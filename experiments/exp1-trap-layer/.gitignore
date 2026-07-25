@@ -1,0 +1,15 @@
+# 凭证与本地环境——绝不提交
+.env
+
+# Python / uv
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# 运行时产物（WAL 落盘文件）
+results/wal/
+*.wal.jsonl
+
+# 系统
+.DS_Store

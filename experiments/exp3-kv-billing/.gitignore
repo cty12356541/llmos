@@ -1,0 +1,14 @@
+# 凭证与本地环境——绝不提交
+.env
+
+# Python / uv
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# 真实 API 实测产物（含原始 usage JSON，可能含计费信息）
+results/real/
+
+# 系统
+.DS_Store

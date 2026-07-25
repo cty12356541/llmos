@@ -1,0 +1,16 @@
+# 代理签发的 agent key → 预算账户映射（初始账户）
+# 这些是"代理侧"的 key，不是任何真实 provider 的 key，仅用于本地原型。
+# 余额设计配合 harness 三场景：
+#   demo-rich  正常跑完任务
+#   demo-poor  余额 120 < 一次 150 token 调用的预估成本 → 被 max_tokens 硬顶截断
+#   demo-broke 余额 40，两次调用后耗尽 → 预警 → 429 挂起 → 充值恢复
+accounts:
+  - key: "sk-agent-demo-rich"
+    agent_id: "demo-rich"
+    credits: 100000
+  - key: "sk-agent-demo-poor"
+    agent_id: "demo-poor"
+    credits: 120
+  - key: "sk-agent-demo-broke"
+    agent_id: "demo-broke"
+    credits: 40

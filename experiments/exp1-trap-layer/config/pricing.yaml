@@ -1,0 +1,11 @@
+# 用户态定价表：每 1k token 的 credits 单价
+# default 用于未列出的模型
+# mock-model 定价取 1 credit ≈ 1 completion token，便于复现
+# "余额 100 credits vs 预估 150 credits 调用"的截断判定场景
+models:
+  mock-model:
+    prompt_per_1k: 500.0
+    completion_per_1k: 1000.0
+  default:
+    prompt_per_1k: 500.0
+    completion_per_1k: 1000.0

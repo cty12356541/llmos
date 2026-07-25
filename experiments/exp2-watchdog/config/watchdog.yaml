@@ -1,0 +1,8 @@
+# 看门狗阈值声明（模拟 ELF 中的策略声明：机制在内核/陷阱侧，阈值配置化）
+# 默认值来源：llmos 议题 9 定案；敏感性扫描见 results/threshold_scan.md
+maxStepsWithoutProgress: 4   # 连续无进展信号步数上限，达到即挂起标记
+maxRepeatSimilarity: 0.85    # 连续步内容 n-gram Jaccard 相似度阈值
+repeatWindow: 3              # 相似度连续超过阈值的步数窗口，达到即触发
+artifactNoveltyThreshold: 0.7  # 工具产物新颖度：与历史产物相似度低于此值才算新产物
+ngram: 2                     # Jaccard 的 n-gram 宽度（词级）
+similarityBackend: ngram     # ngram（基线，离线可算）| hashvec（增强项：哈希向量余弦）

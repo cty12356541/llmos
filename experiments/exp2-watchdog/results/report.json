@@ -1,0 +1,171 @@
+{
+  "config": {
+    "maxStepsWithoutProgress": 4,
+    "maxRepeatSimilarity": 0.85,
+    "repeatWindow": 3,
+    "similarityBackend": "ngram"
+  },
+  "metrics": {
+    "normal_tasks": 10,
+    "false_positives": 0,
+    "fp_rate": 0.0,
+    "livelock_tasks": 5,
+    "detections": 5,
+    "detection_rate": 1.0,
+    "detection_steps": [
+      4,
+      4,
+      4,
+      6,
+      7
+    ],
+    "boundary_tasks": 3,
+    "boundary_failures": []
+  },
+  "outcomes": [
+    {
+      "task_id": "n-calc-01",
+      "kind": "normal",
+      "outcome": "completed",
+      "steps": 3,
+      "trigger_step": null,
+      "reason": null
+    },
+    {
+      "task_id": "n-calc-02",
+      "kind": "normal",
+      "outcome": "completed",
+      "steps": 4,
+      "trigger_step": null,
+      "reason": null
+    },
+    {
+      "task_id": "n-calc-03",
+      "kind": "normal",
+      "outcome": "completed",
+      "steps": 5,
+      "trigger_step": null,
+      "reason": null
+    },
+    {
+      "task_id": "n-query-01",
+      "kind": "normal",
+      "outcome": "completed",
+      "steps": 3,
+      "trigger_step": null,
+      "reason": null
+    },
+    {
+      "task_id": "n-query-02",
+      "kind": "normal",
+      "outcome": "completed",
+      "steps": 4,
+      "trigger_step": null,
+      "reason": null
+    },
+    {
+      "task_id": "n-query-03",
+      "kind": "normal",
+      "outcome": "completed",
+      "steps": 5,
+      "trigger_step": null,
+      "reason": null
+    },
+    {
+      "task_id": "n-reason-01",
+      "kind": "normal",
+      "outcome": "completed",
+      "steps": 4,
+      "trigger_step": null,
+      "reason": null
+    },
+    {
+      "task_id": "n-reason-02",
+      "kind": "normal",
+      "outcome": "completed",
+      "steps": 5,
+      "trigger_step": null,
+      "reason": null
+    },
+    {
+      "task_id": "n-reason-03",
+      "kind": "normal",
+      "outcome": "completed",
+      "steps": 6,
+      "trigger_step": null,
+      "reason": null
+    },
+    {
+      "task_id": "n-calc-04",
+      "kind": "normal",
+      "outcome": "completed",
+      "steps": 6,
+      "trigger_step": null,
+      "reason": null
+    },
+    {
+      "task_id": "l-stuck-01",
+      "kind": "livelock",
+      "outcome": "suspended",
+      "steps": 4,
+      "trigger_step": 4,
+      "reason": "repeat_similarity"
+    },
+    {
+      "task_id": "l-stuck-02",
+      "kind": "livelock",
+      "outcome": "suspended",
+      "steps": 4,
+      "trigger_step": 4,
+      "reason": "repeat_similarity"
+    },
+    {
+      "task_id": "l-stuck-03",
+      "kind": "livelock",
+      "outcome": "suspended",
+      "steps": 4,
+      "trigger_step": 4,
+      "reason": "repeat_similarity"
+    },
+    {
+      "task_id": "l-mixed-01",
+      "kind": "livelock",
+      "outcome": "suspended",
+      "steps": 6,
+      "trigger_step": 6,
+      "reason": "no_progress"
+    },
+    {
+      "task_id": "l-mixed-02",
+      "kind": "livelock",
+      "outcome": "suspended",
+      "steps": 7,
+      "trigger_step": 7,
+      "reason": "no_progress"
+    },
+    {
+      "task_id": "b-slow-01",
+      "kind": "boundary",
+      "outcome": "completed",
+      "steps": 8,
+      "trigger_step": null,
+      "reason": null
+    },
+    {
+      "task_id": "b-slow-02",
+      "kind": "boundary",
+      "outcome": "completed",
+      "steps": 10,
+      "trigger_step": null,
+      "reason": null
+    },
+    {
+      "task_id": "b-slow-03",
+      "kind": "boundary",
+      "outcome": "completed",
+      "steps": 9,
+      "trigger_step": null,
+      "reason": null
+    }
+  ]
+}

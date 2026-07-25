@@ -1,0 +1,23 @@
+# 用户态定价表：每 1k token 的 credits 单价
+# exp3 扩展：cached_prompt_per_1k 为缓存命中 prompt token 的折扣单价（可缺省）
+# 缺省 cached_prompt_per_1k 时命中部分按 prompt_per_1k 全价计（降级规则）
+# default 用于未列出的模型
+models:
+  mock-model:
+    prompt_per_1k: 500.0
+    completion_per_1k: 1000.0
+    cached_prompt_per_1k: 50.0   # 命中价 = 原价 1/10（DeepSeek 量级）
+  deepseek-chat:
+    prompt_per_1k: 500.0
+    completion_per_1k: 1000.0
+    cached_prompt_per_1k: 50.0
+  openai-style-model:
+    prompt_per_1k: 500.0
+    completion_per_1k: 1000.0
+    cached_prompt_per_1k: 250.0  # 命中价 = 原价 1/2（OpenAI cached_tokens 量级）
+  no-cache-model:
+    prompt_per_1k: 500.0
+    completion_per_1k: 1000.0    # 无 cached 条目：即使回报命中也按全价（降级）
+  default:
+    prompt_per_1k: 500.0
+    completion_per_1k: 1000.0

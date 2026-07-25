@@ -1,0 +1,158 @@
+{
+  "deepseek": [
+    {
+      "call_index": 1,
+      "question": "这段系统提示的主旨是什么？一句话回答。",
+      "raw_usage": {
+        "prompt_tokens": 2505,
+        "completion_tokens": 32,
+        "total_tokens": 2537,
+        "prompt_cache_hit_tokens": 0,
+        "prompt_cache_miss_tokens": 2505
+      },
+      "field_kind": "deepseek",
+      "prompt_tokens": 2505,
+      "cached_tokens": 0,
+      "completion_tokens": 32,
+      "total_cost_credits": 1284.5,
+      "cached_cost_credits": 0.0
+    },
+    {
+      "call_index": 2,
+      "question": "把系统提示里提到的计费规则总结成两点。",
+      "raw_usage": {
+        "prompt_tokens": 2505,
+        "completion_tokens": 32,
+        "total_tokens": 2537,
+        "prompt_cache_hit_tokens": 2500,
+        "prompt_cache_miss_tokens": 5
+      },
+      "field_kind": "deepseek",
+      "prompt_tokens": 2505,
+      "cached_tokens": 2500,
+      "completion_tokens": 32,
+      "total_cost_credits": 159.5,
+      "cached_cost_credits": 125.0
+    },
+    {
+      "call_index": 3,
+      "question": "系统提示中出现的那句英文绕口令是什么？",
+      "raw_usage": {
+        "prompt_tokens": 2505,
+        "completion_tokens": 32,
+        "total_tokens": 2537,
+        "prompt_cache_hit_tokens": 2500,
+        "prompt_cache_miss_tokens": 5
+      },
+      "field_kind": "deepseek",
+      "prompt_tokens": 2505,
+      "cached_tokens": 2500,
+      "completion_tokens": 32,
+      "total_cost_credits": 159.5,
+      "cached_cost_credits": 125.0
+    }
+  ],
+  "openai": [
+    {
+      "call_index": 1,
+      "question": "这段系统提示的主旨是什么？一句话回答。",
+      "raw_usage": {
+        "prompt_tokens": 2505,
+        "completion_tokens": 32,
+        "total_tokens": 2537,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "field_kind": "openai",
+      "prompt_tokens": 2505,
+      "cached_tokens": 0,
+      "completion_tokens": 32,
+      "total_cost_credits": 1284.5,
+      "cached_cost_credits": 0.0
+    },
+    {
+      "call_index": 2,
+      "question": "把系统提示里提到的计费规则总结成两点。",
+      "raw_usage": {
+        "prompt_tokens": 2505,
+        "completion_tokens": 32,
+        "total_tokens": 2537,
+        "prompt_tokens_details": {
+          "cached_tokens": 2500
+        }
+      },
+      "field_kind": "openai",
+      "prompt_tokens": 2505,
+      "cached_tokens": 2500,
+      "completion_tokens": 32,
+      "total_cost_credits": 159.5,
+      "cached_cost_credits": 125.0
+    },
+    {
+      "call_index": 3,
+      "question": "系统提示中出现的那句英文绕口令是什么？",
+      "raw_usage": {
+        "prompt_tokens": 2505,
+        "completion_tokens": 32,
+        "total_tokens": 2537,
+        "prompt_tokens_details": {
+          "cached_tokens": 2500
+        }
+      },
+      "field_kind": "openai",
+      "prompt_tokens": 2505,
+      "cached_tokens": 2500,
+      "completion_tokens": 32,
+      "total_cost_credits": 159.5,
+      "cached_cost_credits": 125.0
+    }
+  ],
+  "none": [
+    {
+      "call_index": 1,
+      "question": "这段系统提示的主旨是什么？一句话回答。",
+      "raw_usage": {
+        "prompt_tokens": 2505,
+        "completion_tokens": 32,
+        "total_tokens": 2537
+      },
+      "field_kind": "none",
+      "prompt_tokens": 2505,
+      "cached_tokens": 0,
+      "completion_tokens": 32,
+      "total_cost_credits": 1284.5,
+      "cached_cost_credits": 0.0
+    },
+    {
+      "call_index": 2,
+      "question": "把系统提示里提到的计费规则总结成两点。",
+      "raw_usage": {
+        "prompt_tokens": 2505,
+        "completion_tokens": 32,
+        "total_tokens": 2537
+      },
+      "field_kind": "none",
+      "prompt_tokens": 2505,
+      "cached_tokens": 0,
+      "completion_tokens": 32,
+      "total_cost_credits": 1284.5,
+      "cached_cost_credits": 0.0
+    },
+    {
+      "call_index": 3,
+      "question": "系统提示中出现的那句英文绕口令是什么？",
+      "raw_usage": {
+        "prompt_tokens": 2505,
+        "completion_tokens": 32,
+        "total_tokens": 2537
+      },
+      "field_kind": "none",
+      "prompt_tokens": 2505,
+      "cached_tokens": 0,
+      "completion_tokens": 32,
+      "total_cost_credits": 1284.5,
+      "cached_cost_credits": 0.0
+    }
+  ]
+}

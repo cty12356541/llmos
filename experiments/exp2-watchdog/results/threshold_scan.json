@@ -1,0 +1,146 @@
+[
+  {
+    "maxStepsWithoutProgress": 3,
+    "maxRepeatSimilarity": 0.8,
+    "fp_count": 0,
+    "fp_rate": 0.0,
+    "detection_rate": 1.0,
+    "max_detection_step": 6,
+    "boundary_failures": 0
+  },
+  {
+    "maxStepsWithoutProgress": 3,
+    "maxRepeatSimilarity": 0.85,
+    "fp_count": 0,
+    "fp_rate": 0.0,
+    "detection_rate": 1.0,
+    "max_detection_step": 6,
+    "boundary_failures": 0
+  },
+  {
+    "maxStepsWithoutProgress": 3,
+    "maxRepeatSimilarity": 0.9,
+    "fp_count": 0,
+    "fp_rate": 0.0,
+    "detection_rate": 1.0,
+    "max_detection_step": 6,
+    "boundary_failures": 0
+  },
+  {
+    "maxStepsWithoutProgress": 3,
+    "maxRepeatSimilarity": 0.95,
+    "fp_count": 0,
+    "fp_rate": 0.0,
+    "detection_rate": 1.0,
+    "max_detection_step": 6,
+    "boundary_failures": 0
+  },
+  {
+    "maxStepsWithoutProgress": 4,
+    "maxRepeatSimilarity": 0.8,
+    "fp_count": 0,
+    "fp_rate": 0.0,
+    "detection_rate": 1.0,
+    "max_detection_step": 7,
+    "boundary_failures": 0
+  },
+  {
+    "maxStepsWithoutProgress": 4,
+    "maxRepeatSimilarity": 0.85,
+    "fp_count": 0,
+    "fp_rate": 0.0,
+    "detection_rate": 1.0,
+    "max_detection_step": 7,
+    "boundary_failures": 0
+  },
+  {
+    "maxStepsWithoutProgress": 4,
+    "maxRepeatSimilarity": 0.9,
+    "fp_count": 0,
+    "fp_rate": 0.0,
+    "detection_rate": 1.0,
+    "max_detection_step": 7,
+    "boundary_failures": 0
+  },
+  {
+    "maxStepsWithoutProgress": 4,
+    "maxRepeatSimilarity": 0.95,
+    "fp_count": 0,
+    "fp_rate": 0.0,
+    "detection_rate": 1.0,
+    "max_detection_step": 7,
+    "boundary_failures": 0
+  },
+  {
+    "maxStepsWithoutProgress": 5,
+    "maxRepeatSimilarity": 0.8,
+    "fp_count": 0,
+    "fp_rate": 0.0,
+    "detection_rate": 1.0,
+    "max_detection_step": 7,
+    "boundary_failures": 0
+  },
+  {
+    "maxStepsWithoutProgress": 5,
+    "maxRepeatSimilarity": 0.85,
+    "fp_count": 0,
+    "fp_rate": 0.0,
+    "detection_rate": 1.0,
+    "max_detection_step": 7,
+    "boundary_failures": 0
+  },
+  {
+    "maxStepsWithoutProgress": 5,
+    "maxRepeatSimilarity": 0.9,
+    "fp_count": 0,
+    "fp_rate": 0.0,
+    "detection_rate": 1.0,
+    "max_detection_step": 7,
+    "boundary_failures": 0
+  },
+  {
+    "maxStepsWithoutProgress": 5,
+    "maxRepeatSimilarity": 0.95,
+    "fp_count": 0,
+    "fp_rate": 0.0,
+    "detection_rate": 1.0,
+    "max_detection_step": 7,
+    "boundary_failures": 0
+  },
+  {
+    "maxStepsWithoutProgress": 6,
+    "maxRepeatSimilarity": 0.8,
+    "fp_count": 0,
+    "fp_rate": 0.0,
+    "detection_rate": 1.0,
+    "max_detection_step": 7,
+    "boundary_failures": 0
+  },
+  {
+    "maxStepsWithoutProgress": 6,
+    "maxRepeatSimilarity": 0.85,
+    "fp_count": 0,
+    "fp_rate": 0.0,
+    "detection_rate": 1.0,
+    "max_detection_step": 7,
+    "boundary_failures": 0
+  },
+  {
+    "maxStepsWithoutProgress": 6,
+    "maxRepeatSimilarity": 0.9,
+    "fp_count": 0,
+    "fp_rate": 0.0,
+    "detection_rate": 1.0,
+    "max_detection_step": 7,
+    "boundary_failures": 0
+  },
+  {
+    "maxStepsWithoutProgress": 6,
+    "maxRepeatSimilarity": 0.95,
+    "fp_count": 0,
+    "fp_rate": 0.0,
+    "detection_rate": 1.0,
+    "max_detection_step": 7,
+    "boundary_failures": 0
+  }
+]
