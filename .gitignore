@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+dist/
+build/
+
+# 环境密钥（绝不入库）
+.env
+
+# opencode 内部状态
+.omo/
+
+# OS
+.DS_Store
