@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>通用内核 · llmos — 智能体时代的操作系统内核</title>
+<meta name="description" content="llmos 架构设计总纲 v0.2 · 通用内核：三层架构、8 抽象 6 族、约 22 个系统调用、ELF 三方契约、16/16 通用性重构测试。">
+<link rel="stylesheet" href="css/style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23e5f4ff'/%3E%3Ctext x='16' y='21' font-family='monospace' font-size='13' font-weight='700' text-anchor='middle' fill='%23030710'%3Ell%3C/text%3E%3C/svg%3E">
+</head>
+<body>
+
+<!-- ================= 导航 ================= -->
+<nav class="nav" id="nav">
+  <div class="nav-inner">
+    <a class="nav-brand" href="index.html">
+      <span class="mark" aria-hidden="true">ll</span>
+      <span>llmos</span>
+    </a>
+    <div class="nav-links" id="navLinks">
+      <a href="index.html">首页</a>
+      <a href="kernel.html" aria-current="page">通用内核</a>
+      <a href="verification.html">支撑与验证</a>
+      <a href="modern.html">现代系统</a>
+    </div>
+    <span class="nav-badge"><span class="b-full">v0.2 · 18 议题全部定案</span><span class="b-short">v0.2</span></span>
+  </div>
+</nav>
+
+<main id="top">
+
+<!-- ================= 页头 ================= -->
+<header class="page-head container">
+  <span class="eyebrow reveal">Part I · 通用系统 · Kernel</span>
+  <h1 class="page-title reveal">通用内核：<span class="w">最小正确抽象</span></h1>
+  <p class="page-desc reveal">主线第一题：先证明这是一套「通用系统」。陷入层物理位置、8 个抽象、约 22 个系统调用、ELF 三方契约，最后用可检验的判据压测通用性——16/16 重构测试通过，无一抽象删除。</p>
+  <nav class="page-toc reveal" aria-label="本页目录">
+    <a href="#arch">三层架构</a>
+    <a href="#abstractions">八大抽象</a>
+    <a href="#syscalls">系统调用</a>
+    <a href="#elf">ELF</a>
+    <a href="#universality">通用性论证</a>
+  </nav>
+</header>
+
+<!-- ================= 1. 三层架构 ================= -->
+<section class="section band" id="arch">
+  <div class="container">
+    <div class="sec-head reveal">
+      <span class="eyebrow">Architecture<span class="sec-no">/ 01</span></span>
+      <h2>三层架构：<em>陷入层</em>是内核的唯一正确物理位置</h2>
+      <p>内核卡在 agent 循环与模型之间、agent 循环与工具之间。每次 LLM 请求、每次工具调用经内核陷入（trap）——一个陷入层同时提供抢占点、预算扣减点、权限校验点、污点标记点四个机制。</p>
+    </div>
+    <div class="arch-wrap">
+      <div class="arch-stack reveal-group">
+        <div class="arch-layer">
+          <div class="layer-label"><span>用户态 · Userspace</span><span class="ring">ring 3</span></div>
+          <h3>harness 程序与策略服务</h3>
+          <div class="chips">
+            <span class="chip">harness 程序（agent 循环）</span>
+            <span class="chip">编排器（graph / workflow）</span>
+            <span class="chip">调度策略 agent</span>
+            <span class="chip">弹性策略 agent</span>
+            <span class="chip">分页策略服务</span>
+            <span class="chip">策略守护进程</span>
+            <span class="chip">工具注册中心</span>
+          </div>
+        </div>
+        <div class="trap-divider">陷入边界 · 跨私有边界全陷入</div>
+        <div class="arch-layer kernel">
+          <div class="layer-label"><span>内核 · Kernel</span><span class="ring">ring 0</span></div>
+          <h3>llmos 微内核</h3>
+          <div class="chips">
+            <span class="chip trap">陷入层：llm_call / tool_call</span>
+            <span class="chip">调度机制</span>
+            <span class="chip">上下文分页机制</span>
+            <span class="chip">IPC 路由 + 背压</span>
+            <span class="chip">预算核算</span>
+            <span class="chip">污点传播</span>
+            <span class="chip">能力校验</span>
+            <span class="chip">namespace 解析</span>
+          </div>
+        </div>
+        <div class="trap-divider">硬件抽象 · 内核不拥有 CPU，只中介访问</div>
+        <div class="arch-layer">
+          <div class="layer-label"><span>硬件态 · Hardware</span><span class="ring">设备</span></div>
+          <h3>推理引擎与执行环境</h3>
+          <div class="chips">
+            <span class="chip">推理引擎（vLLM 等 = CPU）</span>
+            <span class="chip">沙箱执行环境（= 外设）</span>
+            <span class="chip">存储</span>
+          </div>
+        </div>
+      </div>
+      <aside class="arch-side reveal-group">
+        <div class="card">
+          <h4>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+            陷入如何不可绕过
+          </h4>
+          <p>ring 保护的软件等价物：<b>凭证托管</b>——agent 拿不到原始模型 API key，模型端点只接受内核签名的请求；<b>网络策略</b>——沙箱网络规则使工具只能经内核网关到达。不是靠硬件特权级，靠凭证加网络隔离。</p>
+        </div>
+        <div class="card">
+          <h4>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            为什么是微内核
+          </h4>
+          <p>经典微内核（Mach）死于 IPC 性能开销。agent OS 里这个死因不存在：<b>LLM 调用延迟 100ms–10s，IPC 开销微秒到毫秒</b>——IPC 税相对系统调用延迟是噪声。Mach 是对的思路错的基座，agent 给了它对基座。</p>
+        </div>
+        <div class="card">
+          <h4>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2 2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+            不站队两大阵营
+          </h4>
+          <p>harness/沙箱派与图编排派共用 MCP + A2A 协议底座。harness 程序和图编排器都是 llmos 内核之上的<b>用户态程序</b>——内核在两者之下，这就是桥。私有草稿不陷入，对应进程访问私有内存不陷入。</p>
+        </div>
+      </aside>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 2. 八大抽象 ================= -->
+<section class="section" id="abstractions">
+  <div class="container">
+    <div class="sec-head reveal">
+      <span class="eyebrow">Abstractions<span class="sec-no">/ 02</span></span>
+      <h2>最小抽象集：<em>8 个抽象，6 族</em></h2>
+      <p>通用性压测后无一删除（议题 13）：Agent/Context/Tool/Message/Topic/Blackboard 是通用核心；Budget/Policy 是负载无关的基础设施——电力计量类比，<b style="color:var(--white);">是设施不是灵魂</b>。治理语义已归位为可插拔用户态模块，不再占中心。</p>
+    </div>
+    <div class="abs-grid reveal-group">
+      <div class="card abs-card">
+        <div class="abs-head">
+          <span class="abs-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 1v3M15 1v3M9 20v3M15 20v3M1 9h3M1 15h3M20 9h3M20 15h3"/></svg></span>
+          <div><span class="abs-name">Agent</span><span class="abs-unix">计算族 · Unix: <b>进程</b></span></div>
+        </div>
+        <p class="abs-duty">可调度执行单元。<b style="color:var(--text);">通用进程抽象：LLM 能力是一种可选 handle</b>——纯代码 worker 与 LLM agent 同一抽象，拒绝第二种进程类型（议题 13）。调度粒度 = 一个推理步（计量模型下 = chunk 边界）。</p>
+        <p class="abs-kernel"><b>内核</b>　生命周期状态机 · 步边界陷入 · 身份（ID / 父系 / 版本号）</p>
+      </div>
+      <div class="card abs-card">
+        <div class="abs-head">
+          <span class="abs-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 19a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6z"/><path d="M9 9h6M9 13h6"/></svg></span>
+          <div><span class="abs-name">Context</span><span class="abs-unix">内存族 · Unix: <b>虚拟内存</b></span></div>
+        </div>
+        <p class="abs-duty">上下文窗口 = 物理内存；RAG = 请求调页；embedding 索引 = 页表；压缩 = swap；KV 前缀共享 = 共享库。映射最精确的一块。</p>
+        <p class="abs-kernel"><b>内核</b>　页记账 · 钉住强制（mlock）· 换页执行 · KV 共享机制</p>
+      </div>
+      <div class="card abs-card">
+        <div class="abs-head">
+          <span class="abs-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg></span>
+          <div><span class="abs-name">Tool</span><span class="abs-unix">设备族 · Unix: <b>文件/设备</b></span></div>
+        </div>
+        <p class="abs-duty">外部能力入口。MCP 就是 /dev。双设备类：MCP（结构化，RPC 语义）+ shell/文件（字节流），内核不选边。</p>
+        <p class="abs-kernel"><b>内核</b>　工具调用陷入 · 能力校验（handle）· 沙箱强制挂钩</p>
+      </div>
+      <div class="card abs-card">
+        <div class="abs-head">
+          <span class="abs-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4 20-7z"/></svg></span>
+          <div><span class="abs-name">Message</span><span class="abs-unix">通信族 · Unix: <b>管道</b></span></div>
+        </div>
+        <p class="abs-duty">定向、有序、消耗品的消息流，并发语义为背压——写满阻塞写方，且必须与调度原子。投递计费：发送者预付（议题 11）。</p>
+        <p class="abs-kernel"><b>内核</b>　投递保证与排序 · 背压阻塞 · 寻址路由</p>
+      </div>
+      <div class="card abs-card">
+        <div class="abs-head">
+          <span class="abs-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.59 13.51 6.83 3.98M15.41 6.51l-6.82 3.98"/></svg></span>
+          <div><span class="abs-name">Topic</span><span class="abs-unix">通信族 · Unix: <b>无（新发明）</b></span></div>
+        </div>
+        <p class="abs-duty">群发、有序、消耗品的广播主题，并发语义为兴趣过滤——万级规模解决 O(n²) 洪水的核心机制。过滤器 = eBPF 先例：执行不理解。</p>
+        <p class="abs-kernel"><b>内核</b>　投递与排序 · 路由 · 过滤谓词的安全执行</p>
+      </div>
+      <div class="card abs-card">
+        <div class="abs-head">
+          <span class="abs-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg></span>
+          <div><span class="abs-name">Blackboard</span><span class="abs-unix">通信族 · Unix: <b>共享内存</b></span></div>
+        </div>
+        <p class="abs-duty">共享、持久的状态区，并发语义为 git 式合并。定案：内核元数据 + 用户态字节（inode 缓存 vs 磁盘字节）。</p>
+        <p class="abs-kernel"><b>内核</b>　handle / 版本序号 · 写串行化 · wakeup 原子性 · 污点</p>
+      </div>
+      <div class="card abs-card">
+        <div class="abs-head">
+          <span class="abs-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 7v10"/><path d="M12 10.5v3"/><path d="M9.5 12h5"/></svg></span>
+          <div><span class="abs-name">Budget</span><span class="abs-unix">经济族 · Unix: <b>无（新大陆）</b></span></div>
+        </div>
+        <p class="abs-duty">一切行动折算统一货币消耗，陷入点原子扣减，耗尽强制执行。负载无关的计量设施——治理语义归用户态可插拔模块。</p>
+        <p class="abs-kernel"><b>内核</b>　扣减核算 · 耗尽强制 · 继承树权威记账</p>
+      </div>
+      <div class="card abs-card">
+        <div class="abs-head">
+          <span class="abs-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg></span>
+          <div><span class="abs-name">Policy</span><span class="abs-unix">安全族 · Unix: <b>用户/权限</b></span></div>
+        </div>
+        <p class="abs-duty">权限 + 污点 + 自我修改的版本门控。能力表 = fd 表；在 v0.2 中泛化为 namespace 绑定表（议题 14）。</p>
+        <p class="abs-kernel"><b>内核</b>　陷入点强制校验 · 污点传播 · 版本门控 · 衰减机械校验</p>
+      </div>
+    </div>
+    <div class="callout reveal">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20a8 8 0 1 0 0-16 8 8 0 0 0 0 16z"/><path d="M12 14a2 2 0 1 0 0-4 2 2 0 0 0 0 4z"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2"/></svg>
+      <p><b>调度器不进内核热路径。</b>算术否决了 LLM 上热路径：万级 agent × 每步约 2s = 每秒数千调度事件，LLM 决策追不上。分层调度：内核 dispatcher 纯算术，零智能；用户态调度 agent 是 <b>sysctl writer</b>，慢循环写参数进内核（/proc/sys 类比）。内核强制不变量（预算守恒、公平性下界），dead-man's switch 兜底。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 3. 系统调用表（浅区） ================= -->
+<section class="section light" id="syscalls">
+  <div class="container">
+    <div class="sec-head reveal">
+      <span class="eyebrow">Syscalls<span class="sec-no">/ 03</span></span>
+      <h2>约 <em>22 个系统调用</em>，通过 Multics 测试</h2>
+      <p>判定标准：系统调用超过约 30 个就是过度设计。v0.2 语义修订：<b style="color:var(--light-text);">llm_call 推广为计量调用</b>——流式 realtime 是保持打开的长陷阱，驱动按 chunk 增量报量、内核增量扣减、耗尽掐断；请求-响应只是 chunk = 1 的特例（议题 13）。</p>
+    </div>
+    <div class="sys-grid reveal-group">
+      <div class="card sys-group">
+        <h4>进程 · Process</h4>
+        <ul class="sys-list">
+          <li><b>spawn</b>(executable, budget_slice, policy_ref)</li>
+          <li><b>suspend</b> / <b>resume</b></li>
+          <li><b>checkpoint</b> / <b>restore</b></li>
+          <li><b>branch</b>(→ fork) / <b>kill</b></li>
+        </ul>
+      </div>
+      <div class="card sys-group">
+        <h4>内存 · Context</h4>
+        <ul class="sys-list">
+          <li><b>ctx_pin</b> / <b>ctx_unpin</b></li>
+          <li><b>ctx_advise</b> / <b>ctx_map</b></li>
+        </ul>
+      </div>
+      <div class="card sys-group">
+        <h4>设备 · Tool</h4>
+        <ul class="sys-list">
+          <li><b>tool_call</b><span class="trap-tag">陷入</span></li>
+          <li><b>tool_grant</b> / <b>tool_revoke</b></li>
+        </ul>
+      </div>
+      <div class="card sys-group">
+        <h4>IPC</h4>
+        <ul class="sys-list">
+          <li><b>msg_send</b> / <b>msg_recv</b><span class="trap-tag">发送者预付</span></li>
+          <li><b>topic_publish</b> / <b>topic_subscribe</b>(filter)</li>
+          <li><b>bb_open</b> / <b>bb_read</b> / <b>bb_write</b></li>
+        </ul>
+      </div>
+      <div class="card sys-group">
+        <h4>经济 · Budget</h4>
+        <ul class="sys-list">
+          <li><b>budget_query</b> / <b>budget_transfer</b></li>
+          <li><b>llm_call</b><span class="trap-tag">陷入 · 计量调用</span></li>
+        </ul>
+      </div>
+      <div class="card sys-group">
+        <h4>安全 · Policy</h4>
+        <ul class="sys-list">
+          <li><b>policy_grant</b> / <b>policy_revoke</b></li>
+          <li><b>signal_register</b></li>
+        </ul>
+      </div>
+    </div>
+    <p class="sys-note reveal">预算耗尽 = signal 投递（Unix 信号语义直接移植）；agent 注册自己的 handler 决定挂起 / 降级 / 通知。<b>每陷入只查能力表 + 预算 + 污点</b>，持有 handle 后不再每调用重估策略。预算透支由 <b>max_tokens 硬顶</b>物理截断（剩余预算折算 token 上限随调用下发）；消息投递发送者预付 = 经济背压（议题 11）。</p>
+  </div>
+</section>
+
+<!-- ================= 4. ELF（浅区） ================= -->
+<section class="section light" id="elf">
+  <div class="container">
+    <div class="sec-head reveal">
+      <span class="eyebrow">Executable Format<span class="sec-no">/ 04</span></span>
+      <h2>ELF：不是文件格式，是<em>三方契约</em></h2>
+      <p>内核加载器 × agent 作者 × 工具/skills 生态。通用化的前提是格式标准化——谁定义了 agent 的 ELF，谁卡住生态位。定案形态：OCI 分层镜像 + 声明式 manifest（k8s 风格），接口段内嵌 A2A Agent Card，工具依赖用 MCP URI。v0.2 修订：<b style="color:var(--light-text);">runtime.model 声明变为可选</b>（议题 13）；permissions 段 = 声明式 namespace 绑定请求清单（议题 14）。</p>
+    </div>
+    <div class="elf-wrap">
+      <div class="codeblock reveal">
+        <div class="codeblock-bar">
+          <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+          <span class="fname">researcher.agent.yaml — manifest 示例</span>
+        </div>
+<pre><span class="k">apiVersion</span>: <span class="s">llmos/v1alpha2</span>
+<span class="k">kind</span>: <span class="s">Agent</span>
+<span class="k">metadata</span>:
+  <span class="k">name</span>: <span class="s">researcher</span>
+  <span class="k">version</span>: <span class="n">1.2.0</span>
+  <span class="k">digest</span>: <span class="s">sha256:...</span>
+  <span class="k">signature</span>: <span class="s">&lt;开发者签名&gt;</span>
+<span class="k">spec</span>:
+  <span class="k">runtime</span>:                    <span class="c"># ABI 声明</span>
+    <span class="k">loop</span>: <span class="s">react</span>
+    <span class="k">model</span>: { <span class="k">minTier</span>: <span class="n">2</span>, <span class="k">preferred</span>: [...] }  <span class="c"># 可选：纯代码 worker 无 LLM 手柄</span>
+  <span class="k">instructions</span>:
+    <span class="k">core</span>: <span class="s">./instructions.md</span>   <span class="c"># 只读段（text segment）</span>
+  <span class="k">skills</span>:
+    - <span class="k">path</span>: <span class="s">./skills/web-research/</span>
+      <span class="k">mutable</span>: <span class="n">true</span>           <span class="c"># 允许自我修改的段</span>
+  <span class="k">tools</span>:                      <span class="c"># 动态链接（NEEDED）</span>
+    - <span class="s">mcp://.../web-search@^2.0</span>
+  <span class="k">memory</span>:
+    <span class="k">layout</span>: <span class="s">memfs</span>
+    <span class="k">seed</span>: <span class="s">./memory/seed/</span>      <span class="c"># 记忆烘焙</span>
+    <span class="k">quota</span>: <span class="n">100k</span>
+  <span class="k">budget</span>:
+    <span class="k">request</span>: <span class="n">50k/day</span>
+    <span class="k">exhaustion</span>: <span class="s">degrade</span>       <span class="c"># suspend | degrade | notify</span>
+  <span class="k">permissions</span>:                <span class="c"># namespace 绑定请求清单（安装时授权）</span>
+    <span class="k">blackboards</span>: [<span class="s">research-shared</span>]
+    <span class="k">topics</span>: { <span class="k">subscribe</span>: [<span class="s">news.*</span>], <span class="k">publish</span>: [<span class="s">findings</span>] }
+  <span class="k">interfaces</span>:                 <span class="c"># 符号表：内嵌 A2A Agent Card</span>
+    <span class="k">skills</span>: [<span class="s">deep-research</span>]
+  <span class="k">selfModification</span>:           <span class="c"># 段可变性声明（格式级）</span>
+    <span class="k">allowed</span>: [<span class="s">memory</span>, <span class="s">skills</span>]
+    <span class="k">forbidden</span>: [<span class="s">instructions.core</span>]
+    <span class="k">requiresReauth</span>: [<span class="s">tools</span>, <span class="s">permissions</span>]
+  <span class="k">lifecycle</span>:
+    <span class="k">restart</span>: <span class="s">on-failure</span></pre>
+      </div>
+      <aside class="elf-side reveal-group">
+        <div class="card">
+          <h4>OCI 分层镜像</h4>
+          <p>Docker image : container :: agent 包 : 运行实例。registry 复用 OCI 设施，等于 agent 应用商店。</p>
+          <div class="oci-layers">
+            <div class="oci-layer"><b>基础层</b><span>只读指令 · text 段</span></div>
+            <div class="oci-layer"><b>技能层</b><span>skills · 可变</span></div>
+            <div class="oci-layer cow"><b>实例记忆层</b><span>copy-on-write</span></div>
+          </div>
+          <p style="margin-top: var(--sp-3);">「组织基础 agent + 部门定制层 + 个人记忆层」的继承链自然成立。段映射：dynamic 段 = 工具依赖声明（MCP registry = 动态链接器）；symbol table = 对外接口；note 段 = 签名与版本链。</p>
+        </div>
+        <div class="card">
+          <h4>加载流程 · spawn 时内核做什么</h4>
+          <ol class="steps">
+            <li><b>验签</b> + digest 校验（Policy）</li>
+            <li>权限请求 vs 组织 Policy 比对（超权拒绝或降权）</li>
+            <li><b>双划拨</b>：预算切片 + 按 permissions ∩ 父信封<b>构造子 namespace</b></li>
+            <li>记忆 seed 加载 + <b>COW 层建立</b>（Context）</li>
+            <li>工具依赖解析（绑定 handle = 动态链接）</li>
+            <li>注册接口（A2A card 发布到发现服务）</li>
+            <li>进入调度队列，从 entry 开始第一步</li>
+          </ol>
+        </div>
+        <div class="card">
+          <h4>记忆烘焙与 lineage 身份</h4>
+          <p>包内含 seed 记忆 = 经验分发；100 个实例共享初始记忆后各自分叉（COW）。<b>副本 = 同一 lineage 的新实例，授权随 lineage 链验证。</b>工具 + 权限声明的修改必须重授权（requiresReauth）——运行时走三级签字链（衰减 + 常备授权 + 上行，议题 10，<a class="xref" href="verification.html#security">见支撑与验证</a>）。</p>
+        </div>
+      </aside>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 5. 通用性论证（band） ================= -->
+<section class="section band" id="universality">
+  <div class="container">
+    <div class="sec-head reveal">
+      <span class="eyebrow">Universality<span class="sec-no">/ 05</span></span>
+      <h2>通用性不是口号，是<em>可检验的判据</em></h2>
+      <p>方向修正后的主线第一题：设计通用系统。判据取自 Unix 通用性的来源；裁判标准是重构测试——能否用 llmos 的原语把现有计算模式全部重构为用户态程序。压测结果：能。</p>
+    </div>
+    <div class="principles reveal-group">
+      <div class="card principle">
+        <span class="p-no">01</span>
+        <div>
+          <h4>抽象正交性</h4>
+          <p>抽象各自独立、任意组合。通用性不来自抽象数量，来自组合自由度——LangGraph 编排器 spawn CrewAI 团队内含 Letta 记忆 agent，正交组合成立。</p>
+        </div>
+      </div>
+      <div class="card principle">
+        <span class="p-no">02</span>
+        <div>
+          <h4>对负载的无知性</h4>
+          <p>内核不知道也不关心程序在算什么。它只知道能力集合、预算余额、步数、污点、路由地址——结构信号，不是语义判断；Topic 谓词「执行不理解」。</p>
+        </div>
+      </div>
+      <div class="card principle">
+        <span class="p-no">03</span>
+        <div>
+          <h4>可组合性优先于功能</h4>
+          <p>pipe 没有「功能」，但让一切功能可组合。内核提供原语，模式在用户态组装。</p>
+        </div>
+      </div>
+      <div class="card principle">
+        <span class="p-no">04</span>
+        <div>
+          <h4>机制下限，生态上限</h4>
+          <p>系统提供最少机制，通用性由生态组合涌现。MVS 是反面：功能内置，越全越专用。</p>
+        </div>
+      </div>
+    </div>
+    <div class="stats reveal-group">
+      <div class="stat">
+        <span class="num">16 / 16</span>
+        <span class="lbl">重构测试 · 现有计算模式全部可重构为用户态程序（2 裂缝已修复）</span>
+      </div>
+      <div class="stat">
+        <span class="num">8 / 8</span>
+        <span class="lbl">抽象全部存活 · 通用核心 6 + 基础设施 2</span>
+      </div>
+      <div class="stat">
+        <span class="num">0</span>
+        <span class="lbl">第二种进程类型 · 纯代码 worker 与 LLM agent 同一抽象</span>
+      </div>
+    </div>
+    <div class="chips block reveal" aria-label="16 个重构测试通过的模式">
+      <span class="chip">ReAct 循环</span>
+      <span class="chip">LangGraph 状态机</span>
+      <span class="chip">AutoGen 群聊</span>
+      <span class="chip">CrewAI 层级组织</span>
+      <span class="chip">code agent</span>
+      <span class="chip">蜂群 map-reduce</span>
+      <span class="chip">人在环（人 = 设备）</span>
+      <span class="chip">常驻记忆 agent</span>
+      <span class="chip">Temporal 持久执行</span>
+      <span class="chip">动态工具获取（dlopen）</span>
+      <span class="chip">流式 realtime</span>
+      <span class="chip">自定义模型（= 驱动）</span>
+      <span class="chip">递归子代理</span>
+      <span class="chip">共享工作区</span>
+      <span class="chip">A2A 联邦</span>
+      <span class="chip">纯代码 worker</span>
+    </div>
+    <div class="split-2 reveal-group">
+      <div class="card">
+        <h4>裂缝 A 修复 · 计量流陷阱</h4>
+        <p>流式 / realtime 模型是持续流，不是请求-响应的「步」——步边界抢占对流失效。<b>修复：流 = 一个保持打开的长陷阱</b>，驱动按 chunk 增量回报用量，内核增量扣减预算，额度耗尽掐断流；抢占点从步边界推广为 chunk 边界。</p>
+        <p class="sub">步模型不破，推广为计量模型：请求-响应 = chunk = 1 的特例。max_tokens 硬顶同步推广为「累计计量上限」。</p>
+      </div>
+      <div class="card">
+        <h4>裂缝 B 修复 · Agent = 通用进程，LLM 可选</h4>
+        <p>纯代码 worker（数据清洗、格式转换）不该被迫过 LLM。<b>修复：LLM 能力是一种可选 handle</b>——像网络能力可选一样；无 LLM handle 的 agent 不过 llm_call 陷阱，预算照记。Unix 用单一进程抽象跑 cat 和 Emacs；我们用单一 Agent 抽象跑纯代码 worker 和 LLM agent。</p>
+        <p class="sub">通用性的代价可负担：不变量（能力 + 预算）永不旁路；陷阱成本相对 LLM 延迟是噪声，通用性买得起。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<!-- ================= 上一页 / 下一页 ================= -->
+<nav class="pager" aria-label="页面顺序">
+  <div class="container pager-inner">
+    <a class="pager-link prev" href="index.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></svg>
+      <span><small>上一页</small>首页 · 总览</span>
+    </a>
+    <a class="pager-link next" href="verification.html">
+      <span><small>下一页</small>支撑设施与宗旨验证</span>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+    </a>
+  </div>
+</nav>
+
+<!-- ================= 页脚 ================= -->
+<footer class="footer">
+  <div class="container footer-inner">
+    <div class="f-brand">
+      <span class="nav-brand"><span class="mark" aria-hidden="true">ll</span>llmos</span>
+      <span>· 智能体时代的操作系统内核</span>
+    </div>
+    <span>架构设计总纲 v0.2 · 2026-07-23 · 通用系统 → 现代系统</span>
+    <span>来源：docs/design/02-架构设计总纲-v0.2.md（合成自 docs/discussions/ 议题 1–18，全部定案）</span>
+  </div>
+  <div class="footer-mark" aria-hidden="true">llmos</div>
+</footer>
+
+<script src="js/main.js"></script>
+</body>
+</html>

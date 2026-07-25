@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>现代系统 · llmos — 智能体时代的操作系统内核</title>
+<meta name="description" content="llmos 架构设计总纲 v0.2 · 现代系统：namespace、蜂窝式分布式内核、网络协议栈、弹性多租户、分层可观测性，全部定案。">
+<link rel="stylesheet" href="css/style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23e5f4ff'/%3E%3Ctext x='16' y='21' font-family='monospace' font-size='13' font-weight='700' text-anchor='middle' fill='%23030710'%3Ell%3C/text%3E%3C/svg%3E">
+</head>
+<body>
+
+<!-- ================= 导航 ================= -->
+<nav class="nav" id="nav">
+  <div class="nav-inner">
+    <a class="nav-brand" href="index.html">
+      <span class="mark" aria-hidden="true">ll</span>
+      <span>llmos</span>
+    </a>
+    <div class="nav-links" id="navLinks">
+      <a href="index.html">首页</a>
+      <a href="kernel.html">通用内核</a>
+      <a href="verification.html">支撑与验证</a>
+      <a href="modern.html" aria-current="page">现代系统</a>
+    </div>
+    <span class="nav-badge"><span class="b-full">v0.2 · 18 议题全部定案</span><span class="b-short">v0.2</span></span>
+  </div>
+</nav>
+
+<main id="top">
+
+<!-- ================= 页头 ================= -->
+<header class="page-head container">
+  <span class="eyebrow reveal">Part III · 现代系统 · Modern</span>
+  <h1 class="page-title reveal">现代系统：<span class="w">通用内核之上</span></h1>
+  <p class="page-desc reveal">通用性定案之后，主线第二步：namespace 收敛全部权限语义，蜂窝拓扑解决分布式，协议栈保持可替换，弹性多租户与分层可观测性收官——新抽象不增加概念，反而收敛旧概念。</p>
+  <nav class="page-toc reveal" aria-label="本页目录">
+    <a href="#namespace">namespace</a>
+    <a href="#distributed">分布式内核</a>
+    <a href="#protocol">协议栈</a>
+    <a href="#elasticity">弹性多租户</a>
+    <a href="#observability">可观测性</a>
+    <a href="#principles">设计原则</a>
+  </nav>
+</header>
+
+<!-- ================= 1. namespace（现代系统 1/5） ================= -->
+<section class="section" id="namespace">
+  <div class="container">
+    <div class="sec-head reveal">
+      <span class="eyebrow">Namespace · 现代系统 1/5<span class="sec-no">/ 01</span></span>
+      <h2>命名即权限——agent 诞生在一个<em>恰好和权限一样大的世界</em></h2>
+      <p>Plan 9 遗产：每进程私有名字空间，绑定即能力。namespace 不新增抽象，是能力表的泛化；七项已定决策在它之下收敛——好架构的标志：新抽象不增加概念，反而收敛旧概念。</p>
+    </div>
+    <div class="ns-quote reveal">
+      <p class="ns-quote-line">不可命名 <span>=</span> 不可想象</p>
+      <p class="ns-quote-sub">namespace 的内容会被投射进 agent 的上下文窗口——工具列表就是它的世界观。面对注入指令「访问这个 URL」，namespace 里没有网络工具的 agent 失败的原因不是调用被拦截，而是<b style="color:var(--text);">它根本不知道这件事可做</b>。防御从拦截行为前移为限制想象——提示注入防御的最深一层，比污点、比 Policy 校验都靠前。</p>
+    </div>
+    <div class="split-2 reveal-group" style="margin-top: var(--sp-7);">
+      <div class="card">
+        <h4>错误模型：does-not-exist，而非 permission-denied</h4>
+        <p>spawn 时内核按 <b>ELF permissions ∩ 父信封</b>静态构造子 namespace。agent 永远不会对界外事物得到「拒绝访问」——那些事物<b>对它不存在</b>。</p>
+        <p class="sub">信息隐藏强度对比：permission-denied 泄露「东西存在但你不能碰」；does-not-exist 什么都不泄露。运行期变更走常备重授权通道（议题 10 L1），边界清晰可审计。</p>
+      </div>
+      <div class="card">
+        <h4>七项旧决策在此收敛</h4>
+        <div class="chips">
+          <span class="chip">能力表 = namespace 绑定表</span>
+          <span class="chip">衰减 = 子 namespace ⊆ 父</span>
+          <span class="chip">spawn = 构造子 namespace</span>
+          <span class="chip">污点 = 标记区（/untrusted/*）</span>
+          <span class="chip">ELF permissions = 绑定请求清单</span>
+          <span class="chip">工具注册中心 = 设备仓库</span>
+          <span class="chip">控制面只有结构化输入源可命名</span>
+        </div>
+        <p class="sub">外部资源（A2A / 远程）与本地同一 namespace，绑定在污点标记区——位置透明 + 信任可见。</p>
+      </div>
+    </div>
+    <div class="callout reveal">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+      <p><b>为后续议题铺路的红利。</b>/proc 类比：内核统计与 agent 状态作为只读名字绑定（/sys/agents/*）——可观测性的形状（<a class="xref" href="#observability">见本页可观测性</a>）。import：把远程资源绑进本地名字空间，位置透明从 namespace 间接性免费得来——<a class="xref" href="#distributed">分布式</a>与<a class="xref" href="#protocol">联邦</a>的地基。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 2. 分布式内核（现代系统 2/5，band） ================= -->
+<section class="section band" id="distributed">
+  <div class="container">
+    <div class="sec-head reveal">
+      <span class="eyebrow">Distributed Kernel · 现代系统 2/5<span class="sec-no">/ 02</span></span>
+      <h2>蜂窝式内核：<em>本地数据面 + 集中控制面</em></h2>
+      <p>先算账：跨机陷阱的额外延迟（LAN 0.5ms / 跨机房 50ms）相对 LLM 调用仍是噪声，集中式「算得过来」——但可用性与 10k 以上扩展是算术解决不了的问题。答案是被 service mesh（Envoy + Istio）与 Kubernetes（kubelet + 控制面）在万级规模验证过的拓扑；现代系统 4/5（service mesh 同构）的核心内容即此，不单立。</p>
+    </div>
+    <div class="topo reveal-group">
+      <div class="arch-layer kernel">
+        <div class="layer-label"><span>控制面 · 逻辑集中 · Raft 复制</span><span class="ring">权威状态</span></div>
+        <div class="chips">
+          <span class="chip">预算账本</span>
+          <span class="chip">注册表</span>
+          <span class="chip">策略</span>
+        </div>
+      </div>
+      <div class="trap-divider">份额租约 · 绑定 TTL · 私有 9P 式控制协议（bind / lease / debit / event）</div>
+      <div class="grid-3">
+        <div class="card">
+          <span class="node-title">节点 A · 本地内核代理</span>
+          <div class="chips">
+            <span class="chip">能力检查（缓存 namespace）</span>
+            <span class="chip">预算预扣（本地份额）</span>
+            <span class="chip">污点标记</span>
+            <span class="chip">转发驱动</span>
+          </div>
+          <p class="node-foot">agents: 本地调度 · 本地扣减</p>
+        </div>
+        <div class="card">
+          <span class="node-title">节点 B · 本地内核代理</span>
+          <div class="chips">
+            <span class="chip">能力检查（缓存 namespace）</span>
+            <span class="chip">预算预扣（本地份额）</span>
+            <span class="chip">污点标记</span>
+            <span class="chip">转发驱动</span>
+          </div>
+          <p class="node-foot">agents: 本地调度 · 本地扣减</p>
+        </div>
+        <div class="card">
+          <span class="node-title">节点 C · 本地内核代理</span>
+          <div class="chips">
+            <span class="chip">能力检查（缓存 namespace）</span>
+            <span class="chip">预算预扣（本地份额）</span>
+            <span class="chip">污点标记</span>
+            <span class="chip">转发驱动</span>
+          </div>
+          <p class="node-foot">agents: 本地调度 · 本地扣减</p>
+        </div>
+      </div>
+    </div>
+    <div class="grid-3 reveal-group" style="margin-top: var(--sp-6);">
+      <div class="card">
+        <h4 style="font-size:0.96rem;margin-bottom:var(--sp-2);color:var(--white);font-weight:600;">红利一 · 优雅降级</h4>
+        <p style="font-size:0.86rem;color:var(--text-2);">控制面宕机，系统靠<b style="color:var(--text);">未到期的租约滑行</b>：运行中的 agent 不受影响，只是不能 spawn / 迁移。DHCP 租约、Kerberos 票据同款设计。</p>
+      </div>
+      <div class="card">
+        <h4 style="font-size:0.96rem;margin-bottom:var(--sp-2);color:var(--white);font-weight:600;">红利二 · 故障域自动封闭</h4>
+        <p style="font-size:0.86rem;color:var(--text-2);">父 agent / 节点死亡 → 子的份额到期自动耗尽 → 自动挂起。<b style="color:var(--text);">没有孤儿失控 agent</b>——TTL 就是自动收容所。</p>
+      </div>
+      <div class="card">
+        <h4 style="font-size:0.96rem;margin-bottom:var(--sp-2);color:var(--white);font-weight:600;">红利三 · 迁移账本不动</h4>
+        <p style="font-size:0.86rem;color:var(--text-2);">账本权威在控制面，永远不「搬」：迁移 = 归还源节点份额 + 目标节点发新份额。<b style="color:var(--text);">透支上界 = 份额大小</b>，max_tokens 硬顶在分布式下完整保留。</p>
+      </div>
+    </div>
+    <div class="split-2 reveal-group">
+      <div class="card">
+        <h4>迁移语义 · drain 优先</h4>
+        <p><b>默认 drain</b>：等到步边界（在途调用完成并结算）再迁，与协作式调度模型一致。<b>紧急 evacuate</b>（节点将死）：取消传播掐断在途调用，按实际发生结算记损耗，立即迁。</p>
+        <p class="sub">namespace 重绑定：名称稳定、端点可变——目标机注册表把同一名称解析到本地端点（位置透明，namespace 的红利）。机器专属资源用 pinned 绑定（K8s node-affinity 类比）：要么禁止迁移，要么迁移后代理回源。</p>
+      </div>
+      <div class="card">
+        <h4>一致性档位 = 分布策略</h4>
+        <p>议题 12 的档位直接就是分布策略：</p>
+        <ol class="steps">
+          <li><b>强</b>：主副本串行化——每个黑板有 home 节点，写路由到 home 排序；命名空间分片天然负载均衡</li>
+          <li><b>最终</b>：多主 + merge driver——git 式合并模型天然就是多主</li>
+          <li><b>无</b>：本地黑板，不跨机。Raft 仅用于控制面小状态——Raft-per-blackboard 被否</li>
+        </ol>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 3. 网络协议栈（现代系统 3/5） ================= -->
+<section class="section" id="protocol">
+  <div class="container">
+    <div class="sec-head reveal">
+      <span class="eyebrow">Protocol Stack · 现代系统 3/5<span class="sec-no">/ 03</span></span>
+      <h2>内核不说 MCP 也不说 A2A——<em>只说名字和绑定</em></h2>
+      <p>协议的位置不是内核，是栈。内核的一等公民是 namespace 绑定；协议是绑定下面的可替换栈层——协议死了换一个，内核不变。协议演进独立性 = 通用性保全（议题 13 判据：对负载与实现的无知）。支线「MCP vs A2A 协议位置」在此一并关闭。</p>
+    </div>
+    <div class="arch-wrap">
+      <div class="arch-stack reveal-group">
+        <div class="arch-layer">
+          <div class="layer-label"><span>agent · harness</span><span class="ring">业务</span></div>
+          <h3>用户态程序</h3>
+          <div class="chips">
+            <span class="chip">不关心本地 / 远程</span>
+          </div>
+        </div>
+        <div class="trap-divider">系统调用（陷阱）：msg_send / tool_call · 参数是「名字」</div>
+        <div class="arch-layer kernel">
+          <div class="layer-label"><span>内核</span><span class="ring">ring 0</span></div>
+          <h3>绑定层</h3>
+          <div class="chips">
+            <span class="chip trap">namespace 解析</span>
+            <span class="chip">能力校验</span>
+            <span class="chip">预算扣减</span>
+            <span class="chip">污点标记</span>
+          </div>
+        </div>
+        <div class="trap-divider">绑定类型决定栈 · 可替换</div>
+        <div class="arch-layer">
+          <div class="layer-label"><span>栈 · 用户态</span><span class="ring">协议</span></div>
+          <h3>协议栈层</h3>
+          <div class="chips">
+            <span class="chip">MCP 客户端栈（= 设备访问协议，NFS 客户端的位置）</span>
+            <span class="chip">A2A 客户端栈（= 互联协议，TCP/IP + TLS 的位置）</span>
+            <span class="chip">本地 IPC</span>
+          </div>
+        </div>
+        <div class="trap-divider">线路</div>
+        <div class="arch-layer">
+          <div class="layer-label"><span>外部</span><span class="ring">世界</span></div>
+          <h3>组织之外</h3>
+          <div class="chips">
+            <span class="chip">MCP server</span>
+            <span class="chip">他组织内核下的 A2A agent</span>
+          </div>
+        </div>
+      </div>
+      <aside class="arch-side reveal-group">
+        <div class="card">
+          <h4>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 2 2 21"/><path d="M15 3h6v6"/><path d="M9 21H3v-6"/></svg>
+            名字透明 + 语义显式
+          </h4>
+          <p>外部 agent 以本地名字绑进 namespace（位置透明的<b>命名</b>），但绑定类型可见。调用外部绑定产生<b>远程任务</b>：显式超时 / escrow 支付 / 污点结果 / 部分失败状态——不是假装它是一条本地 Message。POSIX 同款智慧：一切都是 fd，但 socket 的 read() 和文件的 read() 返回不同的错误。不欺骗，也不分两个世界。</p>
+        </div>
+        <div class="card">
+          <h4>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+            「分布式计算注记」一半失效
+          </h4>
+          <p>1994 年 Sun 论文的四差异逐项检查：<b>延迟差异淹没在 LLM 延迟里——失效</b>（本地调用秒级 vs 远程秒级 + ms）；<b>部分失败、信任域、结算依然成立——必须显式</b>（外部可中途死亡；远程输出是异组织污点数据；跨组织是真结算）。</p>
+        </div>
+        <div class="card">
+          <h4>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+            跨组织结算 · 清算所净额
+          </h4>
+          <p>B 的 agent 调用 A 的 agent：付 <b>B 的本地 credits</b>，内核只记本地账不变；控制面之间按周期<b>净额轧差</b>（客户各自交易，银行间清算所轧差）。每调用实时 escrow 被否。信任引导：A2A 签名 Agent Card + DID；导出 / 导入 + TTL 租约，吊销 = 解绑。</p>
+        </div>
+      </aside>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 4. 弹性与多租户（现代系统 5/5，浅区） ================= -->
+<section class="section light" id="elasticity">
+  <div class="container">
+    <div class="sec-head reveal">
+      <span class="eyebrow">Elasticity &amp; Tenancy · 现代系统 5/5<span class="sec-no">/ 04</span></span>
+      <h2>弹性有三个维度，<em>预算是天然刹车</em></h2>
+      <p>经典云弹性只有一个维度：实例数（HPA）。agent OS 有三个。机制在内核（spawn / suspend / tick / 档位），策略在用户态——弹性策略 agent 是 sysctl writer 家族的新成员，监视结构信号（Topic 队列深度、Message 积压、预算燃烧率 vs 进展）慢循环调参，零新机制。</p>
+    </div>
+    <div class="tier-ladder three reveal-group">
+      <div class="card tier">
+        <span class="t-no">1</span>
+        <h4>实例数</h4>
+        <span class="t-cost">spawn / suspend / resume</span>
+        <p>水平扩缩。记忆烘焙让弹性实例<b style="color:var(--light-text);">带经验上岗</b>：从 ELF 镜像 spawn 新实例 = 带 seed 记忆 + COW——云的 cold start 痛点被化解为「新实例从组织经验开始」。</p>
+        <span class="t-fit">负载高峰：先升 tick，再增实例</span>
+        <div class="tier-bar"><i style="width:80%"></i></div>
+      </div>
+      <div class="card tier">
+        <span class="t-no">2</span>
+        <h4>tick 速率</h4>
+        <span class="t-cost">调度机制 · 降 tick</span>
+        <p>不增实例，降背景 agent 的推理频率让出槽位。成本压力下的第二档手段。</p>
+        <span class="t-fit">成本压力：先降档，再降 tick</span>
+        <div class="tier-bar"><i style="width:55%"></i></div>
+      </div>
+      <div class="card tier">
+        <span class="t-no">3</span>
+        <h4>模型档位</h4>
+        <span class="t-cost">LOD 调度</span>
+        <p>高峰期关键路径用大模型、背景降小模型。成本压力下的第一响应——减实例有状态成本，排在最后。</p>
+        <span class="t-fit">顺序：降档 → 降 tick → 减实例</span>
+        <div class="tier-bar"><i style="width:35%"></i></div>
+      </div>
+    </div>
+    <div class="callout reveal">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg>
+      <p><b>serverless bill shock 在本架构中结构性不可能。</b>弹性扩缩在预算继承树内进行，总量被根预算物理封死——最多把预算烧完，然后 80% 预警、挂起（议题 8 语义接管）。scale-to-zero = 挂起而非销毁：checkpoint 保留，回暖即恢复，记忆连续；预热池 = 预 spawn + KV 前缀缓存预热。</p>
+    </div>
+    <div class="split-2 reveal-group">
+      <div class="card">
+        <h4>多租户 · 租户 = 三棵树的根</h4>
+        <p>组织 = spawn 树、预算树、namespace 三棵树的根。租户接入 = 签发根信封 + 根预算 + 根 namespace（衰减链的顶端）。<b style="color:var(--light-text);">隔离天然成立</b>：namespace 互相不可见，预算互不可动。</p>
+        <p class="sub">计量归账：账本天然按 agent 记账，租户级汇总是用户态会计服务。</p>
+      </div>
+      <div class="card">
+        <h4>吵闹邻居 · 共享物理层</h4>
+        <p>逻辑隔离有了，但租户共享推理槽位与内核。<b style="color:var(--light-text);">加权公平共享</b>（cgroup shares 层级化：租户份额 → 租户内再分，权重是 sysctl 可写参数）+ <b style="color:var(--light-text);">多维配额</b>挂租户根：</p>
+        <div class="chips">
+          <span class="chip">credits</span>
+          <span class="chip">agent 数上限</span>
+          <span class="chip">spawn 速率</span>
+          <span class="chip">黑板存储</span>
+          <span class="chip">消息速率</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 5. 可观测性（压轴） ================= -->
+<section class="section" id="observability">
+  <div class="container">
+    <div class="sec-head reveal">
+      <span class="eyebrow">Observability · 压轴<span class="sec-no">/ 05</span></span>
+      <h2>确定性故障用日志，<em>概率性故障用现场</em></h2>
+      <p>spawn 树天然就是 trace 树——任务 = request，步 = span，父子 span 按 spawn 关系嵌套。但语义调试需要内容，全量记录 = 存储爆炸 + 隐私问题，于是分层 trace。内核只做四件；存储、汇总、分析、告警、可视化全在用户态。</p>
+    </div>
+    <div class="trace-ladder reveal-group">
+      <div class="trace-row">
+        <span class="lv">L0<small>元数据</small></span>
+        <span class="what">span 结构数据：陷阱类型、模型、token 进出、成本、时长、工具、污点 / 溯源引用</span>
+        <span class="policy">常开 · 便宜可聚合</span>
+      </div>
+      <div class="trace-row">
+        <span class="lv">L1<small>结构化内容</small></span>
+        <span class="what">工具参数 / 结果、关键决策点</span>
+        <span class="policy">采样 · head-based N%</span>
+      </div>
+      <div class="trace-row hot">
+        <span class="lv">L2<small>全量现场</small></span>
+        <span class="what"><b>agent 版 core dump</b>：checkpoint + 完整上下文 + 最近 N 步 trace——不在平时记录一切，在异常瞬间冻结现场</span>
+        <span class="policy">异常触发 · 看门狗标记 / 被杀 / 预算耗尽</span>
+      </div>
+    </div>
+    <div class="grid-4 reveal-group" style="margin-top: var(--sp-6);">
+      <div class="card budget-part">
+        <span class="owner">内核 · 常开</span>
+        <h4>计数器 / 直方图</h4>
+        <p>源头聚合，不流原始事件——Prometheus 模型的内核版：拉指标，不推事件。</p>
+      </div>
+      <div class="card budget-part">
+        <span class="owner">内核</span>
+        <h4>span 发射点</h4>
+        <p>陷阱处发射 span 元数据，每个步 span 一条。</p>
+      </div>
+      <div class="card budget-part">
+        <span class="owner">内核</span>
+        <h4>L2 触发器</h4>
+        <p>看门狗标记 / 被杀 / 预算耗尽时自动捕获全量现场——进程崩溃产生 core dump 的直接类比。</p>
+      </div>
+      <div class="card budget-part">
+        <span class="owner">内核</span>
+        <h4>/sys 只读绑定</h4>
+        <p>/proc 类比落地：每节点内核暴露 /sys/agents/*，指标守护进程逐级汇总。</p>
+      </div>
+    </div>
+    <div class="chips block reveal" aria-label="agent 黄金信号">
+      <span class="chip">LLM 调用 /s</span>
+      <span class="chip">陷阱拒绝（能力 / 预算）</span>
+      <span class="chip">步延迟分布</span>
+      <span class="chip">推理槽位占用</span>
+      <span class="chip">预算树燃烧率</span>
+      <span class="chip">进展率（产物 / 步数）</span>
+      <span class="chip">成本效率（credits / 产物）</span>
+      <span class="chip">步骤重复度</span>
+      <span class="chip">重试率 / N 版本分歧率</span>
+      <span class="chip">污点流量 / verified 占比</span>
+      <span class="chip">L1 常备授权覆盖率</span>
+    </div>
+    <div class="callout reveal">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.59 13.51 6.83 3.98M15.41 6.51l-6.82 3.98"/></svg>
+      <p><b>告警 = Topic 消息：可观测性系统用自己的原语。</b>告警发到运维 Topic，监督 agent（sysctl writer 家族）订阅裁决——背压与兴趣过滤在此自用，狗粮吃完。万级规模：采样双制（head-based + tail-based on anomaly，稀有语义故障靠尾部采样回溯保留全链）；下钻路径由 lineage ID 保持：组织指标 → 子树 → 单 agent → trace → L2 现场。语义可观测性是独有的最后一层：「种群在向目标推进吗」——可观测性系统给监督者提供语义缩放的正确视图。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 6. 设计原则 ================= -->
+<section class="section" id="principles">
+  <div class="container">
+    <div class="sec-head reveal">
+      <span class="eyebrow">Principles<span class="sec-no">/ 06</span></span>
+      <h2>从 Unix 继承的<em>四条设计原则</em></h2>
+    </div>
+    <div class="principles reveal-group">
+      <div class="card principle">
+        <span class="p-no">01</span>
+        <div>
+          <h4>机制 / 策略分离（微内核路线）</h4>
+          <p>机制在内核，策略在用户态，内核只留非留不可的。判定测试：若某机制错了或被绕过，<b>安全或核算是否失效？是否需要在陷入点上原子完成？</b>两关都过才入内核，否则一律用户态。</p>
+        </div>
+      </div>
+      <div class="card principle">
+        <span class="p-no">02</span>
+        <div>
+          <h4>Multics 警惕：抽象少而准</h4>
+          <p>不自上而下设计完美内核。系统调用超过约 30 个就是过度设计（当前 <b>22 个，通过测试</b>）；进程类型只有一种（LLM 可选，议题 13）。赢的那个是抽象最简加生态位最对的。</p>
+        </div>
+      </div>
+      <div class="card principle">
+        <span class="p-no">03</span>
+        <div>
+          <h4>内核从不信任，只设界</h4>
+          <p><code>policy is advisory; invariants are physics</code>。内核强制不变量（预算守恒、公平性下界、衰减包含），LLM 驱动的策略只能在界内调参；内核不管信念，只管共享状态和原语。</p>
+        </div>
+      </div>
+      <div class="card principle">
+        <span class="p-no">04</span>
+        <div>
+          <h4>抽象比稀缺长寿</h4>
+          <p>今天为稀缺设计的抽象，在富足时代仍是地基。进程 / 虚存 / 文件如此，agent / 上下文 / 预算亦然——规模是压力测试，通用才是宗旨。</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<!-- ================= 上一页 / 下一页 ================= -->
+<nav class="pager" aria-label="页面顺序">
+  <div class="container pager-inner">
+    <a class="pager-link prev" href="verification.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></svg>
+      <span><small>上一页</small>支撑设施与宗旨验证</span>
+    </a>
+    <a class="pager-link next" href="index.html">
+      <span><small>回到</small>首页 · 总览</span>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+    </a>
+  </div>
+</nav>
+
+<!-- ================= 页脚 ================= -->
+<footer class="footer">
+  <div class="container footer-inner">
+    <div class="f-brand">
+      <span class="nav-brand"><span class="mark" aria-hidden="true">ll</span>llmos</span>
+      <span>· 智能体时代的操作系统内核</span>
+    </div>
+    <span>架构设计总纲 v0.2 · 2026-07-23 · 通用系统 → 现代系统</span>
+    <span>来源：docs/design/02-架构设计总纲-v0.2.md（合成自 docs/discussions/ 议题 1–18，全部定案）</span>
+  </div>
+  <div class="footer-mark" aria-hidden="true">llmos</div>
+</footer>
+
+<script src="js/main.js"></script>
+</body>
+</html>

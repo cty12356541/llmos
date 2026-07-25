@@ -1,0 +1,131 @@
+# llmos 站点设计系统（v2 · 基于 langchain.com 实地研究）
+
+> 本文件是 docs/site/ 的视觉契约。所有 token 来自 2026-07-23 对
+> https://www.langchain.com（首页、/langgraph、/langsmith/observability）的
+> Playwright 实机截取（1440px 整页截图 + getComputedStyle 提取），不是凭印象的描述。
+
+---
+
+## 0. 实地研究证据
+
+- 截图与原始 token 数据：临时目录 `langchain-research/`（home/langgraph/langsmith 整页 + hero 截图 + tokens.json）
+- 提取方法：Chromium 实机渲染，`getComputedStyle` 全站普查（颜色/背景/圆角/边框/字体出现频次排序）
+- 网络说明：首页因 `ajax.googleapis.com`（Webflow webfont loader）在无梯环境下超时，导致 networkidle 永不触发；改用 `waitUntil: 'commit'` 后完整加载，三页全部拿到真实渲染结果
+
+## 1. LangChain 的真实设计语言（实测，非印象）
+
+### 1.1 一句话总结
+
+**极暗藏青底 + 单一冰蓝 + 细线流场艺术 + 轻字重大标题 + 等宽字体做标签层，深/浅区块交替。**
+克制、工程感、单色纪律。全站几乎找不到一处装饰性渐变。
+
+### 1.2 颜色 token（getComputedStyle 实测值）
+
+| 用途 | 实测值 | hex |
+|---|---|---|
+| 页面底色 | `rgb(3, 7, 16)` | `#030710` |
+| 区块带（band） | `rgb(13, 19, 34)` | `#0D1322` |
+| 卡片/容器面 | `rgb(22, 31, 52)` 及其透明变体 | `#161F34` |
+| 浅色区块底 | `rgb(242, 250, 255)` | `#F2FAFF` |
+| 大标题（深色区） | `rgb(127, 200, 255)` | `#7FC8FF` |
+| 正文（深色区） | `rgb(204, 233, 255)` | `#CCE9FF` |
+| 次级正文 | `rgba(255,255,255,.6)` / `rgba(3,7,16,.6)` | — |
+| 主按钮 | 底 `rgb(229,244,255)` `#E5F4FF`，字 `rgb(3,7,16)` | — |
+| 次按钮 | 透明底，`1px solid rgb(47,75,104)` `#2F4B68` | — |
+| 边框 | `1px solid #2F4B68`（可见）/ `#161F34`（隐性）/ `2px solid #1E3C5A` | — |
+| 浅底链接/强调 | `rgb(0, 109, 221)` `#006DDD` | — |
+
+**颜色普查结论**：深色区文本颜色前三名是 `#7FC8FF`（33–45 次）、`#FFFFFF`、`#CCE9FF`。
+全站只有蓝—白—藏青一个色相家族。没有 teal、没有紫、没有琥珀色。
+
+### 1.3 渐变普查（关键证据）
+
+全页扫描 `background-image: *gradient*` 的元素，只发现 **2 处**，且都是**遮罩渐变**
+（`linear-gradient(90deg, #030710 35%, transparent)`，用于让插画边缘溶入底色）。
+**零装饰渐变、零渐变文字、零紫蓝渐变。** 上一版的三色渐变文字在 LangChain 语言里不存在。
+
+### 1.4 字体与排版（实测）
+
+- 正文：`Aeonik, Tahoma, sans-serif`，16px / 24px（行高 1.5）
+- 展示标题：`Twklausanne`，**字重 300**（不是粗体！），64px，字距 -1.92px（-0.03em），行高 1.1
+- 导航链接、按钮、eyebrow 标签、箭头链接、产品名：**等宽字体**（截图可辨），这是全站的"工程纹理"
+- 大标题颜色 = 纯色 `#7FC8FF`，仅首页 hero 标题带一层很淡的光晕（text-shadow 级，不是 glow 特效）
+
+### 1.5 形状与边界
+
+- 圆角普查：**6px 占绝对主导**（17 次），其次 50%（圆形）、30px（pill）、8px。
+  没有 16px 大圆角卡片——上一版的 `radius-l: 16px` 方向错误
+- 边框即分层：深色区几乎不用阴影，层级全靠 `#161F34` / `#2F4B68` 两档 1px 边框
+- 按钮：主 = 冰白底黑字 6px；次 = 透明 + `#2F4B68` 边 6px；`padding: 12px 18px`，14px
+
+### 1.6 布局节奏
+
+- 容器 `max-width: 1416px`，导航 `1456px`，导航高 72px
+- 区块底色按 **深 → 深 → 带（#0D1322）→ 浅（#F2FAFF，连续 1–2 个）→ 深（CTA/页脚）** 交替，
+  浅色区是节奏里的"换气口"，不是可选项
+- 内容主模式：**左文右图交替行**（标题 + 灰文 + 等宽箭头链接 / 深色视觉卡），不是均等卡片网格
+- 统计数据：超大数字（64px+）+ 等宽小标签
+
+### 1.7 签名视觉元素：细线流场（line-art flow）
+
+LangChain 真正的识别物不是渐变，而是**细线流场**：1px 冰蓝/钢蓝曲线组成的
+喷泉/波浪/汇聚形态——首页 hero 下方 "Build / Test / Deploy / Monitor" 四颗 pill
+挂在一根横线上，曲线向下汇聚成一股；/langgraph hero 右侧大尺度流线；资源卡缩略图；
+页脚 CTA。它精确、数学、工程化，与"发光网格"是完全相反的审美。
+
+### 1.8 页脚
+
+深色，链接分栏，底部**巨型描边 "LangChain" 字标**（outline text）收束全页。
+
+---
+
+## 2. 上一版（v1）的"AI 味"病灶清单
+
+| # | 病灶（v1 实际代码） | 为什么是 AI 套路 | 对应改进（v2 已执行） |
+|---|---|---|---|
+| 1 | `--grad: teal→blue→purple` 三色渐变文字用于 h2 `<em>`、hero 句号、tier 序号、principle 序号（`background-clip: text` 共 6 处） | "AI 生成页"的第一指纹；实测 LangChain 渐变数为 0 | 全部改纯色 `#7FC8FF`；标题内强调用白色；渐变变量删除 |
+| 2 | `.bg-glow` 三团 teal/blue/purple 径向光晕铺满视口 | 无信息量的"氛围光"，模板标配 | 删除；深色区底色纯净 `#030710` |
+| 3 | `.bg-grid` 全页 56px 细网格 + 顶部 mask | "科技感网格"是第二大 AI 指纹；LangChain 无网格 | 删除；换成细线流场 SVG（hero 汇聚喷泉、页脚） |
+| 4 | 抽象卡图标四色轮换（teal/blue/purple/amber 彩虹芯片） | 装饰性多彩 = 模板感；LangChain 单色纪律 | 全部冰蓝单色，语义靠文字不靠色相 |
+| 5 | 语义色泛滥：`--amber` `--purple` `--red` `--blue` 各管一摊 | 色相被当成免费的分层手段 | 收敛为 冰蓝 / 白 / 藏青灰 三档 + 唯一例外：尸检章用一枚克制的红 |
+| 6 | 卡片全部 `radius: 16px` + 均等网格铺满每个区块 | 千篇一律的"SaaS 卡片墙"；实测 LangChain 主圆角 6px | 圆角系统改 6/8px；区块版式多样化：表格行 / 左右交替 / 堆叠层 / 大数字，不再每节都是同构卡片网格 |
+| 7 | hero-thesis 盒子带 3px 渐变左边条 + 泛光 callout（`--grad-soft` 底） | 装饰条无信息 | 论点改等宽一行式排版；callout 改 1px 边框净面板 |
+| 8 | tier-bar 渐变进度条 | 渐变当装饰 | 纯色细条 |
+| 9 | 导航 logo 渐变方块 + 渐变 favicon | 同上 | 纯色冰白方块 + 藏青字 |
+| 10 | 视觉重心平铺：每节都是 eyebrow+h2+卡片网格，无深浅节奏、无超大字体对比 | 无节奏 = 无设计 | 引入 LangChain 节奏：深→深→带→浅→深；hero 64px/300 字重大标题；Budget/随机性区用大数字；页脚巨型描边字标 |
+| 11 | h2 用 `font-weight: 750` 粗黑 | 与 LangChain 的 300 轻字重大标题方向相反；粗黑大标题是 AI 页另一指纹 | 展示标题全部 300 字重 + -0.03em 字距 |
+| 12 | hero 以产品名 "llmos." 作主标题 | 模板式 brand-hero；LangChain hero 标题是价值主张 | hero 主标题改为价值主张（价值句），产品名退到导航/页脚 |
+
+## 3. v2 设计 token（落地值）
+
+```css
+--bg:        #030710;   /* 页面底 */
+--bg-band:   #0D1322;   /* 区块带 */
+--surface:   #0A1220;   /* 卡片面（实测 #161F34 的暗化变体，保持卡片轻于 band） */
+--line:      #161F34;   /* 隐性边框 */
+--line-2:    #2F4B68;   /* 可见边框 */
+--ink:       #7FC8FF;   /* 标题冰蓝 */
+--text:      #CCE9FF;   /* 正文 */
+--text-2:    rgba(204,233,255,.62);
+--text-3:    rgba(204,233,255,.42);
+--white:     #FFFFFF;
+--ice:       #E5F4FF;   /* 主按钮底 */
+--light-bg:  #F2FAFF;   /* 浅区块底 */
+--light-text:#030710;
+--light-2:   rgba(3,7,16,.62);
+--light-line:rgba(3,7,16,.14);
+--link-light:#006DDD;
+--danger:    #E5636C;   /* 唯一例外色：尸检章 */
+
+--radius-s: 6px; --radius-m: 8px; --radius-pill: 999px;
+--font-display: 300 字重系统无衬线栈（Twklausanne 的离线替代）
+--font-mono: ui-monospace 栈（标签层）
+```
+
+排版：hero 64px/300/-0.03em/1.1（clamp 38–64px）；h2 32–40px/300；
+正文 16px/1.6；eyebrow 等宽 12px/大写/宽字距。
+区块节奏：hero(深) → 历史(深) → 问题(深) → 架构(band) → 抽象(深) →
+系统调用(浅) → ELF(浅) → Budget(深) → 随机性(深) → 原则(深) → 页脚(深)。
+
+动效：仅 IntersectionObserver 渐入（600ms 内、translateY ≤16px），
+reduced-motion 全量兜底，无 JS 全可见。签名元素：细线流场 SVG（1px 曲线，无动画装饰）。

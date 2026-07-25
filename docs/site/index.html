@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>llmos — 智能体时代的操作系统内核 · 架构设计总纲 v0.2</title>
+<meta name="description" content="llmos 架构设计总纲 v0.2：规模是压力测试，通用才是宗旨。通用系统 → 现代系统——namespace、分布式内核、网络协议栈、弹性多租户、可观测性全部定案。">
+<link rel="stylesheet" href="css/style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23e5f4ff'/%3E%3Ctext x='16' y='21' font-family='monospace' font-size='13' font-weight='700' text-anchor='middle' fill='%23030710'%3Ell%3C/text%3E%3C/svg%3E">
+</head>
+<body>
+
+<!-- ================= 导航 ================= -->
+<nav class="nav" id="nav">
+  <div class="nav-inner">
+    <a class="nav-brand" href="index.html">
+      <span class="mark" aria-hidden="true">ll</span>
+      <span>llmos</span>
+    </a>
+    <div class="nav-links" id="navLinks">
+      <a href="index.html" aria-current="page">首页</a>
+      <a href="kernel.html">通用内核</a>
+      <a href="verification.html">支撑与验证</a>
+      <a href="modern.html">现代系统</a>
+    </div>
+    <span class="nav-badge"><span class="b-full">v0.2 · 18 议题全部定案</span><span class="b-short">v0.2</span></span>
+  </div>
+</nav>
+
+<main id="top">
+
+<!-- ================= 1. Hero ================= -->
+<header class="hero container">
+  <span class="eyebrow reveal">llmos · Agent OS Kernel · 架构设计总纲 v0.2 · 通用系统 → 现代系统</span>
+  <h1 class="hero-title reveal">智能体时代的<br><span class="w">操作系统内核</span></h1>
+  <p class="hero-desc reveal">
+    当可供调度的资源翻万倍，现有智能体框架集体失效——不是工程不努力，是抽象层级错了。
+    它们全是库（library），没有一个是内核（kernel）。v0.2 沿「通用系统 → 现代系统」主线展开：
+    通用性四判据压测通过，namespace、分布式内核、网络协议栈、弹性多租户、可观测性全部定案。
+  </p>
+  <p class="hero-thesis reveal"><span class="hl">LLM 调用</span><span class="op">+</span><span class="hl">工具调用</span><span class="op">=</span>系统调用</p>
+  <p class="hero-thesis sub reveal">规模是压力测试，通用才是宗旨</p>
+  <div class="hero-cta reveal">
+    <a class="btn btn-primary" href="#history">阅读设计论证</a>
+    <a class="btn btn-ghost" href="kernel.html">直达通用内核</a>
+  </div>
+  <div class="hero-meta reveal">
+    <span><i aria-hidden="true"></i>微内核路线</span>
+    <span><i aria-hidden="true"></i>8 抽象 / 6 族</span>
+    <span><i aria-hidden="true"></i>约 22 个系统调用</span>
+    <span><i aria-hidden="true"></i>议题 1–18 全部定案 · 2026-07-23</span>
+  </div>
+
+  <!-- 细线流场：一切跨边界调用经陷入层汇聚（LangChain 签名线条语言） -->
+  <div class="flow reveal" role="img" aria-label="陷入层示意图：抢占点、预算扣减点、权限校验点、污点标记点经内核汇聚">
+    <svg viewBox="0 0 1440 440" fill="none" aria-hidden="true">
+      <line class="flow-line" x1="0" y1="48" x2="1440" y2="48"/>
+      <path class="flow-curve" d="M120,48 C120,200 640,220 720,340"/>
+      <path class="flow-curve" d="M250,48 C250,190 650,215 720,340"/>
+      <path class="flow-curve" d="M380,48 C380,180 660,210 720,340"/>
+      <path class="flow-curve" d="M510,48 C510,170 670,200 720,340"/>
+      <path class="flow-curve" d="M640,48 C640,160 690,190 720,340"/>
+      <path class="flow-curve" d="M800,48 C800,160 750,190 720,340"/>
+      <path class="flow-curve" d="M930,48 C930,170 770,200 720,340"/>
+      <path class="flow-curve" d="M1060,48 C1060,180 780,210 720,340"/>
+      <path class="flow-curve" d="M1190,48 C1190,190 790,215 720,340"/>
+      <path class="flow-curve" d="M1320,48 C1320,200 800,220 720,340"/>
+      <line class="flow-curve" x1="720" y1="340" x2="720" y2="440"/>
+      <rect class="flow-pill" x="212" y="31" width="76" height="34" rx="17"/>
+      <text class="flow-pill-text" x="250" y="53" text-anchor="middle">抢占点</text>
+      <rect class="flow-pill" x="500" y="31" width="100" height="34" rx="17"/>
+      <text class="flow-pill-text" x="550" y="53" text-anchor="middle">预算扣减点</text>
+      <rect class="flow-pill" x="840" y="31" width="100" height="34" rx="17"/>
+      <text class="flow-pill-text" x="890" y="53" text-anchor="middle">权限校验点</text>
+      <rect class="flow-pill" x="1140" y="31" width="100" height="34" rx="17"/>
+      <text class="flow-pill-text" x="1190" y="53" text-anchor="middle">污点标记点</text>
+    </svg>
+  </div>
+</header>
+
+<!-- ================= 2. 历史论证 ================= -->
+<section class="section" id="history">
+  <div class="container">
+    <div class="sec-head reveal">
+      <span class="eyebrow">History<span class="sec-no">/ 01</span></span>
+      <h2>智能体系统正在重复<em>计算机发展史</em></h2>
+      <p>每个时代的统治 OS 都长在新硬件类别上。agent 时代的「硬件」是 GPU 集群加基础模型，其 OS 按历史规律必然出现。v0.2 沿这条主线走完了两步：通用系统定案，现代系统五大块定案。</p>
+    </div>
+    <div class="timeline reveal-group">
+      <div class="tl-row">
+        <div class="tl-era">专用机器<small>ENIAC</small></div>
+        <div class="tl-cell">为单一任务布线</div>
+        <div class="tl-cell"><b>提示词工程 + 硬编码 workflow</b></div>
+        <span class="tl-status now">当下</span>
+      </div>
+      <div class="tl-row">
+        <div class="tl-era">大型机批处理<small>Mainframe</small></div>
+        <div class="tl-cell">昂贵、集中、专家操作</div>
+        <div class="tl-cell"><b>贵模型 + 集中 API + 一次跑一个流程</b></div>
+        <span class="tl-status now">当下</span>
+      </div>
+      <div class="tl-row highlight">
+        <div class="tl-era">分时系统<small>CTSS / MULTICS / Unix</small></div>
+        <div class="tl-cell">稀缺资源多路复用</div>
+        <div class="tl-cell"><b>agent 内核：调度、上下文分页、IPC、权限</b></div>
+        <span class="tl-status gap">通用内核 · 定案 ← llmos</span>
+      </div>
+      <div class="tl-row">
+        <div class="tl-era">PC / 通用系统<small>Personal Computing</small></div>
+        <div class="tl-cell">资源便宜、通用抽象</div>
+        <div class="tl-cell"><b>通用进程抽象：LLM 可选，16 模式全部可重构</b></div>
+        <span class="tl-status now">v0.2 · 议题 13 定案</span>
+      </div>
+      <div class="tl-row">
+        <div class="tl-era">现代系统<small>Network / Cloud</small></div>
+        <div class="tl-cell">网络、分布式、云</div>
+        <div class="tl-cell"><b>namespace · 分布式内核 · 协议栈 · 弹性 · 可观测性</b></div>
+        <span class="tl-status now">v0.2 · 议题 14–18 定案</span>
+      </div>
+    </div>
+    <div class="tl-notes reveal-group">
+      <div class="tl-note">
+        <h4>抽象比稀缺长寿</h4>
+        <p>分时系统诞生于资源稀缺，但进程 / 虚存 / 文件在资源变便宜后成了 PC 地基。稀缺发明抽象，富足放大抽象。</p>
+      </div>
+      <div class="tl-note">
+        <h4>harness 派在重建 Unix 用户态</h4>
+        <p>agent = 进程，AGENTS.md = rc 配置，skills = PATH 可执行程序，MCP = 设备文件，A2A = socket。但没有人在造内核。</p>
+      </div>
+      <div class="tl-note warn">
+        <h4>历史警示：Multics 教训</h4>
+        <p>Multics 功能最全，输给 Unix 的「够用」；Lisp 机器的优雅败给 C/Unix 的粗暴。先找到最小正确抽象，让生态自己长。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 3. 问题 ================= -->
+<section class="section" id="problem">
+  <div class="container">
+    <div class="sec-head reveal">
+      <span class="eyebrow">Problem<span class="sec-no">/ 02</span></span>
+      <h2>现有框架全是库，<em>没有一个是内核</em></h2>
+      <p>立项问题：如果可供调度的资源翻万倍，现有框架能否同时调度成千上万个智能体？答案是不能——死法不是「调度不动」，而是压根没有「调度」这个概念：无准入控制、无优先级、无抢占、无配额、无资源核算。规模在这里是压力测试：它压出的是通用性缺口。</p>
+    </div>
+    <div class="autopsy-grid reveal-group">
+      <div class="card autopsy-card">
+        <div class="autopsy-top"><span class="autopsy-name">CrewAI</span><span class="autopsy-scale">~100 量级</span></div>
+        <p class="autopsy-cause">顺序 / 层级 Process 语义反并发。</p>
+        <span class="autopsy-verdict">Autopsy · 编排语义</span>
+      </div>
+      <div class="card autopsy-card">
+        <div class="autopsy-top"><span class="autopsy-name">LangGraph</span><span class="autopsy-scale">~1k 量级</span></div>
+        <p class="autopsy-cause">单进程 asyncio，加每 super-step 全量 checkpoint 写放大。</p>
+        <span class="autopsy-verdict">Autopsy · 状态写放大</span>
+      </div>
+      <div class="card autopsy-card">
+        <div class="autopsy-top"><span class="autopsy-name">AutoGen 系</span><span class="autopsy-scale">~1k 量级</span></div>
+        <p class="autopsy-cause">pub/sub 广播 O(n²)，通信拓扑爆炸。</p>
+        <span class="autopsy-verdict">Autopsy · 通信拓扑</span>
+      </div>
+      <div class="card autopsy-card">
+        <div class="autopsy-top"><span class="autopsy-name">Letta / MemFS</span><span class="autopsy-scale">~1k 量级</span></div>
+        <p class="autopsy-cause">记忆合并走 git，万级并发写死于合并冲突。</p>
+        <span class="autopsy-verdict">Autopsy · 状态一致性</span>
+      </div>
+      <div class="card autopsy-card">
+        <div class="autopsy-top"><span class="autopsy-name">OpenAI SDK / harness 派</span><span class="autopsy-scale">~几千</span></div>
+        <p class="autopsy-cause">万级沙箱的调度与回收无设施。</p>
+        <span class="autopsy-verdict">Autopsy · 执行环境</span>
+      </div>
+      <div class="card autopsy-card">
+        <div class="autopsy-top"><span class="autopsy-name">Dapr Agents</span><span class="autopsy-scale alive">活得最久</span></div>
+        <p class="autopsy-cause">但无 agent 专属调度语义——通用工作流引擎不解 agent 问题。</p>
+        <span class="autopsy-verdict">Autopsy · 语义缺失</span>
+      </div>
+    </div>
+    <div class="callout reveal">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg>
+      <p>万级规模失效不是工程不努力，是<b>抽象层级错了</b>——应用库 vs 内核。OS 的核心职能（稀缺资源分配）在框架层完全缺席。万倍资源不会让问题消失，会让它从不存在变成核心矛盾。这六大死因的逐一闭合，见<a class="xref" href="verification.html#validation">支撑与验证 · 宗旨验证</a>。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 4. 方向修正（浅区） ================= -->
+<section class="section light" id="direction">
+  <div class="container">
+    <div class="sec-head reveal">
+      <span class="eyebrow">Direction<span class="sec-no">/ 03</span></span>
+      <h2>规模是压力测试，<em>通用才是宗旨</em></h2>
+      <p>v0.2 的方向修正：规模不是目标，是检验手段。主线因此排成两步——先证明通用，再展开现代。</p>
+    </div>
+    <div class="split-2 reveal-group">
+      <div class="card">
+        <h4>规模压出的是通用性缺口</h4>
+        <p>万倍资源不会让问题消失，会让它从不存在变成核心矛盾。万级失效的死因不是「调度不动」，而是没有「调度」这个概念——这指向抽象层级的错误，不指向工程努力不足。所以万级规模只是压力测试：它压出的每一道裂缝，都是通用性判据的输入。</p>
+      </div>
+      <div class="card">
+        <h4>主线两步走</h4>
+        <p>第一步设计通用系统：判据可检验，16/16 重构测试通过，治理语义归位为可插拔用户态模块——Budget 是设施不是灵魂。第二步展开现代系统：namespace、分布式内核、网络协议栈、弹性多租户、可观测性全部定案。</p>
+        <p class="sub">通用性四判据与 16/16 重构测试，见<a class="xref" href="kernel.html#universality">通用内核 · 通用性论证</a>。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 5. 阅读路线（band） ================= -->
+<section class="section band" id="tour">
+  <div class="container">
+    <div class="sec-head reveal">
+      <span class="eyebrow">Reading Path<span class="sec-no">/ 04</span></span>
+      <h2>阅读路线：<em>通用系统 → 现代系统</em></h2>
+      <p>总纲按主线拆为三个内容页，按顺序阅读即可复现完整论证链。</p>
+    </div>
+    <div class="nav-cards reveal-group">
+      <a class="card nav-card" href="kernel.html">
+        <span class="nc-no">Part I · 通用系统</span>
+        <h3>通用内核</h3>
+        <p>三层架构与陷入层、8 抽象 6 族、约 22 个系统调用、ELF 三方契约，以及 16/16 重构测试的通用性论证。</p>
+        <span class="nc-arrow">进入<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></span>
+      </a>
+      <a class="card nav-card" href="verification.html">
+        <span class="nc-no">Part II · 通用系统</span>
+        <h3>支撑设施与宗旨验证</h3>
+        <p>Budget 经济、随机性管理、衰减授权三级签字链——负载无关的基础设施；随后六大死因逐一闭合、陷阱吞吐算术。</p>
+        <span class="nc-arrow">进入<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></span>
+      </a>
+      <a class="card nav-card" href="modern.html">
+        <span class="nc-no">Part III · 现代系统</span>
+        <h3>现代系统</h3>
+        <p>namespace 收敛权限语义、蜂窝式分布式内核、可替换协议栈、弹性多租户、分层可观测性与四条设计原则。</p>
+        <span class="nc-arrow">进入<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></span>
+      </a>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<!-- ================= 下一页 ================= -->
+<nav class="pager" aria-label="页面顺序">
+  <div class="container pager-inner">
+    <a class="pager-link next" href="kernel.html">
+      <span><small>下一页</small>通用内核</span>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+    </a>
+  </div>
+</nav>
+
+<!-- ================= 页脚 ================= -->
+<footer class="footer">
+  <div class="container footer-inner">
+    <div class="f-brand">
+      <span class="nav-brand"><span class="mark" aria-hidden="true">ll</span>llmos</span>
+      <span>· 智能体时代的操作系统内核</span>
+    </div>
+    <span>架构设计总纲 v0.2 · 2026-07-23 · 通用系统 → 现代系统</span>
+    <span>来源：docs/design/02-架构设计总纲-v0.2.md（合成自 docs/discussions/ 议题 1–18，全部定案）</span>
+  </div>
+  <div class="footer-mark" aria-hidden="true">llmos</div>
+</footer>
+
+<script src="js/main.js"></script>
+</body>
+</html>

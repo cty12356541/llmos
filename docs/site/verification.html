@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>支撑设施与宗旨验证 · llmos — 智能体时代的操作系统内核</title>
+<meta name="description" content="llmos 架构设计总纲 v0.2 · 支撑与验证：Budget 经济、随机性管理、安全授权三级签字链，与六大死因的逐一闭合、陷阱层吞吐算术。">
+<link rel="stylesheet" href="css/style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23e5f4ff'/%3E%3Ctext x='16' y='21' font-family='monospace' font-size='13' font-weight='700' text-anchor='middle' fill='%23030710'%3Ell%3C/text%3E%3C/svg%3E">
+</head>
+<body>
+
+<!-- ================= 导航 ================= -->
+<nav class="nav" id="nav">
+  <div class="nav-inner">
+    <a class="nav-brand" href="index.html">
+      <span class="mark" aria-hidden="true">ll</span>
+      <span>llmos</span>
+    </a>
+    <div class="nav-links" id="navLinks">
+      <a href="index.html">首页</a>
+      <a href="kernel.html">通用内核</a>
+      <a href="verification.html" aria-current="page">支撑与验证</a>
+      <a href="modern.html">现代系统</a>
+    </div>
+    <span class="nav-badge"><span class="b-full">v0.2 · 18 议题全部定案</span><span class="b-short">v0.2</span></span>
+  </div>
+</nav>
+
+<main id="top">
+
+<!-- ================= 页头 ================= -->
+<header class="page-head container">
+  <span class="eyebrow reveal">Part II · 通用系统 · Infrastructure &amp; Validation</span>
+  <h1 class="page-title reveal">支撑设施与<span class="w">宗旨验证</span></h1>
+  <p class="page-desc reveal">Budget、随机性管理、安全授权是负载无关的基础设施——是设施不是灵魂。随后用三道程序回查宗旨：六大死因逐一闭合、陷阱层吞吐算术推演、失败场景走查。</p>
+  <nav class="page-toc reveal" aria-label="本页目录">
+    <a href="#budget">Budget</a>
+    <a href="#randomness">随机性管理</a>
+    <a href="#security">安全与授权</a>
+    <a href="#validation">宗旨验证</a>
+  </nav>
+</header>
+
+<!-- ================= 1. Budget ================= -->
+<section class="section" id="budget">
+  <div class="container">
+    <div class="sec-head reveal">
+      <span class="eyebrow">Economy · 支撑设施<span class="sec-no">/ 01</span></span>
+      <h2>Budget：<em>失控 agent 是财务事故</em>，不是性能事故</h2>
+      <p>方向修正归位：Budget 是负载无关的计量设施，不是系统灵魂。Unix 进程死循环浪费免费时间片，agent 死循环烧钱。计价单位用抽象 <b style="color:var(--white);">credits</b>：不用 token（不同模型单价不同，不是稳定货币），不用法币（内核不该碰汇率）。驱动回报实际用量，用户态定价表折算，内核只记 credits——内核与价格波动隔离。</p>
+    </div>
+    <div class="budget-grid reveal-group">
+      <div class="card budget-part">
+        <span class="owner">内核 · 权威</span>
+        <h4>余额 balance</h4>
+        <p>当前可用量，陷入点原子扣减。</p>
+      </div>
+      <div class="card budget-part">
+        <span class="owner">内核 · 热路径</span>
+        <h4>记账流水 ledger</h4>
+        <p>每笔扣减事件：哪次调用、花多少。WAL 批量组提交（议题 11 裂缝 1）。</p>
+      </div>
+      <div class="card budget-part">
+        <span class="owner">内核</span>
+        <h4>继承树 inheritance</h4>
+        <p>父子划拨关系，A spawn B spawn C 的问责链。</p>
+      </div>
+      <div class="card budget-part">
+        <span class="owner user">ELF + 用户态</span>
+        <h4>耗尽行为 exhaustion</h4>
+        <p>归零时挂起 / 降级 / 通知，agent 注册自己的 handler。</p>
+      </div>
+      <div class="card budget-part">
+        <span class="owner user">用户态</span>
+        <h4>定价表 pricing</h4>
+        <p>各模型 / 工具单价，价格波动隔离在内核之外。</p>
+      </div>
+    </div>
+    <div class="decision-grid reveal-group">
+      <div class="card decision">
+        <span class="d-tag">继承</span>
+        <div>
+          <h4>ELF 要价 + 父审批</h4>
+          <p>子 ELF 声明 <code>budget.request</code>，父（或其 Policy）在 spawn 时批准 / 拒绝 / 调整。支持中途回收未用预算。被否决：共享池——一个失控子 agent 抽干全部兄弟。</p>
+        </div>
+      </div>
+      <div class="card decision">
+        <span class="d-tag">耗尽</span>
+        <div>
+          <h4>80% 预警 + 默认挂起</h4>
+          <p>80% 阈值信号给优雅收尾窗口（主动 checkpoint、申请增资）；100% 默认 <code>suspend</code>，状态保留、充值可恢复——最诚实的失败。<code>degrade</code> 仅限 ELF 显式声明：隐蔽失败比显式失败更危险。</p>
+        </div>
+      </div>
+      <div class="card decision">
+        <span class="d-tag">透支</span>
+        <div>
+          <h4>max_tokens 硬顶（议题 11 拍板）</h4>
+          <p>陷入时余额是预检，实际成本事后才知。内核把剩余预算折算成 <code>max_tokens</code> 随调用下发，驱动物理截断生成——物理保证，无账本复杂性；工具调用用 preauth 预估冻结作补充。</p>
+        </div>
+      </div>
+      <div class="card decision">
+        <span class="d-tag">计费</span>
+        <div>
+          <h4>实际成本 + 钉页费 + 发送者预付</h4>
+          <p>钉住页按「页 × 步数」计费，防止 pin-everything 滥用；KV 共享页按驱动回报的实际成本记账，不做二次分摊。消息投递<b style="color:var(--text);">发送者预付</b>——spam 制造者自付成本，真正的经济背压（议题 11 拍板）。</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 2. 随机性管理 ================= -->
+<section class="section" id="randomness">
+  <div class="container">
+    <div class="sec-head reveal">
+      <span class="eyebrow">Stochasticity · 支撑设施<span class="sec-no">/ 02</span></span>
+      <h2>随机性管理：Unix 把故障当异常，agent OS 把<span style="white-space:nowrap;"><em>故障当统计</em></span></h2>
+      <p>内核消灭不了幻觉，只提供测量、隔离、冗余原语。<b style="color:var(--white);">可靠性是用 Budget 购买的商品。</b>agent 故障 = 拜占庭故障：看似健康地输出错误，检测需要语义判断——检测必须先于监督（Erlang 监督树结构照抄，触发器换掉）。</p>
+    </div>
+    <div class="tier-ladder reveal-group">
+      <div class="card tier">
+        <span class="t-no">1</span>
+        <h4>变体重试</h4>
+        <span class="t-cost">成本 ~1x · 默认</span>
+        <p>重试时改变 temperature / 措辞，打破相关性失败——同模型同提示词跑 3 次，大概率犯同一个错。</p>
+        <span class="t-fit">适用：所有任务默认档</span>
+        <div class="tier-bar"><i style="width:25%"></i></div>
+      </div>
+      <div class="card tier">
+        <span class="t-no">2</span>
+        <h4>校验器</h4>
+        <span class="t-cost">成本 ~1.x 倍</span>
+        <p>生成-校验不对称：验证常比生成便宜（代码跑测试、数学验算）。确定性校验器最优，LLM 校验器次之。</p>
+        <span class="t-fit">适用：可机械验证输出的任务</span>
+        <div class="tier-bar"><i style="width:45%"></i></div>
+      </div>
+      <div class="card tier">
+        <span class="t-no">3</span>
+        <h4>N-版本投票</h4>
+        <span class="t-cost">成本 ~3x</span>
+        <p>3 个多样化实现多数决。冗余必须多样化才有效（不同模型 / 提示词 / harness）——航空软件 N-version programming 先例。</p>
+        <span class="t-fit">适用：关键步骤（ELF 声明 criticality）</span>
+        <div class="tier-bar"><i style="width:75%"></i></div>
+      </div>
+      <div class="card tier">
+        <span class="t-no">4</span>
+        <h4>检查点回滚</h4>
+        <span class="t-cost">成本 = 存储</span>
+        <p>检测到错误后 rewind 到出错前。语义难点：哪个 checkpoint 是「出错前」？依赖检测先行。</p>
+        <span class="t-fit">适用：长任务</span>
+        <div class="tier-bar"><i style="width:100%"></i></div>
+      </div>
+    </div>
+    <div class="split-2 reveal-group">
+      <div class="card">
+        <h4>无进展检测 · 两级制</h4>
+        <p>agent 空转（livelock）持续烧钱但无语义进展，每步都在「正常」调用，Unix 死循环检测无效。</p>
+        <ol class="steps">
+          <li><b>内核看门狗</b>：「喂狗」= 新产物写入、新工具调用、任务清单推进、显式心跳。ELF 声明阈值 <b>maxStepsWithoutProgress / maxRepeatSimilarity</b>，到阈值挂起 + 标记</li>
+          <li><b>用户态语义监督</b>：监督 agent 审查 trace，裁决恢复（误报）/ 转向（注入新指令）/ 杀死（从 checkpoint 重启）。内核只看信号不看语义</li>
+        </ol>
+      </div>
+      <div class="card">
+        <h4>幻觉传染隔离 · 溯源 + 接触追踪</h4>
+        <p>单 agent 幻觉是 bug，幻觉经消息传给 500 个下游是疫情。共享通道上的每条信息<b>内核强制携带</b>溯源元数据：</p>
+        <div class="chips">
+          <span class="chip">来源 agent</span>
+          <span class="chip">lineage 推导链</span>
+          <span class="chip">断言级别（事实 / 结论 / 推测）</span>
+          <span class="chip">验证状态（verified / unverified）</span>
+        </div>
+        <p class="sub">与污点追踪对偶，合起来是完整信息血缘图。「规划上下文只许 verified 进入」是可强制规则；某 agent 判定幻觉后沿 lineage 前向追踪污染，git 版本化 Blackboard 支持定位回滚。血缘数据有 GC：lineage TTL + 分层归档（议题 11 裂缝 4）。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 3. 安全与授权 ================= -->
+<section class="section" id="security">
+  <div class="container">
+    <div class="sec-head reveal">
+      <span class="eyebrow">Security &amp; Consistency · 支撑设施<span class="sec-no">/ 03</span></span>
+      <h2>权限只能<em>衰减</em>，签字分三级</h2>
+      <p>自我修改触及 requiresReauth 段（工具 / 权限声明变更）时，谁签字？衰减原则结构性地回答了这个问题：<b style="color:var(--white);">委托只能衰减，不能放大</b>——于是内核可以做纯集合包含的机械校验，而扩权请求物理上无法被父批准，只能沿授权链上行。</p>
+    </div>
+    <div class="tier-ladder three reveal-group">
+      <div class="card tier">
+        <span class="t-no">L0</span>
+        <h4>内核机械校验</h4>
+        <span class="t-cost">一切重授权 · 同步必过</span>
+        <p>请求的能力 ⊆ 父的当前信封？纯集合包含判断，零语义——完美符合「内核从不信任，只设界」。</p>
+        <span class="t-fit">签字人：内核（不变量）</span>
+        <div class="tier-bar"><i style="width:33%"></i></div>
+      </div>
+      <div class="card tier">
+        <span class="t-no">L1</span>
+        <h4>常备授权</h4>
+        <span class="t-cost">信封内低风险变更 · 即时</span>
+        <p>Policy 守护进程按预批规则自动签（polkit / OPA 类比）。绝大多数重授权是规则可预见的——<b style="color:var(--text);">规则就是「预先签好的字」，人类只见例外</b>。这回答了「人类是瓶颈」的反对。</p>
+        <span class="t-fit">签字人：组织 Policy 守护进程</span>
+        <div class="tier-bar"><i style="width:66%"></i></div>
+      </div>
+      <div class="card tier">
+        <span class="t-no">L2</span>
+        <h4>上行扩权</h4>
+        <span class="t-cost">超出父信封 · 阻塞等待</span>
+        <p>父签不出自己没有的能力，扩权沿链上行至信封源头——最终必达组织根（人类 / 根 Policy）。等待期 <b style="color:var(--text);">v1 续跑 + 批准后原子热切换</b>（蓝绿部署类比，服务不中断）。</p>
+        <span class="t-fit">签字人：信封源头 · 人类</span>
+        <div class="tier-bar"><i style="width:100%"></i></div>
+      </div>
+    </div>
+    <div class="split-2 reveal-group">
+      <div class="card">
+        <h4>一致性参照 OS 模型 · 内核不管信念</h4>
+        <p>「语义一致性」不作为系统层概念——两个 agent 持有矛盾信念在 agent 社会里是常态甚至资产，强制统一 = 群体思维。内核的边界：</p>
+        <ol class="steps">
+          <li><b>系统状态一致性</b>：内核保证共享信息空间（串行化锚点 + 分片 + 分档保证，类比 O_SYNC / 缓冲写的档位）</li>
+          <li><b>进程私有状态</b>：内核只管 checkpoint / restore 自身完整性</li>
+          <li><b>信念协调</b>：非系统层——内核提供同步原语（黑板锁 / 消息有序 / provenance），裁决归用户态组织层。分歧可见、可追溯、可裁决，但不统一</li>
+        </ol>
+      </div>
+      <div class="card">
+        <h4>控制面防注入 · 内核级强制</h4>
+        <p>agent OS 独有的新攻击面：控制面里的 LLM（调度 / 监督 agent）要<b>读 agent 的产物</b>才能做语义决策，恶意 agent 可以在自己的 trace 里埋注入指令。</p>
+        <p class="sub">定案：控制面 LLM 输入全污点化、只允许结构化数据、<b style="color:var(--text);">原始 trace 永不进指令通道</b>——立为内核级强制规则。控制 = 设界，不是理解：OS 不需要理解程序就能杀死它。provenance 强制携带不是可观测性设计，是控制权的根基。</p>
+      </div>
+    </div>
+    <div class="callout reveal">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
+      <p><b>克隆群体的记忆一致性：不可变 base + overlay。</b>100 个实例从同一 seed 分叉后各自漂移，组织更新基础知识 = 发布新 base 层版本（只读共享），实例本地写在 overlay；rebase 仅当实例写过同 key 才冲突——git 双向合并的万级冲突地狱被结构性绕过。这与 OCI 分层镜像、KV 前缀共享是同一个分层思想的三层合流。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 4. 设计宗旨验证（浅区） ================= -->
+<section class="section light" id="validation">
+  <div class="container">
+    <div class="sec-head reveal">
+      <span class="eyebrow">Validation<span class="sec-no">/ 04</span></span>
+      <h2>为什么能成：<em>六大死因，逐一回查</em></h2>
+      <p>议题 11 用三道程序验证宗旨：六死因回查、陷阱层吞吐推演、失败场景走查。议题 18 收官后，议题 3 提出的六大死因全部有设计覆盖。</p>
+    </div>
+    <div class="stats four reveal-group">
+      <div class="stat">
+        <span class="num">5,000/s</span>
+        <span class="lbl">峰值陷阱率 · 10k agent × 平均步长 2s，每次调用过一次陷阱</span>
+      </div>
+      <div class="stat">
+        <span class="num">~50µs</span>
+        <span class="lbl">单次陷阱内核工作 · 能力表 O(1) + 预算扣减 + 流水 + 污点 + 转发</span>
+      </div>
+      <div class="stat">
+        <span class="num">~20k/s</span>
+        <span class="lbl">单核陷阱容量 · 算术上余量充足；真瓶颈在持久化，已由 WAL 组提交关闭</span>
+      </div>
+      <div class="stat">
+        <span class="num">8 / 8</span>
+        <span class="lbl">失败场景走查发现的裂缝 · 全部关闭（2 个真设计缺口已拍板）</span>
+      </div>
+    </div>
+    <div class="timeline reveal-group" style="margin-top: var(--sp-6);">
+      <div class="tl-row">
+        <div class="tl-era">调度语义真空<small>死因 1</small></div>
+        <div class="tl-cell">tick 协作式调度 + 优先级队列 + LOD + sysctl writer 分层</div>
+        <div class="tl-cell"><b>dispatcher 纯算术出队 5k/s 无压力</b></div>
+        <span class="tl-status gap">已解</span>
+      </div>
+      <div class="tl-row">
+        <div class="tl-era">通信拓扑 O(n²)<small>死因 2</small></div>
+        <div class="tl-cell">Topic 兴趣过滤（内核执行谓词）+ 背压</div>
+        <div class="tl-cell"><b>发送者预付 = 经济背压（裂缝 2 拍板）</b></div>
+        <span class="tl-status gap">已解</span>
+      </div>
+      <div class="tl-row">
+        <div class="tl-era">状态一致性<small>死因 3</small></div>
+        <div class="tl-cell">Blackboard 串行化锚点 + wakeup 原子性 + git 合并</div>
+        <div class="tl-cell"><b>命名空间分片，串行化只在片内（裂缝 3）</b></div>
+        <span class="tl-status gap">已解</span>
+      </div>
+      <div class="tl-row">
+        <div class="tl-era">非确定性传染<small>死因 4</small></div>
+        <div class="tl-cell">provenance 内核强制携带 + 接触追踪 + 召回</div>
+        <div class="tl-cell"><b>lineage TTL + 分层归档（裂缝 4）</b></div>
+        <span class="tl-status gap">已解</span>
+      </div>
+      <div class="tl-row">
+        <div class="tl-era">可观测性崩溃<small>死因 5</small></div>
+        <div class="tl-cell">议题 18 压轴定案：内核四件套 + 分层 trace</div>
+        <div class="tl-cell"><b>告警 = Topic · <a class="xref" href="modern.html#observability">见现代系统·可观测性</a></b></div>
+        <span class="tl-status gap">已闭合</span>
+      </div>
+      <div class="tl-row">
+        <div class="tl-era">治理（预算 / 身份）<small>死因 6</small></div>
+        <div class="tl-cell">Budget 全语义 + ELF 签名 + 衰减授权链</div>
+        <div class="tl-cell"><b>流水 WAL 批量组提交（裂缝 1）</b></div>
+        <span class="tl-status gap">已解</span>
+      </div>
+    </div>
+    <div class="callout reveal">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M9 12l2 2 4-4"/></svg>
+      <p><b>诚实的边界：内核保证「万级可存活」，不保证「万级有产出」。</b>本设计解决规模生存问题——不死、不爆、不烧穿预算、不传染；万级 agent 能否协调出有效产出是组织设计问题（部门 / 角色 / SOP），属于 ELF 与用户态层。正如 Linux 让你能跑一万个进程，但它们是否构成有用系统取决于应用。边界清晰，且必须在定位上说破。</p>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<!-- ================= 上一页 / 下一页 ================= -->
+<nav class="pager" aria-label="页面顺序">
+  <div class="container pager-inner">
+    <a class="pager-link prev" href="kernel.html">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></svg>
+      <span><small>上一页</small>通用内核</span>
+    </a>
+    <a class="pager-link next" href="modern.html">
+      <span><small>下一页</small>现代系统</span>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+    </a>
+  </div>
+</nav>
+
+<!-- ================= 页脚 ================= -->
+<footer class="footer">
+  <div class="container footer-inner">
+    <div class="f-brand">
+      <span class="nav-brand"><span class="mark" aria-hidden="true">ll</span>llmos</span>
+      <span>· 智能体时代的操作系统内核</span>
+    </div>
+    <span>架构设计总纲 v0.2 · 2026-07-23 · 通用系统 → 现代系统</span>
+    <span>来源：docs/design/02-架构设计总纲-v0.2.md（合成自 docs/discussions/ 议题 1–18，全部定案）</span>
+  </div>
+  <div class="footer-mark" aria-hidden="true">llmos</div>
+</footer>
+
+<script src="js/main.js"></script>
+</body>
+</html>
