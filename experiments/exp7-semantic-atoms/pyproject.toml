@@ -1,0 +1,28 @@
+[project]
+name = "exp7-semantic-atoms"
+version = "0.1.0"
+description = "llmos exp7: minimal semantic-atom CRUD (issues 21-23 data plane, external review C-07)"
+requires-python = ">=3.12"
+dependencies = []
+
+[dependency-groups]
+dev = ["pytest>=8.3"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["sematom"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+# RUF001/002/003：CJK 全角标点是本项目文档语言的一部分，非歧义字符
+ignore = ["RUF001", "RUF002", "RUF003"]
