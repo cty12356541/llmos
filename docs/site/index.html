@@ -6,9 +6,14 @@
 <title>llmos — 智能体时代的操作系统内核 · 架构设计总纲 v0.2</title>
 <meta name="description" content="llmos 架构设计总纲 v0.2：规模是压力测试，通用才是宗旨。通用系统 → 现代系统——namespace、分布式内核、网络协议栈、弹性多租户、可观测性全部定案。">
 <link rel="stylesheet" href="css/style.css">
+<link rel="stylesheet" href="css/effects.css">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23e5f4ff'/%3E%3Ctext x='16' y='21' font-family='monospace' font-size='13' font-weight='700' text-anchor='middle' fill='%23030710'%3Ell%3C/text%3E%3C/svg%3E">
 </head>
 <body>
+
+<!-- ================= v4 特效背景层 ================= -->
+<canvas id="bg-canvas" aria-hidden="true"></canvas>
+<canvas id="particles-canvas" aria-hidden="true"></canvas>
 
 <!-- ================= 导航 ================= -->
 <nav class="nav" id="nav">
@@ -46,15 +51,19 @@
   </div>
   <div class="hero-meta reveal">
     <span><i aria-hidden="true"></i>微内核路线</span>
-    <span><i aria-hidden="true"></i>8 抽象 / 6 族</span>
-    <span><i aria-hidden="true"></i>约 22 个系统调用</span>
-    <span><i aria-hidden="true"></i>议题 1–18 全部定案 · 2026-07-23</span>
+    <span><i aria-hidden="true"></i><span data-count="8">0</span> 抽象 / <span data-count="6">0</span> 族</span>
+    <span><i aria-hidden="true"></i>约 <span data-count="22">0</span> 个系统调用</span>
+    <span><i aria-hidden="true"></i>议题 1–<span data-count="18">0</span> 全部定案 · 2026-07-23</span>
   </div>
 
   <!-- 细线流场：一切跨边界调用经陷入层汇聚（LangChain 签名线条语言） -->
+  <!-- v3：光流沿曲线向下汇聚到内核，中心内核节点脉冲 -->
   <div class="flow reveal" role="img" aria-label="陷入层示意图：抢占点、预算扣减点、权限校验点、污点标记点经内核汇聚">
-    <svg viewBox="0 0 1440 440" fill="none" aria-hidden="true">
+    <svg viewBox="0 0 1440 460" fill="none" aria-hidden="true">
+      <!-- 顶部横向骨架线（淡） -->
       <line class="flow-line" x1="0" y1="48" x2="1440" y2="48"/>
+
+      <!-- 10 条汇聚曲线：从顶部四个 pill 区出发，向中心 (720,340) 汇聚 -->
       <path class="flow-curve" d="M120,48 C120,200 640,220 720,340"/>
       <path class="flow-curve" d="M250,48 C250,190 650,215 720,340"/>
       <path class="flow-curve" d="M380,48 C380,180 660,210 720,340"/>
@@ -65,14 +74,23 @@
       <path class="flow-curve" d="M1060,48 C1060,180 780,210 720,340"/>
       <path class="flow-curve" d="M1190,48 C1190,190 790,215 720,340"/>
       <path class="flow-curve" d="M1320,48 C1320,200 800,220 720,340"/>
-      <line class="flow-curve" x1="720" y1="340" x2="720" y2="440"/>
-      <rect class="flow-pill" x="212" y="31" width="76" height="34" rx="17"/>
+
+      <!-- 中心内核汇聚节点：脉冲光环 + 核心 -->
+      <circle class="flow-core-glow" cx="720" cy="340" r="48" fill="none"/>
+      <circle class="flow-core" cx="720" cy="340" r="20" fill="rgba(13,22,38,0.9)" stroke-width="1.2"/>
+      <text class="flow-core-text" x="720" y="345" text-anchor="middle">内核</text>
+
+      <!-- 内核向下的输出线（脉冲） -->
+      <line class="flow-curve" x1="720" y1="360" x2="720" y2="460"/>
+
+      <!-- 四个 pill：玻璃质感，hover 联动曲线高亮 -->
+      <rect class="flow-pill" x="212" y="31" width="76" height="34" rx="17" data-curve="2"/>
       <text class="flow-pill-text" x="250" y="53" text-anchor="middle">抢占点</text>
-      <rect class="flow-pill" x="500" y="31" width="100" height="34" rx="17"/>
+      <rect class="flow-pill" x="500" y="31" width="100" height="34" rx="17" data-curve="4"/>
       <text class="flow-pill-text" x="550" y="53" text-anchor="middle">预算扣减点</text>
-      <rect class="flow-pill" x="840" y="31" width="100" height="34" rx="17"/>
+      <rect class="flow-pill" x="840" y="31" width="100" height="34" rx="17" data-curve="6"/>
       <text class="flow-pill-text" x="890" y="53" text-anchor="middle">权限校验点</text>
-      <rect class="flow-pill" x="1140" y="31" width="100" height="34" rx="17"/>
+      <rect class="flow-pill" x="1140" y="31" width="100" height="34" rx="17" data-curve="9"/>
       <text class="flow-pill-text" x="1190" y="53" text-anchor="middle">污点标记点</text>
     </svg>
   </div>
@@ -261,5 +279,10 @@
 </footer>
 
 <script src="js/main.js"></script>
+<!-- ================= v4 特效引擎（本地化 vendor） ================= -->
+<script src="vendor/three.min.js"></script>
+<script src="vendor/gsap.min.js"></script>
+<script src="vendor/ScrollTrigger.min.js"></script>
+<script src="js/effects.js"></script>
 </body>
 </html>
