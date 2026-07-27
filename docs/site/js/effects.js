@@ -1,501 +1,748 @@
-/* ============================================================
-   llmos · v4 极致特效引擎
-   ──────────────────────────────────────────────────────────
-   依赖（本地化 vendor/）：
-     three.min.js            — WebGL 流体极光背景
-     gsap.min.js + ScrollTrigger.min.js — 滚动叙事 / 视差 / 揭幕
-   可选：tsparticles.slim.bundle.min.js — 粒子星云
-   ──────────────────────────────────────────────────────────
-   模块：
-     1. WebGL 流体极光背景（鼠标扰动）
-     2. 磁吸光标 + 光晕拖尾
-     3. GSAP 滚动叙事（视差 + 文字逐行揭幕）
-     4. 玻璃卡光泽扫过 + 3D 倾斜
-     5. 轻量粒子星云（Canvas，鼠标推开）
-   全部遵守 prefers-reduced-motion（降级为静态）
-   ============================================================ */
+﻿import * as THREE from "../vendor/three.module.min.js";
+
+/* NLOS visual effects v6
+   Three.js owns the ambient background.
+   GSAP + ScrollTrigger exclusively own content entrance animation.
+   Pointer effects are progressive enhancements and never gate content. */
 (function () {
   "use strict";
 
-  var REDUCE =
-    window.matchMedia &&
-    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  var FINE = window.matchMedia && window.matchMedia("(pointer: fine)").matches;
+  var REDUCE_QUERY = window.matchMedia(
+    "(prefers-reduced-motion: reduce)"
+  );
+  var FINE_POINTER_QUERY = window.matchMedia("(pointer: fine)");
+  var DESKTOP_QUERY = window.matchMedia(
+    "(min-width: 900px) and (pointer: fine)"
+  );
+  var MOBILE_QUERY = window.matchMedia("(max-width: 720px)");
 
-  var HAS_THREE = typeof window.THREE !== "undefined";
-  var HAS_GSAP = typeof window.gsap !== "undefined";
-  var HAS_ST = HAS_GSAP && typeof window.ScrollTrigger !== "undefined";
+  var REDUCE = REDUCE_QUERY.matches;
+  var FINE_POINTER = FINE_POINTER_QUERY.matches;
 
-  if (HAS_ST) gsap.registerPlugin(ScrollTrigger);
+  var diagnostics = {
+    version: "v6-aurora",
+    background: "pending",
+    targetFps: MOBILE_QUERY.matches ? 30 : 60,
+    qualityTier: MOBILE_QUERY.matches ? "mobile" : "high",
+    averageFrameMs: 0,
+    particleCount: 0
+  };
 
-  /* ============================================================
-     0. CSS 极光降级（WebGL 不可用时）
-     ──────────────────────────────────────────────────────────
-     给 body 加 .css-aurora 类，CSS 用多层径向渐变 + 动画模拟极光
-     ============================================================ */
-  function enableCssFallback() {
+  window.NLOSEffects = {
+    getStats: function () {
+      return Object.assign({}, diagnostics);
+    }
+  };
+  document.documentElement.dataset.effectsVersion = diagnostics.version;
+  document.documentElement.dataset.effectsTargetFps = String(
+    diagnostics.targetFps
+  );
+
+  function enableCssFallback(reason) {
+    diagnostics.background = reason || "css-fallback";
+    document.documentElement.dataset.effectsBackground =
+      diagnostics.background;
     document.body.classList.add("css-aurora");
-    var c = document.getElementById("bg-canvas");
-    if (c) c.style.display = "none";
+    var canvas = document.getElementById("bg-canvas");
+    if (canvas) canvas.hidden = true;
   }
 
   /* ============================================================
-     1. WebGL 流体极光背景
-     ──────────────────────────────────────────────────────────
-     一个全屏 plane，fragment shader 用 domain-warping noise
-     生成缓慢流动的冰蓝光带，深藏青底。鼠标位置轻微扰动光带相位。
+     Three.js aurora background
+     One renderer, one frame loop, adaptive desktop quality.
      ============================================================ */
-  function initAuroraBg() {
-    if (REDUCE) { enableCssFallback(); return; }
-    if (!HAS_THREE) { enableCssFallback(); return; }
-
+  function initAuroraBackground() {
     var canvas = document.getElementById("bg-canvas");
-    if (!canvas) { enableCssFallback(); return; }
+    if (!canvas) {
+      diagnostics.background = "missing-canvas";
+      return;
+    }
+    if (REDUCE) {
+      enableCssFallback("reduced-motion");
+      return;
+    }
 
-    /* WebGL 支持检测：失败则降级到 CSS 极光，避免黑屏 */
-    var testGl = document.createElement("canvas").getContext("webgl") ||
-                 document.createElement("canvas").getContext("experimental-webgl");
-    if (!testGl) { enableCssFallback(); return; }
-
+    var isMobile = MOBILE_QUERY.matches;
+    var targetFps = isMobile ? 30 : 60;
+    var frameInterval = 1000 / targetFps;
+    var qualityStep = isMobile ? 1 : 0;
+    var maxDpr = isMobile ? 1.25 : 1.5;
+    var particleCount = isMobile ? 28 : 58;
+    var visibleParticleCount = particleCount;
     var renderer;
+    var contextAttributes = {
+      alpha: false,
+      antialias: false,
+      powerPreference: isMobile ? "default" : "high-performance"
+    };
+    var gl =
+      canvas.getContext("webgl2", contextAttributes) ||
+      canvas.getContext("webgl", contextAttributes);
+    if (!gl) {
+      enableCssFallback("webgl-unavailable");
+      return;
+    }
+
     try {
       renderer = new THREE.WebGLRenderer({
         canvas: canvas,
+        context: gl,
         antialias: false,
-        alpha: true,
-        powerPreference: "high-performance"
+        alpha: false,
+        powerPreference: isMobile ? "default" : "high-performance"
       });
-    } catch (e) {
-      enableCssFallback();
+    } catch (error) {
+      enableCssFallback("webgl-unavailable");
       return;
     }
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
-    renderer.setSize(window.innerWidth, window.innerHeight);
+
+    diagnostics.background = "three";
+    document.documentElement.dataset.effectsBackground = "three";
+    document.documentElement.dataset.effectsQuality =
+      diagnostics.qualityTier;
+    diagnostics.targetFps = targetFps;
+    diagnostics.particleCount = particleCount;
+    document.body.classList.add("webgl-ready");
+
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
 
     var scene = new THREE.Scene();
-    var camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+    var camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.01, 4);
+    camera.position.z = 2;
 
-    /* shader uniform：时间、鼠标、分辨率 */
     var uniforms = {
       uTime: { value: 0 },
-      uMouse: { value: new THREE.Vector2(0.5, 0.5) },
-      uRes: { value: new THREE.Vector2(window.innerWidth, window.innerHeight) }
+      uPointer: { value: new THREE.Vector2(0.5, 0.5) },
+      uResolution: { value: new THREE.Vector2(1, 1) },
+      uDetail: { value: 1 }
     };
-
-    /* fragment shader：分形噪声 + domain warping，生成流动极光
-       色调严格守 DESIGN.md：深藏青底 + 冰蓝光带（单色家族） */
-    var fragmentShader = [
-      "precision highp float;",
-      "uniform float uTime;",
-      "uniform vec2 uMouse;",
-      "uniform vec2 uRes;",
-      "varying vec2 vUv;",
-
-      /* hash + value noise */
-      "float hash(vec2 p){ return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453); }",
-      "float noise(vec2 p){",
-      "  vec2 i=floor(p), f=fract(p);",
-      "  vec2 u=f*f*(3.0-2.0*f);",
-      "  return mix(mix(hash(i+vec2(0,0)),hash(i+vec2(1,0)),u.x),",
-      "             mix(hash(i+vec2(0,1)),hash(i+vec2(1,1)),u.x),u.y);",
-      "}",
-      /* fbm：叠加多 octave */
-      "float fbm(vec2 p){",
-      "  float v=0.0, a=0.5;",
-      "  for(int i=0;i<5;i++){ v+=a*noise(p); p*=2.0; a*=0.5; }",
-      "  return v;",
-      "}",
-
-      "void main(){",
-      "  vec2 uv=vUv;",
-      "  vec2 p=uv*2.0-1.0;",
-      "  p.x*=uRes.x/uRes.y;",
-      "  float t=uTime*0.045;",
-      "  /* 鼠标轻微扰动相位 */",
-      "  vec2 m=(uMouse-0.5)*0.6;",
-      "  p+=m;",
-
-      "  /* domain warping：双层位移产生流动光带 */",
-      "  vec2 q=vec2(fbm(p+t),fbm(p- t+vec2(5.2,1.3)));",
-      "  vec2 r=vec2(fbm(p+q+t*0.8+vec2(1.7,9.2)),fbm(p+q-t*0.6+vec2(8.3,2.8)));",
-      "  float f=fbm(p+r);",
-
-      "  /* 底色：深藏青 */",
-      "  vec3 base=vec3(0.012,0.027,0.063);",
-      "  /* 极光光带：冰蓝 #7FC8FF ~ 钢蓝，单色家族 */",
-      "  vec3 aurora=vec3(0.10,0.32,0.55)*pow(f,1.6);",
-      "  aurora+=vec3(0.5,0.78,1.0)*pow(max(0.0,r.x*1.2-f*0.4),3.0)*0.8;",
-
-      "  vec3 col=base+aurora;",
-      "  /* 顶部更暗，营造纵深 */",
-      "  col*=mix(0.7,1.1,uv.y);",
-      "  /* 轻微暗角 */",
-      "  float vig=1.0-length(p)*0.18;",
-      "  col*=vig;",
-
-      "  gl_FragColor=vec4(col,1.0);",
-      "}"
-    ].join("\n");
 
     var vertexShader = [
       "varying vec2 vUv;",
-      "void main(){",
-      "  vUv=uv;",
-      "  gl_Position=vec4(position,1.0);",
+      "void main() {",
+      "  vUv = uv;",
+      "  gl_Position = vec4(position, 1.0);",
       "}"
     ].join("\n");
 
-    var material = new THREE.ShaderMaterial({
-      uniforms: uniforms,
-      vertexShader: vertexShader,
-      fragmentShader: fragmentShader
-    });
-    var mesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material);
-    scene.add(mesh);
+    var fragmentShader = [
+      "precision highp float;",
+      "uniform float uTime;",
+      "uniform vec2 uPointer;",
+      "uniform vec2 uResolution;",
+      "uniform float uDetail;",
+      "varying vec2 vUv;",
+      "float ribbon(float y, float center, float width) {",
+      "  float d = abs(y - center) / width;",
+      "  return exp(-d * d * 2.35);",
+      "}",
+      "void main() {",
+      "  vec2 uv = vUv;",
+      "  vec2 p = uv * 2.0 - 1.0;",
+      "  p.x *= uResolution.x / max(uResolution.y, 1.0);",
+      "  float t = uTime * 0.16;",
+      "  float pointerBend = (uPointer.x - 0.5) * 0.045;",
+      "  float x = uv.x;",
+      "",
+      "  float waveA = 0.73 + sin(x * 5.2 + t) * 0.070",
+      "    + sin(x * 11.0 - t * 0.72) * 0.018 + pointerBend;",
+      "  float waveB = 0.48 + sin(x * 4.0 - t * 0.64 + 1.8) * 0.085",
+      "    + sin(x * 8.4 + t * 0.46) * 0.024 - pointerBend * 0.6;",
+      "  float waveC = 0.22 + sin(x * 3.2 + t * 0.38 + 4.1) * 0.060",
+      "    + sin(x * 9.0 - t * 0.31) * 0.016;",
+      "",
+      "  float auroraA = ribbon(uv.y, waveA, 0.052);",
+      "  float auroraB = ribbon(uv.y, waveB, 0.074);",
+      "  float auroraC = ribbon(uv.y, waveC, 0.050);",
+      "  float coreA = ribbon(uv.y, waveA, 0.012);",
+      "  float coreB = ribbon(uv.y, waveB, 0.017);",
+      "  float coreC = ribbon(uv.y, waveC, 0.010);",
+      "  float filament = 0.58 + 0.42 * sin(x * 42.0 + t * 1.9",
+      "    + sin(x * 8.0) * 1.8);",
+      "  filament = mix(0.72, filament, uDetail);",
+      "  float edgeFade = smoothstep(0.0, 0.12, x) * smoothstep(1.0, 0.88, x);",
+      "",
+      "  vec3 deep = vec3(0.012, 0.037, 0.070);",
+      "  vec3 blue = vec3(0.035, 0.27, 0.52);",
+      "  vec3 cyan = vec3(0.22, 0.72, 1.0);",
+      "  vec3 ice = vec3(0.72, 0.94, 1.0);",
+      "  vec3 color = deep;",
+      "  color += blue * auroraC * 0.095 * edgeFade;",
+      "  color += cyan * auroraB * (0.105 + filament * 0.045) * edgeFade;",
+      "  color += ice * auroraA * (0.075 + filament * 0.055) * edgeFade;",
+      "  color += cyan * coreC * 0.12 * edgeFade;",
+      "  color += ice * coreB * 0.11 * edgeFade;",
+      "  color += ice * coreA * (0.14 + filament * 0.08) * edgeFade;",
+      "",
+      "  float curtainA = smoothstep(waveA - 0.24, waveA, uv.y)",
+      "    * (1.0 - smoothstep(waveA - 0.10, waveA + 0.03, uv.y));",
+      "  float curtainB = smoothstep(waveB - 0.18, waveB, uv.y)",
+      "    * (1.0 - smoothstep(waveB - 0.08, waveB + 0.02, uv.y));",
+      "  color += cyan * curtainA * filament * 0.018 * edgeFade;",
+      "  color += blue * curtainB * (1.0 - filament * 0.4) * 0.016 * edgeFade;",
+      "",
+      "  float horizon = smoothstep(0.0, 1.0, uv.y) * 0.012;",
+      "  color += vec3(0.12, 0.38, 0.62) * horizon;",
+      "  float vignette = smoothstep(1.34, 0.20, length(p * vec2(0.58, 0.78)));",
+      "  color *= mix(0.80, 1.04, vignette);",
+      "  gl_FragColor = vec4(color, 1.0);",
+      "}"
+    ].join("\n");
 
-    /* 鼠标平滑跟随 */
-    var target = { x: 0.5, y: 0.5 };
-    window.addEventListener("mousemove", function (e) {
-      target.x = e.clientX / window.innerWidth;
-      target.y = 1.0 - e.clientY / window.innerHeight;
-    }, { passive: true });
+    var plane = new THREE.Mesh(
+      new THREE.PlaneGeometry(2, 2),
+      new THREE.ShaderMaterial({
+        uniforms: uniforms,
+        vertexShader: vertexShader,
+        fragmentShader: fragmentShader,
+        depthTest: false,
+        depthWrite: false
+      })
+    );
+    plane.renderOrder = 0;
+    scene.add(plane);
 
-    /* 标签页隐藏时暂停，省电 */
-    var visible = true;
-    document.addEventListener("visibilitychange", function () {
-      visible = !document.hidden;
-    });
-
-    var last = performance.now();
-    function render(now) {
-      if (visible) {
-        var dt = (now - last) / 1000;
-        last = now;
-        uniforms.uTime.value += dt;
-        /* 鼠标 lerp 平滑 */
-        uniforms.uMouse.value.x += (target.x - uniforms.uMouse.value.x) * 0.04;
-        uniforms.uMouse.value.y += (target.y - uniforms.uMouse.value.y) * 0.04;
-        renderer.render(scene, camera);
-      } else {
-        last = now;
-      }
-      requestAnimationFrame(render);
+    /* Deterministic star field prevents layout flashes between page loads. */
+    var seed = 9137;
+    function random() {
+      seed = (seed * 16807) % 2147483647;
+      return (seed - 1) / 2147483646;
     }
-    requestAnimationFrame(render);
 
-    /* resize */
-    window.addEventListener("resize", function () {
-      renderer.setSize(window.innerWidth, window.innerHeight);
-      uniforms.uRes.value.set(window.innerWidth, window.innerHeight);
-    }, { passive: true });
+    var pointPositions = new Float32Array(particleCount * 3);
+    var pointVelocity = new Float32Array(particleCount * 2);
+    var pointPhase = new Float32Array(particleCount);
+
+    for (var i = 0; i < particleCount; i += 1) {
+      pointPositions[i * 3] = random() * 2 - 1;
+      pointPositions[i * 3 + 1] = random() * 2 - 1;
+      pointPositions[i * 3 + 2] = 0.12;
+      pointVelocity[i * 2] = (random() - 0.5) * 0.006;
+      pointVelocity[i * 2 + 1] = 0.004 + random() * 0.008;
+      pointPhase[i] = random() * Math.PI * 2;
+    }
+
+    var pointGeometry = new THREE.BufferGeometry();
+    var pointAttribute = new THREE.BufferAttribute(pointPositions, 3);
+    pointGeometry.setAttribute("position", pointAttribute);
+    pointGeometry.setDrawRange(0, visibleParticleCount);
+
+    var points = new THREE.Points(
+      pointGeometry,
+      new THREE.PointsMaterial({
+        color: 0x9fddff,
+        size: isMobile ? 1.35 : 1.75,
+        sizeAttenuation: false,
+        transparent: true,
+        opacity: isMobile ? 0.42 : 0.58,
+        blending: THREE.AdditiveBlending,
+        depthTest: false,
+        depthWrite: false
+      })
+    );
+    points.renderOrder = 2;
+    scene.add(points);
+
+    var maxLinks = isMobile ? 8 : 20;
+    var linkPairs = [];
+    for (var linkIndex = 0; linkIndex < particleCount; linkIndex += 2) {
+      if (linkPairs.length >= maxLinks) break;
+      var nearestIndex = -1;
+      var nearestDistance = 0.34 * 0.34;
+      for (
+        var candidate = linkIndex + 1;
+        candidate < particleCount;
+        candidate += 1
+      ) {
+        var dx =
+          pointPositions[linkIndex * 3] - pointPositions[candidate * 3];
+        var dy =
+          pointPositions[linkIndex * 3 + 1] -
+          pointPositions[candidate * 3 + 1];
+        var distance = dx * dx + dy * dy;
+        if (distance < nearestDistance) {
+          nearestDistance = distance;
+          nearestIndex = candidate;
+        }
+      }
+      if (nearestIndex >= 0) linkPairs.push([linkIndex, nearestIndex]);
+    }
+
+    var linePositions = new Float32Array(linkPairs.length * 6);
+    var lineGeometry = new THREE.BufferGeometry();
+    var lineAttribute = new THREE.BufferAttribute(linePositions, 3);
+    lineGeometry.setAttribute("position", lineAttribute);
+
+    var lines = new THREE.LineSegments(
+      lineGeometry,
+      new THREE.LineBasicMaterial({
+        color: 0x76c9f8,
+        transparent: true,
+        opacity: isMobile ? 0.035 : 0.065,
+        blending: THREE.AdditiveBlending,
+        depthTest: false,
+        depthWrite: false
+      })
+    );
+    lines.renderOrder = 1;
+    scene.add(lines);
+
+    var pointerTarget = { x: 0.5, y: 0.5 };
+    window.addEventListener(
+      "pointermove",
+      function (event) {
+        if (!FINE_POINTER) return;
+        pointerTarget.x = event.clientX / Math.max(window.innerWidth, 1);
+        pointerTarget.y = 1 - event.clientY / Math.max(window.innerHeight, 1);
+      },
+      { passive: true }
+    );
+
+    function resize() {
+      var dpr = Math.min(window.devicePixelRatio || 1, maxDpr);
+      renderer.setPixelRatio(dpr);
+      renderer.setSize(window.innerWidth, window.innerHeight, false);
+      uniforms.uResolution.value.set(
+        window.innerWidth * dpr,
+        window.innerHeight * dpr
+      );
+    }
+
+    var resizeQueued = false;
+    window.addEventListener(
+      "resize",
+      function () {
+        if (resizeQueued) return;
+        resizeQueued = true;
+        window.requestAnimationFrame(function () {
+          resize();
+          resizeQueued = false;
+        });
+      },
+      { passive: true }
+    );
+    resize();
+
+    function updateParticles(deltaSeconds, nowSeconds) {
+      for (var index = 0; index < visibleParticleCount; index += 1) {
+        var offset = index * 3;
+        pointPositions[offset] +=
+          pointVelocity[index * 2] * deltaSeconds +
+          Math.sin(nowSeconds * 0.16 + pointPhase[index]) * 0.000018;
+        pointPositions[offset + 1] +=
+          pointVelocity[index * 2 + 1] * deltaSeconds;
+
+        if (pointPositions[offset] > 1.06) pointPositions[offset] = -1.06;
+        if (pointPositions[offset] < -1.06) pointPositions[offset] = 1.06;
+        if (pointPositions[offset + 1] > 1.06) {
+          pointPositions[offset + 1] = -1.06;
+        }
+      }
+      pointAttribute.needsUpdate = true;
+
+      for (var link = 0; link < linkPairs.length; link += 1) {
+        var a = linkPairs[link][0];
+        var b = linkPairs[link][1];
+        var lineOffset = link * 6;
+        linePositions[lineOffset] = pointPositions[a * 3];
+        linePositions[lineOffset + 1] = pointPositions[a * 3 + 1];
+        linePositions[lineOffset + 2] = 0.1;
+        linePositions[lineOffset + 3] = pointPositions[b * 3];
+        linePositions[lineOffset + 4] = pointPositions[b * 3 + 1];
+        linePositions[lineOffset + 5] = 0.1;
+      }
+      lineAttribute.needsUpdate = true;
+    }
+
+    function applyQualityStep(step) {
+      qualityStep = step;
+      if (step === 1) {
+        maxDpr = Math.min(maxDpr, 1.25);
+        visibleParticleCount = Math.min(
+          visibleParticleCount,
+          isMobile ? 24 : 40
+        );
+        pointGeometry.setDrawRange(0, visibleParticleCount);
+        lines.material.opacity *= 0.72;
+        diagnostics.qualityTier = isMobile ? "mobile" : "balanced";
+        document.documentElement.dataset.effectsQuality =
+          diagnostics.qualityTier;
+        resize();
+      } else if (step >= 2) {
+        uniforms.uDetail.value = 0;
+        visibleParticleCount = Math.min(visibleParticleCount, 30);
+        pointGeometry.setDrawRange(0, visibleParticleCount);
+        diagnostics.qualityTier = "performance";
+        document.documentElement.dataset.effectsQuality =
+          diagnostics.qualityTier;
+      }
+      diagnostics.particleCount = visibleParticleCount;
+    }
+
+    var running = true;
+    var lastRendered = performance.now();
+    var frameSamples = [];
+    var sampleCooldown = 0;
+    var renderedFrames = 0;
+    var fpsWindowStart = lastRendered;
+
+    function render(now) {
+      if (!running) return;
+      window.requestAnimationFrame(render);
+      if (document.hidden) {
+        lastRendered = now;
+        return;
+      }
+
+      var elapsed = now - lastRendered;
+      if (elapsed < frameInterval - 0.6) return;
+      lastRendered = now - (elapsed % frameInterval);
+
+      var safeElapsed = Math.min(elapsed, 64);
+      var deltaSeconds = safeElapsed / 1000;
+      uniforms.uTime.value += deltaSeconds;
+      uniforms.uPointer.value.x +=
+        (pointerTarget.x - uniforms.uPointer.value.x) * 0.025;
+      uniforms.uPointer.value.y +=
+        (pointerTarget.y - uniforms.uPointer.value.y) * 0.025;
+
+      updateParticles(deltaSeconds, now / 1000);
+      renderer.render(scene, camera);
+      renderedFrames += 1;
+
+      if (now - fpsWindowStart >= 2000) {
+        var actualFps =
+          (renderedFrames * 1000) / Math.max(now - fpsWindowStart, 1);
+        document.documentElement.dataset.effectsFps =
+          actualFps.toFixed(1);
+        renderedFrames = 0;
+        fpsWindowStart = now;
+      }
+
+      if (!isMobile && sampleCooldown <= 0) {
+        frameSamples.push(safeElapsed);
+        if (frameSamples.length >= 120) {
+          var average =
+            frameSamples.reduce(function (sum, value) {
+              return sum + value;
+            }, 0) / frameSamples.length;
+          diagnostics.averageFrameMs = Number(average.toFixed(2));
+          document.documentElement.dataset.effectsFrameMs =
+            average.toFixed(2);
+          frameSamples.length = 0;
+
+          if (average > 24 && qualityStep === 1) {
+            applyQualityStep(2);
+            sampleCooldown = 180;
+          } else if (average > 20 && qualityStep === 0) {
+            applyQualityStep(1);
+            sampleCooldown = 180;
+          }
+        }
+      } else {
+        sampleCooldown -= 1;
+      }
+    }
+
+    canvas.addEventListener("webglcontextlost", function (event) {
+      event.preventDefault();
+      running = false;
+      document.body.classList.remove("webgl-ready");
+      enableCssFallback("context-lost");
+    });
+
+    diagnostics.particleCount = visibleParticleCount;
+    window.requestAnimationFrame(render);
   }
 
   /* ============================================================
-     2. 磁吸光标 + 光晕拖尾（桌面端）
-     ──────────────────────────────────────────────────────────
-     自定义光标：一个小圆点 + 一个大光晕延迟跟随。
-     hover 链接/按钮时小点放大，光晕变冰蓝。
+     Precise custom cursor — desktop fine-pointer only.
      ============================================================ */
-  function initMagneticCursor() {
-    if (REDUCE || !FINE) return;
+  function initCustomCursor() {
+    if (REDUCE || !FINE_POINTER || !DESKTOP_QUERY.matches) return;
 
-    var dot = document.createElement("div");
+    var dot = document.createElement("span");
+    var ring = document.createElement("span");
     dot.className = "cursor-dot";
-    var ring = document.createElement("div");
     ring.className = "cursor-ring";
+    dot.setAttribute("aria-hidden", "true");
+    ring.setAttribute("aria-hidden", "true");
     document.body.appendChild(dot);
     document.body.appendChild(ring);
-    document.body.classList.add("has-custom-cursor");
 
-    var mx = window.innerWidth / 2,
-      my = window.innerHeight / 2;
-    var rx = mx,
-      ry = my;
-    var hovering = false;
+    var targetX = window.innerWidth / 2;
+    var targetY = window.innerHeight / 2;
+    var ringX = targetX;
+    var ringY = targetY;
+    var cursorRunning = false;
+    var lastMove = 0;
 
-    window.addEventListener("mousemove", function (e) {
-      mx = e.clientX;
-      my = e.clientY;
+    function frame(now) {
+      var dx = targetX - ringX;
+      var dy = targetY - ringY;
+      ringX += dx * 0.28;
+      ringY += dy * 0.28;
+
       dot.style.transform =
-        "translate(" + mx + "px," + my + "px) translate(-50%,-50%)";
-    }, { passive: true });
-
-    /* ring 延迟跟随（lerp） */
-    function loop() {
-      rx += (mx - rx) * 0.18;
-      ry += (my - ry) * 0.18;
-      var s = hovering ? 1.8 : 1;
+        "translate3d(" + targetX + "px," + targetY + "px,0)";
       ring.style.transform =
-        "translate(" + rx + "px," + ry + "px) translate(-50%,-50%) scale(" + s + ")";
-      requestAnimationFrame(loop);
+        "translate3d(" + ringX + "px," + ringY + "px,0)";
+
+      if (
+        Math.abs(dx) > 0.08 ||
+        Math.abs(dy) > 0.08 ||
+        now - lastMove < 220
+      ) {
+        window.requestAnimationFrame(frame);
+      } else {
+        cursorRunning = false;
+      }
     }
-    loop();
 
-    /* hover 联动 */
-    var hoverSel =
-      "a, button, .btn, .nav-card, .card, .flow-pill, [data-cursor]";
-    document.addEventListener("mouseover", function (e) {
-      if (e.target.closest(hoverSel)) {
-        hovering = true;
-        ring.classList.add("hover");
-      }
+    function startCursorLoop() {
+      if (cursorRunning) return;
+      cursorRunning = true;
+      window.requestAnimationFrame(frame);
+    }
+
+    window.addEventListener(
+      "pointermove",
+      function (event) {
+        targetX = event.clientX;
+        targetY = event.clientY;
+        lastMove = performance.now();
+
+        var nativeZone = event.target.closest(
+          "input, textarea, select, [contenteditable='true'], pre, code"
+        );
+        var hoverZone = event.target.closest(
+          "a, button, .btn, .nav-card, [data-cursor]"
+        );
+        document.body.classList.toggle(
+          "custom-cursor-native",
+          Boolean(nativeZone)
+        );
+        document.body.classList.toggle(
+          "custom-cursor-hover",
+          Boolean(hoverZone && !nativeZone)
+        );
+        document.body.classList.add("custom-cursor-ready");
+        startCursorLoop();
+      },
+      { passive: true }
+    );
+
+    window.addEventListener("pointerdown", function () {
+      document.body.classList.add("custom-cursor-down");
     });
-    document.addEventListener("mouseout", function (e) {
-      if (e.target.closest(hoverSel)) {
-        hovering = false;
-        ring.classList.remove("hover");
+    window.addEventListener("pointerup", function () {
+      document.body.classList.remove("custom-cursor-down");
+    });
+    document.documentElement.addEventListener("pointerleave", function () {
+      document.body.classList.remove(
+        "custom-cursor-ready",
+        "custom-cursor-hover",
+        "custom-cursor-down"
+      );
+    });
+    document.addEventListener("visibilitychange", function () {
+      if (document.hidden) {
+        document.body.classList.remove("custom-cursor-ready");
       }
     });
   }
 
   /* ============================================================
-     3. GSAP 滚动叙事
-     ──────────────────────────────────────────────────────────
-     - 视差：section 内带 [data-speed] 的元素按速度移动
-     - 文字揭幕：标题按行/词 split 后从模糊+位移揭幕
-     - 序列入场：reveal-group 用 GSAP timeline 错峰
+     Restrained 3D card tilt.
      ============================================================ */
-  function initScrollNarrative() {
-    if (!HAS_GSAP || !HAS_ST || REDUCE) return;
+  function initCardTilt() {
+    if (REDUCE || !DESKTOP_QUERY.matches) return;
 
-    /* 3.1 视差 */
-    gsap.utils.toArray("[data-speed]").forEach(function (el) {
-      var speed = parseFloat(el.getAttribute("data-speed")) || 1;
-      gsap.to(el, {
-        y: function () {
-          return (1 - speed) * window.innerHeight * 0.3;
-        },
-        ease: "none",
-        scrollTrigger: {
-          trigger: el,
-          start: "top bottom",
-          end: "bottom top",
-          scrub: true
-        }
-      });
-    });
+    var cards = Array.prototype.slice.call(
+      document.querySelectorAll(
+        ".nav-card, .autopsy-card, .abs-card, .stat, .principle"
+      )
+    );
 
-    /* 3.2 标题揭幕：把 h1/h2 的文本按词拆分，逐词 fade+blur 入场 */
-    gsap.utils
-      .toArray(".hero-title, .page-title, .sec-head h2, .ns-quote-line")
-      .forEach(function (h) {
-        /* 跳过已手动拆分的 */
-        if (h.querySelector(".word")) return;
-        var text = h.textContent;
-        /* 保留 em/span 结构太复杂，这里按字符拆中文/按词拆英文 */
-        var chars = Array.from(text);
-        h.innerHTML = chars
-          .map(function (c) {
-            if (c === " " || c === "\n") return c;
-            return '<span class="word">' + c + "</span>";
-          })
-          .join("");
-        var words = h.querySelectorAll(".word");
-        gsap.set(words, { opacity: 0, y: "0.3em", filter: "blur(8px)" });
-        gsap.to(words, {
-          opacity: 1,
-          y: 0,
-          filter: "blur(0px)",
-          duration: 0.6,
-          ease: "power3.out",
-          stagger: 0.03,
-          scrollTrigger: {
-            trigger: h,
-            start: "top 85%",
-            toggleActions: "play none none none"
-          }
-        });
-      });
+    function resetCard(card) {
+      card.classList.remove("is-tilting");
+      card.style.removeProperty("transform");
+      card.style.removeProperty("--sheen-x");
+      card.style.removeProperty("--sheen-y");
+    }
 
-    /* 3.3 reveal-group 增强：用 GSAP 错峰 */
-    gsap.utils.toArray(".reveal-group").forEach(function (group) {
-      var children = group.children;
-      gsap.from(children, {
-        opacity: 0,
-        y: 28,
-        duration: 0.7,
-        ease: "power2.out",
-        stagger: 0.08,
-        scrollTrigger: {
-          trigger: group,
-          start: "top 82%",
-          toggleActions: "play none none none"
-        }
-      });
-    });
-
-    /* 3.4 单个 reveal 元素 */
-    gsap.utils.toArray(".reveal").forEach(function (el) {
-      if (el.classList.contains("reveal-group")) return;
-      gsap.from(el, {
-        opacity: 0,
-        y: 24,
-        duration: 0.8,
-        ease: "power2.out",
-        scrollTrigger: {
-          trigger: el,
-          start: "top 85%",
-          toggleActions: "play none none none"
-        }
-      });
-    });
-
-    ScrollTrigger.refresh();
-  }
-
-  /* ============================================================
-     4. 玻璃卡光泽扫过 + 3D 倾斜
-     ──────────────────────────────────────────────────────────
-     hover 卡片时：一道斜向光带从左上掠过 + 卡片随鼠标轻微 3D 倾斜
-     ============================================================ */
-  function initGlassTilt() {
-    if (REDUCE || !FINE) return;
-
-    var sel = ".card, .stat, .nav-card, .abs-card";
-    document.querySelectorAll(sel).forEach(function (card) {
-      /* 注入光泽层 */
-      if (!card.querySelector(".sheen")) {
-        var sheen = document.createElement("span");
+    cards.forEach(function (card) {
+      card.setAttribute("data-tilt", "");
+      var sheen = card.querySelector(".sheen");
+      if (!sheen) {
+        sheen = document.createElement("span");
         sheen.className = "sheen";
         sheen.setAttribute("aria-hidden", "true");
         card.appendChild(sheen);
       }
 
-      card.addEventListener("mousemove", function (e) {
-        var r = card.getBoundingClientRect();
-        var px = (e.clientX - r.left) / r.width;
-        var py = (e.clientY - r.top) / r.height;
-        /* 3D 倾斜：最大 ±6deg */
-        var rx = (0.5 - py) * 8;
-        var ry = (px - 0.5) * 8;
-        card.style.transform =
-          "perspective(900px) rotateX(" + rx + "deg) rotateY(" + ry + "deg) translateY(-4px)";
-        /* 光泽位置 */
-        var s = card.querySelector(".sheen");
-        if (s) {
-          s.style.opacity = "1";
-          s.style.background =
-            "radial-gradient(circle at " + px * 100 + "% " + py * 100 +
-            "%, rgba(255,255,255,0.12), transparent 45%)";
-        }
-      });
+      var tiltQueued = false;
+      var pointerX = 0.5;
+      var pointerY = 0.5;
 
-      card.addEventListener("mouseleave", function () {
-        card.style.transform = "";
-        var s = card.querySelector(".sheen");
-        if (s) s.style.opacity = "";
+      card.addEventListener(
+        "pointermove",
+        function (event) {
+          if (!DESKTOP_QUERY.matches) {
+            resetCard(card);
+            return;
+          }
+          var rect = card.getBoundingClientRect();
+          pointerX = (event.clientX - rect.left) / rect.width;
+          pointerY = (event.clientY - rect.top) / rect.height;
+          if (tiltQueued) return;
+          tiltQueued = true;
+
+          window.requestAnimationFrame(function () {
+            var rotateX = (0.5 - pointerY) * 5;
+            var rotateY = (pointerX - 0.5) * 5;
+            card.style.transform =
+              "perspective(1100px) rotateX(" +
+              rotateX.toFixed(2) +
+              "deg) rotateY(" +
+              rotateY.toFixed(2) +
+              "deg) translateY(-2px)";
+            card.style.setProperty("--sheen-x", pointerX * 100 + "%");
+            card.style.setProperty("--sheen-y", pointerY * 100 + "%");
+            card.classList.add("is-tilting");
+            tiltQueued = false;
+          });
+        },
+        { passive: true }
+      );
+
+      card.addEventListener("pointerleave", function () {
+        resetCard(card);
       });
+      card.addEventListener("pointercancel", function () {
+        resetCard(card);
+      });
+      card.addEventListener("focusout", function () {
+        resetCard(card);
+      });
+    });
+
+    window.addEventListener("blur", function () {
+      cards.forEach(resetCard);
     });
   }
 
   /* ============================================================
-     5. 轻量粒子星云（Canvas，鼠标推开）
-     ──────────────────────────────────────────────────────────
-     不用 tsParticles，自写 ~120 颗冰蓝星尘，鼠标附近排斥。
+     GSAP motion — the only content entrance system.
+     Content remains visible if GSAP or ScrollTrigger is absent.
      ============================================================ */
-  function initParticleField() {
-    if (REDUCE) return;
-    var canvas = document.getElementById("particles-canvas");
-    if (!canvas) return;
-
-    var ctx = canvas.getContext("2d");
-    var w, h, particles;
-    var mouse = { x: -9999, y: -9999 };
-
-    function resize() {
-      w = canvas.width = window.innerWidth;
-      h = canvas.height = window.innerHeight;
-      var count = Math.min(140, Math.floor((w * h) / 14000));
-      particles = [];
-      for (var i = 0; i < count; i++) {
-        particles.push({
-          x: Math.random() * w,
-          y: Math.random() * h,
-          ox: 0,
-          oy: 0,
-          vx: (Math.random() - 0.5) * 0.15,
-          vy: (Math.random() - 0.5) * 0.15,
-          r: Math.random() * 1.6 + 0.3,
-          a: Math.random() * 0.5 + 0.2
-        });
-        particles[i].ox = particles[i].x;
-        particles[i].oy = particles[i].y;
-      }
+  function initScrollMotion() {
+    var gsap = window.gsap;
+    var ScrollTrigger = window.ScrollTrigger;
+    if (REDUCE || !gsap || !ScrollTrigger) {
+      diagnostics.motion = REDUCE ? "reduced" : "unavailable";
+      return;
     }
-    resize();
-    window.addEventListener("resize", resize, { passive: true });
 
-    window.addEventListener("mousemove", function (e) {
-      mouse.x = e.clientX;
-      mouse.y = e.clientY;
-    }, { passive: true });
-    window.addEventListener("mouseleave", function () {
-      mouse.x = -9999;
-      mouse.y = -9999;
-    });
+    diagnostics.motion = "gsap";
+    gsap.registerPlugin(ScrollTrigger);
 
-    function draw() {
-      ctx.clearRect(0, 0, w, h);
-      for (var i = 0; i < particles.length; i++) {
-        var p = particles[i];
-        /* 漂移 */
-        p.x += p.vx;
-        p.y += p.vy;
-        /* 鼠标排斥 */
-        var dx = p.x - mouse.x;
-        var dy = p.y - mouse.y;
-        var d2 = dx * dx + dy * dy;
-        if (d2 < 14400) {
-          var d = Math.sqrt(d2) || 1;
-          var force = (120 - d) / 120;
-          p.x += (dx / d) * force * 2.4;
-          p.y += (dy / d) * force * 2.4;
-        }
-        /* 边界回弹 */
-        if (p.x < 0) p.x = w;
-        if (p.x > w) p.x = 0;
-        if (p.y < 0) p.y = h;
-        if (p.y > h) p.y = 0;
+    function clearMotionProperties(targets) {
+      gsap.set(targets, {
+        clearProps: "opacity,visibility,transform,filter"
+      });
+    }
 
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
-        ctx.fillStyle = "rgba(127,200,255," + p.a + ")";
-        ctx.fill();
-      }
-      /* 邻近连线（极淡） */
-      for (var a = 0; a < particles.length; a++) {
-        for (var b = a + 1; b < particles.length; b++) {
-          var pa = particles[a], pb = particles[b];
-          var ddx = pa.x - pb.x, ddy = pa.y - pb.y;
-          var dd = ddx * ddx + ddy * ddy;
-          if (dd < 11000) {
-            ctx.beginPath();
-            ctx.moveTo(pa.x, pa.y);
-            ctx.lineTo(pb.x, pb.y);
-            ctx.strokeStyle = "rgba(127,200,255," + (0.06 * (1 - dd / 11000)) + ")";
-            ctx.lineWidth = 0.5;
-            ctx.stroke();
+    function animateTargets(targets, stagger, distance) {
+      if (!targets || !targets.length) return;
+      gsap.fromTo(
+        targets,
+        {
+          autoAlpha: 0,
+          y: distance || 14,
+          filter: "blur(3px)"
+        },
+        {
+          autoAlpha: 1,
+          y: 0,
+          filter: "blur(0px)",
+          duration: 0.62,
+          stagger: stagger || 0.055,
+          ease: "power2.out",
+          overwrite: "auto",
+          onComplete: function () {
+            clearMotionProperties(targets);
           }
         }
-      }
-      requestAnimationFrame(draw);
+      );
     }
-    draw();
+
+    var pageLead = document.querySelector(".hero, .page-head");
+    if (pageLead) {
+      var leadTargets = Array.prototype.slice.call(
+        pageLead.querySelectorAll(
+          ".eyebrow, .title-line, .hero-desc, .page-desc, " +
+            ".hero-thesis, .hero-cta, .hero-meta, .page-toc, .flow"
+        )
+      );
+      animateTargets(leadTargets, 0.065, 12);
+    }
+
+    function prepareReveal(targets, trigger, stagger) {
+      if (!targets.length) return;
+      var rect = trigger.getBoundingClientRect();
+      if (rect.bottom < 0) {
+        clearMotionProperties(targets);
+        return;
+      }
+      if (rect.top < window.innerHeight * 0.9) {
+        animateTargets(targets, stagger, 16);
+        return;
+      }
+
+      gsap.set(targets, { autoAlpha: 0, y: 18 });
+      ScrollTrigger.create({
+        trigger: trigger,
+        start: "top 88%",
+        once: true,
+        onEnter: function (self) {
+          animateTargets(targets, stagger, 18);
+          self.kill();
+        }
+      });
+    }
+
+    Array.prototype.slice
+      .call(document.querySelectorAll(".reveal-group"))
+      .forEach(function (group) {
+        prepareReveal(
+          Array.prototype.slice.call(group.children),
+          group,
+          0.06
+        );
+      });
+
+    Array.prototype.slice
+      .call(document.querySelectorAll(".reveal"))
+      .filter(function (element) {
+        return !element.closest(".hero, .page-head, .reveal-group");
+      })
+      .forEach(function (element) {
+        prepareReveal([element], element, 0);
+      });
+
+    ScrollTrigger.refresh();
   }
 
-  /* ============================================================
-     初始化（DOM ready）
-     ============================================================ */
   function init() {
-    initAuroraBg();
-    initParticleField();
-    initMagneticCursor();
-    initGlassTilt();
-    /* GSAP 滚动叙事最后跑，确保 ScrollTrigger 量算正确 */
-    initScrollNarrative();
+    initAuroraBackground();
+    initCustomCursor();
+    initCardTilt();
+    initScrollMotion();
   }
+
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", init);
+    document.addEventListener("DOMContentLoaded", init, { once: true });
   } else {
     init();
   }

@@ -1,27 +1,30 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>现代系统 · llmos — 智能体时代的操作系统内核</title>
-<meta name="description" content="llmos 架构设计总纲 v0.2 · 现代系统：namespace、蜂窝式分布式内核、网络协议栈、弹性多租户、分层可观测性，全部定案。">
-<link rel="stylesheet" href="css/style.css">
-<link rel="stylesheet" href="css/effects.css">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23e5f4ff'/%3E%3Ctext x='16' y='21' font-family='monospace' font-size='13' font-weight='700' text-anchor='middle' fill='%23030710'%3Ell%3C/text%3E%3C/svg%3E">
+<title>现代系统 · NLOS — 自然语言操作系统</title>
+<meta name="description" content="NLOS 架构设计总纲 v0.2 · 现代系统：namespace、蜂窝式分布式内核、网络协议栈、弹性多租户、分层可观测性，全部定案。">
+<link rel="stylesheet" href="css/style.css?v=6.0.0">
+<link rel="stylesheet" href="css/effects.css?v=6.0.0">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23e5f4ff'/%3E%3Ctext x='16' y='21' font-family='monospace' font-size='12' font-weight='700' text-anchor='middle' fill='%23030710'%3ENL%3C/text%3E%3C/svg%3E">
 </head>
 <body>
 
-<!-- ================= v4 特效背景层 ================= -->
+<!-- ================= v6 极光背景层 ================= -->
 <canvas id="bg-canvas" aria-hidden="true"></canvas>
-<canvas id="particles-canvas" aria-hidden="true"></canvas>
 
 <!-- ================= 导航 ================= -->
 <nav class="nav" id="nav">
   <div class="nav-inner">
     <a class="nav-brand" href="index.html">
-      <span class="mark" aria-hidden="true">ll</span>
-      <span>llmos</span>
+      <span class="mark" aria-hidden="true">NL</span>
+      <span>NLOS</span>
     </a>
+    <button class="nav-toggle" id="navToggle" type="button"
+            aria-expanded="false" aria-controls="navLinks" aria-label="打开主导航">
+      <span></span><span></span><span></span>
+    </button>
     <div class="nav-links" id="navLinks">
       <a href="index.html">首页</a>
       <a href="kernel.html">通用内核</a>
@@ -37,7 +40,7 @@
 <!-- ================= 页头 ================= -->
 <header class="page-head container">
   <span class="eyebrow reveal">Part III · 现代系统 · Modern</span>
-  <h1 class="page-title reveal">现代系统：<span class="w">通用内核之上</span></h1>
+  <h1 class="page-title reveal"><span class="title-line">现代系统：</span><span class="title-line accent">通用内核之上</span></h1>
   <p class="page-desc reveal">通用性定案之后，主线第二步：namespace 收敛全部权限语义，蜂窝拓扑解决分布式，协议栈保持可替换，弹性多租户与分层可观测性收官——新抽象不增加概念，反而收敛旧概念。</p>
   <nav class="page-toc reveal" aria-label="本页目录">
     <a href="#namespace">namespace</a>
@@ -96,6 +99,54 @@
       <h2>蜂窝式内核：<em>本地数据面 + 集中控制面</em></h2>
       <p>先算账：跨机陷阱的额外延迟（LAN 0.5ms / 跨机房 50ms）相对 LLM 调用仍是噪声，集中式「算得过来」——但可用性与 10k 以上扩展是算术解决不了的问题。答案是被 service mesh（Envoy + Istio）与 Kubernetes（kubelet + 控制面）在万级规模验证过的拓扑；现代系统 4/5（service mesh 同构）的核心内容即此，不单立。</p>
     </div>
+    <figure class="idea-map reveal" data-idea-map aria-labelledby="mesh-map-title">
+      <div class="idea-map-heading">
+        <span>INTERACTIVE MODEL · 04</span>
+        <div>
+          <h3 id="mesh-map-title">蜂窝内核的一次远程调用</h3>
+          <p>控制面只发权威与租约，热路径始终留在节点本地。</p>
+        </div>
+      </div>
+      <div class="idea-map-stage">
+        <svg class="idea-map-links" viewBox="0 0 1000 340" preserveAspectRatio="none" aria-hidden="true">
+          <path data-map-link="control local" d="M210 72 C340 72 390 154 470 164"/>
+          <path data-map-link="lease local" d="M210 268 C340 268 390 184 470 174"/>
+          <path data-map-link="local remote" d="M530 164 C610 154 660 72 790 72"/>
+          <path data-map-link="local event" d="M530 174 C610 184 660 268 790 268"/>
+          <path data-map-link="event control" d="M850 292 C850 330 150 330 150 292"/>
+        </svg>
+        <button class="idea-node pos-a" type="button" data-map-node="control"
+                data-map-title="集中控制面"
+                data-map-copy="Raft 复制的控制面维护预算账本、注册表和策略权威，但不参与每一次模型或工具调用，因此不会成为热路径瓶颈。">
+          <span>01 · CONTROL</span><strong>集中控制面</strong><small>ledger · registry · policy</small>
+        </button>
+        <button class="idea-node pos-b" type="button" data-map-node="lease"
+                data-map-title="份额与绑定租约"
+                data-map-copy="控制面把预算份额和 namespace 绑定作为带 TTL 的租约下发。断联后节点可在租约内继续滑行，过期则自动收敛。">
+          <span>02 · LEASE</span><strong>份额与绑定租约</strong><small>quota · binding · TTL</small>
+        </button>
+        <button class="idea-node pos-core is-active" type="button" data-map-node="local"
+                data-map-title="本地内核代理"
+                data-map-copy="能力检查、预算预扣、污点标记和驱动转发都在本机完成。Agent 看到稳定名字，代理负责把调用路由到本地或远程资源。">
+          <span>03 · DATA PLANE</span><strong>本地内核代理</strong><small>check · debit · route</small>
+        </button>
+        <button class="idea-node pos-c" type="button" data-map-node="remote"
+                data-map-title="可替换远程资源"
+                data-map-copy="模型、工具和另一个 Agent 通过绑定类型选择协议栈。MCP、A2A 或本地 IPC 都只是驱动，内核系统调用保持稳定。">
+          <span>04 · ENDPOINT</span><strong>可替换远程资源</strong><small>MCP · A2A · local IPC</small>
+        </button>
+        <button class="idea-node pos-d" type="button" data-map-node="event"
+                data-map-title="事件与观测回流"
+                data-map-copy="扣减、故障、迁移与延迟被压缩成事件回流控制面。权威账本不迁移，迁移只是归还旧份额并签发新份额。">
+          <span>05 · TELEMETRY</span><strong>事件与观测回流</strong><small>debit · fault · migrate</small>
+        </button>
+      </div>
+      <figcaption class="idea-map-readout" aria-live="polite">
+        <span class="idea-map-index">03</span>
+        <div><strong>本地内核代理</strong><p>能力检查、预算预扣、污点标记和驱动转发都在本机完成。Agent 看到稳定名字，代理负责把调用路由到本地或远程资源。</p></div>
+        <span class="idea-map-hint">HOVER / CLICK</span>
+      </figcaption>
+    </figure>
     <div class="topo reveal-group">
       <div class="arch-layer kernel">
         <div class="layer-label"><span>控制面 · 逻辑集中 · Raft 复制</span><span class="ring">权威状态</span></div>
@@ -248,7 +299,7 @@
 </section>
 
 <!-- ================= 4. 弹性与多租户（现代系统 5/5，浅区） ================= -->
-<section class="section light" id="elasticity">
+<section class="section glacier" id="elasticity">
   <div class="container">
     <div class="sec-head reveal">
       <span class="eyebrow">Elasticity &amp; Tenancy · 现代系统 5/5<span class="sec-no">/ 04</span></span>
@@ -433,20 +484,19 @@
 <footer class="footer">
   <div class="container footer-inner">
     <div class="f-brand">
-      <span class="nav-brand"><span class="mark" aria-hidden="true">ll</span>llmos</span>
-      <span>· 智能体时代的操作系统内核</span>
+      <span class="nav-brand"><span class="mark" aria-hidden="true">NL</span>NLOS</span>
+      <span>· 自然语言操作系统</span>
     </div>
     <span>架构设计总纲 v0.2 · 2026-07-23 · 通用系统 → 现代系统</span>
     <span>来源：docs/design/02-架构设计总纲-v0.2.md（合成自 docs/discussions/ 议题 1–18，全部定案）</span>
   </div>
-  <div class="footer-mark" aria-hidden="true">llmos</div>
+  <div class="footer-mark" aria-hidden="true">NLOS</div>
 </footer>
 
-<script src="js/main.js"></script>
-<!-- ================= v4 特效引擎（本地化 vendor） ================= -->
-<script src="vendor/three.min.js"></script>
+<script src="js/main.js?v=6.0.0"></script>
+<!-- ================= v6 极光与交互引擎（本地化 vendor） ================= -->
 <script src="vendor/gsap.min.js"></script>
 <script src="vendor/ScrollTrigger.min.js"></script>
-<script src="js/effects.js"></script>
+<script type="module" src="js/effects.js?v=6.0.0"></script>
 </body>
 </html>

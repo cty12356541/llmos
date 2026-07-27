@@ -1,27 +1,30 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>llmos — 智能体时代的操作系统内核 · 架构设计总纲 v0.2</title>
-<meta name="description" content="llmos 架构设计总纲 v0.2：规模是压力测试，通用才是宗旨。通用系统 → 现代系统——namespace、分布式内核、网络协议栈、弹性多租户、可观测性全部定案。">
-<link rel="stylesheet" href="css/style.css">
-<link rel="stylesheet" href="css/effects.css">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23e5f4ff'/%3E%3Ctext x='16' y='21' font-family='monospace' font-size='13' font-weight='700' text-anchor='middle' fill='%23030710'%3Ell%3C/text%3E%3C/svg%3E">
+<title>NLOS — 自然语言操作系统 · 架构设计总纲 v0.2</title>
+<meta name="description" content="NLOS 架构设计总纲 v0.2：规模是压力测试，通用才是宗旨。通用系统 → 现代系统——namespace、分布式内核、网络协议栈、弹性多租户、可观测性全部定案。">
+<link rel="stylesheet" href="css/style.css?v=6.0.0">
+<link rel="stylesheet" href="css/effects.css?v=6.0.0">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23e5f4ff'/%3E%3Ctext x='16' y='21' font-family='monospace' font-size='12' font-weight='700' text-anchor='middle' fill='%23030710'%3ENL%3C/text%3E%3C/svg%3E">
 </head>
 <body>
 
-<!-- ================= v4 特效背景层 ================= -->
+<!-- ================= v6 极光背景层 ================= -->
 <canvas id="bg-canvas" aria-hidden="true"></canvas>
-<canvas id="particles-canvas" aria-hidden="true"></canvas>
 
 <!-- ================= 导航 ================= -->
 <nav class="nav" id="nav">
   <div class="nav-inner">
     <a class="nav-brand" href="index.html">
-      <span class="mark" aria-hidden="true">ll</span>
-      <span>llmos</span>
+      <span class="mark" aria-hidden="true">NL</span>
+      <span>NLOS</span>
     </a>
+    <button class="nav-toggle" id="navToggle" type="button"
+            aria-expanded="false" aria-controls="navLinks" aria-label="打开主导航">
+      <span></span><span></span><span></span>
+    </button>
     <div class="nav-links" id="navLinks">
       <a href="index.html" aria-current="page">首页</a>
       <a href="kernel.html">通用内核</a>
@@ -36,8 +39,8 @@
 
 <!-- ================= 1. Hero ================= -->
 <header class="hero container">
-  <span class="eyebrow reveal">llmos · Agent OS Kernel · 架构设计总纲 v0.2 · 通用系统 → 现代系统</span>
-  <h1 class="hero-title reveal">智能体时代的<br><span class="w">操作系统内核</span></h1>
+  <span class="eyebrow reveal">NLOS · Natural Language OS Kernel · 架构设计总纲 v0.2 · 通用系统 → 现代系统</span>
+  <h1 class="hero-title reveal"><span class="title-line">自然语言驱动的</span><span class="title-line accent">智能体操作系统</span></h1>
   <p class="hero-desc reveal">
     当可供调度的资源翻万倍，现有智能体框架集体失效——不是工程不努力，是抽象层级错了。
     它们全是库（library），没有一个是内核（kernel）。v0.2 沿「通用系统 → 现代系统」主线展开：
@@ -121,7 +124,7 @@
         <div class="tl-era">分时系统<small>CTSS / MULTICS / Unix</small></div>
         <div class="tl-cell">稀缺资源多路复用</div>
         <div class="tl-cell"><b>agent 内核：调度、上下文分页、IPC、权限</b></div>
-        <span class="tl-status gap">通用内核 · 定案 ← llmos</span>
+        <span class="tl-status gap">通用内核 · 定案 ← NLOS</span>
       </div>
       <div class="tl-row">
         <div class="tl-era">PC / 通用系统<small>Personal Computing</small></div>
@@ -201,24 +204,62 @@
 </section>
 
 <!-- ================= 4. 方向修正（浅区） ================= -->
-<section class="section light" id="direction">
+<section class="section glacier" id="direction">
   <div class="container">
     <div class="sec-head reveal">
       <span class="eyebrow">Direction<span class="sec-no">/ 03</span></span>
       <h2>规模是压力测试，<em>通用才是宗旨</em></h2>
       <p>v0.2 的方向修正：规模不是目标，是检验手段。主线因此排成两步——先证明通用，再展开现代。</p>
     </div>
-    <div class="split-2 reveal-group">
-      <div class="card">
-        <h4>规模压出的是通用性缺口</h4>
-        <p>万倍资源不会让问题消失，会让它从不存在变成核心矛盾。万级失效的死因不是「调度不动」，而是没有「调度」这个概念——这指向抽象层级的错误，不指向工程努力不足。所以万级规模只是压力测试：它压出的每一道裂缝，都是通用性判据的输入。</p>
+    <figure class="idea-map reveal" data-idea-map aria-labelledby="overview-map-title">
+      <div class="idea-map-heading">
+        <span>INTERACTIVE MODEL · 01</span>
+        <div>
+          <h3 id="overview-map-title">一句自然语言，如何变成可治理的系统行为</h3>
+          <p>悬停或点击任一节点，查看意图如何经过内核形成闭环。</p>
+        </div>
       </div>
-      <div class="card">
-        <h4>主线两步走</h4>
-        <p>第一步设计通用系统：判据可检验，16/16 重构测试通过，治理语义归位为可插拔用户态模块——Budget 是设施不是灵魂。第二步展开现代系统：namespace、分布式内核、网络协议栈、弹性多租户、可观测性全部定案。</p>
-        <p class="sub">通用性四判据与 16/16 重构测试，见<a class="xref" href="kernel.html#universality">通用内核 · 通用性论证</a>。</p>
+      <div class="idea-map-stage">
+        <svg class="idea-map-links" viewBox="0 0 1000 340" preserveAspectRatio="none" aria-hidden="true">
+          <path data-map-link="intent kernel" d="M210 72 C340 72 390 154 470 164"/>
+          <path data-map-link="program kernel" d="M210 268 C340 268 390 184 470 174"/>
+          <path data-map-link="kernel resource" d="M530 164 C610 154 660 72 790 72"/>
+          <path data-map-link="kernel control" d="M530 174 C610 184 660 268 790 268"/>
+          <path data-map-link="control program" d="M850 292 C850 330 150 330 150 292"/>
+        </svg>
+        <button class="idea-node pos-a" type="button" data-map-node="intent"
+                data-map-title="自然语言目标"
+                data-map-copy="用户只表达目标、约束和可接受的结果，不需要提前把意图翻译成某个框架的节点图。自然语言是入口，不是内核里的特权语义。">
+          <span>01 · INPUT</span><strong>自然语言目标</strong><small>目标 · 约束 · 结果</small>
+        </button>
+        <button class="idea-node pos-b" type="button" data-map-node="program"
+                data-map-title="用户态程序"
+                data-map-copy="harness、graph、workflow 与纯代码 worker 都是用户态程序。它们可以理解任务语义，但所有跨私有边界的动作必须经由系统调用。">
+          <span>02 · USERSPACE</span><strong>用户态程序</strong><small>harness · graph · worker</small>
+        </button>
+        <button class="idea-node pos-core is-active" type="button" data-map-node="kernel"
+                data-map-title="NLOS 陷入层"
+                data-map-copy="NLOS 把 LLM 调用与工具调用收敛为系统调用：同一个陷入点完成调度、预算扣减、权限校验与污点标记，让自然语言行为第一次具备操作系统级边界。">
+          <span>03 · KERNEL</span><strong>NLOS 陷入层</strong><small>trap · route · enforce</small>
+        </button>
+        <button class="idea-node pos-c" type="button" data-map-node="resource"
+                data-map-title="模型与外部资源"
+                data-map-copy="模型、工具、存储和沙箱是可替换资源。内核不理解业务内容，只通过驱动与 handle 中介访问，因此上层程序不被某个模型或协议绑定。">
+          <span>04 · RESOURCE</span><strong>模型与外部资源</strong><small>model · tool · storage</small>
+        </button>
+        <button class="idea-node pos-d" type="button" data-map-node="control"
+                data-map-title="治理反馈闭环"
+                data-map-copy="预算、能力、污点、lineage 和可观测事件回流到用户态策略。规模越大，闭环越重要：万级只是压力测试，通用、可治理才是系统宗旨。">
+          <span>05 · FEEDBACK</span><strong>治理反馈闭环</strong><small>budget · policy · trace</small>
+        </button>
       </div>
-    </div>
+      <figcaption class="idea-map-readout" aria-live="polite">
+        <span class="idea-map-index">03</span>
+        <div><strong>NLOS 陷入层</strong><p>NLOS 把 LLM 调用与工具调用收敛为系统调用：同一个陷入点完成调度、预算扣减、权限校验与污点标记，让自然语言行为第一次具备操作系统级边界。</p></div>
+        <span class="idea-map-hint">HOVER / CLICK</span>
+      </figcaption>
+    </figure>
+    <p class="diagram-footnote reveal">通用性四判据与 16/16 重构测试，见<a class="xref" href="kernel.html#universality">通用内核 · 通用性论证</a>。</p>
   </div>
 </section>
 
@@ -269,20 +310,19 @@
 <footer class="footer">
   <div class="container footer-inner">
     <div class="f-brand">
-      <span class="nav-brand"><span class="mark" aria-hidden="true">ll</span>llmos</span>
-      <span>· 智能体时代的操作系统内核</span>
+      <span class="nav-brand"><span class="mark" aria-hidden="true">NL</span>NLOS</span>
+      <span>· 自然语言操作系统</span>
     </div>
     <span>架构设计总纲 v0.2 · 2026-07-23 · 通用系统 → 现代系统</span>
     <span>来源：docs/design/02-架构设计总纲-v0.2.md（合成自 docs/discussions/ 议题 1–18，全部定案）</span>
   </div>
-  <div class="footer-mark" aria-hidden="true">llmos</div>
+  <div class="footer-mark" aria-hidden="true">NLOS</div>
 </footer>
 
-<script src="js/main.js"></script>
-<!-- ================= v4 特效引擎（本地化 vendor） ================= -->
-<script src="vendor/three.min.js"></script>
+<script src="js/main.js?v=6.0.0"></script>
+<!-- ================= v6 极光与交互引擎（本地化 vendor） ================= -->
 <script src="vendor/gsap.min.js"></script>
 <script src="vendor/ScrollTrigger.min.js"></script>
-<script src="js/effects.js"></script>
+<script type="module" src="js/effects.js?v=6.0.0"></script>
 </body>
 </html>

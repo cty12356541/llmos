@@ -1,213 +1,239 @@
-/* ============================================================
-   llmos · v4 极致特效层样式
-   ──────────────────────────────────────────────────────────
-   配套 js/effects.js：
-     1. WebGL 极光背景 canvas 分层
-     2. 粒子星云 canvas 分层
-     3. 磁吸光标（dot + ring）
-     4. 玻璃卡光泽扫过 .sheen
-     5. 文字逐字揭幕 .word
-     6. 噪点叠加 .bg-noise
-   z-index 体系：
-     0  #bg-canvas       WebGL 极光（最底）
-     0  #particles-canvas 粒子星云（同层，blend）
-     1  .bg-noise        噪点叠加
-     2  nav/main/footer  内容（顶层）
-     9  光标             最顶
-   ============================================================ */
+/* NLOS v6 — aurora effects layer */
 
-/* ---- 背景画布层（WebGL 极光 + 粒子）---- */
-#bg-canvas,
-#particles-canvas {
+/* ---- Ambient background ---- */
+#bg-canvas {
   position: fixed;
   inset: 0;
   width: 100vw;
   height: 100vh;
+  z-index: 0;
   pointer-events: none;
-  z-index: 0;
-}
-#particles-canvas {
-  z-index: 0;
-  opacity: 0.9;
-  mix-blend-mode: screen; /* 粒子用 screen 叠加，在极光上更通透 */
+  background: #06111f;
+  transform: translateZ(0);
 }
 
-/* 噪点层（替换原 .bg-fx 的 noise） */
-.bg-noise {
+#bg-canvas[hidden] {
+  display: none;
+}
+
+body::before {
+  content: "";
   position: fixed;
   inset: 0;
   z-index: 1;
   pointer-events: none;
-  opacity: 0.04;
-  mix-blend-mode: overlay;
-  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+  opacity: 0.016;
+  mix-blend-mode: soft-light;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.82' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
 }
 
-/* 原有 .bg-fx / .orb 已废弃，由 WebGL 接管 —— 确保它们即使存在也不可见 */
-.bg-fx { display: none !important; }
-
-/* ---- CSS 极光降级（WebGL 不可用时由 effects.js 启用）---- */
 body.css-aurora {
   background:
-    radial-gradient(ellipse 80% 60% at 20% 15%, rgba(127, 200, 255, 0.14), transparent 60%),
-    radial-gradient(ellipse 70% 50% at 80% 40%, rgba(47, 75, 104, 0.35), transparent 60%),
-    radial-gradient(ellipse 60% 50% at 50% 85%, rgba(127, 200, 255, 0.10), transparent 60%),
-    var(--bg);
+    radial-gradient(ellipse 110% 30% at 22% -6%, transparent 52%, rgba(155, 227, 255, 0.16) 58%, transparent 64%),
+    radial-gradient(ellipse 105% 36% at 78% 31%, transparent 51%, rgba(66, 178, 239, 0.13) 57%, transparent 63%),
+    radial-gradient(ellipse 94% 28% at 35% 79%, transparent 52%, rgba(117, 211, 255, 0.1) 59%, transparent 66%),
+    #06111f;
   background-attachment: fixed;
-  animation: css-aurora-shift 24s ease-in-out infinite;
 }
-@keyframes css-aurora-shift {
-  0%, 100% { background-position: 0% 0%, 0% 0%, 0% 0%, 0 0; }
-  50% { background-position: 8% 6%, -6% 4%, 4% -6%, 0 0; }
+
+.nav,
+main,
+.footer,
+.pager {
+  position: relative;
+  z-index: 2;
 }
-body.css-aurora #bg-canvas { display: none; }
 
-/* 内容层置于背景之上（与原 style.css 一致，这里强化） */
-.nav, main, .footer, .pager { position: relative; z-index: 2; }
-
-/* ============================================================
-   2. 磁吸光标（桌面端）
-   ============================================================ */
+/* ---- Custom cursor ---- */
 .cursor-dot,
 .cursor-ring {
   position: fixed;
   top: 0;
   left: 0;
-  pointer-events: none;
   z-index: 9999;
-  border-radius: 50%;
+  pointer-events: none;
+  border-radius: 999px;
+  opacity: 0;
   mix-blend-mode: screen;
   will-change: transform;
+  transition:
+    width 160ms ease,
+    height 160ms ease,
+    opacity 120ms ease,
+    border-color 160ms ease,
+    background-color 160ms ease;
 }
+
 .cursor-dot {
-  width: 7px;
-  height: 7px;
-  background: rgba(127, 200, 255, 0.95);
-  box-shadow: 0 0 12px rgba(127, 200, 255, 0.8);
+  width: 4px;
+  height: 4px;
+  margin: -2px 0 0 -2px;
+  background: rgba(226, 247, 255, 0.98);
+  box-shadow:
+    0 0 7px rgba(143, 211, 255, 0.86),
+    0 0 16px rgba(143, 211, 255, 0.34);
 }
+
 .cursor-ring {
+  width: 28px;
+  height: 28px;
+  margin: -14px 0 0 -14px;
+  border: 1px solid rgba(174, 226, 255, 0.56);
+  background: rgba(143, 211, 255, 0.025);
+  box-shadow: inset 0 0 12px rgba(143, 211, 255, 0.035);
+}
+
+body.custom-cursor-ready:not(.custom-cursor-native),
+body.custom-cursor-ready:not(.custom-cursor-native) * {
+  cursor: none !important;
+}
+
+body.custom-cursor-ready .cursor-dot,
+body.custom-cursor-ready .cursor-ring {
+  opacity: 1;
+}
+
+body.custom-cursor-hover .cursor-ring {
   width: 38px;
   height: 38px;
-  border: 1px solid rgba(127, 200, 255, 0.5);
-  transition: width 280ms cubic-bezier(0.22, 0.61, 0.36, 1),
-              height 280ms cubic-bezier(0.22, 0.61, 0.36, 1),
-              border-color 280ms ease, background 280ms ease;
-}
-.cursor-ring.hover {
-  width: 64px;
-  height: 64px;
-  border-color: rgba(127, 200, 255, 0.8);
-  background: rgba(127, 200, 255, 0.08);
-}
-/* 隐藏系统光标（仅自定义光标激活时，桌面端） */
-body.has-custom-cursor,
-body.has-custom-cursor * { cursor: none !important; }
-/* 但输入元素保留光标 */
-body.has-custom-cursor input,
-body.has-custom-cursor textarea,
-body.has-custom-cursor select { cursor: text !important; }
-
-/* 触屏/粗指针：隐藏自定义光标 */
-@media (pointer: coarse) {
-  .cursor-dot, .cursor-ring { display: none !important; }
-  body.has-custom-cursor,
-  body.has-custom-cursor * { cursor: auto !important; }
+  margin: -19px 0 0 -19px;
+  border-color: rgba(206, 241, 255, 0.86);
+  background: rgba(143, 211, 255, 0.07);
 }
 
-/* ============================================================
-   3. 玻璃卡光泽扫过层 .sheen
-   ============================================================ */
-.card, .stat, .nav-card, .abs-card {
-  position: relative;
-  overflow: hidden;
+body.custom-cursor-down .cursor-ring {
+  width: 24px;
+  height: 24px;
+  margin: -12px 0 0 -12px;
 }
+
+body.custom-cursor-native .cursor-dot,
+body.custom-cursor-native .cursor-ring {
+  opacity: 0;
+}
+
+/* ---- Restrained glass sheen and tilt ---- */
+[data-tilt] {
+  transform-style: preserve-3d;
+  transition:
+    transform 180ms cubic-bezier(0.22, 0.61, 0.36, 1),
+    border-color 220ms ease,
+    box-shadow 220ms ease;
+  will-change: transform;
+}
+
 .sheen {
   position: absolute;
   inset: 0;
-  pointer-events: none;
-  opacity: 0;
-  transition: opacity 320ms ease;
   z-index: 0;
+  pointer-events: none;
   border-radius: inherit;
+  opacity: 0;
+  background:
+    radial-gradient(
+      circle at var(--sheen-x, 50%) var(--sheen-y, 50%),
+      rgba(224, 247, 255, 0.105),
+      transparent 42%
+    );
+  transition: opacity 180ms ease;
 }
-/* 卡片内容上浮到 sheen 之上 */
-.card > *:not(.sheen), .stat > *:not(.sheen),
-.nav-card > *:not(.sheen), .abs-card > *:not(.sheen) {
+
+[data-tilt].is-tilting .sheen {
+  opacity: 1;
+}
+
+[data-tilt] > *:not(.sheen) {
   position: relative;
   z-index: 1;
 }
 
-/* ============================================================
-   4. 文字逐字揭幕（GSAP split 后的 .word 包裹）
-   ============================================================ */
-.word {
+/* ---- Stable title structure and reveal defaults ---- */
+.title-line {
   display: inline-block;
-  white-space: pre;
-  will-change: transform, opacity, filter;
-}
-/* hero-title 的 .w 内部颜色继承 */
-.hero-title .word, .page-title .word { color: inherit; }
-
-/* ============================================================
-   5. 数据/数字高光增强（配合 count-up）
-   ============================================================ */
-[data-count] {
-  font-variant-numeric: tabular-nums;
-  text-shadow: 0 0 24px rgba(127, 200, 255, 0.3);
+  color: inherit;
 }
 
-/* ============================================================
-   6. 玻璃拟态 2.0 —— 在原有基础上增强通透与边缘光
-   ============================================================ */
-/* 卡片边缘 1px 渐变描边（伪元素，模拟玻璃切边） */
-.card::after,
-.stat::after,
-.nav-card::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  padding: 1px;
-  background: linear-gradient(
-    135deg,
-    rgba(127, 200, 255, 0.35) 0%,
-    rgba(127, 200, 255, 0.08) 30%,
-    transparent 60%,
-    rgba(127, 200, 255, 0.15) 100%
-  );
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-          mask-composite: exclude;
-  pointer-events: none;
-  opacity: 0.6;
-  transition: opacity 360ms ease;
-  z-index: 0;
-}
-.card:hover::after,
-.stat:hover::after,
-.nav-card:hover::after { opacity: 1; }
-/* 注意：原 style.css 的 .card::before 是顶部高光，与此 ::after 边缘描边不冲突 */
-
-/* 内容页 page-title 也加 hero 同款光晕 */
-.page-title {
-  text-shadow: 0 0 80px rgba(127, 200, 255, 0.18);
+.hero-title .title-line {
+  display: block;
 }
 
-/* ============================================================
-   7. reduced-motion 全量兜底
-   ============================================================ */
+.title-line.accent {
+  color: var(--ice-white, #eefaff);
+}
+
+html.js .reveal,
+html.js .reveal.in,
+html.js .reveal-group > *,
+html.js .reveal-group.in > * {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+  filter: none;
+  transition: none;
+}
+
+/* Flow interaction never changes the visibility of the full diagram. */
+.flow .flow-curve {
+  transition:
+    stroke 180ms ease,
+    opacity 180ms ease,
+    stroke-width 180ms ease;
+}
+
+.flow .flow-curve.is-highlighted {
+  opacity: 1;
+  stroke: var(--ice-white, #eefaff);
+  stroke-width: 1.5;
+}
+
+.flow .flow-curve.is-muted {
+  opacity: 0.18;
+}
+
+/* ---- Fallbacks ---- */
+@media (pointer: coarse), (max-width: 899px) {
+  .cursor-dot,
+  .cursor-ring {
+    display: none !important;
+  }
+
+  body.custom-cursor-ready,
+  body.custom-cursor-ready * {
+    cursor: auto !important;
+  }
+
+  [data-tilt] {
+    transform: none !important;
+    will-change: auto;
+  }
+
+  .sheen {
+    display: none;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  #bg-canvas, #particles-canvas { display: none !important; }
-  .cursor-dot, .cursor-ring { display: none !important; }
-  body.has-custom-cursor,
-  body.has-custom-cursor * { cursor: auto !important; }
-  .word { opacity: 1 !important; transform: none !important; filter: none !important; }
-  .sheen { display: none !important; }
-  .card, .stat, .nav-card, .abs-card { transform: none !important; }
-}
+  #bg-canvas {
+    display: none !important;
+  }
 
-/* ============================================================
-   8. 性能：GPU 加速提示
-   ============================================================ */
-#bg-canvas { transform: translateZ(0); }
-.card, .stat, .nav-card, .abs-card, .sheen { transform-style: preserve-3d; }
+  .cursor-dot,
+  .cursor-ring,
+  .sheen {
+    display: none !important;
+  }
+
+  [data-tilt] {
+    transform: none !important;
+    transition: none !important;
+  }
+
+  html.js .reveal,
+  html.js .reveal-group > * {
+    opacity: 1 !important;
+    visibility: visible !important;
+    transform: none !important;
+    filter: none !important;
+    transition: none !important;
+  }
+}

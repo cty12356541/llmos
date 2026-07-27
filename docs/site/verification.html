@@ -1,27 +1,30 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>支撑设施与宗旨验证 · llmos — 智能体时代的操作系统内核</title>
-<meta name="description" content="llmos 架构设计总纲 v0.2 · 支撑与验证：Budget 经济、随机性管理、安全授权三级签字链，与六大死因的逐一闭合、陷阱层吞吐算术。">
-<link rel="stylesheet" href="css/style.css">
-<link rel="stylesheet" href="css/effects.css">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23e5f4ff'/%3E%3Ctext x='16' y='21' font-family='monospace' font-size='13' font-weight='700' text-anchor='middle' fill='%23030710'%3Ell%3C/text%3E%3C/svg%3E">
+<title>支撑设施与宗旨验证 · NLOS — 自然语言操作系统</title>
+<meta name="description" content="NLOS 架构设计总纲 v0.2 · 支撑与验证：Budget 经济、随机性管理、安全授权三级签字链，与六大死因的逐一闭合、陷阱层吞吐算术。">
+<link rel="stylesheet" href="css/style.css?v=6.0.0">
+<link rel="stylesheet" href="css/effects.css?v=6.0.0">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23e5f4ff'/%3E%3Ctext x='16' y='21' font-family='monospace' font-size='12' font-weight='700' text-anchor='middle' fill='%23030710'%3ENL%3C/text%3E%3C/svg%3E">
 </head>
 <body>
 
-<!-- ================= v4 特效背景层 ================= -->
+<!-- ================= v6 极光背景层 ================= -->
 <canvas id="bg-canvas" aria-hidden="true"></canvas>
-<canvas id="particles-canvas" aria-hidden="true"></canvas>
 
 <!-- ================= 导航 ================= -->
 <nav class="nav" id="nav">
   <div class="nav-inner">
     <a class="nav-brand" href="index.html">
-      <span class="mark" aria-hidden="true">ll</span>
-      <span>llmos</span>
+      <span class="mark" aria-hidden="true">NL</span>
+      <span>NLOS</span>
     </a>
+    <button class="nav-toggle" id="navToggle" type="button"
+            aria-expanded="false" aria-controls="navLinks" aria-label="打开主导航">
+      <span></span><span></span><span></span>
+    </button>
     <div class="nav-links" id="navLinks">
       <a href="index.html">首页</a>
       <a href="kernel.html">通用内核</a>
@@ -37,7 +40,7 @@
 <!-- ================= 页头 ================= -->
 <header class="page-head container">
   <span class="eyebrow reveal">Part II · 通用系统 · Infrastructure &amp; Validation</span>
-  <h1 class="page-title reveal">支撑设施与<span class="w">宗旨验证</span></h1>
+  <h1 class="page-title reveal"><span class="title-line">支撑设施与</span><span class="title-line accent">宗旨验证</span></h1>
   <p class="page-desc reveal">Budget、随机性管理、安全授权是负载无关的基础设施——是设施不是灵魂。随后用三道程序回查宗旨：六大死因逐一闭合、陷阱层吞吐算术推演、失败场景走查。</p>
   <nav class="page-toc reveal" aria-label="本页目录">
     <a href="#budget">Budget</a>
@@ -55,6 +58,54 @@
       <h2>Budget：<em>失控 agent 是财务事故</em>，不是性能事故</h2>
       <p>方向修正归位：Budget 是负载无关的计量设施，不是系统灵魂。Unix 进程死循环浪费免费时间片，agent 死循环烧钱。计价单位用抽象 <b style="color:var(--white);">credits</b>：不用 token（不同模型单价不同，不是稳定货币），不用法币（内核不该碰汇率）。驱动回报实际用量，用户态定价表折算，内核只记 credits——内核与价格波动隔离。</p>
     </div>
+    <figure class="idea-map reveal" data-idea-map aria-labelledby="budget-map-title">
+      <div class="idea-map-heading">
+        <span>INTERACTIVE MODEL · 03</span>
+        <div>
+          <h3 id="budget-map-title">一次调用的预算闭环</h3>
+          <p>从父级划拨到耗尽信号，逐步查看费用如何成为可强制的不变量。</p>
+        </div>
+      </div>
+      <div class="idea-map-stage">
+        <svg class="idea-map-links" viewBox="0 0 1000 340" preserveAspectRatio="none" aria-hidden="true">
+          <path data-map-link="allocate debit" d="M210 72 C340 72 390 154 470 164"/>
+          <path data-map-link="preauth debit" d="M210 268 C340 268 390 184 470 174"/>
+          <path data-map-link="debit signal" d="M530 164 C610 154 660 72 790 72"/>
+          <path data-map-link="debit ledger" d="M530 174 C610 184 660 268 790 268"/>
+          <path data-map-link="ledger allocate" d="M850 292 C850 330 150 330 150 292"/>
+        </svg>
+        <button class="idea-node pos-a" type="button" data-map-node="allocate"
+                data-map-title="父级预算划拨"
+                data-map-copy="子 Agent 在 ELF 中声明请求，父级在 spawn 时批准、缩减或拒绝。预算沿 lineage 切片，问责关系与执行关系同时建立。">
+          <span>01 · ALLOCATE</span><strong>父级预算划拨</strong><small>request · approve · slice</small>
+        </button>
+        <button class="idea-node pos-b" type="button" data-map-node="preauth"
+                data-map-title="调用前硬上限"
+                data-map-copy="调用前先冻结预估成本，并把剩余额度折算成 max_tokens 或工具 preauth。即使事后成本未知，物理上也无法无限透支。">
+          <span>02 · PREAUTH</span><strong>调用前硬上限</strong><small>freeze · max_tokens</small>
+        </button>
+        <button class="idea-node pos-core is-active" type="button" data-map-node="debit"
+                data-map-title="陷入点原子扣减"
+                data-map-copy="驱动按实际用量回报，NLOS 在陷入点以 credits 原子扣减。价格表留在用户态，内核只维护守恒的余额与继承树。">
+          <span>03 · DEBIT</span><strong>陷入点原子扣减</strong><small>measure · convert · debit</small>
+        </button>
+        <button class="idea-node pos-c" type="button" data-map-node="signal"
+                data-map-title="阈值与耗尽信号"
+                data-map-copy="80% 触发预警，100% 默认 suspend。Agent 可 checkpoint、申请增资或显式降级；隐蔽失败不会被伪装成正常结果。">
+          <span>04 · ENFORCE</span><strong>阈值与耗尽信号</strong><small>80% warn · 100% suspend</small>
+        </button>
+        <button class="idea-node pos-d" type="button" data-map-node="ledger"
+                data-map-title="流水与反馈"
+                data-map-copy="每笔扣减进入 WAL 批量组提交，形成可追责流水；用户态策略依据花费、质量与风险重新分配下一轮资源。">
+          <span>05 · FEEDBACK</span><strong>流水与反馈</strong><small>ledger · audit · reallocate</small>
+        </button>
+      </div>
+      <figcaption class="idea-map-readout" aria-live="polite">
+        <span class="idea-map-index">03</span>
+        <div><strong>陷入点原子扣减</strong><p>驱动按实际用量回报，NLOS 在陷入点以 credits 原子扣减。价格表留在用户态，内核只维护守恒的余额与继承树。</p></div>
+        <span class="idea-map-hint">HOVER / CLICK</span>
+      </figcaption>
+    </figure>
     <div class="budget-grid reveal-group">
       <div class="card budget-part">
         <span class="owner">内核 · 权威</span>
@@ -239,7 +290,7 @@
 </section>
 
 <!-- ================= 4. 设计宗旨验证（浅区） ================= -->
-<section class="section light" id="validation">
+<section class="section glacier" id="validation">
   <div class="container">
     <div class="sec-head reveal">
       <span class="eyebrow">Validation<span class="sec-no">/ 04</span></span>
@@ -329,20 +380,19 @@
 <footer class="footer">
   <div class="container footer-inner">
     <div class="f-brand">
-      <span class="nav-brand"><span class="mark" aria-hidden="true">ll</span>llmos</span>
-      <span>· 智能体时代的操作系统内核</span>
+      <span class="nav-brand"><span class="mark" aria-hidden="true">NL</span>NLOS</span>
+      <span>· 自然语言操作系统</span>
     </div>
     <span>架构设计总纲 v0.2 · 2026-07-23 · 通用系统 → 现代系统</span>
     <span>来源：docs/design/02-架构设计总纲-v0.2.md（合成自 docs/discussions/ 议题 1–18，全部定案）</span>
   </div>
-  <div class="footer-mark" aria-hidden="true">llmos</div>
+  <div class="footer-mark" aria-hidden="true">NLOS</div>
 </footer>
 
-<script src="js/main.js"></script>
-<!-- ================= v4 特效引擎（本地化 vendor） ================= -->
-<script src="vendor/three.min.js"></script>
+<script src="js/main.js?v=6.0.0"></script>
+<!-- ================= v6 极光与交互引擎（本地化 vendor） ================= -->
 <script src="vendor/gsap.min.js"></script>
 <script src="vendor/ScrollTrigger.min.js"></script>
-<script src="js/effects.js"></script>
+<script type="module" src="js/effects.js?v=6.0.0"></script>
 </body>
 </html>

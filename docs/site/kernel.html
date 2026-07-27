@@ -1,27 +1,30 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>通用内核 · llmos — 智能体时代的操作系统内核</title>
-<meta name="description" content="llmos 架构设计总纲 v0.2 · 通用内核：三层架构、8 抽象 6 族、约 22 个系统调用、ELF 三方契约、16/16 通用性重构测试。">
-<link rel="stylesheet" href="css/style.css">
-<link rel="stylesheet" href="css/effects.css">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23e5f4ff'/%3E%3Ctext x='16' y='21' font-family='monospace' font-size='13' font-weight='700' text-anchor='middle' fill='%23030710'%3Ell%3C/text%3E%3C/svg%3E">
+<title>通用内核 · NLOS — 自然语言操作系统</title>
+<meta name="description" content="NLOS 架构设计总纲 v0.2 · 通用内核：三层架构、8 抽象 6 族、约 22 个系统调用、ELF 三方契约、16/16 通用性重构测试。">
+<link rel="stylesheet" href="css/style.css?v=6.0.0">
+<link rel="stylesheet" href="css/effects.css?v=6.0.0">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23e5f4ff'/%3E%3Ctext x='16' y='21' font-family='monospace' font-size='12' font-weight='700' text-anchor='middle' fill='%23030710'%3ENL%3C/text%3E%3C/svg%3E">
 </head>
 <body>
 
-<!-- ================= v4 特效背景层 ================= -->
+<!-- ================= v6 极光背景层 ================= -->
 <canvas id="bg-canvas" aria-hidden="true"></canvas>
-<canvas id="particles-canvas" aria-hidden="true"></canvas>
 
 <!-- ================= 导航 ================= -->
 <nav class="nav" id="nav">
   <div class="nav-inner">
     <a class="nav-brand" href="index.html">
-      <span class="mark" aria-hidden="true">ll</span>
-      <span>llmos</span>
+      <span class="mark" aria-hidden="true">NL</span>
+      <span>NLOS</span>
     </a>
+    <button class="nav-toggle" id="navToggle" type="button"
+            aria-expanded="false" aria-controls="navLinks" aria-label="打开主导航">
+      <span></span><span></span><span></span>
+    </button>
     <div class="nav-links" id="navLinks">
       <a href="index.html">首页</a>
       <a href="kernel.html" aria-current="page">通用内核</a>
@@ -37,7 +40,7 @@
 <!-- ================= 页头 ================= -->
 <header class="page-head container">
   <span class="eyebrow reveal">Part I · 通用系统 · Kernel</span>
-  <h1 class="page-title reveal">通用内核：<span class="w">最小正确抽象</span></h1>
+  <h1 class="page-title reveal"><span class="title-line">通用内核：</span><span class="title-line accent">最小正确抽象</span></h1>
   <p class="page-desc reveal">主线第一题：先证明这是一套「通用系统」。陷入层物理位置、8 个抽象、约 22 个系统调用、ELF 三方契约，最后用可检验的判据压测通用性——16/16 重构测试通过，无一抽象删除。</p>
   <nav class="page-toc reveal" aria-label="本页目录">
     <a href="#arch">三层架构</a>
@@ -56,6 +59,54 @@
       <h2>三层架构：<em>陷入层</em>是内核的唯一正确物理位置</h2>
       <p>内核卡在 agent 循环与模型之间、agent 循环与工具之间。每次 LLM 请求、每次工具调用经内核陷入（trap）——一个陷入层同时提供抢占点、预算扣减点、权限校验点、污点标记点四个机制。</p>
     </div>
+    <figure class="idea-map reveal" data-idea-map aria-labelledby="kernel-map-title">
+      <div class="idea-map-heading">
+        <span>INTERACTIVE MODEL · 02</span>
+        <div>
+          <h3 id="kernel-map-title">内核不理解任务，只守住跨边界的瞬间</h3>
+          <p>逐个查看五类动作，理解哪些必须陷入、哪些留在用户态。</p>
+        </div>
+      </div>
+      <div class="idea-map-stage">
+        <svg class="idea-map-links" viewBox="0 0 1000 340" preserveAspectRatio="none" aria-hidden="true">
+          <path data-map-link="harness trap" d="M210 72 C340 72 390 154 470 164"/>
+          <path data-map-link="private trap" d="M210 268 C340 268 390 184 470 174"/>
+          <path data-map-link="trap model" d="M530 164 C610 154 660 72 790 72"/>
+          <path data-map-link="trap tool" d="M530 174 C610 184 660 268 790 268"/>
+          <path data-map-link="tool harness" d="M850 292 C850 330 150 330 150 292"/>
+        </svg>
+        <button class="idea-node pos-a" type="button" data-map-node="harness"
+                data-map-title="Agent 循环"
+                data-map-copy="harness、图编排器与策略 agent 都运行在用户态。它们负责理解任务和组织步骤，却不能直接持有模型凭证或绕过工具网关。">
+          <span>01 · USERSPACE</span><strong>Agent 循环</strong><small>理解语义 · 组织步骤</small>
+        </button>
+        <button class="idea-node pos-b" type="button" data-map-node="private"
+                data-map-title="私有计算"
+                data-map-copy="思考、草稿和进程私有内存访问不陷入。NLOS 只管共享边界，避免把每个 token 的内部推理都变成内核热路径。">
+          <span>02 · PRIVATE</span><strong>私有计算</strong><small>草稿 · 内存 · 本地状态</small>
+        </button>
+        <button class="idea-node pos-core is-active" type="button" data-map-node="trap"
+                data-map-title="唯一陷入边界"
+                data-map-copy="跨向模型或工具的调用必须经过 NLOS。凭证托管与网络策略使边界不可绕过；抢占、计费、鉴权、污点传播在这里一次完成。">
+          <span>03 · TRAP</span><strong>唯一陷入边界</strong><small>preempt · debit · verify</small>
+        </button>
+        <button class="idea-node pos-c" type="button" data-map-node="model"
+                data-map-title="推理引擎"
+                data-map-copy="vLLM 等推理引擎像 CPU：内核不拥有它，只中介访问。请求—响应与流式 realtime 都归一为可计量调用。">
+          <span>04 · MODEL</span><strong>推理引擎</strong><small>request · stream · chunk</small>
+        </button>
+        <button class="idea-node pos-d" type="button" data-map-node="tool"
+                data-map-title="工具与设备"
+                data-map-copy="MCP、shell、文件、沙箱和存储像设备。handle 决定能否访问，namespace 决定能看到什么，具体协议栈可以替换。">
+          <span>05 · DEVICE</span><strong>工具与设备</strong><small>MCP · shell · sandbox</small>
+        </button>
+      </div>
+      <figcaption class="idea-map-readout" aria-live="polite">
+        <span class="idea-map-index">03</span>
+        <div><strong>唯一陷入边界</strong><p>跨向模型或工具的调用必须经过 NLOS。凭证托管与网络策略使边界不可绕过；抢占、计费、鉴权、污点传播在这里一次完成。</p></div>
+        <span class="idea-map-hint">HOVER / CLICK</span>
+      </figcaption>
+    </figure>
     <div class="arch-wrap">
       <div class="arch-stack reveal-group">
         <div class="arch-layer">
@@ -74,7 +125,7 @@
         <div class="trap-divider">陷入边界 · 跨私有边界全陷入</div>
         <div class="arch-layer kernel">
           <div class="layer-label"><span>内核 · Kernel</span><span class="ring">ring 0</span></div>
-          <h3>llmos 微内核</h3>
+          <h3>NLOS 微内核</h3>
           <div class="chips">
             <span class="chip trap">陷入层：llm_call / tool_call</span>
             <span class="chip">调度机制</span>
@@ -117,7 +168,7 @@
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2 2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
             不站队两大阵营
           </h4>
-          <p>harness/沙箱派与图编排派共用 MCP + A2A 协议底座。harness 程序和图编排器都是 llmos 内核之上的<b>用户态程序</b>——内核在两者之下，这就是桥。私有草稿不陷入，对应进程访问私有内存不陷入。</p>
+          <p>harness/沙箱派与图编排派共用 MCP + A2A 协议底座。harness 程序和图编排器都是 NLOS 内核之上的<b>用户态程序</b>——内核在两者之下，这就是桥。私有草稿不陷入，对应进程访问私有内存不陷入。</p>
         </div>
       </aside>
     </div>
@@ -206,7 +257,7 @@
 </section>
 
 <!-- ================= 3. 系统调用表（浅区） ================= -->
-<section class="section light" id="syscalls">
+<section class="section glacier" id="syscalls">
   <div class="container">
     <div class="sec-head reveal">
       <span class="eyebrow">Syscalls<span class="sec-no">/ 03</span></span>
@@ -265,7 +316,7 @@
 </section>
 
 <!-- ================= 4. ELF（浅区） ================= -->
-<section class="section light" id="elf">
+<section class="section glacier" id="elf">
   <div class="container">
     <div class="sec-head reveal">
       <span class="eyebrow">Executable Format<span class="sec-no">/ 04</span></span>
@@ -278,7 +329,7 @@
           <span class="dot"></span><span class="dot"></span><span class="dot"></span>
           <span class="fname">researcher.agent.yaml — manifest 示例</span>
         </div>
-<pre><span class="k">apiVersion</span>: <span class="s">llmos/v1alpha2</span>
+<pre><span class="k">apiVersion</span>: <span class="s">nlos/v1alpha2</span>
 <span class="k">kind</span>: <span class="s">Agent</span>
 <span class="k">metadata</span>:
   <span class="k">name</span>: <span class="s">researcher</span>
@@ -353,7 +404,7 @@
     <div class="sec-head reveal">
       <span class="eyebrow">Universality<span class="sec-no">/ 05</span></span>
       <h2>通用性不是口号，是<em>可检验的判据</em></h2>
-      <p>方向修正后的主线第一题：设计通用系统。判据取自 Unix 通用性的来源；裁判标准是重构测试——能否用 llmos 的原语把现有计算模式全部重构为用户态程序。压测结果：能。</p>
+      <p>方向修正后的主线第一题：设计通用系统。判据取自 Unix 通用性的来源；裁判标准是重构测试——能否用 NLOS 的原语把现有计算模式全部重构为用户态程序。压测结果：能。</p>
     </div>
     <div class="principles reveal-group">
       <div class="card principle">
@@ -452,20 +503,19 @@
 <footer class="footer">
   <div class="container footer-inner">
     <div class="f-brand">
-      <span class="nav-brand"><span class="mark" aria-hidden="true">ll</span>llmos</span>
-      <span>· 智能体时代的操作系统内核</span>
+      <span class="nav-brand"><span class="mark" aria-hidden="true">NL</span>NLOS</span>
+      <span>· 自然语言操作系统</span>
     </div>
     <span>架构设计总纲 v0.2 · 2026-07-23 · 通用系统 → 现代系统</span>
     <span>来源：docs/design/02-架构设计总纲-v0.2.md（合成自 docs/discussions/ 议题 1–18，全部定案）</span>
   </div>
-  <div class="footer-mark" aria-hidden="true">llmos</div>
+  <div class="footer-mark" aria-hidden="true">NLOS</div>
 </footer>
 
-<script src="js/main.js"></script>
-<!-- ================= v4 特效引擎（本地化 vendor） ================= -->
-<script src="vendor/three.min.js"></script>
+<script src="js/main.js?v=6.0.0"></script>
+<!-- ================= v6 极光与交互引擎（本地化 vendor） ================= -->
 <script src="vendor/gsap.min.js"></script>
 <script src="vendor/ScrollTrigger.min.js"></script>
-<script src="js/effects.js"></script>
+<script type="module" src="js/effects.js?v=6.0.0"></script>
 </body>
 </html>

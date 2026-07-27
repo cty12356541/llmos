@@ -1,4 +1,4 @@
-# llmos 站点设计系统（v2 · 基于 langchain.com 实地研究）
+# NLOS 站点设计系统（v6 · 冰川极光交互系统）
 
 > 本文件是 docs/site/ 的视觉契约。所有 token 来自 2026-07-23 对
 > https://www.langchain.com（首页、/langgraph、/langsmith/observability）的
@@ -94,7 +94,7 @@ LangChain 真正的识别物不是渐变，而是**细线流场**：1px 冰蓝/�
 | 9 | 导航 logo 渐变方块 + 渐变 favicon | 同上 | 纯色冰白方块 + 藏青字 |
 | 10 | 视觉重心平铺：每节都是 eyebrow+h2+卡片网格，无深浅节奏、无超大字体对比 | 无节奏 = 无设计 | 引入 LangChain 节奏：深→深→带→浅→深；hero 64px/300 字重大标题；Budget/随机性区用大数字；页脚巨型描边字标 |
 | 11 | h2 用 `font-weight: 750` 粗黑 | 与 LangChain 的 300 轻字重大标题方向相反；粗黑大标题是 AI 页另一指纹 | 展示标题全部 300 字重 + -0.03em 字距 |
-| 12 | hero 以产品名 "llmos." 作主标题 | 模板式 brand-hero；LangChain hero 标题是价值主张 | hero 主标题改为价值主张（价值句），产品名退到导航/页脚 |
+| 12 | hero 以产品名 "NLOS." 作主标题 | 模板式 brand-hero；hero 标题应是价值主张 | hero 主标题改为价值主张（价值句），产品名退到导航/页脚 |
 
 ## 3. v2 设计 token（落地值）
 
