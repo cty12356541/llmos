@@ -8,7 +8,12 @@
   height: 100vh;
   z-index: 0;
   pointer-events: none;
-  background: #06111f;
+  /*
+   * Stay transparent until WebGL paints its first frame. If the module or
+   * renderer fails before JavaScript can mark the fallback state, the CSS
+   * aurora on body remains visible instead of being covered by a blank canvas.
+   */
+  background: transparent;
   transform: translateZ(0);
 }
 
@@ -27,6 +32,7 @@ body::before {
   background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.82' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
 }
 
+body,
 body.css-aurora {
   background:
     radial-gradient(ellipse 110% 30% at 22% -6%, transparent 52%, rgba(155, 227, 255, 0.16) 58%, transparent 64%),
