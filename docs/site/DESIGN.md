@@ -129,3 +129,44 @@ LangChain 真正的识别物不是渐变，而是**细线流场**：1px 冰蓝/�
 
 动效：仅 IntersectionObserver 渐入（600ms 内、translateY ≤16px），
 reduced-motion 全量兜底，无 JS 全可见。签名元素：细线流场 SVG（1px 曲线，无动画装饰）。
+
+### 3.1 液态玻璃 token（v7 修订）
+
+v7 把全部「经典毛玻璃」（深色调 tint `rgba(13,22,38,0.55–0.72)` + blur）替换为
+**液态玻璃**：低不透明度冰白 tint，让深暗极光背景真正透过来。单色纪律不变
+（只允许冰蓝 / 白 / 藏青家族），圆角 / 布局 / 字号体系不动，只改表面材质。
+
+```css
+--glass-bg: linear-gradient(135deg, rgba(255,255,255,.06), rgba(255,255,255,.015) 42%, transparent 60%),
+  rgba(214,238,255,.06);        /* 玻璃面：斜向折射微光 + 冰白 tint（α ≤ 0.12） */
+--glass-bg-strong: 同上结构，tint α 0.10（glacier 层 0.07 / 0.11）
+--glass-blur: 14px;             /* glacier 层 16px */
+--glass-saturate: 1.7;          /* 高饱和让背景光透出来 */
+--glass-border: rgba(255,255,255,.16);        /* 描边底色（渐变环 fallback） */
+--glass-border-hover: rgba(255,255,255,.40);
+--glass-highlight: rgba(255,255,255,.22);     /* 顶部镜面高光（inset 0 1px 0） */
+--glass-edge-top: rgba(255,255,255,.32);      /* 渐变描边：上缘亮 */
+--glass-edge-bottom: rgba(127,200,255,.08);   /* 渐变描边：下缘暗冰蓝 */
+--glass-edge-top-hover / --glass-edge-bottom-hover: 0.50 / 0.16（hover 同步调亮）
+--shadow-glass: …, inset 0 1px 0 var(--glass-highlight);   /* 镜面高光并入阴影 token */
+```
+
+**三条规则：**
+
+1. **tint ≤ 0.12**：玻璃面一律冰白 / 白色 tint（α 0.05–0.12），禁止回到深色
+   navy tint（0.55+）——深色 tint 会闷死背景极光，液态感来自「透」。
+2. **blur 12–16px + saturate(1.6–1.8)**：所有 `backdrop-filter` 统一走
+   `blur(var(--glass-blur)) saturate(var(--glass-saturate))`；单独调 blur
+   不加 saturate 等于只做了一半（透过来的是灰光不是彩光）。
+3. **镜面高光边**：每个玻璃面必须有 (a) 顶部 `inset 0 1px 0` 镜面高光
+   （α 0.15–0.28，已并入 `--shadow-glass`）+ (b) 1px 渐变描边环（上
+   `--glass-edge-top` → 下 `--glass-edge-bottom`，::before + mask-composite
+   技法，`pointer-events: none`）+ (c) 斜向 135° 折射微光（已并入
+   `--glass-bg`）。hover 时高光与描边同步调亮，过渡 ≤ 220ms。
+
+**浅区变体**：`.section.light` 玻璃用白色 tint（α 0.55）+ 深色 hairline
+（`--light-line`），描边环改为白高光 → `rgba(3,7,16,.06)`，文字 #030710 系可读。
+
+**兜底**：`@supports not (backdrop-filter: blur(1px))` 时 `--glass-bg*` 回退为
+α 0.94+ 的纯色藏青面；`prefers-reduced-transparency: reduce` 时玻璃面不透明化
+并移除全部 backdrop-filter。两种情况下文字对比度不低于无玻璃状态。

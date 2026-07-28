@@ -66,21 +66,28 @@
   --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
   --dur: 220ms;
 
-  /* ---- v3 视感升级：玻璃 / 光效 / 动效（单色家族内深化，无新色相） ---- */
-  /* 玻璃拟态：深色区半透明面 */
-  --glass-bg: rgba(13, 22, 38, 0.55);          /* 卡片玻璃面，透出底层光雾 */
-  --glass-bg-strong: rgba(13, 22, 38, 0.72);
+  /* ---- v7 视感升级：液态玻璃 / 光效 / 动效（单色家族内深化，无新色相） ---- */
+  /* 液态玻璃：低不透明度冰白 tint（≤0.12），背景极光可透过 */
+  --glass-bg: linear-gradient(135deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.015) 42%, rgba(255, 255, 255, 0) 60%),
+    rgba(214, 238, 255, 0.06);                   /* 玻璃面：斜向折射微光 + 冰白 tint */
+  --glass-bg-strong: linear-gradient(135deg, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0.02) 42%, rgba(255, 255, 255, 0) 60%),
+    rgba(214, 238, 255, 0.10);
   --glass-blur: 14px;
-  --glass-border: rgba(127, 200, 255, 0.16);   /* 冰蓝 1px 描边（极淡） */
-  --glass-border-hover: rgba(127, 200, 255, 0.40);
-  --glass-highlight: rgba(255, 255, 255, 0.04);/* 顶部内高光，模拟光源 */
+  --glass-saturate: 1.7;                         /* 高饱和让背景光透出来 */
+  --glass-border: rgba(255, 255, 255, 0.16);     /* 描边底色（渐变描边环的 fallback） */
+  --glass-border-hover: rgba(255, 255, 255, 0.40);
+  --glass-highlight: rgba(255, 255, 255, 0.26);  /* 顶部镜面高光 */
+  --glass-edge-top: rgba(255, 255, 255, 0.32);   /* 渐变描边：上缘亮 */
+  --glass-edge-bottom: rgba(127, 200, 255, 0.08);/* 渐变描边：下缘暗冰蓝 */
+  --glass-edge-top-hover: rgba(255, 255, 255, 0.50);
+  --glass-edge-bottom-hover: rgba(127, 200, 255, 0.16);
 
   /* 光效 */
   --glow-ink-soft: rgba(127, 200, 255, 0.12);
   --glow-ink-mid: rgba(127, 200, 255, 0.22);
   --shadow-lift: 0 12px 40px -12px rgba(0, 0, 0, 0.6);
   --shadow-glass: 0 8px 32px -8px rgba(0, 0, 0, 0.5),
-    inset 0 1px 0 0 rgba(255, 255, 255, 0.04);
+    inset 0 1px 0 0 var(--glass-highlight);
 
   /* 动效时长 / 曲线 */
   --dur-slow: 480ms;
@@ -202,11 +209,11 @@ a:focus-visible, button:focus-visible {
   transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease);
 }
 .nav.scrolled {
-  background: rgba(3, 7, 16, 0.72);
-  backdrop-filter: blur(18px) saturate(1.3);
-  -webkit-backdrop-filter: blur(18px) saturate(1.3);
+  background: rgba(214, 238, 255, 0.07);
+  backdrop-filter: blur(16px) saturate(1.7);
+  -webkit-backdrop-filter: blur(16px) saturate(1.7);
   border-bottom-color: var(--glass-border);
-  box-shadow: 0 1px 0 0 rgba(127, 200, 255, 0.08), 0 8px 32px -16px rgba(0, 0, 0, 0.8);
+  box-shadow: 0 1px 0 0 rgba(255, 255, 255, 0.10), 0 8px 32px -16px rgba(0, 0, 0, 0.8);
 }
 .nav-inner {
   max-width: var(--container);
@@ -290,10 +297,10 @@ a:focus-visible, button:focus-visible {
   background: var(--white);
   box-shadow: 0 8px 24px -6px rgba(229, 244, 255, 0.45), 0 0 0 1px rgba(255,255,255,0.2);
 }
-.btn-ghost { background: var(--glass-bg); color: var(--text); border-color: var(--line-2); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+.btn-ghost { background: var(--glass-bg); color: var(--text); border-color: var(--line-2); backdrop-filter: blur(10px) saturate(1.6); -webkit-backdrop-filter: blur(10px) saturate(1.6); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16); }
 .btn-ghost:hover {
   border-color: var(--ink); color: var(--ink);
-  box-shadow: 0 0 0 1px var(--glass-border-hover), 0 0 24px -4px var(--glow-ink-mid);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.26), 0 0 0 1px var(--glass-border-hover), 0 0 24px -4px var(--glow-ink-mid);
 }
 .section.light .btn-ghost { color: var(--light-text); border-color: var(--light-line-2); background: transparent; backdrop-filter: none; }
 .section.light .btn-ghost:hover { border-color: var(--light-text); box-shadow: none; }
@@ -417,11 +424,11 @@ a:focus-visible, button:focus-visible {
 }
 
 .flow .flow-pill {
-  fill: rgba(13, 22, 38, 0.85);
+  fill: rgba(214, 238, 255, 0.10);
   stroke: var(--line-2);
   stroke-width: 1;
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(10px) saturate(1.6);
+  -webkit-backdrop-filter: blur(10px) saturate(1.6);
   transition: stroke var(--dur) var(--ease);
 }
 .flow .flow-pill:hover { stroke: var(--ink); }
@@ -483,8 +490,8 @@ a:focus-visible, button:focus-visible {
 /* ---- 通用卡片（v3：玻璃拟态升级） ---- */
 .card {
   background: var(--glass-bg);
-  backdrop-filter: blur(var(--glass-blur)) saturate(1.2);
-  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.2);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-m);
   padding: var(--sp-5);
@@ -502,7 +509,7 @@ a:focus-visible, button:focus-visible {
   inset: 0;
   border-radius: inherit;
   padding: 1px;
-  background: linear-gradient(180deg, var(--glass-highlight), transparent 40%);
+  background: linear-gradient(180deg, var(--glass-edge-top), var(--glass-edge-bottom));
   -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
   -webkit-mask-composite: xor;
           mask-composite: exclude;
@@ -515,9 +522,10 @@ a:focus-visible, button:focus-visible {
   background: var(--glass-bg-strong);
 }
 .section.light .card {
-  background: rgba(255, 255, 255, 0.72);
+  background: rgba(255, 255, 255, 0.55);
   border-color: var(--light-line);
-  box-shadow: 0 8px 32px -12px rgba(3, 7, 16, 0.08);
+  box-shadow: 0 8px 32px -12px rgba(3, 7, 16, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.6);
 }
 .section.light .card:hover {
   border-color: var(--light-line-2);
@@ -951,8 +959,8 @@ a:focus-visible, button:focus-visible {
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-m);
   background: var(--glass-bg);
-  backdrop-filter: blur(var(--glass-blur)) saturate(1.2);
-  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.2);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   padding: var(--sp-5);
   display: flex;
   flex-direction: column;
@@ -1203,25 +1211,19 @@ a:focus-visible, button:focus-visible {
 .pager-link svg { flex: none; }
 
 /* ---- 滚动渐入（渐进增强：仅 JS 激活时隐藏初始态，无 JS 全可见） ---- */
-html.js .reveal {
-  opacity: 0;
-  transform: translateY(16px);
-  transition: opacity 560ms var(--ease), transform 560ms var(--ease);
-}
-html.js .reveal.in { opacity: 1; transform: none; }
-html.js .reveal-group > * {
+/* .reveal 的隐藏初始态唯一定义在下方「v3 · 滚动视差与渐入增强」段（scale 增强版），
+   此处仅保留 reveal-group 子级规则，避免双重定义。 */
+html.motion-js .reveal-group > * {
   opacity: 0;
   transform: translateY(12px);
-  transition: opacity 480ms var(--ease), transform 480ms var(--ease);
 }
-html.js .reveal-group.in > * { opacity: 1; transform: none; }
-html.js .reveal-group.in > *:nth-child(2) { transition-delay: 60ms; }
-html.js .reveal-group.in > *:nth-child(3) { transition-delay: 120ms; }
-html.js .reveal-group.in > *:nth-child(4) { transition-delay: 180ms; }
-html.js .reveal-group.in > *:nth-child(5) { transition-delay: 240ms; }
-html.js .reveal-group.in > *:nth-child(6) { transition-delay: 300ms; }
-html.js .reveal-group.in > *:nth-child(7) { transition-delay: 360ms; }
-html.js .reveal-group.in > *:nth-child(8) { transition-delay: 420ms; }
+html.motion-js .reveal-group.in > * { opacity: 1; transform: none; }
+
+/* 入场完成前由 GSAP 独占 opacity / transform，屏蔽组件自身 hover 过渡。 */
+html.motion-js .reveal:not(.in),
+html.motion-js .reveal-group:not(.in) > * {
+  transition: none !important;
+}
 
 /* ============================================================
    v3 · 组件质感升级补丁（玻璃化 + hover 发光 + 微抬升）
@@ -1231,8 +1233,8 @@ html.js .reveal-group.in > *:nth-child(8) { transition-delay: 420ms; }
 /* 历史时间线行：玻璃化 + 悬停发光 */
 .tl-row {
   background: var(--glass-bg);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   border-color: var(--glass-border);
   box-shadow: var(--shadow-glass);
   transition: border-color var(--dur-slow) var(--ease),
@@ -1252,8 +1254,8 @@ html.js .reveal-group.in > *:nth-child(8) { transition-delay: 420ms; }
 /* 尸检卡：危险色 hover 时也带一点玻璃发光 */
 .autopsy-card {
   background: var(--glass-bg);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
 }
 .autopsy-card:hover {
   transform: translateY(-3px);
@@ -1263,8 +1265,8 @@ html.js .reveal-group.in > *:nth-child(8) { transition-delay: 420ms; }
 /* 三层架构层：玻璃化 */
 .arch-layer {
   background: var(--glass-bg);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   border-color: var(--glass-border);
   box-shadow: var(--shadow-glass);
   transition: border-color var(--dur-slow) var(--ease), transform var(--dur-slow) var(--ease);
@@ -1279,8 +1281,8 @@ html.js .reveal-group.in > *:nth-child(8) { transition-delay: 420ms; }
 /* 抽象卡：玻璃 + 图标描边发光 */
 .abs-card {
   background: var(--glass-bg);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   box-shadow: var(--shadow-glass);
   transition: border-color var(--dur-slow) var(--ease),
     transform var(--dur-slow) var(--ease), box-shadow var(--dur-slow) var(--ease);
@@ -1298,8 +1300,8 @@ html.js .reveal-group.in > *:nth-child(8) { transition-delay: 420ms; }
 /* tier 阶梯（Budget / 随机性 / 弹性）：玻璃 + 数字 hover 加亮 */
 .tier {
   background: var(--glass-bg);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   box-shadow: var(--shadow-glass);
   border-radius: var(--radius-m);
   border: 1px solid var(--glass-border);
@@ -1317,8 +1319,8 @@ html.js .reveal-group.in > *:nth-child(8) { transition-delay: 420ms; }
 /* 分层 trace 行：玻璃化 */
 .trace-row {
   background: var(--glass-bg);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   border-color: var(--glass-border);
   box-shadow: var(--shadow-glass);
   transition: border-color var(--dur-slow) var(--ease),
@@ -1330,11 +1332,11 @@ html.js .reveal-group.in > *:nth-child(8) { transition-delay: 420ms; }
   box-shadow: var(--shadow-glass), 0 12px 36px -10px var(--glow-ink-soft);
 }
 
-/* callout：玻璃 */
+/* callout：液态玻璃 */
 .callout {
   background: var(--glass-bg);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   border-color: var(--glass-border);
   box-shadow: var(--shadow-glass);
 }
@@ -1348,8 +1350,8 @@ html.js .reveal-group.in > *:nth-child(8) { transition-delay: 420ms; }
 
 /* 决策卡、原则、oci-layer 等也统一玻璃底（轻量） */
 .decision, .principle, .oci-layer {
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(10px) saturate(1.6);
+  -webkit-backdrop-filter: blur(10px) saturate(1.6);
 }
 
 /* band 区与浅区的玻璃基础（让玻璃卡能透出层级） */
@@ -1366,12 +1368,11 @@ html.js .reveal-group.in > *:nth-child(8) { transition-delay: 420ms; }
 .flow { transform: translateZ(0); }
 
 /* reveal 增强：轻微 scale + 更顺滑的曲线 */
-html.js .reveal {
+html.motion-js .reveal {
   opacity: 0;
   transform: translateY(20px) scale(0.985);
-  transition: opacity 640ms var(--ease-out-back), transform 640ms var(--ease-out-back);
 }
-html.js .reveal.in { opacity: 1; transform: none; }
+html.motion-js .reveal.in { opacity: 1; transform: none; }
 
 /* 数字递增组件标记（main.js 触发 count-up） */
 [data-count] { font-variant-numeric: tabular-nums; }
@@ -1384,7 +1385,7 @@ html.js .reveal.in { opacity: 1; transform: none; }
 
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
-  html.js .reveal, html.js .reveal-group > * { opacity: 1 !important; transform: none !important; transition: none !important; }
+  html.motion-js .reveal, html.motion-js .reveal-group > * { opacity: 1 !important; visibility: visible !important; transform: none !important; transition: none !important; }
   .bg-fx .orb { animation: none !important; }
   .flow .flow-curve { animation: none !important; stroke-dasharray: none !important; opacity: 1 !important; }
   .hero-title { animation: none !important; }
@@ -1473,19 +1474,26 @@ html.js .reveal.in { opacity: 1; transform: none; }
   --ice: #eaf8ff;
   --ice-white: #eefaff;
 
-  --glass-bg: rgba(10, 26, 44, 0.62);
-  --glass-bg-strong: rgba(12, 31, 51, 0.78);
+  --glass-bg: linear-gradient(135deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.02) 42%, rgba(255, 255, 255, 0) 60%),
+    rgba(226, 243, 255, 0.07);
+  --glass-bg-strong: linear-gradient(135deg, rgba(255, 255, 255, 0.10), rgba(255, 255, 255, 0.025) 42%, rgba(255, 255, 255, 0) 60%),
+    rgba(226, 243, 255, 0.11);
   --glass-blur: 16px;
-  --glass-border: rgba(174, 226, 255, 0.18);
-  --glass-border-hover: rgba(194, 235, 255, 0.4);
-  --glass-highlight: rgba(235, 249, 255, 0.075);
+  --glass-saturate: 1.7;
+  --glass-border: rgba(235, 249, 255, 0.18);
+  --glass-border-hover: rgba(240, 250, 255, 0.42);
+  --glass-highlight: rgba(239, 250, 255, 0.26);
+  --glass-edge-top: rgba(240, 250, 255, 0.34);
+  --glass-edge-bottom: rgba(143, 211, 255, 0.09);
+  --glass-edge-top-hover: rgba(255, 255, 255, 0.52);
+  --glass-edge-bottom-hover: rgba(143, 211, 255, 0.17);
 
   --glow-ink-soft: rgba(127, 204, 248, 0.12);
   --glow-ink-mid: rgba(143, 211, 255, 0.2);
   --shadow-lift: 0 20px 52px -28px rgba(0, 0, 0, 0.82);
   --shadow-glass:
     0 18px 48px -30px rgba(0, 0, 0, 0.82),
-    inset 0 1px 0 rgba(239, 250, 255, 0.055);
+    inset 0 1px 0 var(--glass-highlight);
 
   --container: 1200px;
   --measure: 46em;
@@ -1585,7 +1593,7 @@ main {
 
 .section.glacier .oci-layer {
   border-color: var(--glass-border);
-  background: rgba(10, 26, 44, 0.56);
+  background: rgba(226, 243, 255, 0.06);
 }
 
 .section.glacier .oci-layer.cow {
@@ -1598,19 +1606,19 @@ main {
 
 /* ---- Navigation ---- */
 .nav {
-  background: rgba(5, 16, 29, 0.52);
-  border-bottom: 1px solid rgba(177, 226, 252, 0.1);
-  backdrop-filter: blur(16px) saturate(1.25);
-  -webkit-backdrop-filter: blur(16px) saturate(1.25);
+  background: rgba(226, 243, 255, 0.05);
+  border-bottom: 1px solid rgba(235, 249, 255, 0.12);
+  backdrop-filter: blur(16px) saturate(1.7);
+  -webkit-backdrop-filter: blur(16px) saturate(1.7);
   box-shadow: 0 12px 38px -32px rgba(0, 0, 0, 0.9);
 }
 
 .nav.scrolled,
 .nav.menu-open {
-  background: rgba(5, 16, 29, 0.82);
-  border-bottom-color: rgba(177, 226, 252, 0.18);
+  background: rgba(226, 243, 255, 0.09);
+  border-bottom-color: rgba(235, 249, 255, 0.20);
   box-shadow:
-    0 1px 0 rgba(227, 246, 255, 0.035),
+    0 1px 0 rgba(227, 246, 255, 0.08),
     0 18px 44px -30px rgba(0, 0, 0, 0.9);
 }
 
@@ -1782,17 +1790,19 @@ main {
 
 .btn-ghost {
   color: var(--text);
-  background: rgba(13, 33, 54, 0.56);
-  border-color: rgba(174, 226, 255, 0.25);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
+  background: rgba(226, 243, 255, 0.07);
+  border-color: rgba(235, 249, 255, 0.28);
+  backdrop-filter: blur(12px) saturate(1.7);
+  -webkit-backdrop-filter: blur(12px) saturate(1.7);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16);
 }
 
 .btn-ghost:hover {
   color: var(--ice-white);
-  border-color: rgba(194, 235, 255, 0.5);
-  background: rgba(20, 45, 70, 0.68);
-  box-shadow: 0 12px 26px -20px rgba(143, 211, 255, 0.6);
+  border-color: rgba(240, 250, 255, 0.5);
+  background: rgba(226, 243, 255, 0.12);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.26),
+    0 12px 26px -20px rgba(143, 211, 255, 0.6);
 }
 
 /* ---- Architecture flow ---- */
@@ -1811,8 +1821,8 @@ main {
 }
 
 .flow .flow-pill {
-  fill: rgba(7, 20, 35, 0.9);
-  stroke: rgba(174, 226, 255, 0.3);
+  fill: rgba(226, 243, 255, 0.10);
+  stroke: rgba(235, 249, 255, 0.32);
 }
 
 .flow .flow-pill-text {
@@ -1891,8 +1901,8 @@ main {
   border-color: var(--glass-border);
   background: var(--glass-bg);
   box-shadow: var(--shadow-glass);
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
 }
 
 .card {
@@ -1902,10 +1912,9 @@ main {
 .card::before {
   background:
     linear-gradient(
-      90deg,
-      rgba(235, 249, 255, 0.18),
-      rgba(143, 211, 255, 0.035) 44%,
-      transparent 78%
+      180deg,
+      var(--glass-edge-top),
+      var(--glass-edge-bottom)
     );
 }
 
@@ -1924,9 +1933,9 @@ main {
 .nav-card,
 .arch-layer.kernel,
 .callout {
-  background: rgba(11, 30, 50, 0.72);
-  backdrop-filter: blur(14px) saturate(1.12);
-  -webkit-backdrop-filter: blur(14px) saturate(1.12);
+  background: var(--glass-bg-strong);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
 }
 
 .tl-row.highlight,
@@ -1935,10 +1944,10 @@ main {
   background:
     linear-gradient(
       135deg,
-      rgba(143, 211, 255, 0.09),
-      rgba(10, 27, 46, 0.74) 54%
+      rgba(143, 211, 255, 0.14),
+      rgba(226, 243, 255, 0.05) 54%
     );
-  border-color: rgba(183, 230, 255, 0.34);
+  border-color: rgba(235, 249, 255, 0.38);
 }
 
 .autopsy-card:hover {
@@ -2003,8 +2012,8 @@ main {
 
 .chip {
   color: var(--text-2);
-  border-color: rgba(174, 226, 255, 0.16);
-  background: rgba(12, 31, 51, 0.46);
+  border-color: rgba(235, 249, 255, 0.18);
+  background: rgba(226, 243, 255, 0.06);
 }
 
 .codeblock,
@@ -2024,26 +2033,27 @@ main {
 
 .pager,
 .footer {
-  background: rgba(4, 14, 25, 0.56);
-  border-color: rgba(174, 226, 255, 0.1);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  background: rgba(226, 243, 255, 0.05);
+  border-color: rgba(235, 249, 255, 0.12);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
 }
 
 .pager-link {
   min-height: 44px;
 }
 
-/* ---- Motion ownership: visible by default, GSAP uses inline state only ---- */
-html.js .reveal,
-html.js .reveal.in,
-html.js .reveal-group > *,
-html.js .reveal-group.in > * {
-  opacity: 1;
-  visibility: visible;
-  transform: none;
-  filter: none;
-  transition: none;
+/* ---- Motion ownership: CSS pre-hides, GSAP animates from it, .in persists ----
+   reveal-all 是全量兜底：effects.js 加载失败（head 内联 2500ms 定时器）、
+   GSAP/ScrollTrigger 不可用、或 prefers-reduced-motion 时由 effects.js 加类，
+   强制所有内容立即可见。 */
+html.reveal-all .reveal,
+html.reveal-all .reveal-group > * {
+  opacity: 1 !important;
+  visibility: visible !important;
+  transform: none !important;
+  filter: none !important;
+  transition: none !important;
 }
 
 /* ---- Responsive ---- */
@@ -2088,12 +2098,13 @@ html.js .reveal-group.in > * {
     padding: 10px;
     overflow: visible;
     color: var(--text);
-    background: rgba(6, 18, 32, 0.94);
-    border: 1px solid rgba(174, 226, 255, 0.2);
+    background: rgba(9, 22, 39, 0.82);
+    border: 1px solid rgba(235, 249, 255, 0.22);
     border-radius: 12px;
-    box-shadow: 0 24px 56px -24px rgba(0, 0, 0, 0.92);
-    backdrop-filter: blur(20px) saturate(1.2);
-    -webkit-backdrop-filter: blur(20px) saturate(1.2);
+    box-shadow: 0 24px 56px -24px rgba(0, 0, 0, 0.92),
+      inset 0 1px 0 rgba(255, 255, 255, 0.14);
+    backdrop-filter: blur(20px) saturate(1.6);
+    -webkit-backdrop-filter: blur(20px) saturate(1.6);
     opacity: 0;
     visibility: hidden;
     pointer-events: none;
@@ -2185,8 +2196,8 @@ html.js .reveal-group.in > * {
     font-size: 0.72rem;
     line-height: 2;
     text-align: center;
-    background: rgba(10, 28, 47, 0.58);
-    border: 1px solid rgba(174, 226, 255, 0.18);
+    background: rgba(226, 243, 255, 0.07);
+    border: 1px solid rgba(235, 249, 255, 0.20);
     border-radius: 12px;
   }
 
@@ -2270,6 +2281,86 @@ html.js .reveal-group.in > * {
   .flow .flow-core-glow {
     animation: none !important;
   }
+}
+
+/* ============================================================
+   v7 · 液态玻璃统一补丁（liquid glass）
+   规则：tint ≤ 0.12 冰白 / blur 12–16px + saturate(1.6–1.8) /
+   顶部镜面高光边 + 上亮下暗渐变描边。单色纪律不变。
+   ============================================================ */
+
+/* 渐变描边环：上缘亮白 → 下缘暗冰蓝；1px mask 环，不拦截事件、不进层叠 */
+.card, .stat, .tl-row, .arch-layer, .abs-card, .tier, .trace-row, .callout, .autopsy-card {
+  position: relative;
+}
+.card::before, .stat::before, .tl-row::before, .arch-layer::before,
+.abs-card::before, .tier::before, .trace-row::before, .callout::before,
+.autopsy-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(180deg, var(--glass-edge-top), var(--glass-edge-bottom));
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+          mask-composite: exclude;
+  pointer-events: none;
+}
+
+/* hover：高光与描边同步调亮，过渡 ≤ 220ms（--dur） */
+.card, .stat, .tl-row, .arch-layer, .abs-card, .tier, .trace-row, .callout {
+  transition: border-color var(--dur) var(--ease),
+    box-shadow var(--dur) var(--ease),
+    background var(--dur) var(--ease),
+    transform var(--dur-slow) var(--ease);
+}
+.card:hover::before, .stat:hover::before, .tl-row:hover::before,
+.arch-layer:hover::before, .abs-card:hover::before, .tier:hover::before,
+.trace-row:hover::before {
+  background: linear-gradient(180deg, var(--glass-edge-top-hover), var(--glass-edge-bottom-hover));
+}
+
+/* 浅区液态玻璃：白 tint 上的描边环改为白高光 → 深色 hairline */
+.section.light .card::before, .section.light .stat::before,
+.section.light .callout::before, .section.light .tl-row::before {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.65), rgba(3, 7, 16, 0.06));
+}
+
+/* 无 backdrop-filter 兜底：玻璃面回退为高不透明纯色，保证可读 */
+@supports not (backdrop-filter: blur(1px)) {
+  :root {
+    --glass-bg: rgba(13, 26, 44, 0.94);
+    --glass-bg-strong: rgba(17, 34, 55, 0.96);
+  }
+  .nav, .nav.scrolled, .nav.menu-open { background: rgba(5, 14, 26, 0.96); }
+  .btn-ghost { background: rgba(17, 34, 55, 0.94); }
+  .pager, .footer { background: rgba(5, 14, 26, 0.96); }
+  html.js .nav-links { background: rgba(6, 16, 30, 0.97); }
+  .flow .flow-pill { fill: rgba(17, 34, 55, 0.95); }
+  .section.glacier .oci-layer, .chip { background: rgba(17, 34, 55, 0.92); }
+  .section.light .card { background: rgba(255, 255, 255, 0.94); }
+}
+
+/* 减少透明度偏好：玻璃面不透明化 */
+@media (prefers-reduced-transparency: reduce) {
+  :root {
+    --glass-bg: rgba(13, 26, 44, 0.96);
+    --glass-bg-strong: rgba(17, 34, 55, 0.97);
+  }
+  .nav, .nav.scrolled, .nav.menu-open, .btn-ghost,
+  .card, .stat, .tl-row, .arch-layer, .abs-card, .tier, .trace-row,
+  .callout, .autopsy-card, .decision, .principle, .oci-layer,
+  .pager, .footer, html.js .nav-links {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+  .nav, .nav.scrolled, .nav.menu-open, .pager, .footer { background: rgba(5, 14, 26, 0.97); }
+  .btn-ghost { background: rgba(17, 34, 55, 0.96); }
+  html.js .nav-links { background: rgba(6, 16, 30, 0.98); }
+  .flow .flow-pill { fill: rgba(17, 34, 55, 0.96); }
+  .section.glacier .oci-layer, .chip { background: rgba(17, 34, 55, 0.94); }
+  .section.light .card { background: rgba(255, 255, 255, 0.96); }
 }
 
 /* ============================================================

@@ -389,6 +389,7 @@
     }
 
     var running = true;
+    var bgLive = false;
     var lastRendered = performance.now();
     var frameSamples = [];
     var sampleCooldown = 0;
@@ -418,6 +419,11 @@
       updateParticles(deltaSeconds, now / 1000);
       renderer.render(scene, camera);
       renderedFrames += 1;
+
+      if (!bgLive) {
+        bgLive = true;
+        document.body.classList.add("bg-live");
+      }
 
       if (now - fpsWindowStart >= 2000) {
         var actualFps =
@@ -573,7 +579,17 @@
       )
     );
 
+    function motionSettled(card) {
+      var group = card.closest(".reveal-group");
+      return (
+        (!card.classList.contains("reveal") ||
+          card.classList.contains("in")) &&
+        (!group || group.classList.contains("in"))
+      );
+    }
+
     function resetCard(card) {
+      if (!card.classList.contains("is-tilting")) return;
       card.classList.remove("is-tilting");
       card.style.removeProperty("transform");
       card.style.removeProperty("--sheen-x");
@@ -597,7 +613,7 @@
       card.addEventListener(
         "pointermove",
         function (event) {
-          if (!DESKTOP_QUERY.matches) {
+          if (!DESKTOP_QUERY.matches || !motionSettled(card)) {
             resetCard(card);
             return;
           }
@@ -648,8 +664,29 @@
   function initScrollMotion() {
     var gsap = window.gsap;
     var ScrollTrigger = window.ScrollTrigger;
+    var root = document.documentElement;
+
+    function clearRevealFailsafe() {
+      if (!window.__nlosRevealFailsafe) return;
+      clearTimeout(window.__nlosRevealFailsafe);
+      window.__nlosRevealFailsafe = null;
+    }
+
+    /*
+     * If the timeout already exposed the page, do not hide it again and cause
+     * a late-loading flash. Otherwise keep the timeout armed until the whole
+     * motion graph has been registered successfully.
+     */
+    if (root.classList.contains("reveal-all")) {
+      diagnostics.motion = "fallback-timeout";
+      clearRevealFailsafe();
+      return;
+    }
+
     if (REDUCE || !gsap || !ScrollTrigger) {
       diagnostics.motion = REDUCE ? "reduced" : "unavailable";
+      clearRevealFailsafe();
+      root.classList.add("reveal-all");
       return;
     }
 
@@ -659,6 +696,38 @@
     function clearMotionProperties(targets) {
       gsap.set(targets, {
         clearProps: "opacity,visibility,transform,filter"
+      });
+    }
+
+    function persistVisible(element) {
+      if (!element || !element.classList) return;
+      if (
+        element.classList.contains("reveal") ||
+        element.classList.contains("reveal-group")
+      ) {
+        element.classList.add("in");
+      }
+    }
+
+    function settleTargets(targets) {
+      targets.forEach(function (element) {
+        persistVisible(element);
+        persistVisible(element.parentElement);
+      });
+      clearMotionProperties(targets);
+    }
+
+    function settleParentsInstant(targets) {
+      targets.forEach(function (element) {
+        var parent = element.parentElement;
+        if (
+          parent &&
+          parent.classList &&
+          parent.classList.contains("reveal") &&
+          !parent.classList.contains("in")
+        ) {
+          parent.classList.add("in");
+        }
       });
     }
 
@@ -680,7 +749,7 @@
           ease: "power2.out",
           overwrite: "auto",
           onComplete: function () {
-            clearMotionProperties(targets);
+            settleTargets(targets);
           }
         }
       );
@@ -694,6 +763,7 @@
             ".hero-thesis, .hero-cta, .hero-meta, .page-toc, .flow"
         )
       );
+      settleParentsInstant(leadTargets);
       animateTargets(leadTargets, 0.065, 12);
     }
 
@@ -701,20 +771,21 @@
       if (!targets.length) return;
       var rect = trigger.getBoundingClientRect();
       if (rect.bottom < 0) {
-        clearMotionProperties(targets);
+        settleTargets(targets);
         return;
       }
       if (rect.top < window.innerHeight * 0.9) {
+        settleParentsInstant(targets);
         animateTargets(targets, stagger, 16);
         return;
       }
 
-      gsap.set(targets, { autoAlpha: 0, y: 18 });
       ScrollTrigger.create({
         trigger: trigger,
         start: "top 88%",
         once: true,
         onEnter: function (self) {
+          settleParentsInstant(targets);
           animateTargets(targets, stagger, 18);
           self.kill();
         }
@@ -741,6 +812,7 @@
       });
 
     ScrollTrigger.refresh();
+    clearRevealFailsafe();
   }
 
   function init() {
