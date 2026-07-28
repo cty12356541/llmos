@@ -1,11 +1,16 @@
-﻿import * as THREE from "../vendor/three.module.min.js";
-
 /* NLOS visual effects v6
    Three.js owns the ambient background.
    GSAP + ScrollTrigger exclusively own content entrance animation.
    Pointer effects are progressive enhancements and never gate content. */
 (function () {
   "use strict";
+
+  /*
+   * Use the classic local build so this file can still install the v6 CSS
+   * fallback if Three.js is delayed or unavailable. A failed top-level module
+   * import used to prevent every recovery path in this file from running.
+   */
+  var THREE = window.THREE;
 
   var REDUCE_QUERY = window.matchMedia(
     "(prefers-reduced-motion: reduce)"
@@ -55,6 +60,10 @@
     var canvas = document.getElementById("bg-canvas");
     if (!canvas) {
       diagnostics.background = "missing-canvas";
+      return;
+    }
+    if (!THREE) {
+      enableCssFallback("three-unavailable");
       return;
     }
     if (REDUCE) {
