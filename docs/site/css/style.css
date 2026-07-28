@@ -1549,6 +1549,49 @@ main {
     );
 }
 
+/*
+ * Glacier sections now use the dark glass surface.  Keep their content on the
+ * dark text scale too; the original ELF styles below predate this theme and
+ * otherwise render near-black "light section" text over the navy cards.
+ */
+.section.glacier .sec-head h2,
+.section.glacier .sec-head h2 em,
+.section.glacier .sec-head p b,
+.section.glacier .elf-side .card h4,
+.section.glacier .elf-side .card p b,
+.section.glacier .oci-layer,
+.section.glacier .steps li b {
+  color: var(--ice-white);
+}
+
+.section.glacier .sec-head p,
+.section.glacier .elf-side .card p,
+.section.glacier .steps li {
+  color: var(--text-2);
+}
+
+.section.glacier .eyebrow,
+.section.glacier .sec-no,
+.section.glacier .oci-layer span {
+  color: var(--text-3);
+}
+
+.section.glacier .sec-head h2 em,
+.section.glacier .elf-side .card code,
+.section.glacier .oci-layer.cow span,
+.section.glacier .steps li::before {
+  color: var(--ink);
+}
+
+.section.glacier .oci-layer {
+  border-color: var(--glass-border);
+  background: rgba(10, 26, 44, 0.56);
+}
+
+.section.glacier .oci-layer.cow {
+  border-color: var(--line-2);
+}
+
 .section + .section {
   border-top-color: rgba(174, 226, 255, 0.07);
 }
