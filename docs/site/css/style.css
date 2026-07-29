@@ -3821,60 +3821,26 @@ main > .section.light {
   position: absolute;
   inset: 0;
   z-index: 2;
-  display: grid;
-  place-items: center;
-  color: rgba(174,226,255,.52);
-  font-family: "Times New Roman", "STIX Two Math", "Cambria Math", serif;
-  font-size: clamp(10rem, 20vw, 17rem);
-  font-weight: 400;
-  line-height: .72;
-  transform: translateY(-2%);
-  filter:
-    drop-shadow(0 0 10px rgba(143,211,255,.2))
-    drop-shadow(0 0 34px rgba(127,200,255,.08));
-  text-shadow:
-    0 0 16px rgba(127,200,255,.1),
-    0 0 36px rgba(127,200,255,.05);
+  width: 100%;
+  height: 100%;
+  display: block;
   pointer-events: none;
 }
 
-.emblem-infinity::before,
-.emblem-infinity::after {
-  display: none;
+.emblem-infinity-fallback {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  color: rgba(174,226,255,.46);
+  font-family: "Times New Roman", "STIX Two Math", "Cambria Math", serif;
+  font-size: clamp(10rem, 20vw, 17rem);
+  line-height: .72;
+  pointer-events: none;
 }
 
-@supports ((-webkit-background-clip: text) or (background-clip: text)) {
-  .emblem-infinity {
-    color: transparent;
-    background:
-      linear-gradient(
-        108deg,
-        rgba(90,157,205,.28) 0%,
-        rgba(143,211,255,.52) 32%,
-        rgba(244,252,255,.98) 46%,
-        rgba(143,211,255,.72) 54%,
-        rgba(90,157,205,.3) 68%,
-        rgba(143,211,255,.42) 100%
-      );
-    background-size: 280% 100%;
-    background-position: 180% 50%;
-    -webkit-background-clip: text;
-    background-clip: text;
-    animation: infinity-light-flow 4.6s linear infinite;
-  }
-}
-
-@keyframes infinity-light-flow {
-  0% { background-position: 180% 50%; }
-  100% { background-position: -80% 50%; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .emblem-infinity {
-    animation: none;
-    background-position: 50% 50%;
-  }
-}
+.emblem-infinity.is-rendered + .emblem-infinity-fallback { display: none; }
 
 .emblem-axis { z-index: 4; }
 .nlos-emblem strong { z-index: 5; }

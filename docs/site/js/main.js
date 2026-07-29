@@ -603,4 +603,125 @@
     section.insertBefore(handoff, section.firstChild);
     previousLabel = currentLabel;
   });
+
+  /*
+   * v10.5 · 参数曲线无限标志
+   * Gerono 双纽线：x = A cos(t), y = B sin(2t)。
+   * t = π/2 与 3π/2 都回到中心，因此交点天然与十字、星点同心。
+   */
+  (function initInfinityEmblem() {
+    var canvas = document.querySelector("canvas.emblem-infinity");
+    if (!canvas || !canvas.getContext) return;
+    var context = canvas.getContext("2d");
+    if (!context) return;
+
+    var host = canvas.parentElement;
+    var dpr = 1;
+    var width = 0;
+    var height = 0;
+    var reduceMotion = REDUCE_QUERY.matches;
+    var twoPi = Math.PI * 2;
+
+    function resizeInfinityCanvas() {
+      var rect = host.getBoundingClientRect();
+      width = Math.max(1, rect.width);
+      height = Math.max(1, rect.height);
+      dpr = Math.min(window.devicePixelRatio || 1, 2);
+      canvas.width = Math.round(width * dpr);
+      canvas.height = Math.round(height * dpr);
+      canvas.style.width = width + "px";
+      canvas.style.height = height + "px";
+      context.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+
+    function pointAt(t) {
+      var amplitudeX = width * 0.41;
+      var amplitudeY = height * 0.19;
+      return {
+        x: width * 0.5 + amplitudeX * Math.cos(t),
+        y: height * 0.5 + amplitudeY * Math.sin(2 * t)
+      };
+    }
+
+    function strokeCurve() {
+      var samples = 320;
+      context.beginPath();
+      for (var i = 0; i <= samples; i += 1) {
+        var point = pointAt((i / samples) * twoPi);
+        if (i === 0) context.moveTo(point.x, point.y);
+        else context.lineTo(point.x, point.y);
+      }
+
+      context.save();
+      context.lineCap = "round";
+      context.lineJoin = "round";
+      context.strokeStyle = "rgba(92, 171, 224, 0.18)";
+      context.lineWidth = 8;
+      context.shadowColor = "rgba(127, 200, 255, 0.22)";
+      context.shadowBlur = 22;
+      context.stroke();
+      context.shadowBlur = 0;
+      context.strokeStyle = "rgba(174, 226, 255, 0.52)";
+      context.lineWidth = 1.35;
+      context.stroke();
+      context.restore();
+    }
+
+    function strokeFlow(time) {
+      var phase = reduceMotion ? Math.PI * 0.2 : (time * 0.0013) % twoPi;
+      var tailSegments = 62;
+      var step = 0.018;
+
+      context.save();
+      context.globalCompositeOperation = "lighter";
+      context.lineCap = "round";
+
+      for (var i = tailSegments; i >= 0; i -= 1) {
+        var t0 = phase - i * step;
+        var t1 = t0 + step * 1.45;
+        var start = pointAt(t0);
+        var end = pointAt(t1);
+        var progress = 1 - i / tailSegments;
+        var alpha = Math.pow(progress, 2.6);
+
+        context.beginPath();
+        context.moveTo(start.x, start.y);
+        context.lineTo(end.x, end.y);
+        context.strokeStyle =
+          "rgba(225, 247, 255, " + (0.08 + alpha * 0.9).toFixed(3) + ")";
+        context.lineWidth = 1.2 + alpha * 2.8;
+        context.shadowColor = "rgba(143, 211, 255, 0.9)";
+        context.shadowBlur = 4 + alpha * 18;
+        context.stroke();
+      }
+      context.restore();
+    }
+
+    function drawInfinity(time) {
+      context.clearRect(0, 0, width, height);
+      strokeCurve();
+      strokeFlow(time || 0);
+    }
+
+    function frame(time) {
+      drawInfinity(time);
+      if (!reduceMotion) window.requestAnimationFrame(frame);
+    }
+
+    resizeInfinityCanvas();
+    canvas.classList.add("is-rendered");
+    frame(0);
+
+    if ("ResizeObserver" in window) {
+      new ResizeObserver(function () {
+        resizeInfinityCanvas();
+        if (reduceMotion) drawInfinity(0);
+      }).observe(host);
+    } else {
+      window.addEventListener("resize", function () {
+        resizeInfinityCanvas();
+        if (reduceMotion) drawInfinity(0);
+      });
+    }
+  })();
 })();
