@@ -289,3 +289,5 @@ docs/
 6. 用结果决定是否接受 Tokio 基线以及是否需要自定义 scheduler layer。
 
 技术栈讨论已于[议题 30](../discussions/30-阶段B技术栈讨论.md)收束。编码立即从 Cargo workspace、`nlos-types`、`nlos-runtime` 与 Tokio Fiber scale PoC 开始；带 `PoC` 标记的组件在证据出来前不得升级为 `ACCEPTED` 或冻结公共 ABI。
+
+PoC 进度：[PoC-0001 Tokio Fiber Runtime 初始证据](../evidence/stage-b/poc-0001-tokio-fiber-runtime.md)已取得 `PARTIAL PASS`：2 个 worker 上 100K waiting Fiber 测试通过，最大 RSS 约 128.39 MiB；Operation callback fence、fairness、结构化 join/detach、record GC、CPU 分维计量和跨平台验证仍待完成。

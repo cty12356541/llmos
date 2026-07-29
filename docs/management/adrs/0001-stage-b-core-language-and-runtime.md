@@ -55,4 +55,4 @@
 
 ## 当前证据
 
-尚无仓库内 PoC 结果。外部项目说明只能支持候选合理性，不能替代本项目 benchmark。
+[PoC-0001 初始证据](../../evidence/stage-b/poc-0001-tokio-fiber-runtime.md)已经证明在当前 Apple Silicon/macOS 环境中，两个 Tokio worker 可承载并取消 100K 极简 waiting Fiber；测试二进制最大 RSS 约 128.39 MiB。该结果是 `PARTIAL PASS`：真实 Operation callback fence、CPU-heavy fairness、结构化 join/detach、record GC、分维 CPU 计量和跨平台复验仍未完成，因此本 ADR 继续保持 `POC`，尚未升级为 `ACCEPTED`。

@@ -56,6 +56,7 @@ pub struct FiberSpec {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ActivationUsage {
     pub active_cpu: Duration,
+    pub elapsed_wall: Duration,
     pub scheduler_wait: Duration,
     pub external_wait: Duration,
     pub backpressure_wait: Duration,
@@ -129,4 +130,12 @@ pub trait RuntimeAdapter: Send + Sync {
     /// Returns [`RuntimeError::InvalidGeneration`] when the handle is stale, or
     /// an availability error when the runtime cannot answer.
     fn inspect(&self, handle: FiberHandle) -> Result<FiberState, RuntimeError>;
+
+    /// Reads the current best-effort usage dimensions for a fiber generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RuntimeError::InvalidGeneration`] when the handle is stale, or
+    /// an availability error when the runtime cannot answer.
+    fn activation_usage(&self, handle: FiberHandle) -> Result<ActivationUsage, RuntimeError>;
 }

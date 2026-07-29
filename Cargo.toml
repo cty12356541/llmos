@@ -2,6 +2,7 @@
 members = [
     "crates/nlos-types",
     "crates/nlos-runtime",
+    "crates/nlos-runtime-tokio",
 ]
 resolver = "3"
 
@@ -18,3 +19,7 @@ unsafe_code = "forbid"
 [workspace.lints.clippy]
 all = "warn"
 pedantic = "warn"
+
+[workspace.dependencies]
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+tokio = { version = "1.48", features = ["macros", "rt-multi-thread", "sync", "time"] }
