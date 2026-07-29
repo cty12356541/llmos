@@ -760,7 +760,8 @@
       var leadTargets = Array.prototype.slice.call(
         pageLead.querySelectorAll(
           ".eyebrow, .title-line, .hero-desc, .page-desc, " +
-            ".hero-thesis, .hero-cta, .hero-meta, .page-toc, .flow"
+            ".hero-thesis, .hero-cta, .hero-meta, .page-toc, .flow, " +
+            ".nlos-emblem, .home-kicker, .home-philosophy, .home-enter"
         )
       );
       settleParentsInstant(leadTargets);

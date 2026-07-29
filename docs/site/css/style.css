@@ -3430,6 +3430,16 @@ html.reveal-all .reveal-group > * {
 }
 .home-enter:hover { color: var(--ink); transform: translateY(3px); }
 
+/*
+ * 首屏品牌内容必须在动效失效时仍然可见。GSAP 启动后以内联样式接管
+ * 入场过程；若选择器或外部脚本失效，这条规则阻止首页退化为空白。
+ */
+html.motion-js .home-hero .reveal {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+}
+
 /* 导航标志与首页标志共享“轴线 + 轨道”语言。 */
 .nav-brand .mark {
   position: relative;
