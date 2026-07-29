@@ -3664,46 +3664,6 @@ main > .section.light {
   gap: clamp(20px, 3vw, 36px);
 }
 
-.density-grid .density-extra {
-  transition:
-    opacity var(--dur-slow) var(--ease),
-    transform var(--dur-slow) var(--ease);
-}
-
-.density-grid.is-collapsed .density-extra {
-  display: none;
-}
-
-.density-toggle {
-  width: 100%;
-  margin-top: 22px;
-  padding: 15px 18px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  color: var(--text-2);
-  font: inherit;
-  text-align: left;
-  border: 1px solid rgba(174,226,255,.14);
-  border-radius: var(--radius-s);
-  background: linear-gradient(90deg, rgba(127,200,255,.035), transparent);
-  cursor: pointer;
-  transition: color var(--dur) var(--ease), border-color var(--dur) var(--ease);
-}
-
-.density-toggle:hover,
-.density-toggle[aria-expanded="true"] {
-  color: var(--ink);
-  border-color: rgba(235,249,255,.3);
-}
-
-.density-toggle small {
-  color: var(--text-3);
-  font-family: var(--font-mono);
-  font-size: .62rem;
-  letter-spacing: .12em;
-}
-
 /* 全局探索路径：页面级 L0，只显示系统位置，不重复页面正文。 */
 .system-route {
   display: grid;
@@ -3969,14 +3929,6 @@ main .callout::before { display: none !important; }
   box-shadow: none;
 }
 
-.density-toggle {
-  padding: 16px 0;
-  border: 0;
-  border-top: 1px solid rgba(174,226,255,.14);
-  border-radius: 0;
-  background: transparent;
-}
-
 /* 编辑式节标题：索引留在页边，主命题拥有独立阅读列。 */
 @media (min-width: 900px) {
   .sec-head {
@@ -3999,5 +3951,283 @@ main .callout::before { display: none !important; }
   .sec-head > p {
     grid-column: 2;
     grid-row: 2;
+  }
+}
+
+/* ============================================================
+   NLOS v10.6 · 开放式历史轨道
+   ============================================================ */
+
+/*
+ * 历史演进是连续映射，不是二维数据表。阶段节点给出纵向时间，
+ * 中间光路表达“旧计算范式 → NLOS 机制”，路线状态独立对齐。
+ */
+.history-flow {
+  --history-rail-x: 20px;
+  position: relative;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.history-flow::before {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  left: var(--history-rail-x);
+  top: 38px;
+  bottom: 38px;
+  width: 1px;
+  background:
+    linear-gradient(
+      180deg,
+      transparent,
+      rgba(143,211,255,.46) 8%,
+      rgba(143,211,255,.18) 54%,
+      rgba(143,211,255,.38) 92%,
+      transparent
+    );
+  box-shadow: 0 0 18px rgba(127,200,255,.16);
+}
+
+.history-step {
+  position: relative;
+  isolation: isolate;
+  display: grid;
+  grid-template-columns:
+    42px
+    minmax(160px, .68fr)
+    minmax(0, 2.2fr)
+    minmax(142px, auto);
+  column-gap: clamp(20px, 3vw, 44px);
+  align-items: center;
+  min-height: 116px;
+  padding: 24px 0;
+  border-bottom: 1px solid rgba(174,226,255,.12);
+}
+
+.history-step:first-child {
+  border-top: 1px solid rgba(174,226,255,.12);
+}
+
+.history-step::after {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: 8px 0;
+  opacity: 0;
+  background:
+    linear-gradient(90deg, rgba(127,200,255,.045), transparent 70%);
+  transition: opacity var(--dur-slow) var(--ease);
+  pointer-events: none;
+}
+
+.history-step:hover::after,
+.history-step.is-pivot::after {
+  opacity: 1;
+}
+
+.history-no {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: .6rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: .08em;
+  border: 1px solid rgba(174,226,255,.2);
+  border-radius: 50%;
+  background: rgba(3,7,16,.72);
+  box-shadow: 0 0 0 7px rgba(3,7,16,.82);
+  transition:
+    color var(--dur) var(--ease),
+    border-color var(--dur) var(--ease),
+    box-shadow var(--dur) var(--ease);
+}
+
+.history-step:hover .history-no,
+.history-step.is-pivot .history-no {
+  color: var(--ice-white);
+  border-color: rgba(174,226,255,.68);
+  box-shadow:
+    0 0 0 7px rgba(3,7,16,.82),
+    0 0 22px rgba(127,200,255,.22);
+}
+
+.history-era {
+  min-width: 0;
+}
+
+.history-era strong {
+  display: block;
+  color: var(--ice-white);
+  font-size: .98rem;
+  font-weight: 560;
+  line-height: 1.35;
+  letter-spacing: -.015em;
+}
+
+.history-era small {
+  display: block;
+  margin-top: 5px;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: .64rem;
+  font-weight: 400;
+  line-height: 1.35;
+  letter-spacing: .04em;
+}
+
+.history-mapping {
+  display: grid;
+  grid-template-columns:
+    minmax(120px, .72fr)
+    minmax(62px, .34fr)
+    minmax(220px, 1.34fr);
+  gap: clamp(14px, 2vw, 28px);
+  align-items: center;
+  min-width: 0;
+}
+
+.history-origin,
+.history-nlos {
+  min-width: 0;
+  text-wrap: pretty;
+}
+
+.history-origin {
+  color: var(--text-2);
+  font-size: .82rem;
+  line-height: 1.55;
+}
+
+.history-nlos {
+  color: var(--text);
+  font-size: .88rem;
+  font-weight: 540;
+  line-height: 1.55;
+}
+
+.history-arrow {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 1px;
+  background:
+    linear-gradient(
+      90deg,
+      rgba(143,211,255,.08),
+      rgba(143,211,255,.52) 72%,
+      rgba(235,249,255,.8)
+    );
+}
+
+.history-arrow::after {
+  content: "";
+  position: absolute;
+  right: -1px;
+  top: 50%;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--ice-white);
+  box-shadow:
+    0 0 6px rgba(235,249,255,.9),
+    0 0 14px rgba(127,200,255,.5);
+  transform: translate(50%, -50%);
+}
+
+.history-status {
+  justify-self: end;
+  max-width: 190px;
+  padding-left: 13px;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: .62rem;
+  line-height: 1.45;
+  text-align: left;
+  letter-spacing: .035em;
+  border-left: 1px solid rgba(174,226,255,.2);
+}
+
+.history-status.is-now {
+  color: var(--text-2);
+}
+
+.history-status.is-active {
+  color: var(--ink);
+  border-left-color: rgba(143,211,255,.68);
+  text-shadow: 0 0 12px rgba(127,200,255,.22);
+}
+
+@media (max-width: 1024px) {
+  .history-step {
+    grid-template-columns: 42px minmax(150px, .62fr) minmax(0, 1.6fr);
+    row-gap: 10px;
+  }
+
+  .history-no,
+  .history-era {
+    grid-row: 1 / span 2;
+  }
+
+  .history-mapping {
+    grid-column: 3;
+    grid-row: 1;
+  }
+
+  .history-status {
+    grid-column: 3;
+    grid-row: 2;
+    justify-self: start;
+    max-width: none;
+  }
+}
+
+@media (max-width: 720px) {
+  .history-flow {
+    --history-rail-x: 18px;
+  }
+
+  .history-step {
+    grid-template-columns: 38px minmax(0, 1fr);
+    column-gap: 18px;
+    row-gap: 15px;
+    min-height: 0;
+    padding: 27px 0;
+  }
+
+  .history-no {
+    grid-column: 1;
+    grid-row: 1 / span 3;
+    width: 36px;
+    height: 36px;
+    align-self: start;
+  }
+
+  .history-era {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .history-mapping {
+    grid-column: 2;
+    grid-row: 2;
+    grid-template-columns: 1fr;
+    gap: 11px;
+  }
+
+  .history-arrow {
+    width: min(110px, 48%);
+  }
+
+  .history-status {
+    grid-column: 2;
+    grid-row: 3;
+    justify-self: start;
   }
 }

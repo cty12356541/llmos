@@ -6,7 +6,7 @@
 <title>NLOS — Windows/macOS 级通用现代自然语言操作系统</title>
 <meta name="description" content="NLOS 是以自然语言为首要界面、同时支持 GUI、CLI 与 API 的通用现代系统级操作系统；统一管理 Application、Task、Process、Agent、Fiber、资源、数据和设备。">
 <script>document.documentElement.classList.add('motion-js');window.__nlosRevealFailsafe=setTimeout(function(){document.documentElement.classList.add('reveal-all')},2500);</script>
-<link rel="stylesheet" href="css/style.css?v=10.5.2">
+<link rel="stylesheet" href="css/style.css?v=10.6.0">
 <link rel="stylesheet" href="css/effects.css?v=10.1.0">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23e5f4ff'/%3E%3Ctext x='16' y='21' font-family='monospace' font-size='12' font-weight='700' text-anchor='middle' fill='%23030710'%3ENL%3C/text%3E%3C/svg%3E">
 </head>
@@ -70,38 +70,58 @@
       <h2>智能体系统正在重复<em>计算机发展史</em></h2>
       <p>智能体系统正在重新经历现代计算系统已经解决过的并发、隔离、资源、一致性、恢复和分布式问题。NLOS 优先迁移成熟 OS、runtime、数据库和分布式机制，再处理模型带来的语义断裂。</p>
     </div>
-    <div class="timeline reveal-group">
-      <div class="tl-row">
-        <div class="tl-era">专用机器<small>ENIAC</small></div>
-        <div class="tl-cell">为单一任务布线</div>
-        <div class="tl-cell"><b>提示词工程 + 硬编码 workflow</b></div>
-        <span class="tl-status now">当下</span>
-      </div>
-      <div class="tl-row">
-        <div class="tl-era">大型机批处理<small>Mainframe</small></div>
-        <div class="tl-cell">昂贵、集中、专家操作</div>
-        <div class="tl-cell"><b>贵模型 + 集中 API + 一次跑一个流程</b></div>
-        <span class="tl-status now">当下</span>
-      </div>
-      <div class="tl-row highlight">
-        <div class="tl-era">分时系统<small>CTSS / MULTICS / Unix</small></div>
-        <div class="tl-cell">稀缺资源多路复用</div>
-        <div class="tl-cell"><b>agent 内核：调度、上下文分页、IPC、权限</b></div>
-        <span class="tl-status gap">启动微内核 · 阶段 A</span>
-      </div>
-      <div class="tl-row">
-        <div class="tl-era">PC / 通用系统<small>Personal Computing</small></div>
-        <div class="tl-cell">资源便宜、通用抽象</div>
-        <div class="tl-cell"><b>Application / Task / Process / Agent / Fiber 通用执行层级</b></div>
-        <span class="tl-status now">单机应用平台 · 阶段 B</span>
-      </div>
-      <div class="tl-row">
-        <div class="tl-era">现代系统<small>Network / Cloud</small></div>
-        <div class="tl-cell">网络、分布式、云</div>
-        <div class="tl-cell"><b>Cell 分片 · lease/fence · 调度 · 一致性 · 弹性 · 可观测性</b></div>
-        <span class="tl-status now">分布式现代系统 · 阶段 C</span>
-      </div>
-    </div>
+    <ol class="history-flow reveal-group" aria-label="计算系统发展阶段与 NLOS 演进映射">
+      <li class="history-step">
+        <span class="history-no" aria-hidden="true">01</span>
+        <div class="history-era"><strong>专用机器</strong><small>ENIAC</small></div>
+        <div class="history-mapping">
+          <span class="history-origin">为单一任务布线</span>
+          <span class="history-arrow" aria-hidden="true"></span>
+          <strong class="history-nlos">提示词工程 + 硬编码 workflow</strong>
+        </div>
+        <span class="history-status is-now">当下</span>
+      </li>
+      <li class="history-step">
+        <span class="history-no" aria-hidden="true">02</span>
+        <div class="history-era"><strong>大型机批处理</strong><small>Mainframe</small></div>
+        <div class="history-mapping">
+          <span class="history-origin">昂贵、集中、专家操作</span>
+          <span class="history-arrow" aria-hidden="true"></span>
+          <strong class="history-nlos">贵模型 + 集中 API + 一次跑一个流程</strong>
+        </div>
+        <span class="history-status is-now">当下</span>
+      </li>
+      <li class="history-step is-pivot">
+        <span class="history-no" aria-hidden="true">03</span>
+        <div class="history-era"><strong>分时系统</strong><small>CTSS / MULTICS / Unix</small></div>
+        <div class="history-mapping">
+          <span class="history-origin">稀缺资源多路复用</span>
+          <span class="history-arrow" aria-hidden="true"></span>
+          <strong class="history-nlos">Agent 内核：调度、上下文分页、IPC、权限</strong>
+        </div>
+        <span class="history-status is-active">启动微内核 · 阶段 A</span>
+      </li>
+      <li class="history-step">
+        <span class="history-no" aria-hidden="true">04</span>
+        <div class="history-era"><strong>PC / 通用系统</strong><small>Personal Computing</small></div>
+        <div class="history-mapping">
+          <span class="history-origin">资源便宜、通用抽象</span>
+          <span class="history-arrow" aria-hidden="true"></span>
+          <strong class="history-nlos">Application / Task / Process / Agent / Fiber 通用执行层级</strong>
+        </div>
+        <span class="history-status">单机应用平台 · 阶段 B</span>
+      </li>
+      <li class="history-step">
+        <span class="history-no" aria-hidden="true">05</span>
+        <div class="history-era"><strong>现代系统</strong><small>Network / Cloud</small></div>
+        <div class="history-mapping">
+          <span class="history-origin">网络、分布式、云</span>
+          <span class="history-arrow" aria-hidden="true"></span>
+          <strong class="history-nlos">Cell 分片 · lease/fence · 调度 · 一致性 · 弹性 · 可观测性</strong>
+        </div>
+        <span class="history-status">分布式现代系统 · 阶段 C</span>
+      </li>
+    </ol>
     <div class="tl-notes reveal-group">
       <div class="tl-note">
         <h4>抽象比稀缺长寿</h4>
@@ -300,7 +320,7 @@
   <div class="footer-mark" aria-hidden="true">NLOS</div>
 </footer>
 
-<script src="js/main.js?v=10.5.1"></script>
+<script src="js/main.js?v=10.6.0"></script>
 <!-- ================= v6 极光与交互引擎（本地化 vendor） ================= -->
 <script src="vendor/three.min.js?v=6.0.1"></script>
 <script src="vendor/gsap.min.js"></script>

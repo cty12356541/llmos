@@ -508,46 +508,6 @@
     updateSpy();
   }
 
-  /* v10 · 高密度内容默认只展示核心层，其余语料进入可逆的详细层。 */
-  document
-    .querySelectorAll(
-      ".autopsy-grid, .budget-grid, .decision-grid, .abs-grid, .sys-grid, " +
-        ".grid-3, .grid-4, .tier-ladder, .tiers, .principles, .stats, " +
-        ".timeline, .tl-notes"
-    )
-    .forEach(function (grid, gridIndex) {
-      var items = Array.prototype.filter.call(grid.children, function (child) {
-        return child.nodeType === 1;
-      });
-      var visibleCount = grid.classList.contains("stats") ? 4 : 3;
-      if (items.length <= visibleCount) return;
-
-      var hiddenCount = items.length - visibleCount;
-      items.slice(visibleCount).forEach(function (item) {
-        item.classList.add("density-extra");
-      });
-      grid.classList.add("density-grid", "is-collapsed");
-      grid.id = grid.id || "density-grid-" + gridIndex;
-
-      var toggle = document.createElement("button");
-      toggle.type = "button";
-      toggle.className = "density-toggle";
-      toggle.setAttribute("aria-controls", grid.id);
-      toggle.setAttribute("aria-expanded", "false");
-      toggle.innerHTML =
-        "<span>展开详细层</span><small>+" + hiddenCount + " ITEMS</small>";
-
-      toggle.addEventListener("click", function () {
-        var expanded = toggle.getAttribute("aria-expanded") === "true";
-        toggle.setAttribute("aria-expanded", String(!expanded));
-        grid.classList.toggle("is-collapsed", expanded);
-        toggle.querySelector("span").textContent = expanded
-          ? "展开详细层"
-          : "收起详细层";
-      });
-      grid.insertAdjacentElement("afterend", toggle);
-    });
-
   /* v10.1 · 七页共享一条探索路径，当前位置始终可见。 */
   var pageHead = document.querySelector(".page-head");
   if (pageHead) {
