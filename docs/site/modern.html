@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>现代系统 · NLOS — 自然语言操作系统</title>
-<meta name="description" content="NLOS 架构设计总纲 v0.2 · 现代系统：namespace、蜂窝式分布式内核、网络协议栈、弹性多租户、分层可观测性，全部定案。">
+<meta name="description" content="NLOS 架构设计总纲 v0.5 · 现代系统：分层调度、资源管理、lease/fence、一致性、服务治理、可观测性和 Windows/macOS 式控制。">
 <script>document.documentElement.classList.add('motion-js');window.__nlosRevealFailsafe=setTimeout(function(){document.documentElement.classList.add('reveal-all')},2500);</script>
 <link rel="stylesheet" href="css/style.css?v=7.0.0">
 <link rel="stylesheet" href="css/effects.css?v=7.0.0">
@@ -32,7 +32,7 @@
       <a href="verification.html">支撑与验证</a>
       <a href="modern.html" aria-current="page">现代系统</a>
     </div>
-    <span class="nav-badge"><span class="b-full">v0.2 · 18 议题全部定案</span><span class="b-short">v0.2</span></span>
+    <span class="nav-badge"><span class="b-full">v0.5 · 当前规范 · 阶段 B 启动</span><span class="b-short">v0.5</span></span>
   </div>
 </nav>
 
@@ -42,7 +42,7 @@
 <header class="page-head container">
   <span class="eyebrow reveal">Part III · 现代系统 · Modern</span>
   <h1 class="page-title reveal"><span class="title-line">现代系统：</span><span class="title-line accent">通用内核之上</span></h1>
-  <p class="page-desc reveal">通用性定案之后，主线第二步：namespace 收敛全部权限语义，蜂窝拓扑解决分布式，协议栈保持可替换，弹性多租户与分层可观测性收官——新抽象不增加概念，反而收敛旧概念。</p>
+  <p class="page-desc reveal">NLOS 不重新发明并发和分布式历史：直接迁移现代 OS、runtime、数据库与云系统的调度、隔离、WAL、MVCC、lease/fence、backpressure、bulkhead 和可观测性，再对 Context、模型槽和语义状态做必要适配。</p>
   <nav class="page-toc reveal" aria-label="本页目录">
     <a href="#namespace">namespace</a>
     <a href="#distributed">分布式内核</a>
@@ -59,11 +59,11 @@
     <div class="sec-head reveal">
       <span class="eyebrow">Namespace · 现代系统 1/5<span class="sec-no">/ 01</span></span>
       <h2>命名即权限——agent 诞生在一个<em>恰好和权限一样大的世界</em></h2>
-      <p>Plan 9 遗产：每进程私有名字空间，绑定即能力。namespace 不新增抽象，是能力表的泛化；七项已定决策在它之下收敛——好架构的标志：新抽象不增加概念，反而收敛旧概念。</p>
+      <p>Plan 9 遗产：每 Process 私有名字空间，发现与授权分离。namespace 负责“在当前域中是否可寻址、可行动”；它不能保证模型不会从预训练知识中想到某个外部对象，也不能代替 Capability 和真实 egress enforcement。</p>
     </div>
     <div class="ns-quote reveal">
-      <p class="ns-quote-line">不可命名 <span>=</span> 不可想象</p>
-      <p class="ns-quote-sub">namespace 的内容会被投射进 agent 的上下文窗口——工具列表就是它的世界观。面对注入指令「访问这个 URL」，namespace 里没有网络工具的 agent 失败的原因不是调用被拦截，而是<b style="color:var(--text);">它根本不知道这件事可做</b>。防御从拦截行为前移为限制想象——提示注入防御的最深一层，比污点、比 Policy 校验都靠前。</p>
+      <p class="ns-quote-line">不可命名 <span>=</span> 在该 Namespace 中不可寻址、不可行动</p>
+      <p class="ns-quote-sub">渐进式披露只向 Agent 暴露当前任务需要的目录与 handle；真正安全仍由 Capability、凭证托管、网络策略和 reference monitor 同步强制。上下文缩减降低攻击面，但不被宣传为“控制模型想象”。</p>
     </div>
     <div class="split-2 reveal-group" style="margin-top: var(--sp-7);">
       <div class="card">
@@ -444,7 +444,7 @@
         <span class="p-no">02</span>
         <div>
           <h4>Multics 警惕：抽象少而准</h4>
-          <p>不自上而下设计完美内核。系统调用超过约 30 个就是过度设计（当前 <b>22 个，通过测试</b>）；进程类型只有一种（LLM 可选，议题 13）。赢的那个是抽象最简加生态位最对的。</p>
+          <p>不以 syscall 数量替代正确性。当前是 27-entry 基础 KABI candidate，加可协商的 RESOURCE_ESCROW 扩展；只有纵切面、兼容性和 conformance evidence 完成后才能冻结。</p>
         </div>
       </div>
       <div class="card principle">
@@ -458,7 +458,7 @@
         <span class="p-no">04</span>
         <div>
           <h4>抽象比稀缺长寿</h4>
-          <p>今天为稀缺设计的抽象，在富足时代仍是地基。进程 / 虚存 / 文件如此，agent / 上下文 / 预算亦然——规模是压力测试，通用才是宗旨。</p>
+          <p>今天为稀缺设计的抽象，在富足时代仍是地基。Application / Process / Fiber、working set、Capability 和 ResourceGroup 如此——规模是压力测试，通用现代 NLOS 才是宗旨。</p>
         </div>
       </div>
     </div>
@@ -488,8 +488,8 @@
       <span class="nav-brand"><span class="mark" aria-hidden="true">NL</span>NLOS</span>
       <span>· 自然语言操作系统</span>
     </div>
-    <span>架构设计总纲 v0.2 · 2026-07-23 · 通用系统 → 现代系统</span>
-    <span>来源：docs/design/02-架构设计总纲-v0.2.md（合成自 docs/discussions/ 议题 1–18，全部定案）</span>
+    <span>架构设计总纲 v0.5 · 2026-07-29 · 现代系统机制迁移</span>
+    <span>当前权威：docs/design/06-架构设计总纲-v0.5.md · 分布式能力为规范目标，尚待实现证据</span>
   </div>
   <div class="footer-mark" aria-hidden="true">NLOS</div>
 </footer>

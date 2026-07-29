@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>通用内核 · NLOS — 自然语言操作系统</title>
-<meta name="description" content="NLOS 架构设计总纲 v0.2 · 通用内核：三层架构、8 抽象 6 族、约 22 个系统调用、ELF 三方契约、16/16 通用性重构测试。">
+<meta name="description" content="NLOS 架构设计总纲 v0.5 · 通用系统权威：Application、Process、AgentInstance、ExecutionFiber、Capability、Resource 与 KABI/SABI。">
 <script>document.documentElement.classList.add('motion-js');window.__nlosRevealFailsafe=setTimeout(function(){document.documentElement.classList.add('reveal-all')},2500);</script>
 <link rel="stylesheet" href="css/style.css?v=7.0.0">
 <link rel="stylesheet" href="css/effects.css?v=7.0.0">
@@ -32,7 +32,7 @@
       <a href="verification.html">支撑与验证</a>
       <a href="modern.html">现代系统</a>
     </div>
-    <span class="nav-badge"><span class="b-full">v0.2 · 18 议题全部定案</span><span class="b-short">v0.2</span></span>
+    <span class="nav-badge"><span class="b-full">v0.5 · 当前规范 · 阶段 B 启动</span><span class="b-short">v0.5</span></span>
   </div>
 </nav>
 
@@ -41,11 +41,11 @@
 <!-- ================= 页头 ================= -->
 <header class="page-head container">
   <span class="eyebrow reveal">Part I · 通用系统 · Kernel</span>
-  <h1 class="page-title reveal"><span class="title-line">通用内核：</span><span class="title-line accent">最小正确抽象</span></h1>
-  <p class="page-desc reveal">主线第一题：先证明这是一套「通用系统」。陷入层物理位置、8 个抽象、约 22 个系统调用、ELF 三方契约，最后用可检验的判据压测通用性——16/16 重构测试通过，无一抽象删除。</p>
+  <h1 class="page-title reveal"><span class="title-line">通用系统权威：</span><span class="title-line accent">边界、对象与执行</span></h1>
+  <p class="page-desc reveal">微内核只是完整 NLOS 的启动底座。v0.5 将 Application、Task、Process、AgentInstance、ExecutionFiber、Artifact、Resource 与 Device 分离，并以 KABI/SABI、Capability、generation 和 Receipt 建立不可绕过边界。</p>
   <nav class="page-toc reveal" aria-label="本页目录">
     <a href="#arch">三层架构</a>
-    <a href="#abstractions">八大抽象</a>
+    <a href="#abstractions">系统对象</a>
     <a href="#syscalls">系统调用</a>
     <a href="#elf">ELF</a>
     <a href="#universality">通用性论证</a>
@@ -176,13 +176,13 @@
   </div>
 </section>
 
-<!-- ================= 2. 八大抽象 ================= -->
+<!-- ================= 2. 系统对象 ================= -->
 <section class="section" id="abstractions">
   <div class="container">
     <div class="sec-head reveal">
       <span class="eyebrow">Abstractions<span class="sec-no">/ 02</span></span>
-      <h2>最小抽象集：<em>8 个抽象，6 族</em></h2>
-      <p>通用性压测后无一删除（议题 13）：Agent/Context/Tool/Message/Topic/Blackboard 是通用核心；Budget/Policy 是负载无关的基础设施——电力计量类比，<b style="color:var(--white);">是设施不是灵魂</b>。治理语义已归位为可插拔用户态模块，不再占中心。</p>
+      <h2>对象必须分离：<em>应用、执行、数据、资源与设备</em></h2>
+      <p>v0.5 不再让 Agent 一词同时承担应用、包、身份和进程。完整层级是 Application → Process → AgentInstance → ExecutionFiber/Activation；Task 是持久义务，Artifact 是数据本体，Context 是派生工作集，ResourceGroup 与 ResourceAccount 分别负责物理隔离和账本归属。</p>
     </div>
     <div class="abs-grid reveal-group">
       <div class="card abs-card">
@@ -246,7 +246,7 @@
           <span class="abs-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg></span>
           <div><span class="abs-name">Policy</span><span class="abs-unix">安全族 · Unix: <b>用户/权限</b></span></div>
         </div>
-        <p class="abs-duty">权限 + 污点 + 自我修改的版本门控。能力表 = fd 表；在 v0.2 中泛化为 namespace 绑定表（议题 14）。</p>
+        <p class="abs-duty">权限、Namespace、generation 与版本门控。Capability 类似不可伪造 handle；发现、命名和授权必须分离。</p>
         <p class="abs-kernel"><b>内核</b>　陷入点强制校验 · 污点传播 · 版本门控 · 衰减机械校验</p>
       </div>
     </div>
@@ -262,8 +262,8 @@
   <div class="container">
     <div class="sec-head reveal">
       <span class="eyebrow">Syscalls<span class="sec-no">/ 03</span></span>
-      <h2>约 <em>22 个系统调用</em>，通过 Multics 测试</h2>
-      <p>判定标准：系统调用超过约 30 个就是过度设计。v0.2 语义修订：<b style="color:var(--light-text);">llm_call 推广为计量调用</b>——流式 realtime 是保持打开的长陷阱，驱动按 chunk 增量报量、内核增量扣减、耗尽掐断；请求-响应只是 chunk = 1 的特例（议题 13）。</p>
+      <h2><em>27-entry KABI candidate</em>，先纵切面验证再冻结</h2>
+      <p>v0.5 当前是 <b style="color:var(--light-text);">27-entry KABI candidate</b>：Process、对象映射、Namespace/Handle、generic async I/O、Resource 与可信计量。数量尚未冻结；Topic、Blackboard、Package、Semantic 与桌面属于稳定系统服务，不应被硬塞进微内核。</p>
     </div>
     <div class="sys-grid reveal-group">
       <div class="card sys-group">
@@ -322,7 +322,7 @@
     <div class="sec-head reveal">
       <span class="eyebrow">Executable Format<span class="sec-no">/ 04</span></span>
       <h2>ELF：不是文件格式，是<em>三方契约</em></h2>
-      <p>内核加载器 × agent 作者 × 工具/skills 生态。通用化的前提是格式标准化——谁定义了 agent 的 ELF，谁卡住生态位。定案形态：OCI 分层镜像 + 声明式 manifest（k8s 风格），接口段内嵌 A2A Agent Card，工具依赖用 MCP URI。v0.2 修订：<b style="color:var(--light-text);">runtime.model 声明变为可选</b>（议题 13）；permissions 段 = 声明式 namespace 绑定请求清单（议题 14）。</p>
+      <p>v0.5 将 Package、Installation、Application、Executable 与 Process 分离。Package 是不可变签名制品，Application 是安装、授权、更新和用户数据归属单位；MCP、A2A、浏览器和本地 CLI 都只是可替换 Driver adapter，不能成为系统身份。</p>
     </div>
     <div class="elf-wrap">
       <div class="codeblock reveal">
@@ -476,8 +476,8 @@
         <p class="sub">步模型不破，推广为计量模型：请求-响应 = chunk = 1 的特例。max_tokens 硬顶同步推广为「累计计量上限」。</p>
       </div>
       <div class="card">
-        <h4>裂缝 B 修复 · Agent = 通用进程，LLM 可选</h4>
-        <p>纯代码 worker（数据清洗、格式转换）不该被迫过 LLM。<b>修复：LLM 能力是一种可选 handle</b>——像网络能力可选一样；无 LLM handle 的 agent 不过 llm_call 陷阱，预算照记。Unix 用单一进程抽象跑 cat 和 Emacs；我们用单一 Agent 抽象跑纯代码 worker 和 LLM agent。</p>
+        <h4>裂缝 B 修复 · Process 与 AgentRole/AgentInstance 分离</h4>
+        <p>纯代码 worker 不应被迫伪装成 Agent，也不应被迫调用 LLM。Process 是宿主强制执行的资源、故障和生命周期单位；AgentRole 是语义角色，AgentInstance 是 thread/actor-like 执行身份，LLM 只是可选 Device capability。</p>
         <p class="sub">通用性的代价可负担：不变量（能力 + 预算）永不旁路；陷阱成本相对 LLM 延迟是噪声，通用性买得起。</p>
       </div>
     </div>
@@ -507,8 +507,8 @@
       <span class="nav-brand"><span class="mark" aria-hidden="true">NL</span>NLOS</span>
       <span>· 自然语言操作系统</span>
     </div>
-    <span>架构设计总纲 v0.2 · 2026-07-23 · 通用系统 → 现代系统</span>
-    <span>来源：docs/design/02-架构设计总纲-v0.2.md（合成自 docs/discussions/ 议题 1–18，全部定案）</span>
+    <span>架构设计总纲 v0.5 · 2026-07-29 · 通用系统权威与阶段 B</span>
+    <span>当前权威：docs/design/06-架构设计总纲-v0.5.md · 候选 KABI 尚待纵切面验证</span>
   </div>
   <div class="footer-mark" aria-hidden="true">NLOS</div>
 </footer>

@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>支撑设施与宗旨验证 · NLOS — 自然语言操作系统</title>
-<meta name="description" content="NLOS 架构设计总纲 v0.2 · 支撑与验证：Budget 经济、随机性管理、安全授权三级签字链，与六大死因的逐一闭合、陷阱层吞吐算术。">
+<meta name="description" content="NLOS 架构设计总纲 v0.5 · 支撑与验证：Resource、durability、任务隔离、取消、副作用 fencing、语义一致性和 Evidence 分级。">
 <script>document.documentElement.classList.add('motion-js');window.__nlosRevealFailsafe=setTimeout(function(){document.documentElement.classList.add('reveal-all')},2500);</script>
 <link rel="stylesheet" href="css/style.css?v=7.0.0">
 <link rel="stylesheet" href="css/effects.css?v=7.0.0">
@@ -32,7 +32,7 @@
       <a href="verification.html" aria-current="page">支撑与验证</a>
       <a href="modern.html">现代系统</a>
     </div>
-    <span class="nav-badge"><span class="b-full">v0.2 · 18 议题全部定案</span><span class="b-short">v0.2</span></span>
+    <span class="nav-badge"><span class="b-full">v0.5 · 当前规范 · 阶段 B 启动</span><span class="b-short">v0.5</span></span>
   </div>
 </nav>
 
@@ -41,8 +41,8 @@
 <!-- ================= 页头 ================= -->
 <header class="page-head container">
   <span class="eyebrow reveal">Part II · 通用系统 · Infrastructure &amp; Validation</span>
-  <h1 class="page-title reveal"><span class="title-line">支撑设施与</span><span class="title-line accent">宗旨验证</span></h1>
-  <p class="page-desc reveal">Budget、随机性管理、安全授权是负载无关的基础设施——是设施不是灵魂。随后用三道程序回查宗旨：六大死因逐一闭合、陷阱层吞吐算术推演、失败场景走查。</p>
+  <h1 class="page-title reveal"><span class="title-line">系统不变量与</span><span class="title-line accent">证据边界</span></h1>
+  <p class="page-desc reveal">v0.5 将 ResourceGroup 与 ResourceAccount、设计与事实、任务候选与唯一提交分离。这里展示的是当前规范和局部原型证据；未完成真实 provider、故障注入、100K Fiber 和分布式验证前，不宣称生产闭合。</p>
   <nav class="page-toc reveal" aria-label="本页目录">
     <a href="#budget">Budget</a>
     <a href="#randomness">随机性管理</a>
@@ -384,8 +384,8 @@
       <span class="nav-brand"><span class="mark" aria-hidden="true">NL</span>NLOS</span>
       <span>· 自然语言操作系统</span>
     </div>
-    <span>架构设计总纲 v0.2 · 2026-07-23 · 通用系统 → 现代系统</span>
-    <span>来源：docs/design/02-架构设计总纲-v0.2.md（合成自 docs/discussions/ 议题 1–18，全部定案）</span>
+    <span>架构设计总纲 v0.5 · 2026-07-29 · 不变量与证据边界</span>
+    <span>当前权威：docs/design/06-架构设计总纲-v0.5.md · 原型证据不得外推为生产保证</span>
   </div>
   <div class="footer-mark" aria-hidden="true">NLOS</div>
 </footer>

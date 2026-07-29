@@ -8,6 +8,7 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+target/
 
 # 环境密钥（绝不入库）
 .env

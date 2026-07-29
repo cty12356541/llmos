@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>NLOS — 自然语言操作系统 · 架构设计总纲 v0.2</title>
-<meta name="description" content="自然语言操作系统（NLOS）是面向智能体时代的通用系统架构，将模型、工具、记忆与通信统一为可调度、可计量、可授权的系统资源。">
+<title>NLOS — Windows/macOS 级通用现代自然语言操作系统</title>
+<meta name="description" content="NLOS 是以自然语言为首要界面、同时支持 GUI、CLI 与 API 的通用现代系统级操作系统；统一管理 Application、Task、Process、Agent、Fiber、资源、数据和设备。">
 <script>document.documentElement.classList.add('motion-js');window.__nlosRevealFailsafe=setTimeout(function(){document.documentElement.classList.add('reveal-all')},2500);</script>
 <link rel="stylesheet" href="css/style.css?v=7.0.0">
 <link rel="stylesheet" href="css/effects.css?v=7.0.0">
@@ -32,7 +32,7 @@
       <a href="verification.html">支撑与验证</a>
       <a href="modern.html">现代系统</a>
     </div>
-    <span class="nav-badge"><span class="b-full">v0.2 · 18 议题全部定案</span><span class="b-short">v0.2</span></span>
+    <span class="nav-badge"><span class="b-full">v0.5 · 当前规范 · 阶段 B 启动</span><span class="b-short">v0.5</span></span>
   </div>
 </nav>
 
@@ -40,24 +40,24 @@
 
 <!-- ================= 1. Hero ================= -->
 <header class="hero container">
-  <span class="eyebrow reveal">NLOS · Natural Language OS Kernel · 架构设计总纲 v0.2 · 通用系统 → 现代系统</span>
+  <span class="eyebrow reveal">NLOS · Natural Language Operating System · 架构设计总纲 v0.5</span>
   <h1 class="hero-title reveal"><span class="title-line">自然语言</span><span class="title-line accent">操作系统</span></h1>
   <p class="hero-desc reveal">
-    自然语言操作系统（NLOS）是面向智能体时代的通用系统架构。它将模型、工具、记忆与通信
-    统一为可调度、可计量、可授权的系统资源，以微内核提供进程、上下文、IPC、预算与权限等
-    最小抽象，让不同框架和智能体能够在同一运行环境中安全组合、弹性扩展。
+    NLOS 的终局是达到 Windows/macOS 级别的通用、现代、系统级自然语言操作系统。
+    用户从顶层表达目标，系统自动生成 TaskPlan、拆分任务、按需物化并调度海量 Agent；
+    同时保留从 Application、Task、Process、Agent 到 Fiber、资源和 Operation 的逐层手动控制。
   </p>
-  <p class="hero-thesis reveal"><span class="hl">LLM 调用</span><span class="op">+</span><span class="hl">工具调用</span><span class="op">=</span>系统调用</p>
-  <p class="hero-thesis sub reveal">规模是压力测试，通用才是宗旨</p>
+  <p class="hero-thesis reveal"><span class="hl">自然语言顶层调度</span><span class="op">+</span><span class="hl">现代系统控制</span><span class="op">=</span>通用 NLOS</p>
+  <p class="hero-thesis sub reveal">规模是压力测试，通用系统与完整用户体验才是宗旨</p>
   <div class="hero-cta reveal">
     <a class="btn btn-primary" href="#history">阅读设计论证</a>
     <a class="btn btn-ghost" href="kernel.html">直达通用内核</a>
   </div>
   <div class="hero-meta reveal">
-    <span><i aria-hidden="true"></i>微内核路线</span>
-    <span><i aria-hidden="true"></i><span data-count="8">0</span> 抽象 / <span data-count="6">0</span> 族</span>
-    <span><i aria-hidden="true"></i>约 <span data-count="22">0</span> 个系统调用</span>
-    <span><i aria-hidden="true"></i>议题 1–<span data-count="18">0</span> 全部定案 · 2026-07-23</span>
+    <span><i aria-hidden="true"></i>Windows/macOS 级终局</span>
+    <span><i aria-hidden="true"></i>Application → Process → Agent → Fiber</span>
+    <span><i aria-hidden="true"></i>27-entry KABI candidate</span>
+    <span><i aria-hidden="true"></i>设计已规格化 · 实现与证据进行中</span>
   </div>
 
   <!-- 细线流场：一切跨边界调用经陷入层汇聚（LangChain 签名线条语言） -->
@@ -106,7 +106,7 @@
     <div class="sec-head reveal">
       <span class="eyebrow">History<span class="sec-no">/ 01</span></span>
       <h2>智能体系统正在重复<em>计算机发展史</em></h2>
-      <p>每个时代的统治 OS 都长在新硬件类别上。agent 时代的「硬件」是 GPU 集群加基础模型，其 OS 按历史规律必然出现。v0.2 沿这条主线走完了两步：通用系统定案，现代系统五大块定案。</p>
+      <p>智能体系统正在重新经历现代计算系统已经解决过的并发、隔离、资源、一致性、恢复和分布式问题。NLOS 优先迁移成熟 OS、runtime、数据库和分布式机制，再处理模型带来的语义断裂。</p>
     </div>
     <div class="timeline reveal-group">
       <div class="tl-row">
@@ -125,19 +125,19 @@
         <div class="tl-era">分时系统<small>CTSS / MULTICS / Unix</small></div>
         <div class="tl-cell">稀缺资源多路复用</div>
         <div class="tl-cell"><b>agent 内核：调度、上下文分页、IPC、权限</b></div>
-        <span class="tl-status gap">通用内核 · 定案 ← NLOS</span>
+        <span class="tl-status gap">启动微内核 · 阶段 A</span>
       </div>
       <div class="tl-row">
         <div class="tl-era">PC / 通用系统<small>Personal Computing</small></div>
         <div class="tl-cell">资源便宜、通用抽象</div>
-        <div class="tl-cell"><b>通用进程抽象：LLM 可选，16 模式全部可重构</b></div>
-        <span class="tl-status now">v0.2 · 议题 13 定案</span>
+        <div class="tl-cell"><b>Application / Task / Process / Agent / Fiber 通用执行层级</b></div>
+        <span class="tl-status now">单机应用平台 · 阶段 B</span>
       </div>
       <div class="tl-row">
         <div class="tl-era">现代系统<small>Network / Cloud</small></div>
         <div class="tl-cell">网络、分布式、云</div>
-        <div class="tl-cell"><b>namespace · 分布式内核 · 协议栈 · 弹性 · 可观测性</b></div>
-        <span class="tl-status now">v0.2 · 议题 14–18 定案</span>
+        <div class="tl-cell"><b>Cell 分片 · lease/fence · 调度 · 一致性 · 弹性 · 可观测性</b></div>
+        <span class="tl-status now">分布式现代系统 · 阶段 C</span>
       </div>
     </div>
     <div class="tl-notes reveal-group">
@@ -147,7 +147,7 @@
       </div>
       <div class="tl-note">
         <h4>harness 派在重建 Unix 用户态</h4>
-        <p>agent = 进程，AGENTS.md = rc 配置，skills = PATH 可执行程序，MCP = 设备文件，A2A = socket。但没有人在造内核。</p>
+        <p>Agent 不再被粗略等同为进程：Application 包含 Process，Process 承载 AgentInstance，AgentInstance 运行 Fiber；真正隔离仍由 Process/IsolationUnit 提供。</p>
       </div>
       <div class="tl-note warn">
         <h4>历史警示：Multics 教训</h4>
@@ -210,7 +210,7 @@
     <div class="sec-head reveal">
       <span class="eyebrow">Direction<span class="sec-no">/ 03</span></span>
       <h2>规模是压力测试，<em>通用才是宗旨</em></h2>
-      <p>v0.2 的方向修正：规模不是目标，是检验手段。主线因此排成两步——先证明通用，再展开现代。</p>
+      <p>v0.5 的方向已经明确：规模不是产品定义，而是系统抽象的压力测试。主线从启动微内核进入单机通用应用平台，再并行扩展分布式现代系统与完整自然语言桌面。</p>
     </div>
     <figure class="idea-map reveal" data-idea-map aria-labelledby="overview-map-title">
       <div class="idea-map-heading">
@@ -269,26 +269,26 @@
   <div class="container">
     <div class="sec-head reveal">
       <span class="eyebrow">Reading Path<span class="sec-no">/ 04</span></span>
-      <h2>阅读路线：<em>通用系统 → 现代系统</em></h2>
-      <p>总纲按主线拆为三个内容页，按顺序阅读即可复现完整论证链。</p>
+      <h2>阅读路线：<em>完整 NLOS → 权威内核 → 现代系统</em></h2>
+      <p>站点按当前 v0.5 重新解释原有内容；规范、阶段管理和证据状态以仓库文档为最终权威。</p>
     </div>
     <div class="nav-cards reveal-group">
       <a class="card nav-card" href="kernel.html">
         <span class="nc-no">Part I · 通用系统</span>
         <h3>通用内核</h3>
-        <p>三层架构与陷入层、8 抽象 6 族、约 22 个系统调用、ELF 三方契约，以及 16/16 重构测试的通用性论证。</p>
+        <p>Application、Process、AgentInstance、ExecutionFiber 与 Activation；Capability、Namespace、Resource、KABI/SABI 和不可绕过执行边界。</p>
         <span class="nc-arrow">进入<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></span>
       </a>
       <a class="card nav-card" href="verification.html">
         <span class="nc-no">Part II · 通用系统</span>
         <h3>支撑设施与宗旨验证</h3>
-        <p>Budget 经济、随机性管理、衰减授权三级签字链——负载无关的基础设施；随后六大死因逐一闭合、陷阱吞吐算术。</p>
+        <p>ResourceGroup 与 ResourceAccount 分离、durability、取消与副作用 fencing、任务隔离、语义一致性，以及设计—实现—证据分级。</p>
         <span class="nc-arrow">进入<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></span>
       </a>
       <a class="card nav-card" href="modern.html">
         <span class="nc-no">Part III · 现代系统</span>
         <h3>现代系统</h3>
-        <p>namespace 收敛权限语义、蜂窝式分布式内核、可替换协议栈、弹性多租户、分层可观测性与四条设计原则。</p>
+        <p>Global/Cell/Worker 分层调度、分布式 lease/fence、Context 工作集、服务治理、手动控制和现代系统机制迁移。</p>
         <span class="nc-arrow">进入<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></span>
       </a>
     </div>
@@ -314,8 +314,8 @@
       <span class="nav-brand"><span class="mark" aria-hidden="true">NL</span>NLOS</span>
       <span>· 自然语言操作系统</span>
     </div>
-    <span>架构设计总纲 v0.2 · 2026-07-23 · 通用系统 → 现代系统</span>
-    <span>来源：docs/design/02-架构设计总纲-v0.2.md（合成自 docs/discussions/ 议题 1–18，全部定案）</span>
+    <span>架构设计总纲 v0.5 · 2026-07-29 · Windows/macOS 级通用现代 NLOS</span>
+    <span>当前权威：docs/design/06-架构设计总纲-v0.5.md · 设计已规格化，阶段 B 实现与验证进行中</span>
   </div>
   <div class="footer-mark" aria-hidden="true">NLOS</div>
 </footer>
