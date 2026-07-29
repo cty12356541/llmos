@@ -3333,7 +3333,7 @@ html.reveal-all .reveal-group > * {
 
 .nlos-emblem {
   position: relative;
-  width: clamp(122px, 15vw, 176px);
+  width: clamp(230px, 22vw, 320px);
   aspect-ratio: 1;
   display: grid;
   place-items: center;
@@ -3350,7 +3350,7 @@ html.reveal-all .reveal-group > * {
 .nlos-emblem strong {
   position: absolute;
   left: 50%;
-  bottom: 17%;
+  bottom: 8%;
   z-index: 2;
   font-family: var(--font-mono);
   font-size: clamp(.82rem, 1.7vw, 1.12rem);
@@ -3823,11 +3823,12 @@ main > .section.light {
   z-index: 2;
   display: grid;
   place-items: center;
-  color: rgba(174,226,255,.48);
-  font-family: "SF Pro Display", "Segoe UI Symbol", "Apple Symbols", sans-serif;
-  font-size: clamp(3.5rem, 8vw, 5.8rem);
-  font-weight: 200;
-  line-height: 1;
+  color: rgba(174,226,255,.5);
+  font-family: "Times New Roman", "STIX Two Math", "Cambria Math", serif;
+  font-size: clamp(7.5rem, 15vw, 12rem);
+  font-weight: 400;
+  line-height: .72;
+  transform: translateY(-2%);
   text-shadow:
     0 0 16px rgba(127,200,255,.1),
     0 0 36px rgba(127,200,255,.05);
