@@ -27,6 +27,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nlos-operation"
+version = "0.1.0"
+dependencies = [
+ "nlos-runtime",
+ "nlos-types",
+]
+
+[[package]]
 name = "nlos-runtime"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,15 @@
+[package]
+name = "nlos-operation"
+description = "Operation callback fencing and reconciliation state for NLOS."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+nlos-runtime = { path = "../nlos-runtime" }
+nlos-types = { path = "../nlos-types" }
+
+[lints]
+workspace = true

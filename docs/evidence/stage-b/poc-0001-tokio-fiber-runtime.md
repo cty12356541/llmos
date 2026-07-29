@@ -152,7 +152,7 @@ macOS 峰值 RSS 使用编译后的测试二进制直接测量，避免 Cargo/�
 
 PoC-0001 仍保持 `PARTIAL PASS`。升为 ACCEPTED 前至少补充：
 
-1. OperationId + callback generation/cancel epoch；
+1. 将已取得 `PARTIAL PASS` 的 [PoC-0002 Operation callback fence](./poc-0002-operation-callback-fence.md)与 Tokio wake、Driver 和 durable store 集成；
 2. parent/child CancellationScope 与 join/detach；
 3. completed record retention/GC；
 4. priority/fairness 与 CPU-heavy isolation；

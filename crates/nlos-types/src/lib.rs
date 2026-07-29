@@ -49,6 +49,7 @@ nominal_id!(ExecutionFiberId);
 nominal_id!(ActivationId);
 nominal_id!(TaskAttemptId);
 nominal_id!(OperationId);
+nominal_id!(CallbackId);
 nominal_id!(CancellationScopeId);
 nominal_id!(ResourceGroupId);
 nominal_id!(SchedulerDomainId);
@@ -83,9 +84,36 @@ impl Generation {
     }
 }
 
+/// A monotonic cancellation epoch. Epoch zero means no cancellation request
+/// has yet fenced callbacks for the object.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct CancelEpoch(u64);
+
+impl CancelEpoch {
+    pub const INITIAL: Self = Self(0);
+
+    #[must_use]
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+
+    #[must_use]
+    pub const fn checked_next(self) -> Option<Self> {
+        match self.0.checked_add(1) {
+            Some(value) => Some(Self(value)),
+            None => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ExecutionFiberId, Generation, ProcessId};
+    use super::{CancelEpoch, ExecutionFiberId, Generation, ProcessId};
 
     #[test]
     fn nominal_ids_preserve_bytes_and_type_name() {
@@ -105,6 +133,15 @@ mod tests {
         assert_eq!(
             Generation::INITIAL.checked_next().map(Generation::get),
             Some(2)
+        );
+    }
+
+    #[test]
+    fn cancel_epoch_starts_at_zero_and_increments() {
+        assert_eq!(CancelEpoch::INITIAL.get(), 0);
+        assert_eq!(
+            CancelEpoch::INITIAL.checked_next().map(CancelEpoch::get),
+            Some(1)
         );
     }
 }

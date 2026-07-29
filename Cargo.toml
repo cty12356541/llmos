@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/nlos-operation",
     "crates/nlos-types",
     "crates/nlos-runtime",
     "crates/nlos-runtime-tokio",
