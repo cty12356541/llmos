@@ -160,11 +160,18 @@ P0 风险阻止 Stage 退出；P1 必须有 owner、缓解措施和明确复查�
 ## 10. 分支、提交与发布
 
 - 默认从 `main` 创建短生命周期 `codex/<topic>` 或功能分支；紧急修复例外需记录。
-- 一个提交只表达一个可解释结果；提交信息说明“做了什么、为什么”。
+- 一个 canonical 结果对应一个可解释、可独立验证和回退的原子提交；提交信息说明“做了什么、为什么、证据是什么”。
+- 开始任务时记录 base HEAD；提交前检查 HEAD 漂移，漂移后重新审查 read-set/write-set 并复验。
+- 只显式暂存当前 Task/Attempt 的 write-set；共享脏工作区禁止无差别 `git add -A`/`git add .`，不得顺带提交其他 Agent 或用户改动。
+- 暂存后检查 staged name/diff、`git diff --cached --check`、适用测试和 Evidence；未运行项目必须明确记录。
 - 禁止把密钥、真实凭证、用户数据和不可再生大型输出提交到仓库。
+- 未达到 DoD 的候选不得冒充完成；确需 checkpoint commit 时必须标记 `WIP/POC/PARTIAL`。
+- 多 Agent 的同一 canonical 对象由单一 integrator 提交；禁止擅自 amend/rebase/reset/force-push 或改写他人历史。
 - 合并前运行与变更风险相称的测试，保留命令和结果。
 - 发布 Claim 只来自已提交 Evidence；设计文档中的未来时态不得出现在能力声明中。
 - 破坏性 schema/数据迁移先备份、演练恢复，再允许发布。
+- push 前核对 branch/upstream/HEAD，只允许 fast-forward；push、CI、部署分别确认，任何一级成功都不能冒充后一级成功。
+- 详细规范见[项目知识渐进式披露与自动 CRUD 规则第 8 节](./project-knowledge-progressive-disclosure.md#8-控制与提交协议)。
 
 ## 11. 节奏与看板
 
