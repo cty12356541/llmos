@@ -6,7 +6,7 @@
 <title>系统哲学 · NLOS — 自然语言操作系统</title>
 <meta name="description" content="NLOS 的最高目标、核心设计哲学、现代系统迁移方法与自然语言操作系统边界。">
 <script>document.documentElement.classList.add('motion-js');window.__nlosRevealFailsafe=setTimeout(function(){document.documentElement.classList.add('reveal-all')},2500);</script>
-<link rel="stylesheet" href="css/style.css?v=7.0.0">
+<link rel="stylesheet" href="css/style.css?v=8.0.0">
 <link rel="stylesheet" href="css/effects.css?v=7.0.0">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23e5f4ff'/%3E%3Ctext x='16' y='21' font-family='monospace' font-size='12' font-weight='700' text-anchor='middle' fill='%23030710'%3ENL%3C/text%3E%3C/svg%3E">
 </head>
@@ -41,6 +41,24 @@
     <div class="stat"><strong>02</strong><span>系统权威</span><p>身份、权限、资源、通信、存储和生命周期由系统裁决。</p></div>
     <div class="stat"><strong>03</strong><span>完整界面</span><p>自然语言是首要入口，同时保留 GUI、CLI、API 和逐层控制。</p></div>
     <div class="stat"><strong>04</strong><span>长期演进</span><p>Package、Driver、SDK、兼容性、更新回滚和应用生态共同构成 OS。</p></div>
+  </div>
+  <div class="system-graph reveal" aria-label="NLOS 完整系统分层图">
+    <div class="graph-row" style="--cols:1">
+      <div class="graph-node core"><small>HUMAN INTERFACE</small><strong>自然语言桌面 · GUI · CLI · API · 多模态</strong><p>不同入口编译为同一 typed Intent 与 ControlCommand。</p></div>
+    </div>
+    <div class="graph-row" style="--cols:3">
+      <div class="graph-node"><small>APPLICATION</small><strong>第三方应用与 Agent 生态</strong><p>用户目标、工作流、Skill、纯代码与长期服务。</p></div>
+      <div class="graph-node"><small>SYSTEM SERVICES</small><strong>Task · Search · Update · Notification</strong><p>可替换策略、Planner、目录、同步与桌面服务。</p></div>
+      <div class="graph-node"><small>DEVELOPER PLATFORM</small><strong>Package · SDK · Debugger · SABI</strong><p>稳定接口、兼容性和第三方分发。</p></div>
+    </div>
+    <div class="graph-row" style="--cols:1">
+      <div class="graph-node core"><small>NLOS AUTHORITY</small><strong>Process · Capability · Resource · Artifact · Operation · Receipt</strong><p>不可绕过的身份、隔离、资源、提交、持久化和审计边界。</p></div>
+    </div>
+    <div class="graph-row" style="--cols:3">
+      <div class="graph-node"><small>DEVICE</small><strong>Model · Tool · Browser · Robot</strong><p>全部经 Driver 与 capability-scoped Operation 接入。</p></div>
+      <div class="graph-node"><small>HOST OS</small><strong>Windows · Darwin · Linux</strong><p>最终 CPU、地址空间、FD、网络与强杀。</p></div>
+      <div class="graph-node"><small>DISTRIBUTED</small><strong>Cloud · Cell · Edge · GPU</strong><p>placement、lease/fence、迁移和联邦。</p></div>
+    </div>
   </div>
 </div></section>
 

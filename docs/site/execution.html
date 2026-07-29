@@ -5,7 +5,7 @@
 <title>执行与控制 · NLOS — 自然语言操作系统</title>
 <meta name="description" content="NLOS 的 Application、Task、Process、AgentInstance、ExecutionFiber 执行模型，海量 Agent 调度、语义一致性、任务隔离与多层控制。">
 <script>document.documentElement.classList.add('motion-js');window.__nlosRevealFailsafe=setTimeout(function(){document.documentElement.classList.add('reveal-all')},2500);</script>
-<link rel="stylesheet" href="css/style.css?v=7.0.0"><link rel="stylesheet" href="css/effects.css?v=7.0.0">
+<link rel="stylesheet" href="css/style.css?v=8.0.0"><link rel="stylesheet" href="css/effects.css?v=7.0.0">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23e5f4ff'/%3E%3Ctext x='16' y='21' font-family='monospace' font-size='12' font-weight='700' text-anchor='middle' fill='%23030710'%3ENL%3C/text%3E%3C/svg%3E">
 </head>
 <body>
@@ -78,6 +78,22 @@
     <div class="tier-row"><span class="tier-id">C</span><div><h4>Cell Scheduler</h4><p>TaskAuthority、本地 capacity、bulkhead、TaskGroup queue 和跨 Worker placement。</p></div></div>
     <div class="tier-row"><span class="tier-id">W</span><div><h4>Worker Runtime</h4><p>Process/Agent/Fiber runnable queue、work stealing、context affinity、batch 和本地 backpressure。</p></div></div>
   </div>
+  <div class="system-graph reveal" aria-label="海量 Agent 分层调度图">
+    <div class="graph-row" style="--cols:1">
+      <div class="graph-node core"><small>GLOBAL CONTROL</small><strong>Workspace / Application policy · global admission</strong><p>全局只做 placement、quota 与公平策略，不扫描每个 Fiber。</p></div>
+    </div>
+    <div class="graph-row" style="--cols:3">
+      <div class="graph-node"><small>CELL A</small><strong>TaskGroup queues</strong><p>本地 TaskAuthority、capacity 与 failure domain。</p></div>
+      <div class="graph-node"><small>CELL B</small><strong>Resource bulkheads</strong><p>隔离 provider、Topic、Context 与故障风暴。</p></div>
+      <div class="graph-node"><small>CELL C</small><strong>Placement / recovery</strong><p>迁移只移动可迁移 Attempt，并 fence 旧 incarnation。</p></div>
+    </div>
+    <div class="graph-row" style="--cols:4">
+      <div class="graph-node"><small>WORKER 01</small><strong>Process queues</strong><p>宿主隔离与强制资源。</p></div>
+      <div class="graph-node"><small>WORKER 02</small><strong>Agent queues</strong><p>身份、mailbox 与 supervisor。</p></div>
+      <div class="graph-node"><small>WORKER 03</small><strong>Fiber runtime</strong><p>M:N coroutine 与 async Operation。</p></div>
+      <div class="graph-node"><small>WORKER 04</small><strong>Driver slots</strong><p>模型 batch、工具连接与背压。</p></div>
+    </div>
+  </div>
 </div></section>
 
 <section class="section" id="consistency"><div class="container">
@@ -92,6 +108,11 @@
     <div class="card"><h4>EffectPermit 与未知态</h4><p>副作用按 slot/幂等身份 fencing。无法证明外部效果停止时进入 PARTIAL_EFFECT 或 EFFECT_UNKNOWN，不能改名为失败前取消。</p></div>
     <div class="card"><h4>IsolationDomain</h4><p>Namespace、Capability、ResourceGroup、Snapshot、Channel、secret、network/device、cancel 和 failure domain 共同构成隔离面。</p></div>
     <div class="card"><h4>ControlDomain 独立性</h4><p>共识和 quorum 按独立控制域计数；复制多个同源 Agent 不能伪造认识论独立。</p></div>
+  </div>
+  <div class="commit-race reveal" aria-label="并行 TaskAttempt 唯一提交图">
+    <div class="race-lane"><h4>Attempt A</h4><p>同一 TaskSnapshot 上的一个候选执行。</p><div class="race-flow"><span>READ SNAPSHOT</span><span>STAGE ARTIFACT</span><span>REQUEST COMMIT PERMIT</span><span>WINNER · COMMIT</span></div></div>
+    <div class="commit-gate"><div><small>LINEARIZATION POINT</small><h4>TaskHead CAS</h4><p>一个 Task generation 只有一个 canonical winner。</p></div></div>
+    <div class="race-lane"><h4>Attempt B</h4><p>可并行思考，但不能覆盖 winner。</p><div class="race-flow"><span>READ SNAPSHOT</span><span>STAGE ARTIFACT</span><span>REQUEST COMMIT PERMIT</span><span>LOSER · RETAIN AS EVIDENCE</span></div></div>
   </div>
 </div></section>
 

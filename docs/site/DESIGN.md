@@ -1,8 +1,20 @@
-# NLOS 站点设计系统（v6 · 冰川极光交互系统）
+# NLOS 站点设计系统（v8 · 高透冰川极光与系统图谱）
 
 > 本文件是 docs/site/ 的视觉契约。所有 token 来自 2026-07-23 对
 > https://www.langchain.com（首页、/langgraph、/langsmith/observability）的
 > Playwright 实机截取（1440px 整页截图 + getComputedStyle 提取），不是凭印象的描述。
+
+## v8 内容图谱与透明度修订（2026-07-29）
+
+- 子窗口 tint 从约 `0.05–0.07` 降至 `0.026–0.042`，blur 从 `20–22px` 降至 `15–16px`，让背景极光和细线穿过内容面板；
+- 高透不等于低可读性：文字仍使用 `--white/--text-2`，边缘继续保留镜面高光和渐变描边；
+- 设计理念优先转译为纯 HTML/CSS 系统图，不使用装饰性 AI 插画：
+  - 完整 NLOS 系统分层图；
+  - Global→Cell→Worker 海量 Agent 调度图；
+  - 双 TaskAttempt→TaskHead CAS 唯一提交图；
+  - Resource Manager 多资源控制图；
+- 图形语言固定为：冰蓝 1px 连接线、透明节点、等宽层级标签、中心权威节点微光、移动端单列退化；
+- 图必须表达对象、边界、数据流或状态迁移，不能只把段落放进更大的卡片。
 
 ---
 

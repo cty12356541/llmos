@@ -6,7 +6,7 @@
 <title>现代系统 · NLOS — 自然语言操作系统</title>
 <meta name="description" content="NLOS 架构设计总纲 v0.5 · 现代系统：分层调度、资源管理、lease/fence、一致性、服务治理、可观测性和 Windows/macOS 式控制。">
 <script>document.documentElement.classList.add('motion-js');window.__nlosRevealFailsafe=setTimeout(function(){document.documentElement.classList.add('reveal-all')},2500);</script>
-<link rel="stylesheet" href="css/style.css?v=7.0.0">
+<link rel="stylesheet" href="css/style.css?v=8.0.0">
 <link rel="stylesheet" href="css/effects.css?v=7.0.0">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23e5f4ff'/%3E%3Ctext x='16' y='21' font-family='monospace' font-size='12' font-weight='700' text-anchor='middle' fill='%23030710'%3ENL%3C/text%3E%3C/svg%3E">
 </head>
@@ -53,6 +53,7 @@
     <a href="#elasticity">弹性多租户</a>
     <a href="#observability">可观测性</a>
     <a href="#principles">设计原则</a>
+    <a href="#resource-system">资源平面</a>
   </nav>
 </header>
 
@@ -464,6 +465,28 @@
           <p>今天为稀缺设计的抽象，在富足时代仍是地基。Application / Process / Fiber、working set、Capability 和 ResourceGroup 如此——规模是压力测试，通用现代 NLOS 才是宗旨。</p>
         </div>
       </div>
+    </div>
+  </div>
+</section>
+
+<section class="section band" id="resource-system">
+  <div class="container">
+    <div class="sec-head reveal">
+      <span class="eyebrow">Resource Plane<span class="sec-no">/ 07</span></span>
+      <h2>现代资源管理不是一个 Budget，<em>而是一组控制器</em></h2>
+      <p>ResourceAccount 负责可转移 credit 与费用归属；ResourceGroup 负责 cgroup/job 式物理调度和容量隔离。CPU、内存、I/O、网络、加速器、模型槽与 Context 都有独立单位、强制点和回收语义。</p>
+    </div>
+    <div class="resource-map reveal" aria-label="NLOS 现代资源管理图">
+      <div class="resource-node"><strong>CPU / Activation</strong><p>preemption · fair-share · deadline · affinity</p></div>
+      <div class="resource-node"><strong>Memory / Context</strong><p>working set · pressure · reclaim · OOM</p></div>
+      <div class="resource-node"><strong>Storage / Artifact</strong><p>quota · reservation · journal · snapshot</p></div>
+      <div class="resource-node"><strong>I/O / Network</strong><p>bounded queue · rate limit · backpressure</p></div>
+      <div class="resource-node"><strong>GPU / NPU</strong><p>VRAM · slot · batch · device lease</p></div>
+      <div class="resource-core"><strong>Resource Manager</strong><span>DECLARE → ADMIT → RESERVE → BIND → CONSUME → RECLAIM → FINALIZE</span></div>
+      <div class="resource-node"><strong>Model Provider</strong><p>token bound · context bytes · inference slot</p></div>
+      <div class="resource-node"><strong>Human Attention</strong><p>prompt rate · quiet hours · trusted channel</p></div>
+      <div class="resource-node"><strong>ResourceGroup</strong><p>physical isolation · hierarchy · pressure</p></div>
+      <div class="resource-node"><strong>ResourceAccount</strong><p>credit · payer · durable conservation</p></div>
     </div>
   </div>
 </section>
