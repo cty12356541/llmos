@@ -46,7 +46,7 @@ cargo test -p nlos-operation
 cargo clippy -p nlos-operation --all-targets -- -D warnings
 ```
 
-6 项集成测试通过，覆盖以下 7 个断言：
+8 项集成测试通过，覆盖以下 9 个断言：
 
 1. 当前 callback canonicalize 后允许 wake；
 2. duplicate callback 幂等返回原终态；
@@ -54,7 +54,9 @@ cargo clippy -p nlos-operation --all-targets -- -D warnings
 4. dispatch 前 cancel 形成 `CANCELLED_BEFORE_EFFECT` 并阻止 dispatch；
 5. stale Operation/Fiber generation 被拒绝；
 6. callback ID 不得对应不同 outcome；
-7. cancel/completion race 重复 256 次，只出现两个合法线性化结果。
+7. dispatch-time CallbackId/CancelEpoch 被绑定，不能在 dispatch 后替换 callback ticket；
+8. durable restore 会拒绝不可能的 callback/state/cancel epoch 组合；
+9. cancel/completion race 重复 256 次，只出现两个合法线性化结果。
 
 最后一项中的两个合法结果：
 
@@ -70,7 +72,7 @@ completion 先线性化
 
 ## 当前不能证明
 
-- Registry 尚未持久化，Process crash 会丢失状态；
+- 内存 Registry 本身仍不持久化；独立的 [PoC-0003 SQLite authority](./poc-0003-sqlite-operation-authority.md) 已验证初始 durable adapter，但尚未达到完整 fault-injection 验收；
 - 尚未与 Tokio Fiber wake channel 集成；
 - Receipt 目前只有 nominal ID，尚未验证签名和内容；
 - 尚无 Driver callback authentication；

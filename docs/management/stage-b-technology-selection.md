@@ -292,4 +292,6 @@ docs/
 
 PoC 进度：[PoC-0001 Tokio Fiber Runtime 初始证据](../evidence/stage-b/poc-0001-tokio-fiber-runtime.md)已取得 `PARTIAL PASS`：2 个 worker 上 100K waiting Fiber 测试通过，最大 RSS 约 128.39 MiB；Operation callback fence、fairness、结构化 join/detach、record GC、CPU 分维计量和跨平台验证仍待完成。
 
-[PoC-0002 Operation Callback Fence](../evidence/stage-b/poc-0002-operation-callback-fence.md)也已取得 `PARTIAL PASS`：cancel epoch、迟到/重复 callback、generation fence 和 cancel/completion 竞态在线程安全内存 Registry 中通过；durable store、Driver authentication、Tokio wake 和 EffectPermit 集成仍待完成。
+[PoC-0002 Operation Callback Fence](../evidence/stage-b/poc-0002-operation-callback-fence.md)也已取得 `PARTIAL PASS`：cancel epoch、迟到/重复 callback、dispatch ticket identity、generation fence 和 cancel/completion 竞态在线程安全内存 Registry 中通过。
+
+[ADR-0002 / PoC-0003 SQLite Operation Authority](./adrs/0002-stage-b-sqlite-operation-authority.md)已完成首个持久化切片：Operation 转换、Receipt identity 和 Wake/Reconcile Outbox 在 WAL/FULL 单写者事务中提交，并通过重开与无析构进程退出恢复测试；torn-write、disk-full、checkpoint/备份、migration、100K metadata、跨平台以及 Tokio consumer 集成仍待完成。

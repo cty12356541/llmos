@@ -1,10 +1,11 @@
 use nlos_operation::{
-    CallbackTicket, CompletionDecision, CompletionOutcome, OperationError, OperationRegistry,
-    OperationSpec, OperationState,
+    AcceptedCallback, CallbackTicket, CompletionDecision, CompletionOutcome, IssuedCallback,
+    OperationError, OperationMachine, OperationRegistry, OperationSpec, OperationState,
 };
 use nlos_runtime::FiberHandle;
 use nlos_types::{
-    CallbackId, CancellationScopeId, ExecutionFiberId, Generation, OperationId, ReceiptId,
+    CallbackId, CancelEpoch, CancellationScopeId, ExecutionFiberId, Generation, OperationId,
+    ReceiptId,
 };
 use std::sync::Barrier;
 
@@ -134,6 +135,65 @@ fn stale_operation_and_fiber_generations_are_rejected() {
             }
         ),
         Err(OperationError::InvalidGeneration)
+    );
+}
+
+#[test]
+fn callback_ticket_cannot_be_substituted_after_dispatch() {
+    let registry = OperationRegistry::new();
+    let handle = registry.register(spec()).expect("register");
+    let mut ticket = registry
+        .dispatch(handle, CallbackId::from_bytes(bytes(4)))
+        .expect("dispatch");
+    ticket.callback_id = CallbackId::from_bytes(bytes(8));
+
+    assert_eq!(
+        registry.complete(
+            ticket,
+            CompletionOutcome::Completed {
+                receipt_id: ReceiptId::from_bytes(bytes(5)),
+            },
+        ),
+        Err(OperationError::InvalidGeneration)
+    );
+    assert_eq!(
+        registry.inspect(handle).expect("inspect").state,
+        OperationState::Dispatched
+    );
+}
+
+#[test]
+fn restore_rejects_impossible_callback_and_cancel_epoch_combinations() {
+    let callback_id = CallbackId::from_bytes(bytes(4));
+    let receipt_id = ReceiptId::from_bytes(bytes(5));
+    assert_eq!(
+        OperationMachine::restore(
+            spec(),
+            CancelEpoch::INITIAL,
+            OperationState::Completed { receipt_id },
+            Some(IssuedCallback {
+                callback_id,
+                cancel_epoch: CancelEpoch::INITIAL,
+            }),
+            None,
+        ),
+        Err(OperationError::InvalidState)
+    );
+    assert_eq!(
+        OperationMachine::restore(
+            spec(),
+            CancelEpoch::new(2),
+            OperationState::Completed { receipt_id },
+            Some(IssuedCallback {
+                callback_id,
+                cancel_epoch: CancelEpoch::INITIAL,
+            }),
+            Some(AcceptedCallback {
+                callback_id,
+                outcome: CompletionOutcome::Completed { receipt_id },
+            }),
+        ),
+        Err(OperationError::InvalidState)
     );
 }
 

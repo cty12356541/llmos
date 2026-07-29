@@ -94,6 +94,18 @@ pub enum CompletionDecision {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AcceptedCallback {
+    pub callback_id: CallbackId,
+    pub outcome: CompletionOutcome,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct IssuedCallback {
+    pub callback_id: CallbackId,
+    pub cancel_epoch: CancelEpoch,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OperationError {
     DuplicateOperation,
     InvalidGeneration,
@@ -126,17 +138,261 @@ pub struct OperationSnapshot {
     pub state: OperationState,
 }
 
-struct OperationRecord {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OperationMachine {
     spec: OperationSpec,
     cancel_epoch: CancelEpoch,
     state: OperationState,
-    accepted_callback: Option<(CallbackId, CompletionOutcome)>,
+    issued_callback: Option<IssuedCallback>,
+    accepted_callback: Option<AcceptedCallback>,
+}
+
+impl OperationMachine {
+    #[must_use]
+    pub const fn new(spec: OperationSpec) -> Self {
+        Self {
+            spec,
+            cancel_epoch: CancelEpoch::INITIAL,
+            state: OperationState::Registered,
+            issued_callback: None,
+            accepted_callback: None,
+        }
+    }
+
+    /// Restores a machine from a trusted durable record after validating its
+    /// cross-field invariants.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OperationError::InvalidState`] when terminal state and
+    /// callback data disagree or when a non-terminal record carries a callback.
+    pub fn restore(
+        spec: OperationSpec,
+        cancel_epoch: CancelEpoch,
+        state: OperationState,
+        issued_callback: Option<IssuedCallback>,
+        accepted_callback: Option<AcceptedCallback>,
+    ) -> Result<Self, OperationError> {
+        let callback_is_terminal = accepted_callback
+            .is_some_and(|callback| callback.outcome.state() == state && state.is_terminal());
+        let issued_matches_accepted = match (issued_callback, accepted_callback) {
+            (Some(issued), Some(accepted)) => issued.callback_id == accepted.callback_id,
+            (_, None) => true,
+            (None, Some(_)) => false,
+        };
+        let state_matches_issue = match state {
+            OperationState::Registered => issued_callback.is_none(),
+            OperationState::Dispatched | OperationState::CancelRequested => {
+                issued_callback.is_some() && accepted_callback.is_none()
+            }
+            OperationState::CancelledBeforeEffect { .. } => {
+                issued_callback.is_some() == accepted_callback.is_some()
+            }
+            OperationState::Completed { .. }
+            | OperationState::Failed { .. }
+            | OperationState::PartialEffect { .. }
+            | OperationState::EffectUnknown { .. } => {
+                issued_callback.is_some() && accepted_callback.is_some()
+            }
+        };
+        let acceptance_is_valid = match accepted_callback {
+            Some(_) => callback_is_terminal,
+            None => !matches!(
+                state,
+                OperationState::Completed { .. }
+                    | OperationState::Failed { .. }
+                    | OperationState::PartialEffect { .. }
+                    | OperationState::EffectUnknown { .. }
+            ),
+        };
+        let epoch_matches_state = match issued_callback {
+            None => match state {
+                OperationState::Registered => cancel_epoch == CancelEpoch::INITIAL,
+                OperationState::CancelledBeforeEffect { .. } => cancel_epoch == CancelEpoch::new(1),
+                _ => false,
+            },
+            Some(issued) => {
+                let same_epoch = cancel_epoch == issued.cancel_epoch;
+                let cancelled_epoch = issued.cancel_epoch.checked_next() == Some(cancel_epoch);
+                match state {
+                    OperationState::Dispatched => same_epoch,
+                    OperationState::CancelRequested => cancelled_epoch,
+                    OperationState::Completed { .. }
+                    | OperationState::Failed { .. }
+                    | OperationState::CancelledBeforeEffect { .. }
+                    | OperationState::PartialEffect { .. }
+                    | OperationState::EffectUnknown { .. } => same_epoch || cancelled_epoch,
+                    OperationState::Registered => false,
+                }
+            }
+        };
+        if !issued_matches_accepted
+            || !state_matches_issue
+            || !acceptance_is_valid
+            || !epoch_matches_state
+        {
+            return Err(OperationError::InvalidState);
+        }
+        Ok(Self {
+            spec,
+            cancel_epoch,
+            state,
+            issued_callback,
+            accepted_callback,
+        })
+    }
+
+    #[must_use]
+    pub const fn spec(&self) -> OperationSpec {
+        self.spec
+    }
+
+    #[must_use]
+    pub const fn accepted_callback(&self) -> Option<AcceptedCallback> {
+        self.accepted_callback
+    }
+
+    #[must_use]
+    pub const fn issued_callback(&self) -> Option<IssuedCallback> {
+        self.issued_callback
+    }
+
+    #[must_use]
+    pub const fn snapshot(&self) -> OperationSnapshot {
+        OperationSnapshot {
+            handle: OperationHandle {
+                operation_id: self.spec.operation_id,
+                generation: self.spec.generation,
+            },
+            owner_fiber: self.spec.owner_fiber,
+            cancel_epoch: self.cancel_epoch,
+            state: self.state,
+        }
+    }
+
+    /// Applies the dispatch transition and returns its fenced callback ticket.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generation or state error for stale or non-registered input.
+    pub fn dispatch(
+        &mut self,
+        handle: OperationHandle,
+        callback_id: CallbackId,
+    ) -> Result<CallbackTicket, OperationError> {
+        self.validate_handle(handle)?;
+        if self.state != OperationState::Registered {
+            return Err(OperationError::InvalidState);
+        }
+        self.state = OperationState::Dispatched;
+        self.issued_callback = Some(IssuedCallback {
+            callback_id,
+            cancel_epoch: self.cancel_epoch,
+        });
+        Ok(CallbackTicket {
+            callback_id,
+            operation: handle,
+            owner_fiber: self.spec.owner_fiber,
+            cancel_epoch: self.cancel_epoch,
+        })
+    }
+
+    /// Advances the cancellation fence and applies the matching state change.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generation/state error or epoch exhaustion.
+    pub fn request_cancel(
+        &mut self,
+        handle: OperationHandle,
+        no_effect_receipt: ReceiptId,
+    ) -> Result<OperationSnapshot, OperationError> {
+        self.validate_handle(handle)?;
+        if !matches!(
+            self.state,
+            OperationState::Registered | OperationState::Dispatched
+        ) {
+            return Err(OperationError::InvalidState);
+        }
+        self.cancel_epoch = self
+            .cancel_epoch
+            .checked_next()
+            .ok_or(OperationError::CancelEpochExhausted)?;
+        self.state = match self.state {
+            OperationState::Registered => OperationState::CancelledBeforeEffect {
+                receipt_id: no_effect_receipt,
+            },
+            OperationState::Dispatched => OperationState::CancelRequested,
+            _ => unreachable!("state was validated before epoch mutation"),
+        };
+        Ok(self.snapshot())
+    }
+
+    /// Applies one terminal callback through the generation/cancel fence.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generation/state error or callback identity conflict.
+    pub fn complete(
+        &mut self,
+        ticket: CallbackTicket,
+        outcome: CompletionOutcome,
+    ) -> Result<CompletionDecision, OperationError> {
+        self.validate_handle(ticket.operation)?;
+        if ticket.owner_fiber != self.spec.owner_fiber {
+            return Err(OperationError::InvalidGeneration);
+        }
+        let issued = self.issued_callback.ok_or(OperationError::InvalidState)?;
+        if issued.callback_id != ticket.callback_id || issued.cancel_epoch != ticket.cancel_epoch {
+            return Err(OperationError::InvalidGeneration);
+        }
+
+        if let Some(accepted) = self.accepted_callback {
+            if accepted.callback_id == ticket.callback_id {
+                if accepted.outcome != outcome {
+                    return Err(OperationError::CallbackIdentityConflict);
+                }
+                return Ok(CompletionDecision::Duplicate { state: self.state });
+            }
+            return Err(OperationError::InvalidState);
+        }
+
+        if !matches!(
+            self.state,
+            OperationState::Dispatched | OperationState::CancelRequested
+        ) {
+            return Err(OperationError::InvalidState);
+        }
+
+        let wake_allowed =
+            ticket.cancel_epoch == self.cancel_epoch && self.state == OperationState::Dispatched;
+        self.state = outcome.state();
+        self.accepted_callback = Some(AcceptedCallback {
+            callback_id: ticket.callback_id,
+            outcome,
+        });
+
+        Ok(if wake_allowed {
+            CompletionDecision::CanonicalizedAndWake { state: self.state }
+        } else {
+            CompletionDecision::CanonicalizedForReconciliation { state: self.state }
+        })
+    }
+
+    fn validate_handle(&self, handle: OperationHandle) -> Result<(), OperationError> {
+        if self.spec.operation_id != handle.operation_id
+            || self.spec.generation != handle.generation
+        {
+            return Err(OperationError::InvalidGeneration);
+        }
+        Ok(())
+    }
 }
 
 /// Thread-safe in-memory `PoC` of the mechanical Operation callback fence.
 #[derive(Default)]
 pub struct OperationRegistry {
-    operations: Mutex<HashMap<OperationId, OperationRecord>>,
+    operations: Mutex<HashMap<OperationId, OperationMachine>>,
 }
 
 impl OperationRegistry {
@@ -161,15 +417,7 @@ impl OperationRegistry {
             operation_id: spec.operation_id,
             generation: spec.generation,
         };
-        operations.insert(
-            spec.operation_id,
-            OperationRecord {
-                spec,
-                cancel_epoch: CancelEpoch::INITIAL,
-                state: OperationState::Registered,
-                accepted_callback: None,
-            },
-        );
+        operations.insert(spec.operation_id, OperationMachine::new(spec));
         Ok(handle)
     }
 
@@ -187,16 +435,7 @@ impl OperationRegistry {
     ) -> Result<CallbackTicket, OperationError> {
         let mut operations = lock_unpoisoned(&self.operations);
         let record = record_mut(&mut operations, handle)?;
-        if record.state != OperationState::Registered {
-            return Err(OperationError::InvalidState);
-        }
-        record.state = OperationState::Dispatched;
-        Ok(CallbackTicket {
-            callback_id,
-            operation: handle,
-            owner_fiber: record.spec.owner_fiber,
-            cancel_epoch: record.cancel_epoch,
-        })
+        record.dispatch(handle, callback_id)
     }
 
     /// Fences the current callback epoch.
@@ -215,24 +454,7 @@ impl OperationRegistry {
     ) -> Result<OperationSnapshot, OperationError> {
         let mut operations = lock_unpoisoned(&self.operations);
         let record = record_mut(&mut operations, handle)?;
-        if !matches!(
-            record.state,
-            OperationState::Registered | OperationState::Dispatched
-        ) {
-            return Err(OperationError::InvalidState);
-        }
-        record.cancel_epoch = record
-            .cancel_epoch
-            .checked_next()
-            .ok_or(OperationError::CancelEpochExhausted)?;
-        record.state = match record.state {
-            OperationState::Registered => OperationState::CancelledBeforeEffect {
-                receipt_id: no_effect_receipt,
-            },
-            OperationState::Dispatched => OperationState::CancelRequested,
-            _ => unreachable!("state was validated before epoch mutation"),
-        };
-        Ok(snapshot(record))
+        record.request_cancel(handle, no_effect_receipt)
     }
 
     /// Accepts a terminal callback exactly once.
@@ -248,44 +470,7 @@ impl OperationRegistry {
     ) -> Result<CompletionDecision, OperationError> {
         let mut operations = lock_unpoisoned(&self.operations);
         let record = record_mut(&mut operations, ticket.operation)?;
-
-        if ticket.owner_fiber != record.spec.owner_fiber {
-            return Err(OperationError::InvalidGeneration);
-        }
-
-        if let Some((accepted_id, accepted_outcome)) = record.accepted_callback {
-            if accepted_id == ticket.callback_id {
-                if accepted_outcome != outcome {
-                    return Err(OperationError::CallbackIdentityConflict);
-                }
-                return Ok(CompletionDecision::Duplicate {
-                    state: record.state,
-                });
-            }
-            return Err(OperationError::InvalidState);
-        }
-
-        if !matches!(
-            record.state,
-            OperationState::Dispatched | OperationState::CancelRequested
-        ) {
-            return Err(OperationError::InvalidState);
-        }
-
-        let wake_allowed = ticket.cancel_epoch == record.cancel_epoch
-            && record.state == OperationState::Dispatched;
-        record.state = outcome.state();
-        record.accepted_callback = Some((ticket.callback_id, outcome));
-
-        Ok(if wake_allowed {
-            CompletionDecision::CanonicalizedAndWake {
-                state: record.state,
-            }
-        } else {
-            CompletionDecision::CanonicalizedForReconciliation {
-                state: record.state,
-            }
-        })
+        record.complete(ticket, outcome)
     }
 
     /// Returns a mechanically consistent operation snapshot.
@@ -299,36 +484,24 @@ impl OperationRegistry {
         let record = operations
             .get(&handle.operation_id)
             .ok_or(OperationError::InvalidGeneration)?;
-        if record.spec.generation != handle.generation {
+        if record.spec().generation != handle.generation {
             return Err(OperationError::InvalidGeneration);
         }
-        Ok(snapshot(record))
+        Ok(record.snapshot())
     }
 }
 
 fn record_mut(
-    operations: &mut HashMap<OperationId, OperationRecord>,
+    operations: &mut HashMap<OperationId, OperationMachine>,
     handle: OperationHandle,
-) -> Result<&mut OperationRecord, OperationError> {
+) -> Result<&mut OperationMachine, OperationError> {
     let record = operations
         .get_mut(&handle.operation_id)
         .ok_or(OperationError::InvalidGeneration)?;
-    if record.spec.generation != handle.generation {
+    if record.spec().generation != handle.generation {
         return Err(OperationError::InvalidGeneration);
     }
     Ok(record)
-}
-
-fn snapshot(record: &OperationRecord) -> OperationSnapshot {
-    OperationSnapshot {
-        handle: OperationHandle {
-            operation_id: record.spec.operation_id,
-            generation: record.spec.generation,
-        },
-        owner_fiber: record.spec.owner_fiber,
-        cancel_epoch: record.cancel_epoch,
-        state: record.state,
-    }
 }
 
 fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
