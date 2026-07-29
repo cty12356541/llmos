@@ -3821,31 +3821,22 @@ main > .section.light {
   position: absolute;
   inset: 0;
   z-index: 2;
+  display: grid;
+  place-items: center;
+  color: rgba(174,226,255,.48);
+  font-family: "SF Pro Display", "Segoe UI Symbol", "Apple Symbols", sans-serif;
+  font-size: clamp(3.5rem, 8vw, 5.8rem);
+  font-weight: 200;
+  line-height: 1;
+  text-shadow:
+    0 0 16px rgba(127,200,255,.1),
+    0 0 36px rgba(127,200,255,.05);
   pointer-events: none;
 }
 
 .emblem-infinity::before,
 .emblem-infinity::after {
-  content: "";
-  position: absolute;
-  top: 50%;
-  width: 42%;
-  height: 25%;
-  border: 1px solid rgba(174,226,255,.38);
-  border-radius: 50%;
-  box-shadow:
-    0 0 14px rgba(127,200,255,.08),
-    inset 0 0 12px rgba(127,200,255,.035);
-}
-
-.emblem-infinity::before {
-  left: 16%;
-  transform: translateY(-50%) rotate(38deg);
-}
-
-.emblem-infinity::after {
-  right: 16%;
-  transform: translateY(-50%) rotate(-38deg);
+  display: none;
 }
 
 .emblem-axis { z-index: 4; }
