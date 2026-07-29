@@ -737,16 +737,16 @@
         targets,
         {
           autoAlpha: 0,
-          y: distance || 14,
-          filter: "blur(3px)"
+          y: distance || 8,
+          filter: "blur(1.25px)"
         },
         {
           autoAlpha: 1,
           y: 0,
           filter: "blur(0px)",
-          duration: 0.6,
-          stagger: stagger || 0.055,
-          ease: "power2.out",
+          duration: 0.82,
+          stagger: stagger || 0.075,
+          ease: "power3.out",
           overwrite: "auto",
           onComplete: function () {
             settleTargets(targets);
@@ -765,7 +765,7 @@
         )
       );
       settleParentsInstant(leadTargets);
-      animateTargets(leadTargets, 0.065, 12);
+      animateTargets(leadTargets, 0.09, 7);
     }
 
     function prepareReveal(targets, trigger, stagger) {
@@ -777,7 +777,7 @@
       }
       if (rect.top < window.innerHeight * 0.9) {
         settleParentsInstant(targets);
-        animateTargets(targets, stagger, 16);
+        animateTargets(targets, stagger, 9);
         return;
       }
 
@@ -787,7 +787,7 @@
         once: true,
         onEnter: function (self) {
           settleParentsInstant(targets);
-          animateTargets(targets, stagger, 18);
+          animateTargets(targets, stagger, 10);
           self.kill();
         }
       });

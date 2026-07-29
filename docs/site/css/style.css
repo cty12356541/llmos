@@ -3348,30 +3348,69 @@ html.reveal-all .reveal-group > * {
 }
 
 .nlos-emblem strong {
-  position: relative;
+  position: absolute;
+  left: 50%;
+  bottom: 17%;
   z-index: 2;
   font-family: var(--font-mono);
-  font-size: clamp(1.15rem, 2.4vw, 1.7rem);
+  font-size: clamp(.82rem, 1.7vw, 1.12rem);
   letter-spacing: 0.16em;
-  transform: translateX(0.08em);
+  text-shadow: 0 0 14px rgba(143,211,255,.62);
+  transform: translateX(-46%);
 }
 
-.emblem-orbit,
+.emblem-orbit {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 132%;
+  height: 1px;
+  background:
+    linear-gradient(
+      90deg,
+      transparent,
+      rgba(143,211,255,.18) 15%,
+      rgba(235,249,255,.72) 48%,
+      rgba(235,249,255,.72) 52%,
+      rgba(143,211,255,.18) 85%,
+      transparent
+    );
+  transform-origin: center;
+}
+
+.orbit-a { transform: translate(-50%, -50%); }
+.orbit-b { transform: translate(-50%, -50%) rotate(90deg); }
+
+.emblem-orbit::before,
+.emblem-orbit::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: rgba(235,249,255,.86);
+  box-shadow: 0 0 10px rgba(143,211,255,.8);
+  transform: translateY(-50%);
+}
+.emblem-orbit::before { left: 8%; }
+.emblem-orbit::after { right: 8%; }
+
 .emblem-axis {
   position: absolute;
-  inset: 17%;
-  border: 1px solid rgba(143, 211, 255, 0.3);
+  left: 50%;
+  top: 50%;
+  z-index: 3;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
-}
-
-.orbit-a { transform: rotate(58deg) scaleX(0.38); }
-.orbit-b { transform: rotate(-58deg) scaleX(0.38); }
-.emblem-axis {
-  inset: 5% 49.5%;
-  border: 0;
-  width: 1px;
-  border-radius: 0;
-  background: linear-gradient(transparent, rgba(235,249,255,.7), transparent);
+  background: #fff;
+  transform: translate(-50%, -50%);
+  box-shadow:
+    0 0 4px 2px rgba(255,255,255,.94),
+    0 0 12px 5px rgba(186,231,255,.72),
+    0 0 34px 12px rgba(127,200,255,.34),
+    0 0 70px 20px rgba(127,200,255,.12);
 }
 
 .nlos-emblem::before,
@@ -3438,6 +3477,80 @@ html.motion-js .home-hero .reveal {
   opacity: 1;
   visibility: visible;
   transform: none;
+}
+
+/* 论证内容使用开放式编辑版面；玻璃盒只保留给系统对象和交互节点。 */
+.split-2,
+.principles,
+.decision-grid,
+.grid-3,
+.grid-4,
+.tl-notes {
+  counter-reset: editorial-panel;
+}
+
+.split-2 > .card,
+.principles > .card,
+.decision-grid > .card,
+.decision-grid > .decision,
+.grid-3 > .card,
+.grid-4 > .card,
+.tl-notes > .tl-note {
+  counter-increment: editorial-panel;
+  padding: 26px 4px 10px;
+  border: 0;
+  border-top: 1px solid rgba(174,226,255,.2);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.split-2 > .card::before,
+.principles > .card::before,
+.decision-grid > .card::before,
+.decision-grid > .decision::before,
+.grid-3 > .card::before,
+.grid-4 > .card::before,
+.tl-notes > .tl-note::before {
+  content: counter(editorial-panel, decimal-leading-zero);
+  position: static;
+  display: block;
+  width: auto;
+  height: auto;
+  margin-bottom: 20px;
+  padding: 0;
+  color: var(--ink-dim);
+  font-family: var(--font-mono);
+  font-size: .6rem;
+  letter-spacing: .14em;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  -webkit-mask: none;
+  mask: none;
+}
+
+.split-2 > .card:hover,
+.principles > .card:hover,
+.decision-grid > .card:hover,
+.decision-grid > .decision:hover,
+.grid-3 > .card:hover,
+.grid-4 > .card:hover,
+.tl-notes > .tl-note:hover {
+  border-top-color: rgba(235,249,255,.42);
+  background: linear-gradient(180deg, rgba(127,200,255,.025), transparent 65%);
+  box-shadow: none;
+  transform: none;
+}
+
+/* 文字入场由透明度和极轻位移主导，避免统一缩放产生机械感。 */
+html.motion-js .reveal {
+  transform: translateY(10px);
+}
+html.motion-js .reveal-group > * {
+  transform: translateY(8px);
 }
 
 /* 导航标志与首页标志共享“轴线 + 轨道”语言。 */
