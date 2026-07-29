@@ -3303,3 +3303,284 @@ html.reveal-all .reveal-group > * {
   backdrop-filter: blur(10px) saturate(1.8);
   -webkit-backdrop-filter: blur(10px) saturate(1.8);
 }
+
+/* ============================================================
+   NLOS v10 · 连续系统画布与渐进式信息密度
+   ============================================================ */
+
+/* 首页首屏只承担品牌与哲学，不再重复架构正文。 */
+.home-hero {
+  min-height: 100svh;
+  padding-top: 108px;
+  padding-bottom: 72px;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  text-align: center;
+  isolation: isolate;
+}
+
+.home-hero::before {
+  content: "";
+  position: absolute;
+  width: min(76vw, 760px);
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(127, 200, 255, 0.075), transparent 68%);
+  filter: blur(10px);
+  z-index: -1;
+}
+
+.nlos-emblem {
+  position: relative;
+  width: clamp(122px, 15vw, 176px);
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+  margin-bottom: clamp(30px, 5vh, 54px);
+  color: var(--ice-white);
+  border: 1px solid rgba(235, 249, 255, 0.42);
+  border-radius: 50%;
+  box-shadow:
+    0 0 0 12px rgba(127, 200, 255, 0.018),
+    0 0 76px rgba(127, 200, 255, 0.11),
+    inset 0 0 32px rgba(127, 200, 255, 0.055);
+}
+
+.nlos-emblem strong {
+  position: relative;
+  z-index: 2;
+  font-family: var(--font-mono);
+  font-size: clamp(1.55rem, 3vw, 2.25rem);
+  letter-spacing: 0.12em;
+  transform: translateX(0.06em);
+}
+
+.emblem-orbit,
+.emblem-axis {
+  position: absolute;
+  inset: 17%;
+  border: 1px solid rgba(143, 211, 255, 0.3);
+  border-radius: 50%;
+}
+
+.orbit-a { transform: rotate(58deg) scaleX(0.38); }
+.orbit-b { transform: rotate(-58deg) scaleX(0.38); }
+.emblem-axis {
+  inset: 5% 49.5%;
+  border: 0;
+  width: 1px;
+  border-radius: 0;
+  background: linear-gradient(transparent, rgba(235,249,255,.7), transparent);
+}
+
+.nlos-emblem::before,
+.nlos-emblem::after {
+  content: "";
+  position: absolute;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ice-white);
+  box-shadow: 0 0 18px rgba(143,211,255,.9);
+}
+.nlos-emblem::before { top: -4px; }
+.nlos-emblem::after { bottom: -4px; }
+
+.home-kicker {
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: .68rem;
+  letter-spacing: .22em;
+}
+
+.home-philosophy {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: clamp(12px, 2.5vw, 30px);
+  margin-top: 24px;
+  color: var(--ice-white);
+  font-size: clamp(2rem, 5.2vw, 4.8rem);
+  font-weight: 200;
+  letter-spacing: -.045em;
+  line-height: 1.08;
+}
+
+.home-philosophy span:nth-of-type(2) { color: var(--ink); }
+.home-philosophy i {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--ink-dim);
+  box-shadow: 0 0 12px var(--glow-ink-mid);
+}
+
+.home-enter {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: clamp(44px, 8vh, 82px);
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: .7rem;
+  letter-spacing: .14em;
+  transition: color var(--dur) var(--ease), transform var(--dur) var(--ease);
+}
+.home-enter:hover { color: var(--ink); transform: translateY(3px); }
+
+/* 导航标志与首页标志共享“轴线 + 轨道”语言。 */
+.nav-brand .mark {
+  position: relative;
+  overflow: visible;
+  border-radius: 50%;
+  color: var(--ice-white);
+  background: rgba(127, 200, 255, 0.035);
+  border: 1px solid rgba(235,249,255,.44);
+  box-shadow: 0 0 18px rgba(127,200,255,.08);
+}
+.nav-brand .mark::before {
+  content: "";
+  position: absolute;
+  inset: 4px 10px;
+  border: 1px solid rgba(143,211,255,.45);
+  border-radius: 50%;
+  transform: rotate(45deg);
+}
+
+/* 各章节处于同一画布；细轴线替代块状分隔。 */
+main > .section {
+  padding-block: clamp(104px, 12vw, 156px);
+  border-block: 0;
+  background-color: transparent;
+}
+
+main > .section::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 0;
+  width: 1px;
+  height: 58px;
+  background: linear-gradient(transparent, rgba(143,211,255,.22), transparent);
+}
+
+main > .section.band,
+main > .section.glacier,
+main > .section.light {
+  background-color: transparent;
+  border-block: 0;
+}
+
+main > .section.band,
+main > .section.glacier {
+  background:
+    radial-gradient(ellipse 64% 78% at 50% 0%, rgba(127,200,255,.035), transparent 72%);
+}
+
+main > .section.light {
+  background:
+    radial-gradient(ellipse 64% 78% at 50% 0%, rgba(127,200,255,.04), transparent 72%);
+}
+
+/* 每节先给一个清晰焦点；正文宽度不横跨整屏。 */
+.sec-head {
+  max-width: 760px;
+  margin-bottom: clamp(52px, 7vw, 84px);
+}
+.sec-head p {
+  max-width: 68ch;
+  font-size: clamp(.9rem, 1.2vw, 1rem);
+  line-height: 1.85;
+}
+
+/* 卡片墙降低密度：增加呼吸区、限制正文行长和同屏列数。 */
+.card,
+.stat,
+.tl-row,
+.tier,
+.principle,
+.decision,
+.resource-node {
+  padding: clamp(22px, 2.4vw, 32px);
+}
+
+.nav-cards,
+.autopsy-grid,
+.stats,
+.stats.four,
+.tiers,
+.principles {
+  gap: clamp(18px, 2.4vw, 30px);
+}
+
+.card p,
+.stat p,
+.tier p,
+.principle p,
+.decision p,
+.resource-node p {
+  max-width: 62ch;
+  line-height: 1.72;
+}
+
+.tl-notes,
+.split-2,
+.cards-3 {
+  gap: clamp(20px, 3vw, 36px);
+}
+
+.density-grid .density-extra {
+  transition:
+    opacity var(--dur-slow) var(--ease),
+    transform var(--dur-slow) var(--ease);
+}
+
+.density-grid.is-collapsed .density-extra {
+  display: none;
+}
+
+.density-toggle {
+  width: 100%;
+  margin-top: 22px;
+  padding: 15px 18px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: var(--text-2);
+  font: inherit;
+  text-align: left;
+  border: 1px solid rgba(174,226,255,.14);
+  border-radius: var(--radius-s);
+  background: linear-gradient(90deg, rgba(127,200,255,.035), transparent);
+  cursor: pointer;
+  transition: color var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+
+.density-toggle:hover,
+.density-toggle[aria-expanded="true"] {
+  color: var(--ink);
+  border-color: rgba(235,249,255,.3);
+}
+
+.density-toggle small {
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: .62rem;
+  letter-spacing: .12em;
+}
+
+@media (min-width: 900px) {
+  .autopsy-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .nav-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .stats.four { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 720px) {
+  .home-hero { min-height: 92svh; padding-inline: 22px; }
+  .home-philosophy { flex-direction: column; gap: 12px; }
+  .home-philosophy i { display: none; }
+  main > .section { padding-block: 88px; }
+  .sec-head { margin-bottom: 42px; }
+}

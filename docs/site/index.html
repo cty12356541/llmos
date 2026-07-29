@@ -6,7 +6,7 @@
 <title>NLOS — Windows/macOS 级通用现代自然语言操作系统</title>
 <meta name="description" content="NLOS 是以自然语言为首要界面、同时支持 GUI、CLI 与 API 的通用现代系统级操作系统；统一管理 Application、Task、Process、Agent、Fiber、资源、数据和设备。">
 <script>document.documentElement.classList.add('motion-js');window.__nlosRevealFailsafe=setTimeout(function(){document.documentElement.classList.add('reveal-all')},2500);</script>
-<link rel="stylesheet" href="css/style.css?v=9.0.0">
+<link rel="stylesheet" href="css/style.css?v=10.0.0">
 <link rel="stylesheet" href="css/effects.css?v=7.0.0">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23e5f4ff'/%3E%3Ctext x='16' y='21' font-family='monospace' font-size='12' font-weight='700' text-anchor='middle' fill='%23030710'%3ENL%3C/text%3E%3C/svg%3E">
 </head>
@@ -42,65 +42,22 @@
 <main id="top">
 
 <!-- ================= 1. Hero ================= -->
-<header class="hero container">
-  <span class="eyebrow reveal">NLOS · Natural Language Operating System · 架构设计总纲 v0.5</span>
-  <h1 class="hero-title reveal"><span class="title-line">自然语言</span><span class="title-line accent">操作系统</span></h1>
-  <p class="hero-desc reveal">
-    NLOS 的终局是达到 Windows/macOS 级别的通用、现代、系统级自然语言操作系统。
-    用户从顶层表达目标，系统自动生成 TaskPlan、拆分任务、按需物化并调度海量 Agent；
-    同时保留从 Application、Task、Process、Agent 到 Fiber、资源和 Operation 的逐层手动控制。
-  </p>
-  <p class="hero-thesis reveal"><span class="hl">自然语言顶层调度</span><span class="op">+</span><span class="hl">现代系统控制</span><span class="op">=</span>通用 NLOS</p>
-  <p class="hero-thesis sub reveal">规模是压力测试，通用系统与完整用户体验才是宗旨</p>
-  <div class="hero-cta reveal">
-    <a class="btn btn-primary" href="#history">阅读设计论证</a>
-    <a class="btn btn-ghost" href="kernel.html">直达通用内核</a>
+<header class="hero home-hero container">
+  <div class="nlos-emblem reveal" role="img" aria-label="NLOS 标志：自然语言意图穿过系统边界汇聚为受控执行">
+    <span class="emblem-orbit orbit-a"></span>
+    <span class="emblem-orbit orbit-b"></span>
+    <span class="emblem-axis"></span>
+    <strong>NL</strong>
   </div>
-  <div class="hero-meta reveal">
-    <span><i aria-hidden="true"></i>Windows/macOS 级终局</span>
-    <span><i aria-hidden="true"></i>Application → Process → Agent → Fiber</span>
-    <span><i aria-hidden="true"></i>27-entry KABI candidate</span>
-    <span><i aria-hidden="true"></i>设计已规格化 · 实现与证据进行中</span>
-  </div>
-
-  <!-- 细线流场：一切跨边界调用经陷入层汇聚（LangChain 签名线条语言） -->
-  <!-- v3：光流沿曲线向下汇聚到内核，中心内核节点脉冲 -->
-  <div class="flow reveal" role="img" aria-label="陷入层示意图：抢占点、预算扣减点、权限校验点、污点标记点经内核汇聚">
-    <svg viewBox="0 0 1440 460" fill="none" aria-hidden="true">
-      <!-- 顶部横向骨架线（淡） -->
-      <line class="flow-line" x1="0" y1="48" x2="1440" y2="48"/>
-
-      <!-- 10 条汇聚曲线：从顶部四个 pill 区出发，向中心 (720,340) 汇聚 -->
-      <path class="flow-curve" d="M120,48 C120,200 640,220 720,340"/>
-      <path class="flow-curve" d="M250,48 C250,190 650,215 720,340"/>
-      <path class="flow-curve" d="M380,48 C380,180 660,210 720,340"/>
-      <path class="flow-curve" d="M510,48 C510,170 670,200 720,340"/>
-      <path class="flow-curve" d="M640,48 C640,160 690,190 720,340"/>
-      <path class="flow-curve" d="M800,48 C800,160 750,190 720,340"/>
-      <path class="flow-curve" d="M930,48 C930,170 770,200 720,340"/>
-      <path class="flow-curve" d="M1060,48 C1060,180 780,210 720,340"/>
-      <path class="flow-curve" d="M1190,48 C1190,190 790,215 720,340"/>
-      <path class="flow-curve" d="M1320,48 C1320,200 800,220 720,340"/>
-
-      <!-- 中心内核汇聚节点：脉冲光环 + 核心 -->
-      <circle class="flow-core-glow" cx="720" cy="340" r="48" fill="none"/>
-      <circle class="flow-core" cx="720" cy="340" r="20" fill="rgba(13,22,38,0.9)" stroke-width="1.2"/>
-      <text class="flow-core-text" x="720" y="345" text-anchor="middle">内核</text>
-
-      <!-- 内核向下的输出线（脉冲） -->
-      <line class="flow-curve" x1="720" y1="360" x2="720" y2="460"/>
-
-      <!-- 四个 pill：玻璃质感，hover 联动曲线高亮 -->
-      <rect class="flow-pill" x="212" y="31" width="76" height="34" rx="17" data-curve="2"/>
-      <text class="flow-pill-text" x="250" y="53" text-anchor="middle">抢占点</text>
-      <rect class="flow-pill" x="500" y="31" width="100" height="34" rx="17" data-curve="4"/>
-      <text class="flow-pill-text" x="550" y="53" text-anchor="middle">预算扣减点</text>
-      <rect class="flow-pill" x="840" y="31" width="100" height="34" rx="17" data-curve="6"/>
-      <text class="flow-pill-text" x="890" y="53" text-anchor="middle">权限校验点</text>
-      <rect class="flow-pill" x="1140" y="31" width="100" height="34" rx="17" data-curve="9"/>
-      <text class="flow-pill-text" x="1190" y="53" text-anchor="middle">污点标记点</text>
-    </svg>
-  </div>
+  <span class="home-kicker reveal">NLOS · NATURAL LANGUAGE OPERATING SYSTEM</span>
+  <h1 class="home-philosophy reveal">
+    <span>自然表达</span>
+    <i aria-hidden="true"></i>
+    <span>系统执行</span>
+    <i aria-hidden="true"></i>
+    <span>全局可控</span>
+  </h1>
+  <a class="home-enter reveal" href="#history">进入系统 <span aria-hidden="true">↓</span></a>
 </header>
 
 <!-- ================= 2. 历史论证 ================= -->
@@ -341,7 +298,7 @@
   <div class="footer-mark" aria-hidden="true">NLOS</div>
 </footer>
 
-<script src="js/main.js?v=7.0.0"></script>
+<script src="js/main.js?v=10.0.0"></script>
 <!-- ================= v6 极光与交互引擎（本地化 vendor） ================= -->
 <script src="vendor/three.min.js?v=6.0.1"></script>
 <script src="vendor/gsap.min.js"></script>
