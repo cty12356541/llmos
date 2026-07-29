@@ -67,20 +67,20 @@
   --dur: 220ms;
 
   /* ---- v7 视感升级：液态玻璃 / 光效 / 动效（单色家族内深化，无新色相） ---- */
-  /* 液态玻璃：低不透明度冰白 tint（≤0.12），背景极光可透过 */
-  --glass-bg: linear-gradient(135deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.015) 42%, rgba(255, 255, 255, 0) 60%),
-    rgba(214, 238, 255, 0.06);                   /* 玻璃面：斜向折射微光 + 冰白 tint */
-  --glass-bg-strong: linear-gradient(135deg, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0.02) 42%, rgba(255, 255, 255, 0) 60%),
-    rgba(214, 238, 255, 0.10);
-  --glass-blur: 14px;
-  --glass-saturate: 1.7;                         /* 高饱和让背景光透出来 */
-  --glass-border: rgba(255, 255, 255, 0.16);     /* 描边底色（渐变描边环的 fallback） */
-  --glass-border-hover: rgba(255, 255, 255, 0.40);
-  --glass-highlight: rgba(255, 255, 255, 0.26);  /* 顶部镜面高光 */
-  --glass-edge-top: rgba(255, 255, 255, 0.32);   /* 渐变描边：上缘亮 */
-  --glass-edge-bottom: rgba(127, 200, 255, 0.08);/* 渐变描边：下缘暗冰蓝 */
-  --glass-edge-top-hover: rgba(255, 255, 255, 0.50);
-  --glass-edge-bottom-hover: rgba(127, 200, 255, 0.16);
+  /* 液态玻璃：低不透明度冰白 tint（≤0.07），背景极光可透过 */
+  --glass-bg: linear-gradient(135deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.02) 42%, rgba(255, 255, 255, 0) 60%),
+    rgba(214, 238, 255, 0.05);                   /* 玻璃面：斜向折射微光 + 冰白 tint */
+  --glass-bg-strong: linear-gradient(135deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.025) 42%, rgba(255, 255, 255, 0) 60%),
+    rgba(214, 238, 255, 0.06);
+  --glass-blur: 20px;                            /* 高模糊柔化背景，低 tint 下文字更清晰 */
+  --glass-saturate: 2.0;                         /* 高饱和让背景光透出来（彩光不是灰光） */
+  --glass-border: rgba(255, 255, 255, 0.22);     /* 描边底色（渐变描边环的 fallback） */
+  --glass-border-hover: rgba(255, 255, 255, 0.48);
+  --glass-highlight: rgba(255, 255, 255, 0.40);  /* 顶部镜面高光 */
+  --glass-edge-top: rgba(255, 255, 255, 0.45);   /* 渐变描边：上缘亮 */
+  --glass-edge-bottom: rgba(127, 200, 255, 0.10);/* 渐变描边：下缘暗冰蓝 */
+  --glass-edge-top-hover: rgba(255, 255, 255, 0.62);
+  --glass-edge-bottom-hover: rgba(127, 200, 255, 0.20);
 
   /* 光效 */
   --glow-ink-soft: rgba(127, 200, 255, 0.12);
@@ -101,6 +101,8 @@ html {
   scroll-behavior: smooth;
   -webkit-text-size-adjust: 100%;
   scroll-padding-top: 88px;           /* 修复：锚点跳转不被 sticky 导航遮挡 */
+  scrollbar-width: none;              /* 全站隐藏原生滚动条，保留滚动 */
+  -ms-overflow-style: none;
 }
 section[id] { scroll-margin-top: 88px; }
 body {
@@ -181,6 +183,7 @@ a:focus-visible, button:focus-visible {
   outline: 2px solid var(--ink);
   outline-offset: 3px;
   border-radius: 2px;
+  box-shadow: 0 0 0 5px rgba(3, 7, 16, 0.5);
 }
 ::selection { background: rgba(127, 200, 255, 0.3); }
 
@@ -209,11 +212,11 @@ a:focus-visible, button:focus-visible {
   transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease);
 }
 .nav.scrolled {
-  background: rgba(214, 238, 255, 0.07);
-  backdrop-filter: blur(16px) saturate(1.7);
-  -webkit-backdrop-filter: blur(16px) saturate(1.7);
+  background: rgba(214, 238, 255, 0.055);
+  backdrop-filter: blur(16px) saturate(1.9);
+  -webkit-backdrop-filter: blur(16px) saturate(1.9);
   border-bottom-color: var(--glass-border);
-  box-shadow: 0 1px 0 0 rgba(255, 255, 255, 0.10), 0 8px 32px -16px rgba(0, 0, 0, 0.8);
+  box-shadow: 0 1px 0 0 rgba(255, 255, 255, 0.16), 0 8px 32px -16px rgba(0, 0, 0, 0.8);
 }
 .nav-inner {
   max-width: var(--container);
@@ -255,11 +258,21 @@ a:focus-visible, button:focus-visible {
 .nav-links a {
   padding: var(--sp-2) var(--sp-3);
   border-radius: var(--radius-s);
-  transition: color var(--dur) var(--ease);
+  transition: color var(--dur) var(--ease), background var(--dur) var(--ease),
+    border-color var(--dur) var(--ease);
 }
-.nav-links a:hover { color: var(--white); }
+/* v3 基线层：active/hover 无框、径向背景光托底（glacier 层以同形规则覆盖强化） */
+.nav-links a:hover {
+  color: var(--white);
+  background: radial-gradient(ellipse 90% 120% at 50% 50%, rgba(143, 211, 255, 0.1), transparent 75%);
+  border-color: transparent;
+}
 .nav-links a.active,
-.nav-links a[aria-current="page"] { color: var(--ink); }
+.nav-links a[aria-current="page"] {
+  color: var(--ice-white);
+  background: radial-gradient(ellipse 90% 120% at 50% 50%, rgba(143, 211, 255, 0.16), transparent 75%);
+  border-color: transparent;
+}
 .nav-badge {
   font-family: var(--font-mono);
   font-size: 0.68rem;
@@ -297,7 +310,7 @@ a:focus-visible, button:focus-visible {
   background: var(--white);
   box-shadow: 0 8px 24px -6px rgba(229, 244, 255, 0.45), 0 0 0 1px rgba(255,255,255,0.2);
 }
-.btn-ghost { background: var(--glass-bg); color: var(--text); border-color: var(--line-2); backdrop-filter: blur(10px) saturate(1.6); -webkit-backdrop-filter: blur(10px) saturate(1.6); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16); }
+.btn-ghost { background: var(--glass-bg); color: var(--text); border-color: var(--line-2); backdrop-filter: blur(10px) saturate(1.8); -webkit-backdrop-filter: blur(10px) saturate(1.8); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.26); }
 .btn-ghost:hover {
   border-color: var(--ink); color: var(--ink);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.26), 0 0 0 1px var(--glass-border-hover), 0 0 24px -4px var(--glow-ink-mid);
@@ -427,8 +440,8 @@ a:focus-visible, button:focus-visible {
   fill: rgba(214, 238, 255, 0.10);
   stroke: var(--line-2);
   stroke-width: 1;
-  backdrop-filter: blur(10px) saturate(1.6);
-  -webkit-backdrop-filter: blur(10px) saturate(1.6);
+  backdrop-filter: blur(10px) saturate(1.8);
+  -webkit-backdrop-filter: blur(10px) saturate(1.8);
   transition: stroke var(--dur) var(--ease);
 }
 .flow .flow-pill:hover { stroke: var(--ink); }
@@ -436,6 +449,7 @@ a:focus-visible, button:focus-visible {
   fill: var(--text-2);
   font-family: var(--font-mono);
   font-size: 12.5px;
+  pointer-events: none; /* 文字不拦截 pill 的 hover/pointerenter（曲线高亮联动） */
 }
 
 /* v3 · 中心内核汇聚节点：脉冲光环 + 玻璃核心 */
@@ -537,7 +551,7 @@ a:focus-visible, button:focus-visible {
 .timeline { display: grid; gap: var(--sp-2); }
 .tl-row {
   display: grid;
-  grid-template-columns: 200px 1fr 1fr 120px;
+  grid-template-columns: 200px 1fr 1fr auto;
   gap: var(--sp-4);
   align-items: center;
   padding: var(--sp-4) var(--sp-5);
@@ -567,6 +581,7 @@ a:focus-visible, button:focus-visible {
   border: 1px solid var(--line-2);
   color: var(--text-2);
   white-space: nowrap;
+  justify-self: end;
 }
 .tl-status.now { color: var(--text); }
 .tl-status.gap { color: var(--ink); border-color: var(--ink-dim); font-weight: 700; }
@@ -1194,11 +1209,16 @@ a:focus-visible, button:focus-visible {
   font-size: 0.85rem;
   color: var(--text);
   padding: var(--sp-3) var(--sp-4);
-  border: 1px solid var(--line-2);
+  border: 1px solid transparent;
   border-radius: var(--radius-s);
-  transition: color var(--dur) var(--ease), border-color var(--dur) var(--ease);
+  transition: color var(--dur) var(--ease), background var(--dur) var(--ease),
+    border-color var(--dur) var(--ease);
 }
-.pager-link:hover { border-color: var(--ink); color: var(--ink); }
+.pager-link:hover {
+  border-color: transparent;
+  color: var(--ink);
+  background: radial-gradient(ellipse 90% 120% at 50% 50%, rgba(143, 211, 255, 0.08), transparent 75%);
+}
 .pager-link small {
   display: block;
   font-size: 0.64rem;
@@ -1208,7 +1228,11 @@ a:focus-visible, button:focus-visible {
   margin-bottom: 2px;
 }
 .pager-link.next { margin-left: auto; text-align: right; }
-.pager-link svg { flex: none; }
+.pager-link svg {
+  flex: none;
+  transition: transform var(--dur) var(--ease);
+}
+.pager-link:hover svg { transform: translateX(2px); }
 
 /* ---- 滚动渐入（渐进增强：仅 JS 激活时隐藏初始态，无 JS 全可见） ---- */
 /* .reveal 的隐藏初始态唯一定义在下方「v3 · 滚动视差与渐入增强」段（scale 增强版），
@@ -1350,8 +1374,8 @@ html.motion-js .reveal-group:not(.in) > * {
 
 /* 决策卡、原则、oci-layer 等也统一玻璃底（轻量） */
 .decision, .principle, .oci-layer {
-  backdrop-filter: blur(10px) saturate(1.6);
-  -webkit-backdrop-filter: blur(10px) saturate(1.6);
+  backdrop-filter: blur(10px) saturate(1.8);
+  -webkit-backdrop-filter: blur(10px) saturate(1.8);
 }
 
 /* band 区与浅区的玻璃基础（让玻璃卡能透出层级） */
@@ -1474,19 +1498,19 @@ html.motion-js .reveal.in { opacity: 1; transform: none; }
   --ice: #eaf8ff;
   --ice-white: #eefaff;
 
-  --glass-bg: linear-gradient(135deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.02) 42%, rgba(255, 255, 255, 0) 60%),
+  --glass-bg: linear-gradient(135deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.025) 42%, rgba(255, 255, 255, 0) 60%),
+    rgba(226, 243, 255, 0.06);
+  --glass-bg-strong: linear-gradient(135deg, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0.03) 42%, rgba(255, 255, 255, 0) 60%),
     rgba(226, 243, 255, 0.07);
-  --glass-bg-strong: linear-gradient(135deg, rgba(255, 255, 255, 0.10), rgba(255, 255, 255, 0.025) 42%, rgba(255, 255, 255, 0) 60%),
-    rgba(226, 243, 255, 0.11);
-  --glass-blur: 16px;
-  --glass-saturate: 1.7;
-  --glass-border: rgba(235, 249, 255, 0.18);
-  --glass-border-hover: rgba(240, 250, 255, 0.42);
-  --glass-highlight: rgba(239, 250, 255, 0.26);
-  --glass-edge-top: rgba(240, 250, 255, 0.34);
-  --glass-edge-bottom: rgba(143, 211, 255, 0.09);
-  --glass-edge-top-hover: rgba(255, 255, 255, 0.52);
-  --glass-edge-bottom-hover: rgba(143, 211, 255, 0.17);
+  --glass-blur: 22px;
+  --glass-saturate: 2.0;
+  --glass-border: rgba(235, 249, 255, 0.24);
+  --glass-border-hover: rgba(240, 250, 255, 0.50);
+  --glass-highlight: rgba(239, 250, 255, 0.44);
+  --glass-edge-top: rgba(240, 250, 255, 0.50);
+  --glass-edge-bottom: rgba(143, 211, 255, 0.11);
+  --glass-edge-top-hover: rgba(255, 255, 255, 0.66);
+  --glass-edge-bottom-hover: rgba(143, 211, 255, 0.21);
 
   --glow-ink-soft: rgba(127, 204, 248, 0.12);
   --glow-ink-mid: rgba(143, 211, 255, 0.2);
@@ -1503,8 +1527,10 @@ html.motion-js .reveal.in { opacity: 1; transform: none; }
 }
 
 html {
-  scrollbar-color: rgba(159, 218, 250, 0.36) rgba(4, 13, 24, 0.72);
+  scrollbar-width: none;              /* 全站隐藏原生滚动条，保留滚动 */
+  -ms-overflow-style: none;
 }
+::-webkit-scrollbar { display: none; }
 
 body {
   min-width: 320px;
@@ -1606,17 +1632,17 @@ main {
 
 /* ---- Navigation ---- */
 .nav {
-  background: rgba(226, 243, 255, 0.05);
-  border-bottom: 1px solid rgba(235, 249, 255, 0.12);
-  backdrop-filter: blur(16px) saturate(1.7);
-  -webkit-backdrop-filter: blur(16px) saturate(1.7);
+  background: rgba(226, 243, 255, 0.03);
+  border-bottom: 1px solid rgba(235, 249, 255, 0.18);
+  backdrop-filter: blur(16px) saturate(1.9);
+  -webkit-backdrop-filter: blur(16px) saturate(1.9);
   box-shadow: 0 12px 38px -32px rgba(0, 0, 0, 0.9);
 }
 
 .nav.scrolled,
 .nav.menu-open {
-  background: rgba(226, 243, 255, 0.09);
-  border-bottom-color: rgba(235, 249, 255, 0.20);
+  background: rgba(226, 243, 255, 0.055);
+  border-bottom-color: rgba(235, 249, 255, 0.26);
   box-shadow:
     0 1px 0 rgba(227, 246, 255, 0.08),
     0 18px 44px -30px rgba(0, 0, 0, 0.9);
@@ -1652,14 +1678,14 @@ main {
 
 .nav-links a:hover {
   color: var(--white);
-  background: rgba(224, 246, 255, 0.045);
-  border-color: rgba(174, 226, 255, 0.1);
+  background: radial-gradient(ellipse 90% 120% at 50% 50%, rgba(143, 211, 255, 0.1), transparent 75%);
+  border-color: transparent;
 }
 
 .nav-links a[aria-current="page"] {
   color: var(--ice-white);
-  background: rgba(143, 211, 255, 0.075);
-  border-color: rgba(174, 226, 255, 0.14);
+  background: radial-gradient(ellipse 90% 120% at 50% 50%, rgba(143, 211, 255, 0.16), transparent 75%);
+  border-color: transparent;
 }
 
 .nav-badge {
@@ -1792,9 +1818,9 @@ main {
   color: var(--text);
   background: rgba(226, 243, 255, 0.07);
   border-color: rgba(235, 249, 255, 0.28);
-  backdrop-filter: blur(12px) saturate(1.7);
-  -webkit-backdrop-filter: blur(12px) saturate(1.7);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16);
+  backdrop-filter: blur(12px) saturate(1.9);
+  -webkit-backdrop-filter: blur(12px) saturate(1.9);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28);
 }
 
 .btn-ghost:hover {
@@ -1863,9 +1889,10 @@ main {
   max-width: 100%;
   overflow-x: auto;
   padding: 2px 2px 8px;
-  scrollbar-width: thin;
+  scrollbar-width: none;
   overscroll-behavior-inline: contain;
 }
+.page-toc::-webkit-scrollbar { display: none; }
 
 .page-toc a {
   min-height: 38px;
@@ -1907,15 +1934,6 @@ main {
 
 .card {
   padding: 25px;
-}
-
-.card::before {
-  background:
-    linear-gradient(
-      180deg,
-      var(--glass-edge-top),
-      var(--glass-edge-bottom)
-    );
 }
 
 .card:hover,
@@ -2098,13 +2116,13 @@ html.reveal-all .reveal-group > * {
     padding: 10px;
     overflow: visible;
     color: var(--text);
-    background: rgba(9, 22, 39, 0.82);
+    background: rgba(9, 22, 39, 0.94);
     border: 1px solid rgba(235, 249, 255, 0.22);
     border-radius: 12px;
     box-shadow: 0 24px 56px -24px rgba(0, 0, 0, 0.92),
       inset 0 1px 0 rgba(255, 255, 255, 0.14);
-    backdrop-filter: blur(20px) saturate(1.6);
-    -webkit-backdrop-filter: blur(20px) saturate(1.6);
+    backdrop-filter: blur(14px) saturate(1.8);
+    -webkit-backdrop-filter: blur(14px) saturate(1.8);
     opacity: 0;
     visibility: hidden;
     pointer-events: none;
@@ -2285,7 +2303,7 @@ html.reveal-all .reveal-group > * {
 
 /* ============================================================
    v7 · 液态玻璃统一补丁（liquid glass）
-   规则：tint ≤ 0.12 冰白 / blur 12–16px + saturate(1.6–1.8) /
+   规则：tint ≤ 0.07 冰白 / blur 14–22px + saturate(2.0) /
    顶部镜面高光边 + 上亮下暗渐变描边。单色纪律不变。
    ============================================================ */
 
@@ -2319,6 +2337,11 @@ html.reveal-all .reveal-group > * {
 .arch-layer:hover::before, .abs-card:hover::before, .tier:hover::before,
 .trace-row:hover::before {
   background: linear-gradient(180deg, var(--glass-edge-top-hover), var(--glass-edge-bottom-hover));
+}
+
+/* 移动端降档：blur 减小减轻 GPU 负担，高光/描边不变 */
+@media (max-width: 720px) {
+  :root { --glass-blur: 14px; }
 }
 
 /* 浅区液态玻璃：白 tint 上的描边环改为白高光 → 深色 hairline */
@@ -2756,5 +2779,115 @@ html.reveal-all .reveal-group > * {
   .idea-map-links path,
   .idea-node.is-active::after {
     animation: none !important;
+  }
+}
+
+/* ============================================================
+   v8 · 右缘自定义滚动条：垂直进度细轨 + 比例分布章节圆点
+   渐进增强：DOM 由 main.js 生成，无 JS 时不存在。
+   圆点按 section 在可滚动区间中的比例定位，轨道即页面地图。
+   ============================================================ */
+
+/* ---- 右缘垂直滚动细轨（替代已隐藏的原生滚动条） ---- */
+.scroll-progress {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  right: 2px;
+  width: 2px;
+  z-index: 60; /* 在 nav(50) 之上 */
+  pointer-events: none;
+  background: rgba(204, 233, 255, 0.14); /* 淡轨道底色 */
+}
+.scroll-progress-fill {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(127, 200, 255, 0.5), var(--ink));
+  box-shadow: 0 0 8px rgba(127, 200, 255, 0.35);
+  transform: scaleY(0);
+  transform-origin: center top;
+  will-change: transform;
+}
+
+/* ---- 右侧章节导航：长竖光束 + 高亮节点（线两端淡出、中间亮，呼应 hero 流场细线） ---- */
+.side-nav {
+  position: fixed;
+  right: 44px; /* 与右缘 2px 进度轨（right:2px）留出间隔 */
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 40; /* 低于 nav(50) 及其下拉，高于内容层(1) */
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between; /* 节点沿整条长线分布：顶部节点在线顶、底部在线底 */
+  height: 70vh;
+}
+/* 主轴光束：2px 细线，两端延伸出首/末节点并渐变淡出，外发光模拟背景极光带质感 */
+.side-nav::before {
+  content: "";
+  position: absolute;
+  top: -4vh; /* 延伸出首节点之外，两端自然消失 */
+  bottom: -4vh;
+  right: 0;
+  width: 2px;
+  background: linear-gradient(180deg, transparent, rgba(127, 200, 255, 0.55) 6%, rgba(127, 200, 255, 0.55) 94%, transparent);
+  box-shadow: 0 0 8px rgba(127, 200, 255, 0.25);
+  pointer-events: none;
+}
+.side-nav a {
+  position: relative;
+  display: block;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-2);
+  text-decoration: none;
+  white-space: nowrap;
+  text-align: right;
+  padding: 2px 18px 2px 0; /* 右侧 18px 为节点+线轴留出空间 */
+  transition: color var(--dur) var(--ease);
+}
+/* 节点：四芒星——亮核(radial) + 横/竖两条细芒(linear)，drop-shadow 随 alpha 形状发光 */
+.side-nav a::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: -9px; /* 20px 星形可视区居中于 2px 线轴（线心在 anchor 右缘左 1px） */
+  width: 20px;
+  height: 20px;
+  background:
+    radial-gradient(circle at 50% 50%, #fff 0 2px, rgba(234, 248, 255, 0.95) 3px, rgba(143, 211, 255, 0.4) 4.5px, transparent 6.5px) 50% 50% / 100% 100% no-repeat,
+    linear-gradient(180deg, transparent, rgba(234, 248, 255, 0.9) 50%, transparent) 50% 50% / 1.5px 100% no-repeat,
+    linear-gradient(90deg, transparent, rgba(234, 248, 255, 0.9) 50%, transparent) 50% 50% / 100% 1.5px no-repeat;
+  filter: drop-shadow(0 0 3px rgba(143, 211, 255, 0.9))
+    drop-shadow(0 0 9px rgba(143, 211, 255, 0.45));
+  transform: translateY(-50%) scale(var(--node-scale, 1));
+  transition: transform var(--dur) var(--ease), filter var(--dur) var(--ease);
+}
+.side-nav a:hover,
+.side-nav a:focus-visible {
+  color: var(--ink);
+}
+/* 当前章节：星更大更亮（三层光晕）+ 标签点亮 */
+.side-nav a.active {
+  color: var(--ink);
+}
+.side-nav a.active::after {
+  filter: drop-shadow(0 0 4px rgba(234, 248, 255, 1))
+    drop-shadow(0 0 12px rgba(143, 211, 255, 0.75))
+    drop-shadow(0 0 26px rgba(127, 200, 255, 0.4));
+  transform: translateY(-50%) scale(calc(var(--node-scale, 1) * 1.5));
+}
+
+/* 移动端：导航隐藏，垂直细轨保留 */
+@media (max-width: 1023px) {
+  .side-nav {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .side-nav a,
+  .side-nav a::after {
+    transition: none;
   }
 }

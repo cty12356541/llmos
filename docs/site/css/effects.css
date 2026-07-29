@@ -189,7 +189,7 @@ body.custom-cursor-native .cursor-ring {
   color: var(--ice-white, #eefaff);
 }
 
-/* Reveal visibility is owned by style.css (html.js pre-hide + .in persist)
+/* Reveal visibility is owned by style.css (html.motion-js pre-hide + .in persist)
    and effects.js (GSAP entrance); effects.css deliberately does not force it. */
 
 /* Flow interaction never changes the visibility of the full diagram. */
@@ -201,13 +201,13 @@ body.custom-cursor-native .cursor-ring {
 }
 
 .flow .flow-curve.is-highlighted {
-  opacity: 1;
+  opacity: 1 !important; /* 覆盖 flow-trace 关键帧，否则动画 opacity 恒胜普通声明 */
   stroke: var(--ice-white, #eefaff);
   stroke-width: 1.5;
 }
 
 .flow .flow-curve.is-muted {
-  opacity: 0.18;
+  opacity: 0.18 !important; /* 同上：无 !important 时 muted 视觉无效 */
 }
 
 /* ---- Fallbacks ---- */
@@ -248,8 +248,8 @@ body.custom-cursor-native .cursor-ring {
     transition: none !important;
   }
 
-  html.js .reveal,
-  html.js .reveal-group > * {
+  html.motion-js .reveal,
+  html.motion-js .reveal-group > * {
     opacity: 1 !important;
     visibility: visible !important;
     transform: none !important;

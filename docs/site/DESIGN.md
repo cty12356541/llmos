@@ -137,29 +137,31 @@ v7 把全部「经典毛玻璃」（深色调 tint `rgba(13,22,38,0.55–0.72)` 
 （只允许冰蓝 / 白 / 藏青家族），圆角 / 布局 / 字号体系不动，只改表面材质。
 
 ```css
---glass-bg: linear-gradient(135deg, rgba(255,255,255,.06), rgba(255,255,255,.015) 42%, transparent 60%),
-  rgba(214,238,255,.06);        /* 玻璃面：斜向折射微光 + 冰白 tint（α ≤ 0.12） */
---glass-bg-strong: 同上结构，tint α 0.10（glacier 层 0.07 / 0.11）
---glass-blur: 14px;             /* glacier 层 16px */
---glass-saturate: 1.7;          /* 高饱和让背景光透出来 */
---glass-border: rgba(255,255,255,.16);        /* 描边底色（渐变环 fallback） */
---glass-border-hover: rgba(255,255,255,.40);
---glass-highlight: rgba(255,255,255,.22);     /* 顶部镜面高光（inset 0 1px 0） */
---glass-edge-top: rgba(255,255,255,.32);      /* 渐变描边：上缘亮 */
---glass-edge-bottom: rgba(127,200,255,.08);   /* 渐变描边：下缘暗冰蓝 */
---glass-edge-top-hover / --glass-edge-bottom-hover: 0.50 / 0.16（hover 同步调亮）
+--glass-bg: linear-gradient(135deg, rgba(255,255,255,.06), rgba(255,255,255,.02) 42%, transparent 60%),
+  rgba(214,238,255,.045);       /* 玻璃面：斜向折射微光 + 冰白 tint（α ≤ 0.07） */
+--glass-bg-strong: 同上结构，tint α 0.06（glacier 层 0.05 / 0.07）
+--glass-blur: 20px;             /* glacier 层 22px；≤720px 降档 14px 减轻 GPU 负担 */
+--glass-saturate: 2.0;          /* 高饱和让背景光透出来（彩光不是灰光） */
+--glass-border: rgba(255,255,255,.22);        /* 描边底色（渐变环 fallback，glacier .24） */
+--glass-border-hover: rgba(255,255,255,.48);  /* glacier .50 */
+--glass-highlight: rgba(255,255,255,.40);     /* 顶部镜面高光（inset 0 1px 0，glacier .44） */
+--glass-edge-top: rgba(255,255,255,.45);      /* 渐变描边：上缘亮（glacier .50） */
+--glass-edge-bottom: rgba(127,200,255,.10);   /* 渐变描边：下缘暗冰蓝（glacier .11） */
+--glass-edge-top-hover / --glass-edge-bottom-hover: 0.62 / 0.20（glacier 0.66 / 0.21，hover 同步调亮）
 --shadow-glass: …, inset 0 1px 0 var(--glass-highlight);   /* 镜面高光并入阴影 token */
 ```
 
 **三条规则：**
 
-1. **tint ≤ 0.12**：玻璃面一律冰白 / 白色 tint（α 0.05–0.12），禁止回到深色
+1. **tint ≤ 0.07**：玻璃面一律冰白 / 白色 tint（α 0.03–0.07），禁止回到深色
    navy tint（0.55+）——深色 tint 会闷死背景极光，液态感来自「透」。
-2. **blur 12–16px + saturate(1.6–1.8)**：所有 `backdrop-filter` 统一走
-   `blur(var(--glass-blur)) saturate(var(--glass-saturate))`；单独调 blur
-   不加 saturate 等于只做了一半（透过来的是灰光不是彩光）。
+2. **blur 14–22px + saturate(2.0)**：所有 `backdrop-filter` 统一走
+   `blur(var(--glass-blur)) saturate(var(--glass-saturate))`；更高模糊让
+   背景更均匀柔和，低 tint 下文字反而更清晰；单独调 blur 不加 saturate
+   等于只做了一半（透过来的是灰光不是彩光）。移动端
+   （≤720px）`--glass-blur` 降档至 14px 减轻 GPU 负担，高光/描边不变。
 3. **镜面高光边**：每个玻璃面必须有 (a) 顶部 `inset 0 1px 0` 镜面高光
-   （α 0.15–0.28，已并入 `--shadow-glass`）+ (b) 1px 渐变描边环（上
+   （α 0.40–0.44，已并入 `--shadow-glass`）+ (b) 1px 渐变描边环（上
    `--glass-edge-top` → 下 `--glass-edge-bottom`，::before + mask-composite
    技法，`pointer-events: none`）+ (c) 斜向 135° 折射微光（已并入
    `--glass-bg`）。hover 时高光与描边同步调亮，过渡 ≤ 220ms。

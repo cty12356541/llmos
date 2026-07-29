@@ -368,4 +368,143 @@
       if (!structure.contains(event.relatedTarget)) clearFocus();
     });
   });
+
+  /* ---- 右侧悬浮中文导航面板 + 右缘滚动进度细轨 ----
+     渐进增强：全部由 JS 生成，无 JS 时页面无残留占位。
+     移动端（<1024px）面板由 CSS 隐藏，进度轨保留。 */
+  var railSections = Array.prototype.slice.call(
+    document.querySelectorAll("main section[id]")
+  );
+
+  if (railSections.length) {
+    /* 中文标签字典：按 section id 映射，字典外 id fallback 到 h2 前 6 字 */
+    var CN_LABELS = {
+      top: "顶部",
+      /* index */
+      history: "历史论证",
+      problem: "问题",
+      direction: "方向修正",
+      tour: "阅读路线",
+      /* kernel */
+      arch: "三层架构",
+      abstractions: "八大抽象",
+      syscalls: "系统调用",
+      elf: "ELF 契约",
+      universality: "通用性论证",
+      /* verification */
+      budget: "Budget 经济",
+      randomness: "随机性管理",
+      security: "重授权签字链",
+      validation: "宗旨验证",
+      /* modern */
+      namespace: "命名即权限",
+      distributed: "分布式内核",
+      protocol: "协议栈",
+      elasticity: "弹性多租户",
+      observability: "可观测性",
+      principles: "设计原则"
+    };
+
+    function sectionLabel(section) {
+      if (CN_LABELS[section.id]) return CN_LABELS[section.id];
+      var h2 = section.querySelector("h2");
+      if (h2) {
+        var fallback = h2.textContent.trim().slice(0, 6);
+        if (fallback) return fallback;
+      }
+      return section.id;
+    }
+
+    var panel = document.createElement("nav");
+    panel.className = "side-nav";
+    panel.setAttribute("aria-label", "章节导航");
+
+    var itemById = {};
+
+    function addItem(id, label) {
+      var link = document.createElement("a");
+      link.href = "#" + id;
+      link.textContent = label;
+      itemById[id] = link;
+      panel.appendChild(link);
+    }
+
+    addItem("top", CN_LABELS.top);
+    railSections.forEach(function (section) {
+      addItem(section.id, sectionLabel(section));
+    });
+    // 节点大小渐变：两端 1.0 → 正中间 0.6，写入内联 --node-scale（只瘦星形节点，不瘦文字）
+    var navLinks = panel.querySelectorAll("a");
+    var midIndex = (navLinks.length - 1) / 2;
+    navLinks.forEach(function (link, i) {
+      var t = midIndex > 0 ? Math.abs(i - midIndex) / midIndex : 0;
+      link.style.setProperty("--node-scale", (1 - 0.4 * (1 - t)).toFixed(3));
+    });
+    document.body.appendChild(panel);
+
+    var progress = document.createElement("div");
+    progress.className = "scroll-progress";
+    progress.setAttribute("aria-hidden", "true");
+    var progressFill = document.createElement("div");
+    progressFill.className = "scroll-progress-fill";
+    progress.appendChild(progressFill);
+    document.body.appendChild(progress);
+
+    var activeItemId = null;
+    function setActiveItem(id) {
+      if (id === activeItemId) return;
+      activeItemId = id;
+      Object.keys(itemById).forEach(function (key) {
+        var active = key === id;
+        itemById[key].classList.toggle("active", active);
+        if (active) {
+          itemById[key].setAttribute("aria-current", "true");
+        } else {
+          itemById[key].removeAttribute("aria-current");
+        }
+      });
+    }
+
+    function updateProgress() {
+      var doc = document.documentElement;
+      var max = doc.scrollHeight - window.innerHeight;
+      var ratio =
+        max > 0 ? Math.min(1, Math.max(0, window.scrollY / max)) : 0;
+      progressFill.style.transform = "scaleY(" + ratio + ")";
+    }
+
+    function updateSpy() {
+      var y = window.scrollY;
+      var probe = y + window.innerHeight * 0.4;
+      var current = "top";
+      for (var i = 0; i < railSections.length; i++) {
+        var top =
+          railSections[i].getBoundingClientRect().top + y;
+        if (top <= probe) current = railSections[i].id;
+      }
+      /* 滚到页面底部时锁定最后一个 section */
+      if (
+        y + window.innerHeight >=
+        document.documentElement.scrollHeight - 2
+      ) {
+        current = railSections[railSections.length - 1].id;
+      }
+      setActiveItem(current);
+    }
+
+    var sideTicking = false;
+    function onSideScroll() {
+      if (sideTicking) return;
+      sideTicking = true;
+      window.requestAnimationFrame(function () {
+        updateProgress();
+        updateSpy();
+        sideTicking = false;
+      });
+    }
+
+    window.addEventListener("scroll", onSideScroll, { passive: true });
+    updateProgress();
+    updateSpy();
+  }
 })();

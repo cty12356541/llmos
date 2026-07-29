@@ -744,7 +744,7 @@
           autoAlpha: 1,
           y: 0,
           filter: "blur(0px)",
-          duration: 0.62,
+          duration: 0.6,
           stagger: stagger || 0.055,
           ease: "power2.out",
           overwrite: "auto",
