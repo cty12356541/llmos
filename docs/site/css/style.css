@@ -3350,13 +3350,17 @@ html.reveal-all .reveal-group > * {
 .nlos-emblem strong {
   position: absolute;
   left: 50%;
-  bottom: 8%;
+  bottom: 1%;
   z-index: 2;
   font-family: var(--font-mono);
-  font-size: clamp(1.28rem, 2.1vw, 1.78rem);
-  letter-spacing: 0.16em;
-  text-shadow: 0 0 14px rgba(143,211,255,.62);
-  transform: translateX(-46%);
+  font-size: clamp(3.4rem, 5.4vw, 5.4rem);
+  font-weight: 500;
+  line-height: .9;
+  letter-spacing: 0.14em;
+  text-shadow:
+    0 0 12px rgba(235,249,255,.46),
+    0 0 30px rgba(143,211,255,.28);
+  transform: translateX(-46.5%);
 }
 
 .emblem-orbit {
@@ -3378,8 +3382,14 @@ html.reveal-all .reveal-group > * {
   transform-origin: center;
 }
 
-.orbit-a { transform: translate(-50%, -50%); }
-.orbit-b { transform: translate(-50%, -50%) rotate(90deg); }
+.orbit-a {
+  width: 172%;
+  transform: translate(-50%, -50%);
+}
+.orbit-b {
+  width: 112%;
+  transform: translate(-50%, -50%) rotate(90deg);
+}
 
 .emblem-orbit::before,
 .emblem-orbit::after {
@@ -3429,7 +3439,7 @@ html.reveal-all .reveal-group > * {
 .home-kicker {
   color: var(--text-3);
   font-family: var(--font-mono);
-  font-size: .76rem;
+  font-size: .72rem;
   letter-spacing: .22em;
 }
 
@@ -3441,7 +3451,7 @@ html.reveal-all .reveal-group > * {
   gap: clamp(12px, 2.5vw, 30px);
   margin-top: 24px;
   color: var(--ice-white);
-  font-size: clamp(2rem, 4.1vw, 3.8rem);
+  font-size: clamp(1.7rem, 3.15vw, 3rem);
   font-weight: 200;
   letter-spacing: -.045em;
   line-height: 1.08;
