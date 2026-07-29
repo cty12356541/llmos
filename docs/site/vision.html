@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>系统哲学 · NLOS — 自然语言操作系统</title>
+<meta name="description" content="NLOS 的最高目标、核心设计哲学、现代系统迁移方法与自然语言操作系统边界。">
+<script>document.documentElement.classList.add('motion-js');window.__nlosRevealFailsafe=setTimeout(function(){document.documentElement.classList.add('reveal-all')},2500);</script>
+<link rel="stylesheet" href="css/style.css?v=7.0.0">
+<link rel="stylesheet" href="css/effects.css?v=7.0.0">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23e5f4ff'/%3E%3Ctext x='16' y='21' font-family='monospace' font-size='12' font-weight='700' text-anchor='middle' fill='%23030710'%3ENL%3C/text%3E%3C/svg%3E">
+</head>
+<body>
+<canvas id="bg-canvas" aria-hidden="true"></canvas>
+<nav class="nav" id="nav"><div class="nav-inner">
+  <a class="nav-brand" href="index.html"><span class="mark" aria-hidden="true">NL</span><span>NLOS</span></a>
+  <button class="nav-toggle" id="navToggle" type="button" aria-expanded="false" aria-controls="navLinks" aria-label="打开主导航"><span></span><span></span><span></span></button>
+  <div class="nav-links" id="navLinks">
+    <a href="index.html">首页</a><a href="vision.html" aria-current="page">系统哲学</a><a href="kernel.html">通用内核</a><a href="execution.html">执行与控制</a><a href="verification.html">支撑与验证</a><a href="modern.html">现代系统</a><a href="roadmap.html">路线</a>
+  </div>
+  <span class="nav-badge"><span class="b-full">v0.5 · 当前规范 · 阶段 B 启动</span><span class="b-short">v0.5</span></span>
+</div></nav>
+
+<main id="top">
+<header class="page-head container">
+  <span class="eyebrow reveal">Constitution · Philosophy · Method</span>
+  <h1 class="page-title reveal"><span class="title-line">不是更大的编排框架，</span><span class="title-line accent">而是自然语言操作系统</span></h1>
+  <p class="page-desc reveal">项目最高目标是构建达到 Windows/macOS 级别的通用、现代、系统级 NLOS。确定性执行层、Agent reference monitor、控制面和单机 MVP 都只是启动内核，不是最终产品边界。</p>
+  <nav class="page-toc reveal" aria-label="本页目录">
+    <a href="#north-star">最高目标</a><a href="#why-os">为什么是 OS</a><a href="#philosophy">核心哲学</a><a href="#method">迁移方法</a><a href="#boundaries">边界</a>
+  </nav>
+</header>
+
+<section class="section band" id="north-star"><div class="container">
+  <div class="sec-head reveal"><span class="eyebrow">North Star<span class="sec-no">/ 01</span></span>
+    <h2>Windows/macOS 级别，指的是<em>系统完整性</em></h2>
+    <p>它不要求第一天重写 Linux、Darwin 或 Windows，也不要求先拥有裸机内核。它要求 NLOS 最终像现代操作系统一样，拥有稳定系统对象、不可绕过的权威、应用平台、桌面、开发工具、兼容承诺和第三方生态。</p>
+  </div>
+  <div class="stats reveal-group">
+    <div class="stat"><strong>01</strong><span>通用性</span><p>第三方可以运行设计者没有预见的 Application，而不修改内核。</p></div>
+    <div class="stat"><strong>02</strong><span>系统权威</span><p>身份、权限、资源、通信、存储和生命周期由系统裁决。</p></div>
+    <div class="stat"><strong>03</strong><span>完整界面</span><p>自然语言是首要入口，同时保留 GUI、CLI、API 和逐层控制。</p></div>
+    <div class="stat"><strong>04</strong><span>长期演进</span><p>Package、Driver、SDK、兼容性、更新回滚和应用生态共同构成 OS。</p></div>
+  </div>
+</div></section>
+
+<section class="section" id="why-os"><div class="container">
+  <div class="sec-head reveal"><span class="eyebrow">Why an OS<span class="sec-no">/ 02</span></span>
+    <h2>智能体系统正在重演<em>计算机系统史</em></h2>
+    <p>当资源昂贵、任务并发、主体互不信任、状态跨越故障时，应用库无法替代系统层。Agent 编排正在重新遇到分时、虚存、进程隔离、事务、分布式租约、服务治理和桌面控制曾经解决过的问题。</p>
+  </div>
+  <div class="split-2 reveal-group">
+    <div class="card"><h4>编排框架解决“怎么组织一次流程”</h4><p>图、角色、handoff、prompt 和工具链非常重要，但它们主要属于应用与用户态策略。它们不能自行成为全局资源、权限、持久化和故障恢复的权威。</p></div>
+    <div class="card"><h4>NLOS 解决“谁有权在有限世界中做什么”</h4><p>它管理 Application、Task、Process、Agent、Fiber、Artifact、Context、Resource 和 Device，并让不同框架成为同一系统中的可替换应用。</p></div>
+  </div>
+  <div class="callout reveal"><strong>规模是压力测试，通用才是宗旨。</strong><p>万级或 PID 级 Agent 不是为了追求一个华丽数字，而是检验对象模型、调度、隔离、资源和控制是否真的具有系统性。</p></div>
+</div></section>
+
+<section class="section band" id="philosophy"><div class="container">
+  <div class="sec-head reveal"><span class="eyebrow">Core Philosophy<span class="sec-no">/ 03</span></span><h2>项目真正的<em>五条轴心</em></h2></div>
+  <div class="principles reveal-group">
+    <div class="card principle"><span class="p-no">01</span><div><h4>概率智能属于用户态，确定性不变量属于系统权威</h4><p>模型理解、规划和提出行动；Capability、资源上界、generation、唯一提交和副作用 fence 由不可绕过边界强制。</p></div></div>
+    <div class="card principle"><span class="p-no">02</span><div><h4>控制不需要理解</h4><p>系统不必理解 Agent 为什么行动，只需机械判断它能否命名目标、是否有权、资源是否足够、版本是否新鲜、效果是否可安全提交。</p></div></div>
+    <div class="card principle"><span class="p-no">03</span><div><h4>自然语言是首要界面，不是裸 ABI</h4><p>自然语言先编译为 typed Intent、TaskPlan、Action 和 ControlCommand，再进入授权、准入、执行与 Receipt；prompt 本身不拥有权力。</p></div></div>
+    <div class="card principle"><span class="p-no">04</span><div><h4>自动与手动控制并重</h4><p>普通用户从顶层说“完成这个任务”，系统自动拆解和调用依赖；高级用户可以像 Task Manager/Activity Monitor 一样逐层下钻和干预。</p></div></div>
+    <div class="card principle"><span class="p-no">05</span><div><h4>终局完整，实施克制</h4><p>架构始终面向完整 NLOS；工程从最小 strict、durable、可恢复的纵切面开始，绝不把设计稿误写成已经实现的生产事实。</p></div></div>
+  </div>
+</div></section>
+
+<section class="section" id="method"><div class="container">
+  <div class="sec-head reveal"><span class="eyebrow">Transfer Method<span class="sec-no">/ 04</span></span>
+    <h2>优先迁移<em>现代系统成熟机制</em></h2>
+    <p>迁移的是控制回路、隔离边界、状态机和失败语义，不是把传统术语贴到 Agent 上。</p>
+  </div>
+  <div class="tier-list reveal-group">
+    <div class="tier-row"><span class="tier-id">A</span><div><h4>直接迁移</h4><p>Process isolation、Capability、Namespace、bounded queue、backpressure、WAL、MVCC、lease/fence、cgroup 与 job control。</p></div></div>
+    <div class="tier-row"><span class="tier-id">B</span><div><h4>语义适配</h4><p>Context working set、token/model slot、语义缓存、Agent checkpoint、Topic interest 与 human attention。</p></div></div>
+    <div class="tier-row"><span class="tier-id">C</span><div><h4>NLOS 新机制</h4><p>typed Intent、semantic provenance/view、EffectPermit、模型不确定性边界和外部副作用未知态。</p></div></div>
+  </div>
+</div></section>
+
+<section class="section light" id="boundaries"><div class="container">
+  <div class="sec-head reveal"><span class="eyebrow">Boundaries<span class="sec-no">/ 05</span></span><h2>哪些话现在<em>不能说</em></h2></div>
+  <div class="split-2 reveal-group">
+    <div class="card"><h4>不能说“Agent 就是进程”</h4><p>Application 包含 Process，Process 承载 AgentInstance，AgentInstance 运行 ExecutionFiber。名称类比不会自动带来地址空间或故障隔离。</p></div>
+    <div class="card"><h4>不能说“所有 Agent 保持同一信念”</h4><p>系统保证共享状态、snapshot、对象身份、冲突可见与唯一 canonical commit；语义认识仍是 policy-relative view。</p></div>
+    <div class="card"><h4>不能说“十万 Agent 正在同时思考”</h4><p>logical、materialized、runnable、active 和 resident 必须分开计量。规模来自惰性物化与有限工作集。</p></div>
+    <div class="card"><h4>不能说“设计定案等于实现完成”</h4><p>当前 v0.5 是规范基线；阶段 B runtime、100K Fiber、可信 UI 和故障证据仍在实施。</p></div>
+  </div>
+</div></section>
+</main>
+
+<nav class="pager" aria-label="页面顺序"><div class="container pager-inner">
+  <a class="pager-link prev" href="index.html"><span><small>上一页</small>首页 · 总览</span></a>
+  <a class="pager-link next" href="kernel.html"><span><small>下一页</small>通用内核</span></a>
+</div></nav>
+<footer class="footer"><div class="container footer-inner"><div class="f-brand"><span class="nav-brand"><span class="mark" aria-hidden="true">NL</span>NLOS</span><span>· 自然语言操作系统</span></div><span>架构设计总纲 v0.5 · 系统哲学</span><span>最高目标、方法论与证据边界</span></div><div class="footer-mark" aria-hidden="true">NLOS</div></footer>
+<script src="js/main.js?v=7.0.0"></script><script src="vendor/three.min.js?v=6.0.1"></script><script src="vendor/gsap.min.js"></script><script src="vendor/ScrollTrigger.min.js"></script><script src="js/effects.js?v=7.0.0"></script>
+</body></html>

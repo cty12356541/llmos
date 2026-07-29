@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>执行与控制 · NLOS — 自然语言操作系统</title>
+<meta name="description" content="NLOS 的 Application、Task、Process、AgentInstance、ExecutionFiber 执行模型，海量 Agent 调度、语义一致性、任务隔离与多层控制。">
+<script>document.documentElement.classList.add('motion-js');window.__nlosRevealFailsafe=setTimeout(function(){document.documentElement.classList.add('reveal-all')},2500);</script>
+<link rel="stylesheet" href="css/style.css?v=7.0.0"><link rel="stylesheet" href="css/effects.css?v=7.0.0">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23e5f4ff'/%3E%3Ctext x='16' y='21' font-family='monospace' font-size='12' font-weight='700' text-anchor='middle' fill='%23030710'%3ENL%3C/text%3E%3C/svg%3E">
+</head>
+<body>
+<canvas id="bg-canvas" aria-hidden="true"></canvas>
+<nav class="nav" id="nav"><div class="nav-inner">
+  <a class="nav-brand" href="index.html"><span class="mark" aria-hidden="true">NL</span><span>NLOS</span></a>
+  <button class="nav-toggle" id="navToggle" type="button" aria-expanded="false" aria-controls="navLinks" aria-label="打开主导航"><span></span><span></span><span></span></button>
+  <div class="nav-links" id="navLinks"><a href="index.html">首页</a><a href="vision.html">系统哲学</a><a href="kernel.html">通用内核</a><a href="execution.html" aria-current="page">执行与控制</a><a href="verification.html">支撑与验证</a><a href="modern.html">现代系统</a><a href="roadmap.html">路线</a></div>
+  <span class="nav-badge"><span class="b-full">v0.5 · 当前规范 · 阶段 B 启动</span><span class="b-short">v0.5</span></span>
+</div></nav>
+<main id="top">
+<header class="page-head container">
+  <span class="eyebrow reveal">Execution · Scale · Control</span>
+  <h1 class="page-title reveal"><span class="title-line">像现代系统一样，</span><span class="title-line accent">管理海量智能体</span></h1>
+  <p class="page-desc reveal">用户只需在顶层表达目标，NLOS 自动生成 TaskPlan、拆分任务、选择依赖、准入并按需物化；同时，系统把 Application、Task、Process、Agent、Fiber、资源和 Operation 全部暴露为可观察、可授权控制的对象。</p>
+  <nav class="page-toc reveal" aria-label="本页目录"><a href="#hierarchy">执行层级</a><a href="#top-control">顶层自动调度</a><a href="#scale">PID 级规模</a><a href="#consistency">一致性与隔离</a><a href="#manual">手动控制</a></nav>
+</header>
+
+<section class="section band" id="hierarchy"><div class="container">
+  <div class="sec-head reveal"><span class="eyebrow">Execution Hierarchy<span class="sec-no">/ 01</span></span>
+    <h2>从用户应用到一次<em>最小执行片段</em></h2>
+    <p>传统系统是 Application ⊇ Process ⊇ Thread ⊇ Coroutine。NLOS 保留这一成熟分层，但把 Agent 的身份、语义和异步外部操作显式分开。</p>
+  </div>
+  <div class="stack-diagram reveal">
+    <div class="stack-layer"><span class="layer-label">APPLICATION</span><h3>Application</h3><p>用户可见功能、安装、授权、更新和数据所有权整体；可拥有多个 Process 与长期后台 Task。</p></div>
+    <div class="stack-layer"><span class="layer-label">RESOURCE / FAILURE BOUNDARY</span><h3>Process / IsolationUnit</h3><p>宿主可抢占的资源、生命周期、故障与强隔离边界；不要求与 OS PID 一一对应。</p></div>
+    <div class="stack-layer"><span class="layer-label">THREAD / ACTOR-LIKE IDENTITY</span><h3>AgentInstance</h3><p>AgentRole 在特定 TaskAttempt 与 Process incarnation 中的一次可调度身份；不是安全边界。</p></div>
+    <div class="stack-layer"><span class="layer-label">COROUTINE / FIBER</span><h3>ExecutionFiber</h3><p>可挂起、恢复的用户态执行流，在有限宿主线程与 event loop 上 M:N 复用。</p></div>
+    <div class="stack-layer"><span class="layer-label">DISPATCH QUANTUM</span><h3>Activation</h3><p>一次实际获得执行权的 turn，用于调度、追踪和 CPU/model/tool wait 分维计量。</p></div>
+  </div>
+  <div class="callout reveal"><strong>Operation 不是 Fiber。</strong><p>Operation 是一次 future/异步 I/O/模型或工具调用，拥有独立 deadline、cancel、幂等和副作用状态；调用者消失后，外部效果仍可能需要 reconcile。</p></div>
+</div></section>
+
+<section class="section" id="top-control"><div class="container">
+  <div class="sec-head reveal"><span class="eyebrow">Top-level Scheduling<span class="sec-no">/ 02</span></span>
+    <h2>一句自然语言，编译成<em>可检查的系统执行图</em></h2>
+    <p>自然语言不是特权 syscall。它必须经过结构化编译、预览、授权、资源准入和稳定身份，才进入执行层。</p>
+  </div>
+  <div class="pipeline reveal">
+    <div class="pipe-step"><span>01</span><h4>Natural Language</h4><p>用户表达目标、约束、期限和可接受结果。</p></div>
+    <div class="pipe-arrow">→</div>
+    <div class="pipe-step"><span>02</span><h4>Typed Intent</h4><p>解析对象、权限、预算、风险和确认需求。</p></div>
+    <div class="pipe-arrow">→</div>
+    <div class="pipe-step"><span>03</span><h4>TaskPlan</h4><p>生成版本化 DAG、依赖、验收与资源合同。</p></div>
+    <div class="pipe-arrow">→</div>
+    <div class="pipe-step"><span>04</span><h4>Admission</h4><p>检查 Capability、Resource、deadline 和隔离。</p></div>
+    <div class="pipe-arrow">→</div>
+    <div class="pipe-step"><span>05</span><h4>Materialize</h4><p>只创建当前 ready window 需要的 Process/Agent/Fiber。</p></div>
+  </div>
+  <div class="split-2 reveal-group">
+    <div class="card"><h4>应用自己调用依赖</h4><p>像 Windows/macOS 应用使用系统服务一样，Application 通过 ServiceDirectory、SABI 与 Capability 解析模型、工具、Artifact、搜索、通知和设备，不需要用户手工逐层指挥。</p></div>
+    <div class="card"><h4>用户仍保留最终控制</h4><p>计划可预览、编辑、冻结 revision 或重新授权。自动 Planner 只能在授权 Namespace、ResourceContract 和 policy 内行动。</p></div>
+  </div>
+</div></section>
+
+<section class="section light" id="scale"><div class="container">
+  <div class="sec-head reveal"><span class="eyebrow">PID-scale Logical Execution<span class="sec-no">/ 03</span></span>
+    <h2>管理 PID 级逻辑实体，<em>不是同时运行十万个模型</em></h2>
+    <p>规模来自逻辑对象持久化、惰性物化、Context 工作集和分层调度。系统必须持续公开以下五个互不等价的数字。</p>
+  </div>
+  <div class="stats reveal-group">
+    <div class="stat"><strong>LOGICAL</strong><span>TaskNode</span><p>计划中存在，只占有界 metadata。</p></div>
+    <div class="stat"><strong>MATERIALIZED</strong><span>Instance</span><p>已有 Attempt、Process 或 AgentInstance。</p></div>
+    <div class="stat"><strong>RUNNABLE</strong><span>Fiber</span><p>依赖和资源满足，等待 runtime dispatch。</p></div>
+    <div class="stat"><strong>ACTIVE</strong><span>Slot</span><p>正在消耗 CPU、GPU、模型或 Driver 槽位。</p></div>
+    <div class="stat"><strong>RESIDENT</strong><span>Working Set</span><p>占用内存、KV cache 或 pinned Context。</p></div>
+  </div>
+  <div class="tier-list reveal-group">
+    <div class="tier-row"><span class="tier-id">G</span><div><h4>Global Scheduler</h4><p>Tenant/Workspace/Application fairness、Cell placement 和全局 quota；不参与每个 token 的热路径。</p></div></div>
+    <div class="tier-row"><span class="tier-id">C</span><div><h4>Cell Scheduler</h4><p>TaskAuthority、本地 capacity、bulkhead、TaskGroup queue 和跨 Worker placement。</p></div></div>
+    <div class="tier-row"><span class="tier-id">W</span><div><h4>Worker Runtime</h4><p>Process/Agent/Fiber runnable queue、work stealing、context affinity、batch 和本地 backpressure。</p></div></div>
+  </div>
+</div></section>
+
+<section class="section" id="consistency"><div class="container">
+  <div class="sec-head reveal"><span class="eyebrow">Consistency &amp; Isolation<span class="sec-no">/ 04</span></span>
+    <h2>控制得住，不等于让所有 Agent<em>想法完全一样</em></h2>
+    <p>NLOS 管理的是可验证的共享状态与提交协议，而不是强迫概率模型拥有全局统一信念。</p>
+  </div>
+  <div class="split-2 reveal-group">
+    <div class="card"><h4>TaskSnapshot</h4><p>每个 Attempt 从 causal-closed、不可变输入切面开始，避免执行中读取悄悄漂移。</p></div>
+    <div class="card"><h4>独立 Attempt</h4><p>retry、hedge 和 refinement 使用不同 TaskAttemptId、generation、Capability 与 staging area。</p></div>
+    <div class="card"><h4>唯一 canonical commit</h4><p>多个候选可以并行产生，只有获得 CommitPermit 并赢得 TaskHead CAS 的 Attempt 能成为 canonical 结果。</p></div>
+    <div class="card"><h4>EffectPermit 与未知态</h4><p>副作用按 slot/幂等身份 fencing。无法证明外部效果停止时进入 PARTIAL_EFFECT 或 EFFECT_UNKNOWN，不能改名为失败前取消。</p></div>
+    <div class="card"><h4>IsolationDomain</h4><p>Namespace、Capability、ResourceGroup、Snapshot、Channel、secret、network/device、cancel 和 failure domain 共同构成隔离面。</p></div>
+    <div class="card"><h4>ControlDomain 独立性</h4><p>共识和 quorum 按独立控制域计数；复制多个同源 Agent 不能伪造认识论独立。</p></div>
+  </div>
+</div></section>
+
+<section class="section band" id="manual"><div class="container">
+  <div class="sec-head reveal"><span class="eyebrow">Manual Control<span class="sec-no">/ 05</span></span>
+    <h2>像 Task Manager 一样，<em>逐层观察和干预</em></h2>
+    <p>自然语言、GUI、CLI 和结构化 API 全部编译为同一个 typed ControlCommand，经过相同 Capability、generation CAS、资源/effect fence 和 Receipt 路径。</p>
+  </div>
+  <div class="control-table reveal">
+    <div class="control-row"><strong>System / Workspace</strong><span>总负载、pressure、性能模式、Quota、数据边界、并发和通知策略</span></div>
+    <div class="control-row"><strong>Application</strong><span>launch、activate、terminate、后台、自启动、网络/设备权限和资源上限</span></div>
+    <div class="control-row"><strong>Task / Plan</strong><span>预览、编辑、start、pause、resume、cancel、retry、deadline、预算和 revision</span></div>
+    <div class="control-row"><strong>TaskGroup / Node</strong><span>依赖图、fanout/depth、分支、materialize、checkpoint 和 evict</span></div>
+    <div class="control-row"><strong>Process / Agent / Fiber</strong><span>inspect、suspend、resume、kill/cancel、affinity、QoS 与共享故障域</span></div>
+    <div class="control-row"><strong>Resource / Context</strong><span>allocation、working set、pin、pressure、quota、reclaim 与 residency</span></div>
+    <div class="control-row"><strong>Topic / Operation / Device</strong><span>backlog、payer、throttle、drain、cancel、safe retry、reconcile 与 reset</span></div>
+  </div>
+</div></section>
+</main>
+<nav class="pager" aria-label="页面顺序"><div class="container pager-inner"><a class="pager-link prev" href="kernel.html"><span><small>上一页</small>通用内核</span></a><a class="pager-link next" href="verification.html"><span><small>下一页</small>支撑与验证</span></a></div></nav>
+<footer class="footer"><div class="container footer-inner"><div class="f-brand"><span class="nav-brand"><span class="mark" aria-hidden="true">NL</span>NLOS</span><span>· 自然语言操作系统</span></div><span>架构设计总纲 v0.5 · 执行与控制</span><span>自动规划与各层手动调度共享同一系统权威</span></div><div class="footer-mark" aria-hidden="true">NLOS</div></footer>
+<script src="js/main.js?v=7.0.0"></script><script src="vendor/three.min.js?v=6.0.1"></script><script src="vendor/gsap.min.js"></script><script src="vendor/ScrollTrigger.min.js"></script><script src="js/effects.js?v=7.0.0"></script>
+</body></html>

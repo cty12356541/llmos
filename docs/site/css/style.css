@@ -2891,3 +2891,177 @@ html.reveal-all .reveal-group > * {
     transition: none;
   }
 }
+
+/* ================= v0.5 扩展页：沿用既有冰川玻璃语言 ================= */
+.stack-diagram,
+.tier-list,
+.control-table {
+  display: grid;
+  gap: var(--sp-3);
+  margin-top: var(--sp-7);
+}
+
+.stack-layer,
+.tier-row,
+.control-row,
+.pipe-step {
+  position: relative;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-s);
+  background: var(--glass-bg);
+  box-shadow: var(--shadow-glass);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+}
+
+.stack-layer {
+  display: grid;
+  grid-template-columns: minmax(180px, .7fr) minmax(220px, .8fr) minmax(300px, 1.8fr);
+  align-items: center;
+  gap: var(--sp-5);
+  padding: var(--sp-5) var(--sp-6);
+}
+
+.stack-layer::before,
+.tier-row::before,
+.control-row::before,
+.pipe-step::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(180deg, var(--glass-edge-top), var(--glass-edge-bottom));
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+}
+
+.stack-layer .layer-label {
+  font-family: var(--font-mono);
+  font-size: .7rem;
+  letter-spacing: .1em;
+  color: var(--ink-dim);
+}
+
+.stack-layer h3 {
+  color: var(--white);
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+.stack-layer p,
+.tier-row p,
+.control-row span,
+.pipe-step p {
+  color: var(--text-2);
+  font-size: .86rem;
+}
+
+.pipeline {
+  display: grid;
+  grid-template-columns: repeat(9, auto);
+  align-items: stretch;
+  gap: var(--sp-2);
+  margin-top: var(--sp-7);
+}
+
+.pipe-step {
+  min-width: 0;
+  padding: var(--sp-5);
+}
+
+.pipe-step > span,
+.tier-id {
+  font-family: var(--font-mono);
+  color: var(--ink);
+  font-size: .74rem;
+  letter-spacing: .08em;
+}
+
+.pipe-step h4 {
+  margin: var(--sp-3) 0 var(--sp-2);
+  color: var(--white);
+  font-size: .92rem;
+}
+
+.pipe-arrow {
+  display: grid;
+  place-items: center;
+  color: var(--ink-dim);
+  font-family: var(--font-mono);
+}
+
+.tier-row {
+  display: grid;
+  grid-template-columns: 56px 1fr;
+  gap: var(--sp-5);
+  padding: var(--sp-5) var(--sp-6);
+}
+
+.tier-id {
+  font-size: 1.35rem;
+}
+
+.tier-row h4 {
+  margin-bottom: var(--sp-2);
+  color: var(--white);
+  font-size: 1rem;
+}
+
+.control-row {
+  display: grid;
+  grid-template-columns: minmax(190px, .7fr) 2fr;
+  gap: var(--sp-5);
+  padding: var(--sp-4) var(--sp-6);
+}
+
+.control-row strong {
+  color: var(--white);
+  font-size: .9rem;
+}
+
+.stats .stat > strong {
+  display: block;
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 1.2rem;
+  font-weight: 500;
+  letter-spacing: -.02em;
+}
+
+.stats .stat > span {
+  display: block;
+  margin-top: var(--sp-2);
+  color: var(--white);
+  font-size: .9rem;
+  font-weight: 600;
+}
+
+.stats .stat > p {
+  margin-top: var(--sp-2);
+  color: var(--text-2);
+  font-size: .8rem;
+}
+
+@media (max-width: 1100px) {
+  .pipeline {
+    grid-template-columns: 1fr;
+  }
+  .pipe-arrow {
+    transform: rotate(90deg);
+    min-height: 20px;
+  }
+}
+
+@media (max-width: 720px) {
+  .stack-layer,
+  .control-row {
+    grid-template-columns: 1fr;
+    gap: var(--sp-2);
+  }
+  .tier-row {
+    grid-template-columns: 40px 1fr;
+  }
+}

@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>路线与现状 · NLOS — 自然语言操作系统</title>
+<meta name="description" content="NLOS 从启动微内核到单机通用应用平台、分布式现代系统、自然语言桌面和应用生态的路线与证据状态。">
+<script>document.documentElement.classList.add('motion-js');window.__nlosRevealFailsafe=setTimeout(function(){document.documentElement.classList.add('reveal-all')},2500);</script>
+<link rel="stylesheet" href="css/style.css?v=7.0.0"><link rel="stylesheet" href="css/effects.css?v=7.0.0">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23e5f4ff'/%3E%3Ctext x='16' y='21' font-family='monospace' font-size='12' font-weight='700' text-anchor='middle' fill='%23030710'%3ENL%3C/text%3E%3C/svg%3E">
+</head>
+<body>
+<canvas id="bg-canvas" aria-hidden="true"></canvas>
+<nav class="nav" id="nav"><div class="nav-inner">
+  <a class="nav-brand" href="index.html"><span class="mark" aria-hidden="true">NL</span><span>NLOS</span></a>
+  <button class="nav-toggle" id="navToggle" type="button" aria-expanded="false" aria-controls="navLinks" aria-label="打开主导航"><span></span><span></span><span></span></button>
+  <div class="nav-links" id="navLinks"><a href="index.html">首页</a><a href="vision.html">系统哲学</a><a href="kernel.html">通用内核</a><a href="execution.html">执行与控制</a><a href="verification.html">支撑与验证</a><a href="modern.html">现代系统</a><a href="roadmap.html" aria-current="page">路线</a></div>
+  <span class="nav-badge"><span class="b-full">v0.5 · 当前规范 · 阶段 B 启动</span><span class="b-short">v0.5</span></span>
+</div></nav>
+<main id="top">
+<header class="page-head container">
+  <span class="eyebrow reveal">Roadmap · Evidence · Stage B</span>
+  <h1 class="page-title reveal"><span class="title-line">终局保持完整，</span><span class="title-line accent">证据逐层累积</span></h1>
+  <p class="page-desc reveal">路线不是把愿景缩成一个 Agent 中间件，而是从最小可信系统权威出发，依次长出单机应用平台、分布式现代系统、完整自然语言桌面和兼容生态。当前已进入阶段 B 的技术选择与运行时骨架实施。</p>
+  <nav class="page-toc reveal" aria-label="本页目录"><a href="#topology">路线拓扑</a><a href="#stage-b">阶段 B</a><a href="#stack">技术基线</a><a href="#evidence">证据等级</a><a href="#now">当前状态</a></nav>
+</header>
+
+<section class="section band" id="topology"><div class="container">
+  <div class="sec-head reveal"><span class="eyebrow">Route Topology<span class="sec-no">/ 01</span></span><h2>五个阶段，<em>一个不可变终局</em></h2></div>
+  <div class="timeline reveal-group">
+    <div class="tl-row highlight"><div class="tl-era">阶段 A<small>Bootstrap Kernel</small></div><div class="tl-cell">strict sandbox · Capability · Resource · durable ledger · Driver</div><div class="tl-cell"><b>建立不可绕过的系统权威</b></div><span class="tl-status now">设计完成 / 实现早期</span></div>
+    <div class="tl-row highlight"><div class="tl-era">阶段 B<small>Single-node Platform</small></div><div class="tl-cell">Application · Task · Package · Fiber · Artifact · SDK · Task Manager</div><div class="tl-cell"><b>第三方可编写和运行单机 NLOS 应用</b></div><span class="tl-status gap">当前主线</span></div>
+    <div class="tl-row"><div class="tl-era">阶段 C<small>Distributed Modern</small></div><div class="tl-cell">Cell · lease/fence · placement · migration · federation · anti-entropy</div><div class="tl-cell"><b>跨节点、设备和组织运行</b></div><span class="tl-status now">规范目标</span></div>
+    <div class="tl-row"><div class="tl-era">阶段 D<small>Natural Language Desktop</small></div><div class="tl-cell">Task Space · windows · notifications · settings · multimodal · trusted UI</div><div class="tl-cell"><b>普通用户面对的完整系统产品</b></div><span class="tl-status now">规范目标</span></div>
+    <div class="tl-row"><div class="tl-era">阶段 E<small>Ecosystem</small></div><div class="tl-cell">stable ABI · app distribution · compatibility · tooling · governance</div><div class="tl-cell"><b>形成可持续第三方生态</b></div><span class="tl-status now">长期目标</span></div>
+  </div>
+</div></section>
+
+<section class="section" id="stage-b"><div class="container">
+  <div class="sec-head reveal"><span class="eyebrow">Stage B<span class="sec-no">/ 02</span></span>
+    <h2>第一次成为真正的<em>通用操作环境</em></h2>
+    <p>阶段 B 不是“更多 Agent 功能”，而是从可信 runtime 迈向第三方应用平台。</p>
+  </div>
+  <div class="split-2 reveal-group">
+    <div class="card"><h4>应用与数据</h4><p>Application、Package、Installation、Update、Artifact、UserData container、Identity、Search、Notification。</p></div>
+    <div class="card"><h4>任务与执行</h4><p>TaskPlan/TaskNode、TaskGroup/Attempt、Process、AgentInstance、ExecutionFiber/Activation、async Operation。</p></div>
+    <div class="card"><h4>资源与恢复</h4><p>ResourceGroup/Account、Context residency、checkpoint/evict/rehydrate、single-node SchedulerDomain。</p></div>
+    <div class="card"><h4>用户与开发者</h4><p>SDK、CLI、debugger、conformance kit、Task Space、Task Manager、Resource Monitor、可信权限 UI。</p></div>
+  </div>
+  <div class="callout reveal"><strong>阶段 B 退出门不是“页面能跑”。</strong><p>第三方必须能在不修改内核的情况下安装和运行陌生 Application；10K/100K TaskNode、100K waiting Fiber、取消竞态、唯一提交、压力回收和 GUI/NL/CLI/API 控制同路都必须有 Evidence。</p></div>
+</div></section>
+
+<section class="section light" id="stack"><div class="container">
+  <div class="sec-head reveal"><span class="eyebrow">Candidate Baseline<span class="sec-no">/ 03</span></span>
+    <h2>技术栈服务于对象模型，<em>不能反向定义系统</em></h2>
+    <p>当前技术选择属于 candidate/PoC。Tokio task、SQLite row、Wasmtime resource 或 Tauri command 都不能替代 NLOS 的稳定身份和契约。</p>
+  </div>
+  <div class="control-table reveal">
+    <div class="control-row"><strong>Rust</strong><span>核心 TCB、nominal ID、状态机、Resource、Supervisor、Driver host 与 CLI</span></div>
+    <div class="control-row"><strong>Tokio + RuntimeAdapter</strong><span>M:N Fiber/异步执行引擎；NLOS identity、cancel、metering 留在 facade</span></div>
+    <div class="control-row"><strong>Process + Wasmtime/WASI</strong><span>第三方组件的 capability-oriented、跨语言、双层隔离候选</span></div>
+    <div class="control-row"><strong>SQLite WAL + CAS Artifact</strong><span>阶段 B 单机权威状态与内容寻址数据；必须通过 kill/torn-write/recovery</span></div>
+    <div class="control-row"><strong>Protobuf / WIT / CBOR</strong><span>服务 IDL、组件接口与签名 canonical object 各司其职</span></div>
+    <div class="control-row"><strong>Tauri + Web UI</strong><span>Task Manager/Resource Monitor 候选；最终授权仍由 SystemControl 校验</span></div>
+  </div>
+</div></section>
+
+<section class="section" id="evidence"><div class="container">
+  <div class="sec-head reveal"><span class="eyebrow">Evidence Ladder<span class="sec-no">/ 04</span></span><h2>所有能力声明都有<em>证据等级</em></h2></div>
+  <div class="tier-list reveal-group">
+    <div class="tier-row"><span class="tier-id">D</span><div><h4>DESIGN</h4><p>规范中定义了对象、不变量、状态机和验收条件；不代表代码存在。</p></div></div>
+    <div class="tier-row"><span class="tier-id">T</span><div><h4>TESTED</h4><p>在明确 commit、环境和 workload 下通过测试；不得外推到未测平台和规模。</p></div></div>
+    <div class="tier-row"><span class="tier-id">C</span><div><h4>CONFORMANT</h4><p>满足 profile applicability、golden vectors、故障测试和 Evidence registry。</p></div></div>
+    <div class="tier-row"><span class="tier-id">P</span><div><h4>PRODUCTION EVIDENCE</h4><p>具备真实工作负载、长期运行、故障恢复、安全和运维证据。</p></div></div>
+  </div>
+</div></section>
+
+<section class="section band" id="now"><div class="container">
+  <div class="sec-head reveal"><span class="eyebrow">Current State<span class="sec-no">/ 05</span></span><h2>现在已经有什么，<em>还缺什么</em></h2></div>
+  <div class="split-2 reveal-group">
+    <div class="card"><h4>已经完成</h4><p>v0.5 当前规范、最高目标、对象模型、海量执行与控制、现代系统迁移矩阵、项目管理与渐进知识 CRUD、阶段 B 技术讨论、Rust workspace 与 RuntimeAdapter 骨架。</p></div>
+    <div class="card"><h4>正在实施</h4><p>Tokio Fiber scale PoC、nominal contract、单机 authority store、Process/Wasmtime 隔离、typed IPC、SystemControl CLI 与最小 Task Manager。</p></div>
+    <div class="card"><h4>尚未证明</h4><p>100K Fiber 的目标 ScaleProfile、真实 provider 成本上界、宿主 hard resource controller、完整 durable recovery、可信桌面与分布式分区恢复。</p></div>
+    <div class="card"><h4>不会走的捷径</h4><p>不会用登记 Agent 数冒充同时推理，不会用 prompt 代替权限，不会用余额代替物理隔离，不会用“测试通过”冒充生产系统。</p></div>
+  </div>
+</div></section>
+</main>
+<nav class="pager" aria-label="页面顺序"><div class="container pager-inner"><a class="pager-link prev" href="modern.html"><span><small>上一页</small>现代系统</span></a><a class="pager-link next" href="index.html"><span><small>回到</small>首页 · 总览</span></a></div></nav>
+<footer class="footer"><div class="container footer-inner"><div class="f-brand"><span class="nav-brand"><span class="mark" aria-hidden="true">NL</span>NLOS</span><span>· 自然语言操作系统</span></div><span>架构设计总纲 v0.5 · 路线与现状</span><span>终局完整，实施克制，Evidence 决定声明边界</span></div><div class="footer-mark" aria-hidden="true">NLOS</div></footer>
+<script src="js/main.js?v=7.0.0"></script><script src="vendor/three.min.js?v=6.0.1"></script><script src="vendor/gsap.min.js"></script><script src="vendor/ScrollTrigger.min.js"></script><script src="js/effects.js?v=7.0.0"></script>
+</body></html>
