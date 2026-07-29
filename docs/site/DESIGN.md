@@ -1,8 +1,15 @@
-# NLOS 站点设计系统（v8 · 高透冰川极光与系统图谱）
+# NLOS 站点设计系统（v9 · 连续深色冰川界面）
 
 > 本文件是 docs/site/ 的视觉契约。所有 token 来自 2026-07-23 对
 > https://www.langchain.com（首页、/langgraph、/langsmith/observability）的
 > Playwright 实机截取（1440px 整页截图 + getComputedStyle 提取），不是凭印象的描述。
+
+## v9 深色界面连续性修订（2026-07-30）
+
+- 原 `.section.light` 只作为内容语义类保留，不再切换为白色画布；
+- vision 边界、execution 规模、roadmap 技术栈三个章节统一为深色高透玻璃；
+- 浅色章节内的 Card、Stat、Callout、Timeline 全部回归同一冰蓝描边与玻璃层级；
+- 禁止在深色页面流程中插入大面积纯白章节或纯白信息卡，白色仅用于高对比文字和极小高光。
 
 ## v8 内容图谱与透明度修订（2026-07-29）
 

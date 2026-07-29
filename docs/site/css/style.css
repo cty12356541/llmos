@@ -3253,3 +3253,53 @@ html.reveal-all .reveal-group > * {
   .resource-map { grid-template-columns: 1fr 1fr; }
   .resource-core { grid-column: 1 / 3; grid-row: auto; border-radius: var(--radius-m); min-height: 160px; }
 }
+
+/* ---- v9 · 统一深色系统界面：移除遗留的纯白章节断层 ---- */
+.section.light {
+  --light-bg: rgba(8, 22, 38, 0.52);
+  --light-surface: rgba(214, 238, 255, 0.026);
+  --light-text: var(--ice-white);
+  --light-2: var(--text-2);
+  --light-3: var(--text-3);
+  --light-line: rgba(174, 226, 255, 0.12);
+  --light-line-2: rgba(235, 249, 255, 0.24);
+  --link-light: var(--ink);
+  color: var(--text);
+  background:
+    radial-gradient(ellipse 70% 100% at 18% 0%, rgba(135, 211, 252, 0.07), transparent 66%),
+    linear-gradient(180deg, rgba(9, 25, 43, 0.5), rgba(7, 19, 34, 0.62));
+  border-block: 1px solid rgba(174, 226, 255, 0.08);
+}
+
+.section.light + .section.light { border-top-color: var(--light-line); }
+
+.section.light .card,
+.section.light .stat,
+.section.light .callout,
+.section.light .tl-row {
+  background: var(--glass-bg);
+  border-color: var(--glass-border);
+  box-shadow: var(--shadow-glass);
+}
+
+.section.light .card:hover,
+.section.light .stat:hover,
+.section.light .tl-row:hover {
+  border-color: var(--glass-border-hover);
+  box-shadow: var(--shadow-glass), 0 16px 48px -12px var(--glow-ink-soft);
+}
+
+.section.light .card::before,
+.section.light .stat::before,
+.section.light .callout::before,
+.section.light .tl-row::before {
+  background: linear-gradient(180deg, var(--glass-edge-top), var(--glass-edge-bottom));
+}
+
+.section.light .btn-ghost {
+  color: var(--text);
+  border-color: var(--line-2);
+  background: var(--glass-bg);
+  backdrop-filter: blur(10px) saturate(1.8);
+  -webkit-backdrop-filter: blur(10px) saturate(1.8);
+}
