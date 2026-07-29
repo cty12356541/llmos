@@ -3351,9 +3351,9 @@ html.reveal-all .reveal-group > * {
   position: relative;
   z-index: 2;
   font-family: var(--font-mono);
-  font-size: clamp(1.55rem, 3vw, 2.25rem);
-  letter-spacing: 0.12em;
-  transform: translateX(0.06em);
+  font-size: clamp(1.15rem, 2.4vw, 1.7rem);
+  letter-spacing: 0.16em;
+  transform: translateX(0.08em);
 }
 
 .emblem-orbit,
@@ -3581,10 +3581,92 @@ main > .section.light {
   letter-spacing: .12em;
 }
 
+/* 全局探索路径：页面级 L0，只显示系统位置，不重复页面正文。 */
+.system-route {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  max-width: 920px;
+  margin-top: 50px;
+  border-block: 1px solid rgba(174,226,255,.1);
+}
+
+.system-route a {
+  position: relative;
+  display: grid;
+  gap: 8px;
+  padding: 17px 12px;
+  color: var(--text-3);
+  transition: color var(--dur) var(--ease), background var(--dur) var(--ease);
+}
+
+.system-route a + a::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 25%;
+  bottom: 25%;
+  width: 1px;
+  background: rgba(174,226,255,.09);
+}
+
+.system-route small {
+  font-family: var(--font-mono);
+  font-size: .58rem;
+  letter-spacing: .14em;
+}
+
+.system-route span { font-size: .78rem; }
+.system-route a:hover,
+.system-route a.is-current {
+  color: var(--ink);
+  background: linear-gradient(180deg, rgba(127,200,255,.04), transparent);
+}
+.system-route a.is-current::after {
+  content: "";
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: -1px;
+  height: 1px;
+  background: var(--ink);
+  box-shadow: 0 0 10px var(--glow-ink-mid);
+}
+
+/* 章节之间不是硬分屏，而是一次明确的语义交接。 */
+.section-handoff {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  width: min(560px, calc(100% - 48px));
+  display: grid;
+  grid-template-columns: auto 1fr auto 1fr auto;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: .58rem;
+  letter-spacing: .08em;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+.section-handoff span:first-child { text-align: right; }
+.section-handoff i {
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(143,211,255,.22));
+}
+.section-handoff i:nth-of-type(2) {
+  background: linear-gradient(90deg, rgba(143,211,255,.22), transparent);
+}
+.section-handoff b { color: var(--ink-dim); font-weight: 400; }
+
 @media (min-width: 900px) {
   .autopsy-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .nav-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .stats.four { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .budget-grid,
+  .abs-grid,
+  .tier-ladder,
+  .grid-4 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 
 @media (max-width: 720px) {
@@ -3593,4 +3675,13 @@ main > .section.light {
   .home-philosophy i { display: none; }
   main > .section { padding-block: 88px; }
   .sec-head { margin-bottom: 42px; }
+  .system-route {
+    display: flex;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .system-route::-webkit-scrollbar { display: none; }
+  .system-route a { min-width: 104px; }
+  .section-handoff { grid-template-columns: 1fr auto 1fr; }
+  .section-handoff i { display: none; }
 }

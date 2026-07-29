@@ -510,7 +510,11 @@
 
   /* v10 · 高密度内容默认只展示核心层，其余语料进入可逆的详细层。 */
   document
-    .querySelectorAll(".autopsy-grid, .tiers, .principles, .stats, .tl-notes")
+    .querySelectorAll(
+      ".autopsy-grid, .budget-grid, .decision-grid, .abs-grid, .sys-grid, " +
+        ".grid-3, .grid-4, .tier-ladder, .tiers, .principles, .stats, " +
+        ".timeline, .tl-notes"
+    )
     .forEach(function (grid, gridIndex) {
       var items = Array.prototype.filter.call(grid.children, function (child) {
         return child.nodeType === 1;
@@ -543,4 +547,60 @@
       });
       grid.insertAdjacentElement("afterend", toggle);
     });
+
+  /* v10.1 · 七页共享一条探索路径，当前位置始终可见。 */
+  var pageHead = document.querySelector(".page-head");
+  if (pageHead) {
+    var routePages = [
+      ["vision.html", "愿景"],
+      ["kernel.html", "系统边界"],
+      ["execution.html", "执行"],
+      ["verification.html", "验证"],
+      ["modern.html", "资源"],
+      ["roadmap.html", "实现"]
+    ];
+    var currentPage =
+      window.location.pathname.split("/").pop() || "index.html";
+    var route = document.createElement("nav");
+    route.className = "system-route";
+    route.setAttribute("aria-label", "NLOS 系统探索路径");
+
+    routePages.forEach(function (entry, index) {
+      var link = document.createElement("a");
+      link.href = entry[0];
+      link.innerHTML =
+        "<small>0" + (index + 1) + "</small><span>" + entry[1] + "</span>";
+      if (entry[0] === currentPage) {
+        link.className = "is-current";
+        link.setAttribute("aria-current", "page");
+      }
+      route.appendChild(link);
+    });
+    pageHead.appendChild(route);
+  }
+
+  /* 相邻章节共享一条叙事轴，明确“上一节输出 → 下一节输入”。 */
+  var journeySections = Array.prototype.slice.call(
+    document.querySelectorAll("main > section[id]")
+  );
+  var previousLabel = document.querySelector(".page-title")
+    ? document.querySelector(".page-title").textContent.trim()
+    : "系统哲学";
+
+  journeySections.forEach(function (section) {
+    var heading = section.querySelector("h2");
+    if (!heading) return;
+    var currentLabel = heading.textContent.trim();
+    var handoff = document.createElement("div");
+    handoff.className = "section-handoff";
+    handoff.setAttribute("aria-hidden", "true");
+    handoff.innerHTML =
+      "<span>" +
+      previousLabel.slice(0, 12) +
+      "</span><i></i><b>→</b><i></i><span>" +
+      currentLabel.slice(0, 12) +
+      "</span>";
+    section.insertBefore(handoff, section.firstChild);
+    previousLabel = currentLabel;
+  });
 })();
