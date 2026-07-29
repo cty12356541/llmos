@@ -676,6 +676,18 @@
       context.globalCompositeOperation = "lighter";
       context.lineCap = "round";
 
+      function strokeTailSegment(from, to, alpha) {
+        context.beginPath();
+        context.moveTo(from.x, from.y);
+        context.lineTo(to.x, to.y);
+        context.strokeStyle =
+          "rgba(225, 247, 255, " + (0.08 + alpha * 0.9).toFixed(3) + ")";
+        context.lineWidth = 1.2 + alpha * 2.8;
+        context.shadowColor = "rgba(143, 211, 255, 0.9)";
+        context.shadowBlur = 4 + alpha * 18;
+        context.stroke();
+      }
+
       for (var i = tailSegments; i >= 0; i -= 1) {
         var t0 = phase - i * step;
         var t1 = t0 + step * 1.45;
@@ -684,15 +696,17 @@
         var progress = 1 - i / tailSegments;
         var alpha = Math.pow(progress, 2.6);
 
-        context.beginPath();
-        context.moveTo(start.x, start.y);
-        context.lineTo(end.x, end.y);
-        context.strokeStyle =
-          "rgba(225, 247, 255, " + (0.08 + alpha * 0.9).toFixed(3) + ")";
-        context.lineWidth = 1.2 + alpha * 2.8;
-        context.shadowColor = "rgba(143, 211, 255, 0.9)";
-        context.shadowBlur = 4 + alpha * 18;
-        context.stroke();
+        strokeTailSegment(start, end, alpha);
+
+        /*
+         * 第二条彗尾是第一条关于中心点的严格反演：
+         * P(π-t) = 2C-P(t)。因此位置、尾长和亮度逐段中心对称。
+         */
+        strokeTailSegment(
+          pointAt(Math.PI - t0),
+          pointAt(Math.PI - t1),
+          alpha
+        );
       }
       context.restore();
     }

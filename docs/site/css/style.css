@@ -3337,7 +3337,7 @@ html.reveal-all .reveal-group > * {
   aspect-ratio: 1;
   display: grid;
   place-items: center;
-  margin-bottom: clamp(30px, 5vh, 54px);
+  margin-bottom: clamp(18px, 2.4vh, 28px);
   color: var(--ice-white);
   border: 1px solid rgba(235, 249, 255, 0.42);
   border-radius: 50%;
@@ -3353,7 +3353,7 @@ html.reveal-all .reveal-group > * {
   bottom: 8%;
   z-index: 2;
   font-family: var(--font-mono);
-  font-size: clamp(.82rem, 1.7vw, 1.12rem);
+  font-size: clamp(1.28rem, 2.1vw, 1.78rem);
   letter-spacing: 0.16em;
   text-shadow: 0 0 14px rgba(143,211,255,.62);
   transform: translateX(-46%);
@@ -3429,7 +3429,7 @@ html.reveal-all .reveal-group > * {
 .home-kicker {
   color: var(--text-3);
   font-family: var(--font-mono);
-  font-size: .68rem;
+  font-size: .76rem;
   letter-spacing: .22em;
 }
 
@@ -3441,7 +3441,7 @@ html.reveal-all .reveal-group > * {
   gap: clamp(12px, 2.5vw, 30px);
   margin-top: 24px;
   color: var(--ice-white);
-  font-size: clamp(2rem, 5.2vw, 4.8rem);
+  font-size: clamp(2rem, 4.1vw, 3.8rem);
   font-weight: 200;
   letter-spacing: -.045em;
   line-height: 1.08;
