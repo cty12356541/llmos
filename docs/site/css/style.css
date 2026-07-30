@@ -2085,6 +2085,79 @@ html.reveal-all .reveal-group > * {
   }
 }
 
+/* ============================================================
+   NLOS v10.6.1 · 深色系统调用指令槽
+   ============================================================ */
+
+/*
+ * 系统调用区曾沿用浅色章节 token，导致连续深色画布上出现白色块。
+ * 调用槽属于可扫描的代码对象，保留轻边界，但必须使用同一冰蓝暗色阶。
+ */
+.section.glacier .sys-group h4 {
+  color: var(--text-2);
+}
+
+.section.glacier .sys-group h4::after {
+  background:
+    linear-gradient(90deg, rgba(174,226,255,.2), transparent);
+}
+
+.section.glacier .sys-list {
+  gap: 7px;
+}
+
+.section.glacier .sys-list li {
+  color: var(--text-3);
+  border: 1px solid rgba(174,226,255,.14);
+  border-left-color: rgba(143,211,255,.34);
+  background:
+    linear-gradient(
+      90deg,
+      rgba(127,200,255,.075),
+      rgba(127,200,255,.025) 58%,
+      rgba(3,7,16,.18)
+    );
+  box-shadow:
+    inset 0 1px 0 rgba(235,249,255,.055),
+    0 8px 24px -22px rgba(127,200,255,.5);
+  transition:
+    color var(--dur) var(--ease),
+    border-color var(--dur) var(--ease),
+    background var(--dur) var(--ease);
+}
+
+.section.glacier .sys-list li:hover {
+  color: var(--text-2);
+  border-color: rgba(174,226,255,.28);
+  border-left-color: rgba(143,211,255,.68);
+  background:
+    linear-gradient(
+      90deg,
+      rgba(127,200,255,.11),
+      rgba(127,200,255,.035) 64%,
+      rgba(3,7,16,.14)
+    );
+}
+
+.section.glacier .sys-list li b {
+  color: var(--ice-white);
+  font-weight: 600;
+}
+
+.section.glacier .sys-list li .trap-tag {
+  color: var(--ink);
+  border-color: rgba(143,211,255,.36);
+  background: rgba(127,200,255,.07);
+}
+
+.section.glacier .sys-note {
+  color: var(--text-3);
+}
+
+.section.glacier .sys-note b {
+  color: var(--ink);
+}
+
 @media (max-width: 720px) {
   .container {
     width: 100%;
