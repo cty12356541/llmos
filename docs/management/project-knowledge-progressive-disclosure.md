@@ -413,6 +413,7 @@ Agent 需要更多信息时按链接逐层展开，不重新生成“可能存�
 | 规范 Requirement 变化 | 路线、缺口、类型词典、测试/Claim 映射 |
 | 技术选择接受/否决 | ADR、阶段选型、依赖与退出策略 |
 | 实现完成 | 测试、Evidence、实现状态；不得直接升 Production |
+| 阶段 B 工作包状态变化 | [阶段 B 权威进度单](./stage-b-progress.md)、对应 ADR/PoC、下一验收门和未决风险 |
 | 发现反例 | 风险、Evidence、Claim 降级、修复工作项 |
 | 文件归档/改名 | 全部相对链接和 L0 路由 |
 | Stage 退出 | exit gate Evidence、未决风险、release claim |

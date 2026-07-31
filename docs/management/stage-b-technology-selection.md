@@ -245,10 +245,10 @@ WebView（不可信展示）
 | 1 | ADR-0001 Rust workspace 与模块边界 | 编译、lint、test、最小 ID/schema crate |
 | 2 | PoC-0001 Tokio Fiber runtime facade | 100K waiting Fiber + cancel/fence/meter 报告 |
 | 3 | ADR-0002 SQLite authority store | durability、dedup、migration、100K metadata 通过 |
-| 4 | PoC-0002 Wasmtime isolation | capability imports、fuel/epoch、memory limit、host crash 测试 |
+| 4 | PoC-0004 Wasmtime isolation | capability imports、fuel/epoch、memory limit、host crash 测试 |
 | 5 | ADR-0003 IDL/canonical encoding | 三语言生成、compat check、golden/fuzz vectors |
-| 6 | PoC-0003 Process supervisor | macOS/Windows/Linux suspend/kill/resource mapping 能力表 |
-| 7 | PoC-0004 Tauri SystemControl UI | GUI 与 CLI 产生等价 ControlCommand/Receipt |
+| 6 | PoC-0005 Process supervisor | macOS/Windows/Linux suspend/kill/resource mapping 能力表 |
+| 7 | PoC-0006 Tauri SystemControl UI | GUI 与 CLI 产生等价 ControlCommand/Receipt |
 
 ## 13. 首个代码仓库布局建议
 
@@ -279,14 +279,12 @@ docs/
 
 ## 14. 下一步
 
-立即开始的最小工作是 ADR-0001 和 PoC-0001：
+当前已完成 ADR-0001、PoC-0001、PoC-0002 和 ADR-0002/PoC-0003 的初版；下一主线以[阶段 B 权威进度单](./stage-b-progress.md)的 `B-OUTBOX` 为准：
 
-1. 建立 Cargo workspace 与核心 nominal ID；
-2. 定义不依赖 Tokio 的 `RuntimeAdapter`；
-3. 实现 Tokio adapter；
-4. 测量 10K/100K waiting Fiber；
-5. 加入 parent cancel、late callback fence 和 Activation meter；
-6. 用结果决定是否接受 Tokio 基线以及是否需要自定义 scheduler layer。
+1. 将 SQLite durable Outbox 接入 bounded Tokio dispatcher；
+2. 以 Fiber generation/cancel fence 做幂等 wake/reconcile；
+3. 验证 consumer crash、重启重放、backpressure 和 cancel path；
+4. 用集成 Evidence 决定是否推进 Runtime/Store PoC 的验收状态。
 
 技术栈讨论已于[议题 30](../discussions/30-阶段B技术栈讨论.md)收束。编码立即从 Cargo workspace、`nlos-types`、`nlos-runtime` 与 Tokio Fiber scale PoC 开始；带 `PoC` 标记的组件在证据出来前不得升级为 `ACCEPTED` 或冻结公共 ABI。
 

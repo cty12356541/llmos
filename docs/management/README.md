@@ -192,6 +192,7 @@ P0 风险阻止 Stage 退出；P1 必须有 owner、缓解措施和明确复查�
 - 项目知识规则：[project-knowledge-progressive-disclosure.md](./project-knowledge-progressive-disclosure.md)
 - Rust 导读：[rust-for-nlos.md](./rust-for-nlos.md)
 - 技术选型：[stage-b-technology-selection.md](./stage-b-technology-selection.md)
+- 阶段 B 权威进度单：[stage-b-progress.md](./stage-b-progress.md)
 - 规范路线：[v0.5 第 28.2 节](../design/06-架构设计总纲-v0.5.md#282-阶段-b单机通用应用平台)
 - 执行层级决策：[议题 29](../discussions/29-现代系统执行层级与机制迁移.md)
 
@@ -209,3 +210,5 @@ signed Package
 ```
 
 在该纵切面通过前，不并行冻结完整桌面框架、分布式数据库或公共插件 ABI。
+
+阶段 B 的实现状态、当前主线工作包、提交和 Evidence 以[权威进度单](./stage-b-progress.md)为准。任何完成的实现或验证工作都必须在对应 canonical commit 中同步更新该进度单。
