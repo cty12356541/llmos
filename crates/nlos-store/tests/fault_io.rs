@@ -218,12 +218,9 @@ fn injected_ioerr_fails_ack_and_reads_stay_consistent() {
 ///   `-wal`/`-shm` files inheriting the main file's 0o444 mode, so a
 ///   permission restore must cover all three files; after restoring
 ///   0o644, a reopened store reads and writes with data intact.
+#[cfg(unix)]
 #[test]
 fn chmod_readonly_without_wal_files() {
-    if !cfg!(unix) {
-        eprintln!("SKIP chmod_readonly_without_wal_files: chmod needs unix");
-        return;
-    }
     let database = TestFile::new("ro-nowal");
     let handle;
     {
@@ -332,12 +329,9 @@ fn chmod_readonly_without_wal_files() {
 ///   fallback) reads the committed data via a heap wal-index.
 /// - Writes fail closed with `StoreError::Sqlite` (`SQLITE_READONLY`).
 /// - Restoring 0o644 lets a fresh store continue with all data intact.
+#[cfg(unix)]
 #[test]
 fn chmod_readonly_with_wal_shm_present() {
-    if !cfg!(unix) {
-        eprintln!("SKIP chmod_readonly_with_wal_shm_present: chmod needs unix");
-        return;
-    }
     let database = TestFile::new("ro-wal");
     let wal = TestFile::sibling(&database.path, "-wal");
     let shm = TestFile::sibling(&database.path, "-shm");
@@ -417,6 +411,12 @@ fn chmod_readonly_with_wal_shm_present() {
     reopened
         .register(spec(44))
         .expect("write resumes after chmod 644");
+}
+
+#[cfg(not(unix))]
+#[test]
+fn readonly_media_chmod_matrix_requires_unix_permissions() {
+    eprintln!("SKIP read-only chmod matrix: platform has no Unix mode bits");
 }
 
 /// F3 / real full disk (environment-gated, macOS `hdiutil` RAM volume).

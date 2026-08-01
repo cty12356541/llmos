@@ -1,8 +1,9 @@
 //! B-STORE-FAULT Unit B acceptance tests: F1 kill-9 crash matrix and F2
 //! torn-write / power-loss durability proofs.
 //!
-//! **Crash semantics disclaimer**: F1 uses a real `SIGKILL` (`Child::kill`)
-//! to simulate *process* crashes. The OS page cache survives a process death,
+//! **Crash semantics disclaimer**: F1 uses forced child termination
+//! (`SIGKILL` on Unix, `TerminateProcess` on Windows via `Child::kill`) to
+//! simulate *process* crashes. The OS page cache survives a process death,
 //! so a killed process observes storage exactly as a crashed process left it —
 //! but a killed process is NOT a machine power loss: writes the kernel has
 //! accepted are still durable here. Machine-power-loss semantics (accepted
@@ -154,9 +155,9 @@ fn await_marker(child: &mut Child) -> String {
     }
 }
 
-/// Sends a real SIGKILL and proves the child did not exit cleanly.
+/// Force-terminates the child and proves it did not exit cleanly.
 fn kill_and_reap(child: &mut Child) {
-    child.kill().expect("SIGKILL child");
+    child.kill().expect("force-terminate child");
     let status = child.wait().expect("wait child");
     assert!(
         !status.success(),
@@ -447,8 +448,8 @@ fn power_loss_drops_complete_commit_and_recovery_allows_redo() {
 // F2: file-level WAL tampering (pure std::fs, isomorphic to SQLite wal.test)
 // ---------------------------------------------------------------------------
 
-/// Commits two operations in a child and SIGKILLs it, leaving the WAL and
-/// SHM behind exactly as an abrupt process death would.
+/// Commits two operations in a child and force-terminates it, leaving the WAL
+/// and SHM behind exactly as an abrupt process death would.
 fn spawn_wal_fixture(name: &str) -> TestFile {
     let database = TestFile::new(name);
     let mut child = spawn_child("wal-setup", &database.path);
