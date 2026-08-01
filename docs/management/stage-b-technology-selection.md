@@ -279,12 +279,11 @@ docs/
 
 ## 14. 下一步
 
-当前已完成 ADR-0001、PoC-0001、PoC-0002、ADR-0002/PoC-0003 的初版和 PoC-0004（durable Outbox → Tokio wake consumer 集成，`PARTIAL PASS`）；`B-STORE-FAULT` 的 F1–F4 切片已于 2026-08-01 通过 kill-9、fault VFS、disk-full/只读/I/O error、checkpoint/长读和备份恢复验证。下一主线仍以[阶段 B 权威进度单](./stage-b-progress.md)为准：
+当前已完成 ADR-0001、PoC-0001、PoC-0002、ADR-0002/PoC-0003 的初版和 PoC-0004（durable Outbox → Tokio wake consumer 集成，`PARTIAL PASS`）；`B-STORE-FAULT` 的 F1–F4 切片已于 2026-08-01 通过 fault/recovery 验证，F5 于 2026-08-02 通过 v1→v2 migration、golden database、升级前备份和失败恢复验证。下一主线仍以[阶段 B 权威进度单](./stage-b-progress.md)为准：
 
-1. migration：v1→v2 前向迁移、升级前备份/失败恢复演练与 golden database；
-2. 100K Operation metadata 规模行为；
-3. Windows/Linux durability 与恢复复验；
-4. 用故障注入 Evidence 决定 PoC-0003/PoC-0004 能否从 `PARTIAL_PASS` 晋升。
+1. 100K Operation metadata 规模行为；
+2. Windows/Linux durability 与恢复复验；
+3. 用故障注入 Evidence 决定 PoC-0003/PoC-0004 能否从 `PARTIAL_PASS` 晋升。
 
 技术栈讨论已于[议题 30](../discussions/30-阶段B技术栈讨论.md)收束。编码立即从 Cargo workspace、`nlos-types`、`nlos-runtime` 与 Tokio Fiber scale PoC 开始；带 `PoC` 标记的组件在证据出来前不得升级为 `ACCEPTED` 或冻结公共 ABI。
 
@@ -292,4 +291,4 @@ PoC 进度：[PoC-0001 Tokio Fiber Runtime 初始证据](../evidence/stage-b/poc
 
 [PoC-0002 Operation Callback Fence](../evidence/stage-b/poc-0002-operation-callback-fence.md)也已取得 `PARTIAL PASS`：cancel epoch、迟到/重复 callback、dispatch ticket identity、generation fence 和 cancel/completion 竞态在线程安全内存 Registry 中通过。
 
-[ADR-0002 / PoC-0003 SQLite Operation Authority](./adrs/0002-stage-b-sqlite-operation-authority.md)已完成首个持久化切片：Operation 转换、Receipt identity 和 Wake/Reconcile Outbox 在 WAL/FULL 单写者事务中提交，并通过重开与无析构进程退出恢复测试；~~Tokio consumer 集成仍待完成~~ **已由 [PoC-0004](../evidence/stage-b/poc-0004-outbox-wake-consumer.md) 补齐（2026-08-01）**：consumer 经专用 OS 线程 pump 驱动，崩溃重放、幂等去重、stale generation fencing 与 backpressure 均有集成测试（`PARTIAL PASS`，单节点局部证据）。同日 F1–F4 fault-injection 切片补齐 kill-9、模拟 torn-write/断电、disk-full/只读/I/O error、checkpoint/长读与备份恢复；migration、100K metadata、跨平台仍待完成。
+[ADR-0002 / PoC-0003 SQLite Operation Authority](./adrs/0002-stage-b-sqlite-operation-authority.md)已完成首个持久化切片：Operation 转换、Receipt identity 和 Wake/Reconcile Outbox 在 WAL/FULL 单写者事务中提交，并通过重开与无析构进程退出恢复测试；~~Tokio consumer 集成仍待完成~~ **已由 [PoC-0004](../evidence/stage-b/poc-0004-outbox-wake-consumer.md) 补齐（2026-08-01）**。同日 F1–F4 fault-injection 切片补齐 kill-9、模拟 torn-write/断电、disk-full/只读/I/O error、checkpoint/长读与备份恢复；2026-08-02 F5 补齐 v1→v2 migration、golden database、升级前备份与失败恢复。100K metadata 和跨平台仍待完成。

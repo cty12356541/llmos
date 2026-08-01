@@ -43,9 +43,9 @@ Application
 | `B-TYPES` | Rust workspace 与稳定 nominal ID / Generation / CancelEpoch | `DONE` | `crates/nlos-types`；`ADR-0001` | public schema 与生成约束未冻结 |
 | `B-RUNTIME` | RuntimeAdapter 与 Tokio 有界 Fiber runtime | `PARTIAL_PASS` | [ADR-0001](./adrs/0001-stage-b-core-language-and-runtime.md)、[PoC-0001](../evidence/stage-b/poc-0001-tokio-fiber-runtime.md)；提交 `a211088` | wake latency/fairness、structured join/detach、CPU 分维计量、Process crash、跨平台 |
 | `B-OP-FENCE` | Operation 状态机、callback identity、cancel/generation fence | `PARTIAL_PASS` | [PoC-0002](../evidence/stage-b/poc-0002-operation-callback-fence.md)；提交 `8b9ffe1` | Driver authentication、EffectPermit、progress/stream callback；Tokio wake 集成已随 `B-OUTBOX`（PoC-0004）补齐 |
-| `B-STORE` | SQLite WAL/FULL Operation authority、恢复、Outbox | `PARTIAL_PASS` | [ADR-0002](./adrs/0002-stage-b-sqlite-operation-authority.md)、[PoC-0003](../evidence/stage-b/poc-0003-sqlite-operation-authority.md)；初始提交 `bec4c42`，F1–F4 fault-injection 切片见本工作包提交 | migration、100K metadata、跨平台；真实硬件掉电/不同文件系统仍超出当前模拟证据 |
-| `B-OUTBOX` | Durable Outbox → Tokio Fiber wake/reconcile consumer | `DONE` | [PoC-0004](../evidence/stage-b/poc-0004-outbox-wake-consumer.md)；本提交及评审后 remediation 提交（hash 见 git log 与 commit receipt） | durable wait registry/fiber rehydration 归 `B-PROCESS`/Slice K；此前移交 `B-STORE-FAULT` 的 kill-9/torn-write/disk-full F1–F4 已于 2026-08-01 通过，migration/100K/跨平台仍待。2026-08-01 remediation：评审指出的 pump 错误路径可观测性（失败计数/根因/有上限退避/Faulted 终态）、drain panic 防护、shutdown 终态语义与 wake 重缓冲已补齐并各有测试。2026-08-01 复验残余（非阻塞，详见 PoC-0004 §8.4）：持久 apply 失败（`stopped_at` 路径）暂无 health 信号 → 后续 observability 项；`Faulted` 恢复依赖外部监督 → `B-PROCESS`；`PumpHealth.last_error` 跨 IPC 边界需脱敏 → `B-CONTROL`/`B-SCHEMA`；`Buffered` 驻留仅随 fiber 终态清理 → `B-PROCESS`/Slice K |
-| `B-STORE-FAULT` | SQLite fault-injection：kill-9、torn-write、disk-full、checkpoint/backup、migration 与长读事务、100K metadata | `IN_PROGRESS` | [PoC-0003 F1–F4 增量证据](../evidence/stage-b/poc-0003-sqlite-operation-authority.md)：kill-9、fault VFS、模拟断电/WAL 损坏、disk-full/只读/I/O error、checkpoint/长读、backup/restore 已通过 | migration（v1→v2、golden database、升级前备份与恢复演练）、100K Operation metadata、Windows/Linux 复验 |
+| `B-STORE` | SQLite WAL/FULL Operation authority、恢复、Outbox | `PARTIAL_PASS` | [ADR-0002](./adrs/0002-stage-b-sqlite-operation-authority.md)、[PoC-0003](../evidence/stage-b/poc-0003-sqlite-operation-authority.md)；初始提交 `bec4c42`，F1–F4 fault-injection 与 F5 migration 切片见后续提交 | 100K metadata、跨平台；真实硬件掉电/不同文件系统仍超出当前模拟证据 |
+| `B-OUTBOX` | Durable Outbox → Tokio Fiber wake/reconcile consumer | `DONE` | [PoC-0004](../evidence/stage-b/poc-0004-outbox-wake-consumer.md)；本提交及评审后 remediation 提交（hash 见 git log 与 commit receipt） | durable wait registry/fiber rehydration 归 `B-PROCESS`/Slice K；此前移交 `B-STORE-FAULT` 的 F1–F5 fault/recovery/migration 已通过，100K/跨平台仍待。2026-08-01 remediation：评审指出的 pump 错误路径可观测性（失败计数/根因/有上限退避/Faulted 终态）、drain panic 防护、shutdown 终态语义与 wake 重缓冲已补齐并各有测试。2026-08-01 复验残余（非阻塞，详见 PoC-0004 §8.4）：持久 apply 失败（`stopped_at` 路径）暂无 health 信号 → 后续 observability 项；`Faulted` 恢复依赖外部监督 → `B-PROCESS`；`PumpHealth.last_error` 跨 IPC 边界需脱敏 → `B-CONTROL`/`B-SCHEMA`；`Buffered` 驻留仅随 fiber 终态清理 → `B-PROCESS`/Slice K |
+| `B-STORE-FAULT` | SQLite fault-injection：kill-9、torn-write、disk-full、checkpoint/backup、migration 与长读事务、100K metadata | `IN_PROGRESS` | [PoC-0003 F1–F5 增量证据](../evidence/stage-b/poc-0003-sqlite-operation-authority.md)：F1–F4 fault/recovery 与 F5 v1→v2 migration/golden/rollback anchor 已通过 | 100K Operation metadata、Windows/Linux 复验 |
 | `B-SCHEMA` | Protobuf/CBOR、golden vector、版本演进和本地 typed IPC | `READY` | [技术选型第 8 节](./stage-b-technology-selection.md) | 三语言生成、compat check、fuzz、transport adapter |
 | `B-SANDBOX` | Wasmtime/WASI 与独立 host Process 隔离对比 | `READY` | [技术选型第 5 节](./stage-b-technology-selection.md) | capability import、fuel/epoch、memory、host crash、GuaranteeTier |
 | `B-PROCESS` | native Process supervisor 与平台资源/生命周期 adapter | `READY` | [v0.5 Process 规范](../design/06-架构设计总纲-v0.5.md) | macOS/Windows/Linux suspend/kill、host incarnation、resource mapping |
@@ -89,13 +89,18 @@ Application
 - 当前 macOS 上只读介质两种 WAL side-file 场景与真实 RAM volume ENOSPC 探针通过；错误向调用者显式传播，解除故障后 authority 可继续。
 - checkpoint 模式、长读事务、online backup、WAL triplet 与仅复制主文件的正反恢复语义已有测试；这些仍是单机局部证据，不替代真实掉电和跨平台验证。
 
+### 4.6 Store schema migration F5
+
+- durable schema 已从 v1 演进到 v2，新增按 Operation/generation/sequence 的 Outbox 恢复索引，不改变公共 API。
+- golden v1 中的 Operation、Callback fence、Receipt 与未 ACK Outbox 可无损迁移，升级后继续读写。
+- 升级前在线备份保持 v1 rollback anchor，可独立恢复并迁移；逐写入点故障只留下完整 v1 或完整 v2。
+
 ## 5. 当前下一验收门
 
-`B-OUTBOX` 已 `DONE`（证据：[PoC-0004](../evidence/stage-b/poc-0004-outbox-wake-consumer.md)）。当前唯一主线工作包仍是 `B-STORE-FAULT`（SQLite fault-injection，与 ADR-0002 PoC 验收第 7 条对齐）；F1–F4 已通过，剩余验收顺序为：
+`B-OUTBOX` 已 `DONE`（证据：[PoC-0004](../evidence/stage-b/poc-0004-outbox-wake-consumer.md)）。当前唯一主线工作包仍是 `B-STORE-FAULT`（SQLite fault-injection，与 ADR-0002 PoC 验收第 7 条对齐）；F1–F5 已通过，剩余验收顺序为：
 
 ```text
-migration（v1→v2 前向迁移、升级前备份/失败恢复、golden database）
-  → 100K Operation metadata 规模行为
+100K Operation metadata 规模行为
   → Windows / Linux durability 与恢复复验
 ```
 

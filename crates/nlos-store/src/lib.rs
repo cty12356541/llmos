@@ -23,7 +23,7 @@ use nlos_types::{
 };
 use rusqlite::{Connection, OpenFlags, Transaction, TransactionBehavior, params};
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 #[derive(Debug)]
 pub enum StoreError {
@@ -177,7 +177,11 @@ impl SqliteOperationStore {
 
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
         match version {
-            0 => migrate_v1(&mut connection)?,
+            0 => {
+                migrate_v1(&mut connection)?;
+                migrate_v2(&mut connection)?;
+            }
+            1 => migrate_v2(&mut connection)?,
             SCHEMA_VERSION => {}
             other => return Err(StoreError::UnsupportedSchema(other)),
         }
@@ -389,6 +393,20 @@ fn migrate_v1(connection: &mut Connection) -> Result<(), StoreError> {
         CREATE INDEX operation_outbox_pending
             ON operation_outbox(acknowledged, sequence);
         PRAGMA user_version = 1;",
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
+
+/// Adds the operation-scoped Outbox recovery index. The migration is a
+/// single transaction, so interrupted upgrades leave either a complete v1
+/// database or a complete v2 database, never a mixed schema.
+fn migrate_v2(connection: &mut Connection) -> Result<(), StoreError> {
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "CREATE INDEX operation_outbox_by_operation
+            ON operation_outbox(operation_id, operation_generation, sequence);
+         PRAGMA user_version = 2;",
     )?;
     transaction.commit()?;
     Ok(())

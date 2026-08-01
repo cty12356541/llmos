@@ -67,10 +67,10 @@ Operation generation/revision CAS
 
 ## 迁移与退出策略
 
-v1 只允许从空数据库事务创建；遇到未知 `user_version` 直接拒绝打开。任何 v2 变更必须提供前向 migration、备份/恢复演练和 golden database。若 PoC 失败，`nlos-operation` 状态机和 Outbox 契约保留，可替换底层 WAL/KV；不得让 SQLite row identity 进入公共 Operation handle。
+v1 只允许从空数据库事务创建；遇到未知 `user_version` 直接拒绝打开。v2 新增按 `(operation_id, operation_generation, sequence)` 的 Outbox 恢复索引，并已提供事务化前向 migration、升级前备份/恢复演练和 v1 golden database。若 PoC 失败，`nlos-operation` 状态机和 Outbox 契约保留，可替换底层 WAL/KV；不得让 SQLite row identity 进入公共 Operation handle。
 
 ## 当前证据
 
-[PoC-0003](../../evidence/stage-b/poc-0003-sqlite-operation-authority.md)已验证重开恢复、幂等、callback identity、cancel/complete 路由、Outbox ACK 以及 durable ACK 后的无析构进程退出恢复。2026-08-01 的 F1–F4 增量切片进一步通过 kill-9、fault-injection VFS、commit 中断/模拟断电、WAL 尾部损坏、disk-full/只读/I/O error fail-closed、checkpoint/长读和备份恢复测试，并在打开时回读验证 WAL/FULL，拒绝静默 durability 回退。该结果仍是 `PARTIAL PASS`：migration、100K Operation metadata 与跨平台复验尚未完成，因此本 ADR 保持 `POC`。
+[PoC-0003](../../evidence/stage-b/poc-0003-sqlite-operation-authority.md)已验证重开恢复、幂等、callback identity、cancel/complete 路由、Outbox ACK 以及 durable ACK 后的无析构进程退出恢复。2026-08-01 的 F1–F4 增量切片进一步通过 kill-9、fault-injection VFS、commit 中断/模拟断电、WAL 尾部损坏、disk-full/只读/I/O error fail-closed、checkpoint/长读和备份恢复测试，并在打开时回读验证 WAL/FULL，拒绝静默 durability 回退。2026-08-02 的 F5 切片完成 v1→v2 事务化迁移、golden v1、升级前备份和逐写入点失败恢复。该结果仍是 `PARTIAL PASS`：100K Operation metadata 与跨平台复验尚未完成，因此本 ADR 保持 `POC`。
 
-[PoC-0004](../../evidence/stage-b/poc-0004-outbox-wake-consumer.md)（2026-08-01）已补齐 Tokio wake consumer 集成缺口：Outbox 条目经专用 OS 线程 pump 投递到 Tokio Fiber wake 与 reconciliation，commit 前无 wake、崩溃重放不丢失、幂等去重、有界 backpressure 不阻塞 writer，均有集成测试；本 ADR 维持 `POC`，剩余 migration、100K metadata 与跨平台缺口继续归 `B-STORE-FAULT`。
+[PoC-0004](../../evidence/stage-b/poc-0004-outbox-wake-consumer.md)（2026-08-01）已补齐 Tokio wake consumer 集成缺口：Outbox 条目经专用 OS 线程 pump 投递到 Tokio Fiber wake 与 reconciliation，commit 前无 wake、崩溃重放不丢失、幂等去重、有界 backpressure 不阻塞 writer，均有集成测试；本 ADR 维持 `POC`，剩余 100K metadata 与跨平台缺口继续归 `B-STORE-FAULT`。

@@ -103,7 +103,7 @@ cargo fmt --all -- --check
 
 ## 7. 下一验证门
 
-1. `B-STORE-FAULT`（SQLite fault-injection）：F1–F4 的 kill-9、torn-write VFS、disk-full、checkpoint/backup 与长读事务已由 [PoC-0003 增量证据](./poc-0003-sqlite-operation-authority.md)补齐；剩余 migration（v1→v2、golden database、升级前备份/失败恢复）、100K metadata 与 Windows/Linux 复验完成后，本 PoC 方可考虑晋升；
+1. `B-STORE-FAULT`（SQLite fault-injection）：F1–F4 fault/recovery 与 F5 v1→v2 migration/golden/rollback anchor 已由 [PoC-0003 增量证据](./poc-0003-sqlite-operation-authority.md)补齐；剩余 100K metadata 与 Windows/Linux 复验完成后，本 PoC 方可考虑晋升；
 2. durable wait registry 与 fiber rehydration（`B-PROCESS`/Slice K）：使 crash-restart 场景的重投 wake 能送达重建 fiber 而非 `FiberGone`；
 3. reconcile sink 接入真实 Task/Artifact 权威并验证 Driver authentication/EffectPermit；
 4. 跨平台复验与真实速率 backpressure 计量。

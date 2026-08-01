@@ -88,12 +88,26 @@ git diff --check
 
 上述命令全部通过；workspace 的 100K waiting Fiber 显式规模探针仍为 ignored，且它不等价于本工作包要求的 100K Operation metadata。
 
+## B-STORE-FAULT F5 schema migration 增量证据（2026-08-02）
+
+durable format 从 v1 前向演进到 v2。v2 新增 `operation_outbox_by_operation(operation_id, operation_generation, sequence)` 索引，为后续按 Operation 恢复等待与协调状态提供有界查询入口，避免依赖全 Outbox 扫描；公共 Rust API 和既有行编码不变。
+
+迁移采用独立 `BEGIN IMMEDIATE` 事务：新数据库先完整创建 v1，再迁移到 v2；旧 v1 数据库直接迁移；未知版本继续 fail-closed。新增可审计的 `authority-v1.sql` golden fixture，固定一个已完成 Operation、Callback fence、Receipt 与未 ACK Outbox，用于验证旧格式兼容。
+
+新增 3 项验收测试并通过：
+
+1. golden v1 打开后无损升级到 v2，Operation/Receipt/Outbox 保持一致，v2 索引只出现一次，升级后可继续写入；
+2. 升级前 SQLite online backup 保持完整 v1 rollback anchor；源库升级后，备份仍可独立恢复并迁移到 v2；
+3. fault VFS 逐写入点中断迁移，磁盘上只允许完整 v1 或完整 v2，不暴露混合 schema；最终成功点保留全部 golden 数据。
+
+全 workspace 测试、rustfmt、Clippy `-D warnings` 与 `git diff --check` 通过。
+
 ## 当前不能证明
 
 - 当前 fault-injection VFS、WAL 文件破坏和 kill-9 测试已覆盖单机进程崩溃、commit 中断、写损坏与模拟掉电，但不能替代真实硬件掉电、控制器缓存或不同文件系统上的 torn-sector 验证；
 - disk-full、只读文件系统、I/O error 与 fail-closed 行为已在当前 macOS 环境覆盖，尚未跨平台复验；
 - WAL checkpoint、长读事务和备份/恢复已覆盖；尚未测量 100K Operation metadata；
-- schema v1 尚无 v2 migration/rollback golden database；
+- schema v1→v2 前向迁移、升级前备份、失败恢复与 golden database 已覆盖；更复杂的破坏性迁移和发布级 rollback 编排尚未验证；
 - 尚未在 Windows/Linux 和不同文件系统复验；
 - ~~Outbox 尚未连接 Tokio Fiber wake/reconciliation consumer~~ **已由 [PoC-0004](./poc-0004-outbox-wake-consumer.md) 补齐（2026-08-01）**：consumer 经专用 OS 线程 pump 驱动，崩溃重放、幂等去重、stale generation fencing 与 backpressure 均有集成测试（`PARTIAL PASS`，单节点局部证据）；
 - 尚无 Driver authentication、Capability、Reservation 或 EffectPermit；
