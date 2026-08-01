@@ -33,21 +33,15 @@ jobs:
           components: clippy,rustfmt
 
       - name: Install Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
 
       - name: Install Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.13"
-
-      - name: Install Buf
-        uses: bufbuild/buf-setup-action@v1.50.0
-        with:
-          version: 1.72.0
-          github_token: ${{ github.token }}
 
       - name: Install schema runtimes
         run: |
@@ -56,8 +50,7 @@ jobs:
 
       - name: Lint and regenerate schemas
         run: |
-          buf lint
-          buf format -d --exit-code
+          npm run schema:lint
           npm run schema:check-generated
 
       - name: Type-check and test cross-language schema
@@ -68,7 +61,7 @@ jobs:
 
       - name: Reject Protobuf breaking changes
         if: runner.os == 'Linux' && github.event_name == 'pull_request'
-        run: buf breaking --against '.git#branch=origin/${{ github.base_ref }},subdir=schema'
+        run: npx --no-install buf breaking --against '.git#branch=origin/${{ github.base_ref }},subdir=schema'
 
       - name: Test workspace
         run: cargo test --workspace

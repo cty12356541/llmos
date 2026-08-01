@@ -14,6 +14,7 @@
 - TypeScript：Buf remote plugin `buf.build/bufbuild/es:v2.13.0` 生成到 `gen/typescript`，runtime 固定 `@bufbuild/protobuf 2.13.0`；
 - Python：Buf remote plugin `buf.build/protocolbuffers/python:v33.4` 生成到 `gen/python`，runtime 固定 `protobuf 6.33.4`；
 - `buf.yaml` 使用 `STANDARD` lint 和 `FILE` breaking policy；`buf.gen.yaml` 固定 plugin 版本；
+- Buf CLI 本身由官方 npm package `@bufbuild/buf 1.72.0` + lockfile 安装，避免 CI setup action 的旧 Node runtime；
 - checked-in 生成物由 `schema:check-generated` 重生成后检查 `git status --porcelain -- gen`，同时捕获已跟踪差异与新增未跟踪文件；
 - TypeScript/Python conformance 程序读取同一 golden vector，验证 major/critical fail-closed、higher minor/non-critical 接受和 unknown protobuf field round-trip；
 - GitHub Actions 三平台安装固定 Buf/Node/Python/runtime，执行 lint、generation drift、跨语言测试；PR 在 Linux 额外对 `origin/<base>` 执行 `buf breaking`。
@@ -35,6 +36,8 @@ CI Python: 3.13
 验证中发现并拒绝了 `protocolbuffers/python:v35.1`：其生成代码要求 Python protobuf runtime `7.35.1`，而 2026-08-02 PyPI 当前最高可安装版本为 `6.33.6`。最终固定 `v33.4`，生成代码声明 runtime `6.33.4`，并通过真实 import/parse/serialize 测试。这个反例说明 generator version 与语言 runtime 必须作为一组验证，不能只取上游最新 tag。
 
 remote plugin 的版本已固定，生成物也 checked in；正常 Rust build 和 SDK consumer 不依赖 BSR 在线可用。重新生成仍依赖 Buf Schema Registry，属于后续 supply-chain mirror/provenance 工作。
+
+首次三平台 run 30715842211 在 Ubuntu/macOS 通过全部 schema 步骤，但 Windows checkout 因 CRLF 转换导致 Buf format/generated drift 失败；gate 正确阻止了平台字节差异。后续 remediation 新增 `.gitattributes`，强制 `.proto`、生成 Python/TypeScript 使用 LF；同时用 lockfile 中的官方 Buf npm CLI 替代使用 Node 20 action runtime 的 setup action，并升级 Node/Python setup action。该失败作为反例保留，不冒充通过结果。
 
 ## 3. 测试与复现
 

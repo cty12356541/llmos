@@ -31,7 +31,7 @@
 4. unknown major 与 unknown critical extension fail-closed；更高 minor 和 unknown non-critical extension可被当前 consumer 接受；
 5. `ValidatedFrame` 同时保留 typed view 和原始 wire bytes。转发 hop 必须转发原始 frame，禁止通过 decode/re-encode 假装保留生成器未知字段；
 6. envelope 先只承载 128-bit request ID、service、method 与 opaque payload。service-specific payload、Capability、deadline、Operation/Receipt 等字段只有进入 registry 并取得兼容证据后才能成为稳定表面。
-7. Buf 1.72.0 负责 lint、breaking 与跨语言生成编排；TypeScript 固定 protobuf-es 2.13.0，Python 固定 generator v33.4/runtime 6.33.4。生成物 checked in，但 CI 必须重生成并拒绝 drift。
+7. Buf 1.72.0 负责 lint、breaking 与跨语言生成编排；TypeScript 固定 protobuf-es 2.13.0，Python 固定 generator v33.4/runtime 6.33.4。生成物 checked in，`.gitattributes` 强制跨平台 LF，CI 必须重生成并拒绝 drift。
 
 ## 约束
 

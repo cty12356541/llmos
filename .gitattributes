@@ -1,0 +1,4 @@
+# Schema sources and generated baselines must be byte-identical on all hosts.
+schema/**/*.proto text eol=lf
+gen/**/*.py text eol=lf
+gen/**/*.ts text eol=lf
