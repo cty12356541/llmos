@@ -114,13 +114,19 @@ cargo test -p nlos-store --test store_scale -- --ignored --nocapture
 
 fixture 构造在单个可重建测试事务中使用 `synchronous=OFF`，只用于快速生成 100K 规模状态；计入验收的恢复、pending 与 ACK 均通过正常 `SqliteOperationStore` 的 WAL/FULL 路径。这份证据证明当前数据规模下 metadata 恢复与队列热路径没有退化到不可用，但不代表 100K 次逐条生产写入吞吐，也不外推到 Windows/Linux、慢盘或完整 Task/Artifact 负载。
 
+## B-STORE-FAULT F7 跨平台增量证据（2026-08-02）
+
+新增 GitHub Actions `Rust cross-platform verification`，在 `ubuntu-latest`、`windows-latest`、`macos-latest` 上运行同一份 `cargo test --workspace` 与 Clippy `-D warnings`，Linux 额外执行 rustfmt。远程 run [30714584445](https://github.com/cty12356541/llmos/actions/runs/30714584445) 三个平台全部通过。
+
+Windows 首轮测试已通过但 Clippy 暴露 Unix-only chmod 测试仍参与 Windows 编译的问题；修复为编译期平台分流，并把强制子进程终止准确表述为 Unix `SIGKILL` / Windows `TerminateProcess` 后，第二轮全绿。fault VFS、Operation authority、crash recovery、Outbox、migration 和默认规模回归均在三平台执行；Unix chmod 只在 Linux/macOS 执行，真实 RAM-volume ENOSPC 仍只在 macOS 执行。
+
 ## 当前不能证明
 
 - 当前 fault-injection VFS、WAL 文件破坏和 kill-9 测试已覆盖单机进程崩溃、commit 中断、写损坏与模拟掉电，但不能替代真实硬件掉电、控制器缓存或不同文件系统上的 torn-sector 验证；
 - disk-full、只读文件系统、I/O error 与 fail-closed 行为已在当前 macOS 环境覆盖，尚未跨平台复验；
 - WAL checkpoint、长读事务、备份/恢复与 100K Operation metadata 恢复/pending/ACK 已覆盖；尚未测量 100K 次逐条生产写入和完整 Task/Artifact 负载；
 - schema v1→v2 前向迁移、升级前备份、失败恢复与 golden database 已覆盖；更复杂的破坏性迁移和发布级 rollback 编排尚未验证；
-- 尚未在 Windows/Linux 和不同文件系统复验；
+- Windows/Linux/macOS CI 已复验核心 authority/fault/recovery/migration；真实 Windows 只读 ACL、Linux loop-device ENOSPC、真实掉电和更多文件系统仍未覆盖；
 - ~~Outbox 尚未连接 Tokio Fiber wake/reconciliation consumer~~ **已由 [PoC-0004](./poc-0004-outbox-wake-consumer.md) 补齐（2026-08-01）**：consumer 经专用 OS 线程 pump 驱动，崩溃重放、幂等去重、stale generation fencing 与 backpressure 均有集成测试（`PARTIAL PASS`，单节点局部证据）；
 - 尚无 Driver authentication、Capability、Reservation 或 EffectPermit；
 - Receipt 仍只有 nominal ID，没有 durable Receipt body、签名和 provenance；

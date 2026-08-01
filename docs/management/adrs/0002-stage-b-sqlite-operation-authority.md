@@ -71,6 +71,6 @@ v1 只允许从空数据库事务创建；遇到未知 `user_version` 直接拒�
 
 ## 当前证据
 
-[PoC-0003](../../evidence/stage-b/poc-0003-sqlite-operation-authority.md)已验证重开恢复、幂等、callback identity、cancel/complete 路由、Outbox ACK 以及 durable ACK 后的无析构进程退出恢复。2026-08-01 的 F1–F4 增量切片进一步通过 fault/recovery 测试；2026-08-02 的 F5 完成 v1→v2 事务化迁移、golden v1、升级前备份和逐写入点失败恢复，F6 完成 100K Operation + Outbox 的恢复、pending 与 ACK ScaleProfile。该结果仍是 `PARTIAL PASS`：跨平台复验与 100K 逐条生产写入尚未完成，因此本 ADR 保持 `POC`。
+[PoC-0003](../../evidence/stage-b/poc-0003-sqlite-operation-authority.md)已验证重开恢复、幂等、callback identity、cancel/complete 路由、Outbox ACK 以及 durable ACK 后的无析构进程退出恢复。F1–F4 通过 fault/recovery，F5 完成 v1→v2 migration，F6 完成 100K metadata ScaleProfile，F7 在 Ubuntu/Windows/macOS CI 通过核心测试与 Clippy。`B-STORE-FAULT` 验收范围已完成；本 ADR 仍保持 `POC`，因为真实硬件掉电、更多文件系统、100K 逐条生产写入和完整 Task/Artifact 负载不在当前证据内。
 
-[PoC-0004](../../evidence/stage-b/poc-0004-outbox-wake-consumer.md)（2026-08-01）已补齐 Tokio wake consumer 集成缺口：Outbox 条目经专用 OS 线程 pump 投递到 Tokio Fiber wake 与 reconciliation，commit 前无 wake、崩溃重放不丢失、幂等去重、有界 backpressure 不阻塞 writer，均有集成测试；本 ADR 维持 `POC`，剩余跨平台缺口继续归 `B-STORE-FAULT`。
+[PoC-0004](../../evidence/stage-b/poc-0004-outbox-wake-consumer.md)（2026-08-01）已补齐 Tokio wake consumer 集成缺口；其核心 workspace 回归随 F7 在 Ubuntu/Windows/macOS 通过。durable wait registry/fiber rehydration、真实副作用授权与协调仍归后续工作包。

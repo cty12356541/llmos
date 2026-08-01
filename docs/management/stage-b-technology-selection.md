@@ -279,11 +279,12 @@ docs/
 
 ## 14. 下一步
 
-当前已完成 ADR-0001、PoC-0001、PoC-0002、ADR-0002/PoC-0003 的初版和 PoC-0004；`B-STORE-FAULT` 的 F1–F5 已通过 fault/recovery/migration 验证，F6 于 2026-08-02 通过 100K Operation + Outbox 的恢复、pending 与 ACK ScaleProfile。下一主线仍以[阶段 B 权威进度单](./stage-b-progress.md)为准：
+当前已完成 ADR-0001、PoC-0001、PoC-0002、ADR-0002/PoC-0003 的初版和 PoC-0004；`B-STORE-FAULT` 的 F1–F7 已通过 fault/recovery/migration/100K metadata 与 Ubuntu/Windows/macOS CI，工作包 `DONE`。下一主线以[阶段 B 权威进度单](./stage-b-progress.md)的 `B-SCHEMA` 为准：
 
-1. Windows/Linux durability 与恢复复验；
-2. 用故障注入 Evidence 决定 PoC-0003/PoC-0004 能否从 `PARTIAL_PASS` 晋升；
-3. 100K 逐条生产写入作为扩展 ScaleProfile，不阻塞当前 metadata 恢复门。
+1. Protobuf/CBOR IDL 与 schema registry；
+2. Rust/TypeScript/Python 生成和版本兼容；
+3. golden vector、fuzz 与本地 typed IPC adapter；
+4. 100K 逐条生产写入、真实掉电和更多文件系统保留为 Store 扩展 Evidence。
 
 技术栈讨论已于[议题 30](../discussions/30-阶段B技术栈讨论.md)收束。编码立即从 Cargo workspace、`nlos-types`、`nlos-runtime` 与 Tokio Fiber scale PoC 开始；带 `PoC` 标记的组件在证据出来前不得升级为 `ACCEPTED` 或冻结公共 ABI。
 
@@ -291,4 +292,4 @@ PoC 进度：[PoC-0001 Tokio Fiber Runtime 初始证据](../evidence/stage-b/poc
 
 [PoC-0002 Operation Callback Fence](../evidence/stage-b/poc-0002-operation-callback-fence.md)也已取得 `PARTIAL PASS`：cancel epoch、迟到/重复 callback、dispatch ticket identity、generation fence 和 cancel/completion 竞态在线程安全内存 Registry 中通过。
 
-[ADR-0002 / PoC-0003 SQLite Operation Authority](./adrs/0002-stage-b-sqlite-operation-authority.md)已完成首个持久化切片：Operation 转换、Receipt identity 和 Wake/Reconcile Outbox 在 WAL/FULL 单写者事务中提交，并通过重开与无析构进程退出恢复测试；~~Tokio consumer 集成仍待完成~~ **已由 [PoC-0004](../evidence/stage-b/poc-0004-outbox-wake-consumer.md) 补齐（2026-08-01）**。同日 F1–F4 fault-injection 切片补齐 kill-9、模拟 torn-write/断电、disk-full/只读/I/O error、checkpoint/长读与备份恢复；2026-08-02 F5 补齐 v1→v2 migration、golden database、升级前备份与失败恢复。100K metadata 和跨平台仍待完成。
+[ADR-0002 / PoC-0003 SQLite Operation Authority](./adrs/0002-stage-b-sqlite-operation-authority.md)已完成首个持久化切片：Operation 转换、Receipt identity 和 Wake/Reconcile Outbox 在 WAL/FULL 单写者事务中提交，并通过重开与无析构进程退出恢复测试；~~Tokio consumer 集成仍待完成~~ **已由 [PoC-0004](../evidence/stage-b/poc-0004-outbox-wake-consumer.md) 补齐（2026-08-01）**。F1–F7 已依次补齐 fault/recovery、v1→v2 migration、100K metadata 与 Ubuntu/Windows/macOS CI；真实硬件掉电、更多文件系统和 100K 逐条生产写入保留为扩展 Evidence。

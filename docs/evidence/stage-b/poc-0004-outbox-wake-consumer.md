@@ -92,10 +92,10 @@ cargo fmt --all -- --check
 ## 6. 当前不能证明什么
 
 - **durable wait registry / fiber rehydration**：runtime 重启后 fiber record 不恢复，重投 wake 只能分类为 `FiberGone` 并 ACK；让新 runtime 把重投 wake 真正送达重建的 fiber 属于 `B-PROCESS`/Slice K 范围；
-- **真实硬件掉电与跨平台 durability**：本 PoC 的 `exit(97)` 本身不是掉电或写损坏；后续 [PoC-0003 F1–F4 增量切片](./poc-0003-sqlite-operation-authority.md)已覆盖 kill-9、fault VFS 模拟断电/WAL 损坏、disk-full/只读/I/O error fail-closed、checkpoint/备份恢复与长读事务，但仍不能替代真实硬件掉电及 Windows/Linux 复验；
+- **真实硬件掉电与介质 durability**：本 PoC 的 `exit(97)` 本身不是掉电或写损坏；后续 [PoC-0003 F1–F7 增量切片](./poc-0003-sqlite-operation-authority.md)已覆盖 fault/recovery 和三平台 CI，但仍不能替代真实硬件掉电、控制器缓存及更多文件系统复验；
 - **100K Operation metadata** 规模行为与 schema migration；
 - **Driver authentication / EffectPermit / progress callback**：reconcile sink 只记录条目，不验证副作用来源身份或许可；
-- **跨平台**：仅 Apple Silicon/macOS；Linux/Windows 未复验；
+- **跨平台边界**：核心 workspace 回归已随 [PoC-0003 F7](./poc-0003-sqlite-operation-authority.md) 在 Ubuntu/Windows/macOS CI 通过；真实平台资源控制、介质故障与完整 Process 恢复仍未验证；
 - **真实规模 backpressure 计量**：慢 sink 是人工 50ms 延迟，未测量生产速率下的排队深度、延迟分布和 writer 吞吐；
 - **分布式/跨节点**：只证明单进程单节点 at-least-once + 幂等，不证明跨节点 exactly-once。
 
@@ -103,7 +103,7 @@ cargo fmt --all -- --check
 
 ## 7. 下一验证门
 
-1. `B-STORE-FAULT`（SQLite fault-injection）：F1–F6 fault/recovery、migration 与 100K metadata 已由 [PoC-0003 增量证据](./poc-0003-sqlite-operation-authority.md)补齐；剩余 Windows/Linux 复验完成后，本 PoC 方可考虑晋升；
+1. `B-STORE-FAULT` 的 F1–F7 fault/recovery、migration、100K metadata 与三平台 CI 已由 [PoC-0003 增量证据](./poc-0003-sqlite-operation-authority.md)补齐；本 PoC 的后续晋升仍取决于 durable wait registry、真实 reconcile authority 和生产速率证据；
 2. durable wait registry 与 fiber rehydration（`B-PROCESS`/Slice K）：使 crash-restart 场景的重投 wake 能送达重建 fiber 而非 `FiberGone`；
 3. reconcile sink 接入真实 Task/Artifact 权威并验证 Driver authentication/EffectPermit；
 4. 跨平台复验与真实速率 backpressure 计量。
