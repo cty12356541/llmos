@@ -21,7 +21,7 @@ use std::error::Error;
 use std::fmt;
 
 use nlos_operation::OperationState;
-use nlos_runtime::{FiberHandle, WakeOutcome, WakeSink};
+use nlos_runtime::{FiberHandle, RuntimeError, WakeOutcome, WakeSink};
 use nlos_types::{CallbackId, Generation, OperationId};
 
 /// The kind of a durable Outbox entry, mirroring the store-side taxonomy.
@@ -57,17 +57,19 @@ pub struct OutboxItem {
 }
 
 /// Errors surfaced by Outbox sources and reconcile sinks.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum OutboxError {
     /// The Outbox source could not serve a `pending` or `ack` call.
     Source {
-        /// Static description of the failing operation.
-        detail: &'static str,
+        /// Description of the failing operation, carrying the root cause's
+        /// `Display` text so the pump health surface can report it.
+        detail: String,
     },
     /// The reconcile sink failed to apply an effect; redelivery is expected.
     Reconcile {
-        /// Static description of the failing reconciliation.
-        detail: &'static str,
+        /// Description of the failing reconciliation, carrying the root
+        /// cause's `Display` text.
+        detail: String,
     },
 }
 
@@ -130,6 +132,10 @@ pub trait ReconcileSink: Send {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ConsumerConfig {
     /// Maximum number of entries polled and applied per [`OutboxConsumer::drain_once`].
+    ///
+    /// Must be positive: `0` is an illegal configuration that would make the
+    /// consumer poll empty batches forever, and is debug-asserted at the
+    /// [`OutboxConsumer::drain_once`] entry.
     pub batch_limit: usize,
 }
 
@@ -144,10 +150,25 @@ pub struct DrainReport {
     pub applied: usize,
     /// Entries whose ACK was committed during this pass.
     pub acked: usize,
-    /// Sequence of the first entry that stopped the batch, if any. That
-    /// entry and every entry after it were neither applied (past the failing
-    /// apply) nor acknowledged, and will be redelivered on a later drain.
+    /// Sequence of the first entry that stopped the batch, if any. What is
+    /// true of that entry depends on the stop cause:
+    ///
+    /// - apply failure (transient wake/reconcile error): the entry and every
+    ///   entry after it were neither applied nor acknowledged, and will be
+    ///   redelivered on a later drain;
+    /// - ACK failure: the entry was applied but not acknowledged; its
+    ///   redelivery is applied again and absorbed by sink idempotency, and
+    ///   every later entry was neither applied nor acknowledged.
     pub stopped_at: Option<u64>,
+    /// `true` when the batch stopped because the wake sink reported the
+    /// terminal [`RuntimeError::ShuttingDown`].
+    ///
+    /// A shutdown stop is a final state, not transient backpressure: the
+    /// driver (pump) MUST stop draining instead of retrying after the poll
+    /// interval. The stopping entry and every entry after it stay
+    /// unacknowledged in the durable Outbox (at-least-once) for a future
+    /// runtime, exactly as ADR-0002 requires.
+    pub shutdown: bool,
 }
 
 /// Bounded, in-order, idempotent consumer of the durable Operation Outbox.
@@ -179,13 +200,26 @@ impl<S: OutboxSource, W: WakeSink, R: ReconcileSink> OutboxConsumer<S, W, R> {
     /// consumer never reorders, skips, or deduplicates entries; replayed
     /// entries are applied again and absorbed by sink idempotency.
     ///
+    /// A wake that fails with [`RuntimeError::ShuttingDown`] is terminal, not
+    /// transient: the batch stops with [`DrainReport::shutdown`] set so the
+    /// driver can end the drain loop instead of retrying forever.
+    ///
     /// # Errors
     ///
     /// Returns [`OutboxError::Source`] when the source cannot serve
     /// `pending`, or when the returned batch violates the strictly ascending
     /// sequence contract (a source bug the consumer must not paper over by
     /// reordering).
+    ///
+    /// # Panics
+    ///
+    /// Debug-panics when [`ConsumerConfig::batch_limit`] is `0`; an empty
+    /// batch limit would make the consumer poll forever without progress.
     pub fn drain_once(&self) -> Result<DrainReport, OutboxError> {
+        debug_assert!(
+            self.config.batch_limit > 0,
+            "batch_limit must be positive; 0 makes the consumer poll empty batches forever"
+        );
         let items = self.source.pending(self.config.batch_limit)?;
         let mut report = DrainReport {
             polled: items.len(),
@@ -196,7 +230,7 @@ impl<S: OutboxSource, W: WakeSink, R: ReconcileSink> OutboxConsumer<S, W, R> {
             .any(|pair| pair[1].sequence <= pair[0].sequence)
         {
             return Err(OutboxError::Source {
-                detail: "pending entries are not in strictly ascending sequence order",
+                detail: "pending entries are not in strictly ascending sequence order".to_owned(),
             });
         }
         for item in &items {
@@ -211,6 +245,15 @@ impl<S: OutboxSource, W: WakeSink, R: ReconcileSink> OutboxConsumer<S, W, R> {
                     Ok(
                         WakeOutcome::Delivered | WakeOutcome::FiberGone | WakeOutcome::NotWaiting,
                     ) => true,
+                    // `ShuttingDown` is a terminal runtime condition, not
+                    // transient backpressure: stop the batch and flag it so
+                    // the driver ends the drain loop; the unacknowledged
+                    // entries stay durable for a future runtime (ADR-0002).
+                    Err(RuntimeError::ShuttingDown) => {
+                        report.stopped_at = Some(item.sequence);
+                        report.shutdown = true;
+                        return Ok(report);
+                    }
                     Err(_) => false,
                 },
                 OutboxKind::ReconcileEffect => self.reconcile_sink.reconcile(item).is_ok(),

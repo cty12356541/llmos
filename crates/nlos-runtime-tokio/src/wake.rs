@@ -55,8 +55,13 @@ impl WaitKey {
 pub(crate) enum WaitEntry {
     /// A live wait; the sender fires exactly once and the entry is removed.
     Pending(oneshot::Sender<()>),
-    /// A wake that arrived before its wait was registered. The next
-    /// registration for the same key consumes it and resolves immediately.
+    /// A wake that arrived with no live receiver: either it preceded its
+    /// wait registration (early wake), or the registered receiver was
+    /// dropped before the wake fired and the wake was re-buffered. In both
+    /// cases the next registration for the same key consumes the buffer and
+    /// resolves immediately with [`WaitOutcome::Woken`]. This is a contract,
+    /// not an implementation detail: at-least-once redelivery and
+    /// drop-then-rewait sequences rely on it.
     Buffered,
 }
 
@@ -125,6 +130,15 @@ pub struct TokioWakeSink {
 }
 
 impl WakeSink for TokioWakeSink {
+    /// Delivers the wake as a non-blocking handoff.
+    ///
+    /// Contract: consuming a `Pending` entry whose receiver was already
+    /// dropped (the wait future was cancelled or dropped) does NOT lose the
+    /// wake — it is re-buffered under the same key, so a later registration
+    /// for that key resolves immediately with [`WaitOutcome::Woken`], exactly
+    /// like an early wake. A repeat wake that hits a buffered or
+    /// just-consumed key still reports [`WakeOutcome::Delivered`], as
+    /// at-least-once redelivery requires.
     fn wake(
         &self,
         fiber: &FiberHandle,
@@ -153,6 +167,7 @@ impl WakeSink for TokioWakeSink {
         if is_terminal(*lock_unpoisoned(&record.state)) {
             return Ok(WakeOutcome::NotWaiting);
         }
+        let mut rebuffer = false;
         match waits.entry(key) {
             Entry::Occupied(entry) => {
                 if matches!(entry.get(), WaitEntry::Pending(_)) {
@@ -160,7 +175,13 @@ impl WakeSink for TokioWakeSink {
                     // no-op instead of a second logical wake. The signal is
                     // the entire handoff: `wake` never awaits the fiber.
                     if let WaitEntry::Pending(sender) = entry.remove() {
-                        let _delivered = sender.send(());
+                        if sender.send(()).is_err() {
+                            // The receiver is gone (the wait was dropped or
+                            // superseded): re-buffer the wake so a later
+                            // registration for the same key still resolves
+                            // immediately instead of pending forever.
+                            rebuffer = true;
+                        }
                         record.resume_from_wait();
                     }
                 }
@@ -170,6 +191,9 @@ impl WakeSink for TokioWakeSink {
                 // registration for the same Operation resolves immediately.
                 entry.insert(WaitEntry::Buffered);
             }
+        }
+        if rebuffer {
+            waits.insert(key, WaitEntry::Buffered);
         }
         // A repeat wake that hits a buffered or just-consumed key still
         // reports `Delivered`, as at-least-once redelivery requires.

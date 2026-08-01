@@ -103,7 +103,39 @@ cargo fmt --all -- --check
 
 ## 7. 下一验证门
 
-1. `B-STORE-FAULT`（SQLite fault-injection）：kill -9、torn-write VFS、disk-full、checkpoint/backup、100K metadata——与 ADR-0002 PoC 验收第 7 条对齐；通过后本 PoC 方可考虑晋升；
+1. `B-STORE-FAULT`（SQLite fault-injection）：kill -9、torn-write VFS、disk-full、checkpoint/backup、migration（v1→v2 前向迁移、备份/恢复演练、golden database）与长读事务、100K metadata——与 ADR-0002 PoC 验收第 7 条对齐；通过后本 PoC 方可考虑晋升；
 2. durable wait registry 与 fiber rehydration（`B-PROCESS`/Slice K）：使 crash-restart 场景的重投 wake 能送达重建 fiber 而非 `FiberGone`；
 3. reconcile sink 接入真实 Task/Artifact 权威并验证 Driver authentication/EffectPermit；
 4. 跨平台复验与真实速率 backpressure 计量。
+
+## 8. Remediation（2026-08-01）：评审后错误路径语义修复
+
+对本 PoC 提交（`6894240`）的评审发现 1 个 MAJOR 与 3 个同族 MEDIUM 错误路径缺陷，均在同一 remediation 提交中修复并各有测试；本 PoC 状态保持 `PARTIAL PASS`（修复收窄"不能证明什么"的边界，不扩大证据范围）。
+
+### 8.1 评审发现 → 修复对应
+
+| 评审发现 | 修复 |
+|---|---|
+| MAJOR：pump_loop `Ok(_) \| Err(_) => break` 静默吞掉全部 drain 错误，持久 source 故障 = 25ms 无限重试零信号 | pump 区分 `Err(e)` 与正常停批：失败计入 `PumpHealth.consecutive_failures` 与 `last_error`（携带根因 `Display`），按 25ms 起 ×2、cap 1600ms 的有上限指数退避重试，成功 drain 归零复位；连续失败达阈值（默认 16）转 `Faulted` 并退出线程；`OutboxPump::health()` 可无锁热路径读取 |
+| MEDIUM-1：`TokioWakeSink::wake` shutdown 后返回 `Err(ShuttingDown)` 被 consumer 当瞬时错误每 25ms 无限重投，outbox 队头阻塞静默积压 | `DrainReport` 新增 `shutdown: bool`：wake 返回 `ShuttingDown` 时置位并停批返回 `Ok`；pump 见到后转 `Stopped` 退出循环（可 join），未 ACK 条目留在库中（at-least-once 保留给未来 runtime，即 ADR-0002 语义）；`WakeSink` 契约文档（不改签名）声明 `ShuttingDown` 为终态而非瞬时错误 |
+| MEDIUM-2：pump 线程无 panic 防护，drain_once panic → 线程静默死亡，投递永久停滞无信号 | `catch_unwind(AssertUnwindSafe(..))` 包裹每次 drain（无 `unsafe`）；panic 按 failure 同样计数/退避（`last_error = "consumer panicked"`），达阈值同样转 `Faulted` |
+| MEDIUM-3：`wake()` 中 `sender.send(())` 失败（fiber 已 drop 等待句柄）被吞：wake 被消费+ACK，同键重等永久 pending | send 失败时在同键重新插入 `WaitEntry::Buffered`（与 early-wake 同路径），仍返回 `Delivered`；后续同键 `wait_for_operation` 立即 `Woken`；`wake()`/`WaitEntry` 文档已升级为契约级声明 |
+| MINOR：`DrainReport::stopped_at` 文档与 ACK 失败路径矛盾 | 文档精确化：apply 失败停批 = 该条及之后未 apply 未 ack；ACK 失败停批 = 该条已 apply 未 ack、重放靠 sink 幂等吸收 |
+| MINOR：`OutboxError.detail: &'static str` 丢失根因 | 改 `String`（去掉 `Copy`），pump 的 `map_err` 携带 store 错误 `Display` |
+| MINOR：`ConsumerConfig.batch_limit = 0` 合法但导致 pump 永久空转 | `drain_once` 入口 `debug_assert!(batch_limit > 0)`，文档注明 0 为非法配置 |
+| MINOR：`writer_elapsed < 300ms` 墙上时钟断言慢盘 CI 有 flake 风险 | 放宽为 1s 并注明仅为"writer 不被慢 sink 拖住"的粗粒度上界 |
+
+### 8.2 新测试
+
+1. `nlos-runtime-tokio/tests/pump.rs::failing_source_is_observed_through_health_and_backoff`：脚本化持续失败 source → `health()` 显示 failures>0、`last_error` 含根因、drain 尝试间隔随退避拉长（时间戳断言）；source 恢复后 failures 归零；
+2. `nlos-runtime-tokio/tests/pump.rs::panicking_sink_faults_the_pump_without_killing_it`：panicking sink → 线程不死亡（`stop()` 1s 内 join）、health 记录 `consumer panicked`、达阈值转 `Faulted`；
+3. `nlos-runtime-tokio/tests/outbox.rs::runtime_shutdown_stops_the_pump_without_draining_the_outbox`：`runtime.shutdown()` 后有未 ACK 条目 → pump 转 `Stopped`、条目保持 pending 不被无限重投、`stop()` 快速 join；
+4. `nlos-runtime-tokio/tests/wake.rs::wake_to_dropped_receiver_is_rebuffered_for_the_next_registration`：注册 wait → drop → wake（`Delivered`）→ 同键重注册 → 立即 `Woken`；
+5. `nlos-outbox/tests/drain.rs::shutting_down_wake_stops_batch_as_terminal_shutdown` 与 `zero_batch_limit_is_rejected_in_debug_builds`（`#[should_panic]`，debug 构建下验证 `debug_assert`；release 构建仅文档约束）。
+
+既有测试无回归：`nlos-outbox` drain 13 项、`nlos-runtime-tokio` wake 10 项、outbox 10 项及 workspace 其余测试全绿；`cargo fmt --all -- --check` 与 `cargo clippy --workspace --all-targets -- -D warnings` 通过。
+
+### 8.3 语义声明
+
+- **pump 存活/健康语义**：pump 线程任何失败路径（source 错误、consumer panic）都计入 `PumpHealth` 并按有上限退避重试，不允许静默无限重试或静默死亡；`Faulted`/`Stopped` 均为可观察终态，`stop()` 在两态下都能快速 join。
+- **shutdown 终态语义**：`DrainReport::shutdown = true` 是终态停批（区别于瞬时停批的 25ms 重试）；pump 见到后立即 `Stopped` 退出，未 ACK 条目保留在 durable Outbox，由未来 runtime 的 pump 按 at-least-once 重投。

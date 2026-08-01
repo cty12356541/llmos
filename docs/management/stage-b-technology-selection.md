@@ -279,12 +279,12 @@ docs/
 
 ## 14. 下一步
 
-当前已完成 ADR-0001、PoC-0001、PoC-0002 和 ADR-0002/PoC-0003 的初版；下一主线以[阶段 B 权威进度单](./stage-b-progress.md)的 `B-OUTBOX` 为准：
+当前已完成 ADR-0001、PoC-0001、PoC-0002、ADR-0002/PoC-0003 的初版和 PoC-0004（durable Outbox → Tokio wake consumer 集成，`PARTIAL PASS`）；下一主线以[阶段 B 权威进度单](./stage-b-progress.md)的 `B-STORE-FAULT` 为准：
 
-1. 将 SQLite durable Outbox 接入 bounded Tokio dispatcher；
-2. 以 Fiber generation/cancel fence 做幂等 wake/reconcile；
-3. 验证 consumer crash、重启重放、backpressure 和 cancel path；
-4. 用集成 Evidence 决定是否推进 Runtime/Store PoC 的验收状态。
+1. SQLite fault-injection：kill -9/断电、torn-write VFS、disk-full/只读文件系统/I/O error 的 fail-closed 行为；
+2. WAL checkpoint/备份恢复演练、migration（v1→v2 前向迁移、备份/恢复演练、golden database）与长读事务；
+3. 100K Operation metadata 规模行为；
+4. 用故障注入 Evidence 决定 PoC-0003/PoC-0004 能否从 `PARTIAL_PASS` 晋升。
 
 技术栈讨论已于[议题 30](../discussions/30-阶段B技术栈讨论.md)收束。编码立即从 Cargo workspace、`nlos-types`、`nlos-runtime` 与 Tokio Fiber scale PoC 开始；带 `PoC` 标记的组件在证据出来前不得升级为 `ACCEPTED` 或冻结公共 ABI。
 
@@ -292,4 +292,4 @@ PoC 进度：[PoC-0001 Tokio Fiber Runtime 初始证据](../evidence/stage-b/poc
 
 [PoC-0002 Operation Callback Fence](../evidence/stage-b/poc-0002-operation-callback-fence.md)也已取得 `PARTIAL PASS`：cancel epoch、迟到/重复 callback、dispatch ticket identity、generation fence 和 cancel/completion 竞态在线程安全内存 Registry 中通过。
 
-[ADR-0002 / PoC-0003 SQLite Operation Authority](./adrs/0002-stage-b-sqlite-operation-authority.md)已完成首个持久化切片：Operation 转换、Receipt identity 和 Wake/Reconcile Outbox 在 WAL/FULL 单写者事务中提交，并通过重开与无析构进程退出恢复测试；torn-write、disk-full、checkpoint/备份、migration、100K metadata、跨平台以及 Tokio consumer 集成仍待完成。
+[ADR-0002 / PoC-0003 SQLite Operation Authority](./adrs/0002-stage-b-sqlite-operation-authority.md)已完成首个持久化切片：Operation 转换、Receipt identity 和 Wake/Reconcile Outbox 在 WAL/FULL 单写者事务中提交，并通过重开与无析构进程退出恢复测试；~~Tokio consumer 集成仍待完成~~ **已由 [PoC-0004](../evidence/stage-b/poc-0004-outbox-wake-consumer.md) 补齐（2026-08-01）**：consumer 经专用 OS 线程 pump 驱动，崩溃重放、幂等去重、stale generation fencing 与 backpressure 均有集成测试（`PARTIAL PASS`，单节点局部证据）；torn-write、disk-full、checkpoint/备份、migration、100K metadata、跨平台仍待完成。

@@ -21,7 +21,7 @@ use nlos_outbox::{
 };
 use nlos_runtime::{FiberHandle, FiberSpec, RuntimeAdapter, RuntimeError, WakeOutcome, WakeSink};
 use nlos_runtime_tokio::{
-    OperationWait, OutboxPump, PumpConfig, RecordingReconcileSink, StoreOutboxSource,
+    OperationWait, OutboxPump, PumpConfig, PumpState, RecordingReconcileSink, StoreOutboxSource,
     TokioRuntimeAdapter, TokioRuntimeConfig, TokioWakeSink, WaitOutcome,
 };
 use nlos_store::SqliteOperationStore;
@@ -249,7 +249,7 @@ impl OutboxSource for FirstAckFailsSource {
     fn ack(&self, sequence: u64) -> Result<(), OutboxError> {
         if lock(&self.failed).insert(sequence) {
             return Err(OutboxError::Source {
-                detail: "scripted first ack failure",
+                detail: "scripted first ack failure".to_owned(),
             });
         }
         self.inner.ack(sequence)
@@ -269,7 +269,7 @@ impl OutboxSource for NeverAckSource {
 
     fn ack(&self, _sequence: u64) -> Result<(), OutboxError> {
         Err(OutboxError::Source {
-            detail: "ack boundary down",
+            detail: "ack boundary down".to_owned(),
         })
     }
 }
@@ -838,8 +838,11 @@ async fn bounded_batches_and_slow_sink_do_not_block_the_writer() {
         started.elapsed()
     });
     let writer_elapsed = writer.join().expect("writer thread");
+    // Coarse upper bound only: the writer must not be dragged by the slow
+    // sink. 1s is deliberately generous so slow-disk CI cannot flake; the
+    // real signal is the backlog assertion below, not the wall clock.
     assert!(
-        writer_elapsed < Duration::from_millis(300),
+        writer_elapsed < Duration::from_secs(1),
         "writer must not be dragged by the slow consumer: {writer_elapsed:?}"
     );
     assert!(
@@ -939,4 +942,66 @@ async fn wake_is_observed_only_after_commit_returns() {
     runtime
         .cancel_scope(scope, Generation::INITIAL)
         .expect("cancel");
+}
+
+/// 9. Runtime shutdown is terminal, not transient: with an unacknowledged
+/// entry pending, the pump observes `DrainReport::shutdown`, transitions to
+/// `Stopped`, ends its thread (so `stop()` joins promptly), and leaves the
+/// entry durable instead of retrying every poll interval forever.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn runtime_shutdown_stops_the_pump_without_draining_the_outbox() {
+    let database = TestDatabase::new("shutdown-terminal");
+    let store = Arc::new(SqliteOperationStore::open(&database.path).expect("open"));
+    let runtime = runtime(2);
+    let scope = scope_id(9);
+    let fiber = runtime
+        .spawn_fiber(
+            fiber_spec(9, Generation::INITIAL, scope),
+            Box::pin(pending()),
+        )
+        .expect("spawn");
+
+    let handle = store
+        .register(op_spec(9, fiber))
+        .expect("register")
+        .handle();
+    let ticket = store.dispatch(handle, callback(9)).expect("dispatch");
+    store
+        .complete(
+            ticket,
+            CompletionOutcome::Completed {
+                receipt_id: receipt(10),
+            },
+        )
+        .expect("complete");
+    assert_eq!(pending_count(&store), 1);
+
+    // Shut down before the pump starts so every wake hits the terminal
+    // `ShuttingDown` path deterministically.
+    runtime.shutdown();
+
+    let pump = start_pump(
+        StoreOutboxSource::new(Arc::clone(&store)),
+        runtime.wake_sink(),
+        RecordingReconcileSink::default(),
+        8,
+    );
+    let _ = pump.hint();
+
+    wait_until("pump reaches terminal Stopped", || {
+        pump.health().state == PumpState::Stopped
+    })
+    .await;
+    let health = pump.health();
+    assert_eq!(health.consecutive_failures, 0);
+    assert_eq!(health.last_error, None);
+
+    // The unacknowledged entry stays durable and is not redelivered in a
+    // retry loop: the pump thread has exited, so nothing polls anymore.
+    assert_eq!(
+        pending_count(&store),
+        1,
+        "shutdown must not drain or ack the durable entry"
+    );
+    pump.stop();
 }

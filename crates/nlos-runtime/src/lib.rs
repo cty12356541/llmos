@@ -178,11 +178,13 @@ pub trait WakeSink: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns [`RuntimeError`] only for transient delivery failures that make
-    /// redelivery meaningful (for example [`RuntimeError::ShuttingDown`]).
-    /// Permanent conditions MUST be reported as [`WakeOutcome`] instead, so
-    /// the Outbox consumer can acknowledge the entry instead of retrying
-    /// forever.
+    /// Returns [`RuntimeError`] only for delivery failures where redelivery
+    /// is meaningful. [`RuntimeError::ShuttingDown`] is terminal, not
+    /// transient: the runtime is going away, so an Outbox consumer MUST stop
+    /// draining (leaving entries durable for a future runtime) instead of
+    /// retrying it like ordinary backpressure. Permanent per-entry conditions
+    /// MUST be reported as [`WakeOutcome`] instead, so the Outbox consumer
+    /// can acknowledge the entry instead of retrying forever.
     fn wake(
         &self,
         fiber: &FiberHandle,

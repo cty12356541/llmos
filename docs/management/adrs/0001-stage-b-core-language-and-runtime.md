@@ -57,6 +57,4 @@
 
 [PoC-0001 初始证据](../../evidence/stage-b/poc-0001-tokio-fiber-runtime.md)已经证明在当前 Apple Silicon/macOS 环境中，两个 Tokio worker 可承载并取消 100K 极简 waiting Fiber；测试二进制最大 RSS 约 128.39 MiB。该结果是 `PARTIAL PASS`：真实 Operation callback fence、CPU-heavy fairness、结构化 join/detach、record GC、分维 CPU 计量和跨平台复验仍未完成，因此本 ADR 继续保持 `POC`，尚未升级为 `ACCEPTED`。
 
-[PoC-0004](../../evidence/stage-b/poc-0004-outbox-wake-consumer.md)（2026-08-01）已补齐 Tokio wake consumer 集成缺口：durable Outbox 经专用 OS 线程 pump 驱动 `TokioWakeSink`，commit 前无 wake、崩溃重放幂等、stale generation fencing 与 backpressure 均有集成测试；本 ADR 维持 `POC`，其余缺口（fairness、join/detach、record GC、CPU 计量、跨平台等）不变。
-
-补充（2026-08-01）：[PoC-0004](../../evidence/stage-b/poc-0004-outbox-wake-consumer.md) 已补齐 durable Outbox → Tokio wake consumer 的集成缺口（专用 OS 线程 pump，blocking 不进 async worker，符合本 ADR 的隔离约束）；其余缺口不变，本 ADR 维持 `POC`。
+[PoC-0004](../../evidence/stage-b/poc-0004-outbox-wake-consumer.md)（2026-08-01）已补齐 Tokio wake consumer 集成缺口：durable Outbox 经专用 OS 线程 pump 驱动 `TokioWakeSink`（blocking 不进 async worker，符合本 ADR 的隔离约束），commit 前无 wake、崩溃重放幂等、stale generation fencing 与 backpressure 均有集成测试；本 ADR 维持 `POC`，其余缺口（fairness、join/detach、record GC、CPU 计量、跨平台等）不变。

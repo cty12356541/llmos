@@ -73,6 +73,4 @@ v1 只允许从空数据库事务创建；遇到未知 `user_version` 直接拒�
 
 [PoC-0003 初始证据](../../evidence/stage-b/poc-0003-sqlite-operation-authority.md)已验证重开恢复、幂等、callback identity、cancel/complete 路由、Outbox ACK 以及 durable ACK 后的无析构进程退出恢复。该结果仍是 `PARTIAL PASS`：尚未完成 torn-write VFS、disk-full、checkpoint/备份、迁移、100K metadata 和跨平台复验，因此本 ADR 保持 `POC`。
 
-[PoC-0004](../../evidence/stage-b/poc-0004-outbox-wake-consumer.md)（2026-08-01）已补齐 Tokio wake consumer 集成缺口：Outbox 条目经专用 OS 线程 pump 投递到 Tokio Fiber wake 与 reconciliation，崩溃重放、幂等去重和 backpressure 均有集成测试；本 ADR 维持 `POC`，其余缺口（fault-injection、checkpoint/备份、迁移、规模、跨平台）不变，故障注入归 `B-STORE-FAULT`。
-
-补充（2026-08-01）：[PoC-0004](../../evidence/stage-b/poc-0004-outbox-wake-consumer.md) 已补齐 Tokio wake consumer 集成缺口（commit 前无 wake、崩溃重放不丢失、幂等去重、有界 backpressure 不阻塞 writer）；torn-write VFS、disk-full、checkpoint/备份、迁移、100K metadata 与跨平台缺口不变，转入 `B-STORE-FAULT` 工作包，本 ADR 维持 `POC`。
+[PoC-0004](../../evidence/stage-b/poc-0004-outbox-wake-consumer.md)（2026-08-01）已补齐 Tokio wake consumer 集成缺口：Outbox 条目经专用 OS 线程 pump 投递到 Tokio Fiber wake 与 reconciliation，commit 前无 wake、崩溃重放不丢失、幂等去重、有界 backpressure 不阻塞 writer，均有集成测试；本 ADR 维持 `POC`，其余缺口（torn-write VFS、disk-full、checkpoint/备份、迁移、100K metadata、跨平台）不变，转入 `B-STORE-FAULT` 工作包。

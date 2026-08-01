@@ -17,7 +17,9 @@ use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 mod pump;
 mod wake;
 
-pub use pump::{OutboxPump, PumpConfig, RecordingReconcileSink, StoreOutboxSource};
+pub use pump::{
+    OutboxPump, PumpConfig, PumpHealth, PumpState, RecordingReconcileSink, StoreOutboxSource,
+};
 pub use wake::{OperationWait, TokioWakeSink, WaitOutcome};
 use wake::{WaitEntry, WaitKey};
 

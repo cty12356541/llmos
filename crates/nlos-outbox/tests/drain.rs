@@ -77,7 +77,7 @@ impl OutboxSource for &FakeSource {
         lock(&self.log).push(Event::Ack(sequence));
         if lock(&self.failed_acks).contains(&sequence) {
             return Err(OutboxError::Source {
-                detail: "scripted ack failure",
+                detail: "scripted ack failure".to_owned(),
             });
         }
         Ok(())
@@ -229,6 +229,7 @@ fn entries_are_applied_then_acked_in_ascending_sequence_order() {
             applied: 3,
             acked: 3,
             stopped_at: None,
+            shutdown: false,
         }
     );
 }
@@ -241,7 +242,7 @@ fn out_of_order_batch_is_rejected_as_source_contract_violation() {
     assert_eq!(
         error,
         OutboxError::Source {
-            detail: "pending entries are not in strictly ascending sequence order",
+            detail: "pending entries are not in strictly ascending sequence order".to_owned(),
         }
     );
     assert_eq!(harness.events(), Vec::new());
@@ -251,7 +252,7 @@ fn out_of_order_batch_is_rejected_as_source_contract_violation() {
 fn pending_failure_propagates_as_source_error() {
     let harness = Harness::new();
     harness.script_batch(Err(OutboxError::Source {
-        detail: "scripted read failure",
+        detail: "scripted read failure".to_owned(),
     }));
     let error = harness
         .consumer(8)
@@ -260,7 +261,7 @@ fn pending_failure_propagates_as_source_error() {
     assert_eq!(
         error,
         OutboxError::Source {
-            detail: "scripted read failure",
+            detail: "scripted read failure".to_owned(),
         }
     );
 }
@@ -270,7 +271,7 @@ fn transient_wake_error_stops_batch_without_applying_or_acknowledging_rest() {
     let harness = Harness::new();
     harness.script_batch(Ok(wake_batch(&[1, 2, 3])));
     harness.script_wake(Ok(WakeOutcome::Delivered));
-    harness.script_wake(Err(RuntimeError::ShuttingDown));
+    harness.script_wake(Err(RuntimeError::QueueFull));
     let report = harness.consumer(8).drain_once().expect("stop is Ok");
     assert_eq!(
         report,
@@ -279,6 +280,7 @@ fn transient_wake_error_stops_batch_without_applying_or_acknowledging_rest() {
             applied: 1,
             acked: 1,
             stopped_at: Some(2),
+            shutdown: false,
         }
     );
     assert_eq!(
@@ -302,6 +304,7 @@ fn permanent_wake_outcomes_are_applied_and_acknowledged() {
             applied: 3,
             acked: 3,
             stopped_at: None,
+            shutdown: false,
         }
     );
 }
@@ -334,7 +337,7 @@ fn transient_reconcile_error_stops_batch() {
         item(2, OutboxKind::ReconcileEffect),
     ]));
     lock(&harness.reconcile_sink.scripted).push_back(Err(OutboxError::Reconcile {
-        detail: "scripted reconcile failure",
+        detail: "scripted reconcile failure".to_owned(),
     }));
     let report = harness.consumer(8).drain_once().expect("stop is Ok");
     assert_eq!(
@@ -344,6 +347,7 @@ fn transient_reconcile_error_stops_batch() {
             applied: 0,
             acked: 0,
             stopped_at: Some(1),
+            shutdown: false,
         }
     );
     assert_eq!(harness.events(), vec![Event::Reconcile(1)]);
@@ -362,6 +366,7 @@ fn ack_failure_stops_batch_and_later_entries_are_not_applied() {
             applied: 1,
             acked: 0,
             stopped_at: Some(1),
+            shutdown: false,
         }
     );
     // Entry 2 was never applied and never acknowledged.
@@ -379,6 +384,7 @@ fn ack_failure_stops_batch_and_later_entries_are_not_applied() {
             applied: 2,
             acked: 2,
             stopped_at: None,
+            shutdown: false,
         }
     );
     assert_eq!(
@@ -414,4 +420,36 @@ fn redelivered_entry_is_applied_again_and_eventually_acknowledged() {
         harness.events(),
         vec![Event::Wake(7), Event::Ack(7), Event::Wake(7), Event::Ack(7),]
     );
+}
+
+#[test]
+fn shutting_down_wake_stops_batch_as_terminal_shutdown() {
+    let harness = Harness::new();
+    harness.script_batch(Ok(wake_batch(&[1, 2, 3])));
+    harness.script_wake(Ok(WakeOutcome::Delivered));
+    harness.script_wake(Err(RuntimeError::ShuttingDown));
+    let report = harness.consumer(8).drain_once().expect("stop is Ok");
+    assert_eq!(
+        report,
+        DrainReport {
+            polled: 3,
+            applied: 1,
+            acked: 1,
+            stopped_at: Some(2),
+            shutdown: true,
+        }
+    );
+    // Entry 3 was never applied; entries 2 and 3 stay unacknowledged for a
+    // future runtime (at-least-once across the shutdown boundary).
+    assert_eq!(
+        harness.events(),
+        vec![Event::Wake(1), Event::Ack(1), Event::Wake(2)]
+    );
+}
+
+#[test]
+#[should_panic(expected = "batch_limit must be positive")]
+fn zero_batch_limit_is_rejected_in_debug_builds() {
+    let harness = Harness::new();
+    let _ = harness.consumer(0).drain_once();
 }

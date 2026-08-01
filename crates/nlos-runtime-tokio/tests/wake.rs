@@ -150,6 +150,43 @@ async fn early_wake_is_buffered_and_consumed_by_registration() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wake_to_dropped_receiver_is_rebuffered_for_the_next_registration() {
+    let runtime = runtime(2);
+    let scope = CancellationScopeId::from_bytes(id_bytes(29));
+    let handle = runtime
+        .spawn_fiber(fiber_spec(1, scope), Box::pin(pending()))
+        .expect("spawn");
+    let sink = runtime.wake_sink();
+
+    // Register and then drop the wait without awaiting it: the receiver is
+    // gone, so the wake cannot be handed off and must be re-buffered under
+    // the same key instead of being silently lost.
+    let wait = runtime
+        .wait_for_operation(handle, operation(9), Generation::INITIAL)
+        .expect("wait");
+    drop(wait);
+    assert_eq!(
+        sink.wake(&handle, operation(9), Generation::INITIAL),
+        Ok(WakeOutcome::Delivered)
+    );
+
+    // A later registration for the same key consumes the re-buffered wake
+    // and resolves immediately as `Woken`.
+    let wait = runtime
+        .wait_for_operation(handle, operation(9), Generation::INITIAL)
+        .expect("wait");
+    assert_eq!(
+        tokio::time::timeout(RESOLVE, wait)
+            .await
+            .expect("re-buffered wake resolves immediately"),
+        WaitOutcome::Woken
+    );
+    runtime
+        .cancel_scope(scope, Generation::INITIAL)
+        .expect("cancel");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stale_fiber_generation_reports_fiber_gone() {
     let runtime = runtime(2);
     let scope = CancellationScopeId::from_bytes(id_bytes(23));
