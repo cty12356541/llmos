@@ -74,4 +74,4 @@
 
 [B-SCHEMA-002](../../evidence/stage-b/b-schema-002-cross-language-generation.md) 已通过 TypeScript/Python generation、golden conformance、生成物 drift gate、Buf lint/format、删除字段 breaking 反例，以及 [GitHub Actions run 30715954413](https://github.com/cty12356541/llmos/actions/runs/30715954413) 的 Ubuntu/Windows/macOS 复验。由于当前 IDL 没有 RPC service，本证据只声称 type bindings，不声称 service client 已生成。
 
-[B-SCHEMA-003](../../evidence/stage-b/b-schema-003-deterministic-cbor.md) 已在本地通过 deterministic CBOR body、domain-separated preimage、两个 golden vectors 和 13 项严格反例测试；workspace 与三平台 CI 待本提交后补记。该证据不包含实际 SHA-256、签名、key management 或完整 Receipt/Event/Escrow schema。
+[B-SCHEMA-003](../../evidence/stage-b/b-schema-003-deterministic-cbor.md) 已通过 deterministic CBOR body、domain-separated preimage、两个 golden vectors、13 项严格反例测试，以及 [GitHub Actions run 30716908874](https://github.com/cty12356541/llmos/actions/runs/30716908874) 的 Ubuntu/Windows/macOS 复验。该证据不包含实际 SHA-256、签名、key management 或完整 Receipt/Event/Escrow schema。

@@ -80,7 +80,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 12. signing preimage 长度篡改拒绝；
 13. 额外嵌套 map 不属于 profile 并被拒绝。
 
-crate 级 test、rustfmt 与 Clippy `-D warnings` 已在本地通过；workspace 与三平台结果待本提交完成后补记。
+本地完整 workspace 通过；[GitHub Actions run 30716908874](https://github.com/cty12356541/llmos/actions/runs/30716908874) 在 Ubuntu（1m0s）、macOS（1m0s）、Windows（2m4s）全部成功。三平台均执行 schema generation/conformance、workspace test 和 Clippy，Ubuntu 额外执行 rustfmt。
 
 ## 6. 当前不能证明什么
 
