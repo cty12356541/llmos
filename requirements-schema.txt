@@ -1,0 +1,2 @@
+# Must match buf.build/protocolbuffers/python:v33.4 in buf.gen.yaml.
+protobuf==6.33.4

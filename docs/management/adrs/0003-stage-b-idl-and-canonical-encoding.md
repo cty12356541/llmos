@@ -31,6 +31,7 @@
 4. unknown major 与 unknown critical extension fail-closed；更高 minor 和 unknown non-critical extension可被当前 consumer 接受；
 5. `ValidatedFrame` 同时保留 typed view 和原始 wire bytes。转发 hop 必须转发原始 frame，禁止通过 decode/re-encode 假装保留生成器未知字段；
 6. envelope 先只承载 128-bit request ID、service、method 与 opaque payload。service-specific payload、Capability、deadline、Operation/Receipt 等字段只有进入 registry 并取得兼容证据后才能成为稳定表面。
+7. Buf 1.72.0 负责 lint、breaking 与跨语言生成编排；TypeScript 固定 protobuf-es 2.13.0，Python 固定 generator v33.4/runtime 6.33.4。生成物 checked in，但 CI 必须重生成并拒绝 drift。
 
 ## 约束
 
@@ -47,6 +48,8 @@
 
 - `prost 0.14.4` 与 `prost-build 0.14.4` 为 Apache-2.0，最低 Rust 1.85；本仓库以 Cargo.lock 固定版本；
 - `protoc-bin-vendored 3.2.0` 为 MIT，用于让 macOS/Windows/Linux 构建不依赖宿主预装 `protoc`；代价是引入各目标平台的编译器二进制包并扩大供应链面；
+- Buf CLI 1.72.0 为 Apache-2.0；`@bufbuild/protobuf 2.13.0` 为 Apache-2.0/BSD-3-Clause，TypeScript/Node 工具链由 `package-lock.json` 固定；Python runtime `protobuf 6.33.4` 为 BSD-3-Clause；
+- TypeScript/Python remote plugin 固定完整版本，但重新生成仍依赖 BSR 可用性；checked-in 生成物让普通 consumer/build 不依赖在线生成，后续仍需评估 mirror 与 provenance；
 - 上述依赖只进入可替换 schema/build adapter，不进入 Safety TCB、KABI 或 `nlos-types`；升级必须重跑 golden、compat、三平台 CI 和后续 fuzz corpus。
 
 ## 首切片验收
@@ -66,3 +69,5 @@
 ## 当前证据
 
 [B-SCHEMA-001](../../evidence/stage-b/b-schema-001-protobuf-envelope.md) 已通过 Rust generation、7 项 compatibility/golden 测试、本地 workspace 回归，以及 [GitHub Actions run 30715148293](https://github.com/cty12356541/llmos/actions/runs/30715148293) 的 Ubuntu/Windows/macOS 复验。它只支持首个公共 envelope，不证明 TypeScript/Python client、Buf breaking check、deterministic CBOR、fuzz 或本地 typed IPC 已完成。
+
+[B-SCHEMA-002](../../evidence/stage-b/b-schema-002-cross-language-generation.md) 已在本地通过 TypeScript/Python generation、golden conformance、生成物 drift gate、Buf lint/format 和删除字段 breaking 反例；三平台 CI 待本提交推送后补记。由于当前 IDL 没有 RPC service，本证据只声称 type bindings，不声称 service client 已生成。

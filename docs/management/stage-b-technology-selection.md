@@ -185,7 +185,7 @@ PoC 对比：
 
 冻结前必须生成 Rust + TypeScript + Python client，并通过 unknown field、major version、golden vector 和 fuzz test。
 
-当前 PoC 决策与证据见 [ADR-0003](./adrs/0003-stage-b-idl-and-canonical-encoding.md) 和 [B-SCHEMA-001](../evidence/stage-b/b-schema-001-protobuf-envelope.md)：首个 Protobuf 公共 envelope、Rust build-time generation、registry、版本/扩展检查和 golden vector 已实现；TypeScript/Python、Buf、deterministic CBOR、fuzz 与 typed IPC 尚未完成，候选未冻结。
+当前 PoC 决策与证据见 [ADR-0003](./adrs/0003-stage-b-idl-and-canonical-encoding.md)、[B-SCHEMA-001](../evidence/stage-b/b-schema-001-protobuf-envelope.md) 和 [B-SCHEMA-002](../evidence/stage-b/b-schema-002-cross-language-generation.md)：首个 Protobuf 公共 envelope、三语言 type generation、registry、版本/扩展检查、golden conformance、生成物 drift 与 Buf breaking gate 已实现；IDL 尚无 RPC service，deterministic CBOR、fuzz 与 typed IPC 也未完成，候选未冻结。
 
 ## 9. Desktop 与可信控制面
 
@@ -283,9 +283,9 @@ docs/
 
 当前已完成 ADR-0001、PoC-0001、PoC-0002、ADR-0002/PoC-0003 的初版和 PoC-0004；`B-STORE-FAULT` 的 F1–F7 已通过 fault/recovery/migration/100K metadata 与 Ubuntu/Windows/macOS CI，工作包 `DONE`。`B-SCHEMA` 已由 [B-SCHEMA-001](../evidence/stage-b/b-schema-001-protobuf-envelope.md) 启动并进入 `IN_PROGRESS`。下一主线以[阶段 B 权威进度单](./stage-b-progress.md)为准：
 
-1. 在已完成的 Protobuf envelope、Rust generation、registry 与首个 golden vector 上补齐 TypeScript/Python 生成；
-2. 接入 Buf lint/breaking check 与跨语言 golden compatibility；
-3. 定义 deterministic CBOR profile，补齐 fuzz 与本地 typed IPC adapter；
+1. 已完成 Protobuf envelope 的 Rust/TypeScript/Python type generation、Buf lint/breaking、drift gate 与跨语言 golden compatibility；
+2. 下一步定义 deterministic CBOR profile 与签名域，建立 CBOR golden vectors；
+3. 补齐 protobuf/CBOR fuzz 与本地 typed IPC adapter；
 4. 100K 逐条生产写入、真实掉电和更多文件系统保留为 Store 扩展 Evidence。
 
 技术栈讨论已于[议题 30](../discussions/30-阶段B技术栈讨论.md)收束。编码立即从 Cargo workspace、`nlos-types`、`nlos-runtime` 与 Tokio Fiber scale PoC 开始；带 `PoC` 标记的组件在证据出来前不得升级为 `ACCEPTED` 或冻结公共 ABI。

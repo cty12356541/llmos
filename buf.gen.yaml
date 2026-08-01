@@ -1,0 +1,11 @@
+version: v2
+clean: true
+plugins:
+  - remote: buf.build/protocolbuffers/python:v33.4
+    out: gen/python
+  - remote: buf.build/bufbuild/es:v2.13.0
+    out: gen/typescript
+    opt:
+      - target=ts
+inputs:
+  - directory: schema

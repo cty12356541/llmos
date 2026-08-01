@@ -10,6 +10,9 @@ dist/
 build/
 target/
 
+# Node.js schema toolchain
+node_modules/
+
 # 环境密钥（绝不入库）
 .env
 

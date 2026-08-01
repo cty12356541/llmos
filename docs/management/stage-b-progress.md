@@ -46,7 +46,7 @@ Application
 | `B-STORE` | SQLite WAL/FULL Operation authority、恢复、Outbox | `PARTIAL_PASS` | [ADR-0002](./adrs/0002-stage-b-sqlite-operation-authority.md)、[PoC-0003](../evidence/stage-b/poc-0003-sqlite-operation-authority.md)；F1–F7 已通过，包括三平台 CI | 100K 逐条生产写入、真实硬件掉电/更多文件系统仍超出当前证据 |
 | `B-OUTBOX` | Durable Outbox → Tokio Fiber wake/reconcile consumer | `DONE` | [PoC-0004](../evidence/stage-b/poc-0004-outbox-wake-consumer.md)；本提交及评审后 remediation 提交（hash 见 git log 与 commit receipt） | durable wait registry/fiber rehydration 归 `B-PROCESS`/Slice K；此前移交 `B-STORE-FAULT` 的 F1–F7 已全部通过。2026-08-01 remediation：评审指出的 pump 错误路径可观测性（失败计数/根因/有上限退避/Faulted 终态）、drain panic 防护、shutdown 终态语义与 wake 重缓冲已补齐并各有测试。2026-08-01 复验残余（非阻塞，详见 PoC-0004 §8.4）：持久 apply 失败（`stopped_at` 路径）暂无 health 信号 → 后续 observability 项；`Faulted` 恢复依赖外部监督 → `B-PROCESS`；`PumpHealth.last_error` 跨 IPC 边界需脱敏 → `B-CONTROL`/`B-SCHEMA`；`Buffered` 驻留仅随 fiber 终态清理 → `B-PROCESS`/Slice K |
 | `B-STORE-FAULT` | SQLite fault-injection：kill-9、torn-write、disk-full、checkpoint/backup、migration、长读事务、100K metadata、跨平台 | `DONE` | [PoC-0003 F1–F7 增量证据](../evidence/stage-b/poc-0003-sqlite-operation-authority.md)；[三平台 CI run 30714584445](https://github.com/cty12356541/llmos/actions/runs/30714584445) | 100K 逐条生产写入、真实硬件掉电/更多文件系统保留为扩展 Evidence，不阻塞本工作包 |
-| `B-SCHEMA` | Protobuf/CBOR、golden vector、版本演进和本地 typed IPC | `IN_PROGRESS` | [ADR-0003](./adrs/0003-stage-b-idl-and-canonical-encoding.md)、[B-SCHEMA-001](../evidence/stage-b/b-schema-001-protobuf-envelope.md)、[三平台 CI run 30715148293](https://github.com/cty12356541/llmos/actions/runs/30715148293)；`schema/`、`crates/nlos-schema` | TypeScript/Python 生成、Buf breaking、CBOR、fuzz、transport adapter |
+| `B-SCHEMA` | Protobuf/CBOR、golden vector、版本演进和本地 typed IPC | `IN_PROGRESS` | [ADR-0003](./adrs/0003-stage-b-idl-and-canonical-encoding.md)、[B-SCHEMA-001](../evidence/stage-b/b-schema-001-protobuf-envelope.md)、[B-SCHEMA-002](../evidence/stage-b/b-schema-002-cross-language-generation.md)；`schema/`、`gen/`、`crates/nlos-schema` | RPC service/client、CBOR、fuzz、transport adapter |
 | `B-SANDBOX` | Wasmtime/WASI 与独立 host Process 隔离对比 | `READY` | [技术选型第 5 节](./stage-b-technology-selection.md) | capability import、fuel/epoch、memory、host crash、GuaranteeTier |
 | `B-PROCESS` | native Process supervisor 与平台资源/生命周期 adapter | `READY` | [v0.5 Process 规范](../design/06-架构设计总纲-v0.5.md) | macOS/Windows/Linux suspend/kill、host incarnation、resource mapping |
 | `B-TASK` | TaskPlan/TaskNode、lazy materialization、TaskSnapshot、双 Attempt 唯一提交 | `READY` | [v0.5 Task 规范](../design/06-架构设计总纲-v0.5.md) | TaskAuthority、CommitPermit、EffectPermit、snapshot drift、reconcile |
@@ -113,25 +113,33 @@ Application
 - forwarding API 保存原始 wire frame，避免 decode/re-encode 静默丢失当前生成器未知的 protobuf field。
 - 首个 checked-in golden vector和 7 项 compatibility 测试通过；vendored `protoc` 与 Rust 生成链路经 Ubuntu/Windows/macOS CI 复验，不等于三语言、CBOR、fuzz 或 typed IPC 完成。
 
+### 4.10 Schema 跨语言生成与 breaking gate
+
+- Buf 以固定版本从同一 `.proto` 生成 TypeScript/Python type bindings；Rust 仍由 Cargo build 生成，三语言读取同一 golden vector。
+- TypeScript/Python conformance 覆盖主次版本、critical/non-critical 扩展与 unknown protobuf field；生成物 checked in，并由 CI 重生成后检查 tracked/untracked drift。
+- Buf STANDARD lint + FILE breaking policy 已接入；临时删除 `Envelope.method` field 4 的反例被明确拒绝。
+- 当前 IDL 尚无 RPC service，因此不能声称已有三语言 service client；三平台 CI 仍待本提交推送后补记。
+
 ## 5. 当前下一验收门
 
-`B-SCHEMA` 已进入 `IN_PROGRESS`。首个 Protobuf envelope、Rust generation、registry、版本/扩展兼容和 golden vector 已由 B-SCHEMA-001 通过；当前验收门推进到跨语言生成与 breaking check：
+`B-SCHEMA` 继续处于 `IN_PROGRESS`。B-SCHEMA-001 已完成公共 envelope，B-SCHEMA-002 已在本地完成跨语言 type generation、golden conformance、drift 与 breaking gate；当前验收门推进到 deterministic CBOR profile：
 
 ```text
 Protobuf envelope + Rust generation + registry + first golden       DONE
-  → TypeScript / Python generation + checked-in drift check         NEXT
-  → Buf lint / breaking + cross-language compatibility
-  → deterministic CBOR profile + golden / fuzz
+  → TypeScript / Python generation + checked-in drift check         DONE
+  → Buf lint / breaking + cross-language compatibility              DONE (LOCAL)
+  → deterministic CBOR profile + canonical golden                   NEXT
+  → protobuf / CBOR fuzz
   → Unix socket / Windows named pipe typed IPC adapter
 ```
 
 下一切片验收条件：
 
-1. 同一 `.proto` 可重复生成 Rust、TypeScript、Python 类型/客户端，生成结果可由 CI drift check；
-2. 三种语言都能读取当前 golden vector，并产生语义等价的 envelope；
-3. Buf lint/breaking check 阻止删字段、改字段号和不兼容类型变化；
-4. unknown major/critical 与 higher minor/non-critical 行为在跨语言 harness 中一致；
-5. vendored toolchain、license/supply-chain 边界和生成命令记录在 Evidence，并经 Ubuntu/Windows/macOS CI 复验。
+1. 明确 deterministic CBOR 的 map key ordering、integer/float、duplicate key、Unicode、tag、depth/size 与拒绝规则；
+2. 定义签名 domain separation，Protobuf/RPC bytes 不得误作 canonical signing bytes；
+3. Rust encoder 对同一 logical object 只产生一种 canonical bytes，并建立 checked-in golden vectors；
+4. decoder 对 duplicate key、非最短整数、禁用 float/tag、超深/超大输入 fail-closed；
+5. ADR/Evidence 记录库选择、版本、license、替换边界与跨语言验证缺口。
 
 `B-OUTBOX` 的已验收条件（供追溯）：commit 前无 wake；崩溃重放不丢失、不制造旧 generation wake；duplicate 无第二次逻辑唤醒/reconciliation；bounded queue 不阻塞 writer/cancel；测试覆盖 current/late/cancel-before-dispatch/crash-restart 场景；Evidence 已同步三 PoC 集成缺口并保持 `PARTIAL_PASS` 直到故障注入通过。
 

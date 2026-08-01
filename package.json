@@ -1,0 +1,23 @@
+{
+  "name": "llmos-schema-toolchain",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "schema:generate": "buf generate && node tools/normalize-generated-schema.mjs",
+    "schema:check-generated": "npm run schema:generate && node tools/check-generated-schema.mjs",
+    "schema:lint": "buf lint",
+    "schema:test:typescript": "tsx tests/conformance/schema/envelope.ts",
+    "schema:typecheck": "tsc"
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "2.13.0"
+  },
+  "devDependencies": {
+    "@types/node": "26.1.2",
+    "tsx": "4.20.6",
+    "typescript": "5.9.3"
+  }
+}
