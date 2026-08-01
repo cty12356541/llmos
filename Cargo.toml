@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/nlos-canonical",
     "crates/nlos-operation",
     "crates/nlos-schema",
     "crates/nlos-store",
@@ -27,6 +28,7 @@ pedantic = "warn"
 
 [workspace.dependencies]
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
+minicbor = { version = "2.3.0", default-features = false, features = ["std"] }
 prost = "0.14.4"
 rusqlite = { version = "0.40", features = ["bundled", "backup"] }
 tokio = { version = "1.48", features = ["macros", "rt-multi-thread", "sync", "time"] }

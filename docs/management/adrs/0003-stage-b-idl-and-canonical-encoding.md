@@ -26,12 +26,13 @@
 维持技术选型中的双轨候选，不冻结公共 ABI：
 
 1. service/RPC schema 采用 **Protobuf + Buf 候选**；首个 PoC 由 `schema/nlos/sabi/v1/envelope.proto` 作为唯一 IDL 源，`nlos-schema` 在构建期使用 `prost-build` 生成 Rust 类型；
-2. signed/canonical object 继续采用 **deterministic CBOR 候选**，但本切片尚未实现，任何 Protobuf bytes 都不得被当作签名 canonical bytes；
+2. signed/canonical object 采用 **RFC 8949 core deterministic CBOR 候选**；`nlos-canonical` 已实现首个严格 digest envelope/profile，任何 Protobuf bytes 都不得被当作签名 canonical bytes；
 3. 每个公共 frame 显式携带 schema name、major、minor、critical extension IDs 和 non-critical extension IDs；
 4. unknown major 与 unknown critical extension fail-closed；更高 minor 和 unknown non-critical extension可被当前 consumer 接受；
 5. `ValidatedFrame` 同时保留 typed view 和原始 wire bytes。转发 hop 必须转发原始 frame，禁止通过 decode/re-encode 假装保留生成器未知字段；
 6. envelope 先只承载 128-bit request ID、service、method 与 opaque payload。service-specific payload、Capability、deadline、Operation/Receipt 等字段只有进入 registry 并取得兼容证据后才能成为稳定表面。
 7. Buf 1.72.0 负责 lint、breaking 与跨语言生成编排；TypeScript 固定 protobuf-es 2.13.0，Python 固定 generator v33.4/runtime 6.33.4。生成物 checked in，`.gitattributes` 强制跨平台 LF，CI 必须重生成并拒绝 drift。
+8. canonical signing preimage 固定为 `u32_be(domain_len) || ASCII domain || u32_be(cbor_len) || deterministic_cbor(body)`；v1 digest algorithm 固定 `SHA-256`。CBOR map 使用最短 unsigned integer key 严格升序，禁止 duplicate、indefinite、tag、float/NaN、simple value、negative integer和自由 Unicode text；decoder 必须重编码逐字节比对。
 
 ## 约束
 
@@ -39,7 +40,7 @@
 - frame 在解析前执行 1 MiB 上限，公共 request ID 固定 16 bytes；后续每种 service payload 还需更严格的独立上限；
 - non-critical 可忽略不等于可丢弃：透明 forwarding 必须保持输入 wire bytes；
 - critical extension ID 只能在实现、测试和协商支持同时存在时加入 registry；
-- Rust 生成成功不等于三语言 conformance；TypeScript/Python、Buf breaking/lint、fuzz、本地 transport adapter 未完成前，ADR 保持 `POC`；
+- 三语言 Protobuf generation/compat 已通过，但 CBOR 跨语言、fuzz、本地 transport adapter 未完成前，ADR 保持 `POC`；
 - `nlos-types` 继续不依赖 Protobuf；wire adapter 负责在 nominal ID 与生成类型之间显式转换，避免 wire bytes 侵入内核对象身份。
 
 ## 依赖审查
@@ -50,6 +51,7 @@
 - `protoc-bin-vendored 3.2.0` 为 MIT，用于让 macOS/Windows/Linux 构建不依赖宿主预装 `protoc`；代价是引入各目标平台的编译器二进制包并扩大供应链面；
 - Buf CLI 1.72.0 为 Apache-2.0；`@bufbuild/protobuf 2.13.0` 为 Apache-2.0/BSD-3-Clause，TypeScript/Node 工具链由 `package-lock.json` 固定；Python runtime `protobuf 6.33.4` 为 BSD-3-Clause；
 - TypeScript/Python remote plugin 固定完整版本，但重新生成仍依赖 BSR 可用性；checked-in 生成物让普通 consumer/build 不依赖在线生成，后续仍需评估 mirror 与 provenance；
+- `minicbor 2.3.0` 为 BlueOak-1.0.0，只作为可替换的 CBOR primitive codec；NLOS profile 自行执行 map/type/order/size/domain/compat 与 re-encode byte equality 检查；
 - 上述依赖只进入可替换 schema/build adapter，不进入 Safety TCB、KABI 或 `nlos-types`；升级必须重跑 golden、compat、三平台 CI 和后续 fuzz corpus。
 
 ## 首切片验收
@@ -64,10 +66,12 @@
 
 ## 迁移与退出策略
 
-`nlos.sabi.Envelope` 当前为 v1 PoC，未对外冻结。若 Protobuf/Prost 不能满足三语言或 unknown-field 需求，可保留 `SchemaIdentity`、兼容规则与 golden 语义，替换生成器或 RPC encoding；不得复用 major=1 表达不兼容语义。deterministic CBOR profile 在实现前必须单独定义 map ordering、integer/float、duplicate key、Unicode、tag、size/depth 限制和签名域分离。
+`nlos.sabi.Envelope` 与 `nlos.canonical.DigestEnvelope` 当前均为 v1 PoC，未对外冻结。若 Protobuf/Prost 不能满足三语言或 unknown-field 需求，可保留 `SchemaIdentity`、兼容规则与 golden 语义，替换生成器或 RPC encoding；若 CBOR library 被替换，必须保持 canonical body/preimage golden 与全部反例逐字节一致。任何字段/排序/类型/domain/hash 不兼容变化不得复用 major=1 或旧 domain tag。
 
 ## 当前证据
 
 [B-SCHEMA-001](../../evidence/stage-b/b-schema-001-protobuf-envelope.md) 已通过 Rust generation、7 项 compatibility/golden 测试、本地 workspace 回归，以及 [GitHub Actions run 30715148293](https://github.com/cty12356541/llmos/actions/runs/30715148293) 的 Ubuntu/Windows/macOS 复验。它只支持首个公共 envelope，不证明 TypeScript/Python client、Buf breaking check、deterministic CBOR、fuzz 或本地 typed IPC 已完成。
 
 [B-SCHEMA-002](../../evidence/stage-b/b-schema-002-cross-language-generation.md) 已通过 TypeScript/Python generation、golden conformance、生成物 drift gate、Buf lint/format、删除字段 breaking 反例，以及 [GitHub Actions run 30715954413](https://github.com/cty12356541/llmos/actions/runs/30715954413) 的 Ubuntu/Windows/macOS 复验。由于当前 IDL 没有 RPC service，本证据只声称 type bindings，不声称 service client 已生成。
+
+[B-SCHEMA-003](../../evidence/stage-b/b-schema-003-deterministic-cbor.md) 已在本地通过 deterministic CBOR body、domain-separated preimage、两个 golden vectors 和 13 项严格反例测试；workspace 与三平台 CI 待本提交后补记。该证据不包含实际 SHA-256、签名、key management 或完整 Receipt/Event/Escrow schema。

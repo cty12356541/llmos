@@ -1,0 +1,21 @@
+; NLOS deterministic CBOR digest envelope v1.
+; Additional profile constraints enforced by nlos-canonical:
+; - RFC 8949 core deterministic encoding, definite lengths only.
+; - Map keys use their shortest unsigned encoding and strict ascending order.
+; - No tags, floats, simple values, negative integers, or Unicode schema/domain IDs.
+; - Each extension map has at most 16 entries; each value has at most 256 bytes.
+; - The complete CBOR body has at most 4096 bytes.
+
+nlos-canonical-digest-envelope = {
+  0: "nlos.canonical.DigestEnvelope",
+  1: 1,
+  2: uint,
+  3: "sha-256",
+  4: bstr .size 16,
+  5: bstr .size 32,
+  6: { * uint => bstr },
+  7: { * uint => bstr },
+}
+
+; Signing preimage (outside CBOR):
+; u32_be(domain_len) || ASCII domain || u32_be(cbor_len) || cbor_body
