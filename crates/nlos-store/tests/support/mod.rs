@@ -69,6 +69,7 @@ impl Drop for TestFile {
 }
 
 /// Builds a unique [`OperationSpec`] from a small seed byte.
+#[allow(dead_code)]
 pub fn spec(seed: u8) -> OperationSpec {
     OperationSpec {
         operation_id: OperationId::from_bytes([seed; 16]),

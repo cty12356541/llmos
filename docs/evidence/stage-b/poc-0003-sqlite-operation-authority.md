@@ -102,11 +102,23 @@ durable format 从 v1 前向演进到 v2。v2 新增 `operation_outbox_by_operat
 
 全 workspace 测试、rustfmt、Clippy `-D warnings` 与 `git diff --check` 通过。
 
+## B-STORE-FAULT F6 100K Operation metadata 增量证据（2026-08-02）
+
+新增默认 ignored 的显式规模探针，物化 100,000 条 terminal Operation 和 100,000 条未 ACK Outbox（数据库约 28.95 MB），随后通过正常 WAL/FULL authority 执行恢复打开、pending 分页、512 次逐条 durable ACK 和再次恢复。
+
+当前 Apple Silicon/macOS dev profile 实测：fixture 批量构造 491.01 ms、authority 打开 0.34 ms、读取前 512 条 pending 0.56 ms、512 次 durable ACK 26.56 ms、ACK 后再次打开 0.30 ms；重开后下一条 sequence 精确为 513。探针命令：
+
+```sh
+cargo test -p nlos-store --test store_scale -- --ignored --nocapture
+```
+
+fixture 构造在单个可重建测试事务中使用 `synchronous=OFF`，只用于快速生成 100K 规模状态；计入验收的恢复、pending 与 ACK 均通过正常 `SqliteOperationStore` 的 WAL/FULL 路径。这份证据证明当前数据规模下 metadata 恢复与队列热路径没有退化到不可用，但不代表 100K 次逐条生产写入吞吐，也不外推到 Windows/Linux、慢盘或完整 Task/Artifact 负载。
+
 ## 当前不能证明
 
 - 当前 fault-injection VFS、WAL 文件破坏和 kill-9 测试已覆盖单机进程崩溃、commit 中断、写损坏与模拟掉电，但不能替代真实硬件掉电、控制器缓存或不同文件系统上的 torn-sector 验证；
 - disk-full、只读文件系统、I/O error 与 fail-closed 行为已在当前 macOS 环境覆盖，尚未跨平台复验；
-- WAL checkpoint、长读事务和备份/恢复已覆盖；尚未测量 100K Operation metadata；
+- WAL checkpoint、长读事务、备份/恢复与 100K Operation metadata 恢复/pending/ACK 已覆盖；尚未测量 100K 次逐条生产写入和完整 Task/Artifact 负载；
 - schema v1→v2 前向迁移、升级前备份、失败恢复与 golden database 已覆盖；更复杂的破坏性迁移和发布级 rollback 编排尚未验证；
 - 尚未在 Windows/Linux 和不同文件系统复验；
 - ~~Outbox 尚未连接 Tokio Fiber wake/reconciliation consumer~~ **已由 [PoC-0004](./poc-0004-outbox-wake-consumer.md) 补齐（2026-08-01）**：consumer 经专用 OS 线程 pump 驱动，崩溃重放、幂等去重、stale generation fencing 与 backpressure 均有集成测试（`PARTIAL PASS`，单节点局部证据）；

@@ -279,11 +279,11 @@ docs/
 
 ## 14. 下一步
 
-当前已完成 ADR-0001、PoC-0001、PoC-0002、ADR-0002/PoC-0003 的初版和 PoC-0004（durable Outbox → Tokio wake consumer 集成，`PARTIAL PASS`）；`B-STORE-FAULT` 的 F1–F4 切片已于 2026-08-01 通过 fault/recovery 验证，F5 于 2026-08-02 通过 v1→v2 migration、golden database、升级前备份和失败恢复验证。下一主线仍以[阶段 B 权威进度单](./stage-b-progress.md)为准：
+当前已完成 ADR-0001、PoC-0001、PoC-0002、ADR-0002/PoC-0003 的初版和 PoC-0004；`B-STORE-FAULT` 的 F1–F5 已通过 fault/recovery/migration 验证，F6 于 2026-08-02 通过 100K Operation + Outbox 的恢复、pending 与 ACK ScaleProfile。下一主线仍以[阶段 B 权威进度单](./stage-b-progress.md)为准：
 
-1. 100K Operation metadata 规模行为；
-2. Windows/Linux durability 与恢复复验；
-3. 用故障注入 Evidence 决定 PoC-0003/PoC-0004 能否从 `PARTIAL_PASS` 晋升。
+1. Windows/Linux durability 与恢复复验；
+2. 用故障注入 Evidence 决定 PoC-0003/PoC-0004 能否从 `PARTIAL_PASS` 晋升；
+3. 100K 逐条生产写入作为扩展 ScaleProfile，不阻塞当前 metadata 恢复门。
 
 技术栈讨论已于[议题 30](../discussions/30-阶段B技术栈讨论.md)收束。编码立即从 Cargo workspace、`nlos-types`、`nlos-runtime` 与 Tokio Fiber scale PoC 开始；带 `PoC` 标记的组件在证据出来前不得升级为 `ACCEPTED` 或冻结公共 ABI。
 
