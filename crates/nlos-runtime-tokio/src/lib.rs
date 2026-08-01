@@ -14,6 +14,13 @@ use nlos_types::{CancellationScopeId, ExecutionFiberId, Generation};
 use tokio::runtime::Handle;
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 
+mod pump;
+mod wake;
+
+pub use pump::{OutboxPump, PumpConfig, RecordingReconcileSink, StoreOutboxSource};
+pub use wake::{OperationWait, TokioWakeSink, WaitOutcome};
+use wake::{WaitEntry, WaitKey};
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct ScopeKey {
     id: CancellationScopeId,
@@ -52,15 +59,17 @@ impl CancellationScope {
 
 struct FiberRecord {
     generation: Generation,
+    scope: Arc<CancellationScope>,
     state: Mutex<FiberState>,
     usage: Mutex<ActivationUsage>,
     accepted_at: Instant,
 }
 
 impl FiberRecord {
-    fn new(generation: Generation) -> Self {
+    fn new(generation: Generation, scope: Arc<CancellationScope>) -> Self {
         Self {
             generation,
+            scope,
             state: Mutex::new(FiberState::Ready),
             usage: Mutex::new(ActivationUsage::default()),
             accepted_at: Instant::now(),
@@ -70,11 +79,31 @@ impl FiberRecord {
     fn set_state(&self, state: FiberState) {
         *lock_unpoisoned(&self.state) = state;
     }
+
+    /// Best-effort transition into `WaitingIo` while an Operation wait is
+    /// registered. Never resurrects a terminal fiber.
+    fn begin_wait(&self) {
+        let mut state = lock_unpoisoned(&self.state);
+        if matches!(*state, FiberState::Ready | FiberState::Running) {
+            *state = FiberState::WaitingIo;
+        }
+    }
+
+    /// Best-effort transition back to `Running` after a delivered wake.
+    /// Never overwrites a state set by the fiber lifecycle itself.
+    fn resume_from_wait(&self) {
+        let mut state = lock_unpoisoned(&self.state);
+        if *state == FiberState::WaitingIo {
+            *state = FiberState::Running;
+        }
+    }
 }
 
 struct Inner {
     fibers: Mutex<HashMap<ExecutionFiberId, Arc<FiberRecord>>>,
     scopes: Mutex<HashMap<ScopeKey, Arc<CancellationScope>>>,
+    waits: Mutex<HashMap<WaitKey, WaitEntry>>,
+    shutdown: AtomicBool,
     admission: Arc<Semaphore>,
 }
 
@@ -116,6 +145,8 @@ impl TokioRuntimeAdapter {
             inner: Arc::new(Inner {
                 fibers: Mutex::new(HashMap::new()),
                 scopes: Mutex::new(HashMap::new()),
+                waits: Mutex::new(HashMap::new()),
+                shutdown: AtomicBool::new(false),
                 admission: Arc::new(Semaphore::new(config.max_live_fibers)),
             }),
         })
@@ -180,7 +211,7 @@ impl RuntimeAdapter for TokioRuntimeAdapter {
             return Err(RuntimeError::Cancelled);
         }
 
-        let record = Arc::new(FiberRecord::new(spec.fiber_generation));
+        let record = Arc::new(FiberRecord::new(spec.fiber_generation, Arc::clone(&scope)));
         {
             let mut fibers = lock_unpoisoned(&self.inner.fibers);
             if let Some(existing) = fibers.get(&spec.fiber_id) {
@@ -198,8 +229,9 @@ impl RuntimeAdapter for TokioRuntimeAdapter {
             generation: spec.fiber_generation,
         };
         let task_record = Arc::clone(&record);
+        let task_inner = Arc::clone(&self.inner);
         self.handle.spawn(async move {
-            run_fiber(spec, future, scope, task_record, permit).await;
+            run_fiber(spec, future, scope, task_record, permit, task_inner).await;
         });
         Ok(handle)
     }
@@ -239,6 +271,7 @@ async fn run_fiber(
     scope: Arc<CancellationScope>,
     record: Arc<FiberRecord>,
     _permit: OwnedSemaphorePermit,
+    inner: Arc<Inner>,
 ) {
     let started_at = Instant::now();
     {
@@ -270,7 +303,12 @@ async fn run_fiber(
         let mut usage = lock_unpoisoned(&record.usage);
         usage.elapsed_wall = finished_at.saturating_duration_since(started_at);
     }
+    // The terminal transition and the wait-registry purge share one critical
+    // section, so a wake either observes the live fiber (and hands off) or the
+    // terminal state (and reports `NotWaiting`), never an orphaned buffer.
+    let mut waits = lock_unpoisoned(&inner.waits);
     record.set_state(state);
+    waits.retain(|key, _entry| !key.for_fiber(spec.fiber_id, spec.fiber_generation));
 }
 
 const fn terminal_state(exit: nlos_runtime::FiberExit) -> FiberState {

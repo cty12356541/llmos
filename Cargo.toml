@@ -5,6 +5,7 @@ members = [
     "crates/nlos-types",
     "crates/nlos-runtime",
     "crates/nlos-runtime-tokio",
+    "crates/nlos-outbox",
 ]
 resolver = "3"
 

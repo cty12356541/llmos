@@ -135,6 +135,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "nlos-outbox"
+version = "0.1.0"
+dependencies = [
+ "nlos-operation",
+ "nlos-runtime",
+ "nlos-types",
+]
+
+[[package]]
 name = "nlos-runtime"
 version = "0.1.0"
 dependencies = [
@@ -146,7 +155,10 @@ name = "nlos-runtime-tokio"
 version = "0.1.0"
 dependencies = [
  "futures-util",
+ "nlos-operation",
+ "nlos-outbox",
  "nlos-runtime",
+ "nlos-store",
  "nlos-types",
  "tokio",
 ]

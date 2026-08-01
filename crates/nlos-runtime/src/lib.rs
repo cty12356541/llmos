@@ -10,8 +10,8 @@ use std::pin::Pin;
 use std::time::{Duration, Instant};
 
 use nlos_types::{
-    AgentInstanceId, CancellationScopeId, ExecutionFiberId, Generation, ProcessId, ResourceGroupId,
-    SchedulerDomainId, TaskAttemptId,
+    AgentInstanceId, CancellationScopeId, ExecutionFiberId, Generation, OperationId, ProcessId,
+    ResourceGroupId, SchedulerDomainId, TaskAttemptId,
 };
 
 pub type FiberFuture = Pin<Box<dyn Future<Output = FiberExit> + Send + 'static>>;
@@ -138,4 +138,55 @@ pub trait RuntimeAdapter: Send + Sync {
     /// Returns [`RuntimeError::InvalidGeneration`] when the handle is stale, or
     /// an availability error when the runtime cannot answer.
     fn activation_usage(&self, handle: FiberHandle) -> Result<ActivationUsage, RuntimeError>;
+}
+
+/// The outcome of attempting to deliver an Operation wake to a fiber.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WakeOutcome {
+    /// The fiber was waiting on this Operation and has been woken, or was
+    /// already logically woken for the same Operation. Redelivery of the same
+    /// wake MUST produce this outcome again without a second logical wake.
+    Delivered,
+    /// The fiber generation no longer exists. The wake is permanently
+    /// undeliverable and MUST NOT be retried.
+    FiberGone,
+    /// The fiber exists but is not waiting on this Operation (already woken,
+    /// cancelled, or completed). The wake is obsolete and MUST NOT be retried.
+    NotWaiting,
+}
+
+/// Runtime-independent sink for durable Operation wakes.
+///
+/// This is the runtime-facing half of the Outbox closed loop: the persistent
+/// authority commits `WakeFiber` entries in the same transaction as the
+/// Operation terminal state, and a bounded consumer delivers them here only
+/// after that transaction has committed.
+///
+/// Implementations:
+///
+/// - MUST fence on both the fiber handle generation and the Operation
+///   identity + generation; a stale generation wake MUST NOT resume newer
+///   fiber state;
+/// - MUST be idempotent per `(fiber, operation)` pair, so that at-least-once
+///   Outbox redelivery never causes a second logical wake;
+/// - MUST NOT block the caller on fiber execution; delivery is a handoff, not
+///   a join;
+/// - MUST NOT expose executor-local task identity through this contract.
+pub trait WakeSink: Send + Sync {
+    /// Idempotently delivers the terminal wake for `operation_id` +
+    /// `operation_generation` to `fiber`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RuntimeError`] only for transient delivery failures that make
+    /// redelivery meaningful (for example [`RuntimeError::ShuttingDown`]).
+    /// Permanent conditions MUST be reported as [`WakeOutcome`] instead, so
+    /// the Outbox consumer can acknowledge the entry instead of retrying
+    /// forever.
+    fn wake(
+        &self,
+        fiber: &FiberHandle,
+        operation_id: OperationId,
+        operation_generation: Generation,
+    ) -> Result<WakeOutcome, RuntimeError>;
 }

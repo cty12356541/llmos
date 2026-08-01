@@ -73,7 +73,7 @@ completion 先线性化
 ## 当前不能证明
 
 - 内存 Registry 本身仍不持久化；独立的 [PoC-0003 SQLite authority](./poc-0003-sqlite-operation-authority.md) 已验证初始 durable adapter，但尚未达到完整 fault-injection 验收；
-- 尚未与 Tokio Fiber wake channel 集成；
+- ~~尚未与 Tokio Fiber wake channel 集成~~ **已由 [PoC-0004](./poc-0004-outbox-wake-consumer.md) 补齐（2026-08-01）**：当前/迟到/cancel-before-dispatch callback 经 durable Outbox 正确路由到 Tokio Fiber wake 或 reconciliation（`PARTIAL PASS`，单节点局部证据）；
 - Receipt 目前只有 nominal ID，尚未验证签名和内容；
 - 尚无 Driver callback authentication；
 - 尚无 progress/stream callback sequence；

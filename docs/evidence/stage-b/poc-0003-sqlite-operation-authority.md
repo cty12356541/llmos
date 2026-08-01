@@ -69,7 +69,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 - 尚未测量 WAL checkpoint、长读事务、备份/恢复与 100K Operation metadata；
 - schema v1 尚无 v2 migration/rollback golden database；
 - 尚未在 Windows/Linux 和不同文件系统复验；
-- Outbox 尚未连接 Tokio Fiber wake/reconciliation consumer；
+- ~~Outbox 尚未连接 Tokio Fiber wake/reconciliation consumer~~ **已由 [PoC-0004](./poc-0004-outbox-wake-consumer.md) 补齐（2026-08-01）**：consumer 经专用 OS 线程 pump 驱动，崩溃重放、幂等去重、stale generation fencing 与 backpressure 均有集成测试（`PARTIAL PASS`，单节点局部证据）；
 - 尚无 Driver authentication、Capability、Reservation 或 EffectPermit；
 - Receipt 仍只有 nominal ID，没有 durable Receipt body、签名和 provenance；
 - 当前只证明单进程 SQLite authority，不证明跨节点 consensus 或分布式 exactly-once。

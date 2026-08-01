@@ -44,7 +44,8 @@ Application
 | `B-RUNTIME` | RuntimeAdapter 与 Tokio 有界 Fiber runtime | `PARTIAL_PASS` | [ADR-0001](./adrs/0001-stage-b-core-language-and-runtime.md)、[PoC-0001](../evidence/stage-b/poc-0001-tokio-fiber-runtime.md)；提交 `a211088` | wake latency/fairness、structured join/detach、CPU 分维计量、Process crash、跨平台 |
 | `B-OP-FENCE` | Operation 状态机、callback identity、cancel/generation fence | `PARTIAL_PASS` | [PoC-0002](../evidence/stage-b/poc-0002-operation-callback-fence.md)；提交 `8b9ffe1` | Driver authentication、EffectPermit、progress/stream callback、Tokio wake 集成 |
 | `B-STORE` | SQLite WAL/FULL Operation authority、恢复、Outbox | `PARTIAL_PASS` | [ADR-0002](./adrs/0002-stage-b-sqlite-operation-authority.md)、[PoC-0003](../evidence/stage-b/poc-0003-sqlite-operation-authority.md)；提交 `bec4c42` | kill-9/torn-write/disk-full、checkpoint/backup、migration、100K metadata、跨平台 |
-| `B-OUTBOX` | Durable Outbox → Tokio Fiber wake/reconcile consumer | `READY` | 依赖 `B-RUNTIME`、`B-OP-FENCE`、`B-STORE` | bounded dispatcher、generation-idempotent delivery、crash redelivery、ACK 顺序 |
+| `B-OUTBOX` | Durable Outbox → Tokio Fiber wake/reconcile consumer | `DONE` | [PoC-0004](../evidence/stage-b/poc-0004-outbox-wake-consumer.md)；本提交（hash 见 git log 与 commit receipt） | durable wait registry/fiber rehydration 归 `B-PROCESS`/Slice K；kill-9/torn-write/disk-full fault-injection 归 `B-STORE-FAULT` |
+| `B-STORE-FAULT` | SQLite fault-injection：kill-9、torn-write、disk-full、checkpoint/backup、100K metadata | `READY` | 依赖 `B-OUTBOX`（ADR-0002 PoC 验收第 7 条） | fault-injection VFS、断电/写损坏语义、恢复演练、规模 metadata |
 | `B-SCHEMA` | Protobuf/CBOR、golden vector、版本演进和本地 typed IPC | `READY` | [技术选型第 8 节](./stage-b-technology-selection.md) | 三语言生成、compat check、fuzz、transport adapter |
 | `B-SANDBOX` | Wasmtime/WASI 与独立 host Process 隔离对比 | `READY` | [技术选型第 5 节](./stage-b-technology-selection.md) | capability import、fuel/epoch、memory、host crash、GuaranteeTier |
 | `B-PROCESS` | native Process supervisor 与平台资源/生命周期 adapter | `READY` | [v0.5 Process 规范](../design/06-架构设计总纲-v0.5.md) | macOS/Windows/Linux suspend/kill、host incarnation、resource mapping |
@@ -75,28 +76,33 @@ Application
 - 数据库重开、Outbox ACK 重放、异常退出和 durable cancel/completion race 已有测试。
 - Outbox 仍是 at-least-once：consumer 必须 generation-aware、幂等，不能把重复投递误判为新 effect。
 
+### 4.4 Outbox → Tokio wake consumer
+
+- pump 在专用 OS 线程驱动（blocking 不进 Tokio worker）；writer commit 后有界 hint + 兜底轮询，writer 路径不被 consumer 阻塞。
+- commit 前无 wake；崩溃重放不丢失、不制造旧 generation wake；duplicate 不产生第二次逻辑唤醒/reconciliation。
+- runtime 重启后 fiber record 不恢复，重投 wake 分类为 `FiberGone` 并 ACK；durable wait registry/fiber rehydration 属 `B-PROCESS`/Slice K。
+
 ## 5. 当前下一验收门
 
-当前唯一主线工作包是 `B-OUTBOX`：
+`B-OUTBOX` 已 `DONE`（证据：[PoC-0004](../evidence/stage-b/poc-0004-outbox-wake-consumer.md)）。当前唯一主线工作包是 `B-STORE-FAULT`（SQLite fault-injection，与 ADR-0002 PoC 验收第 7 条对齐）：
 
 ```text
-SQLite durable commit
-  → bounded Outbox dispatcher
-  → Fiber generation fence
-  → idempotent wake/reconcile
-  → apply success
-  → ACK
-  → restart redelivery
+kill -9 / 断电
+  → torn-write / commit 中断（fault-injection VFS）
+  → disk-full / 只读文件系统 / I/O error fail-closed
+  → WAL checkpoint / 备份恢复演练
+  → 100K Operation metadata 规模行为
 ```
 
 其验收条件：
 
-1. commit 成功前不允许 Fiber wake；
-2. consumer 崩溃后 Outbox 可重放，不丢失、不制造旧 generation wake；
-3. duplicate delivery 不产生第二次逻辑唤醒或第二次 reconciliation；
-4. bounded queue/backpressure 不阻塞 authority writer 和 cancel path；
-5. 测试同时覆盖 current callback、late callback、cancel-before-dispatch、Process/runtime restart；
-6. Evidence 更新 PoC-0001/0002/0003 的集成缺口，并保留 `PARTIAL_PASS` 直到故障注入通过。
+1. 注入故障后已提交事务不丢失、未提交事务不冒充已提交；
+2. 损坏或未知状态一律 fail-closed，不静默降级；
+3. WAL、`-shm`、主数据库与 checkpoint 作为同一持久状态恢复；
+4. 100K Operation metadata 下 pending/ACK/恢复路径不退化到不可用；
+5. Evidence 更新 PoC-0003/PoC-0004 的 fault-injection 缺口；通过后相关 PoC 方可从 `PARTIAL_PASS` 晋升。
+
+`B-OUTBOX` 的已验收条件（供追溯）：commit 前无 wake；崩溃重放不丢失、不制造旧 generation wake；duplicate 无第二次逻辑唤醒/reconciliation；bounded queue 不阻塞 writer/cancel；测试覆盖 current/late/cancel-before-dispatch/crash-restart 场景；Evidence 已同步三 PoC 集成缺口并保持 `PARTIAL_PASS` 直到故障注入通过。
 
 ## 6. 阶段退出门映射
 
