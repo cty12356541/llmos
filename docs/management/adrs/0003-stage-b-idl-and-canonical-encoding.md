@@ -70,4 +70,4 @@
 
 [B-SCHEMA-001](../../evidence/stage-b/b-schema-001-protobuf-envelope.md) 已通过 Rust generation、7 项 compatibility/golden 测试、本地 workspace 回归，以及 [GitHub Actions run 30715148293](https://github.com/cty12356541/llmos/actions/runs/30715148293) 的 Ubuntu/Windows/macOS 复验。它只支持首个公共 envelope，不证明 TypeScript/Python client、Buf breaking check、deterministic CBOR、fuzz 或本地 typed IPC 已完成。
 
-[B-SCHEMA-002](../../evidence/stage-b/b-schema-002-cross-language-generation.md) 已在本地通过 TypeScript/Python generation、golden conformance、生成物 drift gate、Buf lint/format 和删除字段 breaking 反例；三平台 CI 待本提交推送后补记。由于当前 IDL 没有 RPC service，本证据只声称 type bindings，不声称 service client 已生成。
+[B-SCHEMA-002](../../evidence/stage-b/b-schema-002-cross-language-generation.md) 已通过 TypeScript/Python generation、golden conformance、生成物 drift gate、Buf lint/format、删除字段 breaking 反例，以及 [GitHub Actions run 30715954413](https://github.com/cty12356541/llmos/actions/runs/30715954413) 的 Ubuntu/Windows/macOS 复验。由于当前 IDL 没有 RPC service，本证据只声称 type bindings，不声称 service client 已生成。

@@ -39,6 +39,8 @@ remote plugin 的版本已固定，生成物也 checked in；正常 Rust build �
 
 首次三平台 run 30715842211 在 Ubuntu/macOS 通过全部 schema 步骤，但 Windows checkout 因 CRLF 转换导致 Buf format/generated drift 失败；gate 正确阻止了平台字节差异。后续 remediation 新增 `.gitattributes`，强制 `.proto`、生成 Python/TypeScript 使用 LF；同时用 lockfile 中的官方 Buf npm CLI 替代使用 Node 20 action runtime 的 setup action，并升级 Node/Python setup action。该失败作为反例保留，不冒充通过结果。
 
+remediation 后的 [GitHub Actions run 30715954413](https://github.com/cty12356541/llmos/actions/runs/30715954413) 全部成功：Ubuntu 53s、macOS 1m0s、Windows 2m4s。三平台均通过 Buf lint/format、remote generation、tracked/untracked drift、TypeScript typecheck/conformance、Python conformance、Rust workspace test 与 Clippy；Ubuntu 额外通过 rustfmt。
+
 ## 3. 测试与复现
 
 ```sh
@@ -55,7 +57,7 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-本地结果：Buf lint/format/generate、TypeScript typecheck/conformance、Python conformance、Rust workspace test/Clippy/rustfmt 全部通过。
+本地及上述三平台 CI：Buf lint/format/generate、TypeScript typecheck/conformance、Python conformance、Rust workspace test/Clippy/rustfmt 全部通过。
 
 breaking 反例在临时目录复制 schema，删除 `Envelope.method` field 4 后执行：
 
@@ -80,6 +82,5 @@ Buf 以失败退出并报告：此前存在的 `Envelope` field 4 `method` 被�
 - breaking gate 只证明当前 Buf `FILE` policy 和删除字段反例，不覆盖所有应用级语义破坏；
 - remote plugin 重新生成依赖 BSR，尚未建立内部 mirror、签名/provenance 验证或离线恢复包；
 - deterministic CBOR、签名域、fuzz/property corpus、parser 深度限制和 typed IPC 尚未完成；
-- 本地只在 macOS 执行，三平台 CI 结果必须在本提交推送后补记。
 
 因此 `B-SCHEMA` 继续保持 `IN_PROGRESS`，ADR-0003 继续保持 `POC`。
