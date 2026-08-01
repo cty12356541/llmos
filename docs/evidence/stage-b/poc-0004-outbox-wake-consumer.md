@@ -139,3 +139,12 @@ cargo fmt --all -- --check
 
 - **pump 存活/健康语义**：pump 线程任何失败路径（source 错误、consumer panic）都计入 `PumpHealth` 并按有上限退避重试，不允许静默无限重试或静默死亡；`Faulted`/`Stopped` 均为可观察终态，`stop()` 在两态下都能快速 join。
 - **shutdown 终态语义**：`DrainReport::shutdown = true` 是终态停批（区别于瞬时停批的 25ms 重试）；pump 见到后立即 `Stopped` 退出，未 ACK 条目保留在 durable Outbox，由未来 runtime 的 pump 按 at-least-once 重投。
+
+### 8.4 复验残余观察项（2026-08-01，非阻塞）
+
+remediation 提交（`43b95c3`）经代码质量与安全两条复审泳道 PASS。以下为复审登记的非阻塞残余观察项，按归属移交后续工作包；它们收窄已知边界，不扩大本 PoC 证据范围：
+
+1. **持久 apply 失败无健康信号（MINOR）**：`drain_once` 把 sink 失败折叠为 `Ok(stopped_at)`，pump 按 25ms 重试且不计入 `consecutive_failures`；若队头条目持续失败，pump 表象为 `Running/failures=0`。后续 observability 工作项：对连续相同 `stopped_at` 计数，超阈值写入 `last_error`（不触发 `Faulted`）。
+2. **`Faulted` 恢复依赖外部监督（LOW）**：`Faulted`/`Stopped` 后无进程内自动重启，恢复路径为 `stop()` + 新建 `OutboxPump` 或进程重启；条目持久不丢，但若无人轮询 `health()`，投递将长期暂停。归属 `B-PROCESS` 监督层。
+3. **`PumpHealth.last_error` 含底层错误文本（LOW）**：携带 SQLite/rusqlite 错误 `Display`（可能含 schema/约束细节）；当前仅进程内观测，未来经 IPC 边界暴露时需脱敏。归属 `B-CONTROL`/`B-SCHEMA`。
+4. **`Buffered` 驻留仅随 fiber 终态 purge 清理（LOW）**：scope cancel 路径只移除 `Pending`；`Buffered` 按 `(fiber, operation)` 键在 fiber 生命周期内有界驻留，waits map 无显式上限（由 admission × operation 间接约束）。wait registry 的 retention 策略归属 `B-PROCESS`/Slice K。
