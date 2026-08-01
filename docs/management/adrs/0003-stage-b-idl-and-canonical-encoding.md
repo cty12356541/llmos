@@ -40,7 +40,7 @@
 - frame 在解析前执行 1 MiB 上限，公共 request ID 固定 16 bytes；后续每种 service payload 还需更严格的独立上限；
 - non-critical 可忽略不等于可丢弃：透明 forwarding 必须保持输入 wire bytes；
 - critical extension ID 只能在实现、测试和协商支持同时存在时加入 registry；
-- 三语言 Protobuf generation/compat 已通过，但 CBOR 跨语言、fuzz、本地 transport adapter 未完成前，ADR 保持 `POC`；
+- 三语言 Protobuf generation/compat 与首轮 sanitizer fuzz smoke 已通过，但 CBOR 跨语言、长期 fuzz、本地 transport adapter 未完成前，ADR 保持 `POC`；
 - `nlos-types` 继续不依赖 Protobuf；wire adapter 负责在 nominal ID 与生成类型之间显式转换，避免 wire bytes 侵入内核对象身份。
 
 ## 依赖审查
@@ -52,6 +52,7 @@
 - Buf CLI 1.72.0 为 Apache-2.0；`@bufbuild/protobuf 2.13.0` 为 Apache-2.0/BSD-3-Clause，TypeScript/Node 工具链由 `package-lock.json` 固定；Python runtime `protobuf 6.33.4` 为 BSD-3-Clause；
 - TypeScript/Python remote plugin 固定完整版本，但重新生成仍依赖 BSR 可用性；checked-in 生成物让普通 consumer/build 不依赖在线生成，后续仍需评估 mirror 与 provenance；
 - `minicbor 2.3.0` 为 BlueOak-1.0.0，只作为可替换的 CBOR primitive codec；NLOS profile 自行执行 map/type/order/size/domain/compat 与 re-encode byte equality 检查；
+- `cargo-fuzz 0.13.2` + `libfuzzer-sys 0.4.13` 只进入独立 `fuzz/` package；CI 固定 nightly `2026-08-01` 并执行 Linux AddressSanitizer smoke，不进入普通 workspace 或生产依赖；
 - 上述依赖只进入可替换 schema/build adapter，不进入 Safety TCB、KABI 或 `nlos-types`；升级必须重跑 golden、compat、三平台 CI 和后续 fuzz corpus。
 
 ## 首切片验收
@@ -75,3 +76,5 @@
 [B-SCHEMA-002](../../evidence/stage-b/b-schema-002-cross-language-generation.md) 已通过 TypeScript/Python generation、golden conformance、生成物 drift gate、Buf lint/format、删除字段 breaking 反例，以及 [GitHub Actions run 30715954413](https://github.com/cty12356541/llmos/actions/runs/30715954413) 的 Ubuntu/Windows/macOS 复验。由于当前 IDL 没有 RPC service，本证据只声称 type bindings，不声称 service client 已生成。
 
 [B-SCHEMA-003](../../evidence/stage-b/b-schema-003-deterministic-cbor.md) 已通过 deterministic CBOR body、domain-separated preimage、两个 golden vectors、13 项严格反例测试，以及 [GitHub Actions run 30716908874](https://github.com/cty12356541/llmos/actions/runs/30716908874) 的 Ubuntu/Windows/macOS 复验。该证据不包含实际 SHA-256、签名、key management 或完整 Receipt/Event/Escrow schema。
+
+[B-SCHEMA-004](../../evidence/stage-b/b-schema-004-schema-fuzz-smoke.md) 已建立 Protobuf envelope、canonical CBOR body 和 signing preimage 三个有界 sanitizer fuzz target。本地 33 秒共执行 15,499,860 次，无 crash/timeout/OOM/断言反例；该短跑不替代长期 fuzz，也不构成 production parser claim。

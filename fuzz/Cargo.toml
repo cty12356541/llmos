@@ -1,0 +1,37 @@
+[package]
+name = "nlos-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4.13"
+nlos-canonical = { path = "../crates/nlos-canonical" }
+nlos-schema = { path = "../crates/nlos-schema" }
+
+[[bin]]
+name = "protobuf_envelope"
+path = "fuzz_targets/protobuf_envelope.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "canonical_body"
+path = "fuzz_targets/canonical_body.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "signing_preimage"
+path = "fuzz_targets/signing_preimage.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]

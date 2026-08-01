@@ -9,6 +9,8 @@ __pycache__/
 dist/
 build/
 target/
+fuzz/artifacts/
+fuzz/corpus/
 
 # Node.js schema toolchain
 node_modules/

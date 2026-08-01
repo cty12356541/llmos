@@ -185,7 +185,7 @@ PoC 对比：
 
 冻结前必须生成 Rust + TypeScript + Python client，并通过 unknown field、major version、golden vector 和 fuzz test。
 
-当前 PoC 决策与证据见 [ADR-0003](./adrs/0003-stage-b-idl-and-canonical-encoding.md)、[B-SCHEMA-001](../evidence/stage-b/b-schema-001-protobuf-envelope.md)、[B-SCHEMA-002](../evidence/stage-b/b-schema-002-cross-language-generation.md) 和 [B-SCHEMA-003](../evidence/stage-b/b-schema-003-deterministic-cbor.md)：Protobuf 公共 envelope、三语言 type generation/compat gate，以及首个 deterministic CBOR body/domain-separated preimage/golden 已实现；IDL 尚无 RPC service，CBOR 跨语言、fuzz、实际签名与 typed IPC 仍未完成，候选未冻结。
+当前 PoC 决策与证据见 [ADR-0003](./adrs/0003-stage-b-idl-and-canonical-encoding.md)、[B-SCHEMA-001](../evidence/stage-b/b-schema-001-protobuf-envelope.md)、[B-SCHEMA-002](../evidence/stage-b/b-schema-002-cross-language-generation.md)、[B-SCHEMA-003](../evidence/stage-b/b-schema-003-deterministic-cbor.md) 和 [B-SCHEMA-004](../evidence/stage-b/b-schema-004-schema-fuzz-smoke.md)：Protobuf 公共 envelope、三语言 type generation/compat gate、首个 deterministic CBOR body/domain-separated preimage/golden，以及三目标 sanitizer fuzz smoke 已实现；IDL 尚无 RPC service，CBOR 跨语言、长期 fuzz、实际签名与 typed IPC 仍未完成，候选未冻结。
 
 ## 9. Desktop 与可信控制面
 
@@ -285,7 +285,7 @@ docs/
 
 1. 已完成 Protobuf envelope 的 Rust/TypeScript/Python type generation、Buf lint/breaking、drift gate 与跨语言 golden compatibility；
 2. 已完成首个 deterministic CBOR profile、签名域和 CBOR/preimage golden vectors；
-3. 下一步补齐 protobuf/CBOR fuzz，再推进本地 typed IPC adapter；
+3. 已完成 protobuf/CBOR 三目标 sanitizer fuzz smoke；下一步推进本地 typed IPC adapter，长期 fuzz 保留为 ABI 冻结/production claim 前置门；
 4. 100K 逐条生产写入、真实掉电和更多文件系统保留为 Store 扩展 Evidence。
 
 技术栈讨论已于[议题 30](../discussions/30-阶段B技术栈讨论.md)收束。编码立即从 Cargo workspace、`nlos-types`、`nlos-runtime` 与 Tokio Fiber scale PoC 开始；带 `PoC` 标记的组件在证据出来前不得升级为 `ACCEPTED` 或冻结公共 ABI。

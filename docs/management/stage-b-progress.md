@@ -46,7 +46,7 @@ Application
 | `B-STORE` | SQLite WAL/FULL Operation authority、恢复、Outbox | `PARTIAL_PASS` | [ADR-0002](./adrs/0002-stage-b-sqlite-operation-authority.md)、[PoC-0003](../evidence/stage-b/poc-0003-sqlite-operation-authority.md)；F1–F7 已通过，包括三平台 CI | 100K 逐条生产写入、真实硬件掉电/更多文件系统仍超出当前证据 |
 | `B-OUTBOX` | Durable Outbox → Tokio Fiber wake/reconcile consumer | `DONE` | [PoC-0004](../evidence/stage-b/poc-0004-outbox-wake-consumer.md)；本提交及评审后 remediation 提交（hash 见 git log 与 commit receipt） | durable wait registry/fiber rehydration 归 `B-PROCESS`/Slice K；此前移交 `B-STORE-FAULT` 的 F1–F7 已全部通过。2026-08-01 remediation：评审指出的 pump 错误路径可观测性（失败计数/根因/有上限退避/Faulted 终态）、drain panic 防护、shutdown 终态语义与 wake 重缓冲已补齐并各有测试。2026-08-01 复验残余（非阻塞，详见 PoC-0004 §8.4）：持久 apply 失败（`stopped_at` 路径）暂无 health 信号 → 后续 observability 项；`Faulted` 恢复依赖外部监督 → `B-PROCESS`；`PumpHealth.last_error` 跨 IPC 边界需脱敏 → `B-CONTROL`/`B-SCHEMA`；`Buffered` 驻留仅随 fiber 终态清理 → `B-PROCESS`/Slice K |
 | `B-STORE-FAULT` | SQLite fault-injection：kill-9、torn-write、disk-full、checkpoint/backup、migration、长读事务、100K metadata、跨平台 | `DONE` | [PoC-0003 F1–F7 增量证据](../evidence/stage-b/poc-0003-sqlite-operation-authority.md)；[三平台 CI run 30714584445](https://github.com/cty12356541/llmos/actions/runs/30714584445) | 100K 逐条生产写入、真实硬件掉电/更多文件系统保留为扩展 Evidence，不阻塞本工作包 |
-| `B-SCHEMA` | Protobuf/CBOR、golden vector、版本演进和本地 typed IPC | `IN_PROGRESS` | [ADR-0003](./adrs/0003-stage-b-idl-and-canonical-encoding.md)、[B-SCHEMA-001](../evidence/stage-b/b-schema-001-protobuf-envelope.md)、[B-SCHEMA-002](../evidence/stage-b/b-schema-002-cross-language-generation.md)、[B-SCHEMA-003](../evidence/stage-b/b-schema-003-deterministic-cbor.md)、[三平台 CI run 30716908874](https://github.com/cty12356541/llmos/actions/runs/30716908874)；`schema/`、`gen/`、`crates/nlos-schema`、`crates/nlos-canonical` | RPC service/client、CBOR 跨语言、fuzz、actual signing、transport adapter |
+| `B-SCHEMA` | Protobuf/CBOR、golden vector、版本演进和本地 typed IPC | `IN_PROGRESS` | [ADR-0003](./adrs/0003-stage-b-idl-and-canonical-encoding.md)、[B-SCHEMA-001](../evidence/stage-b/b-schema-001-protobuf-envelope.md)、[B-SCHEMA-002](../evidence/stage-b/b-schema-002-cross-language-generation.md)、[B-SCHEMA-003](../evidence/stage-b/b-schema-003-deterministic-cbor.md)、[B-SCHEMA-004](../evidence/stage-b/b-schema-004-schema-fuzz-smoke.md)、[三平台 CI run 30716908874](https://github.com/cty12356541/llmos/actions/runs/30716908874)；`schema/`、`gen/`、`crates/nlos-schema`、`crates/nlos-canonical`、`fuzz/` | RPC service/client、CBOR 跨语言、长期 fuzz、actual signing、transport adapter |
 | `B-SANDBOX` | Wasmtime/WASI 与独立 host Process 隔离对比 | `READY` | [技术选型第 5 节](./stage-b-technology-selection.md) | capability import、fuel/epoch、memory、host crash、GuaranteeTier |
 | `B-PROCESS` | native Process supervisor 与平台资源/生命周期 adapter | `READY` | [v0.5 Process 规范](../design/06-架构设计总纲-v0.5.md) | macOS/Windows/Linux suspend/kill、host incarnation、resource mapping |
 | `B-TASK` | TaskPlan/TaskNode、lazy materialization、TaskSnapshot、双 Attempt 唯一提交 | `READY` | [v0.5 Task 规范](../design/06-架构设计总纲-v0.5.md) | TaskAuthority、CommitPermit、EffectPermit、snapshot drift、reconcile |
@@ -125,28 +125,35 @@ Application
 - `nlos-canonical` 实现 RFC 8949 core deterministic CBOR 严格子集；schema/major/minor、`sha-256`、object ID、payload digest 和 critical/noncritical opaque extensions 进入 canonical body。
 - signing preimage 使用两个 `u32_be` 长度前缀绑定 ASCII domain 与 CBOR body；verifier 必须提供 expected domain，Protobuf bytes 不进入此路径。
 - 禁止 duplicate/乱序 key、indefinite、非最短整数、tag、float/NaN、算法替换、额外嵌套与超界输入；decoder re-encode 后逐字节比较。
-- CDDL、CBOR body golden、preimage golden 和 13 项正反测试经 Ubuntu/Windows/macOS 通过；实际 SHA-256/signature、完整业务 schema、跨语言 CBOR 和 fuzz 尚未实现。
+- CDDL、CBOR body golden、preimage golden 和 13 项正反测试经 Ubuntu/Windows/macOS 通过；实际 SHA-256/signature、完整业务 schema 和跨语言 CBOR 尚未实现。
+
+### 4.12 Protobuf / CBOR sanitizer fuzz smoke
+
+- 独立 `fuzz/` package 提供 Protobuf envelope、canonical body、signing preimage 三个有界 target；生产 workspace 不依赖 libFuzzer。
+- checked-in corpus 覆盖 unknown Protobuf field，以及 duplicate/order/non-shortest/indefinite/tag/float/length/major/minor/extensions/domain 篡改。
+- CBOR/preimage 任意成功解码都必须重新编码后逐字节等于输入；critical support set 与 expected domain 在 target 内显式校验。
+- macOS arm64 AddressSanitizer 本地 33 秒共执行 15,499,860 次，无 crash/timeout/OOM/断言反例；这只是 smoke，不是长期 fuzz 或 production claim。
 
 ## 5. 当前下一验收门
 
-`B-SCHEMA` 继续处于 `IN_PROGRESS`。B-SCHEMA-001/002 已完成 Protobuf envelope 与跨语言 compat gate，B-SCHEMA-003 已经三平台完成 deterministic CBOR/profile/golden；当前验收门推进到 protobuf/CBOR fuzz：
+`B-SCHEMA` 继续处于 `IN_PROGRESS`。B-SCHEMA-001/002 已完成 Protobuf envelope 与跨语言 compat gate，B-SCHEMA-003 已经三平台完成 deterministic CBOR/profile/golden，B-SCHEMA-004 已建立可重复 sanitizer fuzz smoke；当前验收门推进到本地 typed IPC adapter：
 
 ```text
 Protobuf envelope + Rust generation + registry + first golden       DONE
   → TypeScript / Python generation + checked-in drift check         DONE
   → Buf lint / breaking + cross-language compatibility              DONE
   → deterministic CBOR profile + canonical golden                   DONE
-  → protobuf / CBOR fuzz                                             NEXT
-  → Unix socket / Windows named pipe typed IPC adapter
+  → protobuf / CBOR sanitizer fuzz smoke                            DONE
+  → Unix socket / Windows named pipe typed IPC adapter              NEXT
 ```
 
 下一切片验收条件：
 
-1. 建立 Protobuf envelope 与 CBOR body/preimage 的 fuzz targets，复用 checked-in seeds；
-2. malformed/随机输入不得 panic、OOM、越界或超出有界解析策略；
-3. 任意成功 CBOR decode 必须满足 `encode(decoded) == input`，domain/critical compatibility 不得被绕过；
-4. corpus 覆盖 duplicate/order/non-shortest/indefinite/tag/float/length/major/minor/extensions；
-5. 记录 fuzz 时长、执行次数、峰值输入和发现的反例；未经过长期 fuzz 不得升级为 production parser claim。
+1. 用同一 Protobuf schema 定义最小 request/response service，生成 Rust/TypeScript/Python client surface；
+2. transport-neutral typed adapter 必须在 Unix domain socket 和 Windows named pipe 后端之间保持同一 schema/compat 行为；
+3. frame length、connect/read/write timeout、peer identity/authorization hook 和 backpressure 必须显式有界；
+4. unknown field forwarding、unknown major/critical extension、断连、半帧、超界与重连必须 fail-closed 或产生明确可恢复错误；
+5. 不把 socket path、named-pipe name、OS credential 或 Protobuf bytes 泄漏进 `nlos-types`，并保留后续替换 transport 的边界。
 
 `B-OUTBOX` 的已验收条件（供追溯）：commit 前无 wake；崩溃重放不丢失、不制造旧 generation wake；duplicate 无第二次逻辑唤醒/reconciliation；bounded queue 不阻塞 writer/cancel；测试覆盖 current/late/cancel-before-dispatch/crash-restart 场景；Evidence 已同步三 PoC 集成缺口并保持 `PARTIAL_PASS` 直到故障注入通过。
 
