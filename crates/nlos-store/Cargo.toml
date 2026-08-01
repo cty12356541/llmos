@@ -12,5 +12,8 @@ nlos-runtime = { path = "../nlos-runtime" }
 nlos-types = { path = "../nlos-types" }
 rusqlite.workspace = true
 
+[dev-dependencies]
+nlos-store-fault = { path = "../nlos-store-fault" }
+
 [lints]
 workspace = true

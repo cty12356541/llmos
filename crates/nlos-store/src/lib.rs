@@ -21,7 +21,7 @@ use nlos_types::{
     CallbackId, CancelEpoch, CancellationScopeId, ExecutionFiberId, Generation, OperationId,
     ReceiptId,
 };
-use rusqlite::{Connection, Transaction, TransactionBehavior, params};
+use rusqlite::{Connection, OpenFlags, Transaction, TransactionBehavior, params};
 
 const SCHEMA_VERSION: i64 = 1;
 
@@ -33,6 +33,10 @@ pub enum StoreError {
     UnsupportedSchema(i64),
     OutboxEntryNotFound,
     LockPoisoned,
+    DurabilityUnavailable {
+        journal_mode: String,
+        synchronous: i64,
+    },
 }
 
 impl fmt::Display for StoreError {
@@ -46,6 +50,13 @@ impl fmt::Display for StoreError {
             }
             Self::OutboxEntryNotFound => formatter.write_str("outbox entry does not exist"),
             Self::LockPoisoned => formatter.write_str("authority writer lock is poisoned"),
+            Self::DurabilityUnavailable {
+                journal_mode,
+                synchronous,
+            } => write!(
+                formatter,
+                "WAL/FULL durability unavailable: journal_mode={journal_mode}, synchronous={synchronous}"
+            ),
         }
     }
 }
@@ -112,16 +123,57 @@ pub struct SqliteOperationStore {
 impl SqliteOperationStore {
     /// Opens or creates an authority database and validates its schema.
     ///
+    /// Equivalent to [`SqliteOperationStore::open_with_vfs`] with `None`,
+    /// i.e. the process-default `SQLite` VFS.
+    ///
     /// # Errors
     ///
-    /// Returns an error when `SQLite` cannot establish WAL/FULL durability,
-    /// migrate the schema, or validate the stored schema version.
+    /// Returns an error when the database cannot be opened, when WAL/FULL
+    /// durability cannot be established (verified by reading the pragmas
+    /// back; a silent fallback is rejected with
+    /// [`StoreError::DurabilityUnavailable`]), or when the stored schema
+    /// version cannot be migrated or validated.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
-        let mut connection = Connection::open(path)?;
+        Self::open_with_vfs(path, None)
+    }
+
+    /// Opens or creates an authority database through a named `SQLite` VFS.
+    ///
+    /// `vfs = None` uses the process-default VFS; `Some(name)` selects a VFS
+    /// previously registered under that name (e.g. a fault-injection shim
+    /// registered by tests). The open flags are identical to
+    /// [`Connection::open`] regardless of the chosen VFS.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the named VFS does not exist, when the database
+    /// cannot be opened, when WAL/FULL durability cannot be established
+    /// (verified by reading the pragmas back; a silent fallback is rejected
+    /// with [`StoreError::DurabilityUnavailable`]), or when the stored schema
+    /// version cannot be migrated or validated.
+    pub fn open_with_vfs(path: impl AsRef<Path>, vfs: Option<&str>) -> Result<Self, StoreError> {
+        let mut connection = match vfs {
+            None => Connection::open(path)?,
+            Some(name) => Connection::open_with_flags_and_vfs(path, OpenFlags::default(), name)?,
+        };
         connection.busy_timeout(Duration::from_secs(5))?;
         connection.pragma_update(None, "journal_mode", "WAL")?;
         connection.pragma_update(None, "synchronous", "FULL")?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
+
+        // `pragma_update` discards the result row of `journal_mode`, so a
+        // failed WAL transition would silently fall back (e.g. to `delete`).
+        // Read both durability pragmas back and fail closed.
+        let journal_mode: String =
+            connection.pragma_query_value(None, "journal_mode", |row| row.get(0))?;
+        let synchronous: i64 =
+            connection.pragma_query_value(None, "synchronous", |row| row.get(0))?;
+        if !journal_mode.eq_ignore_ascii_case("wal") || synchronous != 2 {
+            return Err(StoreError::DurabilityUnavailable {
+                journal_mode,
+                synchronous,
+            });
+        }
 
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
         match version {

@@ -169,8 +169,16 @@ version = "0.1.0"
 dependencies = [
  "nlos-operation",
  "nlos-runtime",
+ "nlos-store-fault",
  "nlos-types",
  "rusqlite",
+]
+
+[[package]]
+name = "nlos-store-fault"
+version = "0.1.0"
+dependencies = [
+ "libsqlite3-sys",
 ]
 
 [[package]]

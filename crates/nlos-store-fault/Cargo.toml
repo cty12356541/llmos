@@ -1,0 +1,19 @@
+[package]
+name = "nlos-store-fault"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Test-only fault-injection VFS shim for `nlos-store`.
+#
+# This crate is the single designated `unsafe` audit unit of the workspace:
+# it deliberately does NOT set `[lints] workspace = true`, because the
+# workspace forbids `unsafe_code` while a VFS shim is impossible without it.
+# All `unsafe` is confined to `src/shim.rs` and documented there.
+[dependencies]
+# Must stay exactly equal to the version rusqlite pulls in (see Cargo.lock),
+# otherwise the process would link two SQLite copies and VFS registration
+# would silently target the wrong one.
+libsqlite3-sys = "=0.38.1"

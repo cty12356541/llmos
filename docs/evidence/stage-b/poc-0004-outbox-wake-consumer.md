@@ -92,8 +92,8 @@ cargo fmt --all -- --check
 ## 6. 当前不能证明什么
 
 - **durable wait registry / fiber rehydration**：runtime 重启后 fiber record 不恢复，重投 wake 只能分类为 `FiberGone` 并 ACK；让新 runtime 把重投 wake 真正送达重建的 fiber 属于 `B-PROCESS`/Slice K 范围；
-- **kill -9 / torn-write / disk-full fault-injection**：`exit(97)` 不是掉电或写损坏；commit 中断、torn sector、disk-full、只读文件系统、I/O error 的 fail-closed 行为未验证（归属下一工作包 `B-STORE-FAULT`）；
-- **WAL checkpoint/备份恢复、长读事务、100K Operation metadata** 规模行为；
+- **真实硬件掉电与跨平台 durability**：本 PoC 的 `exit(97)` 本身不是掉电或写损坏；后续 [PoC-0003 F1–F4 增量切片](./poc-0003-sqlite-operation-authority.md)已覆盖 kill-9、fault VFS 模拟断电/WAL 损坏、disk-full/只读/I/O error fail-closed、checkpoint/备份恢复与长读事务，但仍不能替代真实硬件掉电及 Windows/Linux 复验；
+- **100K Operation metadata** 规模行为与 schema migration；
 - **Driver authentication / EffectPermit / progress callback**：reconcile sink 只记录条目，不验证副作用来源身份或许可；
 - **跨平台**：仅 Apple Silicon/macOS；Linux/Windows 未复验；
 - **真实规模 backpressure 计量**：慢 sink 是人工 50ms 延迟，未测量生产速率下的排队深度、延迟分布和 writer 吞吐；
@@ -103,7 +103,7 @@ cargo fmt --all -- --check
 
 ## 7. 下一验证门
 
-1. `B-STORE-FAULT`（SQLite fault-injection）：kill -9、torn-write VFS、disk-full、checkpoint/backup、migration（v1→v2 前向迁移、备份/恢复演练、golden database）与长读事务、100K metadata——与 ADR-0002 PoC 验收第 7 条对齐；通过后本 PoC 方可考虑晋升；
+1. `B-STORE-FAULT`（SQLite fault-injection）：F1–F4 的 kill-9、torn-write VFS、disk-full、checkpoint/backup 与长读事务已由 [PoC-0003 增量证据](./poc-0003-sqlite-operation-authority.md)补齐；剩余 migration（v1→v2、golden database、升级前备份/失败恢复）、100K metadata 与 Windows/Linux 复验完成后，本 PoC 方可考虑晋升；
 2. durable wait registry 与 fiber rehydration（`B-PROCESS`/Slice K）：使 crash-restart 场景的重投 wake 能送达重建 fiber 而非 `FiberGone`；
 3. reconcile sink 接入真实 Task/Artifact 权威并验证 Driver authentication/EffectPermit；
 4. 跨平台复验与真实速率 backpressure 计量。
