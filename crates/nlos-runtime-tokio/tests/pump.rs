@@ -201,9 +201,10 @@ fn failing_source_is_observed_through_health_and_backoff() {
         "last_error must carry the root cause: {health:?}"
     );
 
-    // Backoff: with a 5ms poll interval the waits after failures 1..=5 are
-    // 5/10/20/40/80ms, so the gap preceding the first successful (sixth)
-    // attempt dwarfs the gap after the first failure.
+    // Backoff: with a 5ms poll interval the minimum waits after failures
+    // 1..=5 are 5/10/20/40/80ms. Runner scheduling may delay any attempt by
+    // an arbitrary amount, so assert each configured lower bound rather than
+    // comparing ratios between two scheduler-inflated observations.
     wait_until("the source to recover and serve again", || {
         probe.attempts() > FAILURES
     });
@@ -213,12 +214,14 @@ fn failing_source_is_observed_through_health_and_backoff() {
         "enough attempts recorded: {} gaps {gaps:?}",
         gaps.len()
     );
-    let first = gaps[0];
-    let last = gaps[FAILURES - 1];
-    assert!(
-        last >= first.saturating_mul(4),
-        "backoff must grow the retry interval: first={first:?} last={last:?} all={gaps:?}"
-    );
+    for (failure, gap) in gaps.iter().take(FAILURES).enumerate() {
+        let expected = Duration::from_millis(5 * (1_u64 << failure));
+        assert!(
+            *gap >= expected,
+            "retry after failure {} was early: expected at least {expected:?}, got {gap:?}; all={gaps:?}",
+            failure + 1
+        );
+    }
 
     // Recovery: once the source serves again, a successful drain resets the
     // failure counter while attempts keep increasing.
