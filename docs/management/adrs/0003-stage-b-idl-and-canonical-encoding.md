@@ -65,4 +65,4 @@
 
 ## 当前证据
 
-[B-SCHEMA-001](../../evidence/stage-b/b-schema-001-protobuf-envelope.md) 已通过 Rust generation、7 项 compatibility/golden 测试和本地 workspace 回归。它只支持首个公共 envelope，不证明 TypeScript/Python client、Buf breaking check、deterministic CBOR、fuzz 或本地 typed IPC 已完成。
+[B-SCHEMA-001](../../evidence/stage-b/b-schema-001-protobuf-envelope.md) 已通过 Rust generation、7 项 compatibility/golden 测试、本地 workspace 回归，以及 [GitHub Actions run 30715148293](https://github.com/cty12356541/llmos/actions/runs/30715148293) 的 Ubuntu/Windows/macOS 复验。它只支持首个公共 envelope，不证明 TypeScript/Python client、Buf breaking check、deterministic CBOR、fuzz 或本地 typed IPC 已完成。

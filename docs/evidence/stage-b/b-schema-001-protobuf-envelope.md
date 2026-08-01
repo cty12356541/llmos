@@ -29,6 +29,7 @@ cargo: 1.97.1
 prost/prost-build: 0.14.4
 protoc-bin-vendored: 3.2.0
 build: dev profile
+cross-platform CI: GitHub Actions run 30715148293
 ```
 
 ## 3. 兼容规则
@@ -70,7 +71,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 6. 注入 protobuf field 100 后仍可解码，forwarding bytes 与输入逐字节一致；
 7. 15-byte request ID 与超过 1 MiB 的 frame fail-closed。
 
-完整 workspace 回归通过；100K waiting Fiber 与 100K Store metadata 的显式 ignored 规模探针未运行，因为不属于 schema 首切片。
+完整 workspace 回归通过；推送后 [GitHub Actions run 30715148293](https://github.com/cty12356541/llmos/actions/runs/30715148293) 在 Ubuntu（44s）、Windows（1m24s）和 macOS（1m10s）全部成功，三平台均执行 workspace test 与 Clippy，Ubuntu 额外执行 rustfmt。100K waiting Fiber 与 100K Store metadata 的显式 ignored 规模探针未运行，因为不属于 schema 首切片。
 
 ## 5. 当前能证明什么
 
@@ -79,6 +80,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 - `[COMPAT-VER-001/002]` 中 schema name、major/minor、critical/non-critical 的首个可执行规则已实现；
 - forwarding adapter 可以在不知道新 protobuf field 的情况下保留原始 frame；
 - 不兼容或资源越界输入按 typed error fail-closed。
+- vendored `protoc`、Rust generation、golden/compat 测试已在 Ubuntu、Windows、macOS 构建执行。
 
 ## 6. 当前不能证明什么
 
@@ -87,7 +89,6 @@ cargo clippy --workspace --all-targets -- -D warnings
 - deterministic CBOR canonical profile 与 signed object 未实现；
 - fuzz/property corpus、递归深度和 service-specific payload limits 未完成；
 - Unix domain socket / Windows named pipe transport adapter、peer authentication、Capability 与 Receipt 绑定未实现；
-- 仅本地 macOS 执行了本切片；vendored protoc 和生成测试仍需 Ubuntu/Windows/macOS CI 复验；
 - 原始 frame 保留保证的是透明转发，不保证“修改 typed field 后重新编码”仍保留 unknown field；此类修改必须由版本感知 gateway 明确实现。
 
 因此 `B-SCHEMA` 保持 `IN_PROGRESS`，ADR-0003 保持 `POC`，不得据此宣称公共 SABI 已冻结。
