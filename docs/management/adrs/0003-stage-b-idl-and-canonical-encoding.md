@@ -77,4 +77,4 @@
 
 [B-SCHEMA-003](../../evidence/stage-b/b-schema-003-deterministic-cbor.md) 已通过 deterministic CBOR body、domain-separated preimage、两个 golden vectors、13 项严格反例测试，以及 [GitHub Actions run 30716908874](https://github.com/cty12356541/llmos/actions/runs/30716908874) 的 Ubuntu/Windows/macOS 复验。该证据不包含实际 SHA-256、签名、key management 或完整 Receipt/Event/Escrow schema。
 
-[B-SCHEMA-004](../../evidence/stage-b/b-schema-004-schema-fuzz-smoke.md) 已建立 Protobuf envelope、canonical CBOR body 和 signing preimage 三个有界 sanitizer fuzz target。本地 33 秒共执行 15,499,860 次，无 crash/timeout/OOM/断言反例；该短跑不替代长期 fuzz，也不构成 production parser claim。
+[B-SCHEMA-004](../../evidence/stage-b/b-schema-004-schema-fuzz-smoke.md) 已建立 Protobuf envelope、canonical CBOR body 和 signing preimage 三个有界 sanitizer fuzz target。本地 33 秒共执行 15,499,860 次，无 crash/timeout/OOM/断言反例；[Linux fuzz run 30717749638](https://github.com/cty12356541/llmos/actions/runs/30717749638) 与[三平台回归 run 30717749643](https://github.com/cty12356541/llmos/actions/runs/30717749643) 均成功。该短跑不替代长期 fuzz，也不构成 production parser claim。

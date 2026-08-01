@@ -40,7 +40,9 @@
 
 合计 15,499,860 次执行、33 秒；没有生成 counterexample artifact。`mutation limit` 是该次 libFuzzer 结束时已推进到的变异长度，不等于生产允许的 frame 大小；生产 parser 上限仍由代码中的 1 MiB/4 KiB gate 决定。
 
-另有默认 CI smoke profile：每个 target 2,000 次、共 6,000 次，使用相同长度/timeout/RSS 上限。当前实现提交前，本地 smoke、workspace test、workspace Clippy、fuzz package Clippy、root/fuzz rustfmt 均通过；远程 Linux sanitizer 结果在 push 后补录。
+默认 CI smoke profile 每个 target 2,000 次、共 6,000 次，使用相同长度/timeout/RSS 上限。[GitHub Actions fuzz run 30717749638](https://github.com/cty12356541/llmos/actions/runs/30717749638) 在 Linux 上成功，job 总计 1m17s，其中固定 nightly/cargo-fuzz 安装后，三个 target 的编译与执行步骤为 34s。
+
+[GitHub Actions cross-platform run 30717749643](https://github.com/cty12356541/llmos/actions/runs/30717749643) 同时完成原有 schema generation/conformance、workspace test 和 Clippy：Ubuntu 51s、macOS 1m0s、Windows 1m56s，Ubuntu 额外执行 rustfmt。实现提交前的本地 workspace/fuzz Clippy、root/fuzz rustfmt、三语言 conformance 和 sanitizer smoke 也全部通过。
 
 ## 4. 复现
 

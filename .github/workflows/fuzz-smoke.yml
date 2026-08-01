@@ -3,7 +3,25 @@ name: Schema fuzz smoke
 on:
   push:
     branches: [main]
+    paths:
+      - ".github/workflows/fuzz-smoke.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/nlos-canonical/**"
+      - "crates/nlos-schema/**"
+      - "fuzz/**"
+      - "schema/**"
+      - "scripts/run-fuzz-smoke.sh"
   pull_request:
+    paths:
+      - ".github/workflows/fuzz-smoke.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/nlos-canonical/**"
+      - "crates/nlos-schema/**"
+      - "fuzz/**"
+      - "schema/**"
+      - "scripts/run-fuzz-smoke.sh"
   workflow_dispatch:
 
 permissions:
