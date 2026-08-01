@@ -1,0 +1,18 @@
+[package]
+name = "nlos-schema"
+description = "Generated NLOS wire schemas, registry, and compatibility validation."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+prost.workspace = true
+
+[build-dependencies]
+prost-build = "0.14.4"
+protoc-bin-vendored = "3.2.0"
+
+[lints]
+workspace = true

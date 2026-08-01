@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package nlos.sabi.v1;
+
+// Identity and compatibility policy for a self-describing SABI frame.
+// Critical extension IDs require explicit receiver support. Non-critical IDs
+// may be ignored, but a forwarding hop must retain the original wire frame.
+message SchemaIdentity {
+  string name = 1;
+  uint32 major = 2;
+  uint32 minor = 3;
+  repeated uint32 critical_extension_ids = 4;
+  repeated uint32 non_critical_extension_ids = 5;
+}
+
+// The first Stage B typed boundary. The payload remains service-specific and
+// opaque until the corresponding service schema enters the registry.
+message Envelope {
+  SchemaIdentity schema = 1;
+  bytes request_id = 2;
+  string service = 3;
+  string method = 4;
+  bytes payload = 15;
+}

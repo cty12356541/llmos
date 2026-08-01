@@ -185,6 +185,8 @@ PoC 对比：
 
 冻结前必须生成 Rust + TypeScript + Python client，并通过 unknown field、major version、golden vector 和 fuzz test。
 
+当前 PoC 决策与证据见 [ADR-0003](./adrs/0003-stage-b-idl-and-canonical-encoding.md) 和 [B-SCHEMA-001](../evidence/stage-b/b-schema-001-protobuf-envelope.md)：首个 Protobuf 公共 envelope、Rust build-time generation、registry、版本/扩展检查和 golden vector 已实现；TypeScript/Python、Buf、deterministic CBOR、fuzz 与 typed IPC 尚未完成，候选未冻结。
+
 ## 9. Desktop 与可信控制面
 
 Tauri 2 作为阶段 B Task Manager/Resource Monitor 的首选候选。其 runtime authority 能按窗口/origin 检查 capability、permission 和 scope，但 NLOS 权限最终仍由 SystemControl service 校验，不能把 Tauri ACL 当成 NLOS Capability。[Tauri Runtime Authority](https://v2.tauri.app/security/runtime-authority/)
@@ -246,7 +248,7 @@ WebView（不可信展示）
 | 2 | PoC-0001 Tokio Fiber runtime facade | 100K waiting Fiber + cancel/fence/meter 报告 |
 | 3 | ADR-0002 SQLite authority store | durability、dedup、migration、100K metadata 通过 |
 | 4 | PoC-0004 Wasmtime isolation | capability imports、fuel/epoch、memory limit、host crash 测试 |
-| 5 | ADR-0003 IDL/canonical encoding | 三语言生成、compat check、golden/fuzz vectors |
+| 5 | [ADR-0003 IDL/canonical encoding](./adrs/0003-stage-b-idl-and-canonical-encoding.md) | 三语言生成、compat check、golden/fuzz vectors |
 | 6 | PoC-0005 Process supervisor | macOS/Windows/Linux suspend/kill/resource mapping 能力表 |
 | 7 | PoC-0006 Tauri SystemControl UI | GUI 与 CLI 产生等价 ControlCommand/Receipt |
 
@@ -279,11 +281,11 @@ docs/
 
 ## 14. 下一步
 
-当前已完成 ADR-0001、PoC-0001、PoC-0002、ADR-0002/PoC-0003 的初版和 PoC-0004；`B-STORE-FAULT` 的 F1–F7 已通过 fault/recovery/migration/100K metadata 与 Ubuntu/Windows/macOS CI，工作包 `DONE`。下一主线以[阶段 B 权威进度单](./stage-b-progress.md)的 `B-SCHEMA` 为准：
+当前已完成 ADR-0001、PoC-0001、PoC-0002、ADR-0002/PoC-0003 的初版和 PoC-0004；`B-STORE-FAULT` 的 F1–F7 已通过 fault/recovery/migration/100K metadata 与 Ubuntu/Windows/macOS CI，工作包 `DONE`。`B-SCHEMA` 已由 [B-SCHEMA-001](../evidence/stage-b/b-schema-001-protobuf-envelope.md) 启动并进入 `IN_PROGRESS`。下一主线以[阶段 B 权威进度单](./stage-b-progress.md)为准：
 
-1. Protobuf/CBOR IDL 与 schema registry；
-2. Rust/TypeScript/Python 生成和版本兼容；
-3. golden vector、fuzz 与本地 typed IPC adapter；
+1. 在已完成的 Protobuf envelope、Rust generation、registry 与首个 golden vector 上补齐 TypeScript/Python 生成；
+2. 接入 Buf lint/breaking check 与跨语言 golden compatibility；
+3. 定义 deterministic CBOR profile，补齐 fuzz 与本地 typed IPC adapter；
 4. 100K 逐条生产写入、真实掉电和更多文件系统保留为 Store 扩展 Evidence。
 
 技术栈讨论已于[议题 30](../discussions/30-阶段B技术栈讨论.md)收束。编码立即从 Cargo workspace、`nlos-types`、`nlos-runtime` 与 Tokio Fiber scale PoC 开始；带 `PoC` 标记的组件在证据出来前不得升级为 `ACCEPTED` 或冻结公共 ABI。
