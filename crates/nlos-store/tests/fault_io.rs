@@ -21,7 +21,9 @@ use nlos_store::{SqliteOperationStore, StoreError};
 use nlos_store_fault::{FaultCode, FaultMode};
 use nlos_types::{CallbackId, ReceiptId};
 
-use support::{TestFile, file_size, spec};
+#[cfg(unix)]
+use support::file_size;
+use support::{TestFile, spec};
 
 const VFS_NAME: &str = "nlos-store-fault-io";
 

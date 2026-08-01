@@ -6,6 +6,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 use nlos_operation::OperationSpec;
 use nlos_runtime::FiberHandle;
 use nlos_types::{CancellationScopeId, ExecutionFiberId, Generation, OperationId};
@@ -46,17 +49,10 @@ impl Drop for TestFile {
         ] {
             // A test may have chmod'ed the main file read-only; restore
             // owner-write so removal cannot fail on permission grounds.
+            #[cfg(unix)]
             if let Ok(metadata) = fs::metadata(&path) {
                 let mut permissions = metadata.permissions();
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    permissions.set_mode(0o644);
-                }
-                #[cfg(not(unix))]
-                {
-                    permissions.set_readonly(false);
-                }
+                permissions.set_mode(0o644);
                 let _ = fs::set_permissions(&path, permissions);
             }
             match fs::remove_file(path) {
@@ -85,6 +81,7 @@ pub fn spec(seed: u8) -> OperationSpec {
 
 /// Size of `path` in bytes, or 0 when the file does not exist (e.g. a `-wal`
 /// file removed by a clean close or a TRUNCATE checkpoint).
+#[allow(dead_code)]
 pub fn file_size(path: &Path) -> u64 {
     fs::metadata(path).map_or(0, |metadata| metadata.len())
 }
