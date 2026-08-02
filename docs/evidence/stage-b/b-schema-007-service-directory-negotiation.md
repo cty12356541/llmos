@@ -1,6 +1,6 @@
 # B-SCHEMA-007：ServiceDirectory 协议与确定性协商内核初始证据
 
-> 状态：PARTIAL PASS（三平台 CI 待本提交推送后复验）
+> 状态：PARTIAL PASS（三平台 CI 与 fuzz regression 已通过）
 >
 > 日期：2026-08-02
 >
@@ -67,6 +67,8 @@ Rust 新增 1 项 schema/registry 测试和 5 项目录行为测试，覆盖：
 4. resolve 输出与注册顺序无关；
 5. negotiate 选择更高 minor/generation，并验证 required feature/transport；
 6. 五类 compatibility failure 返回稳定 typed error，畸形输入不被反射。
+
+提交 `80a7a6b` 对应的[三平台 run 30735589673](https://github.com/cty12356541/llmos/actions/runs/30735589673) 已在 Ubuntu、Windows、macOS 通过 schema regenerate/drift、TypeScript/Python golden、现有跨语言 IPC、workspace test 与 Clippy；[Linux fuzz run 30735589675](https://github.com/cty12356541/llmos/actions/runs/30735589675) 的既有 Protobuf/CBOR sanitizer targets 同样成功。当前 fuzz targets 尚未专门覆盖 ServiceDirectory payload，后续应增加独立 target。
 
 ## 4. 当前能证明什么
 
