@@ -2,15 +2,15 @@
 // @generated from file nlos/sabi/v1/envelope.proto (package nlos.sabi.v1, syntax proto3)
 /* eslint-disable */
 
-import type { GenFile, GenMessage } from "@bufbuild/protobuf/codegenv2";
-import { fileDesc, messageDesc } from "@bufbuild/protobuf/codegenv2";
+import type { GenFile, GenMessage, GenService } from "@bufbuild/protobuf/codegenv2";
+import { fileDesc, messageDesc, serviceDesc } from "@bufbuild/protobuf/codegenv2";
 import type { Message } from "@bufbuild/protobuf";
 
 /**
  * Describes the file nlos/sabi/v1/envelope.proto.
  */
 export const file_nlos_sabi_v1_envelope: GenFile = /*@__PURE__*/
-  fileDesc("ChtubG9zL3NhYmkvdjEvZW52ZWxvcGUucHJvdG8SDG5sb3Muc2FiaS52MSKAAQoOU2NoZW1hSWRlbnRpdHkSDAoEbmFtZRgBIAEoCRINCgVtYWpvchgCIAEoDRINCgVtaW5vchgDIAEoDRIeChZjcml0aWNhbF9leHRlbnNpb25faWRzGAQgAygNEiIKGm5vbl9jcml0aWNhbF9leHRlbnNpb25faWRzGAUgAygNIn4KCEVudmVsb3BlEiwKBnNjaGVtYRgBIAEoCzIcLm5sb3Muc2FiaS52MS5TY2hlbWFJZGVudGl0eRISCgpyZXF1ZXN0X2lkGAIgASgMEg8KB3NlcnZpY2UYAyABKAkSDgoGbWV0aG9kGAQgASgJEg8KB3BheWxvYWQYDyABKAxiBnByb3RvMw");
+  fileDesc("ChtubG9zL3NhYmkvdjEvZW52ZWxvcGUucHJvdG8SDG5sb3Muc2FiaS52MSKAAQoOU2NoZW1hSWRlbnRpdHkSDAoEbmFtZRgBIAEoCRINCgVtYWpvchgCIAEoDRINCgVtaW5vchgDIAEoDRIeChZjcml0aWNhbF9leHRlbnNpb25faWRzGAQgAygNEiIKGm5vbl9jcml0aWNhbF9leHRlbnNpb25faWRzGAUgAygNIn4KCEVudmVsb3BlEiwKBnNjaGVtYRgBIAEoCzIcLm5sb3Muc2FiaS52MS5TY2hlbWFJZGVudGl0eRISCgpyZXF1ZXN0X2lkGAIgASgMEg8KB3NlcnZpY2UYAyABKAkSDgoGbWV0aG9kGAQgASgJEg8KB3BheWxvYWQYDyABKAwiOwoPRXhjaGFuZ2VSZXF1ZXN0EigKCGVudmVsb3BlGAEgASgLMhYubmxvcy5zYWJpLnYxLkVudmVsb3BlIjwKEEV4Y2hhbmdlUmVzcG9uc2USKAoIZW52ZWxvcGUYASABKAsyFi5ubG9zLnNhYmkudjEuRW52ZWxvcGUyXAoPTG9jYWxScGNTZXJ2aWNlEkkKCEV4Y2hhbmdlEh0ubmxvcy5zYWJpLnYxLkV4Y2hhbmdlUmVxdWVzdBoeLm5sb3Muc2FiaS52MS5FeGNoYW5nZVJlc3BvbnNlYgZwcm90bzM");
 
 /**
  * Identity and compatibility policy for a self-describing SABI frame.
@@ -92,3 +92,56 @@ export type Envelope = Message<"nlos.sabi.v1.Envelope"> & {
  */
 export const EnvelopeSchema: GenMessage<Envelope> = /*@__PURE__*/
   messageDesc(file_nlos_sabi_v1_envelope, 1);
+
+/**
+ * Transport-neutral unary entry point for the Stage B local IPC proof of concept. The
+ * Envelope continues to select the logical SABI service and method; this RPC
+ * declaration must not be interpreted as requiring gRPC or HTTP/2.
+ *
+ * @generated from message nlos.sabi.v1.ExchangeRequest
+ */
+export type ExchangeRequest = Message<"nlos.sabi.v1.ExchangeRequest"> & {
+  /**
+   * @generated from field: nlos.sabi.v1.Envelope envelope = 1;
+   */
+  envelope?: Envelope | undefined;
+};
+
+/**
+ * Describes the message nlos.sabi.v1.ExchangeRequest.
+ * Use `create(ExchangeRequestSchema)` to create a new message.
+ */
+export const ExchangeRequestSchema: GenMessage<ExchangeRequest> = /*@__PURE__*/
+  messageDesc(file_nlos_sabi_v1_envelope, 2);
+
+/**
+ * @generated from message nlos.sabi.v1.ExchangeResponse
+ */
+export type ExchangeResponse = Message<"nlos.sabi.v1.ExchangeResponse"> & {
+  /**
+   * @generated from field: nlos.sabi.v1.Envelope envelope = 1;
+   */
+  envelope?: Envelope | undefined;
+};
+
+/**
+ * Describes the message nlos.sabi.v1.ExchangeResponse.
+ * Use `create(ExchangeResponseSchema)` to create a new message.
+ */
+export const ExchangeResponseSchema: GenMessage<ExchangeResponse> = /*@__PURE__*/
+  messageDesc(file_nlos_sabi_v1_envelope, 3);
+
+/**
+ * @generated from service nlos.sabi.v1.LocalRpcService
+ */
+export const LocalRpcService: GenService<{
+  /**
+   * @generated from rpc nlos.sabi.v1.LocalRpcService.Exchange
+   */
+  exchange: {
+    methodKind: "unary";
+    input: typeof ExchangeRequestSchema;
+    output: typeof ExchangeResponseSchema;
+  },
+}> = /*@__PURE__*/
+  serviceDesc(file_nlos_sabi_v1_envelope, 0);

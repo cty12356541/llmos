@@ -49,6 +49,7 @@ pub enum CompatibilityError {
     },
     MalformedProtobuf(String),
     MissingSchemaIdentity,
+    MissingExchangeEnvelope,
     UnknownSchema(String),
     UnsupportedMajor {
         schema: String,
@@ -74,6 +75,9 @@ impl fmt::Display for CompatibilityError {
             }
             Self::MalformedProtobuf(message) => write!(formatter, "malformed protobuf: {message}"),
             Self::MissingSchemaIdentity => formatter.write_str("schema identity is missing"),
+            Self::MissingExchangeEnvelope => {
+                formatter.write_str("exchange wrapper is missing its envelope")
+            }
             Self::UnknownSchema(schema) => write!(formatter, "schema {schema:?} is not registered"),
             Self::UnsupportedMajor {
                 schema,
@@ -106,6 +110,80 @@ impl Error for CompatibilityError {}
 pub struct ValidatedFrame {
     envelope: sabi::v1::Envelope,
     wire: Vec<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ValidatedExchangeRequest {
+    request: sabi::v1::ExchangeRequest,
+    wire: Vec<u8>,
+}
+
+impl ValidatedExchangeRequest {
+    #[must_use]
+    pub const fn request(&self) -> &sabi::v1::ExchangeRequest {
+        &self.request
+    }
+
+    #[must_use]
+    /// Returns the validated nested envelope.
+    ///
+    /// # Panics
+    ///
+    /// This only panics if the private validated value was constructed without
+    /// passing through this crate's decoder.
+    pub fn envelope(&self) -> &sabi::v1::Envelope {
+        self.request
+            .envelope
+            .as_ref()
+            .expect("validated exchange request always has an envelope")
+    }
+
+    #[must_use]
+    pub fn wire_bytes(&self) -> &[u8] {
+        &self.wire
+    }
+
+    #[must_use]
+    pub fn into_wire_bytes(self) -> Vec<u8> {
+        self.wire
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ValidatedExchangeResponse {
+    response: sabi::v1::ExchangeResponse,
+    wire: Vec<u8>,
+}
+
+impl ValidatedExchangeResponse {
+    #[must_use]
+    pub const fn response(&self) -> &sabi::v1::ExchangeResponse {
+        &self.response
+    }
+
+    #[must_use]
+    /// Returns the validated nested envelope.
+    ///
+    /// # Panics
+    ///
+    /// This only panics if the private validated value was constructed without
+    /// passing through this crate's decoder.
+    pub fn envelope(&self) -> &sabi::v1::Envelope {
+        self.response
+            .envelope
+            .as_ref()
+            .expect("validated exchange response always has an envelope")
+    }
+
+    #[must_use]
+    pub fn wire_bytes(&self) -> &[u8] {
+        &self.wire
+    }
+
+    #[must_use]
+    pub fn into_wire_bytes(self) -> Vec<u8> {
+        self.wire
+    }
 }
 
 impl ValidatedFrame {
@@ -167,6 +245,103 @@ pub fn encode_sabi_envelope(envelope: &sabi::v1::Envelope) -> Result<Vec<u8>, Co
         });
     }
     Ok(wire)
+}
+
+/// Validates and encodes a local unary RPC request wrapper.
+///
+/// # Errors
+///
+/// Returns [`CompatibilityError`] when the nested envelope is absent,
+/// incompatible, or the complete wrapper exceeds the frame bound.
+pub fn encode_exchange_request(
+    request: &sabi::v1::ExchangeRequest,
+) -> Result<Vec<u8>, CompatibilityError> {
+    let envelope = request
+        .envelope
+        .as_ref()
+        .ok_or(CompatibilityError::MissingExchangeEnvelope)?;
+    validate_envelope(envelope)?;
+    encode_bounded(request)
+}
+
+/// Decodes a local unary RPC request while preserving its exact wire bytes.
+///
+/// # Errors
+///
+/// Returns [`CompatibilityError`] for malformed, oversized, missing, or
+/// incompatible input.
+pub fn decode_exchange_request(
+    wire: &[u8],
+) -> Result<ValidatedExchangeRequest, CompatibilityError> {
+    let request: sabi::v1::ExchangeRequest = decode_bounded(wire)?;
+    let envelope = request
+        .envelope
+        .as_ref()
+        .ok_or(CompatibilityError::MissingExchangeEnvelope)?;
+    validate_envelope(envelope)?;
+    Ok(ValidatedExchangeRequest {
+        request,
+        wire: wire.to_vec(),
+    })
+}
+
+/// Validates and encodes a local unary RPC response wrapper.
+///
+/// # Errors
+///
+/// Returns [`CompatibilityError`] when the nested envelope is absent,
+/// incompatible, or the complete wrapper exceeds the frame bound.
+pub fn encode_exchange_response(
+    response: &sabi::v1::ExchangeResponse,
+) -> Result<Vec<u8>, CompatibilityError> {
+    let envelope = response
+        .envelope
+        .as_ref()
+        .ok_or(CompatibilityError::MissingExchangeEnvelope)?;
+    validate_envelope(envelope)?;
+    encode_bounded(response)
+}
+
+/// Decodes a local unary RPC response while preserving its exact wire bytes.
+///
+/// # Errors
+///
+/// Returns [`CompatibilityError`] for malformed, oversized, missing, or
+/// incompatible input.
+pub fn decode_exchange_response(
+    wire: &[u8],
+) -> Result<ValidatedExchangeResponse, CompatibilityError> {
+    let response: sabi::v1::ExchangeResponse = decode_bounded(wire)?;
+    let envelope = response
+        .envelope
+        .as_ref()
+        .ok_or(CompatibilityError::MissingExchangeEnvelope)?;
+    validate_envelope(envelope)?;
+    Ok(ValidatedExchangeResponse {
+        response,
+        wire: wire.to_vec(),
+    })
+}
+
+fn encode_bounded(message: &impl Message) -> Result<Vec<u8>, CompatibilityError> {
+    let wire = message.encode_to_vec();
+    if wire.len() > MAX_ENVELOPE_BYTES {
+        return Err(CompatibilityError::FrameTooLarge {
+            actual: wire.len(),
+            maximum: MAX_ENVELOPE_BYTES,
+        });
+    }
+    Ok(wire)
+}
+
+fn decode_bounded<M: Message + Default>(wire: &[u8]) -> Result<M, CompatibilityError> {
+    if wire.len() > MAX_ENVELOPE_BYTES {
+        return Err(CompatibilityError::FrameTooLarge {
+            actual: wire.len(),
+            maximum: MAX_ENVELOPE_BYTES,
+        });
+    }
+    M::decode(wire).map_err(|error| CompatibilityError::MalformedProtobuf(error.to_string()))
 }
 
 fn validate_envelope(envelope: &sabi::v1::Envelope) -> Result<(), CompatibilityError> {

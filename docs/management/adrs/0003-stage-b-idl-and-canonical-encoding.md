@@ -33,6 +33,7 @@
 6. envelope 先只承载 128-bit request ID、service、method 与 opaque payload。service-specific payload、Capability、deadline、Operation/Receipt 等字段只有进入 registry 并取得兼容证据后才能成为稳定表面。
 7. Buf 1.72.0 负责 lint、breaking 与跨语言生成编排；TypeScript 固定 protobuf-es 2.13.0，Python 固定 generator v33.4/runtime 6.33.4。生成物 checked in，`.gitattributes` 强制跨平台 LF，CI 必须重生成并拒绝 drift。
 8. canonical signing preimage 固定为 `u32_be(domain_len) || ASCII domain || u32_be(cbor_len) || deterministic_cbor(body)`；v1 digest algorithm 固定 `SHA-256`。CBOR map 使用最短 unsigned integer key 严格升序，禁止 duplicate、indefinite、tag、float/NaN、simple value、negative integer和自由 Unicode text；decoder 必须重编码逐字节比对。
+9. 首个 local RPC 使用 `LocalRpcService.Exchange` 和独立 request/response wrapper；wire framing 为 `u32_be length || protobuf wrapper`，平台层候选为 Unix socket/Windows named pipe。service schema 不绑定 gRPC/HTTP2 或 endpoint，Rust generated client trait 与平台 stream adapter 分离。
 
 ## 约束
 
@@ -40,7 +41,7 @@
 - frame 在解析前执行 1 MiB 上限，公共 request ID 固定 16 bytes；后续每种 service payload 还需更严格的独立上限；
 - non-critical 可忽略不等于可丢弃：透明 forwarding 必须保持输入 wire bytes；
 - critical extension ID 只能在实现、测试和协商支持同时存在时加入 registry；
-- 三语言 Protobuf generation/compat 与首轮 sanitizer fuzz smoke 已通过，但 CBOR 跨语言、长期 fuzz、本地 transport adapter 未完成前，ADR 保持 `POC`；
+- 三语言 Protobuf generation/compat、首轮 sanitizer fuzz smoke 与 macOS Unix typed IPC 已通过，但 Windows named pipe CI、TS/Python transport client、ServiceDirectory/negotiation、CBOR 跨语言和长期 fuzz 未完成前，ADR 保持 `POC`；
 - `nlos-types` 继续不依赖 Protobuf；wire adapter 负责在 nominal ID 与生成类型之间显式转换，避免 wire bytes 侵入内核对象身份。
 
 ## 依赖审查
@@ -53,6 +54,7 @@
 - TypeScript/Python remote plugin 固定完整版本，但重新生成仍依赖 BSR 可用性；checked-in 生成物让普通 consumer/build 不依赖在线生成，后续仍需评估 mirror 与 provenance；
 - `minicbor 2.3.0` 为 BlueOak-1.0.0，只作为可替换的 CBOR primitive codec；NLOS profile 自行执行 map/type/order/size/domain/compat 与 re-encode byte equality 检查；
 - `cargo-fuzz 0.13.2` + `libfuzzer-sys 0.4.13` 只进入独立 `fuzz/` package；CI 固定 nightly `2026-08-01` 并执行 Linux AddressSanitizer smoke，不进入普通 workspace 或生产依赖；
+- `tokio 1.53.1` 提供 Unix socket、peer credential 与 Windows named-pipe async stream；`windows-sys 0.61.2` 只在 Windows IPC adapter 使用固定错误码和 identification QoS 常量，不进入 schema 或 `nlos-types`；
 - 上述依赖只进入可替换 schema/build adapter，不进入 Safety TCB、KABI 或 `nlos-types`；升级必须重跑 golden、compat、三平台 CI 和后续 fuzz corpus。
 
 ## 首切片验收
@@ -78,3 +80,5 @@
 [B-SCHEMA-003](../../evidence/stage-b/b-schema-003-deterministic-cbor.md) 已通过 deterministic CBOR body、domain-separated preimage、两个 golden vectors、13 项严格反例测试，以及 [GitHub Actions run 30716908874](https://github.com/cty12356541/llmos/actions/runs/30716908874) 的 Ubuntu/Windows/macOS 复验。该证据不包含实际 SHA-256、签名、key management 或完整 Receipt/Event/Escrow schema。
 
 [B-SCHEMA-004](../../evidence/stage-b/b-schema-004-schema-fuzz-smoke.md) 已建立 Protobuf envelope、canonical CBOR body 和 signing preimage 三个有界 sanitizer fuzz target。本地 33 秒共执行 15,499,860 次，无 crash/timeout/OOM/断言反例；[Linux fuzz run 30717749638](https://github.com/cty12356541/llmos/actions/runs/30717749638) 与[三平台回归 run 30717749643](https://github.com/cty12356541/llmos/actions/runs/30717749643) 均成功。该短跑不替代长期 fuzz，也不构成 production parser claim。
+
+[B-SCHEMA-005](../../evidence/stage-b/b-schema-005-local-typed-ipc.md) 已加入最小 unary service、Rust generated client trait、TS/Python service descriptor、transport-neutral bounded framing/client/server、Unix socket 和 Windows named-pipe adapter。macOS 上 schema/IPC 测试与真实 Unix 往返通过；Windows named-pipe 实机 CI、TS/Python transport client、ServiceDirectory/negotiation、完整 common semantics 和生产压力仍未完成。

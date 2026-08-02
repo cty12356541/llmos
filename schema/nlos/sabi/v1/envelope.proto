@@ -22,3 +22,18 @@ message Envelope {
   string method = 4;
   bytes payload = 15;
 }
+
+// Transport-neutral unary entry point for the Stage B local IPC proof of concept. The
+// Envelope continues to select the logical SABI service and method; this RPC
+// declaration must not be interpreted as requiring gRPC or HTTP/2.
+message ExchangeRequest {
+  Envelope envelope = 1;
+}
+
+message ExchangeResponse {
+  Envelope envelope = 1;
+}
+
+service LocalRpcService {
+  rpc Exchange(ExchangeRequest) returns (ExchangeResponse);
+}

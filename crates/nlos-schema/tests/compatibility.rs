@@ -1,7 +1,10 @@
-use nlos_schema::sabi::v1::{Envelope, SchemaIdentity};
+use nlos_schema::sabi::v1::{
+    Envelope, ExchangeRequest, ExchangeResponse, SchemaIdentity, local_rpc,
+};
 use nlos_schema::{
-    CompatibilityError, MAX_ENVELOPE_BYTES, SABI_ENVELOPE_SCHEMA, decode_sabi_envelope,
-    encode_sabi_envelope, schema_registry,
+    CompatibilityError, MAX_ENVELOPE_BYTES, SABI_ENVELOPE_SCHEMA, decode_exchange_request,
+    decode_exchange_response, decode_sabi_envelope, encode_exchange_request,
+    encode_exchange_response, encode_sabi_envelope, schema_registry,
 };
 
 fn envelope() -> Envelope {
@@ -124,4 +127,52 @@ fn malformed_identity_and_oversized_frames_fail_closed() {
         decode_sabi_envelope(&oversized),
         Err(CompatibilityError::FrameTooLarge { .. })
     ));
+}
+
+#[test]
+fn generated_local_rpc_surface_has_distinct_request_and_response_types() {
+    assert_eq!(local_rpc::FULL_NAME, "nlos.sabi.v1.LocalRpcService");
+    assert_eq!(
+        local_rpc::EXCHANGE_NAME,
+        "nlos.sabi.v1.LocalRpcService/Exchange"
+    );
+
+    let request = ExchangeRequest {
+        envelope: Some(envelope()),
+    };
+    let request_wire = encode_exchange_request(&request).unwrap();
+    assert_eq!(
+        decode_exchange_request(&request_wire).unwrap().request(),
+        &request
+    );
+
+    let response = ExchangeResponse {
+        envelope: Some(envelope()),
+    };
+    let response_wire = encode_exchange_response(&response).unwrap();
+    assert_eq!(
+        decode_exchange_response(&response_wire).unwrap().response(),
+        &response
+    );
+}
+
+#[test]
+fn exchange_wrappers_preserve_unknown_fields_and_require_an_envelope() {
+    let request = ExchangeRequest {
+        envelope: Some(envelope()),
+    };
+    let mut wire = encode_exchange_request(&request).unwrap();
+    wire.extend_from_slice(&[0xa0, 0x06, 0x07]);
+    let decoded = decode_exchange_request(&wire).unwrap();
+    assert_eq!(decoded.wire_bytes(), wire);
+    assert_eq!(decoded.into_wire_bytes(), wire);
+
+    assert_eq!(
+        encode_exchange_request(&ExchangeRequest { envelope: None }),
+        Err(CompatibilityError::MissingExchangeEnvelope)
+    );
+    assert_eq!(
+        encode_exchange_response(&ExchangeResponse { envelope: None }),
+        Err(CompatibilityError::MissingExchangeEnvelope)
+    );
 }

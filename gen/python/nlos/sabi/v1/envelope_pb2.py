@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x1bnlos/sabi/v1/envelope.proto\x12\x0cnlos.sabi.v1\"\xc3\x01\n\x0eSchemaIdentity\x12\x12\n\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n\x05major\x18\x02 \x01(\rR\x05major\x12\x14\n\x05minor\x18\x03 \x01(\rR\x05minor\x12\x34\n\x16\x63ritical_extension_ids\x18\x04 \x03(\rR\x14\x63riticalExtensionIds\x12;\n\x1anon_critical_extension_ids\x18\x05 \x03(\rR\x17nonCriticalExtensionIds\"\xab\x01\n\x08\x45nvelope\x12\x34\n\x06schema\x18\x01 \x01(\x0b\x32\x1c.nlos.sabi.v1.SchemaIdentityR\x06schema\x12\x1d\n\nrequest_id\x18\x02 \x01(\x0cR\trequestId\x12\x18\n\x07service\x18\x03 \x01(\tR\x07service\x12\x16\n\x06method\x18\x04 \x01(\tR\x06method\x12\x18\n\x07payload\x18\x0f \x01(\x0cR\x07payloadb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x1bnlos/sabi/v1/envelope.proto\x12\x0cnlos.sabi.v1\"\xc3\x01\n\x0eSchemaIdentity\x12\x12\n\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n\x05major\x18\x02 \x01(\rR\x05major\x12\x14\n\x05minor\x18\x03 \x01(\rR\x05minor\x12\x34\n\x16\x63ritical_extension_ids\x18\x04 \x03(\rR\x14\x63riticalExtensionIds\x12;\n\x1anon_critical_extension_ids\x18\x05 \x03(\rR\x17nonCriticalExtensionIds\"\xab\x01\n\x08\x45nvelope\x12\x34\n\x06schema\x18\x01 \x01(\x0b\x32\x1c.nlos.sabi.v1.SchemaIdentityR\x06schema\x12\x1d\n\nrequest_id\x18\x02 \x01(\x0cR\trequestId\x12\x18\n\x07service\x18\x03 \x01(\tR\x07service\x12\x16\n\x06method\x18\x04 \x01(\tR\x06method\x12\x18\n\x07payload\x18\x0f \x01(\x0cR\x07payload\"E\n\x0f\x45xchangeRequest\x12\x32\n\x08\x65nvelope\x18\x01 \x01(\x0b\x32\x16.nlos.sabi.v1.EnvelopeR\x08\x65nvelope\"F\n\x10\x45xchangeResponse\x12\x32\n\x08\x65nvelope\x18\x01 \x01(\x0b\x32\x16.nlos.sabi.v1.EnvelopeR\x08\x65nvelope2\\\n\x0fLocalRpcService\x12I\n\x08\x45xchange\x12\x1d.nlos.sabi.v1.ExchangeRequest\x1a\x1e.nlos.sabi.v1.ExchangeResponseb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -35,4 +35,10 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_SCHEMAIDENTITY']._serialized_end=241
   _globals['_ENVELOPE']._serialized_start=244
   _globals['_ENVELOPE']._serialized_end=415
+  _globals['_EXCHANGEREQUEST']._serialized_start=417
+  _globals['_EXCHANGEREQUEST']._serialized_end=486
+  _globals['_EXCHANGERESPONSE']._serialized_start=488
+  _globals['_EXCHANGERESPONSE']._serialized_end=558
+  _globals['_LOCALRPCSERVICE']._serialized_start=560
+  _globals['_LOCALRPCSERVICE']._serialized_end=652
 # @@protoc_insertion_point(module_scope)

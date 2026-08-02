@@ -6,6 +6,9 @@ import { fromBinary, toBinary } from "@bufbuild/protobuf";
 
 import {
   EnvelopeSchema,
+  ExchangeRequestSchema,
+  ExchangeResponseSchema,
+  LocalRpcService,
   type Envelope,
 } from "../../../gen/typescript/nlos/sabi/v1/envelope_pb.ts";
 
@@ -62,4 +65,15 @@ const withUnknownField = new Uint8Array([...golden, 0xa0, 0x06, 0x07]);
 assert.deepEqual(
   toBinary(EnvelopeSchema, fromBinary(EnvelopeSchema, withUnknownField)),
   withUnknownField,
+);
+
+assert.equal(LocalRpcService.typeName, "nlos.sabi.v1.LocalRpcService");
+assert.equal(LocalRpcService.method.exchange.methodKind, "unary");
+assert.equal(
+  LocalRpcService.method.exchange.input.typeName,
+  ExchangeRequestSchema.typeName,
+);
+assert.equal(
+  LocalRpcService.method.exchange.output.typeName,
+  ExchangeResponseSchema.typeName,
 );

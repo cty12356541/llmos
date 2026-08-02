@@ -65,3 +65,10 @@ try:
 except DecodeError as error:
     raise AssertionError("unknown protobuf field was rejected") from error
 assert unknown_decoded.SerializeToString(deterministic=True) == with_unknown_field
+
+local_rpc = envelope_pb2.DESCRIPTOR.services_by_name["LocalRpcService"]
+exchange = local_rpc.methods_by_name["Exchange"]
+assert exchange.client_streaming is False
+assert exchange.server_streaming is False
+assert exchange.input_type.full_name == "nlos.sabi.v1.ExchangeRequest"
+assert exchange.output_type.full_name == "nlos.sabi.v1.ExchangeResponse"

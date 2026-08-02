@@ -1,0 +1,18 @@
+[package]
+name = "nlos-ipc"
+description = "Bounded transport-neutral local IPC framing and platform adapters for NLOS SABI."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+nlos-schema = { path = "../nlos-schema" }
+tokio.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+
+[lints]
+workspace = true

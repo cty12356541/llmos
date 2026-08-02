@@ -46,7 +46,7 @@ Application
 | `B-STORE` | SQLite WAL/FULL Operation authority、恢复、Outbox | `PARTIAL_PASS` | [ADR-0002](./adrs/0002-stage-b-sqlite-operation-authority.md)、[PoC-0003](../evidence/stage-b/poc-0003-sqlite-operation-authority.md)；F1–F7 已通过，包括三平台 CI | 100K 逐条生产写入、真实硬件掉电/更多文件系统仍超出当前证据 |
 | `B-OUTBOX` | Durable Outbox → Tokio Fiber wake/reconcile consumer | `DONE` | [PoC-0004](../evidence/stage-b/poc-0004-outbox-wake-consumer.md)；本提交及评审后 remediation 提交（hash 见 git log 与 commit receipt） | durable wait registry/fiber rehydration 归 `B-PROCESS`/Slice K；此前移交 `B-STORE-FAULT` 的 F1–F7 已全部通过。2026-08-01 remediation：评审指出的 pump 错误路径可观测性（失败计数/根因/有上限退避/Faulted 终态）、drain panic 防护、shutdown 终态语义与 wake 重缓冲已补齐并各有测试。2026-08-01 复验残余（非阻塞，详见 PoC-0004 §8.4）：持久 apply 失败（`stopped_at` 路径）暂无 health 信号 → 后续 observability 项；`Faulted` 恢复依赖外部监督 → `B-PROCESS`；`PumpHealth.last_error` 跨 IPC 边界需脱敏 → `B-CONTROL`/`B-SCHEMA`；`Buffered` 驻留仅随 fiber 终态清理 → `B-PROCESS`/Slice K |
 | `B-STORE-FAULT` | SQLite fault-injection：kill-9、torn-write、disk-full、checkpoint/backup、migration、长读事务、100K metadata、跨平台 | `DONE` | [PoC-0003 F1–F7 增量证据](../evidence/stage-b/poc-0003-sqlite-operation-authority.md)；[三平台 CI run 30714584445](https://github.com/cty12356541/llmos/actions/runs/30714584445) | 100K 逐条生产写入、真实硬件掉电/更多文件系统保留为扩展 Evidence，不阻塞本工作包 |
-| `B-SCHEMA` | Protobuf/CBOR、golden vector、版本演进和本地 typed IPC | `IN_PROGRESS` | [ADR-0003](./adrs/0003-stage-b-idl-and-canonical-encoding.md)、[B-SCHEMA-001](../evidence/stage-b/b-schema-001-protobuf-envelope.md)、[B-SCHEMA-002](../evidence/stage-b/b-schema-002-cross-language-generation.md)、[B-SCHEMA-003](../evidence/stage-b/b-schema-003-deterministic-cbor.md)、[B-SCHEMA-004](../evidence/stage-b/b-schema-004-schema-fuzz-smoke.md)、[Linux fuzz run 30717749638](https://github.com/cty12356541/llmos/actions/runs/30717749638)、[三平台 CI run 30717749643](https://github.com/cty12356541/llmos/actions/runs/30717749643)；`schema/`、`gen/`、`crates/nlos-schema`、`crates/nlos-canonical`、`fuzz/` | RPC service/client、CBOR 跨语言、长期 fuzz、actual signing、transport adapter |
+| `B-SCHEMA` | Protobuf/CBOR、golden vector、版本演进和本地 typed IPC | `IN_PROGRESS` | [ADR-0003](./adrs/0003-stage-b-idl-and-canonical-encoding.md)、[B-SCHEMA-001](../evidence/stage-b/b-schema-001-protobuf-envelope.md)、[B-SCHEMA-002](../evidence/stage-b/b-schema-002-cross-language-generation.md)、[B-SCHEMA-003](../evidence/stage-b/b-schema-003-deterministic-cbor.md)、[B-SCHEMA-004](../evidence/stage-b/b-schema-004-schema-fuzz-smoke.md)、[B-SCHEMA-005](../evidence/stage-b/b-schema-005-local-typed-ipc.md)；`schema/`、`gen/`、`crates/nlos-schema`、`crates/nlos-canonical`、`crates/nlos-ipc`、`fuzz/` | Windows named-pipe CI、TS/Python transport client、ServiceDirectory/negotiation、reconnect/cancel/deadline、CBOR 跨语言、长期 fuzz、actual signing |
 | `B-SANDBOX` | Wasmtime/WASI 与独立 host Process 隔离对比 | `READY` | [技术选型第 5 节](./stage-b-technology-selection.md) | capability import、fuel/epoch、memory、host crash、GuaranteeTier |
 | `B-PROCESS` | native Process supervisor 与平台资源/生命周期 adapter | `READY` | [v0.5 Process 规范](../design/06-架构设计总纲-v0.5.md) | macOS/Windows/Linux suspend/kill、host incarnation、resource mapping |
 | `B-TASK` | TaskPlan/TaskNode、lazy materialization、TaskSnapshot、双 Attempt 唯一提交 | `READY` | [v0.5 Task 规范](../design/06-架构设计总纲-v0.5.md) | TaskAuthority、CommitPermit、EffectPermit、snapshot drift、reconcile |
@@ -134,6 +134,14 @@ Application
 - CBOR/preimage 任意成功解码都必须重新编码后逐字节等于输入；critical support set 与 expected domain 在 target 内显式校验。
 - macOS arm64 AddressSanitizer 本地 33 秒共执行 15,499,860 次，无 crash/timeout/OOM/断言反例；这只是 smoke，不是长期 fuzz 或 production claim。
 
+### 4.13 本地 typed IPC 初始切片
+
+- `LocalRpcService.Exchange` 以独立 request/response wrapper 进入同一 Protobuf IDL；Rust 生成 transport-neutral client trait，TypeScript/Python 生成 service descriptor。
+- `nlos-ipc` 实现统一 4-byte length framing、1 MiB 硬上限、connect/read/write timeout、authorization-before-read、单 in-flight backpressure、request ID correlation、原始 response forwarding，以及不确定 exchange 后连接 fail-closed。
+- macOS 真实 Unix socket 往返、owner-only `0600`、peer credential hook，以及超界、半帧、断连、未授权、串线、并发积压等 8 项 IPC 测试通过。
+- Windows named pipe adapter 已实现 local-only/first-instance/有界实例和 buffer、identification QoS、有界 busy retry，并有 Windows-only 往返/timeout 测试；尚待本提交推送后的 Windows CI 证明，不能提前记作跨平台通过。
+- TypeScript/Python 尚无 transport runtime client；ServiceDirectory、Capability、deadline/cancel、Operation/Receipt、自动重连和 Windows token/ACL 仍未实现。
+
 ## 5. 当前下一验收门
 
 `B-SCHEMA` 继续处于 `IN_PROGRESS`。B-SCHEMA-001/002 已完成 Protobuf envelope 与跨语言 compat gate，B-SCHEMA-003 已经三平台完成 deterministic CBOR/profile/golden，B-SCHEMA-004 已建立可重复 sanitizer fuzz smoke；当前验收门推进到本地 typed IPC adapter：
@@ -144,16 +152,17 @@ Protobuf envelope + Rust generation + registry + first golden       DONE
   → Buf lint / breaking + cross-language compatibility              DONE
   → deterministic CBOR profile + canonical golden                   DONE
   → protobuf / CBOR sanitizer fuzz smoke                            DONE
-  → Unix socket / Windows named pipe typed IPC adapter              NEXT
+  → Rust typed framing + Unix socket adapter                        PARTIAL PASS
+  → Windows named pipe CI + cross-language transport clients        NEXT
 ```
 
-下一切片验收条件：
+当前 typed IPC 总验收条件及剩余门：
 
-1. 用同一 Protobuf schema 定义最小 request/response service，生成 Rust/TypeScript/Python client surface；
-2. transport-neutral typed adapter 必须在 Unix domain socket 和 Windows named pipe 后端之间保持同一 schema/compat 行为；
-3. frame length、connect/read/write timeout、peer identity/authorization hook 和 backpressure 必须显式有界；
-4. unknown field forwarding、unknown major/critical extension、断连、半帧、超界与重连必须 fail-closed 或产生明确可恢复错误；
-5. 不把 socket path、named-pipe name、OS credential 或 Protobuf bytes 泄漏进 `nlos-types`，并保留后续替换 transport 的边界。
+1. 最小 request/response service 与 Rust client 已实现；TypeScript/Python 只有生成 descriptor，transport client 仍待实现；
+2. transport-neutral framing 与 Unix 后端已验证；Windows 后端必须经 Windows CI 实机复验；
+3. frame length、connect/read/write timeout、peer identity/authorization hook 和 backpressure 已显式有界；Windows token/SID 仍缺；
+4. unknown field、unknown major/critical、断连、半帧、超界和 endpoint 不可用已有失败语义；自动重连/cancel/deadline 状态机仍待实现；
+5. OS endpoint/credential/Protobuf 未进入 `nlos-types`；后续 transport 替换继续以 generated service trait/descriptor 为边界。
 
 `B-OUTBOX` 的已验收条件（供追溯）：commit 前无 wake；崩溃重放不丢失、不制造旧 generation wake；duplicate 无第二次逻辑唤醒/reconciliation；bounded queue 不阻塞 writer/cancel；测试覆盖 current/late/cancel-before-dispatch/crash-restart 场景；Evidence 已同步三 PoC 集成缺口并保持 `PARTIAL_PASS` 直到故障注入通过。
 
