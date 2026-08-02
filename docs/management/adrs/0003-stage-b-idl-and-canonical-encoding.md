@@ -41,7 +41,7 @@
 - frame 在解析前执行 1 MiB 上限，公共 request ID 固定 16 bytes；后续每种 service payload 还需更严格的独立上限；
 - non-critical 可忽略不等于可丢弃：透明 forwarding 必须保持输入 wire bytes；
 - critical extension ID 只能在实现、测试和协商支持同时存在时加入 registry；
-- 三语言 Protobuf generation/compat、首轮 sanitizer fuzz smoke 与 Unix/Windows typed IPC 初始适配已通过，但 TS/Python transport client、ServiceDirectory/negotiation、完整 common semantics、CBOR 跨语言和长期 fuzz 未完成前，ADR 保持 `POC`；
+- 三语言 Protobuf generation/compat、首轮 sanitizer fuzz smoke、Unix/Windows typed IPC client 与 ServiceDirectory schema/Rust 协商内核已通过局部验证，但真实多语言目录调用、完整 common semantics、CBOR 跨语言和长期 fuzz 未完成前，ADR 保持 `POC`；
 - `nlos-types` 继续不依赖 Protobuf；wire adapter 负责在 nominal ID 与生成类型之间显式转换，避免 wire bytes 侵入内核对象身份。
 - SDK 语言按[多语言 SDK 支持评估计划](../language-sdk-support-plan.md)逐级晋升；Go/C# 当前只是 P1 评估候选，生成类型或 descriptor 不构成正式支持声明。
 
@@ -85,3 +85,5 @@
 [B-SCHEMA-005](../../evidence/stage-b/b-schema-005-local-typed-ipc.md) 已加入最小 unary service、Rust generated client trait、TS/Python service descriptor、transport-neutral bounded framing/client/server、Unix socket 和 Windows named-pipe adapter。[三平台 run 30730221706](https://github.com/cty12356541/llmos/actions/runs/30730221706) 已通过真实平台测试与整仓 gate；TS/Python transport client、ServiceDirectory/negotiation、完整 common semantics、Windows token/ACL 和生产压力仍未完成。
 
 [B-SCHEMA-006](../../evidence/stage-b/b-schema-006-typescript-python-ipc-clients.md) 已加入 TypeScript/Node 与 Python asyncio candidate client；[三平台 run 30734744799](https://github.com/cty12356541/llmos/actions/runs/30734744799) 通过两种语言调用 Rust conformance server 的真实 Unix socket/Windows named-pipe 往返、compatibility preflight、backpressure 和 unavailable endpoint 测试。ServiceDirectory/common semantics、双向 peer auth、Python Proactor 稳定 profile 和 SDK 发布仍未完成。
+
+[B-SCHEMA-007](../../evidence/stage-b/b-schema-007-service-directory-negotiation.md) 已加入 `nlos.sabi.ServiceDirectory` v1.0 schema、三语言 generation/golden、独立 64 KiB bound，以及 Rust `SnapshotDirectory` 的确定性 resolve/negotiate 与 typed failure。真实目录 IPC server、TS/Python resolver、watch/lease、Capability/common SABI 和 peer auth 仍未完成。

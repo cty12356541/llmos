@@ -331,6 +331,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "nlos-service-directory"
+version = "0.1.0"
+dependencies = [
+ "nlos-schema",
+]
+
+[[package]]
 name = "nlos-store"
 version = "0.1.0"
 dependencies = [

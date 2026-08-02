@@ -4,9 +4,9 @@ import sys
 from google.protobuf.message import DecodeError
 
 ROOT = Path(__file__).resolve().parents[3]
-sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "gen" / "python"))
 
-from gen.python.nlos.sabi.v1 import envelope_pb2  # noqa: E402
+from nlos.sabi.v1 import envelope_pb2, service_directory_pb2  # noqa: E402
 
 
 SCHEMA_NAME = "nlos.sabi.Envelope"
@@ -72,3 +72,19 @@ assert exchange.client_streaming is False
 assert exchange.server_streaming is False
 assert exchange.input_type.full_name == "nlos.sabi.v1.ExchangeRequest"
 assert exchange.output_type.full_name == "nlos.sabi.v1.ExchangeResponse"
+
+directory_golden = bytes.fromhex(
+    (
+        ROOT
+        / "schema/golden/nlos.sabi.ServiceDirectory.ResolveRequest-v1.hex"
+    ).read_text().strip()
+)
+resolve_request = service_directory_pb2.ResolveServiceRequest.FromString(
+    directory_golden
+)
+assert resolve_request.schema.name == "nlos.sabi.ServiceDirectory"
+assert resolve_request.schema.major == 1
+assert resolve_request.service == "operation"
+assert resolve_request.SerializeToString(deterministic=True) == directory_golden
+assert service_directory_pb2.LOCAL_TRANSPORT_KIND_UNIX_SOCKET == 1
+assert service_directory_pb2.LOCAL_TRANSPORT_KIND_WINDOWS_NAMED_PIPE == 2

@@ -4,6 +4,7 @@ members = [
     "crates/nlos-ipc",
     "crates/nlos-operation",
     "crates/nlos-schema",
+    "crates/nlos-service-directory",
     "crates/nlos-store",
     "crates/nlos-types",
     "crates/nlos-runtime",

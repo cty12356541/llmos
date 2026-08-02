@@ -45,12 +45,17 @@ fn assert_local_exchange(method: &Method) {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let proto = "../../schema/nlos/sabi/v1/envelope.proto";
-    println!("cargo:rerun-if-changed={proto}");
+    let protos = [
+        "../../schema/nlos/sabi/v1/envelope.proto",
+        "../../schema/nlos/sabi/v1/service_directory.proto",
+    ];
+    for proto in protos {
+        println!("cargo:rerun-if-changed={proto}");
+    }
 
     let mut config = prost_build::Config::new();
     config.protoc_executable(protoc_bin_vendored::protoc_bin_path()?);
     config.service_generator(Box::new(LocalRpcServiceGenerator));
-    config.compile_protos(&[proto], &["../../schema"])?;
+    config.compile_protos(&protos, &["../../schema"])?;
     Ok(())
 }

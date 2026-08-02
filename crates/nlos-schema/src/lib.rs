@@ -11,12 +11,15 @@ use prost::Message;
 
 pub mod sabi {
     pub mod v1 {
+        #![allow(clippy::doc_markdown, clippy::must_use_candidate)]
         include!(concat!(env!("OUT_DIR"), "/nlos.sabi.v1.rs"));
     }
 }
 
 pub const SABI_ENVELOPE_SCHEMA: &str = "nlos.sabi.Envelope";
+pub const SABI_SERVICE_DIRECTORY_SCHEMA: &str = "nlos.sabi.ServiceDirectory";
 pub const MAX_ENVELOPE_BYTES: usize = 1024 * 1024;
+pub const MAX_SERVICE_DIRECTORY_PAYLOAD_BYTES: usize = 64 * 1024;
 pub const REQUEST_ID_BYTES: usize = 16;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -34,7 +37,14 @@ const SABI_ENVELOPE_V1: SchemaDescriptor = SchemaDescriptor {
     supported_critical_extensions: &[],
 };
 
-const REGISTRY: &[SchemaDescriptor] = &[SABI_ENVELOPE_V1];
+const SABI_SERVICE_DIRECTORY_V1: SchemaDescriptor = SchemaDescriptor {
+    name: SABI_SERVICE_DIRECTORY_SCHEMA,
+    major: 1,
+    minor: 0,
+    supported_critical_extensions: &[],
+};
+
+const REGISTRY: &[SchemaDescriptor] = &[SABI_ENVELOPE_V1, SABI_SERVICE_DIRECTORY_V1];
 
 #[must_use]
 pub fn schema_registry() -> &'static [SchemaDescriptor] {
@@ -50,6 +60,7 @@ pub enum CompatibilityError {
     MalformedProtobuf(String),
     MissingSchemaIdentity,
     MissingExchangeEnvelope,
+    MissingServiceDirectoryResult,
     UnknownSchema(String),
     UnsupportedMajor {
         schema: String,
@@ -77,6 +88,9 @@ impl fmt::Display for CompatibilityError {
             Self::MissingSchemaIdentity => formatter.write_str("schema identity is missing"),
             Self::MissingExchangeEnvelope => {
                 formatter.write_str("exchange wrapper is missing its envelope")
+            }
+            Self::MissingServiceDirectoryResult => {
+                formatter.write_str("service directory response is missing its result")
             }
             Self::UnknownSchema(schema) => write!(formatter, "schema {schema:?} is not registered"),
             Self::UnsupportedMajor {
@@ -323,32 +337,181 @@ pub fn decode_exchange_response(
     })
 }
 
+/// Returns the v1 identity required on every `ServiceDirectory` payload.
+#[must_use]
+pub fn service_directory_schema_identity() -> sabi::v1::SchemaIdentity {
+    sabi::v1::SchemaIdentity {
+        name: SABI_SERVICE_DIRECTORY_SCHEMA.to_owned(),
+        major: 1,
+        minor: 0,
+        critical_extension_ids: Vec::new(),
+        non_critical_extension_ids: Vec::new(),
+    }
+}
+
+/// Validates and encodes a bounded `ServiceDirectory` resolve request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity or oversized payload.
+pub fn encode_resolve_service_request(
+    request: &sabi::v1::ResolveServiceRequest,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_service_directory_identity(request.schema.as_ref())?;
+    encode_bounded_with_limit(request, MAX_SERVICE_DIRECTORY_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded `ServiceDirectory` resolve request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_resolve_service_request(
+    wire: &[u8],
+) -> Result<sabi::v1::ResolveServiceRequest, CompatibilityError> {
+    let request: sabi::v1::ResolveServiceRequest =
+        decode_bounded_with_limit(wire, MAX_SERVICE_DIRECTORY_PAYLOAD_BYTES)?;
+    validate_service_directory_identity(request.schema.as_ref())?;
+    Ok(request)
+}
+
+/// Validates and encodes a bounded `ServiceDirectory` resolve response.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity, missing result, or bound violation.
+pub fn encode_resolve_service_response(
+    response: &sabi::v1::ResolveServiceResponse,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_service_directory_identity(response.schema.as_ref())?;
+    if response.result.is_none() {
+        return Err(CompatibilityError::MissingServiceDirectoryResult);
+    }
+    encode_bounded_with_limit(response, MAX_SERVICE_DIRECTORY_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded `ServiceDirectory` resolve response.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, incomplete, or oversized input.
+pub fn decode_resolve_service_response(
+    wire: &[u8],
+) -> Result<sabi::v1::ResolveServiceResponse, CompatibilityError> {
+    let response: sabi::v1::ResolveServiceResponse =
+        decode_bounded_with_limit(wire, MAX_SERVICE_DIRECTORY_PAYLOAD_BYTES)?;
+    validate_service_directory_identity(response.schema.as_ref())?;
+    if response.result.is_none() {
+        return Err(CompatibilityError::MissingServiceDirectoryResult);
+    }
+    Ok(response)
+}
+
+/// Validates and encodes a bounded `ServiceDirectory` negotiation request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity or oversized payload.
+pub fn encode_negotiate_service_request(
+    request: &sabi::v1::NegotiateServiceRequest,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_service_directory_identity(request.schema.as_ref())?;
+    encode_bounded_with_limit(request, MAX_SERVICE_DIRECTORY_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded `ServiceDirectory` negotiation request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_negotiate_service_request(
+    wire: &[u8],
+) -> Result<sabi::v1::NegotiateServiceRequest, CompatibilityError> {
+    let request: sabi::v1::NegotiateServiceRequest =
+        decode_bounded_with_limit(wire, MAX_SERVICE_DIRECTORY_PAYLOAD_BYTES)?;
+    validate_service_directory_identity(request.schema.as_ref())?;
+    Ok(request)
+}
+
+/// Validates and encodes a bounded `ServiceDirectory` negotiation response.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity, missing result, or bound violation.
+pub fn encode_negotiate_service_response(
+    response: &sabi::v1::NegotiateServiceResponse,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_service_directory_identity(response.schema.as_ref())?;
+    if response.result.is_none() {
+        return Err(CompatibilityError::MissingServiceDirectoryResult);
+    }
+    encode_bounded_with_limit(response, MAX_SERVICE_DIRECTORY_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded `ServiceDirectory` negotiation response.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, incomplete, or oversized input.
+pub fn decode_negotiate_service_response(
+    wire: &[u8],
+) -> Result<sabi::v1::NegotiateServiceResponse, CompatibilityError> {
+    let response: sabi::v1::NegotiateServiceResponse =
+        decode_bounded_with_limit(wire, MAX_SERVICE_DIRECTORY_PAYLOAD_BYTES)?;
+    validate_service_directory_identity(response.schema.as_ref())?;
+    if response.result.is_none() {
+        return Err(CompatibilityError::MissingServiceDirectoryResult);
+    }
+    Ok(response)
+}
+
 fn encode_bounded(message: &impl Message) -> Result<Vec<u8>, CompatibilityError> {
+    encode_bounded_with_limit(message, MAX_ENVELOPE_BYTES)
+}
+
+fn encode_bounded_with_limit(
+    message: &impl Message,
+    maximum: usize,
+) -> Result<Vec<u8>, CompatibilityError> {
     let wire = message.encode_to_vec();
-    if wire.len() > MAX_ENVELOPE_BYTES {
+    if wire.len() > maximum {
         return Err(CompatibilityError::FrameTooLarge {
             actual: wire.len(),
-            maximum: MAX_ENVELOPE_BYTES,
+            maximum,
         });
     }
     Ok(wire)
 }
 
 fn decode_bounded<M: Message + Default>(wire: &[u8]) -> Result<M, CompatibilityError> {
-    if wire.len() > MAX_ENVELOPE_BYTES {
+    decode_bounded_with_limit(wire, MAX_ENVELOPE_BYTES)
+}
+
+fn decode_bounded_with_limit<M: Message + Default>(
+    wire: &[u8],
+    maximum: usize,
+) -> Result<M, CompatibilityError> {
+    if wire.len() > maximum {
         return Err(CompatibilityError::FrameTooLarge {
             actual: wire.len(),
-            maximum: MAX_ENVELOPE_BYTES,
+            maximum,
         });
     }
     M::decode(wire).map_err(|error| CompatibilityError::MalformedProtobuf(error.to_string()))
 }
 
-fn validate_envelope(envelope: &sabi::v1::Envelope) -> Result<(), CompatibilityError> {
-    let identity = envelope
-        .schema
-        .as_ref()
-        .ok_or(CompatibilityError::MissingSchemaIdentity)?;
+fn validate_service_directory_identity(
+    identity: Option<&sabi::v1::SchemaIdentity>,
+) -> Result<(), CompatibilityError> {
+    let identity = identity.ok_or(CompatibilityError::MissingSchemaIdentity)?;
+    validate_schema_identity(identity)?;
+    if identity.name != SABI_SERVICE_DIRECTORY_SCHEMA {
+        return Err(CompatibilityError::UnknownSchema(identity.name.clone()));
+    }
+    Ok(())
+}
+
+fn validate_schema_identity(identity: &sabi::v1::SchemaIdentity) -> Result<(), CompatibilityError> {
     let descriptor = REGISTRY
         .iter()
         .find(|descriptor| descriptor.name == identity.name)
@@ -372,6 +535,15 @@ fn validate_envelope(envelope: &sabi::v1::Envelope) -> Result<(), CompatibilityE
             extension_id: *extension_id,
         });
     }
+    Ok(())
+}
+
+fn validate_envelope(envelope: &sabi::v1::Envelope) -> Result<(), CompatibilityError> {
+    let identity = envelope
+        .schema
+        .as_ref()
+        .ok_or(CompatibilityError::MissingSchemaIdentity)?;
+    validate_schema_identity(identity)?;
 
     if envelope.request_id.len() != REQUEST_ID_BYTES {
         return Err(CompatibilityError::InvalidRequestIdLength {

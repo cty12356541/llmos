@@ -11,6 +11,10 @@ import {
   LocalRpcService,
   type Envelope,
 } from "../../../gen/typescript/nlos/sabi/v1/envelope_pb.ts";
+import {
+  LocalTransportKind,
+  ResolveServiceRequestSchema,
+} from "../../../gen/typescript/nlos/sabi/v1/service_directory_pb.ts";
 
 const schemaName = "nlos.sabi.Envelope";
 const goldenPath = fileURLToPath(
@@ -77,3 +81,23 @@ assert.equal(
   LocalRpcService.method.exchange.output.typeName,
   ExchangeResponseSchema.typeName,
 );
+
+const directoryGoldenPath = fileURLToPath(
+  new URL(
+    "../../../schema/golden/nlos.sabi.ServiceDirectory.ResolveRequest-v1.hex",
+    import.meta.url,
+  ),
+);
+const directoryGolden = Uint8Array.from(
+  Buffer.from(readFileSync(directoryGoldenPath, "utf8").trim(), "hex"),
+);
+const resolveRequest = fromBinary(ResolveServiceRequestSchema, directoryGolden);
+assert.equal(resolveRequest.schema?.name, "nlos.sabi.ServiceDirectory");
+assert.equal(resolveRequest.schema?.major, 1);
+assert.equal(resolveRequest.service, "operation");
+assert.deepEqual(
+  toBinary(ResolveServiceRequestSchema, resolveRequest),
+  directoryGolden,
+);
+assert.equal(LocalTransportKind.UNIX_SOCKET, 1);
+assert.equal(LocalTransportKind.WINDOWS_NAMED_PIPE, 2);

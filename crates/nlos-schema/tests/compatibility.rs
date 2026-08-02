@@ -1,10 +1,14 @@
 use nlos_schema::sabi::v1::{
-    Envelope, ExchangeRequest, ExchangeResponse, SchemaIdentity, local_rpc,
+    Envelope, ExchangeRequest, ExchangeResponse, NegotiateServiceResponse, ResolveServiceRequest,
+    ResolveServiceResponse, SchemaIdentity, local_rpc,
 };
 use nlos_schema::{
-    CompatibilityError, MAX_ENVELOPE_BYTES, SABI_ENVELOPE_SCHEMA, decode_exchange_request,
-    decode_exchange_response, decode_sabi_envelope, encode_exchange_request,
-    encode_exchange_response, encode_sabi_envelope, schema_registry,
+    CompatibilityError, MAX_ENVELOPE_BYTES, MAX_SERVICE_DIRECTORY_PAYLOAD_BYTES,
+    SABI_ENVELOPE_SCHEMA, SABI_SERVICE_DIRECTORY_SCHEMA, decode_exchange_request,
+    decode_exchange_response, decode_resolve_service_request, decode_sabi_envelope,
+    encode_exchange_request, encode_exchange_response, encode_resolve_service_request,
+    encode_resolve_service_response, encode_sabi_envelope, schema_registry,
+    service_directory_schema_identity,
 };
 
 fn envelope() -> Envelope {
@@ -48,9 +52,55 @@ fn generated_encoding_matches_canonical_golden_vector() {
 
 #[test]
 fn registry_exposes_the_supported_contract() {
-    let descriptor = schema_registry().first().unwrap();
-    assert_eq!(descriptor.name, SABI_ENVELOPE_SCHEMA);
-    assert_eq!((descriptor.major, descriptor.minor), (1, 0));
+    let registry = schema_registry();
+    assert_eq!(registry.len(), 2);
+    for name in [SABI_ENVELOPE_SCHEMA, SABI_SERVICE_DIRECTORY_SCHEMA] {
+        let descriptor = registry.iter().find(|entry| entry.name == name).unwrap();
+        assert_eq!((descriptor.major, descriptor.minor), (1, 0));
+    }
+}
+
+#[test]
+fn service_directory_payload_has_its_own_identity_and_bound() {
+    let request = ResolveServiceRequest {
+        schema: Some(service_directory_schema_identity()),
+        service: "operation".to_owned(),
+    };
+    let wire = encode_resolve_service_request(&request).unwrap();
+    let golden = decode_hex(include_str!(
+        "../../../schema/golden/nlos.sabi.ServiceDirectory.ResolveRequest-v1.hex"
+    ));
+    assert_eq!(wire, golden);
+    assert_eq!(decode_resolve_service_request(&wire).unwrap(), request);
+
+    let mut wrong_major = request.clone();
+    wrong_major.schema.as_mut().unwrap().major = 2;
+    assert!(matches!(
+        encode_resolve_service_request(&wrong_major),
+        Err(CompatibilityError::UnsupportedMajor { got: 2, .. })
+    ));
+
+    let missing_result = ResolveServiceResponse {
+        schema: Some(service_directory_schema_identity()),
+        result: None,
+    };
+    assert_eq!(
+        encode_resolve_service_response(&missing_result),
+        Err(CompatibilityError::MissingServiceDirectoryResult)
+    );
+    assert!(matches!(
+        decode_resolve_service_request(&vec![0_u8; MAX_SERVICE_DIRECTORY_PAYLOAD_BYTES + 1]),
+        Err(CompatibilityError::FrameTooLarge { .. })
+    ));
+
+    let missing_negotiate_result = NegotiateServiceResponse {
+        schema: Some(service_directory_schema_identity()),
+        result: None,
+    };
+    assert_eq!(
+        nlos_schema::encode_negotiate_service_response(&missing_negotiate_result),
+        Err(CompatibilityError::MissingServiceDirectoryResult)
+    );
 }
 
 #[test]
