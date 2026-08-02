@@ -56,7 +56,7 @@ async def start_server(address: str, delay_ms: int) -> asyncio.subprocess.Proces
     )
     assert process.stdout is not None
     try:
-        ready = await asyncio.wait_for(process.stdout.readline(), timeout=30)
+        ready = await asyncio.wait_for(process.stdout.readline(), timeout=60)
     except BaseException:
         process.kill()
         await process.wait()

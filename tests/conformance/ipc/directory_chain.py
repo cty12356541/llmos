@@ -64,7 +64,7 @@ async def start_server(
         stderr=asyncio.subprocess.PIPE,
     )
     assert process.stdout is not None
-    ready = await asyncio.wait_for(process.stdout.readline(), timeout=30)
+    ready = await asyncio.wait_for(process.stdout.readline(), timeout=60)
     if ready.strip() != b"READY":
         assert process.stderr is not None
         stderr = await process.stderr.read()

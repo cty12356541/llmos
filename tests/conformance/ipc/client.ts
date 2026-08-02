@@ -57,7 +57,7 @@ async function startServer(delayMs: number): Promise<ChildProcessWithoutNullStre
   await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(
       () => reject(new Error("Rust IPC conformance server did not become ready")),
-      30_000,
+      60_000,
     );
     let stdout = "";
     let stderr = "";

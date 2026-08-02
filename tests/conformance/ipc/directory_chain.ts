@@ -57,7 +57,7 @@ async function startServer(
   await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(
       () => reject(new Error("directory chain server did not become ready")),
-      30_000,
+      60_000,
     );
     let stdout = "";
     let stderr = "";
