@@ -1,6 +1,6 @@
 # B-SCHEMA-005：本地 typed IPC 与平台适配初始证据
 
-> 状态：PARTIAL PASS（Windows CI 待本提交推送后复验）
+> 状态：PARTIAL PASS
 >
 > 日期：2026-08-02
 >
@@ -61,23 +61,23 @@ cargo clippy -p nlos-ipc --all-targets -- -D warnings
 - Unix 平台：真实 socket 往返、`0600` mode、peer credential 类型和不存在 endpoint 的显式 connect error，共 2 项；
 - 失败路径覆盖 authorization-before-read、oversized declared frame、half-frame EOF、request ID mismatch、并发 backpressure/read timeout 和 unknown wrapper field 原字节 forwarding。
 
-Windows 标准库交叉目标在本地下载阶段持续无输出，已主动终止，不能记作本地 Windows 编译通过。首次远程 [run 30730117157](https://github.com/cty12356541/llmos/actions/runs/30730117157) 的 Windows workspace test 已编译并通过真实 named-pipe 往返与 unavailable-pipe timeout；随后 Clippy 以 `cast_possible_wrap` 拒绝 `ERROR_PIPE_BUSY as i32`，因此整次 run 正确记为失败。remediation 改用显式 `cast_signed()`，尚待下一次三平台 run 复验后才能把本切片记为跨平台通过。
+Windows 标准库交叉目标在本地下载阶段持续无输出，已主动终止，不能记作本地 Windows 编译通过。首次远程 [run 30730117157](https://github.com/cty12356541/llmos/actions/runs/30730117157) 的 Windows workspace test 已编译并通过真实 named-pipe 往返与 unavailable-pipe timeout；随后 Clippy 以 `cast_possible_wrap` 拒绝 `ERROR_PIPE_BUSY as i32`，因此整次 run 正确记为失败。remediation 改用显式 `cast_signed()` 后，[三平台 run 30730221706](https://github.com/cty12356541/llmos/actions/runs/30730221706) 全部成功：Ubuntu 47s、macOS 1m15s、Windows 2m5s，均通过 schema gate、跨语言 conformance、workspace test 和 Clippy；实现提交对应的 [fuzz run 30730117174](https://github.com/cty12356541/llmos/actions/runs/30730117174) 也成功。
 
 ## 4. 当前能证明什么
 
 - 同一个 Protobuf service schema 可以驱动 Rust client trait、TypeScript service descriptor 和 Python service descriptor；
 - Rust client/server 可通过 transport-neutral framing 完成 typed request/response，并保持既有兼容检查和 unknown-field forwarding 语义；
 - macOS 上真实 Unix socket 后端通过 owner-only endpoint 与 peer credential hook 工作；
+- Windows runner 上真实 named-pipe 往返、unavailable-pipe timeout、workspace test 和 Clippy 已通过；
 - frame、timeout 和单连接并发积压有显式上限，常见断连/半帧/超界/串线不会被误判为成功；
 - transport/credential/Protobuf 依赖均留在 schema/IPC adapter，没有进入 `nlos-types`。
 
 ## 5. 当前不能证明什么
 
-- Windows named pipe 尚待本提交的 Windows CI 实机编译和测试；本地 macOS 结果不能替代它；
 - TypeScript/Python 当前只有生成 service descriptor，没有本地 socket/pipe runtime client、跨语言真实往返或取消/重连状态机；
 - ServiceDirectory、version negotiation、Capability、deadline/cancel、Operation、partial failure 和 Receipt 尚未进入这个最小 service；
 - Windows peer PID、token SID 和显式 pipe ACL 尚未提取/固化；默认 token DACL 不能外推为完整 NLOS authorization；
 - 当前 server primitive 一次处理一个请求；没有多连接 supervisor、公平调度、streaming、连接池或自动重连。失败连接会 fail-closed，调用者重建连接的策略与幂等语义仍待实现；
 - 1 MiB 是公共硬上限，不代表每个未来 service payload 已有更严格的独立限额。
 
-因此该切片保持 `PARTIAL PASS`，`B-SCHEMA` 与 ADR-0003 继续为 `IN_PROGRESS/POC`。下一步先由 Windows CI 关闭平台编译/行为风险，再实现 TypeScript/Python transport client、ServiceDirectory negotiation 与可测试的 reconnect/cancel/deadline 语义。
+因此该切片保持 `PARTIAL PASS`，`B-SCHEMA` 与 ADR-0003 继续为 `IN_PROGRESS/POC`。下一步实现 TypeScript/Python transport client、ServiceDirectory negotiation 与可测试的 reconnect/cancel/deadline 语义。

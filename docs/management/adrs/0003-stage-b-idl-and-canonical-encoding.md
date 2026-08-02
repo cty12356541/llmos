@@ -41,7 +41,7 @@
 - frame 在解析前执行 1 MiB 上限，公共 request ID 固定 16 bytes；后续每种 service payload 还需更严格的独立上限；
 - non-critical 可忽略不等于可丢弃：透明 forwarding 必须保持输入 wire bytes；
 - critical extension ID 只能在实现、测试和协商支持同时存在时加入 registry；
-- 三语言 Protobuf generation/compat、首轮 sanitizer fuzz smoke 与 macOS Unix typed IPC 已通过，但 Windows named pipe CI、TS/Python transport client、ServiceDirectory/negotiation、CBOR 跨语言和长期 fuzz 未完成前，ADR 保持 `POC`；
+- 三语言 Protobuf generation/compat、首轮 sanitizer fuzz smoke 与 Unix/Windows typed IPC 初始适配已通过，但 TS/Python transport client、ServiceDirectory/negotiation、完整 common semantics、CBOR 跨语言和长期 fuzz 未完成前，ADR 保持 `POC`；
 - `nlos-types` 继续不依赖 Protobuf；wire adapter 负责在 nominal ID 与生成类型之间显式转换，避免 wire bytes 侵入内核对象身份。
 
 ## 依赖审查
@@ -81,4 +81,4 @@
 
 [B-SCHEMA-004](../../evidence/stage-b/b-schema-004-schema-fuzz-smoke.md) 已建立 Protobuf envelope、canonical CBOR body 和 signing preimage 三个有界 sanitizer fuzz target。本地 33 秒共执行 15,499,860 次，无 crash/timeout/OOM/断言反例；[Linux fuzz run 30717749638](https://github.com/cty12356541/llmos/actions/runs/30717749638) 与[三平台回归 run 30717749643](https://github.com/cty12356541/llmos/actions/runs/30717749643) 均成功。该短跑不替代长期 fuzz，也不构成 production parser claim。
 
-[B-SCHEMA-005](../../evidence/stage-b/b-schema-005-local-typed-ipc.md) 已加入最小 unary service、Rust generated client trait、TS/Python service descriptor、transport-neutral bounded framing/client/server、Unix socket 和 Windows named-pipe adapter。macOS 上 schema/IPC 测试与真实 Unix 往返通过；Windows named-pipe 实机 CI、TS/Python transport client、ServiceDirectory/negotiation、完整 common semantics 和生产压力仍未完成。
+[B-SCHEMA-005](../../evidence/stage-b/b-schema-005-local-typed-ipc.md) 已加入最小 unary service、Rust generated client trait、TS/Python service descriptor、transport-neutral bounded framing/client/server、Unix socket 和 Windows named-pipe adapter。[三平台 run 30730221706](https://github.com/cty12356541/llmos/actions/runs/30730221706) 已通过真实平台测试与整仓 gate；TS/Python transport client、ServiceDirectory/negotiation、完整 common semantics、Windows token/ACL 和生产压力仍未完成。

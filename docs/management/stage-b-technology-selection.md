@@ -185,7 +185,7 @@ PoC 对比：
 
 冻结前必须生成 Rust + TypeScript + Python client，并通过 unknown field、major version、golden vector 和 fuzz test。
 
-当前 PoC 决策与证据见 [ADR-0003](./adrs/0003-stage-b-idl-and-canonical-encoding.md)、[B-SCHEMA-001](../evidence/stage-b/b-schema-001-protobuf-envelope.md)、[B-SCHEMA-002](../evidence/stage-b/b-schema-002-cross-language-generation.md)、[B-SCHEMA-003](../evidence/stage-b/b-schema-003-deterministic-cbor.md)、[B-SCHEMA-004](../evidence/stage-b/b-schema-004-schema-fuzz-smoke.md) 和 [B-SCHEMA-005](../evidence/stage-b/b-schema-005-local-typed-ipc.md)：Protobuf 公共 envelope、三语言 type generation/compat gate、首个 deterministic CBOR body/domain-separated preimage/golden、三目标 sanitizer fuzz smoke，以及 Rust bounded IPC/真实 Unix socket 初始切片已实现；Windows named-pipe CI、TS/Python transport client、ServiceDirectory/negotiation、CBOR 跨语言、长期 fuzz 与实际签名仍未完成，候选未冻结。
+当前 PoC 决策与证据见 [ADR-0003](./adrs/0003-stage-b-idl-and-canonical-encoding.md)、[B-SCHEMA-001](../evidence/stage-b/b-schema-001-protobuf-envelope.md)、[B-SCHEMA-002](../evidence/stage-b/b-schema-002-cross-language-generation.md)、[B-SCHEMA-003](../evidence/stage-b/b-schema-003-deterministic-cbor.md)、[B-SCHEMA-004](../evidence/stage-b/b-schema-004-schema-fuzz-smoke.md) 和 [B-SCHEMA-005](../evidence/stage-b/b-schema-005-local-typed-ipc.md)：Protobuf 公共 envelope、三语言 type generation/compat gate、首个 deterministic CBOR body/domain-separated preimage/golden、三目标 sanitizer fuzz smoke，以及 Rust bounded IPC/真实 Unix socket 与 Windows named-pipe 初始切片已实现；TS/Python transport client、ServiceDirectory/negotiation、Windows token/ACL、CBOR 跨语言、长期 fuzz 与实际签名仍未完成，候选未冻结。
 
 ## 9. Desktop 与可信控制面
 
