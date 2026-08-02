@@ -1,4 +1,4 @@
-//! Schema v1→v2 migration, golden database, backup anchor and interrupted
+//! Schema v1→v3 migration, golden database, backup anchor and interrupted
 //! migration acceptance tests.
 
 mod support;
@@ -49,6 +49,19 @@ fn assert_v2_index(path: &std::path::Path) {
     assert_eq!(count, 1, "v2 recovery index exists exactly once");
 }
 
+fn assert_v3_idempotency_table(path: &std::path::Path) {
+    let connection = Connection::open(path).expect("open migrated database");
+    let count: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM sqlite_schema
+             WHERE type = 'table' AND name = 'idempotent_calls'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("query v3 table");
+    assert_eq!(count, 1, "v3 idempotency table exists exactly once");
+}
+
 fn assert_golden_data(store: &SqliteOperationStore) {
     let handle = nlos_operation::OperationHandle {
         operation_id: OperationId::from_bytes([0x11; 16]),
@@ -73,9 +86,10 @@ fn golden_v1_migrates_forward_without_data_loss_and_accepts_new_writes() {
     let database = TestFile::new("migration-golden");
     create_golden_v1(&database);
 
-    let store = SqliteOperationStore::open(&database.path).expect("migrate v1 to v2");
-    assert_eq!(version(&database.path), 2);
+    let store = SqliteOperationStore::open(&database.path).expect("migrate v1 to v3");
+    assert_eq!(version(&database.path), 3);
     assert_v2_index(&database.path);
+    assert_v3_idempotency_table(&database.path);
     assert_golden_data(&store);
     store.register(spec(0x21)).expect("write after migration");
 }
@@ -97,17 +111,17 @@ fn pre_upgrade_backup_remains_a_restorable_v1_rollback_anchor() {
 
     let migrated = SqliteOperationStore::open(&source.path).expect("migrate source");
     assert_golden_data(&migrated);
-    assert_eq!(version(&source.path), 2);
+    assert_eq!(version(&source.path), 3);
     assert_eq!(version(&backup_file.path), 1, "backup stays at v1");
 
     let restored =
         SqliteOperationStore::open(&backup_file.path).expect("restore and migrate backup");
     assert_golden_data(&restored);
-    assert_eq!(version(&backup_file.path), 2);
+    assert_eq!(version(&backup_file.path), 3);
 }
 
 #[test]
-fn interrupted_migration_leaves_only_complete_v1_or_complete_v2() {
+fn interrupted_migration_leaves_only_complete_schema_versions() {
     let _serialization = fault_lock();
     nlos_store_fault::register(VFS_NAME).expect("register migration fault VFS");
 
@@ -123,18 +137,23 @@ fn interrupted_migration_leaves_only_complete_v1_or_complete_v2() {
         nlos_store_fault::disarm();
 
         if let Ok(store) = result {
-            assert_eq!(version(&database.path), 2);
+            assert_eq!(version(&database.path), 3);
             assert_v2_index(&database.path);
+            assert_v3_idempotency_table(&database.path);
             assert_golden_data(&store);
             break;
         }
         let durable_version = version(&database.path);
         assert!(
-            matches!(durable_version, 1 | 2),
+            matches!(durable_version, 1..=3),
             "interrupted migration exposed version {durable_version}"
         );
         if durable_version == 2 {
             assert_v2_index(&database.path);
+        }
+        if durable_version == 3 {
+            assert_v2_index(&database.path);
+            assert_v3_idempotency_table(&database.path);
         }
         failure_points += 1;
         assert!(

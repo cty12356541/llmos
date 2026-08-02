@@ -118,7 +118,8 @@ Buf 支持固定 remote plugin 并从同一配置生成 Go 等语言；引入时
 | ServiceDirectory schema + Rust negotiation core | `PARTIAL PASS`，三平台 run 30735589673 成功 | `B-SCHEMA`、B-SCHEMA-007 |
 | TS/Python directory negotiate-and-connect | `PARTIAL PASS`，三平台 run 30736741324 成功 | `B-SCHEMA`、B-SCHEMA-008 |
 | SABI common metadata/error/safe-retry validation | `PARTIAL PASS`，三平台 run 30737782776 成功 | `B-SCHEMA`、B-SCHEMA-009 |
-| Durable idempotency + deadline/cancel/uncertain state machine | `NEXT` | `B-SCHEMA`、`B-STORE`、`B-PROCESS` |
+| Durable idempotency authority | `PARTIAL PASS`，本地 SQLite v3；真实 IPC/三平台待复验 | `B-SCHEMA`、`B-STORE`、B-SCHEMA-010 |
+| Deadline/cancel/uncertain server state machine | `NEXT` | `B-SCHEMA`、`B-STORE`、`B-PROCESS` |
 | Go generation/golden probe | `READY`，Gate A 后实施 | `B-SDK-LANG-EVAL` |
 | C# generation/golden probe | `READY`，Gate A 后实施 | `B-SDK-LANG-EVAL` |
 | Go/C# transport 对比 Evidence | `PLANNED` | 新 Evidence，不提前编号 |

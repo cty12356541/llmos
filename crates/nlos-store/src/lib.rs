@@ -18,12 +18,14 @@ use nlos_operation::{
 };
 use nlos_runtime::FiberHandle;
 use nlos_types::{
-    CallbackId, CancelEpoch, CancellationScopeId, ExecutionFiberId, Generation, OperationId,
-    ReceiptId,
+    ApplicationId, CallbackId, CancelEpoch, CancellationScopeId, ExecutionFiberId, Generation,
+    IdempotencyKey, OperationId, ReceiptId,
 };
 use rusqlite::{Connection, OpenFlags, Transaction, TransactionBehavior, params};
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
+const MAX_ENDPOINT_COMPONENT_BYTES: usize = 128;
+const MAX_DURABLE_RESULT_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug)]
 pub enum StoreError {
@@ -32,6 +34,13 @@ pub enum StoreError {
     CorruptRecord(&'static str),
     UnsupportedSchema(i64),
     OutboxEntryNotFound,
+    InvalidIdempotencyScope,
+    IdempotencyConflict,
+    IdempotencyRecordNotFound,
+    DurableResultTooLarge {
+        actual: usize,
+        maximum: usize,
+    },
     LockPoisoned,
     DurabilityUnavailable {
         journal_mode: String,
@@ -49,6 +58,18 @@ impl fmt::Display for StoreError {
                 write!(formatter, "unsupported authority schema version {version}")
             }
             Self::OutboxEntryNotFound => formatter.write_str("outbox entry does not exist"),
+            Self::InvalidIdempotencyScope => formatter.write_str(
+                "idempotency service and method must be non-empty bounded strings without NUL",
+            ),
+            Self::IdempotencyConflict => formatter
+                .write_str("idempotency key was reused for different request or result bytes"),
+            Self::IdempotencyRecordNotFound => {
+                formatter.write_str("operation has no durable idempotency record")
+            }
+            Self::DurableResultTooLarge { actual, maximum } => write!(
+                formatter,
+                "durable result exceeds bound: {actual} bytes (maximum {maximum})"
+            ),
             Self::LockPoisoned => formatter.write_str("authority writer lock is poisoned"),
             Self::DurabilityUnavailable {
                 journal_mode,
@@ -87,6 +108,43 @@ impl From<OperationError> for StoreError {
 pub enum RegistrationDecision {
     Created(OperationHandle),
     Existing(OperationHandle),
+}
+
+/// Stable authority scope for an application-visible idempotency key.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IdempotencyScope {
+    pub application_id: ApplicationId,
+    pub service: String,
+    pub method: String,
+}
+
+/// Exact bytes returned for a completed idempotent call.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DurableCallResult {
+    pub operation: OperationHandle,
+    pub receipt_id: ReceiptId,
+    pub response_wire: Vec<u8>,
+}
+
+/// Result of atomically claiming an idempotency key and registering its Operation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum IdempotencyDecision {
+    /// This caller durably claimed the key and may dispatch the Operation once.
+    Created(OperationHandle),
+    /// The key already names the same request. Query this Operation; do not redispatch.
+    PendingOrUncertain(OperationHandle),
+    /// The original immutable result is available for exact replay.
+    Completed(DurableCallResult),
+}
+
+impl IdempotencyDecision {
+    #[must_use]
+    pub fn operation(&self) -> OperationHandle {
+        match self {
+            Self::Created(operation) | Self::PendingOrUncertain(operation) => *operation,
+            Self::Completed(result) => result.operation,
+        }
+    }
 }
 
 impl RegistrationDecision {
@@ -180,8 +238,13 @@ impl SqliteOperationStore {
             0 => {
                 migrate_v1(&mut connection)?;
                 migrate_v2(&mut connection)?;
+                migrate_v3(&mut connection)?;
             }
-            1 => migrate_v2(&mut connection)?,
+            1 => {
+                migrate_v2(&mut connection)?;
+                migrate_v3(&mut connection)?;
+            }
+            2 => migrate_v3(&mut connection)?,
             SCHEMA_VERSION => {}
             other => return Err(StoreError::UnsupportedSchema(other)),
         }
@@ -214,6 +277,137 @@ impl SqliteOperationStore {
         insert_machine(&transaction, &machine)?;
         transaction.commit()?;
         Ok(RegistrationDecision::Created(machine.snapshot().handle))
+    }
+
+    /// Atomically claims a scoped idempotency key and registers its Operation.
+    ///
+    /// Exact replays return the existing Operation or its immutable result.
+    /// Reusing a key with a different request digest is rejected. A replay of a
+    /// nonterminal record never grants dispatch authority again.
+    ///
+    /// # Errors
+    ///
+    /// Returns a validation, conflict, operation-registration, or storage error.
+    pub fn begin_idempotent_operation(
+        &self,
+        scope: &IdempotencyScope,
+        idempotency_key: IdempotencyKey,
+        request_digest_sha256: [u8; 32],
+        spec: OperationSpec,
+    ) -> Result<IdempotencyDecision, StoreError> {
+        validate_idempotency_scope(scope)?;
+        let mut connection = self.lock_connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(existing) = load_idempotency_record(&transaction, scope, idempotency_key)? {
+            if existing.request_digest_sha256 != request_digest_sha256 {
+                return Err(StoreError::IdempotencyConflict);
+            }
+            transaction.commit()?;
+            return Ok(existing.into_decision());
+        }
+
+        if let Some(existing) = load_machine_optional(&transaction, spec.operation_id)? {
+            if existing.spec() != spec {
+                return Err(OperationError::DuplicateOperation.into());
+            }
+            return Err(StoreError::IdempotencyConflict);
+        }
+
+        let machine = OperationMachine::new(spec);
+        insert_machine(&transaction, &machine)?;
+        let operation = machine.snapshot().handle;
+        transaction.execute(
+            "INSERT INTO idempotent_calls (
+                application_id, service, method, idempotency_key, request_digest_sha256,
+                operation_id, operation_generation, receipt_id, response_wire
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, NULL)",
+            params![
+                scope.application_id.as_bytes().as_slice(),
+                scope.service,
+                scope.method,
+                idempotency_key.as_bytes().as_slice(),
+                request_digest_sha256.as_slice(),
+                operation.operation_id.as_bytes().as_slice(),
+                encode_u64(operation.generation.get()).as_slice(),
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(IdempotencyDecision::Created(operation))
+    }
+
+    /// Completes an idempotent Operation and stores its exact response bytes.
+    ///
+    /// The terminal Operation transition, Receipt identity, immutable result,
+    /// and wake/reconciliation Outbox entry commit in one transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns a bound, conflict, callback, state, or storage error.
+    pub fn complete_idempotent_operation(
+        &self,
+        ticket: CallbackTicket,
+        outcome: CompletionOutcome,
+        response_wire: &[u8],
+    ) -> Result<DurableCallResult, StoreError> {
+        if response_wire.len() > MAX_DURABLE_RESULT_BYTES {
+            return Err(StoreError::DurableResultTooLarge {
+                actual: response_wire.len(),
+                maximum: MAX_DURABLE_RESULT_BYTES,
+            });
+        }
+        let mut connection = self.lock_connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let (mut machine, revision) = load_machine(&transaction, ticket.operation.operation_id)?;
+        let decision = machine.complete(ticket, outcome)?;
+        let record = load_idempotency_record_by_operation(&transaction, ticket.operation)?
+            .ok_or(StoreError::IdempotencyRecordNotFound)?;
+        let receipt_id = receipt_from_state(machine.snapshot().state).ok_or(
+            StoreError::CorruptRecord("idempotent completion lacks final receipt"),
+        )?;
+
+        if let Some(existing) = record.result {
+            if existing.receipt_id != receipt_id || existing.response_wire != response_wire {
+                return Err(StoreError::IdempotencyConflict);
+            }
+            transaction.commit()?;
+            return Ok(existing);
+        }
+
+        if !matches!(decision, CompletionDecision::Duplicate { .. }) {
+            update_machine(&transaction, &machine, revision)?;
+            let kind = match decision {
+                CompletionDecision::CanonicalizedAndWake { .. } => OutboxKind::WakeFiber,
+                CompletionDecision::CanonicalizedForReconciliation { .. } => {
+                    OutboxKind::ReconcileEffect
+                }
+                CompletionDecision::Duplicate { .. } => unreachable!("handled above"),
+            };
+            insert_outbox(&transaction, kind, &machine, Some(ticket.callback_id))?;
+        }
+        let changed = transaction.execute(
+            "UPDATE idempotent_calls
+             SET receipt_id = ?1, response_wire = ?2
+             WHERE operation_id = ?3 AND operation_generation = ?4
+               AND receipt_id IS NULL AND response_wire IS NULL",
+            params![
+                receipt_id.as_bytes().as_slice(),
+                response_wire,
+                ticket.operation.operation_id.as_bytes().as_slice(),
+                encode_u64(ticket.operation.generation.get()).as_slice(),
+            ],
+        )?;
+        if changed != 1 {
+            return Err(StoreError::CorruptRecord(
+                "idempotency result compare-and-set failed",
+            ));
+        }
+        let result = DurableCallResult {
+            operation: ticket.operation,
+            receipt_id,
+            response_wire: response_wire.to_vec(),
+        };
+        transaction.commit()?;
+        Ok(result)
     }
 
     /// Commits the dispatch transition and returns its durable callback ticket.
@@ -410,6 +604,145 @@ fn migrate_v2(connection: &mut Connection) -> Result<(), StoreError> {
     )?;
     transaction.commit()?;
     Ok(())
+}
+
+/// Adds durable SABI/KABI same-key deduplication and immutable result replay.
+fn migrate_v3(connection: &mut Connection) -> Result<(), StoreError> {
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "CREATE TABLE idempotent_calls (
+            application_id BLOB NOT NULL CHECK(length(application_id) = 16),
+            service TEXT NOT NULL
+                CHECK(length(service) BETWEEN 1 AND 128 AND instr(service, char(0)) = 0),
+            method TEXT NOT NULL
+                CHECK(length(method) BETWEEN 1 AND 128 AND instr(method, char(0)) = 0),
+            idempotency_key BLOB NOT NULL CHECK(length(idempotency_key) = 16),
+            request_digest_sha256 BLOB NOT NULL CHECK(length(request_digest_sha256) = 32),
+            operation_id BLOB NOT NULL CHECK(length(operation_id) = 16),
+            operation_generation BLOB NOT NULL CHECK(length(operation_generation) = 8),
+            receipt_id BLOB CHECK(receipt_id IS NULL OR length(receipt_id) = 16),
+            response_wire BLOB,
+            PRIMARY KEY(application_id, service, method, idempotency_key),
+            UNIQUE(operation_id, operation_generation),
+            FOREIGN KEY(operation_id) REFERENCES operations(operation_id),
+            CHECK((receipt_id IS NULL) = (response_wire IS NULL)),
+            CHECK(response_wire IS NULL OR length(response_wire) <= 1048576)
+        ) STRICT;
+
+        CREATE TRIGGER idempotent_result_is_immutable
+        BEFORE UPDATE OF receipt_id, response_wire ON idempotent_calls
+        WHEN OLD.receipt_id IS NOT NULL AND
+             (NEW.receipt_id IS NOT OLD.receipt_id OR
+              NEW.response_wire IS NOT OLD.response_wire)
+        BEGIN
+            SELECT RAISE(ABORT, 'idempotent result is immutable');
+        END;
+
+        PRAGMA user_version = 3;",
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
+
+struct IdempotencyRecord {
+    request_digest_sha256: [u8; 32],
+    operation: OperationHandle,
+    result: Option<DurableCallResult>,
+}
+
+impl IdempotencyRecord {
+    fn into_decision(self) -> IdempotencyDecision {
+        match self.result {
+            Some(result) => IdempotencyDecision::Completed(result),
+            None => IdempotencyDecision::PendingOrUncertain(self.operation),
+        }
+    }
+}
+
+fn validate_idempotency_scope(scope: &IdempotencyScope) -> Result<(), StoreError> {
+    let valid = |component: &str| {
+        !component.is_empty()
+            && component.len() <= MAX_ENDPOINT_COMPONENT_BYTES
+            && !component.contains('\0')
+    };
+    if valid(&scope.service) && valid(&scope.method) {
+        Ok(())
+    } else {
+        Err(StoreError::InvalidIdempotencyScope)
+    }
+}
+
+fn load_idempotency_record(
+    source: &impl SqlRead,
+    scope: &IdempotencyScope,
+    idempotency_key: IdempotencyKey,
+) -> Result<Option<IdempotencyRecord>, StoreError> {
+    let mut statement = source.prepare_statement(
+        "SELECT request_digest_sha256, operation_id, operation_generation,
+                receipt_id, response_wire
+         FROM idempotent_calls
+         WHERE application_id = ?1 AND service = ?2 AND method = ?3
+           AND idempotency_key = ?4",
+    )?;
+    let mut rows = statement.query(params![
+        scope.application_id.as_bytes().as_slice(),
+        scope.service,
+        scope.method,
+        idempotency_key.as_bytes().as_slice(),
+    ])?;
+    rows.next()?.map(decode_idempotency_row).transpose()
+}
+
+fn load_idempotency_record_by_operation(
+    source: &impl SqlRead,
+    operation: OperationHandle,
+) -> Result<Option<IdempotencyRecord>, StoreError> {
+    let mut statement = source.prepare_statement(
+        "SELECT request_digest_sha256, operation_id, operation_generation,
+                receipt_id, response_wire
+         FROM idempotent_calls
+         WHERE operation_id = ?1 AND operation_generation = ?2",
+    )?;
+    let mut rows = statement.query(params![
+        operation.operation_id.as_bytes().as_slice(),
+        encode_u64(operation.generation.get()).as_slice(),
+    ])?;
+    rows.next()?.map(decode_idempotency_row).transpose()
+}
+
+fn decode_idempotency_row(row: &rusqlite::Row<'_>) -> Result<IdempotencyRecord, StoreError> {
+    let request_digest_sha256 = blob32(row, 0)?;
+    let operation = OperationHandle {
+        operation_id: OperationId::from_bytes(blob16(row, 1)?),
+        generation: generation_from_blob(row, 2)?,
+    };
+    let receipt_id = optional_blob16(row, 3)?.map(ReceiptId::from_bytes);
+    let response_wire: Option<Vec<u8>> = row.get(4)?;
+    let result = match (receipt_id, response_wire) {
+        (Some(receipt_id), Some(response_wire)) => {
+            if response_wire.len() > MAX_DURABLE_RESULT_BYTES {
+                return Err(StoreError::CorruptRecord(
+                    "idempotency result exceeds durable bound",
+                ));
+            }
+            Some(DurableCallResult {
+                operation,
+                receipt_id,
+                response_wire,
+            })
+        }
+        (None, None) => None,
+        _ => {
+            return Err(StoreError::CorruptRecord(
+                "idempotency receipt and result disagree",
+            ));
+        }
+    };
+    Ok(IdempotencyRecord {
+        request_digest_sha256,
+        operation,
+        result,
+    })
 }
 
 fn insert_machine(
@@ -788,6 +1121,13 @@ fn blob16(row: &rusqlite::Row<'_>, index: usize) -> Result<[u8; 16], StoreError>
     value
         .try_into()
         .map_err(|_| StoreError::CorruptRecord("expected 16-byte blob"))
+}
+
+fn blob32(row: &rusqlite::Row<'_>, index: usize) -> Result<[u8; 32], StoreError> {
+    let value: Vec<u8> = row.get(index)?;
+    value
+        .try_into()
+        .map_err(|_| StoreError::CorruptRecord("expected 32-byte blob"))
 }
 
 fn optional_blob16(row: &rusqlite::Row<'_>, index: usize) -> Result<Option<[u8; 16]>, StoreError> {

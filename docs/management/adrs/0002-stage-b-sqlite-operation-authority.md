@@ -42,6 +42,7 @@ Operation generation/revision CAS
 - dispatch 时生成的 CallbackId 与 CancelEpoch 必须持久绑定，回调不得替换票据；
 - 所有整数 epoch/generation 以固定 8-byte big-endian BLOB 保存，避免 SQLite signed integer 缩小 `u64` 域；
 - schema 使用 `STRICT` table、长度约束、显式 `user_version` 和未知版本 fail-closed；
+- application-visible 幂等身份按 `(ApplicationId, service, method, IdempotencyKey)` 隔离；首次 claim 必须与 Operation 注册同事务，terminal result 必须与 Operation/Receipt/Outbox 同事务且完成后不可变；
 - SQLite schema 是内部 durable format，不是 KABI/SABI；冻结前可以通过显式 migration 演进；
 - WAL、`-shm`、主数据库和 checkpoint 必须作为同一持久状态管理，不允许复制单个主文件冒充备份；
 - 当前进程内 Mutex 是 writer admission gate，不能冒充跨主机共识或分布式权威。
@@ -67,10 +68,12 @@ Operation generation/revision CAS
 
 ## 迁移与退出策略
 
-v1 只允许从空数据库事务创建；遇到未知 `user_version` 直接拒绝打开。v2 新增按 `(operation_id, operation_generation, sequence)` 的 Outbox 恢复索引，并已提供事务化前向 migration、升级前备份/恢复演练和 v1 golden database。若 PoC 失败，`nlos-operation` 状态机和 Outbox 契约保留，可替换底层 WAL/KV；不得让 SQLite row identity 进入公共 Operation handle。
+v1 只允许从空数据库事务创建；遇到未知 `user_version` 直接拒绝打开。v2 新增按 `(operation_id, operation_generation, sequence)` 的 Outbox 恢复索引；v3 新增 scoped durable dedup/result authority。迁移均为事务化前向 migration，并已有升级前备份/恢复演练和 v1 golden database。若 PoC 失败，`nlos-operation` 状态机、Outbox 和 dedup/result 契约保留，可替换底层 WAL/KV；不得让 SQLite row identity 进入公共 Operation handle。
 
 ## 当前证据
 
 [PoC-0003](../../evidence/stage-b/poc-0003-sqlite-operation-authority.md)已验证重开恢复、幂等、callback identity、cancel/complete 路由、Outbox ACK 以及 durable ACK 后的无析构进程退出恢复。F1–F4 通过 fault/recovery，F5 完成 v1→v2 migration，F6 完成 100K metadata ScaleProfile，F7 在 Ubuntu/Windows/macOS CI 通过核心测试与 Clippy。`B-STORE-FAULT` 验收范围已完成；本 ADR 仍保持 `POC`，因为真实硬件掉电、更多文件系统、100K 逐条生产写入和完整 Task/Artifact 负载不在当前证据内。
 
 [PoC-0004](../../evidence/stage-b/poc-0004-outbox-wake-consumer.md)（2026-08-01）已补齐 Tokio wake consumer 集成缺口；其核心 workspace 回归随 F7 在 Ubuntu/Windows/macOS 通过。durable wait registry/fiber rehydration、真实副作用授权与协调仍归后续工作包。
+
+[B-SCHEMA-010](../../evidence/stage-b/b-schema-010-durable-idempotency-result.md)（2026-08-02）新增 schema v3 与原子 same-key claim/result replay：相同 key/digest 在重开后返回原 Operation 或原始响应，不同 digest 冲突，处理中断不重新授予 dispatch。当前只有本地单节点测试；真实 SABI 接线、远程三平台复验、retention/GC 和 deadline/cancel/uncertain 状态机仍待完成。

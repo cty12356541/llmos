@@ -54,6 +54,7 @@ nominal_id!(CancellationScopeId);
 nominal_id!(ResourceGroupId);
 nominal_id!(SchedulerDomainId);
 nominal_id!(ReceiptId);
+nominal_id!(IdempotencyKey);
 
 /// A non-zero incarnation used to fence stale handles and callbacks.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]

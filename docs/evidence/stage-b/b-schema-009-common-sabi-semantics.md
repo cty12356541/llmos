@@ -1,6 +1,6 @@
 # B-SCHEMA-009：common SABI 元数据与安全重试语义初始证据
 
-> 状态：PARTIAL PASS（三平台 CI 与 fuzz 已通过；持久化/生产语义仍未完成）
+> 状态：PARTIAL PASS（三平台 CI 与 fuzz 已通过；durable dedup/result 的后续证据见 B-SCHEMA-010，其余生产语义仍未完成）
 >
 > 日期：2026-08-02
 >
@@ -96,7 +96,7 @@ NLOS_FUZZ_RUNS=2000 NLOS_FUZZ_TOOLCHAIN=nightly-2026-08-01 scripts/run-fuzz-smok
 
 ## 4. 当前不能证明什么
 
-- IdempotencyKey 目前只有线协议和入口校验；尚无 durable dedup/result authority，不能证明 crash/reconnect 后返回原结果；
+- 本切片提交时 IdempotencyKey 只有线协议和入口校验；后续 [B-SCHEMA-010](./b-schema-010-durable-idempotency-result.md) 已补本地 durable dedup/result authority，但真实 IPC reconnect 仍未验证；
 - deadline 当前只验证同宿主 monotonic 值，尚未实现排队/dispatch/callback 全链路 deadline fence，也未定义远程 clock-domain 映射；
 - cancel epoch 被携带但尚未接入 Operation registry、Process supervisor 或 service handler 的真实取消传播；
 - Operation/Receipt 当前只是 typed reference，fixture 返回固定测试引用；尚无正式 Operation SABI payload、Receipt canonical body/signature/attestation；
@@ -104,4 +104,4 @@ NLOS_FUZZ_RUNS=2000 NLOS_FUZZ_TOOLCHAIN=nightly-2026-08-01 scripts/run-fuzz-smok
 - safe message 只有长度/NUL 限制，生产错误脱敏、localized description 和 service-specific bounded detail 尚未实现；
 - 没有真实 server-side `E_UNCERTAIN`/`E_PARTIAL` 故障注入、stale generation、reconnect same-key retry 或持久化恢复矩阵。
 
-因此 B-SCHEMA-009 只把“common wire metadata + 三语言安全校验 + 两跳传输”记为 `PARTIAL PASS`，不把 TS/Python 升级为完整 `SDK-3`。下一验收门是 durable same-key dedup/result 与 deadline/cancel/uncertain 的服务端状态机。
+因此 B-SCHEMA-009 只把“common wire metadata + 三语言安全校验 + 两跳传输”记为 `PARTIAL PASS`，不把 TS/Python 升级为完整 `SDK-3`。durable same-key dedup/result 的本地 authority 已由 B-SCHEMA-010 继续推进；下一验收门是其真实 SABI 接线与 deadline/cancel/uncertain 服务端状态机。

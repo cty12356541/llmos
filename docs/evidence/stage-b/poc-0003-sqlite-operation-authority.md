@@ -13,7 +13,7 @@
 - SQLite WAL；
 - `synchronous=FULL`；
 - 进程内单写者 admission + `BEGIN IMMEDIATE`；
-- schema v1、`STRICT` tables、固定宽度 ID/epoch 编码；
+- schema v3、`STRICT` tables、固定宽度 ID/epoch 编码；
 - Operation revision CAS；
 - exact `OperationSpec` registration 幂等；
 - dispatched CallbackId/CancelEpoch durable binding；
@@ -102,6 +102,12 @@ durable format 从 v1 前向演进到 v2。v2 新增 `operation_outbox_by_operat
 
 全 workspace 测试、rustfmt、Clippy `-D warnings` 与 `git diff --check` 通过。
 
+## Durable dedup/result schema v3 增量证据（2026-08-02）
+
+v3 新增 scoped `idempotent_calls` authority，把首次 `(ApplicationId, service, method, IdempotencyKey)` claim 与 Operation 注册放在同一事务；terminal transition、Receipt、最多 1 MiB 原始响应和 Outbox 也在同一事务提交。相同 request digest 在重开后只返回原 Operation 或原响应，不重新授予 dispatch；不同 digest/result bytes fail-closed。完整边界、测试和限制见 [B-SCHEMA-010](./b-schema-010-durable-idempotency-result.md)。
+
+v1 golden 可直接迁移到 v3；fault VFS 的逐写入点中断只允许留下完整 v1、v2 或 v3。当前该增量已通过本地 `nlos-store` 全测试与 Clippy，远程三平台复验待提交后执行。
+
 ## B-STORE-FAULT F6 100K Operation metadata 增量证据（2026-08-02）
 
 新增默认 ignored 的显式规模探针，物化 100,000 条 terminal Operation 和 100,000 条未 ACK Outbox（数据库约 28.95 MB），随后通过正常 WAL/FULL authority 执行恢复打开、pending 分页、512 次逐条 durable ACK 和再次恢复。
@@ -125,7 +131,7 @@ Windows 首轮测试已通过但 Clippy 暴露 Unix-only chmod 测试仍参与 W
 - 当前 fault-injection VFS、WAL 文件破坏和 kill-9 测试已覆盖单机进程崩溃、commit 中断、写损坏与模拟掉电，但不能替代真实硬件掉电、控制器缓存或不同文件系统上的 torn-sector 验证；
 - disk-full、只读文件系统、I/O error 与 fail-closed 行为已在当前 macOS 环境覆盖，尚未跨平台复验；
 - WAL checkpoint、长读事务、备份/恢复与 100K Operation metadata 恢复/pending/ACK 已覆盖；尚未测量 100K 次逐条生产写入和完整 Task/Artifact 负载；
-- schema v1→v2 前向迁移、升级前备份、失败恢复与 golden database 已覆盖；更复杂的破坏性迁移和发布级 rollback 编排尚未验证；
+- schema v1→v2→v3 前向迁移、升级前备份、失败恢复与 golden database 已覆盖；更复杂的破坏性迁移和发布级 rollback 编排尚未验证；
 - Windows/Linux/macOS CI 已复验核心 authority/fault/recovery/migration；真实 Windows 只读 ACL、Linux loop-device ENOSPC、真实掉电和更多文件系统仍未覆盖；
 - ~~Outbox 尚未连接 Tokio Fiber wake/reconciliation consumer~~ **已由 [PoC-0004](./poc-0004-outbox-wake-consumer.md) 补齐（2026-08-01）**：consumer 经专用 OS 线程 pump 驱动，崩溃重放、幂等去重、stale generation fencing 与 backpressure 均有集成测试（`PARTIAL PASS`，单节点局部证据）；
 - 尚无 Driver authentication、Capability、Reservation 或 EffectPermit；

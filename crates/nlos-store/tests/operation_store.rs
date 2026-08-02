@@ -8,9 +8,13 @@ use nlos_operation::{
     CompletionDecision, CompletionOutcome, OperationError, OperationSpec, OperationState,
 };
 use nlos_runtime::FiberHandle;
-use nlos_store::{OutboxKind, RegistrationDecision, SqliteOperationStore, StoreError};
+use nlos_store::{
+    IdempotencyDecision, IdempotencyScope, OutboxKind, RegistrationDecision, SqliteOperationStore,
+    StoreError,
+};
 use nlos_types::{
-    CallbackId, CancellationScopeId, ExecutionFiberId, Generation, OperationId, ReceiptId,
+    ApplicationId, CallbackId, CancellationScopeId, ExecutionFiberId, Generation, IdempotencyKey,
+    OperationId, ReceiptId,
 };
 
 static NEXT_DATABASE: AtomicU64 = AtomicU64::new(0);
@@ -71,6 +75,202 @@ fn spec_with_operation(value: u8) -> OperationSpec {
         cancellation_scope_id: CancellationScopeId::from_bytes(bytes(3)),
         cancellation_generation: Generation::INITIAL,
     }
+}
+
+fn idempotency_scope(method: &str) -> IdempotencyScope {
+    IdempotencyScope {
+        application_id: ApplicationId::from_bytes(bytes(0xa0)),
+        service: "service-directory".to_owned(),
+        method: method.to_owned(),
+    }
+}
+
+#[test]
+fn same_key_claim_is_atomic_and_request_digest_conflicts_fail_closed() {
+    let database = TestDatabase::new("idempotency-claim");
+    let store = SqliteOperationStore::open(&database.path).expect("open");
+    let scope = idempotency_scope("resolve");
+    let key = IdempotencyKey::from_bytes(bytes(0xb0));
+    let digest = [0xc0; 32];
+
+    let first = store
+        .begin_idempotent_operation(&scope, key, digest, spec())
+        .expect("claim key");
+    assert!(matches!(first, IdempotencyDecision::Created(_)));
+    assert_eq!(
+        store
+            .begin_idempotent_operation(&scope, key, digest, spec())
+            .expect("replay claim"),
+        IdempotencyDecision::PendingOrUncertain(first.operation())
+    );
+    assert!(matches!(
+        store.begin_idempotent_operation(&scope, key, [0xc1; 32], spec()),
+        Err(StoreError::IdempotencyConflict)
+    ));
+
+    let other_scope = idempotency_scope("negotiate");
+    assert!(matches!(
+        store
+            .begin_idempotent_operation(&other_scope, key, digest, spec_with_operation(0x11),)
+            .expect("same key in another endpoint scope"),
+        IdempotencyDecision::Created(_)
+    ));
+}
+
+#[test]
+fn exact_result_replays_after_reopen_without_redispatch() {
+    let database = TestDatabase::new("idempotency-result-reopen");
+    let scope = idempotency_scope("resolve");
+    let key = IdempotencyKey::from_bytes(bytes(0xb1));
+    let digest = [0xc1; 32];
+    let response = b"canonical response bytes";
+    let expected;
+    {
+        let store = SqliteOperationStore::open(&database.path).expect("open");
+        let operation = store
+            .begin_idempotent_operation(&scope, key, digest, spec())
+            .expect("claim")
+            .operation();
+        let ticket = store
+            .dispatch(operation, CallbackId::from_bytes(bytes(4)))
+            .expect("dispatch");
+        expected = store
+            .complete_idempotent_operation(
+                ticket,
+                CompletionOutcome::Completed {
+                    receipt_id: ReceiptId::from_bytes(bytes(5)),
+                },
+                response,
+            )
+            .expect("complete and persist result");
+    }
+
+    let store = SqliteOperationStore::open(&database.path).expect("reopen");
+    assert_eq!(
+        store
+            .begin_idempotent_operation(&scope, key, digest, spec())
+            .expect("replay after restart"),
+        IdempotencyDecision::Completed(expected)
+    );
+    assert_eq!(store.pending_outbox(10).expect("outbox").len(), 1);
+}
+
+#[test]
+fn crash_window_remains_uncertain_and_never_reissues_dispatch_authority() {
+    let database = TestDatabase::new("idempotency-uncertain-reopen");
+    let scope = idempotency_scope("resolve");
+    let key = IdempotencyKey::from_bytes(bytes(0xb2));
+    let digest = [0xc2; 32];
+    let operation;
+    {
+        let store = SqliteOperationStore::open(&database.path).expect("open");
+        operation = store
+            .begin_idempotent_operation(&scope, key, digest, spec())
+            .expect("claim")
+            .operation();
+        store
+            .dispatch(operation, CallbackId::from_bytes(bytes(4)))
+            .expect("dispatch before simulated crash");
+    }
+
+    let store = SqliteOperationStore::open(&database.path).expect("reopen");
+    assert_eq!(
+        store
+            .begin_idempotent_operation(&scope, key, digest, spec())
+            .expect("query original key"),
+        IdempotencyDecision::PendingOrUncertain(operation)
+    );
+    assert_eq!(
+        store.inspect(operation).expect("inspect").state,
+        OperationState::Dispatched
+    );
+}
+
+#[test]
+fn completed_result_is_immutable_even_for_duplicate_callback() {
+    let database = TestDatabase::new("idempotency-immutable");
+    let store = SqliteOperationStore::open(&database.path).expect("open");
+    let scope = idempotency_scope("resolve");
+    let operation = store
+        .begin_idempotent_operation(
+            &scope,
+            IdempotencyKey::from_bytes(bytes(0xb3)),
+            [0xc3; 32],
+            spec(),
+        )
+        .expect("claim")
+        .operation();
+    let ticket = store
+        .dispatch(operation, CallbackId::from_bytes(bytes(4)))
+        .expect("dispatch");
+    let outcome = CompletionOutcome::Completed {
+        receipt_id: ReceiptId::from_bytes(bytes(5)),
+    };
+    let first = store
+        .complete_idempotent_operation(ticket, outcome, b"result-v1")
+        .expect("first completion");
+    assert_eq!(
+        store
+            .complete_idempotent_operation(ticket, outcome, b"result-v1")
+            .expect("exact duplicate"),
+        first
+    );
+    assert!(matches!(
+        store.complete_idempotent_operation(ticket, outcome, b"result-v2"),
+        Err(StoreError::IdempotencyConflict)
+    ));
+    assert_eq!(store.pending_outbox(10).expect("outbox").len(), 1);
+}
+
+#[test]
+fn idempotency_scope_and_result_size_are_bounded_before_writing() {
+    let database = TestDatabase::new("idempotency-bounds");
+    let store = SqliteOperationStore::open(&database.path).expect("open");
+    let invalid_scope = IdempotencyScope {
+        application_id: ApplicationId::from_bytes(bytes(0xa0)),
+        service: String::new(),
+        method: "resolve".to_owned(),
+    };
+    assert!(matches!(
+        store.begin_idempotent_operation(
+            &invalid_scope,
+            IdempotencyKey::from_bytes(bytes(0xb4)),
+            [0xc4; 32],
+            spec(),
+        ),
+        Err(StoreError::InvalidIdempotencyScope)
+    ));
+
+    let operation = store
+        .begin_idempotent_operation(
+            &idempotency_scope("resolve"),
+            IdempotencyKey::from_bytes(bytes(0xb4)),
+            [0xc4; 32],
+            spec(),
+        )
+        .expect("claim valid scope")
+        .operation();
+    let ticket = store
+        .dispatch(operation, CallbackId::from_bytes(bytes(4)))
+        .expect("dispatch");
+    let oversized_result = vec![0; 1024 * 1024 + 1];
+    assert!(matches!(
+        store.complete_idempotent_operation(
+            ticket,
+            CompletionOutcome::Completed {
+                receipt_id: ReceiptId::from_bytes(bytes(5)),
+            },
+            &oversized_result,
+        ),
+        Err(StoreError::DurableResultTooLarge { .. })
+    ));
+    assert_eq!(
+        store
+            .inspect(operation)
+            .expect("oversize rolled back")
+            .state,
+        OperationState::Dispatched
+    );
 }
 
 #[test]
