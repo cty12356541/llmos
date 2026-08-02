@@ -1,6 +1,6 @@
 # B-SCHEMA-010：durable same-key dedup/result 初始证据
 
-> 状态：PARTIAL PASS（本地单节点 authority 测试通过；远程三平台复验待完成）
+> 状态：PARTIAL PASS（本地与远程三平台单节点 authority 测试通过；真实 SABI 接线待完成）
 >
 > 日期：2026-08-02
 >
@@ -75,9 +75,11 @@ cargo clippy -p nlos-store --all-targets -- -D warnings
 cargo fmt --all -- --check
 ```
 
+远程 [Rust cross-platform verification run 30738888761](https://github.com/cty12356541/llmos/actions/runs/30738888761) 已在 Ubuntu、macOS、Windows 全部成功；三平台均执行 workspace test 与 Clippy，因而 SQLite v3 migration、same-key replay、conflict、uncertain recovery 和 immutable result 测试均实际运行。对应 [GitHub Pages run 30738888747](https://github.com/cty12356541/llmos/actions/runs/30738888747) 也成功。
+
 ## 4. 当前不能证明什么
 
-- 尚未把该 authority 接到 ServiceDirectory 两跳 conformance server，因此 TS/Python reconnect + same-key 的真实 IPC 仍待验证；
+- 尚未把该 authority 接到 ServiceDirectory 两跳 conformance server，因此 TS/Python reconnect + same-key 的真实 IPC 仍待验证；三平台通过只证明 store authority 与既有 IPC 回归分别成功，不把两者冒充已集成；
 - 尚未实现排队、dispatch、callback 全链路 deadline fence、cancel propagation 和真实 server-side `E_UNCERTAIN` 映射；
 - request digest 的 canonicalization/计算仍由可信 service adapter 负责，本切片只持久化并比较固定 32-byte identity；
 - Receipt 仍只有 nominal ID，没有 canonical body、签名、attestation 或正式查询 API；

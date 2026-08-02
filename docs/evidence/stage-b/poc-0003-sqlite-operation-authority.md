@@ -106,7 +106,7 @@ durable format 从 v1 前向演进到 v2。v2 新增 `operation_outbox_by_operat
 
 v3 新增 scoped `idempotent_calls` authority，把首次 `(ApplicationId, service, method, IdempotencyKey)` claim 与 Operation 注册放在同一事务；terminal transition、Receipt、最多 1 MiB 原始响应和 Outbox 也在同一事务提交。相同 request digest 在重开后只返回原 Operation 或原响应，不重新授予 dispatch；不同 digest/result bytes fail-closed。完整边界、测试和限制见 [B-SCHEMA-010](./b-schema-010-durable-idempotency-result.md)。
 
-v1 golden 可直接迁移到 v3；fault VFS 的逐写入点中断只允许留下完整 v1、v2 或 v3。当前该增量已通过本地 `nlos-store` 全测试与 Clippy，远程三平台复验待提交后执行。
+v1 golden 可直接迁移到 v3；fault VFS 的逐写入点中断只允许留下完整 v1、v2 或 v3。该增量已通过本地 `nlos-store` 全测试与 Clippy，并由 [三平台 run 30738888761](https://github.com/cty12356541/llmos/actions/runs/30738888761) 在 Ubuntu、macOS、Windows 复验。
 
 ## B-STORE-FAULT F6 100K Operation metadata 增量证据（2026-08-02）
 

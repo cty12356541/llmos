@@ -41,7 +41,7 @@
 - frame 在解析前执行 1 MiB 上限，公共 request ID 固定 16 bytes；后续每种 service payload 还需更严格的独立上限；
 - non-critical 可忽略不等于可丢弃：透明 forwarding 必须保持输入 wire bytes；
 - critical extension ID 只能在实现、测试和协商支持同时存在时加入 registry；
-- 三语言 Protobuf generation/compat、首轮 sanitizer fuzz smoke、Unix/Windows typed IPC client、ServiceDirectory 两跳调用与 common metadata/safe-retry 校验已通过局部验证；durable dedup/result 已有本地 SQLite authority，但真实 IPC 接线/三平台复验、deadline/cancel/Receipt authority、CBOR 跨语言和长期 fuzz 未完成前，ADR 保持 `POC`；
+- 三语言 Protobuf generation/compat、首轮 sanitizer fuzz smoke、Unix/Windows typed IPC client、ServiceDirectory 两跳调用与 common metadata/safe-retry 校验已通过局部验证；durable dedup/result 已有三平台 SQLite authority，但真实 IPC 接线、deadline/cancel/Receipt authority、CBOR 跨语言和长期 fuzz 未完成前，ADR 保持 `POC`；
 - `nlos-types` 继续不依赖 Protobuf；wire adapter 负责在 nominal ID 与生成类型之间显式转换，避免 wire bytes 侵入内核对象身份。
 - SDK 语言按[多语言 SDK 支持评估计划](../language-sdk-support-plan.md)逐级晋升；Go/C# 当前只是 P1 评估候选，生成类型或 descriptor 不构成正式支持声明。
 
@@ -92,4 +92,4 @@
 
 [B-SCHEMA-009](../../evidence/stage-b/b-schema-009-common-sabi-semantics.md) 已以 Envelope minor=1 candidate 加入 caller/task fence、独立 correlation/idempotency、deadline、Capability、Operation/Receipt reference、19 类 common error 与 safe retry directive；[三平台 run 30737782776](https://github.com/cty12356541/llmos/actions/runs/30737782776) 与 [fuzz run 30737782772](https://github.com/cty12356541/llmos/actions/runs/30737782772) 已成功。
 
-[B-SCHEMA-010](../../evidence/stage-b/b-schema-010-durable-idempotency-result.md) 已为 common IdempotencyKey 增加本地 SQLite v3 authority：首次 scoped key claim 与 Operation 注册原子提交，terminal result 与 Receipt/Outbox 原子提交，相同 key/digest 可在重启后回放原始响应，不同 digest 冲突。真实 SABI server 接线、远程三平台复验、deadline/cancel 状态机、Receipt authority 和 peer auth 仍未完成。
+[B-SCHEMA-010](../../evidence/stage-b/b-schema-010-durable-idempotency-result.md) 已为 common IdempotencyKey 增加 SQLite v3 authority：首次 scoped key claim 与 Operation 注册原子提交，terminal result 与 Receipt/Outbox 原子提交，相同 key/digest 可在重启后回放原始响应，不同 digest 冲突；[三平台 run 30738888761](https://github.com/cty12356541/llmos/actions/runs/30738888761) 已成功。真实 SABI server 接线、deadline/cancel 状态机、Receipt authority 和 peer auth 仍未完成。

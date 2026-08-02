@@ -76,4 +76,4 @@ v1 只允许从空数据库事务创建；遇到未知 `user_version` 直接拒�
 
 [PoC-0004](../../evidence/stage-b/poc-0004-outbox-wake-consumer.md)（2026-08-01）已补齐 Tokio wake consumer 集成缺口；其核心 workspace 回归随 F7 在 Ubuntu/Windows/macOS 通过。durable wait registry/fiber rehydration、真实副作用授权与协调仍归后续工作包。
 
-[B-SCHEMA-010](../../evidence/stage-b/b-schema-010-durable-idempotency-result.md)（2026-08-02）新增 schema v3 与原子 same-key claim/result replay：相同 key/digest 在重开后返回原 Operation 或原始响应，不同 digest 冲突，处理中断不重新授予 dispatch。当前只有本地单节点测试；真实 SABI 接线、远程三平台复验、retention/GC 和 deadline/cancel/uncertain 状态机仍待完成。
+[B-SCHEMA-010](../../evidence/stage-b/b-schema-010-durable-idempotency-result.md)（2026-08-02）新增 schema v3 与原子 same-key claim/result replay：相同 key/digest 在重开后返回原 Operation 或原始响应，不同 digest 冲突，处理中断不重新授予 dispatch。[三平台 run 30738888761](https://github.com/cty12356541/llmos/actions/runs/30738888761) 已成功；真实 SABI 接线、retention/GC 和 deadline/cancel/uncertain 状态机仍待完成。

@@ -104,4 +104,4 @@ NLOS_FUZZ_RUNS=2000 NLOS_FUZZ_TOOLCHAIN=nightly-2026-08-01 scripts/run-fuzz-smok
 - safe message 只有长度/NUL 限制，生产错误脱敏、localized description 和 service-specific bounded detail 尚未实现；
 - 没有真实 server-side `E_UNCERTAIN`/`E_PARTIAL` 故障注入、stale generation、reconnect same-key retry 或持久化恢复矩阵。
 
-因此 B-SCHEMA-009 只把“common wire metadata + 三语言安全校验 + 两跳传输”记为 `PARTIAL PASS`，不把 TS/Python 升级为完整 `SDK-3`。durable same-key dedup/result 的本地 authority 已由 B-SCHEMA-010 继续推进；下一验收门是其真实 SABI 接线与 deadline/cancel/uncertain 服务端状态机。
+因此 B-SCHEMA-009 只把“common wire metadata + 三语言安全校验 + 两跳传输”记为 `PARTIAL PASS`，不把 TS/Python 升级为完整 `SDK-3`。durable same-key dedup/result 的三平台 authority 已由 B-SCHEMA-010 继续推进；下一验收门是其真实 SABI 接线与 deadline/cancel/uncertain 服务端状态机。
