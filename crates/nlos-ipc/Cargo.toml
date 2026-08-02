@@ -8,15 +8,21 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-conformance-server = []
+conformance-server = ["dep:nlos-service-directory"]
 
 [[bin]]
 name = "nlos-ipc-echo"
 path = "src/bin/nlos-ipc-echo.rs"
 required-features = ["conformance-server"]
 
+[[bin]]
+name = "nlos-directory-chain"
+path = "src/bin/nlos-directory-chain.rs"
+required-features = ["conformance-server"]
+
 [dependencies]
 nlos-schema = { path = "../nlos-schema" }
+nlos-service-directory = { path = "../nlos-service-directory", optional = true }
 tokio.workspace = true
 
 [target.'cfg(windows)'.dependencies]

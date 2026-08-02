@@ -63,6 +63,8 @@ jobs:
         run: |
           npm run ipc:test:typescript
           python tests/conformance/ipc/client.py
+          npm run directory:test:typescript
+          python tests/conformance/ipc/directory_chain.py
 
       - name: Reject Protobuf breaking changes
         if: runner.os == 'Linux' && github.event_name == 'pull_request'

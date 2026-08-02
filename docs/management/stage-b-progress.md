@@ -46,7 +46,7 @@ Application
 | `B-STORE` | SQLite WAL/FULL Operation authority、恢复、Outbox | `PARTIAL_PASS` | [ADR-0002](./adrs/0002-stage-b-sqlite-operation-authority.md)、[PoC-0003](../evidence/stage-b/poc-0003-sqlite-operation-authority.md)；F1–F7 已通过，包括三平台 CI | 100K 逐条生产写入、真实硬件掉电/更多文件系统仍超出当前证据 |
 | `B-OUTBOX` | Durable Outbox → Tokio Fiber wake/reconcile consumer | `DONE` | [PoC-0004](../evidence/stage-b/poc-0004-outbox-wake-consumer.md)；本提交及评审后 remediation 提交（hash 见 git log 与 commit receipt） | durable wait registry/fiber rehydration 归 `B-PROCESS`/Slice K；此前移交 `B-STORE-FAULT` 的 F1–F7 已全部通过。2026-08-01 remediation：评审指出的 pump 错误路径可观测性（失败计数/根因/有上限退避/Faulted 终态）、drain panic 防护、shutdown 终态语义与 wake 重缓冲已补齐并各有测试。2026-08-01 复验残余（非阻塞，详见 PoC-0004 §8.4）：持久 apply 失败（`stopped_at` 路径）暂无 health 信号 → 后续 observability 项；`Faulted` 恢复依赖外部监督 → `B-PROCESS`；`PumpHealth.last_error` 跨 IPC 边界需脱敏 → `B-CONTROL`/`B-SCHEMA`；`Buffered` 驻留仅随 fiber 终态清理 → `B-PROCESS`/Slice K |
 | `B-STORE-FAULT` | SQLite fault-injection：kill-9、torn-write、disk-full、checkpoint/backup、migration、长读事务、100K metadata、跨平台 | `DONE` | [PoC-0003 F1–F7 增量证据](../evidence/stage-b/poc-0003-sqlite-operation-authority.md)；[三平台 CI run 30714584445](https://github.com/cty12356541/llmos/actions/runs/30714584445) | 100K 逐条生产写入、真实硬件掉电/更多文件系统保留为扩展 Evidence，不阻塞本工作包 |
-| `B-SCHEMA` | Protobuf/CBOR、golden vector、版本演进和本地 typed IPC | `IN_PROGRESS` | [ADR-0003](./adrs/0003-stage-b-idl-and-canonical-encoding.md)、[B-SCHEMA-001](../evidence/stage-b/b-schema-001-protobuf-envelope.md)、[B-SCHEMA-002](../evidence/stage-b/b-schema-002-cross-language-generation.md)、[B-SCHEMA-003](../evidence/stage-b/b-schema-003-deterministic-cbor.md)、[B-SCHEMA-004](../evidence/stage-b/b-schema-004-schema-fuzz-smoke.md)、[B-SCHEMA-005](../evidence/stage-b/b-schema-005-local-typed-ipc.md)、[B-SCHEMA-006](../evidence/stage-b/b-schema-006-typescript-python-ipc-clients.md)、[B-SCHEMA-007](../evidence/stage-b/b-schema-007-service-directory-negotiation.md)、[三平台 run 30735589673](https://github.com/cty12356541/llmos/actions/runs/30735589673)、[fuzz run 30735589675](https://github.com/cty12356541/llmos/actions/runs/30735589675)；`schema/`、`gen/`、`sdk/`、`crates/nlos-schema`、`crates/nlos-service-directory`、`crates/nlos-canonical`、`crates/nlos-ipc`、`fuzz/` | 真实目录 IPC + TS/Python resolver、watch/lease、ServiceDirectory 专用 fuzz、reconnect/cancel/deadline/idempotency/Receipt、双向 peer auth、Python Proactor 稳定 profile、CBOR 跨语言、长期 fuzz、actual signing |
+| `B-SCHEMA` | Protobuf/CBOR、golden vector、版本演进和本地 typed IPC | `IN_PROGRESS` | [ADR-0003](./adrs/0003-stage-b-idl-and-canonical-encoding.md)、[B-SCHEMA-001](../evidence/stage-b/b-schema-001-protobuf-envelope.md)、[B-SCHEMA-002](../evidence/stage-b/b-schema-002-cross-language-generation.md)、[B-SCHEMA-003](../evidence/stage-b/b-schema-003-deterministic-cbor.md)、[B-SCHEMA-004](../evidence/stage-b/b-schema-004-schema-fuzz-smoke.md)、[B-SCHEMA-005](../evidence/stage-b/b-schema-005-local-typed-ipc.md)、[B-SCHEMA-006](../evidence/stage-b/b-schema-006-typescript-python-ipc-clients.md)、[B-SCHEMA-007](../evidence/stage-b/b-schema-007-service-directory-negotiation.md)、[B-SCHEMA-008](../evidence/stage-b/b-schema-008-cross-language-directory-chain.md)、[三平台 run 30735589673](https://github.com/cty12356541/llmos/actions/runs/30735589673)、[fuzz run 30735589675](https://github.com/cty12356541/llmos/actions/runs/30735589675)；`schema/`、`gen/`、`sdk/`、`crates/nlos-schema`、`crates/nlos-service-directory`、`crates/nlos-canonical`、`crates/nlos-ipc`、`fuzz/` | Namespace bootstrap authority、生产目录 watch/lease/rebind、ServiceDirectory 专用 fuzz、common SABI deadline/cancel/idempotency/Receipt、双向 peer auth、Python Proactor 稳定 profile、CBOR 跨语言、长期 fuzz、actual signing |
 | `B-SDK-LANG-EVAL` | 官方 SDK 语言集合与 Go/C# 优先兼容评估 | `READY` | [多语言 SDK 支持评估计划](./language-sdk-support-plan.md) | Gate A 先完成 TS/Python `SDK-3`；随后做 Go/C# generation/golden 探针，并至少选择一个完成跨平台 IPC PoC；Java/Kotlin、Swift、C/C++ 需求驱动复审 |
 | `B-SANDBOX` | Wasmtime/WASI 与独立 host Process 隔离对比 | `READY` | [技术选型第 5 节](./stage-b-technology-selection.md) | capability import、fuel/epoch、memory、host crash、GuaranteeTier |
 | `B-PROCESS` | native Process supervisor 与平台资源/生命周期 adapter | `READY` | [v0.5 Process 规范](../design/06-架构设计总纲-v0.5.md) | macOS/Windows/Linux suspend/kill、host incarnation、resource mapping |
@@ -157,6 +157,13 @@ Application
 - Rust `SnapshotDirectory` 在注册时拒绝 malformed/duplicate binding，并按更高 minor、更高 generation、更小 binding ID 确定性选择；Rust/TS/Python 已通过同一 resolve request golden。
 - [三平台 run 30735589673](https://github.com/cty12356541/llmos/actions/runs/30735589673) 与 [fuzz regression 30735589675](https://github.com/cty12356541/llmos/actions/runs/30735589675) 已成功；当前仍只记协议与 Rust core `PARTIAL PASS`。真实目录 IPC server、TS/Python resolver、watch/describe_error、lease/撤销和 common SABI 仍未完成。
 
+### 4.16 TypeScript/Python 目录两跳链路
+
+- feature-gated Rust fixture 同时提供 directory 与 business endpoint；directory payload 通过现有 bounded IPC 承载，协商结果来自 `SnapshotDirectory`。
+- TypeScript/Python SDK 只接收 trusted bootstrap endpoint，校验 directory response/binding 后关闭目录连接，再自动连接返回的 business endpoint。
+- 本地 macOS 已通过两种语言的 `bootstrap → negotiate → business exchange` 真实 Unix socket 组合；Windows named-pipe 与 Linux/macOS 回归待本提交三平台 CI。
+- bootstrap 仍是 raw endpoint，业务 schema 暂复用 Envelope；Namespace handle、生产目录、peer auth 和 common SABI 未完成，因此状态保持 `SDK-2 CANDIDATE / PARTIAL`。
+
 ## 5. 当前下一验收门
 
 `B-SCHEMA` 继续处于 `IN_PROGRESS`。B-SCHEMA-001/002 已完成 Protobuf envelope 与跨语言 compat gate，B-SCHEMA-003 已经三平台完成 deterministic CBOR/profile/golden，B-SCHEMA-004 已建立可重复 sanitizer fuzz smoke；当前验收门推进到本地 typed IPC adapter：
@@ -170,7 +177,8 @@ Protobuf envelope + Rust generation + registry + first golden       DONE
   → Rust typed framing + Unix/Windows platform adapters             PARTIAL PASS
   → TS/Python transport clients                                     PARTIAL PASS
   → ServiceDirectory schema + Rust negotiation core                 PARTIAL PASS
-  → TS/Python directory resolver + common SABI semantics             NEXT
+  → TS/Python directory negotiate-and-connect                       PARTIAL PASS
+  → common SABI header/error/idempotency semantics                   NEXT
   → Go/C# generation/golden probes + one independent IPC PoC         PLANNED
 ```
 

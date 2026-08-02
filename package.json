@@ -11,7 +11,8 @@
     "schema:lint": "buf lint && buf format -d --exit-code",
     "schema:test:typescript": "tsx tests/conformance/schema/envelope.ts",
     "schema:typecheck": "tsc",
-    "ipc:test:typescript": "tsx tests/conformance/ipc/client.ts"
+    "ipc:test:typescript": "tsx tests/conformance/ipc/client.ts",
+    "directory:test:typescript": "tsx tests/conformance/ipc/directory_chain.ts"
   },
   "dependencies": {
     "@bufbuild/protobuf": "2.13.0"
