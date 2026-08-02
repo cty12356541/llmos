@@ -1,6 +1,6 @@
 # B-SCHEMA-006：TypeScript/Python 真实本地 IPC client 初始证据
 
-> 状态：PARTIAL PASS（三平台 CI 待本提交推送后复验）
+> 状态：PARTIAL PASS（三平台 CI 已通过）
 >
 > 日期：2026-08-02
 >
@@ -67,7 +67,7 @@ TypeScript 与 Python conformance 都覆盖：
 5. server 正常退出；
 6. 不存在 endpoint 返回 `CONNECT` 或耗尽有界窗口后的 `TIMEOUT`。
 
-macOS 上两种 client 都通过真实 Unix socket。Node 的 Windows named-pipe path 与 Python Proactor 分支必须由本提交的 Windows CI 实机验证，在 run 成功前不能记作跨平台通过。
+提交 `4ca76c9` 对应的[三平台 CI run 30734744799](https://github.com/cty12356541/llmos/actions/runs/30734744799) 已全部成功。macOS 与 Ubuntu 通过 Unix socket；Windows 通过 Node named pipe 与 Python Proactor 两条真实 client 路径，并同时通过 workspace test 和 Clippy。
 
 ## 4. 当前能证明什么
 
@@ -79,11 +79,11 @@ macOS 上两种 client 都通过真实 Unix socket。Node 的 Windows named-pipe
 
 ## 5. 当前不能证明什么
 
-- Windows 实机结果待 CI；特别是 Python 使用的 `ProactorEventLoop.create_pipe_connection` 是 CPython concrete loop 能力，不在 `AbstractEventLoop` 稳定公共表面，必须记录最低 CPython profile 或替换为受维护 adapter；
+- Windows 实机已通过当前 CI profile，但 Python 使用的 `ProactorEventLoop.create_pipe_connection` 是 CPython concrete loop 能力，不在 `AbstractEventLoop` 稳定公共表面；当前成功不能替代最低 CPython profile、长期兼容承诺或受维护 adapter 的选择；
 - client 尚未通过 OS API 验证 server peer identity；当前安全性依赖 endpoint 来自未来受信 ServiceDirectory 和 server 侧 authorization，不能据此宣称双向认证；
 - ServiceDirectory、version/feature negotiation、Capability、deadline/cancel、IdempotencyKey、`E_UNCERTAIN`、Operation/Receipt 和 partial failure 尚未进入最小 schema；
 - 没有自动重连；poison 后由调用方新建 client，何时允许以同 IdempotencyKey 重试必须由后续 common SABI 语义决定；
 - 当前是源码内 candidate SDK，没有 npm/PyPI package、版本承诺、安装文档、API 稳定性或发布签名；
 - 没有 streaming、多连接池、公平性、长期压力、恶意 peer 持续小块发送或 server restart 矩阵。
 
-因此 TypeScript/Python 只晋升为 `SDK-2 CANDIDATE / PARTIAL`，不能标记 `SDK-3` 或官方 SDK。下一验收门是先关闭 Windows CI/Proactor 风险，再实现 ServiceDirectory negotiation 与最小 common SABI semantics。
+因此 TypeScript/Python 只晋升为 `SDK-2 CANDIDATE / PARTIAL`，不能标记 `SDK-3` 或官方 SDK。下一验收门是实现 ServiceDirectory negotiation 与最小 common SABI semantics；Python Proactor 稳定边界作为 SDK packaging/profile 风险继续跟踪。

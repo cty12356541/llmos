@@ -46,7 +46,7 @@ Application
 | `B-STORE` | SQLite WAL/FULL Operation authority、恢复、Outbox | `PARTIAL_PASS` | [ADR-0002](./adrs/0002-stage-b-sqlite-operation-authority.md)、[PoC-0003](../evidence/stage-b/poc-0003-sqlite-operation-authority.md)；F1–F7 已通过，包括三平台 CI | 100K 逐条生产写入、真实硬件掉电/更多文件系统仍超出当前证据 |
 | `B-OUTBOX` | Durable Outbox → Tokio Fiber wake/reconcile consumer | `DONE` | [PoC-0004](../evidence/stage-b/poc-0004-outbox-wake-consumer.md)；本提交及评审后 remediation 提交（hash 见 git log 与 commit receipt） | durable wait registry/fiber rehydration 归 `B-PROCESS`/Slice K；此前移交 `B-STORE-FAULT` 的 F1–F7 已全部通过。2026-08-01 remediation：评审指出的 pump 错误路径可观测性（失败计数/根因/有上限退避/Faulted 终态）、drain panic 防护、shutdown 终态语义与 wake 重缓冲已补齐并各有测试。2026-08-01 复验残余（非阻塞，详见 PoC-0004 §8.4）：持久 apply 失败（`stopped_at` 路径）暂无 health 信号 → 后续 observability 项；`Faulted` 恢复依赖外部监督 → `B-PROCESS`；`PumpHealth.last_error` 跨 IPC 边界需脱敏 → `B-CONTROL`/`B-SCHEMA`；`Buffered` 驻留仅随 fiber 终态清理 → `B-PROCESS`/Slice K |
 | `B-STORE-FAULT` | SQLite fault-injection：kill-9、torn-write、disk-full、checkpoint/backup、migration、长读事务、100K metadata、跨平台 | `DONE` | [PoC-0003 F1–F7 增量证据](../evidence/stage-b/poc-0003-sqlite-operation-authority.md)；[三平台 CI run 30714584445](https://github.com/cty12356541/llmos/actions/runs/30714584445) | 100K 逐条生产写入、真实硬件掉电/更多文件系统保留为扩展 Evidence，不阻塞本工作包 |
-| `B-SCHEMA` | Protobuf/CBOR、golden vector、版本演进和本地 typed IPC | `IN_PROGRESS` | [ADR-0003](./adrs/0003-stage-b-idl-and-canonical-encoding.md)、[B-SCHEMA-001](../evidence/stage-b/b-schema-001-protobuf-envelope.md)、[B-SCHEMA-002](../evidence/stage-b/b-schema-002-cross-language-generation.md)、[B-SCHEMA-003](../evidence/stage-b/b-schema-003-deterministic-cbor.md)、[B-SCHEMA-004](../evidence/stage-b/b-schema-004-schema-fuzz-smoke.md)、[B-SCHEMA-005](../evidence/stage-b/b-schema-005-local-typed-ipc.md)、[B-SCHEMA-006](../evidence/stage-b/b-schema-006-typescript-python-ipc-clients.md)；`schema/`、`gen/`、`sdk/`、`crates/nlos-schema`、`crates/nlos-canonical`、`crates/nlos-ipc`、`fuzz/` | TS/Python Windows IPC CI、ServiceDirectory/negotiation、reconnect/cancel/deadline/idempotency/Receipt、双向 peer auth、CBOR 跨语言、长期 fuzz、actual signing |
+| `B-SCHEMA` | Protobuf/CBOR、golden vector、版本演进和本地 typed IPC | `IN_PROGRESS` | [ADR-0003](./adrs/0003-stage-b-idl-and-canonical-encoding.md)、[B-SCHEMA-001](../evidence/stage-b/b-schema-001-protobuf-envelope.md)、[B-SCHEMA-002](../evidence/stage-b/b-schema-002-cross-language-generation.md)、[B-SCHEMA-003](../evidence/stage-b/b-schema-003-deterministic-cbor.md)、[B-SCHEMA-004](../evidence/stage-b/b-schema-004-schema-fuzz-smoke.md)、[B-SCHEMA-005](../evidence/stage-b/b-schema-005-local-typed-ipc.md)、[B-SCHEMA-006](../evidence/stage-b/b-schema-006-typescript-python-ipc-clients.md)、[三平台 run 30734744799](https://github.com/cty12356541/llmos/actions/runs/30734744799)；`schema/`、`gen/`、`sdk/`、`crates/nlos-schema`、`crates/nlos-canonical`、`crates/nlos-ipc`、`fuzz/` | ServiceDirectory/negotiation、reconnect/cancel/deadline/idempotency/Receipt、双向 peer auth、Python Proactor 稳定 profile、CBOR 跨语言、长期 fuzz、actual signing |
 | `B-SDK-LANG-EVAL` | 官方 SDK 语言集合与 Go/C# 优先兼容评估 | `READY` | [多语言 SDK 支持评估计划](./language-sdk-support-plan.md) | Gate A 先完成 TS/Python `SDK-3`；随后做 Go/C# generation/golden 探针，并至少选择一个完成跨平台 IPC PoC；Java/Kotlin、Swift、C/C++ 需求驱动复审 |
 | `B-SANDBOX` | Wasmtime/WASI 与独立 host Process 隔离对比 | `READY` | [技术选型第 5 节](./stage-b-technology-selection.md) | capability import、fuel/epoch、memory、host crash、GuaranteeTier |
 | `B-PROCESS` | native Process supervisor 与平台资源/生命周期 adapter | `READY` | [v0.5 Process 规范](../design/06-架构设计总纲-v0.5.md) | macOS/Windows/Linux suspend/kill、host incarnation、resource mapping |
@@ -147,7 +147,7 @@ Application
 
 - Node `net.Socket` 和 Python asyncio client 已实现与 Rust 相同的 4-byte framing、1 MiB bound、connect/read/write timeout、单 in-flight backpressure、compatibility gate、request ID correlation 和失败后 connection poison。
 - 两种 client 均通过真实 macOS Unix socket 调用 feature-gated Rust conformance server；测试同时覆盖 unknown major preflight、并发 backpressure 和 unavailable endpoint。
-- 三平台 workflow 已加入 Rust server ↔ TypeScript/Python client 真实组合；Windows Node named pipe 与 Python Proactor 结果待本提交推送后复验。
+- [三平台 run 30734744799](https://github.com/cty12356541/llmos/actions/runs/30734744799) 已通过 Rust server ↔ TypeScript/Python client 真实组合；Windows Node named pipe 与 Python Proactor 路径均成功。
 - ServiceDirectory/common SABI、双向 peer auth、自动重连与 SDK 发布尚未完成，因此当前只记 `SDK-2 CANDIDATE / PARTIAL`。
 
 ## 5. 当前下一验收门
@@ -168,7 +168,7 @@ Protobuf envelope + Rust generation + registry + first golden       DONE
 
 当前 typed IPC 总验收条件及剩余门：
 
-1. 最小 request/response service 与 Rust/TypeScript/Python client 已实现；TS/Python Windows 分支待 CI 关闭风险；
+1. 最小 request/response service 与 Rust/TypeScript/Python client 已实现，TS/Python Unix/Windows 分支已由三平台 CI 验证；
 2. transport-neutral framing、Unix 后端和 Windows named-pipe 后端已由本地/三平台 CI 验证；
 3. frame length、connect/read/write timeout、peer identity/authorization hook 和 backpressure 已显式有界；Windows token/SID 仍缺；
 4. unknown field、unknown major/critical、断连、半帧、超界和 endpoint 不可用已有失败语义；TS/Python 失败连接也会 poison；自动重连/cancel/deadline/idempotency 状态机仍待实现；
