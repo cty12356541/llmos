@@ -76,4 +76,6 @@ v1 只允许从空数据库事务创建；遇到未知 `user_version` 直接拒�
 
 [PoC-0004](../../evidence/stage-b/poc-0004-outbox-wake-consumer.md)（2026-08-01）已补齐 Tokio wake consumer 集成缺口；其核心 workspace 回归随 F7 在 Ubuntu/Windows/macOS 通过。durable wait registry/fiber rehydration、真实副作用授权与协调仍归后续工作包。
 
-[B-SCHEMA-010](../../evidence/stage-b/b-schema-010-durable-idempotency-result.md)（2026-08-02）新增 schema v3 与原子 same-key claim/result replay：相同 key/digest 在重开后返回原 Operation 或原始响应，不同 digest 冲突，处理中断不重新授予 dispatch。[三平台 run 30738888761](https://github.com/cty12356541/llmos/actions/runs/30738888761) 已成功；真实 SABI 接线、retention/GC 和 deadline/cancel/uncertain 状态机仍待完成。
+[B-SCHEMA-010](../../evidence/stage-b/b-schema-010-durable-idempotency-result.md)（2026-08-02）新增 schema v3 与原子 same-key claim/result replay：相同 key/digest 在重开后返回原 Operation 或稳定 service result，不同 digest 冲突，处理中断不重新授予 dispatch。[三平台 run 30738888761](https://github.com/cty12356541/llmos/actions/runs/30738888761) 已成功。
+
+[B-SCHEMA-011](../../evidence/stage-b/b-schema-011-durable-idempotency-ipc.md) 已把 authority 接入本地 Rust↔TS/Python 两跳 IPC，并验证 commit 后/response 前断线、原 key 重连回放、conflict 和 `E_UNCERTAIN`。远程三平台、server process restart、retention/GC 和 deadline/cancel 状态机仍待完成。

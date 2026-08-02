@@ -64,6 +64,7 @@ pub enum IpcError {
     ConnectionUnusable,
     RequestIdMismatch,
     AuthorizationDenied(String),
+    ServiceFailure(&'static str),
 }
 
 impl fmt::Display for IpcError {
@@ -92,6 +93,7 @@ impl fmt::Display for IpcError {
             Self::AuthorizationDenied(reason) => {
                 write!(formatter, "IPC peer authorization denied: {reason}")
             }
+            Self::ServiceFailure(reason) => write!(formatter, "IPC service failed: {reason}"),
         }
     }
 }

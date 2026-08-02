@@ -1,6 +1,6 @@
 # B-SCHEMA-010：durable same-key dedup/result 初始证据
 
-> 状态：PARTIAL PASS（本地与远程三平台单节点 authority 测试通过；真实 SABI 接线待完成）
+> 状态：PARTIAL PASS（本地与远程三平台单节点 authority 测试通过；真实 SABI 接线的后续证据见 B-SCHEMA-011）
 >
 > 日期：2026-08-02
 >
@@ -19,7 +19,7 @@
 - 32-byte canonical request SHA-256 digest；
 - generation-fenced Operation handle；
 - terminal ReceiptId；
-- 最多 1 MiB 的原始响应 wire bytes。
+- 最多 1 MiB 的 transport-independent service result bytes。
 
 service/method 必须非空、单项不超过 128 bytes 且不含 NUL。数据库使用 `STRICT` table、长度约束、唯一 Operation 绑定和 completed-result immutable trigger；未知 schema version 继续 fail-closed。
 
@@ -40,7 +40,7 @@ COMMIT
 
 1. request digest 不同：返回 `IdempotencyConflict`，不注册或派发新 Operation；
 2. digest 相同但结果未提交：返回 `PendingOrUncertain(original Operation)`，不得重新派发副作用；
-3. digest 相同且结果已提交：返回原 Operation、ReceiptId 和逐字节相同的 `response_wire`。
+3. digest 相同且结果已提交：返回原 Operation、ReceiptId 和逐字节相同的 `result_wire`。
 
 terminal callback 使用 `complete_idempotent_operation` 在同一事务提交：
 
@@ -79,7 +79,7 @@ cargo fmt --all -- --check
 
 ## 4. 当前不能证明什么
 
-- 尚未把该 authority 接到 ServiceDirectory 两跳 conformance server，因此 TS/Python reconnect + same-key 的真实 IPC 仍待验证；三平台通过只证明 store authority 与既有 IPC 回归分别成功，不把两者冒充已集成；
+- 本切片提交时尚未接入 ServiceDirectory 两跳 server；后续 [B-SCHEMA-011](./b-schema-011-durable-idempotency-ipc.md) 已补本地 TS/Python reconnect + same-key 真实 IPC，远程三平台复验仍待完成；
 - 尚未实现排队、dispatch、callback 全链路 deadline fence、cancel propagation 和真实 server-side `E_UNCERTAIN` 映射；
 - request digest 的 canonicalization/计算仍由可信 service adapter 负责，本切片只持久化并比较固定 32-byte identity；
 - Receipt 仍只有 nominal ID，没有 canonical body、签名、attestation 或正式查询 API；

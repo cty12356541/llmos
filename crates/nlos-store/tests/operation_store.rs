@@ -103,6 +103,12 @@ fn same_key_claim_is_atomic_and_request_digest_conflicts_fail_closed() {
             .expect("replay claim"),
         IdempotencyDecision::PendingOrUncertain(first.operation())
     );
+    assert_eq!(
+        store
+            .inspect_idempotent_operation(&scope, key)
+            .expect("inspect original key"),
+        Some(IdempotencyDecision::PendingOrUncertain(first.operation()))
+    );
     assert!(matches!(
         store.begin_idempotent_operation(&scope, key, [0xc1; 32], spec()),
         Err(StoreError::IdempotencyConflict)

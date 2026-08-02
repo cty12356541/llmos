@@ -1,19 +1,35 @@
 use std::error::Error;
 use std::ffi::OsString;
+use std::fs;
 use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-use nlos_ipc::{OutboundResponse, PeerAuthorizer, PeerIdentity, TransportConfig, serve_one};
+use nlos_ipc::{
+    FramedIo, IpcError, OutboundResponse, PeerAuthorizer, PeerIdentity, TransportConfig, serve_one,
+};
+use nlos_operation::{CompletionOutcome, OperationSpec};
+use nlos_runtime::FiberHandle;
 use nlos_schema::sabi::v1::{
     DirectoryError, DirectoryErrorCode, ExchangeResponse, LocalEndpoint, LocalTransportKind,
-    NegotiateServiceResponse, OperationReference, ReceiptReference, SabiResponseContext,
-    ServiceCandidate, ServiceVersion, envelope, negotiate_service_response,
+    NegotiateServiceResponse, OperationReference, ReceiptReference, RetryDirective, SabiErrorCode,
+    SabiFailure, SabiResponseContext, ServiceCandidate, ServiceVersion, envelope,
+    negotiate_service_response,
 };
 use nlos_schema::{
-    MethodSemantics, SABI_ENVELOPE_SCHEMA, decode_negotiate_service_request,
-    encode_negotiate_service_response, service_directory_schema_identity,
-    validate_sabi_request_context,
+    MethodSemantics, SABI_ENVELOPE_SCHEMA, decode_exchange_request,
+    decode_negotiate_service_request, encode_negotiate_service_response,
+    service_directory_schema_identity, validate_sabi_request_context,
 };
 use nlos_service_directory::{ServiceRegistration, SnapshotDirectory};
+use nlos_store::{
+    DurableCallResult, IdempotencyDecision, IdempotencyScope, SqliteOperationStore, StoreError,
+};
+use nlos_types::{
+    ApplicationId, CallbackId, CancellationScopeId, ExecutionFiberId, Generation, IdempotencyKey,
+    OperationId, ReceiptId,
+};
+use sha2::{Digest, Sha256};
 
 const DIRECTORY_SERVICE: &str = "service_directory";
 const NEGOTIATE_METHOD: &str = "negotiate";
@@ -32,10 +48,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut arguments = std::env::args_os().skip(1);
     let directory_endpoint = arguments.next().ok_or("missing directory endpoint")?;
     let business_endpoint = arguments.next().ok_or("missing business endpoint")?;
+    let authority_path = arguments.next().ok_or("missing authority database path")?;
     if arguments.next().is_some() {
         return Err("unexpected extra argument".into());
     }
-    run(directory_endpoint, business_endpoint).await
+    run(directory_endpoint, business_endpoint, authority_path).await
 }
 
 fn announce_ready() -> io::Result<()> {
@@ -71,10 +88,8 @@ fn directory(
 async fn run(
     directory_endpoint: OsString,
     business_endpoint: OsString,
+    authority_path: OsString,
 ) -> Result<(), Box<dyn Error>> {
-    use std::fs;
-    use std::path::PathBuf;
-
     use nlos_ipc::unix::UnixListenerAdapter;
 
     struct EndpointGuard(Vec<PathBuf>);
@@ -89,6 +104,7 @@ async fn run(
 
     let directory_path = PathBuf::from(directory_endpoint);
     let business_path = PathBuf::from(business_endpoint);
+    let authority_path = PathBuf::from(authority_path);
     let business_address = business_path
         .to_str()
         .ok_or("business endpoint must be UTF-8")?
@@ -96,6 +112,8 @@ async fn run(
     let directory_listener = UnixListenerAdapter::bind(&directory_path)?;
     let business_listener = UnixListenerAdapter::bind(&business_path)?;
     let _guard = EndpointGuard(vec![directory_path, business_path]);
+    let _database_guard = DatabaseGuard::new(authority_path.clone());
+    let authority = BusinessAuthority::open(&authority_path)?;
     let snapshot = directory(LocalTransportKind::UnixSocket, business_address)?;
     announce_ready()?;
 
@@ -105,7 +123,16 @@ async fn run(
     serve_directory(directory_stream, directory_peer, snapshot).await?;
     let (business_stream, business_peer) =
         business_listener.accept(TransportConfig::default()).await?;
-    serve_business(business_stream, business_peer).await?;
+    commit_then_drop_response(business_stream, business_peer, &authority).await?;
+    let (retry_stream, retry_peer) = business_listener.accept(TransportConfig::default()).await?;
+    serve_business(retry_stream, retry_peer, &authority).await?;
+    let (conflict_stream, conflict_peer) =
+        business_listener.accept(TransportConfig::default()).await?;
+    serve_business(conflict_stream, conflict_peer, &authority).await?;
+    let (pending_stream, pending_peer) =
+        business_listener.accept(TransportConfig::default()).await?;
+    serve_business(pending_stream, pending_peer, &authority).await?;
+    authority.assert_single_cancel_dispatch()?;
     Ok(())
 }
 
@@ -113,6 +140,7 @@ async fn run(
 async fn run(
     directory_endpoint: OsString,
     business_endpoint: OsString,
+    authority_path: OsString,
 ) -> Result<(), Box<dyn Error>> {
     use nlos_ipc::windows::NamedPipeListenerAdapter;
 
@@ -124,6 +152,9 @@ async fn run(
         NamedPipeListenerAdapter::bind(directory_endpoint, 2, TransportConfig::default())?;
     let mut business_listener =
         NamedPipeListenerAdapter::bind(business_endpoint, 2, TransportConfig::default())?;
+    let authority_path = PathBuf::from(authority_path);
+    let _database_guard = DatabaseGuard::new(authority_path.clone());
+    let authority = BusinessAuthority::open(&authority_path)?;
     let snapshot = directory(LocalTransportKind::WindowsNamedPipe, business_address)?;
     announce_ready()?;
 
@@ -133,8 +164,68 @@ async fn run(
     serve_directory(directory_stream, directory_peer, snapshot).await?;
     let (business_stream, business_peer) =
         business_listener.accept(TransportConfig::default()).await?;
-    serve_business(business_stream, business_peer).await?;
+    commit_then_drop_response(business_stream, business_peer, &authority).await?;
+    let (retry_stream, retry_peer) = business_listener.accept(TransportConfig::default()).await?;
+    serve_business(retry_stream, retry_peer, &authority).await?;
+    let (conflict_stream, conflict_peer) =
+        business_listener.accept(TransportConfig::default()).await?;
+    serve_business(conflict_stream, conflict_peer, &authority).await?;
+    let (pending_stream, pending_peer) =
+        business_listener.accept(TransportConfig::default()).await?;
+    serve_business(pending_stream, pending_peer, &authority).await?;
+    authority.assert_single_cancel_dispatch()?;
     Ok(())
+}
+
+struct DatabaseGuard {
+    path: PathBuf,
+}
+
+impl DatabaseGuard {
+    fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+}
+
+impl Drop for DatabaseGuard {
+    fn drop(&mut self) {
+        for path in [
+            self.path.clone(),
+            suffix_path(&self.path, "-wal"),
+            suffix_path(&self.path, "-shm"),
+        ] {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
+fn suffix_path(path: &Path, suffix: &str) -> PathBuf {
+    let mut value = path.as_os_str().to_os_string();
+    value.push(suffix);
+    PathBuf::from(value)
+}
+
+struct BusinessAuthority {
+    store: SqliteOperationStore,
+    cancel_dispatches: AtomicUsize,
+}
+
+impl BusinessAuthority {
+    fn open(path: &Path) -> Result<Self, nlos_store::StoreError> {
+        Ok(Self {
+            store: SqliteOperationStore::open(path)?,
+            cancel_dispatches: AtomicUsize::new(0),
+        })
+    }
+
+    fn assert_single_cancel_dispatch(&self) -> Result<(), Box<dyn Error>> {
+        let actual = self.cancel_dispatches.load(Ordering::SeqCst);
+        if actual == 1 {
+            Ok(())
+        } else {
+            Err(format!("expected one durable dispatch, observed {actual}").into())
+        }
+    }
 }
 
 async fn serve_directory<S>(
@@ -174,7 +265,29 @@ where
     .await
 }
 
-async fn serve_business<S>(stream: S, peer: PeerIdentity) -> Result<(), nlos_ipc::IpcError>
+async fn commit_then_drop_response<S>(
+    stream: S,
+    peer: PeerIdentity,
+    authority: &BusinessAuthority,
+) -> Result<(), IpcError>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    AllowConformancePeer
+        .authorize(&peer)
+        .map_err(IpcError::AuthorizationDenied)?;
+    let mut connection = FramedIo::new(stream, TransportConfig::default());
+    let wire = connection.receive().await?;
+    let request = decode_exchange_request(&wire)?;
+    let _committed_response = process_business(&request, authority)?;
+    Ok(())
+}
+
+async fn serve_business<S>(
+    stream: S,
+    peer: PeerIdentity,
+    authority: &BusinessAuthority,
+) -> Result<(), IpcError>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
@@ -183,30 +296,196 @@ where
         TransportConfig::default(),
         peer,
         &AllowConformancePeer,
-        |request| async move {
-            let request_context = validate_sabi_request_context(
-                request.envelope(),
-                MethodSemantics::LONG_RUNNING_MUTATION,
-                123_455,
-            )?;
-            let mut envelope = request.envelope().clone();
-            envelope.common_context = Some(envelope::CommonContext::ResponseContext(
-                SabiResponseContext {
-                    correlation_id: request_context.correlation_id.clone(),
-                    operation: Some(OperationReference {
-                        operation_id: vec![8; 16],
-                        generation: 4,
-                    }),
-                    receipts: vec![ReceiptReference {
-                        receipt_id: vec![9; 16],
-                    }],
-                    failure: None,
-                },
-            ));
-            Ok(OutboundResponse::Typed(ExchangeResponse {
-                envelope: Some(envelope),
-            }))
-        },
+        |request| async move { process_business(&request, authority) },
     )
     .await
+}
+
+fn process_business(
+    request: &nlos_schema::ValidatedExchangeRequest,
+    authority: &BusinessAuthority,
+) -> Result<OutboundResponse, IpcError> {
+    let request_context = validate_sabi_request_context(
+        request.envelope(),
+        MethodSemantics::LONG_RUNNING_MUTATION,
+        123_455,
+    )?;
+    let caller = request_context
+        .caller
+        .as_ref()
+        .ok_or(IpcError::ServiceFailure("validated caller is missing"))?;
+    let correlation_id = request_context.correlation_id.clone();
+    let application_id = ApplicationId::from_bytes(fixed16(&caller.application_id)?);
+    let idempotency_key = IdempotencyKey::from_bytes(fixed16(&request_context.idempotency_key)?);
+    let scope = IdempotencyScope {
+        application_id,
+        service: request.envelope().service.clone(),
+        method: request.envelope().method.clone(),
+    };
+    let request_digest = Sha256::digest(&request.envelope().payload).into();
+    let operation_id = stable_operation_id(&scope, idempotency_key);
+    let spec = OperationSpec {
+        operation_id,
+        generation: Generation::INITIAL,
+        owner_fiber: FiberHandle {
+            fiber_id: ExecutionFiberId::from_bytes(fixed16(&caller.process_id)?),
+            generation: Generation::INITIAL,
+        },
+        cancellation_scope_id: CancellationScopeId::from_bytes(idempotency_key.into_bytes()),
+        cancellation_generation: Generation::INITIAL,
+    };
+    let decision = match authority.store.begin_idempotent_operation(
+        &scope,
+        idempotency_key,
+        request_digest,
+        spec,
+    ) {
+        Ok(decision) => decision,
+        Err(StoreError::IdempotencyConflict) => {
+            let original = authority
+                .store
+                .inspect_idempotent_operation(&scope, idempotency_key)
+                .map_err(|_| IpcError::ServiceFailure("idempotency conflict lookup failed"))?
+                .ok_or(IpcError::ServiceFailure(
+                    "idempotency conflict lacks original operation",
+                ))?;
+            return Ok(conflict_response(
+                request,
+                correlation_id,
+                original.operation(),
+            ));
+        }
+        Err(_) => {
+            return Err(IpcError::ServiceFailure("durable idempotency claim failed"));
+        }
+    };
+
+    let result = match decision {
+        IdempotencyDecision::Created(operation) => {
+            if request.envelope().method == "cancel" {
+                authority.cancel_dispatches.fetch_add(1, Ordering::SeqCst);
+            }
+            let ticket = authority
+                .store
+                .dispatch(operation, CallbackId::from_bytes([0x88; 16]))
+                .map_err(|_| IpcError::ServiceFailure("durable dispatch failed"))?;
+            if request.envelope().method == "pending" {
+                return Ok(uncertain_response(request, correlation_id, operation));
+            }
+            let mut result_wire = request.envelope().payload.clone();
+            result_wire.push(0xd0);
+            authority
+                .store
+                .complete_idempotent_operation(
+                    ticket,
+                    CompletionOutcome::Completed {
+                        receipt_id: ReceiptId::from_bytes([0x99; 16]),
+                    },
+                    &result_wire,
+                )
+                .map_err(|_| IpcError::ServiceFailure("durable completion failed"))?
+        }
+        IdempotencyDecision::Completed(result) => result,
+        IdempotencyDecision::PendingOrUncertain(operation) => {
+            return Ok(uncertain_response(request, correlation_id, operation));
+        }
+    };
+    Ok(success_response(request, correlation_id, result))
+}
+
+fn success_response(
+    request: &nlos_schema::ValidatedExchangeRequest,
+    correlation_id: Vec<u8>,
+    result: DurableCallResult,
+) -> OutboundResponse {
+    let mut envelope = request.envelope().clone();
+    envelope.payload = result.result_wire;
+    envelope.common_context = Some(envelope::CommonContext::ResponseContext(
+        SabiResponseContext {
+            correlation_id,
+            operation: Some(operation_reference(result.operation)),
+            receipts: vec![ReceiptReference {
+                receipt_id: result.receipt_id.into_bytes().to_vec(),
+            }],
+            failure: None,
+        },
+    ));
+    OutboundResponse::Typed(ExchangeResponse {
+        envelope: Some(envelope),
+    })
+}
+
+fn uncertain_response(
+    request: &nlos_schema::ValidatedExchangeRequest,
+    correlation_id: Vec<u8>,
+    operation: nlos_operation::OperationHandle,
+) -> OutboundResponse {
+    let mut envelope = request.envelope().clone();
+    envelope.payload.clear();
+    envelope.common_context = Some(envelope::CommonContext::ResponseContext(
+        SabiResponseContext {
+            correlation_id,
+            operation: Some(operation_reference(operation)),
+            receipts: Vec::new(),
+            failure: Some(SabiFailure {
+                code: SabiErrorCode::Uncertain.into(),
+                retry: RetryDirective::QueryOperationOrRetrySameIdempotencyKey.into(),
+                safe_message: "operation result is not yet durable".to_owned(),
+            }),
+        },
+    ));
+    OutboundResponse::Typed(ExchangeResponse {
+        envelope: Some(envelope),
+    })
+}
+
+fn conflict_response(
+    request: &nlos_schema::ValidatedExchangeRequest,
+    correlation_id: Vec<u8>,
+    operation: nlos_operation::OperationHandle,
+) -> OutboundResponse {
+    let mut envelope = request.envelope().clone();
+    envelope.payload.clear();
+    envelope.common_context = Some(envelope::CommonContext::ResponseContext(
+        SabiResponseContext {
+            correlation_id,
+            operation: Some(operation_reference(operation)),
+            receipts: Vec::new(),
+            failure: Some(SabiFailure {
+                code: SabiErrorCode::Conflict.into(),
+                retry: RetryDirective::DoNotRetry.into(),
+                safe_message: "idempotency key conflicts with the original request".to_owned(),
+            }),
+        },
+    ));
+    OutboundResponse::Typed(ExchangeResponse {
+        envelope: Some(envelope),
+    })
+}
+
+fn operation_reference(operation: nlos_operation::OperationHandle) -> OperationReference {
+    OperationReference {
+        operation_id: operation.operation_id.into_bytes().to_vec(),
+        generation: operation.generation.get(),
+    }
+}
+
+fn fixed16(bytes: &[u8]) -> Result<[u8; 16], IpcError> {
+    bytes
+        .try_into()
+        .map_err(|_| IpcError::ServiceFailure("validated identifier length changed"))
+}
+
+fn stable_operation_id(scope: &IdempotencyScope, key: IdempotencyKey) -> OperationId {
+    let mut digest = Sha256::new();
+    digest.update(scope.application_id.as_bytes());
+    digest.update((scope.service.len() as u64).to_be_bytes());
+    digest.update(scope.service.as_bytes());
+    digest.update((scope.method.len() as u64).to_be_bytes());
+    digest.update(scope.method.as_bytes());
+    digest.update(key.as_bytes());
+    let digest = digest.finalize();
+    let mut operation_id = [0_u8; 16];
+    operation_id.copy_from_slice(&digest[..16]);
+    OperationId::from_bytes(operation_id)
 }

@@ -56,6 +56,7 @@
 - `minicbor 2.3.0` 为 BlueOak-1.0.0，只作为可替换的 CBOR primitive codec；NLOS profile 自行执行 map/type/order/size/domain/compat 与 re-encode byte equality 检查；
 - `cargo-fuzz 0.13.2` + `libfuzzer-sys 0.4.13` 只进入独立 `fuzz/` package；CI 固定 nightly `2026-08-01` 并执行 Linux AddressSanitizer smoke，不进入普通 workspace 或生产依赖；
 - `tokio 1.53.1` 提供 Unix socket、peer credential 与 Windows named-pipe async stream；`windows-sys 0.61.2` 只在 Windows IPC adapter 使用固定错误码和 identification QoS 常量，不进入 schema 或 `nlos-types`；
+- `sha2 0.11.0`（MIT OR Apache-2.0，MSRV 1.85）只进入 feature-gated conformance server 的可信 request adapter，用于计算实际 SHA-256 payload identity；它不进入 wire/durable ABI，正式 service 仍必须定义 canonical effect fields；
 - 上述依赖只进入可替换 schema/build adapter，不进入 Safety TCB、KABI 或 `nlos-types`；升级必须重跑 golden、compat、三平台 CI 和后续 fuzz corpus。
 
 ## 首切片验收
@@ -92,4 +93,6 @@
 
 [B-SCHEMA-009](../../evidence/stage-b/b-schema-009-common-sabi-semantics.md) 已以 Envelope minor=1 candidate 加入 caller/task fence、独立 correlation/idempotency、deadline、Capability、Operation/Receipt reference、19 类 common error 与 safe retry directive；[三平台 run 30737782776](https://github.com/cty12356541/llmos/actions/runs/30737782776) 与 [fuzz run 30737782772](https://github.com/cty12356541/llmos/actions/runs/30737782772) 已成功。
 
-[B-SCHEMA-010](../../evidence/stage-b/b-schema-010-durable-idempotency-result.md) 已为 common IdempotencyKey 增加 SQLite v3 authority：首次 scoped key claim 与 Operation 注册原子提交，terminal result 与 Receipt/Outbox 原子提交，相同 key/digest 可在重启后回放原始响应，不同 digest 冲突；[三平台 run 30738888761](https://github.com/cty12356541/llmos/actions/runs/30738888761) 已成功。真实 SABI server 接线、deadline/cancel 状态机、Receipt authority 和 peer auth 仍未完成。
+[B-SCHEMA-010](../../evidence/stage-b/b-schema-010-durable-idempotency-result.md) 已为 common IdempotencyKey 增加 SQLite v3 authority：首次 scoped key claim 与 Operation 注册原子提交，terminal result 与 Receipt/Outbox 原子提交，相同 key/digest 可在重启后回放稳定 service result，不同 digest 冲突；[三平台 run 30738888761](https://github.com/cty12356541/llmos/actions/runs/30738888761) 已成功。
+
+[B-SCHEMA-011](../../evidence/stage-b/b-schema-011-durable-idempotency-ipc.md) 已完成本地真实 SABI 接线，并明确 durable `result_wire` 与每次 exchange 重建的 request ID/correlation/envelope 分层；TS/Python commit 后断线重连、conflict 和 `E_UNCERTAIN` 通过。远程三平台、server process restart、deadline/cancel 状态机、Receipt authority 和 peer auth 仍未完成。

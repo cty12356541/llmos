@@ -118,12 +118,15 @@ pub struct IdempotencyScope {
     pub method: String,
 }
 
-/// Exact bytes returned for a completed idempotent call.
+/// Stable service-result bytes for a completed idempotent call.
+///
+/// Transport adapters must build a fresh envelope for each exchange; volatile
+/// request/correlation identifiers must not be stored in this value.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DurableCallResult {
     pub operation: OperationHandle,
     pub receipt_id: ReceiptId,
-    pub response_wire: Vec<u8>,
+    pub result_wire: Vec<u8>,
 }
 
 /// Result of atomically claiming an idempotency key and registering its Operation.
@@ -335,7 +338,28 @@ impl SqliteOperationStore {
         Ok(IdempotencyDecision::Created(operation))
     }
 
-    /// Completes an idempotent Operation and stores its exact response bytes.
+    /// Looks up a scoped idempotency key without claiming or dispatching it.
+    ///
+    /// This is the authority-side query path used to attach the original
+    /// Operation to conflict/uncertain responses.
+    ///
+    /// # Errors
+    ///
+    /// Returns a scope-validation, corrupt-record, lock, or storage error.
+    pub fn inspect_idempotent_operation(
+        &self,
+        scope: &IdempotencyScope,
+        idempotency_key: IdempotencyKey,
+    ) -> Result<Option<IdempotencyDecision>, StoreError> {
+        validate_idempotency_scope(scope)?;
+        let connection = self.lock_connection()?;
+        Ok(
+            load_idempotency_record(&*connection, scope, idempotency_key)?
+                .map(IdempotencyRecord::into_decision),
+        )
+    }
+
+    /// Completes an idempotent Operation and stores its stable result bytes.
     ///
     /// The terminal Operation transition, Receipt identity, immutable result,
     /// and wake/reconciliation Outbox entry commit in one transaction.
@@ -347,11 +371,11 @@ impl SqliteOperationStore {
         &self,
         ticket: CallbackTicket,
         outcome: CompletionOutcome,
-        response_wire: &[u8],
+        result_wire: &[u8],
     ) -> Result<DurableCallResult, StoreError> {
-        if response_wire.len() > MAX_DURABLE_RESULT_BYTES {
+        if result_wire.len() > MAX_DURABLE_RESULT_BYTES {
             return Err(StoreError::DurableResultTooLarge {
-                actual: response_wire.len(),
+                actual: result_wire.len(),
                 maximum: MAX_DURABLE_RESULT_BYTES,
             });
         }
@@ -366,7 +390,7 @@ impl SqliteOperationStore {
         )?;
 
         if let Some(existing) = record.result {
-            if existing.receipt_id != receipt_id || existing.response_wire != response_wire {
+            if existing.receipt_id != receipt_id || existing.result_wire != result_wire {
                 return Err(StoreError::IdempotencyConflict);
             }
             transaction.commit()?;
@@ -391,7 +415,7 @@ impl SqliteOperationStore {
                AND receipt_id IS NULL AND response_wire IS NULL",
             params![
                 receipt_id.as_bytes().as_slice(),
-                response_wire,
+                result_wire,
                 ticket.operation.operation_id.as_bytes().as_slice(),
                 encode_u64(ticket.operation.generation.get()).as_slice(),
             ],
@@ -404,7 +428,7 @@ impl SqliteOperationStore {
         let result = DurableCallResult {
             operation: ticket.operation,
             receipt_id,
-            response_wire: response_wire.to_vec(),
+            result_wire: result_wire.to_vec(),
         };
         transaction.commit()?;
         Ok(result)
@@ -621,6 +645,8 @@ fn migrate_v3(connection: &mut Connection) -> Result<(), StoreError> {
             operation_id BLOB NOT NULL CHECK(length(operation_id) = 16),
             operation_generation BLOB NOT NULL CHECK(length(operation_generation) = 8),
             receipt_id BLOB CHECK(receipt_id IS NULL OR length(receipt_id) = 16),
+            -- Despite the historical internal column name, this stores only
+            -- transport-independent stable service-result bytes.
             response_wire BLOB,
             PRIMARY KEY(application_id, service, method, idempotency_key),
             UNIQUE(operation_id, operation_generation),
@@ -717,10 +743,10 @@ fn decode_idempotency_row(row: &rusqlite::Row<'_>) -> Result<IdempotencyRecord, 
         generation: generation_from_blob(row, 2)?,
     };
     let receipt_id = optional_blob16(row, 3)?.map(ReceiptId::from_bytes);
-    let response_wire: Option<Vec<u8>> = row.get(4)?;
-    let result = match (receipt_id, response_wire) {
-        (Some(receipt_id), Some(response_wire)) => {
-            if response_wire.len() > MAX_DURABLE_RESULT_BYTES {
+    let result_wire: Option<Vec<u8>> = row.get(4)?;
+    let result = match (receipt_id, result_wire) {
+        (Some(receipt_id), Some(result_wire)) => {
+            if result_wire.len() > MAX_DURABLE_RESULT_BYTES {
                 return Err(StoreError::CorruptRecord(
                     "idempotency result exceeds durable bound",
                 ));
@@ -728,7 +754,7 @@ fn decode_idempotency_row(row: &rusqlite::Row<'_>) -> Result<IdempotencyRecord, 
             Some(DurableCallResult {
                 operation,
                 receipt_id,
-                response_wire,
+                result_wire,
             })
         }
         (None, None) => None,

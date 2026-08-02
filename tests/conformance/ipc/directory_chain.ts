@@ -10,10 +10,16 @@ import {
   CapabilityHandleSchema,
   EnvelopeSchema,
   ExchangeRequestSchema,
+  RetryDirective,
   SabiRequestContextSchema,
+  SabiErrorCode,
   SchemaIdentitySchema,
 } from "../../../gen/typescript/nlos/sabi/v1/envelope_pb.ts";
 import { validateResponseContext } from "../../../sdk/typescript/src/common.ts";
+import {
+  IpcError,
+  LocalRpcClient,
+} from "../../../sdk/typescript/src/local_rpc.ts";
 import { ServiceDirectoryClient } from "../../../sdk/typescript/src/service_directory.ts";
 
 function endpoint(label: string): string {
@@ -26,6 +32,7 @@ function endpoint(label: string): string {
 async function startServer(
   directoryEndpoint: string,
   businessEndpoint: string,
+  authorityPath: string,
 ): Promise<ChildProcessWithoutNullStreams> {
   const server = spawn(
     "cargo",
@@ -41,6 +48,7 @@ async function startServer(
       "--",
       directoryEndpoint,
       businessEndpoint,
+      authorityPath,
     ],
     { stdio: ["pipe", "pipe", "pipe"] },
   );
@@ -70,10 +78,62 @@ async function startServer(
   return server;
 }
 
+function businessRequest(
+  requestSeed: number,
+  correlationSeed: number,
+  method = "cancel",
+  keySeed = 6,
+  payload: readonly number[] = [4, 5, 6],
+) {
+  return create(ExchangeRequestSchema, {
+    envelope: create(EnvelopeSchema, {
+      schema: create(SchemaIdentitySchema, {
+        name: "nlos.sabi.Envelope",
+        major: 1,
+        minor: 1,
+      }),
+      requestId: new Uint8Array(16).fill(requestSeed),
+      service: "operation",
+      method,
+      commonContext: {
+        case: "requestContext",
+        value: create(SabiRequestContextSchema, {
+          caller: create(CallerIdentitySchema, {
+            principalId: new Uint8Array(16).fill(1),
+            applicationId: new Uint8Array(16).fill(2),
+            processId: new Uint8Array(16).fill(3),
+            processGeneration: 7n,
+          }),
+          correlationId: new Uint8Array(16).fill(correlationSeed),
+          idempotencyKey: new Uint8Array(16).fill(keySeed),
+          deadlineMonotonicNs: 123_456n,
+          capabilityHandles: [
+            create(CapabilityHandleSchema, { slot: 11n, generation: 2n }),
+          ],
+        }),
+      },
+      payload: new Uint8Array(payload),
+    }),
+  });
+}
+
 const directoryEndpoint = endpoint("bootstrap");
 const businessEndpoint = endpoint("business");
-const server = await startServer(directoryEndpoint, businessEndpoint);
+const authorityPath = join(
+  tmpdir(),
+  `nlos-directory-${process.pid}-${Date.now()}-authority.sqlite3`,
+);
+const server = await startServer(
+  directoryEndpoint,
+  businessEndpoint,
+  authorityPath,
+);
 try {
+  const transportConfig = {
+    connectTimeoutMs: 2_000,
+    readTimeoutMs: 2_000,
+    writeTimeoutMs: 2_000,
+  };
   const connected = await ServiceDirectoryClient.negotiateAndConnect(
     directoryEndpoint,
     {
@@ -82,54 +142,29 @@ try {
       major: 1,
       minimumMinor: 1,
     },
-    {
-      connectTimeoutMs: 2_000,
-      readTimeoutMs: 2_000,
-      writeTimeoutMs: 2_000,
-    },
+    transportConfig,
   );
   assert.equal(connected.binding.endpoint?.address, businessEndpoint);
   assert.equal(connected.binding.candidate?.generation, 7n);
 
-  const response = await connected.client.exchange(
-    create(ExchangeRequestSchema, {
-      envelope: create(EnvelopeSchema, {
-        schema: create(SchemaIdentitySchema, {
-          name: "nlos.sabi.Envelope",
-          major: 1,
-          minor: 1,
-        }),
-        requestId: new Uint8Array(16).fill(9),
-        service: "operation",
-        method: "cancel",
-        commonContext: {
-          case: "requestContext",
-          value: create(SabiRequestContextSchema, {
-            caller: create(CallerIdentitySchema, {
-              principalId: new Uint8Array(16).fill(1),
-              applicationId: new Uint8Array(16).fill(2),
-              processId: new Uint8Array(16).fill(3),
-              processGeneration: 7n,
-            }),
-            correlationId: new Uint8Array(16).fill(5),
-            idempotencyKey: new Uint8Array(16).fill(6),
-            deadlineMonotonicNs: 123_456n,
-            capabilityHandles: [
-              create(CapabilityHandleSchema, { slot: 11n, generation: 2n }),
-            ],
-          }),
-        },
-        payload: new Uint8Array([4, 5, 6]),
-      }),
-    }),
+  await assert.rejects(
+    connected.client.exchange(businessRequest(9, 5)),
+    (error: unknown) => error instanceof IpcError && error.code === "READ",
   );
+  connected.client.close();
+
+  const retryClient = await LocalRpcClient.connect(
+    businessEndpoint,
+    transportConfig,
+  );
+  const response = await retryClient.exchange(businessRequest(10, 7));
   assert.deepEqual(
     Uint8Array.from(response.envelope?.requestId ?? []),
-    new Uint8Array(16).fill(9),
+    new Uint8Array(16).fill(10),
   );
   assert.deepEqual(
     Uint8Array.from(response.envelope?.payload ?? []),
-    new Uint8Array([4, 5, 6]),
+    new Uint8Array([4, 5, 6, 0xd0]),
   );
   assert.ok(response.envelope);
   const responseContext = validateResponseContext(response.envelope, {
@@ -138,14 +173,55 @@ try {
   });
   assert.deepEqual(
     Uint8Array.from(responseContext.correlationId),
-    new Uint8Array(16).fill(5),
+    new Uint8Array(16).fill(7),
   );
-  assert.equal(responseContext.operation?.generation, 4n);
+  assert.equal(responseContext.operation?.generation, 1n);
   assert.deepEqual(
     Uint8Array.from(responseContext.receipts[0]?.receiptId ?? []),
-    new Uint8Array(16).fill(9),
+    new Uint8Array(16).fill(0x99),
   );
-  connected.client.close();
+  retryClient.close();
+
+  const conflictClient = await LocalRpcClient.connect(
+    businessEndpoint,
+    transportConfig,
+  );
+  const conflict = await conflictClient.exchange(
+    businessRequest(11, 8, "cancel", 6, [4, 5, 7]),
+  );
+  assert.ok(conflict.envelope);
+  const conflictContext = validateResponseContext(conflict.envelope, {
+    sideEffecting: true,
+    longRunning: true,
+  });
+  assert.equal(conflictContext.failure?.code, SabiErrorCode.CONFLICT);
+  assert.equal(conflictContext.failure?.retry, RetryDirective.DO_NOT_RETRY);
+  assert.deepEqual(
+    Uint8Array.from(conflictContext.operation?.operationId ?? []),
+    Uint8Array.from(responseContext.operation?.operationId ?? []),
+  );
+  conflictClient.close();
+
+  const pendingClient = await LocalRpcClient.connect(
+    businessEndpoint,
+    transportConfig,
+  );
+  const pending = await pendingClient.exchange(
+    businessRequest(12, 9, "pending", 7, [1]),
+  );
+  assert.ok(pending.envelope);
+  const pendingContext = validateResponseContext(pending.envelope, {
+    sideEffecting: true,
+    longRunning: true,
+  });
+  assert.equal(pendingContext.failure?.code, SabiErrorCode.UNCERTAIN);
+  assert.equal(
+    pendingContext.failure?.retry,
+    RetryDirective.QUERY_OPERATION_OR_RETRY_SAME_IDEMPOTENCY_KEY,
+  );
+  assert.ok(pendingContext.operation);
+  pendingClient.close();
+
   const code = await new Promise<number | null>((resolve, reject) => {
     server.once("exit", resolve);
     server.once("error", reject);
