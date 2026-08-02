@@ -1,6 +1,6 @@
 # B-SCHEMA-012：deadline/cancel durable 服务端状态机初始证据
 
-> 状态：PARTIAL PASS（本地 Rust↔TypeScript/Python 真实 IPC 通过；远程三平台待验证）
+> 状态：PARTIAL PASS（Rust↔TypeScript/Python 真实 IPC 已通过 Ubuntu/macOS/Windows；生产 timer/control API 待完成）
 >
 > 日期：2026-08-02
 >
@@ -61,6 +61,11 @@ python tests/conformance/ipc/directory_chain.py
 
 新增 store 测试还验证 no-effect result 的重开回放、精确重复、结果冲突、单一 Wake Outbox，以及 terminal 后禁止 dispatch。
 
+远程验证：
+
+- [Rust cross-platform verification run 30741733804](https://github.com/cty12356541/llmos/actions/runs/30741733804) 在 Ubuntu、macOS、Windows 全部成功；三平台均运行 Rust workspace/Clippy 和 TS/Python directory-chain，Windows 实际使用 named pipe；
+- [GitHub Pages run 30741733788](https://github.com/cty12356541/llmos/actions/runs/30741733788) 成功。
+
 ## 4. 当前不能证明什么
 
 - 当前由 conformance fixture 的确定性同宿主 monotonic 检查点触发 deadline，不是生产 timer wheel、scheduler queue 或真实慢 worker；
@@ -70,4 +75,4 @@ python tests/conformance/ipc/directory_chain.py
 - 尚未覆盖 cancel/complete/deadline 三方并发的跨进程 IPC fault matrix、异常 server crash 或 authority retention/GC；
 - 本证据只证明单节点受控服务入口，不构成跨节点 exactly-once 或远程 clock-domain 保证。
 
-因此本 Evidence 记为 `PARTIAL PASS`。下一验收门是远程三平台复验，并设计/实现独立 Operation query/cancel payload 与 timer-driven async worker，使取消不依赖 fixture method。
+因此本 Evidence 记为 `PARTIAL PASS`。三平台复验已完成；下一验收门是设计/实现独立 Operation query/cancel payload 与 timer-driven async worker，使取消不依赖 fixture method。
