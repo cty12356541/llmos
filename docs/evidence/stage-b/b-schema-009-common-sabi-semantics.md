@@ -1,6 +1,6 @@
 # B-SCHEMA-009：common SABI 元数据与安全重试语义初始证据
 
-> 状态：PARTIAL PASS（三平台 CI 待本提交推送后复验）
+> 状态：PARTIAL PASS（三平台 CI 与 fuzz 已通过；持久化/生产语义仍未完成）
 >
 > 日期：2026-08-02
 >
@@ -87,6 +87,12 @@ NLOS_FUZZ_RUNS=2000 NLOS_FUZZ_TOOLCHAIN=nightly-2026-08-01 scripts/run-fuzz-smok
 ```
 
 三个 fuzz target 各完成 2,000 次本地 bounded run，无 crash、timeout、OOM 或断言反例。
+
+远程复验：
+
+- [Rust cross-platform verification run 30737782776](https://github.com/cty12356541/llmos/actions/runs/30737782776) 在 Linux、macOS、Windows 全部成功；三平台均通过 Rust/TypeScript/Python golden/反例和目录两跳 common-context IPC，Windows 实际使用 named pipe；
+- [Schema fuzz smoke run 30737782772](https://github.com/cty12356541/llmos/actions/runs/30737782772) 成功，新 common request/uncertain seeds 进入 Protobuf fuzz corpus；
+- [GitHub Pages run 30737782777](https://github.com/cty12356541/llmos/actions/runs/30737782777) 成功。
 
 ## 4. 当前不能证明什么
 
