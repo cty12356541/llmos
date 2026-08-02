@@ -1,6 +1,7 @@
 use nlos_schema::sabi::v1::{
-    CallerIdentity, CapabilityHandle, Envelope, ExchangeRequest, ExchangeResponse,
-    NegotiateServiceResponse, OperationReference, ReceiptReference, ResolveServiceRequest,
+    CallerIdentity, CancelOperationRequest, CapabilityHandle, Envelope, ExchangeRequest,
+    ExchangeResponse, NegotiateServiceResponse, OperationLifecycleState, OperationReference,
+    OperationStatus, QueryOperationRequest, ReceiptReference, ResolveServiceRequest,
     ResolveServiceResponse, RetryDirective, SabiErrorCode, SabiFailure, SabiRequestContext,
     SabiResponseContext, SchemaIdentity, TaskExecutionBinding, envelope as envelope_message,
     local_rpc,
@@ -8,11 +9,14 @@ use nlos_schema::sabi::v1::{
 use nlos_schema::{
     CommonSemanticsError, CompatibilityError, MAX_ENVELOPE_BYTES,
     MAX_SERVICE_DIRECTORY_PAYLOAD_BYTES, MethodSemantics, SABI_ENVELOPE_SCHEMA,
-    SABI_SERVICE_DIRECTORY_SCHEMA, decode_exchange_request, decode_exchange_response,
-    decode_resolve_service_request, decode_sabi_envelope, encode_exchange_request,
-    encode_exchange_response, encode_resolve_service_request, encode_resolve_service_response,
-    encode_sabi_envelope, schema_registry, service_directory_schema_identity,
-    validate_sabi_request_context, validate_sabi_response_context,
+    SABI_OPERATION_CONTROL_SCHEMA, SABI_SERVICE_DIRECTORY_SCHEMA, decode_cancel_operation_request,
+    decode_exchange_request, decode_exchange_response, decode_operation_status,
+    decode_query_operation_request, decode_resolve_service_request, decode_sabi_envelope,
+    encode_cancel_operation_request, encode_exchange_request, encode_exchange_response,
+    encode_operation_status, encode_query_operation_request, encode_resolve_service_request,
+    encode_resolve_service_response, encode_sabi_envelope, operation_control_schema_identity,
+    schema_registry, service_directory_schema_identity, validate_sabi_request_context,
+    validate_sabi_response_context,
 };
 
 fn envelope() -> Envelope {
@@ -140,7 +144,7 @@ fn generated_encoding_matches_canonical_golden_vector() {
 #[test]
 fn registry_exposes_the_supported_contract() {
     let registry = schema_registry();
-    assert_eq!(registry.len(), 2);
+    assert_eq!(registry.len(), 3);
     let envelope = registry
         .iter()
         .find(|entry| entry.name == SABI_ENVELOPE_SCHEMA)
@@ -151,6 +155,53 @@ fn registry_exposes_the_supported_contract() {
         .find(|entry| entry.name == SABI_SERVICE_DIRECTORY_SCHEMA)
         .unwrap();
     assert_eq!((directory.major, directory.minor), (1, 0));
+    let operation_control = registry
+        .iter()
+        .find(|entry| entry.name == SABI_OPERATION_CONTROL_SCHEMA)
+        .unwrap();
+    assert_eq!((operation_control.major, operation_control.minor), (1, 0));
+}
+
+#[test]
+fn operation_control_payloads_are_bounded_typed_and_fail_closed() {
+    let operation = OperationReference {
+        operation_id: vec![0x31; 16],
+        generation: 2,
+    };
+    let query = QueryOperationRequest {
+        schema: Some(operation_control_schema_identity()),
+        operation: Some(operation.clone()),
+    };
+    let query_wire = encode_query_operation_request(&query).unwrap();
+    assert_eq!(decode_query_operation_request(&query_wire).unwrap(), query);
+
+    let cancel = CancelOperationRequest {
+        schema: Some(operation_control_schema_identity()),
+        operation: Some(operation.clone()),
+        expected_cancel_epoch: 7,
+    };
+    let cancel_wire = encode_cancel_operation_request(&cancel).unwrap();
+    assert_eq!(
+        decode_cancel_operation_request(&cancel_wire).unwrap(),
+        cancel
+    );
+
+    let status = OperationStatus {
+        schema: Some(operation_control_schema_identity()),
+        operation: Some(operation),
+        state: OperationLifecycleState::CancelRequested.into(),
+        cancel_epoch: 8,
+        receipt: None,
+    };
+    let status_wire = encode_operation_status(&status).unwrap();
+    assert_eq!(decode_operation_status(&status_wire).unwrap(), status);
+
+    let mut missing_operation = query;
+    missing_operation.operation = None;
+    assert_eq!(
+        encode_query_operation_request(&missing_operation),
+        Err(CompatibilityError::MissingOperationReference)
+    );
 }
 
 #[test]

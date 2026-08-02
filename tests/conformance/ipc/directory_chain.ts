@@ -3,18 +3,25 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { create } from "@bufbuild/protobuf";
+import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 
 import {
   CallerIdentitySchema,
   CapabilityHandleSchema,
   EnvelopeSchema,
   ExchangeRequestSchema,
+  OperationReferenceSchema,
   RetryDirective,
   SabiRequestContextSchema,
   SabiErrorCode,
   SchemaIdentitySchema,
 } from "../../../gen/typescript/nlos/sabi/v1/envelope_pb.ts";
+import {
+  CancelOperationRequestSchema,
+  OperationLifecycleState,
+  OperationStatusSchema,
+  QueryOperationRequestSchema,
+} from "../../../gen/typescript/nlos/sabi/v1/operation_control_pb.ts";
 import { validateResponseContext } from "../../../sdk/typescript/src/common.ts";
 import {
   IpcError,
@@ -131,6 +138,80 @@ function businessRequest(
   });
 }
 
+function operationControlRequest(
+  requestSeed: number,
+  correlationSeed: number,
+  method: "query" | "cancel",
+  operationId: Uint8Array,
+  generation: bigint,
+  expectedCancelEpoch = 0n,
+) {
+  const operation = create(OperationReferenceSchema, {
+    operationId,
+    generation,
+  });
+  const payload =
+    method === "query"
+      ? toBinary(
+          QueryOperationRequestSchema,
+          create(QueryOperationRequestSchema, {
+            schema: create(SchemaIdentitySchema, {
+              name: "nlos.sabi.OperationControl",
+              major: 1,
+              minor: 0,
+            }),
+            operation,
+          }),
+        )
+      : toBinary(
+          CancelOperationRequestSchema,
+          create(CancelOperationRequestSchema, {
+            schema: create(SchemaIdentitySchema, {
+              name: "nlos.sabi.OperationControl",
+              major: 1,
+              minor: 0,
+            }),
+            operation,
+            expectedCancelEpoch,
+          }),
+        );
+  return create(ExchangeRequestSchema, {
+    envelope: create(EnvelopeSchema, {
+      schema: create(SchemaIdentitySchema, {
+        name: "nlos.sabi.Envelope",
+        major: 1,
+        minor: 1,
+      }),
+      requestId: new Uint8Array(16).fill(requestSeed),
+      service: "operation_control",
+      method,
+      commonContext: {
+        case: "requestContext",
+        value: create(SabiRequestContextSchema, {
+          caller: create(CallerIdentitySchema, {
+            principalId: new Uint8Array(16).fill(1),
+            applicationId: new Uint8Array(16).fill(2),
+            processId: new Uint8Array(16).fill(3),
+            processGeneration: 7n,
+          }),
+          correlationId: new Uint8Array(16).fill(correlationSeed),
+          idempotencyKey:
+            method === "cancel" ? new Uint8Array(16).fill(0x71) : new Uint8Array(),
+          capabilityHandles: [
+            create(CapabilityHandleSchema, { slot: 11n, generation: 2n }),
+          ],
+        }),
+      },
+      payload,
+    }),
+  });
+}
+
+function operationStatus(responsePayload: Uint8Array | undefined) {
+  assert.ok(responsePayload);
+  return fromBinary(OperationStatusSchema, responsePayload);
+}
+
 const directoryEndpoint = endpoint("bootstrap");
 const businessEndpoint = endpoint("business");
 const authorityPath = join(
@@ -188,7 +269,6 @@ try {
     transportConfig,
   );
   assert.equal(recovered.binding.endpoint?.address, businessEndpoint);
-
   const retryClient = recovered.client;
   const response = await retryClient.exchange(businessRequest(10, 7));
   assert.deepEqual(
@@ -254,6 +334,165 @@ try {
   );
   assert.ok(pendingContext.operation);
   pendingClient.close();
+
+  const pendingOperation = pendingContext.operation;
+  const queryPendingClient = await LocalRpcClient.connect(
+    businessEndpoint,
+    transportConfig,
+  );
+  const queriedPending = await queryPendingClient.exchange(
+    operationControlRequest(
+      18,
+      15,
+      "query",
+      pendingOperation.operationId,
+      pendingOperation.generation,
+    ),
+  );
+  assert.ok(queriedPending.envelope);
+  validateResponseContext(queriedPending.envelope, {
+    sideEffecting: false,
+    longRunning: false,
+  });
+  const queriedPendingStatus = operationStatus(queriedPending.envelope.payload);
+  assert.equal(queriedPendingStatus.state, OperationLifecycleState.DISPATCHED);
+  assert.equal(queriedPendingStatus.cancelEpoch, 0n);
+  queryPendingClient.close();
+
+  const cancelControlClient = await LocalRpcClient.connect(
+    businessEndpoint,
+    transportConfig,
+  );
+  const cancelledPending = await cancelControlClient.exchange(
+    operationControlRequest(
+      19,
+      16,
+      "cancel",
+      pendingOperation.operationId,
+      pendingOperation.generation,
+    ),
+  );
+  assert.ok(cancelledPending.envelope);
+  validateResponseContext(cancelledPending.envelope, {
+    sideEffecting: true,
+    longRunning: false,
+  });
+  const cancelledPendingStatus = operationStatus(
+    cancelledPending.envelope.payload,
+  );
+  assert.equal(
+    cancelledPendingStatus.state,
+    OperationLifecycleState.CANCEL_REQUESTED,
+  );
+  assert.equal(cancelledPendingStatus.cancelEpoch, 1n);
+  cancelControlClient.close();
+
+  const cancelReplayClient = await LocalRpcClient.connect(
+    businessEndpoint,
+    transportConfig,
+  );
+  const cancelReplay = await cancelReplayClient.exchange(
+    operationControlRequest(
+      20,
+      17,
+      "cancel",
+      pendingOperation.operationId,
+      pendingOperation.generation,
+    ),
+  );
+  assert.ok(cancelReplay.envelope);
+  const cancelReplayStatus = operationStatus(cancelReplay.envelope.payload);
+  assert.equal(cancelReplayStatus.cancelEpoch, 1n);
+  assert.equal(
+    cancelReplayStatus.state,
+    OperationLifecycleState.CANCEL_REQUESTED,
+  );
+  cancelReplayClient.close();
+
+  const queryCancelledClient = await LocalRpcClient.connect(
+    businessEndpoint,
+    transportConfig,
+  );
+  const queryCancelled = await queryCancelledClient.exchange(
+    operationControlRequest(
+      21,
+      18,
+      "query",
+      pendingOperation.operationId,
+      pendingOperation.generation,
+    ),
+  );
+  assert.ok(queryCancelled.envelope);
+  const queryCancelledStatus = operationStatus(queryCancelled.envelope.payload);
+  assert.equal(queryCancelledStatus.cancelEpoch, 1n);
+  assert.equal(
+    queryCancelledStatus.state,
+    OperationLifecycleState.CANCEL_REQUESTED,
+  );
+  queryCancelledClient.close();
+
+  const workerDeadlineClient = await LocalRpcClient.connect(
+    businessEndpoint,
+    transportConfig,
+  );
+  const workerDeadline = await workerDeadlineClient.exchange(
+    businessRequest(22, 19, "worker_deadline", 12, [6]),
+  );
+  assert.ok(workerDeadline.envelope);
+  const workerDeadlineContext = validateResponseContext(workerDeadline.envelope, {
+    sideEffecting: true,
+    longRunning: true,
+  });
+  assert.equal(workerDeadlineContext.failure?.code, SabiErrorCode.UNCERTAIN);
+  assert.ok(workerDeadlineContext.operation);
+  workerDeadlineClient.close();
+
+  const workerOperation = workerDeadlineContext.operation;
+  const queryQueuedClient = await LocalRpcClient.connect(
+    businessEndpoint,
+    transportConfig,
+  );
+  const queryQueued = await queryQueuedClient.exchange(
+    operationControlRequest(
+      23,
+      20,
+      "query",
+      workerOperation.operationId,
+      workerOperation.generation,
+    ),
+  );
+  assert.ok(queryQueued.envelope);
+  const queryQueuedStatus = operationStatus(queryQueued.envelope.payload);
+  assert.equal(queryQueuedStatus.state, OperationLifecycleState.REGISTERED);
+  assert.equal(queryQueuedStatus.cancelEpoch, 0n);
+  queryQueuedClient.close();
+
+  await new Promise((resolve) => setTimeout(resolve, 650));
+  const queryDeadlineClient = await LocalRpcClient.connect(
+    businessEndpoint,
+    transportConfig,
+  );
+  const queryDeadline = await queryDeadlineClient.exchange(
+    operationControlRequest(
+      24,
+      21,
+      "query",
+      workerOperation.operationId,
+      workerOperation.generation,
+    ),
+  );
+  assert.ok(queryDeadline.envelope);
+  const queryDeadlineStatus = operationStatus(queryDeadline.envelope.payload);
+  assert.equal(
+    queryDeadlineStatus.state,
+    OperationLifecycleState.CANCELLED_BEFORE_EFFECT,
+  );
+  assert.equal(queryDeadlineStatus.cancelEpoch, 1n);
+  assert.deepEqual(
+    Uint8Array.from(queryDeadlineStatus.receipt?.receiptId ?? []),
+    new Uint8Array(16).fill(0xa7),
+  );
+  queryDeadlineClient.close();
 
   const deadlineBeforeClient = await LocalRpcClient.connect(
     businessEndpoint,

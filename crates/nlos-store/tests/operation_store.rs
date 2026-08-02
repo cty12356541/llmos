@@ -9,12 +9,12 @@ use nlos_operation::{
 };
 use nlos_runtime::FiberHandle;
 use nlos_store::{
-    IdempotencyDecision, IdempotencyScope, OutboxKind, RegistrationDecision, SqliteOperationStore,
-    StoreError,
+    CancelRequestDecision, IdempotencyDecision, IdempotencyScope, OutboxKind, RegistrationDecision,
+    SqliteOperationStore, StoreError,
 };
 use nlos_types::{
-    ApplicationId, CallbackId, CancellationScopeId, ExecutionFiberId, Generation, IdempotencyKey,
-    OperationId, ReceiptId,
+    ApplicationId, CallbackId, CancelEpoch, CancellationScopeId, ExecutionFiberId, Generation,
+    IdempotencyKey, OperationId, ReceiptId,
 };
 
 static NEXT_DATABASE: AtomicU64 = AtomicU64::new(0);
@@ -279,6 +279,96 @@ fn idempotent_cancel_before_dispatch_commits_no_effect_result_atomically() {
         store.cancel_idempotent_before_dispatch(operation, receipt, b"different"),
         Err(StoreError::IdempotencyConflict)
     ));
+}
+
+#[test]
+fn cancel_control_is_epoch_fenced_idempotent_and_does_not_rewrite_completion() {
+    let database = TestDatabase::new("cancel-control");
+    let store = SqliteOperationStore::open(&database.path).expect("open");
+    let receipt = ReceiptId::from_bytes(bytes(0x61));
+
+    let registered = store.register(spec()).expect("register").handle();
+    let first = store
+        .request_cancel_idempotent(registered, CancelEpoch::INITIAL, receipt)
+        .expect("first cancel");
+    assert!(matches!(first, CancelRequestDecision::Applied(_)));
+    assert_eq!(first.snapshot().cancel_epoch, CancelEpoch::new(1));
+    assert!(matches!(
+        first.snapshot().state,
+        OperationState::CancelledBeforeEffect { receipt_id } if receipt_id == receipt
+    ));
+    let replay = store
+        .request_cancel_idempotent(registered, CancelEpoch::INITIAL, receipt)
+        .expect("exact retry");
+    assert!(matches!(replay, CancelRequestDecision::Replayed(_)));
+    assert_eq!(store.pending_outbox(10).expect("outbox").len(), 1);
+    assert!(matches!(
+        store
+            .request_cancel_idempotent(registered, CancelEpoch::new(1), receipt)
+            .expect("terminal cancel remains a read-only result"),
+        CancelRequestDecision::AlreadyTerminal(_)
+    ));
+    assert_eq!(
+        store
+            .pending_outbox(10)
+            .expect("outbox remains single")
+            .len(),
+        1
+    );
+
+    let completed = store
+        .register(spec_with_operation(0x12))
+        .expect("register completed operation")
+        .handle();
+    let ticket = store
+        .dispatch(completed, CallbackId::from_bytes(bytes(0x13)))
+        .expect("dispatch");
+    store
+        .complete(
+            ticket,
+            CompletionOutcome::Completed {
+                receipt_id: ReceiptId::from_bytes(bytes(0x14)),
+            },
+        )
+        .expect("complete");
+    let late = store
+        .request_cancel_idempotent(completed, CancelEpoch::INITIAL, receipt)
+        .expect("late cancel reads winner");
+    assert!(matches!(late, CancelRequestDecision::AlreadyTerminal(_)));
+    assert!(matches!(
+        late.snapshot().state,
+        OperationState::Completed { .. }
+    ));
+}
+
+#[test]
+fn dispatched_cancel_control_advances_epoch_once() {
+    let database = TestDatabase::new("cancel-control-dispatched");
+    let store = SqliteOperationStore::open(&database.path).expect("open");
+    let operation = store.register(spec()).expect("register").handle();
+    store
+        .dispatch(operation, CallbackId::from_bytes(bytes(0x21)))
+        .expect("dispatch");
+
+    let first = store
+        .request_cancel_idempotent(
+            operation,
+            CancelEpoch::INITIAL,
+            ReceiptId::from_bytes(bytes(0x22)),
+        )
+        .expect("cancel dispatched operation");
+    assert!(matches!(first, CancelRequestDecision::Applied(_)));
+    assert_eq!(first.snapshot().state, OperationState::CancelRequested);
+    assert_eq!(first.snapshot().cancel_epoch, CancelEpoch::new(1));
+    let replay = store
+        .request_cancel_idempotent(
+            operation,
+            CancelEpoch::INITIAL,
+            ReceiptId::from_bytes(bytes(0x22)),
+        )
+        .expect("retry cancel");
+    assert!(matches!(replay, CancelRequestDecision::Replayed(_)));
+    assert!(store.pending_outbox(10).expect("outbox").is_empty());
 }
 
 #[test]

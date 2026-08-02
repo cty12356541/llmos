@@ -1,0 +1,40 @@
+syntax = "proto3";
+
+package nlos.sabi.v1;
+
+import "nlos/sabi/v1/envelope.proto";
+
+// Durable Operation lifecycle exposed by the control service. Values mirror
+// the authority state machine; consumers must not collapse uncertain states.
+enum OperationLifecycleState {
+  OPERATION_LIFECYCLE_STATE_UNSPECIFIED = 0;
+  OPERATION_LIFECYCLE_STATE_REGISTERED = 1;
+  OPERATION_LIFECYCLE_STATE_DISPATCHED = 2;
+  OPERATION_LIFECYCLE_STATE_CANCEL_REQUESTED = 3;
+  OPERATION_LIFECYCLE_STATE_COMPLETED = 4;
+  OPERATION_LIFECYCLE_STATE_FAILED = 5;
+  OPERATION_LIFECYCLE_STATE_CANCELLED_BEFORE_EFFECT = 6;
+  OPERATION_LIFECYCLE_STATE_PARTIAL_EFFECT = 7;
+  OPERATION_LIFECYCLE_STATE_EFFECT_UNKNOWN = 8;
+}
+
+message QueryOperationRequest {
+  SchemaIdentity schema = 1;
+  OperationReference operation = 2;
+}
+
+// expected_cancel_epoch is a compare-and-set fence. Exact retries after the
+// epoch advances return the current durable status without advancing it again.
+message CancelOperationRequest {
+  SchemaIdentity schema = 1;
+  OperationReference operation = 2;
+  uint64 expected_cancel_epoch = 3;
+}
+
+message OperationStatus {
+  SchemaIdentity schema = 1;
+  OperationReference operation = 2;
+  OperationLifecycleState state = 3;
+  uint64 cancel_epoch = 4;
+  ReceiptReference receipt = 5;
+}

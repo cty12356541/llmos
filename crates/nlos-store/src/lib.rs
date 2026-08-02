@@ -37,6 +37,10 @@ pub enum StoreError {
     InvalidIdempotencyScope,
     IdempotencyConflict,
     IdempotencyRecordNotFound,
+    CancelEpochConflict {
+        expected: u64,
+        current: u64,
+    },
     DurableResultTooLarge {
         actual: usize,
         maximum: usize,
@@ -66,6 +70,10 @@ impl fmt::Display for StoreError {
             Self::IdempotencyRecordNotFound => {
                 formatter.write_str("operation has no durable idempotency record")
             }
+            Self::CancelEpochConflict { expected, current } => write!(
+                formatter,
+                "operation cancel epoch conflict: expected {expected}, current {current}"
+            ),
             Self::DurableResultTooLarge { actual, maximum } => write!(
                 formatter,
                 "durable result exceeds bound: {actual} bytes (maximum {maximum})"
@@ -163,6 +171,25 @@ impl RegistrationDecision {
 pub enum OutboxKind {
     WakeFiber,
     ReconcileEffect,
+}
+
+/// Linearized result of an idempotent Operation cancellation request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CancelRequestDecision {
+    Applied(OperationSnapshot),
+    Replayed(OperationSnapshot),
+    AlreadyTerminal(OperationSnapshot),
+}
+
+impl CancelRequestDecision {
+    #[must_use]
+    pub const fn snapshot(self) -> OperationSnapshot {
+        match self {
+            Self::Applied(snapshot)
+            | Self::Replayed(snapshot)
+            | Self::AlreadyTerminal(snapshot) => snapshot,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -547,6 +574,71 @@ impl SqliteOperationStore {
         }
         transaction.commit()?;
         Ok(snapshot)
+    }
+
+    /// Commits an Operation cancellation with an explicit cancel-epoch fence.
+    ///
+    /// The first request at `expected_cancel_epoch` advances the epoch exactly
+    /// once. An exact retry observes the already-advanced state and returns it
+    /// without emitting another Outbox item. If completion won before the
+    /// cancellation CAS, its terminal state is returned without rewriting
+    /// history. Any other epoch mismatch fails closed.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stale handle, epoch conflict, state, or storage error.
+    pub fn request_cancel_idempotent(
+        &self,
+        handle: OperationHandle,
+        expected_cancel_epoch: CancelEpoch,
+        no_effect_receipt: ReceiptId,
+    ) -> Result<CancelRequestDecision, StoreError> {
+        let mut connection = self.lock_connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let (mut machine, revision) = load_machine(&transaction, handle.operation_id)?;
+        let before = machine.snapshot();
+        if before.handle != handle {
+            return Err(OperationError::InvalidGeneration.into());
+        }
+
+        if before.cancel_epoch == expected_cancel_epoch {
+            if before.state.is_terminal() {
+                transaction.commit()?;
+                return Ok(CancelRequestDecision::AlreadyTerminal(before));
+            }
+            let snapshot = machine.request_cancel(handle, no_effect_receipt)?;
+            update_machine(&transaction, &machine, revision)?;
+            if matches!(snapshot.state, OperationState::CancelledBeforeEffect { .. }) {
+                insert_outbox(&transaction, OutboxKind::WakeFiber, &machine, None)?;
+            }
+            transaction.commit()?;
+            return Ok(CancelRequestDecision::Applied(snapshot));
+        }
+
+        if expected_cancel_epoch.checked_next() == Some(before.cancel_epoch)
+            && matches!(
+                before.state,
+                OperationState::CancelRequested
+                    | OperationState::CancelledBeforeEffect { .. }
+                    | OperationState::Completed { .. }
+                    | OperationState::Failed { .. }
+                    | OperationState::PartialEffect { .. }
+                    | OperationState::EffectUnknown { .. }
+            )
+        {
+            if let OperationState::CancelledBeforeEffect { receipt_id } = before.state
+                && receipt_id != no_effect_receipt
+            {
+                return Err(StoreError::IdempotencyConflict);
+            }
+            transaction.commit()?;
+            return Ok(CancelRequestDecision::Replayed(before));
+        }
+
+        Err(StoreError::CancelEpochConflict {
+            expected: expected_cancel_epoch.get(),
+            current: before.cancel_epoch.get(),
+        })
     }
 
     /// Commits a terminal callback and its wake/reconciliation outbox item in

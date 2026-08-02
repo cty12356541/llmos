@@ -24,6 +24,15 @@ from nlos.sabi.v1.envelope_pb2 import (  # noqa: E402
     SABI_ERROR_CODE_UNCERTAIN,
     ExchangeRequest,
 )
+from nlos.sabi.v1.operation_control_pb2 import (  # noqa: E402
+    OPERATION_LIFECYCLE_STATE_CANCEL_REQUESTED,
+    OPERATION_LIFECYCLE_STATE_CANCELLED_BEFORE_EFFECT,
+    OPERATION_LIFECYCLE_STATE_DISPATCHED,
+    OPERATION_LIFECYCLE_STATE_REGISTERED,
+    CancelOperationRequest,
+    OperationStatus,
+    QueryOperationRequest,
+)
 from nlos_sdk import (  # noqa: E402
     IpcError,
     LocalRpcClient,
@@ -105,6 +114,55 @@ def business_request(
     return request
 
 
+def operation_control_request(
+    request_seed: int,
+    correlation_seed: int,
+    method: str,
+    operation_id: bytes,
+    generation: int,
+    expected_cancel_epoch: int = 0,
+) -> ExchangeRequest:
+    if method == "query":
+        payload = QueryOperationRequest()
+    elif method == "cancel":
+        payload = CancelOperationRequest()
+        payload.expected_cancel_epoch = expected_cancel_epoch
+    else:
+        raise AssertionError(f"unsupported control method {method}")
+    payload.schema.name = "nlos.sabi.OperationControl"
+    payload.schema.major = 1
+    payload.operation.operation_id = operation_id
+    payload.operation.generation = generation
+
+    request = ExchangeRequest()
+    request.envelope.schema.name = "nlos.sabi.Envelope"
+    request.envelope.schema.major = 1
+    request.envelope.schema.minor = 1
+    request.envelope.request_id = bytes([request_seed]) * 16
+    request.envelope.service = "operation_control"
+    request.envelope.method = method
+    context = request.envelope.request_context
+    context.caller.principal_id = bytes([1]) * 16
+    context.caller.application_id = bytes([2]) * 16
+    context.caller.process_id = bytes([3]) * 16
+    context.caller.process_generation = 7
+    context.correlation_id = bytes([correlation_seed]) * 16
+    if method == "cancel":
+        context.idempotency_key = bytes([0x71]) * 16
+    capability = context.capability_handles.add()
+    capability.slot = 11
+    capability.generation = 2
+    request.envelope.payload = payload.SerializeToString()
+    return request
+
+
+def operation_status(payload: bytes) -> OperationStatus:
+    status = OperationStatus()
+    status.ParseFromString(payload)
+    assert status.HasField("operation")
+    return status
+
+
 async def main() -> None:
     directory_endpoint = endpoint("bootstrap")
     business_endpoint = endpoint("business")
@@ -163,7 +221,6 @@ async def main() -> None:
             transport_config,
         )
         assert recovered.binding.endpoint.address == business_endpoint
-
         retry_client = recovered.client
         response = await retry_client.exchange(business_request(10, 7))
         assert response.envelope.request_id == bytes([10]) * 16
@@ -214,6 +271,148 @@ async def main() -> None:
         )
         assert pending_context.HasField("operation")
         await pending_client.close()
+
+        pending_operation = pending_context.operation
+        query_pending_client = await LocalRpcClient.connect(
+            business_endpoint, transport_config
+        )
+        queried_pending = await query_pending_client.exchange(
+            operation_control_request(
+                18,
+                15,
+                "query",
+                pending_operation.operation_id,
+                pending_operation.generation,
+            )
+        )
+        validate_response_context(
+            queried_pending.envelope,
+            MethodSemantics(side_effecting=False, long_running=False),
+        )
+        queried_pending_status = operation_status(queried_pending.envelope.payload)
+        assert queried_pending_status.state == OPERATION_LIFECYCLE_STATE_DISPATCHED
+        assert queried_pending_status.cancel_epoch == 0
+        await query_pending_client.close()
+
+        cancel_control_client = await LocalRpcClient.connect(
+            business_endpoint, transport_config
+        )
+        cancelled_pending = await cancel_control_client.exchange(
+            operation_control_request(
+                19,
+                16,
+                "cancel",
+                pending_operation.operation_id,
+                pending_operation.generation,
+            )
+        )
+        validate_response_context(
+            cancelled_pending.envelope,
+            MethodSemantics(side_effecting=True, long_running=False),
+        )
+        cancelled_pending_status = operation_status(
+            cancelled_pending.envelope.payload
+        )
+        assert (
+            cancelled_pending_status.state
+            == OPERATION_LIFECYCLE_STATE_CANCEL_REQUESTED
+        )
+        assert cancelled_pending_status.cancel_epoch == 1
+        await cancel_control_client.close()
+
+        cancel_replay_client = await LocalRpcClient.connect(
+            business_endpoint, transport_config
+        )
+        cancel_replay = await cancel_replay_client.exchange(
+            operation_control_request(
+                20,
+                17,
+                "cancel",
+                pending_operation.operation_id,
+                pending_operation.generation,
+            )
+        )
+        cancel_replay_status = operation_status(cancel_replay.envelope.payload)
+        assert cancel_replay_status.cancel_epoch == 1
+        assert (
+            cancel_replay_status.state
+            == OPERATION_LIFECYCLE_STATE_CANCEL_REQUESTED
+        )
+        await cancel_replay_client.close()
+
+        query_cancelled_client = await LocalRpcClient.connect(
+            business_endpoint, transport_config
+        )
+        query_cancelled = await query_cancelled_client.exchange(
+            operation_control_request(
+                21,
+                18,
+                "query",
+                pending_operation.operation_id,
+                pending_operation.generation,
+            )
+        )
+        query_cancelled_status = operation_status(query_cancelled.envelope.payload)
+        assert query_cancelled_status.cancel_epoch == 1
+        assert (
+            query_cancelled_status.state
+            == OPERATION_LIFECYCLE_STATE_CANCEL_REQUESTED
+        )
+        await query_cancelled_client.close()
+
+        worker_deadline_client = await LocalRpcClient.connect(
+            business_endpoint, transport_config
+        )
+        worker_deadline = await worker_deadline_client.exchange(
+            business_request(22, 19, "worker_deadline", 12, b"\x06")
+        )
+        worker_deadline_context = validate_response_context(
+            worker_deadline.envelope,
+            MethodSemantics(side_effecting=True, long_running=True),
+        )
+        assert worker_deadline_context.failure.code == SABI_ERROR_CODE_UNCERTAIN
+        assert worker_deadline_context.HasField("operation")
+        await worker_deadline_client.close()
+
+        worker_operation = worker_deadline_context.operation
+        query_queued_client = await LocalRpcClient.connect(
+            business_endpoint, transport_config
+        )
+        query_queued = await query_queued_client.exchange(
+            operation_control_request(
+                23,
+                20,
+                "query",
+                worker_operation.operation_id,
+                worker_operation.generation,
+            )
+        )
+        query_queued_status = operation_status(query_queued.envelope.payload)
+        assert query_queued_status.state == OPERATION_LIFECYCLE_STATE_REGISTERED
+        assert query_queued_status.cancel_epoch == 0
+        await query_queued_client.close()
+
+        await asyncio.sleep(0.65)
+        query_deadline_client = await LocalRpcClient.connect(
+            business_endpoint, transport_config
+        )
+        query_deadline = await query_deadline_client.exchange(
+            operation_control_request(
+                24,
+                21,
+                "query",
+                worker_operation.operation_id,
+                worker_operation.generation,
+            )
+        )
+        query_deadline_status = operation_status(query_deadline.envelope.payload)
+        assert (
+            query_deadline_status.state
+            == OPERATION_LIFECYCLE_STATE_CANCELLED_BEFORE_EFFECT
+        )
+        assert query_deadline_status.cancel_epoch == 1
+        assert query_deadline_status.receipt.receipt_id == bytes([0xA7]) * 16
+        await query_deadline_client.close()
 
         deadline_before_client = await LocalRpcClient.connect(
             business_endpoint,

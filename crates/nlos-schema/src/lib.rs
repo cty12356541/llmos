@@ -18,8 +18,10 @@ pub mod sabi {
 
 pub const SABI_ENVELOPE_SCHEMA: &str = "nlos.sabi.Envelope";
 pub const SABI_SERVICE_DIRECTORY_SCHEMA: &str = "nlos.sabi.ServiceDirectory";
+pub const SABI_OPERATION_CONTROL_SCHEMA: &str = "nlos.sabi.OperationControl";
 pub const MAX_ENVELOPE_BYTES: usize = 1024 * 1024;
 pub const MAX_SERVICE_DIRECTORY_PAYLOAD_BYTES: usize = 64 * 1024;
+pub const MAX_OPERATION_CONTROL_PAYLOAD_BYTES: usize = 64 * 1024;
 pub const REQUEST_ID_BYTES: usize = 16;
 pub const SHA256_DIGEST_BYTES: usize = 32;
 pub const MAX_ACTIVITY_CONTEXT_BYTES: usize = 4 * 1024;
@@ -49,7 +51,18 @@ const SABI_SERVICE_DIRECTORY_V1: SchemaDescriptor = SchemaDescriptor {
     supported_critical_extensions: &[],
 };
 
-const REGISTRY: &[SchemaDescriptor] = &[SABI_ENVELOPE_V1, SABI_SERVICE_DIRECTORY_V1];
+const SABI_OPERATION_CONTROL_V1: SchemaDescriptor = SchemaDescriptor {
+    name: SABI_OPERATION_CONTROL_SCHEMA,
+    major: 1,
+    minor: 0,
+    supported_critical_extensions: &[],
+};
+
+const REGISTRY: &[SchemaDescriptor] = &[
+    SABI_ENVELOPE_V1,
+    SABI_SERVICE_DIRECTORY_V1,
+    SABI_OPERATION_CONTROL_V1,
+];
 
 #[must_use]
 pub fn schema_registry() -> &'static [SchemaDescriptor] {
@@ -66,6 +79,9 @@ pub enum CompatibilityError {
     MissingSchemaIdentity,
     MissingExchangeEnvelope,
     MissingServiceDirectoryResult,
+    MissingOperationReference,
+    InvalidReceiptReference,
+    UnspecifiedOperationState,
     UnknownSchema(String),
     UnsupportedMajor {
         schema: String,
@@ -96,6 +112,15 @@ impl fmt::Display for CompatibilityError {
             }
             Self::MissingServiceDirectoryResult => {
                 formatter.write_str("service directory response is missing its result")
+            }
+            Self::MissingOperationReference => {
+                formatter.write_str("operation control payload is missing its operation")
+            }
+            Self::InvalidReceiptReference => {
+                formatter.write_str("operation control receipt reference is malformed")
+            }
+            Self::UnspecifiedOperationState => {
+                formatter.write_str("operation control status has unspecified state")
             }
             Self::UnknownSchema(schema) => write!(formatter, "schema {schema:?} is not registered"),
             Self::UnsupportedMajor {
@@ -474,6 +499,124 @@ pub fn service_directory_schema_identity() -> sabi::v1::SchemaIdentity {
     }
 }
 
+/// Returns the v1 identity required on every `OperationControl` payload.
+#[must_use]
+pub fn operation_control_schema_identity() -> sabi::v1::SchemaIdentity {
+    sabi::v1::SchemaIdentity {
+        name: SABI_OPERATION_CONTROL_SCHEMA.to_owned(),
+        major: 1,
+        minor: 0,
+        critical_extension_ids: Vec::new(),
+        non_critical_extension_ids: Vec::new(),
+    }
+}
+
+/// Encodes a bounded, validated Operation query payload.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity/reference or oversized payload.
+pub fn encode_query_operation_request(
+    request: &sabi::v1::QueryOperationRequest,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_operation_control_identity(request.schema.as_ref())?;
+    validate_operation_reference(request.operation.as_ref())?;
+    encode_bounded_with_limit(request, MAX_OPERATION_CONTROL_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded, validated Operation query payload.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_query_operation_request(
+    wire: &[u8],
+) -> Result<sabi::v1::QueryOperationRequest, CompatibilityError> {
+    let request: sabi::v1::QueryOperationRequest =
+        decode_bounded_with_limit(wire, MAX_OPERATION_CONTROL_PAYLOAD_BYTES)?;
+    validate_operation_control_identity(request.schema.as_ref())?;
+    validate_operation_reference(request.operation.as_ref())?;
+    Ok(request)
+}
+
+/// Encodes a bounded, validated idempotent Operation cancellation payload.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity/reference or oversized payload.
+pub fn encode_cancel_operation_request(
+    request: &sabi::v1::CancelOperationRequest,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_operation_control_identity(request.schema.as_ref())?;
+    validate_operation_reference(request.operation.as_ref())?;
+    encode_bounded_with_limit(request, MAX_OPERATION_CONTROL_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded, validated idempotent Operation cancellation payload.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_cancel_operation_request(
+    wire: &[u8],
+) -> Result<sabi::v1::CancelOperationRequest, CompatibilityError> {
+    let request: sabi::v1::CancelOperationRequest =
+        decode_bounded_with_limit(wire, MAX_OPERATION_CONTROL_PAYLOAD_BYTES)?;
+    validate_operation_control_identity(request.schema.as_ref())?;
+    validate_operation_reference(request.operation.as_ref())?;
+    Ok(request)
+}
+
+/// Encodes a bounded, validated durable Operation status payload.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid state/reference or oversized payload.
+pub fn encode_operation_status(
+    status: &sabi::v1::OperationStatus,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_operation_control_identity(status.schema.as_ref())?;
+    validate_operation_reference(status.operation.as_ref())?;
+    let state = sabi::v1::OperationLifecycleState::try_from(status.state)
+        .map_err(|_| CompatibilityError::UnspecifiedOperationState)?;
+    if state == sabi::v1::OperationLifecycleState::Unspecified {
+        return Err(CompatibilityError::UnspecifiedOperationState);
+    }
+    if let Some(receipt) = status.receipt.as_ref()
+        && receipt.receipt_id.len() != REQUEST_ID_BYTES
+    {
+        return Err(CompatibilityError::InvalidReceiptReference);
+    }
+    encode_bounded_with_limit(status, MAX_OPERATION_CONTROL_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded, validated durable Operation status payload.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_operation_status(
+    wire: &[u8],
+) -> Result<sabi::v1::OperationStatus, CompatibilityError> {
+    let status: sabi::v1::OperationStatus =
+        decode_bounded_with_limit(wire, MAX_OPERATION_CONTROL_PAYLOAD_BYTES)?;
+    validate_operation_control_identity(status.schema.as_ref())?;
+    validate_operation_reference(status.operation.as_ref())?;
+    let state = sabi::v1::OperationLifecycleState::try_from(status.state)
+        .map_err(|_| CompatibilityError::UnspecifiedOperationState)?;
+    if state == sabi::v1::OperationLifecycleState::Unspecified {
+        return Err(CompatibilityError::UnspecifiedOperationState);
+    }
+    if status
+        .receipt
+        .as_ref()
+        .is_some_and(|receipt| receipt.receipt_id.len() != REQUEST_ID_BYTES)
+    {
+        return Err(CompatibilityError::InvalidReceiptReference);
+    }
+    Ok(status)
+}
+
 /// Validates and encodes a bounded `ServiceDirectory` resolve request.
 ///
 /// # Errors
@@ -841,6 +984,27 @@ fn validate_service_directory_identity(
     validate_schema_identity(identity)?;
     if identity.name != SABI_SERVICE_DIRECTORY_SCHEMA {
         return Err(CompatibilityError::UnknownSchema(identity.name.clone()));
+    }
+    Ok(())
+}
+
+fn validate_operation_control_identity(
+    identity: Option<&sabi::v1::SchemaIdentity>,
+) -> Result<(), CompatibilityError> {
+    let identity = identity.ok_or(CompatibilityError::MissingSchemaIdentity)?;
+    validate_schema_identity(identity)?;
+    if identity.name != SABI_OPERATION_CONTROL_SCHEMA {
+        return Err(CompatibilityError::UnknownSchema(identity.name.clone()));
+    }
+    Ok(())
+}
+
+fn validate_operation_reference(
+    operation: Option<&sabi::v1::OperationReference>,
+) -> Result<(), CompatibilityError> {
+    let operation = operation.ok_or(CompatibilityError::MissingOperationReference)?;
+    if operation.operation_id.len() != REQUEST_ID_BYTES || operation.generation == 0 {
+        return Err(CompatibilityError::MissingOperationReference);
     }
     Ok(())
 }

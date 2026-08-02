@@ -75,4 +75,4 @@ python tests/conformance/ipc/directory_chain.py
 - 尚未覆盖 cancel/complete/deadline 三方并发的跨进程 IPC fault matrix、异常 server crash 或 authority retention/GC；
 - 本证据只证明单节点受控服务入口，不构成跨节点 exactly-once 或远程 clock-domain 保证。
 
-因此本 Evidence 记为 `PARTIAL PASS`。三平台复验已完成；下一验收门是设计/实现独立 Operation query/cancel payload 与 timer-driven async worker，使取消不依赖 fixture method。
+因此本 Evidence 记为 `PARTIAL PASS`。三平台复验已完成。其下一验收门已由 [B-SCHEMA-013](./b-schema-013-operation-control-timer-worker.md) 推进：独立 Operation query/cancel payload、cancel epoch CAS 与 timer-driven async worker 已取得本地证据；持久 deadline queue/restart recovery 仍未完成。

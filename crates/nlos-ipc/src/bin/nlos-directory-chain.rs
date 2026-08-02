@@ -2,24 +2,31 @@ use std::error::Error;
 use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Write};
+use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 use nlos_ipc::{
     FramedIo, IpcError, OutboundResponse, PeerAuthorizer, PeerIdentity, TransportConfig, serve_one,
 };
-use nlos_operation::{CompletionOutcome, OperationSpec, OperationState};
+use nlos_operation::{
+    CompletionOutcome, OperationHandle, OperationSnapshot, OperationSpec, OperationState,
+};
 use nlos_runtime::FiberHandle;
 use nlos_schema::sabi::v1::{
     DirectoryError, DirectoryErrorCode, ExchangeResponse, LocalEndpoint, LocalTransportKind,
-    NegotiateServiceResponse, OperationReference, ReceiptReference, RetryDirective, SabiErrorCode,
-    SabiFailure, SabiResponseContext, ServiceCandidate, ServiceVersion, envelope,
-    negotiate_service_response,
+    NegotiateServiceResponse, OperationLifecycleState, OperationReference, OperationStatus,
+    ReceiptReference, RetryDirective, SabiErrorCode, SabiFailure, SabiResponseContext,
+    ServiceCandidate, ServiceVersion, envelope, negotiate_service_response,
 };
 use nlos_schema::{
-    MethodSemantics, SABI_ENVELOPE_SCHEMA, decode_exchange_request,
-    decode_negotiate_service_request, encode_negotiate_service_response,
-    service_directory_schema_identity, validate_sabi_request_context,
+    MethodSemantics, SABI_ENVELOPE_SCHEMA, SABI_OPERATION_CONTROL_SCHEMA,
+    decode_cancel_operation_request, decode_exchange_request, decode_negotiate_service_request,
+    decode_query_operation_request, encode_negotiate_service_response, encode_operation_status,
+    operation_control_schema_identity, service_directory_schema_identity,
+    validate_sabi_request_context,
 };
 use nlos_service_directory::{ServiceRegistration, SnapshotDirectory};
 use nlos_store::{
@@ -27,17 +34,22 @@ use nlos_store::{
     StoreError,
 };
 use nlos_types::{
-    ApplicationId, CallbackId, CancellationScopeId, ExecutionFiberId, Generation, IdempotencyKey,
-    OperationId, ReceiptId,
+    ApplicationId, CallbackId, CancelEpoch, CancellationScopeId, ExecutionFiberId, Generation,
+    IdempotencyKey, OperationId, ReceiptId,
 };
 use sha2::{Digest, Sha256};
 
 const DIRECTORY_SERVICE: &str = "service_directory";
 const NEGOTIATE_METHOD: &str = "negotiate";
 const BUSINESS_SERVICE: &str = "operation";
+const OPERATION_CONTROL_SERVICE: &str = "operation_control";
+const QUERY_OPERATION_METHOD: &str = "query";
+const CANCEL_OPERATION_METHOD: &str = "cancel";
 const ADMISSION_NOW_MONOTONIC_NS: u64 = 123_455;
 const QUEUE_CHECK_NOW_MONOTONIC_NS: u64 = 123_456;
-const RECOVERY_BUSINESS_EXCHANGES: usize = 8;
+const RECOVERY_DIRECTORY_EXCHANGES: usize = 1;
+const RECOVERY_BUSINESS_EXCHANGES: usize = 15;
+const DEADLINE_WORKER_DELAY: Duration = Duration::from_millis(500);
 
 #[derive(Clone, Copy)]
 enum ServerPhase {
@@ -86,24 +98,44 @@ fn directory(
     transport: LocalTransportKind,
     business_endpoint: String,
 ) -> Result<SnapshotDirectory, Box<dyn Error>> {
-    Ok(SnapshotDirectory::new([ServiceRegistration {
-        candidate: ServiceCandidate {
-            binding_id: vec![0x44; 16],
-            generation: 7,
-            service: BUSINESS_SERVICE.to_owned(),
-            version: Some(ServiceVersion {
-                schema_name: SABI_ENVELOPE_SCHEMA.to_owned(),
-                major: 1,
-                minor: 1,
-            }),
-            feature_ids: Vec::new(),
-            transport_kinds: vec![transport.into()],
+    Ok(SnapshotDirectory::new([
+        ServiceRegistration {
+            candidate: ServiceCandidate {
+                binding_id: vec![0x44; 16],
+                generation: 7,
+                service: BUSINESS_SERVICE.to_owned(),
+                version: Some(ServiceVersion {
+                    schema_name: SABI_ENVELOPE_SCHEMA.to_owned(),
+                    major: 1,
+                    minor: 1,
+                }),
+                feature_ids: Vec::new(),
+                transport_kinds: vec![transport.into()],
+            },
+            endpoint: LocalEndpoint {
+                kind: transport.into(),
+                address: business_endpoint.clone(),
+            },
         },
-        endpoint: LocalEndpoint {
-            kind: transport.into(),
-            address: business_endpoint,
+        ServiceRegistration {
+            candidate: ServiceCandidate {
+                binding_id: vec![0x45; 16],
+                generation: 1,
+                service: OPERATION_CONTROL_SERVICE.to_owned(),
+                version: Some(ServiceVersion {
+                    schema_name: SABI_OPERATION_CONTROL_SCHEMA.to_owned(),
+                    major: 1,
+                    minor: 0,
+                }),
+                feature_ids: Vec::new(),
+                transport_kinds: vec![transport.into()],
+            },
+            endpoint: LocalEndpoint {
+                kind: transport.into(),
+                address: business_endpoint,
+            },
         },
-    }])?)
+    ])?)
 }
 
 #[cfg(unix)]
@@ -137,25 +169,32 @@ async fn run(
     let _guard = EndpointGuard(vec![directory_path, business_path]);
     let _database_guard =
         matches!(phase, ServerPhase::Recover).then(|| DatabaseGuard::new(authority_path.clone()));
-    let authority = BusinessAuthority::open(&authority_path)?;
+    let authority = Arc::new(BusinessAuthority::open(&authority_path)?);
     let snapshot = directory(LocalTransportKind::UnixSocket, business_address)?;
     announce_ready()?;
 
-    let (directory_stream, directory_peer) = directory_listener
-        .accept(TransportConfig::default())
-        .await?;
-    serve_directory(directory_stream, directory_peer, snapshot).await?;
+    let directory_exchanges = match phase {
+        ServerPhase::Commit => 1,
+        ServerPhase::Recover => RECOVERY_DIRECTORY_EXCHANGES,
+    };
+    for _ in 0..directory_exchanges {
+        let (directory_stream, directory_peer) = directory_listener
+            .accept(TransportConfig::default())
+            .await?;
+        serve_directory(directory_stream, directory_peer, snapshot.clone()).await?;
+    }
     match phase {
         ServerPhase::Commit => {
             let (business_stream, business_peer) =
                 business_listener.accept(TransportConfig::default()).await?;
-            commit_then_drop_response(business_stream, business_peer, &authority).await?;
+            commit_then_drop_response(business_stream, business_peer, Arc::clone(&authority))
+                .await?;
             authority.assert_cancel_dispatches(1)?;
         }
         ServerPhase::Recover => {
             for _ in 0..RECOVERY_BUSINESS_EXCHANGES {
                 let (stream, peer) = business_listener.accept(TransportConfig::default()).await?;
-                serve_business(stream, peer, &authority).await?;
+                serve_business(stream, peer, Arc::clone(&authority)).await?;
             }
             authority.assert_cancel_dispatches(0)?;
             authority.assert_control_outbox()?;
@@ -184,25 +223,32 @@ async fn run(
     let authority_path = PathBuf::from(authority_path);
     let _database_guard =
         matches!(phase, ServerPhase::Recover).then(|| DatabaseGuard::new(authority_path.clone()));
-    let authority = BusinessAuthority::open(&authority_path)?;
+    let authority = Arc::new(BusinessAuthority::open(&authority_path)?);
     let snapshot = directory(LocalTransportKind::WindowsNamedPipe, business_address)?;
     announce_ready()?;
 
-    let (directory_stream, directory_peer) = directory_listener
-        .accept(TransportConfig::default())
-        .await?;
-    serve_directory(directory_stream, directory_peer, snapshot).await?;
+    let directory_exchanges = match phase {
+        ServerPhase::Commit => 1,
+        ServerPhase::Recover => RECOVERY_DIRECTORY_EXCHANGES,
+    };
+    for _ in 0..directory_exchanges {
+        let (directory_stream, directory_peer) = directory_listener
+            .accept(TransportConfig::default())
+            .await?;
+        serve_directory(directory_stream, directory_peer, snapshot.clone()).await?;
+    }
     match phase {
         ServerPhase::Commit => {
             let (business_stream, business_peer) =
                 business_listener.accept(TransportConfig::default()).await?;
-            commit_then_drop_response(business_stream, business_peer, &authority).await?;
+            commit_then_drop_response(business_stream, business_peer, Arc::clone(&authority))
+                .await?;
             authority.assert_cancel_dispatches(1)?;
         }
         ServerPhase::Recover => {
             for _ in 0..RECOVERY_BUSINESS_EXCHANGES {
                 let (stream, peer) = business_listener.accept(TransportConfig::default()).await?;
-                serve_business(stream, peer, &authority).await?;
+                serve_business(stream, peer, Arc::clone(&authority)).await?;
             }
             authority.assert_cancel_dispatches(0)?;
             authority.assert_control_outbox()?;
@@ -242,6 +288,8 @@ fn suffix_path(path: &Path, suffix: &str) -> PathBuf {
 struct BusinessAuthority {
     store: SqliteOperationStore,
     cancel_dispatches: AtomicUsize,
+    deadline_fires: AtomicUsize,
+    deadline_failures: AtomicUsize,
 }
 
 enum BusinessExecution {
@@ -254,6 +302,8 @@ impl BusinessAuthority {
         Ok(Self {
             store: SqliteOperationStore::open(path)?,
             cancel_dispatches: AtomicUsize::new(0),
+            deadline_fires: AtomicUsize::new(0),
+            deadline_failures: AtomicUsize::new(0),
         })
     }
 
@@ -288,17 +338,21 @@ impl BusinessAuthority {
             .iter()
             .filter(|entry| matches!(entry.state, OperationState::EffectUnknown { .. }))
             .count();
-        if entries.len() == 5
-            && wake_count == 3
+        let deadline_fires = self.deadline_fires.load(Ordering::SeqCst);
+        let deadline_failures = self.deadline_failures.load(Ordering::SeqCst);
+        if entries.len() == 6
+            && wake_count == 4
             && reconcile_count == 2
-            && no_effect_count == 2
+            && no_effect_count == 3
             && partial_count == 1
             && unknown_count == 1
+            && deadline_fires == 1
+            && deadline_failures == 0
         {
             Ok(())
         } else {
             Err(format!(
-                "unexpected control outbox: total={}, wake={wake_count}, reconcile={reconcile_count}, no_effect={no_effect_count}, partial={partial_count}, unknown={unknown_count}",
+                "unexpected control outbox: total={}, wake={wake_count}, reconcile={reconcile_count}, no_effect={no_effect_count}, partial={partial_count}, unknown={unknown_count}, deadline_fires={deadline_fires}, deadline_failures={deadline_failures}",
                 entries.len()
             )
             .into())
@@ -346,7 +400,7 @@ where
 async fn commit_then_drop_response<S>(
     stream: S,
     peer: PeerIdentity,
-    authority: &BusinessAuthority,
+    authority: Arc<BusinessAuthority>,
 ) -> Result<(), IpcError>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -357,14 +411,14 @@ where
     let mut connection = FramedIo::new(stream, TransportConfig::default());
     let wire = connection.receive().await?;
     let request = decode_exchange_request(&wire)?;
-    let _committed_response = process_business(&request, authority)?;
+    let _committed_response = process_request(&request, &authority)?;
     Ok(())
 }
 
 async fn serve_business<S>(
     stream: S,
     peer: PeerIdentity,
-    authority: &BusinessAuthority,
+    authority: Arc<BusinessAuthority>,
 ) -> Result<(), IpcError>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -374,14 +428,28 @@ where
         TransportConfig::default(),
         peer,
         &AllowConformancePeer,
-        |request| async move { process_business(&request, authority) },
+        move |request| {
+            let authority = Arc::clone(&authority);
+            async move { process_request(&request, &authority) }
+        },
     )
     .await
 }
 
+fn process_request(
+    request: &nlos_schema::ValidatedExchangeRequest,
+    authority: &Arc<BusinessAuthority>,
+) -> Result<OutboundResponse, IpcError> {
+    if request.envelope().service == OPERATION_CONTROL_SERVICE {
+        process_operation_control(request, authority)
+    } else {
+        process_business(request, authority)
+    }
+}
+
 fn process_business(
     request: &nlos_schema::ValidatedExchangeRequest,
-    authority: &BusinessAuthority,
+    authority: &Arc<BusinessAuthority>,
 ) -> Result<OutboundResponse, IpcError> {
     let request_context = validate_sabi_request_context(
         request.envelope(),
@@ -458,9 +526,136 @@ fn process_business(
     completed_business_response(request, authority, correlation_id, result)
 }
 
-fn execute_new_business_operation(
+fn process_operation_control(
     request: &nlos_schema::ValidatedExchangeRequest,
     authority: &BusinessAuthority,
+) -> Result<OutboundResponse, IpcError> {
+    let method = request.envelope().method.as_str();
+    let semantics = match method {
+        QUERY_OPERATION_METHOD => MethodSemantics::QUERY,
+        CANCEL_OPERATION_METHOD => MethodSemantics::MUTATION,
+        _ => return Err(IpcError::ServiceFailure("unknown OperationControl method")),
+    };
+    let request_context =
+        validate_sabi_request_context(request.envelope(), semantics, ADMISSION_NOW_MONOTONIC_NS)?;
+    let correlation_id = request_context.correlation_id.clone();
+
+    let snapshot = match method {
+        QUERY_OPERATION_METHOD => {
+            let payload = decode_query_operation_request(&request.envelope().payload)?;
+            let operation = operation_handle_from_reference(payload.operation.as_ref().ok_or(
+                IpcError::ServiceFailure("validated query operation is missing"),
+            )?)?;
+            authority
+                .store
+                .inspect(operation)
+                .map_err(|_| IpcError::ServiceFailure("durable Operation query failed"))?
+        }
+        CANCEL_OPERATION_METHOD => {
+            let payload = decode_cancel_operation_request(&request.envelope().payload)?;
+            let operation = operation_handle_from_reference(payload.operation.as_ref().ok_or(
+                IpcError::ServiceFailure("validated cancel operation is missing"),
+            )?)?;
+            let receipt = stable_cancel_receipt(operation, payload.expected_cancel_epoch);
+            authority
+                .store
+                .request_cancel_idempotent(
+                    operation,
+                    CancelEpoch::new(payload.expected_cancel_epoch),
+                    receipt,
+                )
+                .map_err(|_| IpcError::ServiceFailure("durable Operation cancel failed"))?
+                .snapshot()
+        }
+        _ => unreachable!("method was validated above"),
+    };
+    operation_control_response(request, correlation_id, snapshot)
+}
+
+fn operation_control_response(
+    request: &nlos_schema::ValidatedExchangeRequest,
+    correlation_id: Vec<u8>,
+    snapshot: OperationSnapshot,
+) -> Result<OutboundResponse, IpcError> {
+    let receipt = receipt_from_operation_state(snapshot.state).map(|receipt_id| ReceiptReference {
+        receipt_id: receipt_id.into_bytes().to_vec(),
+    });
+    let status = OperationStatus {
+        schema: Some(operation_control_schema_identity()),
+        operation: Some(operation_reference(snapshot.handle)),
+        state: operation_lifecycle_state(snapshot.state).into(),
+        cancel_epoch: snapshot.cancel_epoch.get(),
+        receipt: receipt.clone(),
+    };
+    let mut envelope = request.envelope().clone();
+    envelope.payload = encode_operation_status(&status)?;
+    envelope.common_context = Some(envelope::CommonContext::ResponseContext(
+        SabiResponseContext {
+            correlation_id,
+            operation: Some(operation_reference(snapshot.handle)),
+            receipts: receipt.into_iter().collect(),
+            failure: None,
+        },
+    ));
+    Ok(OutboundResponse::Typed(ExchangeResponse {
+        envelope: Some(envelope),
+    }))
+}
+
+const fn operation_lifecycle_state(state: OperationState) -> OperationLifecycleState {
+    match state {
+        OperationState::Registered => OperationLifecycleState::Registered,
+        OperationState::Dispatched => OperationLifecycleState::Dispatched,
+        OperationState::CancelRequested => OperationLifecycleState::CancelRequested,
+        OperationState::Completed { .. } => OperationLifecycleState::Completed,
+        OperationState::Failed { .. } => OperationLifecycleState::Failed,
+        OperationState::CancelledBeforeEffect { .. } => {
+            OperationLifecycleState::CancelledBeforeEffect
+        }
+        OperationState::PartialEffect { .. } => OperationLifecycleState::PartialEffect,
+        OperationState::EffectUnknown { .. } => OperationLifecycleState::EffectUnknown,
+    }
+}
+
+const fn receipt_from_operation_state(state: OperationState) -> Option<ReceiptId> {
+    match state {
+        OperationState::Completed { receipt_id }
+        | OperationState::Failed { receipt_id }
+        | OperationState::CancelledBeforeEffect { receipt_id }
+        | OperationState::PartialEffect { receipt_id }
+        | OperationState::EffectUnknown { receipt_id } => Some(receipt_id),
+        OperationState::Registered
+        | OperationState::Dispatched
+        | OperationState::CancelRequested => None,
+    }
+}
+
+fn operation_handle_from_reference(
+    reference: &OperationReference,
+) -> Result<OperationHandle, IpcError> {
+    Ok(OperationHandle {
+        operation_id: OperationId::from_bytes(fixed16(&reference.operation_id)?),
+        generation: Generation::new(NonZeroU64::new(reference.generation).ok_or(
+            IpcError::ServiceFailure("validated Operation generation became zero"),
+        )?),
+    })
+}
+
+fn stable_cancel_receipt(operation: OperationHandle, expected_cancel_epoch: u64) -> ReceiptId {
+    let mut digest = Sha256::new();
+    digest.update(b"nlos.operation-control.cancel-receipt.v1");
+    digest.update(operation.operation_id.as_bytes());
+    digest.update(operation.generation.get().to_be_bytes());
+    digest.update(expected_cancel_epoch.to_be_bytes());
+    let digest = digest.finalize();
+    let mut receipt_id = [0_u8; 16];
+    receipt_id.copy_from_slice(&digest[..16]);
+    ReceiptId::from_bytes(receipt_id)
+}
+
+fn execute_new_business_operation(
+    request: &nlos_schema::ValidatedExchangeRequest,
+    authority: &Arc<BusinessAuthority>,
     operation: nlos_operation::OperationHandle,
     deadline_monotonic_ns: u64,
 ) -> Result<BusinessExecution, IpcError> {
@@ -482,6 +677,23 @@ fn execute_new_business_operation(
     }
     if method == "cancel" {
         authority.cancel_dispatches.fetch_add(1, Ordering::SeqCst);
+    }
+    if method == "worker_deadline" {
+        let authority = Arc::clone(authority);
+        tokio::spawn(async move {
+            tokio::time::sleep(DEADLINE_WORKER_DELAY).await;
+            let outcome = authority.store.cancel_idempotent_before_dispatch(
+                operation,
+                ReceiptId::from_bytes([0xa7; 16]),
+                &[],
+            );
+            if outcome.is_ok() {
+                authority.deadline_fires.fetch_add(1, Ordering::SeqCst);
+            } else {
+                authority.deadline_failures.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+        return Ok(BusinessExecution::Pending);
     }
     let ticket = authority
         .store

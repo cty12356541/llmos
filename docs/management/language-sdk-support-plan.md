@@ -2,7 +2,7 @@
 
 > Work Item：`B-SDK-LANG-EVAL`
 >
-> 状态：`READY / EVALUATION PLANNED`
+> 状态：`IN_PROGRESS / GATE B STARTING`
 >
 > 日期：2026-08-02
 >
@@ -119,9 +119,9 @@ Buf 支持固定 remote plugin 并从同一配置生成 Go 等语言；引入时
 | TS/Python directory negotiate-and-connect | `PARTIAL PASS`，三平台 run 30736741324 成功 | `B-SCHEMA`、B-SCHEMA-008 |
 | SABI common metadata/error/safe-retry validation | `PARTIAL PASS`，三平台 run 30737782776 成功 | `B-SCHEMA`、B-SCHEMA-009 |
 | Durable idempotency authority + reconnect IPC | `PARTIAL PASS`，SQLite v3 与 TS/Python 真实断线重连均通过三平台 run 30740180511 | `B-SCHEMA`、`B-STORE`、B-SCHEMA-010/011 |
-| Deadline/cancel/uncertain server state machine | `NEXT` | `B-SCHEMA`、`B-STORE`、`B-PROCESS` |
-| Go generation/golden probe | `READY`，Gate A 后实施 | `B-SDK-LANG-EVAL` |
-| C# generation/golden probe | `READY`，Gate A 后实施 | `B-SDK-LANG-EVAL` |
+| Deadline/cancel/uncertain + OperationControl/timer worker | `PARTIAL PASS`，B-SCHEMA-012 已通过三平台，B-SCHEMA-013 本地通过 | `B-SCHEMA`、`B-STORE`、`B-PROCESS` |
+| Go generation/golden probe | `NEXT` | `B-SDK-LANG-EVAL` |
+| C# generation/golden probe | `NEXT` | `B-SDK-LANG-EVAL` |
 | Go/C# transport 对比 Evidence | `PLANNED` | 新 Evidence，不提前编号 |
 | 官方 SDK 语言集合 ADR | `PLANNED` | 至少一个 P1 transport PoC 后创建 |
 | Java/Kotlin、Swift、C/C++ 复审 | `DEFERRED / DEMAND-DRIVEN` | Stage B 后段或具体消费者触发 |
