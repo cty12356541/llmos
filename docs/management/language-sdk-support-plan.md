@@ -119,7 +119,7 @@ Buf 支持固定 remote plugin 并从同一配置生成 Go 等语言；引入时
 | TS/Python directory negotiate-and-connect | `PARTIAL PASS`，三平台 run 30736741324 成功 | `B-SCHEMA`、B-SCHEMA-008 |
 | SABI common metadata/error/safe-retry validation | `PARTIAL PASS`，三平台 run 30737782776 成功 | `B-SCHEMA`、B-SCHEMA-009 |
 | Durable idempotency authority + reconnect IPC | `PARTIAL PASS`，SQLite v3 与 TS/Python 真实断线重连均通过三平台 run 30740180511 | `B-SCHEMA`、`B-STORE`、B-SCHEMA-010/011 |
-| Deadline/cancel/uncertain + OperationControl/timer worker | `PARTIAL PASS`，B-SCHEMA-012 已通过三平台，B-SCHEMA-013 本地通过 | `B-SCHEMA`、`B-STORE`、`B-PROCESS` |
+| Deadline/cancel/uncertain + OperationControl/timer worker | `PARTIAL PASS`，B-SCHEMA-012/013 均已通过三平台，最新 run 30743421174 | `B-SCHEMA`、`B-STORE`、`B-PROCESS` |
 | Go generation/golden probe | `NEXT` | `B-SDK-LANG-EVAL` |
 | C# generation/golden probe | `NEXT` | `B-SDK-LANG-EVAL` |
 | Go/C# transport 对比 Evidence | `PLANNED` | 新 Evidence，不提前编号 |

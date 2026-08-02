@@ -99,4 +99,4 @@
 
 [B-SCHEMA-012](../../evidence/stage-b/b-schema-012-deadline-cancel-state-machine.md) 已把 deterministic host-monotonic deadline checkpoint 和 cancel fence 接入 durable Operation：dispatch 前返回 no-effect `E_DEADLINE/E_CANCELLED`，dispatch 后迟到 callback 返回 `E_PARTIAL/E_EFFECT_UNKNOWN` 并进入 reconcile；[三平台 run 30741733804](https://github.com/cty12356541/llmos/actions/runs/30741733804) 已成功。fixture method 尚不能替代正式 Operation query/cancel schema。
 
-[B-SCHEMA-013](../../evidence/stage-b/b-schema-013-operation-control-timer-worker.md) 已新增 `nlos.sabi.OperationControl` v1.0 Query/Cancel/Status、三语言生成物、64 KiB bound 和 fail-closed Rust codec，并以真实 IPC 验证 cancel epoch 幂等 CAS 与 Tokio timer 触发。三平台 CI、正式 SDK facade、持久 deadline queue 和 typed control errors 仍待完成。
+[B-SCHEMA-013](../../evidence/stage-b/b-schema-013-operation-control-timer-worker.md) 已新增 `nlos.sabi.OperationControl` v1.0 Query/Cancel/Status、三语言生成物、64 KiB bound 和 fail-closed Rust codec，并由[三平台 run 30743421174](https://github.com/cty12356541/llmos/actions/runs/30743421174) 的真实 IPC 验证 cancel epoch 幂等 CAS 与 Tokio timer 触发。正式 SDK facade、持久 deadline queue 和 typed control errors 仍待完成。

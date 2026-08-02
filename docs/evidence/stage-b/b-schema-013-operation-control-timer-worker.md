@@ -1,6 +1,6 @@
 # B-SCHEMA-013：OperationControl 与异步 deadline worker 初始证据
 
-> 状态：PARTIAL PASS（Rust↔TypeScript/Python 真实 IPC 本地通过；三平台 CI 待回执）
+> 状态：PARTIAL PASS（Rust↔TypeScript/Python 真实 IPC 已通过 Ubuntu/macOS/Windows；production deadline queue 待完成）
 >
 > 日期：2026-08-02
 >
@@ -67,7 +67,11 @@ python tests/conformance/schema/envelope.py
 git diff --check
 ```
 
-三平台 CI 在提交后继续执行并回填。
+远程验证：
+
+- [Rust cross-platform verification run 30743421174](https://github.com/cty12356541/llmos/actions/runs/30743421174) 在 Ubuntu、macOS、Windows 全部成功；三平台均运行 schema generation/typecheck、Rust workspace/Clippy 和 TS/Python directory-chain，Windows 实际使用 named pipe；
+- [Schema fuzz smoke run 30743421200](https://github.com/cty12356541/llmos/actions/runs/30743421200) 成功；
+- [GitHub Pages run 30743421213](https://github.com/cty12356541/llmos/actions/runs/30743421213) 成功。
 
 ## 4. 当前不能证明什么
 
