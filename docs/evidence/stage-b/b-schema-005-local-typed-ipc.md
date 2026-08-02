@@ -61,7 +61,7 @@ cargo clippy -p nlos-ipc --all-targets -- -D warnings
 - Unix 平台：真实 socket 往返、`0600` mode、peer credential 类型和不存在 endpoint 的显式 connect error，共 2 项；
 - 失败路径覆盖 authorization-before-read、oversized declared frame、half-frame EOF、request ID mismatch、并发 backpressure/read timeout 和 unknown wrapper field 原字节 forwarding。
 
-Windows 标准库交叉目标在本地下载阶段持续无输出，已主动终止，不能记作 Windows 编译通过。仓库现有三平台 workflow 会在 Windows runner 编译并执行真实 named-pipe 往返与 unavailable-pipe timeout 测试；只有对应 run 成功后，才补记为跨平台通过。
+Windows 标准库交叉目标在本地下载阶段持续无输出，已主动终止，不能记作本地 Windows 编译通过。首次远程 [run 30730117157](https://github.com/cty12356541/llmos/actions/runs/30730117157) 的 Windows workspace test 已编译并通过真实 named-pipe 往返与 unavailable-pipe timeout；随后 Clippy 以 `cast_possible_wrap` 拒绝 `ERROR_PIPE_BUSY as i32`，因此整次 run 正确记为失败。remediation 改用显式 `cast_signed()`，尚待下一次三平台 run 复验后才能把本切片记为跨平台通过。
 
 ## 4. 当前能证明什么
 

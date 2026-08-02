@@ -91,7 +91,7 @@ pub async fn connect(
             match options.open(&name) {
                 Ok(client) => return Ok(client),
                 Err(error)
-                    if error.raw_os_error() == Some(ERROR_PIPE_BUSY as i32)
+                    if error.raw_os_error() == Some(ERROR_PIPE_BUSY.cast_signed())
                         || error.kind() == io::ErrorKind::NotFound =>
                 {
                     sleep(Duration::from_millis(10)).await;
