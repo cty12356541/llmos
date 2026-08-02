@@ -161,7 +161,7 @@ Application
 
 - feature-gated Rust fixture 同时提供 directory 与 business endpoint；directory payload 通过现有 bounded IPC 承载，协商结果来自 `SnapshotDirectory`。
 - TypeScript/Python SDK 只接收 trusted bootstrap endpoint，校验 directory response/binding 后关闭目录连接，再自动连接返回的 business endpoint。
-- 本地 macOS 已通过两种语言的 `bootstrap → negotiate → business exchange` 真实 Unix socket 组合；Windows named-pipe 与 Linux/macOS 回归待本提交三平台 CI。
+- [三平台 run 30736741324](https://github.com/cty12356541/llmos/actions/runs/30736741324) 已通过两种语言的 `bootstrap → negotiate → business exchange` 组合，覆盖 Linux/macOS Unix socket 与 Windows named pipe。
 - bootstrap 仍是 raw endpoint，业务 schema 暂复用 Envelope；Namespace handle、生产目录、peer auth 和 common SABI 未完成，因此状态保持 `SDK-2 CANDIDATE / PARTIAL`。
 
 ## 5. 当前下一验收门

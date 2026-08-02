@@ -116,7 +116,7 @@ Buf 支持固定 remote plugin 并从同一配置生成 Go 等语言；引入时
 |---|---|---|
 | Rust/TS/Python transport | `PARTIAL PASS`，三平台 run 30734744799 成功 | `B-SCHEMA`、B-SCHEMA-006 |
 | ServiceDirectory schema + Rust negotiation core | `PARTIAL PASS`，三平台 run 30735589673 成功 | `B-SCHEMA`、B-SCHEMA-007 |
-| TS/Python directory negotiate-and-connect | `PARTIAL PASS / CI PENDING`，B-SCHEMA-008 | `B-SCHEMA` |
+| TS/Python directory negotiate-and-connect | `PARTIAL PASS`，三平台 run 30736741324 成功 | `B-SCHEMA`、B-SCHEMA-008 |
 | SABI common header/error/idempotency semantics | `NEXT` | `B-SCHEMA` |
 | Go generation/golden probe | `READY`，Gate A 后实施 | `B-SDK-LANG-EVAL` |
 | C# generation/golden probe | `READY`，Gate A 后实施 | `B-SDK-LANG-EVAL` |

@@ -1,6 +1,6 @@
 # B-SCHEMA-008：跨语言 ServiceDirectory 两跳 IPC 初始证据
 
-> 状态：PARTIAL PASS（三平台 CI 待本提交推送后复验）
+> 状态：PARTIAL PASS（三平台 CI 已通过；生产能力仍未完成）
 >
 > 日期：2026-08-02
 >
@@ -58,6 +58,12 @@ cargo test --workspace --all-features
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo fmt --all -- --check
 ```
+
+远程复验：
+
+- [Rust cross-platform verification run 30736741324](https://github.com/cty12356541/llmos/actions/runs/30736741324) 在 Linux、macOS、Windows 全部成功；三平台均执行 TypeScript/Python 两套目录两跳组合，Windows 路径实际使用 named pipe；
+- [Schema fuzz smoke run 30736741319](https://github.com/cty12356541/llmos/actions/runs/30736741319) 成功，确认本切片没有破坏已有 bounded schema fuzz gate；
+- [GitHub Pages run 30736741322](https://github.com/cty12356541/llmos/actions/runs/30736741322) 成功。
 
 TypeScript 和 Python 均完成：
 
