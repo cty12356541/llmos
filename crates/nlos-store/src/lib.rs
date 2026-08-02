@@ -434,6 +434,79 @@ impl SqliteOperationStore {
         Ok(result)
     }
 
+    /// Cancels an idempotent Operation before dispatch and stores its stable result.
+    ///
+    /// The no-effect terminal transition, Receipt identity, immutable result,
+    /// and wake Outbox entry commit in one transaction. Exact retries return
+    /// the original result; this method never converts a dispatched Operation
+    /// into `CancelledBeforeEffect`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a bound, conflict, state, or storage error.
+    pub fn cancel_idempotent_before_dispatch(
+        &self,
+        handle: OperationHandle,
+        no_effect_receipt: ReceiptId,
+        result_wire: &[u8],
+    ) -> Result<DurableCallResult, StoreError> {
+        if result_wire.len() > MAX_DURABLE_RESULT_BYTES {
+            return Err(StoreError::DurableResultTooLarge {
+                actual: result_wire.len(),
+                maximum: MAX_DURABLE_RESULT_BYTES,
+            });
+        }
+        let mut connection = self.lock_connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let (mut machine, revision) = load_machine(&transaction, handle.operation_id)?;
+        let record = load_idempotency_record_by_operation(&transaction, handle)?
+            .ok_or(StoreError::IdempotencyRecordNotFound)?;
+
+        if let Some(existing) = record.result {
+            if existing.receipt_id != no_effect_receipt || existing.result_wire != result_wire {
+                return Err(StoreError::IdempotencyConflict);
+            }
+            transaction.commit()?;
+            return Ok(existing);
+        }
+        if machine.snapshot().state != OperationState::Registered {
+            return Err(OperationError::InvalidState.into());
+        }
+
+        let snapshot = machine.request_cancel(handle, no_effect_receipt)?;
+        if !matches!(snapshot.state, OperationState::CancelledBeforeEffect { .. }) {
+            return Err(StoreError::CorruptRecord(
+                "pre-dispatch cancellation did not produce a no-effect terminal state",
+            ));
+        }
+        update_machine(&transaction, &machine, revision)?;
+        insert_outbox(&transaction, OutboxKind::WakeFiber, &machine, None)?;
+        let changed = transaction.execute(
+            "UPDATE idempotent_calls
+             SET receipt_id = ?1, response_wire = ?2
+             WHERE operation_id = ?3 AND operation_generation = ?4
+               AND receipt_id IS NULL AND response_wire IS NULL",
+            params![
+                no_effect_receipt.as_bytes().as_slice(),
+                result_wire,
+                handle.operation_id.as_bytes().as_slice(),
+                encode_u64(handle.generation.get()).as_slice(),
+            ],
+        )?;
+        if changed != 1 {
+            return Err(StoreError::CorruptRecord(
+                "idempotency no-effect result compare-and-set failed",
+            ));
+        }
+        let result = DurableCallResult {
+            operation: handle,
+            receipt_id: no_effect_receipt,
+            result_wire: result_wire.to_vec(),
+        };
+        transaction.commit()?;
+        Ok(result)
+    }
+
     /// Commits the dispatch transition and returns its durable callback ticket.
     ///
     /// # Errors

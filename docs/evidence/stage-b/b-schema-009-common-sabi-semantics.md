@@ -96,12 +96,12 @@ NLOS_FUZZ_RUNS=2000 NLOS_FUZZ_TOOLCHAIN=nightly-2026-08-01 scripts/run-fuzz-smok
 
 ## 4. 当前不能证明什么
 
-- 本切片提交时 IdempotencyKey 只有线协议和入口校验；后续 [B-SCHEMA-010](./b-schema-010-durable-idempotency-result.md) 已补 durable dedup/result authority，[B-SCHEMA-011](./b-schema-011-durable-idempotency-ipc.md) 已补三平台真实 IPC reconnect，进程重启组合也已在本地通过；
-- deadline 当前只验证同宿主 monotonic 值，尚未实现排队/dispatch/callback 全链路 deadline fence，也未定义远程 clock-domain 映射；
-- cancel epoch 被携带但尚未接入 Operation registry、Process supervisor 或 service handler 的真实取消传播；
+- 本切片提交时 IdempotencyKey 只有线协议和入口校验；后续 [B-SCHEMA-010](./b-schema-010-durable-idempotency-result.md) 已补 durable dedup/result authority，[B-SCHEMA-011](./b-schema-011-durable-idempotency-ipc.md) 已补三平台真实 IPC reconnect 与进程重启组合；
+- 本切片提交时 deadline 只验证同宿主 monotonic 值；后续 [B-SCHEMA-012](./b-schema-012-deadline-cancel-state-machine.md) 已把 deterministic queue/dispatch/callback checkpoint 接入 durable Operation，但生产 timer/scheduler 与远程 clock-domain 映射仍未完成；
+- cancel epoch 在本切片只被携带；后续 B-SCHEMA-012 已接入 service handler 和 Operation registry 的 pre/post-dispatch fence，但独立 cancel RPC、Task/Process supervisor 和 Driver acknowledgement 仍未完成；
 - Operation/Receipt 当前只是 typed reference，fixture 返回固定测试引用；尚无正式 Operation SABI payload、Receipt canonical body/signature/attestation；
 - Capability handle 只验证 slot+generation 形状；没有通过 Namespace/authority 查权，也没有 peer auth；
 - safe message 只有长度/NUL 限制，生产错误脱敏、localized description 和 service-specific bounded detail 尚未实现；
-- 已有 fixture `E_UNCERTAIN`、reconnect same-key retry 和正常 server restart 持久化回放；尚无真实异步 worker、`E_PARTIAL`、stale generation、异常 server crash 与 deadline/cancel 的完整故障矩阵。
+- 已有 fixture `E_UNCERTAIN/E_PARTIAL/E_EFFECT_UNKNOWN`、reconnect same-key retry、server restart 和 deadline/cancel durable 路由；尚无真实异步 worker、stale generation、异常 server crash 与三方竞态的完整故障矩阵。
 
-因此 B-SCHEMA-009 只把“common wire metadata + 三语言安全校验 + 两跳传输”记为 `PARTIAL PASS`，不把 TS/Python 升级为完整 `SDK-3`。durable same-key dedup/result 的三平台 authority 已由 B-SCHEMA-010 推进，三平台真实 SABI 重连及 server restart 组合由 B-SCHEMA-011 推进；下一验收门是 deadline/cancel/uncertain 服务端状态机。
+因此 B-SCHEMA-009 只把“common wire metadata + 三语言安全校验 + 两跳传输”记为 `PARTIAL PASS`，不把 TS/Python 升级为完整 `SDK-3`。durable same-key authority、真实 SABI 重连/server restart 和初始 deadline/cancel 状态机分别由 B-SCHEMA-010/011/012 推进；下一验收门是 B-SCHEMA-012 三平台复验与独立 Operation query/cancel + async timer/worker。

@@ -229,6 +229,59 @@ fn completed_result_is_immutable_even_for_duplicate_callback() {
 }
 
 #[test]
+fn idempotent_cancel_before_dispatch_commits_no_effect_result_atomically() {
+    let database = TestDatabase::new("idempotency-cancel-before-dispatch");
+    let scope = idempotency_scope("deadline-before-dispatch");
+    let key = IdempotencyKey::from_bytes(bytes(0xb5));
+    let digest = [0xc5; 32];
+    let receipt = ReceiptId::from_bytes(bytes(6));
+    let expected;
+    let operation;
+    {
+        let store = SqliteOperationStore::open(&database.path).expect("open");
+        operation = store
+            .begin_idempotent_operation(&scope, key, digest, spec())
+            .expect("claim")
+            .operation();
+        expected = store
+            .cancel_idempotent_before_dispatch(operation, receipt, b"deadline")
+            .expect("cancel and persist no-effect result");
+        assert_eq!(
+            store.inspect(operation).expect("inspect").state,
+            OperationState::CancelledBeforeEffect {
+                receipt_id: receipt,
+            }
+        );
+        assert!(matches!(
+            store.dispatch(operation, CallbackId::from_bytes(bytes(4))),
+            Err(StoreError::Operation(OperationError::InvalidState))
+        ));
+        let pending = store.pending_outbox(10).expect("outbox");
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].kind, OutboxKind::WakeFiber);
+        assert_eq!(pending[0].callback_id, None);
+    }
+
+    let store = SqliteOperationStore::open(&database.path).expect("reopen");
+    assert_eq!(
+        store
+            .begin_idempotent_operation(&scope, key, digest, spec())
+            .expect("replay claim"),
+        IdempotencyDecision::Completed(expected.clone())
+    );
+    assert_eq!(
+        store
+            .cancel_idempotent_before_dispatch(operation, receipt, b"deadline")
+            .expect("exact cancel retry"),
+        expected
+    );
+    assert!(matches!(
+        store.cancel_idempotent_before_dispatch(operation, receipt, b"different"),
+        Err(StoreError::IdempotencyConflict)
+    ));
+}
+
+#[test]
 fn idempotency_scope_and_result_size_are_bounded_before_writing() {
     let database = TestDatabase::new("idempotency-bounds");
     let store = SqliteOperationStore::open(&database.path).expect("open");

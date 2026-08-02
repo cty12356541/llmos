@@ -41,7 +41,7 @@
 - frame 在解析前执行 1 MiB 上限，公共 request ID 固定 16 bytes；后续每种 service payload 还需更严格的独立上限；
 - non-critical 可忽略不等于可丢弃：透明 forwarding 必须保持输入 wire bytes；
 - critical extension ID 只能在实现、测试和协商支持同时存在时加入 registry；
-- 三语言 Protobuf generation/compat、首轮 sanitizer fuzz smoke、Unix/Windows typed IPC client、ServiceDirectory 两跳调用与 common metadata/safe-retry 校验已通过局部验证；durable dedup/result 已有三平台 SQLite authority，但真实 IPC 接线、deadline/cancel/Receipt authority、CBOR 跨语言和长期 fuzz 未完成前，ADR 保持 `POC`；
+- 三语言 Protobuf generation/compat、首轮 sanitizer fuzz smoke、Unix/Windows typed IPC client、ServiceDirectory 两跳调用与 common metadata/safe-retry 校验已通过局部验证；durable dedup/result、真实 IPC 重连与 server restart 已有三平台证据，deadline/cancel durable 状态机本地通过。但独立 Operation control payload、Receipt authority、CBOR 跨语言和长期 fuzz 未完成前，ADR 保持 `POC`；
 - `nlos-types` 继续不依赖 Protobuf；wire adapter 负责在 nominal ID 与生成类型之间显式转换，避免 wire bytes 侵入内核对象身份。
 - SDK 语言按[多语言 SDK 支持评估计划](../language-sdk-support-plan.md)逐级晋升；Go/C# 当前只是 P1 评估候选，生成类型或 descriptor 不构成正式支持声明。
 
@@ -95,4 +95,6 @@
 
 [B-SCHEMA-010](../../evidence/stage-b/b-schema-010-durable-idempotency-result.md) 已为 common IdempotencyKey 增加 SQLite v3 authority：首次 scoped key claim 与 Operation 注册原子提交，terminal result 与 Receipt/Outbox 原子提交，相同 key/digest 可在重启后回放稳定 service result，不同 digest 冲突；[三平台 run 30738888761](https://github.com/cty12356541/llmos/actions/runs/30738888761) 已成功。
 
-[B-SCHEMA-011](../../evidence/stage-b/b-schema-011-durable-idempotency-ipc.md) 已完成真实 SABI 接线，并明确 durable `result_wire` 与每次 exchange 重建的 request ID/correlation/envelope 分层；TS/Python commit 后断线重连、conflict 和 `E_UNCERTAIN` 已由[三平台 run 30740180511](https://github.com/cty12356541/llmos/actions/runs/30740180511) 验证。server process restart + directory renegotiation + SQLite reopen 组合又由[三平台 run 30741046472](https://github.com/cty12356541/llmos/actions/runs/30741046472) 验证；deadline/cancel 状态机、Receipt authority 和 peer auth 仍未完成。
+[B-SCHEMA-011](../../evidence/stage-b/b-schema-011-durable-idempotency-ipc.md) 已完成真实 SABI 接线，并明确 durable `result_wire` 与每次 exchange 重建的 request ID/correlation/envelope 分层；TS/Python commit 后断线重连、conflict 和 `E_UNCERTAIN` 已由[三平台 run 30740180511](https://github.com/cty12356541/llmos/actions/runs/30740180511) 验证。server process restart + directory renegotiation + SQLite reopen 组合又由[三平台 run 30741046472](https://github.com/cty12356541/llmos/actions/runs/30741046472) 验证；完整 deadline/cancel 生产链、Receipt authority 和 peer auth 仍未完成。
+
+[B-SCHEMA-012](../../evidence/stage-b/b-schema-012-deadline-cancel-state-machine.md) 已把 deterministic host-monotonic deadline checkpoint 和 cancel fence 接入 durable Operation：dispatch 前返回 no-effect `E_DEADLINE/E_CANCELLED`，dispatch 后迟到 callback 返回 `E_PARTIAL/E_EFFECT_UNKNOWN` 并进入 reconcile；本地 TS/Python IPC 通过，远程三平台待验证。fixture method 尚不能替代正式 Operation query/cancel schema。

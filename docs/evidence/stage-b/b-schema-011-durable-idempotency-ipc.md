@@ -1,6 +1,6 @@
 # B-SCHEMA-011：durable idempotency 真实 SABI 重连初始证据
 
-> 状态：PARTIAL PASS（Rust↔TypeScript/Python 真实 IPC 与 server restart 组合已通过三平台；deadline/cancel 待完成）
+> 状态：PARTIAL PASS（Rust↔TypeScript/Python 真实 IPC 与 server restart 组合已通过三平台；deadline/cancel 后续初始证据见 B-SCHEMA-012）
 >
 > 日期：2026-08-02
 >
@@ -102,8 +102,8 @@ python tests/conformance/ipc/directory_chain.py
 - 当前 server restart 组合是正常退出后重开；kill-9/torn-write 等异常退出由 store fault tests 单独覆盖，尚未与跨语言 IPC 形成完整乘积故障矩阵；
 - request digest 当前只覆盖 fixture 的完整业务 payload；正式 service schema 必须定义哪些 canonical effect fields 进入 digest，不能对任意 envelope 盲目哈希；
 - `pending` 是受控 fixture 分支，尚无真实异步 worker 完成、deadline timer 或 cancel propagation；
-- 尚未实现排队前、dispatch 前和 callback 时的 deadline fence，也未把 cancel epoch 接到真实 SABI handler；
+- 本切片尚未实现排队、dispatch 和 callback deadline/cancel fence；后续 [B-SCHEMA-012](./b-schema-012-deadline-cancel-state-machine.md) 已补确定性检查点与 durable 状态转换，生产 timer/worker 和独立 cancel RPC 仍未完成；
 - Receipt 仍只有 nominal ID；Capability 和 peer authorization 仍是 conformance hook/allow fixture；
 - 三平台已通过现有 CI workload，但尚无网络文件系统、跨主机 transport 或多 authority 证明。
 
-因此本 Evidence 记为 `PARTIAL PASS`。server restart 组合缺口已关闭；下一验收门是实现 deadline/cancel/uncertain 的真实服务端状态机。
+因此本 Evidence 记为 `PARTIAL PASS`。server restart 组合缺口已关闭；deadline/cancel durable 状态机的后续初始证据见 [B-SCHEMA-012](./b-schema-012-deadline-cancel-state-machine.md)。

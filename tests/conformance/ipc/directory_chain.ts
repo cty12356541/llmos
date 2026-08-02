@@ -255,6 +255,118 @@ try {
   assert.ok(pendingContext.operation);
   pendingClient.close();
 
+  const deadlineBeforeClient = await LocalRpcClient.connect(
+    businessEndpoint,
+    transportConfig,
+  );
+  const deadlineBefore = await deadlineBeforeClient.exchange(
+    businessRequest(13, 10, "deadline_before_dispatch", 8, [2]),
+  );
+  assert.ok(deadlineBefore.envelope);
+  const deadlineBeforeContext = validateResponseContext(deadlineBefore.envelope, {
+    sideEffecting: true,
+    longRunning: true,
+  });
+  assert.equal(deadlineBeforeContext.failure?.code, SabiErrorCode.DEADLINE);
+  assert.equal(
+    deadlineBeforeContext.failure?.retry,
+    RetryDirective.DO_NOT_RETRY,
+  );
+  assert.deepEqual(
+    Uint8Array.from(deadlineBeforeContext.receipts[0]?.receiptId ?? []),
+    new Uint8Array(16).fill(0xa1),
+  );
+  deadlineBeforeClient.close();
+
+  const deadlineReplayClient = await LocalRpcClient.connect(
+    businessEndpoint,
+    transportConfig,
+  );
+  const deadlineReplay = await deadlineReplayClient.exchange(
+    businessRequest(14, 11, "deadline_before_dispatch", 8, [2]),
+  );
+  assert.ok(deadlineReplay.envelope);
+  const deadlineReplayContext = validateResponseContext(deadlineReplay.envelope, {
+    sideEffecting: true,
+    longRunning: true,
+  });
+  assert.equal(deadlineReplayContext.failure?.code, SabiErrorCode.DEADLINE);
+  assert.deepEqual(
+    Uint8Array.from(deadlineReplayContext.operation?.operationId ?? []),
+    Uint8Array.from(deadlineBeforeContext.operation?.operationId ?? []),
+  );
+  assert.deepEqual(
+    Uint8Array.from(deadlineReplayContext.correlationId),
+    new Uint8Array(16).fill(11),
+  );
+  deadlineReplayClient.close();
+
+  const cancelBeforeClient = await LocalRpcClient.connect(
+    businessEndpoint,
+    transportConfig,
+  );
+  const cancelBefore = await cancelBeforeClient.exchange(
+    businessRequest(15, 12, "cancel_before_dispatch", 9, [3]),
+  );
+  assert.ok(cancelBefore.envelope);
+  const cancelBeforeContext = validateResponseContext(cancelBefore.envelope, {
+    sideEffecting: true,
+    longRunning: true,
+  });
+  assert.equal(cancelBeforeContext.failure?.code, SabiErrorCode.CANCELLED);
+  assert.equal(cancelBeforeContext.failure?.retry, RetryDirective.DO_NOT_RETRY);
+  assert.deepEqual(
+    Uint8Array.from(cancelBeforeContext.receipts[0]?.receiptId ?? []),
+    new Uint8Array(16).fill(0xa2),
+  );
+  cancelBeforeClient.close();
+
+  const cancelAfterClient = await LocalRpcClient.connect(
+    businessEndpoint,
+    transportConfig,
+  );
+  const cancelAfter = await cancelAfterClient.exchange(
+    businessRequest(16, 13, "cancel_after_dispatch", 10, [4]),
+  );
+  assert.ok(cancelAfter.envelope);
+  const cancelAfterContext = validateResponseContext(cancelAfter.envelope, {
+    sideEffecting: true,
+    longRunning: true,
+  });
+  assert.equal(cancelAfterContext.failure?.code, SabiErrorCode.PARTIAL);
+  assert.equal(cancelAfterContext.failure?.retry, RetryDirective.DO_NOT_RETRY);
+  assert.deepEqual(
+    Uint8Array.from(cancelAfterContext.receipts[0]?.receiptId ?? []),
+    new Uint8Array(16).fill(0xa4),
+  );
+  cancelAfterClient.close();
+
+  const deadlineAfterClient = await LocalRpcClient.connect(
+    businessEndpoint,
+    transportConfig,
+  );
+  const deadlineAfter = await deadlineAfterClient.exchange(
+    businessRequest(17, 14, "deadline_after_dispatch", 11, [5]),
+  );
+  assert.ok(deadlineAfter.envelope);
+  const deadlineAfterContext = validateResponseContext(deadlineAfter.envelope, {
+    sideEffecting: true,
+    longRunning: true,
+  });
+  assert.equal(
+    deadlineAfterContext.failure?.code,
+    SabiErrorCode.EFFECT_UNKNOWN,
+  );
+  assert.equal(
+    deadlineAfterContext.failure?.retry,
+    RetryDirective.QUERY_OPERATION_OR_RETRY_SAME_IDEMPOTENCY_KEY,
+  );
+  assert.deepEqual(
+    Uint8Array.from(deadlineAfterContext.receipts[0]?.receiptId ?? []),
+    new Uint8Array(16).fill(0xa6),
+  );
+  deadlineAfterClient.close();
+
   const code = await waitForExit(server);
   assert.equal(code, 0);
 } catch (error) {

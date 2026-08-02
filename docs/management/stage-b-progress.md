@@ -43,10 +43,10 @@ Application
 | `B-TYPES` | Rust workspace 与稳定 nominal ID / Generation / CancelEpoch | `DONE` | `crates/nlos-types`；`ADR-0001` | public schema 与生成约束未冻结 |
 | `B-RUNTIME` | RuntimeAdapter 与 Tokio 有界 Fiber runtime | `PARTIAL_PASS` | [ADR-0001](./adrs/0001-stage-b-core-language-and-runtime.md)、[PoC-0001](../evidence/stage-b/poc-0001-tokio-fiber-runtime.md)；提交 `a211088` | wake latency/fairness、structured join/detach、CPU 分维计量、Process crash、跨平台 |
 | `B-OP-FENCE` | Operation 状态机、callback identity、cancel/generation fence | `PARTIAL_PASS` | [PoC-0002](../evidence/stage-b/poc-0002-operation-callback-fence.md)；提交 `8b9ffe1` | Driver authentication、EffectPermit、progress/stream callback；Tokio wake 集成已随 `B-OUTBOX`（PoC-0004）补齐 |
-| `B-STORE` | SQLite WAL/FULL Operation authority、恢复、Outbox、durable dedup/result | `PARTIAL_PASS` | [ADR-0002](./adrs/0002-stage-b-sqlite-operation-authority.md)、[PoC-0003](../evidence/stage-b/poc-0003-sqlite-operation-authority.md)、[B-SCHEMA-010](../evidence/stage-b/b-schema-010-durable-idempotency-result.md)、[B-SCHEMA-011](../evidence/stage-b/b-schema-011-durable-idempotency-ipc.md)；F1–F7、authority、真实重连与 server restart IPC 均通过三平台 CI | 100K 逐条生产写入、真实硬件掉电/更多文件系统仍超出当前证据 |
+| `B-STORE` | SQLite WAL/FULL Operation authority、恢复、Outbox、durable dedup/result | `PARTIAL_PASS` | [ADR-0002](./adrs/0002-stage-b-sqlite-operation-authority.md)、[PoC-0003](../evidence/stage-b/poc-0003-sqlite-operation-authority.md)、[B-SCHEMA-010](../evidence/stage-b/b-schema-010-durable-idempotency-result.md)、[B-SCHEMA-011](../evidence/stage-b/b-schema-011-durable-idempotency-ipc.md)、[B-SCHEMA-012](../evidence/stage-b/b-schema-012-deadline-cancel-state-machine.md)；F1–F7、authority、真实重连与 server restart IPC 均通过三平台 CI；durable no-effect result 本地通过 | B-SCHEMA-012 远程三平台待验证；100K 逐条生产写入、真实硬件掉电/更多文件系统仍超出当前证据 |
 | `B-OUTBOX` | Durable Outbox → Tokio Fiber wake/reconcile consumer | `DONE` | [PoC-0004](../evidence/stage-b/poc-0004-outbox-wake-consumer.md)；本提交及评审后 remediation 提交（hash 见 git log 与 commit receipt） | durable wait registry/fiber rehydration 归 `B-PROCESS`/Slice K；此前移交 `B-STORE-FAULT` 的 F1–F7 已全部通过。2026-08-01 remediation：评审指出的 pump 错误路径可观测性（失败计数/根因/有上限退避/Faulted 终态）、drain panic 防护、shutdown 终态语义与 wake 重缓冲已补齐并各有测试。2026-08-01 复验残余（非阻塞，详见 PoC-0004 §8.4）：持久 apply 失败（`stopped_at` 路径）暂无 health 信号 → 后续 observability 项；`Faulted` 恢复依赖外部监督 → `B-PROCESS`；`PumpHealth.last_error` 跨 IPC 边界需脱敏 → `B-CONTROL`/`B-SCHEMA`；`Buffered` 驻留仅随 fiber 终态清理 → `B-PROCESS`/Slice K |
 | `B-STORE-FAULT` | SQLite fault-injection：kill-9、torn-write、disk-full、checkpoint/backup、migration、长读事务、100K metadata、跨平台 | `DONE` | [PoC-0003 F1–F7 增量证据](../evidence/stage-b/poc-0003-sqlite-operation-authority.md)；[三平台 CI run 30714584445](https://github.com/cty12356541/llmos/actions/runs/30714584445) | 100K 逐条生产写入、真实硬件掉电/更多文件系统保留为扩展 Evidence，不阻塞本工作包 |
-| `B-SCHEMA` | Protobuf/CBOR、golden vector、版本演进和本地 typed IPC | `IN_PROGRESS` | [ADR-0003](./adrs/0003-stage-b-idl-and-canonical-encoding.md)、[B-SCHEMA-001](../evidence/stage-b/b-schema-001-protobuf-envelope.md)、[B-SCHEMA-002](../evidence/stage-b/b-schema-002-cross-language-generation.md)、[B-SCHEMA-003](../evidence/stage-b/b-schema-003-deterministic-cbor.md)、[B-SCHEMA-004](../evidence/stage-b/b-schema-004-schema-fuzz-smoke.md)、[B-SCHEMA-005](../evidence/stage-b/b-schema-005-local-typed-ipc.md)、[B-SCHEMA-006](../evidence/stage-b/b-schema-006-typescript-python-ipc-clients.md)、[B-SCHEMA-007](../evidence/stage-b/b-schema-007-service-directory-negotiation.md)、[B-SCHEMA-008](../evidence/stage-b/b-schema-008-cross-language-directory-chain.md)、[B-SCHEMA-009](../evidence/stage-b/b-schema-009-common-sabi-semantics.md)、[B-SCHEMA-010](../evidence/stage-b/b-schema-010-durable-idempotency-result.md)、[B-SCHEMA-011](../evidence/stage-b/b-schema-011-durable-idempotency-ipc.md)、[三平台 reconnect run 30740180511](https://github.com/cty12356541/llmos/actions/runs/30740180511)、[三平台 restart run 30741046472](https://github.com/cty12356541/llmos/actions/runs/30741046472)、[fuzz run 30740180497](https://github.com/cty12356541/llmos/actions/runs/30740180497)；`schema/`、`gen/`、`sdk/`、`crates/nlos-schema`、`crates/nlos-service-directory`、`crates/nlos-canonical`、`crates/nlos-ipc`、`fuzz/` | Namespace bootstrap authority、生产目录 watch/lease/rebind、deadline/cancel/uncertain 服务端状态机、Receipt authority、双向 peer auth、Python Proactor 稳定 profile、CBOR 跨语言、长期 fuzz、actual signing |
+| `B-SCHEMA` | Protobuf/CBOR、golden vector、版本演进和本地 typed IPC | `IN_PROGRESS` | [ADR-0003](./adrs/0003-stage-b-idl-and-canonical-encoding.md)、[B-SCHEMA-001](../evidence/stage-b/b-schema-001-protobuf-envelope.md)、[B-SCHEMA-002](../evidence/stage-b/b-schema-002-cross-language-generation.md)、[B-SCHEMA-003](../evidence/stage-b/b-schema-003-deterministic-cbor.md)、[B-SCHEMA-004](../evidence/stage-b/b-schema-004-schema-fuzz-smoke.md)、[B-SCHEMA-005](../evidence/stage-b/b-schema-005-local-typed-ipc.md)、[B-SCHEMA-006](../evidence/stage-b/b-schema-006-typescript-python-ipc-clients.md)、[B-SCHEMA-007](../evidence/stage-b/b-schema-007-service-directory-negotiation.md)、[B-SCHEMA-008](../evidence/stage-b/b-schema-008-cross-language-directory-chain.md)、[B-SCHEMA-009](../evidence/stage-b/b-schema-009-common-sabi-semantics.md)、[B-SCHEMA-010](../evidence/stage-b/b-schema-010-durable-idempotency-result.md)、[B-SCHEMA-011](../evidence/stage-b/b-schema-011-durable-idempotency-ipc.md)、[B-SCHEMA-012](../evidence/stage-b/b-schema-012-deadline-cancel-state-machine.md)、[三平台 reconnect run 30740180511](https://github.com/cty12356541/llmos/actions/runs/30740180511)、[三平台 restart run 30741046472](https://github.com/cty12356541/llmos/actions/runs/30741046472)、[fuzz run 30740180497](https://github.com/cty12356541/llmos/actions/runs/30740180497)；`schema/`、`gen/`、`sdk/`、`crates/nlos-schema`、`crates/nlos-service-directory`、`crates/nlos-canonical`、`crates/nlos-ipc`、`fuzz/`；deadline/cancel durable 状态机本地通过 | Namespace bootstrap authority、生产目录 watch/lease/rebind、B-SCHEMA-012 远程三平台、独立 Operation query/cancel + async timer/worker、Receipt authority、双向 peer auth、Python Proactor 稳定 profile、CBOR 跨语言、长期 fuzz、actual signing |
 | `B-SDK-LANG-EVAL` | 官方 SDK 语言集合与 Go/C# 优先兼容评估 | `READY` | [多语言 SDK 支持评估计划](./language-sdk-support-plan.md) | Gate A 先完成 TS/Python `SDK-3`；随后做 Go/C# generation/golden 探针，并至少选择一个完成跨平台 IPC PoC；Java/Kotlin、Swift、C/C++ 需求驱动复审 |
 | `B-SANDBOX` | Wasmtime/WASI 与独立 host Process 隔离对比 | `READY` | [技术选型第 5 节](./stage-b-technology-selection.md) | capability import、fuel/epoch、memory、host crash、GuaranteeTier |
 | `B-PROCESS` | native Process supervisor 与平台资源/生命周期 adapter | `READY` | [v0.5 Process 规范](../design/06-架构设计总纲-v0.5.md) | macOS/Windows/Linux suspend/kill、host incarnation、resource mapping |
@@ -170,14 +170,14 @@ Application
 - Rust/TypeScript/Python validators 按 method semantics 要求 mutation idempotency 与 long-running deadline；`E_UNCERTAIN`/`E_EFFECT_UNKNOWN` 只能指示查询 Operation 或使用原 key 重试，`E_PARTIAL` 必须关联 Receipt。
 - 两个跨语言 golden 和 fail-closed 反例已在本地通过；目录两跳 fixture 的业务请求也真实携带 common metadata，由 Rust 服务入口校验后返回 Operation/Receipt，再由 TS/Python 校验。
 - [三平台 run 30737782776](https://github.com/cty12356541/llmos/actions/runs/30737782776) 与 [fuzz run 30737782772](https://github.com/cty12356541/llmos/actions/runs/30737782772) 已成功，覆盖 Linux/macOS Unix socket 与 Windows named pipe。
-- 本切片当时尚无 durable dedup/result；该缺口的三平台 authority 已由 4.18/B-SCHEMA-010 补齐，真实 IPC 与 server restart 三平台组合由 4.19/B-SCHEMA-011 补齐。deadline/cancel propagation、Receipt authority、Capability authorization 和完整 server fault matrix 仍未完成，因此仍是 `SDK-2 CANDIDATE / PARTIAL`。
+- 本切片当时尚无 durable dedup/result；该缺口的三平台 authority 已由 4.18/B-SCHEMA-010 补齐，真实 IPC 与 server restart 三平台组合由 4.19/B-SCHEMA-011 补齐，初始 deadline/cancel durable 路由由 4.20/B-SCHEMA-012 推进。通用 Operation control、Receipt authority、Capability authorization 和完整 server fault matrix 仍未完成，因此仍是 `SDK-2 CANDIDATE / PARTIAL`。
 
 ### 4.18 durable same-key dedup/result authority
 
 - SQLite v3 已持久绑定 `(ApplicationId, service, method, IdempotencyKey)`、canonical request digest、Operation、Receipt 与有界稳定 service result。
 - 首次 claim 才返回 `Created`；重连/重开后的相同 key/digest 返回 `PendingOrUncertain` 或逐字节原结果；不同 digest 和结果篡改被拒绝。
 - crash-window、exact replay、冲突、immutable result、migration 和 online backup 已由本地与[三平台 run 30738888761](https://github.com/cty12356541/llmos/actions/runs/30738888761) 验证；详见 [B-SCHEMA-010](../evidence/stage-b/b-schema-010-durable-idempotency-result.md)。
-- 真实 SABI server 接线与 server restart 组合已由 4.19/B-SCHEMA-011 补齐并通过三平台。deadline/cancel/uncertain 完整 fault matrix、Receipt body 和 retention/GC 仍未完成，因此不升级 SDK 等级。
+- 真实 SABI server 接线与 server restart 组合已由 4.19/B-SCHEMA-011 补齐并通过三平台，deadline/cancel/uncertain 初始状态机由 4.20/B-SCHEMA-012 本地推进。其远程三平台、完整 fault matrix、Receipt body 和 retention/GC 仍未完成，因此不升级 SDK 等级。
 
 ### 4.19 durable idempotency 真实 SABI 重连
 
@@ -185,6 +185,12 @@ Application
 - fixture 在 durable commit 后、response write 前主动断线；TS/Python poison 原连接，以原 key 和新 exchange ID/correlation 重连，回放原 Operation/Receipt/result，server 断言 mutation dispatch 精确一次。
 - 同 key/不同 payload 返回 `E_CONFLICT + DO_NOT_RETRY`；保持 `DISPATCHED` 的新 Operation 返回 `E_UNCERTAIN + QUERY_OPERATION_OR_RETRY_SAME_IDEMPOTENCY_KEY`。
 - 接线明确了 durable `result_wire` 与每次重建的 transport envelope 必须分层；同进程重连已由本地与[三平台 run 30740180511](https://github.com/cty12356541/llmos/actions/runs/30740180511) 验证。新增组合把 commit/recovery 拆为两个独立 Rust 进程，恢复进程重绑目录和业务 endpoint、重开同一 SQLite authority，TS/Python 重新协商后回放原结果且恢复进程零次新 dispatch；[三平台 run 30741046472](https://github.com/cty12356541/llmos/actions/runs/30741046472) 已成功。详见 [B-SCHEMA-011](../evidence/stage-b/b-schema-011-durable-idempotency-ipc.md)。
+
+### 4.20 deadline/cancel durable 服务端状态机
+
+- `cancel_idempotent_before_dispatch` 原子提交 `CancelledBeforeEffect + Receipt + stable result + WakeFiber`，已 dispatch 的 Operation 无法被该路径改写为 no-effect；重开、精确回放和冲突已有测试。
+- Rust SABI handler 用同宿主确定性 monotonic 检查点覆盖 dispatch 前 deadline/cancel，以及 dispatch 后 cancel/deadline；后两者先推进 cancel epoch，再把迟到 callback durable 分类为 `PartialEffect`/`EffectUnknown` 和 `ReconcileEffect`。
+- TS/Python 真实 IPC 校验 `E_DEADLINE`、`E_CANCELLED`、`E_PARTIAL`、`E_EFFECT_UNKNOWN` 及其 Operation/Receipt/retry 组合；本地通过，远程三平台待验证。详见 [B-SCHEMA-012](../evidence/stage-b/b-schema-012-deadline-cancel-state-machine.md)。
 
 ## 5. 当前下一验收门
 
@@ -203,7 +209,8 @@ Protobuf envelope + Rust generation + registry + first golden       DONE
   → common SABI metadata/error/safe-retry validation                PARTIAL PASS
   → durable idempotency authority                                  PARTIAL PASS
   → durable idempotency SABI reconnect integration                 PARTIAL PASS
-  → deadline/cancel/uncertain state machine                        NEXT
+  → deadline/cancel/uncertain state machine                        PARTIAL PASS
+  → Operation query/cancel payload + async timer/worker            NEXT
   → Go/C# generation/golden probes + one independent IPC PoC         PLANNED
 ```
 
@@ -212,7 +219,7 @@ Protobuf envelope + Rust generation + registry + first golden       DONE
 1. 最小 request/response service 与 Rust/TypeScript/Python client 已实现，TS/Python Unix/Windows 分支已由三平台 CI 验证；
 2. transport-neutral framing、Unix 后端和 Windows named-pipe 后端已由本地/三平台 CI 验证；
 3. frame length、connect/read/write timeout、peer identity/authorization hook 和 backpressure 已显式有界；Windows token/SID 仍缺；
-4. unknown field、unknown major/critical、断连、半帧、超界和 endpoint 不可用已有失败语义；TS/Python 失败连接也会 poison；自动重连/cancel/deadline/idempotency 状态机仍待实现；
+4. unknown field、unknown major/critical、断连、半帧、超界和 endpoint 不可用已有失败语义；TS/Python 失败连接也会 poison；durable reconnect 与初始 deadline/cancel 状态机已验证，SDK 自动重连和通用 Operation query/cancel/timer worker 仍待实现；
 5. OS endpoint/credential/Protobuf 未进入 `nlos-types`；后续 transport 替换继续以 generated service trait/descriptor 为边界。
 
 多语言 SDK 扩展按 [`B-SDK-LANG-EVAL`](./language-sdk-support-plan.md) 单独晋级：Go 与 C# 已进入 P1 评估，但不打断当前 TS/Python transport 主线，也不在只有 generated types 时宣称“已支持”。

@@ -16,7 +16,11 @@ sys.path.insert(0, str(ROOT / "gen" / "python"))
 from nlos.sabi.v1.envelope_pb2 import (  # noqa: E402
     RETRY_DIRECTIVE_DO_NOT_RETRY,
     RETRY_DIRECTIVE_QUERY_OPERATION_OR_RETRY_SAME_IDEMPOTENCY_KEY,
+    SABI_ERROR_CODE_CANCELLED,
     SABI_ERROR_CODE_CONFLICT,
+    SABI_ERROR_CODE_DEADLINE,
+    SABI_ERROR_CODE_EFFECT_UNKNOWN,
+    SABI_ERROR_CODE_PARTIAL,
     SABI_ERROR_CODE_UNCERTAIN,
     ExchangeRequest,
 )
@@ -210,6 +214,98 @@ async def main() -> None:
         )
         assert pending_context.HasField("operation")
         await pending_client.close()
+
+        deadline_before_client = await LocalRpcClient.connect(
+            business_endpoint,
+            transport_config,
+        )
+        deadline_before = await deadline_before_client.exchange(
+            business_request(13, 10, "deadline_before_dispatch", 8, b"\x02")
+        )
+        deadline_before_context = validate_response_context(
+            deadline_before.envelope,
+            MethodSemantics(side_effecting=True, long_running=True),
+        )
+        assert deadline_before_context.failure.code == SABI_ERROR_CODE_DEADLINE
+        assert (
+            deadline_before_context.failure.retry
+            == RETRY_DIRECTIVE_DO_NOT_RETRY
+        )
+        assert deadline_before_context.receipts[0].receipt_id == bytes([0xA1]) * 16
+        await deadline_before_client.close()
+
+        deadline_replay_client = await LocalRpcClient.connect(
+            business_endpoint,
+            transport_config,
+        )
+        deadline_replay = await deadline_replay_client.exchange(
+            business_request(14, 11, "deadline_before_dispatch", 8, b"\x02")
+        )
+        deadline_replay_context = validate_response_context(
+            deadline_replay.envelope,
+            MethodSemantics(side_effecting=True, long_running=True),
+        )
+        assert deadline_replay_context.failure.code == SABI_ERROR_CODE_DEADLINE
+        assert (
+            deadline_replay_context.operation.operation_id
+            == deadline_before_context.operation.operation_id
+        )
+        assert deadline_replay_context.correlation_id == bytes([11]) * 16
+        await deadline_replay_client.close()
+
+        cancel_before_client = await LocalRpcClient.connect(
+            business_endpoint,
+            transport_config,
+        )
+        cancel_before = await cancel_before_client.exchange(
+            business_request(15, 12, "cancel_before_dispatch", 9, b"\x03")
+        )
+        cancel_before_context = validate_response_context(
+            cancel_before.envelope,
+            MethodSemantics(side_effecting=True, long_running=True),
+        )
+        assert cancel_before_context.failure.code == SABI_ERROR_CODE_CANCELLED
+        assert cancel_before_context.failure.retry == RETRY_DIRECTIVE_DO_NOT_RETRY
+        assert cancel_before_context.receipts[0].receipt_id == bytes([0xA2]) * 16
+        await cancel_before_client.close()
+
+        cancel_after_client = await LocalRpcClient.connect(
+            business_endpoint,
+            transport_config,
+        )
+        cancel_after = await cancel_after_client.exchange(
+            business_request(16, 13, "cancel_after_dispatch", 10, b"\x04")
+        )
+        cancel_after_context = validate_response_context(
+            cancel_after.envelope,
+            MethodSemantics(side_effecting=True, long_running=True),
+        )
+        assert cancel_after_context.failure.code == SABI_ERROR_CODE_PARTIAL
+        assert cancel_after_context.failure.retry == RETRY_DIRECTIVE_DO_NOT_RETRY
+        assert cancel_after_context.receipts[0].receipt_id == bytes([0xA4]) * 16
+        await cancel_after_client.close()
+
+        deadline_after_client = await LocalRpcClient.connect(
+            business_endpoint,
+            transport_config,
+        )
+        deadline_after = await deadline_after_client.exchange(
+            business_request(17, 14, "deadline_after_dispatch", 11, b"\x05")
+        )
+        deadline_after_context = validate_response_context(
+            deadline_after.envelope,
+            MethodSemantics(side_effecting=True, long_running=True),
+        )
+        assert (
+            deadline_after_context.failure.code
+            == SABI_ERROR_CODE_EFFECT_UNKNOWN
+        )
+        assert (
+            deadline_after_context.failure.retry
+            == RETRY_DIRECTIVE_QUERY_OPERATION_OR_RETRY_SAME_IDEMPOTENCY_KEY
+        )
+        assert deadline_after_context.receipts[0].receipt_id == bytes([0xA6]) * 16
+        await deadline_after_client.close()
 
         assert await server.wait() == 0
     except BaseException:

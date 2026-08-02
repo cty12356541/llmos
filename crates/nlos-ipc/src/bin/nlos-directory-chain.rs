@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use nlos_ipc::{
     FramedIo, IpcError, OutboundResponse, PeerAuthorizer, PeerIdentity, TransportConfig, serve_one,
 };
-use nlos_operation::{CompletionOutcome, OperationSpec};
+use nlos_operation::{CompletionOutcome, OperationSpec, OperationState};
 use nlos_runtime::FiberHandle;
 use nlos_schema::sabi::v1::{
     DirectoryError, DirectoryErrorCode, ExchangeResponse, LocalEndpoint, LocalTransportKind,
@@ -23,7 +23,8 @@ use nlos_schema::{
 };
 use nlos_service_directory::{ServiceRegistration, SnapshotDirectory};
 use nlos_store::{
-    DurableCallResult, IdempotencyDecision, IdempotencyScope, SqliteOperationStore, StoreError,
+    DurableCallResult, IdempotencyDecision, IdempotencyScope, OutboxKind, SqliteOperationStore,
+    StoreError,
 };
 use nlos_types::{
     ApplicationId, CallbackId, CancellationScopeId, ExecutionFiberId, Generation, IdempotencyKey,
@@ -34,6 +35,9 @@ use sha2::{Digest, Sha256};
 const DIRECTORY_SERVICE: &str = "service_directory";
 const NEGOTIATE_METHOD: &str = "negotiate";
 const BUSINESS_SERVICE: &str = "operation";
+const ADMISSION_NOW_MONOTONIC_NS: u64 = 123_455;
+const QUEUE_CHECK_NOW_MONOTONIC_NS: u64 = 123_456;
+const RECOVERY_BUSINESS_EXCHANGES: usize = 8;
 
 #[derive(Clone, Copy)]
 enum ServerPhase {
@@ -149,16 +153,12 @@ async fn run(
             authority.assert_cancel_dispatches(1)?;
         }
         ServerPhase::Recover => {
-            let (retry_stream, retry_peer) =
-                business_listener.accept(TransportConfig::default()).await?;
-            serve_business(retry_stream, retry_peer, &authority).await?;
-            let (conflict_stream, conflict_peer) =
-                business_listener.accept(TransportConfig::default()).await?;
-            serve_business(conflict_stream, conflict_peer, &authority).await?;
-            let (pending_stream, pending_peer) =
-                business_listener.accept(TransportConfig::default()).await?;
-            serve_business(pending_stream, pending_peer, &authority).await?;
+            for _ in 0..RECOVERY_BUSINESS_EXCHANGES {
+                let (stream, peer) = business_listener.accept(TransportConfig::default()).await?;
+                serve_business(stream, peer, &authority).await?;
+            }
             authority.assert_cancel_dispatches(0)?;
+            authority.assert_control_outbox()?;
         }
     }
     Ok(())
@@ -200,16 +200,12 @@ async fn run(
             authority.assert_cancel_dispatches(1)?;
         }
         ServerPhase::Recover => {
-            let (retry_stream, retry_peer) =
-                business_listener.accept(TransportConfig::default()).await?;
-            serve_business(retry_stream, retry_peer, &authority).await?;
-            let (conflict_stream, conflict_peer) =
-                business_listener.accept(TransportConfig::default()).await?;
-            serve_business(conflict_stream, conflict_peer, &authority).await?;
-            let (pending_stream, pending_peer) =
-                business_listener.accept(TransportConfig::default()).await?;
-            serve_business(pending_stream, pending_peer, &authority).await?;
+            for _ in 0..RECOVERY_BUSINESS_EXCHANGES {
+                let (stream, peer) = business_listener.accept(TransportConfig::default()).await?;
+                serve_business(stream, peer, &authority).await?;
+            }
             authority.assert_cancel_dispatches(0)?;
+            authority.assert_control_outbox()?;
         }
     }
     Ok(())
@@ -248,6 +244,11 @@ struct BusinessAuthority {
     cancel_dispatches: AtomicUsize,
 }
 
+enum BusinessExecution {
+    Completed(DurableCallResult),
+    Pending,
+}
+
 impl BusinessAuthority {
     fn open(path: &Path) -> Result<Self, nlos_store::StoreError> {
         Ok(Self {
@@ -262,6 +263,45 @@ impl BusinessAuthority {
             Ok(())
         } else {
             Err(format!("expected {expected} durable dispatches, observed {actual}").into())
+        }
+    }
+
+    fn assert_control_outbox(&self) -> Result<(), Box<dyn Error>> {
+        let entries = self.store.pending_outbox(16)?;
+        let wake_count = entries
+            .iter()
+            .filter(|entry| entry.kind == OutboxKind::WakeFiber)
+            .count();
+        let reconcile_count = entries
+            .iter()
+            .filter(|entry| entry.kind == OutboxKind::ReconcileEffect)
+            .count();
+        let no_effect_count = entries
+            .iter()
+            .filter(|entry| matches!(entry.state, OperationState::CancelledBeforeEffect { .. }))
+            .count();
+        let partial_count = entries
+            .iter()
+            .filter(|entry| matches!(entry.state, OperationState::PartialEffect { .. }))
+            .count();
+        let unknown_count = entries
+            .iter()
+            .filter(|entry| matches!(entry.state, OperationState::EffectUnknown { .. }))
+            .count();
+        if entries.len() == 5
+            && wake_count == 3
+            && reconcile_count == 2
+            && no_effect_count == 2
+            && partial_count == 1
+            && unknown_count == 1
+        {
+            Ok(())
+        } else {
+            Err(format!(
+                "unexpected control outbox: total={}, wake={wake_count}, reconcile={reconcile_count}, no_effect={no_effect_count}, partial={partial_count}, unknown={unknown_count}",
+                entries.len()
+            )
+            .into())
         }
     }
 }
@@ -346,7 +386,7 @@ fn process_business(
     let request_context = validate_sabi_request_context(
         request.envelope(),
         MethodSemantics::LONG_RUNNING_MUTATION,
-        123_455,
+        ADMISSION_NOW_MONOTONIC_NS,
     )?;
     let caller = request_context
         .caller
@@ -399,36 +439,166 @@ fn process_business(
     };
 
     let result = match decision {
-        IdempotencyDecision::Created(operation) => {
-            if request.envelope().method == "cancel" {
-                authority.cancel_dispatches.fetch_add(1, Ordering::SeqCst);
-            }
-            let ticket = authority
-                .store
-                .dispatch(operation, CallbackId::from_bytes([0x88; 16]))
-                .map_err(|_| IpcError::ServiceFailure("durable dispatch failed"))?;
-            if request.envelope().method == "pending" {
+        IdempotencyDecision::Created(operation) => match execute_new_business_operation(
+            request,
+            authority,
+            operation,
+            request_context.deadline_monotonic_ns,
+        )? {
+            BusinessExecution::Completed(result) => result,
+            BusinessExecution::Pending => {
                 return Ok(uncertain_response(request, correlation_id, operation));
             }
-            let mut result_wire = request.envelope().payload.clone();
-            result_wire.push(0xd0);
-            authority
-                .store
-                .complete_idempotent_operation(
-                    ticket,
-                    CompletionOutcome::Completed {
-                        receipt_id: ReceiptId::from_bytes([0x99; 16]),
-                    },
-                    &result_wire,
-                )
-                .map_err(|_| IpcError::ServiceFailure("durable completion failed"))?
-        }
+        },
         IdempotencyDecision::Completed(result) => result,
         IdempotencyDecision::PendingOrUncertain(operation) => {
             return Ok(uncertain_response(request, correlation_id, operation));
         }
     };
-    Ok(success_response(request, correlation_id, result))
+    completed_business_response(request, authority, correlation_id, result)
+}
+
+fn execute_new_business_operation(
+    request: &nlos_schema::ValidatedExchangeRequest,
+    authority: &BusinessAuthority,
+    operation: nlos_operation::OperationHandle,
+    deadline_monotonic_ns: u64,
+) -> Result<BusinessExecution, IpcError> {
+    let method = request.envelope().method.as_str();
+    if method == "deadline_before_dispatch" && deadline_monotonic_ns <= QUEUE_CHECK_NOW_MONOTONIC_NS
+    {
+        let result = authority
+            .store
+            .cancel_idempotent_before_dispatch(operation, ReceiptId::from_bytes([0xa1; 16]), &[])
+            .map_err(|_| IpcError::ServiceFailure("durable pre-dispatch deadline failed"))?;
+        return Ok(BusinessExecution::Completed(result));
+    }
+    if method == "cancel_before_dispatch" {
+        let result = authority
+            .store
+            .cancel_idempotent_before_dispatch(operation, ReceiptId::from_bytes([0xa2; 16]), &[])
+            .map_err(|_| IpcError::ServiceFailure("durable pre-dispatch cancellation failed"))?;
+        return Ok(BusinessExecution::Completed(result));
+    }
+    if method == "cancel" {
+        authority.cancel_dispatches.fetch_add(1, Ordering::SeqCst);
+    }
+    let ticket = authority
+        .store
+        .dispatch(operation, CallbackId::from_bytes([0x88; 16]))
+        .map_err(|_| IpcError::ServiceFailure("durable dispatch failed"))?;
+    if method == "pending" {
+        return Ok(BusinessExecution::Pending);
+    }
+
+    let result = if method == "cancel_after_dispatch" {
+        authority
+            .store
+            .request_cancel(operation, ReceiptId::from_bytes([0xa3; 16]))
+            .map_err(|_| IpcError::ServiceFailure("durable cancel request failed"))?;
+        authority
+            .store
+            .complete_idempotent_operation(
+                ticket,
+                CompletionOutcome::PartialEffect {
+                    receipt_id: ReceiptId::from_bytes([0xa4; 16]),
+                },
+                &[],
+            )
+            .map_err(|_| IpcError::ServiceFailure("durable partial completion failed"))?
+    } else if method == "deadline_after_dispatch"
+        && deadline_monotonic_ns <= QUEUE_CHECK_NOW_MONOTONIC_NS
+    {
+        authority
+            .store
+            .request_cancel(operation, ReceiptId::from_bytes([0xa5; 16]))
+            .map_err(|_| IpcError::ServiceFailure("durable deadline cancel failed"))?;
+        authority
+            .store
+            .complete_idempotent_operation(
+                ticket,
+                CompletionOutcome::EffectUnknown {
+                    receipt_id: ReceiptId::from_bytes([0xa6; 16]),
+                },
+                &[],
+            )
+            .map_err(|_| IpcError::ServiceFailure("durable effect-unknown completion failed"))?
+    } else {
+        let mut result_wire = request.envelope().payload.clone();
+        result_wire.push(0xd0);
+        authority
+            .store
+            .complete_idempotent_operation(
+                ticket,
+                CompletionOutcome::Completed {
+                    receipt_id: ReceiptId::from_bytes([0x99; 16]),
+                },
+                &result_wire,
+            )
+            .map_err(|_| IpcError::ServiceFailure("durable completion failed"))?
+    };
+    Ok(BusinessExecution::Completed(result))
+}
+
+fn completed_business_response(
+    request: &nlos_schema::ValidatedExchangeRequest,
+    authority: &BusinessAuthority,
+    correlation_id: Vec<u8>,
+    result: DurableCallResult,
+) -> Result<OutboundResponse, IpcError> {
+    let state = authority
+        .store
+        .inspect(result.operation)
+        .map_err(|_| IpcError::ServiceFailure("durable result state lookup failed"))?
+        .state;
+    let response = match state {
+        OperationState::CancelledBeforeEffect { .. }
+            if request.envelope().method == "deadline_before_dispatch" =>
+        {
+            terminal_failure_response(
+                request,
+                correlation_id,
+                result,
+                SabiErrorCode::Deadline,
+                RetryDirective::DoNotRetry,
+                "deadline expired before effect dispatch",
+            )
+        }
+        OperationState::CancelledBeforeEffect { .. } => terminal_failure_response(
+            request,
+            correlation_id,
+            result,
+            SabiErrorCode::Cancelled,
+            RetryDirective::DoNotRetry,
+            "operation cancelled before effect dispatch",
+        ),
+        OperationState::PartialEffect { .. } => terminal_failure_response(
+            request,
+            correlation_id,
+            result,
+            SabiErrorCode::Partial,
+            RetryDirective::DoNotRetry,
+            "cancellation observed after a partial effect",
+        ),
+        OperationState::EffectUnknown { .. } => terminal_failure_response(
+            request,
+            correlation_id,
+            result,
+            SabiErrorCode::EffectUnknown,
+            RetryDirective::QueryOperationOrRetrySameIdempotencyKey,
+            "deadline expired after dispatch; effect is unknown",
+        ),
+        OperationState::Completed { .. } => success_response(request, correlation_id, result),
+        OperationState::Failed { .. }
+        | OperationState::Registered
+        | OperationState::Dispatched
+        | OperationState::CancelRequested => {
+            return Err(IpcError::ServiceFailure(
+                "durable result has incompatible operation state",
+            ));
+        }
+    };
+    Ok(response)
 }
 
 fn success_response(
@@ -446,6 +616,35 @@ fn success_response(
                 receipt_id: result.receipt_id.into_bytes().to_vec(),
             }],
             failure: None,
+        },
+    ));
+    OutboundResponse::Typed(ExchangeResponse {
+        envelope: Some(envelope),
+    })
+}
+
+fn terminal_failure_response(
+    request: &nlos_schema::ValidatedExchangeRequest,
+    correlation_id: Vec<u8>,
+    result: DurableCallResult,
+    code: SabiErrorCode,
+    retry: RetryDirective,
+    safe_message: &str,
+) -> OutboundResponse {
+    let mut envelope = request.envelope().clone();
+    envelope.payload = result.result_wire;
+    envelope.common_context = Some(envelope::CommonContext::ResponseContext(
+        SabiResponseContext {
+            correlation_id,
+            operation: Some(operation_reference(result.operation)),
+            receipts: vec![ReceiptReference {
+                receipt_id: result.receipt_id.into_bytes().to_vec(),
+            }],
+            failure: Some(SabiFailure {
+                code: code.into(),
+                retry: retry.into(),
+                safe_message: safe_message.to_owned(),
+            }),
         },
     ));
     OutboundResponse::Typed(ExchangeResponse {
