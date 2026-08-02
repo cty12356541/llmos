@@ -4,7 +4,7 @@
 - 日期：2026-08-02
 - Owner：待指定
 - 关联 Requirement：`COMPAT-VER-001`、`COMPAT-VER-002`、`COMPAT-DEPRECATE-001`、`SABI-DISC-001`、`SABI-TRANSPORT-001`、`TYPE-GEN-001`
-- 复审触发器：三语言生成结果出现语义漂移；unknown field 无法安全转发；Protobuf/CBOR 无法表达 required compatibility；解析资源上限或 fuzz 出现反例；本地 IPC 迫使 schema 绑定单一 transport
+- 复审触发器：任一官方 SDK 候选的生成/运行语义出现漂移；unknown field 无法安全转发；Protobuf/CBOR 无法表达 required compatibility；解析资源上限或 fuzz 出现反例；本地 IPC 迫使 schema 绑定单一 transport
 
 ## 上下文
 
@@ -43,6 +43,7 @@
 - critical extension ID 只能在实现、测试和协商支持同时存在时加入 registry；
 - 三语言 Protobuf generation/compat、首轮 sanitizer fuzz smoke 与 Unix/Windows typed IPC 初始适配已通过，但 TS/Python transport client、ServiceDirectory/negotiation、完整 common semantics、CBOR 跨语言和长期 fuzz 未完成前，ADR 保持 `POC`；
 - `nlos-types` 继续不依赖 Protobuf；wire adapter 负责在 nominal ID 与生成类型之间显式转换，避免 wire bytes 侵入内核对象身份。
+- SDK 语言按[多语言 SDK 支持评估计划](../language-sdk-support-plan.md)逐级晋升；Go/C# 当前只是 P1 评估候选，生成类型或 descriptor 不构成正式支持声明。
 
 ## 依赖审查
 

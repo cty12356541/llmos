@@ -193,6 +193,7 @@ P0 风险阻止 Stage 退出；P1 必须有 owner、缓解措施和明确复查�
 - Rust 导读：[rust-for-nlos.md](./rust-for-nlos.md)
 - 技术选型：[stage-b-technology-selection.md](./stage-b-technology-selection.md)
 - 阶段 B 权威进度单：[stage-b-progress.md](./stage-b-progress.md)
+- 多语言 SDK 支持评估：[language-sdk-support-plan.md](./language-sdk-support-plan.md)
 - 规范路线：[v0.5 第 28.2 节](../design/06-架构设计总纲-v0.5.md#282-阶段-b单机通用应用平台)
 - 执行层级决策：[议题 29](../discussions/29-现代系统执行层级与机制迁移.md)
 

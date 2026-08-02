@@ -47,6 +47,7 @@ Application
 | `B-OUTBOX` | Durable Outbox → Tokio Fiber wake/reconcile consumer | `DONE` | [PoC-0004](../evidence/stage-b/poc-0004-outbox-wake-consumer.md)；本提交及评审后 remediation 提交（hash 见 git log 与 commit receipt） | durable wait registry/fiber rehydration 归 `B-PROCESS`/Slice K；此前移交 `B-STORE-FAULT` 的 F1–F7 已全部通过。2026-08-01 remediation：评审指出的 pump 错误路径可观测性（失败计数/根因/有上限退避/Faulted 终态）、drain panic 防护、shutdown 终态语义与 wake 重缓冲已补齐并各有测试。2026-08-01 复验残余（非阻塞，详见 PoC-0004 §8.4）：持久 apply 失败（`stopped_at` 路径）暂无 health 信号 → 后续 observability 项；`Faulted` 恢复依赖外部监督 → `B-PROCESS`；`PumpHealth.last_error` 跨 IPC 边界需脱敏 → `B-CONTROL`/`B-SCHEMA`；`Buffered` 驻留仅随 fiber 终态清理 → `B-PROCESS`/Slice K |
 | `B-STORE-FAULT` | SQLite fault-injection：kill-9、torn-write、disk-full、checkpoint/backup、migration、长读事务、100K metadata、跨平台 | `DONE` | [PoC-0003 F1–F7 增量证据](../evidence/stage-b/poc-0003-sqlite-operation-authority.md)；[三平台 CI run 30714584445](https://github.com/cty12356541/llmos/actions/runs/30714584445) | 100K 逐条生产写入、真实硬件掉电/更多文件系统保留为扩展 Evidence，不阻塞本工作包 |
 | `B-SCHEMA` | Protobuf/CBOR、golden vector、版本演进和本地 typed IPC | `IN_PROGRESS` | [ADR-0003](./adrs/0003-stage-b-idl-and-canonical-encoding.md)、[B-SCHEMA-001](../evidence/stage-b/b-schema-001-protobuf-envelope.md)、[B-SCHEMA-002](../evidence/stage-b/b-schema-002-cross-language-generation.md)、[B-SCHEMA-003](../evidence/stage-b/b-schema-003-deterministic-cbor.md)、[B-SCHEMA-004](../evidence/stage-b/b-schema-004-schema-fuzz-smoke.md)、[B-SCHEMA-005](../evidence/stage-b/b-schema-005-local-typed-ipc.md)、[三平台 CI run 30730221706](https://github.com/cty12356541/llmos/actions/runs/30730221706)；`schema/`、`gen/`、`crates/nlos-schema`、`crates/nlos-canonical`、`crates/nlos-ipc`、`fuzz/` | TS/Python transport client、ServiceDirectory/negotiation、reconnect/cancel/deadline、Windows token/ACL、CBOR 跨语言、长期 fuzz、actual signing |
+| `B-SDK-LANG-EVAL` | 官方 SDK 语言集合与 Go/C# 优先兼容评估 | `READY` | [多语言 SDK 支持评估计划](./language-sdk-support-plan.md) | Gate A 先完成 TS/Python `SDK-3`；随后做 Go/C# generation/golden 探针，并至少选择一个完成跨平台 IPC PoC；Java/Kotlin、Swift、C/C++ 需求驱动复审 |
 | `B-SANDBOX` | Wasmtime/WASI 与独立 host Process 隔离对比 | `READY` | [技术选型第 5 节](./stage-b-technology-selection.md) | capability import、fuel/epoch、memory、host crash、GuaranteeTier |
 | `B-PROCESS` | native Process supervisor 与平台资源/生命周期 adapter | `READY` | [v0.5 Process 规范](../design/06-架构设计总纲-v0.5.md) | macOS/Windows/Linux suspend/kill、host incarnation、resource mapping |
 | `B-TASK` | TaskPlan/TaskNode、lazy materialization、TaskSnapshot、双 Attempt 唯一提交 | `READY` | [v0.5 Task 规范](../design/06-架构设计总纲-v0.5.md) | TaskAuthority、CommitPermit、EffectPermit、snapshot drift、reconcile |
@@ -154,6 +155,7 @@ Protobuf envelope + Rust generation + registry + first golden       DONE
   → protobuf / CBOR sanitizer fuzz smoke                            DONE
   → Rust typed framing + Unix/Windows platform adapters             PARTIAL PASS
   → TS/Python transport clients + discovery/common semantics         NEXT
+  → Go/C# generation/golden probes + one independent IPC PoC         PLANNED
 ```
 
 当前 typed IPC 总验收条件及剩余门：
@@ -163,6 +165,8 @@ Protobuf envelope + Rust generation + registry + first golden       DONE
 3. frame length、connect/read/write timeout、peer identity/authorization hook 和 backpressure 已显式有界；Windows token/SID 仍缺；
 4. unknown field、unknown major/critical、断连、半帧、超界和 endpoint 不可用已有失败语义；自动重连/cancel/deadline 状态机仍待实现；
 5. OS endpoint/credential/Protobuf 未进入 `nlos-types`；后续 transport 替换继续以 generated service trait/descriptor 为边界。
+
+多语言 SDK 扩展按 [`B-SDK-LANG-EVAL`](./language-sdk-support-plan.md) 单独晋级：Go 与 C# 已进入 P1 评估，但不打断当前 TS/Python transport 主线，也不在只有 generated types 时宣称“已支持”。
 
 `B-OUTBOX` 的已验收条件（供追溯）：commit 前无 wake；崩溃重放不丢失、不制造旧 generation wake；duplicate 无第二次逻辑唤醒/reconciliation；bounded queue 不阻塞 writer/cancel；测试覆盖 current/late/cancel-before-dispatch/crash-restart 场景；Evidence 已同步三 PoC 集成缺口并保持 `PARTIAL_PASS` 直到故障注入通过。
 
