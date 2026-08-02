@@ -5,11 +5,13 @@ use std::io::{self, Write};
 use nlos_ipc::{OutboundResponse, PeerAuthorizer, PeerIdentity, TransportConfig, serve_one};
 use nlos_schema::sabi::v1::{
     DirectoryError, DirectoryErrorCode, ExchangeResponse, LocalEndpoint, LocalTransportKind,
-    NegotiateServiceResponse, ServiceCandidate, ServiceVersion, negotiate_service_response,
+    NegotiateServiceResponse, OperationReference, ReceiptReference, SabiResponseContext,
+    ServiceCandidate, ServiceVersion, envelope, negotiate_service_response,
 };
 use nlos_schema::{
-    SABI_ENVELOPE_SCHEMA, decode_negotiate_service_request, encode_negotiate_service_response,
-    service_directory_schema_identity,
+    MethodSemantics, SABI_ENVELOPE_SCHEMA, decode_negotiate_service_request,
+    encode_negotiate_service_response, service_directory_schema_identity,
+    validate_sabi_request_context,
 };
 use nlos_service_directory::{ServiceRegistration, SnapshotDirectory};
 
@@ -53,7 +55,7 @@ fn directory(
             version: Some(ServiceVersion {
                 schema_name: SABI_ENVELOPE_SCHEMA.to_owned(),
                 major: 1,
-                minor: 0,
+                minor: 1,
             }),
             feature_ids: Vec::new(),
             transport_kinds: vec![transport.into()],
@@ -182,8 +184,27 @@ where
         peer,
         &AllowConformancePeer,
         |request| async move {
+            let request_context = validate_sabi_request_context(
+                request.envelope(),
+                MethodSemantics::LONG_RUNNING_MUTATION,
+                123_455,
+            )?;
+            let mut envelope = request.envelope().clone();
+            envelope.common_context = Some(envelope::CommonContext::ResponseContext(
+                SabiResponseContext {
+                    correlation_id: request_context.correlation_id.clone(),
+                    operation: Some(OperationReference {
+                        operation_id: vec![8; 16],
+                        generation: 4,
+                    }),
+                    receipts: vec![ReceiptReference {
+                        receipt_id: vec![9; 16],
+                    }],
+                    failure: None,
+                },
+            ));
             Ok(OutboundResponse::Typed(ExchangeResponse {
-                envelope: Some(request.envelope().clone()),
+                envelope: Some(envelope),
             }))
         },
     )

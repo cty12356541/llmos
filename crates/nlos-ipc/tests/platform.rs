@@ -30,6 +30,7 @@ fn request() -> ExchangeRequest {
             request_id: vec![3; 16],
             service: "operation".to_owned(),
             method: "get".to_owned(),
+            common_context: None,
             payload: Vec::new(),
         }),
     }

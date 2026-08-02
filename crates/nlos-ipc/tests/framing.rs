@@ -23,6 +23,7 @@ fn envelope(request_id: u8) -> Envelope {
         request_id: vec![request_id; 16],
         service: "operation".to_owned(),
         method: "get".to_owned(),
+        common_context: None,
         payload: b"payload".to_vec(),
     }
 }

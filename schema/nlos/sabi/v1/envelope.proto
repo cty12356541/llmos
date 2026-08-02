@@ -13,6 +13,103 @@ message SchemaIdentity {
   repeated uint32 non_critical_extension_ids = 5;
 }
 
+// Stable caller identity carried by application-facing SABI requests. These
+// IDs are nominal 128-bit values; process_generation fences stale incarnations.
+message CallerIdentity {
+  bytes principal_id = 1;
+  bytes application_id = 2;
+  bytes process_id = 3;
+  uint64 process_generation = 4;
+}
+
+// Optional execution fence for requests made on behalf of a TaskAttempt.
+message TaskExecutionBinding {
+  bytes task_attempt_id = 1;
+  uint64 task_authority_term = 2;
+  uint64 task_control_epoch = 3;
+  uint64 cancel_epoch = 4;
+  uint64 permit_epoch = 5;
+  uint64 isolation_domain_generation = 6;
+}
+
+// Process-local capability references are intentionally opaque to service
+// payloads. Slot plus generation prevents stale handle reuse.
+message CapabilityHandle {
+  uint64 slot = 1;
+  uint64 generation = 2;
+}
+
+// Common metadata for an application-facing SABI request. Whether a method is
+// side-effecting or long-running remains part of the negotiated method
+// contract; validators use that contract to require idempotency and deadline.
+message SabiRequestContext {
+  CallerIdentity caller = 1;
+  bytes activity_context = 2;
+  TaskExecutionBinding task_execution_binding = 3;
+  bytes correlation_id = 4;
+  bytes idempotency_key = 5;
+  uint64 deadline_monotonic_ns = 6;
+  repeated CapabilityHandle capability_handles = 7;
+  CapabilityHandle reservation_handle = 8;
+  bytes proposal_or_input_digest_sha256 = 9;
+}
+
+// Stable common error classes. Service-specific detail belongs in its own
+// bounded payload and must not collapse uncertain or partial outcomes.
+enum SabiErrorCode {
+  SABI_ERROR_CODE_UNSPECIFIED = 0;
+  SABI_ERROR_CODE_ABI_VERSION = 1;
+  SABI_ERROR_CODE_INVALID_ARGUMENT = 2;
+  SABI_ERROR_CODE_NOT_FOUND = 3;
+  SABI_ERROR_CODE_RIGHTS = 4;
+  SABI_ERROR_CODE_STATE = 5;
+  SABI_ERROR_CODE_BUDGET = 6;
+  SABI_ERROR_CODE_QUOTA = 7;
+  SABI_ERROR_CODE_FENCED = 8;
+  SABI_ERROR_CODE_DEADLINE = 9;
+  SABI_ERROR_CODE_CANCELLED = 10;
+  SABI_ERROR_CODE_CONFLICT = 11;
+  SABI_ERROR_CODE_DURABILITY = 12;
+  SABI_ERROR_CODE_UNCERTAIN = 13;
+  SABI_ERROR_CODE_DRIVER = 14;
+  SABI_ERROR_CODE_HOST_LOST = 15;
+  SABI_ERROR_CODE_NOT_SUPPORTED = 16;
+  SABI_ERROR_CODE_RETRY = 17;
+  SABI_ERROR_CODE_PARTIAL = 18;
+  SABI_ERROR_CODE_EFFECT_UNKNOWN = 19;
+}
+
+enum RetryDirective {
+  RETRY_DIRECTIVE_UNSPECIFIED = 0;
+  RETRY_DIRECTIVE_DO_NOT_RETRY = 1;
+  RETRY_DIRECTIVE_RETRY_SAME_IDEMPOTENCY_KEY = 2;
+  RETRY_DIRECTIVE_QUERY_OPERATION_OR_RETRY_SAME_IDEMPOTENCY_KEY = 3;
+}
+
+message OperationReference {
+  bytes operation_id = 1;
+  uint64 generation = 2;
+}
+
+message ReceiptReference {
+  bytes receipt_id = 1;
+}
+
+message SabiFailure {
+  SabiErrorCode code = 1;
+  RetryDirective retry = 2;
+  string safe_message = 3;
+}
+
+// Common metadata returned by a SABI method. Immediate success may omit both
+// operation and failure; state-changing methods still associate receipts.
+message SabiResponseContext {
+  bytes correlation_id = 1;
+  OperationReference operation = 2;
+  repeated ReceiptReference receipts = 3;
+  SabiFailure failure = 4;
+}
+
 // The first Stage B typed boundary. The payload remains service-specific and
 // opaque until the corresponding service schema enters the registry.
 message Envelope {
@@ -20,6 +117,10 @@ message Envelope {
   bytes request_id = 2;
   string service = 3;
   string method = 4;
+  oneof common_context {
+    SabiRequestContext request_context = 5;
+    SabiResponseContext response_context = 6;
+  }
   bytes payload = 15;
 }
 

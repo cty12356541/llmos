@@ -21,6 +21,11 @@ pub const SABI_SERVICE_DIRECTORY_SCHEMA: &str = "nlos.sabi.ServiceDirectory";
 pub const MAX_ENVELOPE_BYTES: usize = 1024 * 1024;
 pub const MAX_SERVICE_DIRECTORY_PAYLOAD_BYTES: usize = 64 * 1024;
 pub const REQUEST_ID_BYTES: usize = 16;
+pub const SHA256_DIGEST_BYTES: usize = 32;
+pub const MAX_ACTIVITY_CONTEXT_BYTES: usize = 4 * 1024;
+pub const MAX_CAPABILITY_HANDLES: usize = 64;
+pub const MAX_RECEIPT_REFERENCES: usize = 64;
+pub const MAX_SAFE_ERROR_MESSAGE_BYTES: usize = 512;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SchemaDescriptor {
@@ -33,7 +38,7 @@ pub struct SchemaDescriptor {
 const SABI_ENVELOPE_V1: SchemaDescriptor = SchemaDescriptor {
     name: SABI_ENVELOPE_SCHEMA,
     major: 1,
-    minor: 0,
+    minor: 1,
     supported_critical_extensions: &[],
 };
 
@@ -119,6 +124,126 @@ impl fmt::Display for CompatibilityError {
 }
 
 impl Error for CompatibilityError {}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MethodSemantics {
+    pub side_effecting: bool,
+    pub long_running: bool,
+}
+
+impl MethodSemantics {
+    pub const QUERY: Self = Self {
+        side_effecting: false,
+        long_running: false,
+    };
+    pub const LONG_RUNNING_QUERY: Self = Self {
+        side_effecting: false,
+        long_running: true,
+    };
+    pub const MUTATION: Self = Self {
+        side_effecting: true,
+        long_running: false,
+    };
+    pub const LONG_RUNNING_MUTATION: Self = Self {
+        side_effecting: true,
+        long_running: true,
+    };
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CommonSemanticsError {
+    MissingRequestContext,
+    MissingResponseContext,
+    MissingCallerIdentity,
+    InvalidIdentifierLength { field: &'static str, actual: usize },
+    ZeroGeneration(&'static str),
+    MissingIdempotencyKey,
+    MissingDeadline,
+    DeadlineExpired,
+    ActivityContextTooLarge { actual: usize, maximum: usize },
+    TooManyCapabilityHandles { actual: usize, maximum: usize },
+    DuplicateCapabilityHandle,
+    InvalidProposalDigestLength { actual: usize },
+    TooManyReceiptReferences { actual: usize, maximum: usize },
+    DuplicateReceiptReference,
+    UnknownErrorCode(i32),
+    UnspecifiedErrorCode,
+    UnknownRetryDirective(i32),
+    UnspecifiedRetryDirective,
+    InvalidRetryDirective,
+    MissingEffectEvidence,
+    MissingOperationForUncertainOutcome,
+    MissingReceiptForPartialOutcome,
+    UnsafeErrorMessage,
+}
+
+impl fmt::Display for CommonSemanticsError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingRequestContext => formatter.write_str("SABI request context is missing"),
+            Self::MissingResponseContext => formatter.write_str("SABI response context is missing"),
+            Self::MissingCallerIdentity => formatter.write_str("caller identity is missing"),
+            Self::InvalidIdentifierLength { field, actual } => write!(
+                formatter,
+                "{field} has {actual} bytes; exactly {REQUEST_ID_BYTES} are required"
+            ),
+            Self::ZeroGeneration(field) => write!(formatter, "{field} generation must be non-zero"),
+            Self::MissingIdempotencyKey => {
+                formatter.write_str("side-effecting call requires a 128-bit idempotency key")
+            }
+            Self::MissingDeadline => {
+                formatter.write_str("long-running call requires a monotonic deadline")
+            }
+            Self::DeadlineExpired => formatter.write_str("call deadline has expired"),
+            Self::ActivityContextTooLarge { actual, maximum } => write!(
+                formatter,
+                "activity context has {actual} bytes; maximum is {maximum}"
+            ),
+            Self::TooManyCapabilityHandles { actual, maximum } => write!(
+                formatter,
+                "request has {actual} capability handles; maximum is {maximum}"
+            ),
+            Self::DuplicateCapabilityHandle => {
+                formatter.write_str("request contains a duplicate capability handle")
+            }
+            Self::InvalidProposalDigestLength { actual } => write!(
+                formatter,
+                "proposal/input digest has {actual} bytes; exactly {SHA256_DIGEST_BYTES} are required"
+            ),
+            Self::TooManyReceiptReferences { actual, maximum } => write!(
+                formatter,
+                "response has {actual} receipt references; maximum is {maximum}"
+            ),
+            Self::DuplicateReceiptReference => {
+                formatter.write_str("response contains a duplicate receipt reference")
+            }
+            Self::UnknownErrorCode(code) => write!(formatter, "unknown SABI error code {code}"),
+            Self::UnspecifiedErrorCode => {
+                formatter.write_str("SABI failure uses the unspecified error code")
+            }
+            Self::UnknownRetryDirective(directive) => {
+                write!(formatter, "unknown SABI retry directive {directive}")
+            }
+            Self::UnspecifiedRetryDirective => {
+                formatter.write_str("SABI failure uses the unspecified retry directive")
+            }
+            Self::InvalidRetryDirective => formatter
+                .write_str("SABI failure retry directive is incompatible with its error code"),
+            Self::MissingEffectEvidence => formatter
+                .write_str("side-effecting response requires an Operation or Receipt reference"),
+            Self::MissingOperationForUncertainOutcome => formatter
+                .write_str("uncertain/effect-unknown outcome requires an Operation reference"),
+            Self::MissingReceiptForPartialOutcome => {
+                formatter.write_str("partial outcome requires at least one Receipt reference")
+            }
+            Self::UnsafeErrorMessage => {
+                formatter.write_str("safe error message is oversized or contains a NUL character")
+            }
+        }
+    }
+}
+
+impl Error for CommonSemanticsError {}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ValidatedFrame {
@@ -463,6 +588,215 @@ pub fn decode_negotiate_service_response(
         return Err(CompatibilityError::MissingServiceDirectoryResult);
     }
     Ok(response)
+}
+
+/// Validates common request metadata against the negotiated method contract.
+///
+/// `now_monotonic_ns` must use the same host monotonic clock domain as the
+/// supplied deadline. A zero value is valid for tests that omit a deadline.
+///
+/// # Errors
+///
+/// Returns a fail-closed error for missing identity/fences, malformed IDs,
+/// missing mutation idempotency, missing/expired long-running deadline, or
+/// unbounded/duplicate authority references.
+pub fn validate_sabi_request_context(
+    envelope: &sabi::v1::Envelope,
+    semantics: MethodSemantics,
+    now_monotonic_ns: u64,
+) -> Result<&sabi::v1::SabiRequestContext, CommonSemanticsError> {
+    let Some(sabi::v1::envelope::CommonContext::RequestContext(context)) =
+        envelope.common_context.as_ref()
+    else {
+        return Err(CommonSemanticsError::MissingRequestContext);
+    };
+    let caller = context
+        .caller
+        .as_ref()
+        .ok_or(CommonSemanticsError::MissingCallerIdentity)?;
+    validate_id("principal_id", &caller.principal_id)?;
+    validate_id("application_id", &caller.application_id)?;
+    validate_id("process_id", &caller.process_id)?;
+    validate_generation("process", caller.process_generation)?;
+    validate_id("correlation_id", &context.correlation_id)?;
+
+    if context.idempotency_key.is_empty() {
+        if semantics.side_effecting {
+            return Err(CommonSemanticsError::MissingIdempotencyKey);
+        }
+    } else {
+        validate_id("idempotency_key", &context.idempotency_key)?;
+    }
+
+    if context.deadline_monotonic_ns == 0 {
+        if semantics.long_running {
+            return Err(CommonSemanticsError::MissingDeadline);
+        }
+    } else if context.deadline_monotonic_ns <= now_monotonic_ns {
+        return Err(CommonSemanticsError::DeadlineExpired);
+    }
+
+    if context.activity_context.len() > MAX_ACTIVITY_CONTEXT_BYTES {
+        return Err(CommonSemanticsError::ActivityContextTooLarge {
+            actual: context.activity_context.len(),
+            maximum: MAX_ACTIVITY_CONTEXT_BYTES,
+        });
+    }
+    if let Some(binding) = context.task_execution_binding.as_ref() {
+        validate_id("task_attempt_id", &binding.task_attempt_id)?;
+        validate_generation("task_authority_term", binding.task_authority_term)?;
+        validate_generation("isolation_domain", binding.isolation_domain_generation)?;
+    }
+    validate_capabilities(&context.capability_handles)?;
+    if let Some(handle) = context.reservation_handle.as_ref() {
+        validate_capability(handle)?;
+        if context.capability_handles.contains(handle) {
+            return Err(CommonSemanticsError::DuplicateCapabilityHandle);
+        }
+    }
+    if !context.proposal_or_input_digest_sha256.is_empty()
+        && context.proposal_or_input_digest_sha256.len() != SHA256_DIGEST_BYTES
+    {
+        return Err(CommonSemanticsError::InvalidProposalDigestLength {
+            actual: context.proposal_or_input_digest_sha256.len(),
+        });
+    }
+    Ok(context)
+}
+
+/// Validates common response metadata and retry safety.
+///
+/// # Errors
+///
+/// Returns a fail-closed error for malformed references, unknown common error
+/// values, unsafe retry instructions, or uncertain/partial outcomes without
+/// the Operation/Receipt evidence required for reconciliation.
+pub fn validate_sabi_response_context(
+    envelope: &sabi::v1::Envelope,
+    semantics: MethodSemantics,
+) -> Result<&sabi::v1::SabiResponseContext, CommonSemanticsError> {
+    let Some(sabi::v1::envelope::CommonContext::ResponseContext(context)) =
+        envelope.common_context.as_ref()
+    else {
+        return Err(CommonSemanticsError::MissingResponseContext);
+    };
+    validate_id("correlation_id", &context.correlation_id)?;
+    if let Some(operation) = context.operation.as_ref() {
+        validate_operation(operation)?;
+    }
+    validate_receipts(&context.receipts)?;
+    if semantics.side_effecting && context.operation.is_none() && context.receipts.is_empty() {
+        return Err(CommonSemanticsError::MissingEffectEvidence);
+    }
+
+    if let Some(failure) = context.failure.as_ref() {
+        let code = sabi::v1::SabiErrorCode::try_from(failure.code)
+            .map_err(|_| CommonSemanticsError::UnknownErrorCode(failure.code))?;
+        if code == sabi::v1::SabiErrorCode::Unspecified {
+            return Err(CommonSemanticsError::UnspecifiedErrorCode);
+        }
+        let retry = sabi::v1::RetryDirective::try_from(failure.retry)
+            .map_err(|_| CommonSemanticsError::UnknownRetryDirective(failure.retry))?;
+        if retry == sabi::v1::RetryDirective::Unspecified {
+            return Err(CommonSemanticsError::UnspecifiedRetryDirective);
+        }
+        if failure.safe_message.len() > MAX_SAFE_ERROR_MESSAGE_BYTES
+            || failure.safe_message.contains('\0')
+        {
+            return Err(CommonSemanticsError::UnsafeErrorMessage);
+        }
+
+        let operation_present = context.operation.is_some();
+        let receipts_present = !context.receipts.is_empty();
+        if retry == sabi::v1::RetryDirective::QueryOperationOrRetrySameIdempotencyKey
+            && !operation_present
+        {
+            return Err(CommonSemanticsError::MissingOperationForUncertainOutcome);
+        }
+        match code {
+            sabi::v1::SabiErrorCode::Uncertain | sabi::v1::SabiErrorCode::EffectUnknown => {
+                if retry != sabi::v1::RetryDirective::QueryOperationOrRetrySameIdempotencyKey {
+                    return Err(CommonSemanticsError::InvalidRetryDirective);
+                }
+            }
+            sabi::v1::SabiErrorCode::Retry => {
+                if retry != sabi::v1::RetryDirective::RetrySameIdempotencyKey {
+                    return Err(CommonSemanticsError::InvalidRetryDirective);
+                }
+            }
+            sabi::v1::SabiErrorCode::Partial if !receipts_present => {
+                return Err(CommonSemanticsError::MissingReceiptForPartialOutcome);
+            }
+            _ => {}
+        }
+    }
+    Ok(context)
+}
+
+fn validate_id(field: &'static str, value: &[u8]) -> Result<(), CommonSemanticsError> {
+    if value.len() != REQUEST_ID_BYTES {
+        return Err(CommonSemanticsError::InvalidIdentifierLength {
+            field,
+            actual: value.len(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_generation(field: &'static str, value: u64) -> Result<(), CommonSemanticsError> {
+    if value == 0 {
+        return Err(CommonSemanticsError::ZeroGeneration(field));
+    }
+    Ok(())
+}
+
+fn validate_capability(handle: &sabi::v1::CapabilityHandle) -> Result<(), CommonSemanticsError> {
+    validate_generation("capability slot", handle.slot)?;
+    validate_generation("capability", handle.generation)
+}
+
+fn validate_capabilities(
+    handles: &[sabi::v1::CapabilityHandle],
+) -> Result<(), CommonSemanticsError> {
+    if handles.len() > MAX_CAPABILITY_HANDLES {
+        return Err(CommonSemanticsError::TooManyCapabilityHandles {
+            actual: handles.len(),
+            maximum: MAX_CAPABILITY_HANDLES,
+        });
+    }
+    for (index, handle) in handles.iter().enumerate() {
+        validate_capability(handle)?;
+        if handles[..index].contains(handle) {
+            return Err(CommonSemanticsError::DuplicateCapabilityHandle);
+        }
+    }
+    Ok(())
+}
+
+fn validate_operation(
+    operation: &sabi::v1::OperationReference,
+) -> Result<(), CommonSemanticsError> {
+    validate_id("operation_id", &operation.operation_id)?;
+    validate_generation("operation", operation.generation)
+}
+
+fn validate_receipts(receipts: &[sabi::v1::ReceiptReference]) -> Result<(), CommonSemanticsError> {
+    if receipts.len() > MAX_RECEIPT_REFERENCES {
+        return Err(CommonSemanticsError::TooManyReceiptReferences {
+            actual: receipts.len(),
+            maximum: MAX_RECEIPT_REFERENCES,
+        });
+    }
+    for (index, receipt) in receipts.iter().enumerate() {
+        validate_id("receipt_id", &receipt.receipt_id)?;
+        if receipts[..index]
+            .iter()
+            .any(|previous| previous.receipt_id == receipt.receipt_id)
+        {
+            return Err(CommonSemanticsError::DuplicateReceiptReference);
+        }
+    }
+    Ok(())
 }
 
 fn encode_bounded(message: &impl Message) -> Result<Vec<u8>, CompatibilityError> {

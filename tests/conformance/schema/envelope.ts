@@ -5,6 +5,11 @@ import { fileURLToPath } from "node:url";
 import { fromBinary, toBinary } from "@bufbuild/protobuf";
 
 import {
+  CommonSemanticsError,
+  validateRequestContext,
+  validateResponseContext,
+} from "../../../sdk/typescript/src/common.ts";
+import {
   EnvelopeSchema,
   ExchangeRequestSchema,
   ExchangeResponseSchema,
@@ -101,3 +106,76 @@ assert.deepEqual(
 );
 assert.equal(LocalTransportKind.UNIX_SOCKET, 1);
 assert.equal(LocalTransportKind.WINDOWS_NAMED_PIPE, 2);
+
+const commonRequestGolden = Uint8Array.from(
+  Buffer.from(
+    readFileSync(
+      fileURLToPath(
+        new URL(
+          "../../../schema/golden/nlos.sabi.Envelope-common-request-v1.hex",
+          import.meta.url,
+        ),
+      ),
+      "utf8",
+    ).trim(),
+    "hex",
+  ),
+);
+const commonRequest = fromBinary(EnvelopeSchema, commonRequestGolden);
+const requestContext = validateRequestContext(
+  commonRequest,
+  { sideEffecting: true, longRunning: true },
+  123_455n,
+);
+assert.equal(commonRequest.schema?.minor, 1);
+assert.equal(requestContext.caller?.processGeneration, 7n);
+assert.deepEqual(requestContext.idempotencyKey, new Uint8Array(16).fill(6));
+assert.deepEqual(toBinary(EnvelopeSchema, commonRequest), commonRequestGolden);
+
+requestContext.idempotencyKey = new Uint8Array();
+assert.throws(
+  () =>
+    validateRequestContext(
+      commonRequest,
+      { sideEffecting: true, longRunning: false },
+      0n,
+    ),
+  (error: unknown) =>
+    error instanceof CommonSemanticsError &&
+    error.code === "MISSING_IDEMPOTENCY_KEY",
+);
+
+const uncertainGolden = Uint8Array.from(
+  Buffer.from(
+    readFileSync(
+      fileURLToPath(
+        new URL(
+          "../../../schema/golden/nlos.sabi.Envelope-common-uncertain-v1.hex",
+          import.meta.url,
+        ),
+      ),
+      "utf8",
+    ).trim(),
+    "hex",
+  ),
+);
+const uncertain = fromBinary(EnvelopeSchema, uncertainGolden);
+const responseContext = validateResponseContext(uncertain, {
+  sideEffecting: true,
+  longRunning: true,
+});
+assert.equal(responseContext.operation?.generation, 4n);
+assert.equal(responseContext.failure?.code, 13);
+assert.equal(responseContext.failure?.retry, 3);
+assert.deepEqual(toBinary(EnvelopeSchema, uncertain), uncertainGolden);
+
+responseContext.failure!.retry = 2;
+assert.throws(
+  () =>
+    validateResponseContext(uncertain, {
+      sideEffecting: true,
+      longRunning: true,
+    }),
+  (error: unknown) =>
+    error instanceof CommonSemanticsError && error.code === "UNSAFE_RETRY",
+);

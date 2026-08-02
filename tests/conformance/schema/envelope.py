@@ -7,6 +7,13 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "gen" / "python"))
 
 from nlos.sabi.v1 import envelope_pb2, service_directory_pb2  # noqa: E402
+sys.path.insert(0, str(ROOT / "sdk" / "python"))
+from nlos_sdk.common import (  # noqa: E402
+    CommonSemanticsError,
+    MethodSemantics,
+    validate_request_context,
+    validate_response_context,
+)
 
 
 SCHEMA_NAME = "nlos.sabi.Envelope"
@@ -88,3 +95,64 @@ assert resolve_request.service == "operation"
 assert resolve_request.SerializeToString(deterministic=True) == directory_golden
 assert service_directory_pb2.LOCAL_TRANSPORT_KIND_UNIX_SOCKET == 1
 assert service_directory_pb2.LOCAL_TRANSPORT_KIND_WINDOWS_NAMED_PIPE == 2
+
+common_request_golden = bytes.fromhex(
+    (
+        ROOT
+        / "schema/golden/nlos.sabi.Envelope-common-request-v1.hex"
+    ).read_text().strip()
+)
+common_request = envelope_pb2.Envelope.FromString(common_request_golden)
+request_context = validate_request_context(
+    common_request,
+    MethodSemantics(side_effecting=True, long_running=True),
+    123_455,
+)
+assert common_request.schema.minor == 1
+assert request_context.caller.process_generation == 7
+assert request_context.idempotency_key == bytes([6]) * 16
+assert common_request.SerializeToString(deterministic=True) == common_request_golden
+
+request_context.idempotency_key = b""
+try:
+    validate_request_context(
+        common_request,
+        MethodSemantics(side_effecting=True),
+        0,
+    )
+except CommonSemanticsError as error:
+    assert error.code == "MISSING_IDEMPOTENCY_KEY"
+else:
+    raise AssertionError("mutation without idempotency key was accepted")
+
+uncertain_golden = bytes.fromhex(
+    (
+        ROOT
+        / "schema/golden/nlos.sabi.Envelope-common-uncertain-v1.hex"
+    ).read_text().strip()
+)
+uncertain = envelope_pb2.Envelope.FromString(uncertain_golden)
+response_context = validate_response_context(
+    uncertain,
+    MethodSemantics(side_effecting=True, long_running=True),
+)
+assert response_context.operation.generation == 4
+assert response_context.failure.code == envelope_pb2.SABI_ERROR_CODE_UNCERTAIN
+assert (
+    response_context.failure.retry
+    == envelope_pb2.RETRY_DIRECTIVE_QUERY_OPERATION_OR_RETRY_SAME_IDEMPOTENCY_KEY
+)
+assert uncertain.SerializeToString(deterministic=True) == uncertain_golden
+
+response_context.failure.retry = (
+    envelope_pb2.RETRY_DIRECTIVE_RETRY_SAME_IDEMPOTENCY_KEY
+)
+try:
+    validate_response_context(
+        uncertain,
+        MethodSemantics(side_effecting=True, long_running=True),
+    )
+except CommonSemanticsError as error:
+    assert error.code == "UNSAFE_RETRY"
+else:
+    raise AssertionError("unsafe uncertain retry directive was accepted")

@@ -2,15 +2,15 @@
 // @generated from file nlos/sabi/v1/envelope.proto (package nlos.sabi.v1, syntax proto3)
 /* eslint-disable */
 
-import type { GenFile, GenMessage, GenService } from "@bufbuild/protobuf/codegenv2";
-import { fileDesc, messageDesc, serviceDesc } from "@bufbuild/protobuf/codegenv2";
+import type { GenEnum, GenFile, GenMessage, GenService } from "@bufbuild/protobuf/codegenv2";
+import { enumDesc, fileDesc, messageDesc, serviceDesc } from "@bufbuild/protobuf/codegenv2";
 import type { Message } from "@bufbuild/protobuf";
 
 /**
  * Describes the file nlos/sabi/v1/envelope.proto.
  */
 export const file_nlos_sabi_v1_envelope: GenFile = /*@__PURE__*/
-  fileDesc("ChtubG9zL3NhYmkvdjEvZW52ZWxvcGUucHJvdG8SDG5sb3Muc2FiaS52MSKAAQoOU2NoZW1hSWRlbnRpdHkSDAoEbmFtZRgBIAEoCRINCgVtYWpvchgCIAEoDRINCgVtaW5vchgDIAEoDRIeChZjcml0aWNhbF9leHRlbnNpb25faWRzGAQgAygNEiIKGm5vbl9jcml0aWNhbF9leHRlbnNpb25faWRzGAUgAygNIn4KCEVudmVsb3BlEiwKBnNjaGVtYRgBIAEoCzIcLm5sb3Muc2FiaS52MS5TY2hlbWFJZGVudGl0eRISCgpyZXF1ZXN0X2lkGAIgASgMEg8KB3NlcnZpY2UYAyABKAkSDgoGbWV0aG9kGAQgASgJEg8KB3BheWxvYWQYDyABKAwiOwoPRXhjaGFuZ2VSZXF1ZXN0EigKCGVudmVsb3BlGAEgASgLMhYubmxvcy5zYWJpLnYxLkVudmVsb3BlIjwKEEV4Y2hhbmdlUmVzcG9uc2USKAoIZW52ZWxvcGUYASABKAsyFi5ubG9zLnNhYmkudjEuRW52ZWxvcGUyXAoPTG9jYWxScGNTZXJ2aWNlEkkKCEV4Y2hhbmdlEh0ubmxvcy5zYWJpLnYxLkV4Y2hhbmdlUmVxdWVzdBoeLm5sb3Muc2FiaS52MS5FeGNoYW5nZVJlc3BvbnNlYgZwcm90bzM");
+  fileDesc("ChtubG9zL3NhYmkvdjEvZW52ZWxvcGUucHJvdG8SDG5sb3Muc2FiaS52MSKAAQoOU2NoZW1hSWRlbnRpdHkSDAoEbmFtZRgBIAEoCRINCgVtYWpvchgCIAEoDRINCgVtaW5vchgDIAEoDRIeChZjcml0aWNhbF9leHRlbnNpb25faWRzGAQgAygNEiIKGm5vbl9jcml0aWNhbF9leHRlbnNpb25faWRzGAUgAygNIm4KDkNhbGxlcklkZW50aXR5EhQKDHByaW5jaXBhbF9pZBgBIAEoDBIWCg5hcHBsaWNhdGlvbl9pZBgCIAEoDBISCgpwcm9jZXNzX2lkGAMgASgMEhoKEnByb2Nlc3NfZ2VuZXJhdGlvbhgEIAEoBCK5AQoUVGFza0V4ZWN1dGlvbkJpbmRpbmcSFwoPdGFza19hdHRlbXB0X2lkGAEgASgMEhsKE3Rhc2tfYXV0aG9yaXR5X3Rlcm0YAiABKAQSGgoSdGFza19jb250cm9sX2Vwb2NoGAMgASgEEhQKDGNhbmNlbF9lcG9jaBgEIAEoBBIUCgxwZXJtaXRfZXBvY2gYBSABKAQSIwobaXNvbGF0aW9uX2RvbWFpbl9nZW5lcmF0aW9uGAYgASgEIjQKEENhcGFiaWxpdHlIYW5kbGUSDAoEc2xvdBgBIAEoBBISCgpnZW5lcmF0aW9uGAIgASgEIpEDChJTYWJpUmVxdWVzdENvbnRleHQSLAoGY2FsbGVyGAEgASgLMhwubmxvcy5zYWJpLnYxLkNhbGxlcklkZW50aXR5EhgKEGFjdGl2aXR5X2NvbnRleHQYAiABKAwSQgoWdGFza19leGVjdXRpb25fYmluZGluZxgDIAEoCzIiLm5sb3Muc2FiaS52MS5UYXNrRXhlY3V0aW9uQmluZGluZxIWCg5jb3JyZWxhdGlvbl9pZBgEIAEoDBIXCg9pZGVtcG90ZW5jeV9rZXkYBSABKAwSHQoVZGVhZGxpbmVfbW9ub3RvbmljX25zGAYgASgEEjoKEmNhcGFiaWxpdHlfaGFuZGxlcxgHIAMoCzIeLm5sb3Muc2FiaS52MS5DYXBhYmlsaXR5SGFuZGxlEjoKEnJlc2VydmF0aW9uX2hhbmRsZRgIIAEoCzIeLm5sb3Muc2FiaS52MS5DYXBhYmlsaXR5SGFuZGxlEicKH3Byb3Bvc2FsX29yX2lucHV0X2RpZ2VzdF9zaGEyNTYYCSABKAwiPgoST3BlcmF0aW9uUmVmZXJlbmNlEhQKDG9wZXJhdGlvbl9pZBgBIAEoDBISCgpnZW5lcmF0aW9uGAIgASgEIiYKEFJlY2VpcHRSZWZlcmVuY2USEgoKcmVjZWlwdF9pZBgBIAEoDCJ7CgtTYWJpRmFpbHVyZRIpCgRjb2RlGAEgASgOMhsubmxvcy5zYWJpLnYxLlNhYmlFcnJvckNvZGUSKwoFcmV0cnkYAiABKA4yHC5ubG9zLnNhYmkudjEuUmV0cnlEaXJlY3RpdmUSFAoMc2FmZV9tZXNzYWdlGAMgASgJIsABChNTYWJpUmVzcG9uc2VDb250ZXh0EhYKDmNvcnJlbGF0aW9uX2lkGAEgASgMEjMKCW9wZXJhdGlvbhgCIAEoCzIgLm5sb3Muc2FiaS52MS5PcGVyYXRpb25SZWZlcmVuY2USMAoIcmVjZWlwdHMYAyADKAsyHi5ubG9zLnNhYmkudjEuUmVjZWlwdFJlZmVyZW5jZRIqCgdmYWlsdXJlGAQgASgLMhkubmxvcy5zYWJpLnYxLlNhYmlGYWlsdXJlIowCCghFbnZlbG9wZRIsCgZzY2hlbWEYASABKAsyHC5ubG9zLnNhYmkudjEuU2NoZW1hSWRlbnRpdHkSEgoKcmVxdWVzdF9pZBgCIAEoDBIPCgdzZXJ2aWNlGAMgASgJEg4KBm1ldGhvZBgEIAEoCRI7Cg9yZXF1ZXN0X2NvbnRleHQYBSABKAsyIC5ubG9zLnNhYmkudjEuU2FiaVJlcXVlc3RDb250ZXh0SAASPQoQcmVzcG9uc2VfY29udGV4dBgGIAEoCzIhLm5sb3Muc2FiaS52MS5TYWJpUmVzcG9uc2VDb250ZXh0SAASDwoHcGF5bG9hZBgPIAEoDEIQCg5jb21tb25fY29udGV4dCI7Cg9FeGNoYW5nZVJlcXVlc3QSKAoIZW52ZWxvcGUYASABKAsyFi5ubG9zLnNhYmkudjEuRW52ZWxvcGUiPAoQRXhjaGFuZ2VSZXNwb25zZRIoCghlbnZlbG9wZRgBIAEoCzIWLm5sb3Muc2FiaS52MS5FbnZlbG9wZSr0BAoNU2FiaUVycm9yQ29kZRIfChtTQUJJX0VSUk9SX0NPREVfVU5TUEVDSUZJRUQQABIfChtTQUJJX0VSUk9SX0NPREVfQUJJX1ZFUlNJT04QARIkCiBTQUJJX0VSUk9SX0NPREVfSU5WQUxJRF9BUkdVTUVOVBACEh0KGVNBQklfRVJST1JfQ09ERV9OT1RfRk9VTkQQAxIaChZTQUJJX0VSUk9SX0NPREVfUklHSFRTEAQSGQoVU0FCSV9FUlJPUl9DT0RFX1NUQVRFEAUSGgoWU0FCSV9FUlJPUl9DT0RFX0JVREdFVBAGEhkKFVNBQklfRVJST1JfQ09ERV9RVU9UQRAHEhoKFlNBQklfRVJST1JfQ09ERV9GRU5DRUQQCBIcChhTQUJJX0VSUk9SX0NPREVfREVBRExJTkUQCRIdChlTQUJJX0VSUk9SX0NPREVfQ0FOQ0VMTEVEEAoSHAoYU0FCSV9FUlJPUl9DT0RFX0NPTkZMSUNUEAsSHgoaU0FCSV9FUlJPUl9DT0RFX0RVUkFCSUxJVFkQDBIdChlTQUJJX0VSUk9SX0NPREVfVU5DRVJUQUlOEA0SGgoWU0FCSV9FUlJPUl9DT0RFX0RSSVZFUhAOEh0KGVNBQklfRVJST1JfQ09ERV9IT1NUX0xPU1QQDxIhCh1TQUJJX0VSUk9SX0NPREVfTk9UX1NVUFBPUlRFRBAQEhkKFVNBQklfRVJST1JfQ09ERV9SRVRSWRAREhsKF1NBQklfRVJST1JfQ09ERV9QQVJUSUFMEBISIgoeU0FCSV9FUlJPUl9DT0RFX0VGRkVDVF9VTktOT1dOEBMqxgEKDlJldHJ5RGlyZWN0aXZlEh8KG1JFVFJZX0RJUkVDVElWRV9VTlNQRUNJRklFRBAAEiAKHFJFVFJZX0RJUkVDVElWRV9ET19OT1RfUkVUUlkQARIuCipSRVRSWV9ESVJFQ1RJVkVfUkVUUllfU0FNRV9JREVNUE9URU5DWV9LRVkQAhJBCj1SRVRSWV9ESVJFQ1RJVkVfUVVFUllfT1BFUkFUSU9OX09SX1JFVFJZX1NBTUVfSURFTVBPVEVOQ1lfS0VZEAMyXAoPTG9jYWxScGNTZXJ2aWNlEkkKCEV4Y2hhbmdlEh0ubmxvcy5zYWJpLnYxLkV4Y2hhbmdlUmVxdWVzdBoeLm5sb3Muc2FiaS52MS5FeGNoYW5nZVJlc3BvbnNlYgZwcm90bzM");
 
 /**
  * Identity and compatibility policy for a self-describing SABI frame.
@@ -54,6 +54,272 @@ export const SchemaIdentitySchema: GenMessage<SchemaIdentity> = /*@__PURE__*/
   messageDesc(file_nlos_sabi_v1_envelope, 0);
 
 /**
+ * Stable caller identity carried by application-facing SABI requests. These
+ * IDs are nominal 128-bit values; process_generation fences stale incarnations.
+ *
+ * @generated from message nlos.sabi.v1.CallerIdentity
+ */
+export type CallerIdentity = Message<"nlos.sabi.v1.CallerIdentity"> & {
+  /**
+   * @generated from field: bytes principal_id = 1;
+   */
+  principalId: Uint8Array;
+
+  /**
+   * @generated from field: bytes application_id = 2;
+   */
+  applicationId: Uint8Array;
+
+  /**
+   * @generated from field: bytes process_id = 3;
+   */
+  processId: Uint8Array;
+
+  /**
+   * @generated from field: uint64 process_generation = 4;
+   */
+  processGeneration: bigint;
+};
+
+/**
+ * Describes the message nlos.sabi.v1.CallerIdentity.
+ * Use `create(CallerIdentitySchema)` to create a new message.
+ */
+export const CallerIdentitySchema: GenMessage<CallerIdentity> = /*@__PURE__*/
+  messageDesc(file_nlos_sabi_v1_envelope, 1);
+
+/**
+ * Optional execution fence for requests made on behalf of a TaskAttempt.
+ *
+ * @generated from message nlos.sabi.v1.TaskExecutionBinding
+ */
+export type TaskExecutionBinding = Message<"nlos.sabi.v1.TaskExecutionBinding"> & {
+  /**
+   * @generated from field: bytes task_attempt_id = 1;
+   */
+  taskAttemptId: Uint8Array;
+
+  /**
+   * @generated from field: uint64 task_authority_term = 2;
+   */
+  taskAuthorityTerm: bigint;
+
+  /**
+   * @generated from field: uint64 task_control_epoch = 3;
+   */
+  taskControlEpoch: bigint;
+
+  /**
+   * @generated from field: uint64 cancel_epoch = 4;
+   */
+  cancelEpoch: bigint;
+
+  /**
+   * @generated from field: uint64 permit_epoch = 5;
+   */
+  permitEpoch: bigint;
+
+  /**
+   * @generated from field: uint64 isolation_domain_generation = 6;
+   */
+  isolationDomainGeneration: bigint;
+};
+
+/**
+ * Describes the message nlos.sabi.v1.TaskExecutionBinding.
+ * Use `create(TaskExecutionBindingSchema)` to create a new message.
+ */
+export const TaskExecutionBindingSchema: GenMessage<TaskExecutionBinding> = /*@__PURE__*/
+  messageDesc(file_nlos_sabi_v1_envelope, 2);
+
+/**
+ * Process-local capability references are intentionally opaque to service
+ * payloads. Slot plus generation prevents stale handle reuse.
+ *
+ * @generated from message nlos.sabi.v1.CapabilityHandle
+ */
+export type CapabilityHandle = Message<"nlos.sabi.v1.CapabilityHandle"> & {
+  /**
+   * @generated from field: uint64 slot = 1;
+   */
+  slot: bigint;
+
+  /**
+   * @generated from field: uint64 generation = 2;
+   */
+  generation: bigint;
+};
+
+/**
+ * Describes the message nlos.sabi.v1.CapabilityHandle.
+ * Use `create(CapabilityHandleSchema)` to create a new message.
+ */
+export const CapabilityHandleSchema: GenMessage<CapabilityHandle> = /*@__PURE__*/
+  messageDesc(file_nlos_sabi_v1_envelope, 3);
+
+/**
+ * Common metadata for an application-facing SABI request. Whether a method is
+ * side-effecting or long-running remains part of the negotiated method
+ * contract; validators use that contract to require idempotency and deadline.
+ *
+ * @generated from message nlos.sabi.v1.SabiRequestContext
+ */
+export type SabiRequestContext = Message<"nlos.sabi.v1.SabiRequestContext"> & {
+  /**
+   * @generated from field: nlos.sabi.v1.CallerIdentity caller = 1;
+   */
+  caller?: CallerIdentity | undefined;
+
+  /**
+   * @generated from field: bytes activity_context = 2;
+   */
+  activityContext: Uint8Array;
+
+  /**
+   * @generated from field: nlos.sabi.v1.TaskExecutionBinding task_execution_binding = 3;
+   */
+  taskExecutionBinding?: TaskExecutionBinding | undefined;
+
+  /**
+   * @generated from field: bytes correlation_id = 4;
+   */
+  correlationId: Uint8Array;
+
+  /**
+   * @generated from field: bytes idempotency_key = 5;
+   */
+  idempotencyKey: Uint8Array;
+
+  /**
+   * @generated from field: uint64 deadline_monotonic_ns = 6;
+   */
+  deadlineMonotonicNs: bigint;
+
+  /**
+   * @generated from field: repeated nlos.sabi.v1.CapabilityHandle capability_handles = 7;
+   */
+  capabilityHandles: CapabilityHandle[];
+
+  /**
+   * @generated from field: nlos.sabi.v1.CapabilityHandle reservation_handle = 8;
+   */
+  reservationHandle?: CapabilityHandle | undefined;
+
+  /**
+   * @generated from field: bytes proposal_or_input_digest_sha256 = 9;
+   */
+  proposalOrInputDigestSha256: Uint8Array;
+};
+
+/**
+ * Describes the message nlos.sabi.v1.SabiRequestContext.
+ * Use `create(SabiRequestContextSchema)` to create a new message.
+ */
+export const SabiRequestContextSchema: GenMessage<SabiRequestContext> = /*@__PURE__*/
+  messageDesc(file_nlos_sabi_v1_envelope, 4);
+
+/**
+ * @generated from message nlos.sabi.v1.OperationReference
+ */
+export type OperationReference = Message<"nlos.sabi.v1.OperationReference"> & {
+  /**
+   * @generated from field: bytes operation_id = 1;
+   */
+  operationId: Uint8Array;
+
+  /**
+   * @generated from field: uint64 generation = 2;
+   */
+  generation: bigint;
+};
+
+/**
+ * Describes the message nlos.sabi.v1.OperationReference.
+ * Use `create(OperationReferenceSchema)` to create a new message.
+ */
+export const OperationReferenceSchema: GenMessage<OperationReference> = /*@__PURE__*/
+  messageDesc(file_nlos_sabi_v1_envelope, 5);
+
+/**
+ * @generated from message nlos.sabi.v1.ReceiptReference
+ */
+export type ReceiptReference = Message<"nlos.sabi.v1.ReceiptReference"> & {
+  /**
+   * @generated from field: bytes receipt_id = 1;
+   */
+  receiptId: Uint8Array;
+};
+
+/**
+ * Describes the message nlos.sabi.v1.ReceiptReference.
+ * Use `create(ReceiptReferenceSchema)` to create a new message.
+ */
+export const ReceiptReferenceSchema: GenMessage<ReceiptReference> = /*@__PURE__*/
+  messageDesc(file_nlos_sabi_v1_envelope, 6);
+
+/**
+ * @generated from message nlos.sabi.v1.SabiFailure
+ */
+export type SabiFailure = Message<"nlos.sabi.v1.SabiFailure"> & {
+  /**
+   * @generated from field: nlos.sabi.v1.SabiErrorCode code = 1;
+   */
+  code: SabiErrorCode;
+
+  /**
+   * @generated from field: nlos.sabi.v1.RetryDirective retry = 2;
+   */
+  retry: RetryDirective;
+
+  /**
+   * @generated from field: string safe_message = 3;
+   */
+  safeMessage: string;
+};
+
+/**
+ * Describes the message nlos.sabi.v1.SabiFailure.
+ * Use `create(SabiFailureSchema)` to create a new message.
+ */
+export const SabiFailureSchema: GenMessage<SabiFailure> = /*@__PURE__*/
+  messageDesc(file_nlos_sabi_v1_envelope, 7);
+
+/**
+ * Common metadata returned by a SABI method. Immediate success may omit both
+ * operation and failure; state-changing methods still associate receipts.
+ *
+ * @generated from message nlos.sabi.v1.SabiResponseContext
+ */
+export type SabiResponseContext = Message<"nlos.sabi.v1.SabiResponseContext"> & {
+  /**
+   * @generated from field: bytes correlation_id = 1;
+   */
+  correlationId: Uint8Array;
+
+  /**
+   * @generated from field: nlos.sabi.v1.OperationReference operation = 2;
+   */
+  operation?: OperationReference | undefined;
+
+  /**
+   * @generated from field: repeated nlos.sabi.v1.ReceiptReference receipts = 3;
+   */
+  receipts: ReceiptReference[];
+
+  /**
+   * @generated from field: nlos.sabi.v1.SabiFailure failure = 4;
+   */
+  failure?: SabiFailure | undefined;
+};
+
+/**
+ * Describes the message nlos.sabi.v1.SabiResponseContext.
+ * Use `create(SabiResponseContextSchema)` to create a new message.
+ */
+export const SabiResponseContextSchema: GenMessage<SabiResponseContext> = /*@__PURE__*/
+  messageDesc(file_nlos_sabi_v1_envelope, 8);
+
+/**
  * The first Stage B typed boundary. The payload remains service-specific and
  * opaque until the corresponding service schema enters the registry.
  *
@@ -81,6 +347,23 @@ export type Envelope = Message<"nlos.sabi.v1.Envelope"> & {
   method: string;
 
   /**
+   * @generated from oneof nlos.sabi.v1.Envelope.common_context
+   */
+  commonContext: {
+    /**
+     * @generated from field: nlos.sabi.v1.SabiRequestContext request_context = 5;
+     */
+    value: SabiRequestContext;
+    case: "requestContext";
+  } | {
+    /**
+     * @generated from field: nlos.sabi.v1.SabiResponseContext response_context = 6;
+     */
+    value: SabiResponseContext;
+    case: "responseContext";
+  } | { case: undefined; value?: undefined };
+
+  /**
    * @generated from field: bytes payload = 15;
    */
   payload: Uint8Array;
@@ -91,7 +374,7 @@ export type Envelope = Message<"nlos.sabi.v1.Envelope"> & {
  * Use `create(EnvelopeSchema)` to create a new message.
  */
 export const EnvelopeSchema: GenMessage<Envelope> = /*@__PURE__*/
-  messageDesc(file_nlos_sabi_v1_envelope, 1);
+  messageDesc(file_nlos_sabi_v1_envelope, 9);
 
 /**
  * Transport-neutral unary entry point for the Stage B local IPC proof of concept. The
@@ -112,7 +395,7 @@ export type ExchangeRequest = Message<"nlos.sabi.v1.ExchangeRequest"> & {
  * Use `create(ExchangeRequestSchema)` to create a new message.
  */
 export const ExchangeRequestSchema: GenMessage<ExchangeRequest> = /*@__PURE__*/
-  messageDesc(file_nlos_sabi_v1_envelope, 2);
+  messageDesc(file_nlos_sabi_v1_envelope, 10);
 
 /**
  * @generated from message nlos.sabi.v1.ExchangeResponse
@@ -129,7 +412,152 @@ export type ExchangeResponse = Message<"nlos.sabi.v1.ExchangeResponse"> & {
  * Use `create(ExchangeResponseSchema)` to create a new message.
  */
 export const ExchangeResponseSchema: GenMessage<ExchangeResponse> = /*@__PURE__*/
-  messageDesc(file_nlos_sabi_v1_envelope, 3);
+  messageDesc(file_nlos_sabi_v1_envelope, 11);
+
+/**
+ * Stable common error classes. Service-specific detail belongs in its own
+ * bounded payload and must not collapse uncertain or partial outcomes.
+ *
+ * @generated from enum nlos.sabi.v1.SabiErrorCode
+ */
+export enum SabiErrorCode {
+  /**
+   * @generated from enum value: SABI_ERROR_CODE_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: SABI_ERROR_CODE_ABI_VERSION = 1;
+   */
+  ABI_VERSION = 1,
+
+  /**
+   * @generated from enum value: SABI_ERROR_CODE_INVALID_ARGUMENT = 2;
+   */
+  INVALID_ARGUMENT = 2,
+
+  /**
+   * @generated from enum value: SABI_ERROR_CODE_NOT_FOUND = 3;
+   */
+  NOT_FOUND = 3,
+
+  /**
+   * @generated from enum value: SABI_ERROR_CODE_RIGHTS = 4;
+   */
+  RIGHTS = 4,
+
+  /**
+   * @generated from enum value: SABI_ERROR_CODE_STATE = 5;
+   */
+  STATE = 5,
+
+  /**
+   * @generated from enum value: SABI_ERROR_CODE_BUDGET = 6;
+   */
+  BUDGET = 6,
+
+  /**
+   * @generated from enum value: SABI_ERROR_CODE_QUOTA = 7;
+   */
+  QUOTA = 7,
+
+  /**
+   * @generated from enum value: SABI_ERROR_CODE_FENCED = 8;
+   */
+  FENCED = 8,
+
+  /**
+   * @generated from enum value: SABI_ERROR_CODE_DEADLINE = 9;
+   */
+  DEADLINE = 9,
+
+  /**
+   * @generated from enum value: SABI_ERROR_CODE_CANCELLED = 10;
+   */
+  CANCELLED = 10,
+
+  /**
+   * @generated from enum value: SABI_ERROR_CODE_CONFLICT = 11;
+   */
+  CONFLICT = 11,
+
+  /**
+   * @generated from enum value: SABI_ERROR_CODE_DURABILITY = 12;
+   */
+  DURABILITY = 12,
+
+  /**
+   * @generated from enum value: SABI_ERROR_CODE_UNCERTAIN = 13;
+   */
+  UNCERTAIN = 13,
+
+  /**
+   * @generated from enum value: SABI_ERROR_CODE_DRIVER = 14;
+   */
+  DRIVER = 14,
+
+  /**
+   * @generated from enum value: SABI_ERROR_CODE_HOST_LOST = 15;
+   */
+  HOST_LOST = 15,
+
+  /**
+   * @generated from enum value: SABI_ERROR_CODE_NOT_SUPPORTED = 16;
+   */
+  NOT_SUPPORTED = 16,
+
+  /**
+   * @generated from enum value: SABI_ERROR_CODE_RETRY = 17;
+   */
+  RETRY = 17,
+
+  /**
+   * @generated from enum value: SABI_ERROR_CODE_PARTIAL = 18;
+   */
+  PARTIAL = 18,
+
+  /**
+   * @generated from enum value: SABI_ERROR_CODE_EFFECT_UNKNOWN = 19;
+   */
+  EFFECT_UNKNOWN = 19,
+}
+
+/**
+ * Describes the enum nlos.sabi.v1.SabiErrorCode.
+ */
+export const SabiErrorCodeSchema: GenEnum<SabiErrorCode> = /*@__PURE__*/
+  enumDesc(file_nlos_sabi_v1_envelope, 0);
+
+/**
+ * @generated from enum nlos.sabi.v1.RetryDirective
+ */
+export enum RetryDirective {
+  /**
+   * @generated from enum value: RETRY_DIRECTIVE_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: RETRY_DIRECTIVE_DO_NOT_RETRY = 1;
+   */
+  DO_NOT_RETRY = 1,
+
+  /**
+   * @generated from enum value: RETRY_DIRECTIVE_RETRY_SAME_IDEMPOTENCY_KEY = 2;
+   */
+  RETRY_SAME_IDEMPOTENCY_KEY = 2,
+
+  /**
+   * @generated from enum value: RETRY_DIRECTIVE_QUERY_OPERATION_OR_RETRY_SAME_IDEMPOTENCY_KEY = 3;
+   */
+  QUERY_OPERATION_OR_RETRY_SAME_IDEMPOTENCY_KEY = 3,
+}
+
+/**
+ * Describes the enum nlos.sabi.v1.RetryDirective.
+ */
+export const RetryDirectiveSchema: GenEnum<RetryDirective> = /*@__PURE__*/
+  enumDesc(file_nlos_sabi_v1_envelope, 1);
 
 /**
  * @generated from service nlos.sabi.v1.LocalRpcService

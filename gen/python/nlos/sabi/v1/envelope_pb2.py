@@ -24,21 +24,41 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x1bnlos/sabi/v1/envelope.proto\x12\x0cnlos.sabi.v1\"\xc3\x01\n\x0eSchemaIdentity\x12\x12\n\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n\x05major\x18\x02 \x01(\rR\x05major\x12\x14\n\x05minor\x18\x03 \x01(\rR\x05minor\x12\x34\n\x16\x63ritical_extension_ids\x18\x04 \x03(\rR\x14\x63riticalExtensionIds\x12;\n\x1anon_critical_extension_ids\x18\x05 \x03(\rR\x17nonCriticalExtensionIds\"\xab\x01\n\x08\x45nvelope\x12\x34\n\x06schema\x18\x01 \x01(\x0b\x32\x1c.nlos.sabi.v1.SchemaIdentityR\x06schema\x12\x1d\n\nrequest_id\x18\x02 \x01(\x0cR\trequestId\x12\x18\n\x07service\x18\x03 \x01(\tR\x07service\x12\x16\n\x06method\x18\x04 \x01(\tR\x06method\x12\x18\n\x07payload\x18\x0f \x01(\x0cR\x07payload\"E\n\x0f\x45xchangeRequest\x12\x32\n\x08\x65nvelope\x18\x01 \x01(\x0b\x32\x16.nlos.sabi.v1.EnvelopeR\x08\x65nvelope\"F\n\x10\x45xchangeResponse\x12\x32\n\x08\x65nvelope\x18\x01 \x01(\x0b\x32\x16.nlos.sabi.v1.EnvelopeR\x08\x65nvelope2\\\n\x0fLocalRpcService\x12I\n\x08\x45xchange\x12\x1d.nlos.sabi.v1.ExchangeRequest\x1a\x1e.nlos.sabi.v1.ExchangeResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x1bnlos/sabi/v1/envelope.proto\x12\x0cnlos.sabi.v1\"\xc3\x01\n\x0eSchemaIdentity\x12\x12\n\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n\x05major\x18\x02 \x01(\rR\x05major\x12\x14\n\x05minor\x18\x03 \x01(\rR\x05minor\x12\x34\n\x16\x63ritical_extension_ids\x18\x04 \x03(\rR\x14\x63riticalExtensionIds\x12;\n\x1anon_critical_extension_ids\x18\x05 \x03(\rR\x17nonCriticalExtensionIds\"\xa8\x01\n\x0e\x43\x61llerIdentity\x12!\n\x0cprincipal_id\x18\x01 \x01(\x0cR\x0bprincipalId\x12%\n\x0e\x61pplication_id\x18\x02 \x01(\x0cR\rapplicationId\x12\x1d\n\nprocess_id\x18\x03 \x01(\x0cR\tprocessId\x12-\n\x12process_generation\x18\x04 \x01(\x04R\x11processGeneration\"\xa2\x02\n\x14TaskExecutionBinding\x12&\n\x0ftask_attempt_id\x18\x01 \x01(\x0cR\rtaskAttemptId\x12.\n\x13task_authority_term\x18\x02 \x01(\x04R\x11taskAuthorityTerm\x12,\n\x12task_control_epoch\x18\x03 \x01(\x04R\x10taskControlEpoch\x12!\n\x0c\x63\x61ncel_epoch\x18\x04 \x01(\x04R\x0b\x63\x61ncelEpoch\x12!\n\x0cpermit_epoch\x18\x05 \x01(\x04R\x0bpermitEpoch\x12>\n\x1bisolation_domain_generation\x18\x06 \x01(\x04R\x19isolationDomainGeneration\"F\n\x10\x43\x61pabilityHandle\x12\x12\n\x04slot\x18\x01 \x01(\x04R\x04slot\x12\x1e\n\ngeneration\x18\x02 \x01(\x04R\ngeneration\"\xb7\x04\n\x12SabiRequestContext\x12\x34\n\x06\x63\x61ller\x18\x01 \x01(\x0b\x32\x1c.nlos.sabi.v1.CallerIdentityR\x06\x63\x61ller\x12)\n\x10\x61\x63tivity_context\x18\x02 \x01(\x0cR\x0f\x61\x63tivityContext\x12X\n\x16task_execution_binding\x18\x03 \x01(\x0b\x32\".nlos.sabi.v1.TaskExecutionBindingR\x14taskExecutionBinding\x12%\n\x0e\x63orrelation_id\x18\x04 \x01(\x0cR\rcorrelationId\x12\'\n\x0fidempotency_key\x18\x05 \x01(\x0cR\x0eidempotencyKey\x12\x32\n\x15\x64\x65\x61\x64line_monotonic_ns\x18\x06 \x01(\x04R\x13\x64\x65\x61\x64lineMonotonicNs\x12M\n\x12\x63\x61pability_handles\x18\x07 \x03(\x0b\x32\x1e.nlos.sabi.v1.CapabilityHandleR\x11\x63\x61pabilityHandles\x12M\n\x12reservation_handle\x18\x08 \x01(\x0b\x32\x1e.nlos.sabi.v1.CapabilityHandleR\x11reservationHandle\x12\x44\n\x1fproposal_or_input_digest_sha256\x18\t \x01(\x0cR\x1bproposalOrInputDigestSha256\"W\n\x12OperationReference\x12!\n\x0coperation_id\x18\x01 \x01(\x0cR\x0boperationId\x12\x1e\n\ngeneration\x18\x02 \x01(\x04R\ngeneration\"1\n\x10ReceiptReference\x12\x1d\n\nreceipt_id\x18\x01 \x01(\x0cR\treceiptId\"\x95\x01\n\x0bSabiFailure\x12/\n\x04\x63ode\x18\x01 \x01(\x0e\x32\x1b.nlos.sabi.v1.SabiErrorCodeR\x04\x63ode\x12\x32\n\x05retry\x18\x02 \x01(\x0e\x32\x1c.nlos.sabi.v1.RetryDirectiveR\x05retry\x12!\n\x0csafe_message\x18\x03 \x01(\tR\x0bsafeMessage\"\xed\x01\n\x13SabiResponseContext\x12%\n\x0e\x63orrelation_id\x18\x01 \x01(\x0cR\rcorrelationId\x12>\n\toperation\x18\x02 \x01(\x0b\x32 .nlos.sabi.v1.OperationReferenceR\toperation\x12:\n\x08receipts\x18\x03 \x03(\x0b\x32\x1e.nlos.sabi.v1.ReceiptReferenceR\x08receipts\x12\x33\n\x07\x66\x61ilure\x18\x04 \x01(\x0b\x32\x19.nlos.sabi.v1.SabiFailureR\x07\x66\x61ilure\"\xda\x02\n\x08\x45nvelope\x12\x34\n\x06schema\x18\x01 \x01(\x0b\x32\x1c.nlos.sabi.v1.SchemaIdentityR\x06schema\x12\x1d\n\nrequest_id\x18\x02 \x01(\x0cR\trequestId\x12\x18\n\x07service\x18\x03 \x01(\tR\x07service\x12\x16\n\x06method\x18\x04 \x01(\tR\x06method\x12K\n\x0frequest_context\x18\x05 \x01(\x0b\x32 .nlos.sabi.v1.SabiRequestContextH\x00R\x0erequestContext\x12N\n\x10response_context\x18\x06 \x01(\x0b\x32!.nlos.sabi.v1.SabiResponseContextH\x00R\x0fresponseContext\x12\x18\n\x07payload\x18\x0f \x01(\x0cR\x07payloadB\x10\n\x0e\x63ommon_context\"E\n\x0f\x45xchangeRequest\x12\x32\n\x08\x65nvelope\x18\x01 \x01(\x0b\x32\x16.nlos.sabi.v1.EnvelopeR\x08\x65nvelope\"F\n\x10\x45xchangeResponse\x12\x32\n\x08\x65nvelope\x18\x01 \x01(\x0b\x32\x16.nlos.sabi.v1.EnvelopeR\x08\x65nvelope*\xf4\x04\n\rSabiErrorCode\x12\x1f\n\x1bSABI_ERROR_CODE_UNSPECIFIED\x10\x00\x12\x1f\n\x1bSABI_ERROR_CODE_ABI_VERSION\x10\x01\x12$\n SABI_ERROR_CODE_INVALID_ARGUMENT\x10\x02\x12\x1d\n\x19SABI_ERROR_CODE_NOT_FOUND\x10\x03\x12\x1a\n\x16SABI_ERROR_CODE_RIGHTS\x10\x04\x12\x19\n\x15SABI_ERROR_CODE_STATE\x10\x05\x12\x1a\n\x16SABI_ERROR_CODE_BUDGET\x10\x06\x12\x19\n\x15SABI_ERROR_CODE_QUOTA\x10\x07\x12\x1a\n\x16SABI_ERROR_CODE_FENCED\x10\x08\x12\x1c\n\x18SABI_ERROR_CODE_DEADLINE\x10\t\x12\x1d\n\x19SABI_ERROR_CODE_CANCELLED\x10\n\x12\x1c\n\x18SABI_ERROR_CODE_CONFLICT\x10\x0b\x12\x1e\n\x1aSABI_ERROR_CODE_DURABILITY\x10\x0c\x12\x1d\n\x19SABI_ERROR_CODE_UNCERTAIN\x10\r\x12\x1a\n\x16SABI_ERROR_CODE_DRIVER\x10\x0e\x12\x1d\n\x19SABI_ERROR_CODE_HOST_LOST\x10\x0f\x12!\n\x1dSABI_ERROR_CODE_NOT_SUPPORTED\x10\x10\x12\x19\n\x15SABI_ERROR_CODE_RETRY\x10\x11\x12\x1b\n\x17SABI_ERROR_CODE_PARTIAL\x10\x12\x12\"\n\x1eSABI_ERROR_CODE_EFFECT_UNKNOWN\x10\x13*\xc6\x01\n\x0eRetryDirective\x12\x1f\n\x1bRETRY_DIRECTIVE_UNSPECIFIED\x10\x00\x12 \n\x1cRETRY_DIRECTIVE_DO_NOT_RETRY\x10\x01\x12.\n*RETRY_DIRECTIVE_RETRY_SAME_IDEMPOTENCY_KEY\x10\x02\x12\x41\n=RETRY_DIRECTIVE_QUERY_OPERATION_OR_RETRY_SAME_IDEMPOTENCY_KEY\x10\x03\x32\\\n\x0fLocalRpcService\x12I\n\x08\x45xchange\x12\x1d.nlos.sabi.v1.ExchangeRequest\x1a\x1e.nlos.sabi.v1.ExchangeResponseb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'nlos.sabi.v1.envelope_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
+  _globals['_SABIERRORCODE']._serialized_start=2374
+  _globals['_SABIERRORCODE']._serialized_end=3002
+  _globals['_RETRYDIRECTIVE']._serialized_start=3005
+  _globals['_RETRYDIRECTIVE']._serialized_end=3203
   _globals['_SCHEMAIDENTITY']._serialized_start=46
   _globals['_SCHEMAIDENTITY']._serialized_end=241
-  _globals['_ENVELOPE']._serialized_start=244
-  _globals['_ENVELOPE']._serialized_end=415
-  _globals['_EXCHANGEREQUEST']._serialized_start=417
-  _globals['_EXCHANGEREQUEST']._serialized_end=486
-  _globals['_EXCHANGERESPONSE']._serialized_start=488
-  _globals['_EXCHANGERESPONSE']._serialized_end=558
-  _globals['_LOCALRPCSERVICE']._serialized_start=560
-  _globals['_LOCALRPCSERVICE']._serialized_end=652
+  _globals['_CALLERIDENTITY']._serialized_start=244
+  _globals['_CALLERIDENTITY']._serialized_end=412
+  _globals['_TASKEXECUTIONBINDING']._serialized_start=415
+  _globals['_TASKEXECUTIONBINDING']._serialized_end=705
+  _globals['_CAPABILITYHANDLE']._serialized_start=707
+  _globals['_CAPABILITYHANDLE']._serialized_end=777
+  _globals['_SABIREQUESTCONTEXT']._serialized_start=780
+  _globals['_SABIREQUESTCONTEXT']._serialized_end=1347
+  _globals['_OPERATIONREFERENCE']._serialized_start=1349
+  _globals['_OPERATIONREFERENCE']._serialized_end=1436
+  _globals['_RECEIPTREFERENCE']._serialized_start=1438
+  _globals['_RECEIPTREFERENCE']._serialized_end=1487
+  _globals['_SABIFAILURE']._serialized_start=1490
+  _globals['_SABIFAILURE']._serialized_end=1639
+  _globals['_SABIRESPONSECONTEXT']._serialized_start=1642
+  _globals['_SABIRESPONSECONTEXT']._serialized_end=1879
+  _globals['_ENVELOPE']._serialized_start=1882
+  _globals['_ENVELOPE']._serialized_end=2228
+  _globals['_EXCHANGEREQUEST']._serialized_start=2230
+  _globals['_EXCHANGEREQUEST']._serialized_end=2299
+  _globals['_EXCHANGERESPONSE']._serialized_start=2301
+  _globals['_EXCHANGERESPONSE']._serialized_end=2371
+  _globals['_LOCALRPCSERVICE']._serialized_start=3205
+  _globals['_LOCALRPCSERVICE']._serialized_end=3297
 # @@protoc_insertion_point(module_scope)

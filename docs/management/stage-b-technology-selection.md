@@ -287,7 +287,7 @@ docs/
 
 1. 已完成 Protobuf envelope 的 Rust/TypeScript/Python type generation、Buf lint/breaking、drift gate 与跨语言 golden compatibility；
 2. 已完成首个 deterministic CBOR profile、签名域和 CBOR/preimage golden vectors；
-3. 已完成 protobuf/CBOR 三目标 sanitizer fuzz smoke、Rust 本地 typed IPC adapter、TypeScript/Python client 的 Unix/Windows 实际往返、ServiceDirectory schema/Rust negotiation core，以及三平台 `bootstrap → negotiate → service` 两跳链路；下一步实现 common SABI semantics，再按[语言 SDK 计划](./language-sdk-support-plan.md)推进 Go/C# generation/golden 与独立 IPC 探针；长期 fuzz 保留为 ABI 冻结/production claim 前置门；
+3. 已完成 protobuf/CBOR 三目标 sanitizer fuzz smoke、Rust 本地 typed IPC adapter、TypeScript/Python client 的 Unix/Windows 实际往返、ServiceDirectory schema/Rust negotiation core、三平台 `bootstrap → negotiate → service` 两跳链路，以及本地 common SABI metadata/error/safe-retry 校验；下一步关闭 common semantics 三平台 CI，并实现 durable same-key dedup/result 与 deadline/cancel/uncertain 服务端状态机，再按[语言 SDK 计划](./language-sdk-support-plan.md)推进 Go/C# generation/golden 与独立 IPC 探针；长期 fuzz 保留为 ABI 冻结/production claim 前置门；
 4. 100K 逐条生产写入、真实掉电和更多文件系统保留为 Store 扩展 Evidence。
 
 技术栈讨论已于[议题 30](../discussions/30-阶段B技术栈讨论.md)收束。编码立即从 Cargo workspace、`nlos-types`、`nlos-runtime` 与 Tokio Fiber scale PoC 开始；带 `PoC` 标记的组件在证据出来前不得升级为 `ACCEPTED` 或冻结公共 ABI。

@@ -15,9 +15,11 @@ sys.path.insert(0, str(ROOT / "gen" / "python"))
 
 from nlos.sabi.v1.envelope_pb2 import ExchangeRequest  # noqa: E402
 from nlos_sdk import (  # noqa: E402
+    MethodSemantics,
     ServiceDirectoryClient,
     ServiceRequirement,
     TransportConfig,
+    validate_response_context,
 )
 
 
@@ -69,6 +71,7 @@ async def main() -> None:
                 service="operation",
                 schema_name="nlos.sabi.Envelope",
                 major=1,
+                minimum_minor=1,
             ),
             TransportConfig(
                 connect_timeout=2,
@@ -82,13 +85,32 @@ async def main() -> None:
         request = ExchangeRequest()
         request.envelope.schema.name = "nlos.sabi.Envelope"
         request.envelope.schema.major = 1
+        request.envelope.schema.minor = 1
         request.envelope.request_id = bytes([9]) * 16
         request.envelope.service = "operation"
-        request.envelope.method = "get"
+        request.envelope.method = "cancel"
+        request_context = request.envelope.request_context
+        request_context.caller.principal_id = bytes([1]) * 16
+        request_context.caller.application_id = bytes([2]) * 16
+        request_context.caller.process_id = bytes([3]) * 16
+        request_context.caller.process_generation = 7
+        request_context.correlation_id = bytes([5]) * 16
+        request_context.idempotency_key = bytes([6]) * 16
+        request_context.deadline_monotonic_ns = 123_456
+        capability = request_context.capability_handles.add()
+        capability.slot = 11
+        capability.generation = 2
         request.envelope.payload = b"\x04\x05\x06"
         response = await connected.client.exchange(request)
         assert response.envelope.request_id == bytes([9]) * 16
         assert response.envelope.payload == b"\x04\x05\x06"
+        response_context = validate_response_context(
+            response.envelope,
+            MethodSemantics(side_effecting=True, long_running=True),
+        )
+        assert response_context.correlation_id == bytes([5]) * 16
+        assert response_context.operation.generation == 4
+        assert response_context.receipts[0].receipt_id == bytes([9]) * 16
         await connected.client.close()
         assert await server.wait() == 0
     except BaseException:

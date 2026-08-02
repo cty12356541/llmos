@@ -12,9 +12,9 @@ use std::time::Duration;
 
 use nlos_schema::sabi::v1::{self, ExchangeRequest, ExchangeResponse};
 use nlos_schema::{
-    CompatibilityError, MAX_ENVELOPE_BYTES, ValidatedExchangeRequest, ValidatedExchangeResponse,
-    decode_exchange_request, decode_exchange_response, encode_exchange_request,
-    encode_exchange_response,
+    CommonSemanticsError, CompatibilityError, MAX_ENVELOPE_BYTES, ValidatedExchangeRequest,
+    ValidatedExchangeResponse, decode_exchange_request, decode_exchange_response,
+    encode_exchange_request, encode_exchange_response,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::Mutex;
@@ -59,6 +59,7 @@ pub enum IpcError {
         source: io::Error,
     },
     Compatibility(CompatibilityError),
+    CommonSemantics(CommonSemanticsError),
     Backpressure,
     ConnectionUnusable,
     RequestIdMismatch,
@@ -78,6 +79,9 @@ impl fmt::Display for IpcError {
             Self::Timeout(operation) => write!(formatter, "IPC {operation} timed out"),
             Self::Io { operation, source } => write!(formatter, "IPC {operation} failed: {source}"),
             Self::Compatibility(error) => write!(formatter, "incompatible IPC frame: {error}"),
+            Self::CommonSemantics(error) => {
+                write!(formatter, "invalid common SABI context: {error}")
+            }
             Self::Backpressure => formatter.write_str("IPC client already has an in-flight call"),
             Self::ConnectionUnusable => formatter.write_str(
                 "IPC connection is unusable after an uncertain or invalid exchange; reconnect",
@@ -97,6 +101,7 @@ impl Error for IpcError {
         match self {
             Self::Io { source, .. } => Some(source),
             Self::Compatibility(error) => Some(error),
+            Self::CommonSemantics(error) => Some(error),
             _ => None,
         }
     }
@@ -105,6 +110,12 @@ impl Error for IpcError {
 impl From<CompatibilityError> for IpcError {
     fn from(error: CompatibilityError) -> Self {
         Self::Compatibility(error)
+    }
+}
+
+impl From<CommonSemanticsError> for IpcError {
+    fn from(error: CommonSemanticsError) -> Self {
+        Self::CommonSemantics(error)
     }
 }
 

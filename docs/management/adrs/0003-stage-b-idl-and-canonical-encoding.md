@@ -30,7 +30,7 @@
 3. 每个公共 frame 显式携带 schema name、major、minor、critical extension IDs 和 non-critical extension IDs；
 4. unknown major 与 unknown critical extension fail-closed；更高 minor 和 unknown non-critical extension可被当前 consumer 接受；
 5. `ValidatedFrame` 同时保留 typed view 和原始 wire bytes。转发 hop 必须转发原始 frame，禁止通过 decode/re-encode 假装保留生成器未知字段；
-6. envelope 先只承载 128-bit request ID、service、method 与 opaque payload。service-specific payload、Capability、deadline、Operation/Receipt 等字段只有进入 registry 并取得兼容证据后才能成为稳定表面。
+6. envelope minor=0 只承载 128-bit exchange request ID、service、method 与 opaque payload；B-SCHEMA-009 以 additive minor=1 candidate 加入 request/response common context，区分 exchange request ID、correlation ID 与 IdempotencyKey，并承载 caller/fence、deadline、Capability、Operation/Receipt reference 和 typed failure。service-specific payload 仍保持 opaque；common context 尚未冻结为稳定 ABI。
 7. Buf 1.72.0 负责 lint、breaking 与跨语言生成编排；TypeScript 固定 protobuf-es 2.13.0，Python 固定 generator v33.4/runtime 6.33.4。生成物 checked in，`.gitattributes` 强制跨平台 LF，CI 必须重生成并拒绝 drift。
 8. canonical signing preimage 固定为 `u32_be(domain_len) || ASCII domain || u32_be(cbor_len) || deterministic_cbor(body)`；v1 digest algorithm 固定 `SHA-256`。CBOR map 使用最短 unsigned integer key 严格升序，禁止 duplicate、indefinite、tag、float/NaN、simple value、negative integer和自由 Unicode text；decoder 必须重编码逐字节比对。
 9. 首个 local RPC 使用 `LocalRpcService.Exchange` 和独立 request/response wrapper；wire framing 为 `u32_be length || protobuf wrapper`，平台层候选为 Unix socket/Windows named pipe。service schema 不绑定 gRPC/HTTP2 或 endpoint，Rust generated client trait 与平台 stream adapter 分离。
@@ -41,7 +41,7 @@
 - frame 在解析前执行 1 MiB 上限，公共 request ID 固定 16 bytes；后续每种 service payload 还需更严格的独立上限；
 - non-critical 可忽略不等于可丢弃：透明 forwarding 必须保持输入 wire bytes；
 - critical extension ID 只能在实现、测试和协商支持同时存在时加入 registry；
-- 三语言 Protobuf generation/compat、首轮 sanitizer fuzz smoke、Unix/Windows typed IPC client 与 ServiceDirectory schema/Rust 协商内核已通过局部验证，但真实多语言目录调用、完整 common semantics、CBOR 跨语言和长期 fuzz 未完成前，ADR 保持 `POC`；
+- 三语言 Protobuf generation/compat、首轮 sanitizer fuzz smoke、Unix/Windows typed IPC client、ServiceDirectory 两跳调用与 common metadata/safe-retry 校验已通过局部验证，但 durable dedup/result、真实 deadline/cancel/Receipt authority、CBOR 跨语言和长期 fuzz 未完成前，ADR 保持 `POC`；
 - `nlos-types` 继续不依赖 Protobuf；wire adapter 负责在 nominal ID 与生成类型之间显式转换，避免 wire bytes 侵入内核对象身份。
 - SDK 语言按[多语言 SDK 支持评估计划](../language-sdk-support-plan.md)逐级晋升；Go/C# 当前只是 P1 评估候选，生成类型或 descriptor 不构成正式支持声明。
 
@@ -89,3 +89,5 @@
 [B-SCHEMA-007](../../evidence/stage-b/b-schema-007-service-directory-negotiation.md) 已加入 `nlos.sabi.ServiceDirectory` v1.0 schema、三语言 generation/golden、独立 64 KiB bound，以及 Rust `SnapshotDirectory` 的确定性 resolve/negotiate 与 typed failure；[三平台 run 30735589673](https://github.com/cty12356541/llmos/actions/runs/30735589673) 和 [fuzz regression 30735589675](https://github.com/cty12356541/llmos/actions/runs/30735589675) 已成功。真实目录 IPC server、TS/Python resolver、watch/lease、Capability/common SABI 和 peer auth 仍未完成。
 
 [B-SCHEMA-008](../../evidence/stage-b/b-schema-008-cross-language-directory-chain.md) 已加入 feature-gated Rust directory/business 双 endpoint fixture，以及 TypeScript/Python `bootstrap → negotiate → connect service → typed exchange` 两跳链路；[三平台 run 30736741324](https://github.com/cty12356541/llmos/actions/runs/30736741324) 已通过 Unix socket/Windows named-pipe 组合。Namespace bootstrap authority、生产目录生命周期、peer auth 和 common SABI 仍未完成。
+
+[B-SCHEMA-009](../../evidence/stage-b/b-schema-009-common-sabi-semantics.md) 已以 Envelope minor=1 candidate 加入 caller/task fence、独立 correlation/idempotency、deadline、Capability、Operation/Receipt reference、19 类 common error 与 safe retry directive；Rust/TypeScript/Python 本地 golden、反例和目录两跳 IPC 已通过，三平台 CI 待本提交推送后复验。Durable dedup/result、真实 deadline/cancel 状态机、Receipt authority 和 peer auth 仍未完成。
