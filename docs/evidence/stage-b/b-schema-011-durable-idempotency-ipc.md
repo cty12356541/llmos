@@ -1,6 +1,6 @@
 # B-SCHEMA-011：durable idempotency 真实 SABI 重连初始证据
 
-> 状态：PARTIAL PASS（本地 Rust↔TypeScript/Python 真实 IPC 通过；远程三平台复验待完成）
+> 状态：PARTIAL PASS（本地与远程三平台 Rust↔TypeScript/Python 真实 IPC 通过；server restart/deadline/cancel 待完成）
 >
 > 日期：2026-08-02
 >
@@ -73,6 +73,12 @@ python tests/conformance/ipc/directory_chain.py
 
 新增 `sha2 0.11.0` 仅进入 feature-gated conformance server 的可信 request adapter，用于实际计算 SHA-256；其 MSRV 1.85，许可证为 MIT OR Apache-2.0。它不是新的 wire/durable ABI。
 
+远程验证：
+
+- [Rust cross-platform verification run 30740180511](https://github.com/cty12356541/llmos/actions/runs/30740180511) 在 Ubuntu、macOS、Windows 全部成功；三平台均运行 Rust workspace/Clippy、TS/Python directory-chain，Windows 实际使用 named pipe；
+- [Schema fuzz smoke run 30740180497](https://github.com/cty12356541/llmos/actions/runs/30740180497) 成功；
+- [GitHub Pages run 30740180477](https://github.com/cty12356541/llmos/actions/runs/30740180477) 成功。
+
 ## 5. 当前不能证明什么
 
 - 当前覆盖连接在 commit 后断开，但 conformance server 进程本身没有在两次 IPC 之间重启；进程重开恢复仍由 `nlos-store` 测试证明，二者尚未组合；
@@ -80,6 +86,6 @@ python tests/conformance/ipc/directory_chain.py
 - `pending` 是受控 fixture 分支，尚无真实异步 worker 完成、deadline timer 或 cancel propagation；
 - 尚未实现排队前、dispatch 前和 callback 时的 deadline fence，也未把 cancel epoch 接到真实 SABI handler；
 - Receipt 仍只有 nominal ID；Capability 和 peer authorization 仍是 conformance hook/allow fixture；
-- remote cross-platform run 尚未完成，不能把本地 Unix socket 结果外推到 Windows named pipe。
+- 三平台已通过现有 CI workload，但尚无网络文件系统、跨主机 transport 或多 authority 证明。
 
-因此本 Evidence 记为 `PARTIAL PASS`。下一验收门是远程三平台复验，然后实现 deadline/cancel/uncertain 的真实服务端状态机与进程重启重放组合测试。
+因此本 Evidence 记为 `PARTIAL PASS`。下一验收门是实现 deadline/cancel/uncertain 的真实服务端状态机与进程重启重放组合测试。
