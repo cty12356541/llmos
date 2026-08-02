@@ -79,7 +79,7 @@ cargo fmt --all -- --check
 
 ## 4. 当前不能证明什么
 
-- 本切片提交时尚未接入 ServiceDirectory 两跳 server；后续 [B-SCHEMA-011](./b-schema-011-durable-idempotency-ipc.md) 已补 TS/Python reconnect + same-key 真实 IPC 并通过三平台，进程重启组合也已在本地通过、远程三平台待验证；
+- 本切片提交时尚未接入 ServiceDirectory 两跳 server；后续 [B-SCHEMA-011](./b-schema-011-durable-idempotency-ipc.md) 已补 TS/Python reconnect + same-key 真实 IPC 和进程重启组合，并由三平台验证；
 - 尚未实现排队、dispatch、callback 全链路 deadline fence、cancel propagation 和真实 server-side `E_UNCERTAIN` 映射；
 - request digest 的 canonicalization/计算仍由可信 service adapter 负责，本切片只持久化并比较固定 32-byte identity；
 - Receipt 仍只有 nominal ID，没有 canonical body、签名、attestation 或正式查询 API；

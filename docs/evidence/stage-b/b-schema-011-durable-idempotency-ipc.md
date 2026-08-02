@@ -1,6 +1,6 @@
 # B-SCHEMA-011：durable idempotency 真实 SABI 重连初始证据
 
-> 状态：PARTIAL PASS（Rust↔TypeScript/Python 真实 IPC 已通过三平台；server restart 组合本地通过、远程三平台待验证；deadline/cancel 待完成）
+> 状态：PARTIAL PASS（Rust↔TypeScript/Python 真实 IPC 与 server restart 组合已通过三平台；deadline/cancel 待完成）
 >
 > 日期：2026-08-02
 >
@@ -90,7 +90,12 @@ python tests/conformance/ipc/directory_chain.py
 - [Schema fuzz smoke run 30740180497](https://github.com/cty12356541/llmos/actions/runs/30740180497) 成功；
 - [GitHub Pages run 30740180477](https://github.com/cty12356541/llmos/actions/runs/30740180477) 成功。
 
-上述三平台 run 对应初版同进程重连。新增跨进程重启组合已在本地 TS/Python 通过，提交后的远程三平台回执待补。
+上述三平台 run 对应初版同进程重连。新增跨进程重启组合的远程验证记录如下：
+
+- [run 30740889652](https://github.com/cty12356541/llmos/actions/runs/30740889652) 中 Ubuntu/Windows 全部通过，macOS 在运行旧 echo fixture 时因 Rust 冷编译超过 30 秒启动预算而失败，尚未运行本组合；这不是恢复语义反例；
+- conformance process 启动预算统一从 30 秒调整为 60 秒，IPC connect/read/write timeout 仍保持 2 秒，不放宽协议行为；
+- 修正后的 [run 30741046472](https://github.com/cty12356541/llmos/actions/runs/30741046472) 在 Ubuntu、macOS、Windows 全部成功；TS/Python 均实际执行两个 Rust server process，Windows 使用 named pipe；
+- 对应 [GitHub Pages run 30741046473](https://github.com/cty12356541/llmos/actions/runs/30741046473) 成功。
 
 ## 5. 当前不能证明什么
 
@@ -101,4 +106,4 @@ python tests/conformance/ipc/directory_chain.py
 - Receipt 仍只有 nominal ID；Capability 和 peer authorization 仍是 conformance hook/allow fixture；
 - 三平台已通过现有 CI workload，但尚无网络文件系统、跨主机 transport 或多 authority 证明。
 
-因此本 Evidence 记为 `PARTIAL PASS`。下一验收门是取得进程重启组合的远程三平台回执，并实现 deadline/cancel/uncertain 的真实服务端状态机。
+因此本 Evidence 记为 `PARTIAL PASS`。server restart 组合缺口已关闭；下一验收门是实现 deadline/cancel/uncertain 的真实服务端状态机。
