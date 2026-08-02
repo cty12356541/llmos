@@ -59,8 +59,8 @@ Rust 继续作为阶段 B 核心实现语言。增加 Go、C# 或其他 SDK 不�
 | 优先级 | 语言 | 当前证据级别 | 当前定位 | 主要价值 | 主要待证风险 |
 |---|---|---|---|---|---|
 | P0 | Rust | `SDK-2 PARTIAL` | 核心实现 + 首个 SDK | 内核、系统服务、CLI、可信 adapter | 不能让 Rust type/layout 泄漏成公共 ABI |
-| P0 | TypeScript | `SDK-0 + SDK-1 PARTIAL` | 阶段 B 官方 SDK 候选 | Tauri/Node 控制工具、桌面 UI 配套生态 | WebView 与 Node 权限边界；真实 pipe client 尚未完成 |
-| P0 | Python | `SDK-0 + SDK-1 PARTIAL` | 阶段 B 官方 SDK 候选 | AI、模型策略、数据与自动化生态 | asyncio/cancel、打包、动态类型和本地 transport 尚未完成 |
+| P0 | TypeScript | `SDK-2 CANDIDATE / CI PENDING` | 阶段 B 官方 SDK 候选 | Tauri/Node 控制工具、桌面 UI 配套生态 | WebView 与 Node 权限边界；discovery/common semantics 尚未完成 |
+| P0 | Python | `SDK-2 CANDIDATE / CI PENDING` | 阶段 B 官方 SDK 候选 | AI、模型策略、数据与自动化生态 | Windows Proactor 稳定边界、打包与 common semantics 尚未完成 |
 | P1 | C#/.NET | `PLANNED / UNASSESSED` | 优先评估，官方 SDK 候选 | Windows 桌面、企业、Unity/.NET；原生 `System.IO.Pipes` | macOS/Linux profile、peer identity、版本最低线和 NuGet 发布 |
 | P1 | Go | `PLANNED / UNASSESSED` | 优先评估，官方 SDK 候选 | CLI、系统代理、基础设施和后续远程节点；部署简单 | Windows named pipe 通常需额外 adapter；context cancel 与 uncertain retry 映射 |
 | P2 | Java/Kotlin | `UNASSESSED` | 需求驱动评估 | 企业服务、JVM 工具、Android/Kotlin 生态 | Windows named pipe 缺少同等直接标准路径；JVM/runtime 体量 |
@@ -114,7 +114,8 @@ Buf 支持固定 remote plugin 并从同一配置生成 Go 等语言；引入时
 
 | 产物 | 状态 | 归属 |
 |---|---|---|
-| Rust/TS/Python transport + SABI common semantics | `NEXT` | `B-SCHEMA` |
+| Rust/TS/Python transport | `PARTIAL PASS / CI PENDING` | `B-SCHEMA`、B-SCHEMA-006 |
+| ServiceDirectory + SABI common semantics | `NEXT` | `B-SCHEMA` |
 | Go generation/golden probe | `READY`，Gate A 后实施 | `B-SDK-LANG-EVAL` |
 | C# generation/golden probe | `READY`，Gate A 后实施 | `B-SDK-LANG-EVAL` |
 | Go/C# transport 对比 Evidence | `PLANNED` | 新 Evidence，不提前编号 |

@@ -187,7 +187,7 @@ PoC 对比：
 
 官方 SDK 语言集合不在此处凭生态印象冻结。当前按[多语言 SDK 支持评估计划](./language-sdk-support-plan.md)分层：Rust/TypeScript/Python 是阶段 B 官方候选，Go/C# 进入优先兼容评估，Java/Kotlin、Swift、C/C++ 保留为需求驱动候选。Go/C# 必须分别经过 generation/golden 探针，且至少一个在 SABI 冻结前完成独立跨平台 IPC PoC；仅能生成 Protobuf 类型不等于 NLOS SDK 已支持。
 
-当前 PoC 决策与证据见 [ADR-0003](./adrs/0003-stage-b-idl-and-canonical-encoding.md)、[B-SCHEMA-001](../evidence/stage-b/b-schema-001-protobuf-envelope.md)、[B-SCHEMA-002](../evidence/stage-b/b-schema-002-cross-language-generation.md)、[B-SCHEMA-003](../evidence/stage-b/b-schema-003-deterministic-cbor.md)、[B-SCHEMA-004](../evidence/stage-b/b-schema-004-schema-fuzz-smoke.md) 和 [B-SCHEMA-005](../evidence/stage-b/b-schema-005-local-typed-ipc.md)：Protobuf 公共 envelope、三语言 type generation/compat gate、首个 deterministic CBOR body/domain-separated preimage/golden、三目标 sanitizer fuzz smoke，以及 Rust bounded IPC/真实 Unix socket 与 Windows named-pipe 初始切片已实现；TS/Python transport client、ServiceDirectory/negotiation、Windows token/ACL、CBOR 跨语言、长期 fuzz 与实际签名仍未完成，候选未冻结。
+当前 PoC 决策与证据见 [ADR-0003](./adrs/0003-stage-b-idl-and-canonical-encoding.md)、[B-SCHEMA-001](../evidence/stage-b/b-schema-001-protobuf-envelope.md)、[B-SCHEMA-002](../evidence/stage-b/b-schema-002-cross-language-generation.md)、[B-SCHEMA-003](../evidence/stage-b/b-schema-003-deterministic-cbor.md)、[B-SCHEMA-004](../evidence/stage-b/b-schema-004-schema-fuzz-smoke.md)、[B-SCHEMA-005](../evidence/stage-b/b-schema-005-local-typed-ipc.md) 和 [B-SCHEMA-006](../evidence/stage-b/b-schema-006-typescript-python-ipc-clients.md)：Protobuf 公共 envelope、三语言 generation/compat gate、deterministic CBOR、sanitizer fuzz smoke、Rust 跨平台 IPC，以及 TS/Python 调用 Rust server 的真实 Unix transport 已实现；TS/Python Windows CI、ServiceDirectory/common semantics、双向 peer auth、CBOR 跨语言、长期 fuzz 与实际签名仍未完成，候选未冻结。
 
 ## 9. Desktop 与可信控制面
 
@@ -287,7 +287,7 @@ docs/
 
 1. 已完成 Protobuf envelope 的 Rust/TypeScript/Python type generation、Buf lint/breaking、drift gate 与跨语言 golden compatibility；
 2. 已完成首个 deterministic CBOR profile、签名域和 CBOR/preimage golden vectors；
-3. 已完成 protobuf/CBOR 三目标 sanitizer fuzz smoke 和 Rust 本地 typed IPC adapter；下一步完成 TypeScript/Python transport + common semantics，再按[语言 SDK 计划](./language-sdk-support-plan.md)推进 Go/C# generation/golden 与独立 IPC 探针；长期 fuzz 保留为 ABI 冻结/production claim 前置门；
+3. 已完成 protobuf/CBOR 三目标 sanitizer fuzz smoke、Rust 本地 typed IPC adapter 和 TypeScript/Python client 的 Unix 实际往返；下一步关闭 TS/Python Windows CI 并实现 ServiceDirectory/common semantics，再按[语言 SDK 计划](./language-sdk-support-plan.md)推进 Go/C# generation/golden 与独立 IPC 探针；长期 fuzz 保留为 ABI 冻结/production claim 前置门；
 4. 100K 逐条生产写入、真实掉电和更多文件系统保留为 Store 扩展 Evidence。
 
 技术栈讨论已于[议题 30](../discussions/30-阶段B技术栈讨论.md)收束。编码立即从 Cargo workspace、`nlos-types`、`nlos-runtime` 与 Tokio Fiber scale PoC 开始；带 `PoC` 标记的组件在证据出来前不得升级为 `ACCEPTED` 或冻结公共 ABI。

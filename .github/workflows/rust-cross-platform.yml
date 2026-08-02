@@ -59,6 +59,11 @@ jobs:
           npm run schema:test:typescript
           python tests/conformance/schema/envelope.py
 
+      - name: Test cross-language local IPC clients
+        run: |
+          npm run ipc:test:typescript
+          python tests/conformance/ipc/client.py
+
       - name: Reject Protobuf breaking changes
         if: runner.os == 'Linux' && github.event_name == 'pull_request'
         run: npx --no-install buf breaking --against '.git#branch=origin/${{ github.base_ref }},subdir=schema'

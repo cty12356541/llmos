@@ -8,5 +8,9 @@
     "noEmit": true,
     "skipLibCheck": true
   },
-  "include": ["gen/typescript/**/*.ts", "tests/conformance/schema/**/*.ts"]
+  "include": [
+    "gen/typescript/**/*.ts",
+    "sdk/typescript/**/*.ts",
+    "tests/conformance/**/*.ts"
+  ]
 }

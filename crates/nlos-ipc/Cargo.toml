@@ -7,6 +7,14 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+conformance-server = []
+
+[[bin]]
+name = "nlos-ipc-echo"
+path = "src/bin/nlos-ipc-echo.rs"
+required-features = ["conformance-server"]
+
 [dependencies]
 nlos-schema = { path = "../nlos-schema" }
 tokio.workspace = true
