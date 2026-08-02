@@ -1,6 +1,6 @@
 # B-SCHEMA-011：durable idempotency 真实 SABI 重连初始证据
 
-> 状态：PARTIAL PASS（本地与远程三平台 Rust↔TypeScript/Python 真实 IPC 通过；server restart/deadline/cancel 待完成）
+> 状态：PARTIAL PASS（Rust↔TypeScript/Python 真实 IPC 已通过三平台；server restart 组合本地通过、远程三平台待验证；deadline/cancel 待完成）
 >
 > 日期：2026-08-02
 >
@@ -36,7 +36,7 @@ conformance server 从已验证 caller/application/idempotency 字节构造 nomi
 - SQLite v3 的内部历史列名仍为 `response_wire`，但代码注释明确其只保存 transport-independent service result，避免无必要的 durable migration；
 - retry 可以使用新的 exchange request ID/correlation，同时仍返回同一 Operation、Receipt 和稳定结果。
 
-## 3. 不确定断线、重连与冲突证据
+## 3. 不确定断线、进程重启与冲突证据
 
 fixture 的第一次 business call 故意执行以下顺序：
 
@@ -45,14 +45,25 @@ commit durable result
 drop connection before response write
 ```
 
-TS/Python client 都收到 typed read failure 并 poison 原连接。随后客户端直接重连已协商 business endpoint，使用：
+TS/Python client 都收到 typed read failure 并 poison 原连接。初版证据随后直接重连已协商 business endpoint；当前组合测试进一步执行：
+
+```text
+commit server exits
+  → all process-local state is discarded
+  → recovery server rebinds directory/business endpoints
+  → recovery server reopens the same SQLite authority
+  → client negotiates ServiceDirectory again
+  → retry original idempotency identity
+```
+
+重试使用：
 
 - 原 Application/service/method/IdempotencyKey；
 - 原业务 payload；
 - 新 exchange request ID；
 - 新 correlation ID。
 
-Rust authority 返回原 Operation、Receipt 和 `result_wire`，再使用当前 exchange metadata 封装响应。server 结束前断言该 `cancel` handler 的 dispatch count 精确为 1，防止测试只比较相同输出却漏掉重复副作用。
+Rust authority 返回原 Operation、Receipt 和 `result_wire`，再使用当前 exchange metadata 封装响应。commit 进程断言该 `cancel` handler 的 dispatch count 精确为 1；全新的 recovery 进程断言 dispatch count 为 0，防止测试只比较相同输出却漏掉进程重启后的重复副作用。
 
 同一链路还覆盖：
 
@@ -79,13 +90,15 @@ python tests/conformance/ipc/directory_chain.py
 - [Schema fuzz smoke run 30740180497](https://github.com/cty12356541/llmos/actions/runs/30740180497) 成功；
 - [GitHub Pages run 30740180477](https://github.com/cty12356541/llmos/actions/runs/30740180477) 成功。
 
+上述三平台 run 对应初版同进程重连。新增跨进程重启组合已在本地 TS/Python 通过，提交后的远程三平台回执待补。
+
 ## 5. 当前不能证明什么
 
-- 当前覆盖连接在 commit 后断开，但 conformance server 进程本身没有在两次 IPC 之间重启；进程重开恢复仍由 `nlos-store` 测试证明，二者尚未组合；
+- 当前 server restart 组合是正常退出后重开；kill-9/torn-write 等异常退出由 store fault tests 单独覆盖，尚未与跨语言 IPC 形成完整乘积故障矩阵；
 - request digest 当前只覆盖 fixture 的完整业务 payload；正式 service schema 必须定义哪些 canonical effect fields 进入 digest，不能对任意 envelope 盲目哈希；
 - `pending` 是受控 fixture 分支，尚无真实异步 worker 完成、deadline timer 或 cancel propagation；
 - 尚未实现排队前、dispatch 前和 callback 时的 deadline fence，也未把 cancel epoch 接到真实 SABI handler；
 - Receipt 仍只有 nominal ID；Capability 和 peer authorization 仍是 conformance hook/allow fixture；
 - 三平台已通过现有 CI workload，但尚无网络文件系统、跨主机 transport 或多 authority 证明。
 
-因此本 Evidence 记为 `PARTIAL PASS`。下一验收门是实现 deadline/cancel/uncertain 的真实服务端状态机与进程重启重放组合测试。
+因此本 Evidence 记为 `PARTIAL PASS`。下一验收门是取得进程重启组合的远程三平台回执，并实现 deadline/cancel/uncertain 的真实服务端状态机。

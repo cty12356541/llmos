@@ -33,6 +33,7 @@ async function startServer(
   directoryEndpoint: string,
   businessEndpoint: string,
   authorityPath: string,
+  phase: "commit" | "recover",
 ): Promise<ChildProcessWithoutNullStreams> {
   const server = spawn(
     "cargo",
@@ -49,6 +50,7 @@ async function startServer(
       directoryEndpoint,
       businessEndpoint,
       authorityPath,
+      phase,
     ],
     { stdio: ["pipe", "pipe", "pipe"] },
   );
@@ -76,6 +78,18 @@ async function startServer(
     server.once("error", reject);
   });
   return server;
+}
+
+function waitForExit(
+  server: ChildProcessWithoutNullStreams,
+): Promise<number | null> {
+  if (server.exitCode !== null || server.signalCode !== null) {
+    return Promise.resolve(server.exitCode);
+  }
+  return new Promise((resolve, reject) => {
+    server.once("exit", resolve);
+    server.once("error", reject);
+  });
 }
 
 function businessRequest(
@@ -123,10 +137,11 @@ const authorityPath = join(
   tmpdir(),
   `nlos-directory-${process.pid}-${Date.now()}-authority.sqlite3`,
 );
-const server = await startServer(
+let server = await startServer(
   directoryEndpoint,
   businessEndpoint,
   authorityPath,
+  "commit",
 );
 try {
   const transportConfig = {
@@ -153,10 +168,28 @@ try {
   );
   connected.client.close();
 
-  const retryClient = await LocalRpcClient.connect(
+  const commitCode = await waitForExit(server);
+  assert.equal(commitCode, 0);
+
+  server = await startServer(
+    directoryEndpoint,
     businessEndpoint,
+    authorityPath,
+    "recover",
+  );
+  const recovered = await ServiceDirectoryClient.negotiateAndConnect(
+    directoryEndpoint,
+    {
+      service: "operation",
+      schemaName: "nlos.sabi.Envelope",
+      major: 1,
+      minimumMinor: 1,
+    },
     transportConfig,
   );
+  assert.equal(recovered.binding.endpoint?.address, businessEndpoint);
+
+  const retryClient = recovered.client;
   const response = await retryClient.exchange(businessRequest(10, 7));
   assert.deepEqual(
     Uint8Array.from(response.envelope?.requestId ?? []),
@@ -222,10 +255,7 @@ try {
   assert.ok(pendingContext.operation);
   pendingClient.close();
 
-  const code = await new Promise<number | null>((resolve, reject) => {
-    server.once("exit", resolve);
-    server.once("error", reject);
-  });
+  const code = await waitForExit(server);
   assert.equal(code, 0);
 } catch (error) {
   server.kill();

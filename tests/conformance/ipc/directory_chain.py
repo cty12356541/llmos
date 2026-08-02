@@ -42,6 +42,7 @@ async def start_server(
     directory_endpoint: str,
     business_endpoint: str,
     authority_path: str,
+    phase: str,
 ) -> asyncio.subprocess.Process:
     process = await asyncio.create_subprocess_exec(
         "cargo",
@@ -57,6 +58,7 @@ async def start_server(
         directory_endpoint,
         business_endpoint,
         authority_path,
+        phase,
         cwd=ROOT,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -110,6 +112,7 @@ async def main() -> None:
         directory_endpoint,
         business_endpoint,
         authority_path,
+        "commit",
     )
     try:
         transport_config = TransportConfig(
@@ -138,10 +141,26 @@ async def main() -> None:
             raise AssertionError("first committed exchange must disconnect")
         await connected.client.close()
 
-        retry_client = await LocalRpcClient.connect(
+        assert await server.wait() == 0
+        server = await start_server(
+            directory_endpoint,
             business_endpoint,
+            authority_path,
+            "recover",
+        )
+        recovered = await ServiceDirectoryClient.negotiate_and_connect(
+            directory_endpoint,
+            ServiceRequirement(
+                service="operation",
+                schema_name="nlos.sabi.Envelope",
+                major=1,
+                minimum_minor=1,
+            ),
             transport_config,
         )
+        assert recovered.binding.endpoint.address == business_endpoint
+
+        retry_client = recovered.client
         response = await retry_client.exchange(business_request(10, 7))
         assert response.envelope.request_id == bytes([10]) * 16
         assert response.envelope.payload == b"\x04\x05\x06\xd0"

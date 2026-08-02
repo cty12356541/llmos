@@ -35,6 +35,22 @@ const DIRECTORY_SERVICE: &str = "service_directory";
 const NEGOTIATE_METHOD: &str = "negotiate";
 const BUSINESS_SERVICE: &str = "operation";
 
+#[derive(Clone, Copy)]
+enum ServerPhase {
+    Commit,
+    Recover,
+}
+
+impl ServerPhase {
+    fn parse(value: &OsString) -> Result<Self, Box<dyn Error>> {
+        match value.to_str() {
+            Some("commit") => Ok(Self::Commit),
+            Some("recover") => Ok(Self::Recover),
+            _ => Err("server phase must be commit or recover".into()),
+        }
+    }
+}
+
 struct AllowConformancePeer;
 
 impl PeerAuthorizer for AllowConformancePeer {
@@ -49,10 +65,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let directory_endpoint = arguments.next().ok_or("missing directory endpoint")?;
     let business_endpoint = arguments.next().ok_or("missing business endpoint")?;
     let authority_path = arguments.next().ok_or("missing authority database path")?;
+    let phase = arguments.next().ok_or("missing server phase")?;
+    let phase = ServerPhase::parse(&phase)?;
     if arguments.next().is_some() {
         return Err("unexpected extra argument".into());
     }
-    run(directory_endpoint, business_endpoint, authority_path).await
+    run(directory_endpoint, business_endpoint, authority_path, phase).await
 }
 
 fn announce_ready() -> io::Result<()> {
@@ -89,6 +107,7 @@ async fn run(
     directory_endpoint: OsString,
     business_endpoint: OsString,
     authority_path: OsString,
+    phase: ServerPhase,
 ) -> Result<(), Box<dyn Error>> {
     use nlos_ipc::unix::UnixListenerAdapter;
 
@@ -112,7 +131,8 @@ async fn run(
     let directory_listener = UnixListenerAdapter::bind(&directory_path)?;
     let business_listener = UnixListenerAdapter::bind(&business_path)?;
     let _guard = EndpointGuard(vec![directory_path, business_path]);
-    let _database_guard = DatabaseGuard::new(authority_path.clone());
+    let _database_guard =
+        matches!(phase, ServerPhase::Recover).then(|| DatabaseGuard::new(authority_path.clone()));
     let authority = BusinessAuthority::open(&authority_path)?;
     let snapshot = directory(LocalTransportKind::UnixSocket, business_address)?;
     announce_ready()?;
@@ -121,18 +141,26 @@ async fn run(
         .accept(TransportConfig::default())
         .await?;
     serve_directory(directory_stream, directory_peer, snapshot).await?;
-    let (business_stream, business_peer) =
-        business_listener.accept(TransportConfig::default()).await?;
-    commit_then_drop_response(business_stream, business_peer, &authority).await?;
-    let (retry_stream, retry_peer) = business_listener.accept(TransportConfig::default()).await?;
-    serve_business(retry_stream, retry_peer, &authority).await?;
-    let (conflict_stream, conflict_peer) =
-        business_listener.accept(TransportConfig::default()).await?;
-    serve_business(conflict_stream, conflict_peer, &authority).await?;
-    let (pending_stream, pending_peer) =
-        business_listener.accept(TransportConfig::default()).await?;
-    serve_business(pending_stream, pending_peer, &authority).await?;
-    authority.assert_single_cancel_dispatch()?;
+    match phase {
+        ServerPhase::Commit => {
+            let (business_stream, business_peer) =
+                business_listener.accept(TransportConfig::default()).await?;
+            commit_then_drop_response(business_stream, business_peer, &authority).await?;
+            authority.assert_cancel_dispatches(1)?;
+        }
+        ServerPhase::Recover => {
+            let (retry_stream, retry_peer) =
+                business_listener.accept(TransportConfig::default()).await?;
+            serve_business(retry_stream, retry_peer, &authority).await?;
+            let (conflict_stream, conflict_peer) =
+                business_listener.accept(TransportConfig::default()).await?;
+            serve_business(conflict_stream, conflict_peer, &authority).await?;
+            let (pending_stream, pending_peer) =
+                business_listener.accept(TransportConfig::default()).await?;
+            serve_business(pending_stream, pending_peer, &authority).await?;
+            authority.assert_cancel_dispatches(0)?;
+        }
+    }
     Ok(())
 }
 
@@ -141,6 +169,7 @@ async fn run(
     directory_endpoint: OsString,
     business_endpoint: OsString,
     authority_path: OsString,
+    phase: ServerPhase,
 ) -> Result<(), Box<dyn Error>> {
     use nlos_ipc::windows::NamedPipeListenerAdapter;
 
@@ -153,7 +182,8 @@ async fn run(
     let mut business_listener =
         NamedPipeListenerAdapter::bind(business_endpoint, 2, TransportConfig::default())?;
     let authority_path = PathBuf::from(authority_path);
-    let _database_guard = DatabaseGuard::new(authority_path.clone());
+    let _database_guard =
+        matches!(phase, ServerPhase::Recover).then(|| DatabaseGuard::new(authority_path.clone()));
     let authority = BusinessAuthority::open(&authority_path)?;
     let snapshot = directory(LocalTransportKind::WindowsNamedPipe, business_address)?;
     announce_ready()?;
@@ -162,18 +192,26 @@ async fn run(
         .accept(TransportConfig::default())
         .await?;
     serve_directory(directory_stream, directory_peer, snapshot).await?;
-    let (business_stream, business_peer) =
-        business_listener.accept(TransportConfig::default()).await?;
-    commit_then_drop_response(business_stream, business_peer, &authority).await?;
-    let (retry_stream, retry_peer) = business_listener.accept(TransportConfig::default()).await?;
-    serve_business(retry_stream, retry_peer, &authority).await?;
-    let (conflict_stream, conflict_peer) =
-        business_listener.accept(TransportConfig::default()).await?;
-    serve_business(conflict_stream, conflict_peer, &authority).await?;
-    let (pending_stream, pending_peer) =
-        business_listener.accept(TransportConfig::default()).await?;
-    serve_business(pending_stream, pending_peer, &authority).await?;
-    authority.assert_single_cancel_dispatch()?;
+    match phase {
+        ServerPhase::Commit => {
+            let (business_stream, business_peer) =
+                business_listener.accept(TransportConfig::default()).await?;
+            commit_then_drop_response(business_stream, business_peer, &authority).await?;
+            authority.assert_cancel_dispatches(1)?;
+        }
+        ServerPhase::Recover => {
+            let (retry_stream, retry_peer) =
+                business_listener.accept(TransportConfig::default()).await?;
+            serve_business(retry_stream, retry_peer, &authority).await?;
+            let (conflict_stream, conflict_peer) =
+                business_listener.accept(TransportConfig::default()).await?;
+            serve_business(conflict_stream, conflict_peer, &authority).await?;
+            let (pending_stream, pending_peer) =
+                business_listener.accept(TransportConfig::default()).await?;
+            serve_business(pending_stream, pending_peer, &authority).await?;
+            authority.assert_cancel_dispatches(0)?;
+        }
+    }
     Ok(())
 }
 
@@ -218,12 +256,12 @@ impl BusinessAuthority {
         })
     }
 
-    fn assert_single_cancel_dispatch(&self) -> Result<(), Box<dyn Error>> {
+    fn assert_cancel_dispatches(&self, expected: usize) -> Result<(), Box<dyn Error>> {
         let actual = self.cancel_dispatches.load(Ordering::SeqCst);
-        if actual == 1 {
+        if actual == expected {
             Ok(())
         } else {
-            Err(format!("expected one durable dispatch, observed {actual}").into())
+            Err(format!("expected {expected} durable dispatches, observed {actual}").into())
         }
     }
 }

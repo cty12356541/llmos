@@ -96,12 +96,12 @@ NLOS_FUZZ_RUNS=2000 NLOS_FUZZ_TOOLCHAIN=nightly-2026-08-01 scripts/run-fuzz-smok
 
 ## 4. 当前不能证明什么
 
-- 本切片提交时 IdempotencyKey 只有线协议和入口校验；后续 [B-SCHEMA-010](./b-schema-010-durable-idempotency-result.md) 已补本地 durable dedup/result authority，但真实 IPC reconnect 仍未验证；
+- 本切片提交时 IdempotencyKey 只有线协议和入口校验；后续 [B-SCHEMA-010](./b-schema-010-durable-idempotency-result.md) 已补 durable dedup/result authority，[B-SCHEMA-011](./b-schema-011-durable-idempotency-ipc.md) 已补三平台真实 IPC reconnect，进程重启组合也已在本地通过；
 - deadline 当前只验证同宿主 monotonic 值，尚未实现排队/dispatch/callback 全链路 deadline fence，也未定义远程 clock-domain 映射；
 - cancel epoch 被携带但尚未接入 Operation registry、Process supervisor 或 service handler 的真实取消传播；
 - Operation/Receipt 当前只是 typed reference，fixture 返回固定测试引用；尚无正式 Operation SABI payload、Receipt canonical body/signature/attestation；
 - Capability handle 只验证 slot+generation 形状；没有通过 Namespace/authority 查权，也没有 peer auth；
 - safe message 只有长度/NUL 限制，生产错误脱敏、localized description 和 service-specific bounded detail 尚未实现；
-- 没有真实 server-side `E_UNCERTAIN`/`E_PARTIAL` 故障注入、stale generation、reconnect same-key retry 或持久化恢复矩阵。
+- 已有 fixture `E_UNCERTAIN`、reconnect same-key retry 和正常 server restart 持久化回放；尚无真实异步 worker、`E_PARTIAL`、stale generation、异常 server crash 与 deadline/cancel 的完整故障矩阵。
 
-因此 B-SCHEMA-009 只把“common wire metadata + 三语言安全校验 + 两跳传输”记为 `PARTIAL PASS`，不把 TS/Python 升级为完整 `SDK-3`。durable same-key dedup/result 的三平台 authority 已由 B-SCHEMA-010 推进，三平台真实 SABI 重连由 B-SCHEMA-011 推进；下一验收门是 server restart 组合与 deadline/cancel/uncertain 服务端状态机。
+因此 B-SCHEMA-009 只把“common wire metadata + 三语言安全校验 + 两跳传输”记为 `PARTIAL PASS`，不把 TS/Python 升级为完整 `SDK-3`。durable same-key dedup/result 的三平台 authority 已由 B-SCHEMA-010 推进，三平台真实 SABI 重连及本地 server restart 组合由 B-SCHEMA-011 推进；下一验收门是 restart 组合远程三平台回执与 deadline/cancel/uncertain 服务端状态机。
