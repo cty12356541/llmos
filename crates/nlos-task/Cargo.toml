@@ -12,6 +12,7 @@ rusqlite.workspace = true
 sha2.workspace = true
 
 [dev-dependencies]
+nlos-store-fault = { path = "../nlos-store-fault" }
 rusqlite.workspace = true
 
 [lints]

@@ -50,7 +50,7 @@ Application
 | `B-SDK-LANG-EVAL` | 官方 SDK 语言集合与 Go/C# 优先兼容评估 | `BLOCKED` | [多语言 SDK 支持评估计划](./language-sdk-support-plan.md)；OperationControl 前置切片见 [B-SCHEMA-013](../evidence/stage-b/b-schema-013-operation-control-timer-worker.md) | 2026-08-04 起 Go/C# generation/golden 探针与独立 IPC PoC 后移至 `B-TASK`/EffectPermit 纵切面之后（议题 31/32：第四种语言不能证明核心成立，且不应推动 SABI 在 Task/Effect 语义稳定前过早冻结）；Java/Kotlin、Swift、C/C++ 需求驱动复审 |
 | `B-SANDBOX` | Wasmtime/WASI 与独立 host Process 隔离对比 | `READY` | [技术选型第 5 节](./stage-b-technology-selection.md) | capability import、fuel/epoch、memory、host crash、GuaranteeTier |
 | `B-PROCESS` | native Process supervisor 与平台资源/生命周期 adapter | `READY` | [v0.5 Process 规范](../design/06-架构设计总纲-v0.5.md) | macOS/Windows/Linux suspend/kill、host incarnation、resource mapping |
-| `B-TASK` | TaskPlan/TaskNode、lazy materialization、TaskSnapshot、双 Attempt 唯一提交 | `IN_PROGRESS` | [v0.5 Task 规范](../design/06-架构设计总纲-v0.5.md)；2026-08-04 起为唯一主线工作包（议题 31/32 顺序变更采纳）；[B-TASK-001](../evidence/stage-b/b-task-001-task-authority-commit-permit.md)：durable TaskAuthority + 双 Attempt 竞争 CommitPermit 六条门 PARTIAL PASS（`nlos-task`，14 测试，三平台 CI [run 30905979180](https://github.com/cty12356541/llmos/actions/runs/30905979180)）；[B-TASK-002](../evidence/stage-b/b-task-002-effect-permit-dispatch.md)：EffectPermit 签发 + 逐槽 EffectSlot 状态机（schema v2，13 测试）PARTIAL PASS 候选；fault-injection 待接入 | 跨 Attempt effect history、PermitAdoption/reconcile（TASK-EFFECT-003）、TaskPlan/TaskNode 惰性物化、Process 绑定、required slot 成功语义、三点崩溃注入、fault-injection 接入 |
+| `B-TASK` | TaskPlan/TaskNode、lazy materialization、TaskSnapshot、双 Attempt 唯一提交 | `IN_PROGRESS` | [v0.5 Task 规范](../design/06-架构设计总纲-v0.5.md)；2026-08-04 起为唯一主线工作包（议题 31/32 顺序变更采纳）；[B-TASK-001](../evidence/stage-b/b-task-001-task-authority-commit-permit.md)：durable TaskAuthority + 双 Attempt 竞争 CommitPermit 六条门 PARTIAL PASS（`nlos-task`，14 测试，三平台 CI [run 30905979180](https://github.com/cty12356541/llmos/actions/runs/30905979180)）；[B-TASK-002](../evidence/stage-b/b-task-002-effect-permit-dispatch.md)：EffectPermit 签发 + 逐槽 EffectSlot 状态机（schema v2，13 测试）PARTIAL PASS 候选；[B-TASK-001 fault-injection](../evidence/stage-b/b-task-001-fault-injection.md)：F1–F4 对齐故障矩阵 6 行全 PASS（kill-9 中断/commit 后崩溃/硬 I/O 错误/ENOSPC/静默丢写+WAL 撕裂/故障解除恢复，7 测试）PARTIAL PASS 候选 | 跨 Attempt effect history、PermitAdoption/reconcile（TASK-EFFECT-003）、TaskPlan/TaskNode 惰性物化、Process 绑定、required slot 成功语义、三点崩溃注入、effect 表组故障注入、F4/F5 矩阵（checkpoint/backup/migration） |
 | `B-CONTROL` | CLI/API/NL/GUI 共用 ControlCommand 与 Receipt | `READY` | [v0.5 控制面规范](../design/06-架构设计总纲-v0.5.md) | SystemControl client、权限 UI、多层手动调度、等价路径证明 |
 | `B-ARTIFACT` | 内容寻址 Artifact、metadata、reconcile、GC | `READY` | [技术选型第 7 节](./stage-b-technology-selection.md) | fsync/rename、blob/metadata 恢复、retention 和 GC |
 | `B-SLICE-K` | Slice K：Package → Application → Task → Fiber → Operation → Receipt → 控制 | `NOT_STARTED` | [v0.5 Slice K](../design/06-架构设计总纲-v0.5.md) | 需要前述执行、持久化、Process、权限和控制能力贯通 |
@@ -216,6 +216,12 @@ Application
 - finalize 收紧：任何 PLANNED/PERMITTED/DISPATCHED/EFFECT_UNKNOWN slot 禁止关闭 permit；EFFECT_UNKNOWN 跨重启持久阻塞；无声明 effect 的旧流程行为不变（14 项旧测试回归）。
 - 13 项新测试 + workspace clippy/fmt 通过，详见 [B-TASK-002](../evidence/stage-b/b-task-002-effect-permit-dispatch.md)；证据等级单节点 H3 候选：TASK-EFFECT-003 quarantine/reconcile、跨 Attempt effect history、required 成功语义、三点崩溃注入均未实现。
 
+### 4.24 TaskAuthority fault-injection（B-TASK-001 增量）
+
+- `nlos-store-fault` VFS 对齐 PoC-0003 F1–F4 矩阵移植至 B-TASK-001 表组，6 行全 PASS：kill-9 中断事务完全回滚无痕迹；commit 后崩溃全部已提交事实（head/receipt/closure/cancel_epoch）逐位保留且重放一致；硬 I/O 错误与 ENOSPC 显式 typed 传播无半截状态；静默丢写幻影 permit 重开不可见、WAL 撕裂尾部整体隐藏且合法前缀保留、重做确定派生同 ID 真实持久；故障解除后从已提交前缀完整继续（head=2 双 attempt 收口）。
+- `PRAGMA integrity_check` 独立复核每行通过；`nlos-task` 零 `src/` 改动（`open_with_vfs` 与 `nlos-store` 同构）。
+- 详见 [B-TASK-001 fault-injection](../evidence/stage-b/b-task-001-fault-injection.md)；限制：macOS VFS 模拟 ≠ 真实断电、三平台 CI 待运行本文件、effect 表组（B-TASK-002 新增）与 F4/F5（checkpoint/backup/migration）矩阵未覆盖。
+
 ## 5. 当前下一验收门
 
 `B-TASK` 自 2026-08-04 起为唯一主线工作包（采纳议题 31/32 顺序变更）。`B-SCHEMA` 保持 `IN_PROGRESS` 完成态收尾但不再持有主线；其剩余横向项（Go/C# 探针、Namespace bootstrap authority、生产目录 watch/lease/rebind、持久 deadline queue/restart recovery、Receipt authority、双向 peer auth、Python Proactor 稳定 profile、CBOR 跨语言、长期 fuzz、actual signing）在 `B-TASK` 纵切面成立前不推动 SABI 冻结。
@@ -264,7 +270,7 @@ planned slot 集承诺 + LogicalEffectId 确定性公式（descriptor 无禁止�
   → finalize 收紧：任何 open/unknown slot 禁止关闭 permit；schema v1→v2 无损迁移      PARTIAL PASS 候选
 ```
 
-下一切片候选（B-TASK-003）：三点强制崩溃注入（外部调用前/调用中/Receipt 前）与重启四态区分（议题 31 条 5–6）、`[TASK-EFFECT-003]` quarantine/PermitAdoption/reconcile 流程、跨 Attempt effect history 与 retry fence 推进（`[TASK-EFFECT-ID-001]`/`[TASK-RETRY-EFFECT-001]`）、required slot 成功语义与 CONDITION_NOT_APPLICABLE 权威证明；B-TASK-001 的 `nlos-store-fault` 故障注入接入并行进行中。不得据 B-TASK-001/002 证据声称 TaskAttempt effect 语义完整。
+下一切片候选（B-TASK-003）：三点强制崩溃注入（外部调用前/调用中/Receipt 前）与重启四态区分（议题 31 条 5–6）、`[TASK-EFFECT-003]` quarantine/PermitAdoption/reconcile 流程、跨 Attempt effect history 与 retry fence 推进（`[TASK-EFFECT-ID-001]`/`[TASK-RETRY-EFFECT-001]`）、required slot 成功语义与 CONDITION_NOT_APPLICABLE 权威证明；B-TASK-001 的 `nlos-store-fault` 故障注入已完成（§4.24），effect 表组同矩阵补注入可并入 B-TASK-003。不得据 B-TASK-001/002 证据声称 TaskAttempt effect 语义完整。
 
 多语言 SDK 扩展按 [`B-SDK-LANG-EVAL`](./language-sdk-support-plan.md) 单独晋级：Go 与 C# 的 generation/golden 探针与独立 IPC PoC 自 2026-08-04 起后移至 `B-TASK`/EffectPermit 纵切面通过之后（议题 31/32 顺序变更），不在只有 generated types 时宣称“已支持”；Rust/TypeScript/Python 三语言现有 PARTIAL PASS 证据保持有效。
 

@@ -411,6 +411,7 @@ dependencies = [
 name = "nlos-task"
 version = "0.1.0"
 dependencies = [
+ "nlos-store-fault",
  "nlos-types",
  "rusqlite",
  "sha2",
