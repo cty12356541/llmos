@@ -1,8 +1,8 @@
 # B-TASK-003：三点崩溃窗口与 effect 表组故障注入增量证据
 
-> 状态：PARTIAL PASS 候选（本地复验通过；尚待三平台 CI 与 integrator 审议）
+> 状态：PARTIAL PASS（本地复验 + 三平台 CI 通过；尚待 integrator 审议）
 >
-> 日期：2026-08-05
+> 日期：2026-08-05（三平台 CI 于同日通过：[run 30931085056](https://github.com/cty12356541/llmos/actions/runs/30931085056)）
 >
 > 对应：议题 31 证据门条 5（三点崩溃窗口注入）与条 6（effect 表组故障矩阵 + 四态区分）的测试层证据，覆盖 `EffectPermit`/`EffectSlot` 机制（6233890，schema v2）在 `nlos-store-fault` VFS 下的耐久行为
 >
@@ -67,7 +67,7 @@ cargo fmt --all -- --check                              # 通过（exit 0）
 ## 6. 当前不能证明什么（限制与非声明）
 
 - **kill-9 ≠ 机器断电**：kill-9 模拟进程崩溃（OS page cache 存活）；"内核已接受但盘未见"的语义由矩阵行 5 的 `PowerLossAfter` 与 WAL 撕裂覆盖；真实断电下的介质行为、APFS 以外文件系统、`-shm`/mmap 损坏组合均不在证据内。
-- **macOS 本地**：尚未跑三平台 CI；真实 ENOSPC RAM-volume 探针未在 effect 表组重做，disk-full 以注入 `SQLITE_FULL` 为准。
+- **macOS 本地 + 三平台 CI**：Ubuntu/Windows/macOS workspace 测试与 Clippy（含本测试文件）已通过（run 30931085056）；真实 ENOSPC RAM-volume 探针未在 effect 表组重做，disk-full 以注入 `SQLITE_FULL` 为准。
 - **不声称 `[TASK-EFFECT-003]` / effect-history / required 成功语义**：quarantine tombstone、`PermitAdoption`、reconcile 流、`TaskEffectHistoryEntry`/`retry_fence` 推进、`PARTIAL_EFFECT`/`FAILED_AFTER_EFFECT` 路径均属并行主线 schema v3 切片；本文未对其表组做任何故障注入，也不对其完成度背书（含 UNKNOWN 在 reconcile 落地前的终态性——本测试断言的是 v2 保留语义：UNKNOWN 阻塞关闭、DISPATCHED 未闭合阻塞 finalize、NO_EFFECT 需可证明未消费 token）。
 - **不声称 F4 全集**：checkpoint/backup/长 reader 矩阵未对 effect 表组重做。
 - 单 authority、单进程 SQLite；不证明跨节点 consensus 或分布式 exactly-once。digest/ID 仍为 domain-separated SHA-256 占位公式，无签名。

@@ -1,8 +1,8 @@
 # B-TASK-003：EFFECT_UNKNOWN quarantine/reconcile、跨 Attempt effect history 与 retry fence、required slot 成功语义初始证据
 
-> 状态：PARTIAL PASS（本地复验通过；尚待 fault-injection 与 integrator 审议）
+> 状态：PARTIAL PASS（本地复验 + 三平台 CI 通过；尚待 v3 表组 fault-injection 与 integrator 审议）
 >
-> 日期：2026-08-05
+> 日期：2026-08-05（三平台 CI 于同日通过：[run 30931085056](https://github.com/cty12356541/llmos/actions/runs/30931085056)）
 >
 > 对应：`[TASK-EFFECT-003]`、`[TASK-COMMIT-003]`（单 authority 子集）、`[TASK-COMMIT-002]`（required slot 成功语义完整子集）、`[TASK-EFFECT-ID-001]`（history 表/root/重算子集）、`[TASK-RETRY-EFFECT-001]`（PARTIAL_EFFECT/FAILED_AFTER_EFFECT + fence 推进 + 回读子集）
 >
@@ -91,4 +91,4 @@ cargo fmt --all -- --check       # 通过
 - 不声称 `[TASK-EFFECT-003]` 的跨 term adoption、分布式语义、Slice K 或 B-TASK 包完成；B-TASK-001/002 证据文档的限制条目继续有效。
 - legacy `finalize_commit` 通道保留 B-TASK-002 语义（§3.5）：严格 required 语义仅经 `finalize_commit_v3`/`close_permit` 强制。
 
-因此证据等级为单节点原型的 H3，PARTIAL PASS，不得据此声称 `B-TASK` 包完成或 TaskAttempt effect 语义完整。
+因此证据等级为单节点原型的 H3 加三平台构建/测试复验（run 30931085056），PARTIAL PASS，不得据此声称 `B-TASK` 包完成或 TaskAttempt effect 语义完整。
