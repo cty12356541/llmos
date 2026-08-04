@@ -1,8 +1,8 @@
 # B-TASK-001：TaskAuthority fault-injection 增量证据（F1–F4 对齐矩阵）
 
-> 状态：PARTIAL PASS（候选；本地复验通过，尚待三平台 CI 与 integrator 审议）
+> 状态：PARTIAL PASS（本地复验 + 三平台 CI 通过；尚待 integrator 审议）
 >
-> 日期：2026-08-04
+> 日期：2026-08-04（三平台 CI 于同日通过：[run 30912986291](https://github.com/cty12356541/llmos/actions/runs/30912986291)）
 >
 > 对应：`B-TASK-001` 耐久性不变量增量；故障矩阵对齐 PoC-0003 F1–F4（见 [poc-0003-sqlite-operation-authority.md](./poc-0003-sqlite-operation-authority.md)）；基线证据见 [b-task-001-task-authority-commit-permit.md](./b-task-001-task-authority-commit-permit.md)
 
@@ -46,7 +46,7 @@ rustfmt --edition 2024 --check crates/nlos-task/tests/fault_injection.rs   # 通
 ## 4. 当前不能证明什么（限制与非声明）
 
 - **macOS 本地 VFS 模拟 ≠ 真实硬件掉电**：`PowerLossAfter` 在 VFS 层丢弃写/sync/truncate，逼近“内核已接受但盘未见”的语义，但不覆盖真实断电下的介质行为、文件系统差异（APFS 以外）、或 `-shm`/mmap 在真断电下的损坏组合；真实 ENOSPC 的 RAM-volume 探针（`nlos-store` F3 已有）未在 TaskAuthority 上重做，disk-full 行为以注入 `SQLITE_FULL` 为准。
-- **平台覆盖**：当前仅本机（macOS/arm64）复验；Ubuntu/Windows CI 尚未运行本测试文件（kill-9 子进程范式在 `nlos-store` 已三平台验证过，但本文件的三平台行为待 CI 确认）。
+- **平台覆盖**：三平台 CI（Ubuntu/Windows/macOS workspace 测试与 Clippy，含本测试文件）已通过（run 30912986291）；真实断电、更多文件系统与长期 soak 仍超出当前证据。
 - **未覆盖 EffectPermit/effect-slot 表组**：并行进行中的 B-TASK-002 切片（`planned_effects` 等 effect 期表）不在本矩阵内；本证据仅覆盖 B-TASK-001 表组。effect 期表接入后需要按同一矩阵补一轮注入。
 - **不声称 F4 全集**：checkpoint/backup/长 reader 矩阵（PoC-0003 F4）未对 TaskAuthority 重做；schema migration 故障注入（F5）待 TaskAuthority 出现 v2 schema 后再补。
 - 单 authority、单进程 SQLite；不证明跨节点 consensus 或分布式 exactly-once。

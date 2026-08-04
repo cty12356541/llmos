@@ -1,8 +1,8 @@
 # B-TASK-002：EffectPermit 签发与逐槽 EffectSlot 状态机初始证据
 
-> 状态：PARTIAL PASS 候选（本地复验通过；尚待 fault-injection 三点注入与 integrator 审议）
+> 状态：PARTIAL PASS（本地复验 + 三平台 CI 通过；尚待 fault-injection 三点注入与 integrator 审议）
 >
-> 日期：2026-08-04
+> 日期：2026-08-04（三平台 CI 于同日通过：[run 30912986291](https://github.com/cty12356541/llmos/actions/runs/30912986291)）
 >
 > 对应：`[TASK-EFFECT-001]`、`[TASK-EFFECT-ID-001]`、`[TASK-EFFECT-002]`（PLANNED/PERMITTED/DISPATCHED/NO_EFFECT/EFFECT_CLOSED/EFFECT_UNKNOWN 子集）、`[TASK-RACE-001]`（permit 维度）、`[TASK-CANCEL-003]`（cancel/dispatch 线性化子集）、`[TASK-COMMIT-002]`（finalize 侧 slot 闭合子集，无 effect-history 部分）
 >
@@ -88,4 +88,4 @@ cargo fmt --all -- --check                              # 通过
 - 单 authority、单进程 SQLite；不证明跨节点 consensus、authority takeover 或分布式 exactly-once。时间戳由调用方供给，仅用于观测。
 - 不声称 Slice K 或 `B-TASK` 包完成；B-TASK-001 证据文档的限制条目继续有效。
 
-因此证据等级为单节点原型的 H3（本地复验），PARTIAL PASS 候选，不得据此声称 `B-TASK` 包完成或 TaskAttempt effect 语义完整。
+因此证据等级为单节点原型的 H3 加三平台构建/测试复验（run 30912986291），PARTIAL PASS，不得据此声称 `B-TASK` 包完成或 TaskAttempt effect 语义完整。
