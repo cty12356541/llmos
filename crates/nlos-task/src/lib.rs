@@ -1,4 +1,4 @@
-//! Durable single-authority Task store for NLOS (B-TASK slices 001+002).
+//! Durable single-authority Task store for NLOS (B-TASK slices 001–003).
 //!
 //! This crate implements the durable `TaskAuthority` subset required by the
 //! B-TASK acceptance gates: Task registration, frozen-input snapshot digest
@@ -6,23 +6,30 @@
 //! independent generations and cancellation scopes, unique `CommitPermit`
 //! issuance (`[TASK-COMMIT-001]`), cancel/permit linearization on one
 //! control/cancel/permit epoch (`[TASK-CANCEL-002]` / `[TASK-CANCEL-003]`),
-//! crash/restart recovery with no ghost permits, and — since schema v2 —
-//! per-slot `EffectPermit` issuance with one-shot dispatch tokens and the
+//! crash/restart recovery with no ghost permits, per-slot `EffectPermit`
+//! issuance with one-shot dispatch tokens and the
 //! `PLANNED → PERMITTED → DISPATCHED → EFFECT_CLOSED|EFFECT_UNKNOWN` /
 //! `NO_EFFECT` slot state machine (`[TASK-EFFECT-001]` /
-//! `[TASK-EFFECT-002]`) including the finalize-side slot-closure subset of
-//! `[TASK-COMMIT-002]`.
+//! `[TASK-EFFECT-002]`), and — since schema v3 — the single-authority
+//! `EFFECT_UNKNOWN` quarantine/adoption/reconcile lifecycle
+//! (`[TASK-EFFECT-003]` / `[TASK-COMMIT-003]`), the durable cross-attempt
+//! `TaskEffectHistoryEntry` table with `TaskEffectHistoryRoot` and
+//! retry-fence advancement (`[TASK-EFFECT-ID-001]` /
+//! `[TASK-RETRY-EFFECT-001]`), and the full required-slot success
+//! semantics of `[TASK-COMMIT-002]`.
 //!
-//! Explicitly out of scope: cross-attempt effect history and retry-fence
-//! advancement, quarantine/`PermitAdoption`/reconcile (`[TASK-EFFECT-003]`,
-//! next slice), TaskPlan/TaskNode materialization, Process/AgentInstance
-//! binding, IsolationDomain/ResourceGroup, signatures, and any IPC surface.
-//! Post-permit `EFFECTING`/`FINALIZING`/`UNCERTAIN`/`RECONCILING` from the
-//! §25.1 attempt state machine are represented as permit/slot states rather
-//! than attempt states here.
+//! Explicitly out of scope: cross-authority-term takeover (adoption is by
+//! the same authority after restart/uncertainty), compensation execution
+//! (`COMPENSATED` is recordable but never executed), `TaskGroup` semantics,
+//! TaskPlan/TaskNode materialization, Process/AgentInstance binding,
+//! IsolationDomain/ResourceGroup, gateway/driver integration, signatures,
+//! and any IPC surface. Post-permit `EFFECTING`/`FINALIZING`/`UNCERTAIN`/
+//! `RECONCILING` from the §25.1 attempt state machine are represented as
+//! permit/slot states rather than attempt states here.
 
 mod effect;
 mod model;
+mod reconcile;
 mod store;
 
 pub use effect::{
@@ -32,11 +39,18 @@ pub use effect::{
     SlotState, empty_effect_set_root, idempotency_identity_digest,
 };
 pub use model::{
-    AttemptHandle, AttemptRecord, AttemptRegistrationDecision, AttemptSpec, AttemptState,
-    CancelDecision, CancelRequest, ClosedAttempt, FinalizeDecision, FinalizeRequest,
-    PermitConflict, PermitDecision, PermitRecord, PermitRequest, PermitState, PlannedEffect,
-    ReceiptOutcome, SnapshotBundle, TaskReceiptRecord, TaskRecord, TaskRegistrationDecision,
-    TaskSpec, TaskState, empty_effect_history_root,
+    AdoptionReceiptRecord, AttemptHandle, AttemptRecord, AttemptRegistrationDecision, AttemptSpec,
+    AttemptState, CancelDecision, CancelRequest, ClosePermitDecision, ClosePermitRequest,
+    ClosedAttempt, EffectHistoryEntry, EffectHistoryLookup, EffectHistoryOutcome, FinalizeDecision,
+    FinalizeRequest, PermitClosureOutcome, PermitConflict, PermitDecision, PermitRecord,
+    PermitRequest, PermitState, PlannedEffect, QuarantineReceiptRecord, ReceiptOutcome,
+    ReconcileOutcome, ReconciliationReceiptRecord, RequiredSatisfaction, RequiredSatisfactionProof,
+    SnapshotBundle, TaskReceiptRecord, TaskRecord, TaskRegistrationDecision, TaskSpec, TaskState,
+    empty_effect_history_root,
+};
+pub use reconcile::{
+    AdoptionReplay, AdoptionRequest, FinalizeRequestV3, ReconcileReplay, ReconcileRequest,
+    effect_history_root_of,
 };
 pub use store::SqliteTaskAuthority;
 
@@ -138,6 +152,43 @@ pub enum TaskStoreError {
     /// `ConditionNotApplicable` was requested for a slot without a
     /// pre-bound `required_condition_digest`.
     ConditionNotBound,
+    /// The active permit is a non-reusable quarantine tombstone
+    /// (`[TASK-EFFECT-003]`): the requested mutation is blocked until
+    /// every unknown slot is reconciled.
+    Quarantined,
+    /// A `PermitAdoptionReceipt` scope is
+    /// `RECONCILE_CLOSE_OR_QUARANTINE_ONLY` (`[TASK-COMMIT-003]`): it never
+    /// authorizes new `EffectPermit`s, dispatches, effects, or proposal
+    /// changes.
+    AdoptionScopeViolation,
+    /// The declared logical effect is already `EFFECT_CLOSED` in the
+    /// durable effect history; silent re-dispatch is refused fail-closed
+    /// (`[TASK-RETRY-EFFECT-001]`).
+    EffectAlreadyClosed,
+    /// A required slot cannot satisfy `COMMITTED` with the presented proof
+    /// (`[TASK-COMMIT-002]`).
+    RequiredEffectUnsatisfied {
+        /// The unsatisfied required slot.
+        effect_seq: u64,
+        /// Static explanation of the violation.
+        reason: &'static str,
+    },
+    /// The slot or permit is not in the durable state the reconcile API
+    /// requires (`[TASK-EFFECT-003]`).
+    InvalidReconcileState {
+        /// Static explanation of the violation.
+        reason: &'static str,
+    },
+    /// The presented finalize/finalize-replay bytes conflict with the
+    /// durable lifecycle record.
+    HistoryConflict,
+    /// A `FAILED_BEFORE_EFFECT`/`CANCELLED_BEFORE_EFFECT` closure was
+    /// requested although at least one effect provably happened
+    /// (`[TASK-RETRY-EFFECT-001]` forbids that path).
+    PermitHasEffects {
+        /// How many slots closed with an effect.
+        count: u64,
+    },
 }
 
 impl fmt::Display for TaskStoreError {
@@ -146,10 +197,7 @@ impl fmt::Display for TaskStoreError {
             Self::Sqlite(error) => write!(formatter, "SQLite authority failure: {error}"),
             Self::CorruptRecord(reason) => write!(formatter, "corrupt durable record: {reason}"),
             Self::UnsupportedSchema(version) => {
-                write!(
-                    formatter,
-                    "unsupported task authority schema version {version}"
-                )
+                write!(formatter, "unsupported task schema version {version}")
             }
             Self::LockPoisoned => formatter.write_str("authority writer lock is poisoned"),
             Self::DurabilityUnavailable {
@@ -163,31 +211,21 @@ impl fmt::Display for TaskStoreError {
             Self::AttemptNotFound => formatter.write_str("attempt does not exist under the task"),
             Self::PermitNotFound => formatter.write_str("permit does not exist under the task"),
             Self::ReceiptNotFound => formatter.write_str("receipt does not exist under the task"),
-            Self::DuplicateTask => {
-                formatter.write_str("task ID re-registered with different specification")
-            }
-            Self::DuplicateAttempt => {
-                formatter.write_str("attempt ID re-registered with different specification")
-            }
-            Self::SnapshotConflict => {
-                formatter.write_str("snapshot ID rebound to different digest bytes")
-            }
+            Self::DuplicateTask => formatter.write_str("task ID re-registered with new spec"),
+            Self::DuplicateAttempt => formatter.write_str("attempt ID re-registered with new spec"),
+            Self::SnapshotConflict => formatter.write_str("snapshot ID rebound to new bytes"),
             Self::IdempotencyConflict => {
-                formatter.write_str("idempotency key was reused for different request bytes")
+                formatter.write_str("idempotency key reused for new bytes")
             }
             Self::InvalidGeneration => formatter.write_str("stale generation for durable object"),
             Self::InvalidAttemptState { state } => {
                 write!(formatter, "attempt state {state:?} rejects the transition")
             }
-            Self::TaskCancelled => {
-                formatter.write_str("cancelled task does not admit new attempts")
-            }
-            Self::NotPermitHolder => {
-                formatter.write_str("caller does not match the permit attempt binding")
-            }
-            Self::PermitNotIssued => formatter.write_str("permit is not in issued state"),
+            Self::TaskCancelled => formatter.write_str("cancelled task admits no new attempts"),
+            Self::NotPermitHolder => formatter.write_str("caller mismatches the holder binding"),
+            Self::PermitNotIssued => formatter.write_str("permit is not issued"),
             Self::StaleTaskHead => {
-                formatter.write_str("current TaskHead does not match the permit expected head")
+                formatter.write_str("current TaskHead differs from the permit expected head")
             }
             Self::FenceRegression => formatter.write_str("retry-fence epoch must never regress"),
             Self::EpochExhausted => formatter.write_str("monotonic epoch space exhausted"),
@@ -198,10 +236,10 @@ impl fmt::Display for TaskStoreError {
                 formatter.write_str("effect slot was not declared for this permit")
             }
             Self::EffectPermitNotFound => {
-                formatter.write_str("effect permit does not exist under the task")
+                formatter.write_str("effect permit does not exist under task")
             }
             Self::PermitEpochMismatch => {
-                formatter.write_str("permit epoch does not match the outstanding permit")
+                formatter.write_str("permit epoch mismatches the outstanding permit")
             }
             Self::CancellationCommitted { cancel_epoch } => write!(
                 formatter,
@@ -228,6 +266,31 @@ impl fmt::Display for TaskStoreError {
             Self::ConditionNotBound => {
                 formatter.write_str("slot has no pre-bound required condition digest")
             }
+            Self::Quarantined => {
+                formatter.write_str("active permit is a quarantine tombstone; reconcile first")
+            }
+            Self::AdoptionScopeViolation => {
+                formatter.write_str("permit adoption scope is RECONCILE_CLOSE_OR_QUARANTINE_ONLY")
+            }
+            Self::EffectAlreadyClosed => {
+                formatter.write_str("logical effect is already EFFECT_CLOSED in effect history")
+            }
+            Self::RequiredEffectUnsatisfied { effect_seq, reason } => {
+                write!(
+                    formatter,
+                    "required effect slot {effect_seq} is unsatisfied: {reason}"
+                )
+            }
+            Self::InvalidReconcileState { reason } => {
+                write!(formatter, "invalid reconcile state: {reason}")
+            }
+            Self::HistoryConflict => {
+                formatter.write_str("presented bytes conflict with lifecycle record")
+            }
+            Self::PermitHasEffects { count } => write!(
+                formatter,
+                "{count} slots closed with an effect; pre-effect closure is forbidden"
+            ),
         }
     }
 }

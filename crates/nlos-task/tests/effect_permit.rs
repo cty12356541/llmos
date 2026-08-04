@@ -1238,7 +1238,10 @@ fn golden_v1_database_migrates_losslessly() {
         let version: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read user_version");
-        assert_eq!(version, 2, "migration stamps the new schema version");
+        // B-TASK-003 adaptation: the open now runs the v1 → v2 → v3
+        // additive chain, so the stamped version is 3; every assertion
+        // below is unchanged (v1/v2 semantics preserved bit-for-bit).
+        assert_eq!(version, 3, "migration stamps the new schema version");
     }
 
     // All v1 data intact.

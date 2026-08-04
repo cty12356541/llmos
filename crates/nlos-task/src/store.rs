@@ -16,19 +16,15 @@ use nlos_types::{
 };
 use rusqlite::{Connection, OpenFlags, Transaction, TransactionBehavior, params};
 
-use crate::model::{
-    derive_closure_receipt_id, derive_commit_receipt_id, derive_permit_id,
-    empty_effect_history_root,
-};
+use crate::model::{derive_closure_receipt_id, derive_permit_id, empty_effect_history_root};
 use crate::{
     AttemptHandle, AttemptRecord, AttemptRegistrationDecision, AttemptSpec, AttemptState,
-    CancelDecision, CancelRequest, ClosedAttempt, FinalizeDecision, FinalizeRequest,
-    PermitConflict, PermitDecision, PermitRecord, PermitRequest, PermitState, ReceiptOutcome,
-    SnapshotBundle, TaskReceiptRecord, TaskRecord, TaskRegistrationDecision, TaskSpec, TaskState,
-    TaskStoreError,
+    CancelDecision, CancelRequest, ClosedAttempt, PermitConflict, PermitDecision, PermitRecord,
+    PermitRequest, PermitState, ReceiptOutcome, SnapshotBundle, TaskReceiptRecord, TaskRecord,
+    TaskRegistrationDecision, TaskSpec, TaskState, TaskStoreError,
 };
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 /// A single-writer `SQLite` task authority.
 ///
@@ -114,8 +110,13 @@ impl SqliteTaskAuthority {
             0 => {
                 migrate_v1(&mut connection)?;
                 migrate_v2(&mut connection)?;
+                migrate_v3(&mut connection)?;
             }
-            1 => migrate_v2(&mut connection)?,
+            1 => {
+                migrate_v2(&mut connection)?;
+                migrate_v3(&mut connection)?;
+            }
+            2 => migrate_v3(&mut connection)?,
             SCHEMA_VERSION => {}
             other => return Err(TaskStoreError::UnsupportedSchema(other)),
         }
@@ -361,109 +362,6 @@ impl SqliteTaskAuthority {
         })
     }
 
-    /// Finalizes an issued permit and advances the `TaskHead`
-    /// (`[TASK-COMMIT-001]` commit side).
-    ///
-    /// Only the permit-holding attempt+generation may finalize, and only
-    /// while the current `TaskHead` still matches the permit's expected
-    /// head. The head advance (`commit_seq + 1`, new roots), the permit
-    /// close, the attempt's `Committed` transition, and the commit receipt
-    /// all commit in one transaction. Losing, stale, or foreign attempts
-    /// get typed errors and change nothing; the winner's receipt is
-    /// immutable. Replaying the same permit finalize with the same roots
-    /// returns the original receipt (`[TASK-COMMIT-003]`); different roots
-    /// fail closed. Permit expiry never blocks or rewrites this path.
-    ///
-    /// # Errors
-    ///
-    /// Returns a not-found, holder, stale-head, fence, replay-conflict, or
-    /// storage error.
-    pub fn finalize_commit(
-        &self,
-        request: FinalizeRequest,
-    ) -> Result<FinalizeDecision, TaskStoreError> {
-        let mut connection = self.lock_connection()?;
-        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let task = load_task(&transaction, request.task_id)?;
-        let permit = load_permit_by_id(&transaction, request.task_id, request.permit_id)?;
-        let attempt = load_attempt(&transaction, request.task_id, request.attempt_id)?;
-        if attempt.attempt_generation != request.attempt_generation {
-            return Err(TaskStoreError::InvalidGeneration);
-        }
-        if permit.state != PermitState::Issued {
-            let decision = replay_finalize(&transaction, &permit, &request)?;
-            transaction.commit()?;
-            return Ok(decision);
-        }
-        if permit.attempt_id != request.attempt_id
-            || permit.attempt_generation != request.attempt_generation
-        {
-            return Err(TaskStoreError::NotPermitHolder);
-        }
-        if task.record.head_commit_seq != permit.expected_head_commit_seq
-            || task.record.head_effect_history_root != permit.expected_effect_history_root
-            || task.record.retry_fence_epoch != permit.expected_retry_fence_epoch
-        {
-            return Err(TaskStoreError::StaleTaskHead);
-        }
-        if request.new_retry_fence_epoch < task.record.retry_fence_epoch {
-            return Err(TaskStoreError::FenceRegression);
-        }
-        // `[TASK-COMMIT-002]` slot-closure subset: a permit may only close
-        // once every declared slot reached a known terminal state
-        // (`NoEffect` / `EffectClosed`); `Planned`, `Permitted`,
-        // `Dispatched`, and `EffectUnknown` all block. Permits with no
-        // declared effect set (all B-TASK-001 flows) have no slot rows and
-        // are unaffected.
-        let blocking = crate::effect::count_blocking_slots(&transaction, permit.permit_id)?;
-        if blocking > 0 {
-            return Err(TaskStoreError::OutstandingEffectSlots { count: blocking });
-        }
-        let new_seq = task
-            .record
-            .head_commit_seq
-            .checked_add(1)
-            .ok_or(TaskStoreError::EpochExhausted)?;
-        let control_epoch = task
-            .record
-            .control_epoch
-            .checked_add(1)
-            .ok_or(TaskStoreError::EpochExhausted)?;
-        let receipt_id = derive_commit_receipt_id(permit.permit_id);
-        let receipt = TaskReceiptRecord {
-            receipt_id,
-            task_id: request.task_id,
-            permit_id: Some(permit.permit_id),
-            attempt_id: request.attempt_id,
-            attempt_generation: request.attempt_generation,
-            outcome: ReceiptOutcome::Committed,
-            prior_head_commit_seq: task.record.head_commit_seq,
-            prior_effect_history_root: task.record.head_effect_history_root,
-            prior_retry_fence_epoch: task.record.retry_fence_epoch,
-            new_head_commit_seq: new_seq,
-            new_effect_history_root: request.new_effect_history_root,
-            new_retry_fence_epoch: request.new_retry_fence_epoch,
-            created_at_ms: request.finalized_at_ms,
-        };
-        insert_receipt(&transaction, &receipt)?;
-        close_permit(&transaction, &permit, request.finalized_at_ms)?;
-        set_attempt_state(
-            &transaction,
-            &attempt,
-            AttemptState::Committed,
-            Some(receipt_id),
-            request.finalized_at_ms,
-        )?;
-        update_task(&transaction, &task, request.finalized_at_ms, |record| {
-            record.head_commit_seq = new_seq;
-            record.head_effect_history_root = request.new_effect_history_root;
-            record.retry_fence_epoch = request.new_retry_fence_epoch;
-            record.control_epoch = control_epoch;
-        })?;
-        transaction.commit()?;
-        Ok(FinalizeDecision::Committed(Box::new(receipt)))
-    }
-
     /// Reads the durable head/control view of a Task, including the
     /// currently outstanding permit (if any).
     ///
@@ -474,7 +372,7 @@ impl SqliteTaskAuthority {
         let connection = self.lock_connection()?;
         let mut stored = load_task(&*connection, task_id)?;
         stored.record.active_permit =
-            load_active_permit(&*connection, task_id)?.map(|permit| permit.permit_id);
+            load_outstanding_permit(&*connection, task_id)?.map(|permit| permit.permit_id);
         Ok(stored.record)
     }
 
@@ -599,6 +497,20 @@ fn compete_for_permit(
         )?;
         return Ok(PermitDecision::Conflicted { reason });
     }
+    // `[TASK-COMMIT-003]` / `[TASK-EFFECT-003]`: a quarantine tombstone
+    // blocks new winner issuance until every unknown slot is reconciled.
+    if let Some(tombstone) = load_quarantined_permit(transaction, task.record.task_id)? {
+        set_attempt_state(
+            transaction,
+            attempt,
+            AttemptState::Superseded,
+            None,
+            request.requested_at_ms,
+        )?;
+        return Ok(PermitDecision::Quarantined {
+            quarantine_receipt_id: crate::model::derive_quarantine_receipt_id(tombstone.permit_id),
+        });
+    }
     if let Some(active) = load_active_permit(transaction, task.record.task_id)? {
         // The conceptual CREATED → READY_TO_COMMIT walk collapses into this
         // atomic CAS: the durable outcomes are only COMMIT_PERMITTED,
@@ -709,24 +621,6 @@ fn issue_permit(
     Ok(record)
 }
 
-fn replay_finalize(
-    transaction: &Transaction<'_>,
-    permit: &PermitRecord,
-    request: &FinalizeRequest,
-) -> Result<FinalizeDecision, TaskStoreError> {
-    let receipt = load_receipt_by_permit(transaction, permit.task_id, permit.permit_id)?
-        .ok_or(TaskStoreError::PermitNotIssued)?;
-    let same_bytes = receipt.attempt_id == request.attempt_id
-        && receipt.attempt_generation == request.attempt_generation
-        && receipt.new_effect_history_root == request.new_effect_history_root
-        && receipt.new_retry_fence_epoch == request.new_retry_fence_epoch;
-    if same_bytes {
-        Ok(FinalizeDecision::Replayed(Box::new(receipt)))
-    } else {
-        Err(TaskStoreError::IdempotencyConflict)
-    }
-}
-
 fn closure_receipt(
     task: &TaskRecord,
     attempt: &AttemptRecord,
@@ -780,6 +674,17 @@ fn migrate_v1(connection: &mut Connection) -> Result<(), TaskStoreError> {
 fn migrate_v2(connection: &mut Connection) -> Result<(), TaskStoreError> {
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     transaction.execute_batch(crate::effect::SCHEMA_V2_SQL)?;
+    transaction.commit()?;
+    Ok(())
+}
+
+/// v2 → v3 is purely additive (effect history + quarantine/adoption/
+/// reconcile receipts + monotonic sequences + `user_version`), committed
+/// in one transaction: a failure anywhere rolls back to a complete v2
+/// database, never a half-migrated one.
+fn migrate_v3(connection: &mut Connection) -> Result<(), TaskStoreError> {
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(crate::effect::SCHEMA_V3_SQL)?;
     transaction.commit()?;
     Ok(())
 }
@@ -1204,7 +1109,7 @@ fn decode_attempt_row(row: &rusqlite::Row<'_>) -> Result<AttemptRecord, TaskStor
     })
 }
 
-fn set_attempt_state(
+pub(crate) fn set_attempt_state(
     transaction: &Transaction<'_>,
     attempt: &AttemptRecord,
     state: AttemptState,
@@ -1324,6 +1229,41 @@ fn load_active_permit(
     rows.next()?.map(decode_permit_row).transpose()
 }
 
+/// The outstanding permit for head reporting: `Issued` or the
+/// non-reusable `Quarantined` tombstone (`[TASK-EFFECT-003]`).
+fn load_outstanding_permit(
+    source: &impl SqlRead,
+    task_id: TaskId,
+) -> Result<Option<PermitRecord>, TaskStoreError> {
+    let mut statement = source.prepare_statement(&format!(
+        "SELECT {PERMIT_COLUMNS} FROM commit_permits
+         WHERE task_id = ?1 AND permit_state IN (?2, ?3)"
+    ))?;
+    let mut rows = statement.query(params![
+        task_id.as_bytes().as_slice(),
+        PermitState::Issued.code(),
+        PermitState::Quarantined.code(),
+    ])?;
+    rows.next()?.map(decode_permit_row).transpose()
+}
+
+/// The quarantine tombstone blocking new winner issuance, if any
+/// (`[TASK-COMMIT-003]`).
+pub(crate) fn load_quarantined_permit(
+    source: &impl SqlRead,
+    task_id: TaskId,
+) -> Result<Option<PermitRecord>, TaskStoreError> {
+    let mut statement = source.prepare_statement(&format!(
+        "SELECT {PERMIT_COLUMNS} FROM commit_permits
+         WHERE task_id = ?1 AND permit_state = ?2"
+    ))?;
+    let mut rows = statement.query(params![
+        task_id.as_bytes().as_slice(),
+        PermitState::Quarantined.code(),
+    ])?;
+    rows.next()?.map(decode_permit_row).transpose()
+}
+
 fn decode_permit_row(row: &rusqlite::Row<'_>) -> Result<PermitRecord, TaskStoreError> {
     Ok(PermitRecord {
         permit_id: CommitPermitId::from_bytes(blob16(row, 0)?),
@@ -1345,7 +1285,7 @@ fn decode_permit_row(row: &rusqlite::Row<'_>) -> Result<PermitRecord, TaskStoreE
     })
 }
 
-fn close_permit(
+pub(crate) fn close_permit(
     transaction: &Transaction<'_>,
     permit: &PermitRecord,
     now_ms: i64,
@@ -1407,7 +1347,7 @@ fn load_cancel(
         .transpose()
 }
 
-fn insert_receipt(
+pub(crate) fn insert_receipt(
     transaction: &Transaction<'_>,
     record: &TaskReceiptRecord,
 ) -> Result<(), TaskStoreError> {
@@ -1451,7 +1391,7 @@ const RECEIPT_COLUMNS: &str = "receipt_id, task_id, permit_id, attempt_id, attem
      prior_retry_fence_epoch, new_head_commit_seq,
      new_effect_history_root, new_retry_fence_epoch, created_at_ms";
 
-fn load_receipt(
+pub(crate) fn load_receipt(
     source: &impl SqlRead,
     task_id: TaskId,
     receipt_id: ReceiptId,
@@ -1470,7 +1410,7 @@ fn load_receipt(
         .ok_or(TaskStoreError::ReceiptNotFound)
 }
 
-fn load_receipt_by_permit(
+pub(crate) fn load_receipt_by_permit(
     source: &impl SqlRead,
     task_id: TaskId,
     permit_id: CommitPermitId,

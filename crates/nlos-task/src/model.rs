@@ -131,6 +131,44 @@ pub struct PermitRequest {
     pub requested_at_ms: i64,
 }
 
+/// A permit-holder request to close an issued permit with a
+/// `TaskPermitClosureReceipt`-shaped record while keeping the `TaskHead`
+/// unchanged (`[TASK-COMMIT-002]` final clause, `[TASK-CANCEL-003]`).
+///
+/// Every planned slot must hold an authoritative absence proof:
+/// `NoEffect` (token verifiably unconsumed) or `ConfirmedNoEffect`
+/// (external authority confirmed no effect). Any slot in `EffectClosed` or
+/// `EffectUnknown` forbids this path (`[TASK-RETRY-EFFECT-001]`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ClosePermitRequest {
+    pub task_id: TaskId,
+    pub attempt_id: TaskAttemptId,
+    pub attempt_generation: Generation,
+    pub permit_id: CommitPermitId,
+    pub outcome: PermitClosureOutcome,
+    /// Caller-supplied participant-fence proof placeholder, persisted on
+    /// the quarantine receipt if any slot is `EffectUnknown`
+    /// (`[TASK-EFFECT-003]`).
+    pub fenced_participant_digest: [u8; 32],
+    pub closed_at_ms: i64,
+}
+
+/// Outcome of a pre-effect permit closure (`TaskPermitClosureReceipt`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PermitClosureOutcome {
+    FailedBeforeEffect,
+    CancelledBeforeEffect,
+}
+
+impl PermitClosureOutcome {
+    pub(crate) const fn receipt_outcome(self) -> ReceiptOutcome {
+        match self {
+            Self::FailedBeforeEffect => ReceiptOutcome::FailedBeforeEffect,
+            Self::CancelledBeforeEffect => ReceiptOutcome::CancelledBeforeEffect,
+        }
+    }
+}
+
 /// A Task cancellation request (`[TASK-CANCEL-002]`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CancelRequest {
@@ -139,13 +177,14 @@ pub struct CancelRequest {
     pub requested_at_ms: i64,
 }
 
-/// A permit-holder finalize request.
+/// A permit-holder finalize request (B-TASK-001/002 shape).
 ///
-/// The caller supplies the post-commit roots. Because the effect-history
-/// slice is out of scope, a no-effect commit keeps
-/// `new_effect_history_root` equal to the prior root and
-/// `new_retry_fence_epoch` equal to the prior fence; the authority enforces
-/// only that the fence never regresses.
+/// For permits with a declared effect set the full `[TASK-COMMIT-002]`
+/// semantics live in
+/// [`FinalizeRequestV3`](crate::FinalizeRequestV3), and the authority
+/// computes the post-commit roots itself; for permits with no declared
+/// effect set (all B-TASK-001 flows) the caller-supplied roots below stay
+/// authoritative and the fence must never regress.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FinalizeRequest {
     pub task_id: TaskId,
@@ -155,6 +194,36 @@ pub struct FinalizeRequest {
     pub new_effect_history_root: [u8; 32],
     pub new_retry_fence_epoch: u64,
     pub finalized_at_ms: i64,
+}
+
+/// Caller-asserted success proof for one required slot
+/// (`[TASK-COMMIT-002]`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RequiredSatisfaction {
+    pub effect_seq: u64,
+    pub proof: RequiredSatisfactionProof,
+}
+
+/// How a required slot's obligation is asserted as met.
+///
+/// The authority never verifies proof *content* — digests are
+/// caller-supplied placeholders — but it enforces the structural rule:
+/// `EffectClosedSuccess` only pairs with an `EffectClosed` slot, and
+/// `ConditionNotApplicable` only pairs with a `NoEffect` slot whose
+/// `TaskNoEffectReceipt` reason is `ConditionNotApplicable` and whose
+/// pre-bound `required_condition_digest` matches. All other `NoEffect`
+/// reasons and `ConfirmedNoEffect` can never satisfy a required slot.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RequiredSatisfactionProof {
+    /// The slot closed with an effect and the caller asserts its
+    /// `success_criteria_digest` is met (placeholder digest binding).
+    EffectClosedSuccess { success_assertion_digest: [u8; 32] },
+    /// The slot's pre-bound condition is authoritatively false: the proof
+    /// digest binds the original snapshot identity plus the pre-bound
+    /// `required_condition_digest` (placeholder binding, see evidence).
+    ConditionNotApplicable {
+        condition_false_proof_digest: [u8; 32],
+    },
 }
 
 /// Lifecycle of a registered Task in this slice.
@@ -267,11 +336,12 @@ impl AttemptState {
 
 /// Lifecycle of a `CommitPermit`.
 ///
-/// Only `Issued` and `Closed` are producible in this slice. `Superseded`
-/// and `Quarantined` are reserved: CAS losers never receive a permit row
-/// (the losing *attempt* enters `AttemptState::Superseded`), and the
-/// quarantine tombstone belongs to the effect-reconciliation slice
-/// (`[TASK-COMMIT-003]` / `[TASK-EFFECT-003]`).
+/// `Superseded` remains reserved: CAS losers never receive a permit row
+/// (the losing *attempt* enters `AttemptState::Superseded`). `Quarantined`
+/// is the non-reusable tombstone produced when any slot is `EffectUnknown`
+/// at closure time (`[TASK-COMMIT-003]` / `[TASK-EFFECT-003]`): the
+/// `TaskHead` stays frozen and no new winner may be issued until every
+/// unknown slot is reconciled.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PermitState {
     Issued,
@@ -305,31 +375,28 @@ impl PermitState {
 
 /// Outcome recorded on a durable task receipt.
 ///
-/// Only `Committed`, `FailedBeforeEffect`, and `CancelledBeforeEffect` are
-/// producible in this slice (the latter two carry a `TaskPermitClosureReceipt`
-/// shape with an unchanged `TaskHead`). `Partial`, `PartialEffect`, and
-/// `FailedAfterEffect` are reserved for the effect slice
-/// (`[TASK-RETRY-EFFECT-001]`) and are rejected fail-closed if ever
-/// presented for insertion.
+/// `PartialEffect` and `FailedAfterEffect` are producible since schema v3
+/// (`[TASK-RETRY-EFFECT-001]`): when a required slot is unsatisfied but at
+/// least one effect already happened, finalize writes a commit receipt
+/// with one of these outcomes and advances the head, history, and fence.
+/// The rule choosing between them: `FailedAfterEffect` when the caller did
+/// not present a proof for any required slot (the attempt's goal failed);
+/// `PartialEffect` when at least one required slot is satisfied (the
+/// commit is partially usable). `Partial` remains reserved.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ReceiptOutcome {
     Committed,
     FailedBeforeEffect,
     CancelledBeforeEffect,
-    /// Reserved for the effect slice; not producible here.
+    /// Reserved for the administrative task-outcome layer; not producible.
     Partial,
-    /// Reserved for the effect slice; not producible here.
     PartialEffect,
-    /// Reserved for the effect slice; not producible here.
     FailedAfterEffect,
 }
 
 impl ReceiptOutcome {
     pub(crate) const fn is_producible(self) -> bool {
-        matches!(
-            self,
-            Self::Committed | Self::FailedBeforeEffect | Self::CancelledBeforeEffect
-        )
+        !matches!(self, Self::Partial)
     }
 
     pub(crate) const fn code(self) -> i64 {
@@ -521,6 +588,10 @@ pub enum PermitDecision {
     /// issued, the attempt closed pre-permit with a closure receipt, and the
     /// `TaskHead` is unchanged.
     CancelledBeforeEffect { receipt_id: ReceiptId },
+    /// A quarantine tombstone blocks new winner issuance
+    /// (`[TASK-COMMIT-003]` / `[TASK-EFFECT-003]`): the requesting attempt
+    /// is durably `Superseded`.
+    Quarantined { quarantine_receipt_id: ReceiptId },
 }
 
 /// One attempt closed by a committed cancellation.
@@ -548,12 +619,175 @@ pub enum CancelDecision {
 }
 
 /// Decision of a permit-holder finalize (`[TASK-COMMIT-001]` CAS commit).
+///
+/// The enum keeps its B-TASK-001 two-variant shape; the quarantine
+/// tombstone (`[TASK-EFFECT-003]`) is reported as the typed
+/// [`TaskStoreError::Quarantined`](crate::TaskStoreError::Quarantined)
+/// refusal — the tombstone commits, the `TaskHead` does not advance, and
+/// replaying the same finalize observes the same refusal.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FinalizeDecision {
-    /// `TaskHead` advanced and the permit closed in one transaction.
+    /// `TaskHead` advanced and the permit closed in one transaction. The
+    /// receipt outcome is `Committed`, `PartialEffect`, or
+    /// `FailedAfterEffect` (`[TASK-RETRY-EFFECT-001]`).
     Committed(Box<TaskReceiptRecord>),
     /// Exact replay of an already-finalized permit: the original receipt.
     Replayed(Box<TaskReceiptRecord>),
+}
+
+/// A `TaskEffectQuarantineReceipt`-shaped durable record
+/// (`[TASK-EFFECT-003]`, single-authority placeholder subset).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QuarantineReceiptRecord {
+    pub receipt_id: ReceiptId,
+    pub task_id: TaskId,
+    pub task_generation: Generation,
+    pub permit_id: CommitPermitId,
+    pub permit_epoch: u64,
+    pub effect_set_root: [u8; 32],
+    pub outstanding_effect_quarantine_root: [u8; 32],
+    /// Durable identity digest of the `EffectUnknown` slot with the
+    /// smallest `effect_seq` (conflicting-target placeholder).
+    pub conflicting_target_digest: [u8; 32],
+    pub known_effect_receipts: Vec<ReceiptId>,
+    pub unknown_slots: Vec<u64>,
+    /// Participant-fence proof placeholder (caller-supplied digest).
+    pub fenced_participant_digest: [u8; 32],
+    pub created_at_ms: i64,
+}
+
+/// A `PermitAdoptionReceipt`-shaped durable record (`[TASK-COMMIT-003]`,
+/// single-authority subset). Its scope is fixed to
+/// `RECONCILE_CLOSE_OR_QUARANTINE_ONLY`: it never authorizes new
+/// `EffectPermit`s, dispatches, effects, or proposal changes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdoptionReceiptRecord {
+    pub receipt_id: ReceiptId,
+    pub task_id: TaskId,
+    pub task_generation: Generation,
+    pub original_permit_id: CommitPermitId,
+    pub original_permit_epoch: u64,
+    pub original_control_epoch: u64,
+    pub original_cancel_epoch: u64,
+    pub effect_set_root: [u8; 32],
+    pub observed_effect_slot_state_root: [u8; 32],
+    pub adoption_epoch: u64,
+    pub created_at_ms: i64,
+}
+
+/// Outcome of one reconcile step on an `EffectUnknown` slot
+/// (`[TASK-EFFECT-003]`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReconcileOutcome {
+    /// The external authority proves the effect happened.
+    EffectClosed,
+    /// The external authority proves no effect happened. This is NOT a
+    /// `TaskNoEffectReceipt` (token-unconsumed proof); it never satisfies
+    /// a required slot but it is a valid absence proof for
+    /// `FAILED_BEFORE_EFFECT`/`CANCELLED_BEFORE_EFFECT` closure.
+    ConfirmedNoEffect,
+    /// Still unknown: the slot returns to `EffectUnknown` and the permit
+    /// stays `Quarantined`.
+    EffectUnknown,
+}
+
+/// A `TaskEffectReconciliationReceipt`-shaped durable record
+/// (`[TASK-EFFECT-003]`).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReconciliationReceiptRecord {
+    pub receipt_id: ReceiptId,
+    pub task_id: TaskId,
+    pub permit_id: CommitPermitId,
+    pub permit_epoch: u64,
+    pub permit_adoption_receipt_id: ReceiptId,
+    pub effect_slot_id: crate::EffectSlotId,
+    pub effect_seq: u64,
+    pub logical_effect_id: [u8; 32],
+    pub retry_fence_epoch: u64,
+    pub effect_set_root: [u8; 32],
+    pub outcome: ReconcileOutcome,
+    /// Caller-supplied digest placeholder for the gateway/provider
+    /// authoritative closure proof.
+    pub closure_proof_digest: [u8; 32],
+    /// Present when `outcome == EffectClosed`: the effect receipt that
+    /// closes the slot (history entry `authoritative_effect_receipt_id`).
+    pub effect_receipt_id: Option<ReceiptId>,
+    pub effect_slot_state_root_after: [u8; 32],
+    pub created_at_ms: i64,
+}
+
+/// Outcome recorded on a `TaskEffectHistoryEntry` (`[TASK-EFFECT-ID-001]`
+/// / `[TASK-RETRY-EFFECT-001]`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EffectHistoryOutcome {
+    EffectClosed,
+    ConfirmedNoEffect,
+    PartialEffect,
+    /// Recorded but never executed in this slice (no compensation
+    /// execution; see evidence limitations).
+    Compensated,
+}
+
+impl EffectHistoryOutcome {
+    pub(crate) const fn code(self) -> i64 {
+        match self {
+            Self::EffectClosed => 0,
+            Self::ConfirmedNoEffect => 1,
+            Self::PartialEffect => 2,
+            Self::Compensated => 3,
+        }
+    }
+
+    pub(crate) fn from_code(code: i64) -> Result<Self, TaskStoreError> {
+        match code {
+            0 => Ok(Self::EffectClosed),
+            1 => Ok(Self::ConfirmedNoEffect),
+            2 => Ok(Self::PartialEffect),
+            3 => Ok(Self::Compensated),
+            _ => Err(TaskStoreError::CorruptRecord(
+                "unknown effect history outcome",
+            )),
+        }
+    }
+}
+
+/// One durable `TaskEffectHistoryEntry` (`[TASK-EFFECT-ID-001]`).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EffectHistoryEntry {
+    /// Strictly increasing from 1, no gaps per task.
+    pub effect_history_seq: u64,
+    pub task_id: TaskId,
+    pub logical_effect_id: [u8; 32],
+    pub retry_fence_epoch: u64,
+    pub action_proposal_digest: [u8; 32],
+    pub idempotency_identity_digest: [u8; 32],
+    /// Placeholder: always `None` in this slice (no Operation binding).
+    pub operation_id: Option<[u8; 16]>,
+    pub outcome: EffectHistoryOutcome,
+    pub authoritative_effect_receipt_id: ReceiptId,
+    pub compensation_receipt_id: Option<ReceiptId>,
+    pub created_at_ms: i64,
+}
+
+/// Read-back view of a cross-attempt effect-history lookup
+/// (`[TASK-RETRY-EFFECT-001]`): the entry plus the original authoritative
+/// effect receipt.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EffectHistoryLookup {
+    pub entry: EffectHistoryEntry,
+    pub original_receipt: crate::EffectReceipt,
+}
+
+/// The original receipt returned by a `close_permit` replay/issuance.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ClosePermitDecision {
+    Closed(Box<TaskReceiptRecord>),
+    /// At least one slot is `EffectUnknown`: the permit became a
+    /// non-reusable `Quarantined` tombstone and the `TaskHead` did NOT
+    /// advance (`[TASK-EFFECT-003]`).
+    Quarantined(Box<QuarantineReceiptRecord>),
+    Replayed(Box<TaskReceiptRecord>),
+    ReplayedQuarantine(Box<QuarantineReceiptRecord>),
 }
 
 fn sha256_prefix16(domain: &str, parts: &[&[u8]]) -> [u8; 16] {
@@ -600,5 +834,47 @@ pub(crate) fn derive_closure_receipt_id(
             attempt_id.as_bytes(),
             &cancel_epoch.to_be_bytes(),
         ],
+    ))
+}
+
+/// Deterministic `TaskPermitClosureReceipt` identity bound to its permit.
+pub(crate) fn derive_permit_closure_receipt_id(permit_id: CommitPermitId) -> ReceiptId {
+    ReceiptId::from_bytes(sha256_prefix16(
+        "llmos/task-permit-closure-receipt/v1",
+        &[permit_id.as_bytes()],
+    ))
+}
+
+/// Deterministic quarantine tombstone identity bound to its permit.
+pub(crate) fn derive_quarantine_receipt_id(permit_id: CommitPermitId) -> ReceiptId {
+    ReceiptId::from_bytes(sha256_prefix16(
+        "llmos/task-effect-quarantine/v1",
+        &[permit_id.as_bytes()],
+    ))
+}
+
+/// Deterministic adoption identity bound to the original permit and the
+/// adoption sequence (`adoption_epoch`), so repeated adoptions of the same
+/// quarantined permit get distinct durable records.
+pub(crate) fn derive_adoption_receipt_id(
+    permit_id: CommitPermitId,
+    adoption_epoch: u64,
+) -> ReceiptId {
+    ReceiptId::from_bytes(sha256_prefix16(
+        "llmos/task-permit-adoption/v1",
+        &[permit_id.as_bytes(), &adoption_epoch.to_be_bytes()],
+    ))
+}
+
+/// Deterministic reconcile identity bound to the slot and the slot-state
+/// sequence of the transition it records (a slot that returns to
+/// `EffectUnknown` can be reconciled again with a fresh identity).
+pub(crate) fn derive_reconcile_receipt_id(
+    effect_slot_id: crate::EffectSlotId,
+    state_seq: u64,
+) -> ReceiptId {
+    ReceiptId::from_bytes(sha256_prefix16(
+        "llmos/task-effect-reconciliation/v1",
+        &[effect_slot_id.as_bytes(), &state_seq.to_be_bytes()],
     ))
 }

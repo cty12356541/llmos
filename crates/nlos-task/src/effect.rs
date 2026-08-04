@@ -130,12 +130,12 @@ pub fn idempotency_identity_digest(logical_effect_id: &[u8; 32]) -> [u8; 32] {
 
 /// Lifecycle of one planned effect slot (`[TASK-EFFECT-002]`).
 ///
-/// Producible here: `Planned` → `Permitted` → `Dispatched` →
-/// `EffectClosed` | `EffectUnknown`, and `Planned` | `Permitted` →
-/// `NoEffect` when the dispatch token is verifiably unconsumed.
-/// `EffectUnknown` is durable and terminal in this slice: the
-/// quarantine/reconcile transitions to `Reconciling`/`ConfirmedNoEffect`
-/// belong to the next slice (`[TASK-EFFECT-003]`).
+/// Producible: `Planned` → `Permitted` → `Dispatched` →
+/// `EffectClosed` | `EffectUnknown`, `Planned` | `Permitted` → `NoEffect`
+/// when the dispatch token is verifiably unconsumed, and since schema v3
+/// `EffectUnknown` → `Reconciling` → `EffectClosed` |
+/// `ConfirmedNoEffect` | `EffectUnknown` via the explicit reconcile API
+/// (`[TASK-EFFECT-003]`). `EffectUnknown` never silently resolves.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SlotState {
     Planned,
@@ -145,22 +145,30 @@ pub enum SlotState {
     NoEffect,
     /// Closed with an authoritative effect receipt.
     EffectClosed,
-    /// Crash-window uncertainty durably registered; blocks permit closure.
+    /// Crash-window uncertainty durably registered; blocks permit closure
+    /// until the explicit reconcile API resolves it.
     EffectUnknown,
-    /// Reserved for the reconcile slice; not producible here.
+    /// Mid-reconcile marker inside one authority transaction
+    /// (`[TASK-EFFECT-003]`); durable between the adoption CAS and the
+    /// reconciliation-receipt write.
     Reconciling,
-    /// Reserved for the reconcile slice; not producible here.
+    /// The external effect authority proved no effect happened. Distinct
+    /// from `NoEffect`: never satisfies a required slot, but is a valid
+    /// absence proof for pre-effect permit closure.
     ConfirmedNoEffect,
 }
 
 impl SlotState {
     /// Whether the slot still blocks permit closure under
     /// `[TASK-COMMIT-002]`: anything that is not a known terminal
-    /// (`NoEffect` / `EffectClosed`) blocks, including `Planned` and
-    /// `EffectUnknown`.
+    /// (`NoEffect` / `EffectClosed` / `ConfirmedNoEffect`) blocks,
+    /// including `Planned`, `Reconciling`, and `EffectUnknown`.
     #[must_use]
     pub const fn blocks_finalization(self) -> bool {
-        !matches!(self, Self::NoEffect | Self::EffectClosed)
+        !matches!(
+            self,
+            Self::NoEffect | Self::EffectClosed | Self::ConfirmedNoEffect
+        )
     }
 
     pub(crate) const fn code(self) -> i64 {
@@ -267,6 +275,9 @@ pub enum ReceiptKind {
     EffectClosed,
     EffectUnknown,
     NoEffect,
+    /// External authority confirmed no effect happened
+    /// (`[TASK-EFFECT-003]`); written by the reconcile path only.
+    ConfirmedNoEffect,
 }
 
 impl ReceiptKind {
@@ -275,6 +286,7 @@ impl ReceiptKind {
             Self::EffectClosed => 0,
             Self::EffectUnknown => 1,
             Self::NoEffect => 2,
+            Self::ConfirmedNoEffect => 3,
         }
     }
 
@@ -283,6 +295,7 @@ impl ReceiptKind {
             0 => Ok(Self::EffectClosed),
             1 => Ok(Self::EffectUnknown),
             2 => Ok(Self::NoEffect),
+            3 => Ok(Self::ConfirmedNoEffect),
             _ => Err(TaskStoreError::CorruptRecord("unknown effect receipt kind")),
         }
     }
@@ -443,7 +456,8 @@ pub struct SetSummary {
     /// Placeholder semantics: required slots currently in `EffectClosed`.
     /// Success-criteria verification is out of scope for this slice.
     pub satisfied_required_effect_count: u64,
-    /// Slots in `NoEffect` / `EffectClosed` / `EffectUnknown`.
+    /// Slots in `NoEffect` / `EffectClosed` / `EffectUnknown` /
+    /// `ConfirmedNoEffect`.
     pub terminal_effect_count: u64,
     pub issued_effect_root: [u8; 32],
     pub dispatched_effect_root: [u8; 32],
@@ -451,8 +465,8 @@ pub struct SetSummary {
     pub outstanding_effect_root: [u8; 32],
 }
 
-struct StoredSummary {
-    summary: SetSummary,
+pub(crate) struct StoredSummary {
+    pub(crate) summary: SetSummary,
     revision: i64,
 }
 
@@ -477,7 +491,7 @@ fn sha256(domain: &str, parts: &[&[u8]]) -> [u8; 32] {
     hasher.finalize().into()
 }
 
-fn derive_effect_slot_id(permit_id: CommitPermitId, effect_seq: u64) -> EffectSlotId {
+pub(crate) fn derive_effect_slot_id(permit_id: CommitPermitId, effect_seq: u64) -> EffectSlotId {
     EffectSlotId::from_bytes(sha256_prefix16(
         "llmos/task-effect-slot/v1",
         &[permit_id.as_bytes(), &effect_seq.to_be_bytes()],
@@ -513,7 +527,11 @@ fn dispatch_token_digest(token: &[u8; 32]) -> [u8; 32] {
     sha256("llmos/task-effect-dispatch-token-digest/v1", &[token])
 }
 
-fn derive_effect_receipt_id(domain: &str, slot_id: EffectSlotId, state_seq: u64) -> ReceiptId {
+pub(crate) fn derive_effect_receipt_id(
+    domain: &str,
+    slot_id: EffectSlotId,
+    state_seq: u64,
+) -> ReceiptId {
     ReceiptId::from_bytes(sha256_prefix16(
         domain,
         &[slot_id.as_bytes(), &state_seq.to_be_bytes()],
@@ -647,7 +665,10 @@ fn summarize(
                 .filter(|slot| {
                     matches!(
                         slot.state,
-                        SlotState::NoEffect | SlotState::EffectClosed | SlotState::EffectUnknown
+                        SlotState::NoEffect
+                            | SlotState::EffectClosed
+                            | SlotState::EffectUnknown
+                            | SlotState::ConfirmedNoEffect
                     )
                 })
                 .count(),
@@ -699,7 +720,7 @@ fn decode_slot_row(row: &rusqlite::Row<'_>) -> Result<SlotRecord, TaskStoreError
     })
 }
 
-fn load_slot(
+pub(crate) fn load_slot(
     source: &impl SqlRead,
     permit_id: CommitPermitId,
     effect_seq: u64,
@@ -717,7 +738,7 @@ fn load_slot(
         .ok_or(TaskStoreError::EffectSlotNotFound)
 }
 
-fn list_slots(
+pub(crate) fn list_slots(
     source: &impl SqlRead,
     permit_id: CommitPermitId,
 ) -> Result<Vec<SlotRecord>, TaskStoreError> {
@@ -730,27 +751,6 @@ fn list_slots(
         slots.push(decode_slot_row(row)?);
     }
     Ok(slots)
-}
-
-/// Counts slots that block permit closure (`[TASK-COMMIT-002]` subset):
-/// anything not in a known terminal state (`NoEffect` / `EffectClosed`).
-pub(crate) fn count_blocking_slots(
-    source: &impl SqlRead,
-    permit_id: CommitPermitId,
-) -> Result<u64, TaskStoreError> {
-    let mut statement = source.prepare_statement(
-        "SELECT COUNT(*) FROM effect_slots
-         WHERE permit_id = ?1 AND slot_state NOT IN (?2, ?3)",
-    )?;
-    let count: i64 = statement.query_row(
-        params![
-            permit_id.as_bytes().as_slice(),
-            SlotState::NoEffect.code(),
-            SlotState::EffectClosed.code(),
-        ],
-        |row| row.get(0),
-    )?;
-    u64::try_from(count).map_err(|_| TaskStoreError::CorruptRecord("negative slot count"))
 }
 
 /// Reads the committed `effect_set_root` of a permit, if it declared one.
@@ -871,7 +871,7 @@ fn insert_slot(transaction: &Transaction<'_>, slot: &SlotRecord) -> Result<(), T
 /// Compare-and-swap one slot transition; `changed != 1` means the durable
 /// state moved under us, which the single-writer gate makes impossible, so
 /// it is treated as corruption (fail closed).
-fn cas_slot(
+pub(crate) fn cas_slot(
     transaction: &Transaction<'_>,
     slot: &SlotRecord,
     new_state: SlotState,
@@ -924,7 +924,7 @@ fn cas_slot(
     Ok(updated)
 }
 
-fn load_summary(
+pub(crate) fn load_summary(
     source: &impl SqlRead,
     permit_id: CommitPermitId,
 ) -> Result<Option<StoredSummary>, TaskStoreError> {
@@ -970,7 +970,7 @@ fn count_from_row(row: &rusqlite::Row<'_>, index: usize) -> Result<u64, TaskStor
 
 /// Recomputes and persists all roots/counts after a slot transition
 /// (`[TASK-EFFECT-002]` final clause), under revision CAS.
-fn refresh_summary(
+pub(crate) fn refresh_summary(
     transaction: &Transaction<'_>,
     permit_id: CommitPermitId,
     now_ms: i64,
@@ -1136,7 +1136,7 @@ fn load_dispatch_token_digest(
         .map_err(|_| TaskStoreError::CorruptRecord("expected 32-byte dispatch token digest"))
 }
 
-fn insert_effect_receipt(
+pub(crate) fn insert_effect_receipt(
     transaction: &Transaction<'_>,
     receipt: &EffectReceipt,
 ) -> Result<(), TaskStoreError> {
@@ -1163,7 +1163,7 @@ fn insert_effect_receipt(
     Ok(())
 }
 
-fn load_effect_receipt(
+pub(crate) fn load_effect_receipt(
     source: &impl SqlRead,
     receipt_id: ReceiptId,
 ) -> Result<EffectReceipt, TaskStoreError> {
@@ -1245,12 +1245,12 @@ fn build_no_effect_receipt(slot: &SlotRecord, request: &NoEffectRequest) -> Effe
 /// Shared holder/epoch validation for every effect-plane mutation: the
 /// caller must be the outstanding `CommitPermit` holder presenting the
 /// exact attempt generation and permit epoch (`[TASK-RACE-001]`).
-struct HolderContext {
+pub(crate) struct HolderContext {
     task: StoredTask,
     permit: PermitRecord,
 }
 
-fn check_holder(
+pub(crate) fn check_holder(
     transaction: &Transaction<'_>,
     task_id: TaskId,
     attempt_id: TaskAttemptId,
@@ -1343,10 +1343,24 @@ impl SqliteTaskAuthority {
                 cancel_epoch: context.task.record.cancel_epoch,
             });
         }
+        // `[TASK-COMMIT-003]`: an adopted permit's scope is
+        // RECONCILE_CLOSE_OR_QUARANTINE_ONLY — no new EffectPermits.
+        if crate::reconcile::has_adoption(&transaction, request.permit_id)? {
+            return Err(TaskStoreError::AdoptionScopeViolation);
+        }
         let slot = load_slot(&transaction, request.permit_id, request.effect_seq)?;
         if slot.state != SlotState::Planned {
             return Err(TaskStoreError::InvalidEffectSlotState { state: slot.state });
         }
+        // `[TASK-RETRY-EFFECT-001]`: a logical effect already
+        // `EFFECT_CLOSED` in the durable cross-attempt history must never
+        // be silently re-dispatched; the original result stays readable
+        // via `lookup_effect_history`.
+        crate::reconcile::check_not_closed_in_history(
+            &transaction,
+            request.task_id,
+            &slot.logical_effect_id,
+        )?;
         let effect_permit_id = derive_effect_permit_id(request.permit_id, request.idempotency_key);
         let token = derive_dispatch_token(
             effect_permit_id,
@@ -1438,6 +1452,11 @@ impl SqliteTaskAuthority {
             request.permit_epoch,
         )?;
         check_head_unchanged(&context.task, &context.permit)?;
+        // `[TASK-COMMIT-003]`: an adopted permit's scope is
+        // RECONCILE_CLOSE_OR_QUARANTINE_ONLY — no new dispatches.
+        if crate::reconcile::has_adoption(&transaction, request.permit_id)? {
+            return Err(TaskStoreError::AdoptionScopeViolation);
+        }
         let effect_permit =
             load_effect_permit_by_id(&transaction, request.task_id, request.effect_permit_id)?;
         if effect_permit.permit_id != request.permit_id {
@@ -1571,7 +1590,7 @@ impl SqliteTaskAuthority {
             .control_epoch
             .checked_add(1)
             .ok_or(TaskStoreError::EpochExhausted)?;
-        cas_slot(
+        let updated = cas_slot(
             &transaction,
             &slot,
             target,
@@ -1580,6 +1599,21 @@ impl SqliteTaskAuthority {
             Some(receipt_id),
             request.recorded_at_ms,
         )?;
+        // `[TASK-EFFECT-ID-001]`: a slot closing with an effect appends
+        // its `TaskEffectHistoryEntry` in the same transaction.
+        if target == SlotState::EffectClosed {
+            crate::reconcile::append_history_entry(
+                &transaction,
+                &crate::reconcile::HistoryAppend {
+                    task_id: context.task.record.task_id,
+                    retry_fence_epoch: context.task.record.retry_fence_epoch,
+                    slot: &updated,
+                    outcome: crate::EffectHistoryOutcome::EffectClosed,
+                    authoritative_effect_receipt_id: receipt_id,
+                    now_ms: request.recorded_at_ms,
+                },
+            )?;
+        }
         refresh_summary(&transaction, request.permit_id, request.recorded_at_ms)?;
         update_task(
             &transaction,
@@ -1846,3 +1880,124 @@ pub(crate) const SCHEMA_V2_SQL: &str =
         END;
 
         PRAGMA user_version = 2;";
+
+/// Schema v3: cross-attempt effect history, quarantine/adoption/reconcile
+/// receipts, and per-task monotonic sequences. Purely additive over v2 —
+/// no v2 table is altered, so a v2 database migrates losslessly in one
+/// transaction.
+pub(crate) const SCHEMA_V3_SQL: &str =
+    "CREATE TABLE effect_history (
+            task_id BLOB NOT NULL CHECK(length(task_id) = 16),
+            effect_history_seq BLOB NOT NULL CHECK(length(effect_history_seq) = 8),
+            logical_effect_id BLOB NOT NULL CHECK(length(logical_effect_id) = 32),
+            retry_fence_epoch BLOB NOT NULL CHECK(length(retry_fence_epoch) = 8),
+            action_proposal_digest BLOB NOT NULL CHECK(length(action_proposal_digest) = 32),
+            idempotency_identity_digest BLOB NOT NULL CHECK(length(idempotency_identity_digest) = 32),
+            operation_id BLOB CHECK(operation_id IS NULL OR length(operation_id) = 16),
+            outcome INTEGER NOT NULL,
+            authoritative_effect_receipt_id BLOB NOT NULL CHECK(length(authoritative_effect_receipt_id) = 16),
+            compensation_receipt_id BLOB CHECK(compensation_receipt_id IS NULL OR length(compensation_receipt_id) = 16),
+            created_at_ms INTEGER NOT NULL,
+            PRIMARY KEY(task_id, effect_history_seq),
+            FOREIGN KEY(task_id) REFERENCES tasks(task_id)
+        ) STRICT;
+
+        CREATE INDEX effect_history_by_logical
+            ON effect_history(task_id, logical_effect_id);
+
+        CREATE TRIGGER effect_history_is_immutable
+        BEFORE UPDATE ON effect_history
+        BEGIN
+            SELECT RAISE(ABORT, 'effect history entry is immutable');
+        END;
+
+        CREATE TABLE task_quarantine_receipts (
+            receipt_id BLOB PRIMARY KEY NOT NULL CHECK(length(receipt_id) = 16),
+            task_id BLOB NOT NULL CHECK(length(task_id) = 16),
+            task_generation BLOB NOT NULL CHECK(length(task_generation) = 8),
+            permit_id BLOB NOT NULL CHECK(length(permit_id) = 16),
+            permit_epoch BLOB NOT NULL CHECK(length(permit_epoch) = 8),
+            effect_set_root BLOB NOT NULL CHECK(length(effect_set_root) = 32),
+            outstanding_effect_quarantine_root BLOB NOT NULL CHECK(length(outstanding_effect_quarantine_root) = 32),
+            conflicting_target_digest BLOB NOT NULL CHECK(length(conflicting_target_digest) = 32),
+            known_effect_receipts BLOB NOT NULL,
+            unknown_slots BLOB NOT NULL,
+            fenced_participant_digest BLOB NOT NULL CHECK(length(fenced_participant_digest) = 32),
+            created_at_ms INTEGER NOT NULL,
+            FOREIGN KEY(task_id) REFERENCES tasks(task_id)
+        ) STRICT;
+
+        CREATE TRIGGER task_quarantine_receipt_is_immutable
+        BEFORE UPDATE ON task_quarantine_receipts
+        BEGIN
+            SELECT RAISE(ABORT, 'quarantine receipt is immutable');
+        END;
+
+        CREATE TABLE task_adoption_receipts (
+            receipt_id BLOB PRIMARY KEY NOT NULL CHECK(length(receipt_id) = 16),
+            task_id BLOB NOT NULL CHECK(length(task_id) = 16),
+            task_generation BLOB NOT NULL CHECK(length(task_generation) = 8),
+            idempotency_key BLOB NOT NULL CHECK(length(idempotency_key) = 16),
+            original_permit_id BLOB NOT NULL CHECK(length(original_permit_id) = 16),
+            original_permit_epoch BLOB NOT NULL CHECK(length(original_permit_epoch) = 8),
+            original_control_epoch BLOB NOT NULL CHECK(length(original_control_epoch) = 8),
+            original_cancel_epoch BLOB NOT NULL CHECK(length(original_cancel_epoch) = 8),
+            effect_set_root BLOB NOT NULL CHECK(length(effect_set_root) = 32),
+            observed_effect_slot_state_root BLOB NOT NULL CHECK(length(observed_effect_slot_state_root) = 32),
+            adoption_epoch BLOB NOT NULL CHECK(length(adoption_epoch) = 8),
+            created_at_ms INTEGER NOT NULL,
+            UNIQUE(task_id, idempotency_key),
+            FOREIGN KEY(task_id) REFERENCES tasks(task_id)
+        ) STRICT;
+
+        CREATE INDEX task_adoption_receipts_by_permit
+            ON task_adoption_receipts(task_id, original_permit_id);
+
+        CREATE TRIGGER task_adoption_receipt_is_immutable
+        BEFORE UPDATE ON task_adoption_receipts
+        BEGIN
+            SELECT RAISE(ABORT, 'adoption receipt is immutable');
+        END;
+
+        CREATE TABLE task_reconcile_receipts (
+            receipt_id BLOB PRIMARY KEY NOT NULL CHECK(length(receipt_id) = 16),
+            task_id BLOB NOT NULL CHECK(length(task_id) = 16),
+            permit_id BLOB NOT NULL CHECK(length(permit_id) = 16),
+            permit_epoch BLOB NOT NULL CHECK(length(permit_epoch) = 8),
+            permit_adoption_receipt_id BLOB NOT NULL CHECK(length(permit_adoption_receipt_id) = 16),
+            effect_slot_id BLOB NOT NULL CHECK(length(effect_slot_id) = 16),
+            effect_seq BLOB NOT NULL CHECK(length(effect_seq) = 8),
+            logical_effect_id BLOB NOT NULL CHECK(length(logical_effect_id) = 32),
+            retry_fence_epoch BLOB NOT NULL CHECK(length(retry_fence_epoch) = 8),
+            effect_set_root BLOB NOT NULL CHECK(length(effect_set_root) = 32),
+            outcome INTEGER NOT NULL,
+            closure_proof_digest BLOB NOT NULL CHECK(length(closure_proof_digest) = 32),
+            effect_receipt_id BLOB CHECK(effect_receipt_id IS NULL OR length(effect_receipt_id) = 16),
+            effect_slot_state_root_after BLOB NOT NULL CHECK(length(effect_slot_state_root_after) = 32),
+            created_at_ms INTEGER NOT NULL,
+            FOREIGN KEY(task_id) REFERENCES tasks(task_id)
+        ) STRICT;
+
+        CREATE INDEX task_reconcile_receipts_by_slot
+            ON task_reconcile_receipts(permit_id, effect_seq);
+
+        CREATE TRIGGER task_reconcile_receipt_is_immutable
+        BEFORE UPDATE ON task_reconcile_receipts
+        BEGIN
+            SELECT RAISE(ABORT, 'reconcile receipt is immutable');
+        END;
+
+        CREATE TABLE task_effect_sequences (
+            task_id BLOB PRIMARY KEY NOT NULL CHECK(length(task_id) = 16),
+            effect_history_seq BLOB NOT NULL CHECK(length(effect_history_seq) = 8),
+            adoption_epoch BLOB NOT NULL CHECK(length(adoption_epoch) = 8),
+            FOREIGN KEY(task_id) REFERENCES tasks(task_id)
+        ) STRICT;
+
+        CREATE TABLE task_finalize_proofs (
+            receipt_id BLOB PRIMARY KEY NOT NULL CHECK(length(receipt_id) = 16),
+            proof_digest BLOB NOT NULL CHECK(length(proof_digest) = 32),
+            FOREIGN KEY(receipt_id) REFERENCES task_receipts(receipt_id)
+        ) STRICT;
+
+        PRAGMA user_version = 3;";
