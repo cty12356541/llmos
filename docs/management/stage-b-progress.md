@@ -52,7 +52,7 @@ Application
 | `B-PROCESS` | native Process supervisor 与平台资源/生命周期 adapter | `READY` | [v0.5 Process 规范](../design/06-架构设计总纲-v0.5.md) | macOS/Windows/Linux suspend/kill、host incarnation、resource mapping |
 | `B-TASK` | TaskPlan/TaskNode、lazy materialization、TaskSnapshot、双 Attempt 唯一提交 | `IN_PROGRESS` | [v0.5 Task 规范](../design/06-架构设计总纲-v0.5.md)；2026-08-04 起为唯一主线工作包（议题 31/32 顺序变更采纳）；[B-TASK-001](../evidence/stage-b/b-task-001-task-authority-commit-permit.md)：durable TaskAuthority + 双 Attempt 竞争 CommitPermit 六条门 PARTIAL PASS（`nlos-task`，14 测试，三平台 CI [run 30905979180](https://github.com/cty12356541/llmos/actions/runs/30905979180)）；[B-TASK-002](../evidence/stage-b/b-task-002-effect-permit-dispatch.md)：EffectPermit 签发 + 逐槽 EffectSlot 状态机（schema v2，13 测试）PARTIAL PASS 候选；[B-TASK-001 fault-injection](../evidence/stage-b/b-task-001-fault-injection.md)：F1–F4 对齐故障矩阵 6 行全 PASS（kill-9 中断/commit 后崩溃/硬 I/O 错误/ENOSPC/静默丢写+WAL 撕裂/故障解除恢复，7 测试）PARTIAL PASS；[B-TASK-003](../evidence/stage-b/b-task-003-reconcile-effect-history.md)：quarantine/reconcile + 跨 Attempt effect history + retry fence + required 成功语义（schema v3，21 测试）PARTIAL PASS；[B-TASK-003 crash windows](../evidence/stage-b/b-task-003-crash-windows.md)：三点崩溃窗口 + effect 表组故障矩阵（11 测试）PARTIAL PASS；[B-TASK-004](../evidence/stage-b/b-task-004-task-group.md)：TaskGroup membership generation/root CAS + Admission Receipt + 树状取消 + ALL/ANY 聚合 + quarantine 父组降级（schema v4，13 测试）PARTIAL PASS 候选；[B-TASK-003 fault](../evidence/stage-b/b-task-003-fault-injection.md)：v3 表组故障矩阵 7 行全 PASS（8 测试）PARTIAL PASS 候选 | QUORUM/REDUCE 执行语义、AGENT_INSTANCE 成员、DETACH 执行、LOST/quiescence、WriteSet/Permit/Receipt 组绑定、TaskPlan/TaskNode 惰性物化、Process/Operation 绑定、跨 authority term adoption、真实 gateway/driver 集成、compensation 执行 |
 | `B-CONTROL` | CLI/API/NL/GUI 共用 ControlCommand 与 Receipt | `READY` | [v0.5 控制面规范](../design/06-架构设计总纲-v0.5.md) | SystemControl client、权限 UI、多层手动调度、等价路径证明 |
-| `B-ARTIFACT` | 内容寻址 Artifact、metadata、reconcile、GC | `READY` | [技术选型第 7 节](./stage-b-technology-selection.md) | fsync/rename、blob/metadata 恢复、retention 和 GC |
+| `B-ARTIFACT` | 内容寻址 Artifact、metadata、reconcile、GC | `IN_PROGRESS` | [B-ARTIFACT-001](../evidence/stage-b/b-artifact-001-content-addressed-store.md)：内容寻址 blob 五步写入协议 + SQLite metadata + 崩溃窗口/reconcile + cache 分域（新 crate `nlos-artifact`，26 测试含 VFS 故障注入）PARTIAL PASS 候选 | GC 执行、retention policy、加密/provenance/legal hold、Package 签名验证、sync/对象存储后端、TaskCommitReceipt 绑定、Windows 目录 fsync 等价物、真实 ENOSPC 探针 |
 | `B-SLICE-K` | Slice K：Package → Application → Task → Fiber → Operation → Receipt → 控制 | `NOT_STARTED` | [v0.5 Slice K](../design/06-架构设计总纲-v0.5.md) | 需要前述执行、持久化、Process、权限和控制能力贯通 |
 
 ## 4. 已验证的当前事实
@@ -245,6 +245,15 @@ Application
 - 树状取消单事务结构化传播：parent cancel_epoch 恰递增一次 → 全部非终态后代（child group + pre-permit member attempt closure receipt、head 不变）；permit 持有 attempt 不动（permit-first 线性化）；终态/未绑组不动。
 - 聚合状态为显式 refresh 派生视图（child 状态是真相权威）：ALL 全成功才 COMPLETED、ANY 任一成功；failure_mode 占位语义 FAIL_FAST（同事务传播取消剩余）/COLLECT_ALL/ISOLATE；quarantine 子树证据使父组降级 PARTIAL 不得 COMPLETED、携带者拒绝移除（`GroupQuarantinedChild`）。
 - 详见 [B-TASK-004](../evidence/stage-b/b-task-004-task-group.md)；证据等级单节点 H3 候选：QUORUM/REDUCE、AGENT_INSTANCE、DETACH、LOST/quiescence、WriteSet/Permit/Receipt 组绑定均未实现。
+
+### 4.28 内容寻址 Artifact 存储（B-ARTIFACT-001）
+
+- 新 crate `nlos-artifact`：`ArtifactId + revision + ContentDigest → SQLite metadata`（WAL/FULL 回读 fail-closed、未知 user_version 拒绝），`ContentDigest → 本地内容寻址字节`；目录布局 artifacts/blobs/tmp 与 cache 分域。
+- 安全关键写入协议：tmp → fsync → **重读按 SHA-256 校验** → atomic rename → 父目录 fsync → metadata 同事务提交（**blob 持久化永远先于引用事务**）；跨设备 rename typed fail-closed。
+- immutable revision（DDL trigger 禁 UPDATE/DELETE）+ mutable head CAS（竞争恰好一胜、`HeadConflict` typed）；读后 digest 重验（撕裂 blob `DigestMismatch` 绝不静默返回错字节）。
+- `recover()` reconcile：committed revision 缺 blob typed 列出、孤儿 tmp 清理、孤儿 blob 仅列出供 GC（本切片不删除）；cache 行 blob 缺失降级 miss 自愈；eviction 无任何触及 artifacts/ 的代码路径（同字节双域测试验证）。
+- 崩溃窗口全覆盖：rename 前（tmp 孤儿清理）/ rename 后 commit 前（无幻影 revision、孤儿列出）/ commit 后（完全可用）；kill-9 中断完全回滚；ENOSPC/静默丢写 typed 无假成功。
+- 26 测试全绿，详见 [B-ARTIFACT-001](../evidence/stage-b/b-artifact-001-content-addressed-store.md)；限制：仅 LOCAL_SINGLE_NODE、无 GC/retention 执行、无加密/Package 验证、recover 只核 presence、Windows 目录 fsync 无 std 等价物（NTFS 日志依赖）、真实 ENOSPC 未测。
 
 ## 5. 当前下一验收门
 

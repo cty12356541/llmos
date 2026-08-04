@@ -12,6 +12,7 @@ members = [
     "crates/nlos-outbox",
     "crates/nlos-store-fault",
     "crates/nlos-task",
+    "crates/nlos-artifact",
 ]
 exclude = ["fuzz"]
 resolver = "3"

@@ -58,6 +58,7 @@ nominal_id!(ResourceGroupId);
 nominal_id!(SchedulerDomainId);
 nominal_id!(ReceiptId);
 nominal_id!(IdempotencyKey);
+nominal_id!(ArtifactId);
 
 /// A non-zero incarnation used to fence stale handles and callbacks.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]

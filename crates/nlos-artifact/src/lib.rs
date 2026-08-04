@@ -1,0 +1,224 @@
+//! Content-addressed artifact store with `SQLite` metadata (B-ARTIFACT-001).
+//!
+//! Per the stage-B technology selection (§7) and v0.5 §14:
+//!
+//! ```text
+//! ArtifactId + revision + ContentDigest -> SQLite metadata (WAL/FULL)
+//! ContentDigest                         -> local content-addressed bytes
+//! ```
+//!
+//! # Layout
+//!
+//! ```text
+//! <root>/metadata.db                    artifact/revision/cache metadata
+//! <root>/artifacts/blobs/<2-hex>/<digest>   artifact本体 blobs (immutable)
+//! <root>/artifacts/tmp/                 pre-rename scratch (same device)
+//! <root>/cache/blobs/<2-hex>/<digest>   evictable derived cache blobs
+//! <root>/cache/tmp/
+//! ```
+//!
+//! `artifacts/` and `cache/` are separate retention domains
+//! (`[CTX-NOTDATA-001]`): cache eviction never touches artifact blobs.
+//!
+//! # Commit protocol and crash windows
+//!
+//! [`ArtifactStore::put_revision`] commits in two ordered phases:
+//!
+//! 1. **Blob**: tmp write → fsync file → re-read + digest verify → atomic
+//!    rename → fsync parent directory (see `blob.rs`).
+//! 2. **Metadata**: one `BEGIN IMMEDIATE` transaction inserts the immutable
+//!    revision row and compare-and-swaps the head pointer.
+//!
+//! Blob durability always precedes the metadata commit that references the
+//! digest. A crash before the rename leaves an orphan tmp file (removed by
+//! [`ArtifactStore::recover`]); after the rename but before the metadata
+//! commit leaves an orphan blob (listed by `recover`, never deleted here);
+//! after the metadata commit the revision is fully usable.
+//!
+//! # Scope and honesty boundaries
+//!
+//! - `DeploymentMode=LOCAL_SINGLE_NODE` only (`[ART-LOCAL-001]`): the local
+//!   store is authoritative; no sync/distributed/object-store backend. The
+//!   blob layer is confined to the internal `blob` module so a later slice
+//!   can lift it behind a backend trait.
+//! - No GC execution, retention policy, encryption, provenance chains,
+//!   legal hold, or Package signature verification.
+//! - [`ArtifactStore::recover`] is **explicit**, not run on open: open
+//!   latency stays predictable and recovery reporting is an operator
+//!   decision. Callers may invoke it immediately after open.
+
+mod blob;
+mod cache;
+mod model;
+mod query;
+mod recover;
+mod schema;
+mod store;
+
+use std::error::Error;
+use std::fmt;
+use std::io;
+use std::path::PathBuf;
+
+use nlos_types::ArtifactId;
+
+pub use model::{
+    ArtifactRecord, ContentDigest, CreateArtifactDecision, CreateArtifactSpec, HeadState,
+    MissingBlob, PutRevisionDecision, PutRevisionRequest, RecoveryReport, RevisionRecord,
+};
+pub use store::ArtifactStore;
+
+/// Typed errors of the artifact store. No `anyhow`; every failure mode a
+/// caller can act on is its own variant.
+#[derive(Debug)]
+pub enum ArtifactError {
+    /// `SQLite` authority failure (see source for the original error).
+    Sqlite(rusqlite::Error),
+    /// Filesystem failure outside the classified variants below.
+    Io(io::Error),
+    /// WAL/FULL durability could not be established (pragmas read back).
+    DurabilityUnavailable {
+        journal_mode: String,
+        synchronous: i64,
+    },
+    /// Stored `user_version` is newer than or otherwise unknown to this
+    /// build; fail closed rather than guess.
+    SchemaVersionUnsupported(i64),
+    /// No artifact with this identity exists.
+    ArtifactNotFound(ArtifactId),
+    /// The artifact exists but has no such revision.
+    RevisionNotFound {
+        artifact_id: ArtifactId,
+        revision: u64,
+    },
+    /// The idempotency key (or artifact identity) was reused with a
+    /// different specification.
+    IdempotencyConflict,
+    /// The observed head does not match `expected_head_revision`: either a
+    /// competing put advanced the head first, or the expectation names a
+    /// revision that does not exist yet. Fail closed; re-resolve the head
+    /// and retry.
+    HeadConflict { expected: u64, current: u64 },
+    /// An immutable revision slot is occupied by different content while the
+    /// head claims the slot is free. Normally unreachable through
+    /// [`ArtifactStore::put_revision`]; the fail-closed guard for metadata
+    /// inconsistency (`[ART-VERSION-001]` immutability spirit).
+    RevisionConflict {
+        artifact_id: ArtifactId,
+        revision: u64,
+    },
+    /// A committed revision's blob is absent from the local store. Run
+    /// [`ArtifactStore::recover`] to reconcile and report all missing blobs.
+    BlobMissing {
+        artifact_id: ArtifactId,
+        revision: u64,
+        digest: ContentDigest,
+        path: PathBuf,
+    },
+    /// Bytes read back (or verified during commit) do not match the
+    /// addressed digest. Wrong bytes are never returned silently.
+    DigestMismatch {
+        expected: ContentDigest,
+        actual: ContentDigest,
+        path: PathBuf,
+    },
+    /// `ENOSPC`/`EDQUOT` while writing a blob. No metadata was committed.
+    BlobNoSpace,
+    /// The tmp directory and the blob directory are on different devices;
+    /// the rename-based atomic commit protocol requires one filesystem.
+    CrossDeviceRename,
+    /// A caller-supplied bounded string was empty, oversized, or contained
+    /// a NUL byte.
+    InvalidSpec(&'static str),
+    /// A durable row violates an invariant this crate enforces.
+    CorruptRecord(&'static str),
+    /// The process-local writer mutex is poisoned.
+    LockPoisoned,
+}
+
+impl fmt::Display for ArtifactError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Sqlite(error) => write!(formatter, "SQLite metadata failure: {error}"),
+            Self::Io(error) => write!(formatter, "blob I/O failure: {error}"),
+            Self::DurabilityUnavailable {
+                journal_mode,
+                synchronous,
+            } => write!(
+                formatter,
+                "WAL/FULL durability unavailable: journal_mode={journal_mode}, synchronous={synchronous}"
+            ),
+            Self::SchemaVersionUnsupported(version) => {
+                write!(formatter, "unsupported artifact schema version {version}")
+            }
+            Self::ArtifactNotFound(artifact_id) => {
+                write!(formatter, "artifact {artifact_id:?} does not exist")
+            }
+            Self::RevisionNotFound {
+                artifact_id,
+                revision,
+            } => write!(
+                formatter,
+                "artifact {artifact_id:?} has no revision {revision}"
+            ),
+            Self::IdempotencyConflict => formatter.write_str(
+                "idempotency key or artifact identity reused for a different specification",
+            ),
+            Self::HeadConflict { expected, current } => write!(
+                formatter,
+                "artifact head conflict: expected {expected}, current {current}"
+            ),
+            Self::RevisionConflict {
+                artifact_id,
+                revision,
+            } => write!(
+                formatter,
+                "immutable revision conflict on artifact {artifact_id:?} revision {revision}"
+            ),
+            Self::BlobMissing {
+                artifact_id,
+                revision,
+                digest,
+                path,
+            } => write!(
+                formatter,
+                "blob {digest} for artifact {artifact_id:?} revision {revision} is missing at {}",
+                path.display()
+            ),
+            Self::DigestMismatch {
+                expected,
+                actual,
+                path,
+            } => write!(
+                formatter,
+                "digest mismatch at {}: expected {expected}, actual {actual}",
+                path.display()
+            ),
+            Self::BlobNoSpace => formatter.write_str("no space left on device during blob write"),
+            Self::CrossDeviceRename => formatter.write_str(
+                "tmp and blob directories are on different devices; atomic rename impossible",
+            ),
+            Self::InvalidSpec(reason) => {
+                write!(formatter, "invalid artifact specification: {reason}")
+            }
+            Self::CorruptRecord(reason) => write!(formatter, "corrupt durable record: {reason}"),
+            Self::LockPoisoned => formatter.write_str("artifact writer lock is poisoned"),
+        }
+    }
+}
+
+impl Error for ArtifactError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Sqlite(error) => Some(error),
+            Self::Io(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+impl From<rusqlite::Error> for ArtifactError {
+    fn from(error: rusqlite::Error) -> Self {
+        Self::Sqlite(error)
+    }
+}

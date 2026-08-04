@@ -315,6 +315,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
 
 [[package]]
+name = "nlos-artifact"
+version = "0.1.0"
+dependencies = [
+ "nlos-store-fault",
+ "nlos-types",
+ "rusqlite",
+ "sha2",
+]
+
+[[package]]
 name = "nlos-canonical"
 version = "0.1.0"
 dependencies = [
