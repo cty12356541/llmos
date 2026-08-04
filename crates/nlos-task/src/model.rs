@@ -81,17 +81,52 @@ pub struct AttemptSpec {
     pub registered_at_ms: i64,
 }
 
+/// One planned effect slot declared inside a `TaskWriteSet`
+/// (`planned_actions` subset, §25.1).
+///
+/// The vector index inside [`PermitRequest::planned_effects`] IS the
+/// `effect_seq`: the authority assigns dense sequence numbers `0..n` by
+/// position, so a gap or duplicate sequence number is unrepresentable by
+/// construction (`[TASK-EFFECT-002]`). `stable_action_slot` lives inside the
+/// [`LogicalEffectDescriptor`](crate::LogicalEffectDescriptor); attempt-bound
+/// identities (`ActionId`/`OperationId`/driver/reservation) are deliberately
+/// absent from the identity-bearing part of the declaration
+/// (`[TASK-EFFECT-ID-001]`).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlannedEffect {
+    /// Cross-attempt-stable logical effect identity input. The descriptor
+    /// carries no attempt/action/operation/incarnation/nonce fields by
+    /// construction (`[TASK-EFFECT-ID-001]`).
+    pub descriptor: crate::effect::LogicalEffectDescriptor,
+    /// Whether the slot is a required obligation for `outcome=COMMITTED`.
+    /// Required-slot success-criteria semantics remain a placeholder in this
+    /// slice (see evidence doc); the flag is recorded durably.
+    pub required: bool,
+    /// Pre-bound condition digest for conditional required slots. The
+    /// snapshot-bound authoritative false-proof is a later slice.
+    pub required_condition_digest: Option<[u8; 32]>,
+    /// Caller-supplied success-criteria digest placeholder.
+    pub success_criteria_digest: [u8; 32],
+    /// Caller-supplied digest placeholder binding the staged action proposal
+    /// the slot is allowed to dispatch.
+    pub action_proposal_digest: [u8; 32],
+}
+
 /// A `CommitPermit` issuance request.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PermitRequest {
     pub task_id: TaskId,
     pub attempt_id: TaskAttemptId,
     pub attempt_generation: Generation,
     /// Caller-supplied digest placeholder for the staged `TaskWriteSet`.
     pub write_set_root: [u8; 32],
+    /// Complete planned effect slot set committed at permit issuance
+    /// (`effect_set_root`, `[TASK-EFFECT-002]`). An empty vector declares a
+    /// no-effect write set and keeps the pre-effect-slice finalize behavior.
+    pub planned_effects: Vec<PlannedEffect>,
     pub idempotency_key: IdempotencyKey,
     /// Caller-supplied expiry. Expiry never clears an issued permit
-    /// (`[TASK-COMMIT-003]`); it is stored for the later effect slice.
+    /// (`[TASK-COMMIT-003]`); it is stored for the effect slice.
     pub valid_until_ms: i64,
     pub requested_at_ms: i64,
 }

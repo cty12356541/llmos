@@ -50,7 +50,7 @@ Application
 | `B-SDK-LANG-EVAL` | 官方 SDK 语言集合与 Go/C# 优先兼容评估 | `BLOCKED` | [多语言 SDK 支持评估计划](./language-sdk-support-plan.md)；OperationControl 前置切片见 [B-SCHEMA-013](../evidence/stage-b/b-schema-013-operation-control-timer-worker.md) | 2026-08-04 起 Go/C# generation/golden 探针与独立 IPC PoC 后移至 `B-TASK`/EffectPermit 纵切面之后（议题 31/32：第四种语言不能证明核心成立，且不应推动 SABI 在 Task/Effect 语义稳定前过早冻结）；Java/Kotlin、Swift、C/C++ 需求驱动复审 |
 | `B-SANDBOX` | Wasmtime/WASI 与独立 host Process 隔离对比 | `READY` | [技术选型第 5 节](./stage-b-technology-selection.md) | capability import、fuel/epoch、memory、host crash、GuaranteeTier |
 | `B-PROCESS` | native Process supervisor 与平台资源/生命周期 adapter | `READY` | [v0.5 Process 规范](../design/06-架构设计总纲-v0.5.md) | macOS/Windows/Linux suspend/kill、host incarnation、resource mapping |
-| `B-TASK` | TaskPlan/TaskNode、lazy materialization、TaskSnapshot、双 Attempt 唯一提交 | `IN_PROGRESS` | [v0.5 Task 规范](../design/06-架构设计总纲-v0.5.md)；2026-08-04 起为唯一主线工作包（议题 31/32 顺序变更采纳）；[B-TASK-001](../evidence/stage-b/b-task-001-task-authority-commit-permit.md)：durable TaskAuthority + 双 Attempt 竞争 CommitPermit 六条门 PARTIAL PASS（`nlos-task`，14 测试，三平台 CI [run 30905979180](https://github.com/cty12356541/llmos/actions/runs/30905979180)）；fault-injection 待接入 | EffectPermit、跨 Attempt effect history、PermitAdoption、TaskPlan/TaskNode 惰性物化、Process 绑定、snapshot drift/reconcile、fault-injection 接入 |
+| `B-TASK` | TaskPlan/TaskNode、lazy materialization、TaskSnapshot、双 Attempt 唯一提交 | `IN_PROGRESS` | [v0.5 Task 规范](../design/06-架构设计总纲-v0.5.md)；2026-08-04 起为唯一主线工作包（议题 31/32 顺序变更采纳）；[B-TASK-001](../evidence/stage-b/b-task-001-task-authority-commit-permit.md)：durable TaskAuthority + 双 Attempt 竞争 CommitPermit 六条门 PARTIAL PASS（`nlos-task`，14 测试，三平台 CI [run 30905979180](https://github.com/cty12356541/llmos/actions/runs/30905979180)）；[B-TASK-002](../evidence/stage-b/b-task-002-effect-permit-dispatch.md)：EffectPermit 签发 + 逐槽 EffectSlot 状态机（schema v2，13 测试）PARTIAL PASS 候选；fault-injection 待接入 | 跨 Attempt effect history、PermitAdoption/reconcile（TASK-EFFECT-003）、TaskPlan/TaskNode 惰性物化、Process 绑定、required slot 成功语义、三点崩溃注入、fault-injection 接入 |
 | `B-CONTROL` | CLI/API/NL/GUI 共用 ControlCommand 与 Receipt | `READY` | [v0.5 控制面规范](../design/06-架构设计总纲-v0.5.md) | SystemControl client、权限 UI、多层手动调度、等价路径证明 |
 | `B-ARTIFACT` | 内容寻址 Artifact、metadata、reconcile、GC | `READY` | [技术选型第 7 节](./stage-b-technology-selection.md) | fsync/rename、blob/metadata 恢复、retention 和 GC |
 | `B-SLICE-K` | Slice K：Package → Application → Task → Fiber → Operation → Receipt → 控制 | `NOT_STARTED` | [v0.5 Slice K](../design/06-架构设计总纲-v0.5.md) | 需要前述执行、持久化、Process、权限和控制能力贯通 |
@@ -207,6 +207,15 @@ Application
 - 重启恢复完整、重放一致、幽灵 permit 不可表示（permit/receipt ID 确定性派生）；14 项测试与 workspace clippy/fmt 本地通过，三平台 CI 已通过（[run 30905979180](https://github.com/cty12356541/llmos/actions/runs/30905979180)），详见 [B-TASK-001](../evidence/stage-b/b-task-001-task-authority-commit-permit.md)。
 - 证据等级为单节点局部 H3 + 三平台复验、PARTIAL PASS：EffectPermit/effect history/PermitAdoption/惰性物化/Process 绑定未实现，digest 为占位公式，未接 fault-injection。
 
+### 4.23 EffectPermit 签发与逐槽 EffectSlot 状态机（B-TASK-002）
+
+- `nlos-task` schema v1→v2 纯增量迁移（`effect_slots`/`effect_permits`/`effect_receipts`/`permit_effect_sets` 四表），golden-v1 无损迁移与失败回滚测试通过。
+- `LogicalEffectId`/`idempotency_identity_digest` 按固定 domain-separated 公式派生；descriptor 按构造排除 AttemptId/ActionId/OperationId/incarnation/nonce（TASK-EFFECT-ID-001 禁止项不可表示）；跨 attempt 同一 descriptor 同一身份。
+- 只有 CommitPermit 持有者可签发 EffectPermit（TASK-RACE-001）：loser/陈旧 generation/错误 epoch/未声明 slot 全类型化拒绝；签发 CAS PLANNED→PERMITTED + 一次性 dispatch token；双线程竞态恰好一胜一拒（DispatchTokenConsumed）。
+- cancel 线性化：cancel 后迟到 dispatch 类型化 `CancellationCommitted` 且 slot 保持 PERMITTED；未消费 token 收口 NO_EFFECT；已消费 token 不得伪装未执行、cancel 后仍可登记真实结局。
+- finalize 收紧：任何 PLANNED/PERMITTED/DISPATCHED/EFFECT_UNKNOWN slot 禁止关闭 permit；EFFECT_UNKNOWN 跨重启持久阻塞；无声明 effect 的旧流程行为不变（14 项旧测试回归）。
+- 13 项新测试 + workspace clippy/fmt 通过，详见 [B-TASK-002](../evidence/stage-b/b-task-002-effect-permit-dispatch.md)；证据等级单节点 H3 候选：TASK-EFFECT-003 quarantine/reconcile、跨 Attempt effect history、required 成功语义、三点崩溃注入均未实现。
+
 ## 5. 当前下一验收门
 
 `B-TASK` 自 2026-08-04 起为唯一主线工作包（采纳议题 31/32 顺序变更）。`B-SCHEMA` 保持 `IN_PROGRESS` 完成态收尾但不再持有主线；其剩余横向项（Go/C# 探针、Namespace bootstrap authority、生产目录 watch/lease/rebind、持久 deadline queue/restart recovery、Receipt authority、双向 peer auth、Python Proactor 稳定 profile、CBOR 跨语言、长期 fuzz、actual signing）在 `B-TASK` 纵切面成立前不推动 SABI 冻结。
@@ -242,7 +251,20 @@ durable TaskAuthority：Task 注册、TaskSnapshot 冻结输入 digest、TaskHea
   → authority 重启后 TaskHead/Attempt/Permit 状态可恢复，无幽灵 permit                 PARTIAL PASS（本地，B-TASK-001）
 ```
 
-六条均经本地 macOS/arm64 复验 + 双线程竞态 + 三平台 CI（run 30905979180）验证；`nlos-store-fault` 故障注入接入后才考虑晋升。下一切片候选：EffectPermit 与逐槽 EffectSlot 状态机（`[TASK-EFFECT-001/002]`）、跨 Attempt effect history 与 retry fence 推进（`[TASK-EFFECT-ID-001]`、`[TASK-RETRY-EFFECT-001]`），或先把 B-TASK-001 接入 fault-injection。
+六条均经本地 macOS/arm64 复验 + 双线程竞态 + 三平台 CI（run 30905979180）验证；`nlos-store-fault` 故障注入接入后才考虑晋升。
+
+`B-TASK` 第二个切片验收门（议题 31 证据门条 4 与条 7 的 permit 维度，B-TASK-002）：
+
+```text
+planned slot 集承诺 + LogicalEffectId 确定性公式（descriptor 无禁止字段）            PARTIAL PASS 候选（本地，13 测试）
+  → 只有 CommitPermit 持有者可签发 EffectPermit（TASK-RACE-001）                     PARTIAL PASS 候选
+  → 签发 CAS PLANNED→PERMITTED + 一次性 dispatch token（二次消费 fail-closed）        PARTIAL PASS 候选
+  → cancel 后迟到 dispatch 类型化拒绝；已消费 token 不得伪装未执行                    PARTIAL PASS 候选
+  → slot 闭合 EFFECT_CLOSED/EFFECT_UNKNOWN/NO_EFFECT；UNKNOWN 跨重启阻塞              PARTIAL PASS 候选
+  → finalize 收紧：任何 open/unknown slot 禁止关闭 permit；schema v1→v2 无损迁移      PARTIAL PASS 候选
+```
+
+下一切片候选（B-TASK-003）：三点强制崩溃注入（外部调用前/调用中/Receipt 前）与重启四态区分（议题 31 条 5–6）、`[TASK-EFFECT-003]` quarantine/PermitAdoption/reconcile 流程、跨 Attempt effect history 与 retry fence 推进（`[TASK-EFFECT-ID-001]`/`[TASK-RETRY-EFFECT-001]`）、required slot 成功语义与 CONDITION_NOT_APPLICABLE 权威证明；B-TASK-001 的 `nlos-store-fault` 故障注入接入并行进行中。不得据 B-TASK-001/002 证据声称 TaskAttempt effect 语义完整。
 
 多语言 SDK 扩展按 [`B-SDK-LANG-EVAL`](./language-sdk-support-plan.md) 单独晋级：Go 与 C# 的 generation/golden 探针与独立 IPC PoC 自 2026-08-04 起后移至 `B-TASK`/EffectPermit 纵切面通过之后（议题 31/32 顺序变更），不在只有 generated types 时宣称“已支持”；Rust/TypeScript/Python 三语言现有 PARTIAL PASS 证据保持有效。
 

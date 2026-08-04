@@ -28,7 +28,7 @@ use crate::{
     TaskStoreError,
 };
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 /// A single-writer `SQLite` task authority.
 ///
@@ -40,8 +40,8 @@ pub struct SqliteTaskAuthority {
     connection: Mutex<Connection>,
 }
 
-struct StoredTask {
-    record: TaskRecord,
+pub(crate) struct StoredTask {
+    pub(crate) record: TaskRecord,
     revision: i64,
 }
 
@@ -111,7 +111,11 @@ impl SqliteTaskAuthority {
 
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
         match version {
-            0 => migrate_v1(&mut connection)?,
+            0 => {
+                migrate_v1(&mut connection)?;
+                migrate_v2(&mut connection)?;
+            }
+            1 => migrate_v2(&mut connection)?,
             SCHEMA_VERSION => {}
             other => return Err(TaskStoreError::UnsupportedSchema(other)),
         }
@@ -239,6 +243,9 @@ impl SqliteTaskAuthority {
     ///
     /// Returns a not-found, generation, idempotency-conflict, or storage
     /// error.
+    // By-value request mirrors every other mutating API here; the lint only
+    // fires because `planned_effects: Vec<_>` ended `Copy`.
+    #[allow(clippy::needless_pass_by_value)]
     pub fn request_commit_permit(
         &self,
         request: PermitRequest,
@@ -249,7 +256,7 @@ impl SqliteTaskAuthority {
         if let Some(existing) =
             load_permit_by_key(&transaction, request.task_id, request.idempotency_key)?
         {
-            let decision = replay_permit(existing, &request)?;
+            let decision = replay_permit(&transaction, existing, &request)?;
             transaction.commit()?;
             return Ok(decision);
         }
@@ -402,6 +409,16 @@ impl SqliteTaskAuthority {
         if request.new_retry_fence_epoch < task.record.retry_fence_epoch {
             return Err(TaskStoreError::FenceRegression);
         }
+        // `[TASK-COMMIT-002]` slot-closure subset: a permit may only close
+        // once every declared slot reached a known terminal state
+        // (`NoEffect` / `EffectClosed`); `Planned`, `Permitted`,
+        // `Dispatched`, and `EffectUnknown` all block. Permits with no
+        // declared effect set (all B-TASK-001 flows) have no slot rows and
+        // are unaffected.
+        let blocking = crate::effect::count_blocking_slots(&transaction, permit.permit_id)?;
+        if blocking > 0 {
+            return Err(TaskStoreError::OutstandingEffectSlots { count: blocking });
+        }
         let new_seq = task
             .record
             .head_commit_seq
@@ -503,7 +520,7 @@ impl SqliteTaskAuthority {
         load_receipt(&*connection, task_id, receipt_id)
     }
 
-    fn lock_connection(&self) -> Result<MutexGuard<'_, Connection>, TaskStoreError> {
+    pub(crate) fn lock_connection(&self) -> Result<MutexGuard<'_, Connection>, TaskStoreError> {
         self.connection
             .lock()
             .map_err(|_| TaskStoreError::LockPoisoned)
@@ -511,13 +528,17 @@ impl SqliteTaskAuthority {
 }
 
 fn replay_permit(
+    transaction: &Transaction<'_>,
     existing: PermitRecord,
     request: &PermitRequest,
 ) -> Result<PermitDecision, TaskStoreError> {
+    let stored_root = crate::effect::stored_effect_set_root(transaction, existing.permit_id)?
+        .unwrap_or_else(crate::effect::empty_effect_set_root);
     let same_bytes = existing.attempt_id == request.attempt_id
         && existing.attempt_generation == request.attempt_generation
         && existing.write_set_root == request.write_set_root
-        && existing.valid_until_ms == request.valid_until_ms;
+        && existing.valid_until_ms == request.valid_until_ms
+        && stored_root == crate::effect::effect_set_root_of(&request.planned_effects);
     if same_bytes {
         Ok(PermitDecision::Replayed(Box::new(existing)))
     } else {
@@ -633,6 +654,11 @@ fn issue_permit(
     attempt: &AttemptRecord,
     request: &PermitRequest,
 ) -> Result<PermitRecord, TaskStoreError> {
+    let effect_set_root = crate::effect::validate_planned_effects(
+        task.record.task_id,
+        task.record.task_generation,
+        &request.planned_effects,
+    )?;
     let permit_epoch = task
         .record
         .permit_epoch
@@ -662,6 +688,13 @@ fn issue_permit(
         updated_at_ms: request.requested_at_ms,
     };
     insert_permit(transaction, &record)?;
+    crate::effect::insert_effect_set(
+        transaction,
+        &record,
+        &request.planned_effects,
+        effect_set_root,
+        request.requested_at_ms,
+    )?;
     set_attempt_state(
         transaction,
         attempt,
@@ -737,6 +770,16 @@ fn attempt_matches_spec(record: &AttemptRecord, spec: &AttemptSpec) -> bool {
 fn migrate_v1(connection: &mut Connection) -> Result<(), TaskStoreError> {
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     transaction.execute_batch(SCHEMA_V1_SQL)?;
+    transaction.commit()?;
+    Ok(())
+}
+
+/// v1 → v2 is purely additive (new effect-plane tables + `user_version`),
+/// committed in one transaction: a failure anywhere rolls back to a
+/// complete v1 database, never a half-migrated one.
+fn migrate_v2(connection: &mut Connection) -> Result<(), TaskStoreError> {
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(crate::effect::SCHEMA_V2_SQL)?;
     transaction.commit()?;
     Ok(())
 }
@@ -854,7 +897,7 @@ const SCHEMA_V1_SQL: &str =
 
         PRAGMA user_version = 1;";
 
-trait SqlRead {
+pub(crate) trait SqlRead {
     fn prepare_statement(&self, sql: &str) -> Result<rusqlite::Statement<'_>, rusqlite::Error>;
 }
 
@@ -894,7 +937,7 @@ fn insert_task(transaction: &Transaction<'_>, record: &TaskRecord) -> Result<(),
     Ok(())
 }
 
-fn update_task(
+pub(crate) fn update_task(
     transaction: &Transaction<'_>,
     task: &StoredTask,
     now_ms: i64,
@@ -934,7 +977,10 @@ const TASK_COLUMNS: &str = "task_id, task_generation, head_commit_seq, head_effe
      retry_fence_epoch, control_epoch, cancel_epoch, permit_epoch,
      task_state, revision, created_at_ms, updated_at_ms";
 
-fn load_task(source: &impl SqlRead, task_id: TaskId) -> Result<StoredTask, TaskStoreError> {
+pub(crate) fn load_task(
+    source: &impl SqlRead,
+    task_id: TaskId,
+) -> Result<StoredTask, TaskStoreError> {
     load_task_optional(source, task_id)?.ok_or(TaskStoreError::TaskNotFound)
 }
 
@@ -1068,7 +1114,7 @@ const ATTEMPT_SELECT: &str = "SELECT a.attempt_id, a.task_id, a.attempt_generati
      JOIN task_snapshots s
        ON s.task_id = a.task_id AND s.snapshot_id = a.snapshot_id";
 
-fn load_attempt(
+pub(crate) fn load_attempt(
     source: &impl SqlRead,
     task_id: TaskId,
     attempt_id: TaskAttemptId,
@@ -1244,7 +1290,7 @@ fn load_permit_by_key(
     rows.next()?.map(decode_permit_row).transpose()
 }
 
-fn load_permit_by_id(
+pub(crate) fn load_permit_by_id(
     source: &impl SqlRead,
     task_id: TaskId,
     permit_id: CommitPermitId,
@@ -1458,11 +1504,11 @@ fn decode_receipt_row(row: &rusqlite::Row<'_>) -> Result<TaskReceiptRecord, Task
     })
 }
 
-const fn encode_u64(value: u64) -> [u8; 8] {
+pub(crate) const fn encode_u64(value: u64) -> [u8; 8] {
     value.to_be_bytes()
 }
 
-fn generation_from_blob(
+pub(crate) fn generation_from_blob(
     row: &rusqlite::Row<'_>,
     index: usize,
 ) -> Result<Generation, TaskStoreError> {
@@ -1472,25 +1518,25 @@ fn generation_from_blob(
     Ok(Generation::new(non_zero))
 }
 
-fn u64_from_blob(row: &rusqlite::Row<'_>, index: usize) -> Result<u64, TaskStoreError> {
+pub(crate) fn u64_from_blob(row: &rusqlite::Row<'_>, index: usize) -> Result<u64, TaskStoreError> {
     Ok(u64::from_be_bytes(blob8(row, index)?))
 }
 
-fn blob16(row: &rusqlite::Row<'_>, index: usize) -> Result<[u8; 16], TaskStoreError> {
+pub(crate) fn blob16(row: &rusqlite::Row<'_>, index: usize) -> Result<[u8; 16], TaskStoreError> {
     let value: Vec<u8> = row.get(index)?;
     value
         .try_into()
         .map_err(|_| TaskStoreError::CorruptRecord("expected 16-byte blob"))
 }
 
-fn blob32(row: &rusqlite::Row<'_>, index: usize) -> Result<[u8; 32], TaskStoreError> {
+pub(crate) fn blob32(row: &rusqlite::Row<'_>, index: usize) -> Result<[u8; 32], TaskStoreError> {
     let value: Vec<u8> = row.get(index)?;
     value
         .try_into()
         .map_err(|_| TaskStoreError::CorruptRecord("expected 32-byte blob"))
 }
 
-fn optional_blob16(
+pub(crate) fn optional_blob16(
     row: &rusqlite::Row<'_>,
     index: usize,
 ) -> Result<Option<[u8; 16]>, TaskStoreError> {

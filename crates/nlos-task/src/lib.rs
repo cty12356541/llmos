@@ -1,29 +1,42 @@
-//! Durable single-authority Task store for NLOS (B-TASK first slice).
+//! Durable single-authority Task store for NLOS (B-TASK slices 001+002).
 //!
 //! This crate implements the durable `TaskAuthority` subset required by the
-//! B-TASK first-slice acceptance gate: Task registration, frozen-input
-//! snapshot digest binding, `TaskHead` revision CAS, dual `TaskAttempt`
-//! registration with independent generations and cancellation scopes,
-//! unique `CommitPermit` issuance (`[TASK-COMMIT-001]`), cancel/permit
-//! linearization on one control/cancel/permit epoch (`[TASK-CANCEL-002]` /
-//! `[TASK-CANCEL-003]`), and crash/restart recovery with no ghost permits.
+//! B-TASK acceptance gates: Task registration, frozen-input snapshot digest
+//! binding, `TaskHead` revision CAS, dual `TaskAttempt` registration with
+//! independent generations and cancellation scopes, unique `CommitPermit`
+//! issuance (`[TASK-COMMIT-001]`), cancel/permit linearization on one
+//! control/cancel/permit epoch (`[TASK-CANCEL-002]` / `[TASK-CANCEL-003]`),
+//! crash/restart recovery with no ghost permits, and — since schema v2 —
+//! per-slot `EffectPermit` issuance with one-shot dispatch tokens and the
+//! `PLANNED → PERMITTED → DISPATCHED → EFFECT_CLOSED|EFFECT_UNKNOWN` /
+//! `NO_EFFECT` slot state machine (`[TASK-EFFECT-001]` /
+//! `[TASK-EFFECT-002]`) including the finalize-side slot-closure subset of
+//! `[TASK-COMMIT-002]`.
 //!
-//! Explicitly out of scope for this slice: `EffectPermit` / `EffectSlot` /
-//! effect history, TaskPlan/TaskNode materialization, Process/AgentInstance
+//! Explicitly out of scope: cross-attempt effect history and retry-fence
+//! advancement, quarantine/`PermitAdoption`/reconcile (`[TASK-EFFECT-003]`,
+//! next slice), TaskPlan/TaskNode materialization, Process/AgentInstance
 //! binding, IsolationDomain/ResourceGroup, signatures, and any IPC surface.
 //! Post-permit `EFFECTING`/`FINALIZING`/`UNCERTAIN`/`RECONCILING` from the
-//! §25.1 attempt state machine are represented as permit states rather than
-//! attempt states here.
+//! §25.1 attempt state machine are represented as permit/slot states rather
+//! than attempt states here.
 
+mod effect;
 mod model;
 mod store;
 
+pub use effect::{
+    DispatchRequest, EffectPermitDecision, EffectPermitId, EffectReceipt, EffectReceiptDecision,
+    EffectSlotId, IssuedPermit, LogicalEffectDescriptor, NoEffectReason, NoEffectRequest, Outcome,
+    OutcomeRequest, PermitRequest as EffectPermitRequest, ReceiptKind, SetSummary, SlotRecord,
+    SlotState, empty_effect_set_root, idempotency_identity_digest,
+};
 pub use model::{
     AttemptHandle, AttemptRecord, AttemptRegistrationDecision, AttemptSpec, AttemptState,
     CancelDecision, CancelRequest, ClosedAttempt, FinalizeDecision, FinalizeRequest,
-    PermitConflict, PermitDecision, PermitRecord, PermitRequest, PermitState, ReceiptOutcome,
-    SnapshotBundle, TaskReceiptRecord, TaskRecord, TaskRegistrationDecision, TaskSpec, TaskState,
-    empty_effect_history_root,
+    PermitConflict, PermitDecision, PermitRecord, PermitRequest, PermitState, PlannedEffect,
+    ReceiptOutcome, SnapshotBundle, TaskReceiptRecord, TaskRecord, TaskRegistrationDecision,
+    TaskSpec, TaskState, empty_effect_history_root,
 };
 pub use store::SqliteTaskAuthority;
 
@@ -83,6 +96,48 @@ pub enum TaskStoreError {
     /// A monotonic epoch/sequence space is exhausted; fail closed instead
     /// of wrapping.
     EpochExhausted,
+    /// The declared planned effect set violates `[TASK-EFFECT-002]`
+    /// (descriptor not bound to this task/generation, or a duplicate
+    /// `LogicalEffectId` inside one set).
+    InvalidEffectSet {
+        /// Static explanation of the violation.
+        reason: &'static str,
+    },
+    /// No slot with the given `effect_seq` was declared for the permit.
+    EffectSlotNotFound,
+    /// No `EffectPermit` with the given ID exists under the given task.
+    EffectPermitNotFound,
+    /// The caller presented a permit epoch different from the outstanding
+    /// permit's epoch.
+    PermitEpochMismatch,
+    /// A cancellation committed after the (effect) permit was issued; the
+    /// pre-cancel window stays untouched for the cancel path to close
+    /// (`[TASK-CANCEL-003]`).
+    CancellationCommitted {
+        /// The cancel epoch now durable on the task.
+        cancel_epoch: u64,
+    },
+    /// The effect slot is not in a state that allows the requested
+    /// transition (`[TASK-EFFECT-002]`).
+    InvalidEffectSlotState {
+        /// The slot's current durable state.
+        state: SlotState,
+    },
+    /// The presented dispatch token does not match the issued one-shot
+    /// token.
+    DispatchTokenMismatch,
+    /// The presented dispatch token was already consumed; re-dispatch is
+    /// refused fail-closed (`[TASK-EFFECT-001]`).
+    DispatchTokenConsumed,
+    /// Finalize is blocked by declared slots that have not reached a known
+    /// terminal state (`[TASK-COMMIT-002]` subset).
+    OutstandingEffectSlots {
+        /// How many declared slots still block closure.
+        count: u64,
+    },
+    /// `ConditionNotApplicable` was requested for a slot without a
+    /// pre-bound `required_condition_digest`.
+    ConditionNotBound,
 }
 
 impl fmt::Display for TaskStoreError {
@@ -136,6 +191,43 @@ impl fmt::Display for TaskStoreError {
             }
             Self::FenceRegression => formatter.write_str("retry-fence epoch must never regress"),
             Self::EpochExhausted => formatter.write_str("monotonic epoch space exhausted"),
+            Self::InvalidEffectSet { reason } => {
+                write!(formatter, "invalid planned effect set: {reason}")
+            }
+            Self::EffectSlotNotFound => {
+                formatter.write_str("effect slot was not declared for this permit")
+            }
+            Self::EffectPermitNotFound => {
+                formatter.write_str("effect permit does not exist under the task")
+            }
+            Self::PermitEpochMismatch => {
+                formatter.write_str("permit epoch does not match the outstanding permit")
+            }
+            Self::CancellationCommitted { cancel_epoch } => write!(
+                formatter,
+                "cancellation committed at cancel_epoch {cancel_epoch} fences this permit"
+            ),
+            Self::InvalidEffectSlotState { state } => {
+                write!(
+                    formatter,
+                    "effect slot state {state:?} rejects the transition"
+                )
+            }
+            Self::DispatchTokenMismatch => {
+                formatter.write_str("dispatch token does not match the issued one-shot token")
+            }
+            Self::DispatchTokenConsumed => {
+                formatter.write_str("dispatch token was already consumed")
+            }
+            Self::OutstandingEffectSlots { count } => {
+                write!(
+                    formatter,
+                    "{count} declared effect slots still block permit closure"
+                )
+            }
+            Self::ConditionNotBound => {
+                formatter.write_str("slot has no pre-bound required condition digest")
+            }
         }
     }
 }

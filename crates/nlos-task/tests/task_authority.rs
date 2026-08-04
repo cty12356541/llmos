@@ -119,6 +119,7 @@ fn permit_request(spec: &AttemptSpec, seed: u8) -> PermitRequest {
         attempt_id: spec.attempt_id,
         attempt_generation: spec.attempt_generation,
         write_set_root: [seed; 32],
+        planned_effects: Vec::new(),
         idempotency_key: IdempotencyKey::from_bytes(bytes(0xb0 + seed)),
         valid_until_ms: 9_999,
         requested_at_ms: 3_000,
@@ -307,8 +308,14 @@ fn permit_replay_returns_original_and_conflicting_bytes_fail_closed() {
     authority.register_attempt(spec_a).expect("register A");
 
     let request = permit_request(&spec_a, 0x01);
-    let issued = issued_permit(authority.request_commit_permit(request).expect("issue"));
-    let replayed = authority.request_commit_permit(request).expect("replay");
+    let issued = issued_permit(
+        authority
+            .request_commit_permit(request.clone())
+            .expect("issue"),
+    );
+    let replayed = authority
+        .request_commit_permit(request.clone())
+        .expect("replay");
     match replayed {
         PermitDecision::Replayed(original) => {
             assert_eq!(original.permit_id, issued.permit_id);
@@ -606,7 +613,7 @@ fn seed_restart_fixture(database: &TestDatabase) -> RestartFixture {
     let request_a = permit_request(&spec_a, 0x01);
     let winner = issued_permit(
         authority
-            .request_commit_permit(request_a)
+            .request_commit_permit(request_a.clone())
             .expect("permit A"),
     );
     authority
