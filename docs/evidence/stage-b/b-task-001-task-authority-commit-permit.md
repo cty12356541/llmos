@@ -1,8 +1,8 @@
 # B-TASK-001：durable TaskAuthority 与双 Attempt 唯一 CommitPermit 初始证据
 
-> 状态：PARTIAL PASS candidate（本地复验通过；尚待三平台 CI 与 integrator 审议）
+> 状态：PARTIAL PASS（本地复验 + 三平台 CI 通过；尚待 fault-injection 与 integrator 审议）
 >
-> 日期：2026-08-04
+> 日期：2026-08-04（三平台 CI 于同日通过：[run 30905979180](https://github.com/cty12356541/llmos/actions/runs/30905979180)）
 >
 > 对应：`[TASK-ATTEMPT-001]`、`[TASK-SNAPSHOT-001/002]`（冻结输入 digest 子集）、`[TASK-COMMIT-001]`、`[TASK-COMMIT-003]`（单 authority 子集）、`[TASK-CANCEL-002/003]`（pre-permit 子集）、`[TASK-RACE-001]`、`[TASK-EFFECT-ID-001]`（初始空 history 公式子集）
 
@@ -54,6 +54,8 @@ cargo fmt --all -- --check       # 通过
 git diff --check                 # 通过
 ```
 
+三平台复验：commit `4d38721` push 后 GitHub Actions [run 30905979180](https://github.com/cty12356541/llmos/actions/runs/30905979180)（Rust cross-platform verification）于 2026-08-04 通过，覆盖 Ubuntu/Windows/macOS workspace 测试与 Clippy。
+
 测试与验收门映射（`crates/nlos-task/tests/task_authority.rs`）：
 
 | 测试 | 验收门条目 |
@@ -80,7 +82,7 @@ git diff --check                 # 通过
 - digest/ID 为 domain-separated SHA-256 **占位公式**，无签名、无 deterministic-CBOR 完整编码、无 provenance；`write_set_root`/snapshot digest 由调用方供给，authority 不验证其内容真实性。
 - 单 authority、单进程 SQLite；不证明跨节点 consensus、authority takeover 或分布式 exactly-once。
 - 并发证据为单进程双线程竞态 + 单写者序列化；尚未接入 `nlos-store-fault` 的 fault-injection VFS（kill-9/torn-write/disk-full 注入）。
-- 仅在本地 macOS/arm64 复验；Ubuntu/Windows CI 尚未运行。
+- 三平台 CI（Ubuntu/Windows/macOS workspace 测试与 Clippy）已通过（run 30905979180）；真实硬件掉电、更多文件系统与长期 soak 仍超出当前证据。
 - 时间戳由调用方供给，仅用于观测，不构成时钟域保证。
 
-因此证据等级仍为单节点原型的局部 H3，候选 PARTIAL PASS，不得据此声称 `B-TASK` 包完成或 TaskAttempt 语义完整。
+因此证据等级为单节点原型的 H3 加三平台构建/测试复验，PARTIAL PASS，不得据此声称 `B-TASK` 包完成或 TaskAttempt 语义完整。
