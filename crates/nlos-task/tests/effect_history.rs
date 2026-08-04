@@ -952,7 +952,7 @@ fn golden_v2_database_migrates_losslessly_to_v3() {
         let version: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read user_version");
-        assert_eq!(version, 3, "migration stamps the new schema version");
+        assert_eq!(version, 4, "migration stamps the new schema version");
     }
 
     // All v2 data intact.

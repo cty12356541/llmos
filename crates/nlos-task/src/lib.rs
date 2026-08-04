@@ -16,18 +16,32 @@
 //! `TaskEffectHistoryEntry` table with `TaskEffectHistoryRoot` and
 //! retry-fence advancement (`[TASK-EFFECT-ID-001]` /
 //! `[TASK-RETRY-EFFECT-001]`), and the full required-slot success
-//! semantics of `[TASK-COMMIT-002]`.
+//! semantics of `[TASK-COMMIT-002]`. Since schema v4 the crate also
+//! carries the single-authority `TaskGroup` organization layer:
+//! acyclic parent/child trees with `max_depth`/`max_children`
+//! enforcement, content-addressed membership with monotonic generation
+//! CAS and immutable Admission/Removal receipts (`[TASK-GROUP-002]`),
+//! optional group binding for attempts (bit-exact membership
+//! generation/root/policy drift fence), structural tree cancellation
+//! (`[TASK-CANCEL-001]` / `[TASK-CANCEL-002]`), and the derived ALL/ANY
+//! aggregate state with the quarantine cap (`[TASK-STATE-002]` subset,
+//! `[TASK-GROUP-002]` final clause).
 //!
 //! Explicitly out of scope: cross-authority-term takeover (adoption is by
 //! the same authority after restart/uncertainty), compensation execution
-//! (`COMPENSATED` is recordable but never executed), `TaskGroup` semantics,
-//! TaskPlan/TaskNode materialization, Process/AgentInstance binding,
-//! IsolationDomain/ResourceGroup, gateway/driver integration, signatures,
-//! and any IPC surface. Post-permit `EFFECTING`/`FINALIZING`/`UNCERTAIN`/
-//! `RECONCILING` from the §25.1 attempt state machine are represented as
-//! permit/slot states rather than attempt states here.
+//! (`COMPENSATED` is recordable but never executed), `QUORUM`/`REDUCE`
+//! group semantics (`[TASK-GROUP-003]`), `BEST_EFFORT` failure mode,
+//! `AGENT_INSTANCE` members, `DETACH` execution (`[TASK-DETACH-001]`),
+//! ResourceGroup/ResourceAccount enforcement (placeholder binding
+//! fields), Namespace delegation, TaskPlan/TaskNode materialization,
+//! Process/AgentInstance binding, `IsolationDomain`, gateway/driver
+//! integration, signatures, and any IPC surface. Post-permit
+//! `EFFECTING`/`FINALIZING`/`UNCERTAIN`/`RECONCILING` from the §25.1
+//! attempt state machine are represented as permit/slot states rather
+//! than attempt states here.
 
 mod effect;
+mod group;
 mod model;
 mod reconcile;
 mod store;
@@ -37,6 +51,13 @@ pub use effect::{
     EffectSlotId, IssuedPermit, LogicalEffectDescriptor, NoEffectReason, NoEffectRequest, Outcome,
     OutcomeRequest, PermitRequest as EffectPermitRequest, ReceiptKind, SetSummary, SlotRecord,
     SlotState, empty_effect_set_root, idempotency_identity_digest,
+};
+pub use group::{
+    AttemptGroupBindingRecord, AttemptGroupRegistration, CompletionMode, FailureMode,
+    GroupAdmissionReceiptRecord, GroupBinding, GroupCancelDecision, GroupCancelRequest,
+    GroupMemberRecord, GroupMemberRef, GroupMemberType, GroupReceiptKind, GroupRecord,
+    GroupRegistrationDecision, GroupSpec, GroupState, MembershipState, RemovalDecision,
+    RemoveMemberRequest, TaskGroupId, empty_group_membership_root, membership_root_of,
 };
 pub use model::{
     AdoptionReceiptRecord, AttemptHandle, AttemptRecord, AttemptRegistrationDecision, AttemptSpec,
@@ -189,8 +210,63 @@ pub enum TaskStoreError {
         /// How many slots closed with an effect.
         count: u64,
     },
+    /// No group with the given ID exists (for the given task).
+    GroupNotFound,
+    /// The group ID is already registered with a different specification.
+    DuplicateGroup,
+    /// The requested parent binding would create a parent/child cycle
+    /// (`[TASK-GROUP-001]`).
+    GroupCycle,
+    /// The child would exceed an ancestor group's `max_depth` bound
+    /// (`[TASK-GROUP-001]`).
+    GroupDepthExceeded,
+    /// The group's `max_children` bound is exhausted
+    /// (`[TASK-GROUP-001]`).
+    GroupFanoutExceeded,
+    /// The group is SEALED; no new child is admitted
+    /// (`[TASK-GROUP-002]`).
+    GroupSealed,
+    /// The group is not OPEN for the requested membership mutation.
+    GroupNotOpen {
+        /// The group's current durable state.
+        state: GroupState,
+    },
+    /// The group is in a state that rejects the requested transition.
+    InvalidGroupState {
+        /// The group's current durable state.
+        state: GroupState,
+    },
+    /// The presented membership root / policy digest / member identity
+    /// differs from the durable record (fail-closed,
+    /// `[TASK-GROUP-002]`).
+    MembershipConflict,
+    /// The caller presented a membership generation different from the
+    /// group's current generation (`[TASK-GROUP-002]`).
+    StaleMembershipGeneration {
+        /// The generation the caller presented.
+        expected: u64,
+        /// The group's current durable generation.
+        current: u64,
+    },
+    /// The member is not present in the group.
+    GroupMemberNotFound,
+    /// A reserved group mode or member type was requested
+    /// (`QUORUM`/`REDUCE`/`BEST_EFFORT`/`AGENT_INSTANCE` are not
+    /// producible in this slice).
+    UnsupportedGroupMode,
+    /// Removal of a member carrying quarantine evidence would launder
+    /// the `[TASK-GROUP-002]` final-clause cap.
+    GroupQuarantinedChild,
+    /// A caller-supplied group specification violates a structural bound.
+    InvalidGroupSpec {
+        /// Static explanation of the violation.
+        reason: &'static str,
+    },
 }
 
+// A flat Display match grows linearly with the variant count; splitting
+// it by category would only obscure the one-message-per-variant table.
+#[allow(clippy::too_many_lines)]
 impl fmt::Display for TaskStoreError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -291,6 +367,42 @@ impl fmt::Display for TaskStoreError {
                 formatter,
                 "{count} slots closed with an effect; pre-effect closure is forbidden"
             ),
+            Self::GroupNotFound => formatter.write_str("group does not exist under the task"),
+            Self::DuplicateGroup => formatter.write_str("group ID re-registered with new spec"),
+            Self::GroupCycle => formatter.write_str("parent binding would create a group cycle"),
+            Self::GroupDepthExceeded => {
+                formatter.write_str("child exceeds an ancestor group's max_depth")
+            }
+            Self::GroupFanoutExceeded => {
+                formatter.write_str("group max_children bound is exhausted")
+            }
+            Self::GroupSealed => formatter.write_str("sealed group admits no new child"),
+            Self::GroupNotOpen { state } => {
+                write!(
+                    formatter,
+                    "group state {state:?} rejects the membership mutation"
+                )
+            }
+            Self::InvalidGroupState { state } => {
+                write!(formatter, "group state {state:?} rejects the transition")
+            }
+            Self::MembershipConflict => {
+                formatter.write_str("membership root/policy/member identity drift")
+            }
+            Self::StaleMembershipGeneration { expected, current } => write!(
+                formatter,
+                "stale membership generation: expected {expected}, current {current}"
+            ),
+            Self::GroupMemberNotFound => formatter.write_str("member is not present in the group"),
+            Self::UnsupportedGroupMode => {
+                formatter.write_str("reserved group mode/member type is not producible")
+            }
+            Self::GroupQuarantinedChild => {
+                formatter.write_str("quarantined member cannot be removed from the group")
+            }
+            Self::InvalidGroupSpec { reason } => {
+                write!(formatter, "invalid group spec: {reason}")
+            }
         }
     }
 }

@@ -24,7 +24,7 @@ use crate::{
     TaskRegistrationDecision, TaskSpec, TaskState, TaskStoreError,
 };
 
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 /// A single-writer `SQLite` task authority.
 ///
@@ -111,12 +111,18 @@ impl SqliteTaskAuthority {
                 migrate_v1(&mut connection)?;
                 migrate_v2(&mut connection)?;
                 migrate_v3(&mut connection)?;
+                migrate_v4(&mut connection)?;
             }
             1 => {
                 migrate_v2(&mut connection)?;
                 migrate_v3(&mut connection)?;
+                migrate_v4(&mut connection)?;
             }
-            2 => migrate_v3(&mut connection)?,
+            2 => {
+                migrate_v3(&mut connection)?;
+                migrate_v4(&mut connection)?;
+            }
+            3 => migrate_v4(&mut connection)?,
             SCHEMA_VERSION => {}
             other => return Err(TaskStoreError::UnsupportedSchema(other)),
         }
@@ -621,7 +627,7 @@ fn issue_permit(
     Ok(record)
 }
 
-fn closure_receipt(
+pub(crate) fn closure_receipt(
     task: &TaskRecord,
     attempt: &AttemptRecord,
     receipt_id: ReceiptId,
@@ -644,7 +650,7 @@ fn closure_receipt(
     }
 }
 
-fn handle_of(record: &AttemptRecord) -> AttemptHandle {
+pub(crate) fn handle_of(record: &AttemptRecord) -> AttemptHandle {
     AttemptHandle {
         attempt_id: record.attempt_id,
         attempt_generation: record.attempt_generation,
@@ -652,7 +658,7 @@ fn handle_of(record: &AttemptRecord) -> AttemptHandle {
     }
 }
 
-fn attempt_matches_spec(record: &AttemptRecord, spec: &AttemptSpec) -> bool {
+pub(crate) fn attempt_matches_spec(record: &AttemptRecord, spec: &AttemptSpec) -> bool {
     record.task_id == spec.task_id
         && record.attempt_id == spec.attempt_id
         && record.attempt_generation == spec.attempt_generation
@@ -685,6 +691,17 @@ fn migrate_v2(connection: &mut Connection) -> Result<(), TaskStoreError> {
 fn migrate_v3(connection: &mut Connection) -> Result<(), TaskStoreError> {
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     transaction.execute_batch(crate::effect::SCHEMA_V3_SQL)?;
+    transaction.commit()?;
+    Ok(())
+}
+
+/// v3 → v4 is purely additive (`TaskGroup` plane: groups, members,
+/// admission/removal receipts, group cancels, attempt group bindings +
+/// `user_version`), committed in one transaction: a failure anywhere
+/// rolls back to a complete v3 database, never a half-migrated one.
+fn migrate_v4(connection: &mut Connection) -> Result<(), TaskStoreError> {
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(crate::group::SCHEMA_V4_SQL)?;
     transaction.commit()?;
     Ok(())
 }
@@ -924,7 +941,7 @@ fn decode_task_row(row: &rusqlite::Row<'_>) -> Result<StoredTask, TaskStoreError
     })
 }
 
-fn insert_snapshot_if_absent(
+pub(crate) fn insert_snapshot_if_absent(
     transaction: &Transaction<'_>,
     task_id: TaskId,
     snapshot: &SnapshotBundle,
@@ -981,7 +998,7 @@ fn load_snapshot_optional(
         .transpose()
 }
 
-fn insert_attempt(
+pub(crate) fn insert_attempt(
     transaction: &Transaction<'_>,
     record: &AttemptRecord,
     idempotency_key: IdempotencyKey,
@@ -1042,7 +1059,7 @@ fn load_attempt_optional(
     rows.next()?.map(decode_attempt_row).transpose()
 }
 
-fn load_attempt_global(
+pub(crate) fn load_attempt_global(
     source: &impl SqlRead,
     attempt_id: TaskAttemptId,
 ) -> Result<Option<AttemptRecord>, TaskStoreError> {
@@ -1052,7 +1069,7 @@ fn load_attempt_global(
     rows.next()?.map(decode_attempt_row).transpose()
 }
 
-fn load_attempt_by_key(
+pub(crate) fn load_attempt_by_key(
     source: &impl SqlRead,
     task_id: TaskId,
     idempotency_key: IdempotencyKey,
@@ -1067,7 +1084,7 @@ fn load_attempt_by_key(
     rows.next()?.map(decode_attempt_row).transpose()
 }
 
-fn list_open_attempts(
+pub(crate) fn list_open_attempts(
     source: &impl SqlRead,
     task_id: TaskId,
 ) -> Result<Vec<AttemptRecord>, TaskStoreError> {

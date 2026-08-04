@@ -50,7 +50,7 @@ Application
 | `B-SDK-LANG-EVAL` | 官方 SDK 语言集合与 Go/C# 优先兼容评估 | `BLOCKED` | [多语言 SDK 支持评估计划](./language-sdk-support-plan.md)；OperationControl 前置切片见 [B-SCHEMA-013](../evidence/stage-b/b-schema-013-operation-control-timer-worker.md) | 2026-08-04 起 Go/C# generation/golden 探针与独立 IPC PoC 后移至 `B-TASK`/EffectPermit 纵切面之后（议题 31/32：第四种语言不能证明核心成立，且不应推动 SABI 在 Task/Effect 语义稳定前过早冻结）；Java/Kotlin、Swift、C/C++ 需求驱动复审 |
 | `B-SANDBOX` | Wasmtime/WASI 与独立 host Process 隔离对比 | `READY` | [技术选型第 5 节](./stage-b-technology-selection.md) | capability import、fuel/epoch、memory、host crash、GuaranteeTier |
 | `B-PROCESS` | native Process supervisor 与平台资源/生命周期 adapter | `READY` | [v0.5 Process 规范](../design/06-架构设计总纲-v0.5.md) | macOS/Windows/Linux suspend/kill、host incarnation、resource mapping |
-| `B-TASK` | TaskPlan/TaskNode、lazy materialization、TaskSnapshot、双 Attempt 唯一提交 | `IN_PROGRESS` | [v0.5 Task 规范](../design/06-架构设计总纲-v0.5.md)；2026-08-04 起为唯一主线工作包（议题 31/32 顺序变更采纳）；[B-TASK-001](../evidence/stage-b/b-task-001-task-authority-commit-permit.md)：durable TaskAuthority + 双 Attempt 竞争 CommitPermit 六条门 PARTIAL PASS（`nlos-task`，14 测试，三平台 CI [run 30905979180](https://github.com/cty12356541/llmos/actions/runs/30905979180)）；[B-TASK-002](../evidence/stage-b/b-task-002-effect-permit-dispatch.md)：EffectPermit 签发 + 逐槽 EffectSlot 状态机（schema v2，13 测试）PARTIAL PASS 候选；[B-TASK-001 fault-injection](../evidence/stage-b/b-task-001-fault-injection.md)：F1–F4 对齐故障矩阵 6 行全 PASS（kill-9 中断/commit 后崩溃/硬 I/O 错误/ENOSPC/静默丢写+WAL 撕裂/故障解除恢复，7 测试）PARTIAL PASS；[B-TASK-003](../evidence/stage-b/b-task-003-reconcile-effect-history.md)：quarantine/reconcile + 跨 Attempt effect history + retry fence + required 成功语义（schema v3，21 测试）PARTIAL PASS；[B-TASK-003 crash windows](../evidence/stage-b/b-task-003-crash-windows.md)：三点崩溃窗口 + effect 表组故障矩阵（11 测试）PARTIAL PASS 候选 | TaskGroup membership、TaskPlan/TaskNode 惰性物化、Process/Operation 绑定、跨 authority term adoption、真实 gateway/driver 集成、compensation 执行、F4 矩阵（checkpoint/backup） |
+| `B-TASK` | TaskPlan/TaskNode、lazy materialization、TaskSnapshot、双 Attempt 唯一提交 | `IN_PROGRESS` | [v0.5 Task 规范](../design/06-架构设计总纲-v0.5.md)；2026-08-04 起为唯一主线工作包（议题 31/32 顺序变更采纳）；[B-TASK-001](../evidence/stage-b/b-task-001-task-authority-commit-permit.md)：durable TaskAuthority + 双 Attempt 竞争 CommitPermit 六条门 PARTIAL PASS（`nlos-task`，14 测试，三平台 CI [run 30905979180](https://github.com/cty12356541/llmos/actions/runs/30905979180)）；[B-TASK-002](../evidence/stage-b/b-task-002-effect-permit-dispatch.md)：EffectPermit 签发 + 逐槽 EffectSlot 状态机（schema v2，13 测试）PARTIAL PASS 候选；[B-TASK-001 fault-injection](../evidence/stage-b/b-task-001-fault-injection.md)：F1–F4 对齐故障矩阵 6 行全 PASS（kill-9 中断/commit 后崩溃/硬 I/O 错误/ENOSPC/静默丢写+WAL 撕裂/故障解除恢复，7 测试）PARTIAL PASS；[B-TASK-003](../evidence/stage-b/b-task-003-reconcile-effect-history.md)：quarantine/reconcile + 跨 Attempt effect history + retry fence + required 成功语义（schema v3，21 测试）PARTIAL PASS；[B-TASK-003 crash windows](../evidence/stage-b/b-task-003-crash-windows.md)：三点崩溃窗口 + effect 表组故障矩阵（11 测试）PARTIAL PASS；[B-TASK-004](../evidence/stage-b/b-task-004-task-group.md)：TaskGroup membership generation/root CAS + Admission Receipt + 树状取消 + ALL/ANY 聚合 + quarantine 父组降级（schema v4，13 测试）PARTIAL PASS 候选；[B-TASK-003 fault](../evidence/stage-b/b-task-003-fault-injection.md)：v3 表组故障矩阵 7 行全 PASS（8 测试）PARTIAL PASS 候选 | QUORUM/REDUCE 执行语义、AGENT_INSTANCE 成员、DETACH 执行、LOST/quiescence、WriteSet/Permit/Receipt 组绑定、TaskPlan/TaskNode 惰性物化、Process/Operation 绑定、跨 authority term adoption、真实 gateway/driver 集成、compensation 执行 |
 | `B-CONTROL` | CLI/API/NL/GUI 共用 ControlCommand 与 Receipt | `READY` | [v0.5 控制面规范](../design/06-架构设计总纲-v0.5.md) | SystemControl client、权限 UI、多层手动调度、等价路径证明 |
 | `B-ARTIFACT` | 内容寻址 Artifact、metadata、reconcile、GC | `READY` | [技术选型第 7 节](./stage-b-technology-selection.md) | fsync/rename、blob/metadata 恢复、retention 和 GC |
 | `B-SLICE-K` | Slice K：Package → Application → Task → Fiber → Operation → Receipt → 控制 | `NOT_STARTED` | [v0.5 Slice K](../design/06-架构设计总纲-v0.5.md) | 需要前述执行、持久化、Process、权限和控制能力贯通 |
@@ -237,6 +237,15 @@ Application
 - 四态区分断言：`blocks_finalization` 映射（DISPATCHED/EFFECT_UNKNOWN 阻塞、NO_EFFECT/EFFECT_CLOSED 放行）经公开 API 直接断言；PARTIAL 如实映射为 v2 观测形态（DISPATCHED 未闭合），提交语义归 B-TASK-003 主线。
 - 详见 [B-TASK-003 crash windows](../evidence/stage-b/b-task-003-crash-windows.md)；限制：kill-9 ≠ 真实断电、macOS 本地、未对 v3 reconcile/history 表组注入、F4 全集未覆盖。
 
+### 4.27 TaskGroup 组织层（B-TASK-004）
+
+- schema v3→v4 纯增量五表迁移（golden-v3 无损 + 失败回滚测试）：`register_group` 无环父子树（父先存在使环构造上不可产生 + 祖先链防御检查）、每 task 单 root、max_depth 沿祖先链与 max_children fail-closed、QUORUM/REDUCE/BEST_EFFORT 保留拒绝。
+- membership content-addressed root + 单调 generation CAS；Admission/Removal Receipt immutable、确定性派生 ID、重放安全；OPEN-only admission（SEALED 冻结）。
+- `register_attempt_in_group` 纯增量 API：期望 membership generation/root/policy 逐位校验，漂移 fail-closed（`StaleMembershipGeneration`/`MembershipConflict`）；未绑组 attempt 行为逐位不变（v1–v3 API 零变化，旧测试仅 2 处版本戳适配）。
+- 树状取消单事务结构化传播：parent cancel_epoch 恰递增一次 → 全部非终态后代（child group + pre-permit member attempt closure receipt、head 不变）；permit 持有 attempt 不动（permit-first 线性化）；终态/未绑组不动。
+- 聚合状态为显式 refresh 派生视图（child 状态是真相权威）：ALL 全成功才 COMPLETED、ANY 任一成功；failure_mode 占位语义 FAIL_FAST（同事务传播取消剩余）/COLLECT_ALL/ISOLATE；quarantine 子树证据使父组降级 PARTIAL 不得 COMPLETED、携带者拒绝移除（`GroupQuarantinedChild`）。
+- 详见 [B-TASK-004](../evidence/stage-b/b-task-004-task-group.md)；证据等级单节点 H3 候选：QUORUM/REDUCE、AGENT_INSTANCE、DETACH、LOST/quiescence、WriteSet/Permit/Receipt 组绑定均未实现。
+
 ## 5. 当前下一验收门
 
 `B-TASK` 自 2026-08-04 起为唯一主线工作包（采纳议题 31/32 顺序变更）。`B-SCHEMA` 保持 `IN_PROGRESS` 完成态收尾但不再持有主线；其剩余横向项（Go/C# 探针、Namespace bootstrap authority、生产目录 watch/lease/rebind、持久 deadline queue/restart recovery、Receipt authority、双向 peer auth、Python Proactor 稳定 profile、CBOR 跨语言、长期 fuzz、actual signing）在 `B-TASK` 纵切面成立前不推动 SABI 冻结。
@@ -308,7 +317,7 @@ EFFECT_UNKNOWN → QUARANTINED tombstone（head 冻结、禁新 winner、重放�
 |---|---|
 | `ROAD-B-001` 第三方 Application 安装/更新/卸载 | 未开始 |
 | `ROAD-B-002` Application 多 Process、后台 Task、UI Surface | 未开始 |
-| `ROAD-B-003` 双 Attempt、cancel/commit、handle 泄漏、snapshot、provider cache、effect fence | 未完成；当前仅有 Operation 局部 fence |
+| `ROAD-B-003` 双 Attempt、cancel/commit、handle 泄漏、snapshot、provider cache、effect fence | 局部推进：双 Attempt 唯一 CommitPermit、cancel/commit 线性化、effect fence 四态与 quarantine/reconcile、树状取消已有单节点 H3 + 三平台证据（B-TASK-001~004）；handle 泄漏、完整 TaskSnapshot 收集、provider cache、Process 绑定未完成 |
 | `ROAD-B-004` 10K/100K logical TaskNode、working-set、pressure/reclaim、rehydrate | 未开始；waiting Fiber 不能替代 TaskNode benchmark |
 | `ROAD-B-005` Task Manager 多层手动控制与 NL/GUI/CLI 同路 | 未开始 |
 | `ROAD-B-006` 100K dormant Fiber、阻塞隔离、crash propagation、Activation meter | 局部通过；仍为 `PARTIAL_PASS` |

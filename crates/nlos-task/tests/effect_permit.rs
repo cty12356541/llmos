@@ -1241,7 +1241,7 @@ fn golden_v1_database_migrates_losslessly() {
         // B-TASK-003 adaptation: the open now runs the v1 → v2 → v3
         // additive chain, so the stamped version is 3; every assertion
         // below is unchanged (v1/v2 semantics preserved bit-for-bit).
-        assert_eq!(version, 3, "migration stamps the new schema version");
+        assert_eq!(version, 4, "migration stamps the new schema version");
     }
 
     // All v1 data intact.
