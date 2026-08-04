@@ -2,7 +2,7 @@
 
 > 状态：`ACTIVE / POC ACCEPTANCE PENDING`
 >
-> 最后更新：2026-08-02
+> 最后更新：2026-08-04（采纳[议题 31](../discussions/31-重复建设评估与继续投入边界.md)/[议题 32](../discussions/32-核心设计理念撞车风险评估.md) 顺序变更：主线由 `B-SCHEMA` 剩余横向门切换为 `B-TASK` 纵切面；Go/C# 探针后移）
 >
 > 权威用途：这是阶段 B 工作项、实现事实、验证证据和下一验收门的唯一汇总入口。它不替代 v0.5 架构规范、ADR 或 Evidence；每一项状态都必须能下钻到这些权威对象。
 
@@ -47,10 +47,10 @@ Application
 | `B-OUTBOX` | Durable Outbox → Tokio Fiber wake/reconcile consumer | `DONE` | [PoC-0004](../evidence/stage-b/poc-0004-outbox-wake-consumer.md)；本提交及评审后 remediation 提交（hash 见 git log 与 commit receipt） | durable wait registry/fiber rehydration 归 `B-PROCESS`/Slice K；此前移交 `B-STORE-FAULT` 的 F1–F7 已全部通过。2026-08-01 remediation：评审指出的 pump 错误路径可观测性（失败计数/根因/有上限退避/Faulted 终态）、drain panic 防护、shutdown 终态语义与 wake 重缓冲已补齐并各有测试。2026-08-01 复验残余（非阻塞，详见 PoC-0004 §8.4）：持久 apply 失败（`stopped_at` 路径）暂无 health 信号 → 后续 observability 项；`Faulted` 恢复依赖外部监督 → `B-PROCESS`；`PumpHealth.last_error` 跨 IPC 边界需脱敏 → `B-CONTROL`/`B-SCHEMA`；`Buffered` 驻留仅随 fiber 终态清理 → `B-PROCESS`/Slice K |
 | `B-STORE-FAULT` | SQLite fault-injection：kill-9、torn-write、disk-full、checkpoint/backup、migration、长读事务、100K metadata、跨平台 | `DONE` | [PoC-0003 F1–F7 增量证据](../evidence/stage-b/poc-0003-sqlite-operation-authority.md)；[三平台 CI run 30714584445](https://github.com/cty12356541/llmos/actions/runs/30714584445) | 100K 逐条生产写入、真实硬件掉电/更多文件系统保留为扩展 Evidence，不阻塞本工作包 |
 | `B-SCHEMA` | Protobuf/CBOR、golden vector、版本演进和本地 typed IPC | `IN_PROGRESS` | [ADR-0003](./adrs/0003-stage-b-idl-and-canonical-encoding.md)、[B-SCHEMA-001](../evidence/stage-b/b-schema-001-protobuf-envelope.md)、[B-SCHEMA-002](../evidence/stage-b/b-schema-002-cross-language-generation.md)、[B-SCHEMA-003](../evidence/stage-b/b-schema-003-deterministic-cbor.md)、[B-SCHEMA-004](../evidence/stage-b/b-schema-004-schema-fuzz-smoke.md)、[B-SCHEMA-005](../evidence/stage-b/b-schema-005-local-typed-ipc.md)、[B-SCHEMA-006](../evidence/stage-b/b-schema-006-typescript-python-ipc-clients.md)、[B-SCHEMA-007](../evidence/stage-b/b-schema-007-service-directory-negotiation.md)、[B-SCHEMA-008](../evidence/stage-b/b-schema-008-cross-language-directory-chain.md)、[B-SCHEMA-009](../evidence/stage-b/b-schema-009-common-sabi-semantics.md)、[B-SCHEMA-010](../evidence/stage-b/b-schema-010-durable-idempotency-result.md)、[B-SCHEMA-011](../evidence/stage-b/b-schema-011-durable-idempotency-ipc.md)、[B-SCHEMA-012](../evidence/stage-b/b-schema-012-deadline-cancel-state-machine.md)、[B-SCHEMA-013](../evidence/stage-b/b-schema-013-operation-control-timer-worker.md)、[三平台 reconnect run 30740180511](https://github.com/cty12356541/llmos/actions/runs/30740180511)、[三平台 restart run 30741046472](https://github.com/cty12356541/llmos/actions/runs/30741046472)、[三平台 deadline/cancel run 30741733804](https://github.com/cty12356541/llmos/actions/runs/30741733804)、[三平台 OperationControl run 30743421174](https://github.com/cty12356541/llmos/actions/runs/30743421174)、[fuzz run 30743421200](https://github.com/cty12356541/llmos/actions/runs/30743421200)；`schema/`、`gen/`、`sdk/`、`crates/nlos-schema`、`crates/nlos-service-directory`、`crates/nlos-canonical`、`crates/nlos-ipc`、`fuzz/` | Namespace bootstrap authority、生产目录 watch/lease/rebind、持久 deadline queue/restart recovery、Receipt authority、双向 peer auth、Python Proactor 稳定 profile、CBOR 跨语言、长期 fuzz、actual signing |
-| `B-SDK-LANG-EVAL` | 官方 SDK 语言集合与 Go/C# 优先兼容评估 | `IN_PROGRESS` | [多语言 SDK 支持评估计划](./language-sdk-support-plan.md)；OperationControl 前置切片见 [B-SCHEMA-013](../evidence/stage-b/b-schema-013-operation-control-timer-worker.md) | 下一门为 Go/C# generation/golden 探针，并至少选择一个完成跨平台 IPC PoC；Java/Kotlin、Swift、C/C++ 需求驱动复审 |
+| `B-SDK-LANG-EVAL` | 官方 SDK 语言集合与 Go/C# 优先兼容评估 | `BLOCKED` | [多语言 SDK 支持评估计划](./language-sdk-support-plan.md)；OperationControl 前置切片见 [B-SCHEMA-013](../evidence/stage-b/b-schema-013-operation-control-timer-worker.md) | 2026-08-04 起 Go/C# generation/golden 探针与独立 IPC PoC 后移至 `B-TASK`/EffectPermit 纵切面之后（议题 31/32：第四种语言不能证明核心成立，且不应推动 SABI 在 Task/Effect 语义稳定前过早冻结）；Java/Kotlin、Swift、C/C++ 需求驱动复审 |
 | `B-SANDBOX` | Wasmtime/WASI 与独立 host Process 隔离对比 | `READY` | [技术选型第 5 节](./stage-b-technology-selection.md) | capability import、fuel/epoch、memory、host crash、GuaranteeTier |
 | `B-PROCESS` | native Process supervisor 与平台资源/生命周期 adapter | `READY` | [v0.5 Process 规范](../design/06-架构设计总纲-v0.5.md) | macOS/Windows/Linux suspend/kill、host incarnation、resource mapping |
-| `B-TASK` | TaskPlan/TaskNode、lazy materialization、TaskSnapshot、双 Attempt 唯一提交 | `READY` | [v0.5 Task 规范](../design/06-架构设计总纲-v0.5.md) | TaskAuthority、CommitPermit、EffectPermit、snapshot drift、reconcile |
+| `B-TASK` | TaskPlan/TaskNode、lazy materialization、TaskSnapshot、双 Attempt 唯一提交 | `IN_PROGRESS` | [v0.5 Task 规范](../design/06-架构设计总纲-v0.5.md)；2026-08-04 起为唯一主线工作包（议题 31/32 顺序变更采纳）；首个切片规划：durable TaskAuthority + TaskSnapshot 冻结 + 双 Attempt 竞争 CommitPermit（议题 31 证据门条 1–3） | TaskAuthority、CommitPermit、EffectPermit、snapshot drift、reconcile |
 | `B-CONTROL` | CLI/API/NL/GUI 共用 ControlCommand 与 Receipt | `READY` | [v0.5 控制面规范](../design/06-架构设计总纲-v0.5.md) | SystemControl client、权限 UI、多层手动调度、等价路径证明 |
 | `B-ARTIFACT` | 内容寻址 Artifact、metadata、reconcile、GC | `READY` | [技术选型第 7 节](./stage-b-technology-selection.md) | fsync/rename、blob/metadata 恢复、retention 和 GC |
 | `B-SLICE-K` | Slice K：Package → Application → Task → Fiber → Operation → Receipt → 控制 | `NOT_STARTED` | [v0.5 Slice K](../design/06-架构设计总纲-v0.5.md) | 需要前述执行、持久化、Process、权限和控制能力贯通 |
@@ -200,7 +200,9 @@ Application
 
 ## 5. 当前下一验收门
 
-`B-SCHEMA` 继续处于 `IN_PROGRESS`。B-SCHEMA-001/002 已完成 Protobuf envelope 与跨语言 compat gate，B-SCHEMA-003 已经三平台完成 deterministic CBOR/profile/golden，B-SCHEMA-004 已建立可重复 sanitizer fuzz smoke；当前验收门推进到本地 typed IPC adapter：
+`B-TASK` 自 2026-08-04 起为唯一主线工作包（采纳议题 31/32 顺序变更）。`B-SCHEMA` 保持 `IN_PROGRESS` 完成态收尾但不再持有主线；其剩余横向项（Go/C# 探针、Namespace bootstrap authority、生产目录 watch/lease/rebind、持久 deadline queue/restart recovery、Receipt authority、双向 peer auth、Python Proactor 稳定 profile、CBOR 跨语言、长期 fuzz、actual signing）在 `B-TASK` 纵切面成立前不推动 SABI 冻结。
+
+已完成的 B-SCHEMA 验收链（保持有效）：
 
 ```text
 Protobuf envelope + Rust generation + registry + first golden       DONE
@@ -217,18 +219,23 @@ Protobuf envelope + Rust generation + registry + first golden       DONE
   → durable idempotency SABI reconnect integration                 PARTIAL PASS
   → deadline/cancel/uncertain state machine                        PARTIAL PASS
   → Operation query/cancel payload + async timer/worker            PARTIAL PASS
-  → Go/C# generation/golden probes + one independent IPC PoC       NEXT
+  → Go/C# generation/golden probes + one independent IPC PoC       DEFERRED（B-TASK 纵切面之后）
 ```
 
-当前 typed IPC 总验收条件及剩余门：
+`B-TASK` 首个切片验收门（议题 31 证据门条 1–3 与条 7 的子集）：
 
-1. 最小 request/response service 与 Rust/TypeScript/Python client 已实现，TS/Python Unix/Windows 分支已由三平台 CI 验证；
-2. transport-neutral framing、Unix 后端和 Windows named-pipe 后端已由本地/三平台 CI 验证；
-3. frame length、connect/read/write timeout、peer identity/authorization hook 和 backpressure 已显式有界；Windows token/SID 仍缺；
-4. unknown field、unknown major/critical、断连、半帧、超界和 endpoint 不可用已有失败语义；TS/Python 失败连接也会 poison；durable reconnect、OperationControl 与初始 timer worker 已验证，SDK 自动重连、正式 OperationControl facade 和持久 deadline queue/restart recovery 仍待实现；
-5. OS endpoint/credential/Protobuf 未进入 `nlos-types`；后续 transport 替换继续以 generated service trait/descriptor 为边界。
+```text
+durable TaskAuthority：Task 注册、TaskSnapshot 冻结输入 digest、TaskHead revision CAS   NEXT
+  → 双 TaskAttempt 注册：独立 generation、独立取消域，均绑定同一 TaskSnapshot          NEXT
+  → CommitPermit 唯一发放：只有一个 Attempt 获得 permit 并推进 TaskHead                NEXT
+  → losing/cancelled/stale Attempt 不得推进 TaskHead、不得覆盖 winner Receipt          NEXT
+  → cancel 与 permit 竞态只有规范允许的线性化结果（cancel-first / permit-first）        NEXT
+  → authority 重启后 TaskHead/Attempt/Permit 状态可恢复，无幽灵 permit                 NEXT
+```
 
-多语言 SDK 扩展按 [`B-SDK-LANG-EVAL`](./language-sdk-support-plan.md) 单独晋级：Go 与 C# 已进入 P1 评估，但不打断当前 TS/Python transport 主线，也不在只有 generated types 时宣称“已支持”。
+EffectPermit、跨 Attempt effect history、TaskPlan/TaskNode 惰性物化与 Slice K 其余条目在本切片通过后续推；不得在本切片 Evidence 上声称 TaskAttempt 语义已完整。
+
+多语言 SDK 扩展按 [`B-SDK-LANG-EVAL`](./language-sdk-support-plan.md) 单独晋级：Go 与 C# 的 generation/golden 探针与独立 IPC PoC 自 2026-08-04 起后移至 `B-TASK`/EffectPermit 纵切面通过之后（议题 31/32 顺序变更），不在只有 generated types 时宣称“已支持”；Rust/TypeScript/Python 三语言现有 PARTIAL PASS 证据保持有效。
 
 `B-OUTBOX` 的已验收条件（供追溯）：commit 前无 wake；崩溃重放不丢失、不制造旧 generation wake；duplicate 无第二次逻辑唤醒/reconciliation；bounded queue 不阻塞 writer/cancel；测试覆盖 current/late/cancel-before-dispatch/crash-restart 场景；Evidence 已同步三 PoC 集成缺口并保持 `PARTIAL_PASS` 直到故障注入通过。
 

@@ -2,9 +2,9 @@
 
 > Work Item：`B-SDK-LANG-EVAL`
 >
-> 状态：`IN_PROGRESS / GATE B STARTING`
+> 状态：`BLOCKED / GATE B DEFERRED`（2026-08-04 起 Go/C# 探针后移至 `B-TASK`/EffectPermit 纵切面之后，依据[议题 31](../discussions/31-重复建设评估与继续投入边界.md)第 5 节与[议题 32](../discussions/32-核心设计理念撞车风险评估.md)；Rust/TS/Python 已产证据保持有效）
 >
-> 日期：2026-08-02
+> 日期：2026-08-04
 >
 > 适用基线：架构总纲 v0.5、ADR-0003、`B-SCHEMA`
 
@@ -70,8 +70,8 @@ Rust 继续作为阶段 B 核心实现语言。增加 Go、C# 或其他 SDK 不�
 
 初步建议不是永久决定：
 
-- **阶段 B 当前主线不变**：先完成 Rust/TypeScript/Python 的 `SDK-3`；
-- **Go 与 C# 正式进入 P1 评估计划**：两者都做 `SDK-0–SDK-1` 生成/golden 探针；至少一个在 SABI 冻结前完成 `SDK-2` 跨平台 IPC 探针；
+- **阶段 B 语言主线**：Rust/TypeScript/Python 的 `SDK-3` 已达成 PARTIAL PASS；当前项目主线已切换为 `B-TASK` 纵切面，语言工作不再持有主线；
+- **Go 与 C# 探针后移（2026-08-04，议题 31/32）**：两者仍保留 P1 评估计划（`SDK-0–SDK-1` 生成/golden 探针、至少一个 `SDK-2` 跨平台 IPC 探针），但在 `B-TASK`/EffectPermit 纵切面通过前不启动；Rust/TS/Python 已足以证明跨语言协议可行，第四种语言不能证明 NLOS 核心成立，且 Go/C# 不应推动 SABI 在 Task/Effect/Receipt 语义稳定前过早冻结；
 - **C# 可优先进行 Windows transport PoC**，因为 .NET 官方提供 `NamedPipeClientStream/NamedPipeServerStream`，且 NLOS 最高目标明确包含 Windows 级桌面系统；[Microsoft .NET pipe operations](https://learn.microsoft.com/en-us/dotnet/standard/io/pipe-operations)
 - **Go 可优先进行 Unix/服务工具 PoC**，标准库直接提供 `UnixConn`；Windows named-pipe 依赖和身份语义必须单独选型，不能假设与 Unix 等价；[Go `net.UnixConn`](https://pkg.go.dev/net#UnixConn)
 - Java/Kotlin、Swift 不进入阶段 B 必交矩阵，但 schema 设计不得主动制造其无法表达的语义；Java 标准库已有 Unix-domain socket API，可作为后续 Unix profile 起点。[Java `UnixDomainSocketAddress`](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/net/UnixDomainSocketAddress.html)
@@ -87,6 +87,8 @@ Rust 继续作为阶段 B 核心实现语言。增加 Go、C# 或其他 SDK 不�
 4. Rust/TypeScript/Python 运行同一跨语言服务端/客户端矩阵，而不只读取同一 golden 文件。
 
 ### Gate B：Go/C# 低成本独立兼容探针
+
+> 2026-08-04 起本 Gate 后移至 `B-TASK`/EffectPermit 纵切面通过之后（议题 31/32 顺序变更）；下列内容保持为启动时的执行定义。
 
 1. 固定 Go 与 C# generator/runtime 版本，生成物 checked in 或提供可验证的离线恢复方式；
 2. 读取 Rust golden，覆盖 major/critical、unknown field、malformed 和 frame bound；
@@ -120,9 +122,9 @@ Buf 支持固定 remote plugin 并从同一配置生成 Go 等语言；引入时
 | SABI common metadata/error/safe-retry validation | `PARTIAL PASS`，三平台 run 30737782776 成功 | `B-SCHEMA`、B-SCHEMA-009 |
 | Durable idempotency authority + reconnect IPC | `PARTIAL PASS`，SQLite v3 与 TS/Python 真实断线重连均通过三平台 run 30740180511 | `B-SCHEMA`、`B-STORE`、B-SCHEMA-010/011 |
 | Deadline/cancel/uncertain + OperationControl/timer worker | `PARTIAL PASS`，B-SCHEMA-012/013 均已通过三平台，最新 run 30743421174 | `B-SCHEMA`、`B-STORE`、`B-PROCESS` |
-| Go generation/golden probe | `NEXT` | `B-SDK-LANG-EVAL` |
-| C# generation/golden probe | `NEXT` | `B-SDK-LANG-EVAL` |
-| Go/C# transport 对比 Evidence | `PLANNED` | 新 Evidence，不提前编号 |
+| Go generation/golden probe | `DEFERRED`（2026-08-04，B-TASK 纵切面之后） | `B-SDK-LANG-EVAL` |
+| C# generation/golden probe | `DEFERRED`（2026-08-04，B-TASK 纵切面之后） | `B-SDK-LANG-EVAL` |
+| Go/C# transport 对比 Evidence | `DEFERRED` | 新 Evidence，不提前编号 |
 | 官方 SDK 语言集合 ADR | `PLANNED` | 至少一个 P1 transport PoC 后创建 |
 | Java/Kotlin、Swift、C/C++ 复审 | `DEFERRED / DEMAND-DRIVEN` | Stage B 后段或具体消费者触发 |
 
