@@ -408,6 +408,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "nlos-task"
+version = "0.1.0"
+dependencies = [
+ "nlos-types",
+ "rusqlite",
+ "sha2",
+]
+
+[[package]]
 name = "nlos-types"
 version = "0.1.0"
 

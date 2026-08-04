@@ -50,7 +50,7 @@ Application
 | `B-SDK-LANG-EVAL` | 官方 SDK 语言集合与 Go/C# 优先兼容评估 | `BLOCKED` | [多语言 SDK 支持评估计划](./language-sdk-support-plan.md)；OperationControl 前置切片见 [B-SCHEMA-013](../evidence/stage-b/b-schema-013-operation-control-timer-worker.md) | 2026-08-04 起 Go/C# generation/golden 探针与独立 IPC PoC 后移至 `B-TASK`/EffectPermit 纵切面之后（议题 31/32：第四种语言不能证明核心成立，且不应推动 SABI 在 Task/Effect 语义稳定前过早冻结）；Java/Kotlin、Swift、C/C++ 需求驱动复审 |
 | `B-SANDBOX` | Wasmtime/WASI 与独立 host Process 隔离对比 | `READY` | [技术选型第 5 节](./stage-b-technology-selection.md) | capability import、fuel/epoch、memory、host crash、GuaranteeTier |
 | `B-PROCESS` | native Process supervisor 与平台资源/生命周期 adapter | `READY` | [v0.5 Process 规范](../design/06-架构设计总纲-v0.5.md) | macOS/Windows/Linux suspend/kill、host incarnation、resource mapping |
-| `B-TASK` | TaskPlan/TaskNode、lazy materialization、TaskSnapshot、双 Attempt 唯一提交 | `IN_PROGRESS` | [v0.5 Task 规范](../design/06-架构设计总纲-v0.5.md)；2026-08-04 起为唯一主线工作包（议题 31/32 顺序变更采纳）；首个切片规划：durable TaskAuthority + TaskSnapshot 冻结 + 双 Attempt 竞争 CommitPermit（议题 31 证据门条 1–3） | TaskAuthority、CommitPermit、EffectPermit、snapshot drift、reconcile |
+| `B-TASK` | TaskPlan/TaskNode、lazy materialization、TaskSnapshot、双 Attempt 唯一提交 | `IN_PROGRESS` | [v0.5 Task 规范](../design/06-架构设计总纲-v0.5.md)；2026-08-04 起为唯一主线工作包（议题 31/32 顺序变更采纳）；[B-TASK-001](../evidence/stage-b/b-task-001-task-authority-commit-permit.md)：durable TaskAuthority + 双 Attempt 竞争 CommitPermit 六条门本地 PARTIAL PASS candidate（`nlos-task`，14 测试）；三平台 CI 待运行 | EffectPermit、跨 Attempt effect history、PermitAdoption、TaskPlan/TaskNode 惰性物化、Process 绑定、snapshot drift/reconcile、fault-injection 接入 |
 | `B-CONTROL` | CLI/API/NL/GUI 共用 ControlCommand 与 Receipt | `READY` | [v0.5 控制面规范](../design/06-架构设计总纲-v0.5.md) | SystemControl client、权限 UI、多层手动调度、等价路径证明 |
 | `B-ARTIFACT` | 内容寻址 Artifact、metadata、reconcile、GC | `READY` | [技术选型第 7 节](./stage-b-technology-selection.md) | fsync/rename、blob/metadata 恢复、retention 和 GC |
 | `B-SLICE-K` | Slice K：Package → Application → Task → Fiber → Operation → Receipt → 控制 | `NOT_STARTED` | [v0.5 Slice K](../design/06-架构设计总纲-v0.5.md) | 需要前述执行、持久化、Process、权限和控制能力贯通 |
@@ -198,6 +198,15 @@ Application
 - `request_cancel_idempotent` 以 Operation generation 和 `expected_cancel_epoch` 做 SQLite 事务 CAS：首次取消只推进一次，精确重试不重复推进/发 Outbox，completion 先提交时只返回既有终态。
 - TS/Python 真实 IPC 已验证 `DISPATCHED(0) → CANCEL_REQUESTED(1)`、cancel replay 与 query；独立 Tokio timer task 又验证 `REGISTERED(0) → CANCELLED_BEFORE_EFFECT(1)`，worker 精确一次成功、零失败。[三平台 run 30743421174](https://github.com/cty12356541/llmos/actions/runs/30743421174) 与 [fuzz run 30743421200](https://github.com/cty12356541/llmos/actions/runs/30743421200) 已成功，保持 `PARTIAL PASS`。详见 [B-SCHEMA-013](../evidence/stage-b/b-schema-013-operation-control-timer-worker.md)。
 
+### 4.22 durable TaskAuthority 与双 Attempt 唯一 CommitPermit（B-TASK-001）
+
+- `nlos-task` crate（schema v1，WAL/FULL 回读 fail-closed、单写者 `BEGIN IMMEDIATE`、未知 `user_version` 拒绝）实现 Task 注册、冻结输入 digest 包快照绑定、TaskHead revision CAS；初始 head 为 `commit_seq=0` + domain-separated 空 effect-history root。
+- 双 TaskAttempt 独立 generation/取消域绑定同一 snapshot；snapshot 行 immutable trigger，同 ID 异 bytes fail-closed `SnapshotConflict`。
+- CommitPermit 线性化 CAS：无 outstanding permit 才签发；snapshot 绑定与当前 head 逐位不等 → `CONFLICTED`；他人持有 → `SUPERSEDED`（带 winner 身份）；同 key 同 bytes 重放原 permit，异 bytes fail-closed；磁盘部分唯一索引使第二个 outstanding permit 不可表示；CLOSED 后可再竞争。
+- cancel-first 线性化：cancel_epoch 恰好递增一次后新 permit 拒发并写 closure receipt（head 不变）；permit-first：permit 不被 cancel 清除，holder 可 finalize 推进 head；effect 级 fencing 推迟到 EffectPermit 切片。
+- 重启恢复完整、重放一致、幽灵 permit 不可表示（permit/receipt ID 确定性派生）；14 项测试与 workspace clippy/fmt 本地通过，详见 [B-TASK-001](../evidence/stage-b/b-task-001-task-authority-commit-permit.md)。
+- 证据等级为单节点局部 H3、PARTIAL PASS candidate：EffectPermit/effect history/PermitAdoption/惰性物化/Process 绑定未实现，digest 为占位公式，未接 fault-injection，三平台 CI 未运行。
+
 ## 5. 当前下一验收门
 
 `B-TASK` 自 2026-08-04 起为唯一主线工作包（采纳议题 31/32 顺序变更）。`B-SCHEMA` 保持 `IN_PROGRESS` 完成态收尾但不再持有主线；其剩余横向项（Go/C# 探针、Namespace bootstrap authority、生产目录 watch/lease/rebind、持久 deadline queue/restart recovery、Receipt authority、双向 peer auth、Python Proactor 稳定 profile、CBOR 跨语言、长期 fuzz、actual signing）在 `B-TASK` 纵切面成立前不推动 SABI 冻结。
@@ -225,15 +234,15 @@ Protobuf envelope + Rust generation + registry + first golden       DONE
 `B-TASK` 首个切片验收门（议题 31 证据门条 1–3 与条 7 的子集）：
 
 ```text
-durable TaskAuthority：Task 注册、TaskSnapshot 冻结输入 digest、TaskHead revision CAS   NEXT
-  → 双 TaskAttempt 注册：独立 generation、独立取消域，均绑定同一 TaskSnapshot          NEXT
-  → CommitPermit 唯一发放：只有一个 Attempt 获得 permit 并推进 TaskHead                NEXT
-  → losing/cancelled/stale Attempt 不得推进 TaskHead、不得覆盖 winner Receipt          NEXT
-  → cancel 与 permit 竞态只有规范允许的线性化结果（cancel-first / permit-first）        NEXT
-  → authority 重启后 TaskHead/Attempt/Permit 状态可恢复，无幽灵 permit                 NEXT
+durable TaskAuthority：Task 注册、TaskSnapshot 冻结输入 digest、TaskHead revision CAS   PARTIAL PASS（本地，B-TASK-001）
+  → 双 TaskAttempt 注册：独立 generation、独立取消域，均绑定同一 TaskSnapshot          PARTIAL PASS（本地，B-TASK-001）
+  → CommitPermit 唯一发放：只有一个 Attempt 获得 permit 并推进 TaskHead                PARTIAL PASS（本地，B-TASK-001）
+  → losing/cancelled/stale Attempt 不得推进 TaskHead、不得覆盖 winner Receipt          PARTIAL PASS（本地，B-TASK-001）
+  → cancel 与 permit 竞态只有规范允许的线性化结果（cancel-first / permit-first）        PARTIAL PASS（本地，B-TASK-001）
+  → authority 重启后 TaskHead/Attempt/Permit 状态可恢复，无幽灵 permit                 PARTIAL PASS（本地，B-TASK-001）
 ```
 
-EffectPermit、跨 Attempt effect history、TaskPlan/TaskNode 惰性物化与 Slice K 其余条目在本切片通过后续推；不得在本切片 Evidence 上声称 TaskAttempt 语义已完整。
+六条均为本地 macOS/arm64 复验 + 双线程竞态证据；待三平台 CI 复验与 `nlos-store-fault` 故障注入接入后才考虑晋升。下一切片候选：EffectPermit 与逐槽 EffectSlot 状态机（`[TASK-EFFECT-001/002]`）、跨 Attempt effect history 与 retry fence 推进（`[TASK-EFFECT-ID-001]`、`[TASK-RETRY-EFFECT-001]`），或先把 B-TASK-001 推上三平台 CI 并接 fault-injection。
 
 多语言 SDK 扩展按 [`B-SDK-LANG-EVAL`](./language-sdk-support-plan.md) 单独晋级：Go 与 C# 的 generation/golden 探针与独立 IPC PoC 自 2026-08-04 起后移至 `B-TASK`/EffectPermit 纵切面通过之后（议题 31/32 顺序变更），不在只有 generated types 时宣称“已支持”；Rust/TypeScript/Python 三语言现有 PARTIAL PASS 证据保持有效。
 
