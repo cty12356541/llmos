@@ -266,6 +266,9 @@ fn sync_dir(path: &Path) -> Result<(), ArtifactError> {
 }
 
 #[cfg(not(unix))]
+// The fallible signature is shared with the Unix branch (which can fail);
+// on this platform directory sync is a documented no-op (see above).
+#[allow(clippy::unnecessary_wraps)]
 fn sync_dir(_path: &Path) -> Result<(), ArtifactError> {
     Ok(())
 }
