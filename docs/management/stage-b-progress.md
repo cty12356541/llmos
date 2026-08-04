@@ -230,6 +230,13 @@ Application
 - required 成功语义完整化：`COMMITTED` 要求 required 槽 `EFFECT_CLOSED`+断言 或 `NO_EFFECT`+CNA+snapshot 绑定证明；普通 NO_EFFECT 与 `CONFIRMED_NO_EFFECT` 永不满足 required；skip 绝不写成 COMMITTED；legacy `finalize_commit` 通道冻结 B-TASK-002 语义（兼容层，见 B-TASK-003 §3.5）。
 - 21 项新测试 + 仅 1 处旧测试适配（golden v1 版本戳 2→3），详见 [B-TASK-003](../evidence/stage-b/b-task-003-reconcile-effect-history.md)；证据等级单节点 H3：跨 term adoption、真实 gateway proof、compensation 执行、TaskGroup 均未实现。
 
+### 4.26 三点崩溃窗口与 effect 表组故障矩阵（B-TASK-003 增量）
+
+- 三窗口 kill-9 注入全 PASS：窗口1（token 未消费）重启后 PERMITTED 可证明、NO_EFFECT 收口合法、登记 outcome/伪造 token 类型化拒绝；窗口2（DISPATCHED 未闭合）不冒充成败、finalize 阻塞、拒绝 NO_EFFECT 改名、EFFECT_UNKNOWN 跨二次重开持久阻塞且 permit 保持 ISSUED 不冒充失败；窗口3（Receipt 前）登记 EFFECT_CLOSED 后 required 槽 COMMITTED。
+- effect 表组 F1–F4 对齐矩阵 6 行全 PASS：kill-9 中断无半截 slot；commit 后崩溃 slot/permit/token/receipt/summary 逐位保留且重放一致（迟到登记 PermitNotIssued）；IoErr/ENOSPC typed 传播无假成功；静默丢写幻影 EffectPermit 不可见、WAL 撕裂尾部隐藏幻影 DISPATCHED；故障解除后从已提交前缀继续至 head=2。
+- 四态区分断言：`blocks_finalization` 映射（DISPATCHED/EFFECT_UNKNOWN 阻塞、NO_EFFECT/EFFECT_CLOSED 放行）经公开 API 直接断言；PARTIAL 如实映射为 v2 观测形态（DISPATCHED 未闭合），提交语义归 B-TASK-003 主线。
+- 详见 [B-TASK-003 crash windows](../evidence/stage-b/b-task-003-crash-windows.md)；限制：kill-9 ≠ 真实断电、macOS 本地、未对 v3 reconcile/history 表组注入、F4 全集未覆盖。
+
 ## 5. 当前下一验收门
 
 `B-TASK` 自 2026-08-04 起为唯一主线工作包（采纳议题 31/32 顺序变更）。`B-SCHEMA` 保持 `IN_PROGRESS` 完成态收尾但不再持有主线；其剩余横向项（Go/C# 探针、Namespace bootstrap authority、生产目录 watch/lease/rebind、持久 deadline queue/restart recovery、Receipt authority、双向 peer auth、Python Proactor 稳定 profile、CBOR 跨语言、长期 fuzz、actual signing）在 `B-TASK` 纵切面成立前不推动 SABI 冻结。
