@@ -255,6 +255,12 @@ Application
 - 崩溃窗口全覆盖：rename 前（tmp 孤儿清理）/ rename 后 commit 前（无幻影 revision、孤儿列出）/ commit 后（完全可用）；kill-9 中断完全回滚；ENOSPC/静默丢写 typed 无假成功。
 - 26 测试全绿，详见 [B-ARTIFACT-001](../evidence/stage-b/b-artifact-001-content-addressed-store.md)；限制：仅 LOCAL_SINGLE_NODE、无 GC/retention 执行、无加密/Package 验证、recover 只核 presence、Windows 目录 fsync 无 std 等价物（NTFS 日志依赖）、真实 ENOSPC 未测。
 
+### 4.29 v3 表组故障注入（B-TASK-003 增量）
+
+- quarantine/adoption/reconcile/effect-history/finalize-proofs 六表的 F1–F4 对齐矩阵 7 行全 PASS：kill-9 中断 v3 事务完全回滚（幻影 tombstone/history/sequence 不可见，重做确定性派生 ID 一致）；commit 后崩溃 tombstone/adoption/reconcile/history/finalize-proof 逐位保留（异 proof HistoryConflict、重放不双重追加）；PARTIAL_EFFECT finalize 重放 fence 不再 +1、history seq 无洞不双增；IoErr/ENOSPC typed 无假成功；静默丢写幻影 reconcile/adoption 不可见、WAL 撕裂尾部隐藏合法前缀保留；故障解除后 reconcile 重试闭合 + 新竞争完整收口至 head=2。
+- v3 语义断言在 v4（TaskGroup）落地后全部保持绿色，无 counter-evidence。
+- 详见 [B-TASK-003 fault](../evidence/stage-b/b-task-003-fault-injection.md)；限制：kill-9 ≠ 真实断电、macOS VFS、F4 全集未覆盖、TaskGroup 表组未注入。
+
 ## 5. 当前下一验收门
 
 `B-TASK` 自 2026-08-04 起为唯一主线工作包（采纳议题 31/32 顺序变更）。`B-SCHEMA` 保持 `IN_PROGRESS` 完成态收尾但不再持有主线；其剩余横向项（Go/C# 探针、Namespace bootstrap authority、生产目录 watch/lease/rebind、持久 deadline queue/restart recovery、Receipt authority、双向 peer auth、Python Proactor 稳定 profile、CBOR 跨语言、长期 fuzz、actual signing）在 `B-TASK` 纵切面成立前不推动 SABI 冻结。
