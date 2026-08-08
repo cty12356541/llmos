@@ -933,6 +933,7 @@ fn write_commit_receipt(
         permit_id: Some(ctx.permit.permit_id),
         attempt_id: ctx.attempt.attempt_id,
         attempt_generation: ctx.attempt.attempt_generation,
+        group_binding: ctx.permit.group_binding,
         outcome,
         prior_head_commit_seq: ctx.task.record.head_commit_seq,
         prior_effect_history_root: ctx.task.record.head_effect_history_root,
@@ -986,6 +987,7 @@ fn write_closure_receipt(
         permit_id: Some(ctx.permit.permit_id),
         attempt_id: ctx.attempt.attempt_id,
         attempt_generation: ctx.attempt.attempt_generation,
+        group_binding: ctx.permit.group_binding,
         outcome: outcome.receipt_outcome(),
         prior_head_commit_seq: ctx.task.record.head_commit_seq,
         prior_effect_history_root: ctx.task.record.head_effect_history_root,
@@ -1127,6 +1129,11 @@ impl SqliteTaskAuthority {
         {
             return Err(TaskStoreError::StaleTaskHead);
         }
+        crate::group::validate_commit_binding(
+            &transaction,
+            attempt.attempt_id,
+            permit.group_binding,
+        )?;
         if legacy {
             let decision = finalize_legacy(&transaction, &task, &permit, &attempt, request)?;
             transaction.commit()?;
@@ -1237,6 +1244,11 @@ impl SqliteTaskAuthority {
         {
             return Err(TaskStoreError::NotPermitHolder);
         }
+        crate::group::validate_commit_binding(
+            &transaction,
+            attempt.attempt_id,
+            permit.group_binding,
+        )?;
         let slots = list_slots(&transaction, permit.permit_id)?;
         if slots
             .iter()
@@ -1615,6 +1627,7 @@ fn finalize_legacy(
         permit_id: Some(permit.permit_id),
         attempt_id: request.base.attempt_id,
         attempt_generation: request.base.attempt_generation,
+        group_binding: permit.group_binding,
         outcome: ReceiptOutcome::Committed,
         prior_head_commit_seq: task.record.head_commit_seq,
         prior_effect_history_root: task.record.head_effect_history_root,

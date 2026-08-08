@@ -9,8 +9,10 @@
 //! receipts (member type/id/generation/`ControlDomain` placeholder),
 //! OPEN-only child admission (SEALED rejects new members), optional
 //! attempt registration bound bit-for-bit to the group's membership
-//! generation/root and policy digest (drift fails closed), structural
-//! tree cancellation (`[TASK-CANCEL-001]` / `[TASK-CANCEL-002]`), and a
+//! generation/root and policy digest (drift fails closed), schema-v5
+//! WriteSet/CommitPermit/TaskCommitReceipt membership binding with
+//! pre-dispatch/finalize drift fences, structural tree cancellation
+//! (`[TASK-CANCEL-001]` / `[TASK-CANCEL-002]`), and a
 //! derived aggregate state recomputed from child terminal states
 //! (`[TASK-STATE-002]` subset) with the quarantine cap of
 //! `[TASK-GROUP-002]`'s final clause.
@@ -67,6 +69,21 @@ local_id!(
     TaskGroupId,
     "Authority-scoped identity of one `TaskGroup` (crate-local; `nlos-types` is owned by another lane)."
 );
+
+/// Membership position bound into a `TaskWriteSet`/`CommitPermit` and
+/// copied verbatim into its terminal task receipt (`[TASK-GROUP-002]`).
+///
+/// Ungrouped attempts carry `None`. For grouped attempts the authority
+/// snapshots the group's current generation/root/policy when the permit is
+/// issued and refuses terminalization if that position drifts while the
+/// permit is active.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TaskGroupCommitBinding {
+    pub group_id: TaskGroupId,
+    pub membership_generation: u64,
+    pub membership_root: [u8; 32],
+    pub group_policy_digest: [u8; 32],
+}
 
 /// `TaskGroup` lifecycle (§25.1 state machine, producible subset).
 ///
@@ -1165,6 +1182,50 @@ fn load_attempt_binding(
             })
         })
         .transpose()
+}
+
+/// Captures the current membership position for a grouped attempt at
+/// `CommitPermit` issuance. The attempt must still be an active member;
+/// removal cannot be laundered into an ungrouped commit.
+pub(crate) fn current_commit_binding(
+    source: &impl SqlRead,
+    attempt_id: TaskAttemptId,
+) -> Result<Option<TaskGroupCommitBinding>, TaskStoreError> {
+    let Some(admission) = load_attempt_binding(source, attempt_id)? else {
+        return Ok(None);
+    };
+    let group = load_group(source, admission.group_id)?;
+    let member = load_member_optional(
+        source,
+        admission.group_id,
+        GroupMemberType::TaskAttempt,
+        attempt_id.as_bytes(),
+    )?
+    .ok_or(TaskStoreError::GroupMemberNotFound)?;
+    if member.membership_state != MembershipState::Active {
+        return Err(TaskStoreError::MembershipConflict);
+    }
+    Ok(Some(TaskGroupCommitBinding {
+        group_id: group.record.group_id,
+        membership_generation: group.record.membership_generation,
+        membership_root: group.record.membership_root,
+        group_policy_digest: group.record.group_policy_digest,
+    }))
+}
+
+/// Revalidates the exact group position captured by a live permit before
+/// writing any terminal task receipt. A membership or policy change while
+/// the permit is active fails closed and leaves the permit/head untouched.
+pub(crate) fn validate_commit_binding(
+    source: &impl SqlRead,
+    attempt_id: TaskAttemptId,
+    expected: Option<TaskGroupCommitBinding>,
+) -> Result<(), TaskStoreError> {
+    if current_commit_binding(source, attempt_id)? == expected {
+        Ok(())
+    } else {
+        Err(TaskStoreError::MembershipConflict)
+    }
 }
 
 fn attempt_has_quarantined_permit(

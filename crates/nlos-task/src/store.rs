@@ -24,7 +24,7 @@ use crate::{
     TaskRegistrationDecision, TaskSpec, TaskState, TaskStoreError,
 };
 
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 
 /// A single-writer `SQLite` task authority.
 ///
@@ -112,17 +112,24 @@ impl SqliteTaskAuthority {
                 migrate_v2(&mut connection)?;
                 migrate_v3(&mut connection)?;
                 migrate_v4(&mut connection)?;
+                migrate_v5(&mut connection)?;
             }
             1 => {
                 migrate_v2(&mut connection)?;
                 migrate_v3(&mut connection)?;
                 migrate_v4(&mut connection)?;
+                migrate_v5(&mut connection)?;
             }
             2 => {
                 migrate_v3(&mut connection)?;
                 migrate_v4(&mut connection)?;
+                migrate_v5(&mut connection)?;
             }
-            3 => migrate_v4(&mut connection)?,
+            3 => {
+                migrate_v4(&mut connection)?;
+                migrate_v5(&mut connection)?;
+            }
+            4 => migrate_v5(&mut connection)?,
             SCHEMA_VERSION => {}
             other => return Err(TaskStoreError::UnsupportedSchema(other)),
         }
@@ -597,6 +604,7 @@ fn issue_permit(
         expected_effect_history_root: attempt.snapshot.effect_history_root,
         expected_retry_fence_epoch: attempt.snapshot.retry_fence_epoch,
         write_set_root: request.write_set_root,
+        group_binding: crate::group::current_commit_binding(transaction, attempt.attempt_id)?,
         permit_epoch,
         control_epoch,
         cancel_epoch: task.record.cancel_epoch,
@@ -639,6 +647,7 @@ pub(crate) fn closure_receipt(
         permit_id: None,
         attempt_id: attempt.attempt_id,
         attempt_generation: attempt.attempt_generation,
+        group_binding: None,
         outcome: ReceiptOutcome::CancelledBeforeEffect,
         prior_head_commit_seq: task.head_commit_seq,
         prior_effect_history_root: task.head_effect_history_root,
@@ -705,6 +714,28 @@ fn migrate_v4(connection: &mut Connection) -> Result<(), TaskStoreError> {
     transaction.commit()?;
     Ok(())
 }
+
+/// v4 → v5 is purely additive: nullable group-binding columns are added to
+/// permits and receipts. Existing ungrouped/v1-v4 rows decode as `None`;
+/// new grouped permits persist all four fields and copy them verbatim into
+/// their terminal receipt.
+fn migrate_v5(connection: &mut Connection) -> Result<(), TaskStoreError> {
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(SCHEMA_V5_SQL)?;
+    transaction.commit()?;
+    Ok(())
+}
+
+const SCHEMA_V5_SQL: &str =
+    "ALTER TABLE commit_permits ADD COLUMN group_id BLOB CHECK(group_id IS NULL OR length(group_id) = 16);
+     ALTER TABLE commit_permits ADD COLUMN membership_generation BLOB CHECK(membership_generation IS NULL OR length(membership_generation) = 8);
+     ALTER TABLE commit_permits ADD COLUMN membership_root BLOB CHECK(membership_root IS NULL OR length(membership_root) = 32);
+     ALTER TABLE commit_permits ADD COLUMN group_policy_digest BLOB CHECK(group_policy_digest IS NULL OR length(group_policy_digest) = 32);
+     ALTER TABLE task_receipts ADD COLUMN group_id BLOB CHECK(group_id IS NULL OR length(group_id) = 16);
+     ALTER TABLE task_receipts ADD COLUMN membership_generation BLOB CHECK(membership_generation IS NULL OR length(membership_generation) = 8);
+     ALTER TABLE task_receipts ADD COLUMN membership_root BLOB CHECK(membership_root IS NULL OR length(membership_root) = 32);
+     ALTER TABLE task_receipts ADD COLUMN group_policy_digest BLOB CHECK(group_policy_digest IS NULL OR length(group_policy_digest) = 32);
+     PRAGMA user_version = 5;";
 
 const SCHEMA_V1_SQL: &str =
     "CREATE TABLE tasks (
@@ -1160,14 +1191,26 @@ fn insert_permit(
     transaction: &Transaction<'_>,
     record: &PermitRecord,
 ) -> Result<(), TaskStoreError> {
+    let group_id = record
+        .group_binding
+        .map(|binding| binding.group_id.into_bytes());
+    let membership_generation = record
+        .group_binding
+        .map(|binding| encode_u64(binding.membership_generation));
+    let membership_root = record.group_binding.map(|binding| binding.membership_root);
+    let group_policy_digest = record
+        .group_binding
+        .map(|binding| binding.group_policy_digest);
     transaction.execute(
         "INSERT INTO commit_permits (
             permit_id, task_id, idempotency_key, attempt_id, attempt_generation,
             expected_head_commit_seq, expected_effect_history_root,
             expected_retry_fence_epoch, write_set_root, permit_epoch,
             control_epoch, cancel_epoch, valid_until_ms, permit_state,
-            created_at_ms, updated_at_ms
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+            created_at_ms, updated_at_ms, group_id, membership_generation,
+            membership_root, group_policy_digest
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
+                   ?17, ?18, ?19, ?20)",
         params![
             record.permit_id.as_bytes().as_slice(),
             record.task_id.as_bytes().as_slice(),
@@ -1185,6 +1228,10 @@ fn insert_permit(
             record.state.code(),
             record.created_at_ms,
             record.updated_at_ms,
+            group_id.as_ref().map(<[u8; 16]>::as_slice),
+            membership_generation.as_ref().map(<[u8; 8]>::as_slice),
+            membership_root.as_ref().map(<[u8; 32]>::as_slice),
+            group_policy_digest.as_ref().map(<[u8; 32]>::as_slice),
         ],
     )?;
     Ok(())
@@ -1194,7 +1241,8 @@ const PERMIT_COLUMNS: &str = "permit_id, task_id, idempotency_key, attempt_id, a
      expected_head_commit_seq, expected_effect_history_root,
      expected_retry_fence_epoch, write_set_root, permit_epoch,
      control_epoch, cancel_epoch, valid_until_ms, permit_state,
-     created_at_ms, updated_at_ms";
+     created_at_ms, updated_at_ms, group_id, membership_generation,
+     membership_root, group_policy_digest";
 
 fn load_permit_by_key(
     source: &impl SqlRead,
@@ -1282,6 +1330,7 @@ pub(crate) fn load_quarantined_permit(
 }
 
 fn decode_permit_row(row: &rusqlite::Row<'_>) -> Result<PermitRecord, TaskStoreError> {
+    let group_binding = decode_group_binding(row, 16)?;
     Ok(PermitRecord {
         permit_id: CommitPermitId::from_bytes(blob16(row, 0)?),
         task_id: TaskId::from_bytes(blob16(row, 1)?),
@@ -1292,6 +1341,7 @@ fn decode_permit_row(row: &rusqlite::Row<'_>) -> Result<PermitRecord, TaskStoreE
         expected_effect_history_root: blob32(row, 6)?,
         expected_retry_fence_epoch: u64_from_blob(row, 7)?,
         write_set_root: blob32(row, 8)?,
+        group_binding,
         permit_epoch: u64_from_blob(row, 9)?,
         control_epoch: u64_from_blob(row, 10)?,
         cancel_epoch: u64_from_blob(row, 11)?,
@@ -1373,13 +1423,25 @@ pub(crate) fn insert_receipt(
             "reserved receipt outcome is not producible in this slice",
         ));
     }
+    let group_id = record
+        .group_binding
+        .map(|binding| binding.group_id.into_bytes());
+    let membership_generation = record
+        .group_binding
+        .map(|binding| encode_u64(binding.membership_generation));
+    let membership_root = record.group_binding.map(|binding| binding.membership_root);
+    let group_policy_digest = record
+        .group_binding
+        .map(|binding| binding.group_policy_digest);
     transaction.execute(
         "INSERT INTO task_receipts (
             receipt_id, task_id, permit_id, attempt_id, attempt_generation,
             outcome, prior_head_commit_seq, prior_effect_history_root,
             prior_retry_fence_epoch, new_head_commit_seq,
-            new_effect_history_root, new_retry_fence_epoch, created_at_ms
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            new_effect_history_root, new_retry_fence_epoch, created_at_ms,
+            group_id, membership_generation, membership_root, group_policy_digest
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+                   ?14, ?15, ?16, ?17)",
         params![
             record.receipt_id.as_bytes().as_slice(),
             record.task_id.as_bytes().as_slice(),
@@ -1398,6 +1460,10 @@ pub(crate) fn insert_receipt(
             record.new_effect_history_root.as_slice(),
             encode_u64(record.new_retry_fence_epoch).as_slice(),
             record.created_at_ms,
+            group_id.as_ref().map(<[u8; 16]>::as_slice),
+            membership_generation.as_ref().map(<[u8; 8]>::as_slice),
+            membership_root.as_ref().map(<[u8; 32]>::as_slice),
+            group_policy_digest.as_ref().map(<[u8; 32]>::as_slice),
         ],
     )?;
     Ok(())
@@ -1406,7 +1472,8 @@ pub(crate) fn insert_receipt(
 const RECEIPT_COLUMNS: &str = "receipt_id, task_id, permit_id, attempt_id, attempt_generation,
      outcome, prior_head_commit_seq, prior_effect_history_root,
      prior_retry_fence_epoch, new_head_commit_seq,
-     new_effect_history_root, new_retry_fence_epoch, created_at_ms";
+     new_effect_history_root, new_retry_fence_epoch, created_at_ms,
+     group_id, membership_generation, membership_root, group_policy_digest";
 
 pub(crate) fn load_receipt(
     source: &impl SqlRead,
@@ -1450,6 +1517,7 @@ fn decode_receipt_row(row: &rusqlite::Row<'_>) -> Result<TaskReceiptRecord, Task
         permit_id: optional_blob16(row, 2)?.map(CommitPermitId::from_bytes),
         attempt_id: TaskAttemptId::from_bytes(blob16(row, 3)?),
         attempt_generation: generation_from_blob(row, 4)?,
+        group_binding: decode_group_binding(row, 13)?,
         outcome: ReceiptOutcome::from_code(row.get(5)?)?,
         prior_head_commit_seq: u64_from_blob(row, 6)?,
         prior_effect_history_root: blob32(row, 7)?,
@@ -1459,6 +1527,30 @@ fn decode_receipt_row(row: &rusqlite::Row<'_>) -> Result<TaskReceiptRecord, Task
         new_retry_fence_epoch: u64_from_blob(row, 11)?,
         created_at_ms: row.get(12)?,
     })
+}
+
+fn decode_group_binding(
+    row: &rusqlite::Row<'_>,
+    first_index: usize,
+) -> Result<Option<crate::TaskGroupCommitBinding>, TaskStoreError> {
+    let group_id = optional_blob::<16>(row, first_index)?;
+    let generation = optional_blob::<8>(row, first_index + 1)?;
+    let root = optional_blob::<32>(row, first_index + 2)?;
+    let policy = optional_blob::<32>(row, first_index + 3)?;
+    match (group_id, generation, root, policy) {
+        (None, None, None, None) => Ok(None),
+        (Some(group_id), Some(generation), Some(root), Some(policy)) => {
+            Ok(Some(crate::TaskGroupCommitBinding {
+                group_id: crate::TaskGroupId::from_bytes(group_id),
+                membership_generation: u64::from_be_bytes(generation),
+                membership_root: root,
+                group_policy_digest: policy,
+            }))
+        }
+        _ => Err(TaskStoreError::CorruptRecord(
+            "partial task group commit binding",
+        )),
+    }
 }
 
 pub(crate) const fn encode_u64(value: u64) -> [u8; 8] {
@@ -1503,6 +1595,20 @@ pub(crate) fn optional_blob16(
             bytes
                 .try_into()
                 .map_err(|_| TaskStoreError::CorruptRecord("expected optional 16-byte blob"))
+        })
+        .transpose()
+}
+
+fn optional_blob<const N: usize>(
+    row: &rusqlite::Row<'_>,
+    index: usize,
+) -> Result<Option<[u8; N]>, TaskStoreError> {
+    let value: Option<Vec<u8>> = row.get(index)?;
+    value
+        .map(|bytes| {
+            bytes
+                .try_into()
+                .map_err(|_| TaskStoreError::CorruptRecord("unexpected optional blob width"))
         })
         .transpose()
 }

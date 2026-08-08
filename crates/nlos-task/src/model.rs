@@ -495,6 +495,9 @@ pub struct PermitRecord {
     pub expected_effect_history_root: [u8; 32],
     pub expected_retry_fence_epoch: u64,
     pub write_set_root: [u8; 32],
+    /// Exact `TaskGroup` membership position bound with the write set at
+    /// permit issuance. `None` preserves ungrouped B-TASK-001 behavior.
+    pub group_binding: Option<crate::TaskGroupCommitBinding>,
     pub permit_epoch: u64,
     pub control_epoch: u64,
     pub cancel_epoch: u64,
@@ -513,6 +516,9 @@ pub struct TaskReceiptRecord {
     pub permit_id: Option<CommitPermitId>,
     pub attempt_id: TaskAttemptId,
     pub attempt_generation: Generation,
+    /// Verbatim copy of the permit's `TaskGroup` membership binding. The
+    /// authority revalidates it immediately before terminalization.
+    pub group_binding: Option<crate::TaskGroupCommitBinding>,
     pub outcome: ReceiptOutcome,
     pub prior_head_commit_seq: u64,
     pub prior_effect_history_root: [u8; 32],

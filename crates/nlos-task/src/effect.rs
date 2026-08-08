@@ -1291,6 +1291,23 @@ fn check_head_unchanged(task: &StoredTask, permit: &PermitRecord) -> Result<(), 
     Ok(())
 }
 
+fn check_group_unchanged(
+    transaction: &Transaction<'_>,
+    attempt_id: TaskAttemptId,
+    permit: &PermitRecord,
+) -> Result<(), TaskStoreError> {
+    crate::group::validate_commit_binding(transaction, attempt_id, permit.group_binding)
+}
+
+fn check_commit_context(
+    transaction: &Transaction<'_>,
+    attempt_id: TaskAttemptId,
+    context: &HolderContext,
+) -> Result<(), TaskStoreError> {
+    check_head_unchanged(&context.task, &context.permit)?;
+    check_group_unchanged(transaction, attempt_id, &context.permit)
+}
+
 impl SqliteTaskAuthority {
     /// Runs the linearized `EffectPermit` issuance CAS (`[TASK-EFFECT-001]`
     /// first half, `[TASK-RACE-001]`).
@@ -1337,7 +1354,7 @@ impl SqliteTaskAuthority {
             request.permit_id,
             request.permit_epoch,
         )?;
-        check_head_unchanged(&context.task, &context.permit)?;
+        check_commit_context(&transaction, request.attempt_id, &context)?;
         if context.task.record.cancel_epoch != context.permit.cancel_epoch {
             return Err(TaskStoreError::CancellationCommitted {
                 cancel_epoch: context.task.record.cancel_epoch,
@@ -1451,7 +1468,7 @@ impl SqliteTaskAuthority {
             request.permit_id,
             request.permit_epoch,
         )?;
-        check_head_unchanged(&context.task, &context.permit)?;
+        check_commit_context(&transaction, request.attempt_id, &context)?;
         // `[TASK-COMMIT-003]`: an adopted permit's scope is
         // RECONCILE_CLOSE_OR_QUARANTINE_ONLY — no new dispatches.
         if crate::reconcile::has_adoption(&transaction, request.permit_id)? {

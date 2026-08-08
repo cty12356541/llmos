@@ -892,6 +892,210 @@ fn attempt_group_binding_drift_fails_closed() {
     );
 }
 
+/// B-TASK-005: a grouped write set snapshots the group's current
+/// generation/root/policy into the `CommitPermit`, terminalization
+/// revalidates the same bytes, and `TaskCommitReceipt` preserves them across
+/// restart. Ungrouped permits remain bit-compatible with `None`.
+#[test]
+fn permit_and_commit_receipt_bind_group_membership_across_restart() {
+    let database = TestDatabase::new("commit-group-binding");
+    let authority = database.open();
+    register_task(&authority);
+    authority
+        .register_group(root_group_spec(
+            0x01,
+            CompletionMode::All,
+            FailureMode::CollectAll,
+            8,
+            4,
+        ))
+        .expect("root");
+    let attempt = attempt_spec(0x0a, initial_snapshot());
+    admit_attempt(&authority, &attempt, group_id(0x01));
+    let group = authority.inspect_group(group_id(0x01)).expect("group");
+    let permit = issued_permit(
+        authority
+            .request_commit_permit(permit_request(&attempt, 0x21, vec![]))
+            .expect("permit"),
+    );
+    let binding = permit.group_binding.expect("group binding");
+    assert_eq!(binding.group_id, group.group_id);
+    assert_eq!(binding.membership_generation, group.membership_generation);
+    assert_eq!(binding.membership_root, group.membership_root);
+    assert_eq!(binding.group_policy_digest, group.group_policy_digest);
+
+    let receipt = match authority
+        .finalize_commit(nlos_task::FinalizeRequest {
+            task_id: attempt.task_id,
+            attempt_id: attempt.attempt_id,
+            attempt_generation: attempt.attempt_generation,
+            permit_id: permit.permit_id,
+            new_effect_history_root: [0x31; 32],
+            new_retry_fence_epoch: 0,
+            finalized_at_ms: 7_000,
+        })
+        .expect("finalize")
+    {
+        FinalizeDecision::Committed(receipt) => *receipt,
+        FinalizeDecision::Replayed(_) => panic!("expected fresh commit"),
+    };
+    assert_eq!(receipt.group_binding, Some(binding));
+    let receipt_id = receipt.receipt_id;
+    drop(authority);
+
+    let reopened = database.open();
+    assert_eq!(
+        reopened
+            .inspect_permit(task_id(), permit.permit_id)
+            .expect("permit after restart")
+            .group_binding,
+        Some(binding)
+    );
+    assert_eq!(
+        reopened
+            .inspect_receipt(task_id(), receipt_id)
+            .expect("receipt after restart")
+            .group_binding,
+        Some(binding)
+    );
+}
+
+/// B-TASK-005: changing membership after permit issuance cannot be hidden
+/// by finalization; the `TaskHead` and issued permit remain untouched.
+#[test]
+fn membership_drift_after_permit_fails_terminalization_closed() {
+    let database = TestDatabase::new("commit-group-binding-drift");
+    let authority = database.open();
+    register_task(&authority);
+    authority
+        .register_group(root_group_spec(
+            0x01,
+            CompletionMode::All,
+            FailureMode::CollectAll,
+            8,
+            4,
+        ))
+        .expect("root");
+    let winner = attempt_spec(0x0a, initial_snapshot());
+    admit_attempt(&authority, &winner, group_id(0x01));
+    let permit = issued_permit(
+        authority
+            .request_commit_permit(permit_request(&winner, 0x22, vec![planned(0, false)]))
+            .expect("permit"),
+    );
+    let bound = permit.group_binding.expect("binding");
+
+    // A second admission advances generation/root while the permit is
+    // live. The old permit remains durable but cannot terminalize under a
+    // membership position it no longer owns.
+    let late = attempt_spec(0x0b, initial_snapshot());
+    admit_attempt(&authority, &late, group_id(0x01));
+    let current = authority.inspect_group(group_id(0x01)).expect("group");
+    assert!(current.membership_generation > bound.membership_generation);
+    assert_ne!(current.membership_root, bound.membership_root);
+    assert!(matches!(
+        authority.request_effect_permit(EffectPermitRequest {
+            task_id: winner.task_id,
+            attempt_id: winner.attempt_id,
+            attempt_generation: winner.attempt_generation,
+            permit_id: permit.permit_id,
+            permit_epoch: permit.permit_epoch,
+            effect_seq: 0,
+            idempotency_key: IdempotencyKey::from_bytes(bytes(0xe2)),
+            valid_until_ms: 9_999,
+            requested_at_ms: 6_900,
+        }),
+        Err(TaskStoreError::MembershipConflict)
+    ));
+    assert!(matches!(
+        authority.finalize_commit(nlos_task::FinalizeRequest {
+            task_id: winner.task_id,
+            attempt_id: winner.attempt_id,
+            attempt_generation: winner.attempt_generation,
+            permit_id: permit.permit_id,
+            new_effect_history_root: [0x32; 32],
+            new_retry_fence_epoch: 0,
+            finalized_at_ms: 7_100,
+        }),
+        Err(TaskStoreError::MembershipConflict)
+    ));
+    let head = authority.inspect_task(task_id()).expect("head");
+    assert_eq!(head.head_commit_seq, 0);
+    assert_eq!(head.active_permit, Some(permit.permit_id));
+    assert_eq!(
+        authority
+            .inspect_permit(task_id(), permit.permit_id)
+            .expect("permit")
+            .state,
+        nlos_task::PermitState::Issued
+    );
+}
+
+/// B-TASK-005 migration gate: a structurally valid v4 database upgrades
+/// transactionally to v5; pre-v5 permits remain explicitly ungrouped and
+/// can still finalize with an ungrouped receipt.
+#[test]
+fn schema_v4_upgrades_to_v5_without_inventing_group_bindings() {
+    let database = TestDatabase::new("migration-v5");
+    let authority = database.open();
+    register_task(&authority);
+    let attempt = attempt_spec(0x0a, initial_snapshot());
+    authority.register_attempt(attempt).expect("attempt");
+    let permit = issued_permit(
+        authority
+            .request_commit_permit(permit_request(&attempt, 0x23, vec![]))
+            .expect("permit"),
+    );
+    assert_eq!(permit.group_binding, None);
+    drop(authority);
+
+    // Reconstruct the v4 shape by removing exactly the additive v5
+    // columns, then let the production migration run again.
+    {
+        let connection = rusqlite::Connection::open(&database.path).expect("raw v5 database");
+        connection
+            .execute_batch(
+                "ALTER TABLE commit_permits DROP COLUMN group_policy_digest;
+                 ALTER TABLE commit_permits DROP COLUMN membership_root;
+                 ALTER TABLE commit_permits DROP COLUMN membership_generation;
+                 ALTER TABLE commit_permits DROP COLUMN group_id;
+                 ALTER TABLE task_receipts DROP COLUMN group_policy_digest;
+                 ALTER TABLE task_receipts DROP COLUMN membership_root;
+                 ALTER TABLE task_receipts DROP COLUMN membership_generation;
+                 ALTER TABLE task_receipts DROP COLUMN group_id;
+                 PRAGMA user_version = 4;",
+            )
+            .expect("restore v4 shape");
+    }
+
+    let migrated = database.open();
+    let stored = migrated
+        .inspect_permit(task_id(), permit.permit_id)
+        .expect("migrated permit");
+    assert_eq!(stored.group_binding, None);
+    let receipt = match migrated
+        .finalize_commit(nlos_task::FinalizeRequest {
+            task_id: attempt.task_id,
+            attempt_id: attempt.attempt_id,
+            attempt_generation: attempt.attempt_generation,
+            permit_id: permit.permit_id,
+            new_effect_history_root: [0x33; 32],
+            new_retry_fence_epoch: 0,
+            finalized_at_ms: 7_200,
+        })
+        .expect("finalize migrated permit")
+    {
+        FinalizeDecision::Committed(receipt) => *receipt,
+        FinalizeDecision::Replayed(_) => panic!("expected fresh commit"),
+    };
+    assert_eq!(receipt.group_binding, None);
+    let connection = rusqlite::Connection::open(&database.path).expect("raw migrated database");
+    let version: i64 = connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .expect("schema version");
+    assert_eq!(version, 5);
+}
+
 /// Builds the cancellation fixture: root group + child group with an
 /// open pre-permit member each, a terminal-success member, a
 /// permit-holding member, and an ungrouped attempt of the same task.
@@ -1622,7 +1826,7 @@ fn golden_v3_database_migrates_losslessly_to_v4() {
         let version: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read user_version");
-        assert_eq!(version, 4, "migration stamps the new schema version");
+        assert_eq!(version, 5, "migration stamps the current schema version");
     }
 
     // All v3 data intact.

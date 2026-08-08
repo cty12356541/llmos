@@ -1,4 +1,4 @@
-//! Durable single-authority Task store for NLOS (B-TASK slices 001–003).
+//! Durable single-authority Task store for NLOS (B-TASK slices 001–005).
 //!
 //! This crate implements the durable `TaskAuthority` subset required by the
 //! B-TASK acceptance gates: Task registration, frozen-input snapshot digest
@@ -25,7 +25,10 @@
 //! generation/root/policy drift fence), structural tree cancellation
 //! (`[TASK-CANCEL-001]` / `[TASK-CANCEL-002]`), and the derived ALL/ANY
 //! aggregate state with the quarantine cap (`[TASK-STATE-002]` subset,
-//! `[TASK-GROUP-002]` final clause).
+//! `[TASK-GROUP-002]` final clause). Schema v5 additionally snapshots the
+//! current membership generation/root/policy with each grouped write set /
+//! `CommitPermit`, revalidates it before effect dispatch and terminalization,
+//! and copies it verbatim into `TaskCommitReceipt`-shaped records.
 //!
 //! Explicitly out of scope: cross-authority-term takeover (adoption is by
 //! the same authority after restart/uncertainty), compensation execution
@@ -57,7 +60,8 @@ pub use group::{
     GroupAdmissionReceiptRecord, GroupBinding, GroupCancelDecision, GroupCancelRequest,
     GroupMemberRecord, GroupMemberRef, GroupMemberType, GroupReceiptKind, GroupRecord,
     GroupRegistrationDecision, GroupSpec, GroupState, MembershipState, RemovalDecision,
-    RemoveMemberRequest, TaskGroupId, empty_group_membership_root, membership_root_of,
+    RemoveMemberRequest, TaskGroupCommitBinding, TaskGroupId, empty_group_membership_root,
+    membership_root_of,
 };
 pub use model::{
     AdoptionReceiptRecord, AttemptHandle, AttemptRecord, AttemptRegistrationDecision, AttemptSpec,
