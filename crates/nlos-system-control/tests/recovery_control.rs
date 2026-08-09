@@ -281,6 +281,7 @@ fn envelope(method: &str, context: SabiRequestContext, payload: Vec<u8>) -> Enve
     }
 }
 
+#[cfg(unix)]
 fn get_exchange_request() -> ExchangeRequest {
     ExchangeRequest {
         envelope: Some(envelope(
