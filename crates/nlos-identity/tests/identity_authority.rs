@@ -1,0 +1,249 @@
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use ed25519_dalek::{Signer, SigningKey};
+use nlos_identity::{
+    BootstrapDecision, BootstrapPrincipalRequest, IdentityAuthority, IdentityAuthorityError,
+    KeyPurpose, KeyRevocationDecision, RevokeKeyRequest, VerifySemanticSignatureRequest,
+    semantic_signature_message,
+};
+use nlos_types::{Generation, IdempotencyKey, PrincipalId, SemanticEventId};
+use rusqlite::Connection;
+
+static NEXT: AtomicU64 = AtomicU64::new(1);
+
+struct Root(PathBuf);
+
+impl Root {
+    fn new(label: &str) -> Self {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        Self(std::env::temp_dir().join(format!(
+            "nlos-identity-{label}-{}-{nonce}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        )))
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for Root {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn signing_key(seed: u8) -> SigningKey {
+    SigningKey::from_bytes(&[seed; 32])
+}
+
+fn bootstrap_request(seed: u8, signing_key: &SigningKey) -> BootstrapPrincipalRequest {
+    BootstrapPrincipalRequest {
+        principal_profile_digest: [seed.wrapping_add(1); 32],
+        control_domain_policy_digest: [seed.wrapping_add(2); 32],
+        public_key: signing_key.verifying_key().to_bytes(),
+        key_purpose: KeyPurpose::SemanticEventSigning,
+        key_valid_from_ms: 1_000,
+        key_valid_until_ms: 9_000,
+        idempotency_key: IdempotencyKey::from_bytes([seed.wrapping_add(3); 16]),
+        created_at_ms: 500,
+    }
+}
+
+fn verify_request(
+    signing_key: &SigningKey,
+    binding: nlos_identity::IdentityBinding,
+    event_id: SemanticEventId,
+    admitted_at_ms: u64,
+) -> VerifySemanticSignatureRequest {
+    let signature = signing_key
+        .sign(&semantic_signature_message(event_id))
+        .to_bytes();
+    VerifySemanticSignatureRequest {
+        event_id,
+        issuer: binding.principal_id,
+        control_domain_id: binding.control_domain_id,
+        key_id: binding.key_id,
+        signature,
+        admitted_at_ms,
+    }
+}
+
+#[test]
+fn bootstrap_is_atomic_durable_and_exactly_replayable() {
+    let root = Root::new("bootstrap");
+    let key = signing_key(10);
+    let request = bootstrap_request(10, &key);
+    let binding = {
+        let authority = IdentityAuthority::open(root.path()).unwrap();
+        let first = authority.bootstrap_principal(request).unwrap();
+        assert!(matches!(first, BootstrapDecision::Created(_)));
+        let replay = authority.bootstrap_principal(request).unwrap();
+        assert!(matches!(replay, BootstrapDecision::Replayed(_)));
+        assert_eq!(first.binding(), replay.binding());
+        first.binding()
+    };
+
+    let reopened = IdentityAuthority::open(root.path()).unwrap();
+    assert_eq!(
+        reopened.bootstrap_principal(request).unwrap().binding(),
+        binding
+    );
+    assert_eq!(
+        reopened.inspect_current_binding(binding.key_id).unwrap(),
+        binding
+    );
+    assert_eq!(binding.snapshot_generation, Generation::INITIAL);
+    assert_eq!(binding.key_generation, Generation::INITIAL);
+}
+
+#[test]
+fn semantic_verification_checks_signature_binding_and_validity() {
+    let root = Root::new("verify");
+    let key = signing_key(20);
+    let authority = IdentityAuthority::open(root.path()).unwrap();
+    let binding = authority
+        .bootstrap_principal(bootstrap_request(20, &key))
+        .unwrap()
+        .binding();
+    let event_id = SemanticEventId::from_bytes([0x55; 32]);
+    let request = verify_request(&key, binding, event_id, 2_000);
+    let verified = authority.verify_semantic_signature(request).unwrap();
+    assert_eq!(verified.principal_id, binding.principal_id);
+    assert_eq!(verified.identity_snapshot_id, binding.identity_snapshot_id);
+
+    let mut wrong_issuer = request;
+    wrong_issuer.issuer = PrincipalId::from_bytes([0xee; 16]);
+    assert!(matches!(
+        authority.verify_semantic_signature(wrong_issuer),
+        Err(IdentityAuthorityError::SignerBindingMismatch)
+    ));
+
+    let mut wrong_signature = request;
+    wrong_signature.signature[0] ^= 1;
+    assert!(matches!(
+        authority.verify_semantic_signature(wrong_signature),
+        Err(IdentityAuthorityError::InvalidSignature)
+    ));
+    let mut early = request;
+    early.admitted_at_ms = 999;
+    assert!(matches!(
+        authority.verify_semantic_signature(early),
+        Err(IdentityAuthorityError::KeyNotYetValid)
+    ));
+    let mut expired = request;
+    expired.admitted_at_ms = 9_001;
+    assert!(matches!(
+        authority.verify_semantic_signature(expired),
+        Err(IdentityAuthorityError::KeyExpired)
+    ));
+}
+
+#[test]
+fn revocation_advances_both_fences_and_survives_restart() {
+    let root = Root::new("revoke");
+    let key = signing_key(30);
+    let (binding, request, receipt) = {
+        let authority = IdentityAuthority::open(root.path()).unwrap();
+        let binding = authority
+            .bootstrap_principal(bootstrap_request(30, &key))
+            .unwrap()
+            .binding();
+        let request = RevokeKeyRequest {
+            key_id: binding.key_id,
+            expected_key_generation: binding.key_generation,
+            expected_identity_snapshot_id: binding.identity_snapshot_id,
+            idempotency_key: IdempotencyKey::from_bytes([0x77; 16]),
+            revoked_at_ms: 3_000,
+        };
+        let first = authority.revoke_key(request).unwrap();
+        assert!(matches!(first, KeyRevocationDecision::Revoked(_)));
+        let replay = authority.revoke_key(request).unwrap();
+        assert!(matches!(replay, KeyRevocationDecision::Replayed(_)));
+        assert_eq!(first.receipt(), replay.receipt());
+        (binding, request, first.receipt())
+    };
+
+    assert_eq!(receipt.resulting_key_generation.get(), 2);
+    assert_eq!(receipt.snapshot_generation.get(), 2);
+    assert_ne!(receipt.identity_snapshot_id, binding.identity_snapshot_id);
+
+    let reopened = IdentityAuthority::open(root.path()).unwrap();
+    assert_eq!(reopened.revoke_key(request).unwrap().receipt(), receipt);
+    let historical = reopened
+        .inspect_binding_at_snapshot(binding.identity_snapshot_id, binding.key_id)
+        .unwrap();
+    assert_eq!(historical, binding);
+    let current = reopened.inspect_current_binding(binding.key_id).unwrap();
+    assert_eq!(current.identity_snapshot_id, receipt.identity_snapshot_id);
+    assert_eq!(current.key_revoked_at_ms, Some(3_000));
+    let event_id = SemanticEventId::from_bytes([0x66; 32]);
+    assert!(matches!(
+        reopened.verify_semantic_signature(verify_request(&key, binding, event_id, 2_000)),
+        Err(IdentityAuthorityError::KeyRevoked)
+    ));
+    assert!(matches!(
+        reopened.revoke_key(RevokeKeyRequest {
+            idempotency_key: IdempotencyKey::from_bytes([0x78; 16]),
+            ..request
+        }),
+        Err(IdentityAuthorityError::KeyGenerationFenceConflict)
+    ));
+}
+
+#[test]
+fn bootstrap_rebinding_and_invalid_validity_fail_closed() {
+    let root = Root::new("conflict");
+    let key = signing_key(40);
+    let authority = IdentityAuthority::open(root.path()).unwrap();
+    let request = bootstrap_request(40, &key);
+    authority.bootstrap_principal(request).unwrap();
+    let mut changed = request;
+    changed.control_domain_policy_digest = [0xaa; 32];
+    assert!(matches!(
+        authority.bootstrap_principal(changed),
+        Err(IdentityAuthorityError::IdempotencyConflict)
+    ));
+    let mut invalid = bootstrap_request(41, &signing_key(41));
+    invalid.key_valid_from_ms = 5_000;
+    invalid.key_valid_until_ms = 4_999;
+    assert!(matches!(
+        authority.bootstrap_principal(invalid),
+        Err(IdentityAuthorityError::InvalidKeyValidity)
+    ));
+}
+
+#[test]
+fn snapshot_key_versions_and_revocation_receipts_are_ddl_immutable() {
+    let root = Root::new("immutable");
+    let key = signing_key(50);
+    let authority = IdentityAuthority::open(root.path()).unwrap();
+    let binding = authority
+        .bootstrap_principal(bootstrap_request(50, &key))
+        .unwrap()
+        .binding();
+    authority
+        .revoke_key(RevokeKeyRequest {
+            key_id: binding.key_id,
+            expected_key_generation: binding.key_generation,
+            expected_identity_snapshot_id: binding.identity_snapshot_id,
+            idempotency_key: IdempotencyKey::from_bytes([0x99; 16]),
+            revoked_at_ms: 3_000,
+        })
+        .unwrap();
+    drop(authority);
+
+    let raw = Connection::open(root.path().join("identity-authority.db")).unwrap();
+    assert!(
+        raw.execute("UPDATE key_versions SET valid_until_ms=9999", [])
+            .is_err()
+    );
+    assert!(raw.execute("DELETE FROM identity_snapshots", []).is_err());
+    assert!(raw.execute("DELETE FROM key_revocations", []).is_err());
+}

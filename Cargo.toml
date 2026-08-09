@@ -12,6 +12,7 @@ members = [
     "crates/nlos-outbox",
     "crates/nlos-store-fault",
     "crates/nlos-task",
+    "crates/nlos-identity",
     "crates/nlos-process",
     "crates/nlos-resource",
     "crates/nlos-artifact",
@@ -36,6 +37,7 @@ all = "warn"
 pedantic = "warn"
 
 [workspace.dependencies]
+ed25519-dalek = { version = "3.0.0", default-features = false, features = ["fast"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 minicbor = { version = "2.3.0", default-features = false, features = ["std"] }
 prost = "0.14.4"

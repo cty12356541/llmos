@@ -95,6 +95,7 @@ nominal_id!(ChannelId);
 nominal_id!(DeviceId);
 nominal_id!(DriverId);
 nominal_id!(ControlDomainId);
+nominal_id!(IdentitySnapshotId);
 nominal_id!(KeyId);
 nominal_id!(SchedulerDomainId);
 nominal_id!(ReceiptId);
