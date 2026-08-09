@@ -65,6 +65,86 @@ pub trait RecoveryHealthSource {
     fn recovery_health(&self) -> RecoveryWorkerHealth;
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RecoveryCounter {
+    CompletedCycles,
+    InspectedPlans,
+    FinalizedPlans,
+}
+
+impl RecoveryCounter {
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::CompletedCycles => "nlos_artifact_recovery_cycles_total",
+            Self::InspectedPlans => "nlos_artifact_recovery_plans_inspected_total",
+            Self::FinalizedPlans => "nlos_artifact_recovery_plans_finalized_total",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RecoveryGauge {
+    ConsecutiveFailedCycles,
+    RetryDelayMilliseconds,
+    DurableRetrying,
+    DurableEscalated,
+    DurableUnacknowledgedEscalated,
+    DurableResolved,
+}
+
+impl RecoveryGauge {
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::ConsecutiveFailedCycles => "nlos_artifact_recovery_consecutive_failed_cycles",
+            Self::RetryDelayMilliseconds => "nlos_artifact_recovery_retry_delay_milliseconds",
+            Self::DurableRetrying => "nlos_artifact_recovery_durable_retrying",
+            Self::DurableEscalated => "nlos_artifact_recovery_durable_escalated",
+            Self::DurableUnacknowledgedEscalated => {
+                "nlos_artifact_recovery_durable_unacknowledged_escalated"
+            }
+            Self::DurableResolved => "nlos_artifact_recovery_durable_resolved",
+        }
+    }
+}
+
+/// Backend-neutral exporter boundary. Metric names and kinds are fixed here;
+/// a host adapter may render them as `OpenMetrics`, ETW, signposts, or another
+/// platform facility without changing the authority model.
+pub trait RecoveryMetricsSink {
+    type Error;
+
+    /// Records the current worker lifecycle.
+    ///
+    /// # Errors
+    ///
+    /// Returns a backend-specific export error.
+    fn record_worker_state(&mut self, state: RecoveryWorkerState) -> Result<(), Self::Error>;
+    /// Sets one monotonic counter to its authoritative total.
+    ///
+    /// # Errors
+    ///
+    /// Returns a backend-specific export error.
+    fn set_counter_total(
+        &mut self,
+        counter: RecoveryCounter,
+        value: u64,
+    ) -> Result<(), Self::Error>;
+    /// Sets one point-in-time gauge.
+    ///
+    /// # Errors
+    ///
+    /// Returns a backend-specific export error.
+    fn set_gauge(&mut self, gauge: RecoveryGauge, value: u64) -> Result<(), Self::Error>;
+}
+
+#[derive(Debug)]
+pub enum RecoveryMetricsExportError<E> {
+    Task(TaskStoreError),
+    Sink(E),
+}
+
 impl RecoveryHealthSource for TaskAuthorityCommitRecoveryWorker {
     fn recovery_health(&self) -> RecoveryWorkerHealth {
         self.health()
@@ -182,6 +262,52 @@ where
         }
     }
 
+    /// Exports one authoritative metrics snapshot through a backend-neutral
+    /// sink. Diagnostic strings and per-plan identities are not metrics.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `TaskAuthority` read failure or the first sink error.
+    pub fn export_metrics<S: RecoveryMetricsSink>(
+        &self,
+        sink: &mut S,
+    ) -> Result<(), RecoveryMetricsExportError<S::Error>> {
+        let health = self
+            .authoritative_health()
+            .map_err(RecoveryMetricsExportError::Task)?;
+        sink.record_worker_state(health.state)
+            .map_err(RecoveryMetricsExportError::Sink)?;
+        for (counter, value) in [
+            (RecoveryCounter::CompletedCycles, health.completed_cycles),
+            (RecoveryCounter::InspectedPlans, health.total_inspected),
+            (RecoveryCounter::FinalizedPlans, health.total_finalized),
+        ] {
+            sink.set_counter_total(counter, value)
+                .map_err(RecoveryMetricsExportError::Sink)?;
+        }
+        for (gauge, value) in [
+            (
+                RecoveryGauge::ConsecutiveFailedCycles,
+                u64::try_from(health.consecutive_failed_cycles).unwrap_or(u64::MAX),
+            ),
+            (
+                RecoveryGauge::RetryDelayMilliseconds,
+                health.retry_delay.map_or(0, duration_ms),
+            ),
+            (RecoveryGauge::DurableRetrying, health.durable_retrying),
+            (RecoveryGauge::DurableEscalated, health.durable_escalated),
+            (
+                RecoveryGauge::DurableUnacknowledgedEscalated,
+                health.durable_unacknowledged_escalated,
+            ),
+            (RecoveryGauge::DurableResolved, health.durable_resolved),
+        ] {
+            sink.set_gauge(gauge, value)
+                .map_err(RecoveryMetricsExportError::Sink)?;
+        }
+        Ok(())
+    }
+
     fn handle_get(
         &self,
         request: &Envelope,
@@ -220,12 +346,7 @@ where
                 })
             })
             .collect::<Result<Vec<_>, SystemControlError>>()?;
-        let durable = self.tasks.summarize_artifact_recovery()?;
-        let mut health = self.health.recovery_health();
-        health.durable_retrying = durable.retrying;
-        health.durable_escalated = durable.escalated;
-        health.durable_unacknowledged_escalated = durable.unacknowledged_escalated;
-        health.durable_resolved = durable.resolved;
+        let health = self.authoritative_health()?;
         let snapshot = ArtifactRecoveryOperationsSnapshot {
             schema: Some(system_control_schema_identity()),
             metrics: Some(metrics(health)),
@@ -238,6 +359,16 @@ where
             encode_artifact_recovery_operations_snapshot(&snapshot)?,
             Vec::new(),
         ))
+    }
+
+    fn authoritative_health(&self) -> Result<RecoveryWorkerHealth, TaskStoreError> {
+        let durable = self.tasks.summarize_artifact_recovery()?;
+        let mut health = self.health.recovery_health();
+        health.durable_retrying = durable.retrying;
+        health.durable_escalated = durable.escalated;
+        health.durable_unacknowledged_escalated = durable.unacknowledged_escalated;
+        health.durable_resolved = durable.resolved;
+        Ok(health)
     }
 
     fn handle_submit(

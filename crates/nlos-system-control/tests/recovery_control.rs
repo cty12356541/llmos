@@ -28,8 +28,8 @@ use nlos_schema::{
 };
 use nlos_service_directory::{ServiceRegistration, SnapshotDirectory};
 use nlos_system_control::{
-    GET_METHOD, RecoveryHealthSource, RecoverySystemControl, SUBMIT_METHOD, SYSTEM_CONTROL_SERVICE,
-    SystemControlAuthorizer,
+    GET_METHOD, RecoveryCounter, RecoveryGauge, RecoveryHealthSource, RecoveryMetricsSink,
+    RecoverySystemControl, SUBMIT_METHOD, SYSTEM_CONTROL_SERVICE, SystemControlAuthorizer,
 };
 use nlos_task::{
     ArtifactPublicationExpectation, ArtifactRecoveryFailureRequest, ArtifactRecoveryFailureSource,
@@ -125,6 +125,36 @@ struct StubHealth(RecoveryWorkerHealth);
 impl RecoveryHealthSource for StubHealth {
     fn recovery_health(&self) -> RecoveryWorkerHealth {
         self.0.clone()
+    }
+}
+
+#[derive(Default)]
+struct RecordingMetrics {
+    state: Option<RecoveryWorkerState>,
+    counters: Vec<(RecoveryCounter, u64)>,
+    gauges: Vec<(RecoveryGauge, u64)>,
+}
+
+impl RecoveryMetricsSink for RecordingMetrics {
+    type Error = std::convert::Infallible;
+
+    fn record_worker_state(&mut self, state: RecoveryWorkerState) -> Result<(), Self::Error> {
+        self.state = Some(state);
+        Ok(())
+    }
+
+    fn set_counter_total(
+        &mut self,
+        counter: RecoveryCounter,
+        value: u64,
+    ) -> Result<(), Self::Error> {
+        self.counters.push((counter, value));
+        Ok(())
+    }
+
+    fn set_gauge(&mut self, gauge: RecoveryGauge, value: u64) -> Result<(), Self::Error> {
+        self.gauges.push((gauge, value));
+        Ok(())
     }
 }
 
@@ -375,6 +405,41 @@ fn get_returns_bounded_typed_health_without_local_diagnostics() {
                 6_000,
             )
             .is_err()
+    );
+}
+
+#[test]
+fn metrics_export_uses_stable_catalog_and_live_task_authority_gauges() {
+    let database = TestDatabase::new();
+    let authority = database.open();
+    let plan_id = create_escalated_plan(&authority);
+    let mut stale_health = health(plan_id);
+    stale_health.0.durable_escalated = 99;
+    stale_health.0.durable_unacknowledged_escalated = 99;
+    let control = RecoverySystemControl::new(&authority, &stale_health, &CapabilityPolicy);
+    let mut metrics = RecordingMetrics::default();
+    control.export_metrics(&mut metrics).unwrap();
+
+    assert_eq!(metrics.state, Some(RecoveryWorkerState::BackingOff));
+    assert_eq!(metrics.counters.len(), 3);
+    assert!(
+        metrics
+            .counters
+            .contains(&(RecoveryCounter::CompletedCycles, 4))
+    );
+    assert!(
+        metrics
+            .gauges
+            .contains(&(RecoveryGauge::DurableEscalated, 1))
+    );
+    assert!(
+        metrics
+            .gauges
+            .contains(&(RecoveryGauge::DurableUnacknowledgedEscalated, 1))
+    );
+    assert_eq!(
+        RecoveryGauge::DurableUnacknowledgedEscalated.name(),
+        "nlos_artifact_recovery_durable_unacknowledged_escalated"
     );
 }
 
