@@ -22,6 +22,7 @@ struct CycleOutcome {
     infrastructure_failure: bool,
     durable_retrying: u64,
     durable_escalated: u64,
+    durable_unacknowledged_escalated: u64,
     durable_resolved: u64,
 }
 
@@ -91,6 +92,7 @@ pub struct RecoveryWorkerHealth {
     pub last_failures: Vec<RecoveryWorkerFailure>,
     pub durable_retrying: u64,
     pub durable_escalated: u64,
+    pub durable_unacknowledged_escalated: u64,
     pub durable_resolved: u64,
 }
 
@@ -106,6 +108,7 @@ impl Default for RecoveryWorkerHealth {
             last_failures: Vec::new(),
             durable_retrying: 0,
             durable_escalated: 0,
+            durable_unacknowledged_escalated: 0,
             durable_resolved: 0,
         }
     }
@@ -257,6 +260,7 @@ fn run_worker(
                 infrastructure_failure: true,
                 durable_retrying: 0,
                 durable_escalated: 0,
+                durable_unacknowledged_escalated: 0,
                 durable_resolved: 0,
             },
             |timestamp| durable_cycle(tasks, artifacts, config, timestamp),
@@ -273,6 +277,7 @@ fn run_worker(
                 .saturating_add(u64::try_from(outcome.finalized).unwrap_or(u64::MAX));
             current.durable_retrying = outcome.durable_retrying;
             current.durable_escalated = outcome.durable_escalated;
+            current.durable_unacknowledged_escalated = outcome.durable_unacknowledged_escalated;
             current.durable_resolved = outcome.durable_resolved;
             if outcome.failures.is_empty() {
                 current.consecutive_failed_cycles = 0;
@@ -338,6 +343,7 @@ fn durable_cycle(
                 infrastructure_failure: true,
                 durable_retrying: 0,
                 durable_escalated: 0,
+                durable_unacknowledged_escalated: 0,
                 durable_resolved: 0,
             };
         }
@@ -350,6 +356,7 @@ fn durable_cycle(
         infrastructure_failure: false,
         durable_retrying: 0,
         durable_escalated: 0,
+        durable_unacknowledged_escalated: 0,
         durable_resolved: 0,
     };
     let coordinator = ArtifactCommitCoordinator::new(tasks, artifacts);
@@ -418,6 +425,7 @@ fn durable_cycle(
         Ok(summary) => {
             outcome.durable_retrying = summary.retrying;
             outcome.durable_escalated = summary.escalated;
+            outcome.durable_unacknowledged_escalated = summary.unacknowledged_escalated;
             outcome.durable_resolved = summary.resolved;
         }
         Err(error) => {

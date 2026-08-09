@@ -99,6 +99,8 @@ pub use reconcile::{
     effect_history_root_of,
 };
 pub use recovery::{
+    ArtifactRecoveryAlert, ArtifactRecoveryAlertAcknowledgeDecision,
+    ArtifactRecoveryAlertAcknowledgeRequest, ArtifactRecoveryAlertReceipt,
     ArtifactRecoveryFailureRequest, ArtifactRecoveryFailureSource, ArtifactRecoveryRecord,
     ArtifactRecoveryResumeRequest, ArtifactRecoveryState, ArtifactRecoverySummary,
 };

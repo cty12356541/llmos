@@ -43,6 +43,7 @@ macro_rules! nominal_id {
 }
 
 nominal_id!(ApplicationId);
+nominal_id!(PrincipalId);
 nominal_id!(ProcessId);
 nominal_id!(AgentInstanceId);
 nominal_id!(ExecutionFiberId);

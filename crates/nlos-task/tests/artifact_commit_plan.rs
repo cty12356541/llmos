@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use nlos_task::{
     ArtifactCommitPlanDecision, ArtifactCommitPlanState, ArtifactFinalizeDecision,
     ArtifactPublicationAuthorizationDecision, ArtifactPublicationExpectation,
+    ArtifactRecoveryAlertAcknowledgeDecision, ArtifactRecoveryAlertAcknowledgeRequest,
     ArtifactRecoveryFailureRequest, ArtifactRecoveryFailureSource, ArtifactRecoveryResumeRequest,
     ArtifactRecoveryState, AttemptSpec, FinalizeArtifactCommitRequest, LogicalEffectDescriptor,
     NestedArtifactPublicationReceipt, PermitDecision, PermitRequest, PlanArtifactCommitRequest,
@@ -14,8 +15,8 @@ use nlos_task::{
     TaskSpec, TaskStoreError, artifact_publication_plan_root, empty_effect_history_root,
 };
 use nlos_types::{
-    ArtifactId, CancellationScopeId, Generation, IdempotencyKey, ReceiptId, TaskAttemptId, TaskId,
-    TaskSnapshotId,
+    ArtifactId, CancellationScopeId, Generation, IdempotencyKey, PrincipalId, ReceiptId,
+    TaskAttemptId, TaskId, TaskSnapshotId,
 };
 use rusqlite::Connection;
 
@@ -636,7 +637,8 @@ fn v5_database_migrates_to_v6_without_changing_existing_task() {
     }
     let raw = Connection::open(&database.path).expect("open raw");
     raw.execute_batch(
-        "DROP TABLE task_artifact_recovery;
+        "DROP TABLE task_artifact_recovery_alert_receipts;
+         DROP TABLE task_artifact_recovery;
          DROP TABLE task_artifact_publication_receipts;
          DROP TABLE task_artifact_publication_expectations;
          DROP TABLE task_artifact_commit_plans;
@@ -658,7 +660,7 @@ fn v5_database_migrates_to_v6_without_changing_existing_task() {
     let version: i64 = raw
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 8);
+    assert_eq!(version, 9);
 }
 
 #[test]
@@ -823,7 +825,8 @@ fn v6_plan_migrates_to_current_and_remains_queryable() {
     };
     let raw = Connection::open(&database.path).unwrap();
     raw.execute_batch(
-        "DROP TABLE task_artifact_recovery;
+        "DROP TABLE task_artifact_recovery_alert_receipts;
+         DROP TABLE task_artifact_recovery;
          DROP TABLE task_artifact_publication_receipts;
          PRAGMA user_version = 6;",
     )
@@ -1010,7 +1013,8 @@ fn v7_database_migrates_to_v8_without_inventing_recovery_history() {
     };
     let raw = Connection::open(&database.path).unwrap();
     raw.execute_batch(
-        "DROP TABLE task_artifact_recovery;
+        "DROP TABLE task_artifact_recovery_alert_receipts;
+         DROP TABLE task_artifact_recovery;
          PRAGMA user_version = 7;",
     )
     .unwrap();
@@ -1024,5 +1028,189 @@ fn v7_database_migrates_to_v8_without_inventing_recovery_history() {
     let version: i64 = raw
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 8);
+    assert_eq!(version, 9);
+}
+
+#[test]
+fn escalated_alert_acknowledgement_is_durable_idempotent_and_does_not_resume() {
+    let database = TestDatabase::new("recovery-alert-ack");
+    let authority = database.open();
+    let expectations = vec![expectation(1, 1)];
+    let (attempt, permit) = register_and_issue(&authority, &expectations);
+    let plan = authority
+        .plan_artifact_commit(plan_request(attempt, &permit, expectations))
+        .unwrap()
+        .record()
+        .clone();
+    let escalated = authority
+        .record_artifact_recovery_failure(ArtifactRecoveryFailureRequest {
+            plan_id: plan.plan_id,
+            expected_total_failures: 0,
+            source: ArtifactRecoveryFailureSource::ArtifactAuthority,
+            observed_at_ms: 5_000,
+            base_delay_ms: 100,
+            max_delay_ms: 1_000,
+            escalation_threshold: 1,
+        })
+        .unwrap();
+    assert_eq!(escalated.state, ArtifactRecoveryState::Escalated);
+    assert_eq!(
+        authority
+            .summarize_artifact_recovery()
+            .unwrap()
+            .unacknowledged_escalated,
+        1
+    );
+
+    let request = ArtifactRecoveryAlertAcknowledgeRequest {
+        plan_id: plan.plan_id,
+        expected_total_failures: 1,
+        principal_id: PrincipalId::from_bytes([0x71; 16]),
+        idempotency_key: IdempotencyKey::from_bytes([0x72; 16]),
+        acknowledged_at_ms: 6_000,
+    };
+    let ArtifactRecoveryAlertAcknowledgeDecision::Created(receipt) = authority
+        .acknowledge_artifact_recovery_alert(request)
+        .unwrap()
+    else {
+        panic!("first acknowledgement must create a receipt");
+    };
+    assert_eq!(receipt.plan_id, plan.plan_id);
+    assert_eq!(receipt.total_failures, 1);
+    assert_eq!(
+        authority
+            .summarize_artifact_recovery()
+            .unwrap()
+            .unacknowledged_escalated,
+        0
+    );
+    assert_eq!(
+        authority
+            .inspect_artifact_recovery(plan.plan_id)
+            .unwrap()
+            .unwrap()
+            .state,
+        ArtifactRecoveryState::Escalated
+    );
+    drop(authority);
+
+    let authority = database.open();
+    assert_eq!(
+        authority
+            .acknowledge_artifact_recovery_alert(request)
+            .unwrap(),
+        ArtifactRecoveryAlertAcknowledgeDecision::Existing(receipt)
+    );
+    let alerts = authority.list_artifact_recovery_alerts(8).unwrap();
+    assert_eq!(alerts.len(), 1);
+    assert_eq!(alerts[0].recovery, escalated);
+    assert_eq!(alerts[0].acknowledgement, Some(receipt));
+    assert!(
+        authority
+            .list_due_artifact_commit_plans(8, i64::MAX)
+            .unwrap()
+            .is_empty()
+    );
+    drop(authority);
+    let raw = Connection::open(&database.path).unwrap();
+    assert!(
+        raw.execute(
+            "UPDATE task_artifact_recovery_alert_receipts
+             SET acknowledged_at_ms = acknowledged_at_ms + 1 WHERE receipt_id = ?1",
+            [receipt.receipt_id.as_bytes().as_slice()],
+        )
+        .is_err()
+    );
+    assert!(
+        raw.execute(
+            "DELETE FROM task_artifact_recovery_alert_receipts WHERE receipt_id = ?1",
+            [receipt.receipt_id.as_bytes().as_slice()],
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn alert_acknowledgement_fences_stale_or_conflicting_requests() {
+    let database = TestDatabase::new("recovery-alert-fences");
+    let authority = database.open();
+    let expectations = vec![expectation(1, 1)];
+    let (attempt, permit) = register_and_issue(&authority, &expectations);
+    let plan = authority
+        .plan_artifact_commit(plan_request(attempt, &permit, expectations))
+        .unwrap()
+        .record()
+        .clone();
+    authority
+        .record_artifact_recovery_failure(ArtifactRecoveryFailureRequest {
+            plan_id: plan.plan_id,
+            expected_total_failures: 0,
+            source: ArtifactRecoveryFailureSource::Coordinator,
+            observed_at_ms: 5_000,
+            base_delay_ms: 100,
+            max_delay_ms: 1_000,
+            escalation_threshold: 1,
+        })
+        .unwrap();
+    let request = ArtifactRecoveryAlertAcknowledgeRequest {
+        plan_id: plan.plan_id,
+        expected_total_failures: 1,
+        principal_id: PrincipalId::from_bytes([0x81; 16]),
+        idempotency_key: IdempotencyKey::from_bytes([0x82; 16]),
+        acknowledged_at_ms: 6_000,
+    };
+    assert!(matches!(
+        authority.acknowledge_artifact_recovery_alert(ArtifactRecoveryAlertAcknowledgeRequest {
+            expected_total_failures: 0,
+            ..request
+        }),
+        Err(TaskStoreError::ArtifactRecoveryCasMismatch { current: 1, .. })
+    ));
+    authority
+        .acknowledge_artifact_recovery_alert(request)
+        .unwrap();
+    assert!(matches!(
+        authority.acknowledge_artifact_recovery_alert(ArtifactRecoveryAlertAcknowledgeRequest {
+            principal_id: PrincipalId::from_bytes([0x83; 16]),
+            ..request
+        }),
+        Err(TaskStoreError::IdempotencyConflict)
+    ));
+}
+
+#[test]
+fn v8_database_migrates_to_v9_without_inventing_alert_receipts() {
+    let database = TestDatabase::new("migration-v9");
+    let plan_id = {
+        let authority = database.open();
+        let expectations = vec![expectation(1, 1)];
+        let (attempt, permit) = register_and_issue(&authority, &expectations);
+        authority
+            .plan_artifact_commit(plan_request(attempt, &permit, expectations))
+            .unwrap()
+            .record()
+            .plan_id
+    };
+    let raw = Connection::open(&database.path).unwrap();
+    raw.execute_batch(
+        "DROP TABLE task_artifact_recovery_alert_receipts;
+         PRAGMA user_version = 8;",
+    )
+    .unwrap();
+    drop(raw);
+
+    let migrated = database.open();
+    assert!(migrated.inspect_artifact_commit_plan(plan_id).is_ok());
+    assert!(
+        migrated
+            .list_artifact_recovery_alerts(8)
+            .unwrap()
+            .is_empty()
+    );
+    drop(migrated);
+    let raw = Connection::open(&database.path).unwrap();
+    let version: i64 = raw
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, 9);
 }
