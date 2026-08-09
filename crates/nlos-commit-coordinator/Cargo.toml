@@ -12,6 +12,7 @@ nlos-task = { path = "../nlos-task" }
 
 [dev-dependencies]
 nlos-types = { path = "../nlos-types" }
+rusqlite.workspace = true
 
 [lints]
 workspace = true

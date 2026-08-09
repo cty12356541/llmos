@@ -338,6 +338,7 @@ dependencies = [
  "nlos-artifact",
  "nlos-task",
  "nlos-types",
+ "rusqlite",
 ]
 
 [[package]]
