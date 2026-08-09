@@ -25,7 +25,7 @@ use crate::{
     TaskState, TaskStoreError,
 };
 
-const SCHEMA_VERSION: i64 = 10;
+const SCHEMA_VERSION: i64 = 11;
 
 /// A single-writer `SQLite` task authority.
 ///
@@ -79,6 +79,7 @@ impl SqliteTaskAuthority {
     /// (verified by reading the pragmas back; a silent fallback is rejected
     /// with [`TaskStoreError::DurabilityUnavailable`]), or when the stored
     /// schema version cannot be migrated or validated.
+    #[allow(clippy::too_many_lines)] // Explicit linear migration chain is easier to audit.
     pub fn open_with_vfs(
         path: impl AsRef<Path>,
         vfs: Option<&str>,
@@ -119,6 +120,7 @@ impl SqliteTaskAuthority {
                 migrate_v8(&mut connection)?;
                 migrate_v9(&mut connection)?;
                 migrate_v10(&mut connection)?;
+                migrate_v11(&mut connection)?;
             }
             1 => {
                 migrate_v2(&mut connection)?;
@@ -130,6 +132,7 @@ impl SqliteTaskAuthority {
                 migrate_v8(&mut connection)?;
                 migrate_v9(&mut connection)?;
                 migrate_v10(&mut connection)?;
+                migrate_v11(&mut connection)?;
             }
             2 => {
                 migrate_v3(&mut connection)?;
@@ -140,6 +143,7 @@ impl SqliteTaskAuthority {
                 migrate_v8(&mut connection)?;
                 migrate_v9(&mut connection)?;
                 migrate_v10(&mut connection)?;
+                migrate_v11(&mut connection)?;
             }
             3 => {
                 migrate_v4(&mut connection)?;
@@ -149,6 +153,7 @@ impl SqliteTaskAuthority {
                 migrate_v8(&mut connection)?;
                 migrate_v9(&mut connection)?;
                 migrate_v10(&mut connection)?;
+                migrate_v11(&mut connection)?;
             }
             4 => {
                 migrate_v5(&mut connection)?;
@@ -157,6 +162,7 @@ impl SqliteTaskAuthority {
                 migrate_v8(&mut connection)?;
                 migrate_v9(&mut connection)?;
                 migrate_v10(&mut connection)?;
+                migrate_v11(&mut connection)?;
             }
             5 => {
                 migrate_v6(&mut connection)?;
@@ -164,23 +170,31 @@ impl SqliteTaskAuthority {
                 migrate_v8(&mut connection)?;
                 migrate_v9(&mut connection)?;
                 migrate_v10(&mut connection)?;
+                migrate_v11(&mut connection)?;
             }
             6 => {
                 migrate_v7(&mut connection)?;
                 migrate_v8(&mut connection)?;
                 migrate_v9(&mut connection)?;
                 migrate_v10(&mut connection)?;
+                migrate_v11(&mut connection)?;
             }
             7 => {
                 migrate_v8(&mut connection)?;
                 migrate_v9(&mut connection)?;
                 migrate_v10(&mut connection)?;
+                migrate_v11(&mut connection)?;
             }
             8 => {
                 migrate_v9(&mut connection)?;
                 migrate_v10(&mut connection)?;
+                migrate_v11(&mut connection)?;
             }
-            9 => migrate_v10(&mut connection)?,
+            9 => {
+                migrate_v10(&mut connection)?;
+                migrate_v11(&mut connection)?;
+            }
+            10 => migrate_v11(&mut connection)?,
             SCHEMA_VERSION => {}
             other => return Err(TaskStoreError::UnsupportedSchema(other)),
         }
@@ -229,6 +243,7 @@ impl SqliteTaskAuthority {
             updated_at_ms: spec.registered_at_ms,
         };
         insert_task(&transaction, &record)?;
+        crate::participant::initialize_registry(&transaction, &record, spec.registered_at_ms)?;
         transaction.commit()?;
         Ok(TaskRegistrationDecision::Created(spec.task_id))
     }
@@ -565,6 +580,21 @@ impl SqliteTaskAuthority {
         Ok(stored.record)
     }
 
+    /// Reads the current durable participant registry for a Task.
+    ///
+    /// # Errors
+    ///
+    /// Returns `TaskNotFound`, `ParticipantRegistryNotFound`, corruption, or
+    /// storage errors.
+    pub fn inspect_participant_registry(
+        &self,
+        task_id: TaskId,
+    ) -> Result<crate::ParticipantRegistryRecord, TaskStoreError> {
+        let connection = self.lock_connection()?;
+        let task = load_task(&*connection, task_id)?;
+        crate::participant::inspect_registry(&connection, &task.record)
+    }
+
     /// Reads the durable view of one `TaskAttempt`.
     ///
     /// # Errors
@@ -770,6 +800,8 @@ fn issue_permit(
         .control_epoch
         .checked_add(1)
         .ok_or(TaskStoreError::EpochExhausted)?;
+    let participant_registry_binding =
+        crate::participant::freeze_for_permit(transaction, &task.record, request.requested_at_ms)?;
     let record = PermitRecord {
         permit_id: derive_permit_id(request.task_id, request.idempotency_key),
         task_id: request.task_id,
@@ -781,6 +813,7 @@ fn issue_permit(
         expected_retry_fence_epoch: attempt.snapshot.retry_fence_epoch,
         write_set_root: request.write_set_root,
         group_binding: crate::group::current_commit_binding(transaction, attempt.attempt_id)?,
+        participant_registry_binding: Some(participant_registry_binding),
         permit_epoch,
         control_epoch,
         cancel_epoch: task.record.cancel_epoch,
@@ -1103,6 +1136,57 @@ fn migrate_v9(connection: &mut Connection) -> Result<(), TaskStoreError> {
 fn migrate_v10(connection: &mut Connection) -> Result<(), TaskStoreError> {
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     transaction.execute_batch(SCHEMA_V10_SQL)?;
+    transaction.commit()?;
+    Ok(())
+}
+
+/// v10 → v11 adds authority-assigned `TaskStore` participant identity,
+/// versioned participant registries/receipts, and permit-time registry
+/// generation/root bindings. Existing permits remain explicitly unbound.
+fn migrate_v11(connection: &mut Connection) -> Result<(), TaskStoreError> {
+    let table_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type='table' AND name IN (
+            'task_authority_identity', 'task_participant_registries',
+            'task_participants', 'task_participant_registry_receipts'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    let trigger_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type='trigger' AND (
+            name LIKE 'task_participant_registry%'
+            OR name LIKE 'task_participants_%'
+            OR name LIKE 'task_authority_identity_%'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    let mut has_generation = false;
+    let mut has_root = false;
+    {
+        let mut statement = connection.prepare("PRAGMA table_info(commit_permits)")?;
+        let columns = statement.query_map([], |row| row.get::<_, String>(1))?;
+        for column in columns {
+            match column?.as_str() {
+                "participant_registry_generation" => has_generation = true,
+                "participant_registry_root" => has_root = true,
+                _ => {}
+            }
+        }
+    }
+    if table_count == 4 && trigger_count == 8 && has_generation && has_root {
+        connection.pragma_update(None, "user_version", 11)?;
+        return Ok(());
+    }
+    if table_count != 0 || trigger_count != 0 || has_generation || has_root {
+        return Err(TaskStoreError::CorruptRecord(
+            "partial participant registry schema",
+        ));
+    }
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(crate::participant::SCHEMA_V11_SQL)?;
     transaction.commit()?;
     Ok(())
 }
@@ -1628,6 +1712,12 @@ fn insert_permit(
     let group_policy_digest = record
         .group_binding
         .map(|binding| binding.group_policy_digest);
+    let participant_registry_generation = record
+        .participant_registry_binding
+        .map(|binding| encode_u64(binding.generation));
+    let participant_registry_root = record
+        .participant_registry_binding
+        .map(|binding| binding.root);
     transaction.execute(
         "INSERT INTO commit_permits (
             permit_id, task_id, idempotency_key, attempt_id, attempt_generation,
@@ -1635,9 +1725,10 @@ fn insert_permit(
             expected_retry_fence_epoch, write_set_root, permit_epoch,
             control_epoch, cancel_epoch, valid_until_ms, permit_state,
             created_at_ms, updated_at_ms, group_id, membership_generation,
-            membership_root, group_policy_digest
+            membership_root, group_policy_digest, participant_registry_generation,
+            participant_registry_root
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
-                   ?17, ?18, ?19, ?20)",
+                   ?17, ?18, ?19, ?20, ?21, ?22)",
         params![
             record.permit_id.as_bytes().as_slice(),
             record.task_id.as_bytes().as_slice(),
@@ -1659,6 +1750,10 @@ fn insert_permit(
             membership_generation.as_ref().map(<[u8; 8]>::as_slice),
             membership_root.as_ref().map(<[u8; 32]>::as_slice),
             group_policy_digest.as_ref().map(<[u8; 32]>::as_slice),
+            participant_registry_generation
+                .as_ref()
+                .map(<[u8; 8]>::as_slice),
+            participant_registry_root.as_ref().map(<[u8; 32]>::as_slice),
         ],
     )?;
     Ok(())
@@ -1669,7 +1764,8 @@ const PERMIT_COLUMNS: &str = "permit_id, task_id, idempotency_key, attempt_id, a
      expected_retry_fence_epoch, write_set_root, permit_epoch,
      control_epoch, cancel_epoch, valid_until_ms, permit_state,
      created_at_ms, updated_at_ms, group_id, membership_generation,
-     membership_root, group_policy_digest";
+     membership_root, group_policy_digest, participant_registry_generation,
+     participant_registry_root";
 
 fn load_permit_by_key(
     source: &impl SqlRead,
@@ -1758,6 +1854,20 @@ pub(crate) fn load_quarantined_permit(
 
 fn decode_permit_row(row: &rusqlite::Row<'_>) -> Result<PermitRecord, TaskStoreError> {
     let group_binding = decode_group_binding(row, 16)?;
+    let participant_generation = optional_blob::<8>(row, 20)?;
+    let participant_root = optional_blob::<32>(row, 21)?;
+    let participant_registry_binding = match (participant_generation, participant_root) {
+        (Some(generation), Some(root)) => Some(crate::ParticipantRegistryBinding {
+            generation: u64::from_be_bytes(generation),
+            root,
+        }),
+        (None, None) => None,
+        _ => {
+            return Err(TaskStoreError::CorruptRecord(
+                "partial participant registry permit binding",
+            ));
+        }
+    };
     Ok(PermitRecord {
         permit_id: CommitPermitId::from_bytes(blob16(row, 0)?),
         task_id: TaskId::from_bytes(blob16(row, 1)?),
@@ -1769,6 +1879,7 @@ fn decode_permit_row(row: &rusqlite::Row<'_>) -> Result<PermitRecord, TaskStoreE
         expected_retry_fence_epoch: u64_from_blob(row, 7)?,
         write_set_root: blob32(row, 8)?,
         group_binding,
+        participant_registry_binding,
         permit_epoch: u64_from_blob(row, 9)?,
         control_epoch: u64_from_blob(row, 10)?,
         cancel_epoch: u64_from_blob(row, 11)?,

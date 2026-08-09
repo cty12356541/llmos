@@ -2,7 +2,7 @@
 
 > 状态：`ACTIVE / POC ACCEPTANCE PENDING`
 >
-> 最后更新：2026-08-09（已纳入 `B-SEMANTIC-002B` durable SpecEvent admission、`B-SEMANTIC-002A` canonical IntentSpec body identity、`B-SEMANTIC-001` durable Assertion admission authority、`B-CAPABILITY-001` durable issue/attenuate/revoke authority、`B-IDENTITY-001` durable Principal/ControlDomain/key authority、`B-RESOURCE-001` Driver/Reservation binding authority、`B-PROCESS-001` durable execution binding authority 与 `B-TASK-006P` shared typed identity spine，并接受 [ADR-0005](./adrs/0005-task-write-set-authority-first.md) 的 TaskWriteSet authority-first 实施顺序；此前 `B-TASK-006O` durable TaskSnapshotReceipt、`B-TASK-006N` dual-authority VFS/process crash fault matrix、`B-TASK-003/004/005/006A–006M`、`B-SCHEMA-014`、`B-ARTIFACT-001/002` 及对应故障注入证据保持有效；2026-08-04 采纳[议题 31](../discussions/31-重复建设评估与继续投入边界.md)/[议题 32](../discussions/32-核心设计理念撞车风险评估.md) 顺序变更：主线由 `B-SCHEMA` 剩余横向门切换为 `B-TASK` 纵切面，Go/C# 探针后移）
+> 最后更新：2026-08-09（已纳入 `B-TASK-007A` authority-assigned TaskStore self-participant registry、`B-SEMANTIC-002B` durable SpecEvent admission、`B-SEMANTIC-002A` canonical IntentSpec body identity、`B-SEMANTIC-001` durable Assertion admission authority、`B-CAPABILITY-001` durable issue/attenuate/revoke authority、`B-IDENTITY-001` durable Principal/ControlDomain/key authority、`B-RESOURCE-001` Driver/Reservation binding authority、`B-PROCESS-001` durable execution binding authority 与 `B-TASK-006P` shared typed identity spine，并接受 [ADR-0005](./adrs/0005-task-write-set-authority-first.md) 的 TaskWriteSet authority-first 实施顺序；此前 `B-TASK-006O` durable TaskSnapshotReceipt、`B-TASK-006N` dual-authority VFS/process crash fault matrix、`B-TASK-003/004/005/006A–006M`、`B-SCHEMA-014`、`B-ARTIFACT-001/002` 及对应故障注入证据保持有效；2026-08-04 采纳[议题 31](../discussions/31-重复建设评估与继续投入边界.md)/[议题 32](../discussions/32-核心设计理念撞车风险评估.md) 顺序变更：主线由 `B-SCHEMA` 剩余横向门切换为 `B-TASK` 纵切面，Go/C# 探针后移）
 >
 > 权威用途：这是阶段 B 工作项、实现事实、验证证据和下一验收门的唯一汇总入口。它不替代 v0.5 架构规范、ADR 或 Evidence；每一项状态都必须能下钻到这些权威对象。
 
@@ -44,6 +44,7 @@ Application
 | `B-IDENTITY` | Principal、ControlDomain、版本化 identity snapshot 与 signing key authority | `IN_PROGRESS` | [B-IDENTITY-001](../evidence/stage-b/b-identity-001-principal-key-authority.md)：authority-assigned identity、Ed25519 key validity/revocation、Semantic signature verification PARTIAL PASS | 多 Principal domain merge/split、key rotation/custody、认证 session/attestation ingress、可信时钟与 fault matrix |
 | `B-CAPABILITY` | Capability issue、attenuation、delegation、revoke 与 reference monitor | `IN_PROGRESS` | [B-CAPABILITY-001](../evidence/stage-b/b-capability-001-durable-attenuation-authority.md)：durable root issue/delegation Receipt、全维衰减、generation/ancestor fence、verified-signer Semantic authorization PARTIAL PASS | Namespace hierarchy narrowing、call-limit 消耗账本、跨进程认证入口、通用 object/right registry、fault matrix |
 | `B-SEMANTIC` | canonical SemanticEvent、签名、lineage、Admission/Durability 与 authority view | `IN_PROGRESS` | [B-SEMANTIC-001](../evidence/stage-b/b-semantic-001-durable-assertion-admission.md)：durable Assertion；[B-SEMANTIC-002A](../evidence/stage-b/b-semantic-002a-canonical-intent-spec-body.md)：canonical IntentSpec identity；[B-SEMANTIC-002B](../evidence/stage-b/b-semantic-002b-durable-spec-event-admission.md)：durable signed SpecEvent admission/migration PARTIAL PASS | Judgment/Verification/Retraction、declassification、batch DAG、Trust View/checkpoint、fault matrix |
+| `B-PARTICIPANT` | TaskAuthority participant registry generation/root/freeze 与 endpoint proof | `IN_PROGRESS` | [B-TASK-007A](../evidence/stage-b/b-task-007a-self-participant-registry.md)：authority-assigned TaskStore self participant、versioned root、permit-time atomic freeze PARTIAL PASS | verified Semantic/Artifact/Driver/Resource endpoints、registration CAS、EffectPermit/Receipt binding、takeover fence、fault matrix |
 | `B-RUNTIME` | RuntimeAdapter 与 Tokio 有界 Fiber runtime | `PARTIAL_PASS` | [ADR-0001](./adrs/0001-stage-b-core-language-and-runtime.md)、[PoC-0001](../evidence/stage-b/poc-0001-tokio-fiber-runtime.md)；提交 `a211088` | wake latency/fairness、structured join/detach、CPU 分维计量、Process crash、跨平台 |
 | `B-OP-FENCE` | Operation 状态机、callback identity、cancel/generation fence | `PARTIAL_PASS` | [PoC-0002](../evidence/stage-b/poc-0002-operation-callback-fence.md)；提交 `8b9ffe1` | Driver authentication、EffectPermit、progress/stream callback；Tokio wake 集成已随 `B-OUTBOX`（PoC-0004）补齐 |
 | `B-STORE` | SQLite WAL/FULL Operation authority、恢复、Outbox、durable dedup/result | `PARTIAL_PASS` | [ADR-0002](./adrs/0002-stage-b-sqlite-operation-authority.md)、[PoC-0003](../evidence/stage-b/poc-0003-sqlite-operation-authority.md)、[B-SCHEMA-010](../evidence/stage-b/b-schema-010-durable-idempotency-result.md)、[B-SCHEMA-011](../evidence/stage-b/b-schema-011-durable-idempotency-ipc.md)、[B-SCHEMA-012](../evidence/stage-b/b-schema-012-deadline-cancel-state-machine.md)、[B-SCHEMA-013](../evidence/stage-b/b-schema-013-operation-control-timer-worker.md)；F1–F7、authority、真实重连、server restart、durable no-effect 与 cancel epoch CAS 已验证 | 100K 逐条生产写入、真实硬件掉电/更多文件系统仍超出当前证据 |
@@ -428,6 +429,12 @@ Application
 - `append_spec` 复用 Identity/Process/Capability/lineage/taint gates，并把 spec body/event/signature/log/edges、signed DURABLE AdmissionReceipt 与 outbox 原子提交；精确 replay 跨重启返回原 Receipt。
 - schema v2 用 tagged XOR 区分 Assertion ContentDigest 与 SpecBodyDigest，`spec_bodies` append-only；真实 v1 Assertion/Receipt/lineage store 无损迁移并通过 FK 检查。15 项 Semantic tests 通过，详见 [B-SEMANTIC-002B](../evidence/stage-b/b-semantic-002b-durable-spec-event-admission.md)。
 
+### 4.56 TaskStore self-participant registry（B-TASK-007A）
+
+- schema v11 由 TaskAuthority 分配 durable TaskStore participant identity；Task 注册同事务建立 generation 1 OPEN registry、完整 root 与 immutable create Receipt，不接受调用者自报 self endpoint。
+- CommitPermit issuance 同一 transaction CAS freeze registry 并逐位绑定 generation/root；exact replay 保留原 binding，旧 permit 闭合后的新竞争创建 successor generation/prior-root chain，不原地解冻历史 registry。
+- 3 项新增 integration tests 与原 `nlos-task` 全套测试通过，详见 [B-TASK-007A](../evidence/stage-b/b-task-007a-self-participant-registry.md)。限制：当前只覆盖 TaskStore self participant；外部 endpoint proof、registration CAS、EffectPermit/Receipt binding 与 takeover fence 尚未实现。
+
 ## 5. 当前下一验收门
 
 `B-TASK` 自 2026-08-04 起为唯一主线工作包（采纳议题 31/32 顺序变更）。`B-SCHEMA` 保持 `IN_PROGRESS` 完成态收尾但不再持有主线；其剩余横向项（Go/C# 探针、Namespace bootstrap authority、生产目录 watch/lease/rebind、持久 deadline queue/restart recovery、Receipt authority、双向 peer auth、Python Proactor 稳定 profile、CBOR 跨语言、长期 fuzz、actual signing）在 `B-TASK` 纵切面成立前不推动 SABI 冻结。
@@ -523,7 +530,8 @@ TaskGroup membership generation/root CAS + Admission/Removal Receipt            
   → Semantic Assertion target/event admission authority                                    PARTIAL PASS（B-SEMANTIC-001）
   → Semantic canonical IntentSpec body identity                                            PARTIAL PASS（B-SEMANTIC-002A）
   → Semantic SpecEvent durable admission                                                   PARTIAL PASS（B-SEMANTIC-002B）
-  → participant registry                                                                   NEXT
+  → TaskStore self-participant registry                                                    PARTIAL PASS（B-TASK-007A）
+  → verified Semantic/Artifact participant registration                                    NEXT
   → complete TaskWriteSet + permit binding                                                 BLOCKED BY ABOVE
 ```
 

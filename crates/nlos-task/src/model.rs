@@ -558,6 +558,9 @@ pub struct PermitRecord {
     /// Exact `TaskGroup` membership position bound with the write set at
     /// permit issuance. `None` preserves ungrouped B-TASK-001 behavior.
     pub group_binding: Option<crate::TaskGroupCommitBinding>,
+    /// Participant registry atomically frozen by this permit issuance.
+    /// `None` is reserved for pre-v11 migrated permits.
+    pub participant_registry_binding: Option<crate::ParticipantRegistryBinding>,
     pub permit_epoch: u64,
     pub control_epoch: u64,
     pub cancel_epoch: u64,

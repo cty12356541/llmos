@@ -64,6 +64,8 @@ nominal_id!(CommitPermitId);
 nominal_id!(EffectSlotId);
 nominal_id!(EffectPermitId);
 nominal_id!(TaskAuthorityAssignmentId);
+nominal_id!(TaskParticipantRegistryId);
+nominal_id!(TaskParticipantId);
 nominal_id!(IntentId);
 nominal_id!(ActionId);
 nominal_id!(ControlCommandId);

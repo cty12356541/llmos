@@ -59,6 +59,7 @@ mod commit;
 mod effect;
 mod group;
 mod model;
+mod participant;
 mod reconcile;
 mod recovery;
 mod store;
@@ -95,6 +96,10 @@ pub use model::{
     empty_effect_history_root,
 };
 pub use nlos_types::{EffectPermitId, EffectSlotId, TaskGroupId};
+pub use participant::{
+    ParticipantRecord, ParticipantRegistryBinding, ParticipantRegistryRecord,
+    ParticipantRegistryState, ParticipantType,
+};
 pub use reconcile::{
     AdoptionReplay, AdoptionRequest, FinalizeRequestV3, ReconcileReplay, ReconcileRequest,
     effect_history_root_of,
@@ -333,6 +338,14 @@ pub enum TaskStoreError {
     /// Removal of a member carrying quarantine evidence would launder
     /// the `[TASK-GROUP-002]` final-clause cap.
     GroupQuarantinedChild,
+    /// No participant registry exists for the task.
+    ParticipantRegistryNotFound,
+    /// The registry is frozen and rejects the requested transition.
+    ParticipantRegistryFrozen {
+        state: ParticipantRegistryState,
+    },
+    /// The registry state changed outside the expected authority CAS.
+    ParticipantRegistryCasMismatch,
     /// A caller-supplied group specification violates a structural bound.
     InvalidGroupSpec {
         /// Static explanation of the violation.
@@ -515,6 +528,15 @@ impl fmt::Display for TaskStoreError {
             }
             Self::GroupQuarantinedChild => {
                 formatter.write_str("quarantined member cannot be removed from the group")
+            }
+            Self::ParticipantRegistryNotFound => {
+                formatter.write_str("task participant registry does not exist")
+            }
+            Self::ParticipantRegistryFrozen { state } => {
+                write!(formatter, "participant registry state {state:?} is frozen")
+            }
+            Self::ParticipantRegistryCasMismatch => {
+                formatter.write_str("participant registry compare-and-swap failed")
             }
             Self::InvalidGroupSpec { reason } => {
                 write!(formatter, "invalid group spec: {reason}")
