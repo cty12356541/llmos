@@ -43,8 +43,8 @@
 //! fields), Namespace delegation, TaskPlan/TaskNode materialization,
 //! Process/AgentInstance binding, `IsolationDomain`, gateway/driver
 //! integration, signatures, and any IPC surface. Artifact publication
-//! authorization/receipt consumption/finalize is also outside the
-//! schema-v6 planning slice. Post-permit
+//! authorization and Task finalize remain outside the schema-v7 receipt
+//! consumption slice. Post-permit
 //! `EFFECTING`/`FINALIZING`/`UNCERTAIN`/`RECONCILING` from the §25.1
 //! attempt state machine are represented as permit/slot states rather
 //! than attempt states here.
@@ -58,7 +58,8 @@ mod store;
 
 pub use commit::{
     ArtifactCommitPlanDecision, ArtifactCommitPlanId, ArtifactCommitPlanRecord,
-    ArtifactCommitPlanState, ArtifactPublicationExpectation, PlanArtifactCommitRequest,
+    ArtifactCommitPlanState, ArtifactCommitProgress, ArtifactPublicationExpectation,
+    NestedArtifactPublicationReceipt, PlanArtifactCommitRequest, RecordArtifactPublicationsRequest,
     artifact_publication_plan_root,
 };
 pub use effect::{
@@ -133,6 +134,12 @@ pub enum TaskStoreError {
     /// does not equal the permit's artifact-only write-set root.
     InvalidArtifactPublicationPlan {
         /// Static explanation of the rejected invariant.
+        reason: &'static str,
+    },
+    /// An Artifact publication receipt conflicts with the immutable plan
+    /// or an already consumed receipt.
+    ArtifactPublicationConflict {
+        /// Static explanation of the rejected binding.
         reason: &'static str,
     },
     /// The caller presented a stale generation for an existing object.
@@ -322,6 +329,9 @@ impl fmt::Display for TaskStoreError {
             }
             Self::InvalidArtifactPublicationPlan { reason } => {
                 write!(formatter, "invalid artifact publication plan: {reason}")
+            }
+            Self::ArtifactPublicationConflict { reason } => {
+                write!(formatter, "artifact publication receipt conflict: {reason}")
             }
             Self::InvalidGeneration => formatter.write_str("stale generation for durable object"),
             Self::InvalidAttemptState { state } => {

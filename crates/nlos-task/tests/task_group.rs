@@ -1055,7 +1055,8 @@ fn schema_v4_upgrades_to_v5_without_inventing_group_bindings() {
         let connection = rusqlite::Connection::open(&database.path).expect("raw v5 database");
         connection
             .execute_batch(
-                "DROP TABLE task_artifact_publication_expectations;
+                "DROP TABLE task_artifact_publication_receipts;
+                 DROP TABLE task_artifact_publication_expectations;
                  DROP TABLE task_artifact_commit_plans;
                  ALTER TABLE commit_permits DROP COLUMN group_policy_digest;
                  ALTER TABLE commit_permits DROP COLUMN membership_root;
@@ -1095,7 +1096,7 @@ fn schema_v4_upgrades_to_v5_without_inventing_group_bindings() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("schema version");
-    assert_eq!(version, 6);
+    assert_eq!(version, 7);
 }
 
 /// Builds the cancellation fixture: root group + child group with an
@@ -1828,7 +1829,7 @@ fn golden_v3_database_migrates_losslessly_to_v4() {
         let version: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read user_version");
-        assert_eq!(version, 6, "migration stamps the current schema version");
+        assert_eq!(version, 7, "migration stamps the current schema version");
     }
 
     // All v3 data intact.

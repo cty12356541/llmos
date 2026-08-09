@@ -24,7 +24,7 @@ use crate::{
     TaskRegistrationDecision, TaskSpec, TaskState, TaskStoreError,
 };
 
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 
 /// A single-writer `SQLite` task authority.
 ///
@@ -114,6 +114,7 @@ impl SqliteTaskAuthority {
                 migrate_v4(&mut connection)?;
                 migrate_v5(&mut connection)?;
                 migrate_v6(&mut connection)?;
+                migrate_v7(&mut connection)?;
             }
             1 => {
                 migrate_v2(&mut connection)?;
@@ -121,23 +122,31 @@ impl SqliteTaskAuthority {
                 migrate_v4(&mut connection)?;
                 migrate_v5(&mut connection)?;
                 migrate_v6(&mut connection)?;
+                migrate_v7(&mut connection)?;
             }
             2 => {
                 migrate_v3(&mut connection)?;
                 migrate_v4(&mut connection)?;
                 migrate_v5(&mut connection)?;
                 migrate_v6(&mut connection)?;
+                migrate_v7(&mut connection)?;
             }
             3 => {
                 migrate_v4(&mut connection)?;
                 migrate_v5(&mut connection)?;
                 migrate_v6(&mut connection)?;
+                migrate_v7(&mut connection)?;
             }
             4 => {
                 migrate_v5(&mut connection)?;
                 migrate_v6(&mut connection)?;
+                migrate_v7(&mut connection)?;
             }
-            5 => migrate_v6(&mut connection)?,
+            5 => {
+                migrate_v6(&mut connection)?;
+                migrate_v7(&mut connection)?;
+            }
+            6 => migrate_v7(&mut connection)?,
             SCHEMA_VERSION => {}
             other => return Err(TaskStoreError::UnsupportedSchema(other)),
         }
@@ -740,6 +749,14 @@ fn migrate_v5(connection: &mut Connection) -> Result<(), TaskStoreError> {
 fn migrate_v6(connection: &mut Connection) -> Result<(), TaskStoreError> {
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     transaction.execute_batch(crate::commit::SCHEMA_V6_SQL)?;
+    transaction.commit()?;
+    Ok(())
+}
+
+/// v6 → v7 adds immutable nested Artifact publication receipt evidence.
+fn migrate_v7(connection: &mut Connection) -> Result<(), TaskStoreError> {
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(crate::commit::SCHEMA_V7_SQL)?;
     transaction.commit()?;
     Ok(())
 }

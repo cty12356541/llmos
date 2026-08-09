@@ -1,14 +1,13 @@
 //! Artifact publication planning for the recoverable Task commit protocol.
 //!
-//! Schema v6 deliberately lands the durable, immutable plan before any
-//! publication authorization. A plan binds the current `CommitPermit` and
-//! its artifact-only `write_set_root` to a canonical set of staged Artifact
-//! expectations. Later slices advance the state only after full finalize
-//! readiness validation and consume Artifact publication receipts.
+//! Schema v6 lands the durable immutable plan before publication. Schema v7
+//! consumes immutable Artifact publication receipts and exposes partial
+//! `Publishing` versus complete `Ready` state without closing the permit or
+//! advancing `TaskHead`.
 
 use std::fmt;
 
-use nlos_types::{ArtifactId, CommitPermitId, IdempotencyKey, TaskAttemptId, TaskId};
+use nlos_types::{ArtifactId, CommitPermitId, IdempotencyKey, ReceiptId, TaskAttemptId, TaskId};
 use rusqlite::{Row, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
 
@@ -59,8 +58,9 @@ pub struct ArtifactPublicationExpectation {
     pub size_bytes: u64,
 }
 
-/// Lifecycle reserved by schema v6. Only `Planned` is currently
-/// producible; later transitions cannot reinterpret the immutable plan.
+/// Durable lifecycle of an Artifact commit plan. Schema v7 produces
+/// `Planned`, `Publishing`, and `Ready`; `Finalized` remains reserved for
+/// the Task finalize slice.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ArtifactCommitPlanState {
     Planned,
@@ -118,6 +118,43 @@ pub struct ArtifactCommitPlanRecord {
     pub state: ArtifactCommitPlanState,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
+}
+
+/// Artifact publication receipt consumed as nested Task commit evidence.
+/// The shape mirrors the authority output without depending on its
+/// concrete implementation crate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NestedArtifactPublicationReceipt {
+    pub receipt_id: ReceiptId,
+    pub staging_id: [u8; 16],
+    pub artifact_id: ArtifactId,
+    pub revision: u64,
+    pub digest: [u8; 32],
+    pub size_bytes: u64,
+    pub task_id: TaskId,
+    pub permit_id: CommitPermitId,
+    pub write_set_root: [u8; 32],
+    pub prior_head_revision: u64,
+    pub prior_head_digest: Option<[u8; 32]>,
+    pub new_head_revision: u64,
+    pub new_head_digest: [u8; 32],
+    pub created_at_ms: i64,
+}
+
+/// Request to consume one or more authoritative Artifact publication
+/// receipts against an immutable plan.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecordArtifactPublicationsRequest {
+    pub plan_id: ArtifactCommitPlanId,
+    pub receipts: Vec<NestedArtifactPublicationReceipt>,
+    pub observed_at_ms: i64,
+}
+
+/// Queryable partial/ready state of a planned Artifact commit.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ArtifactCommitProgress {
+    pub plan: ArtifactCommitPlanRecord,
+    pub publications: Vec<NestedArtifactPublicationReceipt>,
 }
 
 /// Idempotent plan decision.
@@ -307,6 +344,186 @@ impl SqliteTaskAuthority {
         let connection = self.lock_connection()?;
         load_plan_optional(&*connection, plan_id)?.ok_or(TaskStoreError::ArtifactCommitPlanNotFound)
     }
+
+    /// Consumes Artifact publication receipts idempotently. A partial set
+    /// advances the plan to `Publishing`; a complete exact set advances it
+    /// to `Ready`. Neither state closes the permit or advances `TaskHead`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed plan-not-found, publication-conflict, corrupt-record,
+    /// or storage error.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn record_artifact_publications(
+        &self,
+        request: RecordArtifactPublicationsRequest,
+    ) -> Result<ArtifactCommitProgress, TaskStoreError> {
+        if request.receipts.is_empty() {
+            return Err(TaskStoreError::ArtifactPublicationConflict {
+                reason: "receipt batch must not be empty",
+            });
+        }
+        let mut connection = self.lock_connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut plan = load_plan_optional(&transaction, request.plan_id)?
+            .ok_or(TaskStoreError::ArtifactCommitPlanNotFound)?;
+        if plan.state == ArtifactCommitPlanState::Finalized {
+            return Err(TaskStoreError::ArtifactPublicationConflict {
+                reason: "finalized plan cannot consume publication receipts",
+            });
+        }
+
+        let mut inserted_any = false;
+        for receipt in &request.receipts {
+            validate_publication_receipt(&plan, receipt)?;
+            if let Some(existing) =
+                load_publication_by_staging(&transaction, plan.plan_id, &receipt.staging_id)?
+            {
+                if existing != *receipt {
+                    return Err(TaskStoreError::ArtifactPublicationConflict {
+                        reason: "staging expectation already consumed by different receipt",
+                    });
+                }
+                continue;
+            }
+            if load_publication_by_receipt_id(&transaction, receipt.receipt_id)?.is_some() {
+                return Err(TaskStoreError::ArtifactPublicationConflict {
+                    reason: "receipt identity already belongs to another staging slot",
+                });
+            }
+            insert_publication(&transaction, plan.plan_id, receipt)?;
+            inserted_any = true;
+        }
+
+        let publications = load_publications(&transaction, plan.plan_id)?;
+        let state = if publications.len() == plan.expectations.len() {
+            ArtifactCommitPlanState::Ready
+        } else {
+            ArtifactCommitPlanState::Publishing
+        };
+        if inserted_any || plan.state != state {
+            update_plan_state(
+                &transaction,
+                plan.plan_id,
+                plan.state,
+                state,
+                request.observed_at_ms,
+            )?;
+            plan.state = state;
+            plan.updated_at_ms = request.observed_at_ms;
+        }
+        transaction.commit()?;
+        Ok(ArtifactCommitProgress { plan, publications })
+    }
+
+    /// Reads a plan together with all nested Artifact publication receipts
+    /// consumed so far.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ArtifactCommitPlanNotFound`, corrupt-record, or storage
+    /// errors.
+    pub fn inspect_artifact_commit_progress(
+        &self,
+        plan_id: ArtifactCommitPlanId,
+    ) -> Result<ArtifactCommitProgress, TaskStoreError> {
+        let connection = self.lock_connection()?;
+        let plan = load_plan_optional(&*connection, plan_id)?
+            .ok_or(TaskStoreError::ArtifactCommitPlanNotFound)?;
+        let publications = load_publications(&*connection, plan_id)?;
+        validate_progress(&plan, &publications)?;
+        Ok(ArtifactCommitProgress { plan, publications })
+    }
+}
+
+fn validate_publication_receipt(
+    plan: &ArtifactCommitPlanRecord,
+    receipt: &NestedArtifactPublicationReceipt,
+) -> Result<(), TaskStoreError> {
+    if receipt.task_id != plan.task_id
+        || receipt.permit_id != plan.permit_id
+        || receipt.write_set_root != plan.write_set_root
+    {
+        return Err(TaskStoreError::ArtifactPublicationConflict {
+            reason: "Task/Permit/write-set binding differs from plan",
+        });
+    }
+    let expectation = plan
+        .expectations
+        .iter()
+        .find(|item| item.staging_id == receipt.staging_id)
+        .ok_or(TaskStoreError::ArtifactPublicationConflict {
+            reason: "receipt staging identity is absent from plan",
+        })?;
+    if expectation.artifact_id != receipt.artifact_id
+        || expectation.target_revision != receipt.revision
+        || expectation.digest != receipt.digest
+        || expectation.size_bytes != receipt.size_bytes
+    {
+        return Err(TaskStoreError::ArtifactPublicationConflict {
+            reason: "receipt content differs from planned Artifact revision",
+        });
+    }
+    if receipt.new_head_revision != receipt.revision
+        || receipt.new_head_digest != receipt.digest
+        || receipt.prior_head_revision.checked_add(1) != Some(receipt.new_head_revision)
+        || (receipt.prior_head_revision == 0) != receipt.prior_head_digest.is_none()
+    {
+        return Err(TaskStoreError::ArtifactPublicationConflict {
+            reason: "receipt head transition is internally inconsistent",
+        });
+    }
+    Ok(())
+}
+
+fn validate_progress(
+    plan: &ArtifactCommitPlanRecord,
+    publications: &[NestedArtifactPublicationReceipt],
+) -> Result<(), TaskStoreError> {
+    for receipt in publications {
+        validate_publication_receipt(plan, receipt).map_err(|_| {
+            TaskStoreError::CorruptRecord("stored publication receipt disagrees with plan")
+        })?;
+    }
+    let expected_state = if publications.is_empty() {
+        ArtifactCommitPlanState::Planned
+    } else if publications.len() == plan.expectations.len() {
+        ArtifactCommitPlanState::Ready
+    } else {
+        ArtifactCommitPlanState::Publishing
+    };
+    if plan.state != ArtifactCommitPlanState::Finalized && plan.state != expected_state {
+        return Err(TaskStoreError::CorruptRecord(
+            "artifact commit plan state disagrees with publication count",
+        ));
+    }
+    Ok(())
+}
+
+fn update_plan_state(
+    transaction: &rusqlite::Transaction<'_>,
+    plan_id: ArtifactCommitPlanId,
+    old: ArtifactCommitPlanState,
+    new: ArtifactCommitPlanState,
+    now_ms: i64,
+) -> Result<(), TaskStoreError> {
+    let changed = transaction.execute(
+        "UPDATE task_artifact_commit_plans
+         SET plan_state = ?1, updated_at_ms = ?2
+         WHERE plan_id = ?3 AND plan_state = ?4",
+        params![
+            new.code(),
+            now_ms,
+            plan_id.as_bytes().as_slice(),
+            old.code(),
+        ],
+    )?;
+    if changed != 1 {
+        return Err(TaskStoreError::CorruptRecord(
+            "artifact commit plan state compare-and-swap failed",
+        ));
+    }
+    Ok(())
 }
 
 fn same_plan_request(
@@ -488,6 +705,109 @@ fn load_expectations(
     Ok(out)
 }
 
+fn insert_publication(
+    transaction: &rusqlite::Transaction<'_>,
+    plan_id: ArtifactCommitPlanId,
+    receipt: &NestedArtifactPublicationReceipt,
+) -> Result<(), TaskStoreError> {
+    transaction.execute(
+        "INSERT INTO task_artifact_publication_receipts (
+            plan_id, receipt_id, staging_id, artifact_id, revision, digest,
+            size_bytes, task_id, permit_id, write_set_root,
+            prior_head_revision, prior_head_digest, new_head_revision,
+            new_head_digest, created_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+        params![
+            plan_id.as_bytes().as_slice(),
+            receipt.receipt_id.as_bytes().as_slice(),
+            receipt.staging_id.as_slice(),
+            receipt.artifact_id.as_bytes().as_slice(),
+            encode_u64(receipt.revision).as_slice(),
+            receipt.digest.as_slice(),
+            encode_u64(receipt.size_bytes).as_slice(),
+            receipt.task_id.as_bytes().as_slice(),
+            receipt.permit_id.as_bytes().as_slice(),
+            receipt.write_set_root.as_slice(),
+            encode_u64(receipt.prior_head_revision).as_slice(),
+            receipt.prior_head_digest.as_ref().map(<[u8; 32]>::as_slice),
+            encode_u64(receipt.new_head_revision).as_slice(),
+            receipt.new_head_digest.as_slice(),
+            receipt.created_at_ms,
+        ],
+    )?;
+    Ok(())
+}
+
+const PUBLICATION_COLUMNS: &str = "receipt_id, staging_id, artifact_id, revision,
+     digest, size_bytes, task_id, permit_id, write_set_root,
+     prior_head_revision, prior_head_digest, new_head_revision,
+     new_head_digest, created_at_ms";
+
+fn load_publication_by_staging(
+    source: &impl SqlRead,
+    plan_id: ArtifactCommitPlanId,
+    staging_id: &[u8; 16],
+) -> Result<Option<NestedArtifactPublicationReceipt>, TaskStoreError> {
+    let mut statement = source.prepare_statement(&format!(
+        "SELECT {PUBLICATION_COLUMNS} FROM task_artifact_publication_receipts
+         WHERE plan_id = ?1 AND staging_id = ?2"
+    ))?;
+    let mut rows = statement.query(params![
+        plan_id.as_bytes().as_slice(),
+        staging_id.as_slice(),
+    ])?;
+    rows.next()?.map(decode_publication_row).transpose()
+}
+
+fn load_publication_by_receipt_id(
+    source: &impl SqlRead,
+    receipt_id: ReceiptId,
+) -> Result<Option<NestedArtifactPublicationReceipt>, TaskStoreError> {
+    let mut statement = source.prepare_statement(&format!(
+        "SELECT {PUBLICATION_COLUMNS} FROM task_artifact_publication_receipts
+         WHERE receipt_id = ?1"
+    ))?;
+    let mut rows = statement.query([receipt_id.as_bytes().as_slice()])?;
+    rows.next()?.map(decode_publication_row).transpose()
+}
+
+fn load_publications(
+    source: &impl SqlRead,
+    plan_id: ArtifactCommitPlanId,
+) -> Result<Vec<NestedArtifactPublicationReceipt>, TaskStoreError> {
+    let mut statement = source.prepare_statement(&format!(
+        "SELECT {PUBLICATION_COLUMNS} FROM task_artifact_publication_receipts
+         WHERE plan_id = ?1 ORDER BY artifact_id, revision, staging_id"
+    ))?;
+    let mut rows = statement.query([plan_id.as_bytes().as_slice()])?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next()? {
+        out.push(decode_publication_row(row)?);
+    }
+    Ok(out)
+}
+
+fn decode_publication_row(
+    row: &Row<'_>,
+) -> Result<NestedArtifactPublicationReceipt, TaskStoreError> {
+    Ok(NestedArtifactPublicationReceipt {
+        receipt_id: ReceiptId::from_bytes(blob16(row, 0)?),
+        staging_id: blob16(row, 1)?,
+        artifact_id: ArtifactId::from_bytes(blob16(row, 2)?),
+        revision: u64_from_blob(row, 3)?,
+        digest: blob32(row, 4)?,
+        size_bytes: u64_from_blob(row, 5)?,
+        task_id: TaskId::from_bytes(blob16(row, 6)?),
+        permit_id: CommitPermitId::from_bytes(blob16(row, 7)?),
+        write_set_root: blob32(row, 8)?,
+        prior_head_revision: u64_from_blob(row, 9)?,
+        prior_head_digest: optional_blob32(row, 10)?,
+        new_head_revision: u64_from_blob(row, 11)?,
+        new_head_digest: blob32(row, 12)?,
+        created_at_ms: row.get(13)?,
+    })
+}
+
 fn generation_from_blob(
     row: &Row<'_>,
     index: usize,
@@ -512,6 +832,17 @@ fn blob16(row: &Row<'_>, index: usize) -> Result<[u8; 16], TaskStoreError> {
 
 fn blob32(row: &Row<'_>, index: usize) -> Result<[u8; 32], TaskStoreError> {
     blob_n(row, index)
+}
+
+fn optional_blob32(row: &Row<'_>, index: usize) -> Result<Option<[u8; 32]>, TaskStoreError> {
+    let bytes: Option<Vec<u8>> = row.get(index)?;
+    bytes
+        .map(|value| {
+            value
+                .try_into()
+                .map_err(|_| TaskStoreError::CorruptRecord("blob column length mismatch"))
+        })
+        .transpose()
 }
 
 fn blob_n<const N: usize>(row: &Row<'_>, index: usize) -> Result<[u8; N], TaskStoreError> {
@@ -591,3 +922,38 @@ pub(crate) const SCHEMA_V6_SQL: &str = "CREATE TABLE task_artifact_commit_plans 
      END;
 
      PRAGMA user_version = 6;";
+
+pub(crate) const SCHEMA_V7_SQL: &str = "CREATE TABLE task_artifact_publication_receipts (
+        plan_id BLOB NOT NULL CHECK(length(plan_id) = 16),
+        receipt_id BLOB PRIMARY KEY NOT NULL CHECK(length(receipt_id) = 16),
+        staging_id BLOB NOT NULL CHECK(length(staging_id) = 16),
+        artifact_id BLOB NOT NULL CHECK(length(artifact_id) = 16),
+        revision BLOB NOT NULL CHECK(length(revision) = 8),
+        digest BLOB NOT NULL CHECK(length(digest) = 32),
+        size_bytes BLOB NOT NULL CHECK(length(size_bytes) = 8),
+        task_id BLOB NOT NULL CHECK(length(task_id) = 16),
+        permit_id BLOB NOT NULL CHECK(length(permit_id) = 16),
+        write_set_root BLOB NOT NULL CHECK(length(write_set_root) = 32),
+        prior_head_revision BLOB NOT NULL CHECK(length(prior_head_revision) = 8),
+        prior_head_digest BLOB CHECK(prior_head_digest IS NULL OR length(prior_head_digest) = 32),
+        new_head_revision BLOB NOT NULL CHECK(length(new_head_revision) = 8),
+        new_head_digest BLOB NOT NULL CHECK(length(new_head_digest) = 32),
+        created_at_ms INTEGER NOT NULL,
+        UNIQUE(plan_id, staging_id),
+        UNIQUE(plan_id, artifact_id, revision),
+        FOREIGN KEY(plan_id) REFERENCES task_artifact_commit_plans(plan_id)
+     ) STRICT;
+
+     CREATE TRIGGER task_artifact_publication_receipt_immutable_update
+     BEFORE UPDATE ON task_artifact_publication_receipts
+     BEGIN
+        SELECT RAISE(ABORT, 'nested artifact publication receipt is immutable');
+     END;
+
+     CREATE TRIGGER task_artifact_publication_receipt_immutable_delete
+     BEFORE DELETE ON task_artifact_publication_receipts
+     BEGIN
+        SELECT RAISE(ABORT, 'nested artifact publication receipt is durable evidence');
+     END;
+
+     PRAGMA user_version = 7;";

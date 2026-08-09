@@ -1,4 +1,4 @@
-//! B-TASK-006A: durable Artifact publication plan bound to `CommitPermit`.
+//! B-TASK-006A/B: durable Artifact publication plan and nested receipts.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -6,12 +6,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use nlos_task::{
     ArtifactCommitPlanDecision, ArtifactCommitPlanState, ArtifactPublicationExpectation,
-    AttemptSpec, PermitDecision, PermitRequest, PlanArtifactCommitRequest, SnapshotBundle,
+    AttemptSpec, NestedArtifactPublicationReceipt, PermitDecision, PermitRequest,
+    PlanArtifactCommitRequest, RecordArtifactPublicationsRequest, SnapshotBundle,
     SqliteTaskAuthority, TaskSpec, TaskStoreError, artifact_publication_plan_root,
     empty_effect_history_root,
 };
 use nlos_types::{
-    ArtifactId, CancellationScopeId, Generation, IdempotencyKey, TaskAttemptId, TaskId,
+    ArtifactId, CancellationScopeId, Generation, IdempotencyKey, ReceiptId, TaskAttemptId, TaskId,
     TaskSnapshotId,
 };
 use rusqlite::Connection;
@@ -133,6 +134,30 @@ fn plan_request(
         expectations,
         idempotency_key: IdempotencyKey::from_bytes([0x08; 16]),
         planned_at_ms: 4_000,
+    }
+}
+
+fn publication(
+    expectation: ArtifactPublicationExpectation,
+    plan: &nlos_task::ArtifactCommitPlanRecord,
+    seed: u8,
+) -> NestedArtifactPublicationReceipt {
+    let prior_head_revision = expectation.target_revision - 1;
+    NestedArtifactPublicationReceipt {
+        receipt_id: ReceiptId::from_bytes([0xa0 + seed; 16]),
+        staging_id: expectation.staging_id,
+        artifact_id: expectation.artifact_id,
+        revision: expectation.target_revision,
+        digest: expectation.digest,
+        size_bytes: expectation.size_bytes,
+        task_id: plan.task_id,
+        permit_id: plan.permit_id,
+        write_set_root: plan.write_set_root,
+        prior_head_revision,
+        prior_head_digest: (prior_head_revision != 0).then_some([0xb0 + seed; 32]),
+        new_head_revision: expectation.target_revision,
+        new_head_digest: expectation.digest,
+        created_at_ms: 5_000 + i64::from(seed),
     }
 }
 
@@ -312,7 +337,8 @@ fn v5_database_migrates_to_v6_without_changing_existing_task() {
     }
     let raw = Connection::open(&database.path).expect("open raw");
     raw.execute_batch(
-        "DROP TABLE task_artifact_publication_expectations;
+        "DROP TABLE task_artifact_publication_receipts;
+         DROP TABLE task_artifact_publication_expectations;
          DROP TABLE task_artifact_commit_plans;
          PRAGMA user_version = 5;",
     )
@@ -332,5 +358,184 @@ fn v5_database_migrates_to_v6_without_changing_existing_task() {
     let version: i64 = raw
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 6);
+    assert_eq!(version, 7);
+}
+
+#[test]
+fn partial_publications_survive_restart_and_complete_to_ready() {
+    let database = TestDatabase::new("publication-progress");
+    let expectations = vec![expectation(1, 1), expectation(2, 1)];
+    let (attempt, permit, plan, first_receipt) = {
+        let authority = database.open();
+        let (attempt, permit) = register_and_issue(&authority, &expectations);
+        let plan = authority
+            .plan_artifact_commit(plan_request(attempt, &permit, expectations.clone()))
+            .unwrap()
+            .record()
+            .clone();
+        let first_receipt = publication(expectation(1, 1), &plan, 1);
+        let progress = authority
+            .record_artifact_publications(RecordArtifactPublicationsRequest {
+                plan_id: plan.plan_id,
+                receipts: vec![first_receipt],
+                observed_at_ms: 6_000,
+            })
+            .expect("record partial");
+        assert_eq!(progress.plan.state, ArtifactCommitPlanState::Publishing);
+        assert_eq!(progress.publications, vec![first_receipt]);
+        assert_eq!(
+            authority
+                .inspect_task(attempt.task_id)
+                .unwrap()
+                .head_commit_seq,
+            0
+        );
+        (attempt, permit, plan, first_receipt)
+    };
+
+    let reopened = database.open();
+    let partial = reopened
+        .inspect_artifact_commit_progress(plan.plan_id)
+        .expect("inspect partial after restart");
+    assert_eq!(partial.plan.state, ArtifactCommitPlanState::Publishing);
+    assert_eq!(partial.publications, vec![first_receipt]);
+
+    let second_receipt = publication(expectation(2, 1), &plan, 2);
+    let ready = reopened
+        .record_artifact_publications(RecordArtifactPublicationsRequest {
+            plan_id: plan.plan_id,
+            receipts: vec![second_receipt],
+            observed_at_ms: 7_000,
+        })
+        .expect("complete receipts");
+    assert_eq!(ready.plan.state, ArtifactCommitPlanState::Ready);
+    assert_eq!(ready.publications.len(), 2);
+    assert_eq!(
+        reopened
+            .inspect_task(attempt.task_id)
+            .unwrap()
+            .head_commit_seq,
+        0
+    );
+    assert_eq!(
+        reopened
+            .inspect_permit(attempt.task_id, permit.permit_id)
+            .unwrap()
+            .state,
+        nlos_task::PermitState::Issued
+    );
+
+    let replay = reopened
+        .record_artifact_publications(RecordArtifactPublicationsRequest {
+            plan_id: plan.plan_id,
+            receipts: vec![first_receipt, second_receipt],
+            observed_at_ms: 9_000,
+        })
+        .expect("exact replay");
+    assert_eq!(replay, ready, "exact replay does not rewrite timestamps");
+}
+
+#[test]
+fn conflicting_receipt_batch_rolls_back_without_partial_consumption() {
+    let database = TestDatabase::new("publication-conflict");
+    let authority = database.open();
+    let expectations = vec![expectation(1, 1), expectation(2, 1)];
+    let (attempt, permit) = register_and_issue(&authority, &expectations);
+    let plan = authority
+        .plan_artifact_commit(plan_request(attempt, &permit, expectations))
+        .unwrap()
+        .record()
+        .clone();
+    let valid = publication(expectation(1, 1), &plan, 1);
+    let mut invalid = publication(expectation(2, 1), &plan, 2);
+    invalid.write_set_root = [0xff; 32];
+
+    assert!(matches!(
+        authority.record_artifact_publications(RecordArtifactPublicationsRequest {
+            plan_id: plan.plan_id,
+            receipts: vec![valid, invalid],
+            observed_at_ms: 6_000,
+        }),
+        Err(TaskStoreError::ArtifactPublicationConflict { .. })
+    ));
+    let unchanged = authority
+        .inspect_artifact_commit_progress(plan.plan_id)
+        .unwrap();
+    assert_eq!(unchanged.plan.state, ArtifactCommitPlanState::Planned);
+    assert!(unchanged.publications.is_empty());
+}
+
+#[test]
+fn nested_publication_receipts_are_ddl_immutable() {
+    let database = TestDatabase::new("publication-immutable");
+    let authority = database.open();
+    let expectations = vec![expectation(1, 1)];
+    let (attempt, permit) = register_and_issue(&authority, &expectations);
+    let plan = authority
+        .plan_artifact_commit(plan_request(attempt, &permit, expectations))
+        .unwrap()
+        .record()
+        .clone();
+    let receipt = publication(expectation(1, 1), &plan, 1);
+    authority
+        .record_artifact_publications(RecordArtifactPublicationsRequest {
+            plan_id: plan.plan_id,
+            receipts: vec![receipt],
+            observed_at_ms: 6_000,
+        })
+        .unwrap();
+    drop(authority);
+
+    let raw = Connection::open(&database.path).unwrap();
+    assert!(
+        raw.execute(
+            "UPDATE task_artifact_publication_receipts SET created_at_ms = created_at_ms + 1
+             WHERE receipt_id = ?1",
+            [receipt.receipt_id.as_bytes().as_slice()],
+        )
+        .is_err()
+    );
+    assert!(
+        raw.execute(
+            "DELETE FROM task_artifact_publication_receipts WHERE receipt_id = ?1",
+            [receipt.receipt_id.as_bytes().as_slice()],
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn v6_plan_migrates_to_v7_and_remains_queryable() {
+    let database = TestDatabase::new("migration-v7");
+    let (plan_id, expected) = {
+        let authority = database.open();
+        let expectations = vec![expectation(1, 1)];
+        let (attempt, permit) = register_and_issue(&authority, &expectations);
+        let plan = authority
+            .plan_artifact_commit(plan_request(attempt, &permit, expectations))
+            .unwrap()
+            .record()
+            .clone();
+        (plan.plan_id, plan)
+    };
+    let raw = Connection::open(&database.path).unwrap();
+    raw.execute_batch(
+        "DROP TABLE task_artifact_publication_receipts;
+         PRAGMA user_version = 6;",
+    )
+    .expect("restore structural v6");
+    drop(raw);
+
+    let migrated = database.open();
+    assert_eq!(
+        migrated.inspect_artifact_commit_plan(plan_id).unwrap(),
+        expected
+    );
+    assert!(
+        migrated
+            .inspect_artifact_commit_progress(plan_id)
+            .unwrap()
+            .publications
+            .is_empty()
+    );
 }
