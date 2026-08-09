@@ -71,7 +71,7 @@ pub enum ArtifactCommitPlanState {
 }
 
 impl ArtifactCommitPlanState {
-    const fn code(self) -> i64 {
+    pub(crate) const fn code(self) -> i64 {
         match self {
             Self::Planned => 0,
             Self::Publishing => 1,
@@ -744,6 +744,7 @@ fn finalize_ready_plan(
         record.control_epoch = control_epoch;
     })?;
     finalize_plan(transaction, plan.plan_id, receipt_id, finalized_at_ms)?;
+    crate::recovery::resolve_recovery(transaction, plan.plan_id, finalized_at_ms)?;
     Ok(receipt)
 }
 
@@ -974,7 +975,7 @@ const PLAN_COLUMNS: &str = "plan_id, task_id, permit_id, attempt_id,
      attempt_generation, write_set_root, artifact_plan_root,
      expected_artifact_count, plan_state, task_receipt_id, created_at_ms, updated_at_ms";
 
-fn load_plan_optional(
+pub(crate) fn load_plan_optional(
     source: &impl SqlRead,
     plan_id: ArtifactCommitPlanId,
 ) -> Result<Option<ArtifactCommitPlanRecord>, TaskStoreError> {

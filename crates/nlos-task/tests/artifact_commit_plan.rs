@@ -6,11 +6,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use nlos_task::{
     ArtifactCommitPlanDecision, ArtifactCommitPlanState, ArtifactFinalizeDecision,
-    ArtifactPublicationAuthorizationDecision, ArtifactPublicationExpectation, AttemptSpec,
-    FinalizeArtifactCommitRequest, LogicalEffectDescriptor, NestedArtifactPublicationReceipt,
-    PermitDecision, PermitRequest, PlanArtifactCommitRequest, PlannedEffect,
-    RecordArtifactPublicationsRequest, SnapshotBundle, SqliteTaskAuthority, TaskSpec,
-    TaskStoreError, artifact_publication_plan_root, empty_effect_history_root,
+    ArtifactPublicationAuthorizationDecision, ArtifactPublicationExpectation,
+    ArtifactRecoveryFailureRequest, ArtifactRecoveryFailureSource, ArtifactRecoveryResumeRequest,
+    ArtifactRecoveryState, AttemptSpec, FinalizeArtifactCommitRequest, LogicalEffectDescriptor,
+    NestedArtifactPublicationReceipt, PermitDecision, PermitRequest, PlanArtifactCommitRequest,
+    PlannedEffect, RecordArtifactPublicationsRequest, SnapshotBundle, SqliteTaskAuthority,
+    TaskSpec, TaskStoreError, artifact_publication_plan_root, empty_effect_history_root,
 };
 use nlos_types::{
     ArtifactId, CancellationScopeId, Generation, IdempotencyKey, ReceiptId, TaskAttemptId, TaskId,
@@ -635,7 +636,8 @@ fn v5_database_migrates_to_v6_without_changing_existing_task() {
     }
     let raw = Connection::open(&database.path).expect("open raw");
     raw.execute_batch(
-        "DROP TABLE task_artifact_publication_receipts;
+        "DROP TABLE task_artifact_recovery;
+         DROP TABLE task_artifact_publication_receipts;
          DROP TABLE task_artifact_publication_expectations;
          DROP TABLE task_artifact_commit_plans;
          PRAGMA user_version = 5;",
@@ -656,7 +658,7 @@ fn v5_database_migrates_to_v6_without_changing_existing_task() {
     let version: i64 = raw
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 7);
+    assert_eq!(version, 8);
 }
 
 #[test]
@@ -806,7 +808,7 @@ fn nested_publication_receipts_are_ddl_immutable() {
 }
 
 #[test]
-fn v6_plan_migrates_to_v7_and_remains_queryable() {
+fn v6_plan_migrates_to_current_and_remains_queryable() {
     let database = TestDatabase::new("migration-v7");
     let (plan_id, expected) = {
         let authority = database.open();
@@ -821,7 +823,8 @@ fn v6_plan_migrates_to_v7_and_remains_queryable() {
     };
     let raw = Connection::open(&database.path).unwrap();
     raw.execute_batch(
-        "DROP TABLE task_artifact_publication_receipts;
+        "DROP TABLE task_artifact_recovery;
+         DROP TABLE task_artifact_publication_receipts;
          PRAGMA user_version = 6;",
     )
     .expect("restore structural v6");
@@ -839,4 +842,187 @@ fn v6_plan_migrates_to_v7_and_remains_queryable() {
             .publications
             .is_empty()
     );
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn recovery_ledger_survives_restart_filters_due_and_resolves_with_commit() {
+    let database = TestDatabase::new("recovery-ledger");
+    let expectations = vec![expectation(1, 1)];
+    let (plan, first) = {
+        let authority = database.open();
+        let (attempt, permit) = register_and_issue(&authority, &expectations);
+        let plan = authority
+            .plan_artifact_commit(plan_request(attempt, &permit, expectations.clone()))
+            .unwrap()
+            .record()
+            .clone();
+        assert_eq!(
+            authority.list_due_artifact_commit_plans(8, 5_000).unwrap(),
+            vec![plan.clone()]
+        );
+        let first = authority
+            .record_artifact_recovery_failure(ArtifactRecoveryFailureRequest {
+                plan_id: plan.plan_id,
+                expected_total_failures: 0,
+                source: ArtifactRecoveryFailureSource::ArtifactAuthority,
+                observed_at_ms: 5_000,
+                base_delay_ms: 100,
+                max_delay_ms: 1_000,
+                escalation_threshold: 3,
+            })
+            .unwrap();
+        assert_eq!(first.state, ArtifactRecoveryState::Retrying);
+        assert_eq!(first.consecutive_failures, 1);
+        assert_eq!(first.total_failures, 1);
+        assert!((5_080..=5_120).contains(&first.next_retry_at_ms.unwrap()));
+        (plan, first)
+    };
+
+    let authority = database.open();
+    assert_eq!(
+        authority.inspect_artifact_recovery(plan.plan_id).unwrap(),
+        Some(first)
+    );
+    let first_due = first.next_retry_at_ms.unwrap();
+    assert!(
+        authority
+            .list_due_artifact_commit_plans(8, first_due - 1)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        authority
+            .list_due_artifact_commit_plans(8, first_due)
+            .unwrap(),
+        vec![plan.clone()]
+    );
+    assert!(matches!(
+        authority.record_artifact_recovery_failure(ArtifactRecoveryFailureRequest {
+            plan_id: plan.plan_id,
+            expected_total_failures: 0,
+            source: ArtifactRecoveryFailureSource::TaskAuthority,
+            observed_at_ms: first_due,
+            base_delay_ms: 100,
+            max_delay_ms: 1_000,
+            escalation_threshold: 3,
+        }),
+        Err(TaskStoreError::ArtifactRecoveryCasMismatch { current: 1, .. })
+    ));
+
+    let second = authority
+        .record_artifact_recovery_failure(ArtifactRecoveryFailureRequest {
+            plan_id: plan.plan_id,
+            expected_total_failures: 1,
+            source: ArtifactRecoveryFailureSource::TaskAuthority,
+            observed_at_ms: first_due,
+            base_delay_ms: 100,
+            max_delay_ms: 1_000,
+            escalation_threshold: 3,
+        })
+        .unwrap();
+    assert_eq!(second.consecutive_failures, 2);
+    assert_eq!(second.total_failures, 2);
+    assert_eq!(
+        second.last_source,
+        ArtifactRecoveryFailureSource::TaskAuthority
+    );
+    let second_due = second.next_retry_at_ms.unwrap();
+    assert!((first_due + 160..=first_due + 240).contains(&second_due));
+
+    let escalated = authority
+        .record_artifact_recovery_failure(ArtifactRecoveryFailureRequest {
+            plan_id: plan.plan_id,
+            expected_total_failures: 2,
+            source: ArtifactRecoveryFailureSource::Coordinator,
+            observed_at_ms: second_due,
+            base_delay_ms: 100,
+            max_delay_ms: 1_000,
+            escalation_threshold: 3,
+        })
+        .unwrap();
+    assert_eq!(escalated.state, ArtifactRecoveryState::Escalated);
+    assert_eq!(escalated.consecutive_failures, 3);
+    assert_eq!(escalated.next_retry_at_ms, None);
+    assert!(
+        authority
+            .list_due_artifact_commit_plans(8, i64::MAX)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(matches!(
+        authority.resume_artifact_recovery(ArtifactRecoveryResumeRequest {
+            plan_id: plan.plan_id,
+            expected_total_failures: 2,
+            resumed_at_ms: 9_000,
+        }),
+        Err(TaskStoreError::ArtifactRecoveryCasMismatch { current: 3, .. })
+    ));
+    let resumed = authority
+        .resume_artifact_recovery(ArtifactRecoveryResumeRequest {
+            plan_id: plan.plan_id,
+            expected_total_failures: 3,
+            resumed_at_ms: 9_000,
+        })
+        .unwrap();
+    assert_eq!(resumed.state, ArtifactRecoveryState::Retrying);
+    assert_eq!(resumed.consecutive_failures, 0);
+    assert_eq!(resumed.next_retry_at_ms, Some(9_000));
+
+    authority
+        .authorize_artifact_publication(plan.plan_id, 9_500)
+        .unwrap();
+    authority
+        .record_artifact_publications(RecordArtifactPublicationsRequest {
+            plan_id: plan.plan_id,
+            receipts: vec![publication(expectation(1, 1), &plan, 1)],
+            observed_at_ms: 10_000,
+        })
+        .unwrap();
+    authority
+        .finalize_artifact_commit(FinalizeArtifactCommitRequest {
+            plan_id: plan.plan_id,
+            finalized_at_ms: 11_000,
+        })
+        .unwrap();
+    let resolved = authority
+        .inspect_artifact_recovery(plan.plan_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(resolved.state, ArtifactRecoveryState::Resolved);
+    assert_eq!(resolved.consecutive_failures, 0);
+    assert_eq!(resolved.total_failures, 3);
+    assert_eq!(resolved.resolved_at_ms, Some(11_000));
+}
+
+#[test]
+fn v7_database_migrates_to_v8_without_inventing_recovery_history() {
+    let database = TestDatabase::new("migration-v8");
+    let plan_id = {
+        let authority = database.open();
+        let expectations = vec![expectation(1, 1)];
+        let (attempt, permit) = register_and_issue(&authority, &expectations);
+        authority
+            .plan_artifact_commit(plan_request(attempt, &permit, expectations))
+            .unwrap()
+            .record()
+            .plan_id
+    };
+    let raw = Connection::open(&database.path).unwrap();
+    raw.execute_batch(
+        "DROP TABLE task_artifact_recovery;
+         PRAGMA user_version = 7;",
+    )
+    .unwrap();
+    drop(raw);
+
+    let migrated = database.open();
+    assert!(migrated.inspect_artifact_commit_plan(plan_id).is_ok());
+    assert_eq!(migrated.inspect_artifact_recovery(plan_id).unwrap(), None);
+    drop(migrated);
+    let raw = Connection::open(&database.path).unwrap();
+    let version: i64 = raw
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, 8);
 }

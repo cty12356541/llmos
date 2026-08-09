@@ -33,6 +33,9 @@
 //! an immutable, canonical Artifact publication plan to an issued permit's
 //! artifact-only `write_set_root`; planning itself never authorizes
 //! publication or advances `TaskHead`.
+//! Schema v8 adds a per-plan durable recovery ledger: retry due time,
+//! deterministic jitter, consecutive/total failure counts, and escalation
+//! survive `TaskAuthority` process restart and resolve with terminal commit.
 //!
 //! Explicitly out of scope: cross-authority-term takeover (adoption is by
 //! the same authority after restart/uncertainty), compensation execution
@@ -46,7 +49,8 @@
 //! authorization is now a durable `TaskAuthority` fence for artifact-only
 //! permits; READY-only Artifact-aware Task finalize now links nested receipts
 //! atomically inside `TaskAuthority`. `ArtifactAuthority` online verification
-//! and an automatic cross-authority coordinator remain outside schema v7. Post-permit
+//! remains outside schema v8; the automatic cross-authority driver and worker
+//! live in `nlos-commit-coordinator` to avoid a reverse crate dependency. Post-permit
 //! `EFFECTING`/`FINALIZING`/`UNCERTAIN`/`RECONCILING` from the §25.1
 //! attempt state machine are represented as permit/slot states rather
 //! than attempt states here.
@@ -56,6 +60,7 @@ mod effect;
 mod group;
 mod model;
 mod reconcile;
+mod recovery;
 mod store;
 
 pub use commit::{
@@ -93,6 +98,10 @@ pub use reconcile::{
     AdoptionReplay, AdoptionRequest, FinalizeRequestV3, ReconcileReplay, ReconcileRequest,
     effect_history_root_of,
 };
+pub use recovery::{
+    ArtifactRecoveryFailureRequest, ArtifactRecoveryFailureSource, ArtifactRecoveryRecord,
+    ArtifactRecoveryResumeRequest, ArtifactRecoveryState,
+};
 pub use store::SqliteTaskAuthority;
 
 use std::error::Error;
@@ -127,6 +136,21 @@ pub enum TaskStoreError {
     /// The Artifact publication plan is not complete enough to finalize.
     ArtifactCommitPlanNotReady {
         state: ArtifactCommitPlanState,
+    },
+    /// Recovery retry timing, threshold, or timestamp is invalid.
+    InvalidArtifactRecoveryPolicy {
+        reason: &'static str,
+    },
+    /// An escalated recovery resume used a stale failure-count CAS.
+    ArtifactRecoveryCasMismatch {
+        expected: u64,
+        current: u64,
+    },
+    /// No retry/escalation ledger exists for the plan.
+    ArtifactRecoveryNotFound,
+    /// The requested recovery transition is invalid for its durable state.
+    InvalidArtifactRecoveryState {
+        state: ArtifactRecoveryState,
     },
     /// The task ID is already registered with a different specification.
     DuplicateTask,
@@ -335,6 +359,22 @@ impl fmt::Display for TaskStoreError {
                 write!(
                     formatter,
                     "artifact commit plan state {state:?} is not ready"
+                )
+            }
+            Self::InvalidArtifactRecoveryPolicy { reason } => {
+                write!(formatter, "invalid Artifact recovery policy: {reason}")
+            }
+            Self::ArtifactRecoveryCasMismatch { expected, current } => write!(
+                formatter,
+                "Artifact recovery CAS expected {expected} failures but found {current}"
+            ),
+            Self::ArtifactRecoveryNotFound => {
+                formatter.write_str("Artifact recovery ledger does not exist")
+            }
+            Self::InvalidArtifactRecoveryState { state } => {
+                write!(
+                    formatter,
+                    "Artifact recovery state {state:?} rejects the transition"
                 )
             }
             Self::DuplicateTask => formatter.write_str("task ID re-registered with new spec"),
