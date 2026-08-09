@@ -1,4 +1,4 @@
-//! Durable single-authority Task store for NLOS (B-TASK slices 001–005).
+//! Durable single-authority Task store for NLOS (B-TASK slices 001–006).
 //!
 //! This crate implements the durable `TaskAuthority` subset required by the
 //! B-TASK acceptance gates: Task registration, frozen-input snapshot digest
@@ -29,6 +29,10 @@
 //! current membership generation/root/policy with each grouped write set /
 //! `CommitPermit`, revalidates it before effect dispatch and terminalization,
 //! and copies it verbatim into `TaskCommitReceipt`-shaped records.
+//! Schema v6 begins the recoverable cross-authority commit path by binding
+//! an immutable, canonical Artifact publication plan to an issued permit's
+//! artifact-only `write_set_root`; planning itself never authorizes
+//! publication or advances `TaskHead`.
 //!
 //! Explicitly out of scope: cross-authority-term takeover (adoption is by
 //! the same authority after restart/uncertainty), compensation execution
@@ -38,17 +42,25 @@
 //! ResourceGroup/ResourceAccount enforcement (placeholder binding
 //! fields), Namespace delegation, TaskPlan/TaskNode materialization,
 //! Process/AgentInstance binding, `IsolationDomain`, gateway/driver
-//! integration, signatures, and any IPC surface. Post-permit
+//! integration, signatures, and any IPC surface. Artifact publication
+//! authorization/receipt consumption/finalize is also outside the
+//! schema-v6 planning slice. Post-permit
 //! `EFFECTING`/`FINALIZING`/`UNCERTAIN`/`RECONCILING` from the §25.1
 //! attempt state machine are represented as permit/slot states rather
 //! than attempt states here.
 
+mod commit;
 mod effect;
 mod group;
 mod model;
 mod reconcile;
 mod store;
 
+pub use commit::{
+    ArtifactCommitPlanDecision, ArtifactCommitPlanId, ArtifactCommitPlanRecord,
+    ArtifactCommitPlanState, ArtifactPublicationExpectation, PlanArtifactCommitRequest,
+    artifact_publication_plan_root,
+};
 pub use effect::{
     DispatchRequest, EffectPermitDecision, EffectPermitId, EffectReceipt, EffectReceiptDecision,
     EffectSlotId, IssuedPermit, LogicalEffectDescriptor, NoEffectReason, NoEffectRequest, Outcome,
@@ -106,6 +118,8 @@ pub enum TaskStoreError {
     PermitNotFound,
     /// No receipt with the given ID exists under the given task.
     ReceiptNotFound,
+    /// No Artifact publication plan with this identity exists.
+    ArtifactCommitPlanNotFound,
     /// The task ID is already registered with a different specification.
     DuplicateTask,
     /// The attempt ID is already registered with a different specification.
@@ -115,6 +129,12 @@ pub enum TaskStoreError {
     SnapshotConflict,
     /// An idempotency key was replayed with different request bytes.
     IdempotencyConflict,
+    /// The Artifact publication expectation set is empty, ambiguous, or
+    /// does not equal the permit's artifact-only write-set root.
+    InvalidArtifactPublicationPlan {
+        /// Static explanation of the rejected invariant.
+        reason: &'static str,
+    },
     /// The caller presented a stale generation for an existing object.
     InvalidGeneration,
     /// The attempt is not in a state that allows the requested transition.
@@ -291,11 +311,17 @@ impl fmt::Display for TaskStoreError {
             Self::AttemptNotFound => formatter.write_str("attempt does not exist under the task"),
             Self::PermitNotFound => formatter.write_str("permit does not exist under the task"),
             Self::ReceiptNotFound => formatter.write_str("receipt does not exist under the task"),
+            Self::ArtifactCommitPlanNotFound => {
+                formatter.write_str("artifact commit plan does not exist")
+            }
             Self::DuplicateTask => formatter.write_str("task ID re-registered with new spec"),
             Self::DuplicateAttempt => formatter.write_str("attempt ID re-registered with new spec"),
             Self::SnapshotConflict => formatter.write_str("snapshot ID rebound to new bytes"),
             Self::IdempotencyConflict => {
                 formatter.write_str("idempotency key reused for new bytes")
+            }
+            Self::InvalidArtifactPublicationPlan { reason } => {
+                write!(formatter, "invalid artifact publication plan: {reason}")
             }
             Self::InvalidGeneration => formatter.write_str("stale generation for durable object"),
             Self::InvalidAttemptState { state } => {
