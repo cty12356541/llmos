@@ -7,6 +7,7 @@
 mod canonical;
 mod model;
 mod schema;
+mod spec;
 
 use std::error::Error;
 use std::fmt;
@@ -33,9 +34,17 @@ pub use canonical::{
 };
 pub use model::{
     AdmissionDurability, AdmissionReceipt, AppendAssertionRequest, AppendDecision, AssertionMode,
-    LocalProcessRef, MAX_CANONICAL_EVENT_BYTES, MAX_CONTENT_BYTES, MAX_LINEAGE_ITEMS,
-    MAX_NONCE_BYTES, MIN_NONCE_BYTES, SemanticEventRecord, StoreSigner, StoreSignerError,
-    TaintFlags, UnsignedAssertionEvent,
+    CriterionAggregation, CriterionEffect, EvaluatorKind, ImmutableEvaluatorReference,
+    ImmutableEvaluatorReferenceKind, IntentConstraints, IntentCriterion, IntentCriticality,
+    IntentSettlement, IntentSpecBody, LocalProcessRef, MAX_CANONICAL_EVENT_BYTES,
+    MAX_CONTENT_BYTES, MAX_LINEAGE_ITEMS, MAX_NONCE_BYTES, MAX_SPEC_CAPABILITY_REFS,
+    MAX_SPEC_CRITERIA, MAX_SPEC_EXTENSION_BYTES, MAX_SPEC_EXTENSIONS, MIN_NONCE_BYTES,
+    SemanticEventRecord, SettlementMode, SettlementTimeoutAction, SpecExtension, StoreSigner,
+    StoreSignerError, TaintFlags, UnsignedAssertionEvent,
+};
+pub use spec::{
+    criterion_id, decode_intent_spec_body, encode_intent_spec_body, hard_criteria_digest,
+    intent_spec_body_digest,
 };
 
 const SCHEMA_VERSION: i64 = 1;
@@ -65,6 +74,8 @@ pub enum SemanticAuthorityError {
     InvalidTarget,
     InvalidIssuerExecution,
     InvalidAssertionPayload,
+    InvalidSpecBody(&'static str),
+    UnsupportedCriticalSpecExtension,
     MissingExecutionEvidence,
     EventIdMismatch,
     EventIdCollision,
@@ -121,6 +132,10 @@ impl fmt::Display for SemanticAuthorityError {
                 formatter.write_str("invalid or stale issuer execution")
             }
             Self::InvalidAssertionPayload => formatter.write_str("invalid assertion payload"),
+            Self::InvalidSpecBody(reason) => write!(formatter, "invalid IntentSpec body: {reason}"),
+            Self::UnsupportedCriticalSpecExtension => {
+                formatter.write_str("unsupported critical IntentSpec extension")
+            }
             Self::MissingExecutionEvidence => {
                 formatter.write_str("FACT_FROM_TOOL requires execution evidence")
             }

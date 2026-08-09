@@ -1,6 +1,7 @@
 use nlos_capability::{CapabilityHandle, CapabilityTarget};
 use nlos_types::{
-    ControlDomainId, Generation, KeyId, PrincipalId, ProcessId, ReceiptId, SemanticEventId,
+    ControlDomainId, Generation, KeyId, NamespaceId, PrincipalId, ProcessId, ReceiptId,
+    SemanticEventId,
 };
 
 pub const MAX_CANONICAL_EVENT_BYTES: usize = 65_536;
@@ -8,6 +9,111 @@ pub const MAX_CONTENT_BYTES: usize = 1_048_576;
 pub const MAX_LINEAGE_ITEMS: usize = 64;
 pub const MAX_NONCE_BYTES: usize = 32;
 pub const MIN_NONCE_BYTES: usize = 16;
+pub const MAX_SPEC_CRITERIA: usize = 64;
+pub const MAX_SPEC_CAPABILITY_REFS: usize = 64;
+pub const MAX_SPEC_EXTENSIONS: usize = 32;
+pub const MAX_SPEC_EXTENSION_BYTES: usize = 4_096;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CriterionEffect {
+    Hard,
+    Soft,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EvaluatorKind {
+    Model,
+    DeterministicTool,
+    Human,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ImmutableEvaluatorReferenceKind {
+    Artifact,
+    AuthorityPolicy,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ImmutableEvaluatorReference {
+    pub kind: ImmutableEvaluatorReferenceKind,
+    pub digest: [u8; 32],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CriterionAggregation {
+    pub pass_quorum: u16,
+    pub fail_quorum: u16,
+    pub veto_on_authorized_fail: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IntentCriterion {
+    pub description_digest: [u8; 32],
+    pub effect: CriterionEffect,
+    pub evaluator_kind: EvaluatorKind,
+    pub evaluator_ref: ImmutableEvaluatorReference,
+    pub target_selector_digest: [u8; 32],
+    pub timeout_ms: Option<u64>,
+    pub independence_policy_digest: Option<[u8; 32]>,
+    pub authority_policy_digest: Option<[u8; 32]>,
+    pub risk_policy_digest: Option<[u8; 32]>,
+    pub aggregation: CriterionAggregation,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IntentConstraints {
+    pub resource_vector_digest: [u8; 32],
+    pub deadline_ms: Option<u64>,
+    pub namespace_root: NamespaceId,
+    pub allowed_capability_digests: Vec<[u8; 32]>,
+    pub forbidden_capability_digests: Vec<[u8; 32]>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IntentCriticality {
+    Low,
+    Standard,
+    High,
+    Critical,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SettlementMode {
+    None,
+    Automatic,
+    Manual,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SettlementTimeoutAction {
+    Refund,
+    Dispute,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct IntentSettlement {
+    pub mode: SettlementMode,
+    pub hard_criteria_digest: Option<[u8; 32]>,
+    pub on_timeout: SettlementTimeoutAction,
+    pub challenge_window_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SpecExtension {
+    pub id: u32,
+    pub value: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IntentSpecBody {
+    pub goal_digest: [u8; 32],
+    pub acceptance: Vec<IntentCriterion>,
+    pub constraints: IntentConstraints,
+    pub criticality: IntentCriticality,
+    pub settlement: IntentSettlement,
+    pub critical_extensions: Vec<SpecExtension>,
+    pub noncritical_extensions: Vec<SpecExtension>,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AssertionMode {
