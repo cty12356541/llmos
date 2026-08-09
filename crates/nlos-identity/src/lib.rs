@@ -26,7 +26,8 @@ use sha2::{Digest, Sha256};
 pub use model::{
     BootstrapDecision, BootstrapPrincipalRequest, Ed25519PublicKey, Ed25519Signature,
     IdentityBinding, KeyPurpose, KeyRevocationDecision, KeyRevocationReceipt, RevokeKeyRequest,
-    VerifiedSemanticSigner, VerifySemanticSignatureRequest,
+    VerifiedSemanticAuthoritySigner, VerifiedSemanticSigner,
+    VerifySemanticAuthoritySignatureRequest, VerifySemanticSignatureRequest,
 };
 
 const SCHEMA_VERSION: i64 = 1;
@@ -490,7 +491,7 @@ impl IdentityAuthority {
         {
             return Err(IdentityAuthorityError::SignerBindingMismatch);
         }
-        if binding.key_purpose != KeyPurpose::SemanticEventSigning {
+        if binding.key_purpose != KeyPurpose::SemanticSigning {
             return Err(IdentityAuthorityError::KeyPurposeMismatch);
         }
         if binding.key_revoked_at_ms.is_some() {
@@ -513,6 +514,51 @@ impl IdentityAuthority {
             control_domain_id: binding.control_domain_id,
             identity_snapshot_id: binding.identity_snapshot_id,
             snapshot_generation: binding.snapshot_generation,
+            key_id: binding.key_id,
+            key_generation: binding.key_generation,
+        })
+    }
+
+    /// Verifies a domain-separated Semantic authority Receipt/checkpoint
+    /// digest with a current Semantic signing key.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed fail-closed error for binding, validity, revocation,
+    /// purpose, public-key, or signature failure.
+    pub fn verify_semantic_authority_signature(
+        &self,
+        request: VerifySemanticAuthoritySignatureRequest,
+    ) -> Result<VerifiedSemanticAuthoritySigner, IdentityAuthorityError> {
+        let connection = self.lock()?;
+        let binding = load_current_binding(&connection, request.key_id)?
+            .ok_or(IdentityAuthorityError::KeyNotFound(request.key_id))?;
+        if binding.principal_id != request.issuer
+            || binding.control_domain_id != request.control_domain_id
+        {
+            return Err(IdentityAuthorityError::SignerBindingMismatch);
+        }
+        if binding.key_purpose != KeyPurpose::SemanticSigning {
+            return Err(IdentityAuthorityError::KeyPurposeMismatch);
+        }
+        if binding.key_revoked_at_ms.is_some() {
+            return Err(IdentityAuthorityError::KeyRevoked);
+        }
+        if request.verified_at_ms < binding.key_valid_from_ms {
+            return Err(IdentityAuthorityError::KeyNotYetValid);
+        }
+        if request.verified_at_ms > binding.key_valid_until_ms {
+            return Err(IdentityAuthorityError::KeyExpired);
+        }
+        let verifying_key = VerifyingKey::from_bytes(&binding.public_key)
+            .map_err(|_| IdentityAuthorityError::InvalidPublicKey)?;
+        let signature = Signature::from_bytes(&request.signature);
+        verifying_key
+            .verify_strict(&request.message_digest, &signature)
+            .map_err(|_| IdentityAuthorityError::InvalidSignature)?;
+        Ok(VerifiedSemanticAuthoritySigner {
+            principal_id: binding.principal_id,
+            control_domain_id: binding.control_domain_id,
             key_id: binding.key_id,
             key_generation: binding.key_generation,
         })

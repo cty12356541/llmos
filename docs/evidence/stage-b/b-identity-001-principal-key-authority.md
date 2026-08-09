@@ -22,7 +22,7 @@
 
 - `bootstrap_principal` 在一个 `BEGIN IMMEDIATE` 事务中创建 authority-assigned `PrincipalId`、单成员 `ControlDomainId`、`IdentitySnapshotId` 与 `KeyId`；调用者只提供 trusted-bootstrap profile/policy digest、公钥、用途、有效期和幂等键；
 - `principals`、`identity_snapshots`、`snapshot_principals`、`key_versions`、`snapshot_key_bindings` 与 `key_revocations` 由 DDL trigger 禁止 UPDATE/DELETE；head 表只保存当前 fence；
-- Ed25519 public key 绑定 `SemanticEventSigning` purpose、`valid_from/valid_until`、key generation 与 revocation state；authority 不接收或持久化 private key；
+- Ed25519 public key 绑定 `SemanticSigning` purpose、`valid_from/valid_until`、key generation 与 revocation state；event 与 authority Receipt 使用不同 domain-separated message，authority 不接收或持久化 private key；
 - `revoke_key` 同时 CAS 当前 key generation 与当前 identity snapshot，追加新 key version、snapshot 和 immutable revocation Receipt；旧 snapshot 仍可按精确 ID 回读；
 - `verify_semantic_signature` 校验 Principal/ControlDomain/Key current binding、purpose、有效期、撤销状态，并以 Ed25519 strict verification 检查 domain-separated semantic message digest；
 - 数据库启动要求 `journal_mode=WAL`、`synchronous=FULL`、foreign keys，未知 schema version fail-closed。

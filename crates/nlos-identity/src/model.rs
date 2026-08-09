@@ -9,7 +9,7 @@ pub type Ed25519Signature = [u8; 64];
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
 pub enum KeyPurpose {
-    SemanticEventSigning = 1,
+    SemanticSigning = 1,
 }
 
 impl KeyPurpose {
@@ -19,7 +19,7 @@ impl KeyPurpose {
 
     pub(crate) fn decode(value: i64) -> Option<Self> {
         match value {
-            1 => Some(Self::SemanticEventSigning),
+            1 => Some(Self::SemanticSigning),
             _ => None,
         }
     }
@@ -121,6 +121,46 @@ pub struct VerifiedSemanticSigner {
     pub(crate) snapshot_generation: Generation,
     pub(crate) key_id: KeyId,
     pub(crate) key_generation: Generation,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VerifySemanticAuthoritySignatureRequest {
+    pub message_digest: [u8; 32],
+    pub issuer: PrincipalId,
+    pub control_domain_id: ControlDomainId,
+    pub key_id: KeyId,
+    pub signature: Ed25519Signature,
+    pub verified_at_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VerifiedSemanticAuthoritySigner {
+    pub(crate) principal_id: PrincipalId,
+    pub(crate) control_domain_id: ControlDomainId,
+    pub(crate) key_id: KeyId,
+    pub(crate) key_generation: Generation,
+}
+
+impl VerifiedSemanticAuthoritySigner {
+    #[must_use]
+    pub const fn principal_id(self) -> PrincipalId {
+        self.principal_id
+    }
+
+    #[must_use]
+    pub const fn control_domain_id(self) -> ControlDomainId {
+        self.control_domain_id
+    }
+
+    #[must_use]
+    pub const fn key_id(self) -> KeyId {
+        self.key_id
+    }
+
+    #[must_use]
+    pub const fn key_generation(self) -> Generation {
+        self.key_generation
+    }
 }
 
 impl VerifiedSemanticSigner {

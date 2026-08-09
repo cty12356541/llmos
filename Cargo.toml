@@ -14,6 +14,7 @@ members = [
     "crates/nlos-task",
     "crates/nlos-identity",
     "crates/nlos-capability",
+    "crates/nlos-semantic",
     "crates/nlos-process",
     "crates/nlos-resource",
     "crates/nlos-artifact",

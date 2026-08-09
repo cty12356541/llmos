@@ -1,0 +1,22 @@
+[package]
+name = "nlos-semantic"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+minicbor.workspace = true
+nlos-capability = { path = "../nlos-capability" }
+nlos-identity = { path = "../nlos-identity" }
+nlos-process = { path = "../nlos-process" }
+nlos-types = { path = "../nlos-types" }
+rusqlite.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+ed25519-dalek.workspace = true
+
+[lints]
+workspace = true

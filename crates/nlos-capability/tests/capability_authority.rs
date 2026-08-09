@@ -57,7 +57,7 @@ fn bootstrap(
             principal_profile_digest: [seed.wrapping_add(1); 32],
             control_domain_policy_digest: [seed.wrapping_add(2); 32],
             public_key: key.verifying_key().to_bytes(),
-            key_purpose: KeyPurpose::SemanticEventSigning,
+            key_purpose: KeyPurpose::SemanticSigning,
             key_valid_from_ms: 0,
             key_valid_until_ms: 10_000,
             idempotency_key: IdempotencyKey::from_bytes([seed.wrapping_add(3); 16]),

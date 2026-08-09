@@ -500,6 +500,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "nlos-semantic"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "minicbor",
+ "nlos-capability",
+ "nlos-identity",
+ "nlos-process",
+ "nlos-types",
+ "rusqlite",
+ "sha2",
+]
+
+[[package]]
 name = "nlos-service-directory"
 version = "0.1.0"
 dependencies = [
