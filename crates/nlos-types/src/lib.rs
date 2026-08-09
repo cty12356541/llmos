@@ -92,13 +92,43 @@ nominal_id!(ExpireRequestId);
 nominal_id!(ChannelId);
 nominal_id!(DeviceId);
 nominal_id!(DriverId);
-nominal_id!(SemanticEventId);
 nominal_id!(ControlDomainId);
 nominal_id!(KeyId);
 nominal_id!(SchedulerDomainId);
 nominal_id!(ReceiptId);
 nominal_id!(IdempotencyKey);
 nominal_id!(ArtifactId);
+
+/// SHA-256 identity of a canonical unsigned semantic event (§16.1).
+#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct SemanticEventId([u8; 32]);
+
+impl SemanticEventId {
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    #[must_use]
+    pub const fn into_bytes(self) -> [u8; 32] {
+        self.0
+    }
+
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+impl fmt::Debug for SemanticEventId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("SemanticEventId(")?;
+        for byte in self.0 {
+            write!(formatter, "{byte:02x}")?;
+        }
+        formatter.write_str(")")
+    }
+}
 
 /// A non-zero incarnation used to fence stale handles and callbacks.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -183,7 +213,6 @@ mod tests {
             format!("{:?}", IsolationDomainId::from_bytes(bytes)),
             format!("{:?}", EffectSlotId::from_bytes(bytes)),
             format!("{:?}", EffectPermitId::from_bytes(bytes)),
-            format!("{:?}", SemanticEventId::from_bytes(bytes)),
             format!("{:?}", ControlDomainId::from_bytes(bytes)),
             format!("{:?}", DriverId::from_bytes(bytes)),
             format!("{:?}", ReservationId::from_bytes(bytes)),
@@ -194,6 +223,11 @@ mod tests {
         }
         assert_eq!(TaskGroupId::from_bytes(bytes).into_bytes(), bytes);
         assert_eq!(IsolationDomainId::from_bytes(bytes).into_bytes(), bytes);
+
+        let event_bytes = [0x5au8; 32];
+        let event = SemanticEventId::from_bytes(event_bytes);
+        assert_eq!(event.into_bytes(), event_bytes);
+        assert_eq!(format!("{event:?}").len(), "SemanticEventId()".len() + 64);
     }
 
     #[test]

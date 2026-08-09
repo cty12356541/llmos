@@ -375,7 +375,7 @@ Application
 
 ### 4.48 Shared nominal identity spine（B-TASK-006P）
 
-- `nlos-types` 补齐 TaskWriteSet 前置链所需的 Process/Isolation、Task/Effect、Semantic、Control、Resource/Lease/Reservation、Device/Driver 等 16-byte nominal ID。
+- `nlos-types` 补齐 TaskWriteSet 前置链所需的 typed ID：对象身份使用 16-byte nominal ID；`SemanticEventId` 按 v0.5 §16.1 使用 32-byte SHA-256 event identity。
 - `TaskGroupId`、`EffectSlotId`、`EffectPermitId` 不再由 `nlos-task` 重复定义；crate root 继续兼容重导出共享类型。
 - workspace check、`nlos-types`/`nlos-task` tests、workspace clippy 与 fmt 通过，详见 [B-TASK-006P](../evidence/stage-b/b-task-006p-shared-nominal-identity-spine.md)。限制：这不是 authority 实现，SABI/多语言生成和完整 TaskWriteSet 仍未完成。
 
