@@ -99,6 +99,13 @@ pub struct ArtifactRecoveryRecord {
     pub updated_at_ms: i64,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ArtifactRecoverySummary {
+    pub retrying: u64,
+    pub escalated: u64,
+    pub resolved: u64,
+}
+
 impl SqliteTaskAuthority {
     /// Appends one failed recovery cycle and computes its durable next due
     /// time or escalation state.
@@ -202,6 +209,32 @@ impl SqliteTaskAuthority {
         load_optional(&*connection, plan_id)
     }
 
+    /// Returns bounded aggregate counts for the local operations health
+    /// surface without exposing diagnostic strings.
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage failure or corrupt negative count.
+    pub fn summarize_artifact_recovery(&self) -> Result<ArtifactRecoverySummary, TaskStoreError> {
+        let connection = self.lock_connection()?;
+        let mut statement = connection.prepare(
+            "SELECT
+                COALESCE(SUM(CASE WHEN recovery_state = 0 THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN recovery_state = 1 THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN recovery_state = 2 THEN 1 ELSE 0 END), 0)
+             FROM task_artifact_recovery",
+        )?;
+        statement
+            .query_row([], |row| {
+                Ok(ArtifactRecoverySummary {
+                    retrying: count_from_i64(row.get(0)?)?,
+                    escalated: count_from_i64(row.get(1)?)?,
+                    resolved: count_from_i64(row.get(2)?)?,
+                })
+            })
+            .map_err(TaskStoreError::from)
+    }
+
     /// Lists non-finalized plans whose durable retry time is due. Escalated
     /// plans are excluded until an explicit CAS resume.
     ///
@@ -298,6 +331,10 @@ impl SqliteTaskAuthority {
         transaction.commit()?;
         Ok(record)
     }
+}
+
+fn count_from_i64(value: i64) -> Result<u64, rusqlite::Error> {
+    u64::try_from(value).map_err(|_| rusqlite::Error::IntegralValueOutOfRange(0, value))
 }
 
 pub(crate) fn resolve_recovery(

@@ -7,14 +7,22 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use nlos_artifact::ArtifactStore;
-use nlos_task::{ArtifactCommitPlanId, SqliteTaskAuthority};
+use nlos_task::{
+    ArtifactCommitPlanId, ArtifactRecoveryFailureRequest, ArtifactRecoveryFailureSource,
+    ArtifactRecoveryState, SqliteTaskAuthority,
+};
 
-use crate::{ArtifactCommitCoordinator, CoordinatorError, PendingConvergenceReport};
+use crate::{ArtifactCommitCoordinator, CoordinatorError};
 
 struct CycleOutcome {
     inspected: usize,
     finalized: usize,
     failures: Vec<RecoveryWorkerFailure>,
+    retry_delay: Option<Duration>,
+    infrastructure_failure: bool,
+    durable_retrying: u64,
+    durable_escalated: u64,
+    durable_resolved: u64,
 }
 
 /// Lifecycle tuning for the TaskAuthority-owned commit recovery worker.
@@ -81,6 +89,9 @@ pub struct RecoveryWorkerHealth {
     pub consecutive_failed_cycles: usize,
     pub retry_delay: Option<Duration>,
     pub last_failures: Vec<RecoveryWorkerFailure>,
+    pub durable_retrying: u64,
+    pub durable_escalated: u64,
+    pub durable_resolved: u64,
 }
 
 impl Default for RecoveryWorkerHealth {
@@ -93,6 +104,9 @@ impl Default for RecoveryWorkerHealth {
             consecutive_failed_cycles: 0,
             retry_delay: None,
             last_failures: Vec::new(),
+            durable_retrying: 0,
+            durable_escalated: 0,
+            durable_resolved: 0,
         }
     }
 }
@@ -239,17 +253,13 @@ fn run_worker(
                     authority: RecoveryFailureAuthority::Worker,
                     message,
                 }],
+                retry_delay: None,
+                infrastructure_failure: true,
+                durable_retrying: 0,
+                durable_escalated: 0,
+                durable_resolved: 0,
             },
-            |timestamp| match ArtifactCommitCoordinator::new(tasks, artifacts)
-                .converge_pending_best_effort(config.scan_limit, timestamp)
-            {
-                Ok(report) => cycle_outcome(&report),
-                Err(error) => CycleOutcome {
-                    inspected: 0,
-                    finalized: 0,
-                    failures: vec![failure_of(None, &error)],
-                },
-            },
+            |timestamp| durable_cycle(tasks, artifacts, config, timestamp),
         );
 
         let delay = {
@@ -261,13 +271,16 @@ fn run_worker(
             current.total_finalized = current
                 .total_finalized
                 .saturating_add(u64::try_from(outcome.finalized).unwrap_or(u64::MAX));
+            current.durable_retrying = outcome.durable_retrying;
+            current.durable_escalated = outcome.durable_escalated;
+            current.durable_resolved = outcome.durable_resolved;
             if outcome.failures.is_empty() {
                 current.consecutive_failed_cycles = 0;
                 current.retry_delay = None;
                 current.last_failures.clear();
                 current.state = RecoveryWorkerState::Running;
                 config.poll_interval
-            } else {
+            } else if outcome.infrastructure_failure {
                 current.consecutive_failed_cycles =
                     current.consecutive_failed_cycles.saturating_add(1);
                 current.last_failures = outcome.failures;
@@ -280,6 +293,16 @@ fn run_worker(
                 current.state = RecoveryWorkerState::BackingOff;
                 current.retry_delay = Some(delay);
                 delay
+            } else {
+                current.consecutive_failed_cycles = 0;
+                current.last_failures = outcome.failures;
+                current.retry_delay = outcome.retry_delay;
+                current.state = if outcome.retry_delay.is_some() {
+                    RecoveryWorkerState::BackingOff
+                } else {
+                    RecoveryWorkerState::Running
+                };
+                outcome.retry_delay.unwrap_or(config.poll_interval)
             }
         };
 
@@ -295,16 +318,120 @@ fn run_worker(
     }
 }
 
-fn cycle_outcome(report: &PendingConvergenceReport) -> CycleOutcome {
-    CycleOutcome {
-        inspected: report.inspected,
-        finalized: report.finalized.len(),
-        failures: report
-            .failures
-            .iter()
-            .map(|failure| failure_of(Some(failure.plan_id), &failure.error))
-            .collect(),
+// Keeping one cycle linear makes the external converge result and its
+// TaskAuthority ledger CAS visibly adjacent for crash-window review.
+#[allow(clippy::too_many_lines)]
+fn durable_cycle(
+    tasks: &SqliteTaskAuthority,
+    artifacts: &ArtifactStore,
+    config: RecoveryWorkerConfig,
+    now_ms: i64,
+) -> CycleOutcome {
+    let plans = match tasks.list_due_artifact_commit_plans(config.scan_limit, now_ms) {
+        Ok(plans) => plans,
+        Err(error) => {
+            return CycleOutcome {
+                inspected: 0,
+                finalized: 0,
+                failures: vec![failure_of(None, &CoordinatorError::Task(error))],
+                retry_delay: None,
+                infrastructure_failure: true,
+                durable_retrying: 0,
+                durable_escalated: 0,
+                durable_resolved: 0,
+            };
+        }
+    };
+    let mut outcome = CycleOutcome {
+        inspected: plans.len(),
+        finalized: 0,
+        failures: Vec::new(),
+        retry_delay: None,
+        infrastructure_failure: false,
+        durable_retrying: 0,
+        durable_escalated: 0,
+        durable_resolved: 0,
+    };
+    let coordinator = ArtifactCommitCoordinator::new(tasks, artifacts);
+    for plan in plans {
+        match coordinator.converge(crate::ConvergeArtifactCommitRequest {
+            plan_id: plan.plan_id,
+            now_ms,
+        }) {
+            Ok(_) => outcome.finalized += 1,
+            Err(error) => {
+                outcome
+                    .failures
+                    .push(failure_of(Some(plan.plan_id), &error));
+                let current = match tasks.inspect_artifact_recovery(plan.plan_id) {
+                    Ok(record) => record.map_or(0, |record| record.total_failures),
+                    Err(ledger_error) => {
+                        outcome.infrastructure_failure = true;
+                        outcome.failures.push(failure_of(
+                            Some(plan.plan_id),
+                            &CoordinatorError::Task(ledger_error),
+                        ));
+                        continue;
+                    }
+                };
+                let source = match error {
+                    CoordinatorError::Task(_) => ArtifactRecoveryFailureSource::TaskAuthority,
+                    CoordinatorError::Artifact(_) => {
+                        ArtifactRecoveryFailureSource::ArtifactAuthority
+                    }
+                    CoordinatorError::InvalidTimestamp => {
+                        ArtifactRecoveryFailureSource::Coordinator
+                    }
+                };
+                match tasks.record_artifact_recovery_failure(ArtifactRecoveryFailureRequest {
+                    plan_id: plan.plan_id,
+                    expected_total_failures: current,
+                    source,
+                    observed_at_ms: now_ms,
+                    base_delay_ms: duration_ms(config.poll_interval),
+                    max_delay_ms: duration_ms(config.max_backoff),
+                    escalation_threshold: u64::try_from(config.failure_threshold)
+                        .unwrap_or(u64::MAX),
+                }) {
+                    Ok(record) if record.state == ArtifactRecoveryState::Retrying => {
+                        let delay_ms = record.next_retry_at_ms.unwrap_or(now_ms) - now_ms;
+                        let delay = Duration::from_millis(u64::try_from(delay_ms).unwrap_or(0));
+                        outcome.retry_delay = Some(
+                            outcome
+                                .retry_delay
+                                .map_or(delay, |current| current.min(delay)),
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(ledger_error) => {
+                        outcome.infrastructure_failure = true;
+                        outcome.failures.push(failure_of(
+                            Some(plan.plan_id),
+                            &CoordinatorError::Task(ledger_error),
+                        ));
+                    }
+                }
+            }
+        }
     }
+    match tasks.summarize_artifact_recovery() {
+        Ok(summary) => {
+            outcome.durable_retrying = summary.retrying;
+            outcome.durable_escalated = summary.escalated;
+            outcome.durable_resolved = summary.resolved;
+        }
+        Err(error) => {
+            outcome.infrastructure_failure = true;
+            outcome
+                .failures
+                .push(failure_of(None, &CoordinatorError::Task(error)));
+        }
+    }
+    outcome
+}
+
+fn duration_ms(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 fn failure_of(

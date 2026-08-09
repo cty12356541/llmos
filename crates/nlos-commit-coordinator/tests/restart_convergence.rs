@@ -702,9 +702,14 @@ fn task_authority_worker_backs_off_reports_source_and_recovers() {
     )
     .unwrap();
 
-    wait_until(|| worker.health().consecutive_failed_cycles >= 2);
+    wait_until(|| {
+        tasks
+            .inspect_artifact_recovery(pending.plan)
+            .is_ok_and(|record| record.is_some_and(|record| record.total_failures >= 2))
+    });
     let failed = worker.health();
     assert_eq!(failed.state, RecoveryWorkerState::BackingOff);
+    assert_eq!(failed.consecutive_failed_cycles, 0);
     assert!(failed.retry_delay.is_some());
     assert_eq!(failed.total_inspected, failed.completed_cycles);
     assert_eq!(failed.last_failures.len(), 1);
@@ -730,7 +735,7 @@ fn task_authority_worker_backs_off_reports_source_and_recovers() {
 }
 
 #[test]
-fn persistent_failure_faults_worker_without_losing_durable_plan() {
+fn persistent_plan_failure_escalates_without_faulting_worker() {
     let databases = TestAuthorities::new("worker-faulted");
     let pending = prepare_single(&databases, 0xd1);
     execute_sql(
@@ -757,12 +762,13 @@ fn persistent_failure_faults_worker_without_losing_durable_plan() {
     )
     .unwrap();
 
-    wait_until(|| worker.health().state == RecoveryWorkerState::Faulted);
-    let faulted = worker.health();
-    assert_eq!(faulted.completed_cycles, 2);
-    assert_eq!(faulted.consecutive_failed_cycles, 2);
-    assert_eq!(faulted.retry_delay, None);
-    assert_eq!(faulted.last_failures[0].plan_id, Some(pending.plan));
+    wait_until(|| worker.health().durable_escalated == 1);
+    let escalated = worker.health();
+    assert_eq!(escalated.state, RecoveryWorkerState::Running);
+    assert_eq!(escalated.consecutive_failed_cycles, 0);
+    assert_eq!(escalated.retry_delay, None);
+    assert_eq!(escalated.durable_escalated, 1);
+    assert_eq!(escalated.last_failures[0].plan_id, Some(pending.plan));
     assert_eq!(
         tasks
             .inspect_artifact_commit_plan(pending.plan)

@@ -100,7 +100,7 @@ pub use reconcile::{
 };
 pub use recovery::{
     ArtifactRecoveryFailureRequest, ArtifactRecoveryFailureSource, ArtifactRecoveryRecord,
-    ArtifactRecoveryResumeRequest, ArtifactRecoveryState,
+    ArtifactRecoveryResumeRequest, ArtifactRecoveryState, ArtifactRecoverySummary,
 };
 pub use store::SqliteTaskAuthority;
 

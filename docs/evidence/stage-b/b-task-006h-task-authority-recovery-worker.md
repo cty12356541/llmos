@@ -44,6 +44,8 @@ cargo fmt --all -- --check
 
 ## 4. 证据边界与下一步
 
+> 后续更新：B-TASK-006J 已用 per-plan durable escalation 取代本切片的纯进程内“持续 plan failure → worker Faulted”策略；`Faulted` 现仅用于控制环基础设施连续失败。启动/停止/health 基础仍有效。
+
 本证据是单节点本地 H3 / `PARTIAL PASS`，不声称独立服务、分布式事务或 production 运维能力。尚未实现：
 
 - jitter 与持久 retry/escalation ledger；进程崩溃会从 durable plan 恢复，但连续失败计数从零开始；
