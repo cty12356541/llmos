@@ -1,0 +1,17 @@
+[package]
+name = "nlos-commit-coordinator"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+nlos-artifact = { path = "../nlos-artifact" }
+nlos-task = { path = "../nlos-task" }
+
+[dev-dependencies]
+nlos-types = { path = "../nlos-types" }
+
+[lints]
+workspace = true

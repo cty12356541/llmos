@@ -27,7 +27,7 @@ impl ArtifactStore {
         let digest = ContentDigest::of_bytes(request.bytes);
         blob::commit_blob(&self.paths().artifacts, digest, request.bytes)?;
 
-        let staging_id = derive_staging_id(request.artifact_id, request.idempotency_key);
+        let staging_id = staging_id_for(request.artifact_id, request.idempotency_key);
         let size_bytes = u64::try_from(request.bytes.len())
             .map_err(|_| ArtifactError::InvalidSpec("blob length exceeds u64"))?;
         let mut connection = self.lock_connection()?;
@@ -287,7 +287,10 @@ fn commit_publication(
     Ok(receipt)
 }
 
-fn derive_staging_id(artifact_id: ArtifactId, key: IdempotencyKey) -> StagingId {
+/// Deterministically derives the authority staging identity before bytes
+/// are staged, allowing a Task write-set plan to bind the future stage.
+#[must_use]
+pub fn staging_id_for(artifact_id: ArtifactId, key: IdempotencyKey) -> StagingId {
     derive_id(
         b"llmos/artifact-staging/v1",
         artifact_id.as_bytes(),

@@ -78,6 +78,7 @@ pub use model::{
     RevisionRecord, StageRevisionDecision, StageRevisionRequest, StagedRevisionRecord,
     StagedRevisionState, StagingId,
 };
+pub use publication::staging_id_for;
 pub use store::ArtifactStore;
 
 /// Typed errors of the artifact store. No `anyhow`; every failure mode a

@@ -577,6 +577,42 @@ impl SqliteTaskAuthority {
         Ok(ArtifactCommitProgress { plan, publications })
     }
 
+    /// Lists non-finalized Artifact plans in stable creation/identity order
+    /// for a restart coordinator scan.
+    ///
+    /// # Errors
+    ///
+    /// Returns a corrupt-record or storage error.
+    pub fn list_incomplete_artifact_commit_plans(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<ArtifactCommitPlanRecord>, TaskStoreError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let connection = self.lock_connection()?;
+        let mut statement = connection.prepare(
+            "SELECT plan_id FROM task_artifact_commit_plans
+             WHERE plan_state != ?1 ORDER BY created_at_ms, plan_id LIMIT ?2",
+        )?;
+        let mut rows = statement.query(params![
+            ArtifactCommitPlanState::Finalized.code(),
+            i64::try_from(limit).unwrap_or(i64::MAX),
+        ])?;
+        let mut ids = Vec::new();
+        while let Some(row) = rows.next()? {
+            ids.push(ArtifactCommitPlanId::from_bytes(blob16(row, 0)?));
+        }
+        drop(rows);
+        drop(statement);
+        ids.into_iter()
+            .map(|plan_id| {
+                load_plan_optional(&*connection, plan_id)?
+                    .ok_or(TaskStoreError::ArtifactCommitPlanNotFound)
+            })
+            .collect()
+    }
+
     /// Atomically closes an artifact-only permit after every planned
     /// publication receipt is durable, advances `TaskHead`, links the Task
     /// receipt, and marks the plan `Finalized`.

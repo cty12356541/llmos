@@ -332,6 +332,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "nlos-commit-coordinator"
+version = "0.1.0"
+dependencies = [
+ "nlos-artifact",
+ "nlos-task",
+ "nlos-types",
+]
+
+[[package]]
 name = "nlos-ipc"
 version = "0.1.0"
 dependencies = [
