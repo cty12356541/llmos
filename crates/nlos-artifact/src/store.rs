@@ -1,4 +1,4 @@
-//! `ArtifactStore`: open/durability gating, schema v1, artifact creation,
+//! `ArtifactStore`: open/durability gating, schema migrations, artifact creation,
 //! and the two-phase revision commit.
 
 use std::path::Path;
@@ -15,7 +15,7 @@ use crate::model::{
 };
 use crate::query::{load_artifact_optional, load_revision_optional};
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 /// Filesystem layout under the store root.
 #[derive(Clone, Debug)]
@@ -118,7 +118,11 @@ impl ArtifactStore {
 
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
         match version {
-            0 => crate::schema::migrate_v1(&mut connection)?,
+            0 => {
+                crate::schema::migrate_v1(&mut connection)?;
+                crate::schema::migrate_v2(&mut connection)?;
+            }
+            1 => crate::schema::migrate_v2(&mut connection)?,
             SCHEMA_VERSION => {}
             other => return Err(ArtifactError::SchemaVersionUnsupported(other)),
         }

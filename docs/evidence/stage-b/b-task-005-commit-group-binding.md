@@ -56,7 +56,7 @@ cargo clippy -p nlos-task --all-targets -- -D warnings
 
 ## 5. 下一步
 
-1. 将 Artifact staged revision/publication receipt 与 TaskCommitReceipt 绑定，避免先推进 Artifact canonical head 后 Task finalize 失败。
+1. `B-ARTIFACT-002` 已完成 Artifact staged revision 与 Artifact 域内 publication receipt；下一步由 TaskAuthority durable prepare/finalize 消费 nested receipt，避免先推进 Artifact canonical head 后 Task finalize 失败被误报为完整提交。
 2. 建立完整 TaskWriteSet/TaskSnapshotReceipt/read-set validation，并把 sealed membership rebase 变为显式 Receipt。
 3. 为 schema v5 表组补齐 fault-injection 与三平台 CI Evidence。
 4. 进入 Slice K 最小端到端骨架：Package → Application → Task → Fiber → Operation → Artifact/Receipt → CLI。

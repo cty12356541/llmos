@@ -1,4 +1,5 @@
-//! Content-addressed artifact store with `SQLite` metadata (B-ARTIFACT-001).
+//! Content-addressed artifact store with `SQLite` metadata
+//! (B-ARTIFACT-001/002).
 //!
 //! Per the stage-B technology selection (§7) and v0.5 §14:
 //!
@@ -35,6 +36,13 @@
 //! commit leaves an orphan blob (listed by `recover`, never deleted here);
 //! after the metadata commit the revision is fully usable.
 //!
+//! [`ArtifactStore::stage_revision`] uses the same durable blob phase but
+//! writes only staged metadata: it never creates a revision or advances the
+//! canonical head. [`ArtifactStore::publish_staged_revision`] later verifies
+//! the task/permit/write-set binding and atomically inserts the immutable
+//! revision, compare-and-swaps head, writes an immutable publication receipt,
+//! and marks the stage published in one `SQLite` transaction.
+//!
 //! # Scope and honesty boundaries
 //!
 //! - `DeploymentMode=LOCAL_SINGLE_NODE` only (`[ART-LOCAL-001]`): the local
@@ -50,6 +58,7 @@
 mod blob;
 mod cache;
 mod model;
+mod publication;
 mod query;
 mod recover;
 mod schema;
@@ -63,8 +72,11 @@ use std::path::PathBuf;
 use nlos_types::ArtifactId;
 
 pub use model::{
-    ArtifactRecord, ContentDigest, CreateArtifactDecision, CreateArtifactSpec, HeadState,
-    MissingBlob, PutRevisionDecision, PutRevisionRequest, RecoveryReport, RevisionRecord,
+    ArtifactPublicationReceipt, ArtifactRecord, ContentDigest, CreateArtifactDecision,
+    CreateArtifactSpec, HeadState, MissingBlob, MissingStagedBlob, PublishStagedRevisionDecision,
+    PublishStagedRevisionRequest, PutRevisionDecision, PutRevisionRequest, RecoveryReport,
+    RevisionRecord, StageRevisionDecision, StageRevisionRequest, StagedRevisionRecord,
+    StagedRevisionState, StagingId,
 };
 pub use store::ArtifactStore;
 
@@ -86,6 +98,10 @@ pub enum ArtifactError {
     SchemaVersionUnsupported(i64),
     /// No artifact with this identity exists.
     ArtifactNotFound(ArtifactId),
+    /// No staged revision with this authority-derived identity exists.
+    StagedRevisionNotFound(StagingId),
+    /// No immutable publication receipt with this identity exists.
+    PublicationReceiptNotFound(nlos_types::ReceiptId),
     /// The artifact exists but has no such revision.
     RevisionNotFound {
         artifact_id: ArtifactId,
@@ -94,6 +110,9 @@ pub enum ArtifactError {
     /// The idempotency key (or artifact identity) was reused with a
     /// different specification.
     IdempotencyConflict,
+    /// A publish request does not reproduce the task, permit, and write-set
+    /// binding stored with the staged revision.
+    PublicationBindingMismatch,
     /// The observed head does not match `expected_head_revision`: either a
     /// competing put advanced the head first, or the expectation names a
     /// revision that does not exist yet. Fail closed; re-resolve the head
@@ -112,6 +131,12 @@ pub enum ArtifactError {
     BlobMissing {
         artifact_id: ArtifactId,
         revision: u64,
+        digest: ContentDigest,
+        path: PathBuf,
+    },
+    /// A staged revision's blob is absent, so publication cannot proceed.
+    StagedBlobMissing {
+        staging_id: StagingId,
         digest: ContentDigest,
         path: PathBuf,
     },
@@ -154,6 +179,15 @@ impl fmt::Display for ArtifactError {
             Self::ArtifactNotFound(artifact_id) => {
                 write!(formatter, "artifact {artifact_id:?} does not exist")
             }
+            Self::StagedRevisionNotFound(staging_id) => {
+                write!(formatter, "staged revision {staging_id:?} does not exist")
+            }
+            Self::PublicationReceiptNotFound(receipt_id) => {
+                write!(
+                    formatter,
+                    "publication receipt {receipt_id:?} does not exist"
+                )
+            }
             Self::RevisionNotFound {
                 artifact_id,
                 revision,
@@ -163,6 +197,9 @@ impl fmt::Display for ArtifactError {
             ),
             Self::IdempotencyConflict => formatter.write_str(
                 "idempotency key or artifact identity reused for a different specification",
+            ),
+            Self::PublicationBindingMismatch => formatter.write_str(
+                "publication request does not match the staged task/permit/write-set binding",
             ),
             Self::HeadConflict { expected, current } => write!(
                 formatter,
@@ -183,6 +220,15 @@ impl fmt::Display for ArtifactError {
             } => write!(
                 formatter,
                 "blob {digest} for artifact {artifact_id:?} revision {revision} is missing at {}",
+                path.display()
+            ),
+            Self::StagedBlobMissing {
+                staging_id,
+                digest,
+                path,
+            } => write!(
+                formatter,
+                "blob {digest} for staged revision {staging_id:?} is missing at {}",
                 path.display()
             ),
             Self::DigestMismatch {

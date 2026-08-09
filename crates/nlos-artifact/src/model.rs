@@ -4,7 +4,7 @@
 use std::fmt;
 use std::path::PathBuf;
 
-use nlos_types::{ApplicationId, ArtifactId, IdempotencyKey};
+use nlos_types::{ApplicationId, ArtifactId, CommitPermitId, IdempotencyKey, ReceiptId, TaskId};
 use sha2::{Digest, Sha256};
 
 /// Upper bound for caller-supplied bounded strings (content type, owner,
@@ -83,6 +83,132 @@ pub(crate) fn hex_encode(value: &[u8]) -> String {
             let _ = write!(out, "{byte:02x}");
             out
         })
+}
+
+/// Authority-derived identity of one staged revision.
+#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct StagingId([u8; 16]);
+
+impl StagingId {
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; 16]) -> Self {
+        Self(bytes)
+    }
+
+    #[must_use]
+    pub const fn into_bytes(self) -> [u8; 16] {
+        self.0
+    }
+
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 16] {
+        &self.0
+    }
+}
+
+impl fmt::Debug for StagingId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "StagingId({})", hex_encode(&self.0))
+    }
+}
+
+/// Durable lifecycle state of a staged revision.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StagedRevisionState {
+    Staged,
+    Published,
+}
+
+/// Request to durably stage bytes without advancing the artifact head.
+#[derive(Clone, Copy, Debug)]
+pub struct StageRevisionRequest<'a> {
+    pub artifact_id: ArtifactId,
+    pub expected_head_revision: u64,
+    pub bytes: &'a [u8],
+    pub task_id: TaskId,
+    pub permit_id: CommitPermitId,
+    pub write_set_root: ContentDigest,
+    pub idempotency_key: IdempotencyKey,
+    pub created_at_ms: u64,
+}
+
+/// Durable staged revision metadata.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StagedRevisionRecord {
+    pub staging_id: StagingId,
+    pub artifact_id: ArtifactId,
+    pub expected_head_revision: u64,
+    pub target_revision: u64,
+    pub digest: ContentDigest,
+    pub size_bytes: u64,
+    pub task_id: TaskId,
+    pub permit_id: CommitPermitId,
+    pub write_set_root: ContentDigest,
+    pub state: StagedRevisionState,
+    pub publication_receipt_id: Option<ReceiptId>,
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
+}
+
+/// Outcome of [`crate::ArtifactStore::stage_revision`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum StageRevisionDecision {
+    Staged(StagedRevisionRecord),
+    Replayed(StagedRevisionRecord),
+}
+
+impl StageRevisionDecision {
+    #[must_use]
+    pub const fn record(&self) -> &StagedRevisionRecord {
+        match self {
+            Self::Staged(record) | Self::Replayed(record) => record,
+        }
+    }
+}
+
+/// Request to publish one staged revision under its original task binding.
+#[derive(Clone, Copy, Debug)]
+pub struct PublishStagedRevisionRequest {
+    pub staging_id: StagingId,
+    pub task_id: TaskId,
+    pub permit_id: CommitPermitId,
+    pub write_set_root: ContentDigest,
+    pub published_at_ms: u64,
+}
+
+/// Immutable proof that `ArtifactAuthority` published one staged revision.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ArtifactPublicationReceipt {
+    pub receipt_id: ReceiptId,
+    pub staging_id: StagingId,
+    pub artifact_id: ArtifactId,
+    pub revision: u64,
+    pub digest: ContentDigest,
+    pub size_bytes: u64,
+    pub task_id: TaskId,
+    pub permit_id: CommitPermitId,
+    pub write_set_root: ContentDigest,
+    pub prior_head_revision: u64,
+    pub prior_head_digest: Option<ContentDigest>,
+    pub new_head_revision: u64,
+    pub new_head_digest: ContentDigest,
+    pub created_at_ms: u64,
+}
+
+/// Outcome of [`crate::ArtifactStore::publish_staged_revision`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PublishStagedRevisionDecision {
+    Published(ArtifactPublicationReceipt),
+    Replayed(ArtifactPublicationReceipt),
+}
+
+impl PublishStagedRevisionDecision {
+    #[must_use]
+    pub const fn receipt(&self) -> &ArtifactPublicationReceipt {
+        match self {
+            Self::Published(receipt) | Self::Replayed(receipt) => receipt,
+        }
+    }
 }
 
 /// Durable specification of a new artifact. `artifact_id` is authority-issued
@@ -194,6 +320,15 @@ pub struct MissingBlob {
     pub digest: ContentDigest,
 }
 
+/// A staged revision whose durable blob is missing.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MissingStagedBlob {
+    pub staging_id: StagingId,
+    pub artifact_id: ArtifactId,
+    pub target_revision: u64,
+    pub digest: ContentDigest,
+}
+
 /// Result of [`crate::ArtifactStore::recover`].
 ///
 /// Recovery reconciles metadata against blob presence. It never repairs
@@ -208,7 +343,11 @@ pub struct RecoveryReport {
     /// corresponding `get_revision` fail with
     /// [`crate::ArtifactError::BlobMissing`].
     pub missing_blobs: Vec<MissingBlob>,
-    /// Blob files under `artifacts/blobs/` no committed revision references.
+    /// Staged candidates whose blob is absent. They remain staged so a
+    /// caller can retry/repair without silently changing authority state.
+    pub missing_staged_blobs: Vec<MissingStagedBlob>,
+    /// Blob files under `artifacts/blobs/` no committed revision or active
+    /// staged revision references.
     pub orphan_blobs: Vec<ContentDigest>,
     /// Files under `cache/blobs/` no cache entry references.
     pub orphan_cache_blobs: Vec<ContentDigest>,

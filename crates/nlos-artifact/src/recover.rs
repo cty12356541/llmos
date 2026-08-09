@@ -5,7 +5,8 @@
 //! - lists committed revisions whose blob is missing (`missing_blobs`;
 //!   repairing them is a policy decision above this crate);
 //! - removes orphan tmp files (by definition pre-rename, hence uncommitted);
-//! - lists orphan blobs no metadata references (for a later GC slice —
+//! - lists orphan blobs no committed revision or active stage references
+//!   (for a later GC slice —
 //!   **never deleted in this slice**);
 //! - drops cache rows whose blob vanished (best-effort cache self-heal).
 
@@ -15,7 +16,8 @@ use rusqlite::TransactionBehavior;
 
 use crate::ArtifactError;
 use crate::blob;
-use crate::model::{ContentDigest, MissingBlob, RecoveryReport};
+use crate::model::{ContentDigest, MissingBlob, MissingStagedBlob, RecoveryReport};
+use crate::publication::load_all_staged_digests;
 use crate::query::load_all_revision_digests;
 use crate::store::ArtifactStore;
 
@@ -45,6 +47,24 @@ impl ArtifactStore {
                 report.missing_blobs.push(MissingBlob {
                     artifact_id,
                     revision,
+                    digest,
+                });
+            }
+        }
+
+        // Staged blobs are durable authority state too. They must neither be
+        // reported as orphans nor silently forgotten merely because they
+        // have not advanced a canonical head yet.
+        for (staging_id, artifact_id, target_revision, digest) in
+            load_all_staged_digests(&*transaction)?
+        {
+            referenced.insert(digest);
+            let path = self.paths().artifacts.blob_path(digest);
+            if !path.try_exists().map_err(ArtifactError::Io)? {
+                report.missing_staged_blobs.push(MissingStagedBlob {
+                    staging_id,
+                    artifact_id,
+                    target_revision,
                     digest,
                 });
             }
