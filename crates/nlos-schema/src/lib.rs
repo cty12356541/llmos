@@ -19,9 +19,14 @@ pub mod sabi {
 pub const SABI_ENVELOPE_SCHEMA: &str = "nlos.sabi.Envelope";
 pub const SABI_SERVICE_DIRECTORY_SCHEMA: &str = "nlos.sabi.ServiceDirectory";
 pub const SABI_OPERATION_CONTROL_SCHEMA: &str = "nlos.sabi.OperationControl";
+pub const SABI_SYSTEM_CONTROL_SCHEMA: &str = "nlos.sabi.SystemControl";
 pub const MAX_ENVELOPE_BYTES: usize = 1024 * 1024;
 pub const MAX_SERVICE_DIRECTORY_PAYLOAD_BYTES: usize = 64 * 1024;
 pub const MAX_OPERATION_CONTROL_PAYLOAD_BYTES: usize = 64 * 1024;
+pub const MAX_SYSTEM_CONTROL_PAYLOAD_BYTES: usize = 64 * 1024;
+pub const MAX_SYSTEM_CONTROL_ALERTS: usize = 256;
+pub const MAX_SYSTEM_CONTROL_FAILURES: usize = 64;
+pub const MAX_CONTROL_REASON_BYTES: usize = 512;
 pub const REQUEST_ID_BYTES: usize = 16;
 pub const SHA256_DIGEST_BYTES: usize = 32;
 pub const MAX_ACTIVITY_CONTEXT_BYTES: usize = 4 * 1024;
@@ -58,10 +63,18 @@ const SABI_OPERATION_CONTROL_V1: SchemaDescriptor = SchemaDescriptor {
     supported_critical_extensions: &[],
 };
 
+const SABI_SYSTEM_CONTROL_V1: SchemaDescriptor = SchemaDescriptor {
+    name: SABI_SYSTEM_CONTROL_SCHEMA,
+    major: 1,
+    minor: 0,
+    supported_critical_extensions: &[],
+};
+
 const REGISTRY: &[SchemaDescriptor] = &[
     SABI_ENVELOPE_V1,
     SABI_SERVICE_DIRECTORY_V1,
     SABI_OPERATION_CONTROL_V1,
+    SABI_SYSTEM_CONTROL_V1,
 ];
 
 #[must_use]
@@ -82,6 +95,19 @@ pub enum CompatibilityError {
     MissingOperationReference,
     InvalidReceiptReference,
     UnspecifiedOperationState,
+    MissingSystemControlCommand,
+    MissingSystemControlMetrics,
+    InvalidSystemControlMetrics,
+    UnspecifiedSystemControlView,
+    UnspecifiedControlCommandSource,
+    UnspecifiedControlScope,
+    UnspecifiedControlCommandState,
+    InvalidSystemControlIdentifier,
+    InvalidSystemControlAlertLimit,
+    InvalidSystemControlAlert,
+    TooManySystemControlAlerts,
+    TooManySystemControlFailures,
+    UnsafeControlReason,
     UnknownSchema(String),
     UnsupportedMajor {
         schema: String,
@@ -121,6 +147,45 @@ impl fmt::Display for CompatibilityError {
             }
             Self::UnspecifiedOperationState => {
                 formatter.write_str("operation control status has unspecified state")
+            }
+            Self::MissingSystemControlCommand => {
+                formatter.write_str("SystemControl payload is missing its command")
+            }
+            Self::MissingSystemControlMetrics => {
+                formatter.write_str("SystemControl snapshot is missing recovery metrics")
+            }
+            Self::InvalidSystemControlMetrics => {
+                formatter.write_str("SystemControl recovery metrics are malformed")
+            }
+            Self::UnspecifiedSystemControlView => {
+                formatter.write_str("SystemControl request uses an unspecified view")
+            }
+            Self::UnspecifiedControlCommandSource => {
+                formatter.write_str("ControlCommand uses an unspecified source")
+            }
+            Self::UnspecifiedControlScope => {
+                formatter.write_str("ControlCommand uses an unspecified scope")
+            }
+            Self::UnspecifiedControlCommandState => {
+                formatter.write_str("ControlCommand result uses an unspecified state")
+            }
+            Self::InvalidSystemControlIdentifier => {
+                formatter.write_str("SystemControl payload contains an invalid identifier")
+            }
+            Self::InvalidSystemControlAlertLimit => {
+                formatter.write_str("SystemControl alert limit is outside its bounded range")
+            }
+            Self::InvalidSystemControlAlert => {
+                formatter.write_str("SystemControl recovery alert is malformed")
+            }
+            Self::TooManySystemControlAlerts => {
+                formatter.write_str("SystemControl snapshot contains too many alerts")
+            }
+            Self::TooManySystemControlFailures => {
+                formatter.write_str("SystemControl metrics contain too many failure summaries")
+            }
+            Self::UnsafeControlReason => {
+                formatter.write_str("ControlCommand reason is oversized or contains NUL")
             }
             Self::UnknownSchema(schema) => write!(formatter, "schema {schema:?} is not registered"),
             Self::UnsupportedMajor {
@@ -509,6 +574,125 @@ pub fn operation_control_schema_identity() -> sabi::v1::SchemaIdentity {
         critical_extension_ids: Vec::new(),
         non_critical_extension_ids: Vec::new(),
     }
+}
+
+/// Returns the v1 identity required on every `SystemControl` payload.
+#[must_use]
+pub fn system_control_schema_identity() -> sabi::v1::SchemaIdentity {
+    sabi::v1::SchemaIdentity {
+        name: SABI_SYSTEM_CONTROL_SCHEMA.to_owned(),
+        major: 1,
+        minor: 0,
+        critical_extension_ids: Vec::new(),
+        non_critical_extension_ids: Vec::new(),
+    }
+}
+
+/// Encodes a bounded, typed `SystemControl.get` request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity, view, limit, or bound.
+pub fn encode_get_system_control_request(
+    request: &sabi::v1::GetSystemControlRequest,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_get_system_control_request(request)?;
+    encode_bounded_with_limit(request, MAX_SYSTEM_CONTROL_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded, typed `SystemControl.get` request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_get_system_control_request(
+    wire: &[u8],
+) -> Result<sabi::v1::GetSystemControlRequest, CompatibilityError> {
+    let request: sabi::v1::GetSystemControlRequest =
+        decode_bounded_with_limit(wire, MAX_SYSTEM_CONTROL_PAYLOAD_BYTES)?;
+    validate_get_system_control_request(&request)?;
+    Ok(request)
+}
+
+/// Encodes a bounded, sanitized Artifact recovery operations snapshot.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed metrics, alerts, or identities.
+pub fn encode_artifact_recovery_operations_snapshot(
+    snapshot: &sabi::v1::ArtifactRecoveryOperationsSnapshot,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_artifact_recovery_operations_snapshot(snapshot)?;
+    encode_bounded_with_limit(snapshot, MAX_SYSTEM_CONTROL_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded, sanitized Artifact recovery operations snapshot.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_artifact_recovery_operations_snapshot(
+    wire: &[u8],
+) -> Result<sabi::v1::ArtifactRecoveryOperationsSnapshot, CompatibilityError> {
+    let snapshot: sabi::v1::ArtifactRecoveryOperationsSnapshot =
+        decode_bounded_with_limit(wire, MAX_SYSTEM_CONTROL_PAYLOAD_BYTES)?;
+    validate_artifact_recovery_operations_snapshot(&snapshot)?;
+    Ok(snapshot)
+}
+
+/// Encodes a bounded `SystemControl.submit` command request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed command identity, source,
+/// scope, target, CAS, command variant, reason, or payload size.
+pub fn encode_submit_control_command_request(
+    request: &sabi::v1::SubmitControlCommandRequest,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_system_control_identity(request.schema.as_ref())?;
+    validate_control_command(request.command.as_ref())?;
+    encode_bounded_with_limit(request, MAX_SYSTEM_CONTROL_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded `SystemControl.submit` command request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_submit_control_command_request(
+    wire: &[u8],
+) -> Result<sabi::v1::SubmitControlCommandRequest, CompatibilityError> {
+    let request: sabi::v1::SubmitControlCommandRequest =
+        decode_bounded_with_limit(wire, MAX_SYSTEM_CONTROL_PAYLOAD_BYTES)?;
+    validate_system_control_identity(request.schema.as_ref())?;
+    validate_control_command(request.command.as_ref())?;
+    Ok(request)
+}
+
+/// Encodes a bounded durable `ControlCommand` result.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed identity, state, or Receipt.
+pub fn encode_control_command_result(
+    result: &sabi::v1::ControlCommandResult,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_control_command_result(result)?;
+    encode_bounded_with_limit(result, MAX_SYSTEM_CONTROL_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded durable `ControlCommand` result.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_control_command_result(
+    wire: &[u8],
+) -> Result<sabi::v1::ControlCommandResult, CompatibilityError> {
+    let result: sabi::v1::ControlCommandResult =
+        decode_bounded_with_limit(wire, MAX_SYSTEM_CONTROL_PAYLOAD_BYTES)?;
+    validate_control_command_result(&result)?;
+    Ok(result)
 }
 
 /// Encodes a bounded, validated Operation query payload.
@@ -995,6 +1179,140 @@ fn validate_operation_control_identity(
     validate_schema_identity(identity)?;
     if identity.name != SABI_OPERATION_CONTROL_SCHEMA {
         return Err(CompatibilityError::UnknownSchema(identity.name.clone()));
+    }
+    Ok(())
+}
+
+fn validate_system_control_identity(
+    identity: Option<&sabi::v1::SchemaIdentity>,
+) -> Result<(), CompatibilityError> {
+    let identity = identity.ok_or(CompatibilityError::MissingSchemaIdentity)?;
+    validate_schema_identity(identity)?;
+    if identity.name != SABI_SYSTEM_CONTROL_SCHEMA {
+        return Err(CompatibilityError::UnknownSchema(identity.name.clone()));
+    }
+    Ok(())
+}
+
+fn validate_get_system_control_request(
+    request: &sabi::v1::GetSystemControlRequest,
+) -> Result<(), CompatibilityError> {
+    validate_system_control_identity(request.schema.as_ref())?;
+    let view = sabi::v1::SystemControlView::try_from(request.view)
+        .map_err(|_| CompatibilityError::UnspecifiedSystemControlView)?;
+    if view == sabi::v1::SystemControlView::Unspecified {
+        return Err(CompatibilityError::UnspecifiedSystemControlView);
+    }
+    if request.alert_limit == 0
+        || usize::try_from(request.alert_limit).unwrap_or(usize::MAX) > MAX_SYSTEM_CONTROL_ALERTS
+    {
+        return Err(CompatibilityError::InvalidSystemControlAlertLimit);
+    }
+    Ok(())
+}
+
+fn validate_artifact_recovery_operations_snapshot(
+    snapshot: &sabi::v1::ArtifactRecoveryOperationsSnapshot,
+) -> Result<(), CompatibilityError> {
+    validate_system_control_identity(snapshot.schema.as_ref())?;
+    let metrics = snapshot
+        .metrics
+        .as_ref()
+        .ok_or(CompatibilityError::MissingSystemControlMetrics)?;
+    let worker_state = sabi::v1::RecoveryWorkerLifecycleState::try_from(metrics.worker_state)
+        .map_err(|_| CompatibilityError::InvalidSystemControlMetrics)?;
+    if worker_state == sabi::v1::RecoveryWorkerLifecycleState::Unspecified {
+        return Err(CompatibilityError::InvalidSystemControlMetrics);
+    }
+    if metrics.last_failures.len() > MAX_SYSTEM_CONTROL_FAILURES {
+        return Err(CompatibilityError::TooManySystemControlFailures);
+    }
+    for failure in &metrics.last_failures {
+        if !failure.plan_id.is_empty() && failure.plan_id.len() != REQUEST_ID_BYTES {
+            return Err(CompatibilityError::InvalidSystemControlIdentifier);
+        }
+        let authority = sabi::v1::RecoveryFailureAuthority::try_from(failure.authority)
+            .map_err(|_| CompatibilityError::InvalidSystemControlMetrics)?;
+        if authority == sabi::v1::RecoveryFailureAuthority::Unspecified {
+            return Err(CompatibilityError::InvalidSystemControlMetrics);
+        }
+    }
+    if snapshot.alerts.len() > MAX_SYSTEM_CONTROL_ALERTS {
+        return Err(CompatibilityError::TooManySystemControlAlerts);
+    }
+    for alert in &snapshot.alerts {
+        if alert.plan_id.len() != REQUEST_ID_BYTES
+            || alert.total_failures == 0
+            || alert.first_failed_at_ms < 0
+            || alert.last_failed_at_ms < alert.first_failed_at_ms
+            || alert.escalated_at_ms < alert.last_failed_at_ms
+        {
+            return Err(CompatibilityError::InvalidSystemControlAlert);
+        }
+        let authority = sabi::v1::RecoveryFailureAuthority::try_from(alert.last_failure_authority)
+            .map_err(|_| CompatibilityError::InvalidSystemControlAlert)?;
+        if authority == sabi::v1::RecoveryFailureAuthority::Unspecified {
+            return Err(CompatibilityError::InvalidSystemControlAlert);
+        }
+        if alert
+            .acknowledgement_receipt
+            .as_ref()
+            .is_some_and(|receipt| receipt.receipt_id.len() != REQUEST_ID_BYTES)
+        {
+            return Err(CompatibilityError::InvalidReceiptReference);
+        }
+    }
+    Ok(())
+}
+
+fn validate_control_command(
+    command: Option<&sabi::v1::ControlCommand>,
+) -> Result<(), CompatibilityError> {
+    let command = command.ok_or(CompatibilityError::MissingSystemControlCommand)?;
+    if command.control_command_id.len() != REQUEST_ID_BYTES
+        || command.issuer_principal_id.len() != REQUEST_ID_BYTES
+        || command.target_id.len() != REQUEST_ID_BYTES
+        || command.expected_generation_or_revision == 0
+    {
+        return Err(CompatibilityError::InvalidSystemControlIdentifier);
+    }
+    let source = sabi::v1::ControlCommandSource::try_from(command.source)
+        .map_err(|_| CompatibilityError::UnspecifiedControlCommandSource)?;
+    if source == sabi::v1::ControlCommandSource::Unspecified {
+        return Err(CompatibilityError::UnspecifiedControlCommandSource);
+    }
+    let scope = sabi::v1::ControlScope::try_from(command.scope)
+        .map_err(|_| CompatibilityError::UnspecifiedControlScope)?;
+    if scope != sabi::v1::ControlScope::Operation {
+        return Err(CompatibilityError::UnspecifiedControlScope);
+    }
+    if command.command.is_none() {
+        return Err(CompatibilityError::MissingSystemControlCommand);
+    }
+    if command.reason.len() > MAX_CONTROL_REASON_BYTES || command.reason.contains('\0') {
+        return Err(CompatibilityError::UnsafeControlReason);
+    }
+    Ok(())
+}
+
+fn validate_control_command_result(
+    result: &sabi::v1::ControlCommandResult,
+) -> Result<(), CompatibilityError> {
+    validate_system_control_identity(result.schema.as_ref())?;
+    if result.control_command_id.len() != REQUEST_ID_BYTES {
+        return Err(CompatibilityError::InvalidSystemControlIdentifier);
+    }
+    let state = sabi::v1::ControlCommandLifecycleState::try_from(result.state)
+        .map_err(|_| CompatibilityError::UnspecifiedControlCommandState)?;
+    if state == sabi::v1::ControlCommandLifecycleState::Unspecified {
+        return Err(CompatibilityError::UnspecifiedControlCommandState);
+    }
+    if result
+        .receipt
+        .as_ref()
+        .is_none_or(|receipt| receipt.receipt_id.len() != REQUEST_ID_BYTES)
+    {
+        return Err(CompatibilityError::InvalidReceiptReference);
     }
     Ok(())
 }

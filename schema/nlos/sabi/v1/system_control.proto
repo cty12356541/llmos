@@ -1,0 +1,120 @@
+syntax = "proto3";
+
+package nlos.sabi.v1;
+
+import "nlos/sabi/v1/envelope.proto";
+
+enum ControlCommandSource {
+  CONTROL_COMMAND_SOURCE_UNSPECIFIED = 0;
+  CONTROL_COMMAND_SOURCE_TRUSTED_GUI = 1;
+  CONTROL_COMMAND_SOURCE_NL_SHELL = 2;
+  CONTROL_COMMAND_SOURCE_CLI = 3;
+  CONTROL_COMMAND_SOURCE_STRUCTURED_API = 4;
+  CONTROL_COMMAND_SOURCE_AUTOMATION = 5;
+}
+
+enum ControlScope {
+  CONTROL_SCOPE_UNSPECIFIED = 0;
+  CONTROL_SCOPE_SYSTEM = 1;
+  CONTROL_SCOPE_OPERATION = 2;
+}
+
+enum SystemControlView {
+  SYSTEM_CONTROL_VIEW_UNSPECIFIED = 0;
+  SYSTEM_CONTROL_VIEW_ARTIFACT_COMMIT_RECOVERY = 1;
+}
+
+enum RecoveryWorkerLifecycleState {
+  RECOVERY_WORKER_LIFECYCLE_STATE_UNSPECIFIED = 0;
+  RECOVERY_WORKER_LIFECYCLE_STATE_STARTING = 1;
+  RECOVERY_WORKER_LIFECYCLE_STATE_RUNNING = 2;
+  RECOVERY_WORKER_LIFECYCLE_STATE_BACKING_OFF = 3;
+  RECOVERY_WORKER_LIFECYCLE_STATE_FAULTED = 4;
+  RECOVERY_WORKER_LIFECYCLE_STATE_STOPPED = 5;
+}
+
+enum RecoveryFailureAuthority {
+  RECOVERY_FAILURE_AUTHORITY_UNSPECIFIED = 0;
+  RECOVERY_FAILURE_AUTHORITY_TASK = 1;
+  RECOVERY_FAILURE_AUTHORITY_ARTIFACT = 2;
+  RECOVERY_FAILURE_AUTHORITY_COORDINATOR = 3;
+  RECOVERY_FAILURE_AUTHORITY_WORKER = 4;
+}
+
+message GetSystemControlRequest {
+  SchemaIdentity schema = 1;
+  SystemControlView view = 2;
+  uint32 alert_limit = 3;
+}
+
+// Deliberately excludes local diagnostic strings. A trusted local operator
+// receives only bounded identities, typed authority classes, and counters.
+message RecoveryFailureSummary {
+  bytes plan_id = 1;
+  RecoveryFailureAuthority authority = 2;
+}
+
+message ArtifactRecoveryMetrics {
+  RecoveryWorkerLifecycleState worker_state = 1;
+  uint64 completed_cycles = 2;
+  uint64 total_inspected = 3;
+  uint64 total_finalized = 4;
+  uint64 consecutive_failed_cycles = 5;
+  optional uint64 retry_delay_ms = 6;
+  uint64 durable_retrying = 7;
+  uint64 durable_escalated = 8;
+  uint64 durable_unacknowledged_escalated = 9;
+  uint64 durable_resolved = 10;
+  repeated RecoveryFailureSummary last_failures = 11;
+}
+
+message ArtifactRecoveryAlertStatus {
+  bytes plan_id = 1;
+  uint64 total_failures = 2;
+  RecoveryFailureAuthority last_failure_authority = 3;
+  int64 first_failed_at_ms = 4;
+  int64 last_failed_at_ms = 5;
+  int64 escalated_at_ms = 6;
+  ReceiptReference acknowledgement_receipt = 7;
+}
+
+message ArtifactRecoveryOperationsSnapshot {
+  SchemaIdentity schema = 1;
+  ArtifactRecoveryMetrics metrics = 2;
+  repeated ArtifactRecoveryAlertStatus alerts = 3;
+  bool alerts_truncated = 4;
+}
+
+message AcknowledgeArtifactRecoveryAlertCommand {}
+
+message ControlCommand {
+  bytes control_command_id = 1;
+  bytes issuer_principal_id = 2;
+  ControlCommandSource source = 3;
+  ControlScope scope = 4;
+  bytes target_id = 5;
+  uint64 expected_generation_or_revision = 6;
+  oneof command {
+    AcknowledgeArtifactRecoveryAlertCommand acknowledge_artifact_recovery_alert = 7;
+  }
+  string reason = 8;
+}
+
+message SubmitControlCommandRequest {
+  SchemaIdentity schema = 1;
+  ControlCommand command = 2;
+}
+
+enum ControlCommandLifecycleState {
+  CONTROL_COMMAND_LIFECYCLE_STATE_UNSPECIFIED = 0;
+  CONTROL_COMMAND_LIFECYCLE_STATE_COMPLETED = 1;
+  CONTROL_COMMAND_LIFECYCLE_STATE_REJECTED = 2;
+  CONTROL_COMMAND_LIFECYCLE_STATE_UNCERTAIN = 3;
+}
+
+message ControlCommandResult {
+  SchemaIdentity schema = 1;
+  bytes control_command_id = 2;
+  ControlCommandLifecycleState state = 3;
+  ReceiptReference receipt = 4;
+}

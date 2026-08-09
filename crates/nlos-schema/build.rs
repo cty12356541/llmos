@@ -49,6 +49,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         "../../schema/nlos/sabi/v1/envelope.proto",
         "../../schema/nlos/sabi/v1/service_directory.proto",
         "../../schema/nlos/sabi/v1/operation_control.proto",
+        "../../schema/nlos/sabi/v1/system_control.proto",
     ];
     for proto in protos {
         println!("cargo:rerun-if-changed={proto}");

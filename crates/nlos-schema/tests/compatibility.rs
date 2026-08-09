@@ -1,22 +1,30 @@
 use nlos_schema::sabi::v1::{
-    CallerIdentity, CancelOperationRequest, CapabilityHandle, Envelope, ExchangeRequest,
-    ExchangeResponse, NegotiateServiceResponse, OperationLifecycleState, OperationReference,
-    OperationStatus, QueryOperationRequest, ReceiptReference, ResolveServiceRequest,
-    ResolveServiceResponse, RetryDirective, SabiErrorCode, SabiFailure, SabiRequestContext,
-    SabiResponseContext, SchemaIdentity, TaskExecutionBinding, envelope as envelope_message,
-    local_rpc,
+    AcknowledgeArtifactRecoveryAlertCommand, ArtifactRecoveryAlertStatus, ArtifactRecoveryMetrics,
+    ArtifactRecoveryOperationsSnapshot, CallerIdentity, CancelOperationRequest, CapabilityHandle,
+    ControlCommand, ControlCommandLifecycleState, ControlCommandResult, ControlCommandSource,
+    ControlScope, Envelope, ExchangeRequest, ExchangeResponse, GetSystemControlRequest,
+    NegotiateServiceResponse, OperationLifecycleState, OperationReference, OperationStatus,
+    QueryOperationRequest, ReceiptReference, RecoveryFailureAuthority, RecoveryFailureSummary,
+    RecoveryWorkerLifecycleState, ResolveServiceRequest, ResolveServiceResponse, RetryDirective,
+    SabiErrorCode, SabiFailure, SabiRequestContext, SabiResponseContext, SchemaIdentity,
+    SubmitControlCommandRequest, SystemControlView, TaskExecutionBinding, control_command,
+    envelope as envelope_message, local_rpc,
 };
 use nlos_schema::{
     CommonSemanticsError, CompatibilityError, MAX_ENVELOPE_BYTES,
-    MAX_SERVICE_DIRECTORY_PAYLOAD_BYTES, MethodSemantics, SABI_ENVELOPE_SCHEMA,
-    SABI_OPERATION_CONTROL_SCHEMA, SABI_SERVICE_DIRECTORY_SCHEMA, decode_cancel_operation_request,
-    decode_exchange_request, decode_exchange_response, decode_operation_status,
+    MAX_SERVICE_DIRECTORY_PAYLOAD_BYTES, MAX_SYSTEM_CONTROL_ALERTS, MethodSemantics,
+    SABI_ENVELOPE_SCHEMA, SABI_OPERATION_CONTROL_SCHEMA, SABI_SERVICE_DIRECTORY_SCHEMA,
+    SABI_SYSTEM_CONTROL_SCHEMA, decode_artifact_recovery_operations_snapshot,
+    decode_cancel_operation_request, decode_control_command_result, decode_exchange_request,
+    decode_exchange_response, decode_get_system_control_request, decode_operation_status,
     decode_query_operation_request, decode_resolve_service_request, decode_sabi_envelope,
-    encode_cancel_operation_request, encode_exchange_request, encode_exchange_response,
-    encode_operation_status, encode_query_operation_request, encode_resolve_service_request,
-    encode_resolve_service_response, encode_sabi_envelope, operation_control_schema_identity,
-    schema_registry, service_directory_schema_identity, validate_sabi_request_context,
-    validate_sabi_response_context,
+    decode_submit_control_command_request, encode_artifact_recovery_operations_snapshot,
+    encode_cancel_operation_request, encode_control_command_result, encode_exchange_request,
+    encode_exchange_response, encode_get_system_control_request, encode_operation_status,
+    encode_query_operation_request, encode_resolve_service_request,
+    encode_resolve_service_response, encode_sabi_envelope, encode_submit_control_command_request,
+    operation_control_schema_identity, schema_registry, service_directory_schema_identity,
+    system_control_schema_identity, validate_sabi_request_context, validate_sabi_response_context,
 };
 
 fn envelope() -> Envelope {
@@ -144,7 +152,7 @@ fn generated_encoding_matches_canonical_golden_vector() {
 #[test]
 fn registry_exposes_the_supported_contract() {
     let registry = schema_registry();
-    assert_eq!(registry.len(), 3);
+    assert_eq!(registry.len(), 4);
     let envelope = registry
         .iter()
         .find(|entry| entry.name == SABI_ENVELOPE_SCHEMA)
@@ -160,6 +168,102 @@ fn registry_exposes_the_supported_contract() {
         .find(|entry| entry.name == SABI_OPERATION_CONTROL_SCHEMA)
         .unwrap();
     assert_eq!((operation_control.major, operation_control.minor), (1, 0));
+    let system_control = registry
+        .iter()
+        .find(|entry| entry.name == SABI_SYSTEM_CONTROL_SCHEMA)
+        .unwrap();
+    assert_eq!((system_control.major, system_control.minor), (1, 0));
+}
+
+#[test]
+fn system_control_payloads_are_typed_bounded_and_sanitized() {
+    let get = GetSystemControlRequest {
+        schema: Some(system_control_schema_identity()),
+        view: SystemControlView::ArtifactCommitRecovery.into(),
+        alert_limit: 8,
+    };
+    let get_wire = encode_get_system_control_request(&get).unwrap();
+    assert_eq!(decode_get_system_control_request(&get_wire).unwrap(), get);
+
+    let snapshot = ArtifactRecoveryOperationsSnapshot {
+        schema: Some(system_control_schema_identity()),
+        metrics: Some(ArtifactRecoveryMetrics {
+            worker_state: RecoveryWorkerLifecycleState::BackingOff.into(),
+            completed_cycles: 9,
+            total_inspected: 10,
+            total_finalized: 7,
+            consecutive_failed_cycles: 0,
+            retry_delay_ms: Some(250),
+            durable_retrying: 1,
+            durable_escalated: 1,
+            durable_unacknowledged_escalated: 1,
+            durable_resolved: 3,
+            last_failures: vec![RecoveryFailureSummary {
+                plan_id: vec![0x21; 16],
+                authority: RecoveryFailureAuthority::Artifact.into(),
+            }],
+        }),
+        alerts: vec![ArtifactRecoveryAlertStatus {
+            plan_id: vec![0x21; 16],
+            total_failures: 3,
+            last_failure_authority: RecoveryFailureAuthority::Artifact.into(),
+            first_failed_at_ms: 1_000,
+            last_failed_at_ms: 2_000,
+            escalated_at_ms: 2_000,
+            acknowledgement_receipt: None,
+        }],
+        alerts_truncated: false,
+    };
+    let snapshot_wire = encode_artifact_recovery_operations_snapshot(&snapshot).unwrap();
+    assert_eq!(
+        decode_artifact_recovery_operations_snapshot(&snapshot_wire).unwrap(),
+        snapshot
+    );
+
+    let submit = SubmitControlCommandRequest {
+        schema: Some(system_control_schema_identity()),
+        command: Some(ControlCommand {
+            control_command_id: vec![0x31; 16],
+            issuer_principal_id: vec![0x32; 16],
+            source: ControlCommandSource::Cli.into(),
+            scope: ControlScope::Operation.into(),
+            target_id: vec![0x21; 16],
+            expected_generation_or_revision: 3,
+            command: Some(control_command::Command::AcknowledgeArtifactRecoveryAlert(
+                AcknowledgeArtifactRecoveryAlertCommand {},
+            )),
+            reason: "operator inspected durable recovery state".to_owned(),
+        }),
+    };
+    let submit_wire = encode_submit_control_command_request(&submit).unwrap();
+    assert_eq!(
+        decode_submit_control_command_request(&submit_wire).unwrap(),
+        submit
+    );
+
+    let result = ControlCommandResult {
+        schema: Some(system_control_schema_identity()),
+        control_command_id: vec![0x31; 16],
+        state: ControlCommandLifecycleState::Completed.into(),
+        receipt: Some(ReceiptReference {
+            receipt_id: vec![0x41; 16],
+        }),
+    };
+    let result_wire = encode_control_command_result(&result).unwrap();
+    assert_eq!(decode_control_command_result(&result_wire).unwrap(), result);
+
+    let mut unbounded = snapshot;
+    unbounded.alerts = vec![unbounded.alerts[0].clone(); MAX_SYSTEM_CONTROL_ALERTS + 1];
+    assert_eq!(
+        encode_artifact_recovery_operations_snapshot(&unbounded),
+        Err(CompatibilityError::TooManySystemControlAlerts)
+    );
+    let mut unsafe_submit = submit;
+    unsafe_submit.command.as_mut().unwrap().reason.push('\0');
+    assert_eq!(
+        encode_submit_control_command_request(&unsafe_submit),
+        Err(CompatibilityError::UnsafeControlReason)
+    );
 }
 
 #[test]
