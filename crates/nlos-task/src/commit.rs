@@ -12,9 +12,10 @@ use rusqlite::{Row, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
 
 use crate::store::{
-    SqlRead, SqliteTaskAuthority, encode_u64, load_attempt, load_permit_by_id, load_task,
+    SqlRead, SqliteTaskAuthority, close_permit, encode_u64, insert_receipt, load_attempt,
+    load_permit_by_id, load_receipt, load_task, optional_blob16, set_attempt_state, update_task,
 };
-use crate::{PermitState, TaskStoreError};
+use crate::{AttemptState, PermitState, ReceiptOutcome, TaskReceiptRecord, TaskStoreError};
 
 /// Authority-derived identity of one Artifact commit plan.
 #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -116,6 +117,7 @@ pub struct ArtifactCommitPlanRecord {
     pub write_set_root: [u8; 32],
     pub expectations: Vec<ArtifactPublicationExpectation>,
     pub state: ArtifactCommitPlanState,
+    pub task_receipt_id: Option<ReceiptId>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
 }
@@ -155,6 +157,37 @@ pub struct RecordArtifactPublicationsRequest {
 pub struct ArtifactCommitProgress {
     pub plan: ArtifactCommitPlanRecord,
     pub publications: Vec<NestedArtifactPublicationReceipt>,
+}
+
+/// Final Task receipt together with the immutable Artifact receipts it
+/// nests as commit evidence.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ArtifactTaskCommitReceipt {
+    pub task_receipt: TaskReceiptRecord,
+    pub artifact_publications: Vec<NestedArtifactPublicationReceipt>,
+}
+
+/// Request to atomically finalize one complete artifact-only plan.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FinalizeArtifactCommitRequest {
+    pub plan_id: ArtifactCommitPlanId,
+    pub finalized_at_ms: i64,
+}
+
+/// Idempotent Artifact-aware Task finalize decision.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ArtifactFinalizeDecision {
+    Committed(Box<ArtifactTaskCommitReceipt>),
+    Replayed(Box<ArtifactTaskCommitReceipt>),
+}
+
+impl ArtifactFinalizeDecision {
+    #[must_use]
+    pub fn receipt(&self) -> &ArtifactTaskCommitReceipt {
+        match self {
+            Self::Committed(receipt) | Self::Replayed(receipt) => receipt,
+        }
+    }
 }
 
 /// Idempotent plan decision.
@@ -338,6 +371,7 @@ impl SqliteTaskAuthority {
             write_set_root: root,
             expectations: canonical,
             state: ArtifactCommitPlanState::Planned,
+            task_receipt_id: None,
             created_at_ms: request.planned_at_ms,
             updated_at_ms: request.planned_at_ms,
         };
@@ -542,6 +576,139 @@ impl SqliteTaskAuthority {
         validate_progress(&plan, &publications)?;
         Ok(ArtifactCommitProgress { plan, publications })
     }
+
+    /// Atomically closes an artifact-only permit after every planned
+    /// publication receipt is durable, advances `TaskHead`, links the Task
+    /// receipt, and marks the plan `Finalized`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed readiness/holder/head/membership error or storage
+    /// error; no subset of the terminal facts is committed on failure.
+    pub fn finalize_artifact_commit(
+        &self,
+        request: FinalizeArtifactCommitRequest,
+    ) -> Result<ArtifactFinalizeDecision, TaskStoreError> {
+        let mut connection = self.lock_connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut plan = load_plan_optional(&transaction, request.plan_id)?
+            .ok_or(TaskStoreError::ArtifactCommitPlanNotFound)?;
+        let publications = load_publications(&transaction, plan.plan_id)?;
+        validate_progress(&plan, &publications)?;
+        if plan.state == ArtifactCommitPlanState::Finalized {
+            let receipt_id = plan.task_receipt_id.ok_or(TaskStoreError::CorruptRecord(
+                "finalized Artifact plan lacks Task receipt",
+            ))?;
+            let task_receipt = load_receipt(&transaction, plan.task_id, receipt_id)?;
+            transaction.commit()?;
+            return Ok(ArtifactFinalizeDecision::Replayed(Box::new(
+                ArtifactTaskCommitReceipt {
+                    task_receipt,
+                    artifact_publications: publications,
+                },
+            )));
+        }
+        if plan.state != ArtifactCommitPlanState::Ready {
+            return Err(TaskStoreError::ArtifactCommitPlanNotReady { state: plan.state });
+        }
+
+        let task_receipt = finalize_ready_plan(&transaction, &plan, request.finalized_at_ms)?;
+        let receipt_id = task_receipt.receipt_id;
+        plan.state = ArtifactCommitPlanState::Finalized;
+        plan.task_receipt_id = Some(receipt_id);
+        plan.updated_at_ms = request.finalized_at_ms;
+        transaction.commit()?;
+        Ok(ArtifactFinalizeDecision::Committed(Box::new(
+            ArtifactTaskCommitReceipt {
+                task_receipt,
+                artifact_publications: publications,
+            },
+        )))
+    }
+}
+
+fn finalize_ready_plan(
+    transaction: &rusqlite::Transaction<'_>,
+    plan: &ArtifactCommitPlanRecord,
+    finalized_at_ms: i64,
+) -> Result<TaskReceiptRecord, TaskStoreError> {
+    let task = load_task(transaction, plan.task_id)?;
+    let permit = load_permit_by_id(transaction, plan.task_id, plan.permit_id)?;
+    let attempt = load_attempt(transaction, plan.task_id, plan.attempt_id)?;
+    if attempt.attempt_generation != plan.attempt_generation {
+        return Err(TaskStoreError::InvalidGeneration);
+    }
+    if permit.attempt_id != plan.attempt_id || permit.attempt_generation != plan.attempt_generation
+    {
+        return Err(TaskStoreError::NotPermitHolder);
+    }
+    if permit.state != PermitState::Issued {
+        return Err(TaskStoreError::PermitNotIssued);
+    }
+    if permit.write_set_root != plan.write_set_root {
+        return Err(TaskStoreError::InvalidArtifactPublicationPlan {
+            reason: "durable plan root differs from permit write_set_root",
+        });
+    }
+    if task.record.head_commit_seq != permit.expected_head_commit_seq
+        || task.record.head_effect_history_root != permit.expected_effect_history_root
+        || task.record.retry_fence_epoch != permit.expected_retry_fence_epoch
+    {
+        return Err(TaskStoreError::StaleTaskHead);
+    }
+    crate::group::validate_commit_binding(transaction, attempt.attempt_id, permit.group_binding)?;
+    let effect_count: i64 = transaction.query_row(
+        "SELECT COUNT(*) FROM effect_slots WHERE permit_id = ?1",
+        [plan.permit_id.as_bytes().as_slice()],
+        |row| row.get(0),
+    )?;
+    if effect_count != 0 {
+        return Err(TaskStoreError::InvalidArtifactPublicationPlan {
+            reason: "Artifact finalize requires an artifact-only permit",
+        });
+    }
+    let new_seq = task
+        .record
+        .head_commit_seq
+        .checked_add(1)
+        .ok_or(TaskStoreError::EpochExhausted)?;
+    let control_epoch = task
+        .record
+        .control_epoch
+        .checked_add(1)
+        .ok_or(TaskStoreError::EpochExhausted)?;
+    let receipt_id = crate::model::derive_commit_receipt_id(permit.permit_id);
+    let receipt = TaskReceiptRecord {
+        receipt_id,
+        task_id: plan.task_id,
+        permit_id: Some(permit.permit_id),
+        attempt_id: attempt.attempt_id,
+        attempt_generation: attempt.attempt_generation,
+        group_binding: permit.group_binding,
+        outcome: ReceiptOutcome::Committed,
+        prior_head_commit_seq: task.record.head_commit_seq,
+        prior_effect_history_root: task.record.head_effect_history_root,
+        prior_retry_fence_epoch: task.record.retry_fence_epoch,
+        new_head_commit_seq: new_seq,
+        new_effect_history_root: task.record.head_effect_history_root,
+        new_retry_fence_epoch: task.record.retry_fence_epoch,
+        created_at_ms: finalized_at_ms,
+    };
+    insert_receipt(transaction, &receipt)?;
+    close_permit(transaction, &permit, finalized_at_ms)?;
+    set_attempt_state(
+        transaction,
+        &attempt,
+        AttemptState::Committed,
+        Some(receipt_id),
+        finalized_at_ms,
+    )?;
+    update_task(transaction, &task, finalized_at_ms, |record| {
+        record.head_commit_seq = new_seq;
+        record.control_epoch = control_epoch;
+    })?;
+    finalize_plan(transaction, plan.plan_id, receipt_id, finalized_at_ms)?;
+    Ok(receipt)
 }
 
 fn validate_publication_receipt(
@@ -604,7 +771,11 @@ fn validate_progress(
     } else {
         ArtifactCommitPlanState::Publishing
     };
-    if plan.state != ArtifactCommitPlanState::Finalized && plan.state != expected_state {
+    let state_matches = match plan.state {
+        ArtifactCommitPlanState::Finalized => expected_state == ArtifactCommitPlanState::Ready,
+        state => state == expected_state,
+    };
+    if !state_matches {
         return Err(TaskStoreError::CorruptRecord(
             "artifact commit plan state disagrees with publication count",
         ));
@@ -647,6 +818,32 @@ fn update_plan_state(
     if changed != 1 {
         return Err(TaskStoreError::CorruptRecord(
             "artifact commit plan state compare-and-swap failed",
+        ));
+    }
+    Ok(())
+}
+
+fn finalize_plan(
+    transaction: &rusqlite::Transaction<'_>,
+    plan_id: ArtifactCommitPlanId,
+    receipt_id: ReceiptId,
+    now_ms: i64,
+) -> Result<(), TaskStoreError> {
+    let changed = transaction.execute(
+        "UPDATE task_artifact_commit_plans
+         SET plan_state = ?1, task_receipt_id = ?2, updated_at_ms = ?3
+         WHERE plan_id = ?4 AND plan_state = ?5 AND task_receipt_id IS NULL",
+        params![
+            ArtifactCommitPlanState::Finalized.code(),
+            receipt_id.as_bytes().as_slice(),
+            now_ms,
+            plan_id.as_bytes().as_slice(),
+            ArtifactCommitPlanState::Ready.code(),
+        ],
+    )?;
+    if changed != 1 {
+        return Err(TaskStoreError::CorruptRecord(
+            "Artifact plan finalize compare-and-swap failed",
         ));
     }
     Ok(())
@@ -739,7 +936,7 @@ fn insert_expectations(
 
 const PLAN_COLUMNS: &str = "plan_id, task_id, permit_id, attempt_id,
      attempt_generation, write_set_root, artifact_plan_root,
-     expected_artifact_count, plan_state, created_at_ms, updated_at_ms";
+     expected_artifact_count, plan_state, task_receipt_id, created_at_ms, updated_at_ms";
 
 fn load_plan_optional(
     source: &impl SqlRead,
@@ -803,8 +1000,9 @@ fn decode_plan_row(
         write_set_root,
         state: ArtifactCommitPlanState::from_code(row.get(8)?)?,
         expectations,
-        created_at_ms: row.get(9)?,
-        updated_at_ms: row.get(10)?,
+        task_receipt_id: optional_blob16(row, 9)?.map(ReceiptId::from_bytes),
+        created_at_ms: row.get(10)?,
+        updated_at_ms: row.get(11)?,
     })
 }
 

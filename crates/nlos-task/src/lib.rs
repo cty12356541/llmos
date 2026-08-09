@@ -44,8 +44,9 @@
 //! Process/AgentInstance binding, `IsolationDomain`, gateway/driver
 //! integration, signatures, and any IPC surface. Artifact publication
 //! authorization is now a durable `TaskAuthority` fence for artifact-only
-//! permits; `ArtifactAuthority` online verification and Task finalize remain
-//! outside the schema-v7 slice. Post-permit
+//! permits; READY-only Artifact-aware Task finalize now links nested receipts
+//! atomically inside `TaskAuthority`. `ArtifactAuthority` online verification
+//! and an automatic cross-authority coordinator remain outside schema v7. Post-permit
 //! `EFFECTING`/`FINALIZING`/`UNCERTAIN`/`RECONCILING` from the §25.1
 //! attempt state machine are represented as permit/slot states rather
 //! than attempt states here.
@@ -59,9 +60,10 @@ mod store;
 
 pub use commit::{
     ArtifactCommitPlanDecision, ArtifactCommitPlanId, ArtifactCommitPlanRecord,
-    ArtifactCommitPlanState, ArtifactCommitProgress, ArtifactPublicationAuthorizationDecision,
-    ArtifactPublicationExpectation, NestedArtifactPublicationReceipt, PlanArtifactCommitRequest,
-    RecordArtifactPublicationsRequest, artifact_publication_plan_root,
+    ArtifactCommitPlanState, ArtifactCommitProgress, ArtifactFinalizeDecision,
+    ArtifactPublicationAuthorizationDecision, ArtifactPublicationExpectation,
+    ArtifactTaskCommitReceipt, FinalizeArtifactCommitRequest, NestedArtifactPublicationReceipt,
+    PlanArtifactCommitRequest, RecordArtifactPublicationsRequest, artifact_publication_plan_root,
 };
 pub use effect::{
     DispatchRequest, EffectPermitDecision, EffectPermitId, EffectReceipt, EffectReceiptDecision,
@@ -122,6 +124,10 @@ pub enum TaskStoreError {
     ReceiptNotFound,
     /// No Artifact publication plan with this identity exists.
     ArtifactCommitPlanNotFound,
+    /// The Artifact publication plan is not complete enough to finalize.
+    ArtifactCommitPlanNotReady {
+        state: ArtifactCommitPlanState,
+    },
     /// The task ID is already registered with a different specification.
     DuplicateTask,
     /// The attempt ID is already registered with a different specification.
@@ -324,6 +330,12 @@ impl fmt::Display for TaskStoreError {
             Self::ReceiptNotFound => formatter.write_str("receipt does not exist under the task"),
             Self::ArtifactCommitPlanNotFound => {
                 formatter.write_str("artifact commit plan does not exist")
+            }
+            Self::ArtifactCommitPlanNotReady { state } => {
+                write!(
+                    formatter,
+                    "artifact commit plan state {state:?} is not ready"
+                )
             }
             Self::DuplicateTask => formatter.write_str("task ID re-registered with new spec"),
             Self::DuplicateAttempt => formatter.write_str("attempt ID re-registered with new spec"),

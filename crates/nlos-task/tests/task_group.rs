@@ -15,19 +15,20 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use nlos_task::{
     ArtifactPublicationExpectation, AttemptGroupRegistration, AttemptRegistrationDecision,
     AttemptSpec, AttemptState, CancelRequest, ClosePermitDecision, ClosePermitRequest,
-    CompletionMode, EffectPermitDecision, EffectPermitRequest, FailureMode, FinalizeDecision,
-    FinalizeRequestV3, GroupBinding, GroupCancelDecision, GroupCancelRequest, GroupMemberRef,
-    GroupMemberType, GroupReceiptKind, GroupRegistrationDecision, GroupSpec, GroupState,
-    IssuedPermit, LogicalEffectDescriptor, MembershipState, Outcome, OutcomeRequest,
+    CompletionMode, EffectPermitDecision, EffectPermitRequest, FailureMode,
+    FinalizeArtifactCommitRequest, FinalizeDecision, FinalizeRequestV3, GroupBinding,
+    GroupCancelDecision, GroupCancelRequest, GroupMemberRef, GroupMemberType, GroupReceiptKind,
+    GroupRegistrationDecision, GroupSpec, GroupState, IssuedPermit, LogicalEffectDescriptor,
+    MembershipState, NestedArtifactPublicationReceipt, Outcome, OutcomeRequest,
     PermitClosureOutcome, PermitDecision, PermitRecord, PermitRequest, PermitState,
-    PlanArtifactCommitRequest, PlannedEffect, ReceiptOutcome, RemovalDecision, RemoveMemberRequest,
-    SnapshotBundle, SqliteTaskAuthority, TaskGroupId, TaskSpec, TaskState, TaskStoreError,
-    artifact_publication_plan_root, empty_effect_history_root, empty_group_membership_root,
-    membership_root_of,
+    PlanArtifactCommitRequest, PlannedEffect, ReceiptOutcome, RecordArtifactPublicationsRequest,
+    RemovalDecision, RemoveMemberRequest, SnapshotBundle, SqliteTaskAuthority, TaskGroupId,
+    TaskSpec, TaskState, TaskStoreError, artifact_publication_plan_root, empty_effect_history_root,
+    empty_group_membership_root, membership_root_of,
 };
 use nlos_types::{
-    ArtifactId, CancellationScopeId, CommitPermitId, Generation, IdempotencyKey, TaskAttemptId,
-    TaskId, TaskSnapshotId,
+    ArtifactId, CancellationScopeId, CommitPermitId, Generation, IdempotencyKey, ReceiptId,
+    TaskAttemptId, TaskId, TaskSnapshotId,
 };
 
 static NEXT_DATABASE: AtomicU64 = AtomicU64::new(0);
@@ -208,6 +209,7 @@ fn issued_permit(decision: PermitDecision) -> PermitRecord {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn authorized_artifact_publication_freezes_group_membership() {
     let database = TestDatabase::new("artifact-publication-freeze");
     let authority = database.open();
@@ -282,6 +284,42 @@ fn authorized_artifact_publication_freezes_group_membership() {
     assert_eq!(
         authority.list_group_members(group_id(0x01)).unwrap().len(),
         1
+    );
+
+    authority
+        .record_artifact_publications(RecordArtifactPublicationsRequest {
+            plan_id: plan.plan_id,
+            receipts: vec![NestedArtifactPublicationReceipt {
+                receipt_id: ReceiptId::from_bytes(bytes(0x36)),
+                staging_id: expectation.staging_id,
+                artifact_id: expectation.artifact_id,
+                revision: expectation.target_revision,
+                digest: expectation.digest,
+                size_bytes: expectation.size_bytes,
+                task_id: attempt_a.task_id,
+                permit_id: permit.permit_id,
+                write_set_root,
+                prior_head_revision: 0,
+                prior_head_digest: None,
+                new_head_revision: 1,
+                new_head_digest: expectation.digest,
+                created_at_ms: 5_500,
+            }],
+            observed_at_ms: 6_000,
+        })
+        .unwrap();
+    authority
+        .finalize_artifact_commit(FinalizeArtifactCommitRequest {
+            plan_id: plan.plan_id,
+            finalized_at_ms: 6_500,
+        })
+        .unwrap();
+    authority
+        .register_attempt_in_group(attempt_b, binding_of(&authority, group_id(0x01)))
+        .expect("finalize releases membership freeze");
+    assert_eq!(
+        authority.list_group_members(group_id(0x01)).unwrap().len(),
+        2
     );
 }
 

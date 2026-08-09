@@ -5,11 +5,12 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use nlos_task::{
-    ArtifactCommitPlanDecision, ArtifactCommitPlanState, ArtifactPublicationAuthorizationDecision,
-    ArtifactPublicationExpectation, AttemptSpec, LogicalEffectDescriptor,
-    NestedArtifactPublicationReceipt, PermitDecision, PermitRequest, PlanArtifactCommitRequest,
-    PlannedEffect, RecordArtifactPublicationsRequest, SnapshotBundle, SqliteTaskAuthority,
-    TaskSpec, TaskStoreError, artifact_publication_plan_root, empty_effect_history_root,
+    ArtifactCommitPlanDecision, ArtifactCommitPlanState, ArtifactFinalizeDecision,
+    ArtifactPublicationAuthorizationDecision, ArtifactPublicationExpectation, AttemptSpec,
+    FinalizeArtifactCommitRequest, LogicalEffectDescriptor, NestedArtifactPublicationReceipt,
+    PermitDecision, PermitRequest, PlanArtifactCommitRequest, PlannedEffect,
+    RecordArtifactPublicationsRequest, SnapshotBundle, SqliteTaskAuthority, TaskSpec,
+    TaskStoreError, artifact_publication_plan_root, empty_effect_history_root,
 };
 use nlos_types::{
     ArtifactId, CancellationScopeId, Generation, IdempotencyKey, ReceiptId, TaskAttemptId, TaskId,
@@ -277,6 +278,185 @@ fn authorization_rejects_permits_with_effect_slots() {
             .state,
         ArtifactCommitPlanState::Planned
     );
+}
+
+#[test]
+fn ready_plan_finalizes_atomically_and_replays_complete_receipt_after_restart() {
+    let database = TestDatabase::new("artifact-finalize");
+    let expectations = vec![expectation(1, 1), expectation(2, 1)];
+    let (attempt, permit, plan, expected_publications, committed) = {
+        let authority = database.open();
+        let (attempt, permit) = register_and_issue(&authority, &expectations);
+        let plan = authority
+            .plan_artifact_commit(plan_request(attempt, &permit, expectations.clone()))
+            .unwrap()
+            .record()
+            .clone();
+        authorize(&authority, &plan);
+        assert!(matches!(
+            authority.finalize_artifact_commit(FinalizeArtifactCommitRequest {
+                plan_id: plan.plan_id,
+                finalized_at_ms: 5_500,
+            }),
+            Err(TaskStoreError::ArtifactCommitPlanNotReady {
+                state: ArtifactCommitPlanState::Publishing
+            })
+        ));
+        let expected_publications = vec![
+            publication(expectation(1, 1), &plan, 1),
+            publication(expectation(2, 1), &plan, 2),
+        ];
+        authority
+            .record_artifact_publications(RecordArtifactPublicationsRequest {
+                plan_id: plan.plan_id,
+                receipts: expected_publications.clone(),
+                observed_at_ms: 6_000,
+            })
+            .unwrap();
+        let decision = authority
+            .finalize_artifact_commit(FinalizeArtifactCommitRequest {
+                plan_id: plan.plan_id,
+                finalized_at_ms: 7_000,
+            })
+            .unwrap();
+        assert!(matches!(decision, ArtifactFinalizeDecision::Committed(_)));
+        let committed = decision.receipt().clone();
+        assert_eq!(committed.artifact_publications, expected_publications);
+        assert_eq!(committed.task_receipt.new_head_commit_seq, 1);
+        assert_eq!(
+            committed.task_receipt.new_effect_history_root,
+            empty_effect_history_root()
+        );
+        let finalized = authority
+            .inspect_artifact_commit_plan(plan.plan_id)
+            .unwrap();
+        assert_eq!(finalized.state, ArtifactCommitPlanState::Finalized);
+        assert_eq!(
+            finalized.task_receipt_id,
+            Some(committed.task_receipt.receipt_id)
+        );
+        assert_eq!(
+            authority
+                .inspect_task(attempt.task_id)
+                .unwrap()
+                .head_commit_seq,
+            1
+        );
+        assert_eq!(
+            authority
+                .inspect_permit(attempt.task_id, permit.permit_id)
+                .unwrap()
+                .state,
+            nlos_task::PermitState::Closed
+        );
+        (attempt, permit, plan, expected_publications, committed)
+    };
+
+    let reopened = database.open();
+    let replay = reopened
+        .finalize_artifact_commit(FinalizeArtifactCommitRequest {
+            plan_id: plan.plan_id,
+            finalized_at_ms: 9_000,
+        })
+        .unwrap();
+    assert!(matches!(replay, ArtifactFinalizeDecision::Replayed(_)));
+    assert_eq!(replay.receipt(), &committed);
+    assert_eq!(
+        replay.receipt().artifact_publications,
+        expected_publications
+    );
+    assert_eq!(
+        reopened
+            .inspect_receipt(attempt.task_id, committed.task_receipt.receipt_id)
+            .unwrap(),
+        committed.task_receipt
+    );
+    assert_eq!(
+        reopened
+            .inspect_permit(attempt.task_id, permit.permit_id)
+            .unwrap()
+            .state,
+        nlos_task::PermitState::Closed
+    );
+}
+
+#[test]
+fn finalize_storage_failure_rolls_back_every_terminal_fact() {
+    let database = TestDatabase::new("artifact-finalize-rollback");
+    let expectations = vec![expectation(1, 1)];
+    let (attempt, permit, plan) = {
+        let authority = database.open();
+        let (attempt, permit) = register_and_issue(&authority, &expectations);
+        let plan = authority
+            .plan_artifact_commit(plan_request(attempt, &permit, expectations))
+            .unwrap()
+            .record()
+            .clone();
+        authorize(&authority, &plan);
+        authority
+            .record_artifact_publications(RecordArtifactPublicationsRequest {
+                plan_id: plan.plan_id,
+                receipts: vec![publication(expectation(1, 1), &plan, 1)],
+                observed_at_ms: 6_000,
+            })
+            .unwrap();
+        (attempt, permit, plan)
+    };
+    let raw = Connection::open(&database.path).unwrap();
+    raw.execute_batch(
+        "CREATE TRIGGER fail_artifact_finalize
+         BEFORE UPDATE ON task_artifact_commit_plans
+         WHEN NEW.plan_state = 3
+         BEGIN SELECT RAISE(ABORT, 'injected finalize failure'); END;",
+    )
+    .unwrap();
+    drop(raw);
+
+    let authority = database.open();
+    assert!(matches!(
+        authority.finalize_artifact_commit(FinalizeArtifactCommitRequest {
+            plan_id: plan.plan_id,
+            finalized_at_ms: 7_000,
+        }),
+        Err(TaskStoreError::Sqlite(_))
+    ));
+    assert_eq!(
+        authority
+            .inspect_task(attempt.task_id)
+            .unwrap()
+            .head_commit_seq,
+        0
+    );
+    assert_eq!(
+        authority
+            .inspect_permit(attempt.task_id, permit.permit_id)
+            .unwrap()
+            .state,
+        nlos_task::PermitState::Issued
+    );
+    assert_eq!(
+        authority
+            .inspect_artifact_commit_plan(plan.plan_id)
+            .unwrap()
+            .state,
+        ArtifactCommitPlanState::Ready
+    );
+    drop(authority);
+
+    let raw = Connection::open(&database.path).unwrap();
+    raw.execute_batch("DROP TRIGGER fail_artifact_finalize;")
+        .unwrap();
+    drop(raw);
+    assert!(matches!(
+        database
+            .open()
+            .finalize_artifact_commit(FinalizeArtifactCommitRequest {
+                plan_id: plan.plan_id,
+                finalized_at_ms: 8_000,
+            })
+            .unwrap(),
+        ArtifactFinalizeDecision::Committed(_)
+    ));
 }
 
 #[test]
