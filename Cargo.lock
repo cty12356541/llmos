@@ -389,6 +389,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "nlos-capability"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "nlos-identity",
+ "nlos-types",
+ "rusqlite",
+ "sha2",
+]
+
+[[package]]
 name = "nlos-commit-coordinator"
 version = "0.1.0"
 dependencies = [

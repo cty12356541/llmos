@@ -115,10 +115,42 @@ pub struct VerifySemanticSignatureRequest {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct VerifiedSemanticSigner {
-    pub principal_id: PrincipalId,
-    pub control_domain_id: ControlDomainId,
-    pub identity_snapshot_id: IdentitySnapshotId,
-    pub snapshot_generation: Generation,
-    pub key_id: KeyId,
-    pub key_generation: Generation,
+    pub(crate) principal_id: PrincipalId,
+    pub(crate) control_domain_id: ControlDomainId,
+    pub(crate) identity_snapshot_id: IdentitySnapshotId,
+    pub(crate) snapshot_generation: Generation,
+    pub(crate) key_id: KeyId,
+    pub(crate) key_generation: Generation,
+}
+
+impl VerifiedSemanticSigner {
+    #[must_use]
+    pub const fn principal_id(self) -> PrincipalId {
+        self.principal_id
+    }
+
+    #[must_use]
+    pub const fn control_domain_id(self) -> ControlDomainId {
+        self.control_domain_id
+    }
+
+    #[must_use]
+    pub const fn identity_snapshot_id(self) -> IdentitySnapshotId {
+        self.identity_snapshot_id
+    }
+
+    #[must_use]
+    pub const fn snapshot_generation(self) -> Generation {
+        self.snapshot_generation
+    }
+
+    #[must_use]
+    pub const fn key_id(self) -> KeyId {
+        self.key_id
+    }
+
+    #[must_use]
+    pub const fn key_generation(self) -> Generation {
+        self.key_generation
+    }
 }

@@ -115,8 +115,11 @@ fn semantic_verification_checks_signature_binding_and_validity() {
     let event_id = SemanticEventId::from_bytes([0x55; 32]);
     let request = verify_request(&key, binding, event_id, 2_000);
     let verified = authority.verify_semantic_signature(request).unwrap();
-    assert_eq!(verified.principal_id, binding.principal_id);
-    assert_eq!(verified.identity_snapshot_id, binding.identity_snapshot_id);
+    assert_eq!(verified.principal_id(), binding.principal_id);
+    assert_eq!(
+        verified.identity_snapshot_id(),
+        binding.identity_snapshot_id
+    );
 
     let mut wrong_issuer = request;
     wrong_issuer.issuer = PrincipalId::from_bytes([0xee; 16]);
