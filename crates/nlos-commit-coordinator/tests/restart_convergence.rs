@@ -179,6 +179,14 @@ fn execute_sql(path: &PathBuf, sql: &str) {
         .unwrap();
 }
 
+fn hex(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    bytes.iter().fold(String::new(), |mut output, byte| {
+        write!(output, "{byte:02x}").unwrap();
+        output
+    })
+}
+
 #[test]
 #[allow(clippy::too_many_lines)]
 fn every_cross_authority_prefix_converges_after_restart() {
@@ -558,4 +566,59 @@ fn authority_write_failures_remain_partial_and_converge_after_repair() {
         })
         .unwrap();
     assert_eq!(receipt.task_receipt.new_head_commit_seq, 1);
+}
+
+#[test]
+fn best_effort_scan_isolates_one_bad_plan_and_reports_typed_failure() {
+    let databases = TestAuthorities::new("best-effort-isolation");
+    let failing = prepare_single(&databases, 0x91);
+    let healthy = prepare_single(&databases, 0xa1);
+    execute_sql(
+        &databases.task_path,
+        &format!(
+            "CREATE TRIGGER fail_one_plan_finalize
+             BEFORE UPDATE ON task_artifact_commit_plans
+             WHEN NEW.plan_state = 3 AND NEW.plan_id = X'{}'
+             BEGIN SELECT RAISE(ABORT, 'injected per-plan failure'); END;",
+            hex(failing.plan.as_bytes())
+        ),
+    );
+
+    {
+        let (tasks, artifacts) = databases.open();
+        let report = ArtifactCommitCoordinator::new(&tasks, &artifacts)
+            .converge_pending_best_effort(16, 6_000)
+            .unwrap();
+        assert_eq!(report.inspected, 2);
+        assert_eq!(report.finalized.len(), 1);
+        assert_eq!(report.failures.len(), 1);
+        assert_eq!(report.failures[0].plan_id, failing.plan);
+        assert!(matches!(
+            report.failures[0].error,
+            CoordinatorError::Task(_)
+        ));
+        assert_eq!(
+            tasks
+                .inspect_artifact_commit_plan(failing.plan)
+                .unwrap()
+                .state,
+            ArtifactCommitPlanState::Ready
+        );
+        assert_eq!(
+            tasks
+                .inspect_artifact_commit_plan(healthy.plan)
+                .unwrap()
+                .state,
+            ArtifactCommitPlanState::Finalized
+        );
+    }
+
+    execute_sql(&databases.task_path, "DROP TRIGGER fail_one_plan_finalize;");
+    let (tasks, artifacts) = databases.open();
+    let repaired = ArtifactCommitCoordinator::new(&tasks, &artifacts)
+        .converge_pending_best_effort(16, 7_000)
+        .unwrap();
+    assert_eq!(repaired.inspected, 1);
+    assert_eq!(repaired.finalized.len(), 1);
+    assert!(repaired.failures.is_empty());
 }

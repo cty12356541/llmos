@@ -45,6 +45,22 @@ pub enum CoordinatorError {
     Artifact(ArtifactError),
 }
 
+/// One plan that could not converge during a best-effort pending scan.
+#[derive(Debug)]
+pub struct PendingConvergenceFailure {
+    pub plan_id: ArtifactCommitPlanId,
+    pub error: CoordinatorError,
+}
+
+/// Bounded pending-scan result. A failed plan does not prevent later plans
+/// in the same snapshot from converging.
+#[derive(Debug)]
+pub struct PendingConvergenceReport {
+    pub inspected: usize,
+    pub finalized: Vec<ArtifactTaskCommitReceipt>,
+    pub failures: Vec<PendingConvergenceFailure>,
+}
+
 impl fmt::Display for CoordinatorError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -223,6 +239,40 @@ impl<'a> ArtifactCommitCoordinator<'a> {
                 })
             })
             .collect()
+    }
+
+    /// Scans a bounded snapshot and attempts every plan independently.
+    /// Per-plan authority failures are returned in the report so one bad
+    /// plan cannot starve unrelated commits.
+    ///
+    /// # Errors
+    ///
+    /// Returns only when the `TaskAuthority` scan itself fails. Individual
+    /// convergence failures remain typed in `report.failures`.
+    pub fn converge_pending_best_effort(
+        &self,
+        limit: usize,
+        now_ms: i64,
+    ) -> Result<PendingConvergenceReport, CoordinatorError> {
+        let plans = self.tasks.list_incomplete_artifact_commit_plans(limit)?;
+        let mut report = PendingConvergenceReport {
+            inspected: plans.len(),
+            finalized: Vec::new(),
+            failures: Vec::new(),
+        };
+        for plan in plans {
+            match self.converge(ConvergeArtifactCommitRequest {
+                plan_id: plan.plan_id,
+                now_ms,
+            }) {
+                Ok(receipt) => report.finalized.push(receipt),
+                Err(error) => report.failures.push(PendingConvergenceFailure {
+                    plan_id: plan.plan_id,
+                    error,
+                }),
+            }
+        }
+        Ok(report)
     }
 }
 
