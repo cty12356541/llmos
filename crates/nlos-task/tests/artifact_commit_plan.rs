@@ -5,11 +5,11 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use nlos_task::{
-    ArtifactCommitPlanDecision, ArtifactCommitPlanState, ArtifactPublicationExpectation,
-    AttemptSpec, NestedArtifactPublicationReceipt, PermitDecision, PermitRequest,
-    PlanArtifactCommitRequest, RecordArtifactPublicationsRequest, SnapshotBundle,
-    SqliteTaskAuthority, TaskSpec, TaskStoreError, artifact_publication_plan_root,
-    empty_effect_history_root,
+    ArtifactCommitPlanDecision, ArtifactCommitPlanState, ArtifactPublicationAuthorizationDecision,
+    ArtifactPublicationExpectation, AttemptSpec, LogicalEffectDescriptor,
+    NestedArtifactPublicationReceipt, PermitDecision, PermitRequest, PlanArtifactCommitRequest,
+    PlannedEffect, RecordArtifactPublicationsRequest, SnapshotBundle, SqliteTaskAuthority,
+    TaskSpec, TaskStoreError, artifact_publication_plan_root, empty_effect_history_root,
 };
 use nlos_types::{
     ArtifactId, CancellationScopeId, Generation, IdempotencyKey, ReceiptId, TaskAttemptId, TaskId,
@@ -75,6 +75,14 @@ fn register_and_issue(
     authority: &SqliteTaskAuthority,
     expectations: &[ArtifactPublicationExpectation],
 ) -> (AttemptSpec, nlos_task::PermitRecord) {
+    register_and_issue_with_effects(authority, expectations, Vec::new())
+}
+
+fn register_and_issue_with_effects(
+    authority: &SqliteTaskAuthority,
+    expectations: &[ArtifactPublicationExpectation],
+    planned_effects: Vec<PlannedEffect>,
+) -> (AttemptSpec, nlos_task::PermitRecord) {
     let task_id = TaskId::from_bytes([0x01; 16]);
     authority
         .register_task(TaskSpec {
@@ -109,7 +117,7 @@ fn register_and_issue(
             attempt_id: attempt.attempt_id,
             attempt_generation: attempt.attempt_generation,
             write_set_root,
-            planned_effects: Vec::new(),
+            planned_effects,
             idempotency_key: IdempotencyKey::from_bytes([0x07; 16]),
             valid_until_ms: 20_000,
             requested_at_ms: 3_000,
@@ -159,6 +167,116 @@ fn publication(
         new_head_digest: expectation.digest,
         created_at_ms: 5_000 + i64::from(seed),
     }
+}
+
+fn authorize(authority: &SqliteTaskAuthority, plan: &nlos_task::ArtifactCommitPlanRecord) {
+    assert!(matches!(
+        authority
+            .authorize_artifact_publication(plan.plan_id, 4_500)
+            .expect("authorize publication"),
+        ArtifactPublicationAuthorizationDecision::Authorized(_)
+    ));
+}
+
+#[test]
+fn authorization_is_durable_replayable_and_required_before_receipts() {
+    let database = TestDatabase::new("authorization");
+    let expectations = vec![expectation(1, 1)];
+    let (attempt, permit, plan) = {
+        let authority = database.open();
+        let (attempt, permit) = register_and_issue(&authority, &expectations);
+        let plan = authority
+            .plan_artifact_commit(plan_request(attempt, &permit, expectations.clone()))
+            .unwrap()
+            .record()
+            .clone();
+        let receipt = publication(expectation(1, 1), &plan, 1);
+        assert!(matches!(
+            authority.record_artifact_publications(RecordArtifactPublicationsRequest {
+                plan_id: plan.plan_id,
+                receipts: vec![receipt],
+                observed_at_ms: 4_250,
+            }),
+            Err(TaskStoreError::ArtifactPublicationConflict { .. })
+        ));
+        let decision = authority
+            .authorize_artifact_publication(plan.plan_id, 4_500)
+            .unwrap();
+        assert!(matches!(
+            decision,
+            ArtifactPublicationAuthorizationDecision::Authorized(_)
+        ));
+        assert_eq!(decision.record().state, ArtifactCommitPlanState::Publishing);
+        let progress = authority
+            .inspect_artifact_commit_progress(plan.plan_id)
+            .unwrap();
+        assert!(progress.publications.is_empty());
+        (attempt, permit, plan)
+    };
+
+    let reopened = database.open();
+    let replay = reopened
+        .authorize_artifact_publication(plan.plan_id, 9_000)
+        .unwrap();
+    assert!(matches!(
+        replay,
+        ArtifactPublicationAuthorizationDecision::Replayed(_)
+    ));
+    assert_eq!(replay.record().updated_at_ms, 4_500);
+    assert_eq!(
+        reopened
+            .inspect_task(attempt.task_id)
+            .unwrap()
+            .head_commit_seq,
+        0
+    );
+    assert_eq!(
+        reopened
+            .inspect_permit(attempt.task_id, permit.permit_id)
+            .unwrap()
+            .state,
+        nlos_task::PermitState::Issued
+    );
+}
+
+#[test]
+fn authorization_rejects_permits_with_effect_slots() {
+    let database = TestDatabase::new("authorization-effect-rejection");
+    let authority = database.open();
+    let expectations = vec![expectation(1, 1)];
+    let effect = PlannedEffect {
+        descriptor: LogicalEffectDescriptor {
+            task_id: TaskId::from_bytes([0x01; 16]),
+            task_generation: Generation::INITIAL,
+            intent_spec_id: [0x31; 32],
+            stable_action_slot: 1,
+            target_authority_object_id: [0x32; 32],
+            effect_class: 1,
+            idempotency_scope: 1,
+        },
+        required: true,
+        required_condition_digest: None,
+        success_criteria_digest: [0x33; 32],
+        action_proposal_digest: [0x34; 32],
+    };
+    let (attempt, permit) =
+        register_and_issue_with_effects(&authority, &expectations, vec![effect]);
+    let plan = authority
+        .plan_artifact_commit(plan_request(attempt, &permit, expectations))
+        .unwrap()
+        .record()
+        .clone();
+    assert!(matches!(
+        authority.authorize_artifact_publication(plan.plan_id, 4_500),
+        Err(TaskStoreError::InvalidArtifactPublicationPlan { .. })
+    ));
+    assert_eq!(
+        authority
+            .inspect_artifact_commit_plan(plan.plan_id)
+            .unwrap()
+            .state,
+        ArtifactCommitPlanState::Planned
+    );
 }
 
 #[test]
@@ -373,6 +491,7 @@ fn partial_publications_survive_restart_and_complete_to_ready() {
             .unwrap()
             .record()
             .clone();
+        authorize(&authority, &plan);
         let first_receipt = publication(expectation(1, 1), &plan, 1);
         let progress = authority
             .record_artifact_publications(RecordArtifactPublicationsRequest {
@@ -446,6 +565,7 @@ fn conflicting_receipt_batch_rolls_back_without_partial_consumption() {
         .unwrap()
         .record()
         .clone();
+    authorize(&authority, &plan);
     let valid = publication(expectation(1, 1), &plan, 1);
     let mut invalid = publication(expectation(2, 1), &plan, 2);
     invalid.write_set_root = [0xff; 32];
@@ -461,7 +581,7 @@ fn conflicting_receipt_batch_rolls_back_without_partial_consumption() {
     let unchanged = authority
         .inspect_artifact_commit_progress(plan.plan_id)
         .unwrap();
-    assert_eq!(unchanged.plan.state, ArtifactCommitPlanState::Planned);
+    assert_eq!(unchanged.plan.state, ArtifactCommitPlanState::Publishing);
     assert!(unchanged.publications.is_empty());
 }
 
@@ -476,6 +596,7 @@ fn nested_publication_receipts_are_ddl_immutable() {
         .unwrap()
         .record()
         .clone();
+    authorize(&authority, &plan);
     let receipt = publication(expectation(1, 1), &plan, 1);
     authority
         .record_artifact_publications(RecordArtifactPublicationsRequest {

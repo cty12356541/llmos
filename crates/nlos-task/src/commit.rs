@@ -164,6 +164,23 @@ pub enum ArtifactCommitPlanDecision {
     Replayed(Box<ArtifactCommitPlanRecord>),
 }
 
+/// Idempotent decision that fences an immutable plan immediately before
+/// the first canonical Artifact publication.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ArtifactPublicationAuthorizationDecision {
+    Authorized(Box<ArtifactCommitPlanRecord>),
+    Replayed(Box<ArtifactCommitPlanRecord>),
+}
+
+impl ArtifactPublicationAuthorizationDecision {
+    #[must_use]
+    pub fn record(&self) -> &ArtifactCommitPlanRecord {
+        match self {
+            Self::Authorized(record) | Self::Replayed(record) => record,
+        }
+    }
+}
+
 impl ArtifactCommitPlanDecision {
     #[must_use]
     pub fn record(&self) -> &ArtifactCommitPlanRecord {
@@ -345,6 +362,89 @@ impl SqliteTaskAuthority {
         load_plan_optional(&*connection, plan_id)?.ok_or(TaskStoreError::ArtifactCommitPlanNotFound)
     }
 
+    /// Revalidates every live Task-side fence and authorizes canonical
+    /// Artifact publication by durably moving `Planned` to `Publishing`.
+    /// Exact retries after that transition replay the durable decision.
+    ///
+    /// The current cross-authority slice is deliberately artifact-only:
+    /// any declared effect slot rejects authorization fail-closed.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed plan/permit/head/membership validation error or a
+    /// storage error without authorizing publication.
+    pub fn authorize_artifact_publication(
+        &self,
+        plan_id: ArtifactCommitPlanId,
+        authorized_at_ms: i64,
+    ) -> Result<ArtifactPublicationAuthorizationDecision, TaskStoreError> {
+        let mut connection = self.lock_connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut plan = load_plan_optional(&transaction, plan_id)?
+            .ok_or(TaskStoreError::ArtifactCommitPlanNotFound)?;
+        if plan.state != ArtifactCommitPlanState::Planned {
+            transaction.commit()?;
+            return Ok(ArtifactPublicationAuthorizationDecision::Replayed(
+                Box::new(plan),
+            ));
+        }
+
+        let task = load_task(&transaction, plan.task_id)?;
+        let permit = load_permit_by_id(&transaction, plan.task_id, plan.permit_id)?;
+        let attempt = load_attempt(&transaction, plan.task_id, plan.attempt_id)?;
+        if attempt.attempt_generation != plan.attempt_generation {
+            return Err(TaskStoreError::InvalidGeneration);
+        }
+        if permit.attempt_id != plan.attempt_id
+            || permit.attempt_generation != plan.attempt_generation
+        {
+            return Err(TaskStoreError::NotPermitHolder);
+        }
+        if permit.state != PermitState::Issued {
+            return Err(TaskStoreError::PermitNotIssued);
+        }
+        if permit.write_set_root != plan.write_set_root {
+            return Err(TaskStoreError::InvalidArtifactPublicationPlan {
+                reason: "durable plan root differs from permit write_set_root",
+            });
+        }
+        if task.record.head_commit_seq != permit.expected_head_commit_seq
+            || task.record.head_effect_history_root != permit.expected_effect_history_root
+            || task.record.retry_fence_epoch != permit.expected_retry_fence_epoch
+        {
+            return Err(TaskStoreError::StaleTaskHead);
+        }
+        crate::group::validate_commit_binding(
+            &transaction,
+            attempt.attempt_id,
+            permit.group_binding,
+        )?;
+        let effect_count: i64 = transaction.query_row(
+            "SELECT COUNT(*) FROM effect_slots WHERE permit_id = ?1",
+            [plan.permit_id.as_bytes().as_slice()],
+            |row| row.get(0),
+        )?;
+        if effect_count != 0 {
+            return Err(TaskStoreError::InvalidArtifactPublicationPlan {
+                reason: "Artifact publication authorization requires an artifact-only permit",
+            });
+        }
+
+        update_plan_state(
+            &transaction,
+            plan.plan_id,
+            ArtifactCommitPlanState::Planned,
+            ArtifactCommitPlanState::Publishing,
+            authorized_at_ms,
+        )?;
+        plan.state = ArtifactCommitPlanState::Publishing;
+        plan.updated_at_ms = authorized_at_ms;
+        transaction.commit()?;
+        Ok(ArtifactPublicationAuthorizationDecision::Authorized(
+            Box::new(plan),
+        ))
+    }
+
     /// Consumes Artifact publication receipts idempotently. A partial set
     /// advances the plan to `Publishing`; a complete exact set advances it
     /// to `Ready`. Neither state closes the permit or advances `TaskHead`.
@@ -367,10 +467,18 @@ impl SqliteTaskAuthority {
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut plan = load_plan_optional(&transaction, request.plan_id)?
             .ok_or(TaskStoreError::ArtifactCommitPlanNotFound)?;
-        if plan.state == ArtifactCommitPlanState::Finalized {
-            return Err(TaskStoreError::ArtifactPublicationConflict {
-                reason: "finalized plan cannot consume publication receipts",
-            });
+        match plan.state {
+            ArtifactCommitPlanState::Planned => {
+                return Err(TaskStoreError::ArtifactPublicationConflict {
+                    reason: "Artifact publication was not authorized by TaskAuthority",
+                });
+            }
+            ArtifactCommitPlanState::Publishing | ArtifactCommitPlanState::Ready => {}
+            ArtifactCommitPlanState::Finalized => {
+                return Err(TaskStoreError::ArtifactPublicationConflict {
+                    reason: "finalized plan cannot consume publication receipts",
+                });
+            }
         }
 
         let mut inserted_any = false;
@@ -486,7 +594,11 @@ fn validate_progress(
         })?;
     }
     let expected_state = if publications.is_empty() {
-        ArtifactCommitPlanState::Planned
+        if plan.state == ArtifactCommitPlanState::Publishing {
+            ArtifactCommitPlanState::Publishing
+        } else {
+            ArtifactCommitPlanState::Planned
+        }
     } else if publications.len() == plan.expectations.len() {
         ArtifactCommitPlanState::Ready
     } else {
@@ -498,6 +610,20 @@ fn validate_progress(
         ));
     }
     Ok(())
+}
+
+pub(crate) fn group_has_publication_in_flight(
+    source: &impl SqlRead,
+    group_id: crate::TaskGroupId,
+) -> Result<bool, TaskStoreError> {
+    let mut statement = source.prepare_statement(
+        "SELECT COUNT(*)
+         FROM task_artifact_commit_plans AS plans
+         JOIN commit_permits AS permits ON permits.permit_id = plans.permit_id
+         WHERE permits.group_id = ?1 AND plans.plan_state IN (1, 2)",
+    )?;
+    let count: i64 = statement.query_row([group_id.as_bytes().as_slice()], |row| row.get(0))?;
+    Ok(count != 0)
 }
 
 fn update_plan_state(

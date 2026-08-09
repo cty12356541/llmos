@@ -43,8 +43,9 @@
 //! fields), Namespace delegation, TaskPlan/TaskNode materialization,
 //! Process/AgentInstance binding, `IsolationDomain`, gateway/driver
 //! integration, signatures, and any IPC surface. Artifact publication
-//! authorization and Task finalize remain outside the schema-v7 receipt
-//! consumption slice. Post-permit
+//! authorization is now a durable `TaskAuthority` fence for artifact-only
+//! permits; `ArtifactAuthority` online verification and Task finalize remain
+//! outside the schema-v7 slice. Post-permit
 //! `EFFECTING`/`FINALIZING`/`UNCERTAIN`/`RECONCILING` from the §25.1
 //! attempt state machine are represented as permit/slot states rather
 //! than attempt states here.
@@ -58,9 +59,9 @@ mod store;
 
 pub use commit::{
     ArtifactCommitPlanDecision, ArtifactCommitPlanId, ArtifactCommitPlanRecord,
-    ArtifactCommitPlanState, ArtifactCommitProgress, ArtifactPublicationExpectation,
-    NestedArtifactPublicationReceipt, PlanArtifactCommitRequest, RecordArtifactPublicationsRequest,
-    artifact_publication_plan_root,
+    ArtifactCommitPlanState, ArtifactCommitProgress, ArtifactPublicationAuthorizationDecision,
+    ArtifactPublicationExpectation, NestedArtifactPublicationReceipt, PlanArtifactCommitRequest,
+    RecordArtifactPublicationsRequest, artifact_publication_plan_root,
 };
 pub use effect::{
     DispatchRequest, EffectPermitDecision, EffectPermitId, EffectReceipt, EffectReceiptDecision,
@@ -142,6 +143,9 @@ pub enum TaskStoreError {
         /// Static explanation of the rejected binding.
         reason: &'static str,
     },
+    /// Membership mutation is frozen while a group-bound Artifact plan is
+    /// authorized but not yet atomically finalized.
+    GroupPublicationInFlight,
     /// The caller presented a stale generation for an existing object.
     InvalidGeneration,
     /// The attempt is not in a state that allows the requested transition.
@@ -332,6 +336,9 @@ impl fmt::Display for TaskStoreError {
             }
             Self::ArtifactPublicationConflict { reason } => {
                 write!(formatter, "artifact publication receipt conflict: {reason}")
+            }
+            Self::GroupPublicationInFlight => {
+                formatter.write_str("group membership is frozen by in-flight Artifact publication")
             }
             Self::InvalidGeneration => formatter.write_str("stale generation for durable object"),
             Self::InvalidAttemptState { state } => {

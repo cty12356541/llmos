@@ -1575,6 +1575,9 @@ fn admit_member(
     admission: &MemberAdmission,
     now_ms: i64,
 ) -> Result<(u64, [u8; 32], ReceiptId), TaskStoreError> {
+    if crate::commit::group_has_publication_in_flight(transaction, parent.record.group_id)? {
+        return Err(TaskStoreError::GroupPublicationInFlight);
+    }
     let MemberAdmission {
         member_type,
         member_id,
@@ -1896,6 +1899,9 @@ impl crate::SqliteTaskAuthority {
             GroupState::Open => {}
             GroupState::Sealed => return Err(TaskStoreError::GroupSealed),
             state => return Err(TaskStoreError::GroupNotOpen { state }),
+        }
+        if crate::commit::group_has_publication_in_flight(&transaction, request.group_id)? {
+            return Err(TaskStoreError::GroupPublicationInFlight);
         }
         let member = load_member_optional(
             &transaction,

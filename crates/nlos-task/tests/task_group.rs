@@ -13,19 +13,21 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use nlos_task::{
-    AttemptGroupRegistration, AttemptRegistrationDecision, AttemptSpec, AttemptState,
-    CancelRequest, ClosePermitDecision, ClosePermitRequest, CompletionMode, EffectPermitDecision,
-    EffectPermitRequest, FailureMode, FinalizeDecision, FinalizeRequestV3, GroupBinding,
-    GroupCancelDecision, GroupCancelRequest, GroupMemberRef, GroupMemberType, GroupReceiptKind,
-    GroupRegistrationDecision, GroupSpec, GroupState, IssuedPermit, LogicalEffectDescriptor,
-    MembershipState, Outcome, OutcomeRequest, PermitClosureOutcome, PermitDecision, PermitRecord,
-    PermitRequest, PermitState, PlannedEffect, ReceiptOutcome, RemovalDecision,
-    RemoveMemberRequest, SnapshotBundle, SqliteTaskAuthority, TaskGroupId, TaskSpec, TaskState,
-    TaskStoreError, empty_effect_history_root, empty_group_membership_root, membership_root_of,
+    ArtifactPublicationExpectation, AttemptGroupRegistration, AttemptRegistrationDecision,
+    AttemptSpec, AttemptState, CancelRequest, ClosePermitDecision, ClosePermitRequest,
+    CompletionMode, EffectPermitDecision, EffectPermitRequest, FailureMode, FinalizeDecision,
+    FinalizeRequestV3, GroupBinding, GroupCancelDecision, GroupCancelRequest, GroupMemberRef,
+    GroupMemberType, GroupReceiptKind, GroupRegistrationDecision, GroupSpec, GroupState,
+    IssuedPermit, LogicalEffectDescriptor, MembershipState, Outcome, OutcomeRequest,
+    PermitClosureOutcome, PermitDecision, PermitRecord, PermitRequest, PermitState,
+    PlanArtifactCommitRequest, PlannedEffect, ReceiptOutcome, RemovalDecision, RemoveMemberRequest,
+    SnapshotBundle, SqliteTaskAuthority, TaskGroupId, TaskSpec, TaskState, TaskStoreError,
+    artifact_publication_plan_root, empty_effect_history_root, empty_group_membership_root,
+    membership_root_of,
 };
 use nlos_types::{
-    CancellationScopeId, CommitPermitId, Generation, IdempotencyKey, TaskAttemptId, TaskId,
-    TaskSnapshotId,
+    ArtifactId, CancellationScopeId, CommitPermitId, Generation, IdempotencyKey, TaskAttemptId,
+    TaskId, TaskSnapshotId,
 };
 
 static NEXT_DATABASE: AtomicU64 = AtomicU64::new(0);
@@ -203,6 +205,84 @@ fn issued_permit(decision: PermitDecision) -> PermitRecord {
         PermitDecision::Issued(permit) => *permit,
         other => panic!("expected Issued, got {other:?}"),
     }
+}
+
+#[test]
+fn authorized_artifact_publication_freezes_group_membership() {
+    let database = TestDatabase::new("artifact-publication-freeze");
+    let authority = database.open();
+    register_task(&authority);
+    authority
+        .register_group(root_group_spec(
+            0x01,
+            CompletionMode::All,
+            FailureMode::CollectAll,
+            4,
+            1,
+        ))
+        .expect("register group");
+    let attempt_a = attempt_spec(0x21, initial_snapshot());
+    admit_attempt(&authority, &attempt_a, group_id(0x01));
+    let expectation = ArtifactPublicationExpectation {
+        staging_id: bytes(0x31),
+        artifact_id: ArtifactId::from_bytes(bytes(0x32)),
+        target_revision: 1,
+        digest: [0x33; 32],
+        size_bytes: 64,
+    };
+    let write_set_root = artifact_publication_plan_root(&[expectation]).unwrap();
+    let permit = issued_permit(
+        authority
+            .request_commit_permit(PermitRequest {
+                task_id: attempt_a.task_id,
+                attempt_id: attempt_a.attempt_id,
+                attempt_generation: attempt_a.attempt_generation,
+                write_set_root,
+                planned_effects: Vec::new(),
+                idempotency_key: IdempotencyKey::from_bytes(bytes(0x34)),
+                valid_until_ms: 20_000,
+                requested_at_ms: 3_000,
+            })
+            .unwrap(),
+    );
+    let plan = authority
+        .plan_artifact_commit(PlanArtifactCommitRequest {
+            task_id: attempt_a.task_id,
+            attempt_id: attempt_a.attempt_id,
+            attempt_generation: attempt_a.attempt_generation,
+            permit_id: permit.permit_id,
+            expectations: vec![expectation],
+            idempotency_key: IdempotencyKey::from_bytes(bytes(0x35)),
+            planned_at_ms: 4_000,
+        })
+        .unwrap()
+        .record()
+        .clone();
+    authority
+        .authorize_artifact_publication(plan.plan_id, 4_500)
+        .unwrap();
+
+    assert!(matches!(
+        authority.remove_member(RemoveMemberRequest {
+            group_id: group_id(0x01),
+            member: GroupMemberRef {
+                member_type: GroupMemberType::TaskAttempt,
+                member_id: attempt_a.attempt_id.into_bytes(),
+                member_generation: attempt_a.attempt_generation,
+            },
+            removed_at_ms: 5_000,
+        }),
+        Err(TaskStoreError::GroupPublicationInFlight)
+    ));
+    let attempt_b = attempt_spec(0x22, initial_snapshot());
+    assert!(matches!(
+        authority.register_attempt_in_group(attempt_b, binding_of(&authority, group_id(0x01))),
+        Err(TaskStoreError::GroupPublicationInFlight)
+    ));
+    assert_eq!(
+        authority.list_group_members(group_id(0x01)).unwrap().len(),
+        1
+    );
 }
 
 /// Drives an attempt through a no-effect permit to `Committed`; returns
