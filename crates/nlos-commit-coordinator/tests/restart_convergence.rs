@@ -1,7 +1,10 @@
 use std::fs;
+use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
+use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use nlos_artifact::{
@@ -13,10 +16,11 @@ use nlos_commit_coordinator::{
     RecoveryFailureAuthority, RecoveryWorkerConfig, RecoveryWorkerState,
     TaskAuthorityCommitRecoveryWorker,
 };
+use nlos_store_fault::{FaultCode, FaultMode};
 use nlos_task::{
-    ArtifactCommitPlanState, ArtifactPublicationExpectation, AttemptSpec, PermitDecision,
-    PermitRequest, PlanArtifactCommitRequest, SnapshotBundle, SqliteTaskAuthority, TaskSpec,
-    artifact_publication_plan_root, empty_effect_history_root,
+    ArtifactCommitPlanId, ArtifactCommitPlanState, ArtifactPublicationExpectation, AttemptSpec,
+    PermitDecision, PermitRequest, PlanArtifactCommitRequest, SnapshotBundle, SqliteTaskAuthority,
+    TaskSpec, artifact_publication_plan_root, empty_effect_history_root,
 };
 use nlos_types::{
     ArtifactId, CancellationScopeId, CommitPermitId, Generation, IdempotencyKey, TaskAttemptId,
@@ -24,6 +28,22 @@ use nlos_types::{
 };
 
 static NEXT_DATABASE: AtomicU64 = AtomicU64::new(0);
+static FAULT_LOCK: Mutex<()> = Mutex::new(());
+const VFS_NAME: &str = "nlos-commit-coordinator-fault";
+
+fn fault_lock() -> MutexGuard<'static, ()> {
+    FAULT_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+struct FaultDisarmGuard;
+
+impl Drop for FaultDisarmGuard {
+    fn drop(&mut self) {
+        nlos_store_fault::disarm();
+    }
+}
 
 struct TestAuthorities {
     root: PathBuf,
@@ -50,6 +70,22 @@ impl TestAuthorities {
         (
             SqliteTaskAuthority::open(&self.task_path).unwrap(),
             ArtifactStore::open(&self.artifact_root).unwrap(),
+        )
+    }
+
+    fn open_task_faulted(&self) -> (SqliteTaskAuthority, ArtifactStore) {
+        nlos_store_fault::register(VFS_NAME).expect("register coordinator fault VFS");
+        (
+            SqliteTaskAuthority::open_with_vfs(&self.task_path, Some(VFS_NAME)).unwrap(),
+            ArtifactStore::open(&self.artifact_root).unwrap(),
+        )
+    }
+
+    fn open_artifact_faulted(&self) -> (SqliteTaskAuthority, ArtifactStore) {
+        nlos_store_fault::register(VFS_NAME).expect("register coordinator fault VFS");
+        (
+            SqliteTaskAuthority::open(&self.task_path).unwrap(),
+            ArtifactStore::open_with_vfs(&self.artifact_root, Some(VFS_NAME)).unwrap(),
         )
     }
 }
@@ -196,6 +232,97 @@ fn wait_until(mut predicate: impl FnMut() -> bool) {
     while !predicate() {
         assert!(Instant::now() < deadline, "condition did not become true");
         std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+fn spawn_published_prefix_child(
+    databases: &TestAuthorities,
+    plan_id: ArtifactCommitPlanId,
+) -> Child {
+    Command::new(std::env::current_exe().expect("current test executable"))
+        .args(["--exact", "crash_child_helper", "--nocapture"])
+        .env("NLOS_COORDINATOR_CRASH_TASK_PATH", &databases.task_path)
+        .env(
+            "NLOS_COORDINATOR_CRASH_ARTIFACT_ROOT",
+            &databases.artifact_root,
+        )
+        .env("NLOS_COORDINATOR_CRASH_PLAN", hex(plan_id.as_bytes()))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("spawn coordinator crash child")
+}
+
+fn await_ready(child: &mut Child) {
+    let stdout = child.stdout.take().expect("piped child stdout");
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let marker = BufReader::new(stdout)
+            .lines()
+            .find_map(|line| match line {
+                Ok(line) if line.starts_with("READY") => Some(Ok(())),
+                Ok(_) => None,
+                Err(error) => Some(Err(error.to_string())),
+            })
+            .unwrap_or_else(|| Err("child exited without READY".to_string()));
+        let _ = sender.send(marker);
+    });
+    match receiver.recv_timeout(Duration::from_mins(1)) {
+        Ok(Ok(())) => {}
+        other => {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("coordinator child did not report READY: {other:?}");
+        }
+    }
+}
+
+fn kill_and_reap(child: &mut Child) {
+    child.kill().expect("force-terminate coordinator child");
+    let status = child.wait().expect("wait for coordinator child");
+    assert!(!status.success(), "killed child exited successfully");
+}
+
+fn decode_plan_id(encoded: &str) -> ArtifactCommitPlanId {
+    assert_eq!(encoded.len(), 32, "plan id must be 16 bytes of hex");
+    let mut bytes = [0_u8; 16];
+    for (index, byte) in bytes.iter_mut().enumerate() {
+        *byte =
+            u8::from_str_radix(&encoded[index * 2..index * 2 + 2], 16).expect("valid plan id hex");
+    }
+    ArtifactCommitPlanId::from_bytes(bytes)
+}
+
+#[test]
+fn crash_child_helper() {
+    let (Ok(task_path), Ok(artifact_root), Ok(plan)) = (
+        std::env::var("NLOS_COORDINATOR_CRASH_TASK_PATH"),
+        std::env::var("NLOS_COORDINATOR_CRASH_ARTIFACT_ROOT"),
+        std::env::var("NLOS_COORDINATOR_CRASH_PLAN"),
+    ) else {
+        return;
+    };
+    let tasks = SqliteTaskAuthority::open(task_path).expect("open child TaskAuthority");
+    let artifacts = ArtifactStore::open(artifact_root).expect("open child ArtifactAuthority");
+    let progress = tasks
+        .inspect_artifact_commit_progress(decode_plan_id(&plan))
+        .expect("inspect child plan");
+    assert_eq!(progress.plan.state, ArtifactCommitPlanState::Publishing);
+    let expectation = progress.plan.expectations.first().expect("one expectation");
+    artifacts
+        .publish_staged_revision(PublishStagedRevisionRequest {
+            staging_id: nlos_artifact::StagingId::from_bytes(expectation.staging_id),
+            task_id: progress.plan.task_id,
+            permit_id: progress.plan.permit_id,
+            write_set_root: ContentDigest::from_bytes(progress.plan.write_set_root),
+            published_at_ms: 5_000,
+        })
+        .expect("publish durable child prefix");
+    println!("READY published-prefix");
+    std::io::stdout().flush().expect("flush child marker");
+    let _keepers = (tasks, artifacts);
+    loop {
+        std::thread::park();
     }
 }
 
@@ -410,6 +537,249 @@ fn every_cross_authority_prefix_converges_after_restart() {
             .unwrap()
             .is_empty()
     );
+}
+
+#[test]
+fn artifact_vfs_io_error_keeps_both_heads_at_the_committed_prefix() {
+    let _serialization = fault_lock();
+    nlos_store_fault::disarm();
+    let _fault_guard = FaultDisarmGuard;
+    let databases = TestAuthorities::new("artifact-vfs-ioerr");
+    let pending = prepare_single(&databases, 0x21);
+    {
+        let (tasks, artifacts) = databases.open();
+        assert_eq!(
+            ArtifactCommitCoordinator::new(&tasks, &artifacts)
+                .converge_one_step(ConvergeArtifactCommitRequest {
+                    plan_id: pending.plan,
+                    now_ms: 5_000,
+                })
+                .unwrap(),
+            ConvergeStep::Authorized
+        );
+    }
+
+    {
+        let (tasks, artifacts) = databases.open_artifact_faulted();
+        nlos_store_fault::arm(FaultMode::FailWritesAfter {
+            remaining: 0,
+            code: FaultCode::IoErr,
+        });
+        assert!(matches!(
+            ArtifactCommitCoordinator::new(&tasks, &artifacts).converge_one_step(
+                ConvergeArtifactCommitRequest {
+                    plan_id: pending.plan,
+                    now_ms: 5_500,
+                }
+            ),
+            Err(CoordinatorError::Artifact(_))
+        ));
+        assert!(nlos_store_fault::writes_observed() > 0);
+    }
+    nlos_store_fault::disarm();
+
+    {
+        let (tasks, artifacts) = databases.open();
+        assert!(artifacts.resolve_head(pending.artifact).unwrap().is_none());
+        let progress = tasks
+            .inspect_artifact_commit_progress(pending.plan)
+            .unwrap();
+        assert_eq!(progress.plan.state, ArtifactCommitPlanState::Publishing);
+        assert!(progress.publications.is_empty());
+        assert_eq!(tasks.inspect_task(pending.task).unwrap().head_commit_seq, 0);
+        let receipt = ArtifactCommitCoordinator::new(&tasks, &artifacts)
+            .converge(ConvergeArtifactCommitRequest {
+                plan_id: pending.plan,
+                now_ms: 6_000,
+            })
+            .unwrap();
+        assert_eq!(receipt.task_receipt.new_head_commit_seq, 1);
+    }
+}
+
+#[test]
+fn task_vfs_enospc_preserves_published_artifact_and_replays_receipt() {
+    let _serialization = fault_lock();
+    nlos_store_fault::disarm();
+    let _fault_guard = FaultDisarmGuard;
+    let databases = TestAuthorities::new("task-vfs-full");
+    let pending = prepare_single(&databases, 0x31);
+    {
+        let (tasks, artifacts) = databases.open();
+        ArtifactCommitCoordinator::new(&tasks, &artifacts)
+            .converge_one_step(ConvergeArtifactCommitRequest {
+                plan_id: pending.plan,
+                now_ms: 5_000,
+            })
+            .unwrap();
+    }
+
+    {
+        let (tasks, artifacts) = databases.open_task_faulted();
+        nlos_store_fault::arm(FaultMode::FailWritesAfter {
+            remaining: 0,
+            code: FaultCode::Full,
+        });
+        assert!(matches!(
+            ArtifactCommitCoordinator::new(&tasks, &artifacts).converge_one_step(
+                ConvergeArtifactCommitRequest {
+                    plan_id: pending.plan,
+                    now_ms: 5_500,
+                }
+            ),
+            Err(CoordinatorError::Task(_))
+        ));
+        assert!(nlos_store_fault::writes_observed() > 0);
+    }
+    nlos_store_fault::disarm();
+
+    {
+        let (tasks, artifacts) = databases.open();
+        assert_eq!(
+            artifacts
+                .resolve_head(pending.artifact)
+                .unwrap()
+                .expect("ArtifactAuthority committed prefix")
+                .revision,
+            1
+        );
+        let progress = tasks
+            .inspect_artifact_commit_progress(pending.plan)
+            .unwrap();
+        assert_eq!(progress.plan.state, ArtifactCommitPlanState::Publishing);
+        assert!(progress.publications.is_empty());
+        assert_eq!(tasks.inspect_task(pending.task).unwrap().head_commit_seq, 0);
+        ArtifactCommitCoordinator::new(&tasks, &artifacts)
+            .converge(ConvergeArtifactCommitRequest {
+                plan_id: pending.plan,
+                now_ms: 6_000,
+            })
+            .unwrap();
+        assert_eq!(
+            tasks
+                .inspect_artifact_commit_plan(pending.plan)
+                .unwrap()
+                .state,
+            ArtifactCommitPlanState::Finalized
+        );
+    }
+}
+
+#[test]
+fn task_vfs_power_loss_hides_phantom_nested_receipt_and_redoes_from_prefix() {
+    let _serialization = fault_lock();
+    nlos_store_fault::disarm();
+    let _fault_guard = FaultDisarmGuard;
+    let databases = TestAuthorities::new("task-vfs-power-loss");
+    let pending = prepare_single(&databases, 0x39);
+    {
+        let (tasks, artifacts) = databases.open();
+        ArtifactCommitCoordinator::new(&tasks, &artifacts)
+            .converge_one_step(ConvergeArtifactCommitRequest {
+                plan_id: pending.plan,
+                now_ms: 5_000,
+            })
+            .unwrap();
+    }
+
+    {
+        let (tasks, artifacts) = databases.open_task_faulted();
+        nlos_store_fault::arm(FaultMode::PowerLossAfter { remaining: 0 });
+        let phantom = ArtifactCommitCoordinator::new(&tasks, &artifacts)
+            .converge_one_step(ConvergeArtifactCommitRequest {
+                plan_id: pending.plan,
+                now_ms: 5_500,
+            })
+            .expect("fault model reports the dropped Task write as successful");
+        assert!(matches!(
+            phantom,
+            ConvergeStep::PublishedOne {
+                state_after: ArtifactCommitPlanState::Ready,
+                ..
+            }
+        ));
+        assert!(nlos_store_fault::writes_observed() > 0);
+    }
+    nlos_store_fault::disarm();
+
+    let (tasks, artifacts) = databases.open();
+    assert_eq!(
+        artifacts
+            .resolve_head(pending.artifact)
+            .unwrap()
+            .expect("Artifact publication is the durable prefix")
+            .revision,
+        1
+    );
+    let recovered = tasks
+        .inspect_artifact_commit_progress(pending.plan)
+        .unwrap();
+    assert_eq!(recovered.plan.state, ArtifactCommitPlanState::Publishing);
+    assert!(recovered.publications.is_empty());
+    assert_eq!(tasks.inspect_task(pending.task).unwrap().head_commit_seq, 0);
+    let receipt = ArtifactCommitCoordinator::new(&tasks, &artifacts)
+        .converge(ConvergeArtifactCommitRequest {
+            plan_id: pending.plan,
+            now_ms: 6_000,
+        })
+        .unwrap();
+    assert_eq!(receipt.task_receipt.new_head_commit_seq, 1);
+}
+
+#[test]
+fn worker_converges_after_process_crash_at_published_prefix() {
+    let databases = TestAuthorities::new("process-crash-published-prefix");
+    let pending = prepare_single(&databases, 0x41);
+    {
+        let (tasks, artifacts) = databases.open();
+        ArtifactCommitCoordinator::new(&tasks, &artifacts)
+            .converge_one_step(ConvergeArtifactCommitRequest {
+                plan_id: pending.plan,
+                now_ms: 5_000,
+            })
+            .unwrap();
+    }
+
+    let mut child = spawn_published_prefix_child(&databases, pending.plan);
+    await_ready(&mut child);
+    kill_and_reap(&mut child);
+
+    let (tasks, artifacts) = databases.open();
+    assert_eq!(
+        artifacts
+            .resolve_head(pending.artifact)
+            .unwrap()
+            .expect("child committed Artifact head")
+            .revision,
+        1
+    );
+    let prefix = tasks
+        .inspect_artifact_commit_progress(pending.plan)
+        .unwrap();
+    assert_eq!(prefix.plan.state, ArtifactCommitPlanState::Publishing);
+    assert!(prefix.publications.is_empty());
+    assert_eq!(tasks.inspect_task(pending.task).unwrap().head_commit_seq, 0);
+
+    let tasks = Arc::new(tasks);
+    let artifacts = Arc::new(artifacts);
+    let mut worker = TaskAuthorityCommitRecoveryWorker::start(
+        Arc::clone(&tasks),
+        artifacts,
+        RecoveryWorkerConfig {
+            scan_limit: 16,
+            poll_interval: Duration::from_secs(10),
+            max_backoff: Duration::from_secs(10),
+            failure_threshold: 3,
+        },
+    )
+    .unwrap();
+    wait_until(|| {
+        tasks
+            .inspect_artifact_commit_plan(pending.plan)
+            .is_ok_and(|plan| plan.state == ArtifactCommitPlanState::Finalized)
+    });
+    worker.stop();
+    assert_eq!(tasks.inspect_task(pending.task).unwrap().head_commit_seq, 1);
 }
 
 #[test]

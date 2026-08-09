@@ -11,6 +11,7 @@ nlos-artifact = { path = "../nlos-artifact" }
 nlos-task = { path = "../nlos-task" }
 
 [dev-dependencies]
+nlos-store-fault = { path = "../nlos-store-fault" }
 nlos-types = { path = "../nlos-types" }
 rusqlite.workspace = true
 
