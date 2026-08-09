@@ -30,24 +30,26 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, 
 use sha2::{Digest, Sha256};
 
 pub use canonical::{
-    decode_unsigned_assertion_event, encode_unsigned_assertion_event, semantic_event_id,
+    decode_unsigned_assertion_event, decode_unsigned_spec_event, encode_unsigned_assertion_event,
+    encode_unsigned_spec_event, semantic_event_id,
 };
 pub use model::{
-    AdmissionDurability, AdmissionReceipt, AppendAssertionRequest, AppendDecision, AssertionMode,
-    CriterionAggregation, CriterionEffect, EvaluatorKind, ImmutableEvaluatorReference,
-    ImmutableEvaluatorReferenceKind, IntentConstraints, IntentCriterion, IntentCriticality,
-    IntentSettlement, IntentSpecBody, LocalProcessRef, MAX_CANONICAL_EVENT_BYTES,
-    MAX_CONTENT_BYTES, MAX_LINEAGE_ITEMS, MAX_NONCE_BYTES, MAX_SPEC_CAPABILITY_REFS,
-    MAX_SPEC_CRITERIA, MAX_SPEC_EXTENSION_BYTES, MAX_SPEC_EXTENSIONS, MIN_NONCE_BYTES,
-    SemanticEventRecord, SettlementMode, SettlementTimeoutAction, SpecExtension, StoreSigner,
-    StoreSignerError, TaintFlags, UnsignedAssertionEvent,
+    AdmissionDurability, AdmissionReceipt, AppendAssertionRequest, AppendDecision,
+    AppendSpecRequest, AssertionMode, CriterionAggregation, CriterionEffect, EvaluatorKind,
+    ImmutableEvaluatorReference, ImmutableEvaluatorReferenceKind, IntentConstraints,
+    IntentCriterion, IntentCriticality, IntentSettlement, IntentSpecBody, LocalProcessRef,
+    MAX_CANONICAL_EVENT_BYTES, MAX_CONTENT_BYTES, MAX_LINEAGE_ITEMS, MAX_NONCE_BYTES,
+    MAX_SPEC_CAPABILITY_REFS, MAX_SPEC_CRITERIA, MAX_SPEC_EXTENSION_BYTES, MAX_SPEC_EXTENSIONS,
+    MIN_NONCE_BYTES, SemanticEventRecord, SemanticPayloadIdentity, SettlementMode,
+    SettlementTimeoutAction, SpecExtension, StoreSigner, StoreSignerError, TaintFlags,
+    UnsignedAssertionEvent, UnsignedSpecEvent,
 };
 pub use spec::{
     criterion_id, decode_intent_spec_body, encode_intent_spec_body, hard_criteria_digest,
     intent_spec_body_digest,
 };
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 const EDGE_DECLARED: i64 = 1;
 const EDGE_CAPTURED: i64 = 2;
 
@@ -76,6 +78,8 @@ pub enum SemanticAuthorityError {
     InvalidAssertionPayload,
     InvalidSpecBody(&'static str),
     UnsupportedCriticalSpecExtension,
+    SpecBodyDigestMismatch,
+    SpecBodyDigestCollision,
     MissingExecutionEvidence,
     EventIdMismatch,
     EventIdCollision,
@@ -135,6 +139,12 @@ impl fmt::Display for SemanticAuthorityError {
             Self::InvalidSpecBody(reason) => write!(formatter, "invalid IntentSpec body: {reason}"),
             Self::UnsupportedCriticalSpecExtension => {
                 formatter.write_str("unsupported critical IntentSpec extension")
+            }
+            Self::SpecBodyDigestMismatch => {
+                formatter.write_str("SpecBodyDigest does not match canonical IntentSpec body")
+            }
+            Self::SpecBodyDigestCollision => {
+                formatter.write_str("SpecBodyDigest is bound to different canonical bytes")
             }
             Self::MissingExecutionEvidence => {
                 formatter.write_str("FACT_FROM_TOOL requires execution evidence")
@@ -239,7 +249,8 @@ impl SemanticAuthority {
         }
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
         match version {
-            0 => schema::migrate_v1(&mut connection)?,
+            0 => schema::migrate_v2(&mut connection)?,
+            1 => schema::migrate_v1_to_v2(&mut connection)?,
             SCHEMA_VERSION => {}
             other => return Err(SemanticAuthorityError::SchemaVersionUnsupported(other)),
         }
@@ -338,6 +349,180 @@ impl SemanticAuthority {
             &request.content_bytes,
         )?;
         insert_event(&transaction, request, &event)?;
+        transaction.execute(
+            "INSERT INTO event_signatures (event_id, key_id, signature) VALUES (?1, ?2, ?3)",
+            params![
+                request.claimed_event_id.as_bytes().as_slice(),
+                event.key_id.as_bytes().as_slice(),
+                request.signature.as_slice(),
+            ],
+        )?;
+        transaction.execute(
+            "INSERT INTO event_log (event_id) VALUES (?1)",
+            [request.claimed_event_id.as_bytes().as_slice()],
+        )?;
+        let log_seq = u64::try_from(transaction.last_insert_rowid())
+            .map_err(|_| SemanticAuthorityError::CorruptRecord("negative log sequence"))?;
+        insert_lineage_edges(
+            &transaction,
+            request.claimed_event_id,
+            &event.declared_parents,
+            EDGE_DECLARED,
+        )?;
+        insert_lineage_edges(
+            &transaction,
+            request.claimed_event_id,
+            &request.captured_inputs,
+            EDGE_CAPTURED,
+        )?;
+
+        let receipt_core_digest = build_admission_receipt_core_digest(
+            request.claimed_event_id,
+            log_seq,
+            request.admitted_at_ms,
+            Some(effective_valid_until_ms),
+            &request.captured_inputs,
+            effective_taint,
+            request.authz_policy_digest,
+            store_signer.principal_id(),
+            store_signer.control_domain_id(),
+            store_signer.key_id(),
+        );
+        let mut receipt_id_bytes = [0_u8; 16];
+        receipt_id_bytes.copy_from_slice(&receipt_core_digest[..16]);
+        let receipt_id = ReceiptId::from_bytes(receipt_id_bytes);
+        let receipt_message = admission_receipt_signature_message(receipt_id, receipt_core_digest);
+        let store_signature = store_signer.sign(&receipt_message).map_err(|error| {
+            SemanticAuthorityError::StoreSigningFailed(error.message().to_owned())
+        })?;
+        let verified_store = identity.verify_semantic_authority_signature(
+            VerifySemanticAuthoritySignatureRequest {
+                message_digest: receipt_message,
+                issuer: store_signer.principal_id(),
+                control_domain_id: store_signer.control_domain_id(),
+                key_id: store_signer.key_id(),
+                signature: store_signature,
+                verified_at_ms: request.admitted_at_ms,
+            },
+        )?;
+        if verified_store.principal_id() != store_signer.principal_id()
+            || verified_store.control_domain_id() != store_signer.control_domain_id()
+            || verified_store.key_id() != store_signer.key_id()
+        {
+            return Err(SemanticAuthorityError::StoreSignerBindingMismatch);
+        }
+        let receipt = AdmissionReceipt {
+            receipt_id,
+            event_id: request.claimed_event_id,
+            log_seq,
+            admitted_at_ms: request.admitted_at_ms,
+            effective_valid_until_ms: Some(effective_valid_until_ms),
+            captured_inputs: request.captured_inputs.clone(),
+            effective_taint,
+            authz_policy_digest: request.authz_policy_digest,
+            durability: AdmissionDurability::Durable,
+            store_principal: store_signer.principal_id(),
+            store_control_domain: store_signer.control_domain_id(),
+            store_key_id: store_signer.key_id(),
+            store_signature,
+        };
+        insert_admission_receipt(&transaction, &receipt)?;
+        transaction.execute(
+            "INSERT INTO semantic_outbox (log_seq, event_id, receipt_id, acknowledged_at_ms)
+             VALUES (?1, ?2, ?3, NULL)",
+            params![
+                encode_u64(log_seq)?,
+                receipt.event_id.as_bytes().as_slice(),
+                receipt.receipt_id.as_bytes().as_slice(),
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(AppendDecision::Admitted(receipt))
+    }
+
+    /// Atomically admits one canonical SPEC event containing a complete
+    /// canonical `IntentSpecBody`.
+    ///
+    /// # Errors
+    ///
+    /// Returns typed fail-closed errors for body/canonical/identity/authz/
+    /// lineage failures or when the signed durable Receipt cannot commit.
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_lines)]
+    pub fn append_spec(
+        &self,
+        identity: &IdentityAuthority,
+        capability: &CapabilityAuthority,
+        process: &ProcessAuthority,
+        store_signer: &impl StoreSigner,
+        request: &AppendSpecRequest,
+    ) -> Result<AppendDecision, SemanticAuthorityError> {
+        canonical::validate_sorted_unique(&request.captured_inputs)?;
+        let event = decode_unsigned_spec_event(&request.canonical_unsigned_event)?;
+        let computed_event_id = semantic_event_id(&request.canonical_unsigned_event);
+        if computed_event_id != request.claimed_event_id {
+            return Err(SemanticAuthorityError::EventIdMismatch);
+        }
+
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(replay) = load_spec_replay(&transaction, request)? {
+            transaction.commit()?;
+            return Ok(AppendDecision::Replayed(replay));
+        }
+
+        let signer = identity.verify_semantic_signature(VerifySemanticSignatureRequest {
+            event_id: request.claimed_event_id,
+            issuer: event.issuer,
+            control_domain_id: event.control_domain,
+            key_id: event.key_id,
+            signature: request.signature,
+            admitted_at_ms: request.admitted_at_ms,
+        })?;
+        let execution =
+            process.inspect_active_process_binding(event.issuer_execution.process_id)?;
+        if execution.process_generation != event.issuer_execution.generation {
+            return Err(SemanticAuthorityError::InvalidIssuerExecution);
+        }
+        capability.authorize_semantic(AuthorizeSemanticRequest {
+            handle: request.capability,
+            signer,
+            target: event.scope,
+            required_right: CapabilityRights::SEMANTIC_APPEND,
+            purpose_digest: event.purpose_digest,
+            admitted_at_ms: request.admitted_at_ms,
+        })?;
+        let capability_record =
+            capability.inspect_active(request.capability, request.admitted_at_ms)?;
+        let key_binding = identity.inspect_current_binding(event.key_id)?;
+        let effective_valid_until_ms = effective_valid_until(
+            event.valid_until_ms,
+            key_binding.key_valid_until_ms,
+            capability_record.valid_until_ms,
+            request.admission_limit_ms,
+        );
+        if effective_valid_until_ms < request.admitted_at_ms {
+            return Err(SemanticAuthorityError::EventExpired);
+        }
+
+        validate_lineage(
+            &transaction,
+            request.claimed_event_id,
+            &event.declared_parents,
+            &request.captured_inputs,
+        )?;
+        let effective_taint = derive_effective_taint(
+            &transaction,
+            request.ingress_taint,
+            &event.declared_parents,
+            &request.captured_inputs,
+        )?;
+        insert_or_validate_spec_body(
+            &transaction,
+            event.spec_body_digest,
+            &event.canonical_spec_body,
+        )?;
+        insert_spec_event(&transaction, request, &event)?;
         transaction.execute(
             "INSERT INTO event_signatures (event_id, key_id, signature) VALUES (?1, ?2, ?3)",
             params![
@@ -611,6 +796,31 @@ fn insert_or_validate_content(
     Ok(())
 }
 
+fn insert_or_validate_spec_body(
+    transaction: &Transaction<'_>,
+    digest: [u8; 32],
+    canonical_body: &[u8],
+) -> Result<(), SemanticAuthorityError> {
+    let existing = transaction
+        .query_row(
+            "SELECT canonical_spec_body FROM spec_bodies WHERE spec_body_digest=?1",
+            [digest.as_slice()],
+            |row| row.get::<_, Vec<u8>>(0),
+        )
+        .optional()?;
+    if let Some(existing_body) = existing {
+        if existing_body != canonical_body {
+            return Err(SemanticAuthorityError::SpecBodyDigestCollision);
+        }
+        return Ok(());
+    }
+    transaction.execute(
+        "INSERT INTO spec_bodies (spec_body_digest, canonical_spec_body) VALUES (?1, ?2)",
+        params![digest.as_slice(), canonical_body],
+    )?;
+    Ok(())
+}
+
 fn insert_event(
     transaction: &Transaction<'_>,
     request: &AppendAssertionRequest,
@@ -638,6 +848,38 @@ fn insert_event(
             event.purpose_digest,
             event.key_id.as_bytes().as_slice(),
             event.content_digest.as_slice(),
+        ],
+    )?;
+    Ok(())
+}
+
+fn insert_spec_event(
+    transaction: &Transaction<'_>,
+    request: &AppendSpecRequest,
+    event: &UnsignedSpecEvent,
+) -> Result<(), SemanticAuthorityError> {
+    let (scope_kind, scope_id) = encode_scope(event.scope);
+    transaction.execute(
+        "INSERT INTO semantic_events (
+            event_id, canonical_unsigned_event, event_type, scope_kind, scope_id,
+            issuer_principal_id, issuer_process_id, issuer_process_generation,
+            control_domain_id, issued_at_unix_ns, valid_until_ms, purpose_digest,
+            key_id, content_digest, spec_body_digest
+         ) VALUES (?1, ?2, 5, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, NULL, ?13)",
+        params![
+            request.claimed_event_id.as_bytes().as_slice(),
+            request.canonical_unsigned_event.as_slice(),
+            scope_kind,
+            scope_id.as_slice(),
+            event.issuer.as_bytes().as_slice(),
+            event.issuer_execution.process_id.as_bytes().as_slice(),
+            encode_u64(event.issuer_execution.generation.get())?,
+            event.control_domain.as_bytes().as_slice(),
+            encode_u64(event.issued_at_unix_ns)?,
+            event.valid_until_ms.map(encode_u64).transpose()?,
+            event.purpose_digest,
+            event.key_id.as_bytes().as_slice(),
+            event.spec_body_digest.as_slice(),
         ],
     )?;
     Ok(())
@@ -697,6 +939,13 @@ fn load_replay(
     transaction: &Transaction<'_>,
     request: &AppendAssertionRequest,
 ) -> Result<Option<AdmissionReceipt>, SemanticAuthorityError> {
+    if let Some(canonical) = load_existing_canonical(transaction, request.claimed_event_id)? {
+        if canonical != request.canonical_unsigned_event {
+            return Err(SemanticAuthorityError::EventIdCollision);
+        }
+    } else {
+        return Ok(None);
+    }
     let existing = transaction
         .query_row(
             "SELECT e.canonical_unsigned_event, s.signature, c.media_type, c.exact_bytes
@@ -715,12 +964,11 @@ fn load_replay(
             },
         )
         .optional()?;
-    let Some((canonical, signature, media_type, content)) = existing else {
-        return Ok(None);
+    let Some((_canonical, signature, media_type, content)) = existing else {
+        return Err(SemanticAuthorityError::CorruptRecord(
+            "assertion payload row",
+        ));
     };
-    if canonical != request.canonical_unsigned_event {
-        return Err(SemanticAuthorityError::EventIdCollision);
-    }
     if signature.as_slice() != request.signature
         || media_type != request.content_media_type
         || content != request.content_bytes
@@ -728,6 +976,58 @@ fn load_replay(
         return Err(SemanticAuthorityError::EventReplayConflict);
     }
     load_receipt(transaction, request.claimed_event_id).map(Some)
+}
+
+fn load_spec_replay(
+    transaction: &Transaction<'_>,
+    request: &AppendSpecRequest,
+) -> Result<Option<AdmissionReceipt>, SemanticAuthorityError> {
+    if let Some(canonical) = load_existing_canonical(transaction, request.claimed_event_id)? {
+        if canonical != request.canonical_unsigned_event {
+            return Err(SemanticAuthorityError::EventIdCollision);
+        }
+    } else {
+        return Ok(None);
+    }
+    let existing = transaction
+        .query_row(
+            "SELECT e.canonical_unsigned_event, s.signature, b.canonical_spec_body
+             FROM semantic_events e
+             JOIN event_signatures s ON s.event_id=e.event_id
+             JOIN spec_bodies b ON b.spec_body_digest=e.spec_body_digest
+             WHERE e.event_id=?1",
+            [request.claimed_event_id.as_bytes().as_slice()],
+            |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((canonical, signature, canonical_body)) = existing else {
+        return Err(SemanticAuthorityError::CorruptRecord("SPEC payload row"));
+    };
+    let event = decode_unsigned_spec_event(&canonical)?;
+    if signature.as_slice() != request.signature || canonical_body != event.canonical_spec_body {
+        return Err(SemanticAuthorityError::EventReplayConflict);
+    }
+    load_receipt(transaction, request.claimed_event_id).map(Some)
+}
+
+fn load_existing_canonical(
+    connection: &Connection,
+    event_id: SemanticEventId,
+) -> Result<Option<Vec<u8>>, SemanticAuthorityError> {
+    connection
+        .query_row(
+            "SELECT canonical_unsigned_event FROM semantic_events WHERE event_id=?1",
+            [event_id.as_bytes().as_slice()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(SemanticAuthorityError::Sqlite)
 }
 
 fn load_receipt(
@@ -788,9 +1088,9 @@ fn load_event_record(
 ) -> Result<Option<SemanticEventRecord>, SemanticAuthorityError> {
     connection
         .query_row(
-            "SELECT e.canonical_unsigned_event, e.scope_kind, e.scope_id,
+            "SELECT e.canonical_unsigned_event, e.event_type, e.scope_kind, e.scope_id,
                     e.issuer_principal_id, e.control_domain_id, e.key_id,
-                    e.content_digest, l.log_seq
+                    e.content_digest, e.spec_body_digest, l.log_seq
              FROM semantic_events e JOIN event_log l ON l.event_id=e.event_id
              WHERE e.event_id=?1",
             [event_id.as_bytes().as_slice()],
@@ -798,12 +1098,14 @@ fn load_event_record(
                 Ok((
                     row.get::<_, Vec<u8>>(0)?,
                     row.get::<_, i64>(1)?,
-                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, i64>(2)?,
                     row.get::<_, Vec<u8>>(3)?,
                     row.get::<_, Vec<u8>>(4)?,
                     row.get::<_, Vec<u8>>(5)?,
                     row.get::<_, Vec<u8>>(6)?,
-                    row.get::<_, i64>(7)?,
+                    row.get::<_, Option<Vec<u8>>>(7)?,
+                    row.get::<_, Option<Vec<u8>>>(8)?,
+                    row.get::<_, i64>(9)?,
                 ))
             },
         )
@@ -812,16 +1114,16 @@ fn load_event_record(
             Ok(SemanticEventRecord {
                 event_id,
                 canonical_unsigned_event: row.0,
-                scope: decode_scope(row.1, decode_array(row.2, "scope id")?)?,
-                issuer: decode_id(row.3, nlos_types::PrincipalId::from_bytes, "issuer")?,
+                scope: decode_scope(row.2, decode_array(row.3, "scope id")?)?,
+                issuer: decode_id(row.4, nlos_types::PrincipalId::from_bytes, "issuer")?,
                 control_domain: decode_id(
-                    row.4,
+                    row.5,
                     nlos_types::ControlDomainId::from_bytes,
                     "domain",
                 )?,
-                key_id: decode_id(row.5, nlos_types::KeyId::from_bytes, "key")?,
-                content_digest: decode_array(row.6, "content digest")?,
-                log_seq: decode_u64(row.7)?,
+                key_id: decode_id(row.6, nlos_types::KeyId::from_bytes, "key")?,
+                payload_identity: decode_payload_identity(row.1, row.7, row.8)?,
+                log_seq: decode_u64(row.9)?,
             })
         })
         .transpose()
@@ -900,6 +1202,26 @@ fn decode_scope(kind: i64, bytes: [u8; 16]) -> Result<CapabilityTarget, Semantic
             bytes,
         ))),
         _ => Err(SemanticAuthorityError::CorruptRecord("scope kind")),
+    }
+}
+
+fn decode_payload_identity(
+    event_type: i64,
+    content_digest: Option<Vec<u8>>,
+    spec_body_digest: Option<Vec<u8>>,
+) -> Result<SemanticPayloadIdentity, SemanticAuthorityError> {
+    match (event_type, content_digest, spec_body_digest) {
+        (1, Some(digest), None) => Ok(SemanticPayloadIdentity::AssertionContent(decode_array(
+            digest,
+            "content digest",
+        )?)),
+        (5, None, Some(digest)) => Ok(SemanticPayloadIdentity::IntentSpecBody(decode_array(
+            digest,
+            "spec body digest",
+        )?)),
+        _ => Err(SemanticAuthorityError::CorruptRecord(
+            "event payload identity",
+        )),
     }
 }
 

@@ -9,7 +9,8 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     AssertionMode, LocalProcessRef, MAX_CANONICAL_EVENT_BYTES, MAX_LINEAGE_ITEMS, MAX_NONCE_BYTES,
-    MIN_NONCE_BYTES, SemanticAuthorityError, UnsignedAssertionEvent,
+    MIN_NONCE_BYTES, SemanticAuthorityError, UnsignedAssertionEvent, UnsignedSpecEvent,
+    decode_intent_spec_body, intent_spec_body_digest,
 };
 
 const FIELD_COUNT: u64 = 17;
@@ -17,6 +18,7 @@ const SCHEMA_NAME: &str = "llmos.semantic-event";
 const SCHEMA_MAJOR: u32 = 1;
 const SCHEMA_MINOR: u32 = 0;
 const EVENT_TYPE_ASSERTION: u8 = 1;
+const EVENT_TYPE_SPEC: u8 = 5;
 
 /// Encodes the v1 Assertion unsigned envelope as deterministic CBOR.
 ///
@@ -102,6 +104,166 @@ pub fn decode_unsigned_assertion_event(
     }
     let event = decode_structural(bytes)?;
     if encode_unsigned_assertion_event(&event)? != bytes {
+        return Err(SemanticAuthorityError::CanonicalMismatch);
+    }
+    Ok(event)
+}
+
+/// Encodes a v1 SPEC unsigned envelope containing the complete canonical
+/// `IntentSpecBody`.
+///
+/// # Errors
+///
+/// Rejects invalid bounds, lineage, body identity, or encoding failure.
+pub fn encode_unsigned_spec_event(
+    event: &UnsignedSpecEvent,
+) -> Result<Vec<u8>, SemanticAuthorityError> {
+    validate_spec_event(event)?;
+    let mut encoder = Encoder::new(Vec::new());
+    encoder
+        .map(FIELD_COUNT)
+        .and_then(|e| e.u8(0))
+        .and_then(|e| e.str(SCHEMA_NAME))
+        .and_then(|e| e.u8(1))
+        .and_then(|e| e.u32(SCHEMA_MAJOR))
+        .and_then(|e| e.u8(2))
+        .and_then(|e| e.u32(SCHEMA_MINOR))
+        .and_then(|e| e.u8(3))
+        .and_then(|e| e.u8(EVENT_TYPE_SPEC))
+        .and_then(|e| e.u8(4))
+        .and_then(|e| e.u8(scope_kind(event.scope)))
+        .and_then(|e| e.u8(5))
+        .and_then(|e| e.bytes(&scope_bytes(event.scope)))
+        .and_then(|e| e.u8(6))
+        .and_then(|e| e.bytes(event.issuer.as_bytes()))
+        .and_then(|e| e.u8(7))
+        .and_then(|e| e.array(3))
+        .and_then(|e| e.u8(1))
+        .and_then(|e| e.bytes(event.issuer_execution.process_id.as_bytes()))
+        .and_then(|e| e.u64(event.issuer_execution.generation.get()))
+        .and_then(|e| e.u8(8))
+        .and_then(|e| e.bytes(event.control_domain.as_bytes()))
+        .and_then(|e| e.u8(9))
+        .and_then(|e| e.u64(event.issued_at_unix_ns))
+        .and_then(|e| e.u8(10))
+        .and_then(|e| e.bytes(&event.nonce))
+        .and_then(|e| e.u8(11))
+        .and_then(|e| e.array(event.declared_parents.len() as u64))
+        .map_err(encoding_error)?;
+    for parent in &event.declared_parents {
+        encoder.bytes(parent.as_bytes()).map_err(encoding_error)?;
+    }
+    encoder
+        .u8(12)
+        .and_then(|e| e.null())
+        .and_then(|e| e.u8(13))
+        .map_err(encoding_error)?;
+    encode_optional_u64(&mut encoder, event.valid_until_ms)?;
+    encoder.u8(14).map_err(encoding_error)?;
+    encode_optional_digest(&mut encoder, event.purpose_digest)?;
+    encoder
+        .u8(15)
+        .and_then(|e| e.array(2))
+        .and_then(|e| e.bytes(&event.spec_body_digest))
+        .and_then(|e| e.bytes(&event.canonical_spec_body))
+        .and_then(|e| e.u8(16))
+        .and_then(|e| e.bytes(event.key_id.as_bytes()))
+        .map_err(encoding_error)?;
+    let bytes = encoder.into_writer();
+    if bytes.len() > MAX_CANONICAL_EVENT_BYTES {
+        return Err(SemanticAuthorityError::CanonicalTooLarge);
+    }
+    Ok(bytes)
+}
+
+/// Strictly decodes and re-encodes a v1 SPEC unsigned envelope.
+///
+/// # Errors
+///
+/// Rejects malformed, noncanonical, unsupported, or body-digest-mismatched
+/// bytes.
+pub fn decode_unsigned_spec_event(
+    bytes: &[u8],
+) -> Result<UnsignedSpecEvent, SemanticAuthorityError> {
+    if bytes.len() > MAX_CANONICAL_EVENT_BYTES {
+        return Err(SemanticAuthorityError::CanonicalTooLarge);
+    }
+    let mut decoder = Decoder::new(bytes);
+    if decoder.map().map_err(decode_error)? != Some(FIELD_COUNT) {
+        return Err(SemanticAuthorityError::CanonicalMismatch);
+    }
+    expect_key(&mut decoder, 0)?;
+    if decoder.str().map_err(decode_error)? != SCHEMA_NAME {
+        return Err(SemanticAuthorityError::UnsupportedSchema);
+    }
+    expect_key(&mut decoder, 1)?;
+    if decoder.u32().map_err(decode_error)? != SCHEMA_MAJOR {
+        return Err(SemanticAuthorityError::UnsupportedSchema);
+    }
+    expect_key(&mut decoder, 2)?;
+    if decoder.u32().map_err(decode_error)? != SCHEMA_MINOR {
+        return Err(SemanticAuthorityError::UnsupportedSchema);
+    }
+    expect_key(&mut decoder, 3)?;
+    if decoder.u8().map_err(decode_error)? != EVENT_TYPE_SPEC {
+        return Err(SemanticAuthorityError::UnsupportedEventType);
+    }
+    expect_key(&mut decoder, 4)?;
+    let scope_kind = decoder.u8().map_err(decode_error)?;
+    expect_key(&mut decoder, 5)?;
+    let scope = decode_scope(scope_kind, fixed_bytes(&mut decoder, "scope id")?)?;
+    expect_key(&mut decoder, 6)?;
+    let issuer = PrincipalId::from_bytes(fixed_bytes(&mut decoder, "issuer")?);
+    expect_key(&mut decoder, 7)?;
+    if decoder.array().map_err(decode_error)? != Some(3) || decoder.u8().map_err(decode_error)? != 1
+    {
+        return Err(SemanticAuthorityError::InvalidIssuerExecution);
+    }
+    let issuer_execution = LocalProcessRef {
+        process_id: ProcessId::from_bytes(fixed_bytes(&mut decoder, "process id")?),
+        generation: decode_generation(decoder.u64().map_err(decode_error)?)?,
+    };
+    expect_key(&mut decoder, 8)?;
+    let control_domain = ControlDomainId::from_bytes(fixed_bytes(&mut decoder, "domain")?);
+    expect_key(&mut decoder, 9)?;
+    let issued_at_unix_ns = decoder.u64().map_err(decode_error)?;
+    expect_key(&mut decoder, 10)?;
+    let nonce = decoder.bytes().map_err(decode_error)?.to_vec();
+    expect_key(&mut decoder, 11)?;
+    let declared_parents = decode_event_ids(&mut decoder)?;
+    expect_key(&mut decoder, 12)?;
+    decoder.null().map_err(decode_error)?;
+    expect_key(&mut decoder, 13)?;
+    let valid_until_ms = decode_optional_u64(&mut decoder)?;
+    expect_key(&mut decoder, 14)?;
+    let purpose_digest = decode_optional_digest(&mut decoder)?;
+    expect_key(&mut decoder, 15)?;
+    if decoder.array().map_err(decode_error)? != Some(2) {
+        return Err(SemanticAuthorityError::CanonicalMismatch);
+    }
+    let spec_body_digest = fixed_bytes(&mut decoder, "spec body digest")?;
+    let canonical_spec_body = decoder.bytes().map_err(decode_error)?.to_vec();
+    expect_key(&mut decoder, 16)?;
+    let key_id = KeyId::from_bytes(fixed_bytes(&mut decoder, "key id")?);
+    if decoder.position() != bytes.len() {
+        return Err(SemanticAuthorityError::CanonicalMismatch);
+    }
+    let event = UnsignedSpecEvent {
+        scope,
+        issuer,
+        issuer_execution,
+        control_domain,
+        issued_at_unix_ns,
+        nonce,
+        declared_parents,
+        valid_until_ms,
+        purpose_digest,
+        spec_body_digest,
+        canonical_spec_body,
+        key_id,
+    };
+    validate_spec_event(&event)?;
+    if encode_unsigned_spec_event(&event)? != bytes {
         return Err(SemanticAuthorityError::CanonicalMismatch);
     }
     Ok(event)
@@ -224,6 +386,18 @@ fn validate_event(event: &UnsignedAssertionEvent) -> Result<(), SemanticAuthorit
         && event.execution_evidence_receipt_id.is_none()
     {
         return Err(SemanticAuthorityError::MissingExecutionEvidence);
+    }
+    Ok(())
+}
+
+fn validate_spec_event(event: &UnsignedSpecEvent) -> Result<(), SemanticAuthorityError> {
+    if !(MIN_NONCE_BYTES..=MAX_NONCE_BYTES).contains(&event.nonce.len()) {
+        return Err(SemanticAuthorityError::InvalidNonce);
+    }
+    validate_sorted_unique(&event.declared_parents)?;
+    let body = decode_intent_spec_body(&event.canonical_spec_body)?;
+    if intent_spec_body_digest(&body)? != event.spec_body_digest {
+        return Err(SemanticAuthorityError::SpecBodyDigestMismatch);
     }
     Ok(())
 }

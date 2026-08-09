@@ -213,6 +213,35 @@ pub struct AppendAssertionRequest {
     pub admitted_at_ms: u64,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UnsignedSpecEvent {
+    pub scope: CapabilityTarget,
+    pub issuer: PrincipalId,
+    pub issuer_execution: LocalProcessRef,
+    pub control_domain: ControlDomainId,
+    pub issued_at_unix_ns: u64,
+    pub nonce: Vec<u8>,
+    pub declared_parents: Vec<SemanticEventId>,
+    pub valid_until_ms: Option<u64>,
+    pub purpose_digest: Option<[u8; 32]>,
+    pub spec_body_digest: [u8; 32],
+    pub canonical_spec_body: Vec<u8>,
+    pub key_id: KeyId,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AppendSpecRequest {
+    pub canonical_unsigned_event: Vec<u8>,
+    pub claimed_event_id: SemanticEventId,
+    pub signature: [u8; 64],
+    pub capability: CapabilityHandle,
+    pub captured_inputs: Vec<SemanticEventId>,
+    pub ingress_taint: TaintFlags,
+    pub authz_policy_digest: [u8; 32],
+    pub admission_limit_ms: Option<u64>,
+    pub admitted_at_ms: u64,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AdmissionDurability {
     Durable,
@@ -258,8 +287,14 @@ pub struct SemanticEventRecord {
     pub issuer: PrincipalId,
     pub control_domain: ControlDomainId,
     pub key_id: KeyId,
-    pub content_digest: [u8; 32],
+    pub payload_identity: SemanticPayloadIdentity,
     pub log_seq: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SemanticPayloadIdentity {
+    AssertionContent([u8; 32]),
+    IntentSpecBody([u8; 32]),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

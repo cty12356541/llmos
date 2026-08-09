@@ -12,11 +12,16 @@ use nlos_process::{
     CreateIsolationDomainRequest, ProcessAuthority, RegisterDelegatedProcessRequest,
 };
 use nlos_semantic::{
-    AdmissionReceipt, AppendAssertionRequest, AppendDecision, AssertionMode, LocalProcessRef,
-    SemanticAuthority, SemanticAuthorityError, StoreSigner, StoreSignerError, TaintFlags,
-    UnsignedAssertionEvent, admission_receipt_core_digest, admission_receipt_signature_message,
-    content_digest, decode_unsigned_assertion_event, encode_unsigned_assertion_event,
-    semantic_event_id,
+    AdmissionReceipt, AppendAssertionRequest, AppendDecision, AppendSpecRequest, AssertionMode,
+    CriterionAggregation, CriterionEffect, EvaluatorKind, ImmutableEvaluatorReference,
+    ImmutableEvaluatorReferenceKind, IntentConstraints, IntentCriterion, IntentCriticality,
+    IntentSettlement, IntentSpecBody, LocalProcessRef, SemanticAuthority, SemanticAuthorityError,
+    SemanticPayloadIdentity, SettlementMode, SettlementTimeoutAction, StoreSigner,
+    StoreSignerError, TaintFlags, UnsignedAssertionEvent, UnsignedSpecEvent,
+    admission_receipt_core_digest, admission_receipt_signature_message, content_digest,
+    decode_unsigned_assertion_event, decode_unsigned_spec_event, encode_intent_spec_body,
+    encode_unsigned_assertion_event, encode_unsigned_spec_event, hard_criteria_digest,
+    intent_spec_body_digest, semantic_event_id,
 };
 use nlos_types::{
     Generation, IdempotencyKey, NamespaceId, ReceiptId, SemanticEventId, TaskAttemptId, TaskId,
@@ -235,6 +240,88 @@ fn append(fixture: &Fixture, request: &AppendAssertionRequest) -> AppendDecision
         .unwrap()
 }
 
+fn spec_body() -> IntentSpecBody {
+    let criterion = IntentCriterion {
+        description_digest: [0xa1; 32],
+        effect: CriterionEffect::Hard,
+        evaluator_kind: EvaluatorKind::DeterministicTool,
+        evaluator_ref: ImmutableEvaluatorReference {
+            kind: ImmutableEvaluatorReferenceKind::Artifact,
+            digest: [0xa2; 32],
+        },
+        target_selector_digest: [0xa3; 32],
+        timeout_ms: Some(5_000),
+        independence_policy_digest: None,
+        authority_policy_digest: None,
+        risk_policy_digest: None,
+        aggregation: CriterionAggregation {
+            pass_quorum: 1,
+            fail_quorum: 1,
+            veto_on_authorized_fail: true,
+        },
+    };
+    let mut body = IntentSpecBody {
+        goal_digest: [0xa0; 32],
+        acceptance: vec![criterion],
+        constraints: IntentConstraints {
+            resource_vector_digest: [0xa4; 32],
+            deadline_ms: Some(8_000),
+            namespace_root: NamespaceId::from_bytes([0x44; 16]),
+            allowed_capability_digests: vec![[0xa5; 32]],
+            forbidden_capability_digests: vec![[0xa6; 32]],
+        },
+        criticality: IntentCriticality::Standard,
+        settlement: IntentSettlement {
+            mode: SettlementMode::Automatic,
+            hard_criteria_digest: None,
+            on_timeout: SettlementTimeoutAction::Dispute,
+            challenge_window_ms: Some(1_000),
+        },
+        critical_extensions: Vec::new(),
+        noncritical_extensions: Vec::new(),
+    };
+    body.settlement.hard_criteria_digest = hard_criteria_digest(&body).unwrap();
+    body
+}
+
+fn spec_request(fixture: &Fixture, seed: u8, parents: Vec<SemanticEventId>) -> AppendSpecRequest {
+    let body = spec_body();
+    let canonical_spec_body = encode_intent_spec_body(&body).unwrap();
+    let event = UnsignedSpecEvent {
+        scope: fixture.capability_record.target,
+        issuer: fixture.issuer.principal_id,
+        issuer_execution: LocalProcessRef {
+            process_id: fixture.process_binding.process_id,
+            generation: fixture.process_binding.process_generation,
+        },
+        control_domain: fixture.issuer.control_domain_id,
+        issued_at_unix_ns: 2_000_000_000 + u64::from(seed),
+        nonce: vec![seed; 16],
+        declared_parents: parents,
+        valid_until_ms: Some(8_000),
+        purpose_digest: fixture.capability_record.purpose_digest,
+        spec_body_digest: intent_spec_body_digest(&body).unwrap(),
+        canonical_spec_body,
+        key_id: fixture.issuer.key_id,
+    };
+    let canonical_unsigned_event = encode_unsigned_spec_event(&event).unwrap();
+    let claimed_event_id = semantic_event_id(&canonical_unsigned_event);
+    AppendSpecRequest {
+        canonical_unsigned_event,
+        claimed_event_id,
+        signature: fixture
+            .issuer_key
+            .sign(&nlos_identity::semantic_signature_message(claimed_event_id))
+            .to_bytes(),
+        capability: fixture.capability_record.handle,
+        captured_inputs: Vec::new(),
+        ingress_taint: TaintFlags::default(),
+        authz_policy_digest: [0xb0; 32],
+        admission_limit_ms: Some(8_500),
+        admitted_at_ms: 2_000,
+    }
+}
+
 #[test]
 fn canonical_event_round_trips_and_rejects_noncanonical_or_invalid_payloads() {
     let root = Root::new("canonical");
@@ -446,6 +533,166 @@ fn committed_event_replays_after_capability_revoke_but_new_event_is_fenced() {
         ),
         Err(SemanticAuthorityError::Capability(_))
     ));
+}
+
+#[test]
+fn spec_event_canonical_body_digest_and_type_are_strict() {
+    let root = Root::new("spec-canonical");
+    let fixture = fixture(&root, 100);
+    let request = spec_request(&fixture, 10, Vec::new());
+    let event = decode_unsigned_spec_event(&request.canonical_unsigned_event).unwrap();
+    assert_eq!(
+        encode_unsigned_spec_event(&event).unwrap(),
+        request.canonical_unsigned_event
+    );
+
+    let mut mismatch = event;
+    mismatch.spec_body_digest[0] ^= 1;
+    assert!(matches!(
+        encode_unsigned_spec_event(&mismatch),
+        Err(SemanticAuthorityError::SpecBodyDigestMismatch)
+    ));
+    assert!(matches!(
+        decode_unsigned_assertion_event(&request.canonical_unsigned_event),
+        Err(SemanticAuthorityError::UnsupportedEventType)
+    ));
+}
+
+#[test]
+fn spec_event_admission_is_atomic_durable_and_replayable_after_restart() {
+    let root = Root::new("spec-admit");
+    let (request, receipt) = {
+        let fixture = fixture(&root, 120);
+        let parent = request(&fixture, 11, Vec::new(), Vec::new(), TaintFlags::PRIVATE);
+        append(&fixture, &parent);
+        let request = spec_request(&fixture, 12, vec![parent.claimed_event_id]);
+        let first = fixture
+            .semantic
+            .append_spec(
+                &fixture.identity,
+                &fixture.capability,
+                &fixture.process,
+                &fixture.store_signer,
+                &request,
+            )
+            .unwrap();
+        assert!(matches!(first, AppendDecision::Admitted(_)));
+        assert_eq!(first.receipt().effective_taint, TaintFlags::PRIVATE);
+        verify_store_receipt(&fixture.store_signer, first.receipt());
+        (request, first.receipt().clone())
+    };
+
+    let fixture = fixture(&root, 120);
+    let replay = fixture
+        .semantic
+        .append_spec(
+            &fixture.identity,
+            &fixture.capability,
+            &fixture.process,
+            &fixture.store_signer,
+            &request,
+        )
+        .unwrap();
+    assert!(matches!(replay, AppendDecision::Replayed(_)));
+    assert_eq!(replay.receipt(), &receipt);
+    let record = fixture
+        .semantic
+        .inspect_event(request.claimed_event_id)
+        .unwrap();
+    assert_eq!(
+        record.payload_identity,
+        SemanticPayloadIdentity::IntentSpecBody(
+            decode_unsigned_spec_event(&request.canonical_unsigned_event)
+                .unwrap()
+                .spec_body_digest
+        )
+    );
+
+    let raw = Connection::open(root.path().join("semantic-authority.db")).unwrap();
+    assert_eq!(
+        raw.query_row("SELECT COUNT(*) FROM spec_bodies", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    assert!(raw.execute("DELETE FROM spec_bodies", []).is_err());
+}
+
+#[test]
+fn real_v1_store_migrates_without_losing_assertion_or_receipt() {
+    let root = Root::new("v1-migration");
+    let (event_id, receipt_id) = {
+        let fixture = fixture(&root, 125);
+        let request = request(&fixture, 13, Vec::new(), Vec::new(), TaintFlags::default());
+        let receipt = append(&fixture, &request).receipt().clone();
+        (request.claimed_event_id, receipt.receipt_id)
+    };
+
+    let raw = Connection::open(root.path().join("semantic-authority.db")).unwrap();
+    raw.pragma_update(None, "foreign_keys", "OFF").unwrap();
+    raw.pragma_update(None, "legacy_alter_table", "ON").unwrap();
+    raw.execute_batch(
+        "DROP TRIGGER semantic_events_immutable_update;
+         DROP TRIGGER semantic_events_immutable_delete;
+         DROP TRIGGER spec_bodies_immutable_update;
+         DROP TRIGGER spec_bodies_immutable_delete;
+         ALTER TABLE semantic_events RENAME TO semantic_events_v2;
+         CREATE TABLE semantic_events (
+            event_id BLOB PRIMARY KEY NOT NULL CHECK(length(event_id) = 32),
+            canonical_unsigned_event BLOB NOT NULL CHECK(length(canonical_unsigned_event) <= 65536),
+            event_type INTEGER NOT NULL CHECK(event_type = 1),
+            scope_kind INTEGER NOT NULL CHECK(scope_kind IN (1, 2)),
+            scope_id BLOB NOT NULL CHECK(length(scope_id) = 16),
+            issuer_principal_id BLOB NOT NULL CHECK(length(issuer_principal_id) = 16),
+            issuer_process_id BLOB NOT NULL CHECK(length(issuer_process_id) = 16),
+            issuer_process_generation INTEGER NOT NULL CHECK(issuer_process_generation >= 1),
+            control_domain_id BLOB NOT NULL CHECK(length(control_domain_id) = 16),
+            issued_at_unix_ns INTEGER NOT NULL CHECK(issued_at_unix_ns >= 0),
+            valid_until_ms INTEGER CHECK(valid_until_ms IS NULL OR valid_until_ms >= 0),
+            purpose_digest BLOB CHECK(purpose_digest IS NULL OR length(purpose_digest) = 32),
+            key_id BLOB NOT NULL CHECK(length(key_id) = 16),
+            content_digest BLOB NOT NULL CHECK(length(content_digest) = 32),
+            FOREIGN KEY(content_digest) REFERENCES content_objects(content_digest)
+         ) STRICT;
+         INSERT INTO semantic_events
+         SELECT event_id, canonical_unsigned_event, event_type, scope_kind, scope_id,
+                issuer_principal_id, issuer_process_id, issuer_process_generation,
+                control_domain_id, issued_at_unix_ns, valid_until_ms, purpose_digest,
+                key_id, content_digest
+         FROM semantic_events_v2;
+         DROP TABLE semantic_events_v2;
+         DROP TABLE spec_bodies;
+         CREATE TRIGGER semantic_events_immutable_update BEFORE UPDATE ON semantic_events
+         BEGIN SELECT RAISE(ABORT, 'semantic event is immutable'); END;
+         CREATE TRIGGER semantic_events_immutable_delete BEFORE DELETE ON semantic_events
+         BEGIN SELECT RAISE(ABORT, 'semantic event is immutable'); END;
+         PRAGMA user_version = 1;",
+    )
+    .unwrap();
+    drop(raw);
+
+    let migrated = SemanticAuthority::open(root.path()).unwrap();
+    assert_eq!(migrated.inspect_event(event_id).unwrap().log_seq, 1);
+    let raw = Connection::open(root.path().join("semantic-authority.db")).unwrap();
+    assert_eq!(
+        raw.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        raw.query_row(
+            "SELECT receipt_id FROM admission_receipts WHERE event_id=?1",
+            [event_id.as_bytes().as_slice()],
+            |row| row.get::<_, Vec<u8>>(0),
+        )
+        .unwrap(),
+        receipt_id.as_bytes()
+    );
+    assert!(
+        raw.query_row("PRAGMA foreign_key_check", [], |row| row
+            .get::<_, String>(0))
+            .is_err()
+    );
 }
 
 #[test]
