@@ -72,11 +72,11 @@ use std::path::PathBuf;
 use nlos_types::ArtifactId;
 
 pub use model::{
-    ArtifactPublicationReceipt, ArtifactRecord, ContentDigest, CreateArtifactDecision,
-    CreateArtifactSpec, HeadState, MissingBlob, MissingStagedBlob, PublishStagedRevisionDecision,
-    PublishStagedRevisionRequest, PutRevisionDecision, PutRevisionRequest, RecoveryReport,
-    RevisionRecord, StageRevisionDecision, StageRevisionRequest, StagedRevisionRecord,
-    StagedRevisionState, StagingId,
+    ArtifactHeadEndpointProof, ArtifactPublicationReceipt, ArtifactRecord, ContentDigest,
+    CreateArtifactDecision, CreateArtifactSpec, HeadState, MissingBlob, MissingStagedBlob,
+    PublishStagedRevisionDecision, PublishStagedRevisionRequest, PutRevisionDecision,
+    PutRevisionRequest, RecoveryReport, RevisionRecord, StageRevisionDecision,
+    StageRevisionRequest, StagedRevisionRecord, StagedRevisionState, StagingId,
 };
 pub use publication::staging_id_for;
 pub use store::ArtifactStore;

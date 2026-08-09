@@ -1,9 +1,10 @@
 //! Schema DDL. Kept separate so the durable format is auditable in one
 //! place; any future migration gets its own function and `user_version`.
 
-use rusqlite::{Connection, TransactionBehavior};
+use nlos_types::{ArtifactId, Generation, ReceiptId, TaskParticipantId};
+use rusqlite::{Connection, Transaction, TransactionBehavior, params};
 
-use crate::ArtifactError;
+use crate::{ArtifactError, ArtifactHeadEndpointProof};
 
 /// Creates the v1 schema in one transaction: artifact metadata, immutable
 /// revisions (enforced by triggers), and the best-effort cache table.
@@ -130,4 +131,133 @@ pub(crate) fn migrate_v2(connection: &mut Connection) -> Result<(), ArtifactErro
     )?;
     transaction.commit()?;
     Ok(())
+}
+
+/// Adds immutable authority-assigned endpoint identity/proof for every
+/// Artifact head. Existing heads receive identities during the migration;
+/// future heads receive them in their creation transaction.
+pub(crate) fn migrate_v3(connection: &mut Connection) -> Result<(), ArtifactError> {
+    let table_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type='table' AND name='artifact_head_endpoint_proofs'",
+        [],
+        |row| row.get(0),
+    )?;
+    let trigger_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type='trigger' AND name LIKE 'artifact_head_endpoint_proofs_%'",
+        [],
+        |row| row.get(0),
+    )?;
+    let missing_proof_count = if table_count == 1 {
+        connection.query_row(
+            "SELECT COUNT(*) FROM artifacts AS a
+             LEFT JOIN artifact_head_endpoint_proofs AS p ON p.artifact_id=a.artifact_id
+             WHERE p.artifact_id IS NULL",
+            [],
+            |row| row.get::<_, i64>(0),
+        )?
+    } else {
+        0
+    };
+    if table_count == 1 && trigger_count == 2 && missing_proof_count == 0 {
+        connection.pragma_update(None, "user_version", 3)?;
+        return Ok(());
+    }
+    if table_count != 0 || trigger_count != 0 || missing_proof_count != 0 {
+        return Err(ArtifactError::CorruptRecord(
+            "partial artifact endpoint proof schema",
+        ));
+    }
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "CREATE TABLE artifact_head_endpoint_proofs (
+            artifact_id BLOB PRIMARY KEY NOT NULL CHECK(length(artifact_id) = 16),
+            participant_id BLOB NOT NULL UNIQUE CHECK(length(participant_id) = 16),
+            participant_generation BLOB NOT NULL CHECK(length(participant_generation) = 8),
+            admission_receipt_id BLOB NOT NULL UNIQUE CHECK(length(admission_receipt_id) = 16),
+            FOREIGN KEY(artifact_id) REFERENCES artifacts(artifact_id)
+        ) STRICT;
+
+        INSERT INTO artifact_head_endpoint_proofs
+            (artifact_id, participant_id, participant_generation, admission_receipt_id)
+        SELECT artifact_id, randomblob(16), X'0000000000000001', randomblob(16)
+        FROM artifacts;
+
+        CREATE TRIGGER artifact_head_endpoint_proofs_immutable_update
+        BEFORE UPDATE ON artifact_head_endpoint_proofs
+        BEGIN SELECT RAISE(ABORT, 'artifact head endpoint proof is immutable'); END;
+        CREATE TRIGGER artifact_head_endpoint_proofs_immutable_delete
+        BEFORE DELETE ON artifact_head_endpoint_proofs
+        BEGIN SELECT RAISE(ABORT, 'artifact head endpoint proof is immutable'); END;
+
+        PRAGMA user_version = 3;",
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
+
+pub(crate) fn insert_artifact_head_endpoint_proof(
+    transaction: &Transaction<'_>,
+    artifact_id: ArtifactId,
+) -> Result<(), ArtifactError> {
+    transaction.execute(
+        "INSERT INTO artifact_head_endpoint_proofs (
+            artifact_id, participant_id, participant_generation, admission_receipt_id
+         ) VALUES (?1, randomblob(16), ?2, randomblob(16))",
+        params![
+            artifact_id.as_bytes().as_slice(),
+            1_u64.to_be_bytes().as_slice(),
+        ],
+    )?;
+    Ok(())
+}
+
+pub(crate) fn load_artifact_head_endpoint_proof(
+    connection: &Connection,
+    artifact_id: ArtifactId,
+) -> Result<ArtifactHeadEndpointProof, ArtifactError> {
+    let result = connection.query_row(
+        "SELECT participant_id, participant_generation, admission_receipt_id
+         FROM artifact_head_endpoint_proofs WHERE artifact_id=?1",
+        [artifact_id.as_bytes().as_slice()],
+        |row| {
+            Ok((
+                row.get::<_, Vec<u8>>(0)?,
+                row.get::<_, Vec<u8>>(1)?,
+                row.get::<_, Vec<u8>>(2)?,
+            ))
+        },
+    );
+    let (participant_id, generation, receipt_id) = match result {
+        Ok(row) => row,
+        Err(rusqlite::Error::QueryReturnedNoRows) => {
+            return Err(ArtifactError::ArtifactNotFound(artifact_id));
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let generation = u64::from_be_bytes(
+        generation
+            .try_into()
+            .map_err(|_| ArtifactError::CorruptRecord("artifact endpoint generation"))?,
+    );
+    let generation = std::num::NonZeroU64::new(generation)
+        .map(Generation::new)
+        .ok_or(ArtifactError::CorruptRecord(
+            "zero artifact endpoint generation",
+        ))?;
+    Ok(ArtifactHeadEndpointProof {
+        artifact_id,
+        participant_id: TaskParticipantId::from_bytes(
+            participant_id
+                .try_into()
+                .map_err(|_| ArtifactError::CorruptRecord("artifact endpoint id"))?,
+        ),
+        participant_generation: generation,
+        admission_receipt_id: ReceiptId::from_bytes(
+            receipt_id
+                .try_into()
+                .map_err(|_| ArtifactError::CorruptRecord("artifact endpoint receipt"))?,
+        ),
+    })
 }

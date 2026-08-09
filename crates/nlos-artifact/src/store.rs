@@ -10,12 +10,13 @@ use rusqlite::{Connection, OpenFlags, TransactionBehavior, params};
 use crate::ArtifactError;
 use crate::blob::{self, DomainPaths};
 use crate::model::{
-    ArtifactRecord, ContentDigest, CreateArtifactDecision, CreateArtifactSpec,
-    MAX_TEXT_COMPONENT_BYTES, PutRevisionDecision, PutRevisionRequest, RevisionRecord,
+    ArtifactHeadEndpointProof, ArtifactRecord, ContentDigest, CreateArtifactDecision,
+    CreateArtifactSpec, MAX_TEXT_COMPONENT_BYTES, PutRevisionDecision, PutRevisionRequest,
+    RevisionRecord,
 };
 use crate::query::{load_artifact_optional, load_revision_optional};
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 /// Filesystem layout under the store root.
 #[derive(Clone, Debug)]
@@ -121,8 +122,13 @@ impl ArtifactStore {
             0 => {
                 crate::schema::migrate_v1(&mut connection)?;
                 crate::schema::migrate_v2(&mut connection)?;
+                crate::schema::migrate_v3(&mut connection)?;
             }
-            1 => crate::schema::migrate_v2(&mut connection)?,
+            1 => {
+                crate::schema::migrate_v2(&mut connection)?;
+                crate::schema::migrate_v3(&mut connection)?;
+            }
+            2 => crate::schema::migrate_v3(&mut connection)?,
             SCHEMA_VERSION => {}
             other => return Err(ArtifactError::SchemaVersionUnsupported(other)),
         }
@@ -182,8 +188,23 @@ impl ArtifactStore {
             created_at_ms: spec.created_at_ms,
         };
         crate::query::insert_artifact(&transaction, &record, spec.idempotency_key)?;
+        crate::schema::insert_artifact_head_endpoint_proof(&transaction, record.artifact_id)?;
         transaction.commit()?;
         Ok(CreateArtifactDecision::Created(record))
+    }
+
+    /// Reads the durable authority-issued endpoint proof for an Artifact head.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ArtifactNotFound`, corruption, or storage errors. Registration
+    /// consumers must compare every field with this readback.
+    pub fn inspect_head_endpoint_proof(
+        &self,
+        artifact_id: nlos_types::ArtifactId,
+    ) -> Result<ArtifactHeadEndpointProof, ArtifactError> {
+        let connection = self.lock_connection()?;
+        crate::schema::load_artifact_head_endpoint_proof(&connection, artifact_id)
     }
 
     /// Appends one immutable revision and advances the head, crash-safely.

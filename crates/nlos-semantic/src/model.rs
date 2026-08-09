@@ -1,7 +1,7 @@
 use nlos_capability::{CapabilityHandle, CapabilityTarget};
 use nlos_types::{
     ControlDomainId, Generation, KeyId, NamespaceId, PrincipalId, ProcessId, ReceiptId,
-    SemanticEventId,
+    SemanticEventId, TaskParticipantId,
 };
 
 pub const MAX_CANONICAL_EVENT_BYTES: usize = 65_536;
@@ -262,6 +262,17 @@ pub struct AdmissionReceipt {
     pub store_control_domain: ControlDomainId,
     pub store_key_id: KeyId,
     pub store_signature: [u8; 64],
+}
+
+/// Durable authority-issued identity of the Semantic admission endpoint.
+///
+/// Consumers must verify transported values by exact readback from the
+/// owning [`crate::SemanticAuthority`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SemanticAdmissionEndpointProof {
+    pub participant_id: TaskParticipantId,
+    pub participant_generation: Generation,
+    pub admission_receipt_id: ReceiptId,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -4,7 +4,10 @@
 use std::fmt;
 use std::path::PathBuf;
 
-use nlos_types::{ApplicationId, ArtifactId, CommitPermitId, IdempotencyKey, ReceiptId, TaskId};
+use nlos_types::{
+    ApplicationId, ArtifactId, CommitPermitId, Generation, IdempotencyKey, ReceiptId, TaskId,
+    TaskParticipantId,
+};
 use sha2::{Digest, Sha256};
 
 /// Upper bound for caller-supplied bounded strings (content type, owner,
@@ -292,6 +295,18 @@ pub struct ArtifactRecord {
     pub head_revision: u64,
     pub head_digest: Option<ContentDigest>,
     pub created_at_ms: u64,
+}
+
+/// Durable authority-issued identity of one Artifact head endpoint.
+///
+/// Callers may transport this value, but consumers must verify it by exact
+/// readback from the owning [`crate::ArtifactStore`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ArtifactHeadEndpointProof {
+    pub artifact_id: ArtifactId,
+    pub participant_id: TaskParticipantId,
+    pub participant_generation: Generation,
+    pub admission_receipt_id: ReceiptId,
 }
 
 /// Durable immutable revision row.

@@ -40,16 +40,16 @@ pub use model::{
     IntentCriterion, IntentCriticality, IntentSettlement, IntentSpecBody, LocalProcessRef,
     MAX_CANONICAL_EVENT_BYTES, MAX_CONTENT_BYTES, MAX_LINEAGE_ITEMS, MAX_NONCE_BYTES,
     MAX_SPEC_CAPABILITY_REFS, MAX_SPEC_CRITERIA, MAX_SPEC_EXTENSION_BYTES, MAX_SPEC_EXTENSIONS,
-    MIN_NONCE_BYTES, SemanticEventRecord, SemanticPayloadIdentity, SettlementMode,
-    SettlementTimeoutAction, SpecExtension, StoreSigner, StoreSignerError, TaintFlags,
-    UnsignedAssertionEvent, UnsignedSpecEvent,
+    MIN_NONCE_BYTES, SemanticAdmissionEndpointProof, SemanticEventRecord, SemanticPayloadIdentity,
+    SettlementMode, SettlementTimeoutAction, SpecExtension, StoreSigner, StoreSignerError,
+    TaintFlags, UnsignedAssertionEvent, UnsignedSpecEvent,
 };
 pub use spec::{
     criterion_id, decode_intent_spec_body, encode_intent_spec_body, hard_criteria_digest,
     intent_spec_body_digest,
 };
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 const EDGE_DECLARED: i64 = 1;
 const EDGE_CAPTURED: i64 = 2;
 
@@ -249,8 +249,15 @@ impl SemanticAuthority {
         }
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
         match version {
-            0 => schema::migrate_v2(&mut connection)?,
-            1 => schema::migrate_v1_to_v2(&mut connection)?,
+            0 => {
+                schema::migrate_v2(&mut connection)?;
+                schema::migrate_v3(&mut connection)?;
+            }
+            1 => {
+                schema::migrate_v1_to_v2(&mut connection)?;
+                schema::migrate_v3(&mut connection)?;
+            }
+            2 => schema::migrate_v3(&mut connection)?,
             SCHEMA_VERSION => {}
             other => return Err(SemanticAuthorityError::SchemaVersionUnsupported(other)),
         }
@@ -626,6 +633,19 @@ impl SemanticAuthority {
         let connection = self.lock()?;
         load_event_record(&connection, event_id)?
             .ok_or(SemanticAuthorityError::EventNotFound(event_id))
+    }
+
+    /// Reads the durable authority-issued Semantic admission endpoint proof.
+    ///
+    /// # Errors
+    ///
+    /// Returns corruption or storage errors. Registration consumers must
+    /// compare every transported field with this authority readback.
+    pub fn inspect_admission_endpoint_proof(
+        &self,
+    ) -> Result<SemanticAdmissionEndpointProof, SemanticAuthorityError> {
+        let connection = self.lock()?;
+        schema::load_semantic_admission_endpoint_proof(&connection)
     }
 
     fn lock(&self) -> Result<MutexGuard<'_, Connection>, SemanticAuthorityError> {

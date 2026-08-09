@@ -1,6 +1,7 @@
+use nlos_types::{Generation, ReceiptId, TaskParticipantId};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 
-use crate::SemanticAuthorityError;
+use crate::{SemanticAdmissionEndpointProof, SemanticAuthorityError};
 
 #[allow(clippy::too_many_lines)] // One auditable transaction contains the complete v2 DDL.
 pub(crate) fn migrate_v2(connection: &mut Connection) -> Result<(), SemanticAuthorityError> {
@@ -219,6 +220,100 @@ pub(crate) fn migrate_v1_to_v2(connection: &mut Connection) -> Result<(), Semant
     connection.pragma_update(None, "legacy_alter_table", "OFF")?;
     connection.pragma_update(None, "foreign_keys", "ON")?;
     migration
+}
+
+/// Adds the immutable authority-assigned Semantic admission endpoint proof.
+pub(crate) fn migrate_v3(connection: &mut Connection) -> Result<(), SemanticAuthorityError> {
+    let table_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type='table' AND name='semantic_admission_endpoint_proof'",
+        [],
+        |row| row.get(0),
+    )?;
+    let trigger_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type='trigger' AND name LIKE 'semantic_admission_endpoint_proof_%'",
+        [],
+        |row| row.get(0),
+    )?;
+    let identity_count = if table_count == 1 {
+        connection.query_row(
+            "SELECT COUNT(*) FROM semantic_admission_endpoint_proof WHERE singleton=1",
+            [],
+            |row| row.get::<_, i64>(0),
+        )?
+    } else {
+        0
+    };
+    if table_count == 1 && trigger_count == 2 && identity_count == 1 {
+        connection.pragma_update(None, "user_version", 3)?;
+        return Ok(());
+    }
+    if table_count != 0 || trigger_count != 0 || identity_count != 0 {
+        return Err(SemanticAuthorityError::CorruptRecord(
+            "partial semantic endpoint proof schema",
+        ));
+    }
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "CREATE TABLE semantic_admission_endpoint_proof (
+            singleton INTEGER PRIMARY KEY NOT NULL CHECK(singleton = 1),
+            participant_id BLOB NOT NULL UNIQUE CHECK(length(participant_id) = 16),
+            participant_generation BLOB NOT NULL CHECK(length(participant_generation) = 8),
+            admission_receipt_id BLOB NOT NULL UNIQUE CHECK(length(admission_receipt_id) = 16)
+        ) STRICT;
+        INSERT INTO semantic_admission_endpoint_proof
+            VALUES (1, randomblob(16), X'0000000000000001', randomblob(16));
+        CREATE TRIGGER semantic_admission_endpoint_proof_immutable_update
+        BEFORE UPDATE ON semantic_admission_endpoint_proof
+        BEGIN SELECT RAISE(ABORT, 'semantic admission endpoint proof is immutable'); END;
+        CREATE TRIGGER semantic_admission_endpoint_proof_immutable_delete
+        BEFORE DELETE ON semantic_admission_endpoint_proof
+        BEGIN SELECT RAISE(ABORT, 'semantic admission endpoint proof is immutable'); END;
+        PRAGMA user_version = 3;",
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
+
+pub(crate) fn load_semantic_admission_endpoint_proof(
+    connection: &Connection,
+) -> Result<SemanticAdmissionEndpointProof, SemanticAuthorityError> {
+    let (participant_id, generation, receipt_id) = connection.query_row(
+        "SELECT participant_id, participant_generation, admission_receipt_id
+         FROM semantic_admission_endpoint_proof WHERE singleton=1",
+        [],
+        |row| {
+            Ok((
+                row.get::<_, Vec<u8>>(0)?,
+                row.get::<_, Vec<u8>>(1)?,
+                row.get::<_, Vec<u8>>(2)?,
+            ))
+        },
+    )?;
+    let generation = u64::from_be_bytes(
+        generation
+            .try_into()
+            .map_err(|_| SemanticAuthorityError::CorruptRecord("semantic endpoint generation"))?,
+    );
+    let generation = std::num::NonZeroU64::new(generation)
+        .map(Generation::new)
+        .ok_or(SemanticAuthorityError::CorruptRecord(
+            "zero semantic endpoint generation",
+        ))?;
+    Ok(SemanticAdmissionEndpointProof {
+        participant_id: TaskParticipantId::from_bytes(
+            participant_id
+                .try_into()
+                .map_err(|_| SemanticAuthorityError::CorruptRecord("semantic endpoint id"))?,
+        ),
+        participant_generation: generation,
+        admission_receipt_id: ReceiptId::from_bytes(
+            receipt_id
+                .try_into()
+                .map_err(|_| SemanticAuthorityError::CorruptRecord("semantic endpoint receipt"))?,
+        ),
+    })
 }
 
 #[cfg(test)]

@@ -677,7 +677,7 @@ fn real_v1_store_migrates_without_losing_assertion_or_receipt() {
     assert_eq!(
         raw.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .unwrap(),
-        2
+        3
     );
     assert_eq!(
         raw.query_row(
@@ -691,6 +691,35 @@ fn real_v1_store_migrates_without_losing_assertion_or_receipt() {
     assert!(
         raw.query_row("PRAGMA foreign_key_check", [], |row| row
             .get::<_, String>(0))
+            .is_err()
+    );
+}
+
+#[test]
+fn semantic_admission_endpoint_proof_is_authority_assigned_durable_and_immutable() {
+    let root = Root::new("endpoint-proof");
+    let proof = {
+        let authority = SemanticAuthority::open(root.path()).unwrap();
+        let proof = authority.inspect_admission_endpoint_proof().unwrap();
+        assert_eq!(
+            proof.participant_generation,
+            nlos_types::Generation::INITIAL
+        );
+        proof
+    };
+    let authority = SemanticAuthority::open(root.path()).unwrap();
+    assert_eq!(authority.inspect_admission_endpoint_proof().unwrap(), proof);
+    drop(authority);
+    let raw = Connection::open(root.path().join("semantic-authority.db")).unwrap();
+    assert!(
+        raw.execute(
+            "UPDATE semantic_admission_endpoint_proof SET participant_id=zeroblob(16)",
+            [],
+        )
+        .is_err()
+    );
+    assert!(
+        raw.execute("DELETE FROM semantic_admission_endpoint_proof", [])
             .is_err()
     );
 }

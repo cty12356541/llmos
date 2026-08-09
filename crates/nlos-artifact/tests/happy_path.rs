@@ -191,7 +191,47 @@ fn durability_pragmas_are_wal_and_full() {
     let user_version: i64 = raw
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("read user_version");
-    assert_eq!(user_version, 2);
+    assert_eq!(user_version, 3);
+}
+
+#[test]
+fn artifact_head_endpoint_proof_is_authority_assigned_durable_and_immutable() {
+    let directory = TestStoreDir::new("endpoint-proof");
+    let proof = {
+        let store = ArtifactStore::open(directory.root()).expect("open");
+        let spec = artifact_spec(0x31);
+        store.create_artifact(spec.clone()).expect("create");
+        let proof = store
+            .inspect_head_endpoint_proof(spec.artifact_id)
+            .expect("proof");
+        assert_eq!(proof.artifact_id, spec.artifact_id);
+        assert_eq!(
+            proof.participant_generation,
+            nlos_types::Generation::INITIAL
+        );
+        proof
+    };
+
+    let store = ArtifactStore::open(directory.root()).expect("reopen");
+    assert_eq!(
+        store
+            .inspect_head_endpoint_proof(proof.artifact_id)
+            .expect("durable proof"),
+        proof
+    );
+    drop(store);
+    let raw = rusqlite::Connection::open(directory.root().join("metadata.db")).expect("raw");
+    assert!(
+        raw.execute(
+            "UPDATE artifact_head_endpoint_proofs SET participant_id=zeroblob(16)",
+            [],
+        )
+        .is_err()
+    );
+    assert!(
+        raw.execute("DELETE FROM artifact_head_endpoint_proofs", [])
+            .is_err()
+    );
 }
 
 #[test]
