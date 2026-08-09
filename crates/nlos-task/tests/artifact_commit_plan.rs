@@ -637,7 +637,10 @@ fn v5_database_migrates_to_v6_without_changing_existing_task() {
     }
     let raw = Connection::open(&database.path).expect("open raw");
     raw.execute_batch(
-        "DROP TABLE task_artifact_recovery_alert_receipts;
+        "DROP TABLE task_snapshot_checkpoint_receipts;
+         DROP TABLE task_snapshot_receipts;
+         ALTER TABLE task_attempts DROP COLUMN snapshot_receipt_id;
+         DROP TABLE task_artifact_recovery_alert_receipts;
          DROP TABLE task_artifact_recovery;
          DROP TABLE task_artifact_publication_receipts;
          DROP TABLE task_artifact_publication_expectations;
@@ -660,7 +663,7 @@ fn v5_database_migrates_to_v6_without_changing_existing_task() {
     let version: i64 = raw
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 9);
+    assert_eq!(version, 10);
 }
 
 #[test]
@@ -825,7 +828,10 @@ fn v6_plan_migrates_to_current_and_remains_queryable() {
     };
     let raw = Connection::open(&database.path).unwrap();
     raw.execute_batch(
-        "DROP TABLE task_artifact_recovery_alert_receipts;
+        "DROP TABLE task_snapshot_checkpoint_receipts;
+         DROP TABLE task_snapshot_receipts;
+         ALTER TABLE task_attempts DROP COLUMN snapshot_receipt_id;
+         DROP TABLE task_artifact_recovery_alert_receipts;
          DROP TABLE task_artifact_recovery;
          DROP TABLE task_artifact_publication_receipts;
          PRAGMA user_version = 6;",
@@ -1013,7 +1019,10 @@ fn v7_database_migrates_to_v8_without_inventing_recovery_history() {
     };
     let raw = Connection::open(&database.path).unwrap();
     raw.execute_batch(
-        "DROP TABLE task_artifact_recovery_alert_receipts;
+        "DROP TABLE task_snapshot_checkpoint_receipts;
+         DROP TABLE task_snapshot_receipts;
+         ALTER TABLE task_attempts DROP COLUMN snapshot_receipt_id;
+         DROP TABLE task_artifact_recovery_alert_receipts;
          DROP TABLE task_artifact_recovery;
          PRAGMA user_version = 7;",
     )
@@ -1028,7 +1037,7 @@ fn v7_database_migrates_to_v8_without_inventing_recovery_history() {
     let version: i64 = raw
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 9);
+    assert_eq!(version, 10);
 }
 
 #[test]
@@ -1193,7 +1202,10 @@ fn v8_database_migrates_to_v9_without_inventing_alert_receipts() {
     };
     let raw = Connection::open(&database.path).unwrap();
     raw.execute_batch(
-        "DROP TABLE task_artifact_recovery_alert_receipts;
+        "DROP TABLE task_snapshot_checkpoint_receipts;
+         DROP TABLE task_snapshot_receipts;
+         ALTER TABLE task_attempts DROP COLUMN snapshot_receipt_id;
+         DROP TABLE task_artifact_recovery_alert_receipts;
          PRAGMA user_version = 8;",
     )
     .unwrap();
@@ -1212,5 +1224,5 @@ fn v8_database_migrates_to_v9_without_inventing_alert_receipts() {
     let version: i64 = raw
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 9);
+    assert_eq!(version, 10);
 }

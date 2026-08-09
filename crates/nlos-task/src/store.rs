@@ -21,10 +21,11 @@ use crate::{
     AttemptHandle, AttemptRecord, AttemptRegistrationDecision, AttemptSpec, AttemptState,
     CancelDecision, CancelRequest, ClosedAttempt, PermitConflict, PermitDecision, PermitRecord,
     PermitRequest, PermitState, ReceiptOutcome, SnapshotBundle, TaskReceiptRecord, TaskRecord,
-    TaskRegistrationDecision, TaskSpec, TaskState, TaskStoreError,
+    TaskRegistrationDecision, TaskSnapshotReceiptRecord, TaskSnapshotReceiptSpec, TaskSpec,
+    TaskState, TaskStoreError,
 };
 
-const SCHEMA_VERSION: i64 = 9;
+const SCHEMA_VERSION: i64 = 10;
 
 /// A single-writer `SQLite` task authority.
 ///
@@ -117,6 +118,7 @@ impl SqliteTaskAuthority {
                 migrate_v7(&mut connection)?;
                 migrate_v8(&mut connection)?;
                 migrate_v9(&mut connection)?;
+                migrate_v10(&mut connection)?;
             }
             1 => {
                 migrate_v2(&mut connection)?;
@@ -127,6 +129,7 @@ impl SqliteTaskAuthority {
                 migrate_v7(&mut connection)?;
                 migrate_v8(&mut connection)?;
                 migrate_v9(&mut connection)?;
+                migrate_v10(&mut connection)?;
             }
             2 => {
                 migrate_v3(&mut connection)?;
@@ -136,6 +139,7 @@ impl SqliteTaskAuthority {
                 migrate_v7(&mut connection)?;
                 migrate_v8(&mut connection)?;
                 migrate_v9(&mut connection)?;
+                migrate_v10(&mut connection)?;
             }
             3 => {
                 migrate_v4(&mut connection)?;
@@ -144,6 +148,7 @@ impl SqliteTaskAuthority {
                 migrate_v7(&mut connection)?;
                 migrate_v8(&mut connection)?;
                 migrate_v9(&mut connection)?;
+                migrate_v10(&mut connection)?;
             }
             4 => {
                 migrate_v5(&mut connection)?;
@@ -151,23 +156,31 @@ impl SqliteTaskAuthority {
                 migrate_v7(&mut connection)?;
                 migrate_v8(&mut connection)?;
                 migrate_v9(&mut connection)?;
+                migrate_v10(&mut connection)?;
             }
             5 => {
                 migrate_v6(&mut connection)?;
                 migrate_v7(&mut connection)?;
                 migrate_v8(&mut connection)?;
                 migrate_v9(&mut connection)?;
+                migrate_v10(&mut connection)?;
             }
             6 => {
                 migrate_v7(&mut connection)?;
                 migrate_v8(&mut connection)?;
                 migrate_v9(&mut connection)?;
+                migrate_v10(&mut connection)?;
             }
             7 => {
                 migrate_v8(&mut connection)?;
                 migrate_v9(&mut connection)?;
+                migrate_v10(&mut connection)?;
             }
-            8 => migrate_v9(&mut connection)?,
+            8 => {
+                migrate_v9(&mut connection)?;
+                migrate_v10(&mut connection)?;
+            }
+            9 => migrate_v10(&mut connection)?,
             SCHEMA_VERSION => {}
             other => return Err(TaskStoreError::UnsupportedSchema(other)),
         }
@@ -220,6 +233,92 @@ impl SqliteTaskAuthority {
         Ok(TaskRegistrationDecision::Created(spec.task_id))
     }
 
+    /// Persists an immutable `TaskSnapshotReceipt` and its ordered signed
+    /// authority-checkpoint receipt set. The snapshot must bind the current
+    /// Task head/history/fence exactly at registration time.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stale/incomplete/conflicting receipt or storage error.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn register_snapshot_receipt(
+        &self,
+        spec: TaskSnapshotReceiptSpec,
+    ) -> Result<TaskSnapshotReceiptRecord, TaskStoreError> {
+        if spec.built_at_ms < 0 {
+            return Err(TaskStoreError::InvalidSnapshotReceipt {
+                reason: "built_at_ms must be non-negative",
+            });
+        }
+        if spec.per_authority_checkpoint_receipts.is_empty() {
+            return Err(TaskStoreError::InvalidSnapshotReceipt {
+                reason: "at least one authority checkpoint receipt is required",
+            });
+        }
+        if spec.per_authority_checkpoint_receipts.len() > 64 {
+            return Err(TaskStoreError::InvalidSnapshotReceipt {
+                reason: "authority checkpoint receipt count exceeds 64",
+            });
+        }
+        let mut deduplicated = spec.per_authority_checkpoint_receipts.clone();
+        deduplicated.sort_unstable();
+        deduplicated.dedup();
+        if deduplicated.len() != spec.per_authority_checkpoint_receipts.len() {
+            return Err(TaskStoreError::InvalidSnapshotReceipt {
+                reason: "authority checkpoint receipt IDs must be unique",
+            });
+        }
+
+        let mut connection = self.lock_connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let task = load_task(&transaction, spec.task_id)?;
+        if let Some(existing) =
+            load_snapshot_receipt_optional(&transaction, spec.task_id, spec.receipt_id)?
+        {
+            if existing == spec {
+                transaction.commit()?;
+                return Ok(existing);
+            }
+            return Err(TaskStoreError::InvalidSnapshotReceipt {
+                reason: "receipt ID was rebound to different bytes",
+            });
+        }
+        if load_snapshot_receipt_by_snapshot_optional(
+            &transaction,
+            spec.task_id,
+            spec.snapshot.snapshot_id,
+        )?
+        .is_some()
+        {
+            return Err(TaskStoreError::InvalidSnapshotReceipt {
+                reason: "snapshot already has a different receipt",
+            });
+        }
+        if validate_head_binding(&task.record, &spec.snapshot).is_some() {
+            return Err(TaskStoreError::InvalidSnapshotReceipt {
+                reason: "snapshot does not bind the current Task head/history/fence",
+            });
+        }
+        insert_snapshot_if_absent(&transaction, spec.task_id, &spec.snapshot, spec.built_at_ms)?;
+        insert_snapshot_receipt(&transaction, &spec)?;
+        transaction.commit()?;
+        Ok(spec)
+    }
+
+    /// Reads one immutable durable `TaskSnapshotReceipt`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SnapshotReceiptNotFound` or a storage error.
+    pub fn inspect_snapshot_receipt(
+        &self,
+        task_id: TaskId,
+        receipt_id: ReceiptId,
+    ) -> Result<TaskSnapshotReceiptRecord, TaskStoreError> {
+        let connection = self.lock_connection()?;
+        load_snapshot_receipt(&*connection, task_id, receipt_id)
+    }
+
     /// Registers one `TaskAttempt` idempotently.
     ///
     /// Each attempt carries an independent ID/generation and its own
@@ -237,13 +336,38 @@ impl SqliteTaskAuthority {
         &self,
         spec: AttemptSpec,
     ) -> Result<AttemptRegistrationDecision, TaskStoreError> {
+        self.register_attempt_bound(spec, None)
+    }
+
+    /// Registers an attempt bound to an immutable durable
+    /// `TaskSnapshotReceipt`. Legacy unreceipted attempts remain readable,
+    /// but replay cannot switch between the two registration paths.
+    ///
+    /// # Errors
+    ///
+    /// Returns a validation, receipt-binding, conflict, or storage error.
+    pub fn register_attempt_with_snapshot_receipt(
+        &self,
+        spec: AttemptSpec,
+        snapshot_receipt_id: ReceiptId,
+    ) -> Result<AttemptRegistrationDecision, TaskStoreError> {
+        self.register_attempt_bound(spec, Some(snapshot_receipt_id))
+    }
+
+    fn register_attempt_bound(
+        &self,
+        spec: AttemptSpec,
+        snapshot_receipt_id: Option<ReceiptId>,
+    ) -> Result<AttemptRegistrationDecision, TaskStoreError> {
         let mut connection = self.lock_connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let task = load_task(&transaction, spec.task_id)?;
         if let Some(existing) =
             load_attempt_by_key(&transaction, spec.task_id, spec.idempotency_key)?
         {
-            if attempt_matches_spec(&existing, &spec) {
+            if attempt_matches_spec(&existing, &spec)
+                && existing.snapshot_receipt_id == snapshot_receipt_id
+            {
                 transaction.commit()?;
                 return Ok(AttemptRegistrationDecision::Existing(handle_of(&existing)));
             }
@@ -254,6 +378,19 @@ impl SqliteTaskAuthority {
         }
         if task.record.state == TaskState::Cancelled {
             return Err(TaskStoreError::TaskCancelled);
+        }
+        if let Some(receipt_id) = snapshot_receipt_id {
+            let receipt = load_snapshot_receipt(&transaction, spec.task_id, receipt_id)?;
+            if receipt.snapshot != spec.snapshot {
+                return Err(TaskStoreError::InvalidSnapshotReceipt {
+                    reason: "attempt snapshot differs from snapshot receipt",
+                });
+            }
+            if receipt.achieved_consistency == crate::SnapshotConsistency::MixedNonSettleable {
+                return Err(TaskStoreError::InvalidSnapshotReceipt {
+                    reason: "MIXED_NON_SETTLEABLE snapshot cannot authorize an attempt",
+                });
+            }
         }
         insert_snapshot_if_absent(
             &transaction,
@@ -266,6 +403,7 @@ impl SqliteTaskAuthority {
             attempt_id: spec.attempt_id,
             attempt_generation: spec.attempt_generation,
             snapshot: spec.snapshot,
+            snapshot_receipt_id,
             cancellation_scope_id: spec.cancellation_scope_id,
             cancellation_generation: spec.cancellation_generation,
             state: AttemptState::Created,
@@ -714,6 +852,164 @@ pub(crate) fn attempt_matches_spec(record: &AttemptRecord, spec: &AttemptSpec) -
         && record.cancellation_generation == spec.cancellation_generation
 }
 
+fn insert_snapshot_receipt(
+    transaction: &Transaction<'_>,
+    record: &TaskSnapshotReceiptRecord,
+) -> Result<(), TaskStoreError> {
+    transaction.execute(
+        "INSERT INTO task_snapshot_receipts (
+            receipt_id, task_id, snapshot_id, builder_id,
+            builder_version_digest, dependency_closure_root,
+            semantic_resolver_digest, canonical_iteration_digest,
+            achieved_consistency, built_at_ms, authority_id, key_id, signature
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+        params![
+            record.receipt_id.as_bytes().as_slice(),
+            record.task_id.as_bytes().as_slice(),
+            record.snapshot.snapshot_id.as_bytes().as_slice(),
+            record.builder_id.as_slice(),
+            record.builder_version_digest.as_slice(),
+            record.dependency_closure_root.as_slice(),
+            record.semantic_resolver_digest.as_slice(),
+            record.canonical_iteration_digest.as_slice(),
+            record.achieved_consistency.code(),
+            record.built_at_ms,
+            record.authority_id.as_slice(),
+            record.key_id.as_slice(),
+            record.signature.as_slice(),
+        ],
+    )?;
+    for (sequence, checkpoint) in record.per_authority_checkpoint_receipts.iter().enumerate() {
+        transaction.execute(
+            "INSERT INTO task_snapshot_checkpoint_receipts (
+                snapshot_receipt_id, checkpoint_seq, checkpoint_receipt_id
+             ) VALUES (?1, ?2, ?3)",
+            params![
+                record.receipt_id.as_bytes().as_slice(),
+                i64::try_from(sequence).map_err(|_| TaskStoreError::InvalidSnapshotReceipt {
+                    reason: "checkpoint sequence exceeds SQLite integer",
+                })?,
+                checkpoint.as_bytes().as_slice(),
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+fn load_snapshot_receipt(
+    source: &impl SqlRead,
+    task_id: TaskId,
+    receipt_id: ReceiptId,
+) -> Result<TaskSnapshotReceiptRecord, TaskStoreError> {
+    load_snapshot_receipt_optional(source, task_id, receipt_id)?
+        .ok_or(TaskStoreError::SnapshotReceiptNotFound)
+}
+
+fn load_snapshot_receipt_optional(
+    source: &impl SqlRead,
+    task_id: TaskId,
+    receipt_id: ReceiptId,
+) -> Result<Option<TaskSnapshotReceiptRecord>, TaskStoreError> {
+    load_snapshot_receipt_matching(source, task_id, *receipt_id.as_bytes(), false)
+}
+
+fn load_snapshot_receipt_by_snapshot_optional(
+    source: &impl SqlRead,
+    task_id: TaskId,
+    snapshot_id: TaskSnapshotId,
+) -> Result<Option<TaskSnapshotReceiptRecord>, TaskStoreError> {
+    load_snapshot_receipt_matching(source, task_id, *snapshot_id.as_bytes(), true)
+}
+
+fn load_snapshot_receipt_matching(
+    source: &impl SqlRead,
+    task_id: TaskId,
+    key: [u8; 16],
+    by_snapshot: bool,
+) -> Result<Option<TaskSnapshotReceiptRecord>, TaskStoreError> {
+    let predicate = if by_snapshot {
+        "r.task_id = ?1 AND r.snapshot_id = ?2"
+    } else {
+        "r.task_id = ?1 AND r.receipt_id = ?2"
+    };
+    let sql = format!(
+        "SELECT r.receipt_id, r.task_id,
+                s.snapshot_id, s.snapshot_digest, s.expected_head_commit_seq,
+                s.effect_history_root, s.retry_fence_epoch,
+                r.builder_id, r.builder_version_digest,
+                r.dependency_closure_root, r.semantic_resolver_digest,
+                r.canonical_iteration_digest, r.achieved_consistency,
+                r.built_at_ms, r.authority_id, r.key_id, r.signature
+         FROM task_snapshot_receipts r
+         JOIN task_snapshots s
+           ON s.task_id = r.task_id AND s.snapshot_id = r.snapshot_id
+         WHERE {predicate}"
+    );
+    let header = {
+        let mut statement = source.prepare_statement(&sql)?;
+        let mut rows = statement.query(params![task_id.as_bytes().as_slice(), key.as_slice()])?;
+        rows.next()?
+            .map(decode_snapshot_receipt_header)
+            .transpose()?
+    };
+    let Some(mut record) = header else {
+        return Ok(None);
+    };
+    record.per_authority_checkpoint_receipts =
+        load_snapshot_checkpoints(source, record.receipt_id)?;
+    Ok(Some(record))
+}
+
+fn decode_snapshot_receipt_header(
+    row: &rusqlite::Row<'_>,
+) -> Result<TaskSnapshotReceiptRecord, TaskStoreError> {
+    Ok(TaskSnapshotReceiptRecord {
+        receipt_id: ReceiptId::from_bytes(blob16(row, 0)?),
+        task_id: TaskId::from_bytes(blob16(row, 1)?),
+        snapshot: SnapshotBundle {
+            snapshot_id: TaskSnapshotId::from_bytes(blob16(row, 2)?),
+            snapshot_digest: blob32(row, 3)?,
+            expected_head_commit_seq: u64_from_blob(row, 4)?,
+            effect_history_root: blob32(row, 5)?,
+            retry_fence_epoch: u64_from_blob(row, 6)?,
+        },
+        builder_id: blob16(row, 7)?,
+        builder_version_digest: blob32(row, 8)?,
+        per_authority_checkpoint_receipts: Vec::new(),
+        dependency_closure_root: blob32(row, 9)?,
+        semantic_resolver_digest: blob32(row, 10)?,
+        canonical_iteration_digest: blob32(row, 11)?,
+        achieved_consistency: crate::SnapshotConsistency::from_code(row.get(12)?)?,
+        built_at_ms: row.get(13)?,
+        authority_id: blob16(row, 14)?,
+        key_id: blob16(row, 15)?,
+        signature: blob64(row, 16)?,
+    })
+}
+
+fn load_snapshot_checkpoints(
+    source: &impl SqlRead,
+    receipt_id: ReceiptId,
+) -> Result<Vec<ReceiptId>, TaskStoreError> {
+    let mut statement = source.prepare_statement(
+        "SELECT checkpoint_receipt_id
+         FROM task_snapshot_checkpoint_receipts
+         WHERE snapshot_receipt_id = ?1
+         ORDER BY checkpoint_seq",
+    )?;
+    let mut rows = statement.query([receipt_id.as_bytes().as_slice()])?;
+    let mut checkpoints = Vec::new();
+    while let Some(row) = rows.next()? {
+        checkpoints.push(ReceiptId::from_bytes(blob16(row, 0)?));
+    }
+    if checkpoints.is_empty() {
+        return Err(TaskStoreError::CorruptRecord(
+            "snapshot receipt has no authority checkpoint receipts",
+        ));
+    }
+    Ok(checkpoints)
+}
+
 fn migrate_v1(connection: &mut Connection) -> Result<(), TaskStoreError> {
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     transaction.execute_batch(SCHEMA_V1_SQL)?;
@@ -799,6 +1095,59 @@ fn migrate_v9(connection: &mut Connection) -> Result<(), TaskStoreError> {
     transaction.commit()?;
     Ok(())
 }
+
+/// v9 → v10 adds immutable snapshot receipts, their ordered authority
+/// checkpoint receipt set, and an optional binding on attempts. Existing
+/// attempts remain explicitly legacy/unreceipted rather than receiving
+/// invented proof during migration.
+fn migrate_v10(connection: &mut Connection) -> Result<(), TaskStoreError> {
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(SCHEMA_V10_SQL)?;
+    transaction.commit()?;
+    Ok(())
+}
+
+const SCHEMA_V10_SQL: &str = "CREATE TABLE task_snapshot_receipts (
+        receipt_id BLOB PRIMARY KEY NOT NULL CHECK(length(receipt_id) = 16),
+        task_id BLOB NOT NULL CHECK(length(task_id) = 16),
+        snapshot_id BLOB NOT NULL CHECK(length(snapshot_id) = 16),
+        builder_id BLOB NOT NULL CHECK(length(builder_id) = 16),
+        builder_version_digest BLOB NOT NULL CHECK(length(builder_version_digest) = 32),
+        dependency_closure_root BLOB NOT NULL CHECK(length(dependency_closure_root) = 32),
+        semantic_resolver_digest BLOB NOT NULL CHECK(length(semantic_resolver_digest) = 32),
+        canonical_iteration_digest BLOB NOT NULL CHECK(length(canonical_iteration_digest) = 32),
+        achieved_consistency INTEGER NOT NULL CHECK(achieved_consistency BETWEEN 0 AND 3),
+        durability INTEGER NOT NULL DEFAULT 1 CHECK(durability = 1),
+        built_at_ms INTEGER NOT NULL CHECK(built_at_ms >= 0),
+        authority_id BLOB NOT NULL CHECK(length(authority_id) = 16),
+        key_id BLOB NOT NULL CHECK(length(key_id) = 16),
+        signature BLOB NOT NULL CHECK(length(signature) = 64),
+        UNIQUE(task_id, snapshot_id),
+        FOREIGN KEY(task_id, snapshot_id) REFERENCES task_snapshots(task_id, snapshot_id)
+    ) STRICT;
+
+    CREATE TABLE task_snapshot_checkpoint_receipts (
+        snapshot_receipt_id BLOB NOT NULL CHECK(length(snapshot_receipt_id) = 16),
+        checkpoint_seq INTEGER NOT NULL CHECK(checkpoint_seq >= 0),
+        checkpoint_receipt_id BLOB NOT NULL CHECK(length(checkpoint_receipt_id) = 16),
+        PRIMARY KEY(snapshot_receipt_id, checkpoint_seq),
+        UNIQUE(snapshot_receipt_id, checkpoint_receipt_id),
+        FOREIGN KEY(snapshot_receipt_id) REFERENCES task_snapshot_receipts(receipt_id)
+    ) STRICT;
+
+    CREATE TRIGGER task_snapshot_receipt_is_immutable
+    BEFORE UPDATE ON task_snapshot_receipts
+    BEGIN SELECT RAISE(ABORT, 'task snapshot receipt is immutable'); END;
+
+    CREATE TRIGGER task_snapshot_checkpoint_receipt_is_immutable
+    BEFORE UPDATE ON task_snapshot_checkpoint_receipts
+    BEGIN SELECT RAISE(ABORT, 'task snapshot checkpoint receipt is immutable'); END;
+
+    ALTER TABLE task_attempts ADD COLUMN snapshot_receipt_id BLOB
+        CHECK(snapshot_receipt_id IS NULL OR length(snapshot_receipt_id) = 16)
+        REFERENCES task_snapshot_receipts(receipt_id);
+
+    PRAGMA user_version = 10;";
 
 const SCHEMA_V5_SQL: &str =
     "ALTER TABLE commit_permits ADD COLUMN group_id BLOB CHECK(group_id IS NULL OR length(group_id) = 16);
@@ -1111,14 +1460,16 @@ pub(crate) fn insert_attempt(
     transaction.execute(
         "INSERT INTO task_attempts (
             attempt_id, task_id, attempt_generation, snapshot_id,
+            snapshot_receipt_id,
             cancellation_scope_id, cancellation_generation, idempotency_key,
             attempt_state, receipt_id, created_at_ms, updated_at_ms
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, ?9, ?10)",
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10, ?11)",
         params![
             record.attempt_id.as_bytes().as_slice(),
             record.task_id.as_bytes().as_slice(),
             encode_u64(record.attempt_generation.get()).as_slice(),
             record.snapshot.snapshot_id.as_bytes().as_slice(),
+            record.snapshot_receipt_id.map(ReceiptId::into_bytes),
             record.cancellation_scope_id.as_bytes().as_slice(),
             encode_u64(record.cancellation_generation.get()).as_slice(),
             idempotency_key.as_bytes().as_slice(),
@@ -1133,6 +1484,7 @@ pub(crate) fn insert_attempt(
 // Attempt rows always join their immutable snapshot row so the digest
 // bundle an attempt is bound to can never drift from the snapshot table.
 const ATTEMPT_SELECT: &str = "SELECT a.attempt_id, a.task_id, a.attempt_generation, a.snapshot_id,
+            a.snapshot_receipt_id,
             a.cancellation_scope_id, a.cancellation_generation,
             a.attempt_state, a.receipt_id, a.created_at_ms, a.updated_at_ms,
             s.snapshot_digest, s.expected_head_commit_seq,
@@ -1217,17 +1569,18 @@ fn decode_attempt_row(row: &rusqlite::Row<'_>) -> Result<AttemptRecord, TaskStor
         attempt_generation: generation_from_blob(row, 2)?,
         snapshot: SnapshotBundle {
             snapshot_id: TaskSnapshotId::from_bytes(blob16(row, 3)?),
-            snapshot_digest: blob32(row, 10)?,
-            expected_head_commit_seq: u64_from_blob(row, 11)?,
-            effect_history_root: blob32(row, 12)?,
-            retry_fence_epoch: u64_from_blob(row, 13)?,
+            snapshot_digest: blob32(row, 11)?,
+            expected_head_commit_seq: u64_from_blob(row, 12)?,
+            effect_history_root: blob32(row, 13)?,
+            retry_fence_epoch: u64_from_blob(row, 14)?,
         },
-        cancellation_scope_id: CancellationScopeId::from_bytes(blob16(row, 4)?),
-        cancellation_generation: generation_from_blob(row, 5)?,
-        state: AttemptState::from_code(row.get(6)?)?,
-        receipt_id: optional_blob16(row, 7)?.map(ReceiptId::from_bytes),
-        created_at_ms: row.get(8)?,
-        updated_at_ms: row.get(9)?,
+        snapshot_receipt_id: optional_blob16(row, 4)?.map(ReceiptId::from_bytes),
+        cancellation_scope_id: CancellationScopeId::from_bytes(blob16(row, 5)?),
+        cancellation_generation: generation_from_blob(row, 6)?,
+        state: AttemptState::from_code(row.get(7)?)?,
+        receipt_id: optional_blob16(row, 8)?.map(ReceiptId::from_bytes),
+        created_at_ms: row.get(9)?,
+        updated_at_ms: row.get(10)?,
     })
 }
 
@@ -1657,6 +2010,13 @@ pub(crate) fn blob32(row: &rusqlite::Row<'_>, index: usize) -> Result<[u8; 32], 
     value
         .try_into()
         .map_err(|_| TaskStoreError::CorruptRecord("expected 32-byte blob"))
+}
+
+fn blob64(row: &rusqlite::Row<'_>, index: usize) -> Result<[u8; 64], TaskStoreError> {
+    let value: Vec<u8> = row.get(index)?;
+    value
+        .try_into()
+        .map_err(|_| TaskStoreError::CorruptRecord("expected 64-byte blob"))
 }
 
 pub(crate) fn optional_blob16(

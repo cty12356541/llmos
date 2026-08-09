@@ -91,7 +91,8 @@ pub use model::{
     FinalizeRequest, PermitClosureOutcome, PermitConflict, PermitDecision, PermitRecord,
     PermitRequest, PermitState, PlannedEffect, QuarantineReceiptRecord, ReceiptOutcome,
     ReconcileOutcome, ReconciliationReceiptRecord, RequiredSatisfaction, RequiredSatisfactionProof,
-    SnapshotBundle, TaskReceiptRecord, TaskRecord, TaskRegistrationDecision, TaskSpec, TaskState,
+    SnapshotBundle, SnapshotConsistency, TaskReceiptRecord, TaskRecord, TaskRegistrationDecision,
+    TaskSnapshotReceiptRecord, TaskSnapshotReceiptSpec, TaskSpec, TaskState,
     empty_effect_history_root,
 };
 pub use reconcile::{
@@ -133,6 +134,8 @@ pub enum TaskStoreError {
     PermitNotFound,
     /// No receipt with the given ID exists under the given task.
     ReceiptNotFound,
+    /// No durable snapshot receipt with the given ID exists under the task.
+    SnapshotReceiptNotFound,
     /// No Artifact publication plan with this identity exists.
     ArtifactCommitPlanNotFound,
     /// The Artifact publication plan is not complete enough to finalize.
@@ -161,6 +164,12 @@ pub enum TaskStoreError {
     /// A snapshot ID was rebound to different digest bytes; snapshots are
     /// immutable once inserted (`[TASK-SNAPSHOT-001]`).
     SnapshotConflict,
+    /// The snapshot receipt is stale, structurally incomplete, or conflicts
+    /// with an immutable receipt/snapshot binding.
+    InvalidSnapshotReceipt {
+        /// Static explanation of the rejected invariant.
+        reason: &'static str,
+    },
     /// An idempotency key was replayed with different request bytes.
     IdempotencyConflict,
     /// The Artifact publication expectation set is empty, ambiguous, or
@@ -354,6 +363,9 @@ impl fmt::Display for TaskStoreError {
             Self::AttemptNotFound => formatter.write_str("attempt does not exist under the task"),
             Self::PermitNotFound => formatter.write_str("permit does not exist under the task"),
             Self::ReceiptNotFound => formatter.write_str("receipt does not exist under the task"),
+            Self::SnapshotReceiptNotFound => {
+                formatter.write_str("snapshot receipt does not exist under the task")
+            }
             Self::ArtifactCommitPlanNotFound => {
                 formatter.write_str("artifact commit plan does not exist")
             }
@@ -382,6 +394,9 @@ impl fmt::Display for TaskStoreError {
             Self::DuplicateTask => formatter.write_str("task ID re-registered with new spec"),
             Self::DuplicateAttempt => formatter.write_str("attempt ID re-registered with new spec"),
             Self::SnapshotConflict => formatter.write_str("snapshot ID rebound to new bytes"),
+            Self::InvalidSnapshotReceipt { reason } => {
+                write!(formatter, "invalid snapshot receipt: {reason}")
+            }
             Self::IdempotencyConflict => {
                 formatter.write_str("idempotency key reused for new bytes")
             }

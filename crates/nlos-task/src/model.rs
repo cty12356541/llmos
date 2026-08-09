@@ -46,14 +46,15 @@ pub struct TaskSpec {
     pub registered_at_ms: i64,
 }
 
-/// Frozen-input digest bundle standing in for a full `TaskSnapshot`.
+/// Frozen-input core shared by a full `TaskSnapshot` and its durable receipt.
 ///
 /// `[TASK-SNAPSHOT-001/002]` requires a causal-closed cut over the current
 /// `TaskHead`, the durable effect-history root, and the retry-fence epoch,
 /// frozen before the attempt starts. In this slice the snapshot is
-/// represented by this caller-supplied bundle; the per-authority checkpoint
-/// collection and the signed `TaskSnapshotReceipt` are out of scope. The
-/// bundle is immutable once inserted.
+/// The bundle is immutable once inserted. Schema v10 can additionally bind
+/// it to a durable [`TaskSnapshotReceiptRecord`]; legacy attempts may retain
+/// an unreceipted bundle during forward migration but cannot be confused with
+/// the receipted registration API.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SnapshotBundle {
     pub snapshot_id: TaskSnapshotId,
@@ -62,6 +63,63 @@ pub struct SnapshotBundle {
     pub effect_history_root: [u8; 32],
     pub retry_fence_epoch: u64,
 }
+
+/// Consistency actually achieved by a snapshot builder. Ordering is not a
+/// strength relation; callers must compare the exact requested contract.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SnapshotConsistency {
+    Causal,
+    SerializableDomain,
+    LinearizableAuthority,
+    MixedNonSettleable,
+}
+
+impl SnapshotConsistency {
+    pub(crate) const fn code(self) -> i64 {
+        match self {
+            Self::Causal => 0,
+            Self::SerializableDomain => 1,
+            Self::LinearizableAuthority => 2,
+            Self::MixedNonSettleable => 3,
+        }
+    }
+
+    pub(crate) fn from_code(code: i64) -> Result<Self, TaskStoreError> {
+        match code {
+            0 => Ok(Self::Causal),
+            1 => Ok(Self::SerializableDomain),
+            2 => Ok(Self::LinearizableAuthority),
+            3 => Ok(Self::MixedNonSettleable),
+            _ => Err(TaskStoreError::CorruptRecord(
+                "unknown snapshot consistency",
+            )),
+        }
+    }
+}
+
+/// Immutable receipt supplied by the snapshot builder. Signature bytes are
+/// stored and replayed exactly; cryptographic verification belongs to the
+/// Identity/key-trust authority integration rather than this local slice.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TaskSnapshotReceiptSpec {
+    pub task_id: TaskId,
+    pub snapshot: SnapshotBundle,
+    pub receipt_id: ReceiptId,
+    pub builder_id: [u8; 16],
+    pub builder_version_digest: [u8; 32],
+    pub per_authority_checkpoint_receipts: Vec<ReceiptId>,
+    pub dependency_closure_root: [u8; 32],
+    pub semantic_resolver_digest: [u8; 32],
+    pub canonical_iteration_digest: [u8; 32],
+    pub achieved_consistency: SnapshotConsistency,
+    pub built_at_ms: i64,
+    pub authority_id: [u8; 16],
+    pub key_id: [u8; 16],
+    pub signature: [u8; 64],
+}
+
+/// Durable readback of one `TaskSnapshotReceipt`.
+pub type TaskSnapshotReceiptRecord = TaskSnapshotReceiptSpec;
 
 /// Durable specification of one `TaskAttempt` registration.
 ///
@@ -475,6 +533,8 @@ pub struct AttemptRecord {
     pub attempt_id: TaskAttemptId,
     pub attempt_generation: Generation,
     pub snapshot: SnapshotBundle,
+    /// Present only when registration used the schema-v10 receipted path.
+    pub snapshot_receipt_id: Option<ReceiptId>,
     pub cancellation_scope_id: CancellationScopeId,
     pub cancellation_generation: Generation,
     pub state: AttemptState,

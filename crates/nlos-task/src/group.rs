@@ -1832,6 +1832,7 @@ impl crate::SqliteTaskAuthority {
             attempt_id: spec.attempt_id,
             attempt_generation: spec.attempt_generation,
             snapshot: spec.snapshot,
+            snapshot_receipt_id: None,
             cancellation_scope_id: spec.cancellation_scope_id,
             cancellation_generation: spec.cancellation_generation,
             state: AttemptState::Created,
