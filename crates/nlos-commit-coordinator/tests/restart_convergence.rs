@@ -1,6 +1,8 @@
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use nlos_artifact::{
     ArtifactStore, ContentDigest, CreateArtifactSpec, PublishStagedRevisionRequest,
@@ -8,6 +10,8 @@ use nlos_artifact::{
 };
 use nlos_commit_coordinator::{
     ArtifactCommitCoordinator, ConvergeArtifactCommitRequest, ConvergeStep, CoordinatorError,
+    RecoveryFailureAuthority, RecoveryWorkerConfig, RecoveryWorkerState,
+    TaskAuthorityCommitRecoveryWorker,
 };
 use nlos_task::{
     ArtifactCommitPlanState, ArtifactPublicationExpectation, AttemptSpec, PermitDecision,
@@ -132,7 +136,7 @@ fn prepare_single(databases: &TestAuthorities, seed: u8) -> PreparedSingle {
             write_set_root,
             planned_effects: Vec::new(),
             idempotency_key: IdempotencyKey::from_bytes([seed.wrapping_add(10); 16]),
-            valid_until_ms: 30_000,
+            valid_until_ms: i64::MAX,
             requested_at_ms: 3_000,
         })
         .unwrap()
@@ -185,6 +189,14 @@ fn hex(bytes: &[u8]) -> String {
         write!(output, "{byte:02x}").unwrap();
         output
     })
+}
+
+fn wait_until(mut predicate: impl FnMut() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !predicate() {
+        assert!(Instant::now() < deadline, "condition did not become true");
+        std::thread::sleep(Duration::from_millis(5));
+    }
 }
 
 #[test]
@@ -621,4 +633,141 @@ fn best_effort_scan_isolates_one_bad_plan_and_reports_typed_failure() {
     assert_eq!(repaired.inspected, 1);
     assert_eq!(repaired.finalized.len(), 1);
     assert!(repaired.failures.is_empty());
+}
+
+#[test]
+fn task_authority_worker_scans_immediately_and_stops_promptly() {
+    let databases = TestAuthorities::new("worker-startup");
+    let pending = prepare_single(&databases, 0xb1);
+    let (tasks, artifacts) = databases.open();
+    let tasks = Arc::new(tasks);
+    let artifacts = Arc::new(artifacts);
+    let mut worker = TaskAuthorityCommitRecoveryWorker::start(
+        Arc::clone(&tasks),
+        Arc::clone(&artifacts),
+        RecoveryWorkerConfig {
+            scan_limit: 16,
+            poll_interval: Duration::from_secs(10),
+            max_backoff: Duration::from_secs(10),
+            failure_threshold: 3,
+        },
+    )
+    .unwrap();
+
+    wait_until(|| {
+        tasks
+            .inspect_artifact_commit_plan(pending.plan)
+            .is_ok_and(|plan| plan.state == ArtifactCommitPlanState::Finalized)
+            && worker.health().completed_cycles >= 1
+    });
+    let running = worker.health();
+    assert_eq!(running.state, RecoveryWorkerState::Running);
+    assert!(running.completed_cycles >= 1);
+    assert_eq!(running.total_inspected, 1);
+    assert_eq!(running.total_finalized, 1);
+    assert!(running.last_failures.is_empty());
+
+    let stop_started = Instant::now();
+    worker.stop();
+    assert!(stop_started.elapsed() < Duration::from_secs(1));
+    assert_eq!(worker.health().state, RecoveryWorkerState::Stopped);
+}
+
+#[test]
+fn task_authority_worker_backs_off_reports_source_and_recovers() {
+    let databases = TestAuthorities::new("worker-repair");
+    let pending = prepare_single(&databases, 0xc1);
+    execute_sql(
+        &databases.task_path,
+        &format!(
+            "CREATE TRIGGER fail_worker_finalize
+             BEFORE UPDATE ON task_artifact_commit_plans
+             WHEN NEW.plan_state = 3 AND NEW.plan_id = X'{}'
+             BEGIN SELECT RAISE(ABORT, 'injected worker failure'); END;",
+            hex(pending.plan.as_bytes())
+        ),
+    );
+    let (tasks, artifacts) = databases.open();
+    let tasks = Arc::new(tasks);
+    let artifacts = Arc::new(artifacts);
+    let mut worker = TaskAuthorityCommitRecoveryWorker::start(
+        Arc::clone(&tasks),
+        artifacts,
+        RecoveryWorkerConfig {
+            scan_limit: 16,
+            poll_interval: Duration::from_millis(10),
+            max_backoff: Duration::from_millis(40),
+            failure_threshold: 20,
+        },
+    )
+    .unwrap();
+
+    wait_until(|| worker.health().consecutive_failed_cycles >= 2);
+    let failed = worker.health();
+    assert_eq!(failed.state, RecoveryWorkerState::BackingOff);
+    assert!(failed.retry_delay.is_some());
+    assert_eq!(failed.total_inspected, failed.completed_cycles);
+    assert_eq!(failed.last_failures.len(), 1);
+    assert_eq!(failed.last_failures[0].plan_id, Some(pending.plan));
+    assert_eq!(
+        failed.last_failures[0].authority,
+        RecoveryFailureAuthority::Task
+    );
+
+    execute_sql(&databases.task_path, "DROP TRIGGER fail_worker_finalize;");
+    wait_until(|| {
+        tasks
+            .inspect_artifact_commit_plan(pending.plan)
+            .is_ok_and(|plan| plan.state == ArtifactCommitPlanState::Finalized)
+            && worker.health().state == RecoveryWorkerState::Running
+    });
+    let recovered = worker.health();
+    assert_eq!(recovered.consecutive_failed_cycles, 0);
+    assert_eq!(recovered.retry_delay, None);
+    assert!(recovered.last_failures.is_empty());
+    assert_eq!(recovered.total_finalized, 1);
+    worker.stop();
+}
+
+#[test]
+fn persistent_failure_faults_worker_without_losing_durable_plan() {
+    let databases = TestAuthorities::new("worker-faulted");
+    let pending = prepare_single(&databases, 0xd1);
+    execute_sql(
+        &databases.task_path,
+        &format!(
+            "CREATE TRIGGER keep_worker_faulted
+             BEFORE UPDATE ON task_artifact_commit_plans
+             WHEN NEW.plan_state = 3 AND NEW.plan_id = X'{}'
+             BEGIN SELECT RAISE(ABORT, 'persistent worker failure'); END;",
+            hex(pending.plan.as_bytes())
+        ),
+    );
+    let (tasks, artifacts) = databases.open();
+    let tasks = Arc::new(tasks);
+    let worker = TaskAuthorityCommitRecoveryWorker::start(
+        Arc::clone(&tasks),
+        Arc::new(artifacts),
+        RecoveryWorkerConfig {
+            scan_limit: 16,
+            poll_interval: Duration::from_millis(10),
+            max_backoff: Duration::from_millis(20),
+            failure_threshold: 2,
+        },
+    )
+    .unwrap();
+
+    wait_until(|| worker.health().state == RecoveryWorkerState::Faulted);
+    let faulted = worker.health();
+    assert_eq!(faulted.completed_cycles, 2);
+    assert_eq!(faulted.consecutive_failed_cycles, 2);
+    assert_eq!(faulted.retry_delay, None);
+    assert_eq!(faulted.last_failures[0].plan_id, Some(pending.plan));
+    assert_eq!(
+        tasks
+            .inspect_artifact_commit_plan(pending.plan)
+            .unwrap()
+            .state,
+        ArtifactCommitPlanState::Ready
+    );
 }

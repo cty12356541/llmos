@@ -48,4 +48,4 @@ Artifact-only Task commit 已由无独立持久状态的 coordinator 驱动
 
 ## 当前证据与缺口
 
-`B-TASK-006E/F/G` 已证明无状态 coordinator 的重启收敛、事务故障保真和逐 plan 隔离，足以支持 owner 决策；它们尚未证明 worker 生命周期、退避、健康或真实进程崩溃。上述能力必须由后续 Evidence 验证后才能记为实现事实。
+`B-TASK-006E/F/G` 已证明无状态 coordinator 的重启收敛、事务故障保真和逐 plan 隔离，足以支持 owner 决策。[B-TASK-006H](../../evidence/stage-b/b-task-006h-task-authority-recovery-worker.md) 已进一步验证启动扫描、周期调度、有界指数退避、生命周期健康、故障阈值和及时 join；持久 retry/escalation ledger、jitter、外部运维接口与真实进程/VFS 故障仍未完成。

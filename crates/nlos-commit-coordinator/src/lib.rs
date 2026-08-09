@@ -4,6 +4,9 @@
 //! state machine already recorded by `TaskAuthority` and
 //! `ArtifactAuthority`, one idempotent step at a time, so process restart
 //! can resume from any committed prefix.
+//! [`TaskAuthorityCommitRecoveryWorker`] gives the owning `TaskAuthority`
+//! service a startup scan, periodic retry, bounded backoff, lifecycle health,
+//! and prompt joined shutdown without introducing a third authority.
 
 use std::error::Error;
 use std::fmt;
@@ -16,6 +19,13 @@ use nlos_task::{
     ArtifactCommitPlanId, ArtifactCommitPlanState, ArtifactFinalizeDecision,
     ArtifactTaskCommitReceipt, FinalizeArtifactCommitRequest, NestedArtifactPublicationReceipt,
     RecordArtifactPublicationsRequest, SqliteTaskAuthority, TaskStoreError,
+};
+
+mod worker;
+
+pub use worker::{
+    RecoveryFailureAuthority, RecoveryWorkerConfig, RecoveryWorkerFailure, RecoveryWorkerHealth,
+    RecoveryWorkerStartError, RecoveryWorkerState, TaskAuthorityCommitRecoveryWorker,
 };
 
 /// One bounded coordinator invocation.
