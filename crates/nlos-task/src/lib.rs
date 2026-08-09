@@ -71,18 +71,17 @@ pub use commit::{
     PlanArtifactCommitRequest, RecordArtifactPublicationsRequest, artifact_publication_plan_root,
 };
 pub use effect::{
-    DispatchRequest, EffectPermitDecision, EffectPermitId, EffectReceipt, EffectReceiptDecision,
-    EffectSlotId, IssuedPermit, LogicalEffectDescriptor, NoEffectReason, NoEffectRequest, Outcome,
-    OutcomeRequest, PermitRequest as EffectPermitRequest, ReceiptKind, SetSummary, SlotRecord,
-    SlotState, empty_effect_set_root, idempotency_identity_digest,
+    DispatchRequest, EffectPermitDecision, EffectReceipt, EffectReceiptDecision, IssuedPermit,
+    LogicalEffectDescriptor, NoEffectReason, NoEffectRequest, Outcome, OutcomeRequest,
+    PermitRequest as EffectPermitRequest, ReceiptKind, SetSummary, SlotRecord, SlotState,
+    empty_effect_set_root, idempotency_identity_digest,
 };
 pub use group::{
     AttemptGroupBindingRecord, AttemptGroupRegistration, CompletionMode, FailureMode,
     GroupAdmissionReceiptRecord, GroupBinding, GroupCancelDecision, GroupCancelRequest,
     GroupMemberRecord, GroupMemberRef, GroupMemberType, GroupReceiptKind, GroupRecord,
     GroupRegistrationDecision, GroupSpec, GroupState, MembershipState, RemovalDecision,
-    RemoveMemberRequest, TaskGroupCommitBinding, TaskGroupId, empty_group_membership_root,
-    membership_root_of,
+    RemoveMemberRequest, TaskGroupCommitBinding, empty_group_membership_root, membership_root_of,
 };
 pub use model::{
     AdoptionReceiptRecord, AttemptHandle, AttemptRecord, AttemptRegistrationDecision, AttemptSpec,
@@ -95,6 +94,7 @@ pub use model::{
     TaskSnapshotReceiptRecord, TaskSnapshotReceiptSpec, TaskSpec, TaskState,
     empty_effect_history_root,
 };
+pub use nlos_types::{EffectPermitId, EffectSlotId, TaskGroupId};
 pub use reconcile::{
     AdoptionReplay, AdoptionRequest, FinalizeRequestV3, ReconcileReplay, ReconcileRequest,
     effect_history_root_of,

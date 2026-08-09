@@ -26,7 +26,7 @@
 
 use nlos_types::{
     CancellationScopeId, Generation, IdempotencyKey, ReceiptId, ResourceGroupId, TaskAttemptId,
-    TaskId,
+    TaskGroupId, TaskId,
 };
 use rusqlite::{Transaction, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
@@ -39,36 +39,6 @@ use crate::{
     AttemptRecord, AttemptRegistrationDecision, AttemptSpec, AttemptState, ClosedAttempt,
     TaskState, TaskStoreError,
 };
-
-macro_rules! local_id {
-    ($name:ident, $doc:literal) => {
-        #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-        #[doc = $doc]
-        pub struct $name([u8; 16]);
-
-        impl $name {
-            #[must_use]
-            pub const fn from_bytes(bytes: [u8; 16]) -> Self {
-                Self(bytes)
-            }
-
-            #[must_use]
-            pub const fn into_bytes(self) -> [u8; 16] {
-                self.0
-            }
-
-            #[must_use]
-            pub const fn as_bytes(&self) -> &[u8; 16] {
-                &self.0
-            }
-        }
-    };
-}
-
-local_id!(
-    TaskGroupId,
-    "Authority-scoped identity of one `TaskGroup` (crate-local; `nlos-types` is owned by another lane)."
-);
 
 /// Membership position bound into a `TaskWriteSet`/`CommitPermit` and
 /// copied verbatim into its terminal task receipt (`[TASK-GROUP-002]`).

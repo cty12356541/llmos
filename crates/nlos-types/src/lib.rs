@@ -44,18 +44,57 @@ macro_rules! nominal_id {
 
 nominal_id!(ApplicationId);
 nominal_id!(PrincipalId);
+nominal_id!(PackageId);
+nominal_id!(InstallationId);
+nominal_id!(ExecutableId);
 nominal_id!(ProcessId);
+nominal_id!(AgentRoleId);
 nominal_id!(AgentInstanceId);
 nominal_id!(ExecutionFiberId);
 nominal_id!(ActivationId);
+nominal_id!(TaskGroupId);
 nominal_id!(TaskAttemptId);
 nominal_id!(TaskId);
+nominal_id!(IsolationDomainId);
+nominal_id!(TaskPlanId);
+nominal_id!(TaskNodeId);
 nominal_id!(TaskSnapshotId);
+nominal_id!(TaskCommitId);
 nominal_id!(CommitPermitId);
+nominal_id!(EffectSlotId);
+nominal_id!(EffectPermitId);
+nominal_id!(TaskAuthorityAssignmentId);
+nominal_id!(IntentId);
+nominal_id!(ActionId);
+nominal_id!(ControlCommandId);
 nominal_id!(OperationId);
 nominal_id!(CallbackId);
 nominal_id!(CancellationScopeId);
+nominal_id!(ContextId);
+nominal_id!(WorkspaceId);
+nominal_id!(SessionId);
+nominal_id!(NamespaceId);
+nominal_id!(CapabilityId);
+nominal_id!(ResourceAccountId);
 nominal_id!(ResourceGroupId);
+nominal_id!(ResourceAllocationId);
+nominal_id!(ResourceControllerId);
+nominal_id!(ControllerBindingId);
+nominal_id!(AdmissionPlanId);
+nominal_id!(AdmissionDecisionId);
+nominal_id!(ReclaimRequestId);
+nominal_id!(QuotaLeaseId);
+nominal_id!(CapacityLeaseId);
+nominal_id!(ExclusiveDeviceLeaseId);
+nominal_id!(ReservationId);
+nominal_id!(EscrowId);
+nominal_id!(ExpireRequestId);
+nominal_id!(ChannelId);
+nominal_id!(DeviceId);
+nominal_id!(DriverId);
+nominal_id!(SemanticEventId);
+nominal_id!(ControlDomainId);
+nominal_id!(KeyId);
 nominal_id!(SchedulerDomainId);
 nominal_id!(ReceiptId);
 nominal_id!(IdempotencyKey);
@@ -119,7 +158,10 @@ impl CancelEpoch {
 
 #[cfg(test)]
 mod tests {
-    use super::{CancelEpoch, ExecutionFiberId, Generation, ProcessId};
+    use super::{
+        CancelEpoch, ControlDomainId, DriverId, EffectPermitId, EffectSlotId, ExecutionFiberId,
+        Generation, IsolationDomainId, ProcessId, ReservationId, SemanticEventId, TaskGroupId,
+    };
 
     #[test]
     fn nominal_ids_preserve_bytes_and_type_name() {
@@ -131,6 +173,27 @@ mod tests {
         assert_eq!(fiber.into_bytes(), bytes);
         assert!(format!("{process:?}").starts_with("ProcessId("));
         assert!(format!("{fiber:?}").starts_with("ExecutionFiberId("));
+    }
+
+    #[test]
+    fn task_write_set_binding_ids_share_the_stable_nominal_contract() {
+        let bytes = [0x5au8; 16];
+        let values = [
+            format!("{:?}", TaskGroupId::from_bytes(bytes)),
+            format!("{:?}", IsolationDomainId::from_bytes(bytes)),
+            format!("{:?}", EffectSlotId::from_bytes(bytes)),
+            format!("{:?}", EffectPermitId::from_bytes(bytes)),
+            format!("{:?}", SemanticEventId::from_bytes(bytes)),
+            format!("{:?}", ControlDomainId::from_bytes(bytes)),
+            format!("{:?}", DriverId::from_bytes(bytes)),
+            format!("{:?}", ReservationId::from_bytes(bytes)),
+        ];
+
+        for value in values {
+            assert!(value.ends_with("5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a)"));
+        }
+        assert_eq!(TaskGroupId::from_bytes(bytes).into_bytes(), bytes);
+        assert_eq!(IsolationDomainId::from_bytes(bytes).into_bytes(), bytes);
     }
 
     #[test]
