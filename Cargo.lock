@@ -428,6 +428,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "nlos-system-control"
+version = "0.1.0"
+dependencies = [
+ "nlos-commit-coordinator",
+ "nlos-ipc",
+ "nlos-schema",
+ "nlos-service-directory",
+ "nlos-task",
+ "nlos-types",
+ "tokio",
+]
+
+[[package]]
 name = "nlos-task"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,22 @@
+[package]
+name = "nlos-system-control"
+description = "Typed SystemControl handler for TaskAuthority recovery operations."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+nlos-commit-coordinator = { path = "../nlos-commit-coordinator" }
+nlos-schema = { path = "../nlos-schema" }
+nlos-task = { path = "../nlos-task" }
+nlos-types = { path = "../nlos-types" }
+
+[dev-dependencies]
+nlos-ipc = { path = "../nlos-ipc" }
+nlos-service-directory = { path = "../nlos-service-directory" }
+tokio.workspace = true
+
+[lints]
+workspace = true

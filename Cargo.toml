@@ -14,6 +14,7 @@ members = [
     "crates/nlos-task",
     "crates/nlos-artifact",
     "crates/nlos-commit-coordinator",
+    "crates/nlos-system-control",
 ]
 exclude = ["fuzz"]
 resolver = "3"
