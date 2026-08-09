@@ -13,6 +13,7 @@ members = [
     "crates/nlos-store-fault",
     "crates/nlos-task",
     "crates/nlos-process",
+    "crates/nlos-resource",
     "crates/nlos-artifact",
     "crates/nlos-commit-coordinator",
     "crates/nlos-system-control",

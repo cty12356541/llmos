@@ -67,6 +67,8 @@ nominal_id!(TaskAuthorityAssignmentId);
 nominal_id!(IntentId);
 nominal_id!(ActionId);
 nominal_id!(ControlCommandId);
+nominal_id!(CallId);
+nominal_id!(QuoteId);
 nominal_id!(OperationId);
 nominal_id!(CallbackId);
 nominal_id!(CancellationScopeId);
