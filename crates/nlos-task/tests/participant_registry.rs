@@ -439,3 +439,164 @@ fn stale_or_frozen_registration_fails_without_mutating_registry() {
         frozen
     );
 }
+
+#[test]
+#[allow(clippy::too_many_lines)] // One lifecycle proves register, rotate, replace, replay, restart.
+fn verified_resource_registration_tracks_driver_rotation_and_replays() {
+    let database = Database::new();
+    let resource_root = AuthorityRoot::new("resource");
+    let resource = nlos_resource::ResourceAuthority::open(&resource_root.0).unwrap();
+    let driver = resource
+        .register_driver(nlos_resource::RegisterDriverRequest {
+            profile_digest: [0x81; 32],
+            idempotency_key: IdempotencyKey::from_bytes([0x82; 16]),
+            created_at_ms: 1_000,
+        })
+        .unwrap()
+        .record();
+    let account = resource
+        .create_account(nlos_resource::CreateAccountRequest {
+            initial_credit: 100,
+            idempotency_key: IdempotencyKey::from_bytes([0x83; 16]),
+            created_at_ms: 1_000,
+        })
+        .unwrap();
+    let initial_driver_proof = resource
+        .inspect_driver_gateway_endpoint_proof(driver.driver_id)
+        .unwrap();
+
+    let authority = database.open();
+    authority
+        .register_task(TaskSpec {
+            task_id: task_id(),
+            task_generation: Generation::INITIAL,
+            registered_at_ms: 1_000,
+        })
+        .unwrap();
+    let initial = authority.inspect_participant_registry(task_id()).unwrap();
+    let generation_two = Generation::INITIAL.checked_next().unwrap();
+    assert!(matches!(
+        authority.register_driver_gateway_participant(
+            &resource,
+            task_id(),
+            binding(&initial),
+            driver.driver_id,
+            generation_two,
+            1_900,
+        ),
+        Err(TaskStoreError::ParticipantEndpointGenerationMismatch {
+            expected: 2,
+            current: 1
+        })
+    ));
+    assert_eq!(
+        authority.inspect_participant_registry(task_id()).unwrap(),
+        initial
+    );
+    let driver_registry = authority
+        .register_driver_gateway_participant(
+            &resource,
+            task_id(),
+            binding(&initial),
+            driver.driver_id,
+            driver.generation,
+            2_000,
+        )
+        .unwrap()
+        .registry()
+        .clone();
+    let ledger_registry = authority
+        .register_resource_ledger_participant(
+            &resource,
+            task_id(),
+            binding(&driver_registry),
+            account.account_id,
+            Generation::INITIAL,
+            2_100,
+        )
+        .unwrap()
+        .registry()
+        .clone();
+    assert_eq!(ledger_registry.participants.len(), 3);
+
+    let rotated = resource
+        .rotate_driver(nlos_resource::RotateDriverRequest {
+            driver_id: driver.driver_id,
+            expected_generation: driver.generation,
+            expected_fencing_token: driver.fencing_token,
+            idempotency_key: IdempotencyKey::from_bytes([0x84; 16]),
+            rotated_at_ms: 2_200,
+        })
+        .unwrap()
+        .record();
+    assert!(matches!(
+        authority.register_driver_gateway_participant(
+            &resource,
+            task_id(),
+            binding(&ledger_registry),
+            driver.driver_id,
+            driver.generation,
+            2_300,
+        ),
+        Err(TaskStoreError::ParticipantEndpointGenerationMismatch {
+            expected: 1,
+            current: 2
+        })
+    ));
+    let rotated_registry = authority
+        .register_driver_gateway_participant(
+            &resource,
+            task_id(),
+            binding(&ledger_registry),
+            driver.driver_id,
+            rotated.generation,
+            2_400,
+        )
+        .unwrap()
+        .registry()
+        .clone();
+    assert_eq!(rotated_registry.participants.len(), 3);
+    let rotated_participant = rotated_registry
+        .participants
+        .iter()
+        .find(|participant| participant.participant_type == ParticipantType::DriverGateway)
+        .unwrap();
+    assert_eq!(
+        rotated_participant.participant_id,
+        initial_driver_proof.participant_id
+    );
+    assert_eq!(
+        rotated_participant.participant_generation,
+        rotated.generation
+    );
+    assert_ne!(
+        rotated_participant.admission_receipt_id,
+        initial_driver_proof.admission_receipt_id
+    );
+    match authority
+        .register_driver_gateway_participant(
+            &resource,
+            task_id(),
+            binding(&ledger_registry),
+            driver.driver_id,
+            rotated.generation,
+            2_500,
+        )
+        .unwrap()
+    {
+        ParticipantRegistrationDecision::Replayed(registry) => {
+            assert_eq!(registry, rotated_registry);
+        }
+        other @ ParticipantRegistrationDecision::Registered(_) => {
+            panic!("expected replay, got {other:?}")
+        }
+    }
+    drop(authority);
+    assert_eq!(
+        database
+            .open()
+            .inspect_participant_registry(task_id())
+            .unwrap(),
+        rotated_registry
+    );
+}

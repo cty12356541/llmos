@@ -651,6 +651,74 @@ impl SqliteTaskAuthority {
         self.register_verified_participant(task_id, expected, participant, registered_at_ms)
     }
 
+    /// Registers the current Driver gateway generation after direct
+    /// `ResourceAuthority` readback and an exact planned-generation check.
+    ///
+    /// # Errors
+    ///
+    /// Returns typed Resource proof, generation, task, registry CAS/freeze,
+    /// bound, or storage errors. No Task mutation occurs on proof mismatch.
+    pub fn register_driver_gateway_participant(
+        &self,
+        resource_authority: &nlos_resource::ResourceAuthority,
+        task_id: TaskId,
+        expected: crate::ParticipantRegistryBinding,
+        driver_id: nlos_types::DriverId,
+        expected_driver_generation: nlos_types::Generation,
+        registered_at_ms: i64,
+    ) -> Result<crate::ParticipantRegistrationDecision, TaskStoreError> {
+        let proof = resource_authority
+            .inspect_driver_gateway_endpoint_proof(driver_id)
+            .map_err(TaskStoreError::ResourceParticipantAuthority)?;
+        if proof.participant_generation != expected_driver_generation {
+            return Err(TaskStoreError::ParticipantEndpointGenerationMismatch {
+                expected: expected_driver_generation.get(),
+                current: proof.participant_generation.get(),
+            });
+        }
+        let participant = crate::ParticipantRecord {
+            participant_type: crate::ParticipantType::DriverGateway,
+            participant_id: proof.participant_id,
+            participant_generation: proof.participant_generation,
+            admission_receipt_id: proof.admission_receipt_id,
+        };
+        self.register_verified_participant(task_id, expected, participant, registered_at_ms)
+    }
+
+    /// Registers a Resource/Ledger account endpoint after direct owner
+    /// readback and an exact planned-generation check.
+    ///
+    /// # Errors
+    ///
+    /// Returns typed Resource proof, generation, task, registry CAS/freeze,
+    /// bound, or storage errors. No Task mutation occurs on proof mismatch.
+    pub fn register_resource_ledger_participant(
+        &self,
+        resource_authority: &nlos_resource::ResourceAuthority,
+        task_id: TaskId,
+        expected: crate::ParticipantRegistryBinding,
+        account_id: nlos_types::ResourceAccountId,
+        expected_account_generation: nlos_types::Generation,
+        registered_at_ms: i64,
+    ) -> Result<crate::ParticipantRegistrationDecision, TaskStoreError> {
+        let proof = resource_authority
+            .inspect_resource_ledger_endpoint_proof(account_id)
+            .map_err(TaskStoreError::ResourceParticipantAuthority)?;
+        if proof.participant_generation != expected_account_generation {
+            return Err(TaskStoreError::ParticipantEndpointGenerationMismatch {
+                expected: expected_account_generation.get(),
+                current: proof.participant_generation.get(),
+            });
+        }
+        let participant = crate::ParticipantRecord {
+            participant_type: crate::ParticipantType::ResourceLedger,
+            participant_id: proof.participant_id,
+            participant_generation: proof.participant_generation,
+            admission_receipt_id: proof.admission_receipt_id,
+        };
+        self.register_verified_participant(task_id, expected, participant, registered_at_ms)
+    }
+
     fn register_verified_participant(
         &self,
         task_id: TaskId,

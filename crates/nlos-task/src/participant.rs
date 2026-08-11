@@ -242,10 +242,23 @@ pub(crate) fn register_verified_participant(
     if registry.participants.contains(&participant) {
         return Ok(ParticipantRegistrationDecision::Replayed(registry));
     }
-    if registry.participants.iter().any(|existing| {
-        existing.participant_id == participant.participant_id
-            || existing.admission_receipt_id == participant.admission_receipt_id
-    }) {
+    let replacement = registry
+        .participants
+        .iter()
+        .position(|existing| existing.participant_id == participant.participant_id);
+    if let Some(index) = replacement {
+        let existing = registry.participants[index];
+        if existing.participant_type != participant.participant_type
+            || existing.participant_generation.get() >= participant.participant_generation.get()
+        {
+            return Err(TaskStoreError::ParticipantEndpointConflict);
+        }
+    }
+    if registry
+        .participants
+        .iter()
+        .any(|existing| existing.admission_receipt_id == participant.admission_receipt_id)
+    {
         return Err(TaskStoreError::ParticipantEndpointConflict);
     }
     if registry.generation != expected.generation || registry.root != expected.root {
@@ -256,7 +269,7 @@ pub(crate) fn register_verified_participant(
             state: registry.state,
         });
     }
-    if registry.participants.len() >= MAX_PARTICIPANTS {
+    if replacement.is_none() && registry.participants.len() >= MAX_PARTICIPANTS {
         return Err(TaskStoreError::ParticipantRegistryFull);
     }
     let changed = transaction.execute(
@@ -278,7 +291,11 @@ pub(crate) fn register_verified_participant(
         .checked_add(1)
         .ok_or(TaskStoreError::EpochExhausted)?;
     let mut participants = registry.participants.clone();
-    participants.push(participant);
+    if let Some(index) = replacement {
+        participants[index] = participant;
+    } else {
+        participants.push(participant);
+    }
     participants.sort_unstable_by_key(|item| {
         (
             item.participant_type.code(),

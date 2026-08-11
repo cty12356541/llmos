@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 nlos-artifact = { path = "../nlos-artifact" }
+nlos-resource = { path = "../nlos-resource" }
 nlos-semantic = { path = "../nlos-semantic" }
 nlos-types = { path = "../nlos-types" }
 rusqlite.workspace = true

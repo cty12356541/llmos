@@ -354,6 +354,13 @@ pub enum TaskStoreError {
     ArtifactParticipantAuthority(nlos_artifact::ArtifactError),
     /// Semantic authority proof readback failed before Task mutation.
     SemanticParticipantAuthority(nlos_semantic::SemanticAuthorityError),
+    /// Resource authority proof readback failed before Task mutation.
+    ResourceParticipantAuthority(nlos_resource::ResourceAuthorityError),
+    /// The owner proof does not match the generation planned by the caller.
+    ParticipantEndpointGenerationMismatch {
+        expected: u64,
+        current: u64,
+    },
     /// A caller-supplied group specification violates a structural bound.
     InvalidGroupSpec {
         /// Static explanation of the violation.
@@ -564,6 +571,16 @@ impl fmt::Display for TaskStoreError {
                     "Semantic participant proof verification failed: {error}"
                 )
             }
+            Self::ResourceParticipantAuthority(error) => {
+                write!(
+                    formatter,
+                    "Resource participant proof verification failed: {error}"
+                )
+            }
+            Self::ParticipantEndpointGenerationMismatch { expected, current } => write!(
+                formatter,
+                "participant endpoint generation mismatch: expected {expected}, current {current}"
+            ),
             Self::InvalidGroupSpec { reason } => {
                 write!(formatter, "invalid group spec: {reason}")
             }
@@ -577,6 +594,7 @@ impl Error for TaskStoreError {
             Self::Sqlite(error) => Some(error),
             Self::ArtifactParticipantAuthority(error) => Some(error),
             Self::SemanticParticipantAuthority(error) => Some(error),
+            Self::ResourceParticipantAuthority(error) => Some(error),
             _ => None,
         }
     }
