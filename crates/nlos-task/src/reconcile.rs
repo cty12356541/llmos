@@ -934,6 +934,7 @@ fn write_commit_receipt(
         attempt_id: ctx.attempt.attempt_id,
         attempt_generation: ctx.attempt.attempt_generation,
         group_binding: ctx.permit.group_binding,
+        participant_registry_binding: ctx.permit.participant_registry_binding,
         outcome,
         prior_head_commit_seq: ctx.task.record.head_commit_seq,
         prior_effect_history_root: ctx.task.record.head_effect_history_root,
@@ -988,6 +989,7 @@ fn write_closure_receipt(
         attempt_id: ctx.attempt.attempt_id,
         attempt_generation: ctx.attempt.attempt_generation,
         group_binding: ctx.permit.group_binding,
+        participant_registry_binding: ctx.permit.participant_registry_binding,
         outcome: outcome.receipt_outcome(),
         prior_head_commit_seq: ctx.task.record.head_commit_seq,
         prior_effect_history_root: ctx.task.record.head_effect_history_root,
@@ -1134,6 +1136,11 @@ impl SqliteTaskAuthority {
             attempt.attempt_id,
             permit.group_binding,
         )?;
+        crate::participant::validate_frozen_binding(
+            &transaction,
+            &task.record,
+            permit.participant_registry_binding,
+        )?;
         if legacy {
             let decision = finalize_legacy(&transaction, &task, &permit, &attempt, request)?;
             transaction.commit()?;
@@ -1230,6 +1237,9 @@ impl SqliteTaskAuthority {
                 let receipt =
                     load_receipt_by_permit(&transaction, request.task_id, permit.permit_id)?
                         .ok_or(TaskStoreError::PermitNotIssued)?;
+                if receipt.participant_registry_binding != permit.participant_registry_binding {
+                    return Err(TaskStoreError::ParticipantRegistryBindingMismatch);
+                }
                 if receipt.outcome != request.outcome.receipt_outcome() {
                     return Err(TaskStoreError::HistoryConflict);
                 }
@@ -1248,6 +1258,11 @@ impl SqliteTaskAuthority {
             &transaction,
             attempt.attempt_id,
             permit.group_binding,
+        )?;
+        crate::participant::validate_frozen_binding(
+            &transaction,
+            &task.record,
+            permit.participant_registry_binding,
         )?;
         let slots = list_slots(&transaction, permit.permit_id)?;
         if slots
@@ -1628,6 +1643,7 @@ fn finalize_legacy(
         attempt_id: request.base.attempt_id,
         attempt_generation: request.base.attempt_generation,
         group_binding: permit.group_binding,
+        participant_registry_binding: permit.participant_registry_binding,
         outcome: ReceiptOutcome::Committed,
         prior_head_commit_seq: task.record.head_commit_seq,
         prior_effect_history_root: task.record.head_effect_history_root,
@@ -1818,6 +1834,9 @@ fn replay_finalize(
 ) -> Result<FinalizeDecision, TaskStoreError> {
     let receipt = load_receipt_by_permit(transaction, permit.task_id, permit.permit_id)?
         .ok_or(TaskStoreError::PermitNotIssued)?;
+    if receipt.participant_registry_binding != permit.participant_registry_binding {
+        return Err(TaskStoreError::ParticipantRegistryBindingMismatch);
+    }
     if matches!(
         receipt.outcome,
         ReceiptOutcome::FailedBeforeEffect | ReceiptOutcome::CancelledBeforeEffect

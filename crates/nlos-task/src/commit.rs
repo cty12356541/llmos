@@ -693,6 +693,11 @@ fn finalize_ready_plan(
         return Err(TaskStoreError::StaleTaskHead);
     }
     crate::group::validate_commit_binding(transaction, attempt.attempt_id, permit.group_binding)?;
+    crate::participant::validate_frozen_binding(
+        transaction,
+        &task.record,
+        permit.participant_registry_binding,
+    )?;
     let effect_count: i64 = transaction.query_row(
         "SELECT COUNT(*) FROM effect_slots WHERE permit_id = ?1",
         [plan.permit_id.as_bytes().as_slice()],
@@ -721,6 +726,7 @@ fn finalize_ready_plan(
         attempt_id: attempt.attempt_id,
         attempt_generation: attempt.attempt_generation,
         group_binding: permit.group_binding,
+        participant_registry_binding: permit.participant_registry_binding,
         outcome: ReceiptOutcome::Committed,
         prior_head_commit_seq: task.record.head_commit_seq,
         prior_effect_history_root: task.record.head_effect_history_root,

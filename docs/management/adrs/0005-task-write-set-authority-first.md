@@ -49,4 +49,6 @@ schema v10 已建立 durable `TaskSnapshotReceipt` 与 attempt binding。下一�
 
 ## 当前证据与缺口
 
-[B-TASK-006O](../../evidence/stage-b/b-task-006o-durable-task-snapshot-receipt.md) 已证明 snapshot receipt 的本地持久化、replay 和 attempt binding，但真实 builder/checkpoint/验签仍未接通。Process/IsolationDomain、Semantic、Resource/Driver 与 participant registry 尚无本 ADR 要求的 durable Evidence；因此完整 TaskWriteSet 尚未实现。
+[B-TASK-006O](../../evidence/stage-b/b-task-006o-durable-task-snapshot-receipt.md) 已证明 snapshot receipt 的本地持久化、replay 和 attempt binding；[B-PROCESS-001](../../evidence/stage-b/b-process-001-durable-execution-binding-authority.md)、[B-RESOURCE-001](../../evidence/stage-b/b-resource-001-driver-reservation-binding-authority.md)、[B-SEMANTIC-001/002B](../../evidence/stage-b/b-semantic-002b-durable-spec-event-admission.md) 已建立本地 reference authority facts。[B-TASK-007A–007D1](../../evidence/stage-b/b-task-007d1-participant-binding-propagation.md) 已建立 authority-assigned participant registry、verified endpoint registration、permit freeze，以及 EffectPermit/Task Receipt generation/root 传播与在线重验。
+
+这些证据仍是单节点 H3 partial proof：真实 snapshot builder/checkpoint 验签、Channel endpoint、operation prepare→activate、TaskAuthority term/takeover coverage 与完整 planned endpoint seal 仍缺失。因此 ADR 步骤 1–4 已取得局部前置证据，步骤 5 的 complete TaskWriteSet 仍未实现，下一工作项为 `B-TASK-008A`。

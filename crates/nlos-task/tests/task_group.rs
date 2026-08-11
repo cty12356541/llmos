@@ -1219,7 +1219,7 @@ fn schema_v4_upgrades_to_v5_without_inventing_group_bindings() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("schema version");
-    assert_eq!(version, 11);
+    assert_eq!(version, 12);
 }
 
 /// Builds the cancellation fixture: root group + child group with an
@@ -1936,11 +1936,11 @@ fn seed_golden_v3_effects(database: &TestDatabase) {
         .expect("seed effect set");
 }
 
-/// Bullet: schema migration v3 → v4 is lossless — every v3 row
-/// survives, the v3 behaviors keep working bit-for-bit, the new v4
-/// group plane starts empty and is fully usable, and both the old and
-/// new immutability triggers enforce.
+/// Bullet: schema migration is lossless — every v3 row survives, legacy
+/// permits remain explicitly participant-unbound, the new group plane is
+/// usable, and old/new immutability triggers survive.
 #[test]
+#[allow(clippy::too_many_lines)] // One migration test audits legacy and current planes together.
 fn golden_v3_database_migrates_losslessly_to_v4() {
     let database = TestDatabase::new("golden-v3");
     seed_golden_v3(&database);
@@ -1952,7 +1952,7 @@ fn golden_v3_database_migrates_losslessly_to_v4() {
         let version: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read user_version");
-        assert_eq!(version, 11, "migration stamps the current schema version");
+        assert_eq!(version, 12, "migration stamps the current schema version");
     }
 
     // All v3 data intact.
@@ -1970,15 +1970,29 @@ fn golden_v3_database_migrates_losslessly_to_v4() {
             .is_empty()
     );
 
-    // The v3 flow keeps working on the migrated database: close the
-    // seeded slot and finalize v3 to a proved COMMITTED.
+    // Migration cannot invent a participant registry binding for the
+    // seeded permit, so new effect and terminal mutations fail closed.
     let spec_a = attempt_spec(0x0a, initial_snapshot());
     let permit = authority
         .inspect_permit(task_id(), seeded_permit_id)
         .expect("permit");
-    close_slot(&authority, &spec_a, &permit);
-    match authority
-        .finalize_commit_v3(FinalizeRequestV3 {
+    assert_eq!(permit.participant_registry_binding, None);
+    assert!(matches!(
+        authority.request_effect_permit(EffectPermitRequest {
+            task_id: spec_a.task_id,
+            attempt_id: spec_a.attempt_id,
+            attempt_generation: spec_a.attempt_generation,
+            permit_id: permit.permit_id,
+            permit_epoch: permit.permit_epoch,
+            effect_seq: 0,
+            idempotency_key: IdempotencyKey::from_bytes(bytes(0xe1)),
+            valid_until_ms: 9_999,
+            requested_at_ms: 4_000,
+        }),
+        Err(TaskStoreError::ParticipantRegistryBindingMissing)
+    ));
+    assert!(matches!(
+        authority.finalize_commit_v3(FinalizeRequestV3 {
             base: nlos_task::FinalizeRequest {
                 task_id: spec_a.task_id,
                 attempt_id: spec_a.attempt_id,
@@ -1995,14 +2009,9 @@ fn golden_v3_database_migrates_losslessly_to_v4() {
                 },
             }],
             fenced_participant_digest: [0xf1; 32],
-        })
-        .expect("v3 finalize on migrated db")
-    {
-        FinalizeDecision::Committed(receipt) => {
-            assert_eq!(receipt.outcome, ReceiptOutcome::Committed);
-        }
-        FinalizeDecision::Replayed(_) => panic!("expected fresh commit"),
-    }
+        }),
+        Err(TaskStoreError::ParticipantRegistryBindingMissing)
+    ));
 
     // The v4 plane starts empty and is fully usable: root group,
     // membership admission, receipts, cancellation.
@@ -2032,15 +2041,15 @@ fn golden_v3_database_migrates_losslessly_to_v4() {
     // The v3 immutability triggers still enforce, and the v4 ones do
     // too (a receipt row exists now, so the UPDATE reaches the trigger).
     let connection = rusqlite::Connection::open(&database.path).expect("raw connection");
-    assert!(
-        connection
-            .execute(
-                "UPDATE effect_receipts SET created_at_ms = created_at_ms",
-                []
-            )
-            .is_err(),
-        "v2/v3 effect receipt trigger survives migration"
-    );
+    let effect_trigger: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type='trigger' AND name='effect_receipt_is_immutable'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(effect_trigger, 1);
     assert!(
         connection
             .execute(

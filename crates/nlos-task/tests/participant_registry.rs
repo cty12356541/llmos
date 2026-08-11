@@ -2,9 +2,10 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use nlos_task::{
-    AttemptSpec, FinalizeDecision, FinalizeRequest, ParticipantRegistrationDecision,
+    AttemptSpec, EffectPermitDecision, EffectPermitRequest, FinalizeDecision, FinalizeRequest,
+    LogicalEffectDescriptor, Outcome, OutcomeRequest, ParticipantRegistrationDecision,
     ParticipantRegistryBinding, ParticipantRegistryState, ParticipantType, PermitDecision,
-    PermitRequest, SnapshotBundle, SqliteTaskAuthority, TaskSpec, TaskStoreError,
+    PermitRequest, PlannedEffect, SnapshotBundle, SqliteTaskAuthority, TaskSpec, TaskStoreError,
     empty_effect_history_root,
 };
 use nlos_types::{
@@ -90,6 +91,24 @@ fn permit(spec: &AttemptSpec, seed: u8) -> PermitRequest {
         idempotency_key: IdempotencyKey::from_bytes([seed.wrapping_add(10); 16]),
         valid_until_ms: 9_000,
         requested_at_ms: 3_000 + i64::from(seed),
+    }
+}
+
+fn planned_effect() -> PlannedEffect {
+    PlannedEffect {
+        descriptor: LogicalEffectDescriptor {
+            task_id: task_id(),
+            task_generation: Generation::INITIAL,
+            intent_spec_id: [0x91; 32],
+            stable_action_slot: 0,
+            target_authority_object_id: [0x92; 32],
+            effect_class: 1,
+            idempotency_scope: 1,
+        },
+        required: false,
+        required_condition_digest: None,
+        success_criteria_digest: [0x93; 32],
+        action_proposal_digest: [0x94; 32],
     }
 }
 
@@ -212,6 +231,140 @@ fn permit_atomically_freezes_and_binds_exact_registry_generation_root() {
             .unwrap()
             .root,
         binding.root
+    );
+}
+
+#[test]
+#[allow(clippy::too_many_lines)] // One lifecycle proves issuance, dispatch, finalize, restart.
+fn effect_permit_dispatch_and_task_receipt_copy_and_revalidate_registry_binding() {
+    let database = Database::new();
+    let authority = database.open();
+    authority
+        .register_task(TaskSpec {
+            task_id: task_id(),
+            task_generation: Generation::INITIAL,
+            registered_at_ms: 1_000,
+        })
+        .unwrap();
+    let spec = attempt(0x32, 0, empty_effect_history_root());
+    authority.register_attempt(spec).unwrap();
+    let mut commit_request = permit(&spec, 0x33);
+    commit_request.planned_effects = vec![planned_effect()];
+    let commit_permit = issued(authority.request_commit_permit(commit_request).unwrap());
+    let binding = commit_permit.participant_registry_binding.unwrap();
+    let effect_permit = match authority
+        .request_effect_permit(EffectPermitRequest {
+            task_id: task_id(),
+            attempt_id: spec.attempt_id,
+            attempt_generation: spec.attempt_generation,
+            permit_id: commit_permit.permit_id,
+            permit_epoch: commit_permit.permit_epoch,
+            effect_seq: 0,
+            idempotency_key: IdempotencyKey::from_bytes([0xa1; 16]),
+            valid_until_ms: 9_000,
+            requested_at_ms: 4_000,
+        })
+        .unwrap()
+    {
+        EffectPermitDecision::Issued(record) => *record,
+        other @ EffectPermitDecision::Replayed(_) => {
+            panic!("expected issued effect permit, got {other:?}")
+        }
+    };
+    assert_eq!(effect_permit.participant_registry_binding, Some(binding));
+
+    let raw = Connection::open(&database.0).unwrap();
+    raw.execute(
+        "UPDATE task_participant_registries SET registry_state=1 WHERE task_id=?1",
+        [task_id().as_bytes().as_slice()],
+    )
+    .unwrap();
+    let dispatch = nlos_task::DispatchRequest {
+        task_id: task_id(),
+        attempt_id: spec.attempt_id,
+        attempt_generation: spec.attempt_generation,
+        permit_id: commit_permit.permit_id,
+        permit_epoch: commit_permit.permit_epoch,
+        effect_permit_id: effect_permit.effect_permit_id,
+        dispatch_token: effect_permit.one_shot_dispatch_token,
+        dispatched_at_ms: 5_000,
+    };
+    assert!(matches!(
+        authority.consume_dispatch_token(dispatch),
+        Err(TaskStoreError::ParticipantRegistryFrozen {
+            state: ParticipantRegistryState::Open
+        })
+    ));
+    raw.execute(
+        "UPDATE task_participant_registries SET registry_state=2 WHERE task_id=?1",
+        [task_id().as_bytes().as_slice()],
+    )
+    .unwrap();
+    authority.consume_dispatch_token(dispatch).unwrap();
+    authority
+        .record_effect_outcome(OutcomeRequest {
+            task_id: task_id(),
+            attempt_id: spec.attempt_id,
+            attempt_generation: spec.attempt_generation,
+            permit_id: commit_permit.permit_id,
+            permit_epoch: commit_permit.permit_epoch,
+            effect_seq: 0,
+            outcome: Outcome::Closed {
+                authoritative_closure_digest: [0xa2; 32],
+            },
+            recorded_at_ms: 6_000,
+        })
+        .unwrap();
+
+    raw.execute(
+        "UPDATE task_participant_registries SET registry_state=1 WHERE task_id=?1",
+        [task_id().as_bytes().as_slice()],
+    )
+    .unwrap();
+    let finalize = FinalizeRequest {
+        task_id: task_id(),
+        attempt_id: spec.attempt_id,
+        attempt_generation: spec.attempt_generation,
+        permit_id: commit_permit.permit_id,
+        new_effect_history_root: [0xa3; 32],
+        new_retry_fence_epoch: 0,
+        finalized_at_ms: 7_000,
+    };
+    assert!(matches!(
+        authority.finalize_commit(finalize),
+        Err(TaskStoreError::ParticipantRegistryFrozen {
+            state: ParticipantRegistryState::Open
+        })
+    ));
+    raw.execute(
+        "UPDATE task_participant_registries SET registry_state=2 WHERE task_id=?1",
+        [task_id().as_bytes().as_slice()],
+    )
+    .unwrap();
+    let receipt = match authority.finalize_commit(finalize).unwrap() {
+        FinalizeDecision::Committed(receipt) => *receipt,
+        other @ FinalizeDecision::Replayed(_) => {
+            panic!("expected committed receipt, got {other:?}")
+        }
+    };
+    assert_eq!(receipt.participant_registry_binding, Some(binding));
+    drop(raw);
+    drop(authority);
+
+    let reopened = database.open();
+    assert_eq!(
+        reopened
+            .inspect_effect_permit(task_id(), effect_permit.effect_permit_id)
+            .unwrap()
+            .participant_registry_binding,
+        Some(binding)
+    );
+    assert_eq!(
+        reopened
+            .inspect_receipt(task_id(), receipt.receipt_id)
+            .unwrap()
+            .participant_registry_binding,
+        Some(binding)
     );
 }
 

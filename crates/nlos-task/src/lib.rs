@@ -346,6 +346,12 @@ pub enum TaskStoreError {
     },
     /// The registry state changed outside the expected authority CAS.
     ParticipantRegistryCasMismatch,
+    /// A legacy permit or receipt lacks the registry binding required for
+    /// a new effect-plane or terminal authority decision.
+    ParticipantRegistryBindingMissing,
+    /// A copied effect/receipt binding differs from its parent permit or
+    /// from the frozen authority registry.
+    ParticipantRegistryBindingMismatch,
     /// A verified endpoint identity or Receipt collides with another tuple.
     ParticipantEndpointConflict,
     /// The bounded participant set is full.
@@ -552,6 +558,12 @@ impl fmt::Display for TaskStoreError {
             }
             Self::ParticipantRegistryCasMismatch => {
                 formatter.write_str("participant registry compare-and-swap failed")
+            }
+            Self::ParticipantRegistryBindingMissing => {
+                formatter.write_str("participant registry binding is missing")
+            }
+            Self::ParticipantRegistryBindingMismatch => {
+                formatter.write_str("participant registry binding mismatch")
             }
             Self::ParticipantEndpointConflict => {
                 formatter.write_str("participant endpoint identity or receipt conflicts")

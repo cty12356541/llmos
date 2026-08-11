@@ -19,8 +19,9 @@ use sha2::{Digest, Sha256};
 
 use crate::model::PlannedEffect;
 use crate::store::{
-    SqlRead, SqliteTaskAuthority, StoredTask, blob16, blob32, encode_u64, generation_from_blob,
-    load_attempt, load_permit_by_id, load_task, optional_blob16, u64_from_blob, update_task,
+    SqlRead, SqliteTaskAuthority, StoredTask, blob16, blob32, decode_participant_binding,
+    encode_u64, generation_from_blob, load_attempt, load_permit_by_id, load_task, optional_blob16,
+    u64_from_blob, update_task,
 };
 use crate::{PermitRecord, PermitState, TaskStoreError};
 
@@ -325,6 +326,9 @@ pub struct IssuedPermit {
     pub idempotency_identity_digest: [u8; 32],
     pub effect_set_root: [u8; 32],
     pub action_proposal_digest: [u8; 32],
+    /// Verbatim copy of the parent `CommitPermit` registry binding. `None`
+    /// is reserved for pre-v12 migrated effect permits.
+    pub participant_registry_binding: Option<crate::ParticipantRegistryBinding>,
     pub control_epoch: u64,
     pub cancel_epoch: u64,
     /// Deterministically derived, single-use bearer token. Consumption is
@@ -983,7 +987,8 @@ const EFFECT_PERMIT_COLUMNS: &str = "effect_permit_id, task_id, idempotency_key,
      permit_epoch, attempt_id, attempt_generation, effect_slot_id, effect_seq,
      logical_effect_id, retry_fence_epoch, idempotency_identity_digest,
      effect_set_root, action_proposal_digest, control_epoch, cancel_epoch,
-     valid_until_ms, created_at_ms";
+     valid_until_ms, created_at_ms, participant_registry_generation,
+     participant_registry_root";
 
 fn decode_effect_permit_row(row: &rusqlite::Row<'_>) -> Result<IssuedPermit, TaskStoreError> {
     let effect_permit_id = EffectPermitId::from_bytes(blob16(row, 0)?);
@@ -1004,6 +1009,7 @@ fn decode_effect_permit_row(row: &rusqlite::Row<'_>) -> Result<IssuedPermit, Tas
         idempotency_identity_digest: blob32(row, 11)?,
         effect_set_root: blob32(row, 12)?,
         action_proposal_digest: blob32(row, 13)?,
+        participant_registry_binding: decode_participant_binding(row, 18)?,
         control_epoch: u64_from_blob(row, 14)?,
         cancel_epoch: u64_from_blob(row, 15)?,
         one_shot_dispatch_token: derive_dispatch_token(
@@ -1056,14 +1062,24 @@ fn insert_effect_permit(
     record: &IssuedPermit,
     token_digest: [u8; 32],
 ) -> Result<(), TaskStoreError> {
+    if record.participant_registry_binding.is_none() {
+        return Err(TaskStoreError::ParticipantRegistryBindingMissing);
+    }
+    let participant_generation = record
+        .participant_registry_binding
+        .map(|binding| encode_u64(binding.generation));
+    let participant_root = record
+        .participant_registry_binding
+        .map(|binding| binding.root);
     transaction.execute(
         "INSERT INTO effect_permits (
             effect_permit_id, task_id, idempotency_key, permit_id, permit_epoch,
             attempt_id, attempt_generation, effect_slot_id, effect_seq,
             logical_effect_id, retry_fence_epoch, idempotency_identity_digest,
             effect_set_root, action_proposal_digest, control_epoch, cancel_epoch,
-            dispatch_token_digest, valid_until_ms, created_at_ms
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+            dispatch_token_digest, valid_until_ms, created_at_ms,
+            participant_registry_generation, participant_registry_root
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
         params![
             record.effect_permit_id.as_bytes().as_slice(),
             record.task_id.as_bytes().as_slice(),
@@ -1084,6 +1100,8 @@ fn insert_effect_permit(
             token_digest.as_slice(),
             record.valid_until_ms,
             record.created_at_ms,
+            participant_generation.as_ref().map(<[u8; 8]>::as_slice),
+            participant_root.as_ref().map(<[u8; 32]>::as_slice),
         ],
     )?;
     Ok(())
@@ -1274,7 +1292,13 @@ fn check_commit_context(
     context: &HolderContext,
 ) -> Result<(), TaskStoreError> {
     check_head_unchanged(&context.task, &context.permit)?;
-    check_group_unchanged(transaction, attempt_id, &context.permit)
+    check_group_unchanged(transaction, attempt_id, &context.permit)?;
+    crate::participant::validate_frozen_binding(
+        transaction,
+        &context.task.record,
+        context.permit.participant_registry_binding,
+    )?;
+    Ok(())
 }
 
 impl SqliteTaskAuthority {
@@ -1295,6 +1319,7 @@ impl SqliteTaskAuthority {
     ///
     /// Returns a not-found, holder, epoch, stale-head, cancel, slot-state,
     /// idempotency-conflict, or storage error.
+    #[allow(clippy::too_many_lines)] // Keep the one-transaction authority decision contiguous.
     pub fn request_effect_permit(
         &self,
         request: PermitRequest,
@@ -1304,6 +1329,10 @@ impl SqliteTaskAuthority {
         if let Some(existing) =
             load_effect_permit_by_key(&transaction, request.task_id, request.idempotency_key)?
         {
+            let parent = load_permit_by_id(&transaction, request.task_id, existing.permit_id)?;
+            if existing.participant_registry_binding != parent.participant_registry_binding {
+                return Err(TaskStoreError::ParticipantRegistryBindingMismatch);
+            }
             let same_bytes = existing.permit_id == request.permit_id
                 && existing.attempt_id == request.attempt_id
                 && existing.attempt_generation == request.attempt_generation
@@ -1378,6 +1407,7 @@ impl SqliteTaskAuthority {
             idempotency_identity_digest: slot.idempotency_identity_digest,
             effect_set_root,
             action_proposal_digest: slot.action_proposal_digest,
+            participant_registry_binding: context.permit.participant_registry_binding,
             control_epoch,
             cancel_epoch: context.task.record.cancel_epoch,
             one_shot_dispatch_token: token,
@@ -1448,6 +1478,10 @@ impl SqliteTaskAuthority {
         if effect_permit.permit_id != request.permit_id {
             return Err(TaskStoreError::EffectPermitNotFound);
         }
+        crate::participant::validate_copied_binding(
+            context.permit.participant_registry_binding,
+            effect_permit.participant_registry_binding,
+        )?;
         let slot = load_slot(&transaction, request.permit_id, effect_permit.effect_seq)?;
         let presented_digest = dispatch_token_digest(&request.dispatch_token);
         let stored_digest = load_dispatch_token_digest(&transaction, request.effect_permit_id)?;

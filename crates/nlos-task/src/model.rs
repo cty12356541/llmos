@@ -582,6 +582,9 @@ pub struct TaskReceiptRecord {
     /// Verbatim copy of the permit's `TaskGroup` membership binding. The
     /// authority revalidates it immediately before terminalization.
     pub group_binding: Option<crate::TaskGroupCommitBinding>,
+    /// Verbatim copy of the permit's participant registry binding. `None`
+    /// is reserved for pre-permit closure or pre-v12 migrated receipts.
+    pub participant_registry_binding: Option<crate::ParticipantRegistryBinding>,
     pub outcome: ReceiptOutcome,
     pub prior_head_commit_seq: u64,
     pub prior_effect_history_root: [u8; 32],

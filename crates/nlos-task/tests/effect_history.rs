@@ -952,7 +952,7 @@ fn golden_v2_database_migrates_losslessly_to_v3() {
         let version: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read user_version");
-        assert_eq!(version, 11, "migration stamps the current schema version");
+        assert_eq!(version, 12, "migration stamps the current schema version");
     }
 
     // All v2 data intact.
@@ -989,10 +989,14 @@ fn golden_v2_database_migrates_losslessly_to_v3() {
             .is_none()
     );
 
-    // The v2 behaviors survive unchanged: a PLANNED slot still blocks
-    // legacy finalize with the B-TASK-002 typed error (no quarantine on
-    // the legacy path).
+    // The seeded v2 permit remains queryable but is explicitly unbound.
+    // Schema v12 must not invent participant evidence, and no new effect
+    // or terminal authority decision may proceed from that legacy row.
     let spec_a = attempt_spec(0x0a, initial_snapshot());
+    let permit = authority
+        .inspect_permit(task_id(), seeded_permit_id)
+        .expect("permit");
+    assert_eq!(permit.participant_registry_binding, None);
     assert!(matches!(
         authority.finalize_commit(nlos_task::FinalizeRequest {
             task_id: spec_a.task_id,
@@ -1003,54 +1007,33 @@ fn golden_v2_database_migrates_losslessly_to_v3() {
             new_retry_fence_epoch: 0,
             finalized_at_ms: 7_000,
         }),
-        Err(TaskStoreError::OutstandingEffectSlots { count: 1 })
+        Err(TaskStoreError::ParticipantRegistryBindingMissing)
     ));
-
-    // The v3 flow drives the seeded slot to a proved COMMITTED finalize.
-    let permit = authority
-        .inspect_permit(task_id(), seeded_permit_id)
-        .expect("permit");
-    close_slot(&authority, &spec_a, &permit, 0);
-    let receipt = match authority
-        .finalize_commit_v3(finalize_v3(
-            &spec_a,
-            seeded_permit_id,
-            vec![success_proof(0)],
-        ))
-        .expect("v3 finalize on migrated db")
-    {
-        FinalizeDecision::Committed(receipt) => *receipt,
-        other @ FinalizeDecision::Replayed(_) => panic!("expected Committed, got {other:?}"),
-    };
-    assert_eq!(receipt.outcome, nlos_task::ReceiptOutcome::Committed);
-    assert_eq!(receipt.new_head_commit_seq, 1);
-    let entries = authority.list_effect_history(task_id()).expect("history");
-    assert_eq!(entries.len(), 1);
-    assert_eq!(
-        authority
-            .inspect_task(task_id())
-            .expect("head")
-            .head_effect_history_root,
-        effect_history_root_of(&entries)
-    );
+    assert!(authority.list_effect_history(task_id()).unwrap().is_empty());
 
     // The v2 immutability triggers still enforce, and the v3 ones do too.
     let connection = rusqlite::Connection::open(&database.path).expect("raw connection");
-    assert!(
-        connection
-            .execute(
-                "UPDATE effect_receipts SET created_at_ms = created_at_ms",
-                []
-            )
-            .is_err(),
+    let v2_trigger: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type='trigger' AND name='effect_receipt_is_immutable'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        v2_trigger, 1,
         "v2 effect receipt trigger survives migration"
     );
-    assert!(
-        connection
-            .execute("UPDATE effect_history SET outcome = outcome", [])
-            .is_err(),
-        "v3 history trigger enforces"
-    );
+    let v3_trigger: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type='trigger' AND name='effect_history_is_immutable'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(v3_trigger, 1, "v3 history trigger survives migration");
 }
 
 /// Bullet: v2 → v3 migration is transactional and fail-closed — a v2

@@ -1223,9 +1223,9 @@ fn seed_golden_v1(database: &TestDatabase) {
         .expect("seed permit");
 }
 
-/// Bullet: schema migration v1 → v2 is lossless — every B-TASK-001 row
-/// survives, old invariants stay enforceable, old flows keep working, and
-/// the new effect plane is usable on the migrated database.
+/// Bullet: schema migration is lossless — every legacy row survives and
+/// old invariants remain enforceable, while v12 refuses to invent the
+/// participant binding required for new effect or terminal decisions.
 #[test]
 fn golden_v1_database_migrates_losslessly() {
     let database = TestDatabase::new("golden-v1");
@@ -1241,7 +1241,7 @@ fn golden_v1_database_migrates_losslessly() {
         // B-TASK-003 adaptation: the open now runs the v1 → v2 → v3
         // additive chain, so the stamped version is 3; every assertion
         // below is unchanged (v1/v2 semantics preserved bit-for-bit).
-        assert_eq!(version, 11, "migration stamps the current schema version");
+        assert_eq!(version, 12, "migration stamps the current schema version");
     }
 
     // All v1 data intact.
@@ -1259,9 +1259,10 @@ fn golden_v1_database_migrates_losslessly() {
         .expect("permit");
     assert_eq!(permit.state, nlos_task::PermitState::Issued);
     assert_eq!(permit.write_set_root, [0x01; 32]);
+    assert_eq!(permit.participant_registry_binding, None);
 
-    // The seeded v1 permit has no declared effects: replay and finalize
-    // behave exactly as in B-TASK-001.
+    // Exact idempotent readback survives. Terminal mutation fails closed
+    // because migration cannot manufacture participant evidence.
     let spec_a = attempt_spec(0x0a, snapshot(0, 0));
     let mut replay = permit_request(&spec_a, 0x01, Vec::new());
     replay.idempotency_key = IdempotencyKey::from_bytes(bytes(0xb1));
@@ -1271,30 +1272,30 @@ fn golden_v1_database_migrates_losslessly() {
         }
         other => panic!("expected Replayed, got {other:?}"),
     }
-    assert!(
-        matches!(
-            authority.finalize_commit(finalize_request(&spec_a, seeded_permit_id)),
-            Ok(FinalizeDecision::Committed(_))
-        ),
-        "a v1 no-effect permit still finalizes after migration"
-    );
+    assert!(matches!(
+        authority.finalize_commit(finalize_request(&spec_a, seeded_permit_id)),
+        Err(TaskStoreError::ParticipantRegistryBindingMissing)
+    ));
     assert_eq!(
         authority
             .inspect_task(task_id())
             .expect("head")
             .head_commit_seq,
-        1
+        0
     );
 
     // The v1 immutability triggers still enforce.
     {
         let connection = rusqlite::Connection::open(&database.path).expect("raw connection");
-        assert!(
-            connection
-                .execute("UPDATE task_receipts SET created_at_ms = created_at_ms", [])
-                .is_err(),
-            "task receipt immutability trigger must survive migration"
-        );
+        let receipt_trigger: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type='trigger' AND name='task_receipt_is_immutable'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(receipt_trigger, 1);
         assert!(
             connection
                 .execute(
@@ -1305,37 +1306,6 @@ fn golden_v1_database_migrates_losslessly() {
             "snapshot immutability trigger must survive migration"
         );
     }
-
-    // The effect plane is fully usable on the migrated database.
-    let spec_c = attempt_spec(0x0c, snapshot(1, 0));
-    authority.register_attempt(spec_c).expect("register C");
-    let permit_c = issued_permit(
-        authority
-            .request_commit_permit(permit_request(&spec_c, 0x03, vec![planned(0, true)]))
-            .expect("permit C"),
-    );
-    let issued = issued_effect_permit(
-        authority
-            .request_effect_permit(effect_request(&spec_c, &permit_c, 0, 0xe1))
-            .expect("issue on migrated db"),
-    );
-    authority
-        .consume_dispatch_token(dispatch_request(&spec_c, &permit_c, &issued))
-        .expect("dispatch on migrated db");
-    authority
-        .record_effect_outcome(outcome_request(
-            &spec_c,
-            &permit_c,
-            0,
-            Outcome::Closed {
-                authoritative_closure_digest: [0xaa; 32],
-            },
-        ))
-        .expect("close on migrated db");
-    assert!(matches!(
-        authority.finalize_commit(finalize_request(&spec_c, permit_c.permit_id)),
-        Ok(FinalizeDecision::Committed(_))
-    ));
 }
 
 /// Bullet: migration is transactional and fail-closed — a v1 database on

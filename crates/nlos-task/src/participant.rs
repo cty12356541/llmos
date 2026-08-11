@@ -323,6 +323,37 @@ pub(crate) fn inspect_registry(
     Ok(registry)
 }
 
+pub(crate) fn validate_frozen_binding(
+    connection: &Connection,
+    task: &TaskRecord,
+    binding: Option<ParticipantRegistryBinding>,
+) -> Result<ParticipantRegistryBinding, TaskStoreError> {
+    let binding = binding.ok_or(TaskStoreError::ParticipantRegistryBindingMissing)?;
+    let registry = load_current_registry(connection, task.task_id)?
+        .ok_or(TaskStoreError::ParticipantRegistryNotFound)?;
+    validate_registry(task, &registry)?;
+    if registry.generation != binding.generation || registry.root != binding.root {
+        return Err(TaskStoreError::ParticipantRegistryBindingMismatch);
+    }
+    if registry.state != ParticipantRegistryState::FrozenForPermit {
+        return Err(TaskStoreError::ParticipantRegistryFrozen {
+            state: registry.state,
+        });
+    }
+    Ok(binding)
+}
+
+pub(crate) fn validate_copied_binding(
+    parent: Option<ParticipantRegistryBinding>,
+    copied: Option<ParticipantRegistryBinding>,
+) -> Result<ParticipantRegistryBinding, TaskStoreError> {
+    let parent = parent.ok_or(TaskStoreError::ParticipantRegistryBindingMissing)?;
+    if copied != Some(parent) {
+        return Err(TaskStoreError::ParticipantRegistryBindingMismatch);
+    }
+    Ok(parent)
+}
+
 fn insert_registry_generation(
     transaction: &Transaction<'_>,
     task: &TaskRecord,

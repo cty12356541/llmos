@@ -25,7 +25,7 @@ use crate::{
     TaskState, TaskStoreError,
 };
 
-const SCHEMA_VERSION: i64 = 11;
+const SCHEMA_VERSION: i64 = 12;
 
 /// A single-writer `SQLite` task authority.
 ///
@@ -121,6 +121,7 @@ impl SqliteTaskAuthority {
                 migrate_v9(&mut connection)?;
                 migrate_v10(&mut connection)?;
                 migrate_v11(&mut connection)?;
+                migrate_v12(&mut connection)?;
             }
             1 => {
                 migrate_v2(&mut connection)?;
@@ -133,6 +134,7 @@ impl SqliteTaskAuthority {
                 migrate_v9(&mut connection)?;
                 migrate_v10(&mut connection)?;
                 migrate_v11(&mut connection)?;
+                migrate_v12(&mut connection)?;
             }
             2 => {
                 migrate_v3(&mut connection)?;
@@ -144,6 +146,7 @@ impl SqliteTaskAuthority {
                 migrate_v9(&mut connection)?;
                 migrate_v10(&mut connection)?;
                 migrate_v11(&mut connection)?;
+                migrate_v12(&mut connection)?;
             }
             3 => {
                 migrate_v4(&mut connection)?;
@@ -154,6 +157,7 @@ impl SqliteTaskAuthority {
                 migrate_v9(&mut connection)?;
                 migrate_v10(&mut connection)?;
                 migrate_v11(&mut connection)?;
+                migrate_v12(&mut connection)?;
             }
             4 => {
                 migrate_v5(&mut connection)?;
@@ -163,6 +167,7 @@ impl SqliteTaskAuthority {
                 migrate_v9(&mut connection)?;
                 migrate_v10(&mut connection)?;
                 migrate_v11(&mut connection)?;
+                migrate_v12(&mut connection)?;
             }
             5 => {
                 migrate_v6(&mut connection)?;
@@ -171,6 +176,7 @@ impl SqliteTaskAuthority {
                 migrate_v9(&mut connection)?;
                 migrate_v10(&mut connection)?;
                 migrate_v11(&mut connection)?;
+                migrate_v12(&mut connection)?;
             }
             6 => {
                 migrate_v7(&mut connection)?;
@@ -178,23 +184,31 @@ impl SqliteTaskAuthority {
                 migrate_v9(&mut connection)?;
                 migrate_v10(&mut connection)?;
                 migrate_v11(&mut connection)?;
+                migrate_v12(&mut connection)?;
             }
             7 => {
                 migrate_v8(&mut connection)?;
                 migrate_v9(&mut connection)?;
                 migrate_v10(&mut connection)?;
                 migrate_v11(&mut connection)?;
+                migrate_v12(&mut connection)?;
             }
             8 => {
                 migrate_v9(&mut connection)?;
                 migrate_v10(&mut connection)?;
                 migrate_v11(&mut connection)?;
+                migrate_v12(&mut connection)?;
             }
             9 => {
                 migrate_v10(&mut connection)?;
                 migrate_v11(&mut connection)?;
+                migrate_v12(&mut connection)?;
             }
-            10 => migrate_v11(&mut connection)?,
+            10 => {
+                migrate_v11(&mut connection)?;
+                migrate_v12(&mut connection)?;
+            }
+            11 => migrate_v12(&mut connection)?,
             SCHEMA_VERSION => {}
             other => return Err(TaskStoreError::UnsupportedSchema(other)),
         }
@@ -1002,6 +1016,7 @@ pub(crate) fn closure_receipt(
         attempt_id: attempt.attempt_id,
         attempt_generation: attempt.attempt_generation,
         group_binding: None,
+        participant_registry_binding: None,
         outcome: ReceiptOutcome::CancelledBeforeEffect,
         prior_head_commit_seq: task.head_commit_seq,
         prior_effect_history_root: task.head_effect_history_root,
@@ -1335,6 +1350,77 @@ fn migrate_v11(connection: &mut Connection) -> Result<(), TaskStoreError> {
     transaction.commit()?;
     Ok(())
 }
+
+/// v11 → v12 copies the frozen participant registry binding into every new
+/// `EffectPermit` and permit-backed Task receipt. Existing rows remain
+/// explicitly unbound rather than receiving invented authority evidence.
+fn migrate_v12(connection: &mut Connection) -> Result<(), TaskStoreError> {
+    let mut present = 0usize;
+    for (table, expected) in [
+        (
+            "effect_permits",
+            [
+                "participant_registry_generation",
+                "participant_registry_root",
+            ],
+        ),
+        (
+            "task_receipts",
+            [
+                "participant_registry_generation",
+                "participant_registry_root",
+            ],
+        ),
+    ] {
+        let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
+        let columns = statement.query_map([], |row| row.get::<_, String>(1))?;
+        for column in columns {
+            if expected.contains(&column?.as_str()) {
+                present += 1;
+            }
+        }
+    }
+    let trigger_present: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master
+            WHERE type='trigger' AND name='effect_permit_participant_binding_immutable'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if present == 4 && trigger_present {
+        connection.pragma_update(None, "user_version", 12)?;
+        return Ok(());
+    }
+    if present != 0 || trigger_present {
+        return Err(TaskStoreError::CorruptRecord(
+            "partial participant binding propagation schema",
+        ));
+    }
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(SCHEMA_V12_SQL)?;
+    transaction.commit()?;
+    Ok(())
+}
+
+const SCHEMA_V12_SQL: &str = "ALTER TABLE effect_permits
+        ADD COLUMN participant_registry_generation BLOB
+        CHECK(participant_registry_generation IS NULL OR length(participant_registry_generation) = 8);
+    ALTER TABLE effect_permits
+        ADD COLUMN participant_registry_root BLOB
+        CHECK(participant_registry_root IS NULL OR length(participant_registry_root) = 32);
+    ALTER TABLE task_receipts
+        ADD COLUMN participant_registry_generation BLOB
+        CHECK(participant_registry_generation IS NULL OR length(participant_registry_generation) = 8);
+    ALTER TABLE task_receipts
+        ADD COLUMN participant_registry_root BLOB
+        CHECK(participant_registry_root IS NULL OR length(participant_registry_root) = 32);
+    CREATE TRIGGER effect_permit_participant_binding_immutable
+    BEFORE UPDATE ON effect_permits
+    WHEN NEW.participant_registry_generation IS NOT OLD.participant_registry_generation
+      OR NEW.participant_registry_root IS NOT OLD.participant_registry_root
+    BEGIN SELECT RAISE(ABORT, 'effect permit participant binding is immutable'); END;
+    PRAGMA user_version = 12;";
 
 const SCHEMA_V10_SQL: &str = "CREATE TABLE task_snapshot_receipts (
         receipt_id BLOB PRIMARY KEY NOT NULL CHECK(length(receipt_id) = 16),
@@ -2106,6 +2192,9 @@ pub(crate) fn insert_receipt(
             "reserved receipt outcome is not producible in this slice",
         ));
     }
+    if record.permit_id.is_some() && record.participant_registry_binding.is_none() {
+        return Err(TaskStoreError::ParticipantRegistryBindingMissing);
+    }
     let group_id = record
         .group_binding
         .map(|binding| binding.group_id.into_bytes());
@@ -2116,15 +2205,22 @@ pub(crate) fn insert_receipt(
     let group_policy_digest = record
         .group_binding
         .map(|binding| binding.group_policy_digest);
+    let participant_generation = record
+        .participant_registry_binding
+        .map(|binding| encode_u64(binding.generation));
+    let participant_root = record
+        .participant_registry_binding
+        .map(|binding| binding.root);
     transaction.execute(
         "INSERT INTO task_receipts (
             receipt_id, task_id, permit_id, attempt_id, attempt_generation,
             outcome, prior_head_commit_seq, prior_effect_history_root,
             prior_retry_fence_epoch, new_head_commit_seq,
             new_effect_history_root, new_retry_fence_epoch, created_at_ms,
-            group_id, membership_generation, membership_root, group_policy_digest
+            group_id, membership_generation, membership_root, group_policy_digest,
+            participant_registry_generation, participant_registry_root
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                   ?14, ?15, ?16, ?17)",
+                   ?14, ?15, ?16, ?17, ?18, ?19)",
         params![
             record.receipt_id.as_bytes().as_slice(),
             record.task_id.as_bytes().as_slice(),
@@ -2147,6 +2243,8 @@ pub(crate) fn insert_receipt(
             membership_generation.as_ref().map(<[u8; 8]>::as_slice),
             membership_root.as_ref().map(<[u8; 32]>::as_slice),
             group_policy_digest.as_ref().map(<[u8; 32]>::as_slice),
+            participant_generation.as_ref().map(<[u8; 8]>::as_slice),
+            participant_root.as_ref().map(<[u8; 32]>::as_slice),
         ],
     )?;
     Ok(())
@@ -2156,7 +2254,8 @@ const RECEIPT_COLUMNS: &str = "receipt_id, task_id, permit_id, attempt_id, attem
      outcome, prior_head_commit_seq, prior_effect_history_root,
      prior_retry_fence_epoch, new_head_commit_seq,
      new_effect_history_root, new_retry_fence_epoch, created_at_ms,
-     group_id, membership_generation, membership_root, group_policy_digest";
+     group_id, membership_generation, membership_root, group_policy_digest,
+     participant_registry_generation, participant_registry_root";
 
 pub(crate) fn load_receipt(
     source: &impl SqlRead,
@@ -2201,6 +2300,7 @@ fn decode_receipt_row(row: &rusqlite::Row<'_>) -> Result<TaskReceiptRecord, Task
         attempt_id: TaskAttemptId::from_bytes(blob16(row, 3)?),
         attempt_generation: generation_from_blob(row, 4)?,
         group_binding: decode_group_binding(row, 13)?,
+        participant_registry_binding: decode_participant_binding(row, 17)?,
         outcome: ReceiptOutcome::from_code(row.get(5)?)?,
         prior_head_commit_seq: u64_from_blob(row, 6)?,
         prior_effect_history_root: blob32(row, 7)?,
@@ -2232,6 +2332,24 @@ fn decode_group_binding(
         }
         _ => Err(TaskStoreError::CorruptRecord(
             "partial task group commit binding",
+        )),
+    }
+}
+
+pub(crate) fn decode_participant_binding(
+    row: &rusqlite::Row<'_>,
+    first_index: usize,
+) -> Result<Option<crate::ParticipantRegistryBinding>, TaskStoreError> {
+    let generation = optional_blob::<8>(row, first_index)?;
+    let root = optional_blob::<32>(row, first_index + 1)?;
+    match (generation, root) {
+        (None, None) => Ok(None),
+        (Some(generation), Some(root)) => Ok(Some(crate::ParticipantRegistryBinding {
+            generation: u64::from_be_bytes(generation),
+            root,
+        })),
+        _ => Err(TaskStoreError::CorruptRecord(
+            "partial participant registry binding",
         )),
     }
 }
