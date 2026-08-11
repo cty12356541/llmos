@@ -2,12 +2,14 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use nlos_task::{
-    AttemptSpec, FinalizeDecision, FinalizeRequest, ParticipantRegistryState, ParticipantType,
-    PermitDecision, PermitRequest, SnapshotBundle, SqliteTaskAuthority, TaskSpec,
+    AttemptSpec, FinalizeDecision, FinalizeRequest, ParticipantRegistrationDecision,
+    ParticipantRegistryBinding, ParticipantRegistryState, ParticipantType, PermitDecision,
+    PermitRequest, SnapshotBundle, SqliteTaskAuthority, TaskSpec, TaskStoreError,
     empty_effect_history_root,
 };
 use nlos_types::{
-    CancellationScopeId, Generation, IdempotencyKey, TaskAttemptId, TaskId, TaskSnapshotId,
+    ArtifactId, CancellationScopeId, Generation, IdempotencyKey, TaskAttemptId, TaskId,
+    TaskSnapshotId,
 };
 use rusqlite::Connection;
 
@@ -34,6 +36,24 @@ impl Drop for Database {
         for suffix in ["", "-wal", "-shm"] {
             let _ = std::fs::remove_file(format!("{}{}", self.0.display(), suffix));
         }
+    }
+}
+
+struct AuthorityRoot(PathBuf);
+
+impl AuthorityRoot {
+    fn new(label: &str) -> Self {
+        Self(std::env::temp_dir().join(format!(
+            "nlos-task-participant-{label}-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        )))
+    }
+}
+
+impl Drop for AuthorityRoot {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 
@@ -78,6 +98,28 @@ fn issued(decision: PermitDecision) -> nlos_task::PermitRecord {
         PermitDecision::Issued(record) => *record,
         other => panic!("expected issued permit, got {other:?}"),
     }
+}
+
+fn binding(registry: &nlos_task::ParticipantRegistryRecord) -> ParticipantRegistryBinding {
+    ParticipantRegistryBinding {
+        generation: registry.generation,
+        root: registry.root,
+    }
+}
+
+fn create_artifact(store: &nlos_artifact::ArtifactStore, seed: u8) -> ArtifactId {
+    let artifact_id = ArtifactId::from_bytes([seed; 16]);
+    store
+        .create_artifact(nlos_artifact::CreateArtifactSpec {
+            artifact_id,
+            idempotency_key: IdempotencyKey::from_bytes([seed.wrapping_add(1); 16]),
+            content_type: "application/octet-stream".to_owned(),
+            application_id: None,
+            owner: None,
+            created_at_ms: 1_500,
+        })
+        .unwrap();
+    artifact_id
 }
 
 #[test]
@@ -222,4 +264,178 @@ fn next_competition_creates_new_registry_generation_instead_of_unfreezing_old() 
     assert_eq!(current.state, ParticipantRegistryState::FrozenForPermit);
     assert_eq!(current.prior_root, first_binding.root);
     assert_eq!(current.participants.len(), 1);
+}
+
+#[test]
+fn verified_artifact_and_semantic_registration_cas_replays_and_survives_restart() {
+    let database = Database::new();
+    let artifact_root = AuthorityRoot::new("artifact");
+    let semantic_root = AuthorityRoot::new("semantic");
+    let artifact = nlos_artifact::ArtifactStore::open(&artifact_root.0).unwrap();
+    let artifact_id = create_artifact(&artifact, 0x71);
+    let artifact_proof = artifact.inspect_head_endpoint_proof(artifact_id).unwrap();
+    let semantic = nlos_semantic::SemanticAuthority::open(&semantic_root.0).unwrap();
+    let semantic_proof = semantic.inspect_admission_endpoint_proof().unwrap();
+
+    let authority = database.open();
+    authority
+        .register_task(TaskSpec {
+            task_id: task_id(),
+            task_generation: Generation::INITIAL,
+            registered_at_ms: 1_000,
+        })
+        .unwrap();
+    let initial = authority.inspect_participant_registry(task_id()).unwrap();
+    let artifact_registry = match authority
+        .register_artifact_head_participant(
+            &artifact,
+            task_id(),
+            binding(&initial),
+            artifact_id,
+            2_000,
+        )
+        .unwrap()
+    {
+        ParticipantRegistrationDecision::Registered(registry) => registry,
+        other @ ParticipantRegistrationDecision::Replayed(_) => {
+            panic!("expected registration, got {other:?}")
+        }
+    };
+    assert_eq!(artifact_registry.generation, 2);
+    assert!(artifact_registry.participants.iter().any(|participant| {
+        participant.participant_type == ParticipantType::ArtifactHead
+            && participant.participant_id == artifact_proof.participant_id
+            && participant.admission_receipt_id == artifact_proof.admission_receipt_id
+    }));
+    match authority
+        .register_artifact_head_participant(
+            &artifact,
+            task_id(),
+            binding(&initial),
+            artifact_id,
+            2_001,
+        )
+        .unwrap()
+    {
+        ParticipantRegistrationDecision::Replayed(registry) => {
+            assert_eq!(registry, artifact_registry);
+        }
+        other @ ParticipantRegistrationDecision::Registered(_) => {
+            panic!("expected replay, got {other:?}")
+        }
+    }
+    let semantic_registry = match authority
+        .register_semantic_admission_participant(
+            &semantic,
+            task_id(),
+            binding(&artifact_registry),
+            2_100,
+        )
+        .unwrap()
+    {
+        ParticipantRegistrationDecision::Registered(registry) => registry,
+        other @ ParticipantRegistrationDecision::Replayed(_) => {
+            panic!("expected registration, got {other:?}")
+        }
+    };
+    assert_eq!(semantic_registry.generation, 3);
+    assert_eq!(semantic_registry.participants.len(), 3);
+    assert!(semantic_registry.participants.iter().any(|participant| {
+        participant.participant_type == ParticipantType::SemanticAdmission
+            && participant.participant_id == semantic_proof.participant_id
+            && participant.admission_receipt_id == semantic_proof.admission_receipt_id
+    }));
+    drop(authority);
+
+    assert_eq!(
+        database
+            .open()
+            .inspect_participant_registry(task_id())
+            .unwrap(),
+        semantic_registry
+    );
+}
+
+#[test]
+fn stale_or_frozen_registration_fails_without_mutating_registry() {
+    let database = Database::new();
+    let artifact_root = AuthorityRoot::new("artifact-fence");
+    let artifact = nlos_artifact::ArtifactStore::open(&artifact_root.0).unwrap();
+    let first_artifact = create_artifact(&artifact, 0x61);
+    let second_artifact = create_artifact(&artifact, 0x62);
+    let authority = database.open();
+    authority
+        .register_task(TaskSpec {
+            task_id: task_id(),
+            task_generation: Generation::INITIAL,
+            registered_at_ms: 1_000,
+        })
+        .unwrap();
+    let initial = authority.inspect_participant_registry(task_id()).unwrap();
+    assert!(matches!(
+        authority.register_artifact_head_participant(
+            &artifact,
+            task_id(),
+            binding(&initial),
+            ArtifactId::from_bytes([0x63; 16]),
+            1_900,
+        ),
+        Err(TaskStoreError::ArtifactParticipantAuthority(
+            nlos_artifact::ArtifactError::ArtifactNotFound(_)
+        ))
+    ));
+    assert_eq!(
+        authority.inspect_participant_registry(task_id()).unwrap(),
+        initial
+    );
+    let current = authority
+        .register_artifact_head_participant(
+            &artifact,
+            task_id(),
+            binding(&initial),
+            first_artifact,
+            2_000,
+        )
+        .unwrap()
+        .registry()
+        .clone();
+    assert!(matches!(
+        authority.register_artifact_head_participant(
+            &artifact,
+            task_id(),
+            binding(&initial),
+            second_artifact,
+            2_100,
+        ),
+        Err(TaskStoreError::ParticipantRegistryCasMismatch)
+    ));
+    assert_eq!(
+        authority.inspect_participant_registry(task_id()).unwrap(),
+        current
+    );
+
+    let spec = attempt(0x51, 0, empty_effect_history_root());
+    authority.register_attempt(spec).unwrap();
+    issued(
+        authority
+            .request_commit_permit(permit(&spec, 0x52))
+            .unwrap(),
+    );
+    let frozen = authority.inspect_participant_registry(task_id()).unwrap();
+    assert!(matches!(
+        authority.register_artifact_head_participant(
+            &artifact,
+            task_id(),
+            binding(&frozen),
+            second_artifact,
+            3_000,
+        ),
+        Err(TaskStoreError::ParticipantRegistryFrozen {
+            state: ParticipantRegistryState::FrozenForPermit
+        })
+    ));
+    assert_eq!(
+        authority.inspect_participant_registry(task_id()).unwrap(),
+        frozen
+    );
 }

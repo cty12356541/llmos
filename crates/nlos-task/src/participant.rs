@@ -97,6 +97,23 @@ pub struct ParticipantRegistryRecord {
     pub updated_at_ms: i64,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ParticipantRegistrationDecision {
+    Registered(ParticipantRegistryRecord),
+    Replayed(ParticipantRegistryRecord),
+}
+
+impl ParticipantRegistrationDecision {
+    #[must_use]
+    pub const fn registry(&self) -> &ParticipantRegistryRecord {
+        match self {
+            Self::Registered(registry) | Self::Replayed(registry) => registry,
+        }
+    }
+}
+
+const MAX_PARTICIPANTS: usize = 256;
+
 pub(crate) fn initialize_registry(
     transaction: &Transaction<'_>,
     task: &TaskRecord,
@@ -209,6 +226,74 @@ pub(crate) fn freeze_for_permit(
         generation: registry.generation,
         root: registry.root,
     })
+}
+
+pub(crate) fn register_verified_participant(
+    transaction: &Transaction<'_>,
+    task: &TaskRecord,
+    expected: ParticipantRegistryBinding,
+    participant: ParticipantRecord,
+    now_ms: i64,
+) -> Result<ParticipantRegistrationDecision, TaskStoreError> {
+    if participant.participant_type == ParticipantType::TaskStore {
+        return Err(TaskStoreError::ParticipantEndpointConflict);
+    }
+    let registry = initialize_registry(transaction, task, now_ms)?;
+    if registry.participants.contains(&participant) {
+        return Ok(ParticipantRegistrationDecision::Replayed(registry));
+    }
+    if registry.participants.iter().any(|existing| {
+        existing.participant_id == participant.participant_id
+            || existing.admission_receipt_id == participant.admission_receipt_id
+    }) {
+        return Err(TaskStoreError::ParticipantEndpointConflict);
+    }
+    if registry.generation != expected.generation || registry.root != expected.root {
+        return Err(TaskStoreError::ParticipantRegistryCasMismatch);
+    }
+    if registry.state != ParticipantRegistryState::Open {
+        return Err(TaskStoreError::ParticipantRegistryFrozen {
+            state: registry.state,
+        });
+    }
+    if registry.participants.len() >= MAX_PARTICIPANTS {
+        return Err(TaskStoreError::ParticipantRegistryFull);
+    }
+    let changed = transaction.execute(
+        "UPDATE task_participant_registries
+         SET registry_state=?1, updated_at_ms=?2
+         WHERE registry_id=?3 AND registry_state=?4",
+        params![
+            ParticipantRegistryState::Superseded.code(),
+            now_ms,
+            registry.registry_id.as_bytes().as_slice(),
+            ParticipantRegistryState::Open.code(),
+        ],
+    )?;
+    if changed != 1 {
+        return Err(TaskStoreError::ParticipantRegistryCasMismatch);
+    }
+    let next_generation = registry
+        .generation
+        .checked_add(1)
+        .ok_or(TaskStoreError::EpochExhausted)?;
+    let mut participants = registry.participants.clone();
+    participants.push(participant);
+    participants.sort_unstable_by_key(|item| {
+        (
+            item.participant_type.code(),
+            item.participant_id.into_bytes(),
+        )
+    });
+    let next = insert_registry_generation(
+        transaction,
+        task,
+        next_generation,
+        registry.root,
+        &participants,
+        now_ms,
+    )?;
+    Ok(ParticipantRegistrationDecision::Registered(next))
 }
 
 pub(crate) fn inspect_registry(

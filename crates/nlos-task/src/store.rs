@@ -595,6 +595,83 @@ impl SqliteTaskAuthority {
         crate::participant::inspect_registry(&connection, &task.record)
     }
 
+    /// Registers an Artifact head after direct proof readback from its owner.
+    ///
+    /// The caller supplies only the stable Artifact identity and the Task
+    /// registry position it observed; it cannot inject participant identity,
+    /// generation, or Receipt bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns typed Artifact proof, task, registry CAS/freeze/bound, or
+    /// storage errors. No Task mutation occurs when proof readback fails.
+    pub fn register_artifact_head_participant(
+        &self,
+        artifact_authority: &nlos_artifact::ArtifactStore,
+        task_id: TaskId,
+        expected: crate::ParticipantRegistryBinding,
+        artifact_id: nlos_types::ArtifactId,
+        registered_at_ms: i64,
+    ) -> Result<crate::ParticipantRegistrationDecision, TaskStoreError> {
+        let proof = artifact_authority
+            .inspect_head_endpoint_proof(artifact_id)
+            .map_err(TaskStoreError::ArtifactParticipantAuthority)?;
+        let participant = crate::ParticipantRecord {
+            participant_type: crate::ParticipantType::ArtifactHead,
+            participant_id: proof.participant_id,
+            participant_generation: proof.participant_generation,
+            admission_receipt_id: proof.admission_receipt_id,
+        };
+        self.register_verified_participant(task_id, expected, participant, registered_at_ms)
+    }
+
+    /// Registers the owning Semantic admission endpoint after direct proof
+    /// readback. No caller-supplied endpoint tuple is accepted.
+    ///
+    /// # Errors
+    ///
+    /// Returns typed Semantic proof, task, registry CAS/freeze/bound, or
+    /// storage errors. No Task mutation occurs when proof readback fails.
+    pub fn register_semantic_admission_participant(
+        &self,
+        semantic_authority: &nlos_semantic::SemanticAuthority,
+        task_id: TaskId,
+        expected: crate::ParticipantRegistryBinding,
+        registered_at_ms: i64,
+    ) -> Result<crate::ParticipantRegistrationDecision, TaskStoreError> {
+        let proof = semantic_authority
+            .inspect_admission_endpoint_proof()
+            .map_err(TaskStoreError::SemanticParticipantAuthority)?;
+        let participant = crate::ParticipantRecord {
+            participant_type: crate::ParticipantType::SemanticAdmission,
+            participant_id: proof.participant_id,
+            participant_generation: proof.participant_generation,
+            admission_receipt_id: proof.admission_receipt_id,
+        };
+        self.register_verified_participant(task_id, expected, participant, registered_at_ms)
+    }
+
+    fn register_verified_participant(
+        &self,
+        task_id: TaskId,
+        expected: crate::ParticipantRegistryBinding,
+        participant: crate::ParticipantRecord,
+        registered_at_ms: i64,
+    ) -> Result<crate::ParticipantRegistrationDecision, TaskStoreError> {
+        let mut connection = self.lock_connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let task = load_task(&transaction, task_id)?;
+        let decision = crate::participant::register_verified_participant(
+            &transaction,
+            &task.record,
+            expected,
+            participant,
+            registered_at_ms,
+        )?;
+        transaction.commit()?;
+        Ok(decision)
+    }
+
     /// Reads the durable view of one `TaskAttempt`.
     ///
     /// # Errors

@@ -97,8 +97,8 @@ pub use model::{
 };
 pub use nlos_types::{EffectPermitId, EffectSlotId, TaskGroupId};
 pub use participant::{
-    ParticipantRecord, ParticipantRegistryBinding, ParticipantRegistryRecord,
-    ParticipantRegistryState, ParticipantType,
+    ParticipantRecord, ParticipantRegistrationDecision, ParticipantRegistryBinding,
+    ParticipantRegistryRecord, ParticipantRegistryState, ParticipantType,
 };
 pub use reconcile::{
     AdoptionReplay, AdoptionRequest, FinalizeRequestV3, ReconcileReplay, ReconcileRequest,
@@ -346,6 +346,14 @@ pub enum TaskStoreError {
     },
     /// The registry state changed outside the expected authority CAS.
     ParticipantRegistryCasMismatch,
+    /// A verified endpoint identity or Receipt collides with another tuple.
+    ParticipantEndpointConflict,
+    /// The bounded participant set is full.
+    ParticipantRegistryFull,
+    /// Artifact authority proof readback failed before Task mutation.
+    ArtifactParticipantAuthority(nlos_artifact::ArtifactError),
+    /// Semantic authority proof readback failed before Task mutation.
+    SemanticParticipantAuthority(nlos_semantic::SemanticAuthorityError),
     /// A caller-supplied group specification violates a structural bound.
     InvalidGroupSpec {
         /// Static explanation of the violation.
@@ -538,6 +546,24 @@ impl fmt::Display for TaskStoreError {
             Self::ParticipantRegistryCasMismatch => {
                 formatter.write_str("participant registry compare-and-swap failed")
             }
+            Self::ParticipantEndpointConflict => {
+                formatter.write_str("participant endpoint identity or receipt conflicts")
+            }
+            Self::ParticipantRegistryFull => {
+                formatter.write_str("task participant registry is full")
+            }
+            Self::ArtifactParticipantAuthority(error) => {
+                write!(
+                    formatter,
+                    "Artifact participant proof verification failed: {error}"
+                )
+            }
+            Self::SemanticParticipantAuthority(error) => {
+                write!(
+                    formatter,
+                    "Semantic participant proof verification failed: {error}"
+                )
+            }
             Self::InvalidGroupSpec { reason } => {
                 write!(formatter, "invalid group spec: {reason}")
             }
@@ -549,6 +575,8 @@ impl Error for TaskStoreError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Sqlite(error) => Some(error),
+            Self::ArtifactParticipantAuthority(error) => Some(error),
+            Self::SemanticParticipantAuthority(error) => Some(error),
             _ => None,
         }
     }
