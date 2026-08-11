@@ -280,3 +280,144 @@ fn quote_reservation_and_receipt_identity_are_ddl_protected() {
         .is_err()
     );
 }
+
+#[test]
+fn endpoint_proofs_are_authority_assigned_rotate_and_survive_restart() {
+    let root = Root::new("endpoint-proofs");
+    let (driver, account, initial_driver_proof, rotated_driver_proof, ledger_proof) = {
+        let authority = ResourceAuthority::open(root.path()).unwrap();
+        let driver = authority
+            .register_driver(driver_request(60))
+            .unwrap()
+            .record();
+        let account = authority.create_account(account_request(60, 100)).unwrap();
+        let initial_driver_proof = authority
+            .inspect_driver_gateway_endpoint_proof(driver.driver_id)
+            .unwrap();
+        let ledger_proof = authority
+            .inspect_resource_ledger_endpoint_proof(account.account_id)
+            .unwrap();
+        assert_eq!(
+            initial_driver_proof.participant_generation,
+            driver.generation
+        );
+        assert_eq!(
+            ledger_proof.participant_generation,
+            nlos_types::Generation::INITIAL
+        );
+        let rotated = authority
+            .rotate_driver(RotateDriverRequest {
+                driver_id: driver.driver_id,
+                expected_generation: driver.generation,
+                expected_fencing_token: driver.fencing_token,
+                idempotency_key: IdempotencyKey::from_bytes([0xe0; 16]),
+                rotated_at_ms: 4_000,
+            })
+            .unwrap()
+            .record();
+        let rotated_driver_proof = authority
+            .inspect_driver_gateway_endpoint_proof(driver.driver_id)
+            .unwrap();
+        assert_eq!(
+            rotated_driver_proof.participant_generation,
+            rotated.generation
+        );
+        assert_eq!(
+            rotated_driver_proof.participant_id,
+            initial_driver_proof.participant_id
+        );
+        assert_ne!(
+            rotated_driver_proof.admission_receipt_id,
+            initial_driver_proof.admission_receipt_id
+        );
+        (
+            driver,
+            account,
+            initial_driver_proof,
+            rotated_driver_proof,
+            ledger_proof,
+        )
+    };
+
+    let authority = ResourceAuthority::open(root.path()).unwrap();
+    assert_eq!(
+        authority
+            .inspect_driver_gateway_endpoint_proof(driver.driver_id)
+            .unwrap(),
+        rotated_driver_proof
+    );
+    assert_eq!(
+        authority
+            .inspect_resource_ledger_endpoint_proof(account.account_id)
+            .unwrap(),
+        ledger_proof
+    );
+    drop(authority);
+    let raw = Connection::open(root.path().join("resource-authority.db")).unwrap();
+    assert_eq!(
+        raw.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+            .unwrap(),
+        2
+    );
+    assert!(
+        raw.execute(
+            "UPDATE driver_gateway_endpoint_proofs SET admission_receipt_id=zeroblob(16)
+             WHERE driver_id=?1 AND driver_generation=?2",
+            rusqlite::params![
+                driver.driver_id.as_bytes().as_slice(),
+                i64::try_from(initial_driver_proof.participant_generation.get()).unwrap()
+            ],
+        )
+        .is_err()
+    );
+    assert!(
+        raw.execute("DELETE FROM resource_ledger_endpoint_proofs", [])
+            .is_err()
+    );
+}
+
+#[test]
+fn v1_resource_data_migrates_with_complete_endpoint_proof_coverage() {
+    let root = Root::new("endpoint-migration");
+    let (driver, account) = {
+        let authority = ResourceAuthority::open(root.path()).unwrap();
+        (
+            authority
+                .register_driver(driver_request(70))
+                .unwrap()
+                .record(),
+            authority.create_account(account_request(70, 100)).unwrap(),
+        )
+    };
+    let raw = Connection::open(root.path().join("resource-authority.db")).unwrap();
+    raw.execute_batch(
+        "DROP TRIGGER driver_gateway_identities_immutable_update;
+         DROP TRIGGER driver_gateway_identities_immutable_delete;
+         DROP TRIGGER driver_gateway_endpoint_proofs_immutable_update;
+         DROP TRIGGER driver_gateway_endpoint_proofs_immutable_delete;
+         DROP TRIGGER resource_ledger_endpoint_proofs_immutable_update;
+         DROP TRIGGER resource_ledger_endpoint_proofs_immutable_delete;
+         DROP TABLE driver_gateway_endpoint_proofs;
+         DROP TABLE driver_gateway_identities;
+         DROP TABLE resource_ledger_endpoint_proofs;
+         PRAGMA user_version=1;",
+    )
+    .unwrap();
+    drop(raw);
+
+    let migrated = ResourceAuthority::open(root.path()).unwrap();
+    assert_eq!(
+        migrated
+            .inspect_driver_gateway_endpoint_proof(driver.driver_id)
+            .unwrap()
+            .participant_generation,
+        driver.generation
+    );
+    assert_eq!(
+        migrated
+            .inspect_resource_ledger_endpoint_proof(account.account_id)
+            .unwrap()
+            .account_id,
+        account.account_id
+    );
+}

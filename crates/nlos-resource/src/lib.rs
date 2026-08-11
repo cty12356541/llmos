@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use nlos_types::{
     CallId, DeviceId, DriverId, Generation, IdempotencyKey, OperationId, QuoteId, ReceiptId,
-    ReservationId, ResourceAccountId,
+    ReservationId, ResourceAccountId, TaskParticipantId,
 };
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
@@ -36,6 +36,14 @@ pub struct DriverRecord {
     pub fencing_token: FencingToken,
     pub profile_digest: [u8; 32],
     pub created_at_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DriverGatewayEndpointProof {
+    pub driver_id: DriverId,
+    pub participant_id: TaskParticipantId,
+    pub participant_generation: Generation,
+    pub admission_receipt_id: ReceiptId,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -87,6 +95,14 @@ pub struct AccountRecord {
     pub initial_credit: u64,
     pub available_credit: u64,
     pub created_at_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ResourceLedgerEndpointProof {
+    pub account_id: ResourceAccountId,
+    pub participant_id: TaskParticipantId,
+    pub participant_generation: Generation,
+    pub admission_receipt_id: ReceiptId,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -286,8 +302,12 @@ impl ResourceAuthority {
         }
         let v: i64 = c.pragma_query_value(None, "user_version", |r| r.get(0))?;
         match v {
-            0 => schema::migrate_v1(&mut c)?,
-            1 => {}
+            0 => {
+                schema::migrate_v1(&mut c)?;
+                schema::migrate_v2(&mut c)?;
+            }
+            1 => schema::migrate_v2(&mut c)?,
+            2 => {}
             x => return Err(ResourceAuthorityError::SchemaVersionUnsupported(x)),
         }
         Ok(Self {
@@ -350,6 +370,7 @@ impl ResourceAuthority {
             ],
         )?;
         insert_driver_generation(&tx, r)?;
+        insert_initial_driver_gateway_endpoint(&tx, r)?;
         tx.commit()?;
         Ok(DriverDecision::Registered(r))
     }
@@ -389,6 +410,7 @@ impl ResourceAuthority {
             ..cur
         };
         insert_driver_generation(&tx, r)?;
+        insert_driver_gateway_generation_proof(&tx, r)?;
         tx.execute(
             "INSERT INTO driver_rotations VALUES(?1,?2,?3,?4,?5,?6,?7)",
             params![
@@ -439,6 +461,7 @@ impl ResourceAuthority {
                 eu(q.created_at_ms)?
             ],
         )?;
+        insert_resource_ledger_endpoint(&tx, id)?;
         tx.commit()?;
         Ok(AccountRecord {
             account_id: id,
@@ -667,6 +690,34 @@ impl ResourceAuthority {
         let connection = self.lock()?;
         account(&connection, id)?.ok_or(ResourceAuthorityError::AccountNotFound)
     }
+
+    /// Reads the endpoint proof for the current Driver generation.
+    ///
+    /// # Errors
+    /// Fails for an unknown Driver, missing/corrupt proof, or storage error.
+    pub fn inspect_driver_gateway_endpoint_proof(
+        &self,
+        id: DriverId,
+    ) -> Result<DriverGatewayEndpointProof, ResourceAuthorityError> {
+        let connection = self.lock()?;
+        let driver = driver(&connection, id)?.ok_or(ResourceAuthorityError::DriverNotFound)?;
+        load_driver_gateway_endpoint_proof(&connection, driver)
+    }
+
+    /// Reads the durable endpoint proof for one Resource/Ledger account.
+    ///
+    /// # Errors
+    /// Fails for an unknown account, missing/corrupt proof, or storage error.
+    pub fn inspect_resource_ledger_endpoint_proof(
+        &self,
+        id: ResourceAccountId,
+    ) -> Result<ResourceLedgerEndpointProof, ResourceAuthorityError> {
+        let connection = self.lock()?;
+        if account(&connection, id)?.is_none() {
+            return Err(ResourceAuthorityError::AccountNotFound);
+        }
+        load_resource_ledger_endpoint_proof(&connection, id)
+    }
     fn lock(&self) -> Result<MutexGuard<'_, Connection>, ResourceAuthorityError> {
         self.connection
             .lock()
@@ -686,6 +737,90 @@ fn insert_driver_generation(c: &Connection, r: DriverRecord) -> Result<(), Resou
         ],
     )?;
     Ok(())
+}
+fn insert_initial_driver_gateway_endpoint(
+    c: &Connection,
+    r: DriverRecord,
+) -> Result<(), ResourceAuthorityError> {
+    c.execute(
+        "INSERT INTO driver_gateway_identities VALUES(?1, randomblob(16))",
+        [r.driver_id.as_bytes().as_slice()],
+    )?;
+    insert_driver_gateway_generation_proof(c, r)
+}
+fn insert_driver_gateway_generation_proof(
+    c: &Connection,
+    r: DriverRecord,
+) -> Result<(), ResourceAuthorityError> {
+    let changed = c.execute(
+        "INSERT INTO driver_gateway_endpoint_proofs
+            (driver_id, driver_generation, participant_id, admission_receipt_id)
+         SELECT ?1, ?2, participant_id, randomblob(16)
+         FROM driver_gateway_identities WHERE driver_id=?1",
+        params![r.driver_id.as_bytes().as_slice(), eg(r.generation)?],
+    )?;
+    if changed != 1 {
+        return Err(ResourceAuthorityError::CorruptRecord(
+            "driver gateway identity absent",
+        ));
+    }
+    Ok(())
+}
+fn insert_resource_ledger_endpoint(
+    c: &Connection,
+    id: ResourceAccountId,
+) -> Result<(), ResourceAuthorityError> {
+    c.execute(
+        "INSERT INTO resource_ledger_endpoint_proofs
+            (account_id, participant_id, participant_generation, admission_receipt_id)
+         VALUES(?1, randomblob(16), ?2, randomblob(16))",
+        params![id.as_bytes().as_slice(), 1_u64.to_be_bytes().as_slice()],
+    )?;
+    Ok(())
+}
+fn load_driver_gateway_endpoint_proof(
+    c: &Connection,
+    driver: DriverRecord,
+) -> Result<DriverGatewayEndpointProof, ResourceAuthorityError> {
+    let (participant_id, receipt_id) = c.query_row(
+        "SELECT participant_id, admission_receipt_id
+         FROM driver_gateway_endpoint_proofs
+         WHERE driver_id=?1 AND driver_generation=?2",
+        params![
+            driver.driver_id.as_bytes().as_slice(),
+            eg(driver.generation)?
+        ],
+        |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?)),
+    )?;
+    Ok(DriverGatewayEndpointProof {
+        driver_id: driver.driver_id,
+        participant_id: TaskParticipantId::from_bytes(a16(participant_id)?),
+        participant_generation: driver.generation,
+        admission_receipt_id: ReceiptId::from_bytes(a16(receipt_id)?),
+    })
+}
+fn load_resource_ledger_endpoint_proof(
+    c: &Connection,
+    id: ResourceAccountId,
+) -> Result<ResourceLedgerEndpointProof, ResourceAuthorityError> {
+    let (participant_id, generation, receipt_id) = c.query_row(
+        "SELECT participant_id, participant_generation, admission_receipt_id
+         FROM resource_ledger_endpoint_proofs WHERE account_id=?1",
+        [id.as_bytes().as_slice()],
+        |row| {
+            Ok((
+                row.get::<_, Vec<u8>>(0)?,
+                row.get::<_, Vec<u8>>(1)?,
+                row.get::<_, Vec<u8>>(2)?,
+            ))
+        },
+    )?;
+    Ok(ResourceLedgerEndpointProof {
+        account_id: id,
+        participant_id: TaskParticipantId::from_bytes(a16(participant_id)?),
+        participant_generation: generation_from_blob(generation)?,
+        admission_receipt_id: ReceiptId::from_bytes(a16(receipt_id)?),
+    })
 }
 fn active_driver(
     c: &Connection,
@@ -910,6 +1045,14 @@ fn eg(v: Generation) -> Result<i64, ResourceAuthorityError> {
 }
 fn dg(v: i64) -> Result<Generation, ResourceAuthorityError> {
     NonZeroU64::new(du(v)?)
+        .map(Generation::new)
+        .ok_or(ResourceAuthorityError::CorruptRecord("zero generation"))
+}
+fn generation_from_blob(v: Vec<u8>) -> Result<Generation, ResourceAuthorityError> {
+    let bytes: [u8; 8] = v
+        .try_into()
+        .map_err(|_| ResourceAuthorityError::CorruptRecord("generation length"))?;
+    NonZeroU64::new(u64::from_be_bytes(bytes))
         .map(Generation::new)
         .ok_or(ResourceAuthorityError::CorruptRecord("zero generation"))
 }

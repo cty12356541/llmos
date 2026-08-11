@@ -133,3 +133,108 @@ pub(crate) fn migrate_v1(connection: &mut Connection) -> Result<(), ResourceAuth
     transaction.commit()?;
     Ok(())
 }
+
+/// Adds authority-assigned Driver gateway and Resource/Ledger endpoint proofs.
+#[allow(clippy::too_many_lines)]
+pub(crate) fn migrate_v2(connection: &mut Connection) -> Result<(), ResourceAuthorityError> {
+    let table_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN (
+            'driver_gateway_identities', 'driver_gateway_endpoint_proofs',
+            'resource_ledger_endpoint_proofs'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    let trigger_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND (
+            name LIKE 'driver_gateway_identities_%'
+            OR name LIKE 'driver_gateway_endpoint_proofs_%'
+            OR name LIKE 'resource_ledger_endpoint_proofs_%'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    let missing_coverage: i64 = if table_count == 3 {
+        connection.query_row(
+            "SELECT
+                (SELECT COUNT(*) FROM drivers AS d LEFT JOIN driver_gateway_identities AS i
+                 ON i.driver_id=d.driver_id WHERE i.driver_id IS NULL)
+              + (SELECT COUNT(*) FROM driver_generations AS g
+                 LEFT JOIN driver_gateway_endpoint_proofs AS p
+                 ON p.driver_id=g.driver_id AND p.driver_generation=g.generation
+                 WHERE p.driver_id IS NULL)
+              + (SELECT COUNT(*) FROM resource_accounts AS a
+                 LEFT JOIN resource_ledger_endpoint_proofs AS p ON p.account_id=a.account_id
+                 WHERE p.account_id IS NULL)",
+            [],
+            |row| row.get(0),
+        )?
+    } else {
+        0
+    };
+    if table_count == 3 && trigger_count == 6 && missing_coverage == 0 {
+        connection.pragma_update(None, "user_version", 2)?;
+        return Ok(());
+    }
+    if table_count != 0 || trigger_count != 0 || missing_coverage != 0 {
+        return Err(ResourceAuthorityError::CorruptRecord(
+            "partial resource endpoint proof schema",
+        ));
+    }
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "CREATE TABLE driver_gateway_identities (
+            driver_id BLOB PRIMARY KEY NOT NULL CHECK(length(driver_id) = 16),
+            participant_id BLOB NOT NULL UNIQUE CHECK(length(participant_id) = 16),
+            FOREIGN KEY(driver_id) REFERENCES drivers(driver_id)
+        ) STRICT;
+        CREATE TABLE driver_gateway_endpoint_proofs (
+            driver_id BLOB NOT NULL CHECK(length(driver_id) = 16),
+            driver_generation INTEGER NOT NULL CHECK(driver_generation >= 1),
+            participant_id BLOB NOT NULL CHECK(length(participant_id) = 16),
+            admission_receipt_id BLOB NOT NULL UNIQUE CHECK(length(admission_receipt_id) = 16),
+            PRIMARY KEY(driver_id, driver_generation),
+            FOREIGN KEY(driver_id) REFERENCES driver_gateway_identities(driver_id),
+            FOREIGN KEY(driver_id, driver_generation)
+                REFERENCES driver_generations(driver_id, generation)
+        ) STRICT;
+        CREATE TABLE resource_ledger_endpoint_proofs (
+            account_id BLOB PRIMARY KEY NOT NULL CHECK(length(account_id) = 16),
+            participant_id BLOB NOT NULL UNIQUE CHECK(length(participant_id) = 16),
+            participant_generation BLOB NOT NULL CHECK(length(participant_generation) = 8),
+            admission_receipt_id BLOB NOT NULL UNIQUE CHECK(length(admission_receipt_id) = 16),
+            FOREIGN KEY(account_id) REFERENCES resource_accounts(account_id)
+        ) STRICT;
+
+        INSERT INTO driver_gateway_identities
+            SELECT driver_id, randomblob(16) FROM drivers;
+        INSERT INTO driver_gateway_endpoint_proofs
+            SELECT g.driver_id, g.generation, i.participant_id, randomblob(16)
+            FROM driver_generations AS g JOIN driver_gateway_identities AS i USING(driver_id);
+        INSERT INTO resource_ledger_endpoint_proofs
+            SELECT account_id, randomblob(16), X'0000000000000001', randomblob(16)
+            FROM resource_accounts;
+
+        CREATE TRIGGER driver_gateway_identities_immutable_update
+        BEFORE UPDATE ON driver_gateway_identities
+        BEGIN SELECT RAISE(ABORT, 'driver gateway identity is immutable'); END;
+        CREATE TRIGGER driver_gateway_identities_immutable_delete
+        BEFORE DELETE ON driver_gateway_identities
+        BEGIN SELECT RAISE(ABORT, 'driver gateway identity is immutable'); END;
+        CREATE TRIGGER driver_gateway_endpoint_proofs_immutable_update
+        BEFORE UPDATE ON driver_gateway_endpoint_proofs
+        BEGIN SELECT RAISE(ABORT, 'driver gateway endpoint proof is immutable'); END;
+        CREATE TRIGGER driver_gateway_endpoint_proofs_immutable_delete
+        BEFORE DELETE ON driver_gateway_endpoint_proofs
+        BEGIN SELECT RAISE(ABORT, 'driver gateway endpoint proof is immutable'); END;
+        CREATE TRIGGER resource_ledger_endpoint_proofs_immutable_update
+        BEFORE UPDATE ON resource_ledger_endpoint_proofs
+        BEGIN SELECT RAISE(ABORT, 'resource ledger endpoint proof is immutable'); END;
+        CREATE TRIGGER resource_ledger_endpoint_proofs_immutable_delete
+        BEFORE DELETE ON resource_ledger_endpoint_proofs
+        BEGIN SELECT RAISE(ABORT, 'resource ledger endpoint proof is immutable'); END;
+        PRAGMA user_version = 2;",
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
