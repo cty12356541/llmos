@@ -93,6 +93,7 @@ pub use model::{
     ReconcileOutcome, ReconciliationReceiptRecord, RequiredSatisfaction, RequiredSatisfactionProof,
     SnapshotBundle, SnapshotConsistency, TaskReceiptRecord, TaskRecord, TaskRegistrationDecision,
     TaskSnapshotReceiptRecord, TaskSnapshotReceiptSpec, TaskSpec, TaskState,
+    TaskWriteSetArtifactRead, TaskWriteSetDecision, TaskWriteSetRecord, TaskWriteSetRequest,
     empty_effect_history_root,
 };
 pub use nlos_types::{EffectPermitId, EffectSlotId, TaskGroupId};
@@ -356,6 +357,16 @@ pub enum TaskStoreError {
     ParticipantEndpointConflict,
     /// The bounded participant set is full.
     ParticipantRegistryFull,
+    /// A `TaskWriteSet` identity was reused with different sealed bytes.
+    TaskWriteSetConflict {
+        /// Static explanation of the conflicting binding.
+        reason: &'static str,
+    },
+    /// The requested Artifact read revision/digest differs from owner
+    /// authority readback.
+    TaskWriteSetReadConflict,
+    /// A `TaskWriteSet` is required for the verified permit path but missing.
+    TaskWriteSetNotFound,
     /// Artifact authority proof readback failed before Task mutation.
     ArtifactParticipantAuthority(nlos_artifact::ArtifactError),
     /// Semantic authority proof readback failed before Task mutation.
@@ -570,6 +581,15 @@ impl fmt::Display for TaskStoreError {
             }
             Self::ParticipantRegistryFull => {
                 formatter.write_str("task participant registry is full")
+            }
+            Self::TaskWriteSetConflict { reason } => {
+                write!(formatter, "TaskWriteSet conflict: {reason}")
+            }
+            Self::TaskWriteSetReadConflict => {
+                formatter.write_str("TaskWriteSet Artifact read set differs from authority")
+            }
+            Self::TaskWriteSetNotFound => {
+                formatter.write_str("verified TaskWriteSet does not exist")
             }
             Self::ArtifactParticipantAuthority(error) => {
                 write!(

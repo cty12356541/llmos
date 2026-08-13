@@ -9,8 +9,8 @@
 //! mandated by the full §25.1 contract.
 
 use nlos_types::{
-    CancellationScopeId, CommitPermitId, Generation, IdempotencyKey, ReceiptId, TaskAttemptId,
-    TaskId, TaskSnapshotId,
+    ArtifactId, CancellationScopeId, CommitPermitId, Generation, IdempotencyKey, ReceiptId,
+    TaskAttemptId, TaskId, TaskSnapshotId,
 };
 use sha2::{Digest, Sha256};
 
@@ -137,6 +137,115 @@ pub struct AttemptSpec {
     pub cancellation_generation: Generation,
     pub idempotency_key: IdempotencyKey,
     pub registered_at_ms: i64,
+}
+
+/// One exact Artifact head revision observed while sealing a verified
+/// `TaskWriteSet` read set. `revision=0` with `digest=None` represents an
+/// artifact that exists but has no committed head yet.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TaskWriteSetArtifactRead {
+    pub artifact_id: ArtifactId,
+    pub expected_head_revision: u64,
+    pub expected_head_digest: Option<[u8; 32]>,
+}
+
+/// Authority-verified `TaskWriteSet` seal request for the snapshot/read-set
+/// slice. Owner authorities are queried by the sealing API; callers provide
+/// only stable object identities and the revision they intend to read.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TaskWriteSetRequest {
+    pub task_id: TaskId,
+    pub attempt_id: TaskAttemptId,
+    pub attempt_generation: Generation,
+    pub artifact_reads: Vec<TaskWriteSetArtifactRead>,
+    pub idempotency_key: IdempotencyKey,
+    pub sealed_at_ms: i64,
+}
+
+/// Durable authority-derived `TaskWriteSet` seal. The root covers the
+/// receipted snapshot, TaskHead/fence, group/participant bindings, and the
+/// exact Artifact read set. Planned effects and other owner bindings are
+/// added by later authority-first slices.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TaskWriteSetRecord {
+    pub task_id: TaskId,
+    pub attempt_id: TaskAttemptId,
+    pub attempt_generation: Generation,
+    pub idempotency_key: IdempotencyKey,
+    pub snapshot_id: TaskSnapshotId,
+    pub snapshot_receipt_id: ReceiptId,
+    pub expected_head_commit_seq: u64,
+    pub effect_history_root: [u8; 32],
+    pub retry_fence_epoch: u64,
+    pub group_binding: Option<crate::TaskGroupCommitBinding>,
+    pub participant_registry_binding: crate::ParticipantRegistryBinding,
+    pub artifact_reads: Vec<TaskWriteSetArtifactRead>,
+    pub artifact_read_set_root: [u8; 32],
+    pub write_set_root: [u8; 32],
+    pub sealed_at_ms: i64,
+}
+
+/// Idempotent result of sealing a `TaskWriteSet`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TaskWriteSetDecision {
+    Sealed(TaskWriteSetRecord),
+    Replayed(TaskWriteSetRecord),
+}
+
+impl TaskWriteSetDecision {
+    #[must_use]
+    pub const fn record(&self) -> &TaskWriteSetRecord {
+        match self {
+            Self::Sealed(record) | Self::Replayed(record) => record,
+        }
+    }
+}
+
+pub(crate) fn artifact_read_set_root(reads: &[TaskWriteSetArtifactRead]) -> [u8; 32] {
+    let mut ordered = reads.to_vec();
+    ordered.sort_unstable_by_key(|read| read.artifact_id.into_bytes());
+    let mut hasher = Sha256::new();
+    hasher.update(b"llmos/task-write-set-artifact-reads/v1");
+    hasher.update((ordered.len() as u64).to_be_bytes());
+    for read in ordered {
+        hasher.update(read.artifact_id.as_bytes());
+        hasher.update(read.expected_head_revision.to_be_bytes());
+        match read.expected_head_digest {
+            Some(digest) => {
+                hasher.update([1u8]);
+                hasher.update(digest);
+            }
+            None => hasher.update([0u8]),
+        }
+    }
+    hasher.finalize().into()
+}
+
+pub(crate) fn task_write_set_root(record: &TaskWriteSetRecord) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"llmos/task-write-set/v1");
+    hasher.update(record.task_id.as_bytes());
+    hasher.update(record.attempt_id.as_bytes());
+    hasher.update(record.attempt_generation.get().to_be_bytes());
+    hasher.update(record.snapshot_id.as_bytes());
+    hasher.update(record.snapshot_receipt_id.as_bytes());
+    hasher.update(record.expected_head_commit_seq.to_be_bytes());
+    hasher.update(record.effect_history_root);
+    hasher.update(record.retry_fence_epoch.to_be_bytes());
+    match record.group_binding {
+        Some(binding) => {
+            hasher.update([1u8]);
+            hasher.update(binding.group_id.as_bytes());
+            hasher.update(binding.membership_generation.to_be_bytes());
+            hasher.update(binding.membership_root);
+            hasher.update(binding.group_policy_digest);
+        }
+        None => hasher.update([0u8]),
+    }
+    hasher.update(record.participant_registry_binding.generation.to_be_bytes());
+    hasher.update(record.participant_registry_binding.root);
+    hasher.update(record.artifact_read_set_root);
+    hasher.finalize().into()
 }
 
 /// One planned effect slot declared inside a `TaskWriteSet`

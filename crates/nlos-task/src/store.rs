@@ -11,8 +11,8 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use nlos_types::{
-    CancellationScopeId, CommitPermitId, Generation, IdempotencyKey, ReceiptId, TaskAttemptId,
-    TaskId, TaskSnapshotId,
+    ArtifactId, CancellationScopeId, CommitPermitId, Generation, IdempotencyKey, ReceiptId,
+    TaskAttemptId, TaskId, TaskSnapshotId,
 };
 use rusqlite::{Connection, OpenFlags, Transaction, TransactionBehavior, params};
 
@@ -20,12 +20,13 @@ use crate::model::{derive_closure_receipt_id, derive_permit_id, empty_effect_his
 use crate::{
     AttemptHandle, AttemptRecord, AttemptRegistrationDecision, AttemptSpec, AttemptState,
     CancelDecision, CancelRequest, ClosedAttempt, PermitConflict, PermitDecision, PermitRecord,
-    PermitRequest, PermitState, ReceiptOutcome, SnapshotBundle, TaskReceiptRecord, TaskRecord,
-    TaskRegistrationDecision, TaskSnapshotReceiptRecord, TaskSnapshotReceiptSpec, TaskSpec,
-    TaskState, TaskStoreError,
+    PermitRequest, PermitState, ReceiptOutcome, SnapshotBundle, SnapshotConsistency,
+    TaskReceiptRecord, TaskRecord, TaskRegistrationDecision, TaskSnapshotReceiptRecord,
+    TaskSnapshotReceiptSpec, TaskSpec, TaskState, TaskStoreError, TaskWriteSetArtifactRead,
+    TaskWriteSetDecision, TaskWriteSetRecord, TaskWriteSetRequest,
 };
 
-const SCHEMA_VERSION: i64 = 12;
+const SCHEMA_VERSION: i64 = 13;
 
 /// A single-writer `SQLite` task authority.
 ///
@@ -209,8 +210,11 @@ impl SqliteTaskAuthority {
                 migrate_v12(&mut connection)?;
             }
             11 => migrate_v12(&mut connection)?,
-            SCHEMA_VERSION => {}
+            12 | SCHEMA_VERSION => {}
             other => return Err(TaskStoreError::UnsupportedSchema(other)),
+        }
+        if version < SCHEMA_VERSION {
+            migrate_v13(&mut connection)?;
         }
 
         Ok(Self {
@@ -346,6 +350,148 @@ impl SqliteTaskAuthority {
     ) -> Result<TaskSnapshotReceiptRecord, TaskStoreError> {
         let connection = self.lock_connection()?;
         load_snapshot_receipt(&*connection, task_id, receipt_id)
+    }
+
+    /// Seals an authority-verified snapshot/read-set `TaskWriteSet` slice.
+    /// Artifact heads are read directly from the owning `ArtifactAuthority`;
+    /// Task snapshot, group, and participant facts are read in the same
+    /// `TaskAuthority` transaction that persists the immutable seal.
+    ///
+    /// # Errors
+    ///
+    /// Returns owner readback, snapshot binding, duplicate-read,
+    /// idempotency, participant, or storage errors. No `TaskWriteSet` row is
+    /// written when an owner read does not match the requested revision.
+    #[allow(clippy::needless_pass_by_value)]
+    #[allow(clippy::too_many_lines)]
+    pub fn seal_task_write_set(
+        &self,
+        artifact_authority: &nlos_artifact::ArtifactStore,
+        request: TaskWriteSetRequest,
+    ) -> Result<TaskWriteSetDecision, TaskStoreError> {
+        if request.sealed_at_ms < 0 {
+            return Err(TaskStoreError::TaskWriteSetConflict {
+                reason: "sealed_at_ms must be non-negative",
+            });
+        }
+        let mut artifact_reads = request.artifact_reads.clone();
+        artifact_reads.sort_unstable_by_key(|read| read.artifact_id.into_bytes());
+        if artifact_reads
+            .windows(2)
+            .any(|pair| pair[0].artifact_id == pair[1].artifact_id)
+        {
+            return Err(TaskStoreError::TaskWriteSetConflict {
+                reason: "Artifact read set contains duplicate artifact IDs",
+            });
+        }
+        for read in &artifact_reads {
+            let head = artifact_authority
+                .resolve_head(read.artifact_id)
+                .map_err(TaskStoreError::ArtifactParticipantAuthority)?;
+            let (current_revision, current_digest) = head.map_or((0, None), |head| {
+                (head.revision, Some(head.digest.into_bytes()))
+            });
+            if current_revision != read.expected_head_revision
+                || current_digest != read.expected_head_digest
+            {
+                return Err(TaskStoreError::TaskWriteSetReadConflict);
+            }
+        }
+
+        let mut connection = self.lock_connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let task = load_task(&transaction, request.task_id)?;
+        let attempt = load_attempt(&transaction, request.task_id, request.attempt_id)?;
+        if attempt.attempt_generation != request.attempt_generation {
+            return Err(TaskStoreError::InvalidGeneration);
+        }
+        let snapshot_receipt_id =
+            attempt
+                .snapshot_receipt_id
+                .ok_or(TaskStoreError::TaskWriteSetConflict {
+                    reason: "TaskWriteSet requires a receipted snapshot-bound attempt",
+                })?;
+        let snapshot_receipt =
+            load_snapshot_receipt(&transaction, request.task_id, snapshot_receipt_id)?;
+        if snapshot_receipt.snapshot != attempt.snapshot
+            || snapshot_receipt.achieved_consistency == SnapshotConsistency::MixedNonSettleable
+        {
+            return Err(TaskStoreError::TaskWriteSetConflict {
+                reason: "attempt snapshot receipt does not authorize this write set",
+            });
+        }
+        if validate_head_binding(&task.record, &attempt.snapshot).is_some() {
+            return Err(TaskStoreError::StaleTaskHead);
+        }
+        let group_binding = crate::group::current_commit_binding(&transaction, request.attempt_id)?;
+        let registry = crate::participant::initialize_registry(
+            &transaction,
+            &task.record,
+            request.sealed_at_ms,
+        )?;
+        if registry.state != crate::ParticipantRegistryState::Open {
+            return Err(TaskStoreError::ParticipantRegistryFrozen {
+                state: registry.state,
+            });
+        }
+        let participant_registry_binding = crate::ParticipantRegistryBinding {
+            generation: registry.generation,
+            root: registry.root,
+        };
+        let artifact_read_set_root = crate::model::artifact_read_set_root(&artifact_reads);
+        let mut record = TaskWriteSetRecord {
+            task_id: request.task_id,
+            attempt_id: request.attempt_id,
+            attempt_generation: request.attempt_generation,
+            idempotency_key: request.idempotency_key,
+            snapshot_id: attempt.snapshot.snapshot_id,
+            snapshot_receipt_id,
+            expected_head_commit_seq: attempt.snapshot.expected_head_commit_seq,
+            effect_history_root: attempt.snapshot.effect_history_root,
+            retry_fence_epoch: attempt.snapshot.retry_fence_epoch,
+            group_binding,
+            participant_registry_binding,
+            artifact_reads,
+            artifact_read_set_root,
+            write_set_root: [0; 32],
+            sealed_at_ms: request.sealed_at_ms,
+        };
+        record.write_set_root = crate::model::task_write_set_root(&record);
+        if let Some(existing) =
+            load_write_set_by_key(&transaction, request.task_id, request.idempotency_key)?
+        {
+            if existing == record {
+                transaction.commit()?;
+                return Ok(TaskWriteSetDecision::Replayed(existing));
+            }
+            return Err(TaskStoreError::TaskWriteSetConflict {
+                reason: "idempotency key was rebound to different TaskWriteSet bytes",
+            });
+        }
+        if load_write_set_by_root(&transaction, request.task_id, record.write_set_root)?.is_some() {
+            return Err(TaskStoreError::TaskWriteSetConflict {
+                reason: "write_set_root is already bound to another seal",
+            });
+        }
+        insert_write_set(&transaction, &record)?;
+        transaction.commit()?;
+        Ok(TaskWriteSetDecision::Sealed(record))
+    }
+
+    /// Reads one durable `TaskWriteSet` seal by its idempotency key.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed not-found or storage error when the seal is absent or
+    /// cannot be decoded.
+    pub fn inspect_task_write_set(
+        &self,
+        task_id: TaskId,
+        idempotency_key: IdempotencyKey,
+    ) -> Result<TaskWriteSetRecord, TaskStoreError> {
+        let connection = self.lock_connection()?;
+        load_write_set_by_key(&*connection, task_id, idempotency_key)?
+            .ok_or(TaskStoreError::TaskWriteSetNotFound)
     }
 
     /// Registers one `TaskAttempt` idempotently.
@@ -938,6 +1084,7 @@ fn validate_head_binding(task: &TaskRecord, snapshot: &SnapshotBundle) -> Option
     None
 }
 
+#[allow(clippy::too_many_lines)]
 fn issue_permit(
     transaction: &Transaction<'_>,
     task: &StoredTask,
@@ -959,8 +1106,52 @@ fn issue_permit(
         .control_epoch
         .checked_add(1)
         .ok_or(TaskStoreError::EpochExhausted)?;
+    let sealed_write_set =
+        load_write_set_by_root(transaction, request.task_id, request.write_set_root)?;
+    if let Some(record) = &sealed_write_set {
+        if record.attempt_id != attempt.attempt_id
+            || record.attempt_generation != attempt.attempt_generation
+            || record.snapshot_id != attempt.snapshot.snapshot_id
+            || record.expected_head_commit_seq != attempt.snapshot.expected_head_commit_seq
+            || record.effect_history_root != attempt.snapshot.effect_history_root
+            || record.retry_fence_epoch != attempt.snapshot.retry_fence_epoch
+        {
+            return Err(TaskStoreError::TaskWriteSetConflict {
+                reason: "sealed TaskWriteSet no longer matches attempt snapshot",
+            });
+        }
+        if record.artifact_read_set_root
+            != crate::model::artifact_read_set_root(&record.artifact_reads)
+            || record.write_set_root != crate::model::task_write_set_root(record)
+        {
+            return Err(TaskStoreError::CorruptRecord(
+                "TaskWriteSet canonical root mismatch",
+            ));
+        }
+        let current_group = crate::group::current_commit_binding(transaction, attempt.attempt_id)?;
+        if record.group_binding != current_group {
+            return Err(TaskStoreError::MembershipConflict);
+        }
+        let registry = crate::participant::initialize_registry(
+            transaction,
+            &task.record,
+            request.requested_at_ms,
+        )?;
+        if registry.state != crate::ParticipantRegistryState::Open
+            || record.participant_registry_binding.generation != registry.generation
+            || record.participant_registry_binding.root != registry.root
+        {
+            return Err(TaskStoreError::ParticipantRegistryBindingMismatch);
+        }
+    }
     let participant_registry_binding =
         crate::participant::freeze_for_permit(transaction, &task.record, request.requested_at_ms)?;
+    if sealed_write_set
+        .as_ref()
+        .is_some_and(|record| record.participant_registry_binding != participant_registry_binding)
+    {
+        return Err(TaskStoreError::ParticipantRegistryBindingMismatch);
+    }
     let record = PermitRecord {
         permit_id: derive_permit_id(request.task_id, request.idempotency_key),
         task_id: request.task_id,
@@ -1402,6 +1593,85 @@ fn migrate_v12(connection: &mut Connection) -> Result<(), TaskStoreError> {
     transaction.commit()?;
     Ok(())
 }
+
+/// v12 → v13 adds the immutable, authority-derived snapshot/read-set
+/// `TaskWriteSet` seal. Existing tasks receive no invented write-set rows.
+fn migrate_v13(connection: &mut Connection) -> Result<(), TaskStoreError> {
+    let table_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN
+            ('task_write_sets', 'task_write_set_artifact_reads')",
+        [],
+        |row| row.get(0),
+    )?;
+    let trigger_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN
+            ('task_write_set_is_immutable', 'task_write_set_is_immutable_delete',
+             'task_write_set_artifact_read_is_immutable',
+             'task_write_set_artifact_read_is_immutable_delete')",
+        [],
+        |row| row.get(0),
+    )?;
+    if table_count == 2 && trigger_count == 4 {
+        connection.pragma_update(None, "user_version", 13)?;
+        return Ok(());
+    }
+    if table_count != 0 || trigger_count != 0 {
+        return Err(TaskStoreError::CorruptRecord("partial TaskWriteSet schema"));
+    }
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(SCHEMA_V13_SQL)?;
+    transaction.commit()?;
+    Ok(())
+}
+
+const SCHEMA_V13_SQL: &str = "CREATE TABLE task_write_sets (
+        task_id BLOB NOT NULL CHECK(length(task_id) = 16),
+        attempt_id BLOB NOT NULL CHECK(length(attempt_id) = 16),
+        attempt_generation BLOB NOT NULL CHECK(length(attempt_generation) = 8),
+        idempotency_key BLOB NOT NULL CHECK(length(idempotency_key) = 16),
+        snapshot_id BLOB NOT NULL CHECK(length(snapshot_id) = 16),
+        snapshot_receipt_id BLOB NOT NULL CHECK(length(snapshot_receipt_id) = 16),
+        expected_head_commit_seq BLOB NOT NULL CHECK(length(expected_head_commit_seq) = 8),
+        effect_history_root BLOB NOT NULL CHECK(length(effect_history_root) = 32),
+        retry_fence_epoch BLOB NOT NULL CHECK(length(retry_fence_epoch) = 8),
+        group_id BLOB CHECK(group_id IS NULL OR length(group_id) = 16),
+        membership_generation BLOB CHECK(membership_generation IS NULL OR length(membership_generation) = 8),
+        membership_root BLOB CHECK(membership_root IS NULL OR length(membership_root) = 32),
+        group_policy_digest BLOB CHECK(group_policy_digest IS NULL OR length(group_policy_digest) = 32),
+        participant_registry_generation BLOB NOT NULL CHECK(length(participant_registry_generation) = 8),
+        participant_registry_root BLOB NOT NULL CHECK(length(participant_registry_root) = 32),
+        artifact_read_set_root BLOB NOT NULL CHECK(length(artifact_read_set_root) = 32),
+        write_set_root BLOB NOT NULL CHECK(length(write_set_root) = 32),
+        sealed_at_ms INTEGER NOT NULL CHECK(sealed_at_ms >= 0),
+        PRIMARY KEY(task_id, idempotency_key),
+        UNIQUE(task_id, write_set_root),
+        FOREIGN KEY(task_id) REFERENCES tasks(task_id)
+    ) STRICT;
+    CREATE TABLE task_write_set_artifact_reads (
+        task_id BLOB NOT NULL CHECK(length(task_id) = 16),
+        idempotency_key BLOB NOT NULL CHECK(length(idempotency_key) = 16),
+        read_seq INTEGER NOT NULL CHECK(read_seq >= 0),
+        artifact_id BLOB NOT NULL CHECK(length(artifact_id) = 16),
+        expected_head_revision BLOB NOT NULL CHECK(length(expected_head_revision) = 8),
+        expected_head_digest BLOB CHECK(expected_head_digest IS NULL OR length(expected_head_digest) = 32),
+        PRIMARY KEY(task_id, idempotency_key, read_seq),
+        UNIQUE(task_id, idempotency_key, artifact_id),
+        FOREIGN KEY(task_id, idempotency_key)
+            REFERENCES task_write_sets(task_id, idempotency_key)
+    ) STRICT;
+    CREATE TRIGGER task_write_set_is_immutable
+    BEFORE UPDATE ON task_write_sets
+    BEGIN SELECT RAISE(ABORT, 'TaskWriteSet is immutable'); END;
+    CREATE TRIGGER task_write_set_is_immutable_delete
+    BEFORE DELETE ON task_write_sets
+    BEGIN SELECT RAISE(ABORT, 'TaskWriteSet is immutable'); END;
+    CREATE TRIGGER task_write_set_artifact_read_is_immutable
+    BEFORE UPDATE ON task_write_set_artifact_reads
+    BEGIN SELECT RAISE(ABORT, 'TaskWriteSet artifact read is immutable'); END;
+    CREATE TRIGGER task_write_set_artifact_read_is_immutable_delete
+    BEFORE DELETE ON task_write_set_artifact_reads
+    BEGIN SELECT RAISE(ABORT, 'TaskWriteSet artifact read is immutable'); END;
+    PRAGMA user_version = 13;";
 
 const SCHEMA_V12_SQL: &str = "ALTER TABLE effect_permits
         ADD COLUMN participant_registry_generation BLOB
@@ -1990,6 +2260,190 @@ fn insert_permit(
     Ok(())
 }
 
+fn insert_write_set(
+    transaction: &Transaction<'_>,
+    record: &TaskWriteSetRecord,
+) -> Result<(), TaskStoreError> {
+    let group_id = record
+        .group_binding
+        .map(|binding| binding.group_id.into_bytes());
+    let membership_generation = record
+        .group_binding
+        .map(|binding| encode_u64(binding.membership_generation));
+    let membership_root = record.group_binding.map(|binding| binding.membership_root);
+    let group_policy_digest = record
+        .group_binding
+        .map(|binding| binding.group_policy_digest);
+    transaction.execute(
+        "INSERT INTO task_write_sets (
+            task_id, attempt_id, attempt_generation, idempotency_key,
+            snapshot_id, snapshot_receipt_id, expected_head_commit_seq,
+            effect_history_root, retry_fence_epoch, group_id,
+            membership_generation, membership_root, group_policy_digest,
+            participant_registry_generation, participant_registry_root,
+            artifact_read_set_root, write_set_root, sealed_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+                   ?13, ?14, ?15, ?16, ?17, ?18)",
+        params![
+            record.task_id.as_bytes().as_slice(),
+            record.attempt_id.as_bytes().as_slice(),
+            encode_u64(record.attempt_generation.get()).as_slice(),
+            record.idempotency_key.as_bytes().as_slice(),
+            record.snapshot_id.as_bytes().as_slice(),
+            record.snapshot_receipt_id.as_bytes().as_slice(),
+            encode_u64(record.expected_head_commit_seq).as_slice(),
+            record.effect_history_root.as_slice(),
+            encode_u64(record.retry_fence_epoch).as_slice(),
+            group_id.as_ref().map(<[u8; 16]>::as_slice),
+            membership_generation.as_ref().map(<[u8; 8]>::as_slice),
+            membership_root.as_ref().map(<[u8; 32]>::as_slice),
+            group_policy_digest.as_ref().map(<[u8; 32]>::as_slice),
+            encode_u64(record.participant_registry_binding.generation).as_slice(),
+            record.participant_registry_binding.root.as_slice(),
+            record.artifact_read_set_root.as_slice(),
+            record.write_set_root.as_slice(),
+            record.sealed_at_ms,
+        ],
+    )?;
+    for (sequence, read) in record.artifact_reads.iter().enumerate() {
+        transaction.execute(
+            "INSERT INTO task_write_set_artifact_reads (
+                task_id, idempotency_key, read_seq, artifact_id,
+                expected_head_revision, expected_head_digest
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                record.task_id.as_bytes().as_slice(),
+                record.idempotency_key.as_bytes().as_slice(),
+                i64::try_from(sequence).map_err(|_| TaskStoreError::TaskWriteSetConflict {
+                    reason: "Artifact read set exceeds SQLite sequence range",
+                })?,
+                read.artifact_id.as_bytes().as_slice(),
+                encode_u64(read.expected_head_revision).as_slice(),
+                read.expected_head_digest.as_ref().map(<[u8; 32]>::as_slice),
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+const WRITE_SET_COLUMNS: &str = "task_id, attempt_id, attempt_generation,
+     idempotency_key, snapshot_id, snapshot_receipt_id,
+     expected_head_commit_seq, effect_history_root, retry_fence_epoch,
+     group_id, membership_generation, membership_root, group_policy_digest,
+     participant_registry_generation, participant_registry_root,
+     artifact_read_set_root, write_set_root, sealed_at_ms";
+
+fn load_write_set_by_key(
+    source: &impl SqlRead,
+    task_id: TaskId,
+    idempotency_key: IdempotencyKey,
+) -> Result<Option<TaskWriteSetRecord>, TaskStoreError> {
+    let mut statement = source.prepare_statement(&format!(
+        "SELECT {WRITE_SET_COLUMNS} FROM task_write_sets
+         WHERE task_id = ?1 AND idempotency_key = ?2"
+    ))?;
+    let mut rows = statement.query(params![
+        task_id.as_bytes().as_slice(),
+        idempotency_key.as_bytes().as_slice(),
+    ])?;
+    let Some(row) = rows.next()? else {
+        return Ok(None);
+    };
+    let mut record = decode_write_set_row(row)?;
+    record.artifact_reads = load_write_set_reads(source, task_id, idempotency_key)?;
+    Ok(Some(record))
+}
+
+fn load_write_set_by_root(
+    source: &impl SqlRead,
+    task_id: TaskId,
+    write_set_root: [u8; 32],
+) -> Result<Option<TaskWriteSetRecord>, TaskStoreError> {
+    let mut statement = source.prepare_statement(&format!(
+        "SELECT {WRITE_SET_COLUMNS} FROM task_write_sets
+         WHERE task_id = ?1 AND write_set_root = ?2"
+    ))?;
+    let mut rows = statement.query(params![
+        task_id.as_bytes().as_slice(),
+        write_set_root.as_slice(),
+    ])?;
+    let Some(row) = rows.next()? else {
+        return Ok(None);
+    };
+    let mut record = decode_write_set_row(row)?;
+    record.artifact_reads = load_write_set_reads(source, task_id, record.idempotency_key)?;
+    Ok(Some(record))
+}
+
+fn load_write_set_reads(
+    source: &impl SqlRead,
+    task_id: TaskId,
+    idempotency_key: IdempotencyKey,
+) -> Result<Vec<TaskWriteSetArtifactRead>, TaskStoreError> {
+    let mut statement = source.prepare_statement(
+        "SELECT artifact_id, expected_head_revision, expected_head_digest
+         FROM task_write_set_artifact_reads
+         WHERE task_id = ?1 AND idempotency_key = ?2 ORDER BY read_seq",
+    )?;
+    let rows = statement.query_map(
+        params![
+            task_id.as_bytes().as_slice(),
+            idempotency_key.as_bytes().as_slice()
+        ],
+        |row| {
+            Ok((
+                row.get::<_, Vec<u8>>(0)?,
+                row.get::<_, Vec<u8>>(1)?,
+                row.get::<_, Option<Vec<u8>>>(2)?,
+            ))
+        },
+    )?;
+    rows.map(|row| {
+        let (artifact_id, revision, digest) = row?;
+        Ok(TaskWriteSetArtifactRead {
+            artifact_id: ArtifactId::from_bytes(
+                artifact_id
+                    .try_into()
+                    .map_err(|_| rusqlite::Error::InvalidQuery)?,
+            ),
+            expected_head_revision: u64_from_bytes(revision)?,
+            expected_head_digest: digest
+                .map(|value| {
+                    value
+                        .try_into()
+                        .map_err(|_| TaskStoreError::CorruptRecord("write set digest"))
+                })
+                .transpose()?,
+        })
+    })
+    .collect()
+}
+
+fn decode_write_set_row(row: &rusqlite::Row<'_>) -> Result<TaskWriteSetRecord, TaskStoreError> {
+    let participant_generation = u64_from_blob(row, 13)?;
+    let participant_root = blob32(row, 14)?;
+    Ok(TaskWriteSetRecord {
+        task_id: TaskId::from_bytes(blob16(row, 0)?),
+        attempt_id: TaskAttemptId::from_bytes(blob16(row, 1)?),
+        attempt_generation: generation_from_blob(row, 2)?,
+        idempotency_key: IdempotencyKey::from_bytes(blob16(row, 3)?),
+        snapshot_id: TaskSnapshotId::from_bytes(blob16(row, 4)?),
+        snapshot_receipt_id: ReceiptId::from_bytes(blob16(row, 5)?),
+        expected_head_commit_seq: u64_from_blob(row, 6)?,
+        effect_history_root: blob32(row, 7)?,
+        retry_fence_epoch: u64_from_blob(row, 8)?,
+        group_binding: decode_group_binding(row, 9)?,
+        participant_registry_binding: crate::ParticipantRegistryBinding {
+            generation: participant_generation,
+            root: participant_root,
+        },
+        artifact_reads: Vec::new(),
+        artifact_read_set_root: blob32(row, 15)?,
+        write_set_root: blob32(row, 16)?,
+        sealed_at_ms: row.get(17)?,
+    })
+}
+
 const PERMIT_COLUMNS: &str = "permit_id, task_id, idempotency_key, attempt_id, attempt_generation,
      expected_head_commit_seq, expected_effect_history_root,
      expected_retry_fence_epoch, write_set_root, permit_epoch,
@@ -2370,6 +2824,12 @@ pub(crate) fn generation_from_blob(
 
 pub(crate) fn u64_from_blob(row: &rusqlite::Row<'_>, index: usize) -> Result<u64, TaskStoreError> {
     Ok(u64::from_be_bytes(blob8(row, index)?))
+}
+
+fn u64_from_bytes(bytes: Vec<u8>) -> Result<u64, TaskStoreError> {
+    Ok(u64::from_be_bytes(bytes.try_into().map_err(|_| {
+        TaskStoreError::CorruptRecord("expected 8-byte integer")
+    })?))
 }
 
 pub(crate) fn blob16(row: &rusqlite::Row<'_>, index: usize) -> Result<[u8; 16], TaskStoreError> {
