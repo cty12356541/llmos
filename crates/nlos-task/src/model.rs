@@ -9,8 +9,9 @@
 //! mandated by the full §25.1 contract.
 
 use nlos_types::{
-    AgentInstanceId, ArtifactId, CancellationScopeId, CommitPermitId, Generation, IdempotencyKey,
-    IsolationDomainId, ProcessId, ReceiptId, TaskAttemptId, TaskId, TaskParticipantId,
+    AgentInstanceId, ArtifactId, CallId, CancellationScopeId, CommitPermitId, DeviceId, DriverId,
+    Generation, IdempotencyKey, IsolationDomainId, OperationId, ProcessId, QuoteId, ReceiptId,
+    ReservationId, ResourceAccountId, SemanticEventId, TaskAttemptId, TaskId, TaskParticipantId,
     TaskSnapshotId,
 };
 use sha2::{Digest, Sha256};
@@ -197,6 +198,41 @@ pub struct TaskWriteSetProcessBinding {
     pub admission_receipt_id: ReceiptId,
 }
 
+/// Caller-declared Semantic events read by the `TaskWriteSet`. The Semantic
+/// authority must confirm both the durable log sequence and canonical bytes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TaskWriteSetSemanticRead {
+    pub event_id: SemanticEventId,
+    pub expected_log_seq: u64,
+    pub expected_canonical_digest: [u8; 32],
+}
+
+/// Caller-declared Reservation binding expected by a planned action. Stable
+/// owner fields are persisted after `ResourceAuthority` readback; activation
+/// tokens are never copied into the write-set root.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TaskWriteSetResourceReservationRequest {
+    pub reservation_id: ReservationId,
+    pub expected_call_id: CallId,
+    pub expected_operation_id: OperationId,
+    pub expected_quote_id: QuoteId,
+}
+
+/// Owner-read stable Reservation binding persisted in the sealed write set.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TaskWriteSetResourceReservation {
+    pub reservation_id: ReservationId,
+    pub account_id: ResourceAccountId,
+    pub quote_id: QuoteId,
+    pub call_id: CallId,
+    pub operation_id: OperationId,
+    pub driver_id: DriverId,
+    pub device_id: DeviceId,
+    pub driver_generation: Generation,
+    pub driver_fencing_token: [u8; 32],
+    pub upper_bound: u64,
+}
+
 /// Authority-verified `TaskWriteSet` seal request for the snapshot/read-set
 /// slice. Owner authorities are queried by the sealing API; callers provide
 /// only stable object identities and the revision they intend to read.
@@ -207,6 +243,8 @@ pub struct TaskWriteSetRequest {
     pub attempt_generation: Generation,
     pub artifact_reads: Vec<TaskWriteSetArtifactRead>,
     pub process_binding: Option<TaskWriteSetProcessBindingRequest>,
+    pub semantic_reads: Vec<TaskWriteSetSemanticRead>,
+    pub resource_reservations: Vec<TaskWriteSetResourceReservationRequest>,
     pub idempotency_key: IdempotencyKey,
     pub sealed_at_ms: i64,
 }
@@ -230,7 +268,11 @@ pub struct TaskWriteSetRecord {
     pub participant_registry_binding: crate::ParticipantRegistryBinding,
     pub artifact_reads: Vec<TaskWriteSetArtifactRead>,
     pub process_binding: Option<TaskWriteSetProcessBinding>,
+    pub semantic_reads: Vec<TaskWriteSetSemanticRead>,
+    pub resource_reservations: Vec<TaskWriteSetResourceReservation>,
     pub artifact_read_set_root: [u8; 32],
+    pub semantic_read_set_root: [u8; 32],
+    pub resource_reservation_set_root: [u8; 32],
     pub write_set_root: [u8; 32],
     pub sealed_at_ms: i64,
 }
@@ -271,9 +313,66 @@ pub(crate) fn artifact_read_set_root(reads: &[TaskWriteSetArtifactRead]) -> [u8;
     hasher.finalize().into()
 }
 
-pub(crate) fn task_write_set_root(record: &TaskWriteSetRecord) -> [u8; 32] {
+pub(crate) fn semantic_read_set_root(reads: &[TaskWriteSetSemanticRead]) -> [u8; 32] {
+    if reads.is_empty() {
+        return [0; 32];
+    }
+    let mut ordered = reads.to_vec();
+    ordered.sort_unstable_by_key(|read| read.event_id);
     let mut hasher = Sha256::new();
-    hasher.update(b"llmos/task-write-set/v1");
+    hasher.update(b"llmos/task-write-set-semantic-reads/v1");
+    hasher.update((ordered.len() as u64).to_be_bytes());
+    for read in ordered {
+        hasher.update(read.event_id.as_bytes());
+        hasher.update(read.expected_log_seq.to_be_bytes());
+        hasher.update(read.expected_canonical_digest);
+    }
+    hasher.finalize().into()
+}
+
+pub(crate) fn semantic_canonical_digest(bytes: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"llmos/task-write-set-semantic-event/v1");
+    hasher.update(bytes);
+    hasher.finalize().into()
+}
+
+pub(crate) fn resource_reservation_set_root(
+    reservations: &[TaskWriteSetResourceReservation],
+) -> [u8; 32] {
+    if reservations.is_empty() {
+        return [0; 32];
+    }
+    let mut ordered = reservations.to_vec();
+    ordered.sort_unstable_by_key(|reservation| reservation.reservation_id);
+    let mut hasher = Sha256::new();
+    hasher.update(b"llmos/task-write-set-resource-reservations/v1");
+    hasher.update((ordered.len() as u64).to_be_bytes());
+    for reservation in ordered {
+        hasher.update(reservation.reservation_id.as_bytes());
+        hasher.update(reservation.account_id.as_bytes());
+        hasher.update(reservation.quote_id.as_bytes());
+        hasher.update(reservation.call_id.as_bytes());
+        hasher.update(reservation.operation_id.as_bytes());
+        hasher.update(reservation.driver_id.as_bytes());
+        hasher.update(reservation.device_id.as_bytes());
+        hasher.update(reservation.driver_generation.get().to_be_bytes());
+        hasher.update(reservation.driver_fencing_token);
+        hasher.update(reservation.upper_bound.to_be_bytes());
+    }
+    hasher.finalize().into()
+}
+
+pub(crate) fn task_write_set_root(record: &TaskWriteSetRecord) -> [u8; 32] {
+    let extended = record.process_binding.is_some()
+        || !record.semantic_reads.is_empty()
+        || !record.resource_reservations.is_empty();
+    let mut hasher = Sha256::new();
+    hasher.update(if extended {
+        b"llmos/task-write-set/v2".as_slice()
+    } else {
+        b"llmos/task-write-set/v1".as_slice()
+    });
     hasher.update(record.task_id.as_bytes());
     hasher.update(record.attempt_id.as_bytes());
     hasher.update(record.attempt_generation.get().to_be_bytes());
@@ -292,22 +391,26 @@ pub(crate) fn task_write_set_root(record: &TaskWriteSetRecord) -> [u8; 32] {
         }
         None => hasher.update([0u8]),
     }
-    match record.process_binding {
-        Some(binding) => {
-            hasher.update([1u8]);
-            hasher.update(binding.process_id.as_bytes());
-            hasher.update(binding.process_generation.get().to_be_bytes());
-            hasher.update(binding.process_fencing_token);
-            hasher.update(binding.agent_instance_id.as_bytes());
-            hasher.update(binding.agent_instance_generation.get().to_be_bytes());
-            hasher.update(binding.isolation_domain_id.as_bytes());
-            hasher.update(binding.isolation_domain_generation.get().to_be_bytes());
-            hasher.update(binding.isolation_domain_fencing_token);
-            hasher.update(binding.participant_id.as_bytes());
-            hasher.update(binding.participant_generation.get().to_be_bytes());
-            hasher.update(binding.admission_receipt_id.as_bytes());
+    if extended {
+        match record.process_binding {
+            Some(binding) => {
+                hasher.update([1u8]);
+                hasher.update(binding.process_id.as_bytes());
+                hasher.update(binding.process_generation.get().to_be_bytes());
+                hasher.update(binding.process_fencing_token);
+                hasher.update(binding.agent_instance_id.as_bytes());
+                hasher.update(binding.agent_instance_generation.get().to_be_bytes());
+                hasher.update(binding.isolation_domain_id.as_bytes());
+                hasher.update(binding.isolation_domain_generation.get().to_be_bytes());
+                hasher.update(binding.isolation_domain_fencing_token);
+                hasher.update(binding.participant_id.as_bytes());
+                hasher.update(binding.participant_generation.get().to_be_bytes());
+                hasher.update(binding.admission_receipt_id.as_bytes());
+            }
+            None => hasher.update([0u8]),
         }
-        None => hasher.update([0u8]),
+        hasher.update(record.semantic_read_set_root);
+        hasher.update(record.resource_reservation_set_root);
     }
     hasher.update(record.participant_registry_binding.generation.to_be_bytes());
     hasher.update(record.participant_registry_binding.root);

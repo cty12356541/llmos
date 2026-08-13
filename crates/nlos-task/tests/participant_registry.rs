@@ -7,13 +7,14 @@ use nlos_task::{
     ParticipantRegistryBinding, ParticipantRegistryState, ParticipantType, PermitDecision,
     PermitRequest, PlannedEffect, SnapshotBundle, SnapshotConsistency, SqliteTaskAuthority,
     TaskSpec, TaskStoreError, TaskWriteSetArtifactRead, TaskWriteSetRequest,
-    empty_effect_history_root,
+    TaskWriteSetResourceReservationRequest, TaskWriteSetSemanticRead, empty_effect_history_root,
 };
 use nlos_types::{
-    ArtifactId, CancellationScopeId, Generation, IdempotencyKey, TaskAttemptId, TaskId,
-    TaskSnapshotId,
+    ArtifactId, CallId, CancellationScopeId, Generation, IdempotencyKey, OperationId,
+    SemanticEventId, TaskAttemptId, TaskId, TaskSnapshotId,
 };
 use rusqlite::Connection;
+use sha2::{Digest, Sha256};
 
 static NEXT: AtomicU64 = AtomicU64::new(1);
 
@@ -458,6 +459,8 @@ fn verified_write_set_seal_binds_receipted_snapshot_and_artifact_reads() {
             expected_head_digest: None,
         }],
         process_binding: Some(nlos_process::ActiveProcessBinding::from(&active_process).into()),
+        semantic_reads: Vec::new(),
+        resource_reservations: Vec::new(),
         idempotency_key: IdempotencyKey::from_bytes([0xbc; 16]),
         sealed_at_ms: 1_200,
     };
@@ -520,6 +523,267 @@ fn verified_write_set_seal_binds_receipted_snapshot_and_artifact_reads() {
             .unwrap(),
         record
     );
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn verified_write_set_seal_binds_reserved_resource_owner_facts() {
+    let database = Database::new();
+    let artifact_root = AuthorityRoot::new("resource-write-set-artifact");
+    let artifact = nlos_artifact::ArtifactStore::open(&artifact_root.0).unwrap();
+    let artifact_id = create_artifact(&artifact, 0xd1);
+    let resource_root = AuthorityRoot::new("write-set-resource");
+    let resource = nlos_resource::ResourceAuthority::open(&resource_root.0).unwrap();
+    let driver = resource
+        .register_driver(nlos_resource::RegisterDriverRequest {
+            profile_digest: [0xd2; 32],
+            idempotency_key: IdempotencyKey::from_bytes([0xd3; 16]),
+            created_at_ms: 1_000,
+        })
+        .unwrap()
+        .record();
+    let account = resource
+        .create_account(nlos_resource::CreateAccountRequest {
+            initial_credit: 100,
+            idempotency_key: IdempotencyKey::from_bytes([0xd4; 16]),
+            created_at_ms: 1_000,
+        })
+        .unwrap();
+    let quote = resource
+        .create_quote(nlos_resource::CreateQuoteRequest {
+            driver_id: driver.driver_id,
+            driver_generation: driver.generation,
+            driver_fencing_token: driver.fencing_token,
+            operation_proposal_digest: [0xd5; 32],
+            pricing_version: [0xd6; 32],
+            upper_bound: 25,
+            valid_until_ms: 9_000,
+            idempotency_key: IdempotencyKey::from_bytes([0xd7; 16]),
+            created_at_ms: 1_000,
+        })
+        .unwrap()
+        .record();
+    let reservation = resource
+        .reserve(nlos_resource::ReserveRequest {
+            account_id: account.account_id,
+            quote_id: quote.quote_id,
+            call_id: CallId::from_bytes([0xd8; 16]),
+            operation_id: OperationId::from_bytes([0xd9; 16]),
+            idempotency_key: IdempotencyKey::from_bytes([0xda; 16]),
+            reserved_at_ms: 1_100,
+        })
+        .unwrap()
+        .record();
+    let authority = database.open();
+    authority
+        .register_task(TaskSpec {
+            task_id: task_id(),
+            task_generation: Generation::INITIAL,
+            registered_at_ms: 1_000,
+        })
+        .unwrap();
+    let spec = attempt(0x73, 0, empty_effect_history_root());
+    let receipt_id = nlos_types::ReceiptId::from_bytes([0xdb; 16]);
+    authority
+        .register_snapshot_receipt(nlos_task::TaskSnapshotReceiptSpec {
+            task_id: task_id(),
+            snapshot: spec.snapshot,
+            receipt_id,
+            builder_id: [0xdc; 16],
+            builder_version_digest: [0xdd; 32],
+            per_authority_checkpoint_receipts: vec![nlos_types::ReceiptId::from_bytes([0xe5; 16])],
+            dependency_closure_root: [0xde; 32],
+            semantic_resolver_digest: [0xdf; 32],
+            canonical_iteration_digest: [0xe0; 32],
+            achieved_consistency: SnapshotConsistency::Causal,
+            built_at_ms: 1_050,
+            authority_id: [0xe1; 16],
+            key_id: [0xe2; 16],
+            signature: [0xe3; 64],
+        })
+        .unwrap();
+    authority
+        .register_attempt_with_snapshot_receipt(spec, receipt_id)
+        .unwrap();
+    let first_binding = binding(&authority.inspect_participant_registry(task_id()).unwrap());
+    let driver_registration = authority
+        .register_driver_gateway_participant(
+            &resource,
+            task_id(),
+            first_binding,
+            driver.driver_id,
+            driver.generation,
+            1_150,
+        )
+        .unwrap();
+    let second_binding = binding(driver_registration.registry());
+    authority
+        .register_resource_ledger_participant(
+            &resource,
+            task_id(),
+            second_binding,
+            account.account_id,
+            Generation::INITIAL,
+            1_160,
+        )
+        .unwrap();
+    let request = TaskWriteSetRequest {
+        task_id: task_id(),
+        attempt_id: spec.attempt_id,
+        attempt_generation: spec.attempt_generation,
+        artifact_reads: vec![TaskWriteSetArtifactRead {
+            artifact_id,
+            expected_head_revision: 0,
+            expected_head_digest: None,
+        }],
+        process_binding: None,
+        semantic_reads: Vec::new(),
+        resource_reservations: vec![TaskWriteSetResourceReservationRequest {
+            reservation_id: reservation.reservation_id,
+            expected_call_id: reservation.call_id,
+            expected_operation_id: reservation.operation_id,
+            expected_quote_id: reservation.quote_id,
+        }],
+        idempotency_key: IdempotencyKey::from_bytes([0xe4; 16]),
+        sealed_at_ms: 1_200,
+    };
+    let record = authority
+        .seal_task_write_set_with_resource_authority(&artifact, &resource, request.clone())
+        .unwrap()
+        .record()
+        .clone();
+    assert_eq!(record.resource_reservations.len(), 1);
+    assert_eq!(
+        record.resource_reservations[0].reservation_id,
+        reservation.reservation_id
+    );
+    let mut conflict = request;
+    conflict.resource_reservations[0].expected_operation_id = OperationId::from_bytes([0xee; 16]);
+    assert!(matches!(
+        authority.seal_task_write_set_with_resource_authority(&artifact, &resource, conflict),
+        Err(TaskStoreError::TaskWriteSetResourceReservationConflict)
+    ));
+    drop(authority);
+    let reopened = database.open();
+    assert_eq!(
+        reopened
+            .inspect_task_write_set(task_id(), IdempotencyKey::from_bytes([0xe4; 16]))
+            .unwrap(),
+        record
+    );
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn verified_write_set_seal_binds_semantic_event_readback() {
+    let database = Database::new();
+    let artifact_root = AuthorityRoot::new("semantic-write-set-artifact");
+    let artifact = nlos_artifact::ArtifactStore::open(&artifact_root.0).unwrap();
+    let semantic_root = AuthorityRoot::new("write-set-semantic");
+    let semantic = nlos_semantic::SemanticAuthority::open(&semantic_root.0).unwrap();
+    let event_id = SemanticEventId::from_bytes([0xe6; 32]);
+    let canonical = vec![0x01, 0x02, 0x03, 0x04];
+    let content_digest: [u8; 32] = [0xe7; 32];
+    let seed_bytes: &[u8] = b"seed";
+    let raw = Connection::open(semantic_root.0.join("semantic-authority.db")).unwrap();
+    raw.execute(
+        "INSERT INTO content_objects (content_digest, media_type, exact_bytes)
+         VALUES (?1, ?2, ?3)",
+        rusqlite::params![content_digest.as_slice(), "text/plain", seed_bytes],
+    )
+    .unwrap();
+    raw.execute(
+        "INSERT INTO semantic_events (
+            event_id, canonical_unsigned_event, event_type, scope_kind, scope_id,
+            issuer_principal_id, issuer_process_id, issuer_process_generation,
+            control_domain_id, issued_at_unix_ns, valid_until_ms, purpose_digest,
+            key_id, content_digest
+         ) VALUES (?1, ?2, 1, 1, ?3, ?4, ?5, 1, ?6, 1, NULL, NULL, ?7, ?8)",
+        rusqlite::params![
+            event_id.as_bytes().as_slice(),
+            canonical.as_slice(),
+            [0xe8u8; 16].as_slice(),
+            [0xe9u8; 16].as_slice(),
+            [0xeau8; 16].as_slice(),
+            [0xebu8; 16].as_slice(),
+            [0xecu8; 16].as_slice(),
+            content_digest.as_slice(),
+        ],
+    )
+    .unwrap();
+    raw.execute(
+        "INSERT INTO event_log (event_id) VALUES (?1)",
+        [event_id.as_bytes().as_slice()],
+    )
+    .unwrap();
+    drop(raw);
+    let endpoint = semantic.inspect_admission_endpoint_proof().unwrap();
+    let authority = database.open();
+    authority
+        .register_task(TaskSpec {
+            task_id: task_id(),
+            task_generation: Generation::INITIAL,
+            registered_at_ms: 1_000,
+        })
+        .unwrap();
+    let spec = attempt(0x84, 0, empty_effect_history_root());
+    let receipt_id = nlos_types::ReceiptId::from_bytes([0xed; 16]);
+    authority
+        .register_snapshot_receipt(nlos_task::TaskSnapshotReceiptSpec {
+            task_id: task_id(),
+            snapshot: spec.snapshot,
+            receipt_id,
+            builder_id: [0xee; 16],
+            builder_version_digest: [0xef; 32],
+            per_authority_checkpoint_receipts: vec![nlos_types::ReceiptId::from_bytes([0xf0; 16])],
+            dependency_closure_root: [0xf1; 32],
+            semantic_resolver_digest: [0xf2; 32],
+            canonical_iteration_digest: [0xf3; 32],
+            achieved_consistency: SnapshotConsistency::Causal,
+            built_at_ms: 1_050,
+            authority_id: [0xf4; 16],
+            key_id: [0xf5; 16],
+            signature: [0xf6; 64],
+        })
+        .unwrap();
+    authority
+        .register_attempt_with_snapshot_receipt(spec, receipt_id)
+        .unwrap();
+    let registry_binding = binding(&authority.inspect_participant_registry(task_id()).unwrap());
+    authority
+        .register_semantic_admission_participant(&semantic, task_id(), registry_binding, 1_100)
+        .unwrap();
+    let mut hasher = Sha256::new();
+    hasher.update(b"llmos/task-write-set-semantic-event/v1");
+    hasher.update(&canonical);
+    let request = TaskWriteSetRequest {
+        task_id: task_id(),
+        attempt_id: spec.attempt_id,
+        attempt_generation: spec.attempt_generation,
+        artifact_reads: Vec::new(),
+        process_binding: None,
+        semantic_reads: vec![TaskWriteSetSemanticRead {
+            event_id,
+            expected_log_seq: 1,
+            expected_canonical_digest: hasher.finalize().into(),
+        }],
+        resource_reservations: Vec::new(),
+        idempotency_key: IdempotencyKey::from_bytes([0xf7; 16]),
+        sealed_at_ms: 1_200,
+    };
+    let record = authority
+        .seal_task_write_set_with_semantic_authority(&artifact, &semantic, request.clone())
+        .unwrap()
+        .record()
+        .clone();
+    assert_eq!(record.semantic_reads, request.semantic_reads);
+    assert_eq!(endpoint.participant_generation.get(), 1);
+    let mut conflict = request;
+    conflict.semantic_reads[0].expected_log_seq = 2;
+    assert!(matches!(
+        authority.seal_task_write_set_with_semantic_authority(&artifact, &semantic, conflict),
+        Err(TaskStoreError::TaskWriteSetSemanticReadConflict)
+    ));
 }
 
 #[test]

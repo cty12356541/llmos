@@ -95,7 +95,8 @@ pub use model::{
     TaskSnapshotReceiptRecord, TaskSnapshotReceiptSpec, TaskSpec, TaskState,
     TaskWriteSetArtifactRead, TaskWriteSetDecision, TaskWriteSetProcessBinding,
     TaskWriteSetProcessBindingRequest, TaskWriteSetRecord, TaskWriteSetRequest,
-    empty_effect_history_root,
+    TaskWriteSetResourceReservation, TaskWriteSetResourceReservationRequest,
+    TaskWriteSetSemanticRead, empty_effect_history_root,
 };
 pub use nlos_types::{EffectPermitId, EffectSlotId, TaskGroupId};
 pub use participant::{
@@ -366,6 +367,11 @@ pub enum TaskStoreError {
     /// The requested Artifact read revision/digest differs from owner
     /// authority readback.
     TaskWriteSetReadConflict,
+    /// The requested Semantic event log sequence or canonical bytes differ
+    /// from `SemanticAuthority` readback.
+    TaskWriteSetSemanticReadConflict,
+    /// A requested Reservation is not the expected current RESERVED binding.
+    TaskWriteSetResourceReservationConflict,
     /// A `TaskWriteSet` is required for the verified permit path but missing.
     TaskWriteSetNotFound,
     /// Artifact authority proof readback failed before Task mutation.
@@ -590,6 +596,12 @@ impl fmt::Display for TaskStoreError {
             }
             Self::TaskWriteSetReadConflict => {
                 formatter.write_str("TaskWriteSet Artifact read set differs from authority")
+            }
+            Self::TaskWriteSetSemanticReadConflict => {
+                formatter.write_str("TaskWriteSet Semantic read set differs from authority")
+            }
+            Self::TaskWriteSetResourceReservationConflict => {
+                formatter.write_str("TaskWriteSet Resource Reservation differs from authority")
             }
             Self::TaskWriteSetNotFound => {
                 formatter.write_str("verified TaskWriteSet does not exist")

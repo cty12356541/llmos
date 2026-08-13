@@ -28,7 +28,7 @@ use crate::{
     TaskWriteSetDecision, TaskWriteSetRecord, TaskWriteSetRequest,
 };
 
-const SCHEMA_VERSION: i64 = 15;
+const SCHEMA_VERSION: i64 = 16;
 
 /// A single-writer `SQLite` task authority.
 ///
@@ -219,6 +219,7 @@ impl SqliteTaskAuthority {
             migrate_v13(&mut connection)?;
             migrate_v14(&mut connection)?;
             migrate_v15(&mut connection)?;
+            migrate_v16(&mut connection)?;
         }
 
         Ok(Self {
@@ -373,7 +374,7 @@ impl SqliteTaskAuthority {
         artifact_authority: &nlos_artifact::ArtifactStore,
         request: TaskWriteSetRequest,
     ) -> Result<TaskWriteSetDecision, TaskStoreError> {
-        self.seal_task_write_set_inner(artifact_authority, None, request)
+        self.seal_task_write_set_inner(artifact_authority, None, None, None, request)
     }
 
     /// Seals the snapshot/read-set slice and an owner-verified current
@@ -395,7 +396,86 @@ impl SqliteTaskAuthority {
         process_authority: &nlos_process::ProcessAuthority,
         request: TaskWriteSetRequest,
     ) -> Result<TaskWriteSetDecision, TaskStoreError> {
-        self.seal_task_write_set_inner(artifact_authority, Some(process_authority), request)
+        self.seal_task_write_set_inner(
+            artifact_authority,
+            Some(process_authority),
+            None,
+            None,
+            request,
+        )
+    }
+
+    /// Seals a write set after `SemanticAuthority` event readback.
+    ///
+    /// # Errors
+    ///
+    /// Returns typed Semantic owner, endpoint, read-set, snapshot, or storage
+    /// errors.
+    #[allow(clippy::needless_pass_by_value)]
+    #[allow(clippy::too_many_lines)]
+    pub fn seal_task_write_set_with_semantic_authority(
+        &self,
+        artifact_authority: &nlos_artifact::ArtifactStore,
+        semantic_authority: &nlos_semantic::SemanticAuthority,
+        request: TaskWriteSetRequest,
+    ) -> Result<TaskWriteSetDecision, TaskStoreError> {
+        self.seal_task_write_set_inner(
+            artifact_authority,
+            None,
+            Some(semantic_authority),
+            None,
+            request,
+        )
+    }
+
+    /// Seals a write set after `ResourceAuthority` Reservation readback.
+    ///
+    /// # Errors
+    ///
+    /// Returns typed Resource owner, endpoint, reservation, snapshot, or
+    /// storage errors.
+    #[allow(clippy::needless_pass_by_value)]
+    #[allow(clippy::too_many_lines)]
+    pub fn seal_task_write_set_with_resource_authority(
+        &self,
+        artifact_authority: &nlos_artifact::ArtifactStore,
+        resource_authority: &nlos_resource::ResourceAuthority,
+        request: TaskWriteSetRequest,
+    ) -> Result<TaskWriteSetDecision, TaskStoreError> {
+        self.seal_task_write_set_inner(
+            artifact_authority,
+            None,
+            None,
+            Some(resource_authority),
+            request,
+        )
+    }
+
+    /// Seals a write set after direct readback from Process, Semantic, and
+    /// Resource owner authorities. All endpoint participants must have been
+    /// registered in the same OPEN Task registry before this call.
+    ///
+    /// # Errors
+    ///
+    /// Returns typed owner-read, endpoint-registration, snapshot, read-set,
+    /// idempotency, or storage errors.
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_lines)]
+    pub fn seal_task_write_set_with_authorities(
+        &self,
+        artifact_authority: &nlos_artifact::ArtifactStore,
+        process_authority: &nlos_process::ProcessAuthority,
+        semantic_authority: &nlos_semantic::SemanticAuthority,
+        resource_authority: &nlos_resource::ResourceAuthority,
+        request: TaskWriteSetRequest,
+    ) -> Result<TaskWriteSetDecision, TaskStoreError> {
+        self.seal_task_write_set_inner(
+            artifact_authority,
+            Some(process_authority),
+            Some(semantic_authority),
+            Some(resource_authority),
+            request,
+        )
     }
 
     #[allow(clippy::needless_pass_by_value)]
@@ -404,6 +484,8 @@ impl SqliteTaskAuthority {
         &self,
         artifact_authority: &nlos_artifact::ArtifactStore,
         process_authority: Option<&nlos_process::ProcessAuthority>,
+        semantic_authority: Option<&nlos_semantic::SemanticAuthority>,
+        resource_authority: Option<&nlos_resource::ResourceAuthority>,
         request: TaskWriteSetRequest,
     ) -> Result<TaskWriteSetDecision, TaskStoreError> {
         if request.sealed_at_ms < 0 {
@@ -483,6 +565,102 @@ impl SqliteTaskAuthority {
             }
         };
 
+        let mut semantic_reads = request.semantic_reads.clone();
+        semantic_reads.sort_unstable_by_key(|read| read.event_id);
+        if semantic_reads
+            .windows(2)
+            .any(|pair| pair[0].event_id == pair[1].event_id)
+        {
+            return Err(TaskStoreError::TaskWriteSetSemanticReadConflict);
+        }
+        let semantic_endpoint = if semantic_reads.is_empty() {
+            None
+        } else {
+            let authority = semantic_authority.ok_or(TaskStoreError::TaskWriteSetConflict {
+                reason: "Semantic reads require SemanticAuthority readback",
+            })?;
+            let proof = authority
+                .inspect_admission_endpoint_proof()
+                .map_err(TaskStoreError::SemanticParticipantAuthority)?;
+            for read in &semantic_reads {
+                let event = authority
+                    .inspect_event(read.event_id)
+                    .map_err(TaskStoreError::SemanticParticipantAuthority)?;
+                if event.log_seq != read.expected_log_seq
+                    || crate::model::semantic_canonical_digest(&event.canonical_unsigned_event)
+                        != read.expected_canonical_digest
+                {
+                    return Err(TaskStoreError::TaskWriteSetSemanticReadConflict);
+                }
+            }
+            Some(crate::ParticipantRecord {
+                participant_type: crate::ParticipantType::SemanticAdmission,
+                participant_id: proof.participant_id,
+                participant_generation: proof.participant_generation,
+                admission_receipt_id: proof.admission_receipt_id,
+            })
+        };
+
+        let mut resource_requests = request.resource_reservations.clone();
+        resource_requests.sort_unstable_by_key(|reservation| reservation.reservation_id);
+        if resource_requests
+            .windows(2)
+            .any(|pair| pair[0].reservation_id == pair[1].reservation_id)
+        {
+            return Err(TaskStoreError::TaskWriteSetResourceReservationConflict);
+        }
+        let mut resource_reservations = Vec::with_capacity(resource_requests.len());
+        let mut resource_participants = Vec::new();
+        if !resource_requests.is_empty() {
+            let authority = resource_authority.ok_or(TaskStoreError::TaskWriteSetConflict {
+                reason: "Resource reservations require ResourceAuthority readback",
+            })?;
+            for request in resource_requests {
+                let reservation = authority
+                    .inspect_permit_binding(request.reservation_id)
+                    .map_err(TaskStoreError::ResourceParticipantAuthority)?;
+                if reservation.call_id != request.expected_call_id
+                    || reservation.operation_id != request.expected_operation_id
+                    || reservation.quote_id != request.expected_quote_id
+                {
+                    return Err(TaskStoreError::TaskWriteSetResourceReservationConflict);
+                }
+                let driver_proof = authority
+                    .inspect_driver_gateway_endpoint_proof(reservation.driver_id)
+                    .map_err(TaskStoreError::ResourceParticipantAuthority)?;
+                if driver_proof.participant_generation != reservation.driver_generation {
+                    return Err(TaskStoreError::TaskWriteSetResourceReservationConflict);
+                }
+                let account_proof = authority
+                    .inspect_resource_ledger_endpoint_proof(reservation.account_id)
+                    .map_err(TaskStoreError::ResourceParticipantAuthority)?;
+                resource_participants.push(crate::ParticipantRecord {
+                    participant_type: crate::ParticipantType::DriverGateway,
+                    participant_id: driver_proof.participant_id,
+                    participant_generation: driver_proof.participant_generation,
+                    admission_receipt_id: driver_proof.admission_receipt_id,
+                });
+                resource_participants.push(crate::ParticipantRecord {
+                    participant_type: crate::ParticipantType::ResourceLedger,
+                    participant_id: account_proof.participant_id,
+                    participant_generation: account_proof.participant_generation,
+                    admission_receipt_id: account_proof.admission_receipt_id,
+                });
+                resource_reservations.push(crate::TaskWriteSetResourceReservation {
+                    reservation_id: reservation.reservation_id,
+                    account_id: reservation.account_id,
+                    quote_id: reservation.quote_id,
+                    call_id: reservation.call_id,
+                    operation_id: reservation.operation_id,
+                    driver_id: reservation.driver_id,
+                    device_id: reservation.device_id,
+                    driver_generation: reservation.driver_generation,
+                    driver_fencing_token: reservation.driver_fencing_token,
+                    upper_bound: reservation.upper_bound,
+                });
+            }
+        }
+
         let mut connection = self.lock_connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let task = load_task(&transaction, request.task_id)?;
@@ -532,11 +710,28 @@ impl SqliteTaskAuthority {
                 });
             }
         }
+        if let Some(participant) = semantic_endpoint
+            && !crate::participant::has_participant(&registry, participant)
+        {
+            return Err(TaskStoreError::TaskWriteSetConflict {
+                reason: "Semantic endpoint is not registered in participant registry",
+            });
+        }
+        for participant in resource_participants {
+            if !crate::participant::has_participant(&registry, participant) {
+                return Err(TaskStoreError::TaskWriteSetConflict {
+                    reason: "Resource endpoint is not registered in participant registry",
+                });
+            }
+        }
         let participant_registry_binding = crate::ParticipantRegistryBinding {
             generation: registry.generation,
             root: registry.root,
         };
         let artifact_read_set_root = crate::model::artifact_read_set_root(&artifact_reads);
+        let semantic_read_set_root = crate::model::semantic_read_set_root(&semantic_reads);
+        let resource_reservation_set_root =
+            crate::model::resource_reservation_set_root(&resource_reservations);
         let mut record = TaskWriteSetRecord {
             task_id: request.task_id,
             attempt_id: request.attempt_id,
@@ -551,7 +746,11 @@ impl SqliteTaskAuthority {
             participant_registry_binding,
             artifact_reads,
             process_binding,
+            semantic_reads,
+            resource_reservations,
             artifact_read_set_root,
+            semantic_read_set_root,
+            resource_reservation_set_root,
             write_set_root: [0; 32],
             sealed_at_ms: request.sealed_at_ms,
         };
@@ -1269,6 +1468,10 @@ fn issue_permit(
         }
         if record.artifact_read_set_root
             != crate::model::artifact_read_set_root(&record.artifact_reads)
+            || record.semantic_read_set_root
+                != crate::model::semantic_read_set_root(&record.semantic_reads)
+            || record.resource_reservation_set_root
+                != crate::model::resource_reservation_set_root(&record.resource_reservations)
             || record.write_set_root != crate::model::task_write_set_root(record)
         {
             return Err(TaskStoreError::CorruptRecord(
@@ -1849,6 +2052,45 @@ fn migrate_v15(connection: &mut Connection) -> Result<(), TaskStoreError> {
     Ok(())
 }
 
+/// v15 → v16 adds immutable Semantic read and Resource Reservation children
+/// for the authority-verified `TaskWriteSet` slice.
+fn migrate_v16(connection: &mut Connection) -> Result<(), TaskStoreError> {
+    let table_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN
+            ('task_write_set_semantic_reads', 'task_write_set_resource_reservations')",
+        [],
+        |row| row.get(0),
+    )?;
+    let trigger_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN
+            ('task_write_set_semantic_read_is_immutable',
+             'task_write_set_semantic_read_is_immutable_delete',
+             'task_write_set_resource_reservation_is_immutable',
+             'task_write_set_resource_reservation_is_immutable_delete')",
+        [],
+        |row| row.get(0),
+    )?;
+    let root_column_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('task_write_sets')
+         WHERE name IN ('semantic_read_set_root', 'resource_reservation_set_root')",
+        [],
+        |row| row.get(0),
+    )?;
+    if table_count == 2 && trigger_count == 4 && root_column_count == 2 {
+        connection.pragma_update(None, "user_version", 16)?;
+        return Ok(());
+    }
+    if table_count != 0 || trigger_count != 0 || root_column_count != 0 {
+        return Err(TaskStoreError::CorruptRecord(
+            "partial Semantic/Resource TaskWriteSet schema",
+        ));
+    }
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(SCHEMA_V16_SQL)?;
+    transaction.commit()?;
+    Ok(())
+}
+
 const SCHEMA_V13_SQL: &str = "CREATE TABLE task_write_sets (
         task_id BLOB NOT NULL CHECK(length(task_id) = 16),
         attempt_id BLOB NOT NULL CHECK(length(attempt_id) = 16),
@@ -1950,6 +2192,57 @@ const SCHEMA_V15_SQL: &str = "DROP TRIGGER task_participants_immutable_update;
     CREATE TRIGGER task_participants_immutable_delete BEFORE DELETE ON task_participants
     BEGIN SELECT RAISE(ABORT, 'task participant is immutable'); END;
     PRAGMA user_version = 15;";
+
+const SCHEMA_V16_SQL: &str = "ALTER TABLE task_write_sets
+        ADD COLUMN semantic_read_set_root BLOB NOT NULL DEFAULT X'0000000000000000000000000000000000000000000000000000000000000000'
+        CHECK(length(semantic_read_set_root) = 32);
+    ALTER TABLE task_write_sets
+        ADD COLUMN resource_reservation_set_root BLOB NOT NULL DEFAULT X'0000000000000000000000000000000000000000000000000000000000000000'
+        CHECK(length(resource_reservation_set_root) = 32);
+    CREATE TABLE task_write_set_semantic_reads (
+        task_id BLOB NOT NULL CHECK(length(task_id) = 16),
+        idempotency_key BLOB NOT NULL CHECK(length(idempotency_key) = 16),
+        read_seq INTEGER NOT NULL CHECK(read_seq >= 0),
+        event_id BLOB NOT NULL CHECK(length(event_id) = 32),
+        expected_log_seq BLOB NOT NULL CHECK(length(expected_log_seq) = 8),
+        expected_canonical_digest BLOB NOT NULL CHECK(length(expected_canonical_digest) = 32),
+        PRIMARY KEY(task_id, idempotency_key, read_seq),
+        UNIQUE(task_id, idempotency_key, event_id),
+        FOREIGN KEY(task_id, idempotency_key)
+            REFERENCES task_write_sets(task_id, idempotency_key)
+    ) STRICT;
+    CREATE TABLE task_write_set_resource_reservations (
+        task_id BLOB NOT NULL CHECK(length(task_id) = 16),
+        idempotency_key BLOB NOT NULL CHECK(length(idempotency_key) = 16),
+        read_seq INTEGER NOT NULL CHECK(read_seq >= 0),
+        reservation_id BLOB NOT NULL CHECK(length(reservation_id) = 16),
+        account_id BLOB NOT NULL CHECK(length(account_id) = 16),
+        quote_id BLOB NOT NULL CHECK(length(quote_id) = 16),
+        call_id BLOB NOT NULL CHECK(length(call_id) = 16),
+        operation_id BLOB NOT NULL CHECK(length(operation_id) = 16),
+        driver_id BLOB NOT NULL CHECK(length(driver_id) = 16),
+        device_id BLOB NOT NULL CHECK(length(device_id) = 16),
+        driver_generation BLOB NOT NULL CHECK(length(driver_generation) = 8),
+        driver_fencing_token BLOB NOT NULL CHECK(length(driver_fencing_token) = 32),
+        upper_bound BLOB NOT NULL CHECK(length(upper_bound) = 8),
+        PRIMARY KEY(task_id, idempotency_key, read_seq),
+        UNIQUE(task_id, idempotency_key, reservation_id),
+        FOREIGN KEY(task_id, idempotency_key)
+            REFERENCES task_write_sets(task_id, idempotency_key)
+    ) STRICT;
+    CREATE TRIGGER task_write_set_semantic_read_is_immutable
+    BEFORE UPDATE ON task_write_set_semantic_reads
+    BEGIN SELECT RAISE(ABORT, 'TaskWriteSet Semantic read is immutable'); END;
+    CREATE TRIGGER task_write_set_semantic_read_is_immutable_delete
+    BEFORE DELETE ON task_write_set_semantic_reads
+    BEGIN SELECT RAISE(ABORT, 'TaskWriteSet Semantic read is immutable'); END;
+    CREATE TRIGGER task_write_set_resource_reservation_is_immutable
+    BEFORE UPDATE ON task_write_set_resource_reservations
+    BEGIN SELECT RAISE(ABORT, 'TaskWriteSet Resource Reservation is immutable'); END;
+    CREATE TRIGGER task_write_set_resource_reservation_is_immutable_delete
+    BEFORE DELETE ON task_write_set_resource_reservations
+    BEGIN SELECT RAISE(ABORT, 'TaskWriteSet Resource Reservation is immutable'); END;
+    PRAGMA user_version = 16;";
 
 const SCHEMA_V12_SQL: &str = "ALTER TABLE effect_permits
         ADD COLUMN participant_registry_generation BLOB
@@ -2538,6 +2831,7 @@ fn insert_permit(
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 fn insert_write_set(
     transaction: &Transaction<'_>,
     record: &TaskWriteSetRecord,
@@ -2559,9 +2853,10 @@ fn insert_write_set(
             effect_history_root, retry_fence_epoch, group_id,
             membership_generation, membership_root, group_policy_digest,
             participant_registry_generation, participant_registry_root,
-            artifact_read_set_root, write_set_root, sealed_at_ms
+            artifact_read_set_root, semantic_read_set_root,
+            resource_reservation_set_root, write_set_root, sealed_at_ms
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-                   ?13, ?14, ?15, ?16, ?17, ?18)",
+                   ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
         params![
             record.task_id.as_bytes().as_slice(),
             record.attempt_id.as_bytes().as_slice(),
@@ -2579,6 +2874,8 @@ fn insert_write_set(
             encode_u64(record.participant_registry_binding.generation).as_slice(),
             record.participant_registry_binding.root.as_slice(),
             record.artifact_read_set_root.as_slice(),
+            record.semantic_read_set_root.as_slice(),
+            record.resource_reservation_set_root.as_slice(),
             record.write_set_root.as_slice(),
             record.sealed_at_ms,
         ],
@@ -2627,6 +2924,50 @@ fn insert_write_set(
             ],
         )?;
     }
+    for (sequence, read) in record.semantic_reads.iter().enumerate() {
+        transaction.execute(
+            "INSERT INTO task_write_set_semantic_reads (
+                task_id, idempotency_key, read_seq, event_id,
+                expected_log_seq, expected_canonical_digest
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                record.task_id.as_bytes().as_slice(),
+                record.idempotency_key.as_bytes().as_slice(),
+                i64::try_from(sequence).map_err(|_| TaskStoreError::TaskWriteSetConflict {
+                    reason: "Semantic read set exceeds SQLite sequence range",
+                })?,
+                read.event_id.as_bytes().as_slice(),
+                encode_u64(read.expected_log_seq).as_slice(),
+                read.expected_canonical_digest.as_slice(),
+            ],
+        )?;
+    }
+    for (sequence, reservation) in record.resource_reservations.iter().enumerate() {
+        transaction.execute(
+            "INSERT INTO task_write_set_resource_reservations (
+                task_id, idempotency_key, read_seq, reservation_id, account_id,
+                quote_id, call_id, operation_id, driver_id, device_id,
+                driver_generation, driver_fencing_token, upper_bound
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            params![
+                record.task_id.as_bytes().as_slice(),
+                record.idempotency_key.as_bytes().as_slice(),
+                i64::try_from(sequence).map_err(|_| TaskStoreError::TaskWriteSetConflict {
+                    reason: "Resource Reservation set exceeds SQLite sequence range",
+                })?,
+                reservation.reservation_id.as_bytes().as_slice(),
+                reservation.account_id.as_bytes().as_slice(),
+                reservation.quote_id.as_bytes().as_slice(),
+                reservation.call_id.as_bytes().as_slice(),
+                reservation.operation_id.as_bytes().as_slice(),
+                reservation.driver_id.as_bytes().as_slice(),
+                reservation.device_id.as_bytes().as_slice(),
+                encode_u64(reservation.driver_generation.get()).as_slice(),
+                reservation.driver_fencing_token.as_slice(),
+                encode_u64(reservation.upper_bound).as_slice(),
+            ],
+        )?;
+    }
     Ok(())
 }
 
@@ -2635,7 +2976,8 @@ const WRITE_SET_COLUMNS: &str = "task_id, attempt_id, attempt_generation,
      expected_head_commit_seq, effect_history_root, retry_fence_epoch,
      group_id, membership_generation, membership_root, group_policy_digest,
      participant_registry_generation, participant_registry_root,
-     artifact_read_set_root, write_set_root, sealed_at_ms";
+     artifact_read_set_root, semantic_read_set_root,
+     resource_reservation_set_root, write_set_root, sealed_at_ms";
 
 fn load_write_set_by_key(
     source: &impl SqlRead,
@@ -2656,6 +2998,9 @@ fn load_write_set_by_key(
     let mut record = decode_write_set_row(row)?;
     record.artifact_reads = load_write_set_reads(source, task_id, idempotency_key)?;
     record.process_binding = load_write_set_process_binding(source, task_id, idempotency_key)?;
+    record.semantic_reads = load_write_set_semantic_reads(source, task_id, idempotency_key)?;
+    record.resource_reservations =
+        load_write_set_resource_reservations(source, task_id, idempotency_key)?;
     Ok(Some(record))
 }
 
@@ -2679,7 +3024,128 @@ fn load_write_set_by_root(
     record.artifact_reads = load_write_set_reads(source, task_id, record.idempotency_key)?;
     record.process_binding =
         load_write_set_process_binding(source, task_id, record.idempotency_key)?;
+    record.semantic_reads = load_write_set_semantic_reads(source, task_id, record.idempotency_key)?;
+    record.resource_reservations =
+        load_write_set_resource_reservations(source, task_id, record.idempotency_key)?;
     Ok(Some(record))
+}
+
+fn load_write_set_semantic_reads(
+    source: &impl SqlRead,
+    task_id: TaskId,
+    idempotency_key: IdempotencyKey,
+) -> Result<Vec<crate::TaskWriteSetSemanticRead>, TaskStoreError> {
+    let mut statement = source.prepare_statement(
+        "SELECT event_id, expected_log_seq, expected_canonical_digest
+         FROM task_write_set_semantic_reads
+         WHERE task_id = ?1 AND idempotency_key = ?2 ORDER BY read_seq",
+    )?;
+    let rows = statement.query_map(
+        params![
+            task_id.as_bytes().as_slice(),
+            idempotency_key.as_bytes().as_slice()
+        ],
+        |row| {
+            Ok((
+                row.get::<_, Vec<u8>>(0)?,
+                row.get::<_, Vec<u8>>(1)?,
+                row.get::<_, Vec<u8>>(2)?,
+            ))
+        },
+    )?;
+    rows.map(|row| {
+        let (event_id, log_seq, digest) = row?;
+        Ok(crate::TaskWriteSetSemanticRead {
+            event_id: nlos_types::SemanticEventId::from_bytes(blob32_vec(event_id)?),
+            expected_log_seq: u64_from_bytes(log_seq)?,
+            expected_canonical_digest: digest
+                .try_into()
+                .map_err(|_| TaskStoreError::CorruptRecord("semantic read digest"))?,
+        })
+    })
+    .collect()
+}
+
+fn load_write_set_resource_reservations(
+    source: &impl SqlRead,
+    task_id: TaskId,
+    idempotency_key: IdempotencyKey,
+) -> Result<Vec<crate::TaskWriteSetResourceReservation>, TaskStoreError> {
+    let mut statement = source.prepare_statement(
+        "SELECT reservation_id, account_id, quote_id, call_id, operation_id,
+                driver_id, device_id, driver_generation, driver_fencing_token,
+                upper_bound
+         FROM task_write_set_resource_reservations
+         WHERE task_id = ?1 AND idempotency_key = ?2 ORDER BY read_seq",
+    )?;
+    let rows = statement.query_map(
+        params![
+            task_id.as_bytes().as_slice(),
+            idempotency_key.as_bytes().as_slice()
+        ],
+        |row| {
+            Ok((
+                row.get::<_, Vec<u8>>(0)?,
+                row.get::<_, Vec<u8>>(1)?,
+                row.get::<_, Vec<u8>>(2)?,
+                row.get::<_, Vec<u8>>(3)?,
+                row.get::<_, Vec<u8>>(4)?,
+                row.get::<_, Vec<u8>>(5)?,
+                row.get::<_, Vec<u8>>(6)?,
+                row.get::<_, Vec<u8>>(7)?,
+                row.get::<_, Vec<u8>>(8)?,
+                row.get::<_, Vec<u8>>(9)?,
+            ))
+        },
+    )?;
+    rows.map(|row| {
+        let (
+            reservation_id,
+            account_id,
+            quote_id,
+            call_id,
+            operation_id,
+            driver_id,
+            device_id,
+            driver_generation,
+            driver_fencing_token,
+            upper_bound,
+        ) = row?;
+        Ok(crate::TaskWriteSetResourceReservation {
+            reservation_id: nlos_types::ReservationId::from_bytes(blob16_vec(reservation_id)?),
+            account_id: nlos_types::ResourceAccountId::from_bytes(blob16_vec(account_id)?),
+            quote_id: nlos_types::QuoteId::from_bytes(blob16_vec(quote_id)?),
+            call_id: nlos_types::CallId::from_bytes(blob16_vec(call_id)?),
+            operation_id: nlos_types::OperationId::from_bytes(blob16_vec(operation_id)?),
+            driver_id: nlos_types::DriverId::from_bytes(blob16_vec(driver_id)?),
+            device_id: nlos_types::DeviceId::from_bytes(blob16_vec(device_id)?),
+            driver_generation: generation_from_u64_bytes(driver_generation)?,
+            driver_fencing_token: driver_fencing_token
+                .try_into()
+                .map_err(|_| TaskStoreError::CorruptRecord("reservation driver fence"))?,
+            upper_bound: u64_from_bytes(upper_bound)?,
+        })
+    })
+    .collect()
+}
+
+fn blob16_vec(bytes: Vec<u8>) -> Result<[u8; 16], TaskStoreError> {
+    bytes
+        .try_into()
+        .map_err(|_| TaskStoreError::CorruptRecord("16-byte write-set identity"))
+}
+
+fn blob32_vec(bytes: Vec<u8>) -> Result<[u8; 32], TaskStoreError> {
+    bytes
+        .try_into()
+        .map_err(|_| TaskStoreError::CorruptRecord("32-byte write-set identity"))
+}
+
+fn generation_from_u64_bytes(bytes: Vec<u8>) -> Result<Generation, TaskStoreError> {
+    let value = u64_from_bytes(bytes)?;
+    std::num::NonZeroU64::new(value)
+        .map(Generation::new)
+        .ok_or(TaskStoreError::CorruptRecord("zero reservation generation"))
 }
 
 fn load_write_set_process_binding(
@@ -2781,9 +3247,13 @@ fn decode_write_set_row(row: &rusqlite::Row<'_>) -> Result<TaskWriteSetRecord, T
         },
         artifact_reads: Vec::new(),
         process_binding: None,
+        semantic_reads: Vec::new(),
+        resource_reservations: Vec::new(),
         artifact_read_set_root: blob32(row, 15)?,
-        write_set_root: blob32(row, 16)?,
-        sealed_at_ms: row.get(17)?,
+        semantic_read_set_root: blob32(row, 16)?,
+        resource_reservation_set_root: blob32(row, 17)?,
+        write_set_root: blob32(row, 18)?,
+        sealed_at_ms: row.get(19)?,
     })
 }
 
