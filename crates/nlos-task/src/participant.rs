@@ -13,6 +13,7 @@ pub enum ParticipantType {
     ChannelTopic,
     DriverGateway,
     ResourceLedger,
+    ProcessBinding,
 }
 
 impl ParticipantType {
@@ -24,6 +25,7 @@ impl ParticipantType {
             Self::ChannelTopic => 4,
             Self::DriverGateway => 5,
             Self::ResourceLedger => 6,
+            Self::ProcessBinding => 7,
         }
     }
 
@@ -35,6 +37,7 @@ impl ParticipantType {
             4 => Ok(Self::ChannelTopic),
             5 => Ok(Self::DriverGateway),
             6 => Ok(Self::ResourceLedger),
+            7 => Ok(Self::ProcessBinding),
             _ => Err(TaskStoreError::CorruptRecord("participant type")),
         }
     }
@@ -321,6 +324,13 @@ pub(crate) fn inspect_registry(
         .ok_or(TaskStoreError::ParticipantRegistryNotFound)?;
     validate_registry(task, &registry)?;
     Ok(registry)
+}
+
+pub(crate) fn has_participant(
+    registry: &ParticipantRegistryRecord,
+    participant: ParticipantRecord,
+) -> bool {
+    registry.participants.contains(&participant)
 }
 
 pub(crate) fn validate_frozen_binding(

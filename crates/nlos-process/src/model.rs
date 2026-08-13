@@ -1,6 +1,6 @@
 use nlos_types::{
-    AgentInstanceId, Generation, IdempotencyKey, IsolationDomainId, ProcessId, TaskAttemptId,
-    TaskId,
+    AgentInstanceId, Generation, IdempotencyKey, IsolationDomainId, ProcessId, ReceiptId,
+    TaskAttemptId, TaskId, TaskParticipantId,
 };
 
 pub type FencingToken = [u8; 32];
@@ -142,6 +142,20 @@ pub struct ActiveProcessBinding {
     pub isolation_domain_id: IsolationDomainId,
     pub isolation_domain_generation: Generation,
     pub isolation_domain_fencing_token: FencingToken,
+}
+
+/// Authority-derived participant proof for a current Process binding.
+///
+/// The participant identity is stable for a Process identity while its
+/// generation and admission receipt advance with each authority generation.
+/// Consumers must use [`ProcessAuthority`](crate::ProcessAuthority)
+/// readback rather than constructing this tuple themselves.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProcessBindingEndpointProof {
+    pub process_id: ProcessId,
+    pub participant_id: TaskParticipantId,
+    pub participant_generation: Generation,
+    pub admission_receipt_id: ReceiptId,
 }
 
 impl From<&ProcessBindingRecord> for ActiveProcessBinding {

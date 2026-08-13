@@ -25,8 +25,8 @@ use sha2::{Digest, Sha256};
 pub use model::{
     ActiveProcessBinding, CreateIsolationDomainRequest, FencingToken, IsolationDomainDecision,
     IsolationDomainRecord, IsolationDomainRotationDecision, ProcessBindingDecision,
-    ProcessBindingRecord, RegisterDelegatedProcessRequest, RestoreProcessDecision,
-    RestoreProcessRequest, RotateIsolationDomainRequest,
+    ProcessBindingEndpointProof, ProcessBindingRecord, RegisterDelegatedProcessRequest,
+    RestoreProcessDecision, RestoreProcessRequest, RotateIsolationDomainRequest,
 };
 
 const SCHEMA_VERSION: i64 = 1;
@@ -533,6 +533,39 @@ impl ProcessAuthority {
             return Err(ProcessAuthorityError::StaleProcessBinding);
         }
         Ok(record)
+    }
+
+    /// Reads the authority-derived participant proof for the current Process
+    /// binding. The proof is deterministic from the immutable Process identity
+    /// and current generation, but is only authoritative after this readback.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the Process or its current domain fence is stale, unknown,
+    /// or corrupt.
+    pub fn inspect_binding_endpoint_proof(
+        &self,
+        process_id: ProcessId,
+    ) -> Result<ProcessBindingEndpointProof, ProcessAuthorityError> {
+        let record = self.inspect_active_process_binding(process_id)?;
+        let participant_id = nlos_types::TaskParticipantId::from_bytes(derive_id(
+            b"nlos/process-binding/participant/v1",
+            &[record.process_id.as_bytes()],
+        ));
+        let admission_receipt_id = nlos_types::ReceiptId::from_bytes(derive_id(
+            b"nlos/process-binding/admission/v1",
+            &[
+                record.process_id.as_bytes(),
+                &record.process_generation.get().to_be_bytes(),
+                record.process_fencing_token.as_slice(),
+            ],
+        ));
+        Ok(ProcessBindingEndpointProof {
+            process_id: record.process_id,
+            participant_id,
+            participant_generation: record.process_generation,
+            admission_receipt_id,
+        })
     }
 
     /// Reads the current domain generation and fence.

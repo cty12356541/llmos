@@ -93,7 +93,8 @@ pub use model::{
     ReconcileOutcome, ReconciliationReceiptRecord, RequiredSatisfaction, RequiredSatisfactionProof,
     SnapshotBundle, SnapshotConsistency, TaskReceiptRecord, TaskRecord, TaskRegistrationDecision,
     TaskSnapshotReceiptRecord, TaskSnapshotReceiptSpec, TaskSpec, TaskState,
-    TaskWriteSetArtifactRead, TaskWriteSetDecision, TaskWriteSetRecord, TaskWriteSetRequest,
+    TaskWriteSetArtifactRead, TaskWriteSetDecision, TaskWriteSetProcessBinding,
+    TaskWriteSetProcessBindingRequest, TaskWriteSetRecord, TaskWriteSetRequest,
     empty_effect_history_root,
 };
 pub use nlos_types::{EffectPermitId, EffectSlotId, TaskGroupId};
@@ -373,6 +374,8 @@ pub enum TaskStoreError {
     SemanticParticipantAuthority(nlos_semantic::SemanticAuthorityError),
     /// Resource authority proof readback failed before Task mutation.
     ResourceParticipantAuthority(nlos_resource::ResourceAuthorityError),
+    /// Process authority proof readback failed before Task mutation.
+    ProcessParticipantAuthority(nlos_process::ProcessAuthorityError),
     /// The owner proof does not match the generation planned by the caller.
     ParticipantEndpointGenerationMismatch {
         expected: u64,
@@ -609,6 +612,12 @@ impl fmt::Display for TaskStoreError {
                     "Resource participant proof verification failed: {error}"
                 )
             }
+            Self::ProcessParticipantAuthority(error) => {
+                write!(
+                    formatter,
+                    "Process participant proof verification failed: {error}"
+                )
+            }
             Self::ParticipantEndpointGenerationMismatch { expected, current } => write!(
                 formatter,
                 "participant endpoint generation mismatch: expected {expected}, current {current}"
@@ -627,6 +636,7 @@ impl Error for TaskStoreError {
             Self::ArtifactParticipantAuthority(error) => Some(error),
             Self::SemanticParticipantAuthority(error) => Some(error),
             Self::ResourceParticipantAuthority(error) => Some(error),
+            Self::ProcessParticipantAuthority(error) => Some(error),
             _ => None,
         }
     }

@@ -118,6 +118,68 @@ fn authority_assigns_identities_and_replays_across_restart() {
 }
 
 #[test]
+fn process_binding_endpoint_proof_is_owner_derived_and_generation_fenced() {
+    let root = TestRoot::new("endpoint-proof");
+    let authority = ProcessAuthority::open(root.path()).expect("open");
+    let domain = authority
+        .create_isolation_domain(domain_request(15))
+        .expect("domain")
+        .record()
+        .clone();
+    let binding = authority
+        .register_delegated_process(registration(15, &domain))
+        .expect("process")
+        .record()
+        .clone();
+    let proof = authority
+        .inspect_binding_endpoint_proof(binding.process_id)
+        .expect("proof");
+    assert_eq!(proof.process_id, binding.process_id);
+    assert_eq!(proof.participant_generation, binding.process_generation);
+    assert_eq!(
+        proof,
+        authority
+            .inspect_binding_endpoint_proof(binding.process_id)
+            .expect("proof replay")
+    );
+
+    let rotated = authority
+        .rotate_isolation_domain(rotate_request(15, &domain))
+        .expect("rotate domain")
+        .record()
+        .clone();
+    assert!(matches!(
+        authority.inspect_binding_endpoint_proof(binding.process_id),
+        Err(ProcessAuthorityError::StaleIsolationDomain)
+    ));
+    let restored = authority
+        .restore_process(RestoreProcessRequest {
+            process_id: binding.process_id,
+            expected_process_generation: binding.process_generation,
+            expected_process_fencing_token: binding.process_fencing_token,
+            isolation_domain_id: rotated.isolation_domain_id,
+            isolation_domain_generation: rotated.generation,
+            isolation_domain_fencing_token: rotated.fencing_token,
+            idempotency_key: IdempotencyKey::from_bytes([0xd0; 16]),
+            restored_at_ms: 4_000,
+        })
+        .expect("restore")
+        .record()
+        .clone();
+    let restored_proof = authority
+        .inspect_binding_endpoint_proof(restored.process_id)
+        .expect("restored proof");
+    assert_eq!(
+        restored_proof.participant_generation,
+        restored.process_generation
+    );
+    assert_ne!(
+        restored_proof.admission_receipt_id,
+        proof.admission_receipt_id
+    );
+}
+
+#[test]
 fn idempotency_rebinding_and_stale_domain_fail_closed() {
     let root = TestRoot::new("conflicts");
     let authority = ProcessAuthority::open(root.path()).expect("open");

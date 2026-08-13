@@ -9,8 +9,9 @@
 //! mandated by the full §25.1 contract.
 
 use nlos_types::{
-    ArtifactId, CancellationScopeId, CommitPermitId, Generation, IdempotencyKey, ReceiptId,
-    TaskAttemptId, TaskId, TaskSnapshotId,
+    AgentInstanceId, ArtifactId, CancellationScopeId, CommitPermitId, Generation, IdempotencyKey,
+    IsolationDomainId, ProcessId, ReceiptId, TaskAttemptId, TaskId, TaskParticipantId,
+    TaskSnapshotId,
 };
 use sha2::{Digest, Sha256};
 
@@ -149,6 +150,53 @@ pub struct TaskWriteSetArtifactRead {
     pub expected_head_digest: Option<[u8; 32]>,
 }
 
+/// Caller-declared current Process/AgentInstance/IsolationDomain binding.
+/// Every field is verified by `ProcessAuthority` before it enters a durable
+/// `TaskWriteSet`; the endpoint proof is supplied by that owner authority.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TaskWriteSetProcessBindingRequest {
+    pub process_id: ProcessId,
+    pub process_generation: Generation,
+    pub process_fencing_token: [u8; 32],
+    pub agent_instance_id: AgentInstanceId,
+    pub agent_instance_generation: Generation,
+    pub isolation_domain_id: IsolationDomainId,
+    pub isolation_domain_generation: Generation,
+    pub isolation_domain_fencing_token: [u8; 32],
+}
+
+impl From<nlos_process::ActiveProcessBinding> for TaskWriteSetProcessBindingRequest {
+    fn from(binding: nlos_process::ActiveProcessBinding) -> Self {
+        Self {
+            process_id: binding.process_id,
+            process_generation: binding.process_generation,
+            process_fencing_token: binding.process_fencing_token,
+            agent_instance_id: binding.agent_instance_id,
+            agent_instance_generation: binding.agent_instance_generation,
+            isolation_domain_id: binding.isolation_domain_id,
+            isolation_domain_generation: binding.isolation_domain_generation,
+            isolation_domain_fencing_token: binding.isolation_domain_fencing_token,
+        }
+    }
+}
+
+/// Owner-read Process binding persisted in the sealed write set, including
+/// the Process authority's participant endpoint proof.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TaskWriteSetProcessBinding {
+    pub process_id: ProcessId,
+    pub process_generation: Generation,
+    pub process_fencing_token: [u8; 32],
+    pub agent_instance_id: AgentInstanceId,
+    pub agent_instance_generation: Generation,
+    pub isolation_domain_id: IsolationDomainId,
+    pub isolation_domain_generation: Generation,
+    pub isolation_domain_fencing_token: [u8; 32],
+    pub participant_id: TaskParticipantId,
+    pub participant_generation: Generation,
+    pub admission_receipt_id: ReceiptId,
+}
+
 /// Authority-verified `TaskWriteSet` seal request for the snapshot/read-set
 /// slice. Owner authorities are queried by the sealing API; callers provide
 /// only stable object identities and the revision they intend to read.
@@ -158,6 +206,7 @@ pub struct TaskWriteSetRequest {
     pub attempt_id: TaskAttemptId,
     pub attempt_generation: Generation,
     pub artifact_reads: Vec<TaskWriteSetArtifactRead>,
+    pub process_binding: Option<TaskWriteSetProcessBindingRequest>,
     pub idempotency_key: IdempotencyKey,
     pub sealed_at_ms: i64,
 }
@@ -180,6 +229,7 @@ pub struct TaskWriteSetRecord {
     pub group_binding: Option<crate::TaskGroupCommitBinding>,
     pub participant_registry_binding: crate::ParticipantRegistryBinding,
     pub artifact_reads: Vec<TaskWriteSetArtifactRead>,
+    pub process_binding: Option<TaskWriteSetProcessBinding>,
     pub artifact_read_set_root: [u8; 32],
     pub write_set_root: [u8; 32],
     pub sealed_at_ms: i64,
@@ -239,6 +289,23 @@ pub(crate) fn task_write_set_root(record: &TaskWriteSetRecord) -> [u8; 32] {
             hasher.update(binding.membership_generation.to_be_bytes());
             hasher.update(binding.membership_root);
             hasher.update(binding.group_policy_digest);
+        }
+        None => hasher.update([0u8]),
+    }
+    match record.process_binding {
+        Some(binding) => {
+            hasher.update([1u8]);
+            hasher.update(binding.process_id.as_bytes());
+            hasher.update(binding.process_generation.get().to_be_bytes());
+            hasher.update(binding.process_fencing_token);
+            hasher.update(binding.agent_instance_id.as_bytes());
+            hasher.update(binding.agent_instance_generation.get().to_be_bytes());
+            hasher.update(binding.isolation_domain_id.as_bytes());
+            hasher.update(binding.isolation_domain_generation.get().to_be_bytes());
+            hasher.update(binding.isolation_domain_fencing_token);
+            hasher.update(binding.participant_id.as_bytes());
+            hasher.update(binding.participant_generation.get().to_be_bytes());
+            hasher.update(binding.admission_receipt_id.as_bytes());
         }
         None => hasher.update([0u8]),
     }

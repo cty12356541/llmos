@@ -556,6 +556,7 @@ name = "nlos-task"
 version = "0.1.0"
 dependencies = [
  "nlos-artifact",
+ "nlos-process",
  "nlos-resource",
  "nlos-semantic",
  "nlos-store-fault",

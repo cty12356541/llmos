@@ -11,10 +11,12 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use nlos_types::{
-    ArtifactId, CancellationScopeId, CommitPermitId, Generation, IdempotencyKey, ReceiptId,
-    TaskAttemptId, TaskId, TaskSnapshotId,
+    ArtifactId, CancellationScopeId, CommitPermitId, Generation, IdempotencyKey, ProcessId,
+    ReceiptId, TaskAttemptId, TaskId, TaskSnapshotId,
 };
-use rusqlite::{Connection, OpenFlags, Transaction, TransactionBehavior, params};
+use rusqlite::{
+    Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
+};
 
 use crate::model::{derive_closure_receipt_id, derive_permit_id, empty_effect_history_root};
 use crate::{
@@ -26,7 +28,7 @@ use crate::{
     TaskWriteSetDecision, TaskWriteSetRecord, TaskWriteSetRequest,
 };
 
-const SCHEMA_VERSION: i64 = 13;
+const SCHEMA_VERSION: i64 = 15;
 
 /// A single-writer `SQLite` task authority.
 ///
@@ -210,11 +212,13 @@ impl SqliteTaskAuthority {
                 migrate_v12(&mut connection)?;
             }
             11 => migrate_v12(&mut connection)?,
-            12 | SCHEMA_VERSION => {}
+            12..=SCHEMA_VERSION => {}
             other => return Err(TaskStoreError::UnsupportedSchema(other)),
         }
         if version < SCHEMA_VERSION {
             migrate_v13(&mut connection)?;
+            migrate_v14(&mut connection)?;
+            migrate_v15(&mut connection)?;
         }
 
         Ok(Self {
@@ -369,6 +373,39 @@ impl SqliteTaskAuthority {
         artifact_authority: &nlos_artifact::ArtifactStore,
         request: TaskWriteSetRequest,
     ) -> Result<TaskWriteSetDecision, TaskStoreError> {
+        self.seal_task_write_set_inner(artifact_authority, None, request)
+    }
+
+    /// Seals the snapshot/read-set slice and an owner-verified current
+    /// Process/AgentInstance/IsolationDomain binding.
+    ///
+    /// The Process endpoint must already be present in the OPEN Task
+    /// participant registry; this method never expands the registry behind a
+    /// seal. Use [`Self::register_process_binding_participant`] first.
+    ///
+    /// # Errors
+    ///
+    /// Returns typed Process owner, binding, registry, snapshot, read-set,
+    /// idempotency, or storage errors.
+    #[allow(clippy::needless_pass_by_value)]
+    #[allow(clippy::too_many_lines)]
+    pub fn seal_task_write_set_with_process_authority(
+        &self,
+        artifact_authority: &nlos_artifact::ArtifactStore,
+        process_authority: &nlos_process::ProcessAuthority,
+        request: TaskWriteSetRequest,
+    ) -> Result<TaskWriteSetDecision, TaskStoreError> {
+        self.seal_task_write_set_inner(artifact_authority, Some(process_authority), request)
+    }
+
+    #[allow(clippy::needless_pass_by_value)]
+    #[allow(clippy::too_many_lines)]
+    fn seal_task_write_set_inner(
+        &self,
+        artifact_authority: &nlos_artifact::ArtifactStore,
+        process_authority: Option<&nlos_process::ProcessAuthority>,
+        request: TaskWriteSetRequest,
+    ) -> Result<TaskWriteSetDecision, TaskStoreError> {
         if request.sealed_at_ms < 0 {
             return Err(TaskStoreError::TaskWriteSetConflict {
                 reason: "sealed_at_ms must be non-negative",
@@ -397,6 +434,54 @@ impl SqliteTaskAuthority {
                 return Err(TaskStoreError::TaskWriteSetReadConflict);
             }
         }
+
+        let process_binding = match (request.process_binding, process_authority) {
+            (None, _) => None,
+            (Some(_), None) => {
+                return Err(TaskStoreError::TaskWriteSetConflict {
+                    reason: "Process binding requires ProcessAuthority readback",
+                });
+            }
+            (Some(expected), Some(authority)) => {
+                let active = nlos_process::ActiveProcessBinding {
+                    process_id: expected.process_id,
+                    process_generation: expected.process_generation,
+                    process_fencing_token: expected.process_fencing_token,
+                    agent_instance_id: expected.agent_instance_id,
+                    agent_instance_generation: expected.agent_instance_generation,
+                    isolation_domain_id: expected.isolation_domain_id,
+                    isolation_domain_generation: expected.isolation_domain_generation,
+                    isolation_domain_fencing_token: expected.isolation_domain_fencing_token,
+                };
+                let owner_record = authority
+                    .verify_active_process_binding(&active)
+                    .map_err(TaskStoreError::ProcessParticipantAuthority)?;
+                if owner_record.task_id != request.task_id
+                    || owner_record.task_attempt_id != request.attempt_id
+                    || owner_record.attempt_generation != request.attempt_generation
+                {
+                    return Err(TaskStoreError::TaskWriteSetConflict {
+                        reason: "Process binding is for a different TaskAttempt",
+                    });
+                }
+                let proof = authority
+                    .inspect_binding_endpoint_proof(expected.process_id)
+                    .map_err(TaskStoreError::ProcessParticipantAuthority)?;
+                Some(crate::TaskWriteSetProcessBinding {
+                    process_id: owner_record.process_id,
+                    process_generation: owner_record.process_generation,
+                    process_fencing_token: owner_record.process_fencing_token,
+                    agent_instance_id: owner_record.agent_instance_id,
+                    agent_instance_generation: owner_record.agent_instance_generation,
+                    isolation_domain_id: owner_record.isolation_domain_id,
+                    isolation_domain_generation: owner_record.isolation_domain_generation,
+                    isolation_domain_fencing_token: owner_record.isolation_domain_fencing_token,
+                    participant_id: proof.participant_id,
+                    participant_generation: proof.participant_generation,
+                    admission_receipt_id: proof.admission_receipt_id,
+                })
+            }
+        };
 
         let mut connection = self.lock_connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -434,6 +519,19 @@ impl SqliteTaskAuthority {
                 state: registry.state,
             });
         }
+        if let Some(binding) = process_binding {
+            let participant = crate::ParticipantRecord {
+                participant_type: crate::ParticipantType::ProcessBinding,
+                participant_id: binding.participant_id,
+                participant_generation: binding.participant_generation,
+                admission_receipt_id: binding.admission_receipt_id,
+            };
+            if !crate::participant::has_participant(&registry, participant) {
+                return Err(TaskStoreError::TaskWriteSetConflict {
+                    reason: "Process endpoint is not registered in participant registry",
+                });
+            }
+        }
         let participant_registry_binding = crate::ParticipantRegistryBinding {
             generation: registry.generation,
             root: registry.root,
@@ -452,6 +550,7 @@ impl SqliteTaskAuthority {
             group_binding,
             participant_registry_binding,
             artifact_reads,
+            process_binding,
             artifact_read_set_root,
             write_set_root: [0; 32],
             sealed_at_ms: request.sealed_at_ms,
@@ -804,6 +903,54 @@ impl SqliteTaskAuthority {
             .map_err(TaskStoreError::SemanticParticipantAuthority)?;
         let participant = crate::ParticipantRecord {
             participant_type: crate::ParticipantType::SemanticAdmission,
+            participant_id: proof.participant_id,
+            participant_generation: proof.participant_generation,
+            admission_receipt_id: proof.admission_receipt_id,
+        };
+        self.register_verified_participant(task_id, expected, participant, registered_at_ms)
+    }
+
+    /// Registers the current Process binding after direct `ProcessAuthority`
+    /// endpoint-proof readback.
+    ///
+    /// # Errors
+    ///
+    /// Returns typed Process proof, task, registry CAS/freeze, bound, or
+    /// storage errors. No Task mutation occurs when proof readback fails.
+    #[allow(clippy::too_many_arguments)]
+    pub fn register_process_binding_participant(
+        &self,
+        process_authority: &nlos_process::ProcessAuthority,
+        task_id: TaskId,
+        expected: crate::ParticipantRegistryBinding,
+        attempt_id: nlos_types::TaskAttemptId,
+        expected_attempt_generation: nlos_types::Generation,
+        process_id: nlos_types::ProcessId,
+        expected_process_generation: nlos_types::Generation,
+        registered_at_ms: i64,
+    ) -> Result<crate::ParticipantRegistrationDecision, TaskStoreError> {
+        let owner = process_authority
+            .inspect_active_process_binding(process_id)
+            .map_err(TaskStoreError::ProcessParticipantAuthority)?;
+        if owner.task_id != task_id
+            || owner.task_attempt_id != attempt_id
+            || owner.attempt_generation != expected_attempt_generation
+        {
+            return Err(TaskStoreError::TaskWriteSetConflict {
+                reason: "Process endpoint is for a different TaskAttempt",
+            });
+        }
+        let proof = process_authority
+            .inspect_binding_endpoint_proof(process_id)
+            .map_err(TaskStoreError::ProcessParticipantAuthority)?;
+        if proof.participant_generation != expected_process_generation {
+            return Err(TaskStoreError::ParticipantEndpointGenerationMismatch {
+                expected: expected_process_generation.get(),
+                current: proof.participant_generation.get(),
+            });
+        }
+        let participant = crate::ParticipantRecord {
+            participant_type: crate::ParticipantType::ProcessBinding,
             participant_id: proof.participant_id,
             participant_generation: proof.participant_generation,
             admission_receipt_id: proof.admission_receipt_id,
@@ -1624,6 +1771,84 @@ fn migrate_v13(connection: &mut Connection) -> Result<(), TaskStoreError> {
     Ok(())
 }
 
+/// v13 → v14 adds the immutable owner-verified Process binding child for a
+/// `TaskWriteSet`. Existing seals remain valid and explicitly have no Process
+/// binding; no caller-supplied execution identity is invented during upgrade.
+fn migrate_v14(connection: &mut Connection) -> Result<(), TaskStoreError> {
+    let table_present: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master
+            WHERE type='table' AND name='task_write_set_process_bindings'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    let trigger_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN
+            ('task_write_set_process_binding_is_immutable',
+             'task_write_set_process_binding_is_immutable_delete')",
+        [],
+        |row| row.get(0),
+    )?;
+    if table_present && trigger_count == 2 {
+        connection.pragma_update(None, "user_version", 14)?;
+        return Ok(());
+    }
+    if table_present || trigger_count != 0 {
+        return Err(TaskStoreError::CorruptRecord(
+            "partial TaskWriteSet Process binding schema",
+        ));
+    }
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(SCHEMA_V14_SQL)?;
+    transaction.commit()?;
+    Ok(())
+}
+
+/// v14 → v15 widens the participant type check to include the Process
+/// binding endpoint. The immutable participant rows are copied byte-for-byte;
+/// no registry generation or root is rewritten.
+fn migrate_v15(connection: &mut Connection) -> Result<(), TaskStoreError> {
+    let table_sql: Option<String> = connection
+        .query_row(
+            "SELECT sql FROM sqlite_master
+             WHERE type='table' AND name='task_participants'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(table_sql) = table_sql else {
+        return Err(TaskStoreError::CorruptRecord(
+            "missing participant table during v15 migration",
+        ));
+    };
+    let trigger_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN
+            ('task_participants_immutable_update',
+             'task_participants_immutable_delete')",
+        [],
+        |row| row.get(0),
+    )?;
+    if table_sql.contains("BETWEEN 1 AND 7") && trigger_count == 2 {
+        connection.pragma_update(None, "user_version", 15)?;
+        return Ok(());
+    }
+    if table_sql.contains("BETWEEN 1 AND 7") {
+        return Err(TaskStoreError::CorruptRecord(
+            "partial Process participant type migration",
+        ));
+    }
+    if !table_sql.contains("BETWEEN 1 AND 6") {
+        return Err(TaskStoreError::CorruptRecord(
+            "unexpected participant type constraint",
+        ));
+    }
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(SCHEMA_V15_SQL)?;
+    transaction.commit()?;
+    Ok(())
+}
+
 const SCHEMA_V13_SQL: &str = "CREATE TABLE task_write_sets (
         task_id BLOB NOT NULL CHECK(length(task_id) = 16),
         attempt_id BLOB NOT NULL CHECK(length(attempt_id) = 16),
@@ -1672,6 +1897,59 @@ const SCHEMA_V13_SQL: &str = "CREATE TABLE task_write_sets (
     BEFORE DELETE ON task_write_set_artifact_reads
     BEGIN SELECT RAISE(ABORT, 'TaskWriteSet artifact read is immutable'); END;
     PRAGMA user_version = 13;";
+
+const SCHEMA_V14_SQL: &str = "CREATE TABLE task_write_set_process_bindings (
+        task_id BLOB NOT NULL CHECK(length(task_id) = 16),
+        idempotency_key BLOB NOT NULL CHECK(length(idempotency_key) = 16),
+        process_id BLOB NOT NULL CHECK(length(process_id) = 16),
+        process_generation BLOB NOT NULL CHECK(length(process_generation) = 8),
+        process_fencing_token BLOB NOT NULL CHECK(length(process_fencing_token) = 32),
+        agent_instance_id BLOB NOT NULL CHECK(length(agent_instance_id) = 16),
+        agent_instance_generation BLOB NOT NULL CHECK(length(agent_instance_generation) = 8),
+        isolation_domain_id BLOB NOT NULL CHECK(length(isolation_domain_id) = 16),
+        isolation_domain_generation BLOB NOT NULL CHECK(length(isolation_domain_generation) = 8),
+        isolation_domain_fencing_token BLOB NOT NULL CHECK(length(isolation_domain_fencing_token) = 32),
+        participant_id BLOB NOT NULL CHECK(length(participant_id) = 16),
+        participant_generation BLOB NOT NULL CHECK(length(participant_generation) = 8),
+        admission_receipt_id BLOB NOT NULL CHECK(length(admission_receipt_id) = 16),
+        PRIMARY KEY(task_id, idempotency_key),
+        FOREIGN KEY(task_id, idempotency_key)
+            REFERENCES task_write_sets(task_id, idempotency_key)
+    ) STRICT;
+    CREATE TRIGGER task_write_set_process_binding_is_immutable
+    BEFORE UPDATE ON task_write_set_process_bindings
+    BEGIN SELECT RAISE(ABORT, 'TaskWriteSet Process binding is immutable'); END;
+    CREATE TRIGGER task_write_set_process_binding_is_immutable_delete
+    BEFORE DELETE ON task_write_set_process_bindings
+    BEGIN SELECT RAISE(ABORT, 'TaskWriteSet Process binding is immutable'); END;
+    PRAGMA user_version = 14;";
+
+const SCHEMA_V15_SQL: &str = "DROP TRIGGER task_participants_immutable_update;
+    DROP TRIGGER task_participants_immutable_delete;
+    CREATE TABLE task_participants_v15 (
+        registry_id BLOB NOT NULL CHECK(length(registry_id) = 16),
+        participant_seq INTEGER NOT NULL CHECK(participant_seq >= 0),
+        participant_type INTEGER NOT NULL CHECK(participant_type BETWEEN 1 AND 7),
+        participant_id BLOB NOT NULL CHECK(length(participant_id) = 16),
+        participant_generation BLOB NOT NULL CHECK(length(participant_generation) = 8),
+        admission_receipt_id BLOB NOT NULL CHECK(length(admission_receipt_id) = 16),
+        PRIMARY KEY(registry_id, participant_seq),
+        UNIQUE(registry_id, participant_type, participant_id),
+        FOREIGN KEY(registry_id) REFERENCES task_participant_registries(registry_id)
+    ) STRICT;
+    INSERT INTO task_participants_v15
+        (registry_id, participant_seq, participant_type, participant_id,
+         participant_generation, admission_receipt_id)
+        SELECT registry_id, participant_seq, participant_type, participant_id,
+               participant_generation, admission_receipt_id
+        FROM task_participants;
+    DROP TABLE task_participants;
+    ALTER TABLE task_participants_v15 RENAME TO task_participants;
+    CREATE TRIGGER task_participants_immutable_update BEFORE UPDATE ON task_participants
+    BEGIN SELECT RAISE(ABORT, 'task participant is immutable'); END;
+    CREATE TRIGGER task_participants_immutable_delete BEFORE DELETE ON task_participants
+    BEGIN SELECT RAISE(ABORT, 'task participant is immutable'); END;
+    PRAGMA user_version = 15;";
 
 const SCHEMA_V12_SQL: &str = "ALTER TABLE effect_permits
         ADD COLUMN participant_registry_generation BLOB
@@ -2323,6 +2601,32 @@ fn insert_write_set(
             ],
         )?;
     }
+    if let Some(binding) = record.process_binding {
+        transaction.execute(
+            "INSERT INTO task_write_set_process_bindings (
+                task_id, idempotency_key, process_id, process_generation,
+                process_fencing_token, agent_instance_id, agent_instance_generation,
+                isolation_domain_id, isolation_domain_generation,
+                isolation_domain_fencing_token, participant_id,
+                participant_generation, admission_receipt_id
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            params![
+                record.task_id.as_bytes().as_slice(),
+                record.idempotency_key.as_bytes().as_slice(),
+                binding.process_id.as_bytes().as_slice(),
+                encode_u64(binding.process_generation.get()).as_slice(),
+                binding.process_fencing_token.as_slice(),
+                binding.agent_instance_id.as_bytes().as_slice(),
+                encode_u64(binding.agent_instance_generation.get()).as_slice(),
+                binding.isolation_domain_id.as_bytes().as_slice(),
+                encode_u64(binding.isolation_domain_generation.get()).as_slice(),
+                binding.isolation_domain_fencing_token.as_slice(),
+                binding.participant_id.as_bytes().as_slice(),
+                encode_u64(binding.participant_generation.get()).as_slice(),
+                binding.admission_receipt_id.as_bytes().as_slice(),
+            ],
+        )?;
+    }
     Ok(())
 }
 
@@ -2351,6 +2655,7 @@ fn load_write_set_by_key(
     };
     let mut record = decode_write_set_row(row)?;
     record.artifact_reads = load_write_set_reads(source, task_id, idempotency_key)?;
+    record.process_binding = load_write_set_process_binding(source, task_id, idempotency_key)?;
     Ok(Some(record))
 }
 
@@ -2372,7 +2677,44 @@ fn load_write_set_by_root(
     };
     let mut record = decode_write_set_row(row)?;
     record.artifact_reads = load_write_set_reads(source, task_id, record.idempotency_key)?;
+    record.process_binding =
+        load_write_set_process_binding(source, task_id, record.idempotency_key)?;
     Ok(Some(record))
+}
+
+fn load_write_set_process_binding(
+    source: &impl SqlRead,
+    task_id: TaskId,
+    idempotency_key: IdempotencyKey,
+) -> Result<Option<crate::TaskWriteSetProcessBinding>, TaskStoreError> {
+    let mut statement = source.prepare_statement(
+        "SELECT process_id, process_generation, process_fencing_token,
+                agent_instance_id, agent_instance_generation, isolation_domain_id,
+                isolation_domain_generation, isolation_domain_fencing_token,
+                participant_id, participant_generation, admission_receipt_id
+         FROM task_write_set_process_bindings
+         WHERE task_id = ?1 AND idempotency_key = ?2",
+    )?;
+    let mut rows = statement.query(params![
+        task_id.as_bytes().as_slice(),
+        idempotency_key.as_bytes().as_slice(),
+    ])?;
+    let Some(row) = rows.next()? else {
+        return Ok(None);
+    };
+    Ok(Some(crate::TaskWriteSetProcessBinding {
+        process_id: ProcessId::from_bytes(blob16(row, 0)?),
+        process_generation: generation_from_blob(row, 1)?,
+        process_fencing_token: blob32(row, 2)?,
+        agent_instance_id: nlos_types::AgentInstanceId::from_bytes(blob16(row, 3)?),
+        agent_instance_generation: generation_from_blob(row, 4)?,
+        isolation_domain_id: nlos_types::IsolationDomainId::from_bytes(blob16(row, 5)?),
+        isolation_domain_generation: generation_from_blob(row, 6)?,
+        isolation_domain_fencing_token: blob32(row, 7)?,
+        participant_id: nlos_types::TaskParticipantId::from_bytes(blob16(row, 8)?),
+        participant_generation: generation_from_blob(row, 9)?,
+        admission_receipt_id: ReceiptId::from_bytes(blob16(row, 10)?),
+    }))
 }
 
 fn load_write_set_reads(
@@ -2438,6 +2780,7 @@ fn decode_write_set_row(row: &rusqlite::Row<'_>) -> Result<TaskWriteSetRecord, T
             root: participant_root,
         },
         artifact_reads: Vec::new(),
+        process_binding: None,
         artifact_read_set_root: blob32(row, 15)?,
         write_set_root: blob32(row, 16)?,
         sealed_at_ms: row.get(17)?,

@@ -370,11 +370,14 @@ fn effect_permit_dispatch_and_task_receipt_copy_and_revalidate_registry_binding(
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn verified_write_set_seal_binds_receipted_snapshot_and_artifact_reads() {
     let database = Database::new();
     let artifact_root = AuthorityRoot::new("write-set-artifact");
     let artifact = nlos_artifact::ArtifactStore::open(&artifact_root.0).unwrap();
     let artifact_id = create_artifact(&artifact, 0xb1);
+    let process_root = AuthorityRoot::new("write-set-process");
+    let process = nlos_process::ProcessAuthority::open(&process_root.0).unwrap();
     let authority = database.open();
     authority
         .register_task(TaskSpec {
@@ -406,6 +409,45 @@ fn verified_write_set_seal_binds_receipted_snapshot_and_artifact_reads() {
     authority
         .register_attempt_with_snapshot_receipt(spec, receipt_id)
         .unwrap();
+    let isolation_domain = process
+        .create_isolation_domain(nlos_process::CreateIsolationDomainRequest {
+            policy_digest: [0xc0; 32],
+            idempotency_key: IdempotencyKey::from_bytes([0xc1; 16]),
+            created_at_ms: 1_150,
+        })
+        .unwrap()
+        .record()
+        .clone();
+    let process_binding = process
+        .register_delegated_process(nlos_process::RegisterDelegatedProcessRequest {
+            task_id: task_id(),
+            task_attempt_id: spec.attempt_id,
+            attempt_generation: spec.attempt_generation,
+            isolation_domain_id: isolation_domain.isolation_domain_id,
+            isolation_domain_generation: isolation_domain.generation,
+            isolation_domain_fencing_token: isolation_domain.fencing_token,
+            idempotency_key: IdempotencyKey::from_bytes([0xc2; 16]),
+            created_at_ms: 1_160,
+        })
+        .unwrap()
+        .record()
+        .clone();
+    let active_process = process
+        .inspect_active_process_binding(process_binding.process_id)
+        .unwrap();
+    let registry_binding = binding(&authority.inspect_participant_registry(task_id()).unwrap());
+    authority
+        .register_process_binding_participant(
+            &process,
+            task_id(),
+            registry_binding,
+            spec.attempt_id,
+            spec.attempt_generation,
+            active_process.process_id,
+            active_process.process_generation,
+            1_170,
+        )
+        .unwrap();
     let request = TaskWriteSetRequest {
         task_id: task_id(),
         attempt_id: spec.attempt_id,
@@ -415,11 +457,12 @@ fn verified_write_set_seal_binds_receipted_snapshot_and_artifact_reads() {
             expected_head_revision: 0,
             expected_head_digest: None,
         }],
+        process_binding: Some(nlos_process::ActiveProcessBinding::from(&active_process).into()),
         idempotency_key: IdempotencyKey::from_bytes([0xbc; 16]),
         sealed_at_ms: 1_200,
     };
     let record = match authority
-        .seal_task_write_set(&artifact, request.clone())
+        .seal_task_write_set_with_process_authority(&artifact, &process, request.clone())
         .unwrap()
     {
         nlos_task::TaskWriteSetDecision::Sealed(record) => record,
@@ -427,14 +470,19 @@ fn verified_write_set_seal_binds_receipted_snapshot_and_artifact_reads() {
     };
     assert_eq!(record.snapshot_receipt_id, receipt_id);
     assert_eq!(record.artifact_reads, request.artifact_reads);
+    assert_eq!(
+        record.process_binding.unwrap().process_id,
+        active_process.process_id
+    );
     assert_eq!(record.group_binding, None);
     assert_eq!(
         record.participant_registry_binding,
         binding(&authority.inspect_participant_registry(task_id()).unwrap())
     );
     assert!(matches!(
-        authority.seal_task_write_set(
+        authority.seal_task_write_set_with_process_authority(
             &artifact,
+            &process,
             TaskWriteSetRequest {
                 artifact_reads: vec![TaskWriteSetArtifactRead {
                     artifact_id,
@@ -446,7 +494,10 @@ fn verified_write_set_seal_binds_receipted_snapshot_and_artifact_reads() {
         ),
         Err(TaskStoreError::TaskWriteSetReadConflict)
     ));
-    match authority.seal_task_write_set(&artifact, request).unwrap() {
+    match authority
+        .seal_task_write_set_with_process_authority(&artifact, &process, request)
+        .unwrap()
+    {
         nlos_task::TaskWriteSetDecision::Replayed(replayed) => assert_eq!(replayed, record),
         nlos_task::TaskWriteSetDecision::Sealed(_) => panic!("expected replayed write-set seal"),
     }
