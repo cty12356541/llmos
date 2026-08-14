@@ -27,10 +27,11 @@ use crate::{
     TaskSnapshotReceiptSpec, TaskSpec, TaskState, TaskStoreError, TaskWriteSetArtifactRead,
     TaskWriteSetArtifactWrite, TaskWriteSetDecision, TaskWriteSetEffectEndpoint,
     TaskWriteSetEffectEndpointKind, TaskWriteSetEffectEndpointRequest, TaskWriteSetRecord,
-    TaskWriteSetRequest,
+    TaskWriteSetRequest, TaskWriteSetSemanticAppend, TaskWriteSetSemanticRequiredDurability,
+    TaskWriteSetSemanticTarget,
 };
 
-const SCHEMA_VERSION: i64 = 20;
+const SCHEMA_VERSION: i64 = 21;
 
 /// A single-writer `SQLite` task authority.
 ///
@@ -226,6 +227,7 @@ impl SqliteTaskAuthority {
             migrate_v18(&mut connection)?;
             migrate_v19(&mut connection)?;
             migrate_v20(&mut connection)?;
+            migrate_v21(&mut connection)?;
         }
 
         Ok(Self {
@@ -619,11 +621,12 @@ impl SqliteTaskAuthority {
         {
             return Err(TaskStoreError::TaskWriteSetSemanticReadConflict);
         }
-        let semantic_endpoint = if semantic_reads.is_empty() {
+        let semantic_endpoint = if semantic_reads.is_empty() && request.semantic_appends.is_empty()
+        {
             None
         } else {
             let authority = semantic_authority.ok_or(TaskStoreError::TaskWriteSetConflict {
-                reason: "Semantic reads require SemanticAuthority readback",
+                reason: "Semantic reads/appends require SemanticAuthority readback",
             })?;
             let proof = authority
                 .inspect_admission_endpoint_proof()
@@ -646,6 +649,58 @@ impl SqliteTaskAuthority {
                 admission_receipt_id: proof.admission_receipt_id,
             })
         };
+
+        let mut semantic_appends = request.semantic_appends.clone();
+        semantic_appends.sort_unstable_by_key(|append| append.event_id);
+        if semantic_appends
+            .windows(2)
+            .any(|pair| pair[0].event_id == pair[1].event_id)
+        {
+            return Err(TaskStoreError::TaskWriteSetConflict {
+                reason: "Semantic append set contains duplicate event IDs",
+            });
+        }
+        let mut semantic_append_records = Vec::with_capacity(semantic_appends.len());
+        if !semantic_appends.is_empty() {
+            let authority = semantic_authority.ok_or(TaskStoreError::TaskWriteSetConflict {
+                reason: "Semantic appends require SemanticAuthority readback",
+            })?;
+            for append in semantic_appends {
+                let event = authority
+                    .inspect_event(append.event_id)
+                    .map_err(TaskStoreError::SemanticParticipantAuthority)?;
+                if event.scope_kind() != append.target.kind()
+                    || event.scope_id() != append.target.id()
+                {
+                    return Err(TaskStoreError::TaskWriteSetConflict {
+                        reason: "Semantic append target scope differs from admitted event",
+                    });
+                }
+                let receipt = authority
+                    .inspect_admission_receipt(append.event_id)
+                    .map_err(TaskStoreError::SemanticParticipantAuthority)?;
+                if receipt.event_id != append.event_id
+                    || receipt.log_seq != event.log_seq
+                    || !matches!(
+                        (append.required_durability, receipt.durability),
+                        (
+                            TaskWriteSetSemanticRequiredDurability::Durable,
+                            nlos_semantic::AdmissionDurability::Durable
+                        )
+                    )
+                {
+                    return Err(TaskStoreError::TaskWriteSetConflict {
+                        reason: "Semantic append lacks the required durable AdmissionReceipt",
+                    });
+                }
+                semantic_append_records.push(TaskWriteSetSemanticAppend {
+                    event_id: append.event_id,
+                    target: append.target,
+                    required_durability: append.required_durability,
+                    admission_receipt_id: receipt.receipt_id,
+                });
+            }
+        }
 
         let mut resource_requests = request.resource_reservations.clone();
         resource_requests.sort_unstable_by_key(|reservation| reservation.reservation_id);
@@ -813,6 +868,8 @@ impl SqliteTaskAuthority {
         let artifact_read_set_root = crate::model::artifact_read_set_root(&artifact_reads);
         let artifact_write_set_root = crate::model::artifact_write_set_root(&artifact_writes);
         let semantic_read_set_root = crate::model::semantic_read_set_root(&semantic_reads);
+        let semantic_append_set_root =
+            crate::model::semantic_append_set_root(&semantic_append_records);
         let resource_reservation_set_root =
             crate::model::resource_reservation_set_root(&resource_reservations);
         let mut record = TaskWriteSetRecord {
@@ -831,6 +888,7 @@ impl SqliteTaskAuthority {
             artifact_writes,
             process_binding,
             semantic_reads,
+            semantic_appends: semantic_append_records,
             resource_reservations,
             planned_effects,
             effect_endpoints,
@@ -839,6 +897,7 @@ impl SqliteTaskAuthority {
             resource_reservation_set_root,
             effect_set_root,
             effect_endpoint_set_root,
+            semantic_append_set_root,
             artifact_write_set_root,
             write_set_root: [0; 32],
             sealed_at_ms: request.sealed_at_ms,
@@ -1759,6 +1818,8 @@ fn issue_permit(
         }
         if record.artifact_read_set_root
             != crate::model::artifact_read_set_root(&record.artifact_reads)
+            || record.semantic_append_set_root
+                != crate::model::semantic_append_set_root(&record.semantic_appends)
             || record.semantic_read_set_root
                 != crate::model::semantic_read_set_root(&record.semantic_reads)
             || record.resource_reservation_set_root
@@ -2612,6 +2673,46 @@ fn migrate_v20(connection: &mut Connection) -> Result<(), TaskStoreError> {
     Ok(())
 }
 
+/// v20 → v21 adds owner-verified Semantic append declarations. The current
+/// `SemanticAuthority` direct durable `AdmissionReceipt` is the only accepted
+/// durability path in this slice; publication/finalization remains later.
+fn migrate_v21(connection: &mut Connection) -> Result<(), TaskStoreError> {
+    let table_present: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master
+            WHERE type='table' AND name='task_write_set_semantic_appends'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    let trigger_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN
+            ('task_write_set_semantic_append_is_immutable',
+             'task_write_set_semantic_append_is_immutable_delete')",
+        [],
+        |row| row.get(0),
+    )?;
+    let root_column_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('task_write_sets')
+         WHERE name = 'semantic_append_set_root'",
+        [],
+        |row| row.get(0),
+    )?;
+    if table_present && trigger_count == 2 && root_column_count == 1 {
+        connection.pragma_update(None, "user_version", 21)?;
+        return Ok(());
+    }
+    if table_present || trigger_count != 0 || root_column_count != 0 {
+        return Err(TaskStoreError::CorruptRecord(
+            "partial Semantic-append TaskWriteSet schema",
+        ));
+    }
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(SCHEMA_V21_SQL)?;
+    transaction.commit()?;
+    Ok(())
+}
+
 const SCHEMA_V13_SQL: &str = "CREATE TABLE task_write_sets (
         task_id BLOB NOT NULL CHECK(length(task_id) = 16),
         attempt_id BLOB NOT NULL CHECK(length(attempt_id) = 16),
@@ -2901,6 +3002,31 @@ const SCHEMA_V20_SQL: &str = "DROP TRIGGER IF EXISTS task_artifact_commit_plan_i
         SELECT RAISE(ABORT, 'artifact commit plan is durable evidence');
     END;
     PRAGMA user_version = 20;";
+
+const SCHEMA_V21_SQL: &str = "ALTER TABLE task_write_sets
+        ADD COLUMN semantic_append_set_root BLOB NOT NULL DEFAULT X'0000000000000000000000000000000000000000000000000000000000000000'
+        CHECK(length(semantic_append_set_root) = 32);
+    CREATE TABLE task_write_set_semantic_appends (
+        task_id BLOB NOT NULL CHECK(length(task_id) = 16),
+        idempotency_key BLOB NOT NULL CHECK(length(idempotency_key) = 16),
+        append_seq INTEGER NOT NULL CHECK(append_seq >= 0),
+        event_id BLOB NOT NULL CHECK(length(event_id) = 32),
+        target_scope_kind INTEGER NOT NULL CHECK(target_scope_kind IN (1, 2)),
+        target_scope_id BLOB NOT NULL CHECK(length(target_scope_id) = 16),
+        required_durability INTEGER NOT NULL CHECK(required_durability = 2),
+        admission_receipt_id BLOB NOT NULL CHECK(length(admission_receipt_id) = 16),
+        PRIMARY KEY(task_id, idempotency_key, append_seq),
+        UNIQUE(task_id, idempotency_key, event_id),
+        FOREIGN KEY(task_id, idempotency_key)
+            REFERENCES task_write_sets(task_id, idempotency_key)
+    ) STRICT;
+    CREATE TRIGGER task_write_set_semantic_append_is_immutable
+    BEFORE UPDATE ON task_write_set_semantic_appends
+    BEGIN SELECT RAISE(ABORT, 'TaskWriteSet Semantic append is immutable'); END;
+    CREATE TRIGGER task_write_set_semantic_append_is_immutable_delete
+    BEFORE DELETE ON task_write_set_semantic_appends
+    BEGIN SELECT RAISE(ABORT, 'TaskWriteSet Semantic append is immutable'); END;
+    PRAGMA user_version = 21;";
 
 const SCHEMA_V12_SQL: &str = "ALTER TABLE effect_permits
         ADD COLUMN participant_registry_generation BLOB
@@ -3512,12 +3638,12 @@ fn insert_write_set(
             membership_generation, membership_root, group_policy_digest,
             participant_registry_generation, participant_registry_root,
             artifact_read_set_root, semantic_read_set_root,
-            artifact_write_set_root,
+            semantic_append_set_root, artifact_write_set_root,
             resource_reservation_set_root, effect_set_root,
             effect_endpoint_set_root,
             write_set_root, sealed_at_ms
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-                   ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
+                   ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
         params![
             record.task_id.as_bytes().as_slice(),
             record.attempt_id.as_bytes().as_slice(),
@@ -3536,6 +3662,7 @@ fn insert_write_set(
             record.participant_registry_binding.root.as_slice(),
             record.artifact_read_set_root.as_slice(),
             record.semantic_read_set_root.as_slice(),
+            record.semantic_append_set_root.as_slice(),
             record.artifact_write_set_root.as_slice(),
             record.resource_reservation_set_root.as_slice(),
             record.effect_set_root.as_slice(),
@@ -3580,6 +3707,27 @@ fn insert_write_set(
                 encode_u64(write.proposed_revision).as_slice(),
                 write.content_digest.as_slice(),
                 encode_u64(write.size_bytes).as_slice(),
+            ],
+        )?;
+    }
+    for (sequence, append) in record.semantic_appends.iter().enumerate() {
+        transaction.execute(
+            "INSERT INTO task_write_set_semantic_appends (
+                task_id, idempotency_key, append_seq, event_id,
+                target_scope_kind, target_scope_id, required_durability,
+                admission_receipt_id
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                record.task_id.as_bytes().as_slice(),
+                record.idempotency_key.as_bytes().as_slice(),
+                i64::try_from(sequence).map_err(|_| TaskStoreError::TaskWriteSetConflict {
+                    reason: "Semantic append set exceeds SQLite sequence range",
+                })?,
+                append.event_id.as_bytes().as_slice(),
+                i64::from(append.target.kind()),
+                append.target.id().as_slice(),
+                i64::from(TaskWriteSetSemanticRequiredDurability::code()),
+                append.admission_receipt_id.as_bytes().as_slice(),
             ],
         )?;
     }
@@ -3720,7 +3868,8 @@ const WRITE_SET_COLUMNS: &str = "task_id, attempt_id, attempt_generation,
      expected_head_commit_seq, effect_history_root, retry_fence_epoch,
      group_id, membership_generation, membership_root, group_policy_digest,
      participant_registry_generation, participant_registry_root,
-     artifact_read_set_root, semantic_read_set_root, artifact_write_set_root,
+     artifact_read_set_root, semantic_read_set_root, semantic_append_set_root,
+     artifact_write_set_root,
      resource_reservation_set_root, effect_set_root, effect_endpoint_set_root,
      write_set_root, sealed_at_ms";
 
@@ -3745,11 +3894,13 @@ fn load_write_set_by_key(
     record.artifact_writes = load_write_set_artifact_writes(source, task_id, idempotency_key)?;
     record.process_binding = load_write_set_process_binding(source, task_id, idempotency_key)?;
     record.semantic_reads = load_write_set_semantic_reads(source, task_id, idempotency_key)?;
+    record.semantic_appends = load_write_set_semantic_appends(source, task_id, idempotency_key)?;
     record.resource_reservations =
         load_write_set_resource_reservations(source, task_id, idempotency_key)?;
     record.planned_effects = load_write_set_planned_effects(source, task_id, idempotency_key)?;
     record.effect_endpoints = load_write_set_effect_endpoints(source, task_id, idempotency_key)?;
     validate_artifact_write_rows(&record)?;
+    validate_semantic_append_rows(&record)?;
     validate_effect_endpoint_rows(&record)?;
     Ok(Some(record))
 }
@@ -3777,6 +3928,8 @@ pub(crate) fn load_write_set_by_root(
     record.process_binding =
         load_write_set_process_binding(source, task_id, record.idempotency_key)?;
     record.semantic_reads = load_write_set_semantic_reads(source, task_id, record.idempotency_key)?;
+    record.semantic_appends =
+        load_write_set_semantic_appends(source, task_id, record.idempotency_key)?;
     record.resource_reservations =
         load_write_set_resource_reservations(source, task_id, record.idempotency_key)?;
     record.planned_effects =
@@ -3784,6 +3937,7 @@ pub(crate) fn load_write_set_by_root(
     record.effect_endpoints =
         load_write_set_effect_endpoints(source, task_id, record.idempotency_key)?;
     validate_artifact_write_rows(&record)?;
+    validate_semantic_append_rows(&record)?;
     validate_effect_endpoint_rows(&record)?;
     Ok(Some(record))
 }
@@ -3854,6 +4008,35 @@ fn validate_artifact_write_rows(record: &TaskWriteSetRecord) -> Result<(), TaskS
     Ok(())
 }
 
+fn validate_semantic_append_rows(record: &TaskWriteSetRecord) -> Result<(), TaskStoreError> {
+    if record.semantic_appends.is_empty() {
+        if record.semantic_append_set_root != [0; 32] {
+            return Err(TaskStoreError::CorruptRecord(
+                "empty Semantic append set has a non-zero root",
+            ));
+        }
+        return Ok(());
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for append in &record.semantic_appends {
+        if append.required_durability != TaskWriteSetSemanticRequiredDurability::Durable
+            || !seen.insert(append.event_id)
+        {
+            return Err(TaskStoreError::CorruptRecord(
+                "Semantic append durability or uniqueness",
+            ));
+        }
+    }
+    if record.semantic_append_set_root
+        != crate::model::semantic_append_set_root(&record.semantic_appends)
+    {
+        return Err(TaskStoreError::CorruptRecord(
+            "Semantic append root mismatch",
+        ));
+    }
+    Ok(())
+}
+
 fn load_write_set_artifact_writes(
     source: &impl SqlRead,
     task_id: TaskId,
@@ -3895,6 +4078,65 @@ fn load_write_set_artifact_writes(
                 .try_into()
                 .map_err(|_| TaskStoreError::CorruptRecord("Artifact write content digest"))?,
             size_bytes: u64_from_bytes(size_bytes)?,
+        })
+    })
+    .collect()
+}
+
+fn load_write_set_semantic_appends(
+    source: &impl SqlRead,
+    task_id: TaskId,
+    idempotency_key: IdempotencyKey,
+) -> Result<Vec<TaskWriteSetSemanticAppend>, TaskStoreError> {
+    let mut statement = source.prepare_statement(
+        "SELECT event_id, target_scope_kind, target_scope_id,
+                required_durability, admission_receipt_id
+         FROM task_write_set_semantic_appends
+         WHERE task_id = ?1 AND idempotency_key = ?2 ORDER BY append_seq",
+    )?;
+    let rows = statement.query_map(
+        params![
+            task_id.as_bytes().as_slice(),
+            idempotency_key.as_bytes().as_slice()
+        ],
+        |row| {
+            Ok((
+                row.get::<_, Vec<u8>>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, Vec<u8>>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, Vec<u8>>(4)?,
+            ))
+        },
+    )?;
+    rows.map(|row| {
+        let (event_id, target_scope_kind, target_scope_id, required_durability, receipt_id) = row?;
+        let target_scope_id = target_scope_id
+            .try_into()
+            .map_err(|_| TaskStoreError::CorruptRecord("Semantic append target scope"))?;
+        let target = match target_scope_kind {
+            1 => TaskWriteSetSemanticTarget::Namespace(nlos_types::NamespaceId::from_bytes(
+                target_scope_id,
+            )),
+            2 => TaskWriteSetSemanticTarget::Task(TaskId::from_bytes(target_scope_id)),
+            _ => return Err(TaskStoreError::CorruptRecord("Semantic append target kind")),
+        };
+        if required_durability != i64::from(TaskWriteSetSemanticRequiredDurability::code()) {
+            return Err(TaskStoreError::CorruptRecord("Semantic append durability"));
+        }
+        Ok(TaskWriteSetSemanticAppend {
+            event_id: nlos_types::SemanticEventId::from_bytes(
+                event_id
+                    .try_into()
+                    .map_err(|_| TaskStoreError::CorruptRecord("Semantic append event id"))?,
+            ),
+            target,
+            required_durability: TaskWriteSetSemanticRequiredDurability::Durable,
+            admission_receipt_id: ReceiptId::from_bytes(
+                receipt_id
+                    .try_into()
+                    .map_err(|_| TaskStoreError::CorruptRecord("Semantic append receipt id"))?,
+            ),
         })
     })
     .collect()
@@ -4284,18 +4526,20 @@ fn decode_write_set_row(row: &rusqlite::Row<'_>) -> Result<TaskWriteSetRecord, T
         artifact_reads: Vec::new(),
         process_binding: None,
         semantic_reads: Vec::new(),
+        semantic_appends: Vec::new(),
         resource_reservations: Vec::new(),
         artifact_writes: Vec::new(),
         planned_effects: Vec::new(),
         effect_endpoints: Vec::new(),
         artifact_read_set_root: blob32(row, 15)?,
         semantic_read_set_root: blob32(row, 16)?,
-        artifact_write_set_root: blob32(row, 17)?,
-        resource_reservation_set_root: blob32(row, 18)?,
-        effect_set_root: blob32(row, 19)?,
-        effect_endpoint_set_root: blob32(row, 20)?,
-        write_set_root: blob32(row, 21)?,
-        sealed_at_ms: row.get(22)?,
+        semantic_append_set_root: blob32(row, 17)?,
+        artifact_write_set_root: blob32(row, 18)?,
+        resource_reservation_set_root: blob32(row, 19)?,
+        effect_set_root: blob32(row, 20)?,
+        effect_endpoint_set_root: blob32(row, 21)?,
+        write_set_root: blob32(row, 22)?,
+        sealed_at_ms: row.get(23)?,
     })
 }
 

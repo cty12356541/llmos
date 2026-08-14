@@ -41,7 +41,9 @@
 //! slots and folds their participant binding into the canonical write-set
 //! root; schema v19 adds authority-checked proposed Artifact writes, and
 //! schema v20 separates the permit-bound `TaskWriteSet` root from the
-//! staging-bearing Artifact publication-plan root. These remain local partial
+//! staging-bearing Artifact publication-plan root. Schema v21 adds owner-
+//! verified Semantic append declarations, target-scope matching, and direct
+//! durable `AdmissionReceipt` identity binding. These remain local partial
 //! proofs, not cross-authority activation or complete publication.
 //!
 //! Explicitly out of scope: cross-authority-term takeover (adoption is by
@@ -106,7 +108,8 @@ pub use model::{
     TaskWriteSetEffectEndpointRequest, TaskWriteSetProcessBinding,
     TaskWriteSetProcessBindingRequest, TaskWriteSetRecord, TaskWriteSetRequest,
     TaskWriteSetResourceReservation, TaskWriteSetResourceReservationRequest,
-    TaskWriteSetSemanticRead, empty_effect_history_root,
+    TaskWriteSetSemanticAppend, TaskWriteSetSemanticAppendRequest, TaskWriteSetSemanticRead,
+    TaskWriteSetSemanticRequiredDurability, TaskWriteSetSemanticTarget, empty_effect_history_root,
 };
 pub use nlos_types::{EffectPermitId, EffectSlotId, TaskGroupId};
 pub use participant::{

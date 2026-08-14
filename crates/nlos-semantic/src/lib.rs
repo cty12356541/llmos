@@ -635,6 +635,26 @@ impl SemanticAuthority {
             .ok_or(SemanticAuthorityError::EventNotFound(event_id))
     }
 
+    /// Reads the immutable `AdmissionReceipt` for one admitted event.
+    ///
+    /// The receipt is the authority's observation fact. A receipt with
+    /// `durability = Durable` is the direct durable-admission path; no
+    /// outbox acknowledgement is inferred as a stronger publication proof.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EventNotFound` when the event is absent, or a storage/corrupt
+    /// record error when the event and receipt cannot be read consistently.
+    pub fn inspect_admission_receipt(
+        &self,
+        event_id: SemanticEventId,
+    ) -> Result<AdmissionReceipt, SemanticAuthorityError> {
+        let connection = self.lock()?;
+        load_event_record(&connection, event_id)?
+            .ok_or(SemanticAuthorityError::EventNotFound(event_id))?;
+        load_receipt(&connection, event_id)
+    }
+
     /// Reads the durable authority-issued Semantic admission endpoint proof.
     ///
     /// # Errors

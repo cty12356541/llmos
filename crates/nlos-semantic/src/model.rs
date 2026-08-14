@@ -302,6 +302,27 @@ pub struct SemanticEventRecord {
     pub log_seq: u64,
 }
 
+impl SemanticEventRecord {
+    /// Stable scope kind used by `TaskWriteSet` publication declarations.
+    #[must_use]
+    pub const fn scope_kind(&self) -> u8 {
+        match self.scope {
+            CapabilityTarget::Namespace(_) => 1,
+            CapabilityTarget::Task(_) => 2,
+        }
+    }
+
+    /// Stable 16-byte scope identity used by `TaskWriteSet` publication
+    /// declarations.
+    #[must_use]
+    pub const fn scope_id(&self) -> [u8; 16] {
+        match self.scope {
+            CapabilityTarget::Namespace(id) => id.into_bytes(),
+            CapabilityTarget::Task(id) => id.into_bytes(),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SemanticPayloadIdentity {
     AssertionContent([u8; 32]),

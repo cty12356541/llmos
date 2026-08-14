@@ -8,10 +8,12 @@ use nlos_task::{
     PermitRequest, PlannedEffect, SnapshotBundle, SnapshotConsistency, SqliteTaskAuthority,
     TaskSnapshotReceiptSpec, TaskSpec, TaskStoreError, TaskWriteSetArtifactRead,
     TaskWriteSetArtifactWriteRequest, TaskWriteSetEffectEndpointRequest, TaskWriteSetRequest,
-    TaskWriteSetResourceReservationRequest, TaskWriteSetSemanticRead, empty_effect_history_root,
+    TaskWriteSetResourceReservationRequest, TaskWriteSetSemanticAppendRequest,
+    TaskWriteSetSemanticRead, TaskWriteSetSemanticRequiredDurability, TaskWriteSetSemanticTarget,
+    empty_effect_history_root,
 };
 use nlos_types::{
-    ArtifactId, CallId, CancellationScopeId, Generation, IdempotencyKey, OperationId,
+    ArtifactId, CallId, CancellationScopeId, Generation, IdempotencyKey, NamespaceId, OperationId,
     SemanticEventId, TaskAttemptId, TaskId, TaskSnapshotId,
 };
 use rusqlite::Connection;
@@ -462,6 +464,7 @@ fn verified_write_set_seal_binds_receipted_snapshot_and_artifact_reads() {
         artifact_writes: Vec::new(),
         process_binding: Some(nlos_process::ActiveProcessBinding::from(&active_process).into()),
         semantic_reads: Vec::new(),
+        semantic_appends: Vec::new(),
         resource_reservations: Vec::new(),
         planned_effects: vec![planned_effect()],
         effect_endpoints: vec![TaskWriteSetEffectEndpointRequest::ProcessBinding {
@@ -594,6 +597,7 @@ fn verified_write_set_seal_binds_planned_effects_to_permit_and_replays_after_res
         artifact_writes: Vec::new(),
         process_binding: None,
         semantic_reads: Vec::new(),
+        semantic_appends: Vec::new(),
         resource_reservations: Vec::new(),
         planned_effects: vec![planned_effect()],
         effect_endpoints: vec![TaskWriteSetEffectEndpointRequest::ArtifactHead {
@@ -775,6 +779,7 @@ fn artifact_write_declaration_binds_post_permit_publication_plan() {
         }],
         process_binding: None,
         semantic_reads: Vec::new(),
+        semantic_appends: Vec::new(),
         resource_reservations: Vec::new(),
         planned_effects: vec![planned_effect()],
         effect_endpoints: vec![TaskWriteSetEffectEndpointRequest::ArtifactHead {
@@ -964,6 +969,7 @@ fn verified_write_set_seal_binds_reserved_resource_owner_facts() {
         artifact_writes: Vec::new(),
         process_binding: None,
         semantic_reads: Vec::new(),
+        semantic_appends: Vec::new(),
         resource_reservations: vec![TaskWriteSetResourceReservationRequest {
             reservation_id: reservation.reservation_id,
             expected_call_id: reservation.call_id,
@@ -1014,7 +1020,7 @@ fn verified_write_set_seal_binds_reserved_resource_owner_facts() {
 
 #[test]
 #[allow(clippy::too_many_lines)]
-fn verified_write_set_seal_binds_semantic_event_readback() {
+fn verified_write_set_seal_binds_semantic_event_readback_and_append() {
     let database = Database::new();
     let artifact_root = AuthorityRoot::new("semantic-write-set-artifact");
     let artifact = nlos_artifact::ArtifactStore::open(&artifact_root.0).unwrap();
@@ -1053,6 +1059,24 @@ fn verified_write_set_seal_binds_semantic_event_readback() {
     raw.execute(
         "INSERT INTO event_log (event_id) VALUES (?1)",
         [event_id.as_bytes().as_slice()],
+    )
+    .unwrap();
+    raw.execute(
+        "INSERT INTO admission_receipts (
+            receipt_id, event_id, log_seq, admitted_at_ms, effective_valid_until_ms,
+            effective_taint, authz_policy_digest, durability, store_principal_id,
+            store_control_domain_id, store_key_id, store_signature
+         ) VALUES (?1, ?2, 1, ?3, NULL, 0, ?4, 2, ?5, ?6, ?7, ?8)",
+        rusqlite::params![
+            [0xedu8; 16].as_slice(),
+            event_id.as_bytes().as_slice(),
+            1_040i64,
+            [0xddu8; 32].as_slice(),
+            [0xdeu8; 16].as_slice(),
+            [0xdfu8; 16].as_slice(),
+            [0xe0u8; 16].as_slice(),
+            [0xe1u8; 64].as_slice(),
+        ],
     )
     .unwrap();
     drop(raw);
@@ -1107,6 +1131,11 @@ fn verified_write_set_seal_binds_semantic_event_readback() {
             expected_log_seq: 1,
             expected_canonical_digest: hasher.finalize().into(),
         }],
+        semantic_appends: vec![TaskWriteSetSemanticAppendRequest {
+            event_id,
+            target: TaskWriteSetSemanticTarget::Namespace(NamespaceId::from_bytes([0xe8; 16])),
+            required_durability: TaskWriteSetSemanticRequiredDurability::Durable,
+        }],
         resource_reservations: Vec::new(),
         planned_effects: vec![planned_effect()],
         effect_endpoints: vec![TaskWriteSetEffectEndpointRequest::SemanticAdmission {
@@ -1121,13 +1150,52 @@ fn verified_write_set_seal_binds_semantic_event_readback() {
         .record()
         .clone();
     assert_eq!(record.semantic_reads, request.semantic_reads);
+    assert_eq!(record.semantic_appends.len(), 1);
+    assert_eq!(
+        record.semantic_appends[0].admission_receipt_id,
+        nlos_types::ReceiptId::from_bytes([0xed; 16])
+    );
+    assert_ne!(record.semantic_append_set_root, [0; 32]);
     assert_eq!(endpoint.participant_generation.get(), 1);
+    match authority
+        .seal_task_write_set_with_semantic_authority(&artifact, &semantic, request.clone())
+        .unwrap()
+    {
+        nlos_task::TaskWriteSetDecision::Replayed(replayed) => assert_eq!(replayed, record),
+        nlos_task::TaskWriteSetDecision::Sealed(_) => panic!("expected Semantic append replay"),
+    }
+    let mut target_conflict = request.clone();
+    target_conflict.semantic_appends[0].target =
+        TaskWriteSetSemanticTarget::Namespace(NamespaceId::from_bytes([0xe9; 16]));
+    assert!(matches!(
+        authority.seal_task_write_set_with_semantic_authority(
+            &artifact,
+            &semantic,
+            target_conflict,
+        ),
+        Err(TaskStoreError::TaskWriteSetConflict {
+            reason: "Semantic append target scope differs from admitted event",
+        })
+    ));
+    let mut permit_request = permit(&spec, 0xf8);
+    permit_request.write_set_root = record.write_set_root;
+    permit_request.planned_effects = request.planned_effects.clone();
+    let permit_record = issued(authority.request_commit_permit(permit_request).unwrap());
+    assert_eq!(permit_record.write_set_root, record.write_set_root);
     let mut conflict = request;
     conflict.semantic_reads[0].expected_log_seq = 2;
     assert!(matches!(
         authority.seal_task_write_set_with_semantic_authority(&artifact, &semantic, conflict),
         Err(TaskStoreError::TaskWriteSetSemanticReadConflict)
     ));
+    drop(authority);
+    let reopened = database.open();
+    assert_eq!(
+        reopened
+            .inspect_task_write_set(task_id(), IdempotencyKey::from_bytes([0xf7; 16]))
+            .unwrap(),
+        record
+    );
 }
 
 #[test]

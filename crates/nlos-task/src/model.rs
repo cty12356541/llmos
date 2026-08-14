@@ -10,9 +10,9 @@
 
 use nlos_types::{
     AgentInstanceId, ArtifactId, CallId, CancellationScopeId, CommitPermitId, DeviceId, DriverId,
-    Generation, IdempotencyKey, IsolationDomainId, OperationId, ProcessId, QuoteId, ReceiptId,
-    ReservationId, ResourceAccountId, SemanticEventId, TaskAttemptId, TaskId, TaskParticipantId,
-    TaskSnapshotId,
+    Generation, IdempotencyKey, IsolationDomainId, NamespaceId, OperationId, ProcessId, QuoteId,
+    ReceiptId, ReservationId, ResourceAccountId, SemanticEventId, TaskAttemptId, TaskId,
+    TaskParticipantId, TaskSnapshotId,
 };
 use sha2::{Digest, Sha256};
 
@@ -224,6 +224,61 @@ pub struct TaskWriteSetSemanticRead {
     pub expected_canonical_digest: [u8; 32],
 }
 
+/// Semantic scope targeted by a staged append. The owner authority confirms
+/// that this caller-declared scope matches the admitted event envelope.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum TaskWriteSetSemanticTarget {
+    Namespace(NamespaceId),
+    Task(TaskId),
+}
+
+impl TaskWriteSetSemanticTarget {
+    pub(crate) const fn kind(self) -> u8 {
+        match self {
+            Self::Namespace(_) => 1,
+            Self::Task(_) => 2,
+        }
+    }
+
+    pub(crate) const fn id(self) -> [u8; 16] {
+        match self {
+            Self::Namespace(id) => id.into_bytes(),
+            Self::Task(id) => id.into_bytes(),
+        }
+    }
+}
+
+/// Durability requested for a Semantic staging item. This slice accepts only
+/// the `SemanticAuthority` direct durable-admission path.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum TaskWriteSetSemanticRequiredDurability {
+    Durable,
+}
+
+impl TaskWriteSetSemanticRequiredDurability {
+    pub(crate) const fn code() -> u8 {
+        2
+    }
+}
+
+/// Caller-declared Semantic append that must already have an owner-issued
+/// durable `AdmissionReceipt` before the `TaskWriteSet` can be sealed.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct TaskWriteSetSemanticAppendRequest {
+    pub event_id: SemanticEventId,
+    pub target: TaskWriteSetSemanticTarget,
+    pub required_durability: TaskWriteSetSemanticRequiredDurability,
+}
+
+/// Owner-verified Semantic append persisted in the sealed `TaskWriteSet`.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct TaskWriteSetSemanticAppend {
+    pub event_id: SemanticEventId,
+    pub target: TaskWriteSetSemanticTarget,
+    pub required_durability: TaskWriteSetSemanticRequiredDurability,
+    pub admission_receipt_id: ReceiptId,
+}
+
 /// Caller-declared Reservation binding expected by a planned action. Stable
 /// owner fields are persisted after `ResourceAuthority` readback; activation
 /// tokens are never copied into the write-set root.
@@ -353,6 +408,7 @@ pub struct TaskWriteSetRequest {
     pub artifact_writes: Vec<TaskWriteSetArtifactWriteRequest>,
     pub process_binding: Option<TaskWriteSetProcessBindingRequest>,
     pub semantic_reads: Vec<TaskWriteSetSemanticRead>,
+    pub semantic_appends: Vec<TaskWriteSetSemanticAppendRequest>,
     pub resource_reservations: Vec<TaskWriteSetResourceReservationRequest>,
     /// Planned effect slots sealed before `CommitPermit` issuance. The
     /// authority validates each descriptor against the task generation and
@@ -386,10 +442,14 @@ pub struct TaskWriteSetRecord {
     pub artifact_writes: Vec<TaskWriteSetArtifactWrite>,
     pub process_binding: Option<TaskWriteSetProcessBinding>,
     pub semantic_reads: Vec<TaskWriteSetSemanticRead>,
+    pub semantic_appends: Vec<TaskWriteSetSemanticAppend>,
     pub resource_reservations: Vec<TaskWriteSetResourceReservation>,
     pub planned_effects: Vec<PlannedEffect>,
     pub effect_endpoints: Vec<TaskWriteSetEffectEndpoint>,
     pub artifact_read_set_root: [u8; 32],
+    /// Zero for legacy/no-Semantic-append seals; otherwise the canonical
+    /// owner-verified Semantic append declaration root.
+    pub semantic_append_set_root: [u8; 32],
     /// Zero for legacy/no-artifact-write seals; otherwise the canonical
     /// proposed Artifact write declaration root.
     pub artifact_write_set_root: [u8; 32],
@@ -483,6 +543,25 @@ pub(crate) fn semantic_read_set_root(reads: &[TaskWriteSetSemanticRead]) -> [u8;
     hasher.finalize().into()
 }
 
+pub(crate) fn semantic_append_set_root(appends: &[TaskWriteSetSemanticAppend]) -> [u8; 32] {
+    if appends.is_empty() {
+        return [0; 32];
+    }
+    let mut ordered = appends.to_vec();
+    ordered.sort_unstable_by_key(|append| append.event_id);
+    let mut hasher = Sha256::new();
+    hasher.update(b"llmos/task-write-set-semantic-appends/v1");
+    hasher.update((ordered.len() as u64).to_be_bytes());
+    for append in ordered {
+        hasher.update(append.event_id.as_bytes());
+        hasher.update([append.target.kind()]);
+        hasher.update(append.target.id());
+        hasher.update([TaskWriteSetSemanticRequiredDurability::code()]);
+        hasher.update(append.admission_receipt_id.as_bytes());
+    }
+    hasher.finalize().into()
+}
+
 pub(crate) fn semantic_canonical_digest(bytes: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(b"llmos/task-write-set-semantic-event/v1");
@@ -545,15 +624,19 @@ pub(crate) fn effect_endpoint_set_root(endpoints: &[TaskWriteSetEffectEndpoint])
 
 pub(crate) fn task_write_set_root(record: &TaskWriteSetRecord) -> [u8; 32] {
     let has_artifact_writes = !record.artifact_writes.is_empty();
+    let has_semantic_appends = !record.semantic_appends.is_empty();
     let has_effects = !record.planned_effects.is_empty();
     let has_effect_endpoints = !record.effect_endpoints.is_empty();
     let extended = record.process_binding.is_some()
         || !record.semantic_reads.is_empty()
+        || has_semantic_appends
         || !record.resource_reservations.is_empty()
         || has_effects
         || has_effect_endpoints;
     let mut hasher = Sha256::new();
-    hasher.update(if has_artifact_writes {
+    hasher.update(if has_semantic_appends {
+        b"llmos/task-write-set/v6".as_slice()
+    } else if has_artifact_writes {
         b"llmos/task-write-set/v5".as_slice()
     } else if has_effect_endpoints {
         b"llmos/task-write-set/v4".as_slice()
@@ -601,6 +684,9 @@ pub(crate) fn task_write_set_root(record: &TaskWriteSetRecord) -> [u8; 32] {
             None => hasher.update([0u8]),
         }
         hasher.update(record.semantic_read_set_root);
+        if has_semantic_appends {
+            hasher.update(record.semantic_append_set_root);
+        }
         hasher.update(record.resource_reservation_set_root);
     }
     if has_effects {
