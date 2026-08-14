@@ -46,7 +46,10 @@
 //! durable `AdmissionReceipt` identity binding. Schema v22 additionally
 //! carries an optional owner-verified `DurabilityReceipt` identity without
 //! inferring publication from an outbox row. These remain local partial
-//! proofs, not cross-authority activation or complete publication.
+//! proofs, not cross-authority activation or complete publication. The
+//! Semantic-aware v3 finalization entry point re-reads those owner proofs for
+//! an issued permit before the Task CAS; replayed terminal permits keep the
+//! normal idempotent path and no publication receipt is synthesized.
 //!
 //! Explicitly out of scope: cross-authority-term takeover (adoption is by
 //! the same authority after restart/uncertainty), compensation execution

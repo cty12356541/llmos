@@ -148,6 +148,57 @@ fn sha256(domain: &str, parts: &[&[u8]]) -> [u8; 32] {
     hasher.finalize().into()
 }
 
+/// Re-reads every Semantic append proof from its owning authority immediately
+/// before an issued permit is finalized. This is deliberately a guard only:
+/// it does not acknowledge the Semantic outbox, create a checkpoint, or
+/// manufacture a publication receipt (`[TASK-WRITE-003]`).
+fn validate_semantic_finalization(
+    semantic_authority: &nlos_semantic::SemanticAuthority,
+    record: &crate::TaskWriteSetRecord,
+) -> Result<(), TaskStoreError> {
+    for append in &record.semantic_appends {
+        let event = semantic_authority
+            .inspect_event(append.event_id)
+            .map_err(TaskStoreError::SemanticParticipantAuthority)?;
+        if event.scope_kind() != append.target.kind() || event.scope_id() != append.target.id() {
+            return Err(TaskStoreError::TaskWriteSetConflict {
+                reason: "Semantic append finalization target scope differs from admitted event",
+            });
+        }
+        let admission = semantic_authority
+            .inspect_admission_receipt(append.event_id)
+            .map_err(TaskStoreError::SemanticParticipantAuthority)?;
+        if admission.receipt_id != append.admission_receipt_id
+            || admission.event_id != append.event_id
+            || admission.log_seq != event.log_seq
+            || !matches!(
+                (append.required_durability, admission.durability),
+                (
+                    crate::TaskWriteSetSemanticRequiredDurability::Durable,
+                    nlos_semantic::AdmissionDurability::Durable
+                )
+            )
+        {
+            return Err(TaskStoreError::TaskWriteSetConflict {
+                reason: "Semantic append finalization receipt differs from sealed owner proof",
+            });
+        }
+        if let Some(durability_receipt_id) = append.durability_receipt_id {
+            let durability = semantic_authority
+                .inspect_durability_receipt(append.event_id, durability_receipt_id)
+                .map_err(TaskStoreError::SemanticParticipantAuthority)?;
+            if durability.receipt_id != durability_receipt_id
+                || durability.event_id != append.event_id
+            {
+                return Err(TaskStoreError::TaskWriteSetConflict {
+                    reason: "Semantic finalization durability receipt differs from sealed owner proof",
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Whether the logical effect is durably `EFFECT_CLOSED` in the
 /// cross-attempt history (`[TASK-RETRY-EFFECT-001]` re-dispatch fence).
 pub(crate) fn is_effect_closed_in_history(
@@ -1080,6 +1131,45 @@ impl SqliteTaskAuthority {
         &self,
         request: FinalizeRequestV3,
     ) -> Result<FinalizeDecision, TaskStoreError> {
+        self.finalize_impl(&request, false)
+    }
+
+    /// Finalizes an issued permit after re-reading any sealed Semantic append
+    /// proofs from the owning [`nlos_semantic::SemanticAuthority`]. A
+    /// closed/quarantined permit follows the normal replay path and does not
+    /// require a second owner read. This boundary is intentionally weaker
+    /// than Semantic publication: it never acknowledges an outbox row,
+    /// creates a checkpoint, or adds publication fields to the task receipt.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same lifecycle errors as [`Self::finalize_commit_v3`], plus
+    /// a fail-closed Semantic authority or sealed-write-set error when an
+    /// issued permit's owner proof cannot be re-read exactly.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn finalize_commit_v3_with_semantic_authority(
+        &self,
+        semantic_authority: &nlos_semantic::SemanticAuthority,
+        request: FinalizeRequestV3,
+    ) -> Result<FinalizeDecision, TaskStoreError> {
+        let permit = self.inspect_permit(request.base.task_id, request.base.permit_id)?;
+        if permit.state == PermitState::Issued && permit.write_set_root != [0; 32] {
+            let record = {
+                let connection = self.lock_connection()?;
+                store::load_write_set_by_root(
+                    &*connection,
+                    request.base.task_id,
+                    permit.write_set_root,
+                )?
+            }
+            .ok_or(TaskStoreError::TaskWriteSetNotFound)?;
+            if record.write_set_root != crate::model::task_write_set_root(&record) {
+                return Err(TaskStoreError::CorruptRecord(
+                    "TaskWriteSet canonical root mismatch before Semantic finalization",
+                ));
+            }
+            validate_semantic_finalization(semantic_authority, &record)?;
+        }
         self.finalize_impl(&request, false)
     }
 

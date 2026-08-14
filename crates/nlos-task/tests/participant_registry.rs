@@ -3,14 +3,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use nlos_task::{
     AttemptSpec, EffectPermitDecision, EffectPermitRequest, FinalizeDecision, FinalizeRequest,
-    LogicalEffectDescriptor, Outcome, OutcomeRequest, ParticipantRegistrationDecision,
-    ParticipantRegistryBinding, ParticipantRegistryState, ParticipantType, PermitDecision,
-    PermitRequest, PlannedEffect, SnapshotBundle, SnapshotConsistency, SqliteTaskAuthority,
-    TaskSnapshotReceiptSpec, TaskSpec, TaskStoreError, TaskWriteSetArtifactRead,
-    TaskWriteSetArtifactWriteRequest, TaskWriteSetEffectEndpointRequest, TaskWriteSetRequest,
-    TaskWriteSetResourceReservationRequest, TaskWriteSetSemanticAppendRequest,
-    TaskWriteSetSemanticRead, TaskWriteSetSemanticRequiredDurability, TaskWriteSetSemanticTarget,
-    empty_effect_history_root,
+    FinalizeRequestV3, LogicalEffectDescriptor, NoEffectReason, NoEffectRequest, Outcome,
+    OutcomeRequest, ParticipantRegistrationDecision, ParticipantRegistryBinding,
+    ParticipantRegistryState, ParticipantType, PermitDecision, PermitRequest, PlannedEffect,
+    SnapshotBundle, SnapshotConsistency, SqliteTaskAuthority, TaskSnapshotReceiptSpec, TaskSpec,
+    TaskStoreError, TaskWriteSetArtifactRead, TaskWriteSetArtifactWriteRequest,
+    TaskWriteSetEffectEndpointRequest, TaskWriteSetRequest, TaskWriteSetResourceReservationRequest,
+    TaskWriteSetSemanticAppendRequest, TaskWriteSetSemanticRead,
+    TaskWriteSetSemanticRequiredDurability, TaskWriteSetSemanticTarget, empty_effect_history_root,
 };
 use nlos_types::{
     ArtifactId, CallId, CancellationScopeId, Generation, IdempotencyKey, NamespaceId, OperationId,
@@ -1216,6 +1216,63 @@ fn verified_write_set_seal_binds_semantic_event_readback_and_append() {
     assert!(matches!(
         authority.seal_task_write_set_with_semantic_authority(&artifact, &semantic, conflict),
         Err(TaskStoreError::TaskWriteSetSemanticReadConflict)
+    ));
+    authority
+        .record_no_effect(NoEffectRequest {
+            task_id: task_id(),
+            attempt_id: spec.attempt_id,
+            attempt_generation: spec.attempt_generation,
+            permit_id: permit_record.permit_id,
+            permit_epoch: permit_record.permit_epoch,
+            effect_seq: 0,
+            reason: NoEffectReason::NotSelected,
+            dispatch_token: None,
+            recorded_at_ms: 1_250,
+        })
+        .unwrap();
+    let finalize_request = FinalizeRequestV3 {
+        base: FinalizeRequest {
+            task_id: task_id(),
+            attempt_id: spec.attempt_id,
+            attempt_generation: spec.attempt_generation,
+            permit_id: permit_record.permit_id,
+            new_effect_history_root: empty_effect_history_root(),
+            new_retry_fence_epoch: 0,
+            finalized_at_ms: 1_300,
+        },
+        required_satisfaction: Vec::new(),
+        fenced_participant_digest: [0; 32],
+    };
+    let wrong_semantic_root = AuthorityRoot::new("wrong-semantic-finalize");
+    let wrong_semantic = nlos_semantic::SemanticAuthority::open(&wrong_semantic_root.0).unwrap();
+    assert!(matches!(
+        authority
+            .finalize_commit_v3_with_semantic_authority(&wrong_semantic, finalize_request.clone(),),
+        Err(TaskStoreError::SemanticParticipantAuthority(_))
+    ));
+    assert_eq!(
+        authority
+            .inspect_permit(task_id(), permit_record.permit_id)
+            .unwrap()
+            .state,
+        nlos_task::PermitState::Issued
+    );
+    match authority
+        .finalize_commit_v3_with_semantic_authority(&semantic, finalize_request.clone())
+        .unwrap()
+    {
+        FinalizeDecision::Committed(receipt) => {
+            assert_eq!(receipt.outcome, nlos_task::ReceiptOutcome::Committed);
+        }
+        other @ FinalizeDecision::Replayed(_) => {
+            panic!("expected Semantic-guarded commit, got {other:?}")
+        }
+    }
+    assert!(matches!(
+        authority
+            .finalize_commit_v3_with_semantic_authority(&semantic, finalize_request)
+            .unwrap(),
+        FinalizeDecision::Replayed(_)
     ));
     drop(authority);
     let reopened = database.open();
