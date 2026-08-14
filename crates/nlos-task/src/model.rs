@@ -245,14 +245,17 @@ pub struct TaskWriteSetRequest {
     pub process_binding: Option<TaskWriteSetProcessBindingRequest>,
     pub semantic_reads: Vec<TaskWriteSetSemanticRead>,
     pub resource_reservations: Vec<TaskWriteSetResourceReservationRequest>,
+    /// Planned effect slots sealed before `CommitPermit` issuance. The
+    /// authority validates each descriptor against the task generation and
+    /// persists the exact ordered declaration.
+    pub planned_effects: Vec<PlannedEffect>,
     pub idempotency_key: IdempotencyKey,
     pub sealed_at_ms: i64,
 }
 
 /// Durable authority-derived `TaskWriteSet` seal. The root covers the
-/// receipted snapshot, TaskHead/fence, group/participant bindings, and the
-/// exact Artifact read set. Planned effects and other owner bindings are
-/// added by later authority-first slices.
+/// receipted snapshot, TaskHead/fence, group/participant bindings, exact
+/// owner-read sets, and (when present) the ordered planned effect set.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TaskWriteSetRecord {
     pub task_id: TaskId,
@@ -270,9 +273,13 @@ pub struct TaskWriteSetRecord {
     pub process_binding: Option<TaskWriteSetProcessBinding>,
     pub semantic_reads: Vec<TaskWriteSetSemanticRead>,
     pub resource_reservations: Vec<TaskWriteSetResourceReservation>,
+    pub planned_effects: Vec<PlannedEffect>,
     pub artifact_read_set_root: [u8; 32],
     pub semantic_read_set_root: [u8; 32],
     pub resource_reservation_set_root: [u8; 32],
+    /// Zero for legacy/no-effect seals; otherwise the canonical effect-set
+    /// root used by `EffectSlot` issuance.
+    pub effect_set_root: [u8; 32],
     pub write_set_root: [u8; 32],
     pub sealed_at_ms: i64,
 }
@@ -364,11 +371,15 @@ pub(crate) fn resource_reservation_set_root(
 }
 
 pub(crate) fn task_write_set_root(record: &TaskWriteSetRecord) -> [u8; 32] {
+    let has_effects = !record.planned_effects.is_empty();
     let extended = record.process_binding.is_some()
         || !record.semantic_reads.is_empty()
-        || !record.resource_reservations.is_empty();
+        || !record.resource_reservations.is_empty()
+        || has_effects;
     let mut hasher = Sha256::new();
-    hasher.update(if extended {
+    hasher.update(if has_effects {
+        b"llmos/task-write-set/v3".as_slice()
+    } else if extended {
         b"llmos/task-write-set/v2".as_slice()
     } else {
         b"llmos/task-write-set/v1".as_slice()
@@ -411,6 +422,9 @@ pub(crate) fn task_write_set_root(record: &TaskWriteSetRecord) -> [u8; 32] {
         }
         hasher.update(record.semantic_read_set_root);
         hasher.update(record.resource_reservation_set_root);
+    }
+    if has_effects {
+        hasher.update(record.effect_set_root);
     }
     hasher.update(record.participant_registry_binding.generation.to_be_bytes());
     hasher.update(record.participant_registry_binding.root);

@@ -22,13 +22,13 @@ use crate::model::{derive_closure_receipt_id, derive_permit_id, empty_effect_his
 use crate::{
     AttemptHandle, AttemptRecord, AttemptRegistrationDecision, AttemptSpec, AttemptState,
     CancelDecision, CancelRequest, ClosedAttempt, PermitConflict, PermitDecision, PermitRecord,
-    PermitRequest, PermitState, ReceiptOutcome, SnapshotBundle, SnapshotConsistency,
+    PermitRequest, PermitState, PlannedEffect, ReceiptOutcome, SnapshotBundle, SnapshotConsistency,
     TaskReceiptRecord, TaskRecord, TaskRegistrationDecision, TaskSnapshotReceiptRecord,
     TaskSnapshotReceiptSpec, TaskSpec, TaskState, TaskStoreError, TaskWriteSetArtifactRead,
     TaskWriteSetDecision, TaskWriteSetRecord, TaskWriteSetRequest,
 };
 
-const SCHEMA_VERSION: i64 = 16;
+const SCHEMA_VERSION: i64 = 17;
 
 /// A single-writer `SQLite` task authority.
 ///
@@ -220,6 +220,7 @@ impl SqliteTaskAuthority {
             migrate_v14(&mut connection)?;
             migrate_v15(&mut connection)?;
             migrate_v16(&mut connection)?;
+            migrate_v17(&mut connection)?;
         }
 
         Ok(Self {
@@ -664,6 +665,16 @@ impl SqliteTaskAuthority {
         let mut connection = self.lock_connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let task = load_task(&transaction, request.task_id)?;
+        let planned_effects = request.planned_effects.clone();
+        let effect_set_root = if planned_effects.is_empty() {
+            [0; 32]
+        } else {
+            crate::effect::validate_planned_effects(
+                task.record.task_id,
+                task.record.task_generation,
+                &planned_effects,
+            )?
+        };
         let attempt = load_attempt(&transaction, request.task_id, request.attempt_id)?;
         if attempt.attempt_generation != request.attempt_generation {
             return Err(TaskStoreError::InvalidGeneration);
@@ -748,9 +759,11 @@ impl SqliteTaskAuthority {
             process_binding,
             semantic_reads,
             resource_reservations,
+            planned_effects,
             artifact_read_set_root,
             semantic_read_set_root,
             resource_reservation_set_root,
+            effect_set_root,
             write_set_root: [0; 32],
             sealed_at_ms: request.sealed_at_ms,
         };
@@ -1472,11 +1485,35 @@ fn issue_permit(
                 != crate::model::semantic_read_set_root(&record.semantic_reads)
             || record.resource_reservation_set_root
                 != crate::model::resource_reservation_set_root(&record.resource_reservations)
+            || record.effect_set_root
+                != if record.planned_effects.is_empty() {
+                    [0; 32]
+                } else {
+                    crate::effect::effect_set_root_of(&record.planned_effects)
+                }
+            || (!record.planned_effects.is_empty()
+                && crate::effect::validate_planned_effects(
+                    record.task_id,
+                    task.record.task_generation,
+                    &record.planned_effects,
+                )? != record.effect_set_root)
             || record.write_set_root != crate::model::task_write_set_root(record)
         {
             return Err(TaskStoreError::CorruptRecord(
                 "TaskWriteSet canonical root mismatch",
             ));
+        }
+        if record.planned_effects != request.planned_effects
+            || record.effect_set_root
+                != if request.planned_effects.is_empty() {
+                    [0; 32]
+                } else {
+                    crate::effect::effect_set_root_of(&request.planned_effects)
+                }
+        {
+            return Err(TaskStoreError::TaskWriteSetConflict {
+                reason: "permit planned effects differ from sealed TaskWriteSet",
+            });
         }
         let current_group = crate::group::current_commit_binding(transaction, attempt.attempt_id)?;
         if record.group_binding != current_group {
@@ -2091,6 +2128,46 @@ fn migrate_v16(connection: &mut Connection) -> Result<(), TaskStoreError> {
     Ok(())
 }
 
+/// v16 → v17 adds the immutable planned-effect declaration to each verified
+/// `TaskWriteSet`. Existing rows keep a zero effect root and no invented
+/// planned slots, preserving their v1/v2 write-set roots.
+fn migrate_v17(connection: &mut Connection) -> Result<(), TaskStoreError> {
+    let table_present: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master
+            WHERE type='table' AND name='task_write_set_planned_effects'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    let trigger_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN
+            ('task_write_set_planned_effect_is_immutable',
+             'task_write_set_planned_effect_is_immutable_delete')",
+        [],
+        |row| row.get(0),
+    )?;
+    let root_column_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('task_write_sets')
+         WHERE name = 'effect_set_root'",
+        [],
+        |row| row.get(0),
+    )?;
+    if table_present && trigger_count == 2 && root_column_count == 1 {
+        connection.pragma_update(None, "user_version", 17)?;
+        return Ok(());
+    }
+    if table_present || trigger_count != 0 || root_column_count != 0 {
+        return Err(TaskStoreError::CorruptRecord(
+            "partial planned-effect TaskWriteSet schema",
+        ));
+    }
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(SCHEMA_V17_SQL)?;
+    transaction.commit()?;
+    Ok(())
+}
+
 const SCHEMA_V13_SQL: &str = "CREATE TABLE task_write_sets (
         task_id BLOB NOT NULL CHECK(length(task_id) = 16),
         attempt_id BLOB NOT NULL CHECK(length(attempt_id) = 16),
@@ -2243,6 +2320,37 @@ const SCHEMA_V16_SQL: &str = "ALTER TABLE task_write_sets
     BEFORE DELETE ON task_write_set_resource_reservations
     BEGIN SELECT RAISE(ABORT, 'TaskWriteSet Resource Reservation is immutable'); END;
     PRAGMA user_version = 16;";
+
+const SCHEMA_V17_SQL: &str = "ALTER TABLE task_write_sets
+        ADD COLUMN effect_set_root BLOB NOT NULL DEFAULT X'0000000000000000000000000000000000000000000000000000000000000000'
+        CHECK(length(effect_set_root) = 32);
+    CREATE TABLE task_write_set_planned_effects (
+        task_id BLOB NOT NULL CHECK(length(task_id) = 16),
+        idempotency_key BLOB NOT NULL CHECK(length(idempotency_key) = 16),
+        effect_seq INTEGER NOT NULL CHECK(effect_seq >= 0),
+        intent_spec_id BLOB NOT NULL CHECK(length(intent_spec_id) = 32),
+        stable_action_slot BLOB NOT NULL CHECK(length(stable_action_slot) = 8),
+        target_authority_object_id BLOB NOT NULL CHECK(length(target_authority_object_id) = 32),
+        effect_class INTEGER NOT NULL CHECK(effect_class BETWEEN 0 AND 4294967295),
+        idempotency_scope INTEGER NOT NULL CHECK(idempotency_scope BETWEEN 0 AND 4294967295),
+        logical_effect_id BLOB NOT NULL CHECK(length(logical_effect_id) = 32),
+        idempotency_identity_digest BLOB NOT NULL CHECK(length(idempotency_identity_digest) = 32),
+        required INTEGER NOT NULL CHECK(required IN (0, 1)),
+        required_condition_digest BLOB CHECK(required_condition_digest IS NULL OR length(required_condition_digest) = 32),
+        success_criteria_digest BLOB NOT NULL CHECK(length(success_criteria_digest) = 32),
+        action_proposal_digest BLOB NOT NULL CHECK(length(action_proposal_digest) = 32),
+        PRIMARY KEY(task_id, idempotency_key, effect_seq),
+        UNIQUE(task_id, idempotency_key, logical_effect_id),
+        FOREIGN KEY(task_id, idempotency_key)
+            REFERENCES task_write_sets(task_id, idempotency_key)
+    ) STRICT;
+    CREATE TRIGGER task_write_set_planned_effect_is_immutable
+    BEFORE UPDATE ON task_write_set_planned_effects
+    BEGIN SELECT RAISE(ABORT, 'TaskWriteSet planned effect is immutable'); END;
+    CREATE TRIGGER task_write_set_planned_effect_is_immutable_delete
+    BEFORE DELETE ON task_write_set_planned_effects
+    BEGIN SELECT RAISE(ABORT, 'TaskWriteSet planned effect is immutable'); END;
+    PRAGMA user_version = 17;";
 
 const SCHEMA_V12_SQL: &str = "ALTER TABLE effect_permits
         ADD COLUMN participant_registry_generation BLOB
@@ -2854,9 +2962,10 @@ fn insert_write_set(
             membership_generation, membership_root, group_policy_digest,
             participant_registry_generation, participant_registry_root,
             artifact_read_set_root, semantic_read_set_root,
-            resource_reservation_set_root, write_set_root, sealed_at_ms
+            resource_reservation_set_root, effect_set_root,
+            write_set_root, sealed_at_ms
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-                   ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+                   ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
         params![
             record.task_id.as_bytes().as_slice(),
             record.attempt_id.as_bytes().as_slice(),
@@ -2876,6 +2985,7 @@ fn insert_write_set(
             record.artifact_read_set_root.as_slice(),
             record.semantic_read_set_root.as_slice(),
             record.resource_reservation_set_root.as_slice(),
+            record.effect_set_root.as_slice(),
             record.write_set_root.as_slice(),
             record.sealed_at_ms,
         ],
@@ -2968,6 +3078,39 @@ fn insert_write_set(
             ],
         )?;
     }
+    for (sequence, planned) in record.planned_effects.iter().enumerate() {
+        let descriptor = &planned.descriptor;
+        transaction.execute(
+            "INSERT INTO task_write_set_planned_effects (
+                task_id, idempotency_key, effect_seq, intent_spec_id,
+                stable_action_slot, target_authority_object_id, effect_class,
+                idempotency_scope, logical_effect_id,
+                idempotency_identity_digest, required, required_condition_digest,
+                success_criteria_digest, action_proposal_digest
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            params![
+                record.task_id.as_bytes().as_slice(),
+                record.idempotency_key.as_bytes().as_slice(),
+                i64::try_from(sequence).map_err(|_| TaskStoreError::TaskWriteSetConflict {
+                    reason: "planned effect set exceeds SQLite sequence range",
+                })?,
+                descriptor.intent_spec_id.as_slice(),
+                encode_u64(descriptor.stable_action_slot).as_slice(),
+                descriptor.target_authority_object_id.as_slice(),
+                i64::from(descriptor.effect_class),
+                i64::from(descriptor.idempotency_scope),
+                descriptor.logical_effect_id().as_slice(),
+                descriptor.idempotency_identity_digest().as_slice(),
+                i64::from(planned.required),
+                planned
+                    .required_condition_digest
+                    .as_ref()
+                    .map(<[u8; 32]>::as_slice),
+                planned.success_criteria_digest.as_slice(),
+                planned.action_proposal_digest.as_slice(),
+            ],
+        )?;
+    }
     Ok(())
 }
 
@@ -2977,7 +3120,7 @@ const WRITE_SET_COLUMNS: &str = "task_id, attempt_id, attempt_generation,
      group_id, membership_generation, membership_root, group_policy_digest,
      participant_registry_generation, participant_registry_root,
      artifact_read_set_root, semantic_read_set_root,
-     resource_reservation_set_root, write_set_root, sealed_at_ms";
+     resource_reservation_set_root, effect_set_root, write_set_root, sealed_at_ms";
 
 fn load_write_set_by_key(
     source: &impl SqlRead,
@@ -3001,6 +3144,7 @@ fn load_write_set_by_key(
     record.semantic_reads = load_write_set_semantic_reads(source, task_id, idempotency_key)?;
     record.resource_reservations =
         load_write_set_resource_reservations(source, task_id, idempotency_key)?;
+    record.planned_effects = load_write_set_planned_effects(source, task_id, idempotency_key)?;
     Ok(Some(record))
 }
 
@@ -3027,7 +3171,106 @@ fn load_write_set_by_root(
     record.semantic_reads = load_write_set_semantic_reads(source, task_id, record.idempotency_key)?;
     record.resource_reservations =
         load_write_set_resource_reservations(source, task_id, record.idempotency_key)?;
+    record.planned_effects =
+        load_write_set_planned_effects(source, task_id, record.idempotency_key)?;
     Ok(Some(record))
+}
+
+fn load_write_set_planned_effects(
+    source: &impl SqlRead,
+    task_id: TaskId,
+    idempotency_key: IdempotencyKey,
+) -> Result<Vec<PlannedEffect>, TaskStoreError> {
+    let task_generation = source
+        .prepare_statement("SELECT task_generation FROM tasks WHERE task_id = ?1")?
+        .query_row([task_id.as_bytes().as_slice()], |row| {
+            row.get::<_, Vec<u8>>(0)
+        })
+        .map_err(TaskStoreError::Sqlite)
+        .and_then(generation_from_u64_bytes)?;
+    let mut statement = source.prepare_statement(
+        "SELECT effect_seq, intent_spec_id, stable_action_slot,
+                target_authority_object_id, effect_class, idempotency_scope,
+                logical_effect_id, idempotency_identity_digest, required,
+                required_condition_digest, success_criteria_digest,
+                action_proposal_digest
+         FROM task_write_set_planned_effects
+         WHERE task_id = ?1 AND idempotency_key = ?2 ORDER BY effect_seq",
+    )?;
+    let rows = statement.query_map(
+        params![
+            task_id.as_bytes().as_slice(),
+            idempotency_key.as_bytes().as_slice()
+        ],
+        |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, Vec<u8>>(1)?,
+                row.get::<_, Vec<u8>>(2)?,
+                row.get::<_, Vec<u8>>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, Vec<u8>>(6)?,
+                row.get::<_, Vec<u8>>(7)?,
+                row.get::<_, i64>(8)?,
+                row.get::<_, Option<Vec<u8>>>(9)?,
+                row.get::<_, Vec<u8>>(10)?,
+                row.get::<_, Vec<u8>>(11)?,
+            ))
+        },
+    )?;
+    let mut planned = Vec::new();
+    for row in rows {
+        let (
+            effect_seq,
+            intent_spec_id,
+            stable_action_slot,
+            target_authority_object_id,
+            effect_class,
+            idempotency_scope,
+            logical_effect_id,
+            idempotency_identity_digest,
+            required,
+            required_condition_digest,
+            success_criteria_digest,
+            action_proposal_digest,
+        ) = row?;
+        let effect_seq = u64::try_from(effect_seq)
+            .map_err(|_| TaskStoreError::CorruptRecord("planned effect sequence"))?;
+        if effect_seq != planned.len() as u64 {
+            return Err(TaskStoreError::CorruptRecord("planned effect sequence"));
+        }
+        if !(0..=i64::from(u32::MAX)).contains(&effect_class)
+            || !(0..=i64::from(u32::MAX)).contains(&idempotency_scope)
+            || !matches!(required, 0 | 1)
+        {
+            return Err(TaskStoreError::CorruptRecord("planned effect scalar"));
+        }
+        let descriptor = crate::LogicalEffectDescriptor {
+            task_id,
+            task_generation,
+            intent_spec_id: blob32_vec(intent_spec_id)?,
+            stable_action_slot: u64_from_bytes(stable_action_slot)?,
+            target_authority_object_id: blob32_vec(target_authority_object_id)?,
+            effect_class: u32::try_from(effect_class)
+                .map_err(|_| TaskStoreError::CorruptRecord("planned effect class"))?,
+            idempotency_scope: u32::try_from(idempotency_scope)
+                .map_err(|_| TaskStoreError::CorruptRecord("planned effect scope"))?,
+        };
+        if descriptor.logical_effect_id() != blob32_vec(logical_effect_id)?
+            || descriptor.idempotency_identity_digest() != blob32_vec(idempotency_identity_digest)?
+        {
+            return Err(TaskStoreError::CorruptRecord("planned effect identity"));
+        }
+        planned.push(PlannedEffect {
+            descriptor,
+            required: required == 1,
+            required_condition_digest: required_condition_digest.map(blob32_vec).transpose()?,
+            success_criteria_digest: blob32_vec(success_criteria_digest)?,
+            action_proposal_digest: blob32_vec(action_proposal_digest)?,
+        });
+    }
+    Ok(planned)
 }
 
 fn load_write_set_semantic_reads(
@@ -3249,11 +3492,13 @@ fn decode_write_set_row(row: &rusqlite::Row<'_>) -> Result<TaskWriteSetRecord, T
         process_binding: None,
         semantic_reads: Vec::new(),
         resource_reservations: Vec::new(),
+        planned_effects: Vec::new(),
         artifact_read_set_root: blob32(row, 15)?,
         semantic_read_set_root: blob32(row, 16)?,
         resource_reservation_set_root: blob32(row, 17)?,
-        write_set_root: blob32(row, 18)?,
-        sealed_at_ms: row.get(19)?,
+        effect_set_root: blob32(row, 18)?,
+        write_set_root: blob32(row, 19)?,
+        sealed_at_ms: row.get(20)?,
     })
 }
 

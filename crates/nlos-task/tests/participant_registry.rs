@@ -461,6 +461,7 @@ fn verified_write_set_seal_binds_receipted_snapshot_and_artifact_reads() {
         process_binding: Some(nlos_process::ActiveProcessBinding::from(&active_process).into()),
         semantic_reads: Vec::new(),
         resource_reservations: Vec::new(),
+        planned_effects: Vec::new(),
         idempotency_key: IdempotencyKey::from_bytes([0xbc; 16]),
         sealed_at_ms: 1_200,
     };
@@ -523,6 +524,151 @@ fn verified_write_set_seal_binds_receipted_snapshot_and_artifact_reads() {
             .unwrap(),
         record
     );
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn verified_write_set_seal_binds_planned_effects_to_permit_and_replays_after_restart() {
+    let database = Database::new();
+    let artifact_root = AuthorityRoot::new("write-set-effect-artifact");
+    let artifact = nlos_artifact::ArtifactStore::open(&artifact_root.0).unwrap();
+    let artifact_id = create_artifact(&artifact, 0xf8);
+    let authority = database.open();
+    authority
+        .register_task(TaskSpec {
+            task_id: task_id(),
+            task_generation: Generation::INITIAL,
+            registered_at_ms: 1_000,
+        })
+        .unwrap();
+    let spec = attempt(0x91, 0, empty_effect_history_root());
+    let receipt_id = nlos_types::ReceiptId::from_bytes([0xf9; 16]);
+    authority
+        .register_snapshot_receipt(nlos_task::TaskSnapshotReceiptSpec {
+            task_id: task_id(),
+            snapshot: spec.snapshot,
+            receipt_id,
+            builder_id: [0xfa; 16],
+            builder_version_digest: [0xfb; 32],
+            per_authority_checkpoint_receipts: vec![nlos_types::ReceiptId::from_bytes([0xfc; 16])],
+            dependency_closure_root: [0xfd; 32],
+            semantic_resolver_digest: [0xfe; 32],
+            canonical_iteration_digest: [0xff; 32],
+            achieved_consistency: SnapshotConsistency::Causal,
+            built_at_ms: 1_050,
+            authority_id: [0x81; 16],
+            key_id: [0x82; 16],
+            signature: [0x83; 64],
+        })
+        .unwrap();
+    authority
+        .register_attempt_with_snapshot_receipt(spec, receipt_id)
+        .unwrap();
+    let registry_binding = binding(&authority.inspect_participant_registry(task_id()).unwrap());
+    authority
+        .register_artifact_head_participant(
+            &artifact,
+            task_id(),
+            registry_binding,
+            artifact_id,
+            1_100,
+        )
+        .unwrap();
+    let request = TaskWriteSetRequest {
+        task_id: task_id(),
+        attempt_id: spec.attempt_id,
+        attempt_generation: spec.attempt_generation,
+        artifact_reads: vec![TaskWriteSetArtifactRead {
+            artifact_id,
+            expected_head_revision: 0,
+            expected_head_digest: None,
+        }],
+        process_binding: None,
+        semantic_reads: Vec::new(),
+        resource_reservations: Vec::new(),
+        planned_effects: vec![planned_effect()],
+        idempotency_key: IdempotencyKey::from_bytes([0x84; 16]),
+        sealed_at_ms: 1_200,
+    };
+    let record = authority
+        .seal_task_write_set(&artifact, request.clone())
+        .unwrap()
+        .record()
+        .clone();
+    assert_eq!(record.planned_effects, request.planned_effects);
+    assert_ne!(record.effect_set_root, [0; 32]);
+    let mut permit_request = permit(&spec, 0x85);
+    permit_request.write_set_root = record.write_set_root;
+    permit_request.planned_effects = request.planned_effects.clone();
+    let mut conflicting_permit_request = permit_request.clone();
+    conflicting_permit_request.idempotency_key = IdempotencyKey::from_bytes([0x87; 16]);
+    conflicting_permit_request.planned_effects[0].action_proposal_digest = [0x86; 32];
+    assert!(matches!(
+        authority.request_commit_permit(conflicting_permit_request),
+        Err(TaskStoreError::TaskWriteSetConflict { .. })
+    ));
+    let permit_record = issued(
+        authority
+            .request_commit_permit(permit_request.clone())
+            .unwrap(),
+    );
+    assert_eq!(
+        authority
+            .inspect_effect_set(permit_record.permit_id)
+            .unwrap()
+            .unwrap()
+            .effect_set_root,
+        record.effect_set_root
+    );
+    assert_eq!(
+        authority
+            .list_effect_slots(permit_record.permit_id)
+            .unwrap()
+            .len(),
+        1
+    );
+    drop(authority);
+    let raw = Connection::open(&database.0).unwrap();
+    assert!(
+        raw.execute(
+            "UPDATE task_write_set_planned_effects
+             SET action_proposal_digest = zeroblob(32)
+             WHERE task_id = ?1 AND idempotency_key = ?2 AND effect_seq = 0",
+            rusqlite::params![
+                task_id().as_bytes().as_slice(),
+                request.idempotency_key.as_bytes().as_slice()
+            ],
+        )
+        .is_err()
+    );
+    assert!(
+        raw.execute(
+            "DELETE FROM task_write_set_planned_effects
+             WHERE task_id = ?1 AND idempotency_key = ?2 AND effect_seq = 0",
+            rusqlite::params![
+                task_id().as_bytes().as_slice(),
+                request.idempotency_key.as_bytes().as_slice()
+            ],
+        )
+        .is_err()
+    );
+    drop(raw);
+    let reopened = database.open();
+    assert_eq!(
+        reopened
+            .inspect_task_write_set(task_id(), request.idempotency_key)
+            .unwrap(),
+        record
+    );
+    let mut replay_conflict = permit_request;
+    replay_conflict.planned_effects[0].action_proposal_digest = [0x86; 32];
+    assert!(matches!(
+        reopened.request_commit_permit(PermitRequest {
+            planned_effects: replay_conflict.planned_effects,
+            ..replay_conflict
+        }),
+        Err(TaskStoreError::IdempotencyConflict)
+    ));
 }
 
 #[test]
@@ -644,6 +790,7 @@ fn verified_write_set_seal_binds_reserved_resource_owner_facts() {
             expected_operation_id: reservation.operation_id,
             expected_quote_id: reservation.quote_id,
         }],
+        planned_effects: Vec::new(),
         idempotency_key: IdempotencyKey::from_bytes([0xe4; 16]),
         sealed_at_ms: 1_200,
     };
@@ -768,6 +915,7 @@ fn verified_write_set_seal_binds_semantic_event_readback() {
             expected_canonical_digest: hasher.finalize().into(),
         }],
         resource_reservations: Vec::new(),
+        planned_effects: Vec::new(),
         idempotency_key: IdempotencyKey::from_bytes([0xf7; 16]),
         sealed_at_ms: 1_200,
     };
