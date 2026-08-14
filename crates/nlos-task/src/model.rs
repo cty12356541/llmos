@@ -233,6 +233,97 @@ pub struct TaskWriteSetResourceReservation {
     pub upper_bound: u64,
 }
 
+/// Owner endpoint kind attached to one planned effect slot. The kind is
+/// deliberately finite: every endpoint that enters a `TaskWriteSet` must have
+/// a concrete authority capable of returning a durable proof.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TaskWriteSetEffectEndpointKind {
+    ArtifactHead,
+    SemanticAdmission,
+    ProcessBinding,
+    DriverGateway,
+    ResourceLedger,
+}
+
+impl TaskWriteSetEffectEndpointKind {
+    pub(crate) const fn code(self) -> u8 {
+        match self {
+            Self::ArtifactHead => 1,
+            Self::SemanticAdmission => 2,
+            Self::ProcessBinding => 3,
+            Self::DriverGateway => 4,
+            Self::ResourceLedger => 5,
+        }
+    }
+
+    pub(crate) fn from_code(code: i64) -> Result<Self, TaskStoreError> {
+        match code {
+            1 => Ok(Self::ArtifactHead),
+            2 => Ok(Self::SemanticAdmission),
+            3 => Ok(Self::ProcessBinding),
+            4 => Ok(Self::DriverGateway),
+            5 => Ok(Self::ResourceLedger),
+            _ => Err(TaskStoreError::CorruptRecord(
+                "TaskWriteSet effect endpoint kind",
+            )),
+        }
+    }
+}
+
+/// Caller-declared owner endpoint needed by one planned effect. The caller
+/// supplies only the stable object identity (or the authority-wide Semantic
+/// admission endpoint); the owner proof is read back during sealing.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TaskWriteSetEffectEndpointRequest {
+    ArtifactHead {
+        effect_seq: u64,
+        artifact_id: ArtifactId,
+    },
+    SemanticAdmission {
+        effect_seq: u64,
+    },
+    ProcessBinding {
+        effect_seq: u64,
+        process_id: ProcessId,
+        expected_process_generation: Generation,
+    },
+    DriverGateway {
+        effect_seq: u64,
+        driver_id: DriverId,
+        expected_driver_generation: Generation,
+    },
+    ResourceLedger {
+        effect_seq: u64,
+        account_id: ResourceAccountId,
+        expected_account_generation: Generation,
+    },
+}
+
+impl TaskWriteSetEffectEndpointRequest {
+    pub(crate) const fn effect_seq(self) -> u64 {
+        match self {
+            Self::ArtifactHead { effect_seq, .. }
+            | Self::SemanticAdmission { effect_seq }
+            | Self::ProcessBinding { effect_seq, .. }
+            | Self::DriverGateway { effect_seq, .. }
+            | Self::ResourceLedger { effect_seq, .. } => effect_seq,
+        }
+    }
+}
+
+/// Authority-read endpoint proof persisted beside the planned effect set.
+/// `object_id` is the fixed-width stable ID for the endpoint kind; Semantic
+/// admission is authority-wide and therefore uses an all-zero object ID.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TaskWriteSetEffectEndpoint {
+    pub effect_seq: u64,
+    pub kind: TaskWriteSetEffectEndpointKind,
+    pub object_id: [u8; 16],
+    pub participant_id: TaskParticipantId,
+    pub participant_generation: Generation,
+    pub admission_receipt_id: ReceiptId,
+}
+
 /// Authority-verified `TaskWriteSet` seal request for the snapshot/read-set
 /// slice. Owner authorities are queried by the sealing API; callers provide
 /// only stable object identities and the revision they intend to read.
@@ -249,6 +340,10 @@ pub struct TaskWriteSetRequest {
     /// authority validates each descriptor against the task generation and
     /// persists the exact ordered declaration.
     pub planned_effects: Vec<PlannedEffect>,
+    /// Owner endpoint proofs to bind to the declared effect slots. The
+    /// sealing API reads the proof from the relevant authority and rejects
+    /// an endpoint that is not already in the OPEN participant registry.
+    pub effect_endpoints: Vec<TaskWriteSetEffectEndpointRequest>,
     pub idempotency_key: IdempotencyKey,
     pub sealed_at_ms: i64,
 }
@@ -274,12 +369,16 @@ pub struct TaskWriteSetRecord {
     pub semantic_reads: Vec<TaskWriteSetSemanticRead>,
     pub resource_reservations: Vec<TaskWriteSetResourceReservation>,
     pub planned_effects: Vec<PlannedEffect>,
+    pub effect_endpoints: Vec<TaskWriteSetEffectEndpoint>,
     pub artifact_read_set_root: [u8; 32],
     pub semantic_read_set_root: [u8; 32],
     pub resource_reservation_set_root: [u8; 32],
     /// Zero for legacy/no-effect seals; otherwise the canonical effect-set
     /// root used by `EffectSlot` issuance.
     pub effect_set_root: [u8; 32],
+    /// Zero for legacy/no-endpoint seals; otherwise the canonical owner
+    /// endpoint proof root bound to the planned effect sequence.
+    pub effect_endpoint_set_root: [u8; 32],
     pub write_set_root: [u8; 32],
     pub sealed_at_ms: i64,
 }
@@ -370,14 +469,45 @@ pub(crate) fn resource_reservation_set_root(
     hasher.finalize().into()
 }
 
+pub(crate) fn effect_endpoint_set_root(endpoints: &[TaskWriteSetEffectEndpoint]) -> [u8; 32] {
+    if endpoints.is_empty() {
+        return [0; 32];
+    }
+    let mut ordered = endpoints.to_vec();
+    ordered.sort_unstable_by_key(|endpoint| {
+        (
+            endpoint.effect_seq,
+            endpoint.kind.code(),
+            endpoint.object_id,
+            endpoint.participant_id.into_bytes(),
+        )
+    });
+    let mut hasher = Sha256::new();
+    hasher.update(b"llmos/task-write-set-effect-endpoints/v1");
+    hasher.update((ordered.len() as u64).to_be_bytes());
+    for endpoint in ordered {
+        hasher.update(endpoint.effect_seq.to_be_bytes());
+        hasher.update([endpoint.kind.code()]);
+        hasher.update(endpoint.object_id);
+        hasher.update(endpoint.participant_id.as_bytes());
+        hasher.update(endpoint.participant_generation.get().to_be_bytes());
+        hasher.update(endpoint.admission_receipt_id.as_bytes());
+    }
+    hasher.finalize().into()
+}
+
 pub(crate) fn task_write_set_root(record: &TaskWriteSetRecord) -> [u8; 32] {
     let has_effects = !record.planned_effects.is_empty();
+    let has_effect_endpoints = !record.effect_endpoints.is_empty();
     let extended = record.process_binding.is_some()
         || !record.semantic_reads.is_empty()
         || !record.resource_reservations.is_empty()
-        || has_effects;
+        || has_effects
+        || has_effect_endpoints;
     let mut hasher = Sha256::new();
-    hasher.update(if has_effects {
+    hasher.update(if has_effect_endpoints {
+        b"llmos/task-write-set/v4".as_slice()
+    } else if has_effects {
         b"llmos/task-write-set/v3".as_slice()
     } else if extended {
         b"llmos/task-write-set/v2".as_slice()
@@ -425,6 +555,9 @@ pub(crate) fn task_write_set_root(record: &TaskWriteSetRecord) -> [u8; 32] {
     }
     if has_effects {
         hasher.update(record.effect_set_root);
+    }
+    if has_effect_endpoints {
+        hasher.update(record.effect_endpoint_set_root);
     }
     hasher.update(record.participant_registry_binding.generation.to_be_bytes());
     hasher.update(record.participant_registry_binding.root);

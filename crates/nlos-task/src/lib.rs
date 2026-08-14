@@ -36,6 +36,9 @@
 //! Schema v8 adds a per-plan durable recovery ledger: retry due time,
 //! deterministic jitter, consecutive/total failure counts, and escalation
 //! survive `TaskAuthority` process restart and resolve with terminal commit.
+//! Schema v18 adds immutable owner-read endpoint proofs for planned effect
+//! slots and folds their participant binding into the canonical write-set
+//! root; this is still a local partial proof, not cross-authority activation.
 //!
 //! Explicitly out of scope: cross-authority-term takeover (adoption is by
 //! the same authority after restart/uncertainty), compensation execution
@@ -44,8 +47,9 @@
 //! `AGENT_INSTANCE` members, `DETACH` execution (`[TASK-DETACH-001]`),
 //! ResourceGroup/ResourceAccount enforcement (placeholder binding
 //! fields), Namespace delegation, TaskPlan/TaskNode materialization,
-//! Process/AgentInstance binding, `IsolationDomain`, gateway/driver
-//! integration, signatures, and any IPC surface. Artifact publication
+//! full Process BirthDecision/host enforcement, full `IsolationDomain`
+//! lifecycle, operation prepare→activate, Channel endpoints, signatures,
+//! and any IPC surface. Artifact publication
 //! authorization is now a durable `TaskAuthority` fence for artifact-only
 //! permits; READY-only Artifact-aware Task finalize now links nested receipts
 //! atomically inside `TaskAuthority`. `ArtifactAuthority` online verification
@@ -93,7 +97,8 @@ pub use model::{
     ReconcileOutcome, ReconciliationReceiptRecord, RequiredSatisfaction, RequiredSatisfactionProof,
     SnapshotBundle, SnapshotConsistency, TaskReceiptRecord, TaskRecord, TaskRegistrationDecision,
     TaskSnapshotReceiptRecord, TaskSnapshotReceiptSpec, TaskSpec, TaskState,
-    TaskWriteSetArtifactRead, TaskWriteSetDecision, TaskWriteSetProcessBinding,
+    TaskWriteSetArtifactRead, TaskWriteSetDecision, TaskWriteSetEffectEndpoint,
+    TaskWriteSetEffectEndpointKind, TaskWriteSetEffectEndpointRequest, TaskWriteSetProcessBinding,
     TaskWriteSetProcessBindingRequest, TaskWriteSetRecord, TaskWriteSetRequest,
     TaskWriteSetResourceReservation, TaskWriteSetResourceReservationRequest,
     TaskWriteSetSemanticRead, empty_effect_history_root,

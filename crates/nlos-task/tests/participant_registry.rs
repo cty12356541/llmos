@@ -6,8 +6,9 @@ use nlos_task::{
     LogicalEffectDescriptor, Outcome, OutcomeRequest, ParticipantRegistrationDecision,
     ParticipantRegistryBinding, ParticipantRegistryState, ParticipantType, PermitDecision,
     PermitRequest, PlannedEffect, SnapshotBundle, SnapshotConsistency, SqliteTaskAuthority,
-    TaskSpec, TaskStoreError, TaskWriteSetArtifactRead, TaskWriteSetRequest,
-    TaskWriteSetResourceReservationRequest, TaskWriteSetSemanticRead, empty_effect_history_root,
+    TaskSpec, TaskStoreError, TaskWriteSetArtifactRead, TaskWriteSetEffectEndpointRequest,
+    TaskWriteSetRequest, TaskWriteSetResourceReservationRequest, TaskWriteSetSemanticRead,
+    empty_effect_history_root,
 };
 use nlos_types::{
     ArtifactId, CallId, CancellationScopeId, Generation, IdempotencyKey, OperationId,
@@ -461,7 +462,12 @@ fn verified_write_set_seal_binds_receipted_snapshot_and_artifact_reads() {
         process_binding: Some(nlos_process::ActiveProcessBinding::from(&active_process).into()),
         semantic_reads: Vec::new(),
         resource_reservations: Vec::new(),
-        planned_effects: Vec::new(),
+        planned_effects: vec![planned_effect()],
+        effect_endpoints: vec![TaskWriteSetEffectEndpointRequest::ProcessBinding {
+            effect_seq: 0,
+            process_id: active_process.process_id,
+            expected_process_generation: active_process.process_generation,
+        }],
         idempotency_key: IdempotencyKey::from_bytes([0xbc; 16]),
         sealed_at_ms: 1_200,
     };
@@ -507,6 +513,7 @@ fn verified_write_set_seal_binds_receipted_snapshot_and_artifact_reads() {
     }
     let mut permit_request = permit(&spec, 0xbd);
     permit_request.write_set_root = record.write_set_root;
+    permit_request.planned_effects = record.planned_effects.clone();
     let permit_record = issued(authority.request_commit_permit(permit_request).unwrap());
     assert_eq!(permit_record.write_set_root, record.write_set_root);
     assert_eq!(
@@ -587,6 +594,10 @@ fn verified_write_set_seal_binds_planned_effects_to_permit_and_replays_after_res
         semantic_reads: Vec::new(),
         resource_reservations: Vec::new(),
         planned_effects: vec![planned_effect()],
+        effect_endpoints: vec![TaskWriteSetEffectEndpointRequest::ArtifactHead {
+            effect_seq: 0,
+            artifact_id,
+        }],
         idempotency_key: IdempotencyKey::from_bytes([0x84; 16]),
         sealed_at_ms: 1_200,
     };
@@ -597,6 +608,8 @@ fn verified_write_set_seal_binds_planned_effects_to_permit_and_replays_after_res
         .clone();
     assert_eq!(record.planned_effects, request.planned_effects);
     assert_ne!(record.effect_set_root, [0; 32]);
+    assert_eq!(record.effect_endpoints.len(), 1);
+    assert_ne!(record.effect_endpoint_set_root, [0; 32]);
     let mut permit_request = permit(&spec, 0x85);
     permit_request.write_set_root = record.write_set_root;
     permit_request.planned_effects = request.planned_effects.clone();
@@ -634,6 +647,29 @@ fn verified_write_set_seal_binds_planned_effects_to_permit_and_replays_after_res
             "UPDATE task_write_set_planned_effects
              SET action_proposal_digest = zeroblob(32)
              WHERE task_id = ?1 AND idempotency_key = ?2 AND effect_seq = 0",
+            rusqlite::params![
+                task_id().as_bytes().as_slice(),
+                request.idempotency_key.as_bytes().as_slice()
+            ],
+        )
+        .is_err()
+    );
+    assert!(
+        raw.execute(
+            "UPDATE task_write_set_effect_endpoints
+             SET participant_id = zeroblob(16)
+             WHERE task_id = ?1 AND idempotency_key = ?2 AND endpoint_seq = 0",
+            rusqlite::params![
+                task_id().as_bytes().as_slice(),
+                request.idempotency_key.as_bytes().as_slice()
+            ],
+        )
+        .is_err()
+    );
+    assert!(
+        raw.execute(
+            "DELETE FROM task_write_set_effect_endpoints
+             WHERE task_id = ?1 AND idempotency_key = ?2 AND endpoint_seq = 0",
             rusqlite::params![
                 task_id().as_bytes().as_slice(),
                 request.idempotency_key.as_bytes().as_slice()
@@ -790,7 +826,19 @@ fn verified_write_set_seal_binds_reserved_resource_owner_facts() {
             expected_operation_id: reservation.operation_id,
             expected_quote_id: reservation.quote_id,
         }],
-        planned_effects: Vec::new(),
+        planned_effects: vec![planned_effect()],
+        effect_endpoints: vec![
+            TaskWriteSetEffectEndpointRequest::DriverGateway {
+                effect_seq: 0,
+                driver_id: driver.driver_id,
+                expected_driver_generation: driver.generation,
+            },
+            TaskWriteSetEffectEndpointRequest::ResourceLedger {
+                effect_seq: 0,
+                account_id: account.account_id,
+                expected_account_generation: Generation::INITIAL,
+            },
+        ],
         idempotency_key: IdempotencyKey::from_bytes([0xe4; 16]),
         sealed_at_ms: 1_200,
     };
@@ -915,7 +963,10 @@ fn verified_write_set_seal_binds_semantic_event_readback() {
             expected_canonical_digest: hasher.finalize().into(),
         }],
         resource_reservations: Vec::new(),
-        planned_effects: Vec::new(),
+        planned_effects: vec![planned_effect()],
+        effect_endpoints: vec![TaskWriteSetEffectEndpointRequest::SemanticAdmission {
+            effect_seq: 0,
+        }],
         idempotency_key: IdempotencyKey::from_bytes([0xf7; 16]),
         sealed_at_ms: 1_200,
     };

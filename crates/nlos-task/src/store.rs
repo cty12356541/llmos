@@ -25,10 +25,11 @@ use crate::{
     PermitRequest, PermitState, PlannedEffect, ReceiptOutcome, SnapshotBundle, SnapshotConsistency,
     TaskReceiptRecord, TaskRecord, TaskRegistrationDecision, TaskSnapshotReceiptRecord,
     TaskSnapshotReceiptSpec, TaskSpec, TaskState, TaskStoreError, TaskWriteSetArtifactRead,
-    TaskWriteSetDecision, TaskWriteSetRecord, TaskWriteSetRequest,
+    TaskWriteSetDecision, TaskWriteSetEffectEndpoint, TaskWriteSetEffectEndpointKind,
+    TaskWriteSetEffectEndpointRequest, TaskWriteSetRecord, TaskWriteSetRequest,
 };
 
-const SCHEMA_VERSION: i64 = 17;
+const SCHEMA_VERSION: i64 = 18;
 
 /// A single-writer `SQLite` task authority.
 ///
@@ -221,6 +222,7 @@ impl SqliteTaskAuthority {
             migrate_v15(&mut connection)?;
             migrate_v16(&mut connection)?;
             migrate_v17(&mut connection)?;
+            migrate_v18(&mut connection)?;
         }
 
         Ok(Self {
@@ -679,6 +681,18 @@ impl SqliteTaskAuthority {
         if attempt.attempt_generation != request.attempt_generation {
             return Err(TaskStoreError::InvalidGeneration);
         }
+        let (effect_endpoints, effect_endpoint_participants) = resolve_effect_endpoints(
+            artifact_authority,
+            process_authority,
+            semantic_authority,
+            resource_authority,
+            &request.effect_endpoints,
+            planned_effects.len(),
+            &task.record,
+            request.attempt_id,
+            request.attempt_generation,
+        )?;
+        let effect_endpoint_set_root = crate::model::effect_endpoint_set_root(&effect_endpoints);
         let snapshot_receipt_id =
             attempt
                 .snapshot_receipt_id
@@ -735,6 +749,13 @@ impl SqliteTaskAuthority {
                 });
             }
         }
+        for participant in effect_endpoint_participants {
+            if !crate::participant::has_participant(&registry, participant) {
+                return Err(TaskStoreError::TaskWriteSetConflict {
+                    reason: "planned effect endpoint is not registered in participant registry",
+                });
+            }
+        }
         let participant_registry_binding = crate::ParticipantRegistryBinding {
             generation: registry.generation,
             root: registry.root,
@@ -760,10 +781,12 @@ impl SqliteTaskAuthority {
             semantic_reads,
             resource_reservations,
             planned_effects,
+            effect_endpoints,
             artifact_read_set_root,
             semantic_read_set_root,
             resource_reservation_set_root,
             effect_set_root,
+            effect_endpoint_set_root,
             write_set_root: [0; 32],
             sealed_at_ms: request.sealed_at_ms,
         };
@@ -1359,6 +1382,208 @@ fn close_attempt_for_cancel(
     Ok(PermitDecision::CancelledBeforeEffect { receipt_id })
 }
 
+/// Reads every owner proof named by the planned effect endpoint request. The
+/// returned participant tuples are checked against the same OPEN registry
+/// later in the seal transaction; this helper never admits a participant by
+/// itself.
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_lines)]
+fn resolve_effect_endpoints(
+    artifact_authority: &nlos_artifact::ArtifactStore,
+    process_authority: Option<&nlos_process::ProcessAuthority>,
+    semantic_authority: Option<&nlos_semantic::SemanticAuthority>,
+    resource_authority: Option<&nlos_resource::ResourceAuthority>,
+    requests: &[TaskWriteSetEffectEndpointRequest],
+    effect_count: usize,
+    task: &TaskRecord,
+    attempt_id: TaskAttemptId,
+    attempt_generation: Generation,
+) -> Result<
+    (
+        Vec<TaskWriteSetEffectEndpoint>,
+        Vec<crate::ParticipantRecord>,
+    ),
+    TaskStoreError,
+> {
+    let effect_count = u64::try_from(effect_count).map_err(|_| TaskStoreError::EpochExhausted)?;
+    let mut seen = std::collections::BTreeSet::new();
+    let mut endpoints = Vec::with_capacity(requests.len());
+    let mut participants = Vec::with_capacity(requests.len());
+    for request in requests {
+        if request.effect_seq() >= effect_count {
+            return Err(TaskStoreError::TaskWriteSetConflict {
+                reason: "planned effect endpoint references an unknown effect sequence",
+            });
+        }
+        let (kind, object_id) = match *request {
+            TaskWriteSetEffectEndpointRequest::ArtifactHead { artifact_id, .. } => (
+                TaskWriteSetEffectEndpointKind::ArtifactHead,
+                artifact_id.into_bytes(),
+            ),
+            TaskWriteSetEffectEndpointRequest::SemanticAdmission { .. } => {
+                (TaskWriteSetEffectEndpointKind::SemanticAdmission, [0; 16])
+            }
+            TaskWriteSetEffectEndpointRequest::ProcessBinding { process_id, .. } => (
+                TaskWriteSetEffectEndpointKind::ProcessBinding,
+                process_id.into_bytes(),
+            ),
+            TaskWriteSetEffectEndpointRequest::DriverGateway { driver_id, .. } => (
+                TaskWriteSetEffectEndpointKind::DriverGateway,
+                driver_id.into_bytes(),
+            ),
+            TaskWriteSetEffectEndpointRequest::ResourceLedger { account_id, .. } => (
+                TaskWriteSetEffectEndpointKind::ResourceLedger,
+                account_id.into_bytes(),
+            ),
+        };
+        let key = (request.effect_seq(), kind.code(), object_id);
+        if !seen.insert(key) {
+            return Err(TaskStoreError::TaskWriteSetConflict {
+                reason: "planned effect endpoint is duplicated",
+            });
+        }
+
+        let (participant_id, participant_generation, admission_receipt_id) = match *request {
+            TaskWriteSetEffectEndpointRequest::ArtifactHead { artifact_id, .. } => {
+                let proof = artifact_authority
+                    .inspect_head_endpoint_proof(artifact_id)
+                    .map_err(TaskStoreError::ArtifactParticipantAuthority)?;
+                (
+                    proof.participant_id,
+                    proof.participant_generation,
+                    proof.admission_receipt_id,
+                )
+            }
+            TaskWriteSetEffectEndpointRequest::SemanticAdmission { .. } => {
+                let authority = semantic_authority.ok_or(TaskStoreError::TaskWriteSetConflict {
+                    reason: "Semantic effect endpoint requires SemanticAuthority readback",
+                })?;
+                let proof = authority
+                    .inspect_admission_endpoint_proof()
+                    .map_err(TaskStoreError::SemanticParticipantAuthority)?;
+                (
+                    proof.participant_id,
+                    proof.participant_generation,
+                    proof.admission_receipt_id,
+                )
+            }
+            TaskWriteSetEffectEndpointRequest::ProcessBinding {
+                process_id,
+                expected_process_generation,
+                ..
+            } => {
+                let authority = process_authority.ok_or(TaskStoreError::TaskWriteSetConflict {
+                    reason: "Process effect endpoint requires ProcessAuthority readback",
+                })?;
+                let owner = authority
+                    .inspect_active_process_binding(process_id)
+                    .map_err(TaskStoreError::ProcessParticipantAuthority)?;
+                if owner.task_id != task.task_id
+                    || owner.task_attempt_id != attempt_id
+                    || owner.attempt_generation != attempt_generation
+                    || owner.process_generation != expected_process_generation
+                {
+                    return Err(TaskStoreError::TaskWriteSetConflict {
+                        reason: "Process effect endpoint is not bound to this TaskAttempt/generation",
+                    });
+                }
+                let proof = authority
+                    .inspect_binding_endpoint_proof(process_id)
+                    .map_err(TaskStoreError::ProcessParticipantAuthority)?;
+                (
+                    proof.participant_id,
+                    proof.participant_generation,
+                    proof.admission_receipt_id,
+                )
+            }
+            TaskWriteSetEffectEndpointRequest::DriverGateway {
+                driver_id,
+                expected_driver_generation,
+                ..
+            } => {
+                let authority = resource_authority.ok_or(TaskStoreError::TaskWriteSetConflict {
+                    reason: "Driver effect endpoint requires ResourceAuthority readback",
+                })?;
+                let proof = authority
+                    .inspect_driver_gateway_endpoint_proof(driver_id)
+                    .map_err(TaskStoreError::ResourceParticipantAuthority)?;
+                if proof.participant_generation != expected_driver_generation {
+                    return Err(TaskStoreError::ParticipantEndpointGenerationMismatch {
+                        expected: expected_driver_generation.get(),
+                        current: proof.participant_generation.get(),
+                    });
+                }
+                (
+                    proof.participant_id,
+                    proof.participant_generation,
+                    proof.admission_receipt_id,
+                )
+            }
+            TaskWriteSetEffectEndpointRequest::ResourceLedger {
+                account_id,
+                expected_account_generation,
+                ..
+            } => {
+                let authority = resource_authority.ok_or(TaskStoreError::TaskWriteSetConflict {
+                    reason: "Resource effect endpoint requires ResourceAuthority readback",
+                })?;
+                let proof = authority
+                    .inspect_resource_ledger_endpoint_proof(account_id)
+                    .map_err(TaskStoreError::ResourceParticipantAuthority)?;
+                if proof.participant_generation != expected_account_generation {
+                    return Err(TaskStoreError::ParticipantEndpointGenerationMismatch {
+                        expected: expected_account_generation.get(),
+                        current: proof.participant_generation.get(),
+                    });
+                }
+                (
+                    proof.participant_id,
+                    proof.participant_generation,
+                    proof.admission_receipt_id,
+                )
+            }
+        };
+        endpoints.push(TaskWriteSetEffectEndpoint {
+            effect_seq: request.effect_seq(),
+            kind,
+            object_id,
+            participant_id,
+            participant_generation,
+            admission_receipt_id,
+        });
+        participants.push(crate::ParticipantRecord {
+            participant_type: match kind {
+                TaskWriteSetEffectEndpointKind::ArtifactHead => {
+                    crate::ParticipantType::ArtifactHead
+                }
+                TaskWriteSetEffectEndpointKind::SemanticAdmission => {
+                    crate::ParticipantType::SemanticAdmission
+                }
+                TaskWriteSetEffectEndpointKind::ProcessBinding => {
+                    crate::ParticipantType::ProcessBinding
+                }
+                TaskWriteSetEffectEndpointKind::DriverGateway => {
+                    crate::ParticipantType::DriverGateway
+                }
+                TaskWriteSetEffectEndpointKind::ResourceLedger => {
+                    crate::ParticipantType::ResourceLedger
+                }
+            },
+            participant_id,
+            participant_generation,
+            admission_receipt_id,
+        });
+    }
+    endpoints.sort_unstable_by_key(|endpoint| {
+        (
+            endpoint.effect_seq,
+            endpoint.kind.code(),
+            endpoint.object_id,
+        )
+    });
+    Ok((endpoints, participants))
+}
+
 fn compete_for_permit(
     transaction: &Transaction<'_>,
     task: &StoredTask,
@@ -1497,6 +1722,8 @@ fn issue_permit(
                     task.record.task_generation,
                     &record.planned_effects,
                 )? != record.effect_set_root)
+            || record.effect_endpoint_set_root
+                != crate::model::effect_endpoint_set_root(&record.effect_endpoints)
             || record.write_set_root != crate::model::task_write_set_root(record)
         {
             return Err(TaskStoreError::CorruptRecord(
@@ -1529,6 +1756,33 @@ fn issue_permit(
             || record.participant_registry_binding.root != registry.root
         {
             return Err(TaskStoreError::ParticipantRegistryBindingMismatch);
+        }
+        for endpoint in &record.effect_endpoints {
+            let participant = crate::ParticipantRecord {
+                participant_type: match endpoint.kind {
+                    TaskWriteSetEffectEndpointKind::ArtifactHead => {
+                        crate::ParticipantType::ArtifactHead
+                    }
+                    TaskWriteSetEffectEndpointKind::SemanticAdmission => {
+                        crate::ParticipantType::SemanticAdmission
+                    }
+                    TaskWriteSetEffectEndpointKind::ProcessBinding => {
+                        crate::ParticipantType::ProcessBinding
+                    }
+                    TaskWriteSetEffectEndpointKind::DriverGateway => {
+                        crate::ParticipantType::DriverGateway
+                    }
+                    TaskWriteSetEffectEndpointKind::ResourceLedger => {
+                        crate::ParticipantType::ResourceLedger
+                    }
+                },
+                participant_id: endpoint.participant_id,
+                participant_generation: endpoint.participant_generation,
+                admission_receipt_id: endpoint.admission_receipt_id,
+            };
+            if !crate::participant::has_participant(&registry, participant) {
+                return Err(TaskStoreError::ParticipantRegistryBindingMismatch);
+            }
         }
     }
     let participant_registry_binding =
@@ -2168,6 +2422,45 @@ fn migrate_v17(connection: &mut Connection) -> Result<(), TaskStoreError> {
     Ok(())
 }
 
+/// v17 → v18 adds immutable owner endpoint proofs for planned effect slots.
+/// Existing rows retain a zero endpoint root and no invented endpoint facts.
+fn migrate_v18(connection: &mut Connection) -> Result<(), TaskStoreError> {
+    let table_present: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master
+            WHERE type='table' AND name='task_write_set_effect_endpoints'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    let trigger_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN
+            ('task_write_set_effect_endpoint_is_immutable',
+             'task_write_set_effect_endpoint_is_immutable_delete')",
+        [],
+        |row| row.get(0),
+    )?;
+    let root_column_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('task_write_sets')
+         WHERE name = 'effect_endpoint_set_root'",
+        [],
+        |row| row.get(0),
+    )?;
+    if table_present && trigger_count == 2 && root_column_count == 1 {
+        connection.pragma_update(None, "user_version", 18)?;
+        return Ok(());
+    }
+    if table_present || trigger_count != 0 || root_column_count != 0 {
+        return Err(TaskStoreError::CorruptRecord(
+            "partial effect-endpoint TaskWriteSet schema",
+        ));
+    }
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(SCHEMA_V18_SQL)?;
+    transaction.commit()?;
+    Ok(())
+}
+
 const SCHEMA_V13_SQL: &str = "CREATE TABLE task_write_sets (
         task_id BLOB NOT NULL CHECK(length(task_id) = 16),
         attempt_id BLOB NOT NULL CHECK(length(attempt_id) = 16),
@@ -2351,6 +2644,32 @@ const SCHEMA_V17_SQL: &str = "ALTER TABLE task_write_sets
     BEFORE DELETE ON task_write_set_planned_effects
     BEGIN SELECT RAISE(ABORT, 'TaskWriteSet planned effect is immutable'); END;
     PRAGMA user_version = 17;";
+
+const SCHEMA_V18_SQL: &str = "ALTER TABLE task_write_sets
+        ADD COLUMN effect_endpoint_set_root BLOB NOT NULL DEFAULT X'0000000000000000000000000000000000000000000000000000000000000000'
+        CHECK(length(effect_endpoint_set_root) = 32);
+    CREATE TABLE task_write_set_effect_endpoints (
+        task_id BLOB NOT NULL CHECK(length(task_id) = 16),
+        idempotency_key BLOB NOT NULL CHECK(length(idempotency_key) = 16),
+        endpoint_seq INTEGER NOT NULL CHECK(endpoint_seq >= 0),
+        effect_seq INTEGER NOT NULL CHECK(effect_seq >= 0),
+        endpoint_kind INTEGER NOT NULL CHECK(endpoint_kind BETWEEN 1 AND 5),
+        object_id BLOB NOT NULL CHECK(length(object_id) = 16),
+        participant_id BLOB NOT NULL CHECK(length(participant_id) = 16),
+        participant_generation BLOB NOT NULL CHECK(length(participant_generation) = 8),
+        admission_receipt_id BLOB NOT NULL CHECK(length(admission_receipt_id) = 16),
+        PRIMARY KEY(task_id, idempotency_key, endpoint_seq),
+        UNIQUE(task_id, idempotency_key, effect_seq, endpoint_kind, object_id),
+        FOREIGN KEY(task_id, idempotency_key)
+            REFERENCES task_write_sets(task_id, idempotency_key)
+    ) STRICT;
+    CREATE TRIGGER task_write_set_effect_endpoint_is_immutable
+    BEFORE UPDATE ON task_write_set_effect_endpoints
+    BEGIN SELECT RAISE(ABORT, 'TaskWriteSet effect endpoint is immutable'); END;
+    CREATE TRIGGER task_write_set_effect_endpoint_is_immutable_delete
+    BEFORE DELETE ON task_write_set_effect_endpoints
+    BEGIN SELECT RAISE(ABORT, 'TaskWriteSet effect endpoint is immutable'); END;
+    PRAGMA user_version = 18;";
 
 const SCHEMA_V12_SQL: &str = "ALTER TABLE effect_permits
         ADD COLUMN participant_registry_generation BLOB
@@ -2963,9 +3282,10 @@ fn insert_write_set(
             participant_registry_generation, participant_registry_root,
             artifact_read_set_root, semantic_read_set_root,
             resource_reservation_set_root, effect_set_root,
+            effect_endpoint_set_root,
             write_set_root, sealed_at_ms
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-                   ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
+                   ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
         params![
             record.task_id.as_bytes().as_slice(),
             record.attempt_id.as_bytes().as_slice(),
@@ -2986,6 +3306,7 @@ fn insert_write_set(
             record.semantic_read_set_root.as_slice(),
             record.resource_reservation_set_root.as_slice(),
             record.effect_set_root.as_slice(),
+            record.effect_endpoint_set_root.as_slice(),
             record.write_set_root.as_slice(),
             record.sealed_at_ms,
         ],
@@ -3111,6 +3432,32 @@ fn insert_write_set(
             ],
         )?;
     }
+    for (sequence, endpoint) in record.effect_endpoints.iter().enumerate() {
+        transaction.execute(
+            "INSERT INTO task_write_set_effect_endpoints (
+                task_id, idempotency_key, endpoint_seq, effect_seq,
+                endpoint_kind, object_id, participant_id,
+                participant_generation, admission_receipt_id
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                record.task_id.as_bytes().as_slice(),
+                record.idempotency_key.as_bytes().as_slice(),
+                i64::try_from(sequence).map_err(|_| TaskStoreError::TaskWriteSetConflict {
+                    reason: "effect endpoint set exceeds SQLite sequence range",
+                })?,
+                i64::try_from(endpoint.effect_seq).map_err(|_| {
+                    TaskStoreError::TaskWriteSetConflict {
+                        reason: "effect endpoint effect sequence exceeds SQLite range",
+                    }
+                })?,
+                i64::from(endpoint.kind.code()),
+                endpoint.object_id.as_slice(),
+                endpoint.participant_id.as_bytes().as_slice(),
+                encode_u64(endpoint.participant_generation.get()).as_slice(),
+                endpoint.admission_receipt_id.as_bytes().as_slice(),
+            ],
+        )?;
+    }
     Ok(())
 }
 
@@ -3120,7 +3467,8 @@ const WRITE_SET_COLUMNS: &str = "task_id, attempt_id, attempt_generation,
      group_id, membership_generation, membership_root, group_policy_digest,
      participant_registry_generation, participant_registry_root,
      artifact_read_set_root, semantic_read_set_root,
-     resource_reservation_set_root, effect_set_root, write_set_root, sealed_at_ms";
+     resource_reservation_set_root, effect_set_root, effect_endpoint_set_root,
+     write_set_root, sealed_at_ms";
 
 fn load_write_set_by_key(
     source: &impl SqlRead,
@@ -3145,6 +3493,8 @@ fn load_write_set_by_key(
     record.resource_reservations =
         load_write_set_resource_reservations(source, task_id, idempotency_key)?;
     record.planned_effects = load_write_set_planned_effects(source, task_id, idempotency_key)?;
+    record.effect_endpoints = load_write_set_effect_endpoints(source, task_id, idempotency_key)?;
+    validate_effect_endpoint_rows(&record)?;
     Ok(Some(record))
 }
 
@@ -3173,7 +3523,45 @@ fn load_write_set_by_root(
         load_write_set_resource_reservations(source, task_id, record.idempotency_key)?;
     record.planned_effects =
         load_write_set_planned_effects(source, task_id, record.idempotency_key)?;
+    record.effect_endpoints =
+        load_write_set_effect_endpoints(source, task_id, record.idempotency_key)?;
+    validate_effect_endpoint_rows(&record)?;
     Ok(Some(record))
+}
+
+fn validate_effect_endpoint_rows(record: &TaskWriteSetRecord) -> Result<(), TaskStoreError> {
+    if record.effect_endpoints.is_empty() {
+        if record.effect_endpoint_set_root != [0; 32] {
+            return Err(TaskStoreError::CorruptRecord(
+                "empty effect endpoint set has a non-zero root",
+            ));
+        }
+        return Ok(());
+    }
+    let effect_count = u64::try_from(record.planned_effects.len())
+        .map_err(|_| TaskStoreError::CorruptRecord("planned effect count"))?;
+    let mut seen = std::collections::BTreeSet::new();
+    for endpoint in &record.effect_endpoints {
+        if endpoint.effect_seq >= effect_count
+            || !seen.insert((
+                endpoint.effect_seq,
+                endpoint.kind.code(),
+                endpoint.object_id,
+            ))
+        {
+            return Err(TaskStoreError::CorruptRecord(
+                "effect endpoint sequence or uniqueness",
+            ));
+        }
+    }
+    if record.effect_endpoint_set_root
+        != crate::model::effect_endpoint_set_root(&record.effect_endpoints)
+    {
+        return Err(TaskStoreError::CorruptRecord(
+            "effect endpoint root mismatch",
+        ));
+    }
+    Ok(())
 }
 
 fn load_write_set_planned_effects(
@@ -3271,6 +3659,75 @@ fn load_write_set_planned_effects(
         });
     }
     Ok(planned)
+}
+
+fn load_write_set_effect_endpoints(
+    source: &impl SqlRead,
+    task_id: TaskId,
+    idempotency_key: IdempotencyKey,
+) -> Result<Vec<TaskWriteSetEffectEndpoint>, TaskStoreError> {
+    let mut statement = source.prepare_statement(
+        "SELECT effect_seq, endpoint_kind, object_id, participant_id,
+                participant_generation, admission_receipt_id
+         FROM task_write_set_effect_endpoints
+         WHERE task_id = ?1 AND idempotency_key = ?2 ORDER BY endpoint_seq",
+    )?;
+    let rows = statement.query_map(
+        params![
+            task_id.as_bytes().as_slice(),
+            idempotency_key.as_bytes().as_slice()
+        ],
+        |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, Vec<u8>>(2)?,
+                row.get::<_, Vec<u8>>(3)?,
+                row.get::<_, Vec<u8>>(4)?,
+                row.get::<_, Vec<u8>>(5)?,
+            ))
+        },
+    )?;
+    let mut endpoints = Vec::new();
+    for row in rows {
+        let (
+            effect_seq,
+            endpoint_kind,
+            object_id,
+            participant_id,
+            participant_generation,
+            admission_receipt_id,
+        ) = row?;
+        let effect_seq = u64::try_from(effect_seq)
+            .map_err(|_| TaskStoreError::CorruptRecord("effect endpoint sequence"))?;
+        endpoints.push(TaskWriteSetEffectEndpoint {
+            effect_seq,
+            kind: TaskWriteSetEffectEndpointKind::from_code(endpoint_kind)?,
+            object_id: object_id
+                .try_into()
+                .map_err(|_| TaskStoreError::CorruptRecord("effect endpoint object id"))?,
+            participant_id: nlos_types::TaskParticipantId::from_bytes(
+                participant_id
+                    .try_into()
+                    .map_err(|_| TaskStoreError::CorruptRecord("effect endpoint participant id"))?,
+            ),
+            participant_generation: generation_from_u64_bytes(participant_generation)?,
+            admission_receipt_id: ReceiptId::from_bytes(
+                admission_receipt_id
+                    .try_into()
+                    .map_err(|_| TaskStoreError::CorruptRecord("effect endpoint receipt id"))?,
+            ),
+        });
+    }
+    if endpoints
+        .windows(2)
+        .any(|pair| pair[0].effect_seq > pair[1].effect_seq)
+    {
+        return Err(TaskStoreError::CorruptRecord(
+            "effect endpoint sequence ordering",
+        ));
+    }
+    Ok(endpoints)
 }
 
 fn load_write_set_semantic_reads(
@@ -3493,12 +3950,14 @@ fn decode_write_set_row(row: &rusqlite::Row<'_>) -> Result<TaskWriteSetRecord, T
         semantic_reads: Vec::new(),
         resource_reservations: Vec::new(),
         planned_effects: Vec::new(),
+        effect_endpoints: Vec::new(),
         artifact_read_set_root: blob32(row, 15)?,
         semantic_read_set_root: blob32(row, 16)?,
         resource_reservation_set_root: blob32(row, 17)?,
         effect_set_root: blob32(row, 18)?,
-        write_set_root: blob32(row, 19)?,
-        sealed_at_ms: row.get(20)?,
+        effect_endpoint_set_root: blob32(row, 19)?,
+        write_set_root: blob32(row, 20)?,
+        sealed_at_ms: row.get(21)?,
     })
 }
 
