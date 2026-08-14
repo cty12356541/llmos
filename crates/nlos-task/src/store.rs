@@ -25,11 +25,12 @@ use crate::{
     PermitRequest, PermitState, PlannedEffect, ReceiptOutcome, SnapshotBundle, SnapshotConsistency,
     TaskReceiptRecord, TaskRecord, TaskRegistrationDecision, TaskSnapshotReceiptRecord,
     TaskSnapshotReceiptSpec, TaskSpec, TaskState, TaskStoreError, TaskWriteSetArtifactRead,
-    TaskWriteSetDecision, TaskWriteSetEffectEndpoint, TaskWriteSetEffectEndpointKind,
-    TaskWriteSetEffectEndpointRequest, TaskWriteSetRecord, TaskWriteSetRequest,
+    TaskWriteSetArtifactWrite, TaskWriteSetDecision, TaskWriteSetEffectEndpoint,
+    TaskWriteSetEffectEndpointKind, TaskWriteSetEffectEndpointRequest, TaskWriteSetRecord,
+    TaskWriteSetRequest,
 };
 
-const SCHEMA_VERSION: i64 = 18;
+const SCHEMA_VERSION: i64 = 20;
 
 /// A single-writer `SQLite` task authority.
 ///
@@ -223,6 +224,8 @@ impl SqliteTaskAuthority {
             migrate_v16(&mut connection)?;
             migrate_v17(&mut connection)?;
             migrate_v18(&mut connection)?;
+            migrate_v19(&mut connection)?;
+            migrate_v20(&mut connection)?;
         }
 
         Ok(Self {
@@ -520,6 +523,46 @@ impl SqliteTaskAuthority {
             }
         }
 
+        let mut artifact_writes = request.artifact_writes.clone();
+        artifact_writes.sort_unstable_by_key(|write| {
+            (write.artifact_id.into_bytes(), write.proposed_revision)
+        });
+        if artifact_writes
+            .windows(2)
+            .any(|pair| pair[0].artifact_id == pair[1].artifact_id)
+        {
+            return Err(TaskStoreError::TaskWriteSetConflict {
+                reason: "Artifact write set contains duplicate artifact slots",
+            });
+        }
+        let mut artifact_write_participants = Vec::with_capacity(artifact_writes.len());
+        for write in &artifact_writes {
+            let head = artifact_authority
+                .resolve_head(write.artifact_id)
+                .map_err(TaskStoreError::ArtifactParticipantAuthority)?;
+            let current_revision = head.map_or(0, |head| head.revision);
+            let expected_target = write
+                .expected_head_revision
+                .checked_add(1)
+                .ok_or(TaskStoreError::EpochExhausted)?;
+            if current_revision != write.expected_head_revision
+                || write.proposed_revision != expected_target
+            {
+                return Err(TaskStoreError::TaskWriteSetConflict {
+                    reason: "Artifact write declaration disagrees with current head",
+                });
+            }
+            let proof = artifact_authority
+                .inspect_head_endpoint_proof(write.artifact_id)
+                .map_err(TaskStoreError::ArtifactParticipantAuthority)?;
+            artifact_write_participants.push(crate::ParticipantRecord {
+                participant_type: crate::ParticipantType::ArtifactHead,
+                participant_id: proof.participant_id,
+                participant_generation: proof.participant_generation,
+                admission_receipt_id: proof.admission_receipt_id,
+            });
+        }
+
         let process_binding = match (request.process_binding, process_authority) {
             (None, _) => None,
             (Some(_), None) => {
@@ -722,6 +765,13 @@ impl SqliteTaskAuthority {
                 state: registry.state,
             });
         }
+        for participant in artifact_write_participants {
+            if !crate::participant::has_participant(&registry, participant) {
+                return Err(TaskStoreError::TaskWriteSetConflict {
+                    reason: "Artifact write endpoint is not registered in participant registry",
+                });
+            }
+        }
         if let Some(binding) = process_binding {
             let participant = crate::ParticipantRecord {
                 participant_type: crate::ParticipantType::ProcessBinding,
@@ -761,6 +811,7 @@ impl SqliteTaskAuthority {
             root: registry.root,
         };
         let artifact_read_set_root = crate::model::artifact_read_set_root(&artifact_reads);
+        let artifact_write_set_root = crate::model::artifact_write_set_root(&artifact_writes);
         let semantic_read_set_root = crate::model::semantic_read_set_root(&semantic_reads);
         let resource_reservation_set_root =
             crate::model::resource_reservation_set_root(&resource_reservations);
@@ -777,6 +828,7 @@ impl SqliteTaskAuthority {
             group_binding,
             participant_registry_binding,
             artifact_reads,
+            artifact_writes,
             process_binding,
             semantic_reads,
             resource_reservations,
@@ -787,6 +839,7 @@ impl SqliteTaskAuthority {
             resource_reservation_set_root,
             effect_set_root,
             effect_endpoint_set_root,
+            artifact_write_set_root,
             write_set_root: [0; 32],
             sealed_at_ms: request.sealed_at_ms,
         };
@@ -1724,6 +1777,8 @@ fn issue_permit(
                 )? != record.effect_set_root)
             || record.effect_endpoint_set_root
                 != crate::model::effect_endpoint_set_root(&record.effect_endpoints)
+            || record.artifact_write_set_root
+                != crate::model::artifact_write_set_root(&record.artifact_writes)
             || record.write_set_root != crate::model::task_write_set_root(record)
         {
             return Err(TaskStoreError::CorruptRecord(
@@ -2461,6 +2516,102 @@ fn migrate_v18(connection: &mut Connection) -> Result<(), TaskStoreError> {
     Ok(())
 }
 
+/// v18 → v19 adds the authority-checked proposed Artifact write declaration.
+/// It is an intent root only; publication still requires a later Artifact
+/// staging/publication receipt path.
+fn migrate_v19(connection: &mut Connection) -> Result<(), TaskStoreError> {
+    let table_present: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master
+            WHERE type='table' AND name='task_write_set_artifact_writes'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    let trigger_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN
+            ('task_write_set_artifact_write_is_immutable',
+             'task_write_set_artifact_write_is_immutable_delete')",
+        [],
+        |row| row.get(0),
+    )?;
+    let root_column_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('task_write_sets')
+         WHERE name = 'artifact_write_set_root'",
+        [],
+        |row| row.get(0),
+    )?;
+    if table_present && trigger_count == 2 && root_column_count == 1 {
+        connection.pragma_update(None, "user_version", 19)?;
+        return Ok(());
+    }
+    if table_present || trigger_count != 0 || root_column_count != 0 {
+        return Err(TaskStoreError::CorruptRecord(
+            "partial Artifact-write TaskWriteSet schema",
+        ));
+    }
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(SCHEMA_V19_SQL)?;
+    transaction.commit()?;
+    Ok(())
+}
+
+/// v19 → v20 removes the historical equality check between the permit-bound
+/// `write_set_root` and the canonical Artifact publication-plan root. A
+/// sealed `TaskWriteSet` may now carry proposed Artifact writes whose staging
+/// identity is chosen after permit issuance, so the two roots are durable but
+/// distinct commitments.
+fn migrate_v20(connection: &mut Connection) -> Result<(), TaskStoreError> {
+    let table_sql: String = connection.query_row(
+        "SELECT COALESCE(
+            (SELECT sql FROM sqlite_master
+             WHERE type='table' AND name='task_artifact_commit_plans'), '')",
+        [],
+        |row| row.get(0),
+    )?;
+    let trigger_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN
+            ('task_artifact_commit_plan_identity_immutable',
+             'task_artifact_commit_plan_no_delete')",
+        [],
+        |row| row.get(0),
+    )?;
+    let column_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('task_artifact_commit_plans')",
+        [],
+        |row| row.get(0),
+    )?;
+    if table_sql.is_empty() || trigger_count != 2 || column_count != 13 {
+        return Err(TaskStoreError::CorruptRecord(
+            "partial Artifact commit-plan schema",
+        ));
+    }
+    let normalized_sql: String = table_sql
+        .to_ascii_lowercase()
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect();
+    if !normalized_sql.contains("check(artifact_plan_root=write_set_root)") {
+        connection.pragma_update(None, "user_version", 20)?;
+        return Ok(());
+    }
+
+    connection.pragma_update(None, "foreign_keys", "OFF")?;
+    let migration = (|| {
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute_batch(SCHEMA_V20_SQL)?;
+        transaction.commit()?;
+        Ok::<(), TaskStoreError>(())
+    })();
+    let restore = connection.pragma_update(None, "foreign_keys", "ON");
+    if let Err(error) = migration {
+        let _ = restore;
+        return Err(error);
+    }
+    restore?;
+    Ok(())
+}
+
 const SCHEMA_V13_SQL: &str = "CREATE TABLE task_write_sets (
         task_id BLOB NOT NULL CHECK(length(task_id) = 16),
         attempt_id BLOB NOT NULL CHECK(length(attempt_id) = 16),
@@ -2670,6 +2821,86 @@ const SCHEMA_V18_SQL: &str = "ALTER TABLE task_write_sets
     BEFORE DELETE ON task_write_set_effect_endpoints
     BEGIN SELECT RAISE(ABORT, 'TaskWriteSet effect endpoint is immutable'); END;
     PRAGMA user_version = 18;";
+
+const SCHEMA_V19_SQL: &str = "ALTER TABLE task_write_sets
+        ADD COLUMN artifact_write_set_root BLOB NOT NULL DEFAULT X'0000000000000000000000000000000000000000000000000000000000000000'
+        CHECK(length(artifact_write_set_root) = 32);
+    CREATE TABLE task_write_set_artifact_writes (
+        task_id BLOB NOT NULL CHECK(length(task_id) = 16),
+        idempotency_key BLOB NOT NULL CHECK(length(idempotency_key) = 16),
+        write_seq INTEGER NOT NULL CHECK(write_seq >= 0),
+        artifact_id BLOB NOT NULL CHECK(length(artifact_id) = 16),
+        expected_head_revision BLOB NOT NULL CHECK(length(expected_head_revision) = 8),
+        proposed_revision BLOB NOT NULL CHECK(length(proposed_revision) = 8),
+        content_digest BLOB NOT NULL CHECK(length(content_digest) = 32),
+        size_bytes BLOB NOT NULL CHECK(length(size_bytes) = 8),
+        PRIMARY KEY(task_id, idempotency_key, write_seq),
+        UNIQUE(task_id, idempotency_key, artifact_id),
+        FOREIGN KEY(task_id, idempotency_key)
+            REFERENCES task_write_sets(task_id, idempotency_key)
+    ) STRICT;
+    CREATE TRIGGER task_write_set_artifact_write_is_immutable
+    BEFORE UPDATE ON task_write_set_artifact_writes
+    BEGIN SELECT RAISE(ABORT, 'TaskWriteSet Artifact write is immutable'); END;
+    CREATE TRIGGER task_write_set_artifact_write_is_immutable_delete
+    BEFORE DELETE ON task_write_set_artifact_writes
+    BEGIN SELECT RAISE(ABORT, 'TaskWriteSet Artifact write is immutable'); END;
+    PRAGMA user_version = 19;";
+
+const SCHEMA_V20_SQL: &str = "DROP TRIGGER IF EXISTS task_artifact_commit_plan_identity_immutable;
+    DROP TRIGGER IF EXISTS task_artifact_commit_plan_no_delete;
+    CREATE TABLE task_artifact_commit_plans_v20 (
+        plan_id BLOB PRIMARY KEY NOT NULL CHECK(length(plan_id) = 16),
+        task_id BLOB NOT NULL CHECK(length(task_id) = 16),
+        permit_id BLOB NOT NULL UNIQUE CHECK(length(permit_id) = 16),
+        idempotency_key BLOB NOT NULL CHECK(length(idempotency_key) = 16),
+        attempt_id BLOB NOT NULL CHECK(length(attempt_id) = 16),
+        attempt_generation BLOB NOT NULL CHECK(length(attempt_generation) = 8),
+        write_set_root BLOB NOT NULL CHECK(length(write_set_root) = 32),
+        artifact_plan_root BLOB NOT NULL CHECK(length(artifact_plan_root) = 32),
+        expected_artifact_count BLOB NOT NULL CHECK(length(expected_artifact_count) = 8),
+        plan_state INTEGER NOT NULL CHECK(plan_state IN (0, 1, 2, 3)),
+        task_receipt_id BLOB CHECK(task_receipt_id IS NULL OR length(task_receipt_id) = 16),
+        created_at_ms INTEGER NOT NULL,
+        updated_at_ms INTEGER NOT NULL,
+        UNIQUE(task_id, idempotency_key),
+        FOREIGN KEY(task_id) REFERENCES tasks(task_id),
+        FOREIGN KEY(permit_id) REFERENCES commit_permits(permit_id),
+        CHECK((plan_state = 3) = (task_receipt_id IS NOT NULL))
+     ) STRICT;
+    INSERT INTO task_artifact_commit_plans_v20 (
+        plan_id, task_id, permit_id, idempotency_key, attempt_id,
+        attempt_generation, write_set_root, artifact_plan_root,
+        expected_artifact_count, plan_state, task_receipt_id,
+        created_at_ms, updated_at_ms
+    ) SELECT plan_id, task_id, permit_id, idempotency_key, attempt_id,
+        attempt_generation, write_set_root, artifact_plan_root,
+        expected_artifact_count, plan_state, task_receipt_id,
+        created_at_ms, updated_at_ms
+      FROM task_artifact_commit_plans;
+    DROP TABLE task_artifact_commit_plans;
+    ALTER TABLE task_artifact_commit_plans_v20 RENAME TO task_artifact_commit_plans;
+    CREATE TRIGGER task_artifact_commit_plan_identity_immutable
+    BEFORE UPDATE ON task_artifact_commit_plans
+    WHEN OLD.plan_id IS NOT NEW.plan_id
+      OR OLD.task_id IS NOT NEW.task_id
+      OR OLD.permit_id IS NOT NEW.permit_id
+      OR OLD.idempotency_key IS NOT NEW.idempotency_key
+      OR OLD.attempt_id IS NOT NEW.attempt_id
+      OR OLD.attempt_generation IS NOT NEW.attempt_generation
+      OR OLD.write_set_root IS NOT NEW.write_set_root
+      OR OLD.artifact_plan_root IS NOT NEW.artifact_plan_root
+      OR OLD.expected_artifact_count IS NOT NEW.expected_artifact_count
+      OR OLD.created_at_ms IS NOT NEW.created_at_ms
+    BEGIN
+        SELECT RAISE(ABORT, 'artifact commit plan identity is immutable');
+    END;
+    CREATE TRIGGER task_artifact_commit_plan_no_delete
+    BEFORE DELETE ON task_artifact_commit_plans
+    BEGIN
+        SELECT RAISE(ABORT, 'artifact commit plan is durable evidence');
+    END;
+    PRAGMA user_version = 20;";
 
 const SCHEMA_V12_SQL: &str = "ALTER TABLE effect_permits
         ADD COLUMN participant_registry_generation BLOB
@@ -3281,11 +3512,12 @@ fn insert_write_set(
             membership_generation, membership_root, group_policy_digest,
             participant_registry_generation, participant_registry_root,
             artifact_read_set_root, semantic_read_set_root,
+            artifact_write_set_root,
             resource_reservation_set_root, effect_set_root,
             effect_endpoint_set_root,
             write_set_root, sealed_at_ms
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-                   ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
+                   ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
         params![
             record.task_id.as_bytes().as_slice(),
             record.attempt_id.as_bytes().as_slice(),
@@ -3304,6 +3536,7 @@ fn insert_write_set(
             record.participant_registry_binding.root.as_slice(),
             record.artifact_read_set_root.as_slice(),
             record.semantic_read_set_root.as_slice(),
+            record.artifact_write_set_root.as_slice(),
             record.resource_reservation_set_root.as_slice(),
             record.effect_set_root.as_slice(),
             record.effect_endpoint_set_root.as_slice(),
@@ -3326,6 +3559,27 @@ fn insert_write_set(
                 read.artifact_id.as_bytes().as_slice(),
                 encode_u64(read.expected_head_revision).as_slice(),
                 read.expected_head_digest.as_ref().map(<[u8; 32]>::as_slice),
+            ],
+        )?;
+    }
+    for (sequence, write) in record.artifact_writes.iter().enumerate() {
+        transaction.execute(
+            "INSERT INTO task_write_set_artifact_writes (
+                task_id, idempotency_key, write_seq, artifact_id,
+                expected_head_revision, proposed_revision, content_digest,
+                size_bytes
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                record.task_id.as_bytes().as_slice(),
+                record.idempotency_key.as_bytes().as_slice(),
+                i64::try_from(sequence).map_err(|_| TaskStoreError::TaskWriteSetConflict {
+                    reason: "Artifact write set exceeds SQLite sequence range",
+                })?,
+                write.artifact_id.as_bytes().as_slice(),
+                encode_u64(write.expected_head_revision).as_slice(),
+                encode_u64(write.proposed_revision).as_slice(),
+                write.content_digest.as_slice(),
+                encode_u64(write.size_bytes).as_slice(),
             ],
         )?;
     }
@@ -3466,7 +3720,7 @@ const WRITE_SET_COLUMNS: &str = "task_id, attempt_id, attempt_generation,
      expected_head_commit_seq, effect_history_root, retry_fence_epoch,
      group_id, membership_generation, membership_root, group_policy_digest,
      participant_registry_generation, participant_registry_root,
-     artifact_read_set_root, semantic_read_set_root,
+     artifact_read_set_root, semantic_read_set_root, artifact_write_set_root,
      resource_reservation_set_root, effect_set_root, effect_endpoint_set_root,
      write_set_root, sealed_at_ms";
 
@@ -3488,17 +3742,19 @@ fn load_write_set_by_key(
     };
     let mut record = decode_write_set_row(row)?;
     record.artifact_reads = load_write_set_reads(source, task_id, idempotency_key)?;
+    record.artifact_writes = load_write_set_artifact_writes(source, task_id, idempotency_key)?;
     record.process_binding = load_write_set_process_binding(source, task_id, idempotency_key)?;
     record.semantic_reads = load_write_set_semantic_reads(source, task_id, idempotency_key)?;
     record.resource_reservations =
         load_write_set_resource_reservations(source, task_id, idempotency_key)?;
     record.planned_effects = load_write_set_planned_effects(source, task_id, idempotency_key)?;
     record.effect_endpoints = load_write_set_effect_endpoints(source, task_id, idempotency_key)?;
+    validate_artifact_write_rows(&record)?;
     validate_effect_endpoint_rows(&record)?;
     Ok(Some(record))
 }
 
-fn load_write_set_by_root(
+pub(crate) fn load_write_set_by_root(
     source: &impl SqlRead,
     task_id: TaskId,
     write_set_root: [u8; 32],
@@ -3516,6 +3772,8 @@ fn load_write_set_by_root(
     };
     let mut record = decode_write_set_row(row)?;
     record.artifact_reads = load_write_set_reads(source, task_id, record.idempotency_key)?;
+    record.artifact_writes =
+        load_write_set_artifact_writes(source, task_id, record.idempotency_key)?;
     record.process_binding =
         load_write_set_process_binding(source, task_id, record.idempotency_key)?;
     record.semantic_reads = load_write_set_semantic_reads(source, task_id, record.idempotency_key)?;
@@ -3525,6 +3783,7 @@ fn load_write_set_by_root(
         load_write_set_planned_effects(source, task_id, record.idempotency_key)?;
     record.effect_endpoints =
         load_write_set_effect_endpoints(source, task_id, record.idempotency_key)?;
+    validate_artifact_write_rows(&record)?;
     validate_effect_endpoint_rows(&record)?;
     Ok(Some(record))
 }
@@ -3562,6 +3821,83 @@ fn validate_effect_endpoint_rows(record: &TaskWriteSetRecord) -> Result<(), Task
         ));
     }
     Ok(())
+}
+
+fn validate_artifact_write_rows(record: &TaskWriteSetRecord) -> Result<(), TaskStoreError> {
+    if record.artifact_writes.is_empty() {
+        if record.artifact_write_set_root != [0; 32] {
+            return Err(TaskStoreError::CorruptRecord(
+                "empty Artifact write set has a non-zero root",
+            ));
+        }
+        return Ok(());
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for write in &record.artifact_writes {
+        let expected_target = write
+            .expected_head_revision
+            .checked_add(1)
+            .ok_or(TaskStoreError::CorruptRecord("Artifact write revision"))?;
+        if write.proposed_revision != expected_target || !seen.insert(write.artifact_id) {
+            return Err(TaskStoreError::CorruptRecord(
+                "Artifact write revision or uniqueness",
+            ));
+        }
+    }
+    if record.artifact_write_set_root
+        != crate::model::artifact_write_set_root(&record.artifact_writes)
+    {
+        return Err(TaskStoreError::CorruptRecord(
+            "Artifact write root mismatch",
+        ));
+    }
+    Ok(())
+}
+
+fn load_write_set_artifact_writes(
+    source: &impl SqlRead,
+    task_id: TaskId,
+    idempotency_key: IdempotencyKey,
+) -> Result<Vec<TaskWriteSetArtifactWrite>, TaskStoreError> {
+    let mut statement = source.prepare_statement(
+        "SELECT artifact_id, expected_head_revision, proposed_revision,
+                content_digest, size_bytes
+         FROM task_write_set_artifact_writes
+         WHERE task_id = ?1 AND idempotency_key = ?2 ORDER BY write_seq",
+    )?;
+    let rows = statement.query_map(
+        params![
+            task_id.as_bytes().as_slice(),
+            idempotency_key.as_bytes().as_slice()
+        ],
+        |row| {
+            Ok((
+                row.get::<_, Vec<u8>>(0)?,
+                row.get::<_, Vec<u8>>(1)?,
+                row.get::<_, Vec<u8>>(2)?,
+                row.get::<_, Vec<u8>>(3)?,
+                row.get::<_, Vec<u8>>(4)?,
+            ))
+        },
+    )?;
+    rows.map(|row| {
+        let (artifact_id, expected_head_revision, proposed_revision, content_digest, size_bytes) =
+            row?;
+        Ok(TaskWriteSetArtifactWrite {
+            artifact_id: ArtifactId::from_bytes(
+                artifact_id
+                    .try_into()
+                    .map_err(|_| TaskStoreError::CorruptRecord("Artifact write artifact id"))?,
+            ),
+            expected_head_revision: u64_from_bytes(expected_head_revision)?,
+            proposed_revision: u64_from_bytes(proposed_revision)?,
+            content_digest: content_digest
+                .try_into()
+                .map_err(|_| TaskStoreError::CorruptRecord("Artifact write content digest"))?,
+            size_bytes: u64_from_bytes(size_bytes)?,
+        })
+    })
+    .collect()
 }
 
 fn load_write_set_planned_effects(
@@ -3949,15 +4285,17 @@ fn decode_write_set_row(row: &rusqlite::Row<'_>) -> Result<TaskWriteSetRecord, T
         process_binding: None,
         semantic_reads: Vec::new(),
         resource_reservations: Vec::new(),
+        artifact_writes: Vec::new(),
         planned_effects: Vec::new(),
         effect_endpoints: Vec::new(),
         artifact_read_set_root: blob32(row, 15)?,
         semantic_read_set_root: blob32(row, 16)?,
-        resource_reservation_set_root: blob32(row, 17)?,
-        effect_set_root: blob32(row, 18)?,
-        effect_endpoint_set_root: blob32(row, 19)?,
-        write_set_root: blob32(row, 20)?,
-        sealed_at_ms: row.get(21)?,
+        artifact_write_set_root: blob32(row, 17)?,
+        resource_reservation_set_root: blob32(row, 18)?,
+        effect_set_root: blob32(row, 19)?,
+        effect_endpoint_set_root: blob32(row, 20)?,
+        write_set_root: blob32(row, 21)?,
+        sealed_at_ms: row.get(22)?,
     })
 }
 

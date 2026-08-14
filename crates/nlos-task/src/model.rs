@@ -151,6 +151,23 @@ pub struct TaskWriteSetArtifactRead {
     pub expected_head_digest: Option<[u8; 32]>,
 }
 
+/// Proposed Artifact revision declared by a `TaskWriteSet` before a permit is
+/// issued. The digest/size are proposal bytes; the current head and target
+/// revision are checked against `ArtifactAuthority` during seal.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct TaskWriteSetArtifactWriteRequest {
+    pub artifact_id: ArtifactId,
+    pub expected_head_revision: u64,
+    pub proposed_revision: u64,
+    pub content_digest: [u8; 32],
+    pub size_bytes: u64,
+}
+
+/// Durable Artifact write declaration copied from the authority-verified
+/// seal. The proposed content is not called published until a later
+/// Artifact publication plan/receipt path consumes it.
+pub type TaskWriteSetArtifactWrite = TaskWriteSetArtifactWriteRequest;
+
 /// Caller-declared current Process/AgentInstance/IsolationDomain binding.
 /// Every field is verified by `ProcessAuthority` before it enters a durable
 /// `TaskWriteSet`; the endpoint proof is supplied by that owner authority.
@@ -333,6 +350,7 @@ pub struct TaskWriteSetRequest {
     pub attempt_id: TaskAttemptId,
     pub attempt_generation: Generation,
     pub artifact_reads: Vec<TaskWriteSetArtifactRead>,
+    pub artifact_writes: Vec<TaskWriteSetArtifactWriteRequest>,
     pub process_binding: Option<TaskWriteSetProcessBindingRequest>,
     pub semantic_reads: Vec<TaskWriteSetSemanticRead>,
     pub resource_reservations: Vec<TaskWriteSetResourceReservationRequest>,
@@ -365,12 +383,16 @@ pub struct TaskWriteSetRecord {
     pub group_binding: Option<crate::TaskGroupCommitBinding>,
     pub participant_registry_binding: crate::ParticipantRegistryBinding,
     pub artifact_reads: Vec<TaskWriteSetArtifactRead>,
+    pub artifact_writes: Vec<TaskWriteSetArtifactWrite>,
     pub process_binding: Option<TaskWriteSetProcessBinding>,
     pub semantic_reads: Vec<TaskWriteSetSemanticRead>,
     pub resource_reservations: Vec<TaskWriteSetResourceReservation>,
     pub planned_effects: Vec<PlannedEffect>,
     pub effect_endpoints: Vec<TaskWriteSetEffectEndpoint>,
     pub artifact_read_set_root: [u8; 32],
+    /// Zero for legacy/no-artifact-write seals; otherwise the canonical
+    /// proposed Artifact write declaration root.
+    pub artifact_write_set_root: [u8; 32],
     pub semantic_read_set_root: [u8; 32],
     pub resource_reservation_set_root: [u8; 32],
     /// Zero for legacy/no-effect seals; otherwise the canonical effect-set
@@ -415,6 +437,31 @@ pub(crate) fn artifact_read_set_root(reads: &[TaskWriteSetArtifactRead]) -> [u8;
             }
             None => hasher.update([0u8]),
         }
+    }
+    hasher.finalize().into()
+}
+
+pub(crate) fn artifact_write_set_root(writes: &[TaskWriteSetArtifactWrite]) -> [u8; 32] {
+    if writes.is_empty() {
+        return [0; 32];
+    }
+    let mut ordered = writes.to_vec();
+    ordered.sort_unstable_by_key(|write| {
+        (
+            write.artifact_id.into_bytes(),
+            write.proposed_revision,
+            write.content_digest,
+        )
+    });
+    let mut hasher = Sha256::new();
+    hasher.update(b"llmos/task-write-set-artifact-writes/v1");
+    hasher.update((ordered.len() as u64).to_be_bytes());
+    for write in ordered {
+        hasher.update(write.artifact_id.as_bytes());
+        hasher.update(write.expected_head_revision.to_be_bytes());
+        hasher.update(write.proposed_revision.to_be_bytes());
+        hasher.update(write.content_digest);
+        hasher.update(write.size_bytes.to_be_bytes());
     }
     hasher.finalize().into()
 }
@@ -497,6 +544,7 @@ pub(crate) fn effect_endpoint_set_root(endpoints: &[TaskWriteSetEffectEndpoint])
 }
 
 pub(crate) fn task_write_set_root(record: &TaskWriteSetRecord) -> [u8; 32] {
+    let has_artifact_writes = !record.artifact_writes.is_empty();
     let has_effects = !record.planned_effects.is_empty();
     let has_effect_endpoints = !record.effect_endpoints.is_empty();
     let extended = record.process_binding.is_some()
@@ -505,7 +553,9 @@ pub(crate) fn task_write_set_root(record: &TaskWriteSetRecord) -> [u8; 32] {
         || has_effects
         || has_effect_endpoints;
     let mut hasher = Sha256::new();
-    hasher.update(if has_effect_endpoints {
+    hasher.update(if has_artifact_writes {
+        b"llmos/task-write-set/v5".as_slice()
+    } else if has_effect_endpoints {
         b"llmos/task-write-set/v4".as_slice()
     } else if has_effects {
         b"llmos/task-write-set/v3".as_slice()
@@ -562,6 +612,9 @@ pub(crate) fn task_write_set_root(record: &TaskWriteSetRecord) -> [u8; 32] {
     hasher.update(record.participant_registry_binding.generation.to_be_bytes());
     hasher.update(record.participant_registry_binding.root);
     hasher.update(record.artifact_read_set_root);
+    if has_artifact_writes {
+        hasher.update(record.artifact_write_set_root);
+    }
     hasher.finalize().into()
 }
 

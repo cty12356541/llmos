@@ -31,14 +31,18 @@
 //! and copies it verbatim into `TaskCommitReceipt`-shaped records.
 //! Schema v6 begins the recoverable cross-authority commit path by binding
 //! an immutable, canonical Artifact publication plan to an issued permit's
-//! artifact-only `write_set_root`; planning itself never authorizes
-//! publication or advances `TaskHead`.
+//! `write_set_root`; planning itself never authorizes publication or advances
+//! `TaskHead`. Sealed proposed Artifact writes may now feed that plan, while
+//! effectful terminal Task finalization remains guarded separately.
 //! Schema v8 adds a per-plan durable recovery ledger: retry due time,
 //! deterministic jitter, consecutive/total failure counts, and escalation
 //! survive `TaskAuthority` process restart and resolve with terminal commit.
 //! Schema v18 adds immutable owner-read endpoint proofs for planned effect
 //! slots and folds their participant binding into the canonical write-set
-//! root; this is still a local partial proof, not cross-authority activation.
+//! root; schema v19 adds authority-checked proposed Artifact writes, and
+//! schema v20 separates the permit-bound `TaskWriteSet` root from the
+//! staging-bearing Artifact publication-plan root. These remain local partial
+//! proofs, not cross-authority activation or complete publication.
 //!
 //! Explicitly out of scope: cross-authority-term takeover (adoption is by
 //! the same authority after restart/uncertainty), compensation execution
@@ -50,8 +54,8 @@
 //! full Process BirthDecision/host enforcement, full `IsolationDomain`
 //! lifecycle, operation prepare→activate, Channel endpoints, signatures,
 //! and any IPC surface. Artifact publication
-//! authorization is now a durable `TaskAuthority` fence for artifact-only
-//! permits; READY-only Artifact-aware Task finalize now links nested receipts
+//! authorization is now a durable `TaskAuthority` fence; READY-only
+//! Artifact-aware Task finalize now links nested receipts
 //! atomically inside `TaskAuthority`. `ArtifactAuthority` online verification
 //! remains outside schema v8; the automatic cross-authority driver and worker
 //! live in `nlos-commit-coordinator` to avoid a reverse crate dependency. Post-permit
@@ -97,8 +101,9 @@ pub use model::{
     ReconcileOutcome, ReconciliationReceiptRecord, RequiredSatisfaction, RequiredSatisfactionProof,
     SnapshotBundle, SnapshotConsistency, TaskReceiptRecord, TaskRecord, TaskRegistrationDecision,
     TaskSnapshotReceiptRecord, TaskSnapshotReceiptSpec, TaskSpec, TaskState,
-    TaskWriteSetArtifactRead, TaskWriteSetDecision, TaskWriteSetEffectEndpoint,
-    TaskWriteSetEffectEndpointKind, TaskWriteSetEffectEndpointRequest, TaskWriteSetProcessBinding,
+    TaskWriteSetArtifactRead, TaskWriteSetArtifactWrite, TaskWriteSetArtifactWriteRequest,
+    TaskWriteSetDecision, TaskWriteSetEffectEndpoint, TaskWriteSetEffectEndpointKind,
+    TaskWriteSetEffectEndpointRequest, TaskWriteSetProcessBinding,
     TaskWriteSetProcessBindingRequest, TaskWriteSetRecord, TaskWriteSetRequest,
     TaskWriteSetResourceReservation, TaskWriteSetResourceReservationRequest,
     TaskWriteSetSemanticRead, empty_effect_history_root,
@@ -186,7 +191,7 @@ pub enum TaskStoreError {
     /// An idempotency key was replayed with different request bytes.
     IdempotencyConflict,
     /// The Artifact publication expectation set is empty, ambiguous, or
-    /// does not equal the permit's artifact-only write-set root.
+    /// does not equal the sealed declaration or permit-bound write-set root.
     InvalidArtifactPublicationPlan {
         /// Static explanation of the rejected invariant.
         reason: &'static str,

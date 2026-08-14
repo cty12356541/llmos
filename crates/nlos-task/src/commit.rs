@@ -13,7 +13,8 @@ use sha2::{Digest, Sha256};
 
 use crate::store::{
     SqlRead, SqliteTaskAuthority, close_permit, encode_u64, insert_receipt, load_attempt,
-    load_permit_by_id, load_receipt, load_task, optional_blob16, set_attempt_state, update_task,
+    load_permit_by_id, load_receipt, load_task, load_write_set_by_root, optional_blob16,
+    set_attempt_state, update_task,
 };
 use crate::{AttemptState, PermitState, ReceiptOutcome, TaskReceiptRecord, TaskStoreError};
 
@@ -296,8 +297,11 @@ fn canonical_expectations(
 
 impl SqliteTaskAuthority {
     /// Durably records an immutable Artifact publication plan for one
-    /// issued permit. The plan root must exactly equal the permit's
-    /// artifact-only `write_set_root`; this call does not authorize any
+    /// issued permit. When the permit points at an authority-sealed
+    /// `TaskWriteSet` with proposed Artifact writes, expectations are checked
+    /// against those declarations while the durable plan remains bound to the
+    /// permit root. Legacy permits without a sealed write declaration retain
+    /// the direct canonical-root check. This call does not authorize any
     /// canonical Artifact publication.
     ///
     /// # Errors
@@ -356,11 +360,30 @@ impl SqliteTaskAuthority {
             attempt.attempt_id,
             permit.group_binding,
         )?;
-        if root != permit.write_set_root {
-            return Err(TaskStoreError::InvalidArtifactPublicationPlan {
-                reason: "canonical plan root differs from permit write_set_root",
-            });
-        }
+        let sealed_write_set =
+            load_write_set_by_root(&transaction, request.task_id, permit.write_set_root)?;
+        let plan_write_set_root = if let Some(sealed) = sealed_write_set {
+            if sealed.attempt_id != request.attempt_id
+                || sealed.attempt_generation != request.attempt_generation
+            {
+                return Err(TaskStoreError::InvalidArtifactPublicationPlan {
+                    reason: "sealed TaskWriteSet belongs to a different attempt",
+                });
+            }
+            if !artifact_expectations_match_write_set(&canonical, &sealed.artifact_writes) {
+                return Err(TaskStoreError::InvalidArtifactPublicationPlan {
+                    reason: "Artifact publication expectations differ from sealed Artifact writes",
+                });
+            }
+            permit.write_set_root
+        } else {
+            if root != permit.write_set_root {
+                return Err(TaskStoreError::InvalidArtifactPublicationPlan {
+                    reason: "canonical plan root differs from permit write_set_root",
+                });
+            }
+            root
+        };
 
         let record = ArtifactCommitPlanRecord {
             plan_id,
@@ -368,14 +391,14 @@ impl SqliteTaskAuthority {
             permit_id: request.permit_id,
             attempt_id: request.attempt_id,
             attempt_generation: request.attempt_generation,
-            write_set_root: root,
+            write_set_root: plan_write_set_root,
             expectations: canonical,
             state: ArtifactCommitPlanState::Planned,
             task_receipt_id: None,
             created_at_ms: request.planned_at_ms,
             updated_at_ms: request.planned_at_ms,
         };
-        insert_plan(&transaction, &record, request.idempotency_key)?;
+        insert_plan(&transaction, &record, request.idempotency_key, root)?;
         insert_expectations(&transaction, &record)?;
         transaction.commit()?;
         Ok(ArtifactCommitPlanDecision::Planned(Box::new(record)))
@@ -400,8 +423,10 @@ impl SqliteTaskAuthority {
     /// Artifact publication by durably moving `Planned` to `Publishing`.
     /// Exact retries after that transition replay the durable decision.
     ///
-    /// The current cross-authority slice is deliberately artifact-only:
-    /// any declared effect slot rejects authorization fail-closed.
+    /// A permit backed only by the legacy publication-root path remains
+    /// artifact-only. A newer sealed `TaskWriteSet` may carry both proposed
+    /// Artifact writes and effect slots; this slice authorizes the Artifact
+    /// side while terminal Task finalization remains guarded separately.
     ///
     /// # Errors
     ///
@@ -453,12 +478,15 @@ impl SqliteTaskAuthority {
             attempt.attempt_id,
             permit.group_binding,
         )?;
+        let sealed_artifact_writes =
+            load_write_set_by_root(&transaction, plan.task_id, permit.write_set_root)?
+                .is_some_and(|record| !record.artifact_writes.is_empty());
         let effect_count: i64 = transaction.query_row(
             "SELECT COUNT(*) FROM effect_slots WHERE permit_id = ?1",
             [plan.permit_id.as_bytes().as_slice()],
             |row| row.get(0),
         )?;
-        if effect_count != 0 {
+        if effect_count != 0 && !sealed_artifact_writes {
             return Err(TaskStoreError::InvalidArtifactPublicationPlan {
                 reason: "Artifact publication authorization requires an artifact-only permit",
             });
@@ -905,6 +933,27 @@ fn same_plan_request(
         && existing.expectations == canonical
 }
 
+fn artifact_expectations_match_write_set(
+    expectations: &[ArtifactPublicationExpectation],
+    writes: &[crate::TaskWriteSetArtifactWrite],
+) -> bool {
+    if expectations.len() != writes.len() || writes.is_empty() {
+        return false;
+    }
+    let mut ordered_writes = writes.to_vec();
+    ordered_writes
+        .sort_unstable_by_key(|write| (write.artifact_id.into_bytes(), write.proposed_revision));
+    expectations
+        .iter()
+        .zip(ordered_writes.iter())
+        .all(|(expectation, write)| {
+            expectation.artifact_id == write.artifact_id
+                && expectation.target_revision == write.proposed_revision
+                && expectation.digest == write.content_digest
+                && expectation.size_bytes == write.size_bytes
+        })
+}
+
 fn derive_plan_id(permit_id: CommitPermitId) -> ArtifactCommitPlanId {
     let mut hasher = Sha256::new();
     hasher.update(b"llmos/task-artifact-commit-plan/v1");
@@ -919,6 +968,7 @@ fn insert_plan(
     transaction: &rusqlite::Transaction<'_>,
     record: &ArtifactCommitPlanRecord,
     idempotency_key: IdempotencyKey,
+    artifact_plan_root: [u8; 32],
 ) -> Result<(), TaskStoreError> {
     transaction.execute(
         "INSERT INTO task_artifact_commit_plans (
@@ -926,7 +976,7 @@ fn insert_plan(
             attempt_generation, write_set_root, artifact_plan_root,
             expected_artifact_count, plan_state, task_receipt_id,
             created_at_ms, updated_at_ms
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8, ?9, NULL, ?10, ?10)",
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, ?11, ?11)",
         params![
             record.plan_id.as_bytes().as_slice(),
             record.task_id.as_bytes().as_slice(),
@@ -935,6 +985,7 @@ fn insert_plan(
             record.attempt_id.as_bytes().as_slice(),
             encode_u64(record.attempt_generation.get()).as_slice(),
             record.write_set_root.as_slice(),
+            artifact_plan_root.as_slice(),
             encode_u64(u64::try_from(record.expectations.len()).map_err(|_| {
                 TaskStoreError::InvalidArtifactPublicationPlan {
                     reason: "expectation count exceeds u64",
@@ -1026,10 +1077,7 @@ fn decode_plan_row(
     let recomputed_root = artifact_publication_plan_root(&expectations).map_err(|_| {
         TaskStoreError::CorruptRecord("durable artifact expectations are ambiguous")
     })?;
-    if artifact_plan_root != write_set_root
-        || expected_count != actual_count
-        || recomputed_root != write_set_root
-    {
+    if expected_count != actual_count || recomputed_root != artifact_plan_root {
         return Err(TaskStoreError::CorruptRecord(
             "artifact commit plan root/count disagrees with expectations",
         ));

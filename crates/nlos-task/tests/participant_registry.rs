@@ -6,9 +6,9 @@ use nlos_task::{
     LogicalEffectDescriptor, Outcome, OutcomeRequest, ParticipantRegistrationDecision,
     ParticipantRegistryBinding, ParticipantRegistryState, ParticipantType, PermitDecision,
     PermitRequest, PlannedEffect, SnapshotBundle, SnapshotConsistency, SqliteTaskAuthority,
-    TaskSpec, TaskStoreError, TaskWriteSetArtifactRead, TaskWriteSetEffectEndpointRequest,
-    TaskWriteSetRequest, TaskWriteSetResourceReservationRequest, TaskWriteSetSemanticRead,
-    empty_effect_history_root,
+    TaskSnapshotReceiptSpec, TaskSpec, TaskStoreError, TaskWriteSetArtifactRead,
+    TaskWriteSetArtifactWriteRequest, TaskWriteSetEffectEndpointRequest, TaskWriteSetRequest,
+    TaskWriteSetResourceReservationRequest, TaskWriteSetSemanticRead, empty_effect_history_root,
 };
 use nlos_types::{
     ArtifactId, CallId, CancellationScopeId, Generation, IdempotencyKey, OperationId,
@@ -459,6 +459,7 @@ fn verified_write_set_seal_binds_receipted_snapshot_and_artifact_reads() {
             expected_head_revision: 0,
             expected_head_digest: None,
         }],
+        artifact_writes: Vec::new(),
         process_binding: Some(nlos_process::ActiveProcessBinding::from(&active_process).into()),
         semantic_reads: Vec::new(),
         resource_reservations: Vec::new(),
@@ -590,6 +591,7 @@ fn verified_write_set_seal_binds_planned_effects_to_permit_and_replays_after_res
             expected_head_revision: 0,
             expected_head_digest: None,
         }],
+        artifact_writes: Vec::new(),
         process_binding: None,
         semantic_reads: Vec::new(),
         resource_reservations: Vec::new(),
@@ -709,6 +711,147 @@ fn verified_write_set_seal_binds_planned_effects_to_permit_and_replays_after_res
 
 #[test]
 #[allow(clippy::too_many_lines)]
+fn artifact_write_declaration_binds_post_permit_publication_plan() {
+    let database = Database::new();
+    let artifact_root = AuthorityRoot::new("artifact-write-plan-artifact");
+    let artifact = nlos_artifact::ArtifactStore::open(&artifact_root.0).unwrap();
+    let artifact_id = create_artifact(&artifact, 0xa1);
+    let authority = database.open();
+    authority
+        .register_task(TaskSpec {
+            task_id: task_id(),
+            task_generation: Generation::INITIAL,
+            registered_at_ms: 1_000,
+        })
+        .unwrap();
+    let spec = attempt(0xa2, 0, empty_effect_history_root());
+    let snapshot_receipt_id = nlos_types::ReceiptId::from_bytes([0xa3; 16]);
+    authority
+        .register_snapshot_receipt(TaskSnapshotReceiptSpec {
+            task_id: task_id(),
+            snapshot: spec.snapshot,
+            receipt_id: snapshot_receipt_id,
+            builder_id: [0xa4; 16],
+            builder_version_digest: [0xa5; 32],
+            per_authority_checkpoint_receipts: vec![nlos_types::ReceiptId::from_bytes([0xa6; 16])],
+            dependency_closure_root: [0xa7; 32],
+            semantic_resolver_digest: [0xa8; 32],
+            canonical_iteration_digest: [0xa9; 32],
+            achieved_consistency: SnapshotConsistency::Causal,
+            built_at_ms: 1_100,
+            authority_id: [0xaa; 16],
+            key_id: [0xab; 16],
+            signature: [0xac; 64],
+        })
+        .unwrap();
+    authority
+        .register_attempt_with_snapshot_receipt(spec, snapshot_receipt_id)
+        .unwrap();
+    let registry_binding = binding(&authority.inspect_participant_registry(task_id()).unwrap());
+    authority
+        .register_artifact_head_participant(
+            &artifact,
+            task_id(),
+            registry_binding,
+            artifact_id,
+            1_120,
+        )
+        .unwrap();
+
+    let payload = b"c2b-artifact";
+    let content_digest = nlos_artifact::ContentDigest::of_bytes(payload).into_bytes();
+    let staging_key = IdempotencyKey::from_bytes([0xad; 16]);
+    let request = TaskWriteSetRequest {
+        task_id: task_id(),
+        attempt_id: spec.attempt_id,
+        attempt_generation: spec.attempt_generation,
+        artifact_reads: Vec::new(),
+        artifact_writes: vec![TaskWriteSetArtifactWriteRequest {
+            artifact_id,
+            expected_head_revision: 0,
+            proposed_revision: 1,
+            content_digest,
+            size_bytes: payload.len() as u64,
+        }],
+        process_binding: None,
+        semantic_reads: Vec::new(),
+        resource_reservations: Vec::new(),
+        planned_effects: vec![planned_effect()],
+        effect_endpoints: vec![TaskWriteSetEffectEndpointRequest::ArtifactHead {
+            effect_seq: 0,
+            artifact_id,
+        }],
+        idempotency_key: IdempotencyKey::from_bytes([0xae; 16]),
+        sealed_at_ms: 1_130,
+    };
+    let record = authority
+        .seal_task_write_set(&artifact, request.clone())
+        .unwrap()
+        .record()
+        .clone();
+
+    let mut permit_request = permit(&spec, 0xaf);
+    permit_request.write_set_root = record.write_set_root;
+    permit_request.planned_effects = request.planned_effects.clone();
+    let permit_record = issued(authority.request_commit_permit(permit_request).unwrap());
+    let expectation = nlos_task::ArtifactPublicationExpectation {
+        staging_id: nlos_artifact::staging_id_for(artifact_id, staging_key).into_bytes(),
+        artifact_id,
+        target_revision: 1,
+        digest: content_digest,
+        size_bytes: payload.len() as u64,
+    };
+    let plan_request = |expectations| nlos_task::PlanArtifactCommitRequest {
+        task_id: task_id(),
+        attempt_id: spec.attempt_id,
+        attempt_generation: spec.attempt_generation,
+        permit_id: permit_record.permit_id,
+        expectations,
+        idempotency_key: IdempotencyKey::from_bytes([0xb0; 16]),
+        planned_at_ms: 1_140,
+    };
+    let mut mismatch = expectation;
+    mismatch.digest = [0xff; 32];
+    assert!(matches!(
+        authority.plan_artifact_commit(plan_request(vec![mismatch])),
+        Err(TaskStoreError::InvalidArtifactPublicationPlan { .. })
+    ));
+    let plan = authority
+        .plan_artifact_commit(plan_request(vec![expectation]))
+        .unwrap()
+        .record()
+        .clone();
+    assert_eq!(plan.write_set_root, record.write_set_root);
+    assert_ne!(
+        plan.write_set_root,
+        nlos_task::artifact_publication_plan_root(&[expectation]).unwrap()
+    );
+
+    let staged = artifact
+        .stage_revision(nlos_artifact::StageRevisionRequest {
+            artifact_id,
+            expected_head_revision: 0,
+            bytes: payload,
+            task_id: task_id(),
+            permit_id: permit_record.permit_id,
+            write_set_root: nlos_artifact::ContentDigest::from_bytes(record.write_set_root),
+            idempotency_key: staging_key,
+            created_at_ms: 1_150,
+        })
+        .unwrap()
+        .record()
+        .clone();
+    assert_eq!(staged.staging_id.into_bytes(), expectation.staging_id);
+    assert!(matches!(
+        authority
+            .authorize_artifact_publication(plan.plan_id, 1_160)
+            .unwrap(),
+        nlos_task::ArtifactPublicationAuthorizationDecision::Authorized(_)
+    ));
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
 fn verified_write_set_seal_binds_reserved_resource_owner_facts() {
     let database = Database::new();
     let artifact_root = AuthorityRoot::new("resource-write-set-artifact");
@@ -818,6 +961,7 @@ fn verified_write_set_seal_binds_reserved_resource_owner_facts() {
             expected_head_revision: 0,
             expected_head_digest: None,
         }],
+        artifact_writes: Vec::new(),
         process_binding: None,
         semantic_reads: Vec::new(),
         resource_reservations: vec![TaskWriteSetResourceReservationRequest {
@@ -956,6 +1100,7 @@ fn verified_write_set_seal_binds_semantic_event_readback() {
         attempt_id: spec.attempt_id,
         attempt_generation: spec.attempt_generation,
         artifact_reads: Vec::new(),
+        artifact_writes: Vec::new(),
         process_binding: None,
         semantic_reads: vec![TaskWriteSetSemanticRead {
             event_id,
