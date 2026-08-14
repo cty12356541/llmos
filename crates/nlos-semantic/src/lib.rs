@@ -35,8 +35,8 @@ pub use canonical::{
 };
 pub use model::{
     AdmissionDurability, AdmissionReceipt, AppendAssertionRequest, AppendDecision,
-    AppendSpecRequest, AssertionMode, CriterionAggregation, CriterionEffect, EvaluatorKind,
-    ImmutableEvaluatorReference, ImmutableEvaluatorReferenceKind, IntentConstraints,
+    AppendSpecRequest, AssertionMode, CriterionAggregation, CriterionEffect, DurabilityReceipt,
+    EvaluatorKind, ImmutableEvaluatorReference, ImmutableEvaluatorReferenceKind, IntentConstraints,
     IntentCriterion, IntentCriticality, IntentSettlement, IntentSpecBody, LocalProcessRef,
     MAX_CANONICAL_EVENT_BYTES, MAX_CONTENT_BYTES, MAX_LINEAGE_ITEMS, MAX_NONCE_BYTES,
     MAX_SPEC_CAPABILITY_REFS, MAX_SPEC_CRITERIA, MAX_SPEC_EXTENSION_BYTES, MAX_SPEC_EXTENSIONS,
@@ -655,6 +655,24 @@ impl SemanticAuthority {
         load_receipt(&connection, event_id)
     }
 
+    /// Reads one immutable owner-issued durability proof for an admitted
+    /// event. A missing proof is not synthesized from an outbox row.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EventNotFound` when the event is absent, or a corrupt/storage
+    /// error when the requested receipt is absent or malformed.
+    pub fn inspect_durability_receipt(
+        &self,
+        event_id: SemanticEventId,
+        receipt_id: ReceiptId,
+    ) -> Result<DurabilityReceipt, SemanticAuthorityError> {
+        let connection = self.lock()?;
+        load_event_record(&connection, event_id)?
+            .ok_or(SemanticAuthorityError::EventNotFound(event_id))?;
+        load_durability_receipt(&connection, event_id, receipt_id)
+    }
+
     /// Reads the durable authority-issued Semantic admission endpoint proof.
     ///
     /// # Errors
@@ -1119,6 +1137,46 @@ fn load_receipt(
         )?,
         store_key_id: decode_id(row.8, nlos_types::KeyId::from_bytes, "store key")?,
         store_signature: decode_array(row.9, "store signature")?,
+    })
+}
+
+fn load_durability_receipt(
+    connection: &Connection,
+    event_id: SemanticEventId,
+    receipt_id: ReceiptId,
+) -> Result<DurabilityReceipt, SemanticAuthorityError> {
+    let row = connection.query_row(
+        "SELECT event_id, durable_checkpoint_id, durable_at_ms, store_signature
+         FROM durability_receipts WHERE receipt_id=?1 AND event_id=?2",
+        params![
+            receipt_id.as_bytes().as_slice(),
+            event_id.as_bytes().as_slice()
+        ],
+        |row| {
+            Ok((
+                row.get::<_, Vec<u8>>(0)?,
+                row.get::<_, Vec<u8>>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, Vec<u8>>(3)?,
+            ))
+        },
+    )?;
+    Ok(DurabilityReceipt {
+        receipt_id,
+        event_id: nlos_types::SemanticEventId::from_bytes(
+            row.0
+                .try_into()
+                .map_err(|_| SemanticAuthorityError::CorruptRecord("durability event id"))?,
+        ),
+        durable_checkpoint_id: row
+            .1
+            .try_into()
+            .map_err(|_| SemanticAuthorityError::CorruptRecord("durable checkpoint id"))?,
+        durable_at_ms: decode_u64(row.2)?,
+        store_signature: row
+            .3
+            .try_into()
+            .map_err(|_| SemanticAuthorityError::CorruptRecord("durability store signature"))?,
     })
 }
 

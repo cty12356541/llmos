@@ -268,6 +268,10 @@ pub struct TaskWriteSetSemanticAppendRequest {
     pub event_id: SemanticEventId,
     pub target: TaskWriteSetSemanticTarget,
     pub required_durability: TaskWriteSetSemanticRequiredDurability,
+    /// Optional owner-issued proof when the event crossed a later durable
+    /// checkpoint. Direct `Durable` `AdmissionReceipt` admission does not need
+    /// a second receipt.
+    pub durability_receipt_id: Option<ReceiptId>,
 }
 
 /// Owner-verified Semantic append persisted in the sealed `TaskWriteSet`.
@@ -277,6 +281,7 @@ pub struct TaskWriteSetSemanticAppend {
     pub target: TaskWriteSetSemanticTarget,
     pub required_durability: TaskWriteSetSemanticRequiredDurability,
     pub admission_receipt_id: ReceiptId,
+    pub durability_receipt_id: Option<ReceiptId>,
 }
 
 /// Caller-declared Reservation binding expected by a planned action. Stable
@@ -549,8 +554,15 @@ pub(crate) fn semantic_append_set_root(appends: &[TaskWriteSetSemanticAppend]) -
     }
     let mut ordered = appends.to_vec();
     ordered.sort_unstable_by_key(|append| append.event_id);
+    let has_durability_receipts = ordered
+        .iter()
+        .any(|append| append.durability_receipt_id.is_some());
     let mut hasher = Sha256::new();
-    hasher.update(b"llmos/task-write-set-semantic-appends/v1");
+    hasher.update(if has_durability_receipts {
+        b"llmos/task-write-set-semantic-appends/v2".as_slice()
+    } else {
+        b"llmos/task-write-set-semantic-appends/v1".as_slice()
+    });
     hasher.update((ordered.len() as u64).to_be_bytes());
     for append in ordered {
         hasher.update(append.event_id.as_bytes());
@@ -558,6 +570,15 @@ pub(crate) fn semantic_append_set_root(appends: &[TaskWriteSetSemanticAppend]) -
         hasher.update(append.target.id());
         hasher.update([TaskWriteSetSemanticRequiredDurability::code()]);
         hasher.update(append.admission_receipt_id.as_bytes());
+        if has_durability_receipts {
+            match append.durability_receipt_id {
+                Some(receipt_id) => {
+                    hasher.update([1u8]);
+                    hasher.update(receipt_id.as_bytes());
+                }
+                None => hasher.update([0u8]),
+            }
+        }
     }
     hasher.finalize().into()
 }

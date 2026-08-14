@@ -264,6 +264,18 @@ pub struct AdmissionReceipt {
     pub store_signature: [u8; 64],
 }
 
+/// Immutable owner-issued proof that an admitted event crossed a durable
+/// checkpoint after admission. This receipt is optional when the authority
+/// directly issued a `Durable` [`AdmissionReceipt`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DurabilityReceipt {
+    pub receipt_id: ReceiptId,
+    pub event_id: SemanticEventId,
+    pub durable_checkpoint_id: [u8; 32],
+    pub durable_at_ms: u64,
+    pub store_signature: [u8; 64],
+}
+
 /// Durable authority-issued identity of the Semantic admission endpoint.
 ///
 /// Consumers must verify transported values by exact readback from the

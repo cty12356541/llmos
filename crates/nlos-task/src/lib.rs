@@ -43,7 +43,9 @@
 //! schema v20 separates the permit-bound `TaskWriteSet` root from the
 //! staging-bearing Artifact publication-plan root. Schema v21 adds owner-
 //! verified Semantic append declarations, target-scope matching, and direct
-//! durable `AdmissionReceipt` identity binding. These remain local partial
+//! durable `AdmissionReceipt` identity binding. Schema v22 additionally
+//! carries an optional owner-verified `DurabilityReceipt` identity without
+//! inferring publication from an outbox row. These remain local partial
 //! proofs, not cross-authority activation or complete publication.
 //!
 //! Explicitly out of scope: cross-authority-term takeover (adoption is by

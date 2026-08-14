@@ -1079,6 +1079,19 @@ fn verified_write_set_seal_binds_semantic_event_readback_and_append() {
         ],
     )
     .unwrap();
+    raw.execute(
+        "INSERT INTO durability_receipts (
+            receipt_id, event_id, durable_checkpoint_id, durable_at_ms, store_signature
+         ) VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![
+            [0xf1u8; 16].as_slice(),
+            event_id.as_bytes().as_slice(),
+            [0xf2u8; 32].as_slice(),
+            1_060i64,
+            [0xf3u8; 64].as_slice(),
+        ],
+    )
+    .unwrap();
     drop(raw);
     let endpoint = semantic.inspect_admission_endpoint_proof().unwrap();
     let authority = database.open();
@@ -1135,6 +1148,7 @@ fn verified_write_set_seal_binds_semantic_event_readback_and_append() {
             event_id,
             target: TaskWriteSetSemanticTarget::Namespace(NamespaceId::from_bytes([0xe8; 16])),
             required_durability: TaskWriteSetSemanticRequiredDurability::Durable,
+            durability_receipt_id: Some(nlos_types::ReceiptId::from_bytes([0xf1; 16])),
         }],
         resource_reservations: Vec::new(),
         planned_effects: vec![planned_effect()],
@@ -1155,6 +1169,10 @@ fn verified_write_set_seal_binds_semantic_event_readback_and_append() {
         record.semantic_appends[0].admission_receipt_id,
         nlos_types::ReceiptId::from_bytes([0xed; 16])
     );
+    assert_eq!(
+        record.semantic_appends[0].durability_receipt_id,
+        Some(nlos_types::ReceiptId::from_bytes([0xf1; 16]))
+    );
     assert_ne!(record.semantic_append_set_root, [0; 32]);
     assert_eq!(endpoint.participant_generation.get(), 1);
     match authority
@@ -1164,6 +1182,17 @@ fn verified_write_set_seal_binds_semantic_event_readback_and_append() {
         nlos_task::TaskWriteSetDecision::Replayed(replayed) => assert_eq!(replayed, record),
         nlos_task::TaskWriteSetDecision::Sealed(_) => panic!("expected Semantic append replay"),
     }
+    let mut durability_conflict = request.clone();
+    durability_conflict.semantic_appends[0].durability_receipt_id =
+        Some(nlos_types::ReceiptId::from_bytes([0xf4; 16]));
+    assert!(matches!(
+        authority.seal_task_write_set_with_semantic_authority(
+            &artifact,
+            &semantic,
+            durability_conflict,
+        ),
+        Err(TaskStoreError::SemanticParticipantAuthority(_))
+    ));
     let mut target_conflict = request.clone();
     target_conflict.semantic_appends[0].target =
         TaskWriteSetSemanticTarget::Namespace(NamespaceId::from_bytes([0xe9; 16]));
