@@ -1082,7 +1082,7 @@ impl SqliteTaskAuthority {
         &self,
         request: PermitRequest,
     ) -> Result<PermitDecision, TaskStoreError> {
-        self.request_commit_permit_inner(None, None, request)
+        self.request_commit_permit_inner(None, None, None, request)
     }
 
     /// Runs the `CommitPermit` CAS after re-reading every Artifact head named
@@ -1107,7 +1107,32 @@ impl SqliteTaskAuthority {
         artifact_authority: &nlos_artifact::ArtifactStore,
         request: PermitRequest,
     ) -> Result<PermitDecision, TaskStoreError> {
-        self.request_commit_permit_inner(Some(artifact_authority), None, request)
+        self.request_commit_permit_inner(Some(artifact_authority), None, None, request)
+    }
+
+    /// Runs the `CommitPermit` CAS after re-reading an optional Process /
+    /// `AgentInstance` / `IsolationDomain` binding from its owning
+    /// [`nlos_process::ProcessAuthority`]. The complete owner binding and its
+    /// endpoint proof must still match the sealed `TaskWriteSet` before the
+    /// participant registry can be frozen.
+    ///
+    /// This is an opt-in strengthening of the legacy permit entry point: it
+    /// does not spawn, rotate, or otherwise mutate Process authority state. A
+    /// permit replay returns the existing durable decision without repeating
+    /// owner reads.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::request_commit_permit`], plus a
+    /// typed Process owner or write-binding conflict when the sealed binding
+    /// is no longer current.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn request_commit_permit_with_process_authority(
+        &self,
+        process_authority: &nlos_process::ProcessAuthority,
+        request: PermitRequest,
+    ) -> Result<PermitDecision, TaskStoreError> {
+        self.request_commit_permit_inner(None, Some(process_authority), None, request)
     }
 
     /// Runs the `CommitPermit` CAS after re-reading every Resource reservation
@@ -1132,13 +1157,14 @@ impl SqliteTaskAuthority {
         resource_authority: &nlos_resource::ResourceAuthority,
         request: PermitRequest,
     ) -> Result<PermitDecision, TaskStoreError> {
-        self.request_commit_permit_inner(None, Some(resource_authority), request)
+        self.request_commit_permit_inner(None, None, Some(resource_authority), request)
     }
 
     #[allow(clippy::needless_pass_by_value)]
     fn request_commit_permit_inner(
         &self,
         artifact_authority: Option<&nlos_artifact::ArtifactStore>,
+        process_authority: Option<&nlos_process::ProcessAuthority>,
         resource_authority: Option<&nlos_resource::ResourceAuthority>,
         request: PermitRequest,
     ) -> Result<PermitDecision, TaskStoreError> {
@@ -1172,6 +1198,7 @@ impl SqliteTaskAuthority {
             &attempt,
             &request,
             artifact_authority,
+            process_authority,
             resource_authority,
         )?;
         transaction.commit()?;
@@ -1790,6 +1817,7 @@ fn compete_for_permit(
     attempt: &AttemptRecord,
     request: &PermitRequest,
     artifact_authority: Option<&nlos_artifact::ArtifactStore>,
+    process_authority: Option<&nlos_process::ProcessAuthority>,
     resource_authority: Option<&nlos_resource::ResourceAuthority>,
 ) -> Result<PermitDecision, TaskStoreError> {
     if !attempt.state.is_open_candidate() {
@@ -1856,6 +1884,7 @@ fn compete_for_permit(
         attempt,
         request,
         artifact_authority,
+        process_authority,
         resource_authority,
     )?;
     Ok(PermitDecision::Issued(Box::new(record)))
@@ -1881,6 +1910,51 @@ fn validate_artifact_write_bindings(
                 reason: "Artifact write owner head differs before permit freeze",
             });
         }
+    }
+    Ok(())
+}
+
+fn validate_process_binding(
+    process_authority: &nlos_process::ProcessAuthority,
+    task_id: nlos_types::TaskId,
+    attempt_id: nlos_types::TaskAttemptId,
+    attempt_generation: nlos_types::Generation,
+    record: &TaskWriteSetRecord,
+) -> Result<(), TaskStoreError> {
+    let Some(expected) = record.process_binding else {
+        return Ok(());
+    };
+    let active = nlos_process::ActiveProcessBinding {
+        process_id: expected.process_id,
+        process_generation: expected.process_generation,
+        process_fencing_token: expected.process_fencing_token,
+        agent_instance_id: expected.agent_instance_id,
+        agent_instance_generation: expected.agent_instance_generation,
+        isolation_domain_id: expected.isolation_domain_id,
+        isolation_domain_generation: expected.isolation_domain_generation,
+        isolation_domain_fencing_token: expected.isolation_domain_fencing_token,
+    };
+    let owner = process_authority
+        .verify_active_process_binding(&active)
+        .map_err(TaskStoreError::ProcessParticipantAuthority)?;
+    if owner.task_id != task_id
+        || owner.task_attempt_id != attempt_id
+        || owner.attempt_generation != attempt_generation
+    {
+        return Err(TaskStoreError::TaskWriteSetConflict {
+            reason: "Process binding owner belongs to a different TaskAttempt",
+        });
+    }
+    let proof = process_authority
+        .inspect_binding_endpoint_proof(expected.process_id)
+        .map_err(TaskStoreError::ProcessParticipantAuthority)?;
+    if proof.participant_id != expected.participant_id
+        || proof.participant_generation != expected.participant_generation
+        || proof.admission_receipt_id != expected.admission_receipt_id
+    {
+        return Err(TaskStoreError::TaskWriteSetConflict {
+            reason: "Process binding endpoint proof differs before permit freeze",
+        });
     }
     Ok(())
 }
@@ -1933,6 +2007,7 @@ fn issue_permit(
     attempt: &AttemptRecord,
     request: &PermitRequest,
     artifact_authority: Option<&nlos_artifact::ArtifactStore>,
+    process_authority: Option<&nlos_process::ProcessAuthority>,
     resource_authority: Option<&nlos_resource::ResourceAuthority>,
 ) -> Result<PermitRecord, TaskStoreError> {
     let effect_set_root = crate::effect::validate_planned_effects(
@@ -2011,6 +2086,15 @@ fn issue_permit(
         }
         if let Some(artifact_authority) = artifact_authority {
             validate_artifact_write_bindings(artifact_authority, record)?;
+        }
+        if let Some(process_authority) = process_authority {
+            validate_process_binding(
+                process_authority,
+                task.record.task_id,
+                attempt.attempt_id,
+                attempt.attempt_generation,
+                record,
+            )?;
         }
         let current_group = crate::group::current_commit_binding(transaction, attempt.attempt_id)?;
         if record.group_binding != current_group {

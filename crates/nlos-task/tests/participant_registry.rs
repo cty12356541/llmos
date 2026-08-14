@@ -518,8 +518,25 @@ fn verified_write_set_seal_binds_receipted_snapshot_and_artifact_reads() {
     let mut permit_request = permit(&spec, 0xbd);
     permit_request.write_set_root = record.write_set_root;
     permit_request.planned_effects = record.planned_effects.clone();
-    let permit_record = issued(authority.request_commit_permit(permit_request).unwrap());
+    let wrong_process_root = AuthorityRoot::new("wrong-process-permit");
+    let wrong_process = nlos_process::ProcessAuthority::open(&wrong_process_root.0).unwrap();
+    assert!(matches!(
+        authority
+            .request_commit_permit_with_process_authority(&wrong_process, permit_request.clone(),),
+        Err(TaskStoreError::ProcessParticipantAuthority(_))
+    ));
+    let permit_record = issued(
+        authority
+            .request_commit_permit_with_process_authority(&process, permit_request.clone())
+            .unwrap(),
+    );
     assert_eq!(permit_record.write_set_root, record.write_set_root);
+    assert!(matches!(
+        authority
+            .request_commit_permit_with_process_authority(&process, permit_request)
+            .unwrap(),
+        PermitDecision::Replayed(_)
+    ));
     assert_eq!(
         authority
             .inspect_participant_registry(task_id())
