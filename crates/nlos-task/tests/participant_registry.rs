@@ -798,7 +798,26 @@ fn artifact_write_declaration_binds_post_permit_publication_plan() {
     let mut permit_request = permit(&spec, 0xaf);
     permit_request.write_set_root = record.write_set_root;
     permit_request.planned_effects = request.planned_effects.clone();
-    let permit_record = issued(authority.request_commit_permit(permit_request).unwrap());
+    let wrong_artifact_root = AuthorityRoot::new("wrong-artifact-permit");
+    let wrong_artifact = nlos_artifact::ArtifactStore::open(&wrong_artifact_root.0).unwrap();
+    assert!(matches!(
+        authority.request_commit_permit_with_artifact_authority(
+            &wrong_artifact,
+            permit_request.clone(),
+        ),
+        Err(TaskStoreError::ArtifactParticipantAuthority(_))
+    ));
+    let permit_record = issued(
+        authority
+            .request_commit_permit_with_artifact_authority(&artifact, permit_request.clone())
+            .unwrap(),
+    );
+    assert!(matches!(
+        authority
+            .request_commit_permit_with_artifact_authority(&artifact, permit_request)
+            .unwrap(),
+        PermitDecision::Replayed(_)
+    ));
     let expectation = nlos_task::ArtifactPublicationExpectation {
         staging_id: nlos_artifact::staging_id_for(artifact_id, staging_key).into_bytes(),
         artifact_id,

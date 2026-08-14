@@ -1082,7 +1082,32 @@ impl SqliteTaskAuthority {
         &self,
         request: PermitRequest,
     ) -> Result<PermitDecision, TaskStoreError> {
-        self.request_commit_permit_inner(None, request)
+        self.request_commit_permit_inner(None, None, request)
+    }
+
+    /// Runs the `CommitPermit` CAS after re-reading every Artifact head named
+    /// by an authority-sealed `TaskWriteSet` from its owning
+    /// [`nlos_artifact::ArtifactStore`]. Each declared write must still point
+    /// at the same current head revision and the immediately following target
+    /// revision before the permit can freeze the participant set.
+    ///
+    /// This is an opt-in strengthening of the legacy permit entry point: it
+    /// does not stage or publish bytes, and it does not invent an Artifact
+    /// publication receipt. A permit replay returns the existing durable
+    /// decision without repeating owner reads.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::request_commit_permit`], plus a
+    /// typed Artifact owner or write-binding conflict when a sealed Artifact
+    /// head has advanced or disappeared.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn request_commit_permit_with_artifact_authority(
+        &self,
+        artifact_authority: &nlos_artifact::ArtifactStore,
+        request: PermitRequest,
+    ) -> Result<PermitDecision, TaskStoreError> {
+        self.request_commit_permit_inner(Some(artifact_authority), None, request)
     }
 
     /// Runs the `CommitPermit` CAS after re-reading every Resource reservation
@@ -1107,12 +1132,13 @@ impl SqliteTaskAuthority {
         resource_authority: &nlos_resource::ResourceAuthority,
         request: PermitRequest,
     ) -> Result<PermitDecision, TaskStoreError> {
-        self.request_commit_permit_inner(Some(resource_authority), request)
+        self.request_commit_permit_inner(None, Some(resource_authority), request)
     }
 
     #[allow(clippy::needless_pass_by_value)]
     fn request_commit_permit_inner(
         &self,
+        artifact_authority: Option<&nlos_artifact::ArtifactStore>,
         resource_authority: Option<&nlos_resource::ResourceAuthority>,
         request: PermitRequest,
     ) -> Result<PermitDecision, TaskStoreError> {
@@ -1140,8 +1166,14 @@ impl SqliteTaskAuthority {
             transaction.commit()?;
             return Ok(decision);
         }
-        let decision =
-            compete_for_permit(&transaction, &task, &attempt, &request, resource_authority)?;
+        let decision = compete_for_permit(
+            &transaction,
+            &task,
+            &attempt,
+            &request,
+            artifact_authority,
+            resource_authority,
+        )?;
         transaction.commit()?;
         Ok(decision)
     }
@@ -1757,6 +1789,7 @@ fn compete_for_permit(
     task: &StoredTask,
     attempt: &AttemptRecord,
     request: &PermitRequest,
+    artifact_authority: Option<&nlos_artifact::ArtifactStore>,
     resource_authority: Option<&nlos_resource::ResourceAuthority>,
 ) -> Result<PermitDecision, TaskStoreError> {
     if !attempt.state.is_open_candidate() {
@@ -1817,8 +1850,39 @@ fn compete_for_permit(
             winner: Box::new(active),
         });
     }
-    let record = issue_permit(transaction, task, attempt, request, resource_authority)?;
+    let record = issue_permit(
+        transaction,
+        task,
+        attempt,
+        request,
+        artifact_authority,
+        resource_authority,
+    )?;
     Ok(PermitDecision::Issued(Box::new(record)))
+}
+
+fn validate_artifact_write_bindings(
+    artifact_authority: &nlos_artifact::ArtifactStore,
+    record: &TaskWriteSetRecord,
+) -> Result<(), TaskStoreError> {
+    for expected in &record.artifact_writes {
+        let actual_revision = artifact_authority
+            .resolve_head(expected.artifact_id)
+            .map_err(TaskStoreError::ArtifactParticipantAuthority)?
+            .map_or(0, |head| head.revision);
+        let expected_target = expected
+            .expected_head_revision
+            .checked_add(1)
+            .ok_or(TaskStoreError::EpochExhausted)?;
+        if actual_revision != expected.expected_head_revision
+            || expected.proposed_revision != expected_target
+        {
+            return Err(TaskStoreError::TaskWriteSetConflict {
+                reason: "Artifact write owner head differs before permit freeze",
+            });
+        }
+    }
+    Ok(())
 }
 
 fn validate_resource_reservation_bindings(
@@ -1868,6 +1932,7 @@ fn issue_permit(
     task: &StoredTask,
     attempt: &AttemptRecord,
     request: &PermitRequest,
+    artifact_authority: Option<&nlos_artifact::ArtifactStore>,
     resource_authority: Option<&nlos_resource::ResourceAuthority>,
 ) -> Result<PermitRecord, TaskStoreError> {
     let effect_set_root = crate::effect::validate_planned_effects(
@@ -1943,6 +2008,9 @@ fn issue_permit(
         }
         if let Some(resource_authority) = resource_authority {
             validate_resource_reservation_bindings(resource_authority, record)?;
+        }
+        if let Some(artifact_authority) = artifact_authority {
+            validate_artifact_write_bindings(artifact_authority, record)?;
         }
         let current_group = crate::group::current_commit_binding(transaction, attempt.attempt_id)?;
         if record.group_binding != current_group {

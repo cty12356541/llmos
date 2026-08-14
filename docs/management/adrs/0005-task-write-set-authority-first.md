@@ -49,7 +49,9 @@ schema v10 已建立 durable `TaskSnapshotReceipt` 与 attempt binding。下一�
 
 ## 当前证据与缺口
 
-`B-TASK-008C2G-RES` 增加了 Resource owner-aware permit issuance：对 sealed Reservation 在 participant registry freeze 前逐项回读 RESERVED binding，错误 authority、已激活记录或 Driver fence 漂移均 fail closed；该 opt-in guard 不激活/消费 Reservation，也不生成 Resource publication/finalization receipt。详见 [Evidence](../../evidence/stage-b/b-task-008c2g-resource-permit-owner-revalidation.md)。Semantic publication receipt producer/consumer 仍是下一主门，完整 TaskWriteSet 仍保持 `READY`。
+`B-TASK-008C2G-RES` 增加了 Resource owner-aware permit issuance：对 sealed Reservation 在 participant registry freeze 前逐项回读 RESERVED binding，错误 authority、已激活记录或 Driver fence 漂移均 fail closed；该 opt-in guard 不激活/消费 Reservation，也不生成 Resource publication/finalization receipt。详见 [Evidence](../../evidence/stage-b/b-task-008c2g-resource-permit-owner-revalidation.md)。
+
+`B-TASK-008C2G-ART` 又增加 Artifact owner-aware permit issuance：对 sealed Artifact write 在 participant registry freeze 前回读当前 head revision，head 漂移或目标 revision 不连续即 fail closed；该 opt-in guard 不 stage/publish bytes，也不生成 Artifact publication receipt。详见 [Evidence](../../evidence/stage-b/b-task-008c2g-artifact-permit-owner-revalidation.md)。Semantic publication receipt producer/consumer 仍是下一主门，完整 TaskWriteSet 仍保持 `READY`。
 
 [B-TASK-006O](../../evidence/stage-b/b-task-006o-durable-task-snapshot-receipt.md) 已证明 snapshot receipt 的本地持久化、replay 和 attempt binding；[B-PROCESS-001](../../evidence/stage-b/b-process-001-durable-execution-binding-authority.md)、[B-RESOURCE-001](../../evidence/stage-b/b-resource-001-driver-reservation-binding-authority.md)、[B-SEMANTIC-001/002B](../../evidence/stage-b/b-semantic-002b-durable-spec-event-admission.md) 已建立本地 reference authority facts。[B-TASK-007A–007D1](../../evidence/stage-b/b-task-007d1-participant-binding-propagation.md) 已建立 authority-assigned participant registry、verified endpoint registration、permit freeze，以及 EffectPermit/Task Receipt generation/root 传播与在线重验。
 
