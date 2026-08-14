@@ -1082,6 +1082,40 @@ impl SqliteTaskAuthority {
         &self,
         request: PermitRequest,
     ) -> Result<PermitDecision, TaskStoreError> {
+        self.request_commit_permit_inner(None, request)
+    }
+
+    /// Runs the `CommitPermit` CAS after re-reading every Resource reservation
+    /// named by an authority-sealed `TaskWriteSet` from its owning
+    /// [`nlos_resource::ResourceAuthority`]. The owner must still report the
+    /// same RESERVED call/operation/quote, Driver generation/fence, device and
+    /// upper-bound bytes before the permit can freeze the participant set.
+    ///
+    /// This is an opt-in strengthening of the legacy permit entry point: it
+    /// does not activate or consume a reservation, and it does not invent a
+    /// Resource publication/finalization receipt. A permit replay returns the
+    /// existing durable decision without repeating owner reads.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::request_commit_permit`], plus a
+    /// typed Resource owner or reservation-binding conflict when a sealed
+    /// reservation has disappeared, activated, rotated, or changed.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn request_commit_permit_with_resource_authority(
+        &self,
+        resource_authority: &nlos_resource::ResourceAuthority,
+        request: PermitRequest,
+    ) -> Result<PermitDecision, TaskStoreError> {
+        self.request_commit_permit_inner(Some(resource_authority), request)
+    }
+
+    #[allow(clippy::needless_pass_by_value)]
+    fn request_commit_permit_inner(
+        &self,
+        resource_authority: Option<&nlos_resource::ResourceAuthority>,
+        request: PermitRequest,
+    ) -> Result<PermitDecision, TaskStoreError> {
         let mut connection = self.lock_connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let task = load_task(&transaction, request.task_id)?;
@@ -1106,7 +1140,8 @@ impl SqliteTaskAuthority {
             transaction.commit()?;
             return Ok(decision);
         }
-        let decision = compete_for_permit(&transaction, &task, &attempt, &request)?;
+        let decision =
+            compete_for_permit(&transaction, &task, &attempt, &request, resource_authority)?;
         transaction.commit()?;
         Ok(decision)
     }
@@ -1722,6 +1757,7 @@ fn compete_for_permit(
     task: &StoredTask,
     attempt: &AttemptRecord,
     request: &PermitRequest,
+    resource_authority: Option<&nlos_resource::ResourceAuthority>,
 ) -> Result<PermitDecision, TaskStoreError> {
     if !attempt.state.is_open_candidate() {
         return Err(TaskStoreError::InvalidAttemptState {
@@ -1781,8 +1817,33 @@ fn compete_for_permit(
             winner: Box::new(active),
         });
     }
-    let record = issue_permit(transaction, task, attempt, request)?;
+    let record = issue_permit(transaction, task, attempt, request, resource_authority)?;
     Ok(PermitDecision::Issued(Box::new(record)))
+}
+
+fn validate_resource_reservation_bindings(
+    resource_authority: &nlos_resource::ResourceAuthority,
+    record: &TaskWriteSetRecord,
+) -> Result<(), TaskStoreError> {
+    for expected in &record.resource_reservations {
+        let actual = resource_authority
+            .inspect_permit_binding(expected.reservation_id)
+            .map_err(TaskStoreError::ResourceParticipantAuthority)?;
+        if actual.reservation_id != expected.reservation_id
+            || actual.account_id != expected.account_id
+            || actual.quote_id != expected.quote_id
+            || actual.call_id != expected.call_id
+            || actual.operation_id != expected.operation_id
+            || actual.driver_id != expected.driver_id
+            || actual.device_id != expected.device_id
+            || actual.driver_generation != expected.driver_generation
+            || actual.driver_fencing_token != expected.driver_fencing_token
+            || actual.upper_bound != expected.upper_bound
+        {
+            return Err(TaskStoreError::TaskWriteSetResourceReservationConflict);
+        }
+    }
+    Ok(())
 }
 
 fn validate_head_binding(task: &TaskRecord, snapshot: &SnapshotBundle) -> Option<PermitConflict> {
@@ -1807,6 +1868,7 @@ fn issue_permit(
     task: &StoredTask,
     attempt: &AttemptRecord,
     request: &PermitRequest,
+    resource_authority: Option<&nlos_resource::ResourceAuthority>,
 ) -> Result<PermitRecord, TaskStoreError> {
     let effect_set_root = crate::effect::validate_planned_effects(
         task.record.task_id,
@@ -1878,6 +1940,9 @@ fn issue_permit(
             return Err(TaskStoreError::TaskWriteSetConflict {
                 reason: "permit planned effects differ from sealed TaskWriteSet",
             });
+        }
+        if let Some(resource_authority) = resource_authority {
+            validate_resource_reservation_bindings(resource_authority, record)?;
         }
         let current_group = crate::group::current_commit_binding(transaction, attempt.attempt_id)?;
         if record.group_binding != current_group {

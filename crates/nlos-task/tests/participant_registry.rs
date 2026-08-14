@@ -1002,11 +1002,35 @@ fn verified_write_set_seal_binds_reserved_resource_owner_facts() {
         record.resource_reservations[0].reservation_id,
         reservation.reservation_id
     );
-    let mut conflict = request;
+    let mut conflict = request.clone();
     conflict.resource_reservations[0].expected_operation_id = OperationId::from_bytes([0xee; 16]);
     assert!(matches!(
         authority.seal_task_write_set_with_resource_authority(&artifact, &resource, conflict),
         Err(TaskStoreError::TaskWriteSetResourceReservationConflict)
+    ));
+    let mut permit_request = permit(&spec, 0xeb);
+    permit_request.write_set_root = record.write_set_root;
+    permit_request.planned_effects = request.planned_effects.clone();
+    let wrong_resource_root = AuthorityRoot::new("wrong-resource-permit");
+    let wrong_resource = nlos_resource::ResourceAuthority::open(&wrong_resource_root.0).unwrap();
+    assert!(matches!(
+        authority.request_commit_permit_with_resource_authority(
+            &wrong_resource,
+            permit_request.clone(),
+        ),
+        Err(TaskStoreError::ResourceParticipantAuthority(_))
+    ));
+    let permit_record = issued(
+        authority
+            .request_commit_permit_with_resource_authority(&resource, permit_request.clone())
+            .unwrap(),
+    );
+    assert_eq!(permit_record.write_set_root, record.write_set_root);
+    assert!(matches!(
+        authority
+            .request_commit_permit_with_resource_authority(&resource, permit_request)
+            .unwrap(),
+        PermitDecision::Replayed(_)
     ));
     drop(authority);
     let reopened = database.open();
