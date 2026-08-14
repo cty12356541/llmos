@@ -1148,6 +1148,7 @@ fn verified_write_set_seal_binds_semantic_event_readback_and_append() {
             event_id,
             target: TaskWriteSetSemanticTarget::Namespace(NamespaceId::from_bytes([0xe8; 16])),
             required_durability: TaskWriteSetSemanticRequiredDurability::Durable,
+            expected_admission_policy_digest: [0xdd; 32],
             durability_receipt_id: Some(nlos_types::ReceiptId::from_bytes([0xf1; 16])),
         }],
         resource_reservations: Vec::new(),
@@ -1168,6 +1169,10 @@ fn verified_write_set_seal_binds_semantic_event_readback_and_append() {
     assert_eq!(
         record.semantic_appends[0].admission_receipt_id,
         nlos_types::ReceiptId::from_bytes([0xed; 16])
+    );
+    assert_eq!(
+        record.semantic_appends[0].admission_policy_digest,
+        Some([0xdd; 32])
     );
     assert_eq!(
         record.semantic_appends[0].durability_receipt_id,
@@ -1192,6 +1197,18 @@ fn verified_write_set_seal_binds_semantic_event_readback_and_append() {
             durability_conflict,
         ),
         Err(TaskStoreError::SemanticParticipantAuthority(_))
+    ));
+    let mut admission_policy_conflict = request.clone();
+    admission_policy_conflict.semantic_appends[0].expected_admission_policy_digest = [0xdcu8; 32];
+    assert!(matches!(
+        authority.seal_task_write_set_with_semantic_authority(
+            &artifact,
+            &semantic,
+            admission_policy_conflict,
+        ),
+        Err(TaskStoreError::TaskWriteSetConflict {
+            reason: "Semantic append admission policy differs from owner receipt",
+        })
     ));
     let mut target_conflict = request.clone();
     target_conflict.semantic_appends[0].target =

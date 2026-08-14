@@ -268,6 +268,10 @@ pub struct TaskWriteSetSemanticAppendRequest {
     pub event_id: SemanticEventId,
     pub target: TaskWriteSetSemanticTarget,
     pub required_durability: TaskWriteSetSemanticRequiredDurability,
+    /// Expected admission-policy digest from the Semantic authority. The
+    /// sealing API compares this declaration with the owner-issued
+    /// `AdmissionReceipt`; it is not trusted as a receipt fact.
+    pub expected_admission_policy_digest: [u8; 32],
     /// Optional owner-issued proof when the event crossed a later durable
     /// checkpoint. Direct `Durable` `AdmissionReceipt` admission does not need
     /// a second receipt.
@@ -281,6 +285,9 @@ pub struct TaskWriteSetSemanticAppend {
     pub target: TaskWriteSetSemanticTarget,
     pub required_durability: TaskWriteSetSemanticRequiredDurability,
     pub admission_receipt_id: ReceiptId,
+    /// Owner-verified admission-policy declaration. `None` is retained only
+    /// for pre-v23 historical rows that never declared a policy digest.
+    pub admission_policy_digest: Option<[u8; 32]>,
     pub durability_receipt_id: Option<ReceiptId>,
 }
 
@@ -557,8 +564,13 @@ pub(crate) fn semantic_append_set_root(appends: &[TaskWriteSetSemanticAppend]) -
     let has_durability_receipts = ordered
         .iter()
         .any(|append| append.durability_receipt_id.is_some());
+    let has_admission_policy_digests = ordered
+        .iter()
+        .any(|append| append.admission_policy_digest.is_some());
     let mut hasher = Sha256::new();
-    hasher.update(if has_durability_receipts {
+    hasher.update(if has_admission_policy_digests {
+        b"llmos/task-write-set-semantic-appends/v3".as_slice()
+    } else if has_durability_receipts {
         b"llmos/task-write-set-semantic-appends/v2".as_slice()
     } else {
         b"llmos/task-write-set-semantic-appends/v1".as_slice()
@@ -570,6 +582,15 @@ pub(crate) fn semantic_append_set_root(appends: &[TaskWriteSetSemanticAppend]) -
         hasher.update(append.target.id());
         hasher.update([TaskWriteSetSemanticRequiredDurability::code()]);
         hasher.update(append.admission_receipt_id.as_bytes());
+        if has_admission_policy_digests {
+            match append.admission_policy_digest {
+                Some(digest) => {
+                    hasher.update([1u8]);
+                    hasher.update(digest);
+                }
+                None => hasher.update([0u8]),
+            }
+        }
         if has_durability_receipts {
             match append.durability_receipt_id {
                 Some(receipt_id) => {

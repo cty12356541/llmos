@@ -31,7 +31,7 @@ use crate::{
     TaskWriteSetSemanticTarget,
 };
 
-const SCHEMA_VERSION: i64 = 22;
+const SCHEMA_VERSION: i64 = 23;
 
 /// A single-writer `SQLite` task authority.
 ///
@@ -229,6 +229,7 @@ impl SqliteTaskAuthority {
             migrate_v20(&mut connection)?;
             migrate_v21(&mut connection)?;
             migrate_v22(&mut connection)?;
+            migrate_v23(&mut connection)?;
         }
 
         Ok(Self {
@@ -694,6 +695,11 @@ impl SqliteTaskAuthority {
                         reason: "Semantic append lacks the required durable AdmissionReceipt",
                     });
                 }
+                if receipt.authz_policy_digest != append.expected_admission_policy_digest {
+                    return Err(TaskStoreError::TaskWriteSetConflict {
+                        reason: "Semantic append admission policy differs from owner receipt",
+                    });
+                }
                 if let Some(durability_receipt_id) = append.durability_receipt_id {
                     let durability_receipt = authority
                         .inspect_durability_receipt(append.event_id, durability_receipt_id)
@@ -711,6 +717,7 @@ impl SqliteTaskAuthority {
                     target: append.target,
                     required_durability: append.required_durability,
                     admission_receipt_id: receipt.receipt_id,
+                    admission_policy_digest: Some(append.expected_admission_policy_digest),
                     durability_receipt_id: append.durability_receipt_id,
                 });
             }
@@ -2760,6 +2767,40 @@ fn migrate_v22(connection: &mut Connection) -> Result<(), TaskStoreError> {
     Ok(())
 }
 
+/// v22 → v23 adds the caller-declared Semantic admission-policy digest.
+/// Historical rows retain `NULL` rather than receiving an invented policy
+/// fact; new seals persist the owner-verified digest and include it in the
+/// v3 append-set root.
+fn migrate_v23(connection: &mut Connection) -> Result<(), TaskStoreError> {
+    let table_present: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master
+            WHERE type='table' AND name='task_write_set_semantic_appends'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if !table_present {
+        return Err(TaskStoreError::CorruptRecord(
+            "missing Semantic-append table before v23",
+        ));
+    }
+    let column_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('task_write_set_semantic_appends')
+         WHERE name = 'admission_policy_digest'",
+        [],
+        |row| row.get(0),
+    )?;
+    if column_count == 1 {
+        connection.pragma_update(None, "user_version", 23)?;
+        return Ok(());
+    }
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(SCHEMA_V23_SQL)?;
+    transaction.commit()?;
+    Ok(())
+}
+
 const SCHEMA_V13_SQL: &str = "CREATE TABLE task_write_sets (
         task_id BLOB NOT NULL CHECK(length(task_id) = 16),
         attempt_id BLOB NOT NULL CHECK(length(attempt_id) = 16),
@@ -3079,6 +3120,11 @@ const SCHEMA_V22_SQL: &str = "ALTER TABLE task_write_set_semantic_appends
         ADD COLUMN durability_receipt_id BLOB
         CHECK(durability_receipt_id IS NULL OR length(durability_receipt_id) = 16);
     PRAGMA user_version = 22;";
+
+const SCHEMA_V23_SQL: &str = "ALTER TABLE task_write_set_semantic_appends
+        ADD COLUMN admission_policy_digest BLOB
+        CHECK(admission_policy_digest IS NULL OR length(admission_policy_digest) = 32);
+    PRAGMA user_version = 23;";
 
 const SCHEMA_V12_SQL: &str = "ALTER TABLE effect_permits
         ADD COLUMN participant_registry_generation BLOB
@@ -3767,8 +3813,9 @@ fn insert_write_set(
             "INSERT INTO task_write_set_semantic_appends (
                 task_id, idempotency_key, append_seq, event_id,
                 target_scope_kind, target_scope_id, required_durability,
-                admission_receipt_id, durability_receipt_id
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                admission_receipt_id, durability_receipt_id,
+                admission_policy_digest
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 record.task_id.as_bytes().as_slice(),
                 record.idempotency_key.as_bytes().as_slice(),
@@ -3783,6 +3830,7 @@ fn insert_write_set(
                 append
                     .durability_receipt_id
                     .map(|receipt_id| receipt_id.as_bytes().to_vec()),
+                append.admission_policy_digest.map(|digest| digest.to_vec()),
             ],
         )?;
     }
@@ -4073,12 +4121,17 @@ fn validate_semantic_append_rows(record: &TaskWriteSetRecord) -> Result<(), Task
         return Ok(());
     }
     let mut seen = std::collections::BTreeSet::new();
+    let has_admission_policy_digests = record
+        .semantic_appends
+        .iter()
+        .any(|append| append.admission_policy_digest.is_some());
     for append in &record.semantic_appends {
         if append.required_durability != TaskWriteSetSemanticRequiredDurability::Durable
             || !seen.insert(append.event_id)
+            || (has_admission_policy_digests && append.admission_policy_digest.is_none())
         {
             return Err(TaskStoreError::CorruptRecord(
-                "Semantic append durability or uniqueness",
+                "Semantic append durability, policy declaration, or uniqueness",
             ));
         }
     }
@@ -4145,7 +4198,8 @@ fn load_write_set_semantic_appends(
 ) -> Result<Vec<TaskWriteSetSemanticAppend>, TaskStoreError> {
     let mut statement = source.prepare_statement(
         "SELECT event_id, target_scope_kind, target_scope_id,
-                required_durability, admission_receipt_id, durability_receipt_id
+                required_durability, admission_receipt_id, durability_receipt_id,
+                admission_policy_digest
          FROM task_write_set_semantic_appends
          WHERE task_id = ?1 AND idempotency_key = ?2 ORDER BY append_seq",
     )?;
@@ -4162,6 +4216,7 @@ fn load_write_set_semantic_appends(
                 row.get::<_, i64>(3)?,
                 row.get::<_, Vec<u8>>(4)?,
                 row.get::<_, Option<Vec<u8>>>(5)?,
+                row.get::<_, Option<Vec<u8>>>(6)?,
             ))
         },
     )?;
@@ -4173,6 +4228,7 @@ fn load_write_set_semantic_appends(
             required_durability,
             receipt_id,
             durability_receipt_id,
+            admission_policy_digest,
         ) = row?;
         let target_scope_id = target_scope_id
             .try_into()
@@ -4195,6 +4251,13 @@ fn load_write_set_semantic_appends(
                     .map_err(|_| TaskStoreError::CorruptRecord("Semantic durability receipt id"))
             })
             .transpose()?;
+        let admission_policy_digest = admission_policy_digest
+            .map(|digest| {
+                digest
+                    .try_into()
+                    .map_err(|_| TaskStoreError::CorruptRecord("Semantic admission policy digest"))
+            })
+            .transpose()?;
         Ok(TaskWriteSetSemanticAppend {
             event_id: nlos_types::SemanticEventId::from_bytes(
                 event_id
@@ -4208,6 +4271,7 @@ fn load_write_set_semantic_appends(
                     .try_into()
                     .map_err(|_| TaskStoreError::CorruptRecord("Semantic append receipt id"))?,
             ),
+            admission_policy_digest,
             durability_receipt_id,
         })
     })

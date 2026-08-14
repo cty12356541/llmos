@@ -183,6 +183,14 @@ fn validate_semantic_finalization(
                 reason: "Semantic append finalization receipt differs from sealed owner proof",
             });
         }
+        if append
+            .admission_policy_digest
+            .is_some_and(|digest| digest != admission.authz_policy_digest)
+        {
+            return Err(TaskStoreError::TaskWriteSetConflict {
+                reason: "Semantic finalization admission policy differs from sealed owner proof",
+            });
+        }
         if let Some(durability_receipt_id) = append.durability_receipt_id {
             let durability = semantic_authority
                 .inspect_durability_receipt(append.event_id, durability_receipt_id)
