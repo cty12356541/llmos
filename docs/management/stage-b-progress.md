@@ -641,7 +641,7 @@ Application
 
 - `SemanticCommitCoordinator` 已把 Semantic-only plan 的 `PLANNED → PUBLISHING → READY → FINALIZED` durable prefix 串起来；每个步骤只调用对应 owner authority，TaskAuthority 仍是 plan/receipt 的唯一 durable consumer。
 - `inspect_semantic_commit_expectations` 从 sealed `TaskWriteSet` 派生发布声明，`list_incomplete_semantic_commit_plans` 提供稳定 bounded scan；重启后可从 `PUBLISHING`/`READY` 继续，显式 replay 返回同一 nested receipt。
-- 详见 [B-TASK-008C2G-COORD](../evidence/stage-b/b-task-008c2g-semantic-coordinator.md)。仍为 `PARTIAL_PASS`：混合 Effect finalize envelope、跨进程 auth/lease/term takeover、kill-9/ENOSPC/VFS 故障矩阵、Trust View/vector checkpoint、多 Cell 与完整 TaskWriteSet 仍未完成。
+- TaskAuthority 写失败后的 owner publication exact replay 与 prefix 收敛已有 SQLite abort/VFS 局部证据；详见 [B-TASK-008C2G-COORD](../evidence/stage-b/b-task-008c2g-semantic-coordinator.md)。仍为 `PARTIAL_PASS`：混合 Effect finalize envelope、跨进程 auth/lease/term takeover、完整 kill-9/ENOSPC/torn-write 矩阵、Trust View/vector checkpoint、多 Cell 与完整 TaskWriteSet 仍未完成。
 
 
 ## 5. 当前下一验收门

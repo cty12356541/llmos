@@ -15,12 +15,12 @@
 
 ## 3. Evidence
 
-- `cargo test -p nlos-commit-coordinator --test semantic_convergence -- --nocapture`：2 项通过；覆盖授权→发布→READY→重启后 finalize、显式 replay、pending scan，以及负时间戳在任何 mutation 前拒绝。
+- `cargo test -p nlos-commit-coordinator --test semantic_convergence -- --nocapture`：3 项通过；覆盖授权→发布→READY→重启后 finalize、显式 replay、pending scan、负时间戳在任何 mutation 前拒绝，以及 TaskAuthority 写失败后 owner publication exact replay 与 durable prefix 收敛。
 - `cargo test -p nlos-commit-coordinator --quiet`：coordinator 既有 Artifact recovery 测试与 Semantic coordinator 测试全绿。
 - `cargo clippy -p nlos-commit-coordinator --all-targets --all-features -- -D warnings`：通过。
 
 ## 4. 明确限制
 
-- 只覆盖单机 SemanticAuthority/TaskAuthority、Semantic-only coordinator；没有跨进程认证、租约、term takeover、kill-9/ENOSPC/VFS 组合故障矩阵或多 Cell 传播证据。
+- 只覆盖单机 SemanticAuthority/TaskAuthority、Semantic-only coordinator；新增的故障证据是 TaskAuthority SQLite abort/VFS 写失败，不等于完整 kill-9/ENOSPC/torn-write 组合矩阵，也没有跨进程认证、租约、term takeover 或多 Cell 传播证据。
 - 混合 Effect + Semantic v3 finalize 目前由 TaskAuthority 本地统一 hook 接收调用方提供的 `FinalizeRequestV3`；要让 coordinator 在调用方崩溃后无参数恢复，还需要把 required-effect satisfaction/finalize proof envelope 持久化到 plan。
 - 不把 outbox ACK、local log-prefix digest 或 coordinator observation 晋升为 Trust View/vector checkpoint，也不声称分布式原子提交。

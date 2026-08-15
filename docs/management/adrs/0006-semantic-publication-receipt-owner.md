@@ -41,4 +41,4 @@
 
 ## 当前证据与缺口
 
-`B-SEMANTIC-005` 已验证 schema v4、owner target/Admission/Durability readback、local log-prefix checkpoint、immutable receipt、exact replay、restart readback 和错误绑定拒绝；`B-TASK-008C2G-SEM` 已验证 schema v25、TaskAuthority consumer、nested TaskCommitReceipt 与本地混合 Effect + Semantic v3 终结/重放；`B-TASK-008C2G-COORD` 已验证 Semantic-only plan 的授权、owner publication、Task receipt consumption、重启继续与 replay。混合 Effect finalize envelope、跨 authority 完整 prepare/consume/recovery、Trust View/vector checkpoint、跨进程认证与多 Cell 仍未完成。
+`B-SEMANTIC-005` 已验证 schema v4、owner target/Admission/Durability readback、local log-prefix checkpoint、immutable receipt、exact replay、restart readback 和错误绑定拒绝；`B-TASK-008C2G-SEM` 已验证 schema v25、TaskAuthority consumer、nested TaskCommitReceipt 与本地混合 Effect + Semantic v3 终结/重放；`B-TASK-008C2G-COORD` 已验证 Semantic-only plan 的授权、owner publication、Task receipt consumption、重启继续、Task 写失败后的 owner replay 与 durable prefix 收敛。混合 Effect finalize envelope、跨 authority 完整 prepare/consume/recovery、Trust View/vector checkpoint、跨进程认证与多 Cell 仍未完成。

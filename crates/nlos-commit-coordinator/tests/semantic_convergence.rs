@@ -1,11 +1,13 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard};
 
 use nlos_artifact::ArtifactStore;
 use nlos_commit_coordinator::{
     ConvergeSemanticCommitRequest, ConvergeSemanticStep, SemanticCommitCoordinator,
 };
 use nlos_semantic::SemanticAuthority;
+use nlos_store_fault::{FaultCode, FaultMode};
 use nlos_task::{
     AttemptSpec, PermitDecision, PermitRequest, PlanSemanticCommitRequest, SemanticCommitPlanId,
     SemanticCommitPlanState, SnapshotBundle, SnapshotConsistency, SqliteTaskAuthority,
@@ -19,6 +21,22 @@ use nlos_types::{
 use rusqlite::Connection;
 
 static NEXT: AtomicU64 = AtomicU64::new(1);
+static FAULT_LOCK: Mutex<()> = Mutex::new(());
+const VFS_NAME: &str = "nlos-semantic-coordinator-fault";
+
+struct FaultDisarmGuard;
+
+impl Drop for FaultDisarmGuard {
+    fn drop(&mut self) {
+        nlos_store_fault::disarm();
+    }
+}
+
+fn fault_lock() -> MutexGuard<'static, ()> {
+    FAULT_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 struct Fixture {
     task_path: PathBuf,
@@ -315,4 +333,45 @@ fn semantic_coordinator_rejects_negative_timestamp_before_mutation() {
         task.inspect_semantic_commit_progress(plan_id),
         Ok(progress) if progress.plan.state == SemanticCommitPlanState::Planned
     ));
+}
+
+#[test]
+fn semantic_coordinator_replays_owner_publication_after_task_write_failure() {
+    let _serialization = fault_lock();
+    nlos_store_fault::disarm();
+    let _fault_guard = FaultDisarmGuard;
+    let fixture = Fixture::new();
+    let (task, semantic, plan_id) = prepare(&fixture);
+    let coordinator = SemanticCommitCoordinator::new(&task, &semantic);
+    assert!(matches!(
+        coordinator
+            .converge_one_step(ConvergeSemanticCommitRequest { plan_id, now_ms: 7 })
+            .unwrap(),
+        ConvergeSemanticStep::Authorized
+    ));
+    drop(task);
+
+    nlos_store_fault::register(VFS_NAME).unwrap();
+    let faulted = SqliteTaskAuthority::open_with_vfs(&fixture.task_path, Some(VFS_NAME)).unwrap();
+    nlos_store_fault::arm(FaultMode::FailWritesAfter {
+        remaining: 0,
+        code: FaultCode::IoErr,
+    });
+    assert!(matches!(
+        SemanticCommitCoordinator::new(&faulted, &semantic)
+            .converge_one_step(ConvergeSemanticCommitRequest { plan_id, now_ms: 8 }),
+        Err(nlos_commit_coordinator::CoordinatorError::Task(_))
+    ));
+    assert!(nlos_store_fault::writes_observed() > 0);
+    drop(faulted);
+    nlos_store_fault::disarm();
+
+    let recovered = SqliteTaskAuthority::open(&fixture.task_path).unwrap();
+    let progress = recovered.inspect_semantic_commit_progress(plan_id).unwrap();
+    assert_eq!(progress.plan.state, SemanticCommitPlanState::Publishing);
+    assert!(progress.publications.is_empty());
+    let receipt = SemanticCommitCoordinator::new(&recovered, &semantic)
+        .converge(ConvergeSemanticCommitRequest { plan_id, now_ms: 9 })
+        .unwrap();
+    assert_eq!(receipt.task_receipt.new_head_commit_seq, 1);
 }
