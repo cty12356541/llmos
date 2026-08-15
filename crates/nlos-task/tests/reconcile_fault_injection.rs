@@ -47,7 +47,7 @@ use nlos_task::{
     PermitDecision, PermitRecord, PermitRequest, PermitState, PlannedEffect, ReceiptOutcome,
     ReconcileOutcome, ReconcileReplay, ReconcileRequest, RequiredSatisfaction,
     RequiredSatisfactionProof, SlotState, SnapshotBundle, SqliteTaskAuthority, TaskSpec,
-    TaskStoreError, empty_effect_history_root,
+    TaskStoreError, empty_effect_history_root, expected_success_assertion_digest,
 };
 use nlos_types::{
     CancellationScopeId, CommitPermitId, Generation, IdempotencyKey, ReceiptId, TaskAttemptId,
@@ -339,11 +339,21 @@ fn finalize_v3(
     }
 }
 
-fn success_proof(effect_seq: u64) -> RequiredSatisfaction {
+fn success_proof(
+    authority: &SqliteTaskAuthority,
+    permit_id: CommitPermitId,
+    effect_seq: u64,
+) -> RequiredSatisfaction {
+    let slot = authority
+        .inspect_effect_slot(permit_id, effect_seq)
+        .expect("effect slot");
+    let receipt = authority
+        .inspect_effect_receipt(slot.effect_receipt_id.expect("effect receipt"))
+        .expect("effect receipt record");
     RequiredSatisfaction {
         effect_seq,
         proof: RequiredSatisfactionProof::EffectClosedSuccess {
-            success_assertion_digest: [0x5a; 32],
+            success_assertion_digest: expected_success_assertion_digest(&slot, &receipt),
         },
     }
 }
@@ -711,7 +721,11 @@ fn child_v3_commit_complete(path: &Path) -> ! {
             .expect("reconcile slot 1 to confirmed-no-effect"),
     );
     match authority
-        .finalize_commit_v3(finalize_v3(&spec, permit.permit_id, vec![success_proof(0)]))
+        .finalize_commit_v3(finalize_v3(
+            &spec,
+            permit.permit_id,
+            vec![success_proof(&authority, permit.permit_id, 0)],
+        ))
         .expect("finalize commits")
     {
         FinalizeDecision::Committed(receipt) => {
@@ -769,7 +783,11 @@ fn child_partial_commit(path: &Path) -> ! {
         ))
         .expect("required slot 1 skipped");
     match authority
-        .finalize_commit_v3(finalize_v3(&spec, permit.permit_id, vec![success_proof(0)]))
+        .finalize_commit_v3(finalize_v3(
+            &spec,
+            permit.permit_id,
+            vec![success_proof(&authority, permit.permit_id, 0)],
+        ))
         .expect("partial finalize")
     {
         FinalizeDecision::Committed(receipt) => {
@@ -1011,7 +1029,11 @@ fn fault_kill9_after_v3_commit_preserves_everything() {
 
     // Replays after the crash return the original durable decisions.
     match authority
-        .finalize_commit_v3(finalize_v3(&spec, permit_id, vec![success_proof(0)]))
+        .finalize_commit_v3(finalize_v3(
+            &spec,
+            permit_id,
+            vec![success_proof(&authority, permit_id, 0)],
+        ))
         .expect("replay finalize")
     {
         FinalizeDecision::Replayed(original) => assert_eq!(*original, commit_receipt),
@@ -1121,7 +1143,11 @@ fn fault_kill9_after_partial_effect_finalize_preserves_fence_and_history() {
     // Replay of the same finalize returns the original receipt; the fence
     // is not re-incremented and no history entry is double-appended.
     match authority
-        .finalize_commit_v3(finalize_v3(&spec, permit_id, vec![success_proof(0)]))
+        .finalize_commit_v3(finalize_v3(
+            &spec,
+            permit_id,
+            vec![success_proof(&authority, permit_id, 0)],
+        ))
         .expect("replay partial finalize")
     {
         FinalizeDecision::Replayed(original) => assert_eq!(*original, receipt),
@@ -1377,7 +1403,11 @@ fn fault_enospc_on_adoption_and_finalize_proof_writes_fails_closed() {
         code: FaultCode::Full,
     });
     let error = authority
-        .finalize_commit_v3(finalize_v3(&spec, permit.permit_id, vec![success_proof(0)]))
+        .finalize_commit_v3(finalize_v3(
+            &spec,
+            permit.permit_id,
+            vec![success_proof(&authority, permit.permit_id, 0)],
+        ))
         .expect_err("finalize must fail under injected disk-full");
     assert_sqlite_error_chain(&error, &["full"]);
 
@@ -1405,7 +1435,11 @@ fn fault_enospc_on_adoption_and_finalize_proof_writes_fails_closed() {
 
     nlos_store_fault::disarm();
     match authority
-        .finalize_commit_v3(finalize_v3(&spec, permit.permit_id, vec![success_proof(0)]))
+        .finalize_commit_v3(finalize_v3(
+            &spec,
+            permit.permit_id,
+            vec![success_proof(&authority, permit.permit_id, 0)],
+        ))
         .expect("finalize succeeds after disarm")
     {
         FinalizeDecision::Committed(receipt) => {
@@ -1679,7 +1713,7 @@ fn run_second_competition(authority: &SqliteTaskAuthority) -> PermitRecord {
         .finalize_commit_v3(finalize_v3(
             &spec_b,
             permit_b.permit_id,
-            vec![success_proof(0)],
+            vec![success_proof(authority, permit_b.permit_id, 0)],
         ))
         .expect("finalize B")
     {
@@ -1757,7 +1791,7 @@ fn fault_after_disarm_reconcile_retry_closes_from_committed_prefix() {
         .finalize_commit_v3(finalize_v3(
             &spec_a,
             permit_a.permit_id,
-            vec![success_proof(0)],
+            vec![success_proof(&authority, permit_a.permit_id, 0)],
         ))
         .expect("finalize A")
     {

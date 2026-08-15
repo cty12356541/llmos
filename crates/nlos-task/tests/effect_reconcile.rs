@@ -13,7 +13,7 @@ use nlos_task::{
     PermitClosureOutcome, PermitDecision, PermitRecord, PermitRequest, PermitState, PlannedEffect,
     ReconcileOutcome, ReconcileReplay, ReconcileRequest, RequiredSatisfaction,
     RequiredSatisfactionProof, SlotState, SnapshotBundle, SqliteTaskAuthority, TaskSpec,
-    TaskStoreError, empty_effect_history_root,
+    TaskStoreError, empty_effect_history_root, expected_success_assertion_digest,
 };
 use nlos_types::{
     CancellationScopeId, CommitPermitId, Generation, IdempotencyKey, ReceiptId, TaskAttemptId,
@@ -236,11 +236,21 @@ fn finalize_v3(
     }
 }
 
-fn success_proof(effect_seq: u64) -> RequiredSatisfaction {
+fn success_proof(
+    authority: &SqliteTaskAuthority,
+    permit_id: CommitPermitId,
+    effect_seq: u64,
+) -> RequiredSatisfaction {
+    let slot = authority
+        .inspect_effect_slot(permit_id, effect_seq)
+        .expect("effect slot");
+    let receipt = authority
+        .inspect_effect_receipt(slot.effect_receipt_id.expect("effect receipt"))
+        .expect("effect receipt record");
     RequiredSatisfaction {
         effect_seq,
         proof: RequiredSatisfactionProof::EffectClosedSuccess {
-            success_assertion_digest: [0x5a; 32],
+            success_assertion_digest: expected_success_assertion_digest(&slot, &receipt),
         },
     }
 }
@@ -686,7 +696,7 @@ fn reconcile_replay_is_byte_exact_and_proof_conflicts_fail_closed() {
         .finalize_commit_v3(finalize_v3(
             &spec,
             permit.permit_id,
-            vec![success_proof(0)],
+            vec![success_proof(&authority, permit.permit_id, 0)],
             [0xf1; 32],
         ))
         .expect("finalize commits")
@@ -753,7 +763,7 @@ fn confirmed_no_effect_on_required_slot_never_commits() {
         authority.finalize_commit_v3(finalize_v3(
             &spec,
             permit.permit_id,
-            vec![success_proof(0)],
+            vec![success_proof(&authority, permit.permit_id, 0)],
             [0xf1; 32],
         )),
         Err(TaskStoreError::RequiredEffectUnsatisfied { effect_seq: 0, .. })
@@ -991,7 +1001,7 @@ fn reconcile_and_finalize_replay_consistent_across_restart() {
         .finalize_commit_v3(finalize_v3(
             &spec,
             permit.permit_id,
-            vec![success_proof(0)],
+            vec![success_proof(&authority, permit.permit_id, 0)],
             [0xf1; 32],
         ))
         .expect("finalize")
@@ -1006,7 +1016,7 @@ fn reconcile_and_finalize_replay_consistent_across_restart() {
             authority.finalize_commit_v3(finalize_v3(
                 &spec,
                 permit.permit_id,
-                vec![success_proof(0)],
+                vec![success_proof(&authority, permit.permit_id, 0)],
                 [0xf1; 32],
             )),
             Ok(FinalizeDecision::Replayed(_))

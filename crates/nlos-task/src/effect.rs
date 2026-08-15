@@ -209,7 +209,7 @@ impl NoEffectReason {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Outcome {
     /// The driver/gateway produced an authoritative closure; the digest is
-    /// a caller-supplied placeholder for the real effect receipt.
+    /// the closure proof carried by the effect Receipt.
     Closed {
         authoritative_closure_digest: [u8; 32],
     },
@@ -406,6 +406,28 @@ pub struct EffectReceipt {
     pub no_effect_reason: Option<NoEffectReason>,
     pub proof_digest: [u8; 32],
     pub created_at_ms: i64,
+}
+
+/// Computes the Task-side success assertion for one authoritative
+/// `EffectClosed` receipt. The assertion binds the immutable slot contract to
+/// the exact closure receipt, so a proof copied from another effect, slot, or
+/// closure attempt cannot satisfy this required obligation.
+#[must_use]
+pub fn expected_success_assertion_digest(slot: &SlotRecord, receipt: &EffectReceipt) -> [u8; 32] {
+    let effect_seq = slot.effect_seq.to_be_bytes();
+    let receipt_kind = receipt.kind.code().to_be_bytes();
+    sha256(
+        "llmos/task-effect-success-proof/v1",
+        &[
+            slot.effect_slot_id.as_bytes(),
+            slot.logical_effect_id.as_slice(),
+            &effect_seq,
+            slot.success_criteria_digest.as_slice(),
+            receipt.receipt_id.as_bytes(),
+            receipt.proof_digest.as_slice(),
+            &receipt_kind,
+        ],
+    )
 }
 
 /// Decision of an outcome or no-effect registration.

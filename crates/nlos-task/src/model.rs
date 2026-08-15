@@ -773,13 +773,13 @@ pub struct PlannedEffect {
     /// construction (`[TASK-EFFECT-ID-001]`).
     pub descriptor: crate::effect::LogicalEffectDescriptor,
     /// Whether the slot is a required obligation for `outcome=COMMITTED`.
-    /// Required-slot success-criteria semantics remain a placeholder in this
-    /// slice (see evidence doc); the flag is recorded durably.
+    /// The success assertion must bind the stored criteria digest to the
+    /// authoritative closure Receipt.
     pub required: bool,
     /// Pre-bound condition digest for conditional required slots. The
-    /// snapshot-bound authoritative false-proof is a later slice.
+    /// snapshot-bound authoritative false-proof is checked at finalize.
     pub required_condition_digest: Option<[u8; 32]>,
-    /// Caller-supplied success-criteria digest placeholder.
+    /// Digest of the immutable success criteria used by the proof binding.
     pub success_criteria_digest: [u8; 32],
     /// Caller-supplied digest placeholder binding the staged action proposal
     /// the slot is allowed to dispatch.
@@ -880,21 +880,20 @@ pub struct RequiredSatisfaction {
 
 /// How a required slot's obligation is asserted as met.
 ///
-/// The authority never verifies proof *content* — digests are
-/// caller-supplied placeholders — but it enforces the structural rule:
-/// `EffectClosedSuccess` only pairs with an `EffectClosed` slot, and
-/// `ConditionNotApplicable` only pairs with a `NoEffect` slot whose
-/// `TaskNoEffectReceipt` reason is `ConditionNotApplicable` and whose
-/// pre-bound `required_condition_digest` matches. All other `NoEffect`
-/// reasons and `ConfirmedNoEffect` can never satisfy a required slot.
+/// `EffectClosedSuccess` is bound to the slot's success criteria and the
+/// exact authoritative closure Receipt by
+/// [`crate::effect::expected_success_assertion_digest`].
+/// `ConditionNotApplicable` is bound to the original snapshot and pre-bound
+/// condition digest. All other `NoEffect` reasons and `ConfirmedNoEffect` can
+/// never satisfy a required slot.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RequiredSatisfactionProof {
-    /// The slot closed with an effect and the caller asserts its
-    /// `success_criteria_digest` is met (placeholder digest binding).
+    /// The slot closed with an effect and the caller presents the
+    /// slot/Receipt-bound success assertion digest.
     EffectClosedSuccess { success_assertion_digest: [u8; 32] },
     /// The slot's pre-bound condition is authoritatively false: the proof
     /// digest binds the original snapshot identity plus the pre-bound
-    /// `required_condition_digest` (placeholder binding, see evidence).
+    /// `required_condition_digest`.
     ConditionNotApplicable {
         condition_false_proof_digest: [u8; 32],
     },

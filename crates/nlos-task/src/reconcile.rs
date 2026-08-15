@@ -1119,7 +1119,7 @@ impl SqliteTaskAuthority {
     ///   [`TaskStoreError::Quarantined`] refusal (`[TASK-EFFECT-003]`);
     ///   replaying the same finalize observes the same refusal;
     /// - any other non-terminal slot → typed `OutstandingEffectSlots`;
-    /// - all terminal and every required slot satisfied (caller-asserted
+    /// - all terminal and every required slot satisfied (a slot/Receipt-bound
     ///   `EffectClosedSuccess`, or snapshot-bound
     ///   `ConditionNotApplicable`) → `Committed`;
     /// - required unsatisfied with at least one effect already closed →
@@ -2032,8 +2032,13 @@ fn evaluate_required(
         match (slot.state, proof) {
             (
                 SlotState::EffectClosed,
-                Some(RequiredSatisfactionProof::EffectClosedSuccess { .. }),
-            ) => satisfied_count += 1,
+                Some(RequiredSatisfactionProof::EffectClosedSuccess {
+                    success_assertion_digest,
+                }),
+            ) => {
+                validate_effect_closed_success(transaction, slot, success_assertion_digest)?;
+                satisfied_count += 1;
+            }
             (
                 SlotState::NoEffect,
                 Some(RequiredSatisfactionProof::ConditionNotApplicable {
@@ -2095,6 +2100,33 @@ fn evaluate_required(
         satisfied_count,
         unsatisfied,
     })
+}
+
+fn validate_effect_closed_success(
+    transaction: &Transaction<'_>,
+    slot: &SlotRecord,
+    success_assertion_digest: [u8; 32],
+) -> Result<(), TaskStoreError> {
+    let receipt_id = slot.effect_receipt_id.ok_or(TaskStoreError::CorruptRecord(
+        "effect-closed slot lacks its effect receipt",
+    ))?;
+    let receipt = effect::load_effect_receipt(transaction, receipt_id)?;
+    let matches_slot = receipt.kind == effect::ReceiptKind::EffectClosed
+        && receipt.no_effect_reason.is_none()
+        && receipt.task_id == slot.task_id
+        && receipt.permit_id == slot.permit_id
+        && receipt.effect_slot_id == slot.effect_slot_id
+        && receipt.effect_seq == slot.effect_seq
+        && receipt.logical_effect_id == slot.logical_effect_id;
+    if !matches_slot
+        || success_assertion_digest != effect::expected_success_assertion_digest(slot, &receipt)
+    {
+        return Err(TaskStoreError::RequiredEffectUnsatisfied {
+            effect_seq: slot.effect_seq,
+            reason: "success proof does not match the slot contract and closure receipt",
+        });
+    }
+    Ok(())
 }
 
 fn replay_finalize(

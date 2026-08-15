@@ -14,7 +14,7 @@ use nlos_task::{
     PermitClosureOutcome, PermitConflict, PermitDecision, PermitRecord, PermitRequest, PermitState,
     PlannedEffect, RequiredSatisfaction, RequiredSatisfactionProof, SlotState, SnapshotBundle,
     SqliteTaskAuthority, TaskSpec, TaskStoreError, effect_history_root_of,
-    empty_effect_history_root,
+    empty_effect_history_root, expected_success_assertion_digest,
 };
 use nlos_types::{
     CancellationScopeId, CommitPermitId, Generation, IdempotencyKey, TaskAttemptId, TaskId,
@@ -247,11 +247,21 @@ fn finalize_v3(
     }
 }
 
-fn success_proof(effect_seq: u64) -> RequiredSatisfaction {
+fn success_proof(
+    authority: &SqliteTaskAuthority,
+    permit_id: CommitPermitId,
+    effect_seq: u64,
+) -> RequiredSatisfaction {
+    let slot = authority
+        .inspect_effect_slot(permit_id, effect_seq)
+        .expect("effect slot");
+    let receipt = authority
+        .inspect_effect_receipt(slot.effect_receipt_id.expect("effect receipt"))
+        .expect("effect receipt record");
     RequiredSatisfaction {
         effect_seq,
         proof: RequiredSatisfactionProof::EffectClosedSuccess {
-            success_assertion_digest: [0x5a; 32],
+            success_assertion_digest: expected_success_assertion_digest(&slot, &receipt),
         },
     }
 }
@@ -456,7 +466,11 @@ fn partial_effect_advances_head_root_and_fence_and_new_attempts_inherit() {
     close_slot(&authority, &spec, &permit, 2);
 
     let receipt = match authority
-        .finalize_commit_v3(finalize_v3(&spec, permit.permit_id, vec![success_proof(0)]))
+        .finalize_commit_v3(finalize_v3(
+            &spec,
+            permit.permit_id,
+            vec![success_proof(&authority, permit.permit_id, 0)],
+        ))
         .expect("partial finalize")
     {
         FinalizeDecision::Committed(receipt) => *receipt,
@@ -599,7 +613,11 @@ fn lookup_effect_history_readback_and_re_dispatch_refused() {
     let authority = database.open();
     close_slot(&authority, &spec, &permit, 0);
     authority
-        .finalize_commit_v3(finalize_v3(&spec, permit.permit_id, vec![success_proof(0)]))
+        .finalize_commit_v3(finalize_v3(
+            &spec,
+            permit.permit_id,
+            vec![success_proof(&authority, permit.permit_id, 0)],
+        ))
         .expect("finalize");
     let root = authority
         .compute_effect_history_root(task_id())
@@ -675,8 +693,25 @@ fn required_slot_satisfaction_matrix() {
     let (database, spec, permit) = setup(vec![planned(0, true)]);
     let authority = database.open();
     close_slot(&authority, &spec, &permit, 0);
+    assert!(matches!(
+        authority.finalize_commit_v3(finalize_v3(
+            &spec,
+            permit.permit_id,
+            vec![RequiredSatisfaction {
+                effect_seq: 0,
+                proof: RequiredSatisfactionProof::EffectClosedSuccess {
+                    success_assertion_digest: [0x5a; 32],
+                },
+            }],
+        )),
+        Err(TaskStoreError::RequiredEffectUnsatisfied { effect_seq: 0, .. })
+    ));
     let receipt = match authority
-        .finalize_commit_v3(finalize_v3(&spec, permit.permit_id, vec![success_proof(0)]))
+        .finalize_commit_v3(finalize_v3(
+            &spec,
+            permit.permit_id,
+            vec![success_proof(&authority, permit.permit_id, 0)],
+        ))
         .expect("proved finalize")
     {
         FinalizeDecision::Committed(receipt) => *receipt,
@@ -780,7 +815,7 @@ fn plain_no_effect_and_foreign_proofs_never_satisfy_required() {
             authority.finalize_commit_v3(finalize_v3(
                 &spec,
                 permit.permit_id,
-                vec![success_proof(0)],
+                vec![success_proof(&authority, permit.permit_id, 0)],
             )),
             Err(TaskStoreError::RequiredEffectUnsatisfied { .. })
         ),
