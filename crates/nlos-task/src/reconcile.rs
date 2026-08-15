@@ -29,7 +29,8 @@ use crate::store::{
 };
 use crate::{
     AdoptionReceiptRecord, AttemptState, ClosePermitDecision, FinalizeDecision, PermitRecord,
-    PermitState, ReconciliationReceiptRecord, TaskReceiptRecord, TaskStoreError,
+    PermitState, ReconciliationReceiptRecord, SemanticCommitPlanId, SemanticFinalizeDecision,
+    SemanticTaskCommitReceipt, TaskReceiptRecord, TaskStoreError,
 };
 
 /// A `PermitAdoptionReceipt` issuance request (`[TASK-COMMIT-003]`,
@@ -1026,6 +1027,11 @@ fn write_commit_receipt(
     Ok(receipt)
 }
 
+enum FinalizeImplResult {
+    Plain(FinalizeDecision),
+    Semantic(SemanticFinalizeDecision),
+}
+
 /// Builds, stores, and applies the `TaskPermitClosureReceipt`-shaped
 /// record: permit close and attempt transition with the `TaskHead`
 /// unchanged (`[TASK-COMMIT-002]` final clause).
@@ -1181,11 +1187,78 @@ impl SqliteTaskAuthority {
         self.finalize_impl(&request, false)
     }
 
+    /// Finalizes a mixed Effect + Semantic permit after the Task-side
+    /// Semantic publication plan is `READY`. The existing v3 effect-slot
+    /// evaluation and history append run unchanged; the immutable nested
+    /// Semantic receipts and the Task terminal receipt are committed in the
+    /// same `TaskAuthority` transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns the normal v3 lifecycle errors, plus Semantic plan readiness,
+    /// owner-proof, binding, and storage errors. A failed call leaves both
+    /// the plan and all terminal Task facts at their prior durable prefix.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn finalize_commit_v3_with_semantic_publications(
+        &self,
+        semantic_authority: &nlos_semantic::SemanticAuthority,
+        plan_id: SemanticCommitPlanId,
+        request: FinalizeRequestV3,
+    ) -> Result<SemanticFinalizeDecision, TaskStoreError> {
+        let permit = self.inspect_permit(request.base.task_id, request.base.permit_id)?;
+        if permit.state == PermitState::Issued && permit.write_set_root != [0; 32] {
+            let record = {
+                let connection = self.lock_connection()?;
+                store::load_write_set_by_root(
+                    &*connection,
+                    request.base.task_id,
+                    permit.write_set_root,
+                )?
+            }
+            .ok_or(TaskStoreError::TaskWriteSetNotFound)?;
+            if record.write_set_root != crate::model::task_write_set_root(&record) {
+                return Err(TaskStoreError::CorruptRecord(
+                    "TaskWriteSet canonical root mismatch before mixed Semantic finalization",
+                ));
+            }
+            validate_semantic_finalization(semantic_authority, &record)?;
+        }
+        self.finalize_impl_with_semantic_plan(&request, plan_id)
+    }
+
     fn finalize_impl(
         &self,
         request: &FinalizeRequestV3,
         legacy: bool,
     ) -> Result<FinalizeDecision, TaskStoreError> {
+        match self.finalize_impl_inner(request, legacy, None)? {
+            FinalizeImplResult::Plain(decision) => Ok(decision),
+            FinalizeImplResult::Semantic(_) => Err(TaskStoreError::CorruptRecord(
+                "Semantic finalize result returned through plain API",
+            )),
+        }
+    }
+
+    fn finalize_impl_with_semantic_plan(
+        &self,
+        request: &FinalizeRequestV3,
+        plan_id: SemanticCommitPlanId,
+    ) -> Result<SemanticFinalizeDecision, TaskStoreError> {
+        match self.finalize_impl_inner(request, false, Some(plan_id))? {
+            FinalizeImplResult::Semantic(decision) => Ok(decision),
+            FinalizeImplResult::Plain(_) => Err(TaskStoreError::CorruptRecord(
+                "plain finalize result returned through Semantic API",
+            )),
+        }
+    }
+
+    #[allow(clippy::too_many_lines)] // Lifecycle branches stay adjacent for transaction audit.
+    fn finalize_impl_inner(
+        &self,
+        request: &FinalizeRequestV3,
+        legacy: bool,
+        semantic_plan_id: Option<SemanticCommitPlanId>,
+    ) -> Result<FinalizeImplResult, TaskStoreError> {
         let mut connection = self.lock_connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let task = store::load_task(&transaction, request.base.task_id)?;
@@ -1212,8 +1285,28 @@ impl SqliteTaskAuthority {
             }
             PermitState::Closed => {
                 let decision = replay_finalize(&transaction, &permit, request)?;
+                if let Some(plan_id) = semantic_plan_id {
+                    let receipt = match &decision {
+                        FinalizeDecision::Committed(receipt)
+                        | FinalizeDecision::Replayed(receipt) => (**receipt).clone(),
+                    };
+                    let publications =
+                        crate::semantic_commit::load_finalized_semantic_publications(
+                            &transaction,
+                            plan_id,
+                            request.base.task_id,
+                            receipt.receipt_id,
+                        )?;
+                    transaction.commit()?;
+                    return Ok(FinalizeImplResult::Semantic(
+                        SemanticFinalizeDecision::Replayed(Box::new(SemanticTaskCommitReceipt {
+                            task_receipt: receipt,
+                            semantic_publications: publications,
+                        })),
+                    ));
+                }
                 transaction.commit()?;
-                return Ok(decision);
+                return Ok(FinalizeImplResult::Plain(decision));
             }
             PermitState::Issued => {}
             PermitState::Superseded => return Err(TaskStoreError::PermitNotIssued),
@@ -1240,10 +1333,32 @@ impl SqliteTaskAuthority {
             permit.participant_registry_binding,
         )?;
         if legacy {
+            if semantic_plan_id.is_some() {
+                return Err(TaskStoreError::InvalidSemanticPublicationPlan {
+                    reason: "Semantic publication requires v3 finalize semantics",
+                });
+            }
             let decision = finalize_legacy(&transaction, &task, &permit, &attempt, request)?;
             transaction.commit()?;
-            return Ok(decision);
+            return Ok(FinalizeImplResult::Plain(decision));
         }
+        let semantic_context = if let Some(plan_id) = semantic_plan_id {
+            let write_set = store::load_write_set_by_root(
+                &transaction,
+                request.base.task_id,
+                permit.write_set_root,
+            )?
+            .ok_or(TaskStoreError::TaskWriteSetNotFound)?;
+            Some(crate::semantic_commit::load_ready_semantic_plan(
+                &transaction,
+                plan_id,
+                request.base.task_id,
+                permit.permit_id,
+                &write_set,
+            )?)
+        } else {
+            None
+        };
         let slots = list_slots(&transaction, permit.permit_id)?;
         if slots
             .iter()
@@ -1282,8 +1397,25 @@ impl SqliteTaskAuthority {
             )?
         };
         let receipt = write_commit_receipt(&transaction, &ctx, request, outcome, new_fence)?;
+        if let Some((plan, publications)) = semantic_context {
+            crate::semantic_commit::finalize_plan(
+                &transaction,
+                plan.plan_id,
+                receipt.receipt_id,
+                request.base.finalized_at_ms,
+            )?;
+            transaction.commit()?;
+            return Ok(FinalizeImplResult::Semantic(
+                SemanticFinalizeDecision::Committed(Box::new(SemanticTaskCommitReceipt {
+                    task_receipt: receipt,
+                    semantic_publications: publications,
+                })),
+            ));
+        }
         transaction.commit()?;
-        Ok(FinalizeDecision::Committed(Box::new(receipt)))
+        Ok(FinalizeImplResult::Plain(FinalizeDecision::Committed(
+            Box::new(receipt),
+        )))
     }
 
     /// Closes an issued permit with a `TaskPermitClosureReceipt`-shaped

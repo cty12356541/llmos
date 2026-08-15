@@ -216,9 +216,9 @@ impl SemanticPublicationAuthorizationDecision {
 
 impl SqliteTaskAuthority {
     /// Creates an immutable Semantic publication plan from the sealed
-    /// `TaskWriteSet` bound to an issued permit. This slice accepts a
-    /// Semantic-only permit; mixed Effect + Semantic terminalization remains
-    /// on the later unified coordinator path.
+    /// `TaskWriteSet` bound to an issued permit. Mixed Effect + Semantic
+    /// plans are consumed by the unified v3 finalize hook; the dedicated
+    /// Semantic-only finalize entry point remains intentionally narrower.
     ///
     /// # Errors
     ///
@@ -502,6 +502,7 @@ impl SqliteTaskAuthority {
         )?;
         validate_semantic_only_context(&transaction, &task, &permit, &write_set)?;
         validate_plan_against_write_set(&plan, &write_set)?;
+        ensure_no_effect_slots(&transaction, permit.permit_id)?;
         let new_seq = task
             .record
             .head_commit_seq
@@ -615,16 +616,6 @@ fn validate_semantic_only_context(
             reason: "sealed TaskWriteSet has no Semantic append declarations",
         });
     }
-    let effect_count: i64 = transaction.query_row(
-        "SELECT COUNT(*) FROM effect_slots WHERE permit_id = ?1",
-        [permit.permit_id.as_bytes().as_slice()],
-        |row| row.get(0),
-    )?;
-    if effect_count != 0 {
-        return Err(TaskStoreError::InvalidSemanticPublicationPlan {
-            reason: "Semantic publication finalize requires a Semantic-only permit",
-        });
-    }
     crate::group::validate_commit_binding(transaction, permit.attempt_id, permit.group_binding)?;
     crate::participant::validate_frozen_binding(
         transaction,
@@ -634,7 +625,24 @@ fn validate_semantic_only_context(
     Ok(())
 }
 
-fn validate_plan_against_write_set(
+fn ensure_no_effect_slots(
+    transaction: &Transaction<'_>,
+    permit_id: CommitPermitId,
+) -> Result<(), TaskStoreError> {
+    let effect_count: i64 = transaction.query_row(
+        "SELECT COUNT(*) FROM effect_slots WHERE permit_id = ?1",
+        [permit_id.as_bytes().as_slice()],
+        |row| row.get(0),
+    )?;
+    if effect_count != 0 {
+        return Err(TaskStoreError::InvalidSemanticPublicationPlan {
+            reason: "Semantic-only finalize cannot carry Effect slots",
+        });
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_plan_against_write_set(
     plan: &SemanticCommitPlanRecord,
     write_set: &TaskWriteSetRecord,
 ) -> Result<(), TaskStoreError> {
@@ -728,7 +736,7 @@ fn validate_publication_receipt(
     Ok(())
 }
 
-fn validate_progress(
+pub(crate) fn validate_progress(
     plan: &SemanticCommitPlanRecord,
     publications: &[NestedSemanticPublicationReceipt],
 ) -> Result<(), TaskStoreError> {
@@ -764,6 +772,61 @@ fn validate_progress(
         ));
     }
     Ok(())
+}
+
+/// Loads a READY Semantic plan for the unified Effect + Semantic finalize
+/// hook. The caller owns the surrounding Task transaction and supplies the
+/// sealed write set already bound to the permit.
+pub(crate) fn load_ready_semantic_plan(
+    source: &impl SqlRead,
+    plan_id: SemanticCommitPlanId,
+    task_id: TaskId,
+    permit_id: CommitPermitId,
+    write_set: &TaskWriteSetRecord,
+) -> Result<
+    (
+        SemanticCommitPlanRecord,
+        Vec<NestedSemanticPublicationReceipt>,
+    ),
+    TaskStoreError,
+> {
+    let plan =
+        load_plan_optional(source, plan_id)?.ok_or(TaskStoreError::SemanticCommitPlanNotFound)?;
+    if plan.state != SemanticCommitPlanState::Ready {
+        return Err(TaskStoreError::SemanticCommitPlanNotReady { state: plan.state });
+    }
+    if plan.task_id != task_id || plan.permit_id != permit_id {
+        return Err(TaskStoreError::InvalidSemanticPublicationPlan {
+            reason: "Semantic plan belongs to a different Task/permit",
+        });
+    }
+    validate_plan_against_write_set(&plan, write_set)?;
+    let publications = load_publications(source, plan.plan_id)?;
+    validate_progress(&plan, &publications)?;
+    Ok((plan, publications))
+}
+
+/// Loads a FINALIZED Semantic plan during unified terminal replay and returns
+/// its immutable nested publication set.
+pub(crate) fn load_finalized_semantic_publications(
+    source: &impl SqlRead,
+    plan_id: SemanticCommitPlanId,
+    task_id: TaskId,
+    receipt_id: ReceiptId,
+) -> Result<Vec<NestedSemanticPublicationReceipt>, TaskStoreError> {
+    let plan =
+        load_plan_optional(source, plan_id)?.ok_or(TaskStoreError::SemanticCommitPlanNotFound)?;
+    if plan.state != SemanticCommitPlanState::Finalized || plan.task_id != task_id {
+        return Err(TaskStoreError::InvalidSemanticPublicationPlan {
+            reason: "Semantic plan is not finalized for this Task",
+        });
+    }
+    if plan.task_receipt_id != Some(receipt_id) {
+        return Err(TaskStoreError::HistoryConflict);
+    }
+    let publications = load_publications(source, plan.plan_id)?;
+    validate_progress(&plan, &publications)?;
+    Ok(publications)
 }
 
 fn same_plan_request(
@@ -842,7 +905,7 @@ fn update_plan_state(
     Ok(())
 }
 
-fn finalize_plan(
+pub(crate) fn finalize_plan(
     transaction: &Transaction<'_>,
     plan_id: SemanticCommitPlanId,
     receipt_id: ReceiptId,

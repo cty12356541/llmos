@@ -6,11 +6,13 @@ use nlos_semantic::{
     PublishSemanticPublicationRequest, SemanticAuthority, SemanticPublicationReceipt,
 };
 use nlos_task::{
-    AttemptSpec, FinalizeSemanticCommitRequest, NestedSemanticPublicationReceipt, PermitDecision,
-    PermitRequest, PlanSemanticCommitRequest, RecordSemanticPublicationsRequest,
-    SemanticCommitPlanState, SemanticFinalizeDecision, SnapshotBundle, SnapshotConsistency,
-    SqliteTaskAuthority, TaskSnapshotReceiptSpec, TaskSpec, TaskStoreError, TaskWriteSetRequest,
-    TaskWriteSetSemanticAppendRequest, TaskWriteSetSemanticRequiredDurability,
+    AttemptSpec, EffectPermitDecision, EffectPermitRequest, FinalizeRequest, FinalizeRequestV3,
+    FinalizeSemanticCommitRequest, LogicalEffectDescriptor, NestedSemanticPublicationReceipt,
+    NoEffectReason, NoEffectRequest, PermitDecision, PermitRequest, PlanSemanticCommitRequest,
+    PlannedEffect, RecordSemanticPublicationsRequest, SemanticCommitPlanState,
+    SemanticFinalizeDecision, SnapshotBundle, SnapshotConsistency, SqliteTaskAuthority,
+    TaskSnapshotReceiptSpec, TaskSpec, TaskStoreError, TaskWriteSetEffectEndpointRequest,
+    TaskWriteSetRequest, TaskWriteSetSemanticAppendRequest, TaskWriteSetSemanticRequiredDurability,
     TaskWriteSetSemanticTarget, empty_effect_history_root,
 };
 use nlos_types::{
@@ -150,9 +152,38 @@ fn nested(
     }
 }
 
+fn mixed_effect(task_id: TaskId) -> PlannedEffect {
+    PlannedEffect {
+        descriptor: LogicalEffectDescriptor {
+            task_id,
+            task_generation: Generation::INITIAL,
+            intent_spec_id: [0x73; 32],
+            stable_action_slot: 1,
+            target_authority_object_id: [0x74; 32],
+            effect_class: 1,
+            idempotency_scope: 1,
+        },
+        required: false,
+        required_condition_digest: None,
+        success_criteria_digest: [0x75; 32],
+        action_proposal_digest: [0x76; 32],
+    }
+}
+
 #[test]
 #[allow(clippy::too_many_lines)]
 fn semantic_owner_receipt_is_consumed_nested_and_replayed() {
+    run_semantic_owner_receipt_lifecycle(false);
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn mixed_effect_semantic_receipt_finalizes_in_one_transaction() {
+    run_semantic_owner_receipt_lifecycle(true);
+}
+
+#[allow(clippy::too_many_lines)]
+fn run_semantic_owner_receipt_lifecycle(with_effect: bool) {
     let fixture = Fixture::new();
     let (semantic, event_id, admission_receipt_id, durability_receipt_id) =
         seed_semantic_authority(&fixture.semantic_root);
@@ -213,6 +244,17 @@ fn semantic_owner_receipt_is_consumed_nested_and_replayed() {
         3,
     )
     .unwrap();
+    let effect = mixed_effect(task_id);
+    let planned_effects = if with_effect {
+        vec![effect.clone()]
+    } else {
+        Vec::new()
+    };
+    let effect_endpoints = if with_effect {
+        vec![TaskWriteSetEffectEndpointRequest::SemanticAdmission { effect_seq: 0 }]
+    } else {
+        Vec::new()
+    };
     let write_set = task
         .seal_task_write_set_with_semantic_authority(
             &artifact,
@@ -233,8 +275,8 @@ fn semantic_owner_receipt_is_consumed_nested_and_replayed() {
                     durability_receipt_id: Some(durability_receipt_id),
                 }],
                 resource_reservations: Vec::new(),
-                planned_effects: Vec::new(),
-                effect_endpoints: Vec::new(),
+                planned_effects: planned_effects.clone(),
+                effect_endpoints,
                 idempotency_key: IdempotencyKey::from_bytes([0x70; 16]),
                 sealed_at_ms: 4,
             },
@@ -252,7 +294,7 @@ fn semantic_owner_receipt_is_consumed_nested_and_replayed() {
             attempt_id,
             attempt_generation: Generation::INITIAL,
             write_set_root: write_set.write_set_root,
-            planned_effects: Vec::new(),
+            planned_effects: planned_effects.clone(),
             idempotency_key: IdempotencyKey::from_bytes([0x71; 16]),
             valid_until_ms: 1_000,
             requested_at_ms: 5,
@@ -320,15 +362,110 @@ fn semantic_owner_receipt_is_consumed_nested_and_replayed() {
         .unwrap();
     assert_eq!(progress.plan.state, SemanticCommitPlanState::Ready);
     assert_eq!(progress.publications, vec![owner_copy]);
-    let committed = task
-        .finalize_semantic_commit(FinalizeSemanticCommitRequest {
-            plan_id: plan.plan_id,
-            finalized_at_ms: 11,
+    if with_effect {
+        assert!(matches!(
+            task.finalize_semantic_commit(FinalizeSemanticCommitRequest {
+                plan_id: plan.plan_id,
+                finalized_at_ms: 11,
+            }),
+            Err(TaskStoreError::InvalidSemanticPublicationPlan { .. })
+        ));
+        let premature_request = FinalizeRequestV3 {
+            base: FinalizeRequest {
+                task_id,
+                attempt_id,
+                attempt_generation: Generation::INITIAL,
+                permit_id: permit.permit_id,
+                new_effect_history_root: empty_effect_history_root(),
+                new_retry_fence_epoch: 0,
+                finalized_at_ms: 13,
+            },
+            required_satisfaction: Vec::new(),
+            fenced_participant_digest: [0; 32],
+        };
+        assert!(matches!(
+            task.finalize_commit_v3_with_semantic_publications(
+                &semantic,
+                plan.plan_id,
+                premature_request,
+            ),
+            Err(TaskStoreError::OutstandingEffectSlots { count: 1 })
+        ));
+        assert_eq!(
+            task.inspect_semantic_commit_progress(plan.plan_id)
+                .unwrap()
+                .plan
+                .state,
+            SemanticCommitPlanState::Ready
+        );
+    }
+    let (committed, replay_request) = if with_effect {
+        let issued = match task
+            .request_effect_permit(EffectPermitRequest {
+                task_id,
+                attempt_id,
+                attempt_generation: Generation::INITIAL,
+                permit_id: permit.permit_id,
+                permit_epoch: permit.permit_epoch,
+                effect_seq: 0,
+                idempotency_key: IdempotencyKey::from_bytes([0x77; 16]),
+                valid_until_ms: 1_000,
+                requested_at_ms: 11,
+            })
+            .unwrap()
+        {
+            EffectPermitDecision::Issued(issued) | EffectPermitDecision::Replayed(issued) => {
+                *issued
+            }
+        };
+        task.record_no_effect(NoEffectRequest {
+            task_id,
+            attempt_id,
+            attempt_generation: Generation::INITIAL,
+            permit_id: permit.permit_id,
+            permit_epoch: permit.permit_epoch,
+            effect_seq: 0,
+            reason: NoEffectReason::NotSelected,
+            dispatch_token: Some(issued.one_shot_dispatch_token),
+            recorded_at_ms: 12,
         })
         .unwrap();
-    assert!(matches!(committed, SemanticFinalizeDecision::Committed(_)));
-    assert_eq!(committed.receipt().semantic_publications, vec![owner_copy]);
-    assert_eq!(committed.receipt().task_receipt.new_head_commit_seq, 1);
+        let finalize_request = FinalizeRequestV3 {
+            base: FinalizeRequest {
+                task_id,
+                attempt_id,
+                attempt_generation: Generation::INITIAL,
+                permit_id: permit.permit_id,
+                new_effect_history_root: empty_effect_history_root(),
+                new_retry_fence_epoch: 0,
+                finalized_at_ms: 13,
+            },
+            required_satisfaction: Vec::new(),
+            fenced_participant_digest: [0; 32],
+        };
+        let decision = task
+            .finalize_commit_v3_with_semantic_publications(
+                &semantic,
+                plan.plan_id,
+                finalize_request.clone(),
+            )
+            .unwrap();
+        assert!(matches!(decision, SemanticFinalizeDecision::Committed(_)));
+        assert_eq!(decision.receipt().semantic_publications, vec![owner_copy]);
+        assert_eq!(decision.receipt().task_receipt.new_head_commit_seq, 1);
+        (decision, Some(finalize_request))
+    } else {
+        let decision = task
+            .finalize_semantic_commit(FinalizeSemanticCommitRequest {
+                plan_id: plan.plan_id,
+                finalized_at_ms: 11,
+            })
+            .unwrap();
+        assert!(matches!(decision, SemanticFinalizeDecision::Committed(_)));
+        assert_eq!(decision.receipt().semantic_publications, vec![owner_copy]);
+        assert_eq!(decision.receipt().task_receipt.new_head_commit_seq, 1);
+        (decision, None)
+    };
     drop(task);
     let raw = Connection::open(&fixture.task_path).unwrap();
     assert!(
@@ -340,12 +477,19 @@ fn semantic_owner_receipt_is_consumed_nested_and_replayed() {
     );
     drop(raw);
     let reopened = SqliteTaskAuthority::open(&fixture.task_path).unwrap();
-    let replay = reopened
-        .finalize_semantic_commit(FinalizeSemanticCommitRequest {
-            plan_id: plan.plan_id,
-            finalized_at_ms: 99,
-        })
-        .unwrap();
+    let replay = if let Some(mut request) = replay_request {
+        request.base.finalized_at_ms = 99;
+        reopened
+            .finalize_commit_v3_with_semantic_publications(&semantic, plan.plan_id, request)
+            .unwrap()
+    } else {
+        reopened
+            .finalize_semantic_commit(FinalizeSemanticCommitRequest {
+                plan_id: plan.plan_id,
+                finalized_at_ms: 99,
+            })
+            .unwrap()
+    };
     assert!(matches!(replay, SemanticFinalizeDecision::Replayed(_)));
     assert_eq!(replay.receipt(), committed.receipt());
 }
