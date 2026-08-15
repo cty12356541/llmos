@@ -3,8 +3,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use nlos_ipc::{
-    FramedIo, IoOperation, IpcError, LocalRpcClient, OutboundResponse, PeerAuthorizer,
-    PeerIdentity, TransportConfig, serve_one,
+    ExactPeerAuthorizer, FramedIo, IoOperation, IpcError, LocalRpcClient, OutboundResponse,
+    PeerAuthorizer, PeerCredentialBinding, PeerIdentity, TransportConfig, serve_one,
 };
 use nlos_schema::sabi::v1::{Envelope, ExchangeRequest, ExchangeResponse, SchemaIdentity};
 use nlos_schema::{SABI_ENVELOPE_SCHEMA, decode_exchange_response, encode_exchange_response};
@@ -48,6 +48,27 @@ impl PeerAuthorizer for Deny {
     fn authorize(&self, _: &PeerIdentity) -> Result<(), String> {
         Err("test policy".to_owned())
     }
+}
+
+#[test]
+fn exact_peer_authorizer_rejects_credential_drift() {
+    let observed = PeerIdentity::Unix {
+        process_id: Some(42),
+        user_id: 7,
+        group_id: 8,
+    };
+    let authorizer = ExactPeerAuthorizer::new(PeerCredentialBinding::from_peer(observed));
+    assert_eq!(authorizer.binding().identity(), observed);
+    assert!(authorizer.authorize(&observed).is_ok());
+    assert!(matches!(
+        authorizer.authorize(&PeerIdentity::Unix {
+            process_id: Some(43),
+            user_id: 7,
+            group_id: 8,
+        }),
+        Err(reason) if reason == "peer credentials do not match the exact binding"
+    ));
+    assert!(authorizer.authorize(&PeerIdentity::InMemory).is_err());
 }
 
 fn fast_config(maximum_frame_bytes: usize) -> TransportConfig {

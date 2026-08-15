@@ -189,7 +189,7 @@ impl Default for TransportConfig {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PeerIdentity {
     InMemory,
     Unix {
@@ -200,6 +200,62 @@ pub enum PeerIdentity {
     WindowsNamedPipe {
         process_id: Option<u32>,
     },
+}
+
+/// Exact operating-system credential tuple a local service may bind before
+/// reading any request bytes. This is an authentication pre-gate, not a
+/// signed NLOS principal or authority-lease proof.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PeerCredentialBinding {
+    identity: PeerIdentity,
+}
+
+impl PeerCredentialBinding {
+    /// Captures the exact peer identity observed by the platform adapter.
+    #[must_use]
+    pub const fn from_peer(identity: PeerIdentity) -> Self {
+        Self { identity }
+    }
+
+    /// Returns the identity captured by this binding.
+    #[must_use]
+    pub const fn identity(self) -> PeerIdentity {
+        self.identity
+    }
+
+    fn matches(self, peer: &PeerIdentity) -> bool {
+        self.identity == *peer
+    }
+}
+
+/// Fail-closed authorizer for one exact local OS peer credential tuple.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExactPeerAuthorizer {
+    binding: PeerCredentialBinding,
+}
+
+impl ExactPeerAuthorizer {
+    /// Creates an authorizer bound to one previously observed peer tuple.
+    #[must_use]
+    pub const fn new(binding: PeerCredentialBinding) -> Self {
+        Self { binding }
+    }
+
+    /// Returns the credential tuple this authorizer accepts.
+    #[must_use]
+    pub const fn binding(self) -> PeerCredentialBinding {
+        self.binding
+    }
+}
+
+impl PeerAuthorizer for ExactPeerAuthorizer {
+    fn authorize(&self, peer: &PeerIdentity) -> Result<(), String> {
+        if self.binding.matches(peer) {
+            Ok(())
+        } else {
+            Err("peer credentials do not match the exact binding".to_owned())
+        }
+    }
 }
 
 pub trait PeerAuthorizer: Send + Sync {

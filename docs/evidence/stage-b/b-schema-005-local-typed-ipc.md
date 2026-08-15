@@ -23,6 +23,7 @@ request/response wrapper 都只持有一个现有 Envelope；schema 不包含 so
 - Unix domain socket 和 Windows named pipe 平台 adapter；
 - connect/read/write/accept timeout、frame 上限、单连接单 in-flight backpressure；
 - OS peer identity 到同步 authorization hook 的边界；
+- `PeerCredentialBinding` + `ExactPeerAuthorizer` 对已观测的 OS peer tuple 做逐字段、平台类型精确匹配；
 - response request ID correlation；
 - 已验证 response 的原始 wire forwarding，避免 unknown Protobuf field 被重编码丢失。
 
@@ -35,7 +36,7 @@ endpoint 由调用者提供，预留给后续 ServiceDirectory/resolver；本切
 | 超界发送/接收 | 配置上限必须位于 `1..=1 MiB`；接收先读 4-byte 长度并在分配 body 前拒绝超界声明 |
 | 慢连接/半帧 | connect/accept/read/write 各有非零 timeout；半帧或 EOF 返回带 operation 的显式 I/O error |
 | 并发积压 | 每个 client connection 只允许一个 in-flight call；第二个并发调用立即返回 `Backpressure`，不进入无界队列 |
-| 未授权 peer | `PeerAuthorizer` 在读取任何 frame 前执行；拒绝返回 `AuthorizationDenied` |
+| 未授权 peer | `PeerAuthorizer` 在读取任何 frame 前执行；`ExactPeerAuthorizer` 对 PID/UID/GID/平台类型漂移 fail closed，拒绝返回 `AuthorizationDenied` |
 | 响应串线 | response 的 16-byte request ID 必须等于 request，否则 `RequestIdMismatch` fail-closed |
 | unknown field | validated wrapper 保留精确输入 bytes；forwarding response 不 decode/re-encode |
 | endpoint 暂不可用 | Unix 返回显式 connect I/O error；Windows 对 busy/not-found 做 10 ms 有界重试，耗尽 connect window 后返回 timeout |
@@ -47,7 +48,7 @@ Windows named pipe 使用 `first_pipe_instance` 防止静默附着既有 namespa
 
 ## 3. 测试与当前结果
 
-当前本地 macOS arm64 已通过：
+当前本地 macOS arm64 已通过（含 2026-08-16 OS credential binding 增量）：
 
 ```sh
 npm run schema:generate
@@ -57,7 +58,7 @@ cargo clippy -p nlos-ipc --all-targets -- -D warnings
 ```
 
 - `nlos-schema`：9 项 compatibility/golden/service surface 测试；
-- `nlos-ipc`：6 项 transport-neutral framing/client 测试；
+- `nlos-ipc`：9 项 transport-neutral framing/client/platform 测试；新增 exact peer credential binding 漂移拒绝；
 - Unix 平台：真实 socket 往返、`0600` mode、peer credential 类型和不存在 endpoint 的显式 connect error，共 2 项；
 - 失败路径覆盖 authorization-before-read、oversized declared frame、half-frame EOF、request ID mismatch、并发 backpressure/read timeout 和 unknown wrapper field 原字节 forwarding。
 
@@ -68,6 +69,7 @@ Windows 标准库交叉目标在本地下载阶段持续无输出，已主动终
 - 同一个 Protobuf service schema 可以驱动 Rust client trait、TypeScript service descriptor 和 Python service descriptor；
 - Rust client/server 可通过 transport-neutral framing 完成 typed request/response，并保持既有兼容检查和 unknown-field forwarding 语义；
 - macOS 上真实 Unix socket 后端通过 owner-only endpoint 与 peer credential hook 工作；
+- `ExactPeerAuthorizer` 能接受同一完整 `PeerIdentity`，并拒绝 process/user/group 或平台类型任一漂移；
 - Windows runner 上真实 named-pipe 往返、unavailable-pipe timeout、workspace test 和 Clippy 已通过；
 - frame、timeout 和单连接并发积压有显式上限，常见断连/半帧/超界/串线不会被误判为成功；
 - transport/credential/Protobuf 依赖均留在 schema/IPC adapter，没有进入 `nlos-types`。
@@ -77,6 +79,7 @@ Windows 标准库交叉目标在本地下载阶段持续无输出，已主动终
 - TypeScript/Python 当前只有生成 service descriptor，没有本地 socket/pipe runtime client、跨语言真实往返或取消/重连状态机；
 - ServiceDirectory、version negotiation、Capability、deadline/cancel、Operation、partial failure 和 Receipt 尚未进入这个最小 service；
 - Windows peer PID、token SID 和显式 pipe ACL 尚未提取/固化；默认 token DACL 不能外推为完整 NLOS authorization；
+- `PeerCredentialBinding` 仍只是本地 OS credential pre-gate，尚未映射到 NLOS Principal/Process/authority lease，也没有签名 challenge、token/attestation 或跨 term takeover proof；
 - 当前 server primitive 一次处理一个请求；没有多连接 supervisor、公平调度、streaming、连接池或自动重连。失败连接会 fail-closed，调用者重建连接的策略与幂等语义仍待实现；
 - 1 MiB 是公共硬上限，不代表每个未来 service payload 已有更严格的独立限额。
 
