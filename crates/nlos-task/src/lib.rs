@@ -49,7 +49,11 @@
 //! without inferring publication from an outbox row. Schema v24 adds the
 //! owner-verified Operation endpoint to the per-effect endpoint and
 //! participant registries. These remain local partial proofs, not
-//! cross-authority activation or complete publication.
+//! cross-authority activation or complete publication. Schema v25 adds
+//! Task-side Semantic publication plans and immutable nested owner receipt
+//! copies; Semantic-only plans can finalize with a nested
+//! `SemanticTaskCommitReceipt`, while mixed Effect + Semantic commits remain
+//! on the unified coordinator path.
 //! The Semantic-aware v3 finalization entry point re-reads those owner proofs
 //! for an issued permit before the Task CAS; replayed terminal permits keep
 //! the normal idempotent path and no publication receipt is synthesized.
@@ -80,6 +84,7 @@ mod model;
 mod participant;
 mod reconcile;
 mod recovery;
+mod semantic_commit;
 mod store;
 
 pub use commit::{
@@ -134,6 +139,12 @@ pub use recovery::{
     ArtifactRecoveryFailureRequest, ArtifactRecoveryFailureSource, ArtifactRecoveryRecord,
     ArtifactRecoveryResumeRequest, ArtifactRecoveryState, ArtifactRecoverySummary,
 };
+pub use semantic_commit::{
+    FinalizeSemanticCommitRequest, NestedSemanticPublicationReceipt, PlanSemanticCommitRequest,
+    RecordSemanticPublicationsRequest, SemanticCommitPlanDecision, SemanticCommitPlanId,
+    SemanticCommitPlanRecord, SemanticCommitPlanState, SemanticCommitProgress,
+    SemanticFinalizeDecision, SemanticPublicationAuthorizationDecision, SemanticTaskCommitReceipt,
+};
 pub use store::SqliteTaskAuthority;
 
 use std::error::Error;
@@ -167,9 +178,15 @@ pub enum TaskStoreError {
     SnapshotReceiptNotFound,
     /// No Artifact publication plan with this identity exists.
     ArtifactCommitPlanNotFound,
+    /// No Semantic publication plan with this identity exists.
+    SemanticCommitPlanNotFound,
     /// The Artifact publication plan is not complete enough to finalize.
     ArtifactCommitPlanNotReady {
         state: ArtifactCommitPlanState,
+    },
+    /// The Semantic publication plan is not complete enough to finalize.
+    SemanticCommitPlanNotReady {
+        state: SemanticCommitPlanState,
     },
     /// Recovery retry timing, threshold, or timestamp is invalid.
     InvalidArtifactRecoveryPolicy {
@@ -210,6 +227,18 @@ pub enum TaskStoreError {
     /// An Artifact publication receipt conflicts with the immutable plan
     /// or an already consumed receipt.
     ArtifactPublicationConflict {
+        /// Static explanation of the rejected binding.
+        reason: &'static str,
+    },
+    /// A Semantic publication plan or nested owner receipt conflicts with
+    /// the immutable `TaskWriteSet` binding.
+    InvalidSemanticPublicationPlan {
+        /// Static explanation of the rejected binding.
+        reason: &'static str,
+    },
+    /// A Semantic publication receipt conflicts with an already consumed
+    /// receipt or immutable plan row.
+    SemanticPublicationConflict {
         /// Static explanation of the rejected binding.
         reason: &'static str,
     },
@@ -446,10 +475,19 @@ impl fmt::Display for TaskStoreError {
             Self::ArtifactCommitPlanNotFound => {
                 formatter.write_str("artifact commit plan does not exist")
             }
+            Self::SemanticCommitPlanNotFound => {
+                formatter.write_str("semantic commit plan does not exist")
+            }
             Self::ArtifactCommitPlanNotReady { state } => {
                 write!(
                     formatter,
                     "artifact commit plan state {state:?} is not ready"
+                )
+            }
+            Self::SemanticCommitPlanNotReady { state } => {
+                write!(
+                    formatter,
+                    "semantic commit plan state {state:?} is not ready"
                 )
             }
             Self::InvalidArtifactRecoveryPolicy { reason } => {
@@ -483,8 +521,14 @@ impl fmt::Display for TaskStoreError {
             Self::ArtifactPublicationConflict { reason } => {
                 write!(formatter, "artifact publication receipt conflict: {reason}")
             }
+            Self::InvalidSemanticPublicationPlan { reason } => {
+                write!(formatter, "invalid semantic publication plan: {reason}")
+            }
+            Self::SemanticPublicationConflict { reason } => {
+                write!(formatter, "semantic publication receipt conflict: {reason}")
+            }
             Self::GroupPublicationInFlight => {
-                formatter.write_str("group membership is frozen by in-flight Artifact publication")
+                formatter.write_str("group membership is frozen by in-flight publication")
             }
             Self::InvalidGeneration => formatter.write_str("stale generation for durable object"),
             Self::InvalidAttemptState { state } => {

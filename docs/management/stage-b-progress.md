@@ -12,6 +12,8 @@
 >
 > 状态更正（2026-08-16）：用户已选择 ADR-0006 候选 1；`B-SEMANTIC-005` 已完成 SemanticAuthority publication receipt producer。当前下一门改为 TaskAuthority consumer 与 nested `TaskCommitReceipt.semantic_publications` 接线。上方“仍待 authority ownership 决策”仅是 2026-08-15 的历史摘要，现由 ADR-0006 取代。
 >
+> 状态更正（2026-08-16，Task consumer）：`B-TASK-008C2G-SEM` 已完成 TaskAuthority Semantic-only publication plan/owner receipt consumer、schema v25、READY/finalize 与 nested `SemanticTaskCommitReceipt.semantic_publications`；混合 Effect + Semantic 统一 finalize、跨 authority coordinator 与完整 TaskWriteSet 仍保持未完成。
+>
 > 权威用途：这是阶段 B 工作项、实现事实、验证证据和下一验收门的唯一汇总入口。它不替代 v0.5 架构规范、ADR 或 Evidence；每一项状态都必须能下钻到这些权威对象。
 
 ## 1. 阶段目标
@@ -71,7 +73,8 @@ Application
 | `B-RESOURCE-002` | Resource activation receipt owner 回读 | `PARTIAL_PASS` | [Evidence](../evidence/stage-b/b-resource-002-activation-receipt-readback.md) | Task 消费/统一 receipt、CLOSING/finalize/refund 与跨 authority lifecycle 仍未实现；strict consume high-water 见 B-RESOURCE-003 |
 | `B-SEMANTIC-003` | Semantic admission outbox owner 回读 | `PARTIAL_PASS` | [Evidence](../evidence/stage-b/b-semantic-003-outbox-owner-readback.md) | 跨进程 consumer/ACK、checkpoint/publication receipt 与 TaskCommitReceipt 接线仍未实现；owner ACK writer 见 B-SEMANTIC-004 |
 | `B-SEMANTIC-004` | Semantic outbox owner ACK writer | `PARTIAL_PASS` | [Evidence](../evidence/stage-b/b-semantic-004-outbox-ack-writer.md) | 跨进程 consumer 认证/租约、checkpoint/publication receipt 与 TaskCommitReceipt 接线仍未实现 |
-| `B-SEMANTIC-005` | Semantic publication receipt producer | `PARTIAL_PASS` | [Evidence](../evidence/stage-b/b-semantic-005-publication-receipt-producer.md)；[ADR-0006](./adrs/0006-semantic-publication-receipt-owner.md) | TaskAuthority consumer、nested `TaskCommitReceipt.semantic_publications`、跨 authority prepare/consume/recovery、Trust View/vector checkpoint 与多 Cell 仍未实现 |
+| `B-SEMANTIC-005` | Semantic publication receipt producer | `PARTIAL_PASS` | [Evidence](../evidence/stage-b/b-semantic-005-publication-receipt-producer.md)；[ADR-0006](./adrs/0006-semantic-publication-receipt-owner.md) | Task consumer 已由 B-TASK-008C2G-SEM 接线；跨 authority prepare/consume/recovery、Trust View/vector checkpoint 与多 Cell 仍未实现 |
+| `B-TASK-008C2G-SEM` | TaskAuthority Semantic publication consumer | `PARTIAL_PASS` | [Evidence](../evidence/stage-b/b-task-008c2g-semantic-publication-consumer.md) | 仅 Semantic-only permit；混合 Effect + Semantic unified finalize、跨 authority coordinator/recovery、Trust View/vector checkpoint 与多 Cell 仍未实现 |
 | `B-RESOURCE-003` | Resource strict consume high-water | `PARTIAL_PASS` | [Evidence](../evidence/stage-b/b-resource-003-consumption-high-water.md) | CLOSING/finalize/refund/risk/unknown usage 与跨 authority resource/cost receipt 仍未实现 |
 | `B-RESOURCE-004` | Resource QUARANTINED freeze | `PARTIAL_PASS` | [Evidence](../evidence/stage-b/b-resource-004-quarantine-freeze.md) | effect-closed final usage proof、CLOSING/FINALIZED、reconciliation/finalize/refund 与跨 authority resource/cost receipt 仍未实现 |
 | `B-OP-FENCE-002` | Operation owner endpoint proof/readback | `PARTIAL_PASS` | [Evidence](../evidence/stage-b/b-op-fence-002-operation-endpoint-proof.md)；TaskWriteSet 接线见 [B-TASK-008C2G-OP](../evidence/stage-b/b-task-008c2g-operation-endpoint-binding.md) | Operation prepare→activate、跨进程签名/租约/attestation、Channel endpoint 与 Operation completion 仍未实现 |
@@ -623,7 +626,14 @@ Application
 - Semantic schema v4 新增 immutable `semantic_publication_receipts`，以唯一 `(TaskId, CommitPermitId, EventId)` 绑定 owner-derived receipt；update/delete 与 partial schema 均 fail closed。
 - `SemanticAuthority::publish_semantic_publication` 在同一 owner transaction 重新读取 Event scope、Durable AdmissionReceipt 和可选 DurabilityReceipt；不 ACK outbox、不修改既有 Semantic facts。
 - `semantic_checkpoint_after` 是当前 append-only `event_log` 前缀的确定性本地 digest；receipt identity、exact replay、错误 target/receipt 拒绝与 authority restart readback 已覆盖。详见 [B-SEMANTIC-005](../evidence/stage-b/b-semantic-005-publication-receipt-producer.md) 与 [ADR-0006](./adrs/0006-semantic-publication-receipt-owner.md)。
-- 仍为 `PARTIAL_PASS`：TaskAuthority publication consumer、nested `TaskCommitReceipt.semantic_publications`、跨 authority prepare/consume/recovery、Trust View/vector checkpoint、跨进程 auth/lease 与多 Cell 仍未完成；下一门是 Task consumer 接线。
+- 仍为 `PARTIAL_PASS`：TaskAuthority consumer 已由 `B-TASK-008C2G-SEM` 接线；跨 authority prepare/consume/recovery、Trust View/vector checkpoint、跨进程 auth/lease 与多 Cell 仍未完成。
+
+### 4.83 TaskAuthority Semantic publication consumer（B-TASK-008C2G-SEM）
+
+- schema v25 新增 immutable Semantic commit plan/receipt 表；`plan → authorize → partial/READY consume` 只接受 sealed `TaskWriteSet.semantic_appends`，并在消费时重新读取 `SemanticAuthority` owner receipt。
+- Semantic-only permit 的完整 receipt set 在一个 TaskAuthority transaction 内关闭 permit、推进 TaskHead/attempt、写入既有 Task receipt，并返回 nested `SemanticTaskCommitReceipt.semantic_publications`；重启后精确回放不重写 receipt。
+- Task group publication-in-flight fence 已同时覆盖 Artifact/Semantic plan；错误 owner binding、checkpoint、target、Admission/Durability receipt 与 immutable child UPDATE 均 fail closed。详见 [B-TASK-008C2G-SEM](../evidence/stage-b/b-task-008c2g-semantic-publication-consumer.md)。
+- 仍为 `PARTIAL_PASS`：混合 Effect + Semantic unified terminal receipt、跨 authority prepare/finalize coordinator、真实故障矩阵、Trust View/vector checkpoint、多 Cell 与完整 TaskWriteSet 仍未完成。
 
 
 ## 5. 当前下一验收门
@@ -748,7 +758,8 @@ TaskGroup membership generation/root CAS + Admission/Removal Receipt            
   → Operation owner-derived endpoint proof/readback                                   PARTIAL PASS（B-OP-FENCE-002）
   → Operation endpoint TaskWriteSet/participant registry binding                       PARTIAL PASS（B-TASK-008C2G-OP）
   → Semantic publication receipt producer                                             PARTIAL PASS（B-SEMANTIC-005）
-  → TaskAuthority publication consumer + TaskCommitReceipt semantic_publications       NEXT（B-TASK-008C2G）
+  → TaskAuthority Semantic publication consumer + nested TaskCommitReceipt             PARTIAL PASS（B-TASK-008C2G-SEM）
+  → Mixed Effect + Semantic unified finalize/coordinator                                NEXT（B-TASK-008C2G）
 ```
 
 议题 31 证据门条 1–7 的 Task/Effect 核心语义至此全部具有至少 H3 级本地证据；TaskGroup membership generation/root 已由 B-TASK-004 实现，WriteSet/CommitPermit/TaskCommitReceipt 的 permit-time 组绑定与漂移围栏已由 B-TASK-005 取得局部 H3 证据，Artifact staged revision 与 Artifact 域内 publication receipt 已由 B-ARTIFACT-002 取得局部 H3 证据。条 8 的本地双 authority 路径已经具备 TaskAuthority publication authorization、Artifact publication nested Receipt、READY-only terminal transaction、重启收敛和逐 plan 故障隔离（B-TASK-006A–006G）；B-TASK-006H–006O 继续证明 recovery lifecycle、durable ledger/alert、typed control/metrics、dual-authority crash recovery 与 TaskSnapshotReceipt；[B-TASK-006P](../evidence/stage-b/b-task-006p-shared-nominal-identity-spine.md) 收敛共享 typed identity，[B-PROCESS-001](../evidence/stage-b/b-process-001-durable-execution-binding-authority.md) 建立 Process/AgentInstance/IsolationDomain generation/fence authority，[B-RESOURCE-001](../evidence/stage-b/b-resource-001-driver-reservation-binding-authority.md) 建立 Driver/Device/Quote/Reservation pre-dispatch binding authority，[B-IDENTITY-001](../evidence/stage-b/b-identity-001-principal-key-authority.md) 建立 Principal/ControlDomain/signing-key validity、撤销与真实 Semantic signature verification，[B-CAPABILITY-001](../evidence/stage-b/b-capability-001-durable-attenuation-authority.md) 建立 issue/delegate/revoke 与 verified-signer reference monitor，[B-SEMANTIC-001](../evidence/stage-b/b-semantic-001-durable-assertion-admission.md) 将前置权威接入 canonical Assertion append，[B-SEMANTIC-002A/002B](../evidence/stage-b/b-semantic-002b-durable-spec-event-admission.md) 冻结 IntentSpec identity 并建立 signed durable SpecEvent admission。[ADR-0005](./adrs/0005-task-write-set-authority-first.md) 的前置 authority/participant registry 链已取得局部 H3 证据；B-TASK-008A 完成 snapshot/read-set seal，B-TASK-008B1 完成 Process owner binding，B-TASK-008B2 完成 Semantic/Resource owner readback，B-TASK-008C1 完成 planned effect 的 durable seal 与 sealed-root permit exact binding，B-TASK-008C2A 完成 owner endpoint proof 与 permit 前 frozen registry membership，B-TASK-008C2B 完成 Artifact proposed-write 与 publication plan 的局部 binding，B-TASK-008C2C 完成 Semantic append declaration 与直接 Durable AdmissionReceipt 的局部 binding，B-TASK-008C2D 完成可选 Semantic DurabilityReceipt owner binding，B-TASK-008C2E 完成终结前 owner-proof re-read guard，B-TASK-008C2F 完成 expected admission-policy owner binding 的局部证据，B-TASK-008C2G-OP 完成 Operation endpoint 的 schema v24、registry 接线与 permit 前 owner 复核，但 **complete TaskWriteSet 仍未完成**，下一验收门是 B-TASK-008C2G 的 Semantic publication receipt producer/consumer 与 TaskCommitReceipt 接线。现有证据仍只覆盖单节点本地 reference authority，不得外推为完整 Identity/Keychain、通用 Capability 系统、五类完整 Semantic store、Trust View、Ledger、真实 Driver enforcement、硬件掉电、分布式原子事务、跨 term 接管或 Slice K 完成。

@@ -32,7 +32,7 @@ use crate::{
     TaskWriteSetSemanticTarget,
 };
 
-const SCHEMA_VERSION: i64 = 24;
+const SCHEMA_VERSION: i64 = 25;
 
 /// A single-writer `SQLite` task authority.
 ///
@@ -232,6 +232,7 @@ impl SqliteTaskAuthority {
             migrate_v22(&mut connection)?;
             migrate_v23(&mut connection)?;
             migrate_v24(&mut connection)?;
+            migrate_v25(&mut connection)?;
         }
 
         Ok(Self {
@@ -3341,6 +3342,40 @@ fn migrate_v24(connection: &mut Connection) -> Result<(), TaskStoreError> {
     Ok(())
 }
 
+/// v24 → v25 adds the immutable Task-side Semantic publication plan and
+/// nested owner receipt rows. Existing permits and Task receipts remain
+/// unchanged; no publication fact is inferred during migration.
+fn migrate_v25(connection: &mut Connection) -> Result<(), TaskStoreError> {
+    let table_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN
+            ('task_semantic_commit_plans', 'task_semantic_publication_receipts')",
+        [],
+        |row| row.get(0),
+    )?;
+    let trigger_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN
+            ('task_semantic_commit_plan_identity_immutable',
+             'task_semantic_commit_plan_no_delete',
+             'task_semantic_publication_receipt_immutable_update',
+             'task_semantic_publication_receipt_immutable_delete')",
+        [],
+        |row| row.get(0),
+    )?;
+    if table_count == 2 && trigger_count == 4 {
+        connection.pragma_update(None, "user_version", 25)?;
+        return Ok(());
+    }
+    if table_count != 0 || trigger_count != 0 {
+        return Err(TaskStoreError::CorruptRecord(
+            "partial Semantic publication schema",
+        ));
+    }
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(SCHEMA_V25_SQL)?;
+    transaction.commit()?;
+    Ok(())
+}
+
 const SCHEMA_V13_SQL: &str = "CREATE TABLE task_write_sets (
         task_id BLOB NOT NULL CHECK(length(task_id) = 16),
         attempt_id BLOB NOT NULL CHECK(length(attempt_id) = 16),
@@ -3724,6 +3759,84 @@ const SCHEMA_V24_SQL: &str = "DROP TRIGGER task_participants_immutable_update;
     BEFORE DELETE ON task_write_set_effect_endpoints
     BEGIN SELECT RAISE(ABORT, 'TaskWriteSet effect endpoint is immutable'); END;
     PRAGMA user_version = 24;";
+
+pub(crate) const SCHEMA_V25_SQL: &str = "CREATE TABLE task_semantic_commit_plans (
+        plan_id BLOB PRIMARY KEY NOT NULL CHECK(length(plan_id) = 16),
+        task_id BLOB NOT NULL CHECK(length(task_id) = 16),
+        permit_id BLOB NOT NULL UNIQUE CHECK(length(permit_id) = 16),
+        idempotency_key BLOB NOT NULL CHECK(length(idempotency_key) = 16),
+        attempt_id BLOB NOT NULL CHECK(length(attempt_id) = 16),
+        attempt_generation BLOB NOT NULL CHECK(length(attempt_generation) = 8),
+        write_set_root BLOB NOT NULL CHECK(length(write_set_root) = 32),
+        semantic_append_set_root BLOB NOT NULL CHECK(length(semantic_append_set_root) = 32),
+        expected_semantic_count BLOB NOT NULL CHECK(length(expected_semantic_count) = 8),
+        plan_state INTEGER NOT NULL CHECK(plan_state IN (0, 1, 2, 3)),
+        task_receipt_id BLOB CHECK(task_receipt_id IS NULL OR length(task_receipt_id) = 16),
+        created_at_ms INTEGER NOT NULL,
+        updated_at_ms INTEGER NOT NULL,
+        UNIQUE(task_id, idempotency_key),
+        FOREIGN KEY(task_id) REFERENCES tasks(task_id),
+        FOREIGN KEY(permit_id) REFERENCES commit_permits(permit_id),
+        CHECK((plan_state = 3) = (task_receipt_id IS NOT NULL))
+     ) STRICT;
+
+     CREATE TABLE task_semantic_publication_receipts (
+        plan_id BLOB NOT NULL CHECK(length(plan_id) = 16),
+        receipt_id BLOB PRIMARY KEY NOT NULL CHECK(length(receipt_id) = 16),
+        task_id BLOB NOT NULL CHECK(length(task_id) = 16),
+        permit_id BLOB NOT NULL CHECK(length(permit_id) = 16),
+        write_set_root BLOB NOT NULL CHECK(length(write_set_root) = 32),
+        event_id BLOB NOT NULL CHECK(length(event_id) = 32),
+        target_scope_kind INTEGER NOT NULL CHECK(target_scope_kind IN (1, 2)),
+        target_scope_id BLOB NOT NULL CHECK(length(target_scope_id) = 16),
+        log_seq BLOB NOT NULL CHECK(length(log_seq) = 8),
+        admission_receipt_id BLOB NOT NULL CHECK(length(admission_receipt_id) = 16),
+        durability_receipt_id BLOB CHECK(durability_receipt_id IS NULL OR length(durability_receipt_id) = 16),
+        semantic_checkpoint_after BLOB NOT NULL CHECK(length(semantic_checkpoint_after) = 32),
+        created_at_ms INTEGER NOT NULL,
+        UNIQUE(plan_id, event_id),
+        UNIQUE(plan_id, receipt_id),
+        FOREIGN KEY(plan_id) REFERENCES task_semantic_commit_plans(plan_id)
+     ) STRICT;
+
+     CREATE INDEX task_semantic_publication_receipts_by_task_permit
+        ON task_semantic_publication_receipts(task_id, permit_id);
+
+     CREATE TRIGGER task_semantic_commit_plan_identity_immutable
+     BEFORE UPDATE ON task_semantic_commit_plans
+     WHEN OLD.plan_id IS NOT NEW.plan_id
+       OR OLD.task_id IS NOT NEW.task_id
+       OR OLD.permit_id IS NOT NEW.permit_id
+       OR OLD.idempotency_key IS NOT NEW.idempotency_key
+       OR OLD.attempt_id IS NOT NEW.attempt_id
+       OR OLD.attempt_generation IS NOT NEW.attempt_generation
+       OR OLD.write_set_root IS NOT NEW.write_set_root
+       OR OLD.semantic_append_set_root IS NOT NEW.semantic_append_set_root
+       OR OLD.expected_semantic_count IS NOT NEW.expected_semantic_count
+       OR OLD.created_at_ms IS NOT NEW.created_at_ms
+     BEGIN
+        SELECT RAISE(ABORT, 'semantic commit plan identity is immutable');
+     END;
+
+     CREATE TRIGGER task_semantic_commit_plan_no_delete
+     BEFORE DELETE ON task_semantic_commit_plans
+     BEGIN
+        SELECT RAISE(ABORT, 'semantic commit plan is durable evidence');
+     END;
+
+     CREATE TRIGGER task_semantic_publication_receipt_immutable_update
+     BEFORE UPDATE ON task_semantic_publication_receipts
+     BEGIN
+        SELECT RAISE(ABORT, 'nested semantic publication receipt is immutable');
+     END;
+
+     CREATE TRIGGER task_semantic_publication_receipt_immutable_delete
+     BEFORE DELETE ON task_semantic_publication_receipts
+     BEGIN
+        SELECT RAISE(ABORT, 'nested semantic publication receipt is durable evidence');
+     END;
+
+     PRAGMA user_version = 25;";
 
 const SCHEMA_V12_SQL: &str = "ALTER TABLE effect_permits
         ADD COLUMN participant_registry_generation BLOB

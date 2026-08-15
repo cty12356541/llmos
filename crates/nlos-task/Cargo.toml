@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 nlos-artifact = { path = "../nlos-artifact" }
+nlos-capability = { path = "../nlos-capability" }
 nlos-operation = { path = "../nlos-operation" }
 nlos-process = { path = "../nlos-process" }
 nlos-resource = { path = "../nlos-resource" }

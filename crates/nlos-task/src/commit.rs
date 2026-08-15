@@ -859,13 +859,24 @@ pub(crate) fn group_has_publication_in_flight(
     group_id: crate::TaskGroupId,
 ) -> Result<bool, TaskStoreError> {
     let mut statement = source.prepare_statement(
-        "SELECT COUNT(*)
-         FROM task_artifact_commit_plans AS plans
-         JOIN commit_permits AS permits ON permits.permit_id = plans.permit_id
-         WHERE permits.group_id = ?1 AND plans.plan_state IN (1, 2)",
+        "SELECT (
+            EXISTS(
+                SELECT 1
+                FROM task_artifact_commit_plans AS plans
+                JOIN commit_permits AS permits ON permits.permit_id = plans.permit_id
+                WHERE permits.group_id = ?1 AND plans.plan_state IN (1, 2)
+            )
+            OR EXISTS(
+                SELECT 1
+                FROM task_semantic_commit_plans AS plans
+                JOIN commit_permits AS permits ON permits.permit_id = plans.permit_id
+                WHERE permits.group_id = ?1 AND plans.plan_state IN (1, 2)
+            )
+         )",
     )?;
-    let count: i64 = statement.query_row([group_id.as_bytes().as_slice()], |row| row.get(0))?;
-    Ok(count != 0)
+    let in_flight: bool =
+        statement.query_row([group_id.as_bytes().as_slice()], |row| row.get(0))?;
+    Ok(in_flight)
 }
 
 fn update_plan_state(
