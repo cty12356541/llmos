@@ -557,9 +557,12 @@ name = "nlos-task"
 version = "0.1.0"
 dependencies = [
  "nlos-artifact",
+ "nlos-operation",
  "nlos-process",
  "nlos-resource",
+ "nlos-runtime",
  "nlos-semantic",
+ "nlos-store",
  "nlos-store-fault",
  "nlos-types",
  "rusqlite",

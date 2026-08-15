@@ -10,9 +10,10 @@ use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
+use nlos_operation::OperationHandle;
 use nlos_types::{
-    ArtifactId, CancellationScopeId, CommitPermitId, Generation, IdempotencyKey, ProcessId,
-    ReceiptId, TaskAttemptId, TaskId, TaskSnapshotId,
+    ArtifactId, CancellationScopeId, CommitPermitId, Generation, IdempotencyKey, OperationId,
+    ProcessId, ReceiptId, TaskAttemptId, TaskId, TaskSnapshotId,
 };
 use rusqlite::{
     Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
@@ -31,7 +32,7 @@ use crate::{
     TaskWriteSetSemanticTarget,
 };
 
-const SCHEMA_VERSION: i64 = 23;
+const SCHEMA_VERSION: i64 = 24;
 
 /// A single-writer `SQLite` task authority.
 ///
@@ -230,6 +231,7 @@ impl SqliteTaskAuthority {
             migrate_v21(&mut connection)?;
             migrate_v22(&mut connection)?;
             migrate_v23(&mut connection)?;
+            migrate_v24(&mut connection)?;
         }
 
         Ok(Self {
@@ -384,7 +386,7 @@ impl SqliteTaskAuthority {
         artifact_authority: &nlos_artifact::ArtifactStore,
         request: TaskWriteSetRequest,
     ) -> Result<TaskWriteSetDecision, TaskStoreError> {
-        self.seal_task_write_set_inner(artifact_authority, None, None, None, request)
+        self.seal_task_write_set_inner(artifact_authority, None, None, None, None, request)
     }
 
     /// Seals the snapshot/read-set slice and an owner-verified current
@@ -411,6 +413,7 @@ impl SqliteTaskAuthority {
             Some(process_authority),
             None,
             None,
+            None,
             request,
         )
     }
@@ -433,6 +436,7 @@ impl SqliteTaskAuthority {
             artifact_authority,
             None,
             Some(semantic_authority),
+            None,
             None,
             request,
         )
@@ -457,6 +461,7 @@ impl SqliteTaskAuthority {
             None,
             None,
             Some(resource_authority),
+            None,
             request,
         )
     }
@@ -484,6 +489,63 @@ impl SqliteTaskAuthority {
             Some(process_authority),
             Some(semantic_authority),
             Some(resource_authority),
+            None,
+            request,
+        )
+    }
+
+    /// Seals a write set after the owning Operation authority has returned an
+    /// exact `OperationId + Generation` endpoint proof. The Operation proof
+    /// is persisted only when the endpoint is already present in the OPEN
+    /// participant registry; this method does not expand that registry.
+    ///
+    /// # Errors
+    ///
+    /// Returns typed Operation owner, endpoint-registration, snapshot,
+    /// read-set, idempotency, or storage errors.
+    #[allow(clippy::needless_pass_by_value)]
+    #[allow(clippy::too_many_lines)]
+    pub fn seal_task_write_set_with_operation_authority(
+        &self,
+        artifact_authority: &nlos_artifact::ArtifactStore,
+        operation_authority: &nlos_store::SqliteOperationStore,
+        request: TaskWriteSetRequest,
+    ) -> Result<TaskWriteSetDecision, TaskStoreError> {
+        self.seal_task_write_set_inner(
+            artifact_authority,
+            None,
+            None,
+            None,
+            Some(operation_authority),
+            request,
+        )
+    }
+
+    /// Seals a write set after direct readback from Process, Semantic,
+    /// Resource, and Operation owner authorities. This is the combined entry
+    /// point for a request carrying more than one non-Artifact endpoint kind.
+    ///
+    /// # Errors
+    ///
+    /// Returns typed owner-proof, endpoint-registration, snapshot, read-set,
+    /// idempotency, or storage errors.
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_lines)]
+    pub fn seal_task_write_set_with_authorities_and_operation_authority(
+        &self,
+        artifact_authority: &nlos_artifact::ArtifactStore,
+        process_authority: &nlos_process::ProcessAuthority,
+        semantic_authority: &nlos_semantic::SemanticAuthority,
+        resource_authority: &nlos_resource::ResourceAuthority,
+        operation_authority: &nlos_store::SqliteOperationStore,
+        request: TaskWriteSetRequest,
+    ) -> Result<TaskWriteSetDecision, TaskStoreError> {
+        self.seal_task_write_set_inner(
+            artifact_authority,
+            Some(process_authority),
+            Some(semantic_authority),
+            Some(resource_authority),
+            Some(operation_authority),
             request,
         )
     }
@@ -496,6 +558,7 @@ impl SqliteTaskAuthority {
         process_authority: Option<&nlos_process::ProcessAuthority>,
         semantic_authority: Option<&nlos_semantic::SemanticAuthority>,
         resource_authority: Option<&nlos_resource::ResourceAuthority>,
+        operation_authority: Option<&nlos_store::SqliteOperationStore>,
         request: TaskWriteSetRequest,
     ) -> Result<TaskWriteSetDecision, TaskStoreError> {
         if request.sealed_at_ms < 0 {
@@ -805,6 +868,7 @@ impl SqliteTaskAuthority {
             process_authority,
             semantic_authority,
             resource_authority,
+            operation_authority,
             &request.effect_endpoints,
             planned_effects.len(),
             &task.record,
@@ -1082,7 +1146,7 @@ impl SqliteTaskAuthority {
         &self,
         request: PermitRequest,
     ) -> Result<PermitDecision, TaskStoreError> {
-        self.request_commit_permit_inner(None, None, None, request)
+        self.request_commit_permit_inner(None, None, None, None, request)
     }
 
     /// Runs the `CommitPermit` CAS after re-reading every Artifact head named
@@ -1107,7 +1171,7 @@ impl SqliteTaskAuthority {
         artifact_authority: &nlos_artifact::ArtifactStore,
         request: PermitRequest,
     ) -> Result<PermitDecision, TaskStoreError> {
-        self.request_commit_permit_inner(Some(artifact_authority), None, None, request)
+        self.request_commit_permit_inner(Some(artifact_authority), None, None, None, request)
     }
 
     /// Runs the `CommitPermit` CAS after re-reading an optional Process /
@@ -1132,7 +1196,7 @@ impl SqliteTaskAuthority {
         process_authority: &nlos_process::ProcessAuthority,
         request: PermitRequest,
     ) -> Result<PermitDecision, TaskStoreError> {
-        self.request_commit_permit_inner(None, Some(process_authority), None, request)
+        self.request_commit_permit_inner(None, Some(process_authority), None, None, request)
     }
 
     /// Runs the `CommitPermit` CAS after re-reading every Resource reservation
@@ -1157,7 +1221,54 @@ impl SqliteTaskAuthority {
         resource_authority: &nlos_resource::ResourceAuthority,
         request: PermitRequest,
     ) -> Result<PermitDecision, TaskStoreError> {
-        self.request_commit_permit_inner(None, None, Some(resource_authority), request)
+        self.request_commit_permit_inner(None, None, Some(resource_authority), None, request)
+    }
+
+    /// Runs the `CommitPermit` CAS after re-reading every Operation endpoint
+    /// named by a sealed `TaskWriteSet` from its owning Operation authority.
+    /// A stale or changed owner proof blocks participant-registry freezing.
+    ///
+    /// This is an opt-in strengthening of the legacy permit entry point: it
+    /// does not dispatch or transition the Operation itself.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::request_commit_permit`], plus a
+    /// typed Operation owner or endpoint-proof conflict.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn request_commit_permit_with_operation_authority(
+        &self,
+        operation_authority: &nlos_store::SqliteOperationStore,
+        request: PermitRequest,
+    ) -> Result<PermitDecision, TaskStoreError> {
+        self.request_commit_permit_inner(None, None, None, Some(operation_authority), request)
+    }
+
+    /// Runs the `CommitPermit` CAS with Artifact, Process, Resource, and
+    /// Operation owner revalidation enabled together. Semantic append
+    /// revalidation remains on the dedicated Semantic-aware finalize path.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::request_commit_permit`], plus typed
+    /// Artifact, Process, Resource, or Operation owner-proof conflicts.
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn request_commit_permit_with_authorities_and_operation_authority(
+        &self,
+        artifact_authority: &nlos_artifact::ArtifactStore,
+        process_authority: &nlos_process::ProcessAuthority,
+        resource_authority: &nlos_resource::ResourceAuthority,
+        operation_authority: &nlos_store::SqliteOperationStore,
+        request: PermitRequest,
+    ) -> Result<PermitDecision, TaskStoreError> {
+        self.request_commit_permit_inner(
+            Some(artifact_authority),
+            Some(process_authority),
+            Some(resource_authority),
+            Some(operation_authority),
+            request,
+        )
     }
 
     #[allow(clippy::needless_pass_by_value)]
@@ -1166,6 +1277,7 @@ impl SqliteTaskAuthority {
         artifact_authority: Option<&nlos_artifact::ArtifactStore>,
         process_authority: Option<&nlos_process::ProcessAuthority>,
         resource_authority: Option<&nlos_resource::ResourceAuthority>,
+        operation_authority: Option<&nlos_store::SqliteOperationStore>,
         request: PermitRequest,
     ) -> Result<PermitDecision, TaskStoreError> {
         let mut connection = self.lock_connection()?;
@@ -1200,6 +1312,7 @@ impl SqliteTaskAuthority {
             artifact_authority,
             process_authority,
             resource_authority,
+            operation_authority,
         )?;
         transaction.commit()?;
         Ok(decision)
@@ -1420,6 +1533,48 @@ impl SqliteTaskAuthority {
         self.register_verified_participant(task_id, expected, participant, registered_at_ms)
     }
 
+    /// Registers the current Operation endpoint after exact owner proof
+    /// readback. The caller cannot provide the Operation participant tuple;
+    /// it is derived by `SqliteOperationStore` from the durable registration
+    /// row and generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns typed Operation proof, generation, task, registry CAS/freeze,
+    /// bound, or storage errors. No Task mutation occurs on proof mismatch.
+    pub fn register_operation_binding_participant(
+        &self,
+        operation_authority: &nlos_store::SqliteOperationStore,
+        task_id: TaskId,
+        expected: crate::ParticipantRegistryBinding,
+        operation_id: OperationId,
+        expected_operation_generation: Generation,
+        registered_at_ms: i64,
+    ) -> Result<crate::ParticipantRegistrationDecision, TaskStoreError> {
+        let proof = operation_authority
+            .inspect_endpoint_proof(OperationHandle {
+                operation_id,
+                generation: expected_operation_generation,
+            })
+            .map_err(TaskStoreError::OperationParticipantAuthority)?;
+        if proof.operation.operation_id != operation_id
+            || proof.operation.generation != expected_operation_generation
+            || proof.participant_generation != expected_operation_generation
+        {
+            return Err(TaskStoreError::ParticipantEndpointGenerationMismatch {
+                expected: expected_operation_generation.get(),
+                current: proof.participant_generation.get(),
+            });
+        }
+        let participant = crate::ParticipantRecord {
+            participant_type: crate::ParticipantType::OperationBinding,
+            participant_id: proof.participant_id,
+            participant_generation: proof.participant_generation,
+            admission_receipt_id: proof.admission_receipt_id,
+        };
+        self.register_verified_participant(task_id, expected, participant, registered_at_ms)
+    }
+
     /// Registers the current Driver gateway generation after direct
     /// `ResourceAuthority` readback and an exact planned-generation check.
     ///
@@ -1620,6 +1775,7 @@ fn resolve_effect_endpoints(
     process_authority: Option<&nlos_process::ProcessAuthority>,
     semantic_authority: Option<&nlos_semantic::SemanticAuthority>,
     resource_authority: Option<&nlos_resource::ResourceAuthority>,
+    operation_authority: Option<&nlos_store::SqliteOperationStore>,
     requests: &[TaskWriteSetEffectEndpointRequest],
     effect_count: usize,
     task: &TaskRecord,
@@ -1661,6 +1817,10 @@ fn resolve_effect_endpoints(
             TaskWriteSetEffectEndpointRequest::ResourceLedger { account_id, .. } => (
                 TaskWriteSetEffectEndpointKind::ResourceLedger,
                 account_id.into_bytes(),
+            ),
+            TaskWriteSetEffectEndpointRequest::OperationBinding { operation_id, .. } => (
+                TaskWriteSetEffectEndpointKind::OperationBinding,
+                operation_id.into_bytes(),
             ),
         };
         let key = (request.effect_seq(), kind.code(), object_id);
@@ -1769,6 +1929,36 @@ fn resolve_effect_endpoints(
                     proof.admission_receipt_id,
                 )
             }
+            TaskWriteSetEffectEndpointRequest::OperationBinding {
+                operation_id,
+                expected_operation_generation,
+                ..
+            } => {
+                let authority =
+                    operation_authority.ok_or(TaskStoreError::TaskWriteSetConflict {
+                        reason: "Operation effect endpoint requires OperationAuthority readback",
+                    })?;
+                let proof = authority
+                    .inspect_endpoint_proof(OperationHandle {
+                        operation_id,
+                        generation: expected_operation_generation,
+                    })
+                    .map_err(TaskStoreError::OperationParticipantAuthority)?;
+                if proof.operation.operation_id != operation_id
+                    || proof.operation.generation != expected_operation_generation
+                    || proof.participant_generation != expected_operation_generation
+                {
+                    return Err(TaskStoreError::ParticipantEndpointGenerationMismatch {
+                        expected: expected_operation_generation.get(),
+                        current: proof.participant_generation.get(),
+                    });
+                }
+                (
+                    proof.participant_id,
+                    proof.participant_generation,
+                    proof.admission_receipt_id,
+                )
+            }
         };
         endpoints.push(TaskWriteSetEffectEndpoint {
             effect_seq: request.effect_seq(),
@@ -1795,6 +1985,9 @@ fn resolve_effect_endpoints(
                 TaskWriteSetEffectEndpointKind::ResourceLedger => {
                     crate::ParticipantType::ResourceLedger
                 }
+                TaskWriteSetEffectEndpointKind::OperationBinding => {
+                    crate::ParticipantType::OperationBinding
+                }
             },
             participant_id,
             participant_generation,
@@ -1811,6 +2004,7 @@ fn resolve_effect_endpoints(
     Ok((endpoints, participants))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compete_for_permit(
     transaction: &Transaction<'_>,
     task: &StoredTask,
@@ -1819,6 +2013,7 @@ fn compete_for_permit(
     artifact_authority: Option<&nlos_artifact::ArtifactStore>,
     process_authority: Option<&nlos_process::ProcessAuthority>,
     resource_authority: Option<&nlos_resource::ResourceAuthority>,
+    operation_authority: Option<&nlos_store::SqliteOperationStore>,
 ) -> Result<PermitDecision, TaskStoreError> {
     if !attempt.state.is_open_candidate() {
         return Err(TaskStoreError::InvalidAttemptState {
@@ -1886,6 +2081,7 @@ fn compete_for_permit(
         artifact_authority,
         process_authority,
         resource_authority,
+        operation_authority,
     )?;
     Ok(PermitDecision::Issued(Box::new(record)))
 }
@@ -1984,6 +2180,45 @@ fn validate_resource_reservation_bindings(
     Ok(())
 }
 
+fn validate_operation_endpoint_bindings(
+    operation_authority: Option<&nlos_store::SqliteOperationStore>,
+    record: &TaskWriteSetRecord,
+) -> Result<(), TaskStoreError> {
+    let has_operation_endpoint = record
+        .effect_endpoints
+        .iter()
+        .any(|endpoint| endpoint.kind == TaskWriteSetEffectEndpointKind::OperationBinding);
+    if !has_operation_endpoint {
+        return Ok(());
+    }
+    let authority = operation_authority.ok_or(TaskStoreError::TaskWriteSetConflict {
+        reason: "Operation effect endpoint requires OperationAuthority readback before permit freeze",
+    })?;
+    for expected in record
+        .effect_endpoints
+        .iter()
+        .filter(|endpoint| endpoint.kind == TaskWriteSetEffectEndpointKind::OperationBinding)
+    {
+        let proof = authority
+            .inspect_endpoint_proof(OperationHandle {
+                operation_id: OperationId::from_bytes(expected.object_id),
+                generation: expected.participant_generation,
+            })
+            .map_err(TaskStoreError::OperationParticipantAuthority)?;
+        if proof.operation.operation_id != OperationId::from_bytes(expected.object_id)
+            || proof.operation.generation != expected.participant_generation
+            || proof.participant_id != expected.participant_id
+            || proof.participant_generation != expected.participant_generation
+            || proof.admission_receipt_id != expected.admission_receipt_id
+        {
+            return Err(TaskStoreError::TaskWriteSetConflict {
+                reason: "Operation endpoint proof differs before permit freeze",
+            });
+        }
+    }
+    Ok(())
+}
+
 fn validate_head_binding(task: &TaskRecord, snapshot: &SnapshotBundle) -> Option<PermitConflict> {
     if snapshot.expected_head_commit_seq != task.head_commit_seq {
         return Some(PermitConflict::StaleTaskHead {
@@ -2000,6 +2235,7 @@ fn validate_head_binding(task: &TaskRecord, snapshot: &SnapshotBundle) -> Option
     None
 }
 
+#[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_lines)]
 fn issue_permit(
     transaction: &Transaction<'_>,
@@ -2009,6 +2245,7 @@ fn issue_permit(
     artifact_authority: Option<&nlos_artifact::ArtifactStore>,
     process_authority: Option<&nlos_process::ProcessAuthority>,
     resource_authority: Option<&nlos_resource::ResourceAuthority>,
+    operation_authority: Option<&nlos_store::SqliteOperationStore>,
 ) -> Result<PermitRecord, TaskStoreError> {
     let effect_set_root = crate::effect::validate_planned_effects(
         task.record.task_id,
@@ -2096,6 +2333,7 @@ fn issue_permit(
                 record,
             )?;
         }
+        validate_operation_endpoint_bindings(operation_authority, record)?;
         let current_group = crate::group::current_commit_binding(transaction, attempt.attempt_id)?;
         if record.group_binding != current_group {
             return Err(TaskStoreError::MembershipConflict);
@@ -2128,6 +2366,9 @@ fn issue_permit(
                     }
                     TaskWriteSetEffectEndpointKind::ResourceLedger => {
                         crate::ParticipantType::ResourceLedger
+                    }
+                    TaskWriteSetEffectEndpointKind::OperationBinding => {
+                        crate::ParticipantType::OperationBinding
                     }
                 },
                 participant_id: endpoint.participant_id,
@@ -2677,11 +2918,13 @@ fn migrate_v15(connection: &mut Connection) -> Result<(), TaskStoreError> {
         [],
         |row| row.get(0),
     )?;
-    if table_sql.contains("BETWEEN 1 AND 7") && trigger_count == 2 {
+    if (table_sql.contains("BETWEEN 1 AND 7") || table_sql.contains("BETWEEN 1 AND 8"))
+        && trigger_count == 2
+    {
         connection.pragma_update(None, "user_version", 15)?;
         return Ok(());
     }
-    if table_sql.contains("BETWEEN 1 AND 7") {
+    if table_sql.contains("BETWEEN 1 AND 7") || table_sql.contains("BETWEEN 1 AND 8") {
         return Err(TaskStoreError::CorruptRecord(
             "partial Process participant type migration",
         ));
@@ -3018,6 +3261,86 @@ fn migrate_v23(connection: &mut Connection) -> Result<(), TaskStoreError> {
     Ok(())
 }
 
+/// v23 → v24 widens the immutable participant and planned-effect endpoint
+/// checks for the owner-verified Operation endpoint. `SQLite` cannot alter a
+/// CHECK constraint in place, so both tables are copied in one transaction;
+/// historical rows and their trigger guards remain byte-for-byte equivalent.
+fn migrate_v24(connection: &mut Connection) -> Result<(), TaskStoreError> {
+    let participant_sql: Option<String> = connection
+        .query_row(
+            "SELECT sql FROM sqlite_master
+             WHERE type='table' AND name='task_participants'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let endpoint_sql: Option<String> = connection
+        .query_row(
+            "SELECT sql FROM sqlite_master
+             WHERE type='table' AND name='task_write_set_effect_endpoints'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let trigger_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN
+            ('task_participants_immutable_update',
+             'task_participants_immutable_delete',
+             'task_write_set_effect_endpoint_is_immutable',
+             'task_write_set_effect_endpoint_is_immutable_delete')",
+        [],
+        |row| row.get(0),
+    )?;
+    let normalize = |sql: &str| {
+        sql.to_ascii_lowercase()
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>()
+    };
+    let participant_sql =
+        participant_sql
+            .as_deref()
+            .map(normalize)
+            .ok_or(TaskStoreError::CorruptRecord(
+                "missing participant table before v24",
+            ))?;
+    let endpoint_sql =
+        endpoint_sql
+            .as_deref()
+            .map(normalize)
+            .ok_or(TaskStoreError::CorruptRecord(
+                "missing effect-endpoint table before v24",
+            ))?;
+    let participant_wide = participant_sql.contains("check(participant_typebetween1and8)");
+    let endpoint_wide = endpoint_sql.contains("check(endpoint_kindbetween1and6)");
+    if participant_wide && endpoint_wide && trigger_count == 4 {
+        connection.pragma_update(None, "user_version", 24)?;
+        return Ok(());
+    }
+    let participant_old = participant_sql.contains("check(participant_typebetween1and7)");
+    let endpoint_old = endpoint_sql.contains("check(endpoint_kindbetween1and5)");
+    if !participant_old || !endpoint_old || trigger_count != 4 {
+        return Err(TaskStoreError::CorruptRecord(
+            "partial Operation endpoint schema migration",
+        ));
+    }
+
+    connection.pragma_update(None, "foreign_keys", "OFF")?;
+    let migration = (|| {
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute_batch(SCHEMA_V24_SQL)?;
+        transaction.commit()?;
+        Ok::<(), TaskStoreError>(())
+    })();
+    let restore = connection.pragma_update(None, "foreign_keys", "ON");
+    if let Err(error) = migration {
+        let _ = restore;
+        return Err(error);
+    }
+    restore?;
+    Ok(())
+}
+
 const SCHEMA_V13_SQL: &str = "CREATE TABLE task_write_sets (
         task_id BLOB NOT NULL CHECK(length(task_id) = 16),
         attempt_id BLOB NOT NULL CHECK(length(attempt_id) = 16),
@@ -3342,6 +3665,65 @@ const SCHEMA_V23_SQL: &str = "ALTER TABLE task_write_set_semantic_appends
         ADD COLUMN admission_policy_digest BLOB
         CHECK(admission_policy_digest IS NULL OR length(admission_policy_digest) = 32);
     PRAGMA user_version = 23;";
+
+const SCHEMA_V24_SQL: &str = "DROP TRIGGER task_participants_immutable_update;
+    DROP TRIGGER task_participants_immutable_delete;
+    CREATE TABLE task_participants_v24 (
+        registry_id BLOB NOT NULL CHECK(length(registry_id) = 16),
+        participant_seq INTEGER NOT NULL CHECK(participant_seq >= 0),
+        participant_type INTEGER NOT NULL CHECK(participant_type BETWEEN 1 AND 8),
+        participant_id BLOB NOT NULL CHECK(length(participant_id) = 16),
+        participant_generation BLOB NOT NULL CHECK(length(participant_generation) = 8),
+        admission_receipt_id BLOB NOT NULL CHECK(length(admission_receipt_id) = 16),
+        PRIMARY KEY(registry_id, participant_seq),
+        UNIQUE(registry_id, participant_type, participant_id),
+        FOREIGN KEY(registry_id) REFERENCES task_participant_registries(registry_id)
+    ) STRICT;
+    INSERT INTO task_participants_v24
+        (registry_id, participant_seq, participant_type, participant_id,
+         participant_generation, admission_receipt_id)
+        SELECT registry_id, participant_seq, participant_type, participant_id,
+               participant_generation, admission_receipt_id
+        FROM task_participants;
+    DROP TABLE task_participants;
+    ALTER TABLE task_participants_v24 RENAME TO task_participants;
+    CREATE TRIGGER task_participants_immutable_update BEFORE UPDATE ON task_participants
+    BEGIN SELECT RAISE(ABORT, 'task participant is immutable'); END;
+    CREATE TRIGGER task_participants_immutable_delete BEFORE DELETE ON task_participants
+    BEGIN SELECT RAISE(ABORT, 'task participant is immutable'); END;
+    DROP TRIGGER task_write_set_effect_endpoint_is_immutable;
+    DROP TRIGGER task_write_set_effect_endpoint_is_immutable_delete;
+    CREATE TABLE task_write_set_effect_endpoints_v24 (
+        task_id BLOB NOT NULL CHECK(length(task_id) = 16),
+        idempotency_key BLOB NOT NULL CHECK(length(idempotency_key) = 16),
+        endpoint_seq INTEGER NOT NULL CHECK(endpoint_seq >= 0),
+        effect_seq INTEGER NOT NULL CHECK(effect_seq >= 0),
+        endpoint_kind INTEGER NOT NULL CHECK(endpoint_kind BETWEEN 1 AND 6),
+        object_id BLOB NOT NULL CHECK(length(object_id) = 16),
+        participant_id BLOB NOT NULL CHECK(length(participant_id) = 16),
+        participant_generation BLOB NOT NULL CHECK(length(participant_generation) = 8),
+        admission_receipt_id BLOB NOT NULL CHECK(length(admission_receipt_id) = 16),
+        PRIMARY KEY(task_id, idempotency_key, endpoint_seq),
+        UNIQUE(task_id, idempotency_key, effect_seq, endpoint_kind, object_id),
+        FOREIGN KEY(task_id, idempotency_key)
+            REFERENCES task_write_sets(task_id, idempotency_key)
+    ) STRICT;
+    INSERT INTO task_write_set_effect_endpoints_v24
+        (task_id, idempotency_key, endpoint_seq, effect_seq, endpoint_kind,
+         object_id, participant_id, participant_generation, admission_receipt_id)
+        SELECT task_id, idempotency_key, endpoint_seq, effect_seq, endpoint_kind,
+               object_id, participant_id, participant_generation, admission_receipt_id
+        FROM task_write_set_effect_endpoints;
+    DROP TABLE task_write_set_effect_endpoints;
+    ALTER TABLE task_write_set_effect_endpoints_v24
+        RENAME TO task_write_set_effect_endpoints;
+    CREATE TRIGGER task_write_set_effect_endpoint_is_immutable
+    BEFORE UPDATE ON task_write_set_effect_endpoints
+    BEGIN SELECT RAISE(ABORT, 'TaskWriteSet effect endpoint is immutable'); END;
+    CREATE TRIGGER task_write_set_effect_endpoint_is_immutable_delete
+    BEFORE DELETE ON task_write_set_effect_endpoints
+    BEGIN SELECT RAISE(ABORT, 'TaskWriteSet effect endpoint is immutable'); END;
+    PRAGMA user_version = 24;";
 
 const SCHEMA_V12_SQL: &str = "ALTER TABLE effect_permits
         ADD COLUMN participant_registry_generation BLOB

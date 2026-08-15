@@ -14,6 +14,7 @@ pub enum ParticipantType {
     DriverGateway,
     ResourceLedger,
     ProcessBinding,
+    OperationBinding,
 }
 
 impl ParticipantType {
@@ -26,6 +27,7 @@ impl ParticipantType {
             Self::DriverGateway => 5,
             Self::ResourceLedger => 6,
             Self::ProcessBinding => 7,
+            Self::OperationBinding => 8,
         }
     }
 
@@ -38,6 +40,7 @@ impl ParticipantType {
             5 => Ok(Self::DriverGateway),
             6 => Ok(Self::ResourceLedger),
             7 => Ok(Self::ProcessBinding),
+            8 => Ok(Self::OperationBinding),
             _ => Err(TaskStoreError::CorruptRecord("participant type")),
         }
     }

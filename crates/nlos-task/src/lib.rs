@@ -46,8 +46,10 @@
 //! durable `AdmissionReceipt` identity binding. Schema v22 additionally
 //! carries an optional owner-verified `DurabilityReceipt` identity, and
 //! schema v23 carries an optional caller-declared admission-policy digest,
-//! without inferring publication from an outbox row. These remain local
-//! partial proofs, not cross-authority activation or complete publication.
+//! without inferring publication from an outbox row. Schema v24 adds the
+//! owner-verified Operation endpoint to the per-effect endpoint and
+//! participant registries. These remain local partial proofs, not
+//! cross-authority activation or complete publication.
 //! The Semantic-aware v3 finalization entry point re-reads those owner proofs
 //! for an issued permit before the Task CAS; replayed terminal permits keep
 //! the normal idempotent path and no publication receipt is synthesized.
@@ -401,6 +403,8 @@ pub enum TaskStoreError {
     ResourceParticipantAuthority(nlos_resource::ResourceAuthorityError),
     /// Process authority proof readback failed before Task mutation.
     ProcessParticipantAuthority(nlos_process::ProcessAuthorityError),
+    /// Operation authority proof readback failed before Task mutation.
+    OperationParticipantAuthority(nlos_store::StoreError),
     /// The owner proof does not match the generation planned by the caller.
     ParticipantEndpointGenerationMismatch {
         expected: u64,
@@ -649,6 +653,12 @@ impl fmt::Display for TaskStoreError {
                     "Process participant proof verification failed: {error}"
                 )
             }
+            Self::OperationParticipantAuthority(error) => {
+                write!(
+                    formatter,
+                    "Operation participant proof verification failed: {error}"
+                )
+            }
             Self::ParticipantEndpointGenerationMismatch { expected, current } => write!(
                 formatter,
                 "participant endpoint generation mismatch: expected {expected}, current {current}"
@@ -668,6 +678,7 @@ impl Error for TaskStoreError {
             Self::SemanticParticipantAuthority(error) => Some(error),
             Self::ResourceParticipantAuthority(error) => Some(error),
             Self::ProcessParticipantAuthority(error) => Some(error),
+            Self::OperationParticipantAuthority(error) => Some(error),
             _ => None,
         }
     }

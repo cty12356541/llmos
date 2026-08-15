@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use nlos_runtime::FiberHandle;
 use nlos_task::{
     AttemptSpec, EffectPermitDecision, EffectPermitRequest, FinalizeDecision, FinalizeRequest,
     FinalizeRequestV3, LogicalEffectDescriptor, NoEffectReason, NoEffectRequest, Outcome,
@@ -13,8 +14,8 @@ use nlos_task::{
     TaskWriteSetSemanticRequiredDurability, TaskWriteSetSemanticTarget, empty_effect_history_root,
 };
 use nlos_types::{
-    ArtifactId, CallId, CancellationScopeId, Generation, IdempotencyKey, NamespaceId, OperationId,
-    SemanticEventId, TaskAttemptId, TaskId, TaskSnapshotId,
+    ArtifactId, CallId, CancellationScopeId, ExecutionFiberId, Generation, IdempotencyKey,
+    NamespaceId, OperationId, SemanticEventId, TaskAttemptId, TaskId, TaskSnapshotId,
 };
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
@@ -144,6 +145,19 @@ fn create_artifact(store: &nlos_artifact::ArtifactStore, seed: u8) -> ArtifactId
         })
         .unwrap();
     artifact_id
+}
+
+fn operation_spec(seed: u8) -> nlos_operation::OperationSpec {
+    nlos_operation::OperationSpec {
+        operation_id: OperationId::from_bytes([seed; 16]),
+        generation: Generation::INITIAL,
+        owner_fiber: FiberHandle {
+            fiber_id: ExecutionFiberId::from_bytes([seed.wrapping_add(1); 16]),
+            generation: Generation::INITIAL,
+        },
+        cancellation_scope_id: CancellationScopeId::from_bytes([seed.wrapping_add(2); 16]),
+        cancellation_generation: Generation::INITIAL,
+    }
 }
 
 #[test]
@@ -549,6 +563,167 @@ fn verified_write_set_seal_binds_receipted_snapshot_and_artifact_reads() {
     assert_eq!(
         reopened
             .inspect_task_write_set(task_id(), IdempotencyKey::from_bytes([0xbc; 16]))
+            .unwrap(),
+        record
+    );
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn verified_operation_endpoint_is_rechecked_during_seal_and_permit() {
+    let database = Database::new();
+    let artifact_root = AuthorityRoot::new("operation-endpoint-artifact");
+    let operation_root = AuthorityRoot::new("operation-endpoint-authority");
+    std::fs::create_dir_all(&operation_root.0).unwrap();
+    let operation_path = operation_root.0.join("authority.sqlite3");
+    let artifact = nlos_artifact::ArtifactStore::open(&artifact_root.0).unwrap();
+    let artifact_id = create_artifact(&artifact, 0xc1);
+    let operation = nlos_store::SqliteOperationStore::open(&operation_path).unwrap();
+    let operation_spec = operation_spec(0xc2);
+    operation.register(operation_spec).unwrap();
+
+    let authority = database.open();
+    authority
+        .register_task(TaskSpec {
+            task_id: task_id(),
+            task_generation: Generation::INITIAL,
+            registered_at_ms: 1_000,
+        })
+        .unwrap();
+    let spec = attempt(0xc3, 0, empty_effect_history_root());
+    let snapshot_receipt_id = nlos_types::ReceiptId::from_bytes([0xc4; 16]);
+    authority
+        .register_snapshot_receipt(nlos_task::TaskSnapshotReceiptSpec {
+            task_id: task_id(),
+            snapshot: spec.snapshot,
+            receipt_id: snapshot_receipt_id,
+            builder_id: [0xc5; 16],
+            builder_version_digest: [0xc6; 32],
+            per_authority_checkpoint_receipts: vec![nlos_types::ReceiptId::from_bytes([0xc7; 16])],
+            dependency_closure_root: [0xc8; 32],
+            semantic_resolver_digest: [0xc9; 32],
+            canonical_iteration_digest: [0xca; 32],
+            achieved_consistency: SnapshotConsistency::Causal,
+            built_at_ms: 1_100,
+            authority_id: [0xcb; 16],
+            key_id: [0xcc; 16],
+            signature: [0xcd; 64],
+        })
+        .unwrap();
+    authority
+        .register_attempt_with_snapshot_receipt(spec, snapshot_receipt_id)
+        .unwrap();
+    let registry_binding = binding(&authority.inspect_participant_registry(task_id()).unwrap());
+    let operation_binding = authority
+        .register_operation_binding_participant(
+            &operation,
+            task_id(),
+            registry_binding,
+            operation_spec.operation_id,
+            operation_spec.generation,
+            1_150,
+        )
+        .unwrap();
+    assert!(
+        operation_binding
+            .registry()
+            .participants
+            .iter()
+            .any(|participant| participant.participant_type == ParticipantType::OperationBinding)
+    );
+
+    let request = TaskWriteSetRequest {
+        task_id: task_id(),
+        attempt_id: spec.attempt_id,
+        attempt_generation: spec.attempt_generation,
+        artifact_reads: vec![TaskWriteSetArtifactRead {
+            artifact_id,
+            expected_head_revision: 0,
+            expected_head_digest: None,
+        }],
+        artifact_writes: Vec::new(),
+        process_binding: None,
+        semantic_reads: Vec::new(),
+        semantic_appends: Vec::new(),
+        resource_reservations: Vec::new(),
+        planned_effects: vec![planned_effect()],
+        effect_endpoints: vec![TaskWriteSetEffectEndpointRequest::OperationBinding {
+            effect_seq: 0,
+            operation_id: operation_spec.operation_id,
+            expected_operation_generation: operation_spec.generation,
+        }],
+        idempotency_key: IdempotencyKey::from_bytes([0xce; 16]),
+        sealed_at_ms: 1_200,
+    };
+    let mut stale_generation = request.clone();
+    stale_generation.effect_endpoints[0] = TaskWriteSetEffectEndpointRequest::OperationBinding {
+        effect_seq: 0,
+        operation_id: operation_spec.operation_id,
+        expected_operation_generation: operation_spec.generation.checked_next().unwrap(),
+    };
+    assert!(matches!(
+        authority.seal_task_write_set_with_operation_authority(
+            &artifact,
+            &operation,
+            stale_generation,
+        ),
+        Err(TaskStoreError::OperationParticipantAuthority(_))
+    ));
+    let record = authority
+        .seal_task_write_set_with_operation_authority(&artifact, &operation, request.clone())
+        .unwrap()
+        .record()
+        .clone();
+    assert_eq!(record.effect_endpoints.len(), 1);
+    assert_eq!(
+        record.effect_endpoints[0].kind,
+        nlos_task::TaskWriteSetEffectEndpointKind::OperationBinding
+    );
+    assert_eq!(
+        record.effect_endpoints[0].object_id,
+        operation_spec.operation_id.into_bytes()
+    );
+    assert_eq!(
+        record.effect_endpoints[0].participant_generation,
+        operation_spec.generation
+    );
+
+    let mut permit_request = permit(&spec, 0xcf);
+    permit_request.write_set_root = record.write_set_root;
+    permit_request.planned_effects = record.planned_effects.clone();
+    assert!(matches!(
+        authority.request_commit_permit(permit_request.clone()),
+        Err(TaskStoreError::TaskWriteSetConflict {
+            reason: "Operation effect endpoint requires OperationAuthority readback before permit freeze"
+        })
+    ));
+    let permit_record = issued(
+        authority
+            .request_commit_permit_with_operation_authority(&operation, permit_request.clone())
+            .unwrap(),
+    );
+    assert!(matches!(
+        authority
+            .request_commit_permit_with_operation_authority(&operation, permit_request)
+            .unwrap(),
+        PermitDecision::Replayed(_)
+    ));
+    assert_eq!(permit_record.write_set_root, record.write_set_root);
+
+    drop(authority);
+    drop(operation);
+    let reopened_operation = nlos_store::SqliteOperationStore::open(&operation_path).unwrap();
+    let proof = reopened_operation
+        .inspect_endpoint_proof(nlos_operation::OperationHandle {
+            operation_id: operation_spec.operation_id,
+            generation: operation_spec.generation,
+        })
+        .unwrap();
+    assert_eq!(proof.participant_generation, operation_spec.generation);
+    let reopened = database.open();
+    assert_eq!(
+        reopened
+            .inspect_task_write_set(task_id(), IdempotencyKey::from_bytes([0xce; 16]))
             .unwrap(),
         record
     );

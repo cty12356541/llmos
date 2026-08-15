@@ -8,15 +8,18 @@ repository.workspace = true
 
 [dependencies]
 nlos-artifact = { path = "../nlos-artifact" }
+nlos-operation = { path = "../nlos-operation" }
 nlos-process = { path = "../nlos-process" }
 nlos-resource = { path = "../nlos-resource" }
 nlos-semantic = { path = "../nlos-semantic" }
+nlos-store = { path = "../nlos-store" }
 nlos-types = { path = "../nlos-types" }
 rusqlite.workspace = true
 sha2.workspace = true
 
 [dev-dependencies]
 nlos-store-fault = { path = "../nlos-store-fault" }
+nlos-runtime = { path = "../nlos-runtime" }
 rusqlite.workspace = true
 
 [lints]

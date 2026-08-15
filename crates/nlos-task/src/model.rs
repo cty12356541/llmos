@@ -327,6 +327,7 @@ pub enum TaskWriteSetEffectEndpointKind {
     ProcessBinding,
     DriverGateway,
     ResourceLedger,
+    OperationBinding,
 }
 
 impl TaskWriteSetEffectEndpointKind {
@@ -337,6 +338,7 @@ impl TaskWriteSetEffectEndpointKind {
             Self::ProcessBinding => 3,
             Self::DriverGateway => 4,
             Self::ResourceLedger => 5,
+            Self::OperationBinding => 6,
         }
     }
 
@@ -347,6 +349,7 @@ impl TaskWriteSetEffectEndpointKind {
             3 => Ok(Self::ProcessBinding),
             4 => Ok(Self::DriverGateway),
             5 => Ok(Self::ResourceLedger),
+            6 => Ok(Self::OperationBinding),
             _ => Err(TaskStoreError::CorruptRecord(
                 "TaskWriteSet effect endpoint kind",
             )),
@@ -381,6 +384,11 @@ pub enum TaskWriteSetEffectEndpointRequest {
         account_id: ResourceAccountId,
         expected_account_generation: Generation,
     },
+    OperationBinding {
+        effect_seq: u64,
+        operation_id: OperationId,
+        expected_operation_generation: Generation,
+    },
 }
 
 impl TaskWriteSetEffectEndpointRequest {
@@ -390,7 +398,8 @@ impl TaskWriteSetEffectEndpointRequest {
             | Self::SemanticAdmission { effect_seq }
             | Self::ProcessBinding { effect_seq, .. }
             | Self::DriverGateway { effect_seq, .. }
-            | Self::ResourceLedger { effect_seq, .. } => effect_seq,
+            | Self::ResourceLedger { effect_seq, .. }
+            | Self::OperationBinding { effect_seq, .. } => effect_seq,
         }
     }
 }
