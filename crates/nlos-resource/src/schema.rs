@@ -331,3 +331,116 @@ pub(crate) fn migrate_v3(connection: &mut Connection) -> Result<(), ResourceAuth
     transaction.commit()?;
     Ok(())
 }
+
+/// Adds the fail-closed Reservation quarantine tombstone. The legacy
+/// `reservations.state` check remains `RESERVED|ACTIVE`; a non-null
+/// `quarantine_receipt_id` is the durable QUARANTINED overlay so v1 rows can
+/// migrate without rewriting immutable Reservation identity/history.
+#[allow(clippy::too_many_lines)]
+pub(crate) fn migrate_v4(connection: &mut Connection) -> Result<(), ResourceAuthorityError> {
+    let reservation_columns = {
+        let mut statement = connection.prepare("PRAGMA table_info(reservations)")?;
+        statement
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    let has_quarantine_columns = reservation_columns
+        .iter()
+        .any(|name| name == "quarantine_receipt_id")
+        && reservation_columns
+            .iter()
+            .any(|name| name == "quarantined_at_ms");
+    let table_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type='table' AND name='reservation_quarantine_receipts'",
+        [],
+        |row| row.get(0),
+    )?;
+    let index_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type='index' AND name='reservations_quarantine_receipt_unique'",
+        [],
+        |row| row.get(0),
+    )?;
+    let trigger_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN (
+            'reservation_quarantine_receipts_immutable_update',
+            'reservation_quarantine_receipts_immutable_delete',
+            'reservation_quarantine_binding_insert',
+            'reservation_quarantine_binding_update'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if has_quarantine_columns && table_count == 1 && index_count == 1 && trigger_count == 4 {
+        connection.pragma_update(None, "user_version", 4)?;
+        return Ok(());
+    }
+    if has_quarantine_columns
+        || reservation_columns
+            .iter()
+            .any(|name| name == "quarantine_receipt_id")
+        || reservation_columns
+            .iter()
+            .any(|name| name == "quarantined_at_ms")
+        || table_count != 0
+        || index_count != 0
+        || trigger_count != 0
+    {
+        return Err(ResourceAuthorityError::CorruptRecord(
+            "partial resource quarantine schema",
+        ));
+    }
+
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "ALTER TABLE reservations
+             ADD COLUMN quarantine_receipt_id BLOB
+                 CHECK(quarantine_receipt_id IS NULL OR length(quarantine_receipt_id) = 16);
+         ALTER TABLE reservations
+             ADD COLUMN quarantined_at_ms INTEGER
+                 CHECK(quarantined_at_ms IS NULL OR quarantined_at_ms >= 0);
+         CREATE UNIQUE INDEX reservations_quarantine_receipt_unique
+             ON reservations(quarantine_receipt_id)
+             WHERE quarantine_receipt_id IS NOT NULL;
+
+         CREATE TABLE reservation_quarantine_receipts (
+             receipt_id BLOB PRIMARY KEY NOT NULL CHECK(length(receipt_id) = 16),
+             reservation_id BLOB NOT NULL UNIQUE CHECK(length(reservation_id) = 16),
+             operation_id BLOB NOT NULL CHECK(length(operation_id) = 16),
+             activation_receipt_id BLOB NOT NULL CHECK(length(activation_receipt_id) = 16),
+             reason_digest BLOB NOT NULL CHECK(length(reason_digest) = 32),
+             high_water_seq INTEGER NOT NULL CHECK(high_water_seq >= 0),
+             high_water INTEGER NOT NULL CHECK(high_water >= 0),
+             quarantined_at_ms INTEGER NOT NULL CHECK(quarantined_at_ms >= 0),
+             FOREIGN KEY(reservation_id) REFERENCES reservations(reservation_id),
+             FOREIGN KEY(activation_receipt_id)
+                 REFERENCES reservation_activation_receipts(receipt_id)
+         ) STRICT;
+
+         CREATE TRIGGER reservation_quarantine_binding_insert
+         BEFORE INSERT ON reservation_quarantine_receipts
+         WHEN NOT EXISTS (
+             SELECT 1 FROM reservations AS r
+             WHERE r.reservation_id = NEW.reservation_id
+               AND r.operation_id = NEW.operation_id
+               AND r.activation_receipt_id = NEW.activation_receipt_id
+               AND r.state = 1
+         )
+         BEGIN SELECT RAISE(ABORT, 'quarantine receipt binding mismatch'); END;
+         CREATE TRIGGER reservation_quarantine_binding_update
+         BEFORE UPDATE OF reservation_id, operation_id, activation_receipt_id
+             ON reservation_quarantine_receipts
+         BEGIN SELECT RAISE(ABORT, 'quarantine receipt is immutable'); END;
+         CREATE TRIGGER reservation_quarantine_receipts_immutable_update
+         BEFORE UPDATE ON reservation_quarantine_receipts
+         BEGIN SELECT RAISE(ABORT, 'quarantine receipt is immutable'); END;
+         CREATE TRIGGER reservation_quarantine_receipts_immutable_delete
+         BEFORE DELETE ON reservation_quarantine_receipts
+         BEGIN SELECT RAISE(ABORT, 'quarantine receipt is immutable'); END;
+
+         PRAGMA user_version = 4;",
+    )?;
+    transaction.commit()?;
+    Ok(())
+}

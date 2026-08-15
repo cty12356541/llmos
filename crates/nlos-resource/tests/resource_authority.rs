@@ -4,9 +4,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use nlos_resource::{
     ActivateReservationRequest, ActivationDecision, ConsumeDecision, ConsumeReservationRequest,
-    CreateAccountRequest, CreateQuoteRequest, DriverRotationDecision, RegisterDriverRequest,
-    ReservationDecision, ReserveRequest, ResourceAuthority, ResourceAuthorityError,
-    RotateDriverRequest,
+    CreateAccountRequest, CreateQuoteRequest, DriverRotationDecision, QuarantineDecision,
+    QuarantineReservationRequest, RegisterDriverRequest, ReservationDecision, ReserveRequest,
+    ResourceAuthority, ResourceAuthorityError, RotateDriverRequest,
 };
 use nlos_types::{CallId, IdempotencyKey, OperationId, ReceiptId};
 use rusqlite::Connection;
@@ -77,6 +77,7 @@ fn reserve_request(
     }
 }
 
+#[allow(clippy::large_types_passed_by_value)] // Keep fixture call sites compact and readable.
 fn consume_request(
     reservation: nlos_resource::ReservationRecord,
     activation: nlos_resource::ActivationReceipt,
@@ -352,6 +353,117 @@ fn consumption_records_strict_monotonic_high_water_and_replays() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)] // Keep the quarantine freeze/replay boundary auditable together.
+fn quarantine_freezes_high_water_rejects_late_consume_and_replays() {
+    let root = Root::new("quarantine");
+    let authority = ResourceAuthority::open(root.path()).unwrap();
+    let driver = authority
+        .register_driver(driver_request(35))
+        .unwrap()
+        .record();
+    let account = authority.create_account(account_request(35, 100)).unwrap();
+    let quote = authority
+        .create_quote(quote_request(35, driver, 25))
+        .unwrap()
+        .record();
+    let reservation = authority
+        .reserve(reserve_request(35, account, quote))
+        .unwrap()
+        .record();
+    let activation = authority
+        .activate(ActivateReservationRequest {
+            reservation_id: reservation.reservation_id,
+            call_id: reservation.call_id,
+            operation_id: reservation.operation_id,
+            driver_id: reservation.driver_id,
+            driver_generation: reservation.driver_generation,
+            driver_fencing_token: reservation.driver_fencing_token,
+            activation_token: reservation.activation_token,
+            activated_at_ms: 3_000,
+        })
+        .unwrap()
+        .receipt();
+    let consume = consume_request(reservation, activation, 1, 10);
+    let consumed = authority.consume(consume).unwrap().receipt();
+    let quarantine = QuarantineReservationRequest {
+        reservation_id: reservation.reservation_id,
+        operation_id: reservation.operation_id,
+        activation_receipt_id: activation.receipt_id,
+        reason_digest: [0xa5; 32],
+        quarantined_at_ms: 5_000,
+    };
+    let first = authority.quarantine(quarantine).unwrap();
+    assert!(matches!(first, QuarantineDecision::Quarantined(_)));
+    let receipt = first.receipt();
+    assert_eq!(receipt.high_water_seq, 1);
+    assert_eq!(receipt.high_water, 10);
+    assert_eq!(
+        authority
+            .inspect_quarantine_receipt(reservation.reservation_id)
+            .unwrap(),
+        receipt
+    );
+    // The activation proof remains readable for reconciliation, but every
+    // late consume callback is rejected after the freeze.
+    assert_eq!(
+        authority
+            .inspect_activation_receipt(reservation.reservation_id)
+            .unwrap(),
+        activation
+    );
+    assert!(matches!(
+        authority.consume(consume),
+        Err(ResourceAuthorityError::ReservationQuarantined)
+    ));
+    assert!(matches!(
+        authority.quarantine(QuarantineReservationRequest {
+            reason_digest: [0xa6; 32],
+            ..quarantine
+        }),
+        Err(ResourceAuthorityError::IdempotencyConflict)
+    ));
+    let replay = authority.quarantine(quarantine).unwrap();
+    assert!(matches!(replay, QuarantineDecision::Replayed(_)));
+    assert_eq!(replay.receipt(), receipt);
+
+    let reopened = ResourceAuthority::open(root.path()).unwrap();
+    assert_eq!(
+        reopened
+            .inspect_quarantine_receipt(reservation.reservation_id)
+            .unwrap(),
+        receipt
+    );
+    assert!(matches!(
+        reopened.consume(ConsumeReservationRequest {
+            sequence: 2,
+            cumulative_usage: 11,
+            consumed_at_ms: 5_001,
+            ..consume
+        }),
+        Err(ResourceAuthorityError::ReservationQuarantined)
+    ));
+    assert_eq!(consumed.cumulative_usage, 10);
+
+    drop(reopened);
+    let raw = Connection::open(root.path().join("resource-authority.db")).unwrap();
+    assert!(
+        raw.execute(
+            "UPDATE reservation_quarantine_receipts SET high_water=11
+             WHERE reservation_id=?1",
+            [reservation.reservation_id.as_bytes().as_slice()],
+        )
+        .is_err()
+    );
+    assert!(
+        raw.execute(
+            "DELETE FROM reservation_quarantine_receipts WHERE reservation_id=?1",
+            [reservation.reservation_id.as_bytes().as_slice()],
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn driver_rotation_fences_old_quotes_and_reserved_bindings() {
     let root = Root::new("rotate");
     let authority = ResourceAuthority::open(root.path()).unwrap();
@@ -513,7 +625,7 @@ fn endpoint_proofs_are_authority_assigned_rotate_and_survive_restart() {
     assert_eq!(
         raw.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .unwrap(),
-        3
+        4
     );
     assert!(
         raw.execute(
