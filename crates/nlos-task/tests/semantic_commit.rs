@@ -234,20 +234,15 @@ fn run_semantic_owner_receipt_lifecycle(with_effect: bool) {
     .unwrap();
     task.register_attempt_with_snapshot_receipt(attempt, ReceiptId::from_bytes([0x66; 16]))
         .unwrap();
-    let authority_lease = if with_effect {
-        Some(
-            task.acquire_authority_lease(AuthorityLeaseRequest {
-                holder_id: ProcessId::from_bytes([0x01; 16]),
-                idempotency_key: IdempotencyKey::from_bytes([0x6f; 16]),
-                requested_at_ms: 5,
-                ttl_ms: 1_000,
-            })
-            .unwrap()
-            .record(),
-        )
-    } else {
-        None
-    };
+    let authority_lease = task
+        .acquire_authority_lease(AuthorityLeaseRequest {
+            holder_id: ProcessId::from_bytes([0x01; 16]),
+            idempotency_key: IdempotencyKey::from_bytes([0x6f; 16]),
+            requested_at_ms: 5,
+            ttl_ms: 1_000,
+        })
+        .unwrap()
+        .record();
     let registry = task.inspect_participant_registry(task_id).unwrap();
     task.register_semantic_admission_participant(
         &semantic,
@@ -313,15 +308,12 @@ fn run_semantic_owner_receipt_lifecycle(with_effect: bool) {
         valid_until_ms: 1_000,
         requested_at_ms: 5,
     };
-    let permit_decision = if let Some(lease) = authority_lease {
-        task.request_commit_permit_with_authority_lease(AuthorityLeasePermitRequest {
+    let permit_decision = task
+        .request_commit_permit_with_authority_lease(AuthorityLeasePermitRequest {
             permit: permit_request,
-            lease,
+            lease: authority_lease,
         })
-    } else {
-        task.request_commit_permit(permit_request)
-    }
-    .unwrap();
+        .unwrap();
     let permit = match permit_decision {
         PermitDecision::Issued(permit) => *permit,
         other => panic!("expected issued permit, got {other:?}"),
@@ -405,7 +397,7 @@ fn run_semantic_owner_receipt_lifecycle(with_effect: bool) {
                 plan_id: plan.plan_id,
                 finalized_at_ms: 11,
             }),
-            Err(TaskStoreError::InvalidSemanticPublicationPlan { .. })
+            Err(TaskStoreError::AuthorityLeaseRequired)
         ));
         let premature_request = FinalizeRequestV3 {
             base: FinalizeRequest {
@@ -425,7 +417,7 @@ fn run_semantic_owner_receipt_lifecycle(with_effect: bool) {
                 &semantic,
                 plan.plan_id,
                 premature_request,
-                authority_lease.expect("effect path lease"),
+                authority_lease,
             ),
             Err(TaskStoreError::OutstandingEffectSlots { count: 1 })
         ));
@@ -486,7 +478,7 @@ fn run_semantic_owner_receipt_lifecycle(with_effect: bool) {
                 &semantic,
                 plan.plan_id,
                 13,
-                authority_lease.expect("effect path lease"),
+                authority_lease,
             )
             .unwrap();
         assert!(matches!(decision, SemanticFinalizeDecision::Committed(_)));
@@ -494,11 +486,21 @@ fn run_semantic_owner_receipt_lifecycle(with_effect: bool) {
         assert_eq!(decision.receipt().task_receipt.new_head_commit_seq, 1);
         (decision, Some(finalize_request))
     } else {
-        let decision = task
-            .finalize_semantic_commit(FinalizeSemanticCommitRequest {
+        assert!(matches!(
+            task.finalize_semantic_commit(FinalizeSemanticCommitRequest {
                 plan_id: plan.plan_id,
                 finalized_at_ms: 11,
-            })
+            }),
+            Err(TaskStoreError::AuthorityLeaseRequired)
+        ));
+        let decision = task
+            .finalize_semantic_commit_with_authority_lease(
+                FinalizeSemanticCommitRequest {
+                    plan_id: plan.plan_id,
+                    finalized_at_ms: 11,
+                },
+                authority_lease,
+            )
             .unwrap();
         assert!(matches!(decision, SemanticFinalizeDecision::Committed(_)));
         assert_eq!(decision.receipt().semantic_publications, vec![owner_copy]);
@@ -533,7 +535,7 @@ fn run_semantic_owner_receipt_lifecycle(with_effect: bool) {
                     &semantic,
                     plan.plan_id,
                     99,
-                    authority_lease.expect("effect path lease"),
+                    authority_lease,
                 )
                 .unwrap()
         } else {
@@ -543,10 +545,13 @@ fn run_semantic_owner_receipt_lifecycle(with_effect: bool) {
         }
     } else {
         reopened
-            .finalize_semantic_commit(FinalizeSemanticCommitRequest {
-                plan_id: plan.plan_id,
-                finalized_at_ms: 99,
-            })
+            .finalize_semantic_commit_with_authority_lease(
+                FinalizeSemanticCommitRequest {
+                    plan_id: plan.plan_id,
+                    finalized_at_ms: 99,
+                },
+                authority_lease,
+            )
             .unwrap()
     };
     assert!(matches!(replay, SemanticFinalizeDecision::Replayed(_)));

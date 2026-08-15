@@ -15,6 +15,7 @@ use rusqlite::{Row, Transaction, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
 
 use crate::effect::list_slots;
+use crate::lease::{AuthorityLeaseRecord, validate_authority_lease_binding_in_transaction};
 use crate::store::{
     SqlRead, SqliteTaskAuthority, blob16, blob32, close_permit, encode_u64, generation_from_blob,
     load_attempt, load_permit_by_id, load_receipt, load_task, load_write_set_by_root,
@@ -647,6 +648,36 @@ impl SqliteTaskAuthority {
         &self,
         request: FinalizeSemanticCommitRequest,
     ) -> Result<SemanticFinalizeDecision, TaskStoreError> {
+        self.finalize_semantic_commit_inner(request, None)
+    }
+
+    /// Finalizes a complete Semantic-only plan while proving the current
+    /// durable authority lease bound into its `CommitPermit`.
+    ///
+    /// Finalized plans remain idempotently readable without presenting the
+    /// lease again; a fresh terminal mutation requires the exact holder,
+    /// term, epoch, fencing token, and expiry binding that was issued with
+    /// the permit.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed lease, readiness/holder/head/membership/write-set
+    /// error or a storage error. No subset of terminal Task facts is
+    /// committed on failure.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn finalize_semantic_commit_with_authority_lease(
+        &self,
+        request: FinalizeSemanticCommitRequest,
+        authority_lease: AuthorityLeaseRecord,
+    ) -> Result<SemanticFinalizeDecision, TaskStoreError> {
+        self.finalize_semantic_commit_inner(request, Some(authority_lease))
+    }
+
+    fn finalize_semantic_commit_inner(
+        &self,
+        request: FinalizeSemanticCommitRequest,
+        authority_lease: Option<AuthorityLeaseRecord>,
+    ) -> Result<SemanticFinalizeDecision, TaskStoreError> {
         let mut connection = self.lock_connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let plan = load_plan_optional(&transaction, request.plan_id)?
@@ -675,6 +706,12 @@ impl SqliteTaskAuthority {
             plan.attempt_id,
             plan.attempt_generation,
             plan.permit_id,
+        )?;
+        validate_semantic_only_lease(
+            &transaction,
+            &permit,
+            request.finalized_at_ms,
+            authority_lease,
         )?;
         validate_semantic_only_context(&transaction, &task, &permit, &write_set)?;
         validate_plan_against_write_set(&plan, &write_set)?;
@@ -763,6 +800,25 @@ fn load_plan_context(
     let write_set = load_write_set_by_root(source, task_id, permit.write_set_root)?
         .ok_or(TaskStoreError::TaskWriteSetNotFound)?;
     Ok((task, permit, attempt, write_set))
+}
+
+fn validate_semantic_only_lease(
+    transaction: &Transaction<'_>,
+    permit: &crate::PermitRecord,
+    now_ms: i64,
+    authority_lease: Option<AuthorityLeaseRecord>,
+) -> Result<(), TaskStoreError> {
+    match (permit.authority_lease_binding, authority_lease) {
+        (None, None) => Ok(()),
+        (None, Some(_)) => Err(TaskStoreError::AuthorityLeaseBindingMismatch),
+        (Some(_), None) => Err(TaskStoreError::AuthorityLeaseRequired),
+        (Some(binding), Some(lease)) => {
+            if binding != lease.binding() {
+                return Err(TaskStoreError::AuthorityLeaseBindingMismatch);
+            }
+            validate_authority_lease_binding_in_transaction(transaction, binding, now_ms)
+        }
+    }
 }
 
 fn validate_semantic_only_context(
