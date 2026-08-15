@@ -423,12 +423,7 @@ impl<'a> SemanticCommitCoordinator<'a> {
                 })
             }
             SemanticCommitPlanState::Ready => {
-                let decision = self.tasks.finalize_semantic_commit(
-                    nlos_task::FinalizeSemanticCommitRequest {
-                        plan_id: request.plan_id,
-                        finalized_at_ms: request.now_ms,
-                    },
-                )?;
+                let decision = self.finalize_ready(request.plan_id, request.now_ms)?;
                 Ok(match decision {
                     SemanticFinalizeDecision::Committed(receipt) => {
                         ConvergeSemanticStep::Finalized(receipt)
@@ -439,12 +434,7 @@ impl<'a> SemanticCommitCoordinator<'a> {
                 })
             }
             SemanticCommitPlanState::Finalized => {
-                let decision = self.tasks.finalize_semantic_commit(
-                    nlos_task::FinalizeSemanticCommitRequest {
-                        plan_id: request.plan_id,
-                        finalized_at_ms: request.now_ms,
-                    },
-                )?;
+                let decision = self.finalize_ready(request.plan_id, request.now_ms)?;
                 Ok(ConvergeSemanticStep::AlreadyFinalized(Box::new(
                     decision.receipt().clone(),
                 )))
@@ -492,6 +482,32 @@ impl<'a> SemanticCommitCoordinator<'a> {
                 })
             })
             .collect()
+    }
+
+    fn finalize_ready(
+        &self,
+        plan_id: SemanticCommitPlanId,
+        finalized_at_ms: i64,
+    ) -> Result<SemanticFinalizeDecision, CoordinatorError> {
+        if self
+            .tasks
+            .inspect_semantic_finalize_envelope(plan_id)?
+            .is_some()
+        {
+            return Ok(self
+                .tasks
+                .finalize_commit_v3_with_persisted_semantic_envelope(
+                    self.semantic,
+                    plan_id,
+                    finalized_at_ms,
+                )?);
+        }
+        Ok(self
+            .tasks
+            .finalize_semantic_commit(nlos_task::FinalizeSemanticCommitRequest {
+                plan_id,
+                finalized_at_ms,
+            })?)
     }
 }
 

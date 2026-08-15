@@ -1226,6 +1226,46 @@ impl SqliteTaskAuthority {
         self.finalize_impl_with_semantic_plan(&request, plan_id)
     }
 
+    /// Reconstructs a mixed v3 finalize request from the immutable envelope
+    /// prepared on the Semantic plan, then runs the same owner revalidation
+    /// and `TaskAuthority` transaction as the direct API.
+    ///
+    /// # Errors
+    ///
+    /// Returns the normal mixed-finalize errors, or a typed invalid-plan
+    /// error when the plan has no persisted envelope.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn finalize_commit_v3_with_persisted_semantic_envelope(
+        &self,
+        semantic_authority: &nlos_semantic::SemanticAuthority,
+        plan_id: SemanticCommitPlanId,
+        finalized_at_ms: i64,
+    ) -> Result<SemanticFinalizeDecision, TaskStoreError> {
+        let plan = self.inspect_semantic_commit_plan(plan_id)?;
+        let envelope = self.inspect_semantic_finalize_envelope(plan_id)?.ok_or(
+            TaskStoreError::InvalidSemanticPublicationPlan {
+                reason: "mixed finalize envelope is not prepared",
+            },
+        )?;
+        self.finalize_commit_v3_with_semantic_publications(
+            semantic_authority,
+            plan_id,
+            FinalizeRequestV3 {
+                base: FinalizeRequest {
+                    task_id: plan.task_id,
+                    attempt_id: plan.attempt_id,
+                    attempt_generation: plan.attempt_generation,
+                    permit_id: plan.permit_id,
+                    new_effect_history_root: [0; 32],
+                    new_retry_fence_epoch: 0,
+                    finalized_at_ms,
+                },
+                required_satisfaction: envelope.required_satisfaction,
+                fenced_participant_digest: envelope.fenced_participant_digest,
+            },
+        )
+    }
+
     fn finalize_impl(
         &self,
         request: &FinalizeRequestV3,

@@ -9,11 +9,11 @@ use nlos_task::{
     AttemptSpec, EffectPermitDecision, EffectPermitRequest, FinalizeRequest, FinalizeRequestV3,
     FinalizeSemanticCommitRequest, LogicalEffectDescriptor, NestedSemanticPublicationReceipt,
     NoEffectReason, NoEffectRequest, PermitDecision, PermitRequest, PlanSemanticCommitRequest,
-    PlannedEffect, RecordSemanticPublicationsRequest, SemanticCommitPlanState,
-    SemanticFinalizeDecision, SnapshotBundle, SnapshotConsistency, SqliteTaskAuthority,
-    TaskSnapshotReceiptSpec, TaskSpec, TaskStoreError, TaskWriteSetEffectEndpointRequest,
-    TaskWriteSetRequest, TaskWriteSetSemanticAppendRequest, TaskWriteSetSemanticRequiredDurability,
-    TaskWriteSetSemanticTarget, empty_effect_history_root,
+    PlannedEffect, PrepareSemanticFinalizeRequest, RecordSemanticPublicationsRequest,
+    SemanticCommitPlanState, SemanticFinalizeDecision, SnapshotBundle, SnapshotConsistency,
+    SqliteTaskAuthority, TaskSnapshotReceiptSpec, TaskSpec, TaskStoreError,
+    TaskWriteSetEffectEndpointRequest, TaskWriteSetRequest, TaskWriteSetSemanticAppendRequest,
+    TaskWriteSetSemanticRequiredDurability, TaskWriteSetSemanticTarget, empty_effect_history_root,
 };
 use nlos_types::{
     CancellationScopeId, Generation, IdempotencyKey, NamespaceId, ReceiptId, SemanticEventId,
@@ -363,6 +363,21 @@ fn run_semantic_owner_receipt_lifecycle(with_effect: bool) {
     assert_eq!(progress.plan.state, SemanticCommitPlanState::Ready);
     assert_eq!(progress.publications, vec![owner_copy]);
     if with_effect {
+        let envelope = task
+            .prepare_semantic_finalize(PrepareSemanticFinalizeRequest {
+                plan_id: plan.plan_id,
+                required_satisfaction: Vec::new(),
+                fenced_participant_digest: [0; 32],
+                prepared_at_ms: 11,
+            })
+            .unwrap();
+        assert_eq!(envelope.record().plan_id, plan.plan_id);
+        assert_eq!(
+            task.inspect_semantic_finalize_envelope(plan.plan_id)
+                .unwrap()
+                .unwrap(),
+            *envelope.record()
+        );
         assert!(matches!(
             task.finalize_semantic_commit(FinalizeSemanticCommitRequest {
                 plan_id: plan.plan_id,
@@ -444,11 +459,7 @@ fn run_semantic_owner_receipt_lifecycle(with_effect: bool) {
             fenced_participant_digest: [0; 32],
         };
         let decision = task
-            .finalize_commit_v3_with_semantic_publications(
-                &semantic,
-                plan.plan_id,
-                finalize_request.clone(),
-            )
+            .finalize_commit_v3_with_persisted_semantic_envelope(&semantic, plan.plan_id, 13)
             .unwrap();
         assert!(matches!(decision, SemanticFinalizeDecision::Committed(_)));
         assert_eq!(decision.receipt().semantic_publications, vec![owner_copy]);
@@ -475,13 +486,28 @@ fn run_semantic_owner_receipt_lifecycle(with_effect: bool) {
         )
         .is_err()
     );
+    if with_effect {
+        assert!(
+            raw.execute(
+                "UPDATE task_semantic_finalize_envelopes SET prepared_at_ms = 12",
+                [],
+            )
+            .is_err()
+        );
+    }
     drop(raw);
     let reopened = SqliteTaskAuthority::open(&fixture.task_path).unwrap();
     let replay = if let Some(mut request) = replay_request {
         request.base.finalized_at_ms = 99;
-        reopened
-            .finalize_commit_v3_with_semantic_publications(&semantic, plan.plan_id, request)
-            .unwrap()
+        if with_effect {
+            reopened
+                .finalize_commit_v3_with_persisted_semantic_envelope(&semantic, plan.plan_id, 99)
+                .unwrap()
+        } else {
+            reopened
+                .finalize_commit_v3_with_semantic_publications(&semantic, plan.plan_id, request)
+                .unwrap()
+        }
     } else {
         reopened
             .finalize_semantic_commit(FinalizeSemanticCommitRequest {

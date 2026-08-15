@@ -141,9 +141,11 @@ pub use recovery::{
 };
 pub use semantic_commit::{
     FinalizeSemanticCommitRequest, NestedSemanticPublicationReceipt, PlanSemanticCommitRequest,
-    RecordSemanticPublicationsRequest, SemanticCommitPlanDecision, SemanticCommitPlanId,
-    SemanticCommitPlanRecord, SemanticCommitPlanState, SemanticCommitProgress,
-    SemanticFinalizeDecision, SemanticPublicationAuthorizationDecision, SemanticTaskCommitReceipt,
+    PrepareSemanticFinalizeRequest, RecordSemanticPublicationsRequest, SemanticCommitPlanDecision,
+    SemanticCommitPlanId, SemanticCommitPlanRecord, SemanticCommitPlanState,
+    SemanticCommitProgress, SemanticFinalizeDecision, SemanticFinalizeEnvelopeDecision,
+    SemanticFinalizeEnvelopeRecord, SemanticPublicationAuthorizationDecision,
+    SemanticTaskCommitReceipt,
 };
 pub use store::SqliteTaskAuthority;
 

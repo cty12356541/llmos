@@ -14,14 +14,16 @@ use nlos_types::{
 use rusqlite::{Row, Transaction, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
 
+use crate::effect::list_slots;
 use crate::store::{
     SqlRead, SqliteTaskAuthority, blob16, blob32, close_permit, encode_u64, generation_from_blob,
     load_attempt, load_permit_by_id, load_receipt, load_task, load_write_set_by_root,
     optional_blob16, set_attempt_state, u64_from_blob, update_task,
 };
 use crate::{
-    AttemptState, PermitState, ReceiptOutcome, TaskReceiptRecord, TaskStoreError,
-    TaskWriteSetRecord, TaskWriteSetSemanticAppend, TaskWriteSetSemanticTarget,
+    AttemptState, PermitState, ReceiptOutcome, RequiredSatisfaction, RequiredSatisfactionProof,
+    TaskReceiptRecord, TaskStoreError, TaskWriteSetRecord, TaskWriteSetSemanticAppend,
+    TaskWriteSetSemanticTarget,
 };
 
 /// Durable state of a Task-side Semantic publication plan.
@@ -163,6 +165,42 @@ pub struct SemanticTaskCommitReceipt {
 pub struct FinalizeSemanticCommitRequest {
     pub plan_id: SemanticCommitPlanId,
     pub finalized_at_ms: i64,
+}
+
+/// Typed effect-proof envelope persisted before a mixed Effect + Semantic
+/// coordinator starts publication. Persisting the proofs makes a later
+/// restart able to reconstruct the v3 finalize request without caller memory.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PrepareSemanticFinalizeRequest {
+    pub plan_id: SemanticCommitPlanId,
+    pub required_satisfaction: Vec<RequiredSatisfaction>,
+    pub fenced_participant_digest: [u8; 32],
+    pub prepared_at_ms: i64,
+}
+
+/// Immutable durable mixed-finalize envelope bound to one Semantic plan.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SemanticFinalizeEnvelopeRecord {
+    pub plan_id: SemanticCommitPlanId,
+    pub required_satisfaction: Vec<RequiredSatisfaction>,
+    pub fenced_participant_digest: [u8; 32],
+    pub prepared_at_ms: i64,
+}
+
+/// Idempotent result of preparing the mixed-finalize envelope.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SemanticFinalizeEnvelopeDecision {
+    Prepared(Box<SemanticFinalizeEnvelopeRecord>),
+    Replayed(Box<SemanticFinalizeEnvelopeRecord>),
+}
+
+impl SemanticFinalizeEnvelopeDecision {
+    #[must_use]
+    pub fn record(&self) -> &SemanticFinalizeEnvelopeRecord {
+        match self {
+            Self::Prepared(record) | Self::Replayed(record) => record,
+        }
+    }
 }
 
 /// Idempotent Semantic-aware Task finalize decision.
@@ -513,6 +551,88 @@ impl SqliteTaskAuthority {
             .collect()
     }
 
+    /// Persists the typed required-effect proofs needed by the mixed v3
+    /// finalize path. The envelope is immutable and may be prepared before
+    /// Semantic publication authorization; exact retries replay its bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed binding, slot, idempotency, or storage error.
+    pub fn prepare_semantic_finalize(
+        &self,
+        request: PrepareSemanticFinalizeRequest,
+    ) -> Result<SemanticFinalizeEnvelopeDecision, TaskStoreError> {
+        if request.prepared_at_ms < 0 {
+            return Err(TaskStoreError::InvalidSemanticPublicationPlan {
+                reason: "mixed finalize envelope timestamp must be non-negative",
+            });
+        }
+        let mut connection = self.lock_connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let plan = load_plan_optional(&transaction, request.plan_id)?
+            .ok_or(TaskStoreError::SemanticCommitPlanNotFound)?;
+        if let Some(existing) = load_finalize_envelope_optional(&transaction, request.plan_id)? {
+            if existing.required_satisfaction == request.required_satisfaction
+                && existing.fenced_participant_digest == request.fenced_participant_digest
+                && existing.prepared_at_ms == request.prepared_at_ms
+            {
+                transaction.commit()?;
+                return Ok(SemanticFinalizeEnvelopeDecision::Replayed(Box::new(
+                    existing,
+                )));
+            }
+            return Err(TaskStoreError::InvalidSemanticPublicationPlan {
+                reason: "mixed finalize envelope request conflicts with durable bytes",
+            });
+        }
+        if plan.state == SemanticCommitPlanState::Finalized {
+            return Err(TaskStoreError::InvalidSemanticPublicationPlan {
+                reason: "finalized Semantic plan lacks its mixed finalize envelope",
+            });
+        }
+        let (task, permit, _attempt, write_set) = load_plan_context(
+            &transaction,
+            plan.task_id,
+            plan.attempt_id,
+            plan.attempt_generation,
+            plan.permit_id,
+        )?;
+        validate_semantic_only_context(&transaction, &task, &permit, &write_set)?;
+        validate_plan_against_write_set(&plan, &write_set)?;
+        let slots = list_slots(&transaction, permit.permit_id)?;
+        if slots.is_empty() {
+            return Err(TaskStoreError::InvalidSemanticPublicationPlan {
+                reason: "mixed finalize envelope requires declared Effect slots",
+            });
+        }
+        validate_finalize_satisfaction_shape(&slots, &request.required_satisfaction)?;
+        let envelope = SemanticFinalizeEnvelopeRecord {
+            plan_id: request.plan_id,
+            required_satisfaction: request.required_satisfaction,
+            fenced_participant_digest: request.fenced_participant_digest,
+            prepared_at_ms: request.prepared_at_ms,
+        };
+        insert_finalize_envelope(&transaction, &envelope)?;
+        transaction.commit()?;
+        Ok(SemanticFinalizeEnvelopeDecision::Prepared(Box::new(
+            envelope,
+        )))
+    }
+
+    /// Reads the immutable mixed-finalize envelope, if one was prepared for
+    /// the plan. The absence of an envelope is the Semantic-only path.
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage or corrupt-record error.
+    pub fn inspect_semantic_finalize_envelope(
+        &self,
+        plan_id: SemanticCommitPlanId,
+    ) -> Result<Option<SemanticFinalizeEnvelopeRecord>, TaskStoreError> {
+        let connection = self.lock_connection()?;
+        load_finalize_envelope_optional(&*connection, plan_id)
+    }
+
     /// Finalizes a complete Semantic-only plan in one `TaskAuthority`
     /// transaction. The returned wrapper nests the exact owner receipts;
     /// the base `TaskReceiptRecord` remains the existing immutable receipt
@@ -694,6 +814,37 @@ fn ensure_no_effect_slots(
         return Err(TaskStoreError::InvalidSemanticPublicationPlan {
             reason: "Semantic-only finalize cannot carry Effect slots",
         });
+    }
+    Ok(())
+}
+
+fn validate_finalize_satisfaction_shape(
+    slots: &[crate::SlotRecord],
+    satisfactions: &[RequiredSatisfaction],
+) -> Result<(), TaskStoreError> {
+    let mut seen = std::collections::BTreeSet::new();
+    for satisfaction in satisfactions {
+        if !seen.insert(satisfaction.effect_seq) {
+            return Err(TaskStoreError::InvalidSemanticPublicationPlan {
+                reason: "mixed finalize envelope repeats an effect satisfaction",
+            });
+        }
+        let slot = slots
+            .iter()
+            .find(|slot| slot.effect_seq == satisfaction.effect_seq)
+            .ok_or(TaskStoreError::EffectSlotNotFound)?;
+        if !slot.required {
+            return Err(TaskStoreError::InvalidSemanticPublicationPlan {
+                reason: "mixed finalize envelope covers a non-required Effect slot",
+            });
+        }
+        if matches!(
+            satisfaction.proof,
+            RequiredSatisfactionProof::ConditionNotApplicable { .. }
+        ) && slot.required_condition_digest.is_none()
+        {
+            return Err(TaskStoreError::ConditionNotBound);
+        }
     }
     Ok(())
 }
@@ -985,6 +1136,92 @@ pub(crate) fn finalize_plan(
         ));
     }
     Ok(())
+}
+
+fn insert_finalize_envelope(
+    transaction: &Transaction<'_>,
+    envelope: &SemanticFinalizeEnvelopeRecord,
+) -> Result<(), TaskStoreError> {
+    transaction.execute(
+        "INSERT INTO task_semantic_finalize_envelopes (
+            plan_id, fenced_participant_digest, prepared_at_ms
+         ) VALUES (?1, ?2, ?3)",
+        params![
+            envelope.plan_id.as_bytes().as_slice(),
+            envelope.fenced_participant_digest.as_slice(),
+            envelope.prepared_at_ms,
+        ],
+    )?;
+    for satisfaction in &envelope.required_satisfaction {
+        let (proof_kind, proof_digest) = match satisfaction.proof {
+            RequiredSatisfactionProof::EffectClosedSuccess {
+                success_assertion_digest,
+            } => (0_i64, success_assertion_digest),
+            RequiredSatisfactionProof::ConditionNotApplicable {
+                condition_false_proof_digest,
+            } => (1_i64, condition_false_proof_digest),
+        };
+        transaction.execute(
+            "INSERT INTO task_semantic_finalize_satisfactions (
+                plan_id, effect_seq, proof_kind, proof_digest
+             ) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                envelope.plan_id.as_bytes().as_slice(),
+                encode_u64(satisfaction.effect_seq).as_slice(),
+                proof_kind,
+                proof_digest.as_slice(),
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+fn load_finalize_envelope_optional(
+    source: &impl SqlRead,
+    plan_id: SemanticCommitPlanId,
+) -> Result<Option<SemanticFinalizeEnvelopeRecord>, TaskStoreError> {
+    let (fenced_participant_digest, prepared_at_ms) = {
+        let mut statement = source.prepare_statement(
+            "SELECT fenced_participant_digest, prepared_at_ms
+             FROM task_semantic_finalize_envelopes WHERE plan_id = ?1",
+        )?;
+        let mut rows = statement.query([plan_id.as_bytes().as_slice()])?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+        (blob32(row, 0)?, row.get::<_, i64>(1)?)
+    };
+    let mut statement = source.prepare_statement(
+        "SELECT effect_seq, proof_kind, proof_digest
+         FROM task_semantic_finalize_satisfactions
+         WHERE plan_id = ?1 ORDER BY effect_seq",
+    )?;
+    let mut rows = statement.query([plan_id.as_bytes().as_slice()])?;
+    let mut required_satisfaction = Vec::new();
+    while let Some(row) = rows.next()? {
+        let effect_seq = u64_from_blob(row, 0)?;
+        let proof_digest = blob32(row, 2)?;
+        let proof = match row.get::<_, i64>(1)? {
+            0 => RequiredSatisfactionProof::EffectClosedSuccess {
+                success_assertion_digest: proof_digest,
+            },
+            1 => RequiredSatisfactionProof::ConditionNotApplicable {
+                condition_false_proof_digest: proof_digest,
+            },
+            _ => {
+                return Err(TaskStoreError::CorruptRecord(
+                    "unknown mixed finalize proof kind",
+                ));
+            }
+        };
+        required_satisfaction.push(RequiredSatisfaction { effect_seq, proof });
+    }
+    Ok(Some(SemanticFinalizeEnvelopeRecord {
+        plan_id,
+        required_satisfaction,
+        fenced_participant_digest,
+        prepared_at_ms,
+    }))
 }
 
 const PLAN_COLUMNS: &str = "plan_id, task_id, permit_id, attempt_id,

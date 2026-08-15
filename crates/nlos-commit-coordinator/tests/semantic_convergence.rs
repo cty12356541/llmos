@@ -9,14 +9,16 @@ use nlos_commit_coordinator::{
 use nlos_semantic::SemanticAuthority;
 use nlos_store_fault::{FaultCode, FaultMode};
 use nlos_task::{
-    AttemptSpec, PermitDecision, PermitRequest, PlanSemanticCommitRequest, SemanticCommitPlanId,
-    SemanticCommitPlanState, SnapshotBundle, SnapshotConsistency, SqliteTaskAuthority,
-    TaskSnapshotReceiptSpec, TaskSpec, TaskWriteSetRequest, TaskWriteSetSemanticAppendRequest,
+    AttemptSpec, EffectPermitDecision, EffectPermitRequest, LogicalEffectDescriptor,
+    NoEffectReason, NoEffectRequest, PermitDecision, PermitRequest, PlanSemanticCommitRequest,
+    PlannedEffect, SemanticCommitPlanId, SemanticCommitPlanState, SnapshotBundle,
+    SnapshotConsistency, SqliteTaskAuthority, TaskSnapshotReceiptSpec, TaskSpec,
+    TaskWriteSetEffectEndpointRequest, TaskWriteSetRequest, TaskWriteSetSemanticAppendRequest,
     TaskWriteSetSemanticRequiredDurability, TaskWriteSetSemanticTarget, empty_effect_history_root,
 };
 use nlos_types::{
-    CancellationScopeId, Generation, IdempotencyKey, NamespaceId, ReceiptId, SemanticEventId,
-    TaskAttemptId, TaskId, TaskSnapshotId,
+    CancellationScopeId, CommitPermitId, Generation, IdempotencyKey, NamespaceId, ReceiptId,
+    SemanticEventId, TaskAttemptId, TaskId, TaskSnapshotId,
 };
 use rusqlite::Connection;
 
@@ -148,8 +150,37 @@ fn seed_semantic_authority(
     )
 }
 
+fn mixed_effect(task_id: TaskId) -> PlannedEffect {
+    PlannedEffect {
+        descriptor: LogicalEffectDescriptor {
+            task_id,
+            task_generation: Generation::INITIAL,
+            intent_spec_id: [0xf0; 32],
+            stable_action_slot: 1,
+            target_authority_object_id: [0xf1; 32],
+            effect_class: 1,
+            idempotency_scope: 1,
+        },
+        required: false,
+        required_condition_digest: None,
+        success_criteria_digest: [0xf2; 32],
+        action_proposal_digest: [0xf3; 32],
+    }
+}
+
 #[allow(clippy::too_many_lines)]
-fn prepare(fixture: &Fixture) -> (SqliteTaskAuthority, SemanticAuthority, SemanticCommitPlanId) {
+fn prepare(
+    fixture: &Fixture,
+    with_effect: bool,
+) -> (
+    SqliteTaskAuthority,
+    SemanticAuthority,
+    SemanticCommitPlanId,
+    TaskId,
+    TaskAttemptId,
+    CommitPermitId,
+    u64,
+) {
     let (semantic, event_id, admission_receipt_id, durability_receipt_id) =
         seed_semantic_authority(&fixture.semantic_root);
     let artifact = ArtifactStore::open(&fixture.artifact_root).expect("open Artifact authority");
@@ -209,6 +240,16 @@ fn prepare(fixture: &Fixture) -> (SqliteTaskAuthority, SemanticAuthority, Semant
         3,
     )
     .unwrap();
+    let planned_effects = if with_effect {
+        vec![mixed_effect(task_id)]
+    } else {
+        Vec::new()
+    };
+    let effect_endpoints = if with_effect {
+        vec![TaskWriteSetEffectEndpointRequest::SemanticAdmission { effect_seq: 0 }]
+    } else {
+        Vec::new()
+    };
     let write_set = task
         .seal_task_write_set_with_semantic_authority(
             &artifact,
@@ -229,8 +270,8 @@ fn prepare(fixture: &Fixture) -> (SqliteTaskAuthority, SemanticAuthority, Semant
                     durability_receipt_id: Some(durability_receipt_id),
                 }],
                 resource_reservations: Vec::new(),
-                planned_effects: Vec::new(),
-                effect_endpoints: Vec::new(),
+                planned_effects: planned_effects.clone(),
+                effect_endpoints,
                 idempotency_key: IdempotencyKey::from_bytes([0x20; 16]),
                 sealed_at_ms: 4,
             },
@@ -248,7 +289,7 @@ fn prepare(fixture: &Fixture) -> (SqliteTaskAuthority, SemanticAuthority, Semant
             attempt_id,
             attempt_generation: Generation::INITIAL,
             write_set_root: write_set.write_set_root,
-            planned_effects: Vec::new(),
+            planned_effects,
             idempotency_key: IdempotencyKey::from_bytes([0x21; 16]),
             valid_until_ms: 1_000,
             requested_at_ms: 5,
@@ -270,13 +311,21 @@ fn prepare(fixture: &Fixture) -> (SqliteTaskAuthority, SemanticAuthority, Semant
         .unwrap()
         .record()
         .plan_id;
-    (task, semantic, plan)
+    (
+        task,
+        semantic,
+        plan,
+        task_id,
+        attempt_id,
+        permit.permit_id,
+        permit.permit_epoch,
+    )
 }
 
 #[test]
 fn semantic_coordinator_survives_restart_between_publication_and_finalize() {
     let fixture = Fixture::new();
-    let (task, semantic, plan_id) = prepare(&fixture);
+    let (task, semantic, plan_id, ..) = prepare(&fixture, false);
     let coordinator = SemanticCommitCoordinator::new(&task, &semantic);
     assert!(matches!(
         coordinator
@@ -320,7 +369,7 @@ fn semantic_coordinator_survives_restart_between_publication_and_finalize() {
 #[test]
 fn semantic_coordinator_rejects_negative_timestamp_before_mutation() {
     let fixture = Fixture::new();
-    let (task, semantic, plan_id) = prepare(&fixture);
+    let (task, semantic, plan_id, ..) = prepare(&fixture, false);
     let coordinator = SemanticCommitCoordinator::new(&task, &semantic);
     assert!(matches!(
         coordinator.converge_one_step(ConvergeSemanticCommitRequest {
@@ -341,7 +390,7 @@ fn semantic_coordinator_replays_owner_publication_after_task_write_failure() {
     nlos_store_fault::disarm();
     let _fault_guard = FaultDisarmGuard;
     let fixture = Fixture::new();
-    let (task, semantic, plan_id) = prepare(&fixture);
+    let (task, semantic, plan_id, ..) = prepare(&fixture, false);
     let coordinator = SemanticCommitCoordinator::new(&task, &semantic);
     assert!(matches!(
         coordinator
@@ -374,4 +423,81 @@ fn semantic_coordinator_replays_owner_publication_after_task_write_failure() {
         .converge(ConvergeSemanticCommitRequest { plan_id, now_ms: 9 })
         .unwrap();
     assert_eq!(receipt.task_receipt.new_head_commit_seq, 1);
+}
+
+#[test]
+fn mixed_semantic_coordinator_reconstructs_persisted_finalize_envelope() {
+    let fixture = Fixture::new();
+    let (task, semantic, plan_id, task_id, attempt_id, permit_id, permit_epoch) =
+        prepare(&fixture, true);
+    task.prepare_semantic_finalize(nlos_task::PrepareSemanticFinalizeRequest {
+        plan_id,
+        required_satisfaction: Vec::new(),
+        fenced_participant_digest: [0; 32],
+        prepared_at_ms: 6,
+    })
+    .unwrap();
+    let coordinator = SemanticCommitCoordinator::new(&task, &semantic);
+    assert!(matches!(
+        coordinator
+            .converge_one_step(ConvergeSemanticCommitRequest { plan_id, now_ms: 7 })
+            .unwrap(),
+        ConvergeSemanticStep::Authorized
+    ));
+    assert!(matches!(
+        coordinator
+            .converge_one_step(ConvergeSemanticCommitRequest { plan_id, now_ms: 8 })
+            .unwrap(),
+        ConvergeSemanticStep::PublishedOne {
+            state_after: SemanticCommitPlanState::Ready,
+            ..
+        }
+    ));
+    let issued = match task
+        .request_effect_permit(EffectPermitRequest {
+            task_id,
+            attempt_id,
+            attempt_generation: Generation::INITIAL,
+            permit_id,
+            permit_epoch,
+            effect_seq: 0,
+            idempotency_key: IdempotencyKey::from_bytes([0xf4; 16]),
+            valid_until_ms: 1_000,
+            requested_at_ms: 9,
+        })
+        .unwrap()
+    {
+        EffectPermitDecision::Issued(issued) | EffectPermitDecision::Replayed(issued) => *issued,
+    };
+    task.record_no_effect(NoEffectRequest {
+        task_id,
+        attempt_id,
+        attempt_generation: Generation::INITIAL,
+        permit_id,
+        permit_epoch,
+        effect_seq: 0,
+        reason: NoEffectReason::NotSelected,
+        dispatch_token: Some(issued.one_shot_dispatch_token),
+        recorded_at_ms: 10,
+    })
+    .unwrap();
+    drop(task);
+
+    let reopened = SqliteTaskAuthority::open(&fixture.task_path).unwrap();
+    let receipt = SemanticCommitCoordinator::new(&reopened, &semantic)
+        .converge(ConvergeSemanticCommitRequest {
+            plan_id,
+            now_ms: 11,
+        })
+        .unwrap();
+    assert_eq!(receipt.task_receipt.new_head_commit_seq, 1);
+    assert_eq!(receipt.semantic_publications.len(), 1);
+    assert_eq!(
+        reopened
+            .inspect_semantic_finalize_envelope(plan_id)
+            .unwrap()
+            .unwrap()
+            .required_satisfaction,
+        Vec::new()
+    );
 }
