@@ -3,11 +3,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use nlos_resource::{
-    ActivateReservationRequest, ActivationDecision, CreateAccountRequest, CreateQuoteRequest,
-    DriverRotationDecision, RegisterDriverRequest, ReservationDecision, ReserveRequest,
-    ResourceAuthority, ResourceAuthorityError, RotateDriverRequest,
+    ActivateReservationRequest, ActivationDecision, ConsumeDecision, ConsumeReservationRequest,
+    CreateAccountRequest, CreateQuoteRequest, DriverRotationDecision, RegisterDriverRequest,
+    ReservationDecision, ReserveRequest, ResourceAuthority, ResourceAuthorityError,
+    RotateDriverRequest,
 };
-use nlos_types::{CallId, IdempotencyKey, OperationId};
+use nlos_types::{CallId, IdempotencyKey, OperationId, ReceiptId};
 use rusqlite::Connection;
 
 static NEXT: AtomicU64 = AtomicU64::new(1);
@@ -73,6 +74,22 @@ fn reserve_request(
         operation_id: OperationId::from_bytes([seed.wrapping_add(7); 16]),
         idempotency_key: IdempotencyKey::from_bytes([seed.wrapping_add(8); 16]),
         reserved_at_ms: 2000,
+    }
+}
+
+fn consume_request(
+    reservation: nlos_resource::ReservationRecord,
+    activation: nlos_resource::ActivationReceipt,
+    sequence: u64,
+    cumulative_usage: u64,
+) -> ConsumeReservationRequest {
+    ConsumeReservationRequest {
+        reservation_id: reservation.reservation_id,
+        operation_id: reservation.operation_id,
+        activation_receipt_id: activation.receipt_id,
+        sequence,
+        cumulative_usage,
+        consumed_at_ms: 4_000 + sequence,
     }
 }
 
@@ -188,6 +205,17 @@ fn activation_consumes_exact_binding_once_and_replays_receipt() {
         authority.inspect_activation_receipt(r.reservation_id),
         Err(ResourceAuthorityError::ReservationNotActive)
     ));
+    assert!(matches!(
+        authority.consume(ConsumeReservationRequest {
+            reservation_id: r.reservation_id,
+            operation_id: r.operation_id,
+            activation_receipt_id: ReceiptId::from_bytes([0; 16]),
+            sequence: 1,
+            cumulative_usage: 1,
+            consumed_at_ms: 3_001,
+        }),
+        Err(ResourceAuthorityError::ReservationNotActive)
+    ));
     let first = authority.activate(activate).unwrap();
     assert!(matches!(first, ActivationDecision::Activated(_)));
     let replay = authority.activate(activate).unwrap();
@@ -209,6 +237,117 @@ fn activation_consumes_exact_binding_once_and_replays_receipt() {
             .inspect_activation_receipt(r.reservation_id)
             .unwrap(),
         first.receipt()
+    );
+}
+
+#[test]
+#[allow(clippy::too_many_lines)] // Keep the high-water fault matrix in one integration scenario.
+fn consumption_records_strict_monotonic_high_water_and_replays() {
+    let root = Root::new("consume");
+    let authority = ResourceAuthority::open(root.path()).unwrap();
+    let driver = authority
+        .register_driver(driver_request(31))
+        .unwrap()
+        .record();
+    let account = authority.create_account(account_request(31, 100)).unwrap();
+    let quote = authority
+        .create_quote(quote_request(31, driver, 25))
+        .unwrap()
+        .record();
+    let reservation = authority
+        .reserve(reserve_request(31, account, quote))
+        .unwrap()
+        .record();
+    let activation = authority
+        .activate(ActivateReservationRequest {
+            reservation_id: reservation.reservation_id,
+            call_id: reservation.call_id,
+            operation_id: reservation.operation_id,
+            driver_id: reservation.driver_id,
+            driver_generation: reservation.driver_generation,
+            driver_fencing_token: reservation.driver_fencing_token,
+            activation_token: reservation.activation_token,
+            activated_at_ms: 3_000,
+        })
+        .unwrap()
+        .receipt();
+    let consume = consume_request(reservation, activation, 1, 10);
+    assert!(matches!(
+        authority.consume(ConsumeReservationRequest {
+            sequence: 0,
+            ..consume
+        }),
+        Err(ResourceAuthorityError::InvalidUsageSequence)
+    ));
+    let consumed = authority.consume(consume).unwrap();
+    assert!(matches!(consumed, ConsumeDecision::Recorded(_)));
+    let replay = authority.consume(consume).unwrap();
+    assert!(matches!(replay, ConsumeDecision::Replayed(_)));
+    assert_eq!(consumed.receipt(), replay.receipt());
+    assert_eq!(
+        authority
+            .inspect_consumption_receipt(reservation.reservation_id, 1)
+            .unwrap(),
+        consumed.receipt()
+    );
+    assert!(matches!(
+        authority.consume(ConsumeReservationRequest {
+            sequence: 2,
+            cumulative_usage: 9,
+            consumed_at_ms: 4_002,
+            ..consume
+        }),
+        Err(ResourceAuthorityError::UsageNotMonotonic {
+            previous: 10,
+            reported: 9
+        })
+    ));
+    assert!(matches!(
+        authority.consume(ConsumeReservationRequest {
+            cumulative_usage: 11,
+            ..consume
+        }),
+        Err(ResourceAuthorityError::ConsumptionSequenceConflict)
+    ));
+    assert!(matches!(
+        authority.consume(ConsumeReservationRequest {
+            sequence: 2,
+            cumulative_usage: 26,
+            consumed_at_ms: 4_002,
+            ..consume
+        }),
+        Err(ResourceAuthorityError::UsageExceedsUpperBound {
+            usage: 26,
+            upper_bound: 25
+        })
+    ));
+    let reopened = ResourceAuthority::open(root.path()).unwrap();
+    assert_eq!(
+        reopened
+            .inspect_consumption_receipt(reservation.reservation_id, 1)
+            .unwrap(),
+        consumed.receipt()
+    );
+    assert!(matches!(
+        reopened.consume(consume),
+        Ok(ConsumeDecision::Replayed(_))
+    ));
+    drop(reopened);
+    let raw = Connection::open(root.path().join("resource-authority.db")).unwrap();
+    assert!(
+        raw.execute(
+            "UPDATE reservation_consumption_receipts SET cumulative_usage=11
+             WHERE reservation_id=?1 AND sequence=1",
+            [reservation.reservation_id.as_bytes().as_slice()],
+        )
+        .is_err()
+    );
+    assert!(
+        raw.execute(
+            "DELETE FROM reservation_consumption_receipts WHERE reservation_id=?1",
+            [reservation.reservation_id.as_bytes().as_slice()],
+        )
+        .is_err()
     );
 }
 
@@ -374,7 +513,7 @@ fn endpoint_proofs_are_authority_assigned_rotate_and_survive_restart() {
     assert_eq!(
         raw.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .unwrap(),
-        2
+        3
     );
     assert!(
         raw.execute(

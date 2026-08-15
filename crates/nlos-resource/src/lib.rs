@@ -178,6 +178,8 @@ pub struct ReservationRecord {
     pub state: ReservationState,
     pub created_at_ms: u64,
     pub activation_receipt_id: Option<ReceiptId>,
+    pub usage_high_water_seq: u64,
+    pub usage_high_water: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -227,6 +229,41 @@ impl ActivationDecision {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ConsumeReservationRequest {
+    pub reservation_id: ReservationId,
+    pub operation_id: OperationId,
+    pub activation_receipt_id: ReceiptId,
+    pub sequence: u64,
+    pub cumulative_usage: u64,
+    pub consumed_at_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ConsumptionReceipt {
+    pub receipt_id: ReceiptId,
+    pub reservation_id: ReservationId,
+    pub operation_id: OperationId,
+    pub activation_receipt_id: ReceiptId,
+    pub sequence: u64,
+    pub cumulative_usage: u64,
+    pub consumed_at_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConsumeDecision {
+    Recorded(ConsumptionReceipt),
+    Replayed(ConsumptionReceipt),
+}
+impl ConsumeDecision {
+    #[must_use]
+    pub const fn receipt(self) -> ConsumptionReceipt {
+        match self {
+            Self::Recorded(receipt) | Self::Replayed(receipt) => receipt,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum ResourceAuthorityError {
     Sqlite(rusqlite::Error),
@@ -248,6 +285,16 @@ pub enum ResourceAuthorityError {
         available: u64,
         required: u64,
     },
+    InvalidUsageSequence,
+    UsageExceedsUpperBound {
+        usage: u64,
+        upper_bound: u64,
+    },
+    UsageNotMonotonic {
+        previous: u64,
+        reported: u64,
+    },
+    ConsumptionSequenceConflict,
     ReservationBindingMismatch,
     ReservationAlreadyActive,
     ReservationNotActive,
@@ -306,9 +353,13 @@ impl ResourceAuthority {
             0 => {
                 schema::migrate_v1(&mut c)?;
                 schema::migrate_v2(&mut c)?;
+                schema::migrate_v3(&mut c)?;
             }
-            1 => schema::migrate_v2(&mut c)?,
-            2 => {}
+            1 => {
+                schema::migrate_v2(&mut c)?;
+                schema::migrate_v3(&mut c)?;
+            }
+            2 | 3 => schema::migrate_v3(&mut c)?,
             x => return Err(ResourceAuthorityError::SchemaVersionUnsupported(x)),
         }
         Ok(Self {
@@ -594,7 +645,7 @@ impl ResourceAuthority {
                 required: qt.upper_bound,
             });
         }
-        tx.execute("INSERT INTO reservations VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,0,?13,NULL,NULL)",params![id.as_bytes().as_slice(),q.idempotency_key.as_bytes().as_slice(),q.account_id.as_bytes().as_slice(),q.quote_id.as_bytes().as_slice(),q.call_id.as_bytes().as_slice(),q.operation_id.as_bytes().as_slice(),qt.driver_id.as_bytes().as_slice(),qt.device_id.as_bytes().as_slice(),eg(qt.driver_generation)?,qt.driver_fencing_token.as_slice(),eu(qt.upper_bound)?,token.as_slice(),eu(q.reserved_at_ms)?])?;
+        tx.execute("INSERT INTO reservations VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,0,?13,NULL,NULL,0,0)",params![id.as_bytes().as_slice(),q.idempotency_key.as_bytes().as_slice(),q.account_id.as_bytes().as_slice(),q.quote_id.as_bytes().as_slice(),q.call_id.as_bytes().as_slice(),q.operation_id.as_bytes().as_slice(),qt.driver_id.as_bytes().as_slice(),qt.device_id.as_bytes().as_slice(),eg(qt.driver_generation)?,qt.driver_fencing_token.as_slice(),eu(qt.upper_bound)?,token.as_slice(),eu(q.reserved_at_ms)?])?;
         let r = reservation(&tx, id)?.ok_or(ResourceAuthorityError::CorruptRecord(
             "new reservation absent",
         ))?;
@@ -703,6 +754,156 @@ impl ResourceAuthority {
         {
             return Err(ResourceAuthorityError::CorruptRecord(
                 "activation receipt disagrees with reservation",
+            ));
+        }
+        Ok(receipt)
+    }
+
+    /// Records one monotonic cumulative usage observation for an ACTIVE
+    /// Reservation.
+    ///
+    /// This reference profile is strict-only: cumulative usage may not exceed
+    /// the reserved upper bound. The receipt identity excludes the caller's
+    /// timestamp so an exact retry returns the original durable observation.
+    ///
+    /// # Errors
+    /// Fails closed on inactive/stale bindings, sequence/content conflicts,
+    /// upper-bound violations, or storage failure.
+    #[allow(clippy::too_many_lines)] // Keep the consume CAS and immutable receipt auditable together.
+    pub fn consume(
+        &self,
+        q: ConsumeReservationRequest,
+    ) -> Result<ConsumeDecision, ResourceAuthorityError> {
+        if q.sequence == 0 {
+            return Err(ResourceAuthorityError::InvalidUsageSequence);
+        }
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let reservation = reservation(&transaction, q.reservation_id)?
+            .ok_or(ResourceAuthorityError::ReservationNotFound)?;
+        if reservation.state != ReservationState::Active {
+            return Err(ResourceAuthorityError::ReservationNotActive);
+        }
+        let activation_receipt = activation_receipt(&transaction, q.reservation_id)?.ok_or(
+            ResourceAuthorityError::CorruptRecord("active reservation has no receipt"),
+        )?;
+        if reservation.activation_receipt_id != Some(q.activation_receipt_id)
+            || reservation.operation_id != q.operation_id
+            || activation_receipt.receipt_id != q.activation_receipt_id
+            || activation_receipt.operation_id != q.operation_id
+        {
+            return Err(ResourceAuthorityError::ReservationBindingMismatch);
+        }
+        active_driver(
+            &transaction,
+            reservation.driver_id,
+            reservation.driver_generation,
+            reservation.driver_fencing_token,
+        )?;
+
+        if let Some(existing) = consumption_receipt(&transaction, q.reservation_id, q.sequence)? {
+            if existing.operation_id != q.operation_id
+                || existing.activation_receipt_id != q.activation_receipt_id
+                || existing.cumulative_usage != q.cumulative_usage
+            {
+                return Err(ResourceAuthorityError::ConsumptionSequenceConflict);
+            }
+            transaction.commit()?;
+            return Ok(ConsumeDecision::Replayed(existing));
+        }
+        if q.sequence <= reservation.usage_high_water_seq {
+            return Err(ResourceAuthorityError::ConsumptionSequenceConflict);
+        }
+        if q.cumulative_usage < reservation.usage_high_water {
+            return Err(ResourceAuthorityError::UsageNotMonotonic {
+                previous: reservation.usage_high_water,
+                reported: q.cumulative_usage,
+            });
+        }
+        if q.cumulative_usage > reservation.upper_bound {
+            return Err(ResourceAuthorityError::UsageExceedsUpperBound {
+                usage: q.cumulative_usage,
+                upper_bound: reservation.upper_bound,
+            });
+        }
+
+        let receipt_id = ReceiptId::from_bytes(id16(
+            b"nlos/reservation-consumption/receipt/v1",
+            &[
+                q.reservation_id.as_bytes(),
+                q.activation_receipt_id.as_bytes(),
+                &q.sequence.to_be_bytes(),
+                &q.cumulative_usage.to_be_bytes(),
+            ],
+        ));
+        transaction.execute(
+            "INSERT INTO reservation_consumption_receipts (
+                receipt_id, reservation_id, operation_id, activation_receipt_id,
+                sequence, cumulative_usage, consumed_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                receipt_id.as_bytes().as_slice(),
+                q.reservation_id.as_bytes().as_slice(),
+                q.operation_id.as_bytes().as_slice(),
+                q.activation_receipt_id.as_bytes().as_slice(),
+                eu(q.sequence)?,
+                eu(q.cumulative_usage)?,
+                eu(q.consumed_at_ms)?,
+            ],
+        )?;
+        let changed = transaction.execute(
+            "UPDATE reservations
+             SET usage_high_water_seq=?1, usage_high_water=?2
+             WHERE reservation_id=?3 AND state=1
+               AND usage_high_water_seq=?4 AND usage_high_water=?5",
+            params![
+                eu(q.sequence)?,
+                eu(q.cumulative_usage)?,
+                q.reservation_id.as_bytes().as_slice(),
+                eu(reservation.usage_high_water_seq)?,
+                eu(reservation.usage_high_water)?,
+            ],
+        )?;
+        if changed != 1 {
+            return Err(ResourceAuthorityError::CorruptRecord(
+                "consumption high-water CAS lost",
+            ));
+        }
+        transaction.commit()?;
+        Ok(ConsumeDecision::Recorded(ConsumptionReceipt {
+            receipt_id,
+            reservation_id: q.reservation_id,
+            operation_id: q.operation_id,
+            activation_receipt_id: q.activation_receipt_id,
+            sequence: q.sequence,
+            cumulative_usage: q.cumulative_usage,
+            consumed_at_ms: q.consumed_at_ms,
+        }))
+    }
+
+    /// Reads one immutable cumulative usage receipt.
+    ///
+    /// # Errors
+    /// Fails when the Reservation or sequence is unknown, corrupt, or storage
+    /// cannot be read.
+    pub fn inspect_consumption_receipt(
+        &self,
+        reservation_id: ReservationId,
+        sequence: u64,
+    ) -> Result<ConsumptionReceipt, ResourceAuthorityError> {
+        let connection = self.lock()?;
+        let reservation = reservation(&connection, reservation_id)?
+            .ok_or(ResourceAuthorityError::ReservationNotFound)?;
+        let receipt = consumption_receipt(&connection, reservation_id, sequence)?.ok_or(
+            ResourceAuthorityError::CorruptRecord("consumption receipt not found"),
+        )?;
+        if receipt.operation_id != reservation.operation_id
+            || reservation.activation_receipt_id != Some(receipt.activation_receipt_id)
+            || receipt.sequence > reservation.usage_high_water_seq
+            || receipt.cumulative_usage > reservation.usage_high_water
+        {
+            return Err(ResourceAuthorityError::CorruptRecord(
+                "consumption receipt disagrees with reservation high-water",
             ));
         }
         Ok(receipt)
@@ -997,8 +1198,10 @@ fn reservation(
         i64,
         i64,
         Option<Vec<u8>>,
+        i64,
+        i64,
     );
-    let x:R=match c.query_row("SELECT account_id,quote_id,call_id,operation_id,driver_id,device_id,driver_generation,driver_fencing_token,upper_bound,activation_token,state,created_at_ms,activation_receipt_id FROM reservations WHERE reservation_id=?1",[id.as_bytes().as_slice()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?,r.get(9)?,r.get(10)?,r.get(11)?,r.get(12)?))).optional()?{Some(x)=>x,None=>return Ok(None)};
+    let x:R=match c.query_row("SELECT account_id,quote_id,call_id,operation_id,driver_id,device_id,driver_generation,driver_fencing_token,upper_bound,activation_token,state,created_at_ms,activation_receipt_id,usage_high_water_seq,usage_high_water FROM reservations WHERE reservation_id=?1",[id.as_bytes().as_slice()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?,r.get(9)?,r.get(10)?,r.get(11)?,r.get(12)?,r.get(13)?,r.get(14)?))).optional()?{Some(x)=>x,None=>return Ok(None)};
     Ok(Some(ReservationRecord {
         reservation_id: id,
         account_id: ResourceAccountId::from_bytes(a16(x.0)?),
@@ -1018,6 +1221,8 @@ fn reservation(
         },
         created_at_ms: du(x.11)?,
         activation_receipt_id: x.12.map(a16).transpose()?.map(ReceiptId::from_bytes),
+        usage_high_water_seq: du(x.13)?,
+        usage_high_water: du(x.14)?,
     }))
 }
 fn reservation_by_key(
@@ -1046,6 +1251,42 @@ fn activation_receipt(
             reservation_id: id,
             operation_id: OperationId::from_bytes(a16(x.1)?),
             activated_at_ms: du(x.2)?,
+        })
+    })
+    .transpose()
+}
+fn consumption_receipt(
+    c: &Connection,
+    reservation_id: ReservationId,
+    sequence: u64,
+) -> Result<Option<ConsumptionReceipt>, ResourceAuthorityError> {
+    let x = c
+        .query_row(
+            "SELECT receipt_id, operation_id, activation_receipt_id,
+                    cumulative_usage, consumed_at_ms
+             FROM reservation_consumption_receipts
+             WHERE reservation_id=?1 AND sequence=?2",
+            params![reservation_id.as_bytes().as_slice(), eu(sequence)?],
+            |r| {
+                Ok((
+                    r.get::<_, Vec<u8>>(0)?,
+                    r.get::<_, Vec<u8>>(1)?,
+                    r.get::<_, Vec<u8>>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, i64>(4)?,
+                ))
+            },
+        )
+        .optional()?;
+    x.map(|x| {
+        Ok(ConsumptionReceipt {
+            receipt_id: ReceiptId::from_bytes(a16(x.0)?),
+            reservation_id,
+            operation_id: OperationId::from_bytes(a16(x.1)?),
+            activation_receipt_id: ReceiptId::from_bytes(a16(x.2)?),
+            sequence,
+            cumulative_usage: du(x.3)?,
+            consumed_at_ms: du(x.4)?,
         })
     })
     .transpose()

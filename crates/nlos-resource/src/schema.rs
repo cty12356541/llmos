@@ -238,3 +238,96 @@ pub(crate) fn migrate_v2(connection: &mut Connection) -> Result<(), ResourceAuth
     transaction.commit()?;
     Ok(())
 }
+
+/// Adds durable cumulative-usage high-water and immutable consume receipts.
+pub(crate) fn migrate_v3(connection: &mut Connection) -> Result<(), ResourceAuthorityError> {
+    let reservation_columns = {
+        let mut statement = connection.prepare("PRAGMA table_info(reservations)")?;
+        statement
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    let has_high_water_columns = reservation_columns
+        .iter()
+        .any(|name| name == "usage_high_water_seq")
+        && reservation_columns
+            .iter()
+            .any(|name| name == "usage_high_water");
+    let consumption_table_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type='table' AND name='reservation_consumption_receipts'",
+        [],
+        |row| row.get(0),
+    )?;
+    let consumption_trigger_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN (
+            'reservation_consumption_receipts_immutable_update',
+            'reservation_consumption_receipts_immutable_delete',
+            'reservation_usage_high_water_bound_insert',
+            'reservation_usage_high_water_bound_update'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if has_high_water_columns && consumption_table_count == 1 && consumption_trigger_count == 4 {
+        connection.pragma_update(None, "user_version", 3)?;
+        return Ok(());
+    }
+    if has_high_water_columns
+        || reservation_columns
+            .iter()
+            .any(|name| name == "usage_high_water_seq")
+        || reservation_columns
+            .iter()
+            .any(|name| name == "usage_high_water")
+        || consumption_table_count != 0
+        || consumption_trigger_count != 0
+    {
+        return Err(ResourceAuthorityError::CorruptRecord(
+            "partial resource consumption schema",
+        ));
+    }
+
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "ALTER TABLE reservations
+             ADD COLUMN usage_high_water_seq INTEGER NOT NULL DEFAULT 0
+             CHECK(usage_high_water_seq >= 0);
+         ALTER TABLE reservations
+             ADD COLUMN usage_high_water INTEGER NOT NULL DEFAULT 0
+             CHECK(usage_high_water >= 0);
+
+         CREATE TABLE reservation_consumption_receipts (
+             receipt_id BLOB PRIMARY KEY NOT NULL CHECK(length(receipt_id) = 16),
+             reservation_id BLOB NOT NULL CHECK(length(reservation_id) = 16),
+             operation_id BLOB NOT NULL CHECK(length(operation_id) = 16),
+             activation_receipt_id BLOB NOT NULL CHECK(length(activation_receipt_id) = 16),
+             sequence INTEGER NOT NULL CHECK(sequence >= 1),
+             cumulative_usage INTEGER NOT NULL CHECK(cumulative_usage >= 0),
+             consumed_at_ms INTEGER NOT NULL CHECK(consumed_at_ms >= 0),
+             UNIQUE(reservation_id, sequence),
+             FOREIGN KEY(reservation_id) REFERENCES reservations(reservation_id),
+             FOREIGN KEY(activation_receipt_id)
+                 REFERENCES reservation_activation_receipts(receipt_id)
+         ) STRICT;
+
+         CREATE TRIGGER reservation_usage_high_water_bound_insert
+         BEFORE INSERT ON reservations
+         WHEN NEW.usage_high_water > NEW.upper_bound
+         BEGIN SELECT RAISE(ABORT, 'reservation usage exceeds upper bound'); END;
+         CREATE TRIGGER reservation_usage_high_water_bound_update
+         BEFORE UPDATE OF usage_high_water, upper_bound ON reservations
+         WHEN NEW.usage_high_water > NEW.upper_bound
+         BEGIN SELECT RAISE(ABORT, 'reservation usage exceeds upper bound'); END;
+         CREATE TRIGGER reservation_consumption_receipts_immutable_update
+         BEFORE UPDATE ON reservation_consumption_receipts
+         BEGIN SELECT RAISE(ABORT, 'consumption receipt is immutable'); END;
+         CREATE TRIGGER reservation_consumption_receipts_immutable_delete
+         BEFORE DELETE ON reservation_consumption_receipts
+         BEGIN SELECT RAISE(ABORT, 'consumption receipt is immutable'); END;
+
+         PRAGMA user_version = 3;",
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
