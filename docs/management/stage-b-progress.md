@@ -2,9 +2,9 @@
 
 > 状态：`ACTIVE / POC ACCEPTANCE PENDING`
 >
-> 最后更新：2026-08-15（已纳入 `B-TASK-008C2F` Semantic expected admission-policy owner binding、schema v23 与 append-root v3；`B-TASK-008C2E` Semantic-aware finalize owner-proof re-read guard 与重放边界；`B-TASK-008C2D` 可选 Semantic DurabilityReceipt owner readback、schema v22 与 append-root v2；`B-TASK-008C2C` Semantic 追加声明、target scope、直接 Durable AdmissionReceipt 与 schema v21；`B-TASK-008C2B` Artifact 写声明、schema v19/v20 与发布计划绑定；`B-TASK-008C2A` planned effect owner endpoint proof / schema v18；`B-TASK-008C1` sealed TaskWriteSet planned-effect durable binding / schema v17；`B-TASK-008B2` Semantic event / Resource Reservation owner readback + TaskWriteSet binding；`B-TASK-008B1` Process/AgentInstance/IsolationDomain owner proof + TaskWriteSet binding、`B-TASK-008A` authority-verified snapshot/read-set seal 及此前 `B-TASK-007D1` EffectPermit/Task Receipt participant binding propagation + revalidation、`B-TASK-007C2` TaskAuthority verified Driver/Resource registration、`B-TASK-007C1` Driver gateway/Resource-Ledger endpoint proofs、`B-TASK-007B2` TaskAuthority verified participant registration CAS、`B-TASK-007B1` Artifact/Semantic authority endpoint proofs、`B-TASK-007A` authority-assigned TaskStore self-participant registry、`B-SEMANTIC-002B` durable SpecEvent admission、`B-SEMANTIC-002A` canonical IntentSpec body identity、`B-SEMANTIC-001` durable Assertion admission authority、`B-CAPABILITY-001` durable issue/attenuate/revoke authority、`B-IDENTITY-001` durable Principal/ControlDomain/key authority、`B-RESOURCE-001` Driver/Reservation binding authority、`B-PROCESS-001` durable execution binding authority 与 `B-TASK-006P` shared typed identity spine 保持有效；并接受 [ADR-0005](./adrs/0005-task-write-set-authority-first.md) 的 TaskWriteSet authority-first 实施顺序；2026-08-04 采纳[议题 31](../discussions/31-重复建设评估与继续投入边界.md)/[议题 32](../discussions/32-核心设计理念撞车风险评估.md) 顺序变更：主线由 `B-SCHEMA` 剩余横向门切换为 `B-TASK` 纵切面，Go/C# 探针后移）
+> 最后更新：2026-08-15（已纳入 `B-RESOURCE-002` Resource activation receipt owner 回读与重启 replay；`B-TASK-008C2F` Semantic expected admission-policy owner binding、schema v23 与 append-root v3；`B-TASK-008C2E` Semantic-aware finalize owner-proof re-read guard 与重放边界；`B-TASK-008C2D` 可选 Semantic DurabilityReceipt owner readback、schema v22 与 append-root v2；`B-TASK-008C2C` Semantic 追加声明、target scope、直接 Durable AdmissionReceipt 与 schema v21；`B-TASK-008C2B` Artifact 写声明、schema v19/v20 与发布计划绑定；`B-TASK-008C2A` planned effect owner endpoint proof / schema v18；`B-TASK-008C1` sealed TaskWriteSet planned-effect durable binding / schema v17；`B-TASK-008B2` Semantic event / Resource Reservation owner readback + TaskWriteSet binding；`B-TASK-008B1` Process/AgentInstance/IsolationDomain owner proof + TaskWriteSet binding、`B-TASK-008A` authority-verified snapshot/read-set seal 及此前 `B-TASK-007D1` EffectPermit/Task Receipt participant binding propagation + revalidation、`B-TASK-007C2` TaskAuthority verified Driver/Resource registration、`B-TASK-007C1` Driver gateway/Resource-Ledger endpoint proofs、`B-TASK-007B2` TaskAuthority verified participant registration CAS、`B-TASK-007B1` Artifact/Semantic authority endpoint proofs、`B-TASK-007A` authority-assigned TaskStore self-participant registry、`B-SEMANTIC-002B` durable SpecEvent admission、`B-SEMANTIC-002A` canonical IntentSpec body identity、`B-SEMANTIC-001` durable Assertion admission authority、`B-CAPABILITY-001` durable issue/attenuate/revoke authority、`B-IDENTITY-001` durable Principal/ControlDomain/key authority、`B-RESOURCE-001` Driver/Reservation binding authority、`B-PROCESS-001` durable execution binding authority 与 `B-TASK-006P` shared typed identity spine 保持有效；并接受 [ADR-0005](./adrs/0005-task-write-set-authority-first.md) 的 TaskWriteSet authority-first 实施顺序；2026-08-04 采纳[议题 31](../discussions/31-重复建设评估与继续投入边界.md)/[议题 32](../discussions/32-核心设计理念撞车风险评估.md) 顺序变更：主线由 `B-SCHEMA` 剩余横向门切换为 `B-TASK` 纵切面，Go/C# 探针后移）
 >
-> 本次增量：`B-TASK-008C2G-RES`、`B-TASK-008C2G-ART` 与 `B-TASK-008C2G-PROCESS` 已补上 Resource Reservation / Artifact head / Process binding 的 permit 前 owner 复核；Semantic publication receipt 主线仍待 authority ownership 决策。
+> 本次增量：`B-RESOURCE-002` 已补上 ACTIVE Reservation activation receipt 的 owner 回读与重启 replay；`B-TASK-008C2G-RES`、`B-TASK-008C2G-ART` 与 `B-TASK-008C2G-PROCESS` 已补上 Resource Reservation / Artifact head / Process binding 的 permit 前 owner 复核；Semantic publication receipt 主线仍待 authority ownership 决策。
 >
 > 权威用途：这是阶段 B 工作项、实现事实、验证证据和下一验收门的唯一汇总入口。它不替代 v0.5 架构规范、ADR 或 Evidence；每一项状态都必须能下钻到这些权威对象。
 
@@ -61,6 +61,7 @@ Application
 | `B-TASK-008C2G-RES` | Resource Reservation permit 前 owner 复核 | `PARTIAL_PASS` | [Evidence](../evidence/stage-b/b-task-008c2g-resource-permit-owner-revalidation.md) | Resource activation/consume/finalize、publication receipt 与跨 authority complete 仍未实现 |
 | `B-TASK-008C2G-ART` | Artifact head permit 前 owner 复核 | `PARTIAL_PASS` | [Evidence](../evidence/stage-b/b-task-008c2g-artifact-permit-owner-revalidation.md) | Artifact staging/publication receipt consumption 与统一 TaskCommitReceipt 接线仍未实现 |
 | `B-TASK-008C2G-PROCESS` | Process binding permit 前 owner 复核 | `PARTIAL_PASS` | [Evidence](../evidence/stage-b/b-task-008c2g-process-permit-owner-revalidation.md) | Process rotation/跨 authority prepare→activate 与 Operation/Channel linkage 仍未实现 |
+| `B-RESOURCE-002` | Resource activation receipt owner 回读 | `PARTIAL_PASS` | [Evidence](../evidence/stage-b/b-resource-002-activation-receipt-readback.md) | Task 消费/统一 receipt、consume/finalize/refund 与跨 authority lifecycle 仍未实现 |
 | `B-CONTROL` | CLI/API/NL/GUI 共用 ControlCommand 与 Receipt | `READY` | [v0.5 控制面规范](../design/06-架构设计总纲-v0.5.md) | SystemControl client、权限 UI、多层手动调度、等价路径证明 |
 | `B-ARTIFACT` | 内容寻址 Artifact、metadata、reconcile、GC | `IN_PROGRESS` | [B-ARTIFACT-001](../evidence/stage-b/b-artifact-001-content-addressed-store.md)：内容寻址 blob 五步写入协议 + SQLite metadata + 崩溃窗口/reconcile + cache 分域（26 测试含 VFS 故障注入）PARTIAL PASS；[B-ARTIFACT-002](../evidence/stage-b/b-artifact-002-staged-publication.md)：staged revision + Artifact 域内原子 publish + immutable publication receipt + v1→v2 迁移（33 测试）；[B-TASK-007B1](../evidence/stage-b/b-task-007b1-authority-endpoint-proofs.md)：per-head authority endpoint proof PARTIAL PASS | Task registry/operation admission 接线、GC 执行、retention policy、加密/provenance/legal hold、Package 签名验证、sync/对象存储后端、Windows 目录 fsync 等价物、真实 ENOSPC 探针 |
 | `B-SLICE-K` | Slice K：Package → Application → Task → Fiber → Operation → Receipt → 控制 | `NOT_STARTED` | [v0.5 Slice K](../design/06-架构设计总纲-v0.5.md) | 需要前述执行、持久化、Process、权限和控制能力贯通 |
@@ -561,6 +562,12 @@ Application
 - 错误 Process authority 不会发放 permit；正确 authority 支持发放与相同请求 replay。该 API 不修改 ProcessAuthority 状态。详见 [B-TASK-008C2G-PROCESS](../evidence/stage-b/b-task-008c2g-process-permit-owner-revalidation.md)。
 - 仍为 `PARTIAL_PASS`：Process rotation/跨 authority prepare→activate、Semantic publication receipt、Artifact/Resource/Operation/Channel 及完整 TaskWriteSet 仍未完成。
 
+### 4.75 Resource activation receipt owner 回读（B-RESOURCE-002）
+
+- 新增 `ResourceAuthority::inspect_activation_receipt`；仅允许 ACTIVE Reservation 回读 immutable activation receipt，并逐项校验 Reservation 与 receipt 的 `activation_receipt_id`、`operation_id` 绑定。
+- 未知、未激活、缺失 receipt 或绑定不一致均 fail closed；authority 重启后仍回读同一 receipt。详见 [B-RESOURCE-002](../evidence/stage-b/b-resource-002-activation-receipt-readback.md)。
+- 仍为 `PARTIAL_PASS`：Task 消费/统一 `TaskCommitReceipt`、Resource consume/finalize/refund、跨 authority prepare→activate、Operation/Channel 与完整 TaskWriteSet 仍未完成。
+
 
 ## 5. 当前下一验收门
 
@@ -676,6 +683,7 @@ TaskGroup membership generation/root CAS + Admission/Removal Receipt            
   → Resource Reservation owner revalidation before permit freeze                       PARTIAL PASS（B-TASK-008C2G-RES）
   → Artifact head owner revalidation before permit freeze                              PARTIAL PASS（B-TASK-008C2G-ART）
   → Process binding owner revalidation before permit freeze                            PARTIAL PASS（B-TASK-008C2G-PROCESS）
+  → Resource activation receipt owner readback + restart replay                       PARTIAL PASS（B-RESOURCE-002）
   → Semantic publication receipt + TaskCommitReceipt semantic_publications             NEXT（B-TASK-008C2G）
 ```
 
@@ -684,6 +692,7 @@ TaskGroup membership generation/root CAS + Admission/Removal Receipt            
 `B-TASK-008C2G-RES` 已把 Resource Reservation owner readback 推进到 permit freeze 前；它仍是局部安全门，不代表 Resource activation/finalize 或完整 TaskWriteSet 已完成。
 `B-TASK-008C2G-ART` 又把 Artifact write head readback 推进到 permit freeze 前；它仍是局部安全门，不代表 Artifact publication receipt consumption 或完整 TaskWriteSet 已完成。
 `B-TASK-008C2G-PROCESS` 又把 Process/AgentInstance/IsolationDomain owner binding 与 endpoint proof readback 推进到 permit freeze 前；它仍是局部安全门，不代表跨 authority Process lifecycle 或完整 TaskWriteSet 已完成。
+`B-RESOURCE-002` 又为 ACTIVE Reservation 提供 immutable activation receipt 的 owner 回读与重启 replay；它仍是局部安全门，不代表 Task 消费、Resource finalize 或完整 TaskWriteSet 已完成。
 
 多语言 SDK 扩展按 [`B-SDK-LANG-EVAL`](./language-sdk-support-plan.md) 单独晋级：Go 与 C# 的 generation/golden 探针与独立 IPC PoC 自 2026-08-04 起后移至 `B-TASK`/EffectPermit 纵切面通过之后（议题 31/32 顺序变更），不在只有 generated types 时宣称“已支持”；Rust/TypeScript/Python 三语言现有 PARTIAL PASS 证据保持有效。
 

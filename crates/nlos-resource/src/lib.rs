@@ -250,6 +250,7 @@ pub enum ResourceAuthorityError {
     },
     ReservationBindingMismatch,
     ReservationAlreadyActive,
+    ReservationNotActive,
     CorruptRecord(&'static str),
     GenerationExhausted,
     LockPoisoned,
@@ -677,6 +678,34 @@ impl ResourceAuthority {
             operation_id: r.operation_id,
             activated_at_ms: q.activated_at_ms,
         }))
+    }
+
+    /// Reads the immutable activation receipt of an ACTIVE Reservation.
+    ///
+    /// # Errors
+    /// Fails when the Reservation is unknown, not active, missing its receipt,
+    /// or the receipt no longer agrees with the durable Reservation row.
+    pub fn inspect_activation_receipt(
+        &self,
+        reservation_id: ReservationId,
+    ) -> Result<ActivationReceipt, ResourceAuthorityError> {
+        let connection = self.lock()?;
+        let reservation = reservation(&connection, reservation_id)?
+            .ok_or(ResourceAuthorityError::ReservationNotFound)?;
+        if reservation.state != ReservationState::Active {
+            return Err(ResourceAuthorityError::ReservationNotActive);
+        }
+        let receipt = activation_receipt(&connection, reservation_id)?.ok_or(
+            ResourceAuthorityError::CorruptRecord("active reservation has no receipt"),
+        )?;
+        if reservation.activation_receipt_id != Some(receipt.receipt_id)
+            || reservation.operation_id != receipt.operation_id
+        {
+            return Err(ResourceAuthorityError::CorruptRecord(
+                "activation receipt disagrees with reservation",
+            ));
+        }
+        Ok(receipt)
     }
 
     /// Reads the current account balance.

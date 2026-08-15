@@ -184,15 +184,32 @@ fn activation_consumes_exact_binding_once_and_replays_receipt() {
         activation_token: r.activation_token,
         activated_at_ms: 3000,
     };
+    assert!(matches!(
+        authority.inspect_activation_receipt(r.reservation_id),
+        Err(ResourceAuthorityError::ReservationNotActive)
+    ));
     let first = authority.activate(activate).unwrap();
     assert!(matches!(first, ActivationDecision::Activated(_)));
     let replay = authority.activate(activate).unwrap();
     assert!(matches!(replay, ActivationDecision::Replayed(_)));
     assert_eq!(first.receipt(), replay.receipt());
+    assert_eq!(
+        authority
+            .inspect_activation_receipt(r.reservation_id)
+            .unwrap(),
+        first.receipt()
+    );
     assert!(matches!(
         authority.inspect_permit_binding(r.reservation_id),
         Err(ResourceAuthorityError::ReservationAlreadyActive)
     ));
+    let reopened = ResourceAuthority::open(root.path()).unwrap();
+    assert_eq!(
+        reopened
+            .inspect_activation_receipt(r.reservation_id)
+            .unwrap(),
+        first.receipt()
+    );
 }
 
 #[test]
