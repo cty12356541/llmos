@@ -1239,6 +1239,42 @@ impl SqliteTaskAuthority {
         self.finalize_impl(&request, false)
     }
 
+    /// Semantic-owner revalidation plus terminalization for a permit bound to
+    /// an authority lease. The owner readback and Task CAS remain separate
+    /// facts, while the lease check is part of the Task transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as `finalize_commit_v3_with_semantic_authority`,
+    /// plus a typed lease-required, lease-fenced, or lease-expired error.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn finalize_commit_v3_with_semantic_authority_and_authority_lease(
+        &self,
+        semantic_authority: &nlos_semantic::SemanticAuthority,
+        request: FinalizeRequestV3,
+        authority_lease: AuthorityLeaseRecord,
+    ) -> Result<FinalizeDecision, TaskStoreError> {
+        let permit = self.inspect_permit(request.base.task_id, request.base.permit_id)?;
+        if permit.state == PermitState::Issued && permit.write_set_root != [0; 32] {
+            let record = {
+                let connection = self.lock_connection()?;
+                store::load_write_set_by_root(
+                    &*connection,
+                    request.base.task_id,
+                    permit.write_set_root,
+                )?
+            }
+            .ok_or(TaskStoreError::TaskWriteSetNotFound)?;
+            if record.write_set_root != crate::model::task_write_set_root(&record) {
+                return Err(TaskStoreError::CorruptRecord(
+                    "TaskWriteSet canonical root mismatch before lease-bound Semantic finalization",
+                ));
+            }
+            validate_semantic_finalization(semantic_authority, &record)?;
+        }
+        self.finalize_impl_with_authority_lease(&request, false, Some(authority_lease))
+    }
+
     /// Finalizes a mixed Effect + Semantic permit after the Task-side
     /// Semantic publication plan is `READY`. The existing v3 effect-slot
     /// evaluation and history append run unchanged; the immutable nested
@@ -1276,6 +1312,46 @@ impl SqliteTaskAuthority {
             validate_semantic_finalization(semantic_authority, &record)?;
         }
         self.finalize_impl_with_semantic_plan(&request, plan_id)
+    }
+
+    /// Mixed Effect + Semantic finalization with both owner proof revalidation
+    /// and an immutable authority-lease binding.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as `finalize_commit_v3_with_semantic_publications`,
+    /// plus a typed lease-required, lease-fenced, or lease-expired error.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn finalize_commit_v3_with_semantic_publications_and_authority_lease(
+        &self,
+        semantic_authority: &nlos_semantic::SemanticAuthority,
+        plan_id: SemanticCommitPlanId,
+        request: FinalizeRequestV3,
+        authority_lease: AuthorityLeaseRecord,
+    ) -> Result<SemanticFinalizeDecision, TaskStoreError> {
+        let permit = self.inspect_permit(request.base.task_id, request.base.permit_id)?;
+        if permit.state == PermitState::Issued && permit.write_set_root != [0; 32] {
+            let record = {
+                let connection = self.lock_connection()?;
+                store::load_write_set_by_root(
+                    &*connection,
+                    request.base.task_id,
+                    permit.write_set_root,
+                )?
+            }
+            .ok_or(TaskStoreError::TaskWriteSetNotFound)?;
+            if record.write_set_root != crate::model::task_write_set_root(&record) {
+                return Err(TaskStoreError::CorruptRecord(
+                    "TaskWriteSet canonical root mismatch before lease-bound mixed Semantic finalization",
+                ));
+            }
+            validate_semantic_finalization(semantic_authority, &record)?;
+        }
+        self.finalize_impl_with_semantic_plan_and_authority_lease(
+            &request,
+            plan_id,
+            authority_lease,
+        )
     }
 
     /// Reconstructs a mixed v3 finalize request from the immutable envelope
@@ -1318,6 +1394,47 @@ impl SqliteTaskAuthority {
         )
     }
 
+    /// Reconstructs a persisted mixed-finalize envelope and terminalizes it
+    /// under the same authority lease bound to the permit.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as `finalize_commit_v3_with_persisted_semantic_envelope`,
+    /// plus a typed lease-required, lease-fenced, or lease-expired error.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn finalize_commit_v3_with_persisted_semantic_envelope_and_authority_lease(
+        &self,
+        semantic_authority: &nlos_semantic::SemanticAuthority,
+        plan_id: SemanticCommitPlanId,
+        finalized_at_ms: i64,
+        authority_lease: AuthorityLeaseRecord,
+    ) -> Result<SemanticFinalizeDecision, TaskStoreError> {
+        let plan = self.inspect_semantic_commit_plan(plan_id)?;
+        let envelope = self.inspect_semantic_finalize_envelope(plan_id)?.ok_or(
+            TaskStoreError::InvalidSemanticPublicationPlan {
+                reason: "mixed finalize envelope is not prepared",
+            },
+        )?;
+        self.finalize_commit_v3_with_semantic_publications_and_authority_lease(
+            semantic_authority,
+            plan_id,
+            FinalizeRequestV3 {
+                base: FinalizeRequest {
+                    task_id: plan.task_id,
+                    attempt_id: plan.attempt_id,
+                    attempt_generation: plan.attempt_generation,
+                    permit_id: plan.permit_id,
+                    new_effect_history_root: [0; 32],
+                    new_retry_fence_epoch: 0,
+                    finalized_at_ms,
+                },
+                required_satisfaction: envelope.required_satisfaction,
+                fenced_participant_digest: envelope.fenced_participant_digest,
+            },
+            authority_lease,
+        )
+    }
+
     fn finalize_impl(
         &self,
         request: &FinalizeRequestV3,
@@ -1351,6 +1468,20 @@ impl SqliteTaskAuthority {
         plan_id: SemanticCommitPlanId,
     ) -> Result<SemanticFinalizeDecision, TaskStoreError> {
         match self.finalize_impl_inner(request, false, None, Some(plan_id))? {
+            FinalizeImplResult::Semantic(decision) => Ok(decision),
+            FinalizeImplResult::Plain(_) => Err(TaskStoreError::CorruptRecord(
+                "plain finalize result returned through Semantic API",
+            )),
+        }
+    }
+
+    fn finalize_impl_with_semantic_plan_and_authority_lease(
+        &self,
+        request: &FinalizeRequestV3,
+        plan_id: SemanticCommitPlanId,
+        authority_lease: AuthorityLeaseRecord,
+    ) -> Result<SemanticFinalizeDecision, TaskStoreError> {
+        match self.finalize_impl_inner(request, false, Some(authority_lease), Some(plan_id))? {
             FinalizeImplResult::Semantic(decision) => Ok(decision),
             FinalizeImplResult::Plain(_) => Err(TaskStoreError::CorruptRecord(
                 "plain finalize result returned through Semantic API",

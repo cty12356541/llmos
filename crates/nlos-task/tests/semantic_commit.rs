@@ -6,18 +6,19 @@ use nlos_semantic::{
     PublishSemanticPublicationRequest, SemanticAuthority, SemanticPublicationReceipt,
 };
 use nlos_task::{
-    AttemptSpec, EffectPermitDecision, EffectPermitRequest, FinalizeRequest, FinalizeRequestV3,
-    FinalizeSemanticCommitRequest, LogicalEffectDescriptor, NestedSemanticPublicationReceipt,
-    NoEffectReason, NoEffectRequest, PermitDecision, PermitRequest, PlanSemanticCommitRequest,
-    PlannedEffect, PrepareSemanticFinalizeRequest, RecordSemanticPublicationsRequest,
-    SemanticCommitPlanState, SemanticFinalizeDecision, SnapshotBundle, SnapshotConsistency,
-    SqliteTaskAuthority, TaskSnapshotReceiptSpec, TaskSpec, TaskStoreError,
-    TaskWriteSetEffectEndpointRequest, TaskWriteSetRequest, TaskWriteSetSemanticAppendRequest,
-    TaskWriteSetSemanticRequiredDurability, TaskWriteSetSemanticTarget, empty_effect_history_root,
+    AttemptSpec, AuthorityLeasePermitRequest, AuthorityLeaseRequest, EffectPermitDecision,
+    EffectPermitRequest, FinalizeRequest, FinalizeRequestV3, FinalizeSemanticCommitRequest,
+    LogicalEffectDescriptor, NestedSemanticPublicationReceipt, NoEffectReason, NoEffectRequest,
+    PermitDecision, PermitRequest, PlanSemanticCommitRequest, PlannedEffect,
+    PrepareSemanticFinalizeRequest, RecordSemanticPublicationsRequest, SemanticCommitPlanState,
+    SemanticFinalizeDecision, SnapshotBundle, SnapshotConsistency, SqliteTaskAuthority,
+    TaskSnapshotReceiptSpec, TaskSpec, TaskStoreError, TaskWriteSetEffectEndpointRequest,
+    TaskWriteSetRequest, TaskWriteSetSemanticAppendRequest, TaskWriteSetSemanticRequiredDurability,
+    TaskWriteSetSemanticTarget, empty_effect_history_root,
 };
 use nlos_types::{
-    CancellationScopeId, Generation, IdempotencyKey, NamespaceId, ReceiptId, SemanticEventId,
-    TaskAttemptId, TaskId, TaskSnapshotId,
+    CancellationScopeId, Generation, IdempotencyKey, NamespaceId, ProcessId, ReceiptId,
+    SemanticEventId, TaskAttemptId, TaskId, TaskSnapshotId,
 };
 use rusqlite::Connection;
 
@@ -233,6 +234,20 @@ fn run_semantic_owner_receipt_lifecycle(with_effect: bool) {
     .unwrap();
     task.register_attempt_with_snapshot_receipt(attempt, ReceiptId::from_bytes([0x66; 16]))
         .unwrap();
+    let authority_lease = if with_effect {
+        Some(
+            task.acquire_authority_lease(AuthorityLeaseRequest {
+                holder_id: ProcessId::from_bytes([0x01; 16]),
+                idempotency_key: IdempotencyKey::from_bytes([0x6f; 16]),
+                requested_at_ms: 5,
+                ttl_ms: 1_000,
+            })
+            .unwrap()
+            .record(),
+        )
+    } else {
+        None
+    };
     let registry = task.inspect_participant_registry(task_id).unwrap();
     task.register_semantic_admission_participant(
         &semantic,
@@ -288,19 +303,26 @@ fn run_semantic_owner_receipt_lifecycle(with_effect: bool) {
         write_set.semantic_appends[0].admission_receipt_id,
         admission_receipt_id
     );
-    let permit = match task
-        .request_commit_permit(PermitRequest {
-            task_id,
-            attempt_id,
-            attempt_generation: Generation::INITIAL,
-            write_set_root: write_set.write_set_root,
-            planned_effects: planned_effects.clone(),
-            idempotency_key: IdempotencyKey::from_bytes([0x71; 16]),
-            valid_until_ms: 1_000,
-            requested_at_ms: 5,
+    let permit_request = PermitRequest {
+        task_id,
+        attempt_id,
+        attempt_generation: Generation::INITIAL,
+        write_set_root: write_set.write_set_root,
+        planned_effects: planned_effects.clone(),
+        idempotency_key: IdempotencyKey::from_bytes([0x71; 16]),
+        valid_until_ms: 1_000,
+        requested_at_ms: 5,
+    };
+    let permit_decision = if let Some(lease) = authority_lease {
+        task.request_commit_permit_with_authority_lease(AuthorityLeasePermitRequest {
+            permit: permit_request,
+            lease,
         })
-        .unwrap()
-    {
+    } else {
+        task.request_commit_permit(permit_request)
+    }
+    .unwrap();
+    let permit = match permit_decision {
         PermitDecision::Issued(permit) => *permit,
         other => panic!("expected issued permit, got {other:?}"),
     };
@@ -399,10 +421,11 @@ fn run_semantic_owner_receipt_lifecycle(with_effect: bool) {
             fenced_participant_digest: [0; 32],
         };
         assert!(matches!(
-            task.finalize_commit_v3_with_semantic_publications(
+            task.finalize_commit_v3_with_semantic_publications_and_authority_lease(
                 &semantic,
                 plan.plan_id,
                 premature_request,
+                authority_lease.expect("effect path lease"),
             ),
             Err(TaskStoreError::OutstandingEffectSlots { count: 1 })
         ));
@@ -459,7 +482,12 @@ fn run_semantic_owner_receipt_lifecycle(with_effect: bool) {
             fenced_participant_digest: [0; 32],
         };
         let decision = task
-            .finalize_commit_v3_with_persisted_semantic_envelope(&semantic, plan.plan_id, 13)
+            .finalize_commit_v3_with_persisted_semantic_envelope_and_authority_lease(
+                &semantic,
+                plan.plan_id,
+                13,
+                authority_lease.expect("effect path lease"),
+            )
             .unwrap();
         assert!(matches!(decision, SemanticFinalizeDecision::Committed(_)));
         assert_eq!(decision.receipt().semantic_publications, vec![owner_copy]);
@@ -501,7 +529,12 @@ fn run_semantic_owner_receipt_lifecycle(with_effect: bool) {
         request.base.finalized_at_ms = 99;
         if with_effect {
             reopened
-                .finalize_commit_v3_with_persisted_semantic_envelope(&semantic, plan.plan_id, 99)
+                .finalize_commit_v3_with_persisted_semantic_envelope_and_authority_lease(
+                    &semantic,
+                    plan.plan_id,
+                    99,
+                    authority_lease.expect("effect path lease"),
+                )
                 .unwrap()
         } else {
             reopened

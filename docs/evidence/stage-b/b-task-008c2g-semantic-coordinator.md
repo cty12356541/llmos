@@ -25,10 +25,11 @@
 - `cargo clippy -p nlos-task -p nlos-commit-coordinator --all-targets -- -D warnings`：通过。
 - `cargo clippy -p nlos-commit-coordinator --all-targets --all-features -- -D warnings`：通过。
 - `cargo test -p nlos-task --test authority_lease -- --nocapture`：3 项通过；新增覆盖 lease-bound permit 签发、有效 lease 终结、接管后旧 lease 的签发/终结拒绝、新 term 绑定 permit 和 binding 持久化回读。
+- `cargo test -p nlos-task --test semantic_commit -- --nocapture`：2 项通过；mixed Effect + Semantic publication path 使用 lease-bound permit、owner revalidation、persisted envelope finalize/replay 的 opt-in lease API。
 - `cargo test -p nlos-task --quiet`：TaskAuthority 全部测试通过；`cargo clippy -p nlos-task --all-targets -- -D warnings`：通过。
 
 ## 4. 明确限制
 
-- 只覆盖单机 SemanticAuthority/TaskAuthority、Semantic-only coordinator；schema v27/v28 的租约与 permit binding 是单 authority opt-in primitive，不是 IPC peer authentication、跨 authority adoption 或完整 term takeover 协议。当前 lease binding 只覆盖 plain v3 finalize 与 pre-effect close，Semantic-aware publication finalize、adoption/reconcile 和完整故障矩阵仍未接入。新增的故障证据是 TaskAuthority SQLite abort/VFS 写失败，不等于完整 kill-9/ENOSPC/torn-write 组合矩阵，也没有多 Cell 传播证据。
+- 只覆盖单机 SemanticAuthority/TaskAuthority、Semantic-only coordinator；schema v27/v28 的租约与 permit binding 是单 authority opt-in primitive，不是 IPC peer authentication、跨 authority adoption 或完整 term takeover 协议。当前 lease binding 已覆盖 mixed Effect + Semantic owner/publication finalize、persisted envelope replay、plain v3 finalize 与 pre-effect close，但 Semantic-only high-level finalize、adoption/reconcile 和完整故障矩阵仍未接入。新增的故障证据是 TaskAuthority SQLite abort/VFS 写失败，不等于完整 kill-9/ENOSPC/torn-write 组合矩阵，也没有多 Cell 传播证据。
 - mixed v3 envelope 必须在 publication 前由 permit holder 准备；当前 proof 只在 TaskAuthority 内绑定本地 slot contract 与已持久化 EffectReceipt，仍不验证外部 provider 的语义成功内容、签名、attestation 或跨进程 authority lease。
 - 不把 outbox ACK、local log-prefix digest 或 coordinator observation 晋升为 Trust View/vector checkpoint，也不声称分布式原子提交。
