@@ -16,15 +16,17 @@ use nlos_semantic::{
     AppendSpecRequest, AssertionMode, CriterionAggregation, CriterionEffect, EvaluatorKind,
     ImmutableEvaluatorReference, ImmutableEvaluatorReferenceKind, IntentConstraints,
     IntentCriterion, IntentCriticality, IntentSettlement, IntentSpecBody, LocalProcessRef,
-    OutboxAckDecision, SemanticAuthority, SemanticAuthorityError, SemanticPayloadIdentity,
-    SettlementMode, SettlementTimeoutAction, StoreSigner, StoreSignerError, TaintFlags,
-    UnsignedAssertionEvent, UnsignedSpecEvent, admission_receipt_core_digest,
-    admission_receipt_signature_message, content_digest, decode_unsigned_assertion_event,
-    decode_unsigned_spec_event, encode_intent_spec_body, encode_unsigned_assertion_event,
-    encode_unsigned_spec_event, hard_criteria_digest, intent_spec_body_digest, semantic_event_id,
+    OutboxAckDecision, PublishSemanticPublicationRequest, SemanticAuthority,
+    SemanticAuthorityError, SemanticPayloadIdentity, SemanticPublicationDecision, SettlementMode,
+    SettlementTimeoutAction, StoreSigner, StoreSignerError, TaintFlags, UnsignedAssertionEvent,
+    UnsignedSpecEvent, admission_receipt_core_digest, admission_receipt_signature_message,
+    content_digest, decode_unsigned_assertion_event, decode_unsigned_spec_event,
+    encode_intent_spec_body, encode_unsigned_assertion_event, encode_unsigned_spec_event,
+    hard_criteria_digest, intent_spec_body_digest, semantic_event_id,
 };
 use nlos_types::{
-    Generation, IdempotencyKey, NamespaceId, ReceiptId, SemanticEventId, TaskAttemptId, TaskId,
+    CommitPermitId, Generation, IdempotencyKey, NamespaceId, ReceiptId, SemanticEventId,
+    TaskAttemptId, TaskId,
 };
 use rusqlite::Connection;
 
@@ -493,6 +495,107 @@ fn outbox_ack_is_owner_bound_monotonic_and_not_publication_proof() {
     ));
 }
 
+#[test]
+#[allow(clippy::too_many_lines)]
+fn semantic_publication_receipt_is_owner_derived_durable_and_replayable() {
+    let root = Root::new("semantic-publication");
+    let (request, admission) = {
+        let fixture = fixture(&root, 151);
+        let request = request(&fixture, 6, Vec::new(), Vec::new(), TaintFlags::default());
+        let admission = append(&fixture, &request).receipt().clone();
+        let publication = fixture
+            .semantic
+            .publish_semantic_publication(PublishSemanticPublicationRequest {
+                task_id: TaskId::from_bytes([0x11; 16]),
+                permit_id: CommitPermitId::from_bytes([0x22; 16]),
+                write_set_root: [0x33; 32],
+                event_id: request.claimed_event_id,
+                target: fixture.capability_record.target,
+                admission_receipt_id: admission.receipt_id,
+                durability_receipt_id: None,
+                published_at_ms: 2_500,
+            })
+            .unwrap();
+        assert!(matches!(
+            publication,
+            SemanticPublicationDecision::Published(_)
+        ));
+        let receipt = publication.receipt();
+        assert_eq!(receipt.event_id, request.claimed_event_id);
+        assert_eq!(receipt.admission_receipt_id, admission.receipt_id);
+        assert_eq!(receipt.log_seq, admission.log_seq);
+        assert_ne!(receipt.semantic_checkpoint_after, [0; 32]);
+        (request, admission)
+    };
+
+    let authority_fixture = fixture(&root, 151);
+    let publication_request = PublishSemanticPublicationRequest {
+        task_id: TaskId::from_bytes([0x11; 16]),
+        permit_id: CommitPermitId::from_bytes([0x22; 16]),
+        write_set_root: [0x33; 32],
+        event_id: request.claimed_event_id,
+        target: authority_fixture.capability_record.target,
+        admission_receipt_id: admission.receipt_id,
+        durability_receipt_id: None,
+        published_at_ms: 9_999,
+    };
+    let replay = authority_fixture
+        .semantic
+        .publish_semantic_publication(publication_request)
+        .unwrap();
+    assert!(matches!(replay, SemanticPublicationDecision::Replayed(_)));
+    assert_eq!(replay.receipt().created_at_ms, 2_500);
+    let receipt = replay.receipt();
+    assert_eq!(
+        authority_fixture
+            .semantic
+            .inspect_publication_receipt(receipt.receipt_id)
+            .unwrap(),
+        receipt
+    );
+
+    assert!(matches!(
+        authority_fixture.semantic.publish_semantic_publication(
+            PublishSemanticPublicationRequest {
+                target: CapabilityTarget::Task(TaskId::from_bytes([0x44; 16])),
+                ..publication_request
+            }
+        ),
+        Err(SemanticAuthorityError::SemanticPublicationTargetMismatch)
+    ));
+    assert!(matches!(
+        authority_fixture.semantic.publish_semantic_publication(
+            PublishSemanticPublicationRequest {
+                admission_receipt_id: ReceiptId::from_bytes([0x55; 16]),
+                ..publication_request
+            }
+        ),
+        Err(SemanticAuthorityError::SemanticPublicationAdmissionBindingMismatch)
+    ));
+    drop(authority_fixture);
+
+    let reopened = fixture(&root, 151);
+    assert_eq!(
+        reopened
+            .semantic
+            .inspect_publication_receipt(receipt.receipt_id)
+            .unwrap(),
+        receipt
+    );
+    let raw = Connection::open(root.path().join("semantic-authority.db")).unwrap();
+    assert!(
+        raw.execute(
+            "UPDATE semantic_publication_receipts SET created_at_ms=0",
+            [],
+        )
+        .is_err()
+    );
+    assert!(
+        raw.execute("DELETE FROM semantic_publication_receipts", [])
+            .is_err()
+    );
+}
+
 fn verify_store_receipt(signer: &TestSigner, receipt: &AdmissionReceipt) {
     let core = admission_receipt_core_digest(receipt);
     let message = admission_receipt_signature_message(receipt.receipt_id, core);
@@ -785,7 +888,7 @@ fn real_v1_store_migrates_without_losing_assertion_or_receipt() {
     assert_eq!(
         raw.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .unwrap(),
-        3
+        4
     );
     assert_eq!(
         raw.query_row(

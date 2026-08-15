@@ -276,6 +276,68 @@ pub(crate) fn migrate_v3(connection: &mut Connection) -> Result<(), SemanticAuth
     Ok(())
 }
 
+/// Adds the immutable SemanticAuthority-owned publication receipt boundary.
+/// The receipt is deliberately separate from the admission outbox: transport
+/// ACKs remain observations and cannot be upgraded into publication proof.
+pub(crate) fn migrate_v4(connection: &mut Connection) -> Result<(), SemanticAuthorityError> {
+    let table_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type='table' AND name='semantic_publication_receipts'",
+        [],
+        |row| row.get(0),
+    )?;
+    let trigger_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type='trigger' AND name LIKE 'semantic_publication_receipt_%'",
+        [],
+        |row| row.get(0),
+    )?;
+    if table_count == 1 && trigger_count == 2 {
+        connection.pragma_update(None, "user_version", 4)?;
+        return Ok(());
+    }
+    if table_count != 0 || trigger_count != 0 {
+        return Err(SemanticAuthorityError::CorruptRecord(
+            "partial semantic publication receipt schema",
+        ));
+    }
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "CREATE TABLE semantic_publication_receipts (
+            receipt_id BLOB PRIMARY KEY NOT NULL CHECK(length(receipt_id) = 16),
+            task_id BLOB NOT NULL CHECK(length(task_id) = 16),
+            permit_id BLOB NOT NULL CHECK(length(permit_id) = 16),
+            write_set_root BLOB NOT NULL CHECK(length(write_set_root) = 32),
+            event_id BLOB NOT NULL CHECK(length(event_id) = 32),
+            target_kind INTEGER NOT NULL CHECK(target_kind IN (1, 2)),
+            target_id BLOB NOT NULL CHECK(length(target_id) = 16),
+            log_seq INTEGER NOT NULL CHECK(log_seq >= 1),
+            admission_receipt_id BLOB NOT NULL CHECK(length(admission_receipt_id) = 16),
+            durability_receipt_id BLOB CHECK(durability_receipt_id IS NULL OR length(durability_receipt_id) = 16),
+            semantic_checkpoint_after BLOB NOT NULL CHECK(length(semantic_checkpoint_after) = 32),
+            created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0),
+            UNIQUE(task_id, permit_id, event_id),
+            FOREIGN KEY(event_id) REFERENCES semantic_events(event_id),
+            FOREIGN KEY(admission_receipt_id) REFERENCES admission_receipts(receipt_id),
+            FOREIGN KEY(durability_receipt_id) REFERENCES durability_receipts(receipt_id)
+        ) STRICT;
+
+        CREATE INDEX semantic_publication_receipts_by_task_permit
+            ON semantic_publication_receipts(task_id, permit_id, event_id);
+
+        CREATE TRIGGER semantic_publication_receipt_immutable_update
+        BEFORE UPDATE ON semantic_publication_receipts
+        BEGIN SELECT RAISE(ABORT, 'semantic publication receipt is immutable'); END;
+        CREATE TRIGGER semantic_publication_receipt_immutable_delete
+        BEFORE DELETE ON semantic_publication_receipts
+        BEGIN SELECT RAISE(ABORT, 'semantic publication receipt is immutable'); END;
+
+        PRAGMA user_version = 4;",
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
+
 pub(crate) fn load_semantic_admission_endpoint_proof(
     connection: &Connection,
 ) -> Result<SemanticAdmissionEndpointProof, SemanticAuthorityError> {

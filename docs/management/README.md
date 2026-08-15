@@ -195,6 +195,7 @@ P0 风险阻止 Stage 退出；P1 必须有 owner、缓解措施和明确复查�
 - 阶段 B 权威进度单：[stage-b-progress.md](./stage-b-progress.md)
 - TaskAuthority 提交恢复归属：[ADR-0004](./adrs/0004-task-authority-commit-recovery-owner.md)
 - TaskWriteSet authority-first 顺序：[ADR-0005](./adrs/0005-task-write-set-authority-first.md)
+- Semantic publication receipt 权威归属：[ADR-0006](./adrs/0006-semantic-publication-receipt-owner.md)
 - 多语言 SDK 支持评估：[language-sdk-support-plan.md](./language-sdk-support-plan.md)
 - 规范路线：[v0.5 第 28.2 节](../design/06-架构设计总纲-v0.5.md#282-阶段-b单机通用应用平台)
 - 执行层级决策：[议题 29](../discussions/29-现代系统执行层级与机制迁移.md)

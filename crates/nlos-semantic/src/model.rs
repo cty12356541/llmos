@@ -1,7 +1,7 @@
 use nlos_capability::{CapabilityHandle, CapabilityTarget};
 use nlos_types::{
-    ControlDomainId, Generation, KeyId, NamespaceId, PrincipalId, ProcessId, ReceiptId,
-    SemanticEventId, TaskParticipantId,
+    CommitPermitId, ControlDomainId, Generation, KeyId, NamespaceId, PrincipalId, ProcessId,
+    ReceiptId, SemanticEventId, TaskId, TaskParticipantId,
 };
 
 pub const MAX_CANONICAL_EVENT_BYTES: usize = 65_536;
@@ -299,6 +299,58 @@ pub struct AcknowledgeOutboxRequest {
     pub log_seq: u64,
     pub receipt_id: ReceiptId,
     pub acknowledged_at_ms: u64,
+}
+
+/// Request for the Semantic authority to make one already-admitted event
+/// visible as a Task publication. Publication is a Semantic-domain fact: the
+/// owner re-reads the event and its durable Admission/Durability receipts and
+/// derives the checkpoint/receipt identities instead of trusting caller
+/// supplied digests.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PublishSemanticPublicationRequest {
+    pub task_id: TaskId,
+    pub permit_id: CommitPermitId,
+    pub write_set_root: [u8; 32],
+    pub event_id: SemanticEventId,
+    pub target: CapabilityTarget,
+    pub admission_receipt_id: ReceiptId,
+    pub durability_receipt_id: Option<ReceiptId>,
+    pub published_at_ms: u64,
+}
+
+/// Immutable SemanticAuthority-owned proof that one admitted event crossed
+/// the local publication boundary. `semantic_checkpoint_after` is a
+/// deterministic local log-prefix checkpoint; it is not a distributed/global
+/// vector checkpoint and must not be advertised as one.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SemanticPublicationReceipt {
+    pub receipt_id: ReceiptId,
+    pub task_id: TaskId,
+    pub permit_id: CommitPermitId,
+    pub write_set_root: [u8; 32],
+    pub event_id: SemanticEventId,
+    pub target: CapabilityTarget,
+    pub log_seq: u64,
+    pub admission_receipt_id: ReceiptId,
+    pub durability_receipt_id: Option<ReceiptId>,
+    pub semantic_checkpoint_after: [u8; 32],
+    pub created_at_ms: u64,
+}
+
+/// Idempotent result of the Semantic publication boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SemanticPublicationDecision {
+    Published(SemanticPublicationReceipt),
+    Replayed(SemanticPublicationReceipt),
+}
+
+impl SemanticPublicationDecision {
+    #[must_use]
+    pub const fn receipt(self) -> SemanticPublicationReceipt {
+        match self {
+            Self::Published(receipt) | Self::Replayed(receipt) => receipt,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

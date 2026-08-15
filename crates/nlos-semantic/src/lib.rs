@@ -25,7 +25,7 @@ use nlos_identity::{
     VerifySemanticSignatureRequest,
 };
 use nlos_process::{ProcessAuthority, ProcessAuthorityError};
-use nlos_types::{ReceiptId, SemanticEventId};
+use nlos_types::{CommitPermitId, ReceiptId, SemanticEventId, TaskId};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
 
@@ -40,17 +40,18 @@ pub use model::{
     IntentConstraints, IntentCriterion, IntentCriticality, IntentSettlement, IntentSpecBody,
     LocalProcessRef, MAX_CANONICAL_EVENT_BYTES, MAX_CONTENT_BYTES, MAX_LINEAGE_ITEMS,
     MAX_NONCE_BYTES, MAX_SPEC_CAPABILITY_REFS, MAX_SPEC_CRITERIA, MAX_SPEC_EXTENSION_BYTES,
-    MAX_SPEC_EXTENSIONS, MIN_NONCE_BYTES, OutboxAckDecision, SemanticAdmissionEndpointProof,
-    SemanticEventRecord, SemanticOutboxRecord, SemanticPayloadIdentity, SettlementMode,
-    SettlementTimeoutAction, SpecExtension, StoreSigner, StoreSignerError, TaintFlags,
-    UnsignedAssertionEvent, UnsignedSpecEvent,
+    MAX_SPEC_EXTENSIONS, MIN_NONCE_BYTES, OutboxAckDecision, PublishSemanticPublicationRequest,
+    SemanticAdmissionEndpointProof, SemanticEventRecord, SemanticOutboxRecord,
+    SemanticPayloadIdentity, SemanticPublicationDecision, SemanticPublicationReceipt,
+    SettlementMode, SettlementTimeoutAction, SpecExtension, StoreSigner, StoreSignerError,
+    TaintFlags, UnsignedAssertionEvent, UnsignedSpecEvent,
 };
 pub use spec::{
     criterion_id, decode_intent_spec_body, encode_intent_spec_body, hard_criteria_digest,
     intent_spec_body_digest,
 };
 
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 const EDGE_DECLARED: i64 = 1;
 const EDGE_CAPTURED: i64 = 2;
 
@@ -95,6 +96,11 @@ pub enum SemanticAuthorityError {
     StoreSigningFailed(String),
     StoreSignerBindingMismatch,
     EventNotFound(SemanticEventId),
+    SemanticPublicationReceiptNotFound(ReceiptId),
+    SemanticPublicationTargetMismatch,
+    SemanticPublicationAdmissionBindingMismatch,
+    SemanticPublicationDurabilityBindingMismatch,
+    SemanticPublicationConflict(&'static str),
     OutboxAckBindingMismatch,
     OutboxAckNotMonotonic {
         previous: u64,
@@ -106,6 +112,7 @@ pub enum SemanticAuthorityError {
 }
 
 impl fmt::Display for SemanticAuthorityError {
+    #[allow(clippy::too_many_lines)] // Error taxonomy remains one exhaustive display match.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Sqlite(error) => write!(formatter, "SQLite semantic authority failure: {error}"),
@@ -183,6 +190,27 @@ impl fmt::Display for SemanticAuthorityError {
                 formatter.write_str("store signer identity does not match verified key binding")
             }
             Self::EventNotFound(id) => write!(formatter, "semantic event {id:?} does not exist"),
+            Self::SemanticPublicationReceiptNotFound(id) => {
+                write!(
+                    formatter,
+                    "semantic publication receipt {id:?} does not exist"
+                )
+            }
+            Self::SemanticPublicationTargetMismatch => {
+                formatter.write_str("semantic publication target differs from admitted event")
+            }
+            Self::SemanticPublicationAdmissionBindingMismatch => formatter.write_str(
+                "semantic publication admission receipt does not match the admitted event",
+            ),
+            Self::SemanticPublicationDurabilityBindingMismatch => formatter.write_str(
+                "semantic publication durability receipt does not match the admitted event",
+            ),
+            Self::SemanticPublicationConflict(reason) => {
+                write!(
+                    formatter,
+                    "semantic publication conflicts with durable receipt: {reason}"
+                )
+            }
             Self::OutboxAckBindingMismatch => {
                 formatter.write_str("outbox acknowledgement binding does not match owner record")
             }
@@ -269,12 +297,18 @@ impl SemanticAuthority {
             0 => {
                 schema::migrate_v2(&mut connection)?;
                 schema::migrate_v3(&mut connection)?;
+                schema::migrate_v4(&mut connection)?;
             }
             1 => {
                 schema::migrate_v1_to_v2(&mut connection)?;
                 schema::migrate_v3(&mut connection)?;
+                schema::migrate_v4(&mut connection)?;
             }
-            2 => schema::migrate_v3(&mut connection)?,
+            2 => {
+                schema::migrate_v3(&mut connection)?;
+                schema::migrate_v4(&mut connection)?;
+            }
+            3 => schema::migrate_v4(&mut connection)?,
             SCHEMA_VERSION => {}
             other => return Err(SemanticAuthorityError::SchemaVersionUnsupported(other)),
         }
@@ -794,6 +828,128 @@ impl SemanticAuthority {
             acknowledged_at_ms: Some(request.acknowledged_at_ms),
             ..outbox
         }))
+    }
+
+    /// Creates the SemanticAuthority-owned publication receipt for one
+    /// already-admitted event. The operation is local to this authority and
+    /// intentionally does not acknowledge the transport outbox: an ACK is
+    /// only a delivery observation, while this receipt is the durable
+    /// publication fact consumed by `TaskAuthority`.
+    ///
+    /// The owner re-reads the event, target, durable `AdmissionReceipt` and
+    /// optional `DurabilityReceipt` in the same transaction. A deterministic
+    /// log-prefix digest is stored as `semantic_checkpoint_after`; it is a
+    /// local reference checkpoint, not a distributed/global vector clock.
+    /// Exact retries replay the original immutable receipt. A different
+    /// binding for the same `(task, permit, event)` is rejected.
+    ///
+    /// # Errors
+    ///
+    /// Returns typed binding/conflict errors when the caller supplies a stale
+    /// or mismatched owner fact, plus storage/corruption errors.
+    pub fn publish_semantic_publication(
+        &self,
+        request: PublishSemanticPublicationRequest,
+    ) -> Result<SemanticPublicationDecision, SemanticAuthorityError> {
+        if request.write_set_root == [0; 32] {
+            return Err(SemanticAuthorityError::SemanticPublicationConflict(
+                "publication requires a sealed non-zero TaskWriteSet root",
+            ));
+        }
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let event = load_event_record(&transaction, request.event_id)?
+            .ok_or(SemanticAuthorityError::EventNotFound(request.event_id))?;
+        if event.scope != request.target {
+            return Err(SemanticAuthorityError::SemanticPublicationTargetMismatch);
+        }
+        let admission = load_receipt(&transaction, request.event_id)?;
+        if admission.receipt_id != request.admission_receipt_id
+            || admission.event_id != request.event_id
+            || admission.log_seq != event.log_seq
+            || !matches!(admission.durability, AdmissionDurability::Durable)
+        {
+            return Err(SemanticAuthorityError::SemanticPublicationAdmissionBindingMismatch);
+        }
+        if let Some(durability_receipt_id) = request.durability_receipt_id {
+            let durability = match load_durability_receipt(
+                &transaction,
+                request.event_id,
+                durability_receipt_id,
+            ) {
+                Ok(receipt) => receipt,
+                Err(SemanticAuthorityError::Sqlite(rusqlite::Error::QueryReturnedNoRows)) => {
+                    return Err(
+                        SemanticAuthorityError::SemanticPublicationDurabilityBindingMismatch,
+                    );
+                }
+                Err(error) => return Err(error),
+            };
+            if durability.event_id != request.event_id
+                || durability.receipt_id != durability_receipt_id
+            {
+                return Err(SemanticAuthorityError::SemanticPublicationDurabilityBindingMismatch);
+            }
+        }
+
+        if let Some(existing) = load_publication_by_binding(
+            &transaction,
+            request.task_id,
+            request.permit_id,
+            request.event_id,
+        )? {
+            if publication_matches_request(&existing, &request) {
+                transaction.commit()?;
+                return Ok(SemanticPublicationDecision::Replayed(existing));
+            }
+            return Err(SemanticAuthorityError::SemanticPublicationConflict(
+                "durable publication binding differs from retry",
+            ));
+        }
+
+        let semantic_checkpoint_after = semantic_checkpoint_after(&transaction, event.log_seq)?;
+        let receipt_id = semantic_publication_receipt_id(
+            request.task_id,
+            request.permit_id,
+            request.write_set_root,
+            request.event_id,
+            request.admission_receipt_id,
+            request.durability_receipt_id,
+            semantic_checkpoint_after,
+        );
+        let receipt = SemanticPublicationReceipt {
+            receipt_id,
+            task_id: request.task_id,
+            permit_id: request.permit_id,
+            write_set_root: request.write_set_root,
+            event_id: request.event_id,
+            target: request.target,
+            log_seq: event.log_seq,
+            admission_receipt_id: request.admission_receipt_id,
+            durability_receipt_id: request.durability_receipt_id,
+            semantic_checkpoint_after,
+            created_at_ms: request.published_at_ms,
+        };
+        insert_publication_receipt(&transaction, &receipt)?;
+        transaction.commit()?;
+        Ok(SemanticPublicationDecision::Published(receipt))
+    }
+
+    /// Reads one immutable Semantic publication receipt by its owner-issued
+    /// identity. No publication is synthesized from an outbox ACK.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SemanticPublicationReceiptNotFound` when the receipt is absent
+    /// or a typed storage/corruption error when its row cannot be decoded.
+    pub fn inspect_publication_receipt(
+        &self,
+        receipt_id: ReceiptId,
+    ) -> Result<SemanticPublicationReceipt, SemanticAuthorityError> {
+        let connection = self.lock()?;
+        load_publication_by_id(&connection, receipt_id)?.ok_or(
+            SemanticAuthorityError::SemanticPublicationReceiptNotFound(receipt_id),
+        )
     }
 
     /// Reads the durable authority-issued Semantic admission endpoint proof.
@@ -1331,6 +1487,257 @@ fn load_outbox(
             })
         })
         .transpose()
+}
+
+fn publication_matches_request(
+    receipt: &SemanticPublicationReceipt,
+    request: &PublishSemanticPublicationRequest,
+) -> bool {
+    receipt.task_id == request.task_id
+        && receipt.permit_id == request.permit_id
+        && receipt.write_set_root == request.write_set_root
+        && receipt.event_id == request.event_id
+        && receipt.target == request.target
+        && receipt.admission_receipt_id == request.admission_receipt_id
+        && receipt.durability_receipt_id == request.durability_receipt_id
+}
+
+fn load_publication_by_binding(
+    connection: &Connection,
+    task_id: TaskId,
+    permit_id: CommitPermitId,
+    event_id: SemanticEventId,
+) -> Result<Option<SemanticPublicationReceipt>, SemanticAuthorityError> {
+    connection
+        .query_row(
+            "SELECT receipt_id, write_set_root, target_kind, target_id, log_seq,
+                    admission_receipt_id, durability_receipt_id,
+                    semantic_checkpoint_after, created_at_ms
+             FROM semantic_publication_receipts
+             WHERE task_id=?1 AND permit_id=?2 AND event_id=?3",
+            params![
+                task_id.as_bytes().as_slice(),
+                permit_id.as_bytes().as_slice(),
+                event_id.as_bytes().as_slice(),
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, Vec<u8>>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, Vec<u8>>(5)?,
+                    row.get::<_, Option<Vec<u8>>>(6)?,
+                    row.get::<_, Vec<u8>>(7)?,
+                    row.get::<_, i64>(8)?,
+                ))
+            },
+        )
+        .optional()?
+        .map(|row| decode_publication_row(task_id, permit_id, event_id, row))
+        .transpose()
+}
+
+fn load_publication_by_id(
+    connection: &Connection,
+    receipt_id: ReceiptId,
+) -> Result<Option<SemanticPublicationReceipt>, SemanticAuthorityError> {
+    connection
+        .query_row(
+            "SELECT receipt_id, task_id, permit_id, write_set_root, event_id,
+                    target_kind, target_id, log_seq, admission_receipt_id,
+                    durability_receipt_id, semantic_checkpoint_after, created_at_ms
+             FROM semantic_publication_receipts WHERE receipt_id=?1",
+            [receipt_id.as_bytes().as_slice()],
+            |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, Vec<u8>>(3)?,
+                    row.get::<_, Vec<u8>>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, Vec<u8>>(6)?,
+                    row.get::<_, i64>(7)?,
+                    row.get::<_, Vec<u8>>(8)?,
+                    row.get::<_, Option<Vec<u8>>>(9)?,
+                    row.get::<_, Vec<u8>>(10)?,
+                    row.get::<_, i64>(11)?,
+                ))
+            },
+        )
+        .optional()?
+        .map(|row| {
+            Ok(SemanticPublicationReceipt {
+                receipt_id: decode_id(row.0, ReceiptId::from_bytes, "publication receipt id")?,
+                task_id: decode_id(row.1, TaskId::from_bytes, "publication task id")?,
+                permit_id: decode_id(row.2, CommitPermitId::from_bytes, "publication permit id")?,
+                write_set_root: decode_array(row.3, "publication write-set root")?,
+                event_id: decode_id(row.4, SemanticEventId::from_bytes, "publication event id")?,
+                target: decode_scope(row.5, decode_array(row.6, "publication target id")?)?,
+                log_seq: decode_u64(row.7)?,
+                admission_receipt_id: decode_id(
+                    row.8,
+                    ReceiptId::from_bytes,
+                    "publication admission receipt id",
+                )?,
+                durability_receipt_id: row
+                    .9
+                    .map(|bytes| {
+                        decode_id(
+                            bytes,
+                            ReceiptId::from_bytes,
+                            "publication durability receipt id",
+                        )
+                    })
+                    .transpose()?,
+                semantic_checkpoint_after: decode_array(row.10, "publication checkpoint")?,
+                created_at_ms: decode_u64(row.11)?,
+            })
+        })
+        .transpose()
+}
+
+type PublicationRow = (
+    Vec<u8>,
+    Vec<u8>,
+    i64,
+    Vec<u8>,
+    i64,
+    Vec<u8>,
+    Option<Vec<u8>>,
+    Vec<u8>,
+    i64,
+);
+
+fn decode_publication_row(
+    task_id: TaskId,
+    permit_id: CommitPermitId,
+    event_id: SemanticEventId,
+    row: PublicationRow,
+) -> Result<SemanticPublicationReceipt, SemanticAuthorityError> {
+    Ok(SemanticPublicationReceipt {
+        receipt_id: decode_id(row.0, ReceiptId::from_bytes, "publication receipt id")?,
+        task_id,
+        permit_id,
+        write_set_root: decode_array(row.1, "publication write-set root")?,
+        event_id,
+        target: decode_scope(row.2, decode_array(row.3, "publication target id")?)?,
+        log_seq: decode_u64(row.4)?,
+        admission_receipt_id: decode_id(
+            row.5,
+            ReceiptId::from_bytes,
+            "publication admission receipt id",
+        )?,
+        durability_receipt_id: row
+            .6
+            .map(|bytes| {
+                decode_id(
+                    bytes,
+                    ReceiptId::from_bytes,
+                    "publication durability receipt id",
+                )
+            })
+            .transpose()?,
+        semantic_checkpoint_after: decode_array(row.7, "publication checkpoint")?,
+        created_at_ms: decode_u64(row.8)?,
+    })
+}
+
+fn insert_publication_receipt(
+    transaction: &Transaction<'_>,
+    receipt: &SemanticPublicationReceipt,
+) -> Result<(), SemanticAuthorityError> {
+    let (target_kind, target_id) = encode_scope(receipt.target);
+    transaction.execute(
+        "INSERT INTO semantic_publication_receipts (
+            receipt_id, task_id, permit_id, write_set_root, event_id,
+            target_kind, target_id, log_seq, admission_receipt_id,
+            durability_receipt_id, semantic_checkpoint_after, created_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        params![
+            receipt.receipt_id.as_bytes().as_slice(),
+            receipt.task_id.as_bytes().as_slice(),
+            receipt.permit_id.as_bytes().as_slice(),
+            receipt.write_set_root.as_slice(),
+            receipt.event_id.as_bytes().as_slice(),
+            target_kind,
+            target_id.as_slice(),
+            encode_u64(receipt.log_seq)?,
+            receipt.admission_receipt_id.as_bytes().as_slice(),
+            receipt
+                .durability_receipt_id
+                .map(ReceiptId::into_bytes)
+                .as_ref()
+                .map(<[u8; 16]>::as_slice),
+            receipt.semantic_checkpoint_after.as_slice(),
+            encode_u64(receipt.created_at_ms)?,
+        ],
+    )?;
+    Ok(())
+}
+
+fn semantic_publication_receipt_id(
+    task_id: TaskId,
+    permit_id: CommitPermitId,
+    write_set_root: [u8; 32],
+    event_id: SemanticEventId,
+    admission_receipt_id: ReceiptId,
+    durability_receipt_id: Option<ReceiptId>,
+    semantic_checkpoint_after: [u8; 32],
+) -> ReceiptId {
+    let mut hasher = Sha256::new();
+    hasher.update(b"llmos/semantic-publication-receipt/v1");
+    hasher.update(task_id.as_bytes());
+    hasher.update(permit_id.as_bytes());
+    hasher.update(write_set_root);
+    hasher.update(event_id.as_bytes());
+    hasher.update(admission_receipt_id.as_bytes());
+    match durability_receipt_id {
+        Some(receipt_id) => {
+            hasher.update([1_u8]);
+            hasher.update(receipt_id.as_bytes());
+        }
+        None => hasher.update([0_u8]),
+    }
+    hasher.update(semantic_checkpoint_after);
+    let digest = hasher.finalize();
+    let mut bytes = [0_u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    ReceiptId::from_bytes(bytes)
+}
+
+fn semantic_checkpoint_after(
+    connection: &Connection,
+    log_seq: u64,
+) -> Result<[u8; 32], SemanticAuthorityError> {
+    let mut statement = connection.prepare(
+        "SELECT log_seq, event_id FROM event_log
+         WHERE log_seq <= ?1 ORDER BY log_seq",
+    )?;
+    let mut rows = statement.query([encode_u64(log_seq)?])?;
+    let mut hasher = Sha256::new();
+    hasher.update(b"llmos/semantic-log-checkpoint/v1");
+    hasher.update(log_seq.to_be_bytes());
+    let mut count = 0_u64;
+    while let Some(row) = rows.next()? {
+        let sequence = decode_u64(row.get::<_, i64>(0)?)?;
+        let event_id: [u8; 32] = decode_array(row.get::<_, Vec<u8>>(1)?, "checkpoint event id")?;
+        hasher.update(sequence.to_be_bytes());
+        hasher.update(event_id);
+        count = count
+            .checked_add(1)
+            .ok_or(SemanticAuthorityError::CorruptRecord(
+                "checkpoint count overflow",
+            ))?;
+    }
+    if count != log_seq {
+        return Err(SemanticAuthorityError::CorruptRecord(
+            "semantic log prefix is not contiguous",
+        ));
+    }
+    Ok(hasher.finalize().into())
 }
 
 fn load_event_record(
