@@ -83,3 +83,5 @@ v1 只允许从空数据库事务创建；遇到未知 `user_version` 直接拒�
 [B-SCHEMA-012](../../evidence/stage-b/b-schema-012-deadline-cancel-state-machine.md) 新增 dispatch 前 no-effect 的 idempotent 原子完成路径，并把 deadline/cancel 的 pre-dispatch、post-dispatch partial/effect-unknown 转换接入真实 Rust↔TS/Python IPC；[三平台 run 30741733804](https://github.com/cty12356541/llmos/actions/runs/30741733804) 已成功。
 
 [B-SCHEMA-013](../../evidence/stage-b/b-schema-013-operation-control-timer-worker.md) 新增 generation/expected cancel epoch CAS：首次取消只推进一次，精确重试不重复产生 Outbox，completion 先赢时终态不可改写；独立 OperationControl payload 与 Tokio timer worker 已通过[三平台 run 30743421174](https://github.com/cty12356541/llmos/actions/runs/30743421174) 的 Rust↔TS/Python IPC。持久 deadline queue/restart recovery 与 retention/GC 仍待完成。
+
+[B-OP-FENCE-002](../../evidence/stage-b/b-op-fence-002-operation-endpoint-proof.md)（2026-08-15）新增 `SqliteOperationStore::inspect_endpoint_proof`：owner 按 `OperationId + Generation` 回读 durable registration row 后，派生 owner-bound participant/receipt proof，并在 authority 重启后保持逐字段稳定；旧 generation 在 proof 生成前拒绝。该切片仍不等于 Operation prepare→activate、跨进程签名/租约/attestation、Task participant registry 接线或 Channel endpoint。

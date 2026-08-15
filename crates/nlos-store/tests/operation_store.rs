@@ -162,6 +162,40 @@ fn exact_result_replays_after_reopen_without_redispatch() {
 }
 
 #[test]
+fn operation_endpoint_proof_is_generation_bound_and_restart_stable() {
+    let database = TestDatabase::new("operation-endpoint-proof");
+    let handle;
+    let expected;
+    {
+        let store = SqliteOperationStore::open(&database.path).expect("open");
+        handle = store.register(spec()).expect("register").handle();
+        expected = store
+            .inspect_endpoint_proof(handle)
+            .expect("owner proof readback");
+        assert_eq!(expected.operation, handle);
+        assert_eq!(expected.participant_generation, handle.generation);
+        assert_ne!(expected.participant_id.into_bytes(), [0; 16]);
+        assert_ne!(expected.admission_receipt_id.into_bytes(), [0; 16]);
+        let stale = nlos_operation::OperationHandle {
+            operation_id: handle.operation_id,
+            generation: handle.generation.checked_next().expect("next generation"),
+        };
+        assert!(matches!(
+            store.inspect_endpoint_proof(stale),
+            Err(StoreError::Operation(OperationError::InvalidGeneration))
+        ));
+    }
+
+    let reopened = SqliteOperationStore::open(&database.path).expect("reopen");
+    assert_eq!(
+        reopened
+            .inspect_endpoint_proof(handle)
+            .expect("owner proof after restart"),
+        expected
+    );
+}
+
+#[test]
 fn crash_window_remains_uncertain_and_never_reissues_dispatch_authority() {
     let database = TestDatabase::new("idempotency-uncertain-reopen");
     let scope = idempotency_scope("resolve");

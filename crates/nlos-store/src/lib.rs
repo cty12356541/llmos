@@ -19,9 +19,10 @@ use nlos_operation::{
 use nlos_runtime::FiberHandle;
 use nlos_types::{
     ApplicationId, CallbackId, CancelEpoch, CancellationScopeId, ExecutionFiberId, Generation,
-    IdempotencyKey, OperationId, ReceiptId,
+    IdempotencyKey, OperationId, ReceiptId, TaskParticipantId,
 };
 use rusqlite::{Connection, OpenFlags, Transaction, TransactionBehavior, params};
+use sha2::{Digest, Sha256};
 
 const SCHEMA_VERSION: i64 = 3;
 const MAX_ENDPOINT_COMPONENT_BYTES: usize = 128;
@@ -200,6 +201,23 @@ pub struct OutboxEntry {
     pub owner_fiber: FiberHandle,
     pub callback_id: Option<CallbackId>,
     pub state: OperationState,
+}
+
+/// Authority-derived proof for the current Operation endpoint.
+///
+/// The proof is derived from the durable Operation registration row and is
+/// authoritative only after exact `OperationId + Generation` readback. A
+/// caller may transport the tuple, but a consumer must query the owning
+/// `SqliteOperationStore` again before admitting it into a `TaskWriteSet`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OperationEndpointProof {
+    pub operation: OperationHandle,
+    pub owner_fiber: FiberHandle,
+    pub cancellation_scope_id: CancellationScopeId,
+    pub cancellation_generation: Generation,
+    pub participant_id: TaskParticipantId,
+    pub participant_generation: Generation,
+    pub admission_receipt_id: ReceiptId,
 }
 
 /// A single-writer `SQLite` authority. The mutex is a process-local admission
@@ -686,6 +704,47 @@ impl SqliteOperationStore {
             return Err(OperationError::InvalidGeneration.into());
         }
         Ok(snapshot)
+    }
+
+    /// Reads the authority-derived endpoint proof for an Operation.
+    ///
+    /// The proof is deterministic from the immutable registration identity and
+    /// the current generation, but it is authoritative only after this exact
+    /// owner readback. A stale or unknown generation is rejected before any
+    /// participant tuple is returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage, corruption, or stale-generation error.
+    pub fn inspect_endpoint_proof(
+        &self,
+        handle: OperationHandle,
+    ) -> Result<OperationEndpointProof, StoreError> {
+        let connection = self.lock_connection()?;
+        let (machine, _) = load_machine(&*connection, handle.operation_id)?;
+        let spec = machine.spec();
+        if spec.generation != handle.generation {
+            return Err(OperationError::InvalidGeneration.into());
+        }
+        let participant_id = TaskParticipantId::from_bytes(derive_endpoint_id(
+            b"nlos/operation-endpoint/participant/v1",
+            spec.operation_id,
+            spec.generation,
+        ));
+        let admission_receipt_id = ReceiptId::from_bytes(derive_endpoint_id(
+            b"nlos/operation-endpoint/admission/v1",
+            spec.operation_id,
+            spec.generation,
+        ));
+        Ok(OperationEndpointProof {
+            operation: handle,
+            owner_fiber: spec.owner_fiber,
+            cancellation_scope_id: spec.cancellation_scope_id,
+            cancellation_generation: spec.cancellation_generation,
+            participant_id,
+            participant_generation: spec.generation,
+            admission_receipt_id,
+        })
     }
 
     /// Lists unacknowledged outbox entries in durable sequence order.
@@ -1282,6 +1341,21 @@ const fn encode_outbox_kind(kind: OutboxKind) -> i64 {
         OutboxKind::WakeFiber => 0,
         OutboxKind::ReconcileEffect => 1,
     }
+}
+
+fn derive_endpoint_id(
+    domain: &[u8],
+    operation_id: OperationId,
+    generation: Generation,
+) -> [u8; 16] {
+    let mut hasher = Sha256::new();
+    hasher.update(domain);
+    hasher.update(operation_id.as_bytes());
+    hasher.update(generation.get().to_be_bytes());
+    let digest: [u8; 32] = hasher.finalize().into();
+    let mut id = [0_u8; 16];
+    id.copy_from_slice(&digest[..16]);
+    id
 }
 
 fn decode_outbox_kind(kind: i64) -> Result<OutboxKind, StoreError> {

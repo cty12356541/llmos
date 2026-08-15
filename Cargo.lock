@@ -529,6 +529,7 @@ dependencies = [
  "nlos-store-fault",
  "nlos-types",
  "rusqlite",
+ "sha2",
 ]
 
 [[package]]
