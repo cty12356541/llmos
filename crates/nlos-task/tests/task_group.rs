@@ -1219,7 +1219,7 @@ fn schema_v4_upgrades_to_v5_without_inventing_group_bindings() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("schema version");
-    assert_eq!(version, 26);
+    assert_eq!(version, 27);
 }
 
 /// Builds the cancellation fixture: root group + child group with an
@@ -1952,7 +1952,7 @@ fn golden_v3_database_migrates_losslessly_to_v4() {
         let version: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read user_version");
-        assert_eq!(version, 26, "migration stamps the current schema version");
+        assert_eq!(version, 27, "migration stamps the current schema version");
     }
 
     // All v3 data intact.

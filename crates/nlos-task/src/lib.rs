@@ -58,8 +58,10 @@
 //! for an issued permit before the Task CAS; replayed terminal permits keep
 //! the normal idempotent path and no publication receipt is synthesized.
 //!
-//! Explicitly out of scope: cross-authority-term takeover (adoption is by
-//! the same authority after restart/uncertainty), compensation execution
+//! Explicitly out of scope: complete cross-authority lease authentication,
+//! adoption, and fault handling. Schema v27 provides only a durable local
+//! `TaskAuthority` lease/term/fencing primitive; it does not authorize an
+//! IPC peer or bind a lease to `CommitPermit` mutation paths. Compensation execution
 //! (`COMPENSATED` is recordable but never executed), `QUORUM`/`REDUCE`
 //! group semantics (`[TASK-GROUP-003]`), `BEST_EFFORT` failure mode,
 //! `AGENT_INSTANCE` members, `DETACH` execution (`[TASK-DETACH-001]`),
@@ -80,6 +82,7 @@
 mod commit;
 mod effect;
 mod group;
+mod lease;
 mod model;
 mod participant;
 mod reconcile;
@@ -106,6 +109,9 @@ pub use group::{
     GroupMemberRecord, GroupMemberRef, GroupMemberType, GroupReceiptKind, GroupRecord,
     GroupRegistrationDecision, GroupSpec, GroupState, MembershipState, RemovalDecision,
     RemoveMemberRequest, TaskGroupCommitBinding, empty_group_membership_root, membership_root_of,
+};
+pub use lease::{
+    AuthorityLeaseDecision, AuthorityLeaseRecord, AuthorityLeaseRequest, MAX_AUTHORITY_LEASE_TTL_MS,
 };
 pub use model::{
     AdoptionReceiptRecord, AttemptHandle, AttemptRecord, AttemptRegistrationDecision, AttemptSpec,
@@ -167,6 +173,19 @@ pub enum TaskStoreError {
     DurabilityUnavailable {
         journal_mode: String,
         synchronous: i64,
+    },
+    /// No current authority lease exists for the `TaskAuthority`.
+    AuthorityLeaseNotFound,
+    /// A different holder attempted to acquire an unexpired authority lease.
+    AuthorityLeaseHeld,
+    /// A lease was presented after its durable expiry.
+    AuthorityLeaseExpired,
+    /// A lease term, epoch, holder, or fencing token is stale.
+    AuthorityLeaseFenced,
+    /// A lease request violates its timestamp, TTL, or idempotency contract.
+    InvalidAuthorityLease {
+        /// Static explanation of the rejected lease invariant.
+        reason: &'static str,
     },
     /// No task with the given ID is registered.
     TaskNotFound,
@@ -467,6 +486,19 @@ impl fmt::Display for TaskStoreError {
                 formatter,
                 "WAL/FULL durability unavailable: journal_mode={journal_mode}, synchronous={synchronous}"
             ),
+            Self::AuthorityLeaseNotFound => {
+                formatter.write_str("TaskAuthority has no durable authority lease")
+            }
+            Self::AuthorityLeaseHeld => {
+                formatter.write_str("authority lease is held by another live term")
+            }
+            Self::AuthorityLeaseExpired => formatter.write_str("authority lease has expired"),
+            Self::AuthorityLeaseFenced => {
+                formatter.write_str("authority lease term or fencing token is stale")
+            }
+            Self::InvalidAuthorityLease { reason } => {
+                write!(formatter, "invalid authority lease: {reason}")
+            }
             Self::TaskNotFound => formatter.write_str("task is not registered"),
             Self::AttemptNotFound => formatter.write_str("attempt does not exist under the task"),
             Self::PermitNotFound => formatter.write_str("permit does not exist under the task"),

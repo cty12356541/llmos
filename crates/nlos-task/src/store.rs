@@ -32,7 +32,7 @@ use crate::{
     TaskWriteSetSemanticTarget,
 };
 
-const SCHEMA_VERSION: i64 = 26;
+const SCHEMA_VERSION: i64 = 27;
 
 /// A single-writer `SQLite` task authority.
 ///
@@ -234,6 +234,7 @@ impl SqliteTaskAuthority {
             migrate_v24(&mut connection)?;
             migrate_v25(&mut connection)?;
             migrate_v26(&mut connection)?;
+            migrate_v27(&mut connection)?;
         }
 
         Ok(Self {
@@ -3411,6 +3412,37 @@ fn migrate_v26(connection: &mut Connection) -> Result<(), TaskStoreError> {
     Ok(())
 }
 
+/// v26 → v27 adds the durable `TaskAuthority` lease/term and immutable
+/// transition history used to fence stale cross-process holders.
+fn migrate_v27(connection: &mut Connection) -> Result<(), TaskStoreError> {
+    let table_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN
+            ('task_authority_leases', 'task_authority_lease_history')",
+        [],
+        |row| row.get(0),
+    )?;
+    let trigger_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN
+            ('task_authority_lease_history_immutable_update',
+             'task_authority_lease_history_immutable_delete')",
+        [],
+        |row| row.get(0),
+    )?;
+    if table_count == 2 && trigger_count == 2 {
+        connection.pragma_update(None, "user_version", 27)?;
+        return Ok(());
+    }
+    if table_count != 0 || trigger_count != 0 {
+        return Err(TaskStoreError::CorruptRecord(
+            "partial authority lease schema",
+        ));
+    }
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(SCHEMA_V27_SQL)?;
+    transaction.commit()?;
+    Ok(())
+}
+
 const SCHEMA_V13_SQL: &str = "CREATE TABLE task_write_sets (
         task_id BLOB NOT NULL CHECK(length(task_id) = 16),
         attempt_id BLOB NOT NULL CHECK(length(attempt_id) = 16),
@@ -3914,6 +3946,48 @@ pub(crate) const SCHEMA_V26_SQL: &str = "CREATE TABLE task_semantic_finalize_env
      END;
 
      PRAGMA user_version = 26;";
+
+pub(crate) const SCHEMA_V27_SQL: &str = "CREATE TABLE task_authority_leases (
+        authority_id BLOB PRIMARY KEY NOT NULL CHECK(length(authority_id) = 16),
+        holder_id BLOB NOT NULL CHECK(length(holder_id) = 16),
+        term BLOB NOT NULL CHECK(length(term) = 8),
+        lease_epoch BLOB NOT NULL CHECK(length(lease_epoch) = 8),
+        fencing_token BLOB NOT NULL CHECK(length(fencing_token) = 32),
+        requested_at_ms INTEGER NOT NULL CHECK(requested_at_ms >= 0),
+        expires_at_ms INTEGER NOT NULL CHECK(expires_at_ms > requested_at_ms),
+        ttl_ms INTEGER NOT NULL CHECK(ttl_ms > 0),
+        idempotency_key BLOB NOT NULL CHECK(length(idempotency_key) = 16)
+     ) STRICT;
+
+     CREATE TABLE task_authority_lease_history (
+        authority_id BLOB NOT NULL CHECK(length(authority_id) = 16),
+        lease_epoch BLOB NOT NULL CHECK(length(lease_epoch) = 8),
+        term BLOB NOT NULL CHECK(length(term) = 8),
+        holder_id BLOB NOT NULL CHECK(length(holder_id) = 16),
+        fencing_token BLOB NOT NULL CHECK(length(fencing_token) = 32),
+        idempotency_key BLOB NOT NULL CHECK(length(idempotency_key) = 16),
+        requested_at_ms INTEGER NOT NULL CHECK(requested_at_ms >= 0),
+        expires_at_ms INTEGER NOT NULL CHECK(expires_at_ms > requested_at_ms),
+        ttl_ms INTEGER NOT NULL CHECK(ttl_ms > 0),
+        transition_kind INTEGER NOT NULL CHECK(transition_kind BETWEEN 1 AND 3),
+        PRIMARY KEY(authority_id, lease_epoch),
+        UNIQUE(authority_id, idempotency_key),
+        FOREIGN KEY(authority_id) REFERENCES task_authority_leases(authority_id)
+     ) STRICT;
+
+     CREATE TRIGGER task_authority_lease_history_immutable_update
+     BEFORE UPDATE ON task_authority_lease_history
+     BEGIN
+        SELECT RAISE(ABORT, 'authority lease history is immutable');
+     END;
+
+     CREATE TRIGGER task_authority_lease_history_immutable_delete
+     BEFORE DELETE ON task_authority_lease_history
+     BEGIN
+        SELECT RAISE(ABORT, 'authority lease history is durable evidence');
+     END;
+
+     PRAGMA user_version = 27;";
 
 const SCHEMA_V12_SQL: &str = "ALTER TABLE effect_permits
         ADD COLUMN participant_registry_generation BLOB
