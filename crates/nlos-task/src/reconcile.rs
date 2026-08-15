@@ -17,6 +17,7 @@ use sha2::{Digest, Sha256};
 use crate::effect::{
     self, SlotRecord, SlotState, insert_effect_receipt, list_slots, load_slot, refresh_summary,
 };
+use crate::lease::validate_authority_lease_binding_in_transaction;
 use crate::model::{
     self, ClosePermitRequest, EffectHistoryEntry, EffectHistoryLookup, EffectHistoryOutcome,
     FinalizeRequest, QuarantineReceiptRecord, ReceiptOutcome, ReconcileOutcome,
@@ -28,9 +29,9 @@ use crate::store::{
     set_attempt_state, u64_from_blob, update_task,
 };
 use crate::{
-    AdoptionReceiptRecord, AttemptState, ClosePermitDecision, FinalizeDecision, PermitRecord,
-    PermitState, ReconciliationReceiptRecord, SemanticCommitPlanId, SemanticFinalizeDecision,
-    SemanticTaskCommitReceipt, TaskReceiptRecord, TaskStoreError,
+    AdoptionReceiptRecord, AttemptState, AuthorityLeaseRecord, ClosePermitDecision,
+    FinalizeDecision, PermitRecord, PermitState, ReconciliationReceiptRecord, SemanticCommitPlanId,
+    SemanticFinalizeDecision, SemanticTaskCommitReceipt, TaskReceiptRecord, TaskStoreError,
 };
 
 /// A `PermitAdoptionReceipt` issuance request (`[TASK-COMMIT-003]`,
@@ -95,6 +96,22 @@ pub struct FinalizeRequestV3 {
     /// Caller-supplied participant-fence proof placeholder, persisted on
     /// the quarantine receipt if any slot is `EffectUnknown`.
     pub fenced_participant_digest: [u8; 32],
+}
+
+/// Opt-in v3 finalization request carrying the same durable authority lease
+/// that was copied into the permit at issuance.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthorityLeaseFinalizeRequest {
+    pub finalize: FinalizeRequestV3,
+    pub lease: AuthorityLeaseRecord,
+}
+
+/// Opt-in pre-effect closure request carrying the lease copied into the
+/// permit at issuance.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AuthorityLeaseCloseRequest {
+    pub close: ClosePermitRequest,
+    pub lease: AuthorityLeaseRecord,
 }
 
 /// `SHA-256("llmos/task-effect-history/v1" || canonical(entries by seq))`.
@@ -933,6 +950,25 @@ struct TerminalCtx<'a> {
     now_ms: i64,
 }
 
+fn validate_permit_authority_lease(
+    transaction: &Transaction<'_>,
+    permit: &PermitRecord,
+    now_ms: i64,
+    authority_lease: Option<AuthorityLeaseRecord>,
+) -> Result<(), TaskStoreError> {
+    match (permit.authority_lease_binding, authority_lease) {
+        (None, None) => Ok(()),
+        (None, Some(_)) => Err(TaskStoreError::AuthorityLeaseBindingMismatch),
+        (Some(_), None) => Err(TaskStoreError::AuthorityLeaseRequired),
+        (Some(binding), Some(lease)) => {
+            if binding != lease.binding() {
+                return Err(TaskStoreError::AuthorityLeaseBindingMismatch);
+            }
+            validate_authority_lease_binding_in_transaction(transaction, binding, now_ms)
+        }
+    }
+}
+
 /// Writes/replays the quarantine tombstone and optionally advances the
 /// control epoch (fresh quarantines only). The `TaskHead` is never
 /// touched here (`[TASK-EFFECT-003]`).
@@ -1148,6 +1184,22 @@ impl SqliteTaskAuthority {
         self.finalize_impl(&request, false)
     }
 
+    /// Finalizes a permit whose issuance was bound to a durable authority
+    /// lease. The lease term, epoch, fencing token, and expiry are checked in
+    /// the same transaction as the terminal Task CAS.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same lifecycle errors as `finalize_commit_v3`, plus a typed
+    /// lease-required, lease-fenced, or lease-expired error.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn finalize_commit_v3_with_authority_lease(
+        &self,
+        request: AuthorityLeaseFinalizeRequest,
+    ) -> Result<FinalizeDecision, TaskStoreError> {
+        self.finalize_impl_with_authority_lease(&request.finalize, false, Some(request.lease))
+    }
+
     /// Finalizes an issued permit after re-reading any sealed Semantic append
     /// proofs from the owning [`nlos_semantic::SemanticAuthority`]. A
     /// closed/quarantined permit follows the normal replay path and does not
@@ -1271,7 +1323,21 @@ impl SqliteTaskAuthority {
         request: &FinalizeRequestV3,
         legacy: bool,
     ) -> Result<FinalizeDecision, TaskStoreError> {
-        match self.finalize_impl_inner(request, legacy, None)? {
+        match self.finalize_impl_inner(request, legacy, None, None)? {
+            FinalizeImplResult::Plain(decision) => Ok(decision),
+            FinalizeImplResult::Semantic(_) => Err(TaskStoreError::CorruptRecord(
+                "Semantic finalize result returned through plain API",
+            )),
+        }
+    }
+
+    fn finalize_impl_with_authority_lease(
+        &self,
+        request: &FinalizeRequestV3,
+        legacy: bool,
+        authority_lease: Option<AuthorityLeaseRecord>,
+    ) -> Result<FinalizeDecision, TaskStoreError> {
+        match self.finalize_impl_inner(request, legacy, authority_lease, None)? {
             FinalizeImplResult::Plain(decision) => Ok(decision),
             FinalizeImplResult::Semantic(_) => Err(TaskStoreError::CorruptRecord(
                 "Semantic finalize result returned through plain API",
@@ -1284,7 +1350,7 @@ impl SqliteTaskAuthority {
         request: &FinalizeRequestV3,
         plan_id: SemanticCommitPlanId,
     ) -> Result<SemanticFinalizeDecision, TaskStoreError> {
-        match self.finalize_impl_inner(request, false, Some(plan_id))? {
+        match self.finalize_impl_inner(request, false, None, Some(plan_id))? {
             FinalizeImplResult::Semantic(decision) => Ok(decision),
             FinalizeImplResult::Plain(_) => Err(TaskStoreError::CorruptRecord(
                 "plain finalize result returned through Semantic API",
@@ -1297,6 +1363,7 @@ impl SqliteTaskAuthority {
         &self,
         request: &FinalizeRequestV3,
         legacy: bool,
+        authority_lease: Option<AuthorityLeaseRecord>,
         semantic_plan_id: Option<SemanticCommitPlanId>,
     ) -> Result<FinalizeImplResult, TaskStoreError> {
         let mut connection = self.lock_connection()?;
@@ -1306,6 +1373,14 @@ impl SqliteTaskAuthority {
             store::load_permit_by_id(&transaction, request.base.task_id, request.base.permit_id)?;
         let attempt =
             store::load_attempt(&transaction, request.base.task_id, request.base.attempt_id)?;
+        if permit.state == PermitState::Issued {
+            validate_permit_authority_lease(
+                &transaction,
+                &permit,
+                request.base.finalized_at_ms,
+                authority_lease,
+            )?;
+        }
         if attempt.attempt_generation != request.base.attempt_generation {
             return Err(TaskStoreError::InvalidGeneration);
         }
@@ -1478,6 +1553,28 @@ impl SqliteTaskAuthority {
         &self,
         request: ClosePermitRequest,
     ) -> Result<ClosePermitDecision, TaskStoreError> {
+        self.close_permit_inner(request, None)
+    }
+
+    /// Closes a lease-bound permit after checking the same live lease binding
+    /// used at issuance.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same lifecycle errors as `close_permit`, plus a typed
+    /// lease-required, lease-fenced, or lease-expired error.
+    pub fn close_permit_with_authority_lease(
+        &self,
+        request: AuthorityLeaseCloseRequest,
+    ) -> Result<ClosePermitDecision, TaskStoreError> {
+        self.close_permit_inner(request.close, Some(request.lease))
+    }
+
+    fn close_permit_inner(
+        &self,
+        request: ClosePermitRequest,
+        authority_lease: Option<AuthorityLeaseRecord>,
+    ) -> Result<ClosePermitDecision, TaskStoreError> {
         let mut connection = self.lock_connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let task = store::load_task(&transaction, request.task_id)?;
@@ -1485,6 +1582,14 @@ impl SqliteTaskAuthority {
         let attempt = store::load_attempt(&transaction, request.task_id, request.attempt_id)?;
         if attempt.attempt_generation != request.attempt_generation {
             return Err(TaskStoreError::InvalidGeneration);
+        }
+        if permit.state == PermitState::Issued {
+            validate_permit_authority_lease(
+                &transaction,
+                &permit,
+                request.closed_at_ms,
+                authority_lease,
+            )?;
         }
         let ctx = TerminalCtx {
             task: &task,

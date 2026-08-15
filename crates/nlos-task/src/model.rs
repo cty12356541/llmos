@@ -1176,6 +1176,10 @@ pub struct PermitRecord {
     /// Participant registry atomically frozen by this permit issuance.
     /// `None` is reserved for pre-v11 migrated permits.
     pub participant_registry_binding: Option<crate::ParticipantRegistryBinding>,
+    /// Optional durable `TaskAuthority` lease binding. `None` preserves the
+    /// legacy permit path; when present, terminal mutation must present the
+    /// same live term/epoch/fencing token.
+    pub authority_lease_binding: Option<crate::lease::AuthorityLeaseBinding>,
     pub permit_epoch: u64,
     pub control_epoch: u64,
     pub cancel_epoch: u64,

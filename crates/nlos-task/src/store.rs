@@ -19,6 +19,10 @@ use rusqlite::{
     Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
 };
 
+use crate::lease::{
+    AuthorityLeasePermitRequest, AuthorityLeaseRecord,
+    validate_authority_lease_binding_in_transaction,
+};
 use crate::model::{derive_closure_receipt_id, derive_permit_id, empty_effect_history_root};
 use crate::{
     AttemptHandle, AttemptRecord, AttemptRegistrationDecision, AttemptSpec, AttemptState,
@@ -32,7 +36,7 @@ use crate::{
     TaskWriteSetSemanticTarget,
 };
 
-const SCHEMA_VERSION: i64 = 27;
+const SCHEMA_VERSION: i64 = 28;
 
 /// A single-writer `SQLite` task authority.
 ///
@@ -235,6 +239,7 @@ impl SqliteTaskAuthority {
             migrate_v25(&mut connection)?;
             migrate_v26(&mut connection)?;
             migrate_v27(&mut connection)?;
+            migrate_v28(&mut connection)?;
         }
 
         Ok(Self {
@@ -1149,7 +1154,31 @@ impl SqliteTaskAuthority {
         &self,
         request: PermitRequest,
     ) -> Result<PermitDecision, TaskStoreError> {
-        self.request_commit_permit_inner(None, None, None, None, request)
+        self.request_commit_permit_inner(None, None, None, None, request, None)
+    }
+
+    /// Runs the `CommitPermit` CAS with an immutable binding to a live
+    /// `TaskAuthority` lease. The lease is checked in the same `SQLite`
+    /// transaction that freezes the permit; legacy callers remain unbound.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::request_commit_permit`], plus a
+    /// typed lease conflict when the supplied holder, term, epoch, token, or
+    /// expiry is not the current durable lease.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn request_commit_permit_with_authority_lease(
+        &self,
+        request: AuthorityLeasePermitRequest,
+    ) -> Result<PermitDecision, TaskStoreError> {
+        self.request_commit_permit_inner(
+            None,
+            None,
+            None,
+            None,
+            request.permit,
+            Some(request.lease),
+        )
     }
 
     /// Runs the `CommitPermit` CAS after re-reading every Artifact head named
@@ -1174,7 +1203,7 @@ impl SqliteTaskAuthority {
         artifact_authority: &nlos_artifact::ArtifactStore,
         request: PermitRequest,
     ) -> Result<PermitDecision, TaskStoreError> {
-        self.request_commit_permit_inner(Some(artifact_authority), None, None, None, request)
+        self.request_commit_permit_inner(Some(artifact_authority), None, None, None, request, None)
     }
 
     /// Runs the `CommitPermit` CAS after re-reading an optional Process /
@@ -1199,7 +1228,7 @@ impl SqliteTaskAuthority {
         process_authority: &nlos_process::ProcessAuthority,
         request: PermitRequest,
     ) -> Result<PermitDecision, TaskStoreError> {
-        self.request_commit_permit_inner(None, Some(process_authority), None, None, request)
+        self.request_commit_permit_inner(None, Some(process_authority), None, None, request, None)
     }
 
     /// Runs the `CommitPermit` CAS after re-reading every Resource reservation
@@ -1224,7 +1253,7 @@ impl SqliteTaskAuthority {
         resource_authority: &nlos_resource::ResourceAuthority,
         request: PermitRequest,
     ) -> Result<PermitDecision, TaskStoreError> {
-        self.request_commit_permit_inner(None, None, Some(resource_authority), None, request)
+        self.request_commit_permit_inner(None, None, Some(resource_authority), None, request, None)
     }
 
     /// Runs the `CommitPermit` CAS after re-reading every Operation endpoint
@@ -1244,7 +1273,7 @@ impl SqliteTaskAuthority {
         operation_authority: &nlos_store::SqliteOperationStore,
         request: PermitRequest,
     ) -> Result<PermitDecision, TaskStoreError> {
-        self.request_commit_permit_inner(None, None, None, Some(operation_authority), request)
+        self.request_commit_permit_inner(None, None, None, Some(operation_authority), request, None)
     }
 
     /// Runs the `CommitPermit` CAS with Artifact, Process, Resource, and
@@ -1271,6 +1300,7 @@ impl SqliteTaskAuthority {
             Some(resource_authority),
             Some(operation_authority),
             request,
+            None,
         )
     }
 
@@ -1282,6 +1312,7 @@ impl SqliteTaskAuthority {
         resource_authority: Option<&nlos_resource::ResourceAuthority>,
         operation_authority: Option<&nlos_store::SqliteOperationStore>,
         request: PermitRequest,
+        authority_lease: Option<AuthorityLeaseRecord>,
     ) -> Result<PermitDecision, TaskStoreError> {
         let mut connection = self.lock_connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -1289,7 +1320,7 @@ impl SqliteTaskAuthority {
         if let Some(existing) =
             load_permit_by_key(&transaction, request.task_id, request.idempotency_key)?
         {
-            let decision = replay_permit(&transaction, existing, &request)?;
+            let decision = replay_permit(&transaction, existing, &request, authority_lease)?;
             transaction.commit()?;
             return Ok(decision);
         }
@@ -1316,6 +1347,7 @@ impl SqliteTaskAuthority {
             process_authority,
             resource_authority,
             operation_authority,
+            authority_lease,
         )?;
         transaction.commit()?;
         Ok(decision)
@@ -1720,6 +1752,7 @@ fn replay_permit(
     transaction: &Transaction<'_>,
     existing: PermitRecord,
     request: &PermitRequest,
+    authority_lease: Option<AuthorityLeaseRecord>,
 ) -> Result<PermitDecision, TaskStoreError> {
     let stored_root = crate::effect::stored_effect_set_root(transaction, existing.permit_id)?
         .unwrap_or_else(crate::effect::empty_effect_set_root);
@@ -1727,7 +1760,8 @@ fn replay_permit(
         && existing.attempt_generation == request.attempt_generation
         && existing.write_set_root == request.write_set_root
         && existing.valid_until_ms == request.valid_until_ms
-        && stored_root == crate::effect::effect_set_root_of(&request.planned_effects);
+        && stored_root == crate::effect::effect_set_root_of(&request.planned_effects)
+        && existing.authority_lease_binding == authority_lease.map(AuthorityLeaseRecord::binding);
     if same_bytes {
         Ok(PermitDecision::Replayed(Box::new(existing)))
     } else {
@@ -2017,6 +2051,7 @@ fn compete_for_permit(
     process_authority: Option<&nlos_process::ProcessAuthority>,
     resource_authority: Option<&nlos_resource::ResourceAuthority>,
     operation_authority: Option<&nlos_store::SqliteOperationStore>,
+    authority_lease: Option<AuthorityLeaseRecord>,
 ) -> Result<PermitDecision, TaskStoreError> {
     if !attempt.state.is_open_candidate() {
         return Err(TaskStoreError::InvalidAttemptState {
@@ -2085,6 +2120,7 @@ fn compete_for_permit(
         process_authority,
         resource_authority,
         operation_authority,
+        authority_lease,
     )?;
     Ok(PermitDecision::Issued(Box::new(record)))
 }
@@ -2249,7 +2285,15 @@ fn issue_permit(
     process_authority: Option<&nlos_process::ProcessAuthority>,
     resource_authority: Option<&nlos_resource::ResourceAuthority>,
     operation_authority: Option<&nlos_store::SqliteOperationStore>,
+    authority_lease: Option<AuthorityLeaseRecord>,
 ) -> Result<PermitRecord, TaskStoreError> {
+    if let Some(lease) = authority_lease {
+        validate_authority_lease_binding_in_transaction(
+            transaction,
+            lease.binding(),
+            request.requested_at_ms,
+        )?;
+    }
     let effect_set_root = crate::effect::validate_planned_effects(
         task.record.task_id,
         task.record.task_generation,
@@ -2403,6 +2447,7 @@ fn issue_permit(
         write_set_root: request.write_set_root,
         group_binding: crate::group::current_commit_binding(transaction, attempt.attempt_id)?,
         participant_registry_binding: Some(participant_registry_binding),
+        authority_lease_binding: authority_lease.map(AuthorityLeaseRecord::binding),
         permit_epoch,
         control_epoch,
         cancel_epoch: task.record.cancel_epoch,
@@ -3443,6 +3488,50 @@ fn migrate_v27(connection: &mut Connection) -> Result<(), TaskStoreError> {
     Ok(())
 }
 
+/// v27 → v28 adds the optional immutable lease binding copied into each
+/// opt-in `CommitPermit`; legacy permits remain explicitly unbound.
+fn migrate_v28(connection: &mut Connection) -> Result<(), TaskStoreError> {
+    let mut present = 0usize;
+    let expected = [
+        "authority_lease_authority_id",
+        "authority_lease_holder_id",
+        "authority_lease_term",
+        "authority_lease_epoch",
+        "authority_lease_fencing_token",
+        "authority_lease_expires_at_ms",
+    ];
+    {
+        let mut statement = connection.prepare("PRAGMA table_info(commit_permits)")?;
+        let columns = statement.query_map([], |row| row.get::<_, String>(1))?;
+        for column in columns {
+            if expected.contains(&column?.as_str()) {
+                present += 1;
+            }
+        }
+    }
+    let trigger_present: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master
+            WHERE type='trigger' AND name='commit_permit_authority_lease_binding_immutable'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if present == expected.len() && trigger_present {
+        connection.pragma_update(None, "user_version", 28)?;
+        return Ok(());
+    }
+    if present != 0 || trigger_present {
+        return Err(TaskStoreError::CorruptRecord(
+            "partial authority lease permit binding schema",
+        ));
+    }
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(SCHEMA_V28_SQL)?;
+    transaction.commit()?;
+    Ok(())
+}
+
 const SCHEMA_V13_SQL: &str = "CREATE TABLE task_write_sets (
         task_id BLOB NOT NULL CHECK(length(task_id) = 16),
         attempt_id BLOB NOT NULL CHECK(length(attempt_id) = 16),
@@ -3988,6 +4077,38 @@ pub(crate) const SCHEMA_V27_SQL: &str = "CREATE TABLE task_authority_leases (
      END;
 
      PRAGMA user_version = 27;";
+
+pub(crate) const SCHEMA_V28_SQL: &str = "ALTER TABLE commit_permits
+        ADD COLUMN authority_lease_authority_id BLOB
+            CHECK(authority_lease_authority_id IS NULL OR length(authority_lease_authority_id) = 16);
+     ALTER TABLE commit_permits
+        ADD COLUMN authority_lease_holder_id BLOB
+            CHECK(authority_lease_holder_id IS NULL OR length(authority_lease_holder_id) = 16);
+     ALTER TABLE commit_permits
+        ADD COLUMN authority_lease_term BLOB
+            CHECK(authority_lease_term IS NULL OR length(authority_lease_term) = 8);
+     ALTER TABLE commit_permits
+        ADD COLUMN authority_lease_epoch BLOB
+            CHECK(authority_lease_epoch IS NULL OR length(authority_lease_epoch) = 8);
+     ALTER TABLE commit_permits
+        ADD COLUMN authority_lease_fencing_token BLOB
+            CHECK(authority_lease_fencing_token IS NULL OR length(authority_lease_fencing_token) = 32);
+     ALTER TABLE commit_permits
+        ADD COLUMN authority_lease_expires_at_ms INTEGER;
+
+     CREATE TRIGGER commit_permit_authority_lease_binding_immutable
+     BEFORE UPDATE ON commit_permits
+     WHEN NEW.authority_lease_authority_id IS NOT OLD.authority_lease_authority_id
+       OR NEW.authority_lease_holder_id IS NOT OLD.authority_lease_holder_id
+       OR NEW.authority_lease_term IS NOT OLD.authority_lease_term
+       OR NEW.authority_lease_epoch IS NOT OLD.authority_lease_epoch
+       OR NEW.authority_lease_fencing_token IS NOT OLD.authority_lease_fencing_token
+       OR NEW.authority_lease_expires_at_ms IS NOT OLD.authority_lease_expires_at_ms
+     BEGIN
+        SELECT RAISE(ABORT, 'authority lease permit binding is immutable');
+     END;
+
+     PRAGMA user_version = 28;";
 
 const SCHEMA_V12_SQL: &str = "ALTER TABLE effect_permits
         ADD COLUMN participant_registry_generation BLOB
@@ -4535,6 +4656,24 @@ fn insert_permit(
     let participant_registry_root = record
         .participant_registry_binding
         .map(|binding| binding.root);
+    let authority_lease_authority_id = record
+        .authority_lease_binding
+        .map(|binding| binding.authority_id.into_bytes());
+    let authority_lease_holder_id = record
+        .authority_lease_binding
+        .map(|binding| binding.holder_id.into_bytes());
+    let authority_lease_term = record
+        .authority_lease_binding
+        .map(|binding| encode_u64(binding.term));
+    let authority_lease_epoch = record
+        .authority_lease_binding
+        .map(|binding| encode_u64(binding.lease_epoch));
+    let authority_lease_fencing_token = record
+        .authority_lease_binding
+        .map(|binding| binding.fencing_token);
+    let authority_lease_expires_at_ms = record
+        .authority_lease_binding
+        .map(|binding| binding.expires_at_ms);
     transaction.execute(
         "INSERT INTO commit_permits (
             permit_id, task_id, idempotency_key, attempt_id, attempt_generation,
@@ -4543,9 +4682,11 @@ fn insert_permit(
             control_epoch, cancel_epoch, valid_until_ms, permit_state,
             created_at_ms, updated_at_ms, group_id, membership_generation,
             membership_root, group_policy_digest, participant_registry_generation,
-            participant_registry_root
+            participant_registry_root, authority_lease_authority_id,
+            authority_lease_holder_id, authority_lease_term, authority_lease_epoch,
+            authority_lease_fencing_token, authority_lease_expires_at_ms
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
-                   ?17, ?18, ?19, ?20, ?21, ?22)",
+                   ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28)",
         params![
             record.permit_id.as_bytes().as_slice(),
             record.task_id.as_bytes().as_slice(),
@@ -4571,6 +4712,16 @@ fn insert_permit(
                 .as_ref()
                 .map(<[u8; 8]>::as_slice),
             participant_registry_root.as_ref().map(<[u8; 32]>::as_slice),
+            authority_lease_authority_id
+                .as_ref()
+                .map(<[u8; 16]>::as_slice),
+            authority_lease_holder_id.as_ref().map(<[u8; 16]>::as_slice),
+            authority_lease_term.as_ref().map(<[u8; 8]>::as_slice),
+            authority_lease_epoch.as_ref().map(<[u8; 8]>::as_slice),
+            authority_lease_fencing_token
+                .as_ref()
+                .map(<[u8; 32]>::as_slice),
+            authority_lease_expires_at_ms,
         ],
     )?;
     Ok(())
@@ -5548,7 +5699,9 @@ const PERMIT_COLUMNS: &str = "permit_id, task_id, idempotency_key, attempt_id, a
      control_epoch, cancel_epoch, valid_until_ms, permit_state,
      created_at_ms, updated_at_ms, group_id, membership_generation,
      membership_root, group_policy_digest, participant_registry_generation,
-     participant_registry_root";
+     participant_registry_root, authority_lease_authority_id,
+     authority_lease_holder_id, authority_lease_term, authority_lease_epoch,
+     authority_lease_fencing_token, authority_lease_expires_at_ms";
 
 fn load_permit_by_key(
     source: &impl SqlRead,
@@ -5651,6 +5804,42 @@ fn decode_permit_row(row: &rusqlite::Row<'_>) -> Result<PermitRecord, TaskStoreE
             ));
         }
     };
+    let authority_lease_authority_id = optional_blob::<16>(row, 22)?;
+    let authority_lease_holder_id = optional_blob::<16>(row, 23)?;
+    let authority_lease_term = optional_blob::<8>(row, 24)?;
+    let authority_lease_epoch = optional_blob::<8>(row, 25)?;
+    let authority_lease_fencing_token = optional_blob::<32>(row, 26)?;
+    let authority_lease_expires_at_ms: Option<i64> = row.get(27)?;
+    let authority_lease_binding = match (
+        authority_lease_authority_id,
+        authority_lease_holder_id,
+        authority_lease_term,
+        authority_lease_epoch,
+        authority_lease_fencing_token,
+        authority_lease_expires_at_ms,
+    ) {
+        (
+            Some(authority_id),
+            Some(holder_id),
+            Some(term),
+            Some(lease_epoch),
+            Some(fencing_token),
+            Some(expires_at_ms),
+        ) => Some(crate::lease::AuthorityLeaseBinding {
+            authority_id: nlos_types::TaskParticipantId::from_bytes(authority_id),
+            holder_id: ProcessId::from_bytes(holder_id),
+            term: u64::from_be_bytes(term),
+            lease_epoch: u64::from_be_bytes(lease_epoch),
+            fencing_token,
+            expires_at_ms,
+        }),
+        (None, None, None, None, None, None) => None,
+        _ => {
+            return Err(TaskStoreError::CorruptRecord(
+                "partial authority lease permit binding",
+            ));
+        }
+    };
     Ok(PermitRecord {
         permit_id: CommitPermitId::from_bytes(blob16(row, 0)?),
         task_id: TaskId::from_bytes(blob16(row, 1)?),
@@ -5663,6 +5852,7 @@ fn decode_permit_row(row: &rusqlite::Row<'_>) -> Result<PermitRecord, TaskStoreE
         write_set_root: blob32(row, 8)?,
         group_binding,
         participant_registry_binding,
+        authority_lease_binding,
         permit_epoch: u64_from_blob(row, 9)?,
         control_epoch: u64_from_blob(row, 10)?,
         cancel_epoch: u64_from_blob(row, 11)?,

@@ -24,6 +24,21 @@ pub struct AuthorityLeaseRequest {
     pub ttl_ms: i64,
 }
 
+/// A permit/terminal-path binding copied from a durable authority lease.
+///
+/// The request timestamp, TTL, and idempotency key remain inside the lease
+/// record; mutation paths only need the authority identity, holder, current
+/// term/epoch, token, and expiry to reject stale writers.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AuthorityLeaseBinding {
+    pub authority_id: TaskParticipantId,
+    pub holder_id: ProcessId,
+    pub term: u64,
+    pub lease_epoch: u64,
+    pub fencing_token: [u8; 32],
+    pub expires_at_ms: i64,
+}
+
 /// Current durable authority lease, including the term and fencing token that
 /// downstream authority operations must bind before accepting a mutation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -37,6 +52,28 @@ pub struct AuthorityLeaseRecord {
     pub expires_at_ms: i64,
     pub ttl_ms: i64,
     pub idempotency_key: IdempotencyKey,
+}
+
+impl AuthorityLeaseRecord {
+    #[must_use]
+    pub const fn binding(self) -> AuthorityLeaseBinding {
+        AuthorityLeaseBinding {
+            authority_id: self.authority_id,
+            holder_id: self.holder_id,
+            term: self.term,
+            lease_epoch: self.lease_epoch,
+            fencing_token: self.fencing_token,
+            expires_at_ms: self.expires_at_ms,
+        }
+    }
+}
+
+/// Opt-in `CommitPermit` issuance request bound to one durable authority
+/// lease. Legacy `PermitRequest` callers remain unbound for compatibility.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthorityLeasePermitRequest {
+    pub permit: crate::model::PermitRequest,
+    pub lease: AuthorityLeaseRecord,
 }
 
 /// Idempotent lease transition result.
@@ -250,6 +287,31 @@ impl SqliteTaskAuthority {
         }
         Ok(())
     }
+}
+
+pub(crate) fn validate_authority_lease_binding_in_transaction(
+    transaction: &Transaction<'_>,
+    binding: AuthorityLeaseBinding,
+    now_ms: i64,
+) -> Result<(), TaskStoreError> {
+    if now_ms < 0 {
+        return Err(TaskStoreError::InvalidAuthorityLease {
+            reason: "validation timestamp must be non-negative",
+        });
+    }
+    let authority_id = load_authority_id(transaction)?;
+    if authority_id != binding.authority_id {
+        return Err(TaskStoreError::AuthorityLeaseFenced);
+    }
+    let current = load_lease_optional(transaction, authority_id)?
+        .ok_or(TaskStoreError::AuthorityLeaseNotFound)?;
+    if current.binding() != binding {
+        return Err(TaskStoreError::AuthorityLeaseFenced);
+    }
+    if binding.expires_at_ms <= now_ms {
+        return Err(TaskStoreError::AuthorityLeaseExpired);
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy)]

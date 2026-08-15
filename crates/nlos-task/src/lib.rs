@@ -60,8 +60,9 @@
 //!
 //! Explicitly out of scope: complete cross-authority lease authentication,
 //! adoption, and fault handling. Schema v27 provides only a durable local
-//! `TaskAuthority` lease/term/fencing primitive; it does not authorize an
-//! IPC peer or bind a lease to `CommitPermit` mutation paths. Compensation execution
+//! `TaskAuthority` lease/term/fencing primitive; schema v28 adds an opt-in
+//! immutable `CommitPermit` binding and plain v3/pre-effect terminal guards,
+//! but neither schema authorizes an IPC peer nor completes adoption. Compensation execution
 //! (`COMPENSATED` is recordable but never executed), `QUORUM`/`REDUCE`
 //! group semantics (`[TASK-GROUP-003]`), `BEST_EFFORT` failure mode,
 //! `AGENT_INSTANCE` members, `DETACH` execution (`[TASK-DETACH-001]`),
@@ -111,7 +112,8 @@ pub use group::{
     RemoveMemberRequest, TaskGroupCommitBinding, empty_group_membership_root, membership_root_of,
 };
 pub use lease::{
-    AuthorityLeaseDecision, AuthorityLeaseRecord, AuthorityLeaseRequest, MAX_AUTHORITY_LEASE_TTL_MS,
+    AuthorityLeaseBinding, AuthorityLeaseDecision, AuthorityLeasePermitRequest,
+    AuthorityLeaseRecord, AuthorityLeaseRequest, MAX_AUTHORITY_LEASE_TTL_MS,
 };
 pub use model::{
     AdoptionReceiptRecord, AttemptHandle, AttemptRecord, AttemptRegistrationDecision, AttemptSpec,
@@ -136,8 +138,8 @@ pub use participant::{
     ParticipantRegistryRecord, ParticipantRegistryState, ParticipantType,
 };
 pub use reconcile::{
-    AdoptionReplay, AdoptionRequest, FinalizeRequestV3, ReconcileReplay, ReconcileRequest,
-    effect_history_root_of,
+    AdoptionReplay, AdoptionRequest, AuthorityLeaseCloseRequest, AuthorityLeaseFinalizeRequest,
+    FinalizeRequestV3, ReconcileReplay, ReconcileRequest, effect_history_root_of,
 };
 pub use recovery::{
     ArtifactRecoveryAlert, ArtifactRecoveryAlertAcknowledgeDecision,
@@ -187,6 +189,11 @@ pub enum TaskStoreError {
         /// Static explanation of the rejected lease invariant.
         reason: &'static str,
     },
+    /// A permit or terminal mutation is bound to a lease but no lease was
+    /// supplied by the caller.
+    AuthorityLeaseRequired,
+    /// A supplied lease does not match the immutable permit binding.
+    AuthorityLeaseBindingMismatch,
     /// No task with the given ID is registered.
     TaskNotFound,
     /// No attempt with the given ID exists under the given task.
@@ -498,6 +505,12 @@ impl fmt::Display for TaskStoreError {
             }
             Self::InvalidAuthorityLease { reason } => {
                 write!(formatter, "invalid authority lease: {reason}")
+            }
+            Self::AuthorityLeaseRequired => {
+                formatter.write_str("this permit mutation requires its authority lease")
+            }
+            Self::AuthorityLeaseBindingMismatch => {
+                formatter.write_str("authority lease does not match the permit binding")
             }
             Self::TaskNotFound => formatter.write_str("task is not registered"),
             Self::AttemptNotFound => formatter.write_str("attempt does not exist under the task"),
