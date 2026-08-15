@@ -15,10 +15,17 @@ use nlos_artifact::{
     ArtifactError, ArtifactPublicationReceipt, ArtifactStore, ContentDigest,
     PublishStagedRevisionRequest, StagingId,
 };
+use nlos_capability::CapabilityTarget;
+use nlos_semantic::{
+    PublishSemanticPublicationRequest, SemanticAuthority, SemanticAuthorityError,
+    SemanticPublicationReceipt,
+};
 use nlos_task::{
     ArtifactCommitPlanId, ArtifactCommitPlanState, ArtifactFinalizeDecision,
     ArtifactTaskCommitReceipt, FinalizeArtifactCommitRequest, NestedArtifactPublicationReceipt,
-    RecordArtifactPublicationsRequest, SqliteTaskAuthority, TaskStoreError,
+    RecordArtifactPublicationsRequest, RecordSemanticPublicationsRequest, SemanticCommitPlanId,
+    SemanticCommitPlanState, SemanticFinalizeDecision, SemanticTaskCommitReceipt,
+    SqliteTaskAuthority, TaskStoreError, TaskWriteSetSemanticTarget,
 };
 
 mod worker;
@@ -53,6 +60,7 @@ pub enum CoordinatorError {
     InvalidTimestamp,
     Task(TaskStoreError),
     Artifact(ArtifactError),
+    Semantic(SemanticAuthorityError),
 }
 
 /// One plan that could not converge during a best-effort pending scan.
@@ -81,6 +89,9 @@ impl fmt::Display for CoordinatorError {
             Self::Artifact(error) => {
                 write!(formatter, "ArtifactAuthority coordination failure: {error}")
             }
+            Self::Semantic(error) => {
+                write!(formatter, "SemanticAuthority coordination failure: {error}")
+            }
         }
     }
 }
@@ -91,6 +102,7 @@ impl Error for CoordinatorError {
             Self::InvalidTimestamp => None,
             Self::Task(error) => Some(error),
             Self::Artifact(error) => Some(error),
+            Self::Semantic(error) => Some(error),
         }
     }
 }
@@ -104,6 +116,12 @@ impl From<TaskStoreError> for CoordinatorError {
 impl From<ArtifactError> for CoordinatorError {
     fn from(error: ArtifactError) -> Self {
         Self::Artifact(error)
+    }
+}
+
+impl From<SemanticAuthorityError> for CoordinatorError {
+    fn from(error: SemanticAuthorityError) -> Self {
+        Self::Semantic(error)
     }
 }
 
@@ -306,4 +324,203 @@ fn nested_receipt(
         created_at_ms: i64::try_from(receipt.created_at_ms)
             .map_err(|_| CoordinatorError::InvalidTimestamp)?,
     })
+}
+
+/// One bounded Semantic coordinator invocation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ConvergeSemanticCommitRequest {
+    pub plan_id: SemanticCommitPlanId,
+    pub now_ms: i64,
+}
+
+/// Durable boundary reached by one Semantic coordinator step.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ConvergeSemanticStep {
+    Authorized,
+    PublishedOne {
+        event_id: nlos_types::SemanticEventId,
+        state_after: SemanticCommitPlanState,
+    },
+    Finalized(Box<SemanticTaskCommitReceipt>),
+    AlreadyFinalized(Box<SemanticTaskCommitReceipt>),
+}
+
+/// Stateless driver over the Task and Semantic authorities. This first
+/// coordinator slice converges Semantic-only plans; the mixed Effect +
+/// Semantic finalize request still needs a durable persisted effect-proof
+/// envelope before it can be recovered without caller input.
+pub struct SemanticCommitCoordinator<'a> {
+    tasks: &'a SqliteTaskAuthority,
+    semantic: &'a SemanticAuthority,
+}
+
+impl<'a> SemanticCommitCoordinator<'a> {
+    #[must_use]
+    pub const fn new(tasks: &'a SqliteTaskAuthority, semantic: &'a SemanticAuthority) -> Self {
+        Self { tasks, semantic }
+    }
+
+    /// Advances at most one durable cross-authority Semantic boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns the original typed authority failure. A later call resumes
+    /// from the last committed plan prefix.
+    pub fn converge_one_step(
+        &self,
+        request: ConvergeSemanticCommitRequest,
+    ) -> Result<ConvergeSemanticStep, CoordinatorError> {
+        let published_at_ms =
+            u64::try_from(request.now_ms).map_err(|_| CoordinatorError::InvalidTimestamp)?;
+        let progress = self
+            .tasks
+            .inspect_semantic_commit_progress(request.plan_id)?;
+        match progress.plan.state {
+            SemanticCommitPlanState::Planned => {
+                self.tasks
+                    .authorize_semantic_publication(request.plan_id, request.now_ms)?;
+                Ok(ConvergeSemanticStep::Authorized)
+            }
+            SemanticCommitPlanState::Publishing => {
+                let expectations = self
+                    .tasks
+                    .inspect_semantic_commit_expectations(request.plan_id)?;
+                let expectation = expectations
+                    .iter()
+                    .find(|expected| {
+                        !progress
+                            .publications
+                            .iter()
+                            .any(|receipt| receipt.event_id == expected.event_id)
+                    })
+                    .ok_or(TaskStoreError::CorruptRecord(
+                        "Publishing Semantic plan has no missing expectation",
+                    ))?;
+                let owner_receipt = self.semantic.publish_semantic_publication(
+                    PublishSemanticPublicationRequest {
+                        task_id: progress.plan.task_id,
+                        permit_id: progress.plan.permit_id,
+                        write_set_root: progress.plan.write_set_root,
+                        event_id: expectation.event_id,
+                        target: semantic_target(expectation.target),
+                        admission_receipt_id: expectation.admission_receipt_id,
+                        durability_receipt_id: expectation.durability_receipt_id,
+                        published_at_ms,
+                    },
+                )?;
+                let nested = nested_semantic_receipt(&owner_receipt.receipt());
+                let updated = self.tasks.record_semantic_publications(
+                    self.semantic,
+                    RecordSemanticPublicationsRequest {
+                        plan_id: request.plan_id,
+                        receipts: vec![nested],
+                        observed_at_ms: request.now_ms,
+                    },
+                )?;
+                Ok(ConvergeSemanticStep::PublishedOne {
+                    event_id: expectation.event_id,
+                    state_after: updated.plan.state,
+                })
+            }
+            SemanticCommitPlanState::Ready => {
+                let decision = self.tasks.finalize_semantic_commit(
+                    nlos_task::FinalizeSemanticCommitRequest {
+                        plan_id: request.plan_id,
+                        finalized_at_ms: request.now_ms,
+                    },
+                )?;
+                Ok(match decision {
+                    SemanticFinalizeDecision::Committed(receipt) => {
+                        ConvergeSemanticStep::Finalized(receipt)
+                    }
+                    SemanticFinalizeDecision::Replayed(receipt) => {
+                        ConvergeSemanticStep::AlreadyFinalized(receipt)
+                    }
+                })
+            }
+            SemanticCommitPlanState::Finalized => {
+                let decision = self.tasks.finalize_semantic_commit(
+                    nlos_task::FinalizeSemanticCommitRequest {
+                        plan_id: request.plan_id,
+                        finalized_at_ms: request.now_ms,
+                    },
+                )?;
+                Ok(ConvergeSemanticStep::AlreadyFinalized(Box::new(
+                    decision.receipt().clone(),
+                )))
+            }
+        }
+    }
+
+    /// Repeats bounded steps until the Semantic plan is durably finalized.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first typed authority failure; retrying resumes from the
+    /// durable prefix already reached.
+    pub fn converge(
+        &self,
+        request: ConvergeSemanticCommitRequest,
+    ) -> Result<SemanticTaskCommitReceipt, CoordinatorError> {
+        loop {
+            match self.converge_one_step(request)? {
+                ConvergeSemanticStep::Authorized | ConvergeSemanticStep::PublishedOne { .. } => {}
+                ConvergeSemanticStep::Finalized(receipt)
+                | ConvergeSemanticStep::AlreadyFinalized(receipt) => return Ok(*receipt),
+            }
+        }
+    }
+
+    /// Scans a bounded set of durable non-finalized Semantic plans and
+    /// converges each one. This is the restart entry point for this slice.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first typed authority failure.
+    pub fn converge_pending(
+        &self,
+        limit: usize,
+        now_ms: i64,
+    ) -> Result<Vec<SemanticTaskCommitReceipt>, CoordinatorError> {
+        self.tasks
+            .list_incomplete_semantic_commit_plans(limit)?
+            .into_iter()
+            .map(|plan| {
+                self.converge(ConvergeSemanticCommitRequest {
+                    plan_id: plan.plan_id,
+                    now_ms,
+                })
+            })
+            .collect()
+    }
+}
+
+fn semantic_target(target: TaskWriteSetSemanticTarget) -> CapabilityTarget {
+    match target {
+        TaskWriteSetSemanticTarget::Namespace(namespace) => CapabilityTarget::Namespace(namespace),
+        TaskWriteSetSemanticTarget::Task(task) => CapabilityTarget::Task(task),
+    }
+}
+
+fn nested_semantic_receipt(
+    receipt: &SemanticPublicationReceipt,
+) -> nlos_task::NestedSemanticPublicationReceipt {
+    nlos_task::NestedSemanticPublicationReceipt {
+        receipt_id: receipt.receipt_id,
+        task_id: receipt.task_id,
+        permit_id: receipt.permit_id,
+        write_set_root: receipt.write_set_root,
+        event_id: receipt.event_id,
+        target: match receipt.target {
+            CapabilityTarget::Namespace(namespace) => {
+                TaskWriteSetSemanticTarget::Namespace(namespace)
+            }
+            CapabilityTarget::Task(task) => TaskWriteSetSemanticTarget::Task(task),
+        },
+        log_seq: receipt.log_seq,
+        admission_receipt_id: receipt.admission_receipt_id,
+        durability_receipt_id: receipt.durability_receipt_id,
+        semantic_checkpoint_after: receipt.semantic_checkpoint_after,
+        created_at_ms: receipt.created_at_ms,
+    }
 }

@@ -21,7 +21,7 @@ use crate::store::{
 };
 use crate::{
     AttemptState, PermitState, ReceiptOutcome, TaskReceiptRecord, TaskStoreError,
-    TaskWriteSetRecord, TaskWriteSetSemanticTarget,
+    TaskWriteSetRecord, TaskWriteSetSemanticAppend, TaskWriteSetSemanticTarget,
 };
 
 /// Durable state of a Task-side Semantic publication plan.
@@ -455,6 +455,62 @@ impl SqliteTaskAuthority {
         let publications = load_publications(&*connection, plan_id)?;
         validate_progress(&plan, &publications)?;
         Ok(SemanticCommitProgress { plan, publications })
+    }
+
+    /// Reads the sealed Semantic publication declarations for a coordinator
+    /// step. The declarations come from the `TaskWriteSet`; callers cannot
+    /// inject a new event/target/receipt binding while recovering a plan.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed plan, write-set, binding, or storage error.
+    pub fn inspect_semantic_commit_expectations(
+        &self,
+        plan_id: SemanticCommitPlanId,
+    ) -> Result<Vec<TaskWriteSetSemanticAppend>, TaskStoreError> {
+        let connection = self.lock_connection()?;
+        let plan = load_plan_optional(&*connection, plan_id)?
+            .ok_or(TaskStoreError::SemanticCommitPlanNotFound)?;
+        let write_set = load_write_set_by_root(&*connection, plan.task_id, plan.write_set_root)?
+            .ok_or(TaskStoreError::TaskWriteSetNotFound)?;
+        validate_plan_against_write_set(&plan, &write_set)?;
+        Ok(write_set.semantic_appends)
+    }
+
+    /// Lists non-finalized Semantic publication plans in stable creation/
+    /// identity order for a restart coordinator scan.
+    ///
+    /// # Errors
+    ///
+    /// Returns a corrupt-record or storage error.
+    pub fn list_incomplete_semantic_commit_plans(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<SemanticCommitPlanRecord>, TaskStoreError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let connection = self.lock_connection()?;
+        let mut statement = connection.prepare(
+            "SELECT plan_id FROM task_semantic_commit_plans
+             WHERE plan_state != ?1 ORDER BY created_at_ms, plan_id LIMIT ?2",
+        )?;
+        let mut rows = statement.query(params![
+            SemanticCommitPlanState::Finalized.code(),
+            i64::try_from(limit).unwrap_or(i64::MAX),
+        ])?;
+        let mut ids = Vec::new();
+        while let Some(row) = rows.next()? {
+            ids.push(SemanticCommitPlanId::from_bytes(blob16(row, 0)?));
+        }
+        drop(rows);
+        drop(statement);
+        ids.into_iter()
+            .map(|plan_id| {
+                load_plan_optional(&*connection, plan_id)?
+                    .ok_or(TaskStoreError::SemanticCommitPlanNotFound)
+            })
+            .collect()
     }
 
     /// Finalizes a complete Semantic-only plan in one `TaskAuthority`

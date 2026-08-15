@@ -7,12 +7,14 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+nlos-capability = { path = "../nlos-capability" }
 nlos-artifact = { path = "../nlos-artifact" }
+nlos-semantic = { path = "../nlos-semantic" }
 nlos-task = { path = "../nlos-task" }
+nlos-types = { path = "../nlos-types" }
 
 [dev-dependencies]
 nlos-store-fault = { path = "../nlos-store-fault" }
-nlos-types = { path = "../nlos-types" }
 rusqlite.workspace = true
 
 [lints]

@@ -404,6 +404,8 @@ name = "nlos-commit-coordinator"
 version = "0.1.0"
 dependencies = [
  "nlos-artifact",
+ "nlos-capability",
+ "nlos-semantic",
  "nlos-store-fault",
  "nlos-task",
  "nlos-types",

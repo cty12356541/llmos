@@ -389,6 +389,7 @@ fn durable_cycle(
                     CoordinatorError::InvalidTimestamp => {
                         ArtifactRecoveryFailureSource::Coordinator
                     }
+                    CoordinatorError::Semantic(_) => ArtifactRecoveryFailureSource::Coordinator,
                 };
                 match tasks.record_artifact_recovery_failure(ArtifactRecoveryFailureRequest {
                     plan_id: plan.plan_id,
@@ -449,7 +450,9 @@ fn failure_of(
     let authority = match error {
         CoordinatorError::Task(_) => RecoveryFailureAuthority::Task,
         CoordinatorError::Artifact(_) => RecoveryFailureAuthority::Artifact,
-        CoordinatorError::InvalidTimestamp => RecoveryFailureAuthority::Coordinator,
+        CoordinatorError::InvalidTimestamp | CoordinatorError::Semantic(_) => {
+            RecoveryFailureAuthority::Coordinator
+        }
     };
     RecoveryWorkerFailure {
         plan_id,

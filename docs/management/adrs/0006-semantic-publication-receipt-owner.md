@@ -36,9 +36,9 @@
 
 - SemanticAuthority schema 增加 immutable `semantic_publication_receipts`；receipt identity 绑定 Task/Permit/WriteSet/Event/Admission/Durability 和 owner-derived local checkpoint。
 - publication receipt 不修改 Event、AdmissionReceipt、DurabilityReceipt 或 outbox ACK；重复请求逐字节回放，绑定漂移 fail closed。
-- TaskAuthority 增加 publication plan/consumer 与 nested `TaskCommitReceipt.semantic_publications`；含 Effect slot 的 v3 本地终结 hook 复用同一 TaskAuthority transaction，但跨 authority crash/restart 仍保持 PARTIAL/UNCERTAIN 语义。
+- TaskAuthority 增加 publication plan/consumer 与 nested `TaskCommitReceipt.semantic_publications`；含 Effect slot 的 v3 本地终结 hook 复用同一 TaskAuthority transaction，Semantic-only plan 另由 bounded coordinator 跨 authority 驱动。跨 authority crash/restart 仍保持 PARTIAL/UNCERTAIN 语义。
 - 当 TrustPolicy、vector checkpoint、跨 Cell assignment 或独立 Semantic broker 具备完整证据时，新增 ADR/迁移不得重写历史 receipt；可通过 successor receipt/version 扩展。
 
 ## 当前证据与缺口
 
-`B-SEMANTIC-005` 已验证 schema v4、owner target/Admission/Durability readback、local log-prefix checkpoint、immutable receipt、exact replay、restart readback 和错误绑定拒绝；`B-TASK-008C2G-SEM` 已验证 schema v25、TaskAuthority consumer、nested TaskCommitReceipt 与本地混合 Effect + Semantic v3 终结/重放。跨 authority prepare/consume/recovery、Trust View/vector checkpoint、跨进程认证与多 Cell 仍未完成。
+`B-SEMANTIC-005` 已验证 schema v4、owner target/Admission/Durability readback、local log-prefix checkpoint、immutable receipt、exact replay、restart readback 和错误绑定拒绝；`B-TASK-008C2G-SEM` 已验证 schema v25、TaskAuthority consumer、nested TaskCommitReceipt 与本地混合 Effect + Semantic v3 终结/重放；`B-TASK-008C2G-COORD` 已验证 Semantic-only plan 的授权、owner publication、Task receipt consumption、重启继续与 replay。混合 Effect finalize envelope、跨 authority 完整 prepare/consume/recovery、Trust View/vector checkpoint、跨进程认证与多 Cell 仍未完成。
