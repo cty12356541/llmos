@@ -288,6 +288,33 @@ pub struct SemanticOutboxRecord {
     pub acknowledged_at_ms: Option<u64>,
 }
 
+/// A transport consumer's owner-bound acknowledgement observation.
+///
+/// The event/log/receipt triple is supplied by the consumer and must match
+/// the `SemanticAuthority` readback. `acknowledged_at_ms` is a monotonic
+/// transport high-water only; it is not a checkpoint or publication proof.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AcknowledgeOutboxRequest {
+    pub event_id: SemanticEventId,
+    pub log_seq: u64,
+    pub receipt_id: ReceiptId,
+    pub acknowledged_at_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OutboxAckDecision {
+    Recorded(SemanticOutboxRecord),
+    Replayed(SemanticOutboxRecord),
+}
+impl OutboxAckDecision {
+    #[must_use]
+    pub const fn record(self) -> SemanticOutboxRecord {
+        match self {
+            Self::Recorded(record) | Self::Replayed(record) => record,
+        }
+    }
+}
+
 /// Durable authority-issued identity of the Semantic admission endpoint.
 ///
 /// Consumers must verify transported values by exact readback from the

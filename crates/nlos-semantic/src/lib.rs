@@ -34,15 +34,16 @@ pub use canonical::{
     encode_unsigned_spec_event, semantic_event_id,
 };
 pub use model::{
-    AdmissionDurability, AdmissionReceipt, AppendAssertionRequest, AppendDecision,
-    AppendSpecRequest, AssertionMode, CriterionAggregation, CriterionEffect, DurabilityReceipt,
-    EvaluatorKind, ImmutableEvaluatorReference, ImmutableEvaluatorReferenceKind, IntentConstraints,
-    IntentCriterion, IntentCriticality, IntentSettlement, IntentSpecBody, LocalProcessRef,
-    MAX_CANONICAL_EVENT_BYTES, MAX_CONTENT_BYTES, MAX_LINEAGE_ITEMS, MAX_NONCE_BYTES,
-    MAX_SPEC_CAPABILITY_REFS, MAX_SPEC_CRITERIA, MAX_SPEC_EXTENSION_BYTES, MAX_SPEC_EXTENSIONS,
-    MIN_NONCE_BYTES, SemanticAdmissionEndpointProof, SemanticEventRecord, SemanticOutboxRecord,
-    SemanticPayloadIdentity, SettlementMode, SettlementTimeoutAction, SpecExtension, StoreSigner,
-    StoreSignerError, TaintFlags, UnsignedAssertionEvent, UnsignedSpecEvent,
+    AcknowledgeOutboxRequest, AdmissionDurability, AdmissionReceipt, AppendAssertionRequest,
+    AppendDecision, AppendSpecRequest, AssertionMode, CriterionAggregation, CriterionEffect,
+    DurabilityReceipt, EvaluatorKind, ImmutableEvaluatorReference, ImmutableEvaluatorReferenceKind,
+    IntentConstraints, IntentCriterion, IntentCriticality, IntentSettlement, IntentSpecBody,
+    LocalProcessRef, MAX_CANONICAL_EVENT_BYTES, MAX_CONTENT_BYTES, MAX_LINEAGE_ITEMS,
+    MAX_NONCE_BYTES, MAX_SPEC_CAPABILITY_REFS, MAX_SPEC_CRITERIA, MAX_SPEC_EXTENSION_BYTES,
+    MAX_SPEC_EXTENSIONS, MIN_NONCE_BYTES, OutboxAckDecision, SemanticAdmissionEndpointProof,
+    SemanticEventRecord, SemanticOutboxRecord, SemanticPayloadIdentity, SettlementMode,
+    SettlementTimeoutAction, SpecExtension, StoreSigner, StoreSignerError, TaintFlags,
+    UnsignedAssertionEvent, UnsignedSpecEvent,
 };
 pub use spec::{
     criterion_id, decode_intent_spec_body, encode_intent_spec_body, hard_criteria_digest,
@@ -94,6 +95,12 @@ pub enum SemanticAuthorityError {
     StoreSigningFailed(String),
     StoreSignerBindingMismatch,
     EventNotFound(SemanticEventId),
+    OutboxAckBindingMismatch,
+    OutboxAckNotMonotonic {
+        previous: u64,
+        reported: u64,
+    },
+    OutboxAckBeforeAdmission,
     CorruptRecord(&'static str),
     LockPoisoned,
 }
@@ -176,6 +183,16 @@ impl fmt::Display for SemanticAuthorityError {
                 formatter.write_str("store signer identity does not match verified key binding")
             }
             Self::EventNotFound(id) => write!(formatter, "semantic event {id:?} does not exist"),
+            Self::OutboxAckBindingMismatch => {
+                formatter.write_str("outbox acknowledgement binding does not match owner record")
+            }
+            Self::OutboxAckNotMonotonic { previous, reported } => write!(
+                formatter,
+                "outbox acknowledgement timestamp regressed: previous={previous}, reported={reported}"
+            ),
+            Self::OutboxAckBeforeAdmission => {
+                formatter.write_str("outbox acknowledgement precedes admission")
+            }
             Self::CorruptRecord(reason) => write!(formatter, "corrupt durable record: {reason}"),
             Self::LockPoisoned => formatter.write_str("semantic authority lock is poisoned"),
         }
@@ -694,7 +711,8 @@ impl SemanticAuthority {
         let outbox = load_outbox(&connection, event_id)?.ok_or(
             SemanticAuthorityError::CorruptRecord("admitted event has no outbox row"),
         )?;
-        if outbox.log_seq != event.log_seq
+        if outbox.event_id != event_id
+            || outbox.log_seq != event.log_seq
             || outbox.receipt_id != admission.receipt_id
             || outbox.log_seq != admission.log_seq
         {
@@ -703,6 +721,79 @@ impl SemanticAuthority {
             ));
         }
         Ok(outbox)
+    }
+
+    /// Records an owner-bound, monotonic transport acknowledgement for one
+    /// admission outbox item.
+    ///
+    /// The event/log/receipt triple is re-read from this authority in the
+    /// same transaction. A later timestamp advances the transport
+    /// high-water; the same timestamp replays; an older timestamp or any
+    /// identity mismatch fails closed. This method never creates a
+    /// checkpoint/publication receipt and never changes the event log.
+    ///
+    /// # Errors
+    /// Returns `EventNotFound` for an unknown event, typed binding/time
+    /// conflicts, or a corrupt/storage failure when the owner rows disagree.
+    pub fn acknowledge_outbox(
+        &self,
+        request: AcknowledgeOutboxRequest,
+    ) -> Result<OutboxAckDecision, SemanticAuthorityError> {
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let event = load_event_record(&transaction, request.event_id)?
+            .ok_or(SemanticAuthorityError::EventNotFound(request.event_id))?;
+        let admission = load_receipt(&transaction, request.event_id)?;
+        let outbox = load_outbox(&transaction, request.event_id)?.ok_or(
+            SemanticAuthorityError::CorruptRecord("admitted event has no outbox row"),
+        )?;
+        if outbox.event_id != request.event_id
+            || outbox.log_seq != event.log_seq
+            || outbox.log_seq != admission.log_seq
+            || outbox.receipt_id != admission.receipt_id
+            || request.log_seq != outbox.log_seq
+            || request.receipt_id != outbox.receipt_id
+        {
+            return Err(SemanticAuthorityError::OutboxAckBindingMismatch);
+        }
+        if request.acknowledged_at_ms < admission.admitted_at_ms {
+            return Err(SemanticAuthorityError::OutboxAckBeforeAdmission);
+        }
+        if let Some(previous) = outbox.acknowledged_at_ms {
+            if request.acknowledged_at_ms < previous {
+                return Err(SemanticAuthorityError::OutboxAckNotMonotonic {
+                    previous,
+                    reported: request.acknowledged_at_ms,
+                });
+            }
+            if request.acknowledged_at_ms == previous {
+                transaction.commit()?;
+                return Ok(OutboxAckDecision::Replayed(outbox));
+            }
+        }
+        let changed = transaction.execute(
+            "UPDATE semantic_outbox
+             SET acknowledged_at_ms=?1
+             WHERE event_id=?2 AND log_seq=?3 AND receipt_id=?4
+               AND (acknowledged_at_ms IS NULL OR acknowledged_at_ms=?5)",
+            params![
+                encode_u64(request.acknowledged_at_ms)?,
+                request.event_id.as_bytes().as_slice(),
+                encode_u64(request.log_seq)?,
+                request.receipt_id.as_bytes().as_slice(),
+                outbox.acknowledged_at_ms.map(encode_u64).transpose()?,
+            ],
+        )?;
+        if changed != 1 {
+            return Err(SemanticAuthorityError::CorruptRecord(
+                "outbox acknowledgement compare-and-swap failed",
+            ));
+        }
+        transaction.commit()?;
+        Ok(OutboxAckDecision::Recorded(SemanticOutboxRecord {
+            acknowledged_at_ms: Some(request.acknowledged_at_ms),
+            ..outbox
+        }))
     }
 
     /// Reads the durable authority-issued Semantic admission endpoint proof.

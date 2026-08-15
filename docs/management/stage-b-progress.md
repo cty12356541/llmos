@@ -1,6 +1,8 @@
 # 阶段 B 权威进度单
 
 > 本轮新增：`B-RESOURCE-004` 已补上缺少 effect-closed final usage 证明时的 Resource QUARANTINED freeze、immutable QuarantineReceipt 与迟到 consume 拒绝；该分支不移动余额、不冒充最终结算。
+>
+> 本轮继续新增：`B-SEMANTIC-004` 已补上 Semantic outbox owner-bound 单调 ACK writer；ACK 只表示 transport observation，不提升为 checkpoint/publication proof。
 
 > 状态：`ACTIVE / POC ACCEPTANCE PENDING`
 >
@@ -47,7 +49,7 @@ Application
 | `B-TYPES` | Rust workspace 与稳定 nominal ID / Generation / CancelEpoch | `DONE` | `crates/nlos-types`；`ADR-0001`；[B-TASK-006P](../evidence/stage-b/b-task-006p-shared-nominal-identity-spine.md) 扩展 TaskWriteSet 共享 identity spine | public schema 与生成约束未冻结 |
 | `B-IDENTITY` | Principal、ControlDomain、版本化 identity snapshot 与 signing key authority | `IN_PROGRESS` | [B-IDENTITY-001](../evidence/stage-b/b-identity-001-principal-key-authority.md)：authority-assigned identity、Ed25519 key validity/revocation、Semantic signature verification PARTIAL PASS | 多 Principal domain merge/split、key rotation/custody、认证 session/attestation ingress、可信时钟与 fault matrix |
 | `B-CAPABILITY` | Capability issue、attenuation、delegation、revoke 与 reference monitor | `IN_PROGRESS` | [B-CAPABILITY-001](../evidence/stage-b/b-capability-001-durable-attenuation-authority.md)：durable root issue/delegation Receipt、全维衰减、generation/ancestor fence、verified-signer Semantic authorization PARTIAL PASS | Namespace hierarchy narrowing、call-limit 消耗账本、跨进程认证入口、通用 object/right registry、fault matrix |
-| `B-SEMANTIC` | canonical SemanticEvent、签名、lineage、Admission/Durability 与 authority view | `IN_PROGRESS` | [B-SEMANTIC-001](../evidence/stage-b/b-semantic-001-durable-assertion-admission.md)：durable Assertion；[B-SEMANTIC-002A](../evidence/stage-b/b-semantic-002a-canonical-intent-spec-body.md)：canonical IntentSpec identity；[B-SEMANTIC-002B](../evidence/stage-b/b-semantic-002b-durable-spec-event-admission.md)：durable signed SpecEvent admission/migration；[B-SEMANTIC-003](../evidence/stage-b/b-semantic-003-outbox-owner-readback.md)：admission outbox owner-consistent transport readback；[B-TASK-007B1](../evidence/stage-b/b-task-007b1-authority-endpoint-proofs.md)：authority-assigned admission endpoint proof PARTIAL PASS | Judgment/Verification/Retraction、declassification、batch DAG、Trust View/checkpoint、跨进程 endpoint 签名/attestation、fault matrix |
+| `B-SEMANTIC` | canonical SemanticEvent、签名、lineage、Admission/Durability 与 authority view | `IN_PROGRESS` | [B-SEMANTIC-001](../evidence/stage-b/b-semantic-001-durable-assertion-admission.md)：durable Assertion；[B-SEMANTIC-002A](../evidence/stage-b/b-semantic-002a-canonical-intent-spec-body.md)：canonical IntentSpec identity；[B-SEMANTIC-002B](../evidence/stage-b/b-semantic-002b-durable-spec-event-admission.md)：durable signed SpecEvent admission/migration；[B-SEMANTIC-003](../evidence/stage-b/b-semantic-003-outbox-owner-readback.md)：admission outbox owner-consistent transport readback；[B-SEMANTIC-004](../evidence/stage-b/b-semantic-004-outbox-ack-writer.md)：owner-bound monotonic transport ACK；[B-TASK-007B1](../evidence/stage-b/b-task-007b1-authority-endpoint-proofs.md)：authority-assigned admission endpoint proof PARTIAL PASS | Judgment/Verification/Retraction、declassification、batch DAG、Trust View/checkpoint、跨进程 endpoint 签名/attestation、fault matrix |
 | `B-PARTICIPANT` | TaskAuthority participant registry generation/root/freeze 与 endpoint proof | `IN_PROGRESS` | [B-TASK-007A](../evidence/stage-b/b-task-007a-self-participant-registry.md)：TaskStore self/freeze；[B-TASK-007B1/007B2](../evidence/stage-b/b-task-007b2-verified-participant-registration.md)：Artifact/Semantic proof + registration；[B-TASK-007C1/007C2](../evidence/stage-b/b-task-007c2-verified-resource-registration.md)：Driver/Resource proof + registration；[B-TASK-007D1](../evidence/stage-b/b-task-007d1-participant-binding-propagation.md)：EffectPermit/Task Receipt binding + online revalidation PARTIAL PASS | Channel endpoint、operation prepare→activate、planned endpoint seal、takeover/adoption coverage、fault matrix |
 | `B-RUNTIME` | RuntimeAdapter 与 Tokio 有界 Fiber runtime | `PARTIAL_PASS` | [ADR-0001](./adrs/0001-stage-b-core-language-and-runtime.md)、[PoC-0001](../evidence/stage-b/poc-0001-tokio-fiber-runtime.md)；提交 `a211088` | wake latency/fairness、structured join/detach、CPU 分维计量、Process crash、跨平台 |
 | `B-OP-FENCE` | Operation 状态机、callback identity、cancel/generation fence | `PARTIAL_PASS` | [PoC-0002](../evidence/stage-b/poc-0002-operation-callback-fence.md)；提交 `8b9ffe1` | Driver authentication、EffectPermit、progress/stream callback；Tokio wake 集成已随 `B-OUTBOX`（PoC-0004）补齐 |
@@ -64,7 +66,8 @@ Application
 | `B-TASK-008C2G-ART` | Artifact head permit 前 owner 复核 | `PARTIAL_PASS` | [Evidence](../evidence/stage-b/b-task-008c2g-artifact-permit-owner-revalidation.md) | Artifact staging/publication receipt consumption 与统一 TaskCommitReceipt 接线仍未实现 |
 | `B-TASK-008C2G-PROCESS` | Process binding permit 前 owner 复核 | `PARTIAL_PASS` | [Evidence](../evidence/stage-b/b-task-008c2g-process-permit-owner-revalidation.md) | Process rotation/跨 authority prepare→activate 与 Operation/Channel linkage 仍未实现 |
 | `B-RESOURCE-002` | Resource activation receipt owner 回读 | `PARTIAL_PASS` | [Evidence](../evidence/stage-b/b-resource-002-activation-receipt-readback.md) | Task 消费/统一 receipt、CLOSING/finalize/refund 与跨 authority lifecycle 仍未实现；strict consume high-water 见 B-RESOURCE-003 |
-| `B-SEMANTIC-003` | Semantic admission outbox owner 回读 | `PARTIAL_PASS` | [Evidence](../evidence/stage-b/b-semantic-003-outbox-owner-readback.md) | outbox consumer/ACK、checkpoint/publication receipt 与 TaskCommitReceipt 接线仍未实现 |
+| `B-SEMANTIC-003` | Semantic admission outbox owner 回读 | `PARTIAL_PASS` | [Evidence](../evidence/stage-b/b-semantic-003-outbox-owner-readback.md) | 跨进程 consumer/ACK、checkpoint/publication receipt 与 TaskCommitReceipt 接线仍未实现；owner ACK writer 见 B-SEMANTIC-004 |
+| `B-SEMANTIC-004` | Semantic outbox owner ACK writer | `PARTIAL_PASS` | [Evidence](../evidence/stage-b/b-semantic-004-outbox-ack-writer.md) | 跨进程 consumer 认证/租约、checkpoint/publication receipt 与 TaskCommitReceipt 接线仍未实现 |
 | `B-RESOURCE-003` | Resource strict consume high-water | `PARTIAL_PASS` | [Evidence](../evidence/stage-b/b-resource-003-consumption-high-water.md) | CLOSING/finalize/refund/risk/unknown usage 与跨 authority resource/cost receipt 仍未实现 |
 | `B-RESOURCE-004` | Resource QUARANTINED freeze | `PARTIAL_PASS` | [Evidence](../evidence/stage-b/b-resource-004-quarantine-freeze.md) | effect-closed final usage proof、CLOSING/FINALIZED、reconciliation/finalize/refund 与跨 authority resource/cost receipt 仍未实现 |
 | `B-CONTROL` | CLI/API/NL/GUI 共用 ControlCommand 与 Receipt | `READY` | [v0.5 控制面规范](../design/06-架构设计总纲-v0.5.md) | SystemControl client、权限 UI、多层手动调度、等价路径证明 |
@@ -591,6 +594,12 @@ Application
 - 缺少 endpoint/enforcement gateway 的 `effect_closed + final_usage + final_seq` 证明时，只能进入 QUARANTINED；余额不移动、reason digest 不被提升为 final proof。相同请求重放原 Receipt，冲突绑定/reason、重启回读和 DDL immutable 均有测试。详见 [B-RESOURCE-004](../evidence/stage-b/b-resource-004-quarantine-freeze.md)。
 - 仍为 `PARTIAL_PASS`：CLOSING/FINALIZED、endpoint-signed final usage、reconciliation、双重记账 finalize/refund/risk ledger、late rebate、多维资源及 TaskCommitReceipt resource/cost receipt 仍未完成。
 
+### 4.79 Semantic outbox owner ACK writer（B-SEMANTIC-004）
+
+- `SemanticAuthority::acknowledge_outbox` 在 owner 事务内重新校验 Event/AdmissionReceipt/outbox 三元绑定，拒绝 admission 前 ACK、身份漂移和 ACK 时间回退；相同时间回放，更晚时间推进 transport high-water。
+- `inspect_outbox` 补上 outbox 自身 `event_id` 一致性检查。ACK writer 不修改 event log、AdmissionReceipt 或 DurabilityReceipt，也不生成 checkpoint/publication proof。详见 [B-SEMANTIC-004](../evidence/stage-b/b-semantic-004-outbox-ack-writer.md)。
+- 仍为 `PARTIAL_PASS`：跨进程 consumer 认证/租约、Semantic checkpoint/publication receipt、跨 authority finalize 与 `TaskCommitReceipt.semantic_publications` 仍未完成。
+
 
 ## 5. 当前下一验收门
 
@@ -710,6 +719,7 @@ TaskGroup membership generation/root CAS + Admission/Removal Receipt            
   → Resource strict consume high-water + immutable receipt                           PARTIAL PASS（B-RESOURCE-003）
   → Resource QUARANTINED freeze + immutable receipt                                  PARTIAL PASS（B-RESOURCE-004）
   → Semantic admission outbox owner-consistent transport readback                     PARTIAL PASS（B-SEMANTIC-003）
+  → Semantic outbox owner-bound monotonic ACK writer                                  PARTIAL PASS（B-SEMANTIC-004）
   → Semantic publication receipt + TaskCommitReceipt semantic_publications             NEXT（B-TASK-008C2G）
 ```
 
@@ -720,6 +730,7 @@ TaskGroup membership generation/root CAS + Admission/Removal Receipt            
 `B-TASK-008C2G-PROCESS` 又把 Process/AgentInstance/IsolationDomain owner binding 与 endpoint proof readback 推进到 permit freeze 前；它仍是局部安全门，不代表跨 authority Process lifecycle 或完整 TaskWriteSet 已完成。
 `B-RESOURCE-002` 又为 ACTIVE Reservation 提供 immutable activation receipt 的 owner 回读与重启 replay；它仍是局部安全门，不代表 Task 消费、Resource finalize 或完整 TaskWriteSet 已完成。
 `B-SEMANTIC-003` 又为 admission outbox 提供 owner-consistent transport 回读；它仍是局部安全门，不代表 ACK、Semantic checkpoint/publication 或完整 TaskWriteSet 已完成。
+`B-SEMANTIC-004` 又为 admission outbox 提供 owner-bound 单调 ACK writer；它仍是 transport observation，不代表 checkpoint/publication 或完整 TaskWriteSet 已完成。
 `B-RESOURCE-003` 又为 strict ACTIVE Reservation 提供单调 consume high-water 与 immutable receipt；它仍是局部安全门，不代表 Resource finalize/refund 或完整 TaskWriteSet 已完成。
 `B-RESOURCE-004` 又为缺少 effect-closed final usage 证明的 ACTIVE Reservation 提供 QUARANTINED freeze 与 immutable receipt；它仍是保守冻结边界，不代表 Resource finalize/refund 或完整 TaskWriteSet 已完成。
 

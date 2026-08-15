@@ -12,16 +12,16 @@ use nlos_process::{
     CreateIsolationDomainRequest, ProcessAuthority, RegisterDelegatedProcessRequest,
 };
 use nlos_semantic::{
-    AdmissionReceipt, AppendAssertionRequest, AppendDecision, AppendSpecRequest, AssertionMode,
-    CriterionAggregation, CriterionEffect, EvaluatorKind, ImmutableEvaluatorReference,
-    ImmutableEvaluatorReferenceKind, IntentConstraints, IntentCriterion, IntentCriticality,
-    IntentSettlement, IntentSpecBody, LocalProcessRef, SemanticAuthority, SemanticAuthorityError,
-    SemanticPayloadIdentity, SettlementMode, SettlementTimeoutAction, StoreSigner,
-    StoreSignerError, TaintFlags, UnsignedAssertionEvent, UnsignedSpecEvent,
-    admission_receipt_core_digest, admission_receipt_signature_message, content_digest,
-    decode_unsigned_assertion_event, decode_unsigned_spec_event, encode_intent_spec_body,
-    encode_unsigned_assertion_event, encode_unsigned_spec_event, hard_criteria_digest,
-    intent_spec_body_digest, semantic_event_id,
+    AcknowledgeOutboxRequest, AdmissionReceipt, AppendAssertionRequest, AppendDecision,
+    AppendSpecRequest, AssertionMode, CriterionAggregation, CriterionEffect, EvaluatorKind,
+    ImmutableEvaluatorReference, ImmutableEvaluatorReferenceKind, IntentConstraints,
+    IntentCriterion, IntentCriticality, IntentSettlement, IntentSpecBody, LocalProcessRef,
+    OutboxAckDecision, SemanticAuthority, SemanticAuthorityError, SemanticPayloadIdentity,
+    SettlementMode, SettlementTimeoutAction, StoreSigner, StoreSignerError, TaintFlags,
+    UnsignedAssertionEvent, UnsignedSpecEvent, admission_receipt_core_digest,
+    admission_receipt_signature_message, content_digest, decode_unsigned_assertion_event,
+    decode_unsigned_spec_event, encode_intent_spec_body, encode_unsigned_assertion_event,
+    encode_unsigned_spec_event, hard_criteria_digest, intent_spec_body_digest, semantic_event_id,
 };
 use nlos_types::{
     Generation, IdempotencyKey, NamespaceId, ReceiptId, SemanticEventId, TaskAttemptId, TaskId,
@@ -399,6 +399,98 @@ fn admission_is_durable_signed_atomic_and_exactly_replayable() {
             .receipt_id,
         receipt.receipt_id
     );
+}
+
+#[test]
+#[allow(clippy::too_many_lines)] // Keep the owner binding and monotonic ACK matrix together.
+fn outbox_ack_is_owner_bound_monotonic_and_not_publication_proof() {
+    let root = Root::new("outbox-ack");
+    let (request, receipt) = {
+        let fixture = fixture(&root, 75);
+        let request = request(&fixture, 2, Vec::new(), Vec::new(), TaintFlags::PRIVATE);
+        let receipt = append(&fixture, &request).receipt().clone();
+        (request, receipt)
+    };
+
+    let authority_fixture = fixture(&root, 75);
+    assert!(matches!(
+        authority_fixture
+            .semantic
+            .acknowledge_outbox(AcknowledgeOutboxRequest {
+                event_id: request.claimed_event_id,
+                log_seq: receipt.log_seq,
+                receipt_id: receipt.receipt_id,
+                acknowledged_at_ms: receipt.admitted_at_ms - 1,
+            }),
+        Err(SemanticAuthorityError::OutboxAckBeforeAdmission)
+    ));
+    let ack = AcknowledgeOutboxRequest {
+        event_id: request.claimed_event_id,
+        log_seq: receipt.log_seq,
+        receipt_id: receipt.receipt_id,
+        acknowledged_at_ms: receipt.admitted_at_ms + 100,
+    };
+    let first = authority_fixture.semantic.acknowledge_outbox(ack).unwrap();
+    assert!(matches!(first, OutboxAckDecision::Recorded(_)));
+    assert_eq!(first.record().acknowledged_at_ms, Some(2_100));
+    let replay = authority_fixture.semantic.acknowledge_outbox(ack).unwrap();
+    assert!(matches!(replay, OutboxAckDecision::Replayed(_)));
+    assert_eq!(replay.record(), first.record());
+    assert!(matches!(
+        authority_fixture
+            .semantic
+            .acknowledge_outbox(AcknowledgeOutboxRequest {
+                acknowledged_at_ms: 2_099,
+                ..ack
+            }),
+        Err(SemanticAuthorityError::OutboxAckNotMonotonic {
+            previous: 2_100,
+            reported: 2_099
+        })
+    ));
+    let later = authority_fixture
+        .semantic
+        .acknowledge_outbox(AcknowledgeOutboxRequest {
+            acknowledged_at_ms: 2_200,
+            ..ack
+        })
+        .unwrap();
+    assert!(matches!(later, OutboxAckDecision::Recorded(_)));
+    assert_eq!(later.record().acknowledged_at_ms, Some(2_200));
+    assert_eq!(
+        authority_fixture
+            .semantic
+            .inspect_outbox(request.claimed_event_id)
+            .unwrap()
+            .acknowledged_at_ms,
+        Some(2_200)
+    );
+    assert!(matches!(
+        authority_fixture
+            .semantic
+            .acknowledge_outbox(AcknowledgeOutboxRequest {
+                log_seq: receipt.log_seq + 1,
+                ..ack
+            }),
+        Err(SemanticAuthorityError::OutboxAckBindingMismatch)
+    ));
+
+    let reopened = fixture(&root, 75);
+    let recovered = reopened
+        .semantic
+        .inspect_outbox(request.claimed_event_id)
+        .unwrap();
+    assert_eq!(recovered.receipt_id, receipt.receipt_id);
+    assert_eq!(recovered.acknowledged_at_ms, Some(2_200));
+    assert!(matches!(
+        reopened
+            .semantic
+            .acknowledge_outbox(AcknowledgeOutboxRequest {
+                acknowledged_at_ms: 2_200,
+                ..ack
+            }),
+        Ok(OutboxAckDecision::Replayed(_))
+    ));
 }
 
 fn verify_store_receipt(signer: &TestSigner, receipt: &AdmissionReceipt) {
