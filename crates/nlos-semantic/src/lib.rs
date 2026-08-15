@@ -40,9 +40,9 @@ pub use model::{
     IntentCriterion, IntentCriticality, IntentSettlement, IntentSpecBody, LocalProcessRef,
     MAX_CANONICAL_EVENT_BYTES, MAX_CONTENT_BYTES, MAX_LINEAGE_ITEMS, MAX_NONCE_BYTES,
     MAX_SPEC_CAPABILITY_REFS, MAX_SPEC_CRITERIA, MAX_SPEC_EXTENSION_BYTES, MAX_SPEC_EXTENSIONS,
-    MIN_NONCE_BYTES, SemanticAdmissionEndpointProof, SemanticEventRecord, SemanticPayloadIdentity,
-    SettlementMode, SettlementTimeoutAction, SpecExtension, StoreSigner, StoreSignerError,
-    TaintFlags, UnsignedAssertionEvent, UnsignedSpecEvent,
+    MIN_NONCE_BYTES, SemanticAdmissionEndpointProof, SemanticEventRecord, SemanticOutboxRecord,
+    SemanticPayloadIdentity, SettlementMode, SettlementTimeoutAction, SpecExtension, StoreSigner,
+    StoreSignerError, TaintFlags, UnsignedAssertionEvent, UnsignedSpecEvent,
 };
 pub use spec::{
     criterion_id, decode_intent_spec_body, encode_intent_spec_body, hard_criteria_digest,
@@ -673,6 +673,38 @@ impl SemanticAuthority {
         load_durability_receipt(&connection, event_id, receipt_id)
     }
 
+    /// Reads the owner-consistent transport status for one admission outbox item.
+    ///
+    /// The returned acknowledgement is only an outbox transport observation;
+    /// this method never treats it as a Semantic checkpoint or publication
+    /// proof.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EventNotFound` for an unknown event, or a corrupt/storage error
+    /// when the event, admission receipt, and outbox row do not agree.
+    pub fn inspect_outbox(
+        &self,
+        event_id: SemanticEventId,
+    ) -> Result<SemanticOutboxRecord, SemanticAuthorityError> {
+        let connection = self.lock()?;
+        let event = load_event_record(&connection, event_id)?
+            .ok_or(SemanticAuthorityError::EventNotFound(event_id))?;
+        let admission = load_receipt(&connection, event_id)?;
+        let outbox = load_outbox(&connection, event_id)?.ok_or(
+            SemanticAuthorityError::CorruptRecord("admitted event has no outbox row"),
+        )?;
+        if outbox.log_seq != event.log_seq
+            || outbox.receipt_id != admission.receipt_id
+            || outbox.log_seq != admission.log_seq
+        {
+            return Err(SemanticAuthorityError::CorruptRecord(
+                "outbox row disagrees with event or admission receipt",
+            ));
+        }
+        Ok(outbox)
+    }
+
     /// Reads the durable authority-issued Semantic admission endpoint proof.
     ///
     /// # Errors
@@ -1178,6 +1210,36 @@ fn load_durability_receipt(
             .try_into()
             .map_err(|_| SemanticAuthorityError::CorruptRecord("durability store signature"))?,
     })
+}
+
+fn load_outbox(
+    connection: &Connection,
+    event_id: SemanticEventId,
+) -> Result<Option<SemanticOutboxRecord>, SemanticAuthorityError> {
+    connection
+        .query_row(
+            "SELECT log_seq, event_id, receipt_id, acknowledged_at_ms
+             FROM semantic_outbox WHERE event_id=?1",
+            [event_id.as_bytes().as_slice()],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
+                ))
+            },
+        )
+        .optional()?
+        .map(|row| {
+            Ok(SemanticOutboxRecord {
+                log_seq: decode_u64(row.0)?,
+                event_id: decode_id(row.1, SemanticEventId::from_bytes, "outbox event id")?,
+                receipt_id: decode_id(row.2, ReceiptId::from_bytes, "outbox receipt id")?,
+                acknowledged_at_ms: row.3.map(decode_u64).transpose()?,
+            })
+        })
+        .transpose()
 }
 
 fn load_event_record(

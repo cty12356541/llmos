@@ -276,6 +276,18 @@ pub struct DurabilityReceipt {
     pub store_signature: [u8; 64],
 }
 
+/// Durable transport status for one Semantic admission outbox item.
+///
+/// `acknowledged_at_ms` is only an outbox transport observation. It is not a
+/// Semantic checkpoint or publication proof.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SemanticOutboxRecord {
+    pub log_seq: u64,
+    pub event_id: SemanticEventId,
+    pub receipt_id: ReceiptId,
+    pub acknowledged_at_ms: Option<u64>,
+}
+
 /// Durable authority-issued identity of the Semantic admission endpoint.
 ///
 /// Consumers must verify transported values by exact readback from the

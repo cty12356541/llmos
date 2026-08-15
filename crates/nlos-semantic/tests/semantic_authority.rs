@@ -369,6 +369,14 @@ fn admission_is_durable_signed_atomic_and_exactly_replayable() {
         assert_eq!(first.receipt(), replay.receipt());
         let receipt = first.receipt().clone();
         verify_store_receipt(&fixture.store_signer, &receipt);
+        let outbox = fixture
+            .semantic
+            .inspect_outbox(request.claimed_event_id)
+            .unwrap();
+        assert_eq!(outbox.log_seq, receipt.log_seq);
+        assert_eq!(outbox.event_id, request.claimed_event_id);
+        assert_eq!(outbox.receipt_id, receipt.receipt_id);
+        assert_eq!(outbox.acknowledged_at_ms, None);
         (request, receipt)
     };
 
@@ -383,6 +391,14 @@ fn admission_is_durable_signed_atomic_and_exactly_replayable() {
     assert_eq!(record.log_seq, 1);
     assert_eq!(receipt.effective_valid_until_ms, Some(8_000));
     assert_eq!(receipt.effective_taint, TaintFlags::PRIVATE);
+    assert_eq!(
+        fixture
+            .semantic
+            .inspect_outbox(request.claimed_event_id)
+            .unwrap()
+            .receipt_id,
+        receipt.receipt_id
+    );
 }
 
 fn verify_store_receipt(signer: &TestSigner, receipt: &AdmissionReceipt) {
