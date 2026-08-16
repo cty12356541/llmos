@@ -444,3 +444,131 @@ pub(crate) fn migrate_v4(connection: &mut Connection) -> Result<(), ResourceAuth
     transaction.commit()?;
     Ok(())
 }
+
+/// Adds the double-entry finalize/refund settlement overlay. Like the v4
+/// quarantine overlay, the legacy `reservations.state` check remains
+/// `RESERVED|ACTIVE`; a non-null `finalize_receipt_id` is the durable
+/// `FINALIZED` overlay so v1-v4 rows migrate without rewriting immutable
+/// Reservation identity/history. The refund (`upper_bound - final_usage`)
+/// is credited to the account in the same transaction as the immutable
+/// finalize receipt, keeping the hold release atomic.
+#[allow(clippy::too_many_lines)]
+pub(crate) fn migrate_v5(connection: &mut Connection) -> Result<(), ResourceAuthorityError> {
+    let reservation_columns = {
+        let mut statement = connection.prepare("PRAGMA table_info(reservations)")?;
+        statement
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    let has_finalize_columns = reservation_columns
+        .iter()
+        .any(|name| name == "finalize_receipt_id")
+        && reservation_columns
+            .iter()
+            .any(|name| name == "finalized_at_ms");
+    let table_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type='table' AND name='reservation_finalize_receipts'",
+        [],
+        |row| row.get(0),
+    )?;
+    let index_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type='index' AND name='reservations_finalize_receipt_unique'",
+        [],
+        |row| row.get(0),
+    )?;
+    let trigger_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN (
+            'reservation_finalize_receipts_immutable_update',
+            'reservation_finalize_receipts_immutable_delete',
+            'reservation_finalize_binding_insert',
+            'reservation_finalize_binding_update',
+            'reservation_finalize_binding_immutable'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if has_finalize_columns && table_count == 1 && index_count == 1 && trigger_count == 5 {
+        connection.pragma_update(None, "user_version", 5)?;
+        return Ok(());
+    }
+    if has_finalize_columns
+        || reservation_columns
+            .iter()
+            .any(|name| name == "finalize_receipt_id")
+        || reservation_columns
+            .iter()
+            .any(|name| name == "finalized_at_ms")
+        || table_count != 0
+        || index_count != 0
+        || trigger_count != 0
+    {
+        return Err(ResourceAuthorityError::CorruptRecord(
+            "partial resource finalize schema",
+        ));
+    }
+
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "ALTER TABLE reservations
+             ADD COLUMN finalize_receipt_id BLOB
+                 CHECK(finalize_receipt_id IS NULL OR length(finalize_receipt_id) = 16);
+         ALTER TABLE reservations
+             ADD COLUMN finalized_at_ms INTEGER
+                 CHECK(finalized_at_ms IS NULL OR finalized_at_ms >= 0);
+         CREATE UNIQUE INDEX reservations_finalize_receipt_unique
+             ON reservations(finalize_receipt_id)
+             WHERE finalize_receipt_id IS NOT NULL;
+
+         CREATE TABLE reservation_finalize_receipts (
+             receipt_id BLOB PRIMARY KEY NOT NULL CHECK(length(receipt_id) = 16),
+             reservation_id BLOB NOT NULL UNIQUE CHECK(length(reservation_id) = 16),
+             operation_id BLOB NOT NULL CHECK(length(operation_id) = 16),
+             activation_receipt_id BLOB NOT NULL CHECK(length(activation_receipt_id) = 16),
+             effect_closed_proof_digest BLOB NOT NULL CHECK(length(effect_closed_proof_digest) = 32),
+             high_water_seq INTEGER NOT NULL CHECK(high_water_seq >= 0),
+             final_seq INTEGER NOT NULL CHECK(final_seq >= high_water_seq),
+             high_water INTEGER NOT NULL CHECK(high_water >= 0),
+             final_usage INTEGER NOT NULL CHECK(final_usage >= high_water),
+             refund_credit INTEGER NOT NULL CHECK(refund_credit >= 0),
+             finalized_at_ms INTEGER NOT NULL CHECK(finalized_at_ms >= 0),
+             FOREIGN KEY(reservation_id) REFERENCES reservations(reservation_id),
+             FOREIGN KEY(activation_receipt_id)
+                 REFERENCES reservation_activation_receipts(receipt_id)
+         ) STRICT;
+
+         CREATE TRIGGER reservation_finalize_binding_insert
+         BEFORE INSERT ON reservation_finalize_receipts
+         WHEN NOT EXISTS (
+             SELECT 1 FROM reservations AS r
+             WHERE r.reservation_id = NEW.reservation_id
+               AND r.operation_id = NEW.operation_id
+               AND r.activation_receipt_id = NEW.activation_receipt_id
+               AND r.state = 1
+               AND r.quarantine_receipt_id IS NULL
+               AND r.finalize_receipt_id IS NULL
+         )
+         BEGIN SELECT RAISE(ABORT, 'finalize receipt binding mismatch'); END;
+         CREATE TRIGGER reservation_finalize_binding_update
+         BEFORE UPDATE OF reservation_id, operation_id, activation_receipt_id
+             ON reservation_finalize_receipts
+         BEGIN SELECT RAISE(ABORT, 'finalize receipt is immutable'); END;
+         CREATE TRIGGER reservation_finalize_receipts_immutable_update
+         BEFORE UPDATE ON reservation_finalize_receipts
+         BEGIN SELECT RAISE(ABORT, 'finalize receipt is immutable'); END;
+         CREATE TRIGGER reservation_finalize_receipts_immutable_delete
+         BEFORE DELETE ON reservation_finalize_receipts
+         BEGIN SELECT RAISE(ABORT, 'finalize receipt is immutable'); END;
+         CREATE TRIGGER reservation_finalize_binding_immutable
+         BEFORE UPDATE ON reservations
+         WHEN OLD.finalize_receipt_id IS NOT NULL
+           AND (NEW.finalize_receipt_id IS NOT OLD.finalize_receipt_id
+                OR NEW.finalized_at_ms IS NOT OLD.finalized_at_ms)
+         BEGIN SELECT RAISE(ABORT, 'reservation finalize binding is immutable'); END;
+
+         PRAGMA user_version = 5;",
+    )?;
+    transaction.commit()?;
+    Ok(())
+}

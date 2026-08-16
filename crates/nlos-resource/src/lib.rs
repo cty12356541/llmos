@@ -163,6 +163,10 @@ pub enum ReservationState {
     /// The external effect is not proven closed; the reservation is frozen
     /// until an explicit reconciliation/finalization authority resolves it.
     Quarantined,
+    /// The external effect is proven closed; the reservation's hold was
+    /// released with a double-entry refund and no further mutation is
+    /// accepted.
+    Finalized,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -185,6 +189,8 @@ pub struct ReservationRecord {
     pub usage_high_water: u64,
     pub quarantine_receipt_id: Option<ReceiptId>,
     pub quarantined_at_ms: Option<u64>,
+    pub finalize_receipt_id: Option<ReceiptId>,
+    pub finalized_at_ms: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -308,6 +314,57 @@ impl QuarantineDecision {
     }
 }
 
+/// A settlement request for an ACTIVE Reservation whose external effect is
+/// now proven closed. The caller supplies the opaque endpoint proof digest
+/// plus the final cumulative usage and its sequence; the authority releases
+/// the reserved hold with a double-entry refund
+/// (`upper_bound - final_usage`) in the same transaction as the immutable
+/// finalize receipt. A real enforcement-gateway signature is a future
+/// reconciliation authority; this reference profile treats the digest as
+/// caller-asserted.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FinalizeReservationRequest {
+    pub reservation_id: ReservationId,
+    pub operation_id: OperationId,
+    pub activation_receipt_id: ReceiptId,
+    pub effect_closed_proof_digest: [u8; 32],
+    pub final_seq: u64,
+    pub final_usage: u64,
+    pub finalized_at_ms: u64,
+}
+
+/// Immutable double-entry settlement receipt. `refund_credit` equals
+/// `upper_bound - final_usage`; the account's available credit was credited
+/// atomically with this receipt.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FinalizationReceipt {
+    pub receipt_id: ReceiptId,
+    pub reservation_id: ReservationId,
+    pub operation_id: OperationId,
+    pub activation_receipt_id: ReceiptId,
+    pub effect_closed_proof_digest: [u8; 32],
+    pub high_water_seq: u64,
+    pub final_seq: u64,
+    pub high_water: u64,
+    pub final_usage: u64,
+    pub refund_credit: u64,
+    pub finalized_at_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FinalizeDecision {
+    Finalized(FinalizationReceipt),
+    Replayed(FinalizationReceipt),
+}
+impl FinalizeDecision {
+    #[must_use]
+    pub const fn receipt(self) -> FinalizationReceipt {
+        match self {
+            Self::Finalized(receipt) | Self::Replayed(receipt) => receipt,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum ResourceAuthorityError {
     Sqlite(rusqlite::Error),
@@ -343,7 +400,10 @@ pub enum ResourceAuthorityError {
     ReservationAlreadyActive,
     ReservationNotActive,
     ReservationQuarantined,
+    ReservationFinalized,
     InvalidQuarantineTimestamp,
+    InvalidFinalizeTimestamp,
+    FinalizeSequenceConflict,
     CorruptRecord(&'static str),
     GenerationExhausted,
     LockPoisoned,
@@ -401,17 +461,24 @@ impl ResourceAuthority {
                 schema::migrate_v2(&mut c)?;
                 schema::migrate_v3(&mut c)?;
                 schema::migrate_v4(&mut c)?;
+                schema::migrate_v5(&mut c)?;
             }
             1 => {
                 schema::migrate_v2(&mut c)?;
                 schema::migrate_v3(&mut c)?;
                 schema::migrate_v4(&mut c)?;
+                schema::migrate_v5(&mut c)?;
             }
             2 | 3 => {
                 schema::migrate_v3(&mut c)?;
                 schema::migrate_v4(&mut c)?;
+                schema::migrate_v5(&mut c)?;
             }
-            4 => schema::migrate_v4(&mut c)?,
+            4 => {
+                schema::migrate_v4(&mut c)?;
+                schema::migrate_v5(&mut c)?;
+            }
+            5 => schema::migrate_v5(&mut c)?,
             x => return Err(ResourceAuthorityError::SchemaVersionUnsupported(x)),
         }
         Ok(Self {
@@ -697,7 +764,7 @@ impl ResourceAuthority {
                 required: qt.upper_bound,
             });
         }
-        tx.execute("INSERT INTO reservations VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,0,?13,NULL,NULL,0,0,NULL,NULL)",params![id.as_bytes().as_slice(),q.idempotency_key.as_bytes().as_slice(),q.account_id.as_bytes().as_slice(),q.quote_id.as_bytes().as_slice(),q.call_id.as_bytes().as_slice(),q.operation_id.as_bytes().as_slice(),qt.driver_id.as_bytes().as_slice(),qt.device_id.as_bytes().as_slice(),eg(qt.driver_generation)?,qt.driver_fencing_token.as_slice(),eu(qt.upper_bound)?,token.as_slice(),eu(q.reserved_at_ms)?])?;
+        tx.execute("INSERT INTO reservations VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,0,?13,NULL,NULL,0,0,NULL,NULL,NULL,NULL)",params![id.as_bytes().as_slice(),q.idempotency_key.as_bytes().as_slice(),q.account_id.as_bytes().as_slice(),q.quote_id.as_bytes().as_slice(),q.call_id.as_bytes().as_slice(),q.operation_id.as_bytes().as_slice(),qt.driver_id.as_bytes().as_slice(),qt.device_id.as_bytes().as_slice(),eg(qt.driver_generation)?,qt.driver_fencing_token.as_slice(),eu(qt.upper_bound)?,token.as_slice(),eu(q.reserved_at_ms)?])?;
         let r = reservation(&tx, id)?.ok_or(ResourceAuthorityError::CorruptRecord(
             "new reservation absent",
         ))?;
@@ -751,6 +818,9 @@ impl ResourceAuthority {
         )?;
         if r.state == ReservationState::Quarantined {
             return Err(ResourceAuthorityError::ReservationQuarantined);
+        }
+        if r.state == ReservationState::Finalized {
+            return Err(ResourceAuthorityError::ReservationFinalized);
         }
         if r.state == ReservationState::Active {
             let x = activation_receipt(&tx, r.reservation_id)?.ok_or(
@@ -841,6 +911,7 @@ impl ResourceAuthority {
         if reservation.state != ReservationState::Active {
             return Err(match reservation.state {
                 ReservationState::Quarantined => ResourceAuthorityError::ReservationQuarantined,
+                ReservationState::Finalized => ResourceAuthorityError::ReservationFinalized,
                 ReservationState::Reserved | ReservationState::Active => {
                     ResourceAuthorityError::ReservationNotActive
                 }
@@ -998,7 +1069,13 @@ impl ResourceAuthority {
             ));
         }
         if reservation.state != ReservationState::Active {
-            return Err(ResourceAuthorityError::ReservationNotActive);
+            return Err(match reservation.state {
+                ReservationState::Quarantined => ResourceAuthorityError::ReservationQuarantined,
+                ReservationState::Finalized => ResourceAuthorityError::ReservationFinalized,
+                ReservationState::Reserved | ReservationState::Active => {
+                    ResourceAuthorityError::ReservationNotActive
+                }
+            });
         }
         let activation = activation_receipt(&transaction, q.reservation_id)?.ok_or(
             ResourceAuthorityError::CorruptRecord("active reservation has no receipt"),
@@ -1108,6 +1185,221 @@ impl ResourceAuthority {
         Ok(receipt)
     }
 
+    /// Settles an ACTIVE Reservation whose external effect is proven closed.
+    ///
+    /// The final cumulative usage must be monotonic against the observed
+    /// high-water and bounded by the quote's upper bound; the caller-supplied
+    /// proof digest is opaque in this reference profile (a real
+    /// enforcement-gateway signature is the future reconciliation
+    /// authority). One transaction atomically: writes the immutable
+    /// `FinalizationReceipt`, marks the Reservation `FINALIZED` (overlay,
+    /// `state` stays 1), and credits `upper_bound - final_usage` back to the
+    /// account's available credit (double-entry release of the hold).
+    ///
+    /// # Errors
+    /// Fails closed on inactive/stale bindings, replay conflicts, timestamp
+    /// regressions, monotonicity/bound violations, or storage failure.
+    #[allow(clippy::too_many_lines)] // Keep the settle CAS, receipt, and refund auditable together.
+    pub fn finalize_reservation(
+        &self,
+        q: FinalizeReservationRequest,
+    ) -> Result<FinalizeDecision, ResourceAuthorityError> {
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let reservation = reservation(&transaction, q.reservation_id)?
+            .ok_or(ResourceAuthorityError::ReservationNotFound)?;
+        if let Some(existing_id) = reservation.finalize_receipt_id {
+            if reservation.state != ReservationState::Finalized {
+                return Err(ResourceAuthorityError::CorruptRecord(
+                    "finalize receipt attached to non-finalized reservation",
+                ));
+            }
+            let existing = finalize_receipt(&transaction, q.reservation_id)?.ok_or(
+                ResourceAuthorityError::CorruptRecord(
+                    "finalized reservation has no finalize receipt",
+                ),
+            )?;
+            if existing.receipt_id != existing_id {
+                return Err(ResourceAuthorityError::CorruptRecord(
+                    "reservation finalize receipt id disagrees",
+                ));
+            }
+            if existing.operation_id != q.operation_id
+                || existing.activation_receipt_id != q.activation_receipt_id
+            {
+                return Err(ResourceAuthorityError::ReservationBindingMismatch);
+            }
+            if existing.effect_closed_proof_digest != q.effect_closed_proof_digest
+                || existing.final_seq != q.final_seq
+                || existing.final_usage != q.final_usage
+            {
+                return Err(ResourceAuthorityError::IdempotencyConflict);
+            }
+            transaction.commit()?;
+            return Ok(FinalizeDecision::Replayed(existing));
+        }
+        if finalize_receipt(&transaction, q.reservation_id)?.is_some() {
+            return Err(ResourceAuthorityError::CorruptRecord(
+                "finalize receipt is not bound on reservation",
+            ));
+        }
+        if reservation.state != ReservationState::Active {
+            return Err(match reservation.state {
+                ReservationState::Quarantined => ResourceAuthorityError::ReservationQuarantined,
+                ReservationState::Finalized => ResourceAuthorityError::ReservationFinalized,
+                ReservationState::Reserved | ReservationState::Active => {
+                    ResourceAuthorityError::ReservationNotActive
+                }
+            });
+        }
+        let activation = activation_receipt(&transaction, q.reservation_id)?.ok_or(
+            ResourceAuthorityError::CorruptRecord("active reservation has no receipt"),
+        )?;
+        if reservation.activation_receipt_id != Some(q.activation_receipt_id)
+            || activation.receipt_id != q.activation_receipt_id
+            || reservation.operation_id != q.operation_id
+            || activation.operation_id != q.operation_id
+        {
+            return Err(ResourceAuthorityError::ReservationBindingMismatch);
+        }
+        if q.finalized_at_ms < activation.activated_at_ms {
+            return Err(ResourceAuthorityError::InvalidFinalizeTimestamp);
+        }
+        active_driver(
+            &transaction,
+            reservation.driver_id,
+            reservation.driver_generation,
+            reservation.driver_fencing_token,
+        )?;
+        if q.final_seq < reservation.usage_high_water_seq {
+            return Err(ResourceAuthorityError::FinalizeSequenceConflict);
+        }
+        if q.final_usage < reservation.usage_high_water {
+            return Err(ResourceAuthorityError::UsageNotMonotonic {
+                previous: reservation.usage_high_water,
+                reported: q.final_usage,
+            });
+        }
+        if q.final_usage > reservation.upper_bound {
+            return Err(ResourceAuthorityError::UsageExceedsUpperBound {
+                usage: q.final_usage,
+                upper_bound: reservation.upper_bound,
+            });
+        }
+        let refund_credit = reservation.upper_bound - q.final_usage;
+        let receipt_id = ReceiptId::from_bytes(id16(
+            b"nlos/reservation-finalize/receipt/v1",
+            &[
+                q.reservation_id.as_bytes(),
+                q.activation_receipt_id.as_bytes(),
+                q.effect_closed_proof_digest.as_slice(),
+                &q.final_seq.to_be_bytes(),
+                &q.final_usage.to_be_bytes(),
+            ],
+        ));
+        let receipt = FinalizationReceipt {
+            receipt_id,
+            reservation_id: q.reservation_id,
+            operation_id: q.operation_id,
+            activation_receipt_id: q.activation_receipt_id,
+            effect_closed_proof_digest: q.effect_closed_proof_digest,
+            high_water_seq: reservation.usage_high_water_seq,
+            final_seq: q.final_seq,
+            high_water: reservation.usage_high_water,
+            final_usage: q.final_usage,
+            refund_credit,
+            finalized_at_ms: q.finalized_at_ms,
+        };
+        transaction.execute(
+            "INSERT INTO reservation_finalize_receipts (
+                receipt_id, reservation_id, operation_id, activation_receipt_id,
+                effect_closed_proof_digest, high_water_seq, final_seq,
+                high_water, final_usage, refund_credit, finalized_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                receipt.receipt_id.as_bytes().as_slice(),
+                receipt.reservation_id.as_bytes().as_slice(),
+                receipt.operation_id.as_bytes().as_slice(),
+                receipt.activation_receipt_id.as_bytes().as_slice(),
+                receipt.effect_closed_proof_digest.as_slice(),
+                eu(receipt.high_water_seq)?,
+                eu(receipt.final_seq)?,
+                eu(receipt.high_water)?,
+                eu(receipt.final_usage)?,
+                eu(receipt.refund_credit)?,
+                eu(receipt.finalized_at_ms)?,
+            ],
+        )?;
+        let changed = transaction.execute(
+            "UPDATE reservations
+             SET finalize_receipt_id=?1, finalized_at_ms=?2
+             WHERE reservation_id=?3 AND state=1
+               AND quarantine_receipt_id IS NULL AND finalize_receipt_id IS NULL",
+            params![
+                receipt.receipt_id.as_bytes().as_slice(),
+                eu(receipt.finalized_at_ms)?,
+                receipt.reservation_id.as_bytes().as_slice(),
+            ],
+        )?;
+        if changed != 1 {
+            return Err(ResourceAuthorityError::CorruptRecord(
+                "reservation finalize compare-and-swap failed",
+            ));
+        }
+        // Double-entry: release the hold and refund the unused credit in the
+        // same transaction as the immutable receipt.
+        let refunded = transaction.execute(
+            "UPDATE resource_accounts
+             SET available_credit=available_credit+?1
+             WHERE account_id=?2",
+            params![
+                eu(receipt.refund_credit)?,
+                reservation.account_id.as_bytes().as_slice(),
+            ],
+        )?;
+        if refunded != 1 {
+            return Err(ResourceAuthorityError::CorruptRecord(
+                "finalize refund account compare-and-swap failed",
+            ));
+        }
+        transaction.commit()?;
+        Ok(FinalizeDecision::Finalized(receipt))
+    }
+
+    /// Reads the immutable finalize receipt and verifies that the settled
+    /// usage snapshot still agrees with the FINALIZED Reservation.
+    ///
+    /// # Errors
+    /// Fails when the reservation is unknown, not finalized, missing its
+    /// receipt, or the durable binding/usage no longer agrees.
+    pub fn inspect_finalize_receipt(
+        &self,
+        reservation_id: ReservationId,
+    ) -> Result<FinalizationReceipt, ResourceAuthorityError> {
+        let connection = self.lock()?;
+        let reservation = reservation(&connection, reservation_id)?
+            .ok_or(ResourceAuthorityError::ReservationNotFound)?;
+        if reservation.state != ReservationState::Finalized {
+            return Err(ResourceAuthorityError::CorruptRecord(
+                "reservation is not finalized",
+            ));
+        }
+        let receipt = finalize_receipt(&connection, reservation_id)?.ok_or(
+            ResourceAuthorityError::CorruptRecord("finalized reservation has no finalize receipt"),
+        )?;
+        if reservation.finalize_receipt_id != Some(receipt.receipt_id)
+            || reservation.activation_receipt_id != Some(receipt.activation_receipt_id)
+            || reservation.operation_id != receipt.operation_id
+            || reservation.usage_high_water_seq != receipt.high_water_seq
+            || reservation.usage_high_water != receipt.high_water
+        {
+            return Err(ResourceAuthorityError::CorruptRecord(
+                "finalize receipt disagrees with reservation",
+            ));
+        }
+        Ok(receipt)
+    }
+
     /// Reads one immutable cumulative usage receipt.
     ///
     /// # Errors
@@ -1146,6 +1438,19 @@ impl ResourceAuthority {
     ) -> Result<AccountRecord, ResourceAuthorityError> {
         let connection = self.lock()?;
         account(&connection, id)?.ok_or(ResourceAuthorityError::AccountNotFound)
+    }
+
+    /// Reads the durable Reservation record, including the terminal overlay
+    /// (`FINALIZED` / `QUARANTINED`) and its binding receipts.
+    ///
+    /// # Errors
+    /// Fails for an unknown Reservation or storage error.
+    pub fn inspect_reservation(
+        &self,
+        id: ReservationId,
+    ) -> Result<ReservationRecord, ResourceAuthorityError> {
+        let connection = self.lock()?;
+        reservation(&connection, id)?.ok_or(ResourceAuthorityError::ReservationNotFound)
     }
 
     /// Reads the endpoint proof for the current Driver generation.
@@ -1429,9 +1734,12 @@ fn reservation(
         i64,
         Option<Vec<u8>>,
         Option<i64>,
+        Option<Vec<u8>>,
+        Option<i64>,
     );
-    let x:R=match c.query_row("SELECT account_id,quote_id,call_id,operation_id,driver_id,device_id,driver_generation,driver_fencing_token,upper_bound,activation_token,state,created_at_ms,activation_receipt_id,usage_high_water_seq,usage_high_water,quarantine_receipt_id,quarantined_at_ms FROM reservations WHERE reservation_id=?1",[id.as_bytes().as_slice()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?,r.get(9)?,r.get(10)?,r.get(11)?,r.get(12)?,r.get(13)?,r.get(14)?,r.get(15)?,r.get(16)?))).optional()?{Some(x)=>x,None=>return Ok(None)};
+    let x:R=match c.query_row("SELECT account_id,quote_id,call_id,operation_id,driver_id,device_id,driver_generation,driver_fencing_token,upper_bound,activation_token,state,created_at_ms,activation_receipt_id,usage_high_water_seq,usage_high_water,quarantine_receipt_id,quarantined_at_ms,finalize_receipt_id,finalized_at_ms FROM reservations WHERE reservation_id=?1",[id.as_bytes().as_slice()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?,r.get(9)?,r.get(10)?,r.get(11)?,r.get(12)?,r.get(13)?,r.get(14)?,r.get(15)?,r.get(16)?,r.get(17)?,r.get(18)?))).optional()?{Some(x)=>x,None=>return Ok(None)};
     let quarantine_receipt_id = x.15.map(a16).transpose()?.map(ReceiptId::from_bytes);
+    let finalize_receipt_id = x.17.map(a16).transpose()?.map(ReceiptId::from_bytes);
     Ok(Some(ReservationRecord {
         reservation_id: id,
         account_id: ResourceAccountId::from_bytes(a16(x.0)?),
@@ -1446,7 +1754,13 @@ fn reservation(
         activation_token: a32(x.9)?,
         state: match x.10 {
             0 => ReservationState::Reserved,
+            1 if quarantine_receipt_id.is_some() && finalize_receipt_id.is_some() => {
+                return Err(ResourceAuthorityError::CorruptRecord(
+                    "reservation carries both quarantine and finalize overlays",
+                ));
+            }
             1 if quarantine_receipt_id.is_some() => ReservationState::Quarantined,
+            1 if finalize_receipt_id.is_some() => ReservationState::Finalized,
             1 => ReservationState::Active,
             _ => return Err(ResourceAuthorityError::CorruptRecord("reservation state")),
         },
@@ -1456,6 +1770,8 @@ fn reservation(
         usage_high_water: du(x.14)?,
         quarantine_receipt_id,
         quarantined_at_ms: x.16.map(du).transpose()?,
+        finalize_receipt_id,
+        finalized_at_ms: x.18.map(du).transpose()?,
     }))
 }
 fn reservation_by_key(
@@ -1522,6 +1838,51 @@ fn quarantine_receipt(
             high_water_seq: du(x.4)?,
             high_water: du(x.5)?,
             quarantined_at_ms: du(x.6)?,
+        })
+    })
+    .transpose()
+}
+fn finalize_receipt(
+    c: &Connection,
+    reservation_id: ReservationId,
+) -> Result<Option<FinalizationReceipt>, ResourceAuthorityError> {
+    let x = c
+        .query_row(
+            "SELECT receipt_id, operation_id, activation_receipt_id,
+                    effect_closed_proof_digest, high_water_seq, final_seq,
+                    high_water, final_usage, refund_credit, finalized_at_ms
+             FROM reservation_finalize_receipts
+             WHERE reservation_id=?1",
+            [reservation_id.as_bytes().as_slice()],
+            |r| {
+                Ok((
+                    r.get::<_, Vec<u8>>(0)?,
+                    r.get::<_, Vec<u8>>(1)?,
+                    r.get::<_, Vec<u8>>(2)?,
+                    r.get::<_, Vec<u8>>(3)?,
+                    r.get::<_, i64>(4)?,
+                    r.get::<_, i64>(5)?,
+                    r.get::<_, i64>(6)?,
+                    r.get::<_, i64>(7)?,
+                    r.get::<_, i64>(8)?,
+                    r.get::<_, i64>(9)?,
+                ))
+            },
+        )
+        .optional()?;
+    x.map(|x| {
+        Ok(FinalizationReceipt {
+            receipt_id: ReceiptId::from_bytes(a16(x.0)?),
+            reservation_id,
+            operation_id: OperationId::from_bytes(a16(x.1)?),
+            activation_receipt_id: ReceiptId::from_bytes(a16(x.2)?),
+            effect_closed_proof_digest: a32(x.3)?,
+            high_water_seq: du(x.4)?,
+            final_seq: du(x.5)?,
+            high_water: du(x.6)?,
+            final_usage: du(x.7)?,
+            refund_credit: du(x.8)?,
+            finalized_at_ms: du(x.9)?,
         })
     })
     .transpose()
