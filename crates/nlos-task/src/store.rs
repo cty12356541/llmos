@@ -22,6 +22,7 @@ use rusqlite::{
 use crate::lease::{
     AuthorityAssignmentRecord, AuthorityAssignmentState, AuthorityLeasePermitRequest,
     AuthorityLeaseRecord, AuthorityLeaseTakeoverFenceRecord, AuthorityLeaseTakeoverFenceRequest,
+    AuthorityTakeoverBarrierCoverage, AuthorityTakeoverBarrierCoverageState,
     AuthorityTakeoverBarrierReceiptRecord, AuthorityTakeoverBarrierReceiptRequest,
     AuthorityTakeoverFenceMemberRecord, AuthorityTakeoverReceiptRecord,
     AuthorityTakeoverReceiptState, derive_assignment_id, derive_takeover_barrier_receipt_id,
@@ -1801,6 +1802,93 @@ impl SqliteTaskAuthority {
             return Err(TaskStoreError::ReceiptNotFound);
         }
         load_takeover_barrier_receipts(&*connection, takeover_receipt_id)
+    }
+
+    /// Computes a read-only local coverage view for a pending takeover.
+    ///
+    /// `LocallyCovered` means every canonical fence member has one immutable
+    /// `Observed` row with the same exact root. It is deliberately not a
+    /// remote barrier proof and does not mutate the parent receipt or the
+    /// assignment.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ReceiptNotFound` or a storage/corruption error.
+    pub fn inspect_authority_takeover_barrier_coverage(
+        &self,
+        takeover_receipt_id: ReceiptId,
+    ) -> Result<AuthorityTakeoverBarrierCoverage, TaskStoreError> {
+        let connection = self.lock_connection()?;
+        let takeover = load_takeover_receipt_by_id(&*connection, takeover_receipt_id)?
+            .ok_or(TaskStoreError::ReceiptNotFound)?;
+        if takeover.barrier_state != AuthorityTakeoverReceiptState::Pending
+            || takeover.new_assignment_id.is_some()
+        {
+            return Err(TaskStoreError::CorruptRecord(
+                "takeover receipt is not pending",
+            ));
+        }
+        let members = load_takeover_fence_members(&*connection, takeover.fence_receipt_id)?;
+        let observations = load_takeover_barrier_receipts(&*connection, takeover_receipt_id)?;
+        let Some(fence_set_root) = takeover.exact_fence_set_root else {
+            return Ok(AuthorityTakeoverBarrierCoverage {
+                takeover_receipt_id,
+                fence_set_root: None,
+                state: AuthorityTakeoverBarrierCoverageState::ManifestUnavailable,
+                expected_member_count: 0,
+                observed_member_count: observations.len(),
+                missing_participants: Vec::new(),
+            });
+        };
+        if members.is_empty() {
+            return Ok(AuthorityTakeoverBarrierCoverage {
+                takeover_receipt_id,
+                fence_set_root: Some(fence_set_root),
+                state: AuthorityTakeoverBarrierCoverageState::ManifestUnavailable,
+                expected_member_count: 0,
+                observed_member_count: observations.len(),
+                missing_participants: Vec::new(),
+            });
+        }
+        let expected = members
+            .iter()
+            .map(|member| member.participant)
+            .collect::<Vec<_>>();
+        for observation in &observations {
+            if observation.takeover_receipt_id != takeover_receipt_id
+                || observation.task_id != takeover.task_id
+                || observation.task_generation != takeover.task_generation
+                || observation.fence_set_root != fence_set_root
+                || observation.state != crate::lease::AuthorityTakeoverBarrierReceiptState::Observed
+                || !expected.contains(&observation.participant)
+            {
+                return Err(TaskStoreError::CorruptRecord(
+                    "takeover barrier observation binding",
+                ));
+            }
+        }
+        let missing_participants = expected
+            .iter()
+            .copied()
+            .filter(|participant| {
+                !observations
+                    .iter()
+                    .any(|observation| observation.participant == *participant)
+            })
+            .collect::<Vec<_>>();
+        let state = if missing_participants.is_empty() {
+            AuthorityTakeoverBarrierCoverageState::LocallyCovered
+        } else {
+            AuthorityTakeoverBarrierCoverageState::Partial
+        };
+        Ok(AuthorityTakeoverBarrierCoverage {
+            takeover_receipt_id,
+            fence_set_root: Some(fence_set_root),
+            state,
+            expected_member_count: expected.len(),
+            observed_member_count: observations.len(),
+            missing_participants,
+        })
     }
 
     /// Reads the latest durable local `TaskAuthority` assignment, if one has

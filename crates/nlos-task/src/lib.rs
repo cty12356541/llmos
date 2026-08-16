@@ -131,6 +131,7 @@ pub use lease::{
     AuthorityAssignmentRecord, AuthorityAssignmentState, AuthorityLeaseBinding,
     AuthorityLeaseDecision, AuthorityLeasePermitRequest, AuthorityLeaseRecord,
     AuthorityLeaseRequest, AuthorityLeaseTakeoverFenceRecord, AuthorityLeaseTakeoverFenceRequest,
+    AuthorityTakeoverBarrierCoverage, AuthorityTakeoverBarrierCoverageState,
     AuthorityTakeoverBarrierReceiptRecord, AuthorityTakeoverBarrierReceiptRequest,
     AuthorityTakeoverBarrierReceiptState, AuthorityTakeoverFenceMemberRecord,
     AuthorityTakeoverReceiptRecord, AuthorityTakeoverReceiptState, MAX_AUTHORITY_LEASE_TTL_MS,

@@ -295,6 +295,27 @@ pub struct AuthorityTakeoverFenceMemberRecord {
     pub participant: ParticipantRecord,
 }
 
+/// Read-only local coverage state for a takeover fence manifest.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AuthorityTakeoverBarrierCoverageState {
+    ManifestUnavailable,
+    Partial,
+    LocallyCovered,
+}
+
+/// Read-only view of endpoint barrier observations against the canonical
+/// fence member manifest. `LocallyCovered` means every manifest member has an
+/// immutable local observation; it is not a verified remote barrier proof.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthorityTakeoverBarrierCoverage {
+    pub takeover_receipt_id: ReceiptId,
+    pub fence_set_root: Option<[u8; 32]>,
+    pub state: AuthorityTakeoverBarrierCoverageState,
+    pub expected_member_count: usize,
+    pub observed_member_count: usize,
+    pub missing_participants: Vec<ParticipantRecord>,
+}
+
 /// Idempotent lease transition result.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AuthorityLeaseDecision {

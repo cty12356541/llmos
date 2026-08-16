@@ -618,6 +618,16 @@ fn takeover_fence_freezes_registry_and_replays_after_restart() {
             .expect("inspect endpoint barrier observations"),
         vec![barrier]
     );
+    let coverage = authority
+        .inspect_authority_takeover_barrier_coverage(takeover_receipt.receipt_id)
+        .expect("inspect barrier coverage");
+    assert_eq!(
+        coverage.state,
+        nlos_task::AuthorityTakeoverBarrierCoverageState::LocallyCovered
+    );
+    assert_eq!(coverage.expected_member_count, fence_members.len());
+    assert_eq!(coverage.observed_member_count, 1);
+    assert!(coverage.missing_participants.is_empty());
     let mut unknown_participant = participant;
     unknown_participant.participant_id = TaskParticipantId::from_bytes([0xee; 16]);
     assert!(matches!(
@@ -835,6 +845,12 @@ fn takeover_fence_freezes_registry_and_replays_after_restart() {
             .inspect_authority_takeover_barrier_receipts(takeover_receipt.receipt_id)
             .expect("barrier observation after restart"),
         vec![barrier]
+    );
+    assert_eq!(
+        reopened
+            .inspect_authority_takeover_barrier_coverage(takeover_receipt.receipt_id)
+            .expect("barrier coverage after restart"),
+        coverage
     );
     assert!(matches!(
         reopened.prepare_authority_takeover_fence(AuthorityLeaseTakeoverFenceRequest {
