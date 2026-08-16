@@ -4,7 +4,9 @@
 
 ## 1. 结论
 
-本切片把 `b-task-008c2g-semantic-coordinator.md` 明确保留的"完整故障矩阵仍未接入"缺口对 schema v27–v35 的 lease/takeover 表组收口：以 PoC-0003 对齐的 F1–F4 故障矩阵（kill-9 中断事务 / commit 后崩溃 / 硬 I/O 错误 / disk-full / 静默丢写与 WAL 撕裂尾部 / 故障解除后继续）验证 2026-08-16 落地的 authority lease、takeover fence、assignment、pending takeover receipt、barrier observation 与 exact fence member manifest 的 durable 前缀语义。测试只走公开 API（`acquire_authority_lease`、`request_commit_permit_with_authority_lease`、`finalize_commit_v3_with_authority_lease`、`prepare_authority_takeover_fence`、`record_authority_takeover_barrier_receipt` 及只读 inspect），复用 `fault_injection.rs` / `effect_fault_injection.rs` / `reconcile_fault_injection.rs` 的 `nlos-store-fault` VFS 与 kill-9 子进程范式；`nlos-task` 零 `src/` 改动。
+本切片把 `b-task-008c2g-semantic-coordinator.md` 明确保留的"完整故障矩阵仍未接入"缺口对 schema v27–v35 的 lease/takeover 表组收口：以 PoC-0003 对齐的 F1–F4 故障矩阵（kill-9 中断事务 / commit 后崩溃 / 硬 I/O 错误 / disk-full / 静默丢写与 WAL 撕裂尾部 / 故障解除后继续）验证 2026-08-16 落地的 authority lease、takeover fence、assignment、pending takeover receipt、barrier observation 与 exact fence member manifest 的 durable 前缀语义。测试只走公开 API（`acquire_authority_lease`、`request_commit_permit_with_authority_lease`、`finalize_commit_v3_with_authority_lease`、`prepare_authority_takeover_fence`、`record_authority_takeover_barrier_receipt`、`adopt_permit_with_authority_lease` 及只读 inspect），复用 `fault_injection.rs` / `effect_fault_injection.rs` / `reconcile_fault_injection.rs` 的 `nlos-store-fault` VFS 与 kill-9 子进程范式；`nlos-task` 零 `src/` 改动。
+
+第二轮增量（2026-08-17）把 v28/v29 在 `commit_permits` / `task_adoption_receipts` 的 lease-binding 写路径逐条接入同一矩阵（`lease_binding_fault_injection.rs`）：lease-bound permit 签发（写 v28 binding 列 + v31 Active assignment baseline）、lease-bound finalize（receipt + permit 关闭 + head 推进）、lease-bound adoption（写 v29 binding 列 + sequence 推进）三个写事务分别验证 IoErr/ENOSPC typed fail-closed、kill-9 中断回滚、commit 后崩溃逐位保留、PowerLossAfter 幻影不可见且重做确定性 receipt id 一致、WAL 撕裂尾部隐藏 finalize 事务且重做收敛。首轮矩阵文件的 6 行 kill-9/IoErr/ENOSPC/撕裂尾部场景已通过三平台 CI（run 31962738904）。
 
 ## 2. 已实现事实
 
@@ -14,21 +16,29 @@
 - **F4 disk-full**：`FailWritesAfter { 0, Full }` 下同一对事务以 `SQLITE_FULL`（错误链含 full）显式失败且无半截状态；disarm 后同一操作成功。
 - **F5 静默丢写/撕裂尾部**：`PowerLossAfter { 0 }` 下 barrier observation "报告成功"但写入从未落盘，重开后幻影 observation 不可见（无 barrier 行、coverage `Partial`/0 observed）、同一请求重做且确定性派生的 barrier receipt id 逐位相同、重开后真实持久；WAL 截断到最后一个 commit 帧一半时，隐藏整个 fence 事务（registry 回到 `FrozenForPermit`、六表无行、`control_epoch` 不前进，重做 fence 且 receipt id 一致、`control_epoch` 恰好 +1）或只隐藏 barrier 事务（fence 前缀完整、barrier 重做 receipt id 逐位一致）。
 - **F6 故障解除后继续**：fence 写事务在 `FailWritesAfter { 0, Full }` 下失败后 disarm，同一 authority 实例的已提交前缀与故障前逐位一致，fence 重试成功、barrier 成功、coverage `LocallyCovered`；完整重开后全部状态可恢复。
+- **F1'–F6'（v28/v29 lease-binding 写路径，`lease_binding_fault_injection.rs`）**：
+  - IoErr：lease-bound permit 签发事务（permit 行 + v28 binding 列 + v31 assignment + registry freeze 同事务）失败后无 permit/assignment 行、registry 保持 `Open`；lease-bound finalize 事务失败后无 receipt 行、permit 保持 `Issued`、head 不动；disarm 后同一操作成功且 binding 持久。
+  - ENOSPC：lease-bound adoption 事务（v29 receipt 含 binding 列 + sequence 推进同事务）以 `SQLITE_FULL` 显式失败，无 adoption/sequence 行、permit 保持 `Quarantined`；disarm 后 adoption 成功且 v29 binding 逐位持久、重启后仍可回读。
+  - kill-9 中断：mid-tx 幻影 v29 adoption receipt（**带** authority-lease binding 列）+ 幻影 sequence 行 + `commit_permits.permit_state` CAS 弄脏全部回滚——无幻影行、permit 回到 `Quarantined`，同一 lease-bound adoption 重做成功且 receipt id 确定性一致、binding 重启后仍可回读。
+  - kill-9 commit 后崩溃：完整 lease-bound adoption 逐位保留，adoption 重放返回原记录（不重复推进）、v29 binding 列 UPDATE 被 immutable trigger 拒绝、重启后 binding 仍可回读。
+  - PowerLossAfter：lease-bound finalize "报告成功"但写入从未落盘，重开后 permit 回到 `Issued`、无 receipt 行、head 不动、v28 binding 保持；同一 finalize 重做且确定性派生 receipt id 逐位相同、重开后真实持久。
+  - WAL 撕裂尾部：截断在 finalize commit 帧一半时 finalize 整体隐藏（permit 回到 `Issued`、无 receipt 行、head 不动、v28 binding 保持），同一 finalize 重做且确定性派生 receipt id 一致。
 
 每个场景结束时都通过独立 rusqlite 连接执行 `PRAGMA integrity_check` 复核为 `ok`。
 
 ## 3. Evidence
 
 - `cargo test -p nlos-task --test takeover_fault_injection`：7 项通过（`crash_child_helper` 无环境变量时为空操作；6 个矩阵行全绿）。子进程经 `current_exe + --exact crash_child_helper + 环境变量 + piped READY` 同步，kill-9 后断言非正常退出。
+- `cargo test -p nlos-task --test lease_binding_fault_injection`：7 项通过（v28/v29 lease-binding 写路径 6 个矩阵行全绿）。
 - `cargo clippy -p nlos-task --all-targets -- -D warnings`：通过（对单测试覆盖完整矩阵行的长函数显式 `#[allow(clippy::too_many_lines)]`，与既有 fault 测试一致）。
 - `cargo test -p nlos-task --quiet`：TaskAuthority 全部测试通过（含既有 lease/takeover 验收、reconcile/effect fault 矩阵与全部迁移链）。
-- `cargo test --workspace --quiet`：workspace 383 项测试全过（本切片新增 7 项）。
-- 三平台 CI 尚未运行本文件（本地 macOS/arm64 证据）。
+- `cargo test --workspace --quiet`：workspace 390 项测试全过（两轮增量各新增 7 项，383 → 390）。
+- 首轮矩阵文件（takeover_fault_injection.rs）已通过三平台 CI [run 31962738904](https://github.com/cty12356541/llmos/actions/runs/31962738904)（Ubuntu/Windows/macOS workspace 测试与 Clippy）；第二轮 lease-binding 矩阵文件三平台 CI 待运行（本地 macOS/arm64 证据）。
 
 ## 4. 明确限制
 
 - kill-9 是强制终止子进程的进程崩溃模型，不是真实断电；磁盘层写入由 `PowerLossAfter` 与 WAL 撕裂尾部覆盖，仍无真实硬件掉电证据。
-- 覆盖表组：`task_authority_leases`/`task_authority_lease_history`（v27）、`task_authority_takeover_fence_receipts`（v30）、`task_authority_assignments`（v31）、`task_authority_takeover_receipts`（v32）、`task_authority_takeover_barrier_receipts`（v33/v35）、`task_authority_takeover_fence_members`（v34），以及 registry 冻结 CAS（`task_participant_registries.registry_state`）与 `tasks.control_epoch` 推进。v28/v29 在 `commit_permits` / `task_adoption_receipts` 的 lease-binding 列不在本矩阵逐列注入（其中 permit 行以 mid-tx CAS 弄脏覆盖），adoption/reconcile 表组的既有矩阵见 `reconcile_fault_injection.rs`。
+- 覆盖表组：`task_authority_leases`/`task_authority_lease_history`（v27）、`commit_permits` 的 v28 lease-binding 列（经签发/finalize 写路径）、`task_authority_takeover_fence_receipts`（v30）、`task_authority_assignments`（v31）、`task_authority_takeover_receipts`（v32）、`task_authority_takeover_barrier_receipts`（v33/v35）、`task_authority_takeover_fence_members`（v34）、`task_adoption_receipts` 的 v29 lease-binding 列（经 adoption 写路径），以及 registry 冻结 CAS（`task_participant_registries.registry_state`）与 `tasks.control_epoch` 推进。adoption/reconcile 表组的既有矩阵见 `reconcile_fault_injection.rs`。
 - F4 全集（checkpoint / backup / migration 对 v27–v35 表组的变体）未覆盖；本矩阵聚焦写路径原子性。
-- 本地 macOS 单机证据；三平台 CI、真实 ENOSPC 探针与更多文件系统未运行。
+- 本地 macOS 单机证据；真实 ENOSPC 探针与更多文件系统未运行；`lease_binding_fault_injection.rs` 的三平台 CI 复验待运行。
 - 本矩阵只证明本地 durable 前缀的原子性/可恢复性，不证明 IPC peer 认证、远端 barrier 验证/完成、successor assignment 激活或跨 term adoption（这些仍为下一验收门）。
