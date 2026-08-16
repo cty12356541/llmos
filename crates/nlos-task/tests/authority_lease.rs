@@ -1,8 +1,8 @@
-//! Acceptance tests for the schema-v31 durable `TaskAuthority` lease/term
+//! Acceptance tests for the schema-v32 durable `TaskAuthority` lease/term
 //! primitive, opt-in `CommitPermit` binding, same-term lease-bound adoption
 //! guard, and the local `FROZEN_FOR_TAKEOVER` fence pre-gate. The slice
 //! proves local `SQLite` fencing and restart readback; it does not claim IPC
-//! peer authentication, Assignment/TakeoverReceipt, or cross-term
+//! peer authentication, remote barrier completion, or cross-term
 //! `PermitAdoption` semantics.
 
 use std::fs;
@@ -548,6 +548,31 @@ fn takeover_fence_freezes_registry_and_replays_after_restart() {
             .control_epoch,
         control_before + 1
     );
+    let takeover_receipt = authority
+        .inspect_authority_takeover_receipt(first_attempt.task_id, fence_receipt.receipt_id)
+        .expect("pending takeover receipt");
+    assert_eq!(
+        takeover_receipt.barrier_state,
+        nlos_task::AuthorityTakeoverReceiptState::Pending
+    );
+    assert_eq!(takeover_receipt.old_assignment_id, assignment.assignment_id);
+    assert_eq!(takeover_receipt.new_assignment_id, None);
+    assert_eq!(
+        takeover_receipt.frozen_old_authority_term,
+        assignment.authority_lease_binding.term
+    );
+    assert_eq!(takeover_receipt.new_control_epoch, control_before + 1);
+    assert_eq!(
+        takeover_receipt.exact_fence_set_root,
+        fence_receipt.exact_fence_set_root
+    );
+    let pending_assignment = authority
+        .inspect_authority_assignment(first_attempt.task_id)
+        .expect("pending assignment");
+    assert_eq!(
+        pending_assignment.state,
+        nlos_task::AuthorityAssignmentState::TakeoverPending
+    );
 
     let replayed = authority
         .prepare_authority_takeover_fence(AuthorityLeaseTakeoverFenceRequest {
@@ -619,6 +644,22 @@ fn takeover_fence_freezes_registry_and_replays_after_restart() {
     );
     assert!(
         raw.execute(
+            "UPDATE task_authority_takeover_receipts
+             SET new_assignment_id = zeroblob(16)
+             WHERE receipt_id = ?1",
+            rusqlite::params![takeover_receipt.receipt_id.as_bytes().as_slice()],
+        )
+        .is_err()
+    );
+    assert!(
+        raw.execute(
+            "DELETE FROM task_authority_takeover_receipts WHERE receipt_id = ?1",
+            rusqlite::params![takeover_receipt.receipt_id.as_bytes().as_slice()],
+        )
+        .is_err()
+    );
+    assert!(
+        raw.execute(
             "UPDATE task_authority_assignments
              SET authority_id = zeroblob(16)
              WHERE assignment_id = ?1",
@@ -654,7 +695,13 @@ fn takeover_fence_freezes_registry_and_replays_after_restart() {
         reopened
             .inspect_authority_assignment(first_attempt.task_id)
             .expect("assignment after restart"),
-        assignment
+        pending_assignment
+    );
+    assert_eq!(
+        reopened
+            .inspect_authority_takeover_receipt(first_attempt.task_id, fence_receipt.receipt_id)
+            .expect("takeover receipt after restart"),
+        takeover_receipt
     );
     assert!(matches!(
         reopened.prepare_authority_takeover_fence(AuthorityLeaseTakeoverFenceRequest {

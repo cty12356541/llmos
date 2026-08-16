@@ -22,8 +22,10 @@ use rusqlite::{
 use crate::lease::{
     AuthorityAssignmentRecord, AuthorityAssignmentState, AuthorityLeasePermitRequest,
     AuthorityLeaseRecord, AuthorityLeaseTakeoverFenceRecord, AuthorityLeaseTakeoverFenceRequest,
-    derive_assignment_id, derive_takeover_fence_receipt_id, insert_assignment,
-    insert_takeover_fence_receipt, load_current_assignment, load_takeover_fence_receipt,
+    AuthorityTakeoverReceiptRecord, AuthorityTakeoverReceiptState, derive_assignment_id,
+    derive_takeover_fence_receipt_id, derive_takeover_receipt_id, insert_assignment,
+    insert_takeover_fence_receipt, insert_takeover_receipt, load_current_assignment,
+    load_takeover_fence_receipt, load_takeover_receipt, mark_assignment_takeover_pending,
     refresh_active_assignment, validate_authority_lease_binding_in_transaction,
 };
 use crate::model::{derive_closure_receipt_id, derive_permit_id, empty_effect_history_root};
@@ -39,7 +41,7 @@ use crate::{
     TaskWriteSetSemanticTarget,
 };
 
-const SCHEMA_VERSION: i64 = 31;
+const SCHEMA_VERSION: i64 = 32;
 
 /// A single-writer `SQLite` task authority.
 ///
@@ -246,6 +248,7 @@ impl SqliteTaskAuthority {
             migrate_v29(&mut connection)?;
             migrate_v30(&mut connection)?;
             migrate_v31(&mut connection)?;
+            migrate_v32(&mut connection)?;
         }
 
         Ok(Self {
@@ -1485,7 +1488,7 @@ impl SqliteTaskAuthority {
     /// # Errors
     ///
     /// Returns a task, lease, registry binding, CAS, or storage error.
-    #[allow(clippy::needless_pass_by_value)]
+    #[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
     pub fn prepare_authority_takeover_fence(
         &self,
         request: AuthorityLeaseTakeoverFenceRequest,
@@ -1498,6 +1501,20 @@ impl SqliteTaskAuthority {
             request.lease.binding(),
             request.requested_at_ms,
         )?;
+        let assignment = load_current_assignment(&transaction, request.task_id)?;
+        if let Some(assignment) = assignment.as_ref() {
+            if assignment.task_generation != task.record.task_generation {
+                return Err(TaskStoreError::CorruptRecord(
+                    "assignment task generation mismatch",
+                ));
+            }
+            if assignment.participant_registry_binding != request.expected_registry_binding {
+                return Err(TaskStoreError::AuthorityLeaseBindingMismatch);
+            }
+            if assignment.state == AuthorityAssignmentState::Fenced {
+                return Err(TaskStoreError::AuthorityLeaseFenced);
+            }
+        }
         let before = crate::participant::inspect_registry(&transaction, &task.record)?;
         let registry = crate::participant::freeze_for_takeover(
             &transaction,
@@ -1534,7 +1551,7 @@ impl SqliteTaskAuthority {
             )?;
             next
         };
-        let record = AuthorityLeaseTakeoverFenceRecord {
+        let mut record = AuthorityLeaseTakeoverFenceRecord {
             receipt_id: derive_takeover_fence_receipt_id(
                 request.task_id,
                 task.record.task_generation,
@@ -1571,10 +1588,19 @@ impl SqliteTaskAuthority {
                     "takeover fence root changed during replay",
                 ));
             }
-            transaction.commit()?;
-            return Ok(registry);
+            record = existing;
+        } else {
+            insert_takeover_fence_receipt(&transaction, &record)?;
         }
-        insert_takeover_fence_receipt(&transaction, &record)?;
+        if let Some(assignment) = assignment {
+            persist_takeover_pending_receipt(
+                &transaction,
+                &task.record,
+                assignment,
+                &record,
+                request.requested_at_ms,
+            )?;
+        }
         transaction.commit()?;
         Ok(registry)
     }
@@ -1599,6 +1625,26 @@ impl SqliteTaskAuthority {
     ) -> Result<AuthorityLeaseTakeoverFenceRecord, TaskStoreError> {
         let connection = self.lock_connection()?;
         load_takeover_fence_receipt(&*connection, task_id, registry_binding)?
+            .ok_or(TaskStoreError::ReceiptNotFound)
+    }
+
+    /// Reads the pending local prefix of a `TaskAuthorityTakeoverReceipt`.
+    ///
+    /// The returned record proves only that the old local assignment and the
+    /// local frozen fence were durably linked. Its `new_assignment_id` is
+    /// always `None` in this schema; remote endpoint barriers are not
+    /// represented as complete.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ReceiptNotFound` or a storage/corruption error.
+    pub fn inspect_authority_takeover_receipt(
+        &self,
+        task_id: TaskId,
+        fence_receipt_id: ReceiptId,
+    ) -> Result<AuthorityTakeoverReceiptRecord, TaskStoreError> {
+        let connection = self.lock_connection()?;
+        load_takeover_receipt(&*connection, task_id, fence_receipt_id)?
             .ok_or(TaskStoreError::ReceiptNotFound)
     }
 
@@ -2686,6 +2732,79 @@ fn ensure_active_assignment(
     };
     insert_assignment(transaction, &record)?;
     Ok(record)
+}
+
+fn persist_takeover_pending_receipt(
+    transaction: &Transaction<'_>,
+    task: &TaskRecord,
+    assignment: AuthorityAssignmentRecord,
+    fence: &AuthorityLeaseTakeoverFenceRecord,
+    now_ms: i64,
+) -> Result<(), TaskStoreError> {
+    if assignment.task_id != task.task_id
+        || assignment.task_generation != task.task_generation
+        || assignment.participant_registry_binding != fence.frozen_registry_binding
+    {
+        return Err(TaskStoreError::CorruptRecord(
+            "takeover assignment binding mismatch",
+        ));
+    }
+    let current = load_current_assignment(transaction, task.task_id)?.ok_or(
+        TaskStoreError::CorruptRecord("takeover assignment disappeared"),
+    )?;
+    if current.assignment_id != assignment.assignment_id {
+        return Err(TaskStoreError::CorruptRecord(
+            "takeover assignment changed during fence",
+        ));
+    }
+    let pending = match current.state {
+        AuthorityAssignmentState::Active => {
+            if fence.authority_lease_binding.term <= current.authority_lease_binding.term {
+                return Err(TaskStoreError::AuthorityLeaseFenced);
+            }
+            mark_assignment_takeover_pending(transaction, &current, now_ms)?
+        }
+        AuthorityAssignmentState::TakeoverPending => current,
+        AuthorityAssignmentState::Fenced => return Err(TaskStoreError::AuthorityLeaseFenced),
+    };
+    let expected = AuthorityTakeoverReceiptRecord {
+        receipt_id: derive_takeover_receipt_id(
+            task.task_id,
+            task.task_generation,
+            pending.assignment_id,
+            fence.receipt_id,
+            fence.authority_lease_binding,
+            fence.control_epoch,
+        ),
+        task_id: task.task_id,
+        task_generation: task.task_generation,
+        old_assignment_id: pending.assignment_id,
+        new_assignment_id: None,
+        fence_receipt_id: fence.receipt_id,
+        frozen_old_authority_term: pending.authority_lease_binding.term,
+        frozen_old_control_epoch: pending.control_epoch,
+        new_authority_lease_binding: fence.authority_lease_binding,
+        new_control_epoch: fence.control_epoch,
+        frozen_registry_binding: fence.frozen_registry_binding,
+        exact_fence_set_root: fence.exact_fence_set_root,
+        outstanding_operation_participant_root: fence.outstanding_operation_participant_root,
+        barrier_state: AuthorityTakeoverReceiptState::Pending,
+        created_at_ms: fence.created_at_ms,
+    };
+    if let Some(existing) = load_takeover_receipt(transaction, task.task_id, fence.receipt_id)? {
+        if existing != expected {
+            return Err(TaskStoreError::CorruptRecord(
+                "takeover receipt changed during replay",
+            ));
+        }
+        return Ok(());
+    }
+    if current.state == AuthorityAssignmentState::TakeoverPending {
+        return Err(TaskStoreError::CorruptRecord(
+            "pending assignment missing takeover receipt",
+        ));
+    }
+    insert_takeover_receipt(transaction, &expected)
 }
 
 pub(crate) fn closure_receipt(
@@ -3859,6 +3978,43 @@ fn migrate_v31(connection: &mut Connection) -> Result<(), TaskStoreError> {
     Ok(())
 }
 
+/// v31 → v32 adds the immutable pending prefix of a local
+/// `TaskAuthorityTakeoverReceipt`. It links the old assignment to the local
+/// fence receipt but cannot carry a successor assignment or remote barrier
+/// completion yet.
+fn migrate_v32(connection: &mut Connection) -> Result<(), TaskStoreError> {
+    let table_present: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master
+            WHERE type='table' AND name='task_authority_takeover_receipts'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    let trigger_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type='trigger' AND name IN (
+             'task_authority_takeover_receipt_immutable',
+             'task_authority_takeover_receipt_no_delete'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if table_present && trigger_count == 2 {
+        connection.pragma_update(None, "user_version", 32)?;
+        return Ok(());
+    }
+    if table_present || trigger_count != 0 {
+        return Err(TaskStoreError::CorruptRecord(
+            "partial takeover receipt schema",
+        ));
+    }
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(SCHEMA_V32_SQL)?;
+    transaction.commit()?;
+    Ok(())
+}
+
 const SCHEMA_V13_SQL: &str = "CREATE TABLE task_write_sets (
         task_id BLOB NOT NULL CHECK(length(task_id) = 16),
         attempt_id BLOB NOT NULL CHECK(length(attempt_id) = 16),
@@ -4544,6 +4700,50 @@ pub(crate) const SCHEMA_V31_SQL: &str = "CREATE TABLE task_authority_assignments
      END;
 
      PRAGMA user_version = 31;";
+
+pub(crate) const SCHEMA_V32_SQL: &str = "CREATE TABLE task_authority_takeover_receipts (
+        receipt_id BLOB PRIMARY KEY NOT NULL CHECK(length(receipt_id) = 16),
+        task_id BLOB NOT NULL CHECK(length(task_id) = 16),
+        task_generation BLOB NOT NULL CHECK(length(task_generation) = 8),
+        old_assignment_id BLOB NOT NULL CHECK(length(old_assignment_id) = 16),
+        new_assignment_id BLOB CHECK(new_assignment_id IS NULL),
+        fence_receipt_id BLOB NOT NULL CHECK(length(fence_receipt_id) = 16),
+        frozen_old_authority_term BLOB NOT NULL CHECK(length(frozen_old_authority_term) = 8),
+        frozen_old_control_epoch BLOB NOT NULL CHECK(length(frozen_old_control_epoch) = 8),
+        new_authority_id BLOB NOT NULL CHECK(length(new_authority_id) = 16),
+        new_authority_lease_holder_id BLOB NOT NULL CHECK(length(new_authority_lease_holder_id) = 16),
+        new_authority_lease_term BLOB NOT NULL CHECK(length(new_authority_lease_term) = 8),
+        new_authority_lease_epoch BLOB NOT NULL CHECK(length(new_authority_lease_epoch) = 8),
+        new_authority_lease_fencing_token BLOB NOT NULL CHECK(length(new_authority_lease_fencing_token) = 32),
+        new_authority_lease_expires_at_ms INTEGER NOT NULL CHECK(new_authority_lease_expires_at_ms >= 0),
+        new_control_epoch BLOB NOT NULL CHECK(length(new_control_epoch) = 8),
+        frozen_registry_generation BLOB NOT NULL CHECK(length(frozen_registry_generation) = 8),
+        frozen_registry_root BLOB NOT NULL CHECK(length(frozen_registry_root) = 32),
+        exact_fence_set_root BLOB CHECK(exact_fence_set_root IS NULL OR length(exact_fence_set_root) = 32),
+        outstanding_operation_participant_root BLOB
+            CHECK(outstanding_operation_participant_root IS NULL
+                  OR length(outstanding_operation_participant_root) = 32),
+        barrier_state INTEGER NOT NULL CHECK(barrier_state = 1),
+        created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0),
+        UNIQUE(task_id, old_assignment_id, fence_receipt_id),
+        FOREIGN KEY(task_id) REFERENCES tasks(task_id),
+        FOREIGN KEY(old_assignment_id) REFERENCES task_authority_assignments(assignment_id),
+        FOREIGN KEY(fence_receipt_id) REFERENCES task_authority_takeover_fence_receipts(receipt_id)
+     ) STRICT;
+
+     CREATE TRIGGER task_authority_takeover_receipt_immutable
+     BEFORE UPDATE ON task_authority_takeover_receipts
+     BEGIN
+        SELECT RAISE(ABORT, 'task authority takeover receipt is immutable');
+     END;
+
+     CREATE TRIGGER task_authority_takeover_receipt_no_delete
+     BEFORE DELETE ON task_authority_takeover_receipts
+     BEGIN
+        SELECT RAISE(ABORT, 'task authority takeover receipt is durable evidence');
+     END;
+
+     PRAGMA user_version = 32;";
 
 const SCHEMA_V12_SQL: &str = "ALTER TABLE effect_permits
         ADD COLUMN participant_registry_generation BLOB

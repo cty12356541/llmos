@@ -69,7 +69,10 @@
 //! without remote barrier receipts. No schema authorizes an IPC peer or
 //! completes cross-term adoption; schema v31 adds an immutable local
 //! `TaskAuthorityAssignment` baseline for lease-bound permits, but no successor
-//! assignment or `TakeoverReceipt` activation. Compensation execution
+//! assignment activation; schema v32 persists only a pending local
+//! `TaskAuthorityTakeoverReceipt` prefix linked to the old assignment and
+//! frozen fence, without remote barrier receipts or successor activation.
+//! Compensation execution
 //! (`COMPENSATED` is recordable but never executed), `QUORUM`/`REDUCE`
 //! group semantics (`[TASK-GROUP-003]`), `BEST_EFFORT` failure mode,
 //! `AGENT_INSTANCE` members, `DETACH` execution (`[TASK-DETACH-001]`),
@@ -122,7 +125,7 @@ pub use lease::{
     AuthorityAssignmentRecord, AuthorityAssignmentState, AuthorityLeaseBinding,
     AuthorityLeaseDecision, AuthorityLeasePermitRequest, AuthorityLeaseRecord,
     AuthorityLeaseRequest, AuthorityLeaseTakeoverFenceRecord, AuthorityLeaseTakeoverFenceRequest,
-    MAX_AUTHORITY_LEASE_TTL_MS,
+    AuthorityTakeoverReceiptRecord, AuthorityTakeoverReceiptState, MAX_AUTHORITY_LEASE_TTL_MS,
 };
 pub use model::{
     AdoptionReceiptRecord, AttemptHandle, AttemptRecord, AttemptRegistrationDecision, AttemptSpec,
