@@ -33,12 +33,12 @@
 - `cargo clippy -p nlos-task --all-targets -- -D warnings`：通过（对单测试覆盖完整矩阵行的长函数显式 `#[allow(clippy::too_many_lines)]`，与既有 fault 测试一致）。
 - `cargo test -p nlos-task --quiet`：TaskAuthority 全部测试通过（含既有 lease/takeover 验收、reconcile/effect fault 矩阵与全部迁移链）。
 - `cargo test --workspace --quiet`：workspace 390 项测试全过（两轮增量各新增 7 项，383 → 390）。
-- 首轮矩阵文件（takeover_fault_injection.rs）已通过三平台 CI [run 31962738904](https://github.com/cty12356541/llmos/actions/runs/31962738904)（Ubuntu/Windows/macOS workspace 测试与 Clippy）；第二轮 lease-binding 矩阵文件三平台 CI 待运行（本地 macOS/arm64 证据）。
+- 首轮矩阵文件（takeover_fault_injection.rs）已通过三平台 CI [run 31962738904](https://github.com/cty12356541/llmos/actions/runs/31962738904)；第二轮 lease-binding 矩阵文件（lease_binding_fault_injection.rs）也已通过三平台 CI [run 31963113968](https://github.com/cty12356541/llmos/actions/runs/31963113968)（Ubuntu/Windows/macOS workspace 测试与 Clippy）。
 
 ## 4. 明确限制
 
 - kill-9 是强制终止子进程的进程崩溃模型，不是真实断电；磁盘层写入由 `PowerLossAfter` 与 WAL 撕裂尾部覆盖，仍无真实硬件掉电证据。
 - 覆盖表组：`task_authority_leases`/`task_authority_lease_history`（v27）、`commit_permits` 的 v28 lease-binding 列（经签发/finalize 写路径）、`task_authority_takeover_fence_receipts`（v30）、`task_authority_assignments`（v31）、`task_authority_takeover_receipts`（v32）、`task_authority_takeover_barrier_receipts`（v33/v35）、`task_authority_takeover_fence_members`（v34）、`task_adoption_receipts` 的 v29 lease-binding 列（经 adoption 写路径），以及 registry 冻结 CAS（`task_participant_registries.registry_state`）与 `tasks.control_epoch` 推进。adoption/reconcile 表组的既有矩阵见 `reconcile_fault_injection.rs`。
 - F4 全集（checkpoint / backup / migration 对 v27–v35 表组的变体）未覆盖；本矩阵聚焦写路径原子性。
-- 本地 macOS 单机证据；真实 ENOSPC 探针与更多文件系统未运行；`lease_binding_fault_injection.rs` 的三平台 CI 复验待运行。
+- 本地 macOS 单机证据；真实 ENOSPC 探针与更多文件系统未运行。
 - 本矩阵只证明本地 durable 前缀的原子性/可恢复性，不证明 IPC peer 认证、远端 barrier 验证/完成、successor assignment 激活或跨 term adoption（这些仍为下一验收门）。

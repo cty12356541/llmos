@@ -1185,16 +1185,18 @@ impl ResourceAuthority {
         Ok(receipt)
     }
 
-    /// Settles an ACTIVE Reservation whose external effect is proven closed.
+    /// Settles a Reservation whose external effect is proven closed.
     ///
-    /// The final cumulative usage must be monotonic against the observed
-    /// high-water and bounded by the quote's upper bound; the caller-supplied
-    /// proof digest is opaque in this reference profile (a real
-    /// enforcement-gateway signature is the future reconciliation
-    /// authority). One transaction atomically: writes the immutable
-    /// `FinalizationReceipt`, marks the Reservation `FINALIZED` (overlay,
-    /// `state` stays 1), and credits `upper_bound - final_usage` back to the
-    /// account's available credit (double-entry release of the hold).
+    /// Accepts both ACTIVE and QUARANTINED Reservations (the reconciliation
+    /// path). The final cumulative usage must be monotonic against the
+    /// observed (or quarantine-frozen) high-water and bounded by the quote's
+    /// upper bound; the caller-supplied proof digest is opaque in this
+    /// reference profile (a real enforcement-gateway signature is the future
+    /// reconciliation authority). One transaction atomically: writes the
+    /// immutable `FinalizationReceipt`, marks the Reservation `FINALIZED`
+    /// (overlay, `state` stays 1), lifts the `QUARANTINED` overlay when
+    /// present, and credits `upper_bound - final_usage` back to the account's
+    /// available credit (double-entry release of the hold).
     ///
     /// # Errors
     /// Fails closed on inactive/stale bindings, replay conflicts, timestamp
@@ -1243,15 +1245,39 @@ impl ResourceAuthority {
                 "finalize receipt is not bound on reservation",
             ));
         }
-        if reservation.state != ReservationState::Active {
-            return Err(match reservation.state {
-                ReservationState::Quarantined => ResourceAuthorityError::ReservationQuarantined,
-                ReservationState::Finalized => ResourceAuthorityError::ReservationFinalized,
-                ReservationState::Reserved | ReservationState::Active => {
-                    ResourceAuthorityError::ReservationNotActive
+        let quarantined = match reservation.state {
+            ReservationState::Active => None,
+            // Reconciliation path: a QUARANTINED reservation may settle once
+            // the caller later presents an effect-closed proof. The frozen
+            // quarantine high-water is the authoritative baseline; the
+            // immutable quarantine receipt remains as durable evidence while
+            // the QUARANTINED overlay pointer is cleared in the same
+            // transaction as the FINALIZED overlay.
+            ReservationState::Quarantined => {
+                let quarantine = quarantine_receipt(&transaction, q.reservation_id)?.ok_or(
+                    ResourceAuthorityError::CorruptRecord(
+                        "quarantined reservation has no quarantine receipt",
+                    ),
+                )?;
+                if reservation.quarantine_receipt_id != Some(quarantine.receipt_id)
+                    || reservation.operation_id != quarantine.operation_id
+                    || reservation.activation_receipt_id != Some(quarantine.activation_receipt_id)
+                    || reservation.usage_high_water_seq != quarantine.high_water_seq
+                    || reservation.usage_high_water != quarantine.high_water
+                {
+                    return Err(ResourceAuthorityError::CorruptRecord(
+                        "quarantine receipt disagrees with reservation",
+                    ));
                 }
-            });
-        }
+                Some(quarantine)
+            }
+            ReservationState::Finalized => {
+                return Err(ResourceAuthorityError::ReservationFinalized);
+            }
+            ReservationState::Reserved => {
+                return Err(ResourceAuthorityError::ReservationNotActive);
+            }
+        };
         let activation = activation_receipt(&transaction, q.reservation_id)?.ok_or(
             ResourceAuthorityError::CorruptRecord("active reservation has no receipt"),
         )?;
@@ -1262,7 +1288,9 @@ impl ResourceAuthority {
         {
             return Err(ResourceAuthorityError::ReservationBindingMismatch);
         }
-        if q.finalized_at_ms < activation.activated_at_ms {
+        if q.finalized_at_ms < activation.activated_at_ms
+            || quarantined.is_some_and(|receipt| q.finalized_at_ms < receipt.quarantined_at_ms)
+        {
             return Err(ResourceAuthorityError::InvalidFinalizeTimestamp);
         }
         active_driver(
@@ -1310,6 +1338,24 @@ impl ResourceAuthority {
             refund_credit,
             finalized_at_ms: q.finalized_at_ms,
         };
+        // Reconciliation path: lift the QUARANTINED overlay before writing
+        // the finalize receipt (the binding trigger requires a non-quarantined
+        // reservation); the immutable quarantine receipt row stays as
+        // durable evidence.
+        if quarantined.is_some() {
+            let lifted = transaction.execute(
+                "UPDATE reservations
+                 SET quarantine_receipt_id=NULL, quarantined_at_ms=NULL
+                 WHERE reservation_id=?1 AND state=1
+                   AND quarantine_receipt_id IS NOT NULL AND finalize_receipt_id IS NULL",
+                [q.reservation_id.as_bytes().as_slice()],
+            )?;
+            if lifted != 1 {
+                return Err(ResourceAuthorityError::CorruptRecord(
+                    "reservation quarantine overlay CAS failed",
+                ));
+            }
+        }
         transaction.execute(
             "INSERT INTO reservation_finalize_receipts (
                 receipt_id, reservation_id, operation_id, activation_receipt_id,

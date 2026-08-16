@@ -403,7 +403,7 @@ fn finalize_fails_closed_on_invalid_inputs() {
 }
 
 #[test]
-fn finalize_rejects_reserved_and_quarantined_reservations() {
+fn finalize_rejects_reserved_reservations() {
     let root = Root::new("state-guards");
     let authority = ResourceAuthority::open(root.path()).unwrap();
     let driver = authority
@@ -433,30 +433,136 @@ fn finalize_rejects_reserved_and_quarantined_reservations() {
         }),
         Err(ResourceAuthorityError::ReservationNotActive)
     ));
+}
 
-    // A QUARANTINED reservation stays frozen: settlement requires the
-    // effect-closed proof path, which is the future reconciliation gate.
-    let (_, _, active) = seed_active(&authority, 71, 1000, 100);
-    assert!(matches!(
-        authority.quarantine(QuarantineReservationRequest {
-            reservation_id: active.reservation_id,
-            operation_id: active.operation_id,
-            activation_receipt_id: active.activation_receipt_id.unwrap(),
-            reason_digest: [0x22; 32],
-            quarantined_at_ms: 4_000,
-        }),
-        Ok(QuarantineDecision::Quarantined(_))
-    ));
-    assert!(matches!(
-        authority.finalize_reservation(finalize_request(&active, 1, 0, 0x33)),
-        Err(ResourceAuthorityError::ReservationQuarantined)
-    ));
-    assert_eq!(
+#[test]
+#[allow(clippy::too_many_lines)] // One test covers the full quarantine-reconciliation lifecycle.
+fn quarantined_reservation_reconciles_with_effect_closed_proof() {
+    let root = Root::new("reconcile");
+    let (account, reservation, quarantine_receipt) = {
+        let authority = ResourceAuthority::open(root.path()).unwrap();
+        let (_, account, reservation) = seed_active(&authority, 71, 1000, 100);
         authority
-            .inspect_reservation(active.reservation_id)
+            .consume(ConsumeReservationRequest {
+                reservation_id: reservation.reservation_id,
+                operation_id: reservation.operation_id,
+                activation_receipt_id: reservation.activation_receipt_id.unwrap(),
+                sequence: 1,
+                cumulative_usage: 30,
+                consumed_at_ms: 4_001,
+            })
+            .unwrap();
+        // No effect-closed proof yet -> conservative freeze at high-water 30.
+        let quarantine = match authority
+            .quarantine(QuarantineReservationRequest {
+                reservation_id: reservation.reservation_id,
+                operation_id: reservation.operation_id,
+                activation_receipt_id: reservation.activation_receipt_id.unwrap(),
+                reason_digest: [0x22; 32],
+                quarantined_at_ms: 4_000,
+            })
             .unwrap()
-            .state,
-        ReservationState::Quarantined
+        {
+            QuarantineDecision::Quarantined(receipt) => receipt,
+            QuarantineDecision::Replayed(_) => panic!("expected Quarantined"),
+        };
+        assert_eq!(
+            authority
+                .inspect_reservation(reservation.reservation_id)
+                .unwrap()
+                .state,
+            ReservationState::Quarantined
+        );
+        assert_eq!(
+            authority
+                .inspect_account(account.account_id)
+                .unwrap()
+                .available_credit,
+            900,
+            "the full upper bound stays reserved while frozen"
+        );
+
+        // Reconciliation: the effect-closed proof arrives later; the frozen
+        // high-water is the baseline and the hold settles with a refund.
+        let settled = finalize_receipt(
+            authority
+                .finalize_reservation(finalize_request(&reservation, 2, 30, 0x33))
+                .unwrap(),
+        );
+        assert_eq!(
+            settled.high_water, 30,
+            "frozen quarantine high-water is the baseline"
+        );
+        assert_eq!(settled.final_usage, 30);
+        assert_eq!(settled.refund_credit, 70);
+        let stored = authority
+            .inspect_reservation(reservation.reservation_id)
+            .unwrap();
+        assert_eq!(stored.state, ReservationState::Finalized);
+        assert_eq!(
+            stored.quarantine_receipt_id, None,
+            "the QUARANTINED overlay is lifted by the settlement"
+        );
+        assert_eq!(
+            authority
+                .inspect_account(account.account_id)
+                .unwrap()
+                .available_credit,
+            970,
+            "refund (100 - 30) is credited in the same transaction"
+        );
+        assert_eq!(
+            authority
+                .inspect_finalize_receipt(reservation.reservation_id)
+                .unwrap(),
+            settled
+        );
+        // The immutable quarantine receipt row stays as durable evidence,
+        // even though the overlay moved on.
+        assert!(matches!(
+            authority.inspect_quarantine_receipt(reservation.reservation_id),
+            Err(ResourceAuthorityError::CorruptRecord(_))
+        ));
+        // Exact replay returns the original settle receipt.
+        assert!(matches!(
+            authority.finalize_reservation(finalize_request(&reservation, 2, 30, 0x33)),
+            Ok(FinalizeDecision::Replayed(replayed)) if replayed == settled
+        ));
+        (account, reservation, quarantine)
+    };
+
+    let reopened = ResourceAuthority::open(root.path()).unwrap();
+    let stored = reopened
+        .inspect_reservation(reservation.reservation_id)
+        .unwrap();
+    assert_eq!(stored.state, ReservationState::Finalized);
+    assert_eq!(stored.quarantine_receipt_id, None);
+    assert_eq!(
+        reopened
+            .inspect_finalize_receipt(reservation.reservation_id)
+            .unwrap()
+            .refund_credit,
+        70
+    );
+    assert_eq!(
+        reopened
+            .inspect_account(account.account_id)
+            .unwrap()
+            .available_credit,
+        970
+    );
+    // The quarantine receipt row remains durable for audit after restart.
+    let raw = Connection::open(root.path().join("resource-authority.db")).unwrap();
+    let count: i64 = raw
+        .query_row(
+            "SELECT COUNT(*) FROM reservation_quarantine_receipts WHERE receipt_id = ?1",
+            rusqlite::params![quarantine_receipt.receipt_id.as_bytes().as_slice()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        count, 1,
+        "the immutable quarantine receipt survives reconciliation"
     );
 }
 
