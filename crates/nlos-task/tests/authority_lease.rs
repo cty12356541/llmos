@@ -527,8 +527,11 @@ fn takeover_fence_freezes_registry_and_replays_after_restart() {
         .expect("takeover fence receipt");
     assert_eq!(fence_receipt.authority_lease_binding, lease_two.binding());
     assert_eq!(fence_receipt.frozen_registry_binding, registry_binding);
-    assert_eq!(fence_receipt.exact_fence_set_root, None);
-    assert_eq!(fence_receipt.outstanding_operation_participant_root, None);
+    assert!(fence_receipt.exact_fence_set_root.is_some());
+    assert_eq!(
+        fence_receipt.outstanding_operation_participant_root,
+        Some([0; 32])
+    );
     assert_eq!(
         authority
             .inspect_task(first_attempt.task_id)

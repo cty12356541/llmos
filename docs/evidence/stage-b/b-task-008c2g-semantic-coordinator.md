@@ -4,7 +4,7 @@
 
 ## 1. 结论
 
-本切片把 ADR-0006 选择 1 的本地两 authority 前缀接成可重启收敛的 coordinator：它只驱动已由 `TaskAuthority` 持久化的 Semantic plan，不拥有新的事实源；每次跨 authority 调用都从上一次 durable prefix 继续。schema v26 又把混合 Effect finalize 所需的 typed proof envelope 持久化，使 coordinator 能在重启后重建 v3 request；同时，`EffectClosedSuccess` 已收紧为绑定 slot contract 与权威闭合 Receipt 的本地 proof。schema v27 再增加单个 `TaskAuthority` 的 durable lease/term/fencing 原语，schema v28 将该 lease 以 opt-in immutable binding 接入 `CommitPermit` 签发、plain v3 finalize、pre-effect close、mixed persisted-envelope finalize/replay 以及 Semantic-only high-level finalize；schema v29 再把同一 live lease 绑定到 adoption/reconcile 的本地安全子集，并增加 `FROZEN_FOR_TAKEOVER` 的 local takeover-fence CAS pre-gate；schema v30 持久化该 pre-gate 的 immutable local fence receipt。
+本切片把 ADR-0006 选择 1 的本地两 authority 前缀接成可重启收敛的 coordinator：它只驱动已由 `TaskAuthority` 持久化的 Semantic plan，不拥有新的事实源；每次跨 authority 调用都从上一次 durable prefix 继续。schema v26 又把混合 Effect finalize 所需的 typed proof envelope 持久化，使 coordinator 能在重启后重建 v3 request；同时，`EffectClosedSuccess` 已收紧为绑定 slot contract 与权威闭合 Receipt 的本地 proof。schema v27 再增加单个 `TaskAuthority` 的 durable lease/term/fencing 原语，schema v28 将该 lease 以 opt-in immutable binding 接入 `CommitPermit` 签发、plain v3 finalize、pre-effect close、mixed persisted-envelope finalize/replay 以及 Semantic-only high-level finalize；schema v29 再把同一 live lease 绑定到 adoption/reconcile 的本地安全子集，并增加 `FROZEN_FOR_TAKEOVER` 的 local takeover-fence CAS pre-gate；schema v30 持久化该 pre-gate 的 immutable local fence receipt，并在 durable participant mapping 完整时计算 frozen registry ∪ durable outstanding-operation participant 的 exact local roots。
 
 ## 2. 已实现事实
 
@@ -18,7 +18,7 @@
 - schema v28 在 `commit_permits` 持久化可选 authority/holder/term/epoch/token/expiry binding；带 binding 的 permit 只能由同一 live lease 走 opt-in v3 finalize、pre-effect close、mixed persisted-envelope finalize/replay 或 Semantic-only high-level finalize，旧 term 在签发与终结两处都 fail closed，legacy permit 继续保持显式 unbound。
 - schema v29 在 `task_adoption_receipts` 持久化可选 authority/holder/term/epoch/token/expiry binding；lease-bound quarantined permit 的 adoption 与后续 unknown-slot reconcile 必须带同一 live lease，binding UPDATE 被 immutable trigger 拒绝；已解决 reconcile 的 replay 仍可读。
 - 新增 `prepare_authority_takeover_fence`：新 term 的 live lease 以 expected registry generation/root 做 CAS，把当前 registry 持久置为 `FROZEN_FOR_TAKEOVER`，同一事务递增 Task `control_epoch`；重复调用只读回原冻结事实，旧 lease、旧 registry binding 与冻结后的新 permit/adoption 写入均 fail closed，重启后状态保持。
-- schema v30 新增 `task_authority_takeover_fence_receipts`：receipt 逐位绑定 Task generation、frozen registry generation/root、new live lease 和 control epoch；UPDATE/DELETE 由 immutable trigger 拒绝，`exact_fence_set_root` 与 `outstanding_operation_participant_root` 保持显式 NULL，不把候选 registry root 冒充完整 fence union。
+- schema v30 新增 `task_authority_takeover_fence_receipts`：receipt 逐位绑定 Task generation、frozen registry generation/root、new live lease 和 control epoch；UPDATE/DELETE 由 immutable trigger 拒绝，并在 durable participant mapping 完整时以确定性 canonical participant set 计算 `exact_fence_set_root` 与 `outstanding_operation_participant_root`（无 outstanding participant 时为全零 root，否则映射不完整时保持 NULL）。这只是本地 durable union fact，不把它冒充远端 barrier Receipt 或 successor Assignment。
 
 ## 3. Evidence
 
@@ -34,6 +34,6 @@
 
 ## 4. 明确限制
 
-- 只覆盖单机 SemanticAuthority/TaskAuthority、Semantic-only coordinator；schema v27–v30 的租约、permit/adoption binding 与 local fence receipt，都是单 authority opt-in primitive，不是 IPC peer authentication、跨 authority adoption 或完整 term takeover 协议。当前 lease binding 已覆盖 mixed Effect + Semantic owner/publication finalize、persisted envelope replay、plain v3 finalize、pre-effect close、Semantic-only high-level finalize，以及 same-term adoption/reconcile；新 fence receipt 只记录旧 registry 的本地冻结，`exact_fence_set_root`/outstanding-operation union/barrier receipts 保持 NULL，尚未创建 Assignment/successor registry 或跨 term adoption。完整故障矩阵仍未接入。新增的故障证据是 TaskAuthority SQLite abort/VFS 写失败，不等于完整 kill-9/ENOSPC/torn-write 组合矩阵，也没有多 Cell 传播证据。
+- 只覆盖单机 SemanticAuthority/TaskAuthority、Semantic-only coordinator；schema v27–v30 的租约、permit/adoption binding 与 local fence receipt，都是单 authority opt-in primitive，不是 IPC peer authentication、跨 authority adoption 或完整 term takeover 协议。当前 lease binding 已覆盖 mixed Effect + Semantic owner/publication finalize、persisted envelope replay、plain v3 finalize、pre-effect close、Semantic-only high-level finalize，以及 same-term adoption/reconcile；新 fence receipt 在可完整映射的 durable write set 上固定 frozen registry ∪ locally durable outstanding-operation participant 的 roots，映射不完整时保留 NULL；仍没有远端 barrier receipts、Assignment/successor registry 或跨 term adoption。完整故障矩阵仍未接入。新增的故障证据是 TaskAuthority SQLite abort/VFS 写失败，不等于完整 kill-9/ENOSPC/torn-write 组合矩阵，也没有多 Cell 传播证据。
 - mixed v3 envelope 必须在 publication 前由 permit holder 准备；当前 proof 只在 TaskAuthority 内绑定本地 slot contract 与已持久化 EffectReceipt，仍不验证外部 provider 的语义成功内容、签名、attestation 或跨进程 authority lease。
 - 不把 outbox ACK、local log-prefix digest 或 coordinator observation 晋升为 Trust View/vector checkpoint，也不声称分布式原子提交。

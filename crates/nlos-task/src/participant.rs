@@ -1,6 +1,7 @@
 use nlos_types::{Generation, ReceiptId, TaskId, TaskParticipantId, TaskParticipantRegistryId};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 
 use crate::store::encode_u64;
 use crate::{TaskRecord, TaskStoreError};
@@ -406,6 +407,63 @@ pub(crate) fn has_participant(
     registry.participants.contains(&participant)
 }
 
+/// Computes the two local takeover roots without inventing a distributed
+/// barrier proof. The outstanding set is keyed by stable participant type/id;
+/// a generation or admission-receipt conflict is corruption rather than a
+/// silently widened fence.
+pub(crate) fn takeover_fence_roots(
+    registry: &ParticipantRegistryRecord,
+    outstanding: &[ParticipantRecord],
+) -> Result<([u8; 32], [u8; 32]), TaskStoreError> {
+    let outstanding = canonicalize_participants(outstanding)?;
+    let mut union = registry.participants.clone();
+    union.extend(outstanding.iter().copied());
+    let union = canonicalize_participants(&union)?;
+    Ok((
+        participant_set_root(
+            b"llmos/task-takeover-outstanding-participants/v1",
+            &outstanding,
+        ),
+        participant_set_root(b"llmos/task-takeover-exact-fence-set/v1", &union),
+    ))
+}
+
+fn canonicalize_participants(
+    participants: &[ParticipantRecord],
+) -> Result<Vec<ParticipantRecord>, TaskStoreError> {
+    let mut by_identity = BTreeMap::new();
+    for participant in participants {
+        let key = (
+            participant.participant_type.code(),
+            participant.participant_id.into_bytes(),
+        );
+        if let Some(previous) = by_identity.insert(key, *participant)
+            && previous != *participant
+        {
+            return Err(TaskStoreError::CorruptRecord(
+                "takeover participant generation conflict",
+            ));
+        }
+    }
+    Ok(by_identity.into_values().collect())
+}
+
+fn participant_set_root(domain: &[u8], participants: &[ParticipantRecord]) -> [u8; 32] {
+    if participants.is_empty() {
+        return [0; 32];
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(domain);
+    hasher.update((participants.len() as u64).to_be_bytes());
+    for participant in participants {
+        hasher.update(participant.participant_type.code().to_be_bytes());
+        hasher.update(participant.participant_id.as_bytes());
+        hasher.update(participant.participant_generation.get().to_be_bytes());
+        hasher.update(participant.admission_receipt_id.as_bytes());
+    }
+    hasher.finalize().into()
+}
+
 pub(crate) fn validate_frozen_binding(
     connection: &Connection,
     task: &TaskRecord,
@@ -793,3 +851,65 @@ pub(crate) const SCHEMA_V11_SQL: &str = "CREATE TABLE task_authority_identity (
     ALTER TABLE commit_permits ADD COLUMN participant_registry_root BLOB
         CHECK(participant_registry_root IS NULL OR length(participant_registry_root) = 32);
     PRAGMA user_version = 11;";
+
+#[cfg(test)]
+mod takeover_root_tests {
+    use super::*;
+    use std::num::NonZeroU64;
+
+    fn participant(
+        participant_type: ParticipantType,
+        id: u8,
+        generation: u64,
+        receipt: u8,
+    ) -> ParticipantRecord {
+        ParticipantRecord {
+            participant_type,
+            participant_id: TaskParticipantId::from_bytes([id; 16]),
+            participant_generation: Generation::new(
+                NonZeroU64::new(generation).expect("non-zero generation"),
+            ),
+            admission_receipt_id: ReceiptId::from_bytes([receipt; 16]),
+        }
+    }
+
+    fn registry(participants: Vec<ParticipantRecord>) -> ParticipantRegistryRecord {
+        ParticipantRegistryRecord {
+            registry_id: TaskParticipantRegistryId::from_bytes([0x10; 16]),
+            task_id: TaskId::from_bytes([0x11; 16]),
+            task_generation: Generation::INITIAL,
+            generation: 1,
+            prior_root: [0x12; 32],
+            participants,
+            root: [0x13; 32],
+            state: ParticipantRegistryState::FrozenForTakeover,
+            created_at_ms: 1,
+            updated_at_ms: 1,
+        }
+    }
+
+    #[test]
+    fn takeover_roots_are_order_independent_and_deduplicate_union() {
+        let task_store = participant(ParticipantType::TaskStore, 1, 1, 2);
+        let artifact = participant(ParticipantType::ArtifactHead, 2, 1, 3);
+        let first = takeover_fence_roots(&registry(vec![task_store]), &[artifact, task_store])
+            .expect("roots");
+        let second = takeover_fence_roots(&registry(vec![task_store]), &[task_store, artifact])
+            .expect("roots");
+        assert_eq!(first, second);
+        assert_ne!(first.0, [0; 32]);
+        assert_ne!(first.1, [0; 32]);
+    }
+
+    #[test]
+    fn takeover_roots_reject_identity_generation_conflicts() {
+        let registry_participant = participant(ParticipantType::TaskStore, 1, 1, 2);
+        let conflicting = participant(ParticipantType::TaskStore, 1, 2, 3);
+        assert!(matches!(
+            takeover_fence_roots(&registry(vec![registry_participant]), &[conflicting]),
+            Err(TaskStoreError::CorruptRecord(
+                "takeover participant generation conflict"
+            ))
+        ));
+    }
+}

@@ -1503,6 +1503,17 @@ impl SqliteTaskAuthority {
             request.expected_registry_binding,
             request.requested_at_ms,
         )?;
+        let (outstanding_operation_participant_root, exact_fence_set_root) =
+            match load_outstanding_operation_participants(&transaction, request.task_id)? {
+                Some(outstanding_participants) => {
+                    let (outstanding_root, exact_root) = crate::participant::takeover_fence_roots(
+                        &registry,
+                        &outstanding_participants,
+                    )?;
+                    (Some(outstanding_root), Some(exact_root))
+                }
+                None => (None, None),
+            };
         let control_epoch = if before.state == crate::ParticipantRegistryState::FrozenForTakeover {
             task.record.control_epoch
         } else {
@@ -1533,8 +1544,8 @@ impl SqliteTaskAuthority {
             frozen_registry_binding: request.expected_registry_binding,
             authority_lease_binding: request.lease.binding(),
             control_epoch,
-            exact_fence_set_root: None,
-            outstanding_operation_participant_root: None,
+            exact_fence_set_root,
+            outstanding_operation_participant_root,
             created_at_ms: request.requested_at_ms,
         };
         if let Some(existing) = load_takeover_fence_receipt(
@@ -1547,6 +1558,17 @@ impl SqliteTaskAuthority {
             {
                 return Err(TaskStoreError::AuthorityLeaseBindingMismatch);
             }
+            if existing
+                .exact_fence_set_root
+                .is_some_and(|root| Some(root) != record.exact_fence_set_root)
+                || existing
+                    .outstanding_operation_participant_root
+                    .is_some_and(|root| Some(root) != record.outstanding_operation_participant_root)
+            {
+                return Err(TaskStoreError::CorruptRecord(
+                    "takeover fence root changed during replay",
+                ));
+            }
             transaction.commit()?;
             return Ok(registry);
         }
@@ -1558,9 +1580,12 @@ impl SqliteTaskAuthority {
     /// Reads the immutable local takeover-fence receipt for one frozen
     /// registry generation/root.
     ///
-    /// The receipt is only a local pre-gate observation. Its exact fence-set
-    /// and outstanding-operation roots are intentionally absent until the
-    /// distributed takeover barrier is implemented.
+    /// The receipt is only a local pre-gate observation. When the durable
+    /// write set exposes a complete participant mapping, its roots cover the
+    /// frozen registry union with locally durable outstanding-operation
+    /// participants; otherwise the roots remain `None`. Remote endpoint
+    /// barrier receipts and successor assignment activation remain outside
+    /// this API.
     ///
     /// # Errors
     ///
@@ -6029,6 +6054,65 @@ fn load_outstanding_permit(
         PermitState::Quarantined.code(),
     ])?;
     rows.next()?.map(decode_permit_row).transpose()
+}
+
+fn load_outstanding_operation_participants(
+    source: &impl SqlRead,
+    task_id: TaskId,
+) -> Result<Option<Vec<crate::ParticipantRecord>>, TaskStoreError> {
+    let Some(permit) = load_outstanding_permit(source, task_id)? else {
+        return Ok(Some(Vec::new()));
+    };
+    let Some(write_set) = load_write_set_by_root(source, task_id, permit.write_set_root)? else {
+        return Ok(None);
+    };
+    if !write_set.artifact_reads.is_empty()
+        || !write_set.artifact_writes.is_empty()
+        || !write_set.semantic_reads.is_empty()
+        || !write_set.semantic_appends.is_empty()
+        || !write_set.resource_reservations.is_empty()
+        || !write_set.planned_effects.is_empty() && write_set.effect_endpoints.is_empty()
+    {
+        return Ok(None);
+    }
+    let mut participants = write_set
+        .process_binding
+        .iter()
+        .map(|binding| crate::ParticipantRecord {
+            participant_type: crate::ParticipantType::ProcessBinding,
+            participant_id: binding.participant_id,
+            participant_generation: binding.participant_generation,
+            admission_receipt_id: binding.admission_receipt_id,
+        })
+        .collect::<Vec<_>>();
+    participants.extend(
+        write_set
+            .effect_endpoints
+            .iter()
+            .map(effect_endpoint_participant),
+    );
+    Ok(Some(participants))
+}
+
+fn effect_endpoint_participant(endpoint: &TaskWriteSetEffectEndpoint) -> crate::ParticipantRecord {
+    let participant_type = match endpoint.kind {
+        TaskWriteSetEffectEndpointKind::ArtifactHead => crate::ParticipantType::ArtifactHead,
+        TaskWriteSetEffectEndpointKind::SemanticAdmission => {
+            crate::ParticipantType::SemanticAdmission
+        }
+        TaskWriteSetEffectEndpointKind::ProcessBinding => crate::ParticipantType::ProcessBinding,
+        TaskWriteSetEffectEndpointKind::DriverGateway => crate::ParticipantType::DriverGateway,
+        TaskWriteSetEffectEndpointKind::ResourceLedger => crate::ParticipantType::ResourceLedger,
+        TaskWriteSetEffectEndpointKind::OperationBinding => {
+            crate::ParticipantType::OperationBinding
+        }
+    };
+    crate::ParticipantRecord {
+        participant_type,
+        participant_id: endpoint.participant_id,
+        participant_generation: endpoint.participant_generation,
+        admission_receipt_id: endpoint.admission_receipt_id,
+    }
 }
 
 /// The quarantine tombstone blocking new winner issuance, if any

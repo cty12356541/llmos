@@ -96,9 +96,11 @@ pub struct AuthorityLeaseTakeoverFenceRequest {
 
 /// Durable local receipt for the `FROZEN_FOR_TAKEOVER` pre-gate.
 ///
-/// `exact_fence_set_root` and `outstanding_operation_participant_root` stay
-/// `None` until the future Assignment/TakeoverReceipt implementation proves
-/// the required registry ∪ outstanding-operation union and endpoint barriers.
+/// When the local durable write set exposes a complete participant mapping,
+/// the two roots are deterministic facts for the frozen registry union and
+/// outstanding-operation participant set. `None` means that mapping is not
+/// complete; neither form attests a remote endpoint barrier. Assignment/
+/// `TakeoverReceipt` activation remains a later distributed gate.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AuthorityLeaseTakeoverFenceRecord {
     pub receipt_id: ReceiptId,

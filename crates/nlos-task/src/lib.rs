@@ -64,9 +64,10 @@
 //! immutable `CommitPermit` binding and plain v3/pre-effect terminal guards;
 //! schema v29 adds a same-term lease-bound adoption/reconcile guard and an
 //! opt-in local `FROZEN_FOR_TAKEOVER` pre-gate; schema v30 persists an
-//! immutable local fence receipt whose exact fence-set/barrier roots remain
-//! explicitly absent. No schema authorizes an IPC peer or completes
-//! cross-term adoption. Compensation execution
+//! immutable local fence receipt whose local exact-fence and outstanding-set
+//! roots are computed when the durable participant mapping is complete,
+//! without remote barrier receipts. No schema authorizes an IPC peer or
+//! completes cross-term adoption. Compensation execution
 //! (`COMPENSATED` is recordable but never executed), `QUORUM`/`REDUCE`
 //! group semantics (`[TASK-GROUP-003]`), `BEST_EFFORT` failure mode,
 //! `AGENT_INSTANCE` members, `DETACH` execution (`[TASK-DETACH-001]`),
