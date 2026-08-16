@@ -20,7 +20,9 @@ use rusqlite::{
 };
 
 use crate::lease::{
-    AuthorityLeasePermitRequest, AuthorityLeaseRecord, AuthorityLeaseTakeoverFenceRequest,
+    AuthorityLeasePermitRequest, AuthorityLeaseRecord, AuthorityLeaseTakeoverFenceRecord,
+    AuthorityLeaseTakeoverFenceRequest, derive_takeover_fence_receipt_id,
+    insert_takeover_fence_receipt, load_takeover_fence_receipt,
     validate_authority_lease_binding_in_transaction,
 };
 use crate::model::{derive_closure_receipt_id, derive_permit_id, empty_effect_history_root};
@@ -36,7 +38,7 @@ use crate::{
     TaskWriteSetSemanticTarget,
 };
 
-const SCHEMA_VERSION: i64 = 29;
+const SCHEMA_VERSION: i64 = 30;
 
 /// A single-writer `SQLite` task authority.
 ///
@@ -241,6 +243,7 @@ impl SqliteTaskAuthority {
             migrate_v27(&mut connection)?;
             migrate_v28(&mut connection)?;
             migrate_v29(&mut connection)?;
+            migrate_v30(&mut connection)?;
         }
 
         Ok(Self {
@@ -1500,8 +1503,10 @@ impl SqliteTaskAuthority {
             request.expected_registry_binding,
             request.requested_at_ms,
         )?;
-        if before.state != crate::ParticipantRegistryState::FrozenForTakeover {
-            let control_epoch = task
+        let control_epoch = if before.state == crate::ParticipantRegistryState::FrozenForTakeover {
+            task.record.control_epoch
+        } else {
+            let next = task
                 .record
                 .control_epoch
                 .checked_add(1)
@@ -1511,12 +1516,63 @@ impl SqliteTaskAuthority {
                 &task,
                 request.requested_at_ms,
                 |task_record| {
-                    task_record.control_epoch = control_epoch;
+                    task_record.control_epoch = next;
                 },
             )?;
+            next
+        };
+        let record = AuthorityLeaseTakeoverFenceRecord {
+            receipt_id: derive_takeover_fence_receipt_id(
+                request.task_id,
+                task.record.task_generation,
+                request.expected_registry_binding,
+                request.lease.binding(),
+            ),
+            task_id: request.task_id,
+            task_generation: task.record.task_generation,
+            frozen_registry_binding: request.expected_registry_binding,
+            authority_lease_binding: request.lease.binding(),
+            control_epoch,
+            exact_fence_set_root: None,
+            outstanding_operation_participant_root: None,
+            created_at_ms: request.requested_at_ms,
+        };
+        if let Some(existing) = load_takeover_fence_receipt(
+            &transaction,
+            request.task_id,
+            request.expected_registry_binding,
+        )? {
+            if existing.authority_lease_binding != record.authority_lease_binding
+                || existing.control_epoch != record.control_epoch
+            {
+                return Err(TaskStoreError::AuthorityLeaseBindingMismatch);
+            }
+            transaction.commit()?;
+            return Ok(registry);
         }
+        insert_takeover_fence_receipt(&transaction, &record)?;
         transaction.commit()?;
         Ok(registry)
+    }
+
+    /// Reads the immutable local takeover-fence receipt for one frozen
+    /// registry generation/root.
+    ///
+    /// The receipt is only a local pre-gate observation. Its exact fence-set
+    /// and outstanding-operation roots are intentionally absent until the
+    /// distributed takeover barrier is implemented.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ReceiptNotFound` or a storage/corruption error.
+    pub fn inspect_authority_takeover_fence_receipt(
+        &self,
+        task_id: TaskId,
+        registry_binding: crate::ParticipantRegistryBinding,
+    ) -> Result<AuthorityLeaseTakeoverFenceRecord, TaskStoreError> {
+        let connection = self.lock_connection()?;
+        load_takeover_fence_receipt(&*connection, task_id, registry_binding)?
+            .ok_or(TaskStoreError::ReceiptNotFound)
     }
 
     /// Registers an Artifact head after direct proof readback from its owner.
@@ -3632,6 +3688,42 @@ fn migrate_v29(connection: &mut Connection) -> Result<(), TaskStoreError> {
     Ok(())
 }
 
+/// v29 → v30 adds the immutable local receipt for the
+/// `FROZEN_FOR_TAKEOVER` lease fence. The exact fence-set union and barrier
+/// receipts remain nullable until the distributed takeover path exists.
+fn migrate_v30(connection: &mut Connection) -> Result<(), TaskStoreError> {
+    let table_present: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master
+            WHERE type='table' AND name='task_authority_takeover_fence_receipts'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    let trigger_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type='trigger' AND name IN (
+             'task_authority_takeover_fence_receipt_immutable',
+             'task_authority_takeover_fence_receipt_no_delete'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if table_present && trigger_count == 2 {
+        connection.pragma_update(None, "user_version", 30)?;
+        return Ok(());
+    }
+    if table_present || trigger_count != 0 {
+        return Err(TaskStoreError::CorruptRecord(
+            "partial takeover fence receipt schema",
+        ));
+    }
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(SCHEMA_V30_SQL)?;
+    transaction.commit()?;
+    Ok(())
+}
+
 const SCHEMA_V13_SQL: &str = "CREATE TABLE task_write_sets (
         task_id BLOB NOT NULL CHECK(length(task_id) = 16),
         attempt_id BLOB NOT NULL CHECK(length(attempt_id) = 16),
@@ -4241,6 +4333,42 @@ pub(crate) const SCHEMA_V29_SQL: &str = "ALTER TABLE task_adoption_receipts
      END;
 
      PRAGMA user_version = 29;";
+
+pub(crate) const SCHEMA_V30_SQL: &str = "CREATE TABLE task_authority_takeover_fence_receipts (
+        receipt_id BLOB PRIMARY KEY NOT NULL CHECK(length(receipt_id) = 16),
+        task_id BLOB NOT NULL CHECK(length(task_id) = 16),
+        task_generation BLOB NOT NULL CHECK(length(task_generation) = 8),
+        frozen_registry_generation BLOB NOT NULL CHECK(length(frozen_registry_generation) = 8),
+        frozen_registry_root BLOB NOT NULL CHECK(length(frozen_registry_root) = 32),
+        authority_lease_authority_id BLOB NOT NULL CHECK(length(authority_lease_authority_id) = 16),
+        authority_lease_holder_id BLOB NOT NULL CHECK(length(authority_lease_holder_id) = 16),
+        authority_lease_term BLOB NOT NULL CHECK(length(authority_lease_term) = 8),
+        authority_lease_epoch BLOB NOT NULL CHECK(length(authority_lease_epoch) = 8),
+        authority_lease_fencing_token BLOB NOT NULL CHECK(length(authority_lease_fencing_token) = 32),
+        authority_lease_expires_at_ms INTEGER NOT NULL CHECK(authority_lease_expires_at_ms >= 0),
+        control_epoch BLOB NOT NULL CHECK(length(control_epoch) = 8),
+        exact_fence_set_root BLOB CHECK(exact_fence_set_root IS NULL OR length(exact_fence_set_root) = 32),
+        outstanding_operation_participant_root BLOB
+            CHECK(outstanding_operation_participant_root IS NULL
+                  OR length(outstanding_operation_participant_root) = 32),
+        created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0),
+        UNIQUE(task_id, frozen_registry_generation, frozen_registry_root),
+        FOREIGN KEY(task_id) REFERENCES tasks(task_id)
+     ) STRICT;
+
+     CREATE TRIGGER task_authority_takeover_fence_receipt_immutable
+     BEFORE UPDATE ON task_authority_takeover_fence_receipts
+     BEGIN
+        SELECT RAISE(ABORT, 'takeover fence receipt is immutable');
+     END;
+
+     CREATE TRIGGER task_authority_takeover_fence_receipt_no_delete
+     BEFORE DELETE ON task_authority_takeover_fence_receipts
+     BEGIN
+        SELECT RAISE(ABORT, 'takeover fence receipt is durable evidence');
+     END;
+
+     PRAGMA user_version = 30;";
 
 const SCHEMA_V12_SQL: &str = "ALTER TABLE effect_permits
         ADD COLUMN participant_registry_generation BLOB

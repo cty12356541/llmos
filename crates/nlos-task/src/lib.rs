@@ -63,8 +63,10 @@
 //! `TaskAuthority` lease/term/fencing primitive; schema v28 adds an opt-in
 //! immutable `CommitPermit` binding and plain v3/pre-effect terminal guards;
 //! schema v29 adds a same-term lease-bound adoption/reconcile guard and an
-//! opt-in local `FROZEN_FOR_TAKEOVER` pre-gate, but no schema authorizes an
-//! IPC peer or completes cross-term adoption. Compensation execution
+//! opt-in local `FROZEN_FOR_TAKEOVER` pre-gate; schema v30 persists an
+//! immutable local fence receipt whose exact fence-set/barrier roots remain
+//! explicitly absent. No schema authorizes an IPC peer or completes
+//! cross-term adoption. Compensation execution
 //! (`COMPENSATED` is recordable but never executed), `QUORUM`/`REDUCE`
 //! group semantics (`[TASK-GROUP-003]`), `BEST_EFFORT` failure mode,
 //! `AGENT_INSTANCE` members, `DETACH` execution (`[TASK-DETACH-001]`),
@@ -115,8 +117,8 @@ pub use group::{
 };
 pub use lease::{
     AuthorityLeaseBinding, AuthorityLeaseDecision, AuthorityLeasePermitRequest,
-    AuthorityLeaseRecord, AuthorityLeaseRequest, AuthorityLeaseTakeoverFenceRequest,
-    MAX_AUTHORITY_LEASE_TTL_MS,
+    AuthorityLeaseRecord, AuthorityLeaseRequest, AuthorityLeaseTakeoverFenceRecord,
+    AuthorityLeaseTakeoverFenceRequest, MAX_AUTHORITY_LEASE_TTL_MS,
 };
 pub use model::{
     AdoptionReceiptRecord, AttemptHandle, AttemptRecord, AttemptRegistrationDecision, AttemptSpec,

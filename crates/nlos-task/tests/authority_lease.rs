@@ -1,4 +1,4 @@
-//! Acceptance tests for the schema-v29 durable `TaskAuthority` lease/term
+//! Acceptance tests for the schema-v30 durable `TaskAuthority` lease/term
 //! primitive, opt-in `CommitPermit` binding, same-term lease-bound adoption
 //! guard, and the local `FROZEN_FOR_TAKEOVER` fence pre-gate. The slice
 //! proves local `SQLite` fencing and restart readback; it does not claim IPC
@@ -522,6 +522,13 @@ fn takeover_fence_freezes_registry_and_replays_after_restart() {
     );
     assert_eq!(frozen.generation, registry_binding.generation);
     assert_eq!(frozen.root, registry_binding.root);
+    let fence_receipt = authority
+        .inspect_authority_takeover_fence_receipt(first_attempt.task_id, registry_binding)
+        .expect("takeover fence receipt");
+    assert_eq!(fence_receipt.authority_lease_binding, lease_two.binding());
+    assert_eq!(fence_receipt.frozen_registry_binding, registry_binding);
+    assert_eq!(fence_receipt.exact_fence_set_root, None);
+    assert_eq!(fence_receipt.outstanding_operation_participant_root, None);
     assert_eq!(
         authority
             .inspect_task(first_attempt.task_id)
@@ -581,6 +588,25 @@ fn takeover_fence_freezes_registry_and_replays_after_restart() {
         })
     ));
 
+    let raw = Connection::open(&database.path).expect("raw takeover receipt database");
+    assert!(
+        raw.execute(
+            "UPDATE task_authority_takeover_fence_receipts
+             SET exact_fence_set_root = zeroblob(32)
+             WHERE receipt_id = ?1",
+            rusqlite::params![fence_receipt.receipt_id.as_bytes().as_slice()],
+        )
+        .is_err()
+    );
+    assert!(
+        raw.execute(
+            "DELETE FROM task_authority_takeover_fence_receipts WHERE receipt_id = ?1",
+            rusqlite::params![fence_receipt.receipt_id.as_bytes().as_slice()],
+        )
+        .is_err()
+    );
+    drop(raw);
+
     drop(authority);
     let reopened = database.open();
     assert_eq!(
@@ -589,6 +615,12 @@ fn takeover_fence_freezes_registry_and_replays_after_restart() {
             .expect("frozen registry after restart")
             .state,
         nlos_task::ParticipantRegistryState::FrozenForTakeover
+    );
+    assert_eq!(
+        reopened
+            .inspect_authority_takeover_fence_receipt(first_attempt.task_id, registry_binding)
+            .expect("fence receipt after restart"),
+        fence_receipt
     );
     assert!(matches!(
         reopened.prepare_authority_takeover_fence(AuthorityLeaseTakeoverFenceRequest {

@@ -4,11 +4,15 @@
 //! authenticate an IPC peer, perform a distributed consensus decision, or
 //! adopt an old `CommitPermit`; those callers remain explicit next gates.
 
-use nlos_types::{IdempotencyKey, ProcessId, TaskId, TaskParticipantId};
+use std::num::NonZeroU64;
+
+use nlos_types::{Generation, IdempotencyKey, ProcessId, ReceiptId, TaskId, TaskParticipantId};
 use rusqlite::{Transaction, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
 
+use crate::ParticipantRegistryBinding;
 use crate::TaskStoreError;
+use crate::store::optional_blob;
 use crate::store::{SqlRead, SqliteTaskAuthority, blob16, blob32, encode_u64, u64_from_blob};
 
 /// Bounds a single authority lease so a forgotten holder cannot retain a
@@ -88,6 +92,24 @@ pub struct AuthorityLeaseTakeoverFenceRequest {
     pub expected_registry_binding: crate::ParticipantRegistryBinding,
     pub lease: AuthorityLeaseRecord,
     pub requested_at_ms: i64,
+}
+
+/// Durable local receipt for the `FROZEN_FOR_TAKEOVER` pre-gate.
+///
+/// `exact_fence_set_root` and `outstanding_operation_participant_root` stay
+/// `None` until the future Assignment/TakeoverReceipt implementation proves
+/// the required registry ∪ outstanding-operation union and endpoint barriers.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AuthorityLeaseTakeoverFenceRecord {
+    pub receipt_id: ReceiptId,
+    pub task_id: TaskId,
+    pub task_generation: Generation,
+    pub frozen_registry_binding: ParticipantRegistryBinding,
+    pub authority_lease_binding: AuthorityLeaseBinding,
+    pub control_epoch: u64,
+    pub exact_fence_set_root: Option<[u8; 32]>,
+    pub outstanding_operation_participant_root: Option<[u8; 32]>,
+    pub created_at_ms: i64,
 }
 
 /// Idempotent lease transition result.
@@ -461,5 +483,132 @@ fn decode_lease_row(row: &rusqlite::Row<'_>) -> Result<AuthorityLeaseRecord, Tas
         expires_at_ms: row.get(6)?,
         ttl_ms: row.get(7)?,
         idempotency_key: IdempotencyKey::from_bytes(blob16(row, 8)?),
+    })
+}
+
+pub(crate) fn derive_takeover_fence_receipt_id(
+    task_id: TaskId,
+    task_generation: Generation,
+    registry_binding: ParticipantRegistryBinding,
+    lease_binding: AuthorityLeaseBinding,
+) -> ReceiptId {
+    let mut hasher = Sha256::new();
+    hasher.update(b"llmos/task-authority-takeover-fence/v1");
+    hasher.update(task_id.as_bytes());
+    hasher.update(task_generation.get().to_be_bytes());
+    hasher.update(registry_binding.generation.to_be_bytes());
+    hasher.update(registry_binding.root);
+    hasher.update(lease_binding.authority_id.as_bytes());
+    hasher.update(lease_binding.holder_id.as_bytes());
+    hasher.update(lease_binding.term.to_be_bytes());
+    hasher.update(lease_binding.lease_epoch.to_be_bytes());
+    hasher.update(lease_binding.fencing_token);
+    hasher.update(lease_binding.expires_at_ms.to_be_bytes());
+    let digest: [u8; 32] = hasher.finalize().into();
+    ReceiptId::from_bytes(digest[..16].try_into().expect("receipt id prefix"))
+}
+
+pub(crate) fn load_takeover_fence_receipt(
+    source: &impl SqlRead,
+    task_id: TaskId,
+    registry_binding: ParticipantRegistryBinding,
+) -> Result<Option<AuthorityLeaseTakeoverFenceRecord>, TaskStoreError> {
+    let mut statement = source.prepare_statement(
+        "SELECT receipt_id, task_id, task_generation,
+                frozen_registry_generation, frozen_registry_root,
+                authority_lease_authority_id, authority_lease_holder_id,
+                authority_lease_term, authority_lease_epoch,
+                authority_lease_fencing_token, authority_lease_expires_at_ms,
+                control_epoch, exact_fence_set_root,
+                outstanding_operation_participant_root, created_at_ms
+         FROM task_authority_takeover_fence_receipts
+         WHERE task_id = ?1 AND frozen_registry_generation = ?2
+           AND frozen_registry_root = ?3",
+    )?;
+    let mut rows = statement.query(params![
+        task_id.as_bytes().as_slice(),
+        encode_u64(registry_binding.generation).as_slice(),
+        registry_binding.root.as_slice(),
+    ])?;
+    rows.next()?.map(decode_takeover_fence_row).transpose()
+}
+
+pub(crate) fn insert_takeover_fence_receipt(
+    transaction: &Transaction<'_>,
+    record: &AuthorityLeaseTakeoverFenceRecord,
+) -> Result<(), TaskStoreError> {
+    transaction.execute(
+        "INSERT INTO task_authority_takeover_fence_receipts (
+            receipt_id, task_id, task_generation,
+            frozen_registry_generation, frozen_registry_root,
+            authority_lease_authority_id, authority_lease_holder_id,
+            authority_lease_term, authority_lease_epoch,
+            authority_lease_fencing_token, authority_lease_expires_at_ms,
+            control_epoch, exact_fence_set_root,
+            outstanding_operation_participant_root, created_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
+                   ?11, ?12, ?13, ?14, ?15)",
+        params![
+            record.receipt_id.as_bytes().as_slice(),
+            record.task_id.as_bytes().as_slice(),
+            encode_u64(record.task_generation.get()).as_slice(),
+            encode_u64(record.frozen_registry_binding.generation).as_slice(),
+            record.frozen_registry_binding.root.as_slice(),
+            record
+                .authority_lease_binding
+                .authority_id
+                .as_bytes()
+                .as_slice(),
+            record
+                .authority_lease_binding
+                .holder_id
+                .as_bytes()
+                .as_slice(),
+            encode_u64(record.authority_lease_binding.term).as_slice(),
+            encode_u64(record.authority_lease_binding.lease_epoch).as_slice(),
+            record.authority_lease_binding.fencing_token.as_slice(),
+            record.authority_lease_binding.expires_at_ms,
+            encode_u64(record.control_epoch).as_slice(),
+            record
+                .exact_fence_set_root
+                .as_ref()
+                .map(<[u8; 32]>::as_slice),
+            record
+                .outstanding_operation_participant_root
+                .as_ref()
+                .map(<[u8; 32]>::as_slice),
+            record.created_at_ms,
+        ],
+    )?;
+    Ok(())
+}
+
+fn decode_takeover_fence_row(
+    row: &rusqlite::Row<'_>,
+) -> Result<AuthorityLeaseTakeoverFenceRecord, TaskStoreError> {
+    let task_generation = Generation::new(NonZeroU64::new(u64_from_blob(row, 2)?).ok_or(
+        TaskStoreError::CorruptRecord("takeover fence task generation"),
+    )?);
+    let authority_lease_binding = AuthorityLeaseBinding {
+        authority_id: TaskParticipantId::from_bytes(blob16(row, 5)?),
+        holder_id: ProcessId::from_bytes(blob16(row, 6)?),
+        term: u64_from_blob(row, 7)?,
+        lease_epoch: u64_from_blob(row, 8)?,
+        fencing_token: blob32(row, 9)?,
+        expires_at_ms: row.get(10)?,
+    };
+    Ok(AuthorityLeaseTakeoverFenceRecord {
+        receipt_id: ReceiptId::from_bytes(blob16(row, 0)?),
+        task_id: TaskId::from_bytes(blob16(row, 1)?),
+        task_generation,
+        frozen_registry_binding: ParticipantRegistryBinding {
+            generation: u64_from_blob(row, 3)?,
+            root: blob32(row, 4)?,
+        },
+        authority_lease_binding,
+        control_epoch: u64_from_blob(row, 11)?,
+        exact_fence_set_root: optional_blob::<32>(row, 12)?,
+        outstanding_operation_participant_root: optional_blob::<32>(row, 13)?,
+        created_at_ms: row.get(14)?,
     })
 }
