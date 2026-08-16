@@ -435,6 +435,16 @@ pub(crate) fn takeover_fence_members(
     canonicalize_participants(&union)
 }
 
+pub(crate) fn takeover_fence_set_root(
+    participants: &[ParticipantRecord],
+) -> Result<[u8; 32], TaskStoreError> {
+    let canonical = canonicalize_participants(participants)?;
+    Ok(participant_set_root(
+        b"llmos/task-takeover-exact-fence-set/v1",
+        &canonical,
+    ))
+}
+
 fn canonicalize_participants(
     participants: &[ParticipantRecord],
 ) -> Result<Vec<ParticipantRecord>, TaskStoreError> {
@@ -918,5 +928,16 @@ mod takeover_root_tests {
                 "takeover participant generation conflict"
             ))
         ));
+    }
+
+    #[test]
+    fn canonical_fence_manifest_root_matches_takeover_root() {
+        let task_store = participant(ParticipantType::TaskStore, 1, 1, 2);
+        let artifact = participant(ParticipantType::ArtifactHead, 2, 1, 3);
+        let members = vec![artifact, task_store];
+        let manifest_root = takeover_fence_set_root(&members).expect("manifest root");
+        let (_, takeover_root) =
+            takeover_fence_roots(&registry(vec![task_store]), &[artifact]).expect("takeover root");
+        assert_eq!(manifest_root, takeover_root);
     }
 }

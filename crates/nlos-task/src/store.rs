@@ -1737,20 +1737,18 @@ impl SqliteTaskAuthority {
             return Err(TaskStoreError::ParticipantRegistryBindingMismatch);
         }
         let fence_members = load_takeover_fence_members(&transaction, takeover.fence_receipt_id)?;
-        if fence_members.iter().any(|member| {
-            member.task_id != takeover.task_id
-                || member.task_generation != takeover.task_generation
-                || member.fence_receipt_id != takeover.fence_receipt_id
-        }) {
-            return Err(TaskStoreError::CorruptRecord(
-                "takeover fence member binding",
-            ));
-        }
-        if fence_members.is_empty()
-            || !fence_members
-                .iter()
-                .any(|member| member.participant == request.participant)
-        {
+        let manifest_participants = if fence_members.is_empty() {
+            Vec::new()
+        } else {
+            validate_takeover_fence_manifest(
+                &fence_members,
+                takeover.fence_receipt_id,
+                takeover.task_id,
+                takeover.task_generation,
+                fence_set_root,
+            )?
+        };
+        if fence_members.is_empty() || !manifest_participants.contains(&request.participant) {
             return Err(TaskStoreError::ParticipantRegistryBindingMismatch);
         }
         let record = AuthorityTakeoverBarrierReceiptRecord {
@@ -1852,10 +1850,13 @@ impl SqliteTaskAuthority {
                 missing_participants: Vec::new(),
             });
         }
-        let expected = members
-            .iter()
-            .map(|member| member.participant)
-            .collect::<Vec<_>>();
+        let expected = validate_takeover_fence_manifest(
+            &members,
+            takeover.fence_receipt_id,
+            takeover.task_id,
+            takeover.task_generation,
+            fence_set_root,
+        )?;
         for observation in &observations {
             if observation.takeover_receipt_id != takeover_receipt_id
                 || observation.task_id != takeover.task_id
@@ -2190,6 +2191,33 @@ impl SqliteTaskAuthority {
             .lock()
             .map_err(|_| TaskStoreError::LockPoisoned)
     }
+}
+
+fn validate_takeover_fence_manifest(
+    members: &[AuthorityTakeoverFenceMemberRecord],
+    fence_receipt_id: ReceiptId,
+    task_id: TaskId,
+    task_generation: Generation,
+    expected_root: [u8; 32],
+) -> Result<Vec<crate::ParticipantRecord>, TaskStoreError> {
+    if members.iter().any(|member| {
+        member.fence_receipt_id != fence_receipt_id
+            || member.task_id != task_id
+            || member.task_generation != task_generation
+    }) {
+        return Err(TaskStoreError::CorruptRecord(
+            "takeover fence member binding",
+        ));
+    }
+    let participants = members
+        .iter()
+        .map(|member| member.participant)
+        .collect::<Vec<_>>();
+    let actual_root = crate::participant::takeover_fence_set_root(&participants)?;
+    if actual_root != expected_root {
+        return Err(TaskStoreError::CorruptRecord("takeover fence member root"));
+    }
+    Ok(participants)
 }
 
 fn replay_permit(
