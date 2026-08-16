@@ -10,14 +10,14 @@
 //! authority only: adoption is by the same authority after
 //! restart/uncertainty, never a cross-term takeover.
 
-use nlos_types::{CommitPermitId, IdempotencyKey, ReceiptId, TaskId};
+use nlos_types::{CommitPermitId, IdempotencyKey, ProcessId, ReceiptId, TaskId, TaskParticipantId};
 use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
 
 use crate::effect::{
     self, SlotRecord, SlotState, insert_effect_receipt, list_slots, load_slot, refresh_summary,
 };
-use crate::lease::validate_authority_lease_binding_in_transaction;
+use crate::lease::{AuthorityLeaseBinding, validate_authority_lease_binding_in_transaction};
 use crate::model::{
     self, ClosePermitRequest, EffectHistoryEntry, EffectHistoryLookup, EffectHistoryOutcome,
     FinalizeRequest, QuarantineReceiptRecord, ReceiptOutcome, ReconcileOutcome,
@@ -25,7 +25,7 @@ use crate::model::{
 };
 use crate::store::{
     self, SqlRead, SqliteTaskAuthority, StoredTask, blob16, blob32, close_permit, encode_u64,
-    generation_from_blob, insert_receipt, load_receipt_by_permit, optional_blob16,
+    generation_from_blob, insert_receipt, load_receipt_by_permit, optional_blob, optional_blob16,
     set_attempt_state, u64_from_blob, update_task,
 };
 use crate::{
@@ -111,6 +111,23 @@ pub struct AuthorityLeaseFinalizeRequest {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AuthorityLeaseCloseRequest {
     pub close: ClosePermitRequest,
+    pub lease: AuthorityLeaseRecord,
+}
+
+/// Opt-in adoption request carrying the live lease copied into the
+/// quarantined permit. The resulting adoption receipt stores the exact
+/// binding; cross-term takeover proof remains a separate future gate.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthorityLeaseAdoptionRequest {
+    pub adoption: AdoptionRequest,
+    pub lease: AuthorityLeaseRecord,
+}
+
+/// Opt-in reconcile request carrying the live lease bound into the adoption
+/// receipt. Reconcile replay remains readable without presenting the lease.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AuthorityLeaseReconcileRequest {
+    pub reconcile: ReconcileRequest,
     pub lease: AuthorityLeaseRecord,
 }
 
@@ -622,9 +639,47 @@ fn quarantine_permit(
 const ADOPTION_COLUMNS: &str = "receipt_id, task_id, task_generation, idempotency_key,
      original_permit_id, original_permit_epoch, original_control_epoch,
      original_cancel_epoch, effect_set_root, observed_effect_slot_state_root,
-     adoption_epoch, created_at_ms";
+     adoption_epoch, created_at_ms, authority_lease_authority_id,
+     authority_lease_holder_id, authority_lease_term, authority_lease_epoch,
+     authority_lease_fencing_token, authority_lease_expires_at_ms";
 
 fn decode_adoption_row(row: &rusqlite::Row<'_>) -> Result<AdoptionReceiptRecord, TaskStoreError> {
+    let authority_lease_authority_id = optional_blob16(row, 12)?;
+    let authority_lease_holder_id = optional_blob16(row, 13)?;
+    let authority_lease_term = optional_blob::<8>(row, 14)?;
+    let authority_lease_epoch = optional_blob::<8>(row, 15)?;
+    let authority_lease_fencing_token = optional_blob::<32>(row, 16)?;
+    let authority_lease_expires_at_ms: Option<i64> = row.get(17)?;
+    let authority_lease_binding = match (
+        authority_lease_authority_id,
+        authority_lease_holder_id,
+        authority_lease_term,
+        authority_lease_epoch,
+        authority_lease_fencing_token,
+        authority_lease_expires_at_ms,
+    ) {
+        (
+            Some(authority_id),
+            Some(holder_id),
+            Some(term),
+            Some(lease_epoch),
+            Some(fencing_token),
+            Some(expires_at_ms),
+        ) => Some(AuthorityLeaseBinding {
+            authority_id: TaskParticipantId::from_bytes(authority_id),
+            holder_id: ProcessId::from_bytes(holder_id),
+            term: u64::from_be_bytes(term),
+            lease_epoch: u64::from_be_bytes(lease_epoch),
+            fencing_token,
+            expires_at_ms,
+        }),
+        (None, None, None, None, None, None) => None,
+        _ => {
+            return Err(TaskStoreError::CorruptRecord(
+                "partial authority lease adoption binding",
+            ));
+        }
+    };
     Ok(AdoptionReceiptRecord {
         receipt_id: ReceiptId::from_bytes(blob16(row, 0)?),
         task_id: TaskId::from_bytes(blob16(row, 1)?),
@@ -636,6 +691,7 @@ fn decode_adoption_row(row: &rusqlite::Row<'_>) -> Result<AdoptionReceiptRecord,
         effect_set_root: blob32(row, 8)?,
         observed_effect_slot_state_root: blob32(row, 9)?,
         adoption_epoch: u64_from_blob(row, 10)?,
+        authority_lease_binding,
         created_at_ms: row.get(11)?,
     })
 }
@@ -1818,6 +1874,33 @@ impl SqliteTaskAuthority {
     /// Returns a not-found, epoch, reconcile-state, replay-conflict, or
     /// storage error.
     pub fn adopt_permit(&self, request: AdoptionRequest) -> Result<AdoptionReplay, TaskStoreError> {
+        self.adopt_permit_inner(request, None)
+    }
+
+    /// Adopts a quarantined permit while proving the exact live authority
+    /// lease copied into that permit. The binding is persisted in the
+    /// adoption receipt and is required again for mutating reconcile steps.
+    /// This is same-term/local lease fencing only; Assignment/TakeoverReceipt
+    /// coverage for cross-term adoption remains outside this slice.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::adopt_permit`], plus a typed
+    /// lease-required, lease-fenced, or lease-expired error.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn adopt_permit_with_authority_lease(
+        &self,
+        request: AuthorityLeaseAdoptionRequest,
+    ) -> Result<AdoptionReplay, TaskStoreError> {
+        self.adopt_permit_inner(request.adoption, Some(request.lease))
+    }
+
+    #[allow(clippy::too_many_lines)] // Adoption CAS and lease binding stay one transaction.
+    fn adopt_permit_inner(
+        &self,
+        request: AdoptionRequest,
+        authority_lease: Option<AuthorityLeaseRecord>,
+    ) -> Result<AdoptionReplay, TaskStoreError> {
         let mut connection = self.lock_connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let task = store::load_task(&transaction, request.task_id)?;
@@ -1841,6 +1924,12 @@ impl SqliteTaskAuthority {
         if permit.permit_epoch != request.permit_epoch {
             return Err(TaskStoreError::PermitEpochMismatch);
         }
+        validate_permit_authority_lease(
+            &transaction,
+            &permit,
+            request.adopted_at_ms,
+            authority_lease,
+        )?;
         let adoption_epoch = advance_sequence(&transaction, request.task_id, "adoption_epoch")?;
         let record = AdoptionReceiptRecord {
             receipt_id: model::derive_adoption_receipt_id(permit.permit_id, adoption_epoch),
@@ -1857,15 +1946,38 @@ impl SqliteTaskAuthority {
                     stored.summary.effect_slot_state_root
                 }),
             adoption_epoch,
+            authority_lease_binding: authority_lease.map(AuthorityLeaseRecord::binding),
             created_at_ms: request.adopted_at_ms,
         };
+        let authority_lease_authority_id = record
+            .authority_lease_binding
+            .map(|binding| binding.authority_id.into_bytes());
+        let authority_lease_holder_id = record
+            .authority_lease_binding
+            .map(|binding| binding.holder_id.into_bytes());
+        let authority_lease_term = record
+            .authority_lease_binding
+            .map(|binding| encode_u64(binding.term));
+        let authority_lease_epoch = record
+            .authority_lease_binding
+            .map(|binding| encode_u64(binding.lease_epoch));
+        let authority_lease_fencing_token = record
+            .authority_lease_binding
+            .map(|binding| binding.fencing_token);
+        let authority_lease_expires_at_ms = record
+            .authority_lease_binding
+            .map(|binding| binding.expires_at_ms);
         transaction.execute(
             "INSERT INTO task_adoption_receipts (
                 receipt_id, task_id, task_generation, idempotency_key,
                 original_permit_id, original_permit_epoch, original_control_epoch,
                 original_cancel_epoch, effect_set_root,
-                observed_effect_slot_state_root, adoption_epoch, created_at_ms
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                observed_effect_slot_state_root, adoption_epoch, created_at_ms,
+                authority_lease_authority_id, authority_lease_holder_id,
+                authority_lease_term, authority_lease_epoch,
+                authority_lease_fencing_token, authority_lease_expires_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+                       ?13, ?14, ?15, ?16, ?17, ?18)",
             params![
                 record.receipt_id.as_bytes().as_slice(),
                 record.task_id.as_bytes().as_slice(),
@@ -1879,6 +1991,16 @@ impl SqliteTaskAuthority {
                 record.observed_effect_slot_state_root.as_slice(),
                 encode_u64(record.adoption_epoch).as_slice(),
                 record.created_at_ms,
+                authority_lease_authority_id
+                    .as_ref()
+                    .map(<[u8; 16]>::as_slice),
+                authority_lease_holder_id.as_ref().map(<[u8; 16]>::as_slice),
+                authority_lease_term.as_ref().map(<[u8; 8]>::as_slice),
+                authority_lease_epoch.as_ref().map(<[u8; 8]>::as_slice),
+                authority_lease_fencing_token
+                    .as_ref()
+                    .map(<[u8; 32]>::as_slice),
+                authority_lease_expires_at_ms,
             ],
         )?;
         let control_epoch = task
@@ -1916,6 +2038,30 @@ impl SqliteTaskAuthority {
         &self,
         request: ReconcileRequest,
     ) -> Result<ReconcileReplay, TaskStoreError> {
+        self.reconcile_effect_inner(request, None)
+    }
+
+    /// Reconciles one unknown effect while proving the live lease copied into
+    /// the adoption receipt. Exact replay of an already-resolved slot remains
+    /// readable without presenting the lease again.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::reconcile_effect`], plus a typed
+    /// lease-required, lease-fenced, or lease-expired error.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn reconcile_effect_with_authority_lease(
+        &self,
+        request: AuthorityLeaseReconcileRequest,
+    ) -> Result<ReconcileReplay, TaskStoreError> {
+        self.reconcile_effect_inner(request.reconcile, Some(request.lease))
+    }
+
+    fn reconcile_effect_inner(
+        &self,
+        request: ReconcileRequest,
+        authority_lease: Option<AuthorityLeaseRecord>,
+    ) -> Result<ReconcileReplay, TaskStoreError> {
         let mut connection = self.lock_connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let task = store::load_task(&transaction, request.task_id)?;
@@ -1935,6 +2081,15 @@ impl SqliteTaskAuthority {
         if slot.state != SlotState::EffectUnknown {
             return replay_reconcile(&transaction, &permit, &slot, &adoption, &request);
         }
+        if adoption.authority_lease_binding != permit.authority_lease_binding {
+            return Err(TaskStoreError::AuthorityLeaseBindingMismatch);
+        }
+        validate_permit_authority_lease(
+            &transaction,
+            &permit,
+            request.reconciled_at_ms,
+            authority_lease,
+        )?;
         if permit.state != PermitState::Quarantined {
             return Err(TaskStoreError::InvalidReconcileState {
                 reason: "permit is not quarantined",

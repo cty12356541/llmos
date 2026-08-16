@@ -36,7 +36,7 @@ use crate::{
     TaskWriteSetSemanticTarget,
 };
 
-const SCHEMA_VERSION: i64 = 28;
+const SCHEMA_VERSION: i64 = 29;
 
 /// A single-writer `SQLite` task authority.
 ///
@@ -240,6 +240,7 @@ impl SqliteTaskAuthority {
             migrate_v26(&mut connection)?;
             migrate_v27(&mut connection)?;
             migrate_v28(&mut connection)?;
+            migrate_v29(&mut connection)?;
         }
 
         Ok(Self {
@@ -3532,6 +3533,51 @@ fn migrate_v28(connection: &mut Connection) -> Result<(), TaskStoreError> {
     Ok(())
 }
 
+/// v28 → v29 adds the optional immutable lease binding copied into each
+/// lease-aware `PermitAdoptionReceipt`; legacy adoption rows remain
+/// explicitly unbound.
+fn migrate_v29(connection: &mut Connection) -> Result<(), TaskStoreError> {
+    let mut present = 0usize;
+    let expected = [
+        "authority_lease_authority_id",
+        "authority_lease_holder_id",
+        "authority_lease_term",
+        "authority_lease_epoch",
+        "authority_lease_fencing_token",
+        "authority_lease_expires_at_ms",
+    ];
+    {
+        let mut statement = connection.prepare("PRAGMA table_info(task_adoption_receipts)")?;
+        let columns = statement.query_map([], |row| row.get::<_, String>(1))?;
+        for column in columns {
+            if expected.contains(&column?.as_str()) {
+                present += 1;
+            }
+        }
+    }
+    let trigger_present: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master
+            WHERE type='trigger' AND name='task_adoption_authority_lease_binding_immutable'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if present == expected.len() && trigger_present {
+        connection.pragma_update(None, "user_version", 29)?;
+        return Ok(());
+    }
+    if present != 0 || trigger_present {
+        return Err(TaskStoreError::CorruptRecord(
+            "partial authority lease adoption binding schema",
+        ));
+    }
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(SCHEMA_V29_SQL)?;
+    transaction.commit()?;
+    Ok(())
+}
+
 const SCHEMA_V13_SQL: &str = "CREATE TABLE task_write_sets (
         task_id BLOB NOT NULL CHECK(length(task_id) = 16),
         attempt_id BLOB NOT NULL CHECK(length(attempt_id) = 16),
@@ -4109,6 +4155,38 @@ pub(crate) const SCHEMA_V28_SQL: &str = "ALTER TABLE commit_permits
      END;
 
      PRAGMA user_version = 28;";
+
+pub(crate) const SCHEMA_V29_SQL: &str = "ALTER TABLE task_adoption_receipts
+        ADD COLUMN authority_lease_authority_id BLOB
+            CHECK(authority_lease_authority_id IS NULL OR length(authority_lease_authority_id) = 16);
+     ALTER TABLE task_adoption_receipts
+        ADD COLUMN authority_lease_holder_id BLOB
+            CHECK(authority_lease_holder_id IS NULL OR length(authority_lease_holder_id) = 16);
+     ALTER TABLE task_adoption_receipts
+        ADD COLUMN authority_lease_term BLOB
+            CHECK(authority_lease_term IS NULL OR length(authority_lease_term) = 8);
+     ALTER TABLE task_adoption_receipts
+        ADD COLUMN authority_lease_epoch BLOB
+            CHECK(authority_lease_epoch IS NULL OR length(authority_lease_epoch) = 8);
+     ALTER TABLE task_adoption_receipts
+        ADD COLUMN authority_lease_fencing_token BLOB
+            CHECK(authority_lease_fencing_token IS NULL OR length(authority_lease_fencing_token) = 32);
+     ALTER TABLE task_adoption_receipts
+        ADD COLUMN authority_lease_expires_at_ms INTEGER;
+
+     CREATE TRIGGER task_adoption_authority_lease_binding_immutable
+     BEFORE UPDATE ON task_adoption_receipts
+     WHEN NEW.authority_lease_authority_id IS NOT OLD.authority_lease_authority_id
+       OR NEW.authority_lease_holder_id IS NOT OLD.authority_lease_holder_id
+       OR NEW.authority_lease_term IS NOT OLD.authority_lease_term
+       OR NEW.authority_lease_epoch IS NOT OLD.authority_lease_epoch
+       OR NEW.authority_lease_fencing_token IS NOT OLD.authority_lease_fencing_token
+       OR NEW.authority_lease_expires_at_ms IS NOT OLD.authority_lease_expires_at_ms
+     BEGIN
+        SELECT RAISE(ABORT, 'authority lease adoption binding is immutable');
+     END;
+
+     PRAGMA user_version = 29;";
 
 const SCHEMA_V12_SQL: &str = "ALTER TABLE effect_permits
         ADD COLUMN participant_registry_generation BLOB
@@ -6155,7 +6233,7 @@ pub(crate) fn optional_blob16(
         .transpose()
 }
 
-fn optional_blob<const N: usize>(
+pub(crate) fn optional_blob<const N: usize>(
     row: &rusqlite::Row<'_>,
     index: usize,
 ) -> Result<Option<[u8; N]>, TaskStoreError> {

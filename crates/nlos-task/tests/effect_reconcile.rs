@@ -7,8 +7,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use nlos_task::{
-    AdoptionReplay, AdoptionRequest, AttemptSpec, ClosePermitDecision, ClosePermitRequest,
-    EffectPermitDecision, EffectPermitRequest, FinalizeDecision, FinalizeRequestV3, IssuedPermit,
+    AdoptionReplay, AdoptionRequest, AttemptSpec, AuthorityLeaseAdoptionRequest,
+    AuthorityLeaseFinalizeRequest, AuthorityLeasePermitRequest, AuthorityLeaseReconcileRequest,
+    AuthorityLeaseRequest, ClosePermitDecision, ClosePermitRequest, EffectPermitDecision,
+    EffectPermitRequest, FinalizeDecision, FinalizeRequestV3, IssuedPermit,
     LogicalEffectDescriptor, NoEffectReason, NoEffectRequest, Outcome, OutcomeRequest,
     PermitClosureOutcome, PermitDecision, PermitRecord, PermitRequest, PermitState, PlannedEffect,
     ReconcileOutcome, ReconcileReplay, ReconcileRequest, RequiredSatisfaction,
@@ -16,9 +18,10 @@ use nlos_task::{
     TaskStoreError, empty_effect_history_root, expected_success_assertion_digest,
 };
 use nlos_types::{
-    CancellationScopeId, CommitPermitId, Generation, IdempotencyKey, ReceiptId, TaskAttemptId,
-    TaskId, TaskSnapshotId,
+    CancellationScopeId, CommitPermitId, Generation, IdempotencyKey, ProcessId, ReceiptId,
+    TaskAttemptId, TaskId, TaskSnapshotId,
 };
+use rusqlite::Connection;
 
 static NEXT_DATABASE: AtomicU64 = AtomicU64::new(0);
 
@@ -318,16 +321,67 @@ fn issued_effect_permit(decision: EffectPermitDecision) -> IssuedPermit {
 /// Registers a task plus one attempt, issues its `CommitPermit` with the
 /// given effect set, and dispatches slot 0 into `EffectUnknown`.
 fn setup_unknown(effects: Vec<PlannedEffect>) -> (TestDatabase, AttemptSpec, PermitRecord) {
+    let (database, spec, permit, _) = setup_unknown_inner(effects, None);
+    (database, spec, permit)
+}
+
+fn setup_unknown_bound(
+    effects: Vec<PlannedEffect>,
+) -> (
+    TestDatabase,
+    AttemptSpec,
+    PermitRecord,
+    nlos_task::AuthorityLeaseRecord,
+) {
+    let (database, spec, permit, lease) = setup_unknown_inner(
+        effects,
+        Some(AuthorityLeaseRequest {
+            holder_id: ProcessId::from_bytes([0x81; 16]),
+            idempotency_key: IdempotencyKey::from_bytes([0x82; 16]),
+            requested_at_ms: 7_000,
+            ttl_ms: 10_000,
+        }),
+    );
+    (
+        database,
+        spec,
+        permit,
+        lease.expect("bound setup returns lease"),
+    )
+}
+
+fn setup_unknown_inner(
+    effects: Vec<PlannedEffect>,
+    lease_request: Option<AuthorityLeaseRequest>,
+) -> (
+    TestDatabase,
+    AttemptSpec,
+    PermitRecord,
+    Option<nlos_task::AuthorityLeaseRecord>,
+) {
     let database = TestDatabase::new("unknown");
     let authority = database.open();
     authority.register_task(task_spec()).expect("register task");
     let spec = attempt_spec(0x0a, snapshot(0, 0));
     authority.register_attempt(spec).expect("register attempt");
-    let permit = issued_permit(
+    let authority_lease = lease_request.map(|request| {
         authority
-            .request_commit_permit(permit_request(&spec, 0x01, effects))
+            .acquire_authority_lease(request)
+            .expect("authority lease")
+            .record()
+    });
+    let permit_request = permit_request(&spec, 0x01, effects);
+    let permit = issued_permit(match authority_lease {
+        Some(lease) => authority
+            .request_commit_permit_with_authority_lease(AuthorityLeasePermitRequest {
+                permit: permit_request,
+                lease,
+            })
+            .expect("lease-bound permit"),
+        None => authority
+            .request_commit_permit(permit_request)
             .expect("permit"),
-    );
+    });
     let issued = issued_effect_permit(
         authority
             .request_effect_permit(effect_request(&spec, &permit, 0, 0xe1))
@@ -347,7 +401,7 @@ fn setup_unknown(effects: Vec<PlannedEffect>) -> (TestDatabase, AttemptSpec, Per
         ))
         .expect("register uncertainty");
     drop(authority);
-    (database, spec, permit)
+    (database, spec, permit, authority_lease)
 }
 
 /// Bullet: any `EFFECT_UNKNOWN` slot at finalize time turns the active
@@ -886,6 +940,99 @@ fn still_unknown_reconcile_returns_to_quarantine() {
             .state,
         PermitState::Issued
     );
+}
+
+#[test]
+fn lease_bound_adoption_and_reconcile_require_the_live_binding() {
+    let (database, spec, permit, lease) = setup_unknown_bound(vec![planned(0, true)]);
+    let authority = database.open();
+    let finalize = finalize_v3(&spec, permit.permit_id, Vec::new(), [0xf1; 32]);
+    assert!(matches!(
+        authority.finalize_commit_v3(finalize.clone()),
+        Err(TaskStoreError::AuthorityLeaseRequired)
+    ));
+    assert!(matches!(
+        authority.finalize_commit_v3_with_authority_lease(AuthorityLeaseFinalizeRequest {
+            finalize,
+            lease,
+        }),
+        Err(TaskStoreError::Quarantined)
+    ));
+
+    let adoption_request = adopt_request(&spec, &permit, 0xe1);
+    assert!(matches!(
+        authority.adopt_permit(adoption_request),
+        Err(TaskStoreError::AuthorityLeaseRequired)
+    ));
+    let adoption = match authority
+        .adopt_permit_with_authority_lease(AuthorityLeaseAdoptionRequest {
+            adoption: adoption_request,
+            lease,
+        })
+        .expect("lease-bound adoption")
+    {
+        AdoptionReplay::Adopted(record) => *record,
+        other @ AdoptionReplay::Replayed(_) => panic!("expected Adopted, got {other:?}"),
+    };
+    assert_eq!(adoption.authority_lease_binding, Some(lease.binding()));
+    assert_eq!(
+        authority
+            .inspect_adoption_receipt(spec.task_id, adoption.receipt_id)
+            .expect("adoption readback")
+            .authority_lease_binding,
+        Some(lease.binding())
+    );
+    let raw = Connection::open(&database.path).expect("raw task database");
+    assert!(
+        raw.execute(
+            "UPDATE task_adoption_receipts SET authority_lease_term = ?1
+             WHERE receipt_id = ?2",
+            rusqlite::params![
+                [0u8; 8].as_slice(),
+                adoption.receipt_id.as_bytes().as_slice()
+            ],
+        )
+        .is_err()
+    );
+    drop(raw);
+
+    let reconcile = reconcile_request(
+        &spec,
+        &permit,
+        0,
+        adoption.receipt_id,
+        ReconcileOutcome::EffectClosed,
+        [0xab; 32],
+    );
+    assert!(matches!(
+        authority.reconcile_effect(reconcile),
+        Err(TaskStoreError::AuthorityLeaseRequired)
+    ));
+    let reconciled = authority
+        .reconcile_effect_with_authority_lease(AuthorityLeaseReconcileRequest { reconcile, lease })
+        .expect("lease-bound reconcile");
+    assert!(matches!(reconciled, ReconcileReplay::Reconciled(_)));
+    assert_eq!(
+        authority
+            .inspect_permit(spec.task_id, permit.permit_id)
+            .expect("permit after reconcile")
+            .state,
+        PermitState::Issued
+    );
+
+    drop(authority);
+    let reopened = database.open();
+    assert_eq!(
+        reopened
+            .inspect_adoption_receipt(spec.task_id, adoption.receipt_id)
+            .expect("reopened adoption")
+            .authority_lease_binding,
+        Some(lease.binding())
+    );
+    assert!(matches!(
+        reopened.reconcile_effect(reconcile),
+        Ok(ReconcileReplay::Replayed(_))
+    ));
 }
 
 /// Bullet: replay consistency across restart — quarantine, adoption, and

@@ -59,10 +59,11 @@
 //! the normal idempotent path and no publication receipt is synthesized.
 //!
 //! Explicitly out of scope: complete cross-authority lease authentication,
-//! adoption, and fault handling. Schema v27 provides only a durable local
+//! takeover adoption, and fault handling. Schema v27 provides only a durable local
 //! `TaskAuthority` lease/term/fencing primitive; schema v28 adds an opt-in
-//! immutable `CommitPermit` binding and plain v3/pre-effect terminal guards,
-//! but neither schema authorizes an IPC peer nor completes adoption. Compensation execution
+//! immutable `CommitPermit` binding and plain v3/pre-effect terminal guards;
+//! schema v29 adds a same-term lease-bound adoption/reconcile guard, but no
+//! schema authorizes an IPC peer or completes cross-term adoption. Compensation execution
 //! (`COMPENSATED` is recordable but never executed), `QUORUM`/`REDUCE`
 //! group semantics (`[TASK-GROUP-003]`), `BEST_EFFORT` failure mode,
 //! `AGENT_INSTANCE` members, `DETACH` execution (`[TASK-DETACH-001]`),
@@ -138,8 +139,9 @@ pub use participant::{
     ParticipantRegistryRecord, ParticipantRegistryState, ParticipantType,
 };
 pub use reconcile::{
-    AdoptionReplay, AdoptionRequest, AuthorityLeaseCloseRequest, AuthorityLeaseFinalizeRequest,
-    FinalizeRequestV3, ReconcileReplay, ReconcileRequest, effect_history_root_of,
+    AdoptionReplay, AdoptionRequest, AuthorityLeaseAdoptionRequest, AuthorityLeaseCloseRequest,
+    AuthorityLeaseFinalizeRequest, AuthorityLeaseReconcileRequest, FinalizeRequestV3,
+    ReconcileReplay, ReconcileRequest, effect_history_root_of,
 };
 pub use recovery::{
     ArtifactRecoveryAlert, ArtifactRecoveryAlertAcknowledgeDecision,

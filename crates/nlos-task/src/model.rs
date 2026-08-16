@@ -1363,6 +1363,9 @@ pub struct AdoptionReceiptRecord {
     pub effect_set_root: [u8; 32],
     pub observed_effect_slot_state_root: [u8; 32],
     pub adoption_epoch: u64,
+    /// Optional lease binding copied from a lease-bound original permit.
+    /// Legacy adoption rows remain explicitly unbound.
+    pub authority_lease_binding: Option<crate::lease::AuthorityLeaseBinding>,
     pub created_at_ms: i64,
 }
 

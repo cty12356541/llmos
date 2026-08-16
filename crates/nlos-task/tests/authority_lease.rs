@@ -1,7 +1,8 @@
-//! Acceptance tests for the schema-v28 durable `TaskAuthority` lease/term
-//! primitive and opt-in `CommitPermit` binding. The slice proves local
-//! `SQLite` fencing and restart readback; it does not claim IPC peer
-//! authentication or full `PermitAdoption` semantics.
+//! Acceptance tests for the schema-v29 durable `TaskAuthority` lease/term
+//! primitive, opt-in `CommitPermit` binding, and same-term lease-bound
+//! adoption guard. The slice proves local `SQLite` fencing and restart
+//! readback; it does not claim IPC peer authentication or cross-term
+//! `PermitAdoption` semantics.
 
 use std::fs;
 use std::path::{Path, PathBuf};
