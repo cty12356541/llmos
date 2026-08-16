@@ -67,7 +67,9 @@
 //! immutable local fence receipt whose local exact-fence and outstanding-set
 //! roots are computed when the durable participant mapping is complete,
 //! without remote barrier receipts. No schema authorizes an IPC peer or
-//! completes cross-term adoption. Compensation execution
+//! completes cross-term adoption; schema v31 adds an immutable local
+//! `TaskAuthorityAssignment` baseline for lease-bound permits, but no successor
+//! assignment or `TakeoverReceipt` activation. Compensation execution
 //! (`COMPENSATED` is recordable but never executed), `QUORUM`/`REDUCE`
 //! group semantics (`[TASK-GROUP-003]`), `BEST_EFFORT` failure mode,
 //! `AGENT_INSTANCE` members, `DETACH` execution (`[TASK-DETACH-001]`),
@@ -117,9 +119,10 @@ pub use group::{
     RemoveMemberRequest, TaskGroupCommitBinding, empty_group_membership_root, membership_root_of,
 };
 pub use lease::{
-    AuthorityLeaseBinding, AuthorityLeaseDecision, AuthorityLeasePermitRequest,
-    AuthorityLeaseRecord, AuthorityLeaseRequest, AuthorityLeaseTakeoverFenceRecord,
-    AuthorityLeaseTakeoverFenceRequest, MAX_AUTHORITY_LEASE_TTL_MS,
+    AuthorityAssignmentRecord, AuthorityAssignmentState, AuthorityLeaseBinding,
+    AuthorityLeaseDecision, AuthorityLeasePermitRequest, AuthorityLeaseRecord,
+    AuthorityLeaseRequest, AuthorityLeaseTakeoverFenceRecord, AuthorityLeaseTakeoverFenceRequest,
+    MAX_AUTHORITY_LEASE_TTL_MS,
 };
 pub use model::{
     AdoptionReceiptRecord, AttemptHandle, AttemptRecord, AttemptRegistrationDecision, AttemptSpec,

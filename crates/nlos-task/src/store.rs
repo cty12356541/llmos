@@ -20,10 +20,11 @@ use rusqlite::{
 };
 
 use crate::lease::{
-    AuthorityLeasePermitRequest, AuthorityLeaseRecord, AuthorityLeaseTakeoverFenceRecord,
-    AuthorityLeaseTakeoverFenceRequest, derive_takeover_fence_receipt_id,
-    insert_takeover_fence_receipt, load_takeover_fence_receipt,
-    validate_authority_lease_binding_in_transaction,
+    AuthorityAssignmentRecord, AuthorityAssignmentState, AuthorityLeasePermitRequest,
+    AuthorityLeaseRecord, AuthorityLeaseTakeoverFenceRecord, AuthorityLeaseTakeoverFenceRequest,
+    derive_assignment_id, derive_takeover_fence_receipt_id, insert_assignment,
+    insert_takeover_fence_receipt, load_current_assignment, load_takeover_fence_receipt,
+    refresh_active_assignment, validate_authority_lease_binding_in_transaction,
 };
 use crate::model::{derive_closure_receipt_id, derive_permit_id, empty_effect_history_root};
 use crate::{
@@ -38,7 +39,7 @@ use crate::{
     TaskWriteSetSemanticTarget,
 };
 
-const SCHEMA_VERSION: i64 = 30;
+const SCHEMA_VERSION: i64 = 31;
 
 /// A single-writer `SQLite` task authority.
 ///
@@ -244,6 +245,7 @@ impl SqliteTaskAuthority {
             migrate_v28(&mut connection)?;
             migrate_v29(&mut connection)?;
             migrate_v30(&mut connection)?;
+            migrate_v31(&mut connection)?;
         }
 
         Ok(Self {
@@ -1600,6 +1602,21 @@ impl SqliteTaskAuthority {
             .ok_or(TaskStoreError::ReceiptNotFound)
     }
 
+    /// Reads the latest durable local `TaskAuthority` assignment, if one has
+    /// been established by a lease-bound permit path.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ReceiptNotFound` when no assignment exists, or a storage /
+    /// corruption error.
+    pub fn inspect_authority_assignment(
+        &self,
+        task_id: TaskId,
+    ) -> Result<AuthorityAssignmentRecord, TaskStoreError> {
+        let connection = self.lock_connection()?;
+        load_current_assignment(&*connection, task_id)?.ok_or(TaskStoreError::ReceiptNotFound)
+    }
+
     /// Registers an Artifact head after direct proof readback from its owner.
     ///
     /// The caller supplies only the stable Artifact identity and the Task
@@ -2571,6 +2588,16 @@ fn issue_permit(
     {
         return Err(TaskStoreError::ParticipantRegistryBindingMismatch);
     }
+    if let Some(lease) = authority_lease {
+        ensure_active_assignment(
+            transaction,
+            &task.record,
+            lease,
+            participant_registry_binding,
+            control_epoch,
+            request.requested_at_ms,
+        )?;
+    }
     let record = PermitRecord {
         permit_id: derive_permit_id(request.task_id, request.idempotency_key),
         task_id: request.task_id,
@@ -2611,6 +2638,53 @@ fn issue_permit(
         task_record.permit_epoch = permit_epoch;
         task_record.control_epoch = control_epoch;
     })?;
+    Ok(record)
+}
+
+fn ensure_active_assignment(
+    transaction: &Transaction<'_>,
+    task: &TaskRecord,
+    lease: AuthorityLeaseRecord,
+    registry_binding: crate::ParticipantRegistryBinding,
+    control_epoch: u64,
+    now_ms: i64,
+) -> Result<AuthorityAssignmentRecord, TaskStoreError> {
+    let assignment_id = derive_assignment_id(
+        task.task_id,
+        task.task_generation,
+        lease.authority_id,
+        lease.term,
+        registry_binding,
+    );
+    if let Some(existing) = load_current_assignment(transaction, task.task_id)? {
+        if existing.state != AuthorityAssignmentState::Active {
+            return Err(TaskStoreError::AuthorityLeaseFenced);
+        }
+        if existing.assignment_id == assignment_id {
+            return refresh_active_assignment(
+                transaction,
+                &existing,
+                lease.binding(),
+                control_epoch,
+                now_ms,
+            );
+        }
+        if existing.authority_lease_binding.term > lease.term {
+            return Err(TaskStoreError::AuthorityLeaseFenced);
+        }
+    }
+    let record = AuthorityAssignmentRecord {
+        assignment_id,
+        task_id: task.task_id,
+        task_generation: task.task_generation,
+        authority_lease_binding: lease.binding(),
+        control_epoch,
+        participant_registry_binding: registry_binding,
+        state: AuthorityAssignmentState::Active,
+        created_at_ms: now_ms,
+        updated_at_ms: now_ms,
+    };
+    insert_assignment(transaction, &record)?;
     Ok(record)
 }
 
@@ -3749,6 +3823,42 @@ fn migrate_v30(connection: &mut Connection) -> Result<(), TaskStoreError> {
     Ok(())
 }
 
+/// v30 → v31 adds the immutable local assignment baseline used by
+/// lease-bound permit paths. It does not create a successor assignment or a
+/// takeover receipt; those remain a later barrier gate.
+fn migrate_v31(connection: &mut Connection) -> Result<(), TaskStoreError> {
+    let table_present: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master
+            WHERE type='table' AND name='task_authority_assignments'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    let trigger_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type='trigger' AND name IN (
+             'task_authority_assignment_identity_immutable',
+             'task_authority_assignment_no_delete'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if table_present && trigger_count == 2 {
+        connection.pragma_update(None, "user_version", 31)?;
+        return Ok(());
+    }
+    if table_present || trigger_count != 0 {
+        return Err(TaskStoreError::CorruptRecord(
+            "partial authority assignment schema",
+        ));
+    }
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(SCHEMA_V31_SQL)?;
+    transaction.commit()?;
+    Ok(())
+}
+
 const SCHEMA_V13_SQL: &str = "CREATE TABLE task_write_sets (
         task_id BLOB NOT NULL CHECK(length(task_id) = 16),
         attempt_id BLOB NOT NULL CHECK(length(attempt_id) = 16),
@@ -4394,6 +4504,46 @@ pub(crate) const SCHEMA_V30_SQL: &str = "CREATE TABLE task_authority_takeover_fe
      END;
 
      PRAGMA user_version = 30;";
+
+pub(crate) const SCHEMA_V31_SQL: &str = "CREATE TABLE task_authority_assignments (
+        assignment_id BLOB PRIMARY KEY NOT NULL CHECK(length(assignment_id) = 16),
+        task_id BLOB NOT NULL CHECK(length(task_id) = 16),
+        task_generation BLOB NOT NULL CHECK(length(task_generation) = 8),
+        authority_id BLOB NOT NULL CHECK(length(authority_id) = 16),
+        authority_lease_holder_id BLOB NOT NULL CHECK(length(authority_lease_holder_id) = 16),
+        authority_lease_term BLOB NOT NULL CHECK(length(authority_lease_term) = 8),
+        authority_lease_epoch BLOB NOT NULL CHECK(length(authority_lease_epoch) = 8),
+        authority_lease_fencing_token BLOB NOT NULL CHECK(length(authority_lease_fencing_token) = 32),
+        authority_lease_expires_at_ms INTEGER NOT NULL CHECK(authority_lease_expires_at_ms >= 0),
+        control_epoch BLOB NOT NULL CHECK(length(control_epoch) = 8),
+        participant_registry_generation BLOB NOT NULL CHECK(length(participant_registry_generation) = 8),
+        participant_registry_root BLOB NOT NULL CHECK(length(participant_registry_root) = 32),
+        assignment_state INTEGER NOT NULL CHECK(assignment_state BETWEEN 1 AND 3),
+        created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0),
+        updated_at_ms INTEGER NOT NULL CHECK(updated_at_ms >= created_at_ms),
+        UNIQUE(task_id, assignment_id),
+        FOREIGN KEY(task_id) REFERENCES tasks(task_id)
+     ) STRICT;
+
+     CREATE TRIGGER task_authority_assignment_identity_immutable
+     BEFORE UPDATE ON task_authority_assignments
+     WHEN NEW.assignment_id != OLD.assignment_id
+       OR NEW.task_id != OLD.task_id
+       OR NEW.task_generation != OLD.task_generation
+       OR NEW.authority_id != OLD.authority_id
+       OR NEW.authority_lease_term != OLD.authority_lease_term
+       OR NEW.created_at_ms != OLD.created_at_ms
+     BEGIN
+        SELECT RAISE(ABORT, 'task authority assignment identity is immutable');
+     END;
+
+     CREATE TRIGGER task_authority_assignment_no_delete
+     BEFORE DELETE ON task_authority_assignments
+     BEGIN
+        SELECT RAISE(ABORT, 'task authority assignment is durable evidence');
+     END;
+
+     PRAGMA user_version = 31;";
 
 const SCHEMA_V12_SQL: &str = "ALTER TABLE effect_permits
         ADD COLUMN participant_registry_generation BLOB

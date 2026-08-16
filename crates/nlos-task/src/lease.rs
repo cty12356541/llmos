@@ -1,12 +1,16 @@
 //! Durable `TaskAuthority` lease/term primitive for cross-process fencing.
 //!
-//! This module deliberately owns only the authority lease record. It does not
-//! authenticate an IPC peer, perform a distributed consensus decision, or
-//! adopt an old `CommitPermit`; those callers remain explicit next gates.
+//! This module owns the authority lease and the local assignment baseline
+//! copied into lease-bound Task permits. It does not authenticate an IPC
+//! peer, perform a distributed consensus decision, or adopt an old
+//! `CommitPermit`; those callers remain explicit next gates.
 
 use std::num::NonZeroU64;
 
-use nlos_types::{Generation, IdempotencyKey, ProcessId, ReceiptId, TaskId, TaskParticipantId};
+use nlos_types::{
+    Generation, IdempotencyKey, ProcessId, ReceiptId, TaskAuthorityAssignmentId, TaskId,
+    TaskParticipantId,
+};
 use rusqlite::{Transaction, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
 
@@ -58,6 +62,51 @@ pub struct AuthorityLeaseRecord {
     pub idempotency_key: IdempotencyKey,
 }
 
+/// State of the local durable `TaskAuthority` assignment. A successor is not
+/// activated by this slice; takeover only moves the current assignment to
+/// `TakeoverPending` in the next fence/receipt gate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AuthorityAssignmentState {
+    Active,
+    TakeoverPending,
+    Fenced,
+}
+
+impl AuthorityAssignmentState {
+    pub(crate) const fn code(self) -> i64 {
+        match self {
+            Self::Active => 1,
+            Self::TakeoverPending => 2,
+            Self::Fenced => 3,
+        }
+    }
+
+    pub(crate) fn from_code(code: i64) -> Result<Self, TaskStoreError> {
+        match code {
+            1 => Ok(Self::Active),
+            2 => Ok(Self::TakeoverPending),
+            3 => Ok(Self::Fenced),
+            _ => Err(TaskStoreError::CorruptRecord("assignment state")),
+        }
+    }
+}
+
+/// Durable local assignment bound to one Task generation and registry
+/// baseline. Lease renewal may update the copied live binding; assignment
+/// identity remains stable for the same term/registry pair.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AuthorityAssignmentRecord {
+    pub assignment_id: TaskAuthorityAssignmentId,
+    pub task_id: TaskId,
+    pub task_generation: Generation,
+    pub authority_lease_binding: AuthorityLeaseBinding,
+    pub control_epoch: u64,
+    pub participant_registry_binding: ParticipantRegistryBinding,
+    pub state: AuthorityAssignmentState,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
 impl AuthorityLeaseRecord {
     #[must_use]
     pub const fn binding(self) -> AuthorityLeaseBinding {
@@ -70,6 +119,25 @@ impl AuthorityLeaseRecord {
             expires_at_ms: self.expires_at_ms,
         }
     }
+}
+
+pub(crate) fn derive_assignment_id(
+    task_id: TaskId,
+    task_generation: Generation,
+    authority_id: TaskParticipantId,
+    authority_term: u64,
+    registry_binding: ParticipantRegistryBinding,
+) -> TaskAuthorityAssignmentId {
+    let mut hasher = Sha256::new();
+    hasher.update(b"llmos/task-authority-assignment/v1");
+    hasher.update(task_id.as_bytes());
+    hasher.update(task_generation.get().to_be_bytes());
+    hasher.update(authority_id.as_bytes());
+    hasher.update(authority_term.to_be_bytes());
+    hasher.update(registry_binding.generation.to_be_bytes());
+    hasher.update(registry_binding.root);
+    let digest: [u8; 32] = hasher.finalize().into();
+    TaskAuthorityAssignmentId::from_bytes(digest[..16].try_into().expect("assignment id prefix"))
 }
 
 /// Opt-in `CommitPermit` issuance request bound to one durable authority
@@ -485,6 +553,138 @@ fn decode_lease_row(row: &rusqlite::Row<'_>) -> Result<AuthorityLeaseRecord, Tas
         expires_at_ms: row.get(6)?,
         ttl_ms: row.get(7)?,
         idempotency_key: IdempotencyKey::from_bytes(blob16(row, 8)?),
+    })
+}
+
+pub(crate) fn load_current_assignment(
+    source: &impl SqlRead,
+    task_id: TaskId,
+) -> Result<Option<AuthorityAssignmentRecord>, TaskStoreError> {
+    let mut statement = source.prepare_statement(
+        "SELECT assignment_id, task_id, task_generation,
+                authority_id, authority_lease_holder_id,
+                authority_lease_term, authority_lease_epoch,
+                authority_lease_fencing_token, authority_lease_expires_at_ms,
+                control_epoch, participant_registry_generation,
+                participant_registry_root, assignment_state,
+                created_at_ms, updated_at_ms
+         FROM task_authority_assignments
+         WHERE task_id = ?1
+         ORDER BY created_at_ms DESC, assignment_id DESC
+         LIMIT 1",
+    )?;
+    let mut rows = statement.query([task_id.as_bytes().as_slice()])?;
+    rows.next()?.map(decode_assignment_row).transpose()
+}
+
+pub(crate) fn insert_assignment(
+    transaction: &Transaction<'_>,
+    record: &AuthorityAssignmentRecord,
+) -> Result<(), TaskStoreError> {
+    transaction.execute(
+        "INSERT INTO task_authority_assignments (
+            assignment_id, task_id, task_generation, authority_id,
+            authority_lease_holder_id, authority_lease_term,
+            authority_lease_epoch, authority_lease_fencing_token,
+            authority_lease_expires_at_ms, control_epoch,
+            participant_registry_generation, participant_registry_root,
+            assignment_state, created_at_ms, updated_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
+                   ?11, ?12, ?13, ?14, ?15)",
+        params![
+            record.assignment_id.as_bytes().as_slice(),
+            record.task_id.as_bytes().as_slice(),
+            encode_u64(record.task_generation.get()).as_slice(),
+            record
+                .authority_lease_binding
+                .authority_id
+                .as_bytes()
+                .as_slice(),
+            record
+                .authority_lease_binding
+                .holder_id
+                .as_bytes()
+                .as_slice(),
+            encode_u64(record.authority_lease_binding.term).as_slice(),
+            encode_u64(record.authority_lease_binding.lease_epoch).as_slice(),
+            record.authority_lease_binding.fencing_token.as_slice(),
+            record.authority_lease_binding.expires_at_ms,
+            encode_u64(record.control_epoch).as_slice(),
+            encode_u64(record.participant_registry_binding.generation).as_slice(),
+            record.participant_registry_binding.root.as_slice(),
+            record.state.code(),
+            record.created_at_ms,
+            record.updated_at_ms,
+        ],
+    )?;
+    Ok(())
+}
+
+pub(crate) fn refresh_active_assignment(
+    transaction: &Transaction<'_>,
+    record: &AuthorityAssignmentRecord,
+    lease: AuthorityLeaseBinding,
+    control_epoch: u64,
+    now_ms: i64,
+) -> Result<AuthorityAssignmentRecord, TaskStoreError> {
+    let changed = transaction.execute(
+        "UPDATE task_authority_assignments
+         SET authority_lease_holder_id = ?1,
+             authority_lease_epoch = ?2,
+             authority_lease_fencing_token = ?3,
+             authority_lease_expires_at_ms = ?4,
+             control_epoch = ?5,
+             updated_at_ms = ?6
+         WHERE assignment_id = ?7 AND assignment_state = ?8",
+        params![
+            lease.holder_id.as_bytes().as_slice(),
+            encode_u64(lease.lease_epoch).as_slice(),
+            lease.fencing_token.as_slice(),
+            lease.expires_at_ms,
+            encode_u64(control_epoch).as_slice(),
+            now_ms,
+            record.assignment_id.as_bytes().as_slice(),
+            AuthorityAssignmentState::Active.code(),
+        ],
+    )?;
+    if changed != 1 {
+        return Err(TaskStoreError::AuthorityLeaseFenced);
+    }
+    Ok(AuthorityAssignmentRecord {
+        authority_lease_binding: lease,
+        control_epoch,
+        updated_at_ms: now_ms,
+        ..*record
+    })
+}
+
+fn decode_assignment_row(
+    row: &rusqlite::Row<'_>,
+) -> Result<AuthorityAssignmentRecord, TaskStoreError> {
+    let task_generation = Generation::new(
+        NonZeroU64::new(u64_from_blob(row, 2)?)
+            .ok_or(TaskStoreError::CorruptRecord("assignment task generation"))?,
+    );
+    Ok(AuthorityAssignmentRecord {
+        assignment_id: TaskAuthorityAssignmentId::from_bytes(blob16(row, 0)?),
+        task_id: TaskId::from_bytes(blob16(row, 1)?),
+        task_generation,
+        authority_lease_binding: AuthorityLeaseBinding {
+            authority_id: TaskParticipantId::from_bytes(blob16(row, 3)?),
+            holder_id: ProcessId::from_bytes(blob16(row, 4)?),
+            term: u64_from_blob(row, 5)?,
+            lease_epoch: u64_from_blob(row, 6)?,
+            fencing_token: blob32(row, 7)?,
+            expires_at_ms: row.get(8)?,
+        },
+        control_epoch: u64_from_blob(row, 9)?,
+        participant_registry_binding: ParticipantRegistryBinding {
+            generation: u64_from_blob(row, 10)?,
+            root: blob32(row, 11)?,
+        },
+        state: AuthorityAssignmentState::from_code(row.get(12)?)?,
+        created_at_ms: row.get(13)?,
+        updated_at_ms: row.get(14)?,
     })
 }
 

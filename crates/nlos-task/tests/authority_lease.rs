@@ -1,4 +1,4 @@
-//! Acceptance tests for the schema-v30 durable `TaskAuthority` lease/term
+//! Acceptance tests for the schema-v31 durable `TaskAuthority` lease/term
 //! primitive, opt-in `CommitPermit` binding, same-term lease-bound adoption
 //! guard, and the local `FROZEN_FOR_TAKEOVER` fence pre-gate. The slice
 //! proves local `SQLite` fencing and restart readback; it does not claim IPC
@@ -483,6 +483,15 @@ fn takeover_fence_freezes_registry_and_replays_after_restart() {
     let registry_binding = first_permit
         .participant_registry_binding
         .expect("permit registry binding");
+    let assignment = authority
+        .inspect_authority_assignment(first_attempt.task_id)
+        .expect("active assignment");
+    assert_eq!(
+        assignment.state,
+        nlos_task::AuthorityAssignmentState::Active
+    );
+    assert_eq!(assignment.authority_lease_binding, lease_one.binding());
+    assert_eq!(assignment.participant_registry_binding, registry_binding);
     authority
         .finalize_commit_v3_with_authority_lease(AuthorityLeaseFinalizeRequest {
             finalize: finalize_request(&first_attempt, first_permit.permit_id, 160),
@@ -608,6 +617,22 @@ fn takeover_fence_freezes_registry_and_replays_after_restart() {
         )
         .is_err()
     );
+    assert!(
+        raw.execute(
+            "UPDATE task_authority_assignments
+             SET authority_id = zeroblob(16)
+             WHERE assignment_id = ?1",
+            rusqlite::params![assignment.assignment_id.as_bytes().as_slice()],
+        )
+        .is_err()
+    );
+    assert!(
+        raw.execute(
+            "DELETE FROM task_authority_assignments WHERE assignment_id = ?1",
+            rusqlite::params![assignment.assignment_id.as_bytes().as_slice()],
+        )
+        .is_err()
+    );
     drop(raw);
 
     drop(authority);
@@ -624,6 +649,12 @@ fn takeover_fence_freezes_registry_and_replays_after_restart() {
             .inspect_authority_takeover_fence_receipt(first_attempt.task_id, registry_binding)
             .expect("fence receipt after restart"),
         fence_receipt
+    );
+    assert_eq!(
+        reopened
+            .inspect_authority_assignment(first_attempt.task_id)
+            .expect("assignment after restart"),
+        assignment
     );
     assert!(matches!(
         reopened.prepare_authority_takeover_fence(AuthorityLeaseTakeoverFenceRequest {
