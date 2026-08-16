@@ -72,6 +72,9 @@
 //! assignment activation; schema v32 persists only a pending local
 //! `TaskAuthorityTakeoverReceipt` prefix linked to the old assignment and
 //! frozen fence, without remote barrier receipts or successor activation.
+//! Schema v33 persists immutable per-endpoint barrier observations bound to
+//! that pending prefix and exact local fence-set root, but does not verify
+//! remote attestation or advance the takeover state.
 //! Compensation execution
 //! (`COMPENSATED` is recordable but never executed), `QUORUM`/`REDUCE`
 //! group semantics (`[TASK-GROUP-003]`), `BEST_EFFORT` failure mode,
@@ -125,7 +128,9 @@ pub use lease::{
     AuthorityAssignmentRecord, AuthorityAssignmentState, AuthorityLeaseBinding,
     AuthorityLeaseDecision, AuthorityLeasePermitRequest, AuthorityLeaseRecord,
     AuthorityLeaseRequest, AuthorityLeaseTakeoverFenceRecord, AuthorityLeaseTakeoverFenceRequest,
-    AuthorityTakeoverReceiptRecord, AuthorityTakeoverReceiptState, MAX_AUTHORITY_LEASE_TTL_MS,
+    AuthorityTakeoverBarrierReceiptRecord, AuthorityTakeoverBarrierReceiptRequest,
+    AuthorityTakeoverBarrierReceiptState, AuthorityTakeoverReceiptRecord,
+    AuthorityTakeoverReceiptState, MAX_AUTHORITY_LEASE_TTL_MS,
 };
 pub use model::{
     AdoptionReceiptRecord, AttemptHandle, AttemptRecord, AttemptRegistrationDecision, AttemptSpec,

@@ -22,11 +22,15 @@ use rusqlite::{
 use crate::lease::{
     AuthorityAssignmentRecord, AuthorityAssignmentState, AuthorityLeasePermitRequest,
     AuthorityLeaseRecord, AuthorityLeaseTakeoverFenceRecord, AuthorityLeaseTakeoverFenceRequest,
+    AuthorityTakeoverBarrierReceiptRecord, AuthorityTakeoverBarrierReceiptRequest,
     AuthorityTakeoverReceiptRecord, AuthorityTakeoverReceiptState, derive_assignment_id,
-    derive_takeover_fence_receipt_id, derive_takeover_receipt_id, insert_assignment,
+    derive_takeover_barrier_receipt_id, derive_takeover_fence_receipt_id,
+    derive_takeover_receipt_id, insert_assignment, insert_takeover_barrier_receipt,
     insert_takeover_fence_receipt, insert_takeover_receipt, load_current_assignment,
-    load_takeover_fence_receipt, load_takeover_receipt, mark_assignment_takeover_pending,
-    refresh_active_assignment, validate_authority_lease_binding_in_transaction,
+    load_takeover_barrier_receipt_by_participant, load_takeover_barrier_receipts,
+    load_takeover_fence_receipt, load_takeover_receipt, load_takeover_receipt_by_id,
+    mark_assignment_takeover_pending, refresh_active_assignment,
+    validate_authority_lease_binding_in_transaction,
 };
 use crate::model::{derive_closure_receipt_id, derive_permit_id, empty_effect_history_root};
 use crate::{
@@ -41,7 +45,7 @@ use crate::{
     TaskWriteSetSemanticTarget,
 };
 
-const SCHEMA_VERSION: i64 = 32;
+const SCHEMA_VERSION: i64 = 33;
 
 /// A single-writer `SQLite` task authority.
 ///
@@ -249,6 +253,7 @@ impl SqliteTaskAuthority {
             migrate_v30(&mut connection)?;
             migrate_v31(&mut connection)?;
             migrate_v32(&mut connection)?;
+            migrate_v33(&mut connection)?;
         }
 
         Ok(Self {
@@ -1646,6 +1651,112 @@ impl SqliteTaskAuthority {
         let connection = self.lock_connection()?;
         load_takeover_receipt(&*connection, task_id, fence_receipt_id)?
             .ok_or(TaskStoreError::ReceiptNotFound)
+    }
+
+    /// Records one endpoint's immutable takeover-barrier observation.
+    ///
+    /// The endpoint must already be present in the frozen registry and the
+    /// pending takeover receipt must carry an exact local fence-set root.
+    /// This method stores the supplied remote receipt identity/digest for
+    /// replay and audit only; it does not verify remote signatures, mark the
+    /// parent receipt complete, or activate a successor assignment.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ReceiptNotFound`, a participant/root binding error, a
+    /// conflicting replay, or a storage/corruption error.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn record_authority_takeover_barrier_receipt(
+        &self,
+        request: AuthorityTakeoverBarrierReceiptRequest,
+    ) -> Result<AuthorityTakeoverBarrierReceiptRecord, TaskStoreError> {
+        if request.observed_at_ms < 0 {
+            return Err(TaskStoreError::CorruptRecord("takeover barrier timestamp"));
+        }
+        let mut connection = self.lock_connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let takeover = load_takeover_receipt_by_id(&transaction, request.takeover_receipt_id)?
+            .ok_or(TaskStoreError::ReceiptNotFound)?;
+        if takeover.barrier_state != AuthorityTakeoverReceiptState::Pending
+            || takeover.new_assignment_id.is_some()
+        {
+            return Err(TaskStoreError::CorruptRecord(
+                "takeover receipt is not pending",
+            ));
+        }
+        let fence_set_root = takeover
+            .exact_fence_set_root
+            .ok_or(TaskStoreError::CorruptRecord(
+                "takeover fence set root is incomplete",
+            ))?;
+        let task = load_task(&transaction, takeover.task_id)?;
+        if task.record.task_generation != takeover.task_generation {
+            return Err(TaskStoreError::CorruptRecord(
+                "takeover barrier task generation",
+            ));
+        }
+        let registry = crate::participant::inspect_registry(&transaction, &task.record)?;
+        if registry.generation != takeover.frozen_registry_binding.generation
+            || registry.root != takeover.frozen_registry_binding.root
+        {
+            return Err(TaskStoreError::ParticipantRegistryBindingMismatch);
+        }
+        if registry.state != crate::ParticipantRegistryState::FrozenForTakeover {
+            return Err(TaskStoreError::ParticipantRegistryBindingMismatch);
+        }
+        if !crate::participant::has_participant(&registry, request.participant) {
+            return Err(TaskStoreError::ParticipantRegistryBindingMismatch);
+        }
+        let record = AuthorityTakeoverBarrierReceiptRecord {
+            receipt_id: derive_takeover_barrier_receipt_id(
+                request.takeover_receipt_id,
+                request.participant,
+                request.remote_receipt_id,
+                request.barrier_digest,
+                fence_set_root,
+            ),
+            takeover_receipt_id: request.takeover_receipt_id,
+            task_id: takeover.task_id,
+            task_generation: takeover.task_generation,
+            participant: request.participant,
+            remote_receipt_id: request.remote_receipt_id,
+            fence_set_root,
+            state: crate::lease::AuthorityTakeoverBarrierReceiptState::Observed,
+            observed_at_ms: request.observed_at_ms,
+        };
+        if let Some(existing) = load_takeover_barrier_receipt_by_participant(
+            &transaction,
+            request.takeover_receipt_id,
+            request.participant,
+        )? {
+            if existing != record {
+                return Err(TaskStoreError::CorruptRecord(
+                    "takeover barrier receipt changed during replay",
+                ));
+            }
+            transaction.commit()?;
+            return Ok(existing);
+        }
+        insert_takeover_barrier_receipt(&transaction, &record)?;
+        transaction.commit()?;
+        Ok(record)
+    }
+
+    /// Reads all immutable local endpoint-barrier observations for a pending
+    /// takeover receipt. An empty list is valid and does not imply completion.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ReceiptNotFound` or a storage/corruption error.
+    pub fn inspect_authority_takeover_barrier_receipts(
+        &self,
+        takeover_receipt_id: ReceiptId,
+    ) -> Result<Vec<AuthorityTakeoverBarrierReceiptRecord>, TaskStoreError> {
+        let connection = self.lock_connection()?;
+        if load_takeover_receipt_by_id(&*connection, takeover_receipt_id)?.is_none() {
+            return Err(TaskStoreError::ReceiptNotFound);
+        }
+        load_takeover_barrier_receipts(&*connection, takeover_receipt_id)
     }
 
     /// Reads the latest durable local `TaskAuthority` assignment, if one has
@@ -4015,6 +4126,42 @@ fn migrate_v32(connection: &mut Connection) -> Result<(), TaskStoreError> {
     Ok(())
 }
 
+/// v32 → v33 adds immutable per-endpoint takeover-barrier observations. The
+/// rows bind to a pending takeover receipt and exact local fence-set root but
+/// never advance the parent receipt or activate a successor assignment.
+fn migrate_v33(connection: &mut Connection) -> Result<(), TaskStoreError> {
+    let table_present: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master
+            WHERE type='table' AND name='task_authority_takeover_barrier_receipts'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    let trigger_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type='trigger' AND name IN (
+             'task_authority_takeover_barrier_receipt_immutable',
+             'task_authority_takeover_barrier_receipt_no_delete'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if table_present && trigger_count == 2 {
+        connection.pragma_update(None, "user_version", 33)?;
+        return Ok(());
+    }
+    if table_present || trigger_count != 0 {
+        return Err(TaskStoreError::CorruptRecord(
+            "partial takeover barrier receipt schema",
+        ));
+    }
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(SCHEMA_V33_SQL)?;
+    transaction.commit()?;
+    Ok(())
+}
+
 const SCHEMA_V13_SQL: &str = "CREATE TABLE task_write_sets (
         task_id BLOB NOT NULL CHECK(length(task_id) = 16),
         attempt_id BLOB NOT NULL CHECK(length(attempt_id) = 16),
@@ -4744,6 +4891,38 @@ pub(crate) const SCHEMA_V32_SQL: &str = "CREATE TABLE task_authority_takeover_re
      END;
 
      PRAGMA user_version = 32;";
+
+pub(crate) const SCHEMA_V33_SQL: &str = "CREATE TABLE task_authority_takeover_barrier_receipts (
+        receipt_id BLOB PRIMARY KEY NOT NULL CHECK(length(receipt_id) = 16),
+        takeover_receipt_id BLOB NOT NULL CHECK(length(takeover_receipt_id) = 16),
+        task_id BLOB NOT NULL CHECK(length(task_id) = 16),
+        task_generation BLOB NOT NULL CHECK(length(task_generation) = 8),
+        participant_type INTEGER NOT NULL CHECK(participant_type BETWEEN 1 AND 8),
+        participant_id BLOB NOT NULL CHECK(length(participant_id) = 16),
+        participant_generation BLOB NOT NULL CHECK(length(participant_generation) = 8),
+        admission_receipt_id BLOB NOT NULL CHECK(length(admission_receipt_id) = 16),
+        remote_receipt_id BLOB NOT NULL CHECK(length(remote_receipt_id) = 16),
+        fence_set_root BLOB NOT NULL CHECK(length(fence_set_root) = 32),
+        barrier_state INTEGER NOT NULL CHECK(barrier_state = 1),
+        observed_at_ms INTEGER NOT NULL CHECK(observed_at_ms >= 0),
+        UNIQUE(takeover_receipt_id, participant_type, participant_id),
+        FOREIGN KEY(takeover_receipt_id) REFERENCES task_authority_takeover_receipts(receipt_id),
+        FOREIGN KEY(task_id) REFERENCES tasks(task_id)
+     ) STRICT;
+
+     CREATE TRIGGER task_authority_takeover_barrier_receipt_immutable
+     BEFORE UPDATE ON task_authority_takeover_barrier_receipts
+     BEGIN
+        SELECT RAISE(ABORT, 'task authority takeover barrier receipt is immutable');
+     END;
+
+     CREATE TRIGGER task_authority_takeover_barrier_receipt_no_delete
+     BEFORE DELETE ON task_authority_takeover_barrier_receipts
+     BEGIN
+        SELECT RAISE(ABORT, 'task authority takeover barrier receipt is durable evidence');
+     END;
+
+     PRAGMA user_version = 33;";
 
 const SCHEMA_V12_SQL: &str = "ALTER TABLE effect_permits
         ADD COLUMN participant_registry_generation BLOB

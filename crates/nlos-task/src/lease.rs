@@ -16,6 +16,7 @@ use sha2::{Digest, Sha256};
 
 use crate::ParticipantRegistryBinding;
 use crate::TaskStoreError;
+use crate::participant::{ParticipantRecord, ParticipantType};
 use crate::store::optional_blob;
 use crate::store::{SqlRead, SqliteTaskAuthority, blob16, blob32, encode_u64, u64_from_blob};
 
@@ -153,6 +154,59 @@ pub struct AuthorityTakeoverReceiptRecord {
     pub outstanding_operation_participant_root: Option<[u8; 32]>,
     pub barrier_state: AuthorityTakeoverReceiptState,
     pub created_at_ms: i64,
+}
+
+/// Local observation state for one endpoint's takeover barrier receipt.
+/// `Observed` is intentionally weaker than a verified remote barrier: this
+/// slice stores the immutable binding but has no IPC signature/attestation
+/// verifier and never advances the parent takeover receipt.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AuthorityTakeoverBarrierReceiptState {
+    Observed,
+}
+
+impl AuthorityTakeoverBarrierReceiptState {
+    pub(crate) const fn code(self) -> i64 {
+        match self {
+            Self::Observed => 1,
+        }
+    }
+
+    pub(crate) fn from_code(code: i64) -> Result<Self, TaskStoreError> {
+        match code {
+            1 => Ok(Self::Observed),
+            _ => Err(TaskStoreError::CorruptRecord("takeover barrier state")),
+        }
+    }
+}
+
+/// Request to durably record one endpoint's takeover barrier observation.
+///
+/// The caller supplies the endpoint's durable receipt identity and digest,
+/// while `TaskAuthority` verifies only the local participant/root binding.
+/// Remote signature, authority principal, and endpoint-side fence semantics
+/// remain outside this contract.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AuthorityTakeoverBarrierReceiptRequest {
+    pub takeover_receipt_id: ReceiptId,
+    pub participant: ParticipantRecord,
+    pub remote_receipt_id: ReceiptId,
+    pub barrier_digest: [u8; 32],
+    pub observed_at_ms: i64,
+}
+
+/// Immutable local observation of one endpoint barrier receipt.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AuthorityTakeoverBarrierReceiptRecord {
+    pub receipt_id: ReceiptId,
+    pub takeover_receipt_id: ReceiptId,
+    pub task_id: TaskId,
+    pub task_generation: Generation,
+    pub participant: ParticipantRecord,
+    pub remote_receipt_id: ReceiptId,
+    pub fence_set_root: [u8; 32],
+    pub state: AuthorityTakeoverBarrierReceiptState,
+    pub observed_at_ms: i64,
 }
 
 impl AuthorityLeaseRecord {
@@ -928,6 +982,158 @@ fn decode_takeover_receipt_row(
         outstanding_operation_participant_root: optional_blob::<32>(row, 18)?,
         barrier_state: AuthorityTakeoverReceiptState::from_code(row.get(19)?)?,
         created_at_ms: row.get(20)?,
+    })
+}
+
+pub(crate) fn load_takeover_receipt_by_id(
+    source: &impl SqlRead,
+    receipt_id: ReceiptId,
+) -> Result<Option<AuthorityTakeoverReceiptRecord>, TaskStoreError> {
+    let mut statement = source.prepare_statement(
+        "SELECT receipt_id, task_id, task_generation,
+                old_assignment_id, new_assignment_id, fence_receipt_id,
+                frozen_old_authority_term, frozen_old_control_epoch,
+                new_authority_id, new_authority_lease_holder_id,
+                new_authority_lease_term, new_authority_lease_epoch,
+                new_authority_lease_fencing_token,
+                new_authority_lease_expires_at_ms, new_control_epoch,
+                frozen_registry_generation, frozen_registry_root,
+                exact_fence_set_root, outstanding_operation_participant_root,
+                barrier_state, created_at_ms
+         FROM task_authority_takeover_receipts
+         WHERE receipt_id = ?1",
+    )?;
+    let mut rows = statement.query([receipt_id.as_bytes().as_slice()])?;
+    rows.next()?.map(decode_takeover_receipt_row).transpose()
+}
+
+pub(crate) fn derive_takeover_barrier_receipt_id(
+    takeover_receipt_id: ReceiptId,
+    participant: ParticipantRecord,
+    remote_receipt_id: ReceiptId,
+    barrier_digest: [u8; 32],
+    fence_set_root: [u8; 32],
+) -> ReceiptId {
+    let mut hasher = Sha256::new();
+    hasher.update(b"llmos/task-authority-takeover-barrier/v1");
+    hasher.update(takeover_receipt_id.as_bytes());
+    hasher.update(participant.participant_type.code().to_be_bytes());
+    hasher.update(participant.participant_id.as_bytes());
+    hasher.update(participant.participant_generation.get().to_be_bytes());
+    hasher.update(participant.admission_receipt_id.as_bytes());
+    hasher.update(remote_receipt_id.as_bytes());
+    hasher.update(barrier_digest);
+    hasher.update(fence_set_root);
+    let digest: [u8; 32] = hasher.finalize().into();
+    ReceiptId::from_bytes(
+        digest[..16]
+            .try_into()
+            .expect("takeover barrier receipt id prefix"),
+    )
+}
+
+pub(crate) fn load_takeover_barrier_receipt_by_participant(
+    source: &impl SqlRead,
+    takeover_receipt_id: ReceiptId,
+    participant: ParticipantRecord,
+) -> Result<Option<AuthorityTakeoverBarrierReceiptRecord>, TaskStoreError> {
+    let mut statement = source.prepare_statement(
+        "SELECT receipt_id, takeover_receipt_id, task_id, task_generation,
+                participant_type, participant_id, participant_generation,
+                admission_receipt_id, remote_receipt_id, fence_set_root,
+                barrier_state, observed_at_ms
+         FROM task_authority_takeover_barrier_receipts
+         WHERE takeover_receipt_id = ?1
+           AND participant_type = ?2 AND participant_id = ?3",
+    )?;
+    let mut rows = statement.query(params![
+        takeover_receipt_id.as_bytes().as_slice(),
+        participant.participant_type.code(),
+        participant.participant_id.as_bytes().as_slice(),
+    ])?;
+    rows.next()?
+        .map(decode_takeover_barrier_receipt_row)
+        .transpose()
+}
+
+pub(crate) fn load_takeover_barrier_receipts(
+    source: &impl SqlRead,
+    takeover_receipt_id: ReceiptId,
+) -> Result<Vec<AuthorityTakeoverBarrierReceiptRecord>, TaskStoreError> {
+    let mut statement = source.prepare_statement(
+        "SELECT receipt_id, takeover_receipt_id, task_id, task_generation,
+                participant_type, participant_id, participant_generation,
+                admission_receipt_id, remote_receipt_id, fence_set_root,
+                barrier_state, observed_at_ms
+         FROM task_authority_takeover_barrier_receipts
+         WHERE takeover_receipt_id = ?1
+         ORDER BY participant_type, participant_id",
+    )?;
+    let mut rows = statement.query([takeover_receipt_id.as_bytes().as_slice()])?;
+    let mut records = Vec::new();
+    while let Some(row) = rows.next()? {
+        records.push(decode_takeover_barrier_receipt_row(row)?);
+    }
+    Ok(records)
+}
+
+pub(crate) fn insert_takeover_barrier_receipt(
+    transaction: &Transaction<'_>,
+    record: &AuthorityTakeoverBarrierReceiptRecord,
+) -> Result<(), TaskStoreError> {
+    transaction.execute(
+        "INSERT INTO task_authority_takeover_barrier_receipts (
+            receipt_id, takeover_receipt_id, task_id, task_generation,
+            participant_type, participant_id, participant_generation,
+            admission_receipt_id, remote_receipt_id, fence_set_root,
+            barrier_state, observed_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        params![
+            record.receipt_id.as_bytes().as_slice(),
+            record.takeover_receipt_id.as_bytes().as_slice(),
+            record.task_id.as_bytes().as_slice(),
+            encode_u64(record.task_generation.get()).as_slice(),
+            record.participant.participant_type.code(),
+            record.participant.participant_id.as_bytes().as_slice(),
+            encode_u64(record.participant.participant_generation.get()).as_slice(),
+            record
+                .participant
+                .admission_receipt_id
+                .as_bytes()
+                .as_slice(),
+            record.remote_receipt_id.as_bytes().as_slice(),
+            record.fence_set_root.as_slice(),
+            record.state.code(),
+            record.observed_at_ms,
+        ],
+    )?;
+    Ok(())
+}
+
+fn decode_takeover_barrier_receipt_row(
+    row: &rusqlite::Row<'_>,
+) -> Result<AuthorityTakeoverBarrierReceiptRecord, TaskStoreError> {
+    let task_generation = Generation::new(NonZeroU64::new(u64_from_blob(row, 3)?).ok_or(
+        TaskStoreError::CorruptRecord("takeover barrier task generation"),
+    )?);
+    let participant_generation = Generation::new(NonZeroU64::new(u64_from_blob(row, 6)?).ok_or(
+        TaskStoreError::CorruptRecord("takeover barrier participant generation"),
+    )?);
+    Ok(AuthorityTakeoverBarrierReceiptRecord {
+        receipt_id: ReceiptId::from_bytes(blob16(row, 0)?),
+        takeover_receipt_id: ReceiptId::from_bytes(blob16(row, 1)?),
+        task_id: TaskId::from_bytes(blob16(row, 2)?),
+        task_generation,
+        participant: ParticipantRecord {
+            participant_type: ParticipantType::from_code(row.get(4)?)?,
+            participant_id: TaskParticipantId::from_bytes(blob16(row, 5)?),
+            participant_generation,
+            admission_receipt_id: ReceiptId::from_bytes(blob16(row, 7)?),
+        },
+        remote_receipt_id: ReceiptId::from_bytes(blob16(row, 8)?),
+        fence_set_root: blob32(row, 9)?,
+        state: AuthorityTakeoverBarrierReceiptState::from_code(row.get(10)?)?,
+        observed_at_ms: row.get(11)?,
     })
 }
 

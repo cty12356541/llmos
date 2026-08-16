@@ -12,13 +12,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use nlos_task::{
     AttemptRegistrationDecision, AttemptSpec, AuthorityLeaseCloseRequest, AuthorityLeaseDecision,
     AuthorityLeaseFinalizeRequest, AuthorityLeasePermitRequest, AuthorityLeaseRequest,
-    AuthorityLeaseTakeoverFenceRequest, ClosePermitRequest, FinalizeDecision, FinalizeRequest,
-    FinalizeRequestV3, MAX_AUTHORITY_LEASE_TTL_MS, PermitClosureOutcome, PermitDecision,
-    PermitRequest, SnapshotBundle, SqliteTaskAuthority, TaskRegistrationDecision, TaskSpec,
-    TaskStoreError, empty_effect_history_root,
+    AuthorityLeaseTakeoverFenceRequest, AuthorityTakeoverBarrierReceiptRequest, ClosePermitRequest,
+    FinalizeDecision, FinalizeRequest, FinalizeRequestV3, MAX_AUTHORITY_LEASE_TTL_MS,
+    PermitClosureOutcome, PermitDecision, PermitRequest, SnapshotBundle, SqliteTaskAuthority,
+    TaskRegistrationDecision, TaskSpec, TaskStoreError, empty_effect_history_root,
 };
 use nlos_types::{
-    CancellationScopeId, Generation, IdempotencyKey, ProcessId, TaskAttemptId, TaskId,
+    CancellationScopeId, Generation, IdempotencyKey, ProcessId, ReceiptId, TaskAttemptId, TaskId,
+    TaskParticipantId,
 };
 use rusqlite::Connection;
 
@@ -573,6 +574,60 @@ fn takeover_fence_freezes_registry_and_replays_after_restart() {
         pending_assignment.state,
         nlos_task::AuthorityAssignmentState::TakeoverPending
     );
+    let participant = frozen
+        .participants
+        .first()
+        .copied()
+        .expect("frozen registry participant");
+    let barrier = authority
+        .record_authority_takeover_barrier_receipt(AuthorityTakeoverBarrierReceiptRequest {
+            takeover_receipt_id: takeover_receipt.receipt_id,
+            participant,
+            remote_receipt_id: ReceiptId::from_bytes([0x91; 16]),
+            barrier_digest: [0x92; 32],
+            observed_at_ms: 213,
+        })
+        .expect("record endpoint barrier observation");
+    assert_eq!(
+        barrier.state,
+        nlos_task::AuthorityTakeoverBarrierReceiptState::Observed
+    );
+    assert_eq!(
+        barrier.fence_set_root,
+        takeover_receipt.exact_fence_set_root.unwrap()
+    );
+    assert_eq!(
+        authority
+            .record_authority_takeover_barrier_receipt(AuthorityTakeoverBarrierReceiptRequest {
+                takeover_receipt_id: takeover_receipt.receipt_id,
+                participant,
+                remote_receipt_id: ReceiptId::from_bytes([0x91; 16]),
+                barrier_digest: [0x92; 32],
+                observed_at_ms: 213,
+            })
+            .expect("replay endpoint barrier observation"),
+        barrier
+    );
+    assert_eq!(
+        authority
+            .inspect_authority_takeover_barrier_receipts(takeover_receipt.receipt_id)
+            .expect("inspect endpoint barrier observations"),
+        vec![barrier]
+    );
+    let mut unknown_participant = participant;
+    unknown_participant.participant_id = TaskParticipantId::from_bytes([0xee; 16]);
+    assert!(matches!(
+        authority.record_authority_takeover_barrier_receipt(
+            AuthorityTakeoverBarrierReceiptRequest {
+                takeover_receipt_id: takeover_receipt.receipt_id,
+                participant: unknown_participant,
+                remote_receipt_id: ReceiptId::from_bytes([0x93; 16]),
+                barrier_digest: [0x94; 32],
+                observed_at_ms: 214,
+            }
+        ),
+        Err(TaskStoreError::ParticipantRegistryBindingMismatch)
+    ));
 
     let replayed = authority
         .prepare_authority_takeover_fence(AuthorityLeaseTakeoverFenceRequest {
@@ -660,6 +715,22 @@ fn takeover_fence_freezes_registry_and_replays_after_restart() {
     );
     assert!(
         raw.execute(
+            "UPDATE task_authority_takeover_barrier_receipts
+             SET barrier_state = 1
+             WHERE receipt_id = ?1",
+            rusqlite::params![barrier.receipt_id.as_bytes().as_slice()],
+        )
+        .is_err()
+    );
+    assert!(
+        raw.execute(
+            "DELETE FROM task_authority_takeover_barrier_receipts WHERE receipt_id = ?1",
+            rusqlite::params![barrier.receipt_id.as_bytes().as_slice()],
+        )
+        .is_err()
+    );
+    assert!(
+        raw.execute(
             "UPDATE task_authority_assignments
              SET authority_id = zeroblob(16)
              WHERE assignment_id = ?1",
@@ -702,6 +773,12 @@ fn takeover_fence_freezes_registry_and_replays_after_restart() {
             .inspect_authority_takeover_receipt(first_attempt.task_id, fence_receipt.receipt_id)
             .expect("takeover receipt after restart"),
         takeover_receipt
+    );
+    assert_eq!(
+        reopened
+            .inspect_authority_takeover_barrier_receipts(takeover_receipt.receipt_id)
+            .expect("barrier observation after restart"),
+        vec![barrier]
     );
     assert!(matches!(
         reopened.prepare_authority_takeover_fence(AuthorityLeaseTakeoverFenceRequest {

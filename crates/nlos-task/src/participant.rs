@@ -19,7 +19,7 @@ pub enum ParticipantType {
 }
 
 impl ParticipantType {
-    const fn code(self) -> i64 {
+    pub(crate) const fn code(self) -> i64 {
         match self {
             Self::TaskStore => 1,
             Self::ArtifactHead => 2,
@@ -32,7 +32,7 @@ impl ParticipantType {
         }
     }
 
-    fn from_code(code: i64) -> Result<Self, TaskStoreError> {
+    pub(crate) fn from_code(code: i64) -> Result<Self, TaskStoreError> {
         match code {
             1 => Ok(Self::TaskStore),
             2 => Ok(Self::ArtifactHead),
