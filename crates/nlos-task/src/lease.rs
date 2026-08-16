@@ -204,6 +204,10 @@ pub struct AuthorityTakeoverBarrierReceiptRecord {
     pub task_generation: Generation,
     pub participant: ParticipantRecord,
     pub remote_receipt_id: ReceiptId,
+    /// Digest supplied by the remote endpoint. `None` is retained only for
+    /// observations written by the pre-v35 schema, which had no durable
+    /// column for this value.
+    pub barrier_digest: Option<[u8; 32]>,
     pub fence_set_root: [u8; 32],
     pub state: AuthorityTakeoverBarrierReceiptState,
     pub observed_at_ms: i64,
@@ -1072,8 +1076,8 @@ pub(crate) fn load_takeover_barrier_receipt_by_participant(
     let mut statement = source.prepare_statement(
         "SELECT receipt_id, takeover_receipt_id, task_id, task_generation,
                 participant_type, participant_id, participant_generation,
-                admission_receipt_id, remote_receipt_id, fence_set_root,
-                barrier_state, observed_at_ms
+                admission_receipt_id, remote_receipt_id, barrier_receipt_digest,
+                fence_set_root, barrier_state, observed_at_ms
          FROM task_authority_takeover_barrier_receipts
          WHERE takeover_receipt_id = ?1
            AND participant_type = ?2 AND participant_id = ?3",
@@ -1095,8 +1099,8 @@ pub(crate) fn load_takeover_barrier_receipts(
     let mut statement = source.prepare_statement(
         "SELECT receipt_id, takeover_receipt_id, task_id, task_generation,
                 participant_type, participant_id, participant_generation,
-                admission_receipt_id, remote_receipt_id, fence_set_root,
-                barrier_state, observed_at_ms
+                admission_receipt_id, remote_receipt_id, barrier_receipt_digest,
+                fence_set_root, barrier_state, observed_at_ms
          FROM task_authority_takeover_barrier_receipts
          WHERE takeover_receipt_id = ?1
          ORDER BY participant_type, participant_id",
@@ -1117,9 +1121,9 @@ pub(crate) fn insert_takeover_barrier_receipt(
         "INSERT INTO task_authority_takeover_barrier_receipts (
             receipt_id, takeover_receipt_id, task_id, task_generation,
             participant_type, participant_id, participant_generation,
-            admission_receipt_id, remote_receipt_id, fence_set_root,
-            barrier_state, observed_at_ms
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            admission_receipt_id, remote_receipt_id, barrier_receipt_digest,
+            fence_set_root, barrier_state, observed_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         params![
             record.receipt_id.as_bytes().as_slice(),
             record.takeover_receipt_id.as_bytes().as_slice(),
@@ -1134,6 +1138,7 @@ pub(crate) fn insert_takeover_barrier_receipt(
                 .as_bytes()
                 .as_slice(),
             record.remote_receipt_id.as_bytes().as_slice(),
+            record.barrier_digest.as_ref().map(<[u8; 32]>::as_slice),
             record.fence_set_root.as_slice(),
             record.state.code(),
             record.observed_at_ms,
@@ -1163,9 +1168,10 @@ fn decode_takeover_barrier_receipt_row(
             admission_receipt_id: ReceiptId::from_bytes(blob16(row, 7)?),
         },
         remote_receipt_id: ReceiptId::from_bytes(blob16(row, 8)?),
-        fence_set_root: blob32(row, 9)?,
-        state: AuthorityTakeoverBarrierReceiptState::from_code(row.get(10)?)?,
-        observed_at_ms: row.get(11)?,
+        barrier_digest: optional_blob::<32>(row, 9)?,
+        fence_set_root: blob32(row, 10)?,
+        state: AuthorityTakeoverBarrierReceiptState::from_code(row.get(11)?)?,
+        observed_at_ms: row.get(12)?,
     })
 }
 

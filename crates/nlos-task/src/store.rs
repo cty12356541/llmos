@@ -46,7 +46,7 @@ use crate::{
     TaskWriteSetSemanticTarget,
 };
 
-const SCHEMA_VERSION: i64 = 34;
+const SCHEMA_VERSION: i64 = 35;
 
 /// A single-writer `SQLite` task authority.
 ///
@@ -256,6 +256,7 @@ impl SqliteTaskAuthority {
             migrate_v32(&mut connection)?;
             migrate_v33(&mut connection)?;
             migrate_v34(&mut connection)?;
+            migrate_v35(&mut connection)?;
         }
 
         Ok(Self {
@@ -1765,6 +1766,7 @@ impl SqliteTaskAuthority {
             task_generation: takeover.task_generation,
             participant: request.participant,
             remote_receipt_id: request.remote_receipt_id,
+            barrier_digest: Some(request.barrier_digest),
             fence_set_root,
             state: crate::lease::AuthorityTakeoverBarrierReceiptState::Observed,
             observed_at_ms: request.observed_at_ms,
@@ -4359,6 +4361,50 @@ fn migrate_v34(connection: &mut Connection) -> Result<(), TaskStoreError> {
     Ok(())
 }
 
+/// v34 → v35 persists the endpoint-supplied barrier digest. Pre-v35 rows
+/// retain `NULL` because their digest was never durably stored and cannot be
+/// reconstructed from the legacy receipt identity.
+fn migrate_v35(connection: &mut Connection) -> Result<(), TaskStoreError> {
+    let table_present: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master
+            WHERE type='table' AND name='task_authority_takeover_barrier_receipts'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    let digest_column_present: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM pragma_table_info('task_authority_takeover_barrier_receipts')
+            WHERE name='barrier_receipt_digest'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    let trigger_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type='trigger' AND name IN (
+             'task_authority_takeover_barrier_receipt_immutable',
+             'task_authority_takeover_barrier_receipt_no_delete'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if table_present && digest_column_present && trigger_count == 2 {
+        connection.pragma_update(None, "user_version", 35)?;
+        return Ok(());
+    }
+    if !table_present || trigger_count != 2 || digest_column_present {
+        return Err(TaskStoreError::CorruptRecord(
+            "partial takeover barrier digest schema",
+        ));
+    }
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(SCHEMA_V35_SQL)?;
+    transaction.commit()?;
+    Ok(())
+}
+
 const SCHEMA_V13_SQL: &str = "CREATE TABLE task_write_sets (
         task_id BLOB NOT NULL CHECK(length(task_id) = 16),
         attempt_id BLOB NOT NULL CHECK(length(attempt_id) = 16),
@@ -5147,6 +5193,12 @@ pub(crate) const SCHEMA_V34_SQL: &str = "CREATE TABLE task_authority_takeover_fe
      END;
 
      PRAGMA user_version = 34;";
+
+pub(crate) const SCHEMA_V35_SQL: &str = "ALTER TABLE task_authority_takeover_barrier_receipts
+     ADD COLUMN barrier_receipt_digest BLOB
+         CHECK(barrier_receipt_digest IS NULL OR length(barrier_receipt_digest) = 32);
+
+     PRAGMA user_version = 35;";
 
 const SCHEMA_V12_SQL: &str = "ALTER TABLE effect_permits
         ADD COLUMN participant_registry_generation BLOB

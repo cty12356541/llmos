@@ -1,5 +1,7 @@
 # ADR-0005：TaskWriteSet 采用 authority-first 实施顺序
 
+进度补记（2026-08-16）：schema v35 已补上 takeover barrier observation digest 的 durable readback；新 observation 持久化 endpoint-supplied digest，旧 v33/v34 行保留未知值（`NULL`），不改变远端签名验证或 takeover completion 语义。
+
 - 状态：ACCEPTED
 - 日期：2026-08-09
 - Owner：TaskAuthority / ProcessAuthority / SemanticAuthority / Resource reference monitors

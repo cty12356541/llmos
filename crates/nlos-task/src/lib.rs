@@ -78,6 +78,9 @@
 //! Schema v34 persists the canonical exact-fence member manifest so barrier
 //! observations can be matched against the full local fence set, including
 //! durable outstanding-operation participants.
+//! Schema v35 persists the endpoint-supplied barrier digest for new
+//! observations; legacy v33/v34 observations retain an unknown (`NULL`)
+//! digest rather than fabricating one during migration.
 //! Compensation execution
 //! (`COMPENSATED` is recordable but never executed), `QUORUM`/`REDUCE`
 //! group semantics (`[TASK-GROUP-003]`), `BEST_EFFORT` failure mode,

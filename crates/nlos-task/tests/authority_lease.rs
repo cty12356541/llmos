@@ -1,7 +1,7 @@
-//! Acceptance tests for the schema-v32 durable `TaskAuthority` lease/term
+//! Acceptance tests for the schema-v35 durable `TaskAuthority` lease/term
 //! primitive, opt-in `CommitPermit` binding, same-term lease-bound adoption
 //! guard, and the local `FROZEN_FOR_TAKEOVER` fence pre-gate. The slice
-//! proves local `SQLite` fencing and restart readback; it does not claim IPC
+//! proves local `SQLite` fencing, barrier-digest readback, and restart readback; it does not claim IPC
 //! peer authentication, remote barrier completion, or cross-term
 //! `PermitAdoption` semantics.
 
@@ -600,6 +600,7 @@ fn takeover_fence_freezes_registry_and_replays_after_restart() {
         barrier.fence_set_root,
         takeover_receipt.exact_fence_set_root.unwrap()
     );
+    assert_eq!(barrier.barrier_digest, Some([0x92; 32]));
     assert_eq!(
         authority
             .record_authority_takeover_barrier_receipt(AuthorityTakeoverBarrierReceiptRequest {
@@ -861,4 +862,37 @@ fn takeover_fence_freezes_registry_and_replays_after_restart() {
         }),
         Ok(registry) if registry.state == nlos_task::ParticipantRegistryState::FrozenForTakeover
     ));
+}
+
+#[test]
+fn v34_takeover_barrier_schema_migrates_digest_column_without_fabrication() {
+    let database = TestDatabase::new("migration-v35");
+    drop(database.open());
+
+    let raw = Connection::open(&database.path).expect("raw schema database");
+    raw.execute_batch(
+        "ALTER TABLE task_authority_takeover_barrier_receipts
+             DROP COLUMN barrier_receipt_digest;
+         PRAGMA user_version = 34;",
+    )
+    .expect("construct v34 barrier schema");
+    drop(raw);
+
+    drop(database.open());
+    let raw = Connection::open(&database.path).expect("migrated schema database");
+    let version: i64 = raw
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .expect("read migrated schema version");
+    assert_eq!(version, 35);
+    let (column_count, not_null): (i64, i64) = raw
+        .query_row(
+            "SELECT COUNT(*), COALESCE(MAX(\"notnull\"), 0)
+             FROM pragma_table_info('task_authority_takeover_barrier_receipts')
+             WHERE name = 'barrier_receipt_digest'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("inspect migrated digest column");
+    assert_eq!(column_count, 1);
+    assert_eq!(not_null, 0, "legacy rows must remain representable as NULL");
 }
