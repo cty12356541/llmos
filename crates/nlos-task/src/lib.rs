@@ -62,8 +62,9 @@
 //! takeover adoption, and fault handling. Schema v27 provides only a durable local
 //! `TaskAuthority` lease/term/fencing primitive; schema v28 adds an opt-in
 //! immutable `CommitPermit` binding and plain v3/pre-effect terminal guards;
-//! schema v29 adds a same-term lease-bound adoption/reconcile guard, but no
-//! schema authorizes an IPC peer or completes cross-term adoption. Compensation execution
+//! schema v29 adds a same-term lease-bound adoption/reconcile guard and an
+//! opt-in local `FROZEN_FOR_TAKEOVER` pre-gate, but no schema authorizes an
+//! IPC peer or completes cross-term adoption. Compensation execution
 //! (`COMPENSATED` is recordable but never executed), `QUORUM`/`REDUCE`
 //! group semantics (`[TASK-GROUP-003]`), `BEST_EFFORT` failure mode,
 //! `AGENT_INSTANCE` members, `DETACH` execution (`[TASK-DETACH-001]`),
@@ -114,7 +115,8 @@ pub use group::{
 };
 pub use lease::{
     AuthorityLeaseBinding, AuthorityLeaseDecision, AuthorityLeasePermitRequest,
-    AuthorityLeaseRecord, AuthorityLeaseRequest, MAX_AUTHORITY_LEASE_TTL_MS,
+    AuthorityLeaseRecord, AuthorityLeaseRequest, AuthorityLeaseTakeoverFenceRequest,
+    MAX_AUTHORITY_LEASE_TTL_MS,
 };
 pub use model::{
     AdoptionReceiptRecord, AttemptHandle, AttemptRecord, AttemptRegistrationDecision, AttemptSpec,

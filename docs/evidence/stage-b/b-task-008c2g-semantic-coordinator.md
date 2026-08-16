@@ -4,7 +4,7 @@
 
 ## 1. 结论
 
-本切片把 ADR-0006 选择 1 的本地两 authority 前缀接成可重启收敛的 coordinator：它只驱动已由 `TaskAuthority` 持久化的 Semantic plan，不拥有新的事实源；每次跨 authority 调用都从上一次 durable prefix 继续。schema v26 又把混合 Effect finalize 所需的 typed proof envelope 持久化，使 coordinator 能在重启后重建 v3 request；同时，`EffectClosedSuccess` 已收紧为绑定 slot contract 与权威闭合 Receipt 的本地 proof。schema v27 再增加单个 `TaskAuthority` 的 durable lease/term/fencing 原语，schema v28 将该 lease 以 opt-in immutable binding 接入 `CommitPermit` 签发、plain v3 finalize、pre-effect close、mixed persisted-envelope finalize/replay 以及 Semantic-only high-level finalize；schema v29 再把同一 live lease 绑定到 adoption/reconcile 的本地安全子集。
+本切片把 ADR-0006 选择 1 的本地两 authority 前缀接成可重启收敛的 coordinator：它只驱动已由 `TaskAuthority` 持久化的 Semantic plan，不拥有新的事实源；每次跨 authority 调用都从上一次 durable prefix 继续。schema v26 又把混合 Effect finalize 所需的 typed proof envelope 持久化，使 coordinator 能在重启后重建 v3 request；同时，`EffectClosedSuccess` 已收紧为绑定 slot contract 与权威闭合 Receipt 的本地 proof。schema v27 再增加单个 `TaskAuthority` 的 durable lease/term/fencing 原语，schema v28 将该 lease 以 opt-in immutable binding 接入 `CommitPermit` 签发、plain v3 finalize、pre-effect close、mixed persisted-envelope finalize/replay 以及 Semantic-only high-level finalize；schema v29 再把同一 live lease 绑定到 adoption/reconcile 的本地安全子集，并增加 `FROZEN_FOR_TAKEOVER` 的 local takeover-fence CAS pre-gate。
 
 ## 2. 已实现事实
 
@@ -17,6 +17,7 @@
 - schema v27 的 `task_authority_leases` 与 immutable `task_authority_lease_history` 在同一 `SQLite` 事务中记录 holder、term、lease epoch、fencing token 和过期时间；同 holder 只能续租，过期后新 holder 推进 term，旧记录在当前行校验时 fail closed。
 - schema v28 在 `commit_permits` 持久化可选 authority/holder/term/epoch/token/expiry binding；带 binding 的 permit 只能由同一 live lease 走 opt-in v3 finalize、pre-effect close、mixed persisted-envelope finalize/replay 或 Semantic-only high-level finalize，旧 term 在签发与终结两处都 fail closed，legacy permit 继续保持显式 unbound。
 - schema v29 在 `task_adoption_receipts` 持久化可选 authority/holder/term/epoch/token/expiry binding；lease-bound quarantined permit 的 adoption 与后续 unknown-slot reconcile 必须带同一 live lease，binding UPDATE 被 immutable trigger 拒绝；已解决 reconcile 的 replay 仍可读。
+- 新增 `prepare_authority_takeover_fence`：新 term 的 live lease 以 expected registry generation/root 做 CAS，把当前 registry 持久置为 `FROZEN_FOR_TAKEOVER`，同一事务递增 Task `control_epoch`；重复调用只读回原冻结事实，旧 lease、旧 registry binding 与冻结后的新 permit/adoption 写入均 fail closed，重启后状态保持。
 
 ## 3. Evidence
 
@@ -27,11 +28,13 @@
 - `cargo clippy -p nlos-commit-coordinator --all-targets --all-features -- -D warnings`：通过。
 - `cargo test -p nlos-task --test authority_lease -- --nocapture`：3 项通过；新增覆盖 lease-bound permit 签发、有效 lease 终结、接管后旧 lease 的签发/终结拒绝、新 term 绑定 permit 和 binding 持久化回读。
 - `cargo test -p nlos-task --test semantic_commit -- --nocapture`：2 项通过；Semantic-only 与 mixed Effect + Semantic publication path 均使用 lease-bound permit、owner revalidation、对应 finalize/replay 的 opt-in lease API；缺少 lease 的首次 terminal mutation fail closed。
-- `cargo test -p nlos-task --test effect_reconcile -- --nocapture`：12 项通过；新增覆盖 lease-bound quarantine → adoption → reconcile、缺少 lease 的 mutation 拒绝、schema v29 binding 回读/immutable trigger 与 resolved replay。
+- `cargo test -p nlos-task --test effect_reconcile -- --nocapture`：13 项通过；新增覆盖 lease-bound quarantine → adoption → reconcile、缺少 lease 的 mutation 拒绝、schema v29 binding 回读/immutable trigger、takeover fence 后 fresh adoption 拒绝与 resolved replay。
+- `cargo test -p nlos-task --test authority_lease -- --nocapture`：4 项通过；新增覆盖新 term live lease 的 takeover-fence CAS、control epoch 单调推进、旧 lease 拒绝、冻结后新 permit 拒绝与 restart/replay。
+- `cargo test -p nlos-task --test effect_reconcile -- --nocapture`：13 项通过；新增覆盖冻结后 fresh adoption 拒绝、既有 adoption exact replay 保持可读。
 - `cargo test -p nlos-task --quiet`：TaskAuthority 全部测试通过；`cargo clippy -p nlos-task --all-targets -- -D warnings`：通过。
 
 ## 4. 明确限制
 
-- 只覆盖单机 SemanticAuthority/TaskAuthority、Semantic-only coordinator；schema v27–v29 的租约与 permit/adoption binding 是单 authority opt-in primitive，不是 IPC peer authentication、跨 authority adoption 或完整 term takeover 协议。当前 lease binding 已覆盖 mixed Effect + Semantic owner/publication finalize、persisted envelope replay、plain v3 finalize、pre-effect close、Semantic-only high-level finalize，以及 same-term adoption/reconcile；Assignment/TakeoverReceipt、跨 term adoption、完整故障矩阵仍未接入。新增的故障证据是 TaskAuthority SQLite abort/VFS 写失败，不等于完整 kill-9/ENOSPC/torn-write 组合矩阵，也没有多 Cell 传播证据。
+- 只覆盖单机 SemanticAuthority/TaskAuthority、Semantic-only coordinator；schema v27–v29 的租约与 permit/adoption binding，以及 `FROZEN_FOR_TAKEOVER` pre-gate，都是单 authority opt-in primitive，不是 IPC peer authentication、跨 authority adoption 或完整 term takeover 协议。当前 lease binding 已覆盖 mixed Effect + Semantic owner/publication finalize、persisted envelope replay、plain v3 finalize、pre-effect close、Semantic-only high-level finalize，以及 same-term adoption/reconcile；新 fence 只冻结旧 registry，尚未创建 Assignment/TakeoverReceipt、exact outstanding-operation union、barrier receipts、successor registry 或跨 term adoption。完整故障矩阵仍未接入。新增的故障证据是 TaskAuthority SQLite abort/VFS 写失败，不等于完整 kill-9/ENOSPC/torn-write 组合矩阵，也没有多 Cell 传播证据。
 - mixed v3 envelope 必须在 publication 前由 permit holder 准备；当前 proof 只在 TaskAuthority 内绑定本地 slot contract 与已持久化 EffectReceipt，仍不验证外部 provider 的语义成功内容、签名、attestation 或跨进程 authority lease。
 - 不把 outbox ACK、local log-prefix digest 或 coordinator observation 晋升为 Trust View/vector checkpoint，也不声称分布式原子提交。

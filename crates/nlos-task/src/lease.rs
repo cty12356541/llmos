@@ -4,7 +4,7 @@
 //! authenticate an IPC peer, perform a distributed consensus decision, or
 //! adopt an old `CommitPermit`; those callers remain explicit next gates.
 
-use nlos_types::{IdempotencyKey, ProcessId, TaskParticipantId};
+use nlos_types::{IdempotencyKey, ProcessId, TaskId, TaskParticipantId};
 use rusqlite::{Transaction, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
 
@@ -74,6 +74,20 @@ impl AuthorityLeaseRecord {
 pub struct AuthorityLeasePermitRequest {
     pub permit: crate::model::PermitRequest,
     pub lease: AuthorityLeaseRecord,
+}
+
+/// Opt-in local takeover-fence request.
+///
+/// This request only freezes the current Task participant registry under a
+/// newly validated live lease. It deliberately does not claim to be a
+/// `TaskAuthorityAssignment`, `TakeoverReceipt`, or cross-authority barrier
+/// proof; those fields remain a later distributed gate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AuthorityLeaseTakeoverFenceRequest {
+    pub task_id: TaskId,
+    pub expected_registry_binding: crate::ParticipantRegistryBinding,
+    pub lease: AuthorityLeaseRecord,
+    pub requested_at_ms: i64,
 }
 
 /// Idempotent lease transition result.

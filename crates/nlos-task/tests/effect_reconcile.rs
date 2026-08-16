@@ -9,13 +9,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use nlos_task::{
     AdoptionReplay, AdoptionRequest, AttemptSpec, AuthorityLeaseAdoptionRequest,
     AuthorityLeaseFinalizeRequest, AuthorityLeasePermitRequest, AuthorityLeaseReconcileRequest,
-    AuthorityLeaseRequest, ClosePermitDecision, ClosePermitRequest, EffectPermitDecision,
-    EffectPermitRequest, FinalizeDecision, FinalizeRequestV3, IssuedPermit,
-    LogicalEffectDescriptor, NoEffectReason, NoEffectRequest, Outcome, OutcomeRequest,
-    PermitClosureOutcome, PermitDecision, PermitRecord, PermitRequest, PermitState, PlannedEffect,
-    ReconcileOutcome, ReconcileReplay, ReconcileRequest, RequiredSatisfaction,
-    RequiredSatisfactionProof, SlotState, SnapshotBundle, SqliteTaskAuthority, TaskSpec,
-    TaskStoreError, empty_effect_history_root, expected_success_assertion_digest,
+    AuthorityLeaseRequest, AuthorityLeaseTakeoverFenceRequest, ClosePermitDecision,
+    ClosePermitRequest, EffectPermitDecision, EffectPermitRequest, FinalizeDecision,
+    FinalizeRequestV3, IssuedPermit, LogicalEffectDescriptor, NoEffectReason, NoEffectRequest,
+    Outcome, OutcomeRequest, PermitClosureOutcome, PermitDecision, PermitRecord, PermitRequest,
+    PermitState, PlannedEffect, ReconcileOutcome, ReconcileReplay, ReconcileRequest,
+    RequiredSatisfaction, RequiredSatisfactionProof, SlotState, SnapshotBundle,
+    SqliteTaskAuthority, TaskSpec, TaskStoreError, empty_effect_history_root,
+    expected_success_assertion_digest,
 };
 use nlos_types::{
     CancellationScopeId, CommitPermitId, Generation, IdempotencyKey, ProcessId, ReceiptId,
@@ -1032,6 +1033,95 @@ fn lease_bound_adoption_and_reconcile_require_the_live_binding() {
     assert!(matches!(
         reopened.reconcile_effect(reconcile),
         Ok(ReconcileReplay::Replayed(_))
+    ));
+}
+
+#[test]
+fn takeover_fence_blocks_fresh_adoption_but_keeps_exact_replay_readable() {
+    let (database, spec, permit, lease_one) = setup_unknown_bound(vec![planned(0, true)]);
+    let authority = database.open();
+    let finalize = finalize_v3(&spec, permit.permit_id, Vec::new(), [0xf1; 32]);
+    assert!(matches!(
+        authority.finalize_commit_v3_with_authority_lease(AuthorityLeaseFinalizeRequest {
+            finalize,
+            lease: lease_one,
+        }),
+        Err(TaskStoreError::Quarantined)
+    ));
+    let original_adoption = adopt_request(&spec, &permit, 0xe2);
+    let original_adoption_record = match authority
+        .adopt_permit_with_authority_lease(AuthorityLeaseAdoptionRequest {
+            adoption: original_adoption,
+            lease: lease_one,
+        })
+        .expect("initial adoption")
+    {
+        AdoptionReplay::Adopted(record) => *record,
+        other @ AdoptionReplay::Replayed(_) => panic!("expected Adopted, got {other:?}"),
+    };
+    let lease_two = authority
+        .acquire_authority_lease(AuthorityLeaseRequest {
+            holder_id: ProcessId::from_bytes([0x83; 16]),
+            idempotency_key: IdempotencyKey::from_bytes([0x84; 16]),
+            requested_at_ms: 17_001,
+            ttl_ms: 10_000,
+        })
+        .expect("takeover lease")
+        .record();
+    let registry_binding = permit
+        .participant_registry_binding
+        .expect("permit registry binding");
+    authority
+        .prepare_authority_takeover_fence(AuthorityLeaseTakeoverFenceRequest {
+            task_id: spec.task_id,
+            expected_registry_binding: registry_binding,
+            lease: lease_two,
+            requested_at_ms: 17_002,
+        })
+        .expect("takeover fence");
+
+    let adoption_request = adopt_request(&spec, &permit, 0xe3);
+    assert!(matches!(
+        authority.adopt_permit(adoption_request),
+        Err(TaskStoreError::ParticipantRegistryFrozen {
+            state: nlos_task::ParticipantRegistryState::FrozenForTakeover
+        })
+    ));
+    assert!(matches!(
+        authority.adopt_permit_with_authority_lease(AuthorityLeaseAdoptionRequest {
+            adoption: adoption_request,
+            lease: lease_two,
+        }),
+        Err(TaskStoreError::ParticipantRegistryFrozen {
+            state: nlos_task::ParticipantRegistryState::FrozenForTakeover
+        })
+    ));
+    let reconcile = reconcile_request(
+        &spec,
+        &permit,
+        0,
+        original_adoption_record.receipt_id,
+        ReconcileOutcome::EffectClosed,
+        [0xac; 32],
+    );
+    assert!(matches!(
+        authority.reconcile_effect(reconcile),
+        Err(TaskStoreError::ParticipantRegistryFrozen {
+            state: nlos_task::ParticipantRegistryState::FrozenForTakeover
+        })
+    ));
+    assert!(matches!(
+        authority.reconcile_effect_with_authority_lease(AuthorityLeaseReconcileRequest {
+            reconcile,
+            lease: lease_two,
+        }),
+        Err(TaskStoreError::ParticipantRegistryFrozen {
+            state: nlos_task::ParticipantRegistryState::FrozenForTakeover
+        })
+    ));
+    assert!(matches!(
+        authority.adopt_permit(original_adoption),
+        Ok(AdoptionReplay::Replayed(_))
     ));
 }
 

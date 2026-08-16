@@ -1916,6 +1916,7 @@ impl SqliteTaskAuthority {
             transaction.commit()?;
             return Ok(AdoptionReplay::Replayed(Box::new(existing)));
         }
+        crate::participant::reject_takeover_fence(&transaction, request.task_id)?;
         if permit.state != PermitState::Quarantined {
             return Err(TaskStoreError::InvalidReconcileState {
                 reason: "only a quarantined permit can be adopted",
@@ -2081,6 +2082,7 @@ impl SqliteTaskAuthority {
         if slot.state != SlotState::EffectUnknown {
             return replay_reconcile(&transaction, &permit, &slot, &adoption, &request);
         }
+        crate::participant::reject_takeover_fence(&transaction, request.task_id)?;
         if adoption.authority_lease_binding != permit.authority_lease_binding {
             return Err(TaskStoreError::AuthorityLeaseBindingMismatch);
         }

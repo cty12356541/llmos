@@ -20,7 +20,7 @@ use rusqlite::{
 };
 
 use crate::lease::{
-    AuthorityLeasePermitRequest, AuthorityLeaseRecord,
+    AuthorityLeasePermitRequest, AuthorityLeaseRecord, AuthorityLeaseTakeoverFenceRequest,
     validate_authority_lease_binding_in_transaction,
 };
 use crate::model::{derive_closure_receipt_id, derive_permit_id, empty_effect_history_root};
@@ -1463,6 +1463,60 @@ impl SqliteTaskAuthority {
         let connection = self.lock_connection()?;
         let task = load_task(&*connection, task_id)?;
         crate::participant::inspect_registry(&connection, &task.record)
+    }
+
+    /// Prepares the local participant registry for a lease takeover.
+    ///
+    /// The current registry generation/root is CAS-frozen as
+    /// `FROZEN_FOR_TAKEOVER` under a newly validated live lease, and the
+    /// Task control epoch advances in the same transaction. New permit,
+    /// effect, adoption, and reconcile mutations are then rejected until a
+    /// future Assignment/TakeoverReceipt path installs a successor registry.
+    /// Repeating the exact fence after the state is already frozen is a
+    /// read-only replay. This API is intentionally only a local pre-gate; it
+    /// does not create a cross-authority barrier receipt or activate a new
+    /// assignment.
+    ///
+    /// # Errors
+    ///
+    /// Returns a task, lease, registry binding, CAS, or storage error.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn prepare_authority_takeover_fence(
+        &self,
+        request: AuthorityLeaseTakeoverFenceRequest,
+    ) -> Result<crate::ParticipantRegistryRecord, TaskStoreError> {
+        let mut connection = self.lock_connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let task = load_task(&transaction, request.task_id)?;
+        validate_authority_lease_binding_in_transaction(
+            &transaction,
+            request.lease.binding(),
+            request.requested_at_ms,
+        )?;
+        let before = crate::participant::inspect_registry(&transaction, &task.record)?;
+        let registry = crate::participant::freeze_for_takeover(
+            &transaction,
+            &task.record,
+            request.expected_registry_binding,
+            request.requested_at_ms,
+        )?;
+        if before.state != crate::ParticipantRegistryState::FrozenForTakeover {
+            let control_epoch = task
+                .record
+                .control_epoch
+                .checked_add(1)
+                .ok_or(TaskStoreError::EpochExhausted)?;
+            update_task(
+                &transaction,
+                &task,
+                request.requested_at_ms,
+                |task_record| {
+                    task_record.control_epoch = control_epoch;
+                },
+            )?;
+        }
+        transaction.commit()?;
+        Ok(registry)
     }
 
     /// Registers an Artifact head after direct proof readback from its owner.

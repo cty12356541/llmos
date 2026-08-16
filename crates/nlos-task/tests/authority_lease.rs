@@ -1,7 +1,8 @@
 //! Acceptance tests for the schema-v29 durable `TaskAuthority` lease/term
-//! primitive, opt-in `CommitPermit` binding, and same-term lease-bound
-//! adoption guard. The slice proves local `SQLite` fencing and restart
-//! readback; it does not claim IPC peer authentication or cross-term
+//! primitive, opt-in `CommitPermit` binding, same-term lease-bound adoption
+//! guard, and the local `FROZEN_FOR_TAKEOVER` fence pre-gate. The slice
+//! proves local `SQLite` fencing and restart readback; it does not claim IPC
+//! peer authentication, Assignment/TakeoverReceipt, or cross-term
 //! `PermitAdoption` semantics.
 
 use std::fs;
@@ -11,10 +12,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use nlos_task::{
     AttemptRegistrationDecision, AttemptSpec, AuthorityLeaseCloseRequest, AuthorityLeaseDecision,
     AuthorityLeaseFinalizeRequest, AuthorityLeasePermitRequest, AuthorityLeaseRequest,
-    ClosePermitRequest, FinalizeDecision, FinalizeRequest, FinalizeRequestV3,
-    MAX_AUTHORITY_LEASE_TTL_MS, PermitClosureOutcome, PermitDecision, PermitRequest,
-    SnapshotBundle, SqliteTaskAuthority, TaskRegistrationDecision, TaskSpec, TaskStoreError,
-    empty_effect_history_root,
+    AuthorityLeaseTakeoverFenceRequest, ClosePermitRequest, FinalizeDecision, FinalizeRequest,
+    FinalizeRequestV3, MAX_AUTHORITY_LEASE_TTL_MS, PermitClosureOutcome, PermitDecision,
+    PermitRequest, SnapshotBundle, SqliteTaskAuthority, TaskRegistrationDecision, TaskSpec,
+    TaskStoreError, empty_effect_history_root,
 };
 use nlos_types::{
     CancellationScopeId, Generation, IdempotencyKey, ProcessId, TaskAttemptId, TaskId,
@@ -456,4 +457,146 @@ fn lease_binding_fences_permit_issue_and_terminal_mutation() {
         )
         .is_err()
     );
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn takeover_fence_freezes_registry_and_replays_after_restart() {
+    let database = TestDatabase::new("takeover-fence");
+    let authority = database.open();
+    let lease_one = record(
+        authority
+            .acquire_authority_lease(request(1, 0xd1, 100, 100))
+            .expect("initial lease"),
+    );
+    let first_attempt = register_task_attempt(&authority, 0x61);
+    let first_permit = match authority
+        .request_commit_permit_with_authority_lease(AuthorityLeasePermitRequest {
+            permit: permit_request(&first_attempt, 0xe1, 150),
+            lease: lease_one,
+        })
+        .expect("lease-bound permit")
+    {
+        PermitDecision::Issued(permit) => *permit,
+        other => panic!("expected issued permit, got {other:?}"),
+    };
+    let registry_binding = first_permit
+        .participant_registry_binding
+        .expect("permit registry binding");
+    authority
+        .finalize_commit_v3_with_authority_lease(AuthorityLeaseFinalizeRequest {
+            finalize: finalize_request(&first_attempt, first_permit.permit_id, 160),
+            lease: lease_one,
+        })
+        .expect("close first permit before takeover");
+
+    let lease_two = record(
+        authority
+            .acquire_authority_lease(request(2, 0xd2, 201, 100))
+            .expect("new term lease"),
+    );
+    assert_eq!(lease_two.term, lease_one.term + 1);
+    assert!(matches!(
+        authority.prepare_authority_takeover_fence(AuthorityLeaseTakeoverFenceRequest {
+            task_id: first_attempt.task_id,
+            expected_registry_binding: registry_binding,
+            lease: lease_one,
+            requested_at_ms: 210,
+        }),
+        Err(TaskStoreError::AuthorityLeaseFenced)
+    ));
+
+    let task_before = authority.inspect_task(first_attempt.task_id).expect("task");
+    let control_before = task_before.control_epoch;
+    let frozen = authority
+        .prepare_authority_takeover_fence(AuthorityLeaseTakeoverFenceRequest {
+            task_id: first_attempt.task_id,
+            expected_registry_binding: registry_binding,
+            lease: lease_two,
+            requested_at_ms: 210,
+        })
+        .expect("freeze current registry");
+    assert_eq!(
+        frozen.state,
+        nlos_task::ParticipantRegistryState::FrozenForTakeover
+    );
+    assert_eq!(frozen.generation, registry_binding.generation);
+    assert_eq!(frozen.root, registry_binding.root);
+    assert_eq!(
+        authority
+            .inspect_task(first_attempt.task_id)
+            .expect("task after fence")
+            .control_epoch,
+        control_before + 1
+    );
+
+    let replayed = authority
+        .prepare_authority_takeover_fence(AuthorityLeaseTakeoverFenceRequest {
+            task_id: first_attempt.task_id,
+            expected_registry_binding: registry_binding,
+            lease: lease_two,
+            requested_at_ms: 211,
+        })
+        .expect("fence replay");
+    assert_eq!(replayed, frozen);
+    assert_eq!(
+        authority
+            .inspect_task(first_attempt.task_id)
+            .expect("task after replay")
+            .control_epoch,
+        control_before + 1,
+        "takeover fence replay must not advance control epoch twice"
+    );
+
+    let second_attempt = AttemptSpec {
+        task_id: first_attempt.task_id,
+        attempt_id: TaskAttemptId::from_bytes([0x72; 16]),
+        attempt_generation: Generation::INITIAL,
+        snapshot: SnapshotBundle {
+            snapshot_id: nlos_types::TaskSnapshotId::from_bytes([0x73; 16]),
+            snapshot_digest: [0x74; 32],
+            expected_head_commit_seq: 1,
+            effect_history_root: task_before.head_effect_history_root,
+            retry_fence_epoch: 0,
+        },
+        cancellation_scope_id: CancellationScopeId::from_bytes([0x75; 16]),
+        cancellation_generation: Generation::INITIAL,
+        idempotency_key: IdempotencyKey::from_bytes([0x76; 16]),
+        registered_at_ms: 220,
+    };
+    let second_decision = authority
+        .register_attempt(second_attempt)
+        .expect("register second attempt");
+    assert!(matches!(
+        second_decision,
+        AttemptRegistrationDecision::Created(_)
+    ));
+    assert!(matches!(
+        authority.request_commit_permit_with_authority_lease(AuthorityLeasePermitRequest {
+            permit: permit_request(&second_attempt, 0xe2, 221),
+            lease: lease_two,
+        }),
+        Err(TaskStoreError::ParticipantRegistryFrozen {
+            state: nlos_task::ParticipantRegistryState::FrozenForTakeover
+        })
+    ));
+
+    drop(authority);
+    let reopened = database.open();
+    assert_eq!(
+        reopened
+            .inspect_participant_registry(first_attempt.task_id)
+            .expect("frozen registry after restart")
+            .state,
+        nlos_task::ParticipantRegistryState::FrozenForTakeover
+    );
+    assert!(matches!(
+        reopened.prepare_authority_takeover_fence(AuthorityLeaseTakeoverFenceRequest {
+            task_id: first_attempt.task_id,
+            expected_registry_binding: registry_binding,
+            lease: lease_two,
+            requested_at_ms: 212,
+        }),
+        Ok(registry) if registry.state == nlos_task::ParticipantRegistryState::FrozenForTakeover
+    ));
 }
