@@ -23,14 +23,14 @@ use crate::lease::{
     AuthorityAssignmentRecord, AuthorityAssignmentState, AuthorityLeasePermitRequest,
     AuthorityLeaseRecord, AuthorityLeaseTakeoverFenceRecord, AuthorityLeaseTakeoverFenceRequest,
     AuthorityTakeoverBarrierReceiptRecord, AuthorityTakeoverBarrierReceiptRequest,
-    AuthorityTakeoverReceiptRecord, AuthorityTakeoverReceiptState, derive_assignment_id,
-    derive_takeover_barrier_receipt_id, derive_takeover_fence_receipt_id,
-    derive_takeover_receipt_id, insert_assignment, insert_takeover_barrier_receipt,
-    insert_takeover_fence_receipt, insert_takeover_receipt, load_current_assignment,
-    load_takeover_barrier_receipt_by_participant, load_takeover_barrier_receipts,
-    load_takeover_fence_receipt, load_takeover_receipt, load_takeover_receipt_by_id,
-    mark_assignment_takeover_pending, refresh_active_assignment,
-    validate_authority_lease_binding_in_transaction,
+    AuthorityTakeoverFenceMemberRecord, AuthorityTakeoverReceiptRecord,
+    AuthorityTakeoverReceiptState, derive_assignment_id, derive_takeover_barrier_receipt_id,
+    derive_takeover_fence_receipt_id, derive_takeover_receipt_id, insert_assignment,
+    insert_takeover_barrier_receipt, insert_takeover_fence_member, insert_takeover_fence_receipt,
+    insert_takeover_receipt, load_current_assignment, load_takeover_barrier_receipt_by_participant,
+    load_takeover_barrier_receipts, load_takeover_fence_members, load_takeover_fence_receipt,
+    load_takeover_receipt, load_takeover_receipt_by_id, mark_assignment_takeover_pending,
+    refresh_active_assignment, validate_authority_lease_binding_in_transaction,
 };
 use crate::model::{derive_closure_receipt_id, derive_permit_id, empty_effect_history_root};
 use crate::{
@@ -45,7 +45,7 @@ use crate::{
     TaskWriteSetSemanticTarget,
 };
 
-const SCHEMA_VERSION: i64 = 33;
+const SCHEMA_VERSION: i64 = 34;
 
 /// A single-writer `SQLite` task authority.
 ///
@@ -254,6 +254,7 @@ impl SqliteTaskAuthority {
             migrate_v31(&mut connection)?;
             migrate_v32(&mut connection)?;
             migrate_v33(&mut connection)?;
+            migrate_v34(&mut connection)?;
         }
 
         Ok(Self {
@@ -1527,16 +1528,24 @@ impl SqliteTaskAuthority {
             request.expected_registry_binding,
             request.requested_at_ms,
         )?;
-        let (outstanding_operation_participant_root, exact_fence_set_root) =
+        let (fence_members, outstanding_operation_participant_root, exact_fence_set_root) =
             match load_outstanding_operation_participants(&transaction, request.task_id)? {
                 Some(outstanding_participants) => {
+                    let fence_members = crate::participant::takeover_fence_members(
+                        &registry,
+                        &outstanding_participants,
+                    )?;
                     let (outstanding_root, exact_root) = crate::participant::takeover_fence_roots(
                         &registry,
                         &outstanding_participants,
                     )?;
-                    (Some(outstanding_root), Some(exact_root))
+                    (
+                        Some(fence_members),
+                        Some(outstanding_root),
+                        Some(exact_root),
+                    )
                 }
-                None => (None, None),
+                None => (None, None, None),
             };
         let control_epoch = if before.state == crate::ParticipantRegistryState::FrozenForTakeover {
             task.record.control_epoch
@@ -1597,6 +1606,9 @@ impl SqliteTaskAuthority {
         } else {
             insert_takeover_fence_receipt(&transaction, &record)?;
         }
+        if let Some(fence_members) = fence_members.as_deref() {
+            persist_takeover_fence_members(&transaction, &record, fence_members)?;
+        }
         if let Some(assignment) = assignment {
             persist_takeover_pending_receipt(
                 &transaction,
@@ -1631,6 +1643,24 @@ impl SqliteTaskAuthority {
         let connection = self.lock_connection()?;
         load_takeover_fence_receipt(&*connection, task_id, registry_binding)?
             .ok_or(TaskStoreError::ReceiptNotFound)
+    }
+
+    /// Reads the durable exact local fence-set member manifest for one frozen
+    /// registry. An empty list means the fence roots were intentionally left
+    /// unknown in this schema version, not that the set is empty.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ReceiptNotFound` or a storage/corruption error.
+    pub fn inspect_authority_takeover_fence_members(
+        &self,
+        task_id: TaskId,
+        registry_binding: crate::ParticipantRegistryBinding,
+    ) -> Result<Vec<AuthorityTakeoverFenceMemberRecord>, TaskStoreError> {
+        let connection = self.lock_connection()?;
+        let fence = load_takeover_fence_receipt(&*connection, task_id, registry_binding)?
+            .ok_or(TaskStoreError::ReceiptNotFound)?;
+        load_takeover_fence_members(&*connection, fence.receipt_id)
     }
 
     /// Reads the pending local prefix of a `TaskAuthorityTakeoverReceipt`.
@@ -1704,7 +1734,21 @@ impl SqliteTaskAuthority {
         if registry.state != crate::ParticipantRegistryState::FrozenForTakeover {
             return Err(TaskStoreError::ParticipantRegistryBindingMismatch);
         }
-        if !crate::participant::has_participant(&registry, request.participant) {
+        let fence_members = load_takeover_fence_members(&transaction, takeover.fence_receipt_id)?;
+        if fence_members.iter().any(|member| {
+            member.task_id != takeover.task_id
+                || member.task_generation != takeover.task_generation
+                || member.fence_receipt_id != takeover.fence_receipt_id
+        }) {
+            return Err(TaskStoreError::CorruptRecord(
+                "takeover fence member binding",
+            ));
+        }
+        if fence_members.is_empty()
+            || !fence_members
+                .iter()
+                .any(|member| member.participant == request.participant)
+        {
             return Err(TaskStoreError::ParticipantRegistryBindingMismatch);
         }
         let record = AuthorityTakeoverBarrierReceiptRecord {
@@ -2916,6 +2960,36 @@ fn persist_takeover_pending_receipt(
         ));
     }
     insert_takeover_receipt(transaction, &expected)
+}
+
+fn persist_takeover_fence_members(
+    transaction: &Transaction<'_>,
+    fence: &AuthorityLeaseTakeoverFenceRecord,
+    participants: &[crate::ParticipantRecord],
+) -> Result<(), TaskStoreError> {
+    let expected = participants
+        .iter()
+        .copied()
+        .map(|participant| AuthorityTakeoverFenceMemberRecord {
+            fence_receipt_id: fence.receipt_id,
+            task_id: fence.task_id,
+            task_generation: fence.task_generation,
+            participant,
+        })
+        .collect::<Vec<_>>();
+    let existing = load_takeover_fence_members(transaction, fence.receipt_id)?;
+    if existing.is_empty() {
+        for member in &expected {
+            insert_takeover_fence_member(transaction, member)?;
+        }
+        return Ok(());
+    }
+    if existing != expected {
+        return Err(TaskStoreError::CorruptRecord(
+            "takeover fence member manifest changed during replay",
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn closure_receipt(
@@ -4162,6 +4236,41 @@ fn migrate_v33(connection: &mut Connection) -> Result<(), TaskStoreError> {
     Ok(())
 }
 
+/// v33 → v34 adds the canonical exact-fence member manifest used to match
+/// endpoint barrier observations against the full locally provable set.
+fn migrate_v34(connection: &mut Connection) -> Result<(), TaskStoreError> {
+    let table_present: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master
+            WHERE type='table' AND name='task_authority_takeover_fence_members'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    let trigger_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type='trigger' AND name IN (
+             'task_authority_takeover_fence_member_immutable',
+             'task_authority_takeover_fence_member_no_delete'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if table_present && trigger_count == 2 {
+        connection.pragma_update(None, "user_version", 34)?;
+        return Ok(());
+    }
+    if table_present || trigger_count != 0 {
+        return Err(TaskStoreError::CorruptRecord(
+            "partial takeover fence member schema",
+        ));
+    }
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(SCHEMA_V34_SQL)?;
+    transaction.commit()?;
+    Ok(())
+}
+
 const SCHEMA_V13_SQL: &str = "CREATE TABLE task_write_sets (
         task_id BLOB NOT NULL CHECK(length(task_id) = 16),
         attempt_id BLOB NOT NULL CHECK(length(attempt_id) = 16),
@@ -4923,6 +5032,33 @@ pub(crate) const SCHEMA_V33_SQL: &str = "CREATE TABLE task_authority_takeover_ba
      END;
 
      PRAGMA user_version = 33;";
+
+pub(crate) const SCHEMA_V34_SQL: &str = "CREATE TABLE task_authority_takeover_fence_members (
+        fence_receipt_id BLOB NOT NULL CHECK(length(fence_receipt_id) = 16),
+        task_id BLOB NOT NULL CHECK(length(task_id) = 16),
+        task_generation BLOB NOT NULL CHECK(length(task_generation) = 8),
+        participant_type INTEGER NOT NULL CHECK(participant_type BETWEEN 1 AND 8),
+        participant_id BLOB NOT NULL CHECK(length(participant_id) = 16),
+        participant_generation BLOB NOT NULL CHECK(length(participant_generation) = 8),
+        admission_receipt_id BLOB NOT NULL CHECK(length(admission_receipt_id) = 16),
+        PRIMARY KEY(fence_receipt_id, participant_type, participant_id),
+        FOREIGN KEY(fence_receipt_id) REFERENCES task_authority_takeover_fence_receipts(receipt_id),
+        FOREIGN KEY(task_id) REFERENCES tasks(task_id)
+     ) STRICT;
+
+     CREATE TRIGGER task_authority_takeover_fence_member_immutable
+     BEFORE UPDATE ON task_authority_takeover_fence_members
+     BEGIN
+        SELECT RAISE(ABORT, 'task authority takeover fence member is immutable');
+     END;
+
+     CREATE TRIGGER task_authority_takeover_fence_member_no_delete
+     BEFORE DELETE ON task_authority_takeover_fence_members
+     BEGIN
+        SELECT RAISE(ABORT, 'task authority takeover fence member is durable evidence');
+     END;
+
+     PRAGMA user_version = 34;";
 
 const SCHEMA_V12_SQL: &str = "ALTER TABLE effect_permits
         ADD COLUMN participant_registry_generation BLOB

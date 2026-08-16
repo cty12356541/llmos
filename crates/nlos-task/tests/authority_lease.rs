@@ -542,6 +542,10 @@ fn takeover_fence_freezes_registry_and_replays_after_restart() {
         fence_receipt.outstanding_operation_participant_root,
         Some([0; 32])
     );
+    let fence_members = authority
+        .inspect_authority_takeover_fence_members(first_attempt.task_id, registry_binding)
+        .expect("exact fence member manifest");
+    assert!(!fence_members.is_empty());
     assert_eq!(
         authority
             .inspect_task(first_attempt.task_id)
@@ -729,6 +733,52 @@ fn takeover_fence_freezes_registry_and_replays_after_restart() {
         )
         .is_err()
     );
+    let member = fence_members.first().expect("fence member");
+    assert!(
+        raw.execute(
+            "UPDATE task_authority_takeover_fence_members
+             SET participant_generation = zeroblob(8)
+             WHERE fence_receipt_id = ?1
+               AND participant_type = ?2 AND participant_id = ?3",
+            rusqlite::params![
+                member.fence_receipt_id.as_bytes().as_slice(),
+                match member.participant.participant_type {
+                    nlos_task::ParticipantType::TaskStore => 1,
+                    nlos_task::ParticipantType::ArtifactHead => 2,
+                    nlos_task::ParticipantType::SemanticAdmission => 3,
+                    nlos_task::ParticipantType::ChannelTopic => 4,
+                    nlos_task::ParticipantType::DriverGateway => 5,
+                    nlos_task::ParticipantType::ResourceLedger => 6,
+                    nlos_task::ParticipantType::ProcessBinding => 7,
+                    nlos_task::ParticipantType::OperationBinding => 8,
+                },
+                member.participant.participant_id.as_bytes().as_slice(),
+            ],
+        )
+        .is_err()
+    );
+    assert!(
+        raw.execute(
+            "DELETE FROM task_authority_takeover_fence_members
+             WHERE fence_receipt_id = ?1
+               AND participant_type = ?2 AND participant_id = ?3",
+            rusqlite::params![
+                member.fence_receipt_id.as_bytes().as_slice(),
+                match member.participant.participant_type {
+                    nlos_task::ParticipantType::TaskStore => 1,
+                    nlos_task::ParticipantType::ArtifactHead => 2,
+                    nlos_task::ParticipantType::SemanticAdmission => 3,
+                    nlos_task::ParticipantType::ChannelTopic => 4,
+                    nlos_task::ParticipantType::DriverGateway => 5,
+                    nlos_task::ParticipantType::ResourceLedger => 6,
+                    nlos_task::ParticipantType::ProcessBinding => 7,
+                    nlos_task::ParticipantType::OperationBinding => 8,
+                },
+                member.participant.participant_id.as_bytes().as_slice(),
+            ],
+        )
+        .is_err()
+    );
     assert!(
         raw.execute(
             "UPDATE task_authority_assignments
@@ -761,6 +811,12 @@ fn takeover_fence_freezes_registry_and_replays_after_restart() {
             .inspect_authority_takeover_fence_receipt(first_attempt.task_id, registry_binding)
             .expect("fence receipt after restart"),
         fence_receipt
+    );
+    assert_eq!(
+        reopened
+            .inspect_authority_takeover_fence_members(first_attempt.task_id, registry_binding)
+            .expect("fence member manifest after restart"),
+        fence_members
     );
     assert_eq!(
         reopened

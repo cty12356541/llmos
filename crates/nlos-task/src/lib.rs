@@ -75,6 +75,9 @@
 //! Schema v33 persists immutable per-endpoint barrier observations bound to
 //! that pending prefix and exact local fence-set root, but does not verify
 //! remote attestation or advance the takeover state.
+//! Schema v34 persists the canonical exact-fence member manifest so barrier
+//! observations can be matched against the full local fence set, including
+//! durable outstanding-operation participants.
 //! Compensation execution
 //! (`COMPENSATED` is recordable but never executed), `QUORUM`/`REDUCE`
 //! group semantics (`[TASK-GROUP-003]`), `BEST_EFFORT` failure mode,
@@ -129,8 +132,8 @@ pub use lease::{
     AuthorityLeaseDecision, AuthorityLeasePermitRequest, AuthorityLeaseRecord,
     AuthorityLeaseRequest, AuthorityLeaseTakeoverFenceRecord, AuthorityLeaseTakeoverFenceRequest,
     AuthorityTakeoverBarrierReceiptRecord, AuthorityTakeoverBarrierReceiptRequest,
-    AuthorityTakeoverBarrierReceiptState, AuthorityTakeoverReceiptRecord,
-    AuthorityTakeoverReceiptState, MAX_AUTHORITY_LEASE_TTL_MS,
+    AuthorityTakeoverBarrierReceiptState, AuthorityTakeoverFenceMemberRecord,
+    AuthorityTakeoverReceiptRecord, AuthorityTakeoverReceiptState, MAX_AUTHORITY_LEASE_TTL_MS,
 };
 pub use model::{
     AdoptionReceiptRecord, AttemptHandle, AttemptRecord, AttemptRegistrationDecision, AttemptSpec,

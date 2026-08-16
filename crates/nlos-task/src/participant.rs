@@ -416,9 +416,7 @@ pub(crate) fn takeover_fence_roots(
     outstanding: &[ParticipantRecord],
 ) -> Result<([u8; 32], [u8; 32]), TaskStoreError> {
     let outstanding = canonicalize_participants(outstanding)?;
-    let mut union = registry.participants.clone();
-    union.extend(outstanding.iter().copied());
-    let union = canonicalize_participants(&union)?;
+    let union = takeover_fence_members(registry, outstanding.as_slice())?;
     Ok((
         participant_set_root(
             b"llmos/task-takeover-outstanding-participants/v1",
@@ -426,6 +424,15 @@ pub(crate) fn takeover_fence_roots(
         ),
         participant_set_root(b"llmos/task-takeover-exact-fence-set/v1", &union),
     ))
+}
+
+pub(crate) fn takeover_fence_members(
+    registry: &ParticipantRegistryRecord,
+    outstanding: &[ParticipantRecord],
+) -> Result<Vec<ParticipantRecord>, TaskStoreError> {
+    let mut union = registry.participants.clone();
+    union.extend(outstanding.iter().copied());
+    canonicalize_participants(&union)
 }
 
 fn canonicalize_participants(

@@ -284,6 +284,17 @@ pub struct AuthorityLeaseTakeoverFenceRecord {
     pub created_at_ms: i64,
 }
 
+/// Durable member of the exact local fence set captured by a takeover fence.
+/// The manifest makes per-endpoint barrier coverage auditable without
+/// treating the root alone as a list of participants.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AuthorityTakeoverFenceMemberRecord {
+    pub fence_receipt_id: ReceiptId,
+    pub task_id: TaskId,
+    pub task_generation: Generation,
+    pub participant: ParticipantRecord,
+}
+
 /// Idempotent lease transition result.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AuthorityLeaseDecision {
@@ -1135,6 +1146,70 @@ fn decode_takeover_barrier_receipt_row(
         state: AuthorityTakeoverBarrierReceiptState::from_code(row.get(10)?)?,
         observed_at_ms: row.get(11)?,
     })
+}
+
+pub(crate) fn load_takeover_fence_members(
+    source: &impl SqlRead,
+    fence_receipt_id: ReceiptId,
+) -> Result<Vec<AuthorityTakeoverFenceMemberRecord>, TaskStoreError> {
+    let mut statement = source.prepare_statement(
+        "SELECT fence_receipt_id, task_id, task_generation,
+                participant_type, participant_id, participant_generation,
+                admission_receipt_id
+         FROM task_authority_takeover_fence_members
+         WHERE fence_receipt_id = ?1
+         ORDER BY participant_type, participant_id",
+    )?;
+    let mut rows = statement.query([fence_receipt_id.as_bytes().as_slice()])?;
+    let mut records = Vec::new();
+    while let Some(row) = rows.next()? {
+        let task_generation = Generation::new(NonZeroU64::new(u64_from_blob(row, 2)?).ok_or(
+            TaskStoreError::CorruptRecord("takeover fence member task generation"),
+        )?);
+        let participant_generation =
+            Generation::new(NonZeroU64::new(u64_from_blob(row, 5)?).ok_or(
+                TaskStoreError::CorruptRecord("takeover fence member participant generation"),
+            )?);
+        records.push(AuthorityTakeoverFenceMemberRecord {
+            fence_receipt_id: ReceiptId::from_bytes(blob16(row, 0)?),
+            task_id: TaskId::from_bytes(blob16(row, 1)?),
+            task_generation,
+            participant: ParticipantRecord {
+                participant_type: ParticipantType::from_code(row.get(3)?)?,
+                participant_id: TaskParticipantId::from_bytes(blob16(row, 4)?),
+                participant_generation,
+                admission_receipt_id: ReceiptId::from_bytes(blob16(row, 6)?),
+            },
+        });
+    }
+    Ok(records)
+}
+
+pub(crate) fn insert_takeover_fence_member(
+    transaction: &Transaction<'_>,
+    record: &AuthorityTakeoverFenceMemberRecord,
+) -> Result<(), TaskStoreError> {
+    transaction.execute(
+        "INSERT INTO task_authority_takeover_fence_members (
+            fence_receipt_id, task_id, task_generation,
+            participant_type, participant_id, participant_generation,
+            admission_receipt_id
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            record.fence_receipt_id.as_bytes().as_slice(),
+            record.task_id.as_bytes().as_slice(),
+            encode_u64(record.task_generation.get()).as_slice(),
+            record.participant.participant_type.code(),
+            record.participant.participant_id.as_bytes().as_slice(),
+            encode_u64(record.participant.participant_generation.get()).as_slice(),
+            record
+                .participant
+                .admission_receipt_id
+                .as_bytes()
+                .as_slice(),
+        ],
+    )?;
+    Ok(())
 }
 
 pub(crate) fn load_takeover_fence_receipt(
