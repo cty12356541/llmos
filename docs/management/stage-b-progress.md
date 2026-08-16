@@ -4,6 +4,8 @@
 
 > 同步增量：barrier observation 写入与 coverage 只读路径会重新计算 canonical `exact_fence_set_root`，manifest 绑定/root 漂移均 fail closed；仍不验证远端签名或激活 successor。
 
+> fence member manifest 的独立 inspect 现在也执行 root/manifest presence 一致性校验，损坏记录不会被当作可用 fence evidence。
+
 > 本轮新增：`B-RESOURCE-004` 已补上缺少 effect-closed final usage 证明时的 Resource QUARANTINED freeze、immutable QuarantineReceipt 与迟到 consume 拒绝；该分支不移动余额、不冒充最终结算。
 >
 > 本轮继续新增：`B-SEMANTIC-004` 已补上 Semantic outbox owner-bound 单调 ACK writer；ACK 只表示 transport observation，不提升为 checkpoint/publication proof。`B-SEMANTIC-005` 再由 SemanticAuthority 生成 owner-derived publication receipt 与 local log-prefix checkpoint（schema v4）。`B-OP-FENCE-002` 又补上 durable Operation registration row 的 owner-derived endpoint proof/readback；旧 generation 在 proof 生成前拒绝。`B-TASK-008C2G-OP` 再将该 proof 接入 TaskWriteSet per-effect endpoint、participant registry 与 permit 前复核；schema v24 只扩约束并保留历史行。

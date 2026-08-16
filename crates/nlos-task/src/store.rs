@@ -1662,7 +1662,26 @@ impl SqliteTaskAuthority {
         let connection = self.lock_connection()?;
         let fence = load_takeover_fence_receipt(&*connection, task_id, registry_binding)?
             .ok_or(TaskStoreError::ReceiptNotFound)?;
-        load_takeover_fence_members(&*connection, fence.receipt_id)
+        let members = load_takeover_fence_members(&*connection, fence.receipt_id)?;
+        match fence.exact_fence_set_root {
+            Some(_) if members.is_empty() => Err(TaskStoreError::CorruptRecord(
+                "takeover fence member manifest missing",
+            )),
+            Some(root) => {
+                validate_takeover_fence_manifest(
+                    &members,
+                    fence.receipt_id,
+                    fence.task_id,
+                    fence.task_generation,
+                    root,
+                )?;
+                Ok(members)
+            }
+            None if !members.is_empty() => Err(TaskStoreError::CorruptRecord(
+                "takeover fence member manifest unexpected",
+            )),
+            None => Ok(members),
+        }
     }
 
     /// Reads the pending local prefix of a `TaskAuthorityTakeoverReceipt`.

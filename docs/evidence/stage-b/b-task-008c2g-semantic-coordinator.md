@@ -10,6 +10,7 @@
 
 - schema v35 为 `task_authority_takeover_barrier_receipts` 增加 nullable `barrier_receipt_digest`：新 observation 持久化并在重启后读回 caller 提供的 remote barrier digest；v33/v34 旧行无法重建该值，迁移保留 `NULL`，不伪造审计事实。
 - barrier observation 写入与 coverage 查询现在都会重新计算 manifest 的 canonical `exact_fence_set_root`，并逐行校验 fence receipt、Task generation 与 participant binding；manifest 行漂移即 fail closed，不会把损坏的 coverage 晋升为本地覆盖。
+- `inspect_authority_takeover_fence_members` 也对完整 root/manifest 做同一校验；root 已知却缺少 manifest，或 root 未知却出现 manifest，均按损坏记录拒绝读回。
 
 - `SemanticCommitCoordinator` 复用 `TaskAuthority` 的 `PLANNED → PUBLISHING → READY → FINALIZED` 状态机：先授权，再按 sealed `TaskWriteSet` 声明调用 `SemanticAuthority::publish_semantic_publication`，随后消费 owner receipt，最后由 TaskAuthority 原子写入 nested Task receipt。
 - `prepare_semantic_finalize` 在 schema v26 写入 immutable mixed-finalize envelope 与 typed required-satisfaction child rows；重复请求逐字节 replay，缺失/重复/非 required slot proof fail closed。
