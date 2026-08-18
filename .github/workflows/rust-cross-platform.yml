@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    # 夜间调度触发源：专供 scale-probe（10 万级规模探针过重，不适合逐 PR 运行）。
+    # 注意 GitHub Actions 的 on 触发器是 workflow 级的，job 级用 if 条件过滤。
+    - cron: '0 19 * * *'
   workflow_dispatch:
 
 permissions:
@@ -31,6 +35,9 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy,rustfmt
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
 
       - name: Install Node.js
         uses: actions/setup-node@v7
@@ -79,3 +86,56 @@ jobs:
       - name: Rustfmt
         if: runner.os == 'Linux'
         run: cargo fmt --all -- --check
+
+  scale-probe:
+    # GitHub Actions 不支持按 job 声明触发器，用 if 限定：
+    # 仅夜间 schedule 或手动 workflow_dispatch 运行，push/PR 一律跳过，
+    # 避免 10 万级规模探针拖慢日常 CI。
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    name: Scale probe (include-ignored)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      # --include-ignored 会执行两个被 #[ignore] 标记的规模探针：
+      # crates/nlos-store/tests/store_scale.rs（10 万 Operation 元数据）
+      # crates/nlos-runtime-tokio/tests/scale.rs（10 万 fiber）
+      - name: Test workspace including ignored scale probes
+        run: cargo test --workspace -- --include-ignored
+
+  msrv:
+    name: MSRV 1.97
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      # rust-toolchain.toml 固定 stable；此 job 显式安装 1.97 校验声明的 MSRV。
+      # dtolnay/rust-toolchain 已收敛为 v1 单 tag + 必填 toolchain 输入的形式；
+      # rustup 支持部分版本号（1.97 解析到最新 patch），cargo +1.97 同样有效。
+      - name: Install Rust 1.97
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: "1.97"
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          # 独立 key 前缀，避免与 stable 工具链缓存键冲突
+          key: msrv-${{ runner.os }}
+
+      # rust-toolchain.toml 会把裸 cargo 钉在 stable 上，
+      # 必须用 +1.97 显式工具链选择器覆盖，否则 MSRV 校验形同虚设
+      - name: Check workspace on Rust 1.97
+        run: cargo +1.97 check --workspace --all-targets
