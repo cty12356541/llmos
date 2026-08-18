@@ -597,6 +597,76 @@ async fn signed_observation_crosses_duplex_ipc_and_replays_identically() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_callers_linearize_to_one_verified_observation() {
+    let fixture = Fixture::new(
+        "concurrent-callers",
+        0x37,
+        KeyPurpose::BarrierObservationSigning,
+    );
+    let signature = observation(&fixture.fence, &fixture.signer);
+    let request = ExchangeRequest {
+        envelope: Some(submit_request(&fixture.fence, &fixture.signer, signature)),
+    };
+    let mut second_request = request.clone();
+    let second_envelope = second_request.envelope.as_mut().unwrap();
+    second_envelope.request_id = vec![0x36; 16];
+    if let Some(envelope::CommonContext::RequestContext(context)) =
+        second_envelope.common_context.as_mut()
+    {
+        context.caller.as_mut().unwrap().principal_id = vec![0x37; 16];
+        context.correlation_id = vec![0x38; 16];
+    }
+
+    let first_exchange = exchange(
+        Arc::clone(&fixture.authority),
+        Arc::clone(&fixture.identity),
+        request,
+    );
+    let second_exchange = exchange(
+        Arc::clone(&fixture.authority),
+        Arc::clone(&fixture.identity),
+        second_request,
+    );
+    let (first, second) = tokio::join!(first_exchange, second_exchange);
+    let first_envelope = first.envelope();
+    let second_envelope = second.envelope();
+    validate_sabi_response_context(first_envelope, MethodSemantics::MUTATION).unwrap();
+    validate_sabi_response_context(second_envelope, MethodSemantics::MUTATION).unwrap();
+    assert_ne!(first_envelope.request_id, second_envelope.request_id);
+    let first_record = decode_barrier_observation_record(&first_envelope.payload).unwrap();
+    let second_record = decode_barrier_observation_record(&second_envelope.payload).unwrap();
+    assert!(first_record.signed);
+    assert_eq!(first_record, second_record);
+
+    let rows = fixture
+        .authority
+        .inspect_authority_takeover_barrier_receipts(fixture.fence.takeover_receipt_id)
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].receipt_id.into_bytes().as_slice(),
+        first_record.receipt_id.as_slice()
+    );
+    let signer = rows[0].signer.expect("durable signer proof");
+    assert_eq!(
+        signer.principal_id.as_bytes(),
+        first_record.signer_principal_id.as_slice()
+    );
+    assert_eq!(
+        signer.key_id.as_bytes(),
+        first_record.signer_key_id.as_slice()
+    );
+    let coverage = fixture
+        .authority
+        .inspect_authority_takeover_barrier_coverage(fixture.fence.takeover_receipt_id)
+        .unwrap();
+    assert_eq!(
+        coverage.state,
+        AuthorityTakeoverBarrierCoverageState::LocallyCovered
+    );
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn signed_observation_uses_a_directory_resolved_exactly_bound_unix_endpoint() {
