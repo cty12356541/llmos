@@ -22,7 +22,7 @@
 - `cargo clippy -p nlos-takeover-control -p nlos-schema --all-targets -- -D warnings`：通过；`cargo fmt --check` 清洁。
 - TakeoverControl 旧版三平台 CI + MSRV 1.97：已通过（[run 32111164855](https://github.com/cty12356541/llmos/actions/runs/32111164855)，head `5c3aba6`；Windows 首轮失败暴露两个平台缺陷已修复：①Fixture 结构体字段声明序 drop 导致 remove_file 先于 SQLite 连接关闭——os error 32；②unix-only 符号在非 unix 目标 unused imports/dead_code——改为 cfg(unix) 内导入 + `cfg_attr(not(unix), allow(dead_code))` 精准豁免）。本增量 TypeScript/Python + named-pipe workflow 已由三平台 + MSRV run [32192662820](https://github.com/cty12356541/llmos/actions/runs/32192662820)（head `1519b94`）通过，Pages run [32192662841](https://github.com/cty12356541/llmos/actions/runs/32192662841) 成功。Schema fuzz smoke [run 32109263752](https://github.com/cty12356541/llmos/actions/runs/32109263752) 同批通过。
 - 第九增量并发测试已由三平台 + MSRV run [32194086430](https://github.com/cty12356541/llmos/actions/runs/32194086430)（head `4a56832`）通过，Pages run [32194086576](https://github.com/cty12356541/llmos/actions/runs/32194086576) 成功。该 run 的 macOS 首次 workspace job 被既有 `nlos-commit-coordinator` 测试的偶发索引越界打断，重跑失败 job 后全绿；并发切片自身未出现反例。
-- 第十增量的 IPC `IOERR`/`ENOSPC` 故障映射与同 key 恢复已在本地 9 项 Rust 测试、workspace 447 项、feature clippy/fmt 中通过；远端三平台 + MSRV 与 Pages 复验待本提交推送后回填。
+- 第十增量的 IPC `IOERR`/`ENOSPC` 故障映射与同 key 恢复已在本地 9 项 Rust 测试、workspace 447 项、feature clippy/fmt 中通过；三平台 + MSRV run [32196354141](https://github.com/cty12356541/llmos/actions/runs/32196354141)（head `2afacbf`）已通过，Schema fuzz smoke run [32196354132](https://github.com/cty12356541/llmos/actions/runs/32196354132) 与 Pages run [32196354259](https://github.com/cty12356541/llmos/actions/runs/32196354259) 亦成功。
 
 ## 4. 明确限制
 
