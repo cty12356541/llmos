@@ -71,6 +71,7 @@ permit 绑定 fail closed。
 - `commit.rs` 的 Artifact-aware finalize、`semantic_commit.rs` 的 Semantic-only
   high-level finalize 和跨 authority coordinator 仍保留各自既有边界；本切片只把
   核心 Effect reconcile/close/v3 terminal path 接入 successor registry binding。
-- TakeoverControl 的 TypeScript/Python conformance、Windows named pipe handler
-  round-trip、真实 IPC 崩溃/并发矩阵、时间窗防重放和 principal-level peer
-  attestation 仍未完成。因此工作包仍是 `PARTIAL_PASS`，不能外推为完整分布式接管。
+- TakeoverControl 的 TypeScript/Python conformance 与 Windows named-pipe handler
+  round-trip 已由独立 4.91 conformance slice 接入，三平台 CI 结果待回填；真实 IPC
+  崩溃/并发矩阵、时间窗防重放和 principal-level peer attestation 仍未完成。因此
+  工作包仍是 `PARTIAL_PASS`，不能外推为完整分布式接管。

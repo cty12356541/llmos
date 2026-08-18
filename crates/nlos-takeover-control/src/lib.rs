@@ -31,9 +31,11 @@
 //! happened; success responses always reference the durable barrier
 //! receipt.
 //!
-//! This slice ships Rust-only conformance (the `SystemControl`
-//! precedent); TypeScript and Python conformance suites are deferred to a
-//! later slice.
+//! The crate's default build keeps the handler transport-neutral. A
+//! feature-gated `takeover-control-conformance` binary exercises the same
+//! handler over Unix sockets and Windows named pipes, with TypeScript and
+//! Python clients constructing the generated payload and verifying durable
+//! replay; it is test infrastructure, not a production daemon.
 
 use std::error::Error;
 use std::fmt;

@@ -72,6 +72,8 @@ jobs:
           python tests/conformance/ipc/client.py
           npm run directory:test:typescript
           python tests/conformance/ipc/directory_chain.py
+          npm run takeover-control:test:typescript
+          python tests/conformance/ipc/takeover_control.py
 
       - name: Reject Protobuf breaking changes
         if: runner.os == 'Linux' && github.event_name == 'pull_request'

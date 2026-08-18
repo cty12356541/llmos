@@ -7,11 +7,22 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+conformance-server = ["dep:ed25519-dalek", "dep:nlos-ipc", "dep:tokio"]
+
+[[bin]]
+name = "takeover-control-conformance"
+path = "src/bin/takeover-control-conformance.rs"
+required-features = ["conformance-server"]
+
 [dependencies]
+ed25519-dalek = { workspace = true, optional = true }
 nlos-identity = { path = "../nlos-identity" }
+nlos-ipc = { path = "../nlos-ipc", optional = true }
 nlos-schema = { path = "../nlos-schema" }
 nlos-task = { path = "../nlos-task" }
 nlos-types = { path = "../nlos-types" }
+tokio = { workspace = true, optional = true }
 
 [dev-dependencies]
 ed25519-dalek.workspace = true
