@@ -59,6 +59,8 @@ permit 绑定 fail closed。
 - `cargo test -p nlos-task --quiet`：180 项全过（包含旧 schema/lease/takeover 回归）。
 - `cargo test --workspace --quiet`：444 项通过、2 项既有 100K scale probe 保持
   ignored。
+- Rust cross-platform verification + MSRV：通过 [run 32187907894](https://github.com/cty12356541/llmos/actions/runs/32187907894)。
+- GitHub Pages：通过 [run 32187907830](https://github.com/cty12356541/llmos/actions/runs/32187907830)。
 - `cargo fmt --all -- --check`：通过。
 
 ## 4. 明确限制
