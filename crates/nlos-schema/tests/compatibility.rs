@@ -1,30 +1,37 @@
 use nlos_schema::sabi::v1::{
     AcknowledgeArtifactRecoveryAlertCommand, ArtifactRecoveryAlertStatus, ArtifactRecoveryMetrics,
-    ArtifactRecoveryOperationsSnapshot, CallerIdentity, CancelOperationRequest, CapabilityHandle,
-    ControlCommand, ControlCommandLifecycleState, ControlCommandResult, ControlCommandSource,
-    ControlScope, Envelope, ExchangeRequest, ExchangeResponse, GetSystemControlRequest,
-    NegotiateServiceResponse, OperationLifecycleState, OperationReference, OperationStatus,
-    QueryOperationRequest, ReceiptReference, RecoveryFailureAuthority, RecoveryFailureSummary,
-    RecoveryWorkerLifecycleState, ResolveServiceRequest, ResolveServiceResponse, RetryDirective,
-    SabiErrorCode, SabiFailure, SabiRequestContext, SabiResponseContext, SchemaIdentity,
+    ArtifactRecoveryOperationsSnapshot, BarrierObservationEvidence, BarrierObservationRecord,
+    BarrierObservationSignature, BarrierObservationTarget, CallerIdentity, CancelOperationRequest,
+    CapabilityHandle, ControlCommand, ControlCommandLifecycleState, ControlCommandResult,
+    ControlCommandSource, ControlScope, Envelope, ExchangeRequest, ExchangeResponse,
+    GetSystemControlRequest, NegotiateServiceResponse, OperationLifecycleState, OperationReference,
+    OperationStatus, QueryOperationRequest, ReceiptReference, RecoveryFailureAuthority,
+    RecoveryFailureSummary, RecoveryWorkerLifecycleState, ResolveServiceRequest,
+    ResolveServiceResponse, RetryDirective, SabiErrorCode, SabiFailure, SabiRequestContext,
+    SabiResponseContext, SchemaIdentity, SubmitBarrierObservationRequest,
     SubmitControlCommandRequest, SystemControlView, TaskExecutionBinding, control_command,
     envelope as envelope_message, local_rpc,
 };
 use nlos_schema::{
     CommonSemanticsError, CompatibilityError, MAX_ENVELOPE_BYTES,
-    MAX_SERVICE_DIRECTORY_PAYLOAD_BYTES, MAX_SYSTEM_CONTROL_ALERTS, MethodSemantics,
-    SABI_ENVELOPE_SCHEMA, SABI_OPERATION_CONTROL_SCHEMA, SABI_SERVICE_DIRECTORY_SCHEMA,
-    SABI_SYSTEM_CONTROL_SCHEMA, decode_artifact_recovery_operations_snapshot,
-    decode_cancel_operation_request, decode_control_command_result, decode_exchange_request,
-    decode_exchange_response, decode_get_system_control_request, decode_operation_status,
-    decode_query_operation_request, decode_resolve_service_request, decode_sabi_envelope,
-    decode_submit_control_command_request, encode_artifact_recovery_operations_snapshot,
+    MAX_SERVICE_DIRECTORY_PAYLOAD_BYTES, MAX_SYSTEM_CONTROL_ALERTS,
+    MAX_TAKEOVER_CONTROL_PAYLOAD_BYTES, MethodSemantics, SABI_ENVELOPE_SCHEMA,
+    SABI_OPERATION_CONTROL_SCHEMA, SABI_SERVICE_DIRECTORY_SCHEMA, SABI_SYSTEM_CONTROL_SCHEMA,
+    SABI_TAKEOVER_CONTROL_SCHEMA, decode_artifact_recovery_operations_snapshot,
+    decode_barrier_observation_record, decode_cancel_operation_request,
+    decode_control_command_result, decode_exchange_request, decode_exchange_response,
+    decode_get_system_control_request, decode_operation_status, decode_query_operation_request,
+    decode_resolve_service_request, decode_sabi_envelope,
+    decode_submit_barrier_observation_request, decode_submit_control_command_request,
+    encode_artifact_recovery_operations_snapshot, encode_barrier_observation_record,
     encode_cancel_operation_request, encode_control_command_result, encode_exchange_request,
     encode_exchange_response, encode_get_system_control_request, encode_operation_status,
     encode_query_operation_request, encode_resolve_service_request,
-    encode_resolve_service_response, encode_sabi_envelope, encode_submit_control_command_request,
+    encode_resolve_service_response, encode_sabi_envelope,
+    encode_submit_barrier_observation_request, encode_submit_control_command_request,
     operation_control_schema_identity, schema_registry, service_directory_schema_identity,
-    system_control_schema_identity, validate_sabi_request_context, validate_sabi_response_context,
+    system_control_schema_identity, takeover_control_schema_identity,
+    validate_sabi_request_context, validate_sabi_response_context,
 };
 
 fn envelope() -> Envelope {
@@ -152,7 +159,7 @@ fn generated_encoding_matches_canonical_golden_vector() {
 #[test]
 fn registry_exposes_the_supported_contract() {
     let registry = schema_registry();
-    assert_eq!(registry.len(), 4);
+    assert_eq!(registry.len(), 5);
     let envelope = registry
         .iter()
         .find(|entry| entry.name == SABI_ENVELOPE_SCHEMA)
@@ -173,6 +180,11 @@ fn registry_exposes_the_supported_contract() {
         .find(|entry| entry.name == SABI_SYSTEM_CONTROL_SCHEMA)
         .unwrap();
     assert_eq!((system_control.major, system_control.minor), (1, 0));
+    let takeover_control = registry
+        .iter()
+        .find(|entry| entry.name == SABI_TAKEOVER_CONTROL_SCHEMA)
+        .unwrap();
+    assert_eq!((takeover_control.major, takeover_control.minor), (1, 0));
 }
 
 #[test]
@@ -306,6 +318,154 @@ fn operation_control_payloads_are_bounded_typed_and_fail_closed() {
         encode_query_operation_request(&missing_operation),
         Err(CompatibilityError::MissingOperationReference)
     );
+}
+
+#[test]
+fn takeover_control_payloads_round_trip_typed_and_bounded() {
+    let submit = submit_barrier_observation_request();
+    let submit_wire = encode_submit_barrier_observation_request(&submit).unwrap();
+    assert_eq!(
+        decode_submit_barrier_observation_request(&submit_wire).unwrap(),
+        submit
+    );
+
+    let record = barrier_observation_record();
+    let record_wire = encode_barrier_observation_record(&record).unwrap();
+    assert_eq!(
+        decode_barrier_observation_record(&record_wire).unwrap(),
+        record
+    );
+
+    assert!(matches!(
+        decode_submit_barrier_observation_request(&vec![
+            0_u8;
+            MAX_TAKEOVER_CONTROL_PAYLOAD_BYTES + 1
+        ]),
+        Err(CompatibilityError::FrameTooLarge { .. })
+    ));
+    assert!(matches!(
+        decode_barrier_observation_record(&vec![0_u8; MAX_TAKEOVER_CONTROL_PAYLOAD_BYTES + 1]),
+        Err(CompatibilityError::FrameTooLarge { .. })
+    ));
+}
+
+fn submit_barrier_observation_request() -> SubmitBarrierObservationRequest {
+    SubmitBarrierObservationRequest {
+        schema: Some(takeover_control_schema_identity()),
+        target: Some(BarrierObservationTarget {
+            takeover_receipt_id: vec![0x51; 16],
+            participant_type: 7,
+            participant_id: vec![0x52; 16],
+            participant_generation: 3,
+            admission_receipt_id: vec![0x53; 16],
+        }),
+        evidence: Some(BarrierObservationEvidence {
+            remote_receipt_id: vec![0x54; 16],
+            barrier_digest: vec![0x55; 32],
+            observed_at_ms: 1_000,
+        }),
+        signature: Some(BarrierObservationSignature {
+            signer_principal_id: vec![0x56; 16],
+            signer_control_domain_id: vec![0x57; 16],
+            signer_key_id: vec![0x58; 16],
+            signature: vec![0x59; 64],
+        }),
+    }
+}
+
+fn barrier_observation_record() -> BarrierObservationRecord {
+    BarrierObservationRecord {
+        schema: Some(takeover_control_schema_identity()),
+        receipt_id: vec![0x61; 16],
+        participant_type: 7,
+        participant_id: vec![0x52; 16],
+        barrier_digest: vec![0x55; 32],
+        observed_at_ms: 1_000,
+        signed: true,
+        signer_principal_id: vec![0x56; 16],
+        signer_key_id: vec![0x58; 16],
+        signer_key_generation: 2,
+    }
+}
+
+#[test]
+fn takeover_control_validators_fail_closed_on_bad_bindings() {
+    let submit = submit_barrier_observation_request();
+
+    let mut missing_target = submit.clone();
+    missing_target.target = None;
+    assert_eq!(
+        encode_submit_barrier_observation_request(&missing_target),
+        Err(CompatibilityError::MissingTakeoverControlTarget)
+    );
+    let mut missing_evidence = submit.clone();
+    missing_evidence.evidence = None;
+    assert_eq!(
+        encode_submit_barrier_observation_request(&missing_evidence),
+        Err(CompatibilityError::MissingTakeoverControlEvidence)
+    );
+    let mut missing_signature = submit.clone();
+    missing_signature.signature = None;
+    assert_eq!(
+        encode_submit_barrier_observation_request(&missing_signature),
+        Err(CompatibilityError::MissingTakeoverControlSignature)
+    );
+
+    for invalid_type in [0_u32, 9] {
+        let mut bad_type = submit.clone();
+        bad_type.target.as_mut().unwrap().participant_type = invalid_type;
+        assert_eq!(
+            encode_submit_barrier_observation_request(&bad_type),
+            Err(CompatibilityError::UnspecifiedTakeoverControlParticipantType)
+        );
+    }
+    let mut short_id = submit.clone();
+    short_id.target.as_mut().unwrap().participant_id.pop();
+    assert_eq!(
+        encode_submit_barrier_observation_request(&short_id),
+        Err(CompatibilityError::InvalidTakeoverControlIdentifier)
+    );
+    let mut short_digest = submit.clone();
+    short_digest.evidence.as_mut().unwrap().barrier_digest.pop();
+    assert_eq!(
+        encode_submit_barrier_observation_request(&short_digest),
+        Err(CompatibilityError::InvalidTakeoverControlIdentifier)
+    );
+    let mut short_signature = submit.clone();
+    short_signature.signature.as_mut().unwrap().signature.pop();
+    assert_eq!(
+        encode_submit_barrier_observation_request(&short_signature),
+        Err(CompatibilityError::InvalidTakeoverControlIdentifier)
+    );
+    let mut zero_generation = submit.clone();
+    zero_generation
+        .target
+        .as_mut()
+        .unwrap()
+        .participant_generation = 0;
+    assert_eq!(
+        encode_submit_barrier_observation_request(&zero_generation),
+        Err(CompatibilityError::InvalidTakeoverControlGeneration)
+    );
+    let mut negative_timestamp = submit.clone();
+    negative_timestamp.evidence.as_mut().unwrap().observed_at_ms = -1;
+    assert_eq!(
+        encode_submit_barrier_observation_request(&negative_timestamp),
+        Err(CompatibilityError::InvalidTakeoverControlTimestamp)
+    );
+
+    let mut unsigned_record = barrier_observation_record();
+    unsigned_record.signed = false;
+    assert_eq!(
+        encode_barrier_observation_record(&unsigned_record),
+        Err(CompatibilityError::UnsignedTakeoverControlRecord)
+    );
+    let mut wrong_schema = barrier_observation_record();
+    wrong_schema.schema = Some(system_control_schema_identity());
+    assert!(matches!(
+        encode_barrier_observation_record(&wrong_schema),
+        Err(CompatibilityError::UnknownSchema(_))
+    ));
 }
 
 #[test]

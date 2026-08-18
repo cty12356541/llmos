@@ -1,0 +1,23 @@
+[package]
+name = "nlos-takeover-control"
+description = "Typed TakeoverControl handler for signed takeover barrier observations."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+nlos-identity = { path = "../nlos-identity" }
+nlos-schema = { path = "../nlos-schema" }
+nlos-task = { path = "../nlos-task" }
+nlos-types = { path = "../nlos-types" }
+
+[dev-dependencies]
+ed25519-dalek.workspace = true
+nlos-ipc = { path = "../nlos-ipc" }
+nlos-service-directory = { path = "../nlos-service-directory" }
+tokio.workspace = true
+
+[lints]
+workspace = true

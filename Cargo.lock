@@ -556,6 +556,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "nlos-takeover-control"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "nlos-identity",
+ "nlos-ipc",
+ "nlos-schema",
+ "nlos-service-directory",
+ "nlos-task",
+ "nlos-types",
+ "tokio",
+]
+
+[[package]]
 name = "nlos-task"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,57 @@
+syntax = "proto3";
+
+package nlos.sabi.v1;
+
+import "nlos/sabi/v1/envelope.proto";
+
+// Cross-process submission of one signed takeover barrier observation. The
+// signature belongs to the remote participant principal; the IPC caller is
+// authorized separately through its capability handles.
+message SubmitBarrierObservationRequest {
+  SchemaIdentity schema = 1;
+  BarrierObservationTarget target = 2;
+  BarrierObservationEvidence evidence = 3;
+  BarrierObservationSignature signature = 4;
+}
+
+// Frozen takeover fence endpoint the observation is bound to.
+message BarrierObservationTarget {
+  bytes takeover_receipt_id = 1;
+  uint32 participant_type = 2;
+  bytes participant_id = 3;
+  uint64 participant_generation = 4;
+  bytes admission_receipt_id = 5;
+}
+
+// Remote endpoint's durable observation evidence.
+message BarrierObservationEvidence {
+  bytes remote_receipt_id = 1;
+  bytes barrier_digest = 2;
+  int64 observed_at_ms = 3;
+}
+
+// Remote principal's Ed25519 signature over the observation message digest.
+// Every field is verified against the identity authority before the
+// observation becomes durable.
+message BarrierObservationSignature {
+  bytes signer_principal_id = 1;
+  bytes signer_control_domain_id = 2;
+  bytes signer_key_id = 3;
+  bytes signature = 4;
+}
+
+// Durable observation record as confirmed by the TaskAuthority. Signer
+// fields come from the verified identity proof, never from caller
+// assertions.
+message BarrierObservationRecord {
+  SchemaIdentity schema = 1;
+  bytes receipt_id = 2;
+  uint32 participant_type = 3;
+  bytes participant_id = 4;
+  bytes barrier_digest = 5;
+  int64 observed_at_ms = 6;
+  bool signed = 7;
+  bytes signer_principal_id = 8;
+  bytes signer_key_id = 9;
+  uint64 signer_key_generation = 10;
+}

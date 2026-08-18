@@ -20,10 +20,12 @@ pub const SABI_ENVELOPE_SCHEMA: &str = "nlos.sabi.Envelope";
 pub const SABI_SERVICE_DIRECTORY_SCHEMA: &str = "nlos.sabi.ServiceDirectory";
 pub const SABI_OPERATION_CONTROL_SCHEMA: &str = "nlos.sabi.OperationControl";
 pub const SABI_SYSTEM_CONTROL_SCHEMA: &str = "nlos.sabi.SystemControl";
+pub const SABI_TAKEOVER_CONTROL_SCHEMA: &str = "nlos.sabi.TakeoverControl";
 pub const MAX_ENVELOPE_BYTES: usize = 1024 * 1024;
 pub const MAX_SERVICE_DIRECTORY_PAYLOAD_BYTES: usize = 64 * 1024;
 pub const MAX_OPERATION_CONTROL_PAYLOAD_BYTES: usize = 64 * 1024;
 pub const MAX_SYSTEM_CONTROL_PAYLOAD_BYTES: usize = 64 * 1024;
+pub const MAX_TAKEOVER_CONTROL_PAYLOAD_BYTES: usize = 64 * 1024;
 pub const MAX_SYSTEM_CONTROL_ALERTS: usize = 256;
 pub const MAX_SYSTEM_CONTROL_FAILURES: usize = 64;
 pub const MAX_CONTROL_REASON_BYTES: usize = 512;
@@ -70,11 +72,19 @@ const SABI_SYSTEM_CONTROL_V1: SchemaDescriptor = SchemaDescriptor {
     supported_critical_extensions: &[],
 };
 
+const SABI_TAKEOVER_CONTROL_V1: SchemaDescriptor = SchemaDescriptor {
+    name: SABI_TAKEOVER_CONTROL_SCHEMA,
+    major: 1,
+    minor: 0,
+    supported_critical_extensions: &[],
+};
+
 const REGISTRY: &[SchemaDescriptor] = &[
     SABI_ENVELOPE_V1,
     SABI_SERVICE_DIRECTORY_V1,
     SABI_OPERATION_CONTROL_V1,
     SABI_SYSTEM_CONTROL_V1,
+    SABI_TAKEOVER_CONTROL_V1,
 ];
 
 #[must_use]
@@ -108,6 +118,15 @@ pub enum CompatibilityError {
     TooManySystemControlAlerts,
     TooManySystemControlFailures,
     UnsafeControlReason,
+    MissingTakeoverControlTarget,
+    MissingTakeoverControlEvidence,
+    MissingTakeoverControlSignature,
+    InvalidTakeoverControlIdentifier,
+    UnspecifiedTakeoverControlParticipantType,
+    InvalidTakeoverControlTimestamp,
+    InvalidTakeoverControlGeneration,
+    MissingTakeoverControlSigner,
+    UnsignedTakeoverControlRecord,
     UnknownSchema(String),
     UnsupportedMajor {
         schema: String,
@@ -125,6 +144,9 @@ pub enum CompatibilityError {
     EmptyMethod,
 }
 
+// A flat Display match grows linearly with the variant count; splitting it
+// by service would only obscure the one-message-per-variant table.
+#[allow(clippy::too_many_lines)]
 impl fmt::Display for CompatibilityError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -186,6 +208,33 @@ impl fmt::Display for CompatibilityError {
             }
             Self::UnsafeControlReason => {
                 formatter.write_str("ControlCommand reason is oversized or contains NUL")
+            }
+            Self::MissingTakeoverControlTarget => {
+                formatter.write_str("TakeoverControl payload is missing its target")
+            }
+            Self::MissingTakeoverControlEvidence => {
+                formatter.write_str("TakeoverControl payload is missing its evidence")
+            }
+            Self::MissingTakeoverControlSignature => {
+                formatter.write_str("TakeoverControl payload is missing its signature")
+            }
+            Self::InvalidTakeoverControlIdentifier => {
+                formatter.write_str("TakeoverControl payload contains an invalid identifier length")
+            }
+            Self::UnspecifiedTakeoverControlParticipantType => {
+                formatter.write_str("TakeoverControl participant type is outside 1..=8")
+            }
+            Self::InvalidTakeoverControlTimestamp => {
+                formatter.write_str("TakeoverControl observation timestamp is negative")
+            }
+            Self::InvalidTakeoverControlGeneration => {
+                formatter.write_str("TakeoverControl generation is zero")
+            }
+            Self::MissingTakeoverControlSigner => {
+                formatter.write_str("TakeoverControl record is missing its verified signer")
+            }
+            Self::UnsignedTakeoverControlRecord => {
+                formatter.write_str("TakeoverControl record must be signed on this path")
             }
             Self::UnknownSchema(schema) => write!(formatter, "schema {schema:?} is not registered"),
             Self::UnsupportedMajor {
@@ -586,6 +635,73 @@ pub fn system_control_schema_identity() -> sabi::v1::SchemaIdentity {
         critical_extension_ids: Vec::new(),
         non_critical_extension_ids: Vec::new(),
     }
+}
+
+/// Returns the v1 identity required on every `TakeoverControl` payload.
+#[must_use]
+pub fn takeover_control_schema_identity() -> sabi::v1::SchemaIdentity {
+    sabi::v1::SchemaIdentity {
+        name: SABI_TAKEOVER_CONTROL_SCHEMA.to_owned(),
+        major: 1,
+        minor: 0,
+        critical_extension_ids: Vec::new(),
+        non_critical_extension_ids: Vec::new(),
+    }
+}
+
+/// Encodes a bounded, validated `TakeoverControl.submit_barrier_observation`
+/// request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity, target, evidence,
+/// signature, or bound.
+pub fn encode_submit_barrier_observation_request(
+    request: &sabi::v1::SubmitBarrierObservationRequest,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_submit_barrier_observation_request(request)?;
+    encode_bounded_with_limit(request, MAX_TAKEOVER_CONTROL_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded, validated `TakeoverControl.submit_barrier_observation`
+/// request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_submit_barrier_observation_request(
+    wire: &[u8],
+) -> Result<sabi::v1::SubmitBarrierObservationRequest, CompatibilityError> {
+    let request: sabi::v1::SubmitBarrierObservationRequest =
+        decode_bounded_with_limit(wire, MAX_TAKEOVER_CONTROL_PAYLOAD_BYTES)?;
+    validate_submit_barrier_observation_request(&request)?;
+    Ok(request)
+}
+
+/// Encodes a bounded, validated durable barrier observation record.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity, signer, or bound.
+pub fn encode_barrier_observation_record(
+    record: &sabi::v1::BarrierObservationRecord,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_barrier_observation_record(record)?;
+    encode_bounded_with_limit(record, MAX_TAKEOVER_CONTROL_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded, validated durable barrier observation record.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_barrier_observation_record(
+    wire: &[u8],
+) -> Result<sabi::v1::BarrierObservationRecord, CompatibilityError> {
+    let record: sabi::v1::BarrierObservationRecord =
+        decode_bounded_with_limit(wire, MAX_TAKEOVER_CONTROL_PAYLOAD_BYTES)?;
+    validate_barrier_observation_record(&record)?;
+    Ok(record)
 }
 
 /// Encodes a bounded, typed `SystemControl.get` request.
@@ -1190,6 +1306,113 @@ fn validate_system_control_identity(
     validate_schema_identity(identity)?;
     if identity.name != SABI_SYSTEM_CONTROL_SCHEMA {
         return Err(CompatibilityError::UnknownSchema(identity.name.clone()));
+    }
+    Ok(())
+}
+
+fn validate_takeover_control_identity(
+    identity: Option<&sabi::v1::SchemaIdentity>,
+) -> Result<(), CompatibilityError> {
+    let identity = identity.ok_or(CompatibilityError::MissingSchemaIdentity)?;
+    validate_schema_identity(identity)?;
+    if identity.name != SABI_TAKEOVER_CONTROL_SCHEMA {
+        return Err(CompatibilityError::UnknownSchema(identity.name.clone()));
+    }
+    Ok(())
+}
+
+fn validate_submit_barrier_observation_request(
+    request: &sabi::v1::SubmitBarrierObservationRequest,
+) -> Result<(), CompatibilityError> {
+    validate_takeover_control_identity(request.schema.as_ref())?;
+    validate_barrier_observation_target(
+        request
+            .target
+            .as_ref()
+            .ok_or(CompatibilityError::MissingTakeoverControlTarget)?,
+    )?;
+    validate_barrier_observation_evidence(
+        request
+            .evidence
+            .as_ref()
+            .ok_or(CompatibilityError::MissingTakeoverControlEvidence)?,
+    )?;
+    validate_barrier_observation_signature(
+        request
+            .signature
+            .as_ref()
+            .ok_or(CompatibilityError::MissingTakeoverControlSignature)?,
+    )
+}
+
+fn validate_barrier_observation_target(
+    target: &sabi::v1::BarrierObservationTarget,
+) -> Result<(), CompatibilityError> {
+    if target.takeover_receipt_id.len() != REQUEST_ID_BYTES
+        || target.participant_id.len() != REQUEST_ID_BYTES
+        || target.admission_receipt_id.len() != REQUEST_ID_BYTES
+    {
+        return Err(CompatibilityError::InvalidTakeoverControlIdentifier);
+    }
+    if !(1..=8).contains(&target.participant_type) {
+        return Err(CompatibilityError::UnspecifiedTakeoverControlParticipantType);
+    }
+    if target.participant_generation == 0 {
+        return Err(CompatibilityError::InvalidTakeoverControlGeneration);
+    }
+    Ok(())
+}
+
+fn validate_barrier_observation_evidence(
+    evidence: &sabi::v1::BarrierObservationEvidence,
+) -> Result<(), CompatibilityError> {
+    if evidence.remote_receipt_id.len() != REQUEST_ID_BYTES
+        || evidence.barrier_digest.len() != SHA256_DIGEST_BYTES
+    {
+        return Err(CompatibilityError::InvalidTakeoverControlIdentifier);
+    }
+    if evidence.observed_at_ms < 0 {
+        return Err(CompatibilityError::InvalidTakeoverControlTimestamp);
+    }
+    Ok(())
+}
+
+fn validate_barrier_observation_signature(
+    signature: &sabi::v1::BarrierObservationSignature,
+) -> Result<(), CompatibilityError> {
+    if signature.signer_principal_id.len() != REQUEST_ID_BYTES
+        || signature.signer_control_domain_id.len() != REQUEST_ID_BYTES
+        || signature.signer_key_id.len() != REQUEST_ID_BYTES
+        || signature.signature.len() != 64
+    {
+        return Err(CompatibilityError::InvalidTakeoverControlIdentifier);
+    }
+    Ok(())
+}
+
+fn validate_barrier_observation_record(
+    record: &sabi::v1::BarrierObservationRecord,
+) -> Result<(), CompatibilityError> {
+    validate_takeover_control_identity(record.schema.as_ref())?;
+    if record.receipt_id.len() != REQUEST_ID_BYTES
+        || record.participant_id.len() != REQUEST_ID_BYTES
+        || record.barrier_digest.len() != SHA256_DIGEST_BYTES
+        || record.signer_principal_id.len() != REQUEST_ID_BYTES
+        || record.signer_key_id.len() != REQUEST_ID_BYTES
+    {
+        return Err(CompatibilityError::InvalidTakeoverControlIdentifier);
+    }
+    if !(1..=8).contains(&record.participant_type) {
+        return Err(CompatibilityError::UnspecifiedTakeoverControlParticipantType);
+    }
+    if record.observed_at_ms < 0 {
+        return Err(CompatibilityError::InvalidTakeoverControlTimestamp);
+    }
+    if record.signer_key_generation == 0 {
+        return Err(CompatibilityError::InvalidTakeoverControlGeneration);
+    }
+    if !record.signed {
+        return Err(CompatibilityError::UnsignedTakeoverControlRecord);
     }
     Ok(())
 }
