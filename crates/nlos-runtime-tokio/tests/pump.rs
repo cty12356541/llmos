@@ -165,6 +165,7 @@ where
         },
         config,
     )
+    .expect("spawn outbox pump thread")
 }
 
 fn config(poll_interval: Duration, failure_threshold: usize) -> PumpConfig {

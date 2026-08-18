@@ -17,6 +17,8 @@
 //!   so the authority writer and cancel paths never wait on sink latency.
 
 use std::collections::HashSet;
+use std::error::Error;
+use std::fmt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
@@ -247,6 +249,31 @@ impl PumpHealthInner {
     }
 }
 
+/// Failure to start an [`OutboxPump`]: the OS refused to create the pump
+/// thread. No pump state exists in this case and the durable Outbox is
+/// untouched, so a caller may retry `start` after resolving the cause.
+#[derive(Debug)]
+pub enum OutboxPumpStartError {
+    /// The OS could not spawn the dedicated pump thread.
+    Spawn(std::io::Error),
+}
+
+impl fmt::Display for OutboxPumpStartError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Spawn(error) => write!(formatter, "could not spawn outbox pump thread: {error}"),
+        }
+    }
+}
+
+impl Error for OutboxPumpStartError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Spawn(error) => Some(error),
+        }
+    }
+}
+
 /// Dedicated-thread driver for the durable Outbox consumer.
 ///
 /// The pump owns one OS thread that repeatedly drains the consumer; blocking
@@ -270,11 +297,14 @@ pub struct OutboxPump {
 impl OutboxPump {
     /// Spawns the pump thread driving `consumer`.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics when the OS refuses to spawn the pump thread.
-    #[must_use]
-    pub fn start<S, W, R>(consumer: OutboxConsumer<S, W, R>, config: PumpConfig) -> Self
+    /// Returns [`OutboxPumpStartError::Spawn`] when the OS refuses to create
+    /// the pump thread; no pump state exists in that case.
+    pub fn start<S, W, R>(
+        consumer: OutboxConsumer<S, W, R>,
+        config: PumpConfig,
+    ) -> Result<Self, OutboxPumpStartError>
     where
         S: OutboxSource + 'static,
         W: WakeSink + 'static,
@@ -295,14 +325,14 @@ impl OutboxPump {
             std::thread::Builder::new()
                 .name("nlos-outbox-pump".to_owned())
                 .spawn(move || pump_loop(&consumer, &hints, &stop, &health, &config))
-                .expect("spawn outbox pump thread")
+                .map_err(OutboxPumpStartError::Spawn)?
         };
-        Self {
+        Ok(Self {
             stop,
             hint,
             health,
             worker: Some(worker),
-        }
+        })
     }
 
     /// Delivers a bounded wake-up hint after a commit returned.
@@ -428,4 +458,36 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::OutboxPumpStartError;
+
+    /// Given/When/Then: given a `Spawn` start error built from a synthetic
+    /// `io` cause; when rendered through `Display`/`Debug`/`Error::source`;
+    /// then the failed operation is named, the root cause is carried inline,
+    /// and the `io` error stays reachable through the error chain.
+    #[test]
+    fn spawn_start_error_is_descriptive_and_chained() {
+        let error =
+            OutboxPumpStartError::Spawn(std::io::Error::other("synthetic thread exhaustion"));
+
+        let text = error.to_string();
+        assert!(
+            text.contains("outbox pump thread"),
+            "Display must name the failed operation: {text}"
+        );
+        assert!(
+            text.contains("synthetic thread exhaustion"),
+            "Display must carry the io root cause: {text}"
+        );
+        assert!(
+            format!("{error:?}").contains("Spawn"),
+            "Debug must expose the variant: {error:?}"
+        );
+
+        let source = std::error::Error::source(&error).expect("io cause stays chained");
+        assert_eq!(source.to_string(), "synthetic thread exhaustion");
+    }
 }

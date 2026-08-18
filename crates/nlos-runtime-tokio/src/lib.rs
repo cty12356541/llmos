@@ -18,7 +18,8 @@ mod pump;
 mod wake;
 
 pub use pump::{
-    OutboxPump, PumpConfig, PumpHealth, PumpState, RecordingReconcileSink, StoreOutboxSource,
+    OutboxPump, OutboxPumpStartError, PumpConfig, PumpHealth, PumpState, RecordingReconcileSink,
+    StoreOutboxSource,
 };
 pub use wake::{OperationWait, TokioWakeSink, WaitOutcome};
 use wake::{WaitEntry, WaitKey};

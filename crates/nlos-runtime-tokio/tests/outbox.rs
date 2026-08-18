@@ -148,6 +148,7 @@ where
         },
         PumpConfig::default(),
     )
+    .expect("spawn outbox pump thread")
 }
 
 /// Polls `condition` with Tokio time until it holds or the bound expires.
