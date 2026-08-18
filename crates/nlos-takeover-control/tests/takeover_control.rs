@@ -330,13 +330,17 @@ fn domain_signature(signer: &BarrierSigner, signature: [u8; 64]) -> BarrierObser
 }
 
 struct Fixture {
-    database: TestDatabase,
-    // Held only for its Drop-time directory cleanup.
-    _identity_root: IdentityRoot,
     authority: Arc<SqliteTaskAuthority>,
     identity: Arc<IdentityAuthority>,
     signer: BarrierSigner,
     fence: FrozenFence,
+    // Cleanup fields are declared last: struct fields drop in declaration
+    // order, so the SQLite connections above must close before the database
+    // files and identity directory are removed (Windows fails with os
+    // error 32 when removing files with open handles).
+    database: TestDatabase,
+    // Held only for its Drop-time directory cleanup.
+    _identity_root: IdentityRoot,
 }
 
 impl Fixture {
@@ -348,12 +352,12 @@ impl Fixture {
         let signer = bootstrap_barrier_signer(&identity, seed, purpose);
         let fence = fence_takeover(&authority, seed);
         Self {
-            database,
-            _identity_root: identity_root,
             authority,
             identity,
             signer,
             fence,
+            database,
+            _identity_root: identity_root,
         }
     }
 }
