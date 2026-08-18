@@ -12,6 +12,16 @@ repository.workspace = true
 # it deliberately does NOT set `[lints] workspace = true`, because the
 # workspace forbids `unsafe_code` while a VFS shim is impossible without it.
 # All `unsafe` is confined to `src/shim.rs` and documented there.
+#
+# 不继承 workspace lints 的副作用是连 clippy 约束一并丢失。这里显式恢复与
+# workspace 同级的 clippy 检查，但刻意不声明 `rust.unsafe_code`（默认 allow）：
+# 本 crate 是工作区指定的 unsafe 审计单元，SQLite VFS 垫片离不开 unsafe，
+# 若照搬 forbid 将无法编译；unsafe 仍全部收敛于 `src/shim.rs` 并逐块附
+# SAFETY 论证。
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
+
 [dependencies]
 # Must stay exactly equal to the version rusqlite pulls in (see Cargo.lock),
 # otherwise the process would link two SQLite copies and VFS registration

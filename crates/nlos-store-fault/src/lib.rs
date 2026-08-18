@@ -21,7 +21,7 @@ use std::sync::atomic::Ordering;
 /// Hard failure codes injected by [`FaultMode::FailWritesAfter`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FaultCode {
-    /// `SQLITE_IOERR` (fail-closed; SQLite cannot ignore it, unlike
+    /// `SQLITE_IOERR` (fail-closed; `SQLite` cannot ignore it, unlike
     /// `SQLITE_IOERR_SHORT_READ`).
     IoErr,
     /// `SQLITE_FULL`.
