@@ -24,7 +24,7 @@
 - `cargo test -p nlos-resource --test finalize_refund`：6 项通过——`finalize_settles_double_entry_refund_and_is_immutable`（consume 40/100 → refund 60、available 900→960、FINALIZED overlay、exact replay、异 bytes IdempotencyConflict、迟到 consume/quarantine 拒绝、重启回读、receipt 与 overlay 绑定不可变）；`finalize_no_effect_refunds_full_upper_bound`（refund=100、available 回到 1000）；`finalize_fails_closed_on_invalid_inputs`（upper-bound/monotonic/sequence/timestamp/binding/unknown 全类型化拒绝）；`finalize_rejects_reserved_reservations`（RESERVED→NotActive）；`quarantined_reservation_reconciles_with_effect_closed_proof`（QUARANTINED 冻结于 high-water 30、later proof 结算 refund 70、available 900→970、overlay 清除、quarantine receipt 行保留、重放/重启回读）；`finalize_v5_migration_reapplies_idempotently_and_partial_schema_fails_closed`。
 - `cargo test -p nlos-resource --quiet`：15 项全过（含既有 resource_authority 9 项回归）。
 - `cargo clippy -p nlos-resource --all-targets --all-features -- -D warnings`：通过。
-- 三平台 CI 待运行（本地 macOS/arm64 证据）。
+- 三平台 CI：已随 [run 32099012698](https://github.com/cty12356541/llmos/actions/runs/32099012698) 通过（本地 macOS/arm64 证据先行）。
 
 ## 4. 明确限制
 
@@ -43,4 +43,4 @@
 - **F5 静默丢写/撕裂尾部**：`PowerLossAfter` 幻影 finalize 重开不可见（reservation 保持 `ACTIVE`、无 receipt 行、账户 900）且重做确定性 receipt id 逐位相同、重开后真实持久；WAL 截断到 finalize commit 帧一半时 finalize 整体隐藏、重做收敛。
 - **F6 故障解除后**：finalize 写事务失败后 disarm，同一 authority 实例从已提交前缀继续，finalize 重试成功、完整重开可恢复。
 
-验证：`cargo test -p nlos-resource --test finalize_fault_injection`（7 项）、`cargo test -p nlos-resource --quiet`（22 项）、`cargo clippy -p nlos-resource --all-targets --all-features -- -D warnings` 通过；三平台 CI 待运行。限制：kill-9 ≠ 真实断电、macOS 本地、F4 全集（checkpoint/backup/migration 变体）未覆盖、真实 ENOSPC 探针未运行。
+验证：`cargo test -p nlos-resource --test finalize_fault_injection`（7 项）、`cargo test -p nlos-resource --quiet`（22 项）、`cargo clippy -p nlos-resource --all-targets --all-features -- -D warnings` 通过；三平台 CI 已随 [run 32099012698](https://github.com/cty12356541/llmos/actions/runs/32099012698) 通过。限制：kill-9 ≠ 真实断电、macOS 本地、F4 全集（checkpoint/backup/migration 变体）未覆盖、真实 ENOSPC 探针未运行。

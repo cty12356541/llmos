@@ -24,7 +24,7 @@
 - `cargo clippy -p nlos-identity -p nlos-task --all-targets -- -D warnings`：通过。
 - `cargo fmt -p nlos-identity -p nlos-task -- --check`：通过。
 - `cargo build -p nlos-commit-coordinator -p nlos-system-control`：通过（公开 API 兼容）。
-- 三平台 CI：待运行（本地提交后运行）。
+- 三平台 CI + MSRV 1.97 job：已通过（[run 32099012698](https://github.com/cty12356541/llmos/actions/runs/32099012698)，head `278ae53`）。
 
 ## 4. 明确限制
 
