@@ -26,6 +26,7 @@ tokio = { workspace = true, optional = true }
 
 [dev-dependencies]
 ed25519-dalek.workspace = true
+nlos-store-fault = { path = "../nlos-store-fault" }
 nlos-ipc = { path = "../nlos-ipc" }
 nlos-service-directory = { path = "../nlos-service-directory" }
 tokio.workspace = true

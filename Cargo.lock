@@ -564,6 +564,7 @@ dependencies = [
  "nlos-ipc",
  "nlos-schema",
  "nlos-service-directory",
+ "nlos-store-fault",
  "nlos-task",
  "nlos-types",
  "tokio",

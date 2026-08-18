@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::sync::{Mutex, MutexGuard};
 
 use ed25519_dalek::{Signer, SigningKey};
 use nlos_identity::{BootstrapPrincipalRequest, IdentityAuthority, KeyPurpose};
@@ -25,6 +26,7 @@ use nlos_schema::{
     decode_barrier_observation_record, encode_submit_barrier_observation_request,
     takeover_control_schema_identity, validate_sabi_response_context,
 };
+use nlos_store_fault::{FaultCode, FaultMode};
 use nlos_takeover_control::{
     SUBMIT_BARRIER_OBSERVATION_METHOD, TAKEOVER_CONTROL_SERVICE, TakeoverControl,
     TakeoverControlAuthorizer, TakeoverControlError, failure_envelope, participant_type_code,
@@ -44,6 +46,20 @@ use nlos_types::{
 use tokio::io::duplex;
 
 static NEXT: AtomicU64 = AtomicU64::new(1);
+static FAULT_LOCK: Mutex<()> = Mutex::const_new(());
+const FAULT_VFS_NAME: &str = "nlos-takeover-control-fault";
+
+async fn fault_lock() -> MutexGuard<'static, ()> {
+    FAULT_LOCK.lock().await
+}
+
+struct FaultReset;
+
+impl Drop for FaultReset {
+    fn drop(&mut self) {
+        nlos_store_fault::disarm();
+    }
+}
 
 struct TestDatabase {
     path: PathBuf,
@@ -62,6 +78,12 @@ impl TestDatabase {
 
     fn open(&self) -> SqliteTaskAuthority {
         SqliteTaskAuthority::open(&self.path).expect("open task authority")
+    }
+
+    fn open_with_fault_vfs(&self) -> SqliteTaskAuthority {
+        nlos_store_fault::register(FAULT_VFS_NAME).expect("register fault VFS");
+        SqliteTaskAuthority::open_with_vfs(&self.path, Some(FAULT_VFS_NAME))
+            .expect("open task authority with fault VFS")
     }
 }
 
@@ -347,9 +369,21 @@ struct Fixture {
 
 impl Fixture {
     fn new(label: &str, seed: u8, purpose: KeyPurpose) -> Self {
+        Self::new_with_authority(label, seed, purpose, false)
+    }
+
+    fn new_with_fault_vfs(label: &str, seed: u8, purpose: KeyPurpose) -> Self {
+        Self::new_with_authority(label, seed, purpose, true)
+    }
+
+    fn new_with_authority(label: &str, seed: u8, purpose: KeyPurpose, fault_vfs: bool) -> Self {
         let database = TestDatabase::new(label);
         let identity_root = IdentityRoot::new(label);
-        let authority = Arc::new(database.open());
+        let authority = Arc::new(if fault_vfs {
+            database.open_with_fault_vfs()
+        } else {
+            database.open()
+        });
         let identity = Arc::new(IdentityAuthority::open(identity_root.path()).unwrap());
         let signer = bootstrap_barrier_signer(&identity, seed, purpose);
         let fence = fence_takeover(&authority, seed);
@@ -665,6 +699,83 @@ async fn concurrent_callers_linearize_to_one_verified_observation() {
         coverage.state,
         AuthorityTakeoverBarrierCoverageState::LocallyCovered
     );
+}
+
+async fn run_ipc_write_fault(code: FaultCode) {
+    let _serialization = fault_lock().await;
+    nlos_store_fault::disarm();
+    let fixture = Fixture::new_with_fault_vfs(
+        "ipc-write-fault",
+        match code {
+            FaultCode::IoErr => 0x39,
+            FaultCode::Full => 0x3A,
+        },
+        KeyPurpose::BarrierObservationSigning,
+    );
+    let signature = observation(&fixture.fence, &fixture.signer);
+    let request = ExchangeRequest {
+        envelope: Some(submit_request(&fixture.fence, &fixture.signer, signature)),
+    };
+    {
+        let _reset = FaultReset;
+        nlos_store_fault::arm(FaultMode::FailWritesAfter { remaining: 0, code });
+        let response = exchange(
+            Arc::clone(&fixture.authority),
+            Arc::clone(&fixture.identity),
+            request.clone(),
+        )
+        .await;
+        let failure = response_failure(response.envelope());
+        assert_eq!(failure.code, i32::from(SabiErrorCode::Durability));
+        assert_eq!(
+            failure.retry,
+            i32::from(RetryDirective::RetrySameIdempotencyKey)
+        );
+        assert!(nlos_store_fault::writes_observed() > 0);
+        assert!(
+            fixture
+                .authority
+                .inspect_authority_takeover_barrier_receipts(fixture.fence.takeover_receipt_id)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    let response = exchange(
+        Arc::clone(&fixture.authority),
+        Arc::clone(&fixture.identity),
+        request,
+    )
+    .await;
+    validate_sabi_response_context(response.envelope(), MethodSemantics::MUTATION).unwrap();
+    let record = decode_barrier_observation_record(&response.envelope().payload).unwrap();
+    assert!(record.signed);
+    assert_eq!(
+        fixture
+            .authority
+            .inspect_authority_takeover_barrier_receipts(fixture.fence.takeover_receipt_id)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        fixture
+            .authority
+            .inspect_authority_takeover_barrier_coverage(fixture.fence.takeover_receipt_id)
+            .unwrap()
+            .state,
+        AuthorityTakeoverBarrierCoverageState::LocallyCovered
+    );
+}
+
+#[tokio::test]
+async fn ipc_io_error_maps_to_durability_and_same_key_recovers() {
+    run_ipc_write_fault(FaultCode::IoErr).await;
+}
+
+#[tokio::test]
+async fn ipc_enospc_maps_to_durability_and_same_key_recovers() {
+    run_ipc_write_fault(FaultCode::Full).await;
 }
 
 #[cfg(unix)]
