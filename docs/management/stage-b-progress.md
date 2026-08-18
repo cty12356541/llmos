@@ -840,7 +840,7 @@ TaskGroup membership generation/root CAS + Admission/Removal Receipt            
   → v28/v29 lease-binding 写路径故障矩阵（签发/finalize/adoption 三写事务） PARTIAL PASS（B-TASK-008C2G-FAULT 增量，7 测试，三平台 CI 已过 run 31963113968）
   → Barrier observation principal 签名验证（KeyPurpose=2 + schema v36 signed record + coupled signer 列） PARTIAL PASS（B-TASK-008C2G-BARRIER-SIG，7+4 测试，本地全绿）
   → 签名写路径 F1–F6 故障注入矩阵 + term-3 反重放不可构造性 PARTIAL PASS（B-TASK-008C2G-BARRIER-SIG 增量，7 测试，三平台复验已过 run 32104369935）
-  → TakeoverControl 跨进程提交服务（schema 第 5 注册 + handler crate + ExactPeerAuthorizer peer 门控 + IPC 幂等 replay + 错误→SabiFailure 映射表） PARTIAL PASS（B-TASK-008C2G-IPC，6+1 测试，本地全绿；三平台随本次 push）
+  → TakeoverControl 跨进程提交服务（schema 第 5 注册 + handler crate + ExactPeerAuthorizer peer 门控 + IPC 幂等 replay + 错误→SabiFailure 映射表） PARTIAL PASS（B-TASK-008C2G-IPC，6+1 测试，三平台 + MSRV 已过 run 32111164855）
   → TS/Python conformance + Windows named pipe round-trip + cross-term adoption + successor 激活 NEXT（B-TASK-008C2G）
 ```
 
