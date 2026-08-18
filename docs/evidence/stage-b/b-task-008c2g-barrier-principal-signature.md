@@ -36,7 +36,7 @@
 - **F5 静默丢写/撕裂尾部**：`PowerLossAfter` 下"报告成功"的签名观察重开不可见且重做 receipt id 与 API 返回的幻影 id 及独立派生一致、signer 逐位回读；WAL 截断在 commit 帧一半时签名 insert 整体隐藏、重做收敛。
 - **F6 解除后继续**：同 authority 实例故障解除后从已提交前缀继续，重试成功，coverage `LocallyCovered`，完整重开保留全部。
 - **反重放（term-3 不可构造性）**：term-2 lease 过期后以 term-3 live lease 对同一 `FrozenForTakeover` registry 再次 `prepare_authority_takeover_fence` 被 `AuthorityLeaseBindingMismatch` fail-closed（既有 fence receipt 的 lease binding CAS）——term-3 takeover 在公开 API 上不可构造，term-2 签名观察因此无跨 takeover 重放目标；失败尝试零状态扰动且原 term-2 签名观察 replay 不变。
-- Evidence：`cargo test -p nlos-task --test barrier_signature_fault_injection`（8 passed）、`cargo test -p nlos-task --quiet`（167 passed）、clippy `-D warnings`/fmt 清洁；三平台 CI 见下方更新。
+- Evidence：`cargo test -p nlos-task --test barrier_signature_fault_injection`（8 passed）、`cargo test -p nlos-task --quiet`（167 passed）、clippy `-D warnings`/fmt 清洁；三平台 CI + MSRV 1.97 已通过（[run 32104369935](https://github.com/cty12356541/llmos/actions/runs/32104369935)，head `54df911`）。
 
 ## 4. 明确限制
 
