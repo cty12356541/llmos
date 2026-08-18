@@ -1135,6 +1135,60 @@ pub(crate) fn migrate_v35(connection: &mut Connection) -> Result<(), TaskStoreEr
     Ok(())
 }
 
+/// v35 → v36 adds the five optional NLOS principal signer columns plus the
+/// coupled-presence trigger for barrier observations. Pre-v36 rows keep all
+/// five columns `NULL`; they stay readable as legacy unsigned observations.
+pub(crate) fn migrate_v36(connection: &mut Connection) -> Result<(), TaskStoreError> {
+    let table_present: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master
+            WHERE type='table' AND name='task_authority_takeover_barrier_receipts'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    let signer_column_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('task_authority_takeover_barrier_receipts')
+         WHERE name IN (
+             'signer_principal_id', 'signer_control_domain_id', 'signer_key_id',
+             'signer_key_generation', 'signer_signature'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    let trigger_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type='trigger' AND name IN (
+             'task_authority_takeover_barrier_receipt_immutable',
+             'task_authority_takeover_barrier_receipt_no_delete'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    let coupled_trigger_present: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master
+            WHERE type='trigger'
+              AND name='task_authority_takeover_barrier_receipts_signer_coupled'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if table_present && signer_column_count == 5 && trigger_count == 2 && coupled_trigger_present {
+        connection.pragma_update(None, "user_version", 36)?;
+        return Ok(());
+    }
+    if !table_present || trigger_count != 2 || coupled_trigger_present || signer_column_count != 0 {
+        return Err(TaskStoreError::CorruptRecord(
+            "partial v36 barrier signer schema",
+        ));
+    }
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(SCHEMA_V36_SQL)?;
+    transaction.commit()?;
+    Ok(())
+}
+
 const SCHEMA_V13_SQL: &str = "CREATE TABLE task_write_sets (
         task_id BLOB NOT NULL CHECK(length(task_id) = 16),
         attempt_id BLOB NOT NULL CHECK(length(attempt_id) = 16),
@@ -1929,6 +1983,33 @@ pub(crate) const SCHEMA_V35_SQL: &str = "ALTER TABLE task_authority_takeover_bar
          CHECK(barrier_receipt_digest IS NULL OR length(barrier_receipt_digest) = 32);
 
      PRAGMA user_version = 35;";
+
+pub(crate) const SCHEMA_V36_SQL: &str = "ALTER TABLE task_authority_takeover_barrier_receipts
+     ADD COLUMN signer_principal_id BLOB
+         CHECK(signer_principal_id IS NULL OR length(signer_principal_id) = 16);
+     ALTER TABLE task_authority_takeover_barrier_receipts
+     ADD COLUMN signer_control_domain_id BLOB
+         CHECK(signer_control_domain_id IS NULL OR length(signer_control_domain_id) = 16);
+     ALTER TABLE task_authority_takeover_barrier_receipts
+     ADD COLUMN signer_key_id BLOB
+         CHECK(signer_key_id IS NULL OR length(signer_key_id) = 16);
+     ALTER TABLE task_authority_takeover_barrier_receipts
+     ADD COLUMN signer_key_generation INTEGER
+         CHECK(signer_key_generation IS NULL OR signer_key_generation >= 1);
+     ALTER TABLE task_authority_takeover_barrier_receipts
+     ADD COLUMN signer_signature BLOB
+         CHECK(signer_signature IS NULL OR length(signer_signature) = 64);
+
+     CREATE TRIGGER task_authority_takeover_barrier_receipts_signer_coupled
+     BEFORE INSERT ON task_authority_takeover_barrier_receipts
+     WHEN (NEW.signer_principal_id IS NULL) + (NEW.signer_control_domain_id IS NULL)
+           + (NEW.signer_key_id IS NULL) + (NEW.signer_key_generation IS NULL)
+           + (NEW.signer_signature IS NULL) NOT IN (0, 5)
+     BEGIN
+         SELECT RAISE(ABORT, 'task authority takeover barrier signer columns must be coupled');
+     END;
+
+     PRAGMA user_version = 36;";
 
 const SCHEMA_V12_SQL: &str = "ALTER TABLE effect_permits
         ADD COLUMN participant_registry_generation BLOB

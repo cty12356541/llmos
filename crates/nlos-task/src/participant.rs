@@ -32,6 +32,20 @@ impl ParticipantType {
         }
     }
 
+    /// One-byte wire encoding used by barrier observation signature preimages.
+    pub(crate) const fn wire_code(self) -> u8 {
+        match self {
+            Self::TaskStore => 1,
+            Self::ArtifactHead => 2,
+            Self::SemanticAdmission => 3,
+            Self::ChannelTopic => 4,
+            Self::DriverGateway => 5,
+            Self::ResourceLedger => 6,
+            Self::ProcessBinding => 7,
+            Self::OperationBinding => 8,
+        }
+    }
+
     pub(crate) fn from_code(code: i64) -> Result<Self, TaskStoreError> {
         match code {
             1 => Ok(Self::TaskStore),

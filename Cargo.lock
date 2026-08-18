@@ -559,8 +559,10 @@ dependencies = [
 name = "nlos-task"
 version = "0.1.0"
 dependencies = [
+ "ed25519-dalek",
  "nlos-artifact",
  "nlos-capability",
+ "nlos-identity",
  "nlos-operation",
  "nlos-process",
  "nlos-resource",

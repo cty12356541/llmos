@@ -7,9 +7,10 @@
 
 use std::num::NonZeroU64;
 
+use nlos_identity::Ed25519Signature;
 use nlos_types::{
-    Generation, IdempotencyKey, ProcessId, ReceiptId, TaskAuthorityAssignmentId, TaskId,
-    TaskParticipantId,
+    ControlDomainId, Generation, IdempotencyKey, KeyId, PrincipalId, ProcessId, ReceiptId,
+    TaskAuthorityAssignmentId, TaskId, TaskParticipantId,
 };
 use rusqlite::{Transaction, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
@@ -18,6 +19,7 @@ use crate::ParticipantRegistryBinding;
 use crate::TaskStoreError;
 use crate::participant::{ParticipantRecord, ParticipantType};
 use crate::store::optional_blob;
+use crate::store::optional_blob16;
 use crate::store::{SqlRead, SqliteTaskAuthority, blob16, blob32, encode_u64, u64_from_blob};
 
 /// Bounds a single authority lease so a forgotten holder cannot retain a
@@ -195,6 +197,38 @@ pub struct AuthorityTakeoverBarrierReceiptRequest {
     pub observed_at_ms: i64,
 }
 
+/// Caller-supplied Ed25519 signature material for one takeover barrier
+/// observation. Every field is verified against the `nlos-identity` key
+/// authority before the observation becomes durable.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BarrierObservationSignature {
+    /// Principal that signed the observation material.
+    pub issuer: PrincipalId,
+    /// Control domain the signing key must be bound to.
+    pub control_domain_id: ControlDomainId,
+    /// Identity-authority key expected to have produced the signature.
+    pub key_id: KeyId,
+    /// Ed25519 signature bytes over the observation message digest.
+    pub signature: Ed25519Signature,
+}
+
+/// Verified NLOS principal signer proof persisted with a signed barrier
+/// observation. `None` on an observation keeps the legacy unsigned form
+/// readable.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AuthorityTakeoverBarrierSigner {
+    /// Signing principal confirmed by the identity authority proof.
+    pub principal_id: PrincipalId,
+    /// Control domain of the signing key confirmed by the proof.
+    pub control_domain_id: ControlDomainId,
+    /// Signing key identity confirmed by the proof.
+    pub key_id: KeyId,
+    /// Key generation of the signing key at verification time.
+    pub key_generation: Generation,
+    /// Verified Ed25519 signature bytes over the observation message digest.
+    pub signature: Ed25519Signature,
+}
+
 /// Immutable local observation of one endpoint barrier receipt.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AuthorityTakeoverBarrierReceiptRecord {
@@ -211,6 +245,10 @@ pub struct AuthorityTakeoverBarrierReceiptRecord {
     pub fence_set_root: [u8; 32],
     pub state: AuthorityTakeoverBarrierReceiptState,
     pub observed_at_ms: i64,
+    /// Identity-authority-verified signer proof. `None` marks legacy
+    /// unsigned observations written by the pre-v36 schema or through the
+    /// unsigned same-trust-domain path.
+    pub signer: Option<AuthorityTakeoverBarrierSigner>,
 }
 
 impl AuthorityLeaseRecord {
@@ -1068,6 +1106,29 @@ pub(crate) fn derive_takeover_barrier_receipt_id(
     )
 }
 
+/// Computes the digest actually signed by a takeover barrier observation
+/// signer. Every field is fixed-width, so no length prefixes are needed.
+#[must_use]
+pub fn barrier_observation_signature_message(
+    takeover_receipt_id: ReceiptId,
+    participant: &ParticipantRecord,
+    remote_receipt_id: ReceiptId,
+    barrier_digest: [u8; 32],
+    fence_set_root: [u8; 32],
+) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"llmos/takeover-barrier-observation/v1");
+    hasher.update(takeover_receipt_id.as_bytes());
+    hasher.update([participant.participant_type.wire_code()]);
+    hasher.update(participant.participant_id.as_bytes());
+    hasher.update(participant.participant_generation.get().to_be_bytes());
+    hasher.update(participant.admission_receipt_id.as_bytes());
+    hasher.update(remote_receipt_id.as_bytes());
+    hasher.update(barrier_digest);
+    hasher.update(fence_set_root);
+    hasher.finalize().into()
+}
+
 pub(crate) fn load_takeover_barrier_receipt_by_participant(
     source: &impl SqlRead,
     takeover_receipt_id: ReceiptId,
@@ -1077,7 +1138,9 @@ pub(crate) fn load_takeover_barrier_receipt_by_participant(
         "SELECT receipt_id, takeover_receipt_id, task_id, task_generation,
                 participant_type, participant_id, participant_generation,
                 admission_receipt_id, remote_receipt_id, barrier_receipt_digest,
-                fence_set_root, barrier_state, observed_at_ms
+                fence_set_root, barrier_state, observed_at_ms,
+                signer_principal_id, signer_control_domain_id, signer_key_id,
+                signer_key_generation, signer_signature
          FROM task_authority_takeover_barrier_receipts
          WHERE takeover_receipt_id = ?1
            AND participant_type = ?2 AND participant_id = ?3",
@@ -1100,7 +1163,9 @@ pub(crate) fn load_takeover_barrier_receipts(
         "SELECT receipt_id, takeover_receipt_id, task_id, task_generation,
                 participant_type, participant_id, participant_generation,
                 admission_receipt_id, remote_receipt_id, barrier_receipt_digest,
-                fence_set_root, barrier_state, observed_at_ms
+                fence_set_root, barrier_state, observed_at_ms,
+                signer_principal_id, signer_control_domain_id, signer_key_id,
+                signer_key_generation, signer_signature
          FROM task_authority_takeover_barrier_receipts
          WHERE takeover_receipt_id = ?1
          ORDER BY participant_type, participant_id",
@@ -1117,13 +1182,22 @@ pub(crate) fn insert_takeover_barrier_receipt(
     transaction: &Transaction<'_>,
     record: &AuthorityTakeoverBarrierReceiptRecord,
 ) -> Result<(), TaskStoreError> {
+    let signer_key_generation = record
+        .signer
+        .as_ref()
+        .map(|signer| i64::try_from(signer.key_generation.get()))
+        .transpose()
+        .map_err(|_| TaskStoreError::CorruptRecord("barrier signer key generation"))?;
     transaction.execute(
         "INSERT INTO task_authority_takeover_barrier_receipts (
             receipt_id, takeover_receipt_id, task_id, task_generation,
             participant_type, participant_id, participant_generation,
             admission_receipt_id, remote_receipt_id, barrier_receipt_digest,
-            fence_set_root, barrier_state, observed_at_ms
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            fence_set_root, barrier_state, observed_at_ms,
+            signer_principal_id, signer_control_domain_id, signer_key_id,
+            signer_key_generation, signer_signature
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+                   ?14, ?15, ?16, ?17, ?18)",
         params![
             record.receipt_id.as_bytes().as_slice(),
             record.takeover_receipt_id.as_bytes().as_slice(),
@@ -1142,6 +1216,23 @@ pub(crate) fn insert_takeover_barrier_receipt(
             record.fence_set_root.as_slice(),
             record.state.code(),
             record.observed_at_ms,
+            record
+                .signer
+                .as_ref()
+                .map(|signer| signer.principal_id.as_bytes().as_slice()),
+            record
+                .signer
+                .as_ref()
+                .map(|signer| signer.control_domain_id.as_bytes().as_slice()),
+            record
+                .signer
+                .as_ref()
+                .map(|signer| signer.key_id.as_bytes().as_slice()),
+            signer_key_generation,
+            record
+                .signer
+                .as_ref()
+                .map(|signer| signer.signature.as_slice()),
         ],
     )?;
     Ok(())
@@ -1156,6 +1247,13 @@ fn decode_takeover_barrier_receipt_row(
     let participant_generation = Generation::new(NonZeroU64::new(u64_from_blob(row, 6)?).ok_or(
         TaskStoreError::CorruptRecord("takeover barrier participant generation"),
     )?);
+    let signer = decode_takeover_barrier_signer(
+        optional_blob16(row, 13)?,
+        optional_blob16(row, 14)?,
+        optional_blob16(row, 15)?,
+        row.get(16)?,
+        optional_blob::<64>(row, 17)?,
+    )?;
     Ok(AuthorityTakeoverBarrierReceiptRecord {
         receipt_id: ReceiptId::from_bytes(blob16(row, 0)?),
         takeover_receipt_id: ReceiptId::from_bytes(blob16(row, 1)?),
@@ -1172,7 +1270,51 @@ fn decode_takeover_barrier_receipt_row(
         fence_set_root: blob32(row, 10)?,
         state: AuthorityTakeoverBarrierReceiptState::from_code(row.get(11)?)?,
         observed_at_ms: row.get(12)?,
+        signer,
     })
+}
+
+fn decode_takeover_barrier_signer(
+    principal_id: Option<[u8; 16]>,
+    control_domain_id: Option<[u8; 16]>,
+    key_id: Option<[u8; 16]>,
+    key_generation: Option<i64>,
+    signature: Option<[u8; 64]>,
+) -> Result<Option<AuthorityTakeoverBarrierSigner>, TaskStoreError> {
+    match (
+        principal_id,
+        control_domain_id,
+        key_id,
+        key_generation,
+        signature,
+    ) {
+        (None, None, None, None, None) => Ok(None),
+        (
+            Some(principal_id),
+            Some(control_domain_id),
+            Some(key_id),
+            Some(key_generation),
+            Some(signature),
+        ) => {
+            let key_generation = u64::try_from(key_generation)
+                .ok()
+                .and_then(NonZeroU64::new)
+                .map(Generation::new)
+                .ok_or(TaskStoreError::CorruptRecord(
+                    "barrier signer key generation",
+                ))?;
+            Ok(Some(AuthorityTakeoverBarrierSigner {
+                principal_id: PrincipalId::from_bytes(principal_id),
+                control_domain_id: ControlDomainId::from_bytes(control_domain_id),
+                key_id: KeyId::from_bytes(key_id),
+                key_generation,
+                signature,
+            }))
+        }
+        _ => Err(TaskStoreError::CorruptRecord(
+            "partial barrier signer columns",
+        )),
+    }
 }
 
 pub(crate) fn load_takeover_fence_members(

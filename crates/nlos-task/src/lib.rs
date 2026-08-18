@@ -80,7 +80,10 @@
 //! durable outstanding-operation participants.
 //! Schema v35 persists the endpoint-supplied barrier digest for new
 //! observations; legacy v33/v34 observations retain an unknown (`NULL`)
-//! digest rather than fabricating one during migration.
+//! digest rather than fabricating one during migration. Schema v36
+//! additionally persists the `nlos-identity`-verified NLOS principal
+//! signer proof for new observations; unsigned rows remain valid
+//! same-trust-domain local evidence.
 //! Compensation execution
 //! (`COMPENSATED` is recordable but never executed), `QUORUM`/`REDUCE`
 //! group semantics (`[TASK-GROUP-003]`), `BEST_EFFORT` failure mode,
@@ -137,8 +140,10 @@ pub use lease::{
     AuthorityLeaseRequest, AuthorityLeaseTakeoverFenceRecord, AuthorityLeaseTakeoverFenceRequest,
     AuthorityTakeoverBarrierCoverage, AuthorityTakeoverBarrierCoverageState,
     AuthorityTakeoverBarrierReceiptRecord, AuthorityTakeoverBarrierReceiptRequest,
-    AuthorityTakeoverBarrierReceiptState, AuthorityTakeoverFenceMemberRecord,
-    AuthorityTakeoverReceiptRecord, AuthorityTakeoverReceiptState, MAX_AUTHORITY_LEASE_TTL_MS,
+    AuthorityTakeoverBarrierReceiptState, AuthorityTakeoverBarrierSigner,
+    AuthorityTakeoverFenceMemberRecord, AuthorityTakeoverReceiptRecord,
+    AuthorityTakeoverReceiptState, BarrierObservationSignature, MAX_AUTHORITY_LEASE_TTL_MS,
+    barrier_observation_signature_message,
 };
 pub use model::{
     AdoptionReceiptRecord, AttemptHandle, AttemptRecord, AttemptRegistrationDecision, AttemptSpec,
@@ -488,6 +493,9 @@ pub enum TaskStoreError {
     ProcessParticipantAuthority(nlos_process::ProcessAuthorityError),
     /// Operation authority proof readback failed before Task mutation.
     OperationParticipantAuthority(nlos_store::StoreError),
+    /// Identity authority verification failed for a signed barrier
+    /// observation before Task mutation.
+    BarrierSignerIdentityAuthority(nlos_identity::IdentityAuthorityError),
     /// The owner proof does not match the generation planned by the caller.
     ParticipantEndpointGenerationMismatch {
         expected: u64,
@@ -776,6 +784,12 @@ impl fmt::Display for TaskStoreError {
                     "Operation participant proof verification failed: {error}"
                 )
             }
+            Self::BarrierSignerIdentityAuthority(error) => {
+                write!(
+                    formatter,
+                    "barrier observation signer proof verification failed: {error}"
+                )
+            }
             Self::ParticipantEndpointGenerationMismatch { expected, current } => write!(
                 formatter,
                 "participant endpoint generation mismatch: expected {expected}, current {current}"
@@ -796,6 +810,7 @@ impl Error for TaskStoreError {
             Self::ResourceParticipantAuthority(error) => Some(error),
             Self::ProcessParticipantAuthority(error) => Some(error),
             Self::OperationParticipantAuthority(error) => Some(error),
+            Self::BarrierSignerIdentityAuthority(error) => Some(error),
             _ => None,
         }
     }

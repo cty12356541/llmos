@@ -5,8 +5,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use ed25519_dalek::{Signer, SigningKey};
 use nlos_identity::{
     BootstrapDecision, BootstrapPrincipalRequest, IdentityAuthority, IdentityAuthorityError,
-    KeyPurpose, KeyRevocationDecision, RevokeKeyRequest, VerifySemanticSignatureRequest,
-    semantic_signature_message,
+    KeyPurpose, KeyRevocationDecision, RevokeKeyRequest, VerifyBarrierObservationSignatureRequest,
+    VerifySemanticSignatureRequest, semantic_signature_message,
 };
 use nlos_types::{Generation, IdempotencyKey, PrincipalId, SemanticEventId};
 use rusqlite::Connection;
@@ -53,6 +53,13 @@ fn bootstrap_request(seed: u8, signing_key: &SigningKey) -> BootstrapPrincipalRe
         key_valid_until_ms: 9_000,
         idempotency_key: IdempotencyKey::from_bytes([seed.wrapping_add(3); 16]),
         created_at_ms: 500,
+    }
+}
+
+fn barrier_bootstrap_request(seed: u8, signing_key: &SigningKey) -> BootstrapPrincipalRequest {
+    BootstrapPrincipalRequest {
+        key_purpose: KeyPurpose::BarrierObservationSigning,
+        ..bootstrap_request(seed, signing_key)
     }
 }
 
@@ -249,4 +256,113 @@ fn snapshot_key_versions_and_revocation_receipts_are_ddl_immutable() {
     );
     assert!(raw.execute("DELETE FROM identity_snapshots", []).is_err());
     assert!(raw.execute("DELETE FROM key_revocations", []).is_err());
+}
+
+#[test]
+fn barrier_observation_verification_proves_signer_identity() {
+    let root = Root::new("barrier-verify");
+    let key = signing_key(60);
+    let authority = IdentityAuthority::open(root.path()).unwrap();
+    let binding = authority
+        .bootstrap_principal(barrier_bootstrap_request(60, &key))
+        .unwrap()
+        .binding();
+    assert_eq!(binding.key_purpose, KeyPurpose::BarrierObservationSigning);
+    assert_eq!(
+        authority
+            .inspect_current_binding(binding.key_id)
+            .unwrap()
+            .key_purpose,
+        KeyPurpose::BarrierObservationSigning
+    );
+    let message_digest = [0x5a; 32];
+    let signature = key.sign(&message_digest).to_bytes();
+    let verified = authority
+        .verify_barrier_observation_signature(VerifyBarrierObservationSignatureRequest {
+            message_digest,
+            issuer: binding.principal_id,
+            control_domain_id: binding.control_domain_id,
+            key_id: binding.key_id,
+            signature,
+            verified_at_ms: 2_000,
+        })
+        .unwrap();
+    assert_eq!(verified.principal_id(), binding.principal_id);
+    assert_eq!(verified.control_domain_id(), binding.control_domain_id);
+    assert_eq!(verified.key_id(), binding.key_id);
+    assert_eq!(verified.key_generation(), binding.key_generation);
+
+    let mut wrong_issuer = VerifyBarrierObservationSignatureRequest {
+        message_digest,
+        issuer: PrincipalId::from_bytes([0xee; 16]),
+        control_domain_id: binding.control_domain_id,
+        key_id: binding.key_id,
+        signature,
+        verified_at_ms: 2_000,
+    };
+    assert!(matches!(
+        authority.verify_barrier_observation_signature(wrong_issuer),
+        Err(IdentityAuthorityError::SignerBindingMismatch)
+    ));
+    wrong_issuer.issuer = binding.principal_id;
+    wrong_issuer.verified_at_ms = 999;
+    assert!(matches!(
+        authority.verify_barrier_observation_signature(wrong_issuer),
+        Err(IdentityAuthorityError::KeyNotYetValid)
+    ));
+    wrong_issuer.verified_at_ms = 9_001;
+    assert!(matches!(
+        authority.verify_barrier_observation_signature(wrong_issuer),
+        Err(IdentityAuthorityError::KeyExpired)
+    ));
+}
+
+#[test]
+fn barrier_observation_verification_rejects_semantic_signing_keys() {
+    let root = Root::new("barrier-purpose");
+    let key = signing_key(70);
+    let authority = IdentityAuthority::open(root.path()).unwrap();
+    let binding = authority
+        .bootstrap_principal(bootstrap_request(70, &key))
+        .unwrap()
+        .binding();
+    assert_eq!(binding.key_purpose, KeyPurpose::SemanticSigning);
+    let message_digest = [0x5b; 32];
+    let signature = key.sign(&message_digest).to_bytes();
+    assert!(matches!(
+        authority.verify_barrier_observation_signature(VerifyBarrierObservationSignatureRequest {
+            message_digest,
+            issuer: binding.principal_id,
+            control_domain_id: binding.control_domain_id,
+            key_id: binding.key_id,
+            signature,
+            verified_at_ms: 2_000,
+        }),
+        Err(IdentityAuthorityError::KeyPurposeMismatch)
+    ));
+}
+
+#[test]
+fn barrier_observation_verification_rejects_tampered_signatures() {
+    let root = Root::new("barrier-tampered");
+    let key = signing_key(80);
+    let authority = IdentityAuthority::open(root.path()).unwrap();
+    let binding = authority
+        .bootstrap_principal(barrier_bootstrap_request(80, &key))
+        .unwrap()
+        .binding();
+    let message_digest = [0x5c; 32];
+    let mut signature = key.sign(&message_digest).to_bytes();
+    signature[0] ^= 1;
+    assert!(matches!(
+        authority.verify_barrier_observation_signature(VerifyBarrierObservationSignatureRequest {
+            message_digest,
+            issuer: binding.principal_id,
+            control_domain_id: binding.control_domain_id,
+            key_id: binding.key_id,
+            signature,
+            verified_at_ms: 2_000,
+        }),
+        Err(IdentityAuthorityError::InvalidSignature)
+    ));
 }

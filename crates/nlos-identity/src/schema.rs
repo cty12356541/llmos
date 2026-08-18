@@ -57,7 +57,7 @@ pub(crate) fn migrate_v1(connection: &mut Connection) -> Result<(), IdentityAuth
         CREATE TABLE key_versions (
             key_id BLOB NOT NULL CHECK(length(key_id) = 16),
             generation INTEGER NOT NULL CHECK(generation >= 1),
-            purpose INTEGER NOT NULL CHECK(purpose = 1),
+            purpose INTEGER NOT NULL CHECK(purpose IN (1, 2)),
             algorithm INTEGER NOT NULL CHECK(algorithm = 1),
             public_key BLOB NOT NULL CHECK(length(public_key) = 32),
             valid_from_ms INTEGER NOT NULL CHECK(valid_from_ms >= 0),

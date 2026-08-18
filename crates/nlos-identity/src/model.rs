@@ -10,6 +10,7 @@ pub type Ed25519Signature = [u8; 64];
 #[repr(u8)]
 pub enum KeyPurpose {
     SemanticSigning = 1,
+    BarrierObservationSigning = 2,
 }
 
 impl KeyPurpose {
@@ -20,8 +21,29 @@ impl KeyPurpose {
     pub(crate) fn decode(value: i64) -> Option<Self> {
         match value {
             1 => Some(Self::SemanticSigning),
+            2 => Some(Self::BarrierObservationSigning),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::KeyPurpose;
+
+    #[test]
+    fn key_purpose_codec_roundtrips_known_values_and_fails_closed() {
+        assert_eq!(
+            KeyPurpose::decode(KeyPurpose::SemanticSigning.encode()),
+            Some(KeyPurpose::SemanticSigning)
+        );
+        assert_eq!(
+            KeyPurpose::decode(KeyPurpose::BarrierObservationSigning.encode()),
+            Some(KeyPurpose::BarrierObservationSigning)
+        );
+        assert_eq!(KeyPurpose::decode(0), None);
+        assert_eq!(KeyPurpose::decode(3), None);
+        assert_eq!(KeyPurpose::decode(-1), None);
     }
 }
 
@@ -142,6 +164,46 @@ pub struct VerifiedSemanticAuthoritySigner {
 }
 
 impl VerifiedSemanticAuthoritySigner {
+    #[must_use]
+    pub const fn principal_id(self) -> PrincipalId {
+        self.principal_id
+    }
+
+    #[must_use]
+    pub const fn control_domain_id(self) -> ControlDomainId {
+        self.control_domain_id
+    }
+
+    #[must_use]
+    pub const fn key_id(self) -> KeyId {
+        self.key_id
+    }
+
+    #[must_use]
+    pub const fn key_generation(self) -> Generation {
+        self.key_generation
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VerifyBarrierObservationSignatureRequest {
+    pub message_digest: [u8; 32],
+    pub issuer: PrincipalId,
+    pub control_domain_id: ControlDomainId,
+    pub key_id: KeyId,
+    pub signature: Ed25519Signature,
+    pub verified_at_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VerifiedBarrierObservationSigner {
+    pub(crate) principal_id: PrincipalId,
+    pub(crate) control_domain_id: ControlDomainId,
+    pub(crate) key_id: KeyId,
+    pub(crate) key_generation: Generation,
+}
+
+impl VerifiedBarrierObservationSigner {
     #[must_use]
     pub const fn principal_id(self) -> PrincipalId {
         self.principal_id

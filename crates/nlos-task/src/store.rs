@@ -22,11 +22,13 @@ use crate::lease::{
     AuthorityLeaseRecord, AuthorityLeaseTakeoverFenceRecord, AuthorityLeaseTakeoverFenceRequest,
     AuthorityTakeoverBarrierCoverage, AuthorityTakeoverBarrierCoverageState,
     AuthorityTakeoverBarrierReceiptRecord, AuthorityTakeoverBarrierReceiptRequest,
-    AuthorityTakeoverFenceMemberRecord, AuthorityTakeoverReceiptRecord,
-    AuthorityTakeoverReceiptState, derive_assignment_id, derive_takeover_barrier_receipt_id,
-    derive_takeover_fence_receipt_id, derive_takeover_receipt_id, insert_assignment,
-    insert_takeover_barrier_receipt, insert_takeover_fence_member, insert_takeover_fence_receipt,
-    insert_takeover_receipt, load_current_assignment, load_takeover_barrier_receipt_by_participant,
+    AuthorityTakeoverBarrierSigner, AuthorityTakeoverFenceMemberRecord,
+    AuthorityTakeoverReceiptRecord, AuthorityTakeoverReceiptState, BarrierObservationSignature,
+    barrier_observation_signature_message, derive_assignment_id,
+    derive_takeover_barrier_receipt_id, derive_takeover_fence_receipt_id,
+    derive_takeover_receipt_id, insert_assignment, insert_takeover_barrier_receipt,
+    insert_takeover_fence_member, insert_takeover_fence_receipt, insert_takeover_receipt,
+    load_current_assignment, load_takeover_barrier_receipt_by_participant,
     load_takeover_barrier_receipts, load_takeover_fence_members, load_takeover_fence_receipt,
     load_takeover_receipt, load_takeover_receipt_by_id, mark_assignment_takeover_pending,
     refresh_active_assignment, validate_authority_lease_binding_in_transaction,
@@ -36,7 +38,7 @@ use crate::migrations::{
     migrate_v9, migrate_v10, migrate_v11, migrate_v12, migrate_v13, migrate_v14, migrate_v15,
     migrate_v16, migrate_v17, migrate_v18, migrate_v19, migrate_v20, migrate_v21, migrate_v22,
     migrate_v23, migrate_v24, migrate_v25, migrate_v26, migrate_v27, migrate_v28, migrate_v29,
-    migrate_v30, migrate_v31, migrate_v32, migrate_v33, migrate_v34, migrate_v35,
+    migrate_v30, migrate_v31, migrate_v32, migrate_v33, migrate_v34, migrate_v35, migrate_v36,
 };
 use crate::model::{derive_closure_receipt_id, derive_permit_id, empty_effect_history_root};
 use crate::{
@@ -51,7 +53,7 @@ use crate::{
     TaskWriteSetSemanticTarget,
 };
 
-const SCHEMA_VERSION: i64 = 35;
+const SCHEMA_VERSION: i64 = 36;
 
 /// A single-writer `SQLite` task authority.
 ///
@@ -262,6 +264,7 @@ impl SqliteTaskAuthority {
             migrate_v33(&mut connection)?;
             migrate_v34(&mut connection)?;
             migrate_v35(&mut connection)?;
+            migrate_v36(&mut connection)?;
         }
 
         Ok(Self {
@@ -1731,67 +1734,132 @@ impl SqliteTaskAuthority {
         }
         let mut connection = self.lock_connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let takeover = load_takeover_receipt_by_id(&transaction, request.takeover_receipt_id)?
-            .ok_or(TaskStoreError::ReceiptNotFound)?;
-        if takeover.barrier_state != AuthorityTakeoverReceiptState::Pending
-            || takeover.new_assignment_id.is_some()
-        {
-            return Err(TaskStoreError::CorruptRecord(
-                "takeover receipt is not pending",
-            ));
-        }
-        let fence_set_root = takeover
-            .exact_fence_set_root
-            .ok_or(TaskStoreError::CorruptRecord(
-                "takeover fence set root is incomplete",
-            ))?;
-        let task = load_task(&transaction, takeover.task_id)?;
-        if task.record.task_generation != takeover.task_generation {
-            return Err(TaskStoreError::CorruptRecord(
-                "takeover barrier task generation",
-            ));
-        }
-        let registry = crate::participant::inspect_registry(&transaction, &task.record)?;
-        if registry.generation != takeover.frozen_registry_binding.generation
-            || registry.root != takeover.frozen_registry_binding.root
-        {
-            return Err(TaskStoreError::ParticipantRegistryBindingMismatch);
-        }
-        if registry.state != crate::ParticipantRegistryState::FrozenForTakeover {
-            return Err(TaskStoreError::ParticipantRegistryBindingMismatch);
-        }
-        let fence_members = load_takeover_fence_members(&transaction, takeover.fence_receipt_id)?;
-        let manifest_participants = if fence_members.is_empty() {
-            Vec::new()
-        } else {
-            validate_takeover_fence_manifest(
-                &fence_members,
-                takeover.fence_receipt_id,
-                takeover.task_id,
-                takeover.task_generation,
-                fence_set_root,
-            )?
-        };
-        if fence_members.is_empty() || !manifest_participants.contains(&request.participant) {
-            return Err(TaskStoreError::ParticipantRegistryBindingMismatch);
-        }
+        let core = validate_barrier_observation(
+            &transaction,
+            request.takeover_receipt_id,
+            &request.participant,
+        )?;
         let record = AuthorityTakeoverBarrierReceiptRecord {
             receipt_id: derive_takeover_barrier_receipt_id(
                 request.takeover_receipt_id,
                 request.participant,
                 request.remote_receipt_id,
                 request.barrier_digest,
-                fence_set_root,
+                core.fence_set_root,
             ),
             takeover_receipt_id: request.takeover_receipt_id,
-            task_id: takeover.task_id,
-            task_generation: takeover.task_generation,
+            task_id: core.takeover.task_id,
+            task_generation: core.takeover.task_generation,
             participant: request.participant,
             remote_receipt_id: request.remote_receipt_id,
             barrier_digest: Some(request.barrier_digest),
-            fence_set_root,
+            fence_set_root: core.fence_set_root,
             state: crate::lease::AuthorityTakeoverBarrierReceiptState::Observed,
             observed_at_ms: request.observed_at_ms,
+            signer: None,
+        };
+        if let Some(existing) = load_takeover_barrier_receipt_by_participant(
+            &transaction,
+            request.takeover_receipt_id,
+            request.participant,
+        )? {
+            if existing != record {
+                return Err(TaskStoreError::CorruptRecord(
+                    "takeover barrier receipt changed during replay",
+                ));
+            }
+            transaction.commit()?;
+            return Ok(existing);
+        }
+        insert_takeover_barrier_receipt(&transaction, &record)?;
+        transaction.commit()?;
+        Ok(record)
+    }
+
+    /// Records one endpoint's immutable takeover-barrier observation with an
+    /// NLOS principal Ed25519 signature verified by the `nlos-identity` key
+    /// authority.
+    ///
+    /// Verification covers the principal/control-domain/key binding, the
+    /// `BarrierObservationSigning` key purpose, key validity and revocation
+    /// state at `observed_at_ms`, and a strict Ed25519 signature over the
+    /// domain-separated observation message digest (see
+    /// [`barrier_observation_signature_message`]). The durable signer
+    /// columns are filled from the verified authority proof, never from
+    /// caller assertions. Unsigned observations remain recordable for
+    /// same-trust-domain local use; coverage semantics are unchanged and
+    /// this method does not mark the parent takeover receipt complete or
+    /// activate a successor assignment. Replaying the exact signed
+    /// observation returns the stored record; mixing signed and unsigned
+    /// forms of the same observation fails closed.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ReceiptNotFound`, a participant/root binding error, the
+    /// wrapped [`nlos_identity::IdentityAuthorityError`] from signature
+    /// verification, a conflicting replay, or a storage/corruption error.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn record_authority_takeover_barrier_receipt_signed(
+        &self,
+        identity: &nlos_identity::IdentityAuthority,
+        request: AuthorityTakeoverBarrierReceiptRequest,
+        signature: BarrierObservationSignature,
+    ) -> Result<AuthorityTakeoverBarrierReceiptRecord, TaskStoreError> {
+        if request.observed_at_ms < 0 {
+            return Err(TaskStoreError::CorruptRecord("takeover barrier timestamp"));
+        }
+        let verified_at_ms = u64::try_from(request.observed_at_ms)
+            .map_err(|_| TaskStoreError::CorruptRecord("takeover barrier timestamp"))?;
+        let mut connection = self.lock_connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let core = validate_barrier_observation(
+            &transaction,
+            request.takeover_receipt_id,
+            &request.participant,
+        )?;
+        let message_digest = barrier_observation_signature_message(
+            request.takeover_receipt_id,
+            &request.participant,
+            request.remote_receipt_id,
+            request.barrier_digest,
+            core.fence_set_root,
+        );
+        let proof = identity
+            .verify_barrier_observation_signature(
+                nlos_identity::VerifyBarrierObservationSignatureRequest {
+                    message_digest,
+                    issuer: signature.issuer,
+                    control_domain_id: signature.control_domain_id,
+                    key_id: signature.key_id,
+                    signature: signature.signature,
+                    verified_at_ms,
+                },
+            )
+            .map_err(TaskStoreError::BarrierSignerIdentityAuthority)?;
+        let record = AuthorityTakeoverBarrierReceiptRecord {
+            receipt_id: derive_takeover_barrier_receipt_id(
+                request.takeover_receipt_id,
+                request.participant,
+                request.remote_receipt_id,
+                request.barrier_digest,
+                core.fence_set_root,
+            ),
+            takeover_receipt_id: request.takeover_receipt_id,
+            task_id: core.takeover.task_id,
+            task_generation: core.takeover.task_generation,
+            participant: request.participant,
+            remote_receipt_id: request.remote_receipt_id,
+            barrier_digest: Some(request.barrier_digest),
+            fence_set_root: core.fence_set_root,
+            state: crate::lease::AuthorityTakeoverBarrierReceiptState::Observed,
+            observed_at_ms: request.observed_at_ms,
+            signer: Some(AuthorityTakeoverBarrierSigner {
+                principal_id: proof.principal_id(),
+                control_domain_id: proof.control_domain_id(),
+                key_id: proof.key_id(),
+                key_generation: proof.key_generation(),
+                signature: signature.signature,
+            }),
         };
         if let Some(existing) = load_takeover_barrier_receipt_by_participant(
             &transaction,
@@ -2242,6 +2310,70 @@ fn validate_takeover_fence_manifest(
         return Err(TaskStoreError::CorruptRecord("takeover fence member root"));
     }
     Ok(participants)
+}
+
+/// Shared takeover-barrier validation core: pending receipt state, exact
+/// fence-set root resolution, frozen registry binding, and participant
+/// membership in the canonical manifest. Both the unsigned and signed
+/// observation paths must pass this core before any durable write.
+struct BarrierObservationCore {
+    takeover: AuthorityTakeoverReceiptRecord,
+    fence_set_root: [u8; 32],
+}
+
+fn validate_barrier_observation(
+    transaction: &Transaction<'_>,
+    takeover_receipt_id: ReceiptId,
+    participant: &crate::ParticipantRecord,
+) -> Result<BarrierObservationCore, TaskStoreError> {
+    let takeover = load_takeover_receipt_by_id(transaction, takeover_receipt_id)?
+        .ok_or(TaskStoreError::ReceiptNotFound)?;
+    if takeover.barrier_state != AuthorityTakeoverReceiptState::Pending
+        || takeover.new_assignment_id.is_some()
+    {
+        return Err(TaskStoreError::CorruptRecord(
+            "takeover receipt is not pending",
+        ));
+    }
+    let fence_set_root = takeover
+        .exact_fence_set_root
+        .ok_or(TaskStoreError::CorruptRecord(
+            "takeover fence set root is incomplete",
+        ))?;
+    let task = load_task(transaction, takeover.task_id)?;
+    if task.record.task_generation != takeover.task_generation {
+        return Err(TaskStoreError::CorruptRecord(
+            "takeover barrier task generation",
+        ));
+    }
+    let registry = crate::participant::inspect_registry(transaction, &task.record)?;
+    if registry.generation != takeover.frozen_registry_binding.generation
+        || registry.root != takeover.frozen_registry_binding.root
+    {
+        return Err(TaskStoreError::ParticipantRegistryBindingMismatch);
+    }
+    if registry.state != crate::ParticipantRegistryState::FrozenForTakeover {
+        return Err(TaskStoreError::ParticipantRegistryBindingMismatch);
+    }
+    let fence_members = load_takeover_fence_members(transaction, takeover.fence_receipt_id)?;
+    let manifest_participants = if fence_members.is_empty() {
+        Vec::new()
+    } else {
+        validate_takeover_fence_manifest(
+            &fence_members,
+            takeover.fence_receipt_id,
+            takeover.task_id,
+            takeover.task_generation,
+            fence_set_root,
+        )?
+    };
+    if fence_members.is_empty() || !manifest_participants.contains(participant) {
+        return Err(TaskStoreError::ParticipantRegistryBindingMismatch);
+    }
+    Ok(BarrierObservationCore {
+        takeover,
+        fence_set_root,
+    })
 }
 
 fn replay_permit(
