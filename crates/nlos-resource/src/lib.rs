@@ -16,7 +16,7 @@ use nlos_types::{
     CallId, DeviceId, DriverId, Generation, IdempotencyKey, OperationId, QuoteId, ReceiptId,
     ReservationId, ResourceAccountId, TaskParticipantId,
 };
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
 
 pub type FencingToken = [u8; 32];
@@ -440,8 +440,29 @@ impl ResourceAuthority {
     /// # Errors
     /// Fails when storage, durability, or schema validation fails.
     pub fn open(root: impl AsRef<Path>) -> Result<Self, ResourceAuthorityError> {
+        Self::open_with_vfs(root, None)
+    }
+
+    /// Opens the authority through a named `SQLite` VFS (e.g. a
+    /// fault-injection shim registered by tests). `None` uses the
+    /// process-default VFS. The durability and schema-validation guarantees
+    /// are identical to [`Self::open`].
+    ///
+    /// # Errors
+    /// Fails when the named VFS does not exist, or when storage, durability,
+    /// or schema validation fails.
+    pub fn open_with_vfs(
+        root: impl AsRef<Path>,
+        vfs: Option<&str>,
+    ) -> Result<Self, ResourceAuthorityError> {
         std::fs::create_dir_all(root.as_ref()).map_err(ResourceAuthorityError::Io)?;
-        let mut c = Connection::open(root.as_ref().join("resource-authority.db"))?;
+        let database = root.as_ref().join("resource-authority.db");
+        let mut c = match vfs {
+            None => Connection::open(database)?,
+            Some(name) => {
+                Connection::open_with_flags_and_vfs(database, OpenFlags::default(), name)?
+            }
+        };
         c.busy_timeout(Duration::from_secs(5))?;
         c.pragma_update(None, "journal_mode", "WAL")?;
         c.pragma_update(None, "synchronous", "FULL")?;

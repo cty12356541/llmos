@@ -32,3 +32,15 @@
 - `finalize_reservation` 要求当前 Driver fence（与 consume/quarantine 一致）；Driver 轮换后的结算解冻路径未提供。
 - QUARANTINED→FINALIZED 的结算只清 overlay 指针，不删除 quarantine receipt 行；`inspect_quarantine_receipt` 在解冻后返回 `CorruptRecord`（文档化）。
 - 单机 strict reference profile：非多维资源、无真实 Driver enforcement、无三平台 CI/真实 ENOSPC 证据。
+
+## 5. 故障注入矩阵（2026-08-17 增量）
+
+`nlos-resource` 接入 `nlos-store-fault` VFS（新增 `open_with_vfs`，authority 代码零改动），为 schema-v5 finalize 表组补齐 PoC-0003 对齐的 F1–F4 矩阵（`finalize_fault_injection.rs`，7 项测试全绿）：
+
+- **F1 kill-9 中断**：mid-tx 幻影 finalize receipt（真实 reservation 绑定）+ 幻影 FINALIZED overlay + 幻影账户退款全部回滚——无 receipt 行、reservation 保持 `ACTIVE`、账户保持 900；重做 finalize 成功且确定性 receipt id 跨重开一致、退款 960 持久。
+- **F2 commit 后崩溃**：完整 finalize 结算（receipt + FINALIZED overlay + 退款）逐位保留；finalize 重放返回原 receipt（不二次退款）、receipt 表与 overlay 绑定 UPDATE/DELETE 被 immutable trigger 拒绝、重启回读一致。
+- **F3/F4 IoErr 与 ENOSPC**：finalize 结算事务 typed fail-closed（错误链含 i/o/full）、`writes_observed() > 0`、无半截状态（无 receipt 行、reservation 保持 `ACTIVE`、账户不退款）；disarm 后同一 finalize 成功。
+- **F5 静默丢写/撕裂尾部**：`PowerLossAfter` 幻影 finalize 重开不可见（reservation 保持 `ACTIVE`、无 receipt 行、账户 900）且重做确定性 receipt id 逐位相同、重开后真实持久；WAL 截断到 finalize commit 帧一半时 finalize 整体隐藏、重做收敛。
+- **F6 故障解除后**：finalize 写事务失败后 disarm，同一 authority 实例从已提交前缀继续，finalize 重试成功、完整重开可恢复。
+
+验证：`cargo test -p nlos-resource --test finalize_fault_injection`（7 项）、`cargo test -p nlos-resource --quiet`（22 项）、`cargo clippy -p nlos-resource --all-targets --all-features -- -D warnings` 通过；三平台 CI 待运行。限制：kill-9 ≠ 真实断电、macOS 本地、F4 全集（checkpoint/backup/migration 变体）未覆盖、真实 ENOSPC 探针未运行。

@@ -13,3 +13,6 @@ sha2.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+nlos-store-fault = { path = "../nlos-store-fault" }
