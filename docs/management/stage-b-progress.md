@@ -1,16 +1,8 @@
 # 阶段 B 权威进度单
 
-> 本轮继续：`B-RESOURCE-005` 接入 `nlos-store-fault` VFS 故障矩阵（`finalize_fault_injection.rs` 7 测试全绿）：kill-9 中断无幻影 receipt/overlay/退款、commit 后崩溃逐位保留且重放不二次退款、IoErr/ENOSPC typed fail-closed 无半截状态、PowerLossAfter/撕裂尾部幻影 finalize 不可见且重做确定性 receipt id 一致、解除后从已提交前缀继续；`nlos-resource` 22 测试全过、workspace 403 测试全过、三平台 CI 待运行；此前的 QUARANTINED→FINALIZED reconciliation 解冻与 `B-TASK-008C2G-FAULT` 两轮矩阵三平台 CI（run 31962738904 / 31963113968）保持有效。
+> 本轮（2026-08-18）工程风险消除：全项目深度评估后落地四项加固——`nlos-runtime-tokio` outbox pump 线程启动 `.expect` 改为类型化 `OutboxPumpStartError`（提交 `ca29756`）；`nlos-store-fault` 显式恢复 clippy all/pedantic 约束、消除 lint 盲区（`9098c53`）；CI 接入 rust-cache、新增夜间 scale-probe job（`--include-ignored` 首次将两个 10 万级规模探针纳入 CI）与 MSRV 1.97 校验 job、dependabot（`80f2cef`）；`nlos-task` 7373 行 store.rs 的 35 个迁移函数机械拆分至 `migrations.rs`、零行为变化（`458bd57`）。workspace 404 测试全过、fmt/clippy `-D warnings` 全绿；本轮三平台 CI 待运行。
 
-> 本轮继续：为 v28/v29 的 lease-binding 写路径接入同一 F1–F4 故障矩阵（`lease_binding_fault_injection.rs`，7 测试全绿）：lease-bound permit 签发/finalize/adoption 三写事务验证 IoErr/ENOSPC typed fail-closed、kill-9 中断回滚、commit 后崩溃逐位保留、PowerLossAfter 幻影不可见且重做确定性 receipt id 一致、WAL 撕裂尾部隐藏 finalize 且重做收敛（[B-TASK-008C2G-FAULT](../evidence/stage-b/b-task-008c2g-takeover-fault-matrix.md) 增量）；首轮 takeover 矩阵文件已通过三平台 CI（run 31962738904）。`nlos-task` 零 `src/` 改动，workspace 390 测试全过。
-
-> 本轮继续：为 schema v27–v35 的 lease/takeover 表组接入 PoC-0003 对齐的 F1–F4 故障注入矩阵（kill-9 中断/commit 后崩溃/IoErr/ENOSPC/静默丢写与 WAL 撕裂尾部/解除后继续），7 项测试全绿（[B-TASK-008C2G-FAULT](../evidence/stage-b/b-task-008c2g-takeover-fault-matrix.md)）；`nlos-task` 零 `src/` 改动，workspace 383 测试全过。三平台 CI 待运行。
-
-> 本轮继续：schema v35 持久化新 takeover barrier observation 的 endpoint-supplied digest；v33/v34 历史 observation 的 digest 保留为未知（`NULL`），并已加入重启读回验证，不改变远端签名/parent completion 语义。
-
-> 同步增量：barrier observation 写入与 coverage 只读路径会重新计算 canonical `exact_fence_set_root`，manifest 绑定/root 漂移均 fail closed；仍不验证远端签名或激活 successor。
-
-> fence member manifest 的独立 inspect 现在也执行 root/manifest presence 一致性校验，损坏记录不会被当作可用 fence evidence。
+> 近期增量（`B-RESOURCE-005` + `B-TASK-008C2G-FAULT` 故障矩阵系列，2026-08-16~17，明细见第 3 节表格与对应 Evidence）：`finalize_fault_injection.rs`（7 测试）验证 kill-9/commit 后崩溃/IoErr/ENOSPC/PowerLossAfter 下 finalize 双重记账无幻影 receipt/overlay/退款且重做 receipt id 确定性一致；`lease_binding_fault_injection.rs`（7 测试）覆盖 v28/v29 lease-bound permit 签发/finalize/adoption 三写事务同型 F1–F4 矩阵；schema v27–v35 lease/takeover 表组 F1–F4 矩阵（7 测试）；schema v35 barrier observation endpoint-supplied digest 持久化（v33/v34 历史行保留 `NULL`）、barrier 写入与 coverage 路径 canonical `exact_fence_set_root` fail-closed 复算、fence member manifest inspect root/presence 一致性校验。takeover/lease-binding 两轮矩阵已通过三平台 CI（run 31962738904 / 31963113968）；resource 侧矩阵 CI 待运行。
 
 > 本轮新增：`B-RESOURCE-004` 已补上缺少 effect-closed final usage 证明时的 Resource QUARANTINED freeze、immutable QuarantineReceipt 与迟到 consume 拒绝；该分支不移动余额、不冒充最终结算。
 >
@@ -18,7 +10,7 @@
 
 > 状态：`ACTIVE / POC ACCEPTANCE PENDING`
 >
-> 最后更新：2026-08-17（已纳入 `B-RESOURCE-005` 增量：QUARANTINED→FINALIZED reconciliation 解冻（冻结 high-water 基线、同事务清除 quarantine overlay、immutable quarantine receipt 行保留），6 测试全绿、`nlos-resource` 15 测试全过、workspace 396 测试全过、三平台 CI（resource 变更）待运行；`B-TASK-008C2G-FAULT` 两轮矩阵文件均已通过三平台 CI（run 31962738904 / 31963113968）；此前 `B-RESOURCE-005` 的 ACTIVE finalize/refund 双重记账结算、`B-TASK-008C2G-FAULT` 第二轮增量（v28/v29 lease-binding 写路径矩阵）、schema v35 takeover barrier digest、v34 canonical exact-fence member manifest、v33 逐 endpoint barrier observation、v32 pending takeover receipt、v31 lease-bound assignment baseline、v30 immutable local fence receipt、v29 same-term adoption/reconcile lease guard、v28 opt-in CommitPermit binding、v27 durable lease/term/fencing 原语、`B-TASK-008C2G-SEM` Semantic publication consumer、schema v25、nested receipt、本地混合 Effect + Semantic v3 终结 hook、slot/Receipt-bound success proof，以及 `B-TASK-008C2G-COORD` Semantic-only 跨 authority restart coordinator 增量保持有效）
+> 最后更新：2026-08-18（本轮为工程风险消除增量：pump 类型化错误、store-fault clippy 恢复、CI 缓存/scale-probe/MSRV/dependabot、TaskStore 迁移链拆分——workspace 404 测试全过，四个提交（`ca29756`/`9098c53`/`80f2cef`/`458bd57`）三平台 CI 待运行；此前 `B-RESOURCE-005` 的 ACTIVE finalize/refund 双重记账结算、QUARANTINED→FINALIZED reconciliation 解冻与 `B-TASK-008C2G-FAULT` 系列表组故障矩阵保持有效，其中 takeover/lease-binding 两轮矩阵三平台 CI（run 31962738904 / 31963113968）已通过、resource 变更 CI 待运行；schema v35 takeover barrier digest、v34 canonical exact-fence member manifest、v33 逐 endpoint barrier observation、v32 pending takeover receipt、v31 lease-bound assignment baseline、v30 immutable local fence receipt、v29 same-term adoption/reconcile lease guard、v28 opt-in CommitPermit binding、v27 durable lease/term/fencing 原语、`B-TASK-008C2G-SEM` Semantic publication consumer、schema v25、nested receipt、本地混合 Effect + Semantic v3 终结 hook、slot/Receipt-bound success proof，以及 `B-TASK-008C2G-COORD` Semantic-only 跨 authority restart coordinator 增量保持有效）
 >
 > 本次增量（历史摘要）：`B-RESOURCE-003` 已补上 strict ACTIVE Reservation consume high-water 与 immutable ConsumptionReceipt；`B-SEMANTIC-003` 已补上 Semantic admission outbox 的 owner-consistent transport 回读；`B-RESOURCE-002` 已补上 ACTIVE Reservation activation receipt 的 owner 回读与重启 replay；`B-TASK-008C2G-RES`、`B-TASK-008C2G-ART` 与 `B-TASK-008C2G-PROCESS` 已补上 Resource Reservation / Artifact head / Process binding 的 permit 前 owner 复核；`B-TASK-008C2G-OP` 已补上 Operation endpoint 的 TaskWriteSet/participant registry 接线、schema v24 迁移与 permit 前 owner 复核；其中 Semantic publication receipt ownership 已由后续 ADR-0006 取代。
 >
