@@ -103,6 +103,7 @@ mod commit;
 mod effect;
 mod group;
 mod lease;
+mod migrations;
 mod model;
 mod participant;
 mod reconcile;
