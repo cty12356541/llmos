@@ -89,10 +89,11 @@
 //! `complete_authority_takeover` can atomically close the receipt and
 //! activate the new-term successor assignment (old assignment fenced)
 //! once the full fence manifest is covered by principal-signed
-//! observations and the successor lease is live. The registry stays
-//! `FrozenForTakeover` after completion: successor-term registry
-//! generation, cross-term permit issuance, and completed-takeover
-//! adoption remain out of scope.
+//! observations and the successor lease is live. The subsequent local
+//! `reopen_successor_registry` slice chains a new participant-registry
+//! generation, rotates the active assignment, and admits a new
+//! lease-bound permit; it still does not re-attest remote endpoints or
+//! complete cross-term adoption.
 //! Compensation execution
 //! (`COMPENSATED` is recordable but never executed), `QUORUM`/`REDUCE`
 //! group semantics (`[TASK-GROUP-003]`), `BEST_EFFORT` failure mode,
@@ -147,6 +148,7 @@ pub use lease::{
     AuthorityAssignmentRecord, AuthorityAssignmentState, AuthorityLeaseBinding,
     AuthorityLeaseDecision, AuthorityLeasePermitRequest, AuthorityLeaseRecord,
     AuthorityLeaseRequest, AuthorityLeaseTakeoverFenceRecord, AuthorityLeaseTakeoverFenceRequest,
+    AuthoritySuccessorRegistryReopenRecord, AuthoritySuccessorRegistryReopenRequest,
     AuthorityTakeoverBarrierCoverage, AuthorityTakeoverBarrierCoverageState,
     AuthorityTakeoverBarrierReceiptRecord, AuthorityTakeoverBarrierReceiptRequest,
     AuthorityTakeoverBarrierReceiptState, AuthorityTakeoverBarrierSigner,

@@ -220,6 +220,40 @@ pub struct CompleteAuthorityTakeoverRequest {
     pub completed_at_ms: i64,
 }
 
+/// Reopens the successor-term participant registry after a completed local
+/// takeover. The supplied lease must be the exact successor lease recorded by
+/// the completed takeover receipt. Reopening is a local durable hand-off:
+/// it carries the frozen participant identities into a new registry
+/// generation and rotates the active assignment so new permit issuance can
+/// bind the new generation. It does not attest remote endpoint health or
+/// adopt an old permit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AuthoritySuccessorRegistryReopenRequest {
+    /// Completed takeover receipt whose successor assignment is being
+    /// advanced to a new participant-registry generation.
+    pub takeover_receipt_id: ReceiptId,
+    /// Live successor lease; exact bytes must match the completion receipt.
+    pub lease: AuthorityLeaseRecord,
+    /// Monotonic authority timestamp for the new registry/assignment rows.
+    pub reopened_at_ms: i64,
+}
+
+/// Durable projection of a successor registry reopen. No separate table is
+/// needed: the successor registry row, its creation receipt, the fenced prior
+/// assignment, and the new active assignment are the canonical facts. The
+/// identity fields below are intentionally immutable so an exact replay stays
+/// byte-equal even if a later permit changes the assignment's live lease
+/// expiry or control epoch.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AuthoritySuccessorRegistryReopenRecord {
+    pub takeover_receipt_id: ReceiptId,
+    pub task_id: TaskId,
+    pub old_registry_binding: ParticipantRegistryBinding,
+    pub successor_registry_binding: ParticipantRegistryBinding,
+    pub fenced_assignment_id: TaskAuthorityAssignmentId,
+    pub active_assignment_id: TaskAuthorityAssignmentId,
+}
+
 /// Durable view of one completed takeover receipt. Completion is a state
 /// transition on the existing takeover receipt row (`Pending → Complete`
 /// with `new_assignment_id` filled); no separate row or table exists, so
@@ -793,6 +827,29 @@ pub(crate) fn load_current_assignment(
     rows.next()?.map(decode_assignment_row).transpose()
 }
 
+pub(crate) fn load_assignment_by_id(
+    source: &impl SqlRead,
+    task_id: TaskId,
+    assignment_id: TaskAuthorityAssignmentId,
+) -> Result<Option<AuthorityAssignmentRecord>, TaskStoreError> {
+    let mut statement = source.prepare_statement(
+        "SELECT assignment_id, task_id, task_generation,
+                authority_id, authority_lease_holder_id,
+                authority_lease_term, authority_lease_epoch,
+                authority_lease_fencing_token, authority_lease_expires_at_ms,
+                control_epoch, participant_registry_generation,
+                participant_registry_root, assignment_state,
+                created_at_ms, updated_at_ms
+         FROM task_authority_assignments
+         WHERE task_id = ?1 AND assignment_id = ?2",
+    )?;
+    let mut rows = statement.query(params![
+        task_id.as_bytes().as_slice(),
+        assignment_id.as_bytes().as_slice(),
+    ])?;
+    rows.next()?.map(decode_assignment_row).transpose()
+}
+
 pub(crate) fn insert_assignment(
     transaction: &Transaction<'_>,
     record: &AuthorityAssignmentRecord,
@@ -895,6 +952,32 @@ pub(crate) fn mark_assignment_takeover_pending(
     }
     Ok(AuthorityAssignmentRecord {
         state: AuthorityAssignmentState::TakeoverPending,
+        updated_at_ms: now_ms,
+        ..*record
+    })
+}
+
+pub(crate) fn mark_assignment_fenced(
+    transaction: &Transaction<'_>,
+    record: &AuthorityAssignmentRecord,
+    now_ms: i64,
+) -> Result<AuthorityAssignmentRecord, TaskStoreError> {
+    let changed = transaction.execute(
+        "UPDATE task_authority_assignments
+         SET assignment_state = ?1, updated_at_ms = ?2
+         WHERE assignment_id = ?3 AND assignment_state = ?4",
+        params![
+            AuthorityAssignmentState::Fenced.code(),
+            now_ms,
+            record.assignment_id.as_bytes().as_slice(),
+            AuthorityAssignmentState::Active.code(),
+        ],
+    )?;
+    if changed != 1 {
+        return Err(TaskStoreError::AuthorityLeaseFenced);
+    }
+    Ok(AuthorityAssignmentRecord {
+        state: AuthorityAssignmentState::Fenced,
         updated_at_ms: now_ms,
         ..*record
     })

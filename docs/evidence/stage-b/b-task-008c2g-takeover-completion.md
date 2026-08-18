@@ -28,4 +28,8 @@
 - 完成语义是单 authority 本地的：观察的 signer 是"该观察材料的签名者"，principal↔participant 绑定策略（哪个 principal 有权为哪个 endpoint 签观察）尚未定义——当前任何 `BarrierObservationSigning` key 的有效签名都满足门。
 - replay 返回的 completed_at_ms 取自 successor assignment 的 created_at_ms（durable），与请求时间戳不同也不拒绝（决策已 durable）；但 replay 仍强制 lease binding 与 receipt 一致。
 - 迁移期间 `foreign_keys` 短暂 OFF（仅 v37 拷贝窗口，事务外切换）；kill-9 落在迁移事务内的行为由 SQLite 原子性保证，但未对 v37 迁移本身注入故障（后续 F4 全集矩阵的可选项）。
-- registry 在完成后保持冻结：successor term 下重新开放 registry、签发新 permit、cross-term adoption（含放宽 `reject_takeover_fence`/`validate_permit_authority_lease` 的旧 term 拒绝）均为 NEXT。
+- registry 在完成后仍保持冻结，直到独立的 successor-registry hand-off；该 hand-off
+  现由 [B-TASK-008C2G-SUCCESSOR-REGISTRY](./b-task-008c2g-successor-registry.md)
+  提供本地 generation/assignment rotation 与新 permit 接线。cross-term adoption
+  （含放宽 `reject_takeover_fence`/`validate_permit_authority_lease` 的旧 term 拒绝）
+  仍为 NEXT。

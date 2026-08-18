@@ -20,6 +20,7 @@ use rusqlite::{Connection, OpenFlags, Transaction, TransactionBehavior, params};
 use crate::lease::{
     AuthorityAssignmentRecord, AuthorityAssignmentState, AuthorityLeasePermitRequest,
     AuthorityLeaseRecord, AuthorityLeaseTakeoverFenceRecord, AuthorityLeaseTakeoverFenceRequest,
+    AuthoritySuccessorRegistryReopenRecord, AuthoritySuccessorRegistryReopenRequest,
     AuthorityTakeoverBarrierCoverage, AuthorityTakeoverBarrierCoverageState,
     AuthorityTakeoverBarrierReceiptRecord, AuthorityTakeoverBarrierReceiptRequest,
     AuthorityTakeoverBarrierSigner, AuthorityTakeoverCompletionRecord,
@@ -29,10 +30,11 @@ use crate::lease::{
     derive_takeover_barrier_receipt_id, derive_takeover_fence_receipt_id,
     derive_takeover_receipt_id, insert_assignment, insert_takeover_barrier_receipt,
     insert_takeover_fence_member, insert_takeover_fence_receipt, insert_takeover_receipt,
-    load_current_assignment, load_takeover_barrier_receipt_by_participant,
+    load_assignment_by_id, load_current_assignment, load_takeover_barrier_receipt_by_participant,
     load_takeover_barrier_receipts, load_takeover_fence_members, load_takeover_fence_receipt,
-    load_takeover_receipt, load_takeover_receipt_by_id, mark_assignment_takeover_pending,
-    refresh_active_assignment, validate_authority_lease_binding_in_transaction,
+    load_takeover_receipt, load_takeover_receipt_by_id, mark_assignment_fenced,
+    mark_assignment_takeover_pending, refresh_active_assignment,
+    validate_authority_lease_binding_in_transaction,
 };
 use crate::migrations::{
     migrate_v1, migrate_v2, migrate_v3, migrate_v4, migrate_v5, migrate_v6, migrate_v7, migrate_v8,
@@ -2033,6 +2035,206 @@ impl SqliteTaskAuthority {
         Ok(completion)
     }
 
+    /// Reopens the successor-term participant registry after a completed
+    /// takeover and rotates the active assignment to the new registry
+    /// generation in one `BEGIN IMMEDIATE` transaction.
+    ///
+    /// The frozen participant tuples are copied into a successor registry
+    /// generation with a new root. The assignment created by takeover
+    /// completion is fenced, and a new active assignment bound to that root
+    /// is installed. This is the local hand-off required before a new
+    /// lease-bound `CommitPermit` can be issued; it does not re-attest remote
+    /// endpoints or adopt an old quarantined permit.
+    ///
+    /// Replaying after the successor registry has already been created is
+    /// read-only and returns the same identity projection, even when a later
+    /// permit has moved the registry from `Open` to `FrozenForPermit`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ReceiptNotFound`, a completion/lease/assignment/registry
+    /// binding error, a timestamp or epoch error, or a storage error.
+    #[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
+    pub fn reopen_successor_registry(
+        &self,
+        request: AuthoritySuccessorRegistryReopenRequest,
+    ) -> Result<AuthoritySuccessorRegistryReopenRecord, TaskStoreError> {
+        if request.reopened_at_ms < 0 {
+            return Err(TaskStoreError::CorruptRecord(
+                "successor registry timestamp",
+            ));
+        }
+        let mut connection = self.lock_connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let takeover = load_takeover_receipt_by_id(&transaction, request.takeover_receipt_id)?
+            .ok_or(TaskStoreError::ReceiptNotFound)?;
+        if request.lease.binding() != takeover.new_authority_lease_binding {
+            return Err(TaskStoreError::AuthorityLeaseBindingMismatch);
+        }
+        if takeover.barrier_state != AuthorityTakeoverReceiptState::Complete {
+            return Err(TaskStoreError::CorruptRecord(
+                "takeover receipt is not complete",
+            ));
+        }
+        let old_registry_binding = takeover.frozen_registry_binding;
+        let fenced_assignment_id =
+            takeover
+                .new_assignment_id
+                .ok_or(TaskStoreError::CorruptRecord(
+                    "completed takeover lacks successor assignment",
+                ))?;
+        let task = load_task(&transaction, takeover.task_id)?;
+        if task.record.task_generation != takeover.task_generation {
+            return Err(TaskStoreError::CorruptRecord(
+                "successor registry task generation",
+            ));
+        }
+        let registry = crate::participant::inspect_registry(&transaction, &task.record)?;
+
+        // A previously committed reopen has enough durable identity to replay
+        // without revalidating the now possibly expired lease. Exact lease
+        // bytes were already checked above, which prevents another term from
+        // manufacturing a replay for this takeover receipt.
+        if registry.generation > old_registry_binding.generation {
+            if registry.prior_root != old_registry_binding.root
+                || !matches!(
+                    registry.state,
+                    crate::ParticipantRegistryState::Open
+                        | crate::ParticipantRegistryState::FrozenForPermit
+                )
+            {
+                return Err(TaskStoreError::CorruptRecord(
+                    "successor registry replay binding",
+                ));
+            }
+            let old_assignment =
+                load_assignment_by_id(&transaction, takeover.task_id, fenced_assignment_id)?
+                    .ok_or(TaskStoreError::CorruptRecord(
+                        "successor registry replay old assignment",
+                    ))?;
+            if old_assignment.state != AuthorityAssignmentState::Fenced
+                || old_assignment.authority_lease_binding != takeover.new_authority_lease_binding
+                || old_assignment.participant_registry_binding != old_registry_binding
+            {
+                return Err(TaskStoreError::CorruptRecord(
+                    "successor registry replay old assignment",
+                ));
+            }
+            let active = load_current_assignment(&transaction, takeover.task_id)?.ok_or(
+                TaskStoreError::CorruptRecord("successor registry replay active assignment"),
+            )?;
+            if active.state != AuthorityAssignmentState::Active
+                || active.authority_lease_binding != takeover.new_authority_lease_binding
+                || active.participant_registry_binding
+                    != (crate::ParticipantRegistryBinding {
+                        generation: registry.generation,
+                        root: registry.root,
+                    })
+            {
+                return Err(TaskStoreError::CorruptRecord(
+                    "successor registry replay active assignment",
+                ));
+            }
+            let record = AuthoritySuccessorRegistryReopenRecord {
+                takeover_receipt_id: takeover.receipt_id,
+                task_id: takeover.task_id,
+                old_registry_binding,
+                successor_registry_binding: crate::ParticipantRegistryBinding {
+                    generation: registry.generation,
+                    root: registry.root,
+                },
+                fenced_assignment_id,
+                active_assignment_id: active.assignment_id,
+            };
+            transaction.commit()?;
+            return Ok(record);
+        }
+
+        if registry.generation != old_registry_binding.generation
+            || registry.root != old_registry_binding.root
+            || registry.state != crate::ParticipantRegistryState::FrozenForTakeover
+        {
+            return Err(TaskStoreError::ParticipantRegistryBindingMismatch);
+        }
+        let old_assignment =
+            load_assignment_by_id(&transaction, takeover.task_id, fenced_assignment_id)?.ok_or(
+                TaskStoreError::CorruptRecord("successor registry assignment missing"),
+            )?;
+        if old_assignment.state != AuthorityAssignmentState::Active
+            || old_assignment.authority_lease_binding != takeover.new_authority_lease_binding
+            || old_assignment.participant_registry_binding != old_registry_binding
+        {
+            return Err(TaskStoreError::AuthorityLeaseFenced);
+        }
+        if request.reopened_at_ms < old_assignment.updated_at_ms
+            || request.reopened_at_ms < task.record.updated_at_ms
+        {
+            return Err(TaskStoreError::CorruptRecord(
+                "successor registry timestamp",
+            ));
+        }
+        validate_authority_lease_binding_in_transaction(
+            &transaction,
+            takeover.new_authority_lease_binding,
+            request.reopened_at_ms,
+        )?;
+        let next_control_epoch = task
+            .record
+            .control_epoch
+            .checked_add(1)
+            .ok_or(TaskStoreError::EpochExhausted)?;
+        let successor_registry = crate::participant::reopen_after_takeover(
+            &transaction,
+            &task.record,
+            old_registry_binding,
+            request.reopened_at_ms,
+        )?;
+        let successor_registry_binding = crate::ParticipantRegistryBinding {
+            generation: successor_registry.generation,
+            root: successor_registry.root,
+        };
+        let active_assignment_id = derive_assignment_id(
+            task.record.task_id,
+            task.record.task_generation,
+            request.lease.authority_id,
+            request.lease.term,
+            successor_registry_binding,
+        );
+        if active_assignment_id == fenced_assignment_id {
+            return Err(TaskStoreError::CorruptRecord(
+                "successor assignment identity did not advance",
+            ));
+        }
+        mark_assignment_fenced(&transaction, &old_assignment, request.reopened_at_ms)?;
+        insert_assignment(
+            &transaction,
+            &AuthorityAssignmentRecord {
+                assignment_id: active_assignment_id,
+                task_id: task.record.task_id,
+                task_generation: task.record.task_generation,
+                authority_lease_binding: takeover.new_authority_lease_binding,
+                control_epoch: next_control_epoch,
+                participant_registry_binding: successor_registry_binding,
+                state: AuthorityAssignmentState::Active,
+                created_at_ms: request.reopened_at_ms,
+                updated_at_ms: request.reopened_at_ms,
+            },
+        )?;
+        update_task(&transaction, &task, request.reopened_at_ms, |record| {
+            record.control_epoch = next_control_epoch;
+        })?;
+        let result = AuthoritySuccessorRegistryReopenRecord {
+            takeover_receipt_id: takeover.receipt_id,
+            task_id: takeover.task_id,
+            old_registry_binding,
+            successor_registry_binding,
+            fenced_assignment_id,
+            active_assignment_id,
+        };
+        transaction.commit()?;
+        Ok(result)
+    }
+
     /// Reads all immutable local endpoint-barrier observations for a pending
     /// takeover receipt. An empty list is valid and does not imply completion.
     ///
@@ -2545,12 +2747,39 @@ fn complete_takeover_replay(
         .ok_or(TaskStoreError::CorruptRecord(
             "takeover completion assignment",
         ))?;
-    let assignment = load_current_assignment(transaction, receipt.task_id)?.ok_or(
-        TaskStoreError::CorruptRecord("takeover completion assignment"),
-    )?;
-    if assignment.assignment_id != new_assignment_id
-        || new_assignment_id != successor_assignment_id
-        || assignment.state != AuthorityAssignmentState::Active
+    if new_assignment_id != successor_assignment_id {
+        return Err(TaskStoreError::CorruptRecord(
+            "takeover completion assignment",
+        ));
+    }
+    let original_assignment =
+        load_assignment_by_id(transaction, receipt.task_id, new_assignment_id)?.ok_or(
+            TaskStoreError::CorruptRecord("takeover completion assignment"),
+        )?;
+    let assignment_is_active = original_assignment.state == AuthorityAssignmentState::Active;
+    let assignment_was_rotated = if original_assignment.state == AuthorityAssignmentState::Fenced {
+        let task = load_task(transaction, receipt.task_id)?;
+        let registry = crate::participant::inspect_registry(transaction, &task.record)?;
+        let current = load_current_assignment(transaction, receipt.task_id)?.ok_or(
+            TaskStoreError::CorruptRecord("takeover completion successor assignment"),
+        )?;
+        registry.prior_root == receipt.frozen_registry_binding.root
+            && registry.generation > receipt.frozen_registry_binding.generation
+            && matches!(
+                registry.state,
+                crate::ParticipantRegistryState::Open
+                    | crate::ParticipantRegistryState::FrozenForPermit
+            )
+            && current.state == AuthorityAssignmentState::Active
+            && current.authority_lease_binding == receipt.new_authority_lease_binding
+            && current.participant_registry_binding.generation == registry.generation
+            && current.participant_registry_binding.root == registry.root
+    } else {
+        false
+    };
+    if (!assignment_is_active && !assignment_was_rotated)
+        || original_assignment.authority_lease_binding != receipt.new_authority_lease_binding
+        || original_assignment.participant_registry_binding != receipt.frozen_registry_binding
     {
         return Err(TaskStoreError::CorruptRecord(
             "takeover completion assignment",
@@ -2562,7 +2791,7 @@ fn complete_takeover_replay(
         old_assignment_id: receipt.old_assignment_id,
         new_assignment_id,
         barrier_state: AuthorityTakeoverReceiptState::Complete,
-        completed_at_ms: assignment.created_at_ms,
+        completed_at_ms: original_assignment.created_at_ms,
     })
 }
 

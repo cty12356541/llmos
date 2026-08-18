@@ -299,6 +299,60 @@ pub(crate) fn freeze_for_takeover(
     }
 }
 
+/// Creates the successor-term registry generation after a takeover receipt
+/// has reached `Complete`.
+///
+/// The participant tuple is copied byte-for-byte from the frozen registry;
+/// this is deliberately a local hand-off primitive, not a fresh remote
+/// endpoint attestation. The caller must separately prove the completed
+/// takeover and rotate the active assignment in the same transaction.
+pub(crate) fn reopen_after_takeover(
+    transaction: &Transaction<'_>,
+    task: &TaskRecord,
+    expected: ParticipantRegistryBinding,
+    now_ms: i64,
+) -> Result<ParticipantRegistryRecord, TaskStoreError> {
+    let registry = initialize_registry(transaction, task, now_ms)?;
+    if registry.generation != expected.generation || registry.root != expected.root {
+        return Err(TaskStoreError::ParticipantRegistryBindingMismatch);
+    }
+    if registry.state != ParticipantRegistryState::FrozenForTakeover {
+        return Err(TaskStoreError::CorruptRecord(
+            "successor registry is not frozen for takeover",
+        ));
+    }
+    let next_generation = registry
+        .generation
+        .checked_add(1)
+        .ok_or(TaskStoreError::EpochExhausted)?;
+    let changed = transaction.execute(
+        "UPDATE task_participant_registries
+         SET registry_state=?1, updated_at_ms=?2
+         WHERE registry_id=?3 AND registry_generation=?4
+           AND participant_registry_root=?5
+           AND registry_state=?6",
+        params![
+            ParticipantRegistryState::Superseded.code(),
+            now_ms,
+            registry.registry_id.as_bytes().as_slice(),
+            encode_u64(registry.generation).as_slice(),
+            registry.root.as_slice(),
+            ParticipantRegistryState::FrozenForTakeover.code(),
+        ],
+    )?;
+    if changed != 1 {
+        return Err(TaskStoreError::ParticipantRegistryCasMismatch);
+    }
+    insert_registry_generation(
+        transaction,
+        task,
+        next_generation,
+        registry.root,
+        &registry.participants,
+        now_ms,
+    )
+}
+
 /// Rejects new mutations against a registry that has entered the takeover
 /// fence. Existing exact replay paths intentionally call this only after
 /// their durable result has been found.

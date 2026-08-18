@@ -7,8 +7,8 @@
 //! rejections, the narrowed immutable trigger's fail-closed surface, the
 //! v36 → v37 migration with FK integrity, and one fail-closed
 //! fault-injection row (hard I/O error leaves no half state). The tests do
-//! not claim IPC peer authentication, remote barrier truth, registry
-//! re-opening, or cross-term permit issuance.
+//! not claim IPC peer authentication, remote barrier truth, cross-term
+//! adoption, or fresh endpoint attestation after registry reopen.
 //!
 //! The fault VFS state in `nlos-store-fault` is process-global, so every
 //! test in this binary holds `COMPLETION_LOCK` for its entire duration.
@@ -25,7 +25,8 @@ use nlos_identity::{BootstrapPrincipalRequest, IdentityAuthority, KeyPurpose};
 use nlos_task::{
     AuthorityAssignmentState, AuthorityLeaseDecision, AuthorityLeaseFinalizeRequest,
     AuthorityLeasePermitRequest, AuthorityLeaseRecord, AuthorityLeaseRequest,
-    AuthorityLeaseTakeoverFenceRequest, AuthorityTakeoverBarrierReceiptRequest,
+    AuthorityLeaseTakeoverFenceRequest, AuthoritySuccessorRegistryReopenRecord,
+    AuthoritySuccessorRegistryReopenRequest, AuthorityTakeoverBarrierReceiptRequest,
     AuthorityTakeoverBarrierReceiptState, AuthorityTakeoverCompletionRecord,
     AuthorityTakeoverReceiptRecord, AuthorityTakeoverReceiptState, BarrierObservationSignature,
     CompleteAuthorityTakeoverRequest, FinalizeRequest, FinalizeRequestV3, ParticipantRecord,
@@ -1079,6 +1080,234 @@ fn fault_io_error_on_completion_writes_fails_closed() {
     assert_eq!(
         completed.barrier_state,
         AuthorityTakeoverReceiptState::Complete
+    );
+    assert_eq!(raw_count(&database.path, "task_authority_assignments"), 2);
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn successor_registry_reopens_and_new_permit_uses_new_generation() {
+    let _serialization = completion_lock();
+    let database = TestDatabase::new("successor-registry");
+    let identity_root = IdentityRoot::new("successor-registry");
+    let authority = database.open();
+    let identity = IdentityAuthority::open(identity_root.path()).unwrap();
+    let signer = bootstrap_barrier_signer(&identity, 0x4a, KeyPurpose::BarrierObservationSigning);
+    let pending = seed_pending_takeover(&authority, 0x4a, true);
+    record_all_signed(&authority, &identity, &signer, &pending);
+    let completed = authority
+        .complete_authority_takeover(completion_request(&pending, 230))
+        .expect("complete takeover");
+
+    let reopened = authority
+        .reopen_successor_registry(AuthoritySuccessorRegistryReopenRequest {
+            takeover_receipt_id: pending.takeover.receipt_id,
+            lease: pending.lease_two,
+            reopened_at_ms: 240,
+        })
+        .expect("reopen successor registry");
+    assert_eq!(
+        reopened,
+        AuthoritySuccessorRegistryReopenRecord {
+            takeover_receipt_id: pending.takeover.receipt_id,
+            task_id: pending.attempt.task_id,
+            old_registry_binding: pending.registry_binding,
+            successor_registry_binding: reopened.successor_registry_binding,
+            fenced_assignment_id: completed.new_assignment_id,
+            active_assignment_id: reopened.active_assignment_id,
+        }
+    );
+    assert_eq!(
+        reopened.successor_registry_binding.generation,
+        pending.registry_binding.generation + 1
+    );
+    assert_ne!(
+        reopened.successor_registry_binding.root,
+        pending.registry_binding.root
+    );
+    let registry = authority
+        .inspect_participant_registry(pending.attempt.task_id)
+        .expect("successor registry");
+    assert_eq!(registry.state, ParticipantRegistryState::Open);
+    assert_eq!(
+        ParticipantRegistryBinding {
+            generation: registry.generation,
+            root: registry.root,
+        },
+        reopened.successor_registry_binding
+    );
+    let successor = authority
+        .inspect_authority_assignment(pending.attempt.task_id)
+        .expect("rotated active assignment");
+    assert_eq!(successor.assignment_id, reopened.active_assignment_id);
+    assert_eq!(successor.state, AuthorityAssignmentState::Active);
+    assert_eq!(
+        successor.participant_registry_binding,
+        reopened.successor_registry_binding
+    );
+    assert_eq!(
+        raw_assignment_state(&database.path, completed.new_assignment_id.as_bytes()),
+        3,
+        "completion successor assignment must be fenced before registry rotation"
+    );
+    assert_eq!(raw_count(&database.path, "task_authority_assignments"), 3);
+
+    let head = authority
+        .inspect_task(pending.attempt.task_id)
+        .expect("task head");
+    let second_attempt = nlos_task::AttemptSpec {
+        task_id: pending.attempt.task_id,
+        attempt_id: TaskAttemptId::from_bytes([0x5a; 16]),
+        attempt_generation: Generation::INITIAL,
+        snapshot: SnapshotBundle {
+            snapshot_id: TaskSnapshotId::from_bytes([0x5b; 16]),
+            snapshot_digest: [0x5c; 32],
+            expected_head_commit_seq: head.head_commit_seq,
+            effect_history_root: head.head_effect_history_root,
+            retry_fence_epoch: head.retry_fence_epoch,
+        },
+        cancellation_scope_id: CancellationScopeId::from_bytes([0x5d; 16]),
+        cancellation_generation: Generation::INITIAL,
+        idempotency_key: IdempotencyKey::from_bytes([0x5e; 16]),
+        registered_at_ms: 241,
+    };
+    authority
+        .register_attempt(second_attempt)
+        .expect("register successor attempt");
+    let permit = match authority
+        .request_commit_permit_with_authority_lease(AuthorityLeasePermitRequest {
+            permit: permit_request(&second_attempt, 0x5f, 242),
+            lease: pending.lease_two,
+        })
+        .expect("issue successor-term permit")
+    {
+        PermitDecision::Issued(permit) => *permit,
+        other => panic!("expected successor permit, got {other:?}"),
+    };
+    assert_eq!(
+        permit.participant_registry_binding,
+        Some(reopened.successor_registry_binding)
+    );
+    assert_eq!(
+        authority
+            .inspect_participant_registry(pending.attempt.task_id)
+            .expect("registry after permit")
+            .state,
+        ParticipantRegistryState::FrozenForPermit
+    );
+    assert_eq!(
+        authority
+            .inspect_authority_assignment(pending.attempt.task_id)
+            .expect("assignment after permit")
+            .assignment_id,
+        reopened.active_assignment_id
+    );
+
+    // Rotating the registry must not make the original completion replay
+    // look corrupt; the completion fact is still durable evidence for the
+    // prior successor assignment.
+    assert_eq!(
+        authority
+            .complete_authority_takeover(completion_request(&pending, 243))
+            .expect("completion replay after registry reopen"),
+        completed
+    );
+}
+
+#[test]
+fn successor_registry_reopen_replay_is_byte_equal_after_restart() {
+    let _serialization = completion_lock();
+    let database = TestDatabase::new("successor-registry-replay");
+    let identity_root = IdentityRoot::new("successor-registry-replay");
+    let authority = database.open();
+    let identity = IdentityAuthority::open(identity_root.path()).unwrap();
+    let signer = bootstrap_barrier_signer(&identity, 0x4b, KeyPurpose::BarrierObservationSigning);
+    let pending = seed_pending_takeover(&authority, 0x4b, true);
+    record_all_signed(&authority, &identity, &signer, &pending);
+    authority
+        .complete_authority_takeover(completion_request(&pending, 230))
+        .expect("complete takeover");
+    let first = authority
+        .reopen_successor_registry(AuthoritySuccessorRegistryReopenRequest {
+            takeover_receipt_id: pending.takeover.receipt_id,
+            lease: pending.lease_two,
+            reopened_at_ms: 240,
+        })
+        .expect("reopen successor registry");
+    assert_eq!(
+        authority
+            .reopen_successor_registry(AuthoritySuccessorRegistryReopenRequest {
+                takeover_receipt_id: pending.takeover.receipt_id,
+                lease: pending.lease_two,
+                reopened_at_ms: 250,
+            })
+            .expect("same-process replay"),
+        first
+    );
+
+    drop(authority);
+    let reopened_authority = database.open();
+    assert_eq!(
+        reopened_authority
+            .reopen_successor_registry(AuthoritySuccessorRegistryReopenRequest {
+                takeover_receipt_id: pending.takeover.receipt_id,
+                lease: pending.lease_two,
+                reopened_at_ms: 400,
+            })
+            .expect("restart replay does not mutate"),
+        first
+    );
+    assert_eq!(
+        reopened_authority
+            .inspect_participant_registry(pending.attempt.task_id)
+            .expect("registry after replay")
+            .state,
+        ParticipantRegistryState::Open
+    );
+    assert_eq!(raw_count(&database.path, "task_authority_assignments"), 3);
+}
+
+#[test]
+fn successor_registry_reopen_requires_completed_receipt_and_exact_lease() {
+    let _serialization = completion_lock();
+    let database = TestDatabase::new("successor-registry-guards");
+    let identity_root = IdentityRoot::new("successor-registry-guards");
+    let authority = database.open();
+    let identity = IdentityAuthority::open(identity_root.path()).unwrap();
+    let signer = bootstrap_barrier_signer(&identity, 0x4c, KeyPurpose::BarrierObservationSigning);
+    let pending = seed_pending_takeover(&authority, 0x4c, true);
+    assert!(matches!(
+        authority.reopen_successor_registry(AuthoritySuccessorRegistryReopenRequest {
+            takeover_receipt_id: pending.takeover.receipt_id,
+            lease: pending.lease_two,
+            reopened_at_ms: 240,
+        }),
+        Err(TaskStoreError::CorruptRecord(
+            "takeover receipt is not complete"
+        ))
+    ));
+    assert_eq!(raw_count(&database.path, "task_authority_assignments"), 1);
+
+    record_all_signed(&authority, &identity, &signer, &pending);
+    authority
+        .complete_authority_takeover(completion_request(&pending, 230))
+        .expect("complete takeover");
+    let mut wrong_lease = pending.lease_two;
+    wrong_lease.fencing_token[0] ^= 0xff;
+    assert!(matches!(
+        authority.reopen_successor_registry(AuthoritySuccessorRegistryReopenRequest {
+            takeover_receipt_id: pending.takeover.receipt_id,
+            lease: wrong_lease,
+            reopened_at_ms: 240,
+        }),
+        Err(TaskStoreError::AuthorityLeaseBindingMismatch)
+    ));
+    assert_eq!(
+        authority
+            .inspect_participant_registry(pending.attempt.task_id)
+            .expect("registry after rejected reopen")
+            .state,
+        ParticipantRegistryState::FrozenForTakeover
     );
     assert_eq!(raw_count(&database.path, "task_authority_assignments"), 2);
 }
