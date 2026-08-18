@@ -12,8 +12,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use ed25519_dalek::{Signer, SigningKey};
 use nlos_identity::{BootstrapPrincipalRequest, IdentityAuthority, KeyPurpose};
 use nlos_ipc::{
-    ExactPeerAuthorizer, LocalRpcClient, OutboundResponse, PeerAuthorizer, PeerCredentialBinding,
-    PeerIdentity, TransportConfig, serve_one,
+    LocalRpcClient, OutboundResponse, PeerAuthorizer, PeerIdentity, TransportConfig, serve_one,
 };
 use nlos_schema::sabi::v1::{
     BarrierObservationEvidence, BarrierObservationSignature as BarrierObservationSignatureProto,
@@ -22,7 +21,7 @@ use nlos_schema::sabi::v1::{
     SabiRequestContext, SchemaIdentity, SubmitBarrierObservationRequest, envelope,
 };
 use nlos_schema::{
-    MethodSemantics, SABI_ENVELOPE_SCHEMA, SABI_TAKEOVER_CONTROL_SCHEMA, ValidatedExchangeResponse,
+    MethodSemantics, SABI_ENVELOPE_SCHEMA, ValidatedExchangeResponse,
     decode_barrier_observation_record, encode_submit_barrier_observation_request,
     takeover_control_schema_identity, validate_sabi_response_context,
 };
@@ -337,7 +336,10 @@ struct Fixture {
     // Cleanup fields are declared last: struct fields drop in declaration
     // order, so the SQLite connections above must close before the database
     // files and identity directory are removed (Windows fails with os
-    // error 32 when removing files with open handles).
+    // error 32 when removing files with open handles). The database path
+    // is read only by the cfg(unix) socket test, so other targets exempt
+    // the field from dead_code while keeping its Drop cleanup.
+    #[cfg_attr(not(unix), allow(dead_code))]
     database: TestDatabase,
     // Held only for its Drop-time directory cleanup.
     _identity_root: IdentityRoot,
@@ -599,6 +601,8 @@ async fn signed_observation_crosses_duplex_ipc_and_replays_identically() {
 #[tokio::test]
 async fn signed_observation_uses_a_directory_resolved_exactly_bound_unix_endpoint() {
     use nlos_ipc::unix::{UnixListenerAdapter, connect};
+    use nlos_ipc::{ExactPeerAuthorizer, PeerCredentialBinding};
+    use nlos_schema::SABI_TAKEOVER_CONTROL_SCHEMA;
     use nlos_schema::sabi::v1::{
         LocalEndpoint, LocalTransportKind, NegotiateServiceRequest, ServiceCandidate,
         ServiceVersion, negotiate_service_response,
