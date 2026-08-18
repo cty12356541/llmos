@@ -769,6 +769,82 @@ async fn run_ipc_write_fault(code: FaultCode) {
 }
 
 #[tokio::test]
+async fn ipc_power_loss_write_loss_is_invisible_and_same_key_recovers() {
+    let _serialization = fault_lock().await;
+    nlos_store_fault::disarm();
+    let fixture = Fixture::new_with_fault_vfs(
+        "ipc-power-loss",
+        0x3B,
+        KeyPurpose::BarrierObservationSigning,
+    );
+    let signature = observation(&fixture.fence, &fixture.signer);
+    let request = ExchangeRequest {
+        envelope: Some(submit_request(&fixture.fence, &fixture.signer, signature)),
+    };
+    let Fixture {
+        authority,
+        identity,
+        signer: _signer,
+        fence,
+        database,
+        _identity_root,
+    } = fixture;
+
+    {
+        let _reset = FaultReset;
+        nlos_store_fault::arm(FaultMode::PowerLossAfter { remaining: 0 });
+        let phantom = exchange(
+            Arc::clone(&authority),
+            Arc::clone(&identity),
+            request.clone(),
+        )
+        .await;
+        validate_sabi_response_context(phantom.envelope(), MethodSemantics::MUTATION).unwrap();
+        let record = decode_barrier_observation_record(&phantom.envelope().payload).unwrap();
+        assert!(record.signed);
+        assert!(nlos_store_fault::writes_observed() > 0);
+    }
+
+    drop(authority);
+    let recovered = Arc::new(
+        SqliteTaskAuthority::open_with_vfs(&database.path, Some(FAULT_VFS_NAME))
+            .expect("reopen after IPC power loss"),
+    );
+    assert!(
+        recovered
+            .inspect_authority_takeover_barrier_receipts(fence.takeover_receipt_id)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        recovered
+            .inspect_authority_takeover_barrier_coverage(fence.takeover_receipt_id)
+            .unwrap()
+            .state,
+        AuthorityTakeoverBarrierCoverageState::Partial
+    );
+
+    let response = exchange(Arc::clone(&recovered), Arc::clone(&identity), request).await;
+    validate_sabi_response_context(response.envelope(), MethodSemantics::MUTATION).unwrap();
+    let record = decode_barrier_observation_record(&response.envelope().payload).unwrap();
+    assert!(record.signed);
+    assert_eq!(
+        recovered
+            .inspect_authority_takeover_barrier_receipts(fence.takeover_receipt_id)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        recovered
+            .inspect_authority_takeover_barrier_coverage(fence.takeover_receipt_id)
+            .unwrap()
+            .state,
+        AuthorityTakeoverBarrierCoverageState::LocallyCovered
+    );
+}
+
+#[tokio::test]
 async fn ipc_io_error_maps_to_durability_and_same_key_recovers() {
     run_ipc_write_fault(FaultCode::IoErr).await;
 }
