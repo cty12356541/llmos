@@ -83,7 +83,16 @@
 //! digest rather than fabricating one during migration. Schema v36
 //! additionally persists the `nlos-identity`-verified NLOS principal
 //! signer proof for new observations; unsigned rows remain valid
-//! same-trust-domain local evidence.
+//! same-trust-domain local evidence. Schema v37 relaxes the takeover
+//! receipt's completion columns and narrows its immutable trigger to the
+//! single `Pending → Complete` transition, so
+//! `complete_authority_takeover` can atomically close the receipt and
+//! activate the new-term successor assignment (old assignment fenced)
+//! once the full fence manifest is covered by principal-signed
+//! observations and the successor lease is live. The registry stays
+//! `FrozenForTakeover` after completion: successor-term registry
+//! generation, cross-term permit issuance, and completed-takeover
+//! adoption remain out of scope.
 //! Compensation execution
 //! (`COMPENSATED` is recordable but never executed), `QUORUM`/`REDUCE`
 //! group semantics (`[TASK-GROUP-003]`), `BEST_EFFORT` failure mode,
@@ -141,8 +150,9 @@ pub use lease::{
     AuthorityTakeoverBarrierCoverage, AuthorityTakeoverBarrierCoverageState,
     AuthorityTakeoverBarrierReceiptRecord, AuthorityTakeoverBarrierReceiptRequest,
     AuthorityTakeoverBarrierReceiptState, AuthorityTakeoverBarrierSigner,
-    AuthorityTakeoverFenceMemberRecord, AuthorityTakeoverReceiptRecord,
-    AuthorityTakeoverReceiptState, BarrierObservationSignature, MAX_AUTHORITY_LEASE_TTL_MS,
+    AuthorityTakeoverCompletionRecord, AuthorityTakeoverFenceMemberRecord,
+    AuthorityTakeoverReceiptRecord, AuthorityTakeoverReceiptState, BarrierObservationSignature,
+    CompleteAuthorityTakeoverRequest, MAX_AUTHORITY_LEASE_TTL_MS,
     barrier_observation_signature_message,
 };
 pub use model::{
@@ -496,6 +506,11 @@ pub enum TaskStoreError {
     /// Identity authority verification failed for a signed barrier
     /// observation before Task mutation.
     BarrierSignerIdentityAuthority(nlos_identity::IdentityAuthorityError),
+    /// A takeover completion gate found a barrier observation recorded
+    /// without the v36 principal signer proof; unsigned observations stay
+    /// recordable for same-trust-domain local use but can never complete a
+    /// takeover.
+    BarrierObservationUnsigned,
     /// The owner proof does not match the generation planned by the caller.
     ParticipantEndpointGenerationMismatch {
         expected: u64,
@@ -789,6 +804,9 @@ impl fmt::Display for TaskStoreError {
                     formatter,
                     "barrier observation signer proof verification failed: {error}"
                 )
+            }
+            Self::BarrierObservationUnsigned => {
+                formatter.write_str("takeover barrier observation is unsigned")
             }
             Self::ParticipantEndpointGenerationMismatch { expected, current } => write!(
                 formatter,

@@ -13,7 +13,7 @@ use std::time::Duration;
 use nlos_operation::OperationHandle;
 use nlos_types::{
     ArtifactId, CancellationScopeId, CommitPermitId, Generation, IdempotencyKey, OperationId,
-    ProcessId, ReceiptId, TaskAttemptId, TaskId, TaskSnapshotId,
+    ProcessId, ReceiptId, TaskAttemptId, TaskAuthorityAssignmentId, TaskId, TaskSnapshotId,
 };
 use rusqlite::{Connection, OpenFlags, Transaction, TransactionBehavior, params};
 
@@ -22,8 +22,9 @@ use crate::lease::{
     AuthorityLeaseRecord, AuthorityLeaseTakeoverFenceRecord, AuthorityLeaseTakeoverFenceRequest,
     AuthorityTakeoverBarrierCoverage, AuthorityTakeoverBarrierCoverageState,
     AuthorityTakeoverBarrierReceiptRecord, AuthorityTakeoverBarrierReceiptRequest,
-    AuthorityTakeoverBarrierSigner, AuthorityTakeoverFenceMemberRecord,
-    AuthorityTakeoverReceiptRecord, AuthorityTakeoverReceiptState, BarrierObservationSignature,
+    AuthorityTakeoverBarrierSigner, AuthorityTakeoverCompletionRecord,
+    AuthorityTakeoverFenceMemberRecord, AuthorityTakeoverReceiptRecord,
+    AuthorityTakeoverReceiptState, BarrierObservationSignature, CompleteAuthorityTakeoverRequest,
     barrier_observation_signature_message, derive_assignment_id,
     derive_takeover_barrier_receipt_id, derive_takeover_fence_receipt_id,
     derive_takeover_receipt_id, insert_assignment, insert_takeover_barrier_receipt,
@@ -39,6 +40,7 @@ use crate::migrations::{
     migrate_v16, migrate_v17, migrate_v18, migrate_v19, migrate_v20, migrate_v21, migrate_v22,
     migrate_v23, migrate_v24, migrate_v25, migrate_v26, migrate_v27, migrate_v28, migrate_v29,
     migrate_v30, migrate_v31, migrate_v32, migrate_v33, migrate_v34, migrate_v35, migrate_v36,
+    migrate_v37,
 };
 use crate::model::{derive_closure_receipt_id, derive_permit_id, empty_effect_history_root};
 use crate::{
@@ -53,7 +55,7 @@ use crate::{
     TaskWriteSetSemanticTarget,
 };
 
-const SCHEMA_VERSION: i64 = 36;
+const SCHEMA_VERSION: i64 = 37;
 
 /// A single-writer `SQLite` task authority.
 ///
@@ -265,6 +267,7 @@ impl SqliteTaskAuthority {
             migrate_v34(&mut connection)?;
             migrate_v35(&mut connection)?;
             migrate_v36(&mut connection)?;
+            migrate_v37(&mut connection)?;
         }
 
         Ok(Self {
@@ -1692,12 +1695,15 @@ impl SqliteTaskAuthority {
         }
     }
 
-    /// Reads the pending local prefix of a `TaskAuthorityTakeoverReceipt`.
+    /// Reads the pending-or-complete local prefix of a
+    /// `TaskAuthorityTakeoverReceipt`.
     ///
-    /// The returned record proves only that the old local assignment and the
-    /// local frozen fence were durably linked. Its `new_assignment_id` is
-    /// always `None` in this schema; remote endpoint barriers are not
-    /// represented as complete.
+    /// The returned record proves that the old local assignment and the
+    /// local frozen fence were durably linked. While the takeover is
+    /// unresolved, `new_assignment_id` is `None` and `barrier_state` is
+    /// `Pending`; after [`SqliteTaskAuthority::complete_authority_takeover`]
+    /// the receipt carries `Complete` and the activated successor
+    /// assignment identity.
     ///
     /// # Errors
     ///
@@ -1877,6 +1883,154 @@ impl SqliteTaskAuthority {
         insert_takeover_barrier_receipt(&transaction, &record)?;
         transaction.commit()?;
         Ok(record)
+    }
+
+    /// Completes a pending takeover receipt and activates the new-term
+    /// successor assignment in one `BEGIN IMMEDIATE` transaction.
+    ///
+    /// What this proves: the full exact-fence manifest is covered by
+    /// immutable local observations (coverage recomputed inline against the
+    /// frozen member manifest), every observation carries a
+    /// `nlos-identity`-verified principal signer (the v36 gate; any unsigned
+    /// observation fails closed with
+    /// [`TaskStoreError::BarrierObservationUnsigned`]), and the successor
+    /// lease binding is still the live durable lease at completion time.
+    /// On success the receipt moves `Pending → Complete` with the successor
+    /// assignment identity filled (the only transition the schema-v37
+    /// narrowed trigger permits), the old assignment is CAS-fenced
+    /// (`TakeoverPending → Fenced`), and the successor assignment row
+    /// becomes `Active`.
+    ///
+    /// What this does NOT prove: remote barrier truth beyond signature
+    /// validity — a signature proves the signer endorsed the observation
+    /// material, not that the remote barrier physically completed; registry
+    /// re-opening (the registry stays `FrozenForTakeover` — successor-term
+    /// registry generation and cross-term permit issuance are the next
+    /// slice); and any IPC peer authentication.
+    ///
+    /// Replaying the completion of an already-complete receipt re-reads the
+    /// durable state and returns the byte-equal record without further
+    /// mutation; a completed receipt whose successor assignment is missing
+    /// or not `Active` is corruption.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ReceiptNotFound`, `AuthorityLeaseBindingMismatch` when the
+    /// request lease differs from the receipt's immutable successor-term
+    /// binding, `AuthorityLeaseExpired`/`AuthorityLeaseFenced` when that
+    /// lease is no longer live at `completed_at_ms`,
+    /// `BarrierObservationUnsigned` when any observation lacks a signer,
+    /// `CorruptRecord` for partial coverage, a missing fence manifest, an
+    /// incomplete exact-fence root, or binding drift, or a storage error.
+    #[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
+    pub fn complete_authority_takeover(
+        &self,
+        request: CompleteAuthorityTakeoverRequest,
+    ) -> Result<AuthorityTakeoverCompletionRecord, TaskStoreError> {
+        if request.completed_at_ms < 0 {
+            return Err(TaskStoreError::CorruptRecord(
+                "takeover completion timestamp",
+            ));
+        }
+        let mut connection = self.lock_connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let receipt = load_takeover_receipt_by_id(&transaction, request.takeover_receipt_id)?
+            .ok_or(TaskStoreError::ReceiptNotFound)?;
+        if request.lease.binding() != receipt.new_authority_lease_binding {
+            return Err(TaskStoreError::AuthorityLeaseBindingMismatch);
+        }
+        let successor_assignment_id = derive_assignment_id(
+            receipt.task_id,
+            receipt.task_generation,
+            receipt.new_authority_lease_binding.authority_id,
+            receipt.new_authority_lease_binding.term,
+            receipt.frozen_registry_binding,
+        );
+        if receipt.barrier_state == AuthorityTakeoverReceiptState::Complete {
+            return complete_takeover_replay(&transaction, &receipt, successor_assignment_id);
+        }
+        if receipt.new_assignment_id.is_some() {
+            return Err(TaskStoreError::CorruptRecord(
+                "takeover receipt is not pending",
+            ));
+        }
+        validate_authority_lease_binding_in_transaction(
+            &transaction,
+            receipt.new_authority_lease_binding,
+            request.completed_at_ms,
+        )?;
+        let task = load_task(&transaction, receipt.task_id)?;
+        if task.record.task_generation != receipt.task_generation {
+            return Err(TaskStoreError::CorruptRecord(
+                "takeover completion task generation",
+            ));
+        }
+        let registry = crate::participant::inspect_registry(&transaction, &task.record)?;
+        if registry.generation != receipt.frozen_registry_binding.generation
+            || registry.root != receipt.frozen_registry_binding.root
+            || registry.state != crate::ParticipantRegistryState::FrozenForTakeover
+        {
+            return Err(TaskStoreError::ParticipantRegistryBindingMismatch);
+        }
+        validate_takeover_completion_coverage(&transaction, &receipt)?;
+        let completion = AuthorityTakeoverCompletionRecord {
+            takeover_receipt_id: receipt.receipt_id,
+            task_id: receipt.task_id,
+            old_assignment_id: receipt.old_assignment_id,
+            new_assignment_id: successor_assignment_id,
+            barrier_state: AuthorityTakeoverReceiptState::Complete,
+            completed_at_ms: request.completed_at_ms,
+        };
+        let changed = transaction.execute(
+            "UPDATE task_authority_takeover_receipts
+             SET barrier_state = ?1, new_assignment_id = ?2
+             WHERE receipt_id = ?3
+               AND barrier_state = ?4 AND new_assignment_id IS NULL",
+            params![
+                AuthorityTakeoverReceiptState::Complete.code(),
+                successor_assignment_id.as_bytes().as_slice(),
+                receipt.receipt_id.as_bytes().as_slice(),
+                AuthorityTakeoverReceiptState::Pending.code(),
+            ],
+        )?;
+        if changed != 1 {
+            return Err(TaskStoreError::CorruptRecord(
+                "takeover receipt is not pending",
+            ));
+        }
+        // A CAS miss here means the old assignment already left
+        // `TakeoverPending` (for example another receipt completed first),
+        // matching the fenced outcome of the neighbouring CAS helpers.
+        let changed = transaction.execute(
+            "UPDATE task_authority_assignments
+             SET assignment_state = ?1, updated_at_ms = ?2
+             WHERE assignment_id = ?3 AND assignment_state = ?4",
+            params![
+                AuthorityAssignmentState::Fenced.code(),
+                request.completed_at_ms,
+                receipt.old_assignment_id.as_bytes().as_slice(),
+                AuthorityAssignmentState::TakeoverPending.code(),
+            ],
+        )?;
+        if changed != 1 {
+            return Err(TaskStoreError::AuthorityLeaseFenced);
+        }
+        insert_assignment(
+            &transaction,
+            &AuthorityAssignmentRecord {
+                assignment_id: successor_assignment_id,
+                task_id: receipt.task_id,
+                task_generation: receipt.task_generation,
+                authority_lease_binding: receipt.new_authority_lease_binding,
+                control_epoch: receipt.new_control_epoch,
+                participant_registry_binding: receipt.frozen_registry_binding,
+                state: AuthorityAssignmentState::Active,
+                created_at_ms: request.completed_at_ms,
+                updated_at_ms: request.completed_at_ms,
+            },
+        )?;
+        transaction.commit()?;
+        Ok(completion)
     }
 
     /// Reads all immutable local endpoint-barrier observations for a pending
@@ -2374,6 +2528,101 @@ fn validate_barrier_observation(
         takeover,
         fence_set_root,
     })
+}
+
+/// Replay short-circuit for an already-completed takeover receipt: the
+/// decision is durable, so the successor assignment is only re-read and
+/// the byte-equal completion record returned. `completed_at_ms` reads back
+/// from the successor assignment's `created_at_ms` so the record is
+/// restart-stable regardless of the replay request's timestamp.
+fn complete_takeover_replay(
+    transaction: &Transaction<'_>,
+    receipt: &AuthorityTakeoverReceiptRecord,
+    successor_assignment_id: TaskAuthorityAssignmentId,
+) -> Result<AuthorityTakeoverCompletionRecord, TaskStoreError> {
+    let new_assignment_id = receipt
+        .new_assignment_id
+        .ok_or(TaskStoreError::CorruptRecord(
+            "takeover completion assignment",
+        ))?;
+    let assignment = load_current_assignment(transaction, receipt.task_id)?.ok_or(
+        TaskStoreError::CorruptRecord("takeover completion assignment"),
+    )?;
+    if assignment.assignment_id != new_assignment_id
+        || new_assignment_id != successor_assignment_id
+        || assignment.state != AuthorityAssignmentState::Active
+    {
+        return Err(TaskStoreError::CorruptRecord(
+            "takeover completion assignment",
+        ));
+    }
+    Ok(AuthorityTakeoverCompletionRecord {
+        takeover_receipt_id: receipt.receipt_id,
+        task_id: receipt.task_id,
+        old_assignment_id: receipt.old_assignment_id,
+        new_assignment_id,
+        barrier_state: AuthorityTakeoverReceiptState::Complete,
+        completed_at_ms: assignment.created_at_ms,
+    })
+}
+
+/// Inline barrier-coverage recompute for the completion transaction.
+/// Mirrors the per-observation binding checks of
+/// `inspect_authority_takeover_barrier_coverage` (which stays read-only and
+/// Pending-only) and adds the completion gates the coverage view does not
+/// carry: a resolvable exact-fence root, a non-empty validated manifest,
+/// every observation principal-signed (v36 signer columns), and zero
+/// missing manifest members.
+fn validate_takeover_completion_coverage(
+    transaction: &Transaction<'_>,
+    receipt: &AuthorityTakeoverReceiptRecord,
+) -> Result<(), TaskStoreError> {
+    let fence_set_root = receipt
+        .exact_fence_set_root
+        .ok_or(TaskStoreError::CorruptRecord(
+            "takeover fence set root is incomplete",
+        ))?;
+    let members = load_takeover_fence_members(transaction, receipt.fence_receipt_id)?;
+    if members.is_empty() {
+        return Err(TaskStoreError::CorruptRecord(
+            "takeover fence member manifest missing",
+        ));
+    }
+    let expected = validate_takeover_fence_manifest(
+        &members,
+        receipt.fence_receipt_id,
+        receipt.task_id,
+        receipt.task_generation,
+        fence_set_root,
+    )?;
+    let observations = load_takeover_barrier_receipts(transaction, receipt.receipt_id)?;
+    for observation in &observations {
+        if observation.takeover_receipt_id != receipt.receipt_id
+            || observation.task_id != receipt.task_id
+            || observation.task_generation != receipt.task_generation
+            || observation.fence_set_root != fence_set_root
+            || observation.state != crate::lease::AuthorityTakeoverBarrierReceiptState::Observed
+            || !expected.contains(&observation.participant)
+        {
+            return Err(TaskStoreError::CorruptRecord(
+                "takeover barrier observation binding",
+            ));
+        }
+        if observation.signer.is_none() {
+            return Err(TaskStoreError::BarrierObservationUnsigned);
+        }
+    }
+    let fully_covered = expected.iter().all(|participant| {
+        observations
+            .iter()
+            .any(|observation| observation.participant == *participant)
+    });
+    if !fully_covered {
+        return Err(TaskStoreError::CorruptRecord(
+            "takeover barrier coverage is partial",
+        ));
+    }
+    Ok(())
 }
 
 fn replay_permit(

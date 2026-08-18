@@ -1189,6 +1189,76 @@ pub(crate) fn migrate_v36(connection: &mut Connection) -> Result<(), TaskStoreEr
     Ok(())
 }
 
+/// v36 → v37 relaxes the takeover receipt's `new_assignment_id` and
+/// `barrier_state` CHECK constraints and replaces the blanket immutable
+/// trigger with a narrowed guard that permits exactly one transition:
+/// `Pending (1) → Complete (2)` while filling the previously-NULL successor
+/// assignment identity, with every other column byte-equal. This unlocks
+/// what the v32-v36 chain deliberately deferred: takeover completion and
+/// successor assignment activation.
+///
+/// Unlike the v24 precedent this table is an FK parent
+/// (`task_authority_takeover_barrier_receipts.takeover_receipt_id`), and
+/// `SqliteTaskAuthority::open_with_vfs` enables `foreign_keys` before the
+/// migration chain runs. `SQLite`'s `DROP TABLE` performs an implicit delete
+/// that would trip immediate FK checks on durable child observations, so
+/// the migration disables `foreign_keys` around the single
+/// `BEGIN IMMEDIATE` copy transaction (the pragma is a silent no-op inside
+/// a transaction) and restores the enforced state afterwards on every
+/// path. Child foreign keys still resolve after the rename because they
+/// name the final table name, which the copy restores.
+pub(crate) fn migrate_v37(connection: &mut Connection) -> Result<(), TaskStoreError> {
+    let table_present: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master
+            WHERE type='table' AND name='task_authority_takeover_receipts'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    let immutable_trigger_sql: Option<String> = connection
+        .query_row(
+            "SELECT sql FROM sqlite_master
+             WHERE type='trigger' AND name='task_authority_takeover_receipt_immutable'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let no_delete_present: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master
+            WHERE type='trigger' AND name='task_authority_takeover_receipt_no_delete'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    // Table-level CHECK constraints cannot be read back directly, so shape
+    // detection uses the immutable trigger's stored SQL text: the v37 guard
+    // mentions `OLD.barrier_state`/`NEW.barrier_state`, the v36 blanket
+    // trigger mentions no barrier_state at all.
+    let narrowed = immutable_trigger_sql
+        .as_ref()
+        .is_some_and(|sql| sql.contains("OLD.barrier_state") && sql.contains("NEW.barrier_state"));
+    if table_present && narrowed && no_delete_present {
+        connection.pragma_update(None, "user_version", 37)?;
+        return Ok(());
+    }
+    if !table_present || immutable_trigger_sql.is_none() || !no_delete_present {
+        return Err(TaskStoreError::CorruptRecord(
+            "partial v37 takeover completion schema",
+        ));
+    }
+    connection.pragma_update(None, "foreign_keys", "OFF")?;
+    let migration = (|| {
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute_batch(SCHEMA_V37_SQL)?;
+        transaction.commit()?;
+        Ok::<(), TaskStoreError>(())
+    })();
+    connection.pragma_update(None, "foreign_keys", "ON")?;
+    migration
+}
+
 const SCHEMA_V13_SQL: &str = "CREATE TABLE task_write_sets (
         task_id BLOB NOT NULL CHECK(length(task_id) = 16),
         attempt_id BLOB NOT NULL CHECK(length(attempt_id) = 16),
@@ -2000,16 +2070,112 @@ pub(crate) const SCHEMA_V36_SQL: &str = "ALTER TABLE task_authority_takeover_bar
      ADD COLUMN signer_signature BLOB
          CHECK(signer_signature IS NULL OR length(signer_signature) = 64);
 
-     CREATE TRIGGER task_authority_takeover_barrier_receipts_signer_coupled
-     BEFORE INSERT ON task_authority_takeover_barrier_receipts
-     WHEN (NEW.signer_principal_id IS NULL) + (NEW.signer_control_domain_id IS NULL)
-           + (NEW.signer_key_id IS NULL) + (NEW.signer_key_generation IS NULL)
-           + (NEW.signer_signature IS NULL) NOT IN (0, 5)
-     BEGIN
-         SELECT RAISE(ABORT, 'task authority takeover barrier signer columns must be coupled');
-     END;
+      CREATE TRIGGER task_authority_takeover_barrier_receipts_signer_coupled
+      BEFORE INSERT ON task_authority_takeover_barrier_receipts
+      WHEN (NEW.signer_principal_id IS NULL) + (NEW.signer_control_domain_id IS NULL)
+            + (NEW.signer_key_id IS NULL) + (NEW.signer_key_generation IS NULL)
+            + (NEW.signer_signature IS NULL) NOT IN (0, 5)
+      BEGIN
+          SELECT RAISE(ABORT, 'task authority takeover barrier signer columns must be coupled');
+      END;
 
-     PRAGMA user_version = 36;";
+      PRAGMA user_version = 36;";
+
+pub(crate) const SCHEMA_V37_SQL: &str = "DROP TRIGGER task_authority_takeover_receipt_immutable;
+     DROP TRIGGER task_authority_takeover_receipt_no_delete;
+     CREATE TABLE task_authority_takeover_receipts_v37 (
+         receipt_id BLOB PRIMARY KEY NOT NULL CHECK(length(receipt_id) = 16),
+         task_id BLOB NOT NULL CHECK(length(task_id) = 16),
+         task_generation BLOB NOT NULL CHECK(length(task_generation) = 8),
+         old_assignment_id BLOB NOT NULL CHECK(length(old_assignment_id) = 16),
+         new_assignment_id BLOB CHECK(new_assignment_id IS NULL OR length(new_assignment_id) = 16),
+         fence_receipt_id BLOB NOT NULL CHECK(length(fence_receipt_id) = 16),
+         frozen_old_authority_term BLOB NOT NULL CHECK(length(frozen_old_authority_term) = 8),
+         frozen_old_control_epoch BLOB NOT NULL CHECK(length(frozen_old_control_epoch) = 8),
+         new_authority_id BLOB NOT NULL CHECK(length(new_authority_id) = 16),
+         new_authority_lease_holder_id BLOB NOT NULL CHECK(length(new_authority_lease_holder_id) = 16),
+         new_authority_lease_term BLOB NOT NULL CHECK(length(new_authority_lease_term) = 8),
+         new_authority_lease_epoch BLOB NOT NULL CHECK(length(new_authority_lease_epoch) = 8),
+         new_authority_lease_fencing_token BLOB NOT NULL CHECK(length(new_authority_lease_fencing_token) = 32),
+         new_authority_lease_expires_at_ms INTEGER NOT NULL CHECK(new_authority_lease_expires_at_ms >= 0),
+         new_control_epoch BLOB NOT NULL CHECK(length(new_control_epoch) = 8),
+         frozen_registry_generation BLOB NOT NULL CHECK(length(frozen_registry_generation) = 8),
+         frozen_registry_root BLOB NOT NULL CHECK(length(frozen_registry_root) = 32),
+         exact_fence_set_root BLOB CHECK(exact_fence_set_root IS NULL OR length(exact_fence_set_root) = 32),
+         outstanding_operation_participant_root BLOB
+             CHECK(outstanding_operation_participant_root IS NULL
+                   OR length(outstanding_operation_participant_root) = 32),
+         barrier_state INTEGER NOT NULL CHECK(barrier_state IN (1, 2)),
+         created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0),
+         UNIQUE(task_id, old_assignment_id, fence_receipt_id),
+         FOREIGN KEY(task_id) REFERENCES tasks(task_id),
+         FOREIGN KEY(old_assignment_id) REFERENCES task_authority_assignments(assignment_id),
+         FOREIGN KEY(fence_receipt_id) REFERENCES task_authority_takeover_fence_receipts(receipt_id)
+      ) STRICT;
+
+      INSERT INTO task_authority_takeover_receipts_v37 (
+          receipt_id, task_id, task_generation, old_assignment_id,
+          new_assignment_id, fence_receipt_id, frozen_old_authority_term,
+          frozen_old_control_epoch, new_authority_id,
+          new_authority_lease_holder_id, new_authority_lease_term,
+          new_authority_lease_epoch, new_authority_lease_fencing_token,
+          new_authority_lease_expires_at_ms, new_control_epoch,
+          frozen_registry_generation, frozen_registry_root,
+          exact_fence_set_root, outstanding_operation_participant_root,
+          barrier_state, created_at_ms
+      )
+      SELECT receipt_id, task_id, task_generation, old_assignment_id,
+             new_assignment_id, fence_receipt_id, frozen_old_authority_term,
+             frozen_old_control_epoch, new_authority_id,
+             new_authority_lease_holder_id, new_authority_lease_term,
+             new_authority_lease_epoch, new_authority_lease_fencing_token,
+             new_authority_lease_expires_at_ms, new_control_epoch,
+             frozen_registry_generation, frozen_registry_root,
+             exact_fence_set_root, outstanding_operation_participant_root,
+             barrier_state, created_at_ms
+      FROM task_authority_takeover_receipts;
+      DROP TABLE task_authority_takeover_receipts;
+      ALTER TABLE task_authority_takeover_receipts_v37
+          RENAME TO task_authority_takeover_receipts;
+
+      CREATE TRIGGER task_authority_takeover_receipt_immutable
+      BEFORE UPDATE ON task_authority_takeover_receipts
+      WHEN NOT (
+          OLD.barrier_state = 1
+          AND NEW.barrier_state = 2
+          AND OLD.new_assignment_id IS NULL
+          AND NEW.new_assignment_id IS NOT NULL
+          AND NEW.receipt_id IS OLD.receipt_id
+          AND NEW.task_id IS OLD.task_id
+          AND NEW.task_generation IS OLD.task_generation
+          AND NEW.old_assignment_id IS OLD.old_assignment_id
+          AND NEW.fence_receipt_id IS OLD.fence_receipt_id
+          AND NEW.frozen_old_authority_term IS OLD.frozen_old_authority_term
+          AND NEW.frozen_old_control_epoch IS OLD.frozen_old_control_epoch
+          AND NEW.new_authority_id IS OLD.new_authority_id
+          AND NEW.new_authority_lease_holder_id IS OLD.new_authority_lease_holder_id
+          AND NEW.new_authority_lease_term IS OLD.new_authority_lease_term
+          AND NEW.new_authority_lease_epoch IS OLD.new_authority_lease_epoch
+          AND NEW.new_authority_lease_fencing_token IS OLD.new_authority_lease_fencing_token
+          AND NEW.new_authority_lease_expires_at_ms IS OLD.new_authority_lease_expires_at_ms
+          AND NEW.new_control_epoch IS OLD.new_control_epoch
+          AND NEW.frozen_registry_generation IS OLD.frozen_registry_generation
+          AND NEW.frozen_registry_root IS OLD.frozen_registry_root
+          AND NEW.exact_fence_set_root IS OLD.exact_fence_set_root
+          AND NEW.outstanding_operation_participant_root IS OLD.outstanding_operation_participant_root
+          AND NEW.created_at_ms IS OLD.created_at_ms
+      )
+      BEGIN
+          SELECT RAISE(ABORT, 'task authority takeover receipt is immutable');
+      END;
+
+      CREATE TRIGGER task_authority_takeover_receipt_no_delete
+      BEFORE DELETE ON task_authority_takeover_receipts
+      BEGIN
+          SELECT RAISE(ABORT, 'task authority takeover receipt is durable evidence');
+      END;
+
+      PRAGMA user_version = 37;";
 
 const SCHEMA_V12_SQL: &str = "ALTER TABLE effect_permits
         ADD COLUMN participant_registry_generation BLOB

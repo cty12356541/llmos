@@ -65,9 +65,10 @@ pub struct AuthorityLeaseRecord {
     pub idempotency_key: IdempotencyKey,
 }
 
-/// State of the local durable `TaskAuthority` assignment. A successor is not
-/// activated by this slice; takeover only moves the current assignment to
-/// `TakeoverPending` in the next fence/receipt gate.
+/// State of the local durable `TaskAuthority` assignment. A successor is
+/// activated only by [`SqliteTaskAuthority::complete_authority_takeover`];
+/// the fence pre-gate itself only moves the current assignment to
+/// `TakeoverPending`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AuthorityAssignmentState {
     Active,
@@ -110,24 +111,30 @@ pub struct AuthorityAssignmentRecord {
     pub updated_at_ms: i64,
 }
 
-/// Local state of a takeover receipt. `Pending` deliberately means that the
-/// frozen local fence is durable but no remote endpoint barrier has been
-/// attested yet.
+/// Local state of a takeover receipt. `Pending` means the frozen local
+/// fence is durable but the completion gate has not yet accepted the
+/// barrier evidence. `Complete` is reachable only through the schema-v37
+/// narrowed trigger transition: `Pending → Complete` with the successor
+/// assignment identity filled in, after every manifest member has a
+/// principal-signed observation and the new-term lease is live.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AuthorityTakeoverReceiptState {
     Pending,
+    Complete,
 }
 
 impl AuthorityTakeoverReceiptState {
     pub(crate) const fn code(self) -> i64 {
         match self {
             Self::Pending => 1,
+            Self::Complete => 2,
         }
     }
 
     pub(crate) fn from_code(code: i64) -> Result<Self, TaskStoreError> {
         match code {
             1 => Ok(Self::Pending),
+            2 => Ok(Self::Complete),
             _ => Err(TaskStoreError::CorruptRecord("takeover receipt state")),
         }
     }
@@ -136,9 +143,9 @@ impl AuthorityTakeoverReceiptState {
 /// Durable local prefix of a `TaskAuthorityTakeoverReceipt`.
 ///
 /// The old assignment is moved to `TakeoverPending` in the same transaction
-/// as this record. `new_assignment_id` is required to remain `None` in this
-/// slice: no successor registry or assignment is active until a later
-/// cross-authority barrier gate consumes all endpoint receipts.
+/// as this record. While the receipt is `Pending`, `new_assignment_id`
+/// stays `None`; completion fills it and activates the successor
+/// assignment in the same transaction.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AuthorityTakeoverReceiptRecord {
     pub receipt_id: ReceiptId,
@@ -195,6 +202,39 @@ pub struct AuthorityTakeoverBarrierReceiptRequest {
     pub remote_receipt_id: ReceiptId,
     pub barrier_digest: [u8; 32],
     pub observed_at_ms: i64,
+}
+
+/// Request to complete a pending takeover receipt and activate its
+/// successor assignment.
+///
+/// The supplied lease must be the live lease of the successor term and must
+/// byte-equal the receipt's immutable new-authority lease binding; the
+/// completion transaction revalidates it against the durable lease row
+/// before any mutation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CompleteAuthorityTakeoverRequest {
+    pub takeover_receipt_id: ReceiptId,
+    /// Live lease of the successor term; must byte-equal the receipt's
+    /// `new_authority_lease_binding`.
+    pub lease: AuthorityLeaseRecord,
+    pub completed_at_ms: i64,
+}
+
+/// Durable view of one completed takeover receipt. Completion is a state
+/// transition on the existing takeover receipt row (`Pending → Complete`
+/// with `new_assignment_id` filled); no separate row or table exists, so
+/// this record is the deterministic projection of that transition plus the
+/// activated successor assignment. `completed_at_ms` reads back from the
+/// successor assignment's `created_at_ms`, making the replayed record
+/// byte-equal across restarts.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AuthorityTakeoverCompletionRecord {
+    pub takeover_receipt_id: ReceiptId,
+    pub task_id: TaskId,
+    pub old_assignment_id: TaskAuthorityAssignmentId,
+    pub new_assignment_id: TaskAuthorityAssignmentId,
+    pub barrier_state: AuthorityTakeoverReceiptState,
+    pub completed_at_ms: i64,
 }
 
 /// Caller-supplied Ed25519 signature material for one takeover barrier
