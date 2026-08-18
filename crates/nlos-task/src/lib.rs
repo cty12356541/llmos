@@ -59,15 +59,14 @@
 //! the normal idempotent path and no publication receipt is synthesized.
 //!
 //! Explicitly out of scope: complete cross-authority lease authentication,
-//! takeover adoption, and fault handling. Schema v27 provides only a durable local
+//! remote takeover attestation, and fault handling. Schema v27 provides only a durable local
 //! `TaskAuthority` lease/term/fencing primitive; schema v28 adds an opt-in
 //! immutable `CommitPermit` binding and plain v3/pre-effect terminal guards;
 //! schema v29 adds a same-term lease-bound adoption/reconcile guard and an
 //! opt-in local `FROZEN_FOR_TAKEOVER` pre-gate; schema v30 persists an
 //! immutable local fence receipt whose local exact-fence and outstanding-set
 //! roots are computed when the durable participant mapping is complete,
-//! without remote barrier receipts. No schema authorizes an IPC peer or
-//! completes cross-term adoption; schema v31 adds an immutable local
+//! without remote barrier receipts. No schema authorizes an IPC peer; schema v31 adds an immutable local
 //! `TaskAuthorityAssignment` baseline for lease-bound permits, but no successor
 //! assignment activation; schema v32 persists only a pending local
 //! `TaskAuthorityTakeoverReceipt` prefix linked to the old assignment and
@@ -93,7 +92,12 @@
 //! `reopen_successor_registry` slice chains a new participant-registry
 //! generation, rotates the active assignment, and admits a new
 //! lease-bound permit; it still does not re-attest remote endpoints or
-//! complete cross-term adoption.
+//! complete remote barrier attestation. Schema v38 adds a separate immutable
+//! cross-term adoption receipt table: a quarantined old permit can be adopted
+//! only after a completed takeover, exact old fence root, reopened successor
+//! registry, and active successor assignment are all revalidated in one
+//! transaction. The v38 path authorizes reconcile/close only; it does not
+//! issue new permits, dispatch effects, or attest remote cleanup.
 //! Compensation execution
 //! (`COMPENSATED` is recordable but never executed), `QUORUM`/`REDUCE`
 //! group semantics (`[TASK-GROUP-003]`), `BEST_EFFORT` failure mode,
@@ -181,8 +185,9 @@ pub use participant::{
 };
 pub use reconcile::{
     AdoptionReplay, AdoptionRequest, AuthorityLeaseAdoptionRequest, AuthorityLeaseCloseRequest,
-    AuthorityLeaseFinalizeRequest, AuthorityLeaseReconcileRequest, FinalizeRequestV3,
-    ReconcileReplay, ReconcileRequest, effect_history_root_of,
+    AuthorityLeaseCrossTermAdoptionRequest, AuthorityLeaseFinalizeRequest,
+    AuthorityLeaseReconcileRequest, FinalizeRequestV3, ReconcileReplay, ReconcileRequest,
+    effect_history_root_of,
 };
 pub use recovery::{
     ArtifactRecoveryAlert, ArtifactRecoveryAlertAcknowledgeDecision,

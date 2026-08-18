@@ -6,18 +6,27 @@
 //!
 //! Identity and digest formulas are domain-separated SHA-256 placeholders
 //! fixing the deterministic shape required by the spec; canonical
-//! deterministic-CBOR and signatures remain out of scope. Single
-//! authority only: adoption is by the same authority after
-//! restart/uncertainty, never a cross-term takeover.
+//! deterministic-CBOR remains out of scope. Same-term adoption is still
+//! available after restart/uncertainty. Schema v38 additionally supports a
+//! local cross-term adoption proof for a quarantined old permit after takeover
+//! completion and successor-registry reopen; remote cleanup attestation and
+//! cross-authority endpoint revalidation remain out of scope.
 
-use nlos_types::{CommitPermitId, IdempotencyKey, ProcessId, ReceiptId, TaskId, TaskParticipantId};
+use nlos_types::{
+    CommitPermitId, IdempotencyKey, ProcessId, ReceiptId, TaskAuthorityAssignmentId, TaskId,
+    TaskParticipantId,
+};
 use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
 
 use crate::effect::{
     self, SlotRecord, SlotState, insert_effect_receipt, list_slots, load_slot, refresh_summary,
 };
-use crate::lease::{AuthorityLeaseBinding, validate_authority_lease_binding_in_transaction};
+use crate::lease::{
+    AuthorityAssignmentState, AuthorityLeaseBinding, AuthorityTakeoverReceiptRecord,
+    AuthorityTakeoverReceiptState, load_assignment_by_id, load_current_assignment,
+    load_takeover_receipt_by_id, validate_authority_lease_binding_in_transaction,
+};
 use crate::model::{
     self, ClosePermitRequest, EffectHistoryEntry, EffectHistoryLookup, EffectHistoryOutcome,
     FinalizeRequest, QuarantineReceiptRecord, ReceiptOutcome, ReconcileOutcome,
@@ -121,6 +130,17 @@ pub struct AuthorityLeaseCloseRequest {
 pub struct AuthorityLeaseAdoptionRequest {
     pub adoption: AdoptionRequest,
     pub lease: AuthorityLeaseRecord,
+}
+
+/// Cross-term adoption request for a quarantined permit. The successor lease
+/// and completed takeover receipt jointly prove that the current authority
+/// may only reconcile/close the old permit; they never authorize a new
+/// effect or participant registration.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthorityLeaseCrossTermAdoptionRequest {
+    pub adoption: AdoptionRequest,
+    pub takeover_receipt_id: ReceiptId,
+    pub successor_lease: AuthorityLeaseRecord,
 }
 
 /// Opt-in reconcile request carrying the live lease bound into the adoption
@@ -285,7 +305,12 @@ pub(crate) fn has_adoption(
     permit_id: CommitPermitId,
 ) -> Result<bool, TaskStoreError> {
     let mut statement = source.prepare_statement(
-        "SELECT COUNT(*) FROM task_adoption_receipts WHERE original_permit_id = ?1",
+        "SELECT (
+            (SELECT COUNT(*) FROM task_adoption_receipts WHERE original_permit_id = ?1)
+            +
+            (SELECT COUNT(*) FROM task_cross_term_adoption_receipts
+             WHERE original_permit_id = ?1)
+         )",
     )?;
     let count: i64 = statement.query_row([permit_id.as_bytes().as_slice()], |row| row.get(0))?;
     Ok(count > 0)
@@ -692,6 +717,14 @@ fn decode_adoption_row(row: &rusqlite::Row<'_>) -> Result<AdoptionReceiptRecord,
         observed_effect_slot_state_root: blob32(row, 9)?,
         adoption_epoch: u64_from_blob(row, 10)?,
         authority_lease_binding,
+        original_authority_lease_binding: None,
+        original_participant_registry_binding: None,
+        takeover_receipt_id: None,
+        current_assignment_id: None,
+        current_control_epoch: None,
+        current_cancel_epoch: None,
+        current_participant_registry_binding: None,
+        exact_fenced_participant_root: None,
         created_at_ms: row.get(11)?,
     })
 }
@@ -709,7 +742,10 @@ fn load_adoption_by_key(
         task_id.as_bytes().as_slice(),
         idempotency_key.as_bytes().as_slice(),
     ])?;
-    rows.next()?.map(decode_adoption_row).transpose()
+    if let Some(record) = rows.next()?.map(decode_adoption_row).transpose()? {
+        return Ok(Some(record));
+    }
+    load_cross_adoption_by_key(source, task_id, idempotency_key)
 }
 
 fn load_adoption_by_id(
@@ -725,7 +761,396 @@ fn load_adoption_by_id(
         task_id.as_bytes().as_slice(),
         receipt_id.as_bytes().as_slice(),
     ])?;
-    rows.next()?.map(decode_adoption_row).transpose()
+    if let Some(record) = rows.next()?.map(decode_adoption_row).transpose()? {
+        return Ok(Some(record));
+    }
+    load_cross_adoption_by_id(source, task_id, receipt_id)
+}
+
+const CROSS_ADOPTION_COLUMNS: &str = "receipt_id, task_id, task_generation,
+     idempotency_key, original_permit_id, original_permit_epoch,
+     original_control_epoch, original_cancel_epoch,
+     original_registry_generation, original_registry_root, effect_set_root,
+     observed_effect_slot_state_root, adoption_epoch, takeover_receipt_id,
+     current_assignment_id, original_authority_id,
+     original_authority_holder_id, original_authority_term,
+     original_authority_lease_epoch, original_authority_fencing_token,
+     original_authority_lease_expires_at_ms, current_authority_id,
+     current_authority_holder_id, current_authority_term,
+     current_authority_lease_epoch, current_authority_fencing_token,
+     current_authority_lease_expires_at_ms, current_control_epoch,
+     current_cancel_epoch, current_registry_generation, current_registry_root,
+     exact_fenced_participant_root, created_at_ms";
+
+fn decode_cross_adoption_row(
+    row: &rusqlite::Row<'_>,
+) -> Result<AdoptionReceiptRecord, TaskStoreError> {
+    let original_authority_lease_binding = AuthorityLeaseBinding {
+        authority_id: TaskParticipantId::from_bytes(blob16(row, 15)?),
+        holder_id: ProcessId::from_bytes(blob16(row, 16)?),
+        term: u64_from_blob(row, 17)?,
+        lease_epoch: u64_from_blob(row, 18)?,
+        fencing_token: blob32(row, 19)?,
+        expires_at_ms: row.get(20)?,
+    };
+    let current_authority_lease_binding = AuthorityLeaseBinding {
+        authority_id: TaskParticipantId::from_bytes(blob16(row, 21)?),
+        holder_id: ProcessId::from_bytes(blob16(row, 22)?),
+        term: u64_from_blob(row, 23)?,
+        lease_epoch: u64_from_blob(row, 24)?,
+        fencing_token: blob32(row, 25)?,
+        expires_at_ms: row.get(26)?,
+    };
+    Ok(AdoptionReceiptRecord {
+        receipt_id: ReceiptId::from_bytes(blob16(row, 0)?),
+        task_id: TaskId::from_bytes(blob16(row, 1)?),
+        task_generation: generation_from_blob(row, 2)?,
+        original_permit_id: CommitPermitId::from_bytes(blob16(row, 4)?),
+        original_permit_epoch: u64_from_blob(row, 5)?,
+        original_control_epoch: u64_from_blob(row, 6)?,
+        original_cancel_epoch: u64_from_blob(row, 7)?,
+        effect_set_root: blob32(row, 10)?,
+        observed_effect_slot_state_root: blob32(row, 11)?,
+        adoption_epoch: u64_from_blob(row, 12)?,
+        authority_lease_binding: Some(current_authority_lease_binding),
+        original_authority_lease_binding: Some(original_authority_lease_binding),
+        original_participant_registry_binding: Some(crate::ParticipantRegistryBinding {
+            generation: u64_from_blob(row, 8)?,
+            root: blob32(row, 9)?,
+        }),
+        takeover_receipt_id: Some(ReceiptId::from_bytes(blob16(row, 13)?)),
+        current_assignment_id: Some(TaskAuthorityAssignmentId::from_bytes(blob16(row, 14)?)),
+        current_control_epoch: Some(u64_from_blob(row, 27)?),
+        current_cancel_epoch: Some(u64_from_blob(row, 28)?),
+        current_participant_registry_binding: Some(crate::ParticipantRegistryBinding {
+            generation: u64_from_blob(row, 29)?,
+            root: blob32(row, 30)?,
+        }),
+        exact_fenced_participant_root: Some(blob32(row, 31)?),
+        created_at_ms: row.get(32)?,
+    })
+}
+
+fn load_cross_adoption_by_key(
+    source: &impl SqlRead,
+    task_id: TaskId,
+    idempotency_key: IdempotencyKey,
+) -> Result<Option<AdoptionReceiptRecord>, TaskStoreError> {
+    let mut statement = source.prepare_statement(&format!(
+        "SELECT {CROSS_ADOPTION_COLUMNS} FROM task_cross_term_adoption_receipts
+         WHERE task_id = ?1 AND idempotency_key = ?2"
+    ))?;
+    let mut rows = statement.query(params![
+        task_id.as_bytes().as_slice(),
+        idempotency_key.as_bytes().as_slice(),
+    ])?;
+    rows.next()?.map(decode_cross_adoption_row).transpose()
+}
+
+fn load_cross_adoption_by_id(
+    source: &impl SqlRead,
+    task_id: TaskId,
+    receipt_id: ReceiptId,
+) -> Result<Option<AdoptionReceiptRecord>, TaskStoreError> {
+    let mut statement = source.prepare_statement(&format!(
+        "SELECT {CROSS_ADOPTION_COLUMNS} FROM task_cross_term_adoption_receipts
+         WHERE task_id = ?1 AND receipt_id = ?2"
+    ))?;
+    let mut rows = statement.query(params![
+        task_id.as_bytes().as_slice(),
+        receipt_id.as_bytes().as_slice(),
+    ])?;
+    rows.next()?.map(decode_cross_adoption_row).transpose()
+}
+
+fn load_adoption_by_permit(
+    source: &impl SqlRead,
+    task_id: TaskId,
+    permit_id: CommitPermitId,
+) -> Result<Option<AdoptionReceiptRecord>, TaskStoreError> {
+    let mut statement = source.prepare_statement(&format!(
+        "SELECT {ADOPTION_COLUMNS} FROM task_adoption_receipts
+         WHERE task_id = ?1 AND original_permit_id = ?2
+         ORDER BY adoption_epoch LIMIT 1"
+    ))?;
+    let mut rows = statement.query(params![
+        task_id.as_bytes().as_slice(),
+        permit_id.as_bytes().as_slice(),
+    ])?;
+    if let Some(record) = rows.next()?.map(decode_adoption_row).transpose()? {
+        return Ok(Some(record));
+    }
+    let mut statement = source.prepare_statement(&format!(
+        "SELECT {CROSS_ADOPTION_COLUMNS} FROM task_cross_term_adoption_receipts
+         WHERE task_id = ?1 AND original_permit_id = ?2
+         ORDER BY adoption_epoch LIMIT 1"
+    ))?;
+    let mut rows = statement.query(params![
+        task_id.as_bytes().as_slice(),
+        permit_id.as_bytes().as_slice(),
+    ])?;
+    rows.next()?.map(decode_cross_adoption_row).transpose()
+}
+
+struct CrossTermAdoptionContext {
+    takeover: AuthorityTakeoverReceiptRecord,
+    old_lease: AuthorityLeaseBinding,
+    original_registry_binding: crate::ParticipantRegistryBinding,
+    current_assignment_id: TaskAuthorityAssignmentId,
+    current_lease: AuthorityLeaseBinding,
+    current_registry_binding: crate::ParticipantRegistryBinding,
+    exact_fenced_participant_root: [u8; 32],
+}
+
+/// Validates the durable proof chain consumed by a cross-term adoption:
+/// quarantined permit → fenced old assignment/registry → completed takeover
+/// with an exact fence root → reopened successor registry/assignment. The
+/// helper intentionally allows only an Open/FrozenForPermit successor
+/// registry; a `FrozenForTakeover` registry has not completed the hand-off.
+#[allow(clippy::too_many_lines)]
+fn validate_cross_term_adoption_context(
+    transaction: &Transaction<'_>,
+    task: &StoredTask,
+    permit: &PermitRecord,
+    takeover_receipt_id: ReceiptId,
+    successor_lease: AuthorityLeaseRecord,
+    now_ms: i64,
+) -> Result<CrossTermAdoptionContext, TaskStoreError> {
+    if now_ms < 0 {
+        return Err(TaskStoreError::InvalidReconcileState {
+            reason: "cross-term adoption timestamp must be non-negative",
+        });
+    }
+    let original_registry_binding = permit
+        .participant_registry_binding
+        .ok_or(TaskStoreError::ParticipantRegistryBindingMissing)?;
+    let old_lease = permit
+        .authority_lease_binding
+        .ok_or(TaskStoreError::AuthorityLeaseRequired)?;
+    let takeover = load_takeover_receipt_by_id(transaction, takeover_receipt_id)?
+        .ok_or(TaskStoreError::ReceiptNotFound)?;
+    if takeover.task_id != task.record.task_id
+        || takeover.task_generation != task.record.task_generation
+        || takeover.barrier_state != AuthorityTakeoverReceiptState::Complete
+    {
+        return Err(TaskStoreError::InvalidReconcileState {
+            reason: "takeover receipt is not a completed proof for this task",
+        });
+    }
+    if successor_lease.binding() != takeover.new_authority_lease_binding {
+        return Err(TaskStoreError::AuthorityLeaseBindingMismatch);
+    }
+    let exact_fenced_participant_root =
+        takeover
+            .exact_fence_set_root
+            .ok_or(TaskStoreError::CorruptRecord(
+                "completed takeover lacks exact fence root",
+            ))?;
+    if takeover.frozen_registry_binding != original_registry_binding
+        || takeover.frozen_old_authority_term != old_lease.term
+    {
+        return Err(TaskStoreError::ParticipantRegistryBindingMismatch);
+    }
+    let old_assignment =
+        load_assignment_by_id(transaction, task.record.task_id, takeover.old_assignment_id)?
+            .ok_or(TaskStoreError::CorruptRecord(
+                "cross-term adoption old assignment",
+            ))?;
+    if old_assignment.state != AuthorityAssignmentState::Fenced
+        || old_assignment.task_generation != task.record.task_generation
+        || old_assignment.authority_lease_binding != old_lease
+        || old_assignment.participant_registry_binding != original_registry_binding
+        || old_assignment.control_epoch != permit.control_epoch
+        || takeover.frozen_old_control_epoch != old_assignment.control_epoch
+    {
+        return Err(TaskStoreError::AuthorityLeaseFenced);
+    }
+    if permit.cancel_epoch != task.record.cancel_epoch {
+        return Err(TaskStoreError::InvalidReconcileState {
+            reason: "cross-term adoption permit cancel epoch is stale",
+        });
+    }
+    let completion_assignment_id =
+        takeover
+            .new_assignment_id
+            .ok_or(TaskStoreError::CorruptRecord(
+                "completed takeover lacks successor assignment",
+            ))?;
+    let completion_assignment =
+        load_assignment_by_id(transaction, task.record.task_id, completion_assignment_id)?.ok_or(
+            TaskStoreError::CorruptRecord("cross-term adoption completion assignment"),
+        )?;
+    if completion_assignment.state != AuthorityAssignmentState::Fenced
+        || completion_assignment.authority_lease_binding != takeover.new_authority_lease_binding
+        || completion_assignment.participant_registry_binding != takeover.frozen_registry_binding
+    {
+        return Err(TaskStoreError::AuthorityLeaseFenced);
+    }
+    let registry = crate::participant::inspect_registry(transaction, &task.record)?;
+    let expected_generation = original_registry_binding
+        .generation
+        .checked_add(1)
+        .ok_or(TaskStoreError::EpochExhausted)?;
+    if registry.generation != expected_generation
+        || registry.prior_root != original_registry_binding.root
+        || !matches!(
+            registry.state,
+            crate::ParticipantRegistryState::Open
+                | crate::ParticipantRegistryState::FrozenForPermit
+        )
+    {
+        return Err(TaskStoreError::ParticipantRegistryBindingMismatch);
+    }
+    let current_registry_binding = crate::ParticipantRegistryBinding {
+        generation: registry.generation,
+        root: registry.root,
+    };
+    let current_assignment = load_current_assignment(transaction, task.record.task_id)?.ok_or(
+        TaskStoreError::CorruptRecord("cross-term adoption current assignment"),
+    )?;
+    if current_assignment.state != AuthorityAssignmentState::Active
+        || current_assignment.assignment_id == completion_assignment_id
+        || current_assignment.authority_lease_binding != takeover.new_authority_lease_binding
+        || current_assignment.participant_registry_binding != current_registry_binding
+    {
+        return Err(TaskStoreError::AuthorityLeaseFenced);
+    }
+    if now_ms < current_assignment.updated_at_ms {
+        return Err(TaskStoreError::InvalidReconcileState {
+            reason: "cross-term adoption timestamp precedes successor assignment",
+        });
+    }
+    validate_authority_lease_binding_in_transaction(
+        transaction,
+        successor_lease.binding(),
+        now_ms,
+    )?;
+    Ok(CrossTermAdoptionContext {
+        takeover,
+        old_lease,
+        original_registry_binding,
+        current_assignment_id: current_assignment.assignment_id,
+        current_lease: current_assignment.authority_lease_binding,
+        current_registry_binding,
+        exact_fenced_participant_root,
+    })
+}
+
+#[allow(clippy::too_many_lines)]
+fn insert_cross_adoption(
+    transaction: &Transaction<'_>,
+    record: &AdoptionReceiptRecord,
+    idempotency_key: IdempotencyKey,
+) -> Result<(), TaskStoreError> {
+    let original_registry =
+        record
+            .original_participant_registry_binding
+            .ok_or(TaskStoreError::CorruptRecord(
+                "cross-term adoption original registry",
+            ))?;
+    let current_registry =
+        record
+            .current_participant_registry_binding
+            .ok_or(TaskStoreError::CorruptRecord(
+                "cross-term adoption current registry",
+            ))?;
+    let takeover_receipt_id = record
+        .takeover_receipt_id
+        .ok_or(TaskStoreError::CorruptRecord(
+            "cross-term adoption takeover receipt",
+        ))?;
+    let current_assignment_id =
+        record
+            .current_assignment_id
+            .ok_or(TaskStoreError::CorruptRecord(
+                "cross-term adoption current assignment",
+            ))?;
+    let original_lease =
+        record
+            .original_authority_lease_binding
+            .ok_or(TaskStoreError::CorruptRecord(
+                "cross-term adoption original lease",
+            ))?;
+    let current_lease = record
+        .authority_lease_binding
+        .ok_or(TaskStoreError::CorruptRecord(
+            "cross-term adoption current lease",
+        ))?;
+    let current_control_epoch =
+        record
+            .current_control_epoch
+            .ok_or(TaskStoreError::CorruptRecord(
+                "cross-term adoption current control epoch",
+            ))?;
+    let current_cancel_epoch = record
+        .current_cancel_epoch
+        .ok_or(TaskStoreError::CorruptRecord(
+            "cross-term adoption current cancel epoch",
+        ))?;
+    let exact_root = record
+        .exact_fenced_participant_root
+        .ok_or(TaskStoreError::CorruptRecord(
+            "cross-term adoption exact fence root",
+        ))?;
+    transaction.execute(
+        "INSERT INTO task_cross_term_adoption_receipts (
+            receipt_id, task_id, task_generation, idempotency_key,
+            original_permit_id, original_permit_epoch, original_control_epoch,
+            original_cancel_epoch, original_registry_generation,
+            original_registry_root, effect_set_root,
+            observed_effect_slot_state_root, adoption_epoch,
+            takeover_receipt_id, current_assignment_id,
+            original_authority_id, original_authority_holder_id,
+            original_authority_term, original_authority_lease_epoch,
+            original_authority_fencing_token,
+            original_authority_lease_expires_at_ms, current_authority_id,
+            current_authority_holder_id, current_authority_term,
+            current_authority_lease_epoch, current_authority_fencing_token,
+            current_authority_lease_expires_at_ms, current_control_epoch,
+            current_cancel_epoch, current_registry_generation,
+            current_registry_root, exact_fenced_participant_root,
+            created_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
+                   ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21,
+                   ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31,
+                   ?32, ?33)",
+        params![
+            record.receipt_id.as_bytes().as_slice(),
+            record.task_id.as_bytes().as_slice(),
+            encode_u64(record.task_generation.get()).as_slice(),
+            idempotency_key.as_bytes().as_slice(),
+            record.original_permit_id.as_bytes().as_slice(),
+            encode_u64(record.original_permit_epoch).as_slice(),
+            encode_u64(record.original_control_epoch).as_slice(),
+            encode_u64(record.original_cancel_epoch).as_slice(),
+            encode_u64(original_registry.generation).as_slice(),
+            original_registry.root.as_slice(),
+            record.effect_set_root.as_slice(),
+            record.observed_effect_slot_state_root.as_slice(),
+            encode_u64(record.adoption_epoch).as_slice(),
+            takeover_receipt_id.as_bytes().as_slice(),
+            current_assignment_id.as_bytes().as_slice(),
+            original_lease.authority_id.as_bytes().as_slice(),
+            original_lease.holder_id.as_bytes().as_slice(),
+            encode_u64(original_lease.term).as_slice(),
+            encode_u64(original_lease.lease_epoch).as_slice(),
+            original_lease.fencing_token.as_slice(),
+            original_lease.expires_at_ms,
+            current_lease.authority_id.as_bytes().as_slice(),
+            current_lease.holder_id.as_bytes().as_slice(),
+            encode_u64(current_lease.term).as_slice(),
+            encode_u64(current_lease.lease_epoch).as_slice(),
+            current_lease.fencing_token.as_slice(),
+            current_lease.expires_at_ms,
+            encode_u64(current_control_epoch).as_slice(),
+            encode_u64(current_cancel_epoch).as_slice(),
+            encode_u64(current_registry.generation).as_slice(),
+            current_registry.root.as_slice(),
+            exact_root.as_slice(),
+            record.created_at_ms,
+        ],
+    )?;
+    Ok(())
 }
 
 const RECONCILE_COLUMNS: &str = "receipt_id, task_id, permit_id, permit_epoch,
@@ -1004,6 +1429,7 @@ struct TerminalCtx<'a> {
     permit: &'a PermitRecord,
     attempt: &'a crate::AttemptRecord,
     now_ms: i64,
+    effective_registry_binding: Option<crate::ParticipantRegistryBinding>,
 }
 
 fn validate_permit_authority_lease(
@@ -1023,6 +1449,44 @@ fn validate_permit_authority_lease(
             validate_authority_lease_binding_in_transaction(transaction, binding, now_ms)
         }
     }
+}
+
+fn validate_cross_adoption_for_terminal(
+    transaction: &Transaction<'_>,
+    task: &StoredTask,
+    permit: &PermitRecord,
+    adoption: &AdoptionReceiptRecord,
+    now_ms: i64,
+    authority_lease: Option<AuthorityLeaseRecord>,
+) -> Result<crate::ParticipantRegistryBinding, TaskStoreError> {
+    let takeover_receipt_id = adoption
+        .takeover_receipt_id
+        .ok_or(TaskStoreError::CorruptRecord(
+            "cross-term adoption takeover receipt",
+        ))?;
+    let successor_lease = authority_lease.ok_or(TaskStoreError::AuthorityLeaseRequired)?;
+    let context = validate_cross_term_adoption_context(
+        transaction,
+        task,
+        permit,
+        takeover_receipt_id,
+        successor_lease,
+        now_ms,
+    )?;
+    if adoption.authority_lease_binding != Some(context.current_lease)
+        || adoption.original_authority_lease_binding != Some(context.old_lease)
+        || adoption.original_participant_registry_binding != Some(context.original_registry_binding)
+        || adoption.current_assignment_id != Some(context.current_assignment_id)
+        || adoption.current_participant_registry_binding != Some(context.current_registry_binding)
+        || adoption.exact_fenced_participant_root != Some(context.exact_fenced_participant_root)
+        || adoption.current_cancel_epoch != Some(task.record.cancel_epoch)
+        || adoption
+            .current_control_epoch
+            .is_none_or(|epoch| task.record.control_epoch < epoch)
+    {
+        return Err(TaskStoreError::AuthorityLeaseBindingMismatch);
+    }
+    Ok(context.current_registry_binding)
 }
 
 /// Writes/replays the quarantine tombstone and optionally advances the
@@ -1086,7 +1550,7 @@ fn write_commit_receipt(
         attempt_id: ctx.attempt.attempt_id,
         attempt_generation: ctx.attempt.attempt_generation,
         group_binding: ctx.permit.group_binding,
-        participant_registry_binding: ctx.permit.participant_registry_binding,
+        participant_registry_binding: ctx.effective_registry_binding,
         outcome,
         prior_head_commit_seq: ctx.task.record.head_commit_seq,
         prior_effect_history_root: ctx.task.record.head_effect_history_root,
@@ -1146,7 +1610,7 @@ fn write_closure_receipt(
         attempt_id: ctx.attempt.attempt_id,
         attempt_generation: ctx.attempt.attempt_generation,
         group_binding: ctx.permit.group_binding,
-        participant_registry_binding: ctx.permit.participant_registry_binding,
+        participant_registry_binding: ctx.effective_registry_binding,
         outcome: outcome.receipt_outcome(),
         prior_head_commit_seq: ctx.task.record.head_commit_seq,
         prior_effect_history_root: ctx.task.record.head_effect_history_root,
@@ -1560,14 +2024,40 @@ impl SqliteTaskAuthority {
             store::load_permit_by_id(&transaction, request.base.task_id, request.base.permit_id)?;
         let attempt =
             store::load_attempt(&transaction, request.base.task_id, request.base.attempt_id)?;
-        if permit.state == PermitState::Issued {
-            validate_permit_authority_lease(
-                &transaction,
-                &permit,
-                request.base.finalized_at_ms,
-                authority_lease,
-            )?;
-        }
+        let adoption =
+            load_adoption_by_permit(&transaction, request.base.task_id, request.base.permit_id)?;
+        let effective_registry_binding = if permit.state == PermitState::Issued {
+            if let Some(adoption) = adoption.as_ref() {
+                if adoption.takeover_receipt_id.is_some() {
+                    Some(validate_cross_adoption_for_terminal(
+                        &transaction,
+                        &task,
+                        &permit,
+                        adoption,
+                        request.base.finalized_at_ms,
+                        authority_lease,
+                    )?)
+                } else {
+                    validate_permit_authority_lease(
+                        &transaction,
+                        &permit,
+                        request.base.finalized_at_ms,
+                        authority_lease,
+                    )?;
+                    permit.participant_registry_binding
+                }
+            } else {
+                validate_permit_authority_lease(
+                    &transaction,
+                    &permit,
+                    request.base.finalized_at_ms,
+                    authority_lease,
+                )?;
+                permit.participant_registry_binding
+            }
+        } else {
+            None
+        };
         if attempt.attempt_generation != request.base.attempt_generation {
             return Err(TaskStoreError::InvalidGeneration);
         }
@@ -1576,6 +2066,7 @@ impl SqliteTaskAuthority {
             permit: &permit,
             attempt: &attempt,
             now_ms: request.base.finalized_at_ms,
+            effective_registry_binding,
         };
         match permit.state {
             PermitState::Quarantined => {
@@ -1586,7 +2077,11 @@ impl SqliteTaskAuthority {
                 return Err(TaskStoreError::Quarantined);
             }
             PermitState::Closed => {
-                let decision = replay_finalize(&transaction, &permit, request)?;
+                let replay_binding = adoption
+                    .as_ref()
+                    .and_then(|record| record.current_participant_registry_binding)
+                    .or(permit.participant_registry_binding);
+                let decision = replay_finalize(&transaction, &permit, request, replay_binding)?;
                 if let Some(plan_id) = semantic_plan_id {
                     let receipt = match &decision {
                         FinalizeDecision::Committed(receipt)
@@ -1629,11 +2124,16 @@ impl SqliteTaskAuthority {
             attempt.attempt_id,
             permit.group_binding,
         )?;
-        crate::participant::validate_frozen_binding(
-            &transaction,
-            &task.record,
-            permit.participant_registry_binding,
-        )?;
+        if adoption
+            .as_ref()
+            .is_none_or(|record| record.takeover_receipt_id.is_none())
+        {
+            crate::participant::validate_frozen_binding(
+                &transaction,
+                &task.record,
+                permit.participant_registry_binding,
+            )?;
+        }
         if legacy {
             if semantic_plan_id.is_some() {
                 return Err(TaskStoreError::InvalidSemanticPublicationPlan {
@@ -1757,6 +2257,7 @@ impl SqliteTaskAuthority {
         self.close_permit_inner(request.close, Some(request.lease))
     }
 
+    #[allow(clippy::too_many_lines)]
     fn close_permit_inner(
         &self,
         request: ClosePermitRequest,
@@ -1767,22 +2268,48 @@ impl SqliteTaskAuthority {
         let task = store::load_task(&transaction, request.task_id)?;
         let permit = store::load_permit_by_id(&transaction, request.task_id, request.permit_id)?;
         let attempt = store::load_attempt(&transaction, request.task_id, request.attempt_id)?;
+        let adoption = load_adoption_by_permit(&transaction, request.task_id, request.permit_id)?;
         if attempt.attempt_generation != request.attempt_generation {
             return Err(TaskStoreError::InvalidGeneration);
         }
-        if permit.state == PermitState::Issued {
-            validate_permit_authority_lease(
-                &transaction,
-                &permit,
-                request.closed_at_ms,
-                authority_lease,
-            )?;
-        }
+        let effective_registry_binding = if permit.state == PermitState::Issued {
+            if let Some(adoption) = adoption.as_ref() {
+                if adoption.takeover_receipt_id.is_some() {
+                    Some(validate_cross_adoption_for_terminal(
+                        &transaction,
+                        &task,
+                        &permit,
+                        adoption,
+                        request.closed_at_ms,
+                        authority_lease,
+                    )?)
+                } else {
+                    validate_permit_authority_lease(
+                        &transaction,
+                        &permit,
+                        request.closed_at_ms,
+                        authority_lease,
+                    )?;
+                    permit.participant_registry_binding
+                }
+            } else {
+                validate_permit_authority_lease(
+                    &transaction,
+                    &permit,
+                    request.closed_at_ms,
+                    authority_lease,
+                )?;
+                permit.participant_registry_binding
+            }
+        } else {
+            None
+        };
         let ctx = TerminalCtx {
             task: &task,
             permit: &permit,
             attempt: &attempt,
             now_ms: request.closed_at_ms,
+            effective_registry_binding,
         };
         match permit.state {
             PermitState::Quarantined => {
@@ -1799,7 +2326,11 @@ impl SqliteTaskAuthority {
                 let receipt =
                     load_receipt_by_permit(&transaction, request.task_id, permit.permit_id)?
                         .ok_or(TaskStoreError::PermitNotIssued)?;
-                if receipt.participant_registry_binding != permit.participant_registry_binding {
+                let replay_binding = adoption
+                    .as_ref()
+                    .and_then(|record| record.current_participant_registry_binding)
+                    .or(permit.participant_registry_binding);
+                if receipt.participant_registry_binding != replay_binding {
                     return Err(TaskStoreError::ParticipantRegistryBindingMismatch);
                 }
                 if receipt.outcome != request.outcome.receipt_outcome() {
@@ -1821,11 +2352,16 @@ impl SqliteTaskAuthority {
             attempt.attempt_id,
             permit.group_binding,
         )?;
-        crate::participant::validate_frozen_binding(
-            &transaction,
-            &task.record,
-            permit.participant_registry_binding,
-        )?;
+        if adoption
+            .as_ref()
+            .is_none_or(|record| record.takeover_receipt_id.is_none())
+        {
+            crate::participant::validate_frozen_binding(
+                &transaction,
+                &task.record,
+                permit.participant_registry_binding,
+            )?;
+        }
         let slots = list_slots(&transaction, permit.permit_id)?;
         if slots
             .iter()
@@ -1895,6 +2431,117 @@ impl SqliteTaskAuthority {
         self.adopt_permit_inner(request.adoption, Some(request.lease))
     }
 
+    /// Adopts a quarantined permit after a completed authority takeover and
+    /// successor-registry reopen. The receipt stores the original permit
+    /// lease/registry, the completed takeover identity, the exact fence root,
+    /// and the current successor assignment/registry. It remains limited to
+    /// reconcile/close; it never authorizes a new effect permit or dispatch.
+    ///
+    /// # Errors
+    ///
+    /// Returns a not-found, epoch, lifecycle, takeover-proof, idempotency, or
+    /// storage error.
+    #[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
+    pub fn adopt_permit_across_takeover(
+        &self,
+        request: AuthorityLeaseCrossTermAdoptionRequest,
+    ) -> Result<AdoptionReplay, TaskStoreError> {
+        let mut connection = self.lock_connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let task = store::load_task(&transaction, request.adoption.task_id)?;
+        let permit = store::load_permit_by_id(
+            &transaction,
+            request.adoption.task_id,
+            request.adoption.permit_id,
+        )?;
+        if let Some(existing) = load_adoption_by_key(
+            &transaction,
+            request.adoption.task_id,
+            request.adoption.idempotency_key,
+        )? {
+            let same_bytes = existing.takeover_receipt_id == Some(request.takeover_receipt_id)
+                && existing.original_permit_id == request.adoption.permit_id
+                && existing.original_permit_epoch == request.adoption.permit_epoch
+                && existing.authority_lease_binding == Some(request.successor_lease.binding());
+            if !same_bytes {
+                return Err(TaskStoreError::IdempotencyConflict);
+            }
+            transaction.commit()?;
+            return Ok(AdoptionReplay::Replayed(Box::new(existing)));
+        }
+        if load_adoption_by_permit(
+            &transaction,
+            request.adoption.task_id,
+            request.adoption.permit_id,
+        )?
+        .is_some()
+        {
+            return Err(TaskStoreError::InvalidReconcileState {
+                reason: "permit already has an adoption receipt",
+            });
+        }
+        if permit.state != PermitState::Quarantined {
+            return Err(TaskStoreError::InvalidReconcileState {
+                reason: "only a quarantined permit can be adopted across terms",
+            });
+        }
+        if permit.permit_epoch != request.adoption.permit_epoch {
+            return Err(TaskStoreError::PermitEpochMismatch);
+        }
+        let context = validate_cross_term_adoption_context(
+            &transaction,
+            &task,
+            &permit,
+            request.takeover_receipt_id,
+            request.successor_lease,
+            request.adoption.adopted_at_ms,
+        )?;
+        let adoption_epoch =
+            advance_sequence(&transaction, request.adoption.task_id, "adoption_epoch")?;
+        let current_control_epoch = task
+            .record
+            .control_epoch
+            .checked_add(1)
+            .ok_or(TaskStoreError::EpochExhausted)?;
+        let record = AdoptionReceiptRecord {
+            receipt_id: model::derive_adoption_receipt_id(permit.permit_id, adoption_epoch),
+            task_id: task.record.task_id,
+            task_generation: task.record.task_generation,
+            original_permit_id: permit.permit_id,
+            original_permit_epoch: permit.permit_epoch,
+            original_control_epoch: permit.control_epoch,
+            original_cancel_epoch: permit.cancel_epoch,
+            effect_set_root: effect::stored_effect_set_root(&transaction, permit.permit_id)?
+                .unwrap_or_else(effect::empty_effect_set_root),
+            observed_effect_slot_state_root: effect::load_summary(&transaction, permit.permit_id)?
+                .map_or_else(effect::empty_effect_set_root, |stored| {
+                    stored.summary.effect_slot_state_root
+                }),
+            adoption_epoch,
+            authority_lease_binding: Some(context.current_lease),
+            original_authority_lease_binding: Some(context.old_lease),
+            original_participant_registry_binding: Some(context.original_registry_binding),
+            takeover_receipt_id: Some(context.takeover.receipt_id),
+            current_assignment_id: Some(context.current_assignment_id),
+            current_control_epoch: Some(current_control_epoch),
+            current_cancel_epoch: Some(task.record.cancel_epoch),
+            current_participant_registry_binding: Some(context.current_registry_binding),
+            exact_fenced_participant_root: Some(context.exact_fenced_participant_root),
+            created_at_ms: request.adoption.adopted_at_ms,
+        };
+        insert_cross_adoption(&transaction, &record, request.adoption.idempotency_key)?;
+        update_task(
+            &transaction,
+            &task,
+            request.adoption.adopted_at_ms,
+            |task_record| {
+                task_record.control_epoch = current_control_epoch;
+            },
+        )?;
+        transaction.commit()?;
+        Ok(AdoptionReplay::Adopted(Box::new(record)))
+    }
+
     #[allow(clippy::too_many_lines)] // Adoption CAS and lease binding stay one transaction.
     fn adopt_permit_inner(
         &self,
@@ -1948,6 +2595,14 @@ impl SqliteTaskAuthority {
                 }),
             adoption_epoch,
             authority_lease_binding: authority_lease.map(AuthorityLeaseRecord::binding),
+            original_authority_lease_binding: None,
+            original_participant_registry_binding: None,
+            takeover_receipt_id: None,
+            current_assignment_id: None,
+            current_control_epoch: None,
+            current_cancel_epoch: None,
+            current_participant_registry_binding: None,
+            exact_fenced_participant_root: None,
             created_at_ms: request.adopted_at_ms,
         };
         let authority_lease_authority_id = record
@@ -2058,6 +2713,7 @@ impl SqliteTaskAuthority {
         self.reconcile_effect_inner(request.reconcile, Some(request.lease))
     }
 
+    #[allow(clippy::too_many_lines)]
     fn reconcile_effect_inner(
         &self,
         request: ReconcileRequest,
@@ -2082,16 +2738,37 @@ impl SqliteTaskAuthority {
         if slot.state != SlotState::EffectUnknown {
             return replay_reconcile(&transaction, &permit, &slot, &adoption, &request);
         }
-        crate::participant::reject_takeover_fence(&transaction, request.task_id)?;
-        if adoption.authority_lease_binding != permit.authority_lease_binding {
-            return Err(TaskStoreError::AuthorityLeaseBindingMismatch);
+        if let Some(takeover_receipt_id) = adoption.takeover_receipt_id {
+            let successor_lease = authority_lease.ok_or(TaskStoreError::AuthorityLeaseRequired)?;
+            let context = validate_cross_term_adoption_context(
+                &transaction,
+                &task,
+                &permit,
+                takeover_receipt_id,
+                successor_lease,
+                request.reconciled_at_ms,
+            )?;
+            if adoption.authority_lease_binding != Some(context.current_lease)
+                || adoption.current_assignment_id != Some(context.current_assignment_id)
+                || adoption.current_participant_registry_binding
+                    != Some(context.current_registry_binding)
+                || adoption.exact_fenced_participant_root
+                    != Some(context.exact_fenced_participant_root)
+            {
+                return Err(TaskStoreError::AuthorityLeaseBindingMismatch);
+            }
+        } else {
+            crate::participant::reject_takeover_fence(&transaction, request.task_id)?;
+            if adoption.authority_lease_binding != permit.authority_lease_binding {
+                return Err(TaskStoreError::AuthorityLeaseBindingMismatch);
+            }
+            validate_permit_authority_lease(
+                &transaction,
+                &permit,
+                request.reconciled_at_ms,
+                authority_lease,
+            )?;
         }
-        validate_permit_authority_lease(
-            &transaction,
-            &permit,
-            request.reconciled_at_ms,
-            authority_lease,
-        )?;
         if permit.state != PermitState::Quarantined {
             return Err(TaskStoreError::InvalidReconcileState {
                 reason: "permit is not quarantined",
@@ -2526,10 +3203,11 @@ fn replay_finalize(
     transaction: &Transaction<'_>,
     permit: &PermitRecord,
     request: &FinalizeRequestV3,
+    effective_registry_binding: Option<crate::ParticipantRegistryBinding>,
 ) -> Result<FinalizeDecision, TaskStoreError> {
     let receipt = load_receipt_by_permit(transaction, permit.task_id, permit.permit_id)?
         .ok_or(TaskStoreError::PermitNotIssued)?;
-    if receipt.participant_registry_binding != permit.participant_registry_binding {
+    if receipt.participant_registry_binding != effective_registry_binding {
         return Err(TaskStoreError::ParticipantRegistryBindingMismatch);
     }
     if matches!(

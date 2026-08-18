@@ -1259,6 +1259,43 @@ pub(crate) fn migrate_v37(connection: &mut Connection) -> Result<(), TaskStoreEr
     migration
 }
 
+/// v37 → v38 adds a separate immutable receipt plane for cross-term permit
+/// adoption. Keeping it separate preserves the byte shape and same-term
+/// lease semantics of the legacy `task_adoption_receipts` rows while making
+/// the takeover proof fields mandatory for the new path.
+pub(crate) fn migrate_v38(connection: &mut Connection) -> Result<(), TaskStoreError> {
+    let table_present: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master
+            WHERE type='table' AND name='task_cross_term_adoption_receipts'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    let trigger_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type='trigger' AND name IN (
+             'task_cross_term_adoption_receipt_immutable',
+             'task_cross_term_adoption_receipt_no_delete'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if table_present && trigger_count == 2 {
+        connection.pragma_update(None, "user_version", 38)?;
+        return Ok(());
+    }
+    if table_present || trigger_count != 0 {
+        return Err(TaskStoreError::CorruptRecord(
+            "partial cross-term adoption receipt schema",
+        ));
+    }
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(SCHEMA_V38_SQL)?;
+    transaction.commit()?;
+    Ok(())
+}
+
 const SCHEMA_V13_SQL: &str = "CREATE TABLE task_write_sets (
         task_id BLOB NOT NULL CHECK(length(task_id) = 16),
         attempt_id BLOB NOT NULL CHECK(length(attempt_id) = 16),
@@ -2176,6 +2213,63 @@ pub(crate) const SCHEMA_V37_SQL: &str = "DROP TRIGGER task_authority_takeover_re
       END;
 
       PRAGMA user_version = 37;";
+
+pub(crate) const SCHEMA_V38_SQL: &str = "CREATE TABLE task_cross_term_adoption_receipts (
+        receipt_id BLOB PRIMARY KEY NOT NULL CHECK(length(receipt_id) = 16),
+        task_id BLOB NOT NULL CHECK(length(task_id) = 16),
+        task_generation BLOB NOT NULL CHECK(length(task_generation) = 8),
+        idempotency_key BLOB NOT NULL CHECK(length(idempotency_key) = 16),
+        original_permit_id BLOB NOT NULL CHECK(length(original_permit_id) = 16),
+        original_permit_epoch BLOB NOT NULL CHECK(length(original_permit_epoch) = 8),
+        original_control_epoch BLOB NOT NULL CHECK(length(original_control_epoch) = 8),
+        original_cancel_epoch BLOB NOT NULL CHECK(length(original_cancel_epoch) = 8),
+        original_registry_generation BLOB NOT NULL CHECK(length(original_registry_generation) = 8),
+        original_registry_root BLOB NOT NULL CHECK(length(original_registry_root) = 32),
+        effect_set_root BLOB NOT NULL CHECK(length(effect_set_root) = 32),
+        observed_effect_slot_state_root BLOB NOT NULL CHECK(length(observed_effect_slot_state_root) = 32),
+        adoption_epoch BLOB NOT NULL CHECK(length(adoption_epoch) = 8),
+        takeover_receipt_id BLOB NOT NULL CHECK(length(takeover_receipt_id) = 16),
+        current_assignment_id BLOB NOT NULL CHECK(length(current_assignment_id) = 16),
+        original_authority_id BLOB NOT NULL CHECK(length(original_authority_id) = 16),
+        original_authority_holder_id BLOB NOT NULL CHECK(length(original_authority_holder_id) = 16),
+        original_authority_term BLOB NOT NULL CHECK(length(original_authority_term) = 8),
+        original_authority_lease_epoch BLOB NOT NULL CHECK(length(original_authority_lease_epoch) = 8),
+        original_authority_fencing_token BLOB NOT NULL CHECK(length(original_authority_fencing_token) = 32),
+        original_authority_lease_expires_at_ms INTEGER NOT NULL CHECK(original_authority_lease_expires_at_ms >= 0),
+        current_authority_id BLOB NOT NULL CHECK(length(current_authority_id) = 16),
+        current_authority_holder_id BLOB NOT NULL CHECK(length(current_authority_holder_id) = 16),
+        current_authority_term BLOB NOT NULL CHECK(length(current_authority_term) = 8),
+        current_authority_lease_epoch BLOB NOT NULL CHECK(length(current_authority_lease_epoch) = 8),
+        current_authority_fencing_token BLOB NOT NULL CHECK(length(current_authority_fencing_token) = 32),
+        current_authority_lease_expires_at_ms INTEGER NOT NULL CHECK(current_authority_lease_expires_at_ms >= 0),
+        current_control_epoch BLOB NOT NULL CHECK(length(current_control_epoch) = 8),
+        current_cancel_epoch BLOB NOT NULL CHECK(length(current_cancel_epoch) = 8),
+        current_registry_generation BLOB NOT NULL CHECK(length(current_registry_generation) = 8),
+        current_registry_root BLOB NOT NULL CHECK(length(current_registry_root) = 32),
+        exact_fenced_participant_root BLOB NOT NULL CHECK(length(exact_fenced_participant_root) = 32),
+        created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0),
+        UNIQUE(task_id, idempotency_key),
+        FOREIGN KEY(task_id) REFERENCES tasks(task_id),
+        FOREIGN KEY(takeover_receipt_id) REFERENCES task_authority_takeover_receipts(receipt_id),
+        FOREIGN KEY(current_assignment_id) REFERENCES task_authority_assignments(assignment_id)
+    ) STRICT;
+
+    CREATE INDEX task_cross_term_adoption_receipts_by_permit
+        ON task_cross_term_adoption_receipts(task_id, original_permit_id);
+
+    CREATE TRIGGER task_cross_term_adoption_receipt_immutable
+    BEFORE UPDATE ON task_cross_term_adoption_receipts
+    BEGIN
+        SELECT RAISE(ABORT, 'cross-term adoption receipt is immutable');
+    END;
+
+    CREATE TRIGGER task_cross_term_adoption_receipt_no_delete
+    BEFORE DELETE ON task_cross_term_adoption_receipts
+    BEGIN
+        SELECT RAISE(ABORT, 'cross-term adoption receipt is durable evidence');
+    END;
+
+    PRAGMA user_version = 38;";
 
 const SCHEMA_V12_SQL: &str = "ALTER TABLE effect_permits
         ADD COLUMN participant_registry_generation BLOB

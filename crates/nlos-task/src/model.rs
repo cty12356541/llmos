@@ -11,8 +11,8 @@
 use nlos_types::{
     AgentInstanceId, ArtifactId, CallId, CancellationScopeId, CommitPermitId, DeviceId, DriverId,
     Generation, IdempotencyKey, IsolationDomainId, NamespaceId, OperationId, ProcessId, QuoteId,
-    ReceiptId, ReservationId, ResourceAccountId, SemanticEventId, TaskAttemptId, TaskId,
-    TaskParticipantId, TaskSnapshotId,
+    ReceiptId, ReservationId, ResourceAccountId, SemanticEventId, TaskAttemptId,
+    TaskAuthorityAssignmentId, TaskId, TaskParticipantId, TaskSnapshotId,
 };
 use sha2::{Digest, Sha256};
 
@@ -1363,9 +1363,25 @@ pub struct AdoptionReceiptRecord {
     pub effect_set_root: [u8; 32],
     pub observed_effect_slot_state_root: [u8; 32],
     pub adoption_epoch: u64,
-    /// Optional lease binding copied from a lease-bound original permit.
-    /// Legacy adoption rows remain explicitly unbound.
+    /// Lease binding used by the current adoption authority. For a same-term
+    /// row this is the original permit binding; for a cross-term row it is
+    /// the successor-term binding.
     pub authority_lease_binding: Option<crate::lease::AuthorityLeaseBinding>,
+    /// Original permit lease retained on a cross-term adoption receipt.
+    /// Legacy/same-term rows leave this unset.
+    pub original_authority_lease_binding: Option<crate::lease::AuthorityLeaseBinding>,
+    /// Original participant registry binding retained on a cross-term
+    /// adoption receipt. Legacy/same-term rows leave this unset.
+    pub original_participant_registry_binding: Option<crate::ParticipantRegistryBinding>,
+    /// Completed takeover proof consumed by a cross-term adoption.
+    pub takeover_receipt_id: Option<ReceiptId>,
+    /// Successor assignment and registry selected by that takeover proof.
+    pub current_assignment_id: Option<TaskAuthorityAssignmentId>,
+    pub current_control_epoch: Option<u64>,
+    pub current_cancel_epoch: Option<u64>,
+    pub current_participant_registry_binding: Option<crate::ParticipantRegistryBinding>,
+    /// Exact fence-set root covered by the completed takeover barrier.
+    pub exact_fenced_participant_root: Option<[u8; 32]>,
     pub created_at_ms: i64,
 }
 

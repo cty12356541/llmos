@@ -58,11 +58,13 @@ successor assignment 已因 registry rotation 被 fence”的合法后继形态�
   Process、Resource 或 Operation owner 请求跨 term endpoint proof，也没有定义
   principal→participant 的授权绑定。因此这不是远端 barrier attestation 或物理
   cleanup proof。
-- 旧 term 的 quarantined `CommitPermit` 尚不能在 successor term 通过
-  cross-term adoption 继续 reconcile/close；`reject_takeover_fence` 的跨 term
-  放宽和 adoption receipt 设计仍是下一验收门。
+- 旧 term 的 quarantined `CommitPermit` 现在可在 successor term 通过
+  [`B-TASK-008C2G-CROSS-TERM-ADOPTION`](./b-task-008c2g-cross-term-adoption.md)
+  的独立 v38 adoption receipt 继续核心 reconcile/close；Artifact/Semantic
+  high-level 路径的跨 term 接线、远端 endpoint proof/attestation 仍未完成。
 - 本切片没有新增 v38 schema，也未运行 successor-rotation 专属 VFS kill-9/
   ENOSPC 矩阵；现有 takeover/lease/barrier 故障矩阵只覆盖其前置表组。
 - TakeoverControl 仍缺 TypeScript/Python conformance、Windows named pipe
   handler round-trip、真实 Capability authorizer 和 principal-level peer
-  attestation。
+  attestation；cross-term adoption 的本地证明链详见上面的独立 Evidence，
+  不等于远端 barrier/cleanup 已完成。

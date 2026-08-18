@@ -11,8 +11,8 @@
 - **schema v37**：`migrate_v37` + `SCHEMA_V37_SQL`（v24 整表拷贝先例：DROP 双 trigger → 建临时表（仅放宽两处 CHECK）→ 显式列 INSERT…SELECT → DROP 旧表 → RENAME → 重建窄化 immutable + 原样 no_delete → `PRAGMA user_version=37`）。**FK 处理**：本表是 barrier_receipts 的 FK 父表且 authority 连接 `foreign_keys=ON`（open_with_vfs:122），DROP 父表会因子行触发 FK violation——迁移在事务外显式 `PRAGMA foreign_keys=OFF` 再恢复 ON（pragma 事务内无效，故置于事务两侧）。幂等探测：`sqlite_master.sql` 的 trigger 文本含 `OLD.barrier_state`/`NEW.barrier_state` 守卫即已迁移；混合/缺失形状 → `CorruptRecord("partial v37 takeover completion schema")`。
 - **窄化 trigger**：BEFORE UPDATE，仅放行 `OLD.barrier_state=1 AND NEW.barrier_state=2 AND NEW.new_assignment_id NOT NULL AND OLD.new_assignment_id IS NULL` 且其余 19 列逐列 `IS NOT` 相等；authority_lease.rs:718 的裸 `SET new_assignment_id` 断言在新 trigger 下仍正确 ABORT（既有测试零修改通过）。
 - **API `complete_authority_takeover(request)`**：时间戳校验 → 加载 receipt（ReceiptNotFound）→ `request.lease.binding() != receipt.new_authority_lease_binding` → `AuthorityLeaseBindingMismatch`（replay 亦强制）→ **replay 短路**：已 Complete 时验证 successor assignment Active 且 id 一致，返回以 assignment.created_at_ms 为 completed_at 的记录（durable 确定性，跨重启逐位相等）→ Pending 路径：`validate_authority_lease_binding_in_transaction`（新 term lease 仍 live 且逐位等于 receipt 绑定；续约后 epoch 变化会 fail-closed）→ **coverage 内联重算**（不复用 Pending-only 的 inspect API）：manifest 加载 + root 复算 + 逐观察绑定校验（mirror 1952-1963）→ missing 集非空或 root None/manifest 空 → typed 拒绝 → **全签名门**：任一观察 `signer.is_none()` → `BarrierObservationUnsigned`（新增的唯一 TaskStoreError 变体）→ 派生 successor id → UPDATE receipt 终态转移 → 旧 assignment CAS `TakeoverPending→Fenced`（错态 → `AuthorityLeaseFenced`）→ 插入 successor assignment（Active，binding 取 receipt 的 new_authority 列）→ commit。
-- **明确不变**：registry 保持 `FrozenForTakeover`（successor term 下的新 registry generation/permit 签发是下一门）；barrier 观察表/trigger、fence 表、adoption（reconcile）零改动；`ensure_active_assignment` 未复用（其拒绝非 Active 既有态）。
-- **不声称**：签名证明 signer 认可观察材料，不证明远端 barrier 物理完成（`[LEASE-FENCE-001]` 的完整 barrier ACK 语义仍属远端验证后续）；cross-term adoption 未实现。
+- **明确不变**：registry 保持 `FrozenForTakeover`（successor term 下的新 registry generation/permit 签发是下一门）；barrier 观察表/trigger、fence 表、adoption（reconcile）零改动；`ensure_active_assignment` 未复用（其拒绝非 Active 既有态）。后续 successor registry 与旧 permit cross-term adoption 分别见 successor-registry 和 cross-term-adoption Evidence。
+- **不声称**：签名证明 signer 认可观察材料，不证明远端 barrier 物理完成（`[LEASE-FENCE-001]` 的完整 barrier ACK 语义仍属远端验证后续）；本地 cross-term adoption 证明也不替代远端 cleanup attestation。
 
 ## 3. Evidence
 
@@ -30,6 +30,7 @@
 - 迁移期间 `foreign_keys` 短暂 OFF（仅 v37 拷贝窗口，事务外切换）；kill-9 落在迁移事务内的行为由 SQLite 原子性保证，但未对 v37 迁移本身注入故障（后续 F4 全集矩阵的可选项）。
 - registry 在完成后仍保持冻结，直到独立的 successor-registry hand-off；该 hand-off
   现由 [B-TASK-008C2G-SUCCESSOR-REGISTRY](./b-task-008c2g-successor-registry.md)
-  提供本地 generation/assignment rotation 与新 permit 接线。cross-term adoption
-  （含放宽 `reject_takeover_fence`/`validate_permit_authority_lease` 的旧 term 拒绝）
-  仍为 NEXT。
+  提供本地 generation/assignment rotation 与新 permit 接线。旧 permit 的核心
+  cross-term adoption 已由 [B-TASK-008C2G-CROSS-TERM-ADOPTION](./b-task-008c2g-cross-term-adoption.md)
+  接通；远端 attestation、Artifact/Semantic high-level 跨 term 路径与 Windows/多语言
+  conformance 仍为后续门。
