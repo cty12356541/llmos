@@ -20,7 +20,7 @@
 - 新 `tests/takeover_completion.rs` 9 项：signed LocallyCovered 完成链（Complete + successor Active + 旧 Fenced + registry 仍冻结 + 重启回读）、byte-equal replay、unsigned 拒绝（`BarrierObservationUnsigned`，零状态变更）、ManifestUnavailable 拒绝（NULL exact root 的未终结 permit fixture，见 §4 取舍）、expired lease 拒绝（`AuthorityLeaseExpired`）、wrong/stale lease 拒绝（term-3 抢占后 `AuthorityLeaseFenced`）、完成后 immutability（回退/改 id/改他列/DELETE 全 ABORT）、v36→v37 迁移（伪造 v36 形状重开迁移、receipt 逐位存活、`PRAGMA foreign_key_check` 空、raw FK-ON INSERT-then-ROLLBACK 证明子 FK 解析、迁移库上完整激活链）、fault-VFS IoErr 行（typed 失败零半截状态、disarm 后成功）。
 - 三套 takeover 系 fault 矩阵回归：takeover(8)/barrier_signature(7)/lease_binding(7) 全绿。
 - `cargo clippy -p nlos-task --all-targets -- -D warnings` 通过；`cargo fmt --check` 清洁；`cargo build -p nlos-commit-coordinator -p nlos-system-control -p nlos-takeover-control` 通过。
-- `cargo test --workspace --quiet`：440 项全过（431+9）。三平台 CI 随本切片 push 运行（回填见进度单）。
+- `cargo test --workspace --quiet`：440 项全过（431+9）。三平台 CI + MSRV 已通过（run 32115886849，head `b52ca2a`，四平台一次全绿）。
 
 ## 4. 明确限制
 
