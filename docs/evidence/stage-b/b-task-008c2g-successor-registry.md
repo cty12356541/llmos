@@ -65,6 +65,7 @@ successor assignment 已因 registry rotation 被 fence”的合法后继形态�
 - 本切片没有新增 v38 schema，也未运行 successor-rotation 专属 VFS kill-9/
   ENOSPC 矩阵；现有 takeover/lease/barrier 故障矩阵只覆盖其前置表组。
 - TakeoverControl 的 TypeScript/Python payload conformance 与 Windows named-pipe
-  handler round-trip 已由独立 conformance slice 接入，三平台 CI 结果待回填；真实
+  handler round-trip 已由独立 conformance slice 接入，并随三平台 + MSRV [run
+  32192662820](https://github.com/cty12356541/llmos/actions/runs/32192662820) 通过；真实
   Capability authorizer 和 principal-level peer attestation 仍未完成。cross-term
   adoption 的本地证明链详见上面的独立 Evidence，不等于远端 barrier/cleanup 已完成。
