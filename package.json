@@ -21,6 +21,6 @@
     "@bufbuild/buf": "1.72.0",
     "@types/node": "26.1.2",
     "tsx": "4.20.6",
-    "typescript": "5.9.3"
+    "typescript": "7.0.2"
   }
 }
