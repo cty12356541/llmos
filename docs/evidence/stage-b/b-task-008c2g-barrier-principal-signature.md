@@ -1,6 +1,6 @@
 # B-TASK-008C2G-BARRIER-SIG：takeover barrier observation principal 签名验证
 
-状态：`PARTIAL_PASS`（2026-08-18）
+状态：`PARTIAL_PASS`（2026-08-18；同日增量：签名写路径 F1–F6 故障注入矩阵，见 §5）
 
 ## 1. 结论
 
@@ -26,10 +26,22 @@
 - `cargo build -p nlos-commit-coordinator -p nlos-system-control`：通过（公开 API 兼容）。
 - 三平台 CI + MSRV 1.97 job：已通过（[run 32099012698](https://github.com/cty12356541/llmos/actions/runs/32099012698)，head `278ae53`）。
 
+## 5. 增量：签名写路径故障注入矩阵（2026-08-18）
+
+`barrier_signature_fault_injection.rs`（7 项测试，PoC-0003 对齐 F1–F6，全程只走公开 signed API；identity authority DB 保持健康——被测写路径是 task DB；每场景以独立连接 `PRAGMA integrity_check` 复核）：
+
+- **F1 kill-9 mid-tx**：子进程以真实 takeover/fence/manifest/signer 材料写入未提交幻影签名行（含 5 signer 列）后被强杀；重开后 barrier 表零行、registry/assignment/control_epoch 与 fence 提交态逐位一致；重做成功且 receipt id 与测试内独立 SHA-256 镜像派生（同 domain `llmos/task-authority-takeover-barrier/v1`）逐位相等，replay 含 signer 全等。
+- **F2 kill-9 after commit**：完整签名观察提交后被强杀；重开全部事实逐位保留，replay 返回原 record，无重复行。
+- **F3/F4 IoErr/ENOSPC**：typed `TaskStoreError::Sqlite` 显式失败（错误链含 i/o/full）、`writes_observed() > 0`、零半截状态（无行、takeover/registry/coverage 不变）；disarm 后同一操作成功、coverage 升 `LocallyCovered`。
+- **F5 静默丢写/撕裂尾部**：`PowerLossAfter` 下"报告成功"的签名观察重开不可见且重做 receipt id 与 API 返回的幻影 id 及独立派生一致、signer 逐位回读；WAL 截断在 commit 帧一半时签名 insert 整体隐藏、重做收敛。
+- **F6 解除后继续**：同 authority 实例故障解除后从已提交前缀继续，重试成功，coverage `LocallyCovered`，完整重开保留全部。
+- **反重放（term-3 不可构造性）**：term-2 lease 过期后以 term-3 live lease 对同一 `FrozenForTakeover` registry 再次 `prepare_authority_takeover_fence` 被 `AuthorityLeaseBindingMismatch` fail-closed（既有 fence receipt 的 lease binding CAS）——term-3 takeover 在公开 API 上不可构造，term-2 签名观察因此无跨 takeover 重放目标；失败尝试零状态扰动且原 term-2 签名观察 replay 不变。
+- Evidence：`cargo test -p nlos-task --test barrier_signature_fault_injection`（8 passed）、`cargo test -p nlos-task --quiet`（167 passed）、clippy `-D warnings`/fmt 清洁；三平台 CI 见下方更新。
+
 ## 4. 明确限制
 
 - 验证的是 principal 对观察材料的签名与 key 生命周期，不是跨进程通道本身：签名材料如何从远端 endpoint 安全抵达本 authority（IPC transport、防重放窗口、时钟信任）仍未接线，属于 B-TASK-008C2G 的 cross-process 后续切片。
 - preimage 中的 `fence_set_root` 取服务端权威值，但 `remote_receipt_id`/`barrier_digest` 仍由 caller 提供——签名只证明 signer 认可这些 bytes，不证明远端 barrier 真实完成（`[LEASE-FENCE-001]` 的完整 barrier ACK 语义仍由后续 parent completion 切片承担）。
 - `KeyPurpose::BarrierObservationSigning` 尚无 capability/授权策略约束谁能持有 barrier 签名 key（当前与 SemanticSigning 同为 trusted-bootstrap 签发）。
 - unsigned 路径保留（同信任域本地使用），不强制既有调用方迁移。
-- kill-9/ENOSPC/torn-WAL 对签名写路径的注入矩阵、三平台 CI 复验未运行；旧 v1 identity 库（CHECK purpose=1）无法签发 purpose=2 key，需按 fail-closed 语义重建（reference slice，无生产库）。
+- kill-9/ENOSPC/torn-WAL 对签名写路径的注入矩阵已由 §5 覆盖（macOS 本地）；三平台复验见 §5 更新。旧 v1 identity 库（CHECK purpose=1）无法签发 purpose=2 key，需按 fail-closed 语义重建（reference slice，无生产库）。
