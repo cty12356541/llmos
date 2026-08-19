@@ -184,7 +184,8 @@ async function startServer(
   };
 }
 
-function submitRequest(fixture: Fixture) {
+function submitRequest(fixture: Fixture, requestSeed = 0xd1) {
+  const byte = (value: number): number => value & 0xff;
   const payload = toBinary(
     SubmitBarrierObservationRequestSchema,
     create(SubmitBarrierObservationRequestSchema, {
@@ -220,19 +221,19 @@ function submitRequest(fixture: Fixture) {
         major: 1,
         minor: 1,
       }),
-      requestId: new Uint8Array(16).fill(0xd1),
+      requestId: new Uint8Array(16).fill(byte(requestSeed)),
       service: "takeover_control",
       method: "submit_barrier_observation",
       commonContext: {
         case: "requestContext",
         value: create(SabiRequestContextSchema, {
           caller: create(CallerIdentitySchema, {
-            principalId: new Uint8Array(16).fill(0xd4),
-            applicationId: new Uint8Array(16).fill(0xd5),
-            processId: new Uint8Array(16).fill(0xd6),
+            principalId: new Uint8Array(16).fill(byte(requestSeed + 3)),
+            applicationId: new Uint8Array(16).fill(byte(requestSeed + 4)),
+            processId: new Uint8Array(16).fill(byte(requestSeed + 5)),
             processGeneration: 1n,
           }),
-          correlationId: new Uint8Array(16).fill(0xd2),
+          correlationId: new Uint8Array(16).fill(byte(requestSeed + 1)),
           idempotencyKey: new Uint8Array(16).fill(0xd3),
           deadlineMonotonicNs: 1_000n,
           capabilityHandles: [
@@ -348,6 +349,75 @@ async function runCrashRestart(): Promise<void> {
   }
 }
 
+async function runConcurrentPressure(): Promise<void> {
+  const socket = endpoint("tp");
+  const authorityPath = join(
+    tmpdir(),
+    `nlos-takeover-${process.pid}-${Date.now()}-pressure.sqlite3`,
+  );
+  const identityPath = join(
+    tmpdir(),
+    `nlos-takeover-${process.pid}-${Date.now()}-pressure-identity`,
+  );
+  let server: ChildProcessWithoutNullStreams | undefined;
+  const clients: LocalRpcClient[] = [];
+  try {
+    const started = await startServer(socket, authorityPath, identityPath, {
+      NLOS_TAKEOVER_CONTROL_CONNECTIONS: "8",
+    });
+    server = started.server;
+    const config = {
+      connectTimeoutMs: 2_000,
+      readTimeoutMs: 5_000,
+      writeTimeoutMs: 5_000,
+    };
+    for (let index = 0; index < 8; index += 1) {
+      clients.push(await LocalRpcClient.connect(socket, config));
+    }
+    const responses = await Promise.all(
+      clients.map((client, index) => client.exchange(submitRequest(started.fixture, 0xd1 + index))),
+    );
+    const firstResponse = responses[0]!;
+    assertSuccess(firstResponse, started.fixture);
+    const firstRecordWire = toBinary(
+      BarrierObservationRecordSchema,
+      fromBinary(BarrierObservationRecordSchema, firstResponse.envelope!.payload),
+    );
+    for (const [index, response] of responses.entries()) {
+      assertSuccess(response, started.fixture);
+      assert.deepEqual(
+        toBinary(
+          BarrierObservationRecordSchema,
+          fromBinary(BarrierObservationRecordSchema, response.envelope!.payload),
+        ),
+        firstRecordWire,
+        `pressure durable record ${index} differs from the first replay`,
+      );
+    }
+    for (const client of clients) {
+      client.close();
+    }
+    assert.equal((await waitForExit(server)).code, 0);
+  } catch (error) {
+    if (server !== undefined && server.exitCode === null && server.signalCode === null) {
+      server.kill();
+      await waitForExit(server).catch(() => undefined);
+    }
+    throw error;
+  } finally {
+    for (const client of clients) {
+      client.close();
+    }
+    await Promise.all([
+      rm(socket, { force: true }),
+      rm(authorityPath, { force: true }),
+      rm(`${authorityPath}-wal`, { force: true }),
+      rm(`${authorityPath}-shm`, { force: true }),
+      rm(identityPath, { recursive: true, force: true }),
+    ]);
+  }
+}
+
 const socket = endpoint("ts");
 const authorityPath = join(tmpdir(), `nlos-takeover-${process.pid}-${Date.now()}.sqlite3`);
 const identityPath = join(tmpdir(), `nlos-takeover-${process.pid}-${Date.now()}-identity`);
@@ -397,3 +467,5 @@ try {
 }
 
 await runCrashRestart();
+
+await runConcurrentPressure();

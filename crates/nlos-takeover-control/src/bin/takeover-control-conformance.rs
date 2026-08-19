@@ -2,7 +2,8 @@
 //!
 //! The server creates one deterministic pending takeover fixture, prints the
 //! typed observation fields as a bounded key/value manifest, and serves two
-//! one-request IPC connections. TypeScript and Python clients construct the
+//! one-request IPC connections by default (or a bounded test-configured
+//! count). TypeScript and Python clients construct the
 //! protobuf request from that manifest, submit it over the platform adapter,
 //! and submit the same request again to prove durable replay.
 
@@ -37,6 +38,7 @@ const MONOTONIC_NOW_NS: u64 = 10;
 const CAPABILITY_SLOT: u64 = 5;
 const CAPABILITY_GENERATION: u64 = 1;
 const HOLD_AFTER_COMMIT_ENV: &str = "NLOS_TAKEOVER_CONTROL_HOLD_AFTER_COMMIT";
+const CONNECTIONS_ENV: &str = "NLOS_TAKEOVER_CONTROL_CONNECTIONS";
 
 struct AllowPeer;
 
@@ -305,6 +307,18 @@ fn hold_after_commit_enabled() -> bool {
     std::env::var_os(HOLD_AFTER_COMMIT_ENV).is_some()
 }
 
+fn connection_count() -> Result<usize, Box<dyn Error>> {
+    let count = std::env::var(CONNECTIONS_ENV)
+        .ok()
+        .map(|value| value.parse::<usize>())
+        .transpose()?
+        .unwrap_or(2);
+    if !(2..=32).contains(&count) {
+        return Err(format!("{CONNECTIONS_ENV} must be within 2..=32, got {count}").into());
+    }
+    Ok(count)
+}
+
 /*
  * Keep the response construction above deliberately inside the handler future:
  * the marker is emitted only after `TakeoverControl::handle` has returned a
@@ -341,18 +355,22 @@ async fn run(
     let listener = UnixListenerAdapter::bind(&endpoint)?;
     let _guard = EndpointGuard(endpoint);
     let hold_after_commit = hold_after_commit_enabled();
+    let connection_count = connection_count()?;
     announce_ready()?;
     announce_fixture(&fixture);
-    for _ in 0..2 {
+    let mut handlers = tokio::task::JoinSet::new();
+    for _ in 0..connection_count {
         let (stream, peer) = listener.accept(TransportConfig::default()).await?;
-        serve_exchange(
+        handlers.spawn(serve_exchange(
             stream,
             peer,
             Arc::clone(&authority),
             Arc::clone(&identity),
             hold_after_commit,
-        )
-        .await?;
+        ));
+    }
+    while let Some(result) = handlers.join_next().await {
+        result.map_err(|error| format!("TakeoverControl handler task panicked: {error}"))??;
     }
     let rows =
         authority.inspect_authority_takeover_barrier_receipts(fixture.takeover_receipt_id)?;
@@ -380,20 +398,27 @@ async fn run(
     let authority = Arc::new(SqliteTaskAuthority::open(endpoint_path(authority_path))?);
     let identity = Arc::new(IdentityAuthority::open(endpoint_path(identity_path))?);
     let fixture = prepare_fixture(authority.as_ref(), identity.as_ref())?;
-    let mut listener = NamedPipeListenerAdapter::bind(endpoint, 2, TransportConfig::default())?;
+    let connection_count = connection_count()?;
+    // `accept` creates the next pipe instance before returning the current
+    // one, so retain one spare instance while all requested handlers run.
+    let mut listener =
+        NamedPipeListenerAdapter::bind(endpoint, connection_count + 1, TransportConfig::default())?;
     let hold_after_commit = hold_after_commit_enabled();
     announce_ready()?;
     announce_fixture(&fixture);
-    for _ in 0..2 {
+    let mut handlers = tokio::task::JoinSet::new();
+    for _ in 0..connection_count {
         let (stream, peer) = listener.accept(TransportConfig::default()).await?;
-        serve_exchange(
+        handlers.spawn(serve_exchange(
             stream,
             peer,
             Arc::clone(&authority),
             Arc::clone(&identity),
             hold_after_commit,
-        )
-        .await?;
+        ));
+    }
+    while let Some(result) = handlers.join_next().await {
+        result.map_err(|error| format!("TakeoverControl handler task panicked: {error}"))??;
     }
     let rows =
         authority.inspect_authority_takeover_barrier_receipts(fixture.takeover_receipt_id)?;

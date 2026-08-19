@@ -101,7 +101,8 @@ async def wait_for_server_line(
     return line
 
 
-def submit_request(fixture: dict[str, str]) -> ExchangeRequest:
+def submit_request(fixture: dict[str, str], request_seed: int = 0xD1) -> ExchangeRequest:
+    byte = lambda value: bytes([value & 0xFF]) * 16
     payload = SubmitBarrierObservationRequest()
     payload.schema.name = "nlos.sabi.TakeoverControl"
     payload.schema.major = 1
@@ -125,15 +126,15 @@ def submit_request(fixture: dict[str, str]) -> ExchangeRequest:
     request.envelope.schema.name = "nlos.sabi.Envelope"
     request.envelope.schema.major = 1
     request.envelope.schema.minor = 1
-    request.envelope.request_id = bytes([0xD1]) * 16
+    request.envelope.request_id = byte(request_seed)
     request.envelope.service = "takeover_control"
     request.envelope.method = "submit_barrier_observation"
     context = request.envelope.request_context
-    context.caller.principal_id = bytes([0xD4]) * 16
-    context.caller.application_id = bytes([0xD5]) * 16
-    context.caller.process_id = bytes([0xD6]) * 16
+    context.caller.principal_id = byte(request_seed + 3)
+    context.caller.application_id = byte(request_seed + 4)
+    context.caller.process_id = byte(request_seed + 5)
     context.caller.process_generation = 1
-    context.correlation_id = bytes([0xD2]) * 16
+    context.correlation_id = byte(request_seed + 1)
     context.idempotency_key = bytes([0xD3]) * 16
     context.deadline_monotonic_ns = 1_000
     capability = context.capability_handles.add()
@@ -237,6 +238,64 @@ async def run_crash_restart() -> None:
         shutil.rmtree(identity_path, ignore_errors=True)
 
 
+async def run_concurrent_pressure() -> None:
+    socket = endpoint("pp")
+    authority_path = str(
+        Path(tempfile.gettempdir())
+        / f"nlos-takeover-{os.getpid()}-{time.time_ns()}-pressure.sqlite3"
+    )
+    identity_path = str(
+        Path(tempfile.gettempdir())
+        / f"nlos-takeover-{os.getpid()}-{time.time_ns()}-pressure-identity"
+    )
+    process: asyncio.subprocess.Process | None = None
+    clients: list[LocalRpcClient] = []
+    try:
+        process, fixture = await start_server(
+            socket,
+            authority_path,
+            identity_path,
+            {"NLOS_TAKEOVER_CONTROL_CONNECTIONS": "8"},
+        )
+        config = TransportConfig(connect_timeout=2, read_timeout=5, write_timeout=5)
+        for _ in range(8):
+            clients.append(await LocalRpcClient.connect(socket, config))
+        responses = await asyncio.gather(
+            *(
+                client.exchange(submit_request(fixture, 0xD1 + index))
+                for index, client in enumerate(clients)
+            )
+        )
+        first_record = BarrierObservationRecord()
+        first_record.ParseFromString(responses[0].envelope.payload)
+        first_record_wire = first_record.SerializeToString()
+        for index, response in enumerate(responses):
+            assert_success(response, fixture)
+            record = BarrierObservationRecord()
+            record.ParseFromString(response.envelope.payload)
+            assert record.SerializeToString() == first_record_wire, index
+        for client in clients:
+            await client.close()
+        assert await process.wait() == 0
+    finally:
+        for client in clients:
+            await client.close()
+        if process is not None and process.returncode is None:
+            process.kill()
+            await process.wait()
+        for path in (
+            socket,
+            authority_path,
+            f"{authority_path}-wal",
+            f"{authority_path}-shm",
+        ):
+            try:
+                Path(path).unlink()
+            except FileNotFoundError:
+                pass
+        shutil.rmtree(identity_path, ignore_errors=True)
+
+
 async def main() -> None:
     socket = endpoint("py")
     authority_path = str(
@@ -280,6 +339,7 @@ async def main() -> None:
         shutil.rmtree(identity_path, ignore_errors=True)
 
     await run_crash_restart()
+    await run_concurrent_pressure()
 
 
 if __name__ == "__main__":
