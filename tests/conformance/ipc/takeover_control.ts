@@ -26,12 +26,16 @@ import {
   SchemaIdentitySchema,
 } from "../../../gen/typescript/nlos/sabi/v1/envelope_pb.ts";
 import {
-  IpcError,
   LocalRpcClient,
 } from "../../../sdk/typescript/src/local_rpc.ts";
 import { validateResponseContext } from "../../../sdk/typescript/src/common.ts";
 
 type Fixture = Record<string, string>;
+type StartedServer = {
+  server: ChildProcessWithoutNullStreams;
+  fixture: Fixture;
+  waitForLine: (prefix: string) => Promise<string>;
+};
 
 function endpoint(label: string): string {
   const unique = `${process.pid}-${Date.now()}-${label}`;
@@ -62,11 +66,61 @@ function bytes(fixture: Fixture, key: string): Uint8Array {
   return Uint8Array.from(Buffer.from(value, "hex"));
 }
 
+function waitForExit(
+  server: ChildProcessWithoutNullStreams,
+): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
+  if (server.exitCode !== null || server.signalCode !== null) {
+    return Promise.resolve({ code: server.exitCode, signal: server.signalCode });
+  }
+  return new Promise((resolve, reject) => {
+    server.once("exit", (code, signal) => resolve({ code, signal }));
+    server.once("error", reject);
+  });
+}
+
+function waitForServerLine(
+  server: ChildProcessWithoutNullStreams,
+  prefix: string,
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let output = "";
+    const timer = setTimeout(
+      () => finish(new Error(`server did not emit ${prefix} within 60 seconds`)),
+      60_000,
+    );
+    const onData = (chunk: Buffer): void => {
+      output += chunk.toString("utf8");
+      const line = output.split(/\r?\n/).find((candidate) => candidate.startsWith(prefix));
+      if (line !== undefined) {
+        finish(undefined, line);
+      }
+    };
+    const onExit = (code: number | null, signal: NodeJS.Signals | null): void =>
+      finish(new Error(`server exited before ${prefix} (${code ?? signal ?? "unknown"})`));
+    const onError = (error: Error): void => finish(error);
+    const finish = (error?: Error, line?: string): void => {
+      clearTimeout(timer);
+      server.stdout.off("data", onData);
+      server.off("exit", onExit);
+      server.off("error", onError);
+      if (error === undefined && line !== undefined) {
+        resolve(line);
+      } else {
+        reject(error ?? new Error(`server line ${prefix} is missing`));
+      }
+    };
+    server.stdout.on("data", onData);
+    server.once("exit", onExit);
+    server.once("error", onError);
+  });
+}
+
 async function startServer(
   socket: string,
   authorityPath: string,
   identityPath: string,
-): Promise<{ server: ChildProcessWithoutNullStreams; fixture: Fixture }> {
+  environment: NodeJS.ProcessEnv = {},
+): Promise<StartedServer> {
   const server = spawn(
     "cargo",
     [
@@ -83,7 +137,15 @@ async function startServer(
       authorityPath,
       identityPath,
     ],
-    { cwd: process.cwd(), stdio: ["pipe", "pipe", "pipe"] },
+    {
+      cwd: process.cwd(),
+      env: (() => {
+        const serverEnvironment = { ...process.env };
+        delete serverEnvironment.NLOS_TAKEOVER_CONTROL_HOLD_AFTER_COMMIT;
+        return { ...serverEnvironment, ...environment };
+      })(),
+      stdio: ["pipe", "pipe", "pipe"],
+    },
   );
   const result = await new Promise<Fixture>((resolve, reject) => {
     const timer = setTimeout(
@@ -115,7 +177,11 @@ async function startServer(
       reject(error);
     });
   });
-  return { server, fixture: result };
+  return {
+    server,
+    fixture: result,
+    waitForLine: (prefix) => waitForServerLine(server, prefix),
+  };
 }
 
 function submitRequest(fixture: Fixture) {
@@ -207,6 +273,81 @@ function assertSuccess(response: Awaited<ReturnType<LocalRpcClient["exchange"]>>
   );
 }
 
+async function runCrashRestart(): Promise<void> {
+  const crashSocket = endpoint("ts-crash");
+  const restartSocket = endpoint("ts-restart");
+  const authorityPath = join(tmpdir(), `nlos-takeover-${process.pid}-${Date.now()}-crash.sqlite3`);
+  const identityPath = join(
+    tmpdir(),
+    `nlos-takeover-${process.pid}-${Date.now()}-crash-identity`,
+  );
+  let server: ChildProcessWithoutNullStreams | undefined;
+  let client: LocalRpcClient | undefined;
+  try {
+    const crashed = await startServer(crashSocket, authorityPath, identityPath, {
+      NLOS_TAKEOVER_CONTROL_HOLD_AFTER_COMMIT: "1",
+    });
+    server = crashed.server;
+    const request = submitRequest(crashed.fixture);
+    client = await LocalRpcClient.connect(crashSocket, {
+      connectTimeoutMs: 2_000,
+      readTimeoutMs: 2_000,
+      writeTimeoutMs: 2_000,
+    });
+    const inFlight = assert.rejects(client.exchange(request));
+    await crashed.waitForLine("COMMIT_READY");
+    server.kill();
+    const crashExit = await waitForExit(server);
+    assert.notEqual(crashExit.code, 0);
+    await inFlight;
+    client.close();
+    client = undefined;
+
+    const recovered = await startServer(restartSocket, authorityPath, identityPath);
+    server = recovered.server;
+    assert.deepEqual(recovered.fixture, crashed.fixture);
+    const recoveryRequest = submitRequest(crashed.fixture);
+    const recoveryClient = await LocalRpcClient.connect(restartSocket, {
+      connectTimeoutMs: 2_000,
+      readTimeoutMs: 2_000,
+      writeTimeoutMs: 2_000,
+    });
+    const recoveredResponse = await recoveryClient.exchange(recoveryRequest);
+    assertSuccess(recoveredResponse, recovered.fixture);
+    recoveryClient.close();
+
+    const replayClient = await LocalRpcClient.connect(restartSocket, {
+      connectTimeoutMs: 2_000,
+      readTimeoutMs: 2_000,
+      writeTimeoutMs: 2_000,
+    });
+    const replay = await replayClient.exchange(recoveryRequest);
+    assertSuccess(replay, recovered.fixture);
+    assert.deepEqual(
+      toBinary(ExchangeResponseSchema, recoveredResponse),
+      toBinary(ExchangeResponseSchema, replay),
+    );
+    replayClient.close();
+    assert.equal((await waitForExit(server)).code, 0);
+  } catch (error) {
+    client?.close();
+    if (server !== undefined && server.exitCode === null && server.signalCode === null) {
+      server.kill();
+      await waitForExit(server).catch(() => undefined);
+    }
+    throw error;
+  } finally {
+    await Promise.all([
+      rm(crashSocket, { force: true }),
+      rm(restartSocket, { force: true }),
+      rm(authorityPath, { force: true }),
+      rm(`${authorityPath}-wal`, { force: true }),
+      rm(`${authorityPath}-shm`, { force: true }),
+      rm(identityPath, { recursive: true, force: true }),
+    ]);
+  }
+}
+
 const socket = endpoint("ts");
 const authorityPath = join(tmpdir(), `nlos-takeover-${process.pid}-${Date.now()}.sqlite3`);
 const identityPath = join(tmpdir(), `nlos-takeover-${process.pid}-${Date.now()}-identity`);
@@ -254,3 +395,5 @@ try {
     rm(identityPath, { recursive: true, force: true }),
   ]);
 }
+
+await runCrashRestart();

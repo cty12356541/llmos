@@ -20,6 +20,7 @@ from nlos.sabi.v1.takeover_control_pb2 import (  # noqa: E402
     SubmitBarrierObservationRequest,
 )
 from nlos_sdk import (  # noqa: E402
+    IpcError,
     LocalRpcClient,
     MethodSemantics,
     TransportConfig,
@@ -56,7 +57,12 @@ async def start_server(
     socket: str,
     authority_path: str,
     identity_path: str,
+    environment: dict[str, str] | None = None,
 ) -> tuple[asyncio.subprocess.Process, dict[str, str]]:
+    process_environment = os.environ.copy()
+    process_environment.pop("NLOS_TAKEOVER_CONTROL_HOLD_AFTER_COMMIT", None)
+    if environment is not None:
+        process_environment.update(environment)
     process = await asyncio.create_subprocess_exec(
         "cargo",
         "run",
@@ -72,14 +78,27 @@ async def start_server(
         authority_path,
         identity_path,
         cwd=ROOT,
+        env=process_environment,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
     assert process.stdout is not None
     ready = await asyncio.wait_for(process.stdout.readline(), timeout=60)
-    assert ready.strip() == b"READY", ready
+    if ready.strip() != b"READY":
+        assert process.stderr is not None
+        diagnostics = await process.stderr.read()
+        raise AssertionError(f"{ready!r}: {diagnostics.decode('utf-8', errors='replace')}")
     fixture_line = await asyncio.wait_for(process.stdout.readline(), timeout=60)
     return process, parse_fixture(fixture_line)
+
+
+async def wait_for_server_line(
+    process: asyncio.subprocess.Process, prefix: bytes
+) -> bytes:
+    assert process.stdout is not None
+    line = await asyncio.wait_for(process.stdout.readline(), timeout=60)
+    assert line.startswith(prefix), line
+    return line
 
 
 def submit_request(fixture: dict[str, str]) -> ExchangeRequest:
@@ -143,6 +162,81 @@ def assert_success(response: ExchangeResponse, fixture: dict[str, str]) -> None:
     assert context.receipts[0].receipt_id == record.receipt_id
 
 
+async def run_crash_restart() -> None:
+    # Keep Unix socket names below SUN_LEN on macOS/Linux even under a long
+    # temporary-directory prefix.
+    crash_socket = endpoint("pc")
+    restart_socket = endpoint("pr")
+    authority_path = str(
+        Path(tempfile.gettempdir())
+        / f"nlos-takeover-{os.getpid()}-{time.time_ns()}-crash.sqlite3"
+    )
+    identity_path = str(
+        Path(tempfile.gettempdir())
+        / f"nlos-takeover-{os.getpid()}-{time.time_ns()}-crash-identity"
+    )
+    process: asyncio.subprocess.Process | None = None
+    client: LocalRpcClient | None = None
+    try:
+        process, fixture = await start_server(
+            crash_socket,
+            authority_path,
+            identity_path,
+            {"NLOS_TAKEOVER_CONTROL_HOLD_AFTER_COMMIT": "1"},
+        )
+        request = submit_request(fixture)
+        config = TransportConfig(connect_timeout=2, read_timeout=2, write_timeout=2)
+        client = await LocalRpcClient.connect(crash_socket, config)
+        in_flight = asyncio.create_task(client.exchange(request))
+        await wait_for_server_line(process, b"COMMIT_READY")
+        process.kill()
+        crash_code = await process.wait()
+        assert crash_code != 0
+        try:
+            await in_flight
+        except IpcError:
+            pass
+        else:
+            raise AssertionError("crashed TakeoverControl request unexpectedly returned")
+        await client.close()
+        client = None
+
+        process, recovered_fixture = await start_server(
+            restart_socket, authority_path, identity_path
+        )
+        assert recovered_fixture == fixture
+        recovery_request = submit_request(fixture)
+        recovery_client = await LocalRpcClient.connect(restart_socket, config)
+        recovered = await recovery_client.exchange(recovery_request)
+        assert_success(recovered, recovered_fixture)
+        await recovery_client.close()
+
+        replay_client = await LocalRpcClient.connect(restart_socket, config)
+        replay = await replay_client.exchange(recovery_request)
+        assert_success(replay, recovered_fixture)
+        assert recovered.SerializeToString() == replay.SerializeToString()
+        await replay_client.close()
+        assert await process.wait() == 0
+    finally:
+        if client is not None:
+            await client.close()
+        if process is not None and process.returncode is None:
+            process.kill()
+            await process.wait()
+        for path in (
+            crash_socket,
+            restart_socket,
+            authority_path,
+            f"{authority_path}-wal",
+            f"{authority_path}-shm",
+        ):
+            try:
+                Path(path).unlink()
+            except FileNotFoundError:
+                pass
+        shutil.rmtree(identity_path, ignore_errors=True)
+
+
 async def main() -> None:
     socket = endpoint("py")
     authority_path = str(
@@ -184,6 +278,8 @@ async def main() -> None:
             except FileNotFoundError:
                 pass
         shutil.rmtree(identity_path, ignore_errors=True)
+
+    await run_crash_restart()
 
 
 if __name__ == "__main__":

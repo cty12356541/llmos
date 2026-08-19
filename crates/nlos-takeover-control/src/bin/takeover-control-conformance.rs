@@ -36,6 +36,7 @@ const OBSERVED_AT_MS: i64 = 220;
 const MONOTONIC_NOW_NS: u64 = 10;
 const CAPABILITY_SLOT: u64 = 5;
 const CAPABILITY_GENERATION: u64 = 1;
+const HOLD_AFTER_COMMIT_ENV: &str = "NLOS_TAKEOVER_CONTROL_HOLD_AFTER_COMMIT";
 
 struct AllowPeer;
 
@@ -252,11 +253,17 @@ fn announce_fixture(fixture: &Fixture) {
     io::stdout().flush().expect("flush fixture manifest");
 }
 
+fn announce_commit_ready() {
+    println!("COMMIT_READY");
+    io::stdout().flush().expect("flush commit marker");
+}
+
 async fn serve_exchange<S>(
     stream: S,
     peer: PeerIdentity,
     authority: Arc<SqliteTaskAuthority>,
     identity: Arc<IdentityAuthority>,
+    hold_after_commit: bool,
 ) -> Result<(), IpcError>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -267,17 +274,24 @@ where
         peer,
         &ALLOW_PEER,
         move |validated| {
-            let response = match nlos_takeover_control::TakeoverControl::new(
+            let (response, should_hold) = match nlos_takeover_control::TakeoverControl::new(
                 authority.as_ref(),
                 identity.as_ref(),
                 &CAPABILITY_POLICY,
             )
             .handle(validated.envelope(), MONOTONIC_NOW_NS, OBSERVED_AT_MS)
             {
-                Ok(envelope) => envelope,
-                Err(error) => nlos_takeover_control::failure_envelope(validated.envelope(), &error),
+                Ok(envelope) => (envelope, hold_after_commit),
+                Err(error) => (
+                    nlos_takeover_control::failure_envelope(validated.envelope(), &error),
+                    false,
+                ),
             };
             async move {
+                if should_hold {
+                    announce_commit_ready();
+                    std::future::pending::<()>().await;
+                }
                 Ok(OutboundResponse::Typed(ExchangeResponse {
                     envelope: Some(response),
                 }))
@@ -286,6 +300,18 @@ where
     )
     .await
 }
+
+fn hold_after_commit_enabled() -> bool {
+    std::env::var_os(HOLD_AFTER_COMMIT_ENV).is_some()
+}
+
+/*
+ * Keep the response construction above deliberately inside the handler future:
+ * the marker is emitted only after `TakeoverControl::handle` has returned a
+ * successful envelope, which means the store transaction has committed. The
+ * feature-gated conformance process then waits forever until the client kills
+ * it, modelling a process crash between durable commit and response delivery.
+ */
 
 fn endpoint_path(value: OsString) -> PathBuf {
     PathBuf::from(value)
@@ -314,11 +340,19 @@ async fn run(
     let fixture = prepare_fixture(authority.as_ref(), identity.as_ref())?;
     let listener = UnixListenerAdapter::bind(&endpoint)?;
     let _guard = EndpointGuard(endpoint);
+    let hold_after_commit = hold_after_commit_enabled();
     announce_ready()?;
     announce_fixture(&fixture);
     for _ in 0..2 {
         let (stream, peer) = listener.accept(TransportConfig::default()).await?;
-        serve_exchange(stream, peer, Arc::clone(&authority), Arc::clone(&identity)).await?;
+        serve_exchange(
+            stream,
+            peer,
+            Arc::clone(&authority),
+            Arc::clone(&identity),
+            hold_after_commit,
+        )
+        .await?;
     }
     let rows =
         authority.inspect_authority_takeover_barrier_receipts(fixture.takeover_receipt_id)?;
@@ -347,11 +381,19 @@ async fn run(
     let identity = Arc::new(IdentityAuthority::open(endpoint_path(identity_path))?);
     let fixture = prepare_fixture(authority.as_ref(), identity.as_ref())?;
     let mut listener = NamedPipeListenerAdapter::bind(endpoint, 2, TransportConfig::default())?;
+    let hold_after_commit = hold_after_commit_enabled();
     announce_ready()?;
     announce_fixture(&fixture);
     for _ in 0..2 {
         let (stream, peer) = listener.accept(TransportConfig::default()).await?;
-        serve_exchange(stream, peer, Arc::clone(&authority), Arc::clone(&identity)).await?;
+        serve_exchange(
+            stream,
+            peer,
+            Arc::clone(&authority),
+            Arc::clone(&identity),
+            hold_after_commit,
+        )
+        .await?;
     }
     let rows =
         authority.inspect_authority_takeover_barrier_receipts(fixture.takeover_receipt_id)?;
