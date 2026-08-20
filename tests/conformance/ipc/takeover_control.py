@@ -61,6 +61,9 @@ async def start_server(
 ) -> tuple[asyncio.subprocess.Process, dict[str, str]]:
     process_environment = os.environ.copy()
     process_environment.pop("NLOS_TAKEOVER_CONTROL_HOLD_AFTER_COMMIT", None)
+    process_environment.pop("NLOS_TAKEOVER_CONTROL_CONNECTIONS", None)
+    process_environment.pop("NLOS_TAKEOVER_CONTROL_ROUNDS", None)
+    process_environment.pop("NLOS_TAKEOVER_CONTROL_TRUNCATE_WAL_AFTER_COMMIT", None)
     if environment is not None:
         process_environment.update(environment)
     process = await asyncio.create_subprocess_exec(
@@ -296,6 +299,74 @@ async def run_concurrent_pressure() -> None:
         shutil.rmtree(identity_path, ignore_errors=True)
 
 
+async def run_high_connection_soak() -> None:
+    socket = endpoint("soak")
+    authority_path = str(
+        Path(tempfile.gettempdir())
+        / f"nlos-takeover-{os.getpid()}-{time.time_ns()}-soak.sqlite3"
+    )
+    identity_path = str(
+        Path(tempfile.gettempdir())
+        / f"nlos-takeover-{os.getpid()}-{time.time_ns()}-soak-identity"
+    )
+    process: asyncio.subprocess.Process | None = None
+    try:
+        process, fixture = await start_server(
+            socket,
+            authority_path,
+            identity_path,
+            {
+                "NLOS_TAKEOVER_CONTROL_CONNECTIONS": "32",
+                "NLOS_TAKEOVER_CONTROL_ROUNDS": "4",
+            },
+        )
+        config = TransportConfig(connect_timeout=2, read_timeout=5, write_timeout=5)
+        for round_index in range(4):
+            clients = await asyncio.gather(
+                *(LocalRpcClient.connect(socket, config) for _ in range(32))
+            )
+            try:
+                await asyncio.sleep(0.1)
+                responses = await asyncio.gather(
+                    *(
+                        client.exchange(
+                            submit_request(fixture, 0x20 + round_index * 32 + index)
+                        )
+                        for index, client in enumerate(clients)
+                    )
+                )
+                first_record = BarrierObservationRecord()
+                first_record.ParseFromString(responses[0].envelope.payload)
+                first_record_wire = first_record.SerializeToString()
+                for index, response in enumerate(responses):
+                    assert_success(response, fixture)
+                    record = BarrierObservationRecord()
+                    record.ParseFromString(response.envelope.payload)
+                    assert record.SerializeToString() == first_record_wire, (
+                        round_index,
+                        index,
+                    )
+            finally:
+                for client in clients:
+                    await client.close()
+        assert await process.wait() == 0
+    finally:
+        if process is not None and process.returncode is None:
+            process.kill()
+            await process.wait()
+        for path in (
+            socket,
+            authority_path,
+            f"{authority_path}-wal",
+            f"{authority_path}-shm",
+        ):
+            try:
+                Path(path).unlink()
+            except FileNotFoundError:
+                pass
+        shutil.rmtree(identity_path, ignore_errors=True)
+
+
 async def run_torn_wal_recovery() -> None:
     torn_socket = endpoint("tw")
     restart_socket = endpoint("tr")
@@ -417,6 +488,7 @@ async def main() -> None:
 
     await run_crash_restart()
     await run_concurrent_pressure()
+    await run_high_connection_soak()
     await run_torn_wal_recovery()
 
 

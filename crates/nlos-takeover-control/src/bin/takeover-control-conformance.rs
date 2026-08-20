@@ -39,6 +39,7 @@ const CAPABILITY_SLOT: u64 = 5;
 const CAPABILITY_GENERATION: u64 = 1;
 const HOLD_AFTER_COMMIT_ENV: &str = "NLOS_TAKEOVER_CONTROL_HOLD_AFTER_COMMIT";
 const CONNECTIONS_ENV: &str = "NLOS_TAKEOVER_CONTROL_CONNECTIONS";
+const ROUNDS_ENV: &str = "NLOS_TAKEOVER_CONTROL_ROUNDS";
 const TRUNCATE_WAL_AFTER_COMMIT_ENV: &str = "NLOS_TAKEOVER_CONTROL_TRUNCATE_WAL_AFTER_COMMIT";
 
 struct AllowPeer;
@@ -388,6 +389,18 @@ fn connection_count() -> Result<usize, Box<dyn Error>> {
     Ok(count)
 }
 
+fn round_count() -> Result<usize, Box<dyn Error>> {
+    let count = std::env::var(ROUNDS_ENV)
+        .ok()
+        .map(|value| value.parse::<usize>())
+        .transpose()?
+        .unwrap_or(1);
+    if !(1..=8).contains(&count) {
+        return Err(format!("{ROUNDS_ENV} must be within 1..=8, got {count}").into());
+    }
+    Ok(count)
+}
+
 /*
  * Keep the response construction above deliberately inside the handler future:
  * the marker is emitted only after `TakeoverControl::handle` has returned a
@@ -427,23 +440,26 @@ async fn run(
     let hold_after_commit = hold_after_commit_enabled();
     let truncate_wal_after_commit = hold_after_commit && truncate_wal_after_commit_enabled();
     let connection_count = connection_count()?;
+    let round_count = round_count()?;
     announce_ready()?;
     announce_fixture(&fixture);
-    let mut handlers = tokio::task::JoinSet::new();
-    for _ in 0..connection_count {
-        let (stream, peer) = listener.accept(TransportConfig::default()).await?;
-        handlers.spawn(serve_exchange(
-            stream,
-            peer,
-            Arc::clone(&authority),
-            Arc::clone(&identity),
-            hold_after_commit,
-            truncate_wal_after_commit,
-            authority_path.clone(),
-        ));
-    }
-    while let Some(result) = handlers.join_next().await {
-        result.map_err(|error| format!("TakeoverControl handler task panicked: {error}"))??;
+    for _ in 0..round_count {
+        let mut handlers = tokio::task::JoinSet::new();
+        for _ in 0..connection_count {
+            let (stream, peer) = listener.accept(TransportConfig::default()).await?;
+            handlers.spawn(serve_exchange(
+                stream,
+                peer,
+                Arc::clone(&authority),
+                Arc::clone(&identity),
+                hold_after_commit,
+                truncate_wal_after_commit,
+                authority_path.clone(),
+            ));
+        }
+        while let Some(result) = handlers.join_next().await {
+            result.map_err(|error| format!("TakeoverControl handler task panicked: {error}"))??;
+        }
     }
     let rows =
         authority.inspect_authority_takeover_barrier_receipts(fixture.takeover_receipt_id)?;
@@ -479,23 +495,26 @@ async fn run(
         NamedPipeListenerAdapter::bind(endpoint, connection_count + 1, TransportConfig::default())?;
     let hold_after_commit = hold_after_commit_enabled();
     let truncate_wal_after_commit = hold_after_commit && truncate_wal_after_commit_enabled();
+    let round_count = round_count()?;
     announce_ready()?;
     announce_fixture(&fixture);
-    let mut handlers = tokio::task::JoinSet::new();
-    for _ in 0..connection_count {
-        let (stream, peer) = listener.accept(TransportConfig::default()).await?;
-        handlers.spawn(serve_exchange(
-            stream,
-            peer,
-            Arc::clone(&authority),
-            Arc::clone(&identity),
-            hold_after_commit,
-            truncate_wal_after_commit,
-            authority_path.clone(),
-        ));
-    }
-    while let Some(result) = handlers.join_next().await {
-        result.map_err(|error| format!("TakeoverControl handler task panicked: {error}"))??;
+    for _ in 0..round_count {
+        let mut handlers = tokio::task::JoinSet::new();
+        for _ in 0..connection_count {
+            let (stream, peer) = listener.accept(TransportConfig::default()).await?;
+            handlers.spawn(serve_exchange(
+                stream,
+                peer,
+                Arc::clone(&authority),
+                Arc::clone(&identity),
+                hold_after_commit,
+                truncate_wal_after_commit,
+                authority_path.clone(),
+            ));
+        }
+        while let Some(result) = handlers.join_next().await {
+            result.map_err(|error| format!("TakeoverControl handler task panicked: {error}"))??;
+        }
     }
     let rows =
         authority.inspect_authority_takeover_barrier_receipts(fixture.takeover_receipt_id)?;

@@ -142,6 +142,9 @@ async function startServer(
       env: (() => {
         const serverEnvironment = { ...process.env };
         delete serverEnvironment.NLOS_TAKEOVER_CONTROL_HOLD_AFTER_COMMIT;
+        delete serverEnvironment.NLOS_TAKEOVER_CONTROL_CONNECTIONS;
+        delete serverEnvironment.NLOS_TAKEOVER_CONTROL_ROUNDS;
+        delete serverEnvironment.NLOS_TAKEOVER_CONTROL_TRUNCATE_WAL_AFTER_COMMIT;
         return { ...serverEnvironment, ...environment };
       })(),
       stdio: ["pipe", "pipe", "pipe"],
@@ -418,6 +421,80 @@ async function runConcurrentPressure(): Promise<void> {
   }
 }
 
+async function runHighConnectionSoak(): Promise<void> {
+  const socket = endpoint("ts-soak");
+  const authorityPath = join(
+    tmpdir(),
+    `nlos-takeover-${process.pid}-${Date.now()}-soak.sqlite3`,
+  );
+  const identityPath = join(
+    tmpdir(),
+    `nlos-takeover-${process.pid}-${Date.now()}-soak-identity`,
+  );
+  let server: ChildProcessWithoutNullStreams | undefined;
+  try {
+    const started = await startServer(socket, authorityPath, identityPath, {
+      NLOS_TAKEOVER_CONTROL_CONNECTIONS: "32",
+      NLOS_TAKEOVER_CONTROL_ROUNDS: "4",
+    });
+    server = started.server;
+    const config = {
+      connectTimeoutMs: 2_000,
+      readTimeoutMs: 5_000,
+      writeTimeoutMs: 5_000,
+    };
+    for (let round = 0; round < 4; round += 1) {
+      const clients = await Promise.all(
+        Array.from({ length: 32 }, () => LocalRpcClient.connect(socket, config)),
+      );
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        const responses = await Promise.all(
+          clients.map((client, index) =>
+            client.exchange(submitRequest(started.fixture, 0x20 + round * 32 + index)),
+          ),
+        );
+        const firstResponse = responses[0]!;
+        assertSuccess(firstResponse, started.fixture);
+        const firstRecordWire = toBinary(
+          BarrierObservationRecordSchema,
+          fromBinary(BarrierObservationRecordSchema, firstResponse.envelope!.payload),
+        );
+        for (const [index, response] of responses.entries()) {
+          assertSuccess(response, started.fixture);
+          assert.deepEqual(
+            toBinary(
+              BarrierObservationRecordSchema,
+              fromBinary(BarrierObservationRecordSchema, response.envelope!.payload),
+            ),
+            firstRecordWire,
+            `soak durable record ${round}/${index} differs from the first replay`,
+          );
+        }
+      } finally {
+        for (const client of clients) {
+          client.close();
+        }
+      }
+    }
+    assert.equal((await waitForExit(server)).code, 0);
+  } catch (error) {
+    if (server !== undefined && server.exitCode === null && server.signalCode === null) {
+      server.kill();
+      await waitForExit(server).catch(() => undefined);
+    }
+    throw error;
+  } finally {
+    await Promise.all([
+      rm(socket, { force: true }),
+      rm(authorityPath, { force: true }),
+      rm(`${authorityPath}-wal`, { force: true }),
+      rm(`${authorityPath}-shm`, { force: true }),
+      rm(identityPath, { recursive: true, force: true }),
+    ]);
+  }
+}
+
 async function runTornWalRecovery(): Promise<void> {
   const tornSocket = endpoint("tw");
   const restartSocket = endpoint("tr");
@@ -545,5 +622,7 @@ try {
 await runCrashRestart();
 
 await runConcurrentPressure();
+
+await runHighConnectionSoak();
 
 await runTornWalRecovery();
