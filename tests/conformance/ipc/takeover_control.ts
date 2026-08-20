@@ -418,6 +418,82 @@ async function runConcurrentPressure(): Promise<void> {
   }
 }
 
+async function runTornWalRecovery(): Promise<void> {
+  const tornSocket = endpoint("tw");
+  const restartSocket = endpoint("tr");
+  const authorityPath = join(tmpdir(), `nlos-takeover-${process.pid}-${Date.now()}-torn.sqlite3`);
+  const identityPath = join(
+    tmpdir(),
+    `nlos-takeover-${process.pid}-${Date.now()}-torn-identity`,
+  );
+  let server: ChildProcessWithoutNullStreams | undefined;
+  let client: LocalRpcClient | undefined;
+  try {
+    const torn = await startServer(tornSocket, authorityPath, identityPath, {
+      NLOS_TAKEOVER_CONTROL_HOLD_AFTER_COMMIT: "1",
+      NLOS_TAKEOVER_CONTROL_TRUNCATE_WAL_AFTER_COMMIT: "1",
+    });
+    server = torn.server;
+    const request = submitRequest(torn.fixture);
+    client = await LocalRpcClient.connect(tornSocket, {
+      connectTimeoutMs: 2_000,
+      readTimeoutMs: 2_000,
+      writeTimeoutMs: 2_000,
+    });
+    const inFlight = assert.rejects(client.exchange(request));
+    await torn.waitForLine("WAL_TORN_READY");
+    server.kill();
+    const crashExit = await waitForExit(server);
+    assert.notEqual(crashExit.code, 0);
+    await inFlight;
+    client.close();
+    client = undefined;
+    await rm(`${authorityPath}-shm`, { force: true });
+
+    const recovered = await startServer(restartSocket, authorityPath, identityPath);
+    server = recovered.server;
+    assert.deepEqual(recovered.fixture, torn.fixture);
+    const recoveryClient = await LocalRpcClient.connect(restartSocket, {
+      connectTimeoutMs: 2_000,
+      readTimeoutMs: 2_000,
+      writeTimeoutMs: 2_000,
+    });
+    const response = await recoveryClient.exchange(request);
+    assertSuccess(response, recovered.fixture);
+    recoveryClient.close();
+
+    const replayClient = await LocalRpcClient.connect(restartSocket, {
+      connectTimeoutMs: 2_000,
+      readTimeoutMs: 2_000,
+      writeTimeoutMs: 2_000,
+    });
+    const replay = await replayClient.exchange(request);
+    assertSuccess(replay, recovered.fixture);
+    assert.deepEqual(
+      toBinary(ExchangeResponseSchema, response),
+      toBinary(ExchangeResponseSchema, replay),
+    );
+    replayClient.close();
+    assert.equal((await waitForExit(server)).code, 0);
+  } catch (error) {
+    client?.close();
+    if (server !== undefined && server.exitCode === null && server.signalCode === null) {
+      server.kill();
+      await waitForExit(server).catch(() => undefined);
+    }
+    throw error;
+  } finally {
+    await Promise.all([
+      rm(tornSocket, { force: true }),
+      rm(restartSocket, { force: true }),
+      rm(authorityPath, { force: true }),
+      rm(`${authorityPath}-wal`, { force: true }),
+      rm(`${authorityPath}-shm`, { force: true }),
+      rm(identityPath, { recursive: true, force: true }),
+    ]);
+  }
+}
+
 const socket = endpoint("ts");
 const authorityPath = join(tmpdir(), `nlos-takeover-${process.pid}-${Date.now()}.sqlite3`);
 const identityPath = join(tmpdir(), `nlos-takeover-${process.pid}-${Date.now()}-identity`);
@@ -469,3 +545,5 @@ try {
 await runCrashRestart();
 
 await runConcurrentPressure();
+
+await runTornWalRecovery();

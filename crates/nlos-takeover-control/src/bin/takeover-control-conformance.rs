@@ -11,7 +11,7 @@ use std::error::Error;
 use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use ed25519_dalek::{Signer, SigningKey};
@@ -39,6 +39,7 @@ const CAPABILITY_SLOT: u64 = 5;
 const CAPABILITY_GENERATION: u64 = 1;
 const HOLD_AFTER_COMMIT_ENV: &str = "NLOS_TAKEOVER_CONTROL_HOLD_AFTER_COMMIT";
 const CONNECTIONS_ENV: &str = "NLOS_TAKEOVER_CONTROL_CONNECTIONS";
+const TRUNCATE_WAL_AFTER_COMMIT_ENV: &str = "NLOS_TAKEOVER_CONTROL_TRUNCATE_WAL_AFTER_COMMIT";
 
 struct AllowPeer;
 
@@ -260,12 +261,19 @@ fn announce_commit_ready() {
     io::stdout().flush().expect("flush commit marker");
 }
 
+fn announce_wal_torn_ready() {
+    println!("WAL_TORN_READY");
+    io::stdout().flush().expect("flush torn WAL marker");
+}
+
 async fn serve_exchange<S>(
     stream: S,
     peer: PeerIdentity,
     authority: Arc<SqliteTaskAuthority>,
     identity: Arc<IdentityAuthority>,
     hold_after_commit: bool,
+    truncate_wal_after_commit: bool,
+    authority_path: PathBuf,
 ) -> Result<(), IpcError>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -292,6 +300,11 @@ where
             async move {
                 if should_hold {
                     announce_commit_ready();
+                    if truncate_wal_after_commit {
+                        truncate_wal_inside_last_commit(&authority_path)
+                            .expect("truncate WAL after committed IPC observation");
+                        announce_wal_torn_ready();
+                    }
                     std::future::pending::<()>().await;
                 }
                 Ok(OutboundResponse::Typed(ExchangeResponse {
@@ -305,6 +318,62 @@ where
 
 fn hold_after_commit_enabled() -> bool {
     std::env::var_os(HOLD_AFTER_COMMIT_ENV).is_some()
+}
+
+fn truncate_wal_after_commit_enabled() -> bool {
+    std::env::var_os(TRUNCATE_WAL_AFTER_COMMIT_ENV).is_some()
+}
+
+/// `SQLite` WAL layout: 32-byte header, then frames of 24-byte header + page.
+/// Truncate the last commit frame halfway so recovery discards that final
+/// transaction. This hook is only reachable from the feature-gated test
+/// server and models an externally torn WAL tail after the IPC handler has
+/// already reported its durable commit internally.
+fn truncate_wal_inside_last_commit(path: &Path) -> io::Result<()> {
+    let mut wal_path = path.as_os_str().to_os_string();
+    wal_path.push("-wal");
+    let wal_path = PathBuf::from(wal_path);
+    let mut wal = std::fs::read(&wal_path)?;
+    if wal.len() < 32 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "WAL is shorter than its header",
+        ));
+    }
+    let page_size = u32::from_be_bytes(
+        wal[8..12]
+            .try_into()
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "missing WAL page size"))?,
+    );
+    let page_size = if page_size == 1 {
+        65_536
+    } else {
+        usize::try_from(page_size)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid WAL page size"))?
+    };
+    if page_size < 512 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "WAL page size is below SQLite minimum",
+        ));
+    }
+    let frame_size = 24 + page_size;
+    let frame_count = (wal.len() - 32) / frame_size;
+    let last_commit = (0..frame_count)
+        .rfind(|index| {
+            let start = 32 + index * frame_size;
+            let commit = [
+                wal[start + 8],
+                wal[start + 9],
+                wal[start + 10],
+                wal[start + 11],
+            ];
+            u32::from_be_bytes(commit) != 0
+        })
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "WAL has no commit frame"))?;
+    let cut = 32 + last_commit * frame_size + frame_size / 2;
+    wal.truncate(cut);
+    std::fs::write(wal_path, wal)
 }
 
 fn connection_count() -> Result<usize, Box<dyn Error>> {
@@ -349,12 +418,14 @@ async fn run(
     }
 
     let endpoint = endpoint_path(endpoint);
-    let authority = Arc::new(SqliteTaskAuthority::open(endpoint_path(authority_path))?);
+    let authority_path = endpoint_path(authority_path);
+    let authority = Arc::new(SqliteTaskAuthority::open(&authority_path)?);
     let identity = Arc::new(IdentityAuthority::open(endpoint_path(identity_path))?);
     let fixture = prepare_fixture(authority.as_ref(), identity.as_ref())?;
     let listener = UnixListenerAdapter::bind(&endpoint)?;
     let _guard = EndpointGuard(endpoint);
     let hold_after_commit = hold_after_commit_enabled();
+    let truncate_wal_after_commit = hold_after_commit && truncate_wal_after_commit_enabled();
     let connection_count = connection_count()?;
     announce_ready()?;
     announce_fixture(&fixture);
@@ -367,6 +438,8 @@ async fn run(
             Arc::clone(&authority),
             Arc::clone(&identity),
             hold_after_commit,
+            truncate_wal_after_commit,
+            authority_path.clone(),
         ));
     }
     while let Some(result) = handlers.join_next().await {
@@ -395,7 +468,8 @@ async fn run(
 ) -> Result<(), Box<dyn Error>> {
     use nlos_ipc::windows::NamedPipeListenerAdapter;
 
-    let authority = Arc::new(SqliteTaskAuthority::open(endpoint_path(authority_path))?);
+    let authority_path = endpoint_path(authority_path);
+    let authority = Arc::new(SqliteTaskAuthority::open(&authority_path)?);
     let identity = Arc::new(IdentityAuthority::open(endpoint_path(identity_path))?);
     let fixture = prepare_fixture(authority.as_ref(), identity.as_ref())?;
     let connection_count = connection_count()?;
@@ -404,6 +478,7 @@ async fn run(
     let mut listener =
         NamedPipeListenerAdapter::bind(endpoint, connection_count + 1, TransportConfig::default())?;
     let hold_after_commit = hold_after_commit_enabled();
+    let truncate_wal_after_commit = hold_after_commit && truncate_wal_after_commit_enabled();
     announce_ready()?;
     announce_fixture(&fixture);
     let mut handlers = tokio::task::JoinSet::new();
@@ -415,6 +490,8 @@ async fn run(
             Arc::clone(&authority),
             Arc::clone(&identity),
             hold_after_commit,
+            truncate_wal_after_commit,
+            authority_path.clone(),
         ));
     }
     while let Some(result) = handlers.join_next().await {

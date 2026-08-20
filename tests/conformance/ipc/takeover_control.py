@@ -296,6 +296,83 @@ async def run_concurrent_pressure() -> None:
         shutil.rmtree(identity_path, ignore_errors=True)
 
 
+async def run_torn_wal_recovery() -> None:
+    torn_socket = endpoint("tw")
+    restart_socket = endpoint("tr")
+    authority_path = str(
+        Path(tempfile.gettempdir())
+        / f"nlos-takeover-{os.getpid()}-{time.time_ns()}-torn.sqlite3"
+    )
+    identity_path = str(
+        Path(tempfile.gettempdir())
+        / f"nlos-takeover-{os.getpid()}-{time.time_ns()}-torn-identity"
+    )
+    process: asyncio.subprocess.Process | None = None
+    client: LocalRpcClient | None = None
+    try:
+        process, fixture = await start_server(
+            torn_socket,
+            authority_path,
+            identity_path,
+            {
+                "NLOS_TAKEOVER_CONTROL_HOLD_AFTER_COMMIT": "1",
+                "NLOS_TAKEOVER_CONTROL_TRUNCATE_WAL_AFTER_COMMIT": "1",
+            },
+        )
+        request = submit_request(fixture)
+        config = TransportConfig(connect_timeout=2, read_timeout=2, write_timeout=2)
+        client = await LocalRpcClient.connect(torn_socket, config)
+        in_flight = asyncio.create_task(client.exchange(request))
+        await wait_for_server_line(process, b"COMMIT_READY")
+        await wait_for_server_line(process, b"WAL_TORN_READY")
+        process.kill()
+        crash_code = await process.wait()
+        assert crash_code != 0
+        try:
+            await in_flight
+        except IpcError:
+            pass
+        else:
+            raise AssertionError("torn WAL request unexpectedly returned")
+        await client.close()
+        client = None
+        Path(f"{authority_path}-shm").unlink(missing_ok=True)
+
+        process, recovered_fixture = await start_server(
+            restart_socket, authority_path, identity_path
+        )
+        assert recovered_fixture == fixture
+        recovery_client = await LocalRpcClient.connect(restart_socket, config)
+        response = await recovery_client.exchange(request)
+        assert_success(response, recovered_fixture)
+        await recovery_client.close()
+
+        replay_client = await LocalRpcClient.connect(restart_socket, config)
+        replay = await replay_client.exchange(request)
+        assert_success(replay, recovered_fixture)
+        assert response.SerializeToString() == replay.SerializeToString()
+        await replay_client.close()
+        assert await process.wait() == 0
+    finally:
+        if client is not None:
+            await client.close()
+        if process is not None and process.returncode is None:
+            process.kill()
+            await process.wait()
+        for path in (
+            torn_socket,
+            restart_socket,
+            authority_path,
+            f"{authority_path}-wal",
+            f"{authority_path}-shm",
+        ):
+            try:
+                Path(path).unlink()
+            except FileNotFoundError:
+                pass
+        shutil.rmtree(identity_path, ignore_errors=True)
+
+
 async def main() -> None:
     socket = endpoint("py")
     authority_path = str(
@@ -340,6 +417,7 @@ async def main() -> None:
 
     await run_crash_restart()
     await run_concurrent_pressure()
+    await run_torn_wal_recovery()
 
 
 if __name__ == "__main__":
