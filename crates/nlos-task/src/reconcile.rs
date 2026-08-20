@@ -507,16 +507,12 @@ fn decode_quarantine_row(
         ));
     }
     let mut known_effect_receipts = Vec::with_capacity(known_blob.len() / 16);
-    for chunk in known_blob.chunks_exact(16) {
-        let mut bytes = [0u8; 16];
-        bytes.copy_from_slice(chunk);
-        known_effect_receipts.push(ReceiptId::from_bytes(bytes));
+    for chunk in known_blob.as_chunks::<16>().0 {
+        known_effect_receipts.push(ReceiptId::from_bytes(*chunk));
     }
     let mut unknown_slots = Vec::with_capacity(unknown_blob.len() / 8);
-    for chunk in unknown_blob.chunks_exact(8) {
-        let mut bytes = [0u8; 8];
-        bytes.copy_from_slice(chunk);
-        unknown_slots.push(u64::from_be_bytes(bytes));
+    for chunk in unknown_blob.as_chunks::<8>().0 {
+        unknown_slots.push(u64::from_be_bytes(*chunk));
     }
     Ok(QuarantineReceiptRecord {
         receipt_id: ReceiptId::from_bytes(blob16(row, 0)?),
