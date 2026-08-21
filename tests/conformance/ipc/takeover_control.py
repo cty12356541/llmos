@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import signal
 import sys
 import tempfile
 import time
@@ -60,6 +61,7 @@ async def start_server(
     environment: dict[str, str] | None = None,
 ) -> tuple[asyncio.subprocess.Process, dict[str, str]]:
     process_environment = os.environ.copy()
+    process_environment.pop("NLOS_TAKEOVER_CONTROL_HOLD_BEFORE_COMMIT", None)
     process_environment.pop("NLOS_TAKEOVER_CONTROL_HOLD_AFTER_COMMIT", None)
     process_environment.pop("NLOS_TAKEOVER_CONTROL_CONNECTIONS", None)
     process_environment.pop("NLOS_TAKEOVER_CONTROL_ROUNDS", None)
@@ -239,6 +241,123 @@ async def run_crash_restart() -> None:
             except FileNotFoundError:
                 pass
         shutil.rmtree(identity_path, ignore_errors=True)
+
+
+def terminate_process(process: asyncio.subprocess.Process, force: bool) -> None:
+    if force and sys.platform != "win32":
+        process.send_signal(signal.SIGKILL)
+    else:
+        process.terminate()
+
+
+async def run_signal_crash_case(
+    label: str,
+    marker: bytes,
+    environment: dict[str, str],
+    force: bool,
+) -> None:
+    # Keep Unix socket names below SUN_LEN; the case label stays in the DB path.
+    crash_socket = endpoint("sc")
+    restart_socket = endpoint("sr")
+    authority_path = str(
+        Path(tempfile.gettempdir())
+        / f"nlos-takeover-{os.getpid()}-{time.time_ns()}-{label}.sqlite3"
+    )
+    identity_path = str(
+        Path(tempfile.gettempdir())
+        / f"nlos-takeover-{os.getpid()}-{time.time_ns()}-{label}-identity"
+    )
+    process: asyncio.subprocess.Process | None = None
+    client: LocalRpcClient | None = None
+    request_seed = 0xE0 + len(label)
+    try:
+        process, fixture = await start_server(
+            crash_socket,
+            authority_path,
+            identity_path,
+            environment,
+        )
+        request = submit_request(fixture, request_seed)
+        config = TransportConfig(connect_timeout=2, read_timeout=2, write_timeout=2)
+        client = await LocalRpcClient.connect(crash_socket, config)
+        in_flight = asyncio.create_task(client.exchange(request))
+        await wait_for_server_line(process, marker)
+        terminate_process(process, force)
+        crash_code = await process.wait()
+        assert crash_code != 0, f"{label} server unexpectedly exited cleanly"
+        try:
+            await in_flight
+        except IpcError:
+            pass
+        else:
+            raise AssertionError(f"{label} request unexpectedly returned")
+        await client.close()
+        client = None
+
+        process, recovered_fixture = await start_server(
+            restart_socket, authority_path, identity_path
+        )
+        assert recovered_fixture == fixture
+        recovery_client = await LocalRpcClient.connect(restart_socket, config)
+        recovered = await recovery_client.exchange(request)
+        assert_success(recovered, recovered_fixture)
+        await recovery_client.close()
+
+        replay_client = await LocalRpcClient.connect(restart_socket, config)
+        replay = await replay_client.exchange(request)
+        assert_success(replay, recovered_fixture)
+        assert recovered.SerializeToString() == replay.SerializeToString()
+        await replay_client.close()
+        assert await process.wait() == 0
+    finally:
+        if client is not None:
+            await client.close()
+        if process is not None and process.returncode is None:
+            terminate_process(process, force)
+            await process.wait()
+        for path in (
+            crash_socket,
+            restart_socket,
+            authority_path,
+            f"{authority_path}-wal",
+            f"{authority_path}-shm",
+        ):
+            try:
+                Path(path).unlink()
+            except FileNotFoundError:
+                pass
+        shutil.rmtree(identity_path, ignore_errors=True)
+
+
+async def run_signal_crash_matrix() -> None:
+    cases = (
+        (
+            "pre-term",
+            b"PRE_COMMIT_READY",
+            {"NLOS_TAKEOVER_CONTROL_HOLD_BEFORE_COMMIT": "1"},
+            False,
+        ),
+        (
+            "pre-force",
+            b"PRE_COMMIT_READY",
+            {"NLOS_TAKEOVER_CONTROL_HOLD_BEFORE_COMMIT": "1"},
+            True,
+        ),
+        (
+            "post-term",
+            b"COMMIT_READY",
+            {"NLOS_TAKEOVER_CONTROL_HOLD_AFTER_COMMIT": "1"},
+            False,
+        ),
+        (
+            "post-force",
+            b"COMMIT_READY",
+            {"NLOS_TAKEOVER_CONTROL_HOLD_AFTER_COMMIT": "1"},
+            True,
+        ),
+    )
+    for label, marker, environment, force in cases:
+        await run_signal_crash_case(label, marker, environment, force)
 
 
 async def run_concurrent_pressure() -> None:
@@ -487,6 +606,7 @@ async def main() -> None:
         shutil.rmtree(identity_path, ignore_errors=True)
 
     await run_crash_restart()
+    await run_signal_crash_matrix()
     await run_concurrent_pressure()
     await run_high_connection_soak()
     await run_torn_wal_recovery()

@@ -37,6 +37,7 @@ const OBSERVED_AT_MS: i64 = 220;
 const MONOTONIC_NOW_NS: u64 = 10;
 const CAPABILITY_SLOT: u64 = 5;
 const CAPABILITY_GENERATION: u64 = 1;
+const HOLD_BEFORE_COMMIT_ENV: &str = "NLOS_TAKEOVER_CONTROL_HOLD_BEFORE_COMMIT";
 const HOLD_AFTER_COMMIT_ENV: &str = "NLOS_TAKEOVER_CONTROL_HOLD_AFTER_COMMIT";
 const CONNECTIONS_ENV: &str = "NLOS_TAKEOVER_CONTROL_CONNECTIONS";
 const ROUNDS_ENV: &str = "NLOS_TAKEOVER_CONTROL_ROUNDS";
@@ -262,9 +263,21 @@ fn announce_commit_ready() {
     io::stdout().flush().expect("flush commit marker");
 }
 
+fn announce_pre_commit_ready() {
+    println!("PRE_COMMIT_READY");
+    io::stdout().flush().expect("flush pre-commit marker");
+}
+
 fn announce_wal_torn_ready() {
     println!("WAL_TORN_READY");
     io::stdout().flush().expect("flush torn WAL marker");
+}
+
+#[derive(Clone, Copy)]
+struct CrashInjection {
+    hold_before_commit: bool,
+    hold_after_commit: bool,
+    truncate_wal_after_commit: bool,
 }
 
 async fn serve_exchange<S>(
@@ -272,8 +285,7 @@ async fn serve_exchange<S>(
     peer: PeerIdentity,
     authority: Arc<SqliteTaskAuthority>,
     identity: Arc<IdentityAuthority>,
-    hold_after_commit: bool,
-    truncate_wal_after_commit: bool,
+    crash_injection: CrashInjection,
     authority_path: PathBuf,
 ) -> Result<(), IpcError>
 where
@@ -285,23 +297,37 @@ where
         peer,
         &ALLOW_PEER,
         move |validated| {
-            let (response, should_hold) = match nlos_takeover_control::TakeoverControl::new(
-                authority.as_ref(),
-                identity.as_ref(),
-                &CAPABILITY_POLICY,
-            )
-            .handle(validated.envelope(), MONOTONIC_NOW_NS, OBSERVED_AT_MS)
-            {
-                Ok(envelope) => (envelope, hold_after_commit),
-                Err(error) => (
-                    nlos_takeover_control::failure_envelope(validated.envelope(), &error),
-                    false,
-                ),
+            let outcome = if crash_injection.hold_before_commit {
+                announce_pre_commit_ready();
+                None
+            } else {
+                Some(
+                    match nlos_takeover_control::TakeoverControl::new(
+                        authority.as_ref(),
+                        identity.as_ref(),
+                        &CAPABILITY_POLICY,
+                    )
+                    .handle(
+                        validated.envelope(),
+                        MONOTONIC_NOW_NS,
+                        OBSERVED_AT_MS,
+                    ) {
+                        Ok(envelope) => (envelope, crash_injection.hold_after_commit),
+                        Err(error) => (
+                            nlos_takeover_control::failure_envelope(validated.envelope(), &error),
+                            false,
+                        ),
+                    },
+                )
             };
             async move {
+                let Some((response, should_hold)) = outcome else {
+                    std::future::pending::<()>().await;
+                    unreachable!("pre-commit conformance hook must remain suspended");
+                };
                 if should_hold {
                     announce_commit_ready();
-                    if truncate_wal_after_commit {
+                    if crash_injection.truncate_wal_after_commit {
                         truncate_wal_inside_last_commit(&authority_path)
                             .expect("truncate WAL after committed IPC observation");
                         announce_wal_torn_ready();
@@ -319,6 +345,10 @@ where
 
 fn hold_after_commit_enabled() -> bool {
     std::env::var_os(HOLD_AFTER_COMMIT_ENV).is_some()
+}
+
+fn hold_before_commit_enabled() -> bool {
+    std::env::var_os(HOLD_BEFORE_COMMIT_ENV).is_some()
 }
 
 fn truncate_wal_after_commit_enabled() -> bool {
@@ -438,7 +468,11 @@ async fn run(
     let listener = UnixListenerAdapter::bind(&endpoint)?;
     let _guard = EndpointGuard(endpoint);
     let hold_after_commit = hold_after_commit_enabled();
-    let truncate_wal_after_commit = hold_after_commit && truncate_wal_after_commit_enabled();
+    let crash_injection = CrashInjection {
+        hold_before_commit: hold_before_commit_enabled(),
+        hold_after_commit,
+        truncate_wal_after_commit: hold_after_commit && truncate_wal_after_commit_enabled(),
+    };
     let connection_count = connection_count()?;
     let round_count = round_count()?;
     announce_ready()?;
@@ -452,8 +486,7 @@ async fn run(
                 peer,
                 Arc::clone(&authority),
                 Arc::clone(&identity),
-                hold_after_commit,
-                truncate_wal_after_commit,
+                crash_injection,
                 authority_path.clone(),
             ));
         }
@@ -496,6 +529,11 @@ async fn run(
     let hold_after_commit = hold_after_commit_enabled();
     let truncate_wal_after_commit = hold_after_commit && truncate_wal_after_commit_enabled();
     let round_count = round_count()?;
+    let crash_injection = CrashInjection {
+        hold_before_commit: hold_before_commit_enabled(),
+        hold_after_commit,
+        truncate_wal_after_commit,
+    };
     announce_ready()?;
     announce_fixture(&fixture);
     for _ in 0..round_count {
@@ -507,8 +545,7 @@ async fn run(
                 peer,
                 Arc::clone(&authority),
                 Arc::clone(&identity),
-                hold_after_commit,
-                truncate_wal_after_commit,
+                crash_injection,
                 authority_path.clone(),
             ));
         }

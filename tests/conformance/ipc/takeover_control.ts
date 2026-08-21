@@ -141,6 +141,7 @@ async function startServer(
       cwd: process.cwd(),
       env: (() => {
         const serverEnvironment = { ...process.env };
+        delete serverEnvironment.NLOS_TAKEOVER_CONTROL_HOLD_BEFORE_COMMIT;
         delete serverEnvironment.NLOS_TAKEOVER_CONTROL_HOLD_AFTER_COMMIT;
         delete serverEnvironment.NLOS_TAKEOVER_CONTROL_CONNECTIONS;
         delete serverEnvironment.NLOS_TAKEOVER_CONTROL_ROUNDS;
@@ -349,6 +350,141 @@ async function runCrashRestart(): Promise<void> {
       rm(`${authorityPath}-shm`, { force: true }),
       rm(identityPath, { recursive: true, force: true }),
     ]);
+  }
+}
+
+type SignalCrashCase = {
+  label: string;
+  marker: "PRE_COMMIT_READY" | "COMMIT_READY";
+  environment: NodeJS.ProcessEnv;
+  force: boolean;
+};
+
+function terminateServer(
+  server: ChildProcessWithoutNullStreams,
+  force: boolean,
+): void {
+  if (force && process.platform !== "win32") {
+    server.kill("SIGKILL");
+  } else {
+    server.kill("SIGTERM");
+  }
+}
+
+async function runSignalCrashCase(testCase: SignalCrashCase): Promise<void> {
+  // Keep Unix socket names below SUN_LEN; the case label stays in the DB path.
+  const crashSocket = endpoint("sc");
+  const restartSocket = endpoint("sr");
+  const authorityPath = join(
+    tmpdir(),
+    `nlos-takeover-${process.pid}-${Date.now()}-${testCase.label}.sqlite3`,
+  );
+  const identityPath = join(
+    tmpdir(),
+    `nlos-takeover-${process.pid}-${Date.now()}-${testCase.label}-identity`,
+  );
+  let server: ChildProcessWithoutNullStreams | undefined;
+  let client: LocalRpcClient | undefined;
+  try {
+    const crashed = await startServer(
+      crashSocket,
+      authorityPath,
+      identityPath,
+      testCase.environment,
+    );
+    server = crashed.server;
+    const request = submitRequest(crashed.fixture, 0xe0 + testCase.label.length);
+    client = await LocalRpcClient.connect(crashSocket, {
+      connectTimeoutMs: 2_000,
+      readTimeoutMs: 2_000,
+      writeTimeoutMs: 2_000,
+    });
+    const inFlight = assert.rejects(client.exchange(request));
+    await crashed.waitForLine(testCase.marker);
+    terminateServer(server, testCase.force);
+    const crashExit = await waitForExit(server);
+    assert.ok(
+      crashExit.code !== 0 || crashExit.signal !== null,
+      `${testCase.label} server unexpectedly exited cleanly`,
+    );
+    await inFlight;
+    client.close();
+    client = undefined;
+
+    const recovered = await startServer(restartSocket, authorityPath, identityPath);
+    server = recovered.server;
+    assert.deepEqual(recovered.fixture, crashed.fixture);
+    const recoveryRequest = submitRequest(crashed.fixture, 0xe0 + testCase.label.length);
+    const recoveryClient = await LocalRpcClient.connect(restartSocket, {
+      connectTimeoutMs: 2_000,
+      readTimeoutMs: 2_000,
+      writeTimeoutMs: 2_000,
+    });
+    const recoveredResponse = await recoveryClient.exchange(recoveryRequest);
+    assertSuccess(recoveredResponse, recovered.fixture);
+    recoveryClient.close();
+
+    const replayClient = await LocalRpcClient.connect(restartSocket, {
+      connectTimeoutMs: 2_000,
+      readTimeoutMs: 2_000,
+      writeTimeoutMs: 2_000,
+    });
+    const replay = await replayClient.exchange(recoveryRequest);
+    assertSuccess(replay, recovered.fixture);
+    assert.deepEqual(
+      toBinary(ExchangeResponseSchema, recoveredResponse),
+      toBinary(ExchangeResponseSchema, replay),
+    );
+    replayClient.close();
+    assert.equal((await waitForExit(server)).code, 0);
+  } catch (error) {
+    client?.close();
+    if (server !== undefined && server.exitCode === null && server.signalCode === null) {
+      terminateServer(server, testCase.force);
+      await waitForExit(server).catch(() => undefined);
+    }
+    throw error;
+  } finally {
+    await Promise.all([
+      rm(crashSocket, { force: true }),
+      rm(restartSocket, { force: true }),
+      rm(authorityPath, { force: true }),
+      rm(`${authorityPath}-wal`, { force: true }),
+      rm(`${authorityPath}-shm`, { force: true }),
+      rm(identityPath, { recursive: true, force: true }),
+    ]);
+  }
+}
+
+async function runSignalCrashMatrix(): Promise<void> {
+  const cases: SignalCrashCase[] = [
+    {
+      label: "pre-term",
+      marker: "PRE_COMMIT_READY",
+      environment: { NLOS_TAKEOVER_CONTROL_HOLD_BEFORE_COMMIT: "1" },
+      force: false,
+    },
+    {
+      label: "pre-force",
+      marker: "PRE_COMMIT_READY",
+      environment: { NLOS_TAKEOVER_CONTROL_HOLD_BEFORE_COMMIT: "1" },
+      force: true,
+    },
+    {
+      label: "post-term",
+      marker: "COMMIT_READY",
+      environment: { NLOS_TAKEOVER_CONTROL_HOLD_AFTER_COMMIT: "1" },
+      force: false,
+    },
+    {
+      label: "post-force",
+      marker: "COMMIT_READY",
+      environment: { NLOS_TAKEOVER_CONTROL_HOLD_AFTER_COMMIT: "1" },
+      force: true,
+    },
+  ];
+  for (const testCase of cases) {
+    await runSignalCrashCase(testCase);
   }
 }
 
@@ -620,6 +756,8 @@ try {
 }
 
 await runCrashRestart();
+
+await runSignalCrashMatrix();
 
 await runConcurrentPressure();
 
