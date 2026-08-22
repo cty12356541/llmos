@@ -146,6 +146,8 @@ async function startServer(
         delete serverEnvironment.NLOS_TAKEOVER_CONTROL_CONNECTIONS;
         delete serverEnvironment.NLOS_TAKEOVER_CONTROL_ROUNDS;
         delete serverEnvironment.NLOS_TAKEOVER_CONTROL_TRUNCATE_WAL_AFTER_COMMIT;
+        delete serverEnvironment.NLOS_TAKEOVER_CONTROL_RANDOM_CRASH_PHASE;
+        delete serverEnvironment.NLOS_TAKEOVER_CONTROL_RANDOM_CRASH_SEED;
         return { ...serverEnvironment, ...environment };
       })(),
       stdio: ["pipe", "pipe", "pipe"],
@@ -488,6 +490,160 @@ async function runSignalCrashMatrix(): Promise<void> {
   }
 }
 
+type RandomCrashPhase = "before" | "after";
+type RandomCrashCase = {
+  label: string;
+  phase: RandomCrashPhase;
+  seed: number;
+  force: boolean;
+};
+
+type RandomCrashReady = {
+  phase: RandomCrashPhase;
+  seed: number;
+  delayMs: number;
+  killAfterMs: number;
+};
+
+function parseRandomCrashReady(line: string): RandomCrashReady {
+  assert.match(line, /^RANDOM_CRASH_READY /);
+  const fields = Object.fromEntries(
+    line
+      .slice("RANDOM_CRASH_READY ".length)
+      .trim()
+      .split(/\s+/)
+      .map((field) => {
+        const separator = field.indexOf("=");
+        assert.ok(separator > 0, `invalid random crash field ${field}`);
+        return [field.slice(0, separator), field.slice(separator + 1)];
+      }),
+  );
+  assert.ok(fields.phase === "before" || fields.phase === "after");
+  const seed = Number(fields.seed);
+  const delayMs = Number(fields.delay_ms);
+  const killAfterMs = Number(fields.kill_after_ms);
+  assert.ok(Number.isSafeInteger(seed) && seed >= 0);
+  assert.ok(Number.isSafeInteger(delayMs) && delayMs > 0);
+  assert.ok(Number.isSafeInteger(killAfterMs) && killAfterMs > 0);
+  return {
+    phase: fields.phase,
+    seed,
+    delayMs,
+    killAfterMs,
+  };
+}
+
+function expectedRandomCrashDelay(seed: number): { delayMs: number; killAfterMs: number } {
+  const mixed =
+    (BigInt(seed) * 1_103_515_245n + 12_345n) & ((1n << 64n) - 1n);
+  const delayMs = 40 + Number(mixed % 121n);
+  return { delayMs, killAfterMs: Math.floor(delayMs / 3) };
+}
+
+async function runRandomDelayCrashCase(testCase: RandomCrashCase): Promise<void> {
+  const crashSocket = endpoint("rc");
+  const restartSocket = endpoint("rr");
+  const authorityPath = join(
+    tmpdir(),
+    `nlos-takeover-${process.pid}-${Date.now()}-${testCase.label}.sqlite3`,
+  );
+  const identityPath = join(
+    tmpdir(),
+    `nlos-takeover-${process.pid}-${Date.now()}-${testCase.label}-identity`,
+  );
+  let server: ChildProcessWithoutNullStreams | undefined;
+  let client: LocalRpcClient | undefined;
+  try {
+    const crashed = await startServer(crashSocket, authorityPath, identityPath, {
+      NLOS_TAKEOVER_CONTROL_RANDOM_CRASH_PHASE: testCase.phase,
+      NLOS_TAKEOVER_CONTROL_RANDOM_CRASH_SEED: String(testCase.seed),
+    });
+    server = crashed.server;
+    const request = submitRequest(crashed.fixture, 0xf0 + testCase.seed);
+    client = await LocalRpcClient.connect(crashSocket, {
+      connectTimeoutMs: 2_000,
+      readTimeoutMs: 2_000,
+      writeTimeoutMs: 2_000,
+    });
+    const inFlight = assert.rejects(client.exchange(request));
+    const ready = parseRandomCrashReady(await crashed.waitForLine("RANDOM_CRASH_READY"));
+    assert.equal(ready.phase, testCase.phase);
+    assert.equal(ready.seed, testCase.seed);
+    assert.deepEqual(ready, {
+      phase: testCase.phase,
+      seed: testCase.seed,
+      ...expectedRandomCrashDelay(testCase.seed),
+    });
+    assert.ok(ready.killAfterMs < ready.delayMs);
+    await new Promise((resolve) => setTimeout(resolve, ready.killAfterMs));
+    terminateServer(server, testCase.force);
+    const crashExit = await waitForExit(server);
+    assert.ok(
+      crashExit.code !== 0 || crashExit.signal !== null,
+      `${testCase.label} server unexpectedly exited cleanly`,
+    );
+    await inFlight;
+    client.close();
+    client = undefined;
+
+    const recovered = await startServer(restartSocket, authorityPath, identityPath);
+    server = recovered.server;
+    assert.deepEqual(recovered.fixture, crashed.fixture);
+    const recoveryClient = await LocalRpcClient.connect(restartSocket, {
+      connectTimeoutMs: 2_000,
+      readTimeoutMs: 2_000,
+      writeTimeoutMs: 2_000,
+    });
+    const recoveredResponse = await recoveryClient.exchange(request);
+    assertSuccess(recoveredResponse, recovered.fixture);
+    recoveryClient.close();
+
+    const replayClient = await LocalRpcClient.connect(restartSocket, {
+      connectTimeoutMs: 2_000,
+      readTimeoutMs: 2_000,
+      writeTimeoutMs: 2_000,
+    });
+    const replay = await replayClient.exchange(request);
+    assertSuccess(replay, recovered.fixture);
+    assert.deepEqual(
+      toBinary(ExchangeResponseSchema, recoveredResponse),
+      toBinary(ExchangeResponseSchema, replay),
+    );
+    replayClient.close();
+    assert.equal((await waitForExit(server)).code, 0);
+  } catch (error) {
+    client?.close();
+    if (server !== undefined && server.exitCode === null && server.signalCode === null) {
+      terminateServer(server, testCase.force);
+      await waitForExit(server).catch(() => undefined);
+    }
+    throw error;
+  } finally {
+    await Promise.all([
+      rm(crashSocket, { force: true }),
+      rm(restartSocket, { force: true }),
+      rm(authorityPath, { force: true }),
+      rm(`${authorityPath}-wal`, { force: true }),
+      rm(`${authorityPath}-shm`, { force: true }),
+      rm(identityPath, { recursive: true, force: true }),
+    ]);
+  }
+}
+
+async function runRandomDelayCrashMatrix(): Promise<void> {
+  const cases: RandomCrashCase[] = [
+    { label: "random-pre-51", phase: "before", seed: 0x51, force: false },
+    { label: "random-pre-a7", phase: "before", seed: 0xa7, force: true },
+    { label: "random-pre-c3", phase: "before", seed: 0xc3, force: false },
+    { label: "random-post-51", phase: "after", seed: 0x51, force: true },
+    { label: "random-post-a7", phase: "after", seed: 0xa7, force: false },
+    { label: "random-post-c3", phase: "after", seed: 0xc3, force: true },
+  ];
+  for (const testCase of cases) {
+    await runRandomDelayCrashCase(testCase);
+  }
+}
+
 async function runConcurrentPressure(): Promise<void> {
   const socket = endpoint("tp");
   const authorityPath = join(
@@ -758,6 +914,8 @@ try {
 await runCrashRestart();
 
 await runSignalCrashMatrix();
+
+await runRandomDelayCrashMatrix();
 
 await runConcurrentPressure();
 

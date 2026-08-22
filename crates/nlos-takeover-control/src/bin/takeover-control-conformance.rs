@@ -13,6 +13,7 @@ use std::fmt::Write as _;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use ed25519_dalek::{Signer, SigningKey};
 use nlos_identity::{BootstrapPrincipalRequest, IdentityAuthority, KeyPurpose};
@@ -42,6 +43,8 @@ const HOLD_AFTER_COMMIT_ENV: &str = "NLOS_TAKEOVER_CONTROL_HOLD_AFTER_COMMIT";
 const CONNECTIONS_ENV: &str = "NLOS_TAKEOVER_CONTROL_CONNECTIONS";
 const ROUNDS_ENV: &str = "NLOS_TAKEOVER_CONTROL_ROUNDS";
 const TRUNCATE_WAL_AFTER_COMMIT_ENV: &str = "NLOS_TAKEOVER_CONTROL_TRUNCATE_WAL_AFTER_COMMIT";
+const RANDOM_CRASH_PHASE_ENV: &str = "NLOS_TAKEOVER_CONTROL_RANDOM_CRASH_PHASE";
+const RANDOM_CRASH_SEED_ENV: &str = "NLOS_TAKEOVER_CONTROL_RANDOM_CRASH_SEED";
 
 struct AllowPeer;
 
@@ -274,6 +277,83 @@ fn announce_wal_torn_ready() {
 }
 
 #[derive(Clone, Copy)]
+enum RandomCrashPhase {
+    BeforeCommit,
+    AfterCommit,
+}
+
+impl RandomCrashPhase {
+    fn parse(value: &str) -> Result<Self, Box<dyn Error>> {
+        match value {
+            "before" => Ok(Self::BeforeCommit),
+            "after" => Ok(Self::AfterCommit),
+            other => Err(format!(
+                "{RANDOM_CRASH_PHASE_ENV} must be `before` or `after`, got {other}"
+            )
+            .into()),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::BeforeCommit => "before",
+            Self::AfterCommit => "after",
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct RandomCrashInjection {
+    phase: RandomCrashPhase,
+    seed: u64,
+    delay_ms: u64,
+    kill_after_ms: u64,
+}
+
+impl RandomCrashInjection {
+    fn applies_before_commit(self) -> bool {
+        matches!(self.phase, RandomCrashPhase::BeforeCommit)
+    }
+
+    fn applies_after_commit(self) -> bool {
+        matches!(self.phase, RandomCrashPhase::AfterCommit)
+    }
+}
+
+/// Deterministically derive a short delay from a test seed. This is deliberately
+/// a tiny test-server-only PRNG, not a production fault model: the client kills
+/// the process during the first third of the announced delay so the phase is
+/// stable while the delay points vary across the seed sequence.
+fn random_crash_injection() -> Result<Option<RandomCrashInjection>, Box<dyn Error>> {
+    let Some(raw_phase) = std::env::var_os(RANDOM_CRASH_PHASE_ENV) else {
+        return Ok(None);
+    };
+    let phase = RandomCrashPhase::parse(&raw_phase.to_string_lossy())?;
+    let seed = std::env::var(RANDOM_CRASH_SEED_ENV)
+        .map_err(|_| format!("{RANDOM_CRASH_SEED_ENV} is required with {RANDOM_CRASH_PHASE_ENV}"))?
+        .parse::<u64>()?;
+    let mixed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+    let delay_ms = 40 + mixed % 121;
+    Ok(Some(RandomCrashInjection {
+        phase,
+        seed,
+        delay_ms,
+        kill_after_ms: delay_ms / 3,
+    }))
+}
+
+fn announce_random_crash_ready(injection: RandomCrashInjection) {
+    println!(
+        "RANDOM_CRASH_READY phase={} seed={} delay_ms={} kill_after_ms={}",
+        injection.phase.label(),
+        injection.seed,
+        injection.delay_ms,
+        injection.kill_after_ms,
+    );
+    io::stdout().flush().expect("flush random crash marker");
+}
+
+#[derive(Clone, Copy)]
 struct CrashInjection {
     hold_before_commit: bool,
     hold_after_commit: bool,
@@ -286,6 +366,7 @@ async fn serve_exchange<S>(
     authority: Arc<SqliteTaskAuthority>,
     identity: Arc<IdentityAuthority>,
     crash_injection: CrashInjection,
+    random_crash: Option<RandomCrashInjection>,
     authority_path: PathBuf,
 ) -> Result<(), IpcError>
 where
@@ -296,48 +377,46 @@ where
         TransportConfig::default(),
         peer,
         &ALLOW_PEER,
-        move |validated| {
-            let outcome = if crash_injection.hold_before_commit {
-                announce_pre_commit_ready();
-                None
-            } else {
-                Some(
-                    match nlos_takeover_control::TakeoverControl::new(
-                        authority.as_ref(),
-                        identity.as_ref(),
-                        &CAPABILITY_POLICY,
-                    )
-                    .handle(
-                        validated.envelope(),
-                        MONOTONIC_NOW_NS,
-                        OBSERVED_AT_MS,
-                    ) {
-                        Ok(envelope) => (envelope, crash_injection.hold_after_commit),
-                        Err(error) => (
-                            nlos_takeover_control::failure_envelope(validated.envelope(), &error),
-                            false,
-                        ),
-                    },
-                )
-            };
-            async move {
-                let Some((response, should_hold)) = outcome else {
-                    std::future::pending::<()>().await;
-                    unreachable!("pre-commit conformance hook must remain suspended");
-                };
-                if should_hold {
-                    announce_commit_ready();
-                    if crash_injection.truncate_wal_after_commit {
-                        truncate_wal_inside_last_commit(&authority_path)
-                            .expect("truncate WAL after committed IPC observation");
-                        announce_wal_torn_ready();
-                    }
-                    std::future::pending::<()>().await;
-                }
-                Ok(OutboundResponse::Typed(ExchangeResponse {
-                    envelope: Some(response),
-                }))
+        move |validated| async move {
+            if let Some(injection) = random_crash.filter(|item| item.applies_before_commit()) {
+                announce_random_crash_ready(injection);
+                tokio::time::sleep(Duration::from_millis(injection.delay_ms)).await;
             }
+            if crash_injection.hold_before_commit {
+                announce_pre_commit_ready();
+                std::future::pending::<()>().await;
+                unreachable!("pre-commit conformance hook must remain suspended");
+            }
+            let (response, should_hold) = match nlos_takeover_control::TakeoverControl::new(
+                authority.as_ref(),
+                identity.as_ref(),
+                &CAPABILITY_POLICY,
+            )
+            .handle(validated.envelope(), MONOTONIC_NOW_NS, OBSERVED_AT_MS)
+            {
+                Ok(envelope) => (envelope, crash_injection.hold_after_commit),
+                Err(error) => (
+                    nlos_takeover_control::failure_envelope(validated.envelope(), &error),
+                    false,
+                ),
+            };
+            if let Some(injection) = random_crash.filter(|item| item.applies_after_commit()) {
+                announce_random_crash_ready(injection);
+                tokio::time::sleep(Duration::from_millis(injection.delay_ms)).await;
+                std::future::pending::<()>().await;
+            }
+            if should_hold {
+                announce_commit_ready();
+                if crash_injection.truncate_wal_after_commit {
+                    truncate_wal_inside_last_commit(&authority_path)
+                        .expect("truncate WAL after committed IPC observation");
+                    announce_wal_torn_ready();
+                }
+                std::future::pending::<()>().await;
+            }
+            Ok(OutboundResponse::Typed(ExchangeResponse {
+                envelope: Some(response),
+            }))
         },
     )
     .await
@@ -473,6 +552,7 @@ async fn run(
         hold_after_commit,
         truncate_wal_after_commit: hold_after_commit && truncate_wal_after_commit_enabled(),
     };
+    let random_crash = random_crash_injection()?;
     let connection_count = connection_count()?;
     let round_count = round_count()?;
     announce_ready()?;
@@ -487,6 +567,7 @@ async fn run(
                 Arc::clone(&authority),
                 Arc::clone(&identity),
                 crash_injection,
+                random_crash,
                 authority_path.clone(),
             ));
         }
@@ -534,6 +615,7 @@ async fn run(
         hold_after_commit,
         truncate_wal_after_commit,
     };
+    let random_crash = random_crash_injection()?;
     announce_ready()?;
     announce_fixture(&fixture);
     for _ in 0..round_count {
@@ -546,6 +628,7 @@ async fn run(
                 Arc::clone(&authority),
                 Arc::clone(&identity),
                 crash_injection,
+                random_crash,
                 authority_path.clone(),
             ));
         }

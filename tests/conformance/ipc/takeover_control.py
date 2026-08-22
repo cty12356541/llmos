@@ -66,6 +66,8 @@ async def start_server(
     process_environment.pop("NLOS_TAKEOVER_CONTROL_CONNECTIONS", None)
     process_environment.pop("NLOS_TAKEOVER_CONTROL_ROUNDS", None)
     process_environment.pop("NLOS_TAKEOVER_CONTROL_TRUNCATE_WAL_AFTER_COMMIT", None)
+    process_environment.pop("NLOS_TAKEOVER_CONTROL_RANDOM_CRASH_PHASE", None)
+    process_environment.pop("NLOS_TAKEOVER_CONTROL_RANDOM_CRASH_SEED", None)
     if environment is not None:
         process_environment.update(environment)
     process = await asyncio.create_subprocess_exec(
@@ -360,6 +362,140 @@ async def run_signal_crash_matrix() -> None:
         await run_signal_crash_case(label, marker, environment, force)
 
 
+def parse_random_crash_ready(line: bytes) -> dict[str, int | str]:
+    text = line.decode("utf-8").strip()
+    assert text.startswith("RANDOM_CRASH_READY "), text
+    fields: dict[str, str] = {}
+    for field in text.removeprefix("RANDOM_CRASH_READY ").split():
+        key, separator, value = field.partition("=")
+        assert separator and key and value, field
+        fields[key] = value
+    assert fields["phase"] in ("before", "after")
+    seed = int(fields["seed"])
+    delay_ms = int(fields["delay_ms"])
+    kill_after_ms = int(fields["kill_after_ms"])
+    assert seed >= 0
+    assert delay_ms > 0
+    assert kill_after_ms > 0
+    return {
+        "phase": fields["phase"],
+        "seed": seed,
+        "delay_ms": delay_ms,
+        "kill_after_ms": kill_after_ms,
+    }
+
+
+def expected_random_crash_delay(seed: int) -> tuple[int, int]:
+    mixed = (seed * 1_103_515_245 + 12_345) & ((1 << 64) - 1)
+    delay_ms = 40 + mixed % 121
+    return delay_ms, delay_ms // 3
+
+
+async def run_random_delay_crash_case(
+    label: str,
+    phase: str,
+    seed: int,
+    force: bool,
+) -> None:
+    crash_socket = endpoint("rc")
+    restart_socket = endpoint("rr")
+    authority_path = str(
+        Path(tempfile.gettempdir())
+        / f"nlos-takeover-{os.getpid()}-{time.time_ns()}-{label}.sqlite3"
+    )
+    identity_path = str(
+        Path(tempfile.gettempdir())
+        / f"nlos-takeover-{os.getpid()}-{time.time_ns()}-{label}-identity"
+    )
+    process: asyncio.subprocess.Process | None = None
+    client: LocalRpcClient | None = None
+    try:
+        process, fixture = await start_server(
+            crash_socket,
+            authority_path,
+            identity_path,
+            {
+                "NLOS_TAKEOVER_CONTROL_RANDOM_CRASH_PHASE": phase,
+                "NLOS_TAKEOVER_CONTROL_RANDOM_CRASH_SEED": str(seed),
+            },
+        )
+        request = submit_request(fixture, 0xF0 + seed)
+        config = TransportConfig(connect_timeout=2, read_timeout=2, write_timeout=2)
+        client = await LocalRpcClient.connect(crash_socket, config)
+        in_flight = asyncio.create_task(client.exchange(request))
+        ready = parse_random_crash_ready(
+            await wait_for_server_line(process, b"RANDOM_CRASH_READY")
+        )
+        assert ready == {
+            "phase": phase,
+            "seed": seed,
+            "delay_ms": expected_random_crash_delay(seed)[0],
+            "kill_after_ms": expected_random_crash_delay(seed)[1],
+        }
+        delay_ms = int(ready["delay_ms"])
+        kill_after_ms = int(ready["kill_after_ms"])
+        assert 0 < kill_after_ms < delay_ms
+        await asyncio.sleep(kill_after_ms / 1000)
+        terminate_process(process, force)
+        crash_code = await process.wait()
+        assert crash_code != 0, f"{label} server unexpectedly exited cleanly"
+        try:
+            await in_flight
+        except IpcError:
+            pass
+        else:
+            raise AssertionError(f"{label} request unexpectedly returned")
+        await client.close()
+        client = None
+
+        process, recovered_fixture = await start_server(
+            restart_socket, authority_path, identity_path
+        )
+        assert recovered_fixture == fixture
+        recovery_client = await LocalRpcClient.connect(restart_socket, config)
+        recovered = await recovery_client.exchange(request)
+        assert_success(recovered, recovered_fixture)
+        await recovery_client.close()
+
+        replay_client = await LocalRpcClient.connect(restart_socket, config)
+        replay = await replay_client.exchange(request)
+        assert_success(replay, recovered_fixture)
+        assert recovered.SerializeToString() == replay.SerializeToString()
+        await replay_client.close()
+        assert await process.wait() == 0
+    finally:
+        if client is not None:
+            await client.close()
+        if process is not None and process.returncode is None:
+            terminate_process(process, force)
+            await process.wait()
+        for path in (
+            crash_socket,
+            restart_socket,
+            authority_path,
+            f"{authority_path}-wal",
+            f"{authority_path}-shm",
+        ):
+            try:
+                Path(path).unlink()
+            except FileNotFoundError:
+                pass
+        shutil.rmtree(identity_path, ignore_errors=True)
+
+
+async def run_random_delay_crash_matrix() -> None:
+    cases = (
+        ("random-pre-51", "before", 0x51, False),
+        ("random-pre-a7", "before", 0xA7, True),
+        ("random-pre-c3", "before", 0xC3, False),
+        ("random-post-51", "after", 0x51, True),
+        ("random-post-a7", "after", 0xA7, False),
+        ("random-post-c3", "after", 0xC3, True),
+    )
+    for label, phase, seed, force in cases:
+        await run_random_delay_crash_case(label, phase, seed, force)
+
+
 async def run_concurrent_pressure() -> None:
     socket = endpoint("pp")
     authority_path = str(
@@ -607,6 +743,7 @@ async def main() -> None:
 
     await run_crash_restart()
     await run_signal_crash_matrix()
+    await run_random_delay_crash_matrix()
     await run_concurrent_pressure()
     await run_high_connection_soak()
     await run_torn_wal_recovery()
