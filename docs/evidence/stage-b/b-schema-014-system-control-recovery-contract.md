@@ -16,4 +16,4 @@
 
 `nlos-schema` compatibility tests 覆盖 get/snapshot/submit/result round-trip、registry、过量 alert 与不安全 reason；Buf lint/format、TypeScript typecheck 和 Rust tests 通过。
 
-本证据为 schema/validator H3 / `PARTIAL PASS`。尚未接入 TaskAuthority handler、common-envelope caller/idempotency/Capability 校验、ServiceDirectory binding 或真实 local IPC；当前不能声称 GUI/CLI/NL/API 已形成等价控制路径。
+本证据只覆盖 schema/validator，等级为 H3 / `PARTIAL PASS`；TaskAuthority handler、common-envelope caller/idempotency/Capability 校验、ServiceDirectory binding 和 local IPC 已由后续 [B-TASK-006L](./b-task-006l-system-control-recovery-handler.md) 分开记录，但该后续证据仍不代表真实 Capability authority、Principal attestation 或 GUI/CLI/NL/API 等价控制路径。

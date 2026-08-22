@@ -16,11 +16,11 @@ use nlos_schema::sabi;
 use nlos_schema::sabi::v1::{
     ArtifactRecoveryAlertStatus, ArtifactRecoveryMetrics, ArtifactRecoveryOperationsSnapshot,
     ControlCommandLifecycleState, Envelope, ReceiptReference, RecoveryFailureSummary,
-    SabiRequestContext, SabiResponseContext, envelope,
+    RetryDirective, SabiErrorCode, SabiFailure, SabiRequestContext, SabiResponseContext, envelope,
 };
 use nlos_schema::{
     CommonSemanticsError, CompatibilityError, MAX_SYSTEM_CONTROL_FAILURES, MethodSemantics,
-    decode_get_system_control_request, decode_submit_control_command_request,
+    REQUEST_ID_BYTES, decode_get_system_control_request, decode_submit_control_command_request,
     encode_artifact_recovery_operations_snapshot, encode_control_command_result,
     system_control_schema_identity, validate_sabi_request_context,
 };
@@ -216,6 +216,199 @@ impl From<CommonSemanticsError> for SystemControlError {
 impl From<TaskStoreError> for SystemControlError {
     fn from(error: TaskStoreError) -> Self {
         Self::Task(error)
+    }
+}
+
+impl SystemControlError {
+    /// Maps one local rejection to the bounded common SABI failure class.
+    ///
+    /// The mapping deliberately never includes the source error's display
+    /// text. `SQLite` messages, static authority reasons, and durable-record
+    /// details are local diagnostics and must not cross the `SystemControl`
+    /// boundary. A failed acknowledgement carries no receipt evidence, so a
+    /// storage error may be retried with the original idempotency key while a
+    /// contract or state error is terminal for that request.
+    ///
+    /// | Source | Code | Retry |
+    /// |---|---|---|
+    /// | schema/common contract | `INVALID_ARGUMENT` | `DO_NOT_RETRY` |
+    /// | expired deadline | `DEADLINE` | `DO_NOT_RETRY` |
+    /// | authorization/caller binding | `RIGHTS` | `DO_NOT_RETRY` |
+    /// | command/idempotency binding | `CONFLICT` | `DO_NOT_RETRY` |
+    /// | recovery object absent | `NOT_FOUND` | `DO_NOT_RETRY` |
+    /// | recovery CAS/replay conflict | `CONFLICT` | `DO_NOT_RETRY` |
+    /// | recovery lifecycle mismatch | `STATE` | `DO_NOT_RETRY` |
+    /// | SQLite storage failure | `DURABILITY` | `RETRY_SAME_IDEMPOTENCY_KEY` |
+    /// | unavailable durability/corrupt local state | `DURABILITY`/`DRIVER` | `DO_NOT_RETRY` |
+    /// | unknown method | `NOT_SUPPORTED` | `DO_NOT_RETRY` |
+    #[must_use]
+    pub fn to_sabi_failure(&self) -> SabiFailure {
+        let (code, retry, safe_message) = match self {
+            Self::Schema(_) => (
+                SabiErrorCode::InvalidArgument,
+                RetryDirective::DoNotRetry,
+                "request violates the SystemControl payload contract",
+            ),
+            Self::Common(CommonSemanticsError::DeadlineExpired) => (
+                SabiErrorCode::Deadline,
+                RetryDirective::DoNotRetry,
+                "call deadline has expired",
+            ),
+            Self::Common(_) => (
+                SabiErrorCode::InvalidArgument,
+                RetryDirective::DoNotRetry,
+                "request violates the common SABI contract",
+            ),
+            Self::AuthorizationDenied(_) | Self::CallerIssuerMismatch => (
+                SabiErrorCode::Rights,
+                RetryDirective::DoNotRetry,
+                "SystemControl authorization denied",
+            ),
+            Self::CommandIdempotencyMismatch => (
+                SabiErrorCode::Conflict,
+                RetryDirective::DoNotRetry,
+                "command identity conflicts with the idempotency key",
+            ),
+            Self::UnknownMethod => (
+                SabiErrorCode::NotSupported,
+                RetryDirective::DoNotRetry,
+                "unknown SystemControl service or method",
+            ),
+            Self::InvalidRecoveryAlert => (
+                SabiErrorCode::Driver,
+                RetryDirective::DoNotRetry,
+                "local recovery authority returned an invalid alert",
+            ),
+            Self::Task(error) => task_store_failure(error),
+        };
+        SabiFailure {
+            code: code.into(),
+            retry: retry.into(),
+            safe_message: safe_message.to_owned(),
+        }
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+fn task_store_failure(error: &TaskStoreError) -> (SabiErrorCode, RetryDirective, &'static str) {
+    use TaskStoreError as Task;
+
+    match error {
+        Task::Sqlite(_) => (
+            SabiErrorCode::Durability,
+            RetryDirective::RetrySameIdempotencyKey,
+            "task authority storage failure; retry with the same idempotency key",
+        ),
+        Task::DurabilityUnavailable { .. } => (
+            SabiErrorCode::Durability,
+            RetryDirective::DoNotRetry,
+            "task authority durability configuration is unavailable",
+        ),
+        Task::TaskNotFound
+        | Task::AttemptNotFound
+        | Task::PermitNotFound
+        | Task::ReceiptNotFound
+        | Task::SnapshotReceiptNotFound
+        | Task::ArtifactCommitPlanNotFound
+        | Task::SemanticCommitPlanNotFound
+        | Task::ArtifactRecoveryNotFound
+        | Task::EffectSlotNotFound
+        | Task::EffectPermitNotFound
+        | Task::GroupNotFound
+        | Task::GroupMemberNotFound
+        | Task::ParticipantRegistryNotFound
+        | Task::TaskWriteSetNotFound => (
+            SabiErrorCode::NotFound,
+            RetryDirective::DoNotRetry,
+            "requested recovery authority object was not found",
+        ),
+        Task::ArtifactRecoveryCasMismatch { .. }
+        | Task::IdempotencyConflict
+        | Task::SnapshotConflict
+        | Task::ArtifactPublicationConflict { .. }
+        | Task::SemanticPublicationConflict { .. }
+        | Task::TaskWriteSetConflict { .. }
+        | Task::TaskWriteSetReadConflict
+        | Task::TaskWriteSetSemanticReadConflict
+        | Task::TaskWriteSetResourceReservationConflict
+        | Task::HistoryConflict
+        | Task::ParticipantRegistryCasMismatch
+        | Task::ParticipantEndpointConflict
+        | Task::StaleMembershipGeneration { .. } => (
+            SabiErrorCode::Conflict,
+            RetryDirective::DoNotRetry,
+            "request conflicts with durable recovery state",
+        ),
+        Task::ArtifactCommitPlanNotReady { .. }
+        | Task::SemanticCommitPlanNotReady { .. }
+        | Task::InvalidArtifactRecoveryState { .. }
+        | Task::AuthorityLeaseHeld
+        | Task::AuthorityLeaseExpired
+        | Task::AuthorityLeaseRequired
+        | Task::AuthorityLeaseBindingMismatch
+        | Task::GroupPublicationInFlight
+        | Task::InvalidAttemptState { .. }
+        | Task::TaskCancelled
+        | Task::NotPermitHolder
+        | Task::PermitNotIssued
+        | Task::StaleTaskHead
+        | Task::FenceRegression
+        | Task::PermitEpochMismatch
+        | Task::CancellationCommitted { .. }
+        | Task::InvalidEffectSlotState { .. }
+        | Task::DispatchTokenConsumed
+        | Task::OutstandingEffectSlots { .. }
+        | Task::Quarantined
+        | Task::AdoptionScopeViolation
+        | Task::EffectAlreadyClosed
+        | Task::RequiredEffectUnsatisfied { .. }
+        | Task::InvalidReconcileState { .. }
+        | Task::PermitHasEffects { .. }
+        | Task::GroupSealed
+        | Task::GroupNotOpen { .. }
+        | Task::InvalidGroupState { .. }
+        | Task::GroupQuarantinedChild
+        | Task::ParticipantRegistryFrozen { .. }
+        | Task::ParticipantRegistryBindingMissing
+        | Task::ParticipantRegistryBindingMismatch
+        | Task::BarrierObservationUnsigned => (
+            SabiErrorCode::State,
+            RetryDirective::DoNotRetry,
+            "recovery authority state rejects this request",
+        ),
+        Task::InvalidArtifactRecoveryPolicy { .. }
+        | Task::InvalidAuthorityLease { .. }
+        | Task::InvalidSnapshotReceipt { .. }
+        | Task::InvalidArtifactPublicationPlan { .. }
+        | Task::InvalidSemanticPublicationPlan { .. }
+        | Task::InvalidGeneration
+        | Task::InvalidEffectSet { .. }
+        | Task::DispatchTokenMismatch
+        | Task::ConditionNotBound
+        | Task::GroupCycle
+        | Task::GroupDepthExceeded
+        | Task::GroupFanoutExceeded
+        | Task::UnsupportedGroupMode
+        | Task::InvalidGroupSpec { .. } => (
+            SabiErrorCode::InvalidArgument,
+            RetryDirective::DoNotRetry,
+            "request violates the recovery authority contract",
+        ),
+        Task::AuthorityLeaseFenced => (
+            SabiErrorCode::Fenced,
+            RetryDirective::DoNotRetry,
+            "task authority lease is fenced",
+        ),
+        Task::CorruptRecord(_) | Task::UnsupportedSchema(_) | Task::LockPoisoned => (
+            SabiErrorCode::Driver,
+            RetryDirective::DoNotRetry,
+            "local task authority state is invalid",
+        ),
+        _ => (
+            SabiErrorCode::Driver,
+            RetryDirective::DoNotRetry,
+            "local task authority defect; do not retry",
+        ),
     }
 }
 
@@ -494,6 +687,37 @@ fn fixed16(bytes: &[u8]) -> Result<[u8; 16], SystemControlError> {
     bytes
         .try_into()
         .map_err(|_| SystemControlError::InvalidRecoveryAlert)
+}
+
+/// Builds a typed failure envelope for one rejected request.
+///
+/// The request ID and service/method are retained for transport correlation,
+/// while the payload and all Operation/Receipt evidence are cleared. A
+/// malformed correlation ID cannot be echoed into a response, so a valid
+/// request ID is preferred and an all-zero bounded correlation is used only
+/// when both request identifiers are malformed.
+#[must_use]
+pub fn failure_envelope(request: &Envelope, error: &SystemControlError) -> Envelope {
+    let correlation_id = match request.common_context.as_ref() {
+        Some(envelope::CommonContext::RequestContext(context))
+            if context.correlation_id.len() == REQUEST_ID_BYTES =>
+        {
+            context.correlation_id.clone()
+        }
+        _ if request.request_id.len() == REQUEST_ID_BYTES => request.request_id.clone(),
+        _ => vec![0; REQUEST_ID_BYTES],
+    };
+    let mut response = request.clone();
+    response.payload.clear();
+    response.common_context = Some(envelope::CommonContext::ResponseContext(
+        SabiResponseContext {
+            correlation_id,
+            operation: None,
+            receipts: Vec::new(),
+            failure: Some(error.to_sabi_failure()),
+        },
+    ));
+    response
 }
 
 fn response_envelope(
