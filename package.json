@@ -14,7 +14,8 @@
     "ipc:test:typescript": "tsx tests/conformance/ipc/client.ts",
     "directory:test:typescript": "tsx tests/conformance/ipc/directory_chain.ts",
     "takeover-control:test:typescript": "tsx tests/conformance/ipc/takeover_control.ts",
-    "takeover-control:long-soak:typescript": "tsx tests/conformance/ipc/takeover_control_long_soak.ts"
+    "takeover-control:long-soak:typescript": "tsx tests/conformance/ipc/takeover_control_long_soak.ts",
+    "takeover-control:external-crash:typescript": "tsx tests/conformance/ipc/takeover_control_external_crash.ts"
   },
   "dependencies": {
     "@bufbuild/protobuf": "2.14.0"

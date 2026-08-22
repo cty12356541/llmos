@@ -26,7 +26,9 @@ use nlos_identity::{
 };
 use nlos_process::{ProcessAuthority, ProcessAuthorityError};
 use nlos_types::{CommitPermitId, ReceiptId, SemanticEventId, TaskId};
-use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use rusqlite::{
+    Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
+};
 use sha2::{Digest, Sha256};
 
 pub use canonical::{
@@ -276,8 +278,31 @@ impl SemanticAuthority {
     /// Fails when storage, durability configuration, or schema validation
     /// cannot be established.
     pub fn open(root: impl AsRef<Path>) -> Result<Self, SemanticAuthorityError> {
+        Self::open_with_vfs(root, None)
+    }
+
+    /// Opens the authority through an optional named `SQLite` VFS.
+    ///
+    /// Production callers should pass `None`; a named VFS is useful for
+    /// deterministic storage fault-injection tests. The durability and
+    /// schema-validation guarantees are identical to [`Self::open`].
+    ///
+    /// # Errors
+    ///
+    /// Fails when storage, the named VFS, durability configuration, or schema
+    /// validation cannot be established.
+    pub fn open_with_vfs(
+        root: impl AsRef<Path>,
+        vfs: Option<&str>,
+    ) -> Result<Self, SemanticAuthorityError> {
         std::fs::create_dir_all(root.as_ref()).map_err(SemanticAuthorityError::Io)?;
-        let mut connection = Connection::open(root.as_ref().join("semantic-authority.db"))?;
+        let database = root.as_ref().join("semantic-authority.db");
+        let mut connection = match vfs {
+            None => Connection::open(database)?,
+            Some(name) => {
+                Connection::open_with_flags_and_vfs(database, OpenFlags::default(), name)?
+            }
+        };
         connection.busy_timeout(Duration::from_secs(5))?;
         connection.pragma_update(None, "journal_mode", "WAL")?;
         connection.pragma_update(None, "synchronous", "FULL")?;

@@ -1,10 +1,12 @@
 # B-TASK-008C2G-COORD：Semantic publication cross-authority coordinator
 
-状态：`PARTIAL_PASS`（2026-08-16）
+状态：`PARTIAL_PASS`（2026-08-23）
 
 ## 1. 结论
 
 本切片把 ADR-0006 选择 1 的本地两 authority 前缀接成可重启收敛的 coordinator：它只驱动已由 `TaskAuthority` 持久化的 Semantic plan，不拥有新的事实源；每次跨 authority 调用都从上一次 durable prefix 继续。schema v26 又把混合 Effect finalize 所需的 typed proof envelope 持久化，使 coordinator 能在重启后重建 v3 request；同时，`EffectClosedSuccess` 已收紧为绑定 slot contract 与权威闭合 Receipt 的本地 proof。schema v27 再增加单个 `TaskAuthority` 的 durable lease/term/fencing 原语，schema v28 将该 lease 以 opt-in immutable binding 接入 `CommitPermit` 签发、plain v3 finalize、pre-effect close、mixed persisted-envelope finalize/replay 以及 Semantic-only high-level finalize；schema v29 再把同一 live lease 绑定到 adoption/reconcile 的本地安全子集，并增加 `FROZEN_FOR_TAKEOVER` 的 local takeover-fence CAS pre-gate；schema v30 持久化该 pre-gate 的 immutable local fence receipt，并在 durable participant mapping 完整时计算 frozen registry ∪ durable outstanding-operation participant 的 exact local roots；schema v31 为 lease-bound permit 持久化 immutable local `TaskAuthorityAssignment` baseline；schema v32 再把旧 assignment 的 `TakeoverPending` 与本地 pending `TaskAuthorityTakeoverReceipt` 前缀在同一事务持久化；schema v33 新增逐 endpoint 的 immutable barrier receipt observation；schema v34 再持久化 exact fence-set 的 canonical member manifest，使 observation 能覆盖 durable outstanding-operation participant；这些增量都不推进 parent state 或激活 successor assignment。
+
+2026-08-23 增量新增 `B-TASK-008C2G-COORD-SEM-FAULT-1`：为 Semantic owner publication 接入仅供测试使用的 named SQLite VFS，并加入 owner 写失败、静默丢写、WAL 撕裂尾部、Task consumer 写失败及终态 finalize 写失败后的 durable-prefix/restart 矩阵；9 项测试全部通过。该增量仍只证明本地 SQLite 故障前缀，不改变跨 authority 或 Principal attestation 语义。
 
 ## 2. 已实现事实
 
@@ -27,6 +29,7 @@
 - schema v33 新增 `task_authority_takeover_barrier_receipts`：仅接受 frozen registry 中的 endpoint、pending takeover 的 exact local fence-set root 与 caller 提供的 remote receipt identity/digest；记录状态是 `Observed`，UPDATE/DELETE 由 immutable trigger 拒绝，重复提交逐字节回放。它不验证远端签名/attestation、不把 observation 计入完成条件，也不改变 parent `Pending` 状态。
 - schema v34 新增 `task_authority_takeover_fence_members`：在 local fence roots 可完整计算时，按稳定 `(participant_type, participant_id)` 顺序持久化 frozen registry ∪ durable outstanding-operation participants 的 canonical manifest；manifest UPDATE/DELETE 由 immutable trigger 拒绝，升级后的 replay 可补写缺失 manifest。barrier observation 现在按该 manifest 校验 endpoint，而不是只看 registry 子集。
 - 新增只读 `inspect_authority_takeover_barrier_coverage`：返回 `ManifestUnavailable`、`Partial` 或 `LocallyCovered` 及缺失 participant；`LocallyCovered` 仍只表示本地 observation 覆盖 manifest，parent takeover receipt 保持 `Pending`，没有 successor activation。
+- `SemanticAuthority::open_with_vfs(root, Option<&str>)` 仅为测试故障注入选择 named SQLite VFS；`open(root)` 保持默认 VFS 行为，生产调用路径不改变。
 
 ## 3. Evidence
 
@@ -45,3 +48,11 @@
 - 只覆盖单机 SemanticAuthority/TaskAuthority、Semantic-only coordinator；schema v27–v35 的租约、permit/adoption binding、local fence receipt、assignment baseline、pending takeover receipt、fence member manifest 与 barrier observation，都是单 authority opt-in primitive，不是 IPC peer authentication、跨 authority adoption 或完整 term takeover 协议。当前 lease binding 已覆盖 mixed Effect + Semantic owner/publication finalize、persisted envelope replay、plain v3 finalize、pre-effect close、Semantic-only high-level finalize，以及 same-term adoption/reconcile；新 fence receipt 在可完整映射的 durable write set 上固定 frozen registry ∪ durable outstanding-operation participant 的 roots，映射不完整时保留 NULL；pending takeover receipt 只链接旧 assignment 与 local fence，`new_assignment_id` 仍为空；barrier observation 按 v34 manifest 固定 endpoint/root，schema v35 起持久化 remote receipt digest（旧行保持 `NULL`），coverage view 只报告本地覆盖度，未验证远端签名/attestation，也没有 parent completion、successor registry/assignment 激活或跨 term adoption。takeover 表组的本地完整 kill-9/ENOSPC/torn-write 组合矩阵已由 [B-TASK-008C2G-FAULT](./b-task-008c2g-takeover-fault-matrix.md) 接入（macOS 本地，7 测试）；三平台 CI 复验、checkpoint/backup/migration 变体、v28/v29 lease-binding 列逐列注入与多 Cell 传播证据仍未接入。新增的故障证据是 TaskAuthority SQLite abort/VFS 写失败，不等于真实硬件掉电/跨机器原子性。
 - mixed v3 envelope 必须在 publication 前由 permit holder 准备；当前 proof 只在 TaskAuthority 内绑定本地 slot contract 与已持久化 EffectReceipt，仍不验证外部 provider 的语义成功内容、签名、attestation 或跨进程 authority lease。
 - 不把 outbox ACK、local log-prefix digest 或 coordinator observation 晋升为 Trust View/vector checkpoint，也不声称分布式原子提交。
+
+## 5. 增量 Evidence
+
+### 5.1 Semantic publication coordinator 故障前缀与重启矩阵（B-TASK-008C2G-COORD-SEM-FAULT-1）
+
+- 新增 `crates/nlos-commit-coordinator/tests/semantic_convergence_fault_injection.rs`，复用既有 coordinator fixture，串行化进程级 `nlos-store-fault` VFS 注入；覆盖 Semantic owner `IOERR`/`ENOSPC`、`PowerLossAfter` 静默丢写、子进程持有 WAL 后强杀并截断最后 commit frame、owner receipt 已提交但 Task consumer 写失败，以及 READY 后 Task terminal finalize 写失败。
+- 每个故障场景均检查 durable prefix：失败不制造 publication/head 幻影；owner receipt 已存在时重试保持单 receipt；READY/finalize 失败重启后只完成一次 `TaskCommitReceipt`；恢复路径的 publication/task receipt 与计划 identity exact replay。
+- `cargo test -p nlos-commit-coordinator --test semantic_convergence_fault_injection -- --nocapture`：9 项通过；既有 `semantic_convergence` 4 项通过；`cargo test -p nlos-commit-coordinator --quiet`、`cargo test -p nlos-semantic --quiet`、workspace 通过；`cargo clippy -p nlos-semantic -p nlos-commit-coordinator --all-targets --all-features -- -D warnings` 与 `cargo fmt --all -- --check` 通过。该证据覆盖本地 SQLite 故障前缀与重启恢复，不外推真实硬件掉电、跨机器原子提交、外部 provider proof、Trust View/vector checkpoint 或 Principal peer attestation。

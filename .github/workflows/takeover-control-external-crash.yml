@@ -1,0 +1,54 @@
+name: TakeoverControl external timing crash
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: takeover-control-external-crash-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  external-crash:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Install schema runtimes
+        run: |
+          npm ci --ignore-scripts
+          python -m pip install --disable-pip-version-check -r requirements-schema.txt
+
+      - name: Type-check schema and run external crash trials
+        run: |
+          npm run schema:typecheck
+          npm run takeover-control:external-crash:typescript -- --trials 8
+          python tests/conformance/ipc/takeover_control_external_crash.py --trials 8
