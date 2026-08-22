@@ -19,13 +19,13 @@
 ## 2026-08-23 增量验证
 
 - `cargo fmt --all -- --check`：通过。
-- `cargo test -p nlos-system-control --quiet`：通过（6 个既有 integration + 5 个 bounded-failure tests；Windows-only test 在 macOS 目标下为 0 tests，待 Windows CI 执行）。
+- `cargo test -p nlos-system-control --quiet`：通过（6 个既有 integration + 5 个 bounded-failure tests；Windows-only test 在 macOS 目标下为 0 tests）。
 - `cargo clippy -p nlos-system-control --all-targets --all-features -- -D warnings`：通过。
 - `cargo test --workspace --quiet`：通过。
-- 本地 Windows target 未安装，未把本地非 Windows 构建伪装成 Windows 证据；远端 Windows job 是该测试的编译/执行依据。
+- 三平台 + MSRV Rust CI [32588868965](https://github.com/cty12356541/llmos/actions/runs/32588868965) 的 Ubuntu/macOS/Windows/MSRV jobs 均成功；Pages [32588868943](https://github.com/cty12356541/llmos/actions/runs/32588868943) 成功。Windows named-pipe 的编译/执行结论以该 CI 为准。
 
 ## 验证与边界
 
-既有 5 项 integration tests 覆盖脱敏 health、Capability 拒绝、caller/issuer 与 command/key 防替换、真实 framed submit/replay、ServiceDirectory negotiate 和 macOS/Unix endpoint round-trip；新增 5 项 bounded-failure tests 覆盖映射分类、同 key durability 重试安全、相关性保留与脱敏 envelope；Windows-only named-pipe round-trip 在非 Windows 目标下完成编译门，等待远端 Windows 执行。crate tests、workspace、Clippy `-D warnings` 与 fmt 通过。
+既有 5 项 integration tests 覆盖脱敏 health、Capability 拒绝、caller/issuer 与 command/key 防替换、真实 framed submit/replay、ServiceDirectory negotiate 和 macOS/Unix endpoint round-trip；新增 5 项 bounded-failure tests 覆盖映射分类、同 key durability 重试安全、相关性保留与脱敏 envelope；Windows-only named-pipe round-trip 已由三平台 + MSRV CI 执行通过。crate tests、workspace、Clippy `-D warnings` 与 fmt 通过。
 
-本证据为单节点本地 H3 / `PARTIAL PASS`。`handle` 仍是 transport-neutral `Result`，IPC caller 必须显式调用 `failure_envelope` 才能返回 typed rejection；当前 Windows 测试验证成功/重放路径而非拒绝响应。测试 policy/peer authorizer 仍是受控 stub，尚未接真实 Capability authority、Principal-level peer attestation 或双向 peer policy；trusted-clock anti-replay、外部 metrics exporter、GUI/NL/CLI 多入口等价证明、批量控制和三平台 CI 仍未完成。
+本证据为单节点本地 H3 / `PARTIAL PASS`。`handle` 仍是 transport-neutral `Result`，IPC caller 必须显式调用 `failure_envelope` 才能返回 typed rejection；当前 Windows 测试验证成功/重放路径而非拒绝响应。测试 policy/peer authorizer 仍是受控 stub，尚未接真实 Capability authority、Principal-level peer attestation 或双向 peer policy；trusted-clock anti-replay、外部 metrics exporter、GUI/NL/CLI 多入口等价证明和批量控制仍未完成。
