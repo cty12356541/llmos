@@ -1,0 +1,57 @@
+name: TakeoverControl IPC long soak
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: takeover-control-long-soak-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  long-soak:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Install schema runtimes
+        run: |
+          npm ci --ignore-scripts
+          python -m pip install --disable-pip-version-check -r requirements-schema.txt
+
+      - name: Type-check schemas
+        run: npm run schema:typecheck
+
+      - name: Run TypeScript long soak
+        run: npm run takeover-control:long-soak:typescript -- --duration-ms 60000 --rounds 8 --connections 32
+
+      - name: Run Python long soak
+        run: python tests/conformance/ipc/takeover_control_long_soak.py --duration-ms 60000 --rounds 8 --connections 32
