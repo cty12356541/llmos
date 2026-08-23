@@ -58,3 +58,10 @@ Artifact publication pending restart scan 已补齐两个 owner publication rece
 - 重开后只调用公开 `ArtifactCommitCoordinator::converge_pending(1, 6_000)`；coordinator 消费两个原始 owner receipt，返回一条嵌套 `TaskCommitReceipt`，两个 Artifact head 均为 revision 1，plan 为 `FINALIZED`。随后显式 `converge` 返回逐位相同 receipt，后续 pending scan 为空。
 - `cargo test -p nlos-commit-coordinator --test artifact_pending_restart_scan -- --nocapture`：1 项通过；targeted Clippy、fmt、diff check 与 `cargo test --workspace --quiet` 通过。代码基线 `3d274ab` 的 Rust cross-platform/MSRV CI [32627556597](https://github.com/cty12356541/llmos/actions/runs/32627556597) 与 Pages [32627556621](https://github.com/cty12356541/llmos/actions/runs/32627556621) 均成功。
 - 证据仍是单机双 authority bounded recovery：不声称分布式原子提交、真实掉电、Artifact publication 回滚、Resource/Operation/Channel 完整接线、外部 provider proof/attestation 或 complete TaskWriteSet。
+
+### 6.2 多 Artifact 记录故障前缀与重启收敛（B-TASK-008C2G-COORD-ARTIFACT-RESTART-SCAN 增量）
+
+- 新增 `crates/nlos-commit-coordinator/tests/artifact_multi_record_fault_restart.rs`：第一条 Artifact owner receipt 已由 TaskAuthority 消费后，第二条 owner publication 已 durable，但 Task-side nested receipt 写入由测试触发器中止；关闭并重开两 authority 后，移除故障，仅调用公开 `converge_pending(8, 5_300)` 补录缺失 receipt。
+- 恢复结果保持诚实 durable prefix：两个 Artifact head 均为 revision 1、Task 只生成一条完整 receipt、plan 为 `FINALIZED`、head commit seq 为 1；终态 `converge` replay 逐位一致，后续 pending scan 为空。
+- `cargo test -p nlos-commit-coordinator --test artifact_multi_record_fault_restart -- --nocapture`：1 项通过；既有 `restart_convergence` 11 项、targeted Clippy、fmt 与 diff check 通过。代码提交为 `a9f5afe`；Rust cross-platform/MSRV run [32629828391](https://github.com/cty12356541/llmos/actions/runs/32629828391) 与 Pages run [32629828373](https://github.com/cty12356541/llmos/actions/runs/32629828373) 均成功。
+- 该增量仍是单机 SQLite 双 authority bounded recovery；不等同分布式原子提交、真实掉电、补偿队列、Resource/Operation/Channel 完整接线或 complete TaskWriteSet。

@@ -1,7 +1,7 @@
 # B-RESOURCE-005：Reservation finalize/refund 双重记账结算
 
 - 状态：`PARTIAL_PASS`
-- 日期：2026-08-17
+- 日期：2026-08-23（增量验收）
 - 范围：单节点、单一整数 credit 的 strict reference profile；为 ACTIVE **与 QUARANTINED** Reservation 提供 effect-closed 证明下的双重记账 finalize/refund 结算（QUARANTINED→FINALIZED 即 reconciliation 路径）。不是完整 UNKNOWN_USAGE/BOUNDED_RISK ledger、late rebate、endpoint 签名证明或跨 authority settlement。
 
 ## 1. 结论
@@ -31,7 +31,7 @@
 - proof digest 为 caller-asserted opaque 摘要；endpoint/enforcement-gateway 签名、UNKNOWN_USAGE/BOUNDED_RISK/OBSERVED risk ledger、late rebate、自动 reconciliation、跨 authority resource/cost receipt 与 TaskCommitReceipt resource consumption 接线仍未实现。
 - `finalize_reservation` 要求当前 Driver fence（与 consume/quarantine 一致）；Driver 轮换后的结算解冻路径未提供。
 - QUARANTINED→FINALIZED 的结算只清 overlay 指针，不删除 quarantine receipt 行；`inspect_quarantine_receipt` 在解冻后返回 `CorruptRecord`（文档化）。
-- 单机 strict reference profile：非多维资源、无真实 Driver enforcement、无三平台 CI/真实 ENOSPC 证据。
+- 单机 strict reference profile：非多维资源、无真实 Driver enforcement；真实 ENOSPC 探针仍未运行。
 
 ## 5. 故障注入矩阵（2026-08-17 增量）
 
@@ -44,3 +44,22 @@
 - **F6 故障解除后**：finalize 写事务失败后 disarm，同一 authority 实例从已提交前缀继续，finalize 重试成功、完整重开可恢复。
 
 验证：`cargo test -p nlos-resource --test finalize_fault_injection`（7 项）、`cargo test -p nlos-resource --quiet`（22 项）、`cargo clippy -p nlos-resource --all-targets --all-features -- -D warnings` 通过；三平台 CI 已随 [run 32099012698](https://github.com/cty12356541/llmos/actions/runs/32099012698) 通过。限制：kill-9 ≠ 真实断电、macOS 本地、F4 全集（checkpoint/backup/migration 变体）未覆盖、真实 ENOSPC 探针未运行。
+
+## 6. 增量 Evidence（2026-08-23）
+
+`crates/nlos-resource/tests/activation_consume_finalize_restart.rs` 新增 1 项
+生命周期前缀测试：首次 `RESERVED → ACTIVE` 后关闭并重开 authority，回读同一
+activation receipt；consume sequence 1 / cumulative usage 37 后再次重启，验证
+immutable consumption receipt 与 high-water；finalize 后第三次重启，验证
+immutable finalization receipt、`FINALIZED` overlay、available credit 963，以及
+finalize exact replay 不重复退款，迟到 consume 被拒绝。
+
+本测试只证明单机 SQLite Resource owner 的 activation→consume→finalize 重启
+前缀；不声称 TaskAuthority `TaskCommitReceipt` resource/cost 接线、跨 authority
+原子提交、endpoint 签名 proof 或真实掉电。`cargo test -p nlos-resource
+--test activation_consume_finalize_restart -- --nocapture`、完整
+`cargo test -p nlos-resource --quiet`、targeted Clippy、fmt 与 diff check 均通过。
+代码提交为 `9e57694`；其并入 `a9f5afe` 后的 Rust cross-platform/MSRV run
+[32629828391](https://github.com/cty12356541/llmos/actions/runs/32629828391) 与
+Pages run [32629828373](https://github.com/cty12356541/llmos/actions/runs/32629828373)
+均成功。
