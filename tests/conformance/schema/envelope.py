@@ -6,7 +6,11 @@ from google.protobuf.message import DecodeError
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "gen" / "python"))
 
-from nlos.sabi.v1 import envelope_pb2, service_directory_pb2  # noqa: E402
+from nlos.sabi.v1 import (  # noqa: E402
+    envelope_pb2,
+    service_directory_pb2,
+    system_control_pb2,
+)
 sys.path.insert(0, str(ROOT / "sdk" / "python"))
 from nlos_sdk.common import (  # noqa: E402
     CommonSemanticsError,
@@ -171,3 +175,117 @@ except CommonSemanticsError as error:
     assert error.code == "UNSAFE_RETRY"
 else:
     raise AssertionError("unsafe uncertain retry directive was accepted")
+
+
+ARTIFACT_RECOVERY_SNAPSHOT_GOLDEN_HEX = (
+    "0a1b0a176e6c6f732e736162692e53797374656d436f6e74726f6c1001125708"
+    "0310111817200b280230f40338044003480150095a140a101111111111111111"
+    "111111111111111110015a140a10222222222222222222222222222222221002"
+    "5a140a106666666666666666666666666666666610031a330a10333333333333"
+    "333333333333333333331004180320e80728b00930940a3a120a104444444444"
+    "44444444444444444444441a1f0a105555555555555555555555555555555510"
+    "01180420d00f28b4103098112001"
+)
+
+
+def artifact_recovery_snapshot() -> system_control_pb2.ArtifactRecoveryOperationsSnapshot:
+    return system_control_pb2.ArtifactRecoveryOperationsSnapshot(
+        schema=envelope_pb2.SchemaIdentity(
+            name="nlos.sabi.SystemControl",
+            major=1,
+            minor=0,
+        ),
+        metrics=system_control_pb2.ArtifactRecoveryMetrics(
+            worker_state=(
+                system_control_pb2.RECOVERY_WORKER_LIFECYCLE_STATE_BACKING_OFF
+            ),
+            completed_cycles=17,
+            total_inspected=23,
+            total_finalized=11,
+            consecutive_failed_cycles=2,
+            retry_delay_ms=500,
+            durable_retrying=4,
+            durable_escalated=3,
+            durable_unacknowledged_escalated=1,
+            durable_resolved=9,
+            last_failures=[
+                system_control_pb2.RecoveryFailureSummary(
+                    plan_id=bytes([0x11]) * 16,
+                    authority=system_control_pb2.RECOVERY_FAILURE_AUTHORITY_TASK,
+                ),
+                system_control_pb2.RecoveryFailureSummary(
+                    plan_id=bytes([0x22]) * 16,
+                    authority=system_control_pb2.RECOVERY_FAILURE_AUTHORITY_ARTIFACT,
+                ),
+                system_control_pb2.RecoveryFailureSummary(
+                    plan_id=bytes([0x66]) * 16,
+                    authority=system_control_pb2.RECOVERY_FAILURE_AUTHORITY_COORDINATOR,
+                ),
+            ],
+        ),
+        alerts=[
+            system_control_pb2.ArtifactRecoveryAlertStatus(
+                plan_id=bytes([0x33]) * 16,
+                total_failures=4,
+                last_failure_authority=(
+                    system_control_pb2.RECOVERY_FAILURE_AUTHORITY_COORDINATOR
+                ),
+                first_failed_at_ms=1000,
+                last_failed_at_ms=1200,
+                escalated_at_ms=1300,
+                acknowledgement_receipt=envelope_pb2.ReceiptReference(
+                    receipt_id=bytes([0x44]) * 16
+                ),
+            ),
+            system_control_pb2.ArtifactRecoveryAlertStatus(
+                plan_id=bytes([0x55]) * 16,
+                total_failures=1,
+                last_failure_authority=(
+                    system_control_pb2.RECOVERY_FAILURE_AUTHORITY_WORKER
+                ),
+                first_failed_at_ms=2000,
+                last_failed_at_ms=2100,
+                escalated_at_ms=2200,
+            ),
+        ],
+        alerts_truncated=True,
+    )
+
+
+artifact_snapshot = artifact_recovery_snapshot()
+artifact_snapshot_golden = bytes.fromhex(ARTIFACT_RECOVERY_SNAPSHOT_GOLDEN_HEX)
+assert artifact_snapshot.SerializeToString(deterministic=True) == artifact_snapshot_golden
+
+decoded_artifact_snapshot = (
+    system_control_pb2.ArtifactRecoveryOperationsSnapshot.FromString(
+        artifact_snapshot_golden
+    )
+)
+assert decoded_artifact_snapshot.schema.name == "nlos.sabi.SystemControl"
+assert decoded_artifact_snapshot.metrics.worker_state == (
+    system_control_pb2.RECOVERY_WORKER_LIFECYCLE_STATE_BACKING_OFF
+)
+assert decoded_artifact_snapshot.metrics.HasField("retry_delay_ms")
+assert decoded_artifact_snapshot.metrics.retry_delay_ms == 500
+assert [failure.authority for failure in decoded_artifact_snapshot.metrics.last_failures] == [
+    system_control_pb2.RECOVERY_FAILURE_AUTHORITY_TASK,
+    system_control_pb2.RECOVERY_FAILURE_AUTHORITY_ARTIFACT,
+    system_control_pb2.RECOVERY_FAILURE_AUTHORITY_COORDINATOR,
+]
+assert decoded_artifact_snapshot.metrics.last_failures[2].plan_id == bytes([0x66]) * 16
+assert decoded_artifact_snapshot.alerts[0].HasField("acknowledgement_receipt")
+assert not decoded_artifact_snapshot.alerts[1].HasField("acknowledgement_receipt")
+assert decoded_artifact_snapshot.alerts_truncated is True
+assert (
+    decoded_artifact_snapshot.SerializeToString(deterministic=True)
+    == artifact_snapshot_golden
+)
+
+without_retry_delay = system_control_pb2.ArtifactRecoveryOperationsSnapshot()
+without_retry_delay.CopyFrom(decoded_artifact_snapshot)
+without_retry_delay.metrics.ClearField("retry_delay_ms")
+assert not without_retry_delay.metrics.HasField("retry_delay_ms")
+assert (
+    without_retry_delay.SerializeToString(deterministic=True)
+    != artifact_snapshot_golden
+)

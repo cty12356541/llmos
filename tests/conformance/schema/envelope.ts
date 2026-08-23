@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { fromBinary, toBinary } from "@bufbuild/protobuf";
+import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 
 import {
   CommonSemanticsError,
@@ -14,14 +14,24 @@ import {
   ExchangeRequestSchema,
   ExchangeResponseSchema,
   LocalRpcService,
+  ReceiptReferenceSchema,
   RetryDirective,
   SabiErrorCode,
+  SchemaIdentitySchema,
   type Envelope,
 } from "../../../gen/typescript/nlos/sabi/v1/envelope_pb.ts";
 import {
   LocalTransportKind,
   ResolveServiceRequestSchema,
 } from "../../../gen/typescript/nlos/sabi/v1/service_directory_pb.ts";
+import {
+  ArtifactRecoveryAlertStatusSchema,
+  ArtifactRecoveryMetricsSchema,
+  ArtifactRecoveryOperationsSnapshotSchema,
+  RecoveryFailureAuthority,
+  RecoveryFailureSummarySchema,
+  RecoveryWorkerLifecycleState,
+} from "../../../gen/typescript/nlos/sabi/v1/system_control_pb.ts";
 
 const schemaName = "nlos.sabi.Envelope";
 const goldenPath = fileURLToPath(
@@ -199,4 +209,130 @@ assert.throws(
     }),
   (error: unknown) =>
     error instanceof CommonSemanticsError && error.code === "UNSAFE_RETRY",
+);
+
+const artifactRecoverySnapshotGoldenHex =
+  "0a1b0a176e6c6f732e736162692e53797374656d436f6e74726f6c1001125708" +
+  "0310111817200b280230f40338044003480150095a140a101111111111111111" +
+  "111111111111111110015a140a10222222222222222222222222222222221002" +
+  "5a140a106666666666666666666666666666666610031a330a10333333333333" +
+  "333333333333333333331004180320e80728b00930940a3a120a104444444444" +
+  "44444444444444444444441a1f0a105555555555555555555555555555555510" +
+  "01180420d00f28b4103098112001";
+const artifactRecoverySnapshotGolden = Uint8Array.from(
+  Buffer.from(artifactRecoverySnapshotGoldenHex, "hex"),
+);
+
+const artifactRecoverySnapshot = create(
+  ArtifactRecoveryOperationsSnapshotSchema,
+  {
+    schema: create(SchemaIdentitySchema, {
+      name: "nlos.sabi.SystemControl",
+      major: 1,
+      minor: 0,
+      criticalExtensionIds: [],
+      nonCriticalExtensionIds: [],
+    }),
+    metrics: create(ArtifactRecoveryMetricsSchema, {
+      workerState: RecoveryWorkerLifecycleState.BACKING_OFF,
+      completedCycles: 17n,
+      totalInspected: 23n,
+      totalFinalized: 11n,
+      consecutiveFailedCycles: 2n,
+      retryDelayMs: 500n,
+      durableRetrying: 4n,
+      durableEscalated: 3n,
+      durableUnacknowledgedEscalated: 1n,
+      durableResolved: 9n,
+      lastFailures: [
+        create(RecoveryFailureSummarySchema, {
+          planId: new Uint8Array(16).fill(0x11),
+          authority: RecoveryFailureAuthority.TASK,
+        }),
+        create(RecoveryFailureSummarySchema, {
+          planId: new Uint8Array(16).fill(0x22),
+          authority: RecoveryFailureAuthority.ARTIFACT,
+        }),
+        create(RecoveryFailureSummarySchema, {
+          planId: new Uint8Array(16).fill(0x66),
+          authority: RecoveryFailureAuthority.COORDINATOR,
+        }),
+      ],
+    }),
+    alerts: [
+      create(ArtifactRecoveryAlertStatusSchema, {
+        planId: new Uint8Array(16).fill(0x33),
+        totalFailures: 4n,
+        lastFailureAuthority: RecoveryFailureAuthority.COORDINATOR,
+        firstFailedAtMs: 1000n,
+        lastFailedAtMs: 1200n,
+        escalatedAtMs: 1300n,
+        acknowledgementReceipt: create(ReceiptReferenceSchema, {
+          receiptId: new Uint8Array(16).fill(0x44),
+        }),
+      }),
+      create(ArtifactRecoveryAlertStatusSchema, {
+        planId: new Uint8Array(16).fill(0x55),
+        totalFailures: 1n,
+        lastFailureAuthority: RecoveryFailureAuthority.WORKER,
+        firstFailedAtMs: 2000n,
+        lastFailedAtMs: 2100n,
+        escalatedAtMs: 2200n,
+      }),
+    ],
+    alertsTruncated: true,
+  },
+);
+assert.deepEqual(
+  toBinary(ArtifactRecoveryOperationsSnapshotSchema, artifactRecoverySnapshot),
+  artifactRecoverySnapshotGolden,
+);
+
+const decodedArtifactRecoverySnapshot = fromBinary(
+  ArtifactRecoveryOperationsSnapshotSchema,
+  artifactRecoverySnapshotGolden,
+);
+assert.equal(decodedArtifactRecoverySnapshot.schema?.name, "nlos.sabi.SystemControl");
+assert.equal(
+  decodedArtifactRecoverySnapshot.metrics?.workerState,
+  RecoveryWorkerLifecycleState.BACKING_OFF,
+);
+assert.equal(decodedArtifactRecoverySnapshot.metrics?.retryDelayMs, 500n);
+assert.deepEqual(
+  decodedArtifactRecoverySnapshot.metrics?.lastFailures.map(
+    (failure) => failure.authority,
+  ),
+  [
+    RecoveryFailureAuthority.TASK,
+    RecoveryFailureAuthority.ARTIFACT,
+    RecoveryFailureAuthority.COORDINATOR,
+  ],
+);
+assert.deepEqual(
+  decodedArtifactRecoverySnapshot.metrics?.lastFailures[2]?.planId,
+  new Uint8Array(16).fill(0x66),
+);
+assert.ok(decodedArtifactRecoverySnapshot.alerts[0]?.acknowledgementReceipt);
+assert.equal(
+  decodedArtifactRecoverySnapshot.alerts[1]?.acknowledgementReceipt,
+  undefined,
+);
+assert.equal(decodedArtifactRecoverySnapshot.alertsTruncated, true);
+assert.deepEqual(
+  toBinary(
+    ArtifactRecoveryOperationsSnapshotSchema,
+    decodedArtifactRecoverySnapshot,
+  ),
+  artifactRecoverySnapshotGolden,
+);
+
+const withoutRetryDelay = fromBinary(
+  ArtifactRecoveryOperationsSnapshotSchema,
+  artifactRecoverySnapshotGolden,
+);
+withoutRetryDelay.metrics!.retryDelayMs = undefined;
+assert.equal(withoutRetryDelay.metrics?.retryDelayMs, undefined);
+assert.notDeepEqual(
+  toBinary(ArtifactRecoveryOperationsSnapshotSchema, withoutRetryDelay),
+  artifactRecoverySnapshotGolden,
 );
