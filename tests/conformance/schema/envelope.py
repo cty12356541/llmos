@@ -144,6 +144,21 @@ assert (
 )
 assert uncertain.SerializeToString(deterministic=True) == uncertain_golden
 
+terminal_rejection = envelope_pb2.Envelope.FromString(
+    uncertain.SerializeToString(deterministic=True)
+)
+terminal_rejection.response_context.ClearField("operation")
+del terminal_rejection.response_context.receipts[:]
+terminal_rejection.response_context.failure.code = envelope_pb2.SABI_ERROR_CODE_RIGHTS
+terminal_rejection.response_context.failure.retry = (
+    envelope_pb2.RETRY_DIRECTIVE_DO_NOT_RETRY
+)
+terminal_rejection.response_context.failure.safe_message = "authorization denied"
+validate_response_context(
+    terminal_rejection,
+    MethodSemantics(side_effecting=True, long_running=False),
+)
+
 response_context.failure.retry = (
     envelope_pb2.RETRY_DIRECTIVE_RETRY_SAME_IDEMPOTENCY_KEY
 )

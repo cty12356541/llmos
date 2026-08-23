@@ -9,15 +9,14 @@ use nlos_commit_coordinator::{
     RecoveryWorkerHealth, RecoveryWorkerState,
 };
 use nlos_ipc::{
-    IpcError, LocalRpcClient, OutboundResponse, PeerAuthorizer, PeerIdentity, TransportConfig,
-    serve_one,
+    LocalRpcClient, OutboundResponse, PeerAuthorizer, PeerIdentity, TransportConfig, serve_one,
 };
 use nlos_schema::sabi::v1::{
     AcknowledgeArtifactRecoveryAlertCommand, CallerIdentity, CapabilityHandle, ControlCommand,
     ControlCommandSource, ControlScope, Envelope, ExchangeRequest, ExchangeResponse,
     GetSystemControlRequest, LocalEndpoint, LocalTransportKind, NegotiateServiceRequest,
-    ReceiptReference, SabiRequestContext, ServiceCandidate, ServiceVersion,
-    SubmitControlCommandRequest, SystemControlView, control_command, envelope,
+    ReceiptReference, RetryDirective, SabiErrorCode, SabiRequestContext, ServiceCandidate,
+    ServiceVersion, SubmitControlCommandRequest, SystemControlView, control_command, envelope,
     negotiate_service_response,
 };
 use nlos_schema::{
@@ -474,14 +473,11 @@ async fn submit_crosses_real_ipc_and_replays_the_task_authority_receipt() {
                     &server_health,
                     &CapabilityPolicy,
                 )
-                .handle(validated.envelope(), 10, 6_000)
-                .map_err(|_| IpcError::ServiceFailure("SystemControl handler rejected request"));
+                .handle_for_ipc(validated.envelope(), 10, 6_000);
                 async move {
-                    response.map(|envelope| {
-                        OutboundResponse::Typed(ExchangeResponse {
-                            envelope: Some(envelope),
-                        })
-                    })
+                    Ok(OutboundResponse::Typed(ExchangeResponse {
+                        envelope: Some(response),
+                    }))
                 }
             },
         )
@@ -526,6 +522,82 @@ async fn submit_crosses_real_ipc_and_replays_the_task_authority_receipt() {
             .unwrap()
             .receipt,
         Some(receipt)
+    );
+}
+
+#[tokio::test]
+async fn denied_submit_crosses_real_ipc_as_bounded_failure() {
+    let database = Arc::new(TestDatabase::new());
+    let authority = Arc::new(database.open());
+    let plan_id = create_escalated_plan(&authority);
+    let mut denied_envelope =
+        submit_envelope(plan_id, vec![0x31; 16], vec![0x41; 16], vec![0x41; 16]);
+    let envelope::CommonContext::RequestContext(context) = denied_envelope
+        .common_context
+        .as_mut()
+        .expect("request context")
+    else {
+        panic!("expected request context");
+    };
+    context.capability_handles.clear();
+    let request = ExchangeRequest {
+        envelope: Some(denied_envelope),
+    };
+    let config = transport_config();
+    let (client_stream, server_stream) = duplex(64 * 1024);
+    let server_authority = Arc::clone(&authority);
+    let server_health = health(plan_id);
+    let server = tokio::spawn(async move {
+        serve_one(
+            server_stream,
+            config,
+            PeerIdentity::InMemory,
+            &AllowPeer,
+            move |validated| {
+                let response = RecoverySystemControl::new(
+                    server_authority.as_ref(),
+                    &server_health,
+                    &CapabilityPolicy,
+                )
+                .handle_for_ipc(validated.envelope(), 10, 6_000);
+                async move {
+                    Ok(OutboundResponse::Typed(ExchangeResponse {
+                        envelope: Some(response),
+                    }))
+                }
+            },
+        )
+        .await
+    });
+    let response = LocalRpcClient::new(client_stream, config)
+        .exchange_validated(request)
+        .await
+        .unwrap();
+    server.await.unwrap().unwrap();
+
+    let response_envelope = response.envelope();
+    validate_sabi_response_context(response_envelope, MethodSemantics::MUTATION).unwrap();
+    assert!(response_envelope.payload.is_empty());
+    let envelope::CommonContext::ResponseContext(context) = response_envelope
+        .common_context
+        .as_ref()
+        .expect("response context")
+    else {
+        panic!("expected response context");
+    };
+    let failure = context.failure.as_ref().expect("typed rejection");
+    assert_eq!(failure.code, i32::from(SabiErrorCode::Rights));
+    assert_eq!(failure.retry, i32::from(RetryDirective::DoNotRetry));
+    assert!(context.operation.is_none());
+    assert!(context.receipts.is_empty());
+    assert_eq!(
+        authority
+            .list_artifact_recovery_alerts(8)
+            .unwrap()
+            .first()
+            .unwrap()
+            .acknowledgement,
+        None
     );
 }
 
@@ -586,14 +658,11 @@ async fn get_uses_a_service_directory_resolved_unix_endpoint() {
                     &server_health,
                     &CapabilityPolicy,
                 )
-                .handle(validated.envelope(), 10, 6_000)
-                .map_err(|_| IpcError::ServiceFailure("SystemControl handler rejected request"));
+                .handle_for_ipc(validated.envelope(), 10, 6_000);
                 async move {
-                    response.map(|envelope| {
-                        OutboundResponse::Typed(ExchangeResponse {
-                            envelope: Some(envelope),
-                        })
-                    })
+                    Ok(OutboundResponse::Typed(ExchangeResponse {
+                        envelope: Some(response),
+                    }))
                 }
             },
         )

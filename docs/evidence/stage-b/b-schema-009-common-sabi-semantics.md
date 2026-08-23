@@ -40,11 +40,15 @@ Rust、TypeScript、Python validators 当前共同拒绝：
 - unknown/unspecified common error 或 retry directive；
 - `E_UNCERTAIN`/`E_EFFECT_UNKNOWN` 没有 Operation，或没有要求“查询 Operation/使用原 IdempotencyKey 重试”；
 - `E_RETRY` 没有要求使用原 IdempotencyKey；
-- side-effecting response 同时缺少 Operation 和 Receipt，无法证明即时或最终 effect evidence；
+- 没有 `failure` 的 side-effecting response 同时缺少 Operation 和 Receipt，无法证明即时或最终 effect evidence；已知终止 `SabiFailure` 可明确表示请求未接受副作用，因此允许无 Operation/Receipt，且 `E_UNCERTAIN`/`E_EFFECT_UNKNOWN`/`E_PARTIAL` 仍分别要求 Operation、reconciliation retry 或 Receipt；
 - `E_PARTIAL` 没有任何 Receipt；
 - 过长或含 NUL 的 safe error message。
 
 这些规则防止 SDK 在“服务可能已经产生副作用”时换 key 重做，也防止把 partial/uncertain 压扁为普通网络失败。
+
+## 2026-08-23 增量
+
+已知终止 `SabiFailure` 现在允许在没有 Operation/Receipt 时返回，因为该 failure 本身证明 mutation 未被接受；无 failure 的 side-effecting success 仍必须提供 Operation 或 Receipt。`E_UNCERTAIN`/`E_EFFECT_UNKNOWN` 仍要求可查询 Operation 与原 key 重试，`E_PARTIAL` 仍必须带 Receipt。Rust、TypeScript、Python conformance 均覆盖终止拒绝和上述 fail-closed 反例。
 
 ## 3. 跨语言与真实 IPC 证据
 

@@ -103,6 +103,7 @@ def validate_response_context(
         semantics.side_effecting
         and not context.HasField("operation")
         and not context.receipts
+        and not context.HasField("failure")
     ):
         _fail(
             "MISSING_EFFECT_EVIDENCE",

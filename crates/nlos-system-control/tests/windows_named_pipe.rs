@@ -310,16 +310,11 @@ async fn submit_crosses_real_windows_named_pipe_and_replays_receipt() {
             serve_one(stream, config, peer, &peer_authorizer, |validated| {
                 let response =
                     RecoverySystemControl::new(server_authority.as_ref(), &server_health, &policy)
-                        .handle(validated.envelope(), 10, 6_000)
-                        .map_err(|_| {
-                            IpcError::ServiceFailure("SystemControl handler rejected request")
-                        });
+                        .handle_for_ipc(validated.envelope(), 10, 6_000);
                 async move {
-                    response.map(|envelope| {
-                        OutboundResponse::Typed(ExchangeResponse {
-                            envelope: Some(envelope),
-                        })
-                    })
+                    Ok(OutboundResponse::Typed(ExchangeResponse {
+                        envelope: Some(response),
+                    }))
                 }
             })
             .await?;

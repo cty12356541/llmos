@@ -546,6 +546,20 @@ fn uncertain_and_partial_failures_require_reconciliation_evidence() {
         Err(CommonSemanticsError::MissingEffectEvidence)
     );
 
+    let mut terminal_rejection = response.clone();
+    let context = match terminal_rejection.common_context.as_mut().unwrap() {
+        envelope_message::CommonContext::ResponseContext(context) => context,
+        envelope_message::CommonContext::RequestContext(_) => unreachable!(),
+    };
+    context.operation = None;
+    context.receipts.clear();
+    context.failure = Some(SabiFailure {
+        code: SabiErrorCode::Rights.into(),
+        retry: RetryDirective::DoNotRetry.into(),
+        safe_message: "authorization denied".to_owned(),
+    });
+    assert!(validate_sabi_response_context(&terminal_rejection, MethodSemantics::MUTATION).is_ok());
+
     let mut unsafe_retry = response.clone();
     let context = match unsafe_retry.common_context.as_mut().unwrap() {
         envelope_message::CommonContext::ResponseContext(context) => context,

@@ -14,6 +14,8 @@ import {
   ExchangeRequestSchema,
   ExchangeResponseSchema,
   LocalRpcService,
+  RetryDirective,
+  SabiErrorCode,
   type Envelope,
 } from "../../../gen/typescript/nlos/sabi/v1/envelope_pb.ts";
 import {
@@ -168,6 +170,25 @@ assert.equal(responseContext.operation?.generation, 4n);
 assert.equal(responseContext.failure?.code, 13);
 assert.equal(responseContext.failure?.retry, 3);
 assert.deepEqual(toBinary(EnvelopeSchema, uncertain), uncertainGolden);
+
+const terminalRejection = fromBinary(
+  EnvelopeSchema,
+  toBinary(EnvelopeSchema, uncertain),
+);
+assert.equal(terminalRejection.commonContext.case, "responseContext");
+if (terminalRejection.commonContext.case !== "responseContext") {
+  throw new Error("terminal rejection must carry a response context");
+}
+terminalRejection.commonContext.value.operation = undefined;
+terminalRejection.commonContext.value.receipts = [];
+assert.ok(terminalRejection.commonContext.value.failure);
+terminalRejection.commonContext.value.failure.code = SabiErrorCode.RIGHTS;
+terminalRejection.commonContext.value.failure.retry = RetryDirective.DO_NOT_RETRY;
+terminalRejection.commonContext.value.failure.safeMessage = "authorization denied";
+validateResponseContext(terminalRejection, {
+  sideEffecting: true,
+  longRunning: false,
+});
 
 responseContext.failure!.retry = 2;
 assert.throws(

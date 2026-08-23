@@ -96,7 +96,8 @@ export function validateResponseContext(
   if (
     semantics.sideEffecting &&
     context.operation === undefined &&
-    context.receipts.length === 0
+    context.receipts.length === 0 &&
+    context.failure === undefined
   ) {
     fail("MISSING_EFFECT_EVIDENCE", "mutation response requires Operation or Receipt");
   }

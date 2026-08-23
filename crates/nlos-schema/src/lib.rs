@@ -1128,7 +1128,14 @@ pub fn validate_sabi_response_context(
         validate_operation(operation)?;
     }
     validate_receipts(&context.receipts)?;
-    if semantics.side_effecting && context.operation.is_none() && context.receipts.is_empty() {
+    // A known terminal failure is effect evidence that no mutation was
+    // accepted; uncertain/partial failures still require their reconciliation
+    // references and are checked below.
+    if semantics.side_effecting
+        && context.operation.is_none()
+        && context.receipts.is_empty()
+        && context.failure.is_none()
+    {
         return Err(CommonSemanticsError::MissingEffectEvidence);
     }
 
