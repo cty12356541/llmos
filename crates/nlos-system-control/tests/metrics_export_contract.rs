@@ -84,6 +84,40 @@ impl RecoveryHealthSource for FixedHealth {
     }
 }
 
+struct FlappingHealth {
+    calls: AtomicU64,
+}
+
+impl FlappingHealth {
+    fn new() -> Self {
+        Self {
+            calls: AtomicU64::new(0),
+        }
+    }
+}
+
+impl RecoveryHealthSource for FlappingHealth {
+    fn recovery_health(&self) -> RecoveryWorkerHealth {
+        let generation = self.calls.fetch_add(1, Ordering::AcqRel) + 1;
+        RecoveryWorkerHealth {
+            state: RecoveryWorkerState::Running,
+            completed_cycles: generation,
+            total_inspected: 100 + generation,
+            total_finalized: 200 + generation,
+            consecutive_failed_cycles: usize::try_from(300 + generation)
+                .expect("test generation fits usize"),
+            retry_delay: Some(Duration::from_millis(400 + generation)),
+            last_failures: Vec::new(),
+            // The exporter must replace these cache values with the live
+            // TaskAuthority summary before handing the snapshot to the sink.
+            durable_retrying: 900 + generation,
+            durable_escalated: 1_000 + generation,
+            durable_unacknowledged_escalated: 1_100 + generation,
+            durable_resolved: 1_200 + generation,
+        }
+    }
+}
+
 fn health() -> FixedHealth {
     FixedHealth(RecoveryWorkerHealth {
         state: RecoveryWorkerState::Faulted,
@@ -135,21 +169,48 @@ impl RecoveryMetricsSink for OrderedSink {
     }
 }
 
-#[derive(Debug, Eq, PartialEq)]
-enum SinkFailure {
-    FirstGauge,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FailureStage {
+    Lifecycle,
+    Counter,
+    Gauge,
 }
 
-#[derive(Default)]
-struct FailOnFirstGauge {
+#[derive(Debug, Eq, PartialEq)]
+enum SinkFailure {
+    Lifecycle,
+    Counter,
+    Gauge,
+}
+
+struct FailingSink {
+    stage: FailureStage,
     events: Vec<Event>,
+    lifecycle_attempts: usize,
+    counter_attempts: usize,
     gauge_attempts: usize,
 }
 
-impl RecoveryMetricsSink for FailOnFirstGauge {
+impl FailingSink {
+    fn new(stage: FailureStage) -> Self {
+        Self {
+            stage,
+            events: Vec::new(),
+            lifecycle_attempts: 0,
+            counter_attempts: 0,
+            gauge_attempts: 0,
+        }
+    }
+}
+
+impl RecoveryMetricsSink for FailingSink {
     type Error = SinkFailure;
 
     fn record_worker_state(&mut self, state: RecoveryWorkerState) -> Result<(), Self::Error> {
+        self.lifecycle_attempts += 1;
+        if self.stage == FailureStage::Lifecycle {
+            return Err(SinkFailure::Lifecycle);
+        }
         self.events.push(Event::State(state));
         Ok(())
     }
@@ -159,13 +220,21 @@ impl RecoveryMetricsSink for FailOnFirstGauge {
         counter: RecoveryCounter,
         value: u64,
     ) -> Result<(), Self::Error> {
+        self.counter_attempts += 1;
+        if self.stage == FailureStage::Counter {
+            return Err(SinkFailure::Counter);
+        }
         self.events.push(Event::Counter(counter, value));
         Ok(())
     }
 
-    fn set_gauge(&mut self, _gauge: RecoveryGauge, _value: u64) -> Result<(), Self::Error> {
+    fn set_gauge(&mut self, gauge: RecoveryGauge, value: u64) -> Result<(), Self::Error> {
         self.gauge_attempts += 1;
-        Err(SinkFailure::FirstGauge)
+        if self.stage == FailureStage::Gauge {
+            return Err(SinkFailure::Gauge);
+        }
+        self.events.push(Event::Gauge(gauge, value));
+        Ok(())
     }
 }
 
@@ -229,29 +298,88 @@ fn export_emits_complete_typed_catalog_in_stable_order() {
 }
 
 #[test]
-fn export_stops_at_first_sink_failure_without_partial_success_afterward() {
+fn export_uses_one_health_generation_for_the_complete_catalog() {
+    let database = TestDatabase::new();
+    let authority = database.open();
+    let health = FlappingHealth::new();
+    let control = RecoverySystemControl::new(&authority, &health, &NoopAuthorizer);
+    let mut sink = OrderedSink::default();
+
+    control
+        .export_metrics(&mut sink)
+        .expect("metrics export should succeed");
+
+    assert_eq!(health.calls.load(Ordering::Acquire), 1);
+    assert_eq!(
+        sink.events,
+        vec![
+            Event::State(RecoveryWorkerState::Running),
+            Event::Counter(RecoveryCounter::CompletedCycles, 1),
+            Event::Counter(RecoveryCounter::InspectedPlans, 101),
+            Event::Counter(RecoveryCounter::FinalizedPlans, 201),
+            Event::Gauge(RecoveryGauge::ConsecutiveFailedCycles, 301),
+            Event::Gauge(RecoveryGauge::RetryDelayMilliseconds, 401),
+            // These four values come from the live empty TaskAuthority, not
+            // from the deliberately different worker cache generation.
+            Event::Gauge(RecoveryGauge::DurableRetrying, 0),
+            Event::Gauge(RecoveryGauge::DurableEscalated, 0),
+            Event::Gauge(RecoveryGauge::DurableUnacknowledgedEscalated, 0),
+            Event::Gauge(RecoveryGauge::DurableResolved, 0),
+        ]
+    );
+}
+
+#[test]
+fn export_stops_at_first_sink_failure_for_every_sink_stage() {
     let database = TestDatabase::new();
     let authority = database.open();
     let health = health();
     let control = RecoverySystemControl::new(&authority, &health, &NoopAuthorizer);
-    let mut sink = FailOnFirstGauge::default();
 
-    let error = control
-        .export_metrics(&mut sink)
-        .expect_err("first sink failure must be surfaced");
+    for (stage, expected_error, expected_events, expected_attempts) in [
+        (
+            FailureStage::Lifecycle,
+            SinkFailure::Lifecycle,
+            Vec::new(),
+            (1, 0, 0),
+        ),
+        (
+            FailureStage::Counter,
+            SinkFailure::Counter,
+            vec![Event::State(RecoveryWorkerState::Faulted)],
+            (1, 1, 0),
+        ),
+        (
+            FailureStage::Gauge,
+            SinkFailure::Gauge,
+            vec![
+                Event::State(RecoveryWorkerState::Faulted),
+                Event::Counter(RecoveryCounter::CompletedCycles, 17),
+                Event::Counter(RecoveryCounter::InspectedPlans, 29),
+                Event::Counter(RecoveryCounter::FinalizedPlans, 31),
+            ],
+            (1, 3, 1),
+        ),
+    ] {
+        let mut sink = FailingSink::new(stage);
+        let error = control
+            .export_metrics(&mut sink)
+            .expect_err("first sink failure must be surfaced");
 
-    assert!(matches!(
-        error,
-        RecoveryMetricsExportError::Sink(SinkFailure::FirstGauge)
-    ));
-    assert_eq!(sink.gauge_attempts, 1);
-    assert_eq!(
-        sink.events,
-        vec![
-            Event::State(RecoveryWorkerState::Faulted),
-            Event::Counter(RecoveryCounter::CompletedCycles, 17),
-            Event::Counter(RecoveryCounter::InspectedPlans, 29),
-            Event::Counter(RecoveryCounter::FinalizedPlans, 31),
-        ]
-    );
+        match error {
+            RecoveryMetricsExportError::Sink(actual) => assert_eq!(actual, expected_error),
+            RecoveryMetricsExportError::Task(_) => {
+                panic!("sink failure must not be reported as a TaskAuthority failure")
+            }
+        }
+        assert_eq!(sink.events, expected_events);
+        assert_eq!(
+            (
+                sink.lifecycle_attempts,
+                sink.counter_attempts,
+                sink.gauge_attempts,
+            ),
+            expected_attempts
+        );
+    }
 }
