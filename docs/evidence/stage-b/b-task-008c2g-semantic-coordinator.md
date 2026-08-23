@@ -8,6 +8,8 @@
 
 2026-08-23 增量新增 `B-TASK-008C2G-COORD-SEM-FAULT-1`：为 Semantic owner publication 接入仅供测试使用的 named SQLite VFS，并加入 owner 写失败、静默丢写、WAL 撕裂尾部、Task consumer 写失败及终态 finalize 写失败后的 durable-prefix/restart 矩阵；9 项测试全部通过。该增量仍只证明本地 SQLite 故障前缀，不改变跨 authority 或 Principal attestation 语义。
 
+同日新增 `B-TASK-008C2G-COORD-SEM-RESTART-SCAN`：在 owner publication 已提交而 TaskAuthority 进程退出后，重新打开 TaskAuthority，调用公开 `converge_pending` 仅凭 durable plan/expectation 完成 owner exact replay、Task receipt 消费和 terminal finalize；目标测试二进制共 5 项（4 项既有 baseline + 1 项新增）通过。该增量仍只证明本地 bounded restart convergence。
+
 ## 2. 已实现事实
 
 - schema v35 为 `task_authority_takeover_barrier_receipts` 增加 nullable `barrier_receipt_digest`：新 observation 持久化并在重启后读回 caller 提供的 remote barrier digest；v33/v34 旧行无法重建该值，迁移保留 `NULL`，不伪造审计事实。
@@ -42,6 +44,7 @@
 - `cargo test -p nlos-task --test authority_lease -- --nocapture`：5 项通过；新增覆盖 lease-bound permit 建立 assignment baseline、新 term live lease 的 takeover-fence CAS、旧 assignment 进入 `TakeoverPending`、pending takeover receipt、exact fence member manifest、逐 endpoint barrier observation 与只读 coverage view 的 immutable trigger、精确 replay 与 restart readback、v34→v35 digest-column migration、未知 endpoint 拒绝、control epoch 单调推进、旧 lease 拒绝和冻结后新 permit 拒绝。
 - `cargo test -p nlos-task --test effect_reconcile -- --nocapture`：13 项通过；新增覆盖冻结后 fresh adoption 拒绝、既有 adoption exact replay 保持可读。
 - `cargo test -p nlos-task --quiet`：TaskAuthority 全部测试通过；`cargo clippy -p nlos-task --all-targets -- -D warnings`：通过。
+- `cargo test -p nlos-commit-coordinator --test semantic_pending_restart_scan --quiet`：5 项通过；覆盖 owner publication durable 后丢弃/重开 TaskAuthority，由公开 `converge_pending` 完成 owner replay、单条 SemanticTaskCommitReceipt 消费和 `FINALIZED` 收敛；targeted Clippy、fmt、diff check 通过。
 
 ## 4. 明确限制
 
@@ -56,3 +59,9 @@
 - 新增 `crates/nlos-commit-coordinator/tests/semantic_convergence_fault_injection.rs`，复用既有 coordinator fixture，串行化进程级 `nlos-store-fault` VFS 注入；覆盖 Semantic owner `IOERR`/`ENOSPC`、`PowerLossAfter` 静默丢写、子进程持有 WAL 后强杀并截断最后 commit frame、owner receipt 已提交但 Task consumer 写失败，以及 READY 后 Task terminal finalize 写失败。
 - 每个故障场景均检查 durable prefix：失败不制造 publication/head 幻影；owner receipt 已存在时重试保持单 receipt；READY/finalize 失败重启后只完成一次 `TaskCommitReceipt`；恢复路径的 publication/task receipt 与计划 identity exact replay。
 - `cargo test -p nlos-commit-coordinator --test semantic_convergence_fault_injection -- --nocapture`：9 项通过；既有 `semantic_convergence` 4 项通过；`cargo test -p nlos-commit-coordinator --quiet`、`cargo test -p nlos-semantic --quiet`、workspace 通过；`cargo clippy -p nlos-semantic -p nlos-commit-coordinator --all-targets --all-features -- -D warnings` 与 `cargo fmt --all -- --check` 通过。常规 Rust + MSRV CI [32584611547](https://github.com/cty12356541/llmos/actions/runs/32584611547) 与 Pages [32584611605](https://github.com/cty12356541/llmos/actions/runs/32584611605) 均成功。该证据覆盖本地 SQLite 故障前缀与重启恢复，不外推真实硬件掉电、跨机器原子提交、外部 provider proof、Trust View/vector checkpoint 或 Principal peer attestation。
+
+### 5.2 Semantic pending restart scan（B-TASK-008C2G-COORD-SEM-RESTART-SCAN）
+
+- 新增 `crates/nlos-commit-coordinator/tests/semantic_pending_restart_scan.rs`，复用既有 fixture：先让 TaskAuthority durable prefix 进入 `PUBLISHING`，再由 SemanticAuthority 提交 owner publication，丢弃 TaskAuthority 实例并从同一 SQLite 文件重开。
+- 公开 `converge_pending(1, 9)` 从持久化 plan/expectation 重建 owner replay，消费单条 Task receipt，推进 `FINALIZED`，并确认后续 incomplete scan 为空；caller 没有提供新的 event/target/receipt binding。
+- `cargo test -p nlos-commit-coordinator --test semantic_pending_restart_scan --quiet`：5 项通过；targeted Clippy、fmt、diff check 通过。该证据只覆盖本地 SQLite bounded restart recovery，不外推真实硬件掉电、跨机器原子提交、外部 provider proof、Trust View/vector checkpoint、Principal attestation 或完整 TaskWriteSet。
