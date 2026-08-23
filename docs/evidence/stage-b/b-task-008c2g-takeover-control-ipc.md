@@ -69,4 +69,4 @@
 
 - 新增公开 `TakeoverControl::handle_for_ipc(request, now_monotonic_ns, now_wall_ms)`，成功响应保持原 envelope；handler 错误统一经 `failure_envelope` 转为 typed `SabiFailure`，transport I/O 仍由 caller 负责。
 - duplex IPC helper 与真实 Unix socket 拒绝测试改用该 adapter，未知 method 保留 request id、清空 payload/Operation/Receipt，并返回 `NOT_SUPPORTED + DO_NOT_RETRY`。feature-gated conformance server 仍使用 `handle` 的 `Result`，因为 crash-hook 需要据成功提交结果设置 `should_hold`；这是测试 outcome 边界，不是生产 caller 漏迁移的结论。
-- 本地 `cargo test -p nlos-takeover-control --quiet`（10 项）、feature conformance server check、Clippy/fmt 与 diff check 通过。该增量仍不改变 `TakeoverControlAuthorizer` 测试 stub、OS peer pre-gate、Principal attestation 或 trusted-clock anti-replay 的明确限制。
+- 本地 `cargo test -p nlos-takeover-control --quiet`（10 项）、feature conformance server check、Clippy/fmt 与 diff check 通过；本批 Rust cross-platform/MSRV CI [32624822987](https://github.com/cty12356541/llmos/actions/runs/32624822987) 的 Ubuntu/Windows/macOS/MSRV jobs 与 Pages [32624822965](https://github.com/cty12356541/llmos/actions/runs/32624822965) 均成功。该增量仍不改变 `TakeoverControlAuthorizer` 测试 stub、OS peer pre-gate、Principal attestation 或 trusted-clock anti-replay 的明确限制。

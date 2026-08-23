@@ -20,4 +20,4 @@
 
 ## 2026-08-23 增量
 
-新增 `ArtifactRecoveryOperationsSnapshot` 的跨语言 deterministic golden：Python 使用 `SerializeToString(deterministic=True)`，TypeScript 使用 `toBinary`，两者与固定 protobuf bytes 逐字节相等；覆盖 optional `retry_delay_ms`、lifecycle enum、last-failures authority/id、optional alert acknowledgement 与 `alerts_truncated`，并验证清除 retry delay 会改变 canonical bytes。该增量只证明 schema encoding/conformance，不把 metrics sink 或生产 exporter 晋升为完成。
+新增 `ArtifactRecoveryOperationsSnapshot` 的跨语言 deterministic golden：Python 使用 `SerializeToString(deterministic=True)`，TypeScript 使用 `toBinary`，两者与固定 protobuf bytes 逐字节相等；覆盖 optional `retry_delay_ms`、lifecycle enum、last-failures authority/id、optional alert acknowledgement 与 `alerts_truncated`，并验证清除 retry delay 会改变 canonical bytes。本批 Rust cross-platform/MSRV CI [32624822987](https://github.com/cty12356541/llmos/actions/runs/32624822987) 与 Pages [32624822965](https://github.com/cty12356541/llmos/actions/runs/32624822965) 已成功。该增量只证明 schema encoding/conformance，不把 metrics sink 或生产 exporter 晋升为完成。

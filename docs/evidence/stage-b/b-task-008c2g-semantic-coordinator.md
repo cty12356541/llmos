@@ -72,4 +72,4 @@
 
 - 新增 `crates/nlos-commit-coordinator/tests/semantic_pending_mixed_restart_scan.rs`：先以 `prepare(&fixture, true)` 建立 Effect + Semantic sealed write set，持久化 mixed finalize envelope 并完成 Semantic owner publication，再经 `request_effect_permit`/`record_no_effect` 关闭 optional Effect slot。
 - 丢弃 `TaskAuthority`、从同一 SQLite 文件重开后只调用公开 `converge_pending(1, 11)`；断言 Semantic publication 恰一条、TaskCommitReceipt 恰一条、状态为 `FINALIZED`、envelope 仍可读且 incomplete scan 为空。目标测试二进制 5 项通过，targeted Clippy/fmt/diff check 通过。
-- 该证据只覆盖本地 mixed envelope 的 bounded restart convergence；不外推跨机器原子提交、完整所有权证明、外部 provider attestation、Trust View/vector checkpoint 或完整 TaskWriteSet。
+- 该证据只覆盖本地 mixed envelope 的 bounded restart convergence；本批 Rust cross-platform/MSRV CI [32624822987](https://github.com/cty12356541/llmos/actions/runs/32624822987) 与 Pages [32624822965](https://github.com/cty12356541/llmos/actions/runs/32624822965) 已成功；不外推跨机器原子提交、完整所有权证明、外部 provider attestation、Trust View/vector checkpoint 或完整 TaskWriteSet。

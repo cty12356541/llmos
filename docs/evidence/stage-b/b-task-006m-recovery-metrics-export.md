@@ -24,7 +24,7 @@
 - `cargo test -p nlos-system-control --quiet`：该 crate 的 2 + 7 项 integration tests 通过。
 - `cargo fmt --all -- --check` 与 `cargo clippy -p nlos-system-control --all-targets --all-features -- -D warnings`：通过。
 
-新增测试使用真实 `SqliteTaskAuthority` 临时数据库，但只依赖 backend-neutral sink 接口，未把任何平台 exporter 或本地诊断文本引入测试契约；Rust cross-platform/MSRV CI [32614979438](https://github.com/cty12356541/llmos/actions/runs/32614979438) 的 Ubuntu/Windows/macOS/MSRV jobs 与 Pages [32614979403](https://github.com/cty12356541/llmos/actions/runs/32614979403) 已成功。
+新增测试使用真实 `SqliteTaskAuthority` 临时数据库，但只依赖 backend-neutral sink 接口，未把任何平台 exporter 或本地诊断文本引入测试契约；本批 Rust cross-platform/MSRV CI [32624822987](https://github.com/cty12356541/llmos/actions/runs/32624822987) 的 Ubuntu/Windows/macOS/MSRV jobs 与 Pages [32624822965](https://github.com/cty12356541/llmos/actions/runs/32624822965) 已成功。
 
 本证据为单节点本地 H3 / `PARTIAL PASS`。这里只定义 backend-neutral export contract 和 snapshot push；本轮三平台 CI 只验证可移植契约回归，不等同具体 OpenMetrics HTTP endpoint、ETW/signpost adapter、scrape auth、retention/alert rules 或生产 exporter。
 
