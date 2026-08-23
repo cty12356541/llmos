@@ -18,9 +18,10 @@ use nlos_commit_coordinator::{
 };
 use nlos_store_fault::{FaultCode, FaultMode};
 use nlos_task::{
-    ArtifactCommitPlanId, ArtifactCommitPlanState, ArtifactPublicationExpectation, AttemptSpec,
-    PermitDecision, PermitRequest, PlanArtifactCommitRequest, SnapshotBundle, SqliteTaskAuthority,
-    TaskSpec, artifact_publication_plan_root, empty_effect_history_root,
+    ArtifactCommitPlanId, ArtifactCommitPlanState, ArtifactPublicationExpectation,
+    ArtifactRecoveryState, AttemptSpec, PermitDecision, PermitRequest, PlanArtifactCommitRequest,
+    SnapshotBundle, SqliteTaskAuthority, TaskSpec, artifact_publication_plan_root,
+    empty_effect_history_root,
 };
 use nlos_types::{
     ArtifactId, CancellationScopeId, CommitPermitId, Generation, IdempotencyKey, TaskAttemptId,
@@ -1138,12 +1139,19 @@ fn persistent_plan_failure_escalates_without_faulting_worker() {
     assert_eq!(escalated.consecutive_failed_cycles, 0);
     assert_eq!(escalated.retry_delay, None);
     assert_eq!(escalated.durable_escalated, 1);
-    assert_eq!(escalated.last_failures[0].plan_id, Some(pending.plan));
     assert_eq!(
         tasks
             .inspect_artifact_commit_plan(pending.plan)
             .unwrap()
             .state,
         ArtifactCommitPlanState::Ready
+    );
+    assert_eq!(
+        tasks
+            .inspect_artifact_recovery(pending.plan)
+            .unwrap()
+            .expect("durable escalation record")
+            .state,
+        ArtifactRecoveryState::Escalated
     );
 }
