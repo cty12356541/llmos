@@ -400,6 +400,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "nlos-channel"
+version = "0.1.0"
+dependencies = [
+ "nlos-types",
+ "rusqlite",
+ "sha2",
+]
+
+[[package]]
 name = "nlos-commit-coordinator"
 version = "0.1.0"
 dependencies = [
