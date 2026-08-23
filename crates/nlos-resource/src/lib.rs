@@ -351,6 +351,25 @@ pub struct FinalizationReceipt {
     pub finalized_at_ms: u64,
 }
 
+/// Owner-derived, immutable view of a settled Reservation's complete cost
+/// evidence.  This aggregate is a read model only: every nested receipt is
+/// loaded from the Resource authority's immutable tables, and no caller value
+/// is accepted as a cost fact.  A `TaskAuthority` can copy this value into its
+/// own terminal receipt without needing the Resource authority to expose its
+/// private `SQLite` connection.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResourceCostReceipt {
+    pub reservation_id: ReservationId,
+    pub account_id: ResourceAccountId,
+    pub quote_id: QuoteId,
+    pub call_id: CallId,
+    pub operation_id: OperationId,
+    pub upper_bound: u64,
+    pub activation: ActivationReceipt,
+    pub consumptions: Vec<ConsumptionReceipt>,
+    pub finalization: FinalizationReceipt,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FinalizeDecision {
     Finalized(FinalizationReceipt),
@@ -1495,6 +1514,84 @@ impl ResourceAuthority {
         Ok(receipt)
     }
 
+    /// Reads a complete owner-derived Resource/cost receipt for one settled
+    /// Reservation.  The Reservation must already be `FINALIZED`; activation,
+    /// every immutable consumption receipt, and the finalization/refund
+    /// receipt are cross-checked against the same durable Reservation before
+    /// the aggregate is returned.
+    ///
+    /// # Errors
+    /// Fails closed for a missing/non-finalized Reservation, an incomplete or
+    /// inconsistent receipt set, or a storage/read failure.
+    pub fn inspect_cost_receipt(
+        &self,
+        reservation_id: ReservationId,
+    ) -> Result<ResourceCostReceipt, ResourceAuthorityError> {
+        let connection = self.lock()?;
+        let reservation = reservation(&connection, reservation_id)?
+            .ok_or(ResourceAuthorityError::ReservationNotFound)?;
+        if reservation.state != ReservationState::Finalized {
+            return Err(ResourceAuthorityError::ReservationNotActive);
+        }
+        let activation = activation_receipt(&connection, reservation_id)?.ok_or(
+            ResourceAuthorityError::CorruptRecord(
+                "finalized reservation has no activation receipt",
+            ),
+        )?;
+        let finalization = finalize_receipt(&connection, reservation_id)?.ok_or(
+            ResourceAuthorityError::CorruptRecord(
+                "finalized reservation has no finalization receipt",
+            ),
+        )?;
+        if reservation.activation_receipt_id != Some(activation.receipt_id)
+            || reservation.finalize_receipt_id != Some(finalization.receipt_id)
+            || activation.operation_id != reservation.operation_id
+            || finalization.activation_receipt_id != activation.receipt_id
+            || finalization.operation_id != reservation.operation_id
+            || finalization.high_water_seq != reservation.usage_high_water_seq
+            || finalization.high_water != reservation.usage_high_water
+        {
+            return Err(ResourceAuthorityError::CorruptRecord(
+                "Resource cost receipt disagrees with finalized Reservation",
+            ));
+        }
+
+        let consumptions = consumption_receipts(&connection, reservation_id)?;
+        let expected_high_water = consumptions.last().map_or((0, 0), |receipt| {
+            (receipt.sequence, receipt.cumulative_usage)
+        });
+        if expected_high_water
+            != (
+                reservation.usage_high_water_seq,
+                reservation.usage_high_water,
+            )
+        {
+            return Err(ResourceAuthorityError::CorruptRecord(
+                "Resource consumption receipts do not close the high-water",
+            ));
+        }
+        if consumptions.iter().any(|receipt| {
+            receipt.operation_id != reservation.operation_id
+                || receipt.activation_receipt_id != activation.receipt_id
+        }) {
+            return Err(ResourceAuthorityError::CorruptRecord(
+                "Resource consumption receipt binding disagrees with activation",
+            ));
+        }
+
+        Ok(ResourceCostReceipt {
+            reservation_id,
+            account_id: reservation.account_id,
+            quote_id: reservation.quote_id,
+            call_id: reservation.call_id,
+            operation_id: reservation.operation_id,
+            upper_bound: reservation.upper_bound,
+            activation,
+            consumptions,
+            finalization,
+        })
+    }
+
     /// Reads the current account balance.
     ///
     /// # Errors
@@ -1990,6 +2087,34 @@ fn consumption_receipt(
     })
     .transpose()
 }
+
+fn consumption_receipts(
+    c: &Connection,
+    reservation_id: ReservationId,
+) -> Result<Vec<ConsumptionReceipt>, ResourceAuthorityError> {
+    let mut statement = c.prepare(
+        "SELECT receipt_id, operation_id, activation_receipt_id, sequence,
+                cumulative_usage, consumed_at_ms
+           FROM reservation_consumption_receipts
+          WHERE reservation_id=?1
+          ORDER BY sequence",
+    )?;
+    let mut rows = statement.query([reservation_id.as_bytes().as_slice()])?;
+    let mut receipts = Vec::new();
+    while let Some(row) = rows.next()? {
+        receipts.push(ConsumptionReceipt {
+            receipt_id: ReceiptId::from_bytes(a16(row.get::<_, Vec<u8>>(0)?)?),
+            reservation_id,
+            operation_id: OperationId::from_bytes(a16(row.get::<_, Vec<u8>>(1)?)?),
+            activation_receipt_id: ReceiptId::from_bytes(a16(row.get::<_, Vec<u8>>(2)?)?),
+            sequence: du(row.get::<_, i64>(3)?)?,
+            cumulative_usage: du(row.get::<_, i64>(4)?)?,
+            consumed_at_ms: du(row.get::<_, i64>(5)?)?,
+        });
+    }
+    Ok(receipts)
+}
+
 fn hash(tag: &[u8], parts: &[&[u8]]) -> [u8; 32] {
     let mut h = Sha256::new();
     h.update((tag.len() as u64).to_be_bytes());
