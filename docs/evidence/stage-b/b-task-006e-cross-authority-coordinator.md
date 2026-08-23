@@ -48,4 +48,13 @@
 
 ## 5. 下一步
 
-为 coordinator 补齐跨窗口 fault matrix：至少覆盖 publish 前退出、publish 后/record 前退出、record 后/finalize 前退出、Task finalize 写故障与恢复；随后把 pending scan 接入最小 Process supervisor 启动路径。online authorization token/签名与长期 coordinator authority 归属在进入真实 IPC 前冻结。
+Artifact publication pending restart scan 已补齐两个 owner publication receipt 的重开消费；仍需继续覆盖更广的 coordinator fault matrix、Resource/Operation/Channel participant 与完整 TaskWriteSet，并把 pending scan 接入最小 Process supervisor 启动路径。online authorization token/签名与长期 coordinator authority 归属在进入真实 IPC 前冻结。
+
+## 6. 增量 Evidence
+
+### 6.1 Artifact publication pending restart scan（B-TASK-008C2G-COORD-ARTIFACT-RESTART-SCAN）
+
+- 新增 `crates/nlos-commit-coordinator/tests/artifact_pending_restart_scan.rs`：建立一个包含两个 Artifact publication expectation 的 Task plan，分别 stage 并提交两个 Artifact owner publication receipt；确认 TaskAuthority 仍处于 `PUBLISHING` 且 Task-side publication consumer 为空后，丢弃并从同一 SQLite/root 重开两个 authority。
+- 重开后只调用公开 `ArtifactCommitCoordinator::converge_pending(1, 6_000)`；coordinator 消费两个原始 owner receipt，返回一条嵌套 `TaskCommitReceipt`，两个 Artifact head 均为 revision 1，plan 为 `FINALIZED`。随后显式 `converge` 返回逐位相同 receipt，后续 pending scan 为空。
+- `cargo test -p nlos-commit-coordinator --test artifact_pending_restart_scan -- --nocapture`：1 项通过；targeted Clippy、fmt、diff check 与 `cargo test --workspace --quiet` 通过。代码基线 `3d274ab` 的 Rust cross-platform/MSRV CI [32627556597](https://github.com/cty12356541/llmos/actions/runs/32627556597) 与 Pages [32627556621](https://github.com/cty12356541/llmos/actions/runs/32627556621) 均成功。
+- 证据仍是单机双 authority bounded recovery：不声称分布式原子提交、真实掉电、Artifact publication 回滚、Resource/Operation/Channel 完整接线、外部 provider proof/attestation 或 complete TaskWriteSet。
