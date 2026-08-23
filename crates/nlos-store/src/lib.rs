@@ -24,7 +24,7 @@ use nlos_types::{
 use rusqlite::{Connection, OpenFlags, Transaction, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
 
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 const MAX_ENDPOINT_COMPONENT_BYTES: usize = 128;
 const MAX_DURABLE_RESULT_BYTES: usize = 1024 * 1024;
 
@@ -38,6 +38,8 @@ pub enum StoreError {
     InvalidIdempotencyScope,
     IdempotencyConflict,
     IdempotencyRecordNotFound,
+    DispatchPreparationNotFound,
+    DispatchPreparationConflict,
     CancelEpochConflict {
         expected: u64,
         current: u64,
@@ -71,6 +73,12 @@ impl fmt::Display for StoreError {
             Self::IdempotencyRecordNotFound => {
                 formatter.write_str("operation has no durable idempotency record")
             }
+            Self::DispatchPreparationNotFound => {
+                formatter.write_str("operation has no durable dispatch preparation")
+            }
+            Self::DispatchPreparationConflict => formatter.write_str(
+                "operation dispatch preparation does not match the durable owner-bound request",
+            ),
             Self::CancelEpochConflict { expected, current } => write!(
                 formatter,
                 "operation cancel epoch conflict: expected {expected}, current {current}"
@@ -117,6 +125,42 @@ impl From<OperationError> for StoreError {
 pub enum RegistrationDecision {
     Created(OperationHandle),
     Existing(OperationHandle),
+}
+
+/// Durable owner-bound preparation for an Operation dispatch.
+///
+/// A preparation is not an effect permit and does not transition the
+/// Operation. It records the exact callback identity and owner facts that the
+/// later activation must present again after a restart.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OperationDispatchPreparation {
+    pub operation: OperationHandle,
+    pub owner_fiber: FiberHandle,
+    pub cancellation_scope_id: CancellationScopeId,
+    pub cancellation_generation: Generation,
+    pub callback_id: CallbackId,
+    pub cancel_epoch: CancelEpoch,
+    pub preparation_receipt_id: ReceiptId,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OperationPrepareDecision {
+    Prepared(OperationDispatchPreparation),
+    Replayed(OperationDispatchPreparation),
+}
+
+/// Durable result of consuming an Operation dispatch preparation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OperationDispatchActivation {
+    pub preparation: OperationDispatchPreparation,
+    pub ticket: CallbackTicket,
+    pub activation_receipt_id: ReceiptId,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OperationActivationDecision {
+    Activated(OperationDispatchActivation),
+    Replayed(OperationDispatchActivation),
 }
 
 /// Stable authority scope for an application-visible idempotency key.
@@ -287,12 +331,18 @@ impl SqliteOperationStore {
                 migrate_v1(&mut connection)?;
                 migrate_v2(&mut connection)?;
                 migrate_v3(&mut connection)?;
+                migrate_v4(&mut connection)?;
             }
             1 => {
                 migrate_v2(&mut connection)?;
                 migrate_v3(&mut connection)?;
+                migrate_v4(&mut connection)?;
             }
-            2 => migrate_v3(&mut connection)?,
+            2 => {
+                migrate_v3(&mut connection)?;
+                migrate_v4(&mut connection)?;
+            }
+            3 => migrate_v4(&mut connection)?,
             SCHEMA_VERSION => {}
             other => return Err(StoreError::UnsupportedSchema(other)),
         }
@@ -325,6 +375,143 @@ impl SqliteOperationStore {
         insert_machine(&transaction, &machine)?;
         transaction.commit()?;
         Ok(RegistrationDecision::Created(machine.snapshot().handle))
+    }
+
+    /// Durably prepares an Operation for a later owner-bound activation.
+    ///
+    /// Preparation records the callback identity and the current owner/cancel
+    /// facts without changing the Operation state. Repeating the exact
+    /// request returns the same preparation after a restart; a different
+    /// callback for the same Operation is rejected. The legacy direct
+    /// [`Self::dispatch`] path is fenced while a preparation exists, so a
+    /// caller cannot bypass the durable prepare/activate boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stale-generation, state, conflict, or storage error.
+    pub fn prepare_dispatch(
+        &self,
+        handle: OperationHandle,
+        callback_id: CallbackId,
+    ) -> Result<OperationPrepareDecision, StoreError> {
+        let mut connection = self.lock_connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let (machine, _) = load_machine(&transaction, handle.operation_id)?;
+        let snapshot = machine.snapshot();
+        if snapshot.handle != handle {
+            return Err(OperationError::InvalidGeneration.into());
+        }
+
+        if let Some(existing) = load_dispatch_preparation_optional(&transaction, handle)? {
+            if dispatch_preparation_matches_machine(&existing, &machine, callback_id) {
+                transaction.commit()?;
+                return Ok(OperationPrepareDecision::Replayed(existing));
+            }
+            return Err(StoreError::DispatchPreparationConflict);
+        }
+        if snapshot.state != OperationState::Registered {
+            return Err(OperationError::InvalidState.into());
+        }
+
+        let expected = dispatch_preparation_from_machine(&machine, callback_id);
+        insert_dispatch_preparation(&transaction, &expected)?;
+        transaction.commit()?;
+        Ok(OperationPrepareDecision::Prepared(expected))
+    }
+
+    /// Atomically consumes a durable dispatch preparation and transitions the
+    /// Operation to `DISPATCHED`.
+    ///
+    /// The owner facts, callback identity and cancel epoch are all re-read
+    /// from the Operation authority. The activation receipt is immutable and
+    /// replaying the same preparation returns the original fenced callback
+    /// ticket without dispatching again.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stale-generation, missing-preparation, conflict, state, or
+    /// storage error.
+    pub fn activate_dispatch(
+        &self,
+        preparation: OperationDispatchPreparation,
+    ) -> Result<OperationActivationDecision, StoreError> {
+        let mut connection = self.lock_connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let (mut machine, revision) =
+            load_machine(&transaction, preparation.operation.operation_id)?;
+        if machine.snapshot().handle != preparation.operation {
+            return Err(OperationError::InvalidGeneration.into());
+        }
+        let durable_preparation =
+            load_dispatch_preparation_optional(&transaction, preparation.operation)?
+                .ok_or(StoreError::DispatchPreparationNotFound)?;
+        if durable_preparation != preparation {
+            return Err(StoreError::DispatchPreparationConflict);
+        }
+
+        let activation_receipt_id = ReceiptId::from_bytes(derive_operation_dispatch_receipt_id(
+            b"nlos/operation-dispatch/activation/v1",
+            preparation.operation,
+            preparation.callback_id,
+        ));
+        if let Some(existing) =
+            load_dispatch_activation_optional(&transaction, preparation.operation)?
+        {
+            if existing.operation != preparation.operation
+                || existing.preparation_receipt_id != preparation.preparation_receipt_id
+                || existing.activation_receipt_id != activation_receipt_id
+                || existing.callback_id != preparation.callback_id
+                || existing.cancel_epoch != preparation.cancel_epoch
+                || !dispatch_preparation_matches_machine(
+                    &preparation,
+                    &machine,
+                    preparation.callback_id,
+                )
+            {
+                return Err(StoreError::DispatchPreparationConflict);
+            }
+            let issued = machine.issued_callback().ok_or(StoreError::CorruptRecord(
+                "activation receipt lacks issued callback",
+            ))?;
+            if issued.callback_id != existing.callback_id
+                || issued.cancel_epoch != existing.cancel_epoch
+                || machine.snapshot().state == OperationState::Registered
+            {
+                return Err(StoreError::CorruptRecord(
+                    "activation receipt disagrees with Operation state",
+                ));
+            }
+            let activation = OperationDispatchActivation {
+                preparation,
+                ticket: CallbackTicket {
+                    callback_id: existing.callback_id,
+                    operation: preparation.operation,
+                    owner_fiber: preparation.owner_fiber,
+                    cancel_epoch: existing.cancel_epoch,
+                },
+                activation_receipt_id: existing.activation_receipt_id,
+            };
+            transaction.commit()?;
+            return Ok(OperationActivationDecision::Replayed(activation));
+        }
+
+        if machine.snapshot().state != OperationState::Registered {
+            return Err(OperationError::InvalidState.into());
+        }
+        if !dispatch_preparation_matches_machine(&preparation, &machine, preparation.callback_id) {
+            return Err(StoreError::DispatchPreparationConflict);
+        }
+        let ticket = machine.dispatch(preparation.operation, preparation.callback_id)?;
+        update_machine(&transaction, &machine, revision)?;
+        insert_dispatch_activation(&transaction, preparation, activation_receipt_id)?;
+        transaction.commit()?;
+        Ok(OperationActivationDecision::Activated(
+            OperationDispatchActivation {
+                preparation,
+                ticket,
+                activation_receipt_id,
+            },
+        ))
     }
 
     /// Atomically claims a scoped idempotency key and registers its Operation.
@@ -565,6 +752,12 @@ impl SqliteOperationStore {
         let mut connection = self.lock_connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let (mut machine, revision) = load_machine(&transaction, handle.operation_id)?;
+        if machine.snapshot().handle != handle {
+            return Err(OperationError::InvalidGeneration.into());
+        }
+        if load_dispatch_preparation_optional(&transaction, handle)?.is_some() {
+            return Err(OperationError::InvalidState.into());
+        }
         let ticket = machine.dispatch(handle, callback_id)?;
         update_machine(&transaction, &machine, revision)?;
         transaction.commit()?;
@@ -894,6 +1087,68 @@ fn migrate_v3(connection: &mut Connection) -> Result<(), StoreError> {
     Ok(())
 }
 
+/// Adds immutable owner-bound Operation dispatch preparation and activation
+/// receipts. Both tables are append-only; activation is a separate row so a
+/// prepared Operation remains visibly unactivated until the activation
+/// transaction commits.
+fn migrate_v4(connection: &mut Connection) -> Result<(), StoreError> {
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "CREATE TABLE operation_dispatch_preparations (
+            operation_id BLOB PRIMARY KEY NOT NULL CHECK(length(operation_id) = 16),
+            operation_generation BLOB NOT NULL CHECK(length(operation_generation) = 8),
+            owner_fiber_id BLOB NOT NULL CHECK(length(owner_fiber_id) = 16),
+            owner_fiber_generation BLOB NOT NULL CHECK(length(owner_fiber_generation) = 8),
+            cancellation_scope_id BLOB NOT NULL CHECK(length(cancellation_scope_id) = 16),
+            cancellation_generation BLOB NOT NULL CHECK(length(cancellation_generation) = 8),
+            callback_id BLOB NOT NULL CHECK(length(callback_id) = 16),
+            cancel_epoch BLOB NOT NULL CHECK(length(cancel_epoch) = 8),
+            preparation_receipt_id BLOB UNIQUE NOT NULL CHECK(length(preparation_receipt_id) = 16),
+            FOREIGN KEY(operation_id) REFERENCES operations(operation_id)
+        ) STRICT;
+
+        CREATE TABLE operation_dispatch_activation_receipts (
+            activation_receipt_id BLOB PRIMARY KEY NOT NULL CHECK(length(activation_receipt_id) = 16),
+            operation_id BLOB UNIQUE NOT NULL CHECK(length(operation_id) = 16),
+            operation_generation BLOB NOT NULL CHECK(length(operation_generation) = 8),
+            preparation_receipt_id BLOB UNIQUE NOT NULL CHECK(length(preparation_receipt_id) = 16),
+            callback_id BLOB NOT NULL CHECK(length(callback_id) = 16),
+            cancel_epoch BLOB NOT NULL CHECK(length(cancel_epoch) = 8),
+            FOREIGN KEY(operation_id) REFERENCES operations(operation_id),
+            FOREIGN KEY(preparation_receipt_id)
+                REFERENCES operation_dispatch_preparations(preparation_receipt_id)
+        ) STRICT;
+
+        CREATE TRIGGER operation_dispatch_preparations_immutable_update
+        BEFORE UPDATE ON operation_dispatch_preparations
+        BEGIN
+            SELECT RAISE(ABORT, 'operation dispatch preparation is immutable');
+        END;
+
+        CREATE TRIGGER operation_dispatch_preparations_immutable_delete
+        BEFORE DELETE ON operation_dispatch_preparations
+        BEGIN
+            SELECT RAISE(ABORT, 'operation dispatch preparation is immutable');
+        END;
+
+        CREATE TRIGGER operation_dispatch_activation_receipts_immutable_update
+        BEFORE UPDATE ON operation_dispatch_activation_receipts
+        BEGIN
+            SELECT RAISE(ABORT, 'operation dispatch activation receipt is immutable');
+        END;
+
+        CREATE TRIGGER operation_dispatch_activation_receipts_immutable_delete
+        BEFORE DELETE ON operation_dispatch_activation_receipts
+        BEGIN
+            SELECT RAISE(ABORT, 'operation dispatch activation receipt is immutable');
+        END;
+
+        PRAGMA user_version = 4;",
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
+
 struct IdempotencyRecord {
     request_digest_sha256: [u8; 32],
     operation: OperationHandle,
@@ -1208,6 +1463,164 @@ fn load_machine_optional_with_revision(
     Ok(Some((machine, revision)))
 }
 
+fn dispatch_preparation_from_machine(
+    machine: &OperationMachine,
+    callback_id: CallbackId,
+) -> OperationDispatchPreparation {
+    let spec = machine.spec();
+    let snapshot = machine.snapshot();
+    OperationDispatchPreparation {
+        operation: snapshot.handle,
+        owner_fiber: spec.owner_fiber,
+        cancellation_scope_id: spec.cancellation_scope_id,
+        cancellation_generation: spec.cancellation_generation,
+        callback_id,
+        cancel_epoch: snapshot.cancel_epoch,
+        preparation_receipt_id: ReceiptId::from_bytes(derive_operation_dispatch_receipt_id(
+            b"nlos/operation-dispatch/preparation/v1",
+            snapshot.handle,
+            callback_id,
+        )),
+    }
+}
+
+fn dispatch_preparation_matches_machine(
+    preparation: &OperationDispatchPreparation,
+    machine: &OperationMachine,
+    callback_id: CallbackId,
+) -> bool {
+    let spec = machine.spec();
+    let handle = machine.snapshot().handle;
+    preparation.operation == handle
+        && preparation.owner_fiber == spec.owner_fiber
+        && preparation.cancellation_scope_id == spec.cancellation_scope_id
+        && preparation.cancellation_generation == spec.cancellation_generation
+        && preparation.callback_id == callback_id
+        && preparation.cancel_epoch == CancelEpoch::INITIAL
+        && preparation.preparation_receipt_id
+            == ReceiptId::from_bytes(derive_operation_dispatch_receipt_id(
+                b"nlos/operation-dispatch/preparation/v1",
+                handle,
+                callback_id,
+            ))
+}
+
+fn insert_dispatch_preparation(
+    transaction: &Transaction<'_>,
+    preparation: &OperationDispatchPreparation,
+) -> Result<(), StoreError> {
+    transaction.execute(
+        "INSERT INTO operation_dispatch_preparations (
+            operation_id, operation_generation, owner_fiber_id,
+            owner_fiber_generation, cancellation_scope_id,
+            cancellation_generation, callback_id, cancel_epoch,
+            preparation_receipt_id
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            preparation.operation.operation_id.as_bytes().as_slice(),
+            encode_u64(preparation.operation.generation.get()).as_slice(),
+            preparation.owner_fiber.fiber_id.as_bytes().as_slice(),
+            encode_u64(preparation.owner_fiber.generation.get()).as_slice(),
+            preparation.cancellation_scope_id.as_bytes().as_slice(),
+            encode_u64(preparation.cancellation_generation.get()).as_slice(),
+            preparation.callback_id.as_bytes().as_slice(),
+            encode_u64(preparation.cancel_epoch.get()).as_slice(),
+            preparation.preparation_receipt_id.as_bytes().as_slice(),
+        ],
+    )?;
+    Ok(())
+}
+
+fn load_dispatch_preparation_optional(
+    source: &impl SqlRead,
+    operation: OperationHandle,
+) -> Result<Option<OperationDispatchPreparation>, StoreError> {
+    let mut statement = source.prepare_statement(
+        "SELECT operation_id, operation_generation, owner_fiber_id,
+                owner_fiber_generation, cancellation_scope_id,
+                cancellation_generation, callback_id, cancel_epoch,
+                preparation_receipt_id
+         FROM operation_dispatch_preparations
+         WHERE operation_id = ?1",
+    )?;
+    let mut rows = statement.query([operation.operation_id.as_bytes().as_slice()])?;
+    let Some(row) = rows.next()? else {
+        return Ok(None);
+    };
+    Ok(Some(OperationDispatchPreparation {
+        operation: OperationHandle {
+            operation_id: OperationId::from_bytes(blob16(row, 0)?),
+            generation: generation_from_blob(row, 1)?,
+        },
+        owner_fiber: FiberHandle {
+            fiber_id: ExecutionFiberId::from_bytes(blob16(row, 2)?),
+            generation: generation_from_blob(row, 3)?,
+        },
+        cancellation_scope_id: CancellationScopeId::from_bytes(blob16(row, 4)?),
+        cancellation_generation: generation_from_blob(row, 5)?,
+        callback_id: CallbackId::from_bytes(blob16(row, 6)?),
+        cancel_epoch: CancelEpoch::new(u64_from_blob(row, 7)?),
+        preparation_receipt_id: ReceiptId::from_bytes(blob16(row, 8)?),
+    }))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct DispatchActivationRecord {
+    activation_receipt_id: ReceiptId,
+    operation: OperationHandle,
+    preparation_receipt_id: ReceiptId,
+    callback_id: CallbackId,
+    cancel_epoch: CancelEpoch,
+}
+
+fn insert_dispatch_activation(
+    transaction: &Transaction<'_>,
+    preparation: OperationDispatchPreparation,
+    activation_receipt_id: ReceiptId,
+) -> Result<(), StoreError> {
+    transaction.execute(
+        "INSERT INTO operation_dispatch_activation_receipts (
+            activation_receipt_id, operation_id, operation_generation,
+            preparation_receipt_id, callback_id, cancel_epoch
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            activation_receipt_id.as_bytes().as_slice(),
+            preparation.operation.operation_id.as_bytes().as_slice(),
+            encode_u64(preparation.operation.generation.get()).as_slice(),
+            preparation.preparation_receipt_id.as_bytes().as_slice(),
+            preparation.callback_id.as_bytes().as_slice(),
+            encode_u64(preparation.cancel_epoch.get()).as_slice(),
+        ],
+    )?;
+    Ok(())
+}
+
+fn load_dispatch_activation_optional(
+    source: &impl SqlRead,
+    operation: OperationHandle,
+) -> Result<Option<DispatchActivationRecord>, StoreError> {
+    let mut statement = source.prepare_statement(
+        "SELECT activation_receipt_id, operation_id, operation_generation,
+                preparation_receipt_id, callback_id, cancel_epoch
+         FROM operation_dispatch_activation_receipts
+         WHERE operation_id = ?1",
+    )?;
+    let mut rows = statement.query([operation.operation_id.as_bytes().as_slice()])?;
+    let Some(row) = rows.next()? else {
+        return Ok(None);
+    };
+    Ok(Some(DispatchActivationRecord {
+        activation_receipt_id: ReceiptId::from_bytes(blob16(row, 0)?),
+        operation: OperationHandle {
+            operation_id: OperationId::from_bytes(blob16(row, 1)?),
+            generation: generation_from_blob(row, 2)?,
+        },
+        preparation_receipt_id: ReceiptId::from_bytes(blob16(row, 3)?),
+        callback_id: CallbackId::from_bytes(blob16(row, 4)?),
+        cancel_epoch: CancelEpoch::new(u64_from_blob(row, 5)?),
+    }))
+}
+
 fn decode_outbox_row(row: &rusqlite::Row<'_>) -> Result<OutboxEntry, StoreError> {
     let sequence: i64 = row.get(0)?;
     let kind = decode_outbox_kind(row.get(1)?)?;
@@ -1352,6 +1765,22 @@ fn derive_endpoint_id(
     hasher.update(domain);
     hasher.update(operation_id.as_bytes());
     hasher.update(generation.get().to_be_bytes());
+    let digest: [u8; 32] = hasher.finalize().into();
+    let mut id = [0_u8; 16];
+    id.copy_from_slice(&digest[..16]);
+    id
+}
+
+fn derive_operation_dispatch_receipt_id(
+    domain: &[u8],
+    operation: OperationHandle,
+    callback_id: CallbackId,
+) -> [u8; 16] {
+    let mut hasher = Sha256::new();
+    hasher.update(domain);
+    hasher.update(operation.operation_id.as_bytes());
+    hasher.update(operation.generation.get().to_be_bytes());
+    hasher.update(callback_id.as_bytes());
     let digest: [u8; 32] = hasher.finalize().into();
     let mut id = [0_u8; 16];
     id.copy_from_slice(&digest[..16]);

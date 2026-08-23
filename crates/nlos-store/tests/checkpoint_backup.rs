@@ -255,7 +255,7 @@ fn online_backup_produces_complete_openable_copy() {
     let backup_version: i64 = raw_connection(&backup_file.path)
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("backup user_version");
-    assert_eq!(source_version, 3);
+    assert_eq!(source_version, 4);
     assert_eq!(backup_version, source_version, "schema version survives");
 }
 

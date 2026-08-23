@@ -1,4 +1,4 @@
-//! Schema v1→v3 migration, golden database, backup anchor and interrupted
+//! Schema v1→v4 migration, golden database, backup anchor and interrupted
 //! migration acceptance tests.
 
 mod support;
@@ -86,8 +86,8 @@ fn golden_v1_migrates_forward_without_data_loss_and_accepts_new_writes() {
     let database = TestFile::new("migration-golden");
     create_golden_v1(&database);
 
-    let store = SqliteOperationStore::open(&database.path).expect("migrate v1 to v3");
-    assert_eq!(version(&database.path), 3);
+    let store = SqliteOperationStore::open(&database.path).expect("migrate v1 to v4");
+    assert_eq!(version(&database.path), 4);
     assert_v2_index(&database.path);
     assert_v3_idempotency_table(&database.path);
     assert_golden_data(&store);
@@ -111,13 +111,13 @@ fn pre_upgrade_backup_remains_a_restorable_v1_rollback_anchor() {
 
     let migrated = SqliteOperationStore::open(&source.path).expect("migrate source");
     assert_golden_data(&migrated);
-    assert_eq!(version(&source.path), 3);
+    assert_eq!(version(&source.path), 4);
     assert_eq!(version(&backup_file.path), 1, "backup stays at v1");
 
     let restored =
         SqliteOperationStore::open(&backup_file.path).expect("restore and migrate backup");
     assert_golden_data(&restored);
-    assert_eq!(version(&backup_file.path), 3);
+    assert_eq!(version(&backup_file.path), 4);
 }
 
 #[test]
@@ -137,7 +137,7 @@ fn interrupted_migration_leaves_only_complete_schema_versions() {
         nlos_store_fault::disarm();
 
         if let Ok(store) = result {
-            assert_eq!(version(&database.path), 3);
+            assert_eq!(version(&database.path), 4);
             assert_v2_index(&database.path);
             assert_v3_idempotency_table(&database.path);
             assert_golden_data(&store);
@@ -145,13 +145,17 @@ fn interrupted_migration_leaves_only_complete_schema_versions() {
         }
         let durable_version = version(&database.path);
         assert!(
-            matches!(durable_version, 1..=3),
+            matches!(durable_version, 1..=4),
             "interrupted migration exposed version {durable_version}"
         );
         if durable_version == 2 {
             assert_v2_index(&database.path);
         }
         if durable_version == 3 {
+            assert_v2_index(&database.path);
+            assert_v3_idempotency_table(&database.path);
+        }
+        if durable_version == 4 {
             assert_v2_index(&database.path);
             assert_v3_idempotency_table(&database.path);
         }
