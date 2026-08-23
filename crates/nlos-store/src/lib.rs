@@ -40,6 +40,7 @@ pub enum StoreError {
     IdempotencyRecordNotFound,
     DispatchPreparationNotFound,
     DispatchPreparationConflict,
+    OperationNotActivated,
     CancelEpochConflict {
         expected: u64,
         current: u64,
@@ -79,6 +80,9 @@ impl fmt::Display for StoreError {
             Self::DispatchPreparationConflict => formatter.write_str(
                 "operation dispatch preparation does not match the durable owner-bound request",
             ),
+            Self::OperationNotActivated => {
+                formatter.write_str("operation has no durable dispatch activation")
+            }
             Self::CancelEpochConflict { expected, current } => write!(
                 formatter,
                 "operation cancel epoch conflict: expected {expected}, current {current}"
@@ -262,6 +266,19 @@ pub struct OperationEndpointProof {
     pub participant_id: TaskParticipantId,
     pub participant_generation: Generation,
     pub admission_receipt_id: ReceiptId,
+}
+
+/// Authority-derived proof that an Operation's prepared dispatch was
+/// durably activated.  This is intentionally separate from
+/// [`OperationEndpointProof`]: registration/participant admission does not
+/// imply that the one-shot dispatch boundary has opened.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OperationActivationProof {
+    pub operation: OperationHandle,
+    pub preparation_receipt_id: ReceiptId,
+    pub activation_receipt_id: ReceiptId,
+    pub callback_id: CallbackId,
+    pub cancel_epoch: CancelEpoch,
 }
 
 /// A single-writer `SQLite` authority. The mutex is a process-local admission
@@ -937,6 +954,69 @@ impl SqliteOperationStore {
             participant_id,
             participant_generation: spec.generation,
             admission_receipt_id,
+        })
+    }
+
+    /// Reads and validates the immutable owner activation receipt for an
+    /// Operation.  A registered or merely prepared Operation is rejected;
+    /// the proof is returned only after exact `OperationId + Generation`
+    /// readback and cross-checking against the durable preparation, callback
+    /// fence and current Operation state.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stale-generation, missing-preparation, unactivated,
+    /// corrupt-record, or storage error.
+    pub fn inspect_activation_proof(
+        &self,
+        handle: OperationHandle,
+    ) -> Result<OperationActivationProof, StoreError> {
+        let connection = self.lock_connection()?;
+        let (machine, _) = load_machine(&*connection, handle.operation_id)?;
+        if machine.snapshot().handle != handle {
+            return Err(OperationError::InvalidGeneration.into());
+        }
+        let preparation = load_dispatch_preparation_optional(&*connection, handle)?
+            .ok_or(StoreError::DispatchPreparationNotFound)?;
+        let activation = load_dispatch_activation_optional(&*connection, handle)?
+            .ok_or(StoreError::OperationNotActivated)?;
+        if activation.operation != handle
+            || activation.preparation_receipt_id != preparation.preparation_receipt_id
+            || activation.callback_id != preparation.callback_id
+            || activation.cancel_epoch != preparation.cancel_epoch
+        {
+            return Err(StoreError::CorruptRecord(
+                "dispatch activation disagrees with preparation",
+            ));
+        }
+        let expected_activation_receipt_id =
+            ReceiptId::from_bytes(derive_operation_dispatch_receipt_id(
+                b"nlos/operation-dispatch/activation/v1",
+                handle,
+                preparation.callback_id,
+            ));
+        if activation.activation_receipt_id != expected_activation_receipt_id {
+            return Err(StoreError::CorruptRecord(
+                "dispatch activation receipt identity mismatch",
+            ));
+        }
+        let issued = machine.issued_callback().ok_or(StoreError::CorruptRecord(
+            "dispatch activation lacks issued callback",
+        ))?;
+        if issued.callback_id != activation.callback_id
+            || issued.cancel_epoch != activation.cancel_epoch
+            || machine.snapshot().state == OperationState::Registered
+        {
+            return Err(StoreError::CorruptRecord(
+                "dispatch activation disagrees with Operation state",
+            ));
+        }
+        Ok(OperationActivationProof {
+            operation: handle,
+            preparation_receipt_id: preparation.preparation_receipt_id,
+            activation_receipt_id: activation.activation_receipt_id,
+            callback_id: activation.callback_id,
+            cancel_epoch: activation.cancel_epoch,
         })
     }
 
