@@ -29,7 +29,7 @@ use nlos_schema::{
 use nlos_store_fault::{FaultCode, FaultMode};
 use nlos_takeover_control::{
     SUBMIT_BARRIER_OBSERVATION_METHOD, TAKEOVER_CONTROL_SERVICE, TakeoverControl,
-    TakeoverControlAuthorizer, TakeoverControlError, failure_envelope, participant_type_code,
+    TakeoverControlAuthorizer, TakeoverControlError, participant_type_code,
 };
 use nlos_task::{
     AttemptSpec, AuthorityLeaseDecision, AuthorityLeaseFinalizeRequest,
@@ -518,16 +518,9 @@ async fn exchange(
             PeerIdentity::InMemory,
             &AllowPeer,
             move |validated| {
-                let response = match TakeoverControl::new(
-                    authority.as_ref(),
-                    identity.as_ref(),
-                    &CapabilityPolicy,
-                )
-                .handle(validated.envelope(), 10, 6_000)
-                {
-                    Ok(envelope) => envelope,
-                    Err(error) => failure_envelope(validated.envelope(), &error),
-                };
+                let response =
+                    TakeoverControl::new(authority.as_ref(), identity.as_ref(), &CapabilityPolicy)
+                        .handle_for_ipc(validated.envelope(), 10, 6_000);
                 async move {
                     Ok(OutboundResponse::Typed(ExchangeResponse {
                         envelope: Some(response),
@@ -915,16 +908,9 @@ async fn signed_observation_uses_a_directory_resolved_exactly_bound_unix_endpoin
         // the only tuple this connection may serve.
         let authorizer = ExactPeerAuthorizer::new(PeerCredentialBinding::from_peer(peer));
         serve_one(stream, config, peer, &authorizer, move |validated| {
-            let response = match TakeoverControl::new(
-                authority.as_ref(),
-                identity.as_ref(),
-                &CapabilityPolicy,
-            )
-            .handle(validated.envelope(), 10, 6_000)
-            {
-                Ok(envelope) => envelope,
-                Err(error) => failure_envelope(validated.envelope(), &error),
-            };
+            let response =
+                TakeoverControl::new(authority.as_ref(), identity.as_ref(), &CapabilityPolicy)
+                    .handle_for_ipc(validated.envelope(), 10, 6_000);
             async move {
                 Ok(OutboundResponse::Typed(ExchangeResponse {
                     envelope: Some(response),
@@ -1053,7 +1039,19 @@ async fn unknown_method_is_a_typed_not_supported_failure_over_ipc() {
         request,
     )
     .await;
-    let failure = response_failure(response.envelope());
+    let response_envelope = response.envelope();
+    assert_eq!(response_envelope.request_id, vec![0x35; 16]);
+    assert!(response_envelope.payload.is_empty());
+    let envelope::CommonContext::ResponseContext(context) = response_envelope
+        .common_context
+        .as_ref()
+        .expect("response context")
+    else {
+        panic!("expected response context");
+    };
+    assert!(context.operation.is_none());
+    assert!(context.receipts.is_empty());
+    let failure = response_failure(response_envelope);
     assert_eq!(failure.code, i32::from(SabiErrorCode::NotSupported));
     assert_eq!(failure.retry, i32::from(RetryDirective::DoNotRetry));
 }

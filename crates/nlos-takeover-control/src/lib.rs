@@ -360,6 +360,24 @@ where
         }
     }
 
+    /// Handles one request for a local IPC adapter and always returns a typed
+    /// response envelope. Handler errors are converted with
+    /// [`failure_envelope`] before framing; transport I/O failures remain the
+    /// caller's responsibility. Use [`Self::handle`] when the caller needs
+    /// to inspect the local error instead.
+    #[must_use]
+    pub fn handle_for_ipc(
+        &self,
+        request: &Envelope,
+        now_monotonic_ns: u64,
+        now_wall_ms: i64,
+    ) -> Envelope {
+        match self.handle(request, now_monotonic_ns, now_wall_ms) {
+            Ok(response) => response,
+            Err(error) => failure_envelope(request, &error),
+        }
+    }
+
     fn handle_submit(
         &self,
         request: &Envelope,
