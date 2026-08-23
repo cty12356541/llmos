@@ -26,6 +26,7 @@
 - `cargo test --workspace --quiet`：通过。
 - `npm run schema:test:typescript`、`npm run schema:typecheck`、`python tests/conformance/schema/envelope.py`：通过；三语言均覆盖 terminal rejection without effect evidence。
 - 三平台 + MSRV Rust CI [32588868965](https://github.com/cty12356541/llmos/actions/runs/32588868965) 的 Ubuntu/macOS/Windows/MSRV jobs 均成功；Pages [32588868943](https://github.com/cty12356541/llmos/actions/runs/32588868943) 成功。Windows named-pipe 的编译/执行结论以该 CI 为准。
+- 本轮三平台 + MSRV Rust CI [32614979438](https://github.com/cty12356541/llmos/actions/runs/32614979438) 的 Ubuntu/macOS/Windows/MSRV jobs 均成功；Pages [32614979403](https://github.com/cty12356541/llmos/actions/runs/32614979403) 与 Schema fuzz smoke [32614979395](https://github.com/cty12356541/llmos/actions/runs/32614979395) 成功。该轮覆盖 `handle_for_ipc`、terminal rejection common semantics、metrics contract 与 coordinator restart-scan 的 workspace/conformance 回归。
 
 ## 验证与边界
 

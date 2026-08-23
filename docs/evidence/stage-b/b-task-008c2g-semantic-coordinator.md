@@ -44,7 +44,7 @@
 - `cargo test -p nlos-task --test authority_lease -- --nocapture`：5 项通过；新增覆盖 lease-bound permit 建立 assignment baseline、新 term live lease 的 takeover-fence CAS、旧 assignment 进入 `TakeoverPending`、pending takeover receipt、exact fence member manifest、逐 endpoint barrier observation 与只读 coverage view 的 immutable trigger、精确 replay 与 restart readback、v34→v35 digest-column migration、未知 endpoint 拒绝、control epoch 单调推进、旧 lease 拒绝和冻结后新 permit 拒绝。
 - `cargo test -p nlos-task --test effect_reconcile -- --nocapture`：13 项通过；新增覆盖冻结后 fresh adoption 拒绝、既有 adoption exact replay 保持可读。
 - `cargo test -p nlos-task --quiet`：TaskAuthority 全部测试通过；`cargo clippy -p nlos-task --all-targets -- -D warnings`：通过。
-- `cargo test -p nlos-commit-coordinator --test semantic_pending_restart_scan --quiet`：5 项通过；覆盖 owner publication durable 后丢弃/重开 TaskAuthority，由公开 `converge_pending` 完成 owner replay、单条 SemanticTaskCommitReceipt 消费和 `FINALIZED` 收敛；targeted Clippy、fmt、diff check 通过。
+- `cargo test -p nlos-commit-coordinator --test semantic_pending_restart_scan --quiet`：5 项通过；覆盖 owner publication durable 后丢弃/重开 TaskAuthority，由公开 `converge_pending` 完成 owner replay、单条 SemanticTaskCommitReceipt 消费和 `FINALIZED` 收敛；targeted Clippy、fmt、diff check 通过。Rust cross-platform/MSRV CI [32614979438](https://github.com/cty12356541/llmos/actions/runs/32614979438)、Pages [32614979403](https://github.com/cty12356541/llmos/actions/runs/32614979403) 与 Schema fuzz smoke [32614979395](https://github.com/cty12356541/llmos/actions/runs/32614979395) 均成功。
 
 ## 4. 明确限制
 
