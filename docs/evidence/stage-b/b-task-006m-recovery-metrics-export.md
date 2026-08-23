@@ -1,6 +1,6 @@
 # B-TASK-006M：recovery metrics export
 
-> 状态：`PARTIAL PASS`　　日期：2026-08-09
+> 状态：`PARTIAL PASS`　　日期：2026-08-23（第二十三增量）
 >
 > 对应：`B-TASK-006J`、`B-TASK-006K`、`B-TASK-006L`
 
@@ -14,6 +14,20 @@
 
 ## 验证与边界
 
-integration test 用故意过期的 worker gauge 验证 exporter 返回 live TaskAuthority 值，并核对稳定 metric name/kind；`nlos-system-control` 共 6 项 integration tests 通过。
+既有 integration test 用故意过期的 worker gauge 验证 exporter 返回 live TaskAuthority 值，并核对稳定 metric name/kind；本轮新增
+`metrics_export_contract.rs`，以独立的可移植 sink 验证完整的 typed catalog 顺序（1 个 lifecycle、3 个 counter、6 个 gauge）以及
+首个 sink failure 的有界短路（失败后不继续写入后续指标）。`nlos-system-control` 现有与新增 metrics 相关测试均通过。
+
+本轮本地验证：
+
+- `cargo test -p nlos-system-control --test metrics_export_contract --quiet`：2 项通过。
+- `cargo test -p nlos-system-control --quiet`：该 crate 的 2 + 7 项 integration tests 通过。
+- `cargo fmt --all -- --check` 与 `cargo clippy -p nlos-system-control --all-targets --all-features -- -D warnings`：通过。
+
+新增测试使用真实 `SqliteTaskAuthority` 临时数据库，但只依赖 backend-neutral sink 接口，未把任何平台 exporter 或本地诊断文本引入测试契约；三平台 CI 复验尚待集成提交后执行。
 
 本证据为单节点本地 H3 / `PARTIAL PASS`。这里只定义 backend-neutral export contract 和 snapshot push，不含具体 OpenMetrics HTTP endpoint、ETW/signpost adapter、scrape auth、retention/alert rules 或三平台验证。
+
+## 2026-08-23 增量
+
+新增 `metrics_export_contract.rs`：用真实临时 `SqliteTaskAuthority` 验证完整 typed catalog 的固定顺序与 metric name 稳定性，并验证 sink 首次失败后不会继续写入后续样本。该增量仍只证明 backend-neutral contract；三平台 exporter、scrape auth 和生产 sink 仍未完成。
