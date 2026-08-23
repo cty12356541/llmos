@@ -10,6 +10,8 @@
 
 同日新增 `B-TASK-008C2G-COORD-SEM-RESTART-SCAN`：在 owner publication 已提交而 TaskAuthority 进程退出后，重新打开 TaskAuthority，调用公开 `converge_pending` 仅凭 durable plan/expectation 完成 owner exact replay、Task receipt 消费和 terminal finalize；目标测试二进制共 5 项（4 项既有 baseline + 1 项新增）通过。该增量仍只证明本地 bounded restart convergence。
 
+随后新增 `B-TASK-008C2G-COORD-SEM-MIXED-RESTART`：在同一 sealed TaskWriteSet 中同时存在 Effect 与 Semantic 计划时，持久化 mixed finalize envelope，完成 Semantic owner publication，再关闭 optional Effect slot；丢弃并重开 TaskAuthority 后只调用公开 `converge_pending`，恢复为单条 nested `TaskCommitReceipt` 与 `FINALIZED`。该增量仍是单机 mixed-envelope recovery evidence，不代表完整 TaskWriteSet 或跨 authority 原子提交。
+
 ## 2. 已实现事实
 
 - schema v35 为 `task_authority_takeover_barrier_receipts` 增加 nullable `barrier_receipt_digest`：新 observation 持久化并在重启后读回 caller 提供的 remote barrier digest；v33/v34 旧行无法重建该值，迁移保留 `NULL`，不伪造审计事实。
@@ -65,3 +67,9 @@
 - 新增 `crates/nlos-commit-coordinator/tests/semantic_pending_restart_scan.rs`，复用既有 fixture：先让 TaskAuthority durable prefix 进入 `PUBLISHING`，再由 SemanticAuthority 提交 owner publication，丢弃 TaskAuthority 实例并从同一 SQLite 文件重开。
 - 公开 `converge_pending(1, 9)` 从持久化 plan/expectation 重建 owner replay，消费单条 Task receipt，推进 `FINALIZED`，并确认后续 incomplete scan 为空；caller 没有提供新的 event/target/receipt binding。
 - `cargo test -p nlos-commit-coordinator --test semantic_pending_restart_scan --quiet`：5 项通过；targeted Clippy、fmt、diff check 通过。该证据只覆盖本地 SQLite bounded restart recovery，不外推真实硬件掉电、跨机器原子提交、外部 provider proof、Trust View/vector checkpoint、Principal attestation 或完整 TaskWriteSet。
+
+### 5.3 Mixed Effect + Semantic pending restart convergence（B-TASK-008C2G-COORD-SEM-MIXED-RESTART）
+
+- 新增 `crates/nlos-commit-coordinator/tests/semantic_pending_mixed_restart_scan.rs`：先以 `prepare(&fixture, true)` 建立 Effect + Semantic sealed write set，持久化 mixed finalize envelope 并完成 Semantic owner publication，再经 `request_effect_permit`/`record_no_effect` 关闭 optional Effect slot。
+- 丢弃 `TaskAuthority`、从同一 SQLite 文件重开后只调用公开 `converge_pending(1, 11)`；断言 Semantic publication 恰一条、TaskCommitReceipt 恰一条、状态为 `FINALIZED`、envelope 仍可读且 incomplete scan 为空。目标测试二进制 5 项通过，targeted Clippy/fmt/diff check 通过。
+- 该证据只覆盖本地 mixed envelope 的 bounded restart convergence；不外推跨机器原子提交、完整所有权证明、外部 provider attestation、Trust View/vector checkpoint 或完整 TaskWriteSet。

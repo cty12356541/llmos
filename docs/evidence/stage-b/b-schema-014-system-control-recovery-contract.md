@@ -17,3 +17,7 @@
 `nlos-schema` compatibility tests 覆盖 get/snapshot/submit/result round-trip、registry、过量 alert 与不安全 reason；Buf lint/format、TypeScript typecheck 和 Rust tests 通过。
 
 本证据只覆盖 schema/validator，等级为 H3 / `PARTIAL PASS`；TaskAuthority handler、common-envelope caller/idempotency/Capability 校验、ServiceDirectory binding 和 local IPC 已由后续 [B-TASK-006L](./b-task-006l-system-control-recovery-handler.md) 分开记录，但该后续证据仍不代表真实 Capability authority、Principal attestation 或 GUI/CLI/NL/API 等价控制路径。
+
+## 2026-08-23 增量
+
+新增 `ArtifactRecoveryOperationsSnapshot` 的跨语言 deterministic golden：Python 使用 `SerializeToString(deterministic=True)`，TypeScript 使用 `toBinary`，两者与固定 protobuf bytes 逐字节相等；覆盖 optional `retry_delay_ms`、lifecycle enum、last-failures authority/id、optional alert acknowledgement 与 `alerts_truncated`，并验证清除 retry delay 会改变 canonical bytes。该增量只证明 schema encoding/conformance，不把 metrics sink 或生产 exporter 晋升为完成。
