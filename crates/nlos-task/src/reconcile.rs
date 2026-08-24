@@ -41,7 +41,8 @@ use crate::{
     AdoptionReceiptRecord, AttemptState, AuthorityLeaseRecord, ClosePermitDecision,
     FinalizeDecision, NestedResourceCostReceipt, PermitRecord, PermitState,
     ReconciliationReceiptRecord, ResourceFinalizeDecision, ResourceTaskCommitReceipt,
-    SemanticCommitPlanId, SemanticFinalizeDecision, SemanticTaskCommitReceipt, TaskReceiptRecord,
+    SemanticCommitPlanId, SemanticFinalizeDecision, SemanticResourceFinalizeDecision,
+    SemanticResourceTaskCommitReceipt, SemanticTaskCommitReceipt, TaskReceiptRecord,
     TaskStoreError,
 };
 
@@ -209,7 +210,7 @@ fn sha256(domain: &str, parts: &[&[u8]]) -> [u8; 32] {
 /// before an issued permit is finalized. This is deliberately a guard only:
 /// it does not acknowledge the Semantic outbox, create a checkpoint, or
 /// manufacture a publication receipt (`[TASK-WRITE-003]`).
-fn validate_semantic_finalization(
+pub(crate) fn validate_semantic_finalization(
     semantic_authority: &nlos_semantic::SemanticAuthority,
     record: &crate::TaskWriteSetRecord,
 ) -> Result<(), TaskStoreError> {
@@ -1599,6 +1600,7 @@ enum FinalizeImplResult {
     Plain(FinalizeDecision),
     Semantic(SemanticFinalizeDecision),
     Resource(ResourceFinalizeDecision),
+    Combined(SemanticResourceFinalizeDecision),
 }
 
 /// Builds, stores, and applies the `TaskPermitClosureReceipt`-shaped
@@ -2052,6 +2054,31 @@ impl SqliteTaskAuthority {
         }
     }
 
+    /// Combined Semantic + Resource v3 finalize core used by
+    /// `finalize_commit_v3_with_semantic_publications_and_resource_authority[_and_authority_lease]`.
+    /// The caller has already verified both owner states outside the Task
+    /// transaction; replay consults only durable Task rows.
+    pub(crate) fn finalize_impl_with_semantic_and_resource_receipts(
+        &self,
+        request: &FinalizeRequestV3,
+        authority_lease: Option<AuthorityLeaseRecord>,
+        semantic_plan_id: SemanticCommitPlanId,
+        resource_receipts: &[NestedResourceCostReceipt],
+    ) -> Result<SemanticResourceFinalizeDecision, TaskStoreError> {
+        match self.finalize_impl_inner(
+            request,
+            false,
+            authority_lease,
+            Some(semantic_plan_id),
+            Some(resource_receipts),
+        )? {
+            FinalizeImplResult::Combined(decision) => Ok(decision),
+            _ => Err(TaskStoreError::CorruptRecord(
+                "non-Combined finalize result returned through combined Semantic+Resource API",
+            )),
+        }
+    }
+
     #[allow(clippy::too_many_lines)] // Lifecycle branches stay adjacent for transaction audit.
     fn finalize_impl_inner(
         &self,
@@ -2061,11 +2088,6 @@ impl SqliteTaskAuthority {
         semantic_plan_id: Option<SemanticCommitPlanId>,
         resource_receipts: Option<&[NestedResourceCostReceipt]>,
     ) -> Result<FinalizeImplResult, TaskStoreError> {
-        if semantic_plan_id.is_some() && resource_receipts.is_some() {
-            return Err(TaskStoreError::CorruptRecord(
-                "combined Semantic + Resource finalize is not implemented",
-            ));
-        }
         let mut connection = self.lock_connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let task = store::load_task(&transaction, request.base.task_id)?;
@@ -2131,51 +2153,94 @@ impl SqliteTaskAuthority {
                     .and_then(|record| record.current_participant_registry_binding)
                     .or(permit.participant_registry_binding);
                 let decision = replay_finalize(&transaction, &permit, request, replay_binding)?;
-                if resource_receipts.is_some() {
-                    // Resource replay authority is the durable Task rows;
-                    // the Resource owner is never re-read here.
-                    let receipt = match &decision {
-                        FinalizeDecision::Committed(receipt)
-                        | FinalizeDecision::Replayed(receipt) => (**receipt).clone(),
-                    };
-                    let nested = crate::resource_commit::load_resource_cost_receipts(
-                        &transaction,
-                        request.base.task_id,
-                        receipt.receipt_id,
-                    )?;
-                    validate_resource_receipts_against_sealed_write_set(
-                        &transaction,
-                        &permit,
-                        request.base.task_id,
-                        &nested,
-                    )?;
-                    transaction.commit()?;
-                    return Ok(FinalizeImplResult::Resource(
-                        ResourceFinalizeDecision::Replayed(Box::new(ResourceTaskCommitReceipt {
-                            task_receipt: receipt,
-                            resource_cost_receipts: nested,
-                        })),
-                    ));
-                }
-                if let Some(plan_id) = semantic_plan_id {
-                    let receipt = match &decision {
-                        FinalizeDecision::Committed(receipt)
-                        | FinalizeDecision::Replayed(receipt) => (**receipt).clone(),
-                    };
-                    let publications =
-                        crate::semantic_commit::load_finalized_semantic_publications(
+                match (semantic_plan_id, resource_receipts) {
+                    (Some(plan_id), Some(_)) => {
+                        let receipt = match &decision {
+                            FinalizeDecision::Committed(receipt)
+                            | FinalizeDecision::Replayed(receipt) => (**receipt).clone(),
+                        };
+                        // Combined replay authority is the durable Task
+                        // rows; neither owner authority is re-read here.
+                        let publications =
+                            crate::semantic_commit::load_finalized_semantic_publications(
+                                &transaction,
+                                plan_id,
+                                request.base.task_id,
+                                receipt.receipt_id,
+                            )?;
+                        let nested = crate::resource_commit::load_resource_cost_receipts(
                             &transaction,
-                            plan_id,
                             request.base.task_id,
                             receipt.receipt_id,
                         )?;
-                    transaction.commit()?;
-                    return Ok(FinalizeImplResult::Semantic(
-                        SemanticFinalizeDecision::Replayed(Box::new(SemanticTaskCommitReceipt {
-                            task_receipt: receipt,
-                            semantic_publications: publications,
-                        })),
-                    ));
+                        validate_resource_receipts_against_sealed_write_set(
+                            &transaction,
+                            &permit,
+                            request.base.task_id,
+                            &nested,
+                        )?;
+                        transaction.commit()?;
+                        return Ok(FinalizeImplResult::Combined(
+                            SemanticResourceFinalizeDecision::Replayed(Box::new(
+                                SemanticResourceTaskCommitReceipt {
+                                    task_receipt: receipt,
+                                    semantic_publications: publications,
+                                    resource_cost_receipts: nested,
+                                },
+                            )),
+                        ));
+                    }
+                    (None, Some(_)) => {
+                        // Resource replay authority is the durable Task rows;
+                        // the Resource owner is never re-read here.
+                        let receipt = match &decision {
+                            FinalizeDecision::Committed(receipt)
+                            | FinalizeDecision::Replayed(receipt) => (**receipt).clone(),
+                        };
+                        let nested = crate::resource_commit::load_resource_cost_receipts(
+                            &transaction,
+                            request.base.task_id,
+                            receipt.receipt_id,
+                        )?;
+                        validate_resource_receipts_against_sealed_write_set(
+                            &transaction,
+                            &permit,
+                            request.base.task_id,
+                            &nested,
+                        )?;
+                        transaction.commit()?;
+                        return Ok(FinalizeImplResult::Resource(
+                            ResourceFinalizeDecision::Replayed(Box::new(
+                                ResourceTaskCommitReceipt {
+                                    task_receipt: receipt,
+                                    resource_cost_receipts: nested,
+                                },
+                            )),
+                        ));
+                    }
+                    (Some(plan_id), None) => {
+                        let receipt = match &decision {
+                            FinalizeDecision::Committed(receipt)
+                            | FinalizeDecision::Replayed(receipt) => (**receipt).clone(),
+                        };
+                        let publications =
+                            crate::semantic_commit::load_finalized_semantic_publications(
+                                &transaction,
+                                plan_id,
+                                request.base.task_id,
+                                receipt.receipt_id,
+                            )?;
+                        transaction.commit()?;
+                        return Ok(FinalizeImplResult::Semantic(
+                            SemanticFinalizeDecision::Replayed(Box::new(
+                                SemanticTaskCommitReceipt {
+                                    task_receipt: receipt,
+                                    semantic_publications: publications,
+                                },
+                            )),
+                        ));
+                    }
+                    (None, None) => {}
                 }
                 transaction.commit()?;
                 return Ok(FinalizeImplResult::Plain(decision));
@@ -2289,34 +2354,60 @@ impl SqliteTaskAuthority {
             new_fence,
             resource_receipts,
         )?;
-        if let Some(receipts) = resource_receipts {
-            transaction.commit()?;
-            return Ok(FinalizeImplResult::Resource(
-                ResourceFinalizeDecision::Committed(Box::new(ResourceTaskCommitReceipt {
-                    task_receipt: receipt,
-                    resource_cost_receipts: receipts.to_vec(),
-                })),
-            ));
+        match (semantic_context, resource_receipts) {
+            (Some((plan, publications)), Some(receipts)) => {
+                // One terminal transaction carries both nested evidence
+                // sets: the Resource rows were inserted by
+                // `write_commit_receipt`, the Semantic plan flips
+                // READY → FINALIZED against this receipt here.
+                crate::semantic_commit::finalize_plan(
+                    &transaction,
+                    plan.plan_id,
+                    receipt.receipt_id,
+                    request.base.finalized_at_ms,
+                )?;
+                transaction.commit()?;
+                Ok(FinalizeImplResult::Combined(
+                    SemanticResourceFinalizeDecision::Committed(Box::new(
+                        SemanticResourceTaskCommitReceipt {
+                            task_receipt: receipt,
+                            semantic_publications: publications,
+                            resource_cost_receipts: receipts.to_vec(),
+                        },
+                    )),
+                ))
+            }
+            (None, Some(receipts)) => {
+                transaction.commit()?;
+                Ok(FinalizeImplResult::Resource(
+                    ResourceFinalizeDecision::Committed(Box::new(ResourceTaskCommitReceipt {
+                        task_receipt: receipt,
+                        resource_cost_receipts: receipts.to_vec(),
+                    })),
+                ))
+            }
+            (Some((plan, publications)), None) => {
+                crate::semantic_commit::finalize_plan(
+                    &transaction,
+                    plan.plan_id,
+                    receipt.receipt_id,
+                    request.base.finalized_at_ms,
+                )?;
+                transaction.commit()?;
+                Ok(FinalizeImplResult::Semantic(
+                    SemanticFinalizeDecision::Committed(Box::new(SemanticTaskCommitReceipt {
+                        task_receipt: receipt,
+                        semantic_publications: publications,
+                    })),
+                ))
+            }
+            (None, None) => {
+                transaction.commit()?;
+                Ok(FinalizeImplResult::Plain(FinalizeDecision::Committed(
+                    Box::new(receipt),
+                )))
+            }
         }
-        if let Some((plan, publications)) = semantic_context {
-            crate::semantic_commit::finalize_plan(
-                &transaction,
-                plan.plan_id,
-                receipt.receipt_id,
-                request.base.finalized_at_ms,
-            )?;
-            transaction.commit()?;
-            return Ok(FinalizeImplResult::Semantic(
-                SemanticFinalizeDecision::Committed(Box::new(SemanticTaskCommitReceipt {
-                    task_receipt: receipt,
-                    semantic_publications: publications,
-                })),
-            ));
-        }
-        transaction.commit()?;
-        Ok(FinalizeImplResult::Plain(FinalizeDecision::Committed(
-            Box::new(receipt),
-        )))
     }
 
     /// Closes an issued permit with a `TaskPermitClosureReceipt`-shaped

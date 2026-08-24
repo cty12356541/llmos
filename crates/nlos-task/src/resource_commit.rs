@@ -11,14 +11,18 @@
 //!
 //! This bridge is verify-then-commit, not cross-authority atomicity: the
 //! owner read happens before the Task transaction opens. The combined
-//! Semantic + Resource finalize rung is a documented gap.
+//! Semantic + Resource finalize rung below reuses exactly the two
+//! single-authority validation precedents (Semantic owner-proof re-read +
+//! READY publication plan, Resource FINALIZED aggregate re-read) and then
+//! persists BOTH nested evidence sets in one terminal Task transaction.
 
 use nlos_types::{
     CallId, OperationId, QuoteId, ReceiptId, ReservationId, ResourceAccountId, TaskId,
 };
 use rusqlite::{Row, Transaction, params};
 
-use crate::reconcile::FinalizeRequestV3;
+use crate::reconcile::{FinalizeRequestV3, validate_semantic_finalization};
+use crate::semantic_commit::{NestedSemanticPublicationReceipt, SemanticCommitPlanId};
 use crate::store::{SqlRead, SqliteTaskAuthority, blob16, blob32, encode_u64, u64_from_blob};
 use crate::{
     AuthorityLeaseRecord, PermitState, TaskReceiptRecord, TaskStoreError, TaskWriteSetRecord,
@@ -82,6 +86,33 @@ impl ResourceFinalizeDecision {
     }
 }
 
+/// Task terminal receipt plus BOTH nested evidence sets of a combined
+/// Semantic + Resource finalize. Each element type is the exact nested
+/// copy used by its single-authority variant.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SemanticResourceTaskCommitReceipt {
+    pub task_receipt: TaskReceiptRecord,
+    pub semantic_publications: Vec<NestedSemanticPublicationReceipt>,
+    pub resource_cost_receipts: Vec<NestedResourceCostReceipt>,
+}
+
+/// Idempotent result of combined Semantic + Resource-aware Task
+/// finalization.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SemanticResourceFinalizeDecision {
+    Committed(Box<SemanticResourceTaskCommitReceipt>),
+    Replayed(Box<SemanticResourceTaskCommitReceipt>),
+}
+
+impl SemanticResourceFinalizeDecision {
+    #[must_use]
+    pub fn receipt(&self) -> &SemanticResourceTaskCommitReceipt {
+        match self {
+            Self::Committed(receipt) | Self::Replayed(receipt) => receipt,
+        }
+    }
+}
+
 impl SqliteTaskAuthority {
     /// Finalizes an issued permit after re-reading the FINALIZED owner
     /// cost aggregate for every Reservation sealed in the permit's
@@ -134,6 +165,82 @@ impl SqliteTaskAuthority {
         self.finalize_impl_with_resource_receipts(&request, Some(authority_lease), &receipts)
     }
 
+    /// Finalizes an issued permit whose sealed `TaskWriteSet` carries BOTH
+    /// `semantic_appends` and `resource_reservations`. Before the Task
+    /// transaction opens, the Semantic side is re-read exactly as
+    /// [`Self::finalize_commit_v3_with_semantic_publications`] does
+    /// (owner proof re-read per sealed append) and the Resource side
+    /// exactly as [`Self::finalize_commit_v3_with_resource_authority`]
+    /// does (every sealed Reservation FINALIZED via `inspect_cost_receipt`
+    /// with sealed-field comparison). The terminal Task transaction then
+    /// persists the commit receipt, the nested Semantic publication rows
+    /// (after the READY plan gate), the nested Resource cost rows, the
+    /// permit close, and the head advance as ONE transaction.
+    ///
+    /// A closed permit follows the standard v3 replay path: both nested
+    /// sets are loaded from the durable Task rows and neither owner
+    /// authority is consulted again.
+    ///
+    /// # Errors
+    ///
+    /// Returns the normal v3 lifecycle errors, plus a typed
+    /// [`TaskStoreError::SemanticParticipantAuthority`] /
+    /// [`TaskStoreError::TaskWriteSetConflict`] when a sealed Semantic
+    /// proof cannot be re-read exactly,
+    /// [`TaskStoreError::ResourceParticipantAuthority`] when a sealed
+    /// Reservation is not FINALIZED on the owner,
+    /// [`TaskStoreError::TaskWriteSetResourceReservationConflict`] when the
+    /// owner aggregate disagrees with the sealed binding, or
+    /// [`TaskStoreError::SemanticCommitPlanNotReady`] when the publication
+    /// plan has not reached READY.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn finalize_commit_v3_with_semantic_publications_and_resource_authority(
+        &self,
+        semantic_authority: &nlos_semantic::SemanticAuthority,
+        resource_authority: &nlos_resource::ResourceAuthority,
+        plan_id: SemanticCommitPlanId,
+        request: FinalizeRequestV3,
+    ) -> Result<SemanticResourceFinalizeDecision, TaskStoreError> {
+        let receipts = self.verified_semantic_and_resource_receipts(
+            semantic_authority,
+            resource_authority,
+            &request,
+        )?;
+        self.finalize_impl_with_semantic_and_resource_receipts(&request, None, plan_id, &receipts)
+    }
+
+    /// Combined Semantic + Resource revalidation plus terminalization for
+    /// a permit bound to a durable authority lease. Both owner readbacks
+    /// and the Task CAS remain separate facts; the lease check runs inside
+    /// the Task transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as
+    /// [`Self::finalize_commit_v3_with_semantic_publications_and_resource_authority`],
+    /// plus a typed lease-required, lease-fenced, or lease-expired error.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn finalize_commit_v3_with_semantic_publications_and_resource_authority_and_authority_lease(
+        &self,
+        semantic_authority: &nlos_semantic::SemanticAuthority,
+        resource_authority: &nlos_resource::ResourceAuthority,
+        plan_id: SemanticCommitPlanId,
+        request: FinalizeRequestV3,
+        authority_lease: AuthorityLeaseRecord,
+    ) -> Result<SemanticResourceFinalizeDecision, TaskStoreError> {
+        let receipts = self.verified_semantic_and_resource_receipts(
+            semantic_authority,
+            resource_authority,
+            &request,
+        )?;
+        self.finalize_impl_with_semantic_and_resource_receipts(
+            &request,
+            Some(authority_lease),
+            plan_id,
+            &receipts,
+        )
+    }
+
     /// Reads the immutable nested Resource cost receipt set of one Task
     /// terminal receipt. A legacy receipt without nested rows decodes as an
     /// empty set.
@@ -179,6 +286,40 @@ impl SqliteTaskAuthority {
                 "TaskWriteSet canonical root mismatch before Resource finalization",
             ));
         }
+        verify_owner_cost_receipts(resource_authority, &record)
+    }
+
+    /// Combined pre-transaction validation: loads the sealed write set of
+    /// an issued permit once, re-reads the Semantic owner proofs exactly as
+    /// the Semantic publications variant does, then re-reads every
+    /// FINALIZED Resource aggregate exactly as the Resource variant does.
+    /// Non-issued permits and legacy permits without a sealed write set
+    /// return an empty receipt set (replay inserts/reads no rows).
+    fn verified_semantic_and_resource_receipts(
+        &self,
+        semantic_authority: &nlos_semantic::SemanticAuthority,
+        resource_authority: &nlos_resource::ResourceAuthority,
+        request: &FinalizeRequestV3,
+    ) -> Result<Vec<NestedResourceCostReceipt>, TaskStoreError> {
+        let permit = self.inspect_permit(request.base.task_id, request.base.permit_id)?;
+        if permit.state != PermitState::Issued || permit.write_set_root == [0; 32] {
+            return Ok(Vec::new());
+        }
+        let record = {
+            let connection = self.lock_connection()?;
+            crate::store::load_write_set_by_root(
+                &*connection,
+                request.base.task_id,
+                permit.write_set_root,
+            )?
+        }
+        .ok_or(TaskStoreError::TaskWriteSetNotFound)?;
+        if record.write_set_root != crate::model::task_write_set_root(&record) {
+            return Err(TaskStoreError::CorruptRecord(
+                "TaskWriteSet canonical root mismatch before combined Semantic+Resource finalization",
+            ));
+        }
+        validate_semantic_finalization(semantic_authority, &record)?;
         verify_owner_cost_receipts(resource_authority, &record)
     }
 }

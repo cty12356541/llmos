@@ -104,9 +104,12 @@
 //! aggregate before the Task transaction opens, and copies the full detail
 //! (activation, every ordered consumption, finalization/refund) into two
 //! immutable nested tables inside the terminal Task transaction; replay is
-//! answered from the Task rows alone. Verify-then-commit is not
-//! cross-authority atomicity, and the combined Semantic + Resource finalize
-//! rung remains unimplemented.
+//! answered from the Task rows alone. The combined Semantic + Resource
+//! finalize rung layers the Semantic owner-proof re-read and READY
+//! publication-plan gate on top of the same Resource verification and
+//! persists both nested sets in one terminal Task transaction.
+//! Verify-then-commit is not
+//! cross-authority atomicity.
 //! Compensation execution
 //! (`COMPENSATED` is recordable but never executed), `QUORUM`/`REDUCE`
 //! group semantics (`[TASK-GROUP-003]`), `BEST_EFFORT` failure mode,
@@ -207,6 +210,7 @@ pub use recovery::{
 };
 pub use resource_commit::{
     NestedResourceCostReceipt, ResourceFinalizeDecision, ResourceTaskCommitReceipt,
+    SemanticResourceFinalizeDecision, SemanticResourceTaskCommitReceipt,
 };
 pub use semantic_commit::{
     FinalizeSemanticCommitRequest, NestedSemanticPublicationReceipt, PlanSemanticCommitRequest,
