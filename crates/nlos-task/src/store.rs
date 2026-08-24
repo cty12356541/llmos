@@ -6,6 +6,7 @@
 //! state transition, epoch advance, and receipt in one transaction, so a
 //! crash cannot split a decision from its durable record.
 
+use std::fmt;
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
@@ -78,6 +79,47 @@ pub(crate) struct StoredTask {
 struct StoredCancel {
     idempotency_key: IdempotencyKey,
     cancel_epoch_after: u64,
+}
+
+/// Borrowed owner-authority bundle for the struct-based seal and permit
+/// entries. Every field mirrors the exact `Option<&_>` authority slot the
+/// ladder constructors thread into `seal_task_write_set_inner` /
+/// `request_commit_permit_inner`, so one value can name any combination
+/// of authorities — including kinds no single ladder constructor carries
+/// together (for example Operation and Channel endpoints in one write
+/// set). The default value is the authority-free (all-`None`) bundle.
+#[derive(Clone, Copy, Default)]
+pub struct Authorities<'a> {
+    /// Artifact head owner; required by every seal entry, optional for
+    /// permit revalidation.
+    pub artifact: Option<&'a nlos_artifact::ArtifactStore>,
+    /// Process/AgentInstance/IsolationDomain binding owner.
+    pub process: Option<&'a nlos_process::ProcessAuthority>,
+    /// Semantic admission/append owner (seal only; permit-side Semantic
+    /// revalidation stays on the dedicated Semantic-aware finalize path).
+    pub semantic: Option<&'a nlos_semantic::SemanticAuthority>,
+    /// Resource reservation/ledger owner.
+    pub resource: Option<&'a nlos_resource::ResourceAuthority>,
+    /// Operation endpoint proof owner.
+    pub operation: Option<&'a nlos_store::SqliteOperationStore>,
+    /// Channel endpoint proof owner.
+    pub channel: Option<&'a nlos_channel::ChannelAuthority>,
+}
+
+// The owner stores are opaque SQLite handles without `Debug`, so the
+// bundle prints per-field presence instead of handle contents.
+impl fmt::Debug for Authorities<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Authorities")
+            .field("artifact", &self.artifact.is_some())
+            .field("process", &self.process.is_some())
+            .field("semantic", &self.semantic.is_some())
+            .field("resource", &self.resource.is_some())
+            .field("operation", &self.operation.is_some())
+            .field("channel", &self.channel.is_some())
+            .finish()
+    }
 }
 
 impl SqliteTaskAuthority {
@@ -622,6 +664,45 @@ impl SqliteTaskAuthority {
             Some(resource_authority),
             Some(operation_authority),
             None,
+            request,
+        )
+    }
+
+    /// Seals a write set with the owner authorities named by one
+    /// [`Authorities`] bundle. This is the combined entry point for a
+    /// request whose effect endpoints span authority kinds that no single
+    /// ladder constructor carries together (for example an
+    /// `OperationBinding` and a `ChannelTopicBinding` in the same write
+    /// set); the bundle is destructured into the exact inner authority
+    /// slots used by the ladder constructors, with no separate sealing
+    /// path.
+    ///
+    /// `authorities.artifact` is required — like every seal entry — and a
+    /// missing Artifact authority fails closed before any owner read.
+    ///
+    /// # Errors
+    ///
+    /// Returns typed owner-proof, endpoint-registration, snapshot,
+    /// read-set, idempotency, or storage errors.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn seal_task_write_set_with_authorities_struct(
+        &self,
+        authorities: Authorities<'_>,
+        request: TaskWriteSetRequest,
+    ) -> Result<TaskWriteSetDecision, TaskStoreError> {
+        let artifact_authority =
+            authorities
+                .artifact
+                .ok_or(TaskStoreError::TaskWriteSetConflict {
+                    reason: "struct-based seal requires the Artifact authority",
+                })?;
+        self.seal_task_write_set_inner(
+            artifact_authority,
+            authorities.process,
+            authorities.semantic,
+            authorities.resource,
+            authorities.operation,
+            authorities.channel,
             request,
         )
     }
@@ -1434,6 +1515,37 @@ impl SqliteTaskAuthority {
             Some(resource_authority),
             Some(operation_authority),
             None,
+            request,
+            None,
+        )
+    }
+
+    /// Runs the `CommitPermit` CAS with the owner revalidations named by
+    /// one [`Authorities`] bundle (Artifact, Process, Resource, Operation,
+    /// and Channel together). The bundle is destructured into the exact
+    /// inner authority slots used by the ladder permit entries; in
+    /// particular `authorities.semantic` is not consumed here — Semantic
+    /// append revalidation remains on the dedicated Semantic-aware
+    /// finalize path — and the authority-lease binding stays on
+    /// [`Self::request_commit_permit_with_authority_lease`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::request_commit_permit`], plus
+    /// typed Artifact, Process, Resource, Operation, or Channel
+    /// owner-proof conflicts.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn request_commit_permit_with_authorities_struct(
+        &self,
+        authorities: Authorities<'_>,
+        request: PermitRequest,
+    ) -> Result<PermitDecision, TaskStoreError> {
+        self.request_commit_permit_inner(
+            authorities.artifact,
+            authorities.process,
+            authorities.resource,
+            authorities.operation,
+            authorities.channel,
             request,
             None,
         )

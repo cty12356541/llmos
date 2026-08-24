@@ -220,7 +220,7 @@ pub use semantic_commit::{
     SemanticFinalizeEnvelopeRecord, SemanticPublicationAuthorizationDecision,
     SemanticTaskCommitReceipt,
 };
-pub use store::SqliteTaskAuthority;
+pub use store::{Authorities, SqliteTaskAuthority};
 
 use std::error::Error;
 use std::fmt;

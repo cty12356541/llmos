@@ -189,3 +189,62 @@ git diff --check
 - **单槽单 authority 边界**：channel 变体放行 OperationBinding 槽、operation 变体放行 ChannelTopicBinding 槽（测试 6 与 activation gate 测试 7 互为对称证明）；组合多-authority effect-permit 变体刻意不建（单槽单 kind 使其不必要，文档化缺口而非实现）；
 - **无 kill-9/torn-write/掉电 fault matrix**，无 CI、无提交、无推送：本节仅为本地候选证据；`HEAD` 仍为 `4194998`，未 stage、未 commit、未 push，未改 `docs/management/stage-b-progress.md`；
 - queue/Topic/fanout/payer 语义仍排除在外（§5.5 原样保持）。
+
+---
+
+## 7. Combined Authorities 构造器（2026-08-24 增量）
+
+Base HEAD：`5acb1f2f7c9be36dc7b5252602d685fa8adb40b9`（`feat: gate effect permits on channel endpoint proofs`，工作树干净，无漂移；开跑前 `git rev-parse HEAD` 复核一致）。本增量关闭 §5.5 未决项 "combined 全-authority 构造器"：在此前任何构造器组合下，同时包含 `OperationBinding`（kind 6）与 `ChannelTopicBinding`（kind 7）effect 端点的写集都无法 seal/permit——梯子变体各自只携带互不相交的 authority 子集（最高梯 `_with_authorities_and_operation_authority` = P+S+R+O，无 C；`_with_channel_authority` = 仅 C）。**候选工作集，未提交、未推送；未修改 stage-b-progress.md。**
+
+### 7.1 设计：struct-at-boundary，内层零重构
+
+- **`pub struct Authorities<'a>`**（store.rs，经 lib.rs 导出）：六个 `Option<&'a _>` 字段逐一镜像既有 inner 线程化的确切 authority 槽位——`artifact: Option<&ArtifactStore>`、`process`、`semantic`、`resource`、`operation: Option<&SqliteOperationStore>`、`channel: Option<&ChannelAuthority>`；`#[derive(Clone, Copy, Default)]`（全 `None` 即 authority-free bundle）。`Debug` 为手写 presence-flag 实现（owner store 是无 `Debug` 的不透明 SQLite 句柄，且其 crate 在本任务写集之外）。
+- **`seal_task_write_set_with_authorities_struct(&self, authorities: Authorities<'_>, request)`**：边界处解构——`artifact` 缺席 → fail-closed `TaskWriteSetConflict { "struct-based seal requires the Artifact authority" }`（每个 seal 都强制要求 Artifact，与既有 inner 签名一致）；其余五个 Option 原样传入既有 `seal_task_write_set_inner`。**不新增第二条 seal 路径**。
+- **`request_commit_permit_with_authorities_struct(&self, authorities, request)`**：解构进既有 `request_commit_permit_inner`（artifact/process/resource/operation/channel，lease 传 `None`）；`semantic` 字段刻意不被消费——Semantic append 复验留在专用 Semantic-aware finalize 路径（镜像既有 `_with_authorities_and_operation_authority` 的文档化边界）；lease 绑定仍走 `request_commit_permit_with_authority_lease`。
+- **纯增量**：全部 8 个既有 seal 变体与 8 个 permit 变体原样保留、零改动、零委托转换；`seal_task_write_set_inner` / `resolve_effect_endpoints` / `request_commit_permit_inner` / `compete_for_permit` / `issue_permit` 内层签名未动。无 schema/model/migration/effect.rs 改动。
+
+### 7.2 测试（tests/combined_authority_seal.rs，TDD red → green）
+
+- **red**（先写测试）：`cargo test -p nlos-task --test combined_authority_seal` → 编译失败 **13 errors**：1× E0432 `unresolved import nlos_task::Authorities`、5× E0599 `seal_task_write_set_with_authorities_struct` 不存在、7× E0599 `request_commit_permit_with_authorities_struct` 不存在（编译器最近邻建议均为既有梯子变体，证明失败原因即缺失 API 本身，非拼写/导入疏漏）。
+- **green**：`cargo test -p nlos-task --test combined_authority_seal` → **6 passed; 0 failed**：
+  1. `ladder_variants_cannot_seal_mixed_operation_channel_write_set`（缺口实证，实现前后均成立并永久 pin）：混合写集经最高梯 `_with_authorities_and_operation_authority`（P+S+R+O 真实开启）→ 精确 `"Channel effect endpoint requires ChannelAuthority readback"`；经 `_with_channel_authority` → 精确 `"Operation effect endpoint requires OperationAuthority readback"`；两次尝试后 `TaskWriteSetNotFound`（无半 seal）；
+  2. `mixed_write_set_seals_permits_and_replays_via_authorities_struct`：双参与者注册（operation 按 participant_registry.rs 惯例、channel 按 channel_endpoint.rs 惯例）→ struct seal（artifact+operation+channel）→ 两端点 kind/object_id/participant_generation/participant_id 逐一断言 → struct permit 签发 + 同 key `Replayed` → 三 authority drop/重开后 write-set 逐字节相等；
+  3. `struct_seal_without_channel_authority_fails_closed`：struct 缺 channel（None）→ 同一 seal 期精确 reason，且无半 seal；
+  4. `channel_rotation_between_struct_seal_and_struct_permit_blocks_freeze`：seal 后 rotate → permit freeze 期精确 `"Channel endpoint proof differs before permit freeze"`（rotation stale-fence 在组合入口下保持）；
+  5. `authority_absent_struct_permit_fails_closed_at_freeze`（镜像 OP 先例 participant_registry.rs:694-699）：缺 channel → 精确 freeze-gate reason；缺 operation → 精确 freeze-gate reason；随后全 authority struct permit 仍首发 `Issued`（失败零持久化）；
+  6. `all_none_authorities_struct_matches_legacy_seal_and_permit`（委托等价）：同一 DB 内两个 task，A 走 legacy plain 对、B 走 struct 对（仅 seal 强制的 artifact + 其余全 `None` / permit 全 `None`）；因 registry root 覆盖 per-DB `task_authority_identity` randomblob，跨 task 全记录相等**按设计不可行**，故以双向幂等 replay 断言等价：struct 入口 replay legacy 记录、legacy 入口 replay struct 记录（seal 与 permit 各双向，seal replay 置于 permit freeze 之前以避免 registry 代际漂移）。
+
+### 7.3 质量门（全部通过，命令逐字）
+
+```text
+cargo check -p nlos-task
+  → Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.88s（0 error/warning）
+
+cargo test -p nlos-task --test combined_authority_seal   （red：13 compile errors → green）
+  → test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured
+
+cargo test -p nlos-task --quiet
+  → 汇总 passed: 229 failed: 0（基线 223 + 新增 6；全部 28 个 test target ok；既有测试文件零修改）
+
+cargo clippy -p nlos-task --all-targets --all-features -- -D warnings
+  → Finished `dev` profile [unoptimized + debuginfo] target(s) in 11.23s（0 warning / 0 error）
+
+cargo fmt --all -- --check
+  → 退出码 0，无输出（通过）
+
+git diff --check
+  → 退出码 0（无空白错误）
+```
+
+### 7.4 变更集与明确未完成（PARTIAL_PASS 保持）
+
+变更集（候选，未暂存/未提交）：`crates/nlos-task/src/store.rs`（+112：`Authorities<'a>` 定义 + 手写 Debug + 两个 struct 入口）、`crates/nlos-task/src/lib.rs`（1 行导出改动）、`crates/nlos-task/tests/combined_authority_seal.rs`（新增，708 纯行）、本 Evidence 增量。Post-write 自检：无 unsafe、无生产 unwrap/expect、无 `as` 窄化、无新增警告抑制（沿用文件既有 needless_pass_by_value 惯例）、lifetime-clean（`Authorities<'a>` 全借用字段 + `Copy`）、fixture 确定性（原子计数器 + temp 目录，无 sleep/线程）、生产 diff 逐行核验零逃逸句柄。
+
+未完成项：
+
+- **既有梯子构造器全部保留**：移除/弃用是 future breaking change，刻意不做；struct 入口与梯子并存，调用方按需选择；
+- **finalize 家族未吸收**：`reconcile.rs` / `resource_commit.rs` / `semantic_commit.rs` 的 finalize 入口仍是逐 authority 参数（后续吸收为 future lane）；
+- **effect-permit 保持单槽单 authority**：`effect.rs` 未改动（设计如此，见 §6.4——单槽单 kind 使组合变体不必要）；
+- **无 schema/model/migration 变更**（ Authorities 是纯边界类型）；
+- **无 CI / 无提交 / 无推送**：本节仅为本地候选证据；`HEAD` 仍为 `5acb1f2`，未 stage、未 commit、未 push，未改 `docs/management/stage-b-progress.md`；
+- 不声明跨 authority 原子性（verify-then-commit 语义不变）。
