@@ -586,6 +586,7 @@ dependencies = [
  "ed25519-dalek",
  "nlos-artifact",
  "nlos-capability",
+ "nlos-channel",
  "nlos-identity",
  "nlos-operation",
  "nlos-process",

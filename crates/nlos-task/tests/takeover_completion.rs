@@ -913,7 +913,7 @@ fn v36_schema_migrates_to_v37_with_child_fk_intact_and_activates() {
     let version: i64 = raw
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("read migrated schema version");
-    assert_eq!(version, 39);
+    assert_eq!(version, 40);
     let trigger_sql: String = raw
         .query_row(
             "SELECT sql FROM sqlite_master

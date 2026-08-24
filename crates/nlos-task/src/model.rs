@@ -9,9 +9,9 @@
 //! mandated by the full §25.1 contract.
 
 use nlos_types::{
-    AgentInstanceId, ArtifactId, CallId, CancellationScopeId, CommitPermitId, DeviceId, DriverId,
-    Generation, IdempotencyKey, IsolationDomainId, NamespaceId, OperationId, ProcessId, QuoteId,
-    ReceiptId, ReservationId, ResourceAccountId, SemanticEventId, TaskAttemptId,
+    AgentInstanceId, ArtifactId, CallId, CancellationScopeId, ChannelId, CommitPermitId, DeviceId,
+    DriverId, Generation, IdempotencyKey, IsolationDomainId, NamespaceId, OperationId, ProcessId,
+    QuoteId, ReceiptId, ReservationId, ResourceAccountId, SemanticEventId, TaskAttemptId,
     TaskAuthorityAssignmentId, TaskId, TaskParticipantId, TaskSnapshotId,
 };
 use sha2::{Digest, Sha256};
@@ -328,6 +328,7 @@ pub enum TaskWriteSetEffectEndpointKind {
     DriverGateway,
     ResourceLedger,
     OperationBinding,
+    ChannelTopicBinding,
 }
 
 impl TaskWriteSetEffectEndpointKind {
@@ -339,6 +340,7 @@ impl TaskWriteSetEffectEndpointKind {
             Self::DriverGateway => 4,
             Self::ResourceLedger => 5,
             Self::OperationBinding => 6,
+            Self::ChannelTopicBinding => 7,
         }
     }
 
@@ -350,6 +352,7 @@ impl TaskWriteSetEffectEndpointKind {
             4 => Ok(Self::DriverGateway),
             5 => Ok(Self::ResourceLedger),
             6 => Ok(Self::OperationBinding),
+            7 => Ok(Self::ChannelTopicBinding),
             _ => Err(TaskStoreError::CorruptRecord(
                 "TaskWriteSet effect endpoint kind",
             )),
@@ -389,6 +392,11 @@ pub enum TaskWriteSetEffectEndpointRequest {
         operation_id: OperationId,
         expected_operation_generation: Generation,
     },
+    ChannelTopicBinding {
+        effect_seq: u64,
+        channel_id: ChannelId,
+        expected_channel_generation: Generation,
+    },
 }
 
 impl TaskWriteSetEffectEndpointRequest {
@@ -399,7 +407,8 @@ impl TaskWriteSetEffectEndpointRequest {
             | Self::ProcessBinding { effect_seq, .. }
             | Self::DriverGateway { effect_seq, .. }
             | Self::ResourceLedger { effect_seq, .. }
-            | Self::OperationBinding { effect_seq, .. } => effect_seq,
+            | Self::OperationBinding { effect_seq, .. }
+            | Self::ChannelTopicBinding { effect_seq, .. } => effect_seq,
         }
     }
 }

@@ -70,3 +70,64 @@ cargo fmt --all -- --check
 - 单进程内 `Mutex<Connection>` 单写者，无跨进程 IPC、peer 认证、lease/takeover 或多机语义；
 - capacity/policy 只在 create 时绑定、rotate 不修改，容量未做任何 admission/enforcement 执行；
 - 本 Evidence 只确认 §2–§3 所列事实，不把该工作包标记为 `DONE`，不声明 `H4+`。
+
+---
+
+## 5. 2026-08-24 增量：Task 侧接线（Attempt TASK-CHANNEL-ENDPOINT-WIRING-01）
+
+Base HEAD：`73a8b49844c39f7a281b91e3a51c3582610400b1`（工作树干净，无漂移）。本增量把已提交的 Channel endpoint authority 接入 `nlos-task`，关闭 B-CHANNEL-001 未决项中的 "TaskWriteSet/participant registry 接线"。**候选工作集，未提交、未推送；未修改 stage-b-progress.md。**
+
+### 5.1 接线内容
+
+- **participant registration**：`SqliteTaskAuthority::register_channel_participant(channel_authority, task_id, expected_registry_binding, channel_id, expected_channel_generation, registered_at_ms)`，镜像 `register_operation_binding_participant`：`inspect_endpoint_proof(channel_id)` 回读错误包成新增 `TaskStoreError::ChannelParticipantAuthority(nlos_channel::ChannelAuthorityError)`；`proof.participant_generation != expected` → 既有 `ParticipantEndpointGenerationMismatch`；以 owner 派生三元组构造 `ParticipantRecord { participant_type: ChannelTopic (code 4) }` 委托 `register_verified_participant`。
+- **per-effect endpoint（seal）**：`TaskWriteSetEffectEndpointKind::ChannelTopicBinding`（kind code 7）+ 请求变体 `ChannelTopicBinding { effect_seq, channel_id, expected_channel_generation }`；`resolve_effect_endpoints` 的 Channel 分支镜像 Operation 分支：authority 缺席 → `TaskWriteSetConflict { "Channel effect endpoint requires ChannelAuthority readback" }`；校验 `proof.channel_id == channel_id` 且 `proof.participant_generation == expected_channel_generation`（不符 → typed mismatch），object_id 派生 `channel_id.into_bytes()`。kind→ParticipantType 的五处 exhaustive match（model.rs code()/from_code()；store.rs seal 路径、permit 路径、`effect_endpoint_participant`）全部补齐。
+- **permit revalidation**：`validate_channel_endpoint_bindings` 镜像 `validate_operation_endpoint_bindings`，在 `issue_permit` 内紧邻 OP validator 调用；无 Channel 端点则跳过；authority 缺席 → `TaskWriteSetConflict { "Channel effect endpoint requires ChannelAuthority readback before permit freeze" }`；逐端点字节比对三个 proof 字段（participant_id / participant_generation / admission_receipt_id），不符 → `TaskWriteSetConflict { "Channel endpoint proof differs before permit freeze" }`。语义差异（刻意）：Channel inspect 不接受 generation 参数、总是返回**当前** generation 的 proof，因此 seal 与 permit 之间的 rotation 自然破坏等价比较（stale fence，OP 无法测试的场景）。
+- **authority 线程化**：`channel_authority: Option<&ChannelAuthority>` 贯穿 `seal_task_write_set_inner` / `resolve_effect_endpoints` / `request_commit_permit_inner` / `compete_for_permit` / `issue_permit`；既有全部公开入口传 `None`（legacy authority-free 路径不变，由 211 项基线测试背书）；新增 channel-only 变体 `seal_task_write_set_with_channel_authority` 与 `request_commit_permit_with_channel_authority`，命名/线程化镜像 OP 对应变体。
+- **schema v39 → v40**：`SCHEMA_V40_SQL` 为 v24 式表重建（endpoint 半部）：drop 两个 immutability trigger → 重建 `task_write_set_effect_endpoints`（`endpoint_kind BETWEEN 1 AND 7`）→ 原样搬运行 → rename → 重建两 trigger → `PRAGMA user_version = 40`；`migrate_v40` 幂等预检镜像 `migrate_v24`（wide-test `check(endpoint_kindbetween1and7)`，old-test `...1and6`，trigger_count == 2；部分迁移 → `CorruptRecord("partial Channel endpoint schema migration")`）。`SCHEMA_VERSION = 40`；8 个测试文件中 11 处版本 pin 39→40。
+- **migrate_v24 单调幂等修正**（接线必需的最小修复）：v5/v6/v7/v8 回退式迁移测试把现代 DB 回退到旧 `user_version` 但保留 endpoint 表新形状；v24 的"已迁移"宽测试原先只识别 `1 AND 6`，遇到 v40 的 `1 AND 7` 形状误判 partial 并 fail-closed。修正为 `contains(1and6) || contains(1and7)`——已完成 v40 形状必然蕴含 v24 已完成；未知形状仍 fail-closed。
+- **root-hash 稳定性**：无域版本提升——kind 7 沿用既有 `llmos/task-write-set-effect-endpoints/v1` 域（先例：kind 6 随 v24 到达时未改域）。旧 seal 字节级 replay 不变（全量既有 seal/replay 测试通过间接背书）；测试直接断言：kind 6 与 kind 7 仅差 kind 字节的两份 endpoint 集合产生不同 root、authority 实算 root 与 kind-7 公式一致、空集仍 `[0;32]`。
+
+### 5.2 测试（tests/channel_endpoint.rs，TDD red → green）
+
+- **red**（先写测试）：`cargo test -p nlos-task --test channel_endpoint` → 编译失败 **16 errors**，全部为"缺失变体/API"：5× `seal_task_write_set_with_channel_authority` 不存在、3× `request_commit_permit_with_channel_authority` 不存在、2× 请求枚举无 `ChannelTopicBinding`、1× kind 枚举无 `ChannelTopicBinding`、1× `register_channel_participant` 不存在、3× `nlos_channel` 未链接 + 1× 未解析 import（Cargo.toml 依赖未加）。失败原因正确（非拼写/导入疏漏）。
+- **green**：`cargo test -p nlos-task --test channel_endpoint` → **6 passed; 0 failed**：
+  1. `verified_channel_endpoint_is_rechecked_during_seal_and_permit`：create_channel → register（registry 含 ChannelTopic）→ seal（断言 kind/object_id/participant_generation/participant_id 持久化）→ 无 authority 的 `request_commit_permit` 精确 reason 拒绝 → channel 变体签发 + 同 key replay → 双 authority drop/重开后 write-set 逐字节相等（Task-rows replay）；
+  2. `stale_expected_channel_generation_is_rejected_at_seal_without_partial_seal`：expected=gen2/current=gen1 → `ParticipantEndpointGenerationMismatch { expected: 2, current: 1 }`，且 `TaskWriteSetNotFound`（无半 seal）；
+  3. `channel_rotation_between_seal_and_permit_fails_closed`：seal 后 rotate → `"Channel endpoint proof differs before permit freeze"`（OP 测不到的 rotation stale-fence 场景）；
+  4. `channel_endpoint_requires_prior_participant_registration`：未注册即 seal → 既有 `"planned effect endpoint is not registered in participant registry"`；
+  5. `schema_migrates_v39_endpoint_check_to_v40`：v39 形状 DB（旧 CHECK + user_version=39）重开 → user_version == 40、sqlite_master 含 `BETWEEN 1 AND 7`、两 trigger 齐备；
+  6. `endpoint_root_separates_channel_kind_and_empty_set_stays_zero`：如上 root-hash 断言。
+
+### 5.3 质量门（全部通过，命令逐字）
+
+```text
+cargo check -p nlos-task
+  → Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.83s（0 error/warning）
+
+cargo test -p nlos-task --test channel_endpoint   （red：16 compile errors → green）
+  → test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured
+
+cargo test -p nlos-task --quiet
+  → 汇总 passed: 217 failed: 0（基线 211 + 新增 6；全部 27 个 test target ok）
+
+cargo clippy -p nlos-task --all-targets --all-features -- -D warnings
+  → Finished `dev` profile ... in 10.22s（0 warning / 0 error）
+
+cargo fmt --all -- --check
+  → 退出码 0，无输出（通过）
+
+git diff --check
+  → 退出码 0（无空白错误）
+```
+
+### 5.4 变更集（候选，未暂存/未提交）
+
+`crates/nlos-task/Cargo.toml`（+`nlos-channel` path dep，按字母序）、`Cargo.lock`（path dep 的机械单行）、`src/lib.rs`（错误变体 + Display + source）、`src/model.rs`（kind 7 + 请求变体）、`src/store.rs`（registration/seal/permit/线程化/SCHEMA_VERSION=40）、`src/migrations.rs`（migrate_v40 + SCHEMA_V40_SQL + v24 宽测试单调修正）、8 个测试文件的 11 处版本 pin、`tests/channel_endpoint.rs`（新增）、本 Evidence 增量。Post-write 自检：无 unsafe、无生产 unwrap/expect、无警告抑制新增（沿用文件既有 too_many_lines/too_many_arguments/needless_pass_by_value 惯例）、无 `as` 窄化、fixture 确定性（无 sleep/线程）、legacy authority-free 路径行为不变。
+
+### 5.5 明确未完成（PARTIAL_PASS 保持）
+
+- **EffectPermit channel gate 未接**：`effect.rs` 未改动（后续 lane）——effect 签发/派发层尚不校验 Channel 端点；
+- **combined 全-authority 构造器未加**：没有 `...with_authorities_and_channel_authority` 组合变体（文档化缺口，刻意不建）；多非-Artifact 端点混布仍需逐 authority 入口或后续组合入口；
+- **queue/Topic/fanout/payer 语义仍排除**：本接线仅为 endpoint proof 绑定，不实现投递/路由/扇出/计费；
+- **无 CI / 无提交 / 无推送**：本节仅为本地候选证据；`HEAD` 仍为 `73a8b49`，未 stage、未 commit、未 push，未改 `docs/management/stage-b-progress.md`；
+- 无 kill-9/掉电/fault-injection 矩阵；单机单写者语义不变；不声明跨 authority 原子性。

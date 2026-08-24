@@ -694,7 +694,11 @@ pub(crate) fn migrate_v24(connection: &mut Connection) -> Result<(), TaskStoreEr
                 "missing effect-endpoint table before v24",
             ))?;
     let participant_wide = participant_sql.contains("check(participant_typebetween1and8)");
-    let endpoint_wide = endpoint_sql.contains("check(endpoint_kindbetween1and6)");
+    // A later migration (v40) widens the endpoint CHECK further; a database
+    // already carrying that shape necessarily completed v24, so the fast
+    // path must accept it. Any other unrecognized shape still fails closed.
+    let endpoint_wide = endpoint_sql.contains("check(endpoint_kindbetween1and6)")
+        || endpoint_sql.contains("check(endpoint_kindbetween1and7)");
     if participant_wide && endpoint_wide && trigger_count == 4 {
         connection.pragma_update(None, "user_version", 24)?;
         return Ok(());
@@ -1328,6 +1332,67 @@ pub(crate) fn migrate_v39(connection: &mut Connection) -> Result<(), TaskStoreEr
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     transaction.execute_batch(SCHEMA_V39_SQL)?;
     transaction.commit()?;
+    Ok(())
+}
+
+/// v39 → v40 widens the immutable planned-effect endpoint CHECK for the
+/// owner-verified Channel endpoint. `SQLite` cannot alter a CHECK constraint
+/// in place, so the endpoint table is copied in one transaction; historical
+/// rows and their trigger guards remain byte-for-byte equivalent.
+pub(crate) fn migrate_v40(connection: &mut Connection) -> Result<(), TaskStoreError> {
+    let endpoint_sql: Option<String> = connection
+        .query_row(
+            "SELECT sql FROM sqlite_master
+             WHERE type='table' AND name='task_write_set_effect_endpoints'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let trigger_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN
+            ('task_write_set_effect_endpoint_is_immutable',
+             'task_write_set_effect_endpoint_is_immutable_delete')",
+        [],
+        |row| row.get(0),
+    )?;
+    let normalize = |sql: &str| {
+        sql.to_ascii_lowercase()
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>()
+    };
+    let endpoint_sql =
+        endpoint_sql
+            .as_deref()
+            .map(normalize)
+            .ok_or(TaskStoreError::CorruptRecord(
+                "missing effect-endpoint table before v40",
+            ))?;
+    let endpoint_wide = endpoint_sql.contains("check(endpoint_kindbetween1and7)");
+    if endpoint_wide && trigger_count == 2 {
+        connection.pragma_update(None, "user_version", 40)?;
+        return Ok(());
+    }
+    let endpoint_old = endpoint_sql.contains("check(endpoint_kindbetween1and6)");
+    if !endpoint_old || trigger_count != 2 {
+        return Err(TaskStoreError::CorruptRecord(
+            "partial Channel endpoint schema migration",
+        ));
+    }
+
+    connection.pragma_update(None, "foreign_keys", "OFF")?;
+    let migration = (|| {
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute_batch(SCHEMA_V40_SQL)?;
+        transaction.commit()?;
+        Ok::<(), TaskStoreError>(())
+    })();
+    let restore = connection.pragma_update(None, "foreign_keys", "ON");
+    if let Err(error) = migration {
+        let _ = restore;
+        return Err(error);
+    }
+    restore?;
     Ok(())
 }
 
@@ -2555,3 +2620,37 @@ pub(crate) const SCHEMA_V39_SQL: &str = "CREATE TABLE task_resource_cost_receipt
     END;
 
     PRAGMA user_version = 39;";
+
+const SCHEMA_V40_SQL: &str = "DROP TRIGGER task_write_set_effect_endpoint_is_immutable;
+    DROP TRIGGER task_write_set_effect_endpoint_is_immutable_delete;
+    CREATE TABLE task_write_set_effect_endpoints_v40 (
+        task_id BLOB NOT NULL CHECK(length(task_id) = 16),
+        idempotency_key BLOB NOT NULL CHECK(length(idempotency_key) = 16),
+        endpoint_seq INTEGER NOT NULL CHECK(endpoint_seq >= 0),
+        effect_seq INTEGER NOT NULL CHECK(effect_seq >= 0),
+        endpoint_kind INTEGER NOT NULL CHECK(endpoint_kind BETWEEN 1 AND 7),
+        object_id BLOB NOT NULL CHECK(length(object_id) = 16),
+        participant_id BLOB NOT NULL CHECK(length(participant_id) = 16),
+        participant_generation BLOB NOT NULL CHECK(length(participant_generation) = 8),
+        admission_receipt_id BLOB NOT NULL CHECK(length(admission_receipt_id) = 16),
+        PRIMARY KEY(task_id, idempotency_key, endpoint_seq),
+        UNIQUE(task_id, idempotency_key, effect_seq, endpoint_kind, object_id),
+        FOREIGN KEY(task_id, idempotency_key)
+            REFERENCES task_write_sets(task_id, idempotency_key)
+    ) STRICT;
+    INSERT INTO task_write_set_effect_endpoints_v40
+        (task_id, idempotency_key, endpoint_seq, effect_seq, endpoint_kind,
+         object_id, participant_id, participant_generation, admission_receipt_id)
+        SELECT task_id, idempotency_key, endpoint_seq, effect_seq, endpoint_kind,
+               object_id, participant_id, participant_generation, admission_receipt_id
+        FROM task_write_set_effect_endpoints;
+    DROP TABLE task_write_set_effect_endpoints;
+    ALTER TABLE task_write_set_effect_endpoints_v40
+        RENAME TO task_write_set_effect_endpoints;
+    CREATE TRIGGER task_write_set_effect_endpoint_is_immutable
+    BEFORE UPDATE ON task_write_set_effect_endpoints
+    BEGIN SELECT RAISE(ABORT, 'TaskWriteSet effect endpoint is immutable'); END;
+    CREATE TRIGGER task_write_set_effect_endpoint_is_immutable_delete
+    BEFORE DELETE ON task_write_set_effect_endpoints
+    BEGIN SELECT RAISE(ABORT, 'TaskWriteSet effect endpoint is immutable'); END;
+    PRAGMA user_version = 40;";

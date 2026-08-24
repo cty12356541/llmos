@@ -883,7 +883,7 @@ fn v34_takeover_barrier_schema_migrates_digest_column_without_fabrication() {
     let version: i64 = raw
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("read migrated schema version");
-    assert_eq!(version, 39);
+    assert_eq!(version, 40);
     let (column_count, not_null): (i64, i64) = raw
         .query_row(
             "SELECT COUNT(*), COALESCE(MAX(\"notnull\"), 0)

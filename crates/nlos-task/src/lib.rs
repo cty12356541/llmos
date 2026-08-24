@@ -527,6 +527,8 @@ pub enum TaskStoreError {
     ProcessParticipantAuthority(nlos_process::ProcessAuthorityError),
     /// Operation authority proof readback failed before Task mutation.
     OperationParticipantAuthority(nlos_store::StoreError),
+    /// Channel authority proof readback failed before Task mutation.
+    ChannelParticipantAuthority(nlos_channel::ChannelAuthorityError),
     /// Identity authority verification failed for a signed barrier
     /// observation before Task mutation.
     BarrierSignerIdentityAuthority(nlos_identity::IdentityAuthorityError),
@@ -823,6 +825,12 @@ impl fmt::Display for TaskStoreError {
                     "Operation participant proof verification failed: {error}"
                 )
             }
+            Self::ChannelParticipantAuthority(error) => {
+                write!(
+                    formatter,
+                    "Channel participant proof verification failed: {error}"
+                )
+            }
             Self::BarrierSignerIdentityAuthority(error) => {
                 write!(
                     formatter,
@@ -852,6 +860,7 @@ impl Error for TaskStoreError {
             Self::ResourceParticipantAuthority(error) => Some(error),
             Self::ProcessParticipantAuthority(error) => Some(error),
             Self::OperationParticipantAuthority(error) => Some(error),
+            Self::ChannelParticipantAuthority(error) => Some(error),
             Self::BarrierSignerIdentityAuthority(error) => Some(error),
             _ => None,
         }

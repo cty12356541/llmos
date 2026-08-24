@@ -12,8 +12,9 @@ use std::time::Duration;
 
 use nlos_operation::OperationHandle;
 use nlos_types::{
-    ArtifactId, CancellationScopeId, CommitPermitId, Generation, IdempotencyKey, OperationId,
-    ProcessId, ReceiptId, TaskAttemptId, TaskAuthorityAssignmentId, TaskId, TaskSnapshotId,
+    ArtifactId, CancellationScopeId, ChannelId, CommitPermitId, Generation, IdempotencyKey,
+    OperationId, ProcessId, ReceiptId, TaskAttemptId, TaskAuthorityAssignmentId, TaskId,
+    TaskSnapshotId,
 };
 use rusqlite::{Connection, OpenFlags, Transaction, TransactionBehavior, params};
 
@@ -42,7 +43,7 @@ use crate::migrations::{
     migrate_v16, migrate_v17, migrate_v18, migrate_v19, migrate_v20, migrate_v21, migrate_v22,
     migrate_v23, migrate_v24, migrate_v25, migrate_v26, migrate_v27, migrate_v28, migrate_v29,
     migrate_v30, migrate_v31, migrate_v32, migrate_v33, migrate_v34, migrate_v35, migrate_v36,
-    migrate_v37, migrate_v38, migrate_v39,
+    migrate_v37, migrate_v38, migrate_v39, migrate_v40,
 };
 use crate::model::{derive_closure_receipt_id, derive_permit_id, empty_effect_history_root};
 use crate::{
@@ -57,7 +58,7 @@ use crate::{
     TaskWriteSetSemanticTarget,
 };
 
-const SCHEMA_VERSION: i64 = 39;
+const SCHEMA_VERSION: i64 = 40;
 
 /// A single-writer `SQLite` task authority.
 ///
@@ -272,6 +273,7 @@ impl SqliteTaskAuthority {
             migrate_v37(&mut connection)?;
             migrate_v38(&mut connection)?;
             migrate_v39(&mut connection)?;
+            migrate_v40(&mut connection)?;
         }
 
         Ok(Self {
@@ -426,7 +428,7 @@ impl SqliteTaskAuthority {
         artifact_authority: &nlos_artifact::ArtifactStore,
         request: TaskWriteSetRequest,
     ) -> Result<TaskWriteSetDecision, TaskStoreError> {
-        self.seal_task_write_set_inner(artifact_authority, None, None, None, None, request)
+        self.seal_task_write_set_inner(artifact_authority, None, None, None, None, None, request)
     }
 
     /// Seals the snapshot/read-set slice and an owner-verified current
@@ -454,6 +456,7 @@ impl SqliteTaskAuthority {
             None,
             None,
             None,
+            None,
             request,
         )
     }
@@ -476,6 +479,7 @@ impl SqliteTaskAuthority {
             artifact_authority,
             None,
             Some(semantic_authority),
+            None,
             None,
             None,
             request,
@@ -501,6 +505,7 @@ impl SqliteTaskAuthority {
             None,
             None,
             Some(resource_authority),
+            None,
             None,
             request,
         )
@@ -530,6 +535,7 @@ impl SqliteTaskAuthority {
             Some(semantic_authority),
             Some(resource_authority),
             None,
+            None,
             request,
         )
     }
@@ -557,6 +563,35 @@ impl SqliteTaskAuthority {
             None,
             None,
             Some(operation_authority),
+            None,
+            request,
+        )
+    }
+
+    /// Seals a write set after the owning Channel authority has returned the
+    /// current-generation `ChannelEndpointProof`. The Channel proof is
+    /// persisted only when the endpoint is already present in the OPEN
+    /// participant registry; this method does not expand that registry.
+    ///
+    /// # Errors
+    ///
+    /// Returns typed Channel owner, endpoint-registration, snapshot,
+    /// read-set, idempotency, or storage errors.
+    #[allow(clippy::needless_pass_by_value)]
+    #[allow(clippy::too_many_lines)]
+    pub fn seal_task_write_set_with_channel_authority(
+        &self,
+        artifact_authority: &nlos_artifact::ArtifactStore,
+        channel_authority: &nlos_channel::ChannelAuthority,
+        request: TaskWriteSetRequest,
+    ) -> Result<TaskWriteSetDecision, TaskStoreError> {
+        self.seal_task_write_set_inner(
+            artifact_authority,
+            None,
+            None,
+            None,
+            None,
+            Some(channel_authority),
             request,
         )
     }
@@ -586,11 +621,13 @@ impl SqliteTaskAuthority {
             Some(semantic_authority),
             Some(resource_authority),
             Some(operation_authority),
+            None,
             request,
         )
     }
 
     #[allow(clippy::needless_pass_by_value)]
+    #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_lines)]
     fn seal_task_write_set_inner(
         &self,
@@ -599,6 +636,7 @@ impl SqliteTaskAuthority {
         semantic_authority: Option<&nlos_semantic::SemanticAuthority>,
         resource_authority: Option<&nlos_resource::ResourceAuthority>,
         operation_authority: Option<&nlos_store::SqliteOperationStore>,
+        channel_authority: Option<&nlos_channel::ChannelAuthority>,
         request: TaskWriteSetRequest,
     ) -> Result<TaskWriteSetDecision, TaskStoreError> {
         if request.sealed_at_ms < 0 {
@@ -909,6 +947,7 @@ impl SqliteTaskAuthority {
             semantic_authority,
             resource_authority,
             operation_authority,
+            channel_authority,
             &request.effect_endpoints,
             planned_effects.len(),
             &task.record,
@@ -1186,7 +1225,7 @@ impl SqliteTaskAuthority {
         &self,
         request: PermitRequest,
     ) -> Result<PermitDecision, TaskStoreError> {
-        self.request_commit_permit_inner(None, None, None, None, request, None)
+        self.request_commit_permit_inner(None, None, None, None, None, request, None)
     }
 
     /// Runs the `CommitPermit` CAS with an immutable binding to a live
@@ -1204,6 +1243,7 @@ impl SqliteTaskAuthority {
         request: AuthorityLeasePermitRequest,
     ) -> Result<PermitDecision, TaskStoreError> {
         self.request_commit_permit_inner(
+            None,
             None,
             None,
             None,
@@ -1235,7 +1275,15 @@ impl SqliteTaskAuthority {
         artifact_authority: &nlos_artifact::ArtifactStore,
         request: PermitRequest,
     ) -> Result<PermitDecision, TaskStoreError> {
-        self.request_commit_permit_inner(Some(artifact_authority), None, None, None, request, None)
+        self.request_commit_permit_inner(
+            Some(artifact_authority),
+            None,
+            None,
+            None,
+            None,
+            request,
+            None,
+        )
     }
 
     /// Runs the `CommitPermit` CAS after re-reading an optional Process /
@@ -1260,7 +1308,15 @@ impl SqliteTaskAuthority {
         process_authority: &nlos_process::ProcessAuthority,
         request: PermitRequest,
     ) -> Result<PermitDecision, TaskStoreError> {
-        self.request_commit_permit_inner(None, Some(process_authority), None, None, request, None)
+        self.request_commit_permit_inner(
+            None,
+            Some(process_authority),
+            None,
+            None,
+            None,
+            request,
+            None,
+        )
     }
 
     /// Runs the `CommitPermit` CAS after re-reading every Resource reservation
@@ -1285,7 +1341,15 @@ impl SqliteTaskAuthority {
         resource_authority: &nlos_resource::ResourceAuthority,
         request: PermitRequest,
     ) -> Result<PermitDecision, TaskStoreError> {
-        self.request_commit_permit_inner(None, None, Some(resource_authority), None, request, None)
+        self.request_commit_permit_inner(
+            None,
+            None,
+            Some(resource_authority),
+            None,
+            None,
+            request,
+            None,
+        )
     }
 
     /// Runs the `CommitPermit` CAS after re-reading every Operation endpoint
@@ -1305,7 +1369,45 @@ impl SqliteTaskAuthority {
         operation_authority: &nlos_store::SqliteOperationStore,
         request: PermitRequest,
     ) -> Result<PermitDecision, TaskStoreError> {
-        self.request_commit_permit_inner(None, None, None, Some(operation_authority), request, None)
+        self.request_commit_permit_inner(
+            None,
+            None,
+            None,
+            Some(operation_authority),
+            None,
+            request,
+            None,
+        )
+    }
+
+    /// Runs the `CommitPermit` CAS after re-reading every Channel endpoint
+    /// named by a sealed `TaskWriteSet` from its owning Channel authority.
+    /// The proof is re-read at the CURRENT generation, so a rotation between
+    /// seal and permit naturally breaks the byte comparison and blocks
+    /// participant-registry freezing (stale fence).
+    ///
+    /// This is an opt-in strengthening of the legacy permit entry point: it
+    /// does not dispatch or transition the Channel itself.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::request_commit_permit`], plus a
+    /// typed Channel owner or endpoint-proof conflict.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn request_commit_permit_with_channel_authority(
+        &self,
+        channel_authority: &nlos_channel::ChannelAuthority,
+        request: PermitRequest,
+    ) -> Result<PermitDecision, TaskStoreError> {
+        self.request_commit_permit_inner(
+            None,
+            None,
+            None,
+            None,
+            Some(channel_authority),
+            request,
+            None,
+        )
     }
 
     /// Runs the `CommitPermit` CAS with Artifact, Process, Resource, and
@@ -1331,18 +1433,21 @@ impl SqliteTaskAuthority {
             Some(process_authority),
             Some(resource_authority),
             Some(operation_authority),
+            None,
             request,
             None,
         )
     }
 
     #[allow(clippy::needless_pass_by_value)]
+    #[allow(clippy::too_many_arguments)]
     fn request_commit_permit_inner(
         &self,
         artifact_authority: Option<&nlos_artifact::ArtifactStore>,
         process_authority: Option<&nlos_process::ProcessAuthority>,
         resource_authority: Option<&nlos_resource::ResourceAuthority>,
         operation_authority: Option<&nlos_store::SqliteOperationStore>,
+        channel_authority: Option<&nlos_channel::ChannelAuthority>,
         request: PermitRequest,
         authority_lease: Option<AuthorityLeaseRecord>,
     ) -> Result<PermitDecision, TaskStoreError> {
@@ -1379,6 +1484,7 @@ impl SqliteTaskAuthority {
             process_authority,
             resource_authority,
             operation_authority,
+            channel_authority,
             authority_lease,
         )?;
         transaction.commit()?;
@@ -2505,6 +2611,41 @@ impl SqliteTaskAuthority {
         self.register_verified_participant(task_id, expected, participant, registered_at_ms)
     }
 
+    /// Registers the current Channel endpoint after exact owner proof
+    /// readback. The caller cannot provide the Channel participant tuple; it
+    /// is derived by `ChannelAuthority` from the durable current generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns typed Channel proof, generation, task, registry CAS/freeze,
+    /// bound, or storage errors. No Task mutation occurs on proof mismatch.
+    pub fn register_channel_participant(
+        &self,
+        channel_authority: &nlos_channel::ChannelAuthority,
+        task_id: TaskId,
+        expected: crate::ParticipantRegistryBinding,
+        channel_id: nlos_types::ChannelId,
+        expected_channel_generation: Generation,
+        registered_at_ms: i64,
+    ) -> Result<crate::ParticipantRegistrationDecision, TaskStoreError> {
+        let proof = channel_authority
+            .inspect_endpoint_proof(channel_id)
+            .map_err(TaskStoreError::ChannelParticipantAuthority)?;
+        if proof.participant_generation != expected_channel_generation {
+            return Err(TaskStoreError::ParticipantEndpointGenerationMismatch {
+                expected: expected_channel_generation.get(),
+                current: proof.participant_generation.get(),
+            });
+        }
+        let participant = crate::ParticipantRecord {
+            participant_type: crate::ParticipantType::ChannelTopic,
+            participant_id: proof.participant_id,
+            participant_generation: proof.participant_generation,
+            admission_receipt_id: proof.admission_receipt_id,
+        };
+        self.register_verified_participant(task_id, expected, participant, registered_at_ms)
+    }
+
     /// Registers the current Driver gateway generation after direct
     /// `ResourceAuthority` readback and an exact planned-generation check.
     ///
@@ -2921,6 +3062,7 @@ fn resolve_effect_endpoints(
     semantic_authority: Option<&nlos_semantic::SemanticAuthority>,
     resource_authority: Option<&nlos_resource::ResourceAuthority>,
     operation_authority: Option<&nlos_store::SqliteOperationStore>,
+    channel_authority: Option<&nlos_channel::ChannelAuthority>,
     requests: &[TaskWriteSetEffectEndpointRequest],
     effect_count: usize,
     task: &TaskRecord,
@@ -2966,6 +3108,10 @@ fn resolve_effect_endpoints(
             TaskWriteSetEffectEndpointRequest::OperationBinding { operation_id, .. } => (
                 TaskWriteSetEffectEndpointKind::OperationBinding,
                 operation_id.into_bytes(),
+            ),
+            TaskWriteSetEffectEndpointRequest::ChannelTopicBinding { channel_id, .. } => (
+                TaskWriteSetEffectEndpointKind::ChannelTopicBinding,
+                channel_id.into_bytes(),
             ),
         };
         let key = (request.effect_seq(), kind.code(), object_id);
@@ -3104,6 +3250,31 @@ fn resolve_effect_endpoints(
                     proof.admission_receipt_id,
                 )
             }
+            TaskWriteSetEffectEndpointRequest::ChannelTopicBinding {
+                channel_id,
+                expected_channel_generation,
+                ..
+            } => {
+                let authority = channel_authority.ok_or(TaskStoreError::TaskWriteSetConflict {
+                    reason: "Channel effect endpoint requires ChannelAuthority readback",
+                })?;
+                let proof = authority
+                    .inspect_endpoint_proof(channel_id)
+                    .map_err(TaskStoreError::ChannelParticipantAuthority)?;
+                if proof.channel_id != channel_id
+                    || proof.participant_generation != expected_channel_generation
+                {
+                    return Err(TaskStoreError::ParticipantEndpointGenerationMismatch {
+                        expected: expected_channel_generation.get(),
+                        current: proof.participant_generation.get(),
+                    });
+                }
+                (
+                    proof.participant_id,
+                    proof.participant_generation,
+                    proof.admission_receipt_id,
+                )
+            }
         };
         endpoints.push(TaskWriteSetEffectEndpoint {
             effect_seq: request.effect_seq(),
@@ -3133,6 +3304,9 @@ fn resolve_effect_endpoints(
                 TaskWriteSetEffectEndpointKind::OperationBinding => {
                     crate::ParticipantType::OperationBinding
                 }
+                TaskWriteSetEffectEndpointKind::ChannelTopicBinding => {
+                    crate::ParticipantType::ChannelTopic
+                }
             },
             participant_id,
             participant_generation,
@@ -3159,6 +3333,7 @@ fn compete_for_permit(
     process_authority: Option<&nlos_process::ProcessAuthority>,
     resource_authority: Option<&nlos_resource::ResourceAuthority>,
     operation_authority: Option<&nlos_store::SqliteOperationStore>,
+    channel_authority: Option<&nlos_channel::ChannelAuthority>,
     authority_lease: Option<AuthorityLeaseRecord>,
 ) -> Result<PermitDecision, TaskStoreError> {
     if !attempt.state.is_open_candidate() {
@@ -3228,6 +3403,7 @@ fn compete_for_permit(
         process_authority,
         resource_authority,
         operation_authority,
+        channel_authority,
         authority_lease,
     )?;
     Ok(PermitDecision::Issued(Box::new(record)))
@@ -3366,6 +3542,42 @@ fn validate_operation_endpoint_bindings(
     Ok(())
 }
 
+fn validate_channel_endpoint_bindings(
+    channel_authority: Option<&nlos_channel::ChannelAuthority>,
+    record: &TaskWriteSetRecord,
+) -> Result<(), TaskStoreError> {
+    let has_channel_endpoint = record
+        .effect_endpoints
+        .iter()
+        .any(|endpoint| endpoint.kind == TaskWriteSetEffectEndpointKind::ChannelTopicBinding);
+    if !has_channel_endpoint {
+        return Ok(());
+    }
+    let authority = channel_authority.ok_or(TaskStoreError::TaskWriteSetConflict {
+        reason: "Channel effect endpoint requires ChannelAuthority readback before permit freeze",
+    })?;
+    for expected in record
+        .effect_endpoints
+        .iter()
+        .filter(|endpoint| endpoint.kind == TaskWriteSetEffectEndpointKind::ChannelTopicBinding)
+    {
+        let channel_id = ChannelId::from_bytes(expected.object_id);
+        let proof = authority
+            .inspect_endpoint_proof(channel_id)
+            .map_err(TaskStoreError::ChannelParticipantAuthority)?;
+        if proof.channel_id != channel_id
+            || proof.participant_id != expected.participant_id
+            || proof.participant_generation != expected.participant_generation
+            || proof.admission_receipt_id != expected.admission_receipt_id
+        {
+            return Err(TaskStoreError::TaskWriteSetConflict {
+                reason: "Channel endpoint proof differs before permit freeze",
+            });
+        }
+    }
+    Ok(())
+}
+
 fn validate_head_binding(task: &TaskRecord, snapshot: &SnapshotBundle) -> Option<PermitConflict> {
     if snapshot.expected_head_commit_seq != task.head_commit_seq {
         return Some(PermitConflict::StaleTaskHead {
@@ -3393,6 +3605,7 @@ fn issue_permit(
     process_authority: Option<&nlos_process::ProcessAuthority>,
     resource_authority: Option<&nlos_resource::ResourceAuthority>,
     operation_authority: Option<&nlos_store::SqliteOperationStore>,
+    channel_authority: Option<&nlos_channel::ChannelAuthority>,
     authority_lease: Option<AuthorityLeaseRecord>,
 ) -> Result<PermitRecord, TaskStoreError> {
     if let Some(lease) = authority_lease {
@@ -3489,6 +3702,7 @@ fn issue_permit(
             )?;
         }
         validate_operation_endpoint_bindings(operation_authority, record)?;
+        validate_channel_endpoint_bindings(channel_authority, record)?;
         let current_group = crate::group::current_commit_binding(transaction, attempt.attempt_id)?;
         if record.group_binding != current_group {
             return Err(TaskStoreError::MembershipConflict);
@@ -3524,6 +3738,9 @@ fn issue_permit(
                     }
                     TaskWriteSetEffectEndpointKind::OperationBinding => {
                         crate::ParticipantType::OperationBinding
+                    }
+                    TaskWriteSetEffectEndpointKind::ChannelTopicBinding => {
+                        crate::ParticipantType::ChannelTopic
                     }
                 },
                 participant_id: endpoint.participant_id,
@@ -5472,6 +5689,7 @@ fn effect_endpoint_participant(endpoint: &TaskWriteSetEffectEndpoint) -> crate::
         TaskWriteSetEffectEndpointKind::OperationBinding => {
             crate::ParticipantType::OperationBinding
         }
+        TaskWriteSetEffectEndpointKind::ChannelTopicBinding => crate::ParticipantType::ChannelTopic,
     };
     crate::ParticipantRecord {
         participant_type,
