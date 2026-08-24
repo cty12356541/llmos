@@ -536,7 +536,7 @@ fn v35_takeover_barrier_schema_migrates_signer_columns() {
     let version: i64 = raw
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("read migrated schema version");
-    assert_eq!(version, 38);
+    assert_eq!(version, 39);
     let signer_column_count: i64 = raw
         .query_row(
             "SELECT COUNT(*) FROM pragma_table_info('task_authority_takeover_barrier_receipts')

@@ -1,4 +1,4 @@
-//! Linear `SQLite` schema migration chain (v1 → v35) for the durable
+//! Linear `SQLite` schema migration chain (v1 → v39) for the durable
 //! `TaskAuthority`.
 //!
 //! Every `migrate_vN` advances `user_version` by exactly one step, committed
@@ -1296,6 +1296,41 @@ pub(crate) fn migrate_v38(connection: &mut Connection) -> Result<(), TaskStoreEr
     Ok(())
 }
 
+/// v38 → v39 adds the immutable nested Resource cost receipt tables (one
+/// parent row per sealed Reservation plus one child row per ordered
+/// consumption) under a terminal Task receipt. The migration is additive
+/// with no backfill: existing Task receipts remain valid and receive no
+/// invented Resource evidence; a legacy receipt simply has no nested rows.
+pub(crate) fn migrate_v39(connection: &mut Connection) -> Result<(), TaskStoreError> {
+    let complete_schema_parts: i64 = connection.query_row(
+        "SELECT (SELECT COUNT(*) FROM sqlite_master
+                 WHERE type='table' AND name IN (
+                     'task_resource_cost_receipts',
+                     'task_resource_cost_consumptions'))
+              + (SELECT COUNT(*) FROM sqlite_master
+                 WHERE type='trigger' AND name IN (
+                     'task_resource_cost_receipt_immutable',
+                     'task_resource_cost_receipt_no_delete',
+                     'task_resource_cost_consumption_immutable',
+                     'task_resource_cost_consumption_no_delete'))",
+        [],
+        |row| row.get(0),
+    )?;
+    if complete_schema_parts == 6 {
+        connection.pragma_update(None, "user_version", 39)?;
+        return Ok(());
+    }
+    if complete_schema_parts != 0 {
+        return Err(TaskStoreError::CorruptRecord(
+            "partial nested Resource cost receipt schema",
+        ));
+    }
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(SCHEMA_V39_SQL)?;
+    transaction.commit()?;
+    Ok(())
+}
+
 const SCHEMA_V13_SQL: &str = "CREATE TABLE task_write_sets (
         task_id BLOB NOT NULL CHECK(length(task_id) = 16),
         attempt_id BLOB NOT NULL CHECK(length(attempt_id) = 16),
@@ -2455,3 +2490,68 @@ const SCHEMA_V1_SQL: &str =
         END;
 
         PRAGMA user_version = 1;";
+
+pub(crate) const SCHEMA_V39_SQL: &str = "CREATE TABLE task_resource_cost_receipts (
+        task_receipt_id BLOB NOT NULL CHECK(length(task_receipt_id) = 16),
+        task_id BLOB NOT NULL CHECK(length(task_id) = 16),
+        reservation_id BLOB NOT NULL CHECK(length(reservation_id) = 16),
+        account_id BLOB NOT NULL CHECK(length(account_id) = 16),
+        quote_id BLOB NOT NULL CHECK(length(quote_id) = 16),
+        call_id BLOB NOT NULL CHECK(length(call_id) = 16),
+        operation_id BLOB NOT NULL CHECK(length(operation_id) = 16),
+        upper_bound BLOB NOT NULL CHECK(length(upper_bound) = 8),
+        activation_receipt_id BLOB NOT NULL CHECK(length(activation_receipt_id) = 16),
+        activated_at_ms BLOB NOT NULL CHECK(length(activated_at_ms) = 8),
+        finalization_receipt_id BLOB NOT NULL CHECK(length(finalization_receipt_id) = 16),
+        effect_closed_proof_digest BLOB NOT NULL CHECK(length(effect_closed_proof_digest) = 32),
+        high_water_seq BLOB NOT NULL CHECK(length(high_water_seq) = 8),
+        final_seq BLOB NOT NULL CHECK(length(final_seq) = 8),
+        high_water BLOB NOT NULL CHECK(length(high_water) = 8),
+        final_usage BLOB NOT NULL CHECK(length(final_usage) = 8),
+        refund_credit BLOB NOT NULL CHECK(length(refund_credit) = 8),
+        finalized_at_ms BLOB NOT NULL CHECK(length(finalized_at_ms) = 8),
+        PRIMARY KEY(task_receipt_id, reservation_id),
+        FOREIGN KEY(task_receipt_id) REFERENCES task_receipts(receipt_id),
+        FOREIGN KEY(task_id) REFERENCES tasks(task_id)
+    ) STRICT;
+
+    CREATE INDEX task_resource_cost_receipts_by_task
+        ON task_resource_cost_receipts(task_id, task_receipt_id);
+
+    CREATE TABLE task_resource_cost_consumptions (
+        task_receipt_id BLOB NOT NULL CHECK(length(task_receipt_id) = 16),
+        reservation_id BLOB NOT NULL CHECK(length(reservation_id) = 16),
+        sequence BLOB NOT NULL CHECK(length(sequence) = 8),
+        receipt_id BLOB NOT NULL CHECK(length(receipt_id) = 16),
+        cumulative_usage BLOB NOT NULL CHECK(length(cumulative_usage) = 8),
+        consumed_at_ms BLOB NOT NULL CHECK(length(consumed_at_ms) = 8),
+        PRIMARY KEY(task_receipt_id, reservation_id, sequence),
+        FOREIGN KEY(task_receipt_id, reservation_id)
+            REFERENCES task_resource_cost_receipts(task_receipt_id, reservation_id)
+    ) STRICT;
+
+    CREATE TRIGGER task_resource_cost_receipt_immutable
+    BEFORE UPDATE ON task_resource_cost_receipts
+    BEGIN
+        SELECT RAISE(ABORT, 'nested Resource cost receipt is immutable');
+    END;
+
+    CREATE TRIGGER task_resource_cost_receipt_no_delete
+    BEFORE DELETE ON task_resource_cost_receipts
+    BEGIN
+        SELECT RAISE(ABORT, 'nested Resource cost receipt is durable evidence');
+    END;
+
+    CREATE TRIGGER task_resource_cost_consumption_immutable
+    BEFORE UPDATE ON task_resource_cost_consumptions
+    BEGIN
+        SELECT RAISE(ABORT, 'nested Resource cost consumption is immutable');
+    END;
+
+    CREATE TRIGGER task_resource_cost_consumption_no_delete
+    BEFORE DELETE ON task_resource_cost_consumptions
+    BEGIN
+        SELECT RAISE(ABORT, 'nested Resource cost consumption is durable evidence');
+    END;
+
+    PRAGMA user_version = 39;";

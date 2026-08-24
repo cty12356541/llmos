@@ -39,8 +39,10 @@ use crate::store::{
 };
 use crate::{
     AdoptionReceiptRecord, AttemptState, AuthorityLeaseRecord, ClosePermitDecision,
-    FinalizeDecision, PermitRecord, PermitState, ReconciliationReceiptRecord, SemanticCommitPlanId,
-    SemanticFinalizeDecision, SemanticTaskCommitReceipt, TaskReceiptRecord, TaskStoreError,
+    FinalizeDecision, NestedResourceCostReceipt, PermitRecord, PermitState,
+    ReconciliationReceiptRecord, ResourceFinalizeDecision, ResourceTaskCommitReceipt,
+    SemanticCommitPlanId, SemanticFinalizeDecision, SemanticTaskCommitReceipt, TaskReceiptRecord,
+    TaskStoreError,
 };
 
 /// A `PermitAdoptionReceipt` issuance request (`[TASK-COMMIT-003]`,
@@ -1518,12 +1520,16 @@ fn quarantine_decision(
 /// Builds, stores, and applies the commit receipt: head advance, permit
 /// close, attempt transition, finalize-proof record, and task update in
 /// the caller's transaction (`[TASK-COMMIT-001]` / `[TASK-COMMIT-002]`).
+/// Verified owner Resource aggregates, when present, are inserted as
+/// immutable nested rows after the receipt row and before the permit
+/// close / head advance.
 fn write_commit_receipt(
     transaction: &Transaction<'_>,
     ctx: &TerminalCtx<'_>,
     request: &FinalizeRequestV3,
     outcome: ReceiptOutcome,
     new_fence: u64,
+    resource_receipts: Option<&[NestedResourceCostReceipt]>,
 ) -> Result<TaskReceiptRecord, TaskStoreError> {
     let new_seq = ctx
         .task
@@ -1558,6 +1564,16 @@ fn write_commit_receipt(
     };
     insert_receipt(transaction, &receipt)?;
     insert_finalize_proof(transaction, receipt_id, finalize_proof_digest(request))?;
+    if let Some(receipts) = resource_receipts
+        && !receipts.is_empty()
+    {
+        crate::resource_commit::insert_resource_cost_receipts(
+            transaction,
+            ctx.task.record.task_id,
+            receipt_id,
+            receipts,
+        )?;
+    }
     close_permit(transaction, ctx.permit, ctx.now_ms)?;
     let attempt_state = match outcome {
         ReceiptOutcome::FailedAfterEffect => AttemptState::Failed,
@@ -1582,6 +1598,7 @@ fn write_commit_receipt(
 enum FinalizeImplResult {
     Plain(FinalizeDecision),
     Semantic(SemanticFinalizeDecision),
+    Resource(ResourceFinalizeDecision),
 }
 
 /// Builds, stores, and applies the `TaskPermitClosureReceipt`-shaped
@@ -1956,10 +1973,10 @@ impl SqliteTaskAuthority {
         request: &FinalizeRequestV3,
         legacy: bool,
     ) -> Result<FinalizeDecision, TaskStoreError> {
-        match self.finalize_impl_inner(request, legacy, None, None)? {
+        match self.finalize_impl_inner(request, legacy, None, None, None)? {
             FinalizeImplResult::Plain(decision) => Ok(decision),
-            FinalizeImplResult::Semantic(_) => Err(TaskStoreError::CorruptRecord(
-                "Semantic finalize result returned through plain API",
+            _ => Err(TaskStoreError::CorruptRecord(
+                "non-plain finalize result returned through plain API",
             )),
         }
     }
@@ -1970,10 +1987,10 @@ impl SqliteTaskAuthority {
         legacy: bool,
         authority_lease: Option<AuthorityLeaseRecord>,
     ) -> Result<FinalizeDecision, TaskStoreError> {
-        match self.finalize_impl_inner(request, legacy, authority_lease, None)? {
+        match self.finalize_impl_inner(request, legacy, authority_lease, None, None)? {
             FinalizeImplResult::Plain(decision) => Ok(decision),
-            FinalizeImplResult::Semantic(_) => Err(TaskStoreError::CorruptRecord(
-                "Semantic finalize result returned through plain API",
+            _ => Err(TaskStoreError::CorruptRecord(
+                "non-plain finalize result returned through plain API",
             )),
         }
     }
@@ -1983,10 +2000,10 @@ impl SqliteTaskAuthority {
         request: &FinalizeRequestV3,
         plan_id: SemanticCommitPlanId,
     ) -> Result<SemanticFinalizeDecision, TaskStoreError> {
-        match self.finalize_impl_inner(request, false, None, Some(plan_id))? {
+        match self.finalize_impl_inner(request, false, None, Some(plan_id), None)? {
             FinalizeImplResult::Semantic(decision) => Ok(decision),
-            FinalizeImplResult::Plain(_) => Err(TaskStoreError::CorruptRecord(
-                "plain finalize result returned through Semantic API",
+            _ => Err(TaskStoreError::CorruptRecord(
+                "non-Semantic finalize result returned through Semantic API",
             )),
         }
     }
@@ -1997,10 +2014,40 @@ impl SqliteTaskAuthority {
         plan_id: SemanticCommitPlanId,
         authority_lease: AuthorityLeaseRecord,
     ) -> Result<SemanticFinalizeDecision, TaskStoreError> {
-        match self.finalize_impl_inner(request, false, Some(authority_lease), Some(plan_id))? {
+        match self.finalize_impl_inner(
+            request,
+            false,
+            Some(authority_lease),
+            Some(plan_id),
+            None,
+        )? {
             FinalizeImplResult::Semantic(decision) => Ok(decision),
-            FinalizeImplResult::Plain(_) => Err(TaskStoreError::CorruptRecord(
-                "plain finalize result returned through Semantic API",
+            _ => Err(TaskStoreError::CorruptRecord(
+                "non-Semantic finalize result returned through Semantic API",
+            )),
+        }
+    }
+
+    /// Resource-aware v3 finalize core used by
+    /// `finalize_commit_v3_with_resource_authority[_and_authority_lease]`.
+    /// The caller has already verified the owner aggregates outside the
+    /// Task transaction; replay consults only durable Task rows.
+    pub(crate) fn finalize_impl_with_resource_receipts(
+        &self,
+        request: &FinalizeRequestV3,
+        authority_lease: Option<AuthorityLeaseRecord>,
+        resource_receipts: &[NestedResourceCostReceipt],
+    ) -> Result<ResourceFinalizeDecision, TaskStoreError> {
+        match self.finalize_impl_inner(
+            request,
+            false,
+            authority_lease,
+            None,
+            Some(resource_receipts),
+        )? {
+            FinalizeImplResult::Resource(decision) => Ok(decision),
+            _ => Err(TaskStoreError::CorruptRecord(
+                "non-Resource finalize result returned through Resource API",
             )),
         }
     }
@@ -2012,7 +2059,13 @@ impl SqliteTaskAuthority {
         legacy: bool,
         authority_lease: Option<AuthorityLeaseRecord>,
         semantic_plan_id: Option<SemanticCommitPlanId>,
+        resource_receipts: Option<&[NestedResourceCostReceipt]>,
     ) -> Result<FinalizeImplResult, TaskStoreError> {
+        if semantic_plan_id.is_some() && resource_receipts.is_some() {
+            return Err(TaskStoreError::CorruptRecord(
+                "combined Semantic + Resource finalize is not implemented",
+            ));
+        }
         let mut connection = self.lock_connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let task = store::load_task(&transaction, request.base.task_id)?;
@@ -2078,6 +2131,32 @@ impl SqliteTaskAuthority {
                     .and_then(|record| record.current_participant_registry_binding)
                     .or(permit.participant_registry_binding);
                 let decision = replay_finalize(&transaction, &permit, request, replay_binding)?;
+                if resource_receipts.is_some() {
+                    // Resource replay authority is the durable Task rows;
+                    // the Resource owner is never re-read here.
+                    let receipt = match &decision {
+                        FinalizeDecision::Committed(receipt)
+                        | FinalizeDecision::Replayed(receipt) => (**receipt).clone(),
+                    };
+                    let nested = crate::resource_commit::load_resource_cost_receipts(
+                        &transaction,
+                        request.base.task_id,
+                        receipt.receipt_id,
+                    )?;
+                    validate_resource_receipts_against_sealed_write_set(
+                        &transaction,
+                        &permit,
+                        request.base.task_id,
+                        &nested,
+                    )?;
+                    transaction.commit()?;
+                    return Ok(FinalizeImplResult::Resource(
+                        ResourceFinalizeDecision::Replayed(Box::new(ResourceTaskCommitReceipt {
+                            task_receipt: receipt,
+                            resource_cost_receipts: nested,
+                        })),
+                    ));
+                }
                 if let Some(plan_id) = semantic_plan_id {
                     let receipt = match &decision {
                         FinalizeDecision::Committed(receipt)
@@ -2131,9 +2210,9 @@ impl SqliteTaskAuthority {
             )?;
         }
         if legacy {
-            if semantic_plan_id.is_some() {
+            if semantic_plan_id.is_some() || resource_receipts.is_some() {
                 return Err(TaskStoreError::InvalidSemanticPublicationPlan {
-                    reason: "Semantic publication requires v3 finalize semantics",
+                    reason: "owner-verified publication requires v3 finalize semantics",
                 });
             }
             let decision = finalize_legacy(&transaction, &task, &permit, &attempt, request)?;
@@ -2157,6 +2236,14 @@ impl SqliteTaskAuthority {
         } else {
             None
         };
+        if let Some(receipts) = resource_receipts {
+            validate_resource_receipts_against_sealed_write_set(
+                &transaction,
+                &permit,
+                request.base.task_id,
+                receipts,
+            )?;
+        }
         let slots = list_slots(&transaction, permit.permit_id)?;
         if slots
             .iter()
@@ -2194,7 +2281,23 @@ impl SqliteTaskAuthority {
                 request.base.finalized_at_ms,
             )?
         };
-        let receipt = write_commit_receipt(&transaction, &ctx, request, outcome, new_fence)?;
+        let receipt = write_commit_receipt(
+            &transaction,
+            &ctx,
+            request,
+            outcome,
+            new_fence,
+            resource_receipts,
+        )?;
+        if let Some(receipts) = resource_receipts {
+            transaction.commit()?;
+            return Ok(FinalizeImplResult::Resource(
+                ResourceFinalizeDecision::Committed(Box::new(ResourceTaskCommitReceipt {
+                    task_receipt: receipt,
+                    resource_cost_receipts: receipts.to_vec(),
+                })),
+            ));
+        }
         if let Some((plan, publications)) = semantic_context {
             crate::semantic_commit::finalize_plan(
                 &transaction,
@@ -3238,6 +3341,33 @@ fn replay_finalize(
         }
     }
     Ok(FinalizeDecision::Replayed(Box::new(receipt)))
+}
+
+/// Fail-closed comparison of a Resource receipt set (owner-verified before
+/// the terminal CAS, or loaded from nested Task rows during replay)
+/// against the immutable sealed `TaskWriteSet` bound to the permit.
+fn validate_resource_receipts_against_sealed_write_set(
+    transaction: &Transaction<'_>,
+    permit: &PermitRecord,
+    task_id: TaskId,
+    receipts: &[NestedResourceCostReceipt],
+) -> Result<(), TaskStoreError> {
+    if permit.write_set_root == [0; 32] {
+        if receipts.is_empty() {
+            return Ok(());
+        }
+        return Err(TaskStoreError::CorruptRecord(
+            "Resource cost receipts require a sealed TaskWriteSet",
+        ));
+    }
+    let write_set = store::load_write_set_by_root(transaction, task_id, permit.write_set_root)?
+        .ok_or(TaskStoreError::TaskWriteSetNotFound)?;
+    if write_set.write_set_root != crate::model::task_write_set_root(&write_set) {
+        return Err(TaskStoreError::CorruptRecord(
+            "TaskWriteSet canonical root mismatch during Resource finalization",
+        ));
+    }
+    crate::resource_commit::validate_receipts_against_sealed_reservations(&write_set, receipts)
 }
 
 fn replay_reconcile(

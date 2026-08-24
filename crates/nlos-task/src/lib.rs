@@ -98,6 +98,15 @@
 //! registry, and active successor assignment are all revalidated in one
 //! transaction. The v38 path authorizes reconcile/close only; it does not
 //! issue new permits, dispatch effects, or attest remote cleanup.
+//! Schema v39 adds the Task-side Resource cost-receipt bridge: the
+//! resource-aware v3 finalize derives the exact sealed Reservation set from
+//! the permit-bound `TaskWriteSet`, re-reads each FINALIZED owner cost
+//! aggregate before the Task transaction opens, and copies the full detail
+//! (activation, every ordered consumption, finalization/refund) into two
+//! immutable nested tables inside the terminal Task transaction; replay is
+//! answered from the Task rows alone. Verify-then-commit is not
+//! cross-authority atomicity, and the combined Semantic + Resource finalize
+//! rung remains unimplemented.
 //! Compensation execution
 //! (`COMPENSATED` is recordable but never executed), `QUORUM`/`REDUCE`
 //! group semantics (`[TASK-GROUP-003]`), `BEST_EFFORT` failure mode,
@@ -125,6 +134,7 @@ mod model;
 mod participant;
 mod reconcile;
 mod recovery;
+mod resource_commit;
 mod semantic_commit;
 mod store;
 
@@ -194,6 +204,9 @@ pub use recovery::{
     ArtifactRecoveryAlertAcknowledgeRequest, ArtifactRecoveryAlertReceipt,
     ArtifactRecoveryFailureRequest, ArtifactRecoveryFailureSource, ArtifactRecoveryRecord,
     ArtifactRecoveryResumeRequest, ArtifactRecoveryState, ArtifactRecoverySummary,
+};
+pub use resource_commit::{
+    NestedResourceCostReceipt, ResourceFinalizeDecision, ResourceTaskCommitReceipt,
 };
 pub use semantic_commit::{
     FinalizeSemanticCommitRequest, NestedSemanticPublicationReceipt, PlanSemanticCommitRequest,
