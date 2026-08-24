@@ -131,3 +131,61 @@ git diff --check
 - **queue/Topic/fanout/payer 语义仍排除**：本接线仅为 endpoint proof 绑定，不实现投递/路由/扇出/计费；
 - **无 CI / 无提交 / 无推送**：本节仅为本地候选证据；`HEAD` 仍为 `73a8b49`，未 stage、未 commit、未 push，未改 `docs/management/stage-b-progress.md`；
 - 无 kill-9/掉电/fault-injection 矩阵；单机单写者语义不变；不声明跨 authority 原子性。
+
+---
+
+## 6. EffectPermit channel gate（2026-08-24 增量）
+
+Base HEAD：`4194998715e85797bde72f4fc517f8b30c440e66`（`feat: bind channel endpoint proofs into task write sets`，工作树干净，无漂移；开跑前 `git rev-parse HEAD` 复核一致）。本增量关闭 §5.5 未决项第一行 "EffectPermit channel gate 未接"，镜像 activation gate（`73a8b49`，`check_effect_slot_activation` / `request_effect_permit_with_operation_authority`）逐条实现。**候选工作集，未提交、未推送；未修改 stage-b-progress.md。**
+
+### 6.1 接缝与语义
+
+- **seam rationale**：seal（`resolve_effect_endpoints`）与 permit freeze（`validate_channel_endpoint_bindings`，4194998）各自做 owner 回读，但 permit 签发到 EffectPermit mint 之间仍存在旋转窗口。本切片在 `request_effect_permit_inner` 的 mint 直前（`check_effect_slot_activation` 之后、`derive_effect_permit_id` 之前）插入 `check_effect_slot_channel_binding`：以 `inspect_endpoint_proof(ChannelId::from_bytes(object_id))` 回读 Channel owner **当前 generation** 的 proof（该 API 不接受 generation 参数，rotation 因此天然表现为不匹配），关闭 seal→permit→mint 窗口的最后一环。
+- **triple-equality 语义**：`participant_id` / `participant_generation` / `admission_receipt_id` 三字段逐一字节比较 sealed `TaskWriteSetEffectEndpoint` 行；任一不符 → 既有 `TaskWriteSetConflict { reason: "Channel endpoint proof differs before effect permit mint" }`；owner 回读错误 → 既有 `TaskStoreError::ChannelParticipantAuthority` 包裹传播（无新增错误变体、无 schema/model/migration 改动）。kind != `ChannelTopicBinding` 或无 sealed write set → 原样放行：单槽请求只需自己 kind 的 authority（operation 变体对称放行 Channel 槽），`None` 保持 legacy authority-free 行为。
+- **replay 信任 Task 行**：replay 检查（`load_effect_permit_by_key`）仍是 inner 的第一步，在任何 owner 读取之前执行；已 mint 的 permit 重放返回原 durable token，Channel authority 全程不被触碰（测试 4 以空目录 authority 反证）。
+- **零持久化失败语义**：gate 失败路径与 activation gate 相同——事务回滚，slot 停在 `Planned`、无 effect_permit_id；失败后的同 key legacy 调用得到 `Issued`（非 `Replayed`），证明失败的 gated 调用未持久化任何东西。
+- **线程化**：`request_effect_permit_inner(&self, operation_authority, channel_authority, request)`；既有两个公开入口机械补 `None`，新增 `request_effect_permit_with_channel_authority(&ChannelAuthority, PermitRequest)` thin wrapper。未建组合多-authority 变体（单槽单 kind 使其不必要，见 §6.4）。
+
+### 6.2 测试（tests/effect_channel_gate.rs，TDD red → green）
+
+- **red**（先写测试）：`cargo test -p nlos-task --test effect_channel_gate` → 编译失败 **7 errors**，全部为 E0599 "no method named `request_effect_permit_with_channel_authority`"（编译器同时提示最接近的现存方法是 `request_commit_permit_with_channel_authority`，证明名称解析正确、失败原因即缺失 API 本身，非拼写/导入疏漏）。
+- **green**：`cargo test -p nlos-task --test effect_channel_gate` → **6 passed; 0 failed**：
+  1. `channel_gated_effect_permit_mints_one_shot_token_when_proof_matches`：create channel → register_channel_participant → `seal_task_write_set_with_channel_authority` → `request_commit_permit_with_channel_authority` → `request_effect_permit_with_channel_authority` mint one-shot token，slot `Permitted`；
+  2. `channel_rotation_between_seal_and_effect_permit_fails_closed_without_partial_state`：seal+commit 后 rotate → 精确 reason `"Channel endpoint proof differs before effect permit mint"`，slot 仍 `Planned`/无 permit id；同 key legacy 调用随即 `Issued`（非 `Replayed`，证明失败零持久化——legacy 自身语义为无门禁放行，已在此断言并记录）；
+  3. `channel_gate_fails_closed_on_owner_readback_error`：空目录 authority（Channel 从未存在）→ `ChannelParticipantAuthority(ChannelNotFound(_))`，无 token；
+  4. `channel_gate_replay_returns_durable_token_without_owner_readback`：mint 后重开 Task authority，以全新**空目录** ChannelAuthority 同 key 重放两次 → 均返回同一 durable token（任何 owner 读取都会失败，返回 token 即证明 replay 零 owner 读；`inspect_effect_permit` 逐字段相等）；
+  5. `legacy_effect_permit_issuance_skips_channel_gate_for_channel_slot`：owner 已 rotate（gate 必拒）但 authority-free `request_effect_permit` 仍 mint——执法边界只在新变体；
+  6. `channel_gate_passes_through_operation_binding_slot`：OperationBinding 槽（owner 仅 Registered、无 dispatch 准备）经 channel 变体 + 空目录 ChannelAuthority → 照常 mint，channel authority 未被触碰。
+
+### 6.3 质量门（全部通过，命令逐字）
+
+```text
+cargo check -p nlos-task
+  → Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.10s（0 error/warning）
+
+cargo test -p nlos-task --test effect_channel_gate   （red：7× E0599 → green）
+  → test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured
+
+cargo test -p nlos-task --quiet
+  → 汇总 passed: 223 failed: 0（基线 217 + 新增 6；全部 27 个 test target ok）
+
+cargo clippy -p nlos-task --all-targets --all-features -- -D warnings
+  → Finished `dev` profile [unoptimized + debuginfo] target(s) in 11.07s（0 warning / 0 error）
+
+cargo fmt --all -- --check
+  → 退出码 0，无输出（通过）
+
+git diff --check
+  → 退出码 0（无空白错误）
+```
+
+### 6.4 变更集与明确未完成（PARTIAL_PASS 保持）
+
+变更集（候选，未暂存/未提交）：`crates/nlos-task/src/effect.rs`（+96/−4：`ChannelId` import、`check_effect_slot_channel_binding` sibling checker、inner 线程化 + 新公开变体 + mint 前调用点）、`crates/nlos-task/tests/effect_channel_gate.rs`（新增，530 纯行——镜像既有单文件集成测试惯例，`effect_activation_gate.rs` 652 行 / `channel_endpoint.rs` 620 行同款）、本 Evidence 增量。Post-write 自检：无 unsafe、无生产 unwrap/expect、无新增警告抑制（沿用文件既有 needless_pass_by_value/too_many_lines 惯例）、无 `as` 窄化、fixture 确定性（原子计数器 + temp 目录，无 sleep/线程）、legacy authority-free 与 operation 变体路径行为不变（223 项全量背书）。
+
+未完成项：
+
+- **仍为 validation-only**：mint 时 gate 不持久化任何 Channel 事实（不记录 proof 快照/receipt），Channel 侧也不留 Task 读痕；无跨 authority 原子性声明；
+- **单槽单 authority 边界**：channel 变体放行 OperationBinding 槽、operation 变体放行 ChannelTopicBinding 槽（测试 6 与 activation gate 测试 7 互为对称证明）；组合多-authority effect-permit 变体刻意不建（单槽单 kind 使其不必要，文档化缺口而非实现）；
+- **无 kill-9/torn-write/掉电 fault matrix**，无 CI、无提交、无推送：本节仅为本地候选证据；`HEAD` 仍为 `4194998`，未 stage、未 commit、未 push，未改 `docs/management/stage-b-progress.md`；
+- queue/Topic/fanout/payer 语义仍排除在外（§5.5 原样保持）。

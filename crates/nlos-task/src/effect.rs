@@ -12,8 +12,8 @@
 
 use nlos_operation::OperationHandle;
 use nlos_types::{
-    CommitPermitId, EffectPermitId, EffectSlotId, Generation, IdempotencyKey, OperationId,
-    ReceiptId, TaskAttemptId, TaskId,
+    ChannelId, CommitPermitId, EffectPermitId, EffectSlotId, Generation, IdempotencyKey,
+    OperationId, ReceiptId, TaskAttemptId, TaskId,
 };
 use rusqlite::{Transaction, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
@@ -1370,6 +1370,53 @@ fn check_effect_slot_activation(
     Ok(())
 }
 
+/// `B-CHANNEL-001` channel gate: before minting an `EffectPermit` for a slot
+/// whose sealed `TaskWriteSet` endpoint is a `ChannelTopicBinding`, the
+/// owning Channel authority's CURRENT endpoint proof must still byte-match
+/// the sealed triple (`participant_id`, `participant_generation`,
+/// `admission_receipt_id`). `inspect_endpoint_proof` takes no generation
+/// argument, so a rotation between seal and mint naturally breaks the
+/// comparison (stale fence). Non-Channel endpoint kinds and unsealed legacy
+/// permits pass through untouched — single-slot requests need only their own
+/// endpoint kind's authority (the operation variant symmetrically passes
+/// through Channel slots) — and `None` preserves the legacy authority-free
+/// issuance behavior. Nothing new is persisted here — this is a
+/// validation-only readback.
+fn check_effect_slot_channel_binding(
+    transaction: &Transaction<'_>,
+    channel_authority: Option<&nlos_channel::ChannelAuthority>,
+    permit: &PermitRecord,
+    effect_seq: u64,
+) -> Result<(), TaskStoreError> {
+    let Some(authority) = channel_authority else {
+        return Ok(());
+    };
+    let Some(write_set) =
+        load_write_set_by_root(transaction, permit.task_id, permit.write_set_root)?
+    else {
+        return Ok(());
+    };
+    let Some(endpoint) = write_set.effect_endpoints.iter().find(|endpoint| {
+        endpoint.effect_seq == effect_seq
+            && endpoint.kind == TaskWriteSetEffectEndpointKind::ChannelTopicBinding
+    }) else {
+        return Ok(());
+    };
+    let channel_id = ChannelId::from_bytes(endpoint.object_id);
+    let proof = authority
+        .inspect_endpoint_proof(channel_id)
+        .map_err(TaskStoreError::ChannelParticipantAuthority)?;
+    if proof.participant_id != endpoint.participant_id
+        || proof.participant_generation != endpoint.participant_generation
+        || proof.admission_receipt_id != endpoint.admission_receipt_id
+    {
+        return Err(TaskStoreError::TaskWriteSetConflict {
+            reason: "Channel endpoint proof differs before effect permit mint",
+        });
+    }
+    Ok(())
+}
+
 impl SqliteTaskAuthority {
     /// Runs the linearized `EffectPermit` issuance CAS (`[TASK-EFFECT-001]`
     /// first half, `[TASK-RACE-001]`).
@@ -1392,7 +1439,7 @@ impl SqliteTaskAuthority {
         &self,
         request: PermitRequest,
     ) -> Result<EffectPermitDecision, TaskStoreError> {
-        self.request_effect_permit_inner(None, request)
+        self.request_effect_permit_inner(None, None, request)
     }
 
     /// Runs the `EffectPermit` issuance CAS after re-reading the owning
@@ -1423,13 +1470,50 @@ impl SqliteTaskAuthority {
         operation_authority: &nlos_store::SqliteOperationStore,
         request: PermitRequest,
     ) -> Result<EffectPermitDecision, TaskStoreError> {
-        self.request_effect_permit_inner(Some(operation_authority), request)
+        self.request_effect_permit_inner(Some(operation_authority), None, request)
+    }
+
+    /// Runs the `EffectPermit` issuance CAS after re-reading the owning
+    /// Channel authority's CURRENT endpoint proof for a slot whose sealed
+    /// `TaskWriteSet` endpoint is a `ChannelTopicBinding`
+    /// (`B-CHANNEL-001`).
+    ///
+    /// This is an opt-in strengthening of the legacy issuance entry point:
+    /// the sealed triple (`participant_id`, `participant_generation`,
+    /// `admission_receipt_id`) must still byte-match the Channel authority's
+    /// current-generation proof immediately before the one-shot token is
+    /// minted, closing the permit→mint window for Channel rotations (the
+    /// seal→permit freeze already revalidates). Because
+    /// `inspect_endpoint_proof` returns the CURRENT generation, a rotation
+    /// between seal and mint naturally surfaces as a mismatch. An
+    /// already-minted permit replays the durable token WITHOUT consulting
+    /// the Channel authority — the Task rows are the replay authority.
+    /// Slots without a `ChannelTopicBinding` endpoint pass through the
+    /// existing validation unchanged; nothing new is persisted and the
+    /// Channel is not transitioned by this call.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::request_effect_permit`], plus a
+    /// typed Channel owner readback error
+    /// ([`TaskStoreError::ChannelParticipantAuthority`]) when the owner
+    /// cannot answer, or
+    /// [`TaskStoreError::TaskWriteSetConflict`] when the current proof no
+    /// longer byte-matches the sealed triple.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn request_effect_permit_with_channel_authority(
+        &self,
+        channel_authority: &nlos_channel::ChannelAuthority,
+        request: PermitRequest,
+    ) -> Result<EffectPermitDecision, TaskStoreError> {
+        self.request_effect_permit_inner(None, Some(channel_authority), request)
     }
 
     #[allow(clippy::too_many_lines)] // Keep the one-transaction authority decision contiguous.
     fn request_effect_permit_inner(
         &self,
         operation_authority: Option<&nlos_store::SqliteOperationStore>,
+        channel_authority: Option<&nlos_channel::ChannelAuthority>,
         request: PermitRequest,
     ) -> Result<EffectPermitDecision, TaskStoreError> {
         let mut connection = self.lock_connection()?;
@@ -1489,6 +1573,14 @@ impl SqliteTaskAuthority {
         check_effect_slot_activation(
             &transaction,
             operation_authority,
+            &context.permit,
+            request.effect_seq,
+        )?;
+        // `[B-CHANNEL-001]`: mint only after the sealed Channel endpoint's
+        // current-generation proof still byte-matches the sealed triple.
+        check_effect_slot_channel_binding(
+            &transaction,
+            channel_authority,
             &context.permit,
             request.effect_seq,
         )?;
