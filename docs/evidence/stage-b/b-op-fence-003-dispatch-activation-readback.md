@@ -111,3 +111,94 @@ dispatch/commit 闭环：
 
 本 Attempt 未修改任何 Rust 代码、progress sheet、ADR、Cargo 文件、
 Resource/Task/Channel 文件或 git index/commit/remote/stash。
+
+## 4. TaskWriteSet EffectPermit 消费接线（2026-08-24 增量）
+
+本增量为 `TASK-EFFECT-ACTIVATION-GATE-01` Attempt：把上节已提交的
+`inspect_activation_proof` 激活证明接入 Task 侧 `EffectPermit` 签发，作为
+validation-only 门禁（B-OP-FENCE-003 未决项第一项「TaskWriteSet 消费接线」）。
+base HEAD `7ffbfe8ca7db21201e252d2944fc2e0d9f749e5a`（起点工作区 clean；
+本 Attempt 无任何 git index/commit/push 操作）。候选写集仅
+`crates/nlos-task/src/effect.rs`（+100/−6）与新测试文件
+`crates/nlos-task/tests/effect_activation_gate.rs`；`store.rs`/`lib.rs`/
+`migrations.rs`/`model.rs` 零改动（`load_write_set_by_root` 原已是
+`pub(crate)`，无需暴露新 loader）。
+
+### 缝合点选择（seam rationale）
+
+- **门禁放在 EffectPermit 签发，而不是 seal 或 commit-permit**：v24 先例
+  （`request_commit_permit_with_operation_authority`，store.rs:1303）已在
+  permit freeze 时做 endpoint 注册证明复读；本切片把消费端最后一道门放在
+  one-shot token 铸造之前——owner 先激活（ADR-0005 authority-first），Task
+  才消费证明。seal/commit-permit 路径与 v24 流程完全未动。
+- **阶梯命名与线程化镜像 commit-permit 先例**：
+  `request_effect_permit`（legacy，`inner(None)`）→
+  `request_effect_permit_with_operation_authority(&SqliteOperationStore, req)`
+  → `request_effect_permit_inner(Option<&SqliteOperationStore>, req)`，
+  authority 在 replay 检查之后、mint 之前线程化注入。
+- **Handle 重构与 `validate_operation_endpoint_bindings`（store.rs:3350）
+  逐字段一致**：`OperationHandle { operation_id: endpoint.object_id,
+  generation: endpoint.participant_generation }`；owner 错误一律经既有
+  `TaskStoreError::OperationParticipantAuthority(nlos_store::StoreError)`
+  透传（lib.rs:529），无 panic、无新增错误变体。
+
+### Validation-only 决策
+
+不新增 schema（无 v40）、不新增列、不改 root 变体、不持久化
+`activation_receipt_id`/`preparation_receipt_id`：gate 只在签发事务内读回
+sealed `TaskWriteSet` endpoint（按 `permit.write_set_root`）并调用
+`inspect_activation_proof`，要求 `proof.operation == handle`（存在性 + 精确
+generation；不 pin callback_id/cancel_epoch）。endpoint kind 非
+OperationBinding 或 legacy 无 sealed write-set 的 permit 直接通过既有校验。
+
+### Red → Green 记录
+
+- **Red**：`cargo test -p nlos-task --test effect_activation_gate` →
+  编译失败，9 个错误全部为 `error[E0599]`（缺少
+  `request_effect_permit_with_operation_authority`），终止于
+  `error: could not compile nlos-task (test "effect_activation_gate") due to
+  9 previous errors`——失败原因正确（缺方法本身，非导入错误）。
+- **Green（窄）**：同命令 → `test result: ok. 7 passed; 0 failed; 0
+  ignored; 0 measured`。
+- **全量**：`cargo test -p nlos-task --quiet` → 211 passed / 0 failed /
+  0 ignored（204 基线 + 本切片 7，无既有测试回归）。
+- `cargo check -p nlos-task` 通过；`cargo clippy -p nlos-task
+  --all-targets --all-features -- -D warnings` 通过（无告警）；
+  `cargo fmt --all -- --check` 与 `git diff --check` 通过。
+
+### 7 项 Given/When/Then 覆盖（tests/effect_activation_gate.rs）
+
+1. **happy**：seal（OperationBinding，Registered）→ v24 commit permit →
+   owner `prepare_dispatch`+`activate_dispatch` → 门禁签发 one-shot token，
+   slot → `Permitted`。
+2. **仅注册**：未 prepare → `OperationParticipantAuthority(
+   DispatchPreparationNotFound)`，slot 仍 `Planned`、无 permit；激活后同键
+   重试 → `Issued`（非 `Replayed`，证明失败调用零持久化）。
+3. **仅 prepare**：未 activate → `OperationNotActivated` 包装，slot 仍
+   `Planned`。
+4. **stale generation**：sealed 代际 ≠ owner 当前代际（构造同一
+   operation_id 在另一 authority 注册于 `checked_next` 代际）→
+   `Operation(OperationError::InvalidGeneration)` 包装，slot 仍 `Planned`。
+5. **replay 信任 Task 行**：铸币后重开 Task authority 并传入全新空
+   Operation authority，同请求两次 → 均返回同一 durable token
+   （`Replayed`），`inspect_effect_permit` 与原记录全等、slot 仍
+   `Permitted`——空 authority 上任何 owner 读回都会失败，故该测试直接证明
+   replay 不再读 owner（Task 行是 replay 权威，镜像 store.rs:1352-1358）。
+6. **legacy 边界**：同一仅注册 slot 上 authority-free
+   `request_effect_permit` 照常铸币——强化只存在于新变体（legacy 缺口
+   by design，镜像 commit-permit 阶梯）。
+7. **非 Operation endpoint 直通**：ArtifactHead endpoint + 空
+   Operation authority → 门禁方法照常铸币，证明 gate 仅对
+   OperationBinding 生效。
+
+### 明确缺口（本增量后仍成立）
+
+- legacy authority-free `request_effect_permit` 不做激活校验（设计如此，
+  测试 6 固化边界）。
+- Task 侧未持久化任何 activation 事实（activation_receipt_id 不入 Task
+  行；消费证据仅为签发时刻的读回）。
+- 无跨 authority 激活原子性：gate 只读本 owner；测试 4 的第二 authority
+  只是构造 stale 手段，不构成跨 authority 保证。
+- 本 gate 无 fault/corruption 注入矩阵（activation 表篡改路径未覆盖）。
+- 候选代码与本文档未提交、未推送：无 CI 结果；PARTIAL_PASS 维持，由
+  integrator 晋升后补记提交号。

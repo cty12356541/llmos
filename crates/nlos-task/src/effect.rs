@@ -10,18 +10,19 @@
 //! enter `LogicalEffectId`, so a retry, hedge, or agent swap cannot mint a
 //! new logical effect (`[TASK-EFFECT-ID-001]`).
 
+use nlos_operation::OperationHandle;
 use nlos_types::{
-    CommitPermitId, EffectPermitId, EffectSlotId, Generation, IdempotencyKey, ReceiptId,
-    TaskAttemptId, TaskId,
+    CommitPermitId, EffectPermitId, EffectSlotId, Generation, IdempotencyKey, OperationId,
+    ReceiptId, TaskAttemptId, TaskId,
 };
 use rusqlite::{Transaction, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
 
-use crate::model::PlannedEffect;
+use crate::model::{PlannedEffect, TaskWriteSetEffectEndpointKind};
 use crate::store::{
     SqlRead, SqliteTaskAuthority, StoredTask, blob16, blob32, decode_participant_binding,
-    encode_u64, generation_from_blob, load_attempt, load_permit_by_id, load_task, optional_blob16,
-    u64_from_blob, update_task,
+    encode_u64, generation_from_blob, load_attempt, load_permit_by_id, load_task,
+    load_write_set_by_root, optional_blob16, u64_from_blob, update_task,
 };
 use crate::{PermitRecord, PermitState, TaskStoreError};
 
@@ -1323,6 +1324,52 @@ fn check_commit_context(
     Ok(())
 }
 
+/// `[B-OP-FENCE-003]` activation gate for dispatch-consumption wiring: before
+/// minting an `EffectPermit` for a slot whose sealed `TaskWriteSet` endpoint is
+/// an `OperationBinding`, the owning Operation authority must already hold the
+/// durable dispatch activation proof for the exact sealed
+/// `OperationId + Generation` handle (ADR-0005 authority-first ordering: the
+/// owner activates, then the Task consumes the proof). Non-Operation endpoint
+/// kinds and unsealed legacy permits pass through untouched, and `None`
+/// preserves the legacy authority-free issuance behavior. Nothing new is
+/// persisted here — this is a validation-only readback.
+fn check_effect_slot_activation(
+    transaction: &Transaction<'_>,
+    operation_authority: Option<&nlos_store::SqliteOperationStore>,
+    permit: &PermitRecord,
+    effect_seq: u64,
+) -> Result<(), TaskStoreError> {
+    let Some(authority) = operation_authority else {
+        return Ok(());
+    };
+    let Some(write_set) =
+        load_write_set_by_root(transaction, permit.task_id, permit.write_set_root)?
+    else {
+        return Ok(());
+    };
+    let Some(endpoint) = write_set.effect_endpoints.iter().find(|endpoint| {
+        endpoint.effect_seq == effect_seq
+            && endpoint.kind == TaskWriteSetEffectEndpointKind::OperationBinding
+    }) else {
+        return Ok(());
+    };
+    let handle = OperationHandle {
+        operation_id: OperationId::from_bytes(endpoint.object_id),
+        generation: endpoint.participant_generation,
+    };
+    let proof = authority
+        .inspect_activation_proof(handle)
+        .map_err(TaskStoreError::OperationParticipantAuthority)?;
+    if proof.operation != handle {
+        return Err(TaskStoreError::OperationParticipantAuthority(
+            nlos_store::StoreError::CorruptRecord(
+                "activation proof operation handle differs from sealed endpoint",
+            ),
+        ));
+    }
+    Ok(())
+}
+
 impl SqliteTaskAuthority {
     /// Runs the linearized `EffectPermit` issuance CAS (`[TASK-EFFECT-001]`
     /// first half, `[TASK-RACE-001]`).
@@ -1341,9 +1388,48 @@ impl SqliteTaskAuthority {
     ///
     /// Returns a not-found, holder, epoch, stale-head, cancel, slot-state,
     /// idempotency-conflict, or storage error.
-    #[allow(clippy::too_many_lines)] // Keep the one-transaction authority decision contiguous.
     pub fn request_effect_permit(
         &self,
+        request: PermitRequest,
+    ) -> Result<EffectPermitDecision, TaskStoreError> {
+        self.request_effect_permit_inner(None, request)
+    }
+
+    /// Runs the `EffectPermit` issuance CAS after re-reading the owning
+    /// Operation authority's dispatch activation proof for a slot whose
+    /// sealed `TaskWriteSet` endpoint is an `OperationBinding`
+    /// (`[B-OP-FENCE-003]`).
+    ///
+    /// This is an opt-in strengthening of the legacy issuance entry point:
+    /// the owner must have durably prepared AND activated the dispatch for
+    /// the exact sealed `OperationId + Generation` handle before the one-shot
+    /// token is minted (ADR-0005 authority-first ordering). An already-minted
+    /// permit replays the durable token WITHOUT consulting the Operation
+    /// authority — the Task rows are the replay authority. Slots without an
+    /// `OperationBinding` endpoint pass through the existing validation
+    /// unchanged; nothing new is persisted and the Operation is not
+    /// transitioned by this call.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::request_effect_permit`], plus a
+    /// typed Operation owner activation error
+    /// ([`TaskStoreError::OperationParticipantAuthority`]) when the sealed
+    /// endpoint's dispatch was never prepared, never activated, or its
+    /// sealed generation is stale at the owner.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn request_effect_permit_with_operation_authority(
+        &self,
+        operation_authority: &nlos_store::SqliteOperationStore,
+        request: PermitRequest,
+    ) -> Result<EffectPermitDecision, TaskStoreError> {
+        self.request_effect_permit_inner(Some(operation_authority), request)
+    }
+
+    #[allow(clippy::too_many_lines)] // Keep the one-transaction authority decision contiguous.
+    fn request_effect_permit_inner(
+        &self,
+        operation_authority: Option<&nlos_store::SqliteOperationStore>,
         request: PermitRequest,
     ) -> Result<EffectPermitDecision, TaskStoreError> {
         let mut connection = self.lock_connection()?;
@@ -1397,6 +1483,14 @@ impl SqliteTaskAuthority {
             &transaction,
             request.task_id,
             &slot.logical_effect_id,
+        )?;
+        // `[B-OP-FENCE-003]`: mint only after the sealed Operation endpoint's
+        // dispatch activation proof re-read succeeds.
+        check_effect_slot_activation(
+            &transaction,
+            operation_authority,
+            &context.permit,
+            request.effect_seq,
         )?;
         let effect_permit_id = derive_effect_permit_id(request.permit_id, request.idempotency_key);
         let token = derive_dispatch_token(
