@@ -10,6 +10,8 @@
 //! enter `LogicalEffectId`, so a retry, hedge, or agent swap cannot mint a
 //! new logical effect (`[TASK-EFFECT-ID-001]`).
 
+use std::fmt;
+
 use nlos_operation::OperationHandle;
 use nlos_types::{
     ChannelId, CommitPermitId, EffectPermitId, EffectSlotId, Generation, IdempotencyKey,
@@ -1324,6 +1326,40 @@ fn check_commit_context(
     Ok(())
 }
 
+/// Borrowed owner-authority bundle for the struct-based `EffectPermit`
+/// issuance entry. Every field mirrors the exact `Option<&_>` authority slot
+/// the ladder constructors thread into `request_effect_permit_inner`, so one
+/// value can name any combination of the two effect-permit gates — including
+/// both at once for a slot whose sealed `TaskWriteSet` carries an
+/// `OperationBinding` AND a `ChannelTopicBinding` endpoint. The default value
+/// is the authority-free (all-`None`) bundle, which preserves the legacy
+/// authority-free issuance behavior.
+///
+/// Style note: mirrors [`crate::store::Authorities`] — `Clone + Copy +
+/// Default` over `Option<&'_>` slots, with a presence-flag `Debug` because
+/// the owner stores are opaque `SQLite` handles without `Debug`.
+#[derive(Clone, Copy, Default)]
+pub struct EffectPermitAuthorities<'a> {
+    /// Operation endpoint dispatch-activation proof owner
+    /// (`[B-OP-FENCE-003]` gate).
+    pub operation: Option<&'a nlos_store::SqliteOperationStore>,
+    /// Channel endpoint current-generation proof owner (`B-CHANNEL-001`
+    /// gate).
+    pub channel: Option<&'a nlos_channel::ChannelAuthority>,
+}
+
+// The owner stores are opaque SQLite handles without `Debug`, so the
+// bundle prints per-field presence instead of handle contents.
+impl fmt::Debug for EffectPermitAuthorities<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("EffectPermitAuthorities")
+            .field("operation", &self.operation.is_some())
+            .field("channel", &self.channel.is_some())
+            .finish()
+    }
+}
+
 /// `[B-OP-FENCE-003]` activation gate for dispatch-consumption wiring: before
 /// minting an `EffectPermit` for a slot whose sealed `TaskWriteSet` endpoint is
 /// an `OperationBinding`, the owning Operation authority must already hold the
@@ -1507,6 +1543,41 @@ impl SqliteTaskAuthority {
         request: PermitRequest,
     ) -> Result<EffectPermitDecision, TaskStoreError> {
         self.request_effect_permit_inner(None, Some(channel_authority), request)
+    }
+
+    /// Runs the `EffectPermit` issuance CAS with the owner revalidations
+    /// named by one [`EffectPermitAuthorities`] bundle (Operation and
+    /// Channel together).
+    ///
+    /// The bundle is destructured into the exact inner authority slots used
+    /// by the ladder permit entries, with no separate issuance path. When
+    /// both authorities are present, BOTH gates must pass for the same
+    /// sealed slot — the activation proof (`[B-OP-FENCE-003]`) and the
+    /// current-generation channel endpoint proof (`B-CHANNEL-001`) are each
+    /// re-read and byte-compared immediately before the one-shot token is
+    /// minted; a rotation of either relevant authority between seal and
+    /// mint fails closed. An absent slot (`None`) skips only that gate,
+    /// preserving the corresponding ladder variant's behavior, and the
+    /// default bundle reproduces the legacy authority-free issuance. An
+    /// already-minted permit replays the durable token WITHOUT consulting
+    /// any owner authority — the Task rows are the replay authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns the union of
+    /// [`Self::request_effect_permit_with_operation_authority`] and
+    /// [`Self::request_effect_permit_with_channel_authority`] errors:
+    /// [`TaskStoreError::OperationParticipantAuthority`] /
+    /// [`TaskStoreError::ChannelParticipantAuthority`] for typed owner
+    /// readbacks, and [`TaskStoreError::TaskWriteSetConflict`] when the
+    /// current channel proof no longer byte-matches the sealed triple.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn request_effect_permit_with_authorities_struct(
+        &self,
+        authorities: EffectPermitAuthorities<'_>,
+        request: PermitRequest,
+    ) -> Result<EffectPermitDecision, TaskStoreError> {
+        self.request_effect_permit_inner(authorities.operation, authorities.channel, request)
     }
 
     #[allow(clippy::too_many_lines)] // Keep the one-transaction authority decision contiguous.

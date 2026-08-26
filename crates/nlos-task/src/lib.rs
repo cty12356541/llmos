@@ -149,10 +149,11 @@ pub use commit::{
     PlanArtifactCommitRequest, RecordArtifactPublicationsRequest, artifact_publication_plan_root,
 };
 pub use effect::{
-    DispatchRequest, EffectPermitDecision, EffectReceipt, EffectReceiptDecision, IssuedPermit,
-    LogicalEffectDescriptor, NoEffectReason, NoEffectRequest, Outcome, OutcomeRequest,
-    PermitRequest as EffectPermitRequest, ReceiptKind, SetSummary, SlotRecord, SlotState,
-    empty_effect_set_root, expected_success_assertion_digest, idempotency_identity_digest,
+    DispatchRequest, EffectPermitAuthorities, EffectPermitDecision, EffectReceipt,
+    EffectReceiptDecision, IssuedPermit, LogicalEffectDescriptor, NoEffectReason, NoEffectRequest,
+    Outcome, OutcomeRequest, PermitRequest as EffectPermitRequest, ReceiptKind, SetSummary,
+    SlotRecord, SlotState, empty_effect_set_root, expected_success_assertion_digest,
+    idempotency_identity_digest,
 };
 pub use group::{
     AttemptGroupBindingRecord, AttemptGroupRegistration, CompletionMode, FailureMode,
