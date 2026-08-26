@@ -248,3 +248,37 @@ git diff --check
 - **无 schema/model/migration 变更**（ Authorities 是纯边界类型）；
 - **无 CI / 无提交 / 无推送**：本节仅为本地候选证据；`HEAD` 仍为 `5acb1f2`，未 stage、未 commit、未 push，未改 `docs/management/stage-b-progress.md`；
 - 不声明跨 authority 原子性（verify-then-commit 语义不变）。
+
+## 8. Struct 化收尾三车道：effect-permit 组合 / finalize 吸收 / 梯子弃用（2026-08-26 增量）
+
+> Task: TASK-CHANNEL-STRUCT-CLOSURE-01；三车道并行波次（写集不相交，单一 integrator 按 hunk 拆分提交）。
+
+### 8.1 Canonical commits
+
+- `e8a7256` feat: combine effect permit gates behind authorities struct（车道 C）
+- `ff6ccab` feat: absorb finalize ladder into spec entry（车道 B）
+- `88a9770` feat: deprecate seal/permit ladder constructors（车道 A）
+
+### 8.2 实现事实
+
+- **车道 C（effect-permit 组合）**：新增 `EffectPermitAuthorities<'a>`（operation+channel 双 Option 槽，Clone/Copy/Default，presence-flag Debug）与 `request_effect_permit_with_authorities_struct` additive 入口——双 gate 在同一事务内依次回读比对（activation proof 先于 channel endpoint proof），都通过才 mint；任一缺席只跑在场 gate；`Default` 复现 legacy 行为；seal→mint 之间任一 authority rotate 均 fail-closed（`TaskWriteSetConflict` / `OperationParticipantAuthority` 精确错误）；失败调用零持久化；replay 只信 Task 行（双 owner 漂移后仍返回同一 durable token）。既有三入口零改动。
+- **车道 B（finalize 吸收）**：新增 `FinalizeSpec<'a>`（semantic_authority / semantic_plan / persisted_envelope / authority_lease / resource_authority 五 Option 槽）与 `FinalizeSpecDecision`、`finalize_commit_v3_with_spec` additive 入口——spec 形状 fail-closed（plan 无 Semantic authority、envelope 无 plan 精确 conflict reason），按四象限解构分派既有 `finalize_impl*` inner。钉住并修复两个梯子不可表达缺口：persisted envelope + resource authority（+lease）组合、semantic guard + resource receipts（无 plan）；含重启后空 owner replay 一致性。
+- **车道 A（梯子弃用）**：store.rs 15 个梯子变体（seal 8 + permit 7）加 `#[deprecated(since = "0.1.0")]`，note 指引对应 `Authorities` 槽位；逐一核验槽位映射等价。豁免 `request_commit_permit_with_authority_lease`（struct permit 入口无 lease 槽，lease 语义保留专用入口）。25 个测试文件加机械 `#![allow(deprecated)]`（`semantic_convergence.rs` include! 场景改函数/mod 级 allow），零逻辑改动；新增 `ladder_deprecation_equivalence` 双向行为等价测试。
+
+### 8.3 验证
+
+```text
+cargo test --workspace（88a9770 后全仓门）
+  → 汇总 passed: 558 failed: 0 ignored: 2（两项既有 100K scale probe）
+
+cargo clippy --workspace --all-targets -- -D warnings → 0 warning / 0 error
+cargo fmt --all --check → 通过；git diff --check → 通过
+```
+
+分车道数字：nlos-task 242（B/C 合并态）→ 244（A 后，+2 等价测试）；nlos-commit-coordinator/-system-control/-takeover-control 68 passed。
+
+### 8.4 等级与未完成（PARTIAL_PASS 保持）
+
+- validation-only，无 schema/model/migrations 变更；不声明跨 authority 原子性（verify-then-commit 不变）。
+- 梯子函数只弃用未移除（future breaking change）；`FinalizeSpec` envelope 模式下调用方 `request` 被整体覆盖（与既有 envelope 梯子一致，doc 已注明）。
+- CI / push 状态见 §9 提交回执（本节完成后随本轮统一推送）。
