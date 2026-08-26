@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Ladder constructors deprecated in favor of the *_with_authorities_struct entries.
 //! Acceptance tests for the B-TASK second slice: `EffectPermit` issuance
 //! with one-shot dispatch tokens and the per-slot `EffectSlot` state
 //! machine on top of the B-TASK-001 `TaskAuthority`.

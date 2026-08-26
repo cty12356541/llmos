@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Ladder constructors deprecated in favor of the *_with_authorities_struct entries.
 #![cfg(windows)]
 
 use std::fs;

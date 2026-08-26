@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Ladder constructors deprecated in favor of the *_with_authorities_struct entries.
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;

@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Ladder constructors deprecated in favor of the *_with_authorities_struct entries.
 //! TASK-RESOURCE-BRIDGE-FAULT-01: kill-window / fault-injection matrix for
 //! the Task↔Resource bridge finalize rungs —
 //! `finalize_commit_v3_with_resource_authority[_and_authority_lease]`

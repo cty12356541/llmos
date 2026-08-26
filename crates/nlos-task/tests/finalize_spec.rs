@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Ladder constructors deprecated in favor of the *_with_authorities_struct entries.
 //! Struct-based finalize entry (`FinalizeSpec` / `finalize_commit_v3_with_spec`)
 //! tests: slot-combination coverage, equivalence with the bare
 //! `finalize_commit_v3`, precise fail-closed errors for absent authorities,

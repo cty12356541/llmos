@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Ladder constructors deprecated in favor of the *_with_authorities_struct entries.
 //! `B-CHANNEL-001` `EffectPermit` channel gate: the channel-gated issuance
 //! variant must re-read the owning Channel authority's CURRENT-generation
 //! endpoint proof and byte-compare the sealed triple before minting a

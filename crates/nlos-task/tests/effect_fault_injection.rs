@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Ladder constructors deprecated in favor of the *_with_authorities_struct entries.
 //! B-TASK-003 crash-window and effect-table fault-injection tests: the
 //! `EffectPermit`/`EffectSlot` machinery (schema v2, commit 6233890) under
 //! the three canonical crash windows (issue-31 evidence gate item 5) and

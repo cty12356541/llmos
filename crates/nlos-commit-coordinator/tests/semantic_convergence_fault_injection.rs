@@ -6,6 +6,7 @@
 //! durable boundary at a time: Semantic owner publication, Task-side owner
 //! receipt consumption, and terminal Task finalization.
 
+#[allow(deprecated)] // ladder constructors deprecated in favor of the struct entries
 mod matrix {
     include!("semantic_convergence.rs");
 

@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Ladder constructors deprecated in favor of the *_with_authorities_struct entries.
 //! Acceptance tests for the B-TASK-004 `TaskGroup` slice: acyclic
 //! parent/child trees with depth/fanout bounds, content-addressed
 //! membership with monotonic generation CAS, immutable Admission/Removal

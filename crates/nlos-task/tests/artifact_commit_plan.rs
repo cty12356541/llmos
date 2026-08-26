@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Ladder constructors deprecated in favor of the *_with_authorities_struct entries.
 //! B-TASK-006A/B: durable Artifact publication plan and nested receipts.
 
 use std::fs;

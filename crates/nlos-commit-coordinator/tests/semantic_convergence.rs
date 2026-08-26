@@ -169,6 +169,7 @@ fn mixed_effect(task_id: TaskId) -> PlannedEffect {
 }
 
 #[allow(clippy::too_many_lines)]
+#[allow(deprecated)] // ladder constructors deprecated in favor of the struct entries
 fn prepare(
     fixture: &Fixture,
     with_effect: bool,

@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Ladder constructors deprecated in favor of the *_with_authorities_struct entries.
 //! Bounded restart-scan coverage for an Artifact publication prefix.
 //!
 //! Both `ArtifactAuthority` publication receipts are durable before the

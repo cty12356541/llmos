@@ -5,6 +5,7 @@
 //! that restart recovery needs no caller-supplied effect proof or Semantic
 //! binding, without claiming a distributed atomic transaction.
 
+#[allow(deprecated)] // ladder constructors deprecated in favor of the struct entries
 mod baseline {
     include!("semantic_convergence.rs");
 

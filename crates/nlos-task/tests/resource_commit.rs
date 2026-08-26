@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Ladder constructors deprecated in favor of the *_with_authorities_struct entries.
 //! Resource-aware v3 finalize: owner-derived cost-receipt bridge tests
 //! (Attempt TASK-RESOURCE-COMMIT-01).
 //!

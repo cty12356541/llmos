@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Ladder constructors deprecated in favor of the *_with_authorities_struct entries.
 //! Bounded multi-Artifact record fault-prefix/restart coverage.
 //!
 //! The first owner publication is consumed by `TaskAuthority`. The second owner

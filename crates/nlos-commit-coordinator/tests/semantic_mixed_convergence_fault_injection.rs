@@ -7,6 +7,7 @@
 //! restart entry point: owner publication, Task-side receipt consumption, and
 //! terminal mixed finalization.
 
+#[allow(deprecated)] // ladder constructors deprecated in favor of the struct entries
 mod mixed {
     include!("semantic_convergence.rs");
 

@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Ladder constructors deprecated in favor of the *_with_authorities_struct entries.
 //! Acceptance tests for the B-TASK-003 quarantine/adoption/reconcile
 //! lifecycle (`[TASK-EFFECT-003]` / `[TASK-COMMIT-003]`, single-authority
 //! subset) on top of the B-TASK-001/002 `TaskAuthority`.

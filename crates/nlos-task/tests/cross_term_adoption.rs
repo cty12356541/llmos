@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Ladder constructors deprecated in favor of the *_with_authorities_struct entries.
 //! B-TASK-008C2G cross-term adoption acceptance slice.
 //!
 //! The happy path proves that an old quarantined permit can be adopted only

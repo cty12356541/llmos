@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Ladder constructors deprecated in favor of the *_with_authorities_struct entries.
 //! B-TASK-003 schema-v3 fault-injection tests: the quarantine / adoption /
 //! reconcile / effect-history / finalize-proofs table group (landed in
 //! 743c88c) under the PoC-0003-aligned F1-F4 fault matrix, completing the

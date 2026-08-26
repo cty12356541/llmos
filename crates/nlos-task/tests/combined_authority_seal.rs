@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Ladder constructors deprecated in favor of the *_with_authorities_struct entries.
 //! Combined `Authorities` struct boundary tests (B-CHANNEL-001 increment).
 //!
 //! A write set whose effect endpoints mix `OperationBinding` and

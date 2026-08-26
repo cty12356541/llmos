@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Ladder constructors deprecated in favor of the *_with_authorities_struct entries.
 //! B-TASK-001 fault-injection acceptance tests: durability invariants of
 //! `SqliteTaskAuthority` under the `nlos-store-fault` VFS, mirroring the
 //! PoC-0003 F1-F4 fault matrix established for `nlos-store`.

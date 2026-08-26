@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Ladder constructors deprecated in favor of the *_with_authorities_struct entries.
 //! `[B-OP-FENCE-003]` `TaskWriteSet` consumption wiring: the activation-gated
 //! `EffectPermit` issuance variant must re-read the owning Operation
 //! authority's dispatch activation proof before minting a one-shot token for

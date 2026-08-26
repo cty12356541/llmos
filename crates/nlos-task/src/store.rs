@@ -465,6 +465,10 @@ impl SqliteTaskAuthority {
     /// written when an owner read does not match the requested revision.
     #[allow(clippy::needless_pass_by_value)]
     #[allow(clippy::too_many_lines)]
+    #[deprecated(
+        since = "0.1.0",
+        note = "use seal_task_write_set_with_authorities_struct with Authorities { artifact: Some(..), .. }"
+    )]
     pub fn seal_task_write_set(
         &self,
         artifact_authority: &nlos_artifact::ArtifactStore,
@@ -486,6 +490,10 @@ impl SqliteTaskAuthority {
     /// idempotency, or storage errors.
     #[allow(clippy::needless_pass_by_value)]
     #[allow(clippy::too_many_lines)]
+    #[deprecated(
+        since = "0.1.0",
+        note = "use seal_task_write_set_with_authorities_struct with Authorities { artifact: Some(..), process: Some(..), .. }"
+    )]
     pub fn seal_task_write_set_with_process_authority(
         &self,
         artifact_authority: &nlos_artifact::ArtifactStore,
@@ -511,6 +519,10 @@ impl SqliteTaskAuthority {
     /// errors.
     #[allow(clippy::needless_pass_by_value)]
     #[allow(clippy::too_many_lines)]
+    #[deprecated(
+        since = "0.1.0",
+        note = "use seal_task_write_set_with_authorities_struct with Authorities { artifact: Some(..), semantic: Some(..), .. }"
+    )]
     pub fn seal_task_write_set_with_semantic_authority(
         &self,
         artifact_authority: &nlos_artifact::ArtifactStore,
@@ -536,6 +548,10 @@ impl SqliteTaskAuthority {
     /// storage errors.
     #[allow(clippy::needless_pass_by_value)]
     #[allow(clippy::too_many_lines)]
+    #[deprecated(
+        since = "0.1.0",
+        note = "use seal_task_write_set_with_authorities_struct with Authorities { artifact: Some(..), resource: Some(..), .. }"
+    )]
     pub fn seal_task_write_set_with_resource_authority(
         &self,
         artifact_authority: &nlos_artifact::ArtifactStore,
@@ -563,6 +579,10 @@ impl SqliteTaskAuthority {
     /// idempotency, or storage errors.
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_lines)]
+    #[deprecated(
+        since = "0.1.0",
+        note = "use seal_task_write_set_with_authorities_struct with Authorities { artifact/process/semantic/resource: Some(..) }"
+    )]
     pub fn seal_task_write_set_with_authorities(
         &self,
         artifact_authority: &nlos_artifact::ArtifactStore,
@@ -593,6 +613,10 @@ impl SqliteTaskAuthority {
     /// read-set, idempotency, or storage errors.
     #[allow(clippy::needless_pass_by_value)]
     #[allow(clippy::too_many_lines)]
+    #[deprecated(
+        since = "0.1.0",
+        note = "use seal_task_write_set_with_authorities_struct with Authorities { artifact: Some(..), operation: Some(..), .. }"
+    )]
     pub fn seal_task_write_set_with_operation_authority(
         &self,
         artifact_authority: &nlos_artifact::ArtifactStore,
@@ -621,6 +645,10 @@ impl SqliteTaskAuthority {
     /// read-set, idempotency, or storage errors.
     #[allow(clippy::needless_pass_by_value)]
     #[allow(clippy::too_many_lines)]
+    #[deprecated(
+        since = "0.1.0",
+        note = "use seal_task_write_set_with_authorities_struct with Authorities { artifact: Some(..), channel: Some(..), .. }"
+    )]
     pub fn seal_task_write_set_with_channel_authority(
         &self,
         artifact_authority: &nlos_artifact::ArtifactStore,
@@ -648,6 +676,10 @@ impl SqliteTaskAuthority {
     /// idempotency, or storage errors.
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_lines)]
+    #[deprecated(
+        since = "0.1.0",
+        note = "use seal_task_write_set_with_authorities_struct with Authorities { artifact/process/semantic/resource/operation: Some(..) }"
+    )]
     pub fn seal_task_write_set_with_authorities_and_operation_authority(
         &self,
         artifact_authority: &nlos_artifact::ArtifactStore,
@@ -1302,6 +1334,10 @@ impl SqliteTaskAuthority {
     // By-value request mirrors every other mutating API here; the lint only
     // fires because `planned_effects: Vec<_>` ended `Copy`.
     #[allow(clippy::needless_pass_by_value)]
+    #[deprecated(
+        since = "0.1.0",
+        note = "use request_commit_permit_with_authorities_struct with Authorities::default() for the legacy unbound behavior"
+    )]
     pub fn request_commit_permit(
         &self,
         request: PermitRequest,
@@ -1351,6 +1387,10 @@ impl SqliteTaskAuthority {
     /// typed Artifact owner or write-binding conflict when a sealed Artifact
     /// head has advanced or disappeared.
     #[allow(clippy::needless_pass_by_value)]
+    #[deprecated(
+        since = "0.1.0",
+        note = "use request_commit_permit_with_authorities_struct with Authorities { artifact: Some(..), .. }"
+    )]
     pub fn request_commit_permit_with_artifact_authority(
         &self,
         artifact_authority: &nlos_artifact::ArtifactStore,
@@ -1384,6 +1424,10 @@ impl SqliteTaskAuthority {
     /// typed Process owner or write-binding conflict when the sealed binding
     /// is no longer current.
     #[allow(clippy::needless_pass_by_value)]
+    #[deprecated(
+        since = "0.1.0",
+        note = "use request_commit_permit_with_authorities_struct with Authorities { process: Some(..), .. }"
+    )]
     pub fn request_commit_permit_with_process_authority(
         &self,
         process_authority: &nlos_process::ProcessAuthority,
@@ -1417,6 +1461,10 @@ impl SqliteTaskAuthority {
     /// typed Resource owner or reservation-binding conflict when a sealed
     /// reservation has disappeared, activated, rotated, or changed.
     #[allow(clippy::needless_pass_by_value)]
+    #[deprecated(
+        since = "0.1.0",
+        note = "use request_commit_permit_with_authorities_struct with Authorities { resource: Some(..), .. }"
+    )]
     pub fn request_commit_permit_with_resource_authority(
         &self,
         resource_authority: &nlos_resource::ResourceAuthority,
@@ -1445,6 +1493,10 @@ impl SqliteTaskAuthority {
     /// Returns the same errors as [`Self::request_commit_permit`], plus a
     /// typed Operation owner or endpoint-proof conflict.
     #[allow(clippy::needless_pass_by_value)]
+    #[deprecated(
+        since = "0.1.0",
+        note = "use request_commit_permit_with_authorities_struct with Authorities { operation: Some(..), .. }"
+    )]
     pub fn request_commit_permit_with_operation_authority(
         &self,
         operation_authority: &nlos_store::SqliteOperationStore,
@@ -1475,6 +1527,10 @@ impl SqliteTaskAuthority {
     /// Returns the same errors as [`Self::request_commit_permit`], plus a
     /// typed Channel owner or endpoint-proof conflict.
     #[allow(clippy::needless_pass_by_value)]
+    #[deprecated(
+        since = "0.1.0",
+        note = "use request_commit_permit_with_authorities_struct with Authorities { channel: Some(..), .. }"
+    )]
     pub fn request_commit_permit_with_channel_authority(
         &self,
         channel_authority: &nlos_channel::ChannelAuthority,
@@ -1501,6 +1557,10 @@ impl SqliteTaskAuthority {
     /// Artifact, Process, Resource, or Operation owner-proof conflicts.
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::needless_pass_by_value)]
+    #[deprecated(
+        since = "0.1.0",
+        note = "use request_commit_permit_with_authorities_struct with Authorities { artifact/process/resource/operation: Some(..) }"
+    )]
     pub fn request_commit_permit_with_authorities_and_operation_authority(
         &self,
         artifact_authority: &nlos_artifact::ArtifactStore,

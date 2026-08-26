@@ -7,6 +7,7 @@
 //! owner replay, Task receipt consumption, and terminal finalize without
 //! caller-supplied plan data.
 
+#[allow(deprecated)] // ladder constructors deprecated in favor of the struct entries
 mod baseline {
     include!("semantic_convergence.rs");
 

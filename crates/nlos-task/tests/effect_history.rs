@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Ladder constructors deprecated in favor of the *_with_authorities_struct entries.
 //! Acceptance tests for the B-TASK-003 cross-attempt effect history,
 //! retry fence (`[TASK-EFFECT-ID-001]` / `[TASK-RETRY-EFFECT-001]`), the
 //! required-slot success matrix (`[TASK-COMMIT-002]`), and the schema

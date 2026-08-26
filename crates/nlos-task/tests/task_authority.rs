@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Ladder constructors deprecated in favor of the *_with_authorities_struct entries.
 //! Acceptance tests for the B-TASK first slice: durable `TaskAuthority` with
 //! dual `TaskAttempt` competition and unique `CommitPermit` issuance.
 //!
