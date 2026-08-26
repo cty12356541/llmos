@@ -200,8 +200,8 @@ pub use participant::{
 pub use reconcile::{
     AdoptionReplay, AdoptionRequest, AuthorityLeaseAdoptionRequest, AuthorityLeaseCloseRequest,
     AuthorityLeaseCrossTermAdoptionRequest, AuthorityLeaseFinalizeRequest,
-    AuthorityLeaseReconcileRequest, FinalizeRequestV3, ReconcileReplay, ReconcileRequest,
-    effect_history_root_of,
+    AuthorityLeaseReconcileRequest, FinalizeRequestV3, FinalizeSpec, FinalizeSpecDecision,
+    ReconcileReplay, ReconcileRequest, effect_history_root_of,
 };
 pub use recovery::{
     ArtifactRecoveryAlert, ArtifactRecoveryAlertAcknowledgeDecision,

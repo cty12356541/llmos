@@ -118,6 +118,68 @@ pub struct AuthorityLeaseFinalizeRequest {
     pub lease: AuthorityLeaseRecord,
 }
 
+/// Borrowed finalize-parameter bundle for the struct-based finalize entry
+/// [`SqliteTaskAuthority::finalize_commit_v3_with_spec`]. Every field
+/// mirrors one dimension along which the `finalize_commit_v3_*` ladder
+/// constructors vary (Semantic owner revalidation, READY publication plan,
+/// persisted mixed-finalize envelope, authority lease, Resource owner
+/// receipts), so one value can name any combination of them — including
+/// combinations no single ladder constructor carries together (for example
+/// a persisted Semantic finalize envelope plus Resource owner receipts).
+/// The default value is the parameter-free bundle, which finalizes exactly
+/// like the bare [`Self::finalize_commit_v3`].
+#[derive(Clone, Copy, Default)]
+pub struct FinalizeSpec<'a> {
+    /// Semantic owner whose sealed append proofs are re-read before an
+    /// issued permit terminalizes. Required whenever `semantic_plan` is
+    /// set; optional otherwise (guard-only revalidation).
+    pub semantic_authority: Option<&'a nlos_semantic::SemanticAuthority>,
+    /// READY Semantic publication plan whose receipts are persisted with
+    /// the terminal Task receipt. Requires `semantic_authority`.
+    pub semantic_plan: Option<SemanticCommitPlanId>,
+    /// `Some(finalized_at_ms)` reconstructs the whole
+    /// [`FinalizeRequestV3`] from the immutable envelope persisted on
+    /// `semantic_plan`, overriding the caller-supplied request; requires
+    /// `semantic_plan`.
+    pub persisted_envelope: Option<i64>,
+    /// Durable authority lease checked inside the terminal Task
+    /// transaction, as in the `*_and_authority_lease` ladder rungs.
+    pub authority_lease: Option<AuthorityLeaseRecord>,
+    /// Resource owner whose FINALIZED cost aggregates are re-read and
+    /// nested under the terminal Task receipt.
+    pub resource_authority: Option<&'a nlos_resource::ResourceAuthority>,
+}
+
+// The owner stores are opaque SQLite handles without `Debug`, and the
+// lease/plan/envelope payloads are irrelevant to log noise, so the bundle
+// prints per-field presence instead of contents.
+impl std::fmt::Debug for FinalizeSpec<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("FinalizeSpec")
+            .field("semantic_authority", &self.semantic_authority.is_some())
+            .field("semantic_plan", &self.semantic_plan.is_some())
+            .field("persisted_envelope", &self.persisted_envelope.is_some())
+            .field("authority_lease", &self.authority_lease.is_some())
+            .field("resource_authority", &self.resource_authority.is_some())
+            .finish()
+    }
+}
+
+/// Idempotent result of the struct-based finalize entry: exactly one of
+/// the ladder decision shapes, selected by the [`FinalizeSpec`] slots.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FinalizeSpecDecision {
+    /// Plain v3 decision (no Semantic plan, no Resource receipts).
+    Plain(FinalizeDecision),
+    /// Mixed Effect + Semantic decision (`semantic_plan` set, no Resource).
+    Semantic(SemanticFinalizeDecision),
+    /// Resource-aware decision (`resource_authority` set, no Semantic plan).
+    Resource(ResourceFinalizeDecision),
+    /// Combined Semantic + Resource decision (both set).
+    Combined(SemanticResourceFinalizeDecision),
+}
+
 /// Opt-in pre-effect closure request carrying the lease copied into the
 /// permit at issuance.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1968,6 +2030,208 @@ impl SqliteTaskAuthority {
             },
             authority_lease,
         )
+    }
+
+    /// Finalizes an issued permit with the parameters named by one
+    /// [`FinalizeSpec`] bundle. This is the combined entry point for a
+    /// finalize whose evidence spans ladder dimensions that no single
+    /// `finalize_commit_v3_*` constructor carries together (for example a
+    /// persisted mixed-finalize envelope plus Resource owner receipts, or
+    /// Semantic owner revalidation plus Resource receipts without a
+    /// publication plan); the bundle is destructured into the exact inner
+    /// cores used by the ladder constructors, with no separate finalize
+    /// path.
+    ///
+    /// Slot semantics:
+    /// - empty spec (all `None`) is bit-equivalent to
+    ///   [`Self::finalize_commit_v3`] (returns
+    ///   [`FinalizeSpecDecision::Plain`]);
+    /// - `authority_lease` alone matches
+    ///   [`Self::finalize_commit_v3_with_authority_lease`];
+    /// - `semantic_authority` alone matches
+    ///   [`Self::finalize_commit_v3_with_semantic_authority`];
+    /// - `semantic_plan` (+ required `semantic_authority`) matches
+    ///   [`Self::finalize_commit_v3_with_semantic_publications`] (returns
+    ///   [`FinalizeSpecDecision::Semantic`]);
+    /// - `persisted_envelope` reconstructs the finalize request from the
+    ///   immutable envelope on `semantic_plan`, overriding the
+    ///   caller-supplied `request` exactly as
+    ///   [`Self::finalize_commit_v3_with_persisted_semantic_envelope`]
+    ///   does;
+    /// - `resource_authority` (with optional Semantic guard) matches the
+    ///   Resource rungs (returns [`FinalizeSpecDecision::Resource`]);
+    /// - `semantic_plan` + `resource_authority` matches the combined rungs
+    ///   (returns [`FinalizeSpecDecision::Combined`]).
+    ///
+    /// Missing required authorities fail closed before any owner read:
+    /// `semantic_plan` without `semantic_authority`, and
+    /// `persisted_envelope` without `semantic_plan`, both return a typed
+    /// [`TaskStoreError::TaskWriteSetConflict`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the union of the ladder constructors' errors plus the two
+    /// spec-shape conflicts above.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn finalize_commit_v3_with_spec(
+        &self,
+        request: FinalizeRequestV3,
+        spec: FinalizeSpec<'_>,
+    ) -> Result<FinalizeSpecDecision, TaskStoreError> {
+        if spec.persisted_envelope.is_some() && spec.semantic_plan.is_none() {
+            return Err(TaskStoreError::TaskWriteSetConflict {
+                reason: "spec-based persisted-envelope finalize requires a Semantic plan",
+            });
+        }
+        if spec.semantic_plan.is_some() && spec.semantic_authority.is_none() {
+            return Err(TaskStoreError::TaskWriteSetConflict {
+                reason: "spec-based finalize with a Semantic plan requires the Semantic authority",
+            });
+        }
+        let request = match spec.persisted_envelope {
+            Some(finalized_at_ms) => {
+                let plan_id = spec
+                    .semantic_plan
+                    .ok_or(TaskStoreError::TaskWriteSetConflict {
+                        reason: "spec-based persisted-envelope finalize requires a Semantic plan",
+                    })?;
+                self.load_persisted_finalize_request(plan_id, finalized_at_ms)?
+            }
+            None => request,
+        };
+        match (spec.semantic_plan, spec.resource_authority) {
+            (Some(plan_id), Some(resource_authority)) => {
+                let semantic_authority = spec
+                    .semantic_authority
+                    .ok_or(TaskStoreError::TaskWriteSetConflict {
+                        reason: "spec-based finalize with a Semantic plan requires the Semantic authority",
+                    })?;
+                let receipts = self.verify_owners_for_spec_finalize(
+                    Some(semantic_authority),
+                    Some(resource_authority),
+                    &request,
+                )?;
+                let decision = self.finalize_impl_with_semantic_and_resource_receipts(
+                    &request,
+                    spec.authority_lease,
+                    plan_id,
+                    &receipts,
+                )?;
+                Ok(FinalizeSpecDecision::Combined(decision))
+            }
+            (Some(plan_id), None) => {
+                let semantic_authority = spec
+                    .semantic_authority
+                    .ok_or(TaskStoreError::TaskWriteSetConflict {
+                        reason: "spec-based finalize with a Semantic plan requires the Semantic authority",
+                    })?;
+                self.verify_owners_for_spec_finalize(Some(semantic_authority), None, &request)?;
+                let decision = match spec.authority_lease {
+                    Some(lease) => self.finalize_impl_with_semantic_plan_and_authority_lease(
+                        &request, plan_id, lease,
+                    )?,
+                    None => self.finalize_impl_with_semantic_plan(&request, plan_id)?,
+                };
+                Ok(FinalizeSpecDecision::Semantic(decision))
+            }
+            (None, Some(resource_authority)) => {
+                let receipts = self.verify_owners_for_spec_finalize(
+                    spec.semantic_authority,
+                    Some(resource_authority),
+                    &request,
+                )?;
+                let decision = self.finalize_impl_with_resource_receipts(
+                    &request,
+                    spec.authority_lease,
+                    &receipts,
+                )?;
+                Ok(FinalizeSpecDecision::Resource(decision))
+            }
+            (None, None) => {
+                if let Some(semantic_authority) = spec.semantic_authority {
+                    self.verify_owners_for_spec_finalize(Some(semantic_authority), None, &request)?;
+                }
+                let decision = match spec.authority_lease {
+                    Some(lease) => {
+                        self.finalize_impl_with_authority_lease(&request, false, Some(lease))?
+                    }
+                    None => self.finalize_impl(&request, false)?,
+                };
+                Ok(FinalizeSpecDecision::Plain(decision))
+            }
+        }
+    }
+
+    /// Loads the sealed write set of an issued permit once and re-reads the
+    /// Semantic owner proofs (guard only, when requested) and every sealed
+    /// Reservation's FINALIZED owner aggregate (when requested) before the
+    /// Task transaction opens. Non-issued permits and legacy permits
+    /// without a sealed write set validate nothing and return an empty
+    /// receipt set (replay inserts/reads no rows). This replicates the
+    /// pre-transaction halves of the ladder constructors exactly, in one
+    /// shared code path for the struct-based entry.
+    fn verify_owners_for_spec_finalize(
+        &self,
+        semantic_authority: Option<&nlos_semantic::SemanticAuthority>,
+        resource_authority: Option<&nlos_resource::ResourceAuthority>,
+        request: &FinalizeRequestV3,
+    ) -> Result<Vec<NestedResourceCostReceipt>, TaskStoreError> {
+        let permit = self.inspect_permit(request.base.task_id, request.base.permit_id)?;
+        if permit.state != PermitState::Issued || permit.write_set_root == [0; 32] {
+            return Ok(Vec::new());
+        }
+        let record = {
+            let connection = self.lock_connection()?;
+            store::load_write_set_by_root(
+                &*connection,
+                request.base.task_id,
+                permit.write_set_root,
+            )?
+        }
+        .ok_or(TaskStoreError::TaskWriteSetNotFound)?;
+        if record.write_set_root != crate::model::task_write_set_root(&record) {
+            return Err(TaskStoreError::CorruptRecord(
+                "TaskWriteSet canonical root mismatch before spec-based finalization",
+            ));
+        }
+        if let Some(semantic_authority) = semantic_authority {
+            validate_semantic_finalization(semantic_authority, &record)?;
+        }
+        match resource_authority {
+            Some(resource_authority) => {
+                crate::resource_commit::verify_owner_cost_receipts(resource_authority, &record)
+            }
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// Reconstructs a mixed v3 finalize request from the immutable envelope
+    /// prepared on one Semantic plan, exactly as the persisted-envelope
+    /// ladder constructors do.
+    fn load_persisted_finalize_request(
+        &self,
+        plan_id: SemanticCommitPlanId,
+        finalized_at_ms: i64,
+    ) -> Result<FinalizeRequestV3, TaskStoreError> {
+        let plan = self.inspect_semantic_commit_plan(plan_id)?;
+        let envelope = self.inspect_semantic_finalize_envelope(plan_id)?.ok_or(
+            TaskStoreError::InvalidSemanticPublicationPlan {
+                reason: "mixed finalize envelope is not prepared",
+            },
+        )?;
+        Ok(FinalizeRequestV3 {
+            base: FinalizeRequest {
+                task_id: plan.task_id,
+                attempt_id: plan.attempt_id,
+                attempt_generation: plan.attempt_generation,
+                permit_id: plan.permit_id,
+                new_effect_history_root: [0; 32],
+                new_retry_fence_epoch: 0,
+                finalized_at_ms,
+            },
+            required_satisfaction: envelope.required_satisfaction,
+            fenced_participant_digest: envelope.fenced_participant_digest,
+        })
     }
 
     fn finalize_impl(
