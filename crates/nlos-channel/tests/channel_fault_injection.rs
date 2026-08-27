@@ -55,11 +55,11 @@
 //!   `StaleChannel`, with no intermediate generation ever exposed;
 //! - W6 proof consistency — after crash recovery `inspect_endpoint_proof`
 //!   is either complete and valid or fails closed `CorruptRecord` (tamper
-//!   cases), never a bypassable soft success. One pinned counterexample is
-//!   `#[ignore]`d: `inspect_channel`'s head/generation fence cross-check is
-//!   vacuous (it compares `channels.current_fencing_token` against itself),
-//!   so an out-of-band head-fence tamper is silently returned — see
-//!   `channel_fault_head_fence_tamper_is_undetected_by_inspect_channel_counterexample`.
+//!   cases), never a bypassable soft success. The same out-of-band
+//!   head-fence tamper also fails `inspect_channel` closed: its
+//!   head/generation fence cross-check takes the immutable generation row
+//!   as the authority — see
+//!   `channel_fault_head_fence_tamper_fails_closed_in_inspect_channel`.
 //!
 //! **Crash semantics disclaimer** (as in every prior matrix): kill-9
 //! simulates *process* crashes; the OS page cache survives process death,
@@ -1427,7 +1427,7 @@ fn channel_fault_rotate_cas_kill_window_has_no_intermediate_generation() {
 /// - 删除当前代 proof 行 → `CorruptRecord("…has no endpoint proof")`；
 /// - 篡改 head fence → `inspect_endpoint_proof` 经派生校验
 ///   `CorruptRecord("…disagrees with authority-derived identity")` 硬失败
-///   （`inspect_channel` 对同一篡改的现状见下方 `#[ignore]` 反例）。
+///   （`inspect_channel` 对同一篡改同样硬失败，见下方回归测试）。
 #[test]
 #[allow(clippy::too_many_lines)]
 fn channel_fault_endpoint_proof_recovery_is_valid_or_fails_closed() {
@@ -1520,31 +1520,28 @@ fn channel_fault_endpoint_proof_recovery_is_valid_or_fails_closed() {
     assert_integrity(&root.database());
 }
 
-/// **反例（真实缺陷，等待修复决策，勿删）**：head fence 与 generation 行
-/// fence 不一致时 `inspect_channel` 不失败。
+/// **回归（原反例 D-1，已修复）**：head fence 与 generation 行 fence 不一致
+/// 时 `inspect_channel` 必须硬失败。
 ///
 /// 复现窗口：绕过应用层（raw connection）篡改
 /// `channels.current_fencing_token`，使其与
 /// `channel_generations.fencing_token`（同 channel 同 `current_generation` 行）
 /// 不一致，随后 `ChannelAuthority::inspect_channel`。
 ///
-/// 现状（HEAD c5dd155，2026-08-26 钉住）：`inspect_channel` 返回
-/// `Ok(ChannelRecord)`，其 `fencing_token` 即被篡改的 head 值。根因：
-/// `load_current_optional`（crates/nlos-channel/src/lib.rs）的 SELECT 直接
-/// 取 `c.current_fencing_token` 装入 record，随后的 head/generation 交叉
-/// 校验 `load_head_fence` 重新读的是**同一列**（`channels
-/// .current_fencing_token`）并与 record 比较——自己比自己恒相等，
-/// `CorruptRecord("channel head fence disagrees with current generation")`
-/// 分支成为不可达死代码。缓解：`inspect_endpoint_proof` 的派生校验能拦下
-/// 该篡改（上方活动测试已覆盖），但 `inspect_channel` 单独使用时会静默
-/// 返回被污染的 fence（例如被用作 rotate CAS 的期望值来源时）。
+/// 修复前根因：`load_current_optional`（crates/nlos-channel/src/lib.rs）的
+/// SELECT 直接取 `c.current_fencing_token` 装入 record，随后的
+/// head/generation 交叉校验 `load_head_fence` 重新读的是**同一列**
+/// （`channels.current_fencing_token`）并与 record 比较——自己比自己恒相
+/// 等，`CorruptRecord("channel head fence disagrees with current
+/// generation")` 分支不可达，`inspect_channel` 静默返回被污染的 fence
+/// （例如被用作 rotate CAS 的期望值来源时）。
 ///
-/// 期望（修复后应满足，届时移除 `#[ignore]`）：`inspect_channel` 以
-/// `CorruptRecord("channel head fence disagrees with current generation")`
-/// 硬失败（校验应改为对照 `channel_generations.fencing_token`）。
+/// 修复：`inspect_channel` 装配 record 后以 `channel_generations` 最新
+/// immutable 行的 generation 与 `fencing_token` 为权威对照 head 行，不一致
+/// 即以 `CorruptRecord("channel head fence disagrees with current
+/// generation")` 硬失败。
 #[test]
-#[ignore = "counterexample: inspect_channel head/generation fence cross-check is vacuous (self-comparison); awaiting fix decision"]
-fn channel_fault_head_fence_tamper_is_undetected_by_inspect_channel_counterexample() {
+fn channel_fault_head_fence_tamper_fails_closed_in_inspect_channel() {
     let _serialization = fault_lock();
     nlos_store_fault::disarm();
     let root = TestRoot::new("head-fence-defect");

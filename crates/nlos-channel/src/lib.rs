@@ -487,7 +487,8 @@ impl ChannelAuthority {
     }
 
     /// Reads the current Channel record after checking the head/generation
-    /// join and immutable row invariants.
+    /// join, the head fence against the immutable current generation row,
+    /// and the immutable row invariants.
     ///
     /// # Errors
     ///
@@ -497,8 +498,20 @@ impl ChannelAuthority {
         channel_id: ChannelId,
     ) -> Result<ChannelRecord, ChannelAuthorityError> {
         let connection = self.lock()?;
-        load_current_optional(&connection, channel_id)?
-            .ok_or(ChannelAuthorityError::ChannelNotFound(channel_id))
+        let record = load_current_optional(&connection, channel_id)?
+            .ok_or(ChannelAuthorityError::ChannelNotFound(channel_id))?;
+        // The immutable latest generation row is the authority; the mutable
+        // head row must agree with it on both the generation and its fence.
+        // Re-reading the head column the record was assembled from instead
+        // would compare the value against itself (vacuously equal).
+        let (authority_generation, authority_fence) =
+            load_latest_generation(&connection, channel_id)?;
+        if record.generation != authority_generation || record.fencing_token != authority_fence {
+            return Err(ChannelAuthorityError::CorruptRecord(
+                "channel head fence disagrees with current generation",
+            ));
+        }
+        Ok(record)
     }
 
     /// Reads the authority-derived endpoint proof for the current generation.
@@ -1419,12 +1432,6 @@ fn load_current_optional(
                 idempotency_key: IdempotencyKey::from_bytes(array16(key)?),
                 created_at_ms: decode_u64(created)?,
             };
-            let head_fence = load_head_fence(connection, channel_id)?;
-            if head_fence != record.fencing_token {
-                return Err(ChannelAuthorityError::CorruptRecord(
-                    "channel head fence disagrees with current generation",
-                ));
-            }
             validate_capacity(record.capacity_bytes)?;
             Ok(record)
         },
@@ -1432,16 +1439,30 @@ fn load_current_optional(
     .transpose()
 }
 
-fn load_head_fence(
+/// The `(generation, fencing_token)` carried by the Channel's latest
+/// immutable generation row — the authority the mutable head row must agree
+/// with.  Because every rotation inserts the new generation row and advances
+/// the head in one `Immediate` transaction, the latest generation row always
+/// identifies the current generation in any durable state.
+fn load_latest_generation(
     connection: &Connection,
     channel_id: ChannelId,
-) -> Result<FencingToken, ChannelAuthorityError> {
-    let bytes = connection.query_row(
-        "SELECT current_fencing_token FROM channels WHERE channel_id=?1",
-        [channel_id.as_bytes().as_slice()],
-        |row| row.get::<_, Vec<u8>>(0),
-    )?;
-    array32(bytes)
+) -> Result<(Generation, FencingToken), ChannelAuthorityError> {
+    let raw = connection
+        .query_row(
+            "SELECT channel_generation, fencing_token
+             FROM channel_generations
+             WHERE channel_id=?1
+             ORDER BY channel_generation DESC
+             LIMIT 1",
+            [channel_id.as_bytes().as_slice()],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?)),
+        )
+        .optional()?
+        .ok_or(ChannelAuthorityError::CorruptRecord(
+            "channel head references no immutable generation row",
+        ))?;
+    Ok((decode_generation(raw.0)?, array32(raw.1)?))
 }
 
 fn load_generation(
