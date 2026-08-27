@@ -282,3 +282,48 @@ cargo fmt --all --check → 通过；git diff --check → 通过
 - validation-only，无 schema/model/migrations 变更；不声明跨 authority 原子性（verify-then-commit 不变）。
 - 梯子函数只弃用未移除（future breaking change）；`FinalizeSpec` envelope 模式下调用方 `request` 被整体覆盖（与既有 envelope 梯子一致，doc 已注明）。
 - CI / push 状态见 §9 提交回执（本节完成后随本轮统一推送）。
+
+## 9. Queue delivery 前缀 + kill-window 故障矩阵 + D-1 修复（2026-08-28 增量）
+
+> Task: TASK-CHANNEL-QUEUE-01；两车道并行（独立 git worktree 隔离编译），波次屏障后合并验收，单一 integrator 分四个原子提交。
+
+### 9.1 Canonical commits
+
+- `7faae15` feat: add durable channel queue delivery prefix（车道 Q）
+- `c6c9ffd` test: cover channel authority kill-window fault matrix（车道 F）
+- `0c9b3f1` fix: cross-check channel head fence against generation row（车道 G，反例修复）
+
+### 9.2 实现事实（车道 Q）
+
+- **Schema v2**：`channel_queue_entries`（STRICT immutable；UPDATE trigger 禁止；DELETE trigger 按行校验 `sequence ≤ durable trim watermark`，cursor 行缺失时 watermark 视为 −1 使任何删除 fail）、`channel_queue_cursors`（consume/trim 双 high-water，DDL `CHECK(trim ≤ consume)`）、`channel_queue_bytes`（backlog/retained 簿记，`CHECK(backlog ≤ retained)`）。v1→v2 迁移幂等预检（完整形状补 user_version；部分形状 `CorruptRecord`），现存 channel 回填零值行；未知版本仍 `SchemaVersionUnsupported`。
+- **`enqueue`**：单 `Immediate` 事务 gate 链：空 payload `InvalidPayload`（pre-write）→ idempotency replay（同 key 同 channel/generation/fence/payload 返回原 record；漂移 `IdempotencyConflict`）→ fencing CAS（`StaleChannel`）→ 容量 admission（backlog+payload ≤ capacity，超出 `QueueFull` 零部分状态）→ sequence `max(max_live, consume)+1` 分配 + bytes CAS。
+- **`receive`**：零写有序窗口（`sequence > consume ∧ > trim`），per-channel 跨 generation 全序（rotate 后旧 fence 未消费条目仍可读，enqueue 只收当前 fence）；读前跑交叉校验。**`ack`**：单调 CAS 推进 consume high-water（同值幂等回原 decision 含 `acked_at_ms`；回退/越界 `InvalidSequence`）。**`compact`**：effective = min(trim_to, consume)（未消费永不删除），同事务推进 watermark → DELETE 前缀 → 扣减 retained；幂等/回退 fail-closed。
+- **backlog/retained 语义**：`backlog = Σ payload_bytes(sequence > consume)`（admission 度量，consumed-but-uncompacted 不占容量）；`retained = Σ live 行`（compaction 待回收量）。
+- **CorruptRecord 交叉校验**（receive/inspect_queue）：trim ≤ consume、无 ≤ trim 残留、live 连续性（min_live == trim+1，count == max_live − trim）、consume ≤ max_live、backlog/retained 与 entries 重推导相等；4 类篡改测试逐项验证。
+- 已知取舍：compact 删除连同条目 idempotency 记录（已 compact 条目同 key enqueue 重新准入，doc 注明）；ack 不带消费身份（最小前缀，后续项）。
+
+### 9.3 故障矩阵（车道 F，validation-only）
+
+13 项测试（11 主动场景 + crash 子进程 helper + 反例转正）：W1 pre-commit IOERR/ENOSPC（create/rotate）typed fail-closed、零幻影行、重做收敛；W3 commit 点 PowerLossAfter 双向（invisible 重做 byte-equal / kill-9 visible `Replayed`）；W4 torn WAL tail——create 路径 33 个截断点穷举（不可见方向全覆盖 + 可见对照），五表同生同灭双向证明不可能出现部分行；W5 replay storm（create/rotate）幂等 + rotate CAS kill-window 无中间代（generations 恒连续，伪造/旧 fence 全部 `StaleChannel`）；W6 proof 恢复有效或 `CorruptRecord`。fault VFS 经 SQLite URI filename 路由接入（`ChannelAuthority` 无 `open_with_vfs` 且 workspace `forbid(unsafe_code)`，方案文档化于测试文件头）；追加 `nlos-store-fault` dev-dependency。
+
+### 9.4 反例 D-1 及修复（车道 G）
+
+- **反例**（车道 F 钉住）：`inspect_channel` 的 head fence 复核为空转自比——JOIN SELECT 将 `channels.current_fencing_token` 装入 record 后，`load_head_fence` 重读同一列与 record 比对，恒相等；raw connection 篡改 head fence 后 `inspect_channel` 静默返回污染值（`inspect_endpoint_proof` 的派生校验可拦截，单独使用 `inspect_channel` 如作为 rotate CAS 期望值来源则存在采纳污染风险）。
+- **修复**：以最新 immutable `channel_generations` 行（`fencing_token` + `generation` 值）为权威交叉对照 head 装配 record，任一不一致 `CorruptRecord` fail-closed；用最新代而非按 head 代查找，避免 generation 比对再次空转并覆盖「head 连同 fence 一致回退旧代」篡改。校验置于 `inspect_channel`（非共享 `load_current_optional`）以保持 `inspect_endpoint_proof` 派生校验文案与可见行为不变；create/rotate/enqueue/receive/ack/compact 路径零改动。反例测试转正为回归测试（断言逐字保留）。
+- 复查同 crate 无其他「重读同列自比」空转校验（rotate replay 跨表比对、queue decode 同行两表示交叉、verify_queue_state/endpoint proof 派生比对、CAS changed 守卫均为真校验）。
+
+### 9.5 验证
+
+```text
+cargo test -p nlos-channel（0c9b3f1 后）
+  → channel_authority 3 passed；channel_fault_injection 13 passed / 0 ignored；
+    queue_delivery 11 passed；合计 27 passed / 0 failed / 0 ignored
+
+cargo clippy --workspace --all-targets -- -D warnings → 0 warning / 0 error
+cargo fmt --all --check → 通过
+```
+
+### 9.6 等级与未完成（PARTIAL_PASS 保持）
+
+- 单机 SQLite 重启级 H3；kill-9 后页面缓存存活，`PowerLossAfter`/WAL 截断为模型化丢写，非真实掉电。
+- 未做：Topic routing/fanout 与 retention 策略（服务层，RSM-FANOUT-001）、payer accounting/admission 绑定、commit+wakeup 运行时接线（依赖 B-PROCESS durable wait registry）、ack 消费身份绑定、跨进程/多写者、取消传播、CI/部署声明。
