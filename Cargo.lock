@@ -606,6 +606,7 @@ name = "nlos-topic"
 version = "0.1.0"
 dependencies = [
  "nlos-channel",
+ "nlos-store-fault",
  "nlos-types",
  "rusqlite",
  "sha2",

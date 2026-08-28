@@ -12,5 +12,10 @@ nlos-types = { path = "../nlos-types" }
 rusqlite.workspace = true
 sha2.workspace = true
 
+[dev-dependencies]
+# Test-only fault-injection VFS shim for the kill-window matrix
+# (tests/topic_fault_injection.rs); never a production dependency.
+nlos-store-fault = { path = "../nlos-store-fault" }
+
 [lints]
 workspace = true
