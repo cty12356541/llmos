@@ -602,6 +602,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "nlos-topic"
+version = "0.1.0"
+dependencies = [
+ "nlos-channel",
+ "nlos-types",
+ "rusqlite",
+ "sha2",
+]
+
+[[package]]
 name = "nlos-types"
 version = "0.1.0"
 
