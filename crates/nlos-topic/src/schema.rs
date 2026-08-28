@@ -1,8 +1,8 @@
-use rusqlite::{Connection, TransactionBehavior};
+use rusqlite::{Connection, TransactionBehavior, params};
 
 use crate::TopicAuthorityError;
 
-pub(crate) const SCHEMA_VERSION: i64 = 2;
+pub(crate) const SCHEMA_VERSION: i64 = 3;
 
 /// Creates the Topic service-layer authority schema v1: the immutable-topic
 /// head (policy, payer binding, channel fence snapshot, active-subscriber
@@ -233,6 +233,120 @@ pub(crate) fn migrate_v2(connection: &mut Connection) -> Result<(), TopicAuthori
         END;
 
         PRAGMA user_version=2;",
+    )?;
+    transaction.commit()?;
+    connection.pragma_update(None, "foreign_keys", "ON")?;
+    Ok(())
+}
+
+/// Adds the consumption-token identity binding to the per-subscriber state
+/// rows (schema v3): every subscription row durably carries the
+/// authority-derived [`ConsumeToken`] and its subscription generation, so
+/// `advance`/`unsubscribe` can require the caller to present the token the
+/// authority issued at subscribe time instead of trusting the public
+/// `subscriber_key` alone.
+///
+/// The token is deterministic over the stored [`crate::SubscriptionId`] and
+/// the subscription generation, so the migration re-derives it for every
+/// existing row (generation 1, the historical single-subscription lifetime)
+/// rather than leaving it NULL: upgraded databases immediately enforce the
+/// same fail-closed binding as fresh ones.  Idempotent on reopen via the
+/// column pre-check; an unexpected partial column state fails closed as
+/// [`TopicAuthorityError::CorruptRecord`].
+///
+/// `SQLite` cannot alter `CHECK` constraints in place, so
+/// `topic_subscriptions` is rebuilt through the documented table-rebuild
+/// procedure; the immutability and no-delete triggers are recreated.
+pub(crate) fn migrate_v3(connection: &mut Connection) -> Result<(), TopicAuthorityError> {
+    let token_column_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('topic_subscriptions')
+         WHERE name='consume_token'",
+        [],
+        |row| row.get(0),
+    )?;
+    if token_column_count == 1 {
+        connection.pragma_update(None, "user_version", 3)?;
+        return Ok(());
+    }
+    if token_column_count != 0 {
+        return Err(TopicAuthorityError::CorruptRecord(
+            "partial topic subscription token schema",
+        ));
+    }
+
+    // The documented SQLite table-rebuild procedure requires foreign-key
+    // enforcement off around (not inside) the rebuild transaction.
+    connection.pragma_update(None, "foreign_keys", "OFF")?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "DROP TRIGGER IF EXISTS topic_subscriptions_identity_frozen;
+        DROP TRIGGER IF EXISTS topic_subscriptions_no_delete;
+
+        CREATE TABLE topic_subscriptions_v3 (
+            subscription_id BLOB PRIMARY KEY NOT NULL CHECK(length(subscription_id)=16),
+            topic_id BLOB NOT NULL CHECK(length(topic_id)=16),
+            subscriber_key BLOB NOT NULL CHECK(length(subscriber_key)=16),
+            active INTEGER NOT NULL CHECK(active IN (0,1)),
+            cursor INTEGER NOT NULL CHECK(cursor >= 0),
+            subscribed_at_ms INTEGER NOT NULL CHECK(subscribed_at_ms >= 0),
+            unsubscribed_at_ms INTEGER NOT NULL DEFAULT 0 CHECK(unsubscribed_at_ms >= 0),
+            last_advanced_at_ms INTEGER NOT NULL DEFAULT 0 CHECK(last_advanced_at_ms >= 0),
+            consume_token BLOB NOT NULL CHECK(length(consume_token)=32),
+            subscription_generation INTEGER NOT NULL CHECK(subscription_generation >= 1),
+            UNIQUE(topic_id, subscriber_key),
+            FOREIGN KEY(topic_id) REFERENCES topics(topic_id)
+        ) STRICT;
+
+        CREATE TRIGGER topic_subscriptions_identity_frozen
+        BEFORE UPDATE ON topic_subscriptions_v3
+        WHEN NEW.subscription_id != OLD.subscription_id
+            OR NEW.topic_id != OLD.topic_id
+            OR NEW.subscriber_key != OLD.subscriber_key
+        BEGIN
+            SELECT RAISE(ABORT, 'subscription identity is immutable');
+        END;
+        CREATE TRIGGER topic_subscriptions_no_delete
+        BEFORE DELETE ON topic_subscriptions_v3 BEGIN
+            SELECT RAISE(ABORT, 'subscription rows are durable');
+        END;
+
+        PRAGMA user_version=3;",
+    )?;
+    // Re-derive the deterministic token for every existing row (generation
+    // 1: pre-v3 databases have a single subscription lifetime per key).
+    {
+        let mut read = transaction.prepare("SELECT subscription_id FROM topic_subscriptions")?;
+        let ids = read
+            .query_map([], |row| row.get::<_, Vec<u8>>(0))?
+            .collect::<Result<Vec<Vec<u8>>, _>>()?;
+        drop(read);
+        let mut write = transaction.prepare(
+            "INSERT INTO topic_subscriptions_v3 (
+                subscription_id, topic_id, subscriber_key, active, cursor,
+                subscribed_at_ms, unsubscribed_at_ms, last_advanced_at_ms,
+                consume_token, subscription_generation
+             )
+             SELECT subscription_id, topic_id, subscriber_key, active, cursor,
+                    subscribed_at_ms, unsubscribed_at_ms, last_advanced_at_ms,
+                    ?1, 1
+               FROM topic_subscriptions
+              WHERE subscription_id=?2",
+        )?;
+        for id in ids {
+            let subscription_id =
+                crate::SubscriptionId::from_bytes(id.try_into().map_err(|_| {
+                    TopicAuthorityError::CorruptRecord("identity length is not 16")
+                })?);
+            let token = crate::derive_consume_token(subscription_id, 1);
+            write.execute(params![
+                token.as_slice(),
+                subscription_id.as_bytes().as_slice()
+            ])?;
+        }
+    }
+    transaction.execute_batch(
+        "DROP TABLE topic_subscriptions;
+        ALTER TABLE topic_subscriptions_v3 RENAME TO topic_subscriptions;",
     )?;
     transaction.commit()?;
     connection.pragma_update(None, "foreign_keys", "ON")?;

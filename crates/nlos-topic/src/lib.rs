@@ -89,6 +89,16 @@ nominal_id!(TopicId);
 nominal_id!(SubscriptionId);
 nominal_id!(SubscriberKey);
 
+/// The consumption identity binding issued by the authority at subscribe
+/// time, mirroring the Channel [`FencingToken`] derivation style: an
+/// authority-derived, domain-separated SHA-256 over the [`SubscriptionId`]
+/// and the subscription generation.
+///
+/// It is a single-node symmetric proof of the subscribe grant, not a
+/// cryptographic signature: it authenticates "the caller holds the token the
+/// authority issued for this subscription generation" and nothing more.
+pub type ConsumeToken = [u8; 32];
+
 /// The RSM-FANOUT-001 policy bound to a topic before the first enqueue.
 ///
 /// Every field is a durable declaration; `payer` is an opaque typed binding
@@ -157,7 +167,14 @@ pub struct SubscribeRequest {
 /// subscribe point; history before it is never replayed), `unsubscribed_at_ms`
 /// records the most recent unsubscribe (0 if never), and
 /// `last_advanced_at_ms` carries the timestamp of the last accepted
-/// [`TopicAuthority::advance`].
+/// [`TopicAuthority::advance`].  `consume_token` is the authority-issued
+/// consumption proof for this subscription generation
+/// ([`TopicAuthority::advance_with_token`] /
+/// [`TopicAuthority::unsubscribe_with_token`] require it) and
+/// `subscription_generation` counts the durable subscriptions of this
+/// subscriber key (1 for the first, +1 per re-subscribe after an
+/// unsubscribe); the generation participates in the token derivation so a
+/// stale token from a previous subscription generation fails closed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SubscriptionRecord {
     pub subscription_id: SubscriptionId,
@@ -168,6 +185,8 @@ pub struct SubscriptionRecord {
     pub subscribed_at_ms: u64,
     pub unsubscribed_at_ms: u64,
     pub last_advanced_at_ms: u64,
+    pub consume_token: ConsumeToken,
+    pub subscription_generation: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -385,6 +404,10 @@ pub enum TopicAuthorityError {
     TopicNotFound(TopicId),
     SubscriptionNotFound(SubscriptionId),
     SubscriptionInactive(SubscriptionId),
+    /// A consumption token was presented that does not match the
+    /// authority-issued token of the subscription's current generation; the
+    /// caller is not the holder of the subscribe grant and nothing is written.
+    ConsumptionTokenMismatch(SubscriptionId),
     PublicationNotFound(IdempotencyKey),
     /// The parent publication exists but has not reached the terminal
     /// [`PublicationStatus::Enqueued`] state, so it is not forwardable.
@@ -437,6 +460,10 @@ impl fmt::Display for TopicAuthorityError {
             Self::SubscriptionInactive(id) => write!(
                 formatter,
                 "subscription {id:?} is inactive and must re-subscribe first"
+            ),
+            Self::ConsumptionTokenMismatch(id) => write!(
+                formatter,
+                "consumption token does not match the authority-issued token of subscription {id:?}"
             ),
             Self::PublicationNotFound(key) => {
                 write!(formatter, "publication {key:?} does not exist")
@@ -537,8 +564,13 @@ impl TopicAuthority {
             0 => {
                 schema::migrate_v1(&mut connection)?;
                 schema::migrate_v2(&mut connection)?;
+                schema::migrate_v3(&mut connection)?;
             }
-            1 => schema::migrate_v2(&mut connection)?,
+            1 => {
+                schema::migrate_v2(&mut connection)?;
+                schema::migrate_v3(&mut connection)?;
+            }
+            2 => schema::migrate_v3(&mut connection)?,
             schema::SCHEMA_VERSION => {}
             other => return Err(TopicAuthorityError::SchemaVersionUnsupported(other)),
         }
@@ -643,6 +675,17 @@ impl TopicAuthority {
     /// idempotent; subscribing a previously unsubscribed key re-activates it
     /// with a fresh subscribe point.
     ///
+    /// The authority also derives and durably stores a consumption
+    /// [`ConsumeToken`] for the subscription
+    /// (`"nlos/topic/consume-token/v1" ‖ subscription_id ‖ subscription
+    /// generation`) and returns it in the decision record: the token is the
+    /// identity binding that [`TopicAuthority::advance_with_token`] and
+    /// [`TopicAuthority::unsubscribe_with_token`] require.  A replayed
+    /// subscribe of the same active key returns the originally issued token;
+    /// a re-subscribe after an unsubscribe bumps the subscription generation
+    /// and issues a fresh token, so any token from a previous generation
+    /// fails closed.
+    ///
     /// # Errors
     ///
     /// Fails closed for an unknown Topic, the recipient limit, a Channel
@@ -654,12 +697,13 @@ impl TopicAuthority {
         let mut connection = self.lock()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let topic = load_topic_verified(&transaction, request.topic_id)?;
-        if let Some(existing) =
-            load_subscription_optional(&transaction, request.topic_id, request.subscriber_key)?
+        let previous =
+            load_subscription_optional(&transaction, request.topic_id, request.subscriber_key)?;
+        if let Some(existing) = &previous
             && existing.active
         {
             transaction.commit()?;
-            return Ok(SubscribeDecision::Replayed(existing));
+            return Ok(SubscribeDecision::Replayed(*existing));
         }
         let live = self
             .channel
@@ -669,8 +713,12 @@ impl TopicAuthority {
         if active >= topic.policy.max_recipients {
             return Err(TopicAuthorityError::SubscriberLimitReached);
         }
+        let subscription_id = subscription_id_for(request.topic_id, request.subscriber_key);
+        let subscription_generation = previous
+            .as_ref()
+            .map_or(1, |existing| existing.subscription_generation + 1);
         let record = SubscriptionRecord {
-            subscription_id: subscription_id_for(request.topic_id, request.subscriber_key),
+            subscription_id,
             topic_id: request.topic_id,
             subscriber_key: request.subscriber_key,
             active: true,
@@ -678,6 +726,8 @@ impl TopicAuthority {
             subscribed_at_ms: request.subscribed_at_ms,
             unsubscribed_at_ms: 0,
             last_advanced_at_ms: 0,
+            consume_token: derive_consume_token(subscription_id, subscription_generation),
+            subscription_generation,
         };
         insert_or_resubscribe(&transaction, &record)?;
         bump_active_count(&transaction, request.topic_id, active, active + 1)?;
@@ -692,6 +742,11 @@ impl TopicAuthority {
     /// subscriptions are excluded from the min-live-cursor compaction bound.
     /// Repeating the unsubscribe replays the original receipt.
     ///
+    /// Compatibility entry: this call authenticates the caller only by the
+    /// `subscriber_key` (token-free, the pre-binding semantics).  Prefer
+    /// [`TopicAuthority::unsubscribe_with_token`], which requires the
+    /// consumption token issued at subscribe time.
+    ///
     /// # Errors
     ///
     /// Fails closed for an unknown Topic or subscription, or a
@@ -699,6 +754,34 @@ impl TopicAuthority {
     pub fn unsubscribe(
         &self,
         request: UnsubscribeRequest,
+    ) -> Result<UnsubscribeDecision, TopicAuthorityError> {
+        self.unsubscribe_inner(request, None)
+    }
+
+    /// Flips a subscription to inactive, requiring the consumption token.
+    ///
+    /// Identical to [`TopicAuthority::unsubscribe`] except the caller must
+    /// present the [`ConsumeToken`] issued for the subscription's current
+    /// generation; any other token is
+    /// [`TopicAuthorityError::ConsumptionTokenMismatch`] before any write
+    /// (fail-closed, zero durable state change).
+    ///
+    /// # Errors
+    ///
+    /// Fails closed for a token mismatch, an unknown Topic or subscription,
+    /// or a storage/corruption failure.
+    pub fn unsubscribe_with_token(
+        &self,
+        request: UnsubscribeRequest,
+        consume_token: &ConsumeToken,
+    ) -> Result<UnsubscribeDecision, TopicAuthorityError> {
+        self.unsubscribe_inner(request, Some(*consume_token))
+    }
+
+    fn unsubscribe_inner(
+        &self,
+        request: UnsubscribeRequest,
+        consume_token: Option<ConsumeToken>,
     ) -> Result<UnsubscribeDecision, TopicAuthorityError> {
         let mut connection = self.lock()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -708,6 +791,7 @@ impl TopicAuthority {
                 .ok_or(TopicAuthorityError::SubscriptionNotFound(
                     subscription_id_for(request.topic_id, request.subscriber_key),
                 ))?;
+        verify_consume_token(&existing, consume_token)?;
         if !existing.active {
             transaction.commit()?;
             return Ok(UnsubscribeDecision::Replayed(UnsubscribeReceipt {
@@ -1074,6 +1158,11 @@ impl TopicAuthority {
 
     /// Returns the entries this subscriber has not consumed yet.
     ///
+    /// Deliberately not consumption-token gated: `poll` is a zero-write read
+    /// path and presents nothing to replay or overwrite; the authenticated
+    /// boundary is the cursor advance
+    /// ([`TopicAuthority::advance_with_token`]), not the read.
+    ///
     /// Zero-write: the Channel receive window (`sequence >
     /// consume_high_water`, ordered, limited to `limit`) is filtered by the
     /// subscriber's own cursor (`sequence > cursor`) and no cursor moves.  The
@@ -1133,12 +1222,48 @@ impl TopicAuthority {
     /// advance is a per-subscriber CAS and never moves another subscriber's
     /// cursor or any channel cursor.
     ///
+    /// Compatibility entry: this call authenticates the caller only by the
+    /// `subscriber_key` (token-free, the pre-binding semantics).  Prefer
+    /// [`TopicAuthority::advance_with_token`], which requires the consumption
+    /// token issued at subscribe time.
+    ///
     /// # Errors
     ///
     /// Fails closed for an unknown Topic or subscription, an inactive
     /// subscription, a regressing or out-of-range sequence, or a
     /// storage/corruption failure.
     pub fn advance(&self, request: AdvanceRequest) -> Result<AdvanceDecision, TopicAuthorityError> {
+        self.advance_inner(request, None)
+    }
+
+    /// Advances one subscriber's cursor, requiring the consumption token.
+    ///
+    /// Identical to [`TopicAuthority::advance`] except the caller must
+    /// present the [`ConsumeToken`] issued for the subscription's current
+    /// generation; any other token is
+    /// [`TopicAuthorityError::ConsumptionTokenMismatch`] before any write
+    /// (fail-closed, zero durable state change).  [`TopicAuthority::poll`]
+    /// deliberately stays token-free: it is a zero-write read path, and the
+    /// cursor advance — not the read — is the authenticated boundary.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed for a token mismatch, an unknown Topic or subscription,
+    /// an inactive subscription, a regressing or out-of-range sequence, or a
+    /// storage/corruption failure.
+    pub fn advance_with_token(
+        &self,
+        request: AdvanceRequest,
+        consume_token: &ConsumeToken,
+    ) -> Result<AdvanceDecision, TopicAuthorityError> {
+        self.advance_inner(request, Some(*consume_token))
+    }
+
+    fn advance_inner(
+        &self,
+        request: AdvanceRequest,
+        consume_token: Option<ConsumeToken>,
+    ) -> Result<AdvanceDecision, TopicAuthorityError> {
         let mut connection = self.lock()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let topic = load_topic_verified(&transaction, request.topic_id)?;
@@ -1147,6 +1272,7 @@ impl TopicAuthority {
                 .ok_or(TopicAuthorityError::SubscriptionNotFound(
                     subscription_id_for(request.topic_id, request.subscriber_key),
                 ))?;
+        verify_consume_token(&subscription, consume_token)?;
         if !subscription.active {
             return Err(TopicAuthorityError::SubscriptionInactive(
                 subscription.subscription_id,
@@ -1568,12 +1694,15 @@ fn insert_or_resubscribe(
     let changed = transaction.execute(
         "INSERT INTO topic_subscriptions (
             subscription_id, topic_id, subscriber_key, active, cursor,
-            subscribed_at_ms, unsubscribed_at_ms, last_advanced_at_ms
-         ) VALUES (?1, ?2, ?3, 1, ?4, ?5, 0, 0)
+            subscribed_at_ms, unsubscribed_at_ms, last_advanced_at_ms,
+            consume_token, subscription_generation
+         ) VALUES (?1, ?2, ?3, 1, ?4, ?5, 0, 0, ?6, ?7)
          ON CONFLICT(topic_id, subscriber_key) DO UPDATE SET
             active=1, cursor=excluded.cursor,
             subscribed_at_ms=excluded.subscribed_at_ms,
-            unsubscribed_at_ms=0, last_advanced_at_ms=0
+            unsubscribed_at_ms=0, last_advanced_at_ms=0,
+            consume_token=excluded.consume_token,
+            subscription_generation=excluded.subscription_generation
          WHERE topic_subscriptions.active=0",
         params![
             record.subscription_id.as_bytes().as_slice(),
@@ -1581,6 +1710,8 @@ fn insert_or_resubscribe(
             record.subscriber_key.as_bytes().as_slice(),
             encode_u64(record.cursor)?,
             encode_u64(record.subscribed_at_ms)?,
+            record.consume_token.as_slice(),
+            encode_u64(record.subscription_generation)?,
         ],
     )?;
     if changed != 1 {
@@ -1789,7 +1920,8 @@ fn load_subscription_optional(
     let raw = connection
         .query_row(
             "SELECT subscription_id, active, cursor, subscribed_at_ms,
-                    unsubscribed_at_ms, last_advanced_at_ms
+                    unsubscribed_at_ms, last_advanced_at_ms,
+                    consume_token, subscription_generation
              FROM topic_subscriptions WHERE topic_id=?1 AND subscriber_key=?2",
             params![
                 topic_id.as_bytes().as_slice(),
@@ -1803,12 +1935,23 @@ fn load_subscription_optional(
                     row.get::<_, i64>(3)?,
                     row.get::<_, i64>(4)?,
                     row.get::<_, i64>(5)?,
+                    row.get::<_, Vec<u8>>(6)?,
+                    row.get::<_, i64>(7)?,
                 ))
             },
         )
         .optional()?;
     raw.map(
-        |(subscription_id, active, cursor, subscribed, unsubscribed, advanced)| {
+        |(
+            subscription_id,
+            active,
+            cursor,
+            subscribed,
+            unsubscribed,
+            advanced,
+            token,
+            generation,
+        )| {
             let record = SubscriptionRecord {
                 subscription_id: SubscriptionId::from_bytes(array16(subscription_id)?),
                 topic_id,
@@ -1818,6 +1961,8 @@ fn load_subscription_optional(
                 subscribed_at_ms: decode_u64(subscribed)?,
                 unsubscribed_at_ms: decode_u64(unsubscribed)?,
                 last_advanced_at_ms: decode_u64(advanced)?,
+                consume_token: array32(token)?,
+                subscription_generation: decode_u64(generation)?,
             };
             if record.subscription_id != subscription_id_for(topic_id, subscriber_key) {
                 return Err(TopicAuthorityError::CorruptRecord(
@@ -2054,6 +2199,42 @@ fn subscription_id_for(topic_id: TopicId, subscriber_key: SubscriberKey) -> Subs
         b"nlos/topic/subscription/id/v1",
         &[topic_id.as_bytes(), subscriber_key.as_bytes()],
     ))
+}
+
+/// Derives the consumption token for one subscription generation:
+/// domain-separated SHA-256 over the [`SubscriptionId`] and the subscription
+/// generation (the Channel [`FencingToken`] derivation style).  The
+/// generation participates so the token is not derivable from the public
+/// [`SubscriptionId`] alone and so every re-subscribe invalidates the
+/// previous generation's token.
+fn derive_consume_token(
+    subscription_id: SubscriptionId,
+    subscription_generation: u64,
+) -> ConsumeToken {
+    derive_token(
+        b"nlos/topic/consume-token/v1",
+        &[
+            subscription_id.as_bytes(),
+            &subscription_generation.to_be_bytes(),
+        ],
+    )
+}
+
+/// Fail-closed consumption-token check: `Some(token)` must match the
+/// subscription row's authority-issued token exactly
+/// ([`TopicAuthorityError::ConsumptionTokenMismatch`] otherwise, before any
+/// write); `None` is the token-free compatibility surface and is admitted.
+fn verify_consume_token(
+    subscription: &SubscriptionRecord,
+    consume_token: Option<ConsumeToken>,
+) -> Result<(), TopicAuthorityError> {
+    match consume_token {
+        Some(token) if token == subscription.consume_token => Ok(()),
+        Some(_) => Err(TopicAuthorityError::ConsumptionTokenMismatch(
+            subscription.subscription_id,
+        )),
+        None => Ok(()),
+    }
 }
 
 fn derive_policy_digest(policy: &TopicPolicy) -> [u8; 32] {
