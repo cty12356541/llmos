@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Token-free advance/unsubscribe deprecated in favor of the *_with_token entries.
 use nlos_channel::{
     AckRequest, ChannelAuthority, ChannelAuthorityError, ChannelDecision, ChannelRecord,
     CreateChannelRequest, EnqueueDecision, EnqueueRequest, QueueState, RotateChannelRequest,

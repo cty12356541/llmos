@@ -742,15 +742,21 @@ impl TopicAuthority {
     /// subscriptions are excluded from the min-live-cursor compaction bound.
     /// Repeating the unsubscribe replays the original receipt.
     ///
-    /// Compatibility entry: this call authenticates the caller only by the
-    /// `subscriber_key` (token-free, the pre-binding semantics).  Prefer
-    /// [`TopicAuthority::unsubscribe_with_token`], which requires the
-    /// consumption token issued at subscribe time.
+    /// Deprecated compatibility entry: this call authenticates the caller
+    /// only by the `subscriber_key` (token-free, the pre-binding semantics),
+    /// so any caller that can name the key can impersonate the subscriber
+    /// and flip the subscription inactive.  The identity binding is the
+    /// consumption token required by
+    /// [`TopicAuthority::unsubscribe_with_token`]; prefer that entry.
     ///
     /// # Errors
     ///
     /// Fails closed for an unknown Topic or subscription, or a
     /// storage/corruption failure.
+    #[deprecated(
+        since = "0.1.0",
+        note = "use unsubscribe_with_token; the token-free entry lets an impersonator flip the subscription"
+    )]
     pub fn unsubscribe(
         &self,
         request: UnsubscribeRequest,
@@ -1222,16 +1228,22 @@ impl TopicAuthority {
     /// advance is a per-subscriber CAS and never moves another subscriber's
     /// cursor or any channel cursor.
     ///
-    /// Compatibility entry: this call authenticates the caller only by the
-    /// `subscriber_key` (token-free, the pre-binding semantics).  Prefer
-    /// [`TopicAuthority::advance_with_token`], which requires the consumption
-    /// token issued at subscribe time.
+    /// Deprecated compatibility entry: this call authenticates the caller
+    /// only by the `subscriber_key` (token-free, the pre-binding semantics),
+    /// so any caller that can name the key can impersonate the subscriber
+    /// and advance its consume cursor.  The identity binding is the
+    /// consumption token required by [`TopicAuthority::advance_with_token`];
+    /// prefer that entry.
     ///
     /// # Errors
     ///
     /// Fails closed for an unknown Topic or subscription, an inactive
     /// subscription, a regressing or out-of-range sequence, or a
     /// storage/corruption failure.
+    #[deprecated(
+        since = "0.1.0",
+        note = "use advance_with_token; the token-free entry lets an impersonator advance the cursor"
+    )]
     pub fn advance(&self, request: AdvanceRequest) -> Result<AdvanceDecision, TopicAuthorityError> {
         self.advance_inner(request, None)
     }

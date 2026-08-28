@@ -6,6 +6,8 @@
 //! re-subscribe (old token invalidated), restart replay, and the schema v3
 //! migration re-deriving tokens for pre-existing subscription rows.
 
+#![allow(deprecated)] // Token-free advance/unsubscribe deprecated in favor of the *_with_token entries.
+
 use nlos_channel::{ChannelAuthority, ChannelDecision, CreateChannelRequest};
 use nlos_topic::{
     AdvanceDecision, AdvanceRequest, ConsumeToken, CreateTopicRequest, PublishRequest,
@@ -473,4 +475,106 @@ fn schema_v3_migration_rederives_tokens_for_existing_rows() {
     topics
         .advance_with_token(advance_request(&topic, 1, high), &migrated.consume_token)
         .expect("migrated token advances");
+}
+
+/// The deprecated token-free advance entry stays callable and, for the same
+/// request, the two entries converge onto one cursor: whichever entry
+/// issues, the other replays the byte-identical receipt (mirrors the task
+/// ladder-deprecation equivalence convention).
+#[test]
+#[allow(deprecated)]
+fn deprecated_token_free_advance_matches_token_entry() {
+    // Direction 1: the deprecated entry issues; the token entry replays
+    // the exact same receipt.
+    let (harness, topic) = bootstrap("advance-equiv-legacy");
+    let record = match subscribe(&harness, topic.topic_id, 1) {
+        SubscribeDecision::Subscribed(record) => record,
+        SubscribeDecision::Replayed(_) => panic!("fresh subscribe cannot replay"),
+    };
+    let high = publish(&harness, &topic, 1);
+    let legacy = harness
+        .topics
+        .advance(advance_request(&topic, 1, high))
+        .expect("legacy advance");
+    assert!(matches!(legacy, AdvanceDecision::Advanced(_)));
+    let legacy_receipt = legacy.receipt();
+    assert_eq!(legacy_receipt.cursor, high);
+    assert!(matches!(
+        harness
+            .topics
+            .advance_with_token(advance_request(&topic, 1, high), &record.consume_token),
+        Ok(AdvanceDecision::Replayed(receipt)) if receipt == legacy_receipt
+    ));
+
+    // Direction 2: the token entry issues; the deprecated entry replays
+    // the exact same receipt.
+    let (harness, topic) = bootstrap("advance-equiv-token");
+    let record = match subscribe(&harness, topic.topic_id, 1) {
+        SubscribeDecision::Subscribed(record) => record,
+        SubscribeDecision::Replayed(_) => panic!("fresh subscribe cannot replay"),
+    };
+    let high = publish(&harness, &topic, 1);
+    let authenticated = harness
+        .topics
+        .advance_with_token(advance_request(&topic, 1, high), &record.consume_token)
+        .expect("token advance");
+    assert!(matches!(authenticated, AdvanceDecision::Advanced(_)));
+    let authenticated_receipt = authenticated.receipt();
+    assert_eq!(authenticated_receipt.cursor, high);
+    assert!(matches!(
+        harness.topics.advance(advance_request(&topic, 1, high)),
+        Ok(AdvanceDecision::Replayed(receipt)) if receipt == authenticated_receipt
+    ));
+}
+
+/// The deprecated token-free unsubscribe entry stays callable and, for the
+/// same request, the two entries converge onto one flip: whichever entry
+/// issues, the other replays the byte-identical receipt.
+#[test]
+#[allow(deprecated)]
+fn deprecated_token_free_unsubscribe_matches_token_entry() {
+    // Direction 1: the deprecated entry flips; the token entry replays
+    // the exact same receipt.
+    let (harness, topic) = bootstrap("unsubscribe-equiv-legacy");
+    let record = match subscribe(&harness, topic.topic_id, 1) {
+        SubscribeDecision::Subscribed(record) => record,
+        SubscribeDecision::Replayed(_) => panic!("fresh subscribe cannot replay"),
+    };
+    let legacy = harness
+        .topics
+        .unsubscribe(unsubscribe_request(&topic, 1))
+        .expect("legacy unsubscribe");
+    assert!(matches!(
+        legacy,
+        nlos_topic::UnsubscribeDecision::Unsubscribed(_)
+    ));
+    let legacy_receipt = legacy.receipt();
+    assert!(matches!(
+        harness.topics.unsubscribe_with_token(
+            unsubscribe_request(&topic, 1),
+            &record.consume_token
+        ),
+        Ok(nlos_topic::UnsubscribeDecision::Replayed(receipt)) if receipt == legacy_receipt
+    ));
+
+    // Direction 2: the token entry flips; the deprecated entry replays
+    // the exact same receipt.
+    let (harness, topic) = bootstrap("unsubscribe-equiv-token");
+    let record = match subscribe(&harness, topic.topic_id, 1) {
+        SubscribeDecision::Subscribed(record) => record,
+        SubscribeDecision::Replayed(_) => panic!("fresh subscribe cannot replay"),
+    };
+    let authenticated = harness
+        .topics
+        .unsubscribe_with_token(unsubscribe_request(&topic, 1), &record.consume_token)
+        .expect("token unsubscribe");
+    assert!(matches!(
+        authenticated,
+        nlos_topic::UnsubscribeDecision::Unsubscribed(_)
+    ));
+    let authenticated_receipt = authenticated.receipt();
+    assert!(matches!(
+        harness.topics.unsubscribe(unsubscribe_request(&topic, 1)),
+        Ok(nlos_topic::UnsubscribeDecision::Replayed(receipt)) if receipt == authenticated_receipt
+    ));
 }

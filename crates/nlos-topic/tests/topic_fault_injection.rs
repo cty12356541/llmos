@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Token-free advance/unsubscribe deprecated in favor of the *_with_token entries.
 //! B-TOPIC-001 (lane Y): kill-window / fault-injection matrix for the
 //! durable Topic service-layer authority — `TopicAuthority::create_topic`,
 //! `subscribe`, `publish` (the verify-then-commit `PENDING_ENQUEUE` window),
