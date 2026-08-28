@@ -18,10 +18,20 @@
 //! key: the channel's key-scoped replay converges without a duplicate
 //! enqueue.  The slice deliberately does not claim cross-authority atomicity.
 //!
-//! It deliberately does not implement: cascade republish budget consumption
-//! (the budget is initialized and persisted only), delivery-attempt execution,
-//! real payer metering, interest/matching predicates, cross-process access,
-//! wakeup wiring, or `TaskWriteSet` integration.
+//! Cascade republish ([`TopicAuthority::republish`]) spends one unit of the
+//! parent publication's cascade budget through a guarded compare-and-set
+//! inside the same `Immediate` transaction that durably registers the child
+//! publication (level `parent + 1`, parent key recorded for the auditable
+//! provenance chain); the child enqueue then follows the publish
+//! verify-then-commit path.  The budget spend (topic authority) strictly
+//! precedes the child enqueue (channel authority): a crash between the two
+//! leaves the budget spent and the child `PENDING_ENQUEUE`, converged by
+//! replaying the same idempotency key without spending again.
+//!
+//! It deliberately does not implement: delivery-attempt execution,
+//! runtime-automatic cascade triggering (republish is an owner-invoked
+//! forwarding step), real payer metering, interest/matching predicates,
+//! cross-process access, wakeup wiring, or `TaskWriteSet` integration.
 
 mod schema;
 
@@ -241,6 +251,11 @@ pub struct PublicationRecord {
     /// Channel generation of the enqueued entry; 0 while pending.
     pub channel_generation: u64,
     pub cascade_budget_remaining: u64,
+    /// Cascade level of this publication: 0 for a root publish, or the
+    /// parent's level + 1 for a republished child.
+    pub cascade_level: u64,
+    /// The publication this row was republished from; `None` for roots.
+    pub parent_publication_key: Option<IdempotencyKey>,
     pub published_at_ms: u64,
     pub enqueued_at_ms: u64,
 }
@@ -259,6 +274,38 @@ impl PublishDecision {
     pub fn record(self) -> PublicationRecord {
         match self {
             Self::Published(record) | Self::Replayed(record) => record,
+        }
+    }
+}
+
+/// A cascade forward of one parent publication into a child topic
+/// (`RSM-FANOUT-001`): one unit of the parent publication's cascade budget
+/// is spent and the payload is published to the child topic as a fresh
+/// publication with its own policy binding and idempotency scope.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RepublishRequest {
+    pub child_topic_id: TopicId,
+    pub parent_publication_key: IdempotencyKey,
+    pub payload: Vec<u8>,
+    pub idempotency_key: IdempotencyKey,
+    pub republished_at_ms: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RepublishDecision {
+    /// This call spent the parent budget (or resumed a spent-but-pending
+    /// child) and completed the child enqueue.
+    Republished(PublicationRecord),
+    /// The exact request had already completed; the original record returns,
+    /// the budget is not spent again and nothing is enqueued again.
+    Replayed(PublicationRecord),
+}
+
+impl RepublishDecision {
+    #[must_use]
+    pub fn record(self) -> PublicationRecord {
+        match self {
+            Self::Republished(record) | Self::Replayed(record) => record,
         }
     }
 }
@@ -338,6 +385,18 @@ pub enum TopicAuthorityError {
     TopicNotFound(TopicId),
     SubscriptionNotFound(SubscriptionId),
     SubscriptionInactive(SubscriptionId),
+    PublicationNotFound(IdempotencyKey),
+    /// The parent publication exists but has not reached the terminal
+    /// [`PublicationStatus::Enqueued`] state, so it is not forwardable.
+    PublicationNotEnqueued(IdempotencyKey),
+    /// The guarded budget CAS affected no row: the parent publication's
+    /// cascade budget is fully spent.
+    CascadeBudgetExhausted(IdempotencyKey),
+    CascadeDepthExceeded {
+        parent_publication_key: IdempotencyKey,
+        requested_level: u64,
+        cascade_depth: u64,
+    },
     InvalidPolicy(&'static str),
     SubscriberLimitReached,
     IdempotencyConflict,
@@ -378,6 +437,26 @@ impl fmt::Display for TopicAuthorityError {
             Self::SubscriptionInactive(id) => write!(
                 formatter,
                 "subscription {id:?} is inactive and must re-subscribe first"
+            ),
+            Self::PublicationNotFound(key) => {
+                write!(formatter, "publication {key:?} does not exist")
+            }
+            Self::PublicationNotEnqueued(key) => write!(
+                formatter,
+                "publication {key:?} has not reached the terminal enqueued state"
+            ),
+            Self::CascadeBudgetExhausted(key) => write!(
+                formatter,
+                "publication {key:?} has no cascade budget remaining"
+            ),
+            Self::CascadeDepthExceeded {
+                parent_publication_key,
+                requested_level,
+                cascade_depth,
+            } => write!(
+                formatter,
+                "cascade level {requested_level} from {parent_publication_key:?} exceeds \
+                 the parent policy cascade_depth {cascade_depth}"
             ),
             Self::InvalidPolicy(reason) => {
                 write!(formatter, "invalid topic policy: {reason}")
@@ -455,7 +534,11 @@ impl TopicAuthority {
 
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
         match version {
-            0 => schema::migrate_v1(&mut connection)?,
+            0 => {
+                schema::migrate_v1(&mut connection)?;
+                schema::migrate_v2(&mut connection)?;
+            }
+            1 => schema::migrate_v2(&mut connection)?,
             schema::SCHEMA_VERSION => {}
             other => return Err(TopicAuthorityError::SchemaVersionUnsupported(other)),
         }
@@ -689,7 +772,7 @@ impl TopicAuthority {
     ///    `PENDING_ENQUEUE`, binding the topic's policy digest, payer,
     ///    payload digest and the initialized cascade budget (the Topic
     ///    authority never stores the payload body; the Channel authority is
-    ///    the only message log).
+    ///    the only message log).  The row is a level-0 root with no parent.
     /// 2. [`ChannelAuthority::enqueue`] is called with the fence bound on the
     ///    topic head at creation time, so a Channel rotation after
     ///    `create_topic` surfaces as a propagated
@@ -718,22 +801,26 @@ impl TopicAuthority {
     /// rebinding, a propagated Channel rejection (`StaleChannel`,
     /// `QueueFull`, ...) or a storage/corruption failure.  The publication
     /// row stays `PENDING_ENQUEUE` when the enqueue itself is rejected.
-    #[allow(clippy::too_many_lines)] // One method owns the verify-then-commit publish sequence.
     pub fn publish(&self, request: PublishRequest) -> Result<PublishDecision, TopicAuthorityError> {
-        if request.payload.is_empty() {
+        let PublishRequest {
+            topic_id,
+            payload,
+            idempotency_key,
+            published_at_ms,
+        } = request;
+        if payload.is_empty() {
             return Err(TopicAuthorityError::InvalidPayload);
         }
-        let digest = derive_payload_digest(&request.payload);
+        let digest = derive_payload_digest(&payload);
 
         // Step 1: durable PENDING row first (or replay short-circuit).
         let (topic, resumed) = {
             let mut connection = self.lock()?;
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            let topic = load_topic_verified(&transaction, request.topic_id)?;
-            if let Some(existing) = load_publication_by_key(&transaction, request.idempotency_key)?
-            {
-                if existing.topic_id != request.topic_id || existing.payload_digest != digest {
+            let topic = load_topic_verified(&transaction, topic_id)?;
+            if let Some(existing) = load_publication_by_key(&transaction, idempotency_key)? {
+                if existing.topic_id != topic_id || existing.payload_digest != digest {
                     return Err(TopicAuthorityError::IdempotencyConflict);
                 }
                 if existing.status == PublicationStatus::Enqueued {
@@ -746,86 +833,243 @@ impl TopicAuthority {
                 insert_publication(
                     &transaction,
                     &topic,
-                    request.idempotency_key,
+                    idempotency_key,
                     digest,
-                    request.published_at_ms,
+                    None,
+                    0,
+                    published_at_ms,
                 )?;
                 transaction.commit()?;
                 (topic, false)
             }
         };
 
-        // Step 2: fence acquisition.  A fresh publish enqueues against the
-        // fence bound on the topic head so a rotation is observable as
-        // StaleChannel; a resumed PENDING publication re-reads the Channel
-        // head live and re-binds before re-issuing the enqueue (the
-        // documented re-read convergence after a propagated failure).
-        let (expected_generation, expected_fencing_token) = if resumed {
-            let live = self
-                .channel
-                .inspect_channel(topic.channel_id)
-                .map_err(TopicAuthorityError::Channel)?;
-            self.rebind_channel_fence(&topic, &live)?;
-            (live.generation, live.fencing_token)
+        // Steps 2-3: fence acquisition, enqueue and the sequence-association
+        // commit, shared with the cascade republish path.
+        let (record, committed) =
+            self.complete_enqueue(&topic, idempotency_key, &payload, published_at_ms, resumed)?;
+        Ok(if committed {
+            PublishDecision::Published(record)
         } else {
-            (topic.channel_generation, topic.channel_fencing_token)
+            PublishDecision::Replayed(record)
+        })
+    }
+
+    /// Forwards one parent publication into a child topic, spending exactly
+    /// one unit of the parent's cascade budget (`RSM-FANOUT-001`).
+    ///
+    /// Verify-then-commit across the two authorities, budget strictly first:
+    ///
+    /// 1. One `Immediate` topic-authority transaction: the owner reads the
+    ///    parent publication row back (topic ownership, policy binding,
+    ///    cascade budget, level) and audits the parent's provenance chain to
+    ///    its root (a broken link or a cycle is
+    ///    [`TopicAuthorityError::CorruptRecord`]); a missing parent fails
+    ///    with [`TopicAuthorityError::PublicationNotFound`] and a parent that
+    ///    has not reached the terminal [`PublicationStatus::Enqueued`] state
+    ///    with [`TopicAuthorityError::PublicationNotEnqueued`]; the depth
+    ///    bound (`parent level + 1` within the parent policy's
+    ///    `cascade_depth`) is enforced pre-write
+    ///    ([`TopicAuthorityError::CascadeDepthExceeded`]); then one budget
+    ///    unit is spent through a guarded compare-and-set
+    ///    (`UPDATE ... WHERE cascade_budget_remaining > 0`; zero affected
+    ///    rows is [`TopicAuthorityError::CascadeBudgetExhausted`]) and the
+    ///    child publication row is inserted `PENDING_ENQUEUE` with the parent
+    ///    key and `parent level + 1` recorded.  Every rejection happens
+    ///    before any write, so a failed republish leaves zero partial state.
+    /// 2. The child enqueue follows the exact [`TopicAuthority::publish`]
+    ///    path (fence, enqueue, `ENQUEUED` commit, crash-window convergence)
+    ///    on the child topic's channel.
+    ///
+    /// Crash window: the budget spend (topic authority) and the child
+    /// enqueue (channel authority) cannot commit atomically across
+    /// authorities.  A crash after step 1 leaves the budget spent and the
+    /// child `PENDING_ENQUEUE`; replaying the same idempotency key
+    /// supplements the enqueue without spending again.  Replaying a key that
+    /// already reached `ENQUEUED` returns the original record — the budget
+    /// is never spent twice and the enqueue never duplicates; a key rebound
+    /// to a different child topic, parent or payload is an
+    /// [`TopicAuthorityError::IdempotencyConflict`].  Cross-authority
+    /// atomicity is explicitly not claimed.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed for an empty payload, an unknown child topic, a missing
+    /// or non-enqueued parent, a broken or cyclic parent chain, the depth
+    /// bound, an exhausted parent budget, idempotency rebinding, a
+    /// propagated Channel rejection (`StaleChannel`, `QueueFull`, ...) or a
+    /// storage/corruption failure.  The child row stays `PENDING_ENQUEUE`
+    /// when the enqueue itself is rejected (the budget stays spent).
+    #[allow(clippy::too_many_lines)] // One method owns the budget CAS + child registration sequence.
+    pub fn republish(
+        &self,
+        request: RepublishRequest,
+    ) -> Result<RepublishDecision, TopicAuthorityError> {
+        let RepublishRequest {
+            child_topic_id,
+            parent_publication_key,
+            payload,
+            idempotency_key,
+            republished_at_ms,
+        } = request;
+        if payload.is_empty() {
+            return Err(TopicAuthorityError::InvalidPayload);
+        }
+        let digest = derive_payload_digest(&payload);
+
+        // Step 1: one Immediate transaction — replay short-circuit, parent
+        // readback and chain audit, pre-write gates, guarded budget CAS and
+        // the durable PENDING child row.
+        let (child_topic, resumed) = {
+            let mut connection = self.lock()?;
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let child_topic = load_topic_verified(&transaction, child_topic_id)?;
+            if let Some(existing) = load_publication_by_key(&transaction, idempotency_key)? {
+                // A durable row for this key exists: it is either a completed
+                // republish (replay) or a spent-but-pending crash window.
+                if existing.topic_id != child_topic_id
+                    || existing.payload_digest != digest
+                    || existing.parent_publication_key != Some(parent_publication_key)
+                {
+                    return Err(TopicAuthorityError::IdempotencyConflict);
+                }
+                if existing.status == PublicationStatus::Enqueued {
+                    transaction.commit()?;
+                    return Ok(RepublishDecision::Replayed(existing));
+                }
+                // The original attempt committed the budget spend together
+                // with this PENDING row; resume only the enqueue.
+                transaction.commit()?;
+                (child_topic, true)
+            } else {
+                let parent = load_publication_by_key(&transaction, parent_publication_key)?.ok_or(
+                    TopicAuthorityError::PublicationNotFound(parent_publication_key),
+                )?;
+                let parent_topic = load_topic_verified(&transaction, parent.topic_id)?;
+                if parent.policy_digest != parent_topic.policy_digest
+                    || parent.payer != parent_topic.policy.payer
+                {
+                    return Err(TopicAuthorityError::CorruptRecord(
+                        "parent publication binding disagrees with its topic head",
+                    ));
+                }
+                if parent.status != PublicationStatus::Enqueued {
+                    return Err(TopicAuthorityError::PublicationNotEnqueued(
+                        parent_publication_key,
+                    ));
+                }
+                verify_parent_chain(&transaction, &parent)?;
+                let child_level = parent.cascade_level + 1;
+                if child_level > parent_topic.policy.cascade_depth {
+                    return Err(TopicAuthorityError::CascadeDepthExceeded {
+                        parent_publication_key,
+                        requested_level: child_level,
+                        cascade_depth: parent_topic.policy.cascade_depth,
+                    });
+                }
+                // Guarded budget CAS: exactly one unit of the parent's
+                // remaining cascade budget, zero partial state on rejection.
+                let changed = transaction.execute(
+                    "UPDATE topic_publications
+                     SET cascade_budget_remaining = cascade_budget_remaining - 1
+                     WHERE idempotency_key=?1 AND cascade_budget_remaining > 0",
+                    params![parent_publication_key.as_bytes().as_slice()],
+                )?;
+                if changed != 1 {
+                    return Err(TopicAuthorityError::CascadeBudgetExhausted(
+                        parent_publication_key,
+                    ));
+                }
+                insert_publication(
+                    &transaction,
+                    &child_topic,
+                    idempotency_key,
+                    digest,
+                    Some(parent_publication_key),
+                    child_level,
+                    republished_at_ms,
+                )?;
+                transaction.commit()?;
+                (child_topic, false)
+            }
         };
 
-        // Step 3: enqueue; typed rejections propagate without silent retry.
-        // A `Replayed` channel decision is the crash window: a prior attempt
-        // already enqueued this key, so its record is the association to keep.
-        let entry = match self
-            .channel
-            .enqueue(EnqueueRequest {
-                channel_id: topic.channel_id,
-                expected_generation,
-                expected_fencing_token,
-                payload: request.payload,
-                idempotency_key: request.idempotency_key,
-                enqueued_at_ms: request.published_at_ms,
-            })
-            .map_err(TopicAuthorityError::Channel)?
-        {
-            EnqueueDecision::Enqueued(entry) | EnqueueDecision::Replayed(entry) => entry,
-        };
-
-        // Step 4: commit the sequence association.
-        let mut connection = self.lock()?;
-        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let changed = transaction.execute(
-            "UPDATE topic_publications
-             SET status=1, channel_sequence=?1, channel_generation=?2, enqueued_at_ms=?3
-             WHERE idempotency_key=?4 AND status=0",
-            params![
-                encode_u64(entry.sequence)?,
-                encode_u64(entry.generation.get())?,
-                encode_u64(entry.enqueued_at_ms)?,
-                request.idempotency_key.as_bytes().as_slice(),
-            ],
+        // Step 2: the child enqueue on the child topic's channel, shared
+        // with the publish path.
+        let (record, committed) = self.complete_enqueue(
+            &child_topic,
+            idempotency_key,
+            &payload,
+            republished_at_ms,
+            resumed,
         )?;
-        if changed != 1 {
-            // A concurrent call completed the same key first; converge to
-            // its record or fail closed on disagreement.
-            let existing = load_publication_by_key(&transaction, request.idempotency_key)?.ok_or(
-                TopicAuthorityError::CorruptRecord(
-                    "publication row vanished during enqueue commit",
-                ),
-            )?;
-            if existing.status != PublicationStatus::Enqueued
-                || existing.channel_sequence != entry.sequence
-            {
+        Ok(if committed {
+            RepublishDecision::Republished(record)
+        } else {
+            RepublishDecision::Replayed(record)
+        })
+    }
+
+    /// Reads one publication for audit: status, cascade budget remaining,
+    /// cascade level, parent provenance and channel association.
+    ///
+    /// Cross-checks mirror [`TopicAuthority::inspect_publications`] (the
+    /// topic head binding and the sequence within the channel high-water)
+    /// and add the cascade invariants: the parent chain must walk to a
+    /// level-0 root with strictly decreasing levels, no cycle and no broken
+    /// link, and the remaining budget must equal the topic's initialized
+    /// `cascade_depth` minus the durable child publications referencing this
+    /// row.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed for an unknown publication key, corrupt rows, a broken
+    /// or cyclic parent chain, or a propagated Channel rejection.
+    pub fn inspect_publication(
+        &self,
+        publication_key: IdempotencyKey,
+    ) -> Result<PublicationRecord, TopicAuthorityError> {
+        let connection = self.lock()?;
+        let record = load_publication_by_key(&connection, publication_key)?
+            .ok_or(TopicAuthorityError::PublicationNotFound(publication_key))?;
+        let topic = load_topic_verified(&connection, record.topic_id)?;
+        if record.policy_digest != topic.policy_digest || record.payer != topic.policy.payer {
+            return Err(TopicAuthorityError::CorruptRecord(
+                "publication binding disagrees with the topic head",
+            ));
+        }
+        if record.status == PublicationStatus::Enqueued {
+            let queue = self
+                .channel
+                .inspect_queue(topic.channel_id)
+                .map_err(TopicAuthorityError::Channel)?;
+            if record.channel_sequence > queue.max_sequence {
                 return Err(TopicAuthorityError::CorruptRecord(
-                    "publication enqueue commit disagrees with the channel entry",
+                    "publication sequence exceeds the channel high-water",
                 ));
             }
-            transaction.commit()?;
-            return Ok(PublishDecision::Replayed(existing));
         }
-        let record = load_publication_by_key(&transaction, request.idempotency_key)?.ok_or(
-            TopicAuthorityError::CorruptRecord("publication row vanished after enqueue commit"),
+        verify_parent_chain(&connection, &record)?;
+        // The spent budget must reconcile with the durable children: every
+        // referencing child row committed together with exactly one unit.
+        let children: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM topic_publications WHERE parent_idempotency_key=?1",
+            [publication_key.as_bytes().as_slice()],
+            |row| row.get(0),
         )?;
-        transaction.commit()?;
-        Ok(PublishDecision::Published(record))
+        let spent = decode_u64(children)?;
+        let Some(expected_remaining) = topic.policy.cascade_depth.checked_sub(spent) else {
+            return Err(TopicAuthorityError::CorruptRecord(
+                "cascade children exceed the initialized budget",
+            ));
+        };
+        if record.cascade_budget_remaining != expected_remaining {
+            return Err(TopicAuthorityError::CorruptRecord(
+                "cascade budget disagrees with the durable child publications",
+            ));
+        }
+        Ok(record)
     }
 
     /// Returns the entries this subscriber has not consumed yet.
@@ -1065,7 +1309,7 @@ impl TopicAuthority {
         let mut statement = connection.prepare(
             "SELECT idempotency_key, policy_digest, payer_account_id, payload_digest,
                     status, channel_sequence, channel_generation, cascade_budget_remaining,
-                    published_at_ms, enqueued_at_ms
+                    cascade_level, published_at_ms, enqueued_at_ms, parent_idempotency_key
              FROM topic_publications WHERE topic_id=?1
              ORDER BY published_at_ms, idempotency_key",
         )?;
@@ -1082,17 +1326,24 @@ impl TopicAuthority {
                     row.get::<_, i64>(7)?,
                     row.get::<_, i64>(8)?,
                     row.get::<_, i64>(9)?,
+                    row.get::<_, i64>(10)?,
+                    row.get::<_, Option<Vec<u8>>>(11)?,
                 ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
         rows.into_iter()
             .map(|row| {
                 let key = IdempotencyKey::from_bytes(array16(row.0)?);
+                let parent = row
+                    .11
+                    .map(|bytes| array16(bytes).map(IdempotencyKey::from_bytes))
+                    .transpose()?;
                 let record = decode_publication(
                     topic_id,
                     key,
+                    parent,
                     (
-                        row.1, row.2, row.3, row.4, row.5, row.6, row.7, row.8, row.9,
+                        row.1, row.2, row.3, row.4, row.5, row.6, row.7, row.8, row.9, row.10,
                     ),
                 )?;
                 if record.policy_digest != topic.policy_digest || record.payer != topic.policy.payer
@@ -1111,6 +1362,93 @@ impl TopicAuthority {
                 Ok(record)
             })
             .collect()
+    }
+
+    /// Completes the channel side of a durably registered publication: fence
+    /// acquisition, [`ChannelAuthority::enqueue`] and the `ENQUEUED`
+    /// sequence-association commit.  Returns the final record and whether
+    /// this call performed the commit (a concurrent completion of the same
+    /// key converges onto its record instead).
+    ///
+    /// A fresh publication enqueues against the fence bound on the topic head
+    /// so a rotation is observable as `StaleChannel`; a resumed `PENDING`
+    /// publication re-reads the Channel head live and re-binds before
+    /// re-issuing the enqueue (the documented re-read convergence after a
+    /// propagated failure).
+    fn complete_enqueue(
+        &self,
+        topic: &TopicRecord,
+        idempotency_key: IdempotencyKey,
+        payload: &[u8],
+        enqueued_at_ms: u64,
+        resumed: bool,
+    ) -> Result<(PublicationRecord, bool), TopicAuthorityError> {
+        let (expected_generation, expected_fencing_token) = if resumed {
+            let live = self
+                .channel
+                .inspect_channel(topic.channel_id)
+                .map_err(TopicAuthorityError::Channel)?;
+            self.rebind_channel_fence(topic, &live)?;
+            (live.generation, live.fencing_token)
+        } else {
+            (topic.channel_generation, topic.channel_fencing_token)
+        };
+
+        // Typed rejections propagate without silent retry.  A `Replayed`
+        // channel decision is the crash window: a prior attempt already
+        // enqueued this key, so its record is the association to keep.
+        let entry = match self
+            .channel
+            .enqueue(EnqueueRequest {
+                channel_id: topic.channel_id,
+                expected_generation,
+                expected_fencing_token,
+                payload: payload.to_vec(),
+                idempotency_key,
+                enqueued_at_ms,
+            })
+            .map_err(TopicAuthorityError::Channel)?
+        {
+            EnqueueDecision::Enqueued(entry) | EnqueueDecision::Replayed(entry) => entry,
+        };
+
+        // Commit the sequence association.
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let changed = transaction.execute(
+            "UPDATE topic_publications
+             SET status=1, channel_sequence=?1, channel_generation=?2, enqueued_at_ms=?3
+             WHERE idempotency_key=?4 AND status=0",
+            params![
+                encode_u64(entry.sequence)?,
+                encode_u64(entry.generation.get())?,
+                encode_u64(entry.enqueued_at_ms)?,
+                idempotency_key.as_bytes().as_slice(),
+            ],
+        )?;
+        if changed != 1 {
+            // A concurrent call completed the same key first; converge to
+            // its record or fail closed on disagreement.
+            let existing = load_publication_by_key(&transaction, idempotency_key)?.ok_or(
+                TopicAuthorityError::CorruptRecord(
+                    "publication row vanished during enqueue commit",
+                ),
+            )?;
+            if existing.status != PublicationStatus::Enqueued
+                || existing.channel_sequence != entry.sequence
+            {
+                return Err(TopicAuthorityError::CorruptRecord(
+                    "publication enqueue commit disagrees with the channel entry",
+                ));
+            }
+            transaction.commit()?;
+            return Ok((existing, false));
+        }
+        let record = load_publication_by_key(&transaction, idempotency_key)?.ok_or(
+            TopicAuthorityError::CorruptRecord("publication row vanished after enqueue commit"),
+        )?;
+        transaction.commit()?;
+        Ok((record, true))
     }
 
     /// Re-binds the topic head's channel fence snapshot after a live
@@ -1188,8 +1526,9 @@ type TopicRow = (
 );
 
 /// Raw `topic_publications` row without the `topic_id` and `idempotency_key`
-/// columns.
-type PublicationRow = (Vec<u8>, Vec<u8>, Vec<u8>, i64, i64, i64, i64, i64, i64);
+/// columns: policy digest, payer, payload digest, status, sequence,
+/// generation, budget, level, and the two timestamps, in that order.
+type PublicationRow = (Vec<u8>, Vec<u8>, Vec<u8>, i64, i64, i64, i64, i64, i64, i64);
 
 fn insert_topic(
     transaction: &Transaction<'_>,
@@ -1280,14 +1619,17 @@ fn insert_publication(
     topic: &TopicRecord,
     idempotency_key: IdempotencyKey,
     payload_digest: [u8; 32],
+    parent_publication_key: Option<IdempotencyKey>,
+    cascade_level: u64,
     published_at_ms: u64,
 ) -> Result<(), TopicAuthorityError> {
     transaction.execute(
         "INSERT INTO topic_publications (
             idempotency_key, topic_id, policy_digest, payer_account_id,
             payload_digest, status, channel_sequence, channel_generation,
-            cascade_budget_remaining, published_at_ms, enqueued_at_ms
-         ) VALUES (?1, ?2, ?3, ?4, ?5, 0, 0, 0, ?6, ?7, 0)",
+            cascade_budget_remaining, cascade_level, parent_idempotency_key,
+            published_at_ms, enqueued_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, 0, 0, 0, ?6, ?7, ?8, ?9, 0)",
         params![
             idempotency_key.as_bytes().as_slice(),
             topic.topic_id.as_bytes().as_slice(),
@@ -1295,6 +1637,10 @@ fn insert_publication(
             topic.policy.payer.as_bytes().as_slice(),
             payload_digest.as_slice(),
             encode_u64(topic.policy.cascade_depth)?,
+            encode_u64(cascade_level)?,
+            parent_publication_key
+                .as_ref()
+                .map(|key| key.as_bytes().as_slice()),
             encode_u64(published_at_ms)?,
         ],
     )?;
@@ -1492,7 +1838,8 @@ fn load_publication_by_key(
         .query_row(
             "SELECT topic_id, policy_digest, payer_account_id, payload_digest,
                     status, channel_sequence, channel_generation,
-                    cascade_budget_remaining, published_at_ms, enqueued_at_ms
+                    cascade_budget_remaining, cascade_level, published_at_ms,
+                    enqueued_at_ms, parent_idempotency_key
              FROM topic_publications WHERE idempotency_key=?1",
             [key.as_bytes().as_slice()],
             |row| {
@@ -1507,31 +1854,86 @@ fn load_publication_by_key(
                     row.get::<_, i64>(7)?,
                     row.get::<_, i64>(8)?,
                     row.get::<_, i64>(9)?,
+                    row.get::<_, i64>(10)?,
+                    row.get::<_, Option<Vec<u8>>>(11)?,
                 ))
             },
         )
         .optional()?;
     raw.map(|row| {
         let topic_id = TopicId::from_bytes(array16(row.0)?);
+        let parent = row
+            .11
+            .map(|bytes| array16(bytes).map(IdempotencyKey::from_bytes))
+            .transpose()?;
         decode_publication(
             topic_id,
             key,
+            parent,
             (
-                row.1, row.2, row.3, row.4, row.5, row.6, row.7, row.8, row.9,
+                row.1, row.2, row.3, row.4, row.5, row.6, row.7, row.8, row.9, row.10,
             ),
         )
     })
     .transpose()
 }
 
+/// Walks the parent chain from `publication` up to its root publication and
+/// enforces the provenance invariants: every link resolves to a durable row,
+/// the cascade level decreases by exactly one per hop (which no cycle can
+/// satisfy), the walk terminates at a level-0 root binding no parent, and
+/// the chain is never longer than the starting level.  A visited set gives
+/// an explicit cycle signal on top of the monotonicity proof.
+fn verify_parent_chain(
+    connection: &Connection,
+    publication: &PublicationRecord,
+) -> Result<(), TopicAuthorityError> {
+    let mut current = publication.clone();
+    let mut visited = vec![publication.idempotency_key];
+    // A well-formed chain of level L terminates after L hops; anything
+    // longer is corrupt.
+    for _ in 0..=publication.cascade_level {
+        let parent_key = match current.parent_publication_key {
+            Some(key) => key,
+            None if current.cascade_level == 0 => return Ok(()),
+            None => {
+                return Err(TopicAuthorityError::CorruptRecord(
+                    "non-root publication binds no parent",
+                ));
+            }
+        };
+        let parent = load_publication_by_key(connection, parent_key)?.ok_or(
+            TopicAuthorityError::CorruptRecord("parent chain link resolves to no durable row"),
+        )?;
+        if visited.contains(&parent.idempotency_key) {
+            return Err(TopicAuthorityError::CorruptRecord(
+                "parent chain forms a cycle",
+            ));
+        }
+        if parent.cascade_level + 1 != current.cascade_level {
+            return Err(TopicAuthorityError::CorruptRecord(
+                "parent chain cascade levels are not monotone",
+            ));
+        }
+        visited.push(parent.idempotency_key);
+        current = parent;
+    }
+    Err(TopicAuthorityError::CorruptRecord(
+        "parent chain does not terminate at a root publication",
+    ))
+}
+
 /// Decodes one publication row and enforces its structural invariants: the
 /// status mapping is known, a `PENDING_ENQUEUE` row binds no sequence or
-/// generation, and an `ENQUEUED` row binds both.  Cross-checks against the
-/// topic head and the channel high-water run in
-/// [`TopicAuthority::inspect_publications`], where both are known.
+/// generation, an `ENQUEUED` row binds both, and the cascade binding is
+/// self-consistent (a root binds level 0 and no parent, a child binds both).
+/// Cross-checks against the topic head and the channel high-water run in
+/// [`TopicAuthority::inspect_publications`] and
+/// [`TopicAuthority::inspect_publication`], where both are known.
 fn decode_publication(
     topic_id: TopicId,
     idempotency_key: IdempotencyKey,
+    parent_publication_key: Option<IdempotencyKey>,
     row: PublicationRow,
 ) -> Result<PublicationRecord, TopicAuthorityError> {
     let (
@@ -1542,6 +1944,7 @@ fn decode_publication(
         sequence,
         generation,
         budget,
+        cascade_level,
         published,
         enqueued,
     ) = row;
@@ -1554,6 +1957,14 @@ fn decode_publication(
             ));
         }
     };
+    let cascade_level = decode_u64(cascade_level)?;
+    let root_binding = cascade_level == 0 && parent_publication_key.is_none();
+    let child_binding = cascade_level >= 1 && parent_publication_key.is_some();
+    if !root_binding && !child_binding {
+        return Err(TopicAuthorityError::CorruptRecord(
+            "publication cascade level disagrees with its parent binding",
+        ));
+    }
     let record = PublicationRecord {
         topic_id,
         idempotency_key,
@@ -1564,6 +1975,8 @@ fn decode_publication(
         channel_sequence: decode_u64(sequence)?,
         channel_generation: decode_u64(generation)?,
         cascade_budget_remaining: decode_u64(budget)?,
+        cascade_level,
+        parent_publication_key,
         published_at_ms: decode_u64(published)?,
         enqueued_at_ms: decode_u64(enqueued)?,
     };
