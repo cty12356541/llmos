@@ -51,3 +51,10 @@ kill-window 矩阵覆盖：pre-commit IOERR/ENOSPC（create/subscribe/advance/pu
 - **取舍**：token-free 旧入口保留（镜像 channel「新变体强制、legacy 保留」先例）；token-free 入口的弃用为已登记后续项。schema v3 幂等预检迁移，既有行确定性重推导 token。poll 保持零写无鉴权（声明边界）。
 - **已知限制**：token 为单机对称证明，非加密签名/跨进程认证；`inspect_subscription` 返回含 token 记录（单 owner 语义成立，多租户暴露需收口）。
 - **验证**：nlos-topic 39 passed / 0 failed（新增 7 项 consumer_binding，既有 32 项零修改）；workspace clippy -D warnings 零警告；fmt 通过。
+
+## 6. Token-free 旧入口弃用（2026-08-28 增量，commit `a356f97`）
+
+- `advance` / `unsubscribe` 加 `#[deprecated]`（note 指引 `*_with_token` 并说明冒充风险）；全 workspace 无 crate 外使用方、生产代码零内部调用（薄封装委托非弃用 inner）；既有测试文件机械 `#![allow(deprecated)]` 零逻辑改动。
+- 新增 2 项双向行为等价抽测（弃用入口 ↔ token 入口同请求 replay 收敛，receipt 逐字节相等）。
+- 验证：nlos-topic 41 passed / 0 failed；workspace clippy -D warnings 零警告；fmt 通过。
+- Push 状态说明：增量 45/46 共 3 个提交（`178f25e` 之前为 `3d42dc6`/`178f25e`，本增量 `a356f97` + 本文档提交）在 push 时遇 github.com 443 不可达（两次重试失败），先落地本地，恢复后统一 fast-forward 推送，各级状态以实际 push 结果为准。
