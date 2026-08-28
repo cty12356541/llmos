@@ -43,3 +43,11 @@ kill-window 矩阵覆盖：pre-commit IOERR/ENOSPC（create/subscribe/advance/pu
 - payer 为 opaque typed binding + 存在性校验，计量/扣费与 ResourceAccount 集成延后（挂 `RSM-METER-002` AttributionPolicy 后续 ADR）；
 - Topic 匹配谓词/兴趣订阅、retention 策略执行、commit+wakeup 运行时接线（依赖 B-PROCESS wait registry）、跨进程/多写者/多机、真实掉电、CI/部署均未决；
 - kill-9 后页面缓存存活，PowerLossAfter/WAL 截断为模型化丢写，非 fsync 级断电复现。
+
+## 5. 消费身份绑定（2026-08-28 增量，commit `3d42dc6`）
+
+- **缺口**：advance/unsubscribe 原只凭调用者报名 `subscriber_key` 即可推进游标/取消订阅；`SubscriptionId` 为公开派生值，不构成身份证明。
+- **修复**：subscribe 签发 authority 派生 consumption token（domain-separated SHA-256：`subscription_id ‖ subscription_generation`，镜像 channel fencing token 风格）；新增 `advance_with_token` / `unsubscribe_with_token` additive 入口，token 不匹配 `ConsumptionTokenMismatch` 零写入 fail-closed。代次语义：首订 generation=1，重订 +1 换发，旧 token fail-closed（测试钉住）。
+- **取舍**：token-free 旧入口保留（镜像 channel「新变体强制、legacy 保留」先例）；token-free 入口的弃用为已登记后续项。schema v3 幂等预检迁移，既有行确定性重推导 token。poll 保持零写无鉴权（声明边界）。
+- **已知限制**：token 为单机对称证明，非加密签名/跨进程认证；`inspect_subscription` 返回含 token 记录（单 owner 语义成立，多租户暴露需收口）。
+- **验证**：nlos-topic 39 passed / 0 failed（新增 7 项 consumer_binding，既有 32 项零修改）；workspace clippy -D warnings 零警告；fmt 通过。
