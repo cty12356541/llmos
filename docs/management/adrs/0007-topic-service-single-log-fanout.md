@@ -60,4 +60,4 @@
 
 ## 验证与证据
 
-本 ADR 是 DESIGN 级决策记录（2026-08-28 用户选择），尚无实现证据；`B-TOPIC-001` 未开始，不得引用本 ADR 声称 Topic fanout 已实现。`B-TOPIC-001` 的验收至少须覆盖：publish 缺失/越界策略绑定的 fail-closed、单 publication 恰好一次 enqueue、游标单调与重启 replay、min-live-cursor 对 compact 的钳制、cascade 预算 CAS 递减与耗尽/深度越界 fail-closed、payer 绑定存在性校验、订阅 admission 的 max_recipients 约束，以及 Topic 侧 kill-window 故障矩阵。Channel 侧既有证据见 [B-CHANNEL-001](../../evidence/stage-b/b-channel-001-endpoint-authority.md)。
+本 ADR 决策于 2026-08-28 由用户选择；同日 `B-TOPIC-001` 最小前缀已实现并验证（canonical commits `89f966e` / `345a959` / `05ff1ff`），上节所列验收项全部覆盖：策略绑定 fail-closed、恰好一次 enqueue 与 replay 幂等、游标单调/重启 replay、min-live-cursor compact 钳制、cascade 预算 CAS 与耗尽/深度越界 fail-closed、payer 绑定存在性校验、订阅 max_recipients admission，以及 Topic 侧 14 项 kill-window 故障矩阵（含 PENDING_ENQUEUE 跨权威双向收敛与悬空 ENQUEUED 检测路径）。实现事实与明确未决项（delivery attempts 执行、运行时自动 republish、真实 payer 计量、匹配谓词、跨进程/多机、wakeup、真实掉电）见 [B-TOPIC-001 evidence](../../evidence/stage-b/b-topic-001-topic-service-single-log-fanout.md)。仍为单机 `H3 / PARTIAL_PASS`，不声明分布式 broker 或 payer 扣费。Channel 侧既有证据见 [B-CHANNEL-001](../../evidence/stage-b/b-channel-001-endpoint-authority.md)。
