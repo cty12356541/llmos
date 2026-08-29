@@ -25,6 +25,8 @@ pub mod unix;
 #[cfg(windows)]
 pub mod windows;
 
+pub mod handshake;
+
 const LENGTH_PREFIX_BYTES: usize = 4;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -289,6 +291,14 @@ where
     #[must_use]
     pub const fn new(stream: S, config: TransportConfig) -> Self {
         Self { stream, config }
+    }
+
+    /// Returns the wrapped stream, consuming the framer. This lets a caller
+    /// run the connection-level handshake with [`Self`] and then hand the
+    /// same stream to `serve_one` or [`LocalRpcClient`].
+    #[must_use]
+    pub fn into_inner(self) -> S {
+        self.stream
     }
 
     /// Writes one bounded length-prefixed frame.

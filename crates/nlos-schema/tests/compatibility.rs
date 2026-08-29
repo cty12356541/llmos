@@ -5,31 +5,37 @@ use nlos_schema::sabi::v1::{
     CapabilityHandle, ControlCommand, ControlCommandLifecycleState, ControlCommandResult,
     ControlCommandSource, ControlScope, Envelope, ExchangeRequest, ExchangeResponse,
     GetSystemControlRequest, NegotiateServiceResponse, OperationLifecycleState, OperationReference,
-    OperationStatus, QueryOperationRequest, ReceiptReference, RecoveryFailureAuthority,
-    RecoveryFailureSummary, RecoveryWorkerLifecycleState, RegisterWaitRequest,
-    ResolveServiceRequest, ResolveServiceResponse, RetryDirective, SabiErrorCode, SabiFailure,
-    SabiRequestContext, SabiResponseContext, SchemaIdentity, SubmitBarrierObservationRequest,
+    OperationStatus, PrincipalHandshakeAttestation, PrincipalHandshakeChallenge,
+    QueryOperationRequest, ReceiptReference, RecoveryFailureAuthority, RecoveryFailureSummary,
+    RecoveryWorkerLifecycleState, RegisterWaitRequest, ResolveServiceRequest,
+    ResolveServiceResponse, RetryDirective, SabiErrorCode, SabiFailure, SabiRequestContext,
+    SabiResponseContext, SchemaIdentity, SubmitBarrierObservationRequest,
     SubmitControlCommandRequest, SystemControlView, TaskExecutionBinding, control_command,
     envelope as envelope_message, local_rpc,
 };
 use nlos_schema::{
-    CommonSemanticsError, CompatibilityError, MAX_ENVELOPE_BYTES,
+    CommonSemanticsError, CompatibilityError, HANDSHAKE_NONCE_BYTES, HANDSHAKE_SIGNATURE_BYTES,
+    MAX_ENVELOPE_BYTES, MAX_HANDSHAKE_CHANNEL_BINDING_BYTES, MAX_PRINCIPAL_HANDSHAKE_PAYLOAD_BYTES,
     MAX_SERVICE_DIRECTORY_PAYLOAD_BYTES, MAX_SYSTEM_CONTROL_ALERTS,
     MAX_TAKEOVER_CONTROL_PAYLOAD_BYTES, MAX_WAIT_CONTROL_PAYLOAD_BYTES, MethodSemantics,
-    SABI_ENVELOPE_SCHEMA, SABI_OPERATION_CONTROL_SCHEMA, SABI_SERVICE_DIRECTORY_SCHEMA,
-    SABI_SYSTEM_CONTROL_SCHEMA, SABI_TAKEOVER_CONTROL_SCHEMA, SABI_WAIT_CONTROL_SCHEMA,
-    decode_artifact_recovery_operations_snapshot, decode_barrier_observation_record,
-    decode_cancel_operation_request, decode_control_command_result, decode_exchange_request,
-    decode_exchange_response, decode_get_system_control_request, decode_operation_status,
+    SABI_ENVELOPE_SCHEMA, SABI_OPERATION_CONTROL_SCHEMA, SABI_PRINCIPAL_HANDSHAKE_SCHEMA,
+    SABI_SERVICE_DIRECTORY_SCHEMA, SABI_SYSTEM_CONTROL_SCHEMA, SABI_TAKEOVER_CONTROL_SCHEMA,
+    SABI_WAIT_CONTROL_SCHEMA, decode_artifact_recovery_operations_snapshot,
+    decode_barrier_observation_record, decode_cancel_operation_request,
+    decode_control_command_result, decode_exchange_request, decode_exchange_response,
+    decode_get_system_control_request, decode_operation_status,
+    decode_principal_handshake_attestation, decode_principal_handshake_challenge,
     decode_query_operation_request, decode_register_wait_request, decode_resolve_service_request,
     decode_sabi_envelope, decode_submit_barrier_observation_request,
     decode_submit_control_command_request, encode_artifact_recovery_operations_snapshot,
     encode_barrier_observation_record, encode_cancel_operation_request,
     encode_control_command_result, encode_exchange_request, encode_exchange_response,
-    encode_get_system_control_request, encode_operation_status, encode_query_operation_request,
-    encode_register_wait_request, encode_resolve_service_request, encode_resolve_service_response,
-    encode_sabi_envelope, encode_submit_barrier_observation_request,
-    encode_submit_control_command_request, operation_control_schema_identity, schema_registry,
+    encode_get_system_control_request, encode_operation_status,
+    encode_principal_handshake_attestation, encode_principal_handshake_challenge,
+    encode_query_operation_request, encode_register_wait_request, encode_resolve_service_request,
+    encode_resolve_service_response, encode_sabi_envelope,
+    encode_submit_barrier_observation_request, encode_submit_control_command_request,
+    operation_control_schema_identity, principal_handshake_schema_identity, schema_registry,
     service_directory_schema_identity, system_control_schema_identity,
     takeover_control_schema_identity, validate_sabi_request_context,
     validate_sabi_response_context, wait_control_schema_identity,
@@ -161,7 +167,7 @@ fn generated_encoding_matches_canonical_golden_vector() {
 #[test]
 fn registry_exposes_the_supported_contract() {
     let registry = schema_registry();
-    assert_eq!(registry.len(), 6);
+    assert_eq!(registry.len(), 7);
     let envelope = registry
         .iter()
         .find(|entry| entry.name == SABI_ENVELOPE_SCHEMA)
@@ -192,6 +198,14 @@ fn registry_exposes_the_supported_contract() {
         .find(|entry| entry.name == SABI_WAIT_CONTROL_SCHEMA)
         .unwrap();
     assert_eq!((wait_control.major, wait_control.minor), (1, 0));
+    let principal_handshake = registry
+        .iter()
+        .find(|entry| entry.name == SABI_PRINCIPAL_HANDSHAKE_SCHEMA)
+        .unwrap();
+    assert_eq!(
+        (principal_handshake.major, principal_handshake.minor),
+        (1, 0)
+    );
 }
 
 #[test]
@@ -242,6 +256,139 @@ fn wait_control_payloads_are_bounded_and_registry_validated() {
     assert!(matches!(
         encode_register_wait_request(&oversized),
         Err(CompatibilityError::FrameTooLarge { .. })
+    ));
+}
+
+#[test]
+fn generated_encoding_matches_principal_handshake_golden_vector() {
+    let expected = decode_hex(include_str!(
+        "../../../schema/golden/nlos.sabi.PrincipalHandshake-v1.hex"
+    ));
+    let encoded = encode_principal_handshake_attestation(&attestation()).unwrap();
+
+    assert_eq!(encoded, expected);
+    assert_eq!(
+        decode_principal_handshake_attestation(&expected).unwrap(),
+        attestation()
+    );
+}
+
+fn attestation() -> PrincipalHandshakeAttestation {
+    PrincipalHandshakeAttestation {
+        schema: Some(principal_handshake_schema_identity()),
+        principal_id: (0_u8..16).collect(),
+        nonce: vec![0xA5; HANDSHAKE_NONCE_BYTES],
+        channel_binding: b"unix:///tmp/nlos-handshake.sock".to_vec(),
+        signature: vec![0xCD; HANDSHAKE_SIGNATURE_BYTES],
+    }
+}
+
+#[test]
+fn principal_handshake_payloads_are_bounded_and_registry_validated() {
+    let challenge = PrincipalHandshakeChallenge {
+        schema: Some(principal_handshake_schema_identity()),
+        nonce: vec![0x5A; HANDSHAKE_NONCE_BYTES],
+    };
+    let challenge_wire = encode_principal_handshake_challenge(&challenge).unwrap();
+    assert_eq!(
+        decode_principal_handshake_challenge(&challenge_wire).unwrap(),
+        challenge
+    );
+
+    let attestation_wire = encode_principal_handshake_attestation(&attestation()).unwrap();
+    assert!(attestation_wire.len() <= MAX_PRINCIPAL_HANDSHAKE_PAYLOAD_BYTES);
+    assert_eq!(
+        decode_principal_handshake_attestation(&attestation_wire).unwrap(),
+        attestation()
+    );
+
+    // Optional schema fields are legal on the raw wire, so the unbound frame
+    // is produced with prost directly; the shared decoders must fail closed.
+    let unbound_challenge = PrincipalHandshakeChallenge {
+        schema: None,
+        ..challenge.clone()
+    }
+    .encode_to_vec();
+    assert!(matches!(
+        decode_principal_handshake_challenge(&unbound_challenge),
+        Err(CompatibilityError::MissingSchemaIdentity)
+    ));
+    let unbound_attestation = PrincipalHandshakeAttestation {
+        schema: None,
+        ..attestation()
+    }
+    .encode_to_vec();
+    assert!(matches!(
+        decode_principal_handshake_attestation(&unbound_attestation),
+        Err(CompatibilityError::MissingSchemaIdentity)
+    ));
+
+    // Foreign identities fail closed on both messages.
+    let mut foreign = principal_handshake_schema_identity();
+    foreign.name = SABI_WAIT_CONTROL_SCHEMA.to_owned();
+    assert!(matches!(
+        decode_principal_handshake_challenge(
+            &PrincipalHandshakeChallenge {
+                schema: Some(foreign.clone()),
+                nonce: vec![0x5A; HANDSHAKE_NONCE_BYTES],
+            }
+            .encode_to_vec()
+        ),
+        Err(CompatibilityError::UnknownSchema(name))
+            if name == SABI_WAIT_CONTROL_SCHEMA
+    ));
+    assert!(matches!(
+        decode_principal_handshake_attestation(
+            &PrincipalHandshakeAttestation {
+                schema: Some(foreign),
+                ..attestation()
+            }
+            .encode_to_vec()
+        ),
+        Err(CompatibilityError::UnknownSchema(name))
+            if name == SABI_WAIT_CONTROL_SCHEMA
+    ));
+
+    // Malformed nonces, principals, signatures, and channel bindings fail closed.
+    for malformed in [
+        PrincipalHandshakeAttestation {
+            nonce: vec![0xA5; HANDSHAKE_NONCE_BYTES - 1],
+            ..attestation()
+        },
+        PrincipalHandshakeAttestation {
+            principal_id: vec![1; 15],
+            ..attestation()
+        },
+        PrincipalHandshakeAttestation {
+            signature: vec![0xCD; HANDSHAKE_SIGNATURE_BYTES + 1],
+            ..attestation()
+        },
+        PrincipalHandshakeAttestation {
+            channel_binding: Vec::new(),
+            ..attestation()
+        },
+        PrincipalHandshakeAttestation {
+            channel_binding: vec![0; MAX_HANDSHAKE_CHANNEL_BINDING_BYTES + 1],
+            ..attestation()
+        },
+    ] {
+        assert!(matches!(
+            encode_principal_handshake_attestation(&malformed),
+            Err(CompatibilityError::InvalidHandshakeNonceLength { .. }
+                | CompatibilityError::InvalidHandshakePrincipalIdLength { .. }
+                | CompatibilityError::InvalidHandshakeSignatureLength { .. }
+                | CompatibilityError::InvalidHandshakeChannelBindingLength { .. },)
+        ));
+    }
+    assert!(matches!(
+        decode_principal_handshake_challenge(
+            &PrincipalHandshakeChallenge {
+                nonce: vec![0x5A; HANDSHAKE_NONCE_BYTES + 1],
+                ..challenge
+            }
+            .encode_to_vec()
+        ),
+        Err(CompatibilityError::InvalidHandshakeNonceLength { .. })
     ));
 }
 

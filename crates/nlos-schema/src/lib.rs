@@ -22,17 +22,28 @@ pub const SABI_OPERATION_CONTROL_SCHEMA: &str = "nlos.sabi.OperationControl";
 pub const SABI_SYSTEM_CONTROL_SCHEMA: &str = "nlos.sabi.SystemControl";
 pub const SABI_TAKEOVER_CONTROL_SCHEMA: &str = "nlos.sabi.TakeoverControl";
 pub const SABI_WAIT_CONTROL_SCHEMA: &str = "nlos.sabi.WaitControl";
+/// ADR-0011 connection-level principal handshake channel; the seventh
+/// registry entry, added additively under the ADR-0014 v1-beta freeze.
+pub const SABI_PRINCIPAL_HANDSHAKE_SCHEMA: &str = "nlos.sabi.PrincipalHandshake";
 pub const MAX_ENVELOPE_BYTES: usize = 1024 * 1024;
 pub const MAX_SERVICE_DIRECTORY_PAYLOAD_BYTES: usize = 64 * 1024;
 pub const MAX_OPERATION_CONTROL_PAYLOAD_BYTES: usize = 64 * 1024;
 pub const MAX_SYSTEM_CONTROL_PAYLOAD_BYTES: usize = 64 * 1024;
 pub const MAX_TAKEOVER_CONTROL_PAYLOAD_BYTES: usize = 64 * 1024;
 pub const MAX_WAIT_CONTROL_PAYLOAD_BYTES: usize = 64 * 1024;
+pub const MAX_PRINCIPAL_HANDSHAKE_PAYLOAD_BYTES: usize = 4 * 1024;
 pub const MAX_SYSTEM_CONTROL_ALERTS: usize = 256;
 pub const MAX_SYSTEM_CONTROL_FAILURES: usize = 64;
 pub const MAX_CONTROL_REASON_BYTES: usize = 512;
 pub const REQUEST_ID_BYTES: usize = 16;
 pub const SHA256_DIGEST_BYTES: usize = 32;
+/// Ed25519 challenge nonces are exactly 32 bytes on the handshake wire.
+pub const HANDSHAKE_NONCE_BYTES: usize = 32;
+/// Ed25519 signatures are exactly 64 bytes on the handshake wire.
+pub const HANDSHAKE_SIGNATURE_BYTES: usize = 64;
+/// The transport-derived channel binding is bounded and must be non-empty so
+/// every attestation is pinned to one concrete connection context.
+pub const MAX_HANDSHAKE_CHANNEL_BINDING_BYTES: usize = 256;
 pub const MAX_ACTIVITY_CONTEXT_BYTES: usize = 4 * 1024;
 pub const MAX_CAPABILITY_HANDLES: usize = 64;
 pub const MAX_RECEIPT_REFERENCES: usize = 64;
@@ -88,6 +99,13 @@ const SABI_WAIT_CONTROL_V1: SchemaDescriptor = SchemaDescriptor {
     supported_critical_extensions: &[],
 };
 
+const SABI_PRINCIPAL_HANDSHAKE_V1: SchemaDescriptor = SchemaDescriptor {
+    name: SABI_PRINCIPAL_HANDSHAKE_SCHEMA,
+    major: 1,
+    minor: 0,
+    supported_critical_extensions: &[],
+};
+
 const REGISTRY: &[SchemaDescriptor] = &[
     SABI_ENVELOPE_V1,
     SABI_SERVICE_DIRECTORY_V1,
@@ -95,6 +113,7 @@ const REGISTRY: &[SchemaDescriptor] = &[
     SABI_SYSTEM_CONTROL_V1,
     SABI_TAKEOVER_CONTROL_V1,
     SABI_WAIT_CONTROL_V1,
+    SABI_PRINCIPAL_HANDSHAKE_V1,
 ];
 
 #[must_use]
@@ -152,6 +171,18 @@ pub enum CompatibilityError {
     },
     EmptyService,
     EmptyMethod,
+    InvalidHandshakeNonceLength {
+        actual: usize,
+    },
+    InvalidHandshakePrincipalIdLength {
+        actual: usize,
+    },
+    InvalidHandshakeSignatureLength {
+        actual: usize,
+    },
+    InvalidHandshakeChannelBindingLength {
+        actual: usize,
+    },
 }
 
 // A flat Display match grows linearly with the variant count; splitting it
@@ -268,6 +299,22 @@ impl fmt::Display for CompatibilityError {
             ),
             Self::EmptyService => formatter.write_str("service must not be empty"),
             Self::EmptyMethod => formatter.write_str("method must not be empty"),
+            Self::InvalidHandshakeNonceLength { actual } => write!(
+                formatter,
+                "handshake nonce has {actual} bytes; exactly {HANDSHAKE_NONCE_BYTES} are required"
+            ),
+            Self::InvalidHandshakePrincipalIdLength { actual } => write!(
+                formatter,
+                "handshake principal_id has {actual} bytes; exactly {REQUEST_ID_BYTES} are required"
+            ),
+            Self::InvalidHandshakeSignatureLength { actual } => write!(
+                formatter,
+                "handshake signature has {actual} bytes; exactly {HANDSHAKE_SIGNATURE_BYTES} are required"
+            ),
+            Self::InvalidHandshakeChannelBindingLength { actual } => write!(
+                formatter,
+                "handshake channel binding has {actual} bytes; 1..={MAX_HANDSHAKE_CHANNEL_BINDING_BYTES} are required"
+            ),
         }
     }
 }
@@ -1313,6 +1360,119 @@ pub fn decode_inspect_wait_result(
         decode_bounded_with_limit(wire, MAX_WAIT_CONTROL_PAYLOAD_BYTES)?;
     validate_wait_control_identity(result.schema.as_ref())?;
     Ok(result)
+}
+
+/// Returns the v1 identity required on every `PrincipalHandshake` payload.
+#[must_use]
+pub fn principal_handshake_schema_identity() -> sabi::v1::SchemaIdentity {
+    sabi::v1::SchemaIdentity {
+        name: SABI_PRINCIPAL_HANDSHAKE_SCHEMA.to_owned(),
+        major: 1,
+        minor: 0,
+        critical_extension_ids: Vec::new(),
+        non_critical_extension_ids: Vec::new(),
+    }
+}
+
+/// Validates and encodes a bounded `PrincipalHandshake` challenge.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity or malformed nonce.
+pub fn encode_principal_handshake_challenge(
+    challenge: &sabi::v1::PrincipalHandshakeChallenge,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_principal_handshake_identity(challenge.schema.as_ref())?;
+    validate_handshake_nonce(&challenge.nonce)?;
+    encode_bounded_with_limit(challenge, MAX_PRINCIPAL_HANDSHAKE_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded `PrincipalHandshake` challenge.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_principal_handshake_challenge(
+    wire: &[u8],
+) -> Result<sabi::v1::PrincipalHandshakeChallenge, CompatibilityError> {
+    let challenge: sabi::v1::PrincipalHandshakeChallenge =
+        decode_bounded_with_limit(wire, MAX_PRINCIPAL_HANDSHAKE_PAYLOAD_BYTES)?;
+    validate_principal_handshake_identity(challenge.schema.as_ref())?;
+    validate_handshake_nonce(&challenge.nonce)?;
+    Ok(challenge)
+}
+
+/// Validates and encodes a bounded `PrincipalHandshake` attestation.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity, malformed
+/// principal/nonce/signature, or unbounded channel binding.
+pub fn encode_principal_handshake_attestation(
+    attestation: &sabi::v1::PrincipalHandshakeAttestation,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_principal_handshake_identity(attestation.schema.as_ref())?;
+    validate_principal_handshake_attestation_fields(attestation)?;
+    encode_bounded_with_limit(attestation, MAX_PRINCIPAL_HANDSHAKE_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded `PrincipalHandshake` attestation.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_principal_handshake_attestation(
+    wire: &[u8],
+) -> Result<sabi::v1::PrincipalHandshakeAttestation, CompatibilityError> {
+    let attestation: sabi::v1::PrincipalHandshakeAttestation =
+        decode_bounded_with_limit(wire, MAX_PRINCIPAL_HANDSHAKE_PAYLOAD_BYTES)?;
+    validate_principal_handshake_identity(attestation.schema.as_ref())?;
+    validate_principal_handshake_attestation_fields(&attestation)?;
+    Ok(attestation)
+}
+
+fn validate_principal_handshake_identity(
+    identity: Option<&sabi::v1::SchemaIdentity>,
+) -> Result<(), CompatibilityError> {
+    let identity = identity.ok_or(CompatibilityError::MissingSchemaIdentity)?;
+    validate_schema_identity(identity)?;
+    if identity.name != SABI_PRINCIPAL_HANDSHAKE_SCHEMA {
+        return Err(CompatibilityError::UnknownSchema(identity.name.clone()));
+    }
+    Ok(())
+}
+
+fn validate_handshake_nonce(nonce: &[u8]) -> Result<(), CompatibilityError> {
+    if nonce.len() != HANDSHAKE_NONCE_BYTES {
+        return Err(CompatibilityError::InvalidHandshakeNonceLength {
+            actual: nonce.len(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_principal_handshake_attestation_fields(
+    attestation: &sabi::v1::PrincipalHandshakeAttestation,
+) -> Result<(), CompatibilityError> {
+    validate_handshake_nonce(&attestation.nonce)?;
+    if attestation.principal_id.len() != REQUEST_ID_BYTES {
+        return Err(CompatibilityError::InvalidHandshakePrincipalIdLength {
+            actual: attestation.principal_id.len(),
+        });
+    }
+    if attestation.signature.len() != HANDSHAKE_SIGNATURE_BYTES {
+        return Err(CompatibilityError::InvalidHandshakeSignatureLength {
+            actual: attestation.signature.len(),
+        });
+    }
+    if attestation.channel_binding.is_empty()
+        || attestation.channel_binding.len() > MAX_HANDSHAKE_CHANNEL_BINDING_BYTES
+    {
+        return Err(CompatibilityError::InvalidHandshakeChannelBindingLength {
+            actual: attestation.channel_binding.len(),
+        });
+    }
+    Ok(())
 }
 
 /// Validates common request metadata against the negotiated method contract.

@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package nlos.sabi.v1;
+
+import "nlos/sabi/v1/envelope.proto";
+
+// ADR-0011 connection-level principal challenge-response handshake. This
+// message family is an additive v1-beta registry entry; the six previously
+// frozen channels keep byte-identical wire contracts.
+//
+// `PrincipalHandshakeChallenge` carries the server's one-time nonce.
+// `PrincipalHandshakeAttestation` is the client's Ed25519 signature over the
+// domain-separated digest of (nonce, principal id, channel binding), which
+// the server verifies through the IdentityAuthority against the principal's
+// current key generation. Unknown principals, revoked or rotated keys, wrong
+// nonces, and bad signatures all fail closed before any session state exists.
+message PrincipalHandshakeChallenge {
+  SchemaIdentity schema = 1;
+  bytes nonce = 2;
+}
+
+message PrincipalHandshakeAttestation {
+  SchemaIdentity schema = 1;
+  bytes principal_id = 2;
+  bytes nonce = 3;
+  bytes channel_binding = 4;
+  bytes signature = 5;
+}
