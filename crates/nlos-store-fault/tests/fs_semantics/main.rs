@@ -402,22 +402,34 @@ fn fault_write_boundary_loss_matches_real_truncation_at_same_byte_length() {
         drop(db); // close while armed
         drop(armed);
 
-        let surviving = remaining.min(total_rows_u64);
-        let surviving_usize = usize::try_from(surviving).expect("fits usize");
-        let commits = setup_commits + surviving_usize;
-        let expected = expected_rows_for_commits(commits);
-        // Byte anchor from the reference image: end of the row-0 commit
-        // frame (the setup boundary) plus one frame per surviving insert.
-        // Frame COUNT alone under-counts bytes (the journal-mode switch
-        // leaves a non-commit frame in the WAL), so the arithmetic is
-        // anchored to a measured commit-frame end.
+        let surviving_upper = remaining.min(total_rows_u64);
+        // The oracle derives the committed prefix from the bytes on disk
+        // (commit frames fully contained in the measured WAL) instead of
+        // assuming one xWrite per frame: SQLite may issue a frame header
+        // and its page payload as separate writes, so a given B can land
+        // mid-frame. The calibration property is recovery equivalence at
+        // the same measured length, not byte-count arithmetic.
         let setup_boundary = reference.layout.commit_ends[setup_commits - 1];
-        let expected_len = setup_boundary + surviving_usize * reference.layout.frame_size;
-        assert_eq!(
-            usize::try_from(wal_len).expect("wal len fits usize"),
-            expected_len,
-            "fault B={b}: on-disk WAL length must equal the committed-frame \
-             boundary the model implies"
+        let wal_len_usize = usize::try_from(wal_len).expect("wal len fits usize");
+        let reference_wal = reference.snapshot.wal.as_deref().expect("ref wal");
+        assert!(
+            wal_len_usize >= setup_boundary,
+            "fault B={b}: setup frames must stay durable (fault armed only for inserts)"
+        );
+        assert!(
+            wal_len_usize <= reference_wal.len(),
+            "fault B={b}: dropped writes cannot grow the WAL past the reference"
+        );
+        let commits_in_wal = reference
+            .layout
+            .commit_ends
+            .iter()
+            .filter(|end| **end <= wal_len_usize)
+            .count();
+        let expected = expected_rows_for_commits(commits_in_wal);
+        assert!(
+            u64::try_from(commits_in_wal - setup_commits).expect("fits u64") <= surviving_upper,
+            "fault B={b}: recovered rows must not exceed the writes the model allows"
         );
 
         // The calibration core assertion: the fault-run disk image and the
@@ -435,13 +447,11 @@ fn fault_write_boundary_loss_matches_real_truncation_at_same_byte_length() {
         let fault_rows = rows_or_empty(&fault_db);
         drop(fault_db);
 
-        let real_wal_len =
-            expected_len.min(reference.snapshot.wal.as_deref().expect("ref wal").len());
         let real_twin = write_copy(
             twin_dir.path(),
             "real-twin",
             &reference.snapshot.db,
-            Some(&reference.snapshot.wal.as_deref().expect("ref wal")[..real_wal_len]),
+            Some(&reference_wal[..wal_len_usize]),
         );
         let real_db = RawDb::open(&real_twin, None);
         real_db.assert_integrity();
@@ -459,8 +469,9 @@ fn fault_write_boundary_loss_matches_real_truncation_at_same_byte_length() {
     }
     println!(
         "CALIBRATION fault-boundary equivalence: PowerLossAfter B=0..={} — \
-         every simulated tear point lands exactly on a WAL frame boundary \
-         and recovers identically to real byte truncation at that length",
+         every simulated tear point recovers exactly the committed prefix \
+         implied by its on-disk bytes and matches real byte truncation at \
+         the same measured length",
         COMMIT_ROWS + 1
     );
 }
