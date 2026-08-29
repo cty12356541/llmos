@@ -47,6 +47,20 @@
 //! the counter is zeroed, the state flips back to active and the cursor
 //! stays exactly where it was.
 //!
+//! Retention (`RSM-FANOUT-001`, the declared `retained_bytes`/`retention_ms`
+//! bounds) is executed as publish-side admission backpressure: in the same
+//! `Immediate` transaction that reads the policy and before the first
+//! durable write, both the publish path and the republish child path measure
+//! the topic's unconsumed backlog (channel payload bytes beyond
+//! `min(active subscriber cursors, channel consume high-water)` — the lag of
+//! a `QUARANTINED` subscriber holds no retention budget) and the age of the
+//! oldest live entry still held by an active subscriber (measured against
+//! the caller-supplied request time, never a wall clock).  Exceeding either
+//! declared bound rejects the call with the typed
+//! [`TopicAuthorityError::TopicRetentionExhausted`] before any write: zero
+//! partial state, nothing deleted — backpressure on the publisher, never an
+//! automatic eviction.
+//!
 //! It deliberately does not implement: runtime-automatic cascade triggering
 //! (republish is an owner-invoked forwarding step), real payer metering,
 //! interest/matching predicates, cross-process access, wakeup wiring, or
@@ -501,6 +515,28 @@ pub enum TopicAuthorityError {
         requested_level: u64,
         cascade_depth: u64,
     },
+    /// A publish or republish was rejected by the topic's declared retention
+    /// bounds before any durable write (`RSM-FANOUT-001` retention): the
+    /// unconsumed backlog plus the new payload would exceed the declared
+    /// `retained_bytes`, or the oldest live entry still held by an active
+    /// subscriber is older than the declared `retention_ms` measured against
+    /// the caller-supplied request time.  Fail-closed backpressure: the
+    /// rejected call leaves zero partial state and nothing is deleted.
+    TopicRetentionExhausted {
+        topic_id: TopicId,
+        /// Declared byte upper bound (`TopicPolicy::retained_bytes`).
+        retained_bytes_declared: u64,
+        /// Measured unconsumed backlog bytes before the rejected write.
+        backlog_bytes: u64,
+        /// Payload bytes of the rejected publication.
+        payload_bytes: u64,
+        /// Declared time upper bound (`TopicPolicy::retention_ms`).
+        retention_ms_declared: u64,
+        /// Age in ms of the oldest live entry still held by an active
+        /// subscriber, measured against the caller-supplied request time
+        /// (`0` when no live entry is currently held by one).
+        oldest_unconsumed_age_ms: u64,
+    },
     InvalidPolicy(&'static str),
     SubscriberLimitReached,
     IdempotencyConflict,
@@ -574,6 +610,21 @@ impl fmt::Display for TopicAuthorityError {
                 formatter,
                 "cascade level {requested_level} from {parent_publication_key:?} exceeds \
                  the parent policy cascade_depth {cascade_depth}"
+            ),
+            Self::TopicRetentionExhausted {
+                topic_id,
+                retained_bytes_declared,
+                backlog_bytes,
+                payload_bytes,
+                retention_ms_declared,
+                oldest_unconsumed_age_ms,
+            } => write!(
+                formatter,
+                "topic {topic_id:?} retention bounds exhausted: backlog {backlog_bytes} + \
+                 payload {payload_bytes} bytes against declared retained_bytes \
+                 {retained_bytes_declared}, oldest unconsumed held entry \
+                 {oldest_unconsumed_age_ms}ms against declared retention_ms \
+                 {retention_ms_declared}"
             ),
             Self::InvalidPolicy(reason) => {
                 write!(formatter, "invalid topic policy: {reason}")
@@ -1061,10 +1112,28 @@ impl TopicAuthority {
     /// [`TopicAuthorityError::IdempotencyConflict`].  This is verify-then-
     /// commit semantics; no cross-authority atomicity is claimed.
     ///
+    /// Retention admission (`RSM-FANOUT-001`, the declared
+    /// `retained_bytes`/`retention_ms`) runs in the step-1 `Immediate`
+    /// transaction, after the idempotency gates and before the
+    /// `PENDING_ENQUEUE` insert: the unconsumed backlog (channel payload
+    /// bytes beyond `min(active subscriber cursors, channel consume
+    /// high-water)`; a `QUARANTINED` subscriber's lag holds no budget) plus
+    /// the new payload must fit `retained_bytes`, and the oldest live entry
+    /// still held by an active subscriber must not be older than
+    /// `retention_ms`, measured against the caller-supplied
+    /// `published_at_ms`.  Either bound exceeded is
+    /// [`TopicAuthorityError::TopicRetentionExhausted`] before any durable
+    /// write: a rejected publish leaves zero partial state and nothing is
+    /// deleted.  A resumed `PENDING_ENQUEUE` row replays without re-running
+    /// the admission: its insert already passed it, and the channel's
+    /// key-scoped replay converges without a duplicate enqueue.
+    ///
     /// # Errors
     ///
     /// Fails closed for an empty payload, an unknown Topic, idempotency
-    /// rebinding, a propagated Channel rejection (`StaleChannel`,
+    /// rebinding, the declared retention bounds
+    /// ([`TopicAuthorityError::TopicRetentionExhausted`], before any durable
+    /// write), a propagated Channel rejection (`StaleChannel`,
     /// `QueueFull`, ...) or a storage/corruption failure.  The publication
     /// row stays `PENDING_ENQUEUE` when the enqueue itself is rejected.
     pub fn publish(&self, request: PublishRequest) -> Result<PublishDecision, TopicAuthorityError> {
@@ -1096,6 +1165,17 @@ impl TopicAuthority {
                 transaction.commit()?;
                 (topic, true)
             } else {
+                // Retention admission (`RSM-FANOUT-001`): in this same
+                // `Immediate` transaction, after the idempotency gates and
+                // before the first durable write, so a rejected publish
+                // leaves zero partial state.
+                check_retention_admission(
+                    &transaction,
+                    &self.channel,
+                    &topic,
+                    published_at_ms,
+                    payload.len() as u64,
+                )?;
                 insert_publication(
                     &transaction,
                     &topic,
@@ -1136,8 +1216,11 @@ impl TopicAuthority {
     ///    with [`TopicAuthorityError::PublicationNotEnqueued`]; the depth
     ///    bound (`parent level + 1` within the parent policy's
     ///    `cascade_depth`) is enforced pre-write
-    ///    ([`TopicAuthorityError::CascadeDepthExceeded`]); then one budget
-    ///    unit is spent through a guarded compare-and-set
+    ///    ([`TopicAuthorityError::CascadeDepthExceeded`]); the child topic's
+    ///    declared retention bounds are then admitted pre-write as well
+    ///    ([`TopicAuthorityError::TopicRetentionExhausted`], still before
+    ///    any durable write, so a rejected republish spends no budget);
+    ///    then one budget unit is spent through a guarded compare-and-set
     ///    (`UPDATE ... WHERE cascade_budget_remaining > 0`; zero affected
     ///    rows is [`TopicAuthorityError::CascadeBudgetExhausted`]) and the
     ///    child publication row is inserted `PENDING_ENQUEUE` with the parent
@@ -1162,7 +1245,9 @@ impl TopicAuthority {
     ///
     /// Fails closed for an empty payload, an unknown child topic, a missing
     /// or non-enqueued parent, a broken or cyclic parent chain, the depth
-    /// bound, an exhausted parent budget, idempotency rebinding, a
+    /// bound, the child topic's declared retention bounds
+    /// ([`TopicAuthorityError::TopicRetentionExhausted`], before any durable
+    /// write), an exhausted parent budget, idempotency rebinding, a
     /// propagated Channel rejection (`StaleChannel`, `QueueFull`, ...) or a
     /// storage/corruption failure.  The child row stays `PENDING_ENQUEUE`
     /// when the enqueue itself is rejected (the budget stays spent).
@@ -1234,6 +1319,19 @@ impl TopicAuthority {
                         cascade_depth: parent_topic.policy.cascade_depth,
                     });
                 }
+                // Child-topic retention admission (`RSM-FANOUT-001`): the
+                // same pre-write gate as publish, against the child topic's
+                // declared bounds.  It stays with the other pre-write gates,
+                // strictly before the budget compare-and-set (the first
+                // durable write), so a rejected republish spends no budget
+                // and leaves zero partial state.
+                check_retention_admission(
+                    &transaction,
+                    &self.channel,
+                    &child_topic,
+                    republished_at_ms,
+                    payload.len() as u64,
+                )?;
                 // Guarded budget CAS: exactly one unit of the parent's
                 // remaining cascade budget, zero partial state on rejection.
                 let changed = transaction.execute(
@@ -1861,6 +1959,114 @@ fn wrap_compact(
         effective_trim_high_water: target,
         channel: receipt,
     }
+}
+
+/// Retention admission for one prospective publication (`RSM-FANOUT-001`,
+/// ADR-0007 retention addendum): the topic's declared
+/// `retained_bytes`/`retention_ms` bounds are enforced as publish-side
+/// backpressure before any durable write, inside the caller's `Immediate`
+/// transaction (the same one that read the policy), so a rejected
+/// publication leaves zero partial state and nothing is ever deleted here.
+///
+/// Byte bound: the unconsumed backlog is measured from channel-side durable
+/// bytes as the payload-byte sum over live entries beyond the same release
+/// point [`TopicAuthority::compact_bound`] uses —
+/// `min(active subscriber cursors, channel consume high-water)`, falling
+/// back to the consume high-water when no active subscriber holds the log.
+/// A subscriber whose delivery attempts are exhausted (`QUARANTINED`) has
+/// stopped receiving deliveries and holds no retention budget: its lag is
+/// excluded, orthogonal to the delivery-attempts mechanism that isolated it.
+/// When a live subscriber cursor sits behind the channel consume high-water,
+/// the per-entry bytes between the two are not exposed below the channel
+/// consume point, so the total live retained bytes stand in as a
+/// conservative (fail-closed) upper bound of the true backlog.
+///
+/// Time bound: the oldest still-live entry held by an active subscriber
+/// (its channel sequence beyond that cursor and beyond the channel trim
+/// prefix) must not be older than the declared `retention_ms`, measured
+/// with the entry's `enqueued_at_ms` against the caller-supplied request
+/// time — never a wall clock.
+///
+/// The byte bound is checked first, then the time bound; either failing
+/// returns [`TopicAuthorityError::TopicRetentionExhausted`] carrying both
+/// declared bounds and the measured values.
+fn check_retention_admission(
+    transaction: &Transaction<'_>,
+    channel: &ChannelAuthority,
+    topic: &TopicRecord,
+    request_at_ms: u64,
+    payload_bytes: u64,
+) -> Result<(), TopicAuthorityError> {
+    // Only subscribers still receiving deliveries hold retention budget: a
+    // `QUARANTINED` subscription has stopped consuming by policy, and its
+    // lag is the delivery-attempts mechanism's concern, not retention's.
+    let min_live: Option<Option<i64>> = transaction
+        .query_row(
+            "SELECT MIN(cursor) FROM topic_subscriptions
+             WHERE topic_id=?1 AND active=1 AND state=0",
+            [topic.topic_id.as_bytes().as_slice()],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let min_active_cursor = min_live.flatten().map(decode_u64).transpose()?;
+    let queue = channel
+        .inspect_queue(topic.channel_id)
+        .map_err(TopicAuthorityError::Channel)?;
+    // Same release-point trade-off as `compact_bound`: with no active
+    // subscriber the channel consume high-water alone releases the log.
+    let bound = min_active_cursor.map_or(queue.consume_high_water, |cursor| {
+        cursor.min(queue.consume_high_water)
+    });
+    let backlog_bytes = if bound < queue.consume_high_water {
+        // A live subscriber sits behind the channel consume point: the
+        // per-entry bytes of the window between the two are not exposed
+        // below the channel consume point, so the total live retained bytes
+        // stand in as a conservative upper bound of the true backlog.
+        queue.retained_bytes
+    } else {
+        queue.backlog_bytes
+    };
+    let bytes_exhausted = match backlog_bytes.checked_add(payload_bytes) {
+        Some(total) => total > topic.policy.retained_bytes,
+        None => true,
+    };
+    // The time bound needs a holder: an entry nobody actively subscribed is
+    // holding exerts byte pressure only, never time pressure.
+    let oldest_held_enqueued_at_ms: Option<i64> = match min_active_cursor {
+        None => None,
+        Some(min_cursor) => {
+            // Held by an active subscriber (beyond its cursor) and still
+            // live (beyond the channel trim prefix).
+            let held_bound = min_cursor.max(queue.trim_high_water);
+            transaction.query_row(
+                "SELECT MIN(enqueued_at_ms) FROM topic_publications
+                     WHERE topic_id=?1 AND status=1 AND channel_sequence > ?2",
+                params![
+                    topic.topic_id.as_bytes().as_slice(),
+                    encode_u64(held_bound)?,
+                ],
+                |row| row.get(0),
+            )?
+        }
+    };
+    let oldest_unconsumed_age_ms = oldest_held_enqueued_at_ms
+        .map(decode_u64)
+        .transpose()?
+        .map_or(0, |enqueued_at_ms| {
+            request_at_ms.saturating_sub(enqueued_at_ms)
+        });
+    let time_exhausted = oldest_unconsumed_age_ms > topic.policy.retention_ms;
+    if bytes_exhausted || time_exhausted {
+        return Err(TopicAuthorityError::TopicRetentionExhausted {
+            topic_id: topic.topic_id,
+            retained_bytes_declared: topic.policy.retained_bytes,
+            backlog_bytes,
+            payload_bytes,
+            retention_ms_declared: topic.policy.retention_ms,
+            oldest_unconsumed_age_ms,
+        });
+    }
+    Ok(())
 }
 
 /// Raw `topics` row without the constant `topic_id` column.
