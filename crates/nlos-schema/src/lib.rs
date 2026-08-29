@@ -21,11 +21,13 @@ pub const SABI_SERVICE_DIRECTORY_SCHEMA: &str = "nlos.sabi.ServiceDirectory";
 pub const SABI_OPERATION_CONTROL_SCHEMA: &str = "nlos.sabi.OperationControl";
 pub const SABI_SYSTEM_CONTROL_SCHEMA: &str = "nlos.sabi.SystemControl";
 pub const SABI_TAKEOVER_CONTROL_SCHEMA: &str = "nlos.sabi.TakeoverControl";
+pub const SABI_WAIT_CONTROL_SCHEMA: &str = "nlos.sabi.WaitControl";
 pub const MAX_ENVELOPE_BYTES: usize = 1024 * 1024;
 pub const MAX_SERVICE_DIRECTORY_PAYLOAD_BYTES: usize = 64 * 1024;
 pub const MAX_OPERATION_CONTROL_PAYLOAD_BYTES: usize = 64 * 1024;
 pub const MAX_SYSTEM_CONTROL_PAYLOAD_BYTES: usize = 64 * 1024;
 pub const MAX_TAKEOVER_CONTROL_PAYLOAD_BYTES: usize = 64 * 1024;
+pub const MAX_WAIT_CONTROL_PAYLOAD_BYTES: usize = 64 * 1024;
 pub const MAX_SYSTEM_CONTROL_ALERTS: usize = 256;
 pub const MAX_SYSTEM_CONTROL_FAILURES: usize = 64;
 pub const MAX_CONTROL_REASON_BYTES: usize = 512;
@@ -79,12 +81,20 @@ const SABI_TAKEOVER_CONTROL_V1: SchemaDescriptor = SchemaDescriptor {
     supported_critical_extensions: &[],
 };
 
+const SABI_WAIT_CONTROL_V1: SchemaDescriptor = SchemaDescriptor {
+    name: SABI_WAIT_CONTROL_SCHEMA,
+    major: 1,
+    minor: 0,
+    supported_critical_extensions: &[],
+};
+
 const REGISTRY: &[SchemaDescriptor] = &[
     SABI_ENVELOPE_V1,
     SABI_SERVICE_DIRECTORY_V1,
     SABI_OPERATION_CONTROL_V1,
     SABI_SYSTEM_CONTROL_V1,
     SABI_TAKEOVER_CONTROL_V1,
+    SABI_WAIT_CONTROL_V1,
 ];
 
 #[must_use]
@@ -649,6 +659,18 @@ pub fn takeover_control_schema_identity() -> sabi::v1::SchemaIdentity {
     }
 }
 
+/// Returns the v1 identity required on every `WaitControl` payload.
+#[must_use]
+pub fn wait_control_schema_identity() -> sabi::v1::SchemaIdentity {
+    sabi::v1::SchemaIdentity {
+        name: SABI_WAIT_CONTROL_SCHEMA.to_owned(),
+        major: 1,
+        minor: 0,
+        critical_extension_ids: Vec::new(),
+        non_critical_extension_ids: Vec::new(),
+    }
+}
+
 /// Encodes a bounded, validated `TakeoverControl.submit_barrier_observation`
 /// request.
 ///
@@ -1033,6 +1055,266 @@ pub fn decode_negotiate_service_response(
     Ok(response)
 }
 
+/// Validates and encodes a bounded `WaitControl.register_wait` request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity or oversized payload.
+pub fn encode_register_wait_request(
+    request: &sabi::v1::RegisterWaitRequest,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_wait_control_identity(request.schema.as_ref())?;
+    encode_bounded_with_limit(request, MAX_WAIT_CONTROL_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded `WaitControl.register_wait` request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_register_wait_request(
+    wire: &[u8],
+) -> Result<sabi::v1::RegisterWaitRequest, CompatibilityError> {
+    let request: sabi::v1::RegisterWaitRequest =
+        decode_bounded_with_limit(wire, MAX_WAIT_CONTROL_PAYLOAD_BYTES)?;
+    validate_wait_control_identity(request.schema.as_ref())?;
+    Ok(request)
+}
+
+/// Validates and encodes a bounded `WaitControl.register_wait` result.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity or oversized payload.
+pub fn encode_register_wait_result(
+    result: &sabi::v1::RegisterWaitResult,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_wait_control_identity(result.schema.as_ref())?;
+    encode_bounded_with_limit(result, MAX_WAIT_CONTROL_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded `WaitControl.register_wait` result.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_register_wait_result(
+    wire: &[u8],
+) -> Result<sabi::v1::RegisterWaitResult, CompatibilityError> {
+    let result: sabi::v1::RegisterWaitResult =
+        decode_bounded_with_limit(wire, MAX_WAIT_CONTROL_PAYLOAD_BYTES)?;
+    validate_wait_control_identity(result.schema.as_ref())?;
+    Ok(result)
+}
+
+/// Validates and encodes a bounded `WaitControl.notify_commits` request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity or oversized payload.
+pub fn encode_notify_commits_request(
+    request: &sabi::v1::NotifyCommitsRequest,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_wait_control_identity(request.schema.as_ref())?;
+    encode_bounded_with_limit(request, MAX_WAIT_CONTROL_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded `WaitControl.notify_commits` request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_notify_commits_request(
+    wire: &[u8],
+) -> Result<sabi::v1::NotifyCommitsRequest, CompatibilityError> {
+    let request: sabi::v1::NotifyCommitsRequest =
+        decode_bounded_with_limit(wire, MAX_WAIT_CONTROL_PAYLOAD_BYTES)?;
+    validate_wait_control_identity(request.schema.as_ref())?;
+    Ok(request)
+}
+
+/// Validates and encodes a bounded `WaitControl.notify_commits` result.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity or oversized payload.
+pub fn encode_notify_commits_result(
+    report: &sabi::v1::WakeReport,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_wait_control_identity(report.schema.as_ref())?;
+    encode_bounded_with_limit(report, MAX_WAIT_CONTROL_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded `WaitControl.notify_commits` result.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_notify_commits_result(
+    wire: &[u8],
+) -> Result<sabi::v1::WakeReport, CompatibilityError> {
+    let report: sabi::v1::WakeReport =
+        decode_bounded_with_limit(wire, MAX_WAIT_CONTROL_PAYLOAD_BYTES)?;
+    validate_wait_control_identity(report.schema.as_ref())?;
+    Ok(report)
+}
+
+/// Validates and encodes a bounded `WaitControl.cancel_wait` request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity or oversized payload.
+pub fn encode_cancel_wait_request(
+    request: &sabi::v1::CancelWaitRequest,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_wait_control_identity(request.schema.as_ref())?;
+    encode_bounded_with_limit(request, MAX_WAIT_CONTROL_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded `WaitControl.cancel_wait` request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_cancel_wait_request(
+    wire: &[u8],
+) -> Result<sabi::v1::CancelWaitRequest, CompatibilityError> {
+    let request: sabi::v1::CancelWaitRequest =
+        decode_bounded_with_limit(wire, MAX_WAIT_CONTROL_PAYLOAD_BYTES)?;
+    validate_wait_control_identity(request.schema.as_ref())?;
+    Ok(request)
+}
+
+/// Validates and encodes a bounded `WaitControl.cancel_wait` result.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity or oversized payload.
+pub fn encode_cancel_wait_result(
+    result: &sabi::v1::CancelWaitResult,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_wait_control_identity(result.schema.as_ref())?;
+    encode_bounded_with_limit(result, MAX_WAIT_CONTROL_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded `WaitControl.cancel_wait` result.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_cancel_wait_result(
+    wire: &[u8],
+) -> Result<sabi::v1::CancelWaitResult, CompatibilityError> {
+    let result: sabi::v1::CancelWaitResult =
+        decode_bounded_with_limit(wire, MAX_WAIT_CONTROL_PAYLOAD_BYTES)?;
+    validate_wait_control_identity(result.schema.as_ref())?;
+    Ok(result)
+}
+
+/// Validates and encodes a bounded `WaitControl.list_waits` request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity or oversized payload.
+pub fn encode_list_waits_request(
+    request: &sabi::v1::ListWaitsRequest,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_wait_control_identity(request.schema.as_ref())?;
+    encode_bounded_with_limit(request, MAX_WAIT_CONTROL_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded `WaitControl.list_waits` request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_list_waits_request(
+    wire: &[u8],
+) -> Result<sabi::v1::ListWaitsRequest, CompatibilityError> {
+    let request: sabi::v1::ListWaitsRequest =
+        decode_bounded_with_limit(wire, MAX_WAIT_CONTROL_PAYLOAD_BYTES)?;
+    validate_wait_control_identity(request.schema.as_ref())?;
+    Ok(request)
+}
+
+/// Validates and encodes a bounded `WaitControl.list_waits` result.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity or oversized payload.
+pub fn encode_list_waits_result(
+    result: &sabi::v1::ListWaitsResult,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_wait_control_identity(result.schema.as_ref())?;
+    encode_bounded_with_limit(result, MAX_WAIT_CONTROL_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded `WaitControl.list_waits` result.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_list_waits_result(
+    wire: &[u8],
+) -> Result<sabi::v1::ListWaitsResult, CompatibilityError> {
+    let result: sabi::v1::ListWaitsResult =
+        decode_bounded_with_limit(wire, MAX_WAIT_CONTROL_PAYLOAD_BYTES)?;
+    validate_wait_control_identity(result.schema.as_ref())?;
+    Ok(result)
+}
+
+/// Validates and encodes a bounded `WaitControl.inspect_wait` request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity or oversized payload.
+pub fn encode_inspect_wait_request(
+    request: &sabi::v1::InspectWaitRequest,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_wait_control_identity(request.schema.as_ref())?;
+    encode_bounded_with_limit(request, MAX_WAIT_CONTROL_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded `WaitControl.inspect_wait` request.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_inspect_wait_request(
+    wire: &[u8],
+) -> Result<sabi::v1::InspectWaitRequest, CompatibilityError> {
+    let request: sabi::v1::InspectWaitRequest =
+        decode_bounded_with_limit(wire, MAX_WAIT_CONTROL_PAYLOAD_BYTES)?;
+    validate_wait_control_identity(request.schema.as_ref())?;
+    Ok(request)
+}
+
+/// Validates and encodes a bounded `WaitControl.inspect_wait` result.
+///
+/// # Errors
+///
+/// Returns a compatibility error for an invalid identity or oversized payload.
+pub fn encode_inspect_wait_result(
+    result: &sabi::v1::InspectWaitResult,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_wait_control_identity(result.schema.as_ref())?;
+    encode_bounded_with_limit(result, MAX_WAIT_CONTROL_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded `WaitControl.inspect_wait` result.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_inspect_wait_result(
+    wire: &[u8],
+) -> Result<sabi::v1::InspectWaitResult, CompatibilityError> {
+    let result: sabi::v1::InspectWaitResult =
+        decode_bounded_with_limit(wire, MAX_WAIT_CONTROL_PAYLOAD_BYTES)?;
+    validate_wait_control_identity(result.schema.as_ref())?;
+    Ok(result)
+}
+
 /// Validates common request metadata against the negotiated method contract.
 ///
 /// `now_monotonic_ns` must use the same host monotonic clock domain as the
@@ -1323,6 +1605,17 @@ fn validate_takeover_control_identity(
     let identity = identity.ok_or(CompatibilityError::MissingSchemaIdentity)?;
     validate_schema_identity(identity)?;
     if identity.name != SABI_TAKEOVER_CONTROL_SCHEMA {
+        return Err(CompatibilityError::UnknownSchema(identity.name.clone()));
+    }
+    Ok(())
+}
+
+fn validate_wait_control_identity(
+    identity: Option<&sabi::v1::SchemaIdentity>,
+) -> Result<(), CompatibilityError> {
+    let identity = identity.ok_or(CompatibilityError::MissingSchemaIdentity)?;
+    validate_schema_identity(identity)?;
+    if identity.name != SABI_WAIT_CONTROL_SCHEMA {
         return Err(CompatibilityError::UnknownSchema(identity.name.clone()));
     }
     Ok(())
