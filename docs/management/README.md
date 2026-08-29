@@ -198,6 +198,7 @@ P0 风险阻止 Stage 退出；P1 必须有 owner、缓解措施和明确复查�
 - Semantic publication receipt 权威归属：[ADR-0006](./adrs/0006-semantic-publication-receipt-owner.md)
 - Topic 服务层单 log fanout 模型：[ADR-0007](./adrs/0007-topic-service-single-log-fanout.md)
 - Durable wait registry 权威归属：[ADR-0008](./adrs/0008-durable-wait-registry-authority.md)
+- Fiber 事件溯源续跑为主、受控快照兜底：[ADR-0009](./adrs/0009-fiber-event-sourced-resume.md)
 - 多语言 SDK 支持评估：[language-sdk-support-plan.md](./language-sdk-support-plan.md)
 - 规范路线：[v0.5 第 28.2 节](../design/06-架构设计总纲-v0.5.md#282-阶段-b单机通用应用平台)
 - 执行层级决策：[议题 29](../discussions/29-现代系统执行层级与机制迁移.md)
