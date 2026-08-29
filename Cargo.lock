@@ -495,11 +495,13 @@ name = "nlos-runtime-tokio"
 version = "0.1.0"
 dependencies = [
  "futures-util",
+ "nlos-channel",
  "nlos-operation",
  "nlos-outbox",
  "nlos-runtime",
  "nlos-store",
  "nlos-types",
+ "nlos-wait",
  "tokio",
 ]
 

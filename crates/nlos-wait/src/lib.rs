@@ -675,6 +675,29 @@ impl WaitAuthority {
         rows.into_iter().map(decode_raw_wait).collect()
     }
 
+    /// Reads the Channel's durable queue high-water — the highest sequence
+    /// ever written — through the bound Channel owner's verified queue
+    /// readback (`ChannelAuthority::inspect_queue`, cross-checked against the
+    /// cursors and byte bookkeeping).
+    ///
+    /// Waiters use it to decide whether a still-`PENDING` wait is already
+    /// covered by committed queue entries before any explicit notification
+    /// arrives; the explicit-notify model stays authoritative and this is a
+    /// pure read with zero durable side effects.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed for an unknown Channel (typed
+    /// `WaitAuthorityError::Channel(ChannelAuthorityError::ChannelNotFound)`
+    /// propagation, never a zero), a queue whose derived state disagrees with
+    /// its cursors or bookkeeping, or a read failure.
+    pub fn channel_high_water(&self, channel_id: ChannelId) -> Result<u64, WaitAuthorityError> {
+        self.channel
+            .inspect_queue(channel_id)
+            .map_err(WaitAuthorityError::Channel)
+            .map(|state| state.max_sequence)
+    }
+
     fn lock(&self) -> Result<MutexGuard<'_, Connection>, WaitAuthorityError> {
         self.connection
             .lock()

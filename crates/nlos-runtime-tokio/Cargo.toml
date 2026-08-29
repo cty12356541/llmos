@@ -13,9 +13,11 @@ nlos-outbox = { path = "../nlos-outbox" }
 nlos-runtime = { path = "../nlos-runtime" }
 nlos-store = { path = "../nlos-store" }
 nlos-types = { path = "../nlos-types" }
+nlos-wait = { path = "../nlos-wait" }
 tokio.workspace = true
 
 [dev-dependencies]
+nlos-channel = { path = "../nlos-channel" }
 nlos-operation = { path = "../nlos-operation" }
 
 [lints]

@@ -65,7 +65,7 @@ pub(crate) enum WaitEntry {
     Buffered,
 }
 
-const fn is_terminal(state: FiberState) -> bool {
+pub(crate) const fn is_terminal(state: FiberState) -> bool {
     matches!(
         state,
         FiberState::Completed | FiberState::Failed | FiberState::Cancelled
@@ -211,13 +211,15 @@ impl TokioRuntimeAdapter {
         }
     }
 
-    /// Marks the runtime as shutting down: subsequent wakes fail with
-    /// [`RuntimeError::ShuttingDown`] and every currently registered wait
-    /// resolves as [`WaitOutcome::Cancelled`], so no wait can pend forever
-    /// across the shutdown boundary. The flag is one-way.
+    /// Marks the runtime as shutting down: subsequent wakes and channel wake
+    /// deliveries fail with [`RuntimeError::ShuttingDown`] and every currently
+    /// registered wait — Operation and Channel sequence — resolves as
+    /// [`WaitOutcome::Cancelled`], so no wait can pend forever across the
+    /// shutdown boundary. The flag is one-way.
     pub fn shutdown(&self) {
         self.inner.shutdown.store(true, Ordering::Release);
         lock_unpoisoned(&self.inner.waits).clear();
+        lock_unpoisoned(&self.inner.channel_waits).clear();
     }
 
     /// Registers a wait for the terminal wake of `operation_id` +

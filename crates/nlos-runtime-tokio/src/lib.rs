@@ -14,9 +14,14 @@ use nlos_types::{CancellationScopeId, ExecutionFiberId, Generation};
 use tokio::runtime::Handle;
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 
+mod channel_wait;
 mod pump;
 mod wake;
 
+use channel_wait::ChannelWaitKey;
+pub use channel_wait::{
+    ChannelSequenceWait, ChannelWaitError, DeliveryReport, TokioChannelWakeSink,
+};
 pub use pump::{
     OutboxPump, OutboxPumpStartError, PumpConfig, PumpHealth, PumpState, RecordingReconcileSink,
     StoreOutboxSource,
@@ -106,6 +111,7 @@ struct Inner {
     fibers: Mutex<HashMap<ExecutionFiberId, Arc<FiberRecord>>>,
     scopes: Mutex<HashMap<ScopeKey, Arc<CancellationScope>>>,
     waits: Mutex<HashMap<WaitKey, WaitEntry>>,
+    channel_waits: Mutex<HashMap<ChannelWaitKey, WaitEntry>>,
     shutdown: AtomicBool,
     admission: Arc<Semaphore>,
 }
@@ -149,6 +155,7 @@ impl TokioRuntimeAdapter {
                 fibers: Mutex::new(HashMap::new()),
                 scopes: Mutex::new(HashMap::new()),
                 waits: Mutex::new(HashMap::new()),
+                channel_waits: Mutex::new(HashMap::new()),
                 shutdown: AtomicBool::new(false),
                 admission: Arc::new(Semaphore::new(config.max_live_fibers)),
             }),
@@ -306,12 +313,16 @@ async fn run_fiber(
         let mut usage = lock_unpoisoned(&record.usage);
         usage.elapsed_wall = finished_at.saturating_duration_since(started_at);
     }
-    // The terminal transition and the wait-registry purge share one critical
+    // The terminal transition and the wait-registry purges share one critical
     // section, so a wake either observes the live fiber (and hands off) or the
     // terminal state (and reports `NotWaiting`), never an orphaned buffer.
+    // Both wait registries — Operation and Channel sequence — are purged for
+    // the terminated fiber generation, resolving their waits as `Cancelled`.
     let mut waits = lock_unpoisoned(&inner.waits);
+    let mut channel_waits = lock_unpoisoned(&inner.channel_waits);
     record.set_state(state);
     waits.retain(|key, _entry| !key.for_fiber(spec.fiber_id, spec.fiber_generation));
+    channel_waits.retain(|key, _entry| !key.for_fiber(spec.fiber_id, spec.fiber_generation));
 }
 
 const fn terminal_state(exit: nlos_runtime::FiberExit) -> FiberState {
