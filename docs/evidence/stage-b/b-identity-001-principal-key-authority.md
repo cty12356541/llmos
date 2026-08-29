@@ -60,3 +60,9 @@ cargo clippy -p nlos-identity --all-targets -- -D warnings
 - 未执行 kill-9、ENOSPC、VFS/torn-write 或三平台 CI，不得外推为生产 Keychain、HA 或硬件掉电保证。
 
 下一验收门：`B-CAPABILITY-001` durable issue/attenuate/revoke authority，随后再把 Identity + Key + Capability 接入 Semantic target/event admission。
+
+## 5. Capability 验签消费方（2026-08-29 增量，随 commit `2ccc694`）
+
+- §4 开放项「未实现 Capability issue/attenuate/delegate/revoke」的验签半边关闭：IdentityAuthority 新增 `verify_capability_command_signature`（按 principal 解析当前 key 绑定、purpose 限定 SemanticSigning、多 key 行 CorruptRecord fail-closed），被 CapabilityAuthority 三签名命令消费。
+- 验证：identity 11 passed（新增 2 项 helper 单元测试）；capability 侧 18 项含篡改/错 principal/revoked key/replay 免验签矩阵。
+- 其余开放项不变：bootstrap 之外的 enrollment/attestation、HSM custody、key rotation 入口（当前仅 revoke 时 +1 generation，rotation 落地后需补旧 generation 签名拒绝）、多 Principal membership、AuthorityClock。

@@ -60,3 +60,10 @@ cargo clippy -p nlos-capability --all-targets -- -D warnings
 - 未执行 kill-9、ENOSPC、VFS/torn-write 或三平台 CI；不得外推为分布式 Capability、生产 MAC/ACL 或硬件掉电保证。
 
 下一验收门：将 `B-IDENTITY-001 + B-CAPABILITY-001` 接入 `B-SEMANTIC-001` 的 canonical EventId、signature、lineage、atomic durable AdmissionReceipt。
+
+## 5. 签名命令（2026-08-29 增量，commit `2ccc694`，ADR-0010）
+
+- §4 开放项「root issue/delegate/revoke 是可信 TCB API」部分关闭：三命令新增签名变体（行为方 principal 公钥验签，域分隔命令消息，require_signed_by 交叉校验防归属攻击），无签名入口弃用保留；replay 不重验签。
+- signer 持久化于既有 issuer/revoker principal id 列（零 schema 迁移）；nlos-identity additive `verify_capability_command_signature`。
+- 验证：capability 18 / identity 11 / semantic 18 全绿；workspace clippy/fmt 全绿。
+- 其余开放项不变：call-limit 消费计数、Namespace hierarchy、AuthorityClock、IPC peer auth（blocked-by B-TASK-006L）、故障矩阵。
