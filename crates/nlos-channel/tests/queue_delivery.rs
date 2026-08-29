@@ -726,7 +726,7 @@ fn ddl_guards_reject_entry_mutation_outside_compaction() {
 }
 
 #[test]
-#[allow(clippy::too_many_lines)] // One test covers the v1->v2 migration and its backfill.
+#[allow(clippy::too_many_lines)] // One test covers the v1->current migration and its backfill.
 fn v1_database_migrates_to_v2_preserving_channel_data() {
     let root = Root::new("v1-migration");
     let head = {
@@ -741,15 +741,18 @@ fn v1_database_migrates_to_v2_preserving_channel_data() {
          DROP TRIGGER channel_queue_entries_compaction_delete;
          DROP TRIGGER channel_queue_cursors_no_delete;
          DROP TRIGGER channel_queue_bytes_no_delete;
+         DROP TRIGGER channel_queue_consumptions_immutable_update;
+         DROP TRIGGER channel_queue_consumptions_no_delete;
          DROP TABLE channel_queue_entries;
          DROP TABLE channel_queue_cursors;
          DROP TABLE channel_queue_bytes;
+         DROP TABLE channel_queue_consumptions;
          PRAGMA user_version=1;",
     )
     .expect("roll back to v1");
     drop(raw);
 
-    let migrated = ChannelAuthority::open(root.path()).expect("migrate to v2");
+    let migrated = ChannelAuthority::open(root.path()).expect("migrate to current");
     assert_eq!(
         migrated
             .inspect_channel(head.channel_id)
@@ -761,7 +764,7 @@ fn v1_database_migrates_to_v2_preserving_channel_data() {
         assert_eq!(
             raw.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .expect("read version"),
-            2
+            3
         );
     }
 

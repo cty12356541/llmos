@@ -9,15 +9,17 @@ repository.workspace = true
 
 [dependencies]
 futures-util.workspace = true
+nlos-channel = { path = "../nlos-channel" }
 nlos-outbox = { path = "../nlos-outbox" }
+nlos-process = { path = "../nlos-process" }
 nlos-runtime = { path = "../nlos-runtime" }
 nlos-store = { path = "../nlos-store" }
+nlos-task = { path = "../nlos-task" }
 nlos-types = { path = "../nlos-types" }
 nlos-wait = { path = "../nlos-wait" }
 tokio.workspace = true
 
 [dev-dependencies]
-nlos-channel = { path = "../nlos-channel" }
 nlos-operation = { path = "../nlos-operation" }
 
 [lints]

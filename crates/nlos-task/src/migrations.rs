@@ -1,4 +1,4 @@
-//! Linear `SQLite` schema migration chain (v1 → v39) for the durable
+//! Linear `SQLite` schema migration chain (v1 → v41) for the durable
 //! `TaskAuthority`.
 //!
 //! Every `migrate_vN` advances `user_version` by exactly one step, committed
@@ -1396,6 +1396,47 @@ pub(crate) fn migrate_v40(connection: &mut Connection) -> Result<(), TaskStoreEr
     Ok(())
 }
 
+/// v40 → v41 adds the ADR-0012 fiber-registration columns: planned-effect
+/// slot rows gain optional binding/incarnation columns (written only by the
+/// registration entry; rows registered before the ADR existed decode as
+/// `None`, never an invented proof), and the immutable effect fiber
+/// registration receipt table lands. Purely additive; idempotent and
+/// re-runnable.
+pub(crate) fn migrate_v41(connection: &mut Connection) -> Result<(), TaskStoreError> {
+    let binding_columns: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('effect_slots')
+         WHERE name IN ('fiber_binding', 'fiber_generation')",
+        [],
+        |row| row.get(0),
+    )?;
+    let registration_parts: i64 = connection.query_row(
+        "SELECT (SELECT COUNT(*) FROM sqlite_master
+                 WHERE type='table' AND name='effect_fiber_registrations')
+              + (SELECT COUNT(*) FROM sqlite_master
+                 WHERE type='index' AND name='effect_fiber_registrations_by_binding')
+              + (SELECT COUNT(*) FROM sqlite_master
+                 WHERE type='trigger' AND name IN (
+                    'effect_fiber_registration_is_immutable',
+                    'effect_fiber_registration_is_immutable_delete'))",
+        [],
+        |row| row.get(0),
+    )?;
+    if binding_columns == 2 && registration_parts == 4 {
+        connection.pragma_update(None, "user_version", 41)?;
+        return Ok(());
+    }
+    if binding_columns != 0 || registration_parts != 0 {
+        return Err(TaskStoreError::CorruptRecord(
+            "partial fiber-binding effect schema",
+        ));
+    }
+
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(SCHEMA_V41_SQL)?;
+    transaction.commit()?;
+    Ok(())
+}
+
 const SCHEMA_V13_SQL: &str = "CREATE TABLE task_write_sets (
         task_id BLOB NOT NULL CHECK(length(task_id) = 16),
         attempt_id BLOB NOT NULL CHECK(length(attempt_id) = 16),
@@ -2654,3 +2695,36 @@ const SCHEMA_V40_SQL: &str = "DROP TRIGGER task_write_set_effect_endpoint_is_imm
     BEFORE DELETE ON task_write_set_effect_endpoints
     BEGIN SELECT RAISE(ABORT, 'TaskWriteSet effect endpoint is immutable'); END;
     PRAGMA user_version = 40;";
+
+const SCHEMA_V41_SQL: &str = "ALTER TABLE effect_slots
+        ADD COLUMN fiber_binding BLOB
+        CHECK(fiber_binding IS NULL OR length(fiber_binding) = 16);
+    ALTER TABLE effect_slots
+        ADD COLUMN fiber_generation BLOB
+        CHECK(fiber_generation IS NULL OR length(fiber_generation) = 8);
+
+    CREATE TABLE effect_fiber_registrations (
+        registration_id BLOB PRIMARY KEY NOT NULL CHECK(length(registration_id) = 16),
+        task_id BLOB NOT NULL CHECK(length(task_id) = 16),
+        permit_id BLOB NOT NULL CHECK(length(permit_id) = 16),
+        effect_slot_id BLOB NOT NULL CHECK(length(effect_slot_id) = 16),
+        effect_seq BLOB NOT NULL CHECK(length(effect_seq) = 8),
+        logical_effect_id BLOB NOT NULL CHECK(length(logical_effect_id) = 32),
+        binding_id BLOB NOT NULL CHECK(length(binding_id) = 16),
+        fiber_generation BLOB NOT NULL CHECK(length(fiber_generation) = 8),
+        idempotency_key BLOB NOT NULL UNIQUE CHECK(length(idempotency_key) = 16),
+        registered_at_ms INTEGER NOT NULL CHECK(registered_at_ms >= 0),
+        UNIQUE(permit_id, effect_seq, binding_id),
+        FOREIGN KEY(task_id) REFERENCES tasks(task_id)
+    ) STRICT;
+
+    CREATE INDEX effect_fiber_registrations_by_binding
+        ON effect_fiber_registrations(binding_id);
+
+    CREATE TRIGGER effect_fiber_registration_is_immutable
+    BEFORE UPDATE ON effect_fiber_registrations
+    BEGIN SELECT RAISE(ABORT, 'effect fiber registration is immutable'); END;
+    CREATE TRIGGER effect_fiber_registration_is_immutable_delete
+    BEFORE DELETE ON effect_fiber_registrations
+    BEGIN SELECT RAISE(ABORT, 'effect fiber registration is immutable'); END;
+    PRAGMA user_version = 41;";

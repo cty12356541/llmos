@@ -20,7 +20,9 @@ use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
-use nlos_types::{ChannelId, Generation, IdempotencyKey, ReceiptId, TaskParticipantId};
+use nlos_types::{
+    ChannelId, ExecutionFiberId, Generation, IdempotencyKey, ReceiptId, TaskParticipantId,
+};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
 
@@ -114,6 +116,11 @@ pub struct EnqueueRequest {
 }
 
 /// One immutable durable queue entry, exactly as written by the owner.
+///
+/// `binding`/`fiber_generation` are the producing fiber's registration
+/// identity (ADR-0012): they are written only by
+/// [`ChannelAuthority::enqueue_registered`], and rows enqueued before that
+/// registration existed — including every pre-v3 row — decode as `None`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct QueueEntryRecord {
     pub channel_id: ChannelId,
@@ -124,6 +131,18 @@ pub struct QueueEntryRecord {
     pub payload_bytes: u64,
     pub idempotency_key: IdempotencyKey,
     pub enqueued_at_ms: u64,
+    pub binding: Option<ExecutionFiberId>,
+    pub fiber_generation: Option<Generation>,
+}
+
+/// The producing fiber's registration identity carried by
+/// [`ChannelAuthority::enqueue_registered`] (ADR-0012 decision 1, register
+/// mirror of `register_wait`): the durable queue entry row is written with
+/// the identity of the fiber whose effect produced it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProducerRegistration {
+    pub binding: ExecutionFiberId,
+    pub fiber_generation: Generation,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -137,6 +156,49 @@ impl EnqueueDecision {
     pub fn record(self) -> QueueEntryRecord {
         match self {
             Self::Enqueued(record) | Self::Replayed(record) => record,
+        }
+    }
+}
+
+/// A consume-side registration request (ADR-0012 decision 1, the
+/// `register_wait` mirror on the queue plane): the framework registers the
+/// consuming fiber *before* it consumes, and the authority row carries the
+/// registration identity.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RegisterQueueConsumptionRequest {
+    pub channel_id: ChannelId,
+    /// The queue sequence about to be consumed; must be durably present.
+    pub sequence: u64,
+    pub binding: ExecutionFiberId,
+    pub fiber_generation: Generation,
+    pub idempotency_key: IdempotencyKey,
+    pub registered_at_ms: u64,
+}
+
+/// One immutable durable queue-consumption registration row, exactly as
+/// written by the owner.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QueueConsumptionRecord {
+    pub registration_id: ReceiptId,
+    pub channel_id: ChannelId,
+    pub sequence: u64,
+    pub binding: ExecutionFiberId,
+    pub fiber_generation: Generation,
+    pub idempotency_key: IdempotencyKey,
+    pub registered_at_ms: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ConsumptionRegistrationDecision {
+    Registered(QueueConsumptionRecord),
+    Replayed(QueueConsumptionRecord),
+}
+
+impl ConsumptionRegistrationDecision {
+    #[must_use]
+    pub fn record(self) -> QueueConsumptionRecord {
+        match self {
+            Self::Registered(record) | Self::Replayed(record) => record,
         }
     }
 }
@@ -233,6 +295,9 @@ pub enum ChannelAuthorityError {
     QueueFull,
     InvalidPayload,
     InvalidSequence(&'static str),
+    /// A fiber registration identity was invalid (the all-zero binding, or a
+    /// registration that does not match the durable row it replays).
+    InvalidBindingRegistration,
     CorruptRecord(&'static str),
     LockPoisoned,
 }
@@ -271,6 +336,9 @@ impl fmt::Display for ChannelAuthorityError {
             Self::InvalidSequence(reason) => {
                 write!(formatter, "invalid queue sequence: {reason}")
             }
+            Self::InvalidBindingRegistration => formatter.write_str(
+                "fiber registration identity is invalid (zero binding or identity rebinding)",
+            ),
             Self::CorruptRecord(reason) => write!(formatter, "corrupt channel record: {reason}"),
             Self::LockPoisoned => formatter.write_str("channel authority writer lock is poisoned"),
         }
@@ -329,8 +397,13 @@ impl ChannelAuthority {
             0 => {
                 schema::migrate_v1(&mut connection)?;
                 schema::migrate_v2(&mut connection)?;
+                schema::migrate_v3(&mut connection)?;
             }
-            1 => schema::migrate_v2(&mut connection)?,
+            1 => {
+                schema::migrate_v2(&mut connection)?;
+                schema::migrate_v3(&mut connection)?;
+            }
+            2 => schema::migrate_v3(&mut connection)?,
             schema::SCHEMA_VERSION => {}
             other => return Err(ChannelAuthorityError::SchemaVersionUnsupported(other)),
         }
@@ -587,6 +660,43 @@ impl ChannelAuthority {
         &self,
         request: EnqueueRequest,
     ) -> Result<EnqueueDecision, ChannelAuthorityError> {
+        self.enqueue_with_identity(request, None)
+    }
+
+    /// Appends one payload with the producing fiber's registration identity
+    /// (ADR-0012 decision 1): the durable entry row carries `binding` and
+    /// `fiber_generation` in the same transaction, so the projection can
+    /// attribute the enqueue fact to the fiber whose effect produced it.
+    ///
+    /// Gates are [`Self::enqueue`]'s, plus: the all-zero binding is rejected
+    /// ([`ChannelAuthorityError::InvalidBindingRegistration`]), and an
+    /// idempotency replay whose durable producer identity differs from the
+    /// presented one is an [`ChannelAuthorityError::IdempotencyConflict`]
+    /// (a key enqueued through the unregistered [`Self::enqueue`] can never
+    /// be rebound to a producer identity).
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::enqueue`], plus the invalid-registration rejection.
+    pub fn enqueue_registered(
+        &self,
+        request: EnqueueRequest,
+        producer: ProducerRegistration,
+    ) -> Result<EnqueueDecision, ChannelAuthorityError> {
+        if producer.binding.as_bytes().iter().all(|&byte| byte == 0) {
+            return Err(ChannelAuthorityError::InvalidBindingRegistration);
+        }
+        self.enqueue_with_identity(request, Some(producer))
+    }
+
+    /// The single enqueue transaction shared by [`Self::enqueue`] and
+    /// [`Self::enqueue_registered`]; `identity` is the producer registration
+    /// when the caller registered one.
+    fn enqueue_with_identity(
+        &self,
+        request: EnqueueRequest,
+        identity: Option<ProducerRegistration>,
+    ) -> Result<EnqueueDecision, ChannelAuthorityError> {
         if request.payload.is_empty() {
             return Err(ChannelAuthorityError::InvalidPayload);
         }
@@ -599,6 +709,8 @@ impl ChannelAuthority {
                 || existing.generation != request.expected_generation
                 || existing.fencing_token != request.expected_fencing_token
                 || existing.payload != request.payload
+                || existing.binding != identity.map(|producer| producer.binding)
+                || existing.fiber_generation != identity.map(|producer| producer.fiber_generation)
             {
                 return Err(ChannelAuthorityError::IdempotencyConflict);
             }
@@ -641,6 +753,8 @@ impl ChannelAuthority {
             payload_bytes,
             idempotency_key: request.idempotency_key,
             enqueued_at_ms: request.enqueued_at_ms,
+            binding: identity.map(|producer| producer.binding),
+            fiber_generation: identity.map(|producer| producer.fiber_generation),
         };
         insert_queue_entry(&transaction, &record)?;
         let changed = transaction.execute(
@@ -696,7 +810,8 @@ impl ChannelAuthority {
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
         let mut statement = connection.prepare(
             "SELECT channel_generation, fencing_token, sequence, payload,
-                    payload_bytes, idempotency_key, enqueued_at_ms
+                    payload_bytes, idempotency_key, enqueued_at_ms,
+                    binding_id, fiber_generation
              FROM channel_queue_entries
              WHERE channel_id=?1 AND sequence>?2 AND sequence>?3
              ORDER BY sequence
@@ -719,6 +834,8 @@ impl ChannelAuthority {
                         row.get::<_, i64>(4)?,
                         row.get::<_, Vec<u8>>(5)?,
                         row.get::<_, i64>(6)?,
+                        row.get::<_, Option<Vec<u8>>>(7)?,
+                        row.get::<_, Option<i64>>(8)?,
                     ))
                 },
             )?
@@ -965,6 +1082,174 @@ impl ChannelAuthority {
         })
     }
 
+    /// Registers a queue consumption for one fiber binding *before* the
+    /// consume happens (ADR-0012 decision 1, the `register_wait` mirror on
+    /// the queue plane): the [`QueueConsumptionRecord`] is a durable
+    /// authority row carrying the consuming fiber's binding and incarnation
+    /// generation, written in one `Immediate` transaction.
+    ///
+    /// Order of the fail-closed gates, all of which run before any durable
+    /// write:
+    ///
+    /// 1. the all-zero binding is rejected
+    ///    ([`ChannelAuthorityError::InvalidBindingRegistration`]);
+    /// 2. `sequence == 0` is rejected ([`ChannelAuthorityError::
+    ///    InvalidSequence`]);
+    /// 3. an unknown Channel fails closed
+    ///    ([`ChannelAuthorityError::ChannelNotFound`]);
+    /// 4. an exact idempotency replay returns the original registration
+    ///    ([`ConsumptionRegistrationDecision::Replayed`]); a key rebound to a
+    ///    different channel, sequence, binding or generation is an
+    ///    [`ChannelAuthorityError::IdempotencyConflict`];
+    /// 5. the entry at `sequence` must still be durably present — a
+    ///    compacted or never-written sequence is rejected, so a registration
+    ///    can never precede its entry into existence;
+    /// 6. a second registration of the same `(channel, sequence, binding)`
+    ///    under a fresh key is an
+    ///    [`ChannelAuthorityError::IdempotencyConflict`] (the row identity is
+    ///    unique; re-registration replays only under the same key or identity).
+    ///
+    /// The registration row is immutable (trigger-guarded) and survives
+    /// compaction of the entry itself: it is the durable "this binding
+    /// consumed this entry" fact the binding projection reads.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed for an invalid binding, an invalid sequence, an unknown
+    /// Channel, idempotency rebinding, or a storage/corruption failure.
+    pub fn register_queue_consumption(
+        &self,
+        request: RegisterQueueConsumptionRequest,
+    ) -> Result<ConsumptionRegistrationDecision, ChannelAuthorityError> {
+        if request.binding.as_bytes().iter().all(|&byte| byte == 0) {
+            return Err(ChannelAuthorityError::InvalidBindingRegistration);
+        }
+        if request.sequence == 0 {
+            return Err(ChannelAuthorityError::InvalidSequence(
+                "queue consumption sequence must be non-zero",
+            ));
+        }
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(existing) = load_consumption_by_key(&transaction, request.idempotency_key)? {
+            if existing.channel_id != request.channel_id
+                || existing.sequence != request.sequence
+                || existing.binding != request.binding
+                || existing.fiber_generation != request.fiber_generation
+            {
+                return Err(ChannelAuthorityError::IdempotencyConflict);
+            }
+            transaction.commit()?;
+            return Ok(ConsumptionRegistrationDecision::Replayed(existing));
+        }
+        load_current_optional(&transaction, request.channel_id)?
+            .ok_or(ChannelAuthorityError::ChannelNotFound(request.channel_id))?;
+        let entry_present: i64 = transaction.query_row(
+            "SELECT COUNT(*) FROM channel_queue_entries
+             WHERE channel_id=?1 AND sequence=?2",
+            params![
+                request.channel_id.as_bytes().as_slice(),
+                encode_u64(request.sequence)?,
+            ],
+            |row| row.get(0),
+        )?;
+        if entry_present != 1 {
+            return Err(ChannelAuthorityError::InvalidSequence(
+                "queue entry is not durably present",
+            ));
+        }
+        let rebound = load_consumption_by_identity(
+            &transaction,
+            request.channel_id,
+            request.sequence,
+            request.binding,
+        )?;
+        if rebound.is_some() {
+            return Err(ChannelAuthorityError::IdempotencyConflict);
+        }
+        let record = QueueConsumptionRecord {
+            registration_id: ReceiptId::from_bytes(derive_id(
+                b"nlos/channel-queue/consumption/v1",
+                &[
+                    request.channel_id.as_bytes(),
+                    &request.sequence.to_be_bytes(),
+                    request.binding.as_bytes(),
+                    &request.fiber_generation.get().to_be_bytes(),
+                    request.idempotency_key.as_bytes(),
+                ],
+            )),
+            channel_id: request.channel_id,
+            sequence: request.sequence,
+            binding: request.binding,
+            fiber_generation: request.fiber_generation,
+            idempotency_key: request.idempotency_key,
+            registered_at_ms: request.registered_at_ms,
+        };
+        insert_queue_consumption(&transaction, &record)?;
+        transaction.commit()?;
+        Ok(ConsumptionRegistrationDecision::Registered(record))
+    }
+
+    /// Reads every queue-consumption registration bound to one binding, in
+    /// `(registered_at_ms, registration_id)` order (registration-time order,
+    /// the authority-derived id breaking ties deterministically), each row
+    /// revalidated against the authority-derived registration identity.
+    ///
+    /// This is the binding-side projection read of the fiber replay slice
+    /// (ADR-0009/0012): one binding's durable consumption registrations are
+    /// the queue-consumption events of its replayable event stream. The read
+    /// is a pure view with zero durable side effects. Every referenced
+    /// Channel must still exist, verified through the owner readback exactly
+    /// like `register_wait`'s Channel verification.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed for the all-zero binding (not a binding), any referenced
+    /// Channel that no longer exists, any tampered row, or a read failure.
+    pub fn list_consumptions_for_binding(
+        &self,
+        binding: ExecutionFiberId,
+    ) -> Result<Vec<QueueConsumptionRecord>, ChannelAuthorityError> {
+        if binding.as_bytes().iter().all(|&byte| byte == 0) {
+            return Err(ChannelAuthorityError::InvalidBindingRegistration);
+        }
+        let records: Vec<QueueConsumptionRecord> = {
+            let connection = self.lock()?;
+            let mut statement = connection.prepare(
+                "SELECT registration_id, channel_id, sequence, binding_id,
+                        fiber_generation, idempotency_key, registered_at_ms
+                 FROM channel_queue_consumptions
+                 WHERE binding_id=?1
+                 ORDER BY registered_at_ms, registration_id",
+            )?;
+            let rows = statement
+                .query_map([binding.as_bytes().as_slice()], |row| {
+                    Ok((
+                        row.get::<_, Vec<u8>>(0)?,
+                        row.get::<_, Vec<u8>>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, Vec<u8>>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, Vec<u8>>(5)?,
+                        row.get::<_, i64>(6)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            rows.into_iter()
+                .map(decode_consumption)
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        let mut verified: Vec<ChannelId> = Vec::new();
+        for record in &records {
+            if verified.contains(&record.channel_id) {
+                continue;
+            }
+            verified.push(record.channel_id);
+            self.inspect_channel(record.channel_id)?;
+        }
+        Ok(records)
+    }
+
     fn lock(&self) -> Result<MutexGuard<'_, Connection>, ChannelAuthorityError> {
         self.connection
             .lock()
@@ -1101,7 +1386,17 @@ fn insert_endpoint_proof(
 }
 
 /// Raw `channel_queue_entries` row without the constant `channel_id` column.
-type QueueEntryRow = (i64, Vec<u8>, i64, Vec<u8>, i64, Vec<u8>, i64);
+type QueueEntryRow = (
+    i64,
+    Vec<u8>,
+    i64,
+    Vec<u8>,
+    i64,
+    Vec<u8>,
+    i64,
+    Option<Vec<u8>>,
+    Option<i64>,
+);
 
 struct QueueCursors {
     consume_high_water: u64,
@@ -1141,11 +1436,14 @@ fn insert_queue_entry(
     transaction: &Transaction<'_>,
     record: &QueueEntryRecord,
 ) -> Result<(), ChannelAuthorityError> {
+    let binding = record.binding.as_ref().map(ExecutionFiberId::as_bytes);
+    let fiber_generation = record.fiber_generation.map(encode_generation).transpose()?;
     transaction.execute(
         "INSERT INTO channel_queue_entries (
             channel_id, channel_generation, fencing_token, sequence,
-            payload, payload_bytes, idempotency_key, enqueued_at_ms
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            payload, payload_bytes, idempotency_key, enqueued_at_ms,
+            binding_id, fiber_generation
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             record.channel_id.as_bytes().as_slice(),
             encode_generation(record.generation)?,
@@ -1155,6 +1453,8 @@ fn insert_queue_entry(
             encode_u64(record.payload_bytes)?,
             record.idempotency_key.as_bytes().as_slice(),
             encode_u64(record.enqueued_at_ms)?,
+            binding,
+            fiber_generation,
         ],
     )?;
     Ok(())
@@ -1164,7 +1464,21 @@ fn decode_queue_entry(
     channel_id: ChannelId,
     row: QueueEntryRow,
 ) -> Result<QueueEntryRecord, ChannelAuthorityError> {
-    let (generation, fencing_token, sequence, payload, payload_bytes, key, enqueued_at_ms) = row;
+    let (
+        generation,
+        fencing_token,
+        sequence,
+        payload,
+        payload_bytes,
+        key,
+        enqueued_at_ms,
+        binding,
+        fiber_generation,
+    ) = row;
+    let binding = binding
+        .map(|bytes| Ok::<_, ChannelAuthorityError>(ExecutionFiberId::from_bytes(array16(bytes)?)))
+        .transpose()?;
+    let fiber_generation = fiber_generation.map(decode_generation).transpose()?;
     let record = QueueEntryRecord {
         channel_id,
         generation: decode_generation(generation)?,
@@ -1174,6 +1488,8 @@ fn decode_queue_entry(
         payload,
         idempotency_key: IdempotencyKey::from_bytes(array16(key)?),
         enqueued_at_ms: decode_u64(enqueued_at_ms)?,
+        binding,
+        fiber_generation,
     };
     // usize -> u64 is a widening cast on every supported target.
     if record.payload_bytes != record.payload.len() as u64 {
@@ -1191,7 +1507,8 @@ fn load_entry_by_key(
     let raw = connection
         .query_row(
             "SELECT channel_id, channel_generation, fencing_token, sequence,
-                    payload, payload_bytes, idempotency_key, enqueued_at_ms
+                    payload, payload_bytes, idempotency_key, enqueued_at_ms,
+                    binding_id, fiber_generation
              FROM channel_queue_entries WHERE idempotency_key=?1",
             [key.as_bytes().as_slice()],
             |row| {
@@ -1204,12 +1521,25 @@ fn load_entry_by_key(
                     row.get::<_, i64>(5)?,
                     row.get::<_, Vec<u8>>(6)?,
                     row.get::<_, i64>(7)?,
+                    row.get::<_, Option<Vec<u8>>>(8)?,
+                    row.get::<_, Option<i64>>(9)?,
                 ))
             },
         )
         .optional()?;
     raw.map(
-        |(channel_id, generation, fencing_token, sequence, payload, payload_bytes, key, at)| {
+        |(
+            channel_id,
+            generation,
+            fencing_token,
+            sequence,
+            payload,
+            payload_bytes,
+            key,
+            at,
+            binding,
+            fiber_generation,
+        )| {
             decode_queue_entry(
                 ChannelId::from_bytes(array16(channel_id)?),
                 (
@@ -1220,11 +1550,104 @@ fn load_entry_by_key(
                     payload_bytes,
                     key,
                     at,
+                    binding,
+                    fiber_generation,
                 ),
             )
         },
     )
     .transpose()
+}
+
+type ConsumptionRow = (Vec<u8>, Vec<u8>, i64, Vec<u8>, i64, Vec<u8>, i64);
+
+fn decode_consumption(
+    row: ConsumptionRow,
+) -> Result<QueueConsumptionRecord, ChannelAuthorityError> {
+    let (registration_id, channel_id, sequence, binding, fiber_generation, key, registered_at_ms) =
+        row;
+    Ok(QueueConsumptionRecord {
+        registration_id: ReceiptId::from_bytes(array16(registration_id)?),
+        channel_id: ChannelId::from_bytes(array16(channel_id)?),
+        sequence: decode_u64(sequence)?,
+        binding: ExecutionFiberId::from_bytes(array16(binding)?),
+        fiber_generation: decode_generation(fiber_generation)?,
+        idempotency_key: IdempotencyKey::from_bytes(array16(key)?),
+        registered_at_ms: decode_u64(registered_at_ms)?,
+    })
+}
+
+fn consumption_row_mapper(row: &rusqlite::Row<'_>) -> Result<ConsumptionRow, rusqlite::Error> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+        row.get(4)?,
+        row.get(5)?,
+        row.get(6)?,
+    ))
+}
+
+fn load_consumption_by_key(
+    connection: &Connection,
+    key: IdempotencyKey,
+) -> Result<Option<QueueConsumptionRecord>, ChannelAuthorityError> {
+    let raw = connection
+        .query_row(
+            "SELECT registration_id, channel_id, sequence, binding_id,
+                    fiber_generation, idempotency_key, registered_at_ms
+             FROM channel_queue_consumptions WHERE idempotency_key=?1",
+            [key.as_bytes().as_slice()],
+            consumption_row_mapper,
+        )
+        .optional()?;
+    raw.map(decode_consumption).transpose()
+}
+
+fn load_consumption_by_identity(
+    connection: &Connection,
+    channel_id: ChannelId,
+    sequence: u64,
+    binding: ExecutionFiberId,
+) -> Result<Option<QueueConsumptionRecord>, ChannelAuthorityError> {
+    let raw = connection
+        .query_row(
+            "SELECT registration_id, channel_id, sequence, binding_id,
+                    fiber_generation, idempotency_key, registered_at_ms
+             FROM channel_queue_consumptions
+             WHERE channel_id=?1 AND sequence=?2 AND binding_id=?3",
+            params![
+                channel_id.as_bytes().as_slice(),
+                encode_u64(sequence)?,
+                binding.as_bytes().as_slice(),
+            ],
+            consumption_row_mapper,
+        )
+        .optional()?;
+    raw.map(decode_consumption).transpose()
+}
+
+fn insert_queue_consumption(
+    transaction: &Transaction<'_>,
+    record: &QueueConsumptionRecord,
+) -> Result<(), ChannelAuthorityError> {
+    transaction.execute(
+        "INSERT INTO channel_queue_consumptions (
+            registration_id, channel_id, sequence, binding_id,
+            fiber_generation, idempotency_key, registered_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            record.registration_id.as_bytes().as_slice(),
+            record.channel_id.as_bytes().as_slice(),
+            encode_u64(record.sequence)?,
+            record.binding.as_bytes().as_slice(),
+            encode_generation(record.fiber_generation)?,
+            record.idempotency_key.as_bytes().as_slice(),
+            encode_u64(record.registered_at_ms)?,
+        ],
+    )?;
+    Ok(())
 }
 
 fn load_queue_cursors(

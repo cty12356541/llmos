@@ -21,8 +21,8 @@ use nlos_channel::{
 use nlos_runtime::{FiberHandle, FiberSpec, FiberState, RuntimeAdapter, RuntimeError};
 use nlos_runtime_tokio::{
     BindingEventProjection, BindingReplay, ChannelSequenceWait, ChannelWaitError, DeliveryReport,
-    RearmedChannelWait, ResumableBinding, ResumePlan, ResumeRejection, TokioRuntimeAdapter,
-    TokioRuntimeConfig, WaitOutcome,
+    RearmedChannelWait, ReplayAuthorities, ResumableBinding, ResumePlan, ResumeRejection,
+    TokioRuntimeAdapter, TokioRuntimeConfig, WaitOutcome,
 };
 use nlos_types::{
     AgentInstanceId, CancellationScopeId, ChannelId, ExecutionFiberId, Generation, IdempotencyKey,
@@ -268,6 +268,7 @@ impl ResumableBinding for ForeignPlan {
 /// present in registration-time order (across channels), the other
 /// binding's wait never mixes in, and the all-zero binding fails closed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(clippy::too_many_lines)] // One test covers multi-channel order, isolation and the zero gate.
 async fn projection_covers_one_binding_in_registration_order_and_excludes_others() {
     let root = Root::new("projection");
     let pair = open_pair(&root);
@@ -298,20 +299,76 @@ async fn projection_covers_one_binding_in_registration_order_and_excludes_others
     );
     let foreign = register(&pair.wait, register_request(&channel_a, binding(2), 1, 3));
 
-    let replay = BindingEventProjection::project(&pair.wait, binding(1)).expect("project");
+    let replay =
+        BindingEventProjection::project(&pair.wait, ReplayAuthorities::default(), binding(1))
+            .expect("project");
     assert_eq!(replay.binding, binding(1));
     assert_eq!(replay.events.len(), 2, "both wait events, others excluded");
-    assert_eq!(replay.events[0].record.wait_id, first.wait_id);
-    assert_eq!(replay.events[0].record.channel_id, channel_b.channel_id);
-    assert_eq!(replay.events[0].record.registered_at_ms, 1_000);
-    assert_eq!(replay.events[0].record.state, WaitState::Pending);
-    assert_eq!(replay.events[1].record.wait_id, second.wait_id);
-    assert_eq!(replay.events[1].record.channel_id, channel_a.channel_id);
-    assert_eq!(replay.events[1].record.registered_at_ms, 1_100);
+    assert_eq!(
+        replay.events[0]
+            .as_wait()
+            .expect("wait event")
+            .record
+            .wait_id,
+        first.wait_id
+    );
+    assert_eq!(
+        replay.events[0]
+            .as_wait()
+            .expect("wait event")
+            .record
+            .channel_id,
+        channel_b.channel_id
+    );
+    assert_eq!(
+        replay.events[0]
+            .as_wait()
+            .expect("wait event")
+            .record
+            .registered_at_ms,
+        1_000
+    );
+    assert_eq!(
+        replay.events[0].as_wait().expect("wait event").record.state,
+        WaitState::Pending
+    );
+    assert_eq!(
+        replay.events[1]
+            .as_wait()
+            .expect("wait event")
+            .record
+            .wait_id,
+        second.wait_id
+    );
+    assert_eq!(
+        replay.events[1]
+            .as_wait()
+            .expect("wait event")
+            .record
+            .channel_id,
+        channel_a.channel_id
+    );
+    assert_eq!(
+        replay.events[1]
+            .as_wait()
+            .expect("wait event")
+            .record
+            .registered_at_ms,
+        1_100
+    );
 
-    let other = BindingEventProjection::project(&pair.wait, binding(2)).expect("project other");
+    let other =
+        BindingEventProjection::project(&pair.wait, ReplayAuthorities::default(), binding(2))
+            .expect("project other");
     assert_eq!(other.events.len(), 1);
-    assert_eq!(other.events[0].record.wait_id, foreign.wait_id);
+    assert_eq!(
+        other.events[0]
+            .as_wait()
+            .expect("wait event")
+            .record
+            .wait_id,
+        foreign.wait_id
+    );
 
     // The authority read behind the projection agrees on the order.
     let listed = pair
@@ -325,7 +382,11 @@ async fn projection_covers_one_binding_in_registration_order_and_excludes_others
 
     // The all-zero value is not a binding: fail closed, no fabrication.
     assert!(matches!(
-        BindingEventProjection::project(&pair.wait, BindingId::from_bytes([0; 16])),
+        BindingEventProjection::project(
+            &pair.wait,
+            ReplayAuthorities::default(),
+            BindingId::from_bytes([0; 16]),
+        ),
         Err(ChannelWaitError::WaitAuthority(
             nlos_wait::WaitAuthorityError::InvalidBinding
         ))
@@ -371,6 +432,7 @@ async fn resume_redrives_pending_wait_to_live_wait_and_deliver_wakes_it() {
         .resume_binding(
             handle,
             &pair.wait,
+            ReplayAuthorities::default(),
             &Redrive {
                 binding_id: binding(1),
             },
@@ -449,6 +511,7 @@ async fn resume_self_flips_high_water_covered_pending_wait_satisfied() {
         .resume_binding(
             handle,
             &pair.wait,
+            ReplayAuthorities::default(),
             &Redrive {
                 binding_id: binding(1),
             },
@@ -514,6 +577,7 @@ async fn resume_reports_woken_events_as_facts_without_rearming() {
         .resume_binding(
             handle,
             &pair.wait,
+            ReplayAuthorities::default(),
             &Redrive {
                 binding_id: binding(1),
             },
@@ -578,6 +642,7 @@ async fn resume_reports_cancelled_events_as_facts_with_zero_action() {
         .resume_binding(
             handle,
             &pair.wait,
+            ReplayAuthorities::default(),
             &Redrive {
                 binding_id: binding(1),
             },
@@ -625,6 +690,7 @@ async fn second_resume_supersedes_armed_wait_and_keeps_raw_row_unchanged() {
         .resume_binding(
             handle,
             &pair.wait,
+            ReplayAuthorities::default(),
             &Redrive {
                 binding_id: binding(1),
             },
@@ -640,6 +706,7 @@ async fn second_resume_supersedes_armed_wait_and_keeps_raw_row_unchanged() {
         .resume_binding(
             handle,
             &pair.wait,
+            ReplayAuthorities::default(),
             &Redrive {
                 binding_id: binding(1),
             },
@@ -714,6 +781,7 @@ async fn stale_unknown_handle_and_shutdown_fail_closed_without_side_effects() {
         adapter.resume_binding(
             stale,
             &pair.wait,
+            ReplayAuthorities::default(),
             &Redrive {
                 binding_id: binding(1)
             }
@@ -728,6 +796,7 @@ async fn stale_unknown_handle_and_shutdown_fail_closed_without_side_effects() {
         adapter.resume_binding(
             unknown,
             &pair.wait,
+            ReplayAuthorities::default(),
             &Redrive {
                 binding_id: binding(1)
             }
@@ -749,6 +818,7 @@ async fn stale_unknown_handle_and_shutdown_fail_closed_without_side_effects() {
         adapter.resume_binding(
             handle,
             &pair.wait,
+            ReplayAuthorities::default(),
             &Redrive {
                 binding_id: binding(1)
             }
@@ -794,6 +864,7 @@ async fn rearm_then_resume_supersedes_across_entry_points() {
         .resume_binding(
             handle,
             &pair.wait,
+            ReplayAuthorities::default(),
             &Redrive {
                 binding_id: binding(1),
             },
@@ -852,7 +923,9 @@ async fn unknown_binding_projects_empty_replay_and_empty_report() {
     let adapter = runtime();
     let (handle, scope) = spawn_waiter(&adapter, 2, Generation::INITIAL);
 
-    let replay = BindingEventProjection::project(&pair.wait, binding(7)).expect("project empty");
+    let replay =
+        BindingEventProjection::project(&pair.wait, ReplayAuthorities::default(), binding(7))
+            .expect("project empty");
     assert_eq!(replay.binding, binding(7));
     assert!(replay.events.is_empty());
 
@@ -860,6 +933,7 @@ async fn unknown_binding_projects_empty_replay_and_empty_report() {
         .resume_binding(
             handle,
             &pair.wait,
+            ReplayAuthorities::default(),
             &Redrive {
                 binding_id: binding(7),
             },
@@ -892,7 +966,12 @@ async fn rejected_re_drive_and_foreign_plan_fail_closed() {
 
     // A refused re-drive propagates the incarnation's own reason verbatim.
     assert!(matches!(
-        adapter.resume_binding(handle, &pair.wait, &Refusing { binding_id: binding(1) }),
+        adapter.resume_binding(
+            handle,
+            &pair.wait,
+            ReplayAuthorities::default(),
+            &Refusing { binding_id: binding(1) }
+        ),
         Err(ChannelWaitError::ResumeRejected(rejection))
             if rejection.reason == "re-drive precondition failed"
     ));
@@ -903,6 +982,7 @@ async fn rejected_re_drive_and_foreign_plan_fail_closed() {
         adapter.resume_binding(
             handle,
             &pair.wait,
+            ReplayAuthorities::default(),
             &ForeignPlan {
                 binding_id: binding(1),
                 wait_id: other.wait_id,
@@ -917,6 +997,7 @@ async fn rejected_re_drive_and_foreign_plan_fail_closed() {
         .resume_binding(
             handle,
             &pair.wait,
+            ReplayAuthorities::default(),
             &Redrive {
                 binding_id: binding(1),
             },

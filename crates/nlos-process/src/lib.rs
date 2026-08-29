@@ -16,20 +16,20 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use nlos_types::{
-    AgentInstanceId, Generation, IdempotencyKey, IsolationDomainId, ProcessId, TaskAttemptId,
-    TaskId,
+    AgentInstanceId, ExecutionFiberId, Generation, IdempotencyKey, IsolationDomainId, ProcessId,
+    TaskAttemptId, TaskId,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
 
 pub use model::{
-    ActiveProcessBinding, CreateIsolationDomainRequest, FencingToken, IsolationDomainDecision,
-    IsolationDomainRecord, IsolationDomainRotationDecision, ProcessBindingDecision,
-    ProcessBindingEndpointProof, ProcessBindingRecord, RegisterDelegatedProcessRequest,
-    RestoreProcessDecision, RestoreProcessRequest, RotateIsolationDomainRequest,
+    ActiveProcessBinding, CreateIsolationDomainRequest, FencingToken, FiberEntrySnapshotDecision,
+    FiberEntrySnapshotRecord, FiberIncarnationDecision, FiberIncarnationRecord,
+    IsolationDomainDecision, IsolationDomainRecord, IsolationDomainRotationDecision,
+    ProcessBindingDecision, ProcessBindingEndpointProof, ProcessBindingRecord,
+    RegisterDelegatedProcessRequest, RegisterFiberIncarnationRequest, RestoreProcessDecision,
+    RestoreProcessRequest, RotateIsolationDomainRequest, WriteFiberEntrySnapshotRequest,
 };
-
-const SCHEMA_VERSION: i64 = 1;
 
 #[derive(Debug)]
 pub enum ProcessAuthorityError {
@@ -48,6 +48,17 @@ pub enum ProcessAuthorityError {
     StaleIsolationDomain,
     StaleProcessBinding,
     GenerationExhausted,
+    /// The fiber binding is the all-zero value, which is not a binding.
+    InvalidFiberBinding,
+    /// No fiber incarnation is registered for the binding under the process.
+    FiberIncarnationNotFound,
+    /// The presented durable fiber incarnation is not the binding's current
+    /// one (ADR-0012 generation gate; fail-closed, zero side effect).
+    StaleFiberIncarnation,
+    /// No entry snapshot exists for the binding's current incarnation.
+    FiberSnapshotNotFound,
+    /// The entry snapshot input violates its durable contract.
+    InvalidFiberSnapshot(&'static str),
     CorruptRecord(&'static str),
     LockPoisoned,
 }
@@ -90,6 +101,19 @@ impl fmt::Display for ProcessAuthorityError {
                 formatter.write_str("process binding is not the authority current generation")
             }
             Self::GenerationExhausted => formatter.write_str("generation space exhausted"),
+            Self::InvalidFiberBinding => {
+                formatter.write_str("fiber binding must not be the all-zero value")
+            }
+            Self::FiberIncarnationNotFound => {
+                formatter.write_str("no fiber incarnation is registered for this binding")
+            }
+            Self::StaleFiberIncarnation => formatter
+                .write_str("the presented fiber incarnation is not the binding's current one"),
+            Self::FiberSnapshotNotFound => formatter
+                .write_str("no entry snapshot exists for the binding's current incarnation"),
+            Self::InvalidFiberSnapshot(reason) => {
+                write!(formatter, "invalid fiber entry snapshot: {reason}")
+            }
             Self::CorruptRecord(reason) => write!(formatter, "corrupt durable record: {reason}"),
             Self::LockPoisoned => formatter.write_str("process authority writer lock is poisoned"),
         }
@@ -143,8 +167,12 @@ impl ProcessAuthority {
         }
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
         match version {
-            0 => schema::migrate_v1(&mut connection)?,
-            SCHEMA_VERSION => {}
+            0 => {
+                schema::migrate_v1(&mut connection)?;
+                schema::migrate_v2(&mut connection)?;
+            }
+            1 => schema::migrate_v2(&mut connection)?,
+            schema::SCHEMA_VERSION => {}
             other => return Err(ProcessAuthorityError::SchemaVersionUnsupported(other)),
         }
         Ok(Self {
@@ -582,6 +610,282 @@ impl ProcessAuthority {
             .ok_or(ProcessAuthorityError::IsolationDomainNotFound(domain_id))
     }
 
+    /// Registers one fiber incarnation for `binding` under `process_id`
+    /// (ADR-0012 decision 3): the durable generation/fence authority
+    /// B-PROCESS-001 in its fiber-borrowing role. The registration CAS's
+    /// against the process binding's current generation/fencing token, and
+    /// the binding's incarnation generation advances by exactly one per
+    /// registration (`1`, then `prior + 1`), mirroring the process
+    /// generation rotation mechanism family.
+    ///
+    /// Order of the fail-closed gates, all of which run before any durable
+    /// write:
+    ///
+    /// 1. the all-zero binding is rejected
+    ///    ([`ProcessAuthorityError::InvalidFiberBinding`]);
+    /// 2. an exact idempotency replay returns the original record
+    ///    ([`FiberIncarnationDecision::Replayed`]); a key rebound to a
+    ///    different process, binding or process fence is an
+    ///    [`ProcessAuthorityError::IdempotencyConflict`];
+    /// 3. an unknown process fails closed
+    ///    ([`ProcessAuthorityError::ProcessNotFound`]);
+    /// 4. the process binding's current generation/fencing token must equal
+    ///    the presented one ([`ProcessAuthorityError::StaleProcessBinding`]
+    ///    otherwise) — a stale incarnation registration takes zero durable
+    ///    side effect, the ADR-0012 gate the replay re-drive leans on;
+    /// 5. the incarnation increment commits with a compare-and-swap on the
+    ///    binding's head row.
+    ///
+    /// The binding's entry snapshot slot is deliberately left untouched: the
+    /// ADR-0012 latest-only slot is shared across incarnations precisely so
+    /// a new incarnation can consume the previous invocation's snapshot in
+    /// the crash-window recovery; only the explicit terminal GC (or the next
+    /// invocation's overwrite) removes it.
+    ///
+    /// # Errors
+    /// Fails closed for an invalid binding, idempotency rebinding, an
+    /// unknown process, a stale process fence, an exhausted generation
+    /// space, or a storage/corruption failure.
+    pub fn register_fiber_incarnation(
+        &self,
+        request: RegisterFiberIncarnationRequest,
+    ) -> Result<FiberIncarnationDecision, ProcessAuthorityError> {
+        if is_zero_binding(request.binding) {
+            return Err(ProcessAuthorityError::InvalidFiberBinding);
+        }
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(existing) = load_incarnation_by_key(&transaction, request.idempotency_key)? {
+            let exact = existing.process_id == request.process_id
+                && existing.binding == request.binding
+                && existing.process_generation == request.expected_process_generation
+                && existing.process_fencing_token == request.expected_process_fencing_token;
+            if !exact {
+                return Err(ProcessAuthorityError::IdempotencyConflict);
+            }
+            transaction.commit()?;
+            return Ok(FiberIncarnationDecision::Replayed(existing));
+        }
+
+        let head = load_process_head_optional(&transaction, request.process_id)?
+            .ok_or(ProcessAuthorityError::ProcessNotFound(request.process_id))?;
+        if head.process_generation != request.expected_process_generation
+            || head.process_fencing_token != request.expected_process_fencing_token
+        {
+            return Err(ProcessAuthorityError::StaleProcessBinding);
+        }
+        let current =
+            load_incarnation_head_optional(&transaction, request.process_id, request.binding)?;
+        let (incarnation_generation, prior) = match current {
+            None => (Generation::INITIAL, None),
+            Some(head) => (
+                head.current_incarnation
+                    .checked_next()
+                    .ok_or(ProcessAuthorityError::GenerationExhausted)?,
+                Some(head.current_incarnation),
+            ),
+        };
+        let fencing_token = derive_token(
+            b"nlos/process/fiber-incarnation/fence/v1",
+            &[
+                request.process_id.as_bytes(),
+                request.binding.as_bytes(),
+                &incarnation_generation.get().to_be_bytes(),
+                request.idempotency_key.as_bytes(),
+            ],
+        );
+        let record = FiberIncarnationRecord {
+            process_id: request.process_id,
+            binding: request.binding,
+            incarnation_generation,
+            fencing_token,
+            process_generation: head.process_generation,
+            process_fencing_token: head.process_fencing_token,
+            prior_incarnation_generation: prior,
+            idempotency_key: request.idempotency_key,
+            created_at_ms: request.registered_at_ms,
+        };
+        insert_incarnation(&transaction, &record)?;
+        commit_incarnation_head(&transaction, &record, current)?;
+        transaction.commit()?;
+        Ok(FiberIncarnationDecision::Registered(record))
+    }
+
+    /// Reads the binding's current durable incarnation after cross-checking
+    /// the mutable head row against the immutable incarnation row.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed for an invalid binding, an unregistered binding, or a
+    /// head/row disagreement.
+    pub fn inspect_fiber_incarnation(
+        &self,
+        process_id: ProcessId,
+        binding: ExecutionFiberId,
+    ) -> Result<FiberIncarnationRecord, ProcessAuthorityError> {
+        if is_zero_binding(binding) {
+            return Err(ProcessAuthorityError::InvalidFiberBinding);
+        }
+        let connection = self.lock()?;
+        let head = load_incarnation_head_optional(&connection, process_id, binding)?
+            .ok_or(ProcessAuthorityError::FiberIncarnationNotFound)?;
+        let record =
+            load_incarnation_row(&connection, process_id, binding, head.current_incarnation)?;
+        if record.fencing_token != head.current_fencing_token {
+            return Err(ProcessAuthorityError::CorruptRecord(
+                "fiber incarnation head disagrees with its immutable row",
+            ));
+        }
+        Ok(record)
+    }
+
+    /// Writes the binding's handler-entry snapshot (ADR-0012 decision 2, the
+    /// B path's durable face). Latest-only per invocation: the binding owns
+    /// exactly one snapshot slot and every write overwrites it.
+    ///
+    /// Fail-closed gates before any durable write: the all-zero binding
+    /// ([`ProcessAuthorityError::InvalidFiberBinding`]), an empty input
+    /// ([`ProcessAuthorityError::InvalidFiberSnapshot`]), an unregistered
+    /// binding ([`ProcessAuthorityError::FiberIncarnationNotFound`]), and the
+    /// incarnation CAS — `expected_incarnation_generation` must equal the
+    /// binding's current registered incarnation
+    /// ([`ProcessAuthorityError::StaleFiberIncarnation`], zero side effect).
+    /// Writing the same input bytes again replays
+    /// ([`FiberEntrySnapshotDecision::Replayed`]); different bytes overwrite
+    /// (latest wins).
+    ///
+    /// # Errors
+    ///
+    /// Fails closed for an invalid binding, an invalid input, an unregistered
+    /// binding, a stale incarnation, or a storage/corruption failure.
+    pub fn write_fiber_entry_snapshot(
+        &self,
+        request: WriteFiberEntrySnapshotRequest,
+    ) -> Result<FiberEntrySnapshotDecision, ProcessAuthorityError> {
+        if is_zero_binding(request.binding) {
+            return Err(ProcessAuthorityError::InvalidFiberBinding);
+        }
+        if request.handler_input.is_empty() {
+            return Err(ProcessAuthorityError::InvalidFiberSnapshot(
+                "handler entry input must be non-empty",
+            ));
+        }
+        let input_digest = derive_token(
+            b"nlos/process/fiber-entry-snapshot/v1",
+            &[request.handler_input.as_slice()],
+        );
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let head =
+            load_incarnation_head_optional(&transaction, request.process_id, request.binding)?
+                .ok_or(ProcessAuthorityError::FiberIncarnationNotFound)?;
+        if head.current_incarnation != request.expected_incarnation_generation {
+            return Err(ProcessAuthorityError::StaleFiberIncarnation);
+        }
+        let existing = load_snapshot_row(&transaction, request.process_id, request.binding)?;
+        if let Some(existing) = &existing
+            && existing.handler_input == request.handler_input
+        {
+            transaction.commit()?;
+            return Ok(FiberEntrySnapshotDecision::Replayed(existing.clone()));
+        }
+        let record = FiberEntrySnapshotRecord {
+            process_id: request.process_id,
+            binding: request.binding,
+            handler_input: request.handler_input,
+            input_digest,
+            written_by_incarnation: head.current_incarnation,
+            written_at_ms: request.written_at_ms,
+        };
+        transaction.execute(
+            "INSERT INTO fiber_entry_snapshots (
+                process_id, binding_id, handler_input, input_digest,
+                written_by_incarnation, written_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(process_id, binding_id) DO UPDATE SET
+                handler_input = excluded.handler_input,
+                input_digest = excluded.input_digest,
+                written_by_incarnation = excluded.written_by_incarnation,
+                written_at_ms = excluded.written_at_ms",
+            params![
+                record.process_id.as_bytes().as_slice(),
+                record.binding.as_bytes().as_slice(),
+                record.handler_input.as_slice(),
+                record.input_digest.as_slice(),
+                encode_generation(record.written_by_incarnation)?,
+                encode_u64(record.written_at_ms)?,
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(FiberEntrySnapshotDecision::Written(record))
+    }
+
+    /// Reads the binding's latest handler-entry snapshot (the restore-side
+    /// read of the B path). The snapshot is revalidated against its stored
+    /// integrity digest before it is returned.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed for an invalid binding, an unregistered binding
+    /// ([`ProcessAuthorityError::FiberIncarnationNotFound`]), a missing
+    /// snapshot ([`ProcessAuthorityError::FiberSnapshotNotFound`]), or a
+    /// tampered row.
+    pub fn inspect_fiber_entry_snapshot(
+        &self,
+        process_id: ProcessId,
+        binding: ExecutionFiberId,
+    ) -> Result<FiberEntrySnapshotRecord, ProcessAuthorityError> {
+        if is_zero_binding(binding) {
+            return Err(ProcessAuthorityError::InvalidFiberBinding);
+        }
+        let connection = self.lock()?;
+        load_incarnation_head_optional(&connection, process_id, binding)?
+            .ok_or(ProcessAuthorityError::FiberIncarnationNotFound)?;
+        let record = load_snapshot_row(&connection, process_id, binding)?
+            .ok_or(ProcessAuthorityError::FiberSnapshotNotFound)?;
+        let expected = derive_token(
+            b"nlos/process/fiber-entry-snapshot/v1",
+            &[record.handler_input.as_slice()],
+        );
+        if record.input_digest != expected {
+            return Err(ProcessAuthorityError::CorruptRecord(
+                "entry snapshot input digest disagrees with its bytes",
+            ));
+        }
+        Ok(record)
+    }
+
+    /// Garbage-collects the binding's handler-entry snapshot (the terminal
+    /// GC of the latest-only retention policy: the snapshot is either
+    /// consumed by its recovery or disappears with the fiber's terminal
+    /// state). Returns whether a snapshot row was deleted; deleting an
+    /// already-absent snapshot is the idempotent `false`.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed for an invalid binding or a storage failure.
+    pub fn gc_fiber_entry_snapshot(
+        &self,
+        process_id: ProcessId,
+        binding: ExecutionFiberId,
+    ) -> Result<bool, ProcessAuthorityError> {
+        if is_zero_binding(binding) {
+            return Err(ProcessAuthorityError::InvalidFiberBinding);
+        }
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let changed = transaction.execute(
+            "DELETE FROM fiber_entry_snapshots
+             WHERE process_id = ?1 AND binding_id = ?2",
+            params![
+                process_id.as_bytes().as_slice(),
+                binding.as_bytes().as_slice(),
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(changed > 0)
+    }
+
     fn lock(&self) -> Result<MutexGuard<'_, Connection>, ProcessAuthorityError> {
         self.connection
             .lock()
@@ -617,6 +921,227 @@ fn ensure_domain_active(
         return Err(ProcessAuthorityError::StaleIsolationDomain);
     }
     Ok(())
+}
+
+fn is_zero_binding(binding: ExecutionFiberId) -> bool {
+    binding.as_bytes().iter().all(|&byte| byte == 0)
+}
+
+#[derive(Clone, Copy)]
+struct IncarnationHead {
+    current_incarnation: Generation,
+    current_fencing_token: FencingToken,
+}
+
+fn load_incarnation_head_optional(
+    connection: &Connection,
+    process_id: ProcessId,
+    binding: ExecutionFiberId,
+) -> Result<Option<IncarnationHead>, ProcessAuthorityError> {
+    let raw = connection
+        .query_row(
+            "SELECT current_incarnation, current_fencing_token
+             FROM fiber_incarnation_heads WHERE process_id = ?1 AND binding_id = ?2",
+            params![
+                process_id.as_bytes().as_slice(),
+                binding.as_bytes().as_slice()
+            ],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?)),
+        )
+        .optional()?;
+    raw.map(|(generation, token)| {
+        Ok(IncarnationHead {
+            current_incarnation: decode_generation(generation)?,
+            current_fencing_token: array32(token)?,
+        })
+    })
+    .transpose()
+}
+
+fn load_incarnation_by_key(
+    connection: &Connection,
+    key: IdempotencyKey,
+) -> Result<Option<FiberIncarnationRecord>, ProcessAuthorityError> {
+    let identity = connection
+        .query_row(
+            "SELECT process_id, binding_id, incarnation_generation
+             FROM fiber_incarnations WHERE idempotency_key = ?1",
+            [key.as_bytes().as_slice()],
+            |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )
+        .optional()?;
+    identity
+        .map(|(process_id, binding, generation)| {
+            load_incarnation_row(
+                connection,
+                ProcessId::from_bytes(array16(process_id)?),
+                ExecutionFiberId::from_bytes(array16(binding)?),
+                decode_generation(generation)?,
+            )
+        })
+        .transpose()
+}
+
+fn load_incarnation_row(
+    connection: &Connection,
+    process_id: ProcessId,
+    binding: ExecutionFiberId,
+    incarnation_generation: Generation,
+) -> Result<FiberIncarnationRecord, ProcessAuthorityError> {
+    let raw = connection
+        .query_row(
+            "SELECT fencing_token, process_generation, process_fencing_token,
+                    prior_incarnation, idempotency_key, created_at_ms
+             FROM fiber_incarnations
+             WHERE process_id = ?1 AND binding_id = ?2 AND incarnation_generation = ?3",
+            params![
+                process_id.as_bytes().as_slice(),
+                binding.as_bytes().as_slice(),
+                encode_generation(incarnation_generation)?,
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
+                    row.get::<_, Vec<u8>>(4)?,
+                    row.get::<_, i64>(5)?,
+                ))
+            },
+        )
+        .optional()?
+        .ok_or(ProcessAuthorityError::CorruptRecord(
+            "fiber incarnation head references an absent immutable row",
+        ))?;
+    Ok(FiberIncarnationRecord {
+        process_id,
+        binding,
+        incarnation_generation,
+        fencing_token: array32(raw.0)?,
+        process_generation: decode_generation(raw.1)?,
+        process_fencing_token: array32(raw.2)?,
+        prior_incarnation_generation: raw.3.map(decode_generation).transpose()?,
+        idempotency_key: IdempotencyKey::from_bytes(array16(raw.4)?),
+        created_at_ms: decode_u64(raw.5)?,
+    })
+}
+
+fn commit_incarnation_head(
+    transaction: &Transaction<'_>,
+    record: &FiberIncarnationRecord,
+    current: Option<IncarnationHead>,
+) -> Result<(), ProcessAuthorityError> {
+    match current {
+        None => {
+            transaction.execute(
+                "INSERT INTO fiber_incarnation_heads (
+                        process_id, binding_id, current_incarnation,
+                        current_fencing_token, updated_at_ms
+                     ) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    record.process_id.as_bytes().as_slice(),
+                    record.binding.as_bytes().as_slice(),
+                    encode_generation(record.incarnation_generation)?,
+                    record.fencing_token.as_slice(),
+                    encode_u64(record.created_at_ms)?,
+                ],
+            )?;
+        }
+        Some(head) => {
+            let changed = transaction.execute(
+                "UPDATE fiber_incarnation_heads SET
+                        current_incarnation = ?1, current_fencing_token = ?2,
+                        updated_at_ms = ?3
+                     WHERE process_id = ?4 AND binding_id = ?5
+                       AND current_incarnation = ?6",
+                params![
+                    encode_generation(record.incarnation_generation)?,
+                    record.fencing_token.as_slice(),
+                    encode_u64(record.created_at_ms)?,
+                    record.process_id.as_bytes().as_slice(),
+                    record.binding.as_bytes().as_slice(),
+                    encode_generation(head.current_incarnation)?,
+                ],
+            )?;
+            if changed != 1 {
+                return Err(ProcessAuthorityError::CorruptRecord(
+                    "fiber incarnation head compare-and-swap lost",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn insert_incarnation(
+    transaction: &Transaction<'_>,
+    record: &FiberIncarnationRecord,
+) -> Result<(), ProcessAuthorityError> {
+    transaction.execute(
+        "INSERT INTO fiber_incarnations (
+            process_id, binding_id, incarnation_generation, fencing_token,
+            process_generation, process_fencing_token, prior_incarnation,
+            idempotency_key, created_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            record.process_id.as_bytes().as_slice(),
+            record.binding.as_bytes().as_slice(),
+            encode_generation(record.incarnation_generation)?,
+            record.fencing_token.as_slice(),
+            encode_generation(record.process_generation)?,
+            record.process_fencing_token.as_slice(),
+            record
+                .prior_incarnation_generation
+                .map(encode_generation)
+                .transpose()?,
+            record.idempotency_key.as_bytes().as_slice(),
+            encode_u64(record.created_at_ms)?,
+        ],
+    )?;
+    Ok(())
+}
+
+fn load_snapshot_row(
+    connection: &Connection,
+    process_id: ProcessId,
+    binding: ExecutionFiberId,
+) -> Result<Option<FiberEntrySnapshotRecord>, ProcessAuthorityError> {
+    let raw = connection
+        .query_row(
+            "SELECT handler_input, input_digest, written_by_incarnation, written_at_ms
+             FROM fiber_entry_snapshots WHERE process_id = ?1 AND binding_id = ?2",
+            params![
+                process_id.as_bytes().as_slice(),
+                binding.as_bytes().as_slice()
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            },
+        )
+        .optional()?;
+    raw.map(|(input, digest, incarnation, written_at)| {
+        Ok(FiberEntrySnapshotRecord {
+            process_id,
+            binding,
+            handler_input: input,
+            input_digest: array32(digest)?,
+            written_by_incarnation: decode_generation(incarnation)?,
+            written_at_ms: decode_u64(written_at)?,
+        })
+    })
+    .transpose()
 }
 
 fn insert_domain_generation(

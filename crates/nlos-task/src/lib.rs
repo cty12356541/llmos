@@ -149,9 +149,10 @@ pub use commit::{
     PlanArtifactCommitRequest, RecordArtifactPublicationsRequest, artifact_publication_plan_root,
 };
 pub use effect::{
-    DispatchRequest, EffectPermitAuthorities, EffectPermitDecision, EffectReceipt,
-    EffectReceiptDecision, IssuedPermit, LogicalEffectDescriptor, NoEffectReason, NoEffectRequest,
-    Outcome, OutcomeRequest, PermitRequest as EffectPermitRequest, ReceiptKind, SetSummary,
+    DispatchRequest, EffectBindingDecision, EffectFiberRegistrationRecord, EffectPermitAuthorities,
+    EffectPermitDecision, EffectReceipt, EffectReceiptDecision, IssuedPermit,
+    LogicalEffectDescriptor, NoEffectReason, NoEffectRequest, Outcome, OutcomeRequest,
+    PermitRequest as EffectPermitRequest, ReceiptKind, RegisterEffectBindingRequest, SetSummary,
     SlotRecord, SlotState, empty_effect_set_root, expected_success_assertion_digest,
     idempotency_identity_digest,
 };
@@ -392,6 +393,14 @@ pub enum TaskStoreError {
     /// The presented dispatch token was already consumed; re-dispatch is
     /// refused fail-closed (`[TASK-EFFECT-001]`).
     DispatchTokenConsumed,
+    /// The effect slot already carries a fiber registration identity that
+    /// differs from the presented one (a foreign binding, or a stale
+    /// incarnation generation); fail-closed with zero side effect
+    /// (ADR-0012 generation gate).
+    EffectBindingConflict,
+    /// The presented fiber binding is the all-zero value, which is not a
+    /// binding (ADR-0012).
+    InvalidFiberBinding,
     /// Finalize is blocked by declared slots that have not reached a known
     /// terminal state (`[TASK-COMMIT-002]` subset).
     OutstandingEffectSlots {
@@ -692,6 +701,11 @@ impl fmt::Display for TaskStoreError {
             }
             Self::DispatchTokenConsumed => {
                 formatter.write_str("dispatch token was already consumed")
+            }
+            Self::EffectBindingConflict => formatter
+                .write_str("effect slot is registered to a different fiber binding or incarnation"),
+            Self::InvalidFiberBinding => {
+                formatter.write_str("fiber binding must not be the all-zero value")
             }
             Self::OutstandingEffectSlots { count } => {
                 write!(

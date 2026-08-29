@@ -113,8 +113,8 @@ impl ChannelWaitKey {
 }
 
 /// Failure modes of [`TokioRuntimeAdapter::wait_for_channel`],
-/// [`TokioRuntimeAdapter::rearm_channel_waits`] and
-/// [`TokioRuntimeAdapter::resume_binding`].
+/// [`TokioRuntimeAdapter::rearm_channel_waits`],
+/// [`TokioRuntimeAdapter::resume_binding`] and the B-path snapshot entries.
 #[derive(Debug)]
 pub enum ChannelWaitError {
     /// The runtime rejected the wait: [`RuntimeError::ShuttingDown`] after
@@ -125,6 +125,23 @@ pub enum ChannelWaitError {
     /// The durable wait authority failed (registration, row readback,
     /// high-water read or the self-flip notification).
     WaitAuthority(WaitAuthorityError),
+    /// The durable Channel authority failed (consume registration or its
+    /// projection read).
+    ChannelAuthority(nlos_channel::ChannelAuthorityError),
+    /// The durable Task authority failed (effect registration or its
+    /// projection read).
+    TaskAuthority(nlos_task::TaskStoreError),
+    /// The durable Process authority failed (fiber incarnation registration,
+    /// entry snapshot write/restore/GC).
+    ProcessAuthority(nlos_process::ProcessAuthorityError),
+    /// The B path found no entry snapshot for the binding's current
+    /// incarnation: nothing was recorded, or the terminal GC already
+    /// consumed it. The caller should use the A path.
+    SnapshotUnavailable,
+    /// The presented durable fiber incarnation is not the binding's current
+    /// one (the ADR-0012 generation gate); fail-closed, zero durable side
+    /// effect.
+    StaleFiberIncarnation,
     /// The durable row returned by the authority does not match the
     /// registered request (binding, channel or target sequence) — an
     /// authority contract violation, failed closed.
@@ -147,6 +164,17 @@ impl fmt::Display for ChannelWaitError {
             Self::WaitAuthority(error) => {
                 write!(formatter, "wait authority channel wait failure: {error}")
             }
+            Self::ChannelAuthority(error) => {
+                write!(formatter, "channel authority failure: {error}")
+            }
+            Self::TaskAuthority(error) => write!(formatter, "task authority failure: {error}"),
+            Self::ProcessAuthority(error) => {
+                write!(formatter, "process authority failure: {error}")
+            }
+            Self::SnapshotUnavailable => formatter
+                .write_str("no entry snapshot exists for the binding's current incarnation"),
+            Self::StaleFiberIncarnation => formatter
+                .write_str("the presented fiber incarnation is not the binding's current one"),
             Self::RecordMismatch => formatter
                 .write_str("durable wait row does not match the registered channel wait request"),
             Self::ResumeRejected(rejection) => {
@@ -164,7 +192,13 @@ impl std::error::Error for ChannelWaitError {
         match self {
             Self::Runtime(error) => Some(error),
             Self::WaitAuthority(error) => Some(error),
-            Self::RecordMismatch | Self::ResumePlanMismatch => None,
+            Self::ChannelAuthority(error) => Some(error),
+            Self::TaskAuthority(error) => Some(error),
+            Self::ProcessAuthority(error) => Some(error),
+            Self::RecordMismatch
+            | Self::SnapshotUnavailable
+            | Self::StaleFiberIncarnation
+            | Self::ResumePlanMismatch => None,
             Self::ResumeRejected(rejection) => Some(rejection),
         }
     }
@@ -185,6 +219,24 @@ impl From<RuntimeError> for ChannelWaitError {
 impl From<WaitAuthorityError> for ChannelWaitError {
     fn from(error: WaitAuthorityError) -> Self {
         Self::WaitAuthority(error)
+    }
+}
+
+impl From<nlos_channel::ChannelAuthorityError> for ChannelWaitError {
+    fn from(error: nlos_channel::ChannelAuthorityError) -> Self {
+        Self::ChannelAuthority(error)
+    }
+}
+
+impl From<nlos_task::TaskStoreError> for ChannelWaitError {
+    fn from(error: nlos_task::TaskStoreError) -> Self {
+        Self::TaskAuthority(error)
+    }
+}
+
+impl From<nlos_process::ProcessAuthorityError> for ChannelWaitError {
+    fn from(error: nlos_process::ProcessAuthorityError) -> Self {
+        Self::ProcessAuthority(error)
     }
 }
 
@@ -244,7 +296,7 @@ fn self_notify_key(wait_id: WaitId) -> IdempotencyKey {
 /// A non-zero wall-clock millisecond timestamp for self-flip notifications.
 /// The authority rejects a zero timestamp (it would collide with the durable
 /// "not woken" sentinel), so a pre-epoch or coarse clock still yields `1`.
-fn now_millis() -> u64 {
+pub(crate) fn now_millis() -> u64 {
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |since| {

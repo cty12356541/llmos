@@ -14,8 +14,8 @@ use std::fmt;
 
 use nlos_operation::OperationHandle;
 use nlos_types::{
-    ChannelId, CommitPermitId, EffectPermitId, EffectSlotId, Generation, IdempotencyKey,
-    OperationId, ReceiptId, TaskAttemptId, TaskId,
+    ChannelId, CommitPermitId, EffectPermitId, EffectSlotId, ExecutionFiberId, Generation,
+    IdempotencyKey, OperationId, ReceiptId, TaskAttemptId, TaskId,
 };
 use rusqlite::{Transaction, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
@@ -24,7 +24,7 @@ use crate::model::{PlannedEffect, TaskWriteSetEffectEndpointKind};
 use crate::store::{
     SqlRead, SqliteTaskAuthority, StoredTask, blob16, blob32, decode_participant_binding,
     encode_u64, generation_from_blob, load_attempt, load_permit_by_id, load_task,
-    load_write_set_by_root, optional_blob16, u64_from_blob, update_task,
+    load_write_set_by_root, optional_blob, optional_blob16, u64_from_blob, update_task,
 };
 use crate::{PermitRecord, PermitState, TaskStoreError};
 
@@ -275,6 +275,12 @@ impl ReceiptKind {
 }
 
 /// Durable view of one effect slot (`EffectSlotRecord` subset, §25.1).
+///
+/// `fiber_binding`/`fiber_generation` are the initiating fiber's registration
+/// identity (ADR-0012): they are written only by
+/// [`SqliteTaskAuthority::register_effect_binding`], and slots whose effect
+/// was initiated before that registration existed — including every pre-v41
+/// row — decode as `None`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SlotRecord {
     pub permit_id: CommitPermitId,
@@ -293,6 +299,8 @@ pub struct SlotRecord {
     pub effect_receipt_id: Option<ReceiptId>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
+    pub fiber_binding: Option<ExecutionFiberId>,
+    pub fiber_generation: Option<Generation>,
 }
 
 /// An `EffectPermit` issuance request. Only the outstanding `CommitPermit`
@@ -681,7 +689,8 @@ fn summarize(
 const SLOT_COLUMNS: &str = "permit_id, effect_seq, task_id, effect_slot_id, logical_effect_id,
      idempotency_identity_digest, required, required_condition_digest,
      success_criteria_digest, action_proposal_digest, slot_state, state_seq,
-     effect_permit_id, effect_receipt_id, created_at_ms, updated_at_ms";
+     effect_permit_id, effect_receipt_id, created_at_ms, updated_at_ms,
+     fiber_binding, fiber_generation";
 
 fn decode_slot_row(row: &rusqlite::Row<'_>) -> Result<SlotRecord, TaskStoreError> {
     let required: i64 = row.get(6)?;
@@ -715,6 +724,15 @@ fn decode_slot_row(row: &rusqlite::Row<'_>) -> Result<SlotRecord, TaskStoreError
         effect_receipt_id: optional_blob16(row, 13)?.map(ReceiptId::from_bytes),
         created_at_ms: row.get(14)?,
         updated_at_ms: row.get(15)?,
+        fiber_binding: optional_blob16(row, 16)?.map(ExecutionFiberId::from_bytes),
+        fiber_generation: match optional_blob::<8>(row, 17)? {
+            None => None,
+            Some(bytes) => {
+                let non_zero = std::num::NonZeroU64::new(u64::from_be_bytes(bytes))
+                    .ok_or(TaskStoreError::CorruptRecord("zero generation"))?;
+                Some(Generation::new(non_zero))
+            }
+        },
     })
 }
 
@@ -800,6 +818,8 @@ pub(crate) fn insert_effect_set(
             effect_receipt_id: None,
             created_at_ms: now_ms,
             updated_at_ms: now_ms,
+            fiber_binding: None,
+            fiber_generation: None,
         };
         insert_slot(transaction, &slot)?;
         slots.push(slot);
@@ -843,8 +863,8 @@ fn insert_slot(transaction: &Transaction<'_>, slot: &SlotRecord) -> Result<(), T
             idempotency_identity_digest, required, required_condition_digest,
             success_criteria_digest, action_proposal_digest, slot_state,
             state_seq, effect_permit_id, effect_receipt_id,
-            created_at_ms, updated_at_ms
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0, NULL, NULL, ?12, ?13)",
+            created_at_ms, updated_at_ms, fiber_binding, fiber_generation
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0, NULL, NULL, ?12, ?13, NULL, NULL)",
         params![
             slot.permit_id.as_bytes().as_slice(),
             encode_u64(slot.effect_seq).as_slice(),
@@ -2082,6 +2102,217 @@ impl SqliteTaskAuthority {
         let connection = self.lock_connection()?;
         load_effect_receipt(&*connection, receipt_id)
     }
+
+    /// Registers the initiating fiber's identity on one planned-effect slot
+    /// *before* the effect is initiated (ADR-0012 decision 1, the
+    /// `register_wait` mirror on the effect plane): the durable registration
+    /// receipt row and the slot's binding columns commit in one `Immediate`
+    /// transaction, so the projection can attribute the effect's lifecycle
+    /// to the fiber that registered it. Authority-first: the caller presents
+    /// only the opaque binding and its own incarnation generation — every
+    /// durable fact (registration receipt id, slot linkage, logical effect)
+    /// is owner-derived, exactly like the authority-derived `WaitId`.
+    ///
+    /// Order of the fail-closed gates, all of which run before any durable
+    /// write:
+    ///
+    /// 1. the all-zero binding is rejected
+    ///    ([`TaskStoreError::InvalidFiberBinding`]);
+    /// 2. an exact idempotency replay returns the original registration
+    ///    ([`EffectBindingDecision::Replayed`]); a key rebound to a different
+    ///    task, permit, slot, binding or generation is an
+    ///    [`TaskStoreError::IdempotencyConflict`];
+    /// 3. the caller must be the outstanding `CommitPermit` holder
+    ///    ([`TaskStoreError::NotPermitHolder`] otherwise, `[TASK-RACE-001]`);
+    /// 4. the slot must still be `Planned` or `Permitted` — registration
+    ///    precedes the effect, so a `Dispatched` or terminal slot has missed
+    ///    the registration window and fails closed
+    ///    ([`TaskStoreError::InvalidEffectSlotState`]);
+    /// 5. a slot already carrying a binding accepts only the exact same
+    ///    `(binding, fiber_generation)` identity (idempotent re-registration
+    ///    replay); any other identity — including a stale incarnation
+    ///    generation — fails closed with
+    ///    [`TaskStoreError::EffectBindingConflict`] and zero side effect.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed for an invalid binding, idempotency rebinding, a
+    /// non-holder caller, a closed registration window, a conflicting
+    /// binding identity, or a storage/corruption failure.
+    pub fn register_effect_binding(
+        &self,
+        request: RegisterEffectBindingRequest,
+    ) -> Result<EffectBindingDecision, TaskStoreError> {
+        if request.binding.as_bytes().iter().all(|&byte| byte == 0) {
+            return Err(TaskStoreError::InvalidFiberBinding);
+        }
+        let mut connection = self.lock_connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(existing) =
+            load_effect_registration_by_key(&transaction, request.task_id, request.idempotency_key)?
+        {
+            let exact = existing.task_id == request.task_id
+                && existing.permit_id == request.permit_id
+                && existing.effect_seq == request.effect_seq
+                && existing.binding == request.binding
+                && existing.fiber_generation == request.fiber_generation;
+            if !exact {
+                return Err(TaskStoreError::IdempotencyConflict);
+            }
+            transaction.commit()?;
+            return Ok(EffectBindingDecision::Replayed(Box::new(existing)));
+        }
+
+        check_holder(
+            &transaction,
+            request.task_id,
+            request.attempt_id,
+            request.attempt_generation,
+            request.permit_id,
+            request.permit_epoch,
+        )?;
+        let slot = load_slot(&transaction, request.permit_id, request.effect_seq)?;
+        match slot.state {
+            SlotState::Planned | SlotState::Permitted => {}
+            other => return Err(TaskStoreError::InvalidEffectSlotState { state: other }),
+        }
+        if let (Some(existing_binding), Some(existing_generation)) =
+            (slot.fiber_binding, slot.fiber_generation)
+        {
+            if existing_binding == request.binding
+                && existing_generation == request.fiber_generation
+            {
+                let existing = load_effect_registration_by_identity(
+                    &transaction,
+                    request.permit_id,
+                    request.effect_seq,
+                    request.binding,
+                )?
+                .ok_or(TaskStoreError::CorruptRecord(
+                    "effect slot carries a binding without its registration receipt",
+                ))?;
+                transaction.commit()?;
+                return Ok(EffectBindingDecision::Replayed(Box::new(existing)));
+            }
+            return Err(TaskStoreError::EffectBindingConflict);
+        }
+
+        let registration_id = ReceiptId::from_bytes(sha256_prefix16(
+            "llmos/task-effect-fiber-registration/v1",
+            &[
+                request.permit_id.as_bytes(),
+                encode_u64(request.effect_seq).as_slice(),
+                request.binding.as_bytes(),
+                encode_u64(request.fiber_generation.get()).as_slice(),
+                request.idempotency_key.as_bytes(),
+            ],
+        ));
+        let record = EffectFiberRegistrationRecord {
+            registration_id,
+            task_id: request.task_id,
+            permit_id: request.permit_id,
+            effect_slot_id: slot.effect_slot_id,
+            effect_seq: slot.effect_seq,
+            logical_effect_id: slot.logical_effect_id,
+            binding: request.binding,
+            fiber_generation: request.fiber_generation,
+            idempotency_key: request.idempotency_key,
+            registered_at_ms: request.registered_at_ms,
+            slot_state: slot.state,
+            effect_receipt_id: slot.effect_receipt_id,
+        };
+        let changed = transaction.execute(
+            "UPDATE effect_slots SET fiber_binding = ?1, fiber_generation = ?2
+             WHERE permit_id = ?3 AND effect_seq = ?4
+               AND slot_state = ?5 AND state_seq = ?6
+               AND fiber_binding IS NULL AND fiber_generation IS NULL",
+            params![
+                request.binding.as_bytes().as_slice(),
+                encode_u64(request.fiber_generation.get()).as_slice(),
+                slot.permit_id.as_bytes().as_slice(),
+                encode_u64(slot.effect_seq).as_slice(),
+                slot.state.code(),
+                count_to_i64(slot.state_seq)?,
+            ],
+        )?;
+        if changed != 1 {
+            return Err(TaskStoreError::CorruptRecord(
+                "effect slot fiber binding compare-and-swap lost",
+            ));
+        }
+        insert_effect_registration(&transaction, &record)?;
+        transaction.commit()?;
+        Ok(EffectBindingDecision::Registered(Box::new(record)))
+    }
+
+    /// Reads every effect fiber registration bound to one binding, joined
+    /// with the registered slot's current durable state, in
+    /// `(registered_at_ms, registration_id)` order (registration-time order,
+    /// the owner-derived receipt id breaking ties deterministically).
+    ///
+    /// This is the binding-side projection read of the fiber replay slice
+    /// (ADR-0009/0012): one binding's durable effect registrations are the
+    /// effect-initiation events of its replayable event stream, and the
+    /// joined slot state carries each effect's completion view (a terminal
+    /// slot state plus its receipt id is the "effect 完成" fact; the receipt
+    /// itself is read separately through `inspect_effect_receipt`). The read
+    /// is a pure view with zero durable side effects.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed for the all-zero binding (not a binding), a registration
+    /// whose slot row is missing, or a read failure.
+    pub fn list_effect_registrations_for_binding(
+        &self,
+        binding: ExecutionFiberId,
+    ) -> Result<Vec<EffectFiberRegistrationRecord>, TaskStoreError> {
+        if binding.as_bytes().iter().all(|&byte| byte == 0) {
+            return Err(TaskStoreError::InvalidFiberBinding);
+        }
+        let connection = self.lock_connection()?;
+        let mut statement = connection.prepare(
+            "SELECT r.registration_id, r.task_id, r.permit_id, r.effect_slot_id,
+                    r.effect_seq, r.logical_effect_id, r.binding_id,
+                    r.fiber_generation, r.idempotency_key, r.registered_at_ms,
+                    s.slot_state, s.effect_receipt_id
+             FROM effect_fiber_registrations r
+             LEFT JOIN effect_slots s
+               ON s.permit_id = r.permit_id AND s.effect_seq = r.effect_seq
+             WHERE r.binding_id = ?1
+             ORDER BY r.registered_at_ms, r.registration_id",
+        )?;
+        let mut rows = statement.query([binding.as_bytes().as_slice()])?;
+        let mut records = Vec::new();
+        while let Some(row) = rows.next()? {
+            let slot_state: Option<i64> = row.get(10)?;
+            let Some(state_code) = slot_state else {
+                return Err(TaskStoreError::CorruptRecord(
+                    "effect fiber registration references a missing effect slot",
+                ));
+            };
+            let registered_at_ms: i64 = row.get(9)?;
+            if registered_at_ms < 0 {
+                return Err(TaskStoreError::CorruptRecord(
+                    "negative effect registration timestamp",
+                ));
+            }
+            records.push(EffectFiberRegistrationRecord {
+                registration_id: ReceiptId::from_bytes(blob16(row, 0)?),
+                task_id: TaskId::from_bytes(blob16(row, 1)?),
+                permit_id: CommitPermitId::from_bytes(blob16(row, 2)?),
+                effect_slot_id: EffectSlotId::from_bytes(blob16(row, 3)?),
+                effect_seq: u64_from_blob(row, 4)?,
+                logical_effect_id: blob32(row, 5)?,
+                binding: ExecutionFiberId::from_bytes(blob16(row, 6)?),
+                fiber_generation: generation_from_blob(row, 7)?,
+                idempotency_key: IdempotencyKey::from_bytes(blob16(row, 8)?),
+                registered_at_ms,
+                slot_state: SlotState::from_code(state_code)?,
+                effect_receipt_id: optional_blob16(row, 11)?.map(ReceiptId::from_bytes),
+            });
+        }
+        Ok(records)
+    }
 }
 
 /// Schema v2: the effect plane. Purely additive over v1 — no v1 table is
@@ -2300,3 +2531,147 @@ pub(crate) const SCHEMA_V3_SQL: &str =
         ) STRICT;
 
         PRAGMA user_version = 3;";
+
+/// The initiating fiber's registration request for one planned-effect slot
+/// (ADR-0012 decision 1): only the outstanding `CommitPermit` holder may
+/// register, exactly like `EffectPermit` issuance (`[TASK-RACE-001]`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RegisterEffectBindingRequest {
+    pub task_id: TaskId,
+    pub attempt_id: TaskAttemptId,
+    pub attempt_generation: Generation,
+    pub permit_id: CommitPermitId,
+    pub permit_epoch: u64,
+    /// Which declared slot of the permit's committed effect set to register.
+    pub effect_seq: u64,
+    /// The logical fiber identity (opaque binding); must not be all-zero.
+    pub binding: ExecutionFiberId,
+    /// The registering fiber's durable incarnation generation.
+    pub fiber_generation: Generation,
+    pub idempotency_key: IdempotencyKey,
+    pub registered_at_ms: i64,
+}
+
+/// One durable effect fiber registration, joined at read time with the
+/// registered slot's current state (the effect's completion view).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EffectFiberRegistrationRecord {
+    pub registration_id: ReceiptId,
+    pub task_id: TaskId,
+    pub permit_id: CommitPermitId,
+    pub effect_slot_id: EffectSlotId,
+    pub effect_seq: u64,
+    pub logical_effect_id: [u8; 32],
+    pub binding: ExecutionFiberId,
+    pub fiber_generation: Generation,
+    pub idempotency_key: IdempotencyKey,
+    pub registered_at_ms: i64,
+    /// The registered slot's current durable state at read time.
+    pub slot_state: SlotState,
+    /// The slot's effect receipt, present once the slot closed.
+    pub effect_receipt_id: Option<ReceiptId>,
+}
+
+/// Linearized decision of an effect fiber registration.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum EffectBindingDecision {
+    Registered(Box<EffectFiberRegistrationRecord>),
+    Replayed(Box<EffectFiberRegistrationRecord>),
+}
+
+fn decode_registration_row(
+    row: &rusqlite::Row<'_>,
+) -> Result<EffectFiberRegistrationRecord, TaskStoreError> {
+    let slot_state: Option<i64> = row.get(10)?;
+    let slot_state = slot_state.ok_or(TaskStoreError::CorruptRecord(
+        "effect fiber registration references a missing effect slot",
+    ))?;
+    let registered_at_ms: i64 = row.get(9)?;
+    if registered_at_ms < 0 {
+        return Err(TaskStoreError::CorruptRecord(
+            "negative effect registration timestamp",
+        ));
+    }
+    Ok(EffectFiberRegistrationRecord {
+        registration_id: ReceiptId::from_bytes(blob16(row, 0)?),
+        task_id: TaskId::from_bytes(blob16(row, 1)?),
+        permit_id: CommitPermitId::from_bytes(blob16(row, 2)?),
+        effect_slot_id: EffectSlotId::from_bytes(blob16(row, 3)?),
+        effect_seq: u64_from_blob(row, 4)?,
+        logical_effect_id: blob32(row, 5)?,
+        binding: ExecutionFiberId::from_bytes(blob16(row, 6)?),
+        fiber_generation: generation_from_blob(row, 7)?,
+        idempotency_key: IdempotencyKey::from_bytes(blob16(row, 8)?),
+        registered_at_ms,
+        slot_state: SlotState::from_code(slot_state)?,
+        effect_receipt_id: optional_blob16(row, 11)?.map(ReceiptId::from_bytes),
+    })
+}
+
+const REGISTRATION_COLUMNS: &str = "r.registration_id, r.task_id, r.permit_id, r.effect_slot_id,
+     r.effect_seq, r.logical_effect_id, r.binding_id, r.fiber_generation,
+     r.idempotency_key, r.registered_at_ms, s.slot_state, s.effect_receipt_id";
+
+const REGISTRATION_JOIN: &str = "FROM effect_fiber_registrations r
+     JOIN effect_slots s
+       ON s.permit_id = r.permit_id AND s.effect_seq = r.effect_seq";
+
+fn load_effect_registration_by_key(
+    source: &impl SqlRead,
+    task_id: TaskId,
+    idempotency_key: IdempotencyKey,
+) -> Result<Option<EffectFiberRegistrationRecord>, TaskStoreError> {
+    let mut statement = source.prepare_statement(&format!(
+        "SELECT {REGISTRATION_COLUMNS} {REGISTRATION_JOIN}
+         WHERE r.task_id = ?1 AND r.idempotency_key = ?2"
+    ))?;
+    let mut rows = statement.query(params![
+        task_id.as_bytes().as_slice(),
+        idempotency_key.as_bytes().as_slice(),
+    ])?;
+    rows.next()?.map(decode_registration_row).transpose()
+}
+
+fn load_effect_registration_by_identity(
+    source: &impl SqlRead,
+    permit_id: CommitPermitId,
+    effect_seq: u64,
+    binding: ExecutionFiberId,
+) -> Result<Option<EffectFiberRegistrationRecord>, TaskStoreError> {
+    let mut statement = source.prepare_statement(&format!(
+        "SELECT {REGISTRATION_COLUMNS} {REGISTRATION_JOIN}
+         WHERE r.permit_id = ?1 AND r.effect_seq = ?2 AND r.binding_id = ?3"
+    ))?;
+    let mut rows = statement.query(params![
+        permit_id.as_bytes().as_slice(),
+        encode_u64(effect_seq).as_slice(),
+        binding.as_bytes().as_slice(),
+    ])?;
+    rows.next()?.map(decode_registration_row).transpose()
+}
+
+fn insert_effect_registration(
+    transaction: &Transaction<'_>,
+    record: &EffectFiberRegistrationRecord,
+) -> Result<(), TaskStoreError> {
+    transaction.execute(
+        "INSERT INTO effect_fiber_registrations (
+            registration_id, task_id, permit_id, effect_slot_id, effect_seq,
+            logical_effect_id, binding_id, fiber_generation, idempotency_key,
+            registered_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        params![
+            record.registration_id.as_bytes().as_slice(),
+            record.task_id.as_bytes().as_slice(),
+            record.permit_id.as_bytes().as_slice(),
+            record.effect_slot_id.as_bytes().as_slice(),
+            encode_u64(record.effect_seq).as_slice(),
+            record.logical_effect_id.as_slice(),
+            record.binding.as_bytes().as_slice(),
+            encode_u64(record.fiber_generation.get()).as_slice(),
+            record.idempotency_key.as_bytes().as_slice(),
+            record.registered_at_ms,
+        ],
+    )?;
+    Ok(())
+}

@@ -44,7 +44,7 @@ use crate::migrations::{
     migrate_v16, migrate_v17, migrate_v18, migrate_v19, migrate_v20, migrate_v21, migrate_v22,
     migrate_v23, migrate_v24, migrate_v25, migrate_v26, migrate_v27, migrate_v28, migrate_v29,
     migrate_v30, migrate_v31, migrate_v32, migrate_v33, migrate_v34, migrate_v35, migrate_v36,
-    migrate_v37, migrate_v38, migrate_v39, migrate_v40,
+    migrate_v37, migrate_v38, migrate_v39, migrate_v40, migrate_v41,
 };
 use crate::model::{derive_closure_receipt_id, derive_permit_id, empty_effect_history_root};
 use crate::{
@@ -59,7 +59,7 @@ use crate::{
     TaskWriteSetSemanticTarget,
 };
 
-const SCHEMA_VERSION: i64 = 40;
+const SCHEMA_VERSION: i64 = 41;
 
 /// A single-writer `SQLite` task authority.
 ///
@@ -316,6 +316,7 @@ impl SqliteTaskAuthority {
             migrate_v38(&mut connection)?;
             migrate_v39(&mut connection)?;
             migrate_v40(&mut connection)?;
+            migrate_v41(&mut connection)?;
         }
 
         Ok(Self {

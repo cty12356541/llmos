@@ -870,7 +870,7 @@ fn v38_database_migrates_to_v39_and_preserves_legacy_receipts() {
     let version: i64 = raw
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("schema version");
-    assert_eq!(version, 40);
+    assert_eq!(version, 41);
 
     // Then the prior Task receipt stays readable with an empty nested set.
     assert_eq!(

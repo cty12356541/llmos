@@ -2,7 +2,7 @@ use rusqlite::{Connection, TransactionBehavior};
 
 use crate::ChannelAuthorityError;
 
-pub(crate) const SCHEMA_VERSION: i64 = 2;
+pub(crate) const SCHEMA_VERSION: i64 = 3;
 
 pub(crate) fn migrate_v1(connection: &mut Connection) -> Result<(), ChannelAuthorityError> {
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -188,6 +188,84 @@ pub(crate) fn migrate_v2(connection: &mut Connection) -> Result<(), ChannelAutho
         INSERT INTO channel_queue_bytes (channel_id) SELECT channel_id FROM channels;
 
         PRAGMA user_version=2;",
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
+
+/// Adds the ADR-0012 fiber-registration columns: the queue entry rows gain
+/// optional producer binding/fiber-generation columns (written only by the
+/// registered enqueue entry; rows enqueued before the registration existed
+/// decode as `None`, never an invented proof), and the immutable
+/// consume-side registration table lands. Existing v2 rows are left
+/// untouched; the migration is idempotent and re-runnable.
+pub(crate) fn migrate_v3(connection: &mut Connection) -> Result<(), ChannelAuthorityError> {
+    let binding_columns: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('channel_queue_entries')
+         WHERE name IN ('binding_id', 'fiber_generation')",
+        [],
+        |row| row.get(0),
+    )?;
+    let consumption_parts: i64 = connection.query_row(
+        "SELECT (SELECT COUNT(*) FROM sqlite_master
+                 WHERE type='table' AND name='channel_queue_consumptions')
+              + (SELECT COUNT(*) FROM sqlite_master
+                 WHERE type='trigger' AND name IN (
+                    'channel_queue_consumptions_immutable_update',
+                    'channel_queue_consumptions_no_delete'))",
+        [],
+        |row| row.get(0),
+    )?;
+    if binding_columns == 2 && consumption_parts == 3 {
+        connection.pragma_update(None, "user_version", 3)?;
+        return Ok(());
+    }
+    if binding_columns != 0 || consumption_parts != 0 {
+        return Err(ChannelAuthorityError::CorruptRecord(
+            "partial channel queue binding schema",
+        ));
+    }
+    let queue_present: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type='table' AND name='channel_queue_entries'",
+        [],
+        |row| row.get(0),
+    )?;
+    if queue_present != 1 {
+        return Err(ChannelAuthorityError::CorruptRecord(
+            "missing channel queue schema before v3",
+        ));
+    }
+
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "ALTER TABLE channel_queue_entries ADD COLUMN binding_id BLOB
+            CHECK(binding_id IS NULL OR length(binding_id)=16);
+        ALTER TABLE channel_queue_entries ADD COLUMN fiber_generation INTEGER
+            CHECK(fiber_generation IS NULL OR fiber_generation >= 1);
+
+        CREATE TABLE channel_queue_consumptions (
+            registration_id BLOB PRIMARY KEY NOT NULL CHECK(length(registration_id)=16),
+            channel_id BLOB NOT NULL CHECK(length(channel_id)=16),
+            sequence INTEGER NOT NULL CHECK(sequence >= 1),
+            binding_id BLOB NOT NULL CHECK(length(binding_id)=16),
+            fiber_generation INTEGER NOT NULL CHECK(fiber_generation >= 1),
+            idempotency_key BLOB NOT NULL UNIQUE CHECK(length(idempotency_key)=16),
+            registered_at_ms INTEGER NOT NULL CHECK(registered_at_ms >= 0),
+            UNIQUE(channel_id, sequence, binding_id),
+            FOREIGN KEY(channel_id) REFERENCES channels(channel_id)
+        ) STRICT;
+
+        CREATE TRIGGER channel_queue_consumptions_immutable_update
+        BEFORE UPDATE ON channel_queue_consumptions BEGIN
+            SELECT RAISE(ABORT, 'channel queue consumption registration is immutable');
+        END;
+        CREATE TRIGGER channel_queue_consumptions_no_delete
+        BEFORE DELETE ON channel_queue_consumptions BEGIN
+            SELECT RAISE(ABORT, 'channel queue consumption registration is durable evidence');
+        END;
+
+        PRAGMA user_version=3;",
     )?;
     transaction.commit()?;
     Ok(())

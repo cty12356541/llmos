@@ -543,7 +543,7 @@ fn schema_migrates_v39_endpoint_check_to_v40() {
     let version: i64 = raw
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 40);
+    assert_eq!(version, 41);
     let endpoint_sql: String = raw
         .query_row(
             "SELECT sql FROM sqlite_master

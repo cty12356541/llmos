@@ -1,6 +1,6 @@
 use nlos_types::{
-    AgentInstanceId, Generation, IdempotencyKey, IsolationDomainId, ProcessId, ReceiptId,
-    TaskAttemptId, TaskId, TaskParticipantId,
+    AgentInstanceId, ExecutionFiberId, Generation, IdempotencyKey, IsolationDomainId, ProcessId,
+    ReceiptId, TaskAttemptId, TaskId, TaskParticipantId,
 };
 
 pub type FencingToken = [u8; 32];
@@ -169,6 +169,100 @@ impl From<&ProcessBindingRecord> for ActiveProcessBinding {
             isolation_domain_id: record.isolation_domain_id,
             isolation_domain_generation: record.isolation_domain_generation,
             isolation_domain_fencing_token: record.isolation_domain_fencing_token,
+        }
+    }
+}
+
+/// One durable fiber-incarnation registration request (ADR-0012 decision 3):
+/// the fiber binding re-registers itself under a fresh incarnation
+/// generation, borrowed from the B-PROCESS-001 durable generation/fence
+/// authority — the request presents the process binding's current
+/// generation/fencing token as the compare-and-swap precondition.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RegisterFiberIncarnationRequest {
+    pub process_id: ProcessId,
+    pub expected_process_generation: Generation,
+    pub expected_process_fencing_token: FencingToken,
+    /// The logical fiber identity (the binding every incarnation of this
+    /// fiber re-drives under); must not be the all-zero value.
+    pub binding: ExecutionFiberId,
+    pub idempotency_key: IdempotencyKey,
+    pub registered_at_ms: u64,
+}
+
+/// One immutable durable fiber-incarnation row.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FiberIncarnationRecord {
+    pub process_id: ProcessId,
+    pub binding: ExecutionFiberId,
+    /// One-based incarnation generation of the binding: `1` for the first
+    /// registration, exactly `prior + 1` for every later one (CAS).
+    pub incarnation_generation: Generation,
+    pub fencing_token: FencingToken,
+    /// The process binding generation/fence the registration was CAS'd
+    /// against (registration-time state, per the `register_wait` precedent).
+    pub process_generation: Generation,
+    pub process_fencing_token: FencingToken,
+    pub prior_incarnation_generation: Option<Generation>,
+    pub idempotency_key: IdempotencyKey,
+    pub created_at_ms: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FiberIncarnationDecision {
+    Registered(FiberIncarnationRecord),
+    Replayed(FiberIncarnationRecord),
+}
+
+impl FiberIncarnationDecision {
+    #[must_use]
+    pub const fn record(&self) -> &FiberIncarnationRecord {
+        match self {
+            Self::Registered(record) | Self::Replayed(record) => record,
+        }
+    }
+}
+
+/// One handler-entry snapshot write request (ADR-0012 decision 2): the B
+/// path's durable face. Latest-only per invocation — every write overwrites
+/// the binding's single snapshot slot.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WriteFiberEntrySnapshotRequest {
+    pub process_id: ProcessId,
+    pub binding: ExecutionFiberId,
+    /// The incarnation generation the caller proves is current (CAS against
+    /// the binding's registered incarnation; a stale incarnation fails
+    /// closed with zero side effect).
+    pub expected_incarnation_generation: Generation,
+    /// The opaque handler-entry input bytes; must be non-empty.
+    pub handler_input: Vec<u8>,
+    pub written_at_ms: u64,
+}
+
+/// The durable handler-entry snapshot of one binding (latest-only).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FiberEntrySnapshotRecord {
+    pub process_id: ProcessId,
+    pub binding: ExecutionFiberId,
+    pub handler_input: Vec<u8>,
+    pub input_digest: [u8; 32],
+    /// The incarnation that last wrote this snapshot (provenance only; the
+    /// slot is shared across incarnations, latest wins).
+    pub written_by_incarnation: Generation,
+    pub written_at_ms: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FiberEntrySnapshotDecision {
+    Written(FiberEntrySnapshotRecord),
+    Replayed(FiberEntrySnapshotRecord),
+}
+
+impl FiberEntrySnapshotDecision {
+    #[must_use]
+    pub const fn record(&self) -> &FiberEntrySnapshotRecord {
+        match self {
+            Self::Written(record) | Self::Replayed(record) => record,
         }
     }
 }
