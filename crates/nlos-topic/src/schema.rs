@@ -2,6 +2,14 @@ use rusqlite::{Connection, TransactionBehavior, params};
 
 use crate::TopicAuthorityError;
 
+/// The `user_version` watermark of the durable schema: the version through
+/// which the v1-v5 table-rebuild chain has run.  The v6 matching-predicate
+/// step (the ADR-0007 addendum) is additive and is tracked by the durable
+/// presence of its objects (`topic_patterns` plus the `topic_subscriptions.
+/// attached_by` column) instead of a watermark bump — a database carrying
+/// the v6 objects therefore still reads `5`, every open re-runs the
+/// idempotent v6 pre-check, and any higher watermark (a schema this build
+/// does not know) fails closed.
 pub(crate) const SCHEMA_VERSION: i64 = 5;
 
 /// Creates the Topic service-layer authority schema v1: the immutable-topic
@@ -582,6 +590,158 @@ pub(crate) fn migrate_v5(connection: &mut Connection) -> Result<(), TopicAuthori
         END;
 
         PRAGMA user_version=5;",
+    )?;
+    transaction.commit()?;
+    connection.pragma_update(None, "foreign_keys", "ON")?;
+    Ok(())
+}
+
+/// Adds the matching-predicate prefix (schema v6, the ADR-0007
+/// matching-predicate addendum): a durable `topic_patterns` table holds the
+/// pattern subscription rows — the pattern text, the opaque 16-byte
+/// subscriber binding (never the all-zero unbound value), the subscriber
+/// key, the authority-derived consumption token over the pattern id and its
+/// generation (mirroring the concrete subscription token), the UNIQUE
+/// idempotency key, the subscribe/cancel timestamps and the generation —
+/// with the crate's durable-row conventions: the identity triple
+/// (pattern id, pattern text, subscriber key) is frozen by trigger, rows
+/// are never deleted, and the only legal state transition is the guarded
+/// `ACTIVE -> CANCELLED` flip (the re-activation path re-derives the token
+/// and generation through the same Rust-side CAS that guards the concrete
+/// re-subscribe).
+///
+/// `topic_subscriptions` gains the `attached_by` provenance column: `NULL`
+/// for a direct subscription, the originating pattern row id for a
+/// subscription expanded by a pattern attach.  `SQLite` cannot add a column
+/// through the `CHECK`-carrying table in place, so the table is rebuilt
+/// through the documented table-rebuild procedure; existing rows are
+/// carried over verbatim as direct subscriptions (`attached_by = NULL`).
+///
+/// The joint column-and-table pre-check keeps reopen idempotent and orders
+/// the failure modes by recoverability: both objects present is the
+/// completed migration (the `user_version` watermark is left untouched — it
+/// belongs to the v1-v5 rebuild chain and already reads 5); the provenance
+/// column present but the pattern table missing is unrecoverable (durable
+/// rows would reference a dropped table) and fails closed as
+/// [`TopicAuthorityError::CorruptRecord`]; the pattern table present on a
+/// subscriptions table that predates v6 is simply an older subscriptions
+/// shape under an already-created pattern table (the whole migration is one
+/// atomic transaction, so this cannot be a torn v6) and takes the
+/// subscriptions-rebuild-only path.  A truly fresh database runs both.
+#[allow(clippy::too_many_lines)] // One atomic STRICT schema batch, mirroring every other migration step.
+pub(crate) fn migrate_v6(connection: &mut Connection) -> Result<(), TopicAuthorityError> {
+    let attached_by_columns: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('topic_subscriptions')
+         WHERE name='attached_by'",
+        [],
+        |row| row.get(0),
+    )?;
+    let pattern_tables: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='topic_patterns'",
+        [],
+        |row| row.get(0),
+    )?;
+    if attached_by_columns == 1 {
+        if pattern_tables == 1 {
+            // The v6 step is complete: the watermark belongs to the v1-v5
+            // rebuild chain and is left untouched (it already reads 5 after
+            // v5, or is restored by the v5 pre-check in the open chain).
+            return Ok(());
+        }
+        return Err(TopicAuthorityError::CorruptRecord(
+            "topic pattern schema lost its pattern table",
+        ));
+    }
+
+    // The documented SQLite table-rebuild procedure requires foreign-key
+    // enforcement off around (not inside) the rebuild transaction.
+    connection.pragma_update(None, "foreign_keys", "OFF")?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    if pattern_tables == 0 {
+        transaction.execute_batch(
+            "CREATE TABLE topic_patterns (
+                pattern_id BLOB PRIMARY KEY NOT NULL CHECK(length(pattern_id)=16),
+                pattern_text BLOB NOT NULL CHECK(length(pattern_text) > 0),
+                binding BLOB NOT NULL
+                    CHECK(length(binding)=16 AND binding != x'00000000000000000000000000000000'),
+                subscriber_key BLOB NOT NULL CHECK(length(subscriber_key)=16),
+                active INTEGER NOT NULL CHECK(active IN (0,1)),
+                consume_token BLOB NOT NULL CHECK(length(consume_token)=32),
+                pattern_generation INTEGER NOT NULL CHECK(pattern_generation >= 1),
+                subscribed_at_ms INTEGER NOT NULL CHECK(subscribed_at_ms >= 0),
+                cancelled_at_ms INTEGER NOT NULL DEFAULT 0 CHECK(cancelled_at_ms >= 0),
+                create_idempotency_key BLOB NOT NULL UNIQUE
+                    CHECK(length(create_idempotency_key)=16),
+                CHECK((active = 1) = (cancelled_at_ms = 0)),
+                UNIQUE(pattern_text, subscriber_key)
+            ) STRICT;
+
+            CREATE TRIGGER topic_patterns_identity_frozen
+            BEFORE UPDATE ON topic_patterns
+            WHEN NEW.pattern_id != OLD.pattern_id
+                OR NEW.pattern_text != OLD.pattern_text
+                OR NEW.subscriber_key != OLD.subscriber_key
+            BEGIN
+                SELECT RAISE(ABORT, 'pattern identity is immutable');
+            END;
+            CREATE TRIGGER topic_patterns_no_delete
+            BEFORE DELETE ON topic_patterns BEGIN
+                SELECT RAISE(ABORT, 'pattern rows are durable');
+            END;",
+        )?;
+    }
+    transaction.execute_batch(
+        "DROP TRIGGER IF EXISTS topic_subscriptions_identity_frozen;
+        DROP TRIGGER IF EXISTS topic_subscriptions_no_delete;
+
+        CREATE TABLE topic_subscriptions_v6 (
+            subscription_id BLOB PRIMARY KEY NOT NULL CHECK(length(subscription_id)=16),
+            topic_id BLOB NOT NULL CHECK(length(topic_id)=16),
+            subscriber_key BLOB NOT NULL CHECK(length(subscriber_key)=16),
+            active INTEGER NOT NULL CHECK(active IN (0,1)),
+            cursor INTEGER NOT NULL CHECK(cursor >= 0),
+            subscribed_at_ms INTEGER NOT NULL CHECK(subscribed_at_ms >= 0),
+            unsubscribed_at_ms INTEGER NOT NULL DEFAULT 0 CHECK(unsubscribed_at_ms >= 0),
+            last_advanced_at_ms INTEGER NOT NULL DEFAULT 0 CHECK(last_advanced_at_ms >= 0),
+            consume_token BLOB NOT NULL CHECK(length(consume_token)=32),
+            subscription_generation INTEGER NOT NULL CHECK(subscription_generation >= 1),
+            state INTEGER NOT NULL DEFAULT 0 CHECK(state IN (0,1)),
+            redelivery_used INTEGER NOT NULL DEFAULT 0 CHECK(redelivery_used >= 0),
+            quarantined_at_ms INTEGER NOT NULL DEFAULT 0 CHECK(quarantined_at_ms >= 0),
+            reinstated_at_ms INTEGER NOT NULL DEFAULT 0 CHECK(reinstated_at_ms >= 0),
+            attached_by BLOB CHECK(attached_by IS NULL OR length(attached_by)=16),
+            UNIQUE(topic_id, subscriber_key),
+            FOREIGN KEY(topic_id) REFERENCES topics(topic_id),
+            FOREIGN KEY(attached_by) REFERENCES topic_patterns(pattern_id)
+        ) STRICT;
+
+        INSERT INTO topic_subscriptions_v6 (
+            subscription_id, topic_id, subscriber_key, active, cursor,
+            subscribed_at_ms, unsubscribed_at_ms, last_advanced_at_ms,
+            consume_token, subscription_generation, state, redelivery_used,
+            quarantined_at_ms, reinstated_at_ms, attached_by
+         )
+         SELECT subscription_id, topic_id, subscriber_key, active, cursor,
+                subscribed_at_ms, unsubscribed_at_ms, last_advanced_at_ms,
+                consume_token, subscription_generation, state, redelivery_used,
+                quarantined_at_ms, reinstated_at_ms, NULL
+           FROM topic_subscriptions;
+
+        CREATE TRIGGER topic_subscriptions_identity_frozen
+        BEFORE UPDATE ON topic_subscriptions_v6
+        WHEN NEW.subscription_id != OLD.subscription_id
+            OR NEW.topic_id != OLD.topic_id
+            OR NEW.subscriber_key != OLD.subscriber_key
+        BEGIN
+            SELECT RAISE(ABORT, 'subscription identity is immutable');
+        END;
+        CREATE TRIGGER topic_subscriptions_no_delete
+        BEFORE DELETE ON topic_subscriptions_v6 BEGIN
+            SELECT RAISE(ABORT, 'subscription rows are durable');
+        END;
+
+        DROP TABLE topic_subscriptions;
+        ALTER TABLE topic_subscriptions_v6 RENAME TO topic_subscriptions;",
     )?;
     transaction.commit()?;
     connection.pragma_update(None, "foreign_keys", "ON")?;

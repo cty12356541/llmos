@@ -66,10 +66,38 @@
 //! partial state, nothing deleted — backpressure on the publisher, never an
 //! automatic eviction.
 //!
+//! Matching-predicate subscriptions (schema v6, the ADR-0007
+//! matching-predicate addendum) are the minimal prefix: a pattern is an exact
+//! topic name or a name prefix followed by a single trailing `*` (matching is
+//! byte-wise; the wildcard matches any suffix including the empty one, and
+//! any other `*` placement is an
+//! [`TopicAuthorityError::InvalidPattern`] rejection before any write).  A
+//! pattern subscription is a durable pattern row with its own
+//! authority-derived [`PatternId`], consumption token and generation.
+//! Attach runs at exactly two time points — when the pattern is subscribed
+//! (it enumerates every existing topic whose name matches and expands each
+//! into a regular concrete subscription, subject to the topic's
+//! `max_recipients` and skipped when the key already holds an active
+//! subscription there, with every attachment and skip reported verbatim) and
+//! when a topic is created (every active pattern row is checked against the
+//! new topic's name; the attach results are observable through
+//! [`TopicAuthority::inspect_pattern_attachments`], the minimal observation
+//! entry).  Publish never evaluates patterns: the two time points are
+//! exhaustive because every existing topic has passed `create_topic` or was
+//! covered by the subscribe-time enumeration.  Attached subscriptions are
+//! ordinary rows carrying `attached_by` provenance, so delivery, cursor
+//! advance, delivery-attempt billing, compaction clamping and retention
+//! treat them exactly like direct subscriptions — a pattern subscriber's
+//! cursor, and its billing for every publish after the attach point, are
+//! identical to a direct subscriber's.  [`TopicAuthority::cancel_pattern`]
+//! flips the pattern row inactive and unsubscribes the active subscriptions
+//! it attached; direct subscriptions of the same key are untouched.
+//!
 //! It deliberately does not implement: runtime-automatic cascade triggering
 //! (republish is an owner-invoked forwarding step), real payer metering,
-//! interest/matching predicates, cross-process access, wakeup wiring, or
-//! `TaskWriteSet` integration.
+//! attribute filtering or multi-segment wildcards on top of the minimal
+//! prefix pattern language above (addendum review triggers), cross-process
+//! access, wakeup wiring, or `TaskWriteSet` integration.
 
 mod schema;
 
@@ -126,6 +154,7 @@ macro_rules! nominal_id {
 nominal_id!(TopicId);
 nominal_id!(SubscriptionId);
 nominal_id!(SubscriberKey);
+nominal_id!(PatternId);
 
 /// The consumption identity binding issued by the authority at subscribe
 /// time, mirroring the Channel [`FencingToken`] derivation style: an
@@ -239,6 +268,14 @@ pub struct SubscribeRequest {
 /// most recent explicit reinstate (0 while never) — the marker that
 /// distinguishes a reinstate replay from a never-quarantined subscription.
 /// A re-subscribe after an unsubscribe starts a fresh budget.
+///
+/// `attached_by` (schema v6) records the subscription's provenance: `None`
+/// for a direct subscription, the originating [`PatternId`] for a
+/// subscription expanded by a matching-pattern attach.  An attached
+/// subscription is otherwise a fully ordinary row — delivery, cursor,
+/// billing and compaction semantics are identical to a direct one — and the
+/// next activation of the row (direct re-subscribe or a new attach)
+/// overwrites the provenance.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SubscriptionRecord {
     pub subscription_id: SubscriptionId,
@@ -255,6 +292,7 @@ pub struct SubscriptionRecord {
     pub redelivery_used: u64,
     pub quarantined_at_ms: u64,
     pub reinstated_at_ms: u64,
+    pub attached_by: Option<PatternId>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -321,6 +359,153 @@ impl ReinstateDecision {
     pub fn record(self) -> SubscriptionRecord {
         match self {
             Self::Reinstated(record) | Self::Replayed(record) => record,
+        }
+    }
+}
+
+/// A matching-predicate subscription request (schema v6, the ADR-0007
+/// matching-predicate addendum): the pattern text, an opaque non-zero
+/// subscriber binding, the subscriber key, the idempotency scope and the
+/// caller-supplied subscribe time.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SubscribePatternRequest {
+    /// Exact topic name, or a name prefix followed by one trailing `*`.
+    pub pattern: Vec<u8>,
+    /// Opaque typed binding of the pattern subscriber; must not be the
+    /// all-zero (unbound) account.
+    pub binding: ResourceAccountId,
+    pub subscriber_key: SubscriberKey,
+    pub idempotency_key: IdempotencyKey,
+    pub subscribed_at_ms: u64,
+}
+
+/// The durable pattern subscription row.
+///
+/// `pattern_id` is authority-derived from the pattern text and the
+/// subscriber key; `consume_token` is derived from the pattern id and
+/// `pattern_generation` (mirroring the concrete subscription token and
+/// required by [`TopicAuthority::cancel_pattern`]); `cancelled_at_ms` is `0`
+/// while the row is active and records the most recent cancel otherwise.
+/// Re-subscribing a cancelled (pattern, key) pair bumps the generation and
+/// issues a fresh token.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PatternRecord {
+    pub pattern_id: PatternId,
+    pub pattern: Vec<u8>,
+    pub binding: ResourceAccountId,
+    pub subscriber_key: SubscriberKey,
+    pub active: bool,
+    pub consume_token: ConsumeToken,
+    pub pattern_generation: u64,
+    pub subscribed_at_ms: u64,
+    pub cancelled_at_ms: u64,
+}
+
+/// One topic the subscribe-time attach enumeration expanded the pattern
+/// into.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AttachedSubscription {
+    pub topic_id: TopicId,
+    /// The regular concrete subscription created by the attach; carries
+    /// `attached_by` provenance and the ordinary consume token.
+    pub subscription: SubscriptionRecord,
+}
+
+/// Why the subscribe-time attach enumeration excluded one matching topic.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AttachSkipReason {
+    /// The subscriber key already holds an active subscription on the topic
+    /// (direct or attached): the earlier grant wins and no duplicate
+    /// delivery is created.
+    AlreadySubscribed,
+    /// The topic's active subscriptions are already at its declared
+    /// `max_recipients`.
+    RecipientLimitReached,
+}
+
+/// One matching topic the attach enumeration skipped.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AttachSkipped {
+    pub topic_id: TopicId,
+    pub reason: AttachSkipReason,
+}
+
+/// The verbatim subscribe-time attach report: a pattern subscriber is not
+/// guaranteed to observe every matching topic (a filled
+/// `max_recipients` slot is skipped and reported, never queued).
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct AttachReport {
+    pub attached: Vec<AttachedSubscription>,
+    pub skipped: Vec<AttachSkipped>,
+}
+
+/// The subscribe-pattern outcome paired with its attach report.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PatternSubscribeOutcome {
+    pub pattern: PatternRecord,
+    pub report: AttachReport,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PatternSubscribeDecision {
+    /// This call created (or re-activated) the pattern row and ran the
+    /// attach enumeration over the existing matching topics.
+    Subscribed(PatternSubscribeOutcome),
+    /// The request replayed: the *current* durable pattern row returns (its
+    /// state may have advanced past the original subscribe — e.g. been
+    /// cancelled), the report is empty because the enumeration is a
+    /// subscribe-time effect, and nothing is written.
+    Replayed(PatternSubscribeOutcome),
+}
+
+impl PatternSubscribeDecision {
+    #[must_use]
+    pub fn pattern(self) -> PatternRecord {
+        match self {
+            Self::Subscribed(outcome) | Self::Replayed(outcome) => outcome.pattern,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CancelPatternRequest {
+    pub pattern_id: PatternId,
+    pub cancelled_at_ms: u64,
+}
+
+/// One attached subscription deactivated by a pattern cancel, with the
+/// ordinary unsubscribe receipt it produced.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DetachReceipt {
+    pub topic_id: TopicId,
+    pub receipt: UnsubscribeReceipt,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CancelPatternReceipt {
+    /// The pattern row in its post-call state.
+    pub pattern: PatternRecord,
+    /// The active attached subscriptions this call unsubscribed, ordered by
+    /// topic id.
+    pub detached: Vec<DetachReceipt>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CancelPatternDecision {
+    /// This call flipped the pattern row cancelled and detached its active
+    /// attached subscriptions.
+    Cancelled(CancelPatternReceipt),
+    /// The pattern row was already cancelled; the current row returns and
+    /// nothing is detached again (the original receipts were returned by
+    /// the cancelling call).
+    Replayed(CancelPatternReceipt),
+}
+
+impl CancelPatternDecision {
+    #[must_use]
+    pub fn receipt(self) -> CancelPatternReceipt {
+        match self {
+            Self::Cancelled(receipt) | Self::Replayed(receipt) => receipt,
         }
     }
 }
@@ -527,6 +712,17 @@ pub enum TopicAuthorityError {
     /// authority-issued token of the subscription's current generation; the
     /// caller is not the holder of the subscribe grant and nothing is written.
     ConsumptionTokenMismatch(SubscriptionId),
+    /// A pattern subscription request was rejected before any write: the
+    /// pattern text is neither an exact topic name nor a name prefix with a
+    /// single trailing `*` (the empty string, a `*` in the middle, or a
+    /// second `*`).
+    InvalidPattern(&'static str),
+    /// The requested pattern subscription row does not exist.
+    TopicPatternNotFound(PatternId),
+    /// A pattern consumption token was presented that does not match the
+    /// authority-issued token of the pattern row's current generation; the
+    /// caller is not the holder of the pattern grant and nothing is written.
+    PatternConsumptionTokenMismatch(PatternId),
     PublicationNotFound(IdempotencyKey),
     /// The parent publication exists but has not reached the terminal
     /// [`PublicationStatus::Enqueued`] state, so it is not forwardable.
@@ -575,6 +771,7 @@ pub enum TopicAuthorityError {
 }
 
 impl fmt::Display for TopicAuthorityError {
+    #[allow(clippy::too_many_lines)] // One arm per typed variant keeps the failure text beside its definition.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Sqlite(error) => write!(formatter, "SQLite topic authority failure: {error}"),
@@ -618,6 +815,20 @@ impl fmt::Display for TopicAuthorityError {
             Self::ConsumptionTokenMismatch(id) => write!(
                 formatter,
                 "consumption token does not match the authority-issued token of subscription {id:?}"
+            ),
+            Self::InvalidPattern(reason) => {
+                write!(
+                    formatter,
+                    "invalid topic pattern: {reason} (exact name or `prefix*` tail wildcard)"
+                )
+            }
+            Self::TopicPatternNotFound(id) => {
+                write!(formatter, "topic pattern {id:?} does not exist")
+            }
+            Self::PatternConsumptionTokenMismatch(id) => write!(
+                formatter,
+                "pattern consumption token does not match the authority-issued token of \
+                 pattern {id:?}"
             ),
             Self::PublicationNotFound(key) => {
                 write!(formatter, "publication {key:?} does not exist")
@@ -737,24 +948,34 @@ impl TopicAuthority {
                 schema::migrate_v3(&mut connection)?;
                 schema::migrate_v4(&mut connection)?;
                 schema::migrate_v5(&mut connection)?;
+                schema::migrate_v6(&mut connection)?;
             }
             1 => {
                 schema::migrate_v2(&mut connection)?;
                 schema::migrate_v3(&mut connection)?;
                 schema::migrate_v4(&mut connection)?;
                 schema::migrate_v5(&mut connection)?;
+                schema::migrate_v6(&mut connection)?;
             }
             2 => {
                 schema::migrate_v3(&mut connection)?;
                 schema::migrate_v4(&mut connection)?;
                 schema::migrate_v5(&mut connection)?;
+                schema::migrate_v6(&mut connection)?;
             }
             3 => {
                 schema::migrate_v4(&mut connection)?;
                 schema::migrate_v5(&mut connection)?;
+                schema::migrate_v6(&mut connection)?;
             }
-            4 => schema::migrate_v5(&mut connection)?,
-            schema::SCHEMA_VERSION => {}
+            4 => {
+                schema::migrate_v5(&mut connection)?;
+                schema::migrate_v6(&mut connection)?;
+            }
+            // The watermark version: the rebuild chain is complete, so only
+            // the idempotent additive v6 pre-check remains (a no-op when the
+            // v6 objects are already present).
+            schema::SCHEMA_VERSION => schema::migrate_v6(&mut connection)?,
             other => return Err(TopicAuthorityError::SchemaVersionUnsupported(other)),
         }
         Ok(Self {
@@ -779,6 +1000,20 @@ impl TopicAuthority {
     /// and is not compared on replay); rebinding the key to a different
     /// channel, name or policy is an
     /// [`TopicAuthorityError::IdempotencyConflict`].
+    ///
+    /// Matching-predicate attach at the create time point (schema v6, the
+    /// ADR-0007 matching addendum): after the topic head insert, every
+    /// `ACTIVE` pattern row whose pattern matches the new topic's name
+    /// expands into a regular concrete subscription inside this same
+    /// transaction, under the same admission rules as
+    /// [`TopicAuthority::subscribe`] (a filled `max_recipients` slot or an
+    /// already-active key for the pattern's subscriber skips that pattern).
+    /// The decision value stays the topic record; the minimal observation
+    /// entry for the attach results is
+    /// [`TopicAuthority::inspect_pattern_attachments`] plus the
+    /// subscriptions' `attached_by` provenance (create-time skips are not
+    /// recorded separately).  A failure in the attach step aborts the whole
+    /// create: zero partial state.
     ///
     /// # Errors
     ///
@@ -827,8 +1062,21 @@ impl TopicAuthority {
             created_at_ms: request.created_at_ms,
         };
         insert_topic(&transaction, &record)?;
+        // Pattern attach at the create time point (ADR-0007 matching
+        // addendum): part of the create transaction, so a failure here
+        // aborts the create with zero durable state.
+        attach_topic_to_matching_patterns(
+            &transaction,
+            &self.channel,
+            &record,
+            request.created_at_ms,
+        )?;
+        // The attach may have occupied admission slots: return the
+        // post-attach verified head so the decision reflects the durable
+        // counter.
+        let created = load_topic_verified(&transaction, topic_id)?;
         transaction.commit()?;
-        Ok(TopicDecision::Created(record))
+        Ok(TopicDecision::Created(created))
     }
 
     /// Reads the verified topic head.
@@ -870,6 +1118,8 @@ impl TopicAuthority {
     /// and issues a fresh token, so any token from a previous generation
     /// fails closed.  A (re-)subscribed key always starts with a zeroed
     /// delivery-attempt budget in the [`SubscriptionState::Active`] state.
+    /// A direct subscription is recorded with `attached_by = NULL` (any
+    /// provenance from a previous activation of the row is cleared).
     ///
     /// # Errors
     ///
@@ -917,11 +1167,132 @@ impl TopicAuthority {
             redelivery_used: 0,
             quarantined_at_ms: 0,
             reinstated_at_ms: 0,
+            attached_by: None,
         };
-        insert_or_resubscribe(&transaction, &record)?;
+        insert_or_resubscribe(&transaction, &record, None)?;
         bump_active_count(&transaction, request.topic_id, active, active + 1)?;
         transaction.commit()?;
         Ok(SubscribeDecision::Subscribed(record))
+    }
+
+    /// Subscribes a matching predicate — an exact topic name or a `prefix*`
+    /// tail wildcard — instead of one topic (schema v6, the ADR-0007
+    /// matching addendum).
+    ///
+    /// Pattern language (byte-wise, precise): a non-empty byte string
+    /// carrying at most one `*`, and a `*` only as the final byte.  A
+    /// pattern without `*` matches exactly the topic names byte-equal to it;
+    /// a trailing `*` matches every name that begins with the bytes before
+    /// it — the matched suffix may be empty, so `prefix*` also matches the
+    /// bare `prefix` topic, and a bare `*` matches every topic.  Anything
+    /// else — the empty string, a `*` in the middle, a second `*` — is
+    /// [`TopicAuthorityError::InvalidPattern`] before any write, as is a
+    /// zero-valued `binding`.
+    ///
+    /// The durable pattern row carries an authority-derived [`PatternId`]
+    /// (from the pattern text and the subscriber key), the opaque `binding`,
+    /// a consumption token derived from the pattern id and its generation
+    /// (mirroring the concrete subscription token; required by
+    /// [`TopicAuthority::cancel_pattern`]) and a UNIQUE idempotency key.
+    /// Replaying the exact key returns the *current* durable row (its state
+    /// may have advanced past the original subscribe — e.g. been cancelled);
+    /// the same for an already-active (pattern, key) pair under any key;
+    /// re-subscribing a previously cancelled pair re-activates it with a
+    /// bumped generation and a fresh token; a key rebound to a different
+    /// pattern, binding or subscriber key is an
+    /// [`TopicAuthorityError::IdempotencyConflict`].
+    ///
+    /// The subscribe time point enumerates every existing topic whose name
+    /// matches and attaches each one as a regular concrete subscription —
+    /// the same admission and cursor semantics as [`TopicAuthority::subscribe`]
+    /// (cursor at the current channel sequence high-water, history never
+    /// replayed, ordinary per-topic consume token) — recorded with
+    /// `attached_by` provenance.  A matching topic where the key already
+    /// holds an active subscription is skipped (the earlier grant wins, no
+    /// duplicate delivery); a matching topic at its `max_recipients` is
+    /// skipped as well; every attachment and skip is reported verbatim in
+    /// the decision's [`AttachReport`] — a pattern subscriber is not
+    /// guaranteed to observe every matching topic (declared limitation).
+    /// Publish never evaluates patterns: a topic created after this call is
+    /// covered by the `create_topic` attach time point.  The whole operation
+    /// (pattern row plus attach enumeration) is one transaction: a failure
+    /// leaves zero durable state.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed for an invalid pattern or an unbound binding (both
+    /// before any write), idempotency rebinding, a Channel readback failure
+    /// during the enumeration, or a storage/corruption failure.
+    #[allow(clippy::too_many_lines)] // One method owns the pattern-row state machine plus enumeration.
+    pub fn subscribe_pattern(
+        &self,
+        request: SubscribePatternRequest,
+    ) -> Result<PatternSubscribeDecision, TopicAuthorityError> {
+        validate_pattern(&request.pattern)?;
+        if request.binding.as_bytes() == &[0; 16] {
+            return Err(TopicAuthorityError::InvalidPolicy(
+                "pattern binding must be a non-zero ResourceAccountId",
+            ));
+        }
+        let pattern_id = pattern_id_for(&request.pattern, request.subscriber_key);
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(existing) = load_pattern_by_key(&transaction, request.idempotency_key)? {
+            if existing.pattern != request.pattern
+                || existing.binding != request.binding
+                || existing.subscriber_key != request.subscriber_key
+            {
+                return Err(TopicAuthorityError::IdempotencyConflict);
+            }
+            let current = load_pattern_optional(&transaction, pattern_id)?.ok_or(
+                TopicAuthorityError::CorruptRecord("pattern row vanished during key replay"),
+            )?;
+            transaction.commit()?;
+            return Ok(PatternSubscribeDecision::Replayed(
+                PatternSubscribeOutcome {
+                    pattern: current,
+                    report: AttachReport::default(),
+                },
+            ));
+        }
+        let previous = load_pattern_optional(&transaction, pattern_id)?;
+        if let Some(active) = previous.as_ref().filter(|row| row.active) {
+            transaction.commit()?;
+            return Ok(PatternSubscribeDecision::Replayed(
+                PatternSubscribeOutcome {
+                    pattern: active.clone(),
+                    report: AttachReport::default(),
+                },
+            ));
+        }
+        let pattern_generation = previous
+            .as_ref()
+            .map_or(1, |existing| existing.pattern_generation + 1);
+        let record = PatternRecord {
+            pattern_id,
+            pattern: request.pattern,
+            binding: request.binding,
+            subscriber_key: request.subscriber_key,
+            active: true,
+            consume_token: derive_pattern_token(pattern_id, pattern_generation),
+            pattern_generation,
+            subscribed_at_ms: request.subscribed_at_ms,
+            cancelled_at_ms: 0,
+        };
+        insert_or_resubscribe_pattern(&transaction, &record, request.idempotency_key)?;
+        let report = attach_pattern_to_existing_topics(
+            &transaction,
+            &self.channel,
+            &record,
+            request.subscribed_at_ms,
+        )?;
+        transaction.commit()?;
+        Ok(PatternSubscribeDecision::Subscribed(
+            PatternSubscribeOutcome {
+                pattern: record,
+                report,
+            },
+        ))
     }
 
     /// Flips a subscription to inactive.
@@ -1021,6 +1392,81 @@ impl TopicAuthority {
         }))
     }
 
+    /// Cancels a pattern subscription, requiring the pattern's consumption
+    /// token.
+    ///
+    /// The caller must present the [`ConsumeToken`] issued for the pattern
+    /// row's current generation; any other token is
+    /// [`TopicAuthorityError::PatternConsumptionTokenMismatch`] before any
+    /// write (fail-closed, zero durable state), mirroring the concrete
+    /// subscription token binding.  On success the pattern row flips to the
+    /// cancelled state and every *active* concrete subscription carrying the
+    /// row's `attached_by` provenance is unsubscribed — the ordinary
+    /// unsubscribe semantics (active-bit CAS, active-subscription counter
+    /// decrement, receipt), all inside one transaction.  Direct
+    /// subscriptions of the same subscriber key are untouched, and a
+    /// subscription attached by a *different* pattern row is untouched.
+    /// Repeating the cancel of an already-cancelled pattern replays the
+    /// current row with an empty detach list; the pattern row itself is
+    /// durable and never deleted, so a later
+    /// [`TopicAuthority::subscribe_pattern`] of the same (pattern, key) pair
+    /// re-activates it with a fresh generation and token.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed for an unknown pattern, a token mismatch, or a
+    /// storage/corruption failure.
+    pub fn cancel_pattern(
+        &self,
+        request: CancelPatternRequest,
+        consume_token: &ConsumeToken,
+    ) -> Result<CancelPatternDecision, TopicAuthorityError> {
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let existing = load_pattern_optional(&transaction, request.pattern_id)?.ok_or(
+            TopicAuthorityError::TopicPatternNotFound(request.pattern_id),
+        )?;
+        if *consume_token != existing.consume_token {
+            return Err(TopicAuthorityError::PatternConsumptionTokenMismatch(
+                request.pattern_id,
+            ));
+        }
+        if !existing.active {
+            transaction.commit()?;
+            return Ok(CancelPatternDecision::Replayed(CancelPatternReceipt {
+                pattern: existing,
+                detached: Vec::new(),
+            }));
+        }
+        let changed = transaction.execute(
+            "UPDATE topic_patterns
+             SET active=0, cancelled_at_ms=?1
+             WHERE pattern_id=?2 AND active=1",
+            params![
+                encode_u64(request.cancelled_at_ms)?,
+                request.pattern_id.as_bytes().as_slice(),
+            ],
+        )?;
+        if changed != 1 {
+            return Err(TopicAuthorityError::CorruptRecord(
+                "pattern cancel CAS lost",
+            ));
+        }
+        let detached = detach_attached_subscriptions(
+            &transaction,
+            request.pattern_id,
+            request.cancelled_at_ms,
+        )?;
+        let cancelled = load_pattern_optional(&transaction, request.pattern_id)?.ok_or(
+            TopicAuthorityError::CorruptRecord("pattern row vanished during cancel"),
+        )?;
+        transaction.commit()?;
+        Ok(CancelPatternDecision::Cancelled(CancelPatternReceipt {
+            pattern: cancelled,
+            detached,
+        }))
+    }
+
     /// Reinstates a `QUARANTINED` subscription, requiring the consumption
     /// token.
     ///
@@ -1117,6 +1563,65 @@ impl TopicAuthority {
                 subscriber_key,
             )),
         )
+    }
+
+    /// Reads the verified pattern subscription row.
+    ///
+    /// The stored [`PatternId`] is re-derived from the pattern text and the
+    /// subscriber key, and the stored token from the pattern id and its
+    /// generation; any disagreement is
+    /// [`TopicAuthorityError::CorruptRecord`].
+    ///
+    /// # Errors
+    ///
+    /// Fails closed for an unknown pattern or a corrupt record.
+    pub fn inspect_pattern(
+        &self,
+        pattern_id: PatternId,
+    ) -> Result<PatternRecord, TopicAuthorityError> {
+        let connection = self.lock()?;
+        load_pattern_optional(&connection, pattern_id)?
+            .ok_or(TopicAuthorityError::TopicPatternNotFound(pattern_id))
+    }
+
+    /// Reads the active concrete subscriptions a pattern currently holds
+    /// (its `attached_by` provenance), ordered by topic id.
+    ///
+    /// This is the observation entry for the `create_topic` attach time point,
+    /// whose results are deliberately not carried on the [`TopicDecision`]
+    /// value (the minimal-change choice documented on
+    /// [`TopicAuthority::create_topic`]); the subscribe-time attach results
+    /// are additionally reported on the
+    /// [`PatternSubscribeDecision::Subscribed`] outcome.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed for an unknown pattern or a corrupt record.
+    pub fn inspect_pattern_attachments(
+        &self,
+        pattern_id: PatternId,
+    ) -> Result<Vec<SubscriptionRecord>, TopicAuthorityError> {
+        let connection = self.lock()?;
+        load_pattern_optional(&connection, pattern_id)?
+            .ok_or(TopicAuthorityError::TopicPatternNotFound(pattern_id))?;
+        let mut statement = connection.prepare(
+            "SELECT topic_id, subscriber_key FROM topic_subscriptions
+             WHERE attached_by=?1 AND active=1 ORDER BY topic_id",
+        )?;
+        let rows = statement
+            .query_map([pattern_id.as_bytes().as_slice()], |row| {
+                Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows.into_iter()
+            .map(|(topic_id, subscriber_key)| {
+                let topic_id = TopicId::from_bytes(array16(topic_id)?);
+                let subscriber_key = SubscriberKey::from_bytes(array16(subscriber_key)?);
+                load_subscription_optional(&connection, topic_id, subscriber_key)?.ok_or(
+                    TopicAuthorityError::CorruptRecord("attached subscription row vanished"),
+                )
+            })
+            .collect()
     }
 
     /// Publishes one payload: verify-then-commit across the two authorities.
@@ -2153,6 +2658,212 @@ fn check_retention_admission(
     Ok(())
 }
 
+/// Validates a pattern (the precise addendum language): a non-empty byte
+/// string with at most one `*`, and a `*` only as the final byte.  A
+/// trailing `*` is a tail wildcard (the matched suffix may be empty); any
+/// `*` elsewhere — in the middle, at the start, or a second one — and the
+/// empty string are rejections.  Matching is byte-wise.
+fn validate_pattern(pattern: &[u8]) -> Result<(), TopicAuthorityError> {
+    if pattern.is_empty() {
+        return Err(TopicAuthorityError::InvalidPattern(
+            "pattern must be a non-empty byte string",
+        ));
+    }
+    if let Some(star) = pattern.iter().position(|byte| *byte == b'*') {
+        if star + 1 != pattern.len() {
+            return Err(TopicAuthorityError::InvalidPattern(
+                "a wildcard may only be the final byte",
+            ));
+        }
+        if pattern[..star].contains(&b'*') {
+            return Err(TopicAuthorityError::InvalidPattern(
+                "pattern binds at most one wildcard",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The single matching predicate: byte-equality for an exact pattern, or the
+/// byte-prefix test for a trailing-`*` pattern (the empty suffix matches, so
+/// `prefix*` also matches the bare `prefix` name and `*` matches everything).
+fn pattern_matches(pattern: &[u8], name: &[u8]) -> bool {
+    match pattern.split_last() {
+        Some((b'*', prefix)) => name.starts_with(prefix),
+        _ => pattern == name,
+    }
+}
+
+/// Attempts to attach one pattern subscriber to one matching topic: the
+/// shared core of both attach time points.  Mirrors
+/// [`TopicAuthority::subscribe`] exactly — the same replay skip for an
+/// already-active key, the same channel readback for the subscribe point,
+/// the same `max_recipients` admission and the same re-activation CAS — and
+/// additionally records the pattern provenance on the concrete row.
+fn attach_one(
+    transaction: &Transaction<'_>,
+    channel: &ChannelAuthority,
+    topic: &TopicRecord,
+    pattern: &PatternRecord,
+    subscribed_at_ms: u64,
+) -> Result<Result<SubscriptionRecord, AttachSkipReason>, TopicAuthorityError> {
+    let previous = load_subscription_optional(transaction, topic.topic_id, pattern.subscriber_key)?;
+    if previous.as_ref().is_some_and(|existing| existing.active) {
+        return Ok(Err(AttachSkipReason::AlreadySubscribed));
+    }
+    let live = channel
+        .inspect_queue(topic.channel_id)
+        .map_err(TopicAuthorityError::Channel)?;
+    let active = count_active_subscriptions(transaction, topic.topic_id)?;
+    if active >= topic.policy.max_recipients {
+        return Ok(Err(AttachSkipReason::RecipientLimitReached));
+    }
+    let subscription_id = subscription_id_for(topic.topic_id, pattern.subscriber_key);
+    let subscription_generation = previous
+        .as_ref()
+        .map_or(1, |existing| existing.subscription_generation + 1);
+    let record = SubscriptionRecord {
+        subscription_id,
+        topic_id: topic.topic_id,
+        subscriber_key: pattern.subscriber_key,
+        active: true,
+        cursor: live.max_sequence,
+        subscribed_at_ms,
+        unsubscribed_at_ms: 0,
+        last_advanced_at_ms: 0,
+        consume_token: derive_consume_token(subscription_id, subscription_generation),
+        subscription_generation,
+        state: SubscriptionState::Active,
+        redelivery_used: 0,
+        quarantined_at_ms: 0,
+        reinstated_at_ms: 0,
+        attached_by: Some(pattern.pattern_id),
+    };
+    insert_or_resubscribe(transaction, &record, Some(pattern.pattern_id))?;
+    bump_active_count(transaction, topic.topic_id, active, active + 1)?;
+    Ok(Ok(record))
+}
+
+/// The subscribe-time attach enumeration: every existing topic whose name
+/// matches the pattern is offered to [`attach_one`], and every attachment
+/// and skip is reported verbatim.  Topics are visited in id order so the
+/// report is deterministic.
+fn attach_pattern_to_existing_topics(
+    transaction: &Transaction<'_>,
+    channel: &ChannelAuthority,
+    pattern: &PatternRecord,
+    subscribed_at_ms: u64,
+) -> Result<AttachReport, TopicAuthorityError> {
+    let mut statement = transaction.prepare("SELECT topic_id FROM topics ORDER BY topic_id")?;
+    let topic_ids = statement
+        .query_map([], |row| row.get::<_, Vec<u8>>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(statement);
+    let mut report = AttachReport::default();
+    for id in topic_ids {
+        let topic_id = TopicId::from_bytes(array16(id)?);
+        let topic = load_topic_verified(transaction, topic_id)?;
+        if !pattern_matches(&pattern.pattern, &topic.name) {
+            continue;
+        }
+        match attach_one(transaction, channel, &topic, pattern, subscribed_at_ms)? {
+            Ok(subscription) => report.attached.push(AttachedSubscription {
+                topic_id,
+                subscription,
+            }),
+            Err(reason) => report.skipped.push(AttachSkipped { topic_id, reason }),
+        }
+    }
+    Ok(report)
+}
+
+/// The create-time attach enumeration: every `ACTIVE` pattern row whose
+/// pattern matches the freshly created topic's name is offered to
+/// [`attach_one`].  The attachments are observable through the
+/// subscriptions' `attached_by` provenance and
+/// [`TopicAuthority::inspect_pattern_attachments`]; create-time skips follow
+/// the same admission rules but are not recorded separately (documented
+/// minimal-observation choice).
+fn attach_topic_to_matching_patterns(
+    transaction: &Transaction<'_>,
+    channel: &ChannelAuthority,
+    topic: &TopicRecord,
+    attached_at_ms: u64,
+) -> Result<(), TopicAuthorityError> {
+    for pattern in load_active_patterns(transaction)? {
+        if !pattern_matches(&pattern.pattern, &topic.name) {
+            continue;
+        }
+        // Skips follow the same admission rules as the subscribe-time
+        // enumeration and are not recorded separately at this time point
+        // (documented minimal-observation choice).
+        let _attachment = attach_one(transaction, channel, topic, &pattern, attached_at_ms)?;
+    }
+    Ok(())
+}
+
+/// Unsubscribes every active concrete subscription carrying the pattern's
+/// `attached_by` provenance, in topic-id order, using the ordinary
+/// unsubscribe semantics (active-bit CAS plus the topic's
+/// active-subscription counter decrement) — the pattern-cancel detach path.
+fn detach_attached_subscriptions(
+    transaction: &Transaction<'_>,
+    pattern_id: PatternId,
+    unsubscribed_at_ms: u64,
+) -> Result<Vec<DetachReceipt>, TopicAuthorityError> {
+    let mut statement = transaction.prepare(
+        "SELECT topic_id, subscriber_key FROM topic_subscriptions
+         WHERE attached_by=?1 AND active=1 ORDER BY topic_id",
+    )?;
+    let rows = statement
+        .query_map([pattern_id.as_bytes().as_slice()], |row| {
+            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(statement);
+    let mut detached = Vec::new();
+    for (topic_id, subscriber_key) in rows {
+        let topic_id = TopicId::from_bytes(array16(topic_id)?);
+        let subscriber_key = SubscriberKey::from_bytes(array16(subscriber_key)?);
+        let subscription = load_subscription_optional(transaction, topic_id, subscriber_key)?
+            .ok_or(TopicAuthorityError::CorruptRecord(
+                "attached subscription row vanished",
+            ))?;
+        if !subscription.active {
+            return Err(TopicAuthorityError::CorruptRecord(
+                "attached subscription active-bit disagrees with the detach enumeration",
+            ));
+        }
+        load_topic_verified(transaction, topic_id)?;
+        let active = count_active_subscriptions(transaction, topic_id)?;
+        let changed = transaction.execute(
+            "UPDATE topic_subscriptions
+             SET active=0, unsubscribed_at_ms=?1
+             WHERE subscription_id=?2 AND active=1",
+            params![
+                encode_u64(unsubscribed_at_ms)?,
+                subscription.subscription_id.as_bytes().as_slice(),
+            ],
+        )?;
+        if changed != 1 {
+            return Err(TopicAuthorityError::CorruptRecord(
+                "subscription active-bit CAS lost",
+            ));
+        }
+        bump_active_count(transaction, topic_id, active, active - 1)?;
+        detached.push(DetachReceipt {
+            topic_id,
+            receipt: UnsubscribeReceipt {
+                subscription_id: subscription.subscription_id,
+                topic_id,
+                subscriber_key,
+                unsubscribed_at_ms,
+            },
+        });
+    }
+    Ok(detached)
+}
+
 /// Raw `topics` row without the constant `topic_id` column.
 type TopicRow = (
     Vec<u8>,
@@ -2210,21 +2921,23 @@ fn insert_topic(
 fn insert_or_resubscribe(
     transaction: &Transaction<'_>,
     record: &SubscriptionRecord,
+    attached_by: Option<PatternId>,
 ) -> Result<(), TopicAuthorityError> {
     let changed = transaction.execute(
         "INSERT INTO topic_subscriptions (
             subscription_id, topic_id, subscriber_key, active, cursor,
             subscribed_at_ms, unsubscribed_at_ms, last_advanced_at_ms,
             consume_token, subscription_generation, state, redelivery_used,
-            quarantined_at_ms, reinstated_at_ms
-         ) VALUES (?1, ?2, ?3, 1, ?4, ?5, 0, 0, ?6, ?7, 0, 0, 0, 0)
+            quarantined_at_ms, reinstated_at_ms, attached_by
+         ) VALUES (?1, ?2, ?3, 1, ?4, ?5, 0, 0, ?6, ?7, 0, 0, 0, 0, ?8)
          ON CONFLICT(topic_id, subscriber_key) DO UPDATE SET
             active=1, cursor=excluded.cursor,
             subscribed_at_ms=excluded.subscribed_at_ms,
             unsubscribed_at_ms=0, last_advanced_at_ms=0,
             consume_token=excluded.consume_token,
             subscription_generation=excluded.subscription_generation,
-            state=0, redelivery_used=0, quarantined_at_ms=0, reinstated_at_ms=0
+            state=0, redelivery_used=0, quarantined_at_ms=0, reinstated_at_ms=0,
+            attached_by=excluded.attached_by
          WHERE topic_subscriptions.active=0",
         params![
             record.subscription_id.as_bytes().as_slice(),
@@ -2234,6 +2947,9 @@ fn insert_or_resubscribe(
             encode_u64(record.subscribed_at_ms)?,
             record.consume_token.as_slice(),
             encode_u64(record.subscription_generation)?,
+            attached_by
+                .as_ref()
+                .map(|pattern_id| pattern_id.as_bytes().as_slice()),
         ],
     )?;
     if changed != 1 {
@@ -2449,7 +3165,8 @@ fn load_subscription_optional(
             "SELECT subscription_id, active, cursor, subscribed_at_ms,
                     unsubscribed_at_ms, last_advanced_at_ms,
                     consume_token, subscription_generation,
-                    state, redelivery_used, quarantined_at_ms, reinstated_at_ms
+                    state, redelivery_used, quarantined_at_ms, reinstated_at_ms,
+                    attached_by
              FROM topic_subscriptions WHERE topic_id=?1 AND subscriber_key=?2",
             params![
                 topic_id.as_bytes().as_slice(),
@@ -2469,6 +3186,7 @@ fn load_subscription_optional(
                     row.get::<_, i64>(9)?,
                     row.get::<_, i64>(10)?,
                     row.get::<_, i64>(11)?,
+                    row.get::<_, Option<Vec<u8>>>(12)?,
                 ))
             },
         )
@@ -2487,6 +3205,7 @@ fn load_subscription_optional(
             redelivery_used,
             quarantined_at_ms,
             reinstated_at_ms,
+            attached_by,
         )| {
             let state = match state {
                 0 => SubscriptionState::Active,
@@ -2512,6 +3231,9 @@ fn load_subscription_optional(
                 redelivery_used: decode_u64(redelivery_used)?,
                 quarantined_at_ms: decode_u64(quarantined_at_ms)?,
                 reinstated_at_ms: decode_u64(reinstated_at_ms)?,
+                attached_by: attached_by
+                    .map(|bytes| array16(bytes).map(PatternId::from_bytes))
+                    .transpose()?,
             };
             if record.subscription_id != subscription_id_for(topic_id, subscriber_key) {
                 return Err(TopicAuthorityError::CorruptRecord(
@@ -2522,6 +3244,171 @@ fn load_subscription_optional(
         },
     )
     .transpose()
+}
+
+/// Raw `topic_patterns` row without the `pattern_id` column: pattern text,
+/// binding, subscriber key, active bit, token, generation and the two
+/// timestamps, in that order.
+type PatternRow = (Vec<u8>, Vec<u8>, Vec<u8>, i64, Vec<u8>, i64, i64, i64);
+
+fn load_pattern_optional(
+    connection: &Connection,
+    pattern_id: PatternId,
+) -> Result<Option<PatternRecord>, TopicAuthorityError> {
+    let raw = connection
+        .query_row(
+            "SELECT pattern_text, binding, subscriber_key, active, consume_token,
+                    pattern_generation, subscribed_at_ms, cancelled_at_ms
+             FROM topic_patterns WHERE pattern_id=?1",
+            [pattern_id.as_bytes().as_slice()],
+            |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, Vec<u8>>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, i64>(7)?,
+                ))
+            },
+        )
+        .optional()?;
+    raw.map(|row| decode_pattern(pattern_id, row)).transpose()
+}
+
+fn load_pattern_by_key(
+    connection: &Connection,
+    key: IdempotencyKey,
+) -> Result<Option<PatternRecord>, TopicAuthorityError> {
+    let pattern_id = connection
+        .query_row(
+            "SELECT pattern_id FROM topic_patterns WHERE create_idempotency_key=?1",
+            [key.as_bytes().as_slice()],
+            |row| row.get::<_, Vec<u8>>(0),
+        )
+        .optional()?;
+    pattern_id
+        .map(|bytes| load_pattern_optional(connection, PatternId::from_bytes(array16(bytes)?)))
+        .transpose()
+        .map(Option::flatten)
+}
+
+/// Loads every `ACTIVE` pattern row in pattern-id order (the create-time
+/// attach candidate set).
+fn load_active_patterns(
+    connection: &Connection,
+) -> Result<Vec<PatternRecord>, TopicAuthorityError> {
+    let mut statement =
+        connection.prepare("SELECT pattern_id FROM topic_patterns WHERE active=1")?;
+    let ids = statement
+        .query_map([], |row| row.get::<_, Vec<u8>>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(statement);
+    ids.into_iter()
+        .map(|id| {
+            let pattern_id = PatternId::from_bytes(array16(id)?);
+            load_pattern_optional(connection, pattern_id)?.ok_or(
+                TopicAuthorityError::CorruptRecord("active pattern row vanished"),
+            )
+        })
+        .collect()
+}
+
+/// Decodes one pattern row and enforces its structural invariants: the
+/// pattern text is still a legal pattern, the binding is bound, the
+/// authority-derived id and consumption token re-derive from the stored
+/// fields, and the active bit agrees with the cancel timestamp.
+fn decode_pattern(
+    stored_id: PatternId,
+    row: PatternRow,
+) -> Result<PatternRecord, TopicAuthorityError> {
+    let (
+        pattern,
+        binding,
+        subscriber_key,
+        active,
+        token,
+        pattern_generation,
+        subscribed_at_ms,
+        cancelled_at_ms,
+    ) = row;
+    if validate_pattern(&pattern).is_err() {
+        return Err(TopicAuthorityError::CorruptRecord(
+            "stored pattern text is not a legal pattern",
+        ));
+    }
+    if binding == [0; 16] {
+        return Err(TopicAuthorityError::CorruptRecord(
+            "pattern binding is unbound",
+        ));
+    }
+    let subscriber_key = SubscriberKey::from_bytes(array16(subscriber_key)?);
+    if stored_id != pattern_id_for(&pattern, subscriber_key) {
+        return Err(TopicAuthorityError::CorruptRecord(
+            "pattern id disagrees with the authority-derived identity",
+        ));
+    }
+    let active = active == 1;
+    if active != (cancelled_at_ms == 0) {
+        return Err(TopicAuthorityError::CorruptRecord(
+            "pattern active bit disagrees with its cancel timestamp",
+        ));
+    }
+    let record = PatternRecord {
+        pattern_id: stored_id,
+        pattern,
+        binding: ResourceAccountId::from_bytes(array16(binding)?),
+        subscriber_key,
+        active,
+        consume_token: array32(token)?,
+        pattern_generation: decode_u64(pattern_generation)?,
+        subscribed_at_ms: decode_u64(subscribed_at_ms)?,
+        cancelled_at_ms: decode_u64(cancelled_at_ms)?,
+    };
+    if record.consume_token != derive_pattern_token(stored_id, record.pattern_generation) {
+        return Err(TopicAuthorityError::CorruptRecord(
+            "pattern token disagrees with the derived identity",
+        ));
+    }
+    Ok(record)
+}
+
+fn insert_or_resubscribe_pattern(
+    transaction: &Transaction<'_>,
+    record: &PatternRecord,
+    idempotency_key: IdempotencyKey,
+) -> Result<(), TopicAuthorityError> {
+    let changed = transaction.execute(
+        "INSERT INTO topic_patterns (
+            pattern_id, pattern_text, binding, subscriber_key, active,
+            consume_token, pattern_generation, subscribed_at_ms,
+            cancelled_at_ms, create_idempotency_key
+         ) VALUES (?1, ?2, ?3, ?4, 1, ?5, ?6, ?7, 0, ?8)
+         ON CONFLICT(pattern_text, subscriber_key) DO UPDATE SET
+            active=1, consume_token=excluded.consume_token,
+            pattern_generation=excluded.pattern_generation,
+            subscribed_at_ms=excluded.subscribed_at_ms, cancelled_at_ms=0,
+            create_idempotency_key=excluded.create_idempotency_key
+         WHERE topic_patterns.active=0",
+        params![
+            record.pattern_id.as_bytes().as_slice(),
+            record.pattern.as_slice(),
+            record.binding.as_bytes().as_slice(),
+            record.subscriber_key.as_bytes().as_slice(),
+            record.consume_token.as_slice(),
+            encode_u64(record.pattern_generation)?,
+            encode_u64(record.subscribed_at_ms)?,
+            idempotency_key.as_bytes().as_slice(),
+        ],
+    )?;
+    if changed != 1 {
+        return Err(TopicAuthorityError::CorruptRecord(
+            "pattern admission CAS lost",
+        ));
+    }
+    Ok(())
 }
 
 fn load_publication_by_key(
@@ -2748,6 +3635,27 @@ fn subscription_id_for(topic_id: TopicId, subscriber_key: SubscriberKey) -> Subs
         b"nlos/topic/subscription/id/v1",
         &[topic_id.as_bytes(), subscriber_key.as_bytes()],
     ))
+}
+
+/// Derives the [`PatternId`] from the pattern text and the subscriber key
+/// (the same authority-derived-identity discipline as the concrete
+/// [`SubscriptionId`], under its own domain tag).
+fn pattern_id_for(pattern: &[u8], subscriber_key: SubscriberKey) -> PatternId {
+    PatternId::from_bytes(derive_id(
+        b"nlos/topic/pattern/id/v1",
+        &[pattern, subscriber_key.as_bytes()],
+    ))
+}
+
+/// Derives the consumption token for one pattern generation: the concrete
+/// subscription token's derivation, domain-separated for patterns.  The
+/// generation participates so every pattern re-subscribe invalidates the
+/// previous generation's token.
+fn derive_pattern_token(pattern_id: PatternId, pattern_generation: u64) -> ConsumeToken {
+    derive_token(
+        b"nlos/topic/pattern-consume-token/v1",
+        &[pattern_id.as_bytes(), &pattern_generation.to_be_bytes()],
+    )
 }
 
 /// Derives the consumption token for one subscription generation:

@@ -79,3 +79,18 @@
 ## 验证与证据
 
 本 ADR 决策于 2026-08-28 由用户选择；同日 `B-TOPIC-001` 最小前缀已实现并验证（canonical commits `89f966e` / `345a959` / `05ff1ff`），上节所列验收项全部覆盖：策略绑定 fail-closed、恰好一次 enqueue 与 replay 幂等、游标单调/重启 replay、min-live-cursor compact 钳制、cascade 预算 CAS 与耗尽/深度越界 fail-closed、payer 绑定存在性校验、订阅 max_recipients admission，以及 Topic 侧 14 项 kill-window 故障矩阵（含 PENDING_ENQUEUE 跨权威双向收敛与悬空 ENQUEUED 检测路径）。实现事实与明确未决项（delivery attempts 执行、运行时自动 republish、真实 payer 计量、匹配谓词、跨进程/多机、wakeup、真实掉电）见 [B-TOPIC-001 evidence](../../evidence/stage-b/b-topic-001-topic-service-single-log-fanout.md)。仍为单机 `H3 / PARTIAL_PASS`，不声明分布式 broker 或 payer 扣费。Channel 侧既有证据见 [B-CHANNEL-001](../../evidence/stage-b/b-channel-001-endpoint-authority.md)。
+
+## 补记：匹配谓词最小前缀（2026-08-29，第五十三增量，代行决策）
+
+- **模式语言**：精确名或尾通配 `prefix*`（`*` 仅可出现在末尾、匹配含空串的任意后缀；他处出现 `*` → `InvalidPattern` pre-write 拒绝）。不做属性过滤/多段通配（列为复审触发器）。
+- **pattern 订阅**：`subscribe_pattern(pattern, binding, subscriber_key, ...)` 建 durable pattern 行（签发 consumption token，与 concrete 订阅同款）；attach 时点两处——订阅时枚举现有匹配 topics 逐个展开为 concrete 订阅、create_topic 时对全部活跃 pattern 行检查并 attach。publish 时不 attach（时点完备：任一 topic 存在时必经 create 时点或已在枚举覆盖内）。
+- **展开语义**：attach 即创建常规 concrete 订阅（游标初始化于当期订阅点，不回放历史），投递/advance/compact 全部复用既有机制零改动；concrete 行记 `attached_by` 溯源。同 (topic, subscriber_key) 已有直接订阅 → 跳过 attach（直接订阅优先，不重复投递）。attach 受该 topic `max_recipients` 约束，满则跳过该 topic（结果如实回报；不保证 pattern 订阅者看到全部匹配 topic——列为已知限制）。
+- **取消**：`cancel_pattern` 翻转 pattern 行并逐一 unsubscribe 其 attach 的活跃 concrete 订阅（复用既有 unsubscribe 语义）；pattern 行幂等重放。
+- **被否候选**：publish 期动态匹配（每次 publish 评估全部 pattern——成本随订阅数线性且投递语义分裂）；多段/属性谓词（语言设计未决）。
+
+## 补记：payer 计量 ledger 最小前缀（2026-08-29，第五十四增量，代行决策）
+
+- **归属**：fanout 成本归账在 TopicAuthority 侧（publication journal 已有逐条 payload 长度与 payer binding）；Channel 保持内核事实源。`AttributionPolicyVersion` 为 policy 级常量 v1，写入每条 ledger 行（版本化，`RSM-METER-002`）。
+- **记账点**：advance 推进游标时，对 (old_cursor, new_cursor] 区间内的 publication payload 字节逐条记 immutable ledger 行（topic、payer=publication 行 payer、bytes、policy version、sequence 区间证据）；compact/追平导致的「未消费即删除」残余（隔离订阅者滞差被钳制删除的部分）在同事务记 `unallocated` 行。**对账不变量**：`Σ ledger(attributed) + Σ ledger(unallocated) == Σ publication payload_bytes(全部 ENQUEUED 过的行)`，inspect 时交叉校验，不平 → `CorruptRecord` fail-closed。
+- **边界**：ledger 是 durable 记账承诺（§8 补记 payer 语义的延伸），不做扣费/信用/拒绝；payer 仍为 opaque typed binding。多 topic 共享 channel 的成本分摊、与 ResourceAccount 的集成列为复审触发器。
+- **被否候选**：按订阅者计账（订阅者无 payer 身份，pattern 展开后归属更模糊）；publish 时预扣（违背「计量不自动成为账本扣款」`RSM-SEPARATE-001`）。
