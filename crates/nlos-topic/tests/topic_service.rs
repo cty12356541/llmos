@@ -434,6 +434,14 @@ fn subscribe_enforces_limit_and_unsubscribe_changes_min_cursor() {
     ));
 
     // Subscribing an active key is idempotent, including the stored time.
+    // The stored record has since been billed twice by the three
+    // publications that arrived while A lagged (the first publication finds
+    // no backlog and is free); replay must return exactly that record.
+    let a_stored = harness
+        .topics
+        .inspect_subscription(topic.topic_id, subscriber(1))
+        .expect("inspect lagging subscriber");
+    assert_eq!(a_stored.redelivery_used, 2);
     assert_eq!(
         harness
             .topics
@@ -443,7 +451,7 @@ fn subscribe_enforces_limit_and_unsubscribe_changes_min_cursor() {
                 subscribed_at_ms: 9_999,
             })
             .expect("replay subscribe"),
-        SubscribeDecision::Replayed(a)
+        SubscribeDecision::Replayed(a_stored)
     );
 
     harness
@@ -1005,6 +1013,19 @@ fn compact_bound_clamps_to_min_live_subscriber_cursor() {
             .expect("poll consumed tail")
             .is_empty()
     );
+    // A catches up past the hidden entry before the next publication: lag
+    // billing (delivery attempts) charges subscribers that are behind when a
+    // publication lands, and an unconsumed seq 3 would bill A a third time
+    // and quarantine it at the declared budget of three.
+    harness
+        .topics
+        .advance(AdvanceRequest {
+            topic_id: topic.topic_id,
+            subscriber_key: subscriber(1),
+            up_to_sequence: 3,
+            advanced_at_ms: 8_240,
+        })
+        .expect("A catches up before the next publication");
     publish_at(&harness.topics, topic.topic_id, 105, b"four", 8_250);
     assert_eq!(
         harness
@@ -1019,10 +1040,12 @@ fn compact_bound_clamps_to_min_live_subscriber_cursor() {
 
     // Repeating the same effective watermark replays; the channel compact
     // semantics (clamped, idempotent) are preserved through the service.
+    // (A has since caught up to 3, so requesting 3 again would be a fresh
+    // trim; the already-applied watermark 2 still replays.)
     assert_eq!(
         harness
             .topics
-            .compact(topic.topic_id, 3)
+            .compact(topic.topic_id, 2)
             .expect("compact replay"),
         TopicCompactDecision::Replayed(nlos_topic::TopicCompactReceipt {
             topic_id: topic.topic_id,
@@ -1219,11 +1242,15 @@ fn restart_replays_topics_subscriptions_cursors_and_publications() {
                 advanced_at_ms: 10_100,
             })
             .expect("advance A");
+        let b = subscribe_at(&topics, topic.topic_id, 2, 10_003);
+        publish_at(&topics, topic.topic_id, 124, b"three", 10_004);
+        // Snapshot A only after the third publication: A was still lagging
+        // when it landed, so the delivery-attempt billing charged A once more
+        // (seq 2 and seq 3; seq 1 found no backlog and was free).
         let a = topics
             .inspect_subscription(topic.topic_id, subscriber(1))
             .expect("inspect A after its advance");
-        let b = subscribe_at(&topics, topic.topic_id, 2, 10_003);
-        publish_at(&topics, topic.topic_id, 124, b"three", 10_004);
+        assert_eq!(a.redelivery_used, 2);
         let topic_record = topics.inspect_topic(topic.topic_id).expect("inspect topic");
         let subs = vec![
             topics

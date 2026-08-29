@@ -28,10 +28,29 @@
 //! leaves the budget spent and the child `PENDING_ENQUEUE`, converged by
 //! replaying the same idempotency key without spending again.
 //!
-//! It deliberately does not implement: delivery-attempt execution,
-//! runtime-automatic cascade triggering (republish is an owner-invoked
-//! forwarding step), real payer metering, interest/matching predicates,
-//! cross-process access, wakeup wiring, or `TaskWriteSet` integration.
+//! Delivery attempts (`RSM-FANOUT-001`, schema v4) are executed at the
+//! enqueue-commit billing point: when a publication's enqueue commit lands
+//! (the publish and republish child paths share it), every `ACTIVE`
+//! subscription of the topic whose cursor was already behind the pre-enqueue
+//! sequence high-water — a genuinely lagging subscriber — has its durable
+//! `redelivery_used` counter advanced by one in the same topic-authority
+//! transaction.  A fully caught-up subscriber receives a first delivery and
+//! is not billed, and the counter is never reset by catching up: the budget
+//! is granted once at the declared `delivery_attempts`.  The publication
+//! whose increment reaches the declared bound flips the subscription
+//! `QUARANTINED` in that same transaction.  Quarantine stops delivery only:
+//! [`TopicAuthority::poll`] answers the typed
+//! [`TopicAuthorityError::DeliveryQuarantined`] without reading any entry,
+//! while cursor advance and unsubscribe keep working, no channel entry or
+//! cursor is touched, and other subscribers are unaffected.  Recovery is the
+//! explicit, token-authenticated [`TopicAuthority::reinstate_with_token`]:
+//! the counter is zeroed, the state flips back to active and the cursor
+//! stays exactly where it was.
+//!
+//! It deliberately does not implement: runtime-automatic cascade triggering
+//! (republish is an owner-invoked forwarding step), real payer metering,
+//! interest/matching predicates, cross-process access, wakeup wiring, or
+//! `TaskWriteSet` integration.
 
 mod schema;
 
@@ -98,6 +117,21 @@ nominal_id!(SubscriberKey);
 /// cryptographic signature: it authenticates "the caller holds the token the
 /// authority issued for this subscription generation" and nothing more.
 pub type ConsumeToken = [u8; 32];
+
+/// The delivery-attempt execution state of a subscription (schema v4,
+/// `RSM-FANOUT-001`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SubscriptionState {
+    /// Delivery continues; the subscriber is billed one durable unit per
+    /// publication that enqueues while it is genuinely lagging.
+    Active,
+    /// The declared `delivery_attempts` are exhausted: delivery is stopped
+    /// (`poll` fails closed with [`TopicAuthorityError::DeliveryQuarantined`])
+    /// until an explicit [`TopicAuthority::reinstate_with_token`].  Cursor
+    /// advance and unsubscribe keep working, no message or cursor is
+    /// touched, and other subscribers are unaffected.
+    Quarantined,
+}
 
 /// The RSM-FANOUT-001 policy bound to a topic before the first enqueue.
 ///
@@ -175,6 +209,17 @@ pub struct SubscribeRequest {
 /// subscriber key (1 for the first, +1 per re-subscribe after an
 /// unsubscribe); the generation participates in the token derivation so a
 /// stale token from a previous subscription generation fails closed.
+///
+/// The delivery-attempt execution state (`RSM-FANOUT-001`): `state` is
+/// [`Active`](SubscriptionState) until the durable `redelivery_used` counter
+/// reaches the topic's declared `delivery_attempts`, then
+/// [`Quarantined`](SubscriptionState); the counter is billed once per
+/// publication that enqueued while the subscriber was genuinely lagging and
+/// is zeroed only by an explicit reinstate.  `quarantined_at_ms` records the
+/// most recent quarantine flip (0 while never), and `reinstated_at_ms` the
+/// most recent explicit reinstate (0 while never) — the marker that
+/// distinguishes a reinstate replay from a never-quarantined subscription.
+/// A re-subscribe after an unsubscribe starts a fresh budget.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SubscriptionRecord {
     pub subscription_id: SubscriptionId,
@@ -187,6 +232,10 @@ pub struct SubscriptionRecord {
     pub last_advanced_at_ms: u64,
     pub consume_token: ConsumeToken,
     pub subscription_generation: u64,
+    pub state: SubscriptionState,
+    pub redelivery_used: u64,
+    pub quarantined_at_ms: u64,
+    pub reinstated_at_ms: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -230,6 +279,29 @@ impl UnsubscribeDecision {
     pub const fn receipt(self) -> UnsubscribeReceipt {
         match self {
             Self::Unsubscribed(receipt) | Self::Replayed(receipt) => receipt,
+        }
+    }
+}
+
+/// The explicit recovery decision for a quarantined subscription
+/// (`RSM-FANOUT-001`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReinstateDecision {
+    /// This call cleared the durable redelivery counter and flipped the
+    /// subscription back to [`SubscriptionState::Active`] with its cursor
+    /// exactly where it was.
+    Reinstated(SubscriptionRecord),
+    /// The subscription was already reinstated; the durable record returns
+    /// (the original reinstate timestamp included) and nothing is written
+    /// again.
+    Replayed(SubscriptionRecord),
+}
+
+impl ReinstateDecision {
+    #[must_use]
+    pub fn record(self) -> SubscriptionRecord {
+        match self {
+            Self::Reinstated(record) | Self::Replayed(record) => record,
         }
     }
 }
@@ -404,6 +476,15 @@ pub enum TopicAuthorityError {
     TopicNotFound(TopicId),
     SubscriptionNotFound(SubscriptionId),
     SubscriptionInactive(SubscriptionId),
+    /// The polled subscription is `QUARANTINED`: its declared delivery
+    /// attempts are exhausted, so the poll fails closed without reading any
+    /// entry (quarantine rejects the delivery service, not the caller's
+    /// identity — `poll` stays token-free).
+    DeliveryQuarantined(SubscriptionId),
+    /// A reinstate was presented for a subscription that is not
+    /// `QUARANTINED` and has no completed reinstate to replay; recovery is
+    /// explicit, so nothing is written.
+    NotQuarantined(SubscriptionId),
     /// A consumption token was presented that does not match the
     /// authority-issued token of the subscription's current generation; the
     /// caller is not the holder of the subscribe grant and nothing is written.
@@ -460,6 +541,15 @@ impl fmt::Display for TopicAuthorityError {
             Self::SubscriptionInactive(id) => write!(
                 formatter,
                 "subscription {id:?} is inactive and must re-subscribe first"
+            ),
+            Self::DeliveryQuarantined(id) => write!(
+                formatter,
+                "subscription {id:?} is quarantined: the declared delivery attempts are \
+                 exhausted and delivery is stopped until an explicit reinstate"
+            ),
+            Self::NotQuarantined(id) => write!(
+                formatter,
+                "subscription {id:?} is not quarantined, so there is nothing to reinstate"
             ),
             Self::ConsumptionTokenMismatch(id) => write!(
                 formatter,
@@ -565,12 +655,18 @@ impl TopicAuthority {
                 schema::migrate_v1(&mut connection)?;
                 schema::migrate_v2(&mut connection)?;
                 schema::migrate_v3(&mut connection)?;
+                schema::migrate_v4(&mut connection)?;
             }
             1 => {
                 schema::migrate_v2(&mut connection)?;
                 schema::migrate_v3(&mut connection)?;
+                schema::migrate_v4(&mut connection)?;
             }
-            2 => schema::migrate_v3(&mut connection)?,
+            2 => {
+                schema::migrate_v3(&mut connection)?;
+                schema::migrate_v4(&mut connection)?;
+            }
+            3 => schema::migrate_v4(&mut connection)?,
             schema::SCHEMA_VERSION => {}
             other => return Err(TopicAuthorityError::SchemaVersionUnsupported(other)),
         }
@@ -679,12 +775,14 @@ impl TopicAuthority {
     /// [`ConsumeToken`] for the subscription
     /// (`"nlos/topic/consume-token/v1" ‖ subscription_id ‖ subscription
     /// generation`) and returns it in the decision record: the token is the
-    /// identity binding that [`TopicAuthority::advance_with_token`] and
-    /// [`TopicAuthority::unsubscribe_with_token`] require.  A replayed
+    /// identity binding that [`TopicAuthority::advance_with_token`],
+    /// [`TopicAuthority::unsubscribe_with_token`] and
+    /// [`TopicAuthority::reinstate_with_token`] require.  A replayed
     /// subscribe of the same active key returns the originally issued token;
     /// a re-subscribe after an unsubscribe bumps the subscription generation
     /// and issues a fresh token, so any token from a previous generation
-    /// fails closed.
+    /// fails closed.  A (re-)subscribed key always starts with a zeroed
+    /// delivery-attempt budget in the [`SubscriptionState::Active`] state.
     ///
     /// # Errors
     ///
@@ -728,6 +826,10 @@ impl TopicAuthority {
             last_advanced_at_ms: 0,
             consume_token: derive_consume_token(subscription_id, subscription_generation),
             subscription_generation,
+            state: SubscriptionState::Active,
+            redelivery_used: 0,
+            quarantined_at_ms: 0,
+            reinstated_at_ms: 0,
         };
         insert_or_resubscribe(&transaction, &record)?;
         bump_active_count(&transaction, request.topic_id, active, active + 1)?;
@@ -830,6 +932,80 @@ impl TopicAuthority {
             subscriber_key: existing.subscriber_key,
             unsubscribed_at_ms: request.unsubscribed_at_ms,
         }))
+    }
+
+    /// Reinstates a `QUARANTINED` subscription, requiring the consumption
+    /// token.
+    ///
+    /// The caller must present the [`ConsumeToken`] issued for the
+    /// subscription's current generation; any other token is
+    /// [`TopicAuthorityError::ConsumptionTokenMismatch`] before any write.
+    /// Recovery is explicit, never automatic: a quarantined subscription is
+    /// flipped back to [`SubscriptionState::Active`] with its durable
+    /// `redelivery_used` counter zeroed and its cursor exactly where it was —
+    /// no entry is skipped and none is replayed, and the budget is re-granted
+    /// only through this entry.  Repeating an already-completed reinstate of
+    /// the same key replays the durable record (the stored
+    /// `reinstated_at_ms` marker distinguishes that replay from a
+    /// never-quarantined subscription, which fails closed with
+    /// [`TopicAuthorityError::NotQuarantined`]).
+    ///
+    /// # Errors
+    ///
+    /// Fails closed for a token mismatch, an unknown Topic or subscription,
+    /// an inactive subscription, a subscription that is not quarantined, or
+    /// a storage/corruption failure.
+    pub fn reinstate_with_token(
+        &self,
+        topic_id: TopicId,
+        subscriber_key: SubscriberKey,
+        consume_token: &ConsumeToken,
+        reinstated_at_ms: u64,
+    ) -> Result<ReinstateDecision, TopicAuthorityError> {
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        load_topic_verified(&transaction, topic_id)?;
+        let existing = load_subscription_optional(&transaction, topic_id, subscriber_key)?.ok_or(
+            TopicAuthorityError::SubscriptionNotFound(subscription_id_for(
+                topic_id,
+                subscriber_key,
+            )),
+        )?;
+        verify_consume_token(&existing, Some(*consume_token))?;
+        if !existing.active {
+            return Err(TopicAuthorityError::SubscriptionInactive(
+                existing.subscription_id,
+            ));
+        }
+        if existing.state == SubscriptionState::Active {
+            if existing.reinstated_at_ms > 0 {
+                transaction.commit()?;
+                return Ok(ReinstateDecision::Replayed(existing));
+            }
+            return Err(TopicAuthorityError::NotQuarantined(
+                existing.subscription_id,
+            ));
+        }
+        let changed = transaction.execute(
+            "UPDATE topic_subscriptions
+             SET state=0, redelivery_used=0, reinstated_at_ms=?1
+             WHERE subscription_id=?2 AND state=1",
+            params![
+                encode_u64(reinstated_at_ms)?,
+                existing.subscription_id.as_bytes().as_slice(),
+            ],
+        )?;
+        if changed != 1 {
+            return Err(TopicAuthorityError::CorruptRecord(
+                "subscription quarantine reinstate CAS lost",
+            ));
+        }
+        let reinstated = load_subscription_optional(&transaction, topic_id, subscriber_key)?
+            .ok_or(TopicAuthorityError::CorruptRecord(
+                "subscription row vanished during quarantine reinstate",
+            ))?;
+        transaction.commit()?;
+        Ok(ReinstateDecision::Reinstated(reinstated))
     }
 
     /// Reads the verified subscription state row.
@@ -1169,6 +1345,13 @@ impl TopicAuthority {
     /// boundary is the cursor advance
     /// ([`TopicAuthority::advance_with_token`]), not the read.
     ///
+    /// A `QUARANTINED` subscriber is rejected with the typed
+    /// [`TopicAuthorityError::DeliveryQuarantined`] before any Channel read:
+    /// its declared delivery attempts are exhausted, so delivery fails closed
+    /// and leaks no entry (quarantine rejects the service, not the caller's
+    /// identity — the entry stays readable for every other subscriber and for
+    /// this one again after an explicit reinstate).
+    ///
     /// Zero-write: the Channel receive window (`sequence >
     /// consume_high_water`, ordered, limited to `limit`) is filtered by the
     /// subscriber's own cursor (`sequence > cursor`) and no cursor moves.  The
@@ -1181,8 +1364,8 @@ impl TopicAuthority {
     /// # Errors
     ///
     /// Fails closed for an unknown Topic or subscription, an inactive
-    /// subscription, a cursor inconsistent with the channel high-water, or a
-    /// propagated Channel rejection.
+    /// subscription, a quarantined subscription, a cursor inconsistent with
+    /// the channel high-water, or a propagated Channel rejection.
     pub fn poll(
         &self,
         topic_id: TopicId,
@@ -1197,6 +1380,11 @@ impl TopicAuthority {
             ))?;
         if !subscription.active {
             return Err(TopicAuthorityError::SubscriptionInactive(
+                subscription.subscription_id,
+            ));
+        }
+        if subscription.state == SubscriptionState::Quarantined {
+            return Err(TopicAuthorityError::DeliveryQuarantined(
                 subscription.subscription_id,
             ));
         }
@@ -1582,6 +1770,36 @@ impl TopicAuthority {
             transaction.commit()?;
             return Ok((existing, false));
         }
+        // Delivery-attempt billing point (`RSM-FANOUT-001`, same
+        // topic-authority transaction as the enqueue commit): every ACTIVE
+        // subscription whose cursor is behind the pre-enqueue sequence
+        // high-water (`cursor < sequence - 1`) was genuinely lagging when
+        // this publication arrived and is billed one durable unit; a fully
+        // caught-up subscriber receives a first delivery and is not billed.
+        // `QUARANTINED` subscribers stopped receiving deliveries and are not
+        // billed again, and nothing is deleted: the flip only stops
+        // delivery.  The converged path above must not bill — the
+        // committing transaction already did.
+        let lag_bound = entry
+            .sequence
+            .checked_sub(1)
+            .ok_or(TopicAuthorityError::CorruptRecord(
+                "enqueued publication binds no channel sequence",
+            ))?;
+        transaction.execute(
+            "UPDATE topic_subscriptions
+             SET redelivery_used = redelivery_used + 1,
+                 state = CASE WHEN redelivery_used + 1 >= ?1 THEN 1 ELSE state END,
+                 quarantined_at_ms = CASE WHEN redelivery_used + 1 >= ?1
+                                          THEN ?2 ELSE quarantined_at_ms END
+             WHERE topic_id=?3 AND active=1 AND state=0 AND cursor < ?4",
+            params![
+                encode_u64(topic.policy.delivery_attempts)?,
+                encode_u64(entry.enqueued_at_ms)?,
+                topic.topic_id.as_bytes().as_slice(),
+                encode_u64(lag_bound)?,
+            ],
+        )?;
         let record = load_publication_by_key(&transaction, idempotency_key)?.ok_or(
             TopicAuthorityError::CorruptRecord("publication row vanished after enqueue commit"),
         )?;
@@ -1707,14 +1925,16 @@ fn insert_or_resubscribe(
         "INSERT INTO topic_subscriptions (
             subscription_id, topic_id, subscriber_key, active, cursor,
             subscribed_at_ms, unsubscribed_at_ms, last_advanced_at_ms,
-            consume_token, subscription_generation
-         ) VALUES (?1, ?2, ?3, 1, ?4, ?5, 0, 0, ?6, ?7)
+            consume_token, subscription_generation, state, redelivery_used,
+            quarantined_at_ms, reinstated_at_ms
+         ) VALUES (?1, ?2, ?3, 1, ?4, ?5, 0, 0, ?6, ?7, 0, 0, 0, 0)
          ON CONFLICT(topic_id, subscriber_key) DO UPDATE SET
             active=1, cursor=excluded.cursor,
             subscribed_at_ms=excluded.subscribed_at_ms,
             unsubscribed_at_ms=0, last_advanced_at_ms=0,
             consume_token=excluded.consume_token,
-            subscription_generation=excluded.subscription_generation
+            subscription_generation=excluded.subscription_generation,
+            state=0, redelivery_used=0, quarantined_at_ms=0, reinstated_at_ms=0
          WHERE topic_subscriptions.active=0",
         params![
             record.subscription_id.as_bytes().as_slice(),
@@ -1933,7 +2153,8 @@ fn load_subscription_optional(
         .query_row(
             "SELECT subscription_id, active, cursor, subscribed_at_ms,
                     unsubscribed_at_ms, last_advanced_at_ms,
-                    consume_token, subscription_generation
+                    consume_token, subscription_generation,
+                    state, redelivery_used, quarantined_at_ms, reinstated_at_ms
              FROM topic_subscriptions WHERE topic_id=?1 AND subscriber_key=?2",
             params![
                 topic_id.as_bytes().as_slice(),
@@ -1949,6 +2170,10 @@ fn load_subscription_optional(
                     row.get::<_, i64>(5)?,
                     row.get::<_, Vec<u8>>(6)?,
                     row.get::<_, i64>(7)?,
+                    row.get::<_, i64>(8)?,
+                    row.get::<_, i64>(9)?,
+                    row.get::<_, i64>(10)?,
+                    row.get::<_, i64>(11)?,
                 ))
             },
         )
@@ -1963,7 +2188,20 @@ fn load_subscription_optional(
             advanced,
             token,
             generation,
+            state,
+            redelivery_used,
+            quarantined_at_ms,
+            reinstated_at_ms,
         )| {
+            let state = match state {
+                0 => SubscriptionState::Active,
+                1 => SubscriptionState::Quarantined,
+                _ => {
+                    return Err(TopicAuthorityError::CorruptRecord(
+                        "subscription delivery state is unknown",
+                    ));
+                }
+            };
             let record = SubscriptionRecord {
                 subscription_id: SubscriptionId::from_bytes(array16(subscription_id)?),
                 topic_id,
@@ -1975,6 +2213,10 @@ fn load_subscription_optional(
                 last_advanced_at_ms: decode_u64(advanced)?,
                 consume_token: array32(token)?,
                 subscription_generation: decode_u64(generation)?,
+                state,
+                redelivery_used: decode_u64(redelivery_used)?,
+                quarantined_at_ms: decode_u64(quarantined_at_ms)?,
+                reinstated_at_ms: decode_u64(reinstated_at_ms)?,
             };
             if record.subscription_id != subscription_id_for(topic_id, subscriber_key) {
                 return Err(TopicAuthorityError::CorruptRecord(

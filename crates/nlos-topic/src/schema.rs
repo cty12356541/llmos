@@ -2,7 +2,7 @@ use rusqlite::{Connection, TransactionBehavior, params};
 
 use crate::TopicAuthorityError;
 
-pub(crate) const SCHEMA_VERSION: i64 = 3;
+pub(crate) const SCHEMA_VERSION: i64 = 4;
 
 /// Creates the Topic service-layer authority schema v1: the immutable-topic
 /// head (policy, payer binding, channel fence snapshot, active-subscriber
@@ -347,6 +347,106 @@ pub(crate) fn migrate_v3(connection: &mut Connection) -> Result<(), TopicAuthori
     transaction.execute_batch(
         "DROP TABLE topic_subscriptions;
         ALTER TABLE topic_subscriptions_v3 RENAME TO topic_subscriptions;",
+    )?;
+    transaction.commit()?;
+    connection.pragma_update(None, "foreign_keys", "ON")?;
+    Ok(())
+}
+
+/// Adds the delivery-attempt execution state to the per-subscriber rows
+/// (schema v4, `RSM-FANOUT-001`): every subscription durably carries its
+/// delivery state (`0` = ACTIVE, `1` = QUARANTINED), the durable
+/// `redelivery_used` counter billed at the enqueue-commit point, the
+/// timestamp of the quarantine flip and the timestamp of the most recent
+/// explicit reinstate (the reinstate replay marker).
+///
+/// The billing point — one counter unit per publication that enqueued while
+/// the subscriber was genuinely lagging, with the quarantine flip at the
+/// declared `delivery_attempts` — lives in the enqueue-commit transaction of
+/// [`crate::TopicAuthority::publish`] and
+/// [`crate::TopicAuthority::republish`]; this migration only backfills the
+/// new columns for existing rows (`0` counter, ACTIVE, no quarantine or
+/// reinstate timestamps), so upgraded databases start from the same state as
+/// fresh ones.  Idempotent on reopen via the column pre-check; an unexpected
+/// partial column state fails closed as
+/// [`TopicAuthorityError::CorruptRecord`].
+///
+/// `SQLite` cannot alter `CHECK` constraints in place, so
+/// `topic_subscriptions` is rebuilt through the documented table-rebuild
+/// procedure; the immutability and no-delete triggers are recreated.
+pub(crate) fn migrate_v4(connection: &mut Connection) -> Result<(), TopicAuthorityError> {
+    let column_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('topic_subscriptions')
+         WHERE name IN ('state', 'redelivery_used', 'quarantined_at_ms', 'reinstated_at_ms')",
+        [],
+        |row| row.get(0),
+    )?;
+    if column_count == 4 {
+        connection.pragma_update(None, "user_version", 4)?;
+        return Ok(());
+    }
+    if column_count != 0 {
+        return Err(TopicAuthorityError::CorruptRecord(
+            "partial topic subscription delivery-attempt schema",
+        ));
+    }
+
+    // The documented SQLite table-rebuild procedure requires foreign-key
+    // enforcement off around (not inside) the rebuild transaction.
+    connection.pragma_update(None, "foreign_keys", "OFF")?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "DROP TRIGGER IF EXISTS topic_subscriptions_identity_frozen;
+        DROP TRIGGER IF EXISTS topic_subscriptions_no_delete;
+
+        CREATE TABLE topic_subscriptions_v4 (
+            subscription_id BLOB PRIMARY KEY NOT NULL CHECK(length(subscription_id)=16),
+            topic_id BLOB NOT NULL CHECK(length(topic_id)=16),
+            subscriber_key BLOB NOT NULL CHECK(length(subscriber_key)=16),
+            active INTEGER NOT NULL CHECK(active IN (0,1)),
+            cursor INTEGER NOT NULL CHECK(cursor >= 0),
+            subscribed_at_ms INTEGER NOT NULL CHECK(subscribed_at_ms >= 0),
+            unsubscribed_at_ms INTEGER NOT NULL DEFAULT 0 CHECK(unsubscribed_at_ms >= 0),
+            last_advanced_at_ms INTEGER NOT NULL DEFAULT 0 CHECK(last_advanced_at_ms >= 0),
+            consume_token BLOB NOT NULL CHECK(length(consume_token)=32),
+            subscription_generation INTEGER NOT NULL CHECK(subscription_generation >= 1),
+            state INTEGER NOT NULL DEFAULT 0 CHECK(state IN (0,1)),
+            redelivery_used INTEGER NOT NULL DEFAULT 0 CHECK(redelivery_used >= 0),
+            quarantined_at_ms INTEGER NOT NULL DEFAULT 0 CHECK(quarantined_at_ms >= 0),
+            reinstated_at_ms INTEGER NOT NULL DEFAULT 0 CHECK(reinstated_at_ms >= 0),
+            UNIQUE(topic_id, subscriber_key),
+            FOREIGN KEY(topic_id) REFERENCES topics(topic_id)
+        ) STRICT;
+
+        INSERT INTO topic_subscriptions_v4 (
+            subscription_id, topic_id, subscriber_key, active, cursor,
+            subscribed_at_ms, unsubscribed_at_ms, last_advanced_at_ms,
+            consume_token, subscription_generation,
+            state, redelivery_used, quarantined_at_ms, reinstated_at_ms
+         )
+         SELECT subscription_id, topic_id, subscriber_key, active, cursor,
+                subscribed_at_ms, unsubscribed_at_ms, last_advanced_at_ms,
+                consume_token, subscription_generation,
+                0, 0, 0, 0
+           FROM topic_subscriptions;
+
+        CREATE TRIGGER topic_subscriptions_identity_frozen
+        BEFORE UPDATE ON topic_subscriptions_v4
+        WHEN NEW.subscription_id != OLD.subscription_id
+            OR NEW.topic_id != OLD.topic_id
+            OR NEW.subscriber_key != OLD.subscriber_key
+        BEGIN
+            SELECT RAISE(ABORT, 'subscription identity is immutable');
+        END;
+        CREATE TRIGGER topic_subscriptions_no_delete
+        BEFORE DELETE ON topic_subscriptions_v4 BEGIN
+            SELECT RAISE(ABORT, 'subscription rows are durable');
+        END;
+
+        DROP TABLE topic_subscriptions;
+        ALTER TABLE topic_subscriptions_v4 RENAME TO topic_subscriptions;
+
+        PRAGMA user_version=4;",
     )?;
     transaction.commit()?;
     connection.pragma_update(None, "foreign_keys", "ON")?;
