@@ -1,0 +1,29 @@
+[package]
+name = "exp8-sandbox-comparison"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "B-SANDBOX: Wasmtime/WASI vs 独立 host Process 隔离对比实验（四维：CPU 限制 / 内存限制 / capability 权限面 / 故障隔离）"
+license = "Apache-2.0"
+publish = false
+
+# 空成员列表声明本包是独立 workspace 根：
+# 根 Cargo.toml 的 members 未包含本目录（未修改根清单），cargo 不会把本包并入根 workspace。
+[workspace]
+
+[dependencies]
+anyhow = "1"
+# Wasm 侧：手写 WAT guest，免 wasm 工具链依赖（wat 文本随二进制内嵌）
+wasmtime = "36"
+# WASI preview1 capability 面（默认拒绝的文件/时钟/stdio 能力）
+wasmtime-wasi = "36"
+# host Process 侧：rlimit / signal / getrusage 的安全封装
+nix = { version = "0.31", features = ["process", "resource", "signal"] }
+
+[profile.release]
+opt-level = 3
+
+# deny（非 forbid）：child.rs 的 ignore_term() 需要一次 sigaction(SIGTERM, SIG_IGN) FFI 调用，
+# 是本实验唯一 unsafe 点，已在源码内 allow 并注释理由；不继承根 workspace 的 forbid 级 lint。
+[lints.rust]
+unsafe_code = "deny"
