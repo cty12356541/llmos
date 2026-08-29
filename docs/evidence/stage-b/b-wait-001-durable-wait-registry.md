@@ -55,3 +55,9 @@ kill-window 矩阵：三入口 pre-commit IOERR/ENOSPC typed fail-closed 零幻�
 - `WaitAuthority::list_waits(filter)`：全状态枚举 helper（占位缓冲只属 WOKEN 行，故不能只列 PENDING）。
 - **边界**：fiber 执行状态重建（B-PROCESS 检查点域）与跨进程等待（blocked-by B-TASK-006L 真实 Capability/Principal 认证权威，未决）均不实现，登记于 ADR 复审触发器。
 - 验证：runtime-tokio 45 passed / 1 ignored（新增 channel_rehydration 8 项）；nlos-wait 26 无回归；workspace clippy/fmt 全绿。
+
+## 7. 跨进程等待传输前缀（2026-08-29 增量，commit `f5fed22`）
+
+- 原 blocked-by B-TASK-006L 的「跨进程等待」按项目自身先例（SystemControl `handle_for_ipc`）解除到**本地信任域传输前缀**粒度：新 crate `nlos-wait-control` 将 WaitAuthority 五操作（register/notify/cancel/list/inspect）经 SABI envelope 暴露给独立进程，authorizer 注入沿用既有 posture；**跨 Principal 认证仍继承上游未决**（真实 Capability/Principal 模型未定，本前缀不解释 CapabilityHandle 字节）——分级解阻塞，非全量完成。
+- 验证：nlos-wait-control 13 passed / 0 failed（含 tokio duplex 与真实 Unix socket roundtrip、失败映射 envelope 形状）；nlos-wait 26 无回归；workspace clippy/fmt 全绿。
+- 已知限制：payload 为 crate 局部 prost 描述符（入 nlos-schema 共享 REGISTRY 为后续）；无 conformance server bin 与 TS/Python 客户端（对照 takeover-control 后续）。
