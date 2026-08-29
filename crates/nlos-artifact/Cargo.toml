@@ -7,11 +7,13 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+nlos-identity = { path = "../nlos-identity" }
 nlos-types = { path = "../nlos-types" }
 rusqlite.workspace = true
 sha2.workspace = true
 
 [dev-dependencies]
+ed25519-dalek.workspace = true
 nlos-store-fault = { path = "../nlos-store-fault" }
 rusqlite.workspace = true
 

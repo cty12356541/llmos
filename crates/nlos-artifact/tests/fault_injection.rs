@@ -21,9 +21,15 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
-use nlos_artifact::{ArtifactError, ArtifactStore, ContentDigest, PutRevisionDecision};
+use nlos_artifact::{
+    ArtifactError, ArtifactStore, ContentDigest, PackageEntryRole, PackageVerificationDecision,
+    PutRevisionDecision, VerifyPackageRequest,
+};
 use nlos_store_fault::{FaultCode, FaultMode};
-use support::{TestStoreDir, artifact_id, artifact_spec, bytes, put};
+use support::{
+    TestStoreDir, artifact_id, artifact_spec, bytes, entry, manifest, put, sign_package,
+    test_identity,
+};
 
 mod support;
 
@@ -557,5 +563,86 @@ fn fault_kill9_before_rename_cleans_tmp_orphan() {
             .count(),
         0
     );
+    assert_integrity(directory.root());
+}
+
+// ---------------------------------------------------------------------------
+// Row 5: hard I/O error during the package receipt commit — no half state
+// ---------------------------------------------------------------------------
+
+/// 元数据提交期硬 I/O 错误（B-ARTIFACT-003 receipt 写入）：签名与内容绑定
+/// 校验已通过，`FailWritesAfter { 0, IoErr }` 使 receipt 插入事务显式失败；
+/// 无半截 receipt（重开与 raw 计数均为 0），disarm 后同一请求原样成功
+/// （幂等重做）。identity authority 使用默认 VFS，不受 shim 影响。
+#[test]
+fn fault_io_error_during_package_receipt_commit_leaves_no_receipt() {
+    let _serialization = fault_lock();
+    nlos_store_fault::disarm();
+    let directory = TestStoreDir::new("package-receipt-ioerr");
+    let store = open_shim(directory.root());
+    let identity = test_identity("package-receipt-ioerr", 0x58);
+    store.create_artifact(artifact_spec(0x44)).expect("create");
+    let payload = bytes(0xd5, 256);
+    let digest = ContentDigest::of_bytes(&payload);
+    store
+        .put_revision(put(artifact_id(0x44), 0, &payload))
+        .expect("put");
+
+    let signed = sign_package(
+        &identity,
+        manifest(
+            0x20,
+            1,
+            vec![entry(
+                "only",
+                artifact_id(0x44),
+                digest,
+                PackageEntryRole::Data,
+            )],
+        ),
+    );
+    let request = VerifyPackageRequest {
+        signed: &signed,
+        idempotency_key: nlos_types::IdempotencyKey::from_bytes([0x71; 16]),
+        verified_at_ms: 5_000,
+    };
+
+    nlos_store_fault::arm(FaultMode::FailWritesAfter {
+        remaining: 0,
+        code: FaultCode::IoErr,
+    });
+    let error = store
+        .verify_package(&identity.authority, request)
+        .expect_err("receipt commit must fail under injected I/O error");
+    nlos_store_fault::disarm();
+    assert!(
+        matches!(error, ArtifactError::Sqlite(_)),
+        "expected a storage error, got {error}"
+    );
+    assert!(
+        matches!(
+            store.inspect_package_verification_receipt(nlos_types::ReceiptId::from_bytes([0; 16])),
+            Err(ArtifactError::PackageVerificationReceiptNotFound(_))
+        ),
+        "no receipt id may be visible"
+    );
+
+    // No half state: no receipt row exists for this package at all.
+    let raw = rusqlite::Connection::open(directory.root().join("metadata.db")).expect("raw open");
+    let count: i64 = raw
+        .query_row(
+            "SELECT COUNT(*) FROM package_verification_receipts",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count receipts");
+    assert_eq!(count, 0);
+    drop(raw);
+
+    // After the fault clears the same request verifies cleanly.
+    let decision = store
+        .verify_package(&identity.authority, request)
+        .expect("verify after disarm");
+    assert!(matches!(decision, PackageVerificationDecision::Verified(_)));
     assert_integrity(directory.root());
 }

@@ -16,7 +16,7 @@ use crate::model::{
 };
 use crate::query::{load_artifact_optional, load_revision_optional};
 
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 /// Filesystem layout under the store root.
 #[derive(Clone, Debug)]
@@ -123,12 +123,18 @@ impl ArtifactStore {
                 crate::schema::migrate_v1(&mut connection)?;
                 crate::schema::migrate_v2(&mut connection)?;
                 crate::schema::migrate_v3(&mut connection)?;
+                crate::schema::migrate_v4(&mut connection)?;
             }
             1 => {
                 crate::schema::migrate_v2(&mut connection)?;
                 crate::schema::migrate_v3(&mut connection)?;
+                crate::schema::migrate_v4(&mut connection)?;
             }
-            2 => crate::schema::migrate_v3(&mut connection)?,
+            2 => {
+                crate::schema::migrate_v3(&mut connection)?;
+                crate::schema::migrate_v4(&mut connection)?;
+            }
+            3 => crate::schema::migrate_v4(&mut connection)?,
             SCHEMA_VERSION => {}
             other => return Err(ArtifactError::SchemaVersionUnsupported(other)),
         }

@@ -43,14 +43,28 @@
 //! revision, compare-and-swaps head, writes an immutable publication receipt,
 //! and marks the stage published in one `SQLite` transaction.
 //!
+//! # Package verification prefix (B-ARTIFACT-003)
+//!
+//! [`ArtifactStore::verify_package`] verifies a minimal signed Package
+//! envelope: the acting principal's Ed25519 signature over the
+//! domain-separated manifest digest (checked by `nlos-identity` under the
+//! signer's *current* key binding) and every manifest entry's content
+//! binding against the artifact heads. Success commits one immutable
+//! package verification receipt; replays are durable-authoritative and
+//! never re-verify. See `package` for the exact fail-closed order and the
+//! scope boundaries.
+//!
 //! # Scope and honesty boundaries
 //!
 //! - `DeploymentMode=LOCAL_SINGLE_NODE` only (`[ART-LOCAL-001]`): the local
 //!   store is authoritative; no sync/distributed/object-store backend. The
 //!   blob layer is confined to the internal `blob` module so a later slice
 //!   can lift it behind a backend trait.
-//! - No GC execution, retention policy, encryption, provenance chains,
-//!   legal hold, or Package signature verification.
+//! - No GC execution, retention policy, encryption, provenance chains, or
+//!   legal hold. Package verification is a minimal prefix only: no
+//!   installation/update lifecycle, no full §23.2 manifest, no trust-root
+//!   or signature-chain policy (single signing principal), and no
+//!   cross-process verification of the envelope.
 //! - [`ArtifactStore::recover`] is **explicit**, not run on open: open
 //!   latency stays predictable and recovery reporting is an operator
 //!   decision. Callers may invoke it immediately after open.
@@ -58,6 +72,7 @@
 mod blob;
 mod cache;
 mod model;
+mod package;
 mod publication;
 mod query;
 mod recover;
@@ -69,7 +84,8 @@ use std::fmt;
 use std::io;
 use std::path::PathBuf;
 
-use nlos_types::ArtifactId;
+use nlos_identity::IdentityAuthorityError;
+use nlos_types::{ArtifactId, PrincipalId};
 
 pub use model::{
     ArtifactHeadEndpointProof, ArtifactPublicationReceipt, ArtifactRecord, ContentDigest,
@@ -77,6 +93,10 @@ pub use model::{
     PublishStagedRevisionDecision, PublishStagedRevisionRequest, PutRevisionDecision,
     PutRevisionRequest, RecoveryReport, RevisionRecord, StageRevisionDecision,
     StageRevisionRequest, StagedRevisionRecord, StagedRevisionState, StagingId,
+};
+pub use package::{
+    PackageEntryRole, PackageManifest, PackageManifestEntry, PackageVerificationDecision,
+    PackageVerificationReceipt, SignedPackage, VerifyPackageRequest, package_manifest_message,
 };
 pub use publication::staging_id_for;
 pub use store::ArtifactStore;
@@ -156,6 +176,31 @@ pub enum ArtifactError {
     /// A caller-supplied bounded string was empty, oversized, or contained
     /// a NUL byte.
     InvalidSpec(&'static str),
+    /// The package manifest violates its minimal structural contract (empty
+    /// entries, invalid or duplicate entry names).
+    PackageManifestInvalid(&'static str),
+    /// The package signature does not verify over the manifest digest
+    /// (ADR-0010 `SignatureInvalid` semantics).
+    PackageSignatureInvalid,
+    /// The package signer principal does not exist in the identity
+    /// authority (ADR-0010 `PrincipalUnknown` semantics).
+    PackagePrincipalUnknown(PrincipalId),
+    /// The package signer's current key binding is revoked
+    /// (ADR-0010 `KeyRevoked` semantics).
+    PackageKeyRevoked,
+    /// Another identity-authority failure during package signature
+    /// verification (key purpose, validity window, malformed key).
+    PackageIdentity(IdentityAuthorityError),
+    /// A manifest entry's declared digest does not match the artifact
+    /// store's actual content head (`None` = the artifact exists but has no
+    /// revisions yet).
+    PackageTampered {
+        entry: String,
+        expected: ContentDigest,
+        actual: Option<ContentDigest>,
+    },
+    /// No immutable package verification receipt with this identity exists.
+    PackageVerificationReceiptNotFound(nlos_types::ReceiptId),
     /// A durable row violates an invariant this crate enforces.
     CorruptRecord(&'static str),
     /// The process-local writer mutex is poisoned.
@@ -163,6 +208,9 @@ pub enum ArtifactError {
 }
 
 impl fmt::Display for ArtifactError {
+    // Every typed failure mode stays visible as one exhaustive match arm
+    // here, so readers can audit all diagnostics in one place.
+    #[allow(clippy::too_many_lines)]
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Sqlite(error) => write!(formatter, "SQLite metadata failure: {error}"),
@@ -248,6 +296,28 @@ impl fmt::Display for ArtifactError {
             Self::InvalidSpec(reason) => {
                 write!(formatter, "invalid artifact specification: {reason}")
             }
+            Self::PackageManifestInvalid(reason) => {
+                write!(formatter, "invalid package manifest: {reason}")
+            }
+            Self::PackageSignatureInvalid => {
+                formatter.write_str("package manifest signature is invalid")
+            }
+            Self::PackagePrincipalUnknown(id) => {
+                write!(formatter, "package signer principal {id:?} does not exist")
+            }
+            Self::PackageKeyRevoked => formatter.write_str("package signer key is revoked"),
+            Self::PackageIdentity(error) => {
+                write!(formatter, "package identity verification failure: {error}")
+            }
+            Self::PackageTampered {
+                entry,
+                expected,
+                actual,
+            } => write_package_tampered(formatter, entry, expected, *actual),
+            Self::PackageVerificationReceiptNotFound(receipt_id) => write!(
+                formatter,
+                "package verification receipt {receipt_id:?} does not exist"
+            ),
             Self::CorruptRecord(reason) => write!(formatter, "corrupt durable record: {reason}"),
             Self::LockPoisoned => formatter.write_str("artifact writer lock is poisoned"),
         }
@@ -259,8 +329,25 @@ impl Error for ArtifactError {
         match self {
             Self::Sqlite(error) => Some(error),
             Self::Io(error) => Some(error),
+            Self::PackageIdentity(error) => Some(error),
             _ => None,
         }
+    }
+}
+
+fn write_package_tampered(
+    formatter: &mut fmt::Formatter<'_>,
+    entry: &str,
+    expected: &ContentDigest,
+    actual: Option<ContentDigest>,
+) -> fmt::Result {
+    write!(
+        formatter,
+        "package entry {entry:?} is tampered: manifest declares digest {expected}, artifact head is "
+    )?;
+    match actual {
+        Some(digest) => write!(formatter, "{digest}"),
+        None => formatter.write_str("absent"),
     }
 }
 

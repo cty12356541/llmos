@@ -197,6 +197,44 @@ pub(crate) fn migrate_v3(connection: &mut Connection) -> Result<(), ArtifactErro
     Ok(())
 }
 
+/// Adds immutable signed-Package verification receipts (B-ARTIFACT-003
+/// minimal prefix). Receipts reference manifest digests, not blobs, so
+/// recovery needs no package-aware reconciliation.
+pub(crate) fn migrate_v4(connection: &mut Connection) -> Result<(), ArtifactError> {
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "CREATE TABLE package_verification_receipts (
+            receipt_id BLOB PRIMARY KEY NOT NULL CHECK(length(receipt_id) = 16),
+            idempotency_key BLOB NOT NULL UNIQUE CHECK(length(idempotency_key) = 16),
+            manifest_digest BLOB NOT NULL CHECK(length(manifest_digest) = 32),
+            package_id BLOB NOT NULL CHECK(length(package_id) = 16),
+            package_version INTEGER NOT NULL CHECK(package_version >= 0),
+            entry_count INTEGER NOT NULL CHECK(entry_count >= 1),
+            signer_principal BLOB NOT NULL CHECK(length(signer_principal) = 16),
+            signer_key_id BLOB NOT NULL CHECK(length(signer_key_id) = 16),
+            signer_key_generation INTEGER NOT NULL CHECK(signer_key_generation >= 1),
+            signature BLOB NOT NULL CHECK(length(signature) = 64),
+            verified_at_ms INTEGER NOT NULL CHECK(verified_at_ms >= 0)
+        ) STRICT;
+
+        CREATE TRIGGER package_verification_receipts_immutable_update
+        BEFORE UPDATE ON package_verification_receipts
+        BEGIN
+            SELECT RAISE(ABORT, 'package verification receipt is immutable');
+        END;
+
+        CREATE TRIGGER package_verification_receipts_immutable_delete
+        BEFORE DELETE ON package_verification_receipts
+        BEGIN
+            SELECT RAISE(ABORT, 'package verification receipt is immutable');
+        END;
+
+        PRAGMA user_version = 4;",
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
+
 pub(crate) fn insert_artifact_head_endpoint_proof(
     transaction: &Transaction<'_>,
     artifact_id: ArtifactId,

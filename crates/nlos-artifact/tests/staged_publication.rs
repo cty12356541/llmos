@@ -332,7 +332,7 @@ fn v1_store_migrates_to_v2_without_losing_artifacts() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 3);
+    assert_eq!(version, 4);
     assert_eq!(
         connection
             .query_row(
