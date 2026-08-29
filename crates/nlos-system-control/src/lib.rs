@@ -34,6 +34,15 @@ pub const SYSTEM_CONTROL_SERVICE: &str = "system_control";
 pub const GET_METHOD: &str = "get";
 pub const SUBMIT_METHOD: &str = "submit";
 
+/// Minimal typed control-plane prefix ([§25.3] of the architecture master
+/// plan). Every [`control::ControlCommand`] — whether dispatched in-process
+/// or through the `system-control-cli` binary — compiles to the same SABI
+/// envelope and is answered by the same [`RecoverySystemControl`] handler
+/// path, so GUI/NL/CLI/API parity degrades to one code path by construction.
+///
+/// [§25.3]: <https://github.com/cty12356541/llmos/blob/main/docs/design/06-架构设计总纲-v0.5.md>
+pub mod control;
+
 /// Policy boundary used by every `SystemControl` entry point. Implementations
 /// are expected to validate the supplied capability handles against their
 /// authority; mere handle presence is not authorization.

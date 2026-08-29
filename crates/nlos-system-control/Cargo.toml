@@ -7,11 +7,22 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = ["cli"]
+cli = ["dep:nlos-ipc", "dep:tokio"]
+
+[[bin]]
+name = "system-control-cli"
+path = "src/bin/system-control-cli.rs"
+required-features = ["cli"]
+
 [dependencies]
 nlos-commit-coordinator = { path = "../nlos-commit-coordinator" }
 nlos-schema = { path = "../nlos-schema" }
 nlos-task = { path = "../nlos-task" }
 nlos-types = { path = "../nlos-types" }
+nlos-ipc = { path = "../nlos-ipc", optional = true }
+tokio = { workspace = true, optional = true }
 
 [dev-dependencies]
 nlos-ipc = { path = "../nlos-ipc" }
