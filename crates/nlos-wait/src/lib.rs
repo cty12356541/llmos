@@ -754,6 +754,67 @@ impl WaitAuthority {
         Ok(records)
     }
 
+    /// Reads every wait row bound to one binding — every state — in
+    /// `(registered_at_ms, wait_id)` order (registration-time order: the
+    /// caller-supplied timestamp is the primary key and the
+    /// authority-derived [`WaitId`] breaks ties deterministically), each row
+    /// validated exactly like [`Self::inspect_wait`].
+    ///
+    /// This is the binding-side projection read of the fiber replay prefix
+    /// (ADR-0009): one binding's durable wait rows are the wait-event slice
+    /// of its replayable event stream. Like [`Self::list_waits`], the read
+    /// is a pure view with zero durable side effects; state filtering and
+    /// any runtime-side re-mount belong to the caller.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed for the all-zero binding (not a binding), any referenced
+    /// Channel that no longer exists, any tampered or inconsistent row, or a
+    /// read failure.
+    pub fn list_waits_for_binding(
+        &self,
+        binding: BindingId,
+    ) -> Result<Vec<WaitRecord>, WaitAuthorityError> {
+        if is_zero_binding(binding) {
+            return Err(WaitAuthorityError::InvalidBinding);
+        }
+        let raw: Vec<WaitRow> = {
+            let connection = self.lock()?;
+            let mut statement = connection.prepare(&format!(
+                "SELECT {WAIT_COLUMNS}
+                 FROM waits
+                 WHERE binding_id=?1
+                 ORDER BY registered_at_ms, wait_id"
+            ))?;
+            statement
+                .query_map([binding.as_bytes().as_slice()], map_raw_wait)?
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        let records: Vec<WaitRecord> = raw
+            .into_iter()
+            .map(decode_raw_wait)
+            .collect::<Result<Vec<_>, _>>()?;
+        // Every referenced Channel must still exist, verified through the
+        // owner readback exactly like `inspect_wait` and `list_waits`.
+        let mut verified: Vec<ChannelId> = Vec::new();
+        for record in &records {
+            if verified.contains(&record.channel_id) {
+                continue;
+            }
+            verified.push(record.channel_id);
+            match self.channel.inspect_channel(record.channel_id) {
+                Ok(_) => {}
+                Err(ChannelAuthorityError::ChannelNotFound(_)) => {
+                    return Err(WaitAuthorityError::CorruptRecord(
+                        "wait references unknown channel",
+                    ));
+                }
+                Err(error) => return Err(WaitAuthorityError::Channel(error)),
+            }
+        }
+        Ok(records)
+    }
+
     /// Reads the Channel's durable queue high-water — the highest sequence
     /// ever written — through the bound Channel owner's verified queue
     /// readback (`ChannelAuthority::inspect_queue`, cross-checked against the

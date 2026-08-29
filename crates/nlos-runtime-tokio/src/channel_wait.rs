@@ -64,8 +64,9 @@ use nlos_wait::{
 };
 use tokio::sync::oneshot;
 
+use crate::replay::ResumeRejection;
 use crate::wake::{WaitEntry, WaitOutcome, is_terminal};
-use crate::{CancellationScope, Inner, TokioRuntimeAdapter, lock_unpoisoned};
+use crate::{CancellationScope, FiberRecord, Inner, TokioRuntimeAdapter, lock_unpoisoned};
 
 /// The identity of one logical Channel sequence wait: the authority-derived
 /// durable [`WaitId`] plus the waiting fiber generation used for terminal
@@ -111,7 +112,9 @@ impl ChannelWaitKey {
     }
 }
 
-/// Failure modes of [`TokioRuntimeAdapter::wait_for_channel`].
+/// Failure modes of [`TokioRuntimeAdapter::wait_for_channel`],
+/// [`TokioRuntimeAdapter::rearm_channel_waits`] and
+/// [`TokioRuntimeAdapter::resume_binding`].
 #[derive(Debug)]
 pub enum ChannelWaitError {
     /// The runtime rejected the wait: [`RuntimeError::ShuttingDown`] after
@@ -126,6 +129,15 @@ pub enum ChannelWaitError {
     /// registered request (binding, channel or target sequence) — an
     /// authority contract violation, failed closed.
     RecordMismatch,
+    /// The new incarnation's re-drive ([`ResumableBinding::resume`]) failed
+    /// before the framework armed anything; the durable rows are untouched.
+    /// The rejection reason is the incarnation's own, propagated verbatim.
+    ResumeRejected(ResumeRejection),
+    /// The [`ResumePlan`] referenced a [`WaitId`] that is not a
+    /// still-`PENDING` wait event of the projected replay — a plan contract
+    /// violation, failed closed before any arming (and therefore before any
+    /// durable side effect).
+    ResumePlanMismatch,
 }
 
 impl fmt::Display for ChannelWaitError {
@@ -137,6 +149,12 @@ impl fmt::Display for ChannelWaitError {
             }
             Self::RecordMismatch => formatter
                 .write_str("durable wait row does not match the registered channel wait request"),
+            Self::ResumeRejected(rejection) => {
+                write!(formatter, "fiber replay re-drive rejected: {rejection}")
+            }
+            Self::ResumePlanMismatch => formatter.write_str(
+                "resume plan references a wait that is not a still-pending event of the replay",
+            ),
         }
     }
 }
@@ -146,8 +164,15 @@ impl std::error::Error for ChannelWaitError {
         match self {
             Self::Runtime(error) => Some(error),
             Self::WaitAuthority(error) => Some(error),
-            Self::RecordMismatch => None,
+            Self::RecordMismatch | Self::ResumePlanMismatch => None,
+            Self::ResumeRejected(rejection) => Some(rejection),
         }
+    }
+}
+
+impl From<ResumeRejection> for ChannelWaitError {
+    fn from(rejection: ResumeRejection) -> Self {
+        Self::ResumeRejected(rejection)
     }
 }
 
@@ -301,6 +326,129 @@ fn channel_wait_driver(
                 },
             }
         }),
+    }
+}
+
+/// How one durable wait row was armed by [`arm_durable_row`].
+pub(crate) enum RowArming {
+    /// Nothing was armed and nothing is reported: the row was already
+    /// terminal-`CANCELLED`, or the fiber turned terminal / its scope was
+    /// cancelled while the row was being armed (the row stays durable
+    /// `PENDING` for a later pass).
+    NotArmed,
+    /// The wake fact is already established; the armed future resolves
+    /// immediately with [`WaitOutcome::Woken`].
+    Satisfied(RearmedChannelWait),
+    /// A live in-memory wait was re-armed, resolved by a later delivery.
+    Rearmed(RearmedChannelWait),
+}
+
+/// The single-row arming logic shared by
+/// [`TokioRuntimeAdapter::rearm_channel_waits`] and
+/// [`TokioRuntimeAdapter::resume_binding`], verbatim from the rearm loop:
+///
+/// - a `CANCELLED` row is never armed (terminal on the durable side);
+/// - a `WOKEN` row resolves immediately (at-least-once: the durable wake
+///   already happened) and consumes any early-buffered placeholder wake for
+///   its [`WaitId`];
+/// - a still-`PENDING` row whose channel high-water already covers its
+///   target is self-flipped through the domain-reserved `self_notify_key`
+///   transform (the one durable write this logic can perform) and resolves
+///   immediately;
+/// - any other still-`PENDING` row re-registers the in-memory
+///   `ChannelWaitKey`-keyed wait with the same supersede semantics as
+///   `wait_for_channel`: a second arming for the same wait supersedes the
+///   first, whose future resolves [`WaitOutcome::Cancelled`].
+///
+/// # Errors
+///
+/// Returns [`ChannelWaitError::WaitAuthority`] for high-water read,
+/// self-flip or post-flip readback failures.
+pub(crate) fn arm_durable_row(
+    inner: &Arc<Inner>,
+    handle: &FiberHandle,
+    record: &FiberRecord,
+    waits: &WaitAuthority,
+    durable: WaitRecord,
+) -> Result<RowArming, ChannelWaitError> {
+    match durable.state {
+        // A cancelled wait is terminal on the durable side; it is never
+        // resurrected.
+        WaitState::Cancelled => Ok(RowArming::NotArmed),
+        WaitState::Woken => {
+            // At-least-once: the durable wake already happened. A delivery
+            // that raced the restart is buffered under this `WaitId`;
+            // consuming it here is what keeps the buffered placeholder from
+            // outliving its rehydrated wait.
+            consume_channel_buffer(inner, durable.wait_id);
+            Ok(RowArming::Satisfied(RearmedChannelWait {
+                record: durable,
+                wait: ChannelSequenceWait::ready(WaitOutcome::Woken),
+            }))
+        }
+        WaitState::Pending => {
+            // Explicit-notify self-flip, identical to `wait_for_channel`:
+            // the channel's durable queue already covers the target, so
+            // notify under the domain-reserved key and resolve immediately.
+            if waits.channel_high_water(durable.channel_id)? >= durable.target_sequence {
+                waits.notify_commits(NotifyCommitsRequest {
+                    channel_id: durable.channel_id,
+                    up_to_sequence: durable.target_sequence,
+                    notified_at_ms: now_millis(),
+                    idempotency_key: self_notify_key(durable.wait_id),
+                })?;
+                // Re-read so the outcome carries the authoritative post-flip
+                // row (a notification that raced this self-flip may have
+                // flipped the row first).
+                let flipped = waits.inspect_wait(durable.wait_id)?;
+                consume_channel_buffer(inner, durable.wait_id);
+                return Ok(RowArming::Satisfied(RearmedChannelWait {
+                    record: flipped,
+                    wait: ChannelSequenceWait::ready(WaitOutcome::Woken),
+                }));
+            }
+
+            let key = ChannelWaitKey::new(durable.wait_id, handle);
+            // Same critical section as `wait_for_channel` (and the fiber
+            // lifecycle purge): `channel_waits`, then the record's state, so
+            // registration and a concurrent purge are mutually exclusive.
+            let mut channel_waits = lock_unpoisoned(&inner.channel_waits);
+            if is_terminal(*lock_unpoisoned(&record.state)) || record.scope.is_cancelled() {
+                // The fiber turned terminal or its scope was cancelled while
+                // this row was being armed: skip without registering and
+                // without a durable side effect; the row stays `PENDING` for
+                // a later pass.
+                return Ok(RowArming::NotArmed);
+            }
+            // A delivery raced this arming and buffered the wake under this
+            // `WaitId`: consume the buffer and resolve immediately (the
+            // durable flip already happened on the delivery side).
+            let buffered_key = channel_waits
+                .iter()
+                .find(|(buffered, entry)| {
+                    buffered.wait_id == key.wait_id && matches!(entry, WaitEntry::Buffered)
+                })
+                .map(|(buffered, _)| *buffered);
+            if let Some(buffered_key) = buffered_key {
+                channel_waits.remove(&buffered_key);
+                return Ok(RowArming::Satisfied(RearmedChannelWait {
+                    record: durable,
+                    wait: ChannelSequenceWait::ready(WaitOutcome::Woken),
+                }));
+            }
+            let (sender, receiver) = oneshot::channel();
+            // A second arming for the same wait supersedes the first: the
+            // dropped sender resolves the superseded wait as `Cancelled`.
+            channel_waits.insert(key, WaitEntry::Pending(sender));
+            record.begin_wait();
+            let scope = Arc::clone(&record.scope);
+            drop(channel_waits);
+
+            Ok(RowArming::Rearmed(RearmedChannelWait {
+                record: durable,
+                wait: channel_wait_driver(Arc::clone(inner), scope, key, receiver),
+            }))
+        }
     }
 }
 
@@ -647,90 +795,14 @@ impl TokioRuntimeAdapter {
 
         let mut report = RearmReport::default();
         for durable in waits.list_waits(filter)? {
-            match durable.state {
-                // A cancelled wait is terminal on the durable side; rearm
-                // never resurrects it.
-                WaitState::Cancelled => {}
-                WaitState::Woken => {
-                    // At-least-once: the durable wake already happened. A
-                    // delivery that raced the restart is buffered under this
-                    // `WaitId`; consuming it here is what keeps the buffered
-                    // placeholder from outliving its rehydrated wait.
-                    consume_channel_buffer(&self.inner, durable.wait_id);
-                    report.satisfied.push(RearmedChannelWait {
-                        record: durable,
-                        wait: ChannelSequenceWait::ready(WaitOutcome::Woken),
-                    });
-                }
-                WaitState::Pending => {
-                    // Explicit-notify self-flip, identical to
-                    // `wait_for_channel`: the channel's durable queue
-                    // already covers the target, so notify under the
-                    // domain-reserved key and resolve immediately.
-                    if waits.channel_high_water(durable.channel_id)? >= durable.target_sequence {
-                        waits.notify_commits(NotifyCommitsRequest {
-                            channel_id: durable.channel_id,
-                            up_to_sequence: durable.target_sequence,
-                            notified_at_ms: now_millis(),
-                            idempotency_key: self_notify_key(durable.wait_id),
-                        })?;
-                        // Re-read so the report carries the authoritative
-                        // post-flip row (a notification that raced this
-                        // self-flip may have flipped the row first).
-                        let flipped = waits.inspect_wait(durable.wait_id)?;
-                        consume_channel_buffer(&self.inner, durable.wait_id);
-                        report.satisfied.push(RearmedChannelWait {
-                            record: flipped,
-                            wait: ChannelSequenceWait::ready(WaitOutcome::Woken),
-                        });
-                        continue;
-                    }
-
-                    let key = ChannelWaitKey::new(durable.wait_id, &handle);
-                    // Same critical section as `wait_for_channel` (and the
-                    // fiber lifecycle purge): `channel_waits`, then the
-                    // record's state, so registration and a concurrent purge
-                    // are mutually exclusive.
-                    let mut channel_waits = lock_unpoisoned(&self.inner.channel_waits);
-                    if is_terminal(*lock_unpoisoned(&record.state)) || record.scope.is_cancelled() {
-                        // The fiber turned terminal or its scope was
-                        // cancelled while this rearm ran: skip without
-                        // registering and without a durable side effect; the
-                        // row stays `PENDING` for a later rearm.
-                        continue;
-                    }
-                    // A delivery raced this rearm and buffered the wake
-                    // under this `WaitId`: consume the buffer and resolve
-                    // immediately (the durable flip already happened on the
-                    // delivery side).
-                    let buffered_key = channel_waits
-                        .iter()
-                        .find(|(buffered, entry)| {
-                            buffered.wait_id == key.wait_id && matches!(entry, WaitEntry::Buffered)
-                        })
-                        .map(|(buffered, _)| *buffered);
-                    if let Some(buffered_key) = buffered_key {
-                        channel_waits.remove(&buffered_key);
-                        report.satisfied.push(RearmedChannelWait {
-                            record: durable,
-                            wait: ChannelSequenceWait::ready(WaitOutcome::Woken),
-                        });
-                        continue;
-                    }
-                    let (sender, receiver) = oneshot::channel();
-                    // A second rearm for the same wait supersedes the first:
-                    // the dropped sender resolves the superseded wait as
-                    // `Cancelled`.
-                    channel_waits.insert(key, WaitEntry::Pending(sender));
-                    record.begin_wait();
-                    let scope = Arc::clone(&record.scope);
-                    drop(channel_waits);
-
-                    report.pending.push(RearmedChannelWait {
-                        record: durable,
-                        wait: channel_wait_driver(Arc::clone(&self.inner), scope, key, receiver),
-                    });
-                }
+            // The per-row logic is the single-row arming shared with
+            // `resume_binding`; the rearm report buckets map 1:1 onto its
+            // outcomes (a `CANCELLED` row and a mid-loop terminal skip both
+            // arm nothing and are never reported).
+            match arm_durable_row(&self.inner, &handle, &record, waits, durable)? {
+                RowArming::NotArmed => {}
+                RowArming::Satisfied(armed) => report.satisfied.push(armed),
+                RowArming::Rearmed(armed) => report.pending.push(armed),
             }
         }
         Ok(report)

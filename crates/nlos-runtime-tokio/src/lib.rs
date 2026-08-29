@@ -16,6 +16,7 @@ use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 
 mod channel_wait;
 mod pump;
+mod replay;
 mod wake;
 
 use channel_wait::ChannelWaitKey;
@@ -26,6 +27,10 @@ pub use channel_wait::{
 pub use pump::{
     OutboxPump, OutboxPumpStartError, PumpConfig, PumpHealth, PumpState, RecordingReconcileSink,
     StoreOutboxSource,
+};
+pub use replay::{
+    BindingEventProjection, BindingReplay, ReplayedWaitEvent, ResumableBinding, ResumePlan,
+    ResumeRejection, ResumeReport, SnapshotResumable,
 };
 pub use wake::{OperationWait, TokioWakeSink, WaitOutcome};
 use wake::{WaitEntry, WaitKey};
