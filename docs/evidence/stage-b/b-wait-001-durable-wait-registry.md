@@ -61,3 +61,9 @@ kill-window 矩阵：三入口 pre-commit IOERR/ENOSPC typed fail-closed 零幻�
 - 原 blocked-by B-TASK-006L 的「跨进程等待」按项目自身先例（SystemControl `handle_for_ipc`）解除到**本地信任域传输前缀**粒度：新 crate `nlos-wait-control` 将 WaitAuthority 五操作（register/notify/cancel/list/inspect）经 SABI envelope 暴露给独立进程，authorizer 注入沿用既有 posture；**跨 Principal 认证仍继承上游未决**（真实 Capability/Principal 模型未定，本前缀不解释 CapabilityHandle 字节）——分级解阻塞，非全量完成。
 - 验证：nlos-wait-control 13 passed / 0 failed（含 tokio duplex 与真实 Unix socket roundtrip、失败映射 envelope 形状）；nlos-wait 26 无回归；workspace clippy/fmt 全绿。
 - 已知限制：payload 为 crate 局部 prost 描述符（入 nlos-schema 共享 REGISTRY 为后续）；无 conformance server bin 与 TS/Python 客户端（对照 takeover-control 后续）。
+
+## 8. schema canonical 化 + conformance（2026-08-29 增量，commits `020c0bb` / `afa26c2`）
+
+- `nlos.sabi.WaitControl` 入 nlos-schema 共享 REGISTRY（第 6 项 descriptor + canonical proto 源 + 10 对 bounded codec；wire 字节不变，wait-control 局部校验单层化为 canonical 链，公开 API 名不变、13 项测试零修改）；gen/ TS/Python 生成物补齐，`schema:check-generated` 恢复通过。
+- conformance：feature-gated server bin（fresh/registered/mixed 三 scene、READY+FIXTURE 握手、durable 提交后验）+ TS/Python 客户端（五方法 roundtrip、replay 幂等、失败 envelope 形状、mixed 预置态读回、跨进程重启 durability），`npx tsx` / `python3` 端到端 exit 0。
+- 已知限制：无 CI job 接入（只读核实）；Windows named pipe 分支未交叉验证；registered scene 客户端未驱动。
