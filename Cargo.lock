@@ -375,6 +375,8 @@ checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
 name = "nlos-artifact"
 version = "0.1.0"
 dependencies = [
+ "ed25519-dalek",
+ "nlos-identity",
  "nlos-store-fault",
  "nlos-types",
  "rusqlite",
@@ -410,6 +412,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "nlos-clock"
+version = "0.1.0"
+dependencies = [
+ "nlos-store-fault",
+ "nlos-types",
+ "rusqlite",
+]
+
+[[package]]
 name = "nlos-commit-coordinator"
 version = "0.1.0"
 dependencies = [
@@ -436,12 +447,15 @@ dependencies = [
 name = "nlos-ipc"
 version = "0.1.0"
 dependencies = [
+ "ed25519-dalek",
+ "nlos-identity",
  "nlos-operation",
  "nlos-runtime",
  "nlos-schema",
  "nlos-service-directory",
  "nlos-store",
  "nlos-types",
+ "prost",
  "sha2",
  "tokio",
  "windows-sys",
@@ -498,8 +512,10 @@ dependencies = [
  "nlos-channel",
  "nlos-operation",
  "nlos-outbox",
+ "nlos-process",
  "nlos-runtime",
  "nlos-store",
+ "nlos-task",
  "nlos-types",
  "nlos-wait",
  "tokio",
