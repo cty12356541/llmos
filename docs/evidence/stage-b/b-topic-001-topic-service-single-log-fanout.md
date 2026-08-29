@@ -58,3 +58,11 @@ kill-window 矩阵覆盖：pre-commit IOERR/ENOSPC（create/subscribe/advance/pu
 - 新增 2 项双向行为等价抽测（弃用入口 ↔ token 入口同请求 replay 收敛，receipt 逐字节相等）。
 - 验证：nlos-topic 41 passed / 0 failed；workspace clippy -D warnings 零警告；fmt 通过。
 - Push 状态说明：增量 45/46 共 3 个提交（`178f25e` 之前为 `3d42dc6`/`178f25e`，本增量 `a356f97` + 本文档提交）在 push 时遇 github.com 443 不可达（两次重试失败），先落地本地，恢复后统一 fast-forward 推送，各级状态以实际 push 结果为准。
+
+## 7. delivery attempts 执行（2026-08-29 增量，commit `c74e5f4`）
+
+- 语义权威：[ADR-0007 补记](../../management/adrs/0007-topic-service-single-log-fanout.md)（2026-08-28 用户未即时应答，按推荐语义执行并登记复审触发器）：滞后订阅者在每条新 publication 落地时计费 +1（首条无积压免费、追平不清零），达到策略 delivery_attempts 同事务翻转 `QUARANTINED`。
+- 隔离语义：poll 对隔离订阅者 `DeliveryQuarantined` fail-closed；advance/unsubscribe 权利保留；peer 订阅者不受影响；发布者永不受阻；隔离行停止计费；零消息删除。恢复：`reinstate_with_token` 清零计数、cursor 保持、幂等重放、错 token 零写入。
+- schema v4 幂等迁移（既有行回填 0/ACTIVE）；`topic_service` 3 项既有测试按计费语义最小修正（订阅重放断言改用当前存储记录 / A 追平后再发布 / compact 重放改用已生效水位），意图原样保留。
+- 验证：nlos-topic 50 passed / 0 failed（新增 topic_delivery_attempts 9 项）；workspace clippy -D warnings 零警告；fmt 通过。
+- 已知限制：计数为 owner 单机确定性语义，无运行时投递循环参与；恢复为显式动作非自动；poll 无鉴权边界不变。

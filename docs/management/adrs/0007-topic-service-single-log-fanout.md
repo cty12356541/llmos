@@ -58,6 +58,15 @@
 - 负面与技术债：跨 authority 的「策略绑定持久化 → Channel enqueue」无法单事务原子完成，崩溃窗口需要幂等重放收敛（publish idempotency scope 承担）；min-live-cursor 钳制使 compaction 依赖服务层查询，接口需在 `B-TOPIC-001` 定义；payer 只做存在性校验意味着「有人承担」目前是记账承诺而非强制。
 - 退出策略：`nlos-topic` 为纯 additive 服务，不触碰内核与 `nlos-channel` 既有 schema/KABI。若 fanout 模型被取代（如转向分布式 broker 或 per-recipient），订阅与游标记录可整体导出为审计事实，channel log 因 Topic 从未复制消息体而无迁移负担；回滚即停用 Topic 服务并移除 crate，预估成本主要是代码删除与进度单/Evidence 回写，无数据回迁。被取代时新增 ADR，不重写本 ADR 历史。
 
+## 补记：delivery attempts 执行语义（2026-08-28，第四十七增量）
+
+`[RSM-FANOUT-001]` 要求 publish 绑定 delivery attempts；单 log + cursor 模型下「一次投递」的 owner 可强制语义补记如下（用户未即时应答，按推荐语义执行，复审触发器同本 ADR）：
+
+- **计费点**：某订阅者处于滞后态（其 cursor 落后于既有 max sequence）时，每有一条**新** publication 成功 enqueue 到该 topic，该订阅者的 durable 重投计数 +1（与 enqueue 同事务的 owner 计数，非运行时观测）；cursor 追平后计数**不清零**——预算按声明 attempts 一次性给足，耗尽即隔离，避免「追平重置」被慢消费者用作无限续期。
+- **耗尽语义**：计数达到策略声明 delivery_attempts → 订阅翻转 `QUARANTINED`（慢消费者隔离，RSM-FANOUT-001）；poll 对隔离订阅者返回 typed `DeliveryQuarantined`（fail-closed 读，与 poll 无鉴权不冲突：拒绝服务而非鉴权）；advance/unsubscribe 仍可用（不扣留消费权与退出权）；其余订阅者不受影响；**零消息删除**——channel log 与游标不动，隔离只停投递。
+- **恢复**：显式 `reinstate`（须出示 consumption token）清零计数翻转回 ACTIVE，cursor 保持原位；同 key 幂等。
+- **被否候选**：耗尽即删游标/踢出重订（丢位置，违背可审计性）；阻断 topic 新 publish（把单个慢消费者的成本转嫁给全部发布者）；追平即重置计数（无限续期漏洞）。
+
 ## 验证与证据
 
 本 ADR 决策于 2026-08-28 由用户选择；同日 `B-TOPIC-001` 最小前缀已实现并验证（canonical commits `89f966e` / `345a959` / `05ff1ff`），上节所列验收项全部覆盖：策略绑定 fail-closed、恰好一次 enqueue 与 replay 幂等、游标单调/重启 replay、min-live-cursor compact 钳制、cascade 预算 CAS 与耗尽/深度越界 fail-closed、payer 绑定存在性校验、订阅 max_recipients admission，以及 Topic 侧 14 项 kill-window 故障矩阵（含 PENDING_ENQUEUE 跨权威双向收敛与悬空 ENQUEUED 检测路径）。实现事实与明确未决项（delivery attempts 执行、运行时自动 republish、真实 payer 计量、匹配谓词、跨进程/多机、wakeup、真实掉电）见 [B-TOPIC-001 evidence](../../evidence/stage-b/b-topic-001-topic-service-single-log-fanout.md)。仍为单机 `H3 / PARTIAL_PASS`，不声明分布式 broker 或 payer 扣费。Channel 侧既有证据见 [B-CHANNEL-001](../../evidence/stage-b/b-channel-001-endpoint-authority.md)。
