@@ -66,3 +66,10 @@ kill-window 矩阵覆盖：pre-commit IOERR/ENOSPC（create/subscribe/advance/pu
 - schema v4 幂等迁移（既有行回填 0/ACTIVE）；`topic_service` 3 项既有测试按计费语义最小修正（订阅重放断言改用当前存储记录 / A 追平后再发布 / compact 重放改用已生效水位），意图原样保留。
 - 验证：nlos-topic 50 passed / 0 failed（新增 topic_delivery_attempts 9 项）；workspace clippy -D warnings 零警告；fmt 通过。
 - 已知限制：计数为 owner 单机确定性语义，无运行时投递循环参与；恢复为显式动作非自动；poll 无鉴权边界不变。
+
+## 8. retention 背压执行（2026-08-29 增量，commit `504a311`）
+
+- 语义权威：[ADR-0007 补记（retention）](../../management/adrs/0007-topic-service-single-log-fanout.md)：字节上界（未消费 backlog + 新 payload 超 retained_bytes 拒绝）与时间上界（最老被滞后持有 entry 超 retention_ms 拒绝）均为发布侧 pre-write admission，背压而非删数据。
+- 实现：publish/republish 在首个 durable 写前统一检查（幂等 gate 后、PENDING 插入/budget CAS 前），拒绝零部分状态；释放点 = min(活跃 cursor, channel consume high-water)；QUARANTINED 滞差不计入（与 delivery attempts 正交）；订阅者落后于 consume 点的窗口用 retained 全量字节保守上界。schema 零变更。
+- 验证：nlos-topic 59 passed / 0 failed（新增 topic_retention 9 项，既有 50 零修改）；workspace clippy -D warnings 零警告；fmt 通过。
+- 已知限制：无后台驱逐/跨 topic 聚合（channel 级计数保守方向）；时间比较纯调用方时钟语义；resumed PENDING 重放不重跑 admission（插入时已通过 + channel key 幂等）。

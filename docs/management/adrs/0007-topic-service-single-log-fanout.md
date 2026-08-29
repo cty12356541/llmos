@@ -67,6 +67,15 @@
 - **恢复**：显式 `reinstate`（须出示 consumption token）清零计数翻转回 ACTIVE，cursor 保持原位；同 key 幂等。
 - **被否候选**：耗尽即删游标/踢出重订（丢位置，违背可审计性）；阻断 topic 新 publish（把单个慢消费者的成本转嫁给全部发布者）；追平即重置计数（无限续期漏洞）。
 
+## 补记：retention 执行语义（2026-08-29，第四十八增量）
+
+`retained_bytes` / `retention_ms` 为 publish 时声明的保留上界；本 ADR 补记其 owner 可强制执行语义（延续第四十七补记的代行决策模式，复审触发器同前）：
+
+- **字节上界（背压，不删数据）**：publish 在任何 durable 写之前计算该 topic 的未消费 backlog 字节（`Σ payload_bytes(sequence > min(active cursors, channel consume high-water))`），加新 payload 后超 `retained_bytes` → typed `TopicRetentionExhausted` fail-closed（零部分状态）。与 Channel `QueueFull` 同族：容量压力转化为对发布者的显式背压，慢消费者由 delivery attempts 隔离机制另行处理，二者正交。
+- **时间上界**：publish 前检查最老未消费 live entry 的年龄（`now - enqueued_at_ms > retention_ms` 且仍被某活跃订阅者滞后持有）→ 同 typed `TopicRetentionExhausted`（「慢订阅者已超出声明的时间预算，拒绝新发布直到追平/隔离/恢复」）。
+- **被否候选**：到界自动删数据/推进 min-live-cursor（违背本切片零删除主题与可审计性，删除语义留给显式 compact）；静默丢弃新发布（无 typed 信号不可接受）；时间到界自动隔离订阅者（与 delivery attempts 预算机制重复且时钟依赖更强）。
+- **与 compact 的关系**：compact 已有 min-live-cursor 钳制；retention 是发布侧 admission，不触发任何删除路径。无活跃订阅者时 backlog 以 channel consume high-water 为界（与 compact_bound 同一既有取舍）。
+
 ## 验证与证据
 
 本 ADR 决策于 2026-08-28 由用户选择；同日 `B-TOPIC-001` 最小前缀已实现并验证（canonical commits `89f966e` / `345a959` / `05ff1ff`），上节所列验收项全部覆盖：策略绑定 fail-closed、恰好一次 enqueue 与 replay 幂等、游标单调/重启 replay、min-live-cursor compact 钳制、cascade 预算 CAS 与耗尽/深度越界 fail-closed、payer 绑定存在性校验、订阅 max_recipients admission，以及 Topic 侧 14 项 kill-window 故障矩阵（含 PENDING_ENQUEUE 跨权威双向收敛与悬空 ENQUEUED 检测路径）。实现事实与明确未决项（delivery attempts 执行、运行时自动 republish、真实 payer 计量、匹配谓词、跨进程/多机、wakeup、真实掉电）见 [B-TOPIC-001 evidence](../../evidence/stage-b/b-topic-001-topic-service-single-log-fanout.md)。仍为单机 `H3 / PARTIAL_PASS`，不声明分布式 broker 或 payer 扣费。Channel 侧既有证据见 [B-CHANNEL-001](../../evidence/stage-b/b-channel-001-endpoint-authority.md)。
