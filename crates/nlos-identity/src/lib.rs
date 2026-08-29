@@ -612,6 +612,50 @@ impl IdentityAuthority {
         })
     }
 
+    /// Verifies a domain-separated Capability command digest under the
+    /// current key binding of the acting principal. This mirrors
+    /// `verify_semantic_signature`, but resolves the binding by principal so
+    /// the caller can never pin a stale key: unknown principals fail closed
+    /// as `PrincipalNotFound` and revoked keys as `KeyRevoked` before any
+    /// signature bytes are evaluated.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed fail-closed error for unknown principals, key purpose,
+    /// revocation, validity, public-key, or signature failure.
+    pub fn verify_capability_command_signature(
+        &self,
+        request: VerifyCapabilityCommandSignatureRequest,
+    ) -> Result<VerifiedCapabilityCommandSigner, IdentityAuthorityError> {
+        let connection = self.lock()?;
+        let binding = load_current_binding_by_principal(&connection, request.principal)?
+            .ok_or(IdentityAuthorityError::PrincipalNotFound(request.principal))?;
+        if binding.key_purpose != KeyPurpose::SemanticSigning {
+            return Err(IdentityAuthorityError::KeyPurposeMismatch);
+        }
+        if binding.key_revoked_at_ms.is_some() {
+            return Err(IdentityAuthorityError::KeyRevoked);
+        }
+        if request.verified_at_ms < binding.key_valid_from_ms {
+            return Err(IdentityAuthorityError::KeyNotYetValid);
+        }
+        if request.verified_at_ms > binding.key_valid_until_ms {
+            return Err(IdentityAuthorityError::KeyExpired);
+        }
+        let verifying_key = VerifyingKey::from_bytes(&binding.public_key)
+            .map_err(|_| IdentityAuthorityError::InvalidPublicKey)?;
+        let signature = Signature::from_bytes(&request.signature);
+        verifying_key
+            .verify_strict(&request.message_digest, &signature)
+            .map_err(|_| IdentityAuthorityError::InvalidSignature)?;
+        Ok(VerifiedCapabilityCommandSigner {
+            principal_id: binding.principal_id,
+            control_domain_id: binding.control_domain_id,
+            key_id: binding.key_id,
+            key_generation: binding.key_generation,
+        })
+    }
+
     /// Returns the current durable binding for a key.
     ///
     /// # Errors
@@ -658,6 +702,50 @@ pub fn semantic_signature_message(event_id: SemanticEventId) -> [u8; 32] {
     hasher.update(b"llmos/semantic-signature/v1");
     hasher.update(event_id.as_bytes());
     hasher.finalize().into()
+}
+
+/// Fail-closed verification request for one authority-consumed command
+/// signature (for example a Capability issue/delegate/revoke command). The
+/// caller names only the acting principal; this authority resolves the
+/// principal's current key binding itself, so rotated or revoked keys can
+/// never be addressed behind the caller's back.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VerifyCapabilityCommandSignatureRequest {
+    pub message_digest: [u8; 32],
+    pub principal: PrincipalId,
+    pub signature: Ed25519Signature,
+    pub verified_at_ms: u64,
+}
+
+/// The durable binding that authenticated one command signature.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VerifiedCapabilityCommandSigner {
+    principal_id: PrincipalId,
+    control_domain_id: ControlDomainId,
+    key_id: KeyId,
+    key_generation: Generation,
+}
+
+impl VerifiedCapabilityCommandSigner {
+    #[must_use]
+    pub const fn principal_id(self) -> PrincipalId {
+        self.principal_id
+    }
+
+    #[must_use]
+    pub const fn control_domain_id(self) -> ControlDomainId {
+        self.control_domain_id
+    }
+
+    #[must_use]
+    pub const fn key_id(self) -> KeyId {
+        self.key_id
+    }
+
+    #[must_use]
+    pub const fn key_generation(self) -> Generation {
+        self.key_generation
+    }
 }
 
 fn validate_bootstrap_request(
@@ -820,6 +908,36 @@ fn load_current_binding(
         .optional()?
         .map(decode_binding)
         .transpose()
+}
+
+/// Resolves the current binding of a principal's signing key. Bootstrap
+/// assigns exactly one key per principal, so additional `key_heads` rows for
+/// one principal fail closed as corruption instead of picking a row.
+fn load_current_binding_by_principal(
+    connection: &Connection,
+    principal_id: PrincipalId,
+) -> Result<Option<IdentityBinding>, IdentityAuthorityError> {
+    let key_id = match connection.query_row(
+        "SELECT key_id FROM key_heads WHERE principal_id=?1",
+        [principal_id.as_bytes().as_slice()],
+        |row| row.get::<_, Vec<u8>>(0),
+    ) {
+        Ok(bytes) => Some(bytes),
+        Err(rusqlite::Error::QueryReturnedNoRows) => None,
+        Err(rusqlite::Error::QueryReturnedMoreThanOneRow) => {
+            return Err(IdentityAuthorityError::CorruptRecord(
+                "principal key binding",
+            ));
+        }
+        Err(error) => return Err(IdentityAuthorityError::Sqlite(error)),
+    };
+    match key_id {
+        Some(bytes) => load_current_binding(
+            connection,
+            decode_id::<16, _>(bytes, KeyId::from_bytes, "key id")?,
+        ),
+        None => Ok(None),
+    }
 }
 
 fn load_binding_at_snapshot(
@@ -1021,4 +1139,127 @@ fn decode_id<const N: usize, T>(
     field: &'static str,
 ) -> Result<T, IdentityAuthorityError> {
     Ok(constructor(decode_array(bytes, field)?))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use ed25519_dalek::{Signer, SigningKey};
+    use nlos_types::IdempotencyKey;
+
+    use super::{
+        BootstrapPrincipalRequest, Ed25519Signature, Generation, IdentityAuthority,
+        IdentityAuthorityError, IdentityBinding, KeyPurpose, PrincipalId, RevokeKeyRequest,
+        VerifyCapabilityCommandSignatureRequest,
+    };
+
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+
+    struct Root(PathBuf);
+
+    impl Root {
+        fn new(label: &str) -> Self {
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            Self(std::env::temp_dir().join(format!(
+                "nlos-identity-{label}-{}-{nonce}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            )))
+        }
+    }
+
+    impl Drop for Root {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn bootstrap(identity: &IdentityAuthority, seed: u8) -> (SigningKey, IdentityBinding) {
+        let key = SigningKey::from_bytes(&[seed; 32]);
+        let binding = identity
+            .bootstrap_principal(BootstrapPrincipalRequest {
+                principal_profile_digest: [seed.wrapping_add(1); 32],
+                control_domain_policy_digest: [seed.wrapping_add(2); 32],
+                public_key: key.verifying_key().to_bytes(),
+                key_purpose: KeyPurpose::SemanticSigning,
+                key_valid_from_ms: 0,
+                key_valid_until_ms: 10_000,
+                idempotency_key: IdempotencyKey::from_bytes([seed.wrapping_add(3); 16]),
+                created_at_ms: 0,
+            })
+            .unwrap()
+            .binding();
+        (key, binding)
+    }
+
+    #[test]
+    fn capability_command_signature_verifies_under_current_binding() {
+        let root = Root::new("command-signature");
+        let identity = IdentityAuthority::open(&root.0).unwrap();
+        let (key, binding) = bootstrap(&identity, 0x21);
+        let message = [0x33u8; 32];
+        let signer = identity
+            .verify_capability_command_signature(VerifyCapabilityCommandSignatureRequest {
+                message_digest: message,
+                principal: binding.principal_id,
+                signature: key.sign(&message).to_bytes(),
+                verified_at_ms: 5_000,
+            })
+            .unwrap();
+        assert_eq!(signer.principal_id(), binding.principal_id);
+        assert_eq!(signer.control_domain_id(), binding.control_domain_id);
+        assert_eq!(signer.key_id(), binding.key_id);
+        assert_eq!(signer.key_generation(), Generation::INITIAL);
+    }
+
+    #[test]
+    fn capability_command_signature_fails_closed_on_unknown_forged_and_revoked() {
+        let root = Root::new("command-signature-fail-closed");
+        let identity = IdentityAuthority::open(&root.0).unwrap();
+        let (key, binding) = bootstrap(&identity, 0x22);
+        let request = |principal: PrincipalId, signature: Ed25519Signature| {
+            VerifyCapabilityCommandSignatureRequest {
+                message_digest: [0x44; 32],
+                principal,
+                signature,
+                verified_at_ms: 5_000,
+            }
+        };
+        assert!(matches!(
+            identity.verify_capability_command_signature(request(
+                PrincipalId::from_bytes([0x7a; 16]),
+                [0x55; 64],
+            )),
+            Err(IdentityAuthorityError::PrincipalNotFound(_))
+        ));
+        assert!(matches!(
+            identity.verify_capability_command_signature(request(
+                binding.principal_id,
+                key.sign(&[0x66; 32]).to_bytes(),
+            )),
+            Err(IdentityAuthorityError::InvalidSignature)
+        ));
+        identity
+            .revoke_key(RevokeKeyRequest {
+                key_id: binding.key_id,
+                expected_key_generation: Generation::INITIAL,
+                expected_identity_snapshot_id: binding.identity_snapshot_id,
+                idempotency_key: IdempotencyKey::from_bytes([0x7b; 16]),
+                revoked_at_ms: 6_000,
+            })
+            .unwrap();
+        assert!(matches!(
+            identity.verify_capability_command_signature(request(
+                binding.principal_id,
+                key.sign(&[0x44; 32]).to_bytes(),
+            )),
+            Err(IdentityAuthorityError::KeyRevoked)
+        ));
+    }
 }

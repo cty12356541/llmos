@@ -1,3 +1,5 @@
+#![allow(deprecated)] // Deprecated unsigned Capability entries; the signed-entry migration is an ADR-0010 follow-up.
+
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};

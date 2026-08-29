@@ -13,7 +13,10 @@ use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
-use nlos_identity::{IdentityAuthority, IdentityAuthorityError, IdentityBinding};
+use nlos_identity::{
+    Ed25519Signature, IdentityAuthority, IdentityAuthorityError, IdentityBinding,
+    VerifiedCapabilityCommandSigner, VerifyCapabilityCommandSignatureRequest,
+};
 use nlos_types::{CapabilityId, Generation, IdempotencyKey, KeyId, PrincipalId, ReceiptId};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
@@ -22,10 +25,20 @@ pub use model::{
     AuthorizeSemanticRequest, CapabilityHandle, CapabilityIssueDecision, CapabilityIssueReceipt,
     CapabilityRecord, CapabilityRevocationDecision, CapabilityRevocationReceipt, CapabilityRights,
     CapabilityTarget, DelegateCapabilityRequest, IssueRootCapabilityRequest,
-    RevokeCapabilityRequest, SemanticAuthorization,
+    RevokeCapabilityRequest, SemanticAuthorization, SignedDelegateCapabilityRequest,
+    SignedIssueRootCapabilityRequest, SignedRevokeCapabilityRequest,
 };
 
 const SCHEMA_VERSION: i64 = 1;
+
+/// Domain separator for signed Capability command messages. Every field is
+/// fixed-width big-endian with presence tags, so the framing stays canonical
+/// without variable-length length prefixes (mirrors the identity message
+/// style).
+const COMMAND_MESSAGE_DOMAIN: &[u8] = b"nlos/capability/command/v1";
+const COMMAND_KIND_ISSUE_ROOT: u8 = 1;
+const COMMAND_KIND_DELEGATE: u8 = 2;
+const COMMAND_KIND_REVOKE: u8 = 3;
 
 #[derive(Debug)]
 pub enum CapabilityAuthorityError {
@@ -42,6 +55,9 @@ pub enum CapabilityAuthorityError {
     InvalidValidity,
     InvalidCallLimit,
     IdentityKeyInactive(KeyId),
+    SignatureInvalid,
+    PrincipalUnknown(PrincipalId),
+    KeyRevoked,
     GenerationFenceConflict,
     CapabilityRevoked,
     CapabilityNotYetValid,
@@ -91,6 +107,14 @@ impl fmt::Display for CapabilityAuthorityError {
             Self::InvalidValidity => formatter.write_str("invalid capability validity interval"),
             Self::InvalidCallLimit => formatter.write_str("call limit must be non-zero"),
             Self::IdentityKeyInactive(id) => write!(formatter, "identity key {id:?} is inactive"),
+            Self::SignatureInvalid => {
+                formatter.write_str("capability command signature is invalid")
+            }
+            Self::PrincipalUnknown(id) => write!(
+                formatter,
+                "capability command signer principal {id:?} does not exist"
+            ),
+            Self::KeyRevoked => formatter.write_str("capability command signer key is revoked"),
             Self::GenerationFenceConflict => formatter.write_str("capability generation is stale"),
             Self::CapabilityRevoked => formatter.write_str("capability is revoked"),
             Self::CapabilityNotYetValid => formatter.write_str("capability is not yet valid"),
@@ -190,17 +214,64 @@ impl CapabilityAuthority {
         })
     }
 
-    /// Issues a root capability through the trusted authority API after
-    /// resolving both issuer and holder from the Identity authority.
+    /// Issues a root capability through the deprecated unsigned trusted
+    /// authority API after resolving both issuer and holder from the Identity
+    /// authority.
+    ///
+    /// # Deprecated
+    ///
+    /// Unsigned capability commands carry no proof of the acting principal;
+    /// use [`CapabilityAuthority::issue_root_signed`] (ADR-0010). Removal is
+    /// a future breaking change.
     ///
     /// # Errors
     ///
     /// Fails on inactive identities, invalid bounds, idempotency conflict, or
     /// storage failure.
+    #[deprecated(
+        since = "0.1.0",
+        note = "unsigned TCB entry; use `issue_root_signed` (ADR-0010)"
+    )]
     pub fn issue_root(
         &self,
         identity: &IdentityAuthority,
         request: IssueRootCapabilityRequest,
+    ) -> Result<CapabilityIssueDecision, CapabilityAuthorityError> {
+        self.issue_root_impl(identity, request, None)
+    }
+
+    /// Issues a root capability through the signature-gated authority API:
+    /// the acting issuer principal must present an Ed25519 signature over
+    /// [`issue_root_command_message`] under its current Identity key binding.
+    /// The gate order is input bounds, idempotent replay (a replayed decision
+    /// is the durable authority and never re-verifies the signature), command
+    /// signature verification (typed fail-closed before any durable write),
+    /// then the existing identity resolution and issuance transaction. The
+    /// durable `capability_heads` issuer columns record the verified signer.
+    ///
+    /// # Errors
+    ///
+    /// Fails on invalid bounds, unknown signers, invalid or revoked signer
+    /// signatures, inactive identities, idempotency conflict, or storage
+    /// failure.
+    pub fn issue_root_signed(
+        &self,
+        identity: &IdentityAuthority,
+        request: SignedIssueRootCapabilityRequest,
+    ) -> Result<CapabilityIssueDecision, CapabilityAuthorityError> {
+        let proof = CommandSignatureProof {
+            signer: request.signer,
+            signature: request.signature,
+        };
+        self.issue_root_impl(identity, request.command, Some(proof))
+    }
+
+    /// Shared issuance body; `proof` is `Some` exactly for the signed entry.
+    fn issue_root_impl(
+        &self,
+        identity: &IdentityAuthority,
+        request: IssueRootCapabilityRequest,
+        proof: Option<CommandSignatureProof>,
     ) -> Result<CapabilityIssueDecision, CapabilityAuthorityError> {
         validate_bounds(
             request.valid_from_ms,
@@ -216,7 +287,14 @@ impl CapabilityAuthority {
             transaction.commit()?;
             return Ok(replay);
         }
+        let verified = verify_command_signature(
+            identity,
+            proof,
+            &issue_root_command_message(request),
+            request.issued_at_ms,
+        )?;
         let issuer = active_identity(identity, request.issuer_key_id, request.issued_at_ms)?;
+        require_signed_by(verified, &issuer)?;
         let holder = active_identity(identity, request.holder_key_id, request.issued_at_ms)?;
         let record = new_record(
             request_digest,
@@ -243,19 +321,73 @@ impl CapabilityAuthority {
         Ok(CapabilityIssueDecision::Issued(record, receipt))
     }
 
-    /// Delegates an active capability while mechanically enforcing monotonic
-    /// attenuation and binding an immutable delegation Receipt.
+    /// Delegates an active capability through the deprecated unsigned trusted
+    /// authority API while mechanically enforcing monotonic attenuation and
+    /// binding an immutable delegation Receipt.
+    ///
+    /// # Deprecated
+    ///
+    /// Unsigned capability commands carry no proof of the acting principal;
+    /// use [`CapabilityAuthority::delegate_signed`] (ADR-0010). Removal is a
+    /// future breaking change.
     ///
     /// # Errors
     ///
     /// Fails on stale/revoked ancestry, unauthenticated identities, any scope,
     /// rights, purpose, validity, call-limit, or depth amplification, or storage
     /// failure.
-    #[allow(clippy::too_many_lines)] // Keeps the attenuation decision in one linear audit path.
+    #[deprecated(
+        since = "0.1.0",
+        note = "unsigned TCB entry; use `delegate_signed` (ADR-0010)"
+    )]
     pub fn delegate(
         &self,
         identity: &IdentityAuthority,
         request: DelegateCapabilityRequest,
+    ) -> Result<CapabilityIssueDecision, CapabilityAuthorityError> {
+        self.delegate_impl(identity, request, None)
+    }
+
+    /// Delegates an active capability through the signature-gated authority
+    /// API: the acting delegator principal must present an Ed25519 signature
+    /// over [`delegate_command_message`] under its current Identity key
+    /// binding, and the signature is bound to the delegator principal before
+    /// attenuation is evaluated. The gate order is input bounds, idempotent
+    /// replay (never re-verifies the signature), ancestry structure, command
+    /// signature verification (typed fail-closed before any durable write),
+    /// then the existing identity and attenuation gates. The durable child
+    /// record's issuer columns record the verified signer.
+    ///
+    /// # Errors
+    ///
+    /// Fails on unknown signers, invalid or revoked signer signatures,
+    /// stale/revoked ancestry, unauthenticated identities, any scope, rights,
+    /// purpose, validity, call-limit, or depth amplification, or storage
+    /// failure.
+    pub fn delegate_signed(
+        &self,
+        identity: &IdentityAuthority,
+        request: SignedDelegateCapabilityRequest,
+    ) -> Result<CapabilityIssueDecision, CapabilityAuthorityError> {
+        let proof = CommandSignatureProof {
+            signer: request.signer,
+            signature: request.signature,
+        };
+        self.delegate_impl(identity, request.command, Some(proof))
+    }
+
+    /// Shared delegation body; `proof` is `Some` exactly for the signed entry.
+    ///
+    /// # Errors
+    ///
+    /// Fails on invalid bounds, stale/revoked ancestry, signature, identity,
+    /// or amplification failures, or storage failure.
+    #[allow(clippy::too_many_lines)] // Keeps the attenuation decision in one linear audit path.
+    fn delegate_impl(
+        &self,
+        identity: &IdentityAuthority,
+        request: DelegateCapabilityRequest,
+        proof: Option<CommandSignatureProof>,
     ) -> Result<CapabilityIssueDecision, CapabilityAuthorityError> {
         validate_bounds(
             request.valid_from_ms,
@@ -273,8 +405,15 @@ impl CapabilityAuthority {
         }
         let parent = load_exact_current(&transaction, request.parent)?;
         validate_active_chain(&transaction, parent, request.delegated_at_ms)?;
+        let verified = verify_command_signature(
+            identity,
+            proof,
+            &delegate_command_message(request),
+            request.delegated_at_ms,
+        )?;
         let delegator =
             active_identity(identity, request.delegator_key_id, request.delegated_at_ms)?;
+        require_signed_by(verified, &delegator)?;
         if delegator.principal_id != parent.holder
             || delegator.control_domain_id != parent.holder_control_domain
         {
@@ -330,17 +469,64 @@ impl CapabilityAuthority {
         Ok(CapabilityIssueDecision::Issued(record, receipt))
     }
 
-    /// Revokes a capability by advancing its generation. Issuer or holder may
+    /// Revokes a capability by advancing its generation through the
+    /// deprecated unsigned trusted authority API. Issuer or holder may
     /// revoke; descendants are invalidated by their stored parent generation.
+    ///
+    /// # Deprecated
+    ///
+    /// Unsigned capability commands carry no proof of the acting principal;
+    /// use [`CapabilityAuthority::revoke_signed`] (ADR-0010). Removal is a
+    /// future breaking change.
     ///
     /// # Errors
     ///
     /// Fails on stale generation, inactive/unauthorized revoker, idempotency
     /// conflict, generation exhaustion, or storage failure.
+    #[deprecated(
+        since = "0.1.0",
+        note = "unsigned TCB entry; use `revoke_signed` (ADR-0010)"
+    )]
     pub fn revoke(
         &self,
         identity: &IdentityAuthority,
         request: RevokeCapabilityRequest,
+    ) -> Result<CapabilityRevocationDecision, CapabilityAuthorityError> {
+        self.revoke_impl(identity, request, None)
+    }
+
+    /// Revokes a capability through the signature-gated authority API: the
+    /// acting revoker principal must present an Ed25519 signature over
+    /// [`revoke_command_message`] under its current Identity key binding. The
+    /// gate order is idempotent replay (never re-verifies the signature),
+    /// target structure and revocation state, command signature verification
+    /// (typed fail-closed before any durable write), then the existing
+    /// authorization and generation-advance transaction. The durable
+    /// revocation receipt records the verified signer as `revoker`.
+    ///
+    /// # Errors
+    ///
+    /// Fails on stale generation, unknown signers, invalid or revoked signer
+    /// signatures, unauthorized revokers, idempotency conflict, generation
+    /// exhaustion, or storage failure.
+    pub fn revoke_signed(
+        &self,
+        identity: &IdentityAuthority,
+        request: SignedRevokeCapabilityRequest,
+    ) -> Result<CapabilityRevocationDecision, CapabilityAuthorityError> {
+        let proof = CommandSignatureProof {
+            signer: request.signer,
+            signature: request.signature,
+        };
+        self.revoke_impl(identity, request.command, Some(proof))
+    }
+
+    /// Shared revocation body; `proof` is `Some` exactly for the signed entry.
+    fn revoke_impl(
+        &self,
+        identity: &IdentityAuthority,
+        request: RevokeCapabilityRequest,
+        proof: Option<CommandSignatureProof>,
     ) -> Result<CapabilityRevocationDecision, CapabilityAuthorityError> {
         let request_digest = revoke_request_digest(request);
         let mut connection = self.lock()?;
@@ -355,7 +541,14 @@ impl CapabilityAuthority {
         if record.revoked_at_ms.is_some() {
             return Err(CapabilityAuthorityError::CapabilityRevoked);
         }
+        let verified = verify_command_signature(
+            identity,
+            proof,
+            &revoke_command_message(request),
+            request.revoked_at_ms,
+        )?;
         let revoker = active_identity(identity, request.revoker_key_id, request.revoked_at_ms)?;
+        require_signed_by(verified, &revoker)?;
         if revoker.principal_id != record.issuer && revoker.principal_id != record.holder {
             return Err(CapabilityAuthorityError::RevokerUnauthorized);
         }
@@ -492,6 +685,67 @@ fn active_identity(
         return Err(CapabilityAuthorityError::IdentityKeyInactive(key_id));
     }
     Ok(binding)
+}
+
+/// The acting principal's signature over one Capability command message.
+struct CommandSignatureProof {
+    signer: PrincipalId,
+    signature: Ed25519Signature,
+}
+
+/// Verifies the command signature for signed entries; unsigned entries pass
+/// `None` and skip straight to the trusted TCB gates.
+fn verify_command_signature(
+    identity: &IdentityAuthority,
+    proof: Option<CommandSignatureProof>,
+    message: &[u8; 32],
+    at_ms: u64,
+) -> Result<Option<VerifiedCapabilityCommandSigner>, CapabilityAuthorityError> {
+    let Some(proof) = proof else {
+        return Ok(None);
+    };
+    identity
+        .verify_capability_command_signature(VerifyCapabilityCommandSignatureRequest {
+            message_digest: *message,
+            principal: proof.signer,
+            signature: proof.signature,
+            verified_at_ms: at_ms,
+        })
+        .map(Some)
+        .map_err(command_signature_error)
+}
+
+/// Signed entries must prove that the declared behavior key is the current
+/// key of the verifying principal, so a signature by any other principal is
+/// rejected even when it verifies cryptographically.
+fn require_signed_by(
+    verified: Option<VerifiedCapabilityCommandSigner>,
+    binding: &IdentityBinding,
+) -> Result<(), CapabilityAuthorityError> {
+    match verified {
+        None => Ok(()),
+        Some(signer)
+            if signer.principal_id() == binding.principal_id
+                && signer.key_id() == binding.key_id =>
+        {
+            Ok(())
+        }
+        Some(_) => Err(CapabilityAuthorityError::SignatureInvalid),
+    }
+}
+
+/// Lifts the identity verification failure into the typed command-signature
+/// surface (`SignatureInvalid`/`PrincipalUnknown`/`KeyRevoked`); all other
+/// identity failures keep their typed wrapping.
+fn command_signature_error(error: IdentityAuthorityError) -> CapabilityAuthorityError {
+    match error {
+        IdentityAuthorityError::InvalidSignature => CapabilityAuthorityError::SignatureInvalid,
+        IdentityAuthorityError::PrincipalNotFound(id) => {
+            CapabilityAuthorityError::PrincipalUnknown(id)
+        }
+        IdentityAuthorityError::KeyRevoked => CapabilityAuthorityError::KeyRevoked,
+        other => CapabilityAuthorityError::Identity(other),
+    }
 }
 
 fn validate_bounds(
@@ -892,6 +1146,60 @@ fn root_request_digest(request: IssueRootCapabilityRequest) -> [u8; 32] {
 fn delegate_request_digest(request: DelegateCapabilityRequest) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(b"nlos/capability-delegate-request/v1");
+    hash_delegate_fields(&mut hasher, request);
+    hasher.finalize().into()
+}
+
+/// Computes the domain-separated digest verified by `issue_root_signed`:
+/// command kind 1 of [`COMMAND_MESSAGE_DOMAIN`] over every semantic field of
+/// the issuance command.
+#[must_use]
+pub fn issue_root_command_message(command: IssueRootCapabilityRequest) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(COMMAND_MESSAGE_DOMAIN);
+    hasher.update([COMMAND_KIND_ISSUE_ROOT]);
+    hash_issue_fields(
+        &mut hasher,
+        command.issuer_key_id,
+        command.holder_key_id,
+        command.target,
+        command.rights,
+        command.purpose_digest,
+        command.valid_from_ms,
+        command.valid_until_ms,
+        command.delegation_depth_remaining,
+        command.call_limit,
+        command.idempotency_key,
+        command.issued_at_ms,
+    );
+    hasher.finalize().into()
+}
+
+/// Computes the domain-separated digest verified by `delegate_signed`:
+/// command kind 2 of [`COMMAND_MESSAGE_DOMAIN`] over every semantic field of
+/// the delegation command, including the delegate target.
+#[must_use]
+pub fn delegate_command_message(command: DelegateCapabilityRequest) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(COMMAND_MESSAGE_DOMAIN);
+    hasher.update([COMMAND_KIND_DELEGATE]);
+    hash_delegate_fields(&mut hasher, command);
+    hasher.finalize().into()
+}
+
+/// Computes the domain-separated digest verified by `revoke_signed`: command
+/// kind 3 of [`COMMAND_MESSAGE_DOMAIN`] over every semantic field of the
+/// revocation command.
+#[must_use]
+pub fn revoke_command_message(command: RevokeCapabilityRequest) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(COMMAND_MESSAGE_DOMAIN);
+    hasher.update([COMMAND_KIND_REVOKE]);
+    hash_revoke_fields(&mut hasher, command);
+    hasher.finalize().into()
+}
+
+fn hash_delegate_fields(hasher: &mut Sha256, request: DelegateCapabilityRequest) {
     hasher.update(request.parent.capability_id.as_bytes());
     hasher.update(request.parent.generation.get().to_be_bytes());
     hasher.update(request.delegator_key_id.as_bytes());
@@ -899,14 +1207,13 @@ fn delegate_request_digest(request: DelegateCapabilityRequest) -> [u8; 32] {
     hasher.update([request.target.kind()]);
     hasher.update(request.target.bytes());
     hasher.update(request.rights.bits().to_be_bytes());
-    hash_optional_digest(&mut hasher, request.purpose_digest);
+    hash_optional_digest(hasher, request.purpose_digest);
     hasher.update(request.valid_from_ms.to_be_bytes());
     hasher.update(request.valid_until_ms.to_be_bytes());
     hasher.update([request.delegation_depth_remaining]);
-    hash_optional_u64(&mut hasher, request.call_limit);
+    hash_optional_u64(hasher, request.call_limit);
     hasher.update(request.idempotency_key.as_bytes());
     hasher.update(request.delegated_at_ms.to_be_bytes());
-    hasher.finalize().into()
 }
 
 #[allow(clippy::too_many_arguments)] // Fixed canonical field order for root issuance.
@@ -941,12 +1248,16 @@ fn hash_issue_fields(
 fn revoke_request_digest(request: RevokeCapabilityRequest) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(b"nlos/capability-revoke-request/v1");
+    hash_revoke_fields(&mut hasher, request);
+    hasher.finalize().into()
+}
+
+fn hash_revoke_fields(hasher: &mut Sha256, request: RevokeCapabilityRequest) {
     hasher.update(request.handle.capability_id.as_bytes());
     hasher.update(request.handle.generation.get().to_be_bytes());
     hasher.update(request.revoker_key_id.as_bytes());
     hasher.update(request.idempotency_key.as_bytes());
     hasher.update(request.revoked_at_ms.to_be_bytes());
-    hasher.finalize().into()
 }
 
 fn hash_optional_digest(hasher: &mut Sha256, value: Option<[u8; 32]>) {

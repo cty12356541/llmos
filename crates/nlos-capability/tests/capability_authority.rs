@@ -1,3 +1,5 @@
+#![allow(deprecated)] // Deprecated unsigned Capability entries stay pinned as replay-equivalent to the signed entries.
+
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -5,8 +7,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use ed25519_dalek::{Signer, SigningKey};
 use nlos_capability::{
     AuthorizeSemanticRequest, CapabilityAuthority, CapabilityAuthorityError,
-    CapabilityIssueDecision, CapabilityRights, CapabilityTarget, DelegateCapabilityRequest,
-    IssueRootCapabilityRequest, RevokeCapabilityRequest,
+    CapabilityIssueDecision, CapabilityRevocationDecision, CapabilityRights, CapabilityTarget,
+    DelegateCapabilityRequest, IssueRootCapabilityRequest, RevokeCapabilityRequest,
+    SignedDelegateCapabilityRequest, SignedIssueRootCapabilityRequest,
+    SignedRevokeCapabilityRequest, delegate_command_message, issue_root_command_message,
+    revoke_command_message,
 };
 use nlos_identity::{
     BootstrapPrincipalRequest, IdentityAuthority, KeyPurpose, VerifySemanticSignatureRequest,
@@ -385,4 +390,123 @@ fn capability_descriptors_versions_and_receipts_are_ddl_protected() {
         raw.execute("DELETE FROM capability_issue_receipts", [])
             .is_err()
     );
+}
+
+/// The deprecated unsigned issue entry and the signed entry are two fronts
+/// of one durable authority: with the identical command, whichever entry
+/// executes first, the other replays the exact same durable capability.
+#[test]
+fn deprecated_unsigned_issue_replays_through_signed_entry() {
+    // Direction 1: the unsigned entry issues; the signed entry replays it.
+    let root = Root::new("equivalence-issue");
+    let identity = IdentityAuthority::open(root.path()).unwrap();
+    let (_, issuer) = bootstrap(&identity, 240);
+    let capability = CapabilityAuthority::open(root.path()).unwrap();
+    let command = root_request(issuer, issuer, 0x88);
+    let unsigned = capability.issue_root(&identity, command).unwrap();
+    assert!(matches!(unsigned, CapabilityIssueDecision::Issued(_, _)));
+    assert!(matches!(
+        capability.issue_root_signed(
+            &identity,
+            SignedIssueRootCapabilityRequest {
+                command,
+                signer: issuer.principal_id,
+                signature: signing_key(240)
+                    .sign(&issue_root_command_message(command))
+                    .to_bytes(),
+            },
+        ),
+        Ok(CapabilityIssueDecision::Replayed(record, _)) if record == unsigned.record(),
+    ));
+
+    // Direction 2: the signed entry issues; the unsigned entry replays it.
+    let root = Root::new("equivalence-issue-reverse");
+    let identity = IdentityAuthority::open(root.path()).unwrap();
+    let (_, issuer) = bootstrap(&identity, 244);
+    let capability = CapabilityAuthority::open(root.path()).unwrap();
+    let command = root_request(issuer, issuer, 0x90);
+    let signed = capability
+        .issue_root_signed(
+            &identity,
+            SignedIssueRootCapabilityRequest {
+                command,
+                signer: issuer.principal_id,
+                signature: signing_key(244)
+                    .sign(&issue_root_command_message(command))
+                    .to_bytes(),
+            },
+        )
+        .unwrap();
+    assert!(matches!(signed, CapabilityIssueDecision::Issued(_, _)));
+    assert!(matches!(
+        capability.issue_root(&identity, command),
+        Ok(CapabilityIssueDecision::Replayed(record, _)) if record == signed.record(),
+    ));
+}
+
+/// The deprecated unsigned delegate/revoke entries stay replay-equivalent to
+/// the signed entries for identical commands.
+#[test]
+fn deprecated_unsigned_delegate_and_revoke_replay_through_signed_entries() {
+    // Delegate, direction 1: the unsigned entry issues; the signed entry
+    // replays the exact same durable child capability.
+    let root = Root::new("equivalence-delegate");
+    let identity = IdentityAuthority::open(root.path()).unwrap();
+    let (_, delegator) = bootstrap(&identity, 245);
+    let (_, recipient) = bootstrap(&identity, 246);
+    let capability = CapabilityAuthority::open(root.path()).unwrap();
+    let parent = capability
+        .issue_root(&identity, root_request(delegator, delegator, 0x91))
+        .unwrap()
+        .record();
+    let command = delegate_request(parent, delegator, recipient, 0x92);
+    let unsigned = capability.delegate(&identity, command).unwrap();
+    assert!(matches!(unsigned, CapabilityIssueDecision::Issued(_, _)));
+    assert!(matches!(
+        capability.delegate_signed(
+            &identity,
+            SignedDelegateCapabilityRequest {
+                command,
+                signer: delegator.principal_id,
+                signature: signing_key(245)
+                    .sign(&delegate_command_message(command))
+                    .to_bytes(),
+            },
+        ),
+        Ok(CapabilityIssueDecision::Replayed(record, _)) if record == unsigned.record(),
+    ));
+
+    // Revoke, direction 2: the signed entry revokes; the unsigned entry
+    // replays the exact same durable revocation receipt.
+    let root = Root::new("equivalence-revoke");
+    let identity = IdentityAuthority::open(root.path()).unwrap();
+    let (_, holder) = bootstrap(&identity, 247);
+    let capability = CapabilityAuthority::open(root.path()).unwrap();
+    let record = capability
+        .issue_root(&identity, root_request(holder, holder, 0x93))
+        .unwrap()
+        .record();
+    let command = RevokeCapabilityRequest {
+        handle: record.handle,
+        revoker_key_id: holder.key_id,
+        idempotency_key: IdempotencyKey::from_bytes([0x94; 16]),
+        revoked_at_ms: 3_000,
+    };
+    let signed = capability
+        .revoke_signed(
+            &identity,
+            SignedRevokeCapabilityRequest {
+                command,
+                signer: holder.principal_id,
+                signature: signing_key(247)
+                    .sign(&revoke_command_message(command))
+                    .to_bytes(),
+            },
+        )
+        .unwrap();
+    assert!(matches!(signed, CapabilityRevocationDecision::Revoked(_)));
+    assert!(matches!(
+        capability.revoke(&identity, command),
+        Ok(CapabilityRevocationDecision::Replayed(receipt)) if receipt == signed.receipt(),
+    ));
 }

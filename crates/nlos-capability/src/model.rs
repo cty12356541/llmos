@@ -1,4 +1,4 @@
-use nlos_identity::VerifiedSemanticSigner;
+use nlos_identity::{Ed25519Signature, VerifiedSemanticSigner};
 use nlos_types::{
     CapabilityId, ControlDomainId, Generation, IdempotencyKey, KeyId, NamespaceId, PrincipalId,
     ReceiptId, TaskId,
@@ -116,6 +116,18 @@ pub struct IssueRootCapabilityRequest {
     pub issued_at_ms: u64,
 }
 
+/// Signature-gated root issuance (ADR-0010): the exact trusted command plus
+/// the acting issuer principal and its Ed25519 signature over
+/// `issue_root_command_message`. The durable decision digest covers only
+/// `command`, so signed and deprecated unsigned entries stay
+/// inter-replayable for identical commands.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SignedIssueRootCapabilityRequest {
+    pub command: IssueRootCapabilityRequest,
+    pub signer: PrincipalId,
+    pub signature: Ed25519Signature,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DelegateCapabilityRequest {
     pub parent: CapabilityHandle,
@@ -130,6 +142,16 @@ pub struct DelegateCapabilityRequest {
     pub call_limit: Option<u64>,
     pub idempotency_key: IdempotencyKey,
     pub delegated_at_ms: u64,
+}
+
+/// Signature-gated delegation (ADR-0010): the acting delegator principal
+/// must sign `delegate_command_message` under its current Identity key
+/// binding; the child record's durable issuer column is that signer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SignedDelegateCapabilityRequest {
+    pub command: DelegateCapabilityRequest,
+    pub signer: PrincipalId,
+    pub signature: Ed25519Signature,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -169,6 +191,16 @@ pub struct RevokeCapabilityRequest {
     pub revoker_key_id: KeyId,
     pub idempotency_key: IdempotencyKey,
     pub revoked_at_ms: u64,
+}
+
+/// Signature-gated revocation (ADR-0010): the acting revoker principal must
+/// sign `revoke_command_message` under its current Identity key binding; the
+/// durable revocation receipt records that principal as `revoker`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SignedRevokeCapabilityRequest {
+    pub command: RevokeCapabilityRequest,
+    pub signer: PrincipalId,
+    pub signature: Ed25519Signature,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
