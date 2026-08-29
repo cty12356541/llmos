@@ -20,7 +20,8 @@ mod wake;
 
 use channel_wait::ChannelWaitKey;
 pub use channel_wait::{
-    ChannelSequenceWait, ChannelWaitError, DeliveryReport, TokioChannelWakeSink,
+    ChannelSequenceWait, ChannelWaitError, DeliveryReport, RearmReport, RearmedChannelWait,
+    TokioChannelWakeSink,
 };
 pub use pump::{
     OutboxPump, OutboxPumpStartError, PumpConfig, PumpHealth, PumpState, RecordingReconcileSink,

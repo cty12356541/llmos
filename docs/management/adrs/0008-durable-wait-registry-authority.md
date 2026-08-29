@@ -51,3 +51,8 @@
 ## 验证与证据
 
 本 ADR 决策于 2026-08-29 由用户选择；owner-side 最小前缀与本 ADR 同日实现（第四十九增量，沿用 B-TOPIC-001 的「决策与实现同批」模式），由并行车道落地、integrator 合并验收。Evidence 位置：[B-WAIT-001](../../evidence/stage-b/b-wait-001-durable-wait-registry.md)（integrator 落地）。在该 evidence 存在并记录验收结果之前，本 ADR 不声明任何实现事实为已完成。既有相关证据：[B-CHANNEL-001](../../evidence/stage-b/b-channel-001-endpoint-authority.md)（commit 锚点）、[PoC-0004 / B-OUTBOX](../../evidence/stage-b/poc-0004-outbox-wake-consumer.md)（transport observation 侧 wake 消费与移交记录）、[B-PROCESS-001](../../evidence/stage-b/b-process-001-durable-execution-binding-authority.md)（process/agent binding authority 边界）。
+
+## 补记：wait 侧 rehydration 边界（2026-08-29，第五十三增量，代行决策）
+
+- **本切片做**：等待侧重建——重启后 supervisor 以新 fiber 调 `rearm_channel_waits`，对 durable `PENDING` waits（可按 channel/binding 过滤）重挂内存等待：已满足者自 notify 后立即 Woken，未满足者由后续 `deliver` 唤醒；placeholder 缓冲的早到 wake 被同 wait_id 重挂消费。
+- **不做（显式边界）**：fiber 执行状态重建（等待方代码/栈/局部状态恢复）属 B-PROCESS 执行检查点域，超出 wait registry 职责；等待方进程须自行重启 fiber 并调用 rearm。跨进程等待仍被 B-TASK-006L（真实 Capability/Principal 认证权威，未决）阻塞，登记 blocked-by 不实现。

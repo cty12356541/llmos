@@ -675,6 +675,85 @@ impl WaitAuthority {
         rows.into_iter().map(decode_raw_wait).collect()
     }
 
+    /// Reads every wait row — every state — optionally scoped to one
+    /// Channel, in `(channel_id, target_sequence, wait_id)` order (for a
+    /// `Some` filter the leading `channel_id` key is constant), each row
+    /// validated exactly like [`Self::inspect_wait`].
+    ///
+    /// This is the restart-side enumeration entry for wait rehydration: the
+    /// supervisor reads the durable wait facts and re-mounts the runtime-side
+    /// waits from them.  The enumeration deliberately covers all states, not
+    /// only `PENDING`: an early wake that was buffered by a runtime while no
+    /// registration existed always belongs to an already-`WOKEN` row, and
+    /// rehydrating that row must still consume the buffered wake
+    /// (at-least-once).  State filtering and the runtime-side re-mount
+    /// themselves belong to the caller; this read has zero durable side
+    /// effects.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed for an unknown `Some` Channel, any referenced Channel
+    /// that no longer exists, any tampered or inconsistent row, or a read
+    /// failure.
+    pub fn list_waits(
+        &self,
+        filter: Option<ChannelId>,
+    ) -> Result<Vec<WaitRecord>, WaitAuthorityError> {
+        if let Some(channel_id) = filter {
+            // Same owner readback as `inspect_channel_waits`: fail closed on
+            // an unknown Channel before any row is produced.
+            self.channel
+                .inspect_channel(channel_id)
+                .map_err(WaitAuthorityError::Channel)?;
+        }
+        let raw: Vec<WaitRow> = {
+            let connection = self.lock()?;
+            if let Some(channel_id) = filter {
+                let mut statement = connection.prepare(&format!(
+                    "SELECT {WAIT_COLUMNS}
+                     FROM waits
+                     WHERE channel_id=?1
+                     ORDER BY target_sequence, wait_id"
+                ))?;
+                statement
+                    .query_map([channel_id.as_bytes().as_slice()], map_raw_wait)?
+                    .collect::<Result<Vec<_>, _>>()?
+            } else {
+                let mut statement = connection.prepare(&format!(
+                    "SELECT {WAIT_COLUMNS}
+                     FROM waits
+                     ORDER BY channel_id, target_sequence, wait_id"
+                ))?;
+                statement
+                    .query_map(rusqlite::params![], map_raw_wait)?
+                    .collect::<Result<Vec<_>, _>>()?
+            }
+        };
+        let records: Vec<WaitRecord> = raw
+            .into_iter()
+            .map(decode_raw_wait)
+            .collect::<Result<Vec<_>, _>>()?;
+        // Every referenced Channel must still exist, verified through the
+        // owner readback exactly like `inspect_wait`.
+        let mut verified: Vec<ChannelId> = Vec::new();
+        for record in &records {
+            if verified.contains(&record.channel_id) {
+                continue;
+            }
+            verified.push(record.channel_id);
+            match self.channel.inspect_channel(record.channel_id) {
+                Ok(_) => {}
+                Err(ChannelAuthorityError::ChannelNotFound(_)) => {
+                    return Err(WaitAuthorityError::CorruptRecord(
+                        "wait references unknown channel",
+                    ));
+                }
+                Err(error) => return Err(WaitAuthorityError::Channel(error)),
+            }
+        }
+        Ok(records)
+    }
+
     /// Reads the Channel's durable queue high-water — the highest sequence
     /// ever written — through the bound Channel owner's verified queue
     /// readback (`ChannelAuthority::inspect_queue`, cross-checked against the

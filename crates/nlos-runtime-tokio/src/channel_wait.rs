@@ -34,6 +34,19 @@
 //! the caller's explicit `WaitAuthority::cancel_wait`. A cancelled runtime
 //! wait therefore leaves its durable row `PENDING`, and a later notification
 //! (or the restart-replay path) still consumes it.
+//!
+//! Wait-side rehydration: [`TokioRuntimeAdapter::rearm_channel_waits`]
+//! rebuilds exactly this in-memory half after a restart, from the durable
+//! rows alone. It mirrors the same gate order, enumerates the durable rows
+//! through `WaitAuthority::list_waits` (optionally scoped to one channel),
+//! and per row: `CANCELLED` is never re-armed; `WOKEN` resolves immediately
+//! (at-least-once) and consumes any early-buffered placeholder wake; a
+//! high-water-covered `PENDING` row is self-flipped through the same
+//! `self_notify_key` transform; any other `PENDING` row re-registers the
+//! same `ChannelWaitKey`-keyed wait with the same supersede semantics.
+//! The durable rows are otherwise read-only to rearm, and fiber execution
+//! state is not rebuilt — the restarted fiber's own code must call rearm
+//! (or re-register) after it is spawned.
 
 use std::fmt;
 use std::future::Future;
@@ -44,15 +57,15 @@ use std::task::{Context, Poll};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use nlos_runtime::{FiberHandle, RuntimeError};
-use nlos_types::{ExecutionFiberId, Generation, IdempotencyKey};
+use nlos_types::{ChannelId, ExecutionFiberId, Generation, IdempotencyKey};
 use nlos_wait::{
     NotifyCommitsRequest, RegisterDecision, RegisterWaitRequest, WaitAuthority, WaitAuthorityError,
-    WaitId, WaitState, WakeReport,
+    WaitId, WaitRecord, WaitState, WakeReport,
 };
 use tokio::sync::oneshot;
 
 use crate::wake::{WaitEntry, WaitOutcome, is_terminal};
-use crate::{Inner, TokioRuntimeAdapter, lock_unpoisoned};
+use crate::{CancellationScope, Inner, TokioRuntimeAdapter, lock_unpoisoned};
 
 /// The identity of one logical Channel sequence wait: the authority-derived
 /// durable [`WaitId`] plus the waiting fiber generation used for terminal
@@ -174,6 +187,20 @@ fn remove_channel_pending(inner: &Inner, key: &ChannelWaitKey) {
     }
 }
 
+/// Removes any buffered wake for `wait_id` — the placeholder a delivery
+/// buffered when no registration existed yet (under the fiber-less
+/// placeholder key), or a wake re-buffered after its receiver was dropped —
+/// and reports whether one was consumed. Consuming the buffer is what turns
+/// an early delivery into an immediate wake for the rehydrating wait.
+fn consume_channel_buffer(inner: &Inner, wait_id: WaitId) -> bool {
+    let mut channel_waits = lock_unpoisoned(&inner.channel_waits);
+    let buffered = channel_waits
+        .iter()
+        .find(|(key, entry)| key.wait_id == wait_id && matches!(entry, WaitEntry::Buffered))
+        .map(|(key, _)| *key);
+    buffered.is_some_and(|key| channel_waits.remove(&key).is_some())
+}
+
 /// The domain-reserved notify idempotency key for the self-flip of one
 /// durable wait: a bijective transform of the authority-derived `WaitId`.
 /// It is deterministic, so a repeated self-flip for the same wait replays
@@ -230,6 +257,93 @@ impl Future for ChannelSequenceWait {
     fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<WaitOutcome> {
         self.driver.as_mut().poll(context)
     }
+}
+
+/// Builds the shared resolution driver of one registered Channel sequence
+/// wait: `Woken` when the matching wake is delivered, `Cancelled` when the
+/// scope is cancelled, the fiber terminates, the wait is superseded, or the
+/// runtime shuts down. Never pends forever. Used verbatim by both
+/// `wait_for_channel` and `rearm_channel_waits`, so a rehydrated wait
+/// behaves exactly like a freshly registered one.
+fn channel_wait_driver(
+    inner: Arc<Inner>,
+    scope: Arc<CancellationScope>,
+    key: ChannelWaitKey,
+    receiver: oneshot::Receiver<()>,
+) -> ChannelSequenceWait {
+    ChannelSequenceWait {
+        driver: Box::pin(async move {
+            // Create the `Notified` future before checking the flag: a
+            // cancellation racing this point is then observed either by
+            // the flag or by `notify_waiters`, never lost in between.
+            let cancelled = scope.notify.notified();
+            tokio::pin!(cancelled);
+            if scope.is_cancelled() {
+                remove_channel_pending(&inner, &key);
+                // Contract: the runtime-side cancellation leaves the
+                // durable row `PENDING`; durable cancellation is an
+                // explicit `WaitAuthority::cancel_wait`.
+                return WaitOutcome::Cancelled;
+            }
+            tokio::select! {
+                biased;
+                () = &mut cancelled => {
+                    remove_channel_pending(&inner, &key);
+                    WaitOutcome::Cancelled
+                }
+                result = receiver => match result {
+                    Ok(()) => WaitOutcome::Woken,
+                    // The sender was dropped without a signal: the fiber
+                    // terminated (lifecycle purge), the wait was
+                    // superseded, or the runtime shut down. The wait must
+                    // not pend forever.
+                    Err(_) => WaitOutcome::Cancelled,
+                },
+            }
+        }),
+    }
+}
+
+/// One re-armed durable Channel wait: the durable row as rearm observed or
+/// produced it, plus the awaitable runtime side, which is the exact
+/// [`ChannelSequenceWait`] handshake type `wait_for_channel` returns — the
+/// rehydrated fiber awaits it like any registered wait.
+pub struct RearmedChannelWait {
+    /// The durable row as the rearm observed or produced it.
+    pub record: WaitRecord,
+    /// The runtime-side wait; resolve semantics documented on
+    /// [`RearmReport`].
+    pub wait: ChannelSequenceWait,
+}
+
+impl fmt::Debug for RearmedChannelWait {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RearmedChannelWait")
+            .field("record", &self.record)
+            .field("wait", &stringify!(ChannelSequenceWait))
+            .finish()
+    }
+}
+
+/// The outcome of one [`TokioRuntimeAdapter::rearm_channel_waits`] call.
+///
+/// Bucket invariant: every `satisfied` entry's future resolves immediately
+/// with [`WaitOutcome::Woken`] — the wake fact is already established (the
+/// durable row was `WOKEN`, a consumed early-buffered wake, or the
+/// high-water self-flip); every `pending` entry's future awaits a later
+/// `TokioChannelWakeSink::deliver`, and resolves `Cancelled` on scope
+/// cancel, fiber termination, supersession, or shutdown exactly like any
+/// registered wait. An empty report is legal: no durable wait matched the
+/// filter, or the fiber was already terminal.
+#[derive(Debug, Default)]
+pub struct RearmReport {
+    /// Waits whose wake is already established; each future resolves
+    /// immediately with [`WaitOutcome::Woken`].
+    pub satisfied: Vec<RearmedChannelWait>,
+    /// Waits re-armed as live in-memory waits, resolved by a later
+    /// delivery.
+    pub pending: Vec<RearmedChannelWait>,
 }
 
 /// The Tokio-backed delivery endpoint for durable Channel sequence wakes.
@@ -465,36 +579,160 @@ impl TokioRuntimeAdapter {
         let scope = Arc::clone(&record.scope);
         drop(channel_waits);
 
-        Ok(ChannelSequenceWait {
-            driver: Box::pin(async move {
-                // Create the `Notified` future before checking the flag: a
-                // cancellation racing this point is then observed either by
-                // the flag or by `notify_waiters`, never lost in between.
-                let cancelled = scope.notify.notified();
-                tokio::pin!(cancelled);
-                if scope.is_cancelled() {
-                    remove_channel_pending(&inner, &key);
-                    // Contract: the runtime-side cancellation leaves the
-                    // durable row `PENDING`; durable cancellation is an
-                    // explicit `WaitAuthority::cancel_wait`.
-                    return WaitOutcome::Cancelled;
+        Ok(channel_wait_driver(inner, scope, key, receiver))
+    }
+
+    /// Rebuilds the runtime side of durable Channel waits after a restart
+    /// (wait-side rehydration): enumerates the durable wait rows through
+    /// `WaitAuthority::list_waits` (optionally scoped to one channel) and
+    /// re-mounts each row's in-memory half on behalf of `handle`, exactly as
+    /// `wait_for_channel` would have registered it. Fiber execution state is
+    /// NOT rebuilt — the restarted fiber's own code must spawn, then call
+    /// this (or re-register) to obtain its wait futures.
+    ///
+    /// Gate order mirrors `wait_for_channel`:
+    ///
+    /// 1. runtime shutdown → [`RuntimeError::ShuttingDown`];
+    /// 2. stale or unknown fiber handle → [`RuntimeError::InvalidGeneration`];
+    /// 3. terminal fiber or already-cancelled scope → an empty
+    ///    [`RearmReport`] (the ready-`Cancelled` analog: nothing is armed,
+    ///    zero durable side effects), not an error.
+    ///
+    /// Per durable row, mirroring the `wait_for_channel` gates:
+    ///
+    /// - `CANCELLED` rows are never re-armed and never reported;
+    /// - `WOKEN` rows resolve immediately (at-least-once: the durable wake
+    ///   already happened) and consume any early-buffered placeholder wake
+    ///   for their [`WaitId`];
+    /// - a still-`PENDING` row whose channel high-water already covers its
+    ///   target is self-flipped through the same domain-reserved
+    ///   `self_notify_key` transform `wait_for_channel` uses — the one
+    ///   durable write rearm can perform — and resolves immediately;
+    /// - any other still-`PENDING` row re-registers the in-memory
+    ///   `ChannelWaitKey`-keyed wait under the same critical section,
+    ///   re-checks and supersede semantics as `wait_for_channel`: a second
+    ///   rearm (or a racing registration) for the same wait supersedes the
+    ///   first, whose future resolves [`WaitOutcome::Cancelled`]. If the
+    ///   fiber turns terminal or its scope is cancelled while the loop runs,
+    ///   the remaining rows are skipped unregistered — their durable rows
+    ///   stay `PENDING` for a later rearm.
+    ///
+    /// The durable rows are otherwise read-only to rearm: it never
+    /// re-registers durable rows, never touches `CANCELLED` or `WOKEN`
+    /// rows, and never cancels a durable row. The report is the supervisor's
+    /// view of what was armed; an empty match is a successful empty report.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ChannelWaitError::Runtime`] for shutdown and stale/unknown
+    /// fiber handles, and [`ChannelWaitError::WaitAuthority`] for durable
+    /// authority failures (enumeration, high-water reads, the self-flip).
+    pub fn rearm_channel_waits(
+        &self,
+        handle: FiberHandle,
+        waits: &WaitAuthority,
+        filter: Option<ChannelId>,
+    ) -> Result<RearmReport, ChannelWaitError> {
+        if self.inner.shutdown.load(Ordering::Acquire) {
+            return Err(RuntimeError::ShuttingDown.into());
+        }
+        let record = self.record_for(handle)?;
+
+        // Same fail-closed gate as `wait_for_channel`: a terminal or
+        // already-cancelled fiber has nothing to re-arm and never performs
+        // a durable side effect.
+        if is_terminal(*lock_unpoisoned(&record.state)) || record.scope.is_cancelled() {
+            return Ok(RearmReport::default());
+        }
+
+        let mut report = RearmReport::default();
+        for durable in waits.list_waits(filter)? {
+            match durable.state {
+                // A cancelled wait is terminal on the durable side; rearm
+                // never resurrects it.
+                WaitState::Cancelled => {}
+                WaitState::Woken => {
+                    // At-least-once: the durable wake already happened. A
+                    // delivery that raced the restart is buffered under this
+                    // `WaitId`; consuming it here is what keeps the buffered
+                    // placeholder from outliving its rehydrated wait.
+                    consume_channel_buffer(&self.inner, durable.wait_id);
+                    report.satisfied.push(RearmedChannelWait {
+                        record: durable,
+                        wait: ChannelSequenceWait::ready(WaitOutcome::Woken),
+                    });
                 }
-                tokio::select! {
-                    biased;
-                    () = &mut cancelled => {
-                        remove_channel_pending(&inner, &key);
-                        WaitOutcome::Cancelled
+                WaitState::Pending => {
+                    // Explicit-notify self-flip, identical to
+                    // `wait_for_channel`: the channel's durable queue
+                    // already covers the target, so notify under the
+                    // domain-reserved key and resolve immediately.
+                    if waits.channel_high_water(durable.channel_id)? >= durable.target_sequence {
+                        waits.notify_commits(NotifyCommitsRequest {
+                            channel_id: durable.channel_id,
+                            up_to_sequence: durable.target_sequence,
+                            notified_at_ms: now_millis(),
+                            idempotency_key: self_notify_key(durable.wait_id),
+                        })?;
+                        // Re-read so the report carries the authoritative
+                        // post-flip row (a notification that raced this
+                        // self-flip may have flipped the row first).
+                        let flipped = waits.inspect_wait(durable.wait_id)?;
+                        consume_channel_buffer(&self.inner, durable.wait_id);
+                        report.satisfied.push(RearmedChannelWait {
+                            record: flipped,
+                            wait: ChannelSequenceWait::ready(WaitOutcome::Woken),
+                        });
+                        continue;
                     }
-                    result = receiver => match result {
-                        Ok(()) => WaitOutcome::Woken,
-                        // The sender was dropped without a signal: the fiber
-                        // terminated (lifecycle purge), the wait was
-                        // superseded, or the runtime shut down. The wait must
-                        // not pend forever.
-                        Err(_) => WaitOutcome::Cancelled,
-                    },
+
+                    let key = ChannelWaitKey::new(durable.wait_id, &handle);
+                    // Same critical section as `wait_for_channel` (and the
+                    // fiber lifecycle purge): `channel_waits`, then the
+                    // record's state, so registration and a concurrent purge
+                    // are mutually exclusive.
+                    let mut channel_waits = lock_unpoisoned(&self.inner.channel_waits);
+                    if is_terminal(*lock_unpoisoned(&record.state)) || record.scope.is_cancelled() {
+                        // The fiber turned terminal or its scope was
+                        // cancelled while this rearm ran: skip without
+                        // registering and without a durable side effect; the
+                        // row stays `PENDING` for a later rearm.
+                        continue;
+                    }
+                    // A delivery raced this rearm and buffered the wake
+                    // under this `WaitId`: consume the buffer and resolve
+                    // immediately (the durable flip already happened on the
+                    // delivery side).
+                    let buffered_key = channel_waits
+                        .iter()
+                        .find(|(buffered, entry)| {
+                            buffered.wait_id == key.wait_id && matches!(entry, WaitEntry::Buffered)
+                        })
+                        .map(|(buffered, _)| *buffered);
+                    if let Some(buffered_key) = buffered_key {
+                        channel_waits.remove(&buffered_key);
+                        report.satisfied.push(RearmedChannelWait {
+                            record: durable,
+                            wait: ChannelSequenceWait::ready(WaitOutcome::Woken),
+                        });
+                        continue;
+                    }
+                    let (sender, receiver) = oneshot::channel();
+                    // A second rearm for the same wait supersedes the first:
+                    // the dropped sender resolves the superseded wait as
+                    // `Cancelled`.
+                    channel_waits.insert(key, WaitEntry::Pending(sender));
+                    record.begin_wait();
+                    let scope = Arc::clone(&record.scope);
+                    drop(channel_waits);
+
+                    report.pending.push(RearmedChannelWait {
+                        record: durable,
+                        wait: channel_wait_driver(Arc::clone(&self.inner), scope, key, receiver),
+                    });
                 }
-            }),
-        })
+            }
+        }
+        Ok(report)
     }
 }
