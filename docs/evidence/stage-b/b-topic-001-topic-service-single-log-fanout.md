@@ -73,3 +73,9 @@ kill-window 矩阵覆盖：pre-commit IOERR/ENOSPC（create/subscribe/advance/pu
 - 实现：publish/republish 在首个 durable 写前统一检查（幂等 gate 后、PENDING 插入/budget CAS 前），拒绝零部分状态；释放点 = min(活跃 cursor, channel consume high-water)；QUARANTINED 滞差不计入（与 delivery attempts 正交）；订阅者落后于 consume 点的窗口用 retained 全量字节保守上界。schema 零变更。
 - 验证：nlos-topic 59 passed / 0 failed（新增 topic_retention 9 项，既有 50 零修改）；workspace clippy -D warnings 零警告；fmt 通过。
 - 已知限制：无后台驱逐/跨 topic 聚合（channel 级计数保守方向）；时间比较纯调用方时钟语义；resumed PENDING 重放不重跑 admission（插入时已通过 + channel key 幂等）。
+
+## 9. retention 字节精确化（2026-08-29 增量，commit `fa62a00`）
+
+- 关闭 §8 已知限制「订阅者落后 consume 点的保守上界」：schema v5 为 publication 行补 payload 长度元数据（不复制消息体），字节检查恢复 ADR-0007 补记定义的精确公式（`Σ payload_bytes(sequence > min(活跃 cursor, consume))`），遮蔽窗口不再退化为全量保守值。
+- 混合模式：legacy 哨兵行（迁移回填 0）落窗口时取 max(精确已知和, channel retained)——永不低估，`backlog_precision` 字段如实上报 Exact/LegacyConservative；哨兵随 compact/追平消亡。残余不可恢复情形：已 trim 的哨兵行长度两侧均无记录（doc 注明）。
+- 验证：nlos-topic 63 passed / 0 failed（新增 4 项：精确 vs 保守分界、遮蔽窗口边界、哨兵混合不低估、迁移 fail-closed）；workspace clippy/fmt 全绿。
