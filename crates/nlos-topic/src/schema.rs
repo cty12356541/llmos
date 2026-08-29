@@ -2,7 +2,7 @@ use rusqlite::{Connection, TransactionBehavior, params};
 
 use crate::TopicAuthorityError;
 
-pub(crate) const SCHEMA_VERSION: i64 = 4;
+pub(crate) const SCHEMA_VERSION: i64 = 5;
 
 /// Creates the Topic service-layer authority schema v1: the immutable-topic
 /// head (policy, payer binding, channel fence snapshot, active-subscriber
@@ -447,6 +447,141 @@ pub(crate) fn migrate_v4(connection: &mut Connection) -> Result<(), TopicAuthori
         ALTER TABLE topic_subscriptions_v4 RENAME TO topic_subscriptions;
 
         PRAGMA user_version=4;",
+    )?;
+    transaction.commit()?;
+    connection.pragma_update(None, "foreign_keys", "ON")?;
+    Ok(())
+}
+
+/// Adds the cached payload-length metadata to the publication journal
+/// (schema v5, increment 52): every publication row durably records the
+/// byte length of its payload alongside its digest, so the retention byte
+/// bound can be evaluated as the exact `Σ payload_bytes(sequence >
+/// min(active cursors, channel consume high-water))` of the ADR-0007
+/// retention addendum for any sequence window — including the window a
+/// live subscriber shadows below the channel consume point, which the
+/// channel-side `inspect_queue` byte counters cannot expose.
+///
+/// This is length *metadata*, not a message-body copy: the payload itself
+/// stays in the Channel log (the Topic authority continues to store no
+/// message bodies, per ADR-0007).  Enqueue rejects empty payloads, so a
+/// recorded length is always `>= 1`; `0` is therefore an unambiguous
+/// sentinel for "recorded before schema v5" and rows migrated from earlier
+/// schemas are backfilled with it.  The retention admission treats any
+/// sentinel row inside the summation window by merging the exact known-row
+/// sum with the channel-side retained upper bound in the never-understating
+/// direction; sentinel rows leave the window as catch-up and compaction
+/// advance the bound past them.  Rows inserted from schema v5 on always
+/// carry the true length.
+///
+/// `SQLite` cannot alter `CHECK` constraints or triggers in place, so
+/// `topic_publications` is rebuilt through the documented table-rebuild
+/// procedure; the immutability trigger additionally freezes the recorded
+/// length on an enqueued row except for a regression to the `0` sentinel
+/// (the conservative direction — an unknown length can only widen, never
+/// narrow, the admission's byte estimate).  Idempotent on reopen via the
+/// column pre-check; an unexpected partial column state fails closed as
+/// [`TopicAuthorityError::CorruptRecord`].
+pub(crate) fn migrate_v5(connection: &mut Connection) -> Result<(), TopicAuthorityError> {
+    let column_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('topic_publications')
+         WHERE name='payload_bytes'",
+        [],
+        |row| row.get(0),
+    )?;
+    if column_count == 1 {
+        connection.pragma_update(None, "user_version", 5)?;
+        return Ok(());
+    }
+    if column_count != 0 {
+        return Err(TopicAuthorityError::CorruptRecord(
+            "partial topic publication payload-length schema",
+        ));
+    }
+
+    // The documented SQLite table-rebuild procedure requires foreign-key
+    // enforcement off around (not inside) the rebuild transaction.
+    connection.pragma_update(None, "foreign_keys", "OFF")?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "DROP TRIGGER IF EXISTS topic_publications_commit_transition;
+        DROP TRIGGER IF EXISTS topic_publications_no_delete;
+
+        CREATE TABLE topic_publications_v5 (
+            idempotency_key BLOB PRIMARY KEY NOT NULL CHECK(length(idempotency_key)=16),
+            topic_id BLOB NOT NULL CHECK(length(topic_id)=16),
+            policy_digest BLOB NOT NULL CHECK(length(policy_digest)=32),
+            payer_account_id BLOB NOT NULL CHECK(length(payer_account_id)=16),
+            payload_digest BLOB NOT NULL CHECK(length(payload_digest)=32),
+            payload_bytes INTEGER NOT NULL CHECK(payload_bytes >= 0),
+            status INTEGER NOT NULL CHECK(status IN (0,1)),
+            channel_sequence INTEGER NOT NULL DEFAULT 0 CHECK(channel_sequence >= 0),
+            channel_generation INTEGER NOT NULL DEFAULT 0 CHECK(channel_generation >= 0),
+            cascade_budget_remaining INTEGER NOT NULL CHECK(cascade_budget_remaining >= 0),
+            cascade_level INTEGER NOT NULL DEFAULT 0 CHECK(cascade_level >= 0),
+            parent_idempotency_key BLOB
+                CHECK(parent_idempotency_key IS NULL
+                       OR length(parent_idempotency_key)=16),
+            published_at_ms INTEGER NOT NULL CHECK(published_at_ms >= 0),
+            enqueued_at_ms INTEGER NOT NULL DEFAULT 0 CHECK(enqueued_at_ms >= 0),
+            CHECK((status = 1) = (channel_sequence >= 1)),
+            CHECK((status = 1) = (channel_generation >= 1)),
+            CHECK((status = 0) = (enqueued_at_ms = 0)),
+            CHECK((parent_idempotency_key IS NULL) = (cascade_level = 0)),
+            FOREIGN KEY(topic_id) REFERENCES topics(topic_id),
+            FOREIGN KEY(parent_idempotency_key)
+                REFERENCES topic_publications(idempotency_key)
+        ) STRICT;
+
+        INSERT INTO topic_publications_v5 (
+            idempotency_key, topic_id, policy_digest, payer_account_id,
+            payload_digest, payload_bytes, status, channel_sequence,
+            channel_generation, cascade_budget_remaining, cascade_level,
+            parent_idempotency_key, published_at_ms, enqueued_at_ms
+         )
+         SELECT idempotency_key, topic_id, policy_digest, payer_account_id,
+                payload_digest, 0, status, channel_sequence,
+                channel_generation, cascade_budget_remaining, cascade_level,
+                parent_idempotency_key, published_at_ms, enqueued_at_ms
+           FROM topic_publications;
+
+        DROP TABLE topic_publications;
+        ALTER TABLE topic_publications_v5 RENAME TO topic_publications;
+
+        CREATE TRIGGER topic_publications_commit_transition
+        BEFORE UPDATE ON topic_publications
+        WHEN NEW.idempotency_key != OLD.idempotency_key
+            OR NEW.topic_id != OLD.topic_id
+            OR NEW.policy_digest != OLD.policy_digest
+            OR NEW.payer_account_id != OLD.payer_account_id
+            OR NEW.payload_digest != OLD.payload_digest
+            OR (OLD.status = 1
+                AND NEW.payload_bytes != OLD.payload_bytes
+                AND NEW.payload_bytes != 0)
+            OR NEW.parent_idempotency_key IS NOT OLD.parent_idempotency_key
+            OR NEW.cascade_level != OLD.cascade_level
+            OR NEW.published_at_ms != OLD.published_at_ms
+            OR NEW.cascade_budget_remaining > OLD.cascade_budget_remaining
+            OR (NEW.cascade_budget_remaining != OLD.cascade_budget_remaining
+                AND OLD.status != 1)
+            OR (OLD.status = 1
+                AND (NEW.channel_sequence != OLD.channel_sequence
+                     OR NEW.channel_generation != OLD.channel_generation
+                     OR NEW.enqueued_at_ms != OLD.enqueued_at_ms))
+            OR (OLD.status != NEW.status
+                AND NOT (OLD.status = 0 AND NEW.status = 1))
+        BEGIN
+            SELECT RAISE(
+                ABORT,
+                'topic publication is immutable beyond enqueue commit and cascade budget spend'
+            );
+        END;
+        CREATE TRIGGER topic_publications_no_delete
+        BEFORE DELETE ON topic_publications BEGIN
+            SELECT RAISE(ABORT, 'topic publication is durable');
+        END;
+
+        PRAGMA user_version=5;",
     )?;
     transaction.commit()?;
     connection.pragma_update(None, "foreign_keys", "ON")?;

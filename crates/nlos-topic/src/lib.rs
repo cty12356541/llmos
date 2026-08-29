@@ -51,12 +51,17 @@
 //! bounds) is executed as publish-side admission backpressure: in the same
 //! `Immediate` transaction that reads the policy and before the first
 //! durable write, both the publish path and the republish child path measure
-//! the topic's unconsumed backlog (channel payload bytes beyond
-//! `min(active subscriber cursors, channel consume high-water)` — the lag of
+//! the topic's unconsumed backlog as the exact payload-length sum over the
+//! durable publication journal beyond
+//! `min(active subscriber cursors, channel consume high-water)` (the lag of
 //! a `QUARANTINED` subscriber holds no retention budget) and the age of the
 //! oldest live entry still held by an active subscriber (measured against
-//! the caller-supplied request time, never a wall clock).  Exceeding either
-//! declared bound rejects the call with the typed
+//! the caller-supplied request time, never a wall clock).  Rows recorded by
+//! pre-v5 schemas carry the `0` length sentinel; while such a row sits in
+//! the summation window the measurement merges the exact known-row sum with
+//! the channel-side retained upper bound in the never-understating
+//! direction.  Exceeding either declared bound rejects the call with the
+//! typed
 //! [`TopicAuthorityError::TopicRetentionExhausted`] before any write: zero
 //! partial state, nothing deleted — backpressure on the publisher, never an
 //! automatic eviction.
@@ -473,6 +478,25 @@ impl TopicCompactDecision {
     }
 }
 
+/// How the byte bound's `backlog_bytes` figure in
+/// [`TopicAuthorityError::TopicRetentionExhausted`] was measured
+/// (`RSM-FANOUT-001` retention, increment 52).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RetentionBacklogPrecision {
+    /// The exact ADR-0007 backlog: `Σ payload_bytes` over the enqueued
+    /// publication rows beyond the release point
+    /// `min(active subscriber cursors, channel consume high-water)`, with
+    /// every row in the window carrying its true recorded payload length.
+    Exact,
+    /// Legacy rows recorded before schema v5 (the `0` length sentinel) sit
+    /// in the summation window, so their true per-entry bytes are unknown;
+    /// the reported figure merges the exact known-row sum with the
+    /// channel-side retained upper bound in the never-understating
+    /// direction.  The window returns to [`Self::Exact`] once catch-up and
+    /// compaction advance the release point past the sentinel rows.
+    LegacyConservative,
+}
+
 #[derive(Debug)]
 pub enum TopicAuthorityError {
     Sqlite(rusqlite::Error),
@@ -526,8 +550,12 @@ pub enum TopicAuthorityError {
         topic_id: TopicId,
         /// Declared byte upper bound (`TopicPolicy::retained_bytes`).
         retained_bytes_declared: u64,
-        /// Measured unconsumed backlog bytes before the rejected write.
+        /// Measured unconsumed backlog bytes before the rejected write;
+        /// exact or conservatively merged per `backlog_precision`.
         backlog_bytes: u64,
+        /// How `backlog_bytes` was measured: the exact publication-journal
+        /// sum, or the legacy-sentinel conservative merge.
+        backlog_precision: RetentionBacklogPrecision,
         /// Payload bytes of the rejected publication.
         payload_bytes: u64,
         /// Declared time upper bound (`TopicPolicy::retention_ms`).
@@ -615,12 +643,13 @@ impl fmt::Display for TopicAuthorityError {
                 topic_id,
                 retained_bytes_declared,
                 backlog_bytes,
+                backlog_precision,
                 payload_bytes,
                 retention_ms_declared,
                 oldest_unconsumed_age_ms,
             } => write!(
                 formatter,
-                "topic {topic_id:?} retention bounds exhausted: backlog {backlog_bytes} + \
+                "topic {topic_id:?} retention bounds exhausted: backlog {backlog_bytes} ({backlog_precision:?}) + \
                  payload {payload_bytes} bytes against declared retained_bytes \
                  {retained_bytes_declared}, oldest unconsumed held entry \
                  {oldest_unconsumed_age_ms}ms against declared retention_ms \
@@ -707,17 +736,24 @@ impl TopicAuthority {
                 schema::migrate_v2(&mut connection)?;
                 schema::migrate_v3(&mut connection)?;
                 schema::migrate_v4(&mut connection)?;
+                schema::migrate_v5(&mut connection)?;
             }
             1 => {
                 schema::migrate_v2(&mut connection)?;
                 schema::migrate_v3(&mut connection)?;
                 schema::migrate_v4(&mut connection)?;
+                schema::migrate_v5(&mut connection)?;
             }
             2 => {
                 schema::migrate_v3(&mut connection)?;
                 schema::migrate_v4(&mut connection)?;
+                schema::migrate_v5(&mut connection)?;
             }
-            3 => schema::migrate_v4(&mut connection)?,
+            3 => {
+                schema::migrate_v4(&mut connection)?;
+                schema::migrate_v5(&mut connection)?;
+            }
+            4 => schema::migrate_v5(&mut connection)?,
             schema::SCHEMA_VERSION => {}
             other => return Err(TopicAuthorityError::SchemaVersionUnsupported(other)),
         }
@@ -1181,6 +1217,7 @@ impl TopicAuthority {
                     &topic,
                     idempotency_key,
                     digest,
+                    payload.len() as u64,
                     None,
                     0,
                     published_at_ms,
@@ -1350,6 +1387,7 @@ impl TopicAuthority {
                     &child_topic,
                     idempotency_key,
                     digest,
+                    payload.len() as u64,
                     Some(parent_publication_key),
                     child_level,
                     republished_at_ms,
@@ -1836,17 +1874,25 @@ impl TopicAuthority {
             EnqueueDecision::Enqueued(entry) | EnqueueDecision::Replayed(entry) => entry,
         };
 
-        // Commit the sequence association.
+        // Commit the sequence association.  A row migrated from a pre-v5
+        // schema carries the `0` payload-length sentinel (its length was
+        // never recorded); the enqueue-commit transaction heals it with the
+        // true length of the payload being enqueued — the only legal
+        // sentinel transition, and the reason the commit UPDATE, not just
+        // the insert, carries the column.
         let mut connection = self.lock()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let changed = transaction.execute(
             "UPDATE topic_publications
-             SET status=1, channel_sequence=?1, channel_generation=?2, enqueued_at_ms=?3
-             WHERE idempotency_key=?4 AND status=0",
+             SET status=1, channel_sequence=?1, channel_generation=?2,
+                 enqueued_at_ms=?3,
+                 payload_bytes=CASE WHEN payload_bytes=0 THEN ?4 ELSE payload_bytes END
+             WHERE idempotency_key=?5 AND status=0",
             params![
                 encode_u64(entry.sequence)?,
                 encode_u64(entry.generation.get())?,
                 encode_u64(entry.enqueued_at_ms)?,
+                encode_u64(payload.len() as u64)?,
                 idempotency_key.as_bytes().as_slice(),
             ],
         )?;
@@ -1968,18 +2014,32 @@ fn wrap_compact(
 /// transaction (the same one that read the policy), so a rejected
 /// publication leaves zero partial state and nothing is ever deleted here.
 ///
-/// Byte bound: the unconsumed backlog is measured from channel-side durable
-/// bytes as the payload-byte sum over live entries beyond the same release
-/// point [`TopicAuthority::compact_bound`] uses —
+/// Byte bound: the unconsumed backlog is measured exactly as the ADR-0007
+/// addendum defines it — `Σ payload_bytes` over the enqueued
+/// [`crate::PublicationRecord`] rows whose channel sequence lies beyond the
+/// same release point [`TopicAuthority::compact_bound`] uses —
 /// `min(active subscriber cursors, channel consume high-water)`, falling
 /// back to the consume high-water when no active subscriber holds the log.
-/// A subscriber whose delivery attempts are exhausted (`QUARANTINED`) has
-/// stopped receiving deliveries and holds no retention budget: its lag is
-/// excluded, orthogonal to the delivery-attempts mechanism that isolated it.
-/// When a live subscriber cursor sits behind the channel consume high-water,
-/// the per-entry bytes between the two are not exposed below the channel
-/// consume point, so the total live retained bytes stand in as a
-/// conservative (fail-closed) upper bound of the true backlog.
+/// The per-row payload length is durable metadata recorded with the
+/// publication itself since schema v5 (never a message-body copy: the body
+/// stays in the Channel log), so the sum is available for any sequence
+/// window — including the window a live subscriber shadows below the
+/// channel consume point, which the channel-side `inspect_queue` byte
+/// counters cannot expose.  A subscriber whose delivery attempts are
+/// exhausted (`QUARANTINED`) has stopped receiving deliveries and holds no
+/// retention budget: its lag is excluded, orthogonal to the
+/// delivery-attempts mechanism that isolated it.  Rows recorded before
+/// schema v5 carry the `0` length sentinel (enqueue rejects empty payloads,
+/// so `0` unambiguously means "length unknown"); when such a row falls in
+/// the window the measurement switches to the mixed mode: the exact
+/// known-row sum merged with the channel-side total live retained bytes
+/// (an upper bound on every live entry, this topic's or not) by taking the
+/// larger of the two — a value that never understates the ADR backlog
+/// while any sentinel row is live in the window.  Sentinel rows leave the
+/// window as catch-up and compaction advance the bound past them (they die
+/// with compaction), restoring [`RetentionBacklogPrecision::Exact`]; the
+/// mode actually used is reported on the rejection as
+/// `backlog_precision`.
 ///
 /// Time bound: the oldest still-live entry held by an active subscriber
 /// (its channel sequence beyond that cursor and beyond the channel trim
@@ -2017,14 +2077,37 @@ fn check_retention_admission(
     let bound = min_active_cursor.map_or(queue.consume_high_water, |cursor| {
         cursor.min(queue.consume_high_water)
     });
-    let backlog_bytes = if bound < queue.consume_high_water {
-        // A live subscriber sits behind the channel consume point: the
-        // per-entry bytes of the window between the two are not exposed
-        // below the channel consume point, so the total live retained bytes
-        // stand in as a conservative upper bound of the true backlog.
-        queue.retained_bytes
+    // Exact ADR-0007 backlog: the payload length was recorded durably with
+    // each enqueued publication (schema v5), so any sequence window —
+    // including the one a live subscriber shadows below the channel consume
+    // point — sums without touching the channel log.  Legacy rows carry the
+    // `0` sentinel; their count selects the mixed mode below.
+    let (summed_bytes, sentinel_rows): (i64, i64) = transaction.query_row(
+        "SELECT COALESCE(SUM(payload_bytes), 0),
+                COALESCE(SUM(payload_bytes = 0), 0)
+           FROM topic_publications
+          WHERE topic_id=?1 AND status=1 AND channel_sequence > ?2",
+        params![topic.topic_id.as_bytes().as_slice(), encode_u64(bound)?,],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let measured_bytes = decode_u64(summed_bytes)?;
+    let (backlog_bytes, backlog_precision) = if decode_u64(sentinel_rows)? == 0 {
+        (measured_bytes, RetentionBacklogPrecision::Exact)
     } else {
-        queue.backlog_bytes
+        // Mixed mode: sentinel rows' true per-entry bytes were never
+        // recorded, so the sum over known rows alone would understate the
+        // backlog.  The channel-side total live retained bytes upper-bound
+        // every live entry's bytes (including consumed-but-untrimmed ones
+        // and entries of other topics on the same channel), while the
+        // known-row sum stays exact for rows the channel has already
+        // trimmed — taking the larger of the two never understates the
+        // ADR backlog.  A sentinel row already trimmed from the channel is
+        // the one residual gap: its length is unrecoverable from either
+        // side, so the merge bounds everything but it.
+        (
+            measured_bytes.max(queue.retained_bytes),
+            RetentionBacklogPrecision::LegacyConservative,
+        )
     };
     let bytes_exhausted = match backlog_bytes.checked_add(payload_bytes) {
         Some(total) => total > topic.policy.retained_bytes,
@@ -2061,6 +2144,7 @@ fn check_retention_admission(
             topic_id: topic.topic_id,
             retained_bytes_declared: topic.policy.retained_bytes,
             backlog_bytes,
+            backlog_precision,
             payload_bytes,
             retention_ms_declared: topic.policy.retention_ms,
             oldest_unconsumed_age_ms,
@@ -2183,11 +2267,15 @@ fn bump_active_count(
     Ok(())
 }
 
+// One argument past the clippy default: the payload digest and its cached
+// length travel as separate typed metadata, like every other journal field.
+#[allow(clippy::too_many_arguments)]
 fn insert_publication(
     transaction: &Transaction<'_>,
     topic: &TopicRecord,
     idempotency_key: IdempotencyKey,
     payload_digest: [u8; 32],
+    payload_bytes: u64,
     parent_publication_key: Option<IdempotencyKey>,
     cascade_level: u64,
     published_at_ms: u64,
@@ -2195,16 +2283,17 @@ fn insert_publication(
     transaction.execute(
         "INSERT INTO topic_publications (
             idempotency_key, topic_id, policy_digest, payer_account_id,
-            payload_digest, status, channel_sequence, channel_generation,
-            cascade_budget_remaining, cascade_level, parent_idempotency_key,
-            published_at_ms, enqueued_at_ms
-         ) VALUES (?1, ?2, ?3, ?4, ?5, 0, 0, 0, ?6, ?7, ?8, ?9, 0)",
+            payload_digest, payload_bytes, status, channel_sequence,
+            channel_generation, cascade_budget_remaining, cascade_level,
+            parent_idempotency_key, published_at_ms, enqueued_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 0, 0, ?7, ?8, ?9, ?10, 0)",
         params![
             idempotency_key.as_bytes().as_slice(),
             topic.topic_id.as_bytes().as_slice(),
             topic.policy_digest.as_slice(),
             topic.policy.payer.as_bytes().as_slice(),
             payload_digest.as_slice(),
+            encode_u64(payload_bytes)?,
             encode_u64(topic.policy.cascade_depth)?,
             encode_u64(cascade_level)?,
             parent_publication_key

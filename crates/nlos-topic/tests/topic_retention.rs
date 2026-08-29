@@ -14,17 +14,31 @@
 //! idempotent retry, the conservative stand-in when a subscriber lags behind
 //! the channel consume point, and the orthogonality of quarantine (a
 //! `QUARANTINED` subscriber's lag holds no retention budget).
+//!
+//! Lane P (increment 52) refines the byte bound to the exact ADR-0007
+//! backlog — `Σ payload_bytes` over the publication journal beyond the
+//! release point, from the per-row length metadata recorded since schema
+//! v5 — which is available for *any* sequence window.  The appended pins:
+//! exact measurement in the window a live subscriber shadows below the
+//! channel consume point (the pre-52 channel-side fallback there could
+//! misreject a fitting publisher), the exact-fill / one-byte-over boundary
+//! inside that shadowed window, the mixed mode while a legacy `0` sentinel
+//! row (recorded before schema v5) sits in the window — never understating
+//! the backlog, exact again once it leaves — and the v4 → v5 migration
+//! (sentinel backfill, true lengths for new rows, idempotent pre-check,
+//! unknown version fail-closed).
 
 use nlos_channel::{
     AckRequest, ChannelAuthority, ChannelDecision, ChannelRecord, CreateChannelRequest,
 };
 use nlos_topic::{
     AdvanceDecision, AdvanceRequest, ConsumeToken, CreateTopicRequest, PublishDecision,
-    PublishRequest, RepublishDecision, RepublishRequest, SubscribeDecision, SubscribeRequest,
-    SubscriberKey, SubscriptionState, TopicAuthority, TopicAuthorityError, TopicDecision, TopicId,
-    TopicPolicy, TopicRecord,
+    PublishRequest, RepublishDecision, RepublishRequest, RetentionBacklogPrecision,
+    SubscribeDecision, SubscribeRequest, SubscriberKey, SubscriptionState, TopicAuthority,
+    TopicAuthorityError, TopicDecision, TopicId, TopicPolicy, TopicRecord,
 };
 use nlos_types::{IdempotencyKey, ResourceAccountId};
+use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
@@ -634,4 +648,285 @@ fn subscriber_behind_the_channel_consume_point_uses_the_conservative_bound() {
     // applies.
     advance(&harness, &topic, &sub, 1);
     assert_eq!(publish_ok(&harness, &topic, 92, 4_200), 2);
+}
+
+// ---------------------------------------------------------------------------
+// Lane P (increment 52): the exact publication-journal byte bound.
+// ---------------------------------------------------------------------------
+
+/// Publishes an arbitrary payload and returns the assigned channel
+/// sequence (the fixed-size helpers above always publish `PAYLOAD` bytes).
+fn publish_raw_ok(harness: &Harness, topic: &TopicRecord, seed: u8, len: usize, at: u64) -> u64 {
+    match harness
+        .topics
+        .publish(PublishRequest {
+            topic_id: topic.topic_id,
+            payload: vec![seed; len],
+            idempotency_key: key(seed),
+            published_at_ms: at,
+        })
+        .expect("publish admitted by the exact retention bound")
+    {
+        PublishDecision::Published(record) => record.channel_sequence,
+        PublishDecision::Replayed(_) => panic!("fresh publish cannot replay"),
+    }
+}
+
+/// Asserts the typed retention rejection and returns
+/// `(retained_bytes_declared, backlog_bytes, backlog_precision,
+/// payload_bytes)` for exact pinning of the measurement mode.
+fn expect_retention_mode(error: TopicAuthorityError) -> (u64, u64, RetentionBacklogPrecision, u64) {
+    match error {
+        TopicAuthorityError::TopicRetentionExhausted {
+            retained_bytes_declared,
+            backlog_bytes,
+            backlog_precision,
+            payload_bytes,
+            ..
+        } => (
+            retained_bytes_declared,
+            backlog_bytes,
+            backlog_precision,
+            payload_bytes,
+        ),
+        other => panic!("expected TopicRetentionExhausted, got {other:?}"),
+    }
+}
+
+/// Opens a second raw connection to the topic authority database
+/// (WAL tolerates the concurrent owner handle).
+fn raw_topic_db(harness: &Harness) -> Connection {
+    Connection::open(harness.root.path().join("topic-authority.db")).expect("open raw topic db")
+}
+
+fn stored_payload_bytes(connection: &Connection, sequence: i64) -> u64 {
+    connection
+        .query_row(
+            "SELECT payload_bytes FROM topic_publications WHERE channel_sequence=?1",
+            [sequence],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|value| u64::try_from(value).expect("payload_bytes"))
+        .expect("publication row")
+}
+
+#[test]
+fn subscriber_behind_the_consume_point_is_measured_exactly_not_conservatively() {
+    // 25 declared bytes; the shadowed window (cursor, consume] holds one
+    // 10-byte entry the channel-side fallback would double into the bound.
+    let (harness, topic) = bootstrap("precise-shadow", 25, DAY_MS, 64);
+    let sub = subscribe(&harness, topic.topic_id, 1, 3_000);
+    assert_eq!(publish_ok(&harness, &topic, 91, 4_000), 1);
+    assert_eq!(publish_ok(&harness, &topic, 92, 4_100), 2);
+    // The subscriber has consumed entry 1 and the channel has acked past
+    // entries 1-2: the release point is 1, and only entry 2 (10 bytes) is
+    // the true backlog.  The pre-52 fallback used the total live retained
+    // bytes (20) here and misrejected: 20 + 10 > 25.
+    advance(&harness, &topic, &sub, 1);
+    ack(&harness, &topic, 2);
+    assert_eq!(publish_ok(&harness, &topic, 93, 4_200), 3);
+    // The window keeps summing exactly: entries 2 and 3 hold 20 bytes, so
+    // one more payload projects to 30 > 25 and is rejected with the exact
+    // figure, not the conservative stand-in.
+    let error = publish_err(&harness, &topic, 94, 4_300);
+    let (retained_declared, backlog, precision, payload) = expect_retention_mode(error);
+    assert_eq!(
+        (retained_declared, backlog, payload),
+        (25, 20, PAYLOAD as u64)
+    );
+    assert_eq!(precision, RetentionBacklogPrecision::Exact);
+}
+
+#[test]
+fn exact_fill_boundary_holds_in_the_shadowed_window() {
+    // 25 declared bytes; after entry 2 exactly 15 bytes of room remain in
+    // the shadowed window.
+    let (harness, topic) = bootstrap("precise-boundary", 25, DAY_MS, 64);
+    let sub = subscribe(&harness, topic.topic_id, 1, 3_000);
+    assert_eq!(publish_ok(&harness, &topic, 91, 4_000), 1);
+    assert_eq!(publish_ok(&harness, &topic, 92, 4_100), 2);
+    advance(&harness, &topic, &sub, 1);
+    ack(&harness, &topic, 2);
+    // Exact fill: backlog 10 + payload 15 == 25 is admitted (the pre-52
+    // conservative stand-in of 20 live retained bytes would have rejected
+    // it: 20 + 15 > 25).
+    assert_eq!(publish_raw_ok(&harness, &topic, 93, 15, 4_200), 3);
+    // One byte over the declared bound is rejected with the measured
+    // backlog (25) and payload (1) pinned.
+    let error = harness
+        .topics
+        .publish(PublishRequest {
+            topic_id: topic.topic_id,
+            payload: vec![94; 1],
+            idempotency_key: key(94),
+            published_at_ms: 4_300,
+        })
+        .expect_err("one byte over the declared bound must be rejected");
+    let (retained_declared, backlog, precision, payload) = expect_retention_mode(error);
+    assert_eq!((retained_declared, backlog, payload), (25, 25, 1));
+    assert_eq!(precision, RetentionBacklogPrecision::Exact);
+}
+
+#[test]
+fn legacy_sentinel_row_switches_the_window_to_the_conservative_merge() {
+    // 35 declared bytes; three 10-byte entries are live, one of them will
+    // be stripped to the legacy `0` sentinel by hand.
+    let (harness, topic) = bootstrap("legacy-sentinel", 35, DAY_MS, 64);
+    let sub = subscribe(&harness, topic.topic_id, 1, 3_000);
+    assert_eq!(publish_ok(&harness, &topic, 91, 4_000), 1);
+    assert_eq!(publish_ok(&harness, &topic, 92, 4_100), 2);
+    assert_eq!(publish_ok(&harness, &topic, 93, 4_200), 3);
+    ack(&harness, &topic, 3);
+    // Forge the legacy sentinel: a pre-v5 row whose length was never
+    // recorded.  The immutability trigger admits exactly this regression on
+    // an enqueued row (unknown length is the conservative direction).
+    {
+        let raw = raw_topic_db(&harness);
+        assert_eq!(
+            raw.execute(
+                "UPDATE topic_publications SET payload_bytes=0 WHERE channel_sequence=2",
+                [],
+            )
+            .expect("strip entry 2 to the legacy sentinel"),
+            1
+        );
+    }
+    // Sentinel inside the window (release point 0): the exact known-row sum
+    // alone (20) would admit 20 + 10 <= 35, but the mixed mode merges in
+    // the channel-side retained upper bound (30) and rejects — it never
+    // understates the ADR backlog while an unknown-length row is live in
+    // the window.
+    let error = publish_err(&harness, &topic, 94, 4_300);
+    let (retained_declared, backlog, precision, payload) = expect_retention_mode(error);
+    assert_eq!(
+        (retained_declared, backlog, payload),
+        (35, 30, PAYLOAD as u64)
+    );
+    assert_eq!(precision, RetentionBacklogPrecision::LegacyConservative);
+    // Once the subscriber advances past the sentinel row it leaves the
+    // window and the measurement is exact again — the retried key now fits
+    // (10 + 10 <= 35) and subsequent publishes pin the exact sums, far
+    // below the channel-side retained figure (50) at that point.
+    advance(&harness, &topic, &sub, 2);
+    assert_eq!(publish_ok(&harness, &topic, 94, 4_400), 4);
+    assert_eq!(publish_ok(&harness, &topic, 95, 4_500), 5);
+    let error = publish_err(&harness, &topic, 96, 4_600);
+    let (retained_declared, backlog, precision, payload) = expect_retention_mode(error);
+    assert_eq!(
+        (retained_declared, backlog, payload),
+        (35, 30, PAYLOAD as u64)
+    );
+    assert_eq!(precision, RetentionBacklogPrecision::Exact);
+}
+
+/// Rebuilds `topic_publications` at its pre-v5 shape (dropping the
+/// `payload_bytes` column) and rewinds `user_version` to 4, so the next
+/// [`TopicAuthority::open`] exercises the v4 -> v5 migration on a database
+/// carrying rows with no recorded payload length.
+fn downgrade_to_v4(path: &std::path::Path) {
+    let connection = Connection::open(path).expect("open raw topic db");
+    connection
+        .execute_batch(
+            "PRAGMA foreign_keys=OFF;
+            DROP TRIGGER topic_publications_commit_transition;
+            DROP TRIGGER topic_publications_no_delete;
+            CREATE TABLE topic_publications_v4 (
+                idempotency_key BLOB PRIMARY KEY NOT NULL CHECK(length(idempotency_key)=16),
+                topic_id BLOB NOT NULL CHECK(length(topic_id)=16),
+                policy_digest BLOB NOT NULL CHECK(length(policy_digest)=32),
+                payer_account_id BLOB NOT NULL CHECK(length(payer_account_id)=16),
+                payload_digest BLOB NOT NULL CHECK(length(payload_digest)=32),
+                status INTEGER NOT NULL CHECK(status IN (0,1)),
+                channel_sequence INTEGER NOT NULL DEFAULT 0 CHECK(channel_sequence >= 0),
+                channel_generation INTEGER NOT NULL DEFAULT 0 CHECK(channel_generation >= 0),
+                cascade_budget_remaining INTEGER NOT NULL CHECK(cascade_budget_remaining >= 0),
+                cascade_level INTEGER NOT NULL DEFAULT 0 CHECK(cascade_level >= 0),
+                parent_idempotency_key BLOB
+                    CHECK(parent_idempotency_key IS NULL
+                           OR length(parent_idempotency_key)=16),
+                published_at_ms INTEGER NOT NULL CHECK(published_at_ms >= 0),
+                enqueued_at_ms INTEGER NOT NULL DEFAULT 0 CHECK(enqueued_at_ms >= 0),
+                CHECK((status = 1) = (channel_sequence >= 1)),
+                CHECK((status = 1) = (channel_generation >= 1)),
+                CHECK((status = 0) = (enqueued_at_ms = 0)),
+                CHECK((parent_idempotency_key IS NULL) = (cascade_level = 0)),
+                FOREIGN KEY(topic_id) REFERENCES topics(topic_id),
+                FOREIGN KEY(parent_idempotency_key)
+                    REFERENCES topic_publications(idempotency_key)
+            ) STRICT;
+            INSERT INTO topic_publications_v4 (
+                idempotency_key, topic_id, policy_digest, payer_account_id,
+                payload_digest, status, channel_sequence, channel_generation,
+                cascade_budget_remaining, cascade_level, parent_idempotency_key,
+                published_at_ms, enqueued_at_ms
+             )
+             SELECT idempotency_key, topic_id, policy_digest, payer_account_id,
+                    payload_digest, status, channel_sequence, channel_generation,
+                    cascade_budget_remaining, cascade_level, parent_idempotency_key,
+                    published_at_ms, enqueued_at_ms
+               FROM topic_publications;
+            DROP TABLE topic_publications;
+            ALTER TABLE topic_publications_v4 RENAME TO topic_publications;
+            PRAGMA user_version=4;",
+        )
+        .expect("downgrade topic_publications to the v4 shape");
+}
+
+#[test]
+fn v4_database_migration_backfills_the_length_sentinel() {
+    let (harness, topic) = bootstrap("v5-migration", 4_096, DAY_MS, 64);
+    assert_eq!(publish_ok(&harness, &topic, 91, 4_000), 1);
+    assert_eq!(publish_ok(&harness, &topic, 92, 4_100), 2);
+    downgrade_to_v4(&harness.root.path().join("topic-authority.db"));
+
+    // Reopening migrates v4 -> v5: the pre-existing rows carry the `0`
+    // sentinel (their length was never recorded), not a fabricated value.
+    let reopened = TopicAuthority::open(harness.root.path(), Arc::clone(&harness.channel))
+        .expect("reopen migrates v4 to v5");
+    {
+        let raw = raw_topic_db(&harness);
+        let version: i64 = raw
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("user_version");
+        assert_eq!(version, 5);
+        assert_eq!(stored_payload_bytes(&raw, 1), 0);
+        assert_eq!(stored_payload_bytes(&raw, 2), 0);
+    }
+    // New writes always carry the true length.
+    let _ = reopened
+        .publish(PublishRequest {
+            topic_id: topic.topic_id,
+            payload: vec![93; PAYLOAD],
+            idempotency_key: key(93),
+            published_at_ms: 4_200,
+        })
+        .expect("publish on the migrated authority");
+    {
+        let raw = raw_topic_db(&harness);
+        assert_eq!(stored_payload_bytes(&raw, 3), PAYLOAD as u64);
+    }
+    // Reopening again takes the idempotent pre-check: the version stays 5
+    // and the stored lengths are untouched.
+    let _reopened_again = TopicAuthority::open(harness.root.path(), Arc::clone(&harness.channel))
+        .expect("reopen is idempotent");
+    {
+        let raw = raw_topic_db(&harness);
+        let version: i64 = raw
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("user_version");
+        assert_eq!(version, 5);
+        assert_eq!(stored_payload_bytes(&raw, 1), 0);
+        assert_eq!(stored_payload_bytes(&raw, 2), 0);
+        assert_eq!(stored_payload_bytes(&raw, 3), PAYLOAD as u64);
+    }
+    // An unknown future version fails closed.
+    {
+        let raw = raw_topic_db(&harness);
+        raw.pragma_update(None, "user_version", 6)
+            .expect("forge future version");
+    }
+    assert!(matches!(
+        TopicAuthority::open(harness.root.path(), Arc::clone(&harness.channel)),
+        Err(TopicAuthorityError::SchemaVersionUnsupported(6))
+    ));
 }
