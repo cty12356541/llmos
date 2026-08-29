@@ -20,6 +20,7 @@ from nlos.sabi.v1.envelope_pb2 import (  # noqa: E402
     SABI_ERROR_CODE_CONFLICT,
     SABI_ERROR_CODE_NOT_SUPPORTED,
     SABI_ERROR_CODE_RIGHTS,
+    SABI_ERROR_CODE_STATE,
     ExchangeRequest,
     ExchangeResponse,
 )
@@ -519,6 +520,135 @@ async def run_mixed_scenario() -> None:
         shutil.rmtree(authority_root, ignore_errors=True)
 
 
+async def run_registered_scenario() -> None:
+    """The `registered`-scene script: the preset `PENDING` wait (target 5) is
+    read back through list/inspect, driven to `WOKEN` through notifies below
+    and at its target, and proven terminal by a bounded `STATE` rejection."""
+    socket = endpoint("py-registered")
+    authority_root = (
+        Path(tempfile.gettempdir())
+        / f"nlos-wait-{os.getpid()}-{time.time_ns()}-registered"
+    )
+    process: asyncio.subprocess.Process | None = None
+    try:
+        process, fixture = await start_server(
+            socket,
+            str(authority_root),
+            {SCENE_ENV: "registered", CONNECTIONS_ENV: "8"},
+        )
+        channel_id = fixture_bytes(fixture, "channel_id")
+        wait_id = fixture_bytes(fixture, "wait_id")
+        channel_generation = int(fixture["channel_generation"])
+        assert fixture["wait_state"] == "pending"
+
+        # 1. list_waits enumerates exactly the one preset row.
+        list1 = build_exchange(0xF0, "list_waits", list_payload())
+        listed = await exchange(socket, list1)
+        assert_success(listed, 0xF0, side_effecting=False)
+        list_result = wc.ListWaitsResult()
+        list_result.ParseFromString(listed.envelope.payload)
+        assert len(list_result.waits) == 1
+        assert list_result.waits[0].state == wc.WAIT_STATE_CODE_PENDING
+        assert list_result.waits[0].target_sequence == 5
+        assert list_result.waits[0].wait_id == wait_id
+
+        # 2. inspect_wait returns the preset row with its durable facts: the
+        # binding, key and timestamp the server seeded it with.
+        inspect1 = build_exchange(0xF1, "inspect_wait", inspect_payload(wait_id))
+        inspected = await exchange(socket, inspect1)
+        assert_success(inspected, 0xF1, side_effecting=False)
+        inspect_result = wc.InspectWaitResult()
+        inspect_result.ParseFromString(inspected.envelope.payload)
+        assert inspect_result.record.state == wc.WAIT_STATE_CODE_PENDING
+        assert inspect_result.record.target_sequence == 5
+        assert inspect_result.record.binding == filled(0xB1)
+        assert inspect_result.record.channel_id == channel_id
+        assert inspect_result.record.channel_generation == channel_generation
+        assert inspect_result.record.registered_at_ms == 1_000
+
+        # 3. A notify below the target is a durable success that wakes nothing.
+        notify_below = build_exchange(
+            0xF2,
+            "notify_commits",
+            notify_payload(channel_id, 4, 0xB2),
+            idempotency_key=filled(0xB2),
+        )
+        notified_below = await exchange(socket, notify_below)
+        below_context = assert_success(notified_below, 0xF2, side_effecting=True)
+        below_report = wc.WakeReport()
+        below_report.ParseFromString(notified_below.envelope.payload)
+        assert len(below_report.woken) == 0
+        assert below_context.receipts[0].receipt_id == filled(0xB2)
+
+        # 4. The notify at the target flips the preset row to WOKEN.
+        notify_wake = build_exchange(
+            0xF3,
+            "notify_commits",
+            notify_payload(channel_id, 5, 0xB3),
+            idempotency_key=filled(0xB3),
+        )
+        notified = await exchange(socket, notify_wake)
+        wake_context = assert_success(notified, 0xF3, side_effecting=True)
+        report = wc.WakeReport()
+        report.ParseFromString(notified.envelope.payload)
+        assert len(report.woken) == 1
+        assert report.woken[0].state == wc.WAIT_STATE_CODE_WOKEN
+        assert report.woken[0].target_sequence == 5
+        assert report.woken[0].woken_up_to_sequence == 5
+        assert report.woken[0].woken_at_ms == 2_000
+        assert wake_context.receipts[0].receipt_id == filled(0xB3)
+
+        # 5. The wake notify replays byte-identically.
+        notify_replay = await exchange(socket, notify_wake)
+        assert_success(notify_replay, 0xF3, side_effecting=True)
+        assert notified.SerializeToString() == notify_replay.SerializeToString()
+
+        # 6. inspect_wait returns the woken durable row.
+        inspect2 = build_exchange(0xF4, "inspect_wait", inspect_payload(wait_id))
+        inspected2 = await exchange(socket, inspect2)
+        assert_success(inspected2, 0xF4, side_effecting=False)
+        inspect_result2 = wc.InspectWaitResult()
+        inspect_result2.ParseFromString(inspected2.envelope.payload)
+        assert inspect_result2.record.state == wc.WAIT_STATE_CODE_WOKEN
+        assert inspect_result2.record.woken_up_to_sequence == 5
+        assert inspect_result2.record.woken_at_ms == 2_000
+
+        # 7. list_waits still enumerates exactly the one row, now WOKEN.
+        list2 = build_exchange(0xF5, "list_waits", list_payload())
+        listed2 = await exchange(socket, list2)
+        assert_success(listed2, 0xF5, side_effecting=False)
+        list_result2 = wc.ListWaitsResult()
+        list_result2.ParseFromString(listed2.envelope.payload)
+        assert len(list_result2.waits) == 1
+        assert list_result2.waits[0].state == wc.WAIT_STATE_CODE_WOKEN
+
+        # 8. A woken wait can never be retroactively cancelled: the bounded
+        # STATE failure leaves the terminal row untouched (and the server
+        # postcheck proves the preset wait really reached a terminal state).
+        cancel_attempt = build_exchange(
+            0xF6,
+            "cancel_wait",
+            cancel_payload(wait_id, 0xB4),
+            idempotency_key=filled(0xB4),
+        )
+        assert_failure(
+            await exchange(socket, cancel_attempt),
+            cancel_attempt,
+            SABI_ERROR_CODE_STATE,
+            RETRY_DIRECTIVE_DO_NOT_RETRY,
+        )
+
+        assert await process.wait() == 0
+    finally:
+        if process is not None:
+            await stop_server(process)
+        try:
+            Path(socket).unlink()
+        except FileNotFoundError:
+            pass
+        shutil.rmtree(authority_root, ignore_errors=True)
+
+
 async def run_restart_scenario(authority_root: str, register1, record1) -> None:
     """A restarted server on the same authority root replays the original
     registration and still enumerates both canonical rows."""
@@ -568,6 +698,7 @@ async def main() -> None:
     try:
         register1, record1 = await run_fresh_scenario(str(authority_root))
         await run_mixed_scenario()
+        await run_registered_scenario()
         await run_restart_scenario(str(authority_root), register1, record1)
     finally:
         shutil.rmtree(authority_root, ignore_errors=True)

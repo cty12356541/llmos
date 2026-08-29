@@ -682,6 +682,149 @@ async function runMixedScenario(): Promise<void> {
   }
 }
 
+/// The `registered`-scene script: the preset `PENDING` wait (target 5) is
+/// read back through list/inspect, driven to `WOKEN` through notifies below
+/// and at its target, and proven terminal by a bounded `STATE` rejection.
+async function runRegisteredScenario(): Promise<void> {
+  const socket = endpoint("ts-registered");
+  const authorityRoot = `${join(tmpdir(), `nlos-wait-${process.pid}-${Date.now()}-registered`)}`;
+  let server: ChildProcessWithoutNullStreams | undefined;
+  try {
+    const started = startServer(socket, authorityRoot, {
+      [SCENE_ENV]: "registered",
+      [CONNECTIONS_ENV]: "8",
+    });
+    server = started.server;
+    const fixture = await started.fixture;
+    const channelId = bytes(fixture, "channel_id");
+    const waitId = bytes(fixture, "wait_id");
+    const channelGeneration = BigInt(fixture["channel_generation"]);
+    assert.equal(fixture["wait_state"], "pending");
+
+    // 1. list_waits enumerates exactly the one preset row.
+    const list1 = buildExchange({
+      requestSeed: 0xf0,
+      method: "list_waits",
+      payload: listPayload(),
+    });
+    const listed = await exchange(socket, list1);
+    assertSuccess(listed, 0xf0, false);
+    const listResult = fromBinary(ListWaitsResultSchema, listed.envelope!.payload);
+    assert.equal(listResult.waits.length, 1);
+    assert.equal(listResult.waits[0].state, WaitStateCode.PENDING);
+    assert.equal(listResult.waits[0].targetSequence, 5n);
+    assert.deepEqual(Uint8Array.from(listResult.waits[0].waitId), waitId);
+
+    // 2. inspect_wait returns the preset row with its durable facts: the
+    // binding, key and timestamp the server seeded it with.
+    const inspect1 = buildExchange({
+      requestSeed: 0xf1,
+      method: "inspect_wait",
+      payload: inspectPayload(waitId),
+    });
+    const inspected = await exchange(socket, inspect1);
+    assertSuccess(inspected, 0xf1, false);
+    const inspectResult = fromBinary(InspectWaitResultSchema, inspected.envelope!.payload);
+    assert.ok(inspectResult.record, "the preset wait must exist");
+    assert.equal(inspectResult.record.state, WaitStateCode.PENDING);
+    assert.equal(inspectResult.record.targetSequence, 5n);
+    assert.deepEqual(Uint8Array.from(inspectResult.record.binding), filled(0xb1));
+    assert.deepEqual(Uint8Array.from(inspectResult.record.channelId), channelId);
+    assert.equal(inspectResult.record.channelGeneration, channelGeneration);
+    assert.equal(inspectResult.record.registeredAtMs, 1_000n);
+
+    // 3. A notify below the target is a durable success that wakes nothing.
+    const notifyBelow = buildExchange({
+      requestSeed: 0xf2,
+      method: "notify_commits",
+      idempotencyKey: filled(0xb2),
+      payload: notifyPayload(channelId, 4n, 0xb2),
+    });
+    const notifiedBelow = await exchange(socket, notifyBelow);
+    const belowContext = assertSuccess(notifiedBelow, 0xf2, true);
+    const belowReport = fromBinary(WakeReportSchema, notifiedBelow.envelope!.payload);
+    assert.equal(belowReport.woken.length, 0);
+    assert.deepEqual(receiptIds(belowContext), [filled(0xb2)]);
+
+    // 4. The notify at the target flips the preset row to WOKEN.
+    const notifyWake = buildExchange({
+      requestSeed: 0xf3,
+      method: "notify_commits",
+      idempotencyKey: filled(0xb3),
+      payload: notifyPayload(channelId, 5n, 0xb3),
+    });
+    const notified = await exchange(socket, notifyWake);
+    const wakeContext = assertSuccess(notified, 0xf3, true);
+    const report = fromBinary(WakeReportSchema, notified.envelope!.payload);
+    assert.equal(report.woken.length, 1);
+    assert.equal(report.woken[0].state, WaitStateCode.WOKEN);
+    assert.equal(report.woken[0].targetSequence, 5n);
+    assert.equal(report.woken[0].wokenUpToSequence, 5n);
+    assert.equal(report.woken[0].wokenAtMs, 2_000n);
+    assert.deepEqual(receiptIds(wakeContext), [filled(0xb3)]);
+
+    // 5. The wake notify replays byte-identically.
+    const notifyReplay = await exchange(socket, notifyWake);
+    assertSuccess(notifyReplay, 0xf3, true);
+    assert.deepEqual(
+      toBinary(ExchangeResponseSchema, notified),
+      toBinary(ExchangeResponseSchema, notifyReplay),
+    );
+
+    // 6. inspect_wait returns the woken durable row.
+    const inspect2 = buildExchange({
+      requestSeed: 0xf4,
+      method: "inspect_wait",
+      payload: inspectPayload(waitId),
+    });
+    const inspected2 = await exchange(socket, inspect2);
+    assertSuccess(inspected2, 0xf4, false);
+    const inspectResult2 = fromBinary(InspectWaitResultSchema, inspected2.envelope!.payload);
+    assert.ok(inspectResult2.record);
+    assert.equal(inspectResult2.record.state, WaitStateCode.WOKEN);
+    assert.equal(inspectResult2.record.wokenUpToSequence, 5n);
+    assert.equal(inspectResult2.record.wokenAtMs, 2_000n);
+
+    // 7. list_waits still enumerates exactly the one row, now WOKEN.
+    const list2 = buildExchange({
+      requestSeed: 0xf5,
+      method: "list_waits",
+      payload: listPayload(),
+    });
+    const listed2 = await exchange(socket, list2);
+    assertSuccess(listed2, 0xf5, false);
+    const listResult2 = fromBinary(ListWaitsResultSchema, listed2.envelope!.payload);
+    assert.equal(listResult2.waits.length, 1);
+    assert.equal(listResult2.waits[0].state, WaitStateCode.WOKEN);
+
+    // 8. A woken wait can never be retroactively cancelled: the bounded
+    // STATE failure leaves the terminal row untouched (and the server
+    // postcheck proves the preset wait really reached a terminal state).
+    const cancelAttempt = buildExchange({
+      requestSeed: 0xf6,
+      method: "cancel_wait",
+      idempotencyKey: filled(0xb4),
+      payload: cancelPayload(waitId, 0xb4),
+    });
+    assertFailure(
+      await exchange(socket, cancelAttempt),
+      cancelAttempt,
+      SabiErrorCode.STATE,
+      RetryDirective.DO_NOT_RETRY,
+    );
+
+    assert.equal(await waitForExit(server), 0);
+  } finally {
+    if (server !== undefined) {
+      await stopServer(server);
+    }
+    await Promise.all([
+      rm(socket, { force: true }),
+      rm(authorityRoot, { recursive: true, force: true }),
+    ]);
+  }
+}
+
 /// A restarted server on the same authority root replays the original
 /// registration and still enumerates both canonical rows.
 async function runRestartScenario(
@@ -745,6 +888,7 @@ const authorityRoot = join(tmpdir(), `nlos-wait-${process.pid}-${Date.now()}-roo
 try {
   const fresh = await runFreshScenario(authorityRoot);
   await runMixedScenario();
+  await runRegisteredScenario();
   await runRestartScenario(authorityRoot, fresh.register1, fresh.record1);
 } finally {
   await rm(authorityRoot, { recursive: true, force: true });
