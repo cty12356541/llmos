@@ -48,3 +48,10 @@ kill-window 矩阵：三入口 pre-commit IOERR/ENOSPC typed fail-closed 零幻�
 - nlos-wait additive：`channel_high_water` helper；nlos-runtime-tokio 追加 nlos-wait 依赖与 nlos-channel dev-dependency。
 - 验证：nlos-runtime-tokio 37 passed / 1 ignored（既有 scale probe；新增 channel_wait 9 项）；nlos-wait 26、nlos-channel 27 无回归；workspace clippy -D warnings 零警告；fmt 通过。
 - 已知限制：channel_waits 为本 runtime 内存注册表（跨进程等待不做）；同 wait_id 多 fiber 共享注册为 degenerate 允许用法；自翻转 notify key 采用 WaitId 派生的 domain-reserved 变换（producer 不得使用，doc 注明）。
+
+## 6. wait 侧 rehydration（2026-08-29 增量，commit `d3cb9a5`）
+
+- 语义权威：[ADR-0008 补记](../../management/adrs/0008-durable-wait-registry-authority.md)：`rearm_channel_waits` 把重启后仍 PENDING 的 durable waits 重挂到新 fiber 内存等待——已满足者自 notify 翻转计 satisfied（future 立即 Woken）、未满足者注册 Pending 等后续 deliver；placeholder 早到缓冲被同 wait_id 重挂消费；同 key 二次 rearm 取代前者；durable 零副作用（自 notify 除外）。
+- `WaitAuthority::list_waits(filter)`：全状态枚举 helper（占位缓冲只属 WOKEN 行，故不能只列 PENDING）。
+- **边界**：fiber 执行状态重建（B-PROCESS 检查点域）与跨进程等待（blocked-by B-TASK-006L 真实 Capability/Principal 认证权威，未决）均不实现，登记于 ADR 复审触发器。
+- 验证：runtime-tokio 45 passed / 1 ignored（新增 channel_rehydration 8 项）；nlos-wait 26 无回归；workspace clippy/fmt 全绿。

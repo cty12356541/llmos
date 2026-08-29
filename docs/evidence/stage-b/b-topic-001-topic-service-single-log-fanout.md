@@ -79,3 +79,16 @@ kill-window 矩阵覆盖：pre-commit IOERR/ENOSPC（create/subscribe/advance/pu
 - 关闭 §8 已知限制「订阅者落后 consume 点的保守上界」：schema v5 为 publication 行补 payload 长度元数据（不复制消息体），字节检查恢复 ADR-0007 补记定义的精确公式（`Σ payload_bytes(sequence > min(活跃 cursor, consume))`），遮蔽窗口不再退化为全量保守值。
 - 混合模式：legacy 哨兵行（迁移回填 0）落窗口时取 max(精确已知和, channel retained)——永不低估，`backlog_precision` 字段如实上报 Exact/LegacyConservative；哨兵随 compact/追平消亡。残余不可恢复情形：已 trim 的哨兵行长度两侧均无记录（doc 注明）。
 - 验证：nlos-topic 63 passed / 0 failed（新增 4 项：精确 vs 保守分界、遮蔽窗口边界、哨兵混合不低估、迁移 fail-closed）；workspace clippy/fmt 全绿。
+
+## 10. 匹配谓词（2026-08-29 增量，commit `852098a`）
+
+- 语义权威：[ADR-0007 补记（匹配谓词）](../../management/adrs/0007-topic-service-single-log-fanout.md)：精确名或尾通配 `prefix*`；`subscribe_pattern` 订阅时枚举 + `create_topic` 时点 attach，展开为常规 concrete 订阅（`attached_by` 溯源），投递机制零改动；quota 满跳过如实回报；`cancel_pattern` token 校验后按溯源逐一退订。
+- 已知限制：无属性过滤/多段通配（复审触发器）；pattern 订阅者不保证覆盖全部匹配 topic（quota 满不排队）；attach 后无自动迁移；枚举 O(topics×patterns)（publish 期零评估）。
+- 验证：nlos-topic 74 passed / 0 failed（新增 topic_patterns 11 项，既有 63 零修改）。
+
+## 11. payer 计量 ledger（2026-08-29 增量，commit `fc64a20`）
+
+- 语义权威：[ADR-0007 补记（payer ledger）](../../management/adrs/0007-topic-service-single-log-fanout.md)：immutable ledger 行（identity=SHA-256(topic,kind,sequence) 自校验，UNIQUE 使双记结构上不可能）；Attributed 在 advance 事务内按首次跨过记账，Unallocated 在 compact 事务内对无覆盖前缀记账（崩溃窗口重跑 compact 补记收敛）。
+- **三向对账恒等式**：`attributed + unallocated + unsettled == total`（任务书原两向式存在结构性漏洞——live backlog 两点均不覆盖；车道已修正并论证）；`inspect_attribution` 逐行交叉校验 fail-closed。旁路 trim（绕过 topic 直接 channel compact）为协议违反而永久性洞，钉住测试。
+- 验证：nlos-topic 86 passed / 0 failed（新增 topic_attribution 12 项，既有 74 零修改）；workspace clippy/fmt 全绿。
+- 已知限制：记账承诺不做扣费/信用；payer opaque 恒等于 publication payer；共享 channel 多 topic 分摊未做；policy version 无演进路径。
