@@ -93,14 +93,41 @@
 //! flips the pattern row inactive and unsubscribes the active subscriptions
 //! it attached; direct subscriptions of the same key are untouched.
 //!
+//! Payer metering (schema v7, the ADR-0007 payer-metering addendum,
+//! `RSM-METER-002` minimal prefix) is a durable, immutable attribution
+//! ledger — an accounting promise, never a charge: nothing bills, credits or
+//! rejects.  Every accounted byte belongs to exactly one of two accounting
+//! points.  [`TopicAuthority::advance_with_token`] records one `Attributed`
+//! row per ENQUEUED publication its cursor just crossed, inside the same
+//! topic-authority transaction as the cursor CAS (payer = the publication
+//! row's payer, bytes = the recorded payload length, evidence = the single
+//! channel sequence, [`ATTRIBUTION_POLICY_VERSION`] frozen into the row).
+//! [`TopicAuthority::compact`] records one `Unallocated` row per publication
+//! the channel trimmed without any delivery having crossed it (the isolated
+//! or lagging subscriber's residual), in the topic-authority transaction that
+//! follows the channel decision — re-running a compact heals rows a crash
+//! window between the two authorities could have lost, and a replaying
+//! compact records nothing new.  Both points obey first-accounting-event-
+//! wins: a sequence is accounted at most once, by whichever accounting point
+//! touches it first, so overlapping subscriber advances never double-count
+//! one publication's fanout cost and the metering stays per publication
+//! (never per subscriber — pattern-attached subscriptions are ordinary
+//! rows and need no separate treatment).  [`TopicAuthority::
+//! inspect_attribution`] reconciles the ledger against the publication
+//! journal and fails closed as [`TopicAuthorityError::CorruptRecord`] on
+//! any disagreement.
+//!
 //! It deliberately does not implement: runtime-automatic cascade triggering
-//! (republish is an owner-invoked forwarding step), real payer metering,
-//! attribute filtering or multi-segment wildcards on top of the minimal
+//! (republish is an owner-invoked forwarding step), billing or credit
+//! settlement against the attribution ledger (and any `ResourceAccount`
+//! integration), cost allocation for several topics sharing one channel
+//! log, attribute filtering or multi-segment wildcards on top of the minimal
 //! prefix pattern language above (addendum review triggers), cross-process
 //! access, wakeup wiring, or `TaskWriteSet` integration.
 
 mod schema;
 
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
 use std::path::Path;
@@ -682,6 +709,97 @@ pub enum RetentionBacklogPrecision {
     LegacyConservative,
 }
 
+/// The versioned attribution policy of the metering ledger (the ADR-0007
+/// payer-metering addendum, `RSM-METER-002`): a policy-level constant frozen
+/// into every ledger row at write time, so a future policy change is
+/// observable per row instead of silently rewriting history.  This build
+/// writes and understands exactly version 1; a ledger row carrying any other
+/// version fails closed as [`TopicAuthorityError::CorruptRecord`] at
+/// inspection time.
+pub const ATTRIBUTION_POLICY_VERSION: u64 = 1;
+
+/// How the metering ledger accounted one publication (`RSM-METER-002`
+/// minimal prefix).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AttributionKind {
+    /// The publication was delivered: an accepted cursor advance crossed its
+    /// channel sequence (`TopicAuthority::advance_with_token` accounting
+    /// point).
+    Attributed,
+    /// The publication left the channel log without ever being delivered (a
+    /// compaction deleted an unconsumed residual — the isolated or lagging
+    /// subscriber's lag) (`TopicAuthority::compact` accounting point).
+    Unallocated,
+}
+
+impl AttributionKind {
+    /// The durable discriminator stored in the ledger row's `kind` column.
+    #[must_use]
+    pub const fn code(self) -> i64 {
+        match self {
+            Self::Attributed => 1,
+            Self::Unallocated => 2,
+        }
+    }
+
+    fn from_code(code: i64) -> Option<Self> {
+        match code {
+            1 => Some(Self::Attributed),
+            2 => Some(Self::Unallocated),
+            _ => None,
+        }
+    }
+}
+
+/// The payer metering reconciliation report for one topic (the ADR-0007
+/// payer-metering addendum).
+///
+/// The reconciliation identity, byte-exact: every ENQUEUED publication of
+/// the topic is either covered by exactly one ledger row whose bytes equal
+/// the publication's recorded payload length, or its bytes are still
+/// *unsettled* — live backlog awaiting its accounting event (no accepted
+/// advance has crossed the sequence and no compaction has deleted it yet).
+/// Therefore
+/// `attributed_bytes + unallocated_bytes + unsettled_bytes == total`, where
+/// `total` is `Σ payload_bytes` over *every* ENQUEUED publication row of the
+/// journal (trimmed rows included — the journal is durable and never
+/// deleted).  A settled topic (`unsettled_bytes == 0`) reduces this to the
+/// addendum's `attributed + unallocated == total`; a topic with live backlog
+/// keeps the identity only through the third term, which is why the term is
+/// reported explicitly instead of being silently folded into an unbalance.
+///
+/// `balanced` is `true` on every returned report: the inspection validates
+/// the identity (and every covered row's bytes, payer, kind, policy version
+/// and derived identity, plus the absence of ledger rows for sequences
+/// without an ENQUEUED publication, and of uncovered publications at or
+/// below the channel trim watermark — those are deleted bytes no accounting
+/// event ever covered) and fails closed with
+/// [`TopicAuthorityError::CorruptRecord`] instead of returning an
+/// unbalanced report.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AttributionReport {
+    pub topic_id: TopicId,
+    /// `Σ` ledger bytes of [`AttributionKind::Attributed`] rows (delivered
+    /// publications).
+    pub attributed_bytes: u64,
+    /// `Σ` ledger bytes of [`AttributionKind::Unallocated`] rows (deleted
+    /// before delivery).
+    pub unallocated_bytes: u64,
+    /// `Σ` payload bytes of ENQUEUED publications covered by no ledger row
+    /// yet: live backlog pending its accounting event.
+    pub unsettled_bytes: u64,
+    /// `Σ payload_bytes` over every ENQUEUED publication row of the topic
+    /// (trimmed rows included).
+    pub total: u64,
+    /// The attribution policy version the ledger rows carry (validated to be
+    /// [`ATTRIBUTION_POLICY_VERSION`]).
+    pub policy_version: u64,
+    /// Always `true` on a returned report; any violation of the
+    /// reconciliation identity is a fail-closed
+    /// [`TopicAuthorityError::CorruptRecord`], not a `false` flag.
+    pub balanced: bool,
+}
+
 #[derive(Debug)]
 pub enum TopicAuthorityError {
     Sqlite(rusqlite::Error),
@@ -949,6 +1067,7 @@ impl TopicAuthority {
                 schema::migrate_v4(&mut connection)?;
                 schema::migrate_v5(&mut connection)?;
                 schema::migrate_v6(&mut connection)?;
+                schema::migrate_v7(&mut connection)?;
             }
             1 => {
                 schema::migrate_v2(&mut connection)?;
@@ -956,26 +1075,33 @@ impl TopicAuthority {
                 schema::migrate_v4(&mut connection)?;
                 schema::migrate_v5(&mut connection)?;
                 schema::migrate_v6(&mut connection)?;
+                schema::migrate_v7(&mut connection)?;
             }
             2 => {
                 schema::migrate_v3(&mut connection)?;
                 schema::migrate_v4(&mut connection)?;
                 schema::migrate_v5(&mut connection)?;
                 schema::migrate_v6(&mut connection)?;
+                schema::migrate_v7(&mut connection)?;
             }
             3 => {
                 schema::migrate_v4(&mut connection)?;
                 schema::migrate_v5(&mut connection)?;
                 schema::migrate_v6(&mut connection)?;
+                schema::migrate_v7(&mut connection)?;
             }
             4 => {
                 schema::migrate_v5(&mut connection)?;
                 schema::migrate_v6(&mut connection)?;
+                schema::migrate_v7(&mut connection)?;
             }
             // The watermark version: the rebuild chain is complete, so only
-            // the idempotent additive v6 pre-check remains (a no-op when the
-            // v6 objects are already present).
-            schema::SCHEMA_VERSION => schema::migrate_v6(&mut connection)?,
+            // the idempotent additive pre-checks remain (no-ops when the v6
+            // and v7 objects are already present).
+            schema::SCHEMA_VERSION => {
+                schema::migrate_v6(&mut connection)?;
+                schema::migrate_v7(&mut connection)?;
+            }
             other => return Err(TopicAuthorityError::SchemaVersionUnsupported(other)),
         }
         Ok(Self {
@@ -2087,6 +2213,24 @@ impl TopicAuthority {
     /// deliberately stays token-free: it is a zero-write read path, and the
     /// cursor advance — not the read — is the authenticated boundary.
     ///
+    /// Payer metering (the ADR-0007 payer-metering addendum): inside this
+    /// same transaction as the accepted cursor CAS, every ENQUEUED
+    /// publication of the topic whose channel sequence lies in the crossed
+    /// window `(old_cursor, new_cursor]` records one immutable `Attributed`
+    /// ledger row (payer = the publication row's payer, bytes = the recorded
+    /// payload length, evidence = the sequence,
+    /// [`ATTRIBUTION_POLICY_VERSION`] frozen into the row) — zero crossed
+    /// publications record zero rows and the advance still succeeds.  A
+    /// sequence is attributed at most once (first-accounting-event-wins), so
+    /// overlapping advances by several subscribers never double-count a
+    /// publication, and an already-deleted uncovered sequence (at or below
+    /// the channel trim watermark) is left to
+    /// [`TopicAuthority::inspect_attribution`] to surface instead of being
+    /// misattributed as delivered.  The replay path (repeating the exact
+    /// current cursor) returns the stored decision and writes no ledger row.
+    /// Subscriptions attached by a pattern are ordinary rows: their advances
+    /// account exactly like direct ones.
+    ///
     /// # Errors
     ///
     /// Fails closed for a token mismatch, an unknown Topic or subscription,
@@ -2165,6 +2309,18 @@ impl TopicAuthority {
                 "subscriber cursor CAS lost",
             ));
         }
+        // Payer metering accounting point (`RSM-METER-002` minimal prefix):
+        // the `Attributed` ledger rows for the crossed window commit in this
+        // same transaction as the accepted cursor CAS — an advance and its
+        // attribution are one durable fact.
+        record_advance_attribution(
+            &transaction,
+            request.topic_id,
+            subscription.cursor,
+            request.up_to_sequence,
+            queue.trim_high_water,
+            request.advanced_at_ms,
+        )?;
         transaction.commit()?;
         Ok(AdvanceDecision::Advanced(AdvanceReceipt {
             subscription_id: subscription.subscription_id,
@@ -2221,6 +2377,21 @@ impl TopicAuthority {
     /// consume high-water) and replay/regression semantics are preserved and
     /// returned in the wrapped receipt.
     ///
+    /// Payer metering (the ADR-0007 payer-metering addendum): after the
+    /// channel decision, a topic-authority transaction records one immutable
+    /// `Unallocated` ledger row for every ENQUEUED publication at or below
+    /// the effective trim watermark that no ledger row covers yet — bytes
+    /// the log deleted without ever delivering (an isolated or lagging
+    /// subscriber's residual; a subscription that cancelled or unsubscribed
+    /// never records anything itself).  Rows are payer = the publication
+    /// row's payer, bytes = the recorded payload length, evidence = the
+    /// sequence; `recorded_at_ms` is the `0` marker because the compact
+    /// entry carries no caller time (the crate never reads a wall clock).
+    /// A compact the channel replays records nothing new — but still runs
+    /// the same coverage pass, so a crash window between the channel trim
+    /// and a previous attempt's ledger transaction is healed by re-running
+    /// the compact (the pass is idempotent: covered sequences are skipped).
+    ///
     /// # Errors
     ///
     /// Fails closed for an unknown Topic, corrupt state, or a propagated
@@ -2237,19 +2408,35 @@ impl TopicAuthority {
         };
         let bound = self.compact_bound(topic_id)?;
         let target = trim_to_sequence.min(bound);
-        let receipt = match self
+        let channel_decision = self
             .channel
             .compact(channel_id, target)
-            .map_err(TopicAuthorityError::Channel)?
+            .map_err(TopicAuthorityError::Channel)?;
+        // Payer metering accounting point (`RSM-METER-002` minimal prefix):
+        // the channel has accepted the watermark (freshly trimmed or
+        // replayed), so everything at or below its trim watermark is
+        // deleted-or-deleting and every uncovered publication in that prefix
+        // is an `Unallocated` fact.  Same coverage pass on both arms —
+        // a replaying compact writes no new rows but heals a crash window.
         {
+            let mut connection = self.lock()?;
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            record_unallocated_prefix(
+                &transaction,
+                topic_id,
+                channel_decision.receipt().trim_high_water,
+            )?;
+            transaction.commit()?;
+        }
+        Ok(match channel_decision {
             ChannelCompactDecision::Trimmed(receipt) => {
                 TopicCompactDecision::Trimmed(wrap_compact(topic_id, channel_id, target, receipt))
             }
             ChannelCompactDecision::Replayed(receipt) => {
                 TopicCompactDecision::Replayed(wrap_compact(topic_id, channel_id, target, receipt))
             }
-        };
-        Ok(receipt)
+        })
     }
 
     /// Reads the verified publication journal of one topic in publish order.
@@ -2329,6 +2516,181 @@ impl TopicAuthority {
                 Ok(record)
             })
             .collect()
+    }
+
+    /// Reconciles the payer metering ledger against the publication journal
+    /// for one topic (the ADR-0007 payer-metering addendum,
+    /// `RSM-METER-002`): byte-exact, per-publication coverage.  The report
+    /// semantics — the reconciliation identity and what counts as unsettled
+    /// — are documented on [`AttributionReport`].
+    ///
+    /// Every ledger row is cross-checked against the publication it
+    /// accounts: the frozen policy version is the current
+    /// [`ATTRIBUTION_POLICY_VERSION`], the kind decodes, the derived
+    /// identity re-derives, and bytes and payer equal the publication row's.
+    /// The publication side must have no uncovered sequence at or below the
+    /// channel trim watermark (deleted bytes no accounting event ever
+    /// covered — a bypassed or interrupted compaction is indistinguishable
+    /// from corruption here and fails closed; re-running the topic compact
+    /// heals the interrupted case).
+    ///
+    /// # Errors
+    ///
+    /// Fails closed for an unknown Topic, a propagated Channel rejection, or
+    /// any ledger/journal disagreement
+    /// ([`TopicAuthorityError::CorruptRecord`]) — never returns an
+    /// unbalanced report.
+    #[allow(clippy::too_many_lines)] // One method owns the whole journal-vs-ledger cross-check.
+    pub fn inspect_attribution(
+        &self,
+        topic_id: TopicId,
+    ) -> Result<AttributionReport, TopicAuthorityError> {
+        let connection = self.lock()?;
+        let topic = load_topic_verified(&connection, topic_id)?;
+        let queue = self
+            .channel
+            .inspect_queue(topic.channel_id)
+            .map_err(TopicAuthorityError::Channel)?;
+        let mut statement = connection.prepare(
+            "SELECT channel_sequence, payer_account_id, payload_bytes
+             FROM topic_publications
+            WHERE topic_id=?1 AND status=1
+            ORDER BY channel_sequence",
+        )?;
+        let publications = statement
+            .query_map([topic_id.as_bytes().as_slice()], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(statement);
+        let mut statement = connection.prepare(
+            "SELECT ledger_id, payer_account_id, kind, payload_bytes,
+                    policy_version, evidence_sequence
+             FROM topic_attribution_ledger
+            WHERE topic_id=?1
+            ORDER BY evidence_sequence",
+        )?;
+        let ledger = statement
+            .query_map([topic_id.as_bytes().as_slice()], |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(statement);
+
+        let mut journal: BTreeMap<u64, ([u8; 16], u64, bool)> = BTreeMap::new();
+        let mut total: u64 = 0;
+        for (sequence, payer, payload_bytes) in publications {
+            let sequence = decode_u64(sequence)?;
+            let payload_bytes = decode_u64(payload_bytes)?;
+            if journal
+                .insert(sequence, (array16(payer)?, payload_bytes, false))
+                .is_some()
+            {
+                return Err(TopicAuthorityError::CorruptRecord(
+                    "two enqueued publications bind one channel sequence",
+                ));
+            }
+            total = total
+                .checked_add(payload_bytes)
+                .ok_or(TopicAuthorityError::CorruptRecord(
+                    "publication journal byte total overflows",
+                ))?;
+        }
+        let mut attributed_bytes: u64 = 0;
+        let mut unallocated_bytes: u64 = 0;
+        for (ledger_id, payer, kind, payload_bytes, policy_version, evidence_sequence) in ledger {
+            if decode_u64(policy_version)? != ATTRIBUTION_POLICY_VERSION {
+                return Err(TopicAuthorityError::CorruptRecord(
+                    "attribution ledger row carries an unknown policy version",
+                ));
+            }
+            let kind = AttributionKind::from_code(kind).ok_or(
+                TopicAuthorityError::CorruptRecord("attribution ledger row kind is unknown"),
+            )?;
+            let evidence_sequence = decode_u64(evidence_sequence)?;
+            let payload_bytes = decode_u64(payload_bytes)?;
+            if ledger_id.as_slice()
+                != attribution_ledger_id(topic_id, kind.code(), evidence_sequence).as_slice()
+            {
+                return Err(TopicAuthorityError::CorruptRecord(
+                    "attribution ledger identity disagrees with the derived identity",
+                ));
+            }
+            let entry =
+                journal
+                    .get_mut(&evidence_sequence)
+                    .ok_or(TopicAuthorityError::CorruptRecord(
+                        "attribution ledger row binds no enqueued publication",
+                    ))?;
+            if entry.2 {
+                return Err(TopicAuthorityError::CorruptRecord(
+                    "one publication is covered by two ledger rows",
+                ));
+            }
+            if entry.0 != array16(payer)? {
+                return Err(TopicAuthorityError::CorruptRecord(
+                    "attribution ledger payer disagrees with the publication payer",
+                ));
+            }
+            if entry.1 != payload_bytes {
+                return Err(TopicAuthorityError::CorruptRecord(
+                    "attribution ledger bytes disagree with the publication payload length",
+                ));
+            }
+            entry.2 = true;
+            let sum = match kind {
+                AttributionKind::Attributed => &mut attributed_bytes,
+                AttributionKind::Unallocated => &mut unallocated_bytes,
+            };
+            *sum = sum
+                .checked_add(payload_bytes)
+                .ok_or(TopicAuthorityError::CorruptRecord(
+                    "attribution ledger byte total overflows",
+                ))?;
+        }
+        let mut unsettled_bytes: u64 = 0;
+        for (sequence, (_, payload_bytes, covered)) in &journal {
+            if *covered {
+                continue;
+            }
+            if *sequence <= queue.trim_high_water {
+                return Err(TopicAuthorityError::CorruptRecord(
+                    "uncovered publication lies at or below the channel trim watermark",
+                ));
+            }
+            unsettled_bytes = unsettled_bytes.checked_add(*payload_bytes).ok_or(
+                TopicAuthorityError::CorruptRecord("unsettled publication byte total overflows"),
+            )?;
+        }
+        let balanced = attributed_bytes
+            .checked_add(unallocated_bytes)
+            .and_then(|sum| sum.checked_add(unsettled_bytes))
+            .is_some_and(|sum| sum == total);
+        if !balanced {
+            return Err(TopicAuthorityError::CorruptRecord(
+                "attribution ledger does not reconcile with the publication journal",
+            ));
+        }
+        Ok(AttributionReport {
+            topic_id,
+            attributed_bytes,
+            unallocated_bytes,
+            unsettled_bytes,
+            total,
+            policy_version: ATTRIBUTION_POLICY_VERSION,
+            balanced: true,
+        })
     }
 
     /// Completes the channel side of a durably registered publication: fence
@@ -2656,6 +3018,171 @@ fn check_retention_admission(
         });
     }
     Ok(())
+}
+
+/// Derives the ledger row identity (the crate's authority-derived-identity
+/// discipline, under its own domain tag): domain-separated over the topic,
+/// the kind and the evidence sequence, so a row is self-verifying at
+/// inspection time.  Call-level replay idempotency does not need the
+/// calling key in the hash: the advance replay path and the replaying
+/// compact write no rows at all, and the table-level
+/// `UNIQUE(topic_id, evidence_sequence)` makes a second accounting event
+/// for one sequence structurally impossible.
+fn attribution_ledger_id(topic_id: TopicId, kind: i64, evidence_sequence: u64) -> [u8; 16] {
+    derive_id(
+        b"nlos/topic/attribution-ledger/id/v1",
+        &[
+            topic_id.as_bytes(),
+            &kind.to_be_bytes(),
+            &evidence_sequence.to_be_bytes(),
+        ],
+    )
+}
+
+/// One accounted publication selected by an accounting point: the channel
+/// sequence, the publication row's payer and its recorded payload length.
+type AccountedPublication = (i64, Vec<u8>, i64);
+
+/// Records one immutable ledger row per accounted publication (the shared
+/// write of both accounting points).
+fn insert_ledger_rows(
+    transaction: &Transaction<'_>,
+    topic_id: TopicId,
+    kind: AttributionKind,
+    publications: Vec<AccountedPublication>,
+    recorded_at_ms: u64,
+) -> Result<(), TopicAuthorityError> {
+    for (sequence, payer, payload_bytes) in publications {
+        let sequence = decode_u64(sequence)?;
+        transaction.execute(
+            "INSERT INTO topic_attribution_ledger (
+                ledger_id, topic_id, payer_account_id, kind, payload_bytes,
+                policy_version, evidence_sequence, recorded_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                attribution_ledger_id(topic_id, kind.code(), sequence).as_slice(),
+                topic_id.as_bytes().as_slice(),
+                payer.as_slice(),
+                kind.code(),
+                payload_bytes,
+                encode_u64(ATTRIBUTION_POLICY_VERSION)?,
+                encode_u64(sequence)?,
+                encode_u64(recorded_at_ms)?,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+/// The `Attributed` accounting point (the ADR-0007 payer-metering
+/// addendum): one ledger row per ENQUEUED publication of the topic whose
+/// channel sequence the accepted advance just crossed
+/// (`(old_cursor, new_cursor]`), recorded inside the caller's advance
+/// transaction.  First-accounting-event-wins: a sequence already covered by
+/// any ledger row (attributed by an earlier advance — possibly another
+/// subscriber's — or unallocated by a compaction) is skipped, so
+/// overlapping subscriber advances never double-count.  Sequences at or
+/// below the channel trim watermark are skipped as well: their entries are
+/// already deleted, so attributing them as delivered would lauder an
+/// uncovered hole that [`TopicAuthority::inspect_attribution`] must
+/// surface.  Zero crossed publications record zero rows.
+fn record_advance_attribution(
+    transaction: &Transaction<'_>,
+    topic_id: TopicId,
+    old_cursor: u64,
+    new_cursor: u64,
+    channel_trim_high_water: u64,
+    recorded_at_ms: u64,
+) -> Result<(), TopicAuthorityError> {
+    let mut statement = transaction.prepare(
+        "SELECT channel_sequence, payer_account_id, payload_bytes
+         FROM topic_publications
+        WHERE topic_id=?1 AND status=1
+          AND channel_sequence>?2 AND channel_sequence<=?3
+          AND channel_sequence>?4
+          AND NOT EXISTS (
+                SELECT 1 FROM topic_attribution_ledger
+                 WHERE topic_id=topic_publications.topic_id
+                   AND evidence_sequence=topic_publications.channel_sequence)
+        ORDER BY channel_sequence",
+    )?;
+    let publications = statement
+        .query_map(
+            params![
+                topic_id.as_bytes().as_slice(),
+                encode_u64(old_cursor)?,
+                encode_u64(new_cursor)?,
+                encode_u64(channel_trim_high_water)?,
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(statement);
+    insert_ledger_rows(
+        transaction,
+        topic_id,
+        AttributionKind::Attributed,
+        publications,
+        recorded_at_ms,
+    )
+}
+
+/// The `Unallocated` accounting point (the ADR-0007 payer-metering
+/// addendum): one ledger row per ENQUEUED publication of the topic at or
+/// below the channel trim watermark that no ledger row covers yet — log
+/// bytes deleted without ever being delivered.  Recorded inside the
+/// caller's compact transaction after the channel accepted the watermark;
+/// idempotent (covered sequences are skipped), so re-running a compact
+/// heals a crash window between the channel trim and the ledger write, and
+/// a replaying compact records nothing new.
+fn record_unallocated_prefix(
+    transaction: &Transaction<'_>,
+    topic_id: TopicId,
+    channel_trim_high_water: u64,
+) -> Result<(), TopicAuthorityError> {
+    let mut statement = transaction.prepare(
+        "SELECT channel_sequence, payer_account_id, payload_bytes
+         FROM topic_publications
+        WHERE topic_id=?1 AND status=1
+          AND channel_sequence<=?2
+          AND NOT EXISTS (
+                SELECT 1 FROM topic_attribution_ledger
+                 WHERE topic_id=topic_publications.topic_id
+                   AND evidence_sequence=topic_publications.channel_sequence)
+        ORDER BY channel_sequence",
+    )?;
+    let publications = statement
+        .query_map(
+            params![
+                topic_id.as_bytes().as_slice(),
+                encode_u64(channel_trim_high_water)?,
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(statement);
+    // The compact entry carries no caller time and the crate never reads a
+    // wall clock: `recorded_at_ms` stays at the `0` marker for this
+    // accounting point.
+    insert_ledger_rows(
+        transaction,
+        topic_id,
+        AttributionKind::Unallocated,
+        publications,
+        0,
+    )
 }
 
 /// Validates a pattern (the precise addendum language): a non-empty byte

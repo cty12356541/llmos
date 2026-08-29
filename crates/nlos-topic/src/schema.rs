@@ -4,12 +4,13 @@ use crate::TopicAuthorityError;
 
 /// The `user_version` watermark of the durable schema: the version through
 /// which the v1-v5 table-rebuild chain has run.  The v6 matching-predicate
-/// step (the ADR-0007 addendum) is additive and is tracked by the durable
-/// presence of its objects (`topic_patterns` plus the `topic_subscriptions.
-/// attached_by` column) instead of a watermark bump — a database carrying
-/// the v6 objects therefore still reads `5`, every open re-runs the
-/// idempotent v6 pre-check, and any higher watermark (a schema this build
-/// does not know) fails closed.
+/// step and the v7 payer-attribution-ledger step (the ADR-0007 addenda) are
+/// additive and are tracked by the durable presence of their objects
+/// (`topic_patterns` plus the `topic_subscriptions.attached_by` column, and
+/// `topic_attribution_ledger` respectively) instead of a watermark bump — a
+/// database carrying those objects therefore still reads `5`, every open
+/// re-runs the idempotent additive pre-checks, and any higher watermark (a
+/// schema this build does not know) fails closed.
 pub(crate) const SCHEMA_VERSION: i64 = 5;
 
 /// Creates the Topic service-layer authority schema v1: the immutable-topic
@@ -745,5 +746,68 @@ pub(crate) fn migrate_v6(connection: &mut Connection) -> Result<(), TopicAuthori
     )?;
     transaction.commit()?;
     connection.pragma_update(None, "foreign_keys", "ON")?;
+    Ok(())
+}
+
+/// Adds the payer metering ledger (schema v7, the ADR-0007 payer-metering
+/// addendum): a durable `topic_attribution_ledger` table holds one immutable
+/// row per accounted publication — the authority-derived ledger identity, the
+/// topic, the publication row's payer (metering follows the publication, not
+/// the subscriber), the kind (`1` = `Attributed`: an advance crossed the
+/// sequence and the payload was delivered; `2` = `Unallocated`: the
+/// publication left the log without ever being delivered), the accounted
+/// payload byte length, the [`crate::ATTRIBUTION_POLICY_VERSION`] frozen into
+/// the row, the single evidence sequence, and the recording timestamp.
+///
+/// One row per `(topic_id, evidence_sequence)` is a table-level constraint
+/// (the no-double-count backstop behind the first-accounting-event-wins
+/// semantics), and both triggers ban `UPDATE` and `DELETE` outright: ledger
+/// rows are write-once audit facts, corrected only by new facts.
+///
+/// Like v6, the step is additive and is tracked by the durable presence of
+/// its object instead of a watermark bump (the `user_version` watermark
+/// belongs to the v1-v5 rebuild chain and already reads 5): the pre-check
+/// keeps reopen idempotent, and the table plus its triggers are created in
+/// one atomic transaction, so no partial state is representable.
+pub(crate) fn migrate_v7(connection: &mut Connection) -> Result<(), TopicAuthorityError> {
+    let ledger_tables: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type='table' AND name='topic_attribution_ledger'",
+        [],
+        |row| row.get(0),
+    )?;
+    if ledger_tables == 1 {
+        // The v7 step is complete: the watermark belongs to the v1-v5
+        // rebuild chain and is left untouched (it already reads 5 after v5,
+        // or is restored by the v5 pre-check in the open chain).
+        return Ok(());
+    }
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "CREATE TABLE topic_attribution_ledger (
+            ledger_id BLOB PRIMARY KEY NOT NULL CHECK(length(ledger_id)=16),
+            topic_id BLOB NOT NULL CHECK(length(topic_id)=16),
+            payer_account_id BLOB NOT NULL
+                CHECK(length(payer_account_id)=16
+                      AND payer_account_id != x'00000000000000000000000000000000'),
+            kind INTEGER NOT NULL CHECK(kind IN (1,2)),
+            payload_bytes INTEGER NOT NULL CHECK(payload_bytes >= 0),
+            policy_version INTEGER NOT NULL CHECK(policy_version >= 1),
+            evidence_sequence INTEGER NOT NULL CHECK(evidence_sequence >= 1),
+            recorded_at_ms INTEGER NOT NULL CHECK(recorded_at_ms >= 0),
+            UNIQUE(topic_id, evidence_sequence),
+            FOREIGN KEY(topic_id) REFERENCES topics(topic_id)
+        ) STRICT;
+
+        CREATE TRIGGER topic_attribution_ledger_no_update
+        BEFORE UPDATE ON topic_attribution_ledger BEGIN
+            SELECT RAISE(ABORT, 'attribution ledger rows are immutable');
+        END;
+        CREATE TRIGGER topic_attribution_ledger_no_delete
+        BEFORE DELETE ON topic_attribution_ledger BEGIN
+            SELECT RAISE(ABORT, 'attribution ledger rows are durable');
+        END;",
+    )?;
+    transaction.commit()?;
     Ok(())
 }
