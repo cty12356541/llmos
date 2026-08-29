@@ -7,11 +7,21 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+conformance-server = ["dep:nlos-ipc", "dep:tokio"]
+
+[[bin]]
+name = "wait-control-conformance"
+path = "src/bin/wait-control-conformance.rs"
+required-features = ["conformance-server"]
+
 [dependencies]
 nlos-channel = { path = "../nlos-channel" }
+nlos-ipc = { path = "../nlos-ipc", optional = true }
 nlos-schema = { path = "../nlos-schema" }
 nlos-types = { path = "../nlos-types" }
 nlos-wait = { path = "../nlos-wait" }
+tokio = { workspace = true, optional = true }
 
 [dev-dependencies]
 nlos-ipc = { path = "../nlos-ipc" }
