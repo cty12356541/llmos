@@ -40,3 +40,11 @@ kill-window 矩阵：三入口 pre-commit IOERR/ENOSPC typed fail-closed 零幻�
 - runtime-tokio 接线（WakeSink 消费 wait wake、`wait_for` 泛化）与 fiber rehydration（等待方崩溃后重建等待）为 ADR-0008 登记后续；
 - binding 为 opaque，本前缀不解释 fiber/process 绑定结构；无 per-channel notify 水位摘要（乱序/回退 notify 安全但无「已通知至 X」聚合）；
 - 跨进程等待、真实掉电（kill-9 页缓存存活、模型化丢写）、CI/部署均未决。
+
+## 5. runtime-tokio 消费接线（2026-08-29 增量，commit `3b005e6`）
+
+- `TokioRuntimeAdapter::wait_for_channel`：durable 注册（nlos-wait）与内存等待在同一入口完成，gate 顺序与错误语义镜像 `wait_for_operation`；durable WOKEN/CANCELLED 立即解析（at-least-once）；PENDING 且 channel 高水位已满足 → fresh key `notify_commits` 自翻转后立即 Woken（显式 notify 模型，无轮询）；否则内存 Pending（同 key 取代者 Cancelled）。`TokioChannelWakeSink::deliver(report)`：commit 侧 notify 后非阻塞投递，Pending 消费发信号/Vacant 缓冲/重复幂等。purge 与 shutdown 覆盖新注册表；runtime 取消不清 durable 行（doc 契约钉住）。
+- **commit + wakeup 契约就此闭环**（单机内）：channel enqueue（commit）→ `notify_commits`（durable 翻转）→ `deliver`（内存唤醒）→ fiber resume；崩溃后 durable 行由下次 notify/注册触发翻转，等待方重建（fiber rehydration）仍为 ADR-0008 登记后续。
+- nlos-wait additive：`channel_high_water` helper；nlos-runtime-tokio 追加 nlos-wait 依赖与 nlos-channel dev-dependency。
+- 验证：nlos-runtime-tokio 37 passed / 1 ignored（既有 scale probe；新增 channel_wait 9 项）；nlos-wait 26、nlos-channel 27 无回归；workspace clippy -D warnings 零警告；fmt 通过。
+- 已知限制：channel_waits 为本 runtime 内存注册表（跨进程等待不做）；同 wait_id 多 fiber 共享注册为 degenerate 允许用法；自翻转 notify key 采用 WaitId 派生的 domain-reserved 变换（producer 不得使用，doc 注明）。
