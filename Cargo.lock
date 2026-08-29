@@ -630,6 +630,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "nlos-wait-control"
+version = "0.1.0"
+dependencies = [
+ "nlos-channel",
+ "nlos-ipc",
+ "nlos-schema",
+ "nlos-types",
+ "nlos-wait",
+ "prost",
+ "tokio",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"

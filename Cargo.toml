@@ -24,6 +24,7 @@ members = [
     "crates/nlos-takeover-control",
     "crates/nlos-topic",
     "crates/nlos-wait",
+    "crates/nlos-wait-control",
 ]
 exclude = ["fuzz"]
 resolver = "3"

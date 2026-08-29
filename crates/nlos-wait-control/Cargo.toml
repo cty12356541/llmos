@@ -1,0 +1,22 @@
+[package]
+name = "nlos-wait-control"
+description = "Typed WaitControl handler over the durable WaitAuthority for local IPC."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+nlos-channel = { path = "../nlos-channel" }
+nlos-schema = { path = "../nlos-schema" }
+nlos-types = { path = "../nlos-types" }
+nlos-wait = { path = "../nlos-wait" }
+prost.workspace = true
+
+[dev-dependencies]
+nlos-ipc = { path = "../nlos-ipc" }
+tokio.workspace = true
+
+[lints]
+workspace = true
