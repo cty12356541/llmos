@@ -25,9 +25,7 @@ use nlos_slice_k::{
     ChainQuery, SliceKRuntime, run_cancel_path, run_happy_chain, run_recovery_prefix, seeded_key,
 };
 use nlos_task::{AttemptState, CancelDecision, PermitDecision, PermitState, TaskState};
-use nlos_types::{
-    AgentInstanceId, ExecutionFiberId, Generation, ProcessId, ResourceGroupId, SchedulerDomainId,
-};
+use nlos_types::{ExecutionFiberId, Generation, ResourceGroupId, SchedulerDomainId};
 
 fn slice_runtime(name: &str) -> (TempDir, Arc<SliceKRuntime>) {
     let dir = TempDir::new(name);
@@ -136,6 +134,17 @@ async fn full_vertical_slice_produces_every_receipt_and_is_inspectable() {
     assert_eq!(chain.receipt.task_receipt.permit_id, Some(chain.permit_id));
     assert_eq!(chain.receipt.artifact_publications.len(), 1);
 
+    // The fiber ran under an authority-registered process binding, not a
+    // fabricated id: the durable record readback agrees with the spec.
+    assert_eq!(chain.process.process_generation, Generation::INITIAL);
+    let binding = runtime
+        .process
+        .inspect_active_process_binding(chain.process.process_id)
+        .expect("process binding readback");
+    assert_eq!(binding, chain.process);
+    assert_eq!(binding.task_id, chain.task_id);
+    assert_eq!(binding.task_attempt_id, chain.attempt_id);
+
     // The application is durably installed.
     let application = runtime
         .applications
@@ -150,6 +159,7 @@ async fn full_vertical_slice_produces_every_receipt_and_is_inspectable() {
         .inspect_chain(ChainQuery {
             package_id: chain.package.package_id,
             installation_id: Some(chain.installation_id),
+            process_id: Some(chain.process.process_id),
             task_id: chain.task_id,
             attempt_id: chain.attempt_id,
             permit_id: Some(chain.permit_id),
@@ -163,9 +173,18 @@ async fn full_vertical_slice_produces_every_receipt_and_is_inspectable() {
         inspect.application.as_ref().expect("app").status,
         ApplicationStatus::Installed
     );
+    assert_eq!(
+        inspect.process.as_ref().expect("process binding"),
+        &chain.process
+    );
     let lines = inspect.report_lines();
     assert!(lines.iter().any(|line| line.contains("head_commit_seq=1")));
     assert!(lines.iter().any(|line| line.contains("revision=2")));
+    assert!(lines.iter().any(|line| line.contains(&format!(
+        "process={} generation={}",
+        nlos_slice_k::short_hex(chain.process.process_id.as_bytes()),
+        chain.process.process_generation.get()
+    ))));
 }
 
 #[tokio::test]
@@ -198,10 +217,10 @@ async fn cancel_closes_attempt_fences_permit_and_runtime_scope() {
     let fiber_spec = FiberSpec {
         fiber_id: ExecutionFiberId::from_bytes([0xB0u8.wrapping_add(200); 16]),
         fiber_generation: Generation::INITIAL,
-        agent_instance_id: AgentInstanceId::from_bytes([0xB1; 16]),
-        agent_generation: Generation::INITIAL,
-        process_id: ProcessId::from_bytes([0xB2; 16]),
-        process_generation: Generation::INITIAL,
+        agent_instance_id: facts.process.agent_instance_id,
+        agent_generation: facts.process.agent_instance_generation,
+        process_id: facts.process.process_id,
+        process_generation: facts.process.process_generation,
         task_attempt_id: Some(facts.attempt_id),
         cancellation_scope_id: facts.scope_id,
         cancellation_generation: Generation::INITIAL,
@@ -266,6 +285,11 @@ async fn drop_reopen_replays_durable_prefix_to_consistent_terminal_state() {
         .inspect(prefix.operation)
         .expect("pre-crash operation");
     let pre_operation_state = pre_operation.state;
+    let pre_binding = runtime
+        .process
+        .inspect_active_process_binding(prefix.process.process_id)
+        .expect("pre-crash process binding");
+    assert_eq!(pre_binding, prefix.process);
 
     // kill -9 analogue: the runtime adapter and every authority handle are
     // dropped without any close; the durable bytes under the root survive.
@@ -300,6 +324,23 @@ async fn drop_reopen_replays_durable_prefix_to_consistent_terminal_state() {
         .inspect(prefix.operation)
         .expect("reopened operation");
     assert_eq!(reopened_operation.state, pre_operation_state);
+
+    // The process binding is a durable fact of the crash too: the reopened
+    // authority readback returns the identical binding with an unchanged
+    // generation, and the same registration replays idempotently.
+    let reopened_binding = reopened
+        .process
+        .inspect_active_process_binding(prefix.process.process_id)
+        .expect("reopened process binding");
+    assert_eq!(reopened_binding, pre_binding);
+    assert_eq!(
+        reopened_binding.process_generation,
+        prefix.process.process_generation
+    );
+    let replay = reopened
+        .materialize_process(0xC0, prefix.task_id, prefix.attempt_id, Generation::INITIAL)
+        .expect("replay process materialization after reopen");
+    assert_eq!(replay, prefix.process);
 
     // Fiber replay/收敛: the coordinator replays the durable prefix
     // (staged revision + commit plan) to the terminal state.

@@ -64,7 +64,7 @@ cargo run -p nlos-slice-k --bin slice-k-demo                          → 跑通
 1. **Application↔Task 关联无权威字段**：`TaskSpec` 当前只有 `task_id/task_generation/registered_at_ms`，没有可引用 `application_id` 或 manifest digest 的自由字段；绕行：关联关系停留在 slice 编排层（`HappyChain` 同时持有两者并同窗打印），未做确定性 ID 派生（避免发明语义）。**待 TaskAuthority 后续 schema 扩展声明式关联字段**。
 2. **`request_commit_permit` 梯子构造器已 deprecated**：landed API 的权威入口已是 `*_with_authorities_struct`；本链按任务书要求采用 `Authorities` struct 入口（`Authorities::default()`），无绕行，仅登记（ladder 旧入口在本仓库部分测试先例中仍以 `#[allow(deprecated)]` 存在）。
 3. **identity key validity 与真实 wall 时钟的域差**：identity 权威按逻辑 ms 比较 validity，`u64::MAX` 会撞 SQLite i64 列；绕行：fixture 用 `i64::MAX as u64` 作为 `key_valid_until_ms`。属 fixture 级取值选择，非权威缺陷。
-4. **ProcessAuthority 未入链**：FiberSpec 的 `agent_instance_id/process_id` 等为 fixture 标识，未经 `nlos-process` 权威注册（`register_fiber_incarnation`/binding 已存在但非本链最小路径）；纵切面的 Process/AgentInstance 段以标识传递代替权威物化。**待后续切片把 Process binding 接入 spawn 前置校验**。
+4. ~~**ProcessAuthority 未入链**：FiberSpec 的 `agent_instance_id/process_id` 等为 fixture 标识，未经 `nlos-process` 权威注册（`register_fiber_incarnation`/binding 已存在但非本链最小路径）；纵切面的 Process/AgentInstance 段以标识传递代替权威物化。~~ **已勾销（2026-08-30，§8）**：`SliceKRuntime` 已持有 `ProcessAuthority`，三条链（happy/cancel/recovery）与 competing_attempts 车道的全部 fiber 均在 spawn 前经 `create_isolation_domain + register_delegated_process` 权威物化，FiberSpec 的 process/agent 字段改从注册回执取；crash recovery 断言绑定存活与重放幂等。遗留子项：fiber incarnation/snapshot 层（`register_fiber_incarnation`/`write_fiber_entry_snapshot`）仍未入链（见 §8.4）。
 5. **Operation 与 TaskWriteSet effect 端点未打通**：driver Operation 走 `nlos-store` 的 register/dispatch/complete 自治路径，未注册为 Task participant / 未进入 `TaskWriteSet` effect endpoint（v24+ 能力存在但需要 participant registry 全套接线）；本链的 Artifact 写经 permit-bound staged publication 授权，operation 完成回执不进入 effect history。**待 effect 切片统一**。
 
 ## 5. 已知限制（如实声明，不冒充产品级）
@@ -78,7 +78,7 @@ cargo run -p nlos-slice-k --bin slice-k-demo                          → 跑通
 
 ## 6. PARTIAL_PASS 结论
 
-纵切面 12 步全部以已落地 API 贯通并有集成测试与可 grep 演示输出背书——这是议题 31 §6 Slice K 证据门的首次实体兑现；但按 §4/§5 的缺口与限制（Process 权威未物化、Application↔Task 无权威关联、无跨进程面、单机演示级），维持 `PARTIAL_PASS`，不宣称 Slice K 完成。
+纵切面 12 步全部以已落地 API 贯通并有集成测试与可 grep 演示输出背书——这是议题 31 §6 Slice K 证据门的首次实体兑现；但按 §4/§5 的剩余缺口与限制（Application↔Task 无权威关联、无跨进程面、单机演示级；Process binding 物化已于 2026-08-30 由 §8 勾销），维持 `PARTIAL_PASS`，不宣称 Slice K 完成。
 
 ## 7. 竞争场景补充证据（2026-08-30 追加：双 Attempt 竞争 CommitPermit + cancel/commit 竞态）
 
@@ -117,3 +117,57 @@ cargo fmt -p nlos-slice-k -- --check（stable + nightly-2026-08-01） → 干净
 - 线程内顺序线性化（请求顺序 A→B 与 B→A 两种），非多线程真并发交织；SQLite `BEGIN IMMEDIATE` 单写者锁是串行化依据，真并发交织测试待后续车道。
 - 竞争以 artifact-only permit（`planned_effects=[]`、无 effect slot）为对象；EffectPermit 层的竞争（议题 31 §6 条 4）未覆盖。
 - 未覆盖：跨 Task handle 泄漏、snapshot 漂移后败者路径、多 winner 多轮竞争——ROAD-B-003 全门仍开放，本车道仅为纵切面级前片。
+
+## 8. Process authority 物化接入纵切面（2026-08-30 追加：materialize Process → Fiber）
+
+- **定位**：勾销 §4 缺口 4——Fiber spawn 前经 `nlos-process`（B-PROCESS-001 durable generation/fence 权威）注册进程绑定，纵切面顺序成为「materialize Process → Fiber」完整实现；只消费已落地 API，不发明 LaunchGrant/出生原子性等未落地语义。
+- **写集**：仅 `crates/nlos-slice-k/**`（`Cargo.toml` 加 `nlos-process` 依赖一行、`src/{runtime,chain,package,error,lib}.rs`、`src/bin/slice-k-demo.rs`、`tests/{end_to_end,competing_attempts}.rs`）与本 §。`nlos-process` 零改动（只读消费）。`Cargo.lock` 增量为 cargo 自动解析新依赖边，属预期，未手编。base HEAD `afd05ae`。
+
+### 8.1 接线摘要（消费的 API 与语义）
+
+| 接线点 | 消费的已落地 API | 语义（按 ProcessAuthority 既有行为） |
+|---|---|---|
+| 组装器 | `ProcessAuthority::open(root/process)` 入 `SliceKRuntime.process` | 与其他权威同款 WAL/FULL 硬校验；重开同 root 即恢复入口 |
+| 物化步骤 1 | `create_isolation_domain`（`policy_digest=[seed+111;32]`、key `seeded_key(seed,110)`） | 幂等 `Created/Replayed`；同 key 同 policy digest 重放返回原 domain 记录 |
+| 物化步骤 2 | `register_delegated_process`（key `seeded_key(seed,113)`；present domain 当前代/fence） | 权威派生 `process_id/agent_instance_id`（SHA-256 派生，非 fixture 值）；`process_generation=1` + fencing token；幂等重放仅比对 (task, attempt, domain 三元组)，`created_at_ms` 不参与——crash 后重开换时间戳重放仍字节相等 |
+| Fiber 前置 | `runtime.materialize_process(seed, task_id, attempt_id, Generation::INITIAL)`（`package.rs` 助手，紧随 `register_task_and_attempt`） | 注册回执 `ProcessBindingRecord` 即 fiber 身份来源 |
+| FiberSpec | `process_id/process_generation/agent_instance_id/agent_generation` 全部改从注册回执取 | happy/cancel/recovery 三链 + competing_attempts 车道：不再有任何凭空 process/agent id |
+| inspect 面 | `inspect_active_process_binding(process_id)` 入 `ChainQuery.process_id: Option<ProcessId>` → `ChainInspect.process` | fail-closed 回读（head↔binding 交叉核对 + domain 活性）；`report_lines` 新增 `process=<id> generation=<n> agent=<id>` 行，缺失为 `absent` |
+| 错误面 | `SliceKError::Process(ProcessAuthorityError)` 透传 | 组装层只命名拒绝方，不加语义 |
+
+fixture key 偏移 110–114（domain key/policy 字节/时间戳/注册 key），各链已用偏移均 <100，无碰撞。
+
+### 8.2 demo 输出新增行（实跑）
+
+```text
+[slice-k] STEP 05b materialize-process done process=3786d63093b17d96 generation=1 agent=5796cac66bab5309 domain=d526a2a6a9093821
+[slice-k] INSPECT process=3786d63093b17d96 generation=1 agent=5796cac66bab5309
+[slice-k] STEP 14 process-binding survived process=9a6d6ee2239e1448 generation=1
+[slice-k] INSPECT-RECOVERED process=9a6d6ee2239e1448 generation=1 agent=8ce1c5313bab16ef
+```
+
+STEP 05b 位于 Task 注册 receipt（commit-permit）与 STEP 06 fiber-operation 之间，呈现「materialize Process → Fiber」顺序；重开后绑定存活行与 INSPECT-RECOVERED 行同窗呈现 crash 存活事实。
+
+### 8.3 测试增强与断言要点
+
+- `full_vertical_slice_…`：注册回执读回 `inspect_active_process_binding` 逐字段等于 `chain.process`（generation=1）；绑定 task/attempt 与链一致；inspect 面 `ChainInspect.process` 相等且 report 行含 `process=<id> generation=1`。
+- `drop_reopen_…`（crash recovery）：crash 前后 `inspect_active_process_binding` 逐字节相等；重开后代次不变（仍为注册时的当前代）；`materialize_process` 同 key 重放 → 同一 `ProcessBindingRecord`（幂等，domain 创建亦重放）。
+- `cancel_…`：拒绝性 fiber spec 改用 `facts.process` 的权威身份（scope 拒绝语义不变）。
+- `competing_attempts`：胜者 fiber 的 process/agent 字段改从 `materialize_process(…, winner_attempt)` 回执取；竞争语义断言全部不变、全绿。
+
+### 8.4 验证（base HEAD `afd05ae` 工作区，定向 `-p` 命令）
+
+```text
+cargo test -p nlos-slice-k                    → 7 passed / 0 failed（end_to_end 3 + competing_attempts 4）
+cargo clippy -p nlos-slice-k --all-targets -- -D warnings           → 0 warning
+cargo +nightly-2026-08-01 clippy（同前）                             → 0 warning
+cargo fmt -p nlos-slice-k -- --check（stable + nightly-2026-08-01）  → 干净
+cargo run -p nlos-slice-k --bin slice-k-demo                         → 跑通（新增行见 §8.2，末行 DONE）
+```
+
+### 8.5 剩余缺口（如实登记）
+
+- **LaunchGrant / 出生原子性未落地**：`nlos-process` 未提供 LaunchGrant 或跨权威出生决策面；本车道只接「durable binding 注册 + generation/fence」层，进程与 Task/Domain 之外的准备门（resource/capability/namespace prepares）仍未接入，待上游落地后另行接线。
+- **fiber incarnation/snapshot 层未入链**：`register_fiber_incarnation`/`write_fiber_entry_snapshot` 已落地但本链未消费（fiber 复用与 crash-window 快照恢复属后续切片）。
+- **process 绑定与 cancel 无联动语义**：task cancel 不（也不应）撤销 process binding——绑定撤销/rotate 语义上游未定义，本链只断言存活，不发明撤销。
+- **未运行项**：`cargo --workspace` 级命令（任务约束仅允许 `-p nlos-slice-k`）；Windows 实机未验证（纯 SQLite+std + 双工具链门为代理证据）。

@@ -10,10 +10,12 @@ use nlos_clock::{AuthorityClock, NowRequest};
 use nlos_commit_coordinator::ArtifactCommitCoordinator;
 use nlos_identity::IdentityAuthority;
 use nlos_operation::{OperationHandle, OperationSnapshot};
+use nlos_process::{ProcessAuthority, ProcessBindingRecord};
 use nlos_store::SqliteOperationStore;
 use nlos_task::{AttemptRecord, PermitRecord, SqliteTaskAuthority, TaskRecord};
 use nlos_types::{
-    CommitPermitId, Generation, IdempotencyKey, InstallationId, PackageId, TaskAttemptId, TaskId,
+    CommitPermitId, Generation, IdempotencyKey, InstallationId, PackageId, ProcessId,
+    TaskAttemptId, TaskId,
 };
 
 use crate::error::{SliceKError, SliceKResult};
@@ -31,6 +33,10 @@ pub struct SliceKRuntime {
     root: PathBuf,
     /// Principal/key authority (bootstrap, signature verification readback).
     pub identity: IdentityAuthority,
+    /// Process/AgentInstance/IsolationDomain binding authority (durable
+    /// generation/fence; B-PROCESS-001). Fibers spawn only under a binding
+    /// this authority registered.
+    pub process: ProcessAuthority,
     /// Content-addressed artifact authority (revisions, signed packages,
     /// staged publication).
     pub artifacts: ArtifactStore,
@@ -56,6 +62,7 @@ impl SliceKRuntime {
         let root = root.as_ref().to_path_buf();
         std::fs::create_dir_all(&root)?;
         let identity = IdentityAuthority::open(root.join("identity"))?;
+        let process = ProcessAuthority::open(root.join("process"))?;
         let artifacts = ArtifactStore::open(root.join("artifacts"))?;
         let applications = ApplicationAuthority::open(root.join("applications"))?;
         let tasks = SqliteTaskAuthority::open(root.join("tasks.sqlite3"))?;
@@ -64,6 +71,7 @@ impl SliceKRuntime {
         Ok(Self {
             root,
             identity,
+            process,
             artifacts,
             applications,
             tasks,
@@ -140,6 +148,10 @@ impl SliceKRuntime {
             .installation_id
             .map(|installation_id| self.applications.inspect_installation(installation_id))
             .transpose()?;
+        let process = query
+            .process_id
+            .map(|process_id| self.process.inspect_active_process_binding(process_id))
+            .transpose()?;
         let task = self.tasks.inspect_task(query.task_id)?;
         let attempt = self
             .tasks
@@ -159,6 +171,7 @@ impl SliceKRuntime {
         Ok(ChainInspect {
             application,
             installation,
+            process,
             task,
             attempt,
             permit,
@@ -176,6 +189,8 @@ pub struct ChainQuery {
     pub installation_id: Option<InstallationId>,
     pub task_id: TaskId,
     pub attempt_id: TaskAttemptId,
+    /// `None` before the process binding was materialized.
+    pub process_id: Option<ProcessId>,
     /// `None` before permit issuance.
     pub permit_id: Option<CommitPermitId>,
     pub artifact_id: nlos_types::ArtifactId,
@@ -189,6 +204,8 @@ pub struct ChainQuery {
 pub struct ChainInspect {
     pub application: Option<ApplicationView>,
     pub installation: Option<InstallationReceipt>,
+    /// The authority-current process binding, readback-validated.
+    pub process: Option<ProcessBindingRecord>,
     pub task: TaskRecord,
     pub attempt: AttemptRecord,
     pub permit: Option<PermitRecord>,
@@ -216,6 +233,16 @@ impl ChainInspect {
             None => "absent".to_string(),
         };
         lines.push(format!("installation={installation}"));
+        let process = match &self.process {
+            Some(binding) => format!(
+                "{} generation={} agent={}",
+                crate::short_hex(binding.process_id.as_bytes()),
+                binding.process_generation.get(),
+                crate::short_hex(binding.agent_instance_id.as_bytes()),
+            ),
+            None => "absent".to_string(),
+        };
+        lines.push(format!("process={process}"));
         lines.push(format!(
             "task={} head_commit_seq={} cancel_epoch={}",
             crate::short_hex(self.task.task_id.as_bytes()),

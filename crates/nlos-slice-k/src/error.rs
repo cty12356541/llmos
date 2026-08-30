@@ -10,6 +10,7 @@ use nlos_artifact::ArtifactError;
 use nlos_clock::AuthorityClockError;
 use nlos_commit_coordinator::CoordinatorError;
 use nlos_identity::IdentityAuthorityError;
+use nlos_process::ProcessAuthorityError;
 use nlos_runtime::RuntimeError;
 use nlos_store::StoreError;
 use nlos_task::TaskStoreError;
@@ -21,6 +22,8 @@ pub enum SliceKError {
     Io(std::io::Error),
     /// The identity authority refused a bootstrap or verification readback.
     Identity(IdentityAuthorityError),
+    /// The process authority refused a binding/domain materialization step.
+    Process(ProcessAuthorityError),
     /// The artifact authority refused a store or package step.
     Artifact(ArtifactError),
     /// The application authority refused an installation step.
@@ -47,6 +50,7 @@ impl fmt::Display for SliceKError {
         match self {
             Self::Io(error) => write!(formatter, "slice-k root I/O failure: {error}"),
             Self::Identity(error) => write!(formatter, "identity authority: {error}"),
+            Self::Process(error) => write!(formatter, "process authority: {error}"),
             Self::Artifact(error) => write!(formatter, "artifact authority: {error}"),
             Self::Application(error) => write!(formatter, "application authority: {error}"),
             Self::Task(error) => write!(formatter, "task authority: {error}"),
@@ -75,6 +79,7 @@ impl Error for SliceKError {
         match self {
             Self::Io(error) => Some(error),
             Self::Identity(error) => Some(error),
+            Self::Process(error) => Some(error),
             Self::Artifact(error) => Some(error),
             Self::Application(error) => Some(error),
             Self::Task(error) => Some(error),
@@ -96,6 +101,12 @@ impl From<std::io::Error> for SliceKError {
 impl From<IdentityAuthorityError> for SliceKError {
     fn from(error: IdentityAuthorityError) -> Self {
         Self::Identity(error)
+    }
+}
+
+impl From<ProcessAuthorityError> for SliceKError {
+    fn from(error: ProcessAuthorityError) -> Self {
+        Self::Process(error)
     }
 }
 

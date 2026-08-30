@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use nlos_artifact::{ContentDigest, staging_id_for};
 use nlos_operation::OperationHandle;
+use nlos_process::ProcessBindingRecord;
 use nlos_runtime::FiberHandle;
 use nlos_runtime_tokio::TokioRuntimeAdapter;
 use nlos_task::{
@@ -42,6 +43,8 @@ pub struct HappyChain {
     pub task_id: TaskId,
     pub attempt_id: TaskAttemptId,
     pub scope_id: CancellationScopeId,
+    /// The durable process binding the fiber was spawned under.
+    pub process: ProcessBindingRecord,
     pub permit_id: CommitPermitId,
     pub plan_id: ArtifactCommitPlanId,
     pub fiber: FiberHandle,
@@ -74,6 +77,7 @@ pub async fn run_happy_chain(
     let verification_receipt_id = verification.receipt_id;
     let installation = runtime.install_verified_package(&verification, seed)?;
     let (task_id, attempt_id, scope_id) = runtime.register_task_and_attempt(seed)?;
+    let process = runtime.materialize_process(seed, task_id, attempt_id, Generation::INITIAL)?;
 
     let write_bytes = fixture_bytes(seed.wrapping_add(200), 128);
     let stage_key = seeded_key(seed, 40);
@@ -128,10 +132,10 @@ pub async fn run_happy_chain(
     let spec = nlos_runtime::FiberSpec {
         fiber_id: seeded!(ExecutionFiberId::from_bytes, seed, 50),
         fiber_generation: Generation::INITIAL,
-        agent_instance_id: seeded!(nlos_types::AgentInstanceId::from_bytes, seed, 51),
-        agent_generation: Generation::INITIAL,
-        process_id: seeded!(nlos_types::ProcessId::from_bytes, seed, 52),
-        process_generation: Generation::INITIAL,
+        agent_instance_id: process.agent_instance_id,
+        agent_generation: process.agent_instance_generation,
+        process_id: process.process_id,
+        process_generation: process.process_generation,
         task_attempt_id: Some(attempt_id),
         cancellation_scope_id: scope_id,
         cancellation_generation: Generation::INITIAL,
@@ -161,6 +165,7 @@ pub async fn run_happy_chain(
         task_id,
         attempt_id,
         scope_id,
+        process,
         permit_id,
         plan_id,
         fiber,
@@ -174,6 +179,8 @@ pub struct CancelFacts {
     pub task_id: TaskId,
     pub attempt_id: TaskAttemptId,
     pub scope_id: CancellationScopeId,
+    /// The durable process binding the fiber was spawned under.
+    pub process: ProcessBindingRecord,
     pub fiber: FiberHandle,
     pub cancel: CancelDecision,
     pub fenced_permit: PermitDecision,
@@ -200,6 +207,7 @@ pub async fn run_cancel_path(
     seed: u8,
 ) -> SliceKResult<CancelFacts> {
     let (task_id, attempt_id, scope_id) = runtime.register_task_and_attempt(seed)?;
+    let process = runtime.materialize_process(seed, task_id, attempt_id, Generation::INITIAL)?;
     let now_ms = runtime.wall_now_i64(seeded_key(seed, 61))?;
 
     let job = WriteFiberJob {
@@ -222,10 +230,10 @@ pub async fn run_cancel_path(
     let spec = nlos_runtime::FiberSpec {
         fiber_id: seeded!(ExecutionFiberId::from_bytes, seed, 70),
         fiber_generation: Generation::INITIAL,
-        agent_instance_id: seeded!(nlos_types::AgentInstanceId::from_bytes, seed, 71),
-        agent_generation: Generation::INITIAL,
-        process_id: seeded!(nlos_types::ProcessId::from_bytes, seed, 72),
-        process_generation: Generation::INITIAL,
+        agent_instance_id: process.agent_instance_id,
+        agent_generation: process.agent_instance_generation,
+        process_id: process.process_id,
+        process_generation: process.process_generation,
         task_attempt_id: Some(attempt_id),
         cancellation_scope_id: scope_id,
         cancellation_generation: Generation::INITIAL,
@@ -268,6 +276,7 @@ pub async fn run_cancel_path(
         task_id,
         attempt_id,
         scope_id,
+        process,
         fiber,
         cancel,
         fenced_permit,
@@ -281,6 +290,8 @@ pub async fn run_cancel_path(
 pub struct RecoveryPrefix {
     pub task_id: TaskId,
     pub attempt_id: TaskAttemptId,
+    /// The durable process binding the fiber was spawned under.
+    pub process: ProcessBindingRecord,
     pub permit_id: CommitPermitId,
     pub plan_id: ArtifactCommitPlanId,
     pub artifact_id: nlos_types::ArtifactId,
@@ -313,6 +324,7 @@ pub async fn run_recovery_prefix(
     let verification = runtime.verify_signed_package(&package, seed)?;
     let installation = runtime.install_verified_package(&verification, seed)?;
     let (task_id, attempt_id, scope_id) = runtime.register_task_and_attempt(seed)?;
+    let process = runtime.materialize_process(seed, task_id, attempt_id, Generation::INITIAL)?;
 
     let write_bytes = fixture_bytes(seed.wrapping_add(210), 96);
     let stage_key = seeded_key(seed, 80);
@@ -364,10 +376,10 @@ pub async fn run_recovery_prefix(
     let spec = nlos_runtime::FiberSpec {
         fiber_id: seeded!(ExecutionFiberId::from_bytes, seed, 90),
         fiber_generation: Generation::INITIAL,
-        agent_instance_id: seeded!(nlos_types::AgentInstanceId::from_bytes, seed, 91),
-        agent_generation: Generation::INITIAL,
-        process_id: seeded!(nlos_types::ProcessId::from_bytes, seed, 92),
-        process_generation: Generation::INITIAL,
+        agent_instance_id: process.agent_instance_id,
+        agent_generation: process.agent_instance_generation,
+        process_id: process.process_id,
+        process_generation: process.process_generation,
         task_attempt_id: Some(attempt_id),
         cancellation_scope_id: scope_id,
         cancellation_generation: Generation::INITIAL,
@@ -383,6 +395,7 @@ pub async fn run_recovery_prefix(
     Ok(RecoveryPrefix {
         task_id,
         attempt_id,
+        process,
         permit_id: permit.permit_id,
         plan_id,
         artifact_id,

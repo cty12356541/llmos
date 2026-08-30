@@ -11,7 +11,10 @@ use nlos_artifact::{
     package_manifest_message,
 };
 use nlos_identity::{BootstrapPrincipalRequest, IdentityBinding, KeyPurpose};
-use nlos_types::{ArtifactId, PackageId, PrincipalId, TaskAttemptId, TaskId};
+use nlos_process::{
+    CreateIsolationDomainRequest, ProcessBindingRecord, RegisterDelegatedProcessRequest,
+};
+use nlos_types::{ArtifactId, Generation, PackageId, PrincipalId, TaskAttemptId, TaskId};
 
 use crate::error::SliceKResult;
 use crate::runtime::{SliceKRuntime, initial_generation, seeded_key};
@@ -206,6 +209,50 @@ impl SliceKRuntime {
             registered_at_ms,
         })?;
         Ok((task_id, attempt_id, scope_id))
+    }
+
+    /// Materializes the Process of one attempt through the process
+    /// authority: creates (or replays) the attempt's `IsolationDomain`,
+    /// then registers (or replays) the durable delegated Process /
+    /// `AgentInstance` binding against it. The returned record is the
+    /// receipt every fiber spec of the chain takes its process/agent
+    /// identities and generations from. Both steps are idempotent under
+    /// their seeded keys, so reopening after a crash replays byte-identically.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the process authority's fail-closed errors and clock errors.
+    pub fn materialize_process(
+        &self,
+        seed: u8,
+        task_id: TaskId,
+        task_attempt_id: TaskAttemptId,
+        attempt_generation: Generation,
+    ) -> SliceKResult<ProcessBindingRecord> {
+        let domain = self
+            .process
+            .create_isolation_domain(CreateIsolationDomainRequest {
+                policy_digest: [seed.wrapping_add(111); 32],
+                idempotency_key: seeded_key(seed, 110),
+                created_at_ms: self.wall_now_ms(seeded_key(seed, 112))?,
+            })?
+            .record()
+            .clone();
+        let binding = self
+            .process
+            .register_delegated_process(RegisterDelegatedProcessRequest {
+                task_id,
+                task_attempt_id,
+                attempt_generation,
+                isolation_domain_id: domain.isolation_domain_id,
+                isolation_domain_generation: domain.generation,
+                isolation_domain_fencing_token: domain.fencing_token,
+                idempotency_key: seeded_key(seed, 113),
+                created_at_ms: self.wall_now_ms(seeded_key(seed, 114))?,
+            })?
+            .record()
+            .clone();
+        Ok(binding)
     }
 }
 

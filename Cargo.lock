@@ -576,6 +576,7 @@ dependencies = [
  "nlos-commit-coordinator",
  "nlos-identity",
  "nlos-operation",
+ "nlos-process",
  "nlos-runtime",
  "nlos-runtime-tokio",
  "nlos-store",

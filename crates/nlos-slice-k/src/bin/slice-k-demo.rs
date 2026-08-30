@@ -73,6 +73,13 @@ async fn demo_happy_chain(runtime: &Arc<SliceKRuntime>, adapter: &TokioRuntimeAd
         ),
     );
     println!(
+        "[slice-k] STEP 05b materialize-process done process={} generation={} agent={} domain={}",
+        short_hex(chain.process.process_id.as_bytes()),
+        chain.process.process_generation.get(),
+        short_hex(chain.process.agent_instance_id.as_bytes()),
+        short_hex(chain.process.isolation_domain_id.as_bytes()),
+    );
+    println!(
         "[slice-k] STEP 06 fiber-operation operation={} plan={} fiber={:?}",
         short_hex(chain.outcome.operation.operation_id.as_bytes()),
         short_hex(chain.plan_id.as_bytes()),
@@ -97,6 +104,7 @@ fn print_inspect(runtime: &SliceKRuntime, chain: &HappyChain, prefix: &str) {
         .inspect_chain(ChainQuery {
             package_id: chain.package.package_id,
             installation_id: Some(chain.installation_id),
+            process_id: Some(chain.process.process_id),
             task_id: chain.task_id,
             attempt_id: chain.attempt_id,
             permit_id: Some(chain.permit_id),
@@ -170,6 +178,15 @@ async fn demo_recovery(
         "[slice-k] STEP 14 reopen root {}",
         reopened.root().display()
     );
+    let survived = reopened
+        .process
+        .inspect_active_process_binding(prefix.process.process_id)
+        .expect("process binding survived the crash");
+    println!(
+        "[slice-k] STEP 14 process-binding survived process={} generation={}",
+        short_hex(survived.process_id.as_bytes()),
+        survived.process_generation.get(),
+    );
     let now_ms = reopened
         .wall_now_i64(seeded_key(0x2C, 99))
         .expect("post-reopen wall reading");
@@ -194,6 +211,7 @@ async fn demo_recovery(
         .inspect_chain(ChainQuery {
             package_id: PackageId::from_bytes([0x2C; 16]),
             installation_id: Some(prefix.installation_id),
+            process_id: Some(prefix.process.process_id),
             task_id: prefix.task_id,
             attempt_id: prefix.attempt_id,
             permit_id: Some(prefix.permit_id),

@@ -46,9 +46,9 @@ use nlos_task::{
     TaskStoreError, artifact_publication_plan_root, empty_effect_history_root,
 };
 use nlos_types::{
-    AgentInstanceId, ArtifactId, CallbackId, CancellationScopeId, CommitPermitId, ExecutionFiberId,
-    Generation, IdempotencyKey, OperationId, ProcessId, ReceiptId, ResourceGroupId,
-    SchedulerDomainId, TaskAttemptId, TaskId, TaskSnapshotId,
+    ArtifactId, CallbackId, CancellationScopeId, CommitPermitId, ExecutionFiberId, Generation,
+    IdempotencyKey, OperationId, ReceiptId, ResourceGroupId, SchedulerDomainId, TaskAttemptId,
+    TaskId, TaskSnapshotId,
 };
 
 fn slice_runtime(name: &str) -> (TempDir, Arc<SliceKRuntime>) {
@@ -260,13 +260,16 @@ async fn run_competitor_write(
         attempt_id: party.attempt_id,
         attempt_generation: Generation::INITIAL,
     };
+    let binding = runtime
+        .materialize_process(seed, task_id, party.attempt_id, Generation::INITIAL)
+        .expect("materialize competitor process binding");
     let spec = FiberSpec {
         fiber_id: ExecutionFiberId::from_bytes([seed.wrapping_add(50); 16]),
         fiber_generation: Generation::INITIAL,
-        agent_instance_id: AgentInstanceId::from_bytes([seed.wrapping_add(51); 16]),
-        agent_generation: Generation::INITIAL,
-        process_id: ProcessId::from_bytes([seed.wrapping_add(52); 16]),
-        process_generation: Generation::INITIAL,
+        agent_instance_id: binding.agent_instance_id,
+        agent_generation: binding.agent_instance_generation,
+        process_id: binding.process_id,
+        process_generation: binding.process_generation,
         task_attempt_id: Some(party.attempt_id),
         cancellation_scope_id: party.scope_id,
         cancellation_generation: Generation::INITIAL,

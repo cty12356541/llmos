@@ -19,6 +19,7 @@ nlos-clock = { path = "../nlos-clock" }
 nlos-commit-coordinator = { path = "../nlos-commit-coordinator" }
 nlos-identity = { path = "../nlos-identity" }
 nlos-operation = { path = "../nlos-operation" }
+nlos-process = { path = "../nlos-process" }
 nlos-runtime = { path = "../nlos-runtime" }
 nlos-runtime-tokio = { path = "../nlos-runtime-tokio" }
 nlos-store = { path = "../nlos-store" }

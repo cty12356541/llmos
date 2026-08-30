@@ -20,9 +20,9 @@
 //! slice's first integration proof. It invents **no** authority semantics:
 //!
 //! - [`SliceKRuntime`] only fixes sub-paths and opens the landed
-//!   authorities together (`nlos-identity`, `nlos-artifact`,
-//!   `nlos-application`, `nlos-task`, `nlos-clock`, `nlos-store`'s
-//!   operation authority);
+//!   authorities together (`nlos-identity`, `nlos-process`,
+//!   `nlos-artifact`, `nlos-application`, `nlos-task`, `nlos-clock`,
+//!   `nlos-store`'s operation authority);
 //! - [`package`] composes the landed sign/verify/install APIs
 //!   (`ed25519-dalek` appears only on the producer side of the fixture,
 //!   exactly like the `nlos-artifact` signature tests);
