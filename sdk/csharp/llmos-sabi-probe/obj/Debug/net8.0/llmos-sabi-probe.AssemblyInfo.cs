@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("llmos-sabi-probe")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+bb93e2fbd53cafde0933ebc07f83b4c70f7072e1")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+afd05ae71b39e62eaa55487e3cb49e4527d89d36")]
 [assembly: System.Reflection.AssemblyProductAttribute("llmos-sabi-probe")]
 [assembly: System.Reflection.AssemblyTitleAttribute("llmos-sabi-probe")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

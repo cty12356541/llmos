@@ -537,6 +537,7 @@ public static class SabiCodec
                     (byte[] v7, int n7) = Wire.Bytes(buf, i);
                     var h = new CapabilityHandle();
                     Unmarshal(h, v7);
+                    m.CapabilityHandles.Add(h);
                     i += n7;
                     break;
                 case 8 when wt == WireType.Len:

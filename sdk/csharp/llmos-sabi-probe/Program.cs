@@ -220,8 +220,9 @@ Run("wire: TestBytesHelpers", () =>
 });
 
 // ----------------------------------------------------------------------
-// Golden cases (mirror sdk/go/sabi/golden_test.go; the mandated golden gate
-// is the two files also required of this probe: Envelope-v1 and
+// Golden cases (mirror sdk/go/sabi/golden_test.go case-for-case; the golden
+// gate is the full four-file sabi set the Go lane asserts: Envelope-v1,
+// Envelope-common-request-v1, Envelope-common-uncertain-v1, and
 // PrincipalHandshake-v1).
 // ----------------------------------------------------------------------
 
@@ -260,6 +261,117 @@ Run("sabi: TestEnvelopeGolden (byte-equal + decode fields + roundtrip)", () =>
         "oneof common_context must be unset in Envelope-v1 golden");
 
     RoundtripGolden("Envelope-v1", golden, g =>
+    {
+        var m = new Envelope();
+        SabiCodec.Unmarshal(m, g);
+        return SabiCodec.Marshal(m);
+    });
+});
+
+Run("sabi: TestEnvelopeCommonRequestGolden (byte-equal + decode fields + roundtrip)", () =>
+{
+    byte[] golden = GoldenBytes("nlos.sabi.Envelope-common-request-v1.hex");
+
+    var envelope = new Envelope
+    {
+        Schema = new SchemaIdentity { Name = "nlos.sabi.Envelope", Major = 1, Minor = 1 },
+        RequestID = Seq(0x00, 16),
+        Service = "operation",
+        Method = "cancel",
+        RequestContext = new SabiRequestContext
+        {
+            Caller = new CallerIdentity
+            {
+                PrincipalID = Repeat(0x01, 16),
+                ApplicationID = Repeat(0x02, 16),
+                ProcessID = Repeat(0x03, 16),
+                ProcessGeneration = 7,
+            },
+            ActivityContext = Encoding.UTF8.GetBytes("trace"),
+            TaskExecutionBinding = new TaskExecutionBinding
+            {
+                TaskAttemptID = Repeat(0x04, 16),
+                TaskAuthorityTerm = 9,
+                TaskControlEpoch = 10,
+                CancelEpoch = 11,
+                PermitEpoch = 12,
+                IsolationDomainGeneration = 13,
+            },
+            CorrelationID = Repeat(0x05, 16),
+            IdempotencyKey = Repeat(0x06, 16),
+            DeadlineMonotonicNS = 123456,
+            CapabilityHandles = new List<CapabilityHandle> { new() { Slot = 11, Generation = 2 } },
+            ReservationHandle = new CapabilityHandle { Slot = 12, Generation = 3 },
+            ProposalOrInputDigestSHA256 = Repeat(0x07, 32),
+        },
+        Payload = Encoding.UTF8.GetBytes("abc"),
+    };
+    CheckBytes(SabiCodec.Marshal(envelope), golden, "encode Envelope-common-request-v1 != golden");
+
+    var decoded = new Envelope();
+    SabiCodec.Unmarshal(decoded, golden);
+    var rc = decoded.RequestContext;
+    Check(rc != null && decoded.ResponseContext == null, "request arm must be the set oneof");
+    Check(rc!.Caller != null && rc.Caller.ProcessGeneration == 7, "decoded caller process_generation");
+    CheckBytes(rc.IdempotencyKey, Repeat(0x06, 16), "decoded idempotency key");
+    Check(rc.DeadlineMonotonicNS == 123456, "decoded deadline");
+    Check(rc.CapabilityHandles.Count == 1 && rc.CapabilityHandles[0].Slot == 11 && rc.CapabilityHandles[0].Generation == 2,
+        "decoded capability handles");
+    Check(rc.ReservationHandle != null && rc.ReservationHandle.Slot == 12 && rc.ReservationHandle.Generation == 3,
+        "decoded reservation handle");
+    var binding = rc.TaskExecutionBinding;
+    Check(binding != null && binding.TaskAuthorityTerm == 9 && binding.TaskControlEpoch == 10 &&
+        binding.CancelEpoch == 11 && binding.PermitEpoch == 12 && binding.IsolationDomainGeneration == 13,
+        "decoded task execution binding");
+
+    RoundtripGolden("Envelope-common-request-v1", golden, g =>
+    {
+        var m = new Envelope();
+        SabiCodec.Unmarshal(m, g);
+        return SabiCodec.Marshal(m);
+    });
+});
+
+Run("sabi: TestEnvelopeCommonUncertainGolden (byte-equal + decode fields + roundtrip)", () =>
+{
+    byte[] golden = GoldenBytes("nlos.sabi.Envelope-common-uncertain-v1.hex");
+
+    var envelope = new Envelope
+    {
+        Schema = new SchemaIdentity { Name = "nlos.sabi.Envelope", Major = 1, Minor = 1 },
+        RequestID = Seq(0x00, 16),
+        Service = "operation",
+        Method = "cancel",
+        ResponseContext = new SabiResponseContext
+        {
+            CorrelationID = Repeat(0x05, 16),
+            Operation = new OperationReference { OperationID = Repeat(0x08, 16), Generation = 4 },
+            Receipts = new List<ReceiptReference> { new() { ReceiptID = Repeat(0x09, 16) } },
+            Failure = new SabiFailure
+            {
+                Code = SabiErrorCode.Uncertain,
+                Retry = RetryDirective.QueryOperationOrRetrySameIdempotencyKey,
+                SafeMessage = "outcome requires reconciliation",
+            },
+        },
+    };
+    CheckBytes(SabiCodec.Marshal(envelope), golden, "encode Envelope-common-uncertain-v1 != golden");
+
+    var decoded = new Envelope();
+    SabiCodec.Unmarshal(decoded, golden);
+    var rc = decoded.ResponseContext;
+    Check(rc != null && decoded.RequestContext == null, "response arm must be the set oneof");
+    Check(rc!.Operation != null && rc.Operation.Generation == 4, "decoded operation generation");
+    Check(rc.Receipts.Count == 1 && rc.Receipts[0].ReceiptID.AsSpan().SequenceEqual(Repeat(0x09, 16)),
+        "decoded receipts");
+    Check(rc.Failure != null &&
+        rc.Failure.Code == SabiErrorCode.Uncertain &&
+        rc.Failure.Retry == RetryDirective.QueryOperationOrRetrySameIdempotencyKey &&
+        rc.Failure.SafeMessage == "outcome requires reconciliation",
+        "decoded failure face");
+    Check(decoded.Payload.Length == 0, "uncertain golden carries no payload");
+
+    RoundtripGolden("Envelope-common-uncertain-v1", golden, g =>
     {
         var m = new Envelope();
         SabiCodec.Unmarshal(m, g);
