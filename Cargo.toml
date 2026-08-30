@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/nlos-application",
     "crates/nlos-canonical",
     "crates/nlos-clock",
     "crates/nlos-ipc",

@@ -1,0 +1,25 @@
+[package]
+name = "nlos-application"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+nlos-artifact = { path = "../nlos-artifact" }
+nlos-types = { path = "../nlos-types" }
+rusqlite.workspace = true
+# Authority-derived ApplicationId/InstallationId (domain-separated SHA-256),
+# mirroring the nlos-artifact receipt-id derivation precedent.
+sha2.workspace = true
+
+[dev-dependencies]
+ed25519-dalek.workspace = true
+nlos-identity = { path = "../nlos-identity" }
+# Test-only fault-injection VFS shim for the kill-window matrix
+# (tests/application_fault_injection.rs); never a production dependency.
+nlos-store-fault = { path = "../nlos-store-fault" }
+
+[lints]
+workspace = true
