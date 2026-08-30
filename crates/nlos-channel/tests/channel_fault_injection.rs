@@ -259,7 +259,11 @@ impl Drop for SandboxCwd {
 /// root (`SQLite` ignores unrecognized query parameters).
 fn fault_root(base: &Path) -> String {
     let database = base.join("channel-authority.db");
-    format!("file:{}?vfs={VFS_NAME}&tail=", database.display())
+    // SQLite URI paths need forward slashes; Windows drive letters get the
+    // `file:///C:/...` authority form or the URI fails to resolve.
+    let uri_path = database.to_string_lossy().replace('\\', "/");
+    let trimmed = uri_path.trim_start_matches('/');
+    format!("file:///{trimmed}?vfs={VFS_NAME}&tail=")
 }
 
 /// Opens the authority with its connection on the fault VFS. Pragmas and

@@ -362,10 +362,11 @@ fn channel_database(base: &Path) -> PathBuf {
 /// The URI root that routes the wait authority's connection through the
 /// registered fault VFS (see the header deviation note).
 fn fault_wait_root(base: &Path) -> String {
-    format!(
-        "file:{}?vfs={VFS_NAME}&tail=",
-        wait_database(base).display()
-    )
+    // SQLite URI paths need forward slashes; Windows drive letters get the
+    // `file:///C:/...` authority form or the URI fails to resolve.
+    let uri_path = wait_database(base).to_string_lossy().replace('\\', "/");
+    let trimmed = uri_path.trim_start_matches('/');
+    format!("file:///{trimmed}?vfs={VFS_NAME}&tail=")
 }
 
 fn register_fault_vfs() {
