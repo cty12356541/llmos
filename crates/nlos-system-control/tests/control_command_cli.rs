@@ -548,3 +548,95 @@ async fn cli_and_in_process_paths_produce_byte_identical_receipts() {
     server.abort();
     fs::remove_file(&socket_path).unwrap();
 }
+
+/// B-CONTROL-003 evidence: natural-language sentences compile to the exact
+/// [`ControlCommand`]s a caller would construct directly, and dispatching
+/// each over the same real Unix socket yields byte-identical receipts —
+/// the first constructive slice of ROAD-B-005's "NL and CLI walk the same
+/// ControlCommand/Receipt path" requirement.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn nl_sentences_compile_to_the_same_socket_receipts_as_direct_commands() {
+    use nlos_system_control::control::dispatch_over_socket;
+    use nlos_system_control::nl::{NL_ACK_REASON, parse_nl_command};
+
+    use socket_harness::{bind_socket, serve_forever};
+
+    let database = Arc::new(TestDatabase::new());
+    let authority = Arc::new(database.open());
+    let plan_id = create_escalated_plan(authority.as_ref());
+    let plan_bytes: [u8; 16] = *plan_id.as_bytes();
+    let plan_hex = hex(&plan_bytes);
+    let socket_path = database.path.with_extension("sock");
+    let listener = bind_socket(&socket_path);
+    let server = serve_forever(listener, Arc::clone(&authority), health(&plan_id));
+    let stub_health = health(&plan_id);
+    let control = RecoverySystemControl::new(authority.as_ref(), &stub_health, &CapabilityPolicy);
+
+    // Inspect: the NL sentence and the direct construction are the same
+    // command, so both socket dispatches answer with byte-identical receipts.
+    let nl_inspect = parse_nl_command("  Inspect   Health ").unwrap();
+    assert_eq!(nl_inspect, ControlCommand::InspectHealth);
+    assert_eq!(
+        parse_nl_command("查看健康").unwrap(),
+        ControlCommand::InspectHealth
+    );
+    let direct_inspect = dispatch_over_socket(&socket_path, &ControlCommand::InspectHealth)
+        .await
+        .unwrap();
+    let nl_inspect_receipt = dispatch_over_socket(&socket_path, &nl_inspect)
+        .await
+        .unwrap();
+    assert_eq!(direct_inspect.to_bytes(), nl_inspect_receipt.to_bytes());
+    let inspect_in_process =
+        dispatch_in_process(&control, &nl_inspect, MONOTONIC_NOW_NS, WALL_NOW_MS).unwrap();
+    assert_eq!(inspect_in_process.to_bytes(), direct_inspect.to_bytes());
+
+    // Acknowledge: the English and Chinese sentences both compile to the
+    // same fully-determined mutation the direct construction spells out.
+    let direct_ack = ControlCommand::AcknowledgeRecoveryAlert {
+        control_command_id: plan_bytes,
+        plan_id: plan_bytes,
+        expected_total_failures: 1,
+        reason: NL_ACK_REASON.to_owned(),
+    };
+    let english_ack =
+        parse_nl_command(&format!("acknowledge alert {plan_hex} expecting 1")).unwrap();
+    assert_eq!(english_ack, direct_ack);
+    let nl_ack = parse_nl_command(&format!("确认告警 {plan_hex} 期望 1")).unwrap();
+    assert_eq!(nl_ack, direct_ack);
+    let direct_ack_receipt = dispatch_over_socket(&socket_path, &direct_ack)
+        .await
+        .unwrap();
+    let nl_ack_receipt = dispatch_over_socket(&socket_path, &nl_ack).await.unwrap();
+    let ControlOutcome::Acknowledged { receipt_id } = direct_ack_receipt.outcome.as_ref().unwrap()
+    else {
+        panic!("expected acknowledgement receipt");
+    };
+    assert_eq!(receipt_id.len(), 16);
+    assert_eq!(direct_ack_receipt.to_bytes(), nl_ack_receipt.to_bytes());
+    let ack_in_process =
+        dispatch_in_process(&control, &nl_ack, MONOTONIC_NOW_NS, WALL_NOW_MS).unwrap();
+    assert_eq!(ack_in_process.to_bytes(), direct_ack_receipt.to_bytes());
+    assert!(
+        authority
+            .list_artifact_recovery_alerts(8)
+            .unwrap()
+            .first()
+            .unwrap()
+            .acknowledgement
+            .is_some()
+    );
+
+    // Out-of-grammar natural language is a typed rejection before any
+    // dispatch; it never reaches the socket.
+    assert!(matches!(
+        parse_nl_command("pause everything"),
+        Err(nlos_system_control::control::ControlError::InvalidCommand(
+            _
+        ))
+    ));
+
+    server.abort();
+    fs::remove_file(&socket_path).unwrap();
+}

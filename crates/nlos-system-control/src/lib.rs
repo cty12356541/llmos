@@ -43,6 +43,16 @@ pub const SUBMIT_METHOD: &str = "submit";
 /// [§25.3]: <https://github.com/cty12356541/llmos/blob/main/docs/design/06-架构设计总纲-v0.5.md>
 pub mod control;
 
+/// Restricted-grammar natural-language control prefix ([§1.3] of the
+/// architecture master plan): a whitelist compiler front-end that turns
+/// simple English/Chinese imperative sentences into the same
+/// [`control::ControlCommand`] the CLI and structured API dispatch. It is a
+/// compiler, not a privileged path — no fuzzy matching, no free-form NLU,
+/// and out-of-grammar input is a typed rejection naming the legal forms.
+///
+/// [§1.3]: <https://github.com/cty12356541/llmos/blob/main/docs/design/06-架构设计总纲-v0.5.md>
+pub mod nl;
+
 /// Deterministic OpenMetrics text exposition (`text/plain; version=0.0.4`)
 /// for the recovery metrics catalog: the first concrete backend for
 /// [`RecoveryMetricsSink`], with no scraping transport. See the module
