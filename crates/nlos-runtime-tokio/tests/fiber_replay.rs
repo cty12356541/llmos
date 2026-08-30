@@ -451,11 +451,20 @@ async fn resume_redrives_pending_wait_to_live_wait_and_deliver_wakes_it() {
     assert_eq!(armed_record.wait_id, durable.wait_id);
     assert_eq!(armed_record.state, WaitState::Pending);
     assert_stays_pending(&mut armed_wait).await;
-    // The re-arm put the new incarnation into its wait state.
-    assert_eq!(
-        adapter.inspect(handle).expect("inspect"),
-        FiberState::WaitingIo
-    );
+    // The re-armed incarnation sets its wait state only once the runtime
+    // polls it; CI runners schedule slower than the resume call returns, so
+    // yield until the state settles instead of asserting immediately.
+    // Pure `yield_now` polling: blocking sleeps would starve the very task
+    // we are waiting for under a current-thread runtime.
+    let mut state = adapter.inspect(handle).expect("inspect");
+    for _ in 0..100_000 {
+        if state == FiberState::WaitingIo {
+            break;
+        }
+        tokio::task::yield_now().await;
+        state = adapter.inspect(handle).expect("inspect");
+    }
+    assert_eq!(state, FiberState::WaitingIo);
 
     assert_eq!(enqueue(&pair.channel, channel_id, 50), 1);
     let wake = notify(&pair.wait, channel_id, 1, 30);

@@ -11,17 +11,19 @@ use nlos_ipc::handshake::{
     decode_challenge_wire, encode_attestation_wire, encode_challenge_wire, issue_challenge,
     principal_handshake_message, verify_attestation,
 };
-use nlos_ipc::{
-    FramedIo, LocalRpcClient, OutboundResponse, PeerAuthorizer, PeerIdentity, TransportConfig,
-    serve_one,
-};
+#[cfg(unix)]
+use nlos_ipc::{FramedIo, LocalRpcClient, OutboundResponse, serve_one};
+use nlos_ipc::{PeerAuthorizer, PeerIdentity, TransportConfig};
 use nlos_schema::sabi::v1::{
-    Envelope, ExchangeRequest, ExchangeResponse, PrincipalHandshakeAttestation, SchemaIdentity,
+    Envelope, ExchangeRequest, PrincipalHandshakeAttestation, SchemaIdentity,
 };
+#[cfg(unix)]
+use nlos_schema::sabi::v1::ExchangeResponse;
 use nlos_schema::{CompatibilityError, SABI_ENVELOPE_SCHEMA, principal_handshake_schema_identity};
 use nlos_types::{IdempotencyKey, PrincipalId};
 use prost::Message as _;
 
+#[cfg(unix)]
 fn config() -> TransportConfig {
     TransportConfig::new(
         4_096,
@@ -110,8 +112,10 @@ fn attestation_for(
     .unwrap()
 }
 
+#[cfg(unix)]
 struct Allow;
 
+#[cfg(unix)]
 impl PeerAuthorizer for Allow {
     fn authorize(&self, _: &PeerIdentity) -> Result<(), String> {
         Ok(())
@@ -447,6 +451,7 @@ async fn handshake_roundtrip_over_real_unix_socket_then_authenticated_exchange()
     std::fs::remove_file(binding).unwrap();
 }
 
+#[cfg(unix)]
 fn authenticated_request() -> ExchangeRequest {
     ExchangeRequest {
         envelope: Some(Envelope {
