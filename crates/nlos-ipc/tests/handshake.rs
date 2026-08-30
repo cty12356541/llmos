@@ -1,5 +1,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+#[cfg(unix)]
+use std::time::Duration;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use ed25519_dalek::{Signer, SigningKey};
 use nlos_identity::{
@@ -13,13 +15,16 @@ use nlos_ipc::handshake::{
 };
 #[cfg(unix)]
 use nlos_ipc::{FramedIo, LocalRpcClient, OutboundResponse, serve_one};
+#[cfg(unix)]
 use nlos_ipc::{PeerAuthorizer, PeerIdentity, TransportConfig};
-use nlos_schema::sabi::v1::{
-    Envelope, ExchangeRequest, PrincipalHandshakeAttestation, SchemaIdentity,
-};
+#[cfg(unix)]
+use nlos_schema::SABI_ENVELOPE_SCHEMA;
 #[cfg(unix)]
 use nlos_schema::sabi::v1::ExchangeResponse;
-use nlos_schema::{CompatibilityError, SABI_ENVELOPE_SCHEMA, principal_handshake_schema_identity};
+use nlos_schema::sabi::v1::PrincipalHandshakeAttestation;
+#[cfg(unix)]
+use nlos_schema::sabi::v1::{Envelope, ExchangeRequest, SchemaIdentity};
+use nlos_schema::{CompatibilityError, principal_handshake_schema_identity};
 use nlos_types::{IdempotencyKey, PrincipalId};
 use prost::Message as _;
 
