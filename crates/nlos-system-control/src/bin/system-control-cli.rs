@@ -32,8 +32,7 @@
 use std::process::ExitCode;
 
 use nlos_system_control::control::{
-    ControlCommand, ControlError, ControlOutcome, ControlReceipt, dispatch_over_socket,
-    parse_hex_id, receipt_to_hex,
+    ControlCommand, ControlError, ControlOutcome, ControlReceipt, parse_hex_id, receipt_to_hex,
 };
 
 const USAGE: &str = "usage: system-control-cli <SOCKET> inspect-health \
@@ -103,6 +102,7 @@ fn summary(receipt: &ControlReceipt) -> String {
 
 #[cfg(unix)]
 async fn run() -> Result<ExitCode, ControlError> {
+    use nlos_system_control::control::dispatch_over_socket;
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let Some(socket) = arguments.first().cloned() else {
         eprintln!("{USAGE}");

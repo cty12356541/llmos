@@ -6,6 +6,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -149,6 +150,7 @@ fn health(plan_id: &ArtifactCommitPlanId) -> StubHealth {
     })
 }
 
+#[cfg(unix)]
 struct AllowPeer;
 
 impl nlos_ipc::PeerAuthorizer for AllowPeer {
