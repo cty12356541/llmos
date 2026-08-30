@@ -67,3 +67,30 @@
 3. **stale generation 的覆盖形态**：`IdentityAuthority` 当前为 bootstrap 单 key 模型（无独立 rotate-to-new-key API），key generation 只经 revocation 前进；「stale generation」以 revoked（generation 前进后旧 key 一律 `KeyRevoked`）与非当前 key material 签名（`SignatureInvalid`）两类测试覆盖。
 4. **握手复用 SemanticSigning key purpose**：`verify_capability_command_signature` 校验 `KeyPurpose::SemanticSigning`；专用 handshake key purpose 需改 `nlos-identity`（本车道写集外），暂复用 principal 语义签名密钥。
 5. **channel binding 推导为调用方接线**：设施只强制「非空、有界、双端一致、入签」。各传输的 binding 推导策略（如 Unix peer credential 元组编码）由接线切片补充；测试以 resolved endpoint 路径为 binding。
+
+## 2026-08-30 增量验证：握手传输接线设施（ADR-0011 决定 1 的传输闭环）
+
+> 状态：`PARTIAL PASS`（可复用「认证后服务/认证后连接」封装落地；三服务接线为波次 3）
+
+### 已实现事实
+
+1. **API（`crates/nlos-ipc/src/handshake/transport.rs`，全部 `#[cfg(unix)]`）**：`endpoint_channel_binding(path)` 以域分隔 `SHA-256("llmos/ipc-channel-binding/v1" ‖ endpoint path bytes)` 派生定长 32 字节 channel binding（任意路径长度均满足 binding 边界，双端传同一 resolved path 即一致）；`ServerHandshakeContext::new(endpoint, nonce_capacity)` 持有派生 binding + `HandshakeNonceRegistry` 的服务端薄封装；`authenticated_serve_one(listener, config, identity, nonces, endpoint_binding, authorizer, handler, next_nonce, verified_at_ms)` = accept → OS 凭证 pre-gate → 发 challenge wire → 收 attestation wire → `verify_attestation` → 通过后进既有 `serve_one` 语义；`authenticated_connect(path, config, principal, sign)` = connect → 收 challenge → `principal_handshake_message` 摘要经 caller 注入 `sign` 闭包签名 → 发 attestation → 返回 `FramedIo`（可直接接 `LocalRpcClient`/`serve_one`）。签名走回调而非新增 ed25519 主依赖（`nlos-ipc` 现有 deps 无 ed25519；测试经既有 dev-dep `ed25519_dalek` 提供 signer）。
+2. **语义决定**：(a) **nonce 消耗时机**——`verify_attestation` 在验签之前消费一次性 nonce，消费后不返还 registry：握手失败的 nonce 按设计烧毁，被捕获的 attestation 无法对同一 nonce 重放（channel-binding mismatch 是唯一在消耗前拒绝的路径，不烧诚实 client 的 nonce，行为与原语层一致）；(b) **绑定派生**——两端各自从 endpoint 路径派生，server 只核对其本地期望值，attestation 携带值不一致即 `ChannelBindingMismatch`；(c) **pre-gate 双跑**——authorizer 在握手前先跑一次（错 peer 零副作用拒绝、challenge 未发出）且 `serve_one` 内部原语义不变（第二次幂等 authorize）；(d) **握手期越界帧**——任何非合法 attestation 帧走 `decode_attestation_wire` → typed `HandshakeError::Schema` 拒绝；(e) **`HandshakeError` 新增 2 个平台无关变体** `PeerAuthorization(String)` 与 `Transport(IpcError)`（framing/I/O/超时在握手期的 typed 包装），非 unix 编译面零新增 item。
+3. **测试矩阵（`crates/nlos-ipc/tests/handshake_transport.rs`，11 项全过，`#![cfg(unix)]`）**：binding 派生确定性/有界；ServerHandshakeContext 派生与 registry 容量；**真实 Unix socket 全链**（真 bind/accept → `authenticated_connect` 挑战应答 → `IdentityAuthority` 真验签返回当前 key generation 四元组 → 同连接 authenticated Exchange echo + nonce 已消费断言）；坏签名（全零签名 → `SignatureInvalid` + server 关闭连接 client 观测 EOF + nonce 已烧毁）；**attestation 重放**（conn1 捕获 attestation 字节 → conn2 fresh nonce 下原样重放 → `NonceRejected`，client 观测连接关闭）；channel-binding 不匹配（`ChannelBindingMismatch` 且 nonce 未烧毁、仍可消费）；未知 principal（`PrincipalUnknown`）；握手期越界帧（合法 `ExchangeRequest` 提前注入 → `Schema`）；pre-gate 拒绝（`PeerAuthorization` + 挑战从未发出：nonce 从未登记）；静默 client 超时（`Transport(Timeout(Read))` fail-closed）；served 阶段 handler 失败（`AuthenticatedServeOutcome` 同帧携带 verified 身份与 `Err(ServiceFailure)`，client 按 `serve_one` 既有语义观测 EOF）。
+4. **Windows/cfg 纪律**：传输集成整体 `#[cfg(unix)]`（模块声明级）；测试文件整文件 `#![cfg(unix)]`；非 unix 编译面唯一新增是 `HandshakeError` 两个变体（`Display`/`source` 无条件臂引用，无 dead-code/unused 风险）。
+
+### 验证（全部本机运行，macOS/darwin，stable 1.97.0）
+
+- `cargo test -p nlos-ipc`：**32 passed / 0 failed**（lib 0 + framing 7 + handshake 12 + handshake_transport 11 + platform 2 + doc 0）。
+- `cargo clippy -p nlos-ipc --all-targets -- -D warnings`：通过（0 error）。
+- `cargo +nightly-2026-08-01 clippy -p nlos-ipc --all-targets -- -D warnings`：通过（0 error，防新 lint）。
+- `cargo fmt -p nlos-ipc` 后 `cargo fmt -p nlos-ipc -- --check`（stable）：通过；`cargo +nightly-2026-08-01 fmt -p nlos-ipc -- --check`：通过。
+- 未运行：`cargo check -p nlos-ipc --target x86_64-pc-windows-msvc`——本机交叉编译在 `libsqlite3-sys`（nlos-identity 依赖链）build script 失败，属 macOS host 交叉环境限制，非本车道 cfg 缺陷；Windows 编译面按先例由三平台 + MSRV CI 背书。named-pipe 握手传输（Windows 面）本切片显式不做。
+
+### 已知限制
+
+1. **三服务接线为波次 3**：SystemControl / TakeoverControl / WaitControl 的连接入口尚未替换为 `authenticated_serve_one`/`authenticated_connect`；本切片只交付可复用传输封装（ADR-0011 决定 1 的传输闭环，不含决定 2 命令级签名贯穿的接线消费）。
+2. **AuthorityClock 未接入**：`verified_at_ms` 仍由调用方传入；接入由 W2-E 车道（nlos-clock）落地后统一收口。
+3. **nonce 熵为调用方注入**：`authenticated_serve_one` 的 `next_nonce: FnMut() -> [u8; 32]` 刻意不带随机数依赖，生产接线必须注入 OS 级 RNG；测试以确定性序列生成器验证协议语义。registry 只防「同一 nonce 值 outstanding 重复」与「单次消费」，nonce 值复用（随机性不足）不在设施防御面。
+4. **签名回调不可失败语义以 typed error 表达**：`sign: Fn(&[u8; 32]) -> Result<[u8; 64], HandshakeError>`；HSM 类可失败 signer 可直接映射，无需 panic。
+5. **served 阶段失败无 failure response**：镜像既有 `serve_one` 语义（handler 错误直接返回、不向 peer 发送 `SabiFailure`），认证后连接的失败响应策略仍属服务接线切片。

@@ -24,12 +24,17 @@
 //! against its *local* expectation and rejects any attestation carrying
 //! different binding bytes, so client-supplied binding values cannot weaken
 //! the pin.
+//!
+//! On Unix, the [`transport`] submodule composes these primitives with the
+//! framed Unix-socket transport into ready-to-use authenticated
+//! serve/connect entry points.
 
 use std::collections::HashSet;
 use std::error::Error;
 use std::fmt;
 use std::sync::{Mutex, MutexGuard};
 
+use crate::IpcError;
 use nlos_identity::{
     IdentityAuthority, IdentityAuthorityError, VerifiedCapabilityCommandSigner,
     VerifyCapabilityCommandSignatureRequest,
@@ -63,6 +68,8 @@ pub enum HandshakeError {
     KeyNotYetValid,
     KeyExpired,
     Identity(IdentityAuthorityError),
+    PeerAuthorization(String),
+    Transport(IpcError),
 }
 
 impl fmt::Display for HandshakeError {
@@ -94,6 +101,10 @@ impl fmt::Display for HandshakeError {
             Self::KeyNotYetValid => formatter.write_str("handshake signing key is not yet valid"),
             Self::KeyExpired => formatter.write_str("handshake signing key has expired"),
             Self::Identity(error) => write!(formatter, "identity authority failure: {error}"),
+            Self::PeerAuthorization(reason) => {
+                write!(formatter, "handshake peer authorization denied: {reason}")
+            }
+            Self::Transport(error) => write!(formatter, "handshake transport failure: {error}"),
         }
     }
 }
@@ -103,6 +114,7 @@ impl Error for HandshakeError {
         match self {
             Self::Schema(error) => Some(error),
             Self::Identity(error) => Some(error),
+            Self::Transport(error) => Some(error),
             _ => None,
         }
     }
@@ -402,3 +414,6 @@ pub fn decode_attestation_wire(
 ) -> Result<PrincipalHandshakeAttestation, HandshakeError> {
     decode_principal_handshake_attestation(wire).map_err(HandshakeError::Schema)
 }
+
+#[cfg(unix)]
+pub mod transport;
