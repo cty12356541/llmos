@@ -1,0 +1,30 @@
+[package]
+name = "nlos-slice-k"
+description = "Slice K first longitudinal slice: signed Package -> install Application -> Task/Attempt -> CommitPermit -> Fiber Operation -> Artifact + TaskCommitReceipt -> cancel/crash recovery -> inspect, assembled from the landed authorities only."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "slice-k-demo"
+path = "src/bin/slice-k-demo.rs"
+
+[dependencies]
+ed25519-dalek.workspace = true
+nlos-application = { path = "../nlos-application" }
+nlos-artifact = { path = "../nlos-artifact" }
+nlos-clock = { path = "../nlos-clock" }
+nlos-commit-coordinator = { path = "../nlos-commit-coordinator" }
+nlos-identity = { path = "../nlos-identity" }
+nlos-operation = { path = "../nlos-operation" }
+nlos-runtime = { path = "../nlos-runtime" }
+nlos-runtime-tokio = { path = "../nlos-runtime-tokio" }
+nlos-store = { path = "../nlos-store" }
+nlos-task = { path = "../nlos-task" }
+nlos-types = { path = "../nlos-types" }
+tokio.workspace = true
+
+[lints]
+workspace = true

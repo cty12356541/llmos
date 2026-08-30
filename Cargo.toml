@@ -22,6 +22,7 @@ members = [
     "crates/nlos-resource",
     "crates/nlos-artifact",
     "crates/nlos-commit-coordinator",
+    "crates/nlos-slice-k",
     "crates/nlos-system-control",
     "crates/nlos-takeover-control",
     "crates/nlos-topic",

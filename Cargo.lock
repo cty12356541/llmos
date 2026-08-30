@@ -566,6 +566,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "nlos-slice-k"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "nlos-application",
+ "nlos-artifact",
+ "nlos-clock",
+ "nlos-commit-coordinator",
+ "nlos-identity",
+ "nlos-operation",
+ "nlos-runtime",
+ "nlos-runtime-tokio",
+ "nlos-store",
+ "nlos-task",
+ "nlos-types",
+ "tokio",
+]
+
+[[package]]
 name = "nlos-store"
 version = "0.1.0"
 dependencies = [
