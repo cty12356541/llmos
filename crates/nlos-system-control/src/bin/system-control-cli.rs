@@ -31,20 +31,24 @@
 
 use std::process::ExitCode;
 
+#[cfg(unix)]
 use nlos_system_control::control::{
     ControlCommand, ControlError, ControlOutcome, ControlReceipt, parse_hex_id, receipt_to_hex,
 };
 
+#[cfg(unix)]
 const USAGE: &str = "usage: system-control-cli <SOCKET> inspect-health \
 | inspect-task <PLAN_ID_HEX_32> \
 | ack-recovery-alert <COMMAND_ID_HEX_32> <PLAN_ID_HEX_32> <EXPECTED_FAILURES> <REASON>";
 
+#[cfg(unix)]
 fn parse_u64(value: &str) -> Result<u64, ControlError> {
     value
         .parse::<u64>()
         .map_err(|_| ControlError::InvalidCommand("expected failure count must be a u64"))
 }
 
+#[cfg(unix)]
 fn parsed_command(arguments: &[String]) -> Result<ControlCommand, ControlError> {
     let Some(operation) = arguments.first().map(String::as_str) else {
         return Err(ControlError::InvalidCommand("missing control operation"));
@@ -66,6 +70,7 @@ fn parsed_command(arguments: &[String]) -> Result<ControlCommand, ControlError> 
     }
 }
 
+#[cfg(unix)]
 fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
 
@@ -76,6 +81,7 @@ fn hex(bytes: &[u8]) -> String {
     output
 }
 
+#[cfg(unix)]
 fn summary(receipt: &ControlReceipt) -> String {
     match receipt.outcome.as_ref() {
         Ok(ControlOutcome::Inspected(inspection)) => format!(
