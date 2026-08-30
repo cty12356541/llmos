@@ -41,6 +41,11 @@ cargo test -p nlos-slice-k
     full_vertical_slice_produces_every_receipt_and_is_inspectable
     cancel_closes_attempt_fences_permit_and_runtime_scope
     drop_reopen_replays_durable_prefix_to_consistent_terminal_state
+  → competing_attempts 4 passed / 0 failed（2026-08-30 追加，见 §7）：
+    competing_attempts_cas_issues_exactly_one_permit_requester_a_first
+    competing_attempts_cas_issues_exactly_one_permit_requester_b_first
+    cancel_racing_a_live_permit_linearizes_permit_first_with_single_commit
+    cancel_before_any_permit_request_fails_closed_both_attempts
 cargo clippy -p nlos-slice-k --all-targets -- -D warnings            → 0 warning
 cargo +nightly-2026-08-01 clippy（同前）                              → 0 warning
 cargo fmt -p nlos-slice-k -- --check（双工具链）                       → 干净
@@ -65,7 +70,7 @@ cargo run -p nlos-slice-k --bin slice-k-demo                          → 跑通
 ## 5. 已知限制（如实声明，不冒充产品级）
 
 - **单机单进程**：全部权威为单写者 SQLite；纵切面未含跨进程 IPC（CLI 走进程内 dispatch 替身）、未含 ADR-0011 签名贯穿的线上传输。
-- **演示级而非产品级**：id/key 为种子 fixture 值；无并发多 Attempt 竞争、无 multi-party、无策略引擎；错误面为组装层透传。
+- **演示级而非产品级**：id/key 为种子 fixture 值；竞争语义已由进程内顺序线性化测试覆盖（§7），尚未覆盖真并发线程交织下的 permit CAS 竞争、无 multi-party、无策略引擎；错误面为组装层透传。
 - **NL 路径未接**：inspect/control 的自然语言面不存在，仅稳定文本输出可供后续 NL 层消费。
 - **crash 模型为 drop+reopen**：kill -9 类比（OS 页缓存存活），真实掉电由各权威自身既有的 fault 矩阵覆盖，本车道未重复建设。
 - **fiber replay 语义**：恢复靠 commit-coordinator 重放 durable 前缀（landed 机制），不是重跑 fiber future；进程内 fiber 状态机随进程消失。
@@ -74,3 +79,41 @@ cargo run -p nlos-slice-k --bin slice-k-demo                          → 跑通
 ## 6. PARTIAL_PASS 结论
 
 纵切面 12 步全部以已落地 API 贯通并有集成测试与可 grep 演示输出背书——这是议题 31 §6 Slice K 证据门的首次实体兑现；但按 §4/§5 的缺口与限制（Process 权威未物化、Application↔Task 无权威关联、无跨进程面、单机演示级），维持 `PARTIAL_PASS`，不宣称 Slice K 完成。
+
+## 7. 竞争场景补充证据（2026-08-30 追加：双 Attempt 竞争 CommitPermit + cancel/commit 竞态）
+
+- **定位**：议题 31 §6 证据门条 2-3（「同时启动两个竞争同一 TaskHead 的 TaskAttempt」「只有一个 Attempt 获得 CommitPermit」）与 ROAD-B-003 的**纵切面级前片**——在已贯通的 12 步纵切面上补齐竞争维度；不宣称 ROAD-B-003 全达成（跨 Task handle 泄漏、snapshot 漂移、真并发交织等仍开放）。
+- **写集**：仅 `crates/nlos-slice-k/tests/competing_attempts.rs`（新增）与本 §；`nlos-task` 等已落地权威零改动、只消费。
+- **构造**：同一 Task 上注册两个 Attempt（各自独立 snapshot bundle：不同 `snapshot_id`/`snapshot_digest`；各自独立 write set：不同 stage key → 不同 staging identity/digest/write_set_root；不同 idempotency key）。两组请求顺序（A 先 B 后；B 先 A 后）均测。fixture 复用 `SliceKRuntime`/`seeded_key`/`spawn_write_fiber`/`WriteFiberJob` 组装函数，未发明任何权威语义。
+
+### 7.1 场景矩阵与实测语义（按 TaskAuthority 已落地语义如实断言）
+
+| # | 场景 | 线性化结果（实测） | 关键断言 |
+|---|---|---|---|
+| 1 | 双 Attempt 请求 permit，A 先 B 后 | A `Issued`（attempt→`CommitPermit­ted`，`task.active_permit=Some(A)`）；B `Superseded{winner=A}`（attempt→`Superseded` 终态，**无 permit 行**） | 恰好一个 permit；`Superseded.winner.permit_id == A.permit_id`；head 保持 0 |
+| 2 | 同上，B 先 A 后 | 与 #1 对称（胜者换为 B） | 不变量集与请求顺序无关 |
+| 3 | 胜者完成提交 | fiber（operation→stage rev 2→plan）→ `converge_pending` 恰好 1 个 receipt，head 0→1，permit `Closed`，胜者 attempt→`Committed`；二次 drain 空 | head 单调且恰进一次；无双重提交；artifact head rev 2 |
+| 4 | 败者重试边界（新 key + 自己的 write_set 重新请求） | `Err(TaskStoreError::InvalidAttemptState { state: Superseded })` ——终态栅栏 fail-closed，零副作用 | head 不变；失败为 typed 错误而非新 permit |
+| 5 | cancel/commit 竞态：permit 先发、plan 已落、未收敛时 cancel | cancel `Applied{cancel_epoch=1, closed_attempts=[]}`——**permit 持有者（`CommitPermitted`）与已 `Superseded` 败者都不是 open candidate，cancel 不关闭任何 attempt、不清除 outstanding permit**（permit-first 线性化，`[TASK-CANCEL-002]`/`[TASK-COMMIT-003]` 已落地语义）；随后 converge 仍完成该 permit 的唯一提交 | 窗口内 head 保持 0（cancel 单独不推 head）；收敛后终态唯一且一致：head=1 且 `task.state=Cancelled`、`cancel_epoch=1` 并存；无双重终态；二次 cancel 换 key → `AlreadyCancelled{cancel_epoch:1}` 不再递增；二次 drain 空 |
+| 6 | cancel 先于任何 permit 请求（双 Attempt 均 open candidate） | cancel `Applied{cancel_epoch=1, closed_attempts=[A,B]}`（各带 closure receipt）；两 Attempt 后续 permit 请求均 `CancelledBeforeEffect{receipt_id=各自 closure receipt}` | 零 permit Issued；converge 空；head 恒 0；artifact 停留 rev 1；无任何终态 commit |
+
+### 7.2 断言纪律与语义发现
+
+- 只断言 `SqliteTaskAuthority` 已文档化保证的不变量：唯一 permit（`[TASK-COMMIT-001]`）、head 单调恰进一次、无双重提交（二次 drain 空）、cancel 线性化（`[TASK-CANCEL-002/003]`）。全部断言与实测一致，未发现语义与文档相悖之处。
+- **实测语义记录**：cancel 与已发 permit 的竞争结果**不是二选一**（既非「commit 完成且 cancel 被拒」，也非「cancel 生效则 converge 被抑制」），而是 permit-first 双落地：cancel 生效（epoch=1、task `Cancelled`）**且** outstanding permit 仍收敛出唯一 commit（head=1）。二者线性化序唯一（permit 发放先于 cancel 提交），终态无歧义、可重放、无双重提交。此为「唯一 canonical commit」在 cancel 竞争下的构造性前片证据。
+- effect-history root 说明：两 Attempt 的 snapshot bundle 各自独立构造（不同 snapshot_id/digest），但 `expected_head_commit_seq/effect_history_root/retry_fence_epoch` 必须逐位绑定当前 TaskHead（空根），否则 CAS 判 `Conflicted`——这是 head-binding 验证的既定语义，非独立自由度。
+
+### 7.3 验证（追加车道，base HEAD `74bb694` 工作区）
+
+```text
+cargo test -p nlos-slice-k                    → 7 passed / 0 failed（competing_attempts 4 + end_to_end 3）
+cargo clippy -p nlos-slice-k --all-targets -- -D warnings          → 0 warning
+cargo +nightly-2026-08-01 clippy（同前）                            → 0 warning
+cargo fmt -p nlos-slice-k -- --check（stable + nightly-2026-08-01） → 干净
+```
+
+### 7.4 已知限制（本前片）
+
+- 线程内顺序线性化（请求顺序 A→B 与 B→A 两种），非多线程真并发交织；SQLite `BEGIN IMMEDIATE` 单写者锁是串行化依据，真并发交织测试待后续车道。
+- 竞争以 artifact-only permit（`planned_effects=[]`、无 effect slot）为对象；EffectPermit 层的竞争（议题 31 §6 条 4）未覆盖。
+- 未覆盖：跨 Task handle 泄漏、snapshot 漂移后败者路径、多 winner 多轮竞争——ROAD-B-003 全门仍开放，本车道仅为纵切面级前片。
