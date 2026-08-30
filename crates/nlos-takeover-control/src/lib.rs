@@ -36,6 +36,15 @@
 //! handler over Unix sockets and Windows named pipes, with TypeScript and
 //! Python clients constructing the generated payload and verifying durable
 //! replay; it is test infrastructure, not a production daemon.
+//!
+//! A separate opt-in feature `authenticated-ipc` (Unix only) exposes
+//! [`crate::authenticated::AuthenticatedTakeoverControl`], the additive
+//! ADR-0011 authenticated serving variant: it stacks a transport-layer
+//! principal handshake (verified through the identity authority at the
+//! `AuthorityClock`'s durable wall reading) in front of the unchanged
+//! handler. The transport signature and the barrier-observation signature
+//! are two orthogonal layers — different principals, key purposes, and
+//! messages — documented in that module.
 
 use std::error::Error;
 use std::fmt;
@@ -57,6 +66,9 @@ use nlos_task::{
     ParticipantType, SqliteTaskAuthority, TaskStoreError,
 };
 use nlos_types::{ControlDomainId, Generation, KeyId, PrincipalId, ReceiptId, TaskParticipantId};
+
+#[cfg(all(unix, feature = "authenticated-ipc"))]
+pub mod authenticated;
 
 pub const TAKEOVER_CONTROL_SERVICE: &str = "takeover_control";
 pub const SUBMIT_BARRIER_OBSERVATION_METHOD: &str = "submit_barrier_observation";

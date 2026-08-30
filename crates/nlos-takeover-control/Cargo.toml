@@ -9,6 +9,7 @@ repository.workspace = true
 
 [features]
 conformance-server = ["dep:ed25519-dalek", "dep:nlos-ipc", "dep:tokio"]
+authenticated-ipc = ["dep:nlos-clock", "dep:nlos-ipc", "dep:tokio"]
 
 [[bin]]
 name = "takeover-control-conformance"
@@ -17,6 +18,7 @@ required-features = ["conformance-server"]
 
 [dependencies]
 ed25519-dalek = { workspace = true, optional = true }
+nlos-clock = { path = "../nlos-clock", optional = true }
 nlos-identity = { path = "../nlos-identity" }
 nlos-ipc = { path = "../nlos-ipc", optional = true }
 nlos-schema = { path = "../nlos-schema" }
