@@ -588,12 +588,16 @@ dependencies = [
 name = "nlos-system-control"
 version = "0.1.0"
 dependencies = [
+ "ed25519-dalek",
+ "nlos-clock",
  "nlos-commit-coordinator",
+ "nlos-identity",
  "nlos-ipc",
  "nlos-schema",
  "nlos-service-directory",
  "nlos-task",
  "nlos-types",
+ "sha2",
  "tokio",
 ]
 
@@ -602,6 +606,7 @@ name = "nlos-takeover-control"
 version = "0.1.0"
 dependencies = [
  "ed25519-dalek",
+ "nlos-clock",
  "nlos-identity",
  "nlos-ipc",
  "nlos-schema",
@@ -663,12 +668,16 @@ dependencies = [
 name = "nlos-wait-control"
 version = "0.1.0"
 dependencies = [
+ "ed25519-dalek",
  "nlos-channel",
+ "nlos-clock",
+ "nlos-identity",
  "nlos-ipc",
  "nlos-schema",
  "nlos-types",
  "nlos-wait",
  "prost",
+ "sha2",
  "tokio",
 ]
 

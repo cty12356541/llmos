@@ -43,6 +43,13 @@ pub const SUBMIT_METHOD: &str = "submit";
 /// [§25.3]: <https://github.com/cty12356541/llmos/blob/main/docs/design/06-架构设计总纲-v0.5.md>
 pub mod control;
 
+/// ADR-0011 opt-in authenticated control-plane entry points (Unix, `cli`
+/// feature). Strictly additive: the local trust-domain paths above keep
+/// their exact semantics; this module adds one authenticated serve variant
+/// and one authenticated dispatch client.
+#[cfg(all(unix, feature = "cli"))]
+pub mod auth;
+
 /// Policy boundary used by every `SystemControl` entry point. Implementations
 /// are expected to validate the supplied capability handles against their
 /// authority; mere handle presence is not authorization.
@@ -170,6 +177,14 @@ pub enum SystemControlError {
     CallerIssuerMismatch,
     CommandIdempotencyMismatch,
     InvalidRecoveryAlert,
+    /// The ADR-0011 authenticated exchange carried an unbounded correlation
+    /// id, so the clock-anchored wall reading cannot be pinned to it.
+    /// Never produced by the local trust-domain paths.
+    UnboundedCorrelation,
+    /// The `AuthorityClock` refused to serve the wall reading for an
+    /// ADR-0011 authenticated exchange (fail-closed; no time is guessed).
+    /// Never produced by the local trust-domain paths.
+    ClockWallUnavailable,
 }
 
 impl fmt::Display for SystemControlError {
@@ -191,6 +206,11 @@ impl fmt::Display for SystemControlError {
             Self::InvalidRecoveryAlert => {
                 formatter.write_str("TaskAuthority returned an invalid recovery alert")
             }
+            Self::UnboundedCorrelation => formatter
+                .write_str("authenticated control exchange requires a bounded correlation id"),
+            Self::ClockWallUnavailable => {
+                formatter.write_str("authority clock refused to serve a wall reading")
+            }
         }
     }
 }
@@ -205,7 +225,9 @@ impl Error for SystemControlError {
             | Self::AuthorizationDenied(_)
             | Self::CallerIssuerMismatch
             | Self::CommandIdempotencyMismatch
-            | Self::InvalidRecoveryAlert => None,
+            | Self::InvalidRecoveryAlert
+            | Self::UnboundedCorrelation
+            | Self::ClockWallUnavailable => None,
         }
     }
 }
@@ -287,6 +309,16 @@ impl SystemControlError {
                 SabiErrorCode::Driver,
                 RetryDirective::DoNotRetry,
                 "local recovery authority returned an invalid alert",
+            ),
+            Self::UnboundedCorrelation => (
+                SabiErrorCode::InvalidArgument,
+                RetryDirective::DoNotRetry,
+                "authenticated control exchange requires a bounded correlation id",
+            ),
+            Self::ClockWallUnavailable => (
+                SabiErrorCode::Driver,
+                RetryDirective::DoNotRetry,
+                "authority clock refused a wall reading; do not retry",
             ),
             Self::Task(error) => task_store_failure(error),
         };

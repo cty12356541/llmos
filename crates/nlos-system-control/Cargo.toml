@@ -9,7 +9,13 @@ repository.workspace = true
 
 [features]
 default = ["cli"]
-cli = ["dep:nlos-ipc", "dep:tokio"]
+cli = [
+    "dep:nlos-ipc",
+    "dep:nlos-clock",
+    "dep:nlos-identity",
+    "dep:sha2",
+    "dep:tokio",
+]
 
 [[bin]]
 name = "system-control-cli"
@@ -17,14 +23,18 @@ path = "src/bin/system-control-cli.rs"
 required-features = ["cli"]
 
 [dependencies]
+nlos-clock = { path = "../nlos-clock", optional = true }
 nlos-commit-coordinator = { path = "../nlos-commit-coordinator" }
+nlos-identity = { path = "../nlos-identity", optional = true }
 nlos-schema = { path = "../nlos-schema" }
 nlos-task = { path = "../nlos-task" }
 nlos-types = { path = "../nlos-types" }
 nlos-ipc = { path = "../nlos-ipc", optional = true }
+sha2 = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 
 [dev-dependencies]
+ed25519-dalek.workspace = true
 nlos-ipc = { path = "../nlos-ipc" }
 nlos-service-directory = { path = "../nlos-service-directory" }
 tokio.workspace = true

@@ -14,7 +14,8 @@
 //! prefix runs inside the local trust domain and presents fixed placeholder
 //! identities ([`LOCAL_ISSUER_PRINCIPAL_ID`]). The injected
 //! [`SystemControlAuthorizer`] on the service side remains the policy
-//! boundary; presenting a handle is not authorization.
+//! boundary; presenting a handle is not authorization. The explicit opt-in
+//! authenticated alternative lives in [`crate::auth`].
 
 use std::error::Error;
 use std::fmt;
@@ -210,6 +211,10 @@ pub enum ControlError {
     /// Local IPC transport failure (requires the `cli` feature).
     #[cfg(feature = "cli")]
     Ipc(nlos_ipc::IpcError),
+    /// ADR-0011 handshake refusal on the authenticated dispatch path
+    /// (Unix + `cli` only, via [`crate::auth`]).
+    #[cfg(all(unix, feature = "cli"))]
+    Handshake(nlos_ipc::handshake::HandshakeError),
 }
 
 impl fmt::Display for ControlError {
@@ -222,6 +227,8 @@ impl fmt::Display for ControlError {
             }
             #[cfg(feature = "cli")]
             Self::Ipc(error) => write!(formatter, "control transport: {error}"),
+            #[cfg(all(unix, feature = "cli"))]
+            Self::Handshake(error) => write!(formatter, "control handshake refused: {error}"),
         }
     }
 }
@@ -233,6 +240,8 @@ impl Error for ControlError {
             Self::InvalidCommand(_) | Self::UnexpectedResponse(_) => None,
             #[cfg(feature = "cli")]
             Self::Ipc(error) => Some(error),
+            #[cfg(all(unix, feature = "cli"))]
+            Self::Handshake(error) => Some(error),
         }
     }
 }
