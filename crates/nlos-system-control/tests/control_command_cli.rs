@@ -150,9 +150,12 @@ fn health(plan_id: &ArtifactCommitPlanId) -> StubHealth {
     })
 }
 
-#[cfg(unix)]
+// Platform-neutral stub authorizer; only the Unix socket harness constructs
+// it, so silence the dead-code warning on Windows instead of gating the type.
+#[cfg_attr(not(unix), allow(dead_code))]
 struct AllowPeer;
 
+#[cfg_attr(not(unix), allow(dead_code))]
 impl nlos_ipc::PeerAuthorizer for AllowPeer {
     fn authorize(&self, _: &nlos_ipc::PeerIdentity) -> Result<(), String> {
         Ok(())
