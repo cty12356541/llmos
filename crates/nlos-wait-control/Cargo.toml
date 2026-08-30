@@ -9,6 +9,17 @@ repository.workspace = true
 
 [features]
 conformance-server = ["dep:nlos-ipc", "dep:tokio"]
+# Opt-in ADR-0011 authenticated service variant (`authenticated` module):
+# consumes the `nlos-ipc` handshake transport facility, `IdentityAuthority`
+# attestation verification, and the `AuthorityClock` wall reading. Never
+# enabled by default; the local trust-domain path stays dependency-clean.
+authenticated-server = [
+    "dep:nlos-clock",
+    "dep:nlos-identity",
+    "dep:nlos-ipc",
+    "dep:sha2",
+    "dep:tokio",
+]
 
 [[bin]]
 name = "wait-control-conformance"
@@ -17,13 +28,19 @@ required-features = ["conformance-server"]
 
 [dependencies]
 nlos-channel = { path = "../nlos-channel" }
+nlos-clock = { path = "../nlos-clock", optional = true }
+nlos-identity = { path = "../nlos-identity", optional = true }
 nlos-ipc = { path = "../nlos-ipc", optional = true }
 nlos-schema = { path = "../nlos-schema" }
 nlos-types = { path = "../nlos-types" }
 nlos-wait = { path = "../nlos-wait" }
+sha2 = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 
 [dev-dependencies]
+ed25519-dalek.workspace = true
+nlos-clock = { path = "../nlos-clock" }
+nlos-identity = { path = "../nlos-identity" }
 nlos-ipc = { path = "../nlos-ipc" }
 prost.workspace = true
 tokio.workspace = true

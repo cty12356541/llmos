@@ -43,6 +43,18 @@
 //! the [`SABI_WAIT_CONTROL_SCHEMA`] identity fail-closed against the shared
 //! schema registry and enforces the shared 64 KiB payload bound; this crate
 //! adds no second, divergent validation layer.
+//!
+//! # Authenticated service variant (opt-in, ADR-0011)
+//!
+//! The [`authenticated`] module (feature `authenticated-server`, Unix only)
+//! layers the ADR-0011 principal challenge-response handshake in front of
+//! the same five methods: it consumes the `nlos-ipc` handshake transport
+//! facility, verifies attestations through the `IdentityAuthority`, takes
+//! `verified_at` from the `AuthorityClock` durable wall reading, and binds
+//! every mutation idempotency key to the verified principal before the
+//! authority sees it. The module is additive: the plain [`WaitControlService`]
+//! path, its authorization posture, and the feature-gated conformance server
+//! are untouched.
 
 use std::error::Error;
 use std::fmt;
@@ -70,6 +82,9 @@ pub const NOTIFY_COMMITS_METHOD: &str = "notify_commits";
 pub const CANCEL_WAIT_METHOD: &str = "cancel_wait";
 pub const LIST_WAITS_METHOD: &str = "list_waits";
 pub const INSPECT_WAIT_METHOD: &str = "inspect_wait";
+
+#[cfg(all(unix, feature = "authenticated-server"))]
+pub mod authenticated;
 
 pub use nlos_schema::{
     MAX_WAIT_CONTROL_PAYLOAD_BYTES, SABI_WAIT_CONTROL_SCHEMA, decode_cancel_wait_request,
@@ -167,6 +182,51 @@ pub trait WaitControlAuthorizer {
         context: &SabiRequestContext,
         request: &payload::InspectWaitRequest,
     ) -> Result<(), &'static str>;
+}
+
+impl<T> WaitControlAuthorizer for &T
+where
+    T: WaitControlAuthorizer + ?Sized,
+{
+    fn authorize_register_wait(
+        &self,
+        context: &SabiRequestContext,
+        request: &payload::RegisterWaitRequest,
+    ) -> Result<(), &'static str> {
+        T::authorize_register_wait(self, context, request)
+    }
+
+    fn authorize_notify_commits(
+        &self,
+        context: &SabiRequestContext,
+        request: &payload::NotifyCommitsRequest,
+    ) -> Result<(), &'static str> {
+        T::authorize_notify_commits(self, context, request)
+    }
+
+    fn authorize_cancel_wait(
+        &self,
+        context: &SabiRequestContext,
+        request: &payload::CancelWaitRequest,
+    ) -> Result<(), &'static str> {
+        T::authorize_cancel_wait(self, context, request)
+    }
+
+    fn authorize_list_waits(
+        &self,
+        context: &SabiRequestContext,
+        request: &payload::ListWaitsRequest,
+    ) -> Result<(), &'static str> {
+        T::authorize_list_waits(self, context, request)
+    }
+
+    fn authorize_inspect_wait(
+        &self,
+        context: &SabiRequestContext,
+        request: &payload::InspectWaitRequest,
+    ) -> Result<(), &'static str> {
+        T::authorize_inspect_wait(self, context, request)
+    }
 }
 
 #[derive(Debug)]
