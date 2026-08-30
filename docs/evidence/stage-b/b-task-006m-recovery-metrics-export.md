@@ -31,3 +31,21 @@
 ## 2026-08-23 增量
 
 新增 `metrics_export_contract.rs`：用真实临时 `SqliteTaskAuthority` 验证完整 typed catalog 的固定顺序与 metric name 稳定性；`FlappingHealth` 生成计数证明一次 `export_metrics` 只读取一次 health snapshot，live TaskAuthority durable gauges 覆盖 worker cache；lifecycle/counter/gauge sink failure matrix 验证首个失败即短路并返回 typed backend error。metrics 专属测试现为 3 项（本轮新增 2 项）。该增量仍只证明 backend-neutral contract；三平台 exporter、scrape auth 和生产 sink 仍未完成。
+
+## 2026-08-30 增量：OpenMetrics 文本 renderer（B-TASK-006M 未决项最小前缀）
+
+未决项「具体 OpenMetrics/ETW adapter」的最小前缀落地：`nlos-system-control` 新增平台无关纯逻辑模块 `src/openmetrics.rs`。`OpenMetricsRenderer` 实现 `RecoveryMetricsSink`（Error=`OpenMetricsRenderError`），把一次 recovery metrics 快照渲染为 Prometheus/OpenMetrics 文本暴露（`CONTENT_TYPE = "text/plain; version=0.0.4"`）。契约：
+
+1. **确定性**：同一渲染器重复 `render()` 逐字节相等；family 顺序固定为 catalog canonical 顺序（lifecycle → 3 counter → 6 gauge），与录制顺序无关（乱序录制仍按 canonical 顺序输出，重复录制 last-write-wins）；`# TYPE` 行 + 样本行，LF 行尾。
+2. **名称白名单**：counter/gauge 名称只来自 `RecoveryCounter::name()`/`RecoveryGauge::name()` 注册名；lifecycle family 是本模块唯一新增固定注册 `nlos_artifact_recovery_worker_state`（state-machine 模式：5 个 state label 样本 0/1，恰好一个为 1），名称字段无任何自由字符串拼接。
+3. **fail-closed 值准入**：唯一可发射的 label（`state`）值来自闭集枚举，全部经 `validate_label_value` 拒绝式校验（含 `"`、`\`、控制字符即拒绝并返回 `OpenMetricsRenderError::InvalidLabelValue`，渲染器状态不变）；样本值为 `u64` 十进制，无需转义。选择「拒绝」而非「转义」。
+4. **最小侵入**：sink 接口、catalog 语义、快照语义、既有测试零改动；renderer 是 sink 的纯消费者（`export_metrics(&mut renderer)` → `render()`），零新第三方依赖（手写渲染）；空 renderer 渲染空文档（0 字节），未录制的 family 整体省略。
+
+本轮本地验证（全部通过，0 failed）：
+
+- `cargo test -p nlos-system-control`：42 项通过（其中 metrics 相关：既有 `metrics_export_contract` 3 项不变；新增 `metrics_openmetrics_render` 7 项 integration + `openmetrics` 模块 3 项 unit + 1 项 doctest）。
+- `cargo clippy -p nlos-system-control --all-targets --all-features -- -D warnings`：通过。
+- `cargo +nightly-2026-08-01 clippy -p nlos-system-control --all-targets --all-features -- -D warnings`：通过。
+- `cargo fmt -p nlos-system-control -- --check` 与 `cargo +nightly-2026-08-01 fmt -p nlos-system-control -- --check`：通过。
+
+已知限制：本车道只交付文本 renderer，无 HTTP/scrape 端点（renderer 只产文本，端点与 scrape auth 是后续）；ETW/signpost adapter 未做；retention/alert rules 未做；`RecoveryMetricsSink` 的 renderer 实现仅在 label 准入处可失败，而当前 catalog 全部 label 为闭集枚举常量，故该失败路径运行时不可达（由 unit test 直接验证校验函数本身）。

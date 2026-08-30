@@ -43,6 +43,12 @@ pub const SUBMIT_METHOD: &str = "submit";
 /// [§25.3]: <https://github.com/cty12356541/llmos/blob/main/docs/design/06-架构设计总纲-v0.5.md>
 pub mod control;
 
+/// Deterministic OpenMetrics text exposition (`text/plain; version=0.0.4`)
+/// for the recovery metrics catalog: the first concrete backend for
+/// [`RecoveryMetricsSink`], with no scraping transport. See the module
+/// documentation for the renderer contract and remaining B-TASK-006M scope.
+pub mod openmetrics;
+
 /// ADR-0011 opt-in authenticated control-plane entry points (Unix, `cli`
 /// feature). Strictly additive: the local trust-domain paths above keep
 /// their exact semantics; this module adds one authenticated serve variant
