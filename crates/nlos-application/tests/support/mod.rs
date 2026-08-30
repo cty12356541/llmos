@@ -44,11 +44,9 @@ impl TestStoreDir {
 
 impl Drop for TestStoreDir {
     fn drop(&mut self) {
-        match fs::remove_dir_all(&self.root) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => panic!("remove test store dir: {error}"),
-        }
+        // Best-effort: Windows releases SQLite handles asynchronously, so
+        // an eager remove can race an in-flight close (os error 32).
+        let _ = fs::remove_dir_all(&self.root);
     }
 }
 
