@@ -457,7 +457,7 @@ async fn run(endpoint: OsString, authority_root: OsString) -> Result<(), Box<dyn
     let rounds = round_count()?;
     // `accept` creates the next pipe instance before returning the current
     // one, so retain one spare instance while all requested handlers run.
-    let listener =
+    let mut listener =
         NamedPipeListenerAdapter::bind(endpoint, connections + 1, TransportConfig::default())?;
     announce_ready()?;
     announce_fixture(&fixture)?;

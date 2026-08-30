@@ -613,7 +613,7 @@ pub fn parse_hex_id(value: &str) -> Result<[u8; REQUEST_ID_BYTES], ControlError>
         ));
     }
     let mut decoded = [0; REQUEST_ID_BYTES];
-    for (target, pair) in decoded.iter_mut().zip(raw.chunks_exact(2)) {
+    for (target, pair) in decoded.iter_mut().zip(raw.as_chunks::<2>().0) {
         let high = nibble(pair[0]).ok_or(ControlError::InvalidCommand(
             "identifier must contain only hex digits",
         ))?;

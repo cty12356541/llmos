@@ -1164,8 +1164,10 @@ fn load_notify_by_key(
             channel_id: ChannelId::from_bytes(array16(channel_id)?),
             up_to_sequence: decode_u64(up_to_sequence)?,
             woken_wait_ids: woken_ids
-                .chunks_exact(16)
-                .map(|chunk| WaitId::from_bytes(chunk.try_into().expect("chunk is 16 bytes")))
+                .as_chunks::<16>()
+                .0
+                .iter()
+                .map(|chunk| WaitId::from_bytes(*chunk))
                 .collect(),
         })
     })
