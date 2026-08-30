@@ -318,7 +318,12 @@ impl WaitAuthority {
         root: impl AsRef<Path>,
         channel: Arc<ChannelAuthority>,
     ) -> Result<Self, WaitAuthorityError> {
-        std::fs::create_dir_all(root.as_ref()).map_err(WaitAuthorityError::Io)?;
+        // A `file:` URI root (fault-injection tests) is not a directory to
+        // create; its target directory already exists and Windows rejects
+        // the `?`/`:` characters outright.
+        if !root.as_ref().to_string_lossy().starts_with("file:") {
+            std::fs::create_dir_all(root.as_ref()).map_err(WaitAuthorityError::Io)?;
+        }
         let mut connection = Connection::open(root.as_ref().join("wait-authority.db"))?;
         connection.busy_timeout(Duration::from_secs(5))?;
         connection.pragma_update(None, "journal_mode", "WAL")?;
