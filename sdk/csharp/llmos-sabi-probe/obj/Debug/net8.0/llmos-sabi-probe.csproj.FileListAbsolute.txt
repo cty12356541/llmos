@@ -1,0 +1,15 @@
+/Users/lipunima/projects/llmos/sdk/csharp/llmos-sabi-probe/bin/Debug/net8.0/llmos-sabi-probe
+/Users/lipunima/projects/llmos/sdk/csharp/llmos-sabi-probe/bin/Debug/net8.0/llmos-sabi-probe.deps.json
+/Users/lipunima/projects/llmos/sdk/csharp/llmos-sabi-probe/bin/Debug/net8.0/llmos-sabi-probe.runtimeconfig.json
+/Users/lipunima/projects/llmos/sdk/csharp/llmos-sabi-probe/bin/Debug/net8.0/llmos-sabi-probe.dll
+/Users/lipunima/projects/llmos/sdk/csharp/llmos-sabi-probe/bin/Debug/net8.0/llmos-sabi-probe.pdb
+/Users/lipunima/projects/llmos/sdk/csharp/llmos-sabi-probe/obj/Debug/net8.0/llmos-sabi-probe.GeneratedMSBuildEditorConfig.editorconfig
+/Users/lipunima/projects/llmos/sdk/csharp/llmos-sabi-probe/obj/Debug/net8.0/llmos-sabi-probe.AssemblyInfoInputs.cache
+/Users/lipunima/projects/llmos/sdk/csharp/llmos-sabi-probe/obj/Debug/net8.0/llmos-sabi-probe.AssemblyInfo.cs
+/Users/lipunima/projects/llmos/sdk/csharp/llmos-sabi-probe/obj/Debug/net8.0/llmos-sabi-probe.csproj.CoreCompileInputs.cache
+/Users/lipunima/projects/llmos/sdk/csharp/llmos-sabi-probe/obj/Debug/net8.0/llmos-sabi-probe.sourcelink.json
+/Users/lipunima/projects/llmos/sdk/csharp/llmos-sabi-probe/obj/Debug/net8.0/llmos-sabi-probe.dll
+/Users/lipunima/projects/llmos/sdk/csharp/llmos-sabi-probe/obj/Debug/net8.0/refint/llmos-sabi-probe.dll
+/Users/lipunima/projects/llmos/sdk/csharp/llmos-sabi-probe/obj/Debug/net8.0/llmos-sabi-probe.pdb
+/Users/lipunima/projects/llmos/sdk/csharp/llmos-sabi-probe/obj/Debug/net8.0/llmos-sabi-probe.genruntimeconfig.cache
+/Users/lipunima/projects/llmos/sdk/csharp/llmos-sabi-probe/obj/Debug/net8.0/ref/llmos-sabi-probe.dll
