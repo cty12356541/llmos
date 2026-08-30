@@ -5,7 +5,11 @@
 //! verification for Semantic admission. Private key custody and general
 //! Capability authorization remain separate authorities. Takeover barrier
 //! observation signatures are verified through the same binding, purpose,
-//! validity, and revocation chain with a dedicated key purpose.
+//! validity, and revocation chain with a dedicated key purpose.  Capability
+//! command signatures can be verified against an [`AuthorityClock`]'s
+//! durable wall reading (`verify_capability_command_signature_at_clock`,
+//! ADR-0011 decision 3), so validity is judged at an authoritative monotone
+//! time instead of caller-supplied wall time.
 
 mod model;
 mod schema;
@@ -18,6 +22,7 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use ed25519_dalek::{Signature, VerifyingKey};
+use nlos_clock::AuthorityClock;
 use nlos_types::{
     ControlDomainId, Generation, IdempotencyKey, IdentitySnapshotId, KeyId, PrincipalId, ReceiptId,
     SemanticEventId,
@@ -64,6 +69,9 @@ pub enum IdentityAuthorityError {
     GenerationExhausted,
     CorruptRecord(&'static str),
     LockPoisoned,
+    /// The `AuthorityClock` refused to serve a wall reading (storage failure
+    /// or unavailable wall source).  Fail-closed: no time is guessed.
+    Clock(nlos_clock::AuthorityClockError),
 }
 
 impl fmt::Display for IdentityAuthorityError {
@@ -116,6 +124,7 @@ impl fmt::Display for IdentityAuthorityError {
             Self::GenerationExhausted => formatter.write_str("generation space exhausted"),
             Self::CorruptRecord(reason) => write!(formatter, "corrupt durable record: {reason}"),
             Self::LockPoisoned => formatter.write_str("identity authority writer lock is poisoned"),
+            Self::Clock(error) => write!(formatter, "authority clock failure: {error}"),
         }
     }
 }
@@ -125,6 +134,7 @@ impl Error for IdentityAuthorityError {
         match self {
             Self::Sqlite(error) => Some(error),
             Self::Io(error) => Some(error),
+            Self::Clock(error) => Some(error),
             _ => None,
         }
     }
@@ -133,6 +143,12 @@ impl Error for IdentityAuthorityError {
 impl From<rusqlite::Error> for IdentityAuthorityError {
     fn from(error: rusqlite::Error) -> Self {
         Self::Sqlite(error)
+    }
+}
+
+impl From<nlos_clock::AuthorityClockError> for IdentityAuthorityError {
+    fn from(error: nlos_clock::AuthorityClockError) -> Self {
+        Self::Clock(error)
     }
 }
 
@@ -617,7 +633,9 @@ impl IdentityAuthority {
     /// `verify_semantic_signature`, but resolves the binding by principal so
     /// the caller can never pin a stale key: unknown principals fail closed
     /// as `PrincipalNotFound` and revoked keys as `KeyRevoked` before any
-    /// signature bytes are evaluated.
+    /// signature bytes are evaluated.  Validity is judged at the
+    /// caller-supplied `verified_at_ms`; the AuthorityClock-anchored variant
+    /// is [`IdentityAuthority::verify_capability_command_signature_at_clock`].
     ///
     /// # Errors
     ///
@@ -627,26 +645,81 @@ impl IdentityAuthority {
         &self,
         request: VerifyCapabilityCommandSignatureRequest,
     ) -> Result<VerifiedCapabilityCommandSigner, IdentityAuthorityError> {
+        self.verify_capability_command_signature_at_time(
+            request.principal,
+            request.message_digest,
+            request.signature,
+            request.verified_at_ms,
+        )
+    }
+
+    /// Verifies a domain-separated Capability command digest exactly like
+    /// [`IdentityAuthority::verify_capability_command_signature`], but the
+    /// validity instant is the **`AuthorityClock`'s durable wall reading**
+    /// instead of caller-supplied time (ADR-0011 decision 3): the request
+    /// carries an idempotency key, the clock's `wall_now` issues or replays
+    /// the reading for it (monotone across restarts and system-clock
+    /// rollbacks; a replayed command re-reads its original durable reading),
+    /// and the existing judgment chain — binding, purpose, revocation,
+    /// `valid_from`/`valid_until`, strict signature — runs unchanged at that
+    /// reading.  A clock that cannot serve a reading fails closed
+    /// ([`IdentityAuthorityError::Clock`]); no time is guessed.  The
+    /// caller-supplied-time variant remains available during the migration
+    /// window (deprecation is a later, separate change).
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed fail-closed error for clock failures, unknown
+    /// principals, key purpose, revocation, validity, public-key, or
+    /// signature failure.
+    pub fn verify_capability_command_signature_at_clock(
+        &self,
+        request: VerifyCapabilityCommandSignatureAtClockRequest,
+        clock: &AuthorityClock,
+    ) -> Result<VerifiedCapabilityCommandSigner, IdentityAuthorityError> {
+        let verified_at_ms = clock
+            .wall_now(nlos_clock::NowRequest {
+                idempotency_key: request.idempotency_key,
+            })?
+            .reading()
+            .as_u64();
+        self.verify_capability_command_signature_at_time(
+            request.principal,
+            request.message_digest,
+            request.signature,
+            verified_at_ms,
+        )
+    }
+
+    /// The shared judgment chain of both capability-command variants;
+    /// `verified_at_ms` is caller-supplied or clock-issued per variant.
+    fn verify_capability_command_signature_at_time(
+        &self,
+        principal: PrincipalId,
+        message_digest: [u8; 32],
+        signature: Ed25519Signature,
+        verified_at_ms: u64,
+    ) -> Result<VerifiedCapabilityCommandSigner, IdentityAuthorityError> {
         let connection = self.lock()?;
-        let binding = load_current_binding_by_principal(&connection, request.principal)?
-            .ok_or(IdentityAuthorityError::PrincipalNotFound(request.principal))?;
+        let binding = load_current_binding_by_principal(&connection, principal)?
+            .ok_or(IdentityAuthorityError::PrincipalNotFound(principal))?;
         if binding.key_purpose != KeyPurpose::SemanticSigning {
             return Err(IdentityAuthorityError::KeyPurposeMismatch);
         }
         if binding.key_revoked_at_ms.is_some() {
             return Err(IdentityAuthorityError::KeyRevoked);
         }
-        if request.verified_at_ms < binding.key_valid_from_ms {
+        if verified_at_ms < binding.key_valid_from_ms {
             return Err(IdentityAuthorityError::KeyNotYetValid);
         }
-        if request.verified_at_ms > binding.key_valid_until_ms {
+        if verified_at_ms > binding.key_valid_until_ms {
             return Err(IdentityAuthorityError::KeyExpired);
         }
         let verifying_key = VerifyingKey::from_bytes(&binding.public_key)
             .map_err(|_| IdentityAuthorityError::InvalidPublicKey)?;
-        let signature = Signature::from_bytes(&request.signature);
+        let signature = Signature::from_bytes(&signature);
         verifying_key
-            .verify_strict(&request.message_digest, &signature)
+            .verify_strict(&message_digest, &signature)
             .map_err(|_| IdentityAuthorityError::InvalidSignature)?;
         Ok(VerifiedCapabilityCommandSigner {
             principal_id: binding.principal_id,
@@ -715,6 +788,19 @@ pub struct VerifyCapabilityCommandSignatureRequest {
     pub principal: PrincipalId,
     pub signature: Ed25519Signature,
     pub verified_at_ms: u64,
+}
+
+/// The AuthorityClock-anchored counterpart of
+/// [`VerifyCapabilityCommandSignatureRequest`]: no time field — the caller
+/// supplies an idempotency key instead, and the validity instant becomes the
+/// `AuthorityClock`'s durable wall reading issued (or durably replayed) for
+/// that key.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VerifyCapabilityCommandSignatureAtClockRequest {
+    pub message_digest: [u8; 32],
+    pub principal: PrincipalId,
+    pub signature: Ed25519Signature,
+    pub idempotency_key: IdempotencyKey,
 }
 
 /// The durable binding that authenticated one command signature.

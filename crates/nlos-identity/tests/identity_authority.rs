@@ -1,12 +1,15 @@
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ed25519_dalek::{Signer, SigningKey};
+use nlos_clock::{AuthorityClock, AuthorityClockError, WallSource};
 use nlos_identity::{
     BootstrapDecision, BootstrapPrincipalRequest, IdentityAuthority, IdentityAuthorityError,
     KeyPurpose, KeyRevocationDecision, RevokeKeyRequest, VerifyBarrierObservationSignatureRequest,
-    VerifySemanticSignatureRequest, semantic_signature_message,
+    VerifyCapabilityCommandSignatureAtClockRequest, VerifySemanticSignatureRequest,
+    semantic_signature_message,
 };
 use nlos_types::{Generation, IdempotencyKey, PrincipalId, SemanticEventId};
 use rusqlite::Connection;
@@ -365,4 +368,195 @@ fn barrier_observation_verification_rejects_tampered_signatures() {
         }),
         Err(IdentityAuthorityError::InvalidSignature)
     ));
+}
+
+/// Test-controlled `AuthorityClock` wall source: `set` moves the reading
+/// arbitrarily — including backwards — the minimal deterministic model of a
+/// system-clock rollback.  Cloning shares the reading.
+#[derive(Clone)]
+struct ManualWallSource(Arc<AtomicU64>);
+
+impl ManualWallSource {
+    fn at(ms: u64) -> Self {
+        Self(Arc::new(AtomicU64::new(ms)))
+    }
+
+    fn set(&self, ms: u64) {
+        self.0.store(ms, Ordering::Relaxed);
+    }
+}
+
+impl WallSource for ManualWallSource {
+    fn now_ms(&self) -> Result<u64, AuthorityClockError> {
+        Ok(self.0.load(Ordering::Relaxed))
+    }
+}
+
+struct FailingWallSource;
+
+impl WallSource for FailingWallSource {
+    fn now_ms(&self) -> Result<u64, AuthorityClockError> {
+        Err(AuthorityClockError::WallClockUnavailable)
+    }
+}
+
+fn at_clock_request(
+    key: &SigningKey,
+    binding: nlos_identity::IdentityBinding,
+    message_digest: [u8; 32],
+    idempotency_key: IdempotencyKey,
+) -> VerifyCapabilityCommandSignatureAtClockRequest {
+    VerifyCapabilityCommandSignatureAtClockRequest {
+        message_digest,
+        principal: binding.principal_id,
+        signature: key.sign(&message_digest).to_bytes(),
+        idempotency_key,
+    }
+}
+
+/// The at-clock variant judges validity at the `AuthorityClock`'s durable wall
+/// reading across every validity branch — not-yet-valid, valid, expired —
+/// and revocation keeps priority over the clock: an expired-range reading
+/// still yields `KeyRevoked`, not `KeyExpired`.  A replayed idempotency key
+/// re-reads its original durable reading, so the same command yields the
+/// same verdict even after the source has moved on.
+#[test]
+fn capability_command_at_clock_judges_validity_at_wall_reading() {
+    let root = Root::new("at-clock-validity");
+    let clock_root = Root::new("at-clock-validity-clock");
+    let source = ManualWallSource::at(500);
+    let clock = AuthorityClock::open_with_wall_source(clock_root.path(), source.clone())
+        .expect("open clock");
+    let authority = IdentityAuthority::open(root.path()).unwrap();
+    let key = signing_key(21);
+    let binding = authority
+        .bootstrap_principal(bootstrap_request(21, &key))
+        .unwrap()
+        .binding();
+    // bootstrap_request: valid_from 1_000, valid_until 9_000.
+
+    // Not yet valid: the first wall reading (500) is below valid_from.
+    let command = [0x21; 32];
+    let early = at_clock_request(
+        &key,
+        binding,
+        command,
+        IdempotencyKey::from_bytes([0xE1; 16]),
+    );
+    assert!(matches!(
+        authority.verify_capability_command_signature_at_clock(early, &clock),
+        Err(IdentityAuthorityError::KeyNotYetValid)
+    ));
+
+    // Replay with the same key after the source has moved on: the original
+    // durable reading (500) is re-read, so the verdict is unchanged.
+    source.set(5_000);
+    assert!(matches!(
+        authority.verify_capability_command_signature_at_clock(early, &clock),
+        Err(IdentityAuthorityError::KeyNotYetValid)
+    ));
+
+    // Valid: a fresh key reads the advanced source (5_000) inside the window.
+    let verified = authority
+        .verify_capability_command_signature_at_clock(
+            at_clock_request(
+                &key,
+                binding,
+                command,
+                IdempotencyKey::from_bytes([0xE2; 16]),
+            ),
+            &clock,
+        )
+        .expect("valid window must verify at the clock reading");
+    assert_eq!(verified.principal_id(), binding.principal_id);
+    assert_eq!(verified.key_generation(), Generation::INITIAL);
+
+    // Expired: a fresh key reads 12_000, past valid_until.
+    let expired = at_clock_request(
+        &key,
+        binding,
+        command,
+        IdempotencyKey::from_bytes([0xE3; 16]),
+    );
+    source.set(12_000);
+    assert!(matches!(
+        authority.verify_capability_command_signature_at_clock(expired, &clock),
+        Err(IdentityAuthorityError::KeyExpired)
+    ));
+
+    // Revocation outranks the clock: with the reading far past valid_until,
+    // the revoked key fails as KeyRevoked, not KeyExpired.
+    authority
+        .revoke_key(RevokeKeyRequest {
+            key_id: binding.key_id,
+            expected_key_generation: binding.key_generation,
+            expected_identity_snapshot_id: binding.identity_snapshot_id,
+            idempotency_key: IdempotencyKey::from_bytes([0xE4; 16]),
+            revoked_at_ms: 6_000,
+        })
+        .unwrap();
+    let after_revocation = at_clock_request(
+        &key,
+        binding,
+        command,
+        IdempotencyKey::from_bytes([0xE5; 16]),
+    );
+    assert!(matches!(
+        authority.verify_capability_command_signature_at_clock(after_revocation, &clock),
+        Err(IdentityAuthorityError::KeyRevoked)
+    ));
+
+    // Unknown principals still fail closed before any clock-anchored
+    // validity judgment.
+    let unknown = VerifyCapabilityCommandSignatureAtClockRequest {
+        principal: PrincipalId::from_bytes([0x7e; 16]),
+        ..after_revocation
+    };
+    assert!(matches!(
+        authority.verify_capability_command_signature_at_clock(unknown, &clock),
+        Err(IdentityAuthorityError::PrincipalNotFound(_))
+    ));
+}
+
+/// A clock that cannot serve a wall reading fails closed as
+/// `IdentityAuthorityError::Clock` (typed, source-chained, zero side
+/// effects on either authority), and the same verification succeeds once a
+/// healthy clock serves the store.
+#[test]
+fn capability_command_at_clock_fails_closed_when_clock_refuses() {
+    let root = Root::new("at-clock-failure");
+    let clock_root = Root::new("at-clock-failure-clock");
+    let authority = IdentityAuthority::open(root.path()).unwrap();
+    let key = signing_key(22);
+    let binding = authority
+        .bootstrap_principal(bootstrap_request(22, &key))
+        .unwrap()
+        .binding();
+    let broken_clock = AuthorityClock::open_with_wall_source(clock_root.path(), FailingWallSource)
+        .expect("open broken clock");
+
+    let request = at_clock_request(
+        &key,
+        binding,
+        [0x22; 32],
+        IdempotencyKey::from_bytes([0xE6; 16]),
+    );
+    let error = authority
+        .verify_capability_command_signature_at_clock(request, &broken_clock)
+        .expect_err("a refusing clock must fail the verification closed");
+    assert!(
+        matches!(
+            error,
+            IdentityAuthorityError::Clock(AuthorityClockError::WallClockUnavailable)
+        ),
+        "expected Clock(WallClockUnavailable), got {error}"
+    );
+
+    let healthy_clock =
+        AuthorityClock::open_with_wall_source(clock_root.path(), ManualWallSource::at(5_000))
+            .expect("open healthy clock");
+    let verified = authority
+        .verify_capability_command_signature_at_clock(request, &healthy_clock)
+        .expect("verification must succeed at a healthy clock");
+    assert_eq!(verified.principal_id(), binding.principal_id);
 }

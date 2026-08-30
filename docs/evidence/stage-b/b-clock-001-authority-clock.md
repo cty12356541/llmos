@@ -50,3 +50,38 @@ happy-path 与 fail-closed 门：首调初始化 1；逐 key 恰 +1；重启持�
 - 无 wall-clock 校准、无 epoch/offset 持久化（本前缀未发现需要）；
 - kill-9 仅模拟进程崩溃（OS 页缓存存活）；真实掉电由 `PowerLossAfter` 与 WAL tail 截断**模型化**覆盖——与全部既有矩阵同一免责；
 - 未运行项：`cargo --workspace` 级测试/clippy/fmt（任务约束仅允许 `-p nlos-clock` 定向命令）；CI 接入未做；Windows 平台未交叉验证。
+
+## 5. Wall 域增量（2026-08-30，ADR-0011 validity 接入，base HEAD `baf86fa`）
+
+ADR-0011 决定 3 的 validity 接入第一步：AuthorityClock 增补**持久化墙钟高水位** API（additive，schema v1→v2），供消费方以权威单调时间判定 validity，取代「上层传入时间」占位。§1–§4 描述的逻辑 tick 域语义不变；本节是**第二个严格分离的域**——逻辑 tick 与 wall 读数是两个域，不得混用。
+
+### 5.1 实现事实
+
+- **`wall_now(NowRequest) -> WallNowDecision`**：读系统时钟（单位 **ms since Unix epoch**，类型 `WallReading`）但强制单调——fresh key 读数 = `max(durable wall 水位, 系统时钟)`；**首次调用以系统时钟初始化 durable 水位（bootstrap 语义，本节登记）**；整个推进（replay 检查 → 系统时钟读 → 水位读 → CAS 写 → wall 回执插入 → commit）在一个 `Immediate` 事务内，与 `now()` 的 tick 纪律完全同构。任何重启/系统时钟回拨后读数不小于上次 durable 值。`Advanced`/`Replayed` 两分支镜像 `NowDecision`；`inspect_wall()` 为零副作用重启侧验证读。
+- **幂等键回执完全镜像 `now()` 模式**：同 key 重放返回 durable 原读数（不双跳）且**不咨询系统时钟**——时钟坏了重放仍然可服务。
+- **表独立（非 tick 表加 kind 列），论证**：(a) 单行水位表把单调不变量内嵌于行本身，一行只能承载一个域——共用会让 ~1.8e12 的 wall ms 读数 vault 逻辑计数器，直接破坏 `now()` 的稠密 +1 语义，而 no-insert trigger 又禁止第二行；(b) `tick_receipts` 行被 DDL 声明为 immutable（`BEFORE UPDATE` abort），改造列等于事后重释已 durable 的行，独立表让 tick 域 durable 面字节不动；(c) trigger SQL 绑定表名，域各表使两套守卫自洽、两套故障矩阵可独立断言。
+- **域语义差异（显式登记）**：wall 读数**非稠密**——同一毫秒内的多个 key 共享一个读数（水位是系统时钟的高水位，不是每 key 计数器）；tick 读数稠密 +1。
+- **时钟源注入**：公开 `WallSource` trait（`now_ms() -> Result<u64, _>`）+ 生产实现 `SystemWallSource`（`SystemTime`；epoch 之前/不可表示 → `WallClockUnavailable`）；`open_with_wall_source` 注入构造器。方案论证：回拨模拟必须跨重启（reopen 出的新实例也要注入），`#[cfg(test)]` 类方案对集成测试的 reopen 路径不可达，构造器级 seam 是最小侵入方案；`open()` 生产行为与签名不变。
+- **fail-closed**：系统时钟不可用 → 新 typed error `WallClockUnavailable`（不猜时间），事务回滚零 durable 状态变更。
+- **schema v2 additive 迁移**：`wall_watermark`（单行，种子 0=「尚未签发」）+ `wall_receipts`，六条 DDL 守卫逐条镜像 tick 域（不可减/不可插/不可删/singleton 冻结/回执不可改不可删/回执读数 ≤ 水位；`reading_ms >= 1`——恰好 epoch 的系统时钟与「尚未签发」不可区分，fail-closed）。v1 存量库重开自动升级，tick 域状态字节不动（有测试锁定）。
+
+### 5.2 验证（wall 增量部分，base HEAD `baf86fa` 工作区未提交写集）
+
+```text
+cargo test -p nlos-clock -p nlos-identity
+  → clock_authority 4 passed（原有，含 v2 迁移透明生效）
+  → clock_fault_injection 11 passed（原 6 场景 + 新 W1–W4 wall 写窗口）
+  → clock_wall_authority 6 passed（新增）
+cargo clippy -p nlos-clock -p nlos-identity --all-targets -- -D warnings → 0 warning
+cargo +nightly-2026-08-01 clippy（同前）→ 0 warning
+cargo fmt 双工具链 -- -p nlos-clock -p nlos-identity --check → 干净
+```
+
+- `clock_wall_authority`（6）：bootstrap=源值；`max(durable, system)` 推进；源回拨（2_500→2_400）被吸收、fresh key 恒 ≥ durable 水位；同 ms 非稠密共享读数；同 key 重放字节相等且水位不动；**重启后**源回拨到 1 仍不回退；`SystemWallSource` 读数落在观测窗口内；源故障 `WallClockUnavailable` 零状态且重放仍服务；v1→v2 additive 升级保留 tick 状态；wall 域 DDL 守卫 raw 篡改全数 abort；tick/wall 双向域隔离（wall 推进不动 tick 水位，tick 推进不动 wall 水位）。
+- 故障矩阵 W1–W4（镜像 C1–C4 精简为 wall 单入口写窗口）：W1 pre-commit IOERR（bootstrap/advance 两相位）typed 失败、零部分状态、disarm 重做**单调**收敛——与 tick 的逐字节确定性收敛不同（源是系统时钟），此域差异显式登记；W2 ENOSPC 同收敛；W3 PowerLoss 双向（不可见方向幻影消失整体、同 key 重做推进水位；kill-9 可见方向已提交读数整体存活、重放字节相等、fresh key ≥ 水位）；W4 torn WAL tail（≥6 代表截断点：水位恒为旧值或新值、integrity ok、**水位 == 幸存最后一条回执读数**（推进与回执同事务同生同灭）、恒 ≥ 更深幸存提交、幸存回执与控制前缀逐字节相等、缺失 key 重做单调收敛、完整恢复对照相等）。
+
+### 5.3 本节新增已知限制
+
+- wall 校准无外部时间源对齐：wall 读数只锚定本地系统时钟，这是 ADR-0011 复审触发器，非本切片缺陷；
+- wall 同 key 重做是单调收敛而非逐字节确定性（tick 域是确定性的）——源非确定性所致，durability 不变量（不回退）不受影响；
+- §4 中「无 wall-clock 校准」「现公开 API 仅 now/inspect」的表述由本节取代；三服务 IPC 接线仍未消费（见 b-identity-001 §6）。

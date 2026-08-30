@@ -66,3 +66,37 @@ cargo clippy -p nlos-identity --all-targets -- -D warnings
 - §4 开放项「未实现 Capability issue/attenuate/delegate/revoke」的验签半边关闭：IdentityAuthority 新增 `verify_capability_command_signature`（按 principal 解析当前 key 绑定、purpose 限定 SemanticSigning、多 key 行 CorruptRecord fail-closed），被 CapabilityAuthority 三签名命令消费。
 - 验证：identity 11 passed（新增 2 项 helper 单元测试）；capability 侧 18 项含篡改/错 principal/revoked key/replay 免验签矩阵。
 - 其余开放项不变：bootstrap 之外的 enrollment/attestation、HSM custody、key rotation 入口（当前仅 revoke 时 +1 generation，rotation 落地后需补旧 generation 签名拒绝）、多 Principal membership、AuthorityClock。
+
+## 6. AuthorityClock validity 接入（2026-08-30 增量，base HEAD `baf86fa`）
+
+ADR-0011 决定 3 落地：签名命令验签新增消费 AuthorityClock 的 additive 变体，取代「上层传入时间」占位在本验签路径上的使用。§5 开放项「AuthorityClock」的**验签半边**就此关闭。
+
+### 6.1 实现事实
+
+- **`verify_capability_command_signature_at_clock(request, clock: &AuthorityClock)`**：请求类型 `VerifyCapabilityCommandSignatureAtClockRequest`——**无时间字段，自带幂等键**；内部对 clock 调 `wall_now(NowRequest{ idempotency_key })` 取持久化墙钟读数（单位 ms），再走既有判定链。判定链逐字未改：按 principal 解析当前绑定 → purpose（SemanticSigning）→ **revoked** → `valid_from`（`KeyNotYetValid`）→ `valid_until`（`KeyExpired`）→ Ed25519 strict verify。**revoke 判定先于 validity，优先级不受时钟读数影响**（读数即使已越过 valid_until，撤销键仍返回 `KeyRevoked` 而非 `KeyExpired`，有测试锁定）。
+- **重放确定性**：同幂等键重放返回原 durable 读数，同一条命令在真实时间推进后重验仍得到与首次一致的判定（测试锁定：首验 `KeyNotYetValid` 后源前进，同键重验仍 `KeyNotYetValid`）。注意语义：wall 回执在判定链之前由 clock durable 消费——验签失败的命令同样消耗该键的时钟读数（时钟读数是 durable 事实，与下游判定无关）。
+- **迁移期共存**：原 `verified_at_ms` 变体 `verify_capability_command_signature` **保留不弃用**（公共逻辑抽取为私有 `verify_capability_command_signature_at_time` 共享判定链，行为零变化）；弃用登记为后续独立变更。
+- **fail-closed**：clock 拒绝服务（存储故障或 wall 源不可用）→ 新 typed 错误 `IdentityAuthorityError::Clock(AuthorityClockError)`（`source()` 链保留 clock 错误，含 `WallClockUnavailable`），不猜时间、identity 侧零副作用；有测试锁定「拒绝后换健康时钟同请求成功」。
+- **依赖边**：`Cargo.toml` 增 `nlos-clock = { path = "../nlos-clock" }`；方向 identity→clock，clock 仅依赖 nlos-types+rusqlite，与 capability→identity 同向，不构成环。`Cargo.lock` 因新依赖边自动变化，属预期（编排者收口）。
+
+### 6.2 验证（base HEAD `baf86fa` 工作区未提交写集）
+
+```text
+cargo test -p nlos-clock -p nlos-identity
+  → identity 3 单元 + 10 集成 passed（原 8 项集成不变 + 新增 2 项）
+cargo clippy -p nlos-clock -p nlos-identity --all-targets -- -D warnings → 0 warning
+cargo +nightly-2026-08-01 clippy（同前）→ 0 warning
+cargo fmt 双工具链 -- -p nlos-clock -p nlos-identity --check → 干净
+```
+
+新增 2 项集成测试（`tests/identity_authority.rs`）：
+
+1. `capability_command_at_clock_judges_validity_at_wall_reading`：validity 各分支在 clock 读数下命中——未生效（读数 500 < valid_from 1_000 → `KeyNotYetValid`）、同键重放判定确定性、有效（5_000 ∈ 窗口 → 通过且 signer 字段正确）、过期（12_000 > valid_until 9_000 → `KeyExpired`）、撤销优先级（revoke 后即使读数远越过 valid_until 仍 `KeyRevoked`）、unknown principal → `PrincipalNotFound`。
+2. `capability_command_at_clock_fails_closed_when_clock_refuses`：`FailingWallSource` → `Clock(WallClockUnavailable)` typed 失败；同请求换健康时钟（读数 5_000 ∈ 窗口）成功——证明 clock 拒绝零 durable 侧作用。
+
+### 6.3 本节新增已知限制
+
+- wall 校准无外部时间源（见 b-clock-001 §5.3，ADR-0011 复审触发器）；
+- 旧 `verified_at_ms` 变体未弃用（迁移期共存，弃用为后续 breaking change）；
+- 三服务（SystemControl/TakeoverControl/WaitControl）IPC 接线尚未消费本变体——challenge-response 与命令级签名贯穿的服务端接入是 `B-TASK-006L` 后续切片；
+- 验签失败的命令同样 durable 消费其幂等键的时钟读数（见 §6.1，设计使然，调用方需按命令而非按验签尝试分配键）。

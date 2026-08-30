@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 ed25519-dalek.workspace = true
+nlos-clock = { path = "../nlos-clock" }
 nlos-types = { path = "../nlos-types" }
 rusqlite.workspace = true
 sha2.workspace = true

@@ -54,6 +54,30 @@
 //!   watermark-bounded receipts) still abort raw tampering on a database
 //!   that went through an injected crash and its recovery.
 //!
+//! Wall write-window matrix (schema v2 `wall_now`, trimmed per the same
+//! single-entry-per-domain rule — the wall entry is `wall_now`):
+//! - W1 pre-commit IOERR on `wall_now` (bootstrap and advance phases) —
+//!   typed `Sqlite` failure, wall watermark wholly at the previous value
+//!   and zero new wall receipts (zero partial state); the disarmed same-key
+//!   redo converges to `max(durable, system)` (≥ the durable watermark —
+//!   the wall redo is *monotone*, not byte-deterministic like the tick
+//!   counter, because the source is the system clock); replay idempotent;
+//! - W2 pre-commit ENOSPC (`SQLITE_FULL`) on the same two phases — the same
+//!   fail-closed convergence;
+//! - W3 commit-point `PowerLoss` both directions: Phase A (invisible) — the
+//!   wall tick "reports success" but after reopen the wall watermark is
+//!   wholly back at the old value with zero receipts, and the same-key redo
+//!   re-issues at ≥ the durable watermark; Phase B (kill-9 after commit,
+//!   visible) — every committed wall reading survives whole, replays are
+//!   byte-equal, and a fresh key reads ≥ the durable watermark;
+//! - W4 torn WAL tail on the wall write window — every representative cut
+//!   inside the final wall transactions' frame span (and one transaction
+//!   deeper) leaves the wall watermark wholly old or wholly new
+//!   (`integrity_check` passes; watermark == the last surviving receipt's
+//!   reading — advance and receipt co-live in one transaction), never below
+//!   the deeper surviving commit; surviving replays stay byte-equal; the
+//!   redo of missing keys re-issues at ≥ the surviving watermark.
+//!
 //! **Crash semantics disclaimer** (as in every prior matrix): kill-9
 //! simulates *process* crashes; the OS page cache survives process death,
 //! so a killed process is NOT a machine power loss. Writes the kernel
@@ -74,7 +98,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
-use nlos_clock::{AuthorityClock, AuthorityClockError, NowDecision, NowRequest, Reading};
+use nlos_clock::{
+    AuthorityClock, AuthorityClockError, NowDecision, NowRequest, Reading, WallNowDecision,
+    WallReading,
+};
 use nlos_store_fault::{FaultCode, FaultMode};
 use nlos_types::IdempotencyKey;
 use rusqlite::Connection;
@@ -111,6 +138,23 @@ fn replayed(clock: &AuthorityClock, seed: u8) -> Reading {
     match clock.now(request(seed)).expect("now must replay") {
         NowDecision::Replayed(reading) => reading,
         NowDecision::Tick(reading) => panic!("expected Replayed, got Tick {reading}"),
+    }
+}
+
+fn wall_advanced(clock: &AuthorityClock, seed: u8) -> WallReading {
+    match clock
+        .wall_now(request(seed))
+        .expect("wall_now must advance")
+    {
+        WallNowDecision::Advanced(reading) => reading,
+        WallNowDecision::Replayed(reading) => panic!("fresh key cannot replay, got {reading}"),
+    }
+}
+
+fn wall_replayed(clock: &AuthorityClock, seed: u8) -> WallReading {
+    match clock.wall_now(request(seed)).expect("wall_now must replay") {
+        WallNowDecision::Replayed(reading) => reading,
+        WallNowDecision::Advanced(reading) => panic!("expected Replayed, got Advanced {reading}"),
     }
 }
 
@@ -276,6 +320,36 @@ fn raw_receipt_count(base: &Path) -> i64 {
     raw_count(&clock_database(base), "SELECT COUNT(*) FROM tick_receipts")
 }
 
+fn raw_wall_watermark(base: &Path) -> u64 {
+    let value: i64 = raw_count(
+        &clock_database(base),
+        "SELECT reading_ms FROM wall_watermark WHERE singleton=1",
+    );
+    u64::try_from(value).expect("non-negative wall watermark")
+}
+
+fn raw_wall_receipt_count(base: &Path) -> i64 {
+    raw_count(&clock_database(base), "SELECT COUNT(*) FROM wall_receipts")
+}
+
+/// Insertion-ordered wall receipts as `(idempotency_key, reading_ms)`.
+fn raw_wall_receipts(base: &Path) -> Vec<(Vec<u8>, u64)> {
+    let connection = Connection::open(clock_database(base)).expect("open raw reader");
+    let mut statement = connection
+        .prepare("SELECT idempotency_key, reading_ms FROM wall_receipts ORDER BY rowid")
+        .expect("prepare wall receipt scan");
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, i64>(1)?))
+        })
+        .expect("query wall receipts");
+    rows.map(|row| {
+        let (key, reading) = row.expect("wall receipt row");
+        (key, u64::try_from(reading).expect("non-negative reading"))
+    })
+    .collect()
+}
+
 fn assert_integrity(base: &Path) {
     let connection = Connection::open(clock_database(base)).expect("open for integrity check");
     let result: String = connection
@@ -366,6 +440,8 @@ fn crash_child_helper() {
     match scenario.as_str() {
         "tick-three-commit" => child_tick_commit(&root, 3),
         "tick-five-commit" => child_tick_commit(&root, 5),
+        "wall-three-commit" => child_wall_commit(&root, 3),
+        "wall-five-commit" => child_wall_commit(&root, 5),
         other => panic!("unknown crash child scenario {other}"),
     }
 }
@@ -378,6 +454,36 @@ fn child_tick_commit(root: &Path, count: u64) -> ! {
     for index in 0..count {
         last = ticked(&clock, 0xA1 + u8::try_from(index).expect("small count"));
         assert_eq!(last.as_u64(), index + 1, "child ticks are dense");
+    }
+    announce(&format!("READY {}", last.as_u64()));
+    let _keeper = clock;
+    loop {
+        std::thread::park();
+    }
+}
+
+/// Child fixture: `count` fully committed wall readings with the keys
+/// `0xB1..`, one transaction each. Marker: `READY <final-reading-ms>`.
+fn child_wall_commit(root: &Path, count: u64) -> ! {
+    let clock = reopen_clock(root);
+    let mut last = WallReading::from_u64(0);
+    for index in 0..count {
+        let seed = 0xB1 + u8::try_from(index).expect("small count");
+        match clock
+            .wall_now(request(seed))
+            .expect("child wall_now must advance")
+        {
+            WallNowDecision::Advanced(reading) => {
+                assert!(
+                    reading.as_u64() >= last.as_u64(),
+                    "child wall readings never regress"
+                );
+                last = reading;
+            }
+            WallNowDecision::Replayed(reading) => {
+                panic!("child wall keys are fresh, got replay {reading}")
+            }
+        }
     }
     announce(&format!("READY {}", last.as_u64()));
     let _keeper = clock;
@@ -924,5 +1030,361 @@ fn clock_fault_trigger_guards_survive_injection_and_recovery() {
     assert_eq!(replayed(&recovered, 0x01), Reading::from_u64(1));
     assert_eq!(replayed(&recovered, 0x02), Reading::from_u64(2));
     assert_clock_counts(root.base(), [1, 2]);
+    assert_integrity(root.base());
+}
+
+// ---------------------------------------------------------------------------
+// W1: wall pre-commit IOERR fails typed and converges (bootstrap + advance)
+// ---------------------------------------------------------------------------
+
+/// W1：`FailWritesAfter { 0, IoErr }` 分别注入 `wall_now` 的两个阶段——
+/// 首次 bootstrap（以系统时钟初始化 durable 水位）与既有水位上的推进——的
+/// 提交写入 → typed `Sqlite` 失败（错误链含 I/O 条件）；wall 水位整体保持
+/// 旧值、零新 wall 回执（零部分状态）、integrity ok；disarm 后同 key 重做
+/// 收敛到 `max(durable, system)`（≥ durable 水位；wall 重做是**单调**收敛
+/// 而非 tick 那样的逐字节确定性收敛——源是系统时钟）；重放幂等。
+#[test]
+#[allow(clippy::too_many_lines)]
+fn wall_fault_now_precommit_ioerr_fails_typed_and_converges() {
+    let _serialization = fault_lock();
+    nlos_store_fault::disarm();
+    let _sandbox = SandboxCwd::new("wall-ioerr-init");
+    let root = TestRoot::new("wall-ioerr-init");
+    let clock = open_clock_fault(root.base());
+
+    // Phase 1: the bootstrap wall_now under injected I/O errors.
+    nlos_store_fault::arm(FaultMode::FailWritesAfter {
+        remaining: 0,
+        code: FaultCode::IoErr,
+    });
+    let error = clock
+        .wall_now(request(0x01))
+        .expect_err("bootstrap wall_now must fail under injected I/O error");
+    assert_sqlite_error_chain(&error, &["i/o", "ioerr"]);
+    assert!(nlos_store_fault::writes_observed() > 0);
+    assert_eq!(raw_wall_receipt_count(root.base()), 0);
+    assert_eq!(raw_wall_watermark(root.base()), 0, "zero partial state");
+    nlos_store_fault::disarm();
+
+    assert_eq!(
+        clock
+            .inspect_wall()
+            .expect("wall high-water after failed bootstrap"),
+        WallReading::from_u64(0)
+    );
+    assert_integrity(root.base());
+
+    // The redo converges monotonically onto max(durable, system).
+    let redo = wall_advanced(&clock, 0x01);
+    assert!(redo.as_u64() > 0, "bootstrap reading is the system clock");
+    assert_eq!(
+        clock.inspect_wall().expect("watermark moved onto the redo"),
+        redo
+    );
+    assert_eq!(wall_replayed(&clock, 0x01), redo);
+    assert_eq!(raw_wall_receipt_count(root.base()), 1);
+
+    // Phase 2: an advancing wall_now on the same faulted connection.
+    nlos_store_fault::arm(FaultMode::FailWritesAfter {
+        remaining: 0,
+        code: FaultCode::IoErr,
+    });
+    let error = clock
+        .wall_now(request(0x02))
+        .expect_err("advancing wall_now must fail under injected I/O error");
+    assert_sqlite_error_chain(&error, &["i/o", "ioerr"]);
+    nlos_store_fault::disarm();
+    assert_eq!(raw_wall_receipt_count(root.base()), 1);
+    assert_eq!(
+        clock.inspect_wall().expect("wall high-water stays at redo"),
+        redo,
+        "the previous wall high-water survives whole"
+    );
+
+    let second = wall_advanced(&clock, 0x02);
+    assert!(second.as_u64() >= redo.as_u64(), "wall never regresses");
+    drop(clock);
+    let verified = reopen_clock(root.base());
+    assert_eq!(
+        verified.inspect_wall().expect("durable wall high-water"),
+        second
+    );
+    assert_eq!(wall_replayed(&verified, 0x01), redo);
+    assert_eq!(wall_replayed(&verified, 0x02), second);
+    assert_eq!(raw_wall_receipt_count(root.base()), 2);
+    assert_integrity(root.base());
+}
+
+// ---------------------------------------------------------------------------
+// W2: wall pre-commit ENOSPC (SQLITE_FULL), same two phases
+// ---------------------------------------------------------------------------
+
+/// W2：`FailWritesAfter { 0, Full }`（`SQLITE_FULL`）对 wall bootstrap /
+/// advance 两个阶段同一收敛——typed 失败链含 "full"、wall 水位整体保持旧
+/// 值、零新回执；disarm 后重做单调收敛、行恰好一套、重放幂等、integrity ok。
+#[test]
+fn wall_fault_now_precommit_enospc_fails_typed_and_converges() {
+    let _serialization = fault_lock();
+    nlos_store_fault::disarm();
+    let _sandbox = SandboxCwd::new("wall-full-init");
+    let root = TestRoot::new("wall-full-init");
+    let clock = open_clock_fault(root.base());
+
+    nlos_store_fault::arm(FaultMode::FailWritesAfter {
+        remaining: 0,
+        code: FaultCode::Full,
+    });
+    let error = clock
+        .wall_now(request(0x01))
+        .expect_err("bootstrap wall_now must fail under injected disk-full");
+    assert_sqlite_error_chain(&error, &["full"]);
+    assert_eq!(raw_wall_receipt_count(root.base()), 0);
+    assert_eq!(raw_wall_watermark(root.base()), 0);
+
+    nlos_store_fault::disarm();
+    let redo = wall_advanced(&clock, 0x01);
+    assert_eq!(clock.inspect_wall().expect("watermark == redo"), redo);
+
+    nlos_store_fault::arm(FaultMode::FailWritesAfter {
+        remaining: 0,
+        code: FaultCode::Full,
+    });
+    let error = clock
+        .wall_now(request(0x02))
+        .expect_err("advancing wall_now must fail under injected disk-full");
+    assert_sqlite_error_chain(&error, &["full"]);
+    nlos_store_fault::disarm();
+    assert_eq!(raw_wall_receipt_count(root.base()), 1);
+    assert_eq!(
+        clock.inspect_wall().expect("wall high-water stays at redo"),
+        redo
+    );
+
+    let second = wall_advanced(&clock, 0x02);
+    assert!(second.as_u64() >= redo.as_u64());
+    drop(clock);
+    let verified = reopen_clock(root.base());
+    assert_eq!(
+        verified.inspect_wall().expect("durable wall high-water"),
+        second
+    );
+    assert_eq!(wall_replayed(&verified, 0x01), redo);
+    assert_eq!(wall_replayed(&verified, 0x02), second);
+    assert_eq!(raw_wall_receipt_count(root.base()), 2);
+    assert_integrity(root.base());
+}
+
+// ---------------------------------------------------------------------------
+// W3: wall PowerLoss commit point, both directions
+// ---------------------------------------------------------------------------
+
+/// W3（wall 写窗口 commit 点断电双向）：
+/// - Phase A（不可见方向，`PowerLossAfter { 0 }` 建模丢写）：wall "报告成
+///   功"；幸存连接先 drop；重开 → wall 水位整体回到旧值 0、零回执（不回
+///   退到任何更早值）；同 key 重做单调收敛并推进水位；重放幂等。
+/// - Phase B（提交后 kill-9 可见方向）：子进程完整提交 3 个 wall 读数后
+///   被强杀；重开 → 水位 == 通告终值、恰好 3 条回执且读数非降；已提交 key
+///   重放逐字节相等；fresh key 读数 ≥ durable 水位（不回退）；integrity ok。
+#[test]
+#[allow(clippy::too_many_lines)]
+fn wall_fault_power_loss_commit_point_converges_both_ways() {
+    fn wall_key(index: usize) -> u8 {
+        0xB1 + u8::try_from(index).expect("small count")
+    }
+
+    let _serialization = fault_lock();
+    nlos_store_fault::disarm();
+
+    // Phase A: invisible direction (modeled lost page-cache write).
+    {
+        let _sandbox = SandboxCwd::new("wall-pl");
+        let root = TestRoot::new("wall-pl");
+        let clock = open_clock_fault(root.base());
+
+        nlos_store_fault::arm(FaultMode::PowerLossAfter { remaining: 0 });
+        let phantom = wall_advanced(&clock, 0x01);
+        assert!(phantom.as_u64() > 0);
+        nlos_store_fault::disarm();
+        drop(clock);
+
+        let recovered = reopen_clock(root.base());
+        assert_eq!(
+            recovered
+                .inspect_wall()
+                .expect("wall high-water after power loss"),
+            WallReading::from_u64(0),
+            "the lost wall reading is wholly absent: the old watermark stands"
+        );
+        assert_eq!(raw_wall_receipt_count(root.base()), 0);
+        assert_integrity(root.base());
+
+        let redo = wall_advanced(&recovered, 0x01);
+        assert_eq!(
+            recovered.inspect_wall().expect("watermark == redo"),
+            redo,
+            "the redo re-issues at max(durable, system)"
+        );
+        assert_eq!(wall_replayed(&recovered, 0x01), redo);
+        assert_eq!(raw_wall_receipt_count(root.base()), 1);
+        assert_integrity(root.base());
+    }
+
+    // Phase B: visible direction (kill-9 after the commit).
+    {
+        let root = TestRoot::new("wall-kill9");
+        let mut child = spawn_child("wall-three-commit", &root);
+        let marker = await_marker(&mut child);
+        let final_ms = decode_marker(&marker);
+        kill_and_reap(&mut child);
+
+        let clock = reopen_clock(root.base());
+        assert_eq!(
+            clock
+                .inspect_wall()
+                .expect("committed wall watermark survives"),
+            WallReading::from_u64(final_ms),
+            "the committed wall reading survives whole"
+        );
+        let receipts = raw_wall_receipts(root.base());
+        assert_eq!(receipts.len(), 3, "exactly three committed wall receipts");
+        for (index, (_, reading_ms)) in receipts.iter().enumerate() {
+            assert!(
+                *reading_ms <= final_ms,
+                "committed wall readings never exceed the final watermark"
+            );
+            assert_eq!(
+                wall_replayed(&clock, wall_key(index)),
+                WallReading::from_u64(*reading_ms),
+                "replays of the child's committed keys are byte-equal"
+            );
+        }
+        let fresh = wall_advanced(&clock, wall_key(3));
+        assert!(
+            fresh.as_u64() >= final_ms,
+            "a fresh key reads at least the durable watermark"
+        );
+        assert_eq!(raw_wall_receipt_count(root.base()), 4);
+        assert_integrity(root.base());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// W4: wall torn WAL tail — watermark whole-or-absent, never below survivor
+// ---------------------------------------------------------------------------
+
+/// W4：wall 子进程提交 5 个读数后被强杀，父进程对 wall 末段事务帧组的每个
+/// 截断点与再深一段的截断点（合计 ≥6 代表点）逐一恢复重开：wall 水位恒为
+/// 旧值或新值之一（绝不撕裂：integrity ok；**水位 == 幸存最后一条回执的
+/// 读数**——推进与回执同事务、同生同灭）、恒 ≥ 再深一段的幸存提交（不回
+/// 退）；幸存回执与控制值逐字节相等、重放幂等；缺失 key 重做单调收敛（≥
+/// 幸存水位，wall 无逐字节确定性）；完整恢复对照相等。
+#[test]
+#[allow(clippy::too_many_lines)]
+fn wall_fault_torn_wal_tail_watermark_whole_or_absent() {
+    fn wall_key(index: usize) -> u8 {
+        0xB1 + u8::try_from(index).expect("small count")
+    }
+
+    let _serialization = fault_lock();
+    nlos_store_fault::disarm();
+    let root = TestRoot::new("wall-torn");
+    let mut child = spawn_child("wall-five-commit", &root);
+    let marker = await_marker(&mut child);
+    let final_ms = decode_marker(&marker);
+    kill_and_reap(&mut child);
+
+    let snapshot = ClockSnapshot::capture(root.base());
+
+    // Visible control: the untouched WAL recovers all five wall txs whole.
+    let control: Vec<u64> = {
+        let clock = reopen_clock(root.base());
+        assert_eq!(
+            clock.inspect_wall().expect("control wall watermark"),
+            WallReading::from_u64(final_ms)
+        );
+        let receipts = raw_wall_receipts(root.base());
+        assert_eq!(receipts.len(), 5, "control has all five wall receipts");
+        drop(clock);
+        receipts.into_iter().map(|(_, reading)| reading).collect()
+    };
+    for pair in control.windows(2) {
+        assert!(pair[0] <= pair[1], "control wall readings never regress");
+    }
+
+    let mut cuts = [
+        tail_tx_cuts(&snapshot.wal, 0),
+        tail_tx_cuts(&snapshot.wal, 1),
+    ]
+    .concat();
+    cuts.sort_unstable();
+    cuts.dedup();
+    assert!(
+        cuts.len() >= 6,
+        "sweep must cover at least 6 representative cut points, got {cuts:?}"
+    );
+
+    for cut in cuts {
+        snapshot.restore(root.base(), Some(cut));
+        let clock = reopen_clock(root.base());
+        assert_integrity(root.base());
+
+        // Co-life: the watermark advance and its receipt are one
+        // transaction, so the watermark equals the last surviving receipt's
+        // reading, is one of the committed control values, and never falls
+        // below the deepest surviving commit (the third wall reading).
+        let surviving = raw_wall_receipts(root.base());
+        assert!(!surviving.is_empty(), "a wall receipt always survives");
+        let watermark = clock.inspect_wall().expect("wall watermark after cut");
+        assert_eq!(
+            watermark.as_u64(),
+            surviving.last().expect("nonempty").1,
+            "watermark and the last receipt live and die together"
+        );
+        assert!(
+            control.contains(&watermark.as_u64()),
+            "the watermark is a committed value, never torn: got {}",
+            watermark.as_u64()
+        );
+        assert!(
+            watermark.as_u64() >= control[2],
+            "never below the deeper surviving commit"
+        );
+
+        // Surviving receipts are the byte-equal control prefix; their
+        // replays are byte-equal too.
+        for (index, (_, reading_ms)) in surviving.iter().enumerate() {
+            assert_eq!(*reading_ms, control[index], "survivor == control prefix");
+            assert_eq!(
+                wall_replayed(&clock, wall_key(index)),
+                WallReading::from_u64(*reading_ms)
+            );
+        }
+
+        // Redo of the missing keys converges monotonically at or above the
+        // surviving watermark (wall redo is monotone, not byte-equal).
+        for index in surviving.len()..control.len() {
+            let redo = wall_advanced(&clock, wall_key(index));
+            assert!(
+                redo.as_u64() >= watermark.as_u64(),
+                "redo never falls below the surviving watermark"
+            );
+        }
+        assert_eq!(
+            raw_wall_receipt_count(root.base()),
+            5,
+            "all five keys accounted for after redo"
+        );
+        drop(clock);
+    }
+
+    // Full restore returns to the visible world.
+    snapshot.restore(root.base(), None);
+    let clock = reopen_clock(root.base());
+    assert_eq!(
+        clock
+            .inspect_wall()
+            .expect("wall watermark after full restore"),
+        WallReading::from_u64(final_ms)
+    );
     assert_integrity(root.base());
 }
