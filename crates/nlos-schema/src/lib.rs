@@ -55,6 +55,12 @@ pub struct SchemaDescriptor {
     pub major: u32,
     pub minor: u32,
     pub supported_critical_extensions: &'static [u32],
+    /// ADR-0014 v1-beta freeze marker. Frozen entries lock their wire bytes:
+    /// only additive extension (new field numbers / new message types) is
+    /// permitted; renumbering, semantic changes, or field removal require a
+    /// new ADR. This is descriptive registry metadata, not a compile-time
+    /// enforcement — the byte-level defense remains the conformance goldens.
+    pub frozen: bool,
 }
 
 const SABI_ENVELOPE_V1: SchemaDescriptor = SchemaDescriptor {
@@ -62,6 +68,7 @@ const SABI_ENVELOPE_V1: SchemaDescriptor = SchemaDescriptor {
     major: 1,
     minor: 1,
     supported_critical_extensions: &[],
+    frozen: true,
 };
 
 const SABI_SERVICE_DIRECTORY_V1: SchemaDescriptor = SchemaDescriptor {
@@ -69,6 +76,7 @@ const SABI_SERVICE_DIRECTORY_V1: SchemaDescriptor = SchemaDescriptor {
     major: 1,
     minor: 0,
     supported_critical_extensions: &[],
+    frozen: true,
 };
 
 const SABI_OPERATION_CONTROL_V1: SchemaDescriptor = SchemaDescriptor {
@@ -76,6 +84,7 @@ const SABI_OPERATION_CONTROL_V1: SchemaDescriptor = SchemaDescriptor {
     major: 1,
     minor: 0,
     supported_critical_extensions: &[],
+    frozen: true,
 };
 
 const SABI_SYSTEM_CONTROL_V1: SchemaDescriptor = SchemaDescriptor {
@@ -83,6 +92,7 @@ const SABI_SYSTEM_CONTROL_V1: SchemaDescriptor = SchemaDescriptor {
     major: 1,
     minor: 0,
     supported_critical_extensions: &[],
+    frozen: true,
 };
 
 const SABI_TAKEOVER_CONTROL_V1: SchemaDescriptor = SchemaDescriptor {
@@ -90,6 +100,7 @@ const SABI_TAKEOVER_CONTROL_V1: SchemaDescriptor = SchemaDescriptor {
     major: 1,
     minor: 0,
     supported_critical_extensions: &[],
+    frozen: true,
 };
 
 const SABI_WAIT_CONTROL_V1: SchemaDescriptor = SchemaDescriptor {
@@ -97,6 +108,7 @@ const SABI_WAIT_CONTROL_V1: SchemaDescriptor = SchemaDescriptor {
     major: 1,
     minor: 0,
     supported_critical_extensions: &[],
+    frozen: true,
 };
 
 const SABI_PRINCIPAL_HANDSHAKE_V1: SchemaDescriptor = SchemaDescriptor {
@@ -104,6 +116,7 @@ const SABI_PRINCIPAL_HANDSHAKE_V1: SchemaDescriptor = SchemaDescriptor {
     major: 1,
     minor: 0,
     supported_critical_extensions: &[],
+    frozen: false,
 };
 
 const REGISTRY: &[SchemaDescriptor] = &[
@@ -119,6 +132,20 @@ const REGISTRY: &[SchemaDescriptor] = &[
 #[must_use]
 pub fn schema_registry() -> &'static [SchemaDescriptor] {
     REGISTRY
+}
+
+/// Returns the ADR-0014 v1-beta freeze state of a registered schema.
+///
+/// [`Some`] carries the descriptor's `frozen` marker for a known schema
+/// name; [`None`] means the name is not in the registry. Frozen entries
+/// admit additive wire extension only; the byte-level lock itself is
+/// enforced by the conformance goldens, not by this metadata.
+#[must_use]
+pub fn registry_frozen(name: &str) -> Option<bool> {
+    REGISTRY
+        .iter()
+        .find(|descriptor| descriptor.name == name)
+        .map(|descriptor| descriptor.frozen)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

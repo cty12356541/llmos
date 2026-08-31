@@ -35,8 +35,8 @@ use nlos_schema::{
     encode_query_operation_request, encode_register_wait_request, encode_resolve_service_request,
     encode_resolve_service_response, encode_sabi_envelope,
     encode_submit_barrier_observation_request, encode_submit_control_command_request,
-    operation_control_schema_identity, principal_handshake_schema_identity, schema_registry,
-    service_directory_schema_identity, system_control_schema_identity,
+    operation_control_schema_identity, principal_handshake_schema_identity, registry_frozen,
+    schema_registry, service_directory_schema_identity, system_control_schema_identity,
     takeover_control_schema_identity, validate_sabi_request_context,
     validate_sabi_response_context, wait_control_schema_identity,
 };
@@ -206,6 +206,37 @@ fn registry_exposes_the_supported_contract() {
         (principal_handshake.major, principal_handshake.minor),
         (1, 0)
     );
+}
+
+#[test]
+fn registry_freeze_markers_match_adr_0014() {
+    let frozen_names = [
+        SABI_ENVELOPE_SCHEMA,
+        SABI_SERVICE_DIRECTORY_SCHEMA,
+        SABI_OPERATION_CONTROL_SCHEMA,
+        SABI_SYSTEM_CONTROL_SCHEMA,
+        SABI_TAKEOVER_CONTROL_SCHEMA,
+        SABI_WAIT_CONTROL_SCHEMA,
+    ];
+    for name in frozen_names {
+        assert_eq!(registry_frozen(name), Some(true), "{name} must be frozen");
+    }
+    assert_eq!(
+        registry_frozen(SABI_PRINCIPAL_HANDSHAKE_SCHEMA),
+        Some(false),
+        "the additive PrincipalHandshake entry stays open under the freeze"
+    );
+    assert_eq!(registry_frozen("nlos.sabi.Unknown"), None);
+
+    // The descriptor metadata and the query API must agree on every entry.
+    for descriptor in schema_registry() {
+        assert_eq!(
+            registry_frozen(descriptor.name),
+            Some(descriptor.frozen),
+            "{} marker disagreement between registry and query API",
+            descriptor.name
+        );
+    }
 }
 
 #[test]
