@@ -347,11 +347,12 @@ pub struct MissingStagedBlob {
 /// Result of [`crate::ArtifactStore::recover`].
 ///
 /// Recovery reconciles metadata against blob presence. It never repairs
-/// `missing_blobs` (re-fetch/restore is a policy decision above this crate)
-/// and never deletes `orphan_blobs`/`orphan_cache_blobs` in this slice
-/// (listed for a later GC slice only). Orphan temporary files left by
-/// interrupted blob commits are removed, because a tmp file is by definition
-/// pre-rename and therefore uncommitted.
+/// `missing_blobs` (re-fetch/restore is a policy decision above this
+/// crate). Orphan blobs are listed only: `recover` never deletes them —
+/// orphan artifact blobs can be removed solely by the explicit GC
+/// [`crate::ArtifactStore::collect_orphan_blobs`]. Orphan temporary files
+/// left by interrupted blob commits are removed, because a tmp file is by
+/// definition pre-rename and therefore uncommitted.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct RecoveryReport {
     /// Committed revisions whose blob file is absent. Each entry makes the

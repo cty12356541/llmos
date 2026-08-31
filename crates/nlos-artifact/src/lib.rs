@@ -33,8 +33,9 @@
 //! Blob durability always precedes the metadata commit that references the
 //! digest. A crash before the rename leaves an orphan tmp file (removed by
 //! [`ArtifactStore::recover`]); after the rename but before the metadata
-//! commit leaves an orphan blob (listed by `recover`, never deleted here);
-//! after the metadata commit the revision is fully usable.
+//! commit leaves an orphan blob (listed by `recover`, removable only by
+//! the explicit [`ArtifactStore::collect_orphan_blobs`] GC); after the
+//! metadata commit the revision is fully usable.
 //!
 //! [`ArtifactStore::stage_revision`] uses the same durable blob phase but
 //! writes only staged metadata: it never creates a revision or advances the
@@ -54,23 +55,37 @@
 //! never re-verify. See `package` for the exact fail-closed order and the
 //! scope boundaries.
 //!
+//! # Explicit orphan GC (minimal prefix)
+//!
+//! [`ArtifactStore::collect_orphan_blobs`] is the only artifact-blob
+//! deletion path: it removes blobs under `artifacts/blobs/` whose digest
+//! no committed revision, no staged revision (any state), and no head
+//! references, and records exactly what it removed in one immutable GC
+//! receipt replayable by idempotency key across restarts. It is never
+//! triggered automatically. See the `gc` module for the conservative
+//! judgement rule and the crash-window semantics.
+//!
 //! # Scope and honesty boundaries
 //!
 //! - `DeploymentMode=LOCAL_SINGLE_NODE` only (`[ART-LOCAL-001]`): the local
 //!   store is authoritative; no sync/distributed/object-store backend. The
 //!   blob layer is confined to the internal `blob` module so a later slice
 //!   can lift it behind a backend trait.
-//! - No GC execution, retention policy, encryption, provenance chains, or
-//!   legal hold. Package verification is a minimal prefix only: no
-//!   installation/update lifecycle, no full §23.2 manifest, no trust-root
-//!   or signature-chain policy (single signing principal), and no
-//!   cross-process verification of the envelope.
+//! - GC is an explicit conservative orphan sweep only
+//!   (`collect_orphan_blobs`): no automatic/scheduled trigger, no
+//!   retention/TTL policy, no cross-artifact or external reference
+//!   tracking. No encryption, provenance chains, or legal hold. Package
+//!   verification is a minimal prefix only: no installation/update
+//!   lifecycle, no full §23.2 manifest, no trust-root or signature-chain
+//!   policy (single signing principal), and no cross-process verification
+//!   of the envelope.
 //! - [`ArtifactStore::recover`] is **explicit**, not run on open: open
 //!   latency stays predictable and recovery reporting is an operator
 //!   decision. Callers may invoke it immediately after open.
 
 mod blob;
 mod cache;
+mod gc;
 mod model;
 mod package;
 mod publication;
@@ -87,6 +102,7 @@ use std::path::PathBuf;
 use nlos_identity::IdentityAuthorityError;
 use nlos_types::{ArtifactId, PrincipalId};
 
+pub use gc::{CollectOrphanBlobsDecision, CollectOrphanBlobsRequest, GcReceipt};
 pub use model::{
     ArtifactHeadEndpointProof, ArtifactPublicationReceipt, ArtifactRecord, ContentDigest,
     CreateArtifactDecision, CreateArtifactSpec, HeadState, MissingBlob, MissingStagedBlob,
@@ -201,6 +217,8 @@ pub enum ArtifactError {
     },
     /// No immutable package verification receipt with this identity exists.
     PackageVerificationReceiptNotFound(nlos_types::ReceiptId),
+    /// No immutable garbage-collection receipt with this identity exists.
+    GcReceiptNotFound(nlos_types::ReceiptId),
     /// A durable row violates an invariant this crate enforces.
     CorruptRecord(&'static str),
     /// The process-local writer mutex is poisoned.
@@ -317,6 +335,10 @@ impl fmt::Display for ArtifactError {
             Self::PackageVerificationReceiptNotFound(receipt_id) => write!(
                 formatter,
                 "package verification receipt {receipt_id:?} does not exist"
+            ),
+            Self::GcReceiptNotFound(receipt_id) => write!(
+                formatter,
+                "garbage-collection receipt {receipt_id:?} does not exist"
             ),
             Self::CorruptRecord(reason) => write!(formatter, "corrupt durable record: {reason}"),
             Self::LockPoisoned => formatter.write_str("artifact writer lock is poisoned"),

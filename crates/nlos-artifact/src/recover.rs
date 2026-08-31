@@ -5,9 +5,10 @@
 //! - lists committed revisions whose blob is missing (`missing_blobs`;
 //!   repairing them is a policy decision above this crate);
 //! - removes orphan tmp files (by definition pre-rename, hence uncommitted);
-//! - lists orphan blobs no committed revision or active stage references
-//!   (for a later GC slice —
-//!   **never deleted in this slice**);
+//! - lists orphan blobs no committed revision or stage references
+//!   (removable only by the explicit GC
+//!   [`ArtifactStore::collect_orphan_blobs`]; `recover` itself never
+//!   deletes an orphan blob);
 //! - drops cache rows whose blob vanished (best-effort cache self-heal).
 
 use std::collections::HashSet;

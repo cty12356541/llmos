@@ -232,9 +232,11 @@ pub(crate) fn clean_tmp(tmp_dir: &Path) -> Result<u64, ArtifactError> {
     Ok(removed)
 }
 
-/// Removes the blob file for `digest` if present (cache eviction only —
-/// artifact blobs are never deleted by this crate). Returns whether a file
-/// was removed.
+/// Removes the blob file for `digest` if present. The only two call sites
+/// are cache eviction (which touches only `cache/`) and the explicit
+/// orphan GC `collect_orphan_blobs` (which removes only provably orphaned
+/// `artifacts/` blobs); there is no other deletion path. Returns whether
+/// a file was removed.
 pub(crate) fn remove_blob(
     domain: &DomainPaths,
     digest: ContentDigest,

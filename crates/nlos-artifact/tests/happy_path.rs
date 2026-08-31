@@ -191,7 +191,7 @@ fn durability_pragmas_are_wal_and_full() {
     let user_version: i64 = raw
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("read user_version");
-    assert_eq!(user_version, 4);
+    assert_eq!(user_version, 5);
 }
 
 #[test]

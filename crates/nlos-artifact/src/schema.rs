@@ -235,6 +235,42 @@ pub(crate) fn migrate_v4(connection: &mut Connection) -> Result<(), ArtifactErro
     Ok(())
 }
 
+/// Adds immutable garbage-collection receipts (B-ARTIFACT minimal GC
+/// prefix). A receipt records exactly the orphan digests one explicit
+/// `collect_orphan_blobs` run removed. It references no artifact or
+/// revision rows, so GC receipts stay immutable side records: revisions
+/// and heads are never touched by GC.
+pub(crate) fn migrate_v5(connection: &mut Connection) -> Result<(), ArtifactError> {
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "CREATE TABLE artifact_gc_receipts (
+            receipt_id BLOB PRIMARY KEY NOT NULL CHECK(length(receipt_id) = 16),
+            idempotency_key BLOB NOT NULL UNIQUE CHECK(length(idempotency_key) = 16),
+            collected_digests BLOB NOT NULL CHECK(length(collected_digests) % 32 = 0),
+            collected_count INTEGER NOT NULL CHECK(collected_count >= 0
+                AND collected_count = length(collected_digests) / 32),
+            scanned_blob_count INTEGER NOT NULL CHECK(scanned_blob_count >= 0),
+            created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0)
+        ) STRICT;
+
+        CREATE TRIGGER artifact_gc_receipts_immutable_update
+        BEFORE UPDATE ON artifact_gc_receipts
+        BEGIN
+            SELECT RAISE(ABORT, 'artifact gc receipt is immutable');
+        END;
+
+        CREATE TRIGGER artifact_gc_receipts_immutable_delete
+        BEFORE DELETE ON artifact_gc_receipts
+        BEGIN
+            SELECT RAISE(ABORT, 'artifact gc receipt is immutable');
+        END;
+
+        PRAGMA user_version = 5;",
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
+
 pub(crate) fn insert_artifact_head_endpoint_proof(
     transaction: &Transaction<'_>,
     artifact_id: ArtifactId,
