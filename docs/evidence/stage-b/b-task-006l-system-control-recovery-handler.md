@@ -94,3 +94,51 @@
 3. **nonce 熵为调用方注入**：`authenticated_serve_one` 的 `next_nonce: FnMut() -> [u8; 32]` 刻意不带随机数依赖，生产接线必须注入 OS 级 RNG；测试以确定性序列生成器验证协议语义。registry 只防「同一 nonce 值 outstanding 重复」与「单次消费」，nonce 值复用（随机性不足）不在设施防御面。
 4. **签名回调不可失败语义以 typed error 表达**：`sign: Fn(&[u8; 32]) -> Result<[u8; 64], HandshakeError>`；HSM 类可失败 signer 可直接映射，无需 panic。
 5. **served 阶段失败无 failure response**：镜像既有 `serve_one` 语义（handler 错误直接返回、不向 peer 发送 `SabiFailure`），认证后连接的失败响应策略仍属服务接线切片。
+
+## 2026-08-31 增量验证：多入口 parity 收口与全量生产 IPC caller 勘察
+
+> 状态：`PASS`（B-TASK-006L 进度单遗留三项之「多入口 parity」「全量生产 IPC caller 迁移」收口；「metrics exporter」已于 16c0fc0 完成）
+
+### 勘察清单（全仓 `serve_one`/`handle`/`handle_for_ipc` 使用点分类）
+
+**A. 生产服务端点（lib/auth 生产路径）——全部已走 typed `handle_for_ipc` 失败面，零迁移必要：**
+
+1. `nlos-system-control`：`RecoverySystemControl::handle_for_ipc`（lib.rs）；`dispatch_in_process`（control.rs，in-process 入口 → `handle_for_ipc`）；`dispatch_over_socket`（cli 客户端，服务侧同一 handler）；`authenticated_serve_one_control` → `serve_validated` → `control.handle_for_ipc`（auth.rs，认证入口，失败前置契约违规亦走 `failure_envelope`）。
+2. `nlos-wait-control`：`WaitControlService::handle_for_ipc`（lib.rs）；`AuthenticatedWaitControlServer::serve_one` → `service.handle_for_ipc`（authenticated.rs）；`AuthenticatedWaitControl::handle_for_ipc` 显式复用 plain service 的 typed 拒绝词表（「never invents a second rejection vocabulary」）。
+3. `nlos-takeover-control`：`TakeoverControl::handle_for_ipc`（lib.rs）；`AuthenticatedTakeoverControlServer::serve_one` → `control.handle_for_ipc`（authenticated.rs）。
+
+**B. conformance 测试专用（零改动，CI 依赖）：**
+
+1. `nlos-wait-control/src/bin/wait-control-conformance.rs`：bare `serve_one`，但 handler 内部已走 `WaitControlService::handle_for_ipc`（等价合规；按纪律不动）。
+2. `nlos-takeover-control/src/bin/takeover-control-conformance.rs`：bare `serve_one` + 裸 `.handle` + 手工 `failure_envelope`（与 `handle_for_ipc` 语义等价：`handle_for_ipc` 即 `handle` + `failure_envelope`；含 crash-injection 钩子故不迁移；按纪律不动）。
+
+**C. 集成测试 harness（不动）：** 各 `tests/` 内 `serve_one`/`serve_forever`（control_command_cli、recovery_control、wait_control、takeover_control、authenticated_*、windows_named_pipe、nlos-ipc platform/framing/handshake*）均为测试自建 harness。
+
+**D. 写集外发现（如实登记、不修改）：**
+
+1. `nlos-ipc/src/bin/nlos-ipc-echo.rs`、`nlos-directory-chain.rs`：IPC 设施 demo bin（bare `serve_one`），非控制面生产端点，且 `nlos-ipc` 为本任务禁改 crate。
+2. 本地工作区存在他车道未提交变更（`crates/nlos-artifact/**` 8 文件、`crates/nlos-schema/**` 2 文件等）；本地 stable 1.97.1 pedantic clippy 会对其报 `manual_is_multiple_of` 警告（HEAD 4a1cb2a CI 绿，属本地工具链/在途变更漂移，非本车道写集，未触碰）。
+
+### 迁移与 parity 变更摘要
+
+1. **生产 caller 迁移**：勘察结论为**已完成态、零迁移改动**——三控制服务的全部生产入口（in-process / plain-IPC 服务侧 / authenticated 服务侧）在既有提交（d005f15/8d3da50/885ef23 等）中已收敛到 `handle_for_ipc` 单一 typed 失败面；本切片不发明新语义、不重构。
+2. **多入口 parity 测试补缺**（`crates/nlos-system-control/tests/control_ipc_auth.rs`，+195 行，唯一写集变更）：
+   - 既有覆盖：in-process ↔ plain-socket ↔ CLI 成功 receipt 字节一致 + denied 失败一致（`control_command_cli.rs::cli_and_in_process_paths_produce_byte_identical_receipts`）；authenticated 仅独立 roundtrip/失败形态，**无跨入口同请求比对——此为补的缺口**。
+   - 新增 `spawn_plain_entry`（plain 入口 3 连接 harness，`handle_for_ipc` 投影）与 `dispatch_all_entries`（同一命令依次经 in-process / plain-IPC / authenticated 三入口）；
+   - 新增 `same_command_receipts_are_identical_across_in_process_plain_and_authenticated_entries`：三命令 × 三入口矩阵——InspectHealth（成功）、InspectTask 缺失目标（typed `NotFound` + `DO_NOT_RETRY`）、AcknowledgeRecoveryAlert policy 拒绝（typed `Rights` + `DO_NOT_RETRY` + 脱敏 safe_message）——断言同命令跨入口 receipt 字节级一致；并断言 denied ack 三入口零 durable 副作用。`ControlReceipt` 不含 wall 时间戳（故障在策略/CAS 之前返回），故 authenticated 入口的 clock-issued wall 与 caller-supplied wall 不影响字节一致。
+
+### 验证（全部本机运行，macOS/darwin；stable 1.97.1 + nightly-2026-08-01）
+
+- `cargo test -p nlos-system-control`：**52 passed / 0 failed**（lib 16 + cli 4 + control_ipc_auth **9**（含新增 parity）+ metrics_export 3 + openmetrics 7 + recovery_control 7 + failure_mapping 5 + windows_named_pipe 0（macOS）+ doc 1）。
+- `cargo test -p nlos-wait-control`：13 passed / 0 failed；`cargo test -p nlos-takeover-control`：10 passed / 0 failed；`cargo test -p nlos-ipc`：32 passed / 0 failed（勘察涉及 crate 定向回归，零改动零回归）。
+- `cargo clippy -p nlos-system-control --all-targets --all-features -- -D warnings`：通过；`cargo +nightly-2026-08-01 clippy … -D warnings`：通过（双工具链 0 warning）。
+- `cargo fmt -p nlos-system-control -- --check`：通过；`cargo +nightly-2026-08-01 fmt -p nlos-system-control -- --check`：通过。
+- 未运行：Windows named-pipe 面（本机 macOS，按先例由三平台 + MSRV CI 背书；`dispatch_over_socket` 已按既有 `#[cfg(all(unix, feature = "cli"))]` 模式门控）；`--no-default-features` 编译面（新测试与既有 socket 测试同样依赖 cli feature 门控）；`--workspace` 全量（本车道禁用，定向覆盖如上）。
+
+### 遗留项更新
+
+B-TASK-006L 进度单遗留原文「metrics exporter、多入口 parity、全量生产 IPC caller 迁移」三项现状：
+
+1. **metrics exporter**：已完成（16c0fc0，见 metrics evidence）。
+2. **多入口 parity**：本切片完成——三入口（in-process/plain-IPC/authenticated）同请求 receipt 字节级一致已由测试固化。
+3. **全量生产 IPC caller 迁移**：勘察确认**生产面收敛已完成**（先于本切片的提交已把三服务全部生产入口收敛到 `handle_for_ipc`）；bare `serve/handle` 残留仅在 conformance bin、IPC 设施 demo bin 与测试 harness（均为设施/测试专用，按 CI 冻结纪律不动）。**结论：生产面收敛完成，无生产 caller 遗留**；NL 前缀已接（b-control-003），GUI/批量控制等非本遗留项内容仍按进度单原口径另行跟踪。

@@ -798,3 +798,198 @@ async fn unbounded_correlation_is_a_typed_rejection_not_a_guessed_time() {
     let outcomes = server.await.unwrap();
     assert!(outcomes[0].as_ref().unwrap().served().is_ok());
 }
+
+/// Denial reason must carry the fixture policy's `denied` prefix.
+const PARITY_DENIED_REASON: &str = "denied: multi-entry typed-failure parity probe";
+const PARITY_DENIED_COMMAND_ID: [u8; 16] = [0x7D; 16];
+
+type PlainServeOutcomes = Vec<Result<(), IpcError>>;
+
+/// Plain local-IPC entry: one dedicated socket over the same durable
+/// authority and policy, serving exactly the `handle_for_ipc` projection
+/// for three sequential exchanges.
+fn spawn_plain_entry(
+    listener: UnixListenerAdapter,
+    tasks: Arc<SqliteTaskAuthority>,
+    health: StubHealth,
+) -> tokio::task::JoinHandle<Result<PlainServeOutcomes, IpcError>> {
+    use nlos_ipc::{OutboundResponse, serve_one};
+    use nlos_schema::sabi::v1::ExchangeResponse;
+
+    tokio::spawn(async move {
+        let wall_ms = i64::try_from(CLOCK_WALL_MS).unwrap();
+        let mut served = Vec::new();
+        for _ in 0..3 {
+            let tasks = Arc::clone(&tasks);
+            let health = health.clone();
+            let (stream, peer) = listener.accept(TransportConfig::default()).await?;
+            served.push(
+                serve_one(
+                    stream,
+                    TransportConfig::default(),
+                    peer,
+                    &AllowPeer,
+                    move |validated| {
+                        let response =
+                            RecoverySystemControl::new(tasks.as_ref(), &health, &CapabilityPolicy)
+                                .handle_for_ipc(validated.envelope(), MONOTONIC_NOW_NS, wall_ms);
+                        async move {
+                            Ok(OutboundResponse::Typed(ExchangeResponse {
+                                envelope: Some(response),
+                            }))
+                        }
+                    },
+                )
+                .await,
+            );
+        }
+        Ok(served)
+    })
+}
+
+/// B-TASK-006L multi-entry parity: the same command dispatched through the
+/// in-process handler, the plain local-IPC entry, and the ADR-0011
+/// authenticated entry produces byte-identical [`ControlReceipt`]s —
+/// including the bounded [`SabiFailure`] rejections (`NotFound`, `Rights`).
+/// The authenticated surface therefore never invents a second rejection
+/// vocabulary: it is the same `handle_for_ipc` projection behind every
+/// entry.
+#[cfg(all(unix, feature = "cli"))]
+async fn dispatch_all_entries(
+    control: &RecoverySystemControl<'_, StubHealth, CapabilityPolicy>,
+    authenticated_socket: &SocketPath,
+    plain_socket: &SocketPath,
+    principal: PrincipalId,
+    signer: &impl Fn(&[u8; 32]) -> Result<[u8; 64], HandshakeError>,
+    command: &ControlCommand,
+    wall_ms: i64,
+) -> [nlos_system_control::control::ControlReceipt; 3] {
+    use nlos_system_control::control::{dispatch_in_process, dispatch_over_socket};
+
+    let in_process = dispatch_in_process(control, command, MONOTONIC_NOW_NS, wall_ms).unwrap();
+    let plain = dispatch_over_socket(plain_socket, command).await.unwrap();
+    let authenticated =
+        dispatch_over_authenticated_socket(authenticated_socket, principal, signer, command)
+            .await
+            .unwrap();
+    [in_process, plain, authenticated]
+}
+
+#[tokio::test]
+#[cfg(all(unix, feature = "cli"))]
+async fn same_command_receipts_are_identical_across_in_process_plain_and_authenticated_entries() {
+    use nlos_schema::sabi::v1::RetryDirective;
+
+    let (mut fixture, key, binding) = Fixture::new("parity", 0x67, 1_000_000);
+    let principal = binding.principal_id;
+    let signer = honest_signer(&key);
+    let wall_ms = i64::try_from(CLOCK_WALL_MS).unwrap();
+
+    let plain_socket = SocketPath::new("pp");
+    let plain_listener = UnixListenerAdapter::bind(&plain_socket).unwrap();
+    let plain_entry = spawn_plain_entry(
+        plain_listener,
+        Arc::clone(&fixture.tasks),
+        fixture.health.clone(),
+    );
+    let server = fixture.spawn_serving_n(3);
+
+    let missing = ControlCommand::InspectTask {
+        plan_id: [0xEE; 16],
+    };
+    let denied = ControlCommand::AcknowledgeRecoveryAlert {
+        control_command_id: PARITY_DENIED_COMMAND_ID,
+        plan_id: *fixture.plan_id.as_bytes(),
+        expected_total_failures: 1,
+        reason: PARITY_DENIED_REASON.to_owned(),
+    };
+    let control =
+        RecoverySystemControl::new(fixture.tasks.as_ref(), &fixture.health, &CapabilityPolicy);
+
+    let inspect_receipts = dispatch_all_entries(
+        &control,
+        &fixture.socket,
+        &plain_socket,
+        principal,
+        &signer,
+        &ControlCommand::InspectHealth,
+        wall_ms,
+    )
+    .await;
+    let missing_receipts = dispatch_all_entries(
+        &control,
+        &fixture.socket,
+        &plain_socket,
+        principal,
+        &signer,
+        &missing,
+        wall_ms,
+    )
+    .await;
+    let denied_receipts = dispatch_all_entries(
+        &control,
+        &fixture.socket,
+        &plain_socket,
+        principal,
+        &signer,
+        &denied,
+        wall_ms,
+    )
+    .await;
+
+    // Success parity: the read-only inspection is byte-identical through
+    // every entry.
+    assert!(
+        inspect_receipts
+            .iter()
+            .all(|receipt| receipt.to_bytes() == inspect_receipts[0].to_bytes())
+    );
+
+    // Typed failure parity (`NotFound`): every entry answers the same
+    // missing target with the byte-identical bounded failure receipt.
+    let Err(missing_failure) = missing_receipts[0].outcome.as_ref() else {
+        panic!("expected typed NotFound failure");
+    };
+    assert_eq!(missing_failure.code, i32::from(SabiErrorCode::NotFound));
+    assert_eq!(missing_failure.retry, i32::from(RetryDirective::DoNotRetry));
+    assert!(
+        missing_receipts
+            .iter()
+            .all(|receipt| receipt.to_bytes() == missing_receipts[0].to_bytes())
+    );
+
+    // Typed failure parity (`Rights`): the policy denial is byte-identical
+    // through every entry, with the same sanitized failure vocabulary.
+    let Err(denial) = denied_receipts[0].outcome.as_ref() else {
+        panic!("expected typed Rights failure");
+    };
+    assert_eq!(denial.code, i32::from(SabiErrorCode::Rights));
+    assert_eq!(denial.retry, i32::from(RetryDirective::DoNotRetry));
+    assert_eq!(denial.safe_message, "SystemControl authorization denied");
+    assert!(
+        denied_receipts
+            .iter()
+            .all(|receipt| receipt.to_bytes() == denied_receipts[0].to_bytes())
+    );
+
+    // The denied acknowledgement mutated nothing on any entry.
+    assert!(
+        fixture
+            .tasks
+            .list_artifact_recovery_alerts(8)
+            .unwrap()
+            .first()
+            .unwrap()
+            .acknowledgement
+            .is_none()
+    );
+
+    let outcomes = server.await.unwrap();
+    assert_eq!(outcomes.len(), 3);
+    for outcome in &outcomes {
+        assert!(outcome.as_ref().unwrap().served().is_ok());
+    }
+    let plain_outcomes = plain_entry.await.unwrap().unwrap();
+    assert_eq!(plain_outcomes.len(), 3);
+    assert!(plain_outcomes.iter().all(Result::is_ok));
+}
