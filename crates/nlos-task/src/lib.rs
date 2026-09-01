@@ -138,6 +138,7 @@ mod participant;
 mod reconcile;
 mod recovery;
 mod resource_commit;
+mod scale;
 mod semantic_commit;
 mod store;
 
@@ -214,6 +215,7 @@ pub use resource_commit::{
     NestedResourceCostReceipt, ResourceFinalizeDecision, ResourceTaskCommitReceipt,
     SemanticResourceFinalizeDecision, SemanticResourceTaskCommitReceipt,
 };
+pub use scale::{ScaleProfile, TASK_PROFILE_10K};
 pub use semantic_commit::{
     FinalizeSemanticCommitRequest, NestedSemanticPublicationReceipt, PlanSemanticCommitRequest,
     PrepareSemanticFinalizeRequest, RecordSemanticPublicationsRequest, SemanticCommitPlanDecision,
