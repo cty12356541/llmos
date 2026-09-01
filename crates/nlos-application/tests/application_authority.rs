@@ -14,8 +14,9 @@ use nlos_application::{
 };
 use nlos_types::{Generation, IdempotencyKey, ReceiptId};
 use rusqlite::Connection;
-use support::{TestStack, authority_database, disable_replayed, disabled, installed,
-              open_authority, replayed};
+use support::{
+    TestStack, authority_database, disable_replayed, disabled, installed, open_authority, replayed,
+};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
@@ -887,8 +888,11 @@ fn api_disabled_application_refuses_reinstall_and_pins_receipt_guards() {
     ));
 
     assert!(
-        raw.execute("UPDATE application_disable_receipts SET disabled_at_ms=99", [])
-            .is_err(),
+        raw.execute(
+            "UPDATE application_disable_receipts SET disabled_at_ms=99",
+            []
+        )
+        .is_err(),
         "a disable receipt can never be rewritten"
     );
     assert!(
