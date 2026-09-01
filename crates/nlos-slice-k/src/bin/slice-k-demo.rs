@@ -98,7 +98,7 @@ async fn demo_happy_chain(runtime: &Arc<SliceKRuntime>, adapter: &TokioRuntimeAd
         ),
     );
     print_inspect(runtime, &chain, "[slice-k] INSPECT");
-    demo_lifecycle(runtime, &chain).await;
+    demo_lifecycle(runtime, &chain);
 }
 
 fn print_inspect(runtime: &SliceKRuntime, chain: &HappyChain, prefix: &str) {
@@ -124,11 +124,12 @@ fn print_inspect(runtime: &SliceKRuntime, chain: &HappyChain, prefix: &str) {
 /// same-package reinstall advances the installation generation, then
 /// `disable_application` lands the terminal status and further installs
 /// fail closed.
-async fn demo_lifecycle(runtime: &Arc<SliceKRuntime>, chain: &HappyChain) {
+fn demo_lifecycle(runtime: &Arc<SliceKRuntime>, chain: &HappyChain) {
     println!("[slice-k] STEP 09b lifecycle begin");
     let reinstall = runtime
         .install_verified_package_by_id(chain.verification_receipt_id, 0x2D)
-        .expect("reinstall advances the generation");    println!(
+        .expect("reinstall advances the generation");
+    println!(
         "[slice-k] STEP 09b reinstall-advance application={} generation={}",
         short_hex(chain.application_id.as_bytes()),
         reinstall.installation_generation.get()
