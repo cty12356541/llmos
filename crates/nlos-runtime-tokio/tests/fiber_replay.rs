@@ -457,11 +457,18 @@ async fn resume_redrives_pending_wait_to_live_wait_and_deliver_wakes_it() {
     // Pure `yield_now` polling: blocking sleeps would starve the very task
     // we are waiting for under a current-thread runtime.
     let mut state = adapter.inspect(handle).expect("inspect");
-    for _ in 0..100_000 {
+    for round in 0..200_000u32 {
         if state == FiberState::WaitingIo {
             break;
         }
         tokio::task::yield_now().await;
+        // Slow CI runners (observed on windows-latest) can leave the resumed
+        // incarnation unscheduled past any pure-yield budget; async sleep
+        // yields the worker without starving it (blocking sleep deadlocks a
+        // current-thread runtime — do not use it here).
+        if round % 1_000 == 999 {
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
         state = adapter.inspect(handle).expect("inspect");
     }
     assert_eq!(state, FiberState::WaitingIo);
