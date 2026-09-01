@@ -9,18 +9,24 @@
 //! one `Immediate` transaction commits the immutable installation receipt
 //! and CAS-advances the application's current installation generation.
 //!
-//! Schema v1 keeps two tables: `applications` (the current-state singleton
-//! per package identity — derived [`ApplicationId`], package manifest
-//! digest of the current installation, current installation generation,
-//! and the §23.1 minimal lifecycle status `installed`/`disabled`) and
-//! `installation_receipts` (the immutable facts — installation id, package
-//! digest, manifest digest, installer principal, idempotency key,
-//! timestamps). DDL triggers carry the invariants at every layer: receipts
-//! are immutable and durable, the generation is monotonic under CAS,
-//! application identity is frozen, rows cannot be deleted, and a receipt
-//! can only exist at the application's *current* generation (receipt and
-//! generation advance share one transaction, like the clock's
-//! watermark-bounded tick receipts).
+//! Schema v2 keeps three tables: `applications` (the current-state
+//! singleton per package identity — derived [`ApplicationId`], package
+//! manifest digest of the current installation, current installation
+//! generation, and the §23.1 minimal lifecycle status `installed`/
+//! `disabled`), `installation_receipts` (the immutable installation
+//! facts — installation id, package digest, manifest digest, installer
+//! principal, idempotency key, timestamps), and — added in v2, mirroring
+//! the artifact authority's staged migrations —
+//! `application_disable_receipts` (the immutable fact of the one
+//! `installed → disabled` transition, which makes
+//! [`ApplicationAuthority::disable_application`] replayable). DDL triggers
+//! carry the invariants at every layer: receipts are immutable and
+//! durable, the generation is monotonic under CAS, application identity is
+//! frozen, rows cannot be deleted, a receipt can only exist at the
+//! application's *current* generation (receipt and generation advance
+//! share one transaction, like the clock's watermark-bounded tick
+//! receipts), and a disable receipt can only exist for an application
+//! already disabled at its current generation.
 //!
 //! Verify-then-commit order, fail-closed: artifact receipt readback (the
 //! FINALIZED gate — an immutable verified receipt either exists whole or
@@ -35,13 +41,13 @@
 //! durable state.
 //!
 //! The slice deliberately does not implement: the §23.1 update / uninstall
-//! lifecycle and any policy engine (only the `installed`/`disabled`
-//! status and the current installation generation are modeled; `disabled`
-//! is terminal here), Task/Process creation wiring (the next Slice K
-//! longitudinal slice), multi-party installer approval (exactly one
-//! installer principal is recorded, taken from the verified receipt's
-//! signer), §23.2's full manifest applications/components model, and any
-//! cross-process transport.
+//! lifecycle and any policy engine (`disable_application` lands the
+//! `installed → disabled` transition only; `disabled` is terminal — there
+//! is no enable, no update/rollback, and no uninstall), Task/Process
+//! creation wiring (the next Slice K longitudinal slice), multi-party
+//! installer approval (exactly one installer principal is recorded, taken
+//! from the verified receipt's signer), §23.2's full manifest
+//! applications/components model, and any cross-process transport.
 
 mod schema;
 
@@ -169,6 +175,57 @@ impl InstallDecision {
     }
 }
 
+/// Immutable durable proof that one application was disabled: the fact of
+/// the one `installed → disabled` transition. The receipt is uniquely
+/// addressed by the application it disabled (the status is terminal, so at
+/// most one disable receipt can ever exist per application) and records
+/// the installation generation at disable time, which the transition
+/// leaves untouched.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DisableReceipt {
+    pub application_id: ApplicationId,
+    /// The installation generation at disable time (unchanged by the
+    /// transition — the state-machine trigger forbids moving it).
+    pub application_generation: Generation,
+    pub idempotency_key: IdempotencyKey,
+    pub disabled_at_ms: u64,
+}
+
+/// Request to disable one installed application. Exactly-once by
+/// idempotency key, mirroring the install request shape.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DisableApplicationRequest {
+    /// The package identity whose application singleton is disabled.
+    pub package_id: PackageId,
+    /// Caller-supplied exactly-once key for the disable receipt.
+    pub idempotency_key: IdempotencyKey,
+    /// Caller-supplied disable timestamp (ms since Unix epoch); must not
+    /// precede the current installation's install timestamp.
+    pub disabled_at_ms: u64,
+}
+
+/// Outcome of one [`ApplicationAuthority::disable_application`] call.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DisableDecision {
+    /// First execution of this key: the application status CAS'd
+    /// `installed → disabled` and the disable receipt committed with it.
+    Disabled(DisableReceipt),
+    /// Durable replay: this key already disabled the application and the
+    /// recorded original receipt is returned unchanged (no second
+    /// transition, no new fact).
+    Replayed(DisableReceipt),
+}
+
+impl DisableDecision {
+    /// The disable receipt this call denotes, whichever branch.
+    #[must_use]
+    pub const fn receipt(self) -> DisableReceipt {
+        match self {
+            Self::Disabled(receipt) | Self::Replayed(receipt) => receipt,
+        }
+    }
+}
+
 /// Fail-closed typed errors of the application/installation authority.
 /// Every variant is a hard refusal: the caller never receives an
 /// installation whose durability is in doubt, and a rejected install
@@ -202,6 +259,20 @@ pub enum ApplicationAuthorityError {
     /// The application exists but is disabled; reinstalling it requires the
     /// update/uninstall policy engine that is out of scope for this slice.
     ApplicationDisabled { application_id: ApplicationId },
+    /// No application exists under this package identity (nothing was ever
+    /// installed, so there is nothing to disable).
+    ApplicationNotFound { package_id: PackageId },
+    /// The application is already disabled and a *different* disable
+    /// command (a fresh idempotency key) was issued. The durable disable
+    /// receipt of the first command is the only fact; replay is keyed, so
+    /// a distinct command against the terminal state is a typed refusal.
+    ApplicationAlreadyDisabled { application_id: ApplicationId },
+    /// The requested disable timestamp precedes the current installation's
+    /// install timestamp (the application row's last update).
+    DisablePrecedesInstallation {
+        installed_at_ms: u64,
+        disabled_at_ms: u64,
+    },
     /// The same idempotency key was reused with a different request shape
     /// (a different verification receipt or a different timestamp).
     IdempotencyConflict,
@@ -253,6 +324,24 @@ impl fmt::Display for ApplicationAuthorityError {
                 formatter,
                 "application {application_id:?} is disabled; the update/uninstall \
                  policy engine is out of scope for this slice"
+            ),
+            Self::ApplicationNotFound { package_id } => write!(
+                formatter,
+                "no application exists under package {package_id:?}; \
+                 nothing was ever installed"
+            ),
+            Self::ApplicationAlreadyDisabled { application_id } => write!(
+                formatter,
+                "application {application_id:?} is already disabled; replay the \
+                 original disable idempotency key instead of issuing a new command"
+            ),
+            Self::DisablePrecedesInstallation {
+                installed_at_ms,
+                disabled_at_ms,
+            } => write!(
+                formatter,
+                "disable timestamp {disabled_at_ms} precedes the current \
+                 installation timestamp {installed_at_ms}"
             ),
             Self::IdempotencyConflict => formatter
                 .write_str("idempotency key reused with a different installation request shape"),
@@ -330,8 +419,11 @@ impl ApplicationAuthority {
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
         match version {
             0 => schema::migrate_v1(&mut connection)?,
-            schema::SCHEMA_VERSION => {}
+            1 | schema::SCHEMA_VERSION => {}
             other => return Err(ApplicationAuthorityError::SchemaVersionUnsupported(other)),
+        }
+        if version < schema::SCHEMA_VERSION {
+            schema::migrate_v2(&mut connection)?;
         }
         Ok(Self {
             connection: Mutex::new(connection),
@@ -485,6 +577,108 @@ impl ApplicationAuthority {
         Ok(InstallDecision::Installed(receipt))
     }
 
+    /// Disables one installed application: in one `Immediate` transaction
+    /// CAS's the status `installed → disabled` (the generation is left
+    /// untouched — the state-machine trigger forbids moving it) and
+    /// commits the immutable disable receipt.
+    ///
+    /// Fail-closed order:
+    ///
+    /// 1. **Replay**: the first durable disable receipt under the request's
+    ///    idempotency key is the authority; it replays unchanged without
+    ///    touching the state. The same key with a different request shape
+    ///    (a different package or timestamp) is a typed
+    ///    [`ApplicationAuthorityError::IdempotencyConflict`].
+    /// 2. **State CAS**: the application singleton must exist under the
+    ///    request's package identity
+    ///    ([`ApplicationAuthorityError::ApplicationNotFound`]) and be
+    ///    `installed`; a disabled application refuses a distinct disable
+    ///    command with
+    ///    [`ApplicationAuthorityError::ApplicationAlreadyDisabled`] (the
+    ///    status is terminal; only the original key replays). The update
+    ///    predicate re-checks the observed status, a lost CAS is a
+    ///    [`ApplicationAuthorityError::CorruptRecord`].
+    /// 3. **Temporal binding**: the disable timestamp must not precede the
+    ///    current installation's install timestamp (the row's last update).
+    /// 4. **Single-transaction commit**: the status update and the receipt
+    ///    insert share the one transaction (co-life), and the DDL
+    ///    state-bounds guard only accepts a receipt for an application
+    ///    already disabled at its current generation.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed (zero durable state change) for an unknown package, an
+    /// idempotency conflict, a distinct command against an already
+    /// disabled application, a disable preceding its own installation, a
+    /// lost status CAS, or any storage failure.
+    pub fn disable_application(
+        &self,
+        request: DisableApplicationRequest,
+    ) -> Result<DisableDecision, ApplicationAuthorityError> {
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+        // Replay first inside the transaction: the durable disable receipt
+        // is the authority and replays without any further inspection.
+        if let Some(existing) = load_disable_receipt_by_key(&transaction, request.idempotency_key)?
+        {
+            if existing.application_id != derive_application_id(request.package_id)
+                || existing.disabled_at_ms != request.disabled_at_ms
+            {
+                return Err(ApplicationAuthorityError::IdempotencyConflict);
+            }
+            transaction.commit()?;
+            return Ok(DisableDecision::Replayed(existing));
+        }
+
+        let application = load_application_by_package(&transaction, request.package_id)?.ok_or(
+            ApplicationAuthorityError::ApplicationNotFound {
+                package_id: request.package_id,
+            },
+        )?;
+        match application.status {
+            ApplicationStatus::Disabled => {
+                return Err(ApplicationAuthorityError::ApplicationAlreadyDisabled {
+                    application_id: application.application_id,
+                });
+            }
+            ApplicationStatus::Installed => {}
+        }
+
+        if request.disabled_at_ms < application.updated_at_ms {
+            return Err(ApplicationAuthorityError::DisablePrecedesInstallation {
+                installed_at_ms: application.updated_at_ms,
+                disabled_at_ms: request.disabled_at_ms,
+            });
+        }
+
+        let changed = transaction.execute(
+            "UPDATE applications SET status = ?1, updated_at_ms = ?2
+             WHERE application_id = ?3 AND status = ?4",
+            params![
+                ApplicationStatus::Disabled.encode(),
+                encode_u64(request.disabled_at_ms)?,
+                application.application_id.as_bytes().as_slice(),
+                ApplicationStatus::Installed.encode(),
+            ],
+        )?;
+        if changed != 1 {
+            return Err(ApplicationAuthorityError::CorruptRecord(
+                "application status CAS lost",
+            ));
+        }
+
+        let receipt = DisableReceipt {
+            application_id: application.application_id,
+            application_generation: application.current_installation_generation,
+            idempotency_key: request.idempotency_key,
+            disabled_at_ms: request.disabled_at_ms,
+        };
+        insert_disable_receipt(&transaction, &receipt)?;
+        transaction.commit()?;
+        Ok(DisableDecision::Disabled(receipt))
+    }
+
     /// Reads an application's current durable state by package identity
     /// without any durable side effect. `None` means the package has never
     /// been installed — a legitimate read outcome, not an error.
@@ -498,6 +692,21 @@ impl ApplicationAuthority {
     ) -> Result<Option<ApplicationView>, ApplicationAuthorityError> {
         let connection = self.lock()?;
         load_application_by_package(&connection, package_id)
+    }
+
+    /// Reads the immutable disable receipt of one application by package
+    /// identity. `None` means the application was never disabled — a
+    /// legitimate read outcome, not an error.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed on a storage error.
+    pub fn inspect_disable_receipt(
+        &self,
+        package_id: PackageId,
+    ) -> Result<Option<DisableReceipt>, ApplicationAuthorityError> {
+        let connection = self.lock()?;
+        load_disable_receipt_by_package(&connection, package_id)
     }
 
     /// Reads one immutable installation receipt by installation id.
@@ -711,6 +920,61 @@ fn load_receipt_optional(
     )?;
     let mut rows = statement.query([installation_id.as_bytes().as_slice()])?;
     rows.next()?.map(decode_receipt_row).transpose()
+}
+
+fn load_disable_receipt_by_key(
+    source: &Connection,
+    key: IdempotencyKey,
+) -> Result<Option<DisableReceipt>, ApplicationAuthorityError> {
+    let mut statement = source.prepare(
+        "SELECT application_id, application_generation, idempotency_key, disabled_at_ms
+         FROM application_disable_receipts WHERE idempotency_key = ?1",
+    )?;
+    let mut rows = statement.query([key.as_bytes().as_slice()])?;
+    rows.next()?.map(decode_disable_receipt_row).transpose()
+}
+
+fn load_disable_receipt_by_package(
+    source: &Connection,
+    package_id: PackageId,
+) -> Result<Option<DisableReceipt>, ApplicationAuthorityError> {
+    let mut statement = source.prepare(
+        "SELECT application_id, application_generation, idempotency_key, disabled_at_ms
+         FROM application_disable_receipts
+         WHERE application_id = (SELECT application_id FROM applications
+                                 WHERE package_id = ?1)",
+    )?;
+    let mut rows = statement.query([package_id.as_bytes().as_slice()])?;
+    rows.next()?.map(decode_disable_receipt_row).transpose()
+}
+
+fn insert_disable_receipt(
+    transaction: &Connection,
+    receipt: &DisableReceipt,
+) -> Result<(), ApplicationAuthorityError> {
+    transaction.execute(
+        "INSERT INTO application_disable_receipts (
+            application_id, idempotency_key, application_generation, disabled_at_ms
+         ) VALUES (?1, ?2, ?3, ?4)",
+        params![
+            receipt.application_id.as_bytes().as_slice(),
+            receipt.idempotency_key.as_bytes().as_slice(),
+            encode_generation(receipt.application_generation)?,
+            encode_u64(receipt.disabled_at_ms)?,
+        ],
+    )?;
+    Ok(())
+}
+
+fn decode_disable_receipt_row(
+    row: &rusqlite::Row<'_>,
+) -> Result<DisableReceipt, ApplicationAuthorityError> {
+    Ok(DisableReceipt {
+        application_id: ApplicationId::from_bytes(blob16(row, 0)?),
+        application_generation: decode_generation(row, 1)?,
+        idempotency_key: IdempotencyKey::from_bytes(blob16(row, 2)?),
+        disabled_at_ms: decode_u64(row, 3)?,
+    })
 }
 
 fn insert_receipt(

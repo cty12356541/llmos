@@ -9,12 +9,13 @@ mod support;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use nlos_application::{
-    ApplicationAuthorityError, InstallApplicationRequest, derive_application_id,
-    derive_installation_id,
+    ApplicationAuthorityError, DisableApplicationRequest, InstallApplicationRequest,
+    derive_application_id, derive_installation_id,
 };
 use nlos_types::{Generation, IdempotencyKey, ReceiptId};
 use rusqlite::Connection;
-use support::{TestStack, authority_database, installed, open_authority, replayed};
+use support::{TestStack, authority_database, disable_replayed, disabled, installed,
+              open_authority, replayed};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
@@ -48,6 +49,18 @@ fn assert_counts(stack: &TestStack, applications: i64, receipts: i64) {
         raw_count(&database, "SELECT COUNT(*) FROM installation_receipts"),
         receipts,
         "unexpected installation_receipts row count"
+    );
+}
+
+fn assert_disable_counts(stack: &TestStack, disable_receipts: i64) {
+    let database = authority_database(stack.root.root());
+    assert_eq!(
+        raw_count(
+            &database,
+            "SELECT COUNT(*) FROM application_disable_receipts"
+        ),
+        disable_receipts,
+        "unexpected application_disable_receipts row count"
     );
 }
 
@@ -656,4 +669,248 @@ fn generation_and_receipts_stay_in_lockstep() {
     let replay = replayed(&authority, &stack.artifacts, again.receipt_id, 0x05, 6_000);
     assert_eq!(replay, receipt);
     assert_counts(&stack, 1, 5);
+}
+
+/// 正常停用：disable API 单事务落 immutable disable receipt 并 CAS
+/// installed→disabled（代际不动）；同 key 重放返回原回执不产生新事实；
+/// 只读回读逐字段一致。
+#[test]
+fn disable_installed_application_replays_idempotently() {
+    let stack = TestStack::new(&label("disable"), 0x2A);
+    let verified = stack.verify_package(0x41, 1, key(0xF0), 1_000);
+    let authority = open_authority(stack.root.root());
+    let installation = installed(
+        &authority,
+        &stack.artifacts,
+        verified.receipt_id,
+        0x01,
+        2_000,
+    );
+
+    let receipt = disabled(&authority, verified.package_id, 0x0A, 4_000);
+    assert_eq!(receipt.application_id, installation.application_id);
+    assert_eq!(
+        receipt.application_generation,
+        Generation::INITIAL,
+        "disable never moves the generation"
+    );
+    assert_eq!(receipt.idempotency_key, key(0x0A));
+    assert_eq!(receipt.disabled_at_ms, 4_000);
+
+    let view = authority
+        .inspect_application(verified.package_id)
+        .expect("inspect")
+        .expect("exists");
+    assert_eq!(view.status, nlos_application::ApplicationStatus::Disabled);
+    assert_eq!(
+        view.current_installation_generation,
+        Generation::INITIAL,
+        "the generation is untouched by the transition"
+    );
+    assert_eq!(
+        view.updated_at_ms, 4_000,
+        "the row records the disable as its last update"
+    );
+
+    let read_back = authority
+        .inspect_disable_receipt(verified.package_id)
+        .expect("disable readback")
+        .expect("disable receipt exists");
+    assert_eq!(read_back, receipt);
+
+    let replay = disable_replayed(&authority, verified.package_id, 0x0A, 4_000);
+    assert_eq!(replay, receipt);
+    assert_counts(&stack, 1, 1);
+    assert_disable_counts(&stack, 1);
+}
+
+/// 停用拒绝全表：未知 package（ApplicationNotFound）、早于当前安装时间
+/// （DisablePrecedesInstallation）、同 key 异形（IdempotencyConflict，
+/// replay-first：异 package 也先撞 key）、终态异键（ApplicationAlready
+/// Disabled）；全部 typed 且零 durable 状态变化。
+#[test]
+fn disable_refusals_are_typed_and_leave_zero_state() {
+    let stack = TestStack::new(&label("disable-refusals"), 0x2B);
+    let verified = stack.verify_package(0x41, 1, key(0xF0), 1_000);
+    let authority = open_authority(stack.root.root());
+
+    let error = authority
+        .disable_application(DisableApplicationRequest {
+            package_id: verified.package_id,
+            idempotency_key: key(0x0A),
+            disabled_at_ms: 3_000,
+        })
+        .expect_err("nothing was ever installed");
+    assert!(matches!(
+        error,
+        ApplicationAuthorityError::ApplicationNotFound { package_id }
+            if package_id == verified.package_id
+    ));
+
+    installed(
+        &authority,
+        &stack.artifacts,
+        verified.receipt_id,
+        0x01,
+        2_000,
+    );
+
+    let error = authority
+        .disable_application(DisableApplicationRequest {
+            package_id: verified.package_id,
+            idempotency_key: key(0x0A),
+            disabled_at_ms: 1_999,
+        })
+        .expect_err("disable must not precede its own installation");
+    assert!(matches!(
+        error,
+        ApplicationAuthorityError::DisablePrecedesInstallation {
+            installed_at_ms: 2_000,
+            disabled_at_ms: 1_999,
+        }
+    ));
+    assert_disable_counts(&stack, 0);
+
+    let receipt = disabled(&authority, verified.package_id, 0x0A, 3_000);
+    assert_disable_counts(&stack, 1);
+
+    let error = authority
+        .disable_application(DisableApplicationRequest {
+            package_id: verified.package_id,
+            idempotency_key: key(0x0A),
+            disabled_at_ms: 9_000,
+        })
+        .expect_err("same key with a different timestamp must conflict");
+    assert!(matches!(
+        error,
+        ApplicationAuthorityError::IdempotencyConflict
+    ));
+
+    // Replay-first ordering: the same key names the recorded fact, so even
+    // an unknown package under it conflicts before any existence check.
+    let error = authority
+        .disable_application(DisableApplicationRequest {
+            package_id: nlos_types::PackageId::from_bytes([0x42; 16]),
+            idempotency_key: key(0x0A),
+            disabled_at_ms: 3_000,
+        })
+        .expect_err("the key is bound to its original request shape");
+    assert!(matches!(
+        error,
+        ApplicationAuthorityError::IdempotencyConflict
+    ));
+
+    let error = authority
+        .disable_application(DisableApplicationRequest {
+            package_id: verified.package_id,
+            idempotency_key: key(0x0B),
+            disabled_at_ms: 3_000,
+        })
+        .expect_err("a distinct command against the terminal state is refused");
+    assert!(matches!(
+        error,
+        ApplicationAuthorityError::ApplicationAlreadyDisabled { application_id }
+            if application_id == receipt.application_id
+    ));
+
+    assert_counts(&stack, 1, 1);
+    assert_disable_counts(&stack, 1);
+    let view = authority
+        .inspect_application(verified.package_id)
+        .expect("inspect")
+        .expect("exists");
+    assert_eq!(view.status, nlos_application::ApplicationStatus::Disabled);
+    assert_eq!(view.current_installation_generation, Generation::INITIAL);
+}
+
+/// API 停用后的终态全表面：installed 时插入 disable receipt 被 state
+/// bounds trigger abort；停用后 fresh key 重装 typed `ApplicationDisabled`
+/// （代际/状态纹丝不动）；disable receipt 不可变、不可删、同 application
+/// 第二条被 PRIMARY KEY 拒绝。
+#[test]
+fn api_disabled_application_refuses_reinstall_and_pins_receipt_guards() {
+    let stack = TestStack::new(&label("api-disable"), 0x2C);
+    let verified = stack.verify_package(0x41, 1, key(0xF0), 1_000);
+    let authority = open_authority(stack.root.root());
+    let installation = installed(
+        &authority,
+        &stack.artifacts,
+        verified.receipt_id,
+        0x01,
+        2_000,
+    );
+    let database = authority_database(stack.root.root());
+    let raw = Connection::open(&database).expect("raw connection");
+
+    // The state-bounds guard: a disable receipt can only exist for an
+    // application that is already disabled — inserting while installed
+    // aborts even with a perfectly shaped row.
+    assert!(
+        raw.execute(
+            "INSERT INTO application_disable_receipts (
+                application_id, idempotency_key, application_generation, disabled_at_ms
+             ) VALUES (?1, x'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB', 1, 3_000)",
+            [installation.application_id.as_bytes().as_slice()],
+        )
+        .is_err(),
+        "a disable receipt can never precede the disable transition"
+    );
+
+    let receipt = disabled(&authority, verified.package_id, 0x0A, 3_000);
+
+    // At most one disable receipt per application, ever (terminal status).
+    assert!(
+        raw.execute(
+            "INSERT INTO application_disable_receipts (
+                application_id, idempotency_key, application_generation, disabled_at_ms
+             ) VALUES (?1, x'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB', 1, 4_000)",
+            [receipt.application_id.as_bytes().as_slice()],
+        )
+        .is_err(),
+        "the DDL primary key encodes the terminality"
+    );
+
+    let error = authority
+        .install_application(
+            &stack.artifacts,
+            InstallApplicationRequest {
+                package_verification_receipt_id: verified.receipt_id,
+                idempotency_key: key(0x02),
+                installed_at_ms: 4_000,
+            },
+        )
+        .expect_err("an api-disabled application must refuse new installations");
+    assert!(matches!(
+        error,
+        ApplicationAuthorityError::ApplicationDisabled { application_id }
+            if application_id == receipt.application_id
+    ));
+
+    assert!(
+        raw.execute("UPDATE application_disable_receipts SET disabled_at_ms=99", [])
+            .is_err(),
+        "a disable receipt can never be rewritten"
+    );
+    assert!(
+        raw.execute("DELETE FROM application_disable_receipts", [])
+            .is_err(),
+        "a disable receipt is durable"
+    );
+    drop(raw);
+
+    assert_counts(&stack, 1, 1);
+    assert_disable_counts(&stack, 1);
+    let view = authority
+        .inspect_application(verified.package_id)
+        .expect("inspect")
+        .expect("exists");
+    assert_eq!(view.status, nlos_application::ApplicationStatus::Disabled);
+    assert_eq!(view.current_installation_generation, Generation::INITIAL);
+    assert_eq!(
+        authority
+            .inspect_disable_receipt(verified.package_id)
+            .expect("readback")
+            .expect("durable"),
+        receipt
+    );
 }

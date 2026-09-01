@@ -173,6 +173,32 @@ impl SliceKRuntime {
         }
     }
 
+    /// Installs the verified package referenced by an existing durable
+    /// verification receipt id (authority-first readback), advancing the
+    /// installation generation on reinstall.
+    ///
+    /// # Errors
+    ///
+    /// Propagates application-authority errors; a `Replayed` decision
+    /// returns the durably recorded original receipt.
+    pub fn install_verified_package_by_id(
+        &self,
+        verification_receipt_id: nlos_types::ReceiptId,
+        seed: u8,
+    ) -> SliceKResult<InstallationReceipt> {
+        let installed_at_ms = self.wall_now_ms(seeded_key(seed, 15))?;
+        match self.applications.install_application(
+            &self.artifacts,
+            InstallApplicationRequest {
+                package_verification_receipt_id: verification_receipt_id,
+                idempotency_key: seeded_key(seed, 16),
+                installed_at_ms,
+            },
+        )? {
+            InstallDecision::Installed(receipt) | InstallDecision::Replayed(receipt) => Ok(receipt),
+        }
+    }
+
     /// Registers the `Task` + `TaskAttempt` pair of one chain, with the frozen
     /// empty-history snapshot bundle the permit CAS revalidates.
     ///

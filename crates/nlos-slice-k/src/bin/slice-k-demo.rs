@@ -5,13 +5,15 @@
 
 use std::sync::Arc;
 
+use nlos_types::PackageId;
+
+use nlos_application::DisableApplicationRequest;
 use nlos_runtime::RuntimeAdapter as _;
 use nlos_runtime_tokio::{TokioRuntimeAdapter, TokioRuntimeConfig};
 use nlos_slice_k::{
     ChainQuery, HappyChain, SliceKRuntime, run_cancel_path, run_happy_chain, run_recovery_prefix,
     seeded_key, short_hex,
 };
-use nlos_types::PackageId;
 
 fn receipt_line(kind: &str, id: &[u8], detail: &str) {
     println!(
@@ -96,6 +98,7 @@ async fn demo_happy_chain(runtime: &Arc<SliceKRuntime>, adapter: &TokioRuntimeAd
         ),
     );
     print_inspect(runtime, &chain, "[slice-k] INSPECT");
+    demo_lifecycle(runtime, &chain).await;
 }
 
 fn print_inspect(runtime: &SliceKRuntime, chain: &HappyChain, prefix: &str) {
@@ -115,6 +118,49 @@ fn print_inspect(runtime: &SliceKRuntime, chain: &HappyChain, prefix: &str) {
     for line in inspect.report_lines() {
         println!("{prefix} {line}");
     }
+}
+
+/// Demonstrates the §23.1 lifecycle tail on an installed application: a
+/// same-package reinstall advances the installation generation, then
+/// `disable_application` lands the terminal status and further installs
+/// fail closed.
+async fn demo_lifecycle(runtime: &Arc<SliceKRuntime>, chain: &HappyChain) {
+    println!("[slice-k] STEP 09b lifecycle begin");
+    let reinstall = runtime
+        .install_verified_package_by_id(chain.verification_receipt_id, 0x2D)
+        .expect("reinstall advances the generation");    println!(
+        "[slice-k] STEP 09b reinstall-advance application={} generation={}",
+        short_hex(chain.application_id.as_bytes()),
+        reinstall.installation_generation.get()
+    );
+    let disabled_at_ms = u64::try_from(
+        runtime
+            .wall_now_i64(seeded_key(0x2A, 90))
+            .expect("wall for disable"),
+    )
+    .expect("wall fits u64");
+    let disable = runtime
+        .applications
+        .disable_application(DisableApplicationRequest {
+            package_id: chain.package.package_id,
+            idempotency_key: seeded_key(0x2A, 91),
+            disabled_at_ms,
+        })
+        .expect("disable the happy-chain application");
+    let disable_receipt = disable.receipt();
+    println!(
+        "[slice-k] STEP 09b disable application={} generation={} at_ms={}",
+        short_hex(disable_receipt.application_id.as_bytes()),
+        disable_receipt.application_generation.get(),
+        disable_receipt.disabled_at_ms
+    );
+    assert!(
+        runtime
+            .install_verified_package_by_id(chain.verification_receipt_id, 0x2E)
+            .is_err(),
+        "installing over a disabled application must fail closed"
+    );
+    println!("[slice-k] STEP 09b reinstall-after-disable refused (fail-closed)");
 }
 
 async fn demo_cancel_path(runtime: &Arc<SliceKRuntime>, adapter: &TokioRuntimeAdapter) {

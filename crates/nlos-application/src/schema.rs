@@ -2,7 +2,7 @@ use rusqlite::{Connection, TransactionBehavior};
 
 use crate::ApplicationAuthorityError;
 
-pub(crate) const SCHEMA_VERSION: i64 = 1;
+pub(crate) const SCHEMA_VERSION: i64 = 2;
 
 /// Creates the durable application/installation authority schema v1: the
 /// per-package `applications` singleton (current installation generation +
@@ -134,6 +134,85 @@ pub(crate) fn migrate_v1(connection: &mut Connection) -> Result<(), ApplicationA
         END;
 
         PRAGMA user_version=1;",
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
+
+/// Adds schema v2: the immutable `application_disable_receipts` table that
+/// makes [`crate::ApplicationAuthority::disable_application`] replayable
+/// (the staged-migration precedent of the artifact authority: one function
+/// and one `user_version` per migration, applied forward).
+///
+/// - The disable receipt is the *fact* carrier of the one
+///   `installed → disabled` transition: immutable, durable, at most one
+///   per application (`application_id` PRIMARY KEY — the status is
+///   terminal, so the DDL itself encodes the terminality), one row per
+///   idempotency key (`UNIQUE`). No synthetic id is derived: the fact is
+///   uniquely addressed by the application identity it disabled, and the
+///   receipt records the generation at disable time (unchanged by the
+///   transition — the state-machine trigger already forbids moving it).
+/// - The AFTER INSERT state-bounds guard ties every disable receipt to an
+///   application that is *already disabled at its current generation* —
+///   the status CAS and the receipt commit in one transaction and live
+///   and die together, mirroring `installation_receipts_generation_bounds`.
+pub(crate) fn migrate_v2(connection: &mut Connection) -> Result<(), ApplicationAuthorityError> {
+    let table_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type='table' AND name = 'application_disable_receipts'",
+        [],
+        |row| row.get(0),
+    )?;
+    let trigger_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN (
+            'application_disable_receipts_immutable_update',
+            'application_disable_receipts_no_delete',
+            'application_disable_receipts_state_bounds'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if table_count == 1 && trigger_count == 3 {
+        connection.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        return Ok(());
+    }
+    if table_count != 0 || trigger_count != 0 {
+        return Err(ApplicationAuthorityError::CorruptRecord(
+            "partial application disable receipt schema",
+        ));
+    }
+
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "CREATE TABLE application_disable_receipts (
+            application_id BLOB PRIMARY KEY NOT NULL CHECK(length(application_id)=16),
+            idempotency_key BLOB NOT NULL UNIQUE CHECK(length(idempotency_key)=16),
+            application_generation INTEGER NOT NULL CHECK(application_generation >= 1),
+            disabled_at_ms INTEGER NOT NULL CHECK(disabled_at_ms >= 0),
+            FOREIGN KEY(application_id) REFERENCES applications(application_id)
+        ) STRICT;
+
+        CREATE TRIGGER application_disable_receipts_immutable_update
+        BEFORE UPDATE ON application_disable_receipts BEGIN
+            SELECT RAISE(ABORT, 'application disable receipt is immutable');
+        END;
+        CREATE TRIGGER application_disable_receipts_no_delete
+        BEFORE DELETE ON application_disable_receipts BEGIN
+            SELECT RAISE(ABORT, 'application disable receipt is durable');
+        END;
+        CREATE TRIGGER application_disable_receipts_state_bounds
+        AFTER INSERT ON application_disable_receipts
+        WHEN (SELECT status FROM applications
+              WHERE application_id = NEW.application_id) != 2
+            OR NEW.application_generation != (
+                SELECT current_installation_generation FROM applications
+                WHERE application_id = NEW.application_id
+            )
+        BEGIN
+            SELECT RAISE(ABORT, 'application disable receipt requires the disabled application at its current generation');
+        END;
+
+        PRAGMA user_version=2;",
     )?;
     transaction.commit()?;
     Ok(())

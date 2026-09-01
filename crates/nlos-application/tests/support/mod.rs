@@ -11,7 +11,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use ed25519_dalek::{Signer, SigningKey};
-use nlos_application::{ApplicationAuthority, InstallApplicationRequest, InstallDecision};
+use nlos_application::{
+    ApplicationAuthority, DisableApplicationRequest, DisableDecision, DisableReceipt,
+    InstallApplicationRequest, InstallDecision,
+};
 use nlos_artifact::{
     ArtifactStore, ContentDigest, CreateArtifactSpec, PackageEntryRole, PackageManifest,
     PackageManifestEntry, PutRevisionRequest, SignedPackage, VerifyPackageRequest,
@@ -230,6 +233,50 @@ pub fn replayed(
         InstallDecision::Replayed(receipt) => receipt,
         InstallDecision::Installed(receipt) => {
             panic!("expected Replayed, got Installed {receipt:?}")
+        }
+    }
+}
+
+/// Runs one disable and unwraps the fresh-disable branch.
+pub fn disabled(
+    authority: &ApplicationAuthority,
+    package_id: nlos_types::PackageId,
+    key: u8,
+    at_ms: u64,
+) -> DisableReceipt {
+    match authority
+        .disable_application(DisableApplicationRequest {
+            package_id,
+            idempotency_key: IdempotencyKey::from_bytes([key; 16]),
+            disabled_at_ms: at_ms,
+        })
+        .expect("disable must succeed")
+    {
+        DisableDecision::Disabled(receipt) => receipt,
+        DisableDecision::Replayed(receipt) => {
+            panic!("fresh key cannot replay a disable, got {receipt:?}")
+        }
+    }
+}
+
+/// Runs one disable and unwraps the replay branch.
+pub fn disable_replayed(
+    authority: &ApplicationAuthority,
+    package_id: nlos_types::PackageId,
+    key: u8,
+    at_ms: u64,
+) -> DisableReceipt {
+    match authority
+        .disable_application(DisableApplicationRequest {
+            package_id,
+            idempotency_key: IdempotencyKey::from_bytes([key; 16]),
+            disabled_at_ms: at_ms,
+        })
+        .expect("disable must replay")
+    {
+        DisableDecision::Replayed(receipt) => receipt,
+        DisableDecision::Disabled(receipt) => {
+            panic!("expected Replayed, got Disabled {receipt:?}")
         }
     }
 }
