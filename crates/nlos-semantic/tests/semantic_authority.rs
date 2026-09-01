@@ -875,6 +875,9 @@ fn real_v1_store_migrates_without_losing_assertion_or_receipt() {
          FROM semantic_events_v2;
          DROP TABLE semantic_events_v2;
          DROP TABLE spec_bodies;
+         DROP TRIGGER IF EXISTS event_retractions_immutable_update;
+         DROP TRIGGER IF EXISTS event_retractions_immutable_delete;
+         DROP TABLE IF EXISTS event_retractions;
          CREATE TRIGGER semantic_events_immutable_update BEFORE UPDATE ON semantic_events
          BEGIN SELECT RAISE(ABORT, 'semantic event is immutable'); END;
          CREATE TRIGGER semantic_events_immutable_delete BEFORE DELETE ON semantic_events
@@ -890,7 +893,7 @@ fn real_v1_store_migrates_without_losing_assertion_or_receipt() {
     assert_eq!(
         raw.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .unwrap(),
-        4
+        5
     );
     assert_eq!(
         raw.query_row(

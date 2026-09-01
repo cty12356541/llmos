@@ -13,10 +13,10 @@ use crate::{
     decode_intent_spec_body, intent_spec_body_digest,
 };
 
-const FIELD_COUNT: u64 = 17;
-const SCHEMA_NAME: &str = "llmos.semantic-event";
-const SCHEMA_MAJOR: u32 = 1;
-const SCHEMA_MINOR: u32 = 0;
+pub(crate) const FIELD_COUNT: u64 = 17;
+pub(crate) const SCHEMA_NAME: &str = "llmos.semantic-event";
+pub(crate) const SCHEMA_MAJOR: u32 = 1;
+pub(crate) const SCHEMA_MINOR: u32 = 0;
 const EVENT_TYPE_ASSERTION: u8 = 1;
 const EVENT_TYPE_SPEC: u8 = 5;
 
@@ -414,21 +414,24 @@ pub(crate) fn validate_sorted_unique(
     Ok(())
 }
 
-fn scope_kind(scope: CapabilityTarget) -> u8 {
+pub(crate) fn scope_kind(scope: CapabilityTarget) -> u8 {
     match scope {
         CapabilityTarget::Namespace(_) => 1,
         CapabilityTarget::Task(_) => 2,
     }
 }
 
-fn scope_bytes(scope: CapabilityTarget) -> [u8; 16] {
+pub(crate) fn scope_bytes(scope: CapabilityTarget) -> [u8; 16] {
     match scope {
         CapabilityTarget::Namespace(id) => id.into_bytes(),
         CapabilityTarget::Task(id) => id.into_bytes(),
     }
 }
 
-fn decode_scope(kind: u8, bytes: [u8; 16]) -> Result<CapabilityTarget, SemanticAuthorityError> {
+pub(crate) fn decode_scope(
+    kind: u8,
+    bytes: [u8; 16],
+) -> Result<CapabilityTarget, SemanticAuthorityError> {
     match kind {
         1 => Ok(CapabilityTarget::Namespace(NamespaceId::from_bytes(bytes))),
         2 => Ok(CapabilityTarget::Task(TaskId::from_bytes(bytes))),
@@ -436,14 +439,17 @@ fn decode_scope(kind: u8, bytes: [u8; 16]) -> Result<CapabilityTarget, SemanticA
     }
 }
 
-fn expect_key(decoder: &mut Decoder<'_>, expected: u8) -> Result<(), SemanticAuthorityError> {
+pub(crate) fn expect_key(
+    decoder: &mut Decoder<'_>,
+    expected: u8,
+) -> Result<(), SemanticAuthorityError> {
     if decoder.u8().map_err(decode_error)? != expected {
         return Err(SemanticAuthorityError::CanonicalMismatch);
     }
     Ok(())
 }
 
-fn decode_event_ids(
+pub(crate) fn decode_event_ids(
     decoder: &mut Decoder<'_>,
 ) -> Result<Vec<SemanticEventId>, SemanticAuthorityError> {
     let count = decoder
@@ -464,7 +470,7 @@ fn decode_event_ids(
     Ok(result)
 }
 
-fn encode_optional_u64(
+pub(crate) fn encode_optional_u64(
     encoder: &mut Encoder<Vec<u8>>,
     value: Option<u64>,
 ) -> Result<(), SemanticAuthorityError> {
@@ -476,7 +482,9 @@ fn encode_optional_u64(
     Ok(())
 }
 
-fn decode_optional_u64(decoder: &mut Decoder<'_>) -> Result<Option<u64>, SemanticAuthorityError> {
+pub(crate) fn decode_optional_u64(
+    decoder: &mut Decoder<'_>,
+) -> Result<Option<u64>, SemanticAuthorityError> {
     if decoder.datatype().map_err(decode_error)? == Type::Null {
         decoder.null().map_err(decode_error)?;
         Ok(None)
@@ -485,7 +493,7 @@ fn decode_optional_u64(decoder: &mut Decoder<'_>) -> Result<Option<u64>, Semanti
     }
 }
 
-fn encode_optional_u16(
+pub(crate) fn encode_optional_u16(
     encoder: &mut Encoder<Vec<u8>>,
     value: Option<u16>,
 ) -> Result<(), SemanticAuthorityError> {
@@ -497,7 +505,9 @@ fn encode_optional_u16(
     Ok(())
 }
 
-fn decode_optional_u16(decoder: &mut Decoder<'_>) -> Result<Option<u16>, SemanticAuthorityError> {
+pub(crate) fn decode_optional_u16(
+    decoder: &mut Decoder<'_>,
+) -> Result<Option<u16>, SemanticAuthorityError> {
     if decoder.datatype().map_err(decode_error)? == Type::Null {
         decoder.null().map_err(decode_error)?;
         Ok(None)
@@ -506,7 +516,7 @@ fn decode_optional_u16(decoder: &mut Decoder<'_>) -> Result<Option<u16>, Semanti
     }
 }
 
-fn encode_optional_digest(
+pub(crate) fn encode_optional_digest(
     encoder: &mut Encoder<Vec<u8>>,
     value: Option<[u8; 32]>,
 ) -> Result<(), SemanticAuthorityError> {
@@ -518,7 +528,7 @@ fn encode_optional_digest(
     Ok(())
 }
 
-fn decode_optional_digest(
+pub(crate) fn decode_optional_digest(
     decoder: &mut Decoder<'_>,
 ) -> Result<Option<[u8; 32]>, SemanticAuthorityError> {
     if decoder.datatype().map_err(decode_error)? == Type::Null {
@@ -529,7 +539,7 @@ fn decode_optional_digest(
     }
 }
 
-fn encode_optional_receipt(
+pub(crate) fn encode_optional_receipt(
     encoder: &mut Encoder<Vec<u8>>,
     value: Option<ReceiptId>,
 ) -> Result<(), SemanticAuthorityError> {
@@ -541,7 +551,7 @@ fn encode_optional_receipt(
     Ok(())
 }
 
-fn decode_optional_receipt(
+pub(crate) fn decode_optional_receipt(
     decoder: &mut Decoder<'_>,
 ) -> Result<Option<ReceiptId>, SemanticAuthorityError> {
     if decoder.datatype().map_err(decode_error)? == Type::Null {
@@ -555,7 +565,7 @@ fn decode_optional_receipt(
     }
 }
 
-fn fixed_bytes<const N: usize>(
+pub(crate) fn fixed_bytes<const N: usize>(
     decoder: &mut Decoder<'_>,
     field: &'static str,
 ) -> Result<[u8; N], SemanticAuthorityError> {
@@ -566,20 +576,20 @@ fn fixed_bytes<const N: usize>(
         .map_err(|_| SemanticAuthorityError::MalformedCanonical(field))
 }
 
-fn decode_generation(value: u64) -> Result<Generation, SemanticAuthorityError> {
+pub(crate) fn decode_generation(value: u64) -> Result<Generation, SemanticAuthorityError> {
     std::num::NonZeroU64::new(value)
         .map(Generation::new)
         .ok_or(SemanticAuthorityError::InvalidIssuerExecution)
 }
 
 #[allow(clippy::needless_pass_by_value)] // `map_err` supplies the owned encoder error.
-fn encoding_error(
+pub(crate) fn encoding_error(
     error: minicbor::encode::Error<std::convert::Infallible>,
 ) -> SemanticAuthorityError {
     SemanticAuthorityError::CanonicalEncoding(error.to_string())
 }
 
 #[allow(clippy::needless_pass_by_value)] // `map_err` supplies the owned decoder error.
-fn decode_error(error: minicbor::decode::Error) -> SemanticAuthorityError {
+pub(crate) fn decode_error(error: minicbor::decode::Error) -> SemanticAuthorityError {
     SemanticAuthorityError::CanonicalDecoding(error.to_string())
 }

@@ -27,10 +27,38 @@ pub enum EvaluatorKind {
     Human,
 }
 
+impl EvaluatorKind {
+    pub(crate) const fn encode(self) -> u8 {
+        match self {
+            Self::Model => 1,
+            Self::DeterministicTool => 2,
+            Self::Human => 3,
+        }
+    }
+
+    pub(crate) const fn decode(value: u8) -> Option<Self> {
+        match value {
+            1 => Some(Self::Model),
+            2 => Some(Self::DeterministicTool),
+            3 => Some(Self::Human),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ImmutableEvaluatorReferenceKind {
     Artifact,
     AuthorityPolicy,
+}
+
+impl ImmutableEvaluatorReferenceKind {
+    pub(crate) const fn encode(self) -> u8 {
+        match self {
+            Self::Artifact => 1,
+            Self::AuthorityPolicy => 2,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -242,6 +270,245 @@ pub struct AppendSpecRequest {
     pub admitted_at_ms: u64,
 }
 
+/// §17.2 `JudgmentEvent.relation`. `Equivalent` and `Contradicts` are
+/// symmetric: their source/target endpoints MUST be normalized by `EventId`
+/// byte order before canonical encoding (`[SEM-JUDGE-003]`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum JudgmentRelation {
+    Equivalent,
+    Contradicts,
+    Entails,
+    Supports,
+    Refines,
+}
+
+impl JudgmentRelation {
+    pub(crate) const fn encode(self) -> u8 {
+        match self {
+            Self::Equivalent => 1,
+            Self::Contradicts => 2,
+            Self::Entails => 3,
+            Self::Supports => 4,
+            Self::Refines => 5,
+        }
+    }
+
+    pub(crate) const fn decode(value: u8) -> Option<Self> {
+        match value {
+            1 => Some(Self::Equivalent),
+            2 => Some(Self::Contradicts),
+            3 => Some(Self::Entails),
+            4 => Some(Self::Supports),
+            5 => Some(Self::Refines),
+            _ => None,
+        }
+    }
+
+    /// `EQUIVALENT` and `CONTRADICTS` are symmetric per `[SEM-JUDGE-003]`.
+    #[must_use]
+    pub const fn is_symmetric(self) -> bool {
+        matches!(self, Self::Equivalent | Self::Contradicts)
+    }
+}
+
+/// §17.3 `VerificationEvent.outcome`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VerificationOutcome {
+    Pass,
+    Fail,
+    Inconclusive,
+    Error,
+}
+
+impl VerificationOutcome {
+    pub(crate) const fn encode(self) -> u8 {
+        match self {
+            Self::Pass => 1,
+            Self::Fail => 2,
+            Self::Inconclusive => 3,
+            Self::Error => 4,
+        }
+    }
+
+    pub(crate) const fn decode(value: u8) -> Option<Self> {
+        match value {
+            1 => Some(Self::Pass),
+            2 => Some(Self::Fail),
+            3 => Some(Self::Inconclusive),
+            4 => Some(Self::Error),
+            _ => None,
+        }
+    }
+}
+
+/// §17.4 `RetractionEvent.mode`. Retraction withdraws the target event's
+/// visibility claim; it never deletes the target row and never revives a
+/// previously retracted event (`[SEM-RETRACT-004]`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RetractionMode {
+    Withdraw,
+    Invalidate,
+}
+
+impl RetractionMode {
+    pub(crate) const fn encode(self) -> u8 {
+        match self {
+            Self::Withdraw => 1,
+            Self::Invalidate => 2,
+        }
+    }
+
+    pub(crate) const fn decode(value: u8) -> Option<Self> {
+        match value {
+            1 => Some(Self::Withdraw),
+            2 => Some(Self::Invalidate),
+            _ => None,
+        }
+    }
+}
+
+/// §17.3 `VerificationTarget.EventTarget` branch.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EventVerificationTarget {
+    pub event_id: SemanticEventId,
+}
+
+/// §17.3 `VerificationTarget.CriterionTarget` minimal Stage B subset.
+///
+/// `settlement_binding` is intentionally absent: it depends on the not-yet-
+/// landed Escrow hold authority, so this profile refuses the field instead of
+/// accepting an unverifiable binding.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CriterionVerificationTarget {
+    pub spec_id: SemanticEventId,
+    pub criterion_id: [u8; 32],
+    pub artifact_set_digest: [u8; 32],
+    pub procedure_digest: [u8; 32],
+    pub evaluation_id: [u8; 32],
+    pub producer_control_domains: Vec<ControlDomainId>,
+}
+
+/// §17.3 `VerificationTarget` tagged union. Admission accepts exactly one
+/// branch; empty or mixed targets cannot be expressed (`[SEM-VERIFY-004]`).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum VerificationTarget {
+    Event(EventVerificationTarget),
+    Criterion(CriterionVerificationTarget),
+}
+
+/// §17.2 `JudgmentEvent` unsigned envelope. All payload fields live inside
+/// the canonical bytes, so the `EventId` covers the complete judgment.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UnsignedJudgmentEvent {
+    pub scope: CapabilityTarget,
+    pub issuer: PrincipalId,
+    pub issuer_execution: LocalProcessRef,
+    pub control_domain: ControlDomainId,
+    pub issued_at_unix_ns: u64,
+    pub nonce: Vec<u8>,
+    pub declared_parents: Vec<SemanticEventId>,
+    pub valid_until_ms: Option<u64>,
+    pub purpose_digest: Option<[u8; 32]>,
+    pub key_id: KeyId,
+    pub relation: JudgmentRelation,
+    pub source: SemanticEventId,
+    pub target: SemanticEventId,
+    pub context_digest: Option<[u8; 32]>,
+    pub evaluator_evidence_receipt_id: ReceiptId,
+    pub confidence_bp: Option<u16>,
+}
+
+/// §17.3 `VerificationEvent` unsigned envelope.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UnsignedVerificationEvent {
+    pub scope: CapabilityTarget,
+    pub issuer: PrincipalId,
+    pub issuer_execution: LocalProcessRef,
+    pub control_domain: ControlDomainId,
+    pub issued_at_unix_ns: u64,
+    pub nonce: Vec<u8>,
+    pub declared_parents: Vec<SemanticEventId>,
+    pub valid_until_ms: Option<u64>,
+    pub purpose_digest: Option<[u8; 32]>,
+    pub key_id: KeyId,
+    pub target: VerificationTarget,
+    pub outcome: VerificationOutcome,
+    pub evaluator_kind: EvaluatorKind,
+    pub procedure_ref: ImmutableEvaluatorReference,
+    pub evaluator_evidence_receipt_id: ReceiptId,
+    pub evidence: Vec<SemanticEventId>,
+}
+
+/// §17.4 `RetractionEvent` unsigned envelope.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UnsignedRetractionEvent {
+    pub scope: CapabilityTarget,
+    pub issuer: PrincipalId,
+    pub issuer_execution: LocalProcessRef,
+    pub control_domain: ControlDomainId,
+    pub issued_at_unix_ns: u64,
+    pub nonce: Vec<u8>,
+    pub declared_parents: Vec<SemanticEventId>,
+    pub valid_until_ms: Option<u64>,
+    pub purpose_digest: Option<[u8; 32]>,
+    pub key_id: KeyId,
+    pub target_event_id: SemanticEventId,
+    pub mode: RetractionMode,
+    pub reason_digest: Option<[u8; 32]>,
+    pub authority_evidence_receipt_id: ReceiptId,
+}
+
+/// Admission request shared by the Judgment, Verification, and Retraction
+/// typed events. Their complete payload is carried by the canonical bytes, so
+/// no out-of-band content/body bytes are admitted.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AppendTypedEventRequest {
+    pub canonical_unsigned_event: Vec<u8>,
+    pub claimed_event_id: SemanticEventId,
+    pub signature: [u8; 64],
+    pub capability: CapabilityHandle,
+    pub captured_inputs: Vec<SemanticEventId>,
+    pub ingress_taint: TaintFlags,
+    pub authz_policy_digest: [u8; 32],
+    pub admission_limit_ms: Option<u64>,
+    pub admitted_at_ms: u64,
+}
+
+/// One of the §17.2-§17.4 typed semantic events decoded from canonical bytes.
+///
+/// Superseded by the crate-internal `typed::TypedEvent` dispatch, which also
+/// carries the per-type payload decode; kept as the public discriminant view.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TypedSemanticEvent {
+    Judgment(UnsignedJudgmentEvent),
+    Verification(UnsignedVerificationEvent),
+    Retraction(UnsignedRetractionEvent),
+}
+
+impl TypedSemanticEvent {
+    #[must_use]
+    pub const fn event_type_discriminant(&self) -> u8 {
+        match self {
+            Self::Judgment(_) => 2,
+            Self::Verification(_) => 3,
+            Self::Retraction(_) => 4,
+        }
+    }
+}
+
+/// Durable retraction fact for one target event. This is an observation of
+/// the admitted retraction event; it never filters or rewrites the target
+/// row, and no visibility view semantics are derived here.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RetractionRecord {
+    pub target_event_id: SemanticEventId,
+    pub retraction_event_id: SemanticEventId,
+    pub mode: RetractionMode,
+    pub reason_digest: Option<[u8; 32]>,
+    pub retracted_by: PrincipalId,
+    pub admitted_at_ms: u64,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AdmissionDurability {
     Durable,
@@ -430,6 +697,9 @@ impl SemanticEventRecord {
 pub enum SemanticPayloadIdentity {
     AssertionContent([u8; 32]),
     IntentSpecBody([u8; 32]),
+    /// Judgment/Verification/Retraction carry their complete payload inside
+    /// the canonical envelope bytes; no detached digest object exists.
+    Structural,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

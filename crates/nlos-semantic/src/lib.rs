@@ -8,6 +8,7 @@ mod canonical;
 mod model;
 mod schema;
 mod spec;
+mod typed;
 
 use std::error::Error;
 use std::fmt;
@@ -37,23 +38,32 @@ pub use canonical::{
 };
 pub use model::{
     AcknowledgeOutboxRequest, AdmissionDurability, AdmissionReceipt, AppendAssertionRequest,
-    AppendDecision, AppendSpecRequest, AssertionMode, CriterionAggregation, CriterionEffect,
-    DurabilityReceipt, EvaluatorKind, ImmutableEvaluatorReference, ImmutableEvaluatorReferenceKind,
-    IntentConstraints, IntentCriterion, IntentCriticality, IntentSettlement, IntentSpecBody,
-    LocalProcessRef, MAX_CANONICAL_EVENT_BYTES, MAX_CONTENT_BYTES, MAX_LINEAGE_ITEMS,
-    MAX_NONCE_BYTES, MAX_SPEC_CAPABILITY_REFS, MAX_SPEC_CRITERIA, MAX_SPEC_EXTENSION_BYTES,
-    MAX_SPEC_EXTENSIONS, MIN_NONCE_BYTES, OutboxAckDecision, PublishSemanticPublicationRequest,
+    AppendDecision, AppendSpecRequest, AppendTypedEventRequest, AssertionMode,
+    CriterionAggregation, CriterionEffect, CriterionVerificationTarget, DurabilityReceipt,
+    EvaluatorKind, EventVerificationTarget, ImmutableEvaluatorReference,
+    ImmutableEvaluatorReferenceKind, IntentConstraints, IntentCriterion, IntentCriticality,
+    IntentSettlement, IntentSpecBody, JudgmentRelation, LocalProcessRef, MAX_CANONICAL_EVENT_BYTES,
+    MAX_CONTENT_BYTES, MAX_LINEAGE_ITEMS, MAX_NONCE_BYTES, MAX_SPEC_CAPABILITY_REFS,
+    MAX_SPEC_CRITERIA, MAX_SPEC_EXTENSION_BYTES, MAX_SPEC_EXTENSIONS, MIN_NONCE_BYTES,
+    OutboxAckDecision, PublishSemanticPublicationRequest, RetractionMode, RetractionRecord,
     SemanticAdmissionEndpointProof, SemanticEventRecord, SemanticOutboxRecord,
     SemanticPayloadIdentity, SemanticPublicationDecision, SemanticPublicationReceipt,
     SettlementMode, SettlementTimeoutAction, SpecExtension, StoreSigner, StoreSignerError,
-    TaintFlags, UnsignedAssertionEvent, UnsignedSpecEvent,
+    TaintFlags, TypedSemanticEvent, UnsignedAssertionEvent, UnsignedJudgmentEvent,
+    UnsignedRetractionEvent, UnsignedSpecEvent, UnsignedVerificationEvent, VerificationOutcome,
+    VerificationTarget,
 };
 pub use spec::{
     criterion_id, decode_intent_spec_body, encode_intent_spec_body, hard_criteria_digest,
     intent_spec_body_digest,
 };
+pub use typed::{
+    decode_unsigned_judgment_event, decode_unsigned_retraction_event,
+    decode_unsigned_verification_event, encode_unsigned_judgment_event,
+    encode_unsigned_retraction_event, encode_unsigned_verification_event,
+};
 
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 const EDGE_DECLARED: i64 = 1;
 const EDGE_CAPTURED: i64 = 2;
 
@@ -98,6 +108,13 @@ pub enum SemanticAuthorityError {
     StoreSigningFailed(String),
     StoreSignerBindingMismatch,
     EventNotFound(SemanticEventId),
+    EventAlreadyRetracted(SemanticEventId),
+    InvalidRetractionTarget(&'static str),
+    InvalidVerificationTarget(&'static str),
+    RetractionSignerUnauthorized,
+    InvalidJudgmentPayload(&'static str),
+    InvalidVerificationPayload(&'static str),
+    InvalidRetractionPayload(&'static str),
     SemanticPublicationReceiptNotFound(ReceiptId),
     SemanticPublicationTargetMismatch,
     SemanticPublicationAdmissionBindingMismatch,
@@ -192,6 +209,27 @@ impl fmt::Display for SemanticAuthorityError {
                 formatter.write_str("store signer identity does not match verified key binding")
             }
             Self::EventNotFound(id) => write!(formatter, "semantic event {id:?} does not exist"),
+            Self::EventAlreadyRetracted(id) => {
+                write!(formatter, "semantic event {id:?} is already retracted")
+            }
+            Self::InvalidRetractionTarget(reason) => {
+                write!(formatter, "invalid retraction target: {reason}")
+            }
+            Self::InvalidVerificationTarget(reason) => {
+                write!(formatter, "invalid verification target: {reason}")
+            }
+            Self::RetractionSignerUnauthorized => {
+                formatter.write_str("WITHDRAW retraction signer is not the target issuer")
+            }
+            Self::InvalidJudgmentPayload(reason) => {
+                write!(formatter, "invalid judgment payload: {reason}")
+            }
+            Self::InvalidVerificationPayload(reason) => {
+                write!(formatter, "invalid verification payload: {reason}")
+            }
+            Self::InvalidRetractionPayload(reason) => {
+                write!(formatter, "invalid retraction payload: {reason}")
+            }
             Self::SemanticPublicationReceiptNotFound(id) => {
                 write!(
                     formatter,
@@ -323,17 +361,24 @@ impl SemanticAuthority {
                 schema::migrate_v2(&mut connection)?;
                 schema::migrate_v3(&mut connection)?;
                 schema::migrate_v4(&mut connection)?;
+                schema::migrate_v5(&mut connection)?;
             }
             1 => {
                 schema::migrate_v1_to_v2(&mut connection)?;
                 schema::migrate_v3(&mut connection)?;
                 schema::migrate_v4(&mut connection)?;
+                schema::migrate_v5(&mut connection)?;
             }
             2 => {
                 schema::migrate_v3(&mut connection)?;
                 schema::migrate_v4(&mut connection)?;
+                schema::migrate_v5(&mut connection)?;
             }
-            3 => schema::migrate_v4(&mut connection)?,
+            3 => {
+                schema::migrate_v4(&mut connection)?;
+                schema::migrate_v5(&mut connection)?;
+            }
+            4 => schema::migrate_v5(&mut connection)?,
             SCHEMA_VERSION => {}
             other => return Err(SemanticAuthorityError::SchemaVersionUnsupported(other)),
         }
@@ -697,7 +742,262 @@ impl SemanticAuthority {
         Ok(AppendDecision::Admitted(receipt))
     }
 
-    /// Reads a committed immutable event and its authoritative log sequence.
+    /// Atomically admits one canonical §17.2 Judgment event after verifying
+    /// signature, execution, Capability, lineage, and both endpoint events.
+    ///
+    /// # Errors
+    ///
+    /// Returns typed fail-closed errors for canonical/identity/authz failures,
+    /// unknown endpoint events, or when no durable signed Receipt commits.
+    pub fn append_judgment(
+        &self,
+        identity: &IdentityAuthority,
+        capability: &CapabilityAuthority,
+        process: &ProcessAuthority,
+        store_signer: &impl StoreSigner,
+        request: &AppendTypedEventRequest,
+    ) -> Result<AppendDecision, SemanticAuthorityError> {
+        self.append_typed_event(
+            identity,
+            capability,
+            process,
+            store_signer,
+            request,
+            TypedEventKind::Judgment,
+        )
+    }
+
+    /// Atomically admits one canonical §17.3 Verification event. The tagged
+    /// target must resolve to exactly one committed branch fact.
+    ///
+    /// # Errors
+    ///
+    /// Returns typed fail-closed errors for canonical/identity/authz failures,
+    /// unknown or inconsistent targets, or storage failure.
+    pub fn append_verification(
+        &self,
+        identity: &IdentityAuthority,
+        capability: &CapabilityAuthority,
+        process: &ProcessAuthority,
+        store_signer: &impl StoreSigner,
+        request: &AppendTypedEventRequest,
+    ) -> Result<AppendDecision, SemanticAuthorityError> {
+        self.append_typed_event(
+            identity,
+            capability,
+            process,
+            store_signer,
+            request,
+            TypedEventKind::Verification,
+        )
+    }
+
+    /// Atomically admits one canonical §17.4 Retraction event. `WITHDRAW`
+    /// requires the target issuer's identity plus a `SEMANTIC_RETRACT`
+    /// Capability; `INVALIDATE` requires a `SEMANTIC_ADJUDICATE` Capability in
+    /// the target scope. The target row is never deleted or rewritten.
+    ///
+    /// # Errors
+    ///
+    /// Returns typed fail-closed errors for unknown targets, already-retracted
+    /// targets, unauthorized signers, or storage failure.
+    pub fn append_retraction(
+        &self,
+        identity: &IdentityAuthority,
+        capability: &CapabilityAuthority,
+        process: &ProcessAuthority,
+        store_signer: &impl StoreSigner,
+        request: &AppendTypedEventRequest,
+    ) -> Result<AppendDecision, SemanticAuthorityError> {
+        self.append_typed_event(
+            identity,
+            capability,
+            process,
+            store_signer,
+            request,
+            TypedEventKind::Retraction,
+        )
+    }
+
+    /// Reads the durable retraction fact for one target event, if any.
+    ///
+    /// This is a factual observation of the admitted retraction event. The
+    /// target row itself stays committed and unchanged; no visibility view
+    /// semantics are derived here.
+    ///
+    /// # Errors
+    ///
+    /// Returns storage/corrupt-record errors.
+    pub fn inspect_event_retraction(
+        &self,
+        target_event_id: SemanticEventId,
+    ) -> Result<Option<RetractionRecord>, SemanticAuthorityError> {
+        let connection = self.lock()?;
+        load_event_retraction(&connection, target_event_id)
+    }
+
+    /// Shared admission core for the Judgment/Verification/Retraction typed
+    /// events: canonical decode, `EventId` binding, idempotent replay, real
+    /// signature, process generation, per-type reference gates, Capability
+    /// right per mode, lineage/taint, then one atomic durable append.
+    ///
+    /// # Errors
+    ///
+    /// Typed fail-closed errors as documented on the public entry points.
+    #[allow(clippy::too_many_lines)] // Mirrors the established admission gate order.
+    fn append_typed_event(
+        &self,
+        identity: &IdentityAuthority,
+        capability: &CapabilityAuthority,
+        process: &ProcessAuthority,
+        store_signer: &impl StoreSigner,
+        request: &AppendTypedEventRequest,
+        kind: TypedEventKind,
+    ) -> Result<AppendDecision, SemanticAuthorityError> {
+        canonical::validate_sorted_unique(&request.captured_inputs)?;
+        let event = typed::TypedEvent::decode(&request.canonical_unsigned_event)?;
+        if typed_kind(&event) != kind {
+            return Err(SemanticAuthorityError::UnsupportedEventType);
+        }
+        let computed_event_id = semantic_event_id(&request.canonical_unsigned_event);
+        if computed_event_id != request.claimed_event_id {
+            return Err(SemanticAuthorityError::EventIdMismatch);
+        }
+
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(replay) = load_typed_replay(&transaction, request)? {
+            transaction.commit()?;
+            return Ok(AppendDecision::Replayed(replay));
+        }
+
+        let signer = identity.verify_semantic_signature(VerifySemanticSignatureRequest {
+            event_id: request.claimed_event_id,
+            issuer: event.issuer(),
+            control_domain_id: event.control_domain(),
+            key_id: event.key_id(),
+            signature: request.signature,
+            admitted_at_ms: request.admitted_at_ms,
+        })?;
+        let execution =
+            process.inspect_active_process_binding(event.issuer_execution().process_id)?;
+        if execution.process_generation != event.issuer_execution().generation {
+            return Err(SemanticAuthorityError::InvalidIssuerExecution);
+        }
+
+        let (required_right, authorize_target) = match &event {
+            typed::TypedEvent::Judgment(judgment) => {
+                require_committed_event(&transaction, judgment.source)?;
+                require_committed_event(&transaction, judgment.target)?;
+                (CapabilityRights::SEMANTIC_APPEND, event.scope())
+            }
+            typed::TypedEvent::Verification(verification) => {
+                validate_verification_target(&transaction, &verification.target)?;
+                (CapabilityRights::SEMANTIC_APPEND, event.scope())
+            }
+            typed::TypedEvent::Retraction(retraction) => {
+                let target_scope = validate_retraction_target(
+                    &transaction,
+                    retraction.target_event_id,
+                    retraction.mode,
+                    event.issuer(),
+                    event.scope(),
+                )?;
+                let required_right = match retraction.mode {
+                    RetractionMode::Withdraw => CapabilityRights::SEMANTIC_RETRACT,
+                    RetractionMode::Invalidate => CapabilityRights::SEMANTIC_ADJUDICATE,
+                };
+                (required_right, target_scope)
+            }
+        };
+        capability.authorize_semantic(AuthorizeSemanticRequest {
+            handle: request.capability,
+            signer,
+            target: authorize_target,
+            required_right,
+            purpose_digest: event.purpose_digest(),
+            admitted_at_ms: request.admitted_at_ms,
+        })?;
+        let capability_record =
+            capability.inspect_active(request.capability, request.admitted_at_ms)?;
+        let key_binding = identity.inspect_current_binding(event.key_id())?;
+        let effective_valid_until_ms = effective_valid_until(
+            event.valid_until_ms(),
+            key_binding.key_valid_until_ms,
+            capability_record.valid_until_ms,
+            request.admission_limit_ms,
+        );
+        if effective_valid_until_ms < request.admitted_at_ms {
+            return Err(SemanticAuthorityError::EventExpired);
+        }
+
+        validate_lineage(
+            &transaction,
+            request.claimed_event_id,
+            event.declared_parents(),
+            &request.captured_inputs,
+        )?;
+        let effective_taint = derive_effective_taint(
+            &transaction,
+            request.ingress_taint,
+            event.declared_parents(),
+            &request.captured_inputs,
+        )?;
+        insert_typed_event(&transaction, request, &event)?;
+        transaction.execute(
+            "INSERT INTO event_signatures (event_id, key_id, signature) VALUES (?1, ?2, ?3)",
+            params![
+                request.claimed_event_id.as_bytes().as_slice(),
+                event.key_id().as_bytes().as_slice(),
+                request.signature.as_slice(),
+            ],
+        )?;
+        transaction.execute(
+            "INSERT INTO event_log (event_id) VALUES (?1)",
+            [request.claimed_event_id.as_bytes().as_slice()],
+        )?;
+        let log_seq = u64::try_from(transaction.last_insert_rowid())
+            .map_err(|_| SemanticAuthorityError::CorruptRecord("negative log sequence"))?;
+        insert_lineage_edges(
+            &transaction,
+            request.claimed_event_id,
+            event.declared_parents(),
+            EDGE_DECLARED,
+        )?;
+        insert_lineage_edges(
+            &transaction,
+            request.claimed_event_id,
+            &request.captured_inputs,
+            EDGE_CAPTURED,
+        )?;
+        if let typed::TypedEvent::Retraction(retraction) = &event {
+            insert_event_retraction(
+                &transaction,
+                retraction.target_event_id,
+                request.claimed_event_id,
+                retraction.mode,
+                retraction.reason_digest,
+                event.issuer(),
+                request.admitted_at_ms,
+            )?;
+        }
+
+        let receipt = seal_admission(
+            &transaction,
+            identity,
+            store_signer,
+            request.claimed_event_id,
+            log_seq,
+            request.admitted_at_ms,
+            effective_valid_until_ms,
+            &request.captured_inputs,
+            effective_taint,
+            request.authz_policy_digest,
+        )?;
+        transaction.commit()?;
+        Ok(AppendDecision::Admitted(receipt))
+    }
+
     ///
     /// # Errors
     ///
@@ -1245,6 +1545,348 @@ fn insert_spec_event(
         ],
     )?;
     Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TypedEventKind {
+    Judgment,
+    Verification,
+    Retraction,
+}
+
+fn typed_kind(event: &typed::TypedEvent) -> TypedEventKind {
+    match event {
+        typed::TypedEvent::Judgment(_) => TypedEventKind::Judgment,
+        typed::TypedEvent::Verification(_) => TypedEventKind::Verification,
+        typed::TypedEvent::Retraction(_) => TypedEventKind::Retraction,
+    }
+}
+
+/// Signs, store-verifies, durably inserts, and outbox-queues the immutable
+/// `AdmissionReceipt` shared by every admission path.
+#[allow(clippy::too_many_arguments)] // Fixed signed Receipt core field order.
+fn seal_admission(
+    transaction: &Transaction<'_>,
+    identity: &IdentityAuthority,
+    store_signer: &impl StoreSigner,
+    event_id: SemanticEventId,
+    log_seq: u64,
+    admitted_at_ms: u64,
+    effective_valid_until_ms: u64,
+    captured_inputs: &[SemanticEventId],
+    effective_taint: TaintFlags,
+    authz_policy_digest: [u8; 32],
+) -> Result<AdmissionReceipt, SemanticAuthorityError> {
+    let receipt_core_digest = build_admission_receipt_core_digest(
+        event_id,
+        log_seq,
+        admitted_at_ms,
+        Some(effective_valid_until_ms),
+        captured_inputs,
+        effective_taint,
+        authz_policy_digest,
+        store_signer.principal_id(),
+        store_signer.control_domain_id(),
+        store_signer.key_id(),
+    );
+    let mut receipt_id_bytes = [0_u8; 16];
+    receipt_id_bytes.copy_from_slice(&receipt_core_digest[..16]);
+    let receipt_id = ReceiptId::from_bytes(receipt_id_bytes);
+    let receipt_message = admission_receipt_signature_message(receipt_id, receipt_core_digest);
+    let store_signature = store_signer
+        .sign(&receipt_message)
+        .map_err(|error| SemanticAuthorityError::StoreSigningFailed(error.message().to_owned()))?;
+    let verified_store =
+        identity.verify_semantic_authority_signature(VerifySemanticAuthoritySignatureRequest {
+            message_digest: receipt_message,
+            issuer: store_signer.principal_id(),
+            control_domain_id: store_signer.control_domain_id(),
+            key_id: store_signer.key_id(),
+            signature: store_signature,
+            verified_at_ms: admitted_at_ms,
+        })?;
+    if verified_store.principal_id() != store_signer.principal_id()
+        || verified_store.control_domain_id() != store_signer.control_domain_id()
+        || verified_store.key_id() != store_signer.key_id()
+    {
+        return Err(SemanticAuthorityError::StoreSignerBindingMismatch);
+    }
+    let receipt = AdmissionReceipt {
+        receipt_id,
+        event_id,
+        log_seq,
+        admitted_at_ms,
+        effective_valid_until_ms: Some(effective_valid_until_ms),
+        captured_inputs: captured_inputs.to_vec(),
+        effective_taint,
+        authz_policy_digest,
+        durability: AdmissionDurability::Durable,
+        store_principal: store_signer.principal_id(),
+        store_control_domain: store_signer.control_domain_id(),
+        store_key_id: store_signer.key_id(),
+        store_signature,
+    };
+    insert_admission_receipt(transaction, &receipt)?;
+    transaction.execute(
+        "INSERT INTO semantic_outbox (log_seq, event_id, receipt_id, acknowledged_at_ms)
+         VALUES (?1, ?2, ?3, NULL)",
+        params![
+            encode_u64(log_seq)?,
+            receipt.event_id.as_bytes().as_slice(),
+            receipt.receipt_id.as_bytes().as_slice(),
+        ],
+    )?;
+    Ok(receipt)
+}
+
+fn insert_typed_event(
+    transaction: &Transaction<'_>,
+    request: &AppendTypedEventRequest,
+    event: &typed::TypedEvent,
+) -> Result<(), SemanticAuthorityError> {
+    let event_type = match event {
+        typed::TypedEvent::Judgment(_) => 2,
+        typed::TypedEvent::Verification(_) => 3,
+        typed::TypedEvent::Retraction(_) => 4,
+    };
+    let (scope_kind, scope_id) = encode_scope(event.scope());
+    transaction.execute(
+        "INSERT INTO semantic_events (
+            event_id, canonical_unsigned_event, event_type, scope_kind, scope_id,
+            issuer_principal_id, issuer_process_id, issuer_process_generation,
+            control_domain_id, issued_at_unix_ns, valid_until_ms, purpose_digest,
+            key_id, content_digest, spec_body_digest
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, NULL, NULL)",
+        params![
+            request.claimed_event_id.as_bytes().as_slice(),
+            request.canonical_unsigned_event.as_slice(),
+            event_type,
+            scope_kind,
+            scope_id.as_slice(),
+            event.issuer().as_bytes().as_slice(),
+            event.issuer_execution().process_id.as_bytes().as_slice(),
+            encode_u64(event.issuer_execution().generation.get())?,
+            event.control_domain().as_bytes().as_slice(),
+            encode_u64(event.issued_at_unix_ns())?,
+            event.valid_until_ms().map(encode_u64).transpose()?,
+            event.purpose_digest(),
+            event.key_id().as_bytes().as_slice(),
+        ],
+    )?;
+    Ok(())
+}
+
+fn load_typed_replay(
+    transaction: &Transaction<'_>,
+    request: &AppendTypedEventRequest,
+) -> Result<Option<AdmissionReceipt>, SemanticAuthorityError> {
+    if let Some(canonical) = load_existing_canonical(transaction, request.claimed_event_id)? {
+        if canonical != request.canonical_unsigned_event {
+            return Err(SemanticAuthorityError::EventIdCollision);
+        }
+    } else {
+        return Ok(None);
+    }
+    let signature = transaction
+        .query_row(
+            "SELECT signature FROM event_signatures WHERE event_id=?1",
+            [request.claimed_event_id.as_bytes().as_slice()],
+            |row| row.get::<_, Vec<u8>>(0),
+        )
+        .optional()?
+        .ok_or(SemanticAuthorityError::CorruptRecord(
+            "typed event signature row",
+        ))?;
+    if signature.as_slice() != request.signature {
+        return Err(SemanticAuthorityError::EventReplayConflict);
+    }
+    load_receipt(transaction, request.claimed_event_id).map(Some)
+}
+
+fn require_committed_event(
+    transaction: &Transaction<'_>,
+    event_id: SemanticEventId,
+) -> Result<(), SemanticAuthorityError> {
+    let exists = transaction
+        .query_row(
+            "SELECT 1 FROM admission_receipts WHERE event_id=?1",
+            [event_id.as_bytes().as_slice()],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    if exists {
+        Ok(())
+    } else {
+        Err(SemanticAuthorityError::EventNotFound(event_id))
+    }
+}
+
+fn validate_verification_target(
+    transaction: &Transaction<'_>,
+    target: &VerificationTarget,
+) -> Result<(), SemanticAuthorityError> {
+    match target {
+        VerificationTarget::Event(event_target) => {
+            require_committed_event(transaction, event_target.event_id)
+        }
+        VerificationTarget::Criterion(criterion) => {
+            require_committed_event(transaction, criterion.spec_id)?;
+            let body_bytes = transaction
+                .query_row(
+                    "SELECT b.canonical_spec_body FROM semantic_events e
+                     JOIN spec_bodies b ON b.spec_body_digest=e.spec_body_digest
+                     WHERE e.event_id=?1",
+                    [criterion.spec_id.as_bytes().as_slice()],
+                    |row| row.get::<_, Vec<u8>>(0),
+                )
+                .optional()?
+                .ok_or(SemanticAuthorityError::InvalidVerificationTarget(
+                    "spec_id is not a committed SPEC event",
+                ))?;
+            let body = decode_intent_spec_body(&body_bytes)?;
+            let member = body
+                .acceptance
+                .iter()
+                .map(criterion_id)
+                .collect::<Result<Vec<_>, _>>()?
+                .contains(&criterion.criterion_id);
+            if member {
+                Ok(())
+            } else {
+                Err(SemanticAuthorityError::InvalidVerificationTarget(
+                    "criterion_id is not part of the target spec body",
+                ))
+            }
+        }
+    }
+}
+
+fn validate_retraction_target(
+    transaction: &Transaction<'_>,
+    target_event_id: SemanticEventId,
+    mode: RetractionMode,
+    retraction_issuer: nlos_types::PrincipalId,
+    retraction_scope: CapabilityTarget,
+) -> Result<CapabilityTarget, SemanticAuthorityError> {
+    let row = transaction
+        .query_row(
+            "SELECT issuer_principal_id, scope_kind, scope_id FROM semantic_events
+             WHERE event_id=?1",
+            [target_event_id.as_bytes().as_slice()],
+            |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                ))
+            },
+        )
+        .optional()?
+        .ok_or(SemanticAuthorityError::EventNotFound(target_event_id))?;
+    let already_retracted = transaction
+        .query_row(
+            "SELECT 1 FROM event_retractions WHERE target_event_id=?1",
+            [target_event_id.as_bytes().as_slice()],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    if already_retracted {
+        return Err(SemanticAuthorityError::EventAlreadyRetracted(
+            target_event_id,
+        ));
+    }
+    let target_scope = decode_scope(row.1, decode_array(row.2, "target scope")?)?;
+    if target_scope != retraction_scope {
+        return Err(SemanticAuthorityError::InvalidRetractionTarget(
+            "retraction scope differs from target event scope",
+        ));
+    }
+    let target_issuer = decode_id(row.0, nlos_types::PrincipalId::from_bytes, "target issuer")?;
+    // [SEM-RETRACT-001]: WITHDRAW is issuer-only in this slice; pre-delegated
+    // withdraw principals are not modeled yet. INVALIDATE instead requires a
+    // SEMANTIC_ADJUDICATE capability ([SEM-RETRACT-002]) and is issuer-agnostic.
+    if mode == RetractionMode::Withdraw && retraction_issuer != target_issuer {
+        return Err(SemanticAuthorityError::RetractionSignerUnauthorized);
+    }
+    Ok(target_scope)
+}
+
+#[allow(clippy::too_many_arguments)] // One retraction row carries all §17.4 facts.
+fn insert_event_retraction(
+    transaction: &Transaction<'_>,
+    target_event_id: SemanticEventId,
+    retraction_event_id: SemanticEventId,
+    mode: RetractionMode,
+    reason_digest: Option<[u8; 32]>,
+    retracted_by: nlos_types::PrincipalId,
+    admitted_at_ms: u64,
+) -> Result<(), SemanticAuthorityError> {
+    transaction.execute(
+        "INSERT INTO event_retractions (
+            target_event_id, retraction_event_id, retraction_mode, reason_digest,
+            retracted_by, admitted_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            target_event_id.as_bytes().as_slice(),
+            retraction_event_id.as_bytes().as_slice(),
+            mode.encode(),
+            reason_digest,
+            retracted_by.as_bytes().as_slice(),
+            encode_u64(admitted_at_ms)?,
+        ],
+    )?;
+    Ok(())
+}
+
+fn load_event_retraction(
+    connection: &Connection,
+    target_event_id: SemanticEventId,
+) -> Result<Option<RetractionRecord>, SemanticAuthorityError> {
+    connection
+        .query_row(
+            "SELECT retraction_event_id, retraction_mode, reason_digest, retracted_by,
+                    admitted_at_ms
+             FROM event_retractions WHERE target_event_id=?1",
+            [target_event_id.as_bytes().as_slice()],
+            |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Option<Vec<u8>>>(2)?,
+                    row.get::<_, Vec<u8>>(3)?,
+                    row.get::<_, i64>(4)?,
+                ))
+            },
+        )
+        .optional()?
+        .map(|row| {
+            let mode_code = u8::try_from(row.1)
+                .map_err(|_| SemanticAuthorityError::CorruptRecord("retraction mode"))?;
+            let mode = RetractionMode::decode(mode_code)
+                .ok_or(SemanticAuthorityError::CorruptRecord("retraction mode"))?;
+            Ok(RetractionRecord {
+                target_event_id,
+                retraction_event_id: decode_id(
+                    row.0,
+                    SemanticEventId::from_bytes,
+                    "retraction event id",
+                )?,
+                mode,
+                reason_digest: row
+                    .2
+                    .map(|bytes| decode_array(bytes, "retraction reason"))
+                    .transpose()?,
+                retracted_by: decode_id(
+                    row.3,
+                    nlos_types::PrincipalId::from_bytes,
+                    "retracted by",
+                )?,
+                admitted_at_ms: decode_u64(row.4)?,
+            })
+        })
+        .transpose()
 }
 
 fn insert_lineage_edges(
@@ -1902,6 +2544,7 @@ fn decode_payload_identity(
             digest,
             "spec body digest",
         )?)),
+        (2..=4, None, None) => Ok(SemanticPayloadIdentity::Structural),
         _ => Err(SemanticAuthorityError::CorruptRecord(
             "event payload identity",
         )),

@@ -338,6 +338,93 @@ pub(crate) fn migrate_v4(connection: &mut Connection) -> Result<(), SemanticAuth
     Ok(())
 }
 
+/// Extends the semantic event registry to the §17.2/§17.3/§17.4 typed events
+/// (Judgment/Verification/Retraction) and adds the append-only retraction
+/// index. The typed events carry no detached payload object, so their rows
+/// hold NULL content/spec digests; the table rebuild follows the controlled
+/// v1→v2 window pattern.
+#[allow(clippy::too_many_lines)] // One auditable transaction contains the complete v5 DDL.
+pub(crate) fn migrate_v5(connection: &mut Connection) -> Result<(), SemanticAuthorityError> {
+    connection.pragma_update(None, "foreign_keys", "OFF")?;
+    connection.pragma_update(None, "legacy_alter_table", "ON")?;
+    let migration = (|| {
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute_batch(
+            "DROP TRIGGER semantic_events_immutable_update;
+             DROP TRIGGER semantic_events_immutable_delete;
+             ALTER TABLE semantic_events RENAME TO semantic_events_v4;
+
+             CREATE TABLE semantic_events (
+                event_id BLOB PRIMARY KEY NOT NULL CHECK(length(event_id) = 32),
+                canonical_unsigned_event BLOB NOT NULL CHECK(length(canonical_unsigned_event) <= 65536),
+                event_type INTEGER NOT NULL CHECK(event_type IN (1, 2, 3, 4, 5)),
+                scope_kind INTEGER NOT NULL CHECK(scope_kind IN (1, 2)),
+                scope_id BLOB NOT NULL CHECK(length(scope_id) = 16),
+                issuer_principal_id BLOB NOT NULL CHECK(length(issuer_principal_id) = 16),
+                issuer_process_id BLOB NOT NULL CHECK(length(issuer_process_id) = 16),
+                issuer_process_generation INTEGER NOT NULL CHECK(issuer_process_generation >= 1),
+                control_domain_id BLOB NOT NULL CHECK(length(control_domain_id) = 16),
+                issued_at_unix_ns INTEGER NOT NULL CHECK(issued_at_unix_ns >= 0),
+                valid_until_ms INTEGER CHECK(valid_until_ms IS NULL OR valid_until_ms >= 0),
+                purpose_digest BLOB CHECK(purpose_digest IS NULL OR length(purpose_digest) = 32),
+                key_id BLOB NOT NULL CHECK(length(key_id) = 16),
+                content_digest BLOB CHECK(content_digest IS NULL OR length(content_digest) = 32),
+                spec_body_digest BLOB CHECK(spec_body_digest IS NULL OR length(spec_body_digest) = 32),
+                FOREIGN KEY(content_digest) REFERENCES content_objects(content_digest),
+                FOREIGN KEY(spec_body_digest) REFERENCES spec_bodies(spec_body_digest),
+                CHECK((event_type = 1 AND content_digest IS NOT NULL AND spec_body_digest IS NULL)
+                   OR (event_type = 5 AND content_digest IS NULL AND spec_body_digest IS NOT NULL)
+                   OR (event_type IN (2, 3, 4) AND content_digest IS NULL AND spec_body_digest IS NULL))
+             ) STRICT;
+
+             INSERT INTO semantic_events
+             SELECT event_id, canonical_unsigned_event, event_type, scope_kind, scope_id,
+                    issuer_principal_id, issuer_process_id, issuer_process_generation,
+                    control_domain_id, issued_at_unix_ns, valid_until_ms, purpose_digest,
+                    key_id, content_digest, spec_body_digest
+             FROM semantic_events_v4;
+
+             DROP TABLE semantic_events_v4;
+
+             CREATE TRIGGER semantic_events_immutable_update BEFORE UPDATE ON semantic_events
+             BEGIN SELECT RAISE(ABORT, 'semantic event is immutable'); END;
+             CREATE TRIGGER semantic_events_immutable_delete BEFORE DELETE ON semantic_events
+             BEGIN SELECT RAISE(ABORT, 'semantic event is immutable'); END;
+
+             CREATE TABLE event_retractions (
+                target_event_id BLOB PRIMARY KEY NOT NULL CHECK(length(target_event_id) = 32),
+                retraction_event_id BLOB NOT NULL UNIQUE CHECK(length(retraction_event_id) = 32),
+                retraction_mode INTEGER NOT NULL CHECK(retraction_mode IN (1, 2)),
+                reason_digest BLOB CHECK(reason_digest IS NULL OR length(reason_digest) = 32),
+                retracted_by BLOB NOT NULL CHECK(length(retracted_by) = 16),
+                admitted_at_ms INTEGER NOT NULL CHECK(admitted_at_ms >= 0),
+                FOREIGN KEY(target_event_id) REFERENCES semantic_events(event_id),
+                FOREIGN KEY(retraction_event_id) REFERENCES semantic_events(event_id)
+             ) STRICT;
+
+             CREATE TRIGGER event_retractions_immutable_update BEFORE UPDATE ON event_retractions
+             BEGIN SELECT RAISE(ABORT, 'event retraction is immutable'); END;
+             CREATE TRIGGER event_retractions_immutable_delete BEFORE DELETE ON event_retractions
+             BEGIN SELECT RAISE(ABORT, 'event retraction is immutable'); END;
+
+             PRAGMA user_version = 5;",
+        )?;
+        let foreign_key_failure: Option<String> = transaction
+            .query_row("PRAGMA foreign_key_check", [], |row| row.get(0))
+            .optional()?;
+        if foreign_key_failure.is_some() {
+            return Err(SemanticAuthorityError::CorruptRecord(
+                "foreign key violation after semantic v5 migration",
+            ));
+        }
+        transaction.commit()?;
+        Ok(())
+    })();
+    connection.pragma_update(None, "legacy_alter_table", "OFF")?;
+    connection.pragma_update(None, "foreign_keys", "ON")?;
+    migration
+}
+
 pub(crate) fn load_semantic_admission_endpoint_proof(
     connection: &Connection,
 ) -> Result<SemanticAdmissionEndpointProof, SemanticAuthorityError> {
