@@ -162,7 +162,7 @@ impl SliceKRuntime {
             .transpose()?;
         let artifact_head = self
             .artifacts
-            .resolve_head(query.artifact_id)
+            .resolve_head(query.artifact_id, u64::MAX)
             .map_err(SliceKError::from)?;
         let operation = query
             .operation

@@ -512,7 +512,7 @@ fn every_cross_authority_prefix_converges_after_restart() {
     let (tasks, artifacts) = databases.open();
     assert_eq!(
         artifacts
-            .resolve_head(first_artifact)
+            .resolve_head(first_artifact, u64::MAX)
             .unwrap()
             .unwrap()
             .revision,
@@ -520,7 +520,7 @@ fn every_cross_authority_prefix_converges_after_restart() {
     );
     assert_eq!(
         artifacts
-            .resolve_head(second_artifact)
+            .resolve_head(second_artifact, u64::MAX)
             .unwrap()
             .unwrap()
             .revision,
@@ -582,7 +582,12 @@ fn artifact_vfs_io_error_keeps_both_heads_at_the_committed_prefix() {
 
     {
         let (tasks, artifacts) = databases.open();
-        assert!(artifacts.resolve_head(pending.artifact).unwrap().is_none());
+        assert!(
+            artifacts
+                .resolve_head(pending.artifact, u64::MAX)
+                .unwrap()
+                .is_none()
+        );
         let progress = tasks
             .inspect_artifact_commit_progress(pending.plan)
             .unwrap();
@@ -639,7 +644,7 @@ fn task_vfs_enospc_preserves_published_artifact_and_replays_receipt() {
         let (tasks, artifacts) = databases.open();
         assert_eq!(
             artifacts
-                .resolve_head(pending.artifact)
+                .resolve_head(pending.artifact, u64::MAX)
                 .unwrap()
                 .expect("ArtifactAuthority committed prefix")
                 .revision,
@@ -707,7 +712,7 @@ fn task_vfs_power_loss_hides_phantom_nested_receipt_and_redoes_from_prefix() {
     let (tasks, artifacts) = databases.open();
     assert_eq!(
         artifacts
-            .resolve_head(pending.artifact)
+            .resolve_head(pending.artifact, u64::MAX)
             .unwrap()
             .expect("Artifact publication is the durable prefix")
             .revision,
@@ -749,7 +754,7 @@ fn worker_converges_after_process_crash_at_published_prefix() {
     let (tasks, artifacts) = databases.open();
     assert_eq!(
         artifacts
-            .resolve_head(pending.artifact)
+            .resolve_head(pending.artifact, u64::MAX)
             .unwrap()
             .expect("child committed Artifact head")
             .revision,
@@ -816,7 +821,12 @@ fn authority_write_failures_remain_partial_and_converge_after_repair() {
             ),
             Err(CoordinatorError::Artifact(_))
         ));
-        assert!(artifacts.resolve_head(publish.artifact).unwrap().is_none());
+        assert!(
+            artifacts
+                .resolve_head(publish.artifact, u64::MAX)
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(tasks.inspect_task(publish.task).unwrap().head_commit_seq, 0);
     }
     execute_sql(
@@ -863,7 +873,12 @@ fn authority_write_failures_remain_partial_and_converge_after_repair() {
             ),
             Err(CoordinatorError::Task(_))
         ));
-        assert!(artifacts.resolve_head(record.artifact).unwrap().is_some());
+        assert!(
+            artifacts
+                .resolve_head(record.artifact, u64::MAX)
+                .unwrap()
+                .is_some()
+        );
         let progress = tasks.inspect_artifact_commit_progress(record.plan).unwrap();
         assert_eq!(progress.plan.state, ArtifactCommitPlanState::Publishing);
         assert!(progress.publications.is_empty());

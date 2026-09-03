@@ -769,8 +769,13 @@ impl SqliteTaskAuthority {
             });
         }
         for read in &artifact_reads {
+            let now_ms = u64::try_from(request.sealed_at_ms).map_err(|_| {
+                TaskStoreError::TaskWriteSetConflict {
+                    reason: "sealed_at_ms must be non-negative",
+                }
+            })?;
             let head = artifact_authority
-                .resolve_head(read.artifact_id)
+                .resolve_head(read.artifact_id, now_ms)
                 .map_err(TaskStoreError::ArtifactParticipantAuthority)?;
             let (current_revision, current_digest) = head.map_or((0, None), |head| {
                 (head.revision, Some(head.digest.into_bytes()))
@@ -796,8 +801,13 @@ impl SqliteTaskAuthority {
         }
         let mut artifact_write_participants = Vec::with_capacity(artifact_writes.len());
         for write in &artifact_writes {
+            let now_ms = u64::try_from(request.sealed_at_ms).map_err(|_| {
+                TaskStoreError::TaskWriteSetConflict {
+                    reason: "sealed_at_ms must be non-negative",
+                }
+            })?;
             let head = artifact_authority
-                .resolve_head(write.artifact_id)
+                .resolve_head(write.artifact_id, now_ms)
                 .map_err(TaskStoreError::ArtifactParticipantAuthority)?;
             let current_revision = head.map_or(0, |head| head.revision);
             let expected_target = write
@@ -3586,9 +3596,13 @@ fn validate_artifact_write_bindings(
     artifact_authority: &nlos_artifact::ArtifactStore,
     record: &TaskWriteSetRecord,
 ) -> Result<(), TaskStoreError> {
+    let now_ms =
+        u64::try_from(record.sealed_at_ms).map_err(|_| TaskStoreError::TaskWriteSetConflict {
+            reason: "sealed_at_ms must be non-negative",
+        })?;
     for expected in &record.artifact_writes {
         let actual_revision = artifact_authority
-            .resolve_head(expected.artifact_id)
+            .resolve_head(expected.artifact_id, now_ms)
             .map_err(TaskStoreError::ArtifactParticipantAuthority)?
             .map_or(0, |head| head.revision);
         let expected_target = expected

@@ -263,7 +263,7 @@ fn pending_restart_scan_consumes_all_owner_publication_replays() {
     );
     assert_eq!(
         artifacts
-            .resolve_head(first_artifact)
+            .resolve_head(first_artifact, u64::MAX)
             .expect("resolve first head")
             .expect("first head exists")
             .revision,
@@ -271,7 +271,7 @@ fn pending_restart_scan_consumes_all_owner_publication_replays() {
     );
     assert_eq!(
         artifacts
-            .resolve_head(second_artifact)
+            .resolve_head(second_artifact, u64::MAX)
             .expect("resolve second head")
             .expect("second head exists")
             .revision,

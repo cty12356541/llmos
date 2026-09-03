@@ -440,7 +440,7 @@ async fn competing_attempts_cas_issues_exactly_one_permit_requester_a_first() {
     assert_eq!(
         runtime
             .artifacts
-            .resolve_head(artifact)
+            .resolve_head(artifact, u64::MAX)
             .expect("head readback")
             .expect("head after commit")
             .revision,
@@ -733,7 +733,7 @@ async fn cancel_racing_a_live_permit_linearizes_permit_first_with_single_commit(
     assert_eq!(
         runtime
             .artifacts
-            .resolve_head(artifact)
+            .resolve_head(artifact, u64::MAX)
             .expect("head readback")
             .expect("head after commit")
             .revision,
@@ -882,7 +882,7 @@ async fn cancel_before_any_permit_request_fails_closed_both_attempts() {
     assert_eq!(
         runtime
             .artifacts
-            .resolve_head(artifact)
+            .resolve_head(artifact, u64::MAX)
             .expect("head readback")
             .expect("payload head")
             .revision,

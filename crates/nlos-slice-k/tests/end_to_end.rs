@@ -109,7 +109,7 @@ async fn full_vertical_slice_produces_every_receipt_and_is_inspectable() {
     // The fiber's write landed as revision 2 (the package payload is 1).
     let head = runtime
         .artifacts
-        .resolve_head(chain.package.payload_artifact)
+        .resolve_head(chain.package.payload_artifact, u64::MAX)
         .expect("head readback")
         .expect("head after commit");
     assert_eq!(head.revision, 2);
@@ -276,7 +276,7 @@ async fn drop_reopen_replays_durable_prefix_to_consistent_terminal_state() {
     assert_eq!(pre_task.head_commit_seq, 0, "not converged yet");
     let pre_head = runtime
         .artifacts
-        .resolve_head(prefix.artifact_id)
+        .resolve_head(prefix.artifact_id, u64::MAX)
         .expect("pre-crash head")
         .expect("package head");
     assert_eq!(pre_head.revision, 1, "only the package payload head");
@@ -306,7 +306,7 @@ async fn drop_reopen_replays_durable_prefix_to_consistent_terminal_state() {
     assert_eq!(
         reopened
             .artifacts
-            .resolve_head(prefix.artifact_id)
+            .resolve_head(prefix.artifact_id, u64::MAX)
             .expect("head")
             .expect("head")
             .revision,
@@ -367,7 +367,7 @@ async fn drop_reopen_replays_durable_prefix_to_consistent_terminal_state() {
     assert_eq!(post_attempt.state, AttemptState::Committed);
     let post_head = reopened
         .artifacts
-        .resolve_head(prefix.artifact_id)
+        .resolve_head(prefix.artifact_id, u64::MAX)
         .expect("head")
         .expect("head");
     assert_eq!(post_head.revision, 2);

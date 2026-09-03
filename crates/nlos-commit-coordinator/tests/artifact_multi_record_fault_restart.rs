@@ -304,7 +304,7 @@ fn second_artifact_record_failure_restarts_from_owner_prefix() {
         assert_eq!(progress.publications.len(), 1);
         assert_eq!(
             artifacts
-                .resolve_head(prepared.first_artifact)
+                .resolve_head(prepared.first_artifact, u64::MAX)
                 .expect("resolve first head")
                 .expect("first owner publication")
                 .revision,
@@ -312,7 +312,7 @@ fn second_artifact_record_failure_restarts_from_owner_prefix() {
         );
         assert_eq!(
             artifacts
-                .resolve_head(prepared.second_artifact)
+                .resolve_head(prepared.second_artifact, u64::MAX)
                 .expect("resolve second head")
                 .expect("second owner publication survived Task failure")
                 .revision,
