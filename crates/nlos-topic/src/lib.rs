@@ -117,10 +117,34 @@
 //! journal and fails closed as [`TopicAuthorityError::CorruptRecord`] on
 //! any disagreement.
 //!
+//! Publisher credit (schema v8, the B-TOPIC-001 credit increment) is the
+//! admission-enforcement counterpart of that ledger: a payer may open a
+//! durable prepaid credit account ([`TopicAuthority::open_credit`], one
+//! account row per [`ResourceAccountId`] plus its append-only movement
+//! journal) and the account is charged where the byte cost originates —
+//! the publish and republish registration transactions charge the topic
+//! head payer's account by the exact payload length, inside the same
+//! `Immediate` transaction as the retention admission and before the first
+//! durable write.  The gate is opt-in per payer: a payer with no account
+//! row publishes ungated; an account whose balance cannot cover the
+//! payload rejects the publication with the typed
+//! [`TopicAuthorityError::InsufficientCredit`] before any write — zero
+//! partial state, and the idempotency key is not consumed.  A resumed
+//! `PENDING_ENQUEUE` row replays without re-charging (its registration
+//! transaction already charged, mirroring the retention skip).  Recharges
+//! are key-idempotent ([`TopicAuthority::recharge_credit`]) and the
+//! balance readback re-verifies the account against its journal
+//! ([`TopicAuthority::inspect_credit`], fail-closed).  The face is
+//! deliberately separate from the attribution ledger: attribution records
+//! what *was delivered* after the fact and never rejects; credit
+//! pre-charges what is *admitted* and gates.  Neither reads nor writes the
+//! other's rows, and the attribution reconciliation identity is untouched.
+//!
 //! It deliberately does not implement: runtime-automatic cascade triggering
-//! (republish is an owner-invoked forwarding step), billing or credit
-//! settlement against the attribution ledger (and any `ResourceAccount`
-//! integration), cost allocation for several topics sharing one channel
+//! (republish is an owner-invoked forwarding step), credit settlement,
+//! refunds or any real-currency semantics on top of the credit accounts
+//! (and any `ResourceAccount` integration), cost allocation for several
+//! topics sharing one channel
 //! log, attribute filtering or multi-segment wildcards on top of the minimal
 //! prefix pattern language above (addendum review triggers), cross-process
 //! access, wakeup wiring, or `TaskWriteSet` integration.
@@ -800,6 +824,97 @@ pub struct AttributionReport {
     pub balanced: bool,
 }
 
+/// One durable prepaid credit account (the B-TOPIC-001 credit increment).
+///
+/// The unit is the payload byte — the same unit the attribution ledger
+/// records and the retention bound measures, so the admission charge and
+/// the after-the-fact metering stay commensurable.  The durable row carries
+/// the cached balance beside the cumulative granted and spent totals; the
+/// row-level CHECK `balance + spent = granted` makes an internally
+/// inconsistent account structurally impossible, and
+/// [`TopicAuthority::inspect_credit`] additionally re-verifies the cached
+/// columns against the append-only movement journal (fail-closed).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CreditAccountRecord {
+    /// The account's payer binding; one account per payer, never the
+    /// all-zero unbound value.
+    pub payer: ResourceAccountId,
+    /// Prepaid units currently available for admission charges.
+    pub balance_units: u64,
+    /// Cumulative granted units: the opening grant plus every accepted
+    /// recharge.
+    pub total_granted_units: u64,
+    /// Cumulative spent units: every admitted publication's byte charge.
+    pub total_spent_units: u64,
+    /// The opening timestamp (caller-supplied, as everywhere in the crate).
+    pub opened_at_ms: u64,
+    /// The most recent movement's timestamp.
+    pub last_mutated_at_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OpenCreditRequest {
+    /// The payer to open the account for; must not be the all-zero
+    /// unbound account.
+    pub payer: ResourceAccountId,
+    /// The initial prepaid grant; `0` opens a funded-but-empty account
+    /// whose gate is active immediately (every payload charge is then
+    /// insufficient until a recharge).
+    pub initial_units: u64,
+    pub idempotency_key: IdempotencyKey,
+    pub opened_at_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OpenCreditDecision {
+    /// This call created the durable account row and its opening entry.
+    Opened(CreditAccountRecord),
+    /// The exact opening request had already completed; the *current*
+    /// durable account returns (its state may have advanced past the
+    /// original open through later recharges and spends) and nothing is
+    /// written again.
+    Replayed(CreditAccountRecord),
+}
+
+impl OpenCreditDecision {
+    #[must_use]
+    pub fn record(self) -> CreditAccountRecord {
+        match self {
+            Self::Opened(record) | Self::Replayed(record) => record,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RechargeCreditRequest {
+    /// The payer whose account is recharged; the account must be open.
+    pub payer: ResourceAccountId,
+    /// The units to append; at least one.
+    pub units: u64,
+    pub idempotency_key: IdempotencyKey,
+    pub recharged_at_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RechargeCreditDecision {
+    /// This call appended the units to the durable account and recorded
+    /// the recharge entry.
+    Recharged(CreditAccountRecord),
+    /// The exact recharge had already completed; the *current* durable
+    /// account returns (its state may have advanced past the original
+    /// recharge) and the units are not appended again.
+    Replayed(CreditAccountRecord),
+}
+
+impl RechargeCreditDecision {
+    #[must_use]
+    pub fn record(self) -> CreditAccountRecord {
+        match self {
+            Self::Recharged(record) | Self::Replayed(record) => record,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum TopicAuthorityError {
     Sqlite(rusqlite::Error),
@@ -878,6 +993,22 @@ pub enum TopicAuthorityError {
         /// subscriber, measured against the caller-supplied request time
         /// (`0` when no live entry is currently held by one).
         oldest_unconsumed_age_ms: u64,
+    },
+    /// No credit account is open for this payer.  The publish admission
+    /// never raises this — an unopened payer is ungated by design; the
+    /// recharge and readback entries raise it for a payer that was never
+    /// opened ([`TopicAuthority::recharge_credit`] /
+    /// [`TopicAuthority::inspect_credit`]).
+    CreditAccountNotFound(ResourceAccountId),
+    /// A publish or republish was rejected by the payer's open credit
+    /// account before any durable write (the B-TOPIC-001 credit increment):
+    /// the account balance cannot cover the payload's byte charge.
+    /// Fail-closed backpressure — the rejected call leaves zero partial
+    /// state and consumes no idempotency key.
+    InsufficientCredit {
+        payer: ResourceAccountId,
+        balance_units: u64,
+        requested_units: u64,
     },
     InvalidPolicy(&'static str),
     SubscriberLimitReached,
@@ -984,6 +1115,18 @@ impl fmt::Display for TopicAuthorityError {
                  {oldest_unconsumed_age_ms}ms against declared retention_ms \
                  {retention_ms_declared}"
             ),
+            Self::CreditAccountNotFound(payer) => {
+                write!(formatter, "no credit account is open for payer {payer:?}")
+            }
+            Self::InsufficientCredit {
+                payer,
+                balance_units,
+                requested_units,
+            } => write!(
+                formatter,
+                "payer {payer:?} credit balance {balance_units} cannot cover the \
+                  requested {requested_units} unit charge"
+            ),
             Self::InvalidPolicy(reason) => {
                 write!(formatter, "invalid topic policy: {reason}")
             }
@@ -1073,6 +1216,7 @@ impl TopicAuthority {
                 schema::migrate_v5(&mut connection)?;
                 schema::migrate_v6(&mut connection)?;
                 schema::migrate_v7(&mut connection)?;
+                schema::migrate_v8(&mut connection)?;
             }
             1 => {
                 schema::migrate_v2(&mut connection)?;
@@ -1081,6 +1225,7 @@ impl TopicAuthority {
                 schema::migrate_v5(&mut connection)?;
                 schema::migrate_v6(&mut connection)?;
                 schema::migrate_v7(&mut connection)?;
+                schema::migrate_v8(&mut connection)?;
             }
             2 => {
                 schema::migrate_v3(&mut connection)?;
@@ -1088,24 +1233,28 @@ impl TopicAuthority {
                 schema::migrate_v5(&mut connection)?;
                 schema::migrate_v6(&mut connection)?;
                 schema::migrate_v7(&mut connection)?;
+                schema::migrate_v8(&mut connection)?;
             }
             3 => {
                 schema::migrate_v4(&mut connection)?;
                 schema::migrate_v5(&mut connection)?;
                 schema::migrate_v6(&mut connection)?;
                 schema::migrate_v7(&mut connection)?;
+                schema::migrate_v8(&mut connection)?;
             }
             4 => {
                 schema::migrate_v5(&mut connection)?;
                 schema::migrate_v6(&mut connection)?;
                 schema::migrate_v7(&mut connection)?;
+                schema::migrate_v8(&mut connection)?;
             }
             // The watermark version: the rebuild chain is complete, so only
-            // the idempotent additive pre-checks remain (no-ops when the v6
-            // and v7 objects are already present).
+            // the idempotent additive pre-checks remain (no-ops when the v6,
+            // v7 and v8 objects are already present).
             schema::SCHEMA_VERSION => {
                 schema::migrate_v6(&mut connection)?;
                 schema::migrate_v7(&mut connection)?;
+                schema::migrate_v8(&mut connection)?;
             }
             other => return Err(TopicAuthorityError::SchemaVersionUnsupported(other)),
         }
@@ -1800,11 +1949,31 @@ impl TopicAuthority {
     /// the admission: its insert already passed it, and the channel's
     /// key-scoped replay converges without a duplicate enqueue.
     ///
+    /// Publisher credit admission (the B-TOPIC-001 credit increment) runs in
+    /// the same step-1 `Immediate` transaction, after the idempotency and
+    /// retention gates and before the `PENDING_ENQUEUE` insert: when the
+    /// publication payer (the topic head's binding) holds an open credit
+    /// account, the account is charged the exact payload length in that
+    /// transaction — a guarded `balance >= charge` compare-and-set plus one
+    /// append-only spend entry whose evidence is the publication key, so a
+    /// second charge for one publication is structurally impossible.  An
+    /// unopened payer is ungated (credit is opt-in per payer); a balance
+    /// below the charge rejects the publish with the typed
+    /// [`TopicAuthorityError::InsufficientCredit`] before any durable write
+    /// — zero partial state, the account untouched, and the idempotency key
+    /// not consumed (any later attempt may reuse it).  A resumed
+    /// `PENDING_ENQUEUE` row replays without re-charging: its original
+    /// registration transaction already charged, and the whole transaction
+    /// (charge, spend entry, publication row) commits or rolls back as one
+    /// durable fact.
+    ///
     /// # Errors
     ///
     /// Fails closed for an empty payload, an unknown Topic, idempotency
     /// rebinding, the declared retention bounds
     /// ([`TopicAuthorityError::TopicRetentionExhausted`], before any durable
+    /// write), an insufficient credit balance on the payer's open account
+    /// ([`TopicAuthorityError::InsufficientCredit`], before any durable
     /// write), a propagated Channel rejection (`StaleChannel`,
     /// `QueueFull`, ...) or a storage/corruption failure.  The publication
     /// row stays `PENDING_ENQUEUE` when the enqueue itself is rejected.
@@ -1847,6 +2016,18 @@ impl TopicAuthority {
                     &topic,
                     published_at_ms,
                     payload.len() as u64,
+                )?;
+                // Publisher credit admission (the B-TOPIC-001 credit
+                // increment): same transaction, still before the first
+                // durable write — an insufficient balance rejects with zero
+                // partial state, and the charge commits or rolls back
+                // together with the publication row.
+                charge_credit_admission(
+                    &transaction,
+                    &topic.policy.payer,
+                    idempotency_key,
+                    payload.len() as u64,
+                    published_at_ms,
                 )?;
                 insert_publication(
                     &transaction,
@@ -1892,8 +2073,12 @@ impl TopicAuthority {
     ///    ([`TopicAuthorityError::CascadeDepthExceeded`]); the child topic's
     ///    declared retention bounds are then admitted pre-write as well
     ///    ([`TopicAuthorityError::TopicRetentionExhausted`], still before
-    ///    any durable write, so a rejected republish spends no budget);
-    ///    then one budget unit is spent through a guarded compare-and-set
+    ///    any durable write, so a rejected republish spends no budget); the
+    ///    child topic payer's credit account is then charged the payload
+    ///    length in the same pre-write cluster
+    ///    ([`TopicAuthorityError::InsufficientCredit`] before any durable
+    ///    write, an unopened child payer ungated); and finally one budget
+    ///    unit is spent through a guarded compare-and-set
     ///    (`UPDATE ... WHERE cascade_budget_remaining > 0`; zero affected
     ///    rows is [`TopicAuthorityError::CascadeBudgetExhausted`]) and the
     ///    child publication row is inserted `PENDING_ENQUEUE` with the parent
@@ -1920,10 +2105,13 @@ impl TopicAuthority {
     /// or non-enqueued parent, a broken or cyclic parent chain, the depth
     /// bound, the child topic's declared retention bounds
     /// ([`TopicAuthorityError::TopicRetentionExhausted`], before any durable
-    /// write), an exhausted parent budget, idempotency rebinding, a
-    /// propagated Channel rejection (`StaleChannel`, `QueueFull`, ...) or a
-    /// storage/corruption failure.  The child row stays `PENDING_ENQUEUE`
-    /// when the enqueue itself is rejected (the budget stays spent).
+    /// write), an insufficient credit balance on the child payer's open
+    /// account ([`TopicAuthorityError::InsufficientCredit`], before any
+    /// durable write, no parent budget spent), an exhausted parent budget,
+    /// idempotency rebinding, a propagated Channel rejection (`StaleChannel`,
+    /// `QueueFull`, ...) or a storage/corruption failure.  The child row
+    /// stays `PENDING_ENQUEUE` when the enqueue itself is rejected (the
+    /// budget stays spent).
     #[allow(clippy::too_many_lines)] // One method owns the budget CAS + child registration sequence.
     pub fn republish(
         &self,
@@ -2004,6 +2192,18 @@ impl TopicAuthority {
                     &child_topic,
                     republished_at_ms,
                     payload.len() as u64,
+                )?;
+                // Publisher credit admission against the *child* topic's
+                // payer (the child publication's billing identity), still
+                // before the budget compare-and-set: an insufficient child
+                // balance rejects with zero partial state and spends no
+                // parent budget.
+                charge_credit_admission(
+                    &transaction,
+                    &child_topic.policy.payer,
+                    idempotency_key,
+                    payload.len() as u64,
+                    republished_at_ms,
                 )?;
                 // Guarded budget CAS: exactly one unit of the parent's
                 // remaining cascade budget, zero partial state on rejection.
@@ -2698,6 +2898,191 @@ impl TopicAuthority {
         })
     }
 
+    /// Opens a prepaid credit account for one payer (the B-TOPIC-001 credit
+    /// increment): the durable account row plus its append-only opening
+    /// entry, created in one `Immediate` transaction.  The unit is the
+    /// payload byte; from the moment the row exists, every publish and
+    /// republish charging this payer is admitted only while the balance
+    /// covers the payload length
+    /// ([`TopicAuthorityError::InsufficientCredit`] otherwise, zero partial
+    /// state).  An `initial_units` of `0` opens a funded-but-empty account
+    /// whose gate is active immediately.
+    ///
+    /// Replaying the exact opening request returns the *current* durable
+    /// account (its state may have advanced past the original open); the
+    /// key rebound to a different payer or grant, or a fresh key naming an
+    /// already-open payer, is an
+    /// [`TopicAuthorityError::IdempotencyConflict`] — the account is
+    /// one-per-payer and its opening ceremony is frozen
+    /// ([`TopicAuthority::recharge_credit`] is the only way to add units).
+    ///
+    /// # Errors
+    ///
+    /// Fails closed for the all-zero payer binding (before any write),
+    /// idempotency rebinding, or a storage/corruption failure.  Rejections
+    /// leave zero durable state.
+    pub fn open_credit(
+        &self,
+        request: OpenCreditRequest,
+    ) -> Result<OpenCreditDecision, TopicAuthorityError> {
+        if request.payer.as_bytes() == &[0; 16] {
+            return Err(TopicAuthorityError::InvalidPolicy(
+                "credit payer must be a non-zero ResourceAccountId",
+            ));
+        }
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some((kind, entry_payer, entry_units)) =
+            load_credit_entry_by_key(&transaction, request.idempotency_key)?
+        {
+            if kind != CREDIT_ENTRY_OPEN
+                || entry_payer != request.payer
+                || entry_units != request.initial_units
+            {
+                return Err(TopicAuthorityError::IdempotencyConflict);
+            }
+            let account = load_credit_account_verified(&transaction, request.payer)?;
+            transaction.commit()?;
+            return Ok(OpenCreditDecision::Replayed(account));
+        }
+        if load_credit_account_optional(&transaction, request.payer)?.is_some() {
+            return Err(TopicAuthorityError::IdempotencyConflict);
+        }
+        transaction.execute(
+            "INSERT INTO topic_credit_accounts (
+                payer_account_id, balance_units, total_granted_units,
+                total_spent_units, open_idempotency_key, opened_at_ms,
+                last_mutated_at_ms
+             ) VALUES (?1, ?2, ?2, 0, ?3, ?4, ?4)",
+            params![
+                request.payer.as_bytes().as_slice(),
+                encode_u64(request.initial_units)?,
+                request.idempotency_key.as_bytes().as_slice(),
+                encode_u64(request.opened_at_ms)?,
+            ],
+        )?;
+        insert_credit_entry(
+            &transaction,
+            request.payer,
+            CREDIT_ENTRY_OPEN,
+            request.initial_units,
+            Some(request.idempotency_key),
+            None,
+            request.opened_at_ms,
+        )?;
+        let stored = load_credit_account_verified(&transaction, request.payer)?;
+        transaction.commit()?;
+        Ok(OpenCreditDecision::Opened(stored))
+    }
+
+    /// Appends prepaid units to a payer's open credit account, recording the
+    /// recharge in the account's append-only journal under the request's
+    /// idempotency key — the receipt that makes the recharge idempotent:
+    /// replaying the exact request returns the *current* durable account
+    /// without appending again; the key rebound to a different payer or
+    /// grant is an [`TopicAuthorityError::IdempotencyConflict`].  The units
+    /// must be at least one, and the append is one `Immediate` transaction
+    /// (balance, granted total, journal entry) with the overflow rejected
+    /// before any write.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed for the all-zero payer binding, a zero-unit recharge,
+    /// an unopened payer account
+    /// ([`TopicAuthorityError::CreditAccountNotFound`]), a granted-total
+    /// overflow (before any write), idempotency rebinding, or a
+    /// storage/corruption failure.
+    pub fn recharge_credit(
+        &self,
+        request: RechargeCreditRequest,
+    ) -> Result<RechargeCreditDecision, TopicAuthorityError> {
+        if request.payer.as_bytes() == &[0; 16] {
+            return Err(TopicAuthorityError::InvalidPolicy(
+                "credit payer must be a non-zero ResourceAccountId",
+            ));
+        }
+        if request.units < 1 {
+            return Err(TopicAuthorityError::InvalidPolicy(
+                "credit recharge must add at least one unit",
+            ));
+        }
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some((kind, entry_payer, entry_units)) =
+            load_credit_entry_by_key(&transaction, request.idempotency_key)?
+        {
+            if kind != CREDIT_ENTRY_RECHARGE
+                || entry_payer != request.payer
+                || entry_units != request.units
+            {
+                return Err(TopicAuthorityError::IdempotencyConflict);
+            }
+            let account = load_credit_account_verified(&transaction, request.payer)?;
+            transaction.commit()?;
+            return Ok(RechargeCreditDecision::Replayed(account));
+        }
+        let account = load_credit_account_optional(&transaction, request.payer)?
+            .ok_or(TopicAuthorityError::CreditAccountNotFound(request.payer))?;
+        let granted = account
+            .total_granted_units
+            .checked_add(request.units)
+            .ok_or(TopicAuthorityError::InvalidPolicy(
+                "credit recharge overflows the granted total",
+            ))?;
+        let changed = transaction.execute(
+            "UPDATE topic_credit_accounts
+             SET balance_units=balance_units+?1,
+                 total_granted_units=?2,
+                 last_mutated_at_ms=?3
+             WHERE payer_account_id=?4",
+            params![
+                encode_u64(request.units)?,
+                encode_u64(granted)?,
+                encode_u64(request.recharged_at_ms)?,
+                request.payer.as_bytes().as_slice(),
+            ],
+        )?;
+        if changed != 1 {
+            return Err(TopicAuthorityError::CorruptRecord(
+                "credit account recharge CAS lost",
+            ));
+        }
+        insert_credit_entry(
+            &transaction,
+            request.payer,
+            CREDIT_ENTRY_RECHARGE,
+            request.units,
+            Some(request.idempotency_key),
+            None,
+            request.recharged_at_ms,
+        )?;
+        let stored = load_credit_account_verified(&transaction, request.payer)?;
+        transaction.commit()?;
+        Ok(RechargeCreditDecision::Recharged(stored))
+    }
+
+    /// Reads the verified credit account of one payer: the cached balance
+    /// and totals are re-checked against the row-level invariant and the
+    /// whole movement journal — exactly one opening entry whose grant plus
+    /// the recharges equals the granted total, the spend entries' sum equal
+    /// to the spent total, every entry's derived identity re-deriving, and
+    /// every spend entry's evidence resolving to a durable publication of
+    /// the same payer and payload length; any disagreement is
+    /// [`TopicAuthorityError::CorruptRecord`] instead of a report.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed for an unopened payer
+    /// ([`TopicAuthorityError::CreditAccountNotFound`]) or any
+    /// account/journal disagreement ([`TopicAuthorityError::CorruptRecord`]).
+    pub fn inspect_credit(
+        &self,
+        payer: ResourceAccountId,
+    ) -> Result<CreditAccountRecord, TopicAuthorityError> {
+        let connection = self.lock()?;
+        load_credit_account_verified(&connection, payer)
+    }
+
     /// Completes the channel side of a durably registered publication: fence
     /// acquisition, [`ChannelAuthority::enqueue`] and the `ENQUEUED`
     /// sequence-association commit.  Returns the final record and whether
@@ -3188,6 +3573,340 @@ fn record_unallocated_prefix(
         publications,
         0,
     )
+}
+
+/// The durable discriminator of a credit movement
+/// (`topic_credit_entries.kind`): `1` = `Open`, `2` = `Recharge`, `3` =
+/// `Spend`.
+const CREDIT_ENTRY_OPEN: i64 = 1;
+const CREDIT_ENTRY_RECHARGE: i64 = 2;
+const CREDIT_ENTRY_SPEND: i64 = 3;
+
+/// Derives the credit movement entry's self-verifying identity (the crate's
+/// authority-derived-identity discipline, under its own domain tag):
+/// domain-separated over the payer, the kind and the movement's evidence —
+/// the opening/recharge idempotency key, or the charged publication's key —
+/// so an entry re-derives at inspection time.
+fn credit_entry_id(payer: &ResourceAccountId, kind: i64, evidence: &[u8]) -> [u8; 16] {
+    derive_id(
+        b"nlos/topic/credit-entry/id/v1",
+        &[payer.as_bytes(), &kind.to_be_bytes(), evidence],
+    )
+}
+
+/// Records one append-only credit movement (the shared write of the open,
+/// recharge and spend paths): the entry's evidence selects which UNIQUE
+/// column carries it — the idempotency key for `Open`/`Recharge` (the
+/// replay receipt), the publication key for `Spend` (one charge per
+/// publication, structurally).
+fn insert_credit_entry(
+    transaction: &Transaction<'_>,
+    payer: ResourceAccountId,
+    kind: i64,
+    units: u64,
+    idempotency_key: Option<IdempotencyKey>,
+    evidence_key: Option<IdempotencyKey>,
+    recorded_at_ms: u64,
+) -> Result<(), TopicAuthorityError> {
+    let evidence = match (idempotency_key, evidence_key) {
+        (Some(key), None) | (None, Some(key)) => key.as_bytes().to_vec(),
+        _ => {
+            return Err(TopicAuthorityError::CorruptRecord(
+                "credit entry binds exactly one evidence key",
+            ));
+        }
+    };
+    transaction.execute(
+        "INSERT INTO topic_credit_entries (
+            entry_id, payer_account_id, kind, units, idempotency_key,
+            evidence_key, recorded_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            credit_entry_id(&payer, kind, &evidence).as_slice(),
+            payer.as_bytes().as_slice(),
+            kind,
+            encode_u64(units)?,
+            idempotency_key
+                .as_ref()
+                .map(|key| key.as_bytes().as_slice()),
+            evidence_key.as_ref().map(|key| key.as_bytes().as_slice()),
+            encode_u64(recorded_at_ms)?,
+        ],
+    )?;
+    Ok(())
+}
+
+/// Publisher credit admission for one prospective publication (the
+/// B-TOPIC-001 credit increment): the topic head payer's open credit
+/// account is charged the exact payload length, inside the caller's
+/// `Immediate` transaction (the same one that ran the retention
+/// admission), strictly before the first durable write — so a rejected
+/// publication leaves zero partial state, and the charge commits or rolls
+/// back together with the publication row it admits.
+///
+/// The gate is opt-in per payer: no account row means the publication is
+/// admitted ungated (the credit face activates when the account opens, and
+/// nothing is charged retroactively).  An account whose balance cannot
+/// cover the charge rejects with the typed
+/// [`TopicAuthorityError::InsufficientCredit`]; the guarded
+/// `balance >= charge` compare-and-set (the cascade-budget CAS style)
+/// advances the cached balance and spent total in one statement and
+/// appends the spend entry whose UNIQUE evidence is the publication's
+/// idempotency key — a second charge for one publication is structurally
+/// impossible, and the resumed-`PENDING_ENQUEUE` replay path never reaches
+/// this gate at all.
+fn charge_credit_admission(
+    transaction: &Transaction<'_>,
+    payer: &ResourceAccountId,
+    publication_key: IdempotencyKey,
+    charge_units: u64,
+    charged_at_ms: u64,
+) -> Result<(), TopicAuthorityError> {
+    let Some(account) = load_credit_account_optional(transaction, *payer)? else {
+        // Credit is opt-in: an unopened payer publishes ungated.
+        return Ok(());
+    };
+    if account.balance_units < charge_units {
+        return Err(TopicAuthorityError::InsufficientCredit {
+            payer: *payer,
+            balance_units: account.balance_units,
+            requested_units: charge_units,
+        });
+    }
+    let changed = transaction.execute(
+        "UPDATE topic_credit_accounts
+         SET balance_units=balance_units-?1,
+             total_spent_units=total_spent_units+?1,
+             last_mutated_at_ms=?2
+         WHERE payer_account_id=?3 AND balance_units>=?1",
+        params![
+            encode_u64(charge_units)?,
+            encode_u64(charged_at_ms)?,
+            payer.as_bytes().as_slice(),
+        ],
+    )?;
+    if changed != 1 {
+        return Err(TopicAuthorityError::CorruptRecord(
+            "credit balance debit CAS lost",
+        ));
+    }
+    insert_credit_entry(
+        transaction,
+        *payer,
+        CREDIT_ENTRY_SPEND,
+        charge_units,
+        None,
+        Some(publication_key),
+        charged_at_ms,
+    )
+}
+
+/// Loads one credit account row and enforces its structural invariants: the
+/// payer binding is bound and equals the queried payer, and the row-level
+/// `balance + spent = granted` invariant holds at the decode level as well.
+fn load_credit_account_optional(
+    connection: &Connection,
+    payer: ResourceAccountId,
+) -> Result<Option<CreditAccountRecord>, TopicAuthorityError> {
+    let raw = connection
+        .query_row(
+            "SELECT balance_units, total_granted_units, total_spent_units,
+                    opened_at_ms, last_mutated_at_ms
+             FROM topic_credit_accounts WHERE payer_account_id=?1",
+            [payer.as_bytes().as_slice()],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                ))
+            },
+        )
+        .optional()?;
+    raw.map(
+        |(balance, granted, spent, opened_at_ms, last_mutated_at_ms)| {
+            let balance_units = decode_u64(balance)?;
+            let total_granted_units = decode_u64(granted)?;
+            let total_spent_units = decode_u64(spent)?;
+            if balance_units
+                .checked_add(total_spent_units)
+                .is_none_or(|sum| sum != total_granted_units)
+            {
+                return Err(TopicAuthorityError::CorruptRecord(
+                    "credit account balance disagrees with its totals",
+                ));
+            }
+            Ok(CreditAccountRecord {
+                payer,
+                balance_units,
+                total_granted_units,
+                total_spent_units,
+                opened_at_ms: decode_u64(opened_at_ms)?,
+                last_mutated_at_ms: decode_u64(last_mutated_at_ms)?,
+            })
+        },
+    )
+    .transpose()
+}
+
+/// Loads the credit account and re-verifies it against its whole movement
+/// journal: exactly one opening entry, the opening grant plus the recharge
+/// sum equal to the granted total, the spend sum equal to the spent total,
+/// every entry's derived identity re-deriving, and every spend entry's
+/// evidence resolving to a durable publication of the same payer and
+/// payload length.  Any disagreement is [`TopicAuthorityError::
+/// CorruptRecord`] — the verified readback never returns an inconsistent
+/// account.
+fn load_credit_account_verified(
+    connection: &Connection,
+    payer: ResourceAccountId,
+) -> Result<CreditAccountRecord, TopicAuthorityError> {
+    let account = load_credit_account_optional(connection, payer)?
+        .ok_or(TopicAuthorityError::CreditAccountNotFound(payer))?;
+    let counts = aggregate_credit_entries(connection, payer)?;
+    if counts.open_entries != 1 {
+        return Err(TopicAuthorityError::CorruptRecord(
+            "credit account does not carry exactly one opening entry",
+        ));
+    }
+    if counts
+        .open_units
+        .checked_add(counts.recharge_units)
+        .is_none_or(|sum| sum != account.total_granted_units)
+    {
+        return Err(TopicAuthorityError::CorruptRecord(
+            "credit granted total disagrees with the opening and recharge entries",
+        ));
+    }
+    if counts.spend_units != account.total_spent_units {
+        return Err(TopicAuthorityError::CorruptRecord(
+            "credit spent total disagrees with the spend entries",
+        ));
+    }
+    // Every spend must resolve to a durable publication of the same payer
+    // and payload length: a spend entry whose evidence vanished (or was
+    // rewritten) is a torn charge window and fails closed.
+    let matched: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM topic_credit_entries e
+         JOIN topic_publications p ON p.idempotency_key = e.evidence_key
+         WHERE e.payer_account_id=?1 AND e.kind=?2
+           AND p.payer_account_id=e.payer_account_id
+           AND p.payload_bytes=e.units",
+        params![payer.as_bytes().as_slice(), CREDIT_ENTRY_SPEND],
+        |row| row.get(0),
+    )?;
+    if decode_u64(matched)? != counts.spend_entries {
+        return Err(TopicAuthorityError::CorruptRecord(
+            "credit spend entry does not resolve to its charged publication",
+        ));
+    }
+    Ok(account)
+}
+
+/// Re-derives every credit journal entry of one payer and totals them by
+/// kind, re-checking each entry's derived identity on the way through.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct CreditEntryTotals {
+    open_entries: u64,
+    open_units: u64,
+    recharge_units: u64,
+    spend_entries: u64,
+    spend_units: u64,
+}
+
+fn aggregate_credit_entries(
+    connection: &Connection,
+    payer: ResourceAccountId,
+) -> Result<CreditEntryTotals, TopicAuthorityError> {
+    let mut statement = connection.prepare(
+        "SELECT entry_id, kind, units, idempotency_key, evidence_key
+         FROM topic_credit_entries WHERE payer_account_id=?1
+         ORDER BY recorded_at_ms, entry_id",
+    )?;
+    let entries = statement
+        .query_map([payer.as_bytes().as_slice()], |row| {
+            Ok((
+                row.get::<_, Vec<u8>>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, Option<Vec<u8>>>(3)?,
+                row.get::<_, Option<Vec<u8>>>(4)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(statement);
+    let mut totals = CreditEntryTotals::default();
+    for (entry_id, kind, units, idempotency_key, evidence_key) in entries {
+        let units = decode_u64(units)?;
+        let evidence: Vec<u8> = match (kind, idempotency_key, evidence_key) {
+            (CREDIT_ENTRY_OPEN | CREDIT_ENTRY_RECHARGE, Some(key), None)
+            | (CREDIT_ENTRY_SPEND, None, Some(key)) => key,
+            _ => {
+                return Err(TopicAuthorityError::CorruptRecord(
+                    "credit entry kind disagrees with its evidence binding",
+                ));
+            }
+        };
+        if entry_id.as_slice() != credit_entry_id(&payer, kind, &evidence).as_slice() {
+            return Err(TopicAuthorityError::CorruptRecord(
+                "credit entry identity disagrees with the derived identity",
+            ));
+        }
+        match kind {
+            CREDIT_ENTRY_OPEN => {
+                totals.open_entries = totals.open_entries.checked_add(1).ok_or(
+                    TopicAuthorityError::CorruptRecord("credit entry count overflows"),
+                )?;
+                totals.open_units = totals.open_units.checked_add(units).ok_or(
+                    TopicAuthorityError::CorruptRecord("credit entry total overflows"),
+                )?;
+            }
+            CREDIT_ENTRY_RECHARGE => {
+                totals.recharge_units = totals.recharge_units.checked_add(units).ok_or(
+                    TopicAuthorityError::CorruptRecord("credit entry total overflows"),
+                )?;
+            }
+            _ => {
+                totals.spend_entries = totals.spend_entries.checked_add(1).ok_or(
+                    TopicAuthorityError::CorruptRecord("credit entry count overflows"),
+                )?;
+                totals.spend_units = totals.spend_units.checked_add(units).ok_or(
+                    TopicAuthorityError::CorruptRecord("credit entry total overflows"),
+                )?;
+            }
+        }
+    }
+    Ok(totals)
+}
+
+/// Loads the credit movement bound to one idempotency key (any kind): the
+/// replay-drift check behind [`TopicAuthority::open_credit`] and
+/// [`TopicAuthority::recharge_credit`].
+fn load_credit_entry_by_key(
+    connection: &Connection,
+    key: IdempotencyKey,
+) -> Result<Option<(i64, ResourceAccountId, u64)>, TopicAuthorityError> {
+    connection
+        .query_row(
+            "SELECT kind, payer_account_id, units
+             FROM topic_credit_entries WHERE idempotency_key=?1",
+            [key.as_bytes().as_slice()],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )
+        .optional()?
+        .map(|(kind, payer, units)| {
+            let payer = ResourceAccountId::from_bytes(array16(payer)?);
+            Ok((kind, payer, decode_u64(units)?))
+        })
+        .transpose()
 }
 
 /// Validates a pattern (the precise addendum language): a non-empty byte

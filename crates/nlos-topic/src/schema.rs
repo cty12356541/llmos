@@ -811,3 +811,128 @@ pub(crate) fn migrate_v7(connection: &mut Connection) -> Result<(), TopicAuthori
     transaction.commit()?;
     Ok(())
 }
+
+/// Adds the publisher credit-admission prefix (schema v8, the B-TOPIC-001
+/// credit increment): a durable `topic_credit_accounts` table holds one
+/// prepaid account row per payer — the payer [`crate::ResourceAccountId`]
+/// (never the all-zero unbound value) as the primary key, the cached
+/// `balance_units`, the cumulative `total_granted_units` (initial grant plus
+/// every accepted recharge) and `total_spent_units`, the frozen opening
+/// idempotency key and the two timestamps — with the row-level CHECK
+/// `balance_units + total_spent_units = total_granted_units` making an
+/// internally inconsistent account row structurally impossible, and the
+/// crate's durable-row conventions: the payer, the opening key and the
+/// open timestamp are frozen by trigger, and the row is never deleted.
+///
+/// The companion `topic_credit_entries` table is the account's append-only
+/// movement journal: one immutable row per movement — `1` = `Open` (the
+/// initial grant, carrying the opening idempotency key), `2` = `Recharge`
+/// (one accepted recharge, carrying its own idempotency key — the replay
+/// receipt that makes recharges idempotent), `3` = `Spend` (one admitted
+/// publication's byte charge, carrying the publication's idempotency key as
+/// the UNIQUE evidence — a second charge for one publication is
+/// structurally impossible, mirroring the attribution ledger's
+/// one-row-per-evidence discipline).  UPDATE and DELETE are banned outright
+/// by trigger: entries are write-once audit facts.
+///
+/// The credit face is deliberately separate from the payer attribution
+/// ledger (`topic_attribution_ledger`): attribution records what *was
+/// delivered* after the fact and never rejects; credit pre-charges what is
+/// *admitted* and gates.  Neither reads nor writes the other's rows and the
+/// attribution reconciliation identity is untouched.
+///
+/// Like v6 and v7, the step is additive and is tracked by the durable
+/// presence of its objects instead of a watermark bump (the `user_version`
+/// watermark belongs to the v1-v5 rebuild chain and already reads 5): the
+/// joint two-table pre-check keeps reopen idempotent, one table present
+/// without the other is unrecoverable and fails closed as
+/// [`TopicAuthorityError::CorruptRecord`], and both tables plus their
+/// triggers are created in one atomic transaction, so no partial state is
+/// representable.
+pub(crate) fn migrate_v8(connection: &mut Connection) -> Result<(), TopicAuthorityError> {
+    let account_tables: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type='table' AND name='topic_credit_accounts'",
+        [],
+        |row| row.get(0),
+    )?;
+    let entry_tables: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type='table' AND name='topic_credit_entries'",
+        [],
+        |row| row.get(0),
+    )?;
+    if account_tables == 1 {
+        if entry_tables == 1 {
+            // The v8 step is complete: the watermark belongs to the v1-v5
+            // rebuild chain and is left untouched (it already reads 5 after
+            // v5, or is restored by the v5 pre-check in the open chain).
+            return Ok(());
+        }
+        return Err(TopicAuthorityError::CorruptRecord(
+            "topic credit schema lost its entry journal",
+        ));
+    }
+    if entry_tables == 1 {
+        return Err(TopicAuthorityError::CorruptRecord(
+            "topic credit schema lost its account table",
+        ));
+    }
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "CREATE TABLE topic_credit_accounts (
+            payer_account_id BLOB PRIMARY KEY NOT NULL
+                CHECK(length(payer_account_id)=16
+                      AND payer_account_id != x'00000000000000000000000000000000'),
+            balance_units INTEGER NOT NULL CHECK(balance_units >= 0),
+            total_granted_units INTEGER NOT NULL CHECK(total_granted_units >= 0),
+            total_spent_units INTEGER NOT NULL CHECK(total_spent_units >= 0),
+            open_idempotency_key BLOB NOT NULL UNIQUE
+                CHECK(length(open_idempotency_key)=16),
+            opened_at_ms INTEGER NOT NULL CHECK(opened_at_ms >= 0),
+            last_mutated_at_ms INTEGER NOT NULL CHECK(last_mutated_at_ms >= 0),
+            CHECK(balance_units + total_spent_units = total_granted_units)
+        ) STRICT;
+
+        CREATE TRIGGER topic_credit_accounts_identity_frozen
+        BEFORE UPDATE ON topic_credit_accounts
+        WHEN NEW.payer_account_id != OLD.payer_account_id
+            OR NEW.open_idempotency_key != OLD.open_idempotency_key
+            OR NEW.opened_at_ms != OLD.opened_at_ms
+        BEGIN
+            SELECT RAISE(ABORT, 'credit account identity is immutable');
+        END;
+        CREATE TRIGGER topic_credit_accounts_no_delete
+        BEFORE DELETE ON topic_credit_accounts BEGIN
+            SELECT RAISE(ABORT, 'credit account rows are durable');
+        END;
+
+        CREATE TABLE topic_credit_entries (
+            entry_id BLOB PRIMARY KEY NOT NULL CHECK(length(entry_id)=16),
+            payer_account_id BLOB NOT NULL CHECK(length(payer_account_id)=16),
+            kind INTEGER NOT NULL CHECK(kind IN (1,2,3)),
+            units INTEGER NOT NULL
+                CHECK(units >= CASE kind WHEN 1 THEN 0 ELSE 1 END),
+            idempotency_key BLOB UNIQUE CHECK(idempotency_key IS NULL
+                                               OR length(idempotency_key)=16),
+            evidence_key BLOB UNIQUE CHECK(evidence_key IS NULL
+                                            OR length(evidence_key)=16),
+            recorded_at_ms INTEGER NOT NULL CHECK(recorded_at_ms >= 0),
+            CHECK((kind = 3) = (evidence_key IS NOT NULL)),
+            CHECK((kind = 3) = (idempotency_key IS NULL)),
+            FOREIGN KEY(payer_account_id)
+                REFERENCES topic_credit_accounts(payer_account_id)
+        ) STRICT;
+
+        CREATE TRIGGER topic_credit_entries_no_update
+        BEFORE UPDATE ON topic_credit_entries BEGIN
+            SELECT RAISE(ABORT, 'credit entries are immutable');
+        END;
+        CREATE TRIGGER topic_credit_entries_no_delete
+        BEFORE DELETE ON topic_credit_entries BEGIN
+            SELECT RAISE(ABORT, 'credit entries are durable');
+        END;",
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
