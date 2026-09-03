@@ -1,0 +1,490 @@
+name: Power-loss simulation (Layer 2)
+
+# 层 2「虚拟化掉电」CI 接入 —— 对应 docs/evidence/stage-b/b-store-fs-semantics-001-apfs-calibration.md
+# §6 登记的后续项与 §8（层 2 接入）节；分层阶梯决策（2026-08-29 决策 5）：
+# 层 1✓（APFS 校准 1a40c37）→ 层 2 = 虚拟化掉电进 CI（本文件）→ 层 3 = 硬件抽验。
+#
+# 设计要点：
+# - 只手动（workflow_dispatch）/夜间（schedule）触发：掉电模拟慢且可能「假阳性」——
+#   drop_writes 窗口本质是「说谎的磁盘」，会击穿 synchronous=FULL 的持久性承诺，
+#   而任何软件层（含 SQLite）都无法防御媒体说谎。绝不进 push/PR 常规链。
+# - 主路径 dm-flakey（内核目标类型 `flakey`，模块名 `dm_flakey`）覆盖 loop device：
+#   * baseline 相：linear 直通映射上跑全部套件，验证 harness 在 dm 路径成立（阻断式）；
+#   * 掉电相：用 `dmsetup suspend --noflush / load / resume` 活换表，把
+#     `flakey <dev> 0 1 60 1 drop_writes`（1s up / 60s down，写静默丢弃、读直通）
+#     的「掉电窗口」精确扎进测试时间线，再切回 linear。
+#     注意选 drop_writes 而非 dm-error/EIO：静默丢写 ≈ 掉电；EIO 语义（SQLite IOERR
+#     路径）已由 fault VFS F3 覆盖，不用作掉电模拟。
+# - 降级路径：modprobe dm_flakey 失败（hosted runner 缺内核模块等）→
+#   loop ext4 + 进程级 SIGKILL 时序矩阵（python3 + sqlite3 标准库最小探针）。
+#   仍有增量价值：Linux ext4 是层 1 证据明确登记的未测平台（b-store-fs-semantics §5）。
+# - DB 重定向通道（零测试代码改动）：channel/wait/task 权威套件与 fs_semantics
+#   套件的全部落盘目录都取 std::env::temp_dir()（Linux 下受 TMPDIR 控制，子进程
+#   继承环境），故只需在跑测试时 export TMPDIR=<dm 挂载点>。
+#
+# ⚠ 未验证声明（如实）：本 workflow 交付于 2026-09-02、HEAD 498161b，从未实跑。
+# 以下 hosted runner 假设全部待首次 workflow_dispatch 实跑证实：
+#   1. ubuntu runner 提供 passwordless sudo（官方文档声明）；
+#   2. dm_flakey 模块可加载（Ubuntu generic 内核通常随 linux-modules-extra 以模块
+#      发布；若缺失 → 探测失败自动走降级路径，不阻塞）；
+#   3. loop device（/dev/loop-control）可 losetup；
+#   4. e2fsprogs（mkfs.ext4）预装。
+# 任何假设落空都会落入降级路径或在 job summary 如实报告可行性结论。
+
+on:
+  workflow_dispatch:
+    inputs:
+      drop_window_offsets:
+        description: '掉电窗口扎点（秒，相对套件开始；空格分隔）'
+        required: false
+        default: '5 15 30 45'
+      force_fallback:
+        description: '跳过 dm-flakey 探测，强制 loop + SIGKILL 降级路径'
+        type: boolean
+        default: false
+  schedule:
+    # 夜间积累证据；与 rust-cross-platform.yml 的 0 19 错峰。
+    # 注意 GitHub Actions 的 on 触发器是 workflow 级的；本 workflow 整体即重任务，
+    # 无 push/PR 触发器，无需 job 级 if 过滤。
+    - cron: '30 21 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  # 崩溃/掉电类试验禁止中途取消比较（对比 takeover-control-external-crash 先例）
+  group: power-loss-simulation-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  BACKING_FILE: /tmp/nlos-power-loss.img
+  BACKING_SIZE: 1G
+  DM_NAME: nlos-power-flakey
+  DM_DEVICE: /dev/mapper/nlos-power-flakey
+  MOUNT: /mnt/nlos-power-flakey
+  CUT_SECONDS: '4'
+  LOG_DIR: /tmp/power-loss-logs
+
+jobs:
+  power-loss:
+    name: Power-loss simulation
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Prepare log directory
+        run: mkdir -p "$LOG_DIR"
+
+      # 先构建后建设备：把 loop/dm 设备生命周期压缩到只有「跑」的阶段；
+      # 构建失败时根本不碰设备，也不进入清理路径。
+      # 代表性权威（决策：channel / wait / task 三者）+ fs_semantics 校准套件
+      # （层 1 模型校准的层 2 复验入口）。
+      - name: Build representative fault suites
+        run: |
+          set -euo pipefail
+          cargo test -p nlos-channel --test channel_fault_injection --no-run
+          cargo test -p nlos-wait --test wait_fault_injection --no-run
+          cargo test -p nlos-task --test fault_injection --no-run
+          cargo test -p nlos-store-fault --test fs_semantics --no-run
+
+      # 可行性探测：任一假设落空 → mode=fallback（带原因），绝不硬失败。
+      - name: Probe power-loss virtualization feasibility
+        id: feasibility
+        run: |
+          set -euo pipefail
+          {
+            echo "=== uname ==="; uname -a
+            echo "=== sudo ==="
+            if sudo -n true 2>/dev/null; then echo "passwordless sudo: yes"; else echo "passwordless sudo: NO"; fi
+            echo "=== tools ==="
+            for t in dmsetup losetup mkfs.ext4 blockdev e2fsck; do
+              if command -v "$t" >/dev/null 2>&1; then echo "$t: $(command -v "$t")"; else echo "$t: MISSING"; fi
+            done
+          } 2>&1 | tee "$LOG_DIR/feasibility.txt"
+
+          FORCE="${{ inputs.force_fallback }}"
+          FORCE="${FORCE:-false}"
+          OFFSETS="${{ inputs.drop_window_offsets }}"
+          if [ -z "$OFFSETS" ]; then OFFSETS='5 15 30 45'; fi
+
+          mode=fallback
+          reason=""
+          if [ "$FORCE" = "true" ]; then
+            reason="forced by workflow_dispatch input"
+          elif ! command -v losetup >/dev/null 2>&1; then
+            reason="losetup missing"
+          elif ! command -v mkfs.ext4 >/dev/null 2>&1; then
+            reason="mkfs.ext4 missing"
+          elif ! sudo -n true 2>/dev/null; then
+            reason="passwordless sudo unavailable"
+          elif ! sudo losetup -f >/dev/null 2>&1; then
+            reason="no free loop device / loop subsystem unavailable"
+          else
+            # dm_mod 常已内建或自动加载；dm_flakey 为独立模块。
+            sudo modprobe dm_mod >>"$LOG_DIR/feasibility.txt" 2>&1 || true
+            if sudo modprobe dm_flakey >>"$LOG_DIR/feasibility.txt" 2>&1 \
+              && sudo dmsetup targets 2>/dev/null | grep -qw flakey; then
+              mode=dm-flakey
+            else
+              reason="dm_flakey module/target unavailable (see feasibility.txt)"
+            fi
+          fi
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "reason=$reason" >> "$GITHUB_OUTPUT"
+          echo "offsets=$OFFSETS" >> "$GITHUB_OUTPUT"
+          echo "Feasibility verdict: mode=$mode reason=${reason:-dm_flakey available}" | tee -a "$LOG_DIR/feasibility.txt"
+
+      # 建环设备 + 文件系统 + 挂载。dm 可用时在 loop 之上先建 linear 直通映射
+      # （挂载的是映射，后续掉电相只活换映射表，文件系统全程无感）。
+      - name: Provision loop-backed storage
+        id: storage
+        run: |
+          set -euo pipefail
+          MODE="${{ steps.feasibility.outputs.mode }}"
+          truncate -s "$BACKING_SIZE" "$BACKING_FILE"
+          LOOP="$(sudo losetup --find --show "$BACKING_FILE")"
+          SECTORS=$(( $(sudo blockdev --getsize64 "$LOOP") / 512 ))
+          if [ "$MODE" = "dm-flakey" ]; then
+            sudo dmsetup create "$DM_NAME" --table "0 $SECTORS linear $LOOP 0"
+            SRC="$DM_DEVICE"
+          else
+            SRC="$LOOP"
+          fi
+          sudo mkfs.ext4 -q -F "$SRC"
+          sudo mkdir -p "$MOUNT"
+          sudo mount "$SRC" "$MOUNT"
+          sudo chown "$(id -un):$(id -gn)" "$MOUNT"
+          echo "loop=$LOOP" >> "$GITHUB_OUTPUT"
+          echo "sectors=$SECTORS" >> "$GITHUB_OUTPUT"
+          echo "source=$SRC" >> "$GITHUB_OUTPUT"
+          df -h "$MOUNT" | tee -a "$LOG_DIR/feasibility.txt"
+
+      # 最小 SQLite WAL 掉电/崩溃探针：写进程 WAL+FULL 循环提交序号，
+      # 时序矩阵扎 SIGKILL（power 模式下同步包住 drop_writes 窗口），
+      # 重开后断言/观察 committed prefix 与 integrity_check。
+      # 放在 /tmp：探针属 workflow 资产，不进仓库写集。
+      - name: Write minimal power-loss probe
+        if: always()
+        run: |
+          cat > /tmp/power_probe.py <<'PROBE_EOF'
+          #!/usr/bin/env python3
+          """Minimal SQLite WAL power-loss / process-crash probe.
+
+          Usage: power_probe.py <crash|power> <workdir> <offset_seconds...>
+          Each trial: spawn WAL+FULL writer child, SIGKILL it at the scripted
+          offset (power mode wraps the kill in a dm-flakey drop_writes window),
+          reopen and classify the result.
+          """
+          import os
+          import sqlite3
+          import subprocess
+          import sys
+          import time
+
+          FLIP = "/tmp/flip.sh"
+
+          CHILD_CODE = r"""
+          import sqlite3, sys
+          db, ready = sys.argv[1], sys.argv[2]
+          con = sqlite3.connect(db, isolation_level=None)
+          con.execute("PRAGMA journal_mode=WAL")
+          con.execute("PRAGMA synchronous=FULL")
+          con.execute("CREATE TABLE seq(n INTEGER PRIMARY KEY, payload BLOB)")
+          con.execute("INSERT INTO seq VALUES (0, zeroblob(64))")
+          with open(ready, "w") as f:
+              f.write("ready")
+          i = 1
+          while True:
+              con.execute("BEGIN IMMEDIATE")
+              con.execute("INSERT INTO seq VALUES (?, randomblob(64))", (i,))
+              con.execute("COMMIT")
+              i += 1
+          """
+
+          def flip(mode: str) -> None:
+              if os.path.exists(FLIP):
+                  subprocess.run([FLIP, mode], check=True)
+
+          def trial(idx: int, offset: float, workdir: str, power: bool) -> str:
+              db = os.path.join(workdir, f"probe-{idx:03d}.db")
+              ready = db + ".ready"
+              p = subprocess.Popen([sys.executable, "-c", CHILD_CODE, db, ready])
+              deadline = time.time() + 10.0
+              while not os.path.exists(ready):
+                  if p.poll() is not None:
+                      return f"child-died-early rc={p.returncode}"
+                  if time.time() > deadline:
+                      p.kill()
+                      p.wait()
+                      return "child-never-ready (timeout)"
+                  time.sleep(0.02)
+              time.sleep(offset)
+              if power:
+                  flip("drop")
+              p.kill()
+              p.wait()
+              if power:
+                  time.sleep(1.0)
+                  flip("linear")
+              con = sqlite3.connect(db)
+              try:
+                  integrity = con.execute("PRAGMA integrity_check").fetchone()[0]
+                  rows = [r[0] for r in con.execute("SELECT n FROM seq ORDER BY n")]
+              finally:
+                  con.close()
+              contiguous = rows == list(range(len(rows)))
+              if integrity == "ok" and contiguous:
+                  verdict = "prefix-intact"
+              elif integrity == "ok":
+                  verdict = "prefix-gap"
+              else:
+                  verdict = "corruption"
+              return f"{verdict} (integrity={integrity}, committed={max(len(rows) - 1, 0)})"
+
+          def main() -> int:
+              mode = sys.argv[1]
+              workdir = sys.argv[2]
+              offsets = [float(x) for x in sys.argv[3:]]
+              if mode not in ("crash", "power"):
+                  print(f"unknown mode: {mode}", file=sys.stderr)
+                  return 2
+              os.makedirs(workdir, exist_ok=True)
+              power = mode == "power"
+              strict_failures = 0
+              infra_failures = 0
+              trials = 0
+              for rnd in (1, 2):
+                  for off in offsets:
+                      trials += 1
+                      result = trial(trials, off, workdir, power)
+                      print(
+                          f"TRIAL mode={mode} round={rnd} offset={off}s -> {result}",
+                          flush=True,
+                      )
+                      if result.startswith("prefix-intact"):
+                          continue
+                      if result.startswith(("child-died-early", "child-never-ready")):
+                          infra_failures += 1
+                      elif not power:
+                          strict_failures += 1
+              print(
+                  f"SUMMARY mode={mode} trials={trials} "
+                  f"strict_failures={strict_failures} infra_failures={infra_failures}",
+                  flush=True,
+              )
+              if infra_failures:
+                  return 2
+              if strict_failures:
+                  return 1
+              return 0
+
+          if __name__ == "__main__":
+              sys.exit(main())
+          PROBE_EOF
+          python3 -m py_compile /tmp/power_probe.py
+
+      # ── dm 主路径相 1：linear 直通基线（阻断式；掉电相仅在基线通过后运行）──
+      - name: Baseline suites on linear mapping (dm mode)
+        id: baseline
+        if: steps.feasibility.outputs.mode == 'dm-flakey'
+        run: |
+          set -euo pipefail
+          export TMPDIR="$MOUNT"
+          mkdir -p "$TMPDIR"
+          status=pass
+          cargo test -p nlos-channel --test channel_fault_injection 2>&1 | tee "$LOG_DIR/baseline-channel.txt" || status=fail
+          cargo test -p nlos-wait --test wait_fault_injection 2>&1 | tee "$LOG_DIR/baseline-wait.txt" || status=fail
+          cargo test -p nlos-task --test fault_injection 2>&1 | tee "$LOG_DIR/baseline-task.txt" || status=fail
+          cargo test -p nlos-store-fault --test fs_semantics 2>&1 | tee "$LOG_DIR/baseline-fs-semantics.txt" || status=fail
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          [ "$status" = "pass" ]
+
+      # ── dm 主路径相 2：掉电相（continue-on-error：drop_writes 窗口击穿
+      #    synchronous=FULL 承诺属已知媒体说谎边界，失败是「观察值」不是回归，
+      #    需人工分诊；结果在 job summary 与 fsck 报告中如实呈现）──
+      - name: Power-cut phase — drop_writes windows + probe (dm mode)
+        id: power-cut
+        continue-on-error: true
+        if: steps.feasibility.outputs.mode == 'dm-flakey' && steps.baseline.outputs.status == 'pass'
+        run: |
+          set -uo pipefail
+          export TMPDIR="$MOUNT"
+          mkdir -p "$TMPDIR/probe"
+          MARKER="$TMPDIR/.suites-done"
+          rm -f "$MARKER"
+          OFFSETS="${{ steps.feasibility.outputs.offsets }}"
+          SECTORS="${{ steps.storage.outputs.sectors }}"
+          LOOPDEV="${{ steps.storage.outputs.loop }}"
+
+          # 活换工具：drop = 1s up / 60s down + drop_writes（静默丢写 ≈ 掉电）；
+          # linear = 干净直通。python 探针复用同一脚本，保证编排语义一致。
+          cat > /tmp/flip.sh <<FLIP_EOF
+          #!/usr/bin/env bash
+          # 用法: flip.sh drop|linear —— 活换 dm 表制造/解除掉电窗口
+          set -euo pipefail
+          DEVICE="$DM_DEVICE"
+          SECTORS="$SECTORS"
+          LOOPDEV="$LOOPDEV"
+          case "\$1" in
+            drop)   TABLE="0 \$SECTORS flakey \$LOOPDEV 0 1 60 1 drop_writes" ;;
+            linear) TABLE="0 \$SECTORS linear \$LOOPDEV 0" ;;
+            *) echo "usage: flip.sh drop|linear" >&2; exit 2 ;;
+          esac
+          sudo dmsetup suspend --noflush "\$DEVICE"
+          sudo dmsetup load "\$DEVICE" --table "\$TABLE"
+          sudo dmsetup resume "\$DEVICE"
+          FLIP_EOF
+          chmod +x /tmp/flip.sh
+
+          # 掉电窗口编排器：按 offsets 时间线在后台扎窗口；套件结束（marker）
+          # 后自动退出。flip.sh 自身 set -e，失败会留在日志里。
+          (
+            prev=0
+            for off in $OFFSETS; do
+              [ -e "$MARKER" ] && exit 0
+              wait=$(( off - prev ))
+              [ "$wait" -gt 0 ] && sleep "$wait"
+              prev=$off
+              [ -e "$MARKER" ] && exit 0
+              echo "[driver] t=${off}s: POWER CUT — drop_writes window ${CUT_SECONDS}s"
+              /tmp/flip.sh drop && sleep "$CUT_SECONDS"
+              echo "[driver] t=$(( off + CUT_SECONDS ))s: restore linear passthrough"
+              /tmp/flip.sh linear
+            done
+          ) &
+          DRIVER_PID=$!
+
+          status=pass
+          cargo test -p nlos-channel --test channel_fault_injection 2>&1 | tee "$LOG_DIR/power-cut-channel.txt" || status=fail
+          cargo test -p nlos-wait --test wait_fault_injection 2>&1 | tee "$LOG_DIR/power-cut-wait.txt" || status=fail
+          cargo test -p nlos-task --test fault_injection 2>&1 | tee "$LOG_DIR/power-cut-task.txt" || status=fail
+          cargo test -p nlos-store-fault --test fs_semantics 2>&1 | tee "$LOG_DIR/power-cut-fs-semantics.txt" || status=fail
+          echo "suites_status=$status" >> "$GITHUB_OUTPUT"
+
+          # 套件跑完 → 停编排器 → 探针自带编排的掉电窗口
+          touch "$MARKER"
+          wait "$DRIVER_PID" || true
+
+          # 最小掉电探针（power 模式）：SIGKILL 与 drop_writes 窗口同步发生；
+          # prefix 丢失/损坏 = 「媒体说谎击穿 FULL 承诺」观察值，非阻断。
+          python3 /tmp/power_probe.py power "$TMPDIR/probe" 0.5 1.5 3.0 2>&1 | tee "$LOG_DIR/power-cut-probe.txt"
+          grep -c "TRIAL" "$LOG_DIR/power-cut-probe.txt" || true
+
+          # 确保退出时表已回 linear（即使上面某步失败）
+          /tmp/flip.sh linear || sudo dmsetup table "$DM_DEVICE"
+
+      # ── 降级路径：loop ext4 + SIGKILL 时序矩阵（阻断式——无 dm 时这是
+      #    本 workflow 的全部掉电证据，且是 Linux ext4 平台的首批 WAL 语义证据）──
+      - name: Fallback phase — SIGKILL timing matrix on loop ext4
+        id: fallback
+        if: steps.feasibility.outputs.mode == 'fallback'
+        run: |
+          set -uo pipefail
+          export TMPDIR="$MOUNT"
+          mkdir -p "$TMPDIR/probe"
+          overall=0
+          cargo test -p nlos-channel --test channel_fault_injection 2>&1 | tee "$LOG_DIR/fallback-channel.txt" || overall=1
+          cargo test -p nlos-wait --test wait_fault_injection 2>&1 | tee "$LOG_DIR/fallback-wait.txt" || overall=1
+          cargo test -p nlos-task --test fault_injection 2>&1 | tee "$LOG_DIR/fallback-task.txt" || overall=1
+          cargo test -p nlos-store-fault --test fs_semantics 2>&1 | tee "$LOG_DIR/fallback-fs-semantics.txt" || overall=1
+
+          # 最小崩溃探针（crash 模式，严格断言）：committed prefix 必须完好。
+          python3 /tmp/power_probe.py crash "$TMPDIR/probe" 0.3 0.8 1.5 2.5 4.0 2>&1 | tee "$LOG_DIR/fallback-probe.txt" || overall=1
+          exit $overall
+
+      # always 清理：umount → 移除 dm 映射 → fsck 取证 → 卸载环设备。
+      # 任一步失败都留诊断并使 job 失败（runner 资源泄漏是真信号）。
+      - name: Cleanup devices (always)
+        id: cleanup
+        if: always()
+        run: |
+          set -uo pipefail
+          MODE="${{ steps.feasibility.outputs.mode }}"
+          LOOPDEV="${{ steps.storage.outputs.loop }}"
+          rc=0
+          if mountpoint -q "$MOUNT"; then
+            sudo umount "$MOUNT" || { sleep 3; sudo umount -l "$MOUNT" || rc=1; }
+          fi
+          if [ "$MODE" = "dm-flakey" ]; then
+            sudo dmsetup remove -f "$DM_NAME" >>"$LOG_DIR/cleanup.txt" 2>&1 \
+              || { echo "WARN: dmsetup remove failed" | tee -a "$LOG_DIR/cleanup.txt"; rc=1; }
+          fi
+          if [ -n "$LOOPDEV" ] && sudo losetup "$LOOPDEV" >/dev/null 2>&1; then
+            # 卸载后对环设备做只读 fsck：dm 相之后的文件系统级一致性取证。
+            sudo e2fsck -fn "$LOOPDEV" >>"$LOG_DIR/e2fsck.txt" 2>&1
+            fsck_rc=$?
+            echo "fsck_rc=$fsck_rc" >> "$GITHUB_OUTPUT"
+            tail -5 "$LOG_DIR/e2fsck.txt" || true
+            sudo losetup -d "$LOOPDEV" >>"$LOG_DIR/cleanup.txt" 2>&1 || rc=1
+          fi
+          { echo "=== dmsetup ls ==="; sudo dmsetup ls 2>&1; echo "=== losetup -a ==="; losetup -a 2>&1; } \
+            >>"$LOG_DIR/cleanup.txt" || true
+          exit $rc
+
+      # job summary：可行性结论 + 各相结果（含 fallback 分支的可行性结论义务）
+      - name: Job summary
+        if: always()
+        run: |
+          MODE="${{ steps.feasibility.outputs.mode }}"
+          REASON="${{ steps.feasibility.outputs.reason }}"
+          BASELINE="${{ steps.baseline.outputs.status }}"
+          PC_OUT="${{ steps.power-cut.outcome }}"
+          PC_SUITES="${{ steps.power-cut.outputs.suites_status }}"
+          FB_OUT="${{ steps.fallback.outcome }}"
+          FSCK_RC="${{ steps.cleanup.outputs.fsck_rc }}"
+          PROBE_HITS="$(grep -h '^TRIAL' "$LOG_DIR"/*probe.txt 2>/dev/null | wc -l | tr -d ' ')"
+          PROBE_BAD="$(grep -h '^TRIAL' "$LOG_DIR"/*probe.txt 2>/dev/null | grep -cv 'prefix-intact' || true)"
+          {
+            echo "## Power-loss simulation (Layer 2) — run report"
+            echo
+            echo "| 项 | 结果 |"
+            echo "|---|---|"
+            echo "| 可行性模式 | \`$MODE\` |"
+            echo "| 降级/探测原因 | ${REASON:-（dm_flakey 可用）} |"
+            if [ "$MODE" = "dm-flakey" ]; then
+              echo "| baseline（linear 直通，阻断） | \`$BASELINE\` |"
+              echo "| power-cut 相（drop_writes 窗口） | outcome=\`$PC_OUT\` suites=\`$PC_SUITES\`（观察值，需人工分诊） |"
+            else
+              echo "| fallback 相（loop ext4 + SIGKILL 矩阵，阻断） | outcome=\`$FB_OUT\` |"
+            fi
+            echo "| 探针 trial 数 / 非完整前缀观察 | $PROBE_HITS / $PROBE_BAD |"
+            echo "| e2fsck -fn 退出码（文件系统级取证） | \`${FSCK_RC:-n/a}\` |"
+            echo
+            echo "### 可行性结论"
+            echo
+            if [ "$MODE" = "dm-flakey" ]; then
+              echo "- dm_flakey 在本 runner 可用；掉电窗口由 dmsetup 活换表实现。"
+              echo "- power-cut 相失败不视为产品回归：drop_writes = 「说谎的磁盘」，"
+              echo "  synchronous=FULL 的持久性承诺对媒体说谎本就不可软件防御（层 3 硬件抽验归口）。"
+              echo "- 但 baseline 失败与 fallback/crash 模式失败是阻断信号（分别对应"
+              echo "  harness 失效与进程崩溃语义破坏），需要调查。"
+            else
+              echo "- 本 runner **不可用 dm-flakey**（原因：\`${REASON:-unknown}\`）；"
+              echo "  已自动降级为 loop ext4 + 进程级 SIGKILL 时序矩阵。"
+              echo "- 降级路径价值：Linux ext4 为层 1 证据登记的未测平台"
+              echo "  （b-store-fs-semantics §5），crash 模式严格断言 committed prefix。"
+              echo "- 若需层 2 完整掉电语义（drop_writes），须换支持 dm_flakey 的 runner 镜像"
+              echo "  或 self-hosted runner，再以 workflow_dispatch 手动复跑。"
+            fi
+            echo
+            echo "### 状态声明（如实）"
+            echo
+            echo "- 本 workflow 首次实跑即本次运行；在此之前層 2 状态为「workflow 交付、未实跑」。"
+            echo "- 全部日志见 artifact \`power-loss-simulation-logs-${{ github.run_id }}\`。"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: power-loss-simulation-logs-${{ github.run_id }}
+          path: /tmp/power-loss-logs/
+          if-no-files-found: warn
