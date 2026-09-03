@@ -15,21 +15,23 @@ use std::time::Duration;
 
 use nlos_identity::{
     Ed25519Signature, IdentityAuthority, IdentityAuthorityError, IdentityBinding,
-    VerifiedCapabilityCommandSigner, VerifyCapabilityCommandSignatureRequest,
+    VerifiedCapabilityCommandSigner, VerifiedSemanticSigner,
+    VerifyCapabilityCommandSignatureRequest,
 };
 use nlos_types::{CapabilityId, Generation, IdempotencyKey, KeyId, PrincipalId, ReceiptId};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
 
 pub use model::{
-    AuthorizeSemanticRequest, CapabilityHandle, CapabilityIssueDecision, CapabilityIssueReceipt,
-    CapabilityRecord, CapabilityRevocationDecision, CapabilityRevocationReceipt, CapabilityRights,
-    CapabilityTarget, DelegateCapabilityRequest, IssueRootCapabilityRequest,
+    AuthorizeSemanticRequest, CapabilityConsumptionDecision, CapabilityConsumptionReceipt,
+    CapabilityHandle, CapabilityIssueDecision, CapabilityIssueReceipt, CapabilityRecord,
+    CapabilityRevocationDecision, CapabilityRevocationReceipt, CapabilityRights, CapabilityTarget,
+    ConsumeCapabilityRequest, DelegateCapabilityRequest, IssueRootCapabilityRequest,
     RevokeCapabilityRequest, SemanticAuthorization, SignedDelegateCapabilityRequest,
     SignedIssueRootCapabilityRequest, SignedRevokeCapabilityRequest,
 };
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 /// Domain separator for signed Capability command messages. Every field is
 /// fixed-width big-endian with presence tags, so the framing stays canonical
@@ -77,6 +79,7 @@ pub enum CapabilityAuthorityError {
     RequiredRightMissing,
     PurposeMismatch,
     GenerationExhausted,
+    CallLimitExhausted,
     CorruptRecord(&'static str),
     LockPoisoned,
 }
@@ -146,6 +149,7 @@ impl fmt::Display for CapabilityAuthorityError {
             }
             Self::PurposeMismatch => formatter.write_str("capability purpose does not match"),
             Self::GenerationExhausted => formatter.write_str("generation space exhausted"),
+            Self::CallLimitExhausted => formatter.write_str("capability call limit is exhausted"),
             Self::CorruptRecord(reason) => write!(formatter, "corrupt durable record: {reason}"),
             Self::LockPoisoned => formatter.write_str("capability authority lock is poisoned"),
         }
@@ -205,7 +209,11 @@ impl CapabilityAuthority {
         }
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
         match version {
-            0 => schema::migrate_v1(&mut connection)?,
+            0 => {
+                schema::migrate_v1(&mut connection)?;
+                schema::migrate_v2(&mut connection)?;
+            }
+            1 => schema::migrate_v2(&mut connection)?,
             SCHEMA_VERSION => {}
             other => return Err(CapabilityAuthorityError::SchemaVersionUnsupported(other)),
         }
@@ -611,7 +619,9 @@ impl CapabilityAuthority {
     }
 
     /// Authorizes one Semantic operation using an unforgeable signer proof
-    /// returned by `IdentityAuthority::verify_semantic_signature`.
+    /// returned by `IdentityAuthority::verify_semantic_signature`. This is a
+    /// pure admission check and never consumes call-limit budget; budget is
+    /// spent only by [`CapabilityAuthority::consume`].
     ///
     /// # Errors
     ///
@@ -622,22 +632,15 @@ impl CapabilityAuthority {
         request: AuthorizeSemanticRequest,
     ) -> Result<SemanticAuthorization, CapabilityAuthorityError> {
         let connection = self.lock()?;
-        let record = load_exact_current(&connection, request.handle)?;
-        validate_active_chain(&connection, record, request.admitted_at_ms)?;
-        if request.signer.principal_id() != record.holder
-            || request.signer.control_domain_id() != record.holder_control_domain
-        {
-            return Err(CapabilityAuthorityError::HolderMismatch);
-        }
-        if request.target != record.target {
-            return Err(CapabilityAuthorityError::TargetMismatch);
-        }
-        if !record.rights.contains(request.required_right) {
-            return Err(CapabilityAuthorityError::RequiredRightMissing);
-        }
-        if record.purpose_digest != request.purpose_digest {
-            return Err(CapabilityAuthorityError::PurposeMismatch);
-        }
+        let record = admit_semantic(
+            &connection,
+            request.handle,
+            &request.signer,
+            request.target,
+            request.required_right,
+            request.purpose_digest,
+            request.admitted_at_ms,
+        )?;
         Ok(SemanticAuthorization {
             capability_id: record.handle.capability_id,
             generation: record.handle.generation,
@@ -646,6 +649,106 @@ impl CapabilityAuthority {
             granted_rights: record.rights,
             purpose_digest: record.purpose_digest,
         })
+    }
+
+    /// Exercises a capability handle once: the same admission gates as
+    /// `authorize_semantic`, then exactly one durable consumption row against
+    /// the admitted generation. For a limited capability (`call_limit = N`)
+    /// the row count is the spent budget; once every unit is spent, further
+    /// exercises fail with [`CapabilityAuthorityError::CallLimitExhausted`]
+    /// before any durable write, so rejection leaves zero partial state.
+    /// Replays follow the receipt precedent: the same idempotency key with
+    /// the same request digest returns the durable consumption receipt and
+    /// never charges twice, a rebound digest fails closed with
+    /// `IdempotencyConflict`, and a replay never re-runs admission. Each
+    /// capability holds its own independent budget; delegation attenuates the
+    /// declared limit but does not pool it with the parent.
+    ///
+    /// # Errors
+    ///
+    /// Fails on stale/revoked ancestry, holder/target/purpose mismatch,
+    /// missing rights, exhausted call limit, idempotency conflict, or storage
+    /// failure.
+    pub fn consume(
+        &self,
+        request: ConsumeCapabilityRequest,
+    ) -> Result<CapabilityConsumptionDecision, CapabilityAuthorityError> {
+        let request_digest = consume_request_digest(&request);
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(replay) =
+            load_consumption_replay(&transaction, request.idempotency_key, request_digest)?
+        {
+            transaction.commit()?;
+            return Ok(CapabilityConsumptionDecision::Replayed(replay));
+        }
+        let record = admit_semantic(
+            &transaction,
+            request.handle,
+            &request.signer,
+            request.target,
+            request.required_right,
+            request.purpose_digest,
+            request.consumed_at_ms,
+        )?;
+        let used = count_consumption(&transaction, record.handle.capability_id)?;
+        let remaining = match record.call_limit {
+            Some(limit) => {
+                if used >= limit {
+                    return Err(CapabilityAuthorityError::CallLimitExhausted);
+                }
+                Some(limit - used - 1)
+            }
+            None => None,
+        };
+        let receipt = CapabilityConsumptionReceipt {
+            receipt_id: ReceiptId::from_bytes(derive_id(
+                b"nlos/capability-consumption-receipt/id/v1",
+                &[record.handle.capability_id.as_bytes(), &request_digest],
+            )),
+            capability_id: record.handle.capability_id,
+            generation: record.handle.generation,
+            remaining,
+            consumed_at_ms: request.consumed_at_ms,
+        };
+        transaction.execute(
+            "INSERT INTO capability_consumption_rows (
+                idempotency_key, request_digest, receipt_id, capability_id,
+                generation, remaining, consumed_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                request.idempotency_key.as_bytes().as_slice(),
+                request_digest.as_slice(),
+                receipt.receipt_id.as_bytes().as_slice(),
+                record.handle.capability_id.as_bytes().as_slice(),
+                encode_generation(record.handle.generation)?,
+                receipt.remaining.map(encode_u64).transpose()?,
+                encode_u64(request.consumed_at_ms)?,
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(CapabilityConsumptionDecision::Consumed(receipt))
+    }
+
+    /// Reads the remaining call-limit budget of the exact current-generation
+    /// capability: `Some(spent-able units)` for a limited capability and
+    /// `None` for an unlimited one. Pure readback; admission state (ancestry,
+    /// validity, revocation) is not evaluated here.
+    ///
+    /// # Errors
+    ///
+    /// Fails for unknown or stale handles, or storage failure.
+    pub fn call_limit_remaining(
+        &self,
+        handle: CapabilityHandle,
+    ) -> Result<Option<u64>, CapabilityAuthorityError> {
+        let connection = self.lock()?;
+        let record = load_exact_current(&connection, handle)?;
+        let Some(limit) = record.call_limit else {
+            return Ok(None);
+        };
+        let used = count_consumption(&connection, record.handle.capability_id)?;
+        Ok(Some(limit.saturating_sub(used)))
     }
 
     /// Reads an exact current-generation capability after validating its
@@ -960,6 +1063,75 @@ fn load_revocation_replay(
     }))
 }
 
+fn load_consumption_replay(
+    transaction: &Transaction<'_>,
+    idempotency_key: IdempotencyKey,
+    request_digest: [u8; 32],
+) -> Result<Option<CapabilityConsumptionReceipt>, CapabilityAuthorityError> {
+    let row = transaction
+        .query_row(
+            "SELECT request_digest, receipt_id, capability_id, generation,
+                    remaining, consumed_at_ms
+             FROM capability_consumption_rows WHERE idempotency_key=?1",
+            [idempotency_key.as_bytes().as_slice()],
+            |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, Option<i64>>(4)?,
+                    row.get::<_, i64>(5)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    if decode_array::<32>(row.0, "consumption request digest")? != request_digest {
+        return Err(CapabilityAuthorityError::IdempotencyConflict);
+    }
+    Ok(Some(CapabilityConsumptionReceipt {
+        receipt_id: decode_id(row.1, ReceiptId::from_bytes, "consumption receipt id")?,
+        capability_id: decode_id(row.2, CapabilityId::from_bytes, "capability id")?,
+        generation: decode_generation(row.3)?,
+        remaining: row.4.map(decode_u64).transpose()?,
+        consumed_at_ms: decode_u64(row.5)?,
+    }))
+}
+
+fn count_consumption(
+    connection: &Connection,
+    capability_id: CapabilityId,
+) -> Result<u64, CapabilityAuthorityError> {
+    let count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM capability_consumption_rows WHERE capability_id=?1",
+        [capability_id.as_bytes().as_slice()],
+        |row| row.get(0),
+    )?;
+    decode_u64(count)
+}
+
+/// Domain-separated digest of one consume request, covering the exercised
+/// handle, the verified signer, every admission field, the idempotency key,
+/// and the authority time, so a rebound key fails closed like the command
+/// receipts.
+fn consume_request_digest(request: &ConsumeCapabilityRequest) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"nlos/capability-consume-request/v1");
+    hasher.update(request.handle.capability_id.as_bytes());
+    hasher.update(request.handle.generation.get().to_be_bytes());
+    hasher.update(request.signer.principal_id().as_bytes());
+    hasher.update([request.target.kind()]);
+    hasher.update(request.target.bytes());
+    hasher.update(request.required_right.bits().to_be_bytes());
+    hash_optional_digest(&mut hasher, request.purpose_digest);
+    hasher.update(request.idempotency_key.as_bytes());
+    hasher.update(request.consumed_at_ms.to_be_bytes());
+    hasher.finalize().into()
+}
+
 fn load_exact_current(
     connection: &Connection,
     handle: CapabilityHandle,
@@ -1105,6 +1277,38 @@ fn validate_active_chain(
     Err(CapabilityAuthorityError::CorruptRecord(
         "capability ancestor chain exceeds 256",
     ))
+}
+
+/// Shared Semantic admission gates for `authorize_semantic` and `consume`:
+/// exact current generation, active ancestor chain at the authority time,
+/// then holder, target, right, and purpose checks. Returns the admitted
+/// record.
+fn admit_semantic(
+    connection: &Connection,
+    handle: CapabilityHandle,
+    signer: &VerifiedSemanticSigner,
+    target: CapabilityTarget,
+    required_right: CapabilityRights,
+    purpose_digest: Option<[u8; 32]>,
+    at_ms: u64,
+) -> Result<CapabilityRecord, CapabilityAuthorityError> {
+    let record = load_exact_current(connection, handle)?;
+    validate_active_chain(connection, record, at_ms)?;
+    if signer.principal_id() != record.holder
+        || signer.control_domain_id() != record.holder_control_domain
+    {
+        return Err(CapabilityAuthorityError::HolderMismatch);
+    }
+    if target != record.target {
+        return Err(CapabilityAuthorityError::TargetMismatch);
+    }
+    if !record.rights.contains(required_right) {
+        return Err(CapabilityAuthorityError::RequiredRightMissing);
+    }
+    if record.purpose_digest != purpose_digest {
+        return Err(CapabilityAuthorityError::PurposeMismatch);
+    }
+    Ok(record)
 }
 
 fn purpose_is_attenuated(parent: Option<[u8; 32]>, child: Option<[u8; 32]>) -> bool {

@@ -247,3 +247,44 @@ pub struct SemanticAuthorization {
     pub granted_rights: CapabilityRights,
     pub purpose_digest: Option<[u8; 32]>,
 }
+
+/// One exercising use of a capability handle: the same admission gates as
+/// [`AuthorizeSemanticRequest`] plus the idempotency key and authority time
+/// that turn the admission into exactly one durable consumption row.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ConsumeCapabilityRequest {
+    pub handle: CapabilityHandle,
+    pub signer: VerifiedSemanticSigner,
+    pub target: CapabilityTarget,
+    pub required_right: CapabilityRights,
+    pub purpose_digest: Option<[u8; 32]>,
+    pub idempotency_key: IdempotencyKey,
+    pub consumed_at_ms: u64,
+}
+
+/// Durable proof that one exercise was admitted against the given generation.
+/// `remaining` is the budget left after this consumption; `None` marks an
+/// unlimited capability.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CapabilityConsumptionReceipt {
+    pub receipt_id: ReceiptId,
+    pub capability_id: CapabilityId,
+    pub generation: Generation,
+    pub remaining: Option<u64>,
+    pub consumed_at_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CapabilityConsumptionDecision {
+    Consumed(CapabilityConsumptionReceipt),
+    Replayed(CapabilityConsumptionReceipt),
+}
+
+impl CapabilityConsumptionDecision {
+    #[must_use]
+    pub const fn receipt(self) -> CapabilityConsumptionReceipt {
+        match self {
+            Self::Consumed(receipt) | Self::Replayed(receipt) => receipt,
+        }
+    }
+}

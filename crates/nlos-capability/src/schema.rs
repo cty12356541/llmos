@@ -99,3 +99,41 @@ pub(crate) fn migrate_v1(connection: &mut Connection) -> Result<(), CapabilityAu
     transaction.commit()?;
     Ok(())
 }
+
+/// v2 (B-CAPABILITY-002 call-limit ledger): an additive, append-only
+/// consumption ledger. Each admitted exercise inserts one immutable row;
+/// remaining call-limit budget is derived by counting rows, so there is no
+/// mutable counter to drift across restarts. Replay idempotency follows the
+/// receipt precedent: the idempotency key is the primary key and a rebound
+/// request digest fails closed.
+#[allow(clippy::too_many_lines)] // One auditable transaction contains the complete v2 DDL.
+pub(crate) fn migrate_v2(connection: &mut Connection) -> Result<(), CapabilityAuthorityError> {
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "CREATE TABLE capability_consumption_rows (
+            idempotency_key BLOB PRIMARY KEY NOT NULL CHECK(length(idempotency_key) = 16),
+            request_digest BLOB NOT NULL CHECK(length(request_digest) = 32),
+            receipt_id BLOB NOT NULL UNIQUE CHECK(length(receipt_id) = 16),
+            capability_id BLOB NOT NULL CHECK(length(capability_id) = 16),
+            generation INTEGER NOT NULL CHECK(generation >= 1),
+            remaining INTEGER CHECK(remaining IS NULL OR remaining >= 0),
+            consumed_at_ms INTEGER NOT NULL CHECK(consumed_at_ms >= 0),
+            FOREIGN KEY(capability_id, generation)
+                REFERENCES capability_versions(capability_id, generation)
+        ) STRICT;
+
+        CREATE INDEX capability_consumption_capability_idx
+            ON capability_consumption_rows(capability_id);
+
+        CREATE TRIGGER capability_consumption_immutable_update
+            BEFORE UPDATE ON capability_consumption_rows
+        BEGIN SELECT RAISE(ABORT, 'capability consumption row is immutable'); END;
+        CREATE TRIGGER capability_consumption_immutable_delete
+            BEFORE DELETE ON capability_consumption_rows
+        BEGIN SELECT RAISE(ABORT, 'capability consumption row is immutable'); END;
+
+        PRAGMA user_version = 2;",
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
