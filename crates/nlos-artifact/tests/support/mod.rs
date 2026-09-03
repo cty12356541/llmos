@@ -16,6 +16,11 @@ use nlos_types::{ApplicationId, ArtifactId, IdempotencyKey, PackageId};
 
 static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
 
+/// Observation time for read/poll calls in tests of artifacts that carry
+/// no retention policy: unbounded artifacts never expire, so any `now_ms`
+/// (even the maximum) must read successfully.
+pub const READ_NOW_MS: u64 = u64::MAX;
+
 /// Unique temporary store root, removed recursively on drop.
 pub struct TestStoreDir {
     root: PathBuf,

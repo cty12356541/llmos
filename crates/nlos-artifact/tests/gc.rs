@@ -16,7 +16,7 @@ use nlos_artifact::{
 };
 use nlos_store_fault::{FaultCode, FaultMode};
 use nlos_types::{ArtifactId, CommitPermitId, IdempotencyKey, TaskId};
-use support::{TestStoreDir, artifact_id, artifact_spec, bytes, put};
+use support::{READ_NOW_MS, TestStoreDir, artifact_id, artifact_spec, bytes, put};
 
 mod support;
 
@@ -156,9 +156,24 @@ fn gc_collects_provable_orphans_and_retains_every_referenced_blob() {
     assert!(foreign_dir.join("not-a-digest.bin").is_file());
 
     // Active reads unaffected.
-    assert_eq!(store.get_revision(artifact_id(0x30), 1).expect("r1"), p1);
-    assert_eq!(store.get_revision(artifact_id(0x30), 2).expect("r2"), p2);
-    assert_eq!(store.get_revision(artifact_id(0x31), 1).expect("b1"), p3);
+    assert_eq!(
+        store
+            .get_revision(artifact_id(0x30), 1, READ_NOW_MS)
+            .expect("r1"),
+        p1
+    );
+    assert_eq!(
+        store
+            .get_revision(artifact_id(0x30), 2, READ_NOW_MS)
+            .expect("r2"),
+        p2
+    );
+    assert_eq!(
+        store
+            .get_revision(artifact_id(0x31), 1, READ_NOW_MS)
+            .expect("b1"),
+        p3
+    );
 
     let report = store.recover().expect("recover");
     assert!(report.orphan_blobs.is_empty());
@@ -264,7 +279,9 @@ fn gc_io_error_during_receipt_commit_leaves_consistent_state() {
     assert!(!directory.artifact_blob(orphan2).exists());
     // In-registry state is intact and typed reads still work.
     assert_eq!(
-        store.get_revision(artifact_id(0x33), 1).expect("revision"),
+        store
+            .get_revision(artifact_id(0x33), 1, READ_NOW_MS)
+            .expect("revision"),
         p1
     );
 
@@ -339,7 +356,7 @@ fn gc_power_loss_mid_commit_phantom_receipt_invisible_after_reopen() {
     assert!(!directory.artifact_blob(orphan1).exists());
     assert_eq!(
         recovered
-            .get_revision(artifact_id(0x34), 1)
+            .get_revision(artifact_id(0x34), 1, READ_NOW_MS)
             .expect("revision"),
         p1
     );

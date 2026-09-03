@@ -36,17 +36,29 @@ impl ArtifactStore {
     /// [`ArtifactStore::recover`](crate::ArtifactStore::recover) to
     /// reconcile). Wrong bytes are never returned silently.
     ///
+    /// `now_ms` is the caller-supplied observation time (crate-wide
+    /// time-source discipline): an artifact past its retention time upper
+    /// bound at `now_ms` fails closed with
+    /// [`ArtifactError::RetentionExpired`] before any bytes are read —
+    /// expired and not-found stay distinct typed states, and no data is
+    /// deleted by expiry.
+    ///
     /// # Errors
     ///
-    /// Returns a not-found, missing-blob, digest-mismatch, or storage error.
+    /// Returns a not-found, retention-expired, missing-blob,
+    /// digest-mismatch, or storage error.
     pub fn get_revision(
         &self,
         artifact_id: ArtifactId,
         revision: u64,
+        now_ms: u64,
     ) -> Result<Vec<u8>, ArtifactError> {
         let connection = self.lock_connection()?;
-        load_artifact_optional(&*connection, artifact_id)?
+        let artifact = load_artifact_optional(&*connection, artifact_id)?
             .ok_or(ArtifactError::ArtifactNotFound(artifact_id))?;
+        // Fail-closed retention gate: past the artifact's time upper bound
+        // the bytes are refused before any revision state is touched.
+        crate::retention::ensure_readable(&artifact, now_ms)?;
         let record = load_revision_optional(&*connection, artifact_id, revision)?.ok_or(
             ArtifactError::RevisionNotFound {
                 artifact_id,
@@ -67,16 +79,25 @@ impl ArtifactStore {
     /// Resolves the mutable head pointer. Returns `Ok(None)` when the
     /// artifact exists but has no revisions yet.
     ///
+    /// This is the poll surface: an artifact past its retention time upper
+    /// bound at `now_ms` fails closed with
+    /// [`ArtifactError::RetentionExpired`] instead of reporting head state
+    /// (even an empty head), so polling can never observe a live pointer
+    /// into expired data.
+    ///
     /// # Errors
     ///
-    /// Returns [`ArtifactError::ArtifactNotFound`] or a storage error.
+    /// Returns [`ArtifactError::ArtifactNotFound`],
+    /// [`ArtifactError::RetentionExpired`], or a storage error.
     pub fn resolve_head(
         &self,
         artifact_id: ArtifactId,
+        now_ms: u64,
     ) -> Result<Option<HeadState>, ArtifactError> {
         let connection = self.lock_connection()?;
         let record = load_artifact_optional(&*connection, artifact_id)?
             .ok_or(ArtifactError::ArtifactNotFound(artifact_id))?;
+        crate::retention::ensure_readable(&record, now_ms)?;
         match (record.head_revision, record.head_digest) {
             (0, None) => Ok(None),
             (revision, Some(digest)) => Ok(Some(HeadState { revision, digest })),
@@ -152,7 +173,7 @@ pub(crate) fn load_artifact_optional(
 ) -> Result<Option<ArtifactRecord>, ArtifactError> {
     let mut statement = source.prepare_statement(
         "SELECT artifact_id, content_type, application_id, owner,
-                head_revision, head_digest, created_at_ms
+                head_revision, head_digest, created_at_ms, retention_ms
          FROM artifacts WHERE artifact_id = ?1",
     )?;
     let mut rows = statement.query([artifact_id.as_bytes().as_slice()])?;
@@ -165,7 +186,7 @@ pub(crate) fn load_artifact_by_key(
 ) -> Result<Option<ArtifactRecord>, ArtifactError> {
     let mut statement = source.prepare_statement(
         "SELECT artifact_id, content_type, application_id, owner,
-                head_revision, head_digest, created_at_ms
+                head_revision, head_digest, created_at_ms, retention_ms
          FROM artifacts WHERE idempotency_key = ?1",
     )?;
     let mut rows = statement.query([idempotency_key.as_bytes().as_slice()])?;
@@ -241,6 +262,7 @@ pub(crate) fn decode_artifact_row(row: &Row<'_>) -> Result<ArtifactRecord, Artif
     let head_revision = decode_u64(row, 4)?;
     let head_digest = optional_blob32(row, 5)?.map(ContentDigest::from_bytes);
     let created_at_ms = decode_u64(row, 6)?;
+    let retention_ms = optional_u64(row, 7)?;
     if (head_revision == 0) != head_digest.is_none() {
         return Err(ArtifactError::CorruptRecord(
             "head revision and head digest disagree",
@@ -254,6 +276,7 @@ pub(crate) fn decode_artifact_row(row: &Row<'_>) -> Result<ArtifactRecord, Artif
         head_revision,
         head_digest,
         created_at_ms,
+        retention_ms,
     })
 }
 
@@ -270,6 +293,15 @@ pub(crate) fn decode_revision_row(row: &Row<'_>) -> Result<RevisionRecord, Artif
 fn decode_u64(row: &Row<'_>, index: usize) -> Result<u64, ArtifactError> {
     let value: i64 = row.get(index)?;
     u64::try_from(value).map_err(|_| ArtifactError::CorruptRecord("negative u64 column"))
+}
+
+fn optional_u64(row: &Row<'_>, index: usize) -> Result<Option<u64>, ArtifactError> {
+    let value: Option<i64> = row.get(index)?;
+    value
+        .map(|value| {
+            u64::try_from(value).map_err(|_| ArtifactError::CorruptRecord("negative u64 column"))
+        })
+        .transpose()
 }
 
 fn blob16(row: &Row<'_>, index: usize) -> Result<[u8; 16], ArtifactError> {

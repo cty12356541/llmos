@@ -54,6 +54,10 @@ impl ArtifactStore {
 
         let artifact = load_artifact_optional(&transaction, request.artifact_id)?
             .ok_or(ArtifactError::ArtifactNotFound(request.artifact_id))?;
+        // Admission gate after the replay branches: fresh staging into an
+        // artifact past its retention bound is refused; replays of durable
+        // staged state above stay un-gated.
+        crate::retention::ensure_readable(&artifact, request.created_at_ms)?;
         if artifact.head_revision != request.expected_head_revision {
             return Err(ArtifactError::HeadConflict {
                 expected: request.expected_head_revision,
@@ -157,6 +161,11 @@ impl ArtifactStore {
 
         let artifact = load_artifact_optional(&transaction, staged.artifact_id)?
             .ok_or(ArtifactError::ArtifactNotFound(staged.artifact_id))?;
+        // Admission gate on the fresh-publication path only (the
+        // already-published replay above returned earlier): publishing
+        // staged bytes into an artifact past its retention bound would
+        // create a revision no one can read.
+        crate::retention::ensure_readable(&artifact, request.published_at_ms)?;
         if artifact.head_revision != staged.expected_head_revision {
             return Err(ArtifactError::HeadConflict {
                 expected: staged.expected_head_revision,

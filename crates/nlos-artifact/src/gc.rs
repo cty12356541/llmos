@@ -48,7 +48,11 @@
 //! # Scope and honesty boundaries
 //!
 //! Explicit invocation only: no automatic trigger, schedule, or open-time
-//! sweep. No retention/TTL policy. No cross-artifact or external
+//! sweep. Retention expiry (`retention` module) never feeds this module:
+//! an expired artifact's revisions are still committed reference rows, so
+//! expired-but-referenced blobs are mechanically not orphans and the
+//! fail-safe direction is unchanged. Physical reclamation of expired
+//! artifacts is separate follow-up work. No cross-artifact or external
 //! reference tracking — a blob referenced only from outside this store is
 //! by construction an orphan *to this store*. Presence, not integrity,
 //! decides candidacy; full-blob re-hashing remains an audit concern.

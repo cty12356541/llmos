@@ -88,3 +88,46 @@ cargo fmt -p nlos-store-fault
 ```
 
 上述命令于 2026-08-29 在 HEAD `4f90511` 全部通过；测试套件对仓库零写入（全部数据库文件建于每测试独立 tempdir，进程退出即清理）。
+
+## 8. 层 2 接入：虚拟化掉电 CI — workflow 交付（2026-09-02，**未实跑**）
+
+> 本节兑现 §6 登记的「层 2：Linux CI dm-flakey 虚拟化掉电」后续项的**交付半步**：workflow 与可行性分析已落地；实跑数据（FULL/NORMAL 区分、目录项持久性、位级损坏域——M4/M6/M8 的层 2 检验）要等首次 `workflow_dispatch` 手动触发后才有，**本节不将层 2 标记为已验证**。HEAD `498161b`。
+
+### 8.1 交付物与写集
+
+| 文件 | 性质 |
+|---|---|
+| `.github/workflows/power-loss-simulation.yml`（新增） | GitHub Actions workflow：`workflow_dispatch`（含 `drop_window_offsets`/`force_fallback` 输入）+ 夜间 `schedule`（`30 21 * * *`，与 rust-cross-platform 的 `0 19` 错峰）；不进 push/PR 常规链——掉电模拟慢且 drop_writes 属「说谎的磁盘」，可能假阳性 |
+| 本文档 §8 | 设计、可行性分析、未验证声明 |
+
+### 8.2 设计
+
+- **代表性权威**：channel（`nlos-channel/tests/channel_fault_injection.rs`）、wait（`nlos-wait/tests/wait_fault_injection.rs`）、task（`nlos-task/tests/fault_injection.rs`）三者 + `nlos-store-fault/tests/fs_semantics`（层 1 校准套件的层 2 复验入口）。
+- **DB 重定向通道（零测试代码改动）**：四个套件的全部落盘目录均取 `std::env::temp_dir()`（2026-09-02 对源码审计确认：channel L196/L234、wait L299/L333、task L56、fs_semantics harness L60；子进程经环境继承），Linux 下受 `TMPDIR` 控制 → workflow 跑测试时 `export TMPDIR=<dm 挂载点>` 即把全部 SQLite 数据库放到虚拟化掉电设备上。
+- **主路径 dm-flakey**（内核目标类型 `flakey`，模块 `dm_flakey`）：sparse 1 GiB 文件 → `losetup` → dm `linear` 直通映射 → `mkfs.ext4` → 挂载。两相：
+  1. *baseline 相*（阻断式）：linear 直通上跑全部套件，验证 harness 在 dm/ext4 路径成立；
+  2. *掉电相*（`continue-on-error`，结果按观察值分诊）：`dmsetup suspend --noflush / load / resume` 活换表为 `flakey <loop> 0 1 60 1 drop_writes`（1s up / 60s down，写**静默丢弃**、读直通），由后台编排器按 `drop_window_offsets` 时间线把 4s 掉电窗口扎进套件运行，随后切回 linear。选 `drop_writes` 而非 dm-error/EIO：静默丢写 ≈ 掉电语义；EIO（SQLite IOERR 路径）已由 fault VFS F3 覆盖。
+- **最小掉电探针**（workflow 内联 python3 + sqlite3 标准库，不进仓库写集）：写进程 WAL + `synchronous=FULL` 循环提交序号；*crash 模式*（严格断言）在时序矩阵偏移点 SIGKILL 后重开，断言 `integrity_check` ok 且行集为 **committed prefix（0..k 连续无 gap）**；*power 模式*（观察）把 SIGKILL 与 drop_writes 窗口同步包住——prefix 丢失/损坏 =「媒体说谎击穿 FULL 承诺」的预期观察值，因任何软件层（含 SQLite）都不可防御媒体说谎，归层 3 硬件抽验裁决。
+- **降级路径**：`modprobe dm_flakey` / losetup / mkfs / passwordless sudo 任一探测失败 → 自动落 loop ext4 + SIGKILL 时序矩阵（crash 模式严格断言，阻断式）。仍有增量价值：Linux ext4 是 §5 登记的**未测平台**，crash 探针产出该平台首批 WAL committed-prefix 证据。可行性结论强制写入 job summary。
+- **取证与清理**：卸载后 `e2fsck -fn` 对环设备做只读文件系统级一致性取证（退出码进 summary）；`always` 步骤按序 umount → `dmsetup remove -f` → `losetup -d`，失败留诊断并使 job 失败（runner 资源泄漏是真信号）。全量日志上传 artifact。
+- **预期失败语义约定**（写入 workflow 注释与 summary）：baseline 失败与 crash 模式失败 = 阻断信号（harness 失效 / 进程崩溃语义破坏，需调查）；power 模式与掉电相套件失败 = 观察值（需人工分诊，不构成产品回归判定）。
+
+### 8.3 可行性分析（dm-flakey 预期可用性）
+
+GitHub hosted `ubuntu-latest` runner 具备 root（passwordless sudo，官方文档声明）。逐项预期：
+
+| 假设 | 预期 | 依据 | 落空后果 |
+|---|---|---|---|
+| passwordless sudo | 可用 | GH 官方 runner 文档 | 降级不可行 → workflow 失败（如实报告） |
+| `dm_flakey` 模块 | **大概率可用** | Ubuntu generic 内核把 DM 目标以模块形式随 `linux-modules-extra` 发布，hosted runner 镜像含该包；`dmsetup targets` 探测确认 | 自动降级，不阻塞 |
+| loop device | 可用 | `/dev/loop-control` + loop 模块在 runner 镜像长期可用（容器镜像构建依赖） | 探测失败 → 如实报告 |
+| e2fsprogs 预装 | 可用 | ubuntu runner 镜像标配 | 探测失败 → 如实报告 |
+
+ dm-flakey 语义与被校准模型的对接：`drop_writes` 窗口内 `xWrite`/`xSync` 的下层介质静默丢弃但报告成功——正是 M1/M4 注入点假设的**真实介质版**；M3（tear 点 = 写调用边界）之外的更细粒度破坏（M8 偏差）由窗口切割点不受调用边界约束补齐；M6 的目录项持久性与 FULL/NORMAL 区分（M4）需实跑数据才能下结论，**本节不作任何断言**。
+
+### 8.4 未验证项（显式声明）
+
+- **workflow 整体未实跑**：yaml 仅通过语法级自查（`yaml.safe_load`）；actionlint（本机未安装则跳过）。dm-flakey 命令序列（`suspend --noflush`/`load`/`resume` 活换、flakey 表特征参数 `1 drop_writes`）依据内核 device-mapper 文档与 xfstests 用法编写，**未在任何 Linux 环境验证**。
+- 上述 8.3 全部假设未在真实 runner 上证实。
+- 层 2 检验目标（M4 FULL/NORMAL 区分、M6 目录项持久性、M8 位级损坏域、层 1 结论在 ext4 上的复验）**全部无数据**——首次 `workflow_dispatch` 实跑前，§6 第二条的「未运行」状态保持不变。
+- 嵌入探针除 `python3 -m py_compile` 外，其 **crash 模式已于本机（macOS/APFS）功能实跑通过**（2026-09-02：2 轮 × 3 偏移点，6/6 trial `prefix-intact` + `integrity=ok`，exit 0——crash 模式不依赖 dm，平台无关）；**power 模式**（drop_writes 窗口编排）依赖 dm 设备，**未实跑**。flip.sh 活换序列经本地 stub `dmsetup` 端到端验证表参数正确（`flakey <loop> 0 1 60 1 drop_writes` / `linear <loop> 0`），但真实内核路径未验证。

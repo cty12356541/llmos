@@ -295,6 +295,10 @@ pub struct ArtifactRecord {
     pub head_revision: u64,
     pub head_digest: Option<ContentDigest>,
     pub created_at_ms: u64,
+    /// Retention time upper bound in milliseconds counted from
+    /// `created_at_ms`; `None` = unbounded. Past the bound the artifact is
+    /// unreadable (see `retention`), but the row itself stays intact.
+    pub retention_ms: Option<u64>,
 }
 
 /// Durable authority-issued identity of one Artifact head endpoint.

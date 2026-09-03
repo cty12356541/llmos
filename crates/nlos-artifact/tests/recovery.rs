@@ -6,7 +6,7 @@ mod support;
 use std::fs;
 
 use nlos_artifact::{ArtifactError, ArtifactStore, ContentDigest};
-use support::{TestStoreDir, artifact_id, artifact_spec, bytes, put};
+use support::{READ_NOW_MS, TestStoreDir, artifact_id, artifact_spec, bytes, put};
 
 #[test]
 fn missing_blob_is_reported_and_get_fails_typed_with_hint() {
@@ -23,7 +23,7 @@ fn missing_blob_is_reported_and_get_fails_typed_with_hint() {
     fs::remove_file(directory.artifact_blob(digest)).expect("remove blob");
 
     let error = store
-        .get_revision(artifact_id(0x20), 1)
+        .get_revision(artifact_id(0x20), 1, READ_NOW_MS)
         .expect_err("missing blob must fail typed");
     match &error {
         ArtifactError::BlobMissing {
@@ -50,7 +50,7 @@ fn missing_blob_is_reported_and_get_fails_typed_with_hint() {
     assert!(report.orphan_blobs.is_empty());
     // recover reconciles but never fabricates bytes.
     assert!(matches!(
-        store.get_revision(artifact_id(0x20), 1),
+        store.get_revision(artifact_id(0x20), 1, READ_NOW_MS),
         Err(ArtifactError::BlobMissing { .. })
     ));
 }
@@ -76,7 +76,7 @@ fn torn_blob_fails_digest_verification_never_returns_wrong_bytes() {
     drop(file);
 
     let error = store
-        .get_revision(artifact_id(0x21), 1)
+        .get_revision(artifact_id(0x21), 1, READ_NOW_MS)
         .expect_err("torn blob must fail verification");
     match &error {
         ArtifactError::DigestMismatch {
@@ -130,7 +130,7 @@ fn orphan_tmp_files_are_cleaned_and_orphan_blobs_only_listed() {
     // The committed revision is unaffected.
     assert_eq!(
         store
-            .get_revision(artifact_id(0x22), 1)
+            .get_revision(artifact_id(0x22), 1, READ_NOW_MS)
             .expect("revision 1"),
         payload
     );
@@ -170,7 +170,7 @@ fn cache_eviction_never_touches_artifact_blobs() {
     );
     assert_eq!(
         store
-            .get_revision(artifact_id(0x23), 1)
+            .get_revision(artifact_id(0x23), 1, READ_NOW_MS)
             .expect("artifact revision"),
         shared
     );

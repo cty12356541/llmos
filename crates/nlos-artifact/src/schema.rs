@@ -271,6 +271,28 @@ pub(crate) fn migrate_v5(connection: &mut Connection) -> Result<(), ArtifactErro
     Ok(())
 }
 
+/// Adds the nullable per-artifact retention time upper bound
+/// (B-ARTIFACT-005 minimal prefix). `NULL` = unbounded; a value counts
+/// from the artifact's durable `created_at_ms`. Judged only on read and
+/// content-admission paths; the GC reference set and every other table
+/// are untouched.
+pub(crate) fn migrate_v6(connection: &mut Connection) -> Result<(), ArtifactError> {
+    // Defensive idempotence (migrate_v3 precedent): a column left by a
+    // foreign/dev database is adopted instead of re-added and failing.
+    let present: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('artifacts') WHERE name = 'retention_ms'",
+        [],
+        |row| row.get(0),
+    )?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    if present == 0 {
+        transaction.execute_batch("ALTER TABLE artifacts ADD COLUMN retention_ms INTEGER;")?;
+    }
+    transaction.pragma_update(None, "user_version", 6)?;
+    transaction.commit()?;
+    Ok(())
+}
+
 pub(crate) fn insert_artifact_head_endpoint_proof(
     transaction: &Transaction<'_>,
     artifact_id: ArtifactId,

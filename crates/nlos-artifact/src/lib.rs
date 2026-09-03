@@ -65,6 +65,22 @@
 //! triggered automatically. See the `gc` module for the conservative
 //! judgement rule and the crash-window semantics.
 //!
+//! # Retention policy (minimal prefix, B-ARTIFACT-005)
+//!
+//! [`ArtifactStore::set_retention`] stores a per-artifact time upper
+//! bound (`retention_ms`, durable, idempotent) counted from the
+//! artifact's durable creation timestamp. Past the bound the artifact is
+//! **expired**: byte reads and head polls fail closed with
+//! [`ArtifactError::RetentionExpired`], and fresh content admission
+//! (put/stage/publish) is refused. Expiry is *refusal only*: it never
+//! deletes anything and never enters the GC reference set, which still
+//! contains every committed revision row — the conservative "prefer
+//! retaining over wrongly deleting" direction of the GC prefix is
+//! untouched, and physical reclamation (a dedicated retention-GC) is
+//! registered as follow-up work. The metadata plane stays inspectable so
+//! operators can audit expired artifacts. Time is always caller-supplied;
+//! see the `retention` module for the full contract.
+//!
 //! # Scope and honesty boundaries
 //!
 //! - `DeploymentMode=LOCAL_SINGLE_NODE` only (`[ART-LOCAL-001]`): the local
@@ -73,8 +89,11 @@
 //!   can lift it behind a backend trait.
 //! - GC is an explicit conservative orphan sweep only
 //!   (`collect_orphan_blobs`): no automatic/scheduled trigger, no
-//!   retention/TTL policy, no cross-artifact or external reference
-//!   tracking. No encryption, provenance chains, or legal hold. Package
+//!   cross-artifact or external reference tracking. Retention is a
+//!   minimal read-visibility upper bound only (`set_retention`): no
+//!   automatic cleanup or retention-GC, no TTL renewal engine, no
+//!   per-revision bounds. No encryption, provenance chains, or legal
+//!   hold. Package
 //!   verification is a minimal prefix only: no installation/update
 //!   lifecycle, no full §23.2 manifest, no trust-root or signature-chain
 //!   policy (single signing principal), and no cross-process verification
@@ -91,6 +110,7 @@ mod package;
 mod publication;
 mod query;
 mod recover;
+mod retention;
 mod schema;
 mod store;
 
@@ -115,6 +135,7 @@ pub use package::{
     PackageVerificationReceipt, SignedPackage, VerifyPackageRequest, package_manifest_message,
 };
 pub use publication::staging_id_for;
+pub use retention::{RetentionRecord, SetRetentionDecision, SetRetentionRequest};
 pub use store::ArtifactStore;
 
 /// Typed errors of the artifact store. No `anyhow`; every failure mode a
@@ -143,6 +164,16 @@ pub enum ArtifactError {
     RevisionNotFound {
         artifact_id: ArtifactId,
         revision: u64,
+    },
+    /// The artifact is past its retention time upper bound
+    /// (`created_at_ms + retention_ms`): bytes and head state fail closed.
+    /// Nothing was deleted — the rows and blobs stay intact and the
+    /// metadata plane stays inspectable; physical reclamation of expired
+    /// artifacts is a separate explicit concern (see `retention`).
+    RetentionExpired {
+        artifact_id: ArtifactId,
+        /// The absolute deadline that was exceeded.
+        expires_at_ms: u64,
     },
     /// The idempotency key (or artifact identity) was reused with a
     /// different specification.
@@ -261,6 +292,14 @@ impl fmt::Display for ArtifactError {
             } => write!(
                 formatter,
                 "artifact {artifact_id:?} has no revision {revision}"
+            ),
+            Self::RetentionExpired {
+                artifact_id,
+                expires_at_ms,
+            } => write!(
+                formatter,
+                "artifact {artifact_id:?} is past its retention deadline \
+                 {expires_at_ms} ms; reads fail closed (no data was deleted)"
             ),
             Self::IdempotencyConflict => formatter.write_str(
                 "idempotency key or artifact identity reused for a different specification",

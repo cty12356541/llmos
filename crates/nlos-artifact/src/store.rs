@@ -16,7 +16,7 @@ use crate::model::{
 };
 use crate::query::{load_artifact_optional, load_revision_optional};
 
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 
 /// Filesystem layout under the store root.
 #[derive(Clone, Debug)]
@@ -125,23 +125,31 @@ impl ArtifactStore {
                 crate::schema::migrate_v3(&mut connection)?;
                 crate::schema::migrate_v4(&mut connection)?;
                 crate::schema::migrate_v5(&mut connection)?;
+                crate::schema::migrate_v6(&mut connection)?;
             }
             1 => {
                 crate::schema::migrate_v2(&mut connection)?;
                 crate::schema::migrate_v3(&mut connection)?;
                 crate::schema::migrate_v4(&mut connection)?;
                 crate::schema::migrate_v5(&mut connection)?;
+                crate::schema::migrate_v6(&mut connection)?;
             }
             2 => {
                 crate::schema::migrate_v3(&mut connection)?;
                 crate::schema::migrate_v4(&mut connection)?;
                 crate::schema::migrate_v5(&mut connection)?;
+                crate::schema::migrate_v6(&mut connection)?;
             }
             3 => {
                 crate::schema::migrate_v4(&mut connection)?;
                 crate::schema::migrate_v5(&mut connection)?;
+                crate::schema::migrate_v6(&mut connection)?;
             }
-            4 => crate::schema::migrate_v5(&mut connection)?,
+            4 => {
+                crate::schema::migrate_v5(&mut connection)?;
+                crate::schema::migrate_v6(&mut connection)?;
+            }
+            5 => crate::schema::migrate_v6(&mut connection)?,
             SCHEMA_VERSION => {}
             other => return Err(ArtifactError::SchemaVersionUnsupported(other)),
         }
@@ -199,6 +207,7 @@ impl ArtifactStore {
             head_revision: 0,
             head_digest: None,
             created_at_ms: spec.created_at_ms,
+            retention_ms: None,
         };
         crate::query::insert_artifact(&transaction, &record, spec.idempotency_key)?;
         crate::schema::insert_artifact_head_endpoint_proof(&transaction, record.artifact_id)?;
@@ -266,6 +275,11 @@ impl ArtifactStore {
             transaction.commit()?;
             return Ok(PutRevisionDecision::Replayed(slot.clone()));
         }
+        // Fresh content admission gate: an artifact past its retention
+        // bound at the request's own timestamp refuses new revisions, so
+        // the staging-side gate cannot be bypassed through this path.
+        // Replays above are durable facts and stay un-gated.
+        crate::retention::ensure_readable(&artifact, request.created_at_ms)?;
         if head != request.expected_head_revision {
             return Err(ArtifactError::HeadConflict {
                 expected: request.expected_head_revision,

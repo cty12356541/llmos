@@ -5,7 +5,7 @@
 mod support;
 
 use nlos_artifact::{ArtifactError, ArtifactStore, CreateArtifactDecision, PutRevisionDecision};
-use support::{TestStoreDir, artifact_id, artifact_spec, bytes, put};
+use support::{READ_NOW_MS, TestStoreDir, artifact_id, artifact_spec, bytes, put};
 
 #[test]
 fn create_put_resolve_get_roundtrip_with_digest_verification() {
@@ -22,7 +22,12 @@ fn create_put_resolve_get_roundtrip_with_digest_verification() {
     assert_eq!(record.artifact_id, artifact_id(0x01));
     assert_eq!(record.head_revision, 0);
     assert_eq!(record.head_digest, None);
-    assert_eq!(store.resolve_head(artifact_id(0x01)).expect("head"), None);
+    assert_eq!(
+        store
+            .resolve_head(artifact_id(0x01), READ_NOW_MS)
+            .expect("head"),
+        None
+    );
 
     let payload_v1 = bytes(0x11, 1024);
     let digest_v1 = nlos_artifact::ContentDigest::of_bytes(&payload_v1);
@@ -41,7 +46,7 @@ fn create_put_resolve_get_roundtrip_with_digest_verification() {
     assert!(directory.artifact_blob(digest_v1).is_file());
 
     let head = store
-        .resolve_head(artifact_id(0x01))
+        .resolve_head(artifact_id(0x01), READ_NOW_MS)
         .expect("resolve head")
         .expect("head exists after first put");
     assert_eq!(head.revision, 1);
@@ -49,7 +54,7 @@ fn create_put_resolve_get_roundtrip_with_digest_verification() {
 
     // Reads re-verify the digest against the content address.
     let fetched = store
-        .get_revision(artifact_id(0x01), 1)
+        .get_revision(artifact_id(0x01), 1, READ_NOW_MS)
         .expect("get revision 1");
     assert_eq!(fetched, payload_v1);
 
@@ -65,7 +70,7 @@ fn create_put_resolve_get_roundtrip_with_digest_verification() {
     assert_eq!(revision_v2.revision, 2);
     assert_eq!(
         store
-            .resolve_head(artifact_id(0x01))
+            .resolve_head(artifact_id(0x01), READ_NOW_MS)
             .expect("head")
             .expect("head"),
         nlos_artifact::HeadState {
@@ -93,7 +98,7 @@ fn create_put_resolve_get_roundtrip_with_digest_verification() {
     let reopened = ArtifactStore::open(directory.root()).expect("reopen");
     assert_eq!(
         reopened
-            .resolve_head(artifact_id(0x01))
+            .resolve_head(artifact_id(0x01), READ_NOW_MS)
             .expect("head after reopen")
             .expect("head"),
         nlos_artifact::HeadState {
@@ -103,13 +108,13 @@ fn create_put_resolve_get_roundtrip_with_digest_verification() {
     );
     assert_eq!(
         reopened
-            .get_revision(artifact_id(0x01), 1)
+            .get_revision(artifact_id(0x01), 1, READ_NOW_MS)
             .expect("old revision after reopen"),
         payload_v1
     );
     assert_eq!(
         reopened
-            .get_revision(artifact_id(0x01), 2)
+            .get_revision(artifact_id(0x01), 2, READ_NOW_MS)
             .expect("head revision after reopen"),
         payload_v2
     );
@@ -155,15 +160,15 @@ fn unknown_artifact_and_revision_are_typed_errors() {
     store.create_artifact(artifact_spec(0x03)).expect("create");
 
     assert!(matches!(
-        store.resolve_head(artifact_id(0x7f)),
+        store.resolve_head(artifact_id(0x7f), READ_NOW_MS),
         Err(ArtifactError::ArtifactNotFound(_))
     ));
     assert!(matches!(
-        store.get_revision(artifact_id(0x7f), 1),
+        store.get_revision(artifact_id(0x7f), 1, READ_NOW_MS),
         Err(ArtifactError::ArtifactNotFound(_))
     ));
     assert!(matches!(
-        store.get_revision(artifact_id(0x03), 9),
+        store.get_revision(artifact_id(0x03), 9, READ_NOW_MS),
         Err(ArtifactError::RevisionNotFound { revision: 9, .. })
     ));
     assert!(matches!(
@@ -191,7 +196,7 @@ fn durability_pragmas_are_wal_and_full() {
     let user_version: i64 = raw
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("read user_version");
-    assert_eq!(user_version, 5);
+    assert_eq!(user_version, 6);
 }
 
 #[test]

@@ -27,8 +27,8 @@ use nlos_artifact::{
 };
 use nlos_store_fault::{FaultCode, FaultMode};
 use support::{
-    TestStoreDir, artifact_id, artifact_spec, bytes, entry, manifest, put, sign_package,
-    test_identity,
+    READ_NOW_MS, TestStoreDir, artifact_id, artifact_spec, bytes, entry, manifest, put,
+    sign_package, test_identity,
 };
 
 mod support;
@@ -252,7 +252,12 @@ fn fault_io_error_during_metadata_commit_leaves_orphan_blob_no_revision() {
     // No half state: the blob is durable (phase 1), but no revision or head
     // may reference it (phase 2 never committed).
     assert!(directory.artifact_blob(digest).is_file());
-    assert_eq!(store.resolve_head(artifact_id(0x40)).expect("head"), None);
+    assert_eq!(
+        store
+            .resolve_head(artifact_id(0x40), READ_NOW_MS)
+            .expect("head"),
+        None
+    );
     assert!(
         store
             .list_revisions(artifact_id(0x40))
@@ -260,7 +265,7 @@ fn fault_io_error_during_metadata_commit_leaves_orphan_blob_no_revision() {
             .is_empty()
     );
     assert!(matches!(
-        store.get_revision(artifact_id(0x40), 1),
+        store.get_revision(artifact_id(0x40), 1, READ_NOW_MS),
         Err(ArtifactError::RevisionNotFound { .. })
     ));
     let report = store.recover().expect("recover");
@@ -275,7 +280,7 @@ fn fault_io_error_during_metadata_commit_leaves_orphan_blob_no_revision() {
     assert!(matches!(decision, PutRevisionDecision::Committed(_)));
     assert_eq!(
         store
-            .get_revision(artifact_id(0x40), 1)
+            .get_revision(artifact_id(0x40), 1, READ_NOW_MS)
             .expect("get after recovery"),
         payload
     );
@@ -325,7 +330,12 @@ fn fault_disk_full_during_metadata_commit_fails_closed() {
     assert!(nlos_store_fault::writes_observed() > 0);
     nlos_store_fault::disarm();
 
-    assert_eq!(store.resolve_head(artifact_id(0x41)).expect("head"), None);
+    assert_eq!(
+        store
+            .resolve_head(artifact_id(0x41), READ_NOW_MS)
+            .expect("head"),
+        None
+    );
     assert!(
         store
             .list_revisions(artifact_id(0x41))
@@ -365,7 +375,12 @@ fn fault_blob_write_failure_commits_no_metadata() {
         matches!(error, ArtifactError::Io(_)),
         "expected a typed I/O error, got {error}"
     );
-    assert_eq!(store.resolve_head(artifact_id(0x42)).expect("head"), None);
+    assert_eq!(
+        store
+            .resolve_head(artifact_id(0x42), READ_NOW_MS)
+            .expect("head"),
+        None
+    );
     assert!(
         store
             .list_revisions(artifact_id(0x42))
@@ -410,7 +425,9 @@ fn fault_power_loss_phantom_revision_invisible_after_reopen() {
 
     let recovered = ArtifactStore::open(directory.root()).expect("reopen after power loss");
     assert_eq!(
-        recovered.resolve_head(artifact_id(0x43)).expect("head"),
+        recovered
+            .resolve_head(artifact_id(0x43), READ_NOW_MS)
+            .expect("head"),
         None,
         "silently dropped metadata must not fabricate a head"
     );
@@ -421,7 +438,7 @@ fn fault_power_loss_phantom_revision_invisible_after_reopen() {
             .is_empty()
     );
     assert!(matches!(
-        recovered.get_revision(artifact_id(0x43), 1),
+        recovered.get_revision(artifact_id(0x43), 1, READ_NOW_MS),
         Err(ArtifactError::RevisionNotFound { .. })
     ));
     let report = recovered.recover().expect("recover");
@@ -438,7 +455,7 @@ fn fault_power_loss_phantom_revision_invisible_after_reopen() {
     let verified = ArtifactStore::open(directory.root()).expect("reopen after redo");
     assert_eq!(
         verified
-            .get_revision(artifact_id(0x43), 1)
+            .get_revision(artifact_id(0x43), 1, READ_NOW_MS)
             .expect("redone revision"),
         payload
     );
@@ -461,14 +478,14 @@ fn fault_kill9_after_commit_fully_usable() {
 
     let store = ArtifactStore::open(directory.root()).expect("reopen after kill");
     let head = store
-        .resolve_head(artifact_id(0x30))
+        .resolve_head(artifact_id(0x30), READ_NOW_MS)
         .expect("resolve")
         .expect("head");
     assert_eq!(head.revision, 1);
     assert_eq!(head.digest, ContentDigest::of_bytes(&bytes(0xc1, 512)));
     assert_eq!(
         store
-            .get_revision(artifact_id(0x30), 1)
+            .get_revision(artifact_id(0x30), 1, READ_NOW_MS)
             .expect("get committed revision"),
         bytes(0xc1, 512)
     );
@@ -489,7 +506,12 @@ fn fault_kill9_mid_metadata_transaction_rolls_back() {
     kill_and_reap(&mut child);
 
     let store = ArtifactStore::open(directory.root()).expect("reopen after kill");
-    assert_eq!(store.resolve_head(artifact_id(0x31)).expect("head"), None);
+    assert_eq!(
+        store
+            .resolve_head(artifact_id(0x31), READ_NOW_MS)
+            .expect("head"),
+        None
+    );
     assert!(
         store
             .list_revisions(artifact_id(0x31))
@@ -525,7 +547,12 @@ fn fault_kill9_between_rename_and_metadata_commit_lists_orphan_blob() {
 
     let orphan_digest = ContentDigest::of_bytes(&bytes(0xc2, 512));
     let store = ArtifactStore::open(directory.root()).expect("reopen after kill");
-    assert_eq!(store.resolve_head(artifact_id(0x32)).expect("head"), None);
+    assert_eq!(
+        store
+            .resolve_head(artifact_id(0x32), READ_NOW_MS)
+            .expect("head"),
+        None
+    );
     assert!(
         store
             .list_revisions(artifact_id(0x32))
@@ -554,7 +581,12 @@ fn fault_kill9_before_rename_cleans_tmp_orphan() {
     kill_and_reap(&mut child);
 
     let store = ArtifactStore::open(directory.root()).expect("reopen after kill");
-    assert_eq!(store.resolve_head(artifact_id(0x33)).expect("head"), None);
+    assert_eq!(
+        store
+            .resolve_head(artifact_id(0x33), READ_NOW_MS)
+            .expect("head"),
+        None
+    );
     let report = store.recover().expect("recover");
     assert_eq!(report.removed_tmp_files, 1);
     assert_eq!(

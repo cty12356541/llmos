@@ -9,7 +9,7 @@ use nlos_artifact::{
 use nlos_types::{CommitPermitId, IdempotencyKey, TaskId};
 use rusqlite::Connection;
 
-use support::{TestStoreDir, artifact_id, artifact_spec, bytes};
+use support::{READ_NOW_MS, TestStoreDir, artifact_id, artifact_spec, bytes};
 
 fn stage_request(
     seed: u8,
@@ -54,7 +54,9 @@ fn staging_is_durable_but_does_not_advance_canonical_head() {
     assert_eq!(staged.state, StagedRevisionState::Staged);
     assert_eq!(staged.target_revision, 1);
     assert_eq!(
-        store.resolve_head(artifact.artifact_id).expect("head"),
+        store
+            .resolve_head(artifact.artifact_id, READ_NOW_MS)
+            .expect("head"),
         None
     );
     assert!(matches!(
@@ -115,7 +117,12 @@ fn publication_atomically_advances_head_and_replays_immutable_receipt() {
         store.publish_staged_revision(rebound),
         Err(ArtifactError::PublicationBindingMismatch)
     ));
-    assert_eq!(store.resolve_head(artifact.artifact_id).unwrap(), None);
+    assert_eq!(
+        store
+            .resolve_head(artifact.artifact_id, READ_NOW_MS)
+            .unwrap(),
+        None
+    );
 
     let first = store
         .publish_staged_revision(publish_request(&staged))
@@ -126,7 +133,9 @@ fn publication_atomically_advances_head_and_replays_immutable_receipt() {
     assert_eq!(receipt.prior_head_digest, None);
     assert_eq!(receipt.new_head_revision, 1);
     assert_eq!(
-        store.get_revision(artifact.artifact_id, 1).unwrap(),
+        store
+            .get_revision(artifact.artifact_id, 1, READ_NOW_MS)
+            .unwrap(),
         payload
     );
     assert_eq!(
@@ -260,7 +269,10 @@ fn missing_staged_blob_is_visible_and_blocks_publication() {
         store.publish_staged_revision(publish_request(&staged)),
         Err(ArtifactError::StagedBlobMissing { .. })
     ));
-    assert_eq!(store.resolve_head(artifact_id(6)).unwrap(), None);
+    assert_eq!(
+        store.resolve_head(artifact_id(6), READ_NOW_MS).unwrap(),
+        None
+    );
 }
 
 #[test]
@@ -332,7 +344,7 @@ fn v1_store_migrates_to_v2_without_losing_artifacts() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 5);
+    assert_eq!(version, 6);
     assert_eq!(
         connection
             .query_row(

@@ -13,7 +13,7 @@
 mod support;
 
 use nlos_artifact::{ArtifactError, ArtifactStore, PutRevisionDecision};
-use support::{TestStoreDir, artifact_id, artifact_spec, bytes, put};
+use support::{READ_NOW_MS, TestStoreDir, artifact_id, artifact_spec, bytes, put};
 
 #[test]
 fn same_revision_same_bytes_replays_idempotently() {
@@ -40,7 +40,7 @@ fn same_revision_same_bytes_replays_idempotently() {
     }
     assert_eq!(
         store
-            .resolve_head(artifact_id(0x10))
+            .resolve_head(artifact_id(0x10), READ_NOW_MS)
             .expect("head")
             .expect("head")
             .revision,
@@ -80,13 +80,13 @@ fn same_revision_different_bytes_fails_closed() {
     // The immutable revision is untouched.
     assert_eq!(
         store
-            .get_revision(artifact_id(0x11), 1)
+            .get_revision(artifact_id(0x11), 1, READ_NOW_MS)
             .expect("revision 1"),
         original
     );
     assert_eq!(
         store
-            .resolve_head(artifact_id(0x11))
+            .resolve_head(artifact_id(0x11), READ_NOW_MS)
             .expect("head")
             .expect("head")
             .revision,
@@ -157,12 +157,12 @@ fn head_cas_two_competing_puts_exactly_one_wins() {
     // re-resolves and can then advance the head legitimately.
     assert_eq!(
         store_b
-            .get_revision(artifact_id(0x12), 1)
+            .get_revision(artifact_id(0x12), 1, READ_NOW_MS)
             .expect("revision 1"),
         bytes(0x51, 256)
     );
     let head = store_b
-        .resolve_head(artifact_id(0x12))
+        .resolve_head(artifact_id(0x12), READ_NOW_MS)
         .expect("resolve")
         .expect("head");
     assert_eq!(head.revision, 1);
@@ -175,7 +175,7 @@ fn head_cas_two_competing_puts_exactly_one_wins() {
     ));
     assert_eq!(
         store_a
-            .resolve_head(artifact_id(0x12))
+            .resolve_head(artifact_id(0x12), READ_NOW_MS)
             .expect("resolve")
             .expect("head")
             .revision,
