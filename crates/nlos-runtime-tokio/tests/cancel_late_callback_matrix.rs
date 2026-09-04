@@ -36,12 +36,10 @@
 //!    no false wakeup, state stays `Cancelled`, durable row stays
 //!    consumable.
 //!
-//! Structured join/detach: no such API exists on the `nlos_runtime::
-//! RuntimeAdapter` trait or `TokioRuntimeAdapter` (surface is
-//! `spawn_fiber`/`cancel_scope`/`inspect`/`activation_usage`); per the
-//! ROAD-B-006 test plan the gap is registered in
-//! `docs/evidence/stage-b/b-runtime-002-fiber-scale.md` instead of inventing
-//! an API.
+//! Structured join/detach: [`RuntimeAdapter::join_fiber`] /
+//! [`RuntimeAdapter::detach_fiber`] on [`TokioRuntimeAdapter`]; see
+//! `tests/join_detach.rs` and
+//! `docs/evidence/stage-b/b-runtime-002-fiber-scale.md` §6.5.
 
 use std::future::pending;
 use std::path::{Path, PathBuf};

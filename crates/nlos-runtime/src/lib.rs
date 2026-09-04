@@ -101,6 +101,12 @@ impl Error for RuntimeError {}
 pub trait RuntimeAdapter: Send + Sync {
     /// Admits and schedules a new execution fiber.
     ///
+    /// Success returns a [`FiberHandle`] immediately. The fiber runs
+    /// concurrently without requiring a join (implicit detach). Callers that
+    /// need to observe completion use [`Self::join_fiber`]; callers that
+    /// explicitly relinquish join obligation may call [`Self::detach_fiber`]
+    /// for auditability (it does not change scheduling).
+    ///
     /// # Errors
     ///
     /// Returns [`RuntimeError`] when identity/generation validation fails, the
@@ -110,6 +116,33 @@ pub trait RuntimeAdapter: Send + Sync {
         spec: FiberSpec,
         future: FiberFuture,
     ) -> Result<FiberHandle, RuntimeError>;
+
+    /// Waits until the fiber generation reaches a terminal state and returns
+    /// its [`FiberExit`].
+    ///
+    /// Joining an already-terminal fiber is idempotent and returns the stored
+    /// exit without blocking. A stale handle generation MUST be rejected with
+    /// [`RuntimeError::InvalidGeneration`]. This contract MUST NOT expose an
+    /// executor-local task handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RuntimeError::InvalidGeneration`] when the handle is stale,
+    /// or an availability error when the runtime cannot accept the join.
+    fn join_fiber(&self, handle: FiberHandle) -> Result<FiberExit, RuntimeError>;
+
+    /// Documents explicit relinquishment of join obligation for a live or
+    /// terminal fiber generation.
+    ///
+    /// [`Self::spawn_fiber`] is already implicitly detached; this method
+    /// validates the handle and records the intent for structured-concurrency
+    /// audits without changing scheduling or admission.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RuntimeError::InvalidGeneration`] when the handle is stale,
+    /// or an availability error when the runtime cannot answer.
+    fn detach_fiber(&self, handle: FiberHandle) -> Result<(), RuntimeError>;
 
     /// Cancels a structured cancellation scope.
     ///

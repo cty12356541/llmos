@@ -70,7 +70,7 @@ cargo fmt -p nlos-runtime-tokio -- --check                            → 通过
 - **单平台实测**：数字均为 macOS arm64（APFS fsync 特性敏感，register_settle 主导项）；Linux/Windows 数字待夜间 scale-probe CI job（`--include-ignored`，ubuntu）补充。
 - **MSRV 双工具链未本地执行**：本地 1.97 toolchain 安装损坏（`librustc_driver` dylib 缺失 → 其 rustfmt/check 均不可用），fmt 双工具链与 MSRV check 以 CI（stable/Linux fmt 门 + ubuntu MSRV job）为准，如实标注。
 - **in-memory 注册表线性扫描**：`deliver`（逐 report 行线性 find）与 fiber 终态 purge（`retain` 全表）在 100K 挂起下呈 O(n) 每事件，wake 阶段 ~4.3s 可接受但属已登记的规模特征，非本前片修改对象。
-- **未做（ROAD-B-006 其余退出门，登记后续）**：~~cancel/late-callback 矩阵~~（功能级矩阵已落地，见 §6；100K 规模级 cancel 探针仍因 O(n²) 终态 purge 未纳入）、structured join/detach（API 不存在，如实登记缺口，见 §6.4）、Process crash propagation、分维 Activation metering、真实阻塞 I/O（本片为 durable wait 挂起路径）；100K `cancel_scope` 收尾因 O(n²) 终态 purge 未纳入探针， teardown 走 drop。
+- **未做（ROAD-B-006 其余退出门，登记后续）**：~~cancel/late-callback 矩阵~~（功能级矩阵已落地，见 §6；100K 规模级 cancel 探针仍因 O(n²) 终态 purge 未纳入）、~~structured join/detach（API 不存在，如实登记缺口，见 §6.4）~~（合同层最小前缀已落地，见 §6.5）、Process crash propagation、分维 Activation metering、真实阻塞 I/O（本片为 durable wait 挂起路径）；100K `cancel_scope` 收尾因 O(n²) 终态 purge 未纳入探针， teardown 走 drop。
 - probe 为 `#[ignore]`，常规 CI（push/PR）不运行；夜间 scale-probe job 覆盖。
 
 ## 6. cancel/late-callback 功能矩阵（2026-09-02 追加，勾销 §5 中 cancel/late-callback 项的功能级部分）
@@ -111,6 +111,39 @@ clippy 双工具链 `-D warnings`：**本地三次运行均被并行车道在途
 - **勾销**：§5「cancel/late-callback 矩阵」功能级部分 → 本 §6 落地（6/6 绿）。100K 规模级 cancel 探针（`cancel_scope` 收尾）仍随 O(n²) 终态 purge 一并保留于 §5 已登记限制。
 - **如实保留（ROAD-B-006 剩余，整体不达成）**：阻塞 I/O 负向证明（不线性占用宿主线程的负向证据）、Process crash propagation、分维 Activation metering。
 
-### 6.4 structured join/detach：API 缺口登记（不发明）
+### 6.4 structured join/detach：API 缺口登记（已由 §6.5 勾销）
 
-勘察结论：`nlos_runtime::RuntimeAdapter` trait 表面为 `spawn_fiber` / `cancel_scope` / `inspect` / `activation_usage`，`TokioRuntimeAdapter` 及全仓（grep `join|detach` 于 runtime 合同两侧）**不存在任何 structured join/detach API**。按本车道纪律不发明 API、不用 `tokio::JoinHandle` 冒充（adapter 内部 spawn 的 task handle 未外泄，语义上即隐式 detach）。缺口维持登记：structured join/detach 属 ROAD-B-006 退出门的**合同层缺口**（需先在 nlos-runtime 合同层定义），非测试面缺口；本次仅能证明 detach 是当前唯一隐式语义。
+勘察结论（2026-09-02）：`nlos_runtime::RuntimeAdapter` trait 表面为 `spawn_fiber` / `cancel_scope` / `inspect` / `activation_usage`，**不存在 structured join/detach API**。2026-09-04 W11-J 在合同层落地最小前缀，见 §6.5。
+
+### 6.5 structured join/detach 最小前缀（2026-09-04 追加，W11-J / ROAD-B-006）
+
+- Owner：`nlos-runtime`（合同）+ `nlos-runtime-tokio`（`src/lib.rs` + `tests/join_detach.rs`）
+- 设计依据：v0.5 §28.2 ROAD-B-006「structured join/detach」；`[FIBER-CANCEL-001]` 父 scope 结束前须 join/cancel/显式 detach；不得外泄 `tokio::JoinHandle`。
+- **合同层**：`RuntimeAdapter` 新增 `join_fiber(handle) -> Result<FiberExit, RuntimeError>` 与 `detach_fiber(handle) -> Result<(), RuntimeError>`。`spawn_fiber` 文档化**隐式 detach**（成功即并发运行，不强制 join）；`detach_fiber` 为显式 relinquish（校验 handle，不改变调度/admission）。
+- **Tokio 实现**：`FiberRecord` 以 `Condvar` + `TerminalOutcome` 在终态转换时发布 `FiberExit`（与 cancel biased-select、终态唯一、wait 注册表 purge 同 `run_fiber` 临界区）；`join_fiber` 代次围栏经 `record_for`；已终态 join 幂等；内部仍用 `Handle::spawn`，不外泄 executor handle。
+- **新增测试**（`join_detach.rs`，6 项）：
+  1. `join_waits_for_fiber_completion` — join 阻塞至 fiber 完成并返回 `FiberExit::Completed`。
+  2. `stale_generation_join_is_rejected` — 过期代次 → `InvalidGeneration`。
+  3. `join_on_terminal_fiber_is_idempotent` — 终态后重复 join 返回同一 exit、不阻塞。
+  4. `implicit_detach_recovers_admission_without_join` — 不调用 join，fiber 终态后 admission 槽回收（`max_live_fibers=1` 可再 spawn）。
+  5. `join_returns_cancelled_after_scope_cancel` — cancel 竞态下 join 返回 `Cancelled`、状态唯一。
+  6. `explicit_detach_is_a_noop_that_validates_handle` — 显式 detach 校验 handle；过期代次拒绝。
+
+#### 6.5.1 验证门实测
+
+```text
+cargo test -p nlos-runtime-tokio --test join_detach
+  → 6 passed / 0 failed（2026-09-04 W12-J）
+cargo test -p nlos-runtime-tokio
+  → 70 passed / 0 failed / 3 ignored（13 个 test target 全绿；64 既有 + 6 join_detach；
+    ignored = durable_wait_scale 2 项 + scale.rs 100K 1 项）
+cargo clippy -p nlos-runtime -p nlos-runtime-tokio --all-targets -- -D warnings
+  → exit 0（stable，2026-09-04 W12-J）
+cargo fmt -p nlos-runtime -p nlos-runtime-tokio -- --check
+  → 通过（stable，2026-09-04 W12-J）
+```
+
+#### 6.5.2 缺口更新
+
+- **勾销**：§6.4 合同层缺口 → 本 §6.5 最小前缀（join + 显式 detach + 隐式 detach 文档化）。
+- **如实保留（ROAD-B-006 剩余，Claim 维持 PARTIAL_PASS）**：Process crash propagation、分维 Activation metering、阻塞 I/O 负向证明、100K 规模级 cancel 探针；未声称 ROAD-B-006 整体达成。

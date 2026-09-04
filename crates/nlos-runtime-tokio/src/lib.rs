@@ -3,12 +3,13 @@
 use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::Instant;
 
 use futures_util::FutureExt;
 use nlos_runtime::{
-    ActivationUsage, FiberFuture, FiberHandle, FiberSpec, FiberState, RuntimeAdapter, RuntimeError,
+    ActivationUsage, FiberExit, FiberFuture, FiberHandle, FiberSpec, FiberState, RuntimeAdapter,
+    RuntimeError,
 };
 use nlos_types::{CancellationScopeId, ExecutionFiberId, Generation};
 use tokio::runtime::Handle;
@@ -74,12 +75,19 @@ impl CancellationScope {
     }
 }
 
+enum TerminalOutcome {
+    Pending,
+    Finished(FiberExit),
+}
+
 struct FiberRecord {
     generation: Generation,
     scope: Arc<CancellationScope>,
     state: Mutex<FiberState>,
     usage: Mutex<ActivationUsage>,
     accepted_at: Instant,
+    terminal: Mutex<TerminalOutcome>,
+    terminal_notify: Condvar,
 }
 
 impl FiberRecord {
@@ -90,6 +98,30 @@ impl FiberRecord {
             state: Mutex::new(FiberState::Ready),
             usage: Mutex::new(ActivationUsage::default()),
             accepted_at: Instant::now(),
+            terminal: Mutex::new(TerminalOutcome::Pending),
+            terminal_notify: Condvar::new(),
+        }
+    }
+
+    fn finish(&self, exit: FiberExit) {
+        let mut terminal = lock_unpoisoned(&self.terminal);
+        if matches!(*terminal, TerminalOutcome::Pending) {
+            *terminal = TerminalOutcome::Finished(exit);
+            self.terminal_notify.notify_all();
+        }
+    }
+
+    fn join(&self) -> FiberExit {
+        let mut terminal = lock_unpoisoned(&self.terminal);
+        while let TerminalOutcome::Pending = *terminal {
+            terminal = self
+                .terminal_notify
+                .wait(terminal)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        match *terminal {
+            TerminalOutcome::Finished(exit) => exit,
+            TerminalOutcome::Pending => unreachable!("terminal wait returned while still pending"),
         }
     }
 
@@ -242,6 +274,9 @@ impl RuntimeAdapter for TokioRuntimeAdapter {
             }
             fibers.insert(spec.fiber_id, Arc::clone(&record));
         }
+        // Admission succeeded: the generation is live from the caller's view
+        // even before the executor polls the spawned task body.
+        record.set_state(FiberState::Running);
 
         let handle = FiberHandle {
             fiber_id: spec.fiber_id,
@@ -281,6 +316,16 @@ impl RuntimeAdapter for TokioRuntimeAdapter {
         let record = self.record_for(handle)?;
         let usage = *lock_unpoisoned(&record.usage);
         Ok(usage)
+    }
+
+    fn join_fiber(&self, handle: FiberHandle) -> Result<FiberExit, RuntimeError> {
+        let record = self.record_for(handle)?;
+        Ok(record.join())
+    }
+
+    fn detach_fiber(&self, handle: FiberHandle) -> Result<(), RuntimeError> {
+        let _record = self.record_for(handle)?;
+        Ok(())
     }
 }
 
@@ -330,8 +375,24 @@ async fn run_fiber(
     let mut waits = lock_unpoisoned(&inner.waits);
     let mut channel_waits = lock_unpoisoned(&inner.channel_waits);
     record.set_state(state);
+    record.finish(fiber_exit_from_state(state));
     waits.retain(|key, _entry| !key.for_fiber(spec.fiber_id, spec.fiber_generation));
     channel_waits.retain(|key, _entry| !key.for_fiber(spec.fiber_id, spec.fiber_generation));
+}
+
+fn fiber_exit_from_state(state: FiberState) -> FiberExit {
+    match state {
+        FiberState::Completed => FiberExit::Completed,
+        FiberState::Failed => FiberExit::Failed,
+        FiberState::Cancelled => FiberExit::Cancelled,
+        other => {
+            debug_assert!(
+                false,
+                "fiber_exit_from_state called with non-terminal state: {other:?}"
+            );
+            FiberExit::Failed
+        }
+    }
 }
 
 const fn terminal_state(exit: nlos_runtime::FiberExit) -> FiberState {
