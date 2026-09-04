@@ -9,6 +9,7 @@ mod declassification;
 mod model;
 mod schema;
 mod spec;
+mod trust_view;
 mod typed;
 
 use std::error::Error;
@@ -51,9 +52,10 @@ pub use model::{
     RetractionRecord, SemanticAdmissionEndpointProof, SemanticEventRecord, SemanticOutboxRecord,
     SemanticPayloadIdentity, SemanticPublicationDecision, SemanticPublicationReceipt,
     SettlementMode, SettlementTimeoutAction, SpecExtension, StoreSigner, StoreSignerError,
-    TaintFlags, TypedSemanticEvent, UnsignedAssertionEvent, UnsignedJudgmentEvent,
-    UnsignedRetractionEvent, UnsignedSpecEvent, UnsignedVerificationEvent, VerificationOutcome,
-    VerificationTarget,
+    TaintFlags, TrustViewJudgmentFact, TrustViewJudgmentRole, TrustViewSnapshot,
+    TrustViewVerificationFact, TrustViewVerificationStatus, TypedSemanticEvent,
+    UnsignedAssertionEvent, UnsignedJudgmentEvent, UnsignedRetractionEvent, UnsignedSpecEvent,
+    UnsignedVerificationEvent, VerificationOutcome, VerificationTarget,
 };
 pub use spec::{
     criterion_id, decode_intent_spec_body, encode_intent_spec_body, hard_criteria_digest,
@@ -929,6 +931,28 @@ impl SemanticAuthority {
     ) -> Result<DeclassificationReceipt, SemanticAuthorityError> {
         let connection = self.lock()?;
         declassification::inspect_declassification_receipt(&connection, receipt_id)
+    }
+
+    /// Derives a read-only Trust View snapshot for one committed event.
+    ///
+    /// Taint/labels come from the durable `AdmissionReceipt`; verification and
+    /// judgment facts are collected from committed typed events. Lineage parents
+    /// must remain admitted; otherwise the call fails closed with
+    /// `DanglingLineage`.
+    ///
+    /// This is a minimal owner-local prefix: no `TrustPolicy`, `SemanticCheckpoint`,
+    /// Gate aggregation, or multi-Cell vector checkpoint is applied.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EventNotFound` for unknown events, `DanglingLineage` when a
+    /// lineage parent is no longer admitted, or storage/corrupt-record errors.
+    pub fn inspect_trust_view(
+        &self,
+        event_id: SemanticEventId,
+    ) -> Result<TrustViewSnapshot, SemanticAuthorityError> {
+        let connection = self.lock()?;
+        trust_view::inspect_trust_view(&connection, event_id)
     }
 
     /// Shared admission core for the Judgment/Verification/Retraction typed

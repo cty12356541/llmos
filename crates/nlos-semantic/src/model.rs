@@ -705,6 +705,59 @@ impl IssueDeclassificationDecision {
     }
 }
 
+/// Derived verification disposition for one event (`[SEM-VERIFY-002]`).
+///
+/// This is a read-path view state; it MUST NOT be written as a `SemanticEvent`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TrustViewVerificationStatus {
+    Unverified,
+    Pass,
+    Fail,
+    Inconclusive,
+    Error,
+}
+
+/// One committed `VerificationEvent` whose Event target references the subject.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TrustViewVerificationFact {
+    pub verification_event_id: SemanticEventId,
+    pub log_seq: u64,
+    pub outcome: VerificationOutcome,
+    pub admitted_at_ms: u64,
+}
+
+/// One committed `JudgmentEvent` where the subject is a source or target endpoint.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TrustViewJudgmentFact {
+    pub judgment_event_id: SemanticEventId,
+    pub log_seq: u64,
+    pub relation: JudgmentRelation,
+    pub counterpart_event_id: SemanticEventId,
+    pub role: TrustViewJudgmentRole,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TrustViewJudgmentRole {
+    Source,
+    Target,
+}
+
+/// Owner-local Trust View snapshot for one committed event.
+///
+/// This is a minimal read-only prefix: it derives taint/labels and verification
+/// facts from durable admission rows without `TrustPolicy`, `SemanticCheckpoint`, or
+/// Gate aggregation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TrustViewSnapshot {
+    pub event_id: SemanticEventId,
+    pub effective_taint: TaintFlags,
+    pub declassification_receipt_id: Option<ReceiptId>,
+    pub verification_status: TrustViewVerificationStatus,
+    pub verification_facts: Vec<TrustViewVerificationFact>,
+    pub judgment_facts: Vec<TrustViewJudgmentFact>,
+    pub retraction: Option<RetractionRecord>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AppendDecision {
     Admitted(AdmissionReceipt),
