@@ -1,7 +1,7 @@
 # B-RESOURCE-006：Owner 侧 Resource cost-receipt 聚合回读
 
 - 状态：`PARTIAL_PASS`
-- 日期：2026-08-24（增量验收，Attempt `RESOURCE-COST-EVIDENCE-01`）
+- 日期：2026-08-24（增量验收，Attempt `RESOURCE-COST-EVIDENCE-01`）；2026-09-05（Attempt `W13-R`，fault matrix 最小前缀）
 - 范围：单节点、单一整数 credit 的 strict reference profile；为**已 FINALIZED** 的 Reservation 提供 owner-derived 只读聚合 `ResourceCostReceipt`（activation + 全部有序 consumption + finalization receipts）。这是 Resource owner 侧的局部安全门，不是 TaskAuthority 消费接线、跨 authority 事务、endpoint 签名效应证明或统一 TaskWriteSet。
 
 ## 1. 结论
@@ -22,16 +22,29 @@
 - `cargo test -p nlos-resource --test cost_receipt`：2 项通过——
   - `cost_receipt_is_owner_derived_and_replays_after_restart`：完整生命周期（driver/account 1000/quote upper_bound 100/reserve/activate/consume sequence 1 cumulative 37/finalize final_seq 2 final_usage 37 → refund 63）；聚合全字段 owner 断言（reservation/account/quote/call/operation/upper_bound、activation 逐位相等、consumptions 长度 1 且 sequence 1 usage 37、finalization 逐位相等、`ReservationState::Finalized`）；关闭并重开 authority 后 `inspect_cost_receipt` 返回**逐字节相等**的聚合（"owner aggregate must replay exactly after restart"），refund 63 保持。
   - `cost_receipt_requires_terminal_owner_state`：RESERVED（非 FINALIZED）Reservation → `Err(ReservationNotActive)` fail-closed。
-- `cargo test -p nlos-resource --quiet`：**25 项全过、0 失败**（unit 0；`activation_consume_finalize_restart` 1；`cost_receipt` 2；`finalize_fault_injection` 7；`finalize_refund` 6；`resource_authority` 9；doc 0）。
-- `cargo clippy -p nlos-resource --all-targets --all-features -- -D warnings`：通过（0 warning）。
-- `cargo fmt --all -- --check`：通过。
-- 本地 macOS/arm64；基线 HEAD `6b7285e`；候选为工作区未提交变更（`crates/nlos-resource/src/lib.rs` +125 行、新增 `crates/nlos-resource/tests/cost_receipt.rs`）。本 attempt 只写本 Evidence 文件，不提交、不更新进度表；提交与 `stage-b-progress.md` 更新由后续单一 integrator 负责。本 attempt 无 CI 结果。
+- `cargo test -p nlos-resource --test cost_receipt_fault_injection`（Attempt `W13-R`，2026-09-05）：**4 项全过、0 失败**——activation→consume→finalize 既有写路径在 kill-window 故障下 durable prefix 收敛，且 `inspect_cost_receipt` 逐字节一致；**零 src 改动、未发现生产缺陷**。
+- `cargo test -p nlos-resource --quiet`：**29 项全过、0 失败**（unit 0；`activation_consume_finalize_restart` 1；`cost_receipt` 2；`cost_receipt_fault_injection` 4；`finalize_fault_injection` 7；`finalize_refund` 6；`resource_authority` 9；doc 0）。
+- `cargo clippy -p nlos-resource --all-targets -- -D warnings`：通过（0 warning）。
+- `cargo fmt -p nlos-resource --check`：通过。
+- 本地 macOS/arm64；基线 HEAD `544ca72`（Attempt `W13-R`）；写集 `crates/nlos-resource/tests/cost_receipt_fault_injection.rs`（新增）、`docs/evidence/stage-b/b-resource-006-cost-receipt-aggregate.md`（§fault matrix）；无 schema/src 变更。
 
-## 4. 明确限制
+## 4. Fault matrix（Attempt `W13-R`，最小前缀）
+
+Harness 对齐 `finalize_fault_injection.rs` 与 Task 桥接矩阵（`resource_bridge_fault_injection.rs`）：`nlos-store-fault` VFS、`FAULT_LOCK` 进程级串行、typed error-chain 断言、raw 表计数、`PRAGMA integrity_check`。故障注入指向 finalize 结算写路径；`inspect_cost_receipt` 为收敛判据（非独立写路径）。
+
+| 行 | 窗口 | 断言 |
+|---|---|---|
+| W1 | pre-commit IOERR on finalize | `finalize_reservation` typed `Sqlite` fail-closed（链含 i/o/ioerr）；无 finalize receipt 行、reservation `ACTIVE`；`inspect_cost_receipt` → `ReservationNotActive`；disarm 后 redo → aggregate 逐字节持久，重启不变 |
+| W2 | pre-commit ENOSPC on finalize | 同 W1（链含 full） |
+| W3 | `PowerLossAfter { 0 }` at finalize commit boundary | 静默丢写：幻影结算不可见于 aggregate（`ReservationNotActive`、0 finalize receipt 行）；redo 后 aggregate 逐字节持久且 deterministic receipt id 复用 |
+| W4 | finalize replay storm（3+1 次重放 + reopen） | 每次 `Replayed` 且与首次 finalize receipt 逐位相等；`inspect_cost_receipt` 每次 byte-equal；`reservation_finalize_receipts` 恰好 1 行 |
+
+**Crash semantics disclaimer**（与既有矩阵一致）：kill-9 模拟进程崩溃而非整机掉电；内核已接受但磁盘未见的写由 `PowerLossAfter` 与 WAL 截断覆盖。本 attempt 最小前缀不含 kill-9 / torn-WAL 行（已由 B-RESOURCE-005 `finalize_fault_injection` 覆盖写路径；W13-R 仅补 aggregate 收敛判据）。
+
+## 5. 明确限制
 
 - **Owner-side only**：`ResourceCostReceipt` 尚未被 TaskAuthority/`TaskCommitReceipt` 消费；本证据不声称跨 authority resource/cost receipt 事务、跨 authority 原子提交或统一 TaskWriteSet（complete TaskWriteSet 仍未完成）。
 - effect-closed proof digest 仍为 caller-asserted opaque 摘要（沿 B-RESOURCE-005 限制）；无 endpoint/enforcement-gateway 签名的效应证明。
-- 聚合无专属故障注入矩阵：`inspect_cost_receipt` 为纯读路径，F1–F6 只覆盖 finalize 表组写入；未验证真实断电（power-loss）下的聚合读，kill-9/掉电模拟不属本 attempt。
 - 聚合不重读账户行：`upper_bound − final_usage = refund_credit` 守恒由 finalize 同事务双重记账（B-RESOURCE-005）与聚合内 receipt 字段承载，`available_credit` 数值不在聚合输出中复核。
 - 非 FINALIZED 一律复用 `ReservationNotActive` typed 拒绝（无专用 NotFinalized 错误变体）；QUARANTINED→FINALIZED reconciliation 后的聚合路径无专属测试。
 - 单机 strict reference profile：非多维资源、无真实 Driver enforcement；无本 attempt CI 结果，不得据此外推 DONE 或 H4+。
