@@ -50,6 +50,28 @@ cargo fmt -- -p nlos-identity --check
 - rotation 是 trusted local TCB API；未接认证 session、attestation、外部 enrollment 或 HSM/Keychain private-key custody；
 - 未实现 rotation 授权签名、多用途 key 协商、grace-period 双签或 algorithm rollover；
 - 未实现 post-rotation capability-command 旧 key 矩阵（capability 侧按 principal 解析 current binding，行为与 semantic 一致，未在本 Evidence 单独扩测）；
-- 未执行 kill-9、ENOSPC、VFS/torn-write 或三平台 CI。
+- ~~未执行 kill-9、ENOSPC、VFS/torn-write 或三平台 CI~~ **kill-window 故障矩阵已追加（2026-09-05，lane W13-I）**；三平台 CI 仍未完成。
 
 关联：`b-identity-001-principal-key-authority.md` §5 开放项「key rotation 入口」由此 Evidence 关闭最小前缀；HSM/custody/session 仍开放。
+
+## 5. Signing-key rotation kill-window 故障矩阵（2026-09-05 增量，lane W13-I）
+
+`crates/nlos-identity/tests/identity_rotation_fault_injection.rs`：6 项测试（5 主动场景 + crash 子进程 helper），镜像 `nlos-channel`/`nlos-wait` kill-window harness（kill-9 子进程 READY 管道同步、`FAULT_LOCK` 串行化、URI 路由 fault VFS、WAL tail 截断、typed 错误链断言、raw 行计数、逐场景 `integrity_check`）。追加 `nlos-store-fault` dev-dependency。
+
+| 窗口 | 测试 | 断言摘要 | 状态 |
+|---|---|---|---|
+| W1 pre-commit IOERR | `identity_fault_rotate_precommit_ioerr_fails_typed_and_converges` | `FailWritesAfter{0,IoErr}` → typed `Sqlite`（链含 i/o/ioerr）；`key_rotations=0`、bootstrap 前缀保持；disarm 后 redo → `Rotated` gen2 | PASS |
+| W2 pre-commit ENOSPC | `identity_fault_rotate_precommit_enospc_fails_typed_and_converges` | `FailWritesAfter{0,Full}` → 链含 full；零幻影 rotation 行；redo 收敛 | PASS |
+| W3 commit 点 PowerLossAfter | `identity_fault_rotate_power_loss_commit_point_converges_both_ways` | Phase A（`PowerLossAfter{0}`）：head 仍 gen1、零 rotation 行、redo byte-equal 幻影 receipt；Phase B（kill-9 after commit）：rotation 全可见、同 key `Replayed` byte-equal | PASS |
+| W4 torn WAL tail | `identity_fault_rotate_torn_wal_tail_discards_and_redo_converges` | 最后 rotation commit 帧半截断 → head 回 bootstrap、无半套 rotation；redo/replay byte-equal | PASS |
+| W5 replay storm | `identity_fault_rotate_replay_storm_is_idempotent` | 同请求 3+ 次 + 重开后 1 次 → 全 `Replayed` byte-equal；`key_versions` 恒 `[1,2]`、同 key 不双 rotate | PASS |
+
+本地验收（2026-09-05）：
+
+```text
+cargo test -p nlos-identity          # 20 passed
+cargo clippy -p nlos-identity --all-targets -- -D warnings
+cargo fmt -p nlos-identity --check
+```
+
+证据等级仍为 `H3 / PARTIAL_PASS`：VFS/process-crash 为模型化注入，非真实掉电或三平台 CI。

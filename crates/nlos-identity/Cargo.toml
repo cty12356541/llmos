@@ -15,6 +15,9 @@ sha2.workspace = true
 
 [dev-dependencies]
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
+# Test-only fault-injection VFS shim for the rotation kill-window matrix
+# (tests/identity_rotation_fault_injection.rs); never a production dependency.
+nlos-store-fault = { path = "../nlos-store-fault" }
 
 [lints]
 workspace = true
