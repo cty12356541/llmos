@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use ed25519_dalek::{Signer, SigningKey};
 use nlos_application::{
     ApplicationAuthority, DisableApplicationRequest, DisableDecision, DisableReceipt,
-    InstallApplicationRequest, InstallDecision,
+    InstallApplicationRequest, InstallDecision, UpdateApplicationRequest, UpdateDecision,
 };
 use nlos_artifact::{
     ArtifactStore, ContentDigest, CreateArtifactSpec, PackageEntryRole, PackageManifest,
@@ -277,6 +277,62 @@ pub fn disable_replayed(
         DisableDecision::Replayed(receipt) => receipt,
         DisableDecision::Disabled(receipt) => {
             panic!("expected Replayed, got Disabled {receipt:?}")
+        }
+    }
+}
+
+/// Runs one update and unwraps the fresh-update branch.
+pub fn updated(
+    authority: &ApplicationAuthority,
+    artifacts: &ArtifactStore,
+    package_id: nlos_types::PackageId,
+    receipt_id: nlos_types::ReceiptId,
+    key: u8,
+    at_ms: u64,
+) -> nlos_application::InstallationReceipt {
+    match authority
+        .update_application(
+            artifacts,
+            UpdateApplicationRequest {
+                package_id,
+                package_verification_receipt_id: receipt_id,
+                idempotency_key: IdempotencyKey::from_bytes([key; 16]),
+                updated_at_ms: at_ms,
+            },
+        )
+        .expect("update must succeed")
+    {
+        UpdateDecision::Updated(receipt) => receipt,
+        UpdateDecision::Replayed(receipt) => {
+            panic!("fresh key cannot replay an update, got {receipt:?}")
+        }
+    }
+}
+
+/// Runs one update and unwraps the replay branch.
+pub fn update_replayed(
+    authority: &ApplicationAuthority,
+    artifacts: &ArtifactStore,
+    package_id: nlos_types::PackageId,
+    receipt_id: nlos_types::ReceiptId,
+    key: u8,
+    at_ms: u64,
+) -> nlos_application::InstallationReceipt {
+    match authority
+        .update_application(
+            artifacts,
+            UpdateApplicationRequest {
+                package_id,
+                package_verification_receipt_id: receipt_id,
+                idempotency_key: IdempotencyKey::from_bytes([key; 16]),
+                updated_at_ms: at_ms,
+            },
+        )
+        .expect("update must replay")
+    {
+        UpdateDecision::Replayed(receipt) => receipt,
+        UpdateDecision::Updated(receipt) => {
+            panic!("expected Replayed, got Updated {receipt:?}")
         }
     }
 }

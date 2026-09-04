@@ -10,12 +10,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use nlos_application::{
     ApplicationAuthorityError, DisableApplicationRequest, InstallApplicationRequest,
-    derive_application_id, derive_installation_id,
+    UpdateApplicationRequest, derive_application_id, derive_installation_id,
 };
 use nlos_types::{Generation, IdempotencyKey, ReceiptId};
 use rusqlite::Connection;
 use support::{
     TestStack, authority_database, disable_replayed, disabled, installed, open_authority, replayed,
+    update_replayed, updated,
 };
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -917,4 +918,310 @@ fn api_disabled_application_refuses_reinstall_and_pins_receipt_guards() {
             .expect("durable"),
         receipt
     );
+}
+
+/// 正常更新：installed 状态下新 verified package（manifest 变化）推进
+/// 一代并落 immutable installation receipt；authority 派生 Id 与 inspect/
+/// list 只读回读逐字段一致。
+#[test]
+fn update_installed_application_advances_generation() {
+    let stack = TestStack::new(&label("update"), 0x31);
+    let first = stack.verify_package(0x41, 1, key(0xF0), 1_000);
+    let second = stack.verify_package(0x41, 2, key(0xF1), 2_000);
+    assert_ne!(first.manifest_digest, second.manifest_digest);
+    let authority = open_authority(stack.root.root());
+
+    let gen1 = installed(&authority, &stack.artifacts, first.receipt_id, 0x01, 2_000);
+    let gen2 = updated(
+        &authority,
+        &stack.artifacts,
+        first.package_id,
+        second.receipt_id,
+        0x02,
+        3_000,
+    );
+    assert_eq!(gen2.installation_generation.get(), 2);
+    assert_eq!(gen2.package_manifest_digest, second.manifest_digest);
+    assert_eq!(gen2.package_version, 2);
+    assert_eq!(gen2.package_verification_receipt_id, second.receipt_id);
+    assert_eq!(
+        gen2.installation_id,
+        derive_installation_id(key(0x02), gen1.application_id, gen2.installation_generation)
+    );
+
+    let view = authority
+        .inspect_application(first.package_id)
+        .expect("inspect")
+        .expect("exists");
+    assert_eq!(view.status, nlos_application::ApplicationStatus::Installed);
+    assert_eq!(view.package_manifest_digest, second.manifest_digest);
+    assert_eq!(view.current_installation_generation.get(), 2);
+    assert_eq!(view.updated_at_ms, 3_000);
+
+    let read_back = authority
+        .inspect_installation(gen2.installation_id)
+        .expect("inspect installation");
+    assert_eq!(read_back, gen2);
+    assert_eq!(
+        authority
+            .list_installations(gen1.application_id)
+            .expect("list"),
+        vec![gen1, gen2.clone()]
+    );
+}
+
+/// 更新幂等 replay：同 key 重放返回原 receipt 不双跳；同 key 不同请求
+/// 形状为 typed `IdempotencyConflict`。
+#[test]
+fn update_replays_idempotently_and_conflicts_on_shape_mismatch() {
+    let stack = TestStack::new(&label("update-replay"), 0x32);
+    let first = stack.verify_package(0x41, 1, key(0xF0), 1_000);
+    let second = stack.verify_package(0x41, 2, key(0xF1), 2_000);
+    let authority = open_authority(stack.root.root());
+    installed(&authority, &stack.artifacts, first.receipt_id, 0x01, 2_000);
+    let receipt = updated(
+        &authority,
+        &stack.artifacts,
+        first.package_id,
+        second.receipt_id,
+        0x02,
+        3_000,
+    );
+
+    let replay = update_replayed(
+        &authority,
+        &stack.artifacts,
+        first.package_id,
+        second.receipt_id,
+        0x02,
+        3_000,
+    );
+    assert_eq!(replay, receipt);
+    assert_eq!(
+        authority
+            .inspect_application(first.package_id)
+            .expect("inspect")
+            .expect("exists")
+            .current_installation_generation
+            .get(),
+        2,
+        "replay never advances the generation"
+    );
+    assert_counts(&stack, 1, 2);
+
+    let conflict = authority.update_application(
+        &stack.artifacts,
+        UpdateApplicationRequest {
+            package_id: first.package_id,
+            package_verification_receipt_id: second.receipt_id,
+            idempotency_key: key(0x02),
+            updated_at_ms: 9_000,
+        },
+    );
+    assert!(matches!(
+        conflict,
+        Err(ApplicationAuthorityError::IdempotencyConflict)
+    ));
+
+    let third = stack.verify_package(0x41, 3, key(0xF2), 4_000);
+    let conflict = authority.update_application(
+        &stack.artifacts,
+        UpdateApplicationRequest {
+            package_id: first.package_id,
+            package_verification_receipt_id: third.receipt_id,
+            idempotency_key: key(0x02),
+            updated_at_ms: 3_000,
+        },
+    );
+    assert!(matches!(
+        conflict,
+        Err(ApplicationAuthorityError::IdempotencyConflict)
+    ));
+    assert_counts(&stack, 1, 2);
+}
+
+/// 更新重启 replay：重开后同 key 重放逐字节相等、fresh key 从 durable
+/// 代际稠密续推。
+#[test]
+fn update_replay_survives_restart() {
+    let stack = TestStack::new(&label("update-restart"), 0x33);
+    let first = stack.verify_package(0x41, 1, key(0xF0), 1_000);
+    let second = stack.verify_package(0x41, 2, key(0xF1), 2_000);
+    let gen1 = {
+        let authority = open_authority(stack.root.root());
+        installed(&authority, &stack.artifacts, first.receipt_id, 0x01, 2_000)
+    };
+
+    let reopened_artifacts =
+        nlos_artifact::ArtifactStore::open(stack.root.root().join("art")).expect("reopen art");
+    let authority = open_authority(stack.root.root());
+    let gen2 = updated(
+        &authority,
+        &reopened_artifacts,
+        first.package_id,
+        second.receipt_id,
+        0x02,
+        3_000,
+    );
+    assert_eq!(gen2.installation_generation.get(), 2);
+
+    let replay = update_replayed(
+        &authority,
+        &reopened_artifacts,
+        first.package_id,
+        second.receipt_id,
+        0x02,
+        3_000,
+    );
+    assert_eq!(replay, gen2);
+
+    let third = stack.verify_package(0x41, 3, key(0xF3), 4_000);
+    let gen3 = updated(
+        &authority,
+        &reopened_artifacts,
+        first.package_id,
+        third.receipt_id,
+        0x03,
+        5_000,
+    );
+    assert_eq!(gen3.installation_generation.get(), 3);
+    assert_eq!(
+        authority
+            .list_installations(gen1.application_id)
+            .expect("list")
+            .len(),
+        3
+    );
+}
+
+/// 更新拒绝全表：未安装（ApplicationNotFound）、disabled
+/// （ApplicationDisabled）、manifest 未变（UpdateManifestUnchanged）、
+/// package 身份不符（PackageIdentityMismatch）、早于验证时间
+/// （InstallationPrecedesVerification）、未验证 receipt
+/// （PackageVerificationReceiptNotFound）；全部 typed 且零 durable 变化。
+#[test]
+#[allow(clippy::too_many_lines)] // One linear refusal sweep over the update surface.
+fn update_refusals_are_typed_and_leave_zero_state() {
+    let stack = TestStack::new(&label("update-refusals"), 0x34);
+    let verified = stack.verify_package(0x41, 1, key(0xF0), 1_000);
+    let authority = open_authority(stack.root.root());
+
+    let error = authority
+        .update_application(
+            &stack.artifacts,
+            UpdateApplicationRequest {
+                package_id: verified.package_id,
+                package_verification_receipt_id: verified.receipt_id,
+                idempotency_key: key(0x01),
+                updated_at_ms: 2_000,
+            },
+        )
+        .expect_err("update requires a prior install");
+    assert!(matches!(
+        error,
+        ApplicationAuthorityError::ApplicationNotFound { package_id }
+            if package_id == verified.package_id
+    ));
+    assert_counts(&stack, 0, 0);
+
+    installed(
+        &authority,
+        &stack.artifacts,
+        verified.receipt_id,
+        0x01,
+        2_000,
+    );
+
+    let newer = stack.verify_package(0x41, 2, key(0xF6), 5_000);
+    let error = authority
+        .update_application(
+            &stack.artifacts,
+            UpdateApplicationRequest {
+                package_id: verified.package_id,
+                package_verification_receipt_id: newer.receipt_id,
+                idempotency_key: key(0x02),
+                updated_at_ms: 4_999,
+            },
+        )
+        .expect_err("update must not precede verification");
+    assert!(matches!(
+        error,
+        ApplicationAuthorityError::InstallationPrecedesVerification {
+            verified_at_ms: 5_000,
+            installed_at_ms: 4_999,
+        }
+    ));
+
+    let error = authority
+        .update_application(
+            &stack.artifacts,
+            UpdateApplicationRequest {
+                package_id: verified.package_id,
+                package_verification_receipt_id: verified.receipt_id,
+                idempotency_key: key(0x02),
+                updated_at_ms: 2_000,
+            },
+        )
+        .expect_err("same manifest is not an update");
+    assert!(matches!(
+        error,
+        ApplicationAuthorityError::UpdateManifestUnchanged { package_id, .. }
+            if package_id == verified.package_id
+    ));
+    assert_counts(&stack, 1, 1);
+
+    let other_package = stack.verify_package(0x42, 1, key(0xF4), 2_000);
+    let error = authority
+        .update_application(
+            &stack.artifacts,
+            UpdateApplicationRequest {
+                package_id: verified.package_id,
+                package_verification_receipt_id: other_package.receipt_id,
+                idempotency_key: key(0x03),
+                updated_at_ms: 3_000,
+            },
+        )
+        .expect_err("verified package must match the named package");
+    assert!(matches!(
+        error,
+        ApplicationAuthorityError::PackageIdentityMismatch { expected, actual }
+            if expected == verified.package_id && actual == other_package.package_id
+    ));
+
+    let ghost = ReceiptId::from_bytes([0x99; 16]);
+    let error = authority
+        .update_application(
+            &stack.artifacts,
+            UpdateApplicationRequest {
+                package_id: verified.package_id,
+                package_verification_receipt_id: ghost,
+                idempotency_key: key(0x04),
+                updated_at_ms: 3_000,
+            },
+        )
+        .expect_err("unverified receipt");
+    assert!(matches!(
+        error,
+        ApplicationAuthorityError::PackageVerificationReceiptNotFound(id) if id == ghost
+    ));
+
+    disabled(&authority, verified.package_id, 0x0A, 4_000);
+    let disabled_target = stack.verify_package(0x41, 3, key(0xF5), 3_000);
+    let error = authority
+        .update_application(
+            &stack.artifacts,
+            UpdateApplicationRequest {
+                package_id: verified.package_id,
+                package_verification_receipt_id: disabled_target.receipt_id,
+                idempotency_key: key(0x05),
+                updated_at_ms: 5_000,
+            },
+        )
+        .expect_err("disabled application must refuse updates");
+    assert!(matches!(
+        error,
+        ApplicationAuthorityError::ApplicationDisabled { .. }
+    ));
+    assert_counts(&stack, 1, 1);
+    assert_disable_counts(&stack, 1);
 }

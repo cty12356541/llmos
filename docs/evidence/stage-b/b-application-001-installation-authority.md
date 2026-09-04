@@ -64,7 +64,7 @@ cargo +nightly-2026-08-01 fmt -p nlos-application -- --check   # PASS：exit 0
 
 明确不声明：
 
-- **无更新/卸载策略引擎**：只有 installed/disabled 状态与当前 installation 代际；无 update/migrate/rollback、无 uninstall；`disabled` 在本切片只能经直接 durable 管理（合法 SQL 转移，trigger 界定）进入，无 disable API；disabled 后重装 typed 拒绝。
+- **无 uninstall/rollback 策略引擎**：`update_application` 见 B-APPLICATION-002；本切片只有 installed/disabled 状态与当前 installation 代际；无 migrate/rollback、无 uninstall；`disabled` 经 `disable_application` 或合法 SQL 转移进入；disabled 后重装/更新 typed 拒绝。
 - **无 Task 创建接线**：安装不创建 Task/Process/activation——Slice K 下一纵切段；不发明 Task/Process 语义。
 - **单 installer principal、无多方审批**：installer principal 即 verified receipt 的 signer，无 trust-root/签名链/多签/threshold 审批策略。
 - **无跨进程验证**：安装 IPC/传输、对端验证、PackageEnvelope 序列化不在本切片。
@@ -77,5 +77,4 @@ cargo +nightly-2026-08-01 fmt -p nlos-application -- --check   # PASS：exit 0
 
 - Slice K 后半：Task 创建接线（消费 installation receipt 作为 Task 引导事实）。
 - identity 侧 package-signing key purpose 落地后，installer principal 与 installer 审批策略分离。
-- 更新/卸载策略引擎消费 `disabled` 终态与代际 CAS（兼容窗口/健康检查/原子切换按 [PKG-UPDATE-001]）。
-- 更新通道与内容去重：generation 语义从「安装命令」演进为「内容代际」。
+- 更新/卸载策略引擎消费 `disabled` 终态与代际 CAS（兼容窗口/健康检查/原子切换按 [PKG-UPDATE-001]）——**update 最小前缀**见 [B-APPLICATION-002](b-application-002-update.md)（`update_application`，installed 状态内；uninstall/rollback 未做）。

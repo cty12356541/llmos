@@ -40,10 +40,12 @@
 //! moving the generation (no double-jump); every rejection leaves zero
 //! durable state.
 //!
-//! The slice deliberately does not implement: the §23.1 update / uninstall
-//! lifecycle and any policy engine (`disable_application` lands the
+//! The slice deliberately does not implement: the full §23.1
+//! migrate/rollback/uninstall lifecycle and any policy engine
+//! ([`ApplicationAuthority::update_application`] lands the installed-state
+//! content update prefix only; `disable_application` lands the
 //! `installed → disabled` transition only; `disabled` is terminal — there
-//! is no enable, no update/rollback, and no uninstall), Task/Process
+//! is no enable, no rollback, and no uninstall), Task/Process
 //! creation wiring (the next Slice K longitudinal slice), multi-party
 //! installer approval (exactly one installer principal is recorded, taken
 //! from the verified receipt's signer), §23.2's full manifest
@@ -226,6 +228,48 @@ impl DisableDecision {
     }
 }
 
+/// Request to update one installed application to a new verified package
+/// generation. Authority-first: the caller references the verification
+/// fact by its artifact-authority receipt id and names the package
+/// identity whose application singleton is updated.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UpdateApplicationRequest {
+    /// The package identity whose installed application is updated.
+    pub package_id: PackageId,
+    /// Receipt id of the newly verified signed package in the artifact
+    /// authority.
+    pub package_verification_receipt_id: ReceiptId,
+    /// Caller-supplied exactly-once key for this update's installation
+    /// receipt.
+    pub idempotency_key: IdempotencyKey,
+    /// Caller-supplied update timestamp (ms since Unix epoch); must not
+    /// precede the new package's verification timestamp.
+    pub updated_at_ms: u64,
+}
+
+/// Outcome of one [`ApplicationAuthority::update_application`] call. The
+/// committed fact is always an immutable [`InstallationReceipt`] at the
+/// new installation generation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum UpdateDecision {
+    /// First execution of this key: the application generation advanced and
+    /// the installation receipt committed with it.
+    Updated(InstallationReceipt),
+    /// Durable replay: this key already updated and the recorded original
+    /// receipt is returned unchanged (no re-advance, no double-jump).
+    Replayed(InstallationReceipt),
+}
+
+impl UpdateDecision {
+    /// The installation receipt this call denotes, whichever branch.
+    #[must_use]
+    pub const fn receipt(self) -> InstallationReceipt {
+        match self {
+            Self::Updated(receipt) | Self::Replayed(receipt) => receipt,
+        }
+    }
+}
+
 /// Fail-closed typed errors of the application/installation authority.
 /// Every variant is a hard refusal: the caller never receives an
 /// installation whose durability is in doubt, and a rejected install
@@ -284,6 +328,18 @@ pub enum ApplicationAuthorityError {
     },
     /// No installation receipt with this identity exists.
     InstallationNotFound(InstallationId),
+    /// The verified receipt's package identity does not match the update
+    /// request's named package.
+    PackageIdentityMismatch {
+        expected: PackageId,
+        actual: PackageId,
+    },
+    /// The verified package's manifest digest matches the application's
+    /// current installation; content updates require a changed manifest.
+    UpdateManifestUnchanged {
+        package_id: PackageId,
+        manifest_digest: ContentDigest,
+    },
 }
 
 impl fmt::Display for ApplicationAuthorityError {
@@ -356,6 +412,20 @@ impl fmt::Display for ApplicationAuthorityError {
             Self::InstallationNotFound(installation_id) => {
                 write!(formatter, "no installation receipt {installation_id:?}")
             }
+            Self::PackageIdentityMismatch { expected, actual } => write!(
+                formatter,
+                "verified package identity {actual:?} does not match the update \
+                 request's package {expected:?}"
+            ),
+            Self::UpdateManifestUnchanged {
+                package_id,
+                manifest_digest,
+            } => write!(
+                formatter,
+                "verified package {package_id:?} manifest digest {manifest_digest:?} \
+                 is unchanged from the current installation; use install for \
+                 same-content reinstall"
+            ),
         }
     }
 }
@@ -679,6 +749,150 @@ impl ApplicationAuthority {
         Ok(DisableDecision::Disabled(receipt))
     }
 
+    /// Updates one installed application to a new verified package
+    /// generation: reads the artifact authority's verified-package receipt
+    /// by id (verify-then-commit, authority-first), then in one
+    /// `Immediate` transaction commits the immutable installation receipt
+    /// and CAS-advances the application's current installation generation.
+    ///
+    /// Fail-closed order:
+    ///
+    /// 1. **Artifact receipt readback** (the FINALIZED gate): same as
+    ///    install — an unknown receipt id is a typed refusal with zero
+    ///    durable state.
+    /// 2. **Replay**: the first durable installation receipt under the
+    ///    request's idempotency key is the authority; it replays unchanged
+    ///    without advancing the generation. The same key with a different
+    ///    request shape is a typed
+    ///    [`ApplicationAuthorityError::IdempotencyConflict`].
+    /// 3. **Update preconditions**: the application singleton must exist
+    ///    ([`ApplicationAuthorityError::ApplicationNotFound`]), be
+    ///    `installed` ([`ApplicationAuthorityError::ApplicationDisabled`]),
+    ///    name the same package identity as the verified receipt
+    ///    ([`ApplicationAuthorityError::PackageIdentityMismatch`]), and
+    ///    target a manifest digest different from the current installation
+    ///    ([`ApplicationAuthorityError::UpdateManifestUnchanged`]).
+    /// 4. **Digest binding (seven equations)**: same as install.
+    /// 5. **Generation CAS**: advances exactly one generation under a
+    ///    read-then-write CAS; receipt insert and generation advance share
+    ///    the one transaction (co-life).
+    ///
+    /// # Errors
+    ///
+    /// Fails closed (zero durable state change) for an unknown or unreadable
+    /// verification receipt, a missing/disabled/unchanged application, an
+    /// idempotency conflict, an update that would precede its own
+    /// verification, a lost generation CAS, or any storage failure.
+    pub fn update_application(
+        &self,
+        artifacts: &ArtifactStore,
+        request: UpdateApplicationRequest,
+    ) -> Result<UpdateDecision, ApplicationAuthorityError> {
+        let verified = readback_verified_receipt_for_update(artifacts, request)?;
+
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+        if let Some(existing) = load_receipt_by_key(&transaction, request.idempotency_key)? {
+            if existing.package_verification_receipt_id != request.package_verification_receipt_id
+                || existing.installed_at_ms != request.updated_at_ms
+            {
+                return Err(ApplicationAuthorityError::IdempotencyConflict);
+            }
+            transaction.commit()?;
+            return Ok(UpdateDecision::Replayed(existing));
+        }
+
+        if request.updated_at_ms < verified.verified_at_ms {
+            return Err(
+                ApplicationAuthorityError::InstallationPrecedesVerification {
+                    verified_at_ms: verified.verified_at_ms,
+                    installed_at_ms: request.updated_at_ms,
+                },
+            );
+        }
+
+        if verified.package_id != request.package_id {
+            return Err(ApplicationAuthorityError::PackageIdentityMismatch {
+                expected: request.package_id,
+                actual: verified.package_id,
+            });
+        }
+
+        let application = load_application_by_package(&transaction, request.package_id)?.ok_or(
+            ApplicationAuthorityError::ApplicationNotFound {
+                package_id: request.package_id,
+            },
+        )?;
+        match application.status {
+            ApplicationStatus::Disabled => {
+                return Err(ApplicationAuthorityError::ApplicationDisabled {
+                    application_id: application.application_id,
+                });
+            }
+            ApplicationStatus::Installed => {}
+        }
+
+        if verified.manifest_digest == application.package_manifest_digest {
+            return Err(ApplicationAuthorityError::UpdateManifestUnchanged {
+                package_id: request.package_id,
+                manifest_digest: verified.manifest_digest,
+            });
+        }
+
+        let next = application
+            .current_installation_generation
+            .checked_next()
+            .ok_or(ApplicationAuthorityError::CorruptRecord(
+                "installation generation space is exhausted",
+            ))?;
+        let changed = transaction.execute(
+            "UPDATE applications
+             SET current_installation_generation = ?1,
+                 package_manifest_digest = ?2,
+                 updated_at_ms = ?3
+             WHERE application_id = ?4 AND current_installation_generation = ?5
+               AND status = ?6",
+            params![
+                encode_generation(next)?,
+                verified.manifest_digest.as_bytes().as_slice(),
+                encode_u64(request.updated_at_ms)?,
+                application.application_id.as_bytes().as_slice(),
+                encode_generation(application.current_installation_generation)?,
+                ApplicationStatus::Installed.encode(),
+            ],
+        )?;
+        if changed != 1 {
+            return Err(ApplicationAuthorityError::CorruptRecord(
+                "update generation CAS lost",
+            ));
+        }
+
+        let receipt = InstallationReceipt {
+            installation_id: derive_installation_id(
+                request.idempotency_key,
+                application.application_id,
+                next,
+            ),
+            application_id: application.application_id,
+            installation_generation: next,
+            package_id: verified.package_id,
+            package_manifest_digest: verified.manifest_digest,
+            package_version: verified.package_version,
+            entry_count: verified.entry_count,
+            package_verification_receipt_id: verified.receipt_id,
+            installer_principal: verified.signer,
+            idempotency_key: request.idempotency_key,
+            installed_at_ms: request.updated_at_ms,
+        };
+        if let Some(error) = binding_error(&receipt, &verified) {
+            return Err(error);
+        }
+        insert_receipt(&transaction, &receipt)?;
+        transaction.commit()?;
+        Ok(UpdateDecision::Updated(receipt))
+    }
+
     /// Reads an application's current durable state by package identity
     /// without any durable side effect. `None` means the package has never
     /// been installed — a legitimate read outcome, not an error.
@@ -767,11 +981,25 @@ fn readback_verified_receipt(
     artifacts: &ArtifactStore,
     request: InstallApplicationRequest,
 ) -> Result<PackageVerificationReceipt, ApplicationAuthorityError> {
+    readback_verified_receipt_by_id(artifacts, request.package_verification_receipt_id)
+}
+
+fn readback_verified_receipt_for_update(
+    artifacts: &ArtifactStore,
+    request: UpdateApplicationRequest,
+) -> Result<PackageVerificationReceipt, ApplicationAuthorityError> {
+    readback_verified_receipt_by_id(artifacts, request.package_verification_receipt_id)
+}
+
+fn readback_verified_receipt_by_id(
+    artifacts: &ArtifactStore,
+    receipt_id: ReceiptId,
+) -> Result<PackageVerificationReceipt, ApplicationAuthorityError> {
     artifacts
-        .inspect_package_verification_receipt(request.package_verification_receipt_id)
+        .inspect_package_verification_receipt(receipt_id)
         .map_err(|error| match error {
-            ArtifactError::PackageVerificationReceiptNotFound(receipt_id) => {
-                ApplicationAuthorityError::PackageVerificationReceiptNotFound(receipt_id)
+            ArtifactError::PackageVerificationReceiptNotFound(id) => {
+                ApplicationAuthorityError::PackageVerificationReceiptNotFound(id)
             }
             other => ApplicationAuthorityError::Artifact(other),
         })
