@@ -13,13 +13,16 @@
 //! singleton per package identity — derived [`ApplicationId`], package
 //! manifest digest of the current installation, current installation
 //! generation, and the §23.1 minimal lifecycle status `installed`/
-//! `disabled`), `installation_receipts` (the immutable installation
-//! facts — installation id, package digest, manifest digest, installer
-//! principal, idempotency key, timestamps), and — added in v2, mirroring
-//! the artifact authority's staged migrations —
+//! `disabled`/`uninstalled`), `installation_receipts` (the immutable
+//! installation facts — installation id, package digest, manifest digest,
+//! installer principal, idempotency key, timestamps), and — added in v2,
+//! mirroring the artifact authority's staged migrations —
 //! `application_disable_receipts` (the immutable fact of the one
 //! `installed → disabled` transition, which makes
-//! [`ApplicationAuthority::disable_application`] replayable). DDL triggers
+//! [`ApplicationAuthority::disable_application`] replayable). Schema v3
+//! adds `application_uninstall_receipts` (the immutable fact of the terminal
+//! `installed|disabled → uninstalled` transition, which makes
+//! [`ApplicationAuthority::uninstall_application`] replayable). DDL triggers
 //! carry the invariants at every layer: receipts are immutable and
 //! durable, the generation is monotonic under CAS, application identity is
 //! frozen, rows cannot be deleted, a receipt can only exist at the
@@ -41,11 +44,13 @@
 //! durable state.
 //!
 //! The slice deliberately does not implement: the full §23.1
-//! migrate/rollback/uninstall lifecycle and any policy engine
-//! ([`ApplicationAuthority::update_application`] lands the installed-state
-//! content update prefix only; `disable_application` lands the
-//! `installed → disabled` transition only; `disabled` is terminal — there
-//! is no enable, no rollback, and no uninstall), Task/Process
+//! migrate/rollback lifecycle and any policy engine beyond the minimal
+//! prefixes ([`ApplicationAuthority::update_application`] lands the
+//! installed-state content update prefix only; `disable_application` lands
+//! the `installed → disabled` transition only; `uninstall_application`
+//! lands the terminal `installed|disabled → uninstalled` CAS mark only;
+//! there is no enable, no rollback, and no physical row delete), running
+//! Task/Process teardown (uninstall does not stop or wait for tasks),
 //! creation wiring (the next Slice K longitudinal slice), multi-party
 //! installer approval (exactly one installer principal is recorded, taken
 //! from the verified receipt's signer), §23.2's full manifest
@@ -83,6 +88,8 @@ pub enum ApplicationStatus {
     Installed,
     /// The application has been disabled; new installations are refused.
     Disabled,
+    /// The application has been uninstalled; the row remains durable evidence.
+    Uninstalled,
 }
 
 impl ApplicationStatus {
@@ -90,6 +97,7 @@ impl ApplicationStatus {
         match self {
             Self::Installed => 1,
             Self::Disabled => 2,
+            Self::Uninstalled => 3,
         }
     }
 
@@ -97,6 +105,7 @@ impl ApplicationStatus {
         match value {
             1 => Ok(Self::Installed),
             2 => Ok(Self::Disabled),
+            3 => Ok(Self::Uninstalled),
             _ => Err(ApplicationAuthorityError::CorruptRecord(
                 "unknown application status",
             )),
@@ -270,6 +279,57 @@ impl UpdateDecision {
     }
 }
 
+/// Immutable durable proof that one application was uninstalled: the fact of
+/// the terminal `installed|disabled → uninstalled` transition. The receipt
+/// is uniquely addressed by the application it uninstalled (the status is
+/// terminal, so at most one uninstall receipt can ever exist per
+/// application) and records the installation generation at uninstall time,
+/// which the transition leaves untouched.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UninstallReceipt {
+    pub application_id: ApplicationId,
+    /// The installation generation at uninstall time (unchanged by the
+    /// transition — the state-machine trigger forbids moving it).
+    pub application_generation: Generation,
+    pub idempotency_key: IdempotencyKey,
+    pub uninstalled_at_ms: u64,
+}
+
+/// Request to uninstall one installed or disabled application. Exactly-once
+/// by idempotency key, mirroring the disable request shape.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UninstallApplicationRequest {
+    /// The package identity whose application singleton is uninstalled.
+    pub package_id: PackageId,
+    /// Caller-supplied exactly-once key for the uninstall receipt.
+    pub idempotency_key: IdempotencyKey,
+    /// Caller-supplied uninstall timestamp (ms since Unix epoch); must not
+    /// precede the current application row's last update.
+    pub uninstalled_at_ms: u64,
+}
+
+/// Outcome of one [`ApplicationAuthority::uninstall_application`] call.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum UninstallDecision {
+    /// First execution of this key: the application status CAS'd to
+    /// `uninstalled` and the uninstall receipt committed with it.
+    Uninstalled(UninstallReceipt),
+    /// Durable replay: this key already uninstalled the application and the
+    /// recorded original receipt is returned unchanged (no second
+    /// transition, no new fact).
+    Replayed(UninstallReceipt),
+}
+
+impl UninstallDecision {
+    /// The uninstall receipt this call denotes, whichever branch.
+    #[must_use]
+    pub const fn receipt(self) -> UninstallReceipt {
+        match self {
+            Self::Uninstalled(receipt) | Self::Replayed(receipt) => receipt,
+        }
+    }
+}
+
 /// Fail-closed typed errors of the application/installation authority.
 /// Every variant is a hard refusal: the caller never receives an
 /// installation whose durability is in doubt, and a rejected install
@@ -303,6 +363,9 @@ pub enum ApplicationAuthorityError {
     /// The application exists but is disabled; reinstalling it requires the
     /// update/uninstall policy engine that is out of scope for this slice.
     ApplicationDisabled { application_id: ApplicationId },
+    /// The application exists but is uninstalled; no lifecycle command can
+    /// mutate it further in this slice.
+    ApplicationUninstalled { application_id: ApplicationId },
     /// No application exists under this package identity (nothing was ever
     /// installed, so there is nothing to disable).
     ApplicationNotFound { package_id: PackageId },
@@ -311,11 +374,22 @@ pub enum ApplicationAuthorityError {
     /// receipt of the first command is the only fact; replay is keyed, so
     /// a distinct command against the terminal state is a typed refusal.
     ApplicationAlreadyDisabled { application_id: ApplicationId },
+    /// The application is already uninstalled and a *different* uninstall
+    /// command (a fresh idempotency key) was issued. The durable uninstall
+    /// receipt of the first command is the only fact; replay is keyed, so
+    /// a distinct command against the terminal state is a typed refusal.
+    ApplicationAlreadyUninstalled { application_id: ApplicationId },
     /// The requested disable timestamp precedes the current installation's
     /// install timestamp (the application row's last update).
     DisablePrecedesInstallation {
         installed_at_ms: u64,
         disabled_at_ms: u64,
+    },
+    /// The requested uninstall timestamp precedes the current application
+    /// row's last update.
+    UninstallPrecedesLastUpdate {
+        last_updated_at_ms: u64,
+        uninstalled_at_ms: u64,
     },
     /// The same idempotency key was reused with a different request shape
     /// (a different verification receipt or a different timestamp).
@@ -343,6 +417,7 @@ pub enum ApplicationAuthorityError {
 }
 
 impl fmt::Display for ApplicationAuthorityError {
+    #[allow(clippy::too_many_lines)]
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Sqlite(error) => {
@@ -378,8 +453,13 @@ impl fmt::Display for ApplicationAuthorityError {
             }
             Self::ApplicationDisabled { application_id } => write!(
                 formatter,
-                "application {application_id:?} is disabled; the update/uninstall \
-                 policy engine is out of scope for this slice"
+                "application {application_id:?} is disabled; reinstall/update \
+                 require the policy engine that is out of scope for this slice"
+            ),
+            Self::ApplicationUninstalled { application_id } => write!(
+                formatter,
+                "application {application_id:?} is uninstalled; no further \
+                 lifecycle commands are accepted in this slice"
             ),
             Self::ApplicationNotFound { package_id } => write!(
                 formatter,
@@ -391,6 +471,11 @@ impl fmt::Display for ApplicationAuthorityError {
                 "application {application_id:?} is already disabled; replay the \
                  original disable idempotency key instead of issuing a new command"
             ),
+            Self::ApplicationAlreadyUninstalled { application_id } => write!(
+                formatter,
+                "application {application_id:?} is already uninstalled; replay the \
+                 original uninstall idempotency key instead of issuing a new command"
+            ),
             Self::DisablePrecedesInstallation {
                 installed_at_ms,
                 disabled_at_ms,
@@ -398,6 +483,14 @@ impl fmt::Display for ApplicationAuthorityError {
                 formatter,
                 "disable timestamp {disabled_at_ms} precedes the current \
                  installation timestamp {installed_at_ms}"
+            ),
+            Self::UninstallPrecedesLastUpdate {
+                last_updated_at_ms,
+                uninstalled_at_ms,
+            } => write!(
+                formatter,
+                "uninstall timestamp {uninstalled_at_ms} precedes the current \
+                 application update timestamp {last_updated_at_ms}"
             ),
             Self::IdempotencyConflict => formatter
                 .write_str("idempotency key reused with a different installation request shape"),
@@ -489,11 +582,14 @@ impl ApplicationAuthority {
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
         match version {
             0 => schema::migrate_v1(&mut connection)?,
-            1 | schema::SCHEMA_VERSION => {}
+            1 | 2 | schema::SCHEMA_VERSION => {}
             other => return Err(ApplicationAuthorityError::SchemaVersionUnsupported(other)),
         }
-        if version < schema::SCHEMA_VERSION {
+        if version < 2 {
             schema::migrate_v2(&mut connection)?;
+        }
+        if version < schema::SCHEMA_VERSION {
+            schema::migrate_v3(&mut connection)?;
         }
         Ok(Self {
             connection: Mutex::new(connection),
@@ -535,6 +631,7 @@ impl ApplicationAuthority {
     /// verification receipt, an idempotency conflict, an installation that
     /// would precede its own verification, a disabled application, a lost
     /// generation CAS, or any storage failure.
+    #[allow(clippy::too_many_lines)]
     pub fn install_application(
         &self,
         artifacts: &ArtifactStore,
@@ -587,6 +684,11 @@ impl ApplicationAuthority {
                 (application_id, Generation::INITIAL)
             }
             Some(view) => match view.status {
+                ApplicationStatus::Uninstalled => {
+                    return Err(ApplicationAuthorityError::ApplicationUninstalled {
+                        application_id: view.application_id,
+                    });
+                }
                 ApplicationStatus::Disabled => {
                     return Err(ApplicationAuthorityError::ApplicationDisabled {
                         application_id: view.application_id,
@@ -707,6 +809,11 @@ impl ApplicationAuthority {
             },
         )?;
         match application.status {
+            ApplicationStatus::Uninstalled => {
+                return Err(ApplicationAuthorityError::ApplicationUninstalled {
+                    application_id: application.application_id,
+                });
+            }
             ApplicationStatus::Disabled => {
                 return Err(ApplicationAuthorityError::ApplicationAlreadyDisabled {
                     application_id: application.application_id,
@@ -825,6 +932,11 @@ impl ApplicationAuthority {
             },
         )?;
         match application.status {
+            ApplicationStatus::Uninstalled => {
+                return Err(ApplicationAuthorityError::ApplicationUninstalled {
+                    application_id: application.application_id,
+                });
+            }
             ApplicationStatus::Disabled => {
                 return Err(ApplicationAuthorityError::ApplicationDisabled {
                     application_id: application.application_id,
@@ -893,6 +1005,111 @@ impl ApplicationAuthority {
         Ok(UpdateDecision::Updated(receipt))
     }
 
+    /// Uninstalls one installed or disabled application: in one `Immediate`
+    /// transaction CAS's the status to `uninstalled` (the generation is
+    /// left untouched — the state-machine trigger forbids moving it) and
+    /// commits the immutable uninstall receipt.
+    ///
+    /// Fail-closed order:
+    ///
+    /// 1. **Replay**: the first durable uninstall receipt under the
+    ///    request's idempotency key is the authority; it replays unchanged
+    ///    without touching the state. The same key with a different request
+    ///    shape (a different package or timestamp) is a typed
+    ///    [`ApplicationAuthorityError::IdempotencyConflict`].
+    /// 2. **State CAS**: the application singleton must exist under the
+    ///    request's package identity
+    ///    ([`ApplicationAuthorityError::ApplicationNotFound`]) and be
+    ///    `installed` or `disabled`; an uninstalled application refuses a
+    ///    distinct uninstall command with
+    ///    [`ApplicationAuthorityError::ApplicationAlreadyUninstalled`]
+    ///    (the status is terminal; only the original key replays). The
+    ///    update predicate re-checks the observed status, a lost CAS is a
+    ///    [`ApplicationAuthorityError::CorruptRecord`].
+    /// 3. **Temporal binding**: the uninstall timestamp must not precede
+    ///    the application row's last update (install, update, or disable).
+    /// 4. **Single-transaction commit**: the status update and the receipt
+    ///    insert share the one transaction (co-life), and the DDL
+    ///    state-bounds guard only accepts a receipt for an application
+    ///    already uninstalled at its current generation.
+    ///
+    /// This slice does **not** stop running Tasks/Processes, revoke
+    /// Capabilities, garbage-collect artifacts, or physically delete rows.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed (zero durable state change) for an unknown package, an
+    /// idempotency conflict, a distinct command against an already
+    /// uninstalled application, an uninstall preceding its own last update,
+    /// a lost status CAS, or any storage failure.
+    pub fn uninstall_application(
+        &self,
+        request: UninstallApplicationRequest,
+    ) -> Result<UninstallDecision, ApplicationAuthorityError> {
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+        if let Some(existing) =
+            load_uninstall_receipt_by_key(&transaction, request.idempotency_key)?
+        {
+            if existing.application_id != derive_application_id(request.package_id)
+                || existing.uninstalled_at_ms != request.uninstalled_at_ms
+            {
+                return Err(ApplicationAuthorityError::IdempotencyConflict);
+            }
+            transaction.commit()?;
+            return Ok(UninstallDecision::Replayed(existing));
+        }
+
+        let application = load_application_by_package(&transaction, request.package_id)?.ok_or(
+            ApplicationAuthorityError::ApplicationNotFound {
+                package_id: request.package_id,
+            },
+        )?;
+        match application.status {
+            ApplicationStatus::Uninstalled => {
+                return Err(ApplicationAuthorityError::ApplicationAlreadyUninstalled {
+                    application_id: application.application_id,
+                });
+            }
+            ApplicationStatus::Installed | ApplicationStatus::Disabled => {}
+        }
+
+        if request.uninstalled_at_ms < application.updated_at_ms {
+            return Err(ApplicationAuthorityError::UninstallPrecedesLastUpdate {
+                last_updated_at_ms: application.updated_at_ms,
+                uninstalled_at_ms: request.uninstalled_at_ms,
+            });
+        }
+
+        let changed = transaction.execute(
+            "UPDATE applications SET status = ?1, updated_at_ms = ?2
+             WHERE application_id = ?3 AND status IN (?4, ?5)",
+            params![
+                ApplicationStatus::Uninstalled.encode(),
+                encode_u64(request.uninstalled_at_ms)?,
+                application.application_id.as_bytes().as_slice(),
+                ApplicationStatus::Installed.encode(),
+                ApplicationStatus::Disabled.encode(),
+            ],
+        )?;
+        if changed != 1 {
+            return Err(ApplicationAuthorityError::CorruptRecord(
+                "application uninstall status CAS lost",
+            ));
+        }
+
+        let receipt = UninstallReceipt {
+            application_id: application.application_id,
+            application_generation: application.current_installation_generation,
+            idempotency_key: request.idempotency_key,
+            uninstalled_at_ms: request.uninstalled_at_ms,
+        };
+        insert_uninstall_receipt(&transaction, &receipt)?;
+        transaction.commit()?;
+        Ok(UninstallDecision::Uninstalled(receipt))
+    }
+
     /// Reads an application's current durable state by package identity
     /// without any durable side effect. `None` means the package has never
     /// been installed — a legitimate read outcome, not an error.
@@ -921,6 +1138,21 @@ impl ApplicationAuthority {
     ) -> Result<Option<DisableReceipt>, ApplicationAuthorityError> {
         let connection = self.lock()?;
         load_disable_receipt_by_package(&connection, package_id)
+    }
+
+    /// Reads the immutable uninstall receipt of one application by package
+    /// identity. `None` means the application was never uninstalled — a
+    /// legitimate read outcome, not an error.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed on a storage error.
+    pub fn inspect_uninstall_receipt(
+        &self,
+        package_id: PackageId,
+    ) -> Result<Option<UninstallReceipt>, ApplicationAuthorityError> {
+        let connection = self.lock()?;
+        load_uninstall_receipt_by_package(&connection, package_id)
     }
 
     /// Reads one immutable installation receipt by installation id.
@@ -1176,6 +1408,61 @@ fn load_disable_receipt_by_package(
     rows.next()?.map(decode_disable_receipt_row).transpose()
 }
 
+fn load_uninstall_receipt_by_key(
+    source: &Connection,
+    key: IdempotencyKey,
+) -> Result<Option<UninstallReceipt>, ApplicationAuthorityError> {
+    let mut statement = source.prepare(
+        "SELECT application_id, application_generation, idempotency_key, uninstalled_at_ms
+         FROM application_uninstall_receipts WHERE idempotency_key = ?1",
+    )?;
+    let mut rows = statement.query([key.as_bytes().as_slice()])?;
+    rows.next()?.map(decode_uninstall_receipt_row).transpose()
+}
+
+fn load_uninstall_receipt_by_package(
+    source: &Connection,
+    package_id: PackageId,
+) -> Result<Option<UninstallReceipt>, ApplicationAuthorityError> {
+    let mut statement = source.prepare(
+        "SELECT application_id, application_generation, idempotency_key, uninstalled_at_ms
+         FROM application_uninstall_receipts
+         WHERE application_id = (SELECT application_id FROM applications
+                                 WHERE package_id = ?1)",
+    )?;
+    let mut rows = statement.query([package_id.as_bytes().as_slice()])?;
+    rows.next()?.map(decode_uninstall_receipt_row).transpose()
+}
+
+fn insert_uninstall_receipt(
+    transaction: &Connection,
+    receipt: &UninstallReceipt,
+) -> Result<(), ApplicationAuthorityError> {
+    transaction.execute(
+        "INSERT INTO application_uninstall_receipts (
+            application_id, idempotency_key, application_generation, uninstalled_at_ms
+         ) VALUES (?1, ?2, ?3, ?4)",
+        params![
+            receipt.application_id.as_bytes().as_slice(),
+            receipt.idempotency_key.as_bytes().as_slice(),
+            encode_generation(receipt.application_generation)?,
+            encode_u64(receipt.uninstalled_at_ms)?,
+        ],
+    )?;
+    Ok(())
+}
+
+fn decode_uninstall_receipt_row(
+    row: &rusqlite::Row<'_>,
+) -> Result<UninstallReceipt, ApplicationAuthorityError> {
+    Ok(UninstallReceipt {
+        application_id: ApplicationId::from_bytes(blob16(row, 0)?),
+        application_generation: decode_generation(row, 1)?,
+        idempotency_key: IdempotencyKey::from_bytes(blob16(row, 2)?),
+        uninstalled_at_ms: decode_u64(row, 3)?,
+    })
+}
+
 fn insert_disable_receipt(
     transaction: &Connection,
     receipt: &DisableReceipt,
@@ -1361,6 +1648,7 @@ mod tests {
     fn status_encoding_round_trips_and_rejects_unknowns() {
         assert_eq!(ApplicationStatus::Installed.encode(), 1);
         assert_eq!(ApplicationStatus::Disabled.encode(), 2);
+        assert_eq!(ApplicationStatus::Uninstalled.encode(), 3);
         assert_eq!(
             ApplicationStatus::decode(ApplicationStatus::Installed.encode()).expect("installed"),
             ApplicationStatus::Installed
@@ -1369,8 +1657,13 @@ mod tests {
             ApplicationStatus::decode(ApplicationStatus::Disabled.encode()).expect("disabled"),
             ApplicationStatus::Disabled
         );
+        assert_eq!(
+            ApplicationStatus::decode(ApplicationStatus::Uninstalled.encode())
+                .expect("uninstalled"),
+            ApplicationStatus::Uninstalled
+        );
         assert!(matches!(
-            ApplicationStatus::decode(3),
+            ApplicationStatus::decode(4),
             Err(ApplicationAuthorityError::CorruptRecord(_))
         ));
         assert!(matches!(

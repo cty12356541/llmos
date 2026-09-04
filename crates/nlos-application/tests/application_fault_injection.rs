@@ -1111,9 +1111,16 @@ fn application_fault_trigger_guards_survive_injection_and_recovery() {
         .expect("legal disable transition");
     assert!(
         raw.execute("UPDATE applications SET status=1", []).is_err(),
-        "disabled is terminal in this slice"
+        "disabled cannot return to installed in this slice"
     );
-    assert!(raw.execute("UPDATE applications SET status=3", []).is_err());
+    assert!(
+        raw.execute(
+            "UPDATE applications SET status=3, current_installation_generation=current_installation_generation+1",
+            []
+        )
+        .is_err(),
+        "uninstall must not move the generation"
+    );
 
     // The guarded authority still serves reads; the durable installs are
     // untouched.

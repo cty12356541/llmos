@@ -10,13 +10,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use nlos_application::{
     ApplicationAuthorityError, DisableApplicationRequest, InstallApplicationRequest,
-    UpdateApplicationRequest, derive_application_id, derive_installation_id,
+    UninstallApplicationRequest, UpdateApplicationRequest, derive_application_id,
+    derive_installation_id,
 };
 use nlos_types::{Generation, IdempotencyKey, ReceiptId};
 use rusqlite::Connection;
 use support::{
     TestStack, authority_database, disable_replayed, disabled, installed, open_authority, replayed,
-    update_replayed, updated,
+    uninstall_replayed, uninstalled, update_replayed, updated,
 };
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -63,6 +64,18 @@ fn assert_disable_counts(stack: &TestStack, disable_receipts: i64) {
         ),
         disable_receipts,
         "unexpected application_disable_receipts row count"
+    );
+}
+
+fn assert_uninstall_counts(stack: &TestStack, uninstall_receipts: i64) {
+    let database = authority_database(stack.root.root());
+    assert_eq!(
+        raw_count(
+            &database,
+            "SELECT COUNT(*) FROM application_uninstall_receipts"
+        ),
+        uninstall_receipts,
+        "unexpected application_uninstall_receipts row count"
     );
 }
 
@@ -544,7 +557,7 @@ fn trigger_guards_abort_raw_tampering() {
         )
         .is_err()
     );
-    // The application row is durable (uninstall is out of scope).
+    // The application row is durable (physical delete is out of scope).
     assert!(raw.execute("DELETE FROM applications", []).is_err());
 
     // A receipt can only exist at the application's current generation.
@@ -594,12 +607,33 @@ fn trigger_guards_abort_raw_tampering() {
         .is_err()
     );
 
-    // Disabled is terminal: 2→1 and 2→anything are illegal.
+    // Disabled can only transition to uninstalled; re-enable is illegal.
     raw.execute("UPDATE applications SET status=2", [])
         .expect("legal disable");
     assert!(
         raw.execute("UPDATE applications SET status=1", []).is_err(),
         "re-enabling a disabled application is illegal in this slice"
+    );
+    assert!(
+        raw.execute(
+            "UPDATE applications SET status=3, current_installation_generation=current_installation_generation+1",
+            []
+        )
+        .is_err(),
+        "uninstall must not move the generation"
+    );
+    raw.execute(
+        "UPDATE applications SET status=3, updated_at_ms=updated_at_ms+1",
+        [],
+    )
+    .expect("disabled may transition to uninstalled");
+    assert!(
+        raw.execute("UPDATE applications SET status=1", []).is_err(),
+        "uninstalled is terminal"
+    );
+    assert!(
+        raw.execute("UPDATE applications SET status=2", []).is_err(),
+        "uninstalled cannot return to disabled"
     );
     assert!(
         raw.execute("UPDATE applications SET status=3", []).is_err(),
@@ -618,7 +652,10 @@ fn trigger_guards_abort_raw_tampering() {
         .inspect_application(verified.package_id)
         .expect("inspect after tamper sweep")
         .expect("exists");
-    assert_eq!(view.status, nlos_application::ApplicationStatus::Disabled);
+    assert_eq!(
+        view.status,
+        nlos_application::ApplicationStatus::Uninstalled
+    );
     assert_eq!(view.current_installation_generation.get(), 2);
     assert_eq!(
         authority
@@ -1224,4 +1261,240 @@ fn update_refusals_are_typed_and_leave_zero_state() {
     ));
     assert_counts(&stack, 1, 1);
     assert_disable_counts(&stack, 1);
+}
+
+/// 正常卸载（installed）：uninstall API 单事务落 immutable uninstall
+/// receipt 并 CAS installed→uninstalled（代际不动）；同 key 重放返回原回执。
+#[test]
+fn uninstall_installed_application_replays_idempotently() {
+    let stack = TestStack::new(&label("uninstall"), 0x3A);
+    let verified = stack.verify_package(0x41, 1, key(0xF0), 1_000);
+    let authority = open_authority(stack.root.root());
+    let installation = installed(
+        &authority,
+        &stack.artifacts,
+        verified.receipt_id,
+        0x01,
+        2_000,
+    );
+
+    let receipt = uninstalled(&authority, verified.package_id, 0x0A, 4_000);
+    assert_eq!(receipt.application_id, installation.application_id);
+    assert_eq!(
+        receipt.application_generation,
+        Generation::INITIAL,
+        "uninstall never moves the generation"
+    );
+    assert_eq!(receipt.idempotency_key, key(0x0A));
+    assert_eq!(receipt.uninstalled_at_ms, 4_000);
+
+    let view = authority
+        .inspect_application(verified.package_id)
+        .expect("inspect")
+        .expect("exists");
+    assert_eq!(
+        view.status,
+        nlos_application::ApplicationStatus::Uninstalled
+    );
+    assert_eq!(
+        view.current_installation_generation,
+        Generation::INITIAL,
+        "the generation is untouched by the transition"
+    );
+    assert_eq!(
+        view.updated_at_ms, 4_000,
+        "the row records the uninstall as its last update"
+    );
+
+    let read_back = authority
+        .inspect_uninstall_receipt(verified.package_id)
+        .expect("uninstall readback")
+        .expect("uninstall receipt exists");
+    assert_eq!(read_back, receipt);
+
+    let replay = uninstall_replayed(&authority, verified.package_id, 0x0A, 4_000);
+    assert_eq!(replay, receipt);
+    assert_counts(&stack, 1, 1);
+    assert_uninstall_counts(&stack, 1);
+}
+
+/// 正常卸载（disabled）：disabled 状态可经 uninstall 进入终态 uninstalled；
+/// 代际不动；同 key 重放返回原回执。
+#[test]
+fn uninstall_disabled_application_replays_idempotently() {
+    let stack = TestStack::new(&label("uninstall-disabled"), 0x3B);
+    let verified = stack.verify_package(0x41, 1, key(0xF0), 1_000);
+    let authority = open_authority(stack.root.root());
+    let installation = installed(
+        &authority,
+        &stack.artifacts,
+        verified.receipt_id,
+        0x01,
+        2_000,
+    );
+    disabled(&authority, verified.package_id, 0x0B, 3_000);
+
+    let receipt = uninstalled(&authority, verified.package_id, 0x0A, 4_000);
+    assert_eq!(receipt.application_id, installation.application_id);
+    assert_eq!(
+        receipt.application_generation,
+        Generation::INITIAL,
+        "uninstall from disabled never moves the generation"
+    );
+
+    let view = authority
+        .inspect_application(verified.package_id)
+        .expect("inspect")
+        .expect("exists");
+    assert_eq!(
+        view.status,
+        nlos_application::ApplicationStatus::Uninstalled
+    );
+    assert_eq!(view.current_installation_generation, Generation::INITIAL);
+
+    let replay = uninstall_replayed(&authority, verified.package_id, 0x0A, 4_000);
+    assert_eq!(replay, receipt);
+    assert_counts(&stack, 1, 1);
+    assert_disable_counts(&stack, 1);
+    assert_uninstall_counts(&stack, 1);
+}
+
+/// 更新后代际卸载：update 推进到 gen 2 后 uninstall 回执记录 gen 2（代际不动）。
+#[test]
+fn update_then_uninstall_records_current_generation() {
+    let stack = TestStack::new(&label("uninstall-after-update"), 0x3C);
+    let first = stack.verify_package(0x41, 1, key(0xF0), 1_000);
+    let second = stack.verify_package(0x41, 2, key(0xF1), 2_000);
+    let authority = open_authority(stack.root.root());
+    let gen1 = installed(&authority, &stack.artifacts, first.receipt_id, 0x01, 2_000);
+    updated(
+        &authority,
+        &stack.artifacts,
+        first.package_id,
+        second.receipt_id,
+        0x02,
+        3_000,
+    );
+
+    let receipt = uninstalled(&authority, first.package_id, 0x0A, 5_000);
+    assert_eq!(receipt.application_id, gen1.application_id);
+    assert_eq!(
+        receipt.application_generation.get(),
+        2,
+        "the uninstall receipt pins the generation at uninstall time"
+    );
+
+    let view = authority
+        .inspect_application(first.package_id)
+        .expect("inspect")
+        .expect("exists");
+    assert_eq!(
+        view.status,
+        nlos_application::ApplicationStatus::Uninstalled
+    );
+    assert_eq!(view.current_installation_generation.get(), 2);
+    assert_eq!(view.updated_at_ms, 5_000);
+    assert_uninstall_counts(&stack, 1);
+}
+
+/// 卸载拒绝全表：未知 package（ApplicationNotFound）、早于当前更新时间
+/// （UninstallPrecedesLastUpdate）、同 key 异形（IdempotencyConflict，
+/// replay-first：异 package 也先撞 key）、终态异键（ApplicationAlready
+/// Uninstalled）；全部 typed 且零 durable 状态变化。
+#[test]
+fn uninstall_refusals_are_typed_and_leave_zero_state() {
+    let stack = TestStack::new(&label("uninstall-refusals"), 0x3D);
+    let verified = stack.verify_package(0x41, 1, key(0xF0), 1_000);
+    let authority = open_authority(stack.root.root());
+
+    let error = authority
+        .uninstall_application(UninstallApplicationRequest {
+            package_id: verified.package_id,
+            idempotency_key: key(0x0A),
+            uninstalled_at_ms: 3_000,
+        })
+        .expect_err("nothing was ever installed");
+    assert!(matches!(
+        error,
+        ApplicationAuthorityError::ApplicationNotFound { package_id }
+            if package_id == verified.package_id
+    ));
+
+    installed(
+        &authority,
+        &stack.artifacts,
+        verified.receipt_id,
+        0x01,
+        2_000,
+    );
+
+    let error = authority
+        .uninstall_application(UninstallApplicationRequest {
+            package_id: verified.package_id,
+            idempotency_key: key(0x0A),
+            uninstalled_at_ms: 1_999,
+        })
+        .expect_err("uninstall must not precede its own installation");
+    assert!(matches!(
+        error,
+        ApplicationAuthorityError::UninstallPrecedesLastUpdate {
+            last_updated_at_ms: 2_000,
+            uninstalled_at_ms: 1_999,
+        }
+    ));
+    assert_uninstall_counts(&stack, 0);
+
+    let receipt = uninstalled(&authority, verified.package_id, 0x0A, 3_000);
+    assert_uninstall_counts(&stack, 1);
+
+    let error = authority
+        .uninstall_application(UninstallApplicationRequest {
+            package_id: verified.package_id,
+            idempotency_key: key(0x0A),
+            uninstalled_at_ms: 9_000,
+        })
+        .expect_err("same key with a different timestamp must conflict");
+    assert!(matches!(
+        error,
+        ApplicationAuthorityError::IdempotencyConflict
+    ));
+
+    // Replay-first ordering: the same key names the recorded fact, so even
+    // an unknown package under it conflicts before any existence check.
+    let error = authority
+        .uninstall_application(UninstallApplicationRequest {
+            package_id: nlos_types::PackageId::from_bytes([0x42; 16]),
+            idempotency_key: key(0x0A),
+            uninstalled_at_ms: 3_000,
+        })
+        .expect_err("the key is bound to its original request shape");
+    assert!(matches!(
+        error,
+        ApplicationAuthorityError::IdempotencyConflict
+    ));
+
+    let error = authority
+        .uninstall_application(UninstallApplicationRequest {
+            package_id: verified.package_id,
+            idempotency_key: key(0x0B),
+            uninstalled_at_ms: 3_000,
+        })
+        .expect_err("a distinct command against the terminal state is refused");
+    assert!(matches!(
+        error,
+        ApplicationAuthorityError::ApplicationAlreadyUninstalled { application_id }
+            if application_id == receipt.application_id
+    ));
+
+    assert_counts(&stack, 1, 1);
+    assert_uninstall_counts(&stack, 1);
+    let view = authority
+        .inspect_application(verified.package_id)
+        .expect("inspect")
+        .expect("exists");
+    assert_eq!(
+        view.status,
+        nlos_application::ApplicationStatus::Uninstalled
+    );
+    assert_eq!(view.current_installation_generation, Generation::INITIAL);
 }

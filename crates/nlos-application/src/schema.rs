@@ -2,7 +2,7 @@ use rusqlite::{Connection, TransactionBehavior};
 
 use crate::ApplicationAuthorityError;
 
-pub(crate) const SCHEMA_VERSION: i64 = 2;
+pub(crate) const SCHEMA_VERSION: i64 = 3;
 
 /// Creates the durable application/installation authority schema v1: the
 /// per-package `applications` singleton (current installation generation +
@@ -50,7 +50,7 @@ pub(crate) fn migrate_v1(connection: &mut Connection) -> Result<(), ApplicationA
         |row| row.get(0),
     )?;
     if table_count == 2 && trigger_count == 7 {
-        connection.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        connection.pragma_update(None, "user_version", 1)?;
         return Ok(());
     }
     if table_count != 0 || trigger_count != 0 {
@@ -173,7 +173,7 @@ pub(crate) fn migrate_v2(connection: &mut Connection) -> Result<(), ApplicationA
         |row| row.get(0),
     )?;
     if table_count == 1 && trigger_count == 3 {
-        connection.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        connection.pragma_update(None, "user_version", 2)?;
         return Ok(());
     }
     if table_count != 0 || trigger_count != 0 {
@@ -215,5 +215,169 @@ pub(crate) fn migrate_v2(connection: &mut Connection) -> Result<(), ApplicationA
         PRAGMA user_version=2;",
     )?;
     transaction.commit()?;
+    Ok(())
+}
+
+/// Adds schema v3: the immutable `application_uninstall_receipts` table,
+/// extends application status with `uninstalled` (= 3), and relaxes the
+/// status-machine trigger so `disabled → uninstalled` is legal (generation
+/// unchanged on both disable and uninstall transitions).
+///
+/// - The uninstall receipt is the *fact* carrier of the terminal
+///   `installed|disabled → uninstalled` transition: immutable, durable, at
+///   most one per application (`application_id` PRIMARY KEY), one row per
+///   idempotency key (`UNIQUE`). The receipt records the generation at
+///   uninstall time (unchanged by the transition).
+/// - The AFTER INSERT state-bounds guard ties every uninstall receipt to an
+///   application that is *already uninstalled at its current generation*.
+/// - The `applications` table is rebuilt so the `status` `CHECK` accepts
+///   `(1, 2, 3)`; foreign keys are briefly disabled during the rebuild
+///   (child receipt tables reference `applications`).
+#[allow(clippy::too_many_lines)]
+pub(crate) fn migrate_v3(connection: &mut Connection) -> Result<(), ApplicationAuthorityError> {
+    let applications_sql: String = connection.query_row(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='applications'",
+        [],
+        |row| row.get(0),
+    )?;
+    let status_allows_uninstalled = applications_sql.contains("1, 2, 3");
+    let uninstall_table_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type='table' AND name = 'application_uninstall_receipts'",
+        [],
+        |row| row.get(0),
+    )?;
+    let uninstall_trigger_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN (
+            'application_uninstall_receipts_immutable_update',
+            'application_uninstall_receipts_no_delete',
+            'application_uninstall_receipts_state_bounds'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if status_allows_uninstalled && uninstall_table_count == 1 && uninstall_trigger_count == 3 {
+        connection.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        return Ok(());
+    }
+    if uninstall_table_count != 0 || uninstall_trigger_count != 0 {
+        return Err(ApplicationAuthorityError::CorruptRecord(
+            "partial application uninstall receipt schema",
+        ));
+    }
+
+    connection.pragma_update(None, "foreign_keys", "OFF")?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "DROP TRIGGER IF EXISTS applications_monotonic_generation;
+        DROP TRIGGER IF EXISTS applications_frozen_identity;
+        DROP TRIGGER IF EXISTS applications_legal_status_transition;
+        DROP TRIGGER IF EXISTS applications_no_delete;
+        DROP TRIGGER IF EXISTS installation_receipts_generation_bounds;
+        DROP TRIGGER IF EXISTS application_disable_receipts_state_bounds;
+
+        CREATE TABLE applications_v3 (
+            application_id BLOB PRIMARY KEY NOT NULL CHECK(length(application_id)=16),
+            package_id BLOB NOT NULL UNIQUE CHECK(length(package_id)=16),
+            package_manifest_digest BLOB NOT NULL CHECK(length(package_manifest_digest)=32),
+            current_installation_generation INTEGER NOT NULL
+                CHECK(current_installation_generation >= 1),
+            status INTEGER NOT NULL CHECK(status IN (1, 2, 3)),
+            created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0),
+            updated_at_ms INTEGER NOT NULL CHECK(updated_at_ms >= created_at_ms)
+        ) STRICT;
+
+        INSERT INTO applications_v3
+            SELECT application_id, package_id, package_manifest_digest,
+                   current_installation_generation, status,
+                   created_at_ms, updated_at_ms
+            FROM applications;
+        DROP TABLE applications;
+        ALTER TABLE applications_v3 RENAME TO applications;
+
+        CREATE TRIGGER applications_monotonic_generation
+        BEFORE UPDATE ON applications
+        WHEN NEW.current_installation_generation < OLD.current_installation_generation
+        BEGIN
+            SELECT RAISE(ABORT, 'application installation generation is monotonic');
+        END;
+        CREATE TRIGGER applications_frozen_identity
+        BEFORE UPDATE ON applications
+        WHEN NEW.application_id != OLD.application_id OR NEW.package_id != OLD.package_id
+        BEGIN
+            SELECT RAISE(ABORT, 'application identity is frozen');
+        END;
+        CREATE TRIGGER applications_legal_status_transition
+        BEFORE UPDATE ON applications
+        WHEN OLD.status = 3
+            OR (OLD.status = 2 AND NEW.status != 3)
+            OR NEW.status NOT IN (1, 2, 3)
+            OR (NEW.status = 2
+                AND NEW.current_installation_generation
+                    != OLD.current_installation_generation)
+            OR (NEW.status = 3
+                AND NEW.current_installation_generation
+                    != OLD.current_installation_generation)
+        BEGIN
+            SELECT RAISE(ABORT, 'application status transition is not legal');
+        END;
+        CREATE TRIGGER applications_no_delete
+        BEFORE DELETE ON applications BEGIN
+            SELECT RAISE(ABORT, 'application row is durable (physical delete is out of scope)');
+        END;
+
+        CREATE TRIGGER installation_receipts_generation_bounds
+        AFTER INSERT ON installation_receipts
+        WHEN NEW.installation_generation != (
+            SELECT current_installation_generation FROM applications
+            WHERE application_id = NEW.application_id
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'installation receipt exceeds the application generation');
+        END;
+        CREATE TRIGGER application_disable_receipts_state_bounds
+        AFTER INSERT ON application_disable_receipts
+        WHEN (SELECT status FROM applications
+              WHERE application_id = NEW.application_id) != 2
+            OR NEW.application_generation != (
+                SELECT current_installation_generation FROM applications
+                WHERE application_id = NEW.application_id
+            )
+        BEGIN
+            SELECT RAISE(ABORT, 'application disable receipt requires the disabled application at its current generation');
+        END;
+
+        CREATE TABLE application_uninstall_receipts (
+            application_id BLOB PRIMARY KEY NOT NULL CHECK(length(application_id)=16),
+            idempotency_key BLOB NOT NULL UNIQUE CHECK(length(idempotency_key)=16),
+            application_generation INTEGER NOT NULL CHECK(application_generation >= 1),
+            uninstalled_at_ms INTEGER NOT NULL CHECK(uninstalled_at_ms >= 0),
+            FOREIGN KEY(application_id) REFERENCES applications(application_id)
+        ) STRICT;
+
+        CREATE TRIGGER application_uninstall_receipts_immutable_update
+        BEFORE UPDATE ON application_uninstall_receipts BEGIN
+            SELECT RAISE(ABORT, 'application uninstall receipt is immutable');
+        END;
+        CREATE TRIGGER application_uninstall_receipts_no_delete
+        BEFORE DELETE ON application_uninstall_receipts BEGIN
+            SELECT RAISE(ABORT, 'application uninstall receipt is durable');
+        END;
+        CREATE TRIGGER application_uninstall_receipts_state_bounds
+        AFTER INSERT ON application_uninstall_receipts
+        WHEN (SELECT status FROM applications
+              WHERE application_id = NEW.application_id) != 3
+            OR NEW.application_generation != (
+                SELECT current_installation_generation FROM applications
+                WHERE application_id = NEW.application_id
+            )
+        BEGIN
+            SELECT RAISE(ABORT, 'application uninstall receipt requires the uninstalled application at its current generation');
+        END;
+
+        PRAGMA user_version=3;",
+    )?;
+    transaction.commit()?;
+    connection.pragma_update(None, "foreign_keys", "ON")?;
     Ok(())
 }

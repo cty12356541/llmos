@@ -13,7 +13,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use ed25519_dalek::{Signer, SigningKey};
 use nlos_application::{
     ApplicationAuthority, DisableApplicationRequest, DisableDecision, DisableReceipt,
-    InstallApplicationRequest, InstallDecision, UpdateApplicationRequest, UpdateDecision,
+    InstallApplicationRequest, InstallDecision, UninstallApplicationRequest, UninstallDecision,
+    UninstallReceipt, UpdateApplicationRequest, UpdateDecision,
 };
 use nlos_artifact::{
     ArtifactStore, ContentDigest, CreateArtifactSpec, PackageEntryRole, PackageManifest,
@@ -333,6 +334,50 @@ pub fn update_replayed(
         UpdateDecision::Replayed(receipt) => receipt,
         UpdateDecision::Updated(receipt) => {
             panic!("expected Replayed, got Updated {receipt:?}")
+        }
+    }
+}
+
+/// Runs one uninstall and unwraps the fresh-uninstall branch.
+pub fn uninstalled(
+    authority: &ApplicationAuthority,
+    package_id: nlos_types::PackageId,
+    key: u8,
+    at_ms: u64,
+) -> UninstallReceipt {
+    match authority
+        .uninstall_application(UninstallApplicationRequest {
+            package_id,
+            idempotency_key: IdempotencyKey::from_bytes([key; 16]),
+            uninstalled_at_ms: at_ms,
+        })
+        .expect("uninstall must succeed")
+    {
+        UninstallDecision::Uninstalled(receipt) => receipt,
+        UninstallDecision::Replayed(receipt) => {
+            panic!("fresh key cannot replay an uninstall, got {receipt:?}")
+        }
+    }
+}
+
+/// Runs one uninstall and unwraps the replay branch.
+pub fn uninstall_replayed(
+    authority: &ApplicationAuthority,
+    package_id: nlos_types::PackageId,
+    key: u8,
+    at_ms: u64,
+) -> UninstallReceipt {
+    match authority
+        .uninstall_application(UninstallApplicationRequest {
+            package_id,
+            idempotency_key: IdempotencyKey::from_bytes([key; 16]),
+            uninstalled_at_ms: at_ms,
+        })
+        .expect("uninstall must replay")
+    {
+        UninstallDecision::Replayed(receipt) => receipt,
+        UninstallDecision::Uninstalled(receipt) => {
+            panic!("expected Replayed, got Uninstalled {receipt:?}")
         }
     }
 }
