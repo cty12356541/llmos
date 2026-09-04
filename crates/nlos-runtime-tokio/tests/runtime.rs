@@ -113,7 +113,7 @@ async fn completed_fiber_records_wall_and_scheduler_time() {
     let usage = runtime.activation_usage(handle).expect("usage");
     assert!(usage.elapsed_wall >= Duration::from_millis(5));
     assert!(usage.scheduler_wait <= Duration::from_secs(1));
-    assert_eq!(usage.active_cpu, Duration::ZERO);
+    assert!(usage.active_cpu <= usage.elapsed_wall);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

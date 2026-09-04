@@ -80,11 +80,73 @@ enum TerminalOutcome {
     Finished(FiberExit),
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum UsagePhase {
+    #[default]
+    None,
+    Running(Instant),
+    WaitingExternal(Instant),
+}
+
+struct UsageAccumulator {
+    usage: ActivationUsage,
+    phase: UsagePhase,
+}
+
+impl UsageAccumulator {
+    fn enter_running(&mut self, now: Instant) {
+        match self.phase {
+            UsagePhase::WaitingExternal(since) => {
+                self.usage.external_wait += now.saturating_duration_since(since);
+                self.phase = UsagePhase::Running(now);
+            }
+            UsagePhase::None => {
+                self.phase = UsagePhase::Running(now);
+            }
+            UsagePhase::Running(_) => {}
+        }
+    }
+
+    fn enter_waiting(&mut self, now: Instant) {
+        match self.phase {
+            UsagePhase::Running(since) => {
+                self.usage.active_cpu += now.saturating_duration_since(since);
+                self.phase = UsagePhase::WaitingExternal(now);
+            }
+            UsagePhase::None => {
+                self.phase = UsagePhase::WaitingExternal(now);
+            }
+            UsagePhase::WaitingExternal(_) => {}
+        }
+    }
+
+    fn finalize(&mut self, now: Instant) {
+        if let UsagePhase::Running(since) = self.phase {
+            self.usage.active_cpu += now.saturating_duration_since(since);
+        }
+        if let UsagePhase::WaitingExternal(since) = self.phase {
+            self.usage.external_wait += now.saturating_duration_since(since);
+        }
+        self.phase = UsagePhase::None;
+    }
+
+    fn snapshot(&self, now: Instant) -> ActivationUsage {
+        let mut usage = self.usage;
+        if let UsagePhase::Running(since) = self.phase {
+            usage.active_cpu += now.saturating_duration_since(since);
+        }
+        if let UsagePhase::WaitingExternal(since) = self.phase {
+            usage.external_wait += now.saturating_duration_since(since);
+        }
+        usage
+    }
+}
+
 struct FiberRecord {
     generation: Generation,
     scope: Arc<CancellationScope>,
     state: Mutex<FiberState>,
-    usage: Mutex<ActivationUsage>,
+    usage: Mutex<UsageAccumulator>,
     accepted_at: Instant,
     terminal: Mutex<TerminalOutcome>,
     terminal_notify: Condvar,
@@ -96,7 +158,10 @@ impl FiberRecord {
             generation,
             scope,
             state: Mutex::new(FiberState::Ready),
-            usage: Mutex::new(ActivationUsage::default()),
+            usage: Mutex::new(UsageAccumulator {
+                usage: ActivationUsage::default(),
+                phase: UsagePhase::None,
+            }),
             accepted_at: Instant::now(),
             terminal: Mutex::new(TerminalOutcome::Pending),
             terminal_notify: Condvar::new(),
@@ -126,6 +191,27 @@ impl FiberRecord {
     }
 
     fn set_state(&self, state: FiberState) {
+        let now = Instant::now();
+        let current = *lock_unpoisoned(&self.state);
+        if state == FiberState::Running && current == FiberState::WaitingIo {
+            return;
+        }
+        {
+            let mut usage = lock_unpoisoned(&self.usage);
+            match state {
+                FiberState::Running => usage.enter_running(now),
+                FiberState::Completed | FiberState::Failed | FiberState::Cancelled => {
+                    usage.finalize(now);
+                }
+                _ => {}
+            }
+        }
+        *lock_unpoisoned(&self.state) = state;
+    }
+
+    /// Marks a newly admitted fiber as running for inspection without starting
+    /// CPU metering; the task body begins metering on first poll.
+    fn set_state_without_metering(&self, state: FiberState) {
         *lock_unpoisoned(&self.state) = state;
     }
 
@@ -134,6 +220,8 @@ impl FiberRecord {
     fn begin_wait(&self) {
         let mut state = lock_unpoisoned(&self.state);
         if matches!(*state, FiberState::Ready | FiberState::Running) {
+            let now = Instant::now();
+            lock_unpoisoned(&self.usage).enter_waiting(now);
             *state = FiberState::WaitingIo;
         }
     }
@@ -143,8 +231,15 @@ impl FiberRecord {
     fn resume_from_wait(&self) {
         let mut state = lock_unpoisoned(&self.state);
         if *state == FiberState::WaitingIo {
+            let now = Instant::now();
+            lock_unpoisoned(&self.usage).enter_running(now);
             *state = FiberState::Running;
         }
+    }
+
+    fn activation_usage_snapshot(&self) -> ActivationUsage {
+        let usage = lock_unpoisoned(&self.usage);
+        usage.snapshot(Instant::now())
     }
 }
 
@@ -276,7 +371,7 @@ impl RuntimeAdapter for TokioRuntimeAdapter {
         }
         // Admission succeeded: the generation is live from the caller's view
         // even before the executor polls the spawned task body.
-        record.set_state(FiberState::Running);
+        record.set_state_without_metering(FiberState::Running);
 
         let handle = FiberHandle {
             fiber_id: spec.fiber_id,
@@ -314,8 +409,7 @@ impl RuntimeAdapter for TokioRuntimeAdapter {
 
     fn activation_usage(&self, handle: FiberHandle) -> Result<ActivationUsage, RuntimeError> {
         let record = self.record_for(handle)?;
-        let usage = *lock_unpoisoned(&record.usage);
-        Ok(usage)
+        Ok(record.activation_usage_snapshot())
     }
 
     fn join_fiber(&self, handle: FiberHandle) -> Result<FiberExit, RuntimeError> {
@@ -340,7 +434,7 @@ async fn run_fiber(
     let started_at = Instant::now();
     {
         let mut usage = lock_unpoisoned(&record.usage);
-        usage.scheduler_wait = started_at.saturating_duration_since(record.accepted_at);
+        usage.usage.scheduler_wait = started_at.saturating_duration_since(record.accepted_at);
     }
     record.set_state(FiberState::Running);
     let guarded_future = AssertUnwindSafe(future).catch_unwind();
@@ -365,7 +459,7 @@ async fn run_fiber(
     let finished_at = Instant::now();
     {
         let mut usage = lock_unpoisoned(&record.usage);
-        usage.elapsed_wall = finished_at.saturating_duration_since(started_at);
+        usage.usage.elapsed_wall = finished_at.saturating_duration_since(started_at);
     }
     // The terminal transition and the wait-registry purges share one critical
     // section, so a wake either observes the live fiber (and hands off) or the

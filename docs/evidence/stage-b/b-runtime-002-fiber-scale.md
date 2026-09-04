@@ -70,7 +70,7 @@ cargo fmt -p nlos-runtime-tokio -- --check                            → 通过
 - **单平台实测**：数字均为 macOS arm64（APFS fsync 特性敏感，register_settle 主导项）；Linux/Windows 数字待夜间 scale-probe CI job（`--include-ignored`，ubuntu）补充。
 - **MSRV 双工具链未本地执行**：本地 1.97 toolchain 安装损坏（`librustc_driver` dylib 缺失 → 其 rustfmt/check 均不可用），fmt 双工具链与 MSRV check 以 CI（stable/Linux fmt 门 + ubuntu MSRV job）为准，如实标注。
 - **in-memory 注册表线性扫描**：`deliver`（逐 report 行线性 find）与 fiber 终态 purge（`retain` 全表）在 100K 挂起下呈 O(n) 每事件，wake 阶段 ~4.3s 可接受但属已登记的规模特征，非本前片修改对象。
-- **未做（ROAD-B-006 其余退出门，登记后续）**：~~cancel/late-callback 矩阵~~（功能级矩阵已落地，见 §6；100K 规模级 cancel 探针仍因 O(n²) 终态 purge 未纳入）、~~structured join/detach（API 不存在，如实登记缺口，见 §6.4）~~（合同层最小前缀已落地，见 §6.5）、Process crash propagation、分维 Activation metering、真实阻塞 I/O（本片为 durable wait 挂起路径）；100K `cancel_scope` 收尾因 O(n²) 终态 purge 未纳入探针， teardown 走 drop。
+- **未做（ROAD-B-006 其余退出门，登记后续）**：~~cancel/late-callback 矩阵~~（功能级矩阵已落地，见 §6；100K 规模级 cancel 探针仍因 O(n²) 终态 purge 未纳入）、~~structured join/detach（API 不存在，如实登记缺口，见 §6.4）~~（合同层最小前缀已落地，见 §6.5）、~~Process crash propagation~~（见 `b-process-003-crash-propagation.md`）、~~分维 Activation metering 最小前缀~~（见 §6.6）、真实阻塞 I/O（本片为 durable wait 挂起路径）；100K `cancel_scope` 收尾因 O(n²) 终态 purge 未纳入探针， teardown 走 drop。
 - probe 为 `#[ignore]`，常规 CI（push/PR）不运行；夜间 scale-probe job 覆盖。
 
 ## 6. cancel/late-callback 功能矩阵（2026-09-02 追加，勾销 §5 中 cancel/late-callback 项的功能级部分）
@@ -109,7 +109,7 @@ clippy 双工具链 `-D warnings`：**本地三次运行均被并行车道在途
 ### 6.3 缺口更新
 
 - **勾销**：§5「cancel/late-callback 矩阵」功能级部分 → 本 §6 落地（6/6 绿）。100K 规模级 cancel 探针（`cancel_scope` 收尾）仍随 O(n²) 终态 purge 一并保留于 §5 已登记限制。
-- **如实保留（ROAD-B-006 剩余，整体不达成）**：阻塞 I/O 负向证明（不线性占用宿主线程的负向证据）、Process crash propagation、分维 Activation metering。
+- **如实保留（ROAD-B-006 剩余，整体不达成）**：阻塞 I/O 负向证明（不线性占用宿主线程的负向证据）、~~Process crash propagation~~（见 `b-process-003-crash-propagation.md`）、~~分维 Activation metering 最小前缀~~（见 §6.6）。
 
 ### 6.4 structured join/detach：API 缺口登记（已由 §6.5 勾销）
 
@@ -146,4 +146,40 @@ cargo fmt -p nlos-runtime -p nlos-runtime-tokio -- --check
 #### 6.5.2 缺口更新
 
 - **勾销**：§6.4 合同层缺口 → 本 §6.5 最小前缀（join + 显式 detach + 隐式 detach 文档化）。
-- **如实保留（ROAD-B-006 剩余，Claim 维持 PARTIAL_PASS）**：Process crash propagation、分维 Activation metering、阻塞 I/O 负向证明、100K 规模级 cancel 探针；未声称 ROAD-B-006 整体达成。
+- **如实保留（ROAD-B-006 剩余，Claim 维持 PARTIAL_PASS）**：~~Process crash propagation~~（见 `b-process-003-crash-propagation.md`）、~~分维 Activation metering~~（见 §6.6 最小前缀）、阻塞 I/O 负向证明、100K 规模级 cancel 探针；未声称 ROAD-B-006 整体达成。
+
+### 6.6 Activation meter 最小前缀（2026-09-05 追加，W13-M / ROAD-B-006）
+
+- Owner：`nlos-runtime-tokio`（`src/lib.rs` + `tests/activation_meter.rs`）
+- 设计依据：v0.5 §28.2 ROAD-B-006「分维 Activation metering」；`ActivationUsage` 合同已在 `nlos-runtime` 定义（`active_cpu`、`elapsed_wall`、`scheduler_wait`、`external_wait`、`backpressure_wait`、`suspended`）。
+- **实现（最小、additive）**：
+  - `FiberRecord` 以 `UsageAccumulator` + `UsagePhase` 在状态边界累计：`begin_wait` / `resume_from_wait`（Operation wait 与 Channel wait 共用路径）累计 `external_wait`；`Running` 执行段累计 `active_cpu`；终态 `finalize` 收口在途相位。
+  - `spawn_fiber` 仅设置可见 `Running` 态（`set_state_without_metering`），CPU 计量从 `run_fiber` 首次 poll 开始，避免 scheduler 排队误计 `active_cpu`；`set_state(Running)` 不覆写 `WaitingIo`（仅 `resume_from_wait` 可离开等待态）。
+  - 既有 `scheduler_wait` + `elapsed_wall` 口径不变；`backpressure_wait` / `suspended` 仍为默认零。
+- **新增测试**（`activation_meter.rs`，3 项）：
+  1. `operation_wait_accumulates_external_wait_not_active_cpu` — Operation wait 挂起 50ms：`external_wait ≥ 40ms` 且 `active_cpu < external_wait`。
+  2. `compute_fiber_records_active_cpu_against_elapsed_wall` — 纯计算 fiber：`active_cpu` 与 `elapsed_wall` 同量级、`external_wait = 0`。
+  3. `join_then_activation_usage_readback_is_stable` — join 后重复 `activation_usage` 读回一致。
+
+#### 6.6.1 验证门实测
+
+```text
+cargo test -p nlos-runtime-tokio
+  → 73 passed / 0 failed / 3 ignored（14 个 test target 全绿；70 既有 + 3 activation_meter；
+    ignored = durable_wait_scale 2 项 + scale.rs 100K 1 项）
+cargo test -p nlos-runtime-tokio --test activation_meter
+  → 3 passed / 0 failed（2026-09-05 W13-M）
+cargo clippy -p nlos-runtime-tokio --all-targets -- -D warnings
+  → exit 0（stable，2026-09-05 W13-M）
+cargo fmt -p nlos-runtime-tokio -- --check
+  → 通过（stable，2026-09-05 W13-M）
+```
+
+#### 6.6.2 缺口更新
+
+- **勾销**：§6.5.2 / §6.3 中「分维 Activation metering」功能级最小前缀 → 本 §6.6（`external_wait` + `active_cpu` 两维；join 后读回稳定）。
+- **如实保留（ROAD-B-006 剩余，Claim 维持 PARTIAL_PASS）**：
+  - 100K 探针下分维 metering 规模验证（`backpressure_wait` / `suspended` 维仍为零占位）；
+  - 阻塞 I/O 负向证明（宿主线程不随 fiber 数线性增长）；
+  - 100K 规模级 cancel 探针；
+  - 未声称 ROAD-B-006 整体达成。
