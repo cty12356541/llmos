@@ -26,9 +26,11 @@ pub use model::{
     ActiveProcessBinding, CreateIsolationDomainRequest, FencingToken, FiberEntrySnapshotDecision,
     FiberEntrySnapshotRecord, FiberIncarnationDecision, FiberIncarnationRecord,
     IsolationDomainDecision, IsolationDomainRecord, IsolationDomainRotationDecision,
-    ProcessBindingDecision, ProcessBindingEndpointProof, ProcessBindingRecord,
-    RegisterDelegatedProcessRequest, RegisterFiberIncarnationRequest, RestoreProcessDecision,
-    RestoreProcessRequest, RotateIsolationDomainRequest, WriteFiberEntrySnapshotRequest,
+    MarkProcessTerminatedRequest, ProcessBindingDecision, ProcessBindingEndpointProof,
+    ProcessBindingRecord, ProcessLifecycleState, ProcessTerminalDecision, ProcessTerminalRecord,
+    PropagateCrashRequest, RegisterDelegatedProcessRequest, RegisterFiberIncarnationRequest,
+    RestoreProcessDecision, RestoreProcessRequest, RotateIsolationDomainRequest,
+    WriteFiberEntrySnapshotRequest,
 };
 
 #[derive(Debug)]
@@ -59,6 +61,8 @@ pub enum ProcessAuthorityError {
     FiberSnapshotNotFound,
     /// The entry snapshot input violates its durable contract.
     InvalidFiberSnapshot(&'static str),
+    /// The process binding is no longer active: it was marked terminal.
+    ProcessBindingTerminal(ProcessLifecycleState),
     CorruptRecord(&'static str),
     LockPoisoned,
 }
@@ -114,6 +118,10 @@ impl fmt::Display for ProcessAuthorityError {
             Self::InvalidFiberSnapshot(reason) => {
                 write!(formatter, "invalid fiber entry snapshot: {reason}")
             }
+            Self::ProcessBindingTerminal(state) => write!(
+                formatter,
+                "process binding is terminal ({state:?}); fiber registration and resume are fail-closed"
+            ),
             Self::CorruptRecord(reason) => write!(formatter, "corrupt durable record: {reason}"),
             Self::LockPoisoned => formatter.write_str("process authority writer lock is poisoned"),
         }
@@ -170,8 +178,13 @@ impl ProcessAuthority {
             0 => {
                 schema::migrate_v1(&mut connection)?;
                 schema::migrate_v2(&mut connection)?;
+                schema::migrate_v3(&mut connection)?;
             }
-            1 => schema::migrate_v2(&mut connection)?,
+            1 => {
+                schema::migrate_v2(&mut connection)?;
+                schema::migrate_v3(&mut connection)?;
+            }
+            2 => schema::migrate_v3(&mut connection)?,
             schema::SCHEMA_VERSION => {}
             other => return Err(ProcessAuthorityError::SchemaVersionUnsupported(other)),
         }
@@ -495,7 +508,7 @@ impl ProcessAuthority {
         let changed = transaction.execute(
             "UPDATE process_heads SET
                 current_generation = ?1, current_fencing_token = ?2,
-                current_agent_generation = ?3, updated_at_ms = ?4
+                current_agent_generation = ?3, updated_at_ms = ?4, lifecycle_state = 0
              WHERE process_id = ?5 AND current_generation = ?6 AND current_fencing_token = ?7",
             params![
                 encode_generation(record.process_generation)?,
@@ -528,6 +541,7 @@ impl ProcessAuthority {
         let connection = self.lock()?;
         let head = load_process_head_optional(&connection, process_id)?
             .ok_or(ProcessAuthorityError::ProcessNotFound(process_id))?;
+        ensure_process_active(head.lifecycle_state)?;
         let record = load_process_binding(&connection, process_id, head.process_generation)?;
         if record.process_fencing_token != head.process_fencing_token
             || record.agent_instance_id != head.agent_instance_id
@@ -610,6 +624,58 @@ impl ProcessAuthority {
             .ok_or(ProcessAuthorityError::IsolationDomainNotFound(domain_id))
     }
 
+    /// Marks the current Process binding generation as cleanly terminated.
+    /// Once terminal, fiber incarnation registration and handler-entry
+    /// snapshot writes fail closed with zero side effect.
+    ///
+    /// # Errors
+    ///
+    /// Fails on idempotency rebinding, a stale process fence, an already
+    /// terminal binding with a different key, or storage failure.
+    pub fn mark_process_terminated(
+        &self,
+        request: MarkProcessTerminatedRequest,
+    ) -> Result<ProcessTerminalDecision, ProcessAuthorityError> {
+        self.mark_process_terminal(request, ProcessLifecycleState::Terminated)
+    }
+
+    /// Propagates a host crash to the current Process binding generation.
+    ///
+    /// # Errors
+    ///
+    /// Same fail-closed gates as [`Self::mark_process_terminated`].
+    pub fn propagate_crash(
+        &self,
+        request: PropagateCrashRequest,
+    ) -> Result<ProcessTerminalDecision, ProcessAuthorityError> {
+        self.mark_process_terminal(
+            MarkProcessTerminatedRequest {
+                process_id: request.process_id,
+                expected_process_generation: request.expected_process_generation,
+                expected_process_fencing_token: request.expected_process_fencing_token,
+                idempotency_key: request.idempotency_key,
+                marked_at_ms: request.marked_at_ms,
+            },
+            ProcessLifecycleState::Crashed,
+        )
+    }
+
+    /// Reads the durable terminal marker for `process_id` at its current
+    /// head generation, if any.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the Process is unknown or its marker row is corrupt.
+    pub fn inspect_process_terminal(
+        &self,
+        process_id: ProcessId,
+    ) -> Result<Option<ProcessTerminalRecord>, ProcessAuthorityError> {
+        let connection = self.lock()?;
+        let head = load_process_head_optional(&connection, process_id)?
+            .ok_or(ProcessAuthorityError::ProcessNotFound(process_id))?;
+        load_terminal_marker_optional(&connection, process_id, head.process_generation)
+    }
+
     /// Registers one fiber incarnation for `binding` under `process_id`
     /// (ADR-0012 decision 3): the durable generation/fence authority
     /// B-PROCESS-001 in its fiber-borrowing role. The registration CAS's
@@ -669,6 +735,7 @@ impl ProcessAuthority {
 
         let head = load_process_head_optional(&transaction, request.process_id)?
             .ok_or(ProcessAuthorityError::ProcessNotFound(request.process_id))?;
+        ensure_process_active(head.lifecycle_state)?;
         if head.process_generation != request.expected_process_generation
             || head.process_fencing_token != request.expected_process_fencing_token
         {
@@ -776,6 +843,7 @@ impl ProcessAuthority {
         );
         let mut connection = self.lock()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        ensure_process_active(load_process_lifecycle(&transaction, request.process_id)?)?;
         let head =
             load_incarnation_head_optional(&transaction, request.process_id, request.binding)?
                 .ok_or(ProcessAuthorityError::FiberIncarnationNotFound)?;
@@ -891,6 +959,97 @@ impl ProcessAuthority {
             .lock()
             .map_err(|_| ProcessAuthorityError::LockPoisoned)
     }
+
+    fn mark_process_terminal(
+        &self,
+        request: MarkProcessTerminatedRequest,
+        lifecycle_state: ProcessLifecycleState,
+    ) -> Result<ProcessTerminalDecision, ProcessAuthorityError> {
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(existing) = load_terminal_by_key(&transaction, request.idempotency_key)? {
+            if !terminal_matches_request(&existing, &request, lifecycle_state) {
+                return Err(ProcessAuthorityError::IdempotencyConflict);
+            }
+            transaction.commit()?;
+            return Ok(ProcessTerminalDecision::Replayed(existing));
+        }
+
+        let head = load_process_head_optional(&transaction, request.process_id)?
+            .ok_or(ProcessAuthorityError::ProcessNotFound(request.process_id))?;
+        if head.process_generation != request.expected_process_generation
+            || head.process_fencing_token != request.expected_process_fencing_token
+        {
+            return Err(ProcessAuthorityError::StaleProcessBinding);
+        }
+        if head.lifecycle_state != ProcessLifecycleState::Active {
+            if let Some(existing) = load_terminal_marker_optional(
+                &transaction,
+                request.process_id,
+                head.process_generation,
+            )? && terminal_matches_request(&existing, &request, lifecycle_state)
+            {
+                transaction.commit()?;
+                return Ok(ProcessTerminalDecision::Replayed(existing));
+            }
+            return Err(ProcessAuthorityError::ProcessBindingTerminal(
+                head.lifecycle_state,
+            ));
+        }
+        if let Some(existing) = load_terminal_marker_optional(
+            &transaction,
+            request.process_id,
+            head.process_generation,
+        )? {
+            if terminal_matches_request(&existing, &request, lifecycle_state) {
+                transaction.commit()?;
+                return Ok(ProcessTerminalDecision::Replayed(existing));
+            }
+            return Err(ProcessAuthorityError::ProcessBindingTerminal(
+                existing.lifecycle_state,
+            ));
+        }
+
+        let record = ProcessTerminalRecord {
+            process_id: request.process_id,
+            process_generation: head.process_generation,
+            process_fencing_token: head.process_fencing_token,
+            lifecycle_state,
+            idempotency_key: request.idempotency_key,
+            marked_at_ms: request.marked_at_ms,
+        };
+        transaction.execute(
+            "INSERT INTO process_terminal_markers (
+                process_id, process_generation, process_fencing_token,
+                lifecycle_state, idempotency_key, marked_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                record.process_id.as_bytes().as_slice(),
+                encode_generation(record.process_generation)?,
+                record.process_fencing_token.as_slice(),
+                encode_lifecycle_state(record.lifecycle_state),
+                record.idempotency_key.as_bytes().as_slice(),
+                encode_u64(record.marked_at_ms)?,
+            ],
+        )?;
+        let changed = transaction.execute(
+            "UPDATE process_heads SET lifecycle_state = ?1, updated_at_ms = ?2
+             WHERE process_id = ?3 AND current_generation = ?4
+               AND current_fencing_token = ?5 AND lifecycle_state = 0",
+            params![
+                encode_lifecycle_state(record.lifecycle_state),
+                encode_u64(record.marked_at_ms)?,
+                record.process_id.as_bytes().as_slice(),
+                encode_generation(record.process_generation)?,
+                record.process_fencing_token.as_slice(),
+            ],
+        )?;
+        if changed != 1 {
+            return Err(ProcessAuthorityError::ProcessFenceConflict);
+        }
+        transaction.commit()?;
+        Ok(ProcessTerminalDecision::Marked(record))
+    }
 }
 
 #[derive(Clone)]
@@ -899,6 +1058,7 @@ struct ProcessHead {
     process_fencing_token: FencingToken,
     agent_instance_id: AgentInstanceId,
     agent_instance_generation: Generation,
+    lifecycle_state: ProcessLifecycleState,
 }
 
 struct RotationReplay {
@@ -1170,8 +1330,8 @@ fn insert_process_head(
     transaction.execute(
         "INSERT INTO process_heads (
             process_id, current_generation, current_fencing_token, agent_instance_id,
-            current_agent_generation, created_at_ms, updated_at_ms
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+            current_agent_generation, lifecycle_state, created_at_ms, updated_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?6)",
         params![
             record.process_id.as_bytes().as_slice(),
             encode_generation(record.process_generation)?,
@@ -1353,7 +1513,7 @@ fn load_process_head_optional(
     let raw = connection
         .query_row(
             "SELECT current_generation, current_fencing_token,
-                    agent_instance_id, current_agent_generation
+                    agent_instance_id, current_agent_generation, lifecycle_state
              FROM process_heads WHERE process_id = ?1",
             [process_id.as_bytes().as_slice()],
             |row| {
@@ -1362,18 +1522,22 @@ fn load_process_head_optional(
                     row.get::<_, Vec<u8>>(1)?,
                     row.get::<_, Vec<u8>>(2)?,
                     row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
                 ))
             },
         )
         .optional()?;
-    raw.map(|(generation, token, agent_instance_id, agent_generation)| {
-        Ok(ProcessHead {
-            process_generation: decode_generation(generation)?,
-            process_fencing_token: array32(token)?,
-            agent_instance_id: AgentInstanceId::from_bytes(array16(agent_instance_id)?),
-            agent_instance_generation: decode_generation(agent_generation)?,
-        })
-    })
+    raw.map(
+        |(generation, token, agent_instance_id, agent_generation, lifecycle)| {
+            Ok(ProcessHead {
+                process_generation: decode_generation(generation)?,
+                process_fencing_token: array32(token)?,
+                agent_instance_id: AgentInstanceId::from_bytes(array16(agent_instance_id)?),
+                agent_instance_generation: decode_generation(agent_generation)?,
+                lifecycle_state: decode_lifecycle_state(lifecycle)?,
+            })
+        },
+    )
     .transpose()
 }
 
@@ -1534,4 +1698,114 @@ fn array32(bytes: Vec<u8>) -> Result<[u8; 32], ProcessAuthorityError> {
     bytes
         .try_into()
         .map_err(|_| ProcessAuthorityError::CorruptRecord("digest/token length is not 32"))
+}
+
+fn encode_lifecycle_state(state: ProcessLifecycleState) -> i64 {
+    match state {
+        ProcessLifecycleState::Active => 0,
+        ProcessLifecycleState::Terminated => 1,
+        ProcessLifecycleState::Crashed => 2,
+    }
+}
+
+fn decode_lifecycle_state(value: i64) -> Result<ProcessLifecycleState, ProcessAuthorityError> {
+    match value {
+        0 => Ok(ProcessLifecycleState::Active),
+        1 => Ok(ProcessLifecycleState::Terminated),
+        2 => Ok(ProcessLifecycleState::Crashed),
+        _ => Err(ProcessAuthorityError::CorruptRecord(
+            "unknown process lifecycle state",
+        )),
+    }
+}
+
+fn ensure_process_active(
+    lifecycle_state: ProcessLifecycleState,
+) -> Result<(), ProcessAuthorityError> {
+    match lifecycle_state {
+        ProcessLifecycleState::Active => Ok(()),
+        terminal @ (ProcessLifecycleState::Terminated | ProcessLifecycleState::Crashed) => {
+            Err(ProcessAuthorityError::ProcessBindingTerminal(terminal))
+        }
+    }
+}
+
+fn load_process_lifecycle(
+    connection: &Connection,
+    process_id: ProcessId,
+) -> Result<ProcessLifecycleState, ProcessAuthorityError> {
+    load_process_head_optional(connection, process_id)?
+        .ok_or(ProcessAuthorityError::ProcessNotFound(process_id))
+        .map(|head| head.lifecycle_state)
+}
+
+fn terminal_matches_request(
+    record: &ProcessTerminalRecord,
+    request: &MarkProcessTerminatedRequest,
+    lifecycle_state: ProcessLifecycleState,
+) -> bool {
+    record.process_id == request.process_id
+        && record.process_generation == request.expected_process_generation
+        && record.process_fencing_token == request.expected_process_fencing_token
+        && record.lifecycle_state == lifecycle_state
+        && record.idempotency_key == request.idempotency_key
+}
+
+fn load_terminal_by_key(
+    connection: &Connection,
+    key: IdempotencyKey,
+) -> Result<Option<ProcessTerminalRecord>, ProcessAuthorityError> {
+    let identity = connection
+        .query_row(
+            "SELECT process_id, process_generation FROM process_terminal_markers
+             WHERE idempotency_key = ?1",
+            [key.as_bytes().as_slice()],
+            |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .optional()?;
+    match identity {
+        Some((process_id, generation)) => load_terminal_marker_optional(
+            connection,
+            ProcessId::from_bytes(array16(process_id)?),
+            decode_generation(generation)?,
+        ),
+        None => Ok(None),
+    }
+}
+
+fn load_terminal_marker_optional(
+    connection: &Connection,
+    process_id: ProcessId,
+    process_generation: Generation,
+) -> Result<Option<ProcessTerminalRecord>, ProcessAuthorityError> {
+    let raw = connection
+        .query_row(
+            "SELECT process_fencing_token, lifecycle_state, idempotency_key, marked_at_ms
+             FROM process_terminal_markers
+             WHERE process_id = ?1 AND process_generation = ?2",
+            params![
+                process_id.as_bytes().as_slice(),
+                encode_generation(process_generation)?
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            },
+        )
+        .optional()?;
+    raw.map(|(token, lifecycle, key, marked_at)| {
+        Ok(ProcessTerminalRecord {
+            process_id,
+            process_generation,
+            process_fencing_token: array32(token)?,
+            lifecycle_state: decode_lifecycle_state(lifecycle)?,
+            idempotency_key: IdempotencyKey::from_bytes(array16(key)?),
+            marked_at_ms: decode_u64(marked_at)?,
+        })
+    })
+    .transpose()
 }

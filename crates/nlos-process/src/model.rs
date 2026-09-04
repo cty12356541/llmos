@@ -266,3 +266,58 @@ impl FiberEntrySnapshotDecision {
         }
     }
 }
+
+/// Durable lifecycle of one Process binding generation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProcessLifecycleState {
+    /// The binding still accepts fiber registration and resume writes.
+    Active,
+    /// Clean lifecycle exit (join-equivalent terminal).
+    Terminated,
+    /// Host crash or unplanned loss propagated to the binding authority.
+    Crashed,
+}
+
+/// One authority-recorded terminal marker for a Process head generation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProcessTerminalRecord {
+    pub process_id: ProcessId,
+    pub process_generation: Generation,
+    pub process_fencing_token: FencingToken,
+    pub lifecycle_state: ProcessLifecycleState,
+    pub idempotency_key: IdempotencyKey,
+    pub marked_at_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MarkProcessTerminatedRequest {
+    pub process_id: ProcessId,
+    pub expected_process_generation: Generation,
+    pub expected_process_fencing_token: FencingToken,
+    pub idempotency_key: IdempotencyKey,
+    pub marked_at_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PropagateCrashRequest {
+    pub process_id: ProcessId,
+    pub expected_process_generation: Generation,
+    pub expected_process_fencing_token: FencingToken,
+    pub idempotency_key: IdempotencyKey,
+    pub marked_at_ms: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ProcessTerminalDecision {
+    Marked(ProcessTerminalRecord),
+    Replayed(ProcessTerminalRecord),
+}
+
+impl ProcessTerminalDecision {
+    #[must_use]
+    pub const fn record(&self) -> &ProcessTerminalRecord {
+        match self {
+            Self::Marked(record) | Self::Replayed(record) => record,
+        }
+    }
+}

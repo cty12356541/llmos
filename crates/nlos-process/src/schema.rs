@@ -2,7 +2,70 @@ use rusqlite::{Connection, TransactionBehavior};
 
 use crate::ProcessAuthorityError;
 
-pub(crate) const SCHEMA_VERSION: i64 = 2;
+pub(crate) const SCHEMA_VERSION: i64 = 3;
+
+pub(crate) fn migrate_v3(connection: &mut Connection) -> Result<(), ProcessAuthorityError> {
+    let marker_table: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type='table' AND name = 'process_terminal_markers'",
+        [],
+        |row| row.get(0),
+    )?;
+    let trigger_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN (
+            'process_terminal_markers_immutable_update',
+            'process_terminal_markers_immutable_delete'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    let lifecycle_column: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('process_heads')
+         WHERE name = 'lifecycle_state'",
+        [],
+        |row| row.get(0),
+    )?;
+    if marker_table == 1 && trigger_count == 2 && lifecycle_column == 1 {
+        connection.pragma_update(None, "user_version", 3)?;
+        return Ok(());
+    }
+    if marker_table != 0 || trigger_count != 0 || lifecycle_column != 0 {
+        return Err(ProcessAuthorityError::CorruptRecord(
+            "partial process terminal lifecycle schema",
+        ));
+    }
+
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "ALTER TABLE process_heads
+         ADD COLUMN lifecycle_state INTEGER NOT NULL DEFAULT 0
+             CHECK(lifecycle_state >= 0 AND lifecycle_state <= 2);
+
+        CREATE TABLE process_terminal_markers (
+            process_id BLOB NOT NULL CHECK(length(process_id) = 16),
+            process_generation INTEGER NOT NULL CHECK(process_generation >= 1),
+            process_fencing_token BLOB NOT NULL CHECK(length(process_fencing_token) = 32),
+            lifecycle_state INTEGER NOT NULL CHECK(lifecycle_state IN (1, 2)),
+            idempotency_key BLOB NOT NULL UNIQUE CHECK(length(idempotency_key) = 16),
+            marked_at_ms INTEGER NOT NULL CHECK(marked_at_ms >= 0),
+            PRIMARY KEY(process_id, process_generation),
+            FOREIGN KEY(process_id) REFERENCES process_heads(process_id)
+        ) STRICT;
+
+        CREATE TRIGGER process_terminal_markers_immutable_update
+        BEFORE UPDATE ON process_terminal_markers BEGIN
+            SELECT RAISE(ABORT, 'process terminal marker is immutable');
+        END;
+        CREATE TRIGGER process_terminal_markers_immutable_delete
+        BEFORE DELETE ON process_terminal_markers BEGIN
+            SELECT RAISE(ABORT, 'process terminal marker is immutable');
+        END;
+
+        PRAGMA user_version = 3;",
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
 
 pub(crate) fn migrate_v2(connection: &mut Connection) -> Result<(), ProcessAuthorityError> {
     let table_count: i64 = connection.query_row(
