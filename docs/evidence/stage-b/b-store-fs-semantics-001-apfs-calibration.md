@@ -73,7 +73,7 @@ fault-injection 验证体系的地基是 `nlos-store-fault` 的写丢失模型�
 ## 6. 未运行项（显式标注）
 
 - `xTruncate` 注入路径的直接探针（M5）；
-- 层 2：Linux CI dm-flakey 虚拟化掉电（含 FULL/NORMAL 区分、目录项持久性、位级损坏域）；
+- 层 2：Linux CI dm-flakey 虚拟化掉电（含 FULL/NORMAL 区分、目录项持久性、位级损坏域）——**workflow 基础设施已实跑 PASS**（§8.5），模型校准目标 M4/M6/M8 仍无专项数据；
 - 层 3：真实硬件掉电抽验；
 - `cargo test --workspace` / `cargo clippy --workspace`（任务禁止，仅 `-p nlos-store-fault`）；
 - IOERR/ENOSPC 注入（不在本车道范围，poc-0003 F3 已覆盖，含 macOS RAM volume 真实 ENOSPC）。
@@ -89,9 +89,9 @@ cargo fmt -p nlos-store-fault
 
 上述命令于 2026-08-29 在 HEAD `4f90511` 全部通过；测试套件对仓库零写入（全部数据库文件建于每测试独立 tempdir，进程退出即清理）。
 
-## 8. 层 2 接入：虚拟化掉电 CI — workflow 交付（2026-09-02，**未实跑**）
+## 8. 层 2 接入：虚拟化掉电 CI — workflow 交付与首次实跑（2026-09-02 交付；2026-09-04 首次 workflow_dispatch 实跑）
 
-> 本节兑现 §6 登记的「层 2：Linux CI dm-flakey 虚拟化掉电」后续项的**交付半步**：workflow 与可行性分析已落地；实跑数据（FULL/NORMAL 区分、目录项持久性、位级损坏域——M4/M6/M8 的层 2 检验）要等首次 `workflow_dispatch` 手动触发后才有，**本节不将层 2 标记为已验证**。HEAD `498161b`。
+> 本节兑现 §6 登记的「层 2：Linux CI dm-flakey 虚拟化掉电」后续项：workflow 于 2026-09-02 交付（HEAD `498161b`）；**2026-09-04 首次 `workflow_dispatch` 手动触发实跑成功**（run `33895972272`，HEAD `544ca72`）。层 2 基础设施与 harness 在 ubuntu-latest/dm-flakey/ext4 路径已证实；M4（FULL/NORMAL 区分）、M6（目录项持久性）、M8（位级损坏域）的专项检验仍无数据——**本节不将层 2 模型校准标记为已验证**。
 
 ### 8.1 交付物与写集
 
@@ -125,9 +125,52 @@ GitHub hosted `ubuntu-latest` runner 具备 root（passwordless sudo，官方文
 
  dm-flakey 语义与被校准模型的对接：`drop_writes` 窗口内 `xWrite`/`xSync` 的下层介质静默丢弃但报告成功——正是 M1/M4 注入点假设的**真实介质版**；M3（tear 点 = 写调用边界）之外的更细粒度破坏（M8 偏差）由窗口切割点不受调用边界约束补齐；M6 的目录项持久性与 FULL/NORMAL 区分（M4）需实跑数据才能下结论，**本节不作任何断言**。
 
-### 8.4 未验证项（显式声明）
+### 8.4 未验证项（显式声明，2026-09-04 更新）
 
-- **workflow 整体未实跑**：yaml 仅通过语法级自查（`yaml.safe_load`）；actionlint（本机未安装则跳过）。dm-flakey 命令序列（`suspend --noflush`/`load`/`resume` 活换、flakey 表特征参数 `1 drop_writes`）依据内核 device-mapper 文档与 xfstests 用法编写，**未在任何 Linux 环境验证**。
-- 上述 8.3 全部假设未在真实 runner 上证实。
-- 层 2 检验目标（M4 FULL/NORMAL 区分、M6 目录项持久性、M8 位级损坏域、层 1 结论在 ext4 上的复验）**全部无数据**——首次 `workflow_dispatch` 实跑前，§6 第二条的「未运行」状态保持不变。
-- 嵌入探针除 `python3 -m py_compile` 外，其 **crash 模式已于本机（macOS/APFS）功能实跑通过**（2026-09-02：2 轮 × 3 偏移点，6/6 trial `prefix-intact` + `integrity=ok`，exit 0——crash 模式不依赖 dm，平台无关）；**power 模式**（drop_writes 窗口编排）依赖 dm 设备，**未实跑**。flip.sh 活换序列经本地 stub `dmsetup` 端到端验证表参数正确（`flakey <loop> 0 1 60 1 drop_writes` / `linear <loop> 0`），但真实内核路径未验证。
+- ~~**workflow 整体未实跑**~~ → **已实跑**（见 §8.5）。yaml 语法级自查于交付时完成；dm-flakey 活换序列（`suspend --noflush`/`load`/`resume`、flakey 表 `1 drop_writes`）于 2026-09-04 在 ubuntu-latest 实跑证实可用。
+- ~~上述 8.3 全部假设未在真实 runner 上证实~~ → **8.3 四项假设在 ubuntu-latest 全部成立**（passwordless sudo、dm_flakey 模块、loop device、e2fsprogs；见 §8.5 可行性结论）。
+- 层 2 **模型校准目标**（M4 FULL/NORMAL 区分、M6 目录项持久性、M8 位级损坏域）**仍无专项数据**——当前 workflow 的 power 探针仅验证 committed-prefix 完整性，未设计 FULL vs NORMAL 对照或目录项/位级损坏探针。
+- 层 1 结论在 ext4 上的复验：**baseline 相 fs_semantics 11/11 通过**（§8.5），与 APFS 层 1 结果一致，但仅为单次 runner 观察。
+- 嵌入探针：**crash 模式**于 macOS/APFS 功能实跑通过（2026-09-02）；**power 模式**于 2026-09-04 CI 首次实跑（6/6 trial `prefix-intact`，见 §8.5）。
+
+### 8.5 首次实跑记录（2026-09-04，W13-2 车道）
+
+#### 8.5.1 触发与元数据
+
+| 项 | 值 |
+|---|---|
+| 触发方式 | `workflow_dispatch`（`gh workflow run power-loss-simulation.yml`） |
+| Run ID | `33895972272` |
+| URL | https://github.com/cty12356541/llmos/actions/runs/33895972272 |
+| 结论 | **success**（54 s） |
+| HEAD | `544ca72` |
+| Runner | `ubuntu-latest`（GitHub hosted） |
+| Artifact | `power-loss-simulation-logs-33895972272` |
+
+> **补记**：夜间 schedule 已于 2026-09-03 自动触发一次（run `33817628991`，success，1m19s），结果与本次手动触发一致（dm-flakey 主路径、baseline/power-cut 全套件通过、power 探针 6/6 prefix-intact），但交付时 evidence 未登记——本节以 workflow_dispatch 运行为 canonical 首次实跑记录。
+
+#### 8.5.2 可行性探测
+
+| 假设 | 结果 |
+|---|---|
+| passwordless sudo | 可用 |
+| `dm_flakey` 模块 | 可用（`mode=dm-flakey`，未走降级路径） |
+| loop device | 可用 |
+| e2fsprogs | 可用（`mkfs.ext4`/`e2fsck`） |
+
+#### 8.5.3 各相结果
+
+| 相 | 结果 | 详情 |
+|---|---|---|
+| baseline（linear 直通，阻断） | **pass** | channel 13/13、wait 13/13、task 7/7、fs_semantics 11/11 |
+| power-cut（drop_writes 窗口，观察值） | **pass**（suites + 探针） | 同上四套件全过；power 探针 2 轮 × 3 偏移（0.5/1.5/3.0 s），6/6 `prefix-intact`（`integrity=ok`）；`SUMMARY strict_failures=0 infra_failures=0` |
+| fallback | skipped | dm-flakey 可用，未执行 |
+| cleanup / e2fsck | **pass** | `e2fsck -fn` 五遍检查无错误；25 files, 13569 blocks |
+
+#### 8.5.4 结论与分诊
+
+1. **基础设施已验证**：GitHub hosted `ubuntu-latest` 上 dm-flakey 虚拟化掉电 workflow 端到端可运行；§8.3 假设全部成立；§6「层 2：Linux CI dm-flakey 虚拟化掉电」从「未运行」更新为「workflow 已实跑、基础设施 PASS」。
+2. **harness 在 ext4/dm 路径成立**：baseline 相四套件全过，层 1 fs_semantics 结论在 Linux ext4 上复验一致（11/11）。
+3. **掉电相观察值（非回归判定）**：power-cut 相套件与探针均通过——在本 run 的 drop_writes 窗口时序下，未观测到 prefix 丢失或 corruption。这与「媒体说谎击穿 FULL 承诺」的预期观察值并不矛盾（窗口可能未扎中关键写路径）；**不构成 M4/M6/M8 已验证**。
+4. **仍待层 2/3 检验**：M4（FULL vs NORMAL 在真掉电下的区分）、M6（目录项持久性）、M8（帧边界外位级损坏）需专项探针或层 3 硬件抽验；当前 workflow 未覆盖。
+5. **无 workflow 阻塞 bug**：本次实跑无需修改 `.github/workflows/power-loss-simulation.yml` 或测试代码。
