@@ -16,6 +16,7 @@
 //!
 //! ```text
 //! inspect health                             | 查看健康
+//! export metrics                             | 导出指标
 //! inspect task <32-hex>                      | 查看任务 <32位十六进制>
 //! acknowledge alert <32-hex> expecting <n>   | 确认告警 <32位十六进制> 期望 <n>
 //! ```
@@ -46,9 +47,9 @@ pub const NL_ACK_REASON: &str =
     "acknowledged through the restricted natural-language control prefix";
 
 /// Legal grammar, named verbatim in every rejection message.
-const GRAMMAR_HELP: &str = "valid forms: \"inspect health\" | \"inspect task <32-hex>\" | \
-\"acknowledge alert <32-hex> expecting <count>\" | \"查看健康\" | \"查看任务 <32位十六进制>\" | \
-\"确认告警 <32位十六进制> 期望 <次数>\"";
+const GRAMMAR_HELP: &str = "valid forms: \"inspect health\" | \"export metrics\" | \
+\"inspect task <32-hex>\" | \"acknowledge alert <32-hex> expecting <count>\" | \"查看健康\" | \
+\"导出指标\" | \"查看任务 <32位十六进制>\" | \"确认告警 <32位十六进制> 期望 <次数>\"";
 
 /// Compiles one restricted-grammar English or Chinese imperative sentence
 /// into a [`ControlCommand`] for the existing dispatch paths. Pure function:
@@ -69,6 +70,14 @@ pub fn parse_nl_command(input: &str) -> Result<ControlCommand, ControlError> {
         {
             Ok(ControlCommand::InspectHealth)
         }
+        [head, second]
+            if head.eq_ignore_ascii_case("export") && second.eq_ignore_ascii_case("metrics") =>
+        {
+            Ok(ControlCommand::ExportMetrics)
+        }
+        [head, ..] if head.eq_ignore_ascii_case("export") => Err(ControlError::InvalidCommand(
+            "\"export\" expects \"metrics\"",
+        )),
         [head, second, plan]
             if head.eq_ignore_ascii_case("inspect") && second.eq_ignore_ascii_case("task") =>
         {
@@ -92,6 +101,7 @@ pub fn parse_nl_command(input: &str) -> Result<ControlCommand, ControlError> {
             ))
         }
         ["查看健康"] => Ok(ControlCommand::InspectHealth),
+        ["导出指标"] => Ok(ControlCommand::ExportMetrics),
         ["查看任务", plan] => Ok(ControlCommand::InspectTask {
             plan_id: parse_hex_id(plan)?,
         }),
@@ -140,6 +150,38 @@ mod tests {
             0xa1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6, 0x07, 0x18, 0x29, 0x3a, 0x4b, 0x5c, 0x6d, 0x7e,
             0x8f, 0x90,
         ]
+    }
+
+    #[test]
+    fn english_export_metrics_forms_parse() {
+        assert_eq!(
+            parse_nl_command("export metrics").unwrap(),
+            ControlCommand::ExportMetrics
+        );
+        assert_eq!(
+            parse_nl_command("EXPORT METRICS").unwrap(),
+            ControlCommand::ExportMetrics
+        );
+        assert_eq!(
+            parse_nl_command("Export\tMetrics").unwrap(),
+            ControlCommand::ExportMetrics
+        );
+        assert_eq!(
+            parse_nl_command("  export   metrics  \n").unwrap(),
+            ControlCommand::ExportMetrics
+        );
+    }
+
+    #[test]
+    fn chinese_export_metrics_form_parses() {
+        assert_eq!(
+            parse_nl_command("导出指标").unwrap(),
+            ControlCommand::ExportMetrics
+        );
+        assert_eq!(
+            parse_nl_command("  导出指标  ").unwrap(),
+            ControlCommand::ExportMetrics
+        );
     }
 
     #[test]
@@ -267,6 +309,11 @@ mod tests {
             "   ",
             "show health",
             "显示健康",
+            "export",
+            "export metric",
+            "export metrics now",
+            "导出",
+            "导出指标了",
             "inspect",
             "inspect task",
             "inspect health now",

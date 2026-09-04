@@ -12,6 +12,7 @@
 //!
 //! ```text
 //! system-control-cli <SOCKET> inspect-health
+//! system-control-cli <SOCKET> export-metrics
 //! system-control-cli <SOCKET> inspect-task <PLAN_ID_HEX_32>
 //! system-control-cli <SOCKET> ack-recovery-alert <COMMAND_ID_HEX_32> <PLAN_ID_HEX_32> <EXPECTED_FAILURES> <REASON>
 //! ```
@@ -38,6 +39,7 @@ use nlos_system_control::control::{
 
 #[cfg(unix)]
 const USAGE: &str = "usage: system-control-cli <SOCKET> inspect-health \
+| export-metrics \
 | inspect-task <PLAN_ID_HEX_32> \
 | ack-recovery-alert <COMMAND_ID_HEX_32> <PLAN_ID_HEX_32> <EXPECTED_FAILURES> <REASON>";
 
@@ -55,6 +57,7 @@ fn parsed_command(arguments: &[String]) -> Result<ControlCommand, ControlError> 
     };
     match operation {
         "inspect-health" if arguments.len() == 1 => Ok(ControlCommand::InspectHealth),
+        "export-metrics" if arguments.len() == 1 => Ok(ControlCommand::ExportMetrics),
         "inspect-task" if arguments.len() == 2 => Ok(ControlCommand::InspectTask {
             plan_id: parse_hex_id(&arguments[1])?,
         }),
@@ -95,6 +98,10 @@ fn summary(receipt: &ControlReceipt) -> String {
             inspection.durable_unacknowledged_escalated,
             inspection.durable_resolved,
             inspection.alerts.len(),
+        ),
+        Ok(ControlOutcome::MetricsExported(export)) => format!(
+            "outcome=metrics_exported bytes={}",
+            export.openmetrics_text.len(),
         ),
         Ok(ControlOutcome::Acknowledged { receipt_id }) => {
             format!("outcome=acknowledged receipt_id={}", hex(receipt_id))

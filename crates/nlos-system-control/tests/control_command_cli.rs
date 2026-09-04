@@ -442,14 +442,38 @@ mod socket_harness {
             .map(|index| u8::from_str_radix(&hex[index..index + 2], 16).unwrap())
             .collect()
     }
+
+    pub async fn assert_in_process_socket_and_cli_parity(
+        socket_path: &Path,
+        control: &RecoverySystemControl<'_, StubHealth, CapabilityPolicy>,
+        command: &ControlCommand,
+        cli_args: &[&str],
+    ) {
+        use nlos_system_control::control::dispatch_over_socket;
+
+        let direct = dispatch_in_process(control, command, MONOTONIC_NOW_NS, WALL_NOW_MS).unwrap();
+        let library = dispatch_over_socket(socket_path, command).await.unwrap();
+        assert_eq!(direct.to_bytes(), library.to_bytes());
+        let cli = run_cli(socket_path, cli_args);
+        assert!(
+            cli.status.success(),
+            "cli {:?} failed: code={:?} stdout={} stderr={}",
+            cli_args,
+            cli.status.code(),
+            String::from_utf8_lossy(&cli.stdout),
+            String::from_utf8_lossy(&cli.stderr),
+        );
+        assert_eq!(cli_receipt_bytes(&cli), direct.to_bytes());
+    }
 }
 
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn cli_and_in_process_paths_produce_byte_identical_receipts() {
-    use nlos_system_control::control::dispatch_over_socket;
-
-    use socket_harness::{bind_socket, cli_receipt_bytes, run_cli, serve_forever};
+    use socket_harness::{
+        assert_in_process_socket_and_cli_parity, bind_socket, cli_receipt_bytes, run_cli,
+        serve_forever,
+    };
 
     let database = Arc::new(TestDatabase::new());
     let authority = Arc::new(database.open());
@@ -461,33 +485,26 @@ async fn cli_and_in_process_paths_produce_byte_identical_receipts() {
     let stub_health = health(&plan_id);
     let control = RecoverySystemControl::new(authority.as_ref(), &stub_health, &CapabilityPolicy);
 
-    let inspect = ControlCommand::InspectHealth;
-    let direct = dispatch_in_process(&control, &inspect, MONOTONIC_NOW_NS, WALL_NOW_MS).unwrap();
-    let library = dispatch_over_socket(&socket_path, &inspect).await.unwrap();
-    assert_eq!(direct.to_bytes(), library.to_bytes());
-    let cli_inspect = run_cli(&socket_path, &["inspect-health"]);
-    assert!(
-        cli_inspect.status.success(),
-        "cli inspect failed: code={:?} stdout={} stderr={}",
-        cli_inspect.status.code(),
-        String::from_utf8_lossy(&cli_inspect.stdout),
-        String::from_utf8_lossy(&cli_inspect.stderr),
-    );
-    assert_eq!(cli_receipt_bytes(&cli_inspect), direct.to_bytes());
+    assert_in_process_socket_and_cli_parity(
+        &socket_path,
+        &control,
+        &ControlCommand::InspectHealth,
+        &["inspect-health"],
+    )
+    .await;
+    assert_in_process_socket_and_cli_parity(
+        &socket_path,
+        &control,
+        &ControlCommand::ExportMetrics,
+        &["export-metrics"],
+    )
+    .await;
 
     let acknowledge = acknowledge_command(&plan_id);
-    let ack_direct =
-        dispatch_in_process(&control, &acknowledge, MONOTONIC_NOW_NS, WALL_NOW_MS).unwrap();
-    let ControlOutcome::Acknowledged { receipt_id } = ack_direct.outcome.as_ref().unwrap() else {
-        panic!("expected acknowledgement receipt");
-    };
-    assert_eq!(receipt_id.len(), 16);
-    let ack_library = dispatch_over_socket(&socket_path, &acknowledge)
-        .await
-        .unwrap();
-    assert_eq!(ack_direct.to_bytes(), ack_library.to_bytes());
-    let cli_ack = run_cli(
+    assert_in_process_socket_and_cli_parity(
         &socket_path,
+        &control,
+        &acknowledge,
         &[
             "ack-recovery-alert",
             &hex(&ACK_COMMAND_ID),
@@ -495,9 +512,14 @@ async fn cli_and_in_process_paths_produce_byte_identical_receipts() {
             "1",
             ACK_REASON,
         ],
-    );
-    assert!(cli_ack.status.success());
-    assert_eq!(cli_receipt_bytes(&cli_ack), ack_direct.to_bytes());
+    )
+    .await;
+    let ack_direct =
+        dispatch_in_process(&control, &acknowledge, MONOTONIC_NOW_NS, WALL_NOW_MS).unwrap();
+    let ControlOutcome::Acknowledged { receipt_id } = ack_direct.outcome.as_ref().unwrap() else {
+        panic!("expected acknowledgement receipt");
+    };
+    assert_eq!(receipt_id.len(), 16);
 
     let denied_reference = dispatch_in_process(
         &control,
@@ -591,6 +613,33 @@ async fn nl_sentences_compile_to_the_same_socket_receipts_as_direct_commands() {
     let inspect_in_process =
         dispatch_in_process(&control, &nl_inspect, MONOTONIC_NOW_NS, WALL_NOW_MS).unwrap();
     assert_eq!(inspect_in_process.to_bytes(), direct_inspect.to_bytes());
+
+    // Export metrics: read-only `get` with zero alerts, OpenMetrics projection.
+    let nl_export = parse_nl_command("export metrics").unwrap();
+    assert_eq!(nl_export, ControlCommand::ExportMetrics);
+    assert_eq!(
+        parse_nl_command("导出指标").unwrap(),
+        ControlCommand::ExportMetrics
+    );
+    let direct_export = dispatch_over_socket(&socket_path, &ControlCommand::ExportMetrics)
+        .await
+        .unwrap();
+    let nl_export_receipt = dispatch_over_socket(&socket_path, &nl_export)
+        .await
+        .unwrap();
+    assert_eq!(direct_export.to_bytes(), nl_export_receipt.to_bytes());
+    let export_in_process =
+        dispatch_in_process(&control, &nl_export, MONOTONIC_NOW_NS, WALL_NOW_MS).unwrap();
+    assert_eq!(export_in_process.to_bytes(), direct_export.to_bytes());
+    let ControlOutcome::MetricsExported(export_payload) = direct_export.outcome.as_ref().unwrap()
+    else {
+        panic!("expected metrics export receipt");
+    };
+    assert!(
+        export_payload
+            .openmetrics_text
+            .contains("nlos_artifact_recovery_cycles_total")
+    );
 
     // Acknowledge: the English and Chinese sentences both compile to the
     // same fully-determined mutation the direct construction spells out.

@@ -41,3 +41,30 @@
 4. **GUI 路径仍未接**（与 B-CONTROL-001 已知限制 1 相同）：`[CTRL-PARITY-001]` 的 Trusted GUI 编译与确认面未实现，ROAD-B-005 不因此达成——本证据只交付 NL 面的前片。
 5. **ack 派生规则的语义边界**：command id=plan id 意味着每 plan 一个幂等确认身份；告警 re-escalation 后的再次确认需走 CLI/结构化 API 显式出示新 command id（NL 句子重放原始 receipt，恰好是安全侧失效模式）。`expecting <n>` 显式 token 为对任务示例语法的已备案扩展（见已实现事实 5）。
 6. **解析器是字面编译器**：`expecting 0` 等字面合法值照单编译，CAS/策略判定全部留给下游 authorizer 与 TaskAuthority；原始句子任何部分都不进入 envelope 或 receipt。
+
+## W11-C 增量：`ExportMetrics` NL 白名单（2026-09-04）
+
+> 状态：`PARTIAL_PASS`（单节点本地；ROAD-B-005 仍 PARTIAL——GUI 未接）
+>
+> 基线 HEAD：`4a53b2a`　　写集：`crates/nlos-system-control/**`、`docs/evidence/stage-b/b-control-003-nl-prefix.md`
+
+### 已实现事实
+
+1. **additive `ControlCommand::ExportMetrics`**（`src/control.rs`）：只读 `get` 路径与 `InspectHealth`/`InspectTask` 共用同一 `GetSystemControlRequest`（`ArtifactCommitRecovery` view、`alert_limit=8`——schema 禁止 `0`）；§25.3 command id 固定为 `[0xC1; 16]`，correlation 固定为 `[0x36; 16]`。Receipt 投影为 `ControlOutcome::MetricsExported(MetricsExport { openmetrics_text })`：从 handler 返回的 `ArtifactRecoveryMetrics` 经 `OpenMetricsRenderer` 渲染，字段顺序与 `RecoverySystemControl::export_metrics` catalog 一致（B-TASK-006M parity）。
+2. **NL 白名单扩展**（`src/nl.rs`）：`export metrics` / `导出指标` → `ExportMetrics`；拒绝矩阵追加 `export`/`export metric`/`export metrics now`/`导出`/`导出指标了` 等语法外形态。
+3. **CLI parity**（`src/bin/system-control-cli.rs`）：`export-metrics` 子命令，summary 行 `outcome=metrics_exported bytes=<n>`。
+4. **测试**：lib 单测 +2（export envelope 路径、command id）；nl +2（EN/ZH export 形态）；`control_command_cli` 扩展 socket 等价（NL `export metrics`/`导出指标` vs 直接 `ExportMetrics` 逐字节 receipt 相等；CLI `export-metrics` vs in-process 相等）。
+
+### 验证
+
+验证环境：macOS（darwin，arm64），基线 HEAD `4a53b2a`；并行车道对 `nlos-semantic`/`nlos-identity`/`nlos-application` 等未提交改动均在本写集之外、验证前临时 `git checkout HEAD` 恢复依赖编译面。
+
+- `cargo test -p nlos-system-control`：**57 passed / 0 failed**（lib 19——含 nl 10、control 6、openmetrics 3；bin 0；`control_command_cli` 4；其余 integration 34；doc-tests 0）。
+- `cargo clippy -p nlos-system-control --all-targets --all-features -- -D warnings`：通过。
+- `cargo fmt -p nlos-system-control --check`：通过。
+
+### 已知限制（增量）
+
+1. **wire envelope 与 inspect 相同**：Export 与 InspectHealth 共用 GET payload；区分仅在 command id / correlation / receipt 投影（metrics OpenMetrics text vs inspection facts）。未引入新 proto view 或 alert_limit 语义。
+2. **ROAD-B-005 仍 PARTIAL**：Trusted GUI 编译与确认面未实现；本增量只扩展 NL/CLI 控制面前缀，不声称 GUI parity。
+3. **OpenMetrics 仅为 receipt 投影**：无 HTTP scrape endpoint、无 scrape auth（B-TASK-006M 剩余 scope 不变）。

@@ -20,11 +20,12 @@
 use std::error::Error;
 use std::fmt;
 
+use nlos_commit_coordinator::RecoveryWorkerState;
 use nlos_schema::sabi::v1::{
-    AcknowledgeArtifactRecoveryAlertCommand, ArtifactRecoveryOperationsSnapshot, CallerIdentity,
-    CapabilityHandle, ControlCommandSource, ControlScope, Envelope, GetSystemControlRequest,
-    ReceiptReference, SabiErrorCode, SabiFailure, SabiRequestContext, SubmitControlCommandRequest,
-    SystemControlView, control_command, envelope,
+    AcknowledgeArtifactRecoveryAlertCommand, ArtifactRecoveryMetrics,
+    ArtifactRecoveryOperationsSnapshot, CallerIdentity, CapabilityHandle, ControlCommandSource,
+    ControlScope, Envelope, GetSystemControlRequest, ReceiptReference, SabiErrorCode, SabiFailure,
+    SabiRequestContext, SubmitControlCommandRequest, SystemControlView, control_command, envelope,
 };
 use nlos_schema::{
     CompatibilityError, REQUEST_ID_BYTES, SABI_ENVELOPE_SCHEMA,
@@ -33,8 +34,10 @@ use nlos_schema::{
     system_control_schema_identity,
 };
 
+use crate::openmetrics::OpenMetricsRenderer;
 use crate::{
-    GET_METHOD, RecoveryHealthSource, RecoverySystemControl, SUBMIT_METHOD, SystemControlAuthorizer,
+    GET_METHOD, RecoveryCounter, RecoveryGauge, RecoveryHealthSource, RecoveryMetricsSink,
+    RecoverySystemControl, SUBMIT_METHOD, SystemControlAuthorizer,
 };
 
 /// Capability handle presented by the local control prefix. The service-side
@@ -54,7 +57,9 @@ const LOCAL_PROCESS_ID: [u8; 16] = [0x33; 16];
 const LOCAL_REQUEST_ID: [u8; 16] = [0x35; 16];
 const LOCAL_PROCESS_GENERATION: u64 = 1;
 const INSPECT_HEALTH_COMMAND_ID: [u8; 16] = [0xC0; 16];
+const EXPORT_METRICS_COMMAND_ID: [u8; 16] = [0xC1; 16];
 const INSPECT_CORRELATION_ID: [u8; 16] = [0x34; 16];
+const EXPORT_METRICS_CORRELATION_ID: [u8; 16] = [0x36; 16];
 
 /// Bounded control operations for the minimal prefix (§25.3). The read
 /// variants reuse the `get` snapshot; the mutation variant is the one real
@@ -66,6 +71,11 @@ pub enum ControlCommand {
     /// Inspect aggregate recovery health (worker lifecycle plus durable
     /// retrying/escalated/resolved gauges).
     InspectHealth,
+    /// Export one authoritative recovery metrics snapshot as deterministic
+    /// `OpenMetrics` text. Uses the same `get` handler path as inspection and
+    /// projects the typed catalog through the backend-neutral exporter boundary
+    /// (`export_metrics` parity).
+    ExportMetrics,
     /// Inspect one recovery plan/task by its 16-byte plan id; the receipt
     /// reports only that plan's alert.
     InspectTask { plan_id: [u8; 16] },
@@ -87,6 +97,7 @@ impl ControlCommand {
     pub const fn control_command_id(&self) -> [u8; 16] {
         match self {
             Self::InspectHealth => INSPECT_HEALTH_COMMAND_ID,
+            Self::ExportMetrics => EXPORT_METRICS_COMMAND_ID,
             Self::InspectTask { plan_id } => *plan_id,
             Self::AcknowledgeRecoveryAlert {
                 control_command_id, ..
@@ -97,6 +108,7 @@ impl ControlCommand {
     const fn correlation_id(&self) -> [u8; 16] {
         match self {
             Self::InspectHealth => INSPECT_CORRELATION_ID,
+            Self::ExportMetrics => EXPORT_METRICS_CORRELATION_ID,
             Self::InspectTask { plan_id } => *plan_id,
             Self::AcknowledgeRecoveryAlert {
                 control_command_id, ..
@@ -172,11 +184,20 @@ pub struct RecoveryAlertInsight {
     pub acknowledged_receipt_id: Option<Vec<u8>>,
 }
 
+/// Deterministic `OpenMetrics` text produced by one metrics export command.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MetricsExport {
+    /// `text/plain; version=0.0.4` exposition of the recovery metrics catalog.
+    pub openmetrics_text: String,
+}
+
 /// Terminal outcome of one dispatched command.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ControlOutcome {
     /// Read-only inspection completed.
     Inspected(RecoveryInspection),
+    /// Read-only metrics export completed.
+    MetricsExported(MetricsExport),
     /// Mutation accepted by the `TaskAuthority`; authoritative receipt id.
     Acknowledged { receipt_id: Vec<u8> },
 }
@@ -263,7 +284,9 @@ impl From<CompatibilityError> for ControlError {
 /// violated before encoding.
 pub fn build_request_envelope(command: &ControlCommand) -> Result<Envelope, ControlError> {
     let (method, payload) = match command {
-        ControlCommand::InspectHealth | ControlCommand::InspectTask { .. } => (
+        ControlCommand::InspectHealth
+        | ControlCommand::InspectTask { .. }
+        | ControlCommand::ExportMetrics => (
             GET_METHOD,
             encode_get_system_control_request(&GetSystemControlRequest {
                 schema: Some(system_control_schema_identity()),
@@ -458,6 +481,61 @@ fn decoded_inspection(response: &Envelope) -> Result<RecoveryInspection, Control
     })
 }
 
+fn coordinator_worker_state(lifecycle: RecoveryWorkerLifecycle) -> RecoveryWorkerState {
+    match lifecycle {
+        RecoveryWorkerLifecycle::Starting => RecoveryWorkerState::Starting,
+        RecoveryWorkerLifecycle::Running => RecoveryWorkerState::Running,
+        RecoveryWorkerLifecycle::BackingOff => RecoveryWorkerState::BackingOff,
+        RecoveryWorkerLifecycle::Faulted => RecoveryWorkerState::Faulted,
+        RecoveryWorkerLifecycle::Stopped => RecoveryWorkerState::Stopped,
+    }
+}
+
+fn render_metrics_export(metrics: &ArtifactRecoveryMetrics) -> Result<MetricsExport, ControlError> {
+    let worker_state = decode_worker_lifecycle(metrics.worker_state)?;
+    let mut renderer = OpenMetricsRenderer::new();
+    renderer
+        .record_worker_state(coordinator_worker_state(worker_state))
+        .map_err(map_renderer_error)?;
+    for (counter, value) in [
+        (RecoveryCounter::CompletedCycles, metrics.completed_cycles),
+        (RecoveryCounter::InspectedPlans, metrics.total_inspected),
+        (RecoveryCounter::FinalizedPlans, metrics.total_finalized),
+    ] {
+        renderer
+            .set_counter_total(counter, value)
+            .map_err(map_renderer_error)?;
+    }
+    for (gauge, value) in [
+        (
+            RecoveryGauge::ConsecutiveFailedCycles,
+            metrics.consecutive_failed_cycles,
+        ),
+        (
+            RecoveryGauge::RetryDelayMilliseconds,
+            metrics.retry_delay_ms.unwrap_or(0),
+        ),
+        (RecoveryGauge::DurableRetrying, metrics.durable_retrying),
+        (RecoveryGauge::DurableEscalated, metrics.durable_escalated),
+        (
+            RecoveryGauge::DurableUnacknowledgedEscalated,
+            metrics.durable_unacknowledged_escalated,
+        ),
+        (RecoveryGauge::DurableResolved, metrics.durable_resolved),
+    ] {
+        renderer
+            .set_gauge(gauge, value)
+            .map_err(map_renderer_error)?;
+    }
+    Ok(MetricsExport {
+        openmetrics_text: renderer.render(),
+    })
+}
+
+fn map_renderer_error(_error: crate::openmetrics::OpenMetricsRenderError) -> ControlError {
+    ControlError::UnexpectedResponse("metrics export refused an invalid label value")
+}
+
 fn not_found_failure(message: &'static str) -> SabiFailure {
     SabiFailure {
         code: SabiErrorCode::NotFound.into(),
@@ -491,6 +569,15 @@ impl ControlReceipt {
             match command {
                 ControlCommand::InspectHealth => {
                     Ok(ControlOutcome::Inspected(decoded_inspection(response)?))
+                }
+                ControlCommand::ExportMetrics => {
+                    let snapshot = decoded_snapshot(response)?;
+                    let metrics = snapshot.metrics.ok_or(ControlError::Schema(
+                        CompatibilityError::MissingSystemControlMetrics,
+                    ))?;
+                    Ok(ControlOutcome::MetricsExported(render_metrics_export(
+                        &metrics,
+                    )?))
                 }
                 ControlCommand::InspectTask { plan_id } => {
                     let mut inspected = decoded_inspection(response)?;
@@ -572,6 +659,10 @@ impl ControlReceipt {
                     }
                 }
             }
+            Ok(ControlOutcome::MetricsExported(export)) => {
+                bytes.push(3);
+                push_bytes(&mut bytes, export.openmetrics_text.as_bytes());
+            }
             Ok(ControlOutcome::Acknowledged { receipt_id }) => {
                 bytes.push(2);
                 push_bytes(&mut bytes, receipt_id);
@@ -652,10 +743,26 @@ mod tests {
     }
 
     #[test]
+    fn export_metrics_envelope_uses_the_get_snapshot_path() {
+        let envelope = build_request_envelope(&ControlCommand::ExportMetrics).unwrap();
+        assert_eq!(envelope.method, GET_METHOD);
+        assert_eq!(
+            build_request_envelope(&ControlCommand::InspectHealth)
+                .unwrap()
+                .payload,
+            envelope.payload
+        );
+    }
+
+    #[test]
     fn command_ids_are_deterministic_per_variant() {
         assert_eq!(
             ControlCommand::InspectHealth.control_command_id(),
             INSPECT_HEALTH_COMMAND_ID
+        );
+        assert_eq!(
+            ControlCommand::ExportMetrics.control_command_id(),
+            EXPORT_METRICS_COMMAND_ID
         );
         assert_eq!(
             ControlCommand::InspectTask {
