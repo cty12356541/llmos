@@ -7,9 +7,9 @@ use ed25519_dalek::{Signer, SigningKey};
 use nlos_clock::{AuthorityClock, AuthorityClockError, WallSource};
 use nlos_identity::{
     BootstrapDecision, BootstrapPrincipalRequest, IdentityAuthority, IdentityAuthorityError,
-    KeyPurpose, KeyRevocationDecision, RevokeKeyRequest, VerifyBarrierObservationSignatureRequest,
-    VerifyCapabilityCommandSignatureAtClockRequest, VerifySemanticSignatureRequest,
-    semantic_signature_message,
+    KeyPurpose, KeyRevocationDecision, KeyRotationDecision, RevokeKeyRequest, RotateKeyRequest,
+    VerifyBarrierObservationSignatureRequest, VerifyCapabilityCommandSignatureAtClockRequest,
+    VerifySemanticSignatureRequest, semantic_signature_message,
 };
 use nlos_types::{Generation, IdempotencyKey, PrincipalId, SemanticEventId};
 use rusqlite::Connection;
@@ -211,6 +211,70 @@ fn revocation_advances_both_fences_and_survives_restart() {
 }
 
 #[test]
+fn rotation_advances_both_fences_rejects_old_signatures_and_survives_restart() {
+    let root = Root::new("rotate");
+    let old_key = signing_key(35);
+    let new_key = signing_key(36);
+    let (binding, request, receipt) = {
+        let authority = IdentityAuthority::open(root.path()).unwrap();
+        let binding = authority
+            .bootstrap_principal(bootstrap_request(35, &old_key))
+            .unwrap()
+            .binding();
+        let request = RotateKeyRequest {
+            key_id: binding.key_id,
+            expected_key_generation: binding.key_generation,
+            expected_identity_snapshot_id: binding.identity_snapshot_id,
+            new_public_key: new_key.verifying_key().to_bytes(),
+            new_valid_from_ms: 2_000,
+            new_valid_until_ms: 10_000,
+            idempotency_key: IdempotencyKey::from_bytes([0x88; 16]),
+            rotated_at_ms: 3_000,
+        };
+        let first = authority.rotate_key(request).unwrap();
+        assert!(matches!(first, KeyRotationDecision::Rotated(_)));
+        let replay = authority.rotate_key(request).unwrap();
+        assert!(matches!(replay, KeyRotationDecision::Replayed(_)));
+        assert_eq!(first.receipt(), replay.receipt());
+        (binding, request, first.receipt())
+    };
+
+    assert_eq!(receipt.resulting_key_generation.get(), 2);
+    assert_eq!(receipt.snapshot_generation.get(), 2);
+    assert_eq!(receipt.new_public_key, new_key.verifying_key().to_bytes());
+    assert_ne!(receipt.identity_snapshot_id, binding.identity_snapshot_id);
+
+    let reopened = IdentityAuthority::open(root.path()).unwrap();
+    assert_eq!(reopened.rotate_key(request).unwrap().receipt(), receipt);
+    let historical = reopened
+        .inspect_binding_at_snapshot(binding.identity_snapshot_id, binding.key_id)
+        .unwrap();
+    assert_eq!(historical, binding);
+    let current = reopened.inspect_current_binding(binding.key_id).unwrap();
+    assert_eq!(current.identity_snapshot_id, receipt.identity_snapshot_id);
+    assert_eq!(current.public_key, receipt.new_public_key);
+    assert_eq!(current.key_generation.get(), 2);
+
+    let event_id = SemanticEventId::from_bytes([0x67; 32]);
+    assert!(matches!(
+        reopened.verify_semantic_signature(verify_request(&old_key, binding, event_id, 2_500)),
+        Err(IdentityAuthorityError::InvalidSignature)
+    ));
+    let verified = reopened
+        .verify_semantic_signature(verify_request(&new_key, current, event_id, 2_500))
+        .unwrap();
+    assert_eq!(verified.key_generation().get(), 2);
+
+    assert!(matches!(
+        reopened.rotate_key(RotateKeyRequest {
+            idempotency_key: IdempotencyKey::from_bytes([0x89; 16]),
+            ..request
+        }),
+        Err(IdentityAuthorityError::KeyGenerationFenceConflict)
+    ));
+}
+
+#[test]
 fn bootstrap_rebinding_and_invalid_validity_fail_closed() {
     let root = Root::new("conflict");
     let key = signing_key(40);
@@ -236,6 +300,7 @@ fn bootstrap_rebinding_and_invalid_validity_fail_closed() {
 fn snapshot_key_versions_and_revocation_receipts_are_ddl_immutable() {
     let root = Root::new("immutable");
     let key = signing_key(50);
+    let new_key = signing_key(51);
     let authority = IdentityAuthority::open(root.path()).unwrap();
     let binding = authority
         .bootstrap_principal(bootstrap_request(50, &key))
@@ -250,6 +315,22 @@ fn snapshot_key_versions_and_revocation_receipts_are_ddl_immutable() {
             revoked_at_ms: 3_000,
         })
         .unwrap();
+    let rotate_binding = authority
+        .bootstrap_principal(bootstrap_request(52, &new_key))
+        .unwrap()
+        .binding();
+    authority
+        .rotate_key(RotateKeyRequest {
+            key_id: rotate_binding.key_id,
+            expected_key_generation: rotate_binding.key_generation,
+            expected_identity_snapshot_id: rotate_binding.identity_snapshot_id,
+            new_public_key: signing_key(53).verifying_key().to_bytes(),
+            new_valid_from_ms: 2_000,
+            new_valid_until_ms: 10_000,
+            idempotency_key: IdempotencyKey::from_bytes([0x9a; 16]),
+            rotated_at_ms: 3_000,
+        })
+        .unwrap();
     drop(authority);
 
     let raw = Connection::open(root.path().join("identity-authority.db")).unwrap();
@@ -259,6 +340,7 @@ fn snapshot_key_versions_and_revocation_receipts_are_ddl_immutable() {
     );
     assert!(raw.execute("DELETE FROM identity_snapshots", []).is_err());
     assert!(raw.execute("DELETE FROM key_revocations", []).is_err());
+    assert!(raw.execute("DELETE FROM key_rotations", []).is_err());
 }
 
 #[test]

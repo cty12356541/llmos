@@ -32,15 +32,17 @@ use sha2::{Digest, Sha256};
 
 pub use model::{
     BootstrapDecision, BootstrapPrincipalRequest, Ed25519PublicKey, Ed25519Signature,
-    IdentityBinding, KeyPurpose, KeyRevocationDecision, KeyRevocationReceipt, RevokeKeyRequest,
-    VerifiedBarrierObservationSigner, VerifiedSemanticAuthoritySigner, VerifiedSemanticSigner,
+    IdentityBinding, KeyPurpose, KeyRevocationDecision, KeyRevocationReceipt, KeyRotationDecision,
+    KeyRotationReceipt, RevokeKeyRequest, RotateKeyRequest, VerifiedBarrierObservationSigner,
+    VerifiedSemanticAuthoritySigner, VerifiedSemanticSigner,
     VerifyBarrierObservationSignatureRequest, VerifySemanticAuthoritySignatureRequest,
     VerifySemanticSignatureRequest,
 };
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 const CHANGE_BOOTSTRAP: i64 = 1;
 const CHANGE_KEY_REVOCATION: i64 = 2;
+const CHANGE_KEY_ROTATION: i64 = 3;
 
 #[derive(Debug)]
 pub enum IdentityAuthorityError {
@@ -182,7 +184,11 @@ impl IdentityAuthority {
         }
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
         match version {
-            0 => schema::migrate_v1(&mut connection)?,
+            0 => {
+                schema::migrate_v1(&mut connection)?;
+                schema::migrate_v2(&mut connection)?;
+            }
+            1 => schema::migrate_v2(&mut connection)?,
             SCHEMA_VERSION => {}
             other => return Err(IdentityAuthorityError::SchemaVersionUnsupported(other)),
         }
@@ -489,6 +495,181 @@ impl IdentityAuthority {
         )?;
         transaction.commit()?;
         Ok(KeyRevocationDecision::Revoked(receipt))
+    }
+
+    /// Rotates signing-key material with both key-generation and
+    /// identity-snapshot CAS. The old immutable snapshot remains queryable;
+    /// the new current snapshot binds the next key generation and public key.
+    ///
+    /// # Errors
+    ///
+    /// Fails on stale fences, idempotency rebinding, revoked keys, invalid
+    /// new material, generation exhaustion, or storage failure.
+    #[allow(clippy::too_many_lines)] // Keep both fencing CAS operations in one auditable transaction.
+    pub fn rotate_key(
+        &self,
+        request: RotateKeyRequest,
+    ) -> Result<KeyRotationDecision, IdentityAuthorityError> {
+        validate_rotate_request(request)?;
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(existing) = load_rotation_by_key(&transaction, request.idempotency_key)? {
+            if existing.key_id != request.key_id
+                || existing.expected_key_generation != request.expected_key_generation
+                || existing.expected_snapshot_id != request.expected_identity_snapshot_id
+                || existing.new_public_key != request.new_public_key
+                || existing.new_valid_from_ms != request.new_valid_from_ms
+                || existing.new_valid_until_ms != request.new_valid_until_ms
+                || existing.receipt.rotated_at_ms != request.rotated_at_ms
+            {
+                return Err(IdentityAuthorityError::IdempotencyConflict);
+            }
+            transaction.commit()?;
+            return Ok(KeyRotationDecision::Replayed(existing.receipt));
+        }
+
+        let binding = load_current_binding(&transaction, request.key_id)?
+            .ok_or(IdentityAuthorityError::KeyNotFound(request.key_id))?;
+        if binding.key_generation != request.expected_key_generation {
+            return Err(IdentityAuthorityError::KeyGenerationFenceConflict);
+        }
+        if binding.identity_snapshot_id != request.expected_identity_snapshot_id {
+            return Err(IdentityAuthorityError::IdentitySnapshotFenceConflict);
+        }
+        if binding.key_revoked_at_ms.is_some() {
+            return Err(IdentityAuthorityError::KeyRevoked);
+        }
+        if request.rotated_at_ms < binding.key_valid_from_ms {
+            return Err(IdentityAuthorityError::InvalidKeyValidity);
+        }
+        let next_key_generation = binding
+            .key_generation
+            .checked_next()
+            .ok_or(IdentityAuthorityError::GenerationExhausted)?;
+        let next_snapshot_generation = binding
+            .snapshot_generation
+            .checked_next()
+            .ok_or(IdentityAuthorityError::GenerationExhausted)?;
+        let next_snapshot_id = IdentitySnapshotId::from_bytes(derive_id(
+            b"nlos/identity-snapshot/id/v1",
+            &[
+                binding.control_domain_id.as_bytes(),
+                &next_snapshot_generation.get().to_be_bytes(),
+                binding.identity_snapshot_id.as_bytes(),
+                request.idempotency_key.as_bytes(),
+            ],
+        ));
+        let receipt_id = ReceiptId::from_bytes(derive_id(
+            b"nlos/key-rotation-receipt/id/v1",
+            &[
+                request.key_id.as_bytes(),
+                &next_key_generation.get().to_be_bytes(),
+                next_snapshot_id.as_bytes(),
+                request.idempotency_key.as_bytes(),
+            ],
+        ));
+        let policy_digest = load_domain_policy(&transaction, binding.control_domain_id)?;
+        let rotated_binding = IdentityBinding {
+            identity_snapshot_id: next_snapshot_id,
+            snapshot_generation: next_snapshot_generation,
+            key_generation: next_key_generation,
+            public_key: request.new_public_key,
+            key_valid_from_ms: request.new_valid_from_ms,
+            key_valid_until_ms: request.new_valid_until_ms,
+            key_revoked_at_ms: None,
+            ..binding
+        };
+        insert_key_version(&transaction, &rotated_binding)?;
+        insert_snapshot(
+            &transaction,
+            next_snapshot_id,
+            binding.control_domain_id,
+            next_snapshot_generation,
+            Some(binding.identity_snapshot_id),
+            policy_digest,
+            request.rotated_at_ms,
+            CHANGE_KEY_ROTATION,
+        )?;
+        transaction.execute(
+            "INSERT INTO snapshot_principals (identity_snapshot_id, principal_id) VALUES (?1, ?2)",
+            params![
+                next_snapshot_id.as_bytes().as_slice(),
+                binding.principal_id.as_bytes().as_slice(),
+            ],
+        )?;
+        transaction.execute(
+            "INSERT INTO snapshot_key_bindings (
+                identity_snapshot_id, key_id, key_generation
+             ) VALUES (?1, ?2, ?3)",
+            params![
+                next_snapshot_id.as_bytes().as_slice(),
+                request.key_id.as_bytes().as_slice(),
+                encode_generation(next_key_generation)?,
+            ],
+        )?;
+        let key_changed = transaction.execute(
+            "UPDATE key_heads SET current_generation=?1
+             WHERE key_id=?2 AND current_generation=?3",
+            params![
+                encode_generation(next_key_generation)?,
+                request.key_id.as_bytes().as_slice(),
+                encode_generation(request.expected_key_generation)?,
+            ],
+        )?;
+        if key_changed != 1 {
+            return Err(IdentityAuthorityError::KeyGenerationFenceConflict);
+        }
+        let snapshot_changed = transaction.execute(
+            "UPDATE control_domains
+             SET current_snapshot_id=?1, current_generation=?2, updated_at_ms=?3
+             WHERE control_domain_id=?4 AND current_snapshot_id=?5 AND current_generation=?6",
+            params![
+                next_snapshot_id.as_bytes().as_slice(),
+                encode_generation(next_snapshot_generation)?,
+                encode_u64(request.rotated_at_ms)?,
+                binding.control_domain_id.as_bytes().as_slice(),
+                request.expected_identity_snapshot_id.as_bytes().as_slice(),
+                encode_generation(binding.snapshot_generation)?,
+            ],
+        )?;
+        if snapshot_changed != 1 {
+            return Err(IdentityAuthorityError::IdentitySnapshotFenceConflict);
+        }
+        let receipt = KeyRotationReceipt {
+            receipt_id,
+            key_id: request.key_id,
+            resulting_key_generation: next_key_generation,
+            identity_snapshot_id: next_snapshot_id,
+            snapshot_generation: next_snapshot_generation,
+            new_public_key: request.new_public_key,
+            new_valid_from_ms: request.new_valid_from_ms,
+            new_valid_until_ms: request.new_valid_until_ms,
+            rotated_at_ms: request.rotated_at_ms,
+        };
+        transaction.execute(
+            "INSERT INTO key_rotations (
+                idempotency_key, receipt_id, key_id, expected_key_generation,
+                expected_snapshot_id, new_public_key, new_valid_from_ms,
+                new_valid_until_ms, resulting_key_generation,
+                resulting_snapshot_id, resulting_snapshot_generation, rotated_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                request.idempotency_key.as_bytes().as_slice(),
+                receipt_id.as_bytes().as_slice(),
+                request.key_id.as_bytes().as_slice(),
+                encode_generation(request.expected_key_generation)?,
+                request.expected_identity_snapshot_id.as_bytes().as_slice(),
+                request.new_public_key.as_slice(),
+                encode_u64(request.new_valid_from_ms)?,
+                encode_u64(request.new_valid_until_ms)?,
+                encode_generation(next_key_generation)?,
+                next_snapshot_id.as_bytes().as_slice(),
+                encode_generation(next_snapshot_generation)?,
+                encode_u64(request.rotated_at_ms)?,
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(KeyRotationDecision::Rotated(receipt))
     }
 
     /// Validates current Principal/ControlDomain/key binding, purpose,
@@ -845,6 +1026,15 @@ fn validate_bootstrap_request(
     Ok(())
 }
 
+fn validate_rotate_request(request: RotateKeyRequest) -> Result<(), IdentityAuthorityError> {
+    if request.new_valid_from_ms > request.new_valid_until_ms {
+        return Err(IdentityAuthorityError::InvalidKeyValidity);
+    }
+    VerifyingKey::from_bytes(&request.new_public_key)
+        .map_err(|_| IdentityAuthorityError::InvalidPublicKey)?;
+    Ok(())
+}
+
 fn bootstrap_matches(
     binding: IdentityBinding,
     request: BootstrapPrincipalRequest,
@@ -1173,6 +1363,77 @@ fn load_revocation_by_key(
                     )?,
                     snapshot_generation: decode_generation(row.6)?,
                     revoked_at_ms: decode_u64(row.7)?,
+                },
+            })
+        })
+        .transpose()
+}
+
+struct StoredRotation {
+    expected_key_generation: Generation,
+    expected_snapshot_id: IdentitySnapshotId,
+    key_id: KeyId,
+    new_public_key: Ed25519PublicKey,
+    new_valid_from_ms: u64,
+    new_valid_until_ms: u64,
+    receipt: KeyRotationReceipt,
+}
+
+fn load_rotation_by_key(
+    transaction: &Transaction<'_>,
+    idempotency_key: IdempotencyKey,
+) -> Result<Option<StoredRotation>, IdentityAuthorityError> {
+    transaction
+        .query_row(
+            "SELECT receipt_id, key_id, expected_key_generation, expected_snapshot_id,
+                    new_public_key, new_valid_from_ms, new_valid_until_ms,
+                    resulting_key_generation, resulting_snapshot_id,
+                    resulting_snapshot_generation, rotated_at_ms
+             FROM key_rotations WHERE idempotency_key=?1",
+            [idempotency_key.as_bytes().as_slice()],
+            |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, Vec<u8>>(3)?,
+                    row.get::<_, Vec<u8>>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, i64>(7)?,
+                    row.get::<_, Vec<u8>>(8)?,
+                    row.get::<_, i64>(9)?,
+                    row.get::<_, i64>(10)?,
+                ))
+            },
+        )
+        .optional()?
+        .map(|row| {
+            let key_id = decode_id::<16, _>(row.1, KeyId::from_bytes, "key id")?;
+            let expected_snapshot_id =
+                decode_id::<16, _>(row.3, IdentitySnapshotId::from_bytes, "snapshot id")?;
+            let new_public_key = decode_array::<32>(row.4, "public key")?;
+            Ok(StoredRotation {
+                expected_key_generation: decode_generation(row.2)?,
+                expected_snapshot_id,
+                key_id,
+                new_valid_from_ms: decode_u64(row.5)?,
+                new_valid_until_ms: decode_u64(row.6)?,
+                new_public_key,
+                receipt: KeyRotationReceipt {
+                    receipt_id: decode_id::<16, _>(row.0, ReceiptId::from_bytes, "receipt id")?,
+                    key_id,
+                    resulting_key_generation: decode_generation(row.7)?,
+                    identity_snapshot_id: decode_id::<16, _>(
+                        row.8,
+                        IdentitySnapshotId::from_bytes,
+                        "snapshot id",
+                    )?,
+                    snapshot_generation: decode_generation(row.9)?,
+                    new_public_key,
+                    new_valid_from_ms: decode_u64(row.5)?,
+                    new_valid_until_ms: decode_u64(row.6)?,
+                    rotated_at_ms: decode_u64(row.10)?,
                 },
             })
         })

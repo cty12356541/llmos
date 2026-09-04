@@ -125,6 +125,49 @@ impl KeyRevocationDecision {
     }
 }
 
+/// Rotates signing-key material with dual key-generation and identity-snapshot
+/// CAS. The authority assigns the next generation; callers supply the new
+/// Ed25519 public key, validity window, expected fences, and idempotency key.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RotateKeyRequest {
+    pub key_id: KeyId,
+    pub expected_key_generation: Generation,
+    pub expected_identity_snapshot_id: IdentitySnapshotId,
+    pub new_public_key: Ed25519PublicKey,
+    pub new_valid_from_ms: u64,
+    pub new_valid_until_ms: u64,
+    pub idempotency_key: IdempotencyKey,
+    pub rotated_at_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct KeyRotationReceipt {
+    pub receipt_id: ReceiptId,
+    pub key_id: KeyId,
+    pub resulting_key_generation: Generation,
+    pub identity_snapshot_id: IdentitySnapshotId,
+    pub snapshot_generation: Generation,
+    pub new_public_key: Ed25519PublicKey,
+    pub new_valid_from_ms: u64,
+    pub new_valid_until_ms: u64,
+    pub rotated_at_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum KeyRotationDecision {
+    Rotated(KeyRotationReceipt),
+    Replayed(KeyRotationReceipt),
+}
+
+impl KeyRotationDecision {
+    #[must_use]
+    pub const fn receipt(self) -> KeyRotationReceipt {
+        match self {
+            Self::Rotated(receipt) | Self::Replayed(receipt) => receipt,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct VerifySemanticSignatureRequest {
     pub event_id: SemanticEventId,
