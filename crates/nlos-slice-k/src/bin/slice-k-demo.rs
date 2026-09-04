@@ -99,6 +99,7 @@ async fn demo_happy_chain(runtime: &Arc<SliceKRuntime>, adapter: &TokioRuntimeAd
     );
     print_inspect(runtime, &chain, "[slice-k] INSPECT");
     demo_lifecycle(runtime, &chain);
+    demo_uninstall(runtime, &chain);
 }
 
 fn print_inspect(runtime: &SliceKRuntime, chain: &HappyChain, prefix: &str) {
@@ -162,6 +163,52 @@ fn demo_lifecycle(runtime: &Arc<SliceKRuntime>, chain: &HappyChain) {
         "installing over a disabled application must fail closed"
     );
     println!("[slice-k] STEP 09b reinstall-after-disable refused (fail-closed)");
+}
+
+/// Demonstrates the §23.1 uninstall tail: a disabled application transitions
+/// to the terminal `uninstalled` status and further installs fail closed.
+fn demo_uninstall(runtime: &Arc<SliceKRuntime>, chain: &HappyChain) {
+    println!("[slice-k] STEP 09c lifecycle-uninstall begin");
+    let uninstall = runtime
+        .uninstall_application(chain.package.package_id, 0x2A)
+        .expect("uninstall the disabled application");
+    println!(
+        "[slice-k] STEP 09c uninstall application={} generation={} at_ms={}",
+        short_hex(uninstall.application_id.as_bytes()),
+        uninstall.application_generation.get(),
+        uninstall.uninstalled_at_ms
+    );
+    receipt_line(
+        "application-uninstall",
+        uninstall.idempotency_key.as_bytes(),
+        &format!(
+            "application={} generation={}",
+            short_hex(uninstall.application_id.as_bytes()),
+            uninstall.application_generation.get()
+        ),
+    );
+    assert!(
+        runtime
+            .install_verified_package_by_id(chain.verification_receipt_id, 0x2F)
+            .is_err(),
+        "installing over an uninstalled application must fail closed"
+    );
+    println!("[slice-k] STEP 09c reinstall-after-uninstall refused (fail-closed)");
+    let inspect = runtime
+        .inspect_chain(ChainQuery {
+            package_id: chain.package.package_id,
+            installation_id: Some(chain.installation_id),
+            process_id: Some(chain.process.process_id),
+            task_id: chain.task_id,
+            attempt_id: chain.attempt_id,
+            permit_id: Some(chain.permit_id),
+            artifact_id: chain.package.payload_artifact,
+            operation: Some(chain.outcome.operation),
+        })
+        .expect("inspect after uninstall");
+    for line in inspect.report_lines() {
+        println!("[slice-k] INSPECT-UNINSTALLED {line}");
+    }
 }
 
 async fn demo_cancel_path(runtime: &Arc<SliceKRuntime>, adapter: &TokioRuntimeAdapter) {

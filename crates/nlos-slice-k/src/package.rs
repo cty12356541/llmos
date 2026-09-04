@@ -4,7 +4,10 @@
 //! the Task/Attempt pair the fiber will run under.
 
 use ed25519_dalek::{Signer, SigningKey};
-use nlos_application::{InstallApplicationRequest, InstallDecision, InstallationReceipt};
+use nlos_application::{
+    InstallApplicationRequest, InstallDecision, InstallationReceipt, UninstallApplicationRequest,
+    UninstallDecision, UninstallReceipt,
+};
 use nlos_artifact::{
     ContentDigest, CreateArtifactSpec, PackageEntryRole, PackageManifest, PackageManifestEntry,
     PackageVerificationReceipt, PutRevisionRequest, SignedPackage, VerifyPackageRequest,
@@ -196,6 +199,33 @@ impl SliceKRuntime {
             },
         )? {
             InstallDecision::Installed(receipt) | InstallDecision::Replayed(receipt) => Ok(receipt),
+        }
+    }
+
+    /// Uninstalls one installed or disabled application (authority-first:
+    /// terminal `installed|disabled → uninstalled` CAS mark), returning the
+    /// immutable uninstall receipt.
+    ///
+    /// # Errors
+    ///
+    /// Propagates application-authority errors; a `Replayed` decision
+    /// returns the durably recorded original receipt.
+    pub fn uninstall_application(
+        &self,
+        package_id: PackageId,
+        seed: u8,
+    ) -> SliceKResult<UninstallReceipt> {
+        let uninstalled_at_ms = self.wall_now_ms(seeded_key(seed, 17))?;
+        match self
+            .applications
+            .uninstall_application(UninstallApplicationRequest {
+                package_id,
+                idempotency_key: seeded_key(seed, 18),
+                uninstalled_at_ms,
+            })? {
+            UninstallDecision::Uninstalled(receipt) | UninstallDecision::Replayed(receipt) => {
+                Ok(receipt)
+            }
         }
     }
 

@@ -4,7 +4,9 @@
 
 use std::path::{Path, PathBuf};
 
-use nlos_application::{ApplicationAuthority, ApplicationView, InstallationReceipt};
+use nlos_application::{
+    ApplicationAuthority, ApplicationStatus, ApplicationView, InstallationReceipt,
+};
 use nlos_artifact::{ArtifactStore, HeadState};
 use nlos_clock::{AuthorityClock, NowRequest};
 use nlos_commit_coordinator::ArtifactCommitCoordinator;
@@ -220,11 +222,18 @@ impl ChainInspect {
     pub fn report_lines(&self) -> Vec<String> {
         let mut lines = Vec::new();
         let application_state = match &self.application {
-            Some(view) => format!(
-                "installed generation={} manifest={}",
-                view.current_installation_generation.get(),
-                crate::short_hex(view.package_manifest_digest.as_bytes())
-            ),
+            Some(view) => {
+                let status = match view.status {
+                    ApplicationStatus::Installed => "installed",
+                    ApplicationStatus::Disabled => "disabled",
+                    ApplicationStatus::Uninstalled => "uninstalled",
+                };
+                format!(
+                    "{status} generation={} manifest={}",
+                    view.current_installation_generation.get(),
+                    crate::short_hex(view.package_manifest_digest.as_bytes())
+                )
+            }
             None => "absent".to_string(),
         };
         lines.push(format!("application={application_state}"));

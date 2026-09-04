@@ -65,5 +65,5 @@ cargo fmt -p nlos-application -- --check                       # PASS：exit 0
 ## 6. 下一步
 
 - rollback 策略引擎（消费 uninstalled 终态与代际 CAS，兼容 `[PKG-UPDATE-001]`）。
-- Slice K：Task 创建/销毁接线（uninstall 后 Task 引导与 teardown 策略）。
+- ~~Slice K：Task 创建/销毁接线（uninstall 后 Task 引导与 teardown 策略）。~~ **部分勾销（2026-09-05）**：`nlos-slice-k` 已接线 `SliceKRuntime::uninstall_application`（installed\|disabled → uninstalled + fail-closed 重装）；demo STEP 09c + `lifecycle_uninstall` 2 测试；Task/Process teardown 策略仍开放——见 [B-SLICE-K-001 §9](b-slice-k-001-end-to-end.md#9-application-lifecycle-uninstall-接入纵切面2026-09-05-追加disable--uninstall-最小前缀)。
 - 完整 ROAD-B-001 生命周期：running-task 拒绝、GC、跨进程 uninstall 审批。

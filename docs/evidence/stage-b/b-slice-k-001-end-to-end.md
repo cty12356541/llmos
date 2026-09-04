@@ -171,3 +171,49 @@ cargo run -p nlos-slice-k --bin slice-k-demo                         → 跑通�
 - **fiber incarnation/snapshot 层未入链**：`register_fiber_incarnation`/`write_fiber_entry_snapshot` 已落地但本链未消费（fiber 复用与 crash-window 快照恢复属后续切片）。
 - **process 绑定与 cancel 无联动语义**：task cancel 不（也不应）撤销 process binding——绑定撤销/rotate 语义上游未定义，本链只断言存活，不发明撤销。
 - **未运行项**：`cargo --workspace` 级命令（任务约束仅允许 `-p nlos-slice-k`）；Windows 实机未验证（纯 SQLite+std + 双工具链门为代理证据）。
+
+## 9. Application lifecycle uninstall 接入纵切面（2026-09-05 追加：disable → uninstall 最小前缀）
+
+- **定位**：ROAD-B-001 Slice K 消费 B-APPLICATION-003 `uninstall_application` 最小前缀——纵切面 lifecycle 尾从「disable + fail-closed 重装」延伸到「uninstalled 终态 + fail-closed 重装」；只消费已落地 API，不发明 Task/Process teardown 或 GC。
+- **写集**：仅 `crates/nlos-slice-k/**`（`src/package.rs` 新增 `SliceKRuntime::uninstall_application`；`src/runtime.rs` `report_lines` 按 `ApplicationStatus` 输出 installed/disabled/uninstalled；`tests/lifecycle_uninstall.rs` 新增 2 用例；`src/bin/slice-k-demo.rs` STEP 09c）与本 §、`docs/evidence/stage-b/b-application-003-uninstall.md` §Slice K 短追加。`nlos-application` 零改动（只读消费）。base HEAD `544ca72`。
+
+### 9.1 接线摘要
+
+| 接线点 | 消费的已落地 API | 语义 |
+|---|---|---|
+| 组装助手 | `SliceKRuntime::uninstall_application(package_id, seed)` → `ApplicationAuthority::uninstall_application`（key `seeded_key(seed,17/18)`、时间戳取自 clock） | installed\|disabled → uninstalled CAS（代际不动）；`Uninstalled`/`Replayed` 均返回 `UninstallReceipt` |
+| inspect 面 | `inspect_application` + `report_lines` status 标签 | 终态行形如 `application=uninstalled generation=<n> manifest=<hex>` |
+| fail-closed | `install_verified_package` / `install_verified_package_by_id` 对已卸载 application | typed `ApplicationUninstalled` |
+
+### 9.2 demo 输出新增行（实跑）
+
+```text
+[slice-k] STEP 09c lifecycle-uninstall begin
+[slice-k] STEP 09c uninstall application=f8f451f68308ccaa generation=2 at_ms=…
+[slice-k] RECEIPT kind=application-uninstall id=3c3c3c3c3c3c3c3c application=f8f451f68308ccaa generation=2
+[slice-k] STEP 09c reinstall-after-uninstall refused (fail-closed)
+[slice-k] INSPECT-UNINSTALLED application=uninstalled generation=2 manifest=334e1539a90df53b
+```
+
+STEP 09c 接在 STEP 09b（reinstall-advance → disable → reinstall 拒绝）之后，呈现 disabled → uninstalled 终态转移。
+
+### 9.3 测试与断言要点
+
+- `install_then_uninstall_reaches_terminal_state_and_refuses_reinstall`：installed 直卸载 → status `Uninstalled`、代际不动、`inspect_uninstall_receipt` 读回一致、同 package 重装 fail-closed、同 key 重放幂等。
+- `install_disable_then_uninstall_reaches_terminal_state_and_refuses_reinstall`：reinstall 推进代际 → disable → uninstall → 终态 + typed `ApplicationUninstalled` 拒绝重装。
+
+### 9.4 验证（base HEAD `544ca72` 工作区，定向 `-p` 命令）
+
+```text
+cargo test -p nlos-slice-k                    → 9 passed / 0 failed（end_to_end 3 + competing_attempts 4 + lifecycle_uninstall 2）
+cargo run -p nlos-slice-k --bin slice-k-demo  → EXIT 0（新增行见 §9.2，末行 DONE）
+cargo fmt -p nlos-slice-k -- --check            → 干净
+cargo clippy -p nlos-slice-k --all-targets -- -D warnings
+  → 依赖 crate `nlos-semantic` 既有未提交告警（非本车道写集）阻塞全 `-D warnings` 门；本 crate 源码无新增 clippy 项
+```
+
+### 9.5 剩余缺口（如实登记）
+
+- **无 Task/Process teardown**：uninstall 不停止、不等待 happy-chain 上已 Committed 的 Task/Process（与 B-APPLICATION-003 限制一致）；纵切面只接线 application 终态 CAS。
+- **无 rollback/GC**：uninstalled 行 durable 保留；无物理删行或 artifact GC。
+- **lifecycle 与纵切面主链无联动**：happy chain 的 Task/Attempt/Process 在 uninstall 后仍 inspect 可读——符合当前权威语义，非 slice 发明。
