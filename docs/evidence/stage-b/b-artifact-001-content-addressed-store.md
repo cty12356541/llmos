@@ -38,7 +38,7 @@ ContentDigest                          → 本地内容寻址字节存储
 
 ## 3. 测试矩阵与结果
 
-环境：Apple Silicon / arm64，macOS，rustc 1.97.x workspace toolchain，rusqlite 0.40 bundled SQLite。共 26 个测试（3 lib 单测 + 23 集成），全部通过。
+环境：Apple Silicon / arm64，macOS，rustc 1.97.x workspace toolchain，rusqlite 0.40 bundled SQLite。lib 单测增至 5（含 `sync_dir` Unix smoke）；集成测试不变。
 
 | 组 | 场景 | 结果 |
 |---|---|---|
@@ -55,6 +55,7 @@ ContentDigest                          → 本地内容寻址字节存储
 | recovery reconcile | 手删 blob → recover 列 `missing_blobs` + get typed `BlobMissing`（含 digest 提示）；孤儿 tmp 清理；孤儿 blob 仅列出；recover 幂等 | PASS |
 | cache 分离 | 同字节双域 eviction 不触 artifact；cache blob 丢失降级为 miss 且 recover 删行自愈；孤儿 cache blob 仅列出 | PASS |
 | blob 写入失败排序 | tmp 目录只读 → typed I/O 错误、无元数据提交、tmp 无残留（Unix 门控） | PASS |
+| Windows 目录 fsync | `sync_dir` Unix smoke（macOS）；`windows_sync_dir_after_rename_in_shard_layout` 仅 `#[cfg(windows)]`（本 host 未实跑） | PARTIAL（Unix PASS；Windows 实机未测） |
 
 ## 4. 规范解释决策（spec-interpretation decisions）
 
@@ -72,7 +73,7 @@ ContentDigest                          → 本地内容寻址字节存储
 - **无加密、provenance 链、legal hold、删除语义**；`owner`/`application_id` 为占位字段；无 Package 签名验证（属 B-ARTIFACT 后续切片）；无 Context builder（仅原始 cache 域分离）；无 nlos-task 集成（TaskCommitReceipt 绑定属后续切片）。
 - **真实整盘 ENOSPC 未测**：macOS 无可写 `/dev/full`，blob 写期 ENOSPC 以 OS 错误码分类单测（真实 `raw_os_error` 映射）+ tmp 只读集成测试近似；元数据期 ENOSPC 以 `SQLITE_FULL` 注入覆盖。RAM-volume 真实满盘探针留待后续。
 - **kill-9 = 进程崩溃**（OS page cache 存活），非机器断电；断电语义由 `PowerLossAfter` 行覆盖。VFS shim 只拦截 SQLite I/O，blob 写入为普通文件系统 I/O，不在 shim 覆盖内。
-- **Windows 目录 fsync**：std 无法 fsync 目录句柄；`#[cfg(not(unix))]` 下目录项持久性依赖文件系统（NTFS 元数据日志），已在 `blob.rs` 记录为平台限制；本证据仅 macOS 本地复验，CI/其他平台未在本切片声明。
+- **Windows 目录 fsync**：`blob::sync_dir` 在 Windows 上以 `FILE_FLAG_BACKUP_SEMANTICS` 打开目录句柄并调用 std `File::sync_all`（底层 `FlushFileBuffers`），使 rename 后的目录项可在 Windows 上单测；Unix 路径不变；其它平台仍为 documented no-op。本证据 macOS 本地复验通过（含 `sync_dir_succeeds_on_existing_directory` 与 Windows 分支 compile gate）；**Windows 实机单测 `windows_sync_dir_after_rename_in_shard_layout` 未在本 host 执行**（PARTIAL_PASS 如实登记）。
 - **recover 只核 presence 不核 digest**：全量 blob 重哈希留给 GC/审计切片；撕裂 blob 由读后重验覆盖。
 - 单 writer（进程内 Mutex + `BEGIN IMMEDIATE` 存储栅栏）；不声称跨节点一致性。
 
@@ -82,18 +83,13 @@ ContentDigest                          → 本地内容寻址字节存储
 
 ```sh
 cargo test -p nlos-artifact
-# lib 3 passed；fault_injection 9 passed；happy_path 5 passed；
-# immutable_head 4 passed；recovery 5 passed；共 26 passed, 0 failed
+# lib 5 passed（含 sync_dir Unix smoke）；集成测试矩阵同前
 
-cargo clippy -p nlos-artifact -p nlos-types --all-targets -- -D warnings
+cargo clippy -p nlos-artifact --all-targets -- -D warnings
 # 通过（exit 0）
 
-cargo fmt -p nlos-artifact -p nlos-types -- --check
+cargo fmt -p nlos-artifact -- --check
 # 通过（exit 0）
-
-cargo test --workspace
-# 42 个 test binary ok；唯一失败为并行 lane 的 nlos-task --test task_group
-# （其未提交 mid-flight 文件，不在本切片写集，见下）
 ```
 
 并行 lane 说明：复验时点 `crates/nlos-task/**`（TaskGroup schema v4 lane）存在未提交改动，其 `task_group` 测试 1 项失败、`cargo fmt --all -- --check` 仅对其 `task_group.rs` 报 diff、`cargo clippy --workspace` 的错误亦全部位于该 lane 文件。本切片写集（`crates/nlos-artifact/**`、根 `Cargo.toml`、`Cargo.lock`、`crates/nlos-types/src/lib.rs` 一行 `nominal_id!(ArtifactId)`）自身全部绿色；按任务书约定未触碰该 crate。

@@ -17,5 +17,8 @@ ed25519-dalek.workspace = true
 nlos-store-fault = { path = "../nlos-store-fault" }
 rusqlite.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+
 [lints]
 workspace = true

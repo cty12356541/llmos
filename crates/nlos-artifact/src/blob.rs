@@ -256,10 +256,11 @@ pub(crate) fn remove_blob(
 
 /// fsyncs a directory so a rename/create inside it becomes durable.
 ///
-/// On Unix this opens the directory read-only and `sync_all`s it. Windows
-/// cannot fsync a directory handle through the standard library; directory
-/// entry durability there relies on the filesystem (NTFS journals metadata),
-/// which is documented as a platform limitation of this slice.
+/// On Unix this opens the directory read-only and `sync_all`s it. On Windows
+/// the directory must be opened with [`FILE_FLAG_BACKUP_SEMANTICS`] so
+/// [`FlushFileBuffers`](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-flushfilebuffers)
+/// can flush directory metadata; std's [`File::sync_all`] issues that call.
+/// Other platforms have no portable directory fsync and use a documented no-op.
 #[cfg(unix)]
 fn sync_dir(path: &Path) -> Result<(), ArtifactError> {
     File::open(path)
@@ -267,8 +268,23 @@ fn sync_dir(path: &Path) -> Result<(), ArtifactError> {
         .map_err(ArtifactError::Io)
 }
 
-#[cfg(not(unix))]
-// The fallible signature is shared with the Unix branch (which can fail);
+#[cfg(windows)]
+fn sync_dir(path: &Path) -> Result<(), ArtifactError> {
+    use std::fs::OpenOptions;
+    use std::os::windows::fs::OpenOptionsExt;
+
+    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS;
+
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+        .and_then(|directory| directory.sync_all())
+        .map_err(ArtifactError::Io)
+}
+
+#[cfg(not(any(unix, windows)))]
+// The fallible signature is shared with the Unix/Windows branches (which can fail);
 // on this platform directory sync is a documented no-op (see above).
 #[allow(clippy::unnecessary_wraps)]
 fn sync_dir(_path: &Path) -> Result<(), ArtifactError> {
@@ -284,6 +300,9 @@ fn map_write_error(error: io::Error) -> ArtifactError {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::sync::atomic::Ordering;
+
     use super::*;
 
     #[test]
@@ -317,5 +336,46 @@ mod tests {
     #[test]
     fn cross_device_code_is_distinct_from_no_space() {
         assert!(!NO_SPACE_CODES.contains(&CROSS_DEVICE_CODE));
+    }
+
+    /// Smoke-test that `sync_dir` accepts an on-disk directory on every host
+    /// where this crate is built. Unix flushes the directory inode; Windows
+    /// opens with `FILE_FLAG_BACKUP_SEMANTICS` and `FlushFileBuffers`; other
+    /// hosts use the documented no-op branch.
+    #[test]
+    fn sync_dir_succeeds_on_existing_directory() {
+        let sequence = TMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "nlos-artifact-sync-dir-{}-{sequence}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).expect("create temp directory for sync_dir probe");
+        sync_dir(&dir).expect("sync_dir must succeed on an existing directory");
+        fs::remove_dir(&dir).expect("remove temp directory");
+    }
+
+    /// Exercises the rename-then-shard-sync slice of the commit protocol on
+    /// Windows, where directory entry durability is the platform-specific
+    /// concern addressed by `sync_dir`.
+    #[cfg(windows)]
+    #[test]
+    fn windows_sync_dir_after_rename_in_shard_layout() {
+        let sequence = TMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "nlos-artifact-win-sync-{}-{sequence}",
+            std::process::id()
+        ));
+        let blobs = root.join("blobs");
+        let shard = blobs.join("ab");
+        fs::create_dir_all(&shard).expect("create shard directory");
+        sync_dir(&blobs).expect("sync blobs root before rename");
+        let tmp = root.join("tmp").join("ab.tmp");
+        fs::create_dir_all(tmp.parent().expect("tmp parent")).expect("create tmp dir");
+        fs::write(&tmp, b"windows shard sync probe").expect("write tmp blob");
+        let final_path = shard.join("cd");
+        fs::rename(&tmp, &final_path).expect("atomic rename into shard");
+        sync_dir(&shard).expect("flush shard directory after rename");
+        assert!(final_path.is_file());
+        fs::remove_dir_all(&root).expect("cleanup windows sync probe");
     }
 }
