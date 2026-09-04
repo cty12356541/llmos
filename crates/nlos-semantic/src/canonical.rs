@@ -63,10 +63,8 @@ pub fn encode_unsigned_assertion_event(
     for parent in &event.declared_parents {
         encoder.bytes(parent.as_bytes()).map_err(encoding_error)?;
     }
-    encoder
-        .u8(12)
-        .and_then(|e| e.null())
-        .map_err(encoding_error)?;
+    encoder.u8(12).map_err(encoding_error)?;
+    encode_optional_receipt(&mut encoder, event.declassification_receipt_id)?;
     encoder.u8(13).map_err(encoding_error)?;
     encode_optional_u64(&mut encoder, event.valid_until_ms)?;
     encoder.u8(14).map_err(encoding_error)?;
@@ -328,7 +326,7 @@ fn decode_structural(bytes: &[u8]) -> Result<UnsignedAssertionEvent, SemanticAut
     expect_key(&mut decoder, 11)?;
     let declared_parents = decode_event_ids(&mut decoder)?;
     expect_key(&mut decoder, 12)?;
-    decoder.null().map_err(decode_error)?;
+    let declassification_receipt_id = decode_optional_receipt(&mut decoder)?;
     expect_key(&mut decoder, 13)?;
     let valid_until_ms = decode_optional_u64(&mut decoder)?;
     expect_key(&mut decoder, 14)?;
@@ -362,6 +360,7 @@ fn decode_structural(bytes: &[u8]) -> Result<UnsignedAssertionEvent, SemanticAut
         issued_at_unix_ns,
         nonce,
         declared_parents,
+        declassification_receipt_id,
         valid_until_ms,
         purpose_digest,
         content_digest,

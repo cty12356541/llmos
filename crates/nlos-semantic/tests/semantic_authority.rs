@@ -202,6 +202,7 @@ fn request(
         issued_at_unix_ns: 1_000_000_000 + u64::from(seed),
         nonce: vec![seed; 16],
         declared_parents: parents,
+        declassification_receipt_id: None,
         valid_until_ms: Some(8_000),
         purpose_digest: fixture.capability_record.purpose_digest,
         content_digest: content_digest(&media_type, &content_bytes).unwrap(),
@@ -878,6 +879,12 @@ fn real_v1_store_migrates_without_losing_assertion_or_receipt() {
          DROP TRIGGER IF EXISTS event_retractions_immutable_update;
          DROP TRIGGER IF EXISTS event_retractions_immutable_delete;
          DROP TABLE IF EXISTS event_retractions;
+         DROP TRIGGER IF EXISTS declassification_receipts_immutable_update;
+         DROP TRIGGER IF EXISTS declassification_receipts_immutable_delete;
+         DROP TRIGGER IF EXISTS declassification_source_events_immutable_update;
+         DROP TRIGGER IF EXISTS declassification_source_events_immutable_delete;
+         DROP TABLE IF EXISTS declassification_source_events;
+         DROP TABLE IF EXISTS declassification_receipts;
          CREATE TRIGGER semantic_events_immutable_update BEFORE UPDATE ON semantic_events
          BEGIN SELECT RAISE(ABORT, 'semantic event is immutable'); END;
          CREATE TRIGGER semantic_events_immutable_delete BEFORE DELETE ON semantic_events
@@ -893,7 +900,7 @@ fn real_v1_store_migrates_without_losing_assertion_or_receipt() {
     assert_eq!(
         raw.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .unwrap(),
-        5
+        6
     );
     assert_eq!(
         raw.query_row(

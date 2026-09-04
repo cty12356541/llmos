@@ -291,6 +291,7 @@ fn append_assertion(fixture: &Fixture, seed: u8) -> SemanticEventId {
         issued_at_unix_ns: 1_000_000_000 + u64::from(seed),
         nonce: vec![seed; 16],
         declared_parents: Vec::new(),
+        declassification_receipt_id: None,
         valid_until_ms: Some(8_000),
         purpose_digest: fixture.purpose_digest,
         content_digest: content_digest(&media_type, &content_bytes).unwrap(),

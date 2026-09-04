@@ -425,6 +425,56 @@ pub(crate) fn migrate_v5(connection: &mut Connection) -> Result<(), SemanticAuth
     migration
 }
 
+/// Adds append-only declassification receipt storage for `[SEM-DECLASS-001]`.
+pub(crate) fn migrate_v6(connection: &mut Connection) -> Result<(), SemanticAuthorityError> {
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "CREATE TABLE declassification_receipts (
+            receipt_id BLOB PRIMARY KEY NOT NULL CHECK(length(receipt_id) = 16),
+            holder_principal_id BLOB NOT NULL CHECK(length(holder_principal_id) = 16),
+            scope_kind INTEGER NOT NULL CHECK(scope_kind IN (1, 2)),
+            scope_id BLOB NOT NULL CHECK(length(scope_id) = 16),
+            removed_labels INTEGER NOT NULL CHECK(removed_labels BETWEEN 0 AND 7),
+            purpose_digest BLOB CHECK(purpose_digest IS NULL OR length(purpose_digest) = 32),
+            expires_at_ms INTEGER NOT NULL CHECK(expires_at_ms >= 0),
+            nonce BLOB NOT NULL CHECK(length(nonce) BETWEEN 16 AND 32),
+            issued_at_ms INTEGER NOT NULL CHECK(issued_at_ms >= 0),
+            store_principal_id BLOB NOT NULL CHECK(length(store_principal_id) = 16),
+            store_control_domain_id BLOB NOT NULL CHECK(length(store_control_domain_id) = 16),
+            store_key_id BLOB NOT NULL CHECK(length(store_key_id) = 16),
+            store_signature BLOB NOT NULL CHECK(length(store_signature) = 64)
+         ) STRICT;
+
+         CREATE UNIQUE INDEX declassification_receipts_nonce_idx
+         ON declassification_receipts(nonce);
+
+         CREATE TABLE declassification_source_events (
+            receipt_id BLOB NOT NULL CHECK(length(receipt_id) = 16),
+            source_event_id BLOB NOT NULL CHECK(length(source_event_id) = 32),
+            PRIMARY KEY(receipt_id, source_event_id),
+            FOREIGN KEY(receipt_id) REFERENCES declassification_receipts(receipt_id),
+            FOREIGN KEY(source_event_id) REFERENCES semantic_events(event_id)
+         ) STRICT;
+
+         CREATE TRIGGER declassification_receipts_immutable_update
+         BEFORE UPDATE ON declassification_receipts
+         BEGIN SELECT RAISE(ABORT, 'declassification receipt is immutable'); END;
+         CREATE TRIGGER declassification_receipts_immutable_delete
+         BEFORE DELETE ON declassification_receipts
+         BEGIN SELECT RAISE(ABORT, 'declassification receipt is immutable'); END;
+         CREATE TRIGGER declassification_source_events_immutable_update
+         BEFORE UPDATE ON declassification_source_events
+         BEGIN SELECT RAISE(ABORT, 'declassification source is immutable'); END;
+         CREATE TRIGGER declassification_source_events_immutable_delete
+         BEFORE DELETE ON declassification_source_events
+         BEGIN SELECT RAISE(ABORT, 'declassification source is immutable'); END;
+
+         PRAGMA user_version = 6;",
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
+
 pub(crate) fn load_semantic_admission_endpoint_proof(
     connection: &Connection,
 ) -> Result<SemanticAdmissionEndpointProof, SemanticAuthorityError> {

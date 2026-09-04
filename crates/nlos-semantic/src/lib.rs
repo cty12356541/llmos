@@ -5,6 +5,7 @@
 //! signed durable `AdmissionReceipt` in one `SQLite` transaction.
 
 mod canonical;
+mod declassification;
 mod model;
 mod schema;
 mod spec;
@@ -39,14 +40,15 @@ pub use canonical::{
 pub use model::{
     AcknowledgeOutboxRequest, AdmissionDurability, AdmissionReceipt, AppendAssertionRequest,
     AppendDecision, AppendSpecRequest, AppendTypedEventRequest, AssertionMode,
-    CriterionAggregation, CriterionEffect, CriterionVerificationTarget, DurabilityReceipt,
-    EvaluatorKind, EventVerificationTarget, ImmutableEvaluatorReference,
+    CriterionAggregation, CriterionEffect, CriterionVerificationTarget, DeclassificationReceipt,
+    DurabilityReceipt, EvaluatorKind, EventVerificationTarget, ImmutableEvaluatorReference,
     ImmutableEvaluatorReferenceKind, IntentConstraints, IntentCriterion, IntentCriticality,
-    IntentSettlement, IntentSpecBody, JudgmentRelation, LocalProcessRef, MAX_CANONICAL_EVENT_BYTES,
-    MAX_CONTENT_BYTES, MAX_LINEAGE_ITEMS, MAX_NONCE_BYTES, MAX_SPEC_CAPABILITY_REFS,
-    MAX_SPEC_CRITERIA, MAX_SPEC_EXTENSION_BYTES, MAX_SPEC_EXTENSIONS, MIN_NONCE_BYTES,
-    OutboxAckDecision, PublishSemanticPublicationRequest, RetractionMode, RetractionRecord,
-    SemanticAdmissionEndpointProof, SemanticEventRecord, SemanticOutboxRecord,
+    IntentSettlement, IntentSpecBody, IssueDeclassificationDecision,
+    IssueDeclassificationReceiptRequest, JudgmentRelation, LocalProcessRef,
+    MAX_CANONICAL_EVENT_BYTES, MAX_CONTENT_BYTES, MAX_LINEAGE_ITEMS, MAX_NONCE_BYTES,
+    MAX_SPEC_CAPABILITY_REFS, MAX_SPEC_CRITERIA, MAX_SPEC_EXTENSION_BYTES, MAX_SPEC_EXTENSIONS,
+    MIN_NONCE_BYTES, OutboxAckDecision, PublishSemanticPublicationRequest, RetractionMode,
+    RetractionRecord, SemanticAdmissionEndpointProof, SemanticEventRecord, SemanticOutboxRecord,
     SemanticPayloadIdentity, SemanticPublicationDecision, SemanticPublicationReceipt,
     SettlementMode, SettlementTimeoutAction, SpecExtension, StoreSigner, StoreSignerError,
     TaintFlags, TypedSemanticEvent, UnsignedAssertionEvent, UnsignedJudgmentEvent,
@@ -63,7 +65,9 @@ pub use typed::{
     encode_unsigned_retraction_event, encode_unsigned_verification_event,
 };
 
-const SCHEMA_VERSION: i64 = 5;
+pub use declassification::declassification_issue_authorization_id;
+
+const SCHEMA_VERSION: i64 = 6;
 const EDGE_DECLARED: i64 = 1;
 const EDGE_CAPTURED: i64 = 2;
 
@@ -126,6 +130,15 @@ pub enum SemanticAuthorityError {
         reported: u64,
     },
     OutboxAckBeforeAdmission,
+    DeclassificationReceiptNotFound(ReceiptId),
+    DeclassificationReceiptExpired,
+    DeclassificationReceiptHolderMismatch,
+    DeclassificationReceiptScopeMismatch,
+    DeclassificationReceiptPurposeMismatch,
+    DeclassificationReceiptSourceMismatch(SemanticEventId),
+    DeclassificationLabelNotPresent,
+    DeclassificationNonceReplayConflict,
+    DeclassificationRemovedLabelsEmpty,
     CorruptRecord(&'static str),
     LockPoisoned,
 }
@@ -261,6 +274,31 @@ impl fmt::Display for SemanticAuthorityError {
             Self::OutboxAckBeforeAdmission => {
                 formatter.write_str("outbox acknowledgement precedes admission")
             }
+            Self::DeclassificationReceiptNotFound(id) => {
+                write!(formatter, "declassification receipt {id:?} does not exist")
+            }
+            Self::DeclassificationReceiptExpired => {
+                formatter.write_str("declassification receipt is expired at admission")
+            }
+            Self::DeclassificationReceiptHolderMismatch => formatter
+                .write_str("declassification receipt holder does not match assertion issuer"),
+            Self::DeclassificationReceiptScopeMismatch => {
+                formatter.write_str("declassification receipt scope does not match assertion scope")
+            }
+            Self::DeclassificationReceiptPurposeMismatch => formatter
+                .write_str("declassification receipt purpose does not match assertion purpose"),
+            Self::DeclassificationReceiptSourceMismatch(id) => write!(
+                formatter,
+                "declassification receipt source event {id:?} is not in lineage"
+            ),
+            Self::DeclassificationLabelNotPresent => formatter.write_str(
+                "declassification receipt removes labels not present in effective taint",
+            ),
+            Self::DeclassificationNonceReplayConflict => formatter
+                .write_str("declassification nonce replay conflicts with a different receipt"),
+            Self::DeclassificationRemovedLabelsEmpty => {
+                formatter.write_str("declassification receipt must remove at least one label")
+            }
             Self::CorruptRecord(reason) => write!(formatter, "corrupt durable record: {reason}"),
             Self::LockPoisoned => formatter.write_str("semantic authority lock is poisoned"),
         }
@@ -362,23 +400,31 @@ impl SemanticAuthority {
                 schema::migrate_v3(&mut connection)?;
                 schema::migrate_v4(&mut connection)?;
                 schema::migrate_v5(&mut connection)?;
+                schema::migrate_v6(&mut connection)?;
             }
             1 => {
                 schema::migrate_v1_to_v2(&mut connection)?;
                 schema::migrate_v3(&mut connection)?;
                 schema::migrate_v4(&mut connection)?;
                 schema::migrate_v5(&mut connection)?;
+                schema::migrate_v6(&mut connection)?;
             }
             2 => {
                 schema::migrate_v3(&mut connection)?;
                 schema::migrate_v4(&mut connection)?;
                 schema::migrate_v5(&mut connection)?;
+                schema::migrate_v6(&mut connection)?;
             }
             3 => {
                 schema::migrate_v4(&mut connection)?;
                 schema::migrate_v5(&mut connection)?;
+                schema::migrate_v6(&mut connection)?;
             }
-            4 => schema::migrate_v5(&mut connection)?,
+            4 => {
+                schema::migrate_v5(&mut connection)?;
+                schema::migrate_v6(&mut connection)?;
+            }
+            5 => schema::migrate_v6(&mut connection)?,
             SCHEMA_VERSION => {}
             other => return Err(SemanticAuthorityError::SchemaVersionUnsupported(other)),
         }
@@ -469,6 +515,17 @@ impl SemanticAuthority {
             request.ingress_taint,
             &event.declared_parents,
             &request.captured_inputs,
+        )?;
+        let effective_taint = declassification::apply_declassification(
+            &transaction,
+            effective_taint,
+            event.issuer,
+            event.scope,
+            event.purpose_digest,
+            &event.declared_parents,
+            &request.captured_inputs,
+            event.declassification_receipt_id,
+            request.admitted_at_ms,
         )?;
         insert_or_validate_content(
             &transaction,
@@ -834,6 +891,44 @@ impl SemanticAuthority {
     ) -> Result<Option<RetractionRecord>, SemanticAuthorityError> {
         let connection = self.lock()?;
         load_event_retraction(&connection, target_event_id)
+    }
+
+    /// Issues an immutable declassification receipt after adjudicator signature,
+    /// capability authorization, lineage validation, and store signing
+    /// (`[SEM-DECLASS-001]`).
+    ///
+    /// # Errors
+    ///
+    /// Typed fail-closed errors for identity, capability, lineage, nonce replay,
+    /// or store signing failures.
+    pub fn issue_declassification_receipt(
+        &self,
+        identity: &IdentityAuthority,
+        capability: &CapabilityAuthority,
+        store_signer: &impl StoreSigner,
+        request: &IssueDeclassificationReceiptRequest,
+    ) -> Result<IssueDeclassificationDecision, SemanticAuthorityError> {
+        let mut connection = self.lock()?;
+        declassification::issue_declassification_receipt(
+            &mut connection,
+            identity,
+            capability,
+            store_signer,
+            request,
+        )
+    }
+
+    /// Reads one committed declassification receipt by id.
+    ///
+    /// # Errors
+    ///
+    /// Returns storage/corrupt-record errors or `DeclassificationReceiptNotFound`.
+    pub fn inspect_declassification_receipt(
+        &self,
+        receipt_id: ReceiptId,
+    ) -> Result<DeclassificationReceipt, SemanticAuthorityError> {
+        let connection = self.lock()?;
+        declassification::inspect_declassification_receipt(&connection, receipt_id)
     }
 
     /// Shared admission core for the Judgment/Verification/Retraction typed

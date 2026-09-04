@@ -187,6 +187,7 @@ pub struct UnsignedAssertionEvent {
     pub issued_at_unix_ns: u64,
     pub nonce: Vec<u8>,
     pub declared_parents: Vec<SemanticEventId>,
+    pub declassification_receipt_id: Option<ReceiptId>,
     pub valid_until_ms: Option<u64>,
     pub purpose_digest: Option<[u8; 32]>,
     pub content_digest: [u8; 32],
@@ -223,6 +224,16 @@ impl TaintFlags {
     #[must_use]
     pub const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
+    }
+
+    #[must_use]
+    pub const fn contains(self, mask: Self) -> bool {
+        (self.0 & mask.0) == mask.0
+    }
+
+    #[must_use]
+    pub const fn without(self, mask: Self) -> Self {
+        Self(self.0 & !mask.0)
     }
 }
 
@@ -643,6 +654,55 @@ pub struct SemanticAdmissionEndpointProof {
     pub participant_id: TaskParticipantId,
     pub participant_generation: Generation,
     pub admission_receipt_id: ReceiptId,
+}
+
+/// Immutable authorization to remove bounded taint labels from one admission
+/// (`[SEM-DECLASS-001]`).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeclassificationReceipt {
+    pub receipt_id: ReceiptId,
+    pub holder: PrincipalId,
+    pub scope: CapabilityTarget,
+    pub source_events: Vec<SemanticEventId>,
+    pub removed_labels: TaintFlags,
+    pub purpose_digest: Option<[u8; 32]>,
+    pub expires_at_ms: u64,
+    pub nonce: Vec<u8>,
+    pub issued_at_ms: u64,
+    pub store_principal: PrincipalId,
+    pub store_control_domain: ControlDomainId,
+    pub store_key_id: KeyId,
+    pub store_signature: [u8; 64],
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IssueDeclassificationReceiptRequest {
+    pub holder: PrincipalId,
+    pub scope: CapabilityTarget,
+    pub source_events: Vec<SemanticEventId>,
+    pub removed_labels: TaintFlags,
+    pub purpose_digest: Option<[u8; 32]>,
+    pub expires_at_ms: u64,
+    pub nonce: Vec<u8>,
+    pub issued_at_ms: u64,
+    pub capability: CapabilityHandle,
+    pub adjudicator_key_id: KeyId,
+    pub adjudicator_signature: [u8; 64],
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum IssueDeclassificationDecision {
+    Issued(DeclassificationReceipt),
+    Replayed(DeclassificationReceipt),
+}
+
+impl IssueDeclassificationDecision {
+    #[must_use]
+    pub fn receipt(&self) -> &DeclassificationReceipt {
+        match self {
+            Self::Issued(receipt) | Self::Replayed(receipt) => receipt,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
