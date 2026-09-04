@@ -4,6 +4,7 @@
 //! checked against the current generation and the complete ancestor chain.
 
 mod model;
+mod namespace;
 mod schema;
 
 use std::error::Error;
@@ -435,7 +436,7 @@ impl CapabilityAuthority {
         if !request.rights.is_subset_of(parent.rights) {
             return Err(CapabilityAuthorityError::RightsAmplification);
         }
-        if request.target != parent.target {
+        if !namespace::target_is_within(request.target, parent.target) {
             return Err(CapabilityAuthorityError::ScopeAmplification);
         }
         if !purpose_is_attenuated(parent.purpose_digest, request.purpose_digest) {
@@ -1299,7 +1300,7 @@ fn admit_semantic(
     {
         return Err(CapabilityAuthorityError::HolderMismatch);
     }
-    if target != record.target {
+    if !namespace::target_is_within(target, record.target) {
         return Err(CapabilityAuthorityError::TargetMismatch);
     }
     if !record.rights.contains(required_right) {
