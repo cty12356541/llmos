@@ -135,6 +135,7 @@ mod lease;
 mod migrations;
 mod model;
 mod participant;
+mod pressure;
 mod reconcile;
 mod recovery;
 mod resource_commit;
@@ -215,7 +216,12 @@ pub use resource_commit::{
     NestedResourceCostReceipt, ResourceFinalizeDecision, ResourceTaskCommitReceipt,
     SemanticResourceFinalizeDecision, SemanticResourceTaskCommitReceipt,
 };
-pub use scale::{ScaleProfile, TASK_PROFILE_10K, TASK_PROFILE_100K};
+pub use pressure::{
+    ReclaimPhase, ReclaimPolicy, WorkingSetPressure, TASK_DEFAULT_RECLAIM_POLICY,
+};
+pub use scale::{
+    ScaleProfile, DEFAULT_RECLAIM_THRESHOLD_RATIO, TASK_PROFILE_10K, TASK_PROFILE_100K,
+};
 pub use semantic_commit::{
     FinalizeSemanticCommitRequest, NestedSemanticPublicationReceipt, PlanSemanticCommitRequest,
     PrepareSemanticFinalizeRequest, RecordSemanticPublicationsRequest, SemanticCommitPlanDecision,

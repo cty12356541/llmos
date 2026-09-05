@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 
 use nlos_task::{
     AttemptSpec, Authorities, PermitDecision, PermitRequest, SnapshotBundle, SqliteTaskAuthority,
-    TASK_PROFILE_10K, TaskSpec, empty_effect_history_root,
+    TASK_PROFILE_10K, TaskSpec, WorkingSetPressure, empty_effect_history_root,
 };
 use nlos_types::{
     CancellationScopeId, Generation, IdempotencyKey, TaskAttemptId, TaskId, TaskSnapshotId,
@@ -231,6 +231,11 @@ fn task_10k_tier_is_published_and_registration_face_stays_key_scoped() {
     assert!(
         TASK_PROFILE_10K.admits_active_working_set(ACTIVE_SAMPLE),
         "active sample must fit the tier"
+    );
+    let pressure = WorkingSetPressure::new(&TASK_PROFILE_10K, ACTIVE_SAMPLE);
+    assert!(
+        !pressure.needs_reclaim(),
+        "small active sample must stay below soft reclaim threshold"
     );
     // Pathological-slowness guard only (complexity evidence is in the
     // ignored 10K probe; CI machines must never trip this).

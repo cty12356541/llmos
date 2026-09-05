@@ -76,3 +76,26 @@ cargo test -p nlos-task --test scale_profile_probe -- --ignored --nocapture
 | fmt nightly | `cargo +nightly-2026-08-01 fmt -p nlos-task -- --check` | PASS |
 
 修复说明（接管方最小补完，未重写前代理设计）：`scale.rs` / `scale_profile.rs` 文档 `TaskNodes`、`TaskNode` 加反引号（clippy `doc_markdown`）；`from_secs(60/120)` → `from_mins(1/2)`（clippy `duration_suboptimal_units`，语义不变）；`cargo fmt` 纯格式化。
+
+## 6. W17-004 pressure/reclaim 声明式骨架（2026-09-06）
+
+### 已实现事实
+
+1. `nlos-task::pressure`：`WorkingSetPressure`、`ReclaimPolicy`、`ReclaimPhase`、`TASK_DEFAULT_RECLAIM_POLICY`（`[RSM-RECLAIM-001]` 四相占位顺序：cache → QoS → checkpoint/evict → kill）。
+2. `ScaleProfile` 扩展 optional `reclaim_threshold_ratio`（`None` → companion `DEFAULT_RECLAIM_THRESHOLD_RATIO = 90`）；`TASK_PROFILE_10K` / `TASK_PROFILE_100K` 显式 `Some(90)`，既有三字段构造仍可通过 `None` 保持 backward compat。
+3. 谓词：`reclaim_threshold_count()`、`needs_reclaim(active_count)`（`active > threshold`）；`WorkingSetPressure::needs_reclaim` / `admits` 包装硬/软边界（10K 档 threshold=460，461→reclaim 且仍 admits，513→!admits）。
+4. **声明而非强制**：未接入 `TaskAuthority` 注册/admission；无 rehydrate/checkpoint 基准。
+
+### 验证门（W17-004 实跑）
+
+| 门 | 命令 | 结果 |
+| --- | --- | --- |
+| scale_profile 集成 | `cargo test -p nlos-task --test scale_profile` | PASS |
+| scale + pressure 单测 | `cargo test -p nlos-task -q scale pressure` | PASS |
+| clippy | `cargo clippy -p nlos-task --all-targets -- -D warnings` | PASS |
+
+### 仍属缺口（不得宣称 ROAD-B-004 整体达成）
+
+1. pressure/reclaim 未强制于 admission 或 Materialization/Context controller。
+2. checkpoint/rehydrate 基准与 TaskPlan/TaskNode 声明面仍待议题 35 ADR 后推进。
+3. 100K probe 数字仍待本地/CI 实跑后填入 §3.1。
