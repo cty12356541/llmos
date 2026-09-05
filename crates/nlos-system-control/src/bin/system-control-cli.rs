@@ -15,6 +15,7 @@
 //! system-control-cli <SOCKET> export-metrics
 //! system-control-cli <SOCKET> inspect-task <PLAN_ID_HEX_32>
 //! system-control-cli <SOCKET> inspect-process <PROCESS_ID_HEX_32>
+//! system-control-cli <SOCKET> inspect-resource <RESERVATION_ID_HEX_32>
 //! system-control-cli <SOCKET> ack-recovery-alert <COMMAND_ID_HEX_32> <PLAN_ID_HEX_32> <EXPECTED_FAILURES> <REASON>
 //! ```
 //!
@@ -43,6 +44,7 @@ const USAGE: &str = "usage: system-control-cli <SOCKET> inspect-health \
 | export-metrics \
 | inspect-task <PLAN_ID_HEX_32> \
 | inspect-process <PROCESS_ID_HEX_32> \
+| inspect-resource <RESERVATION_ID_HEX_32> \
 | ack-recovery-alert <COMMAND_ID_HEX_32> <PLAN_ID_HEX_32> <EXPECTED_FAILURES> <REASON>";
 
 #[cfg(unix)]
@@ -65,6 +67,9 @@ fn parsed_command(arguments: &[String]) -> Result<ControlCommand, ControlError> 
         }),
         "inspect-process" if arguments.len() == 2 => Ok(ControlCommand::InspectProcess {
             process_id: parse_hex_id(&arguments[1])?,
+        }),
+        "inspect-resource" if arguments.len() == 2 => Ok(ControlCommand::InspectResource {
+            reservation_id: parse_hex_id(&arguments[1])?,
         }),
         "ack-recovery-alert" if arguments.len() == 5 => {
             Ok(ControlCommand::AcknowledgeRecoveryAlert {
@@ -110,6 +115,15 @@ fn summary(receipt: &ControlReceipt) -> String {
             inspection.process_generation,
             hex(&inspection.task_id),
         ),
+        Ok(ControlOutcome::ResourceInspected(inspection)) => format!(
+            "outcome=resource_inspected reservation_id={} account_id={} upper_bound={} \
+             usage_high_water={} consumptions={}",
+            hex(&inspection.reservation_id),
+            hex(&inspection.account_id),
+            inspection.upper_bound,
+            inspection.usage_high_water,
+            inspection.consumption_count,
+        ),
         Ok(ControlOutcome::MetricsExported(export)) => format!(
             "outcome=metrics_exported bytes={}",
             export.openmetrics_text.len(),
@@ -133,7 +147,7 @@ async fn run() -> Result<ExitCode, ControlError> {
         return Ok(ExitCode::from(2));
     };
     let command = parsed_command(&arguments[1..]).inspect_err(|_| eprintln!("{USAGE}"))?;
-    let receipt = dispatch_over_socket(&socket, &command, None).await?;
+    let receipt = dispatch_over_socket(&socket, &command, None, None).await?;
     println!("RECEIPT {}", receipt_to_hex(&receipt));
     println!("{}", summary(&receipt));
     if receipt.outcome.is_ok() {

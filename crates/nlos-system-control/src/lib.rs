@@ -58,6 +58,11 @@ pub mod nl;
 #[cfg(feature = "process")]
 pub mod process_inspector;
 
+/// Optional [`control::ResourceInspector`] adapter backed by
+/// [`nlos_resource::ResourceAuthority`] (`resource` feature).
+#[cfg(feature = "resource")]
+pub mod resource_inspector;
+
 /// Deterministic OpenMetrics text exposition (`text/plain; version=0.0.4`)
 /// for the recovery metrics catalog: the first concrete backend for
 /// [`RecoveryMetricsSink`], with no scraping transport. See the module

@@ -126,3 +126,40 @@
 1. **ProcessInspector 在 dispatch 侧接线**：CLI/socket 客户端默认 `None`（Unwired）；宿主须显式传入 `ProcessAuthorityInspector` 才能获得真实 snapshot——无第二 IPC process 服务。
 2. **`process` feature 依赖 nlos-process**：feature 启用时编译 `ProcessAuthorityInspector`；workspace 并行 lane 若破坏 `nlos-process` 编译面，feature 组合验证可能阻塞（默认 `default = ["cli"]` 不受影响）。
 3. **ROAD-B-005 仍 PARTIAL**：Trusted GUI 与多层手动调度未做；本增量只交付 Process 层 inspect 的 NL/CLI 前缀片。
+
+## W17-005 增量：`InspectTask` socket parity + `InspectResource` NL/CLI 前缀（2026-09-06）
+
+> 状态：`PARTIAL_PASS`（单节点本地；ROAD-B-005 仍 PARTIAL——GUI 未接、CLI 未内嵌 ResourceAuthority）
+>
+> 写集：`crates/nlos-system-control/**`、`docs/evidence/stage-b/b-control-003-nl-prefix.md`
+
+### 已实现事实
+
+1. **InspectTask socket parity**（`tests/control_command_cli.rs`）：在 `nl_sentences_compile_to_the_same_socket_receipts_as_direct_commands` 追加 escalated plan fixture 上 EN/ZH/synonym（`inspect|check task`、`查看任务|查看 任务`）→ `dispatch_over_socket` 与 in-process **逐字节 receipt 等价**。
+2. **additive `ControlCommand::InspectResource { reservation_id }`**（`src/control.rs`）：§25.3 command id / correlation 均为目标 `reservation_id`（bounded 32-hex）；仍交叉 GET recovery envelope 复用 `authorize_get`；receipt 投影为 `ControlOutcome::ResourceInspected(ResourceInspection { reservation_id, account_id, upper_bound, usage_high_water, consumption_count })`，由 dispatch 时注入的 pluggable [`ResourceInspector`] 提供 bounded snapshot。
+3. **默认 stub**：[`UnwiredResourceInspector`] → typed `NotFound`（`resource inspection backend is not wired`）；可选 `resource` feature 启用 [`resource_inspector::ResourceAuthorityInspector`]，经 `nlos_resource::ResourceAuthority::inspect_cost_receipt` 映射最小 settled-cost snapshot 与 bounded `SabiFailure`。
+4. **NL 白名单**（`src/nl.rs`）：`inspect|check|show resource <32-hex>`；`查看资源|查看 资源 <32-hex>`。
+5. **CLI parity**（`src/bin/system-control-cli.rs`）：`inspect-resource <RESERVATION_ID_HEX_32>`；summary `outcome=resource_inspected …`；未接线 backend 时 typed failure receipt（exit 1）与 in-process `None` inspector 逐字节相等。
+6. **dispatch 签名扩展**：`dispatch_in_process` / `dispatch_over_socket` / `dispatch_over_authenticated_socket` / `ControlReceipt::compose` 追加 `resource: Option<&dyn ResourceInspector>` 参数（与 W16-005 ProcessInspector 对称）。
+
+### 验证
+
+验证环境：macOS（darwin，arm64）。
+
+- `cargo test -p nlos-system-control`：**61 passed / 0 failed**（lib 23——含 nl 12、control 6、openmetrics 3；bin 0；`control_command_cli` 4；`control_ipc_auth` 9；其余 integration 24；doc-tests 1）。
+- `cargo fmt -p nlos-system-control --check`：通过。
+- `cargo clippy -p nlos-system-control --all-targets --all-features -- -D warnings`：**阻塞**——传递依赖 `nlos-process`（非本写集）存在 3 项 pre-existing clippy `-D warnings` 违规（`redundant_closure_for_method_calls`、`missing_errors_doc`×2）；默认 `default = ["cli"]` 路径下本 crate 源码零新增 warning。`resource` feature 组合：`cargo clippy -p nlos-system-control --all-targets --features cli,resource -- -D warnings` 本 crate 通过（同上 `nlos-process` 传递依赖阻塞 `--all-features` 全矩阵）。
+
+### Feature 说明
+
+| Feature | 依赖 | 启用内容 |
+|---|---|---|
+| `cli`（default） | nlos-ipc, tokio, … | `system-control-cli`、`dispatch_over_socket`、`auth` |
+| `process` | nlos-process | `process_inspector::ProcessAuthorityInspector` |
+| `resource` | nlos-resource | `resource_inspector::ResourceAuthorityInspector`（`inspect_cost_receipt` 最小 snapshot） |
+
+### 已知限制（增量）
+
+1. **ResourceInspector 在 dispatch 侧接线**：CLI/socket 客户端默认 `None`（Unwired）；宿主须显式传入 `ResourceAuthorityInspector` 才能获得真实 snapshot。
+2. **`resource` feature 依赖 nlos-resource**：只读 settled reservation；未 finalize 的 reservation 由 authority 返回 typed `State` failure。
+3. **ROAD-B-005 仍 PARTIAL**：Trusted GUI 未接；本增量只交付 Task socket parity 片 + Resource inspect NL/CLI 前缀片。

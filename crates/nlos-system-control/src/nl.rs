@@ -25,6 +25,8 @@
 //!   | 查看任务 <32位十六进制> | 查看 任务 <32位十六进制>
 //! inspect process <32-hex> | check process <32-hex> | show process <32-hex>
 //!   | 检查进程 <32位十六进制> | 查看进程 <32位十六进制> | 查看 进程 <32位十六进制>
+//! inspect resource <32-hex> | check resource <32-hex> | show resource <32-hex>
+//!   | 查看资源 <32位十六进制> | 查看 资源 <32位十六进制>
 //! acknowledge alert <32-hex> expecting <n>
 //!   | ack alert <32-hex> expecting <n> | confirm alert <32-hex> expecting <n>
 //!   | 确认告警 <32位十六进制> 期望 <n> | 确认 告警 <32位十六进制> 期望 <n>
@@ -57,9 +59,10 @@ pub const NL_ACK_REASON: &str =
 
 /// Legal grammar, named verbatim in every rejection message.
 const GRAMMAR_HELP: &str = "valid forms: \"inspect health\" | \"export metrics\" | \
-\"inspect task <32-hex>\" | \"inspect process <32-hex>\" | \
+\"inspect task <32-hex>\" | \"inspect process <32-hex>\" | \"inspect resource <32-hex>\" | \
 \"acknowledge alert <32-hex> expecting <count>\" | \"查看健康\" | \
 \"导出指标\" | \"查看任务 <32位十六进制>\" | \"检查进程 <32位十六进制>\" | \
+\"查看资源 <32位十六进制>\" | \
 \"确认告警 <32位十六进制> 期望 <次数>\"";
 
 /// Compiles one restricted-grammar English or Chinese imperative sentence
@@ -85,6 +88,9 @@ pub fn parse_nl_command(input: &str) -> Result<ControlCommand, ControlError> {
         return result;
     }
     if let Some(result) = try_parse_inspect_process(&tokens) {
+        return result;
+    }
+    if let Some(result) = try_parse_inspect_resource(&tokens) {
         return result;
     }
     if let Some(result) = try_parse_acknowledgement(&tokens) {
@@ -139,10 +145,17 @@ fn try_parse_inspect_health(tokens: &[&str]) -> Option<Result<ControlCommand, Co
         {
             None
         }
+        [head, second, ..]
+            if (is_read_verb(head) && second.eq_ignore_ascii_case("resource"))
+                || (*head == "查看" && *second == "资源") =>
+        {
+            None
+        }
         [head, second, ..] if is_read_verb(head) && second.eq_ignore_ascii_case("metrics") => None,
         [head, ..] if is_read_verb(head) || *head == "查看" || *head == "检查" => {
             Some(Err(ControlError::InvalidCommand(
-                "\"inspect\" expects \"health\", \"task <32-hex>\", or \"process <32-hex>\"",
+                "\"inspect\" expects \"health\", \"task <32-hex>\", \"process <32-hex>\", \
+                 or \"resource <32-hex>\"",
             )))
         }
         _ => None,
@@ -158,7 +171,8 @@ fn try_parse_export_metrics(tokens: &[&str]) -> Option<Result<ControlCommand, Co
         [head, second, ..]
             if (head.eq_ignore_ascii_case("show") || head.eq_ignore_ascii_case("get"))
                 && (second.eq_ignore_ascii_case("task")
-                    || second.eq_ignore_ascii_case("process")) =>
+                    || second.eq_ignore_ascii_case("process")
+                    || second.eq_ignore_ascii_case("resource")) =>
         {
             None
         }
@@ -209,6 +223,32 @@ fn try_parse_inspect_process(tokens: &[&str]) -> Option<Result<ControlCommand, C
         {
             Some(Err(ControlError::InvalidCommand(
                 "\"inspect process\" expects \"<32-hex>\"",
+            )))
+        }
+        _ => None,
+    }
+}
+
+fn try_parse_inspect_resource(tokens: &[&str]) -> Option<Result<ControlCommand, ControlError>> {
+    match tokens {
+        [head, second, reservation_id]
+            if is_read_verb(head) && second.eq_ignore_ascii_case("resource") =>
+        {
+            Some(
+                parse_hex_id(reservation_id)
+                    .map(|reservation_id| ControlCommand::InspectResource { reservation_id }),
+            )
+        }
+        ["查看资源", reservation_id] | ["查看", "资源", reservation_id] => Some(
+            parse_hex_id(reservation_id)
+                .map(|reservation_id| ControlCommand::InspectResource { reservation_id }),
+        ),
+        [head, second, ..]
+            if (is_read_verb(head) && second.eq_ignore_ascii_case("resource"))
+                || *second == "资源" =>
+        {
+            Some(Err(ControlError::InvalidCommand(
+                "\"inspect resource\" expects \"<32-hex>\"",
             )))
         }
         _ => None,
@@ -406,6 +446,41 @@ mod tests {
     }
 
     #[test]
+    fn english_resource_forms_parse() {
+        for sentence in [
+            "inspect resource a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "INSPECT RESOURCE A1B2C3D4E5F60718293A4B5C6D7E8F90",
+            "check resource a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "show resource A1B2C3D4E5F60718293A4B5C6D7E8F90",
+        ] {
+            assert_eq!(
+                parse_nl_command(sentence).unwrap(),
+                ControlCommand::InspectResource {
+                    reservation_id: plan_id()
+                },
+                "sentence: {sentence:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn chinese_resource_form_parses() {
+        for sentence in [
+            "查看资源 a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "  查看资源  A1B2C3D4E5F60718293A4B5C6D7E8F90 ",
+            "查看 资源 a1b2c3d4e5f60718293a4b5c6d7e8f90",
+        ] {
+            assert_eq!(
+                parse_nl_command(sentence).unwrap(),
+                ControlCommand::InspectResource {
+                    reservation_id: plan_id()
+                },
+                "sentence: {sentence:?}"
+            );
+        }
+    }
+
+    #[test]
     fn english_acknowledgement_parses_with_derived_identity() {
         let command =
             parse_nl_command("acknowledge alert a1b2c3d4e5f60718293a4b5c6d7e8f90 expecting 3")
@@ -501,6 +576,11 @@ mod tests {
             "inspect process",
             "inspect processes a1b2c3d4e5f60718293a4b5c6d7e8f90",
             "inspect process 1234",
+            "inspect resource",
+            "inspect resources a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "inspect resource 1234",
+            "查看资源",
+            "查看 资源",
             "检查进程",
             "查看 进程",
             "acknowledge alert",

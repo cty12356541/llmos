@@ -84,6 +84,11 @@ pub enum ControlCommand {
     /// [`ProcessInspector`] wired at dispatch time; the recovery GET envelope
     /// is still crossed for authorization parity.
     InspectProcess { process_id: [u8; 16] },
+    /// Inspect one resource reservation by its 16-byte reservation id. The
+    /// receipt reports a bounded read-only snapshot from the pluggable
+    /// [`ResourceInspector`] wired at dispatch time; the recovery GET envelope
+    /// is still crossed for authorization parity.
+    InspectResource { reservation_id: [u8; 16] },
     /// Acknowledge one escalated recovery alert. `control_command_id` is the
     /// idempotency identity (§25.3) and is bound to the request idempotency
     /// key by the handler; `expected_total_failures` is the CAS expectation.
@@ -105,6 +110,7 @@ impl ControlCommand {
             Self::ExportMetrics => EXPORT_METRICS_COMMAND_ID,
             Self::InspectTask { plan_id } => *plan_id,
             Self::InspectProcess { process_id } => *process_id,
+            Self::InspectResource { reservation_id } => *reservation_id,
             Self::AcknowledgeRecoveryAlert {
                 control_command_id, ..
             } => *control_command_id,
@@ -117,6 +123,7 @@ impl ControlCommand {
             Self::ExportMetrics => EXPORT_METRICS_CORRELATION_ID,
             Self::InspectTask { plan_id } => *plan_id,
             Self::InspectProcess { process_id } => *process_id,
+            Self::InspectResource { reservation_id } => *reservation_id,
             Self::AcknowledgeRecoveryAlert {
                 control_command_id, ..
             } => *control_command_id,
@@ -225,6 +232,42 @@ impl ProcessInspector for UnwiredProcessInspector {
     }
 }
 
+/// Bounded read-only facts for one resource reservation cost inspection.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResourceInspection {
+    pub reservation_id: [u8; 16],
+    pub account_id: [u8; 16],
+    pub upper_bound: u64,
+    pub usage_high_water: u64,
+    pub consumption_count: u32,
+}
+
+/// Pluggable read-only resource inspection backend for
+/// [`ControlCommand::InspectResource`]. Hosts wire a real authority adapter
+/// (see [`crate::resource_inspector`] with the `resource` feature) or leave
+/// the default [`UnwiredResourceInspector`] in place until one is available.
+pub trait ResourceInspector {
+    /// Returns one bounded settled-cost snapshot or a sanitized failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SabiFailure`] when the backing authority rejects the read.
+    fn inspect_resource(&self, reservation_id: [u8; 16])
+    -> Result<ResourceInspection, SabiFailure>;
+}
+
+/// Default stub used when no resource inspection backend is wired.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct UnwiredResourceInspector;
+
+impl ResourceInspector for UnwiredResourceInspector {
+    fn inspect_resource(&self, _: [u8; 16]) -> Result<ResourceInspection, SabiFailure> {
+        Err(not_found_failure(
+            "resource inspection backend is not wired",
+        ))
+    }
+}
+
 /// Deterministic `OpenMetrics` text produced by one metrics export command.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MetricsExport {
@@ -239,6 +282,8 @@ pub enum ControlOutcome {
     Inspected(RecoveryInspection),
     /// Read-only process binding inspection completed.
     ProcessInspected(ProcessInspection),
+    /// Read-only resource reservation cost inspection completed.
+    ResourceInspected(ResourceInspection),
     /// Read-only metrics export completed.
     MetricsExported(MetricsExport),
     /// Mutation accepted by the `TaskAuthority`; authoritative receipt id.
@@ -330,6 +375,7 @@ pub fn build_request_envelope(command: &ControlCommand) -> Result<Envelope, Cont
         ControlCommand::InspectHealth
         | ControlCommand::InspectTask { .. }
         | ControlCommand::InspectProcess { .. }
+        | ControlCommand::InspectResource { .. }
         | ControlCommand::ExportMetrics => (
             GET_METHOD,
             encode_get_system_control_request(&GetSystemControlRequest {
@@ -444,6 +490,7 @@ pub fn dispatch_in_process<H, A>(
     now_monotonic_ns: u64,
     now_wall_ms: i64,
     process: Option<&dyn ProcessInspector>,
+    resource: Option<&dyn ResourceInspector>,
 ) -> Result<ControlReceipt, ControlError>
 where
     H: RecoveryHealthSource,
@@ -451,7 +498,7 @@ where
 {
     let request = build_request_envelope(command)?;
     let response = control.handle_for_ipc(&request, now_monotonic_ns, now_wall_ms);
-    ControlReceipt::compose(command, &response, process)
+    ControlReceipt::compose(command, &response, process, resource)
 }
 
 /// Dispatches one command to a real local IPC endpoint and projects the
@@ -469,6 +516,7 @@ pub async fn dispatch_over_socket(
     socket: impl AsRef<std::path::Path>,
     command: &ControlCommand,
     process: Option<&dyn ProcessInspector>,
+    resource: Option<&dyn ResourceInspector>,
 ) -> Result<ControlReceipt, ControlError> {
     use nlos_ipc::{LocalRpcClient, TransportConfig};
     use nlos_schema::sabi::v1::ExchangeRequest;
@@ -485,7 +533,7 @@ pub async fn dispatch_over_socket(
         })
         .await
         .map_err(ControlError::Ipc)?;
-    ControlReceipt::compose(command, response.envelope(), process)
+    ControlReceipt::compose(command, response.envelope(), process, resource)
 }
 
 fn decoded_snapshot(
@@ -605,6 +653,21 @@ fn compose_process_inspection(
     }
 }
 
+fn compose_resource_inspection(
+    resource: Option<&dyn ResourceInspector>,
+    reservation_id: [u8; 16],
+) -> Result<ControlOutcome, SabiFailure> {
+    if let Some(inspector) = resource {
+        inspector
+            .inspect_resource(reservation_id)
+            .map(ControlOutcome::ResourceInspected)
+    } else {
+        UnwiredResourceInspector
+            .inspect_resource(reservation_id)
+            .map(ControlOutcome::ResourceInspected)
+    }
+}
+
 impl ControlReceipt {
     /// Projects one handler response envelope into the typed receipt. This
     /// is the single projection point for both dispatch paths; it never
@@ -619,6 +682,7 @@ impl ControlReceipt {
         command: &ControlCommand,
         response: &Envelope,
         process: Option<&dyn ProcessInspector>,
+        resource: Option<&dyn ResourceInspector>,
     ) -> Result<Self, ControlError> {
         let Some(envelope::CommonContext::ResponseContext(context)) =
             response.common_context.as_ref()
@@ -659,6 +723,9 @@ impl ControlReceipt {
                 }
                 ControlCommand::InspectProcess { process_id } => {
                     compose_process_inspection(process, *process_id)
+                }
+                ControlCommand::InspectResource { reservation_id } => {
+                    compose_resource_inspection(resource, *reservation_id)
                 }
                 ControlCommand::AcknowledgeRecoveryAlert { .. } => {
                     let result = decode_control_command_result(&response.payload)?;
@@ -739,6 +806,14 @@ impl ControlReceipt {
                 bytes.extend_from_slice(&inspection.task_id);
                 bytes.extend_from_slice(&inspection.task_attempt_id);
                 bytes.extend_from_slice(&inspection.isolation_domain_id);
+            }
+            Ok(ControlOutcome::ResourceInspected(inspection)) => {
+                bytes.push(5);
+                bytes.extend_from_slice(&inspection.reservation_id);
+                bytes.extend_from_slice(&inspection.account_id);
+                bytes.extend_from_slice(&inspection.upper_bound.to_le_bytes());
+                bytes.extend_from_slice(&inspection.usage_high_water.to_le_bytes());
+                bytes.extend_from_slice(&inspection.consumption_count.to_le_bytes());
             }
             Ok(ControlOutcome::Acknowledged { receipt_id }) => {
                 bytes.push(2);
@@ -854,6 +929,13 @@ mod tests {
             }
             .control_command_id(),
             [0x55; 16]
+        );
+        assert_eq!(
+            ControlCommand::InspectResource {
+                reservation_id: [0x66; 16]
+            }
+            .control_command_id(),
+            [0x66; 16]
         );
         assert_eq!(
             ControlCommand::AcknowledgeRecoveryAlert {

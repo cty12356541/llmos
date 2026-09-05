@@ -618,6 +618,7 @@ dependencies = [
  "nlos-identity",
  "nlos-ipc",
  "nlos-process",
+ "nlos-resource",
  "nlos-schema",
  "nlos-service-directory",
  "nlos-task",

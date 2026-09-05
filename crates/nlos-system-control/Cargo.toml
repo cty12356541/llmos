@@ -17,6 +17,7 @@ cli = [
     "dep:tokio",
 ]
 process = ["dep:nlos-process"]
+resource = ["dep:nlos-resource"]
 
 [[bin]]
 name = "system-control-cli"
@@ -32,6 +33,7 @@ nlos-task = { path = "../nlos-task" }
 nlos-types = { path = "../nlos-types" }
 nlos-ipc = { path = "../nlos-ipc", optional = true }
 nlos-process = { path = "../nlos-process", optional = true }
+nlos-resource = { path = "../nlos-resource", optional = true }
 sha2 = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 
