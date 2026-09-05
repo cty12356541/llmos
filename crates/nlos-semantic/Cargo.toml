@@ -17,6 +17,9 @@ sha2.workspace = true
 
 [dev-dependencies]
 ed25519-dalek.workspace = true
+# Test-only fault-injection VFS shim for admission kill-window matrix
+# (tests/admission_fault_injection.rs); never a production dependency.
+nlos-store-fault = { path = "../nlos-store-fault" }
 
 [lints]
 workspace = true
