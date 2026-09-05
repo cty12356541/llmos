@@ -12,13 +12,20 @@
 //! `[NLOS-NL-001]`/`[NLOS-NL-002]`).
 //!
 //! Grammar (whitelist, strict word order; ASCII case-insensitive English;
-//! arbitrary whitespace between tokens tolerated):
+//! arbitrary whitespace between tokens tolerated). Canonical forms are listed
+//! first; additional EN/ZH synonym variants compile to the same
+//! [`ControlCommand`] and are enumerated in the module tests.
 //!
 //! ```text
-//! inspect health                             | 查看健康
-//! export metrics                             | 导出指标
-//! inspect task <32-hex>                      | 查看任务 <32位十六进制>
-//! acknowledge alert <32-hex> expecting <n>   | 确认告警 <32位十六进制> 期望 <n>
+//! inspect health | check health | show health | inspect system health
+//!   | 查看健康 | 查看系统健康 | 查看 系统 健康
+//! export metrics | show metrics | get metrics
+//!   | 导出指标 | 导出 指标
+//! inspect task <32-hex> | check task <32-hex> | show task <32-hex>
+//!   | 查看任务 <32位十六进制> | 查看 任务 <32位十六进制>
+//! acknowledge alert <32-hex> expecting <n>
+//!   | ack alert <32-hex> expecting <n> | confirm alert <32-hex> expecting <n>
+//!   | 确认告警 <32位十六进制> 期望 <n> | 确认 告警 <32位十六进制> 期望 <n>
 //! ```
 //!
 //! Derivation rules for the acknowledgement form: the `<32-hex>` argument is
@@ -64,49 +71,123 @@ const GRAMMAR_HELP: &str = "valid forms: \"inspect health\" | \"export metrics\"
 /// otherwise; no fuzzy or probabilistic interpretation is ever attempted.
 pub fn parse_nl_command(input: &str) -> Result<ControlCommand, ControlError> {
     let tokens: Vec<&str> = input.split_whitespace().collect();
-    match tokens.as_slice() {
-        [head, second]
-            if head.eq_ignore_ascii_case("inspect") && second.eq_ignore_ascii_case("health") =>
-        {
-            Ok(ControlCommand::InspectHealth)
+    if let Some(result) = try_parse_inspect_health(&tokens) {
+        return result;
+    }
+    if let Some(result) = try_parse_export_metrics(&tokens) {
+        return result;
+    }
+    if let Some(result) = try_parse_inspect_task(&tokens) {
+        return result;
+    }
+    if let Some(result) = try_parse_acknowledgement(&tokens) {
+        return result;
+    }
+    Err(ControlError::InvalidCommand(GRAMMAR_HELP))
+}
+
+fn is_read_verb(token: &str) -> bool {
+    token.eq_ignore_ascii_case("inspect")
+        || token.eq_ignore_ascii_case("check")
+        || token.eq_ignore_ascii_case("show")
+}
+
+fn is_metrics_verb(token: &str) -> bool {
+    token.eq_ignore_ascii_case("export")
+        || token.eq_ignore_ascii_case("show")
+        || token.eq_ignore_ascii_case("get")
+}
+
+fn is_ack_verb(token: &str) -> bool {
+    token.eq_ignore_ascii_case("acknowledge")
+        || token.eq_ignore_ascii_case("ack")
+        || token.eq_ignore_ascii_case("confirm")
+}
+
+fn try_parse_inspect_health(tokens: &[&str]) -> Option<Result<ControlCommand, ControlError>> {
+    match tokens {
+        [head, second] if is_read_verb(head) && second.eq_ignore_ascii_case("health") => {
+            Some(Ok(ControlCommand::InspectHealth))
         }
-        [head, second]
-            if head.eq_ignore_ascii_case("export") && second.eq_ignore_ascii_case("metrics") =>
+        [head, second, third]
+            if head.eq_ignore_ascii_case("inspect")
+                && second.eq_ignore_ascii_case("system")
+                && third.eq_ignore_ascii_case("health") =>
         {
-            Ok(ControlCommand::ExportMetrics)
+            Some(Ok(ControlCommand::InspectHealth))
         }
-        [head, ..] if head.eq_ignore_ascii_case("export") => Err(ControlError::InvalidCommand(
+        ["查看健康" | "查看系统健康"] | ["查看", "系统", "健康"] => {
+            Some(Ok(ControlCommand::InspectHealth))
+        }
+        [head, second, ..]
+            if (is_read_verb(head) && second.eq_ignore_ascii_case("task"))
+                || (*head == "查看" && *second == "任务") =>
+        {
+            None
+        }
+        [head, second, ..] if is_read_verb(head) && second.eq_ignore_ascii_case("metrics") => None,
+        [head, ..] if is_read_verb(head) || *head == "查看" => Some(Err(
+            ControlError::InvalidCommand("\"inspect\" expects \"health\" or \"task <32-hex>\""),
+        )),
+        _ => None,
+    }
+}
+
+fn try_parse_export_metrics(tokens: &[&str]) -> Option<Result<ControlCommand, ControlError>> {
+    match tokens {
+        [head, second] if is_metrics_verb(head) && second.eq_ignore_ascii_case("metrics") => {
+            Some(Ok(ControlCommand::ExportMetrics))
+        }
+        ["导出指标"] | ["导出", "指标"] => Some(Ok(ControlCommand::ExportMetrics)),
+        [head, second, ..]
+            if (head.eq_ignore_ascii_case("show") || head.eq_ignore_ascii_case("get"))
+                && second.eq_ignore_ascii_case("task") =>
+        {
+            None
+        }
+        [head, ..] if head.eq_ignore_ascii_case("export") => Some(Err(
+            ControlError::InvalidCommand("\"export\" expects \"metrics\""),
+        )),
+        [head, ..] if head.eq_ignore_ascii_case("get") || head.eq_ignore_ascii_case("show") => {
+            Some(Err(ControlError::InvalidCommand(
+                "\"export\" expects \"metrics\"",
+            )))
+        }
+        ["导出", ..] => Some(Err(ControlError::InvalidCommand(
             "\"export\" expects \"metrics\"",
-        )),
-        [head, second, plan]
-            if head.eq_ignore_ascii_case("inspect") && second.eq_ignore_ascii_case("task") =>
-        {
-            Ok(ControlCommand::InspectTask {
-                plan_id: parse_hex_id(plan)?,
-            })
+        ))),
+        _ => None,
+    }
+}
+
+fn try_parse_inspect_task(tokens: &[&str]) -> Option<Result<ControlCommand, ControlError>> {
+    match tokens {
+        [head, second, plan] if is_read_verb(head) && second.eq_ignore_ascii_case("task") => {
+            Some(parse_hex_id(plan).map(|plan_id| ControlCommand::InspectTask { plan_id }))
         }
-        [head, ..] if head.eq_ignore_ascii_case("inspect") => Err(ControlError::InvalidCommand(
-            "\"inspect\" expects \"health\" or \"task <32-hex>\"",
-        )),
+        ["查看任务", plan] | ["查看", "任务", plan] => {
+            Some(parse_hex_id(plan).map(|plan_id| ControlCommand::InspectTask { plan_id }))
+        }
+        _ => None,
+    }
+}
+
+fn try_parse_acknowledgement(tokens: &[&str]) -> Option<Result<ControlCommand, ControlError>> {
+    match tokens {
         [head, second, plan, third, count]
-            if head.eq_ignore_ascii_case("acknowledge")
+            if is_ack_verb(head)
                 && second.eq_ignore_ascii_case("alert")
                 && third.eq_ignore_ascii_case("expecting") =>
         {
-            acknowledge(plan, parse_count(count)?)
+            Some(parse_count(count).and_then(|n| acknowledge(plan, n)))
         }
-        [head, ..] if head.eq_ignore_ascii_case("acknowledge") => {
-            Err(ControlError::InvalidCommand(
-                "\"acknowledge alert\" expects \"<32-hex> expecting <count>\"",
-            ))
+        ["确认告警", plan, "期望", count] | ["确认", "告警", plan, "期望", count] => {
+            Some(parse_count(count).and_then(|n| acknowledge(plan, n)))
         }
-        ["查看健康"] => Ok(ControlCommand::InspectHealth),
-        ["导出指标"] => Ok(ControlCommand::ExportMetrics),
-        ["查看任务", plan] => Ok(ControlCommand::InspectTask {
-            plan_id: parse_hex_id(plan)?,
-        }),
-        ["确认告警", plan, "期望", count] => acknowledge(plan, parse_count(count)?),
-        _ => Err(ControlError::InvalidCommand(GRAMMAR_HELP)),
+        [head, ..] if is_ack_verb(head) => Some(Err(ControlError::InvalidCommand(
+            "\"acknowledge alert\" expects \"<32-hex> expecting <count>\"",
+        ))),
+        _ => None,
     }
 }
 
@@ -154,94 +235,95 @@ mod tests {
 
     #[test]
     fn english_export_metrics_forms_parse() {
-        assert_eq!(
-            parse_nl_command("export metrics").unwrap(),
-            ControlCommand::ExportMetrics
-        );
-        assert_eq!(
-            parse_nl_command("EXPORT METRICS").unwrap(),
-            ControlCommand::ExportMetrics
-        );
-        assert_eq!(
-            parse_nl_command("Export\tMetrics").unwrap(),
-            ControlCommand::ExportMetrics
-        );
-        assert_eq!(
-            parse_nl_command("  export   metrics  \n").unwrap(),
-            ControlCommand::ExportMetrics
-        );
+        for sentence in [
+            "export metrics",
+            "EXPORT METRICS",
+            "Export\tMetrics",
+            "  export   metrics  \n",
+            "show metrics",
+            "get metrics",
+        ] {
+            assert_eq!(
+                parse_nl_command(sentence).unwrap(),
+                ControlCommand::ExportMetrics,
+                "sentence: {sentence:?}"
+            );
+        }
     }
 
     #[test]
     fn chinese_export_metrics_form_parses() {
-        assert_eq!(
-            parse_nl_command("导出指标").unwrap(),
-            ControlCommand::ExportMetrics
-        );
-        assert_eq!(
-            parse_nl_command("  导出指标  ").unwrap(),
-            ControlCommand::ExportMetrics
-        );
+        for sentence in ["导出指标", "  导出指标  ", "导出 指标"] {
+            assert_eq!(
+                parse_nl_command(sentence).unwrap(),
+                ControlCommand::ExportMetrics,
+                "sentence: {sentence:?}"
+            );
+        }
     }
 
     #[test]
     fn english_health_forms_parse() {
-        assert_eq!(
-            parse_nl_command("inspect health").unwrap(),
-            ControlCommand::InspectHealth
-        );
-        assert_eq!(
-            parse_nl_command("INSPECT HEALTH").unwrap(),
-            ControlCommand::InspectHealth
-        );
-        assert_eq!(
-            parse_nl_command("Inspect\tHealth").unwrap(),
-            ControlCommand::InspectHealth
-        );
-        assert_eq!(
-            parse_nl_command("  inspect   health  \n").unwrap(),
-            ControlCommand::InspectHealth
-        );
+        for sentence in [
+            "inspect health",
+            "INSPECT HEALTH",
+            "Inspect\tHealth",
+            "  inspect   health  \n",
+            "check health",
+            "show health",
+            "inspect system health",
+            "Inspect System Health",
+        ] {
+            assert_eq!(
+                parse_nl_command(sentence).unwrap(),
+                ControlCommand::InspectHealth,
+                "sentence: {sentence:?}"
+            );
+        }
     }
 
     #[test]
     fn chinese_health_form_parses() {
-        assert_eq!(
-            parse_nl_command("查看健康").unwrap(),
-            ControlCommand::InspectHealth
-        );
-        assert_eq!(
-            parse_nl_command("  查看健康  ").unwrap(),
-            ControlCommand::InspectHealth
-        );
+        for sentence in ["查看健康", "  查看健康  ", "查看系统健康", "查看 系统 健康"]
+        {
+            assert_eq!(
+                parse_nl_command(sentence).unwrap(),
+                ControlCommand::InspectHealth,
+                "sentence: {sentence:?}"
+            );
+        }
     }
 
     #[test]
     fn english_task_forms_parse() {
-        assert_eq!(
-            parse_nl_command("inspect task a1b2c3d4e5f60718293a4b5c6d7e8f90").unwrap(),
-            ControlCommand::InspectTask { plan_id: plan_id() }
-        );
-        assert_eq!(
-            parse_nl_command("INSPECT TASK A1B2C3D4E5F60718293A4B5C6D7E8F90").unwrap(),
-            ControlCommand::InspectTask { plan_id: plan_id() }
-        );
-        assert_eq!(
-            parse_nl_command("inspect\t task \t A1B2C3D4E5F60718293A4B5C6D7E8F90").unwrap(),
-            ControlCommand::InspectTask { plan_id: plan_id() }
-        );
+        for sentence in [
+            "inspect task a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "INSPECT TASK A1B2C3D4E5F60718293A4B5C6D7E8F90",
+            "inspect\t task \t A1B2C3D4E5F60718293A4B5C6D7E8F90",
+            "check task a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "show task A1B2C3D4E5F60718293A4B5C6D7E8F90",
+        ] {
+            assert_eq!(
+                parse_nl_command(sentence).unwrap(),
+                ControlCommand::InspectTask { plan_id: plan_id() },
+                "sentence: {sentence:?}"
+            );
+        }
     }
 
     #[test]
     fn chinese_task_form_parses() {
-        assert_eq!(
-            parse_nl_command("查看任务 a1b2c3d4e5f60718293a4b5c6d7e8f90").unwrap(),
-            ControlCommand::InspectTask { plan_id: plan_id() }
-        );
-        assert_eq!(
-            parse_nl_command("  查看任务  A1B2C3D4E5F60718293A4B5C6D7E8F90 ").unwrap(),
-            ControlCommand::InspectTask { plan_id: plan_id() }
-        );
+        for sentence in [
+            "查看任务 a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "  查看任务  A1B2C3D4E5F60718293A4B5C6D7E8F90 ",
+            "查看 任务 a1b2c3d4e5f60718293a4b5c6d7e8f90",
+        ] {
+            assert_eq!(
+                parse_nl_command(sentence).unwrap(),
+                ControlCommand::InspectTask { plan_id: plan_id() },
+                "sentence: {sentence:?}"
+            );
+        }
     }
 
     #[test]
@@ -258,13 +340,17 @@ mod tests {
                 reason: NL_ACK_REASON.to_owned(),
             }
         );
-        assert_eq!(
-            parse_nl_command(
-                "  Acknowledge\tAlert  A1B2C3D4E5F60718293A4B5C6D7E8F90 \t EXPECTING  3 "
-            )
-            .unwrap(),
-            command
-        );
+        for sentence in [
+            "  Acknowledge\tAlert  A1B2C3D4E5F60718293A4B5C6D7E8F90 \t EXPECTING  3 ",
+            "ack alert a1b2c3d4e5f60718293a4b5c6d7e8f90 expecting 3",
+            "confirm alert a1b2c3d4e5f60718293a4b5c6d7e8f90 expecting 3",
+        ] {
+            assert_eq!(
+                parse_nl_command(sentence).unwrap(),
+                command,
+                "sentence: {sentence:?}"
+            );
+        }
     }
 
     #[test]
@@ -279,10 +365,16 @@ mod tests {
                 reason: NL_ACK_REASON.to_owned(),
             }
         );
-        assert_eq!(
-            parse_nl_command("  确认告警  A1B2C3D4E5F60718293A4B5C6D7E8F90   期望  7 ").unwrap(),
-            command
-        );
+        for sentence in [
+            "  确认告警  A1B2C3D4E5F60718293A4B5C6D7E8F90   期望  7 ",
+            "确认 告警 a1b2c3d4e5f60718293a4b5c6d7e8f90 期望 7",
+        ] {
+            assert_eq!(
+                parse_nl_command(sentence).unwrap(),
+                command,
+                "sentence: {sentence:?}"
+            );
+        }
     }
 
     #[test]
@@ -307,11 +399,18 @@ mod tests {
         for input in [
             "",
             "   ",
-            "show health",
+            "show health now",
+            "check healthy",
+            "inspect system health now",
+            "查看 健康",
+            "查看 系统",
+            "show health now",
             "显示健康",
             "export",
             "export metric",
             "export metrics now",
+            "show metric",
+            "get metric",
             "导出",
             "导出指标了",
             "inspect",
@@ -328,10 +427,14 @@ mod tests {
             format!("acknowledge alert {PLAN_HEX_LOWER} expecting 1.5").as_str(),
             format!("acknowledge alert {PLAN_HEX_LOWER} expecting {long_count}").as_str(),
             format!("acknowledge alert {PLAN_HEX_LOWER} expecting 1 extra").as_str(),
+            format!("ack alert {PLAN_HEX_LOWER}").as_str(),
+            format!("confirm alert {PLAN_HEX_LOWER} expecting").as_str(),
             "查看健康了",
             "查看任务",
+            "查看 任务",
             format!("确认告警 {PLAN_HEX_UPPER} 期望").as_str(),
             format!("确认告警 {PLAN_HEX_UPPER} 期望 一").as_str(),
+            format!("确认 告警 {PLAN_HEX_UPPER} 期望").as_str(),
         ] {
             match parse_nl_command(input) {
                 Err(ControlError::InvalidCommand(reason)) => {

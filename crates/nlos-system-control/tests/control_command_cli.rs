@@ -465,6 +465,24 @@ mod socket_harness {
         );
         assert_eq!(cli_receipt_bytes(&cli), direct.to_bytes());
     }
+
+    pub async fn assert_nl_socket_and_in_process_parity(
+        socket_path: &Path,
+        control: &RecoverySystemControl<'_, StubHealth, CapabilityPolicy>,
+        direct: &ControlCommand,
+        nl_commands: &[ControlCommand],
+    ) {
+        use nlos_system_control::control::dispatch_over_socket;
+
+        let direct_receipt = dispatch_over_socket(socket_path, direct).await.unwrap();
+        for nl_command in nl_commands {
+            let nl_receipt = dispatch_over_socket(socket_path, nl_command).await.unwrap();
+            assert_eq!(direct_receipt.to_bytes(), nl_receipt.to_bytes());
+            let in_process =
+                dispatch_in_process(control, nl_command, MONOTONIC_NOW_NS, WALL_NOW_MS).unwrap();
+            assert_eq!(in_process.to_bytes(), direct_receipt.to_bytes());
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -571,6 +589,22 @@ async fn cli_and_in_process_paths_produce_byte_identical_receipts() {
     fs::remove_file(&socket_path).unwrap();
 }
 
+#[cfg(unix)]
+fn assert_nl_sentences_reject(sentences: &[&str]) {
+    use nlos_system_control::control::ControlError;
+    use nlos_system_control::nl::parse_nl_command;
+
+    for sentence in sentences {
+        assert!(
+            matches!(
+                parse_nl_command(sentence),
+                Err(ControlError::InvalidCommand(_))
+            ),
+            "expected typed rejection for {sentence:?}"
+        );
+    }
+}
+
 /// B-CONTROL-003 evidence: natural-language sentences compile to the exact
 /// [`ControlCommand`]s a caller would construct directly, and dispatching
 /// each over the same real Unix socket yields byte-identical receipts —
@@ -582,7 +616,7 @@ async fn nl_sentences_compile_to_the_same_socket_receipts_as_direct_commands() {
     use nlos_system_control::control::dispatch_over_socket;
     use nlos_system_control::nl::{NL_ACK_REASON, parse_nl_command};
 
-    use socket_harness::{bind_socket, serve_forever};
+    use socket_harness::{assert_nl_socket_and_in_process_parity, bind_socket, serve_forever};
 
     let database = Arc::new(TestDatabase::new());
     let authority = Arc::new(database.open());
@@ -595,30 +629,29 @@ async fn nl_sentences_compile_to_the_same_socket_receipts_as_direct_commands() {
     let stub_health = health(&plan_id);
     let control = RecoverySystemControl::new(authority.as_ref(), &stub_health, &CapabilityPolicy);
 
-    // Inspect: the NL sentence and the direct construction are the same
-    // command, so both socket dispatches answer with byte-identical receipts.
+    // Inspect: canonical and synonym NL sentences compile to the same command,
+    // so both socket dispatches answer with byte-identical receipts.
     let nl_inspect = parse_nl_command("  Inspect   Health ").unwrap();
     assert_eq!(nl_inspect, ControlCommand::InspectHealth);
     assert_eq!(
-        parse_nl_command("查看健康").unwrap(),
+        parse_nl_command("查看 系统 健康").unwrap(),
         ControlCommand::InspectHealth
     );
-    let direct_inspect = dispatch_over_socket(&socket_path, &ControlCommand::InspectHealth)
-        .await
-        .unwrap();
-    let nl_inspect_receipt = dispatch_over_socket(&socket_path, &nl_inspect)
-        .await
-        .unwrap();
-    assert_eq!(direct_inspect.to_bytes(), nl_inspect_receipt.to_bytes());
-    let inspect_in_process =
-        dispatch_in_process(&control, &nl_inspect, MONOTONIC_NOW_NS, WALL_NOW_MS).unwrap();
-    assert_eq!(inspect_in_process.to_bytes(), direct_inspect.to_bytes());
+    let synonym_inspect = parse_nl_command("check health").unwrap();
+    assert_eq!(synonym_inspect, ControlCommand::InspectHealth);
+    assert_nl_socket_and_in_process_parity(
+        &socket_path,
+        &control,
+        &ControlCommand::InspectHealth,
+        &[nl_inspect, synonym_inspect],
+    )
+    .await;
 
     // Export metrics: read-only `get` with zero alerts, OpenMetrics projection.
     let nl_export = parse_nl_command("export metrics").unwrap();
     assert_eq!(nl_export, ControlCommand::ExportMetrics);
     assert_eq!(
-        parse_nl_command("导出指标").unwrap(),
+        parse_nl_command("show metrics").unwrap(),
         ControlCommand::ExportMetrics
     );
     let direct_export = dispatch_over_socket(&socket_path, &ControlCommand::ExportMetrics)
@@ -652,21 +685,24 @@ async fn nl_sentences_compile_to_the_same_socket_receipts_as_direct_commands() {
     let english_ack =
         parse_nl_command(&format!("acknowledge alert {plan_hex} expecting 1")).unwrap();
     assert_eq!(english_ack, direct_ack);
-    let nl_ack = parse_nl_command(&format!("确认告警 {plan_hex} 期望 1")).unwrap();
+    let nl_ack = parse_nl_command(&format!("确认 告警 {plan_hex} 期望 1")).unwrap();
     assert_eq!(nl_ack, direct_ack);
+    let ack_synonym = parse_nl_command(&format!("ack alert {plan_hex} expecting 1")).unwrap();
+    assert_eq!(ack_synonym, direct_ack);
     let direct_ack_receipt = dispatch_over_socket(&socket_path, &direct_ack)
         .await
         .unwrap();
-    let nl_ack_receipt = dispatch_over_socket(&socket_path, &nl_ack).await.unwrap();
     let ControlOutcome::Acknowledged { receipt_id } = direct_ack_receipt.outcome.as_ref().unwrap()
     else {
         panic!("expected acknowledgement receipt");
     };
     assert_eq!(receipt_id.len(), 16);
-    assert_eq!(direct_ack_receipt.to_bytes(), nl_ack_receipt.to_bytes());
-    let ack_in_process =
-        dispatch_in_process(&control, &nl_ack, MONOTONIC_NOW_NS, WALL_NOW_MS).unwrap();
-    assert_eq!(ack_in_process.to_bytes(), direct_ack_receipt.to_bytes());
+    for nl_command in [nl_ack, ack_synonym] {
+        let nl_ack_receipt = dispatch_over_socket(&socket_path, &nl_command)
+            .await
+            .unwrap();
+        assert_eq!(direct_ack_receipt.to_bytes(), nl_ack_receipt.to_bytes());
+    }
     assert!(
         authority
             .list_artifact_recovery_alerts(8)
@@ -679,12 +715,7 @@ async fn nl_sentences_compile_to_the_same_socket_receipts_as_direct_commands() {
 
     // Out-of-grammar natural language is a typed rejection before any
     // dispatch; it never reaches the socket.
-    assert!(matches!(
-        parse_nl_command("pause everything"),
-        Err(nlos_system_control::control::ControlError::InvalidCommand(
-            _
-        ))
-    ));
+    assert_nl_sentences_reject(&["pause everything", "查看 健康", "show health now"]);
 
     server.abort();
     fs::remove_file(&socket_path).unwrap();

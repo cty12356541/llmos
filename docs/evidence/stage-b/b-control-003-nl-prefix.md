@@ -68,3 +68,33 @@
 1. **wire envelope 与 inspect 相同**：Export 与 InspectHealth 共用 GET payload；区分仅在 command id / correlation / receipt 投影（metrics OpenMetrics text vs inspection facts）。未引入新 proto view 或 alert_limit 语义。
 2. **ROAD-B-005 仍 PARTIAL**：Trusted GUI 编译与确认面未实现；本增量只扩展 NL/CLI 控制面前缀，不声称 GUI parity。
 3. **OpenMetrics 仅为 receipt 投影**：无 HTTP scrape endpoint、无 scrape auth（B-TASK-006M 剩余 scope 不变）。
+
+## W13-C 增量：NL 同义词白名单扩展（2026-09-05）
+
+> 状态：`PARTIAL_PASS`（单节点本地；ROAD-B-005 仍 PARTIAL——GUI 未接）
+>
+> 基线 HEAD：`544ca72`　　写集：`crates/nlos-system-control/**`、`docs/evidence/stage-b/b-control-003-nl-prefix.md`
+
+### 已实现事实
+
+1. **additive 同义词编译**（`src/nl.rs`，零新 `ControlCommand` 变体）：在既有四命令白名单上追加 fail-closed EN/ZH 变体，全部编译为已有 [`ControlCommand`]：
+   - **InspectHealth**：`check health` / `show health` / `inspect system health`；`查看系统健康` / `查看 系统 健康`（仍拒绝 `查看 健康` 两 token 形态）。
+   - **ExportMetrics**：`show metrics` / `get metrics`；`导出 指标`（空格分词）。
+   - **InspectTask**：`check task <hex>` / `show task <hex>`；`查看 任务 <hex>`。
+   - **AcknowledgeRecoveryAlert**：`ack alert … expecting …` / `confirm alert … expecting …`；`确认 告警 … 期望 …`（空格分词）。
+2. **解析器结构**：按命令族拆分为 `try_parse_*` 链；读动词与 metrics 动词 partial-match 不误伤 `show task` / `get task` 形态；拒绝矩阵追加近邻语法外输入（`查看 健康`、`check healthy`、`ack alert <hex>` 无 expecting、`确认 告警 … 期望` 缺 count 等）。
+3. **等价路径证明**（`tests/control_command_cli.rs`）：`check health` 与 `查看 系统 健康` 对 InspectHealth；`ack alert …` 与 `确认 告警 …` 对 AcknowledgeRecoveryAlert——NL 解析→`dispatch_over_socket` 与直接构造→同一 socket **逐字节 receipt 相等**；语法外 `查看 健康` 在 dispatch 前 typed 拒绝。
+
+### 验证
+
+验证环境：macOS（darwin，arm64），基线 HEAD `544ca72`。
+
+- `cargo test -p nlos-system-control`：（见 commit 输出）
+- `cargo clippy -p nlos-system-control --all-targets --all-features -- -D warnings`：通过。
+- `cargo fmt -p nlos-system-control --check`：通过。
+
+### 已知限制（增量）
+
+1. **同义词仍为字面白名单**：无 did-you-mean、无概率解析；`查看 健康`（缺「系统」）与 `show health now`（尾部垃圾）继续 typed 拒绝。
+2. **handler 面无新暴露**：`RecoverySystemControl` 四命令能力已在 W11-C 全部映射；本增量只做 NL 编译器同义词，不发明新 handler 语义。
+3. **ROAD-B-005 仍 PARTIAL**：Trusted GUI 编译与确认面未实现。
