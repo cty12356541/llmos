@@ -10,17 +10,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use nlos_application::{
     ActiveTaskActivityProbe, ApplicationAuthorityError, DisableApplicationRequest,
-    InstallApplicationRequest, RegisterBackgroundTaskRequest, RollbackApplicationRequest,
-    UninstallApplicationRequest, UpdateApplicationRequest, derive_application_id,
-    derive_installation_id,
+    InstallApplicationRequest, RegisterBackgroundTaskRequest, RegisterProcessBindingRequest,
+    RollbackApplicationRequest, UninstallApplicationRequest, UpdateApplicationRequest,
+    derive_application_id, derive_installation_id,
 };
-use nlos_types::{Generation, IdempotencyKey, PackageId, ReceiptId, TaskId};
+use nlos_types::{Generation, IdempotencyKey, PackageId, ProcessId, ReceiptId, TaskId};
 use rusqlite::Connection;
 use support::{
     TestStack, authority_database, background_task_registered,
     background_task_registration_replayed, disable_replayed, disabled, installed, open_authority,
-    replayed, rollback_replayed, rolled_back, uninstall_replayed, uninstalled, update_replayed,
-    updated,
+    process_binding_registered, process_binding_registration_replayed, replayed, rollback_replayed,
+    rolled_back, uninstall_replayed, uninstalled, update_replayed, updated,
 };
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -106,8 +106,24 @@ fn assert_background_task_registration_counts(stack: &TestStack, registrations: 
     );
 }
 
+fn assert_process_binding_counts(stack: &TestStack, bindings: i64) {
+    let database = authority_database(stack.root.root());
+    assert_eq!(
+        raw_count(
+            &database,
+            "SELECT COUNT(*) FROM application_process_bindings"
+        ),
+        bindings,
+        "unexpected application_process_bindings row count"
+    );
+}
+
 fn task_id(seed: u8) -> TaskId {
     TaskId::from_bytes([seed; 16])
+}
+
+fn process_id(seed: u8) -> ProcessId {
+    ProcessId::from_bytes([seed; 16])
 }
 
 /// 正常安装：verified receipt → application singleton（gen 1, installed）+
@@ -1995,4 +2011,130 @@ fn background_task_registration_duplicate_and_conflict_refusals() {
         ApplicationAuthorityError::RegistrationPrecedesLastUpdate { .. }
     ));
     assert_background_task_registration_counts(&stack, 1);
+}
+
+#[test]
+fn process_binding_registration_replays_idempotently() {
+    let stack = TestStack::new(&label("proc-bind-register"), 0x60);
+    let verified = stack.verify_package(0x41, 1, key(0xF0), 1_000);
+    let authority = open_authority(stack.root.root());
+    let install = installed(
+        &authority,
+        &stack.artifacts,
+        verified.receipt_id,
+        0x01,
+        2_000,
+    );
+    let principal = stack.identity.binding.principal_id;
+    let receipt = process_binding_registered(
+        &authority,
+        verified.package_id,
+        process_id(0xB1),
+        principal,
+        0x0A,
+        3_000,
+    );
+    assert_eq!(receipt.application_id, install.application_id);
+    assert_eq!(receipt.application_generation, Generation::INITIAL);
+    let listed = authority
+        .inspect_process_bindings(verified.package_id)
+        .expect("inspect");
+    assert_eq!(listed, vec![receipt.clone()]);
+    let replay = process_binding_registration_replayed(
+        &authority,
+        verified.package_id,
+        process_id(0xB1),
+        principal,
+        0x0A,
+        3_000,
+    );
+    assert_eq!(replay, receipt);
+    assert_process_binding_counts(&stack, 1);
+}
+
+#[test]
+fn process_binding_registration_refusals_are_typed_and_leave_zero_state() {
+    let stack = TestStack::new(&label("proc-bind-refusals"), 0x61);
+    let verified = stack.verify_package(0x41, 1, key(0xF0), 1_000);
+    let authority = open_authority(stack.root.root());
+    installed(
+        &authority,
+        &stack.artifacts,
+        verified.receipt_id,
+        0x01,
+        2_000,
+    );
+    let principal = stack.identity.binding.principal_id;
+    let request = RegisterProcessBindingRequest {
+        package_id: verified.package_id,
+        process_id: process_id(0xB1),
+        registrant_principal: principal,
+        idempotency_key: key(0x0A),
+        registered_at_ms: 3_000,
+    };
+    assert!(matches!(
+        authority
+            .register_process_binding(RegisterProcessBindingRequest {
+                package_id: PackageId::from_bytes([0xEE; 16]),
+                ..request
+            })
+            .expect_err("unknown"),
+        ApplicationAuthorityError::ApplicationNotFound { .. }
+    ));
+    disabled(&authority, verified.package_id, 0x0B, 4_000);
+    assert!(matches!(
+        authority
+            .register_process_binding(request)
+            .expect_err("disabled"),
+        ApplicationAuthorityError::ApplicationDisabled { .. }
+    ));
+    assert_process_binding_counts(&stack, 0);
+}
+
+#[test]
+fn process_binding_registration_duplicate_and_conflict_refusals() {
+    let stack = TestStack::new(&label("proc-bind-conflicts"), 0x62);
+    let verified = stack.verify_package(0x41, 1, key(0xF0), 1_000);
+    let authority = open_authority(stack.root.root());
+    installed(
+        &authority,
+        &stack.artifacts,
+        verified.receipt_id,
+        0x01,
+        2_000,
+    );
+    let principal = stack.identity.binding.principal_id;
+    process_binding_registered(
+        &authority,
+        verified.package_id,
+        process_id(0xB1),
+        principal,
+        0x0A,
+        3_000,
+    );
+    assert!(matches!(
+        authority
+            .register_process_binding(RegisterProcessBindingRequest {
+                package_id: verified.package_id,
+                process_id: process_id(0xB1),
+                registrant_principal: principal,
+                idempotency_key: key(0x0B),
+                registered_at_ms: 3_500,
+            })
+            .expect_err("duplicate"),
+        ApplicationAuthorityError::ProcessAlreadyRegistered { .. }
+    ));
+    assert!(matches!(
+        authority
+            .register_process_binding(RegisterProcessBindingRequest {
+                package_id: verified.package_id,
+                process_id: process_id(0xB2),
+                registrant_principal: principal,
+                idempotency_key: key(0x0C),
+                registered_at_ms: 1_999,
+            })
+            .expect_err("too early"),
+        ApplicationAuthorityError::RegistrationPrecedesLastUpdate { .. }
+    ));
+    assert_process_binding_counts(&stack, 1);
 }

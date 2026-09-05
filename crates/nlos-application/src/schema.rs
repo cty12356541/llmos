@@ -2,7 +2,7 @@ use rusqlite::{Connection, TransactionBehavior};
 
 use crate::ApplicationAuthorityError;
 
-pub(crate) const SCHEMA_VERSION: i64 = 5;
+pub(crate) const SCHEMA_VERSION: i64 = 6;
 
 /// Creates the durable application/installation authority schema v1: the
 /// per-package `applications` singleton (current installation generation +
@@ -559,7 +559,7 @@ pub(crate) fn migrate_v5(connection: &mut Connection) -> Result<(), ApplicationA
         |row| row.get(0),
     )?;
     if table_count == 1 && trigger_count == 3 {
-        connection.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        connection.pragma_update(None, "user_version", 5)?;
         return Ok(());
     }
     if table_count != 0 || trigger_count != 0 {
@@ -597,6 +597,66 @@ pub(crate) fn migrate_v5(connection: &mut Connection) -> Result<(), ApplicationA
             SELECT RAISE(ABORT, 'application background task registration requires the installed application at its current generation');
         END;
         PRAGMA user_version=5;",
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
+
+pub(crate) fn migrate_v6(connection: &mut Connection) -> Result<(), ApplicationAuthorityError> {
+    let table_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type='table' AND name = 'application_process_bindings'",
+        [],
+        |row| row.get(0),
+    )?;
+    let trigger_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN (
+            'application_process_bindings_immutable_update',
+            'application_process_bindings_no_delete',
+            'application_process_bindings_state_bounds'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if table_count == 1 && trigger_count == 3 {
+        connection.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        return Ok(());
+    }
+    if table_count != 0 || trigger_count != 0 {
+        return Err(ApplicationAuthorityError::CorruptRecord(
+            "partial application process binding schema",
+        ));
+    }
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "CREATE TABLE application_process_bindings (
+            idempotency_key BLOB PRIMARY KEY NOT NULL CHECK(length(idempotency_key)=16),
+            application_id BLOB NOT NULL CHECK(length(application_id)=16),
+            process_id BLOB NOT NULL CHECK(length(process_id)=16),
+            registrant_principal BLOB NOT NULL CHECK(length(registrant_principal)=16),
+            application_generation INTEGER NOT NULL CHECK(application_generation >= 1),
+            registered_at_ms INTEGER NOT NULL CHECK(registered_at_ms >= 0),
+            UNIQUE(application_id, process_id, application_generation),
+            FOREIGN KEY(application_id) REFERENCES applications(application_id)
+        ) STRICT;
+        CREATE TRIGGER application_process_bindings_immutable_update
+        BEFORE UPDATE ON application_process_bindings BEGIN
+            SELECT RAISE(ABORT, 'application process binding is immutable');
+        END;
+        CREATE TRIGGER application_process_bindings_no_delete
+        BEFORE DELETE ON application_process_bindings BEGIN
+            SELECT RAISE(ABORT, 'application process binding is durable');
+        END;
+        CREATE TRIGGER application_process_bindings_state_bounds
+        AFTER INSERT ON application_process_bindings
+        WHEN (SELECT status FROM applications WHERE application_id = NEW.application_id) != 1
+            OR NEW.application_generation != (
+                SELECT current_installation_generation FROM applications
+                WHERE application_id = NEW.application_id)
+        BEGIN
+            SELECT RAISE(ABORT, 'application process binding requires the installed application at its current generation');
+        END;
+        PRAGMA user_version=6;",
     )?;
     transaction.commit()?;
     Ok(())

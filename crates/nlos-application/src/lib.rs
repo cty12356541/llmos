@@ -27,7 +27,9 @@
 //! `disabled|uninstalled → installed` generation step back, which makes
 //! [`ApplicationAuthority::rollback_application`] replayable). Schema v5
 //! adds `application_background_task_registrations` (immutable background-task
-//! binding; [`ApplicationAuthority::register_background_task`] replayable). DDL triggers
+//! binding; [`ApplicationAuthority::register_background_task`] replayable). Schema v6
+//! adds `application_process_bindings` (immutable process binding;
+//! [`ApplicationAuthority::register_process_binding`] replayable). DDL triggers
 //! carry the invariants at every layer: receipts are immutable and
 //! durable, the generation is monotonic under CAS, application identity is
 //! frozen, rows cannot be deleted, a receipt can only exist at the
@@ -77,8 +79,8 @@ use std::time::Duration;
 
 use nlos_artifact::{ArtifactError, ArtifactStore, ContentDigest, PackageVerificationReceipt};
 use nlos_types::{
-    ApplicationId, Generation, IdempotencyKey, InstallationId, PackageId, PrincipalId, ReceiptId,
-    TaskId,
+    ApplicationId, Generation, IdempotencyKey, InstallationId, PackageId, PrincipalId, ProcessId,
+    ReceiptId, TaskId,
 };
 use rusqlite::{Connection, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
@@ -430,6 +432,40 @@ impl RegisterBackgroundTaskDecision {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProcessBindingReceipt {
+    pub application_id: ApplicationId,
+    pub process_id: ProcessId,
+    pub registrant_principal: PrincipalId,
+    pub application_generation: Generation,
+    pub idempotency_key: IdempotencyKey,
+    pub registered_at_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RegisterProcessBindingRequest {
+    pub package_id: PackageId,
+    pub process_id: ProcessId,
+    pub registrant_principal: PrincipalId,
+    pub idempotency_key: IdempotencyKey,
+    pub registered_at_ms: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RegisterProcessBindingDecision {
+    Registered(ProcessBindingReceipt),
+    Replayed(ProcessBindingReceipt),
+}
+
+impl RegisterProcessBindingDecision {
+    #[must_use]
+    pub const fn receipt(self) -> ProcessBindingReceipt {
+        match self {
+            Self::Registered(receipt) | Self::Replayed(receipt) => receipt,
+        }
+    }
+}
+
 /// Fail-closed typed errors of the application/installation authority.
 /// Every variant is a hard refusal: the caller never receives an
 /// installation whose durability is in doubt, and a rejected install
@@ -549,6 +585,10 @@ pub enum ApplicationAuthorityError {
     BackgroundTaskAlreadyRegistered {
         application_id: ApplicationId,
         task_id: TaskId,
+    },
+    ProcessAlreadyRegistered {
+        application_id: ApplicationId,
+        process_id: ProcessId,
     },
 }
 
@@ -712,6 +752,13 @@ impl fmt::Display for ApplicationAuthorityError {
                 formatter,
                 "background task {task_id:?} is already registered for application {application_id:?} at the current generation; replay the original idempotency key instead of issuing a new command"
             ),
+            Self::ProcessAlreadyRegistered {
+                application_id,
+                process_id,
+            } => write!(
+                formatter,
+                "process {process_id:?} is already bound to application {application_id:?} at the current generation; replay the original idempotency key instead of issuing a new command"
+            ),
         }
     }
 }
@@ -775,7 +822,7 @@ impl ApplicationAuthority {
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
         match version {
             0 => schema::migrate_v1(&mut connection)?,
-            1 | 2 | 3 | 4 | schema::SCHEMA_VERSION => {}
+            1..=6 => {}
             other => return Err(ApplicationAuthorityError::SchemaVersionUnsupported(other)),
         }
         if version < 2 {
@@ -787,8 +834,11 @@ impl ApplicationAuthority {
         if version < 4 {
             schema::migrate_v4(&mut connection)?;
         }
-        if version < schema::SCHEMA_VERSION {
+        if version < 5 {
             schema::migrate_v5(&mut connection)?;
+        }
+        if version < schema::SCHEMA_VERSION {
+            schema::migrate_v6(&mut connection)?;
         }
         Ok(Self {
             connection: Mutex::new(connection),
@@ -1612,6 +1662,103 @@ impl ApplicationAuthority {
         Ok(receipts)
     }
 
+    /// # Errors
+    ///
+    /// Fails closed for an unknown package, disabled/uninstalled application,
+    /// idempotency conflict, duplicate process binding, registration
+    /// preceding the last application update, or any storage failure.
+    pub fn register_process_binding(
+        &self,
+        request: RegisterProcessBindingRequest,
+    ) -> Result<RegisterProcessBindingDecision, ApplicationAuthorityError> {
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(existing) = load_process_binding_by_key(&transaction, request.idempotency_key)?
+        {
+            if existing.application_id != derive_application_id(request.package_id)
+                || existing.process_id != request.process_id
+                || existing.registrant_principal != request.registrant_principal
+                || existing.registered_at_ms != request.registered_at_ms
+            {
+                return Err(ApplicationAuthorityError::IdempotencyConflict);
+            }
+            transaction.commit()?;
+            return Ok(RegisterProcessBindingDecision::Replayed(existing));
+        }
+        let application = load_application_by_package(&transaction, request.package_id)?.ok_or(
+            ApplicationAuthorityError::ApplicationNotFound {
+                package_id: request.package_id,
+            },
+        )?;
+        match application.status {
+            ApplicationStatus::Uninstalled => {
+                return Err(ApplicationAuthorityError::ApplicationUninstalled {
+                    application_id: application.application_id,
+                });
+            }
+            ApplicationStatus::Disabled => {
+                return Err(ApplicationAuthorityError::ApplicationDisabled {
+                    application_id: application.application_id,
+                });
+            }
+            ApplicationStatus::Installed => {}
+        }
+        if request.registered_at_ms < application.updated_at_ms {
+            return Err(ApplicationAuthorityError::RegistrationPrecedesLastUpdate {
+                last_updated_at_ms: application.updated_at_ms,
+                registered_at_ms: request.registered_at_ms,
+            });
+        }
+        if load_process_binding_at_generation(
+            &transaction,
+            application.application_id,
+            request.process_id,
+            application.current_installation_generation,
+        )?
+        .is_some()
+        {
+            return Err(ApplicationAuthorityError::ProcessAlreadyRegistered {
+                application_id: application.application_id,
+                process_id: request.process_id,
+            });
+        }
+        let receipt = ProcessBindingReceipt {
+            application_id: application.application_id,
+            process_id: request.process_id,
+            registrant_principal: request.registrant_principal,
+            application_generation: application.current_installation_generation,
+            idempotency_key: request.idempotency_key,
+            registered_at_ms: request.registered_at_ms,
+        };
+        insert_process_binding(&transaction, &receipt)?;
+        transaction.commit()?;
+        Ok(RegisterProcessBindingDecision::Registered(receipt))
+    }
+
+    /// # Errors
+    ///
+    /// Fails closed on a storage error.
+    pub fn inspect_process_bindings(
+        &self,
+        package_id: PackageId,
+    ) -> Result<Vec<ProcessBindingReceipt>, ApplicationAuthorityError> {
+        let connection = self.lock()?;
+        let application_id = derive_application_id(package_id);
+        let mut statement = connection.prepare(
+            "SELECT application_id, process_id, registrant_principal,
+                    application_generation, idempotency_key, registered_at_ms
+             FROM application_process_bindings
+             WHERE application_id = ?1
+             ORDER BY registered_at_ms ASC, idempotency_key ASC",
+        )?;
+        let mut rows = statement.query([application_id.as_bytes().as_slice()])?;
+        let mut receipts = Vec::new();
+        while let Some(row) = rows.next()? {
+            receipts.push(decode_process_binding_row(row)?);
+        }
+        Ok(receipts)
+    }
+
     /// Reads an application's current durable state by package identity
     /// without any durable side effect. `None` means the package has never
     /// been installed — a legitimate read outcome, not an error.
@@ -2192,6 +2339,48 @@ fn decode_background_task_registration_row(
     Ok(BackgroundTaskRegistrationReceipt {
         application_id: ApplicationId::from_bytes(blob16(row, 0)?),
         task_id: TaskId::from_bytes(blob16(row, 1)?),
+        registrant_principal: PrincipalId::from_bytes(blob16(row, 2)?),
+        application_generation: decode_generation(row, 3)?,
+        idempotency_key: IdempotencyKey::from_bytes(blob16(row, 4)?),
+        registered_at_ms: decode_u64(row, 5)?,
+    })
+}
+
+fn load_process_binding_by_key(
+    source: &Connection,
+    key: IdempotencyKey,
+) -> Result<Option<ProcessBindingReceipt>, ApplicationAuthorityError> {
+    let mut statement = source.prepare("SELECT application_id, process_id, registrant_principal, application_generation, idempotency_key, registered_at_ms FROM application_process_bindings WHERE idempotency_key = ?1")?;
+    let mut rows = statement.query([key.as_bytes().as_slice()])?;
+    rows.next()?.map(decode_process_binding_row).transpose()
+}
+fn load_process_binding_at_generation(
+    source: &Connection,
+    application_id: ApplicationId,
+    process_id: ProcessId,
+    generation: Generation,
+) -> Result<Option<ProcessBindingReceipt>, ApplicationAuthorityError> {
+    let mut statement = source.prepare("SELECT application_id, process_id, registrant_principal, application_generation, idempotency_key, registered_at_ms FROM application_process_bindings WHERE application_id = ?1 AND process_id = ?2 AND application_generation = ?3")?;
+    let mut rows = statement.query(params![
+        application_id.as_bytes().as_slice(),
+        process_id.as_bytes().as_slice(),
+        encode_generation(generation)?
+    ])?;
+    rows.next()?.map(decode_process_binding_row).transpose()
+}
+fn insert_process_binding(
+    transaction: &Connection,
+    receipt: &ProcessBindingReceipt,
+) -> Result<(), ApplicationAuthorityError> {
+    transaction.execute("INSERT INTO application_process_bindings (idempotency_key, application_id, process_id, registrant_principal, application_generation, registered_at_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6)", params![receipt.idempotency_key.as_bytes().as_slice(), receipt.application_id.as_bytes().as_slice(), receipt.process_id.as_bytes().as_slice(), receipt.registrant_principal.as_bytes().as_slice(), encode_generation(receipt.application_generation)?, encode_u64(receipt.registered_at_ms)?])?;
+    Ok(())
+}
+fn decode_process_binding_row(
+    row: &rusqlite::Row<'_>,
+) -> Result<ProcessBindingReceipt, ApplicationAuthorityError> {
+    Ok(ProcessBindingReceipt {
+        application_id: ApplicationId::from_bytes(blob16(row, 0)?),
+        process_id: ProcessId::from_bytes(blob16(row, 1)?),
         registrant_principal: PrincipalId::from_bytes(blob16(row, 2)?),
         application_generation: decode_generation(row, 3)?,
         idempotency_key: IdempotencyKey::from_bytes(blob16(row, 4)?),

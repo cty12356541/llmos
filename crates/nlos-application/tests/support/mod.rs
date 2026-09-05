@@ -14,9 +14,9 @@ use ed25519_dalek::{Signer, SigningKey};
 use nlos_application::{
     ApplicationAuthority, DisableApplicationRequest, DisableDecision, DisableReceipt,
     InstallApplicationRequest, InstallDecision, RegisterBackgroundTaskDecision,
-    RegisterBackgroundTaskRequest, RollbackApplicationRequest, RollbackDecision, RollbackReceipt,
-    UninstallApplicationRequest, UninstallDecision, UninstallReceipt, UpdateApplicationRequest,
-    UpdateDecision,
+    RegisterBackgroundTaskRequest, RegisterProcessBindingDecision, RegisterProcessBindingRequest,
+    RollbackApplicationRequest, RollbackDecision, RollbackReceipt, UninstallApplicationRequest,
+    UninstallDecision, UninstallReceipt, UpdateApplicationRequest, UpdateDecision,
 };
 use nlos_artifact::{
     ArtifactStore, ContentDigest, CreateArtifactSpec, PackageEntryRole, PackageManifest,
@@ -24,7 +24,9 @@ use nlos_artifact::{
     VerifyPackageRequest, package_manifest_message,
 };
 use nlos_identity::{BootstrapPrincipalRequest, IdentityAuthority, IdentityBinding, KeyPurpose};
-use nlos_types::{ApplicationId, ArtifactId, IdempotencyKey, PackageId, PrincipalId, TaskId};
+use nlos_types::{
+    ApplicationId, ArtifactId, IdempotencyKey, PackageId, PrincipalId, ProcessId, TaskId,
+};
 
 static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
 
@@ -480,6 +482,58 @@ pub fn background_task_registration_replayed(
     {
         RegisterBackgroundTaskDecision::Replayed(receipt) => receipt,
         RegisterBackgroundTaskDecision::Registered(receipt) => {
+            panic!("expected Replayed, got Registered {receipt:?}")
+        }
+    }
+}
+
+/// Runs one process binding registration and unwraps the fresh branch.
+pub fn process_binding_registered(
+    authority: &ApplicationAuthority,
+    package_id: PackageId,
+    process_id: ProcessId,
+    registrant_principal: PrincipalId,
+    key: u8,
+    at_ms: u64,
+) -> nlos_application::ProcessBindingReceipt {
+    match authority
+        .register_process_binding(RegisterProcessBindingRequest {
+            package_id,
+            process_id,
+            registrant_principal,
+            idempotency_key: IdempotencyKey::from_bytes([key; 16]),
+            registered_at_ms: at_ms,
+        })
+        .expect("process binding registration must succeed")
+    {
+        RegisterProcessBindingDecision::Registered(receipt) => receipt,
+        RegisterProcessBindingDecision::Replayed(receipt) => {
+            panic!("fresh key cannot replay a process binding, got {receipt:?}")
+        }
+    }
+}
+
+/// Runs one process binding registration and unwraps the replay branch.
+pub fn process_binding_registration_replayed(
+    authority: &ApplicationAuthority,
+    package_id: PackageId,
+    process_id: ProcessId,
+    registrant_principal: PrincipalId,
+    key: u8,
+    at_ms: u64,
+) -> nlos_application::ProcessBindingReceipt {
+    match authority
+        .register_process_binding(RegisterProcessBindingRequest {
+            package_id,
+            process_id,
+            registrant_principal,
+            idempotency_key: IdempotencyKey::from_bytes([key; 16]),
+            registered_at_ms: at_ms,
+        })
+        .expect("process binding registration must replay")
+    {
+        RegisterProcessBindingDecision::Replayed(receipt) => receipt,
+        RegisterProcessBindingDecision::Registered(receipt) => {
             panic!("expected Replayed, got Registered {receipt:?}")
         }
     }
