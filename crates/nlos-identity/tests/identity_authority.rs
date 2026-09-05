@@ -8,11 +8,12 @@ use nlos_clock::{AuthorityClock, AuthorityClockError, WallSource};
 use nlos_identity::{
     BootstrapDecision, BootstrapPrincipalRequest, CustodyBindingDecision, CustodyProfile,
     IdentityAuthority, IdentityAuthorityError, KeyPurpose, KeyRevocationDecision,
-    KeyRotationDecision, RegisterCustodyBindingRequest, RevokeKeyRequest, RotateKeyRequest,
-    VerifyBarrierObservationSignatureRequest, VerifyCapabilityCommandSignatureAtClockRequest,
-    VerifySemanticSignatureRequest, semantic_signature_message,
+    KeyRotationDecision, RegisterCustodyBindingRequest, RegisterSessionRequest, RevokeKeyRequest,
+    RotateKeyRequest, SessionRegistrationDecision, VerifyBarrierObservationSignatureRequest,
+    VerifyCapabilityCommandSignatureAtClockRequest, VerifySemanticSignatureRequest,
+    semantic_signature_message,
 };
-use nlos_types::{Generation, IdempotencyKey, PrincipalId, SemanticEventId};
+use nlos_types::{Generation, IdempotencyKey, PrincipalId, SemanticEventId, SessionId};
 use rusqlite::Connection;
 
 static NEXT: AtomicU64 = AtomicU64::new(1);
@@ -317,6 +318,17 @@ fn snapshot_key_versions_and_revocation_receipts_are_ddl_immutable() {
         })
         .unwrap();
     authority
+        .register_session(RegisterSessionRequest {
+            session_id: SessionId::from_bytes([0x9c; 16]),
+            session_token_digest: [0x9d; 32],
+            key_id: binding.key_id,
+            expected_key_generation: binding.key_generation,
+            idempotency_key: IdempotencyKey::from_bytes([0x9e; 16]),
+            registered_at_ms: 1_100,
+            expires_at_ms: 9_000,
+        })
+        .unwrap();
+    authority
         .revoke_key(RevokeKeyRequest {
             key_id: binding.key_id,
             expected_key_generation: binding.key_generation,
@@ -352,6 +364,10 @@ fn snapshot_key_versions_and_revocation_receipts_are_ddl_immutable() {
     assert!(raw.execute("DELETE FROM key_revocations", []).is_err());
     assert!(raw.execute("DELETE FROM key_rotations", []).is_err());
     assert!(raw.execute("DELETE FROM key_custody_bindings", []).is_err());
+    assert!(
+        raw.execute("DELETE FROM trusted_local_sessions", [])
+            .is_err()
+    );
 }
 
 #[test]
@@ -767,5 +783,127 @@ fn custody_binding_registers_per_generation_replays_and_survives_restart() {
             ..gen2_request
         }),
         Err(IdentityAuthorityError::KeyGenerationFenceConflict)
+    ));
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn session_registers_replays_inspects_and_survives_restart() {
+    let root = Root::new("session");
+    let key = signing_key(80);
+    let session_request = |binding: nlos_identity::IdentityBinding| RegisterSessionRequest {
+        session_id: SessionId::from_bytes([0xA0; 16]),
+        session_token_digest: [0xB0; 32],
+        key_id: binding.key_id,
+        expected_key_generation: binding.key_generation,
+        idempotency_key: IdempotencyKey::from_bytes([0xD0; 16]),
+        registered_at_ms: 1_600,
+        expires_at_ms: 8_000,
+    };
+    let (binding, record) = {
+        let authority = IdentityAuthority::open(root.path()).unwrap();
+        let binding = authority
+            .bootstrap_principal(bootstrap_request(80, &key))
+            .unwrap()
+            .binding();
+        assert!(matches!(
+            authority.inspect_session(SessionId::from_bytes([0xA0; 16])),
+            Err(IdentityAuthorityError::SessionNotFound(_))
+        ));
+        let request = session_request(binding);
+        let first = authority.register_session(request).unwrap();
+        assert!(matches!(first, SessionRegistrationDecision::Registered(_)));
+        let replay = authority.register_session(request).unwrap();
+        assert!(matches!(replay, SessionRegistrationDecision::Replayed(_)));
+        assert_eq!(first.record(), replay.record());
+        let record = first.record();
+        assert_eq!(record.session_id, request.session_id);
+        assert_eq!(record.session_token_digest, request.session_token_digest);
+        assert_eq!(record.key_id, binding.key_id);
+        assert_eq!(record.key_generation, binding.key_generation);
+        assert_eq!(record.principal_id, binding.principal_id);
+        assert_eq!(record.control_domain_id, binding.control_domain_id);
+        assert_eq!(
+            authority.inspect_session(request.session_id).unwrap(),
+            record
+        );
+        (binding, record)
+    };
+
+    let reopened = IdentityAuthority::open(root.path()).unwrap();
+    assert_eq!(reopened.inspect_session(record.session_id).unwrap(), record);
+    assert!(matches!(
+        reopened.register_session(RegisterSessionRequest {
+            session_token_digest: [0xEE; 32],
+            idempotency_key: IdempotencyKey::from_bytes([0xD1; 16]),
+            ..session_request(binding)
+        }),
+        Err(IdentityAuthorityError::IdempotencyConflict)
+    ));
+    assert!(matches!(
+        reopened.register_session(RegisterSessionRequest {
+            session_id: SessionId::from_bytes([0xA3; 16]),
+            expected_key_generation: binding.key_generation.checked_next().expect("generation 2"),
+            idempotency_key: IdempotencyKey::from_bytes([0xD2; 16]),
+            ..session_request(binding)
+        }),
+        Err(IdentityAuthorityError::KeyGenerationFenceConflict)
+    ));
+}
+
+#[test]
+fn session_inspect_fails_closed_on_revoked_key_generation() {
+    let root = Root::new("session-revoke");
+    let key = signing_key(81);
+    let authority = IdentityAuthority::open(root.path()).unwrap();
+    let binding = authority
+        .bootstrap_principal(bootstrap_request(81, &key))
+        .unwrap()
+        .binding();
+    let request = RegisterSessionRequest {
+        session_id: SessionId::from_bytes([0xA1; 16]),
+        session_token_digest: [0xB1; 32],
+        key_id: binding.key_id,
+        expected_key_generation: binding.key_generation,
+        idempotency_key: IdempotencyKey::from_bytes([0xD3; 16]),
+        registered_at_ms: 1_700,
+        expires_at_ms: 8_500,
+    };
+    let record = authority.register_session(request).unwrap().record();
+    authority
+        .revoke_key(RevokeKeyRequest {
+            key_id: binding.key_id,
+            expected_key_generation: binding.key_generation,
+            expected_identity_snapshot_id: binding.identity_snapshot_id,
+            idempotency_key: IdempotencyKey::from_bytes([0xD4; 16]),
+            revoked_at_ms: 3_500,
+        })
+        .unwrap();
+    assert!(matches!(
+        authority.inspect_session(record.session_id),
+        Err(IdentityAuthorityError::KeyRevoked)
+    ));
+}
+
+#[test]
+fn session_register_rejects_invalid_validity_window() {
+    let root = Root::new("session-validity");
+    let key = signing_key(82);
+    let authority = IdentityAuthority::open(root.path()).unwrap();
+    let binding = authority
+        .bootstrap_principal(bootstrap_request(82, &key))
+        .unwrap()
+        .binding();
+    assert!(matches!(
+        authority.register_session(RegisterSessionRequest {
+            session_id: SessionId::from_bytes([0xA2; 16]),
+            session_token_digest: [0xB2; 32],
+            key_id: binding.key_id,
+            expected_key_generation: binding.key_generation,
+            idempotency_key: IdempotencyKey::from_bytes([0xD5; 16]),
+            registered_at_ms: 9_000,
+            expires_at_ms: 8_000,
+        }),
+        Err(IdentityAuthorityError::InvalidKeyValidity)
     ));
 }

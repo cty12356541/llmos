@@ -1,6 +1,6 @@
 use nlos_types::{
     ControlDomainId, Generation, IdempotencyKey, IdentitySnapshotId, KeyId, PrincipalId, ReceiptId,
-    SemanticEventId,
+    SemanticEventId, SessionId,
 };
 
 pub type Ed25519PublicKey = [u8; 32];
@@ -332,6 +332,51 @@ pub enum CustodyBindingDecision {
 impl CustodyBindingDecision {
     #[must_use]
     pub const fn record(self) -> KeyCustodyRecord {
+        match self {
+            Self::Registered(record) | Self::Replayed(record) => record,
+        }
+    }
+}
+
+/// Durable trusted-local session ingress receipt. The authority assigns
+/// `receipt_id`; callers supply an opaque session token digest for later
+/// correlation without storing raw token material.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TrustedLocalSessionRecord {
+    pub receipt_id: ReceiptId,
+    pub session_id: SessionId,
+    pub session_token_digest: [u8; 32],
+    pub key_id: KeyId,
+    pub key_generation: Generation,
+    pub principal_id: PrincipalId,
+    pub control_domain_id: ControlDomainId,
+    pub registered_at_ms: u64,
+    pub expires_at_ms: u64,
+}
+
+/// Registers a trusted-local session bound to the current key generation.
+/// Principal and control-domain identity are copied from the durable binding;
+/// stale generation fences and revoked generations fail closed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RegisterSessionRequest {
+    pub session_id: SessionId,
+    pub session_token_digest: [u8; 32],
+    pub key_id: KeyId,
+    pub expected_key_generation: Generation,
+    pub idempotency_key: IdempotencyKey,
+    pub registered_at_ms: u64,
+    pub expires_at_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SessionRegistrationDecision {
+    Registered(TrustedLocalSessionRecord),
+    Replayed(TrustedLocalSessionRecord),
+}
+
+impl SessionRegistrationDecision {
+    #[must_use]
+    pub const fn record(self) -> TrustedLocalSessionRecord {
         match self {
             Self::Registered(record) | Self::Replayed(record) => record,
         }

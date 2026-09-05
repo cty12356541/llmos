@@ -260,3 +260,59 @@ pub(crate) fn migrate_v3(connection: &mut Connection) -> Result<(), IdentityAuth
     transaction.commit()?;
     Ok(())
 }
+
+/// Adds durable trusted-local session ingress receipts for the
+/// software-only reference authentication prefix.
+#[allow(clippy::too_many_lines)] // One auditable transaction contains the complete v4 delta.
+pub(crate) fn migrate_v4(connection: &mut Connection) -> Result<(), IdentityAuthorityError> {
+    let table_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='trusted_local_sessions'",
+        [],
+        |row| row.get(0),
+    )?;
+    let trigger_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN (
+            'trusted_local_sessions_immutable_update',
+            'trusted_local_sessions_immutable_delete'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if table_count == 1 && trigger_count == 2 {
+        connection.pragma_update(None, "user_version", 4)?;
+        return Ok(());
+    }
+    if table_count != 0 || trigger_count != 0 {
+        return Err(IdentityAuthorityError::CorruptRecord(
+            "partial identity authority session ingress schema",
+        ));
+    }
+
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "CREATE TABLE trusted_local_sessions (
+            idempotency_key BLOB PRIMARY KEY NOT NULL CHECK(length(idempotency_key) = 16),
+            receipt_id BLOB NOT NULL UNIQUE CHECK(length(receipt_id) = 16),
+            session_id BLOB NOT NULL UNIQUE CHECK(length(session_id) = 16),
+            session_token_digest BLOB NOT NULL CHECK(length(session_token_digest) = 32),
+            key_id BLOB NOT NULL CHECK(length(key_id) = 16),
+            key_generation INTEGER NOT NULL CHECK(key_generation >= 1),
+            principal_id BLOB NOT NULL CHECK(length(principal_id) = 16),
+            control_domain_id BLOB NOT NULL CHECK(length(control_domain_id) = 16),
+            registered_at_ms INTEGER NOT NULL CHECK(registered_at_ms >= 0),
+            expires_at_ms INTEGER NOT NULL CHECK(expires_at_ms >= registered_at_ms),
+            FOREIGN KEY(key_id, key_generation) REFERENCES key_versions(key_id, generation),
+            FOREIGN KEY(principal_id) REFERENCES principals(principal_id),
+            FOREIGN KEY(control_domain_id) REFERENCES control_domains(control_domain_id)
+        ) STRICT;
+
+        CREATE TRIGGER trusted_local_sessions_immutable_update BEFORE UPDATE ON trusted_local_sessions
+        BEGIN SELECT RAISE(ABORT, 'trusted local session is immutable'); END;
+        CREATE TRIGGER trusted_local_sessions_immutable_delete BEFORE DELETE ON trusted_local_sessions
+        BEGIN SELECT RAISE(ABORT, 'trusted local session is immutable'); END;
+
+        PRAGMA user_version=4;",
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
