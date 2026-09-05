@@ -13,6 +13,19 @@
 - **restore**：`restore_process` 推进 generation 时重置 `lifecycle_state=Active`，不删历史 terminal marker 行（按 generation 归档）。
 - **未做**：真实 host spawn/suspend/kill、runtime fiber 批量取消传播、跨 authority Task 收敛、三平台 fault matrix。
 
+## 4. Runtime 侧 terminal 门（2026-09-05 追加，W15-P）
+
+- Owner：`nlos-runtime-tokio`（`src/replay.rs`、`src/snapshot.rs` + `tests/process_crash_propagation.rs`）
+- **实现**：`resume_binding` 与 `resume_from_snapshot` / `snapshot_handler_entry` 在代次 gate 或 durable 写之前调用 `inspect_active_process_binding`，使 terminal/crashed process 以 `ProcessBindingTerminal` fail-closed（`inspect_fiber_incarnation` 本身不拒绝 terminal head）。
+- **验证**：
+
+```text
+cargo test -p nlos-runtime-tokio --test process_crash_propagation
+  → 3 passed / 0 failed（2026-09-05 W15-P）
+```
+
+- **仍 PARTIAL_PASS**：fiber 批量 cancel 传播、平台 kill adapter、Activation meter 联动未做；不等同 ROAD-B-006 整体达成。
+
 ## 2. 验证
 
 ```text

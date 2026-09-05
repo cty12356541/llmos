@@ -113,6 +113,7 @@ impl TokioRuntimeAdapter {
             return Ok(None);
         }
         let fiber = nlos_types::ExecutionFiberId::from_bytes(*snapshot.binding().as_bytes());
+        process.inspect_active_process_binding(snapshot.process_id())?;
         let decision =
             process.write_fiber_entry_snapshot(nlos_process::WriteFiberEntrySnapshotRequest {
                 process_id: snapshot.process_id(),
@@ -170,6 +171,7 @@ impl TokioRuntimeAdapter {
         }
 
         let fiber = nlos_types::ExecutionFiberId::from_bytes(*snapshot.binding().as_bytes());
+        process.inspect_active_process_binding(snapshot.process_id())?;
         let current = process.inspect_fiber_incarnation(snapshot.process_id(), fiber)?;
         if current.incarnation_generation != snapshot.expected_incarnation() {
             return Err(ChannelWaitError::StaleFiberIncarnation);

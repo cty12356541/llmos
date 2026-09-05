@@ -472,16 +472,19 @@ impl TokioRuntimeAdapter {
         }
 
         // ADR-0012 generation gate: validate the binding's durable
-        // incarnation before anything is re-driven.
-        if let (Some(process), Some(process_id), Some(expected)) = (
-            sources.process,
-            resumable.process_id(),
-            resumable.expected_incarnation(),
-        ) {
-            let fiber = nlos_types::ExecutionFiberId::from_bytes(*resumable.binding().as_bytes());
-            let current = process.inspect_fiber_incarnation(process_id, fiber)?;
-            if current.incarnation_generation != expected {
-                return Err(ChannelWaitError::StaleFiberIncarnation);
+        // incarnation before anything is re-driven. Terminal process
+        // bindings fail closed via `inspect_active_process_binding` before
+        // `inspect_fiber_incarnation`, which does not itself reject terminal
+        // process heads (B-PROCESS-003 / W15-P runtime linkage).
+        if let (Some(process), Some(process_id)) = (sources.process, resumable.process_id()) {
+            process.inspect_active_process_binding(process_id)?;
+            if let Some(expected) = resumable.expected_incarnation() {
+                let fiber =
+                    nlos_types::ExecutionFiberId::from_bytes(*resumable.binding().as_bytes());
+                let current = process.inspect_fiber_incarnation(process_id, fiber)?;
+                if current.incarnation_generation != expected {
+                    return Err(ChannelWaitError::StaleFiberIncarnation);
+                }
             }
         }
 
