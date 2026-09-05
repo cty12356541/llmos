@@ -25,7 +25,9 @@
 //! [`ApplicationAuthority::uninstall_application`] replayable). Schema v4
 //! adds `application_rollback_receipts` (the immutable fact of one
 //! `disabled|uninstalled → installed` generation step back, which makes
-//! [`ApplicationAuthority::rollback_application`] replayable). DDL triggers
+//! [`ApplicationAuthority::rollback_application`] replayable). Schema v5
+//! adds `application_background_task_registrations` (immutable background-task
+//! binding; [`ApplicationAuthority::register_background_task`] replayable). DDL triggers
 //! carry the invariants at every layer: receipts are immutable and
 //! durable, the generation is monotonic under CAS, application identity is
 //! frozen, rows cannot be deleted, a receipt can only exist at the
@@ -76,6 +78,7 @@ use std::time::Duration;
 use nlos_artifact::{ArtifactError, ArtifactStore, ContentDigest, PackageVerificationReceipt};
 use nlos_types::{
     ApplicationId, Generation, IdempotencyKey, InstallationId, PackageId, PrincipalId, ReceiptId,
+    TaskId,
 };
 use rusqlite::{Connection, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
@@ -393,11 +396,38 @@ impl RollbackDecision {
     }
 }
 
-/// Caller-provided probe for outstanding Task activity under one package
-/// identity. The authority does not depend on `nlos-task`; integration layers
-/// supply the count.
-pub trait ActiveTaskActivityProbe {
-    fn outstanding_task_count(&self, package_id: PackageId) -> u64;
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BackgroundTaskRegistrationReceipt {
+    pub application_id: ApplicationId,
+    pub task_id: TaskId,
+    pub registrant_principal: PrincipalId,
+    pub application_generation: Generation,
+    pub idempotency_key: IdempotencyKey,
+    pub registered_at_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RegisterBackgroundTaskRequest {
+    pub package_id: PackageId,
+    pub task_id: TaskId,
+    pub registrant_principal: PrincipalId,
+    pub idempotency_key: IdempotencyKey,
+    pub registered_at_ms: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RegisterBackgroundTaskDecision {
+    Registered(BackgroundTaskRegistrationReceipt),
+    Replayed(BackgroundTaskRegistrationReceipt),
+}
+
+impl RegisterBackgroundTaskDecision {
+    #[must_use]
+    pub const fn receipt(self) -> BackgroundTaskRegistrationReceipt {
+        match self {
+            Self::Registered(receipt) | Self::Replayed(receipt) => receipt,
+        }
+    }
 }
 
 /// Fail-closed typed errors of the application/installation authority.
@@ -508,6 +538,22 @@ pub enum ApplicationAuthorityError {
         application_id: ApplicationId,
         generation: Generation,
     },
+    ApplicationActiveTasksRunning {
+        package_id: PackageId,
+        active_task_count: u64,
+    },
+    RegistrationPrecedesLastUpdate {
+        last_updated_at_ms: u64,
+        registered_at_ms: u64,
+    },
+    BackgroundTaskAlreadyRegistered {
+        application_id: ApplicationId,
+        task_id: TaskId,
+    },
+}
+
+pub trait ActiveTaskActivityProbe {
+    fn outstanding_task_count(&self, package_id: PackageId) -> u64;
 }
 
 impl fmt::Display for ApplicationAuthorityError {
@@ -645,6 +691,27 @@ impl fmt::Display for ApplicationAuthorityError {
                 "no installation receipt for application {application_id:?} at \
                  generation {generation:?}"
             ),
+            Self::ApplicationActiveTasksRunning {
+                package_id,
+                active_task_count,
+            } => write!(
+                formatter,
+                "package {package_id:?} has {active_task_count} active task(s); uninstall and rollback are refused until they finish"
+            ),
+            Self::RegistrationPrecedesLastUpdate {
+                last_updated_at_ms,
+                registered_at_ms,
+            } => write!(
+                formatter,
+                "registration timestamp {registered_at_ms} precedes the current application update timestamp {last_updated_at_ms}"
+            ),
+            Self::BackgroundTaskAlreadyRegistered {
+                application_id,
+                task_id,
+            } => write!(
+                formatter,
+                "background task {task_id:?} is already registered for application {application_id:?} at the current generation; replay the original idempotency key instead of issuing a new command"
+            ),
         }
     }
 }
@@ -708,7 +775,7 @@ impl ApplicationAuthority {
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
         match version {
             0 => schema::migrate_v1(&mut connection)?,
-            1 | 2 | 3 | schema::SCHEMA_VERSION => {}
+            1 | 2 | 3 | 4 | schema::SCHEMA_VERSION => {}
             other => return Err(ApplicationAuthorityError::SchemaVersionUnsupported(other)),
         }
         if version < 2 {
@@ -717,8 +784,11 @@ impl ApplicationAuthority {
         if version < 3 {
             schema::migrate_v3(&mut connection)?;
         }
-        if version < schema::SCHEMA_VERSION {
+        if version < 4 {
             schema::migrate_v4(&mut connection)?;
+        }
+        if version < schema::SCHEMA_VERSION {
+            schema::migrate_v5(&mut connection)?;
         }
         Ok(Self {
             connection: Mutex::new(connection),
@@ -1178,6 +1248,14 @@ impl ApplicationAuthority {
         self.uninstall_application_internal(request, None)
     }
 
+    /// Refuses a fresh uninstall when `probe` reports outstanding Tasks
+    /// ([`ApplicationAuthorityError::ApplicationActiveTasksRunning`]).
+    /// Durable replay under the same idempotency key is unaffected.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::uninstall_application`], plus
+    /// [`ApplicationAuthorityError::ApplicationActiveTasksRunning`].
     pub fn uninstall_application_with_activity_gate(
         &self,
         request: UninstallApplicationRequest,
@@ -1225,6 +1303,16 @@ impl ApplicationAuthority {
                 last_updated_at_ms: application.updated_at_ms,
                 uninstalled_at_ms: request.uninstalled_at_ms,
             });
+        }
+
+        if let Some(probe) = probe {
+            let active_task_count = probe.outstanding_task_count(request.package_id);
+            if active_task_count > 0 {
+                return Err(ApplicationAuthorityError::ApplicationActiveTasksRunning {
+                    package_id: request.package_id,
+                    active_task_count,
+                });
+            }
         }
 
         let changed = transaction.execute(
@@ -1303,6 +1391,14 @@ impl ApplicationAuthority {
         self.rollback_application_internal(request, None)
     }
 
+    /// Refuses a fresh rollback when `probe` reports outstanding Tasks
+    /// ([`ApplicationAuthorityError::ApplicationActiveTasksRunning`]).
+    /// Durable replay under the same idempotency key is unaffected.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::rollback_application`], plus
+    /// [`ApplicationAuthorityError::ApplicationActiveTasksRunning`].
     pub fn rollback_application_with_activity_gate(
         &self,
         request: RollbackApplicationRequest,
@@ -1416,6 +1512,104 @@ impl ApplicationAuthority {
         insert_rollback_receipt(&transaction, &receipt)?;
         transaction.commit()?;
         Ok(RollbackDecision::RolledBack(receipt))
+    }
+
+    /// # Errors
+    ///
+    /// Fails closed for an unknown package, disabled/uninstalled application,
+    /// idempotency conflict, duplicate task registration, registration
+    /// preceding the last application update, or any storage failure.
+    pub fn register_background_task(
+        &self,
+        request: RegisterBackgroundTaskRequest,
+    ) -> Result<RegisterBackgroundTaskDecision, ApplicationAuthorityError> {
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(existing) =
+            load_background_task_registration_by_key(&transaction, request.idempotency_key)?
+        {
+            if existing.application_id != derive_application_id(request.package_id)
+                || existing.task_id != request.task_id
+                || existing.registrant_principal != request.registrant_principal
+                || existing.registered_at_ms != request.registered_at_ms
+            {
+                return Err(ApplicationAuthorityError::IdempotencyConflict);
+            }
+            transaction.commit()?;
+            return Ok(RegisterBackgroundTaskDecision::Replayed(existing));
+        }
+        let application = load_application_by_package(&transaction, request.package_id)?.ok_or(
+            ApplicationAuthorityError::ApplicationNotFound {
+                package_id: request.package_id,
+            },
+        )?;
+        match application.status {
+            ApplicationStatus::Uninstalled => {
+                return Err(ApplicationAuthorityError::ApplicationUninstalled {
+                    application_id: application.application_id,
+                });
+            }
+            ApplicationStatus::Disabled => {
+                return Err(ApplicationAuthorityError::ApplicationDisabled {
+                    application_id: application.application_id,
+                });
+            }
+            ApplicationStatus::Installed => {}
+        }
+        if request.registered_at_ms < application.updated_at_ms {
+            return Err(ApplicationAuthorityError::RegistrationPrecedesLastUpdate {
+                last_updated_at_ms: application.updated_at_ms,
+                registered_at_ms: request.registered_at_ms,
+            });
+        }
+        if load_background_task_registration_at_generation(
+            &transaction,
+            application.application_id,
+            request.task_id,
+            application.current_installation_generation,
+        )?
+        .is_some()
+        {
+            return Err(ApplicationAuthorityError::BackgroundTaskAlreadyRegistered {
+                application_id: application.application_id,
+                task_id: request.task_id,
+            });
+        }
+        let receipt = BackgroundTaskRegistrationReceipt {
+            application_id: application.application_id,
+            task_id: request.task_id,
+            registrant_principal: request.registrant_principal,
+            application_generation: application.current_installation_generation,
+            idempotency_key: request.idempotency_key,
+            registered_at_ms: request.registered_at_ms,
+        };
+        insert_background_task_registration(&transaction, &receipt)?;
+        transaction.commit()?;
+        Ok(RegisterBackgroundTaskDecision::Registered(receipt))
+    }
+
+    /// # Errors
+    ///
+    /// Fails closed on a storage error.
+    pub fn inspect_background_tasks(
+        &self,
+        package_id: PackageId,
+    ) -> Result<Vec<BackgroundTaskRegistrationReceipt>, ApplicationAuthorityError> {
+        let connection = self.lock()?;
+        let application_id = derive_application_id(package_id);
+        let mut statement = connection.prepare(
+            "SELECT application_id, task_id, registrant_principal,
+                    application_generation, idempotency_key, registered_at_ms
+             FROM application_background_task_registrations
+             WHERE application_id = ?1
+             ORDER BY registered_at_ms ASC, idempotency_key ASC",
+        )?;
+        let mut rows = statement.query([application_id.as_bytes().as_slice()])?;
+        let mut receipts = Vec::new();
+        while let Some(row) = rows.next()? {
+            receipts.push(decode_background_task_registration_row(row)?);
+        }
+        Ok(receipts)
     }
 
     /// Reads an application's current durable state by package identity
@@ -1956,6 +2150,52 @@ fn decode_receipt_row(
         package_verification_receipt_id: ReceiptId::from_bytes(blob16(row, 8)?),
         installer_principal: PrincipalId::from_bytes(blob16(row, 9)?),
         installed_at_ms: decode_u64(row, 10)?,
+    })
+}
+
+fn load_background_task_registration_by_key(
+    source: &Connection,
+    key: IdempotencyKey,
+) -> Result<Option<BackgroundTaskRegistrationReceipt>, ApplicationAuthorityError> {
+    let mut statement = source.prepare("SELECT application_id, task_id, registrant_principal, application_generation, idempotency_key, registered_at_ms FROM application_background_task_registrations WHERE idempotency_key = ?1")?;
+    let mut rows = statement.query([key.as_bytes().as_slice()])?;
+    rows.next()?
+        .map(decode_background_task_registration_row)
+        .transpose()
+}
+fn load_background_task_registration_at_generation(
+    source: &Connection,
+    application_id: ApplicationId,
+    task_id: TaskId,
+    generation: Generation,
+) -> Result<Option<BackgroundTaskRegistrationReceipt>, ApplicationAuthorityError> {
+    let mut statement = source.prepare("SELECT application_id, task_id, registrant_principal, application_generation, idempotency_key, registered_at_ms FROM application_background_task_registrations WHERE application_id = ?1 AND task_id = ?2 AND application_generation = ?3")?;
+    let mut rows = statement.query(params![
+        application_id.as_bytes().as_slice(),
+        task_id.as_bytes().as_slice(),
+        encode_generation(generation)?
+    ])?;
+    rows.next()?
+        .map(decode_background_task_registration_row)
+        .transpose()
+}
+fn insert_background_task_registration(
+    transaction: &Connection,
+    receipt: &BackgroundTaskRegistrationReceipt,
+) -> Result<(), ApplicationAuthorityError> {
+    transaction.execute("INSERT INTO application_background_task_registrations (idempotency_key, application_id, task_id, registrant_principal, application_generation, registered_at_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6)", params![receipt.idempotency_key.as_bytes().as_slice(), receipt.application_id.as_bytes().as_slice(), receipt.task_id.as_bytes().as_slice(), receipt.registrant_principal.as_bytes().as_slice(), encode_generation(receipt.application_generation)?, encode_u64(receipt.registered_at_ms)?])?;
+    Ok(())
+}
+fn decode_background_task_registration_row(
+    row: &rusqlite::Row<'_>,
+) -> Result<BackgroundTaskRegistrationReceipt, ApplicationAuthorityError> {
+    Ok(BackgroundTaskRegistrationReceipt {
+        application_id: ApplicationId::from_bytes(blob16(row, 0)?),
+        task_id: TaskId::from_bytes(blob16(row, 1)?),
+        registrant_principal: PrincipalId::from_bytes(blob16(row, 2)?),
+        application_generation: decode_generation(row, 3)?,
+        idempotency_key: IdempotencyKey::from_bytes(blob16(row, 4)?),
+        registered_at_ms: decode_u64(row, 5)?,
     })
 }
 

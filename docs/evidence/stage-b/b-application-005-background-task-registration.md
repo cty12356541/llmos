@@ -44,7 +44,7 @@
 本地验证命令与结果（2026-09-05，W16-002）：
 
 ```text
-cargo test -p nlos-application                                # PASS
+cargo test -p nlos-application                                # PASS (40 tests: 4 unit + 29 integration + 7 fault)
 cargo clippy -p nlos-application --all-targets -- -D warnings  # PASS
 cargo fmt -p nlos-application -- --check                       # PASS
 ```

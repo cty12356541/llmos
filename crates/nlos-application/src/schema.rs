@@ -2,7 +2,7 @@ use rusqlite::{Connection, TransactionBehavior};
 
 use crate::ApplicationAuthorityError;
 
-pub(crate) const SCHEMA_VERSION: i64 = 4;
+pub(crate) const SCHEMA_VERSION: i64 = 5;
 
 /// Creates the durable application/installation authority schema v1: the
 /// per-package `applications` singleton (current installation generation +
@@ -257,7 +257,7 @@ pub(crate) fn migrate_v3(connection: &mut Connection) -> Result<(), ApplicationA
         |row| row.get(0),
     )?;
     if status_allows_uninstalled && uninstall_table_count == 1 && uninstall_trigger_count == 3 {
-        connection.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        connection.pragma_update(None, "user_version", 3)?;
         return Ok(());
     }
     if uninstall_table_count != 0 || uninstall_trigger_count != 0 {
@@ -420,7 +420,7 @@ pub(crate) fn migrate_v4(connection: &mut Connection) -> Result<(), ApplicationA
         |row| row.get(0),
     )?;
     if rollback_table_count == 1 && rollback_trigger_count == 3 && monotonic_allows_rollback == 1 {
-        connection.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        connection.pragma_update(None, "user_version", 4)?;
         return Ok(());
     }
     if rollback_table_count != 0 || rollback_trigger_count != 0 {
@@ -537,6 +537,66 @@ pub(crate) fn migrate_v4(connection: &mut Connection) -> Result<(), ApplicationA
         END;
 
         PRAGMA user_version=4;",
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
+
+pub(crate) fn migrate_v5(connection: &mut Connection) -> Result<(), ApplicationAuthorityError> {
+    let table_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type='table' AND name = 'application_background_task_registrations'",
+        [],
+        |row| row.get(0),
+    )?;
+    let trigger_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN (
+            'application_background_task_registrations_immutable_update',
+            'application_background_task_registrations_no_delete',
+            'application_background_task_registrations_state_bounds'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if table_count == 1 && trigger_count == 3 {
+        connection.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        return Ok(());
+    }
+    if table_count != 0 || trigger_count != 0 {
+        return Err(ApplicationAuthorityError::CorruptRecord(
+            "partial application background task registration schema",
+        ));
+    }
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "CREATE TABLE application_background_task_registrations (
+            idempotency_key BLOB PRIMARY KEY NOT NULL CHECK(length(idempotency_key)=16),
+            application_id BLOB NOT NULL CHECK(length(application_id)=16),
+            task_id BLOB NOT NULL CHECK(length(task_id)=16),
+            registrant_principal BLOB NOT NULL CHECK(length(registrant_principal)=16),
+            application_generation INTEGER NOT NULL CHECK(application_generation >= 1),
+            registered_at_ms INTEGER NOT NULL CHECK(registered_at_ms >= 0),
+            UNIQUE(application_id, task_id, application_generation),
+            FOREIGN KEY(application_id) REFERENCES applications(application_id)
+        ) STRICT;
+        CREATE TRIGGER application_background_task_registrations_immutable_update
+        BEFORE UPDATE ON application_background_task_registrations BEGIN
+            SELECT RAISE(ABORT, 'application background task registration is immutable');
+        END;
+        CREATE TRIGGER application_background_task_registrations_no_delete
+        BEFORE DELETE ON application_background_task_registrations BEGIN
+            SELECT RAISE(ABORT, 'application background task registration is durable');
+        END;
+        CREATE TRIGGER application_background_task_registrations_state_bounds
+        AFTER INSERT ON application_background_task_registrations
+        WHEN (SELECT status FROM applications WHERE application_id = NEW.application_id) != 1
+            OR NEW.application_generation != (
+                SELECT current_installation_generation FROM applications
+                WHERE application_id = NEW.application_id)
+        BEGIN
+            SELECT RAISE(ABORT, 'application background task registration requires the installed application at its current generation');
+        END;
+        PRAGMA user_version=5;",
     )?;
     transaction.commit()?;
     Ok(())

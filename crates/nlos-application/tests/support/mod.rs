@@ -13,9 +13,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use ed25519_dalek::{Signer, SigningKey};
 use nlos_application::{
     ApplicationAuthority, DisableApplicationRequest, DisableDecision, DisableReceipt,
-    InstallApplicationRequest, InstallDecision, RollbackApplicationRequest, RollbackDecision,
-    RollbackReceipt, UninstallApplicationRequest, UninstallDecision, UninstallReceipt,
-    UpdateApplicationRequest, UpdateDecision,
+    InstallApplicationRequest, InstallDecision, RegisterBackgroundTaskDecision,
+    RegisterBackgroundTaskRequest, RollbackApplicationRequest, RollbackDecision, RollbackReceipt,
+    UninstallApplicationRequest, UninstallDecision, UninstallReceipt, UpdateApplicationRequest,
+    UpdateDecision,
 };
 use nlos_artifact::{
     ArtifactStore, ContentDigest, CreateArtifactSpec, PackageEntryRole, PackageManifest,
@@ -23,7 +24,7 @@ use nlos_artifact::{
     VerifyPackageRequest, package_manifest_message,
 };
 use nlos_identity::{BootstrapPrincipalRequest, IdentityAuthority, IdentityBinding, KeyPurpose};
-use nlos_types::{ApplicationId, ArtifactId, IdempotencyKey, PackageId};
+use nlos_types::{ApplicationId, ArtifactId, IdempotencyKey, PackageId, PrincipalId, TaskId};
 
 static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
 
@@ -428,6 +429,58 @@ pub fn rollback_replayed(
         RollbackDecision::Replayed(receipt) => receipt,
         RollbackDecision::RolledBack(receipt) => {
             panic!("expected Replayed, got RolledBack {receipt:?}")
+        }
+    }
+}
+
+/// Runs one background-task registration and unwraps the fresh branch.
+pub fn background_task_registered(
+    authority: &ApplicationAuthority,
+    package_id: PackageId,
+    task_id: TaskId,
+    registrant_principal: PrincipalId,
+    key: u8,
+    at_ms: u64,
+) -> nlos_application::BackgroundTaskRegistrationReceipt {
+    match authority
+        .register_background_task(RegisterBackgroundTaskRequest {
+            package_id,
+            task_id,
+            registrant_principal,
+            idempotency_key: IdempotencyKey::from_bytes([key; 16]),
+            registered_at_ms: at_ms,
+        })
+        .expect("background task registration must succeed")
+    {
+        RegisterBackgroundTaskDecision::Registered(receipt) => receipt,
+        RegisterBackgroundTaskDecision::Replayed(receipt) => {
+            panic!("fresh key cannot replay a registration, got {receipt:?}")
+        }
+    }
+}
+
+/// Runs one background-task registration and unwraps the replay branch.
+pub fn background_task_registration_replayed(
+    authority: &ApplicationAuthority,
+    package_id: PackageId,
+    task_id: TaskId,
+    registrant_principal: PrincipalId,
+    key: u8,
+    at_ms: u64,
+) -> nlos_application::BackgroundTaskRegistrationReceipt {
+    match authority
+        .register_background_task(RegisterBackgroundTaskRequest {
+            package_id,
+            task_id,
+            registrant_principal,
+            idempotency_key: IdempotencyKey::from_bytes([key; 16]),
+            registered_at_ms: at_ms,
+        })
+        .expect("background task registration must replay")
+    {
+        RegisterBackgroundTaskDecision::Replayed(receipt) => receipt,
+        RegisterBackgroundTaskDecision::Registered(receipt) => {
+            panic!("expected Replayed, got Registered {receipt:?}")
         }
     }
 }

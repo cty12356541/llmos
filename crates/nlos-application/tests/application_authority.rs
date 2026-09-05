@@ -10,14 +10,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use nlos_application::{
     ActiveTaskActivityProbe, ApplicationAuthorityError, DisableApplicationRequest,
-    InstallApplicationRequest, RollbackApplicationRequest, UninstallApplicationRequest,
-    UpdateApplicationRequest, derive_application_id, derive_installation_id,
+    InstallApplicationRequest, RegisterBackgroundTaskRequest, RollbackApplicationRequest,
+    UninstallApplicationRequest, UpdateApplicationRequest, derive_application_id,
+    derive_installation_id,
 };
-use nlos_types::{Generation, IdempotencyKey, PackageId, ReceiptId};
+use nlos_types::{Generation, IdempotencyKey, PackageId, ReceiptId, TaskId};
 use rusqlite::Connection;
 use support::{
-    TestStack, authority_database, disable_replayed, disabled, installed, open_authority, replayed,
-    rollback_replayed, rolled_back, uninstall_replayed, uninstalled, update_replayed, updated,
+    TestStack, authority_database, background_task_registered,
+    background_task_registration_replayed, disable_replayed, disabled, installed, open_authority,
+    replayed, rollback_replayed, rolled_back, uninstall_replayed, uninstalled, update_replayed,
+    updated,
 };
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -89,6 +92,22 @@ fn assert_rollback_counts(stack: &TestStack, rollback_receipts: i64) {
         rollback_receipts,
         "unexpected application_rollback_receipts row count"
     );
+}
+
+fn assert_background_task_registration_counts(stack: &TestStack, registrations: i64) {
+    let database = authority_database(stack.root.root());
+    assert_eq!(
+        raw_count(
+            &database,
+            "SELECT COUNT(*) FROM application_background_task_registrations"
+        ),
+        registrations,
+        "unexpected application_background_task_registrations row count"
+    );
+}
+
+fn task_id(seed: u8) -> TaskId {
+    TaskId::from_bytes([seed; 16])
 }
 
 /// 正常安装：verified receipt → application singleton（gen 1, installed）+
@@ -1850,4 +1869,130 @@ fn rollback_with_active_tasks_is_refused_with_zero_state() {
         } if package_id == first.package_id
     ));
     assert_rollback_counts(&stack, 0);
+}
+
+#[test]
+fn background_task_registration_replays_idempotently() {
+    let stack = TestStack::new(&label("bg-task-register"), 0x50);
+    let verified = stack.verify_package(0x41, 1, key(0xF0), 1_000);
+    let authority = open_authority(stack.root.root());
+    let install = installed(
+        &authority,
+        &stack.artifacts,
+        verified.receipt_id,
+        0x01,
+        2_000,
+    );
+    let principal = stack.identity.binding.principal_id;
+    let receipt = background_task_registered(
+        &authority,
+        verified.package_id,
+        task_id(0xA1),
+        principal,
+        0x0A,
+        3_000,
+    );
+    assert_eq!(receipt.application_id, install.application_id);
+    assert_eq!(receipt.application_generation, Generation::INITIAL);
+    let listed = authority
+        .inspect_background_tasks(verified.package_id)
+        .expect("inspect");
+    assert_eq!(listed, vec![receipt.clone()]);
+    let replay = background_task_registration_replayed(
+        &authority,
+        verified.package_id,
+        task_id(0xA1),
+        principal,
+        0x0A,
+        3_000,
+    );
+    assert_eq!(replay, receipt);
+    assert_background_task_registration_counts(&stack, 1);
+}
+
+#[test]
+fn background_task_registration_refusals_are_typed_and_leave_zero_state() {
+    let stack = TestStack::new(&label("bg-task-refusals"), 0x51);
+    let verified = stack.verify_package(0x41, 1, key(0xF0), 1_000);
+    let authority = open_authority(stack.root.root());
+    installed(
+        &authority,
+        &stack.artifacts,
+        verified.receipt_id,
+        0x01,
+        2_000,
+    );
+    let principal = stack.identity.binding.principal_id;
+    let request = RegisterBackgroundTaskRequest {
+        package_id: verified.package_id,
+        task_id: task_id(0xA1),
+        registrant_principal: principal,
+        idempotency_key: key(0x0A),
+        registered_at_ms: 3_000,
+    };
+    assert!(matches!(
+        authority
+            .register_background_task(RegisterBackgroundTaskRequest {
+                package_id: PackageId::from_bytes([0xEE; 16]),
+                ..request
+            })
+            .expect_err("unknown"),
+        ApplicationAuthorityError::ApplicationNotFound { .. }
+    ));
+    disabled(&authority, verified.package_id, 0x0B, 4_000);
+    assert!(matches!(
+        authority
+            .register_background_task(request)
+            .expect_err("disabled"),
+        ApplicationAuthorityError::ApplicationDisabled { .. }
+    ));
+    assert_background_task_registration_counts(&stack, 0);
+}
+
+#[test]
+fn background_task_registration_duplicate_and_conflict_refusals() {
+    let stack = TestStack::new(&label("bg-task-conflicts"), 0x52);
+    let verified = stack.verify_package(0x41, 1, key(0xF0), 1_000);
+    let authority = open_authority(stack.root.root());
+    installed(
+        &authority,
+        &stack.artifacts,
+        verified.receipt_id,
+        0x01,
+        2_000,
+    );
+    let principal = stack.identity.binding.principal_id;
+    background_task_registered(
+        &authority,
+        verified.package_id,
+        task_id(0xA1),
+        principal,
+        0x0A,
+        3_000,
+    );
+    assert!(matches!(
+        authority
+            .register_background_task(RegisterBackgroundTaskRequest {
+                package_id: verified.package_id,
+                task_id: task_id(0xA1),
+                registrant_principal: principal,
+                idempotency_key: key(0x0B),
+                registered_at_ms: 3_500,
+            })
+            .expect_err("duplicate"),
+        ApplicationAuthorityError::BackgroundTaskAlreadyRegistered { .. }
+    ));
+    assert!(matches!(
+        authority
+            .register_background_task(RegisterBackgroundTaskRequest {
+                package_id: verified.package_id,
+                task_id: task_id(0xA2),
+                registrant_principal: principal,
+                idempotency_key: key(0x0C),
+                registered_at_ms: 1_999,
+            })
+            .expect_err("too early"),
+        ApplicationAuthorityError::RegistrationPrecedesLastUpdate { .. }
+    ));
+    assert_background_task_registration_counts(&stack, 1);
 }
