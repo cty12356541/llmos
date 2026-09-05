@@ -1,6 +1,6 @@
 # B-RUNTIME-002：100K dormant/waiting Fiber 承载证明（ROAD-B-006 前片）
 
-- 状态：`PARTIAL_PASS`（ROAD-B-006 的承载量 + 唤醒正确性 + 线程有界性前片 + cancel/late-callback 功能矩阵（§6，2026-09-02 追加）；structured join/detach、Process crash propagation、分维 Activation metering、阻塞 I/O 负向证明未做，ROAD-B-006 整体不达成）
+- 状态：`PARTIAL_PASS`（ROAD-B-006 的承载量 + 唤醒正确性 + 线程有界性前片 + cancel/late-callback 功能矩阵（§6，2026-09-02 追加）+ 阻塞 I/O 负向证明最小前缀（§6.7，2026-09-05 追加）；structured join/detach、Process crash propagation、分维 Activation metering 已做；100K 规模级 cancel 探针未做，ROAD-B-006 整体不达成）
 - 日期：2026-08-31（macOS arm64 单平台实测）
 - Owner：`nlos-runtime-tokio`（`tests/durable_wait_scale.rs`）
 - 设计依据：[架构设计总纲 v0.5 §28.2 ROAD-B-006](../../design/06-架构设计总纲-v0.5.md)（「单机 runtime MUST 证明有限宿主线程可承载至少 100K dormant/waiting Fiber……未完成前不得声称 coroutine 级大规模并发」）
@@ -70,7 +70,7 @@ cargo fmt -p nlos-runtime-tokio -- --check                            → 通过
 - **单平台实测**：数字均为 macOS arm64（APFS fsync 特性敏感，register_settle 主导项）；Linux/Windows 数字待夜间 scale-probe CI job（`--include-ignored`，ubuntu）补充。
 - **MSRV 双工具链未本地执行**：本地 1.97 toolchain 安装损坏（`librustc_driver` dylib 缺失 → 其 rustfmt/check 均不可用），fmt 双工具链与 MSRV check 以 CI（stable/Linux fmt 门 + ubuntu MSRV job）为准，如实标注。
 - **in-memory 注册表线性扫描**：`deliver`（逐 report 行线性 find）与 fiber 终态 purge（`retain` 全表）在 100K 挂起下呈 O(n) 每事件，wake 阶段 ~4.3s 可接受但属已登记的规模特征，非本前片修改对象。
-- **未做（ROAD-B-006 其余退出门，登记后续）**：~~cancel/late-callback 矩阵~~（功能级矩阵已落地，见 §6；100K 规模级 cancel 探针仍因 O(n²) 终态 purge 未纳入）、~~structured join/detach（API 不存在，如实登记缺口，见 §6.4）~~（合同层最小前缀已落地，见 §6.5）、~~Process crash propagation~~（见 `b-process-003-crash-propagation.md`）、~~分维 Activation metering 最小前缀~~（见 §6.6）、真实阻塞 I/O（本片为 durable wait 挂起路径）；100K `cancel_scope` 收尾因 O(n²) 终态 purge 未纳入探针， teardown 走 drop。
+- **未做（ROAD-B-006 其余退出门，登记后续）**：~~cancel/late-callback 矩阵~~（功能级矩阵已落地，见 §6；100K 规模级 cancel 探针仍因 O(n²) 终态 purge 未纳入）、~~structured join/detach（API 不存在，如实登记缺口，见 §6.4）~~（合同层最小前缀已落地，见 §6.5）、~~Process crash propagation~~（见 `b-process-003-crash-propagation.md`）、~~分维 Activation metering 最小前缀~~（见 §6.6）、~~阻塞 I/O 负向证明~~（见 §6.7）；100K `cancel_scope` 收尾因 O(n²) 终态 purge 未纳入探针， teardown 走 drop。
 - probe 为 `#[ignore]`，常规 CI（push/PR）不运行；夜间 scale-probe job 覆盖。
 
 ## 6. cancel/late-callback 功能矩阵（2026-09-02 追加，勾销 §5 中 cancel/late-callback 项的功能级部分）
@@ -109,7 +109,7 @@ clippy 双工具链 `-D warnings`：**本地三次运行均被并行车道在途
 ### 6.3 缺口更新
 
 - **勾销**：§5「cancel/late-callback 矩阵」功能级部分 → 本 §6 落地（6/6 绿）。100K 规模级 cancel 探针（`cancel_scope` 收尾）仍随 O(n²) 终态 purge 一并保留于 §5 已登记限制。
-- **如实保留（ROAD-B-006 剩余，整体不达成）**：阻塞 I/O 负向证明（不线性占用宿主线程的负向证据）、~~Process crash propagation~~（见 `b-process-003-crash-propagation.md`）、~~分维 Activation metering 最小前缀~~（见 §6.6）。
+- **如实保留（ROAD-B-006 剩余，整体不达成）**：~~阻塞 I/O 负向证明~~（见 §6.7 最小前缀）、~~Process crash propagation~~（见 `b-process-003-crash-propagation.md`）、~~分维 Activation metering 最小前缀~~（见 §6.6）。
 
 ### 6.4 structured join/detach：API 缺口登记（已由 §6.5 勾销）
 
@@ -146,7 +146,7 @@ cargo fmt -p nlos-runtime -p nlos-runtime-tokio -- --check
 #### 6.5.2 缺口更新
 
 - **勾销**：§6.4 合同层缺口 → 本 §6.5 最小前缀（join + 显式 detach + 隐式 detach 文档化）。
-- **如实保留（ROAD-B-006 剩余，Claim 维持 PARTIAL_PASS）**：~~Process crash propagation~~（见 `b-process-003-crash-propagation.md`）、~~分维 Activation metering~~（见 §6.6 最小前缀）、阻塞 I/O 负向证明、100K 规模级 cancel 探针；未声称 ROAD-B-006 整体达成。
+- **如实保留（ROAD-B-006 剩余，Claim 维持 PARTIAL_PASS）**：~~Process crash propagation~~（见 `b-process-003-crash-propagation.md`）、~~分维 Activation metering~~（见 §6.6 最小前缀）、~~阻塞 I/O 负向证明~~（见 §6.7）、100K 规模级 cancel 探针；未声称 ROAD-B-006 整体达成。
 
 ### 6.6 Activation meter 最小前缀（2026-09-05 追加，W13-M / ROAD-B-006）
 
@@ -180,6 +180,45 @@ cargo fmt -p nlos-runtime-tokio -- --check
 - **勾销**：§6.5.2 / §6.3 中「分维 Activation metering」功能级最小前缀 → 本 §6.6（`external_wait` + `active_cpu` 两维；join 后读回稳定）。
 - **如实保留（ROAD-B-006 剩余，Claim 维持 PARTIAL_PASS）**：
   - 100K 探针下分维 metering 规模验证（`backpressure_wait` / `suspended` 维仍为零占位）；
-  - 阻塞 I/O 负向证明（宿主线程不随 fiber 数线性增长）；
+  - ~~阻塞 I/O 负向证明~~（见 §6.7 最小前缀）；
+  - 100K 规模级 cancel 探针；
+  - 未声称 ROAD-B-006 整体达成。
+
+### 6.7 阻塞 I/O 负向证明最小前缀（2026-09-05 追加，W15-B / ROAD-B-006）
+
+- Owner：`nlos-runtime-tokio`（`tests/blocking_io_negative.rs`）
+- 设计依据：v0.5 §28.2 ROAD-B-006「阻塞 I/O 不线性占用宿主线程」；本片为 **负向证明**——fiber 数增长时宿主线程数不得线性增长。
+- **挂起路径**：与 `durable_wait_scale.rs` 相同——每个 fiber 在**自身 task 体内**经 `wait_for_channel` 注册独立 durable wait 行并挂起；阻塞 I/O 在 durable 注册**之前**执行。
+- **阻塞 I/O 两种模式**（均测，互补）：
+  1. **隔离模式**：`tokio::task::spawn_blocking` + 2ms 模拟阻塞 I/O；探针 runtime 显式 `max_blocking_threads = 8`，证明有界 blocking pool 不随 fiber 数线性扩线程。
+  2. **误用模式**：fiber 体内直接 `std::thread::sleep`（占用 worker 但不 spawn 每 fiber 一线程）；256 fiber 全挂起后线程仍 ≤ `THREAD_BOUND`（10）。
+- **负向证明方法论**：
+  1. **比较 tiers**：32 vs 256 fiber（8×），全达 `WaitingIo` 后测 `ps -M` / `/proc/self/status` 线程数；断言 `threads(256) ≤ threads(32) + 15`（sub-linear headroom）。
+  2. **绝对上界**：256 fiber + spawn_blocking（cap=8）≤ `BLOCKING_IO_THREAD_BOUND`（16）；误用模式 ≤ 10。
+  3. **可选 `#[ignore]` 10K tier**：与 durable_wait_scale 同形状，夜间 scale-probe 可 `--include-ignored` 复跑。
+- **新增测试**（`blocking_io_negative.rs`，3 项：2 常规 + 1 `#[ignore]`）：
+  1. `blocking_io_on_durable_wait_path_grows_threads_sublinearly` — spawn_blocking 后 durable wait：8× fiber 线程增长 sub-linear。
+  2. `misplaced_blocking_sleep_stays_thread_bounded_on_durable_wait_path` — 误用 blocking sleep：256 fiber 线程有界。
+  3. `ten_thousand_blocking_io_fibers_stay_thread_bounded` — 10K `#[ignore]` 快探针。
+
+#### 6.7.1 验证门实测
+
+```text
+cargo test -p nlos-runtime-tokio --test blocking_io_negative
+  → 2 passed / 0 failed / 1 ignored（2026-09-05 W15-B）
+cargo test -p nlos-runtime-tokio
+  → 75 passed / 0 failed / 4 ignored（15 个 test target 全绿；73 既有 + 2 blocking_io_negative 常规项；
+    ignored = durable_wait_scale 2 项 + scale.rs 100K 1 项 + blocking_io_negative 10K 1 项）
+cargo clippy -p nlos-runtime-tokio --all-targets -- -D warnings
+  → exit 0（stable，2026-09-05 W15-B）
+cargo fmt -p nlos-runtime-tokio -- --check
+  → 通过（stable，2026-09-05 W15-B）
+```
+
+#### 6.7.2 缺口更新
+
+- **勾销**：§6.3 / §6.5.2 / §6.6.2 中「阻塞 I/O 负向证明」→ 本 §6.7 最小前缀（sub-linear + 绝对有界；test-only，零 src 侵入）。
+- **如实保留（ROAD-B-006 剩余，Claim 维持 PARTIAL_PASS）**：
+  - 100K 探针下 blocking I/O 负向实跑（10K `#[ignore]` tier 待夜间 job）；
   - 100K 规模级 cancel 探针；
   - 未声称 ROAD-B-006 整体达成。
