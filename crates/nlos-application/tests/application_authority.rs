@@ -9,11 +9,11 @@ mod support;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use nlos_application::{
-    ApplicationAuthorityError, DisableApplicationRequest, InstallApplicationRequest,
-    RollbackApplicationRequest, UninstallApplicationRequest, UpdateApplicationRequest,
-    derive_application_id, derive_installation_id,
+    ActiveTaskActivityProbe, ApplicationAuthorityError, DisableApplicationRequest,
+    InstallApplicationRequest, RollbackApplicationRequest, UninstallApplicationRequest,
+    UpdateApplicationRequest, derive_application_id, derive_installation_id,
 };
-use nlos_types::{Generation, IdempotencyKey, ReceiptId};
+use nlos_types::{Generation, IdempotencyKey, PackageId, ReceiptId};
 use rusqlite::Connection;
 use support::{
     TestStack, authority_database, disable_replayed, disabled, installed, open_authority, replayed,
@@ -1739,4 +1739,115 @@ fn rollback_refusals_are_typed_and_leave_zero_state() {
         .expect("exists");
     assert_eq!(view.status, nlos_application::ApplicationStatus::Installed);
     assert_eq!(view.current_installation_generation, Generation::INITIAL);
+}
+
+struct MockTaskProbe {
+    count: u64,
+}
+
+impl ActiveTaskActivityProbe for MockTaskProbe {
+    fn outstanding_task_count(&self, _package_id: PackageId) -> u64 {
+        self.count
+    }
+}
+
+#[test]
+fn uninstall_with_active_tasks_is_refused_with_zero_state() {
+    let stack = TestStack::new(&label("uninstall-active-tasks"), 0x4D);
+    let verified = stack.verify_package(0x41, 1, key(0xF0), 1_000);
+    let authority = open_authority(stack.root.root());
+    installed(
+        &authority,
+        &stack.artifacts,
+        verified.receipt_id,
+        0x01,
+        2_000,
+    );
+    let probe = MockTaskProbe { count: 2 };
+    let error = authority
+        .uninstall_application_with_activity_gate(
+            UninstallApplicationRequest {
+                package_id: verified.package_id,
+                idempotency_key: key(0x0A),
+                uninstalled_at_ms: 3_000,
+            },
+            &probe,
+        )
+        .expect_err("active tasks must block fresh uninstall");
+    assert!(matches!(
+        error,
+        ApplicationAuthorityError::ApplicationActiveTasksRunning {
+            package_id,
+            active_task_count: 2,
+        } if package_id == verified.package_id
+    ));
+    assert_uninstall_counts(&stack, 0);
+    uninstalled(&authority, verified.package_id, 0x0A, 3_000);
+}
+
+#[test]
+fn uninstall_replay_bypasses_active_task_gate() {
+    let stack = TestStack::new(&label("uninstall-replay-active-tasks"), 0x4E);
+    let verified = stack.verify_package(0x41, 1, key(0xF0), 1_000);
+    let authority = open_authority(stack.root.root());
+    installed(
+        &authority,
+        &stack.artifacts,
+        verified.receipt_id,
+        0x01,
+        2_000,
+    );
+    let receipt = uninstalled(&authority, verified.package_id, 0x0A, 3_000);
+    let probe = MockTaskProbe { count: 1 };
+    let replay = authority
+        .uninstall_application_with_activity_gate(
+            UninstallApplicationRequest {
+                package_id: verified.package_id,
+                idempotency_key: key(0x0A),
+                uninstalled_at_ms: 3_000,
+            },
+            &probe,
+        )
+        .expect("replay must succeed despite active tasks");
+    assert!(matches!(
+        replay,
+        nlos_application::UninstallDecision::Replayed(r) if r == receipt
+    ));
+}
+
+#[test]
+fn rollback_with_active_tasks_is_refused_with_zero_state() {
+    let stack = TestStack::new(&label("rollback-active-tasks"), 0x4F);
+    let first = stack.verify_package(0x41, 1, key(0xF0), 1_000);
+    let second = stack.verify_package(0x41, 2, key(0xF1), 2_000);
+    let authority = open_authority(stack.root.root());
+    installed(&authority, &stack.artifacts, first.receipt_id, 0x01, 2_000);
+    updated(
+        &authority,
+        &stack.artifacts,
+        first.package_id,
+        second.receipt_id,
+        0x02,
+        3_000,
+    );
+    disabled(&authority, first.package_id, 0x0B, 4_000);
+    let probe = MockTaskProbe { count: 3 };
+    let error = authority
+        .rollback_application_with_activity_gate(
+            RollbackApplicationRequest {
+                package_id: first.package_id,
+                idempotency_key: key(0x0A),
+                rollback_at_ms: 5_000,
+            },
+            &probe,
+        )
+        .expect_err("active tasks must block fresh rollback");
+    assert!(matches!(
+        error,
+        ApplicationAuthorityError::ApplicationActiveTasksRunning {
+            package_id,
+            active_task_count: 3,
+        } if package_id == first.package_id
+    ));
+    assert_rollback_counts(&stack, 0);
 }

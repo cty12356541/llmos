@@ -393,6 +393,13 @@ impl RollbackDecision {
     }
 }
 
+/// Caller-provided probe for outstanding Task activity under one package
+/// identity. The authority does not depend on `nlos-task`; integration layers
+/// supply the count.
+pub trait ActiveTaskActivityProbe {
+    fn outstanding_task_count(&self, package_id: PackageId) -> u64;
+}
+
 /// Fail-closed typed errors of the application/installation authority.
 /// Every variant is a hard refusal: the caller never receives an
 /// installation whose durability is in doubt, and a rejected install
@@ -1168,6 +1175,22 @@ impl ApplicationAuthority {
         &self,
         request: UninstallApplicationRequest,
     ) -> Result<UninstallDecision, ApplicationAuthorityError> {
+        self.uninstall_application_internal(request, None)
+    }
+
+    pub fn uninstall_application_with_activity_gate(
+        &self,
+        request: UninstallApplicationRequest,
+        probe: &impl ActiveTaskActivityProbe,
+    ) -> Result<UninstallDecision, ApplicationAuthorityError> {
+        self.uninstall_application_internal(request, Some(probe))
+    }
+
+    fn uninstall_application_internal(
+        &self,
+        request: UninstallApplicationRequest,
+        probe: Option<&dyn ActiveTaskActivityProbe>,
+    ) -> Result<UninstallDecision, ApplicationAuthorityError> {
         let mut connection = self.lock()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
 
@@ -1277,6 +1300,22 @@ impl ApplicationAuthority {
         &self,
         request: RollbackApplicationRequest,
     ) -> Result<RollbackDecision, ApplicationAuthorityError> {
+        self.rollback_application_internal(request, None)
+    }
+
+    pub fn rollback_application_with_activity_gate(
+        &self,
+        request: RollbackApplicationRequest,
+        probe: &impl ActiveTaskActivityProbe,
+    ) -> Result<RollbackDecision, ApplicationAuthorityError> {
+        self.rollback_application_internal(request, Some(probe))
+    }
+
+    fn rollback_application_internal(
+        &self,
+        request: RollbackApplicationRequest,
+        probe: Option<&dyn ActiveTaskActivityProbe>,
+    ) -> Result<RollbackDecision, ApplicationAuthorityError> {
         let mut connection = self.lock()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
 
@@ -1330,6 +1369,16 @@ impl ApplicationAuthority {
             application_id: application.application_id,
             generation: to_generation,
         })?;
+
+        if let Some(probe) = probe {
+            let active_task_count = probe.outstanding_task_count(request.package_id);
+            if active_task_count > 0 {
+                return Err(ApplicationAuthorityError::ApplicationActiveTasksRunning {
+                    package_id: request.package_id,
+                    active_task_count,
+                });
+            }
+        }
 
         let changed = transaction.execute(
             "UPDATE applications
