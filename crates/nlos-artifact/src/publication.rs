@@ -278,6 +278,7 @@ fn commit_publication(
         created_at_ms: published_at_ms,
     };
     insert_receipt(transaction, &receipt)?;
+    crate::provenance::insert_owner_derived_provenance(transaction, &receipt)?;
     let changed = transaction.execute(
         "UPDATE artifact_staged_revisions
          SET stage_state = 1, publication_receipt_id = ?1, updated_at_ms = ?2
@@ -383,7 +384,7 @@ pub(crate) fn load_all_staged_digests(
     Ok(records)
 }
 
-fn load_receipt_optional(
+pub(crate) fn load_receipt_optional(
     source: &impl SqlRead,
     receipt_id: ReceiptId,
 ) -> Result<Option<ArtifactPublicationReceipt>, ArtifactError> {

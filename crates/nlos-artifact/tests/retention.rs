@@ -74,6 +74,7 @@ fn put_after_deadline(
         expected_head_revision: expected_head,
         bytes: payload,
         created_at_ms: DEADLINE_MS + 1,
+        provenance: support::provenance_triple(artifact.as_bytes()[0]),
     }
 }
 

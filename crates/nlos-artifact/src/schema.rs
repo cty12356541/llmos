@@ -357,3 +357,54 @@ pub(crate) fn load_artifact_head_endpoint_proof(
         ),
     })
 }
+
+
+/// Adds immutable per-revision provenance receipts (B-ARTIFACT-006 minimal
+/// prefix). Existing revisions stay without receipts until explicitly
+/// repaired; byte reads for those revisions fail closed.
+pub(crate) fn migrate_v7(connection: &mut Connection) -> Result<(), ArtifactError> {
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "CREATE TABLE artifact_provenance_receipts (
+            receipt_id BLOB PRIMARY KEY NOT NULL CHECK(length(receipt_id) = 16),
+            artifact_id BLOB NOT NULL CHECK(length(artifact_id) = 16),
+            revision INTEGER NOT NULL CHECK(revision >= 1),
+            source_kind INTEGER NOT NULL CHECK(source_kind IN (0, 1)),
+            source_a BLOB NOT NULL CHECK(length(source_a) = 16),
+            source_b BLOB NOT NULL CHECK(length(source_b) = 16),
+            source_digest BLOB NOT NULL CHECK(length(source_digest) = 32),
+            publication_receipt_id BLOB CHECK(
+                publication_receipt_id IS NULL OR length(publication_receipt_id) = 16
+            ),
+            created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0),
+            FOREIGN KEY(artifact_id, revision)
+                REFERENCES artifact_revisions(artifact_id, revision),
+            FOREIGN KEY(publication_receipt_id)
+                REFERENCES artifact_publication_receipts(receipt_id),
+            UNIQUE(artifact_id, revision),
+            CHECK(
+                (source_kind = 0 AND publication_receipt_id IS NULL)
+                OR (source_kind = 1 AND publication_receipt_id IS NOT NULL)
+            )
+        ) STRICT;
+
+        CREATE INDEX artifact_provenance_by_revision
+            ON artifact_provenance_receipts(artifact_id, revision);
+
+        CREATE TRIGGER artifact_provenance_receipts_immutable_update
+        BEFORE UPDATE ON artifact_provenance_receipts
+        BEGIN
+            SELECT RAISE(ABORT, 'artifact provenance receipt is immutable');
+        END;
+
+        CREATE TRIGGER artifact_provenance_receipts_immutable_delete
+        BEFORE DELETE ON artifact_provenance_receipts
+        BEGIN
+            SELECT RAISE(ABORT, 'artifact provenance receipt is immutable');
+        END;
+
+        PRAGMA user_version = 7;",
+    )?;
+    transaction.commit()?;
+    Ok(())
+}

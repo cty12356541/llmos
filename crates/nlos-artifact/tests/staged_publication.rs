@@ -344,7 +344,18 @@ fn v1_store_migrates_to_v2_without_losing_artifacts() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 6);
+    assert_eq!(version, 7);
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT count(*) FROM sqlite_master
+                 WHERE type = 'table' AND name = 'artifact_provenance_receipts'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        1
+    );
     assert_eq!(
         connection
             .query_row(

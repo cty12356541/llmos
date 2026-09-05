@@ -249,6 +249,38 @@ impl CreateArtifactDecision {
     }
 }
 
+/// Caller-supplied opaque source triple stored with a revision. The
+/// authority persists the triple durably but does not verify its semantics.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProvenanceSourceTriple {
+    pub source_a: [u8; 16],
+    pub source_b: [u8; 16],
+    pub source_digest: ContentDigest,
+}
+
+/// How the durable provenance receipt's source triple was established.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProvenanceSourceKind {
+    /// Caller supplied an opaque triple at commit time.
+    CallerAssertedOpaque,
+    /// Authority copied task/permit/write-set from an immutable publication
+    /// receipt during staged publication.
+    OwnerDerived,
+}
+
+/// Immutable proof that one revision carries a recorded source triple.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ArtifactProvenanceReceipt {
+    pub receipt_id: ReceiptId,
+    pub artifact_id: ArtifactId,
+    pub revision: u64,
+    pub source_kind: ProvenanceSourceKind,
+    pub source_triple: ProvenanceSourceTriple,
+    /// Present when [`ProvenanceSourceKind::OwnerDerived`].
+    pub publication_receipt_id: Option<ReceiptId>,
+    pub created_at_ms: u64,
+}
+
 /// Request to append one immutable revision and advance the head.
 ///
 /// The new revision number is derived by the authority as
@@ -262,6 +294,9 @@ pub struct PutRevisionRequest<'a> {
     pub bytes: &'a [u8],
     /// Caller-supplied revision timestamp (milliseconds since Unix epoch).
     pub created_at_ms: u64,
+    /// Caller-asserted opaque provenance triple recorded atomically with
+    /// the new revision.
+    pub provenance: ProvenanceSourceTriple,
 }
 
 /// Outcome of [`crate::ArtifactStore::put_revision`].

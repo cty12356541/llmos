@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use ed25519_dalek::{Signer, SigningKey};
 use nlos_artifact::{
     ContentDigest, CreateArtifactSpec, PackageEntryRole, PackageManifest, PackageManifestEntry,
-    PutRevisionRequest, SignedPackage, package_manifest_message,
+    ProvenanceSourceTriple, PutRevisionRequest, SignedPackage, package_manifest_message,
 };
 use nlos_identity::{BootstrapPrincipalRequest, IdentityAuthority, IdentityBinding, KeyPurpose};
 use nlos_types::{ApplicationId, ArtifactId, IdempotencyKey, PackageId};
@@ -76,12 +76,23 @@ pub fn artifact_spec(seed: u8) -> CreateArtifactSpec {
     }
 }
 
+pub fn provenance_triple(seed: u8) -> ProvenanceSourceTriple {
+    ProvenanceSourceTriple {
+        source_a: [0xc0_u8.wrapping_add(seed); 16],
+        source_b: [0xd0_u8.wrapping_add(seed); 16],
+        source_digest: ContentDigest::from_bytes([0xe0_u8.wrapping_add(seed); 32]),
+    }
+}
+
 pub fn put(artifact: ArtifactId, expected_head: u64, bytes: &[u8]) -> PutRevisionRequest<'_> {
+    let head_byte = u8::try_from(expected_head & 0xff).unwrap_or(0);
+    let seed = artifact.as_bytes()[0].wrapping_add(head_byte);
     PutRevisionRequest {
         artifact_id: artifact,
         expected_head_revision: expected_head,
         bytes,
         created_at_ms: 5_000 + expected_head,
+        provenance: provenance_triple(seed),
     }
 }
 

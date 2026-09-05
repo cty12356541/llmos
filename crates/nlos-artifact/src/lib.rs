@@ -107,6 +107,7 @@ mod cache;
 mod gc;
 mod model;
 mod package;
+mod provenance;
 mod publication;
 mod query;
 mod recover;
@@ -124,8 +125,9 @@ use nlos_types::{ArtifactId, PrincipalId};
 
 pub use gc::{CollectOrphanBlobsDecision, CollectOrphanBlobsRequest, GcReceipt};
 pub use model::{
-    ArtifactHeadEndpointProof, ArtifactPublicationReceipt, ArtifactRecord, ContentDigest,
-    CreateArtifactDecision, CreateArtifactSpec, HeadState, MissingBlob, MissingStagedBlob,
+    ArtifactHeadEndpointProof, ArtifactProvenanceReceipt, ArtifactPublicationReceipt,
+    ArtifactRecord, ContentDigest, CreateArtifactDecision, CreateArtifactSpec, HeadState,
+    MissingBlob, MissingStagedBlob, ProvenanceSourceKind, ProvenanceSourceTriple,
     PublishStagedRevisionDecision, PublishStagedRevisionRequest, PutRevisionDecision,
     PutRevisionRequest, RecoveryReport, RevisionRecord, StageRevisionDecision,
     StageRevisionRequest, StagedRevisionRecord, StagedRevisionState, StagingId,
@@ -250,6 +252,14 @@ pub enum ArtifactError {
     PackageVerificationReceiptNotFound(nlos_types::ReceiptId),
     /// No immutable garbage-collection receipt with this identity exists.
     GcReceiptNotFound(nlos_types::ReceiptId),
+    /// The revision exists but has no durable provenance receipt; byte reads
+    /// fail closed until provenance is recorded (B-ARTIFACT-006).
+    ProvenanceIncomplete {
+        artifact_id: ArtifactId,
+        revision: u64,
+    },
+    /// No immutable provenance receipt with this identity exists.
+    ProvenanceReceiptNotFound(nlos_types::ReceiptId),
     /// A durable row violates an invariant this crate enforces.
     CorruptRecord(&'static str),
     /// The process-local writer mutex is poisoned.
@@ -378,6 +388,18 @@ impl fmt::Display for ArtifactError {
             Self::GcReceiptNotFound(receipt_id) => write!(
                 formatter,
                 "garbage-collection receipt {receipt_id:?} does not exist"
+            ),
+            Self::ProvenanceIncomplete {
+                artifact_id,
+                revision,
+            } => write!(
+                formatter,
+                "artifact {artifact_id:?} revision {revision} lacks provenance; \
+                 byte reads fail closed"
+            ),
+            Self::ProvenanceReceiptNotFound(receipt_id) => write!(
+                formatter,
+                "provenance receipt {receipt_id:?} does not exist"
             ),
             Self::CorruptRecord(reason) => write!(formatter, "corrupt durable record: {reason}"),
             Self::LockPoisoned => formatter.write_str("artifact writer lock is poisoned"),

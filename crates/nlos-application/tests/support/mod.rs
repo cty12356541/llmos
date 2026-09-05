@@ -19,8 +19,8 @@ use nlos_application::{
 };
 use nlos_artifact::{
     ArtifactStore, ContentDigest, CreateArtifactSpec, PackageEntryRole, PackageManifest,
-    PackageManifestEntry, PutRevisionRequest, SignedPackage, VerifyPackageRequest,
-    package_manifest_message,
+    PackageManifestEntry, ProvenanceSourceTriple, PutRevisionRequest, SignedPackage,
+    VerifyPackageRequest, package_manifest_message,
 };
 use nlos_identity::{BootstrapPrincipalRequest, IdentityAuthority, IdentityBinding, KeyPurpose};
 use nlos_types::{ApplicationId, ArtifactId, IdempotencyKey, PackageId};
@@ -130,6 +130,11 @@ impl TestStack {
                 expected_head_revision: 0,
                 bytes: payload,
                 created_at_ms: 5_000,
+                provenance: ProvenanceSourceTriple {
+                    source_a: [0xc0_u8.wrapping_add(seed); 16],
+                    source_b: [0xd0_u8.wrapping_add(seed); 16],
+                    source_digest: ContentDigest::from_bytes([0xe0_u8.wrapping_add(seed); 32]),
+                },
             })
             .expect("put revision");
         (spec.artifact_id, ContentDigest::of_bytes(payload))

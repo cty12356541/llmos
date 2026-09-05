@@ -16,7 +16,7 @@ use crate::model::{
 };
 use crate::query::{load_artifact_optional, load_revision_optional};
 
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 
 /// Filesystem layout under the store root.
 #[derive(Clone, Debug)]
@@ -126,6 +126,7 @@ impl ArtifactStore {
                 crate::schema::migrate_v4(&mut connection)?;
                 crate::schema::migrate_v5(&mut connection)?;
                 crate::schema::migrate_v6(&mut connection)?;
+                crate::schema::migrate_v7(&mut connection)?;
             }
             1 => {
                 crate::schema::migrate_v2(&mut connection)?;
@@ -133,23 +134,31 @@ impl ArtifactStore {
                 crate::schema::migrate_v4(&mut connection)?;
                 crate::schema::migrate_v5(&mut connection)?;
                 crate::schema::migrate_v6(&mut connection)?;
+                crate::schema::migrate_v7(&mut connection)?;
             }
             2 => {
                 crate::schema::migrate_v3(&mut connection)?;
                 crate::schema::migrate_v4(&mut connection)?;
                 crate::schema::migrate_v5(&mut connection)?;
                 crate::schema::migrate_v6(&mut connection)?;
+                crate::schema::migrate_v7(&mut connection)?;
             }
             3 => {
                 crate::schema::migrate_v4(&mut connection)?;
                 crate::schema::migrate_v5(&mut connection)?;
                 crate::schema::migrate_v6(&mut connection)?;
+                crate::schema::migrate_v7(&mut connection)?;
             }
             4 => {
                 crate::schema::migrate_v5(&mut connection)?;
                 crate::schema::migrate_v6(&mut connection)?;
+                crate::schema::migrate_v7(&mut connection)?;
             }
-            5 => crate::schema::migrate_v6(&mut connection)?,
+            5 => {
+                crate::schema::migrate_v6(&mut connection)?;
+                crate::schema::migrate_v7(&mut connection)?;
+            }
+            6 => crate::schema::migrate_v7(&mut connection)?,
             SCHEMA_VERSION => {}
             other => return Err(ArtifactError::SchemaVersionUnsupported(other)),
         }
@@ -328,6 +337,13 @@ impl ArtifactStore {
                 "head compare-and-swap failed under BEGIN IMMEDIATE",
             ));
         }
+        crate::provenance::insert_caller_asserted_provenance(
+            &transaction,
+            record.artifact_id,
+            record.revision,
+            request.provenance,
+            request.created_at_ms,
+        )?;
         transaction.commit()?;
         Ok(PutRevisionDecision::Committed(record))
     }

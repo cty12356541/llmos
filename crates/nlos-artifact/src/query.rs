@@ -65,6 +65,7 @@ impl ArtifactStore {
                 revision,
             },
         )?;
+        crate::provenance::ensure_provenance_recorded(&*connection, artifact_id, revision)?;
         let path = self.paths().artifacts.blob_path(record.digest);
         blob::read_blob_verified(&self.paths().artifacts, record.digest)?.ok_or(
             ArtifactError::BlobMissing {
