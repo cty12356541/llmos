@@ -1,6 +1,6 @@
 # 阶段 B 权威进度单
 
-> 本轮（2026-09-05 第七十五增量）波次 15 七车道全部 canonical 落地（W15-P 两次子 Agent 取消后编排者救回）。(7) [W15-P] runtime crash 联动 terminal 门（commit 待 push，[B-PROCESS-003](../evidence/stage-b/b-process-003-crash-propagation.md) §4）：`resume_binding`/`resume_from_snapshot`/`snapshot_handler_entry` 经 `inspect_active_process_binding` fail-closed；`process_crash_propagation` 3 passed；仍为 PARTIAL_PASS（批量 cancel 传播/平台 kill 未做）。(1)–(6) 见第七十三增量（`2a607b5`/`5e5fae5`/`349fe9d`/`5c8f2de`/`446730f`/`9b262f3`）。定向测试 + clippy/fmt 通过；CI/workspace 全仓门未在本增量后复跑。
+> 本轮（2026-09-05 第七十五增量）波次 15 七车道全部 canonical 落地（W15-P 两次子 Agent 取消后编排者救回）。(7) [W15-P] runtime crash 联动 terminal 门（commit `a69e709`，[B-PROCESS-003](../evidence/stage-b/b-process-003-crash-propagation.md) §4）：`resume_binding`/`resume_from_snapshot`/`snapshot_handler_entry` 经 `inspect_active_process_binding` fail-closed；`process_crash_propagation` 3 passed；仍为 PARTIAL_PASS（批量 cancel 传播/平台 kill 未做）。(1)–(6) 见第七十三增量（`2a607b5`/`5e5fae5`/`349fe9d`/`5c8f2de`/`446730f`/`9b262f3`）。定向测试 + clippy/fmt 通过；CI/workspace 全仓门未在本增量后复跑。
 
 > 本轮（2026-09-05 第七十四增量）波次 15 收尾 integrator：七车道中六车道 canonical 落地、一车道未启动。(1)–(6) 见第七十三增量。(7) [W15-P] runtime crash 联动（runtime-tokio + process）——编排者取消后未 resume、写集未启动，不得冒充 DONE。§3 同步 B-IDENTITY/B-CAPABILITY/B-SEMANTIC/B-RUNTIME/B-ARTIFACT/ROAD-B-001/ROAD-B-006；五 crate 定向测试绿；push `9b262f3` 首次 GitHub 超时（~425s）后重试成功；CI/workspace/10K ignore 探针/runtime-tokio 全 crate 未在本增量复跑。
 
