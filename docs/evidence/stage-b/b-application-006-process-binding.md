@@ -41,12 +41,12 @@
 
 新增 `tests/application_authority.rs` 3 用例（正常登记幂等、disabled/uninstalled 拒绝、重复/conflict/时间戳拒绝）。
 
-本地验证命令（W17-002）：
+本地验证命令与结果（2026-09-06，W17-002）：
 
 ```text
-cargo test -p nlos-application
-cargo clippy -p nlos-application --all-targets -- -D warnings
-cargo fmt -p nlos-application -- --check
+cargo test -p nlos-application                                # PASS (43 tests: 4 unit + 32 integration + 7 fault)
+cargo clippy -p nlos-application --all-targets -- -D warnings  # PASS
+cargo fmt -p nlos-application -- --check                       # PASS
 ```
 
 ## 5. 证据等级与限制
