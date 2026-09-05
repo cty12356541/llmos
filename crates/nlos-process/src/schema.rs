@@ -2,7 +2,66 @@ use rusqlite::{Connection, TransactionBehavior};
 
 use crate::ProcessAuthorityError;
 
-pub(crate) const SCHEMA_VERSION: i64 = 3;
+pub(crate) const SCHEMA_VERSION: i64 = 4;
+
+pub(crate) fn migrate_v4(connection: &mut Connection) -> Result<(), ProcessAuthorityError> {
+    let table: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type='table' AND name = 'fiber_incarnation_cancel_receipts'",
+        [],
+        |row| row.get(0),
+    )?;
+    let trigger_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN (
+            'fiber_incarnation_cancel_receipts_immutable_update',
+            'fiber_incarnation_cancel_receipts_immutable_delete'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if table == 1 && trigger_count == 2 {
+        connection.pragma_update(None, "user_version", 4)?;
+        return Ok(());
+    }
+    if table != 0 || trigger_count != 0 {
+        return Err(ProcessAuthorityError::CorruptRecord(
+            "partial fiber incarnation cancel receipt schema",
+        ));
+    }
+
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "CREATE TABLE fiber_incarnation_cancel_receipts (
+            process_id BLOB NOT NULL CHECK(length(process_id) = 16),
+            process_generation INTEGER NOT NULL CHECK(process_generation >= 1),
+            binding_id BLOB NOT NULL CHECK(length(binding_id) = 16),
+            incarnation_generation INTEGER NOT NULL CHECK(incarnation_generation >= 1),
+            incarnation_fencing_token BLOB NOT NULL
+                CHECK(length(incarnation_fencing_token) = 32),
+            lifecycle_state INTEGER NOT NULL CHECK(lifecycle_state IN (1, 2)),
+            batch_idempotency_key BLOB NOT NULL CHECK(length(batch_idempotency_key) = 16),
+            cancelled_at_ms INTEGER NOT NULL CHECK(cancelled_at_ms >= 0),
+            PRIMARY KEY(process_id, process_generation, binding_id),
+            FOREIGN KEY(process_id) REFERENCES process_heads(process_id)
+        ) STRICT;
+
+        CREATE INDEX fiber_incarnation_cancel_receipts_batch_key
+            ON fiber_incarnation_cancel_receipts(batch_idempotency_key);
+
+        CREATE TRIGGER fiber_incarnation_cancel_receipts_immutable_update
+        BEFORE UPDATE ON fiber_incarnation_cancel_receipts BEGIN
+            SELECT RAISE(ABORT, 'fiber incarnation cancel receipt is immutable');
+        END;
+        CREATE TRIGGER fiber_incarnation_cancel_receipts_immutable_delete
+        BEFORE DELETE ON fiber_incarnation_cancel_receipts BEGIN
+            SELECT RAISE(ABORT, 'fiber incarnation cancel receipt is immutable');
+        END;
+
+        PRAGMA user_version = 4;",
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
 
 pub(crate) fn migrate_v3(connection: &mut Connection) -> Result<(), ProcessAuthorityError> {
     let marker_table: i64 = connection.query_row(

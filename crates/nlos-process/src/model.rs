@@ -321,3 +321,42 @@ impl ProcessTerminalDecision {
         }
     }
 }
+
+/// One immutable durable cancel receipt for a fiber incarnation invalidated
+/// during process terminal/cancel propagation (not platform kill).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FiberIncarnationCancelReceipt {
+    pub process_id: ProcessId,
+    pub process_generation: Generation,
+    pub binding: ExecutionFiberId,
+    pub incarnation_generation: Generation,
+    pub incarnation_fencing_token: FencingToken,
+    pub lifecycle_state: ProcessLifecycleState,
+    pub batch_idempotency_key: IdempotencyKey,
+    pub cancelled_at_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PropagateCancelToFibersRequest {
+    pub process_id: ProcessId,
+    pub expected_process_generation: Generation,
+    pub expected_process_fencing_token: FencingToken,
+    pub lifecycle_state: ProcessLifecycleState,
+    pub idempotency_key: IdempotencyKey,
+    pub cancelled_at_ms: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FiberCancelPropagationDecision {
+    Propagated(Vec<FiberIncarnationCancelReceipt>),
+    Replayed(Vec<FiberIncarnationCancelReceipt>),
+}
+
+impl FiberCancelPropagationDecision {
+    #[must_use]
+    pub const fn receipts(&self) -> &Vec<FiberIncarnationCancelReceipt> {
+        match self {
+            Self::Propagated(receipts) | Self::Replayed(receipts) => receipts,
+        }
+    }
+}

@@ -7,11 +7,27 @@
 
 ## 1. 实现事实
 
+- **schema v4**（`nlos-process`）：v3 基础上增不可变 `fiber_incarnation_cancel_receipts`（W16-P batch cancel 传播 receipt 行）。
 - **schema v3**（`nlos-process`）：`process_heads.lifecycle_state`（0=Active/1=Terminated/2=Crashed）+ 不可变 `process_terminal_markers`（按 `(process_id, process_generation)` 主键、idempotency key 唯一）。
-- **入口**：`mark_process_terminated`（干净终止）与 `propagate_crash`（宿主 crash 传播）；CAS 对当前 generation/fence，`inspect_process_terminal` 读回。
-- **fail-closed 门**：terminal 后 `register_fiber_incarnation`、`write_fiber_entry_snapshot`（resume 路径）、`inspect_active_process_binding` 均返回 `ProcessBindingTerminal` 零副作用；terminal 前已登记 incarnation 的 exact idempotency replay 仍合法。
+- **入口**：`mark_process_terminated`（干净终止）与 `propagate_crash`（宿主 crash 传播）；`propagate_cancel_to_fibers`（batch invalidate + immutable receipt，crash/terminal 路径自动联动）；CAS 对当前 generation/fence，`inspect_process_terminal` / `inspect_fiber_incarnation_cancel_receipt` 读回。
+- **fail-closed 门**：terminal 后 `register_fiber_incarnation`、`write_fiber_entry_snapshot`（resume 路径）、`inspect_active_process_binding` 均返回 `ProcessBindingTerminal` 零副作用；batch cancel 后 `inspect_fiber_incarnation` 返回 `FiberIncarnationCancelled`（绕过 terminal 读回亦 fail-closed）；terminal 前已登记 incarnation 的 exact idempotency replay 仍合法。
 - **restore**：`restore_process` 推进 generation 时重置 `lifecycle_state=Active`，不删历史 terminal marker 行（按 generation 归档）。
-- **未做**：真实 host spawn/suspend/kill、runtime fiber 批量取消传播、跨 authority Task 收敛、三平台 fault matrix。
+- **未做**：真实 host spawn/suspend/kill、runtime 消费 cancel receipt 联动、跨 authority Task 收敛、三平台 fault matrix。
+
+## 5. Process 域 fiber incarnation 批量 cancel 传播（2026-09-05 追加，W16-P）
+
+- Owner：`nlos-process`（schema v4 + `propagate_cancel_to_fibers`）
+- **实现**：`mark_process_terminated` / `propagate_crash` 同事务调用 `propagate_cancel_to_fibers_in_tx`；不可变 `fiber_incarnation_cancel_receipts`（按 `(process_id, process_generation, binding_id)` 主键、batch idempotency key 索引）；对每个 `fiber_incarnation_heads` 行 CAS 校验后写入 receipt；`inspect_fiber_incarnation` / `write_fiber_entry_snapshot` / 同代次 `register_fiber_incarnation` 经 `FiberIncarnationCancelled` fail-closed（不等同 platform kill）。
+- **验证**：
+
+```text
+cargo test -p nlos-process
+  → 25 passed / 0 failed（+3 fiber_cancel_propagation；2026-09-05 W16-P）
+cargo clippy -p nlos-process --all-targets -- -D warnings → 0 warning
+cargo fmt -p nlos-process -- --check → 通过
+```
+
+- **仍 PARTIAL_PASS**：runtime 侧 cancel receipt 消费接线、平台 kill adapter、Activation meter 联动未做。
 
 ## 4. Runtime 侧 terminal 门（2026-09-05 追加，W15-P）
 
@@ -24,7 +40,7 @@ cargo test -p nlos-runtime-tokio --test process_crash_propagation
   → 3 passed / 0 failed（2026-09-05 W15-P）
 ```
 
-- **仍 PARTIAL_PASS**：fiber 批量 cancel 传播、平台 kill adapter、Activation meter 联动未做；不等同 ROAD-B-006 整体达成。
+- **仍 PARTIAL_PASS**：fiber 批量 cancel 传播（process 域最小前缀见 §5）、平台 kill adapter、Activation meter 联动未做；不等同 ROAD-B-006 整体达成。
 
 ## 2. 验证
 

@@ -23,14 +23,15 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, 
 use sha2::{Digest, Sha256};
 
 pub use model::{
-    ActiveProcessBinding, CreateIsolationDomainRequest, FencingToken, FiberEntrySnapshotDecision,
-    FiberEntrySnapshotRecord, FiberIncarnationDecision, FiberIncarnationRecord,
+    ActiveProcessBinding, CreateIsolationDomainRequest, FencingToken,
+    FiberCancelPropagationDecision, FiberEntrySnapshotDecision, FiberEntrySnapshotRecord,
+    FiberIncarnationCancelReceipt, FiberIncarnationDecision, FiberIncarnationRecord,
     IsolationDomainDecision, IsolationDomainRecord, IsolationDomainRotationDecision,
     MarkProcessTerminatedRequest, ProcessBindingDecision, ProcessBindingEndpointProof,
     ProcessBindingRecord, ProcessLifecycleState, ProcessTerminalDecision, ProcessTerminalRecord,
-    PropagateCrashRequest, RegisterDelegatedProcessRequest, RegisterFiberIncarnationRequest,
-    RestoreProcessDecision, RestoreProcessRequest, RotateIsolationDomainRequest,
-    WriteFiberEntrySnapshotRequest,
+    PropagateCancelToFibersRequest, PropagateCrashRequest, RegisterDelegatedProcessRequest,
+    RegisterFiberIncarnationRequest, RestoreProcessDecision, RestoreProcessRequest,
+    RotateIsolationDomainRequest, WriteFiberEntrySnapshotRequest,
 };
 
 #[derive(Debug)]
@@ -57,6 +58,9 @@ pub enum ProcessAuthorityError {
     /// The presented durable fiber incarnation is not the binding's current
     /// one (ADR-0012 generation gate; fail-closed, zero side effect).
     StaleFiberIncarnation,
+    /// The fiber incarnation was batch-invalidated by process terminal/cancel
+    /// propagation (fail-closed, zero side effect; not platform kill).
+    FiberIncarnationCancelled(ProcessLifecycleState),
     /// No entry snapshot exists for the binding's current incarnation.
     FiberSnapshotNotFound,
     /// The entry snapshot input violates its durable contract.
@@ -113,6 +117,10 @@ impl fmt::Display for ProcessAuthorityError {
             }
             Self::StaleFiberIncarnation => formatter
                 .write_str("the presented fiber incarnation is not the binding's current one"),
+            Self::FiberIncarnationCancelled(state) => write!(
+                formatter,
+                "fiber incarnation was cancelled by process propagation ({state:?})"
+            ),
             Self::FiberSnapshotNotFound => formatter
                 .write_str("no entry snapshot exists for the binding's current incarnation"),
             Self::InvalidFiberSnapshot(reason) => {
@@ -179,12 +187,18 @@ impl ProcessAuthority {
                 schema::migrate_v1(&mut connection)?;
                 schema::migrate_v2(&mut connection)?;
                 schema::migrate_v3(&mut connection)?;
+                schema::migrate_v4(&mut connection)?;
             }
             1 => {
                 schema::migrate_v2(&mut connection)?;
                 schema::migrate_v3(&mut connection)?;
+                schema::migrate_v4(&mut connection)?;
             }
-            2 => schema::migrate_v3(&mut connection)?,
+            2 => {
+                schema::migrate_v3(&mut connection)?;
+                schema::migrate_v4(&mut connection)?;
+            }
+            3 => schema::migrate_v4(&mut connection)?,
             schema::SCHEMA_VERSION => {}
             other => return Err(ProcessAuthorityError::SchemaVersionUnsupported(other)),
         }
@@ -660,6 +674,55 @@ impl ProcessAuthority {
         )
     }
 
+    /// Batch-invalidates every registered fiber incarnation under
+    /// `process_id` at the presented process generation: one immutable
+    /// cancel receipt per binding head (CAS-checked against the current head
+    /// row), rejecting resume paths that bypass the process terminal gate.
+    ///
+    /// Normally invoked in the same transaction as
+    /// [`Self::mark_process_terminated`] / [`Self::propagate_crash`]; the
+    /// public entry exists for idempotent replay and inspection. This is
+    /// process-domain cancel propagation, not platform kill.
+    ///
+    /// # Errors
+    ///
+    /// Fails on idempotency rebinding, a stale process fence, a process that
+    /// is not terminal at the presented generation, or storage failure.
+    pub fn propagate_cancel_to_fibers(
+        &self,
+        request: PropagateCancelToFibersRequest,
+    ) -> Result<FiberCancelPropagationDecision, ProcessAuthorityError> {
+        if request.lifecycle_state == ProcessLifecycleState::Active {
+            return Err(ProcessAuthorityError::CorruptRecord(
+                "cancel propagation requires a terminal lifecycle state",
+            ));
+        }
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let decision = propagate_cancel_to_fibers_in_tx(&transaction, &request)?;
+        transaction.commit()?;
+        Ok(decision)
+    }
+
+    /// Reads the durable cancel receipt for one binding at a process
+    /// generation, if any.
+    ///
+    /// # Errors
+    ///
+    /// Fails when storage cannot be read or a row is corrupt.
+    pub fn inspect_fiber_incarnation_cancel_receipt(
+        &self,
+        process_id: ProcessId,
+        process_generation: Generation,
+        binding: ExecutionFiberId,
+    ) -> Result<Option<FiberIncarnationCancelReceipt>, ProcessAuthorityError> {
+        if is_zero_binding(binding) {
+            return Err(ProcessAuthorityError::InvalidFiberBinding);
+        }
+        let connection = self.lock()?;
+        load_cancel_receipt_optional(&connection, process_id, process_generation, binding)
+    }
+
     /// Reads the durable terminal marker for `process_id` at its current
     /// head generation, if any.
     ///
@@ -741,6 +804,18 @@ impl ProcessAuthority {
         {
             return Err(ProcessAuthorityError::StaleProcessBinding);
         }
+        if let Some(current) =
+            load_incarnation_head_optional(&transaction, request.process_id, request.binding)?
+        {
+            ensure_incarnation_not_cancelled_at_generation(
+                &transaction,
+                request.process_id,
+                request.binding,
+                current.current_incarnation,
+                current.current_fencing_token,
+                head.process_generation,
+            )?;
+        }
         let current =
             load_incarnation_head_optional(&transaction, request.process_id, request.binding)?;
         let (incarnation_generation, prior) = match current {
@@ -803,6 +878,13 @@ impl ProcessAuthority {
                 "fiber incarnation head disagrees with its immutable row",
             ));
         }
+        ensure_incarnation_not_cancelled(
+            &connection,
+            process_id,
+            binding,
+            head.current_incarnation,
+            head.current_fencing_token,
+        )?;
         Ok(record)
     }
 
@@ -847,6 +929,13 @@ impl ProcessAuthority {
         let head =
             load_incarnation_head_optional(&transaction, request.process_id, request.binding)?
                 .ok_or(ProcessAuthorityError::FiberIncarnationNotFound)?;
+        ensure_incarnation_not_cancelled(
+            &transaction,
+            request.process_id,
+            request.binding,
+            head.current_incarnation,
+            head.current_fencing_token,
+        )?;
         if head.current_incarnation != request.expected_incarnation_generation {
             return Err(ProcessAuthorityError::StaleFiberIncarnation);
         }
@@ -1047,6 +1136,17 @@ impl ProcessAuthority {
         if changed != 1 {
             return Err(ProcessAuthorityError::ProcessFenceConflict);
         }
+        let _cancel = propagate_cancel_to_fibers_in_tx(
+            &transaction,
+            &PropagateCancelToFibersRequest {
+                process_id: request.process_id,
+                expected_process_generation: record.process_generation,
+                expected_process_fencing_token: record.process_fencing_token,
+                lifecycle_state: record.lifecycle_state,
+                idempotency_key: request.idempotency_key,
+                cancelled_at_ms: request.marked_at_ms,
+            },
+        )?;
         transaction.commit()?;
         Ok(ProcessTerminalDecision::Marked(record))
     }
@@ -1808,4 +1908,264 @@ fn load_terminal_marker_optional(
         })
     })
     .transpose()
+}
+
+fn batch_matches_cancel_request(
+    receipts: &[FiberIncarnationCancelReceipt],
+    request: &PropagateCancelToFibersRequest,
+) -> bool {
+    receipts.iter().all(|receipt| {
+        receipt.process_id == request.process_id
+            && receipt.process_generation == request.expected_process_generation
+            && receipt.lifecycle_state == request.lifecycle_state
+            && receipt.batch_idempotency_key == request.idempotency_key
+    })
+}
+
+fn list_incarnation_bindings_for_process(
+    connection: &Connection,
+    process_id: ProcessId,
+) -> Result<Vec<ExecutionFiberId>, ProcessAuthorityError> {
+    let mut statement = connection
+        .prepare("SELECT binding_id FROM fiber_incarnation_heads WHERE process_id = ?1")?;
+    let rows = statement.query_map([process_id.as_bytes().as_slice()], |row| {
+        row.get::<_, Vec<u8>>(0)
+    })?;
+    let mut bindings = Vec::new();
+    for row in rows {
+        bindings.push(ExecutionFiberId::from_bytes(array16(row?)?));
+    }
+    Ok(bindings)
+}
+
+fn load_cancel_receipt_optional(
+    connection: &Connection,
+    process_id: ProcessId,
+    process_generation: Generation,
+    binding: ExecutionFiberId,
+) -> Result<Option<FiberIncarnationCancelReceipt>, ProcessAuthorityError> {
+    let raw = connection
+        .query_row(
+            "SELECT incarnation_generation, incarnation_fencing_token, lifecycle_state,
+                    batch_idempotency_key, cancelled_at_ms
+             FROM fiber_incarnation_cancel_receipts
+             WHERE process_id = ?1 AND process_generation = ?2 AND binding_id = ?3",
+            params![
+                process_id.as_bytes().as_slice(),
+                encode_generation(process_generation)?,
+                binding.as_bytes().as_slice(),
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, Vec<u8>>(3)?,
+                    row.get::<_, i64>(4)?,
+                ))
+            },
+        )
+        .optional()?;
+    raw.map(|(incarnation, token, lifecycle, key, cancelled_at)| {
+        Ok(FiberIncarnationCancelReceipt {
+            process_id,
+            process_generation,
+            binding,
+            incarnation_generation: decode_generation(incarnation)?,
+            incarnation_fencing_token: array32(token)?,
+            lifecycle_state: decode_lifecycle_state(lifecycle)?,
+            batch_idempotency_key: IdempotencyKey::from_bytes(array16(key)?),
+            cancelled_at_ms: decode_u64(cancelled_at)?,
+        })
+    })
+    .transpose()
+}
+
+fn load_cancel_receipts_by_batch_key(
+    connection: &Connection,
+    batch_idempotency_key: IdempotencyKey,
+) -> Result<Option<Vec<FiberIncarnationCancelReceipt>>, ProcessAuthorityError> {
+    let mut statement = connection.prepare(
+        "SELECT process_id, process_generation, binding_id, incarnation_generation,
+                incarnation_fencing_token, lifecycle_state, cancelled_at_ms
+         FROM fiber_incarnation_cancel_receipts
+         WHERE batch_idempotency_key = ?1",
+    )?;
+    let rows = statement.query_map([batch_idempotency_key.as_bytes().as_slice()], |row| {
+        Ok((
+            row.get::<_, Vec<u8>>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, Vec<u8>>(2)?,
+            row.get::<_, i64>(3)?,
+            row.get::<_, Vec<u8>>(4)?,
+            row.get::<_, i64>(5)?,
+            row.get::<_, i64>(6)?,
+        ))
+    })?;
+    let mut receipts = Vec::new();
+    for row in rows {
+        let (process_id, generation, binding, incarnation, token, lifecycle, cancelled_at) = row?;
+        receipts.push(FiberIncarnationCancelReceipt {
+            process_id: ProcessId::from_bytes(array16(process_id)?),
+            process_generation: decode_generation(generation)?,
+            binding: ExecutionFiberId::from_bytes(array16(binding)?),
+            incarnation_generation: decode_generation(incarnation)?,
+            incarnation_fencing_token: array32(token)?,
+            lifecycle_state: decode_lifecycle_state(lifecycle)?,
+            batch_idempotency_key,
+            cancelled_at_ms: decode_u64(cancelled_at)?,
+        });
+    }
+    if receipts.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(receipts))
+    }
+}
+
+fn insert_cancel_receipt(
+    transaction: &Transaction<'_>,
+    receipt: &FiberIncarnationCancelReceipt,
+) -> Result<(), ProcessAuthorityError> {
+    transaction.execute(
+        "INSERT INTO fiber_incarnation_cancel_receipts (
+            process_id, process_generation, binding_id, incarnation_generation,
+            incarnation_fencing_token, lifecycle_state, batch_idempotency_key,
+            cancelled_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            receipt.process_id.as_bytes().as_slice(),
+            encode_generation(receipt.process_generation)?,
+            receipt.binding.as_bytes().as_slice(),
+            encode_generation(receipt.incarnation_generation)?,
+            receipt.incarnation_fencing_token.as_slice(),
+            encode_lifecycle_state(receipt.lifecycle_state),
+            receipt.batch_idempotency_key.as_bytes().as_slice(),
+            encode_u64(receipt.cancelled_at_ms)?,
+        ],
+    )?;
+    Ok(())
+}
+
+fn ensure_incarnation_not_cancelled(
+    connection: &Connection,
+    process_id: ProcessId,
+    binding: ExecutionFiberId,
+    incarnation_generation: Generation,
+    incarnation_fencing_token: FencingToken,
+) -> Result<(), ProcessAuthorityError> {
+    let record = load_incarnation_row(connection, process_id, binding, incarnation_generation)?;
+    if record.fencing_token != incarnation_fencing_token {
+        return Ok(());
+    }
+    if let Some(receipt) =
+        load_cancel_receipt_optional(connection, process_id, record.process_generation, binding)?
+        && receipt.incarnation_generation == incarnation_generation
+        && receipt.incarnation_fencing_token == incarnation_fencing_token
+    {
+        return Err(ProcessAuthorityError::FiberIncarnationCancelled(
+            receipt.lifecycle_state,
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_incarnation_not_cancelled_at_generation(
+    connection: &Connection,
+    process_id: ProcessId,
+    binding: ExecutionFiberId,
+    incarnation_generation: Generation,
+    incarnation_fencing_token: FencingToken,
+    current_process_generation: Generation,
+) -> Result<(), ProcessAuthorityError> {
+    let record = load_incarnation_row(connection, process_id, binding, incarnation_generation)?;
+    if record.process_generation != current_process_generation {
+        return Ok(());
+    }
+    ensure_incarnation_not_cancelled(
+        connection,
+        process_id,
+        binding,
+        incarnation_generation,
+        incarnation_fencing_token,
+    )
+}
+
+fn propagate_cancel_to_fibers_in_tx(
+    transaction: &Transaction<'_>,
+    request: &PropagateCancelToFibersRequest,
+) -> Result<FiberCancelPropagationDecision, ProcessAuthorityError> {
+    if let Some(existing) = load_cancel_receipts_by_batch_key(transaction, request.idempotency_key)?
+    {
+        if !batch_matches_cancel_request(&existing, request) {
+            return Err(ProcessAuthorityError::IdempotencyConflict);
+        }
+        return Ok(FiberCancelPropagationDecision::Replayed(existing));
+    }
+
+    let head = load_process_head_optional(transaction, request.process_id)?
+        .ok_or(ProcessAuthorityError::ProcessNotFound(request.process_id))?;
+    if head.process_generation != request.expected_process_generation
+        || head.process_fencing_token != request.expected_process_fencing_token
+    {
+        return Err(ProcessAuthorityError::StaleProcessBinding);
+    }
+    if head.lifecycle_state == ProcessLifecycleState::Active {
+        return Err(ProcessAuthorityError::CorruptRecord(
+            "cancel propagation requires a terminal process binding",
+        ));
+    }
+    if head.lifecycle_state != request.lifecycle_state {
+        return Err(ProcessAuthorityError::IdempotencyConflict);
+    }
+
+    let bindings = list_incarnation_bindings_for_process(transaction, request.process_id)?;
+    let mut receipts = Vec::with_capacity(bindings.len());
+    for binding in bindings {
+        if let Some(existing) = load_cancel_receipt_optional(
+            transaction,
+            request.process_id,
+            request.expected_process_generation,
+            binding,
+        )? {
+            receipts.push(existing);
+            continue;
+        }
+
+        let inc_head = load_incarnation_head_optional(transaction, request.process_id, binding)?
+            .ok_or(ProcessAuthorityError::CorruptRecord(
+                "fiber incarnation head disappeared during cancel propagation",
+            ))?;
+        let verify = load_incarnation_head_optional(transaction, request.process_id, binding)?
+            .ok_or(ProcessAuthorityError::CorruptRecord(
+                "fiber incarnation head disappeared during cancel propagation",
+            ))?;
+        if verify.current_incarnation != inc_head.current_incarnation
+            || verify.current_fencing_token != inc_head.current_fencing_token
+        {
+            return Err(ProcessAuthorityError::CorruptRecord(
+                "fiber incarnation head compare-and-swap lost during cancel propagation",
+            ));
+        }
+        let _record = load_incarnation_row(
+            transaction,
+            request.process_id,
+            binding,
+            inc_head.current_incarnation,
+        )?;
+        let receipt = FiberIncarnationCancelReceipt {
+            process_id: request.process_id,
+            process_generation: request.expected_process_generation,
+            binding,
+            incarnation_generation: inc_head.current_incarnation,
+            incarnation_fencing_token: inc_head.current_fencing_token,
+            lifecycle_state: request.lifecycle_state,
+            batch_idempotency_key: request.idempotency_key,
+            cancelled_at_ms: request.cancelled_at_ms,
+        };
+        insert_cancel_receipt(transaction, &receipt)?;
+        receipts.push(receipt);
+    }
+
+    Ok(FiberCancelPropagationDecision::Propagated(receipts))
 }
