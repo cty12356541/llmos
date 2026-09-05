@@ -262,3 +262,17 @@ cargo fmt -p nlos-runtime-tokio -- --check
   - 100K 规模级 cancel 探针；
   - runtime 侧 process crash 传播联动；
   - 未声称 ROAD-B-006 整体达成。
+
+### 6.9 W17-006：Activation meter 100K 规模探针骨架（2026-09-06）
+
+- **写集**：`crates/nlos-runtime-tokio/tests/activation_meter_scale.rs`（新增 `#[ignore]` 10K quick tier + 100K full tier；两 worker 恒定线程；`active_cpu` 与 `external_wait` 分维采样断言；teardown 走 drop 避免 O(n²) cancel purge，与 §6.3 一致）。
+- **验证门（编译 + 默认套件，探针未实跑）**：
+
+```text
+cargo test -p nlos-runtime-tokio --test activation_meter_scale -- --test-threads=1
+  → 0 passed / 0 failed / 2 ignored（2026-09-06 W17-006）
+cargo test -p nlos-runtime-tokio -- --test-threads=1
+  → 79 passed / 0 failed / 6 ignored（+2 activation_meter_scale ignore；2026-09-06 W17-006）
+```
+
+- **缺口**：10K/100K 探针 `--include-ignored` 实跑未在本增量执行；背压/挂起维 100K 规模验证仍缺；不得外推 ROAD-B-006 达成。
