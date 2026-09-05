@@ -98,3 +98,31 @@
 1. **同义词仍为字面白名单**：无 did-you-mean、无概率解析；`查看 健康`（缺「系统」）与 `show health now`（尾部垃圾）继续 typed 拒绝。
 2. **handler 面无新暴露**：`RecoverySystemControl` 四命令能力已在 W11-C 全部映射；本增量只做 NL 编译器同义词，不发明新 handler 语义。
 3. **ROAD-B-005 仍 PARTIAL**：Trusted GUI 编译与确认面未实现。
+
+## W16-005 增量：`InspectProcess` NL/CLI 前缀（2026-09-05）
+
+> 状态：`PARTIAL_PASS`（单节点本地；ROAD-B-005 仍 PARTIAL——GUI 未接、CLI 未内嵌 ProcessAuthority）
+>
+> 写集：`crates/nlos-system-control/**`、`docs/evidence/stage-b/b-control-003-nl-prefix.md`
+
+### 已实现事实
+
+1. **additive `ControlCommand::InspectProcess { process_id }`**（`src/control.rs`）：§25.3 command id / correlation 均为目标 `process_id`；仍交叉 GET recovery envelope 以复用 `authorize_get` 与 `[CTRL-PARITY-001]` 单 handler 授权面；receipt 投影为 `ControlOutcome::ProcessInspected(ProcessInspection { process_id, process_generation, agent_instance_id, task_id, task_attempt_id, isolation_domain_id })`，由 dispatch 时注入的 pluggable [`ProcessInspector`] 提供 bounded snapshot（非 recovery snapshot 内容）。
+2. **默认 stub**：[`UnwiredProcessInspector`] → typed `NotFound`（`process inspection backend is not wired`）；可选 `process` feature 启用 [`process_inspector::ProcessAuthorityInspector`]，经 `nlos_process::ProcessAuthority::inspect_active_process_binding` 映射 `ProcessAuthorityError` → bounded `SabiFailure`。
+3. **NL 白名单**（`src/nl.rs`）：`inspect|check|show process <32-hex>`；`检查进程|查看进程 <32-hex>`、`查看 进程 <32-hex>`；`show/get process` 不误伤 export metrics 解析链。
+4. **CLI parity**（`src/bin/system-control-cli.rs`）：`inspect-process <PROCESS_ID_HEX_32>`；summary `outcome=process_inspected process_id=… generation=… task_id=…`；未接线 backend 时 receipt 为 typed failure（exit 1），与 in-process `None` inspector 逐字节相等。
+5. **测试**：lib +2（EN/ZH process NL 形态）；`control_command_cli` 扩展 unwired NotFound + stub inspector socket/in-process/NL 逐字节 receipt 等价；CLI unwired failure receipt parity。
+
+### 验证
+
+验证环境：macOS（darwin，arm64）。
+
+- `cargo test -p nlos-system-control`：**59 passed / 0 failed**（lib 21；integration 37；doc-tests 1）。
+- `cargo clippy -p nlos-system-control --all-targets --all-features -- -D warnings`：通过。
+- `cargo fmt -p nlos-system-control --check`：通过。
+
+### 已知限制（增量）
+
+1. **ProcessInspector 在 dispatch 侧接线**：CLI/socket 客户端默认 `None`（Unwired）；宿主须显式传入 `ProcessAuthorityInspector` 才能获得真实 snapshot——无第二 IPC process 服务。
+2. **`process` feature 依赖 nlos-process**：feature 启用时编译 `ProcessAuthorityInspector`；workspace 并行 lane 若破坏 `nlos-process` 编译面，feature 组合验证可能阻塞（默认 `default = ["cli"]` 不受影响）。
+3. **ROAD-B-005 仍 PARTIAL**：Trusted GUI 与多层手动调度未做；本增量只交付 Process 层 inspect 的 NL/CLI 前缀片。

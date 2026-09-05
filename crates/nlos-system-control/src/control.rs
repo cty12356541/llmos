@@ -79,6 +79,11 @@ pub enum ControlCommand {
     /// Inspect one recovery plan/task by its 16-byte plan id; the receipt
     /// reports only that plan's alert.
     InspectTask { plan_id: [u8; 16] },
+    /// Inspect one active process binding by its 16-byte process id. The
+    /// receipt reports a bounded read-only snapshot from the pluggable
+    /// [`ProcessInspector`] wired at dispatch time; the recovery GET envelope
+    /// is still crossed for authorization parity.
+    InspectProcess { process_id: [u8; 16] },
     /// Acknowledge one escalated recovery alert. `control_command_id` is the
     /// idempotency identity (§25.3) and is bound to the request idempotency
     /// key by the handler; `expected_total_failures` is the CAS expectation.
@@ -99,6 +104,7 @@ impl ControlCommand {
             Self::InspectHealth => INSPECT_HEALTH_COMMAND_ID,
             Self::ExportMetrics => EXPORT_METRICS_COMMAND_ID,
             Self::InspectTask { plan_id } => *plan_id,
+            Self::InspectProcess { process_id } => *process_id,
             Self::AcknowledgeRecoveryAlert {
                 control_command_id, ..
             } => *control_command_id,
@@ -110,6 +116,7 @@ impl ControlCommand {
             Self::InspectHealth => INSPECT_CORRELATION_ID,
             Self::ExportMetrics => EXPORT_METRICS_CORRELATION_ID,
             Self::InspectTask { plan_id } => *plan_id,
+            Self::InspectProcess { process_id } => *process_id,
             Self::AcknowledgeRecoveryAlert {
                 control_command_id, ..
             } => *control_command_id,
@@ -184,6 +191,36 @@ pub struct RecoveryAlertInsight {
     pub acknowledged_receipt_id: Option<Vec<u8>>,
 }
 
+/// Bounded read-only facts for one active process binding inspection.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProcessInspection {
+    pub process_id: [u8; 16],
+    pub process_generation: u64,
+    pub agent_instance_id: [u8; 16],
+    pub task_id: [u8; 16],
+    pub task_attempt_id: [u8; 16],
+    pub isolation_domain_id: [u8; 16],
+}
+
+/// Pluggable read-only process inspection backend for
+/// [`ControlCommand::InspectProcess`]. Hosts wire a real authority adapter
+/// (see [`crate::process_inspector`] with the `process` feature) or leave
+/// the default [`UnwiredProcessInspector`] in place until one is available.
+pub trait ProcessInspector {
+    /// Returns one bounded active-binding snapshot or a sanitized failure.
+    fn inspect_process(&self, process_id: [u8; 16]) -> Result<ProcessInspection, SabiFailure>;
+}
+
+/// Default stub used when no process inspection backend is wired.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct UnwiredProcessInspector;
+
+impl ProcessInspector for UnwiredProcessInspector {
+    fn inspect_process(&self, _: [u8; 16]) -> Result<ProcessInspection, SabiFailure> {
+        Err(not_found_failure("process inspection backend is not wired"))
+    }
+}
+
 /// Deterministic `OpenMetrics` text produced by one metrics export command.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MetricsExport {
@@ -196,6 +233,8 @@ pub struct MetricsExport {
 pub enum ControlOutcome {
     /// Read-only inspection completed.
     Inspected(RecoveryInspection),
+    /// Read-only process binding inspection completed.
+    ProcessInspected(ProcessInspection),
     /// Read-only metrics export completed.
     MetricsExported(MetricsExport),
     /// Mutation accepted by the `TaskAuthority`; authoritative receipt id.
@@ -286,6 +325,7 @@ pub fn build_request_envelope(command: &ControlCommand) -> Result<Envelope, Cont
     let (method, payload) = match command {
         ControlCommand::InspectHealth
         | ControlCommand::InspectTask { .. }
+        | ControlCommand::InspectProcess { .. }
         | ControlCommand::ExportMetrics => (
             GET_METHOD,
             encode_get_system_control_request(&GetSystemControlRequest {
@@ -399,6 +439,7 @@ pub fn dispatch_in_process<H, A>(
     command: &ControlCommand,
     now_monotonic_ns: u64,
     now_wall_ms: i64,
+    process: Option<&dyn ProcessInspector>,
 ) -> Result<ControlReceipt, ControlError>
 where
     H: RecoveryHealthSource,
@@ -406,7 +447,7 @@ where
 {
     let request = build_request_envelope(command)?;
     let response = control.handle_for_ipc(&request, now_monotonic_ns, now_wall_ms);
-    ControlReceipt::compose(command, &response)
+    ControlReceipt::compose(command, &response, process)
 }
 
 /// Dispatches one command to a real local IPC endpoint and projects the
@@ -423,6 +464,7 @@ where
 pub async fn dispatch_over_socket(
     socket: impl AsRef<std::path::Path>,
     command: &ControlCommand,
+    process: Option<&dyn ProcessInspector>,
 ) -> Result<ControlReceipt, ControlError> {
     use nlos_ipc::{LocalRpcClient, TransportConfig};
     use nlos_schema::sabi::v1::ExchangeRequest;
@@ -439,7 +481,7 @@ pub async fn dispatch_over_socket(
         })
         .await
         .map_err(ControlError::Ipc)?;
-    ControlReceipt::compose(command, response.envelope())
+    ControlReceipt::compose(command, response.envelope(), process)
 }
 
 fn decoded_snapshot(
@@ -544,6 +586,23 @@ fn not_found_failure(message: &'static str) -> SabiFailure {
     }
 }
 
+fn compose_process_inspection(
+    process: Option<&dyn ProcessInspector>,
+    process_id: [u8; 16],
+) -> Result<ControlOutcome, SabiFailure> {
+    match process {
+        Some(inspector) => inspector
+            .inspect_process(process_id)
+            .map(ControlOutcome::ProcessInspected),
+        None => {
+            let unwired = UnwiredProcessInspector;
+            unwired
+                .inspect_process(process_id)
+                .map(ControlOutcome::ProcessInspected)
+        }
+    }
+}
+
 impl ControlReceipt {
     /// Projects one handler response envelope into the typed receipt. This
     /// is the single projection point for both dispatch paths; it never
@@ -554,7 +613,11 @@ impl ControlReceipt {
     ///
     /// Returns [`ControlError`] when the response shape does not match the
     /// command or the frozen payload contract.
-    pub fn compose(command: &ControlCommand, response: &Envelope) -> Result<Self, ControlError> {
+    pub fn compose(
+        command: &ControlCommand,
+        response: &Envelope,
+        process: Option<&dyn ProcessInspector>,
+    ) -> Result<Self, ControlError> {
         let Some(envelope::CommonContext::ResponseContext(context)) =
             response.common_context.as_ref()
         else {
@@ -591,6 +654,9 @@ impl ControlReceipt {
                     } else {
                         Ok(ControlOutcome::Inspected(inspected))
                     }
+                }
+                ControlCommand::InspectProcess { process_id } => {
+                    compose_process_inspection(process, *process_id)
                 }
                 ControlCommand::AcknowledgeRecoveryAlert { .. } => {
                     let result = decode_control_command_result(&response.payload)?;
@@ -662,6 +728,15 @@ impl ControlReceipt {
             Ok(ControlOutcome::MetricsExported(export)) => {
                 bytes.push(3);
                 push_bytes(&mut bytes, export.openmetrics_text.as_bytes());
+            }
+            Ok(ControlOutcome::ProcessInspected(inspection)) => {
+                bytes.push(4);
+                bytes.extend_from_slice(&inspection.process_id);
+                bytes.extend_from_slice(&inspection.process_generation.to_le_bytes());
+                bytes.extend_from_slice(&inspection.agent_instance_id);
+                bytes.extend_from_slice(&inspection.task_id);
+                bytes.extend_from_slice(&inspection.task_attempt_id);
+                bytes.extend_from_slice(&inspection.isolation_domain_id);
             }
             Ok(ControlOutcome::Acknowledged { receipt_id }) => {
                 bytes.push(2);
@@ -770,6 +845,13 @@ mod tests {
             }
             .control_command_id(),
             [0x22; 16]
+        );
+        assert_eq!(
+            ControlCommand::InspectProcess {
+                process_id: [0x55; 16]
+            }
+            .control_command_id(),
+            [0x55; 16]
         );
         assert_eq!(
             ControlCommand::AcknowledgeRecoveryAlert {

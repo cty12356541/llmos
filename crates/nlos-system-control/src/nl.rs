@@ -23,6 +23,8 @@
 //!   | 导出指标 | 导出 指标
 //! inspect task <32-hex> | check task <32-hex> | show task <32-hex>
 //!   | 查看任务 <32位十六进制> | 查看 任务 <32位十六进制>
+//! inspect process <32-hex> | check process <32-hex> | show process <32-hex>
+//!   | 检查进程 <32位十六进制> | 查看进程 <32位十六进制> | 查看 进程 <32位十六进制>
 //! acknowledge alert <32-hex> expecting <n>
 //!   | ack alert <32-hex> expecting <n> | confirm alert <32-hex> expecting <n>
 //!   | 确认告警 <32位十六进制> 期望 <n> | 确认 告警 <32位十六进制> 期望 <n>
@@ -55,8 +57,10 @@ pub const NL_ACK_REASON: &str =
 
 /// Legal grammar, named verbatim in every rejection message.
 const GRAMMAR_HELP: &str = "valid forms: \"inspect health\" | \"export metrics\" | \
-\"inspect task <32-hex>\" | \"acknowledge alert <32-hex> expecting <count>\" | \"查看健康\" | \
-\"导出指标\" | \"查看任务 <32位十六进制>\" | \"确认告警 <32位十六进制> 期望 <次数>\"";
+\"inspect task <32-hex>\" | \"inspect process <32-hex>\" | \
+\"acknowledge alert <32-hex> expecting <count>\" | \"查看健康\" | \
+\"导出指标\" | \"查看任务 <32位十六进制>\" | \"检查进程 <32位十六进制>\" | \
+\"确认告警 <32位十六进制> 期望 <次数>\"";
 
 /// Compiles one restricted-grammar English or Chinese imperative sentence
 /// into a [`ControlCommand`] for the existing dispatch paths. Pure function:
@@ -78,6 +82,9 @@ pub fn parse_nl_command(input: &str) -> Result<ControlCommand, ControlError> {
         return result;
     }
     if let Some(result) = try_parse_inspect_task(&tokens) {
+        return result;
+    }
+    if let Some(result) = try_parse_inspect_process(&tokens) {
         return result;
     }
     if let Some(result) = try_parse_acknowledgement(&tokens) {
@@ -125,10 +132,19 @@ fn try_parse_inspect_health(tokens: &[&str]) -> Option<Result<ControlCommand, Co
         {
             None
         }
+        [head, second, ..]
+            if (is_read_verb(head) && second.eq_ignore_ascii_case("process"))
+                || (*head == "检查" && *second == "进程")
+                || (*head == "查看" && *second == "进程") =>
+        {
+            None
+        }
         [head, second, ..] if is_read_verb(head) && second.eq_ignore_ascii_case("metrics") => None,
-        [head, ..] if is_read_verb(head) || *head == "查看" => Some(Err(
-            ControlError::InvalidCommand("\"inspect\" expects \"health\" or \"task <32-hex>\""),
-        )),
+        [head, ..] if is_read_verb(head) || *head == "查看" || *head == "检查" => {
+            Some(Err(ControlError::InvalidCommand(
+                "\"inspect\" expects \"health\", \"task <32-hex>\", or \"process <32-hex>\"",
+            )))
+        }
         _ => None,
     }
 }
@@ -141,7 +157,8 @@ fn try_parse_export_metrics(tokens: &[&str]) -> Option<Result<ControlCommand, Co
         ["导出指标"] | ["导出", "指标"] => Some(Ok(ControlCommand::ExportMetrics)),
         [head, second, ..]
             if (head.eq_ignore_ascii_case("show") || head.eq_ignore_ascii_case("get"))
-                && second.eq_ignore_ascii_case("task") =>
+                && (second.eq_ignore_ascii_case("task")
+                    || second.eq_ignore_ascii_case("process")) =>
         {
             None
         }
@@ -167,6 +184,32 @@ fn try_parse_inspect_task(tokens: &[&str]) -> Option<Result<ControlCommand, Cont
         }
         ["查看任务", plan] | ["查看", "任务", plan] => {
             Some(parse_hex_id(plan).map(|plan_id| ControlCommand::InspectTask { plan_id }))
+        }
+        _ => None,
+    }
+}
+
+fn try_parse_inspect_process(tokens: &[&str]) -> Option<Result<ControlCommand, ControlError>> {
+    match tokens {
+        [head, second, process_id]
+            if is_read_verb(head) && second.eq_ignore_ascii_case("process") =>
+        {
+            Some(
+                parse_hex_id(process_id)
+                    .map(|process_id| ControlCommand::InspectProcess { process_id }),
+            )
+        }
+        ["检查进程" | "查看进程", process_id] | ["查看", "进程", process_id] => Some(
+            parse_hex_id(process_id)
+                .map(|process_id| ControlCommand::InspectProcess { process_id }),
+        ),
+        [head, second, ..]
+            if (is_read_verb(head) && second.eq_ignore_ascii_case("process"))
+                || *second == "进程" =>
+        {
+            Some(Err(ControlError::InvalidCommand(
+                "\"inspect process\" expects \"<32-hex>\"",
+            )))
         }
         _ => None,
     }
@@ -327,6 +370,42 @@ mod tests {
     }
 
     #[test]
+    fn english_process_forms_parse() {
+        for sentence in [
+            "inspect process a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "INSPECT PROCESS A1B2C3D4E5F60718293A4B5C6D7E8F90",
+            "check process a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "show process A1B2C3D4E5F60718293A4B5C6D7E8F90",
+        ] {
+            assert_eq!(
+                parse_nl_command(sentence).unwrap(),
+                ControlCommand::InspectProcess {
+                    process_id: plan_id()
+                },
+                "sentence: {sentence:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn chinese_process_form_parses() {
+        for sentence in [
+            "检查进程 a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "  检查进程  A1B2C3D4E5F60718293A4B5C6D7E8F90 ",
+            "查看进程 a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "查看 进程 a1b2c3d4e5f60718293a4b5c6d7e8f90",
+        ] {
+            assert_eq!(
+                parse_nl_command(sentence).unwrap(),
+                ControlCommand::InspectProcess {
+                    process_id: plan_id()
+                },
+                "sentence: {sentence:?}"
+            );
+        }
+    }
+
+    #[test]
     fn english_acknowledgement_parses_with_derived_identity() {
         let command =
             parse_nl_command("acknowledge alert a1b2c3d4e5f60718293a4b5c6d7e8f90 expecting 3")
@@ -419,6 +498,11 @@ mod tests {
             "inspect tasks a1b2c3d4e5f60718293a4b5c6d7e8f90",
             "inspect task 1234",
             "inspect task zz313233343536373839303132333435",
+            "inspect process",
+            "inspect processes a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "inspect process 1234",
+            "检查进程",
+            "查看 进程",
             "acknowledge alert",
             format!("acknowledge alert {PLAN_HEX_LOWER}").as_str(),
             format!("acknowledge alert {PLAN_HEX_LOWER} expecting").as_str(),

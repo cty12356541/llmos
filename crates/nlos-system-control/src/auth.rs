@@ -51,7 +51,9 @@ use nlos_schema::{HANDSHAKE_NONCE_BYTES, HANDSHAKE_SIGNATURE_BYTES, REQUEST_ID_B
 use nlos_types::{IdempotencyKey, PrincipalId};
 use sha2::{Digest, Sha256};
 
-use crate::control::{ControlCommand, ControlError, ControlReceipt, build_request_envelope};
+use crate::control::{
+    ControlCommand, ControlError, ControlReceipt, ProcessInspector, build_request_envelope,
+};
 use crate::{
     RecoveryHealthSource, RecoverySystemControl, SystemControlAuthorizer, SystemControlError,
     failure_envelope,
@@ -202,6 +204,7 @@ pub async fn dispatch_over_authenticated_socket<S>(
     principal: PrincipalId,
     sign: S,
     command: &ControlCommand,
+    process: Option<&dyn ProcessInspector>,
 ) -> Result<ControlReceipt, ControlError>
 where
     S: Fn(&[u8; 32]) -> Result<[u8; HANDSHAKE_SIGNATURE_BYTES], HandshakeError>,
@@ -217,5 +220,5 @@ where
         })
         .await
         .map_err(ControlError::Ipc)?;
-    ControlReceipt::compose(command, response.envelope())
+    ControlReceipt::compose(command, response.envelope(), process)
 }

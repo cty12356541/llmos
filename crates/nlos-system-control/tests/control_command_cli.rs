@@ -10,12 +10,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use nlos_schema::sabi::v1::SabiFailure;
 use nlos_schema::sabi::v1::{
     ControlCommand as WireControlCommand, GetSystemControlRequest, SabiErrorCode,
     SabiRequestContext,
 };
 use nlos_system_control::control::{
-    ControlCommand, ControlOutcome, RecoveryWorkerLifecycle, dispatch_in_process, parse_hex_id,
+    ControlCommand, ControlOutcome, ProcessInspection, ProcessInspector, RecoveryWorkerLifecycle,
+    dispatch_in_process, parse_hex_id,
 };
 use nlos_system_control::{RecoveryHealthSource, RecoverySystemControl, SystemControlAuthorizer};
 use nlos_task::{
@@ -35,6 +37,39 @@ const ACK_COMMAND_ID: [u8; 16] = [0x41; 16];
 const DENIED_COMMAND_ID: [u8; 16] = [0x42; 16];
 const ACK_REASON: &str = "inspected recovery evidence";
 const DENIED_REASON: &str = "denied: exercising the policy denial path";
+
+const PROCESS_ID: [u8; 16] = [0x77; 16];
+
+struct StubProcessInspector {
+    snapshot: ProcessInspection,
+}
+
+impl ProcessInspector for StubProcessInspector {
+    fn inspect_process(&self, process_id: [u8; 16]) -> Result<ProcessInspection, SabiFailure> {
+        if process_id == self.snapshot.process_id {
+            Ok(self.snapshot.clone())
+        } else {
+            Err(nlos_schema::sabi::v1::SabiFailure {
+                code: SabiErrorCode::NotFound.into(),
+                retry: nlos_schema::sabi::v1::RetryDirective::DoNotRetry.into(),
+                safe_message: "requested process binding was not found".to_owned(),
+            })
+        }
+    }
+}
+
+fn stub_process_inspection() -> StubProcessInspector {
+    StubProcessInspector {
+        snapshot: ProcessInspection {
+            process_id: PROCESS_ID,
+            process_generation: 1,
+            agent_instance_id: [0x78; 16],
+            task_id: [0x79; 16],
+            task_attempt_id: [0x7A; 16],
+            isolation_domain_id: [0x7B; 16],
+        },
+    }
+}
 
 static NEXT_DATABASE: AtomicU64 = AtomicU64::new(0);
 
@@ -274,6 +309,7 @@ fn in_process_dispatch_produces_typed_receipts() {
         &ControlCommand::InspectHealth,
         MONOTONIC_NOW_NS,
         WALL_NOW_MS,
+        None,
     )
     .unwrap();
     let ControlOutcome::Inspected(inspection) = health_receipt.outcome.as_ref().unwrap() else {
@@ -293,6 +329,7 @@ fn in_process_dispatch_produces_typed_receipts() {
         },
         MONOTONIC_NOW_NS,
         WALL_NOW_MS,
+        None,
     )
     .unwrap();
     let ControlOutcome::Inspected(task_inspection) = task_receipt.outcome.as_ref().unwrap() else {
@@ -308,6 +345,7 @@ fn in_process_dispatch_produces_typed_receipts() {
         },
         MONOTONIC_NOW_NS,
         WALL_NOW_MS,
+        None,
     )
     .unwrap();
     let Err(failure) = missing.outcome.as_ref() else {
@@ -320,6 +358,7 @@ fn in_process_dispatch_produces_typed_receipts() {
         &acknowledge_command(&plan_id),
         MONOTONIC_NOW_NS,
         WALL_NOW_MS,
+        None,
     )
     .unwrap();
     let ControlOutcome::Acknowledged { receipt_id } = acknowledgement.outcome.as_ref().unwrap()
@@ -332,6 +371,7 @@ fn in_process_dispatch_produces_typed_receipts() {
         &acknowledge_command(&plan_id),
         MONOTONIC_NOW_NS,
         WALL_NOW_MS,
+        None,
     )
     .unwrap();
     assert_eq!(acknowledgement.to_bytes(), replay.to_bytes());
@@ -355,6 +395,7 @@ fn in_process_dispatch_produces_typed_receipts() {
         },
         MONOTONIC_NOW_NS,
         WALL_NOW_MS,
+        None,
     )
     .unwrap();
     let Err(denial) = denied.outcome.as_ref() else {
@@ -362,6 +403,39 @@ fn in_process_dispatch_produces_typed_receipts() {
     };
     assert_eq!(denial.code, i32::from(SabiErrorCode::Rights));
     assert_eq!(denial.safe_message, "SystemControl authorization denied");
+
+    let unwired_process = dispatch_in_process(
+        &control,
+        &ControlCommand::InspectProcess {
+            process_id: PROCESS_ID,
+        },
+        MONOTONIC_NOW_NS,
+        WALL_NOW_MS,
+        None,
+    )
+    .unwrap();
+    let Err(unwired_failure) = unwired_process.outcome.as_ref() else {
+        panic!("expected typed failure when the process backend is unwired");
+    };
+    assert_eq!(unwired_failure.code, i32::from(SabiErrorCode::NotFound));
+
+    let stub = stub_process_inspection();
+    let process_receipt = dispatch_in_process(
+        &control,
+        &ControlCommand::InspectProcess {
+            process_id: PROCESS_ID,
+        },
+        MONOTONIC_NOW_NS,
+        WALL_NOW_MS,
+        Some(&stub),
+    )
+    .unwrap();
+    let ControlOutcome::ProcessInspected(snapshot) = process_receipt.outcome.as_ref().unwrap()
+    else {
+        panic!("expected process inspection receipt");
+    };
+    assert_eq!(snapshot.process_id, PROCESS_ID);
+    assert_eq!(snapshot.process_generation, 1);
 }
 
 #[cfg(unix)]
@@ -448,11 +522,15 @@ mod socket_harness {
         control: &RecoverySystemControl<'_, StubHealth, CapabilityPolicy>,
         command: &ControlCommand,
         cli_args: &[&str],
+        process: Option<&dyn ProcessInspector>,
     ) {
         use nlos_system_control::control::dispatch_over_socket;
 
-        let direct = dispatch_in_process(control, command, MONOTONIC_NOW_NS, WALL_NOW_MS).unwrap();
-        let library = dispatch_over_socket(socket_path, command).await.unwrap();
+        let direct =
+            dispatch_in_process(control, command, MONOTONIC_NOW_NS, WALL_NOW_MS, process).unwrap();
+        let library = dispatch_over_socket(socket_path, command, process)
+            .await
+            .unwrap();
         assert_eq!(direct.to_bytes(), library.to_bytes());
         let cli = run_cli(socket_path, cli_args);
         assert!(
@@ -471,15 +549,21 @@ mod socket_harness {
         control: &RecoverySystemControl<'_, StubHealth, CapabilityPolicy>,
         direct: &ControlCommand,
         nl_commands: &[ControlCommand],
+        process: Option<&dyn ProcessInspector>,
     ) {
         use nlos_system_control::control::dispatch_over_socket;
 
-        let direct_receipt = dispatch_over_socket(socket_path, direct).await.unwrap();
+        let direct_receipt = dispatch_over_socket(socket_path, direct, process)
+            .await
+            .unwrap();
         for nl_command in nl_commands {
-            let nl_receipt = dispatch_over_socket(socket_path, nl_command).await.unwrap();
+            let nl_receipt = dispatch_over_socket(socket_path, nl_command, process)
+                .await
+                .unwrap();
             assert_eq!(direct_receipt.to_bytes(), nl_receipt.to_bytes());
             let in_process =
-                dispatch_in_process(control, nl_command, MONOTONIC_NOW_NS, WALL_NOW_MS).unwrap();
+                dispatch_in_process(control, nl_command, MONOTONIC_NOW_NS, WALL_NOW_MS, process)
+                    .unwrap();
             assert_eq!(in_process.to_bytes(), direct_receipt.to_bytes());
         }
     }
@@ -508,6 +592,7 @@ async fn cli_and_in_process_paths_produce_byte_identical_receipts() {
         &control,
         &ControlCommand::InspectHealth,
         &["inspect-health"],
+        None,
     )
     .await;
     assert_in_process_socket_and_cli_parity(
@@ -515,8 +600,27 @@ async fn cli_and_in_process_paths_produce_byte_identical_receipts() {
         &control,
         &ControlCommand::ExportMetrics,
         &["export-metrics"],
+        None,
     )
     .await;
+
+    let unwired_process = ControlCommand::InspectProcess {
+        process_id: PROCESS_ID,
+    };
+    let unwired_reference = dispatch_in_process(
+        &control,
+        &unwired_process,
+        MONOTONIC_NOW_NS,
+        WALL_NOW_MS,
+        None,
+    )
+    .unwrap();
+    let cli_unwired = run_cli(&socket_path, &["inspect-process", &hex(&PROCESS_ID)]);
+    assert_eq!(cli_unwired.status.code(), Some(1));
+    assert_eq!(
+        cli_receipt_bytes(&cli_unwired),
+        unwired_reference.to_bytes()
+    );
 
     let acknowledge = acknowledge_command(&plan_id);
     assert_in_process_socket_and_cli_parity(
@@ -530,10 +634,11 @@ async fn cli_and_in_process_paths_produce_byte_identical_receipts() {
             "1",
             ACK_REASON,
         ],
+        None,
     )
     .await;
     let ack_direct =
-        dispatch_in_process(&control, &acknowledge, MONOTONIC_NOW_NS, WALL_NOW_MS).unwrap();
+        dispatch_in_process(&control, &acknowledge, MONOTONIC_NOW_NS, WALL_NOW_MS, None).unwrap();
     let ControlOutcome::Acknowledged { receipt_id } = ack_direct.outcome.as_ref().unwrap() else {
         panic!("expected acknowledgement receipt");
     };
@@ -549,6 +654,7 @@ async fn cli_and_in_process_paths_produce_byte_identical_receipts() {
         },
         MONOTONIC_NOW_NS,
         WALL_NOW_MS,
+        None,
     )
     .unwrap();
     let cli_denied = run_cli(
@@ -644,6 +750,7 @@ async fn nl_sentences_compile_to_the_same_socket_receipts_as_direct_commands() {
         &control,
         &ControlCommand::InspectHealth,
         &[nl_inspect, synonym_inspect],
+        None,
     )
     .await;
 
@@ -654,15 +761,15 @@ async fn nl_sentences_compile_to_the_same_socket_receipts_as_direct_commands() {
         parse_nl_command("show metrics").unwrap(),
         ControlCommand::ExportMetrics
     );
-    let direct_export = dispatch_over_socket(&socket_path, &ControlCommand::ExportMetrics)
+    let direct_export = dispatch_over_socket(&socket_path, &ControlCommand::ExportMetrics, None)
         .await
         .unwrap();
-    let nl_export_receipt = dispatch_over_socket(&socket_path, &nl_export)
+    let nl_export_receipt = dispatch_over_socket(&socket_path, &nl_export, None)
         .await
         .unwrap();
     assert_eq!(direct_export.to_bytes(), nl_export_receipt.to_bytes());
     let export_in_process =
-        dispatch_in_process(&control, &nl_export, MONOTONIC_NOW_NS, WALL_NOW_MS).unwrap();
+        dispatch_in_process(&control, &nl_export, MONOTONIC_NOW_NS, WALL_NOW_MS, None).unwrap();
     assert_eq!(export_in_process.to_bytes(), direct_export.to_bytes());
     let ControlOutcome::MetricsExported(export_payload) = direct_export.outcome.as_ref().unwrap()
     else {
@@ -673,6 +780,44 @@ async fn nl_sentences_compile_to_the_same_socket_receipts_as_direct_commands() {
             .openmetrics_text
             .contains("nlos_artifact_recovery_cycles_total")
     );
+
+    // Inspect process: NL sentences compile to the same command and, with a
+    // wired stub inspector, produce byte-identical receipts over socket and
+    // in-process dispatch.
+    let process_hex = hex(&PROCESS_ID);
+    let direct_process = ControlCommand::InspectProcess {
+        process_id: PROCESS_ID,
+    };
+    let nl_process = parse_nl_command(&format!("inspect process {process_hex}")).unwrap();
+    assert_eq!(nl_process, direct_process);
+    assert_eq!(
+        parse_nl_command(&format!("检查进程 {process_hex}")).unwrap(),
+        direct_process
+    );
+    let synonym_process = parse_nl_command(&format!("check process {process_hex}")).unwrap();
+    assert_eq!(synonym_process, direct_process);
+    let stub = stub_process_inspection();
+    assert_nl_socket_and_in_process_parity(
+        &socket_path,
+        &control,
+        &direct_process,
+        &[nl_process, synonym_process],
+        Some(&stub),
+    )
+    .await;
+    let process_receipt = dispatch_in_process(
+        &control,
+        &direct_process,
+        MONOTONIC_NOW_NS,
+        WALL_NOW_MS,
+        Some(&stub),
+    )
+    .unwrap();
+    let ControlOutcome::ProcessInspected(snapshot) = process_receipt.outcome.as_ref().unwrap()
+    else {
+        panic!("expected process inspection receipt");
+    };
+    assert_eq!(snapshot.process_id, PROCESS_ID);
 
     // Acknowledge: the English and Chinese sentences both compile to the
     // same fully-determined mutation the direct construction spells out.
@@ -689,7 +834,7 @@ async fn nl_sentences_compile_to_the_same_socket_receipts_as_direct_commands() {
     assert_eq!(nl_ack, direct_ack);
     let ack_synonym = parse_nl_command(&format!("ack alert {plan_hex} expecting 1")).unwrap();
     assert_eq!(ack_synonym, direct_ack);
-    let direct_ack_receipt = dispatch_over_socket(&socket_path, &direct_ack)
+    let direct_ack_receipt = dispatch_over_socket(&socket_path, &direct_ack, None)
         .await
         .unwrap();
     let ControlOutcome::Acknowledged { receipt_id } = direct_ack_receipt.outcome.as_ref().unwrap()
@@ -698,7 +843,7 @@ async fn nl_sentences_compile_to_the_same_socket_receipts_as_direct_commands() {
     };
     assert_eq!(receipt_id.len(), 16);
     for nl_command in [nl_ack, ack_synonym] {
-        let nl_ack_receipt = dispatch_over_socket(&socket_path, &nl_command)
+        let nl_ack_receipt = dispatch_over_socket(&socket_path, &nl_command, None)
             .await
             .unwrap();
         assert_eq!(direct_ack_receipt.to_bytes(), nl_ack_receipt.to_bytes());

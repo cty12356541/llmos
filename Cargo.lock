@@ -617,6 +617,7 @@ dependencies = [
  "nlos-commit-coordinator",
  "nlos-identity",
  "nlos-ipc",
+ "nlos-process",
  "nlos-schema",
  "nlos-service-directory",
  "nlos-task",

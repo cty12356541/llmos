@@ -53,6 +53,11 @@ pub mod control;
 /// [§1.3]: <https://github.com/cty12356541/llmos/blob/main/docs/design/06-架构设计总纲-v0.5.md>
 pub mod nl;
 
+/// Optional [`control::ProcessInspector`] adapter backed by
+/// [`nlos_process::ProcessAuthority`] (`process` feature).
+#[cfg(feature = "process")]
+pub mod process_inspector;
+
 /// Deterministic OpenMetrics text exposition (`text/plain; version=0.0.4`)
 /// for the recovery metrics catalog: the first concrete backend for
 /// [`RecoveryMetricsSink`], with no scraping transport. See the module

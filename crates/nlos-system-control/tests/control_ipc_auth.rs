@@ -494,6 +494,7 @@ async fn authenticated_roundtrip_inspect_and_acknowledge() {
         principal,
         &signer,
         &ControlCommand::InspectHealth,
+        None,
     )
     .await
     .unwrap();
@@ -510,6 +511,7 @@ async fn authenticated_roundtrip_inspect_and_acknowledge() {
         principal,
         &signer,
         &acknowledge_command(&fixture.plan_id),
+        None,
     )
     .await
     .unwrap();
@@ -866,10 +868,13 @@ async fn dispatch_all_entries(
 ) -> [nlos_system_control::control::ControlReceipt; 3] {
     use nlos_system_control::control::{dispatch_in_process, dispatch_over_socket};
 
-    let in_process = dispatch_in_process(control, command, MONOTONIC_NOW_NS, wall_ms).unwrap();
-    let plain = dispatch_over_socket(plain_socket, command).await.unwrap();
+    let in_process =
+        dispatch_in_process(control, command, MONOTONIC_NOW_NS, wall_ms, None).unwrap();
+    let plain = dispatch_over_socket(plain_socket, command, None)
+        .await
+        .unwrap();
     let authenticated =
-        dispatch_over_authenticated_socket(authenticated_socket, principal, signer, command)
+        dispatch_over_authenticated_socket(authenticated_socket, principal, signer, command, None)
             .await
             .unwrap();
     [in_process, plain, authenticated]
