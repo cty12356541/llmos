@@ -263,6 +263,49 @@ cargo fmt -p nlos-runtime-tokio -- --check
   - runtime 侧 process crash 传播联动；
   - 未声称 ROAD-B-006 整体达成。
 
+### 6.9 Activation meter 100K 规模探针（2026-09-06 追加，W17-006 / ROAD-B-006）
+
+- Owner：`nlos-runtime-tokio`（`tests/activation_meter_scale.rs`）
+- 设计依据：v0.5 §28.2 ROAD-B-006 分维 Activation metering 规模验证；§6.6 最小前缀 + §6.8 backpressure/suspended 已落地，本片补 `external_wait`/`active_cpu` 在大量 live fiber 下的不退化证明。
+- **实现（test-only，`#[ignore]` 探针）**：
+  - 新增 `activation_meter_scale.rs`，镜像 `scale.rs` / `durable_wait_scale.rs` 双 tier：`QUICK_COUNT=10_000`、`FULL_COUNT=100_000`，`METER_SUBSET=1_000` 前缀抽样。
+  - **Phase 1 `active_cpu`**：`subset` 计算 fiber 并发完成；全 cohort 断言 `active_cpu ≥ 10ms` 且 `external_wait = 0`（`active_cpu ≤ elapsed_wall` 仍由 `activation_meter.rs` 低并发覆盖；finalize 锁序在并发下可能差微秒级）。
+  - **Phase 2 `external_wait`**：`count` fiber 在 fiber 体内注册 Operation wait（避免 test 线程注册与 `run_fiber` 初始 `Running` 竞态）；`park_settle` 后 sleep 50ms，前 `subset` 断言 `external_wait ≥ 40ms` 且 `active_cpu < external_wait`；teardown 走 drop（100K cancel 仍 O(n²) 未纳入）。
+- **新增测试**（`activation_meter_scale.rs`，2 项，均 `#[ignore]`）：
+  1. `ten_thousand_activation_meter_fibers_on_two_workers` — 10K quick tier。
+  2. `one_hundred_thousand_activation_meter_fibers_on_two_workers` — 100K exit-gate tier（CI/nightly `--include-ignored`）。
+
+#### 6.9.1 验证门实测
+
+```text
+cargo test -p nlos-runtime-tokio --test activation_meter
+  → 3 passed / 0 failed（2026-09-06 W17-006；与全套件同跑时绿）
+cargo test -p nlos-runtime-tokio -- --test-threads=1
+  → 82 passed / 0 failed / 6 ignored（17 个 test target 全绿；+2 activation_meter_scale ignored；
+    ignored = durable_wait_scale 2 + scale.rs 100K 1 + blocking_io_negative 10K 1
+              + activation_meter_scale 10K 1 + activation_meter_scale 100K 1）
+cargo clippy -p nlos-runtime-tokio --all-targets -- -D warnings
+  → exit 0（stable，2026-09-06 W17-006）
+cargo test -p nlos-runtime-tokio --test activation_meter_scale -- --include-ignored ten_thousand --nocapture
+  → 1 passed / 0 failed（10K 探针本地实跑，2026-09-06 W17-006）
+  → 10K profile（2 tokio workers，sample=1000）：
+     active_cpu_phase=12.503s
+     external_wait: spawn_issue=30.9ms park_settle=48.8ms external_wait_sleep=50ms
+                    sample_assert=0.49ms total=133.7ms
+cargo test -p nlos-runtime-tokio --test activation_meter_scale -- --include-ignored one_hundred_thousand
+  → 未本地实跑（100K tier 登记 CI/nightly manual；与 scale.rs / durable_wait_scale 100K 同级）
+```
+
+#### 6.9.2 缺口更新
+
+- **勾销**：§6.6.2 / §6.8.2 中「100K 探针下分维 metering 规模验证（`external_wait`/`active_cpu`）」→ 本 §6.9（10K 实跑 + 100K `#[ignore]` 探针登记）。
+- **如实保留（ROAD-B-006 剩余，Claim 维持 PARTIAL_PASS）**：
+  - 100K activation-meter 探针本地/nightly 实跑数字（10K quick tier 已实跑）；
+  - 100K 规模级 cancel 探针；
+  - fiber 体内自动触发背压/挂起（scheduler 边界 hook 已覆盖，admission 集成未做）；
+  - runtime 侧 process crash 传播联动；
+  - 未声称 ROAD-B-006 整体达成。
+
 ### 6.9 W17-006：Activation meter 100K 规模探针骨架（2026-09-06）
 
 - **写集**：`crates/nlos-runtime-tokio/tests/activation_meter_scale.rs`（新增 `#[ignore]` 10K quick tier + 100K full tier；两 worker 恒定线程；`active_cpu` 与 `external_wait` 分维采样断言；teardown 走 drop 避免 O(n²) cancel purge，与 §6.3 一致）。

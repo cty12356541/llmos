@@ -15,11 +15,10 @@
 //! Both tiers are `#[ignore]`-gated: the regular suite stays green, and the
 //! nightly scale-probe CI job can run them via `--include-ignored`.
 
-use std::future::pending;
 use std::time::{Duration, Instant};
 
 use nlos_runtime::{FiberExit, FiberHandle, FiberSpec, FiberState, RuntimeAdapter};
-use nlos_runtime_tokio::{TokioRuntimeAdapter, TokioRuntimeConfig};
+use nlos_runtime_tokio::{TokioRuntimeAdapter, TokioRuntimeConfig, WaitOutcome};
 use nlos_types::{
     AgentInstanceId, CancellationScopeId, ExecutionFiberId, Generation, OperationId, ProcessId,
     ResourceGroupId, SchedulerDomainId,
@@ -121,7 +120,7 @@ async fn assert_active_cpu_metering_at_scale(subset: usize) -> Duration {
         &runtime,
         &handles,
         FiberState::Completed,
-        Duration::from_secs(120),
+        Duration::from_mins(2),
     )
     .await;
 
@@ -138,6 +137,26 @@ async fn assert_active_cpu_metering_at_scale(subset: usize) -> Duration {
     started.elapsed()
 }
 
+/// Parks on an Operation wait registered from inside the fiber body so
+/// `run_fiber`'s initial `Running` transition cannot race test-thread
+/// registration.
+async fn park_on_operation_wait(
+    runtime: TokioRuntimeAdapter,
+    index: usize,
+) -> FiberExit {
+    let handle = FiberHandle {
+        fiber_id: ExecutionFiberId::from_bytes(id_bytes(index)),
+        generation: Generation::INITIAL,
+    };
+    let wait = runtime
+        .wait_for_operation(handle, operation(index), Generation::INITIAL)
+        .expect("register operation wait");
+    match wait.await {
+        WaitOutcome::Woken => FiberExit::Completed,
+        WaitOutcome::Cancelled => FiberExit::Cancelled,
+    }
+}
+
 /// Phase 2: `count` Operation-wait fibers park in `WaitingIo`; sample the
 /// first `subset` for `external_wait` accumulation.
 async fn assert_external_wait_metering_at_scale(count: usize, subset: usize) -> Duration {
@@ -149,27 +168,27 @@ async fn assert_external_wait_metering_at_scale(count: usize, subset: usize) -> 
     let started = Instant::now();
 
     let spawn_started = Instant::now();
+    let adapter = runtime.clone();
     let handles = (0..count)
         .map(|index| {
-            let handle = runtime
-                .spawn_fiber(fiber_spec(index, scope), Box::pin(pending()))
-                .expect("spawn waiting fiber");
-            let _wait = runtime
-                .wait_for_operation(handle, operation(index), Generation::INITIAL)
-                .expect("register operation wait");
-            handle
+            runtime
+                .spawn_fiber(
+                    fiber_spec(index, scope),
+                    Box::pin(park_on_operation_wait(adapter.clone(), index)),
+                )
+                .expect("spawn waiting fiber")
         })
         .collect::<Vec<_>>();
     let spawn_issue = spawn_started.elapsed();
     assert_eq!(runtime.registered_fibers(), count);
 
-    for handle in &handles[..subset.min(handles.len())] {
-        assert_eq!(
-            runtime.inspect(*handle),
-            Ok(FiberState::WaitingIo),
-            "begin_wait must flip Operation-wait fibers synchronously at registration"
-        );
-    }
+    let park_settle = await_all_state(
+        &runtime,
+        &handles,
+        FiberState::WaitingIo,
+        Duration::from_mins(2),
+    )
+    .await;
 
     tokio::time::sleep(EXTERNAL_WAIT_SLEEP).await;
 
@@ -197,8 +216,9 @@ async fn assert_external_wait_metering_at_scale(count: usize, subset: usize) -> 
     let total = started.elapsed();
     eprintln!(
         "{count}-fiber activation-meter profile (2 tokio workers, sample={subset}): \
-         spawn_issue={spawn_issue:?} external_wait_sleep={EXTERNAL_WAIT_SLEEP:?} \
-         sample_assert={sample_elapsed:?} total={total:?}"
+         spawn_issue={spawn_issue:?} park_settle={park_settle:?} \
+         external_wait_sleep={EXTERNAL_WAIT_SLEEP:?} sample_assert={sample_elapsed:?} \
+         total={total:?}"
     );
     total
 }
