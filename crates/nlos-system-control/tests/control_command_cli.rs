@@ -1,4 +1,5 @@
 #![allow(deprecated)] // Ladder constructors deprecated in favor of the *_with_authorities_struct entries.
+#![allow(clippy::too_many_lines)]
 //! B-CONTROL-001 integration evidence: the in-process dispatcher and the
 //! `system-control-cli` binary both cross the same real `SystemControl`
 //! handler path — the CLI and the library client over a real Unix socket —
