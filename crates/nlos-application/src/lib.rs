@@ -22,7 +22,10 @@
 //! [`ApplicationAuthority::disable_application`] replayable). Schema v3
 //! adds `application_uninstall_receipts` (the immutable fact of the terminal
 //! `installed|disabled → uninstalled` transition, which makes
-//! [`ApplicationAuthority::uninstall_application`] replayable). DDL triggers
+//! [`ApplicationAuthority::uninstall_application`] replayable). Schema v4
+//! adds `application_rollback_receipts` (the immutable fact of one
+//! `disabled|uninstalled → installed` generation step back, which makes
+//! [`ApplicationAuthority::rollback_application`] replayable). DDL triggers
 //! carry the invariants at every layer: receipts are immutable and
 //! durable, the generation is monotonic under CAS, application identity is
 //! frozen, rows cannot be deleted, a receipt can only exist at the
@@ -49,8 +52,10 @@
 //! installed-state content update prefix only; `disable_application` lands
 //! the `installed → disabled` transition only; `uninstall_application`
 //! lands the terminal `installed|disabled → uninstalled` CAS mark only;
-//! there is no enable, no rollback, and no physical row delete), running
-//! Task/Process teardown (uninstall does not stop or wait for tasks),
+//! `rollback_application` lands one generation step back from
+//! `disabled|uninstalled` to `installed` only; there is no enable shortcut,
+//! no physical row delete), running Task/Process teardown (uninstall does not
+//! stop or wait for tasks),
 //! creation wiring (the next Slice K longitudinal slice), multi-party
 //! installer approval (exactly one installer principal is recorded, taken
 //! from the verified receipt's signer), §23.2's full manifest
@@ -330,6 +335,60 @@ impl UninstallDecision {
     }
 }
 
+/// Immutable durable proof that one application rolled back one installation
+/// generation: the fact of one `disabled|uninstalled → installed` step that
+/// CAS-decrements the current generation and restores the previous
+/// installation's manifest digest from durable history.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RollbackReceipt {
+    pub application_id: ApplicationId,
+    /// The installation generation before rollback (the generation being
+    /// stepped back from).
+    pub from_generation: Generation,
+    /// The installation generation after rollback (the previous durable
+    /// installation generation restored as current).
+    pub to_generation: Generation,
+    pub idempotency_key: IdempotencyKey,
+    pub rollback_at_ms: u64,
+}
+
+/// Request to roll one application back one installation generation.
+/// Exactly-once by idempotency key, mirroring the disable/uninstall
+/// request shape.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RollbackApplicationRequest {
+    /// The package identity whose application singleton is rolled back.
+    pub package_id: PackageId,
+    /// Caller-supplied exactly-once key for the rollback receipt.
+    pub idempotency_key: IdempotencyKey,
+    /// Caller-supplied rollback timestamp (ms since Unix epoch); must not
+    /// precede the application row's last update.
+    pub rollback_at_ms: u64,
+}
+
+/// Outcome of one [`ApplicationAuthority::rollback_application`] call.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RollbackDecision {
+    /// First execution of this key: the application status CAS'd to
+    /// `installed`, the generation stepped back one, and the rollback
+    /// receipt committed with it.
+    RolledBack(RollbackReceipt),
+    /// Durable replay: this key already rolled back and the recorded
+    /// original receipt is returned unchanged (no second transition, no
+    /// new fact).
+    Replayed(RollbackReceipt),
+}
+
+impl RollbackDecision {
+    /// The rollback receipt this call denotes, whichever branch.
+    #[must_use]
+    pub const fn receipt(self) -> RollbackReceipt {
+        match self {
+            Self::RolledBack(receipt) | Self::Replayed(receipt) => receipt,
+        }
+    }
+}
+
 /// Fail-closed typed errors of the application/installation authority.
 /// Every variant is a hard refusal: the caller never receives an
 /// installation whose durability is in doubt, and a rejected install
@@ -413,6 +472,30 @@ pub enum ApplicationAuthorityError {
     UpdateManifestUnchanged {
         package_id: PackageId,
         manifest_digest: ContentDigest,
+    },
+    /// Rollback requires the application to be `disabled` or `uninstalled`;
+    /// an installed application cannot roll back in this slice.
+    RollbackRequiresDisabledOrUninstalled {
+        application_id: ApplicationId,
+        status: ApplicationStatus,
+    },
+    /// The application is already at the initial installation generation;
+    /// there is no previous generation to restore.
+    RollbackAtInitialGeneration {
+        application_id: ApplicationId,
+        generation: Generation,
+    },
+    /// The requested rollback timestamp precedes the application row's
+    /// last update.
+    RollbackPrecedesLastUpdate {
+        last_updated_at_ms: u64,
+        rollback_at_ms: u64,
+    },
+    /// The durable installation history has no receipt for the previous
+    /// generation — a corrupt or incomplete record.
+    PreviousInstallationNotFound {
+        application_id: ApplicationId,
+        generation: Generation,
     },
 }
 
@@ -519,6 +602,38 @@ impl fmt::Display for ApplicationAuthorityError {
                  is unchanged from the current installation; use install for \
                  same-content reinstall"
             ),
+            Self::RollbackRequiresDisabledOrUninstalled {
+                application_id,
+                status,
+            } => write!(
+                formatter,
+                "application {application_id:?} is {status:?}; rollback requires \
+                 disabled or uninstalled status in this slice"
+            ),
+            Self::RollbackAtInitialGeneration {
+                application_id,
+                generation,
+            } => write!(
+                formatter,
+                "application {application_id:?} is at installation generation \
+                 {generation:?}; there is no previous generation to roll back to"
+            ),
+            Self::RollbackPrecedesLastUpdate {
+                last_updated_at_ms,
+                rollback_at_ms,
+            } => write!(
+                formatter,
+                "rollback timestamp {rollback_at_ms} precedes the current \
+                 application update timestamp {last_updated_at_ms}"
+            ),
+            Self::PreviousInstallationNotFound {
+                application_id,
+                generation,
+            } => write!(
+                formatter,
+                "no installation receipt for application {application_id:?} at \
+                 generation {generation:?}"
+            ),
         }
     }
 }
@@ -582,14 +697,17 @@ impl ApplicationAuthority {
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
         match version {
             0 => schema::migrate_v1(&mut connection)?,
-            1 | 2 | schema::SCHEMA_VERSION => {}
+            1 | 2 | 3 | schema::SCHEMA_VERSION => {}
             other => return Err(ApplicationAuthorityError::SchemaVersionUnsupported(other)),
         }
         if version < 2 {
             schema::migrate_v2(&mut connection)?;
         }
-        if version < schema::SCHEMA_VERSION {
+        if version < 3 {
             schema::migrate_v3(&mut connection)?;
+        }
+        if version < schema::SCHEMA_VERSION {
+            schema::migrate_v4(&mut connection)?;
         }
         Ok(Self {
             connection: Mutex::new(connection),
@@ -1110,6 +1228,143 @@ impl ApplicationAuthority {
         Ok(UninstallDecision::Uninstalled(receipt))
     }
 
+    /// Rolls one disabled or uninstalled application back one installation
+    /// generation: in one `Immediate` transaction CAS's the status to
+    /// `installed`, decrements the generation by exactly one, restores the
+    /// previous generation's manifest digest from durable installation
+    /// history, and commits the immutable rollback receipt.
+    ///
+    /// Fail-closed order:
+    ///
+    /// 1. **Replay**: the first durable rollback receipt under the
+    ///    request's idempotency key is the authority; it replays unchanged
+    ///    without touching the state. The same key with a different request
+    ///    shape (a different package or timestamp) is a typed
+    ///    [`ApplicationAuthorityError::IdempotencyConflict`].
+    /// 2. **State gate**: the application singleton must exist
+    ///    ([`ApplicationAuthorityError::ApplicationNotFound`]) and be
+    ///    `disabled` or `uninstalled` ([`ApplicationAuthorityError::
+    ///    RollbackRequiresDisabledOrUninstalled`]); an `installed`
+    ///    application cannot roll back in this slice.
+    /// 3. **Temporal binding**: the rollback timestamp must not precede
+    ///    the application row's last update.
+    /// 4. **Generation gate**: the current generation must be strictly
+    ///    greater than the initial generation ([`ApplicationAuthorityError::
+    ///    RollbackAtInitialGeneration`]); the previous installation receipt
+    ///    must exist in durable history ([`ApplicationAuthorityError::
+    ///    PreviousInstallationNotFound`]).
+    /// 5. **Single-transaction commit**: the status/generation/digest update
+    ///    and the receipt insert share the one transaction (co-life), and
+    ///    the DDL state-bounds guard only accepts a receipt for an
+    ///    application already installed at the target generation.
+    ///
+    /// This slice does **not** implement health checks, migration
+    /// compatibility, binary atomic switching, or any full `[PKG-UPDATE-001]`
+    /// policy engine beyond the one-step generation anchor.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed (zero durable state change) for an unknown package, an
+    /// installed application, an initial-generation application, a missing
+    /// previous installation receipt, an idempotency conflict, a rollback
+    /// preceding its own last update, a lost generation CAS, or any storage
+    /// failure.
+    pub fn rollback_application(
+        &self,
+        request: RollbackApplicationRequest,
+    ) -> Result<RollbackDecision, ApplicationAuthorityError> {
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+        if let Some(existing) = load_rollback_receipt_by_key(&transaction, request.idempotency_key)?
+        {
+            if existing.application_id != derive_application_id(request.package_id)
+                || existing.rollback_at_ms != request.rollback_at_ms
+            {
+                return Err(ApplicationAuthorityError::IdempotencyConflict);
+            }
+            transaction.commit()?;
+            return Ok(RollbackDecision::Replayed(existing));
+        }
+
+        let application = load_application_by_package(&transaction, request.package_id)?.ok_or(
+            ApplicationAuthorityError::ApplicationNotFound {
+                package_id: request.package_id,
+            },
+        )?;
+        match application.status {
+            ApplicationStatus::Installed => {
+                return Err(
+                    ApplicationAuthorityError::RollbackRequiresDisabledOrUninstalled {
+                        application_id: application.application_id,
+                        status: application.status,
+                    },
+                );
+            }
+            ApplicationStatus::Disabled | ApplicationStatus::Uninstalled => {}
+        }
+
+        if request.rollback_at_ms < application.updated_at_ms {
+            return Err(ApplicationAuthorityError::RollbackPrecedesLastUpdate {
+                last_updated_at_ms: application.updated_at_ms,
+                rollback_at_ms: request.rollback_at_ms,
+            });
+        }
+
+        let to_generation = generation_prev(application.current_installation_generation).ok_or(
+            ApplicationAuthorityError::RollbackAtInitialGeneration {
+                application_id: application.application_id,
+                generation: application.current_installation_generation,
+            },
+        )?;
+        let previous = load_installation_receipt_at_generation(
+            &transaction,
+            application.application_id,
+            to_generation,
+        )?
+        .ok_or(ApplicationAuthorityError::PreviousInstallationNotFound {
+            application_id: application.application_id,
+            generation: to_generation,
+        })?;
+
+        let changed = transaction.execute(
+            "UPDATE applications
+             SET status = ?1,
+                 current_installation_generation = ?2,
+                 package_manifest_digest = ?3,
+                 updated_at_ms = ?4
+             WHERE application_id = ?5
+               AND current_installation_generation = ?6
+               AND status IN (?7, ?8)",
+            params![
+                ApplicationStatus::Installed.encode(),
+                encode_generation(to_generation)?,
+                previous.package_manifest_digest.as_bytes().as_slice(),
+                encode_u64(request.rollback_at_ms)?,
+                application.application_id.as_bytes().as_slice(),
+                encode_generation(application.current_installation_generation)?,
+                ApplicationStatus::Disabled.encode(),
+                ApplicationStatus::Uninstalled.encode(),
+            ],
+        )?;
+        if changed != 1 {
+            return Err(ApplicationAuthorityError::CorruptRecord(
+                "application rollback generation CAS lost",
+            ));
+        }
+
+        let receipt = RollbackReceipt {
+            application_id: application.application_id,
+            from_generation: application.current_installation_generation,
+            to_generation,
+            idempotency_key: request.idempotency_key,
+            rollback_at_ms: request.rollback_at_ms,
+        };
+        insert_rollback_receipt(&transaction, &receipt)?;
+        transaction.commit()?;
+        Ok(RollbackDecision::RolledBack(receipt))
+    }
+
     /// Reads an application's current durable state by package identity
     /// without any durable side effect. `None` means the package has never
     /// been installed — a legitimate read outcome, not an error.
@@ -1153,6 +1408,46 @@ impl ApplicationAuthority {
     ) -> Result<Option<UninstallReceipt>, ApplicationAuthorityError> {
         let connection = self.lock()?;
         load_uninstall_receipt_by_package(&connection, package_id)
+    }
+
+    /// Reads one immutable rollback receipt by idempotency key. `None` means
+    /// no rollback was ever recorded under this key — a legitimate read
+    /// outcome, not an error.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed on a storage error.
+    pub fn inspect_rollback_receipt(
+        &self,
+        idempotency_key: IdempotencyKey,
+    ) -> Result<Option<RollbackReceipt>, ApplicationAuthorityError> {
+        let connection = self.lock()?;
+        load_rollback_receipt_by_key(&connection, idempotency_key)
+    }
+
+    /// Lists every immutable rollback receipt of one application, oldest
+    /// target generation first. An unknown application lists as empty.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed on a storage error.
+    pub fn list_rollback_receipts(
+        &self,
+        application_id: ApplicationId,
+    ) -> Result<Vec<RollbackReceipt>, ApplicationAuthorityError> {
+        let connection = self.lock()?;
+        let mut statement = connection.prepare(
+            "SELECT application_id, from_generation, to_generation,
+                    idempotency_key, rollback_at_ms
+             FROM application_rollback_receipts WHERE application_id = ?1
+             ORDER BY to_generation ASC",
+        )?;
+        let mut rows = statement.query([application_id.as_bytes().as_slice()])?;
+        let mut receipts = Vec::new();
+        while let Some(row) = rows.next()? {
+            receipts.push(decode_rollback_receipt_row(row)?);
+        }
+        Ok(receipts)
     }
 
     /// Reads one immutable installation receipt by installation id.
@@ -1432,6 +1727,76 @@ fn load_uninstall_receipt_by_package(
     )?;
     let mut rows = statement.query([package_id.as_bytes().as_slice()])?;
     rows.next()?.map(decode_uninstall_receipt_row).transpose()
+}
+
+fn load_rollback_receipt_by_key(
+    source: &Connection,
+    key: IdempotencyKey,
+) -> Result<Option<RollbackReceipt>, ApplicationAuthorityError> {
+    let mut statement = source.prepare(
+        "SELECT application_id, from_generation, to_generation,
+                idempotency_key, rollback_at_ms
+         FROM application_rollback_receipts WHERE idempotency_key = ?1",
+    )?;
+    let mut rows = statement.query([key.as_bytes().as_slice()])?;
+    rows.next()?.map(decode_rollback_receipt_row).transpose()
+}
+
+fn load_installation_receipt_at_generation(
+    source: &Connection,
+    application_id: ApplicationId,
+    generation: Generation,
+) -> Result<Option<InstallationReceipt>, ApplicationAuthorityError> {
+    let mut statement = source.prepare(
+        "SELECT installation_id, idempotency_key, application_id,
+                installation_generation, package_id, package_manifest_digest,
+                package_version, entry_count, package_verification_receipt_id,
+                installer_principal, installed_at_ms
+         FROM installation_receipts
+         WHERE application_id = ?1 AND installation_generation = ?2",
+    )?;
+    let mut rows = statement.query(params![
+        application_id.as_bytes().as_slice(),
+        encode_generation(generation)?,
+    ])?;
+    rows.next()?.map(decode_receipt_row).transpose()
+}
+
+fn insert_rollback_receipt(
+    transaction: &Connection,
+    receipt: &RollbackReceipt,
+) -> Result<(), ApplicationAuthorityError> {
+    transaction.execute(
+        "INSERT INTO application_rollback_receipts (
+            idempotency_key, application_id, from_generation, to_generation,
+            rollback_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            receipt.idempotency_key.as_bytes().as_slice(),
+            receipt.application_id.as_bytes().as_slice(),
+            encode_generation(receipt.from_generation)?,
+            encode_generation(receipt.to_generation)?,
+            encode_u64(receipt.rollback_at_ms)?,
+        ],
+    )?;
+    Ok(())
+}
+
+fn decode_rollback_receipt_row(
+    row: &rusqlite::Row<'_>,
+) -> Result<RollbackReceipt, ApplicationAuthorityError> {
+    Ok(RollbackReceipt {
+        application_id: ApplicationId::from_bytes(blob16(row, 0)?),
+        from_generation: decode_generation(row, 1)?,
+        to_generation: decode_generation(row, 2)?,
+        idempotency_key: IdempotencyKey::from_bytes(blob16(row, 3)?),
+        rollback_at_ms: decode_u64(row, 4)?,
+    })
+}
+
+fn generation_prev(current: Generation) -> Option<Generation> {
+    let prev = current.get().checked_sub(1)?;
+    std::num::NonZeroU64::new(prev).map(Generation::new)
 }
 
 fn insert_uninstall_receipt(

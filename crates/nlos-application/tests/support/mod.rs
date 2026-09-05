@@ -13,8 +13,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use ed25519_dalek::{Signer, SigningKey};
 use nlos_application::{
     ApplicationAuthority, DisableApplicationRequest, DisableDecision, DisableReceipt,
-    InstallApplicationRequest, InstallDecision, UninstallApplicationRequest, UninstallDecision,
-    UninstallReceipt, UpdateApplicationRequest, UpdateDecision,
+    InstallApplicationRequest, InstallDecision, RollbackApplicationRequest, RollbackDecision,
+    RollbackReceipt, UninstallApplicationRequest, UninstallDecision, UninstallReceipt,
+    UpdateApplicationRequest, UpdateDecision,
 };
 use nlos_artifact::{
     ArtifactStore, ContentDigest, CreateArtifactSpec, PackageEntryRole, PackageManifest,
@@ -378,6 +379,50 @@ pub fn uninstall_replayed(
         UninstallDecision::Replayed(receipt) => receipt,
         UninstallDecision::Uninstalled(receipt) => {
             panic!("expected Replayed, got Uninstalled {receipt:?}")
+        }
+    }
+}
+
+/// Runs one rollback and unwraps the fresh-rollback branch.
+pub fn rolled_back(
+    authority: &ApplicationAuthority,
+    package_id: nlos_types::PackageId,
+    key: u8,
+    at_ms: u64,
+) -> RollbackReceipt {
+    match authority
+        .rollback_application(RollbackApplicationRequest {
+            package_id,
+            idempotency_key: IdempotencyKey::from_bytes([key; 16]),
+            rollback_at_ms: at_ms,
+        })
+        .expect("rollback must succeed")
+    {
+        RollbackDecision::RolledBack(receipt) => receipt,
+        RollbackDecision::Replayed(receipt) => {
+            panic!("fresh key cannot replay a rollback, got {receipt:?}")
+        }
+    }
+}
+
+/// Runs one rollback and unwraps the replay branch.
+pub fn rollback_replayed(
+    authority: &ApplicationAuthority,
+    package_id: nlos_types::PackageId,
+    key: u8,
+    at_ms: u64,
+) -> RollbackReceipt {
+    match authority
+        .rollback_application(RollbackApplicationRequest {
+            package_id,
+            idempotency_key: IdempotencyKey::from_bytes([key; 16]),
+            rollback_at_ms: at_ms,
+        })
+        .expect("rollback must replay")
+    {
+        RollbackDecision::Replayed(receipt) => receipt,
+        RollbackDecision::RolledBack(receipt) => {
+            panic!("expected Replayed, got RolledBack {receipt:?}")
         }
     }
 }

@@ -10,14 +10,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use nlos_application::{
     ApplicationAuthorityError, DisableApplicationRequest, InstallApplicationRequest,
-    UninstallApplicationRequest, UpdateApplicationRequest, derive_application_id,
-    derive_installation_id,
+    RollbackApplicationRequest, UninstallApplicationRequest, UpdateApplicationRequest,
+    derive_application_id, derive_installation_id,
 };
 use nlos_types::{Generation, IdempotencyKey, ReceiptId};
 use rusqlite::Connection;
 use support::{
     TestStack, authority_database, disable_replayed, disabled, installed, open_authority, replayed,
-    uninstall_replayed, uninstalled, update_replayed, updated,
+    rollback_replayed, rolled_back, uninstall_replayed, uninstalled, update_replayed, updated,
 };
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -76,6 +76,18 @@ fn assert_uninstall_counts(stack: &TestStack, uninstall_receipts: i64) {
         ),
         uninstall_receipts,
         "unexpected application_uninstall_receipts row count"
+    );
+}
+
+fn assert_rollback_counts(stack: &TestStack, rollback_receipts: i64) {
+    let database = authority_database(stack.root.root());
+    assert_eq!(
+        raw_count(
+            &database,
+            "SELECT COUNT(*) FROM application_rollback_receipts"
+        ),
+        rollback_receipts,
+        "unexpected application_rollback_receipts row count"
     );
 }
 
@@ -607,12 +619,13 @@ fn trigger_guards_abort_raw_tampering() {
         .is_err()
     );
 
-    // Disabled can only transition to uninstalled; re-enable is illegal.
+    // Disabled can only transition to uninstalled or rollback-to-installed
+    // (with a one-step generation decrease); bare re-enable is illegal.
     raw.execute("UPDATE applications SET status=2", [])
         .expect("legal disable");
     assert!(
         raw.execute("UPDATE applications SET status=1", []).is_err(),
-        "re-enabling a disabled application is illegal in this slice"
+        "re-enabling a disabled application without generation rollback is illegal"
     );
     assert!(
         raw.execute(
@@ -629,7 +642,7 @@ fn trigger_guards_abort_raw_tampering() {
     .expect("disabled may transition to uninstalled");
     assert!(
         raw.execute("UPDATE applications SET status=1", []).is_err(),
-        "uninstalled is terminal"
+        "uninstalled is terminal except rollback with generation decrease"
     );
     assert!(
         raw.execute("UPDATE applications SET status=2", []).is_err(),
@@ -1496,5 +1509,234 @@ fn uninstall_refusals_are_typed_and_leave_zero_state() {
         view.status,
         nlos_application::ApplicationStatus::Uninstalled
     );
+    assert_eq!(view.current_installation_generation, Generation::INITIAL);
+}
+
+/// 正常回退（disabled）：update 到 gen 2 后 disable，rollback 单事务 CAS
+/// disabled→installed 并代际 -1、恢复 gen 1 manifest；同 key 重放返回原回执。
+#[test]
+fn rollback_disabled_after_update_replays_idempotently() {
+    let stack = TestStack::new(&label("rollback-disabled"), 0x4A);
+    let first = stack.verify_package(0x41, 1, key(0xF0), 1_000);
+    let second = stack.verify_package(0x41, 2, key(0xF1), 2_000);
+    let authority = open_authority(stack.root.root());
+    let gen1 = installed(&authority, &stack.artifacts, first.receipt_id, 0x01, 2_000);
+    updated(
+        &authority,
+        &stack.artifacts,
+        first.package_id,
+        second.receipt_id,
+        0x02,
+        3_000,
+    );
+    disabled(&authority, first.package_id, 0x0B, 4_000);
+
+    let receipt = rolled_back(&authority, first.package_id, 0x0A, 5_000);
+    assert_eq!(receipt.application_id, gen1.application_id);
+    assert_eq!(receipt.from_generation.get(), 2);
+    assert_eq!(receipt.to_generation, Generation::INITIAL);
+    assert_eq!(receipt.rollback_at_ms, 5_000);
+
+    let view = authority
+        .inspect_application(first.package_id)
+        .expect("inspect")
+        .expect("exists");
+    assert_eq!(view.status, nlos_application::ApplicationStatus::Installed);
+    assert_eq!(view.current_installation_generation, Generation::INITIAL);
+    assert_eq!(view.package_manifest_digest, first.manifest_digest);
+    assert_eq!(view.updated_at_ms, 5_000);
+
+    let read_back = authority
+        .inspect_rollback_receipt(key(0x0A))
+        .expect("rollback readback")
+        .expect("rollback receipt exists");
+    assert_eq!(read_back, receipt);
+
+    let replay = rollback_replayed(&authority, first.package_id, 0x0A, 5_000);
+    assert_eq!(replay, receipt);
+    assert_counts(&stack, 1, 2);
+    assert_disable_counts(&stack, 1);
+    assert_rollback_counts(&stack, 1);
+}
+
+/// 正常回退（uninstalled）：update 到 gen 2 后 uninstall，rollback 恢复
+/// gen 1 manifest 并 CAS uninstalled→installed；同 key 重放返回原回执。
+#[test]
+fn rollback_uninstalled_after_update_replays_idempotently() {
+    let stack = TestStack::new(&label("rollback-uninstalled"), 0x4B);
+    let first = stack.verify_package(0x41, 1, key(0xF0), 1_000);
+    let second = stack.verify_package(0x41, 2, key(0xF1), 2_000);
+    let authority = open_authority(stack.root.root());
+    let gen1 = installed(&authority, &stack.artifacts, first.receipt_id, 0x01, 2_000);
+    updated(
+        &authority,
+        &stack.artifacts,
+        first.package_id,
+        second.receipt_id,
+        0x02,
+        3_000,
+    );
+    uninstalled(&authority, first.package_id, 0x0B, 4_000);
+
+    let receipt = rolled_back(&authority, first.package_id, 0x0A, 5_000);
+    assert_eq!(receipt.application_id, gen1.application_id);
+    assert_eq!(receipt.from_generation.get(), 2);
+    assert_eq!(receipt.to_generation, Generation::INITIAL);
+
+    let view = authority
+        .inspect_application(first.package_id)
+        .expect("inspect")
+        .expect("exists");
+    assert_eq!(view.status, nlos_application::ApplicationStatus::Installed);
+    assert_eq!(view.package_manifest_digest, gen1.package_manifest_digest);
+
+    let replay = rollback_replayed(&authority, first.package_id, 0x0A, 5_000);
+    assert_eq!(replay, receipt);
+    assert_uninstall_counts(&stack, 1);
+    assert_rollback_counts(&stack, 1);
+}
+
+/// 回退拒绝全表：未知 package、installed 状态、gen 1 无上一代、早于最后
+/// 更新、同 key 异形、幂等 replay-first；全部 typed 且零 durable 变化。
+#[test]
+#[allow(clippy::too_many_lines)]
+fn rollback_refusals_are_typed_and_leave_zero_state() {
+    let stack = TestStack::new(&label("rollback-refusals"), 0x4C);
+    let verified = stack.verify_package(0x41, 1, key(0xF0), 1_000);
+    let authority = open_authority(stack.root.root());
+
+    let error = authority
+        .rollback_application(RollbackApplicationRequest {
+            package_id: verified.package_id,
+            idempotency_key: key(0x0A),
+            rollback_at_ms: 3_000,
+        })
+        .expect_err("nothing was ever installed");
+    assert!(matches!(
+        error,
+        ApplicationAuthorityError::ApplicationNotFound { package_id }
+            if package_id == verified.package_id
+    ));
+
+    installed(
+        &authority,
+        &stack.artifacts,
+        verified.receipt_id,
+        0x01,
+        2_000,
+    );
+
+    let error = authority
+        .rollback_application(RollbackApplicationRequest {
+            package_id: verified.package_id,
+            idempotency_key: key(0x0A),
+            rollback_at_ms: 3_000,
+        })
+        .expect_err("installed application cannot roll back");
+    assert!(matches!(
+        error,
+        ApplicationAuthorityError::RollbackRequiresDisabledOrUninstalled {
+            status: nlos_application::ApplicationStatus::Installed,
+            ..
+        }
+    ));
+    assert_rollback_counts(&stack, 0);
+
+    let second = stack.verify_package(0x41, 2, key(0xF1), 2_000);
+    updated(
+        &authority,
+        &stack.artifacts,
+        verified.package_id,
+        second.receipt_id,
+        0x02,
+        4_500,
+    );
+    disabled(&authority, verified.package_id, 0x0B, 5_000);
+
+    let error = authority
+        .rollback_application(RollbackApplicationRequest {
+            package_id: verified.package_id,
+            idempotency_key: key(0x0A),
+            rollback_at_ms: 4_999,
+        })
+        .expect_err("rollback must not precede its own disable");
+    assert!(matches!(
+        error,
+        ApplicationAuthorityError::RollbackPrecedesLastUpdate {
+            last_updated_at_ms: 5_000,
+            rollback_at_ms: 4_999,
+        }
+    ));
+
+    let receipt = rolled_back(&authority, verified.package_id, 0x0A, 6_000);
+    assert_rollback_counts(&stack, 1);
+
+    let gen1_only = stack.verify_package(0x42, 1, key(0xF2), 1_000);
+    installed(
+        &authority,
+        &stack.artifacts,
+        gen1_only.receipt_id,
+        0x03,
+        2_000,
+    );
+    disabled(&authority, gen1_only.package_id, 0x0C, 3_000);
+    let error = authority
+        .rollback_application(RollbackApplicationRequest {
+            package_id: gen1_only.package_id,
+            idempotency_key: key(0x0D),
+            rollback_at_ms: 4_000,
+        })
+        .expect_err("gen 1 has no previous generation");
+    assert!(matches!(
+        error,
+        ApplicationAuthorityError::RollbackAtInitialGeneration { .. }
+    ));
+
+    let error = authority
+        .rollback_application(RollbackApplicationRequest {
+            package_id: verified.package_id,
+            idempotency_key: key(0x0A),
+            rollback_at_ms: 9_000,
+        })
+        .expect_err("same key with a different timestamp must conflict");
+    assert!(matches!(
+        error,
+        ApplicationAuthorityError::IdempotencyConflict
+    ));
+
+    let error = authority
+        .rollback_application(RollbackApplicationRequest {
+            package_id: nlos_types::PackageId::from_bytes([0x42; 16]),
+            idempotency_key: key(0x0A),
+            rollback_at_ms: 6_000,
+        })
+        .expect_err("the key is bound to its original request shape");
+    assert!(matches!(
+        error,
+        ApplicationAuthorityError::IdempotencyConflict
+    ));
+
+    let error = authority
+        .rollback_application(RollbackApplicationRequest {
+            package_id: verified.package_id,
+            idempotency_key: key(0x0E),
+            rollback_at_ms: 6_000,
+        })
+        .expect_err("installed application cannot roll back again");
+    assert!(matches!(
+        error,
+        ApplicationAuthorityError::RollbackRequiresDisabledOrUninstalled {
+            status: nlos_application::ApplicationStatus::Installed,
+            application_id,
+        } if application_id == receipt.application_id
+    ));
+
+    assert_counts(&stack, 2, 3);
+    assert_rollback_counts(&stack, 1);
+    let view = authority
+        .inspect_application(verified.package_id)
+        .expect("inspect")
+        .expect("exists");
+    assert_eq!(view.status, nlos_application::ApplicationStatus::Installed);
     assert_eq!(view.current_installation_generation, Generation::INITIAL);
 }
