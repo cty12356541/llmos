@@ -67,3 +67,37 @@ cargo fmt -p nlos-application -- --check                       # PASS：exit 0
 - rollback 策略引擎（消费 uninstalled 终态与代际 CAS，兼容 `[PKG-UPDATE-001]`）。
 - ~~Slice K：Task 创建/销毁接线（uninstall 后 Task 引导与 teardown 策略）。~~ **部分勾销（2026-09-05）**：`nlos-slice-k` 已接线 `SliceKRuntime::uninstall_application`（installed\|disabled → uninstalled + fail-closed 重装）；demo STEP 09c + `lifecycle_uninstall` 2 测试；Task/Process teardown 策略仍开放——见 [B-SLICE-K-001 §9](b-slice-k-001-end-to-end.md#9-application-lifecycle-uninstall-接入纵切面2026-09-05-追加disable--uninstall-最小前缀)。
 - 完整 ROAD-B-001 生命周期：running-task 拒绝、GC、跨进程 uninstall 审批。
+
+## 7. W16-001 追加：运行中 Task 拒绝 uninstall/rollback（2026-09-05）
+
+> 状态：`PARTIAL PASS`（activity gate 前缀；无 Task 登记/Teardown）
+
+### 7.1 目标
+
+ROAD-B-001 最小前缀：**运行中 Task 拒绝 uninstall/rollback**。Authority 不依赖 `nlos-task`；caller 经 `ActiveTaskActivityProbe` 提供 outstanding task count。
+
+### 7.2 写集
+
+- `crates/nlos-application/src/lib.rs`：`ActiveTaskActivityProbe`、`ApplicationActiveTasksRunning`、`uninstall_application_with_activity_gate` / `rollback_application_with_activity_gate`（internal 共享 replay-first 路径；gate 在 pre-mutation 校验通过后、CAS 前执行）
+- `crates/nlos-application/tests/application_authority.rs`：3 用例（fresh uninstall 拒绝、replay 绕过 gate、fresh rollback 拒绝）+ `MockTaskProbe`
+
+### 7.3 语义
+
+- **Gate 时机**：replay 成功路径不受影响；fresh mutation 在 temporal/generation 等校验通过后、`UPDATE` 前 consult probe。
+- **拒绝**：`probe.outstanding_task_count(package_id) > 0` → `ApplicationActiveTasksRunning { package_id, active_task_count }`；事务 drop，零 durable 副作用。
+- **Ungated API**：`uninstall_application` / `rollback_application` 保持向后兼容，不 consult probe。
+
+### 7.4 验收
+
+```text
+cargo test -p nlos-application                                # PASS：34 passed / 0 failed
+cargo clippy -p nlos-application --all-targets -- -D warnings  # PASS
+cargo fmt -p nlos-application -- --check                       # PASS
+```
+
+### 7.5 仍开放（PARTIAL_PASS 缺口）
+
+- Task 创建/登记与 probe 生产接线（`nlos-task` / Slice K runtime 侧）
+- Task/Process teardown、Capability revoke、GC
+- 跨进程 uninstall 审批
+- Workspace 级门、真实断电、三平台 CI
