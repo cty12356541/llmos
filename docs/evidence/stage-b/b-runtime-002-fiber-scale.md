@@ -222,3 +222,43 @@ cargo fmt -p nlos-runtime-tokio -- --check
   - 100K 探针下 blocking I/O 负向实跑（10K `#[ignore]` tier 待夜间 job）；
   - 100K 规模级 cancel 探针；
   - 未声称 ROAD-B-006 整体达成。
+
+### 6.8 backpressure_wait / suspended 生命周期最小前缀（2026-09-05 追加，W16-006 / ROAD-B-006）
+
+- Owner：`nlos-runtime-tokio`（`src/lib.rs` + `tests/lifecycle_phase.rs`）
+- 设计依据：v0.5 §28.2 ROAD-B-006 分维 Activation metering；`[FIBER-METER-001]` blocked-on-backpressure 与 suspended time 维。
+- **实现（最小、additive）**：
+  - 公开 `FiberLifecyclePhase::{Running,WaitingExternal,BackpressureWait,Suspended}`，由 `TokioRuntimeAdapter::inspect_lifecycle_phase` 读回；`begin_wait`/`resume_from_wait` 同步维护 `WaitingExternal`。
+  - 调度/admission 背压边界：`begin_backpressure_wait` / `resume_from_backpressure_wait`（`FiberState::WaitingModel` 映射）；Running→BackpressureWait 收口 `active_cpu`、累计 `backpressure_wait`。
+  - 协作挂起边界：`begin_suspended` / `resume_from_suspended`（`FiberState::Suspended`）；Running→Suspended 收口 `active_cpu`、累计 `suspended`。
+  - `UsageAccumulator`/`UsagePhase` 扩展四相位终态 `finalize`/`snapshot`；既有 `external_wait`/`active_cpu`/`scheduler_wait`/`elapsed_wall` 口径不变。
+  - `set_state(Running)`  guard 扩展：不覆写 `WaitingIo`/`WaitingModel`/`Suspended`（仅对应 resume 路径可离开）。
+- **新增测试**（`lifecycle_phase.rs`，4 项）：
+  1. `backpressure_wait_exposes_lifecycle_phase_and_fiber_state` — Running→BackpressureWait→Running 相位与 `WaitingModel` 可见。
+  2. `backpressure_wait_accumulates_backpressure_not_external_wait` — 背压挂起 50ms：`backpressure_wait ≥ 40ms` 且 `external_wait = 0`。
+  3. `suspended_exposes_lifecycle_phase_and_fiber_state` — Running→Suspended→Running 相位与 `FiberState::Suspended` 可见。
+  4. `suspended_accumulates_suspended_not_external_wait` — 挂起 50ms：`suspended ≥ 40ms` 且 `external_wait`/`backpressure_wait = 0`。
+
+#### 6.8.1 验证门实测
+
+```text
+cargo test -p nlos-runtime-tokio
+  → 79 passed / 0 failed / 4 ignored（16 个 test target 全绿；75 既有 + 4 lifecycle_phase；
+    ignored = durable_wait_scale 2 项 + scale.rs 100K 1 项 + blocking_io_negative 10K 1 项）
+cargo test -p nlos-runtime-tokio --test lifecycle_phase
+  → 4 passed / 0 failed（2026-09-05 W16-006）
+cargo clippy -p nlos-runtime-tokio --all-targets -- -D warnings
+  → exit 0（stable，2026-09-05 W16-006）
+cargo fmt -p nlos-runtime-tokio -- --check
+  → 通过（stable，2026-09-05 W16-006）
+```
+
+#### 6.8.2 缺口更新
+
+- **勾销**：§6.6.2 中「`backpressure_wait` / `suspended` 维仍为零占位」→ 本 §6.8 功能级最小前缀（显式边界 API + 两维 metering + 相位 inspect）。
+- **如实保留（ROAD-B-006 剩余，Claim 维持 PARTIAL_PASS）**：
+  - 100K 探针下分维 metering 规模验证（背压/挂起维仍为零占位的 100K 实跑未做）；
+  - fiber 体内自动触发背压/挂起（本片为 scheduler 边界显式 hook，非 admission 阻塞 spawn 集成）；
+  - 100K 规模级 cancel 探针；
+  - runtime 侧 process crash 传播联动；
+  - 未声称 ROAD-B-006 整体达成。

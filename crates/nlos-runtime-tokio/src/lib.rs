@@ -80,12 +80,27 @@ enum TerminalOutcome {
     Finished(FiberExit),
 }
 
+/// Scheduler / durable-wait lifecycle phase exposed at the runtime boundary.
+///
+/// Complements [`FiberState`] with metering-specific wait kinds that are not
+/// yet modeled as distinct `FiberState` variants (e.g. admission backpressure).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum FiberLifecyclePhase {
+    #[default]
+    Running,
+    WaitingExternal,
+    BackpressureWait,
+    Suspended,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum UsagePhase {
     #[default]
     None,
     Running(Instant),
     WaitingExternal(Instant),
+    BackpressureWait(Instant),
+    Suspended(Instant),
 }
 
 struct UsageAccumulator {
@@ -98,6 +113,14 @@ impl UsageAccumulator {
         match self.phase {
             UsagePhase::WaitingExternal(since) => {
                 self.usage.external_wait += now.saturating_duration_since(since);
+                self.phase = UsagePhase::Running(now);
+            }
+            UsagePhase::BackpressureWait(since) => {
+                self.usage.backpressure_wait += now.saturating_duration_since(since);
+                self.phase = UsagePhase::Running(now);
+            }
+            UsagePhase::Suspended(since) => {
+                self.usage.suspended += now.saturating_duration_since(since);
                 self.phase = UsagePhase::Running(now);
             }
             UsagePhase::None => {
@@ -116,7 +139,39 @@ impl UsageAccumulator {
             UsagePhase::None => {
                 self.phase = UsagePhase::WaitingExternal(now);
             }
-            UsagePhase::WaitingExternal(_) => {}
+            UsagePhase::WaitingExternal(_)
+            | UsagePhase::BackpressureWait(_)
+            | UsagePhase::Suspended(_) => {}
+        }
+    }
+
+    fn enter_backpressure_wait(&mut self, now: Instant) {
+        match self.phase {
+            UsagePhase::Running(since) => {
+                self.usage.active_cpu += now.saturating_duration_since(since);
+                self.phase = UsagePhase::BackpressureWait(now);
+            }
+            UsagePhase::None => {
+                self.phase = UsagePhase::BackpressureWait(now);
+            }
+            UsagePhase::WaitingExternal(_)
+            | UsagePhase::BackpressureWait(_)
+            | UsagePhase::Suspended(_) => {}
+        }
+    }
+
+    fn enter_suspended(&mut self, now: Instant) {
+        match self.phase {
+            UsagePhase::Running(since) => {
+                self.usage.active_cpu += now.saturating_duration_since(since);
+                self.phase = UsagePhase::Suspended(now);
+            }
+            UsagePhase::None => {
+                self.phase = UsagePhase::Suspended(now);
+            }
+            UsagePhase::WaitingExternal(_)
+            | UsagePhase::BackpressureWait(_)
+            | UsagePhase::Suspended(_) => {}
         }
     }
 
@@ -126,6 +181,12 @@ impl UsageAccumulator {
         }
         if let UsagePhase::WaitingExternal(since) = self.phase {
             self.usage.external_wait += now.saturating_duration_since(since);
+        }
+        if let UsagePhase::BackpressureWait(since) = self.phase {
+            self.usage.backpressure_wait += now.saturating_duration_since(since);
+        }
+        if let UsagePhase::Suspended(since) = self.phase {
+            self.usage.suspended += now.saturating_duration_since(since);
         }
         self.phase = UsagePhase::None;
     }
@@ -138,6 +199,12 @@ impl UsageAccumulator {
         if let UsagePhase::WaitingExternal(since) = self.phase {
             usage.external_wait += now.saturating_duration_since(since);
         }
+        if let UsagePhase::BackpressureWait(since) = self.phase {
+            usage.backpressure_wait += now.saturating_duration_since(since);
+        }
+        if let UsagePhase::Suspended(since) = self.phase {
+            usage.suspended += now.saturating_duration_since(since);
+        }
         usage
     }
 }
@@ -146,6 +213,7 @@ struct FiberRecord {
     generation: Generation,
     scope: Arc<CancellationScope>,
     state: Mutex<FiberState>,
+    lifecycle_phase: Mutex<FiberLifecyclePhase>,
     usage: Mutex<UsageAccumulator>,
     accepted_at: Instant,
     terminal: Mutex<TerminalOutcome>,
@@ -158,6 +226,7 @@ impl FiberRecord {
             generation,
             scope,
             state: Mutex::new(FiberState::Ready),
+            lifecycle_phase: Mutex::new(FiberLifecyclePhase::Running),
             usage: Mutex::new(UsageAccumulator {
                 usage: ActivationUsage::default(),
                 phase: UsagePhase::None,
@@ -193,7 +262,12 @@ impl FiberRecord {
     fn set_state(&self, state: FiberState) {
         let now = Instant::now();
         let current = *lock_unpoisoned(&self.state);
-        if state == FiberState::Running && current == FiberState::WaitingIo {
+        if state == FiberState::Running
+            && matches!(
+                current,
+                FiberState::WaitingIo | FiberState::WaitingModel | FiberState::Suspended
+            )
+        {
             return;
         }
         {
@@ -222,6 +296,7 @@ impl FiberRecord {
         if matches!(*state, FiberState::Ready | FiberState::Running) {
             let now = Instant::now();
             lock_unpoisoned(&self.usage).enter_waiting(now);
+            *lock_unpoisoned(&self.lifecycle_phase) = FiberLifecyclePhase::WaitingExternal;
             *state = FiberState::WaitingIo;
         }
     }
@@ -233,8 +308,57 @@ impl FiberRecord {
         if *state == FiberState::WaitingIo {
             let now = Instant::now();
             lock_unpoisoned(&self.usage).enter_running(now);
+            *lock_unpoisoned(&self.lifecycle_phase) = FiberLifecyclePhase::Running;
             *state = FiberState::Running;
         }
+    }
+
+    /// Scheduler/admission backpressure boundary: leaves `Running` and meters
+    /// `backpressure_wait` until [`Self::resume_from_backpressure_wait`].
+    fn begin_backpressure_wait(&self) {
+        let mut state = lock_unpoisoned(&self.state);
+        if matches!(*state, FiberState::Ready | FiberState::Running) {
+            let now = Instant::now();
+            lock_unpoisoned(&self.usage).enter_backpressure_wait(now);
+            *lock_unpoisoned(&self.lifecycle_phase) = FiberLifecyclePhase::BackpressureWait;
+            *state = FiberState::WaitingModel;
+        }
+    }
+
+    fn resume_from_backpressure_wait(&self) {
+        let mut state = lock_unpoisoned(&self.state);
+        if *state == FiberState::WaitingModel {
+            let now = Instant::now();
+            lock_unpoisoned(&self.usage).enter_running(now);
+            *lock_unpoisoned(&self.lifecycle_phase) = FiberLifecyclePhase::Running;
+            *state = FiberState::Running;
+        }
+    }
+
+    /// Cooperative suspend boundary: leaves `Running` and meters `suspended`
+    /// until [`Self::resume_from_suspended`].
+    fn begin_suspended(&self) {
+        let mut state = lock_unpoisoned(&self.state);
+        if matches!(*state, FiberState::Ready | FiberState::Running) {
+            let now = Instant::now();
+            lock_unpoisoned(&self.usage).enter_suspended(now);
+            *lock_unpoisoned(&self.lifecycle_phase) = FiberLifecyclePhase::Suspended;
+            *state = FiberState::Suspended;
+        }
+    }
+
+    fn resume_from_suspended(&self) {
+        let mut state = lock_unpoisoned(&self.state);
+        if *state == FiberState::Suspended {
+            let now = Instant::now();
+            lock_unpoisoned(&self.usage).enter_running(now);
+            *lock_unpoisoned(&self.lifecycle_phase) = FiberLifecyclePhase::Running;
+            *state = FiberState::Running;
+        }
+    }
+
+    fn lifecycle_phase_snapshot(&self) -> FiberLifecyclePhase {
+        *lock_unpoisoned(&self.lifecycle_phase)
     }
 
     fn activation_usage_snapshot(&self) -> ActivationUsage {
@@ -333,6 +457,63 @@ impl TokioRuntimeAdapter {
             return Err(RuntimeError::InvalidGeneration);
         }
         Ok(Arc::clone(record))
+    }
+
+    /// Returns the scheduler/durable-wait lifecycle phase for inspection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RuntimeError::InvalidGeneration`] when the handle is stale.
+    pub fn inspect_lifecycle_phase(
+        &self,
+        handle: FiberHandle,
+    ) -> Result<FiberLifecyclePhase, RuntimeError> {
+        let record = self.record_for(handle)?;
+        Ok(record.lifecycle_phase_snapshot())
+    }
+
+    /// Marks a live fiber as blocked on scheduler/admission backpressure.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RuntimeError::InvalidGeneration`] when the handle is stale.
+    pub fn begin_backpressure_wait(&self, handle: FiberHandle) -> Result<(), RuntimeError> {
+        let record = self.record_for(handle)?;
+        record.begin_backpressure_wait();
+        Ok(())
+    }
+
+    /// Resumes a fiber from scheduler/admission backpressure.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RuntimeError::InvalidGeneration`] when the handle is stale.
+    pub fn resume_from_backpressure_wait(&self, handle: FiberHandle) -> Result<(), RuntimeError> {
+        let record = self.record_for(handle)?;
+        record.resume_from_backpressure_wait();
+        Ok(())
+    }
+
+    /// Marks a live fiber as cooperatively suspended.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RuntimeError::InvalidGeneration`] when the handle is stale.
+    pub fn begin_suspended(&self, handle: FiberHandle) -> Result<(), RuntimeError> {
+        let record = self.record_for(handle)?;
+        record.begin_suspended();
+        Ok(())
+    }
+
+    /// Resumes a cooperatively suspended fiber.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RuntimeError::InvalidGeneration`] when the handle is stale.
+    pub fn resume_from_suspended(&self, handle: FiberHandle) -> Result<(), RuntimeError> {
+        let record = self.record_for(handle)?;
+        record.resume_from_suspended();
+        Ok(())
     }
 }
 
