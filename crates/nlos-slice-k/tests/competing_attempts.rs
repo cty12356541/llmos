@@ -37,6 +37,7 @@ use std::sync::Arc;
 use nlos_artifact::{ContentDigest, CreateArtifactSpec, PutRevisionRequest, staging_id_for};
 use nlos_runtime::FiberSpec;
 use nlos_runtime_tokio::{TokioRuntimeAdapter, TokioRuntimeConfig};
+use nlos_slice_k::provenance_triple;
 use nlos_slice_k::{
     FiberOutcome, SliceKRuntime, WriteFiberJob, fixture_bytes, seeded_key, spawn_write_fiber,
 };
@@ -135,6 +136,7 @@ fn payload_artifact(runtime: &SliceKRuntime, seed: u8) -> ArtifactId {
             expected_head_revision: 0,
             bytes: &fixture_bytes(seed, 128),
             created_at_ms,
+            provenance: provenance_triple(seed),
         })
         .expect("put payload revision 1");
     artifact_id

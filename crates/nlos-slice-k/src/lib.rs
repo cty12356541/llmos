@@ -51,7 +51,10 @@ pub use chain::{
 };
 pub use error::{SliceKError, SliceKResult};
 pub use fiber::{FiberOutcome, WriteFiberJob, spawn_write_fiber};
-pub use package::{PublishedPackage, Publisher, fixture_bytes};
+pub use package::{
+    PublishedPackage, Publisher, artifact_blob_path, fixture_bytes, plant_orphan_artifact_blob,
+    provenance_triple,
+};
 pub use runtime::{
     ChainInspect, ChainQuery, SliceKRuntime, initial_generation, seeded_key, short_hex,
 };

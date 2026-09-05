@@ -217,3 +217,47 @@ cargo clippy -p nlos-slice-k --all-targets -- -D warnings
 - **无 Task/Process teardown**：uninstall 不停止、不等待 happy-chain 上已 Committed 的 Task/Process（与 B-APPLICATION-003 限制一致）；纵切面只接线 application 终态 CAS。
 - **无 rollback/GC**：uninstalled 行 durable 保留；无物理删行或 artifact GC。
 - **lifecycle 与纵切面主链无联动**：happy chain 的 Task/Attempt/Process 在 uninstall 后仍 inspect 可读——符合当前权威语义，非 slice 发明。
+
+## 10. Uninstall 后显式 orphan GC 接线（2026-09-06 追加：W17-001 ROAD-B-001 GC 最小前缀）
+
+- **定位**：ROAD-B-001 GC 最小前缀——纵切面 uninstall 尾后手动调用 [`ArtifactStore::collect_orphan_blobs`](../../crates/nlos-artifact/src/gc.rs)（B-ARTIFACT-004），证明 package 生命周期中可证明孤儿 blob 可被保守 GC 收集，已引用 blob 保留；只消费已落地 API，不实现 PKG-UPDATE-001、不碰 application authority schema。
+- **写集**：`crates/nlos-slice-k/**`（`package.rs` 新增 `collect_orphan_blobs`/`plant_orphan_artifact_blob`/`artifact_blob_path`/`provenance_triple`；`slice-k-demo.rs` STEP 09d；`tests/lifecycle_uninstall.rs` 新增 1 用例；`competing_attempts.rs` 补 `provenance` 字段对齐 artifact API）与本 §、`docs/evidence/stage-b/b-application-003-uninstall.md` §W17-001。`nlos-artifact`/`nlos-application` 零改动（只读消费）。base HEAD `77efcb6`。
+
+### 10.1 接线摘要
+
+| 接线点 | 消费的已落地 API | 语义 |
+|---|---|---|
+| 组装助手 | `SliceKRuntime::collect_orphan_blobs(seed)` → `ArtifactStore::collect_orphan_blobs`（key `seeded_key(seed,19/20)`、时间戳取自 clock） | 显式保守孤儿 GC；`Collected/Replayed` 均返回 `GcReceipt` |
+| fixture | `plant_orphan_artifact_blob(root, tag, len)` | 模拟 package 写入残留（磁盘有 blob、无 metadata 行） |
+| blob 路径 | `artifact_blob_path(runtime.root(), digest)` | 对齐 `ArtifactStore::open(root/artifacts)` → `{root}/artifacts/artifacts/blobs/` |
+| 时序 | uninstall 终态 CAS 之后手动 GC | uninstall 本身不触发 GC、不解除 artifact 引用 |
+
+### 10.2 demo 输出新增行（STEP 09d，接 09c 之后）
+
+```text
+[slice-k] STEP 09d orphan-gc begin
+[slice-k] STEP 09d orphan-gc collected=2 scanned=4
+[slice-k] RECEIPT kind=artifact-gc id=<hex> collected=2 scanned=4
+[slice-k] STEP 09d referenced-blobs retained (fail-closed GC)
+```
+
+09c 前植入 2 个 package 孤儿 blob（tag `0xCD`/`0xCE`）；happy chain 已产生的 payload/head 引用 blob 经 GC 后仍存活。
+
+### 10.3 测试与断言要点
+
+- `uninstall_then_manual_gc_collects_package_orphans_and_retains_referenced_blobs`：publish→install→植入 2 孤儿→uninstall→`collect_orphan_blobs` → `collected_digests` 恰为 2 孤儿、文件删除、`package.payload_digest` blob 存活、同 key GC 重放 `Replayed` 逐字节相等。
+
+### 10.4 验证（base HEAD `77efcb6` 工作区，定向 `-p` 命令）
+
+```text
+cargo test -p nlos-slice-k                    → 10 passed / 0 failed（end_to_end 3 + competing_attempts 4 + lifecycle_uninstall 3）
+cargo clippy -p nlos-slice-k --all-targets -- -D warnings  → 0 warning
+cargo fmt -p nlos-slice-k -- --check                       → 干净
+```
+
+### 10.5 剩余缺口（如实登记）
+
+- **手动 GC、无自动触发**：与 B-ARTIFACT-004 一致；uninstall 不 schedule/sweep/open-time GC。
+- **uninstall 不解除 artifact 引用**：GC 引用集仍来自 artifact store SQLite 行；package payload/head 引用 blob 机械上非孤儿，本切片只证明「可证明孤儿可删、在册引用保留」。
+- **无 retention-GC / PKG-UPDATE-001 rollback**：登记为后续 ROAD-B-001 车道。
+- **无 Task/Process teardown**：与 §9.5 一致。

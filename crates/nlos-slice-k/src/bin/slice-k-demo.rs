@@ -8,11 +8,12 @@ use std::sync::Arc;
 use nlos_types::PackageId;
 
 use nlos_application::DisableApplicationRequest;
+use nlos_artifact::CollectOrphanBlobsDecision;
 use nlos_runtime::RuntimeAdapter as _;
 use nlos_runtime_tokio::{TokioRuntimeAdapter, TokioRuntimeConfig};
 use nlos_slice_k::{
-    ChainQuery, HappyChain, SliceKRuntime, run_cancel_path, run_happy_chain, run_recovery_prefix,
-    seeded_key, short_hex,
+    ChainQuery, HappyChain, SliceKRuntime, artifact_blob_path, plant_orphan_artifact_blob,
+    run_cancel_path, run_happy_chain, run_recovery_prefix, seeded_key, short_hex,
 };
 
 fn receipt_line(kind: &str, id: &[u8], detail: &str) {
@@ -166,8 +167,15 @@ fn demo_lifecycle(runtime: &Arc<SliceKRuntime>, chain: &HappyChain) {
 }
 
 /// Demonstrates the §23.1 uninstall tail: a disabled application transitions
-/// to the terminal `uninstalled` status and further installs fail closed.
+/// to the terminal `uninstalled` status and further installs fail closed,
+/// then one manual orphan-blob GC pass (B-ARTIFACT-004) collects package
+/// residue while referenced artifact blobs survive.
 fn demo_uninstall(runtime: &Arc<SliceKRuntime>, chain: &HappyChain) {
+    let (orphan_a, _) =
+        plant_orphan_artifact_blob(runtime.root(), 0xCD, 128).expect("plant package orphan A");
+    let (orphan_b, _) =
+        plant_orphan_artifact_blob(runtime.root(), 0xCE, 96).expect("plant package orphan B");
+
     println!("[slice-k] STEP 09c lifecycle-uninstall begin");
     let uninstall = runtime
         .uninstall_application(chain.package.package_id, 0x2A)
@@ -209,6 +217,43 @@ fn demo_uninstall(runtime: &Arc<SliceKRuntime>, chain: &HappyChain) {
     for line in inspect.report_lines() {
         println!("[slice-k] INSPECT-UNINSTALLED {line}");
     }
+
+    println!("[slice-k] STEP 09d orphan-gc begin");
+    let gc = runtime
+        .collect_orphan_blobs(0x2A)
+        .expect("manual orphan GC after uninstall");
+    let receipt = gc.receipt();
+    assert!(matches!(gc, CollectOrphanBlobsDecision::Collected(_)));
+    let mut expected_orphans = vec![orphan_a, orphan_b];
+    expected_orphans.sort();
+    assert_eq!(receipt.collected_digests, expected_orphans);
+    println!(
+        "[slice-k] STEP 09d orphan-gc collected={} scanned={}",
+        receipt.collected_count, receipt.scanned_blob_count
+    );
+    receipt_line(
+        "artifact-gc",
+        receipt.receipt_id.as_bytes(),
+        &format!(
+            "collected={} scanned={}",
+            receipt.collected_count, receipt.scanned_blob_count
+        ),
+    );
+    assert!(
+        artifact_blob_path(runtime.root(), chain.package.payload_digest).is_file(),
+        "referenced package payload blob must survive GC"
+    );
+    let head = runtime
+        .artifacts
+        .resolve_head(chain.package.payload_artifact, u64::MAX)
+        .expect("artifact head after GC");
+    if let Some(head) = head {
+        assert!(
+            artifact_blob_path(runtime.root(), head.digest).is_file(),
+            "referenced artifact head blob must survive GC"
+        );
+    }
+    println!("[slice-k] STEP 09d referenced-blobs retained (fail-closed GC)");
 }
 
 async fn demo_cancel_path(runtime: &Arc<SliceKRuntime>, adapter: &TokioRuntimeAdapter) {

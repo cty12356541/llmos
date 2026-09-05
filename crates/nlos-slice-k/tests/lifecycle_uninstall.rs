@@ -2,8 +2,11 @@
 //! `ApplicationAuthority::uninstall_application` API.
 
 use nlos_application::{ApplicationAuthorityError, ApplicationStatus, DisableApplicationRequest};
-use nlos_artifact::PackageVerificationReceipt;
-use nlos_slice_k::{PublishedPackage, SliceKRuntime, fixture_bytes, seeded_key};
+use nlos_artifact::{CollectOrphanBlobsDecision, PackageVerificationReceipt};
+use nlos_slice_k::{
+    PublishedPackage, SliceKRuntime, artifact_blob_path, fixture_bytes, plant_orphan_artifact_blob,
+    seeded_key,
+};
 
 struct TempDir {
     root: std::path::PathBuf,
@@ -151,4 +154,39 @@ fn install_disable_then_uninstall_reaches_terminal_state_and_refuses_reinstall()
             ApplicationAuthorityError::ApplicationUninstalled { .. }
         )
     ));
+}
+
+#[test]
+fn uninstall_then_manual_gc_collects_package_orphans_and_retains_referenced_blobs() {
+    let (_dir, runtime, package, _verification) = installed_fixture(0xE0);
+
+    let (orphan_a, orphan_a_path) =
+        plant_orphan_artifact_blob(runtime.root(), 0xED, 128).expect("plant orphan A");
+    let (orphan_b, orphan_b_path) =
+        plant_orphan_artifact_blob(runtime.root(), 0xEE, 64).expect("plant orphan B");
+
+    runtime
+        .uninstall_application(package.package_id, 0xE0)
+        .expect("uninstall");
+
+    let gc = runtime
+        .collect_orphan_blobs(0xE0)
+        .expect("manual orphan GC");
+    assert!(matches!(gc, CollectOrphanBlobsDecision::Collected(_)));
+    let receipt = gc.receipt();
+    let mut expected = vec![orphan_a, orphan_b];
+    expected.sort();
+    assert_eq!(receipt.collected_digests, expected);
+    assert_eq!(receipt.collected_count, 2);
+    assert!(!orphan_a_path.exists());
+    assert!(!orphan_b_path.exists());
+
+    assert!(
+        artifact_blob_path(runtime.root(), package.payload_digest).is_file(),
+        "referenced package payload blob must survive GC"
+    );
+
+    let replay = runtime.collect_orphan_blobs(0xE0).expect("GC replay");
+    assert!(matches!(replay, CollectOrphanBlobsDecision::Replayed(_)));
+    assert_eq!(replay.receipt(), receipt);
 }

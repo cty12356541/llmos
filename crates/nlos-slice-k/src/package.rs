@@ -9,8 +9,9 @@ use nlos_application::{
     UninstallDecision, UninstallReceipt,
 };
 use nlos_artifact::{
-    ContentDigest, CreateArtifactSpec, PackageEntryRole, PackageManifest, PackageManifestEntry,
-    PackageVerificationReceipt, PutRevisionRequest, SignedPackage, VerifyPackageRequest,
+    CollectOrphanBlobsDecision, CollectOrphanBlobsRequest, ContentDigest, CreateArtifactSpec,
+    PackageEntryRole, PackageManifest, PackageManifestEntry, PackageVerificationReceipt,
+    ProvenanceSourceTriple, PutRevisionRequest, SignedPackage, VerifyPackageRequest,
     package_manifest_message,
 };
 use nlos_identity::{BootstrapPrincipalRequest, IdentityBinding, KeyPurpose};
@@ -96,6 +97,7 @@ impl SliceKRuntime {
             expected_head_revision: 0,
             bytes: payload,
             created_at_ms,
+            provenance: provenance_triple(seed),
         })?;
         let payload_digest = ContentDigest::of_bytes(payload);
         let manifest = PackageManifest {
@@ -200,6 +202,23 @@ impl SliceKRuntime {
         )? {
             InstallDecision::Installed(receipt) | InstallDecision::Replayed(receipt) => Ok(receipt),
         }
+    }
+
+    /// Runs one explicit conservative orphan-blob GC pass over this runtime's
+    /// artifact store ([`ArtifactStore::collect_orphan_blobs`], B-ARTIFACT-004).
+    /// Caller discipline: manual invocation only; no automatic trigger.
+    ///
+    /// # Errors
+    ///
+    /// Propagates artifact-authority and clock errors.
+    pub fn collect_orphan_blobs(&self, seed: u8) -> SliceKResult<CollectOrphanBlobsDecision> {
+        let collected_at_ms = self.wall_now_ms(seeded_key(seed, 19))?;
+        Ok(self
+            .artifacts
+            .collect_orphan_blobs(CollectOrphanBlobsRequest {
+                idempotency_key: seeded_key(seed, 20),
+                collected_at_ms,
+            })?)
     }
 
     /// Uninstalls one installed or disabled application (authority-first:
@@ -310,6 +329,50 @@ impl SliceKRuntime {
             .clone();
         Ok(binding)
     }
+}
+
+/// Fixture provenance triple for slice `put_revision` calls.
+#[must_use]
+pub fn provenance_triple(seed: u8) -> ProvenanceSourceTriple {
+    ProvenanceSourceTriple {
+        source_a: [0xc0_u8.wrapping_add(seed); 16],
+        source_b: [0xd0_u8.wrapping_add(seed); 16],
+        source_digest: ContentDigest::from_bytes([0xe0_u8.wrapping_add(seed); 32]),
+    }
+}
+
+/// Path of one digest-addressed blob under the slice runtime root
+/// (`{root}/artifacts/artifacts/blobs/`, matching [`ArtifactStore::open`]
+/// on `{root}/artifacts`).
+#[must_use]
+pub fn artifact_blob_path(root: &std::path::Path, digest: ContentDigest) -> std::path::PathBuf {
+    let hex = digest.to_hex();
+    root.join("artifacts")
+        .join("artifacts")
+        .join("blobs")
+        .join(&hex[..2])
+        .join(hex)
+}
+
+/// Plants a provable orphan blob (bytes on disk, no metadata row) for
+/// slice fixtures simulating abandoned package writes.
+///
+/// # Errors
+///
+/// Propagates filesystem errors from directory creation or write.
+pub fn plant_orphan_artifact_blob(
+    root: &std::path::Path,
+    tag: u8,
+    len: usize,
+) -> SliceKResult<(ContentDigest, std::path::PathBuf)> {
+    let payload = fixture_bytes(tag, len);
+    let digest = ContentDigest::of_bytes(&payload);
+    let path = artifact_blob_path(root, digest);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&path, &payload)?;
+    Ok((digest, path))
 }
 
 /// Distinct payload bytes for fixtures (deterministic, seed-tagged).

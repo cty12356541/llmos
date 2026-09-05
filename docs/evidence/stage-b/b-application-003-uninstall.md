@@ -101,3 +101,26 @@ cargo fmt -p nlos-application -- --check                       # PASS
 - Task/Process teardown、Capability revoke、GC
 - 跨进程 uninstall 审批
 - Workspace 级门、真实断电、三平台 CI
+
+## 8. W17-001 追加：Slice K uninstall 后显式 orphan GC（2026-09-06）
+
+> 状态：`PARTIAL PASS`（手动 GC 前缀；无自动触发、uninstall 不解除 artifact 引用）
+
+### 8.1 目标
+
+ROAD-B-001 GC 最小前缀：Slice K 纵切面在 uninstall 后调用 B-ARTIFACT-004 `collect_orphan_blobs`，证明 package 专属可证明孤儿 blob 可被保守收集，referenced blob 保留。
+
+### 8.2 写集
+
+- `crates/nlos-slice-k/**`（`SliceKRuntime::collect_orphan_blobs`、`plant_orphan_artifact_blob`；demo STEP 09d；`lifecycle_uninstall` +1 用例）
+- 证据：`b-slice-k-001-end-to-end.md` §10、`b-application-003-uninstall.md` §8（本段）
+
+### 8.3 限制（Claim ≤ Evidence）
+
+- **手动 GC**：仅显式调用；无 uninstall 挂钩、无 schedule/open-time sweep。
+- **uninstall 不删 artifact 元数据/引用**：GC 引用集不变；payload/head blob 非孤儿，不会被本路径误删。
+- **无 PKG-UPDATE-001 / retention-GC / Task teardown**。
+
+### 8.4 验证
+
+见 [B-SLICE-K-001 §10.4](b-slice-k-001-end-to-end.md#104-验证base-head-77efcb6-工作区定向--p-命令)。
