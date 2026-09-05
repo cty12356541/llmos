@@ -54,8 +54,12 @@
 //! lands the terminal `installed|disabled → uninstalled` CAS mark only;
 //! `rollback_application` lands one generation step back from
 //! `disabled|uninstalled` to `installed` only; there is no enable shortcut,
-//! no physical row delete), running Task/Process teardown (uninstall does not
-//! stop or wait for tasks),
+//! no physical row delete), running Task/Process teardown (ungated
+//! `uninstall_application`/`rollback_application` do not stop or wait for
+//! tasks; [`ApplicationAuthority::uninstall_application_with_activity_gate`]
+//! and [`ApplicationAuthority::rollback_application_with_activity_gate`]
+//! refuse fresh mutations when a caller-supplied [`ActiveTaskActivityProbe`]
+//! reports outstanding Tasks),
 //! creation wiring (the next Slice K longitudinal slice), multi-party
 //! installer approval (exactly one installer principal is recorded, taken
 //! from the verified receipt's signer), §23.2's full manifest
