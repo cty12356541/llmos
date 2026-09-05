@@ -38,7 +38,7 @@ cargo fmt -p nlos-process -- --check → 通过
 
 ```text
 cargo test -p nlos-process
-  → 28 passed / 0 failed（+3 platform_kill；2026-09-06 W17-P）
+  → 20 passed / 0 failed（+3 platform_kill；2026-09-06 W17-P）
 cargo clippy -p nlos-process --all-targets -- -D warnings → 0 warning
 cargo fmt -p nlos-process -- --check → 通过
 ```
