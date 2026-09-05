@@ -208,6 +208,10 @@ pub struct ProcessInspection {
 /// the default [`UnwiredProcessInspector`] in place until one is available.
 pub trait ProcessInspector {
     /// Returns one bounded active-binding snapshot or a sanitized failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SabiFailure`] when the backing authority rejects the read.
     fn inspect_process(&self, process_id: [u8; 16]) -> Result<ProcessInspection, SabiFailure>;
 }
 
@@ -590,16 +594,14 @@ fn compose_process_inspection(
     process: Option<&dyn ProcessInspector>,
     process_id: [u8; 16],
 ) -> Result<ControlOutcome, SabiFailure> {
-    match process {
-        Some(inspector) => inspector
+    if let Some(inspector) = process {
+        inspector
             .inspect_process(process_id)
-            .map(ControlOutcome::ProcessInspected),
-        None => {
-            let unwired = UnwiredProcessInspector;
-            unwired
-                .inspect_process(process_id)
-                .map(ControlOutcome::ProcessInspected)
-        }
+            .map(ControlOutcome::ProcessInspected)
+    } else {
+        UnwiredProcessInspector
+            .inspect_process(process_id)
+            .map(ControlOutcome::ProcessInspected)
     }
 }
 

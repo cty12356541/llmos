@@ -27,7 +27,7 @@ impl ProcessInspector for ProcessAuthorityInspector<'_> {
         let record = self
             .authority
             .inspect_active_process_binding(process_id)
-            .map_err(map_process_authority_error)?;
+            .map_err(|error| map_process_authority_error(&error))?;
         Ok(ProcessInspection {
             process_id: *record.process_id.as_bytes(),
             process_generation: record.process_generation.get(),
@@ -39,7 +39,7 @@ impl ProcessInspector for ProcessAuthorityInspector<'_> {
     }
 }
 
-fn map_process_authority_error(error: ProcessAuthorityError) -> SabiFailure {
+fn map_process_authority_error(error: &ProcessAuthorityError) -> SabiFailure {
     let (code, retry, safe_message) = match error {
         ProcessAuthorityError::ProcessNotFound(_) => (
             SabiErrorCode::NotFound,
@@ -50,7 +50,8 @@ fn map_process_authority_error(error: ProcessAuthorityError) -> SabiFailure {
         | ProcessAuthorityError::StaleProcessBinding
         | ProcessAuthorityError::StaleIsolationDomain
         | ProcessAuthorityError::StaleFiberIncarnation
-        | ProcessAuthorityError::IsolationDomainNotFound(_) => (
+        | ProcessAuthorityError::IsolationDomainNotFound(_)
+        | ProcessAuthorityError::FiberIncarnationCancelled(_) => (
             SabiErrorCode::State,
             RetryDirective::DoNotRetry,
             "process binding is not active",
@@ -88,11 +89,6 @@ fn map_process_authority_error(error: ProcessAuthorityError) -> SabiFailure {
             SabiErrorCode::NotFound,
             RetryDirective::DoNotRetry,
             "requested process fiber state was not found",
-        ),
-        ProcessAuthorityError::FiberIncarnationCancelled(_) => (
-            SabiErrorCode::State,
-            RetryDirective::DoNotRetry,
-            "process binding is not active",
         ),
     };
     SabiFailure {
