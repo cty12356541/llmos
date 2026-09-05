@@ -29,7 +29,18 @@ impl KeyPurpose {
 
 #[cfg(test)]
 mod tests {
-    use super::KeyPurpose;
+    use super::{CustodyProfile, KeyPurpose};
+
+    #[test]
+    fn custody_profile_codec_roundtrips_known_values_and_fails_closed() {
+        assert_eq!(
+            CustodyProfile::decode(CustodyProfile::TrustedLocalSoftware.encode()),
+            Some(CustodyProfile::TrustedLocalSoftware)
+        );
+        assert_eq!(CustodyProfile::decode(0), None);
+        assert_eq!(CustodyProfile::decode(2), None);
+        assert_eq!(CustodyProfile::decode(-1), None);
+    }
 
     #[test]
     fn key_purpose_codec_roundtrips_known_values_and_fails_closed() {
@@ -265,6 +276,65 @@ impl VerifiedBarrierObservationSigner {
     #[must_use]
     pub const fn key_generation(self) -> Generation {
         self.key_generation
+    }
+}
+
+/// Stage-B software-only reference custody profile. Production HSM/Keychain
+/// profiles are additive extensions and are not implemented here.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum CustodyProfile {
+    TrustedLocalSoftware = 1,
+}
+
+impl CustodyProfile {
+    pub(crate) const fn encode(self) -> i64 {
+        self as i64
+    }
+
+    pub(crate) fn decode(value: i64) -> Option<Self> {
+        match value {
+            1 => Some(Self::TrustedLocalSoftware),
+            _ => None,
+        }
+    }
+}
+
+/// Durable binding between one immutable key generation and its custody domain.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct KeyCustodyRecord {
+    pub key_id: KeyId,
+    pub key_generation: Generation,
+    pub principal_id: PrincipalId,
+    pub control_domain_id: ControlDomainId,
+    pub custody_profile: CustodyProfile,
+    pub registered_at_ms: u64,
+}
+
+/// Registers custody for an existing key generation. The authority copies
+/// principal and control-domain identity from the current durable binding and
+/// rejects stale generation fences fail-closed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RegisterCustodyBindingRequest {
+    pub key_id: KeyId,
+    pub expected_key_generation: Generation,
+    pub custody_profile: CustodyProfile,
+    pub idempotency_key: IdempotencyKey,
+    pub registered_at_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CustodyBindingDecision {
+    Registered(KeyCustodyRecord),
+    Replayed(KeyCustodyRecord),
+}
+
+impl CustodyBindingDecision {
+    #[must_use]
+    pub const fn record(self) -> KeyCustodyRecord {
+        match self {
+            Self::Registered(record) | Self::Replayed(record) => record,
+        }
     }
 }
 

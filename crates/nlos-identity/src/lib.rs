@@ -31,15 +31,16 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, 
 use sha2::{Digest, Sha256};
 
 pub use model::{
-    BootstrapDecision, BootstrapPrincipalRequest, Ed25519PublicKey, Ed25519Signature,
-    IdentityBinding, KeyPurpose, KeyRevocationDecision, KeyRevocationReceipt, KeyRotationDecision,
-    KeyRotationReceipt, RevokeKeyRequest, RotateKeyRequest, VerifiedBarrierObservationSigner,
-    VerifiedSemanticAuthoritySigner, VerifiedSemanticSigner,
+    BootstrapDecision, BootstrapPrincipalRequest, CustodyBindingDecision, CustodyProfile,
+    Ed25519PublicKey, Ed25519Signature, IdentityBinding, KeyCustodyRecord, KeyPurpose,
+    KeyRevocationDecision, KeyRevocationReceipt, KeyRotationDecision, KeyRotationReceipt,
+    RegisterCustodyBindingRequest, RevokeKeyRequest, RotateKeyRequest,
+    VerifiedBarrierObservationSigner, VerifiedSemanticAuthoritySigner, VerifiedSemanticSigner,
     VerifyBarrierObservationSignatureRequest, VerifySemanticAuthoritySignatureRequest,
     VerifySemanticSignatureRequest,
 };
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 const CHANGE_BOOTSTRAP: i64 = 1;
 const CHANGE_KEY_REVOCATION: i64 = 2;
 const CHANGE_KEY_ROTATION: i64 = 3;
@@ -59,6 +60,8 @@ pub enum IdentityAuthorityError {
     ControlDomainNotFound(ControlDomainId),
     IdentitySnapshotNotFound(IdentitySnapshotId),
     KeyNotFound(KeyId),
+    CustodyBindingNotFound(KeyId),
+    CustodyProfileUnsupported,
     IdempotencyConflict,
     IdentitySnapshotFenceConflict,
     KeyGenerationFenceConflict,
@@ -104,6 +107,12 @@ impl fmt::Display for IdentityAuthorityError {
                 write!(formatter, "identity snapshot {id:?} does not exist")
             }
             Self::KeyNotFound(id) => write!(formatter, "key {id:?} does not exist"),
+            Self::CustodyBindingNotFound(id) => {
+                write!(formatter, "custody binding for key {id:?} does not exist")
+            }
+            Self::CustodyProfileUnsupported => {
+                formatter.write_str("custody profile is not supported")
+            }
             Self::IdempotencyConflict => {
                 formatter.write_str("idempotency key was rebound to different identity input")
             }
@@ -187,8 +196,13 @@ impl IdentityAuthority {
             0 => {
                 schema::migrate_v1(&mut connection)?;
                 schema::migrate_v2(&mut connection)?;
+                schema::migrate_v3(&mut connection)?;
             }
-            1 => schema::migrate_v2(&mut connection)?,
+            1 => {
+                schema::migrate_v2(&mut connection)?;
+                schema::migrate_v3(&mut connection)?;
+            }
+            2 => schema::migrate_v3(&mut connection)?,
             SCHEMA_VERSION => {}
             other => return Err(IdentityAuthorityError::SchemaVersionUnsupported(other)),
         }
@@ -942,6 +956,107 @@ impl IdentityAuthority {
         )
     }
 
+    /// Registers an immutable custody binding for one key generation under the
+    /// trusted-local software-only reference profile. Principal and control
+    /// domain are copied from the current durable binding; stale generation
+    /// fences fail closed.
+    ///
+    /// # Errors
+    ///
+    /// Fails on unknown keys, stale generation fences, unsupported custody
+    /// profiles, idempotency rebinding, or storage failure.
+    pub fn register_custody_binding(
+        &self,
+        request: RegisterCustodyBindingRequest,
+    ) -> Result<CustodyBindingDecision, IdentityAuthorityError> {
+        validate_custody_profile(request.custody_profile);
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(existing) = load_custody_by_idempotency(&transaction, request.idempotency_key)?
+        {
+            if !custody_request_matches(existing, request) {
+                return Err(IdentityAuthorityError::IdempotencyConflict);
+            }
+            transaction.commit()?;
+            return Ok(CustodyBindingDecision::Replayed(existing));
+        }
+        if let Some(existing) = load_custody_by_generation(
+            &transaction,
+            request.key_id,
+            request.expected_key_generation,
+        )? {
+            if !custody_request_matches(existing, request) {
+                return Err(IdentityAuthorityError::IdempotencyConflict);
+            }
+            transaction.commit()?;
+            return Ok(CustodyBindingDecision::Replayed(existing));
+        }
+
+        let binding = load_current_binding(&transaction, request.key_id)?
+            .ok_or(IdentityAuthorityError::KeyNotFound(request.key_id))?;
+        if binding.key_generation != request.expected_key_generation {
+            return Err(IdentityAuthorityError::KeyGenerationFenceConflict);
+        }
+
+        let record = KeyCustodyRecord {
+            key_id: request.key_id,
+            key_generation: request.expected_key_generation,
+            principal_id: binding.principal_id,
+            control_domain_id: binding.control_domain_id,
+            custody_profile: request.custody_profile,
+            registered_at_ms: request.registered_at_ms,
+        };
+        transaction.execute(
+            "INSERT INTO key_custody_bindings (
+                idempotency_key, key_id, key_generation, principal_id,
+                control_domain_id, custody_profile, registered_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                request.idempotency_key.as_bytes().as_slice(),
+                record.key_id.as_bytes().as_slice(),
+                encode_generation(record.key_generation)?,
+                record.principal_id.as_bytes().as_slice(),
+                record.control_domain_id.as_bytes().as_slice(),
+                request.custody_profile.encode(),
+                encode_u64(record.registered_at_ms)?,
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(CustodyBindingDecision::Registered(record))
+    }
+
+    /// Reads the durable custody binding for one exact key generation.
+    ///
+    /// # Errors
+    ///
+    /// Fails when no binding exists, storage is corrupt, or `SQLite` fails.
+    pub fn inspect_custody(
+        &self,
+        key_id: KeyId,
+        key_generation: Generation,
+    ) -> Result<KeyCustodyRecord, IdentityAuthorityError> {
+        let connection = self.lock()?;
+        load_custody_by_generation(&connection, key_id, key_generation)?
+            .ok_or(IdentityAuthorityError::CustodyBindingNotFound(key_id))
+    }
+
+    /// Reads the custody binding for the key's current generation.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the key or its custody binding does not exist, storage is
+    /// corrupt, or `SQLite` fails.
+    pub fn inspect_current_custody(
+        &self,
+        key_id: KeyId,
+    ) -> Result<KeyCustodyRecord, IdentityAuthorityError> {
+        let connection = self.lock()?;
+        let binding = load_current_binding(&connection, key_id)?
+            .ok_or(IdentityAuthorityError::KeyNotFound(key_id))?;
+        load_custody_by_generation(&connection, key_id, binding.key_generation)?
+            .ok_or(IdentityAuthorityError::CustodyBindingNotFound(key_id))
+    }
+
     fn lock(&self) -> Result<MutexGuard<'_, Connection>, IdentityAuthorityError> {
         self.connection
             .lock()
@@ -1033,6 +1148,22 @@ fn validate_rotate_request(request: RotateKeyRequest) -> Result<(), IdentityAuth
     VerifyingKey::from_bytes(&request.new_public_key)
         .map_err(|_| IdentityAuthorityError::InvalidPublicKey)?;
     Ok(())
+}
+
+fn validate_custody_profile(profile: CustodyProfile) {
+    match profile {
+        CustodyProfile::TrustedLocalSoftware => {}
+    }
+}
+
+fn custody_request_matches(
+    record: KeyCustodyRecord,
+    request: RegisterCustodyBindingRequest,
+) -> bool {
+    record.key_id == request.key_id
+        && record.key_generation == request.expected_key_generation
+        && record.custody_profile == request.custody_profile
+        && record.registered_at_ms == request.registered_at_ms
 }
 
 fn bootstrap_matches(
@@ -1437,6 +1568,77 @@ fn load_rotation_by_key(
                 },
             })
         })
+        .transpose()
+}
+
+type CustodyRow = (Vec<u8>, i64, Vec<u8>, Vec<u8>, i64, i64);
+
+fn decode_custody_row(row: CustodyRow) -> Result<KeyCustodyRecord, IdentityAuthorityError> {
+    Ok(KeyCustodyRecord {
+        key_id: decode_id::<16, _>(row.0, KeyId::from_bytes, "key id")?,
+        key_generation: decode_generation(row.1)?,
+        principal_id: decode_id::<16, _>(row.2, PrincipalId::from_bytes, "principal id")?,
+        control_domain_id: decode_id::<16, _>(row.3, ControlDomainId::from_bytes, "domain id")?,
+        custody_profile: CustodyProfile::decode(row.4)
+            .ok_or(IdentityAuthorityError::CorruptRecord("custody profile"))?,
+        registered_at_ms: decode_u64(row.5)?,
+    })
+}
+
+fn load_custody_by_idempotency(
+    connection: &Connection,
+    idempotency_key: IdempotencyKey,
+) -> Result<Option<KeyCustodyRecord>, IdentityAuthorityError> {
+    connection
+        .query_row(
+            "SELECT key_id, key_generation, principal_id, control_domain_id,
+                    custody_profile, registered_at_ms
+             FROM key_custody_bindings WHERE idempotency_key=?1",
+            [idempotency_key.as_bytes().as_slice()],
+            |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, Vec<u8>>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
+                ))
+            },
+        )
+        .optional()?
+        .map(decode_custody_row)
+        .transpose()
+}
+
+fn load_custody_by_generation(
+    connection: &Connection,
+    key_id: KeyId,
+    key_generation: Generation,
+) -> Result<Option<KeyCustodyRecord>, IdentityAuthorityError> {
+    connection
+        .query_row(
+            "SELECT key_id, key_generation, principal_id, control_domain_id,
+                    custody_profile, registered_at_ms
+             FROM key_custody_bindings
+             WHERE key_id=?1 AND key_generation=?2",
+            params![
+                key_id.as_bytes().as_slice(),
+                encode_generation(key_generation)?,
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, Vec<u8>>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
+                ))
+            },
+        )
+        .optional()?
+        .map(decode_custody_row)
         .transpose()
 }
 

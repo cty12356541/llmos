@@ -6,8 +6,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use ed25519_dalek::{Signer, SigningKey};
 use nlos_clock::{AuthorityClock, AuthorityClockError, WallSource};
 use nlos_identity::{
-    BootstrapDecision, BootstrapPrincipalRequest, IdentityAuthority, IdentityAuthorityError,
-    KeyPurpose, KeyRevocationDecision, KeyRotationDecision, RevokeKeyRequest, RotateKeyRequest,
+    BootstrapDecision, BootstrapPrincipalRequest, CustodyBindingDecision, CustodyProfile,
+    IdentityAuthority, IdentityAuthorityError, KeyPurpose, KeyRevocationDecision,
+    KeyRotationDecision, RegisterCustodyBindingRequest, RevokeKeyRequest, RotateKeyRequest,
     VerifyBarrierObservationSignatureRequest, VerifyCapabilityCommandSignatureAtClockRequest,
     VerifySemanticSignatureRequest, semantic_signature_message,
 };
@@ -307,6 +308,15 @@ fn snapshot_key_versions_and_revocation_receipts_are_ddl_immutable() {
         .unwrap()
         .binding();
     authority
+        .register_custody_binding(RegisterCustodyBindingRequest {
+            key_id: binding.key_id,
+            expected_key_generation: binding.key_generation,
+            custody_profile: CustodyProfile::TrustedLocalSoftware,
+            idempotency_key: IdempotencyKey::from_bytes([0x9b; 16]),
+            registered_at_ms: 1_000,
+        })
+        .unwrap();
+    authority
         .revoke_key(RevokeKeyRequest {
             key_id: binding.key_id,
             expected_key_generation: binding.key_generation,
@@ -341,6 +351,7 @@ fn snapshot_key_versions_and_revocation_receipts_are_ddl_immutable() {
     assert!(raw.execute("DELETE FROM identity_snapshots", []).is_err());
     assert!(raw.execute("DELETE FROM key_revocations", []).is_err());
     assert!(raw.execute("DELETE FROM key_rotations", []).is_err());
+    assert!(raw.execute("DELETE FROM key_custody_bindings", []).is_err());
 }
 
 #[test]
@@ -641,4 +652,120 @@ fn capability_command_at_clock_fails_closed_when_clock_refuses() {
         .verify_capability_command_signature_at_clock(request, &healthy_clock)
         .expect("verification must succeed at a healthy clock");
     assert_eq!(verified.principal_id(), binding.principal_id);
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn custody_binding_registers_per_generation_replays_and_survives_restart() {
+    let root = Root::new("custody");
+    let old_key = signing_key(70);
+    let new_key = signing_key(71);
+    let custody_request = |binding: nlos_identity::IdentityBinding, generation: Generation| {
+        RegisterCustodyBindingRequest {
+            key_id: binding.key_id,
+            expected_key_generation: generation,
+            custody_profile: CustodyProfile::TrustedLocalSoftware,
+            idempotency_key: IdempotencyKey::from_bytes([0xC0; 16]),
+            registered_at_ms: 1_500,
+        }
+    };
+    let (binding, gen1_record, rotate_receipt) = {
+        let authority = IdentityAuthority::open(root.path()).unwrap();
+        let binding = authority
+            .bootstrap_principal(bootstrap_request(70, &old_key))
+            .unwrap()
+            .binding();
+        assert!(matches!(
+            authority.inspect_custody(binding.key_id, binding.key_generation),
+            Err(IdentityAuthorityError::CustodyBindingNotFound(_))
+        ));
+        let request = custody_request(binding, binding.key_generation);
+        let first = authority.register_custody_binding(request).unwrap();
+        assert!(matches!(first, CustodyBindingDecision::Registered(_)));
+        let replay = authority.register_custody_binding(request).unwrap();
+        assert!(matches!(replay, CustodyBindingDecision::Replayed(_)));
+        assert_eq!(first.record(), replay.record());
+        let record = first.record();
+        assert_eq!(record.key_id, binding.key_id);
+        assert_eq!(record.key_generation, binding.key_generation);
+        assert_eq!(record.principal_id, binding.principal_id);
+        assert_eq!(record.control_domain_id, binding.control_domain_id);
+        assert_eq!(record.custody_profile, CustodyProfile::TrustedLocalSoftware);
+        assert_eq!(
+            authority
+                .inspect_custody(binding.key_id, binding.key_generation)
+                .unwrap(),
+            record
+        );
+        assert_eq!(
+            authority.inspect_current_custody(binding.key_id).unwrap(),
+            record
+        );
+
+        let rotate_receipt = authority
+            .rotate_key(RotateKeyRequest {
+                key_id: binding.key_id,
+                expected_key_generation: binding.key_generation,
+                expected_identity_snapshot_id: binding.identity_snapshot_id,
+                new_public_key: new_key.verifying_key().to_bytes(),
+                new_valid_from_ms: 2_000,
+                new_valid_until_ms: 10_000,
+                idempotency_key: IdempotencyKey::from_bytes([0xC1; 16]),
+                rotated_at_ms: 3_000,
+            })
+            .unwrap()
+            .receipt();
+        assert!(matches!(
+            authority.inspect_current_custody(binding.key_id),
+            Err(IdentityAuthorityError::CustodyBindingNotFound(_))
+        ));
+        (binding, record, rotate_receipt)
+    };
+
+    let reopened = IdentityAuthority::open(root.path()).unwrap();
+    assert_eq!(
+        reopened
+            .inspect_custody(binding.key_id, binding.key_generation)
+            .unwrap(),
+        gen1_record
+    );
+    let gen2_request = RegisterCustodyBindingRequest {
+        key_id: binding.key_id,
+        expected_key_generation: rotate_receipt.resulting_key_generation,
+        custody_profile: CustodyProfile::TrustedLocalSoftware,
+        idempotency_key: IdempotencyKey::from_bytes([0xC2; 16]),
+        registered_at_ms: 3_100,
+    };
+    let gen2_record = reopened
+        .register_custody_binding(gen2_request)
+        .unwrap()
+        .record();
+    assert_eq!(
+        gen2_record.key_generation,
+        rotate_receipt.resulting_key_generation
+    );
+    assert_eq!(
+        reopened.inspect_current_custody(binding.key_id).unwrap(),
+        gen2_record
+    );
+
+    assert!(matches!(
+        reopened.register_custody_binding(RegisterCustodyBindingRequest {
+            idempotency_key: IdempotencyKey::from_bytes([0xC3; 16]),
+            registered_at_ms: 9_999,
+            ..gen2_request
+        }),
+        Err(IdentityAuthorityError::IdempotencyConflict)
+    ));
+    assert!(matches!(
+        reopened.register_custody_binding(RegisterCustodyBindingRequest {
+            expected_key_generation: rotate_receipt
+                .resulting_key_generation
+                .checked_next()
+                .expect("generation 3"),
+            idempotency_key: IdempotencyKey::from_bytes([0xC4; 16]),
+            ..gen2_request
+        }),
+        Err(IdentityAuthorityError::KeyGenerationFenceConflict)
+    ));
 }
