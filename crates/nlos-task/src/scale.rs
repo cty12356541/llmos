@@ -56,6 +56,16 @@ pub const TASK_PROFILE_10K: ScaleProfile = ScaleProfile {
     max_active_working_set: 512,
 };
 
+/// Second published single-node tier: 100K logical task units with a bounded
+/// active working set of `5_120` (same ~5% ratio as [`TASK_PROFILE_10K`]).
+/// Measured numbers are recorded by the `#[ignore]` probe in
+/// `tests/scale_profile_probe.rs`.
+pub const TASK_PROFILE_100K: ScaleProfile = ScaleProfile {
+    profile_id: "task-100k",
+    max_task_nodes: 100_000,
+    max_active_working_set: 5_120,
+};
+
 impl ScaleProfile {
     /// Reports whether `count` logical task units fit inside this tier.
     #[must_use]
@@ -73,7 +83,7 @@ impl ScaleProfile {
 
 #[cfg(test)]
 mod tests {
-    use super::{ScaleProfile, TASK_PROFILE_10K};
+    use super::{ScaleProfile, TASK_PROFILE_10K, TASK_PROFILE_100K};
 
     #[test]
     fn task_10k_tier_publishes_declared_constants() {
@@ -83,22 +93,42 @@ mod tests {
     }
 
     #[test]
+    fn task_100k_tier_publishes_declared_constants() {
+        assert_eq!(TASK_PROFILE_100K.profile_id, "task-100k");
+        assert_eq!(TASK_PROFILE_100K.max_task_nodes, 100_000);
+        assert_eq!(TASK_PROFILE_100K.max_active_working_set, 5_120);
+    }
+
+    #[test]
     fn tier_predicates_are_inclusive_upper_bounds() {
         assert!(TASK_PROFILE_10K.admits_task_nodes(0));
         assert!(TASK_PROFILE_10K.admits_task_nodes(10_000));
         assert!(!TASK_PROFILE_10K.admits_task_nodes(10_001));
         assert!(TASK_PROFILE_10K.admits_active_working_set(512));
         assert!(!TASK_PROFILE_10K.admits_active_working_set(513));
+        assert!(TASK_PROFILE_100K.admits_task_nodes(100_000));
+        assert!(!TASK_PROFILE_100K.admits_task_nodes(100_001));
+        assert!(TASK_PROFILE_100K.admits_active_working_set(5_120));
+        assert!(!TASK_PROFILE_100K.admits_active_working_set(5_121));
+    }
+
+    #[test]
+    fn hundred_k_tier_scales_working_set_from_10k_ratio() {
+        assert_eq!(
+            TASK_PROFILE_100K.max_active_working_set,
+            TASK_PROFILE_10K.max_active_working_set
+                * (TASK_PROFILE_100K.max_task_nodes / TASK_PROFILE_10K.max_task_nodes)
+        );
     }
 
     #[test]
     fn custom_profiles_are_representable_without_new_types() {
         let profile = ScaleProfile {
-            profile_id: "task-100k",
-            max_task_nodes: 100_000,
+            profile_id: "task-custom",
+            max_task_nodes: 50_000,
             max_active_working_set: 2_048,
         };
-        assert!(profile.admits_task_nodes(100_000));
+        assert!(profile.admits_task_nodes(50_000));
         assert!(!profile.admits_active_working_set(2_049));
     }
 }

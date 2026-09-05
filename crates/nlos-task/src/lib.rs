@@ -215,7 +215,7 @@ pub use resource_commit::{
     NestedResourceCostReceipt, ResourceFinalizeDecision, ResourceTaskCommitReceipt,
     SemanticResourceFinalizeDecision, SemanticResourceTaskCommitReceipt,
 };
-pub use scale::{ScaleProfile, TASK_PROFILE_10K};
+pub use scale::{ScaleProfile, TASK_PROFILE_10K, TASK_PROFILE_100K};
 pub use semantic_commit::{
     FinalizeSemanticCommitRequest, NestedSemanticPublicationReceipt, PlanSemanticCommitRequest,
     PrepareSemanticFinalizeRequest, RecordSemanticPublicationsRequest, SemanticCommitPlanDecision,

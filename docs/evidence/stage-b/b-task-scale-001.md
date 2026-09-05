@@ -14,7 +14,7 @@
 
 ## 2. 已实现事实
 
-1. `ScaleProfile { profile_id, max_task_nodes, max_active_working_set }` 常量声明面 + `TASK_PROFILE_10K`（`task-10k`，10_000 / 512）档；`admits_task_nodes` / `admits_active_working_set` 为 const 谓词（含端点）。
+1. `ScaleProfile { profile_id, max_task_nodes, max_active_working_set }` 常量声明面 + `TASK_PROFILE_10K`（`task-10k`，10_000 / 512）与 `TASK_PROFILE_100K`（`task-100k`，100_000 / 5_120）档；`admits_task_nodes` / `admits_active_working_set` 为 const 谓词（含端点）。100K 活跃工作集按 10K 同比例（~5%）线性放大。
 2. **声明而非强制**：本片不把档位接入注册/admission 路径（登记为缺口）。
 3. **临时维度映射**：`TaskSpec` 无 plan 字段、TaskPlan/TaskNode 声明面未落地，`max_task_nodes` 暂以持久 `Task` 注册承载，`max_active_working_set` 以未结 `CommitPermit` 承载；名义 `TaskPlanId`/`TaskNodeId` 已存在但未绑定持久面。
 4. 惰性断言针对**已落地 key-scoped 查询模式**：`tasks.task_id` 主键、attempts/permits 的 `UNIQUE(task_id, idempotency_key)`、`commit_permits_single_active` 部分唯一索引；无全表扫描路径。
@@ -36,10 +36,30 @@ test result: ok. 1 passed; 0 failed; ... finished in 2.27s
 3. 512 活跃工作集发放共 166.561ms（p95 388.166µs）；散布点读 4 次 168.625µs。
 4. 落盘体积 7,569,408 字节；进程 RSS 7,389,184 → 8,880,128 字节（`ps` 采样，仅 macOS 有可移植读数，其他 target 如实记 `None`）。
 
+## 3.1 100K 档常量与 probe（W16-004）
+
+### 已发布常量
+
+| 字段 | `TASK_PROFILE_100K` |
+| --- | --- |
+| `profile_id` | `task-100k` |
+| `max_task_nodes` | 100_000 |
+| `max_active_working_set` | 5_120（= 512 × 10，与 10K 档保持 ~5% 比例） |
+
+### probe 状态
+
+100K 全量数字由显式 `#[ignore]` probe `one_hundred_thousand_task_registrations_keep_the_permit_face_lazy` 承载（mirroring 10K 探针：100 基线库 vs 100K 注册库 lazy permit 对比、5_120 活跃工作集、散布点读、RSS/落盘体积）。
+
+**本地 W16-004 验收**：常量单元测试已实跑；100K probe 因 ~10× 注册量未在验收窗口本地实跑（登记为待补证据，与 §4 缺口 #2 对齐）。复现命令：
+
+```sh
+cargo test -p nlos-task --test scale_profile_probe -- --ignored --nocapture
+```
+
 ## 4. 限制与下一步（缺口清单）
 
 1. **未强制**：档位未接入 `TaskAuthority` 注册/admission；强制路径为后续工作。
-2. **维度映射临时**：TaskPlan/TaskNode 持久声明面、Dependency Resolver 未落地；`max_task_nodes` 以 Task 注册近似，100K 档（§28.2 的 100K 基准）未跑，不得宣称 ROAD-B-004 整体达成。
+2. **维度映射临时**：TaskPlan/TaskNode 持久声明面、Dependency Resolver 未落地；`max_task_nodes` 以 Task 注册近似；100K 档常量与 probe 已发布，100K probe 数字待本地/CI 实跑后填入 §3.1；档位仍未接入 admission 强制路径，不得宣称 ROAD-B-004 整体达成。
 3. **证据等级**：debug（test profile）单平台数字；release profile 与多平台复测未做；checkpoint/rehydrate 基准不在本片。
 4. 工作树交接备注：接管时验证窗口与并行车道共享构建目录存在锁竞争，全量门以逐二进制方式收口（结果与本报告命令均一一对应，无跳过项）。
 

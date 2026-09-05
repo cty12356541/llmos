@@ -1,6 +1,6 @@
-//! Explicit ROAD-B-004 front-slice scale probe: 10K durable Task
+//! Explicit ROAD-B-004 front-slice scale probe: 10K and 100K durable Task
 //! registrations with a lazy permit face. Ignored in the default suite
-//! because it materializes a real 10K-row authority database; run it with
+//! because they materialize real authority databases; run them with
 //!
 //! ```sh
 //! cargo test -p nlos-task --test scale_profile_probe -- --ignored --nocapture
@@ -9,17 +9,18 @@
 //! Measured dimensions (single platform, recorded verbatim in
 //! `docs/evidence/stage-b/b-task-scale-001.md`):
 //!
-//! 1. total wall time to register 10K Tasks through the landed
+//! 1. total wall time to register 10K/100K Tasks through the landed
 //!    `register_task` API (fsynced per-registration transactions),
 //! 2. per-`request_commit_permit` latency on a 100-Task baseline database
-//!    versus the 10K-Task database (identical request shape, identical task
+//!    versus the scale database (identical request shape, identical task
 //!    IDs) — the laziness assertion: per-permit cost must stay within a
 //!    small constant factor, proving the CAS touches only the target task's
 //!    indexed rows (`tasks.task_id` PK, `UNIQUE(task_id, idempotency_key)`,
 //!    `commit_permits_single_active` partial index) instead of scanning the
 //!    task population,
-//! 3. the 512-slot active working set of the published
-//!    [`nlos_task::TASK_PROFILE_10K`] tier,
+//! 3. the active working set of the published
+//!    [`nlos_task::TASK_PROFILE_10K`] / [`nlos_task::TASK_PROFILE_100K`]
+//!    tiers,
 //! 4. process RSS before/after and database bytes on disk.
 
 use std::fs;
@@ -29,7 +30,7 @@ use std::time::{Duration, Instant};
 
 use nlos_task::{
     AttemptSpec, Authorities, PermitDecision, PermitRequest, SnapshotBundle, SqliteTaskAuthority,
-    TASK_PROFILE_10K, TaskSpec, empty_effect_history_root,
+    TASK_PROFILE_10K, TASK_PROFILE_100K, TaskSpec, empty_effect_history_root,
 };
 use nlos_types::{
     CancellationScopeId, Generation, IdempotencyKey, TaskAttemptId, TaskId, TaskSnapshotId,
@@ -296,6 +297,107 @@ fn ten_thousand_task_registrations_keep_the_permit_face_lazy() {
          permit_p50_100={:?} permit_p95_100={baseline_p95:?} permit_max_100={:?} \
          permit_p50_10k={:?} permit_p95_10k={scale_p95:?} permit_max_10k={:?} \
          working_set={ACTIVE_WORKING_SET} working_set_total={working_set_elapsed:?} \
+         working_set_p50={:?} working_set_p95={:?} \
+         inspect4={inspect_elapsed:?} database_bytes={database_bytes} \
+         rss_before={rss_before:?} rss_after={rss_after:?}",
+        registration_elapsed / 1_000,
+        baseline_latencies[baseline_latencies.len() / 2],
+        baseline_latencies[baseline_latencies.len() - 1],
+        scale_latencies[scale_latencies.len() / 2],
+        scale_latencies[scale_latencies.len() - 1],
+        working_set_latencies[working_set_latencies.len() / 2],
+        percentile(&working_set_latencies, 9_500),
+    );
+}
+
+const TASK_NODE_COUNT_100K: u64 = 100_000;
+const ACTIVE_WORKING_SET_100K: u64 = TASK_PROFILE_100K.max_active_working_set;
+
+#[test]
+#[ignore = "explicit ROAD-B-004 front-slice 100K Task lazy-permit scale probe"]
+#[allow(clippy::too_many_lines)]
+fn one_hundred_thousand_task_registrations_keep_the_permit_face_lazy() {
+    assert!(TASK_PROFILE_100K.admits_task_nodes(TASK_NODE_COUNT_100K));
+    assert!(TASK_PROFILE_100K.admits_active_working_set(ACTIVE_WORKING_SET_100K));
+
+    // -- Baseline database: identical request shape over 100 tasks. --------
+    let baseline_database = TestDatabase::new("baseline-100-100k");
+    let baseline = baseline_database.open();
+    for index in 0..BASELINE_COUNT {
+        register_task(&baseline, index);
+    }
+    let baseline_latencies = permit_latency_sample(&baseline, LAZY_SAMPLE, 0x50);
+    drop(baseline);
+
+    // -- Scale database: 100K registered Tasks through the landed API. ------
+    let rss_before = sample_rss_bytes();
+    let scale_database = TestDatabase::new("metadata-100k");
+    let authority = scale_database.open();
+
+    let registration_started = Instant::now();
+    for index in 0..TASK_NODE_COUNT_100K {
+        register_task(&authority, index);
+    }
+    let registration_elapsed = registration_started.elapsed();
+
+    let scale_latencies = permit_latency_sample(&authority, LAZY_SAMPLE, 0x50);
+    let baseline_p95 = percentile(&baseline_latencies, 9_500);
+    let scale_p95 = percentile(&scale_latencies, 9_500);
+    assert!(
+        scale_p95 <= baseline_p95.saturating_mul(16),
+        "permit p95 regressed with task population: baseline {baseline_p95:?}, 100K {scale_p95:?}"
+    );
+    assert!(
+        scale_p95 < Duration::from_millis(100),
+        "permit p95 at 100K tasks: {scale_p95:?}"
+    );
+
+    for index in LAZY_SAMPLE..ACTIVE_WORKING_SET_100K {
+        authority
+            .register_attempt(attempt_spec(index))
+            .expect("register attempt");
+    }
+    let working_set_started = Instant::now();
+    let mut working_set_latencies =
+        Vec::with_capacity(usize::try_from(ACTIVE_WORKING_SET_100K).expect("fits usize"));
+    for index in LAZY_SAMPLE..ACTIVE_WORKING_SET_100K {
+        let started = Instant::now();
+        let decision = authority
+            .request_commit_permit_with_authorities_struct(
+                Authorities::default(),
+                permit_request(index, 0x60),
+            )
+            .expect("working-set permit");
+        working_set_latencies.push(started.elapsed());
+        assert!(matches!(decision, PermitDecision::Issued(_)));
+    }
+    let working_set_elapsed = working_set_started.elapsed();
+    working_set_latencies.sort_unstable();
+    assert!(
+        working_set_elapsed < Duration::from_mins(20),
+        "working set: {working_set_elapsed:?}"
+    );
+
+    let inspect_started = Instant::now();
+    for index in [0, 1, TASK_NODE_COUNT_100K / 2, TASK_NODE_COUNT_100K - 1] {
+        let record = authority
+            .inspect_task(task_id(index))
+            .expect("inspect task");
+        assert_eq!(record.task_id, task_id(index));
+    }
+    let inspect_elapsed = inspect_started.elapsed();
+
+    let rss_after = sample_rss_bytes();
+    drop(authority);
+    let database_bytes = file_size(&scale_database.path);
+
+    eprintln!(
+        "100K task profile (single platform): registrations={TASK_NODE_COUNT_100K} \
+         register_total={registration_elapsed:?} \
+         register_mean={:?} \
+         permit_p50_100={:?} permit_p95_100={baseline_p95:?} permit_max_100={:?} \
+         permit_p50_100k={:?} permit_p95_100k={scale_p95:?} permit_max_100k={:?} \
+         working_set={ACTIVE_WORKING_SET_100K} working_set_total={working_set_elapsed:?} \
          working_set_p50={:?} working_set_p95={:?} \
          inspect4={inspect_elapsed:?} database_bytes={database_bytes} \
          rss_before={rss_before:?} rss_after={rss_after:?}",
