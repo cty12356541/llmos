@@ -410,6 +410,7 @@ version = "0.1.0"
 dependencies = [
  "ed25519-dalek",
  "nlos-identity",
+ "nlos-store-fault",
  "nlos-types",
  "rusqlite",
  "sha2",
@@ -555,6 +556,7 @@ dependencies = [
  "nlos-capability",
  "nlos-identity",
  "nlos-process",
+ "nlos-store-fault",
  "nlos-types",
  "rusqlite",
  "sha2",
