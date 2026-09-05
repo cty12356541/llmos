@@ -360,3 +360,36 @@ impl FiberCancelPropagationDecision {
         }
     }
 }
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlatformKillReceipt {
+    pub process_id: ProcessId,
+    pub process_generation: Generation,
+    pub process_fencing_token: FencingToken,
+    pub idempotency_key: IdempotencyKey,
+    pub killed_at_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RequestPlatformKillRequest {
+    pub process_id: ProcessId,
+    pub expected_process_generation: Generation,
+    pub expected_process_fencing_token: FencingToken,
+    pub idempotency_key: IdempotencyKey,
+    pub killed_at_ms: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PlatformKillDecision {
+    Signaled(PlatformKillReceipt),
+    Replayed(PlatformKillReceipt),
+}
+
+impl PlatformKillDecision {
+    #[must_use]
+    pub const fn receipt(&self) -> &PlatformKillReceipt {
+        match self {
+            Self::Signaled(receipt) | Self::Replayed(receipt) => receipt,
+        }
+    }
+}

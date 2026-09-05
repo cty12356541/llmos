@@ -2,7 +2,59 @@ use rusqlite::{Connection, TransactionBehavior};
 
 use crate::ProcessAuthorityError;
 
-pub(crate) const SCHEMA_VERSION: i64 = 4;
+pub(crate) const SCHEMA_VERSION: i64 = 5;
+
+pub(crate) fn migrate_v5(connection: &mut Connection) -> Result<(), ProcessAuthorityError> {
+    let table: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type='table' AND name = 'platform_kill_receipts'",
+        [],
+        |row| row.get(0),
+    )?;
+    let trigger_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN (
+            'platform_kill_receipts_immutable_update',
+            'platform_kill_receipts_immutable_delete'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if table == 1 && trigger_count == 2 {
+        connection.pragma_update(None, "user_version", 5)?;
+        return Ok(());
+    }
+    if table != 0 || trigger_count != 0 {
+        return Err(ProcessAuthorityError::CorruptRecord(
+            "partial platform kill receipt schema",
+        ));
+    }
+
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "CREATE TABLE platform_kill_receipts (
+            process_id BLOB NOT NULL CHECK(length(process_id) = 16),
+            process_generation INTEGER NOT NULL CHECK(process_generation >= 1),
+            process_fencing_token BLOB NOT NULL CHECK(length(process_fencing_token) = 32),
+            idempotency_key BLOB NOT NULL UNIQUE CHECK(length(idempotency_key) = 16),
+            killed_at_ms INTEGER NOT NULL CHECK(killed_at_ms >= 0),
+            PRIMARY KEY(process_id, process_generation),
+            FOREIGN KEY(process_id) REFERENCES process_heads(process_id)
+        ) STRICT;
+
+        CREATE TRIGGER platform_kill_receipts_immutable_update
+        BEFORE UPDATE ON platform_kill_receipts BEGIN
+            SELECT RAISE(ABORT, 'platform kill receipt is immutable');
+        END;
+        CREATE TRIGGER platform_kill_receipts_immutable_delete
+        BEFORE DELETE ON platform_kill_receipts BEGIN
+            SELECT RAISE(ABORT, 'platform kill receipt is immutable');
+        END;
+
+        PRAGMA user_version = 5;",
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
 
 pub(crate) fn migrate_v4(connection: &mut Connection) -> Result<(), ProcessAuthorityError> {
     let table: i64 = connection.query_row(

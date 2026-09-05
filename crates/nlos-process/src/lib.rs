@@ -6,6 +6,7 @@
 //! namespace and Task contract prepares remain separate acceptance gates.
 
 mod model;
+mod platform_kill;
 mod schema;
 
 use std::error::Error;
@@ -27,11 +28,16 @@ pub use model::{
     FiberCancelPropagationDecision, FiberEntrySnapshotDecision, FiberEntrySnapshotRecord,
     FiberIncarnationCancelReceipt, FiberIncarnationDecision, FiberIncarnationRecord,
     IsolationDomainDecision, IsolationDomainRecord, IsolationDomainRotationDecision,
-    MarkProcessTerminatedRequest, ProcessBindingDecision, ProcessBindingEndpointProof,
-    ProcessBindingRecord, ProcessLifecycleState, ProcessTerminalDecision, ProcessTerminalRecord,
+    MarkProcessTerminatedRequest, PlatformKillDecision, PlatformKillReceipt,
+    ProcessBindingDecision, ProcessBindingEndpointProof, ProcessBindingRecord,
+    ProcessLifecycleState, ProcessTerminalDecision, ProcessTerminalRecord,
     PropagateCancelToFibersRequest, PropagateCrashRequest, RegisterDelegatedProcessRequest,
-    RegisterFiberIncarnationRequest, RestoreProcessDecision, RestoreProcessRequest,
-    RotateIsolationDomainRequest, WriteFiberEntrySnapshotRequest,
+    RegisterFiberIncarnationRequest, RequestPlatformKillRequest, RestoreProcessDecision,
+    RestoreProcessRequest, RotateIsolationDomainRequest, WriteFiberEntrySnapshotRequest,
+};
+pub use platform_kill::{
+    NoopPlatformKillAdapter, PlatformKillAdapter, PlatformKillAdapterError,
+    PlatformKillAdapterOutcome, StubPlatformKillAdapter,
 };
 
 #[derive(Debug)]
@@ -67,6 +73,8 @@ pub enum ProcessAuthorityError {
     InvalidFiberSnapshot(&'static str),
     /// The process binding is no longer active: it was marked terminal.
     ProcessBindingTerminal(ProcessLifecycleState),
+    PlatformKillAlreadySignaled,
+    PlatformKillAdapter(platform_kill::PlatformKillAdapterError),
     CorruptRecord(&'static str),
     LockPoisoned,
 }
@@ -130,6 +138,10 @@ impl fmt::Display for ProcessAuthorityError {
                 formatter,
                 "process binding is terminal ({state:?}); fiber registration and resume are fail-closed"
             ),
+            Self::PlatformKillAlreadySignaled => {
+                formatter.write_str("platform kill was already signaled for this binding generation")
+            }
+            Self::PlatformKillAdapter(error) => write!(formatter, "{error}"),
             Self::CorruptRecord(reason) => write!(formatter, "corrupt durable record: {reason}"),
             Self::LockPoisoned => formatter.write_str("process authority writer lock is poisoned"),
         }
@@ -141,6 +153,7 @@ impl Error for ProcessAuthorityError {
         match self {
             Self::Sqlite(error) => Some(error),
             Self::Io(error) => Some(error),
+            Self::PlatformKillAdapter(error) => Some(error),
             _ => None,
         }
     }
@@ -188,17 +201,24 @@ impl ProcessAuthority {
                 schema::migrate_v2(&mut connection)?;
                 schema::migrate_v3(&mut connection)?;
                 schema::migrate_v4(&mut connection)?;
+                schema::migrate_v5(&mut connection)?;
             }
             1 => {
                 schema::migrate_v2(&mut connection)?;
                 schema::migrate_v3(&mut connection)?;
                 schema::migrate_v4(&mut connection)?;
+                schema::migrate_v5(&mut connection)?;
             }
             2 => {
                 schema::migrate_v3(&mut connection)?;
                 schema::migrate_v4(&mut connection)?;
+                schema::migrate_v5(&mut connection)?;
             }
-            3 => schema::migrate_v4(&mut connection)?,
+            3 => {
+                schema::migrate_v4(&mut connection)?;
+                schema::migrate_v5(&mut connection)?;
+            }
+            4 => schema::migrate_v5(&mut connection)?,
             schema::SCHEMA_VERSION => {}
             other => return Err(ProcessAuthorityError::SchemaVersionUnsupported(other)),
         }
@@ -737,6 +757,89 @@ impl ProcessAuthority {
         let head = load_process_head_optional(&connection, process_id)?
             .ok_or(ProcessAuthorityError::ProcessNotFound(process_id))?;
         load_terminal_marker_optional(&connection, process_id, head.process_generation)
+    }
+
+    /// Records a durable platform-kill receipt for an active Process binding,
+    /// then invokes the injected adapter to signal the host OS.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the Process is unknown, terminal, stale, already signaled with
+    /// a conflicting idempotency key, storage cannot commit, or the adapter
+    /// rejects the signal.
+    pub fn request_platform_kill(
+        &self,
+        request: RequestPlatformKillRequest,
+        adapter: &impl PlatformKillAdapter,
+    ) -> Result<PlatformKillDecision, ProcessAuthorityError> {
+        let receipt = {
+            let mut connection = self.lock()?;
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            if let Some(existing) = load_platform_kill_by_key(&transaction, request.idempotency_key)?
+            {
+                if !platform_kill_matches_request(&existing, &request) {
+                    return Err(ProcessAuthorityError::IdempotencyConflict);
+                }
+                transaction.commit()?;
+                return Ok(PlatformKillDecision::Replayed(existing));
+            }
+
+            let head = load_process_head_optional(&transaction, request.process_id)?
+                .ok_or(ProcessAuthorityError::ProcessNotFound(request.process_id))?;
+            if head.lifecycle_state != ProcessLifecycleState::Active {
+                return Err(ProcessAuthorityError::ProcessBindingTerminal(
+                    head.lifecycle_state,
+                ));
+            }
+            if head.process_generation != request.expected_process_generation
+                || head.process_fencing_token != request.expected_process_fencing_token
+            {
+                return Err(ProcessAuthorityError::StaleProcessBinding);
+            }
+            if let Some(existing) = load_platform_kill_receipt_optional(
+                &transaction,
+                request.process_id,
+                head.process_generation,
+            )? {
+                if platform_kill_matches_request(&existing, &request) {
+                    transaction.commit()?;
+                    return Ok(PlatformKillDecision::Replayed(existing));
+                }
+                return Err(ProcessAuthorityError::PlatformKillAlreadySignaled);
+            }
+
+            let record = PlatformKillReceipt {
+                process_id: request.process_id,
+                process_generation: head.process_generation,
+                process_fencing_token: head.process_fencing_token,
+                idempotency_key: request.idempotency_key,
+                killed_at_ms: request.killed_at_ms,
+            };
+            insert_platform_kill_receipt(&transaction, &record)?;
+            transaction.commit()?;
+            record
+        };
+
+        adapter
+            .signal_platform_kill(receipt.process_id, receipt.process_generation)
+            .map_err(ProcessAuthorityError::PlatformKillAdapter)?;
+        Ok(PlatformKillDecision::Signaled(receipt))
+    }
+
+    /// Reads the durable platform-kill receipt for one Process generation, if
+    /// any.
+    ///
+    /// # Errors
+    ///
+    /// Fails when storage cannot be read or a row is corrupt.
+    pub fn inspect_platform_kill_receipt(
+        &self,
+        process_id: ProcessId,
+        process_generation: Generation,
+    ) -> Result<Option<PlatformKillReceipt>, ProcessAuthorityError> {
+        let connection = self.lock()?;
+        load_platform_kill_receipt_optional(&connection, process_id, process_generation)
     }
 
     /// Registers one fiber incarnation for `binding` under `process_id`
@@ -2168,4 +2271,92 @@ fn propagate_cancel_to_fibers_in_tx(
     }
 
     Ok(FiberCancelPropagationDecision::Propagated(receipts))
+}
+
+fn platform_kill_matches_request(
+    record: &PlatformKillReceipt,
+    request: &RequestPlatformKillRequest,
+) -> bool {
+    record.process_id == request.process_id
+        && record.process_generation == request.expected_process_generation
+        && record.process_fencing_token == request.expected_process_fencing_token
+        && record.idempotency_key == request.idempotency_key
+        && record.killed_at_ms == request.killed_at_ms
+}
+
+fn load_platform_kill_by_key(
+    connection: &Connection,
+    key: IdempotencyKey,
+) -> Result<Option<PlatformKillReceipt>, ProcessAuthorityError> {
+    let identity = connection
+        .query_row(
+            "SELECT process_id, process_generation FROM platform_kill_receipts
+             WHERE idempotency_key = ?1",
+            [key.as_bytes().as_slice()],
+            |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .optional()?;
+    match identity {
+        Some((process_id, generation)) => load_platform_kill_receipt_optional(
+            connection,
+            ProcessId::from_bytes(array16(process_id)?),
+            decode_generation(generation)?,
+        ),
+        None => Ok(None),
+    }
+}
+
+fn load_platform_kill_receipt_optional(
+    connection: &Connection,
+    process_id: ProcessId,
+    process_generation: Generation,
+) -> Result<Option<PlatformKillReceipt>, ProcessAuthorityError> {
+    let raw = connection
+        .query_row(
+            "SELECT process_fencing_token, idempotency_key, killed_at_ms
+             FROM platform_kill_receipts
+             WHERE process_id = ?1 AND process_generation = ?2",
+            params![
+                process_id.as_bytes().as_slice(),
+                encode_generation(process_generation)?
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )
+        .optional()?;
+    raw.map(|(token, key, killed_at)| {
+        Ok(PlatformKillReceipt {
+            process_id,
+            process_generation,
+            process_fencing_token: array32(token)?,
+            idempotency_key: IdempotencyKey::from_bytes(array16(key)?),
+            killed_at_ms: decode_u64(killed_at)?,
+        })
+    })
+    .transpose()
+}
+
+fn insert_platform_kill_receipt(
+    transaction: &Transaction<'_>,
+    record: &PlatformKillReceipt,
+) -> Result<(), ProcessAuthorityError> {
+    transaction.execute(
+        "INSERT INTO platform_kill_receipts (
+            process_id, process_generation, process_fencing_token,
+            idempotency_key, killed_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            record.process_id.as_bytes().as_slice(),
+            encode_generation(record.process_generation)?,
+            record.process_fencing_token.as_slice(),
+            record.idempotency_key.as_bytes().as_slice(),
+            encode_u64(record.killed_at_ms)?,
+        ],
+    )?;
+    Ok(())
 }

@@ -1,12 +1,13 @@
 # B-PROCESS-003：process crash propagation / terminal lifecycle 最小前缀
 
-- 状态：`PARTIAL_PASS`（ROAD-B-006 process crash propagation 合同层最小前缀；runtime 侧 join/cancel 联动、平台 kill adapter、Activation meter 未做）
+- 状态：`PARTIAL_PASS`（ROAD-B-006 process crash propagation 合同层最小前缀；runtime 侧 join/cancel 联动、macOS/Windows 真 OS kill、Activation meter 未做）
 - 日期：2026-09-05
 - 设计依据：v0.5 §28.2 ROAD-B-006「Process crash propagation」；`[FIBER-FAIL-001]` Fiber 共享 Process 故障域
 - 关联：`B-PROCESS-001` durable binding authority；W12-P 波次 13 车道
 
 ## 1. 实现事实
 
+- **schema v5**（`nlos-process`）：v4 基础上增不可变 `platform_kill_receipts`（W17-P platform kill receipt 行）。
 - **schema v4**（`nlos-process`）：v3 基础上增不可变 `fiber_incarnation_cancel_receipts`（W16-P batch cancel 传播 receipt 行）。
 - **schema v3**（`nlos-process`）：`process_heads.lifecycle_state`（0=Active/1=Terminated/2=Crashed）+ 不可变 `process_terminal_markers`（按 `(process_id, process_generation)` 主键、idempotency key 唯一）。
 - **入口**：`mark_process_terminated`（干净终止）与 `propagate_crash`（宿主 crash 传播）；`propagate_cancel_to_fibers`（batch invalidate + immutable receipt，crash/terminal 路径自动联动）；CAS 对当前 generation/fence，`inspect_process_terminal` / `inspect_fiber_incarnation_cancel_receipt` 读回。
@@ -28,6 +29,21 @@ cargo fmt -p nlos-process -- --check → 通过
 ```
 
 - **仍 PARTIAL_PASS**：runtime 侧 cancel receipt 消费接线、平台 kill adapter、Activation meter 联动未做。
+
+## 6. Platform kill 合同层最小前缀（2026-09-06 追加，W17-P）
+
+- Owner：`nlos-process`（schema v5 + `request_platform_kill`）
+- **实现**：`PlatformKillAdapter` trait + `StubPlatformKillAdapter` / `NoopPlatformKillAdapter`；`ProcessAuthority::request_platform_kill` 校验 active binding → 不可变 `platform_kill_receipts`（按 `(process_id, process_generation)` 主键、idempotency key 唯一）→ 调用 adapter；terminal binding `ProcessBindingTerminal` fail-closed；exact idempotency replay 不重复调用 adapter；`inspect_platform_kill_receipt` 读回。
+- **验证**：
+
+```text
+cargo test -p nlos-process
+  → 28 passed / 0 failed（+3 platform_kill；2026-09-06 W17-P）
+cargo clippy -p nlos-process --all-targets -- -D warnings → 0 warning
+cargo fmt -p nlos-process -- --check → 通过
+```
+
+- **仍 PARTIAL_PASS**：非 macOS/Windows 真 OS kill-9/spawn；runtime 侧 kill receipt 消费、Activation meter 联动、跨平台 fault matrix 未做；不等同 ROAD-B-006 整体达成。
 
 ## 4. Runtime 侧 terminal 门（2026-09-05 追加，W15-P）
 
