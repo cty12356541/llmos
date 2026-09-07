@@ -17,16 +17,22 @@
 //! [`ControlCommand`] and are enumerated in the module tests.
 //!
 //! ```text
-//! inspect health | check health | show health | inspect system health
-//!   | 查看健康 | 查看系统健康 | 查看 系统 健康
-//! export metrics | show metrics | get metrics
-//!   | 导出指标 | 导出 指标
+//! inspect health | check health | show health | status health | health check
+//!   | inspect system health
+//!   | 查看健康 | 查看系统健康 | 查看 系统 健康 | 系统状态
+//! export metrics | show metrics | get metrics | metrics
+//!   | 导出指标 | 导出 指标 | 指标
 //! inspect task <32-hex> | check task <32-hex> | show task <32-hex>
+//!   | get task <32-hex> | status task <32-hex>
 //!   | 查看任务 <32位十六进制> | 查看 任务 <32位十六进制>
+//!   | 检查任务 <32位十六进制> | 检查 任务 <32位十六进制>
 //! inspect process <32-hex> | check process <32-hex> | show process <32-hex>
+//!   | get process <32-hex> | status process <32-hex>
 //!   | 检查进程 <32位十六进制> | 查看进程 <32位十六进制> | 查看 进程 <32位十六进制>
 //! inspect resource <32-hex> | check resource <32-hex> | show resource <32-hex>
+//!   | get resource <32-hex> | status resource <32-hex>
 //!   | 查看资源 <32位十六进制> | 查看 资源 <32位十六进制>
+//!   | 检查资源 <32位十六进制> | 检查 资源 <32位十六进制>
 //! acknowledge alert <32-hex> expecting <n>
 //!   | ack alert <32-hex> expecting <n> | confirm alert <32-hex> expecting <n>
 //!   | 确认告警 <32位十六进制> 期望 <n> | 确认 告警 <32位十六进制> 期望 <n>
@@ -103,6 +109,8 @@ fn is_read_verb(token: &str) -> bool {
     token.eq_ignore_ascii_case("inspect")
         || token.eq_ignore_ascii_case("check")
         || token.eq_ignore_ascii_case("show")
+        || token.eq_ignore_ascii_case("status")
+        || token.eq_ignore_ascii_case("get")
 }
 
 fn is_metrics_verb(token: &str) -> bool {
@@ -122,6 +130,11 @@ fn try_parse_inspect_health(tokens: &[&str]) -> Option<Result<ControlCommand, Co
         [head, second] if is_read_verb(head) && second.eq_ignore_ascii_case("health") => {
             Some(Ok(ControlCommand::InspectHealth))
         }
+        [first, second]
+            if first.eq_ignore_ascii_case("health") && second.eq_ignore_ascii_case("check") =>
+        {
+            Some(Ok(ControlCommand::InspectHealth))
+        }
         [head, second, third]
             if head.eq_ignore_ascii_case("inspect")
                 && second.eq_ignore_ascii_case("system")
@@ -129,12 +142,13 @@ fn try_parse_inspect_health(tokens: &[&str]) -> Option<Result<ControlCommand, Co
         {
             Some(Ok(ControlCommand::InspectHealth))
         }
-        ["查看健康" | "查看系统健康"] | ["查看", "系统", "健康"] => {
+        ["查看健康" | "查看系统健康" | "系统状态"] | ["查看", "系统", "健康"] => {
             Some(Ok(ControlCommand::InspectHealth))
         }
         [head, second, ..]
             if (is_read_verb(head) && second.eq_ignore_ascii_case("task"))
-                || (*head == "查看" && *second == "任务") =>
+                || (*head == "查看" && *second == "任务")
+                || (*head == "检查" && *second == "任务") =>
         {
             None
         }
@@ -147,7 +161,8 @@ fn try_parse_inspect_health(tokens: &[&str]) -> Option<Result<ControlCommand, Co
         }
         [head, second, ..]
             if (is_read_verb(head) && second.eq_ignore_ascii_case("resource"))
-                || (*head == "查看" && *second == "资源") =>
+                || (*head == "查看" && *second == "资源")
+                || (*head == "检查" && *second == "资源") =>
         {
             None
         }
@@ -164,6 +179,9 @@ fn try_parse_inspect_health(tokens: &[&str]) -> Option<Result<ControlCommand, Co
 
 fn try_parse_export_metrics(tokens: &[&str]) -> Option<Result<ControlCommand, ControlError>> {
     match tokens {
+        [head] if head.eq_ignore_ascii_case("metrics") || *head == "指标" => {
+            Some(Ok(ControlCommand::ExportMetrics))
+        }
         [head, second] if is_metrics_verb(head) && second.eq_ignore_ascii_case("metrics") => {
             Some(Ok(ControlCommand::ExportMetrics))
         }
@@ -196,7 +214,10 @@ fn try_parse_inspect_task(tokens: &[&str]) -> Option<Result<ControlCommand, Cont
         [head, second, plan] if is_read_verb(head) && second.eq_ignore_ascii_case("task") => {
             Some(parse_hex_id(plan).map(|plan_id| ControlCommand::InspectTask { plan_id }))
         }
-        ["查看任务", plan] | ["查看", "任务", plan] => {
+        ["查看任务", plan]
+        | ["查看", "任务", plan]
+        | ["检查任务", plan]
+        | ["检查", "任务", plan] => {
             Some(parse_hex_id(plan).map(|plan_id| ControlCommand::InspectTask { plan_id }))
         }
         _ => None,
@@ -239,7 +260,10 @@ fn try_parse_inspect_resource(tokens: &[&str]) -> Option<Result<ControlCommand, 
                     .map(|reservation_id| ControlCommand::InspectResource { reservation_id }),
             )
         }
-        ["查看资源", reservation_id] | ["查看", "资源", reservation_id] => Some(
+        ["查看资源", reservation_id]
+        | ["查看", "资源", reservation_id]
+        | ["检查资源", reservation_id]
+        | ["检查", "资源", reservation_id] => Some(
             parse_hex_id(reservation_id)
                 .map(|reservation_id| ControlCommand::InspectResource { reservation_id }),
         ),
@@ -325,6 +349,8 @@ mod tests {
             "  export   metrics  \n",
             "show metrics",
             "get metrics",
+            "metrics",
+            "METRICS",
         ] {
             assert_eq!(
                 parse_nl_command(sentence).unwrap(),
@@ -336,7 +362,7 @@ mod tests {
 
     #[test]
     fn chinese_export_metrics_form_parses() {
-        for sentence in ["导出指标", "  导出指标  ", "导出 指标"] {
+        for sentence in ["导出指标", "  导出指标  ", "导出 指标", "指标"] {
             assert_eq!(
                 parse_nl_command(sentence).unwrap(),
                 ControlCommand::ExportMetrics,
@@ -354,6 +380,9 @@ mod tests {
             "  inspect   health  \n",
             "check health",
             "show health",
+            "status health",
+            "health check",
+            "HEALTH CHECK",
             "inspect system health",
             "Inspect System Health",
         ] {
@@ -367,8 +396,13 @@ mod tests {
 
     #[test]
     fn chinese_health_form_parses() {
-        for sentence in ["查看健康", "  查看健康  ", "查看系统健康", "查看 系统 健康"]
-        {
+        for sentence in [
+            "查看健康",
+            "  查看健康  ",
+            "查看系统健康",
+            "查看 系统 健康",
+            "系统状态",
+        ] {
             assert_eq!(
                 parse_nl_command(sentence).unwrap(),
                 ControlCommand::InspectHealth,
@@ -385,6 +419,8 @@ mod tests {
             "inspect\t task \t A1B2C3D4E5F60718293A4B5C6D7E8F90",
             "check task a1b2c3d4e5f60718293a4b5c6d7e8f90",
             "show task A1B2C3D4E5F60718293A4B5C6D7E8F90",
+            "get task a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "status task a1b2c3d4e5f60718293a4b5c6d7e8f90",
         ] {
             assert_eq!(
                 parse_nl_command(sentence).unwrap(),
@@ -400,6 +436,8 @@ mod tests {
             "查看任务 a1b2c3d4e5f60718293a4b5c6d7e8f90",
             "  查看任务  A1B2C3D4E5F60718293A4B5C6D7E8F90 ",
             "查看 任务 a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "检查任务 a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "检查 任务 a1b2c3d4e5f60718293a4b5c6d7e8f90",
         ] {
             assert_eq!(
                 parse_nl_command(sentence).unwrap(),
@@ -416,6 +454,8 @@ mod tests {
             "INSPECT PROCESS A1B2C3D4E5F60718293A4B5C6D7E8F90",
             "check process a1b2c3d4e5f60718293a4b5c6d7e8f90",
             "show process A1B2C3D4E5F60718293A4B5C6D7E8F90",
+            "get process a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "status process a1b2c3d4e5f60718293a4b5c6d7e8f90",
         ] {
             assert_eq!(
                 parse_nl_command(sentence).unwrap(),
@@ -452,6 +492,8 @@ mod tests {
             "INSPECT RESOURCE A1B2C3D4E5F60718293A4B5C6D7E8F90",
             "check resource a1b2c3d4e5f60718293a4b5c6d7e8f90",
             "show resource A1B2C3D4E5F60718293A4B5C6D7E8F90",
+            "get resource a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "status resource a1b2c3d4e5f60718293a4b5c6d7e8f90",
         ] {
             assert_eq!(
                 parse_nl_command(sentence).unwrap(),
@@ -469,6 +511,8 @@ mod tests {
             "查看资源 a1b2c3d4e5f60718293a4b5c6d7e8f90",
             "  查看资源  A1B2C3D4E5F60718293A4B5C6D7E8F90 ",
             "查看 资源 a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "检查资源 a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "检查 资源 a1b2c3d4e5f60718293a4b5c6d7e8f90",
         ] {
             assert_eq!(
                 parse_nl_command(sentence).unwrap(),
@@ -555,18 +599,25 @@ mod tests {
             "   ",
             "show health now",
             "check healthy",
+            "health check now",
+            "status health now",
+            "status",
+            "health",
             "inspect system health now",
             "查看 健康",
             "查看 系统",
+            "系统状态了",
             "show health now",
             "显示健康",
             "export",
             "export metric",
             "export metrics now",
+            "metrics now",
             "show metric",
             "get metric",
             "导出",
             "导出指标了",
+            "指标了",
             "inspect",
             "inspect task",
             "inspect health now",
@@ -581,9 +632,12 @@ mod tests {
             "inspect resource 1234",
             "查看资源",
             "查看 资源",
+            "检查资源",
+            "检查 资源",
             "检查进程",
             "查看 进程",
             "acknowledge alert",
+            format!("cancel alert {PLAN_HEX_LOWER} expecting 1").as_str(),
             format!("acknowledge alert {PLAN_HEX_LOWER}").as_str(),
             format!("acknowledge alert {PLAN_HEX_LOWER} expecting").as_str(),
             format!("acknowledge alert {PLAN_HEX_LOWER} expecting -1").as_str(),

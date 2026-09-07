@@ -871,13 +871,34 @@ async fn nl_sentences_compile_to_the_same_socket_receipts_as_direct_commands() {
         parse_nl_command("查看 系统 健康").unwrap(),
         ControlCommand::InspectHealth
     );
+    assert_eq!(
+        parse_nl_command("health check").unwrap(),
+        ControlCommand::InspectHealth
+    );
+    assert_eq!(
+        parse_nl_command("系统状态").unwrap(),
+        ControlCommand::InspectHealth
+    );
     let synonym_inspect = parse_nl_command("check health").unwrap();
     assert_eq!(synonym_inspect, ControlCommand::InspectHealth);
+    let status_health = parse_nl_command("status health").unwrap();
+    assert_eq!(status_health, ControlCommand::InspectHealth);
     assert_nl_socket_and_in_process_parity(
         &socket_path,
         &control,
         &ControlCommand::InspectHealth,
-        &[nl_inspect, synonym_inspect],
+        &[nl_inspect, synonym_inspect, status_health],
+        None,
+        None,
+    )
+    .await;
+    let health_check = parse_nl_command("health check").unwrap();
+    let system_status = parse_nl_command("系统状态").unwrap();
+    assert_nl_socket_and_in_process_parity(
+        &socket_path,
+        &control,
+        &ControlCommand::InspectHealth,
+        &[health_check, system_status],
         None,
         None,
     )
@@ -927,6 +948,14 @@ async fn nl_sentences_compile_to_the_same_socket_receipts_as_direct_commands() {
         parse_nl_command("show metrics").unwrap(),
         ControlCommand::ExportMetrics
     );
+    assert_eq!(
+        parse_nl_command("metrics").unwrap(),
+        ControlCommand::ExportMetrics
+    );
+    assert_eq!(
+        parse_nl_command("指标").unwrap(),
+        ControlCommand::ExportMetrics
+    );
     let direct_export =
         dispatch_over_socket(&socket_path, &ControlCommand::ExportMetrics, None, None)
             .await
@@ -935,6 +964,16 @@ async fn nl_sentences_compile_to_the_same_socket_receipts_as_direct_commands() {
         .await
         .unwrap();
     assert_eq!(direct_export.to_bytes(), nl_export_receipt.to_bytes());
+    let metrics_synonym = parse_nl_command("metrics").unwrap();
+    let metrics_zh = parse_nl_command("指标").unwrap();
+    let metrics_synonym_receipt = dispatch_over_socket(&socket_path, &metrics_synonym, None, None)
+        .await
+        .unwrap();
+    assert_eq!(direct_export.to_bytes(), metrics_synonym_receipt.to_bytes());
+    let metrics_zh_receipt = dispatch_over_socket(&socket_path, &metrics_zh, None, None)
+        .await
+        .unwrap();
+    assert_eq!(direct_export.to_bytes(), metrics_zh_receipt.to_bytes());
     let export_in_process = dispatch_in_process(
         &control,
         &nl_export,
@@ -1077,7 +1116,12 @@ async fn nl_sentences_compile_to_the_same_socket_receipts_as_direct_commands() {
 
     // Out-of-grammar natural language is a typed rejection before any
     // dispatch; it never reaches the socket.
-    assert_nl_sentences_reject(&["pause everything", "查看 健康", "show health now"]);
+    assert_nl_sentences_reject(&[
+        "pause everything",
+        "查看 健康",
+        "show health now",
+        "cancel alert a1b2c3d4e5f60718293a4b5c6d7e8f90 expecting 1",
+    ]);
 
     server.abort();
     fs::remove_file(&socket_path).unwrap();

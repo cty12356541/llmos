@@ -163,3 +163,37 @@
 1. **ResourceInspector 在 dispatch 侧接线**：CLI/socket 客户端默认 `None`（Unwired）；宿主须显式传入 `ResourceAuthorityInspector` 才能获得真实 snapshot。
 2. **`resource` feature 依赖 nlos-resource**：只读 settled reservation；未 finalize 的 reservation 由 authority 返回 typed `State` failure。
 3. **ROAD-B-005 仍 PARTIAL**：Trusted GUI 未接；本增量只交付 Task socket parity 片 + Resource inspect NL/CLI 前缀片。
+
+## W18-005 增量：NL 同义词白名单扩展（2026-09-07）
+
+> 状态：`PARTIAL_PASS`（单节点本地；ROAD-B-005 仍 PARTIAL——GUI 未接）
+>
+> 基线 HEAD：`8d98b78`　　写集：`crates/nlos-system-control/**`、`docs/evidence/stage-b/b-control-003-nl-prefix.md`
+
+### 已实现事实
+
+1. **additive 同义词编译**（`src/nl.rs`，零新 `ControlCommand` 变体）：在既有六命令白名单上追加 fail-closed EN/ZH 变体：
+   - **InspectHealth**：`status health` / `health check`；`系统状态`。
+   - **ExportMetrics**：`metrics`（单 token）；`指标`（单 token）。
+   - **InspectTask**：`get task <hex>` / `status task <hex>`；`检查任务 <hex>` / `检查 任务 <hex>`。
+   - **InspectProcess**：`get process <hex>` / `status process <hex>`（既有 `检查进程`/`查看进程` 形态保留）。
+   - **InspectResource**：`get resource <hex>` / `status resource <hex>`；`检查资源 <hex>` / `检查 资源 <hex>`。
+   - **AcknowledgeRecoveryAlert**：无新增同义词；`cancel alert` 语义为取消而非确认，**未添加**。
+2. **pause/cancel 命令面**：当前 `ControlCommand` 无 pause/cancel 变体——**无命令面，未添加**；`pause everything` / `cancel alert …` 继续 typed 拒绝。
+3. **读动词扩展**：`is_read_verb` 追加 `status`/`get`；`health check` 为逆序双 token 形态；单 token `metrics`/`指标` 仅在 export 链匹配，不误伤 task/process/resource inspect。
+4. **等价路径证明**（`tests/control_command_cli.rs`）：`health check`/`系统状态`/`status health` 对 InspectHealth；`metrics`/`指标` 对 ExportMetrics——NL 解析→`dispatch_over_socket` 与直接构造 **逐字节 receipt 相等**。
+
+### 验证
+
+验证环境：macOS（darwin，arm64），基线 HEAD `8d98b78`。
+
+- `cargo test -p nlos-system-control`：**61 passed / 0 failed**（lib 23——含 nl 14、control 6、openmetrics 3；bin 0；`control_command_cli` 4；`control_ipc_auth` 9；其余 integration 24；doc-tests 1）。
+- `cargo clippy -p nlos-system-control --all-targets -- -D warnings`：通过（本 crate 零 warning）。
+- `cargo clippy -p nlos-system-control --all-targets --all-features -- -D warnings`：**阻塞**——传递依赖 `nlos-task`（非本写集）存在 2 项 pre-existing `missing_errors_doc` 违规；默认 `default = ["cli"]` 路径下本 crate 源码零新增 warning。
+- `cargo fmt -p nlos-system-control -- --check`：通过。
+
+### 已知限制（增量）
+
+1. **同义词仍为字面白名单**：`health check now`、`metrics export`、`cancel alert … expecting …` 等近邻形态继续 typed 拒绝。
+2. **无 pause/cancel ControlCommand**：NL 面不能编译暂停/取消类意图；须待未来命令面定义后再扩展白名单。
+3. **ROAD-B-005 仍 PARTIAL**：Trusted GUI 编译与确认面未实现。
