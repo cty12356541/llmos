@@ -5,8 +5,10 @@
 
 use ed25519_dalek::{Signer, SigningKey};
 use nlos_application::{
-    InstallApplicationRequest, InstallDecision, InstallationReceipt, UninstallApplicationRequest,
-    UninstallDecision, UninstallReceipt,
+    BackgroundTaskRegistrationReceipt, InstallApplicationRequest, InstallDecision,
+    InstallationReceipt, ProcessBindingReceipt, RegisterBackgroundTaskDecision,
+    RegisterBackgroundTaskRequest, RegisterProcessBindingDecision, RegisterProcessBindingRequest,
+    UninstallApplicationRequest, UninstallDecision, UninstallReceipt,
 };
 use nlos_artifact::{
     CollectOrphanBlobsDecision, CollectOrphanBlobsRequest, ContentDigest, CreateArtifactSpec,
@@ -18,7 +20,9 @@ use nlos_identity::{BootstrapPrincipalRequest, IdentityBinding, KeyPurpose};
 use nlos_process::{
     CreateIsolationDomainRequest, ProcessBindingRecord, RegisterDelegatedProcessRequest,
 };
-use nlos_types::{ArtifactId, Generation, PackageId, PrincipalId, TaskAttemptId, TaskId};
+use nlos_types::{
+    ArtifactId, Generation, PackageId, PrincipalId, ProcessId, TaskAttemptId, TaskId,
+};
 
 use crate::error::SliceKResult;
 use crate::runtime::{SliceKRuntime, initial_generation, seeded_key};
@@ -245,6 +249,64 @@ impl SliceKRuntime {
             UninstallDecision::Uninstalled(receipt) | UninstallDecision::Replayed(receipt) => {
                 Ok(receipt)
             }
+        }
+    }
+
+    /// Registers one background Task against an installed application
+    /// ([`ApplicationAuthority::register_background_task`], B-APPLICATION-005).
+    ///
+    /// # Errors
+    ///
+    /// Propagates application-authority errors; a `Replayed` decision
+    /// returns the durably recorded original receipt.
+    pub fn register_background_task(
+        &self,
+        package_id: PackageId,
+        task_id: TaskId,
+        registrant_principal: PrincipalId,
+        seed: u8,
+    ) -> SliceKResult<BackgroundTaskRegistrationReceipt> {
+        let registered_at_ms = self.wall_now_ms(seeded_key(seed, 30))?;
+        match self
+            .applications
+            .register_background_task(RegisterBackgroundTaskRequest {
+                package_id,
+                task_id,
+                registrant_principal,
+                idempotency_key: seeded_key(seed, 31),
+                registered_at_ms,
+            })? {
+            RegisterBackgroundTaskDecision::Registered(receipt)
+            | RegisterBackgroundTaskDecision::Replayed(receipt) => Ok(receipt),
+        }
+    }
+
+    /// Registers one Process binding against an installed application
+    /// ([`ApplicationAuthority::register_process_binding`], B-APPLICATION-006).
+    ///
+    /// # Errors
+    ///
+    /// Propagates application-authority errors; a `Replayed` decision
+    /// returns the durably recorded original receipt.
+    pub fn register_process_binding(
+        &self,
+        package_id: PackageId,
+        process_id: ProcessId,
+        registrant_principal: PrincipalId,
+        seed: u8,
+    ) -> SliceKResult<ProcessBindingReceipt> {
+        let registered_at_ms = self.wall_now_ms(seeded_key(seed, 32))?;
+        match self
+            .applications
+            .register_process_binding(RegisterProcessBindingRequest {
+                package_id,
+                process_id,
+                registrant_principal,
+                idempotency_key: seeded_key(seed, 33),
+                registered_at_ms,
+            })? {
+            RegisterProcessBindingDecision::Registered(receipt)
+            | RegisterProcessBindingDecision::Replayed(receipt) => Ok(receipt),
         }
     }
 

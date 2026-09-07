@@ -65,3 +65,8 @@ cargo fmt -p nlos-application -- --check                       # PASS
 - ROAD-B-002 续片：UI Surface 登记面或与 process authority 接线。
 - Slice K 纵切面：binding receipt 与 process authority 接线。
 - uninstall/disable 时已绑定 Process 的 teardown/GC 策略。
+
+## 7. Slice K 纵切面 inspect 接线（2026-09-07 追加：W18-002）
+
+- **写集**：`crates/nlos-slice-k/**`（`inspect_application_registrations` 聚合 `inspect_process_bindings`；`register_process_binding` 助手；demo STEP 09a；`tests/application_registrations.rs`）。本文件 §7 追加。
+- **证据**：install → `register_process_binding` → inspect 读回 binding receipt；同 key 重放幂等。见 [B-SLICE-K-001 §11](b-slice-k-001-end-to-end.md#11-后台-task-与-process-binding-inspect-接线2026-09-07-追加w18-002-road-b-002)。

@@ -5,7 +5,8 @@
 use std::path::{Path, PathBuf};
 
 use nlos_application::{
-    ApplicationAuthority, ApplicationStatus, ApplicationView, InstallationReceipt,
+    ApplicationAuthority, ApplicationStatus, ApplicationView, BackgroundTaskRegistrationReceipt,
+    InstallationReceipt, ProcessBindingReceipt,
 };
 use nlos_artifact::{ArtifactStore, HeadState};
 use nlos_clock::{AuthorityClock, NowRequest};
@@ -181,6 +182,25 @@ impl SliceKRuntime {
             operation,
         })
     }
+
+    /// Read-only inspect of one application's durable background-task
+    /// registrations and process bindings — the same facts a CLI/NL surface
+    /// would render for ROAD-B-002 registration state, aggregated straight
+    /// from the application authority.
+    ///
+    /// # Errors
+    ///
+    /// Propagates application-authority read errors. An unknown package
+    /// returns empty lists, not an error.
+    pub fn inspect_application_registrations(
+        &self,
+        package_id: PackageId,
+    ) -> SliceKResult<ApplicationRegistrationInspect> {
+        Ok(ApplicationRegistrationInspect {
+            background_tasks: self.applications.inspect_background_tasks(package_id)?,
+            process_bindings: self.applications.inspect_process_bindings(package_id)?,
+        })
+    }
 }
 
 /// Identifiers naming one assembled chain to [`SliceKRuntime::inspect_chain`].
@@ -213,6 +233,41 @@ pub struct ChainInspect {
     pub permit: Option<PermitRecord>,
     pub artifact_head: Option<HeadState>,
     pub operation: Option<OperationSnapshot>,
+}
+
+/// Durable background-task and process-binding registrations of one
+/// application, read straight from the application authority.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ApplicationRegistrationInspect {
+    pub background_tasks: Vec<BackgroundTaskRegistrationReceipt>,
+    pub process_bindings: Vec<ProcessBindingReceipt>,
+}
+
+impl ApplicationRegistrationInspect {
+    /// Stable `key=value` lines for demo/CLI inspect (grep-friendly).
+    #[must_use]
+    pub fn report_lines(&self) -> Vec<String> {
+        let mut lines = Vec::new();
+        lines.push(format!("background_tasks={}", self.background_tasks.len()));
+        for receipt in &self.background_tasks {
+            lines.push(format!(
+                "background_task={} generation={} principal={}",
+                crate::short_hex(receipt.task_id.as_bytes()),
+                receipt.application_generation.get(),
+                crate::short_hex(receipt.registrant_principal.as_bytes()),
+            ));
+        }
+        lines.push(format!("process_bindings={}", self.process_bindings.len()));
+        for receipt in &self.process_bindings {
+            lines.push(format!(
+                "process_binding={} generation={} principal={}",
+                crate::short_hex(receipt.process_id.as_bytes()),
+                receipt.application_generation.get(),
+                crate::short_hex(receipt.registrant_principal.as_bytes()),
+            ));
+        }
+        lines
+    }
 }
 
 impl ChainInspect {

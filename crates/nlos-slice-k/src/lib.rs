@@ -56,5 +56,6 @@ pub use package::{
     provenance_triple,
 };
 pub use runtime::{
-    ChainInspect, ChainQuery, SliceKRuntime, initial_generation, seeded_key, short_hex,
+    ApplicationRegistrationInspect, ChainInspect, ChainQuery, SliceKRuntime, initial_generation,
+    seeded_key, short_hex,
 };

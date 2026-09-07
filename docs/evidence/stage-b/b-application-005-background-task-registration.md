@@ -66,3 +66,8 @@ cargo fmt -p nlos-application -- --check                       # PASS
 - ROAD-B-002 续片：Application 多 Process binding 或 UI Surface 登记面。
 - Slice K 纵切面：registration receipt 与 task authority 接线。
 - uninstall/disable 时对已登记后台 Task 的 teardown/GC 策略。
+
+## 7. Slice K 纵切面 inspect 接线（2026-09-07 追加：W18-002）
+
+- **写集**：`crates/nlos-slice-k/**`（`inspect_application_registrations` 聚合 `inspect_background_tasks`；`register_background_task` 助手；demo STEP 09a；`tests/application_registrations.rs` + `FixedTaskProbe` activity gate）。本文件 §7 追加。
+- **证据**：install → `register_background_task` → inspect 读回 registration receipt；probe 报告 outstanding → activity-gated uninstall fail-closed。见 [B-SLICE-K-001 §11](b-slice-k-001-end-to-end.md#11-后台-task-与-process-binding-inspect-接线2026-09-07-追加w18-002-road-b-002)。

@@ -261,3 +261,41 @@ cargo fmt -p nlos-slice-k -- --check                       → 干净
 - **uninstall 不解除 artifact 引用**：GC 引用集仍来自 artifact store SQLite 行；package payload/head 引用 blob 机械上非孤儿，本切片只证明「可证明孤儿可删、在册引用保留」。
 - **无 retention-GC / PKG-UPDATE-001 rollback**：登记为后续 ROAD-B-001 车道。
 - **无 Task/Process teardown**：与 §9.5 一致。
+
+## 11. 后台 Task 与 Process binding inspect 接线（2026-09-07 追加：W18-002 ROAD-B-002）
+
+- **定位**：ROAD-B-002 纵切面最小前缀——在 `SliceKRuntime` 聚合 `ApplicationAuthority::inspect_background_tasks` + `inspect_process_bindings` 只读 inspect 路径；组装 `register_background_task` / `register_process_binding` 助手；demo STEP 09a + 2 集成测试证明登记后可 inspect 读回；可选 `FixedTaskProbe`（计数来自 gate 前 inspect）验证 activity-gated uninstall fail-closed。不实现 UI Surface、spawn/kill、TaskPlan。
+- **写集**：`crates/nlos-slice-k/**`（`runtime.rs` 新增 `ApplicationRegistrationInspect`/`inspect_application_registrations`；`package.rs` 新增 register 助手；`slice-k-demo.rs` STEP 09a；`tests/application_registrations.rs` 2 用例）与本 §、`docs/evidence/stage-b/b-application-005-background-task-registration.md` §W18-002、`docs/evidence/stage-b/b-application-006-process-binding.md` §W18-002。`nlos-application` 零改动（只读消费）。base HEAD `8d98b78`。
+
+### 11.1 接线摘要
+
+| 接线点 | 消费的已落地 API | 语义 |
+|---|---|---|
+| 只读 inspect | `SliceKRuntime::inspect_application_registrations` → `inspect_background_tasks` + `inspect_process_bindings` | 按 `package_id` 聚合 registration receipts；未知 package 空列表 |
+| 登记助手 | `register_background_task`（key `seeded_key(seed,30/31)`） | B-APPLICATION-005 durable 登记 |
+| 登记助手 | `register_process_binding`（key `seeded_key(seed,32/33)`） | B-APPLICATION-006 durable 登记 |
+| activity gate | `FixedTaskProbe`（计数来自 gate 前 `inspect_application_registrations`） | uninstall 前 caller-supplied outstanding task 知识；probe 不得 re-enter authority writer lock |
+
+### 11.2 demo 输出新增行（STEP 09a，接 STEP 09 inspect 之后、09b lifecycle 之前）
+
+```text
+[slice-k] STEP 09a application-registrations begin
+[slice-k] RECEIPT kind=background-task-registration id=<hex> task=<hex> generation=1
+[slice-k] RECEIPT kind=process-binding-registration id=<hex> process=<hex> generation=1
+[slice-k] INSPECT-REGISTRATIONS background_tasks=1
+[slice-k] INSPECT-REGISTRATIONS background_task=<hex> generation=1 principal=<hex>
+[slice-k] INSPECT-REGISTRATIONS process_bindings=1
+[slice-k] INSPECT-REGISTRATIONS process_binding=<hex> generation=1 principal=<hex>
+[slice-k] STEP 09a application-registrations done
+```
+
+### 11.3 测试与断言要点
+
+- `register_background_task_and_process_binding_then_inspect_readback`：install → register 各 1 → inspect 读回一致 → 同 key 重放幂等 → `report_lines` 计数正确。
+- `uninstall_with_registered_background_task_is_fail_closed_via_probe`：inspect 报告 1 registration → `FixedTaskProbe` 传 1 → `uninstall_application_with_activity_gate` 返回 `ApplicationActiveTasksRunning`、application 仍为 installed。
+
+### 11.4 剩余缺口（如实登记）
+
+- **无 UI Surface / spawn-kill**：registration 仅为 application authority durable 登记面；纵切面不物化 Process runtime 或调度后台 Task。
+- **probe 为登记计数 stand-in**：非 nlos-task 运行时 outstanding 探测；真实 running-task 计数仍由 caller 提供。
+- **lifecycle 与 registration 无联动**：disable/uninstall 不自动失效历史代际 registration receipts（与 B-APPLICATION-005/006 一致）。

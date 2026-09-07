@@ -99,6 +99,7 @@ async fn demo_happy_chain(runtime: &Arc<SliceKRuntime>, adapter: &TokioRuntimeAd
         ),
     );
     print_inspect(runtime, &chain, "[slice-k] INSPECT");
+    demo_application_registrations(runtime, &chain);
     demo_lifecycle(runtime, &chain);
     demo_uninstall(runtime, &chain);
 }
@@ -120,6 +121,54 @@ fn print_inspect(runtime: &SliceKRuntime, chain: &HappyChain, prefix: &str) {
     for line in inspect.report_lines() {
         println!("{prefix} {line}");
     }
+}
+
+/// Registers the happy-chain Task and Process against the installed
+/// application, then prints the aggregated registration inspect view
+/// (ROAD-B-002 background-task + process-binding wiring).
+fn demo_application_registrations(runtime: &Arc<SliceKRuntime>, chain: &HappyChain) {
+    println!("[slice-k] STEP 09a application-registrations begin");
+    let background = runtime
+        .register_background_task(
+            chain.package.package_id,
+            chain.task_id,
+            chain.publisher.principal_id,
+            0x2A,
+        )
+        .expect("register background task");
+    receipt_line(
+        "background-task-registration",
+        background.idempotency_key.as_bytes(),
+        &format!(
+            "task={} generation={}",
+            short_hex(background.task_id.as_bytes()),
+            background.application_generation.get()
+        ),
+    );
+    let binding = runtime
+        .register_process_binding(
+            chain.package.package_id,
+            chain.process.process_id,
+            chain.publisher.principal_id,
+            0x2A,
+        )
+        .expect("register process binding");
+    receipt_line(
+        "process-binding-registration",
+        binding.idempotency_key.as_bytes(),
+        &format!(
+            "process={} generation={}",
+            short_hex(binding.process_id.as_bytes()),
+            binding.application_generation.get()
+        ),
+    );
+    let inspect = runtime
+        .inspect_application_registrations(chain.package.package_id)
+        .expect("inspect application registrations");
+    for line in inspect.report_lines() {
+        println!("[slice-k] INSPECT-REGISTRATIONS {line}");
+    }
+    println!("[slice-k] STEP 09a application-registrations done");
 }
 
 /// Demonstrates the §23.1 lifecycle tail on an installed application: a
