@@ -66,3 +66,19 @@ cargo fmt -p nlos-application -- --check                       # PASS：exit 0
 - uninstall / rollback 策略引擎（消费 disabled 终态与代际 CAS，兼容 `[PKG-UPDATE-001]`）。
 - Slice K：Task 创建接线（installation/update receipt 作为 Task 引导事实）。
 - 更新通道与内容去重：generation 语义从「安装/更新命令」演进为完整内容代际策略。
+
+## 7. W18-001 `[PKG-UPDATE-001]` compatibility window 最小前缀（2026-09-07）
+
+### 已实现事实
+
+1. **`CompatibilityWindow::SameMajor`**：caller 在 `UpdateApplicationRequest::compatibility_window` 显式声明；`validate` 在 pre-mutation 阶段比较当前 installation receipt 与 verified target 的 semver major（`pack_package_version` / `(version >> 32)`）。
+2. **fail-closed**：跨 major 返回 `UpdateCompatibilityViolation` 且零 durable 副作用；同 major minor/patch 推进仍走既有 update CAS；idempotent replay 不重复校验。
+3. **诚实范围**：非完整 `[PKG-UPDATE-001]` 引擎——无 migration runner、health check、binary 原子切换或多步编排。
+
+### 验证门（W18-001 实跑）
+
+| 门 | 命令 | 结果 |
+| --- | --- | --- |
+| 兼容窗口三用例 | `cargo test -p nlos-application --test application_authority update_compat` | PASS（accept/reject/replay） |
+| lib 单测 | `cargo test -p nlos-application --lib compatibility_window` | PASS |
+| clippy | `cargo clippy -p nlos-application --all-targets -- -D warnings` | （波次 18 integrator 未复跑 workspace 全仓门） |

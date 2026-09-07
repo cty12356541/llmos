@@ -251,6 +251,53 @@ impl DisableDecision {
     }
 }
 
+/// Packs `(major, minor, patch)` into the artifact manifest `version` field
+/// with the major component in the upper 32 bits (`major = version >> 32`).
+#[must_use]
+pub const fn pack_package_version(major: u32, minor: u32, patch: u32) -> u64 {
+    (major as u64) << 32 | (minor as u64) << 16 | (patch as u64)
+}
+
+/// Explicit backward-compatibility policy declared by the caller for one
+/// update. This slice validates only the declared window pre-mutation;
+/// migration runners, health checks, and atomic switching remain out of
+/// scope for the full `[PKG-UPDATE-001]` engine.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CompatibilityWindow {
+    /// The target package version must share the same packed semver major as
+    /// the current installation (`major = version >> 32`).
+    SameMajor,
+}
+
+impl CompatibilityWindow {
+    /// Validates `target_version` against `current_version` under this window.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApplicationAuthorityError::UpdateCompatibilityViolation`] when
+    /// the declared window is not satisfied.
+    pub fn validate(
+        self,
+        package_id: PackageId,
+        current_version: u64,
+        target_version: u64,
+    ) -> Result<(), ApplicationAuthorityError> {
+        match self {
+            Self::SameMajor => {
+                if current_version >> 32 != target_version >> 32 {
+                    return Err(ApplicationAuthorityError::UpdateCompatibilityViolation {
+                        package_id,
+                        current_version,
+                        target_version,
+                        compatibility_window: self,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Request to update one installed application to a new verified package
 /// generation. Authority-first: the caller references the verification
 /// fact by its artifact-authority receipt id and names the package
@@ -268,6 +315,10 @@ pub struct UpdateApplicationRequest {
     /// Caller-supplied update timestamp (ms since Unix epoch); must not
     /// precede the new package's verification timestamp.
     pub updated_at_ms: u64,
+    /// Explicit compatibility window the caller asserts for this update.
+    /// Validated pre-mutation against the current installation's package
+    /// version; a mismatch is a typed refusal with zero durable state.
+    pub compatibility_window: CompatibilityWindow,
 }
 
 /// Outcome of one [`ApplicationAuthority::update_application`] call. The
@@ -550,6 +601,14 @@ pub enum ApplicationAuthorityError {
         package_id: PackageId,
         manifest_digest: ContentDigest,
     },
+    /// The verified package version falls outside the caller-declared
+    /// compatibility window for this update.
+    UpdateCompatibilityViolation {
+        package_id: PackageId,
+        current_version: u64,
+        target_version: u64,
+        compatibility_window: CompatibilityWindow,
+    },
     /// Rollback requires the application to be `disabled` or `uninstalled`;
     /// an installed application cannot roll back in this slice.
     RollbackRequiresDisabledOrUninstalled {
@@ -698,6 +757,17 @@ impl fmt::Display for ApplicationAuthorityError {
                 "verified package {package_id:?} manifest digest {manifest_digest:?} \
                  is unchanged from the current installation; use install for \
                  same-content reinstall"
+            ),
+            Self::UpdateCompatibilityViolation {
+                package_id,
+                current_version,
+                target_version,
+                compatibility_window,
+            } => write!(
+                formatter,
+                "verified package {package_id:?} version {target_version} violates the \
+                 declared compatibility window {compatibility_window:?} against the \
+                 current installation version {current_version}"
             ),
             Self::RollbackRequiresDisabledOrUninstalled {
                 application_id,
@@ -1128,8 +1198,13 @@ impl ApplicationAuthority {
     ///    ([`ApplicationAuthorityError::PackageIdentityMismatch`]), and
     ///    target a manifest digest different from the current installation
     ///    ([`ApplicationAuthorityError::UpdateManifestUnchanged`]).
-    /// 4. **Digest binding (seven equations)**: same as install.
-    /// 5. **Generation CAS**: advances exactly one generation under a
+    /// 4. **Compatibility window**: the caller-declared
+    ///    [`CompatibilityWindow`] is validated against the current
+    ///    installation's package version and the verified target version
+    ///    pre-mutation
+    ///    ([`ApplicationAuthorityError::UpdateCompatibilityViolation`]).
+    /// 5. **Digest binding (seven equations)**: same as install.
+    /// 6. **Generation CAS**: advances exactly one generation under a
     ///    read-then-write CAS; receipt insert and generation advance share
     ///    the one transaction (co-life).
     ///
@@ -1200,6 +1275,20 @@ impl ApplicationAuthority {
                 manifest_digest: verified.manifest_digest,
             });
         }
+
+        let current = load_installation_receipt_at_generation(
+            &transaction,
+            application.application_id,
+            application.current_installation_generation,
+        )?
+        .ok_or(ApplicationAuthorityError::CorruptRecord(
+            "current installation receipt is missing",
+        ))?;
+        request.compatibility_window.validate(
+            request.package_id,
+            current.package_version,
+            verified.package_version,
+        )?;
 
         let next = application
             .current_installation_generation
@@ -2631,6 +2720,29 @@ mod tests {
                     installed_at_ms: 999,
                 }
             )
+        ));
+    }
+
+    #[test]
+    fn compatibility_window_same_major_validates_packed_semver() {
+        use super::{CompatibilityWindow, pack_package_version};
+        use nlos_types::PackageId;
+
+        let package_id = PackageId::from_bytes([0x41; 16]);
+        CompatibilityWindow::SameMajor
+            .validate(
+                package_id,
+                pack_package_version(1, 0, 0),
+                pack_package_version(1, 9, 9),
+            )
+            .expect("same major must admit");
+        assert!(matches!(
+            CompatibilityWindow::SameMajor.validate(
+                package_id,
+                pack_package_version(1, 0, 0),
+                pack_package_version(2, 0, 0),
+            ),
+            Err(ApplicationAuthorityError::UpdateCompatibilityViolation { .. })
         ));
     }
 }

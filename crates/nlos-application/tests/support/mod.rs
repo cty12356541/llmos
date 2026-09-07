@@ -12,8 +12,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use ed25519_dalek::{Signer, SigningKey};
 use nlos_application::{
-    ApplicationAuthority, DisableApplicationRequest, DisableDecision, DisableReceipt,
-    InstallApplicationRequest, InstallDecision, RegisterBackgroundTaskDecision,
+    ApplicationAuthority, CompatibilityWindow, DisableApplicationRequest, DisableDecision,
+    DisableReceipt, InstallApplicationRequest, InstallDecision, RegisterBackgroundTaskDecision,
     RegisterBackgroundTaskRequest, RegisterProcessBindingDecision, RegisterProcessBindingRequest,
     RollbackApplicationRequest, RollbackDecision, RollbackReceipt, UninstallApplicationRequest,
     UninstallDecision, UninstallReceipt, UpdateApplicationRequest, UpdateDecision,
@@ -308,6 +308,7 @@ pub fn updated(
                 package_verification_receipt_id: receipt_id,
                 idempotency_key: IdempotencyKey::from_bytes([key; 16]),
                 updated_at_ms: at_ms,
+                compatibility_window: CompatibilityWindow::SameMajor,
             },
         )
         .expect("update must succeed")
@@ -336,6 +337,7 @@ pub fn update_replayed(
                 package_verification_receipt_id: receipt_id,
                 idempotency_key: IdempotencyKey::from_bytes([key; 16]),
                 updated_at_ms: at_ms,
+                compatibility_window: CompatibilityWindow::SameMajor,
             },
         )
         .expect("update must replay")

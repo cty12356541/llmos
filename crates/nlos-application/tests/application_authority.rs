@@ -9,10 +9,11 @@ mod support;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use nlos_application::{
-    ActiveTaskActivityProbe, ApplicationAuthorityError, DisableApplicationRequest,
-    InstallApplicationRequest, RegisterBackgroundTaskRequest, RegisterProcessBindingRequest,
+    ActiveTaskActivityProbe, ApplicationAuthorityError, CompatibilityWindow,
+    DisableApplicationRequest, InstallApplicationRequest,
+    RegisterBackgroundTaskRequest, RegisterProcessBindingRequest,
     RollbackApplicationRequest, UninstallApplicationRequest, UpdateApplicationRequest,
-    derive_application_id, derive_installation_id,
+    derive_application_id, derive_installation_id, pack_package_version,
 };
 use nlos_types::{Generation, IdempotencyKey, PackageId, ProcessId, ReceiptId, TaskId};
 use rusqlite::Connection;
@@ -1101,6 +1102,7 @@ fn update_replays_idempotently_and_conflicts_on_shape_mismatch() {
             package_verification_receipt_id: second.receipt_id,
             idempotency_key: key(0x02),
             updated_at_ms: 9_000,
+            compatibility_window: CompatibilityWindow::SameMajor,
         },
     );
     assert!(matches!(
@@ -1116,6 +1118,7 @@ fn update_replays_idempotently_and_conflicts_on_shape_mismatch() {
             package_verification_receipt_id: third.receipt_id,
             idempotency_key: key(0x02),
             updated_at_ms: 3_000,
+            compatibility_window: CompatibilityWindow::SameMajor,
         },
     );
     assert!(matches!(
@@ -1199,6 +1202,7 @@ fn update_refusals_are_typed_and_leave_zero_state() {
                 package_verification_receipt_id: verified.receipt_id,
                 idempotency_key: key(0x01),
                 updated_at_ms: 2_000,
+                compatibility_window: CompatibilityWindow::SameMajor,
             },
         )
         .expect_err("update requires a prior install");
@@ -1226,6 +1230,7 @@ fn update_refusals_are_typed_and_leave_zero_state() {
                 package_verification_receipt_id: newer.receipt_id,
                 idempotency_key: key(0x02),
                 updated_at_ms: 4_999,
+                compatibility_window: CompatibilityWindow::SameMajor,
             },
         )
         .expect_err("update must not precede verification");
@@ -1245,6 +1250,7 @@ fn update_refusals_are_typed_and_leave_zero_state() {
                 package_verification_receipt_id: verified.receipt_id,
                 idempotency_key: key(0x02),
                 updated_at_ms: 2_000,
+                compatibility_window: CompatibilityWindow::SameMajor,
             },
         )
         .expect_err("same manifest is not an update");
@@ -1264,6 +1270,7 @@ fn update_refusals_are_typed_and_leave_zero_state() {
                 package_verification_receipt_id: other_package.receipt_id,
                 idempotency_key: key(0x03),
                 updated_at_ms: 3_000,
+                compatibility_window: CompatibilityWindow::SameMajor,
             },
         )
         .expect_err("verified package must match the named package");
@@ -1282,6 +1289,7 @@ fn update_refusals_are_typed_and_leave_zero_state() {
                 package_verification_receipt_id: ghost,
                 idempotency_key: key(0x04),
                 updated_at_ms: 3_000,
+                compatibility_window: CompatibilityWindow::SameMajor,
             },
         )
         .expect_err("unverified receipt");
@@ -1300,6 +1308,7 @@ fn update_refusals_are_typed_and_leave_zero_state() {
                 package_verification_receipt_id: disabled_target.receipt_id,
                 idempotency_key: key(0x05),
                 updated_at_ms: 5_000,
+                compatibility_window: CompatibilityWindow::SameMajor,
             },
         )
         .expect_err("disabled application must refuse updates");
@@ -1309,6 +1318,101 @@ fn update_refusals_are_typed_and_leave_zero_state() {
     ));
     assert_counts(&stack, 1, 1);
     assert_disable_counts(&stack, 1);
+}
+
+/// Same-major minor/patch advance is accepted under
+/// [`CompatibilityWindow::SameMajor`].
+#[test]
+fn update_compat_accepts_same_major() {
+    let stack = TestStack::new(&label("update-compat-accept"), 0x35);
+    let first = stack.verify_package(0x41, pack_package_version(1, 0, 0), key(0xF0), 1_000);
+    let second = stack.verify_package(0x41, pack_package_version(1, 2, 3), key(0xF1), 2_000);
+    assert_ne!(first.manifest_digest, second.manifest_digest);
+    let authority = open_authority(stack.root.root());
+    installed(&authority, &stack.artifacts, first.receipt_id, 0x01, 2_000);
+    let receipt = updated(
+        &authority,
+        &stack.artifacts,
+        first.package_id,
+        second.receipt_id,
+        0x02,
+        3_000,
+    );
+    assert_eq!(receipt.package_version, pack_package_version(1, 2, 3));
+    assert_counts(&stack, 1, 2);
+}
+
+/// Cross-major updates fail closed with zero durable state.
+#[test]
+fn update_compat_rejects_cross_major() {
+    let stack = TestStack::new(&label("update-compat-reject"), 0x36);
+    let first = stack.verify_package(0x41, pack_package_version(1, 0, 0), key(0xF0), 1_000);
+    let second = stack.verify_package(0x41, pack_package_version(2, 0, 0), key(0xF1), 2_000);
+    let authority = open_authority(stack.root.root());
+    installed(&authority, &stack.artifacts, first.receipt_id, 0x01, 2_000);
+
+    let error = authority
+        .update_application(
+            &stack.artifacts,
+            UpdateApplicationRequest {
+                package_id: first.package_id,
+                package_verification_receipt_id: second.receipt_id,
+                idempotency_key: key(0x02),
+                updated_at_ms: 3_000,
+                compatibility_window: CompatibilityWindow::SameMajor,
+            },
+        )
+        .expect_err("cross-major update must be refused");
+    assert!(matches!(
+        error,
+        ApplicationAuthorityError::UpdateCompatibilityViolation {
+            package_id,
+            current_version,
+            target_version,
+            compatibility_window: CompatibilityWindow::SameMajor,
+        } if package_id == first.package_id
+            && current_version == pack_package_version(1, 0, 0)
+            && target_version == pack_package_version(2, 0, 0)
+    ));
+    assert_counts(&stack, 1, 1);
+}
+
+/// Idempotent replay bypasses the compatibility gate and never re-advances.
+#[test]
+fn update_compat_replay_bypasses_compatibility_gate() {
+    let stack = TestStack::new(&label("update-compat-replay"), 0x37);
+    let first = stack.verify_package(0x41, pack_package_version(1, 0, 0), key(0xF0), 1_000);
+    let second = stack.verify_package(0x41, pack_package_version(1, 1, 0), key(0xF1), 2_000);
+    let authority = open_authority(stack.root.root());
+    installed(&authority, &stack.artifacts, first.receipt_id, 0x01, 2_000);
+    let receipt = updated(
+        &authority,
+        &stack.artifacts,
+        first.package_id,
+        second.receipt_id,
+        0x02,
+        3_000,
+    );
+
+    let replay = update_replayed(
+        &authority,
+        &stack.artifacts,
+        first.package_id,
+        second.receipt_id,
+        0x02,
+        3_000,
+    );
+    assert_eq!(replay, receipt);
+    assert_eq!(
+        authority
+            .inspect_application(first.package_id)
+            .expect("inspect")
+            .expect("exists")
+            .current_installation_generation
+            .get(),
+        2
+    );
+    assert_counts(&stack, 1, 2);
 }
 
 /// 正常卸载（installed）：uninstall API 单事务落 immutable uninstall
