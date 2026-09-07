@@ -319,3 +319,25 @@ cargo test -p nlos-runtime-tokio -- --test-threads=1
 ```
 
 - **缺口**：10K/100K 探针 `--include-ignored` 实跑未在本增量执行；背压/挂起维 100K 规模验证仍缺；不得外推 ROAD-B-006 达成。
+
+#### 6.9.3 W18-006：10K ignore 探针实跑 + RSS/线程读数（2026-09-07）
+
+- **写集**：`activation_meter_scale.rs` 补 `process_rss_kib` / `process_thread_count` 与 `THREAD_BOUND` 断言（镜像 `durable_wait_scale.rs` 口径）；§6.9.1 数字由 W17-006 骨架登记更新为 W18-006 实跑。
+- **平台**：macOS arm64，2 tokio workers，`--include-ignored --test-threads=1 --nocapture`。
+- **10K 实跑（exit 0，断言全绿）**：
+
+```text
+cargo test -p nlos-runtime-tokio --test activation_meter_scale ten_thousand -- --include-ignored --test-threads=1 --nocapture
+  → 1 passed / 0 failed（2026-09-07 W18-006）
+  → 10K profile（2 tokio workers，sample=1000）：
+     active_cpu_phase=12.513s（1000 compute fibers，全 cohort active_cpu≥10ms 且 external_wait=0）
+     external_wait: spawn_issue=35.1ms park_settle=21.2ms external_wait_sleep=50ms
+                    sample_assert=0.42ms rss_kib=23440 threads=4 total=112.3ms
+     （1000 前缀 external_wait≥40ms 且 active_cpu<external_wait；threads≤10 有界断言通过）
+cargo test -p nlos-runtime-tokio -- --test-threads=1
+  → 82 passed / 0 failed / 6 ignored（2026-09-07 W18-006；17 test target 全绿）
+cargo test -p nlos-runtime-tokio --test activation_meter_scale -- --include-ignored one_hundred_thousand
+  → 未本地实跑（100K tier 仍登记 CI/nightly manual；W18-006 未跑）
+```
+
+- **缺口更新**：100K activation-meter 探针本地/nightly 实跑数字仍缺；不得外推 ROAD-B-006 达成。

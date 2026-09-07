@@ -35,6 +35,8 @@ const EXTERNAL_WAIT_SLEEP: Duration = Duration::from_millis(50);
 const MIN_EXTERNAL_WAIT: Duration = Duration::from_millis(40);
 const MIN_ACTIVE_CPU: Duration = Duration::from_millis(10);
 const COMPUTE_TARGET: Duration = Duration::from_millis(25);
+/// Host thread bound independent of fiber count (main + 2 tokio workers + probe slack).
+const THREAD_BOUND: usize = 10;
 
 fn id_bytes(value: usize) -> [u8; 16] {
     let mut bytes = [0_u8; 16];
@@ -192,6 +194,13 @@ async fn assert_external_wait_metering_at_scale(count: usize, subset: usize) -> 
 
     tokio::time::sleep(EXTERNAL_WAIT_SLEEP).await;
 
+    let rss_kib = process_rss_kib();
+    let threads = process_thread_count();
+    assert!(
+        threads <= THREAD_BOUND,
+        "host threads {threads} exceed fiber-count-independent bound {THREAD_BOUND}"
+    );
+
     let sample_started = Instant::now();
     for handle in &handles[..subset] {
         let usage = runtime.activation_usage(*handle).expect("usage");
@@ -218,7 +227,7 @@ async fn assert_external_wait_metering_at_scale(count: usize, subset: usize) -> 
         "{count}-fiber activation-meter profile (2 tokio workers, sample={subset}): \
          spawn_issue={spawn_issue:?} park_settle={park_settle:?} \
          external_wait_sleep={EXTERNAL_WAIT_SLEEP:?} sample_assert={sample_elapsed:?} \
-         total={total:?}"
+         rss_kib={rss_kib} threads={threads} total={total:?}"
     );
     total
 }
@@ -242,4 +251,69 @@ async fn ten_thousand_activation_meter_fibers_on_two_workers() {
 #[ignore = "explicit Stage B ROAD-B-006 100K activation-meter fiber scale probe"]
 async fn one_hundred_thousand_activation_meter_fibers_on_two_workers() {
     run_activation_meter_scale(FULL_COUNT, METER_SUBSET).await;
+}
+
+/// Resident set size of this process in KiB, read out-of-band so the probe
+/// adds no measurement dependency to the crate.
+#[cfg(target_os = "macos")]
+fn process_rss_kib() -> u64 {
+    let output = std::process::Command::new("/bin/ps")
+        .args(["-o", "rss=", "-p", &std::process::id().to_string()])
+        .output()
+        .expect("ps rss readout");
+    String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse::<u64>()
+        .expect("ps rss is an integer")
+}
+
+/// Mach thread count via `ps -M`: one header line followed by one line per thread.
+#[cfg(target_os = "macos")]
+fn process_thread_count() -> usize {
+    let output = std::process::Command::new("/bin/ps")
+        .args(["-M", "-p", &std::process::id().to_string()])
+        .output()
+        .expect("ps thread readout");
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .count()
+        .saturating_sub(1)
+}
+
+#[cfg(target_os = "linux")]
+fn process_rss_kib() -> u64 {
+    let status = std::fs::read_to_string("/proc/self/status").expect("proc status readout");
+    let line = status
+        .lines()
+        .find(|line| line.starts_with("VmRSS:"))
+        .expect("VmRSS present");
+    line["VmRSS:".len()..]
+        .split_whitespace()
+        .next()
+        .expect("VmRSS value")
+        .parse::<u64>()
+        .expect("VmRSS is an integer")
+}
+
+#[cfg(target_os = "linux")]
+fn process_thread_count() -> usize {
+    let status = std::fs::read_to_string("/proc/self/status").expect("proc status readout");
+    let line = status
+        .lines()
+        .find(|line| line.starts_with("Threads:"))
+        .expect("Threads present");
+    line["Threads:".len()..]
+        .trim()
+        .parse::<usize>()
+        .expect("Threads is an integer")
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn process_rss_kib() -> u64 {
+    0
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn process_thread_count() -> usize {
+    0
 }
