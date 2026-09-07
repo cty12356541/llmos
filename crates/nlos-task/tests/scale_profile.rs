@@ -24,7 +24,8 @@ use std::time::{Duration, Instant};
 
 use nlos_task::{
     AttemptSpec, Authorities, PermitDecision, PermitRequest, SnapshotBundle, SqliteTaskAuthority,
-    TASK_PROFILE_10K, TaskSpec, WorkingSetPressure, empty_effect_history_root,
+    ScaleProfile, TASK_PROFILE_10K, TaskSpec, TaskStoreError, WorkingSetPressure,
+    empty_effect_history_root,
 };
 use nlos_types::{
     CancellationScopeId, Generation, IdempotencyKey, TaskAttemptId, TaskId, TaskSnapshotId,
@@ -32,6 +33,13 @@ use nlos_types::{
 
 const REGISTRATION_COUNT: u64 = 200;
 const ACTIVE_SAMPLE: u64 = 16;
+
+static ADMISSION_TEST_PROFILE: ScaleProfile = ScaleProfile {
+    profile_id: "task-admission-test",
+    max_task_nodes: 64,
+    max_active_working_set: 2,
+    reclaim_threshold_ratio: Some(90),
+};
 
 static NEXT_DATABASE: AtomicU64 = AtomicU64::new(0);
 
@@ -51,6 +59,11 @@ impl TestDatabase {
 
     fn open(&self) -> SqliteTaskAuthority {
         SqliteTaskAuthority::open(&self.path).expect("open task authority")
+    }
+
+    fn open_with_profile(&self, profile: &'static ScaleProfile) -> SqliteTaskAuthority {
+        SqliteTaskAuthority::open_with_scale_profile(&self.path, profile)
+            .expect("open task authority with profile")
     }
 }
 
@@ -247,4 +260,109 @@ fn task_10k_tier_is_published_and_registration_face_stays_key_scoped() {
         permit_elapsed < Duration::from_mins(1),
         "permit face: {permit_elapsed:?}"
     );
+}
+
+#[test]
+fn working_set_admission_allows_up_to_cap() {
+    let database = TestDatabase::new("admission-at-cap");
+    let authority = database.open_with_profile(&ADMISSION_TEST_PROFILE);
+
+    for index in 0..ADMISSION_TEST_PROFILE.max_active_working_set {
+        register_task(&authority, index);
+        authority
+            .register_attempt(attempt_spec(index))
+            .expect("register attempt");
+        let decision = authority
+            .request_commit_permit_with_authorities_struct(
+                Authorities::default(),
+                permit_request(index, 0x30),
+            )
+            .expect("request permit at cap");
+        issued_permit(decision);
+    }
+}
+
+#[test]
+fn working_set_admission_denies_over_cap() {
+    let database = TestDatabase::new("admission-over-cap");
+    let authority = database.open_with_profile(&ADMISSION_TEST_PROFILE);
+
+    for index in 0..ADMISSION_TEST_PROFILE.max_active_working_set {
+        register_task(&authority, index);
+        authority
+            .register_attempt(attempt_spec(index))
+            .expect("register attempt");
+        authority
+            .request_commit_permit_with_authorities_struct(
+                Authorities::default(),
+                permit_request(index, 0x30),
+            )
+            .expect("request permit");
+    }
+
+    register_task(&authority, ADMISSION_TEST_PROFILE.max_active_working_set);
+    authority
+        .register_attempt(attempt_spec(ADMISSION_TEST_PROFILE.max_active_working_set))
+        .expect("register attempt");
+    let error = authority
+        .request_commit_permit_with_authorities_struct(
+            Authorities::default(),
+            permit_request(ADMISSION_TEST_PROFILE.max_active_working_set, 0x31),
+        )
+        .expect_err("must fail closed over cap");
+    assert!(matches!(
+        error,
+        TaskStoreError::WorkingSetAdmissionDenied {
+            profile_id: "task-admission-test",
+            active_count: 3,
+            max_active_working_set: 2,
+        }
+    ));
+}
+
+#[test]
+fn working_set_admission_replay_bypasses_gate_at_cap() {
+    let database = TestDatabase::new("admission-replay");
+    let authority = database.open_with_profile(&ADMISSION_TEST_PROFILE);
+
+    for index in 0..ADMISSION_TEST_PROFILE.max_active_working_set {
+        register_task(&authority, index);
+        authority
+            .register_attempt(attempt_spec(index))
+            .expect("register attempt");
+        authority
+            .request_commit_permit_with_authorities_struct(
+                Authorities::default(),
+                permit_request(index, 0x30),
+            )
+            .expect("request permit");
+    }
+
+    let replay = authority
+        .request_commit_permit_with_authorities_struct(
+            Authorities::default(),
+            permit_request(0, 0x30),
+        )
+        .expect("idempotent replay must bypass admission gate at cap");
+    match replay {
+        PermitDecision::Issued(record) | PermitDecision::Replayed(record) => {
+            assert_eq!(record.task_id, task_id(0));
+        }
+        other => panic!("expected Issued or Replayed permit, got {other:?}"),
+    }
+
+    register_task(&authority, ADMISSION_TEST_PROFILE.max_active_working_set);
+    authority
+        .register_attempt(attempt_spec(ADMISSION_TEST_PROFILE.max_active_working_set))
+        .expect("register attempt");
+    let error = authority
+        .request_commit_permit_with_authorities_struct(
+            Authorities::default(),
+            permit_request(ADMISSION_TEST_PROFILE.max_active_working_set, 0x31),
+        )
+        .expect_err("fresh issuance still blocked at cap");
+    assert!(matches!(
+        error,
+        TaskStoreError::WorkingSetAdmissionDenied { .. }
+    ));
 }

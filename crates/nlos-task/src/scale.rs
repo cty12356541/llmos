@@ -9,9 +9,11 @@
 //!
 //! Honest scope of this skeleton:
 //!
-//! - **Declaration, not enforcement.** No `TaskAuthority` path consults a
-//!   `ScaleProfile` yet; wiring tier limits into registration/admission is
-//!   future work and is registered as a gap in
+//! - **Prefix enforcement only.** [`crate::SqliteTaskAuthority::request_commit_permit`]
+//!   consults [`crate::WorkingSetPressure::admits`] via the authority's
+//!   configured [`ScaleProfile`] before issuing a new outstanding permit;
+//!   idempotent replays bypass the gate. Task registration and soft reclaim
+//!   are not enforced yet; gaps remain in
 //!   `docs/evidence/stage-b/b-task-scale-001.md`.
 //! - **Provisional dimension mapping.** The durable `TaskPlan`/`TaskNode`
 //!   declaration surface is not landed in this crate (`TaskSpec` carries no

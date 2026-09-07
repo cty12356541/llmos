@@ -47,6 +47,8 @@ use crate::migrations::{
     migrate_v37, migrate_v38, migrate_v39, migrate_v40, migrate_v41,
 };
 use crate::model::{derive_closure_receipt_id, derive_permit_id, empty_effect_history_root};
+use crate::pressure::enforce_working_set_admission;
+use crate::scale::{ScaleProfile, TASK_PROFILE_10K};
 use crate::{
     AttemptHandle, AttemptRecord, AttemptRegistrationDecision, AttemptSpec, AttemptState,
     CancelDecision, CancelRequest, ClosedAttempt, PermitConflict, PermitDecision, PermitRecord,
@@ -69,6 +71,7 @@ const SCHEMA_VERSION: i64 = 41;
 /// (`[TASK-CANCEL-003]`).
 pub struct SqliteTaskAuthority {
     connection: Mutex<Connection>,
+    scale_profile: &'static ScaleProfile,
 }
 
 pub(crate) struct StoredTask {
@@ -136,7 +139,23 @@ impl SqliteTaskAuthority {
     /// [`TaskStoreError::DurabilityUnavailable`]), or when the stored schema
     /// version cannot be migrated or validated.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, TaskStoreError> {
-        Self::open_with_vfs(path, None)
+        Self::open_with_scale_profile(path, &TASK_PROFILE_10K)
+    }
+
+    /// Opens or creates a task authority database with an explicit scale
+    /// tier for active working-set admission on new `CommitPermit` issuance.
+    ///
+    /// Idempotent permit replays bypass the admission gate; only net-new
+    /// issuances consult [`crate::WorkingSetPressure::admits`].
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::open`].
+    pub fn open_with_scale_profile(
+        path: impl AsRef<Path>,
+        scale_profile: &'static ScaleProfile,
+    ) -> Result<Self, TaskStoreError> {
+        Self::open_with_vfs_and_scale_profile(path, None, scale_profile)
     }
 
     /// Opens or creates a task authority database through a named
@@ -154,10 +173,24 @@ impl SqliteTaskAuthority {
     /// (verified by reading the pragmas back; a silent fallback is rejected
     /// with [`TaskStoreError::DurabilityUnavailable`]), or when the stored
     /// schema version cannot be migrated or validated.
-    #[allow(clippy::too_many_lines)] // Explicit linear migration chain is easier to audit.
     pub fn open_with_vfs(
         path: impl AsRef<Path>,
         vfs: Option<&str>,
+    ) -> Result<Self, TaskStoreError> {
+        Self::open_with_vfs_and_scale_profile(path, vfs, &TASK_PROFILE_10K)
+    }
+
+    /// Opens or creates a task authority database through a named `SQLite`
+    /// VFS with an explicit scale tier for working-set admission.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::open_with_vfs`].
+    #[allow(clippy::too_many_lines)] // Explicit linear migration chain is easier to audit.
+    pub fn open_with_vfs_and_scale_profile(
+        path: impl AsRef<Path>,
+        vfs: Option<&str>,
+        scale_profile: &'static ScaleProfile,
     ) -> Result<Self, TaskStoreError> {
         let mut connection = match vfs {
             None => Connection::open(path)?,
@@ -321,6 +354,7 @@ impl SqliteTaskAuthority {
 
         Ok(Self {
             connection: Mutex::new(connection),
+            scale_profile,
         })
     }
 
@@ -1658,6 +1692,8 @@ impl SqliteTaskAuthority {
             transaction.commit()?;
             return Ok(decision);
         }
+        let active_count = count_issued_permits(&transaction)?;
+        enforce_working_set_admission(self.scale_profile, active_count)?;
         let decision = compete_for_permit(
             &transaction,
             &task,
@@ -5806,6 +5842,15 @@ fn load_active_permit(
         PermitState::Issued.code(),
     ])?;
     rows.next()?.map(decode_permit_row).transpose()
+}
+
+fn count_issued_permits(source: &impl SqlRead) -> Result<u64, TaskStoreError> {
+    let mut statement = source.prepare_statement(
+        "SELECT COUNT(*) FROM commit_permits WHERE permit_state = ?1",
+    )?;
+    let count: i64 = statement.query_row([PermitState::Issued.code()], |row| row.get(0))?;
+    u64::try_from(count)
+        .map_err(|_| TaskStoreError::CorruptRecord("negative issued permit count"))
 }
 
 /// The outstanding permit for head reporting: `Issued` or the

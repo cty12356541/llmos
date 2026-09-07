@@ -3,15 +3,19 @@
 //!
 //! Honest scope of this skeleton:
 //!
-//! - **Declaration, not enforcement.** No `TaskAuthority` path, Materialization
-//!   Controller, or Context Residency Controller consults these types yet.
+//! - **Prefix enforcement only.** [`crate::SqliteTaskAuthority::request_commit_permit`]
+//!   consults [`WorkingSetPressure::admits`] before issuing a new outstanding
+//!   `CommitPermit`; idempotent permit replays bypass the gate. No Materialization
+//!   Controller, Context Residency Controller, or soft reclaim path enforces
+//!   [`WorkingSetPressure::needs_reclaim`] yet.
 //! - **No rehydrate.** Checkpoint/evict/rehydrate benchmarks and recovery
 //!   wiring are registered gaps in `docs/evidence/stage-b/b-task-scale-001.md`.
-//! - **Predicate only.** [`WorkingSetPressure::needs_reclaim`] reports when
+//! - **Predicate surface.** [`WorkingSetPressure::needs_reclaim`] reports when
 //!   the observed active working set crosses the tier's soft threshold;
 //!   [`crate::ScaleProfile::admits_active_working_set`] remains the hard
-//!   inclusive upper bound.
+//!   inclusive upper bound checked by [`enforce_working_set_admission`].
 
+use crate::TaskStoreError;
 use crate::scale::ScaleProfile;
 
 /// One reclaim phase in priority order (`[RSM-RECLAIM-001]` subset).
@@ -95,11 +99,42 @@ impl<'profile> WorkingSetPressure<'profile> {
     }
 }
 
+/// Fail-closed when a new outstanding `CommitPermit` would exceed the tier
+/// hard active working-set cap.
+///
+/// `current_active` is the store-wide count of issued permits before the
+/// candidate issuance; the gate consults `current_active + 1`.
+///
+/// # Errors
+///
+/// Returns [`TaskStoreError::WorkingSetAdmissionDenied`] when the projected
+/// count exceeds [`ScaleProfile::max_active_working_set`].
+pub fn enforce_working_set_admission(
+    profile: &ScaleProfile,
+    current_active: u64,
+) -> Result<(), TaskStoreError> {
+    let projected = current_active
+        .checked_add(1)
+        .ok_or(TaskStoreError::EpochExhausted)?;
+    let pressure = WorkingSetPressure::new(profile, projected);
+    if pressure.admits() {
+        Ok(())
+    } else {
+        Err(TaskStoreError::WorkingSetAdmissionDenied {
+            profile_id: profile.profile_id,
+            active_count: projected,
+            max_active_working_set: profile.max_active_working_set,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        ReclaimPhase, ReclaimPolicy, WorkingSetPressure, TASK_DEFAULT_RECLAIM_POLICY,
+        ReclaimPhase, ReclaimPolicy, WorkingSetPressure, enforce_working_set_admission,
+        TASK_DEFAULT_RECLAIM_POLICY,
     };
+    use crate::TaskStoreError;
     use crate::scale::{
         ScaleProfile, DEFAULT_RECLAIM_THRESHOLD_RATIO, TASK_PROFILE_10K, TASK_PROFILE_100K,
     };
@@ -148,6 +183,27 @@ mod tests {
         );
         assert!(pressure.needs_reclaim());
         assert!(pressure.admits());
+    }
+
+    #[test]
+    fn enforce_admits_at_cap_rejects_one_over() {
+        let profile = ScaleProfile {
+            profile_id: "task-admission-unit",
+            max_task_nodes: 64,
+            max_active_working_set: 2,
+            reclaim_threshold_ratio: Some(DEFAULT_RECLAIM_THRESHOLD_RATIO),
+        };
+        enforce_working_set_admission(&profile, 0).expect("first slot");
+        enforce_working_set_admission(&profile, 1).expect("at cap");
+        let denied = enforce_working_set_admission(&profile, 2).unwrap_err();
+        assert!(matches!(
+            denied,
+            TaskStoreError::WorkingSetAdmissionDenied {
+                profile_id: "task-admission-unit",
+                active_count: 3,
+                max_active_working_set: 2,
+            }
+        ));
     }
 
     #[test]

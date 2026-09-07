@@ -217,7 +217,8 @@ pub use resource_commit::{
     SemanticResourceFinalizeDecision, SemanticResourceTaskCommitReceipt,
 };
 pub use pressure::{
-    ReclaimPhase, ReclaimPolicy, WorkingSetPressure, TASK_DEFAULT_RECLAIM_POLICY,
+    ReclaimPhase, ReclaimPolicy, WorkingSetPressure, enforce_working_set_admission,
+    TASK_DEFAULT_RECLAIM_POLICY,
 };
 pub use scale::{
     ScaleProfile, DEFAULT_RECLAIM_THRESHOLD_RATIO, TASK_PROFILE_10K, TASK_PROFILE_100K,
@@ -565,6 +566,16 @@ pub enum TaskStoreError {
         /// Static explanation of the violation.
         reason: &'static str,
     },
+    /// A new outstanding `CommitPermit` would exceed the configured
+    /// [`ScaleProfile`] active working-set hard cap (`[ROAD-B-004]` prefix).
+    WorkingSetAdmissionDenied {
+        /// Tier identifier of the rejecting profile.
+        profile_id: &'static str,
+        /// Projected active working-set count after the rejected issuance.
+        active_count: u64,
+        /// Inclusive hard cap from the profile.
+        max_active_working_set: u64,
+    },
 }
 
 // A flat Display match grows linearly with the variant count; splitting
@@ -870,6 +881,14 @@ impl fmt::Display for TaskStoreError {
             Self::InvalidGroupSpec { reason } => {
                 write!(formatter, "invalid group spec: {reason}")
             }
+            Self::WorkingSetAdmissionDenied {
+                profile_id,
+                active_count,
+                max_active_working_set,
+            } => write!(
+                formatter,
+                "working-set admission denied for profile {profile_id}: active_count {active_count} exceeds max {max_active_working_set}"
+            ),
         }
     }
 }
