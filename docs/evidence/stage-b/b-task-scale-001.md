@@ -99,3 +99,28 @@ cargo test -p nlos-task --test scale_profile_probe -- --ignored --nocapture
 1. pressure/reclaim 未强制于 admission 或 Materialization/Context controller。
 2. checkpoint/rehydrate 基准与 TaskPlan/TaskNode 声明面仍待议题 35 ADR 后推进。
 3. 100K probe 数字仍待本地/CI 实跑后填入 §3.1。
+
+## 7. W18-004 working-set admission 最小前缀（2026-09-07）
+
+### 已实现事实
+
+1. `TaskStoreError::WorkingSetAdmissionDenied`：`profile_id` / `active_count` / `max_active_working_set` 三元组，超 cap fail-closed。
+2. `pressure::enforce_working_set_admission`：对 `current_active + 1`  consult [`WorkingSetPressure::admits`].
+3. **单路径前缀强制**：`SqliteTaskAuthority::request_commit_permit*` 在 net-new  issuance 前（`compete_for_permit` → `issue_permit`）统计 store-wide `Issued` permit 数并 consult  authority 绑定的 `ScaleProfile`（默认 [`TASK_PROFILE_10K`]）；**idempotent replay  bypass**。
+4. `SqliteTaskAuthority::open_with_scale_profile` / `open_with_vfs_and_scale_profile` 供测试与显式 tier 绑定。
+5. **诚实范围**：仅为 predicate enforcement 前缀，非完整 Materialization Controller；`register_task` / soft reclaim / `max_task_nodes` 仍未强制。
+
+### 验证门（W18-004 实跑）
+
+| 门 | 命令 | 结果 |
+| --- | --- | --- |
+| scale_profile 集成 | `cargo test -p nlos-task --test scale_profile` | PASS（4 passed，含 admission 三用例；2026-09-07 W18-004 integrator 救回） |
+| scale_profile_probe | `cargo test -p nlos-task --test scale_profile_probe` | （未在本增量复跑） |
+| pressure 单测 | `cargo test -p nlos-task pressure` | （未在本增量复跑） |
+| clippy | `cargo clippy -p nlos-task --all-targets -- -D warnings` | （未在本增量复跑） |
+
+### 仍属缺口
+
+1. `max_task_nodes` 未接入 `register_task`；soft reclaim 未接入 controller。
+2. checkpoint/rehydrate 与 TaskPlan/TaskNode 声明面仍待议题 35 ADR。
+3. 100K probe 数字仍待实跑。
