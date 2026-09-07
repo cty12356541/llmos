@@ -165,6 +165,125 @@ fn cost_receipt_is_owner_derived_and_replays_after_restart() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
+fn cost_receipt_closes_empty_consumption_at_zero_high_water() {
+    let root = Root::new();
+    let (reservation_id, expected) = {
+        let authority = ResourceAuthority::open(root.path()).unwrap();
+        let driver = authority
+            .register_driver(RegisterDriverRequest {
+                profile_digest: [0x31; 32],
+                idempotency_key: IdempotencyKey::from_bytes([0x32; 16]),
+                created_at_ms: 1_000,
+            })
+            .unwrap()
+            .record();
+        let account = authority
+            .create_account(CreateAccountRequest {
+                initial_credit: 500,
+                idempotency_key: IdempotencyKey::from_bytes([0x33; 16]),
+                created_at_ms: 1_000,
+            })
+            .unwrap();
+        let quote = authority
+            .create_quote(CreateQuoteRequest {
+                driver_id: driver.driver_id,
+                driver_generation: driver.generation,
+                driver_fencing_token: driver.fencing_token,
+                operation_proposal_digest: [0x34; 32],
+                pricing_version: [0x35; 32],
+                upper_bound: 80,
+                valid_until_ms: 10_000,
+                idempotency_key: IdempotencyKey::from_bytes([0x36; 16]),
+                created_at_ms: 1_000,
+            })
+            .unwrap()
+            .record();
+        let reservation = authority
+            .reserve(ReserveRequest {
+                account_id: account.account_id,
+                quote_id: quote.quote_id,
+                call_id: CallId::from_bytes([0x37; 16]),
+                operation_id: OperationId::from_bytes([0x38; 16]),
+                idempotency_key: IdempotencyKey::from_bytes([0x39; 16]),
+                reserved_at_ms: 2_000,
+            })
+            .unwrap()
+            .record();
+        let activation = match authority
+            .activate(ActivateReservationRequest {
+                reservation_id: reservation.reservation_id,
+                call_id: reservation.call_id,
+                operation_id: reservation.operation_id,
+                driver_id: reservation.driver_id,
+                driver_generation: reservation.driver_generation,
+                driver_fencing_token: reservation.driver_fencing_token,
+                activation_token: reservation.activation_token,
+                activated_at_ms: 3_000,
+            })
+            .unwrap()
+        {
+            ActivationDecision::Activated(receipt) => receipt,
+            ActivationDecision::Replayed(_) => panic!("first activation must create receipt"),
+        };
+        let finalized = match authority
+            .finalize_reservation(FinalizeReservationRequest {
+                reservation_id: reservation.reservation_id,
+                operation_id: reservation.operation_id,
+                activation_receipt_id: activation.receipt_id,
+                effect_closed_proof_digest: [0x3a; 32],
+                final_seq: 1,
+                final_usage: 0,
+                finalized_at_ms: 5_000,
+            })
+            .unwrap()
+        {
+            FinalizeDecision::Finalized(receipt) => receipt,
+            FinalizeDecision::Replayed(_) => panic!("first finalize must create receipt"),
+        };
+        assert_eq!(finalized.high_water_seq, 0);
+        assert_eq!(finalized.high_water, 0);
+        assert_eq!(finalized.final_usage, 0);
+        assert_eq!(finalized.refund_credit, 80, "no-effect refunds the full hold");
+        let aggregate = authority
+            .inspect_cost_receipt(reservation.reservation_id)
+            .unwrap();
+        assert_eq!(aggregate.reservation_id, reservation.reservation_id);
+        assert_eq!(aggregate.account_id, account.account_id);
+        assert_eq!(aggregate.quote_id, quote.quote_id);
+        assert_eq!(aggregate.upper_bound, 80);
+        assert_eq!(aggregate.activation, activation);
+        assert!(
+            aggregate.consumptions.is_empty(),
+            "zero-consumption finalize must yield an empty consumption chain"
+        );
+        assert_eq!(aggregate.finalization, finalized);
+        assert_eq!(
+            authority
+                .inspect_reservation(reservation.reservation_id)
+                .unwrap()
+                .usage_high_water_seq,
+            0
+        );
+        assert_eq!(
+            authority
+                .inspect_reservation(reservation.reservation_id)
+                .unwrap()
+                .usage_high_water,
+            0
+        );
+        (reservation.reservation_id, aggregate)
+    };
+
+    let reopened = ResourceAuthority::open(root.path()).unwrap();
+    assert_eq!(
+        reopened.inspect_cost_receipt(reservation_id).unwrap(),
+        expected,
+        "empty-consumption aggregate must replay exactly after restart"
+    );
+}
+
+#[test]
 fn cost_receipt_requires_terminal_owner_state() {
     let root = Root::new();
     let authority = ResourceAuthority::open(root.path()).unwrap();

@@ -1,7 +1,7 @@
 # B-RESOURCE-006：Owner 侧 Resource cost-receipt 聚合回读
 
 - 状态：`PARTIAL_PASS`
-- 日期：2026-08-24（增量验收，Attempt `RESOURCE-COST-EVIDENCE-01`）；2026-09-05（Attempt `W13-R`，fault matrix 最小前缀）
+- 日期：2026-08-24（增量验收，Attempt `RESOURCE-COST-EVIDENCE-01`）；2026-09-05（Attempt `W13-R`，fault matrix 最小前缀）；2026-09-07（Attempt `W18-R`，零 consumption 闭合边界）
 - 范围：单节点、单一整数 credit 的 strict reference profile；为**已 FINALIZED** 的 Reservation 提供 owner-derived 只读聚合 `ResourceCostReceipt`（activation + 全部有序 consumption + finalization receipts）。这是 Resource owner 侧的局部安全门，不是 TaskAuthority 消费接线、跨 authority 事务、endpoint 签名效应证明或统一 TaskWriteSet。
 
 ## 1. 结论
@@ -48,3 +48,12 @@ Harness 对齐 `finalize_fault_injection.rs` 与 Task 桥接矩阵（`resource_b
 - 聚合不重读账户行：`upper_bound − final_usage = refund_credit` 守恒由 finalize 同事务双重记账（B-RESOURCE-005）与聚合内 receipt 字段承载，`available_credit` 数值不在聚合输出中复核。
 - 非 FINALIZED 一律复用 `ReservationNotActive` typed 拒绝（无专用 NotFinalized 错误变体）；QUARANTINED→FINALIZED reconciliation 后的聚合路径无专属测试。
 - 单机 strict reference profile：非多维资源、无真实 Driver enforcement；无本 attempt CI 结果，不得据此外推 DONE 或 H4+。
+
+## 6. 零 consumption 闭合边界（Attempt `W18-R`，2026-09-07）
+
+**范围**：owner-side 只读聚合在 activate→finalize（无 consume）路径上的 `(0,0)` high-water 闭合；零 `nlos-task` 改动、零 src 改动。
+
+- `cost_receipt_closes_empty_consumption_at_zero_high_water`（`cost_receipt.rs`）：activate 后直接 finalize（`final_seq=1`、`final_usage=0`）；`inspect_cost_receipt` 返回空 `consumptions`、finalization `high_water=(0,0)`、`refund_credit=upper_bound`（80）；authority 重启后 aggregate 逐字节相等。
+- `cargo test -p nlos-resource`：**30 项全过、0 失败**（+1 vs W13-R）。
+- `cargo clippy -p nlos-resource --all-targets -- -D warnings`：通过（0 warning）。
+- 基线 HEAD `8d98b78`；写集 `crates/nlos-resource/tests/cost_receipt.rs`、`docs/evidence/stage-b/b-resource-006-cost-receipt-aggregate.md`（§6）。
