@@ -82,3 +82,19 @@ cargo fmt -p nlos-application -- --check                       # PASS：exit 0
 | 兼容窗口三用例 | `cargo test -p nlos-application --test application_authority update_compat` | PASS（accept/reject/replay） |
 | lib 单测 | `cargo test -p nlos-application --lib compatibility_window` | PASS |
 | clippy | `cargo clippy -p nlos-application --all-targets -- -D warnings` | （波次 18 integrator 未复跑 workspace 全仓门） |
+
+## 8. W19-001 `[PKG-UPDATE-001]` SameMinor compatibility window prefix（2026-09-08）
+
+### 已实现事实
+
+1. **`CompatibilityWindow::SameMinor`**：caller 显式声明；`validate` 在 pre-mutation 阶段比较当前 installation 与 verified target 的 packed semver major+minor（`version >> 16`）；patch 可任意变化。
+2. **fail-closed**：跨 minor（含跨 major）返回 `UpdateCompatibilityViolation` 且零 durable 副作用；同 major+minor 的 patch 推进仍走既有 update CAS；idempotent replay 不重复校验（replay 路径在 compatibility gate 之前）。
+3. **诚实范围**：非完整 `[PKG-UPDATE-001]` 引擎——无 patch-downgrade 拒绝、migration runner、health check 或多步编排。
+
+### 验证门（W19-001 实跑）
+
+| 门 | 命令 | 结果 |
+| --- | --- | --- |
+| SameMinor 三用例 | `cargo test -p nlos-application --test application_authority update_compat_same_minor` | PASS（accept/reject/replay） |
+| lib 单测 | `cargo test -p nlos-application --lib compatibility_window_same_minor` | PASS |
+| 兼容窗口全集 | `cargo test -p nlos-application --test application_authority update_compat` | PASS（6 passed） |

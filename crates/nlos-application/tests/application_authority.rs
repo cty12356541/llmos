@@ -13,7 +13,7 @@ use nlos_application::{
     DisableApplicationRequest, InstallApplicationRequest,
     RegisterBackgroundTaskRequest, RegisterProcessBindingRequest,
     RollbackApplicationRequest, UninstallApplicationRequest, UpdateApplicationRequest,
-    derive_application_id, derive_installation_id, pack_package_version,
+    UpdateDecision, derive_application_id, derive_installation_id, pack_package_version,
 };
 use nlos_types::{Generation, IdempotencyKey, PackageId, ProcessId, ReceiptId, TaskId};
 use rusqlite::Connection;
@@ -1403,6 +1403,131 @@ fn update_compat_replay_bypasses_compatibility_gate() {
         3_000,
     );
     assert_eq!(replay, receipt);
+    assert_eq!(
+        authority
+            .inspect_application(first.package_id)
+            .expect("inspect")
+            .expect("exists")
+            .current_installation_generation
+            .get(),
+        2
+    );
+    assert_counts(&stack, 1, 2);
+}
+
+/// Same-major+minor patch advance is accepted under
+/// [`CompatibilityWindow::SameMinor`].
+#[test]
+fn update_compat_same_minor_accepts_patch_bump() {
+    let stack = TestStack::new(&label("update-compat-same-minor-accept"), 0x38);
+    let first = stack.verify_package(0x41, pack_package_version(1, 2, 0), key(0xF0), 1_000);
+    let second = stack.verify_package(0x41, pack_package_version(1, 2, 5), key(0xF1), 2_000);
+    assert_ne!(first.manifest_digest, second.manifest_digest);
+    let authority = open_authority(stack.root.root());
+    installed(&authority, &stack.artifacts, first.receipt_id, 0x01, 2_000);
+    let receipt = authority
+        .update_application(
+            &stack.artifacts,
+            UpdateApplicationRequest {
+                package_id: first.package_id,
+                package_verification_receipt_id: second.receipt_id,
+                idempotency_key: key(0x02),
+                updated_at_ms: 3_000,
+                compatibility_window: CompatibilityWindow::SameMinor,
+            },
+        )
+        .expect("same-minor patch bump must succeed");
+    let updated_receipt = match receipt {
+        UpdateDecision::Updated(receipt) => receipt,
+        UpdateDecision::Replayed(receipt) => {
+            panic!("fresh key cannot replay an update, got {receipt:?}")
+        }
+    };
+    assert_eq!(updated_receipt.package_version, pack_package_version(1, 2, 5));
+    assert_counts(&stack, 1, 2);
+}
+
+/// Cross-minor updates fail closed under [`CompatibilityWindow::SameMinor`].
+#[test]
+fn update_compat_same_minor_rejects_cross_minor() {
+    let stack = TestStack::new(&label("update-compat-same-minor-reject"), 0x39);
+    let first = stack.verify_package(0x41, pack_package_version(1, 2, 0), key(0xF0), 1_000);
+    let second = stack.verify_package(0x41, pack_package_version(1, 3, 0), key(0xF1), 2_000);
+    let authority = open_authority(stack.root.root());
+    installed(&authority, &stack.artifacts, first.receipt_id, 0x01, 2_000);
+
+    let error = authority
+        .update_application(
+            &stack.artifacts,
+            UpdateApplicationRequest {
+                package_id: first.package_id,
+                package_verification_receipt_id: second.receipt_id,
+                idempotency_key: key(0x02),
+                updated_at_ms: 3_000,
+                compatibility_window: CompatibilityWindow::SameMinor,
+            },
+        )
+        .expect_err("cross-minor update must be refused");
+    assert!(matches!(
+        error,
+        ApplicationAuthorityError::UpdateCompatibilityViolation {
+            package_id,
+            current_version,
+            target_version,
+            compatibility_window: CompatibilityWindow::SameMinor,
+        } if package_id == first.package_id
+            && current_version == pack_package_version(1, 2, 0)
+            && target_version == pack_package_version(1, 3, 0)
+    ));
+    assert_counts(&stack, 1, 1);
+}
+
+/// Idempotent replay bypasses the same-minor compatibility gate.
+#[test]
+fn update_compat_same_minor_replay_bypasses_compatibility_gate() {
+    let stack = TestStack::new(&label("update-compat-same-minor-replay"), 0x3B);
+    let first = stack.verify_package(0x41, pack_package_version(1, 2, 0), key(0xF0), 1_000);
+    let second = stack.verify_package(0x41, pack_package_version(1, 2, 1), key(0xF1), 2_000);
+    let authority = open_authority(stack.root.root());
+    installed(&authority, &stack.artifacts, first.receipt_id, 0x01, 2_000);
+    let receipt = authority
+        .update_application(
+            &stack.artifacts,
+            UpdateApplicationRequest {
+                package_id: first.package_id,
+                package_verification_receipt_id: second.receipt_id,
+                idempotency_key: key(0x02),
+                updated_at_ms: 3_000,
+                compatibility_window: CompatibilityWindow::SameMinor,
+            },
+        )
+        .expect("update must succeed");
+    let updated_receipt = match receipt {
+        UpdateDecision::Updated(receipt) => receipt,
+        UpdateDecision::Replayed(receipt) => {
+            panic!("fresh key cannot replay an update, got {receipt:?}")
+        }
+    };
+
+    let replay = authority
+        .update_application(
+            &stack.artifacts,
+            UpdateApplicationRequest {
+                package_id: first.package_id,
+                package_verification_receipt_id: second.receipt_id,
+                idempotency_key: key(0x02),
+                updated_at_ms: 3_000,
+                compatibility_window: CompatibilityWindow::SameMinor,
+            },
+        )
+        .expect("update must replay");
+    let replay_receipt = match replay {
+        UpdateDecision::Replayed(receipt) => receipt,
+        UpdateDecision::Updated(receipt) => {
+            panic!("expected Replayed, got Updated {receipt:?}")
+        }
+    };
+    assert_eq!(replay_receipt, updated_receipt);
     assert_eq!(
         authority
             .inspect_application(first.package_id)

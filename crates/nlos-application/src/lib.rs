@@ -267,6 +267,10 @@ pub enum CompatibilityWindow {
     /// The target package version must share the same packed semver major as
     /// the current installation (`major = version >> 32`).
     SameMajor,
+    /// The target package version must share the same packed semver major and
+    /// minor as the current installation (`major = version >> 32`,
+    /// `minor = (version >> 16) & 0xFFFF`); patch may differ.
+    SameMinor,
 }
 
 impl CompatibilityWindow {
@@ -285,6 +289,16 @@ impl CompatibilityWindow {
         match self {
             Self::SameMajor => {
                 if current_version >> 32 != target_version >> 32 {
+                    return Err(ApplicationAuthorityError::UpdateCompatibilityViolation {
+                        package_id,
+                        current_version,
+                        target_version,
+                        compatibility_window: self,
+                    });
+                }
+            }
+            Self::SameMinor => {
+                if current_version >> 16 != target_version >> 16 {
                     return Err(ApplicationAuthorityError::UpdateCompatibilityViolation {
                         package_id,
                         current_version,
@@ -2741,6 +2755,37 @@ mod tests {
                 package_id,
                 pack_package_version(1, 0, 0),
                 pack_package_version(2, 0, 0),
+            ),
+            Err(ApplicationAuthorityError::UpdateCompatibilityViolation { .. })
+        ));
+    }
+
+    #[test]
+    fn compatibility_window_same_minor_validates_packed_semver() {
+        use super::{CompatibilityWindow, pack_package_version};
+        use nlos_types::PackageId;
+
+        let package_id = PackageId::from_bytes([0x41; 16]);
+        CompatibilityWindow::SameMinor
+            .validate(
+                package_id,
+                pack_package_version(1, 2, 0),
+                pack_package_version(1, 2, 9),
+            )
+            .expect("same major+minor must admit patch bump");
+        assert!(matches!(
+            CompatibilityWindow::SameMinor.validate(
+                package_id,
+                pack_package_version(1, 2, 0),
+                pack_package_version(1, 3, 0),
+            ),
+            Err(ApplicationAuthorityError::UpdateCompatibilityViolation { .. })
+        ));
+        assert!(matches!(
+            CompatibilityWindow::SameMinor.validate(
+                package_id,
+                pack_package_version(1, 2, 0),
+                pack_package_version(2, 2, 0),
             ),
             Err(ApplicationAuthorityError::UpdateCompatibilityViolation { .. })
         ));
