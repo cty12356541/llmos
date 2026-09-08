@@ -19,7 +19,7 @@
 //! ```text
 //! inspect health | check health | show health | status health | health check
 //!   | inspect system health
-//!   | 查看健康 | 查看系统健康 | 查看 系统 健康 | 系统状态
+//!   | 查看健康 | 查看 健康 | 查看系统健康 | 查看 系统 健康 | 系统状态
 //! export metrics | show metrics | get metrics | metrics
 //!   | 导出指标 | 导出 指标 | 指标
 //! inspect task <32-hex> | check task <32-hex> | show task <32-hex>
@@ -142,9 +142,9 @@ fn try_parse_inspect_health(tokens: &[&str]) -> Option<Result<ControlCommand, Co
         {
             Some(Ok(ControlCommand::InspectHealth))
         }
-        ["查看健康" | "查看系统健康" | "系统状态"] | ["查看", "系统", "健康"] => {
-            Some(Ok(ControlCommand::InspectHealth))
-        }
+        ["查看健康" | "查看系统健康" | "系统状态"]
+        | ["查看", "健康"]
+        | ["查看", "系统", "健康"] => Some(Ok(ControlCommand::InspectHealth)),
         [head, second, ..]
             if (is_read_verb(head) && second.eq_ignore_ascii_case("task"))
                 || (*head == "查看" && *second == "任务")
@@ -399,6 +399,7 @@ mod tests {
         for sentence in [
             "查看健康",
             "  查看健康  ",
+            "查看 健康",
             "查看系统健康",
             "查看 系统 健康",
             "系统状态",
@@ -604,7 +605,6 @@ mod tests {
             "status",
             "health",
             "inspect system health now",
-            "查看 健康",
             "查看 系统",
             "系统状态了",
             "show health now",
