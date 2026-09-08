@@ -356,3 +356,41 @@ cargo test -p nlos-runtime-tokio --test activation_meter_scale ten_thousand_acti
 ```
 
 100K tier：编排者本增量尝试 `--include-ignored` 实跑（见波次 19 进度单）；若超时/未完成则如实登记。
+
+### 6.10 Lifecycle phase 10K 规模探针（2026-09-08 追加，W19-006 / ROAD-B-006）
+
+- Owner：`nlos-runtime-tokio`（`tests/lifecycle_scale.rs`）
+- 设计依据：v0.5 §28.2 ROAD-B-006 分维 Activation metering 规模验证；§6.8 backpressure/suspended 功能级最小前缀已落地，本片补两维在 10K live fiber 下的相位转换 + 计量 + 线程有界性证明。
+- **实现（test-only，`#[ignore]` 探针）**：
+  - 新增 `lifecycle_scale.rs`，镜像 `activation_meter_scale.rs` / `lifecycle_phase.rs`：`QUICK_COUNT=10_000`、`METER_SUBSET=1_000` 前缀抽样。
+  - **Phase 1 `backpressure_wait`**：`count` fiber spawn 后 test 线程批量 `begin_backpressure_wait`；`park_settle` 后 sleep 50ms，前 `subset` 断言 `FiberLifecyclePhase::BackpressureWait` + `FiberState::WaitingModel`、`backpressure_wait ≥ 40ms`、`external_wait = 0`、`active_cpu < backpressure_wait`；resume 后全员回 `Running`。
+  - **Phase 2 `suspended`**：同形状 `begin_suspended` / `FiberState::Suspended` / `suspended ≥ 40ms`；teardown 走 drop。
+- **新增测试**（`lifecycle_scale.rs`，1 项 `#[ignore]`）：
+  1. `ten_thousand_lifecycle_phase_fibers_on_two_workers` — 10K quick tier（backpressure_wait + suspended 双 phase）。
+
+#### 6.10.1 验证门实测
+
+```text
+cargo test -p nlos-runtime-tokio --test lifecycle_scale
+  → 0 passed / 0 failed / 1 ignored（2026-09-08 W19-006；默认套件不跑 scale）
+cargo test -p nlos-runtime-tokio --test lifecycle_scale ten_thousand_lifecycle_phase_fibers_on_two_workers -- --include-ignored --nocapture
+  → 1 passed / 0 failed（2026-09-08 W19-006，~0.23s wall，macOS arm64）
+  → 10K profile（2 tokio workers，sample=1000）：
+     backpressure_wait: spawn_issue=31.2ms enter_backpressure=4.0ms park_settle=2.9ms
+                        phase_sleep=50ms sample_assert=0.37ms resume_settle=2.8ms
+                        rss_kib=18304 threads=4 total=101.5ms
+     suspended:         spawn_issue=31.4ms enter_suspended=4.4ms park_settle=3.7ms
+                        phase_sleep=50ms sample_assert=0.38ms resume_settle=2.9ms
+                        threads=4 total=100.7ms
+     （1000 前缀 backpressure_wait/suspended≥40ms 且 external_wait=0；threads≤10 有界断言通过）
+```
+
+#### 6.10.2 缺口更新
+
+- **勾销**：§6.8.2 中「100K 探针下分维 metering 规模验证（背压/挂起维仍为零占位的 100K 实跑未做）」→ 本 §6.10 10K 实跑（背压/挂起双维；100K tier 未登记）。
+- **如实保留（ROAD-B-006 剩余，Claim 维持 PARTIAL_PASS）**：
+  - 100K lifecycle phase 规模探针（本片仅 10K quick tier）；
+  - fiber 体内自动触发背压/挂起（scheduler 边界 hook 已覆盖，admission 集成未做）；
+  - 100K 规模级 cancel 探针；
+  - runtime 侧 process crash 传播联动；
+  - 未声称 ROAD-B-006 整体达成。
