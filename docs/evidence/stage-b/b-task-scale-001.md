@@ -124,3 +124,25 @@ cargo test -p nlos-task --test scale_profile_probe -- --ignored --nocapture
 1. `max_task_nodes` 未接入 `register_task`；soft reclaim 未接入 controller。
 2. checkpoint/rehydrate 与 TaskPlan/TaskNode 声明面仍待议题 35 ADR。
 3. 100K probe 数字仍待实跑。
+
+## 8. W19-004 reclaim advisory 最小前缀（2026-09-08）
+
+### 已实现事实
+
+1. `WorkingSetReclaimAdvisory`：软阈值 crossing 且 hard admission 仍通过时的 typed advisory（`profile_id` / `projected_active_count` / threshold 元数据）；**不执行** [`ReclaimPolicy`] 任何 phase。
+2. `CommitPermitDecision`：`PermitDecision` + `Option<WorkingSetReclaimAdvisory>`；`request_commit_permit_decision_with_authorities_struct` 暴露完整 outcome；legacy `request_commit_permit*` 仍返回 `PermitDecision`（向后兼容）。
+3. **单路径前缀 consult**：net-new issuance 在 `enforce_working_set_admission` 通过后 consult [`working_set_reclaim_advisory`]（projected `current_active + 1`）；仅 `PermitDecision::Issued` 携带 advisory；**idempotent replay / denied path 无 advisory**。
+4. `inspect_working_set_pressure()`：读侧 snapshot（当前 issued count + `needs_reclaim` / `admits` + optional advisory）。
+
+### 验证门（W19-004 实跑）
+
+| 门 | 命令 | 结果 |
+| --- | --- | --- |
+| scale_profile 集成 | `cargo test -p nlos-task --test scale_profile` | PASS（6 passed，含 reclaim advisory 两用例；2026-09-08 W19-004） |
+| pressure 单测 | `cargo test -p nlos-task pressure` | PASS（8 passed；2026-09-08 W19-004） |
+
+### 仍属缺口
+
+1. 无 reclaim 执行/controller wiring；advisory 仅为 prefix 信号。
+2. `max_task_nodes` 未接入 `register_task`；checkpoint/rehydrate 与 TaskPlan/TaskNode 声明面仍待议题 35 ADR。
+3. 100K probe 数字仍待实跑。

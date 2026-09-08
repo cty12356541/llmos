@@ -23,9 +23,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use nlos_task::{
-    AttemptSpec, Authorities, PermitDecision, PermitRequest, SnapshotBundle, SqliteTaskAuthority,
-    ScaleProfile, TASK_PROFILE_10K, TaskSpec, TaskStoreError, WorkingSetPressure,
-    empty_effect_history_root,
+    AttemptSpec, Authorities, CommitPermitDecision, PermitDecision, PermitRequest, SnapshotBundle,
+    SqliteTaskAuthority, ScaleProfile, TASK_PROFILE_10K, TaskSpec, TaskStoreError,
+    WorkingSetPressure, WorkingSetReclaimAdvisory, empty_effect_history_root,
 };
 use nlos_types::{
     CancellationScopeId, Generation, IdempotencyKey, TaskAttemptId, TaskId, TaskSnapshotId,
@@ -158,6 +158,10 @@ fn issued_permit(decision: PermitDecision) -> nlos_task::PermitRecord {
         PermitDecision::Issued(record) => *record,
         other => panic!("expected Issued permit, got {other:?}"),
     }
+}
+
+fn issued_permit_decision(decision: CommitPermitDecision) -> nlos_task::PermitRecord {
+    issued_permit(decision.permit)
 }
 
 #[test]
@@ -318,6 +322,106 @@ fn working_set_admission_denies_over_cap() {
             max_active_working_set: 2,
         }
     ));
+}
+
+#[test]
+fn working_set_reclaim_advisory_fires_between_soft_threshold_and_hard_cap() {
+    let database = TestDatabase::new("reclaim-advisory");
+    let authority = database.open_with_profile(&ADMISSION_TEST_PROFILE);
+
+    register_task(&authority, 0);
+    authority
+        .register_attempt(attempt_spec(0))
+        .expect("register first attempt");
+    let first = authority
+        .request_commit_permit_decision_with_authorities_struct(
+            Authorities::default(),
+            permit_request(0, 0x30),
+        )
+        .expect("first permit below soft threshold");
+    issued_permit_decision(first.clone());
+    assert!(
+        first.reclaim_advisory.is_none(),
+        "projected count 1 must stay below soft threshold"
+    );
+    let pressure = authority
+        .inspect_working_set_pressure()
+        .expect("inspect pressure after first permit");
+    assert!(!pressure.needs_reclaim);
+    assert!(pressure.reclaim_advisory.is_none());
+
+    register_task(&authority, 1);
+    authority
+        .register_attempt(attempt_spec(1))
+        .expect("register second attempt");
+    let second = authority
+        .request_commit_permit_decision_with_authorities_struct(
+            Authorities::default(),
+            permit_request(1, 0x31),
+        )
+        .expect("second permit at hard cap");
+    issued_permit_decision(second.clone());
+    assert_eq!(
+        second.reclaim_advisory,
+        Some(WorkingSetReclaimAdvisory {
+            profile_id: "task-admission-test",
+            projected_active_count: 2,
+            reclaim_threshold_count: 1,
+            reclaim_threshold_ratio: 90,
+            max_active_working_set: 2,
+        })
+    );
+    let pressure = authority
+        .inspect_working_set_pressure()
+        .expect("inspect pressure at cap");
+    assert!(pressure.needs_reclaim);
+    assert!(pressure.admits);
+    assert_eq!(pressure.reclaim_advisory, second.reclaim_advisory);
+}
+
+#[test]
+fn working_set_reclaim_advisory_absent_on_denied_and_replay_paths() {
+    let database = TestDatabase::new("reclaim-advisory-denied-replay");
+    let authority = database.open_with_profile(&ADMISSION_TEST_PROFILE);
+
+    for index in 0..ADMISSION_TEST_PROFILE.max_active_working_set {
+        register_task(&authority, index);
+        authority
+            .register_attempt(attempt_spec(index))
+            .expect("register attempt");
+        authority
+            .request_commit_permit_decision_with_authorities_struct(
+                Authorities::default(),
+                permit_request(index, 0x30),
+            )
+            .expect("fill cap");
+    }
+
+    register_task(&authority, ADMISSION_TEST_PROFILE.max_active_working_set);
+    authority
+        .register_attempt(attempt_spec(ADMISSION_TEST_PROFILE.max_active_working_set))
+        .expect("register over-cap attempt");
+    let denied = authority
+        .request_commit_permit_decision_with_authorities_struct(
+            Authorities::default(),
+            permit_request(ADMISSION_TEST_PROFILE.max_active_working_set, 0x31),
+        )
+        .expect_err("denied over cap");
+    assert!(matches!(
+        denied,
+        TaskStoreError::WorkingSetAdmissionDenied { .. }
+    ));
+
+    let replay = authority
+        .request_commit_permit_decision_with_authorities_struct(
+            Authorities::default(),
+            permit_request(0, 0x30),
+        )
+        .expect("replay bypasses advisory prefix");
+    assert!(
+        replay.reclaim_advisory.is_none(),
+        "idempotent replay must not surface reclaim advisory"
+    );
 }
 
 #[test]

@@ -5,9 +5,12 @@
 //!
 //! - **Prefix enforcement only.** [`crate::SqliteTaskAuthority::request_commit_permit`]
 //!   consults [`WorkingSetPressure::admits`] before issuing a new outstanding
-//!   `CommitPermit`; idempotent permit replays bypass the gate. No Materialization
-//!   Controller, Context Residency Controller, or soft reclaim path enforces
-//!   [`WorkingSetPressure::needs_reclaim`] yet.
+//!   `CommitPermit`; idempotent permit replays bypass the gate. When admission
+//!   still passes but the projected active count crosses the soft threshold,
+//!   [`working_set_reclaim_advisory`] surfaces a typed
+//!   [`WorkingSetReclaimAdvisory`] on [`CommitPermitDecision`] (advisory only;
+//!   no reclaim execution). No Materialization Controller, Context Residency
+//!   Controller, or soft reclaim path enforces execution yet.
 //! - **No rehydrate.** Checkpoint/evict/rehydrate benchmarks and recovery
 //!   wiring are registered gaps in `docs/evidence/stage-b/b-task-scale-001.md`.
 //! - **Predicate surface.** [`WorkingSetPressure::needs_reclaim`] reports when
@@ -16,6 +19,7 @@
 //!   inclusive upper bound checked by [`enforce_working_set_admission`].
 
 use crate::TaskStoreError;
+use crate::model::PermitDecision;
 use crate::scale::ScaleProfile;
 
 /// One reclaim phase in priority order (`[RSM-RECLAIM-001]` subset).
@@ -99,6 +103,108 @@ impl<'profile> WorkingSetPressure<'profile> {
     }
 }
 
+/// Typed advisory when a net-new permit issuance crosses the soft reclaim
+/// threshold but still fits the tier hard cap.
+///
+/// Controllers that land later may consult this prefix signal; this slice
+/// does not execute any [`ReclaimPolicy`] phase.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WorkingSetReclaimAdvisory {
+    pub profile_id: &'static str,
+    /// Active working-set count after the issued permit (`current + 1`).
+    pub projected_active_count: u64,
+    pub reclaim_threshold_count: u64,
+    pub reclaim_threshold_ratio: u64,
+    pub max_active_working_set: u64,
+}
+
+/// Observed store-wide working-set pressure against the authority tier.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WorkingSetPressureSnapshot {
+    pub profile_id: &'static str,
+    pub active_count: u64,
+    pub reclaim_threshold_count: u64,
+    pub needs_reclaim: bool,
+    pub admits: bool,
+    pub reclaim_advisory: Option<WorkingSetReclaimAdvisory>,
+}
+
+/// Linearized `CommitPermit` request outcome plus optional reclaim advisory.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CommitPermitDecision {
+    pub permit: PermitDecision,
+    pub reclaim_advisory: Option<WorkingSetReclaimAdvisory>,
+}
+
+/// Read-side snapshot of the authority's configured tier and issued permit
+/// count.
+pub fn inspect_working_set_pressure(
+    profile: &ScaleProfile,
+    active_count: u64,
+) -> WorkingSetPressureSnapshot {
+    let pressure = WorkingSetPressure::new(profile, active_count);
+    let reclaim_advisory = current_working_set_reclaim_advisory(profile, active_count);
+    WorkingSetPressureSnapshot {
+        profile_id: profile.profile_id,
+        active_count,
+        reclaim_threshold_count: pressure.threshold(),
+        needs_reclaim: pressure.needs_reclaim(),
+        admits: pressure.admits(),
+        reclaim_advisory,
+    }
+}
+
+/// Reports whether a projected net-new issuance should surface reclaim
+/// advisory after hard admission passes.
+///
+/// `current_active` is the store-wide issued permit count before the
+/// candidate issuance; the advisory consults `current_active + 1`.
+pub fn working_set_reclaim_advisory(
+    profile: &ScaleProfile,
+    current_active: u64,
+) -> Result<Option<WorkingSetReclaimAdvisory>, TaskStoreError> {
+    let projected = current_active
+        .checked_add(1)
+        .ok_or(TaskStoreError::EpochExhausted)?;
+    Ok(projected_working_set_reclaim_advisory(profile, projected))
+}
+
+fn current_working_set_reclaim_advisory(
+    profile: &ScaleProfile,
+    active_count: u64,
+) -> Option<WorkingSetReclaimAdvisory> {
+    let pressure = WorkingSetPressure::new(profile, active_count);
+    if pressure.needs_reclaim() && pressure.admits() {
+        Some(WorkingSetReclaimAdvisory {
+            profile_id: profile.profile_id,
+            projected_active_count: active_count,
+            reclaim_threshold_count: pressure.threshold(),
+            reclaim_threshold_ratio: pressure.threshold_ratio(),
+            max_active_working_set: profile.max_active_working_set,
+        })
+    } else {
+        None
+    }
+}
+
+fn projected_working_set_reclaim_advisory(
+    profile: &ScaleProfile,
+    projected_active_count: u64,
+) -> Option<WorkingSetReclaimAdvisory> {
+    let pressure = WorkingSetPressure::new(profile, projected_active_count);
+    if pressure.needs_reclaim() && pressure.admits() {
+        Some(WorkingSetReclaimAdvisory {
+            profile_id: profile.profile_id,
+            projected_active_count,
+            reclaim_threshold_count: pressure.threshold(),
+            reclaim_threshold_ratio: pressure.threshold_ratio(),
+            max_active_working_set: profile.max_active_working_set,
+        })
+    } else {
+        None
+    }
+}
+
 /// Fail-closed when a new outstanding `CommitPermit` would exceed the tier
 /// hard active working-set cap.
 ///
@@ -131,10 +237,12 @@ pub fn enforce_working_set_admission(
 #[cfg(test)]
 mod tests {
     use super::{
-        ReclaimPhase, ReclaimPolicy, WorkingSetPressure, enforce_working_set_admission,
-        TASK_DEFAULT_RECLAIM_POLICY,
+        CommitPermitDecision, ReclaimPhase, ReclaimPolicy, WorkingSetPressure,
+        WorkingSetReclaimAdvisory, enforce_working_set_admission, inspect_working_set_pressure,
+        working_set_reclaim_advisory, TASK_DEFAULT_RECLAIM_POLICY,
     };
     use crate::TaskStoreError;
+    use crate::model::PermitDecision;
     use crate::scale::{
         ScaleProfile, DEFAULT_RECLAIM_THRESHOLD_RATIO, TASK_PROFILE_10K, TASK_PROFILE_100K,
     };
@@ -204,6 +312,80 @@ mod tests {
                 max_active_working_set: 2,
             }
         ));
+    }
+
+    #[test]
+    fn reclaim_advisory_fires_between_soft_threshold_and_hard_cap() {
+        let profile = ScaleProfile {
+            profile_id: "task-advisory-unit",
+            max_task_nodes: 64,
+            max_active_working_set: 2,
+            reclaim_threshold_ratio: Some(DEFAULT_RECLAIM_THRESHOLD_RATIO),
+        };
+        assert_eq!(profile.reclaim_threshold_count(), 1);
+
+        assert_eq!(
+            working_set_reclaim_advisory(&profile, 0).expect("below soft"),
+            None
+        );
+        assert_eq!(
+            working_set_reclaim_advisory(&profile, 1).expect("above soft below cap"),
+            Some(WorkingSetReclaimAdvisory {
+                profile_id: "task-advisory-unit",
+                projected_active_count: 2,
+                reclaim_threshold_count: 1,
+                reclaim_threshold_ratio: DEFAULT_RECLAIM_THRESHOLD_RATIO,
+                max_active_working_set: 2,
+            })
+        );
+        assert_eq!(
+            working_set_reclaim_advisory(&profile, 2).expect("over cap"),
+            None
+        );
+    }
+
+    #[test]
+    fn inspect_pressure_snapshot_matches_current_active_count() {
+        let profile = ScaleProfile {
+            profile_id: "task-inspect-unit",
+            max_task_nodes: 64,
+            max_active_working_set: 2,
+            reclaim_threshold_ratio: Some(DEFAULT_RECLAIM_THRESHOLD_RATIO),
+        };
+        let below = inspect_working_set_pressure(&profile, 1);
+        assert!(!below.needs_reclaim);
+        assert!(below.admits);
+        assert!(below.reclaim_advisory.is_none());
+
+        let advisory_zone = inspect_working_set_pressure(&profile, 2);
+        assert!(advisory_zone.needs_reclaim);
+        assert!(advisory_zone.admits);
+        assert!(advisory_zone.reclaim_advisory.is_some());
+
+        let over = inspect_working_set_pressure(&profile, 3);
+        assert!(over.needs_reclaim);
+        assert!(!over.admits);
+        assert!(over.reclaim_advisory.is_none());
+    }
+
+    #[test]
+    fn commit_permit_decision_carries_optional_advisory() {
+        let advisory = WorkingSetReclaimAdvisory {
+            profile_id: "task-advisory-unit",
+            projected_active_count: 2,
+            reclaim_threshold_count: 1,
+            reclaim_threshold_ratio: DEFAULT_RECLAIM_THRESHOLD_RATIO,
+            max_active_working_set: 2,
+        };
+        let decision = CommitPermitDecision {
+            permit: PermitDecision::Conflicted {
+                reason: crate::PermitConflict::AttemptAlreadyHoldsPermit {
+                    permit_id: nlos_types::CommitPermitId::from_bytes([0x11; 16]),
+                },
+            },
+            reclaim_advisory: Some(advisory),
+        };
+        assert_eq!(decision.reclaim_advisory, Some(advisory));
     }
 
     #[test]

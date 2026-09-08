@@ -217,8 +217,9 @@ pub use resource_commit::{
     SemanticResourceFinalizeDecision, SemanticResourceTaskCommitReceipt,
 };
 pub use pressure::{
-    ReclaimPhase, ReclaimPolicy, WorkingSetPressure, enforce_working_set_admission,
-    TASK_DEFAULT_RECLAIM_POLICY,
+    CommitPermitDecision, ReclaimPhase, ReclaimPolicy, WorkingSetPressure,
+    WorkingSetPressureSnapshot, WorkingSetReclaimAdvisory, enforce_working_set_admission,
+    inspect_working_set_pressure, working_set_reclaim_advisory, TASK_DEFAULT_RECLAIM_POLICY,
 };
 pub use scale::{
     ScaleProfile, DEFAULT_RECLAIM_THRESHOLD_RATIO, TASK_PROFILE_10K, TASK_PROFILE_100K,

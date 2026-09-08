@@ -47,7 +47,11 @@ use crate::migrations::{
     migrate_v37, migrate_v38, migrate_v39, migrate_v40, migrate_v41,
 };
 use crate::model::{derive_closure_receipt_id, derive_permit_id, empty_effect_history_root};
-use crate::pressure::enforce_working_set_admission;
+use crate::pressure::{
+    CommitPermitDecision, WorkingSetPressureSnapshot, enforce_working_set_admission,
+    inspect_working_set_pressure as build_working_set_pressure_snapshot,
+    working_set_reclaim_advisory,
+};
 use crate::scale::{ScaleProfile, TASK_PROFILE_10K};
 use crate::{
     AttemptHandle, AttemptRecord, AttemptRegistrationDecision, AttemptSpec, AttemptState,
@@ -1387,7 +1391,9 @@ impl SqliteTaskAuthority {
         &self,
         request: PermitRequest,
     ) -> Result<PermitDecision, TaskStoreError> {
-        self.request_commit_permit_inner(None, None, None, None, None, request, None)
+        permit_only(self.request_commit_permit_inner(
+            None, None, None, None, None, request, None,
+        ))
     }
 
     /// Runs the `CommitPermit` CAS with an immutable binding to a live
@@ -1404,7 +1410,7 @@ impl SqliteTaskAuthority {
         &self,
         request: AuthorityLeasePermitRequest,
     ) -> Result<PermitDecision, TaskStoreError> {
-        self.request_commit_permit_inner(
+        permit_only(self.request_commit_permit_inner(
             None,
             None,
             None,
@@ -1412,7 +1418,7 @@ impl SqliteTaskAuthority {
             None,
             request.permit,
             Some(request.lease),
-        )
+        ))
     }
 
     /// Runs the `CommitPermit` CAS after re-reading every Artifact head named
@@ -1441,7 +1447,7 @@ impl SqliteTaskAuthority {
         artifact_authority: &nlos_artifact::ArtifactStore,
         request: PermitRequest,
     ) -> Result<PermitDecision, TaskStoreError> {
-        self.request_commit_permit_inner(
+        permit_only(self.request_commit_permit_inner(
             Some(artifact_authority),
             None,
             None,
@@ -1449,7 +1455,7 @@ impl SqliteTaskAuthority {
             None,
             request,
             None,
-        )
+        ))
     }
 
     /// Runs the `CommitPermit` CAS after re-reading an optional Process /
@@ -1478,7 +1484,7 @@ impl SqliteTaskAuthority {
         process_authority: &nlos_process::ProcessAuthority,
         request: PermitRequest,
     ) -> Result<PermitDecision, TaskStoreError> {
-        self.request_commit_permit_inner(
+        permit_only(self.request_commit_permit_inner(
             None,
             Some(process_authority),
             None,
@@ -1486,7 +1492,7 @@ impl SqliteTaskAuthority {
             None,
             request,
             None,
-        )
+        ))
     }
 
     /// Runs the `CommitPermit` CAS after re-reading every Resource reservation
@@ -1515,7 +1521,7 @@ impl SqliteTaskAuthority {
         resource_authority: &nlos_resource::ResourceAuthority,
         request: PermitRequest,
     ) -> Result<PermitDecision, TaskStoreError> {
-        self.request_commit_permit_inner(
+        permit_only(self.request_commit_permit_inner(
             None,
             None,
             Some(resource_authority),
@@ -1523,7 +1529,7 @@ impl SqliteTaskAuthority {
             None,
             request,
             None,
-        )
+        ))
     }
 
     /// Runs the `CommitPermit` CAS after re-reading every Operation endpoint
@@ -1547,7 +1553,7 @@ impl SqliteTaskAuthority {
         operation_authority: &nlos_store::SqliteOperationStore,
         request: PermitRequest,
     ) -> Result<PermitDecision, TaskStoreError> {
-        self.request_commit_permit_inner(
+        permit_only(self.request_commit_permit_inner(
             None,
             None,
             None,
@@ -1555,7 +1561,7 @@ impl SqliteTaskAuthority {
             None,
             request,
             None,
-        )
+        ))
     }
 
     /// Runs the `CommitPermit` CAS after re-reading every Channel endpoint
@@ -1581,7 +1587,7 @@ impl SqliteTaskAuthority {
         channel_authority: &nlos_channel::ChannelAuthority,
         request: PermitRequest,
     ) -> Result<PermitDecision, TaskStoreError> {
-        self.request_commit_permit_inner(
+        permit_only(self.request_commit_permit_inner(
             None,
             None,
             None,
@@ -1589,7 +1595,7 @@ impl SqliteTaskAuthority {
             Some(channel_authority),
             request,
             None,
-        )
+        ))
     }
 
     /// Runs the `CommitPermit` CAS with Artifact, Process, Resource, and
@@ -1614,7 +1620,7 @@ impl SqliteTaskAuthority {
         operation_authority: &nlos_store::SqliteOperationStore,
         request: PermitRequest,
     ) -> Result<PermitDecision, TaskStoreError> {
-        self.request_commit_permit_inner(
+        permit_only(self.request_commit_permit_inner(
             Some(artifact_authority),
             Some(process_authority),
             Some(resource_authority),
@@ -1622,7 +1628,7 @@ impl SqliteTaskAuthority {
             None,
             request,
             None,
-        )
+        ))
     }
 
     /// Runs the `CommitPermit` CAS with the owner revalidations named by
@@ -1645,6 +1651,25 @@ impl SqliteTaskAuthority {
         authorities: Authorities<'_>,
         request: PermitRequest,
     ) -> Result<PermitDecision, TaskStoreError> {
+        permit_only(self.request_commit_permit_decision_with_authorities_struct(
+            authorities, request,
+        ))
+    }
+
+    /// Same as [`Self::request_commit_permit_with_authorities_struct`], but
+    /// returns the optional [`crate::WorkingSetReclaimAdvisory`] prefix when
+    /// the projected active working set crosses the soft threshold while hard
+    /// admission still passes. Idempotent replays omit the advisory.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::request_commit_permit_with_authorities_struct`].
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn request_commit_permit_decision_with_authorities_struct(
+        &self,
+        authorities: Authorities<'_>,
+        request: PermitRequest,
+    ) -> Result<CommitPermitDecision, TaskStoreError> {
         self.request_commit_permit_inner(
             authorities.artifact,
             authorities.process,
@@ -1667,34 +1692,41 @@ impl SqliteTaskAuthority {
         channel_authority: Option<&nlos_channel::ChannelAuthority>,
         request: PermitRequest,
         authority_lease: Option<AuthorityLeaseRecord>,
-    ) -> Result<PermitDecision, TaskStoreError> {
+    ) -> Result<CommitPermitDecision, TaskStoreError> {
         let mut connection = self.lock_connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let task = load_task(&transaction, request.task_id)?;
         if let Some(existing) =
             load_permit_by_key(&transaction, request.task_id, request.idempotency_key)?
         {
-            let decision = replay_permit(&transaction, existing, &request, authority_lease)?;
+            let permit = replay_permit(&transaction, existing, &request, authority_lease)?;
             transaction.commit()?;
-            return Ok(decision);
+            return Ok(CommitPermitDecision {
+                permit,
+                reclaim_advisory: None,
+            });
         }
         let attempt = load_attempt(&transaction, request.task_id, request.attempt_id)?;
         if attempt.attempt_generation != request.attempt_generation {
             return Err(TaskStoreError::InvalidGeneration);
         }
         if task.record.cancel_epoch > 0 {
-            let decision = close_attempt_for_cancel(
+            let permit = close_attempt_for_cancel(
                 &transaction,
                 &task.record,
                 &attempt,
                 request.requested_at_ms,
             )?;
             transaction.commit()?;
-            return Ok(decision);
+            return Ok(CommitPermitDecision {
+                permit,
+                reclaim_advisory: None,
+            });
         }
         let active_count = count_issued_permits(&transaction)?;
         enforce_working_set_admission(self.scale_profile, active_count)?;
-        let decision = compete_for_permit(
+        let reclaim_advisory = working_set_reclaim_advisory(self.scale_profile, active_count)?;
+        let permit = compete_for_permit(
             &transaction,
             &task,
             &attempt,
@@ -1706,8 +1738,15 @@ impl SqliteTaskAuthority {
             channel_authority,
             authority_lease,
         )?;
+        let reclaim_advisory = match &permit {
+            PermitDecision::Issued(_) => reclaim_advisory,
+            _ => None,
+        };
         transaction.commit()?;
-        Ok(decision)
+        Ok(CommitPermitDecision {
+            permit,
+            reclaim_advisory,
+        })
     }
 
     /// Commits a Task cancellation (`[TASK-CANCEL-002]`).
@@ -1804,6 +1843,21 @@ impl SqliteTaskAuthority {
         stored.record.active_permit =
             load_outstanding_permit(&*connection, task_id)?.map(|permit| permit.permit_id);
         Ok(stored.record)
+    }
+
+    /// Read-side snapshot of store-wide working-set pressure against the
+    /// authority's configured [`ScaleProfile`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage error when the issued-permit count cannot be read.
+    pub fn inspect_working_set_pressure(&self) -> Result<WorkingSetPressureSnapshot, TaskStoreError> {
+        let connection = self.lock_connection()?;
+        let active_count = count_issued_permits(&*connection)?;
+        Ok(build_working_set_pressure_snapshot(
+            self.scale_profile,
+            active_count,
+        ))
     }
 
     /// Reads the current durable participant registry for a Task.
@@ -5851,6 +5905,12 @@ fn count_issued_permits(source: &impl SqlRead) -> Result<u64, TaskStoreError> {
     let count: i64 = statement.query_row([PermitState::Issued.code()], |row| row.get(0))?;
     u64::try_from(count)
         .map_err(|_| TaskStoreError::CorruptRecord("negative issued permit count"))
+}
+
+fn permit_only(
+    decision: Result<CommitPermitDecision, TaskStoreError>,
+) -> Result<PermitDecision, TaskStoreError> {
+    decision.map(|decision| decision.permit)
 }
 
 /// The outstanding permit for head reporting: `Issued` or the
