@@ -355,7 +355,18 @@ cargo test -p nlos-runtime-tokio --test activation_meter_scale ten_thousand_acti
                     sample_assert=0.46ms rss_kib=23792 threads=4 total=119.2ms
 ```
 
-100K tier：编排者本增量尝试 `--include-ignored` 实跑（见波次 19 进度单）；若超时/未完成则如实登记。
+100K tier：编排者本增量 `--include-ignored` 实跑亦绿（macOS arm64，~13.4s wall）：
+
+```text
+cargo test -p nlos-runtime-tokio --test activation_meter_scale one_hundred_thousand_activation_meter_fibers_on_two_workers -- --include-ignored --nocapture
+  → 1 passed / 0 failed（2026-09-08 W19-PATCH）
+  → 100K profile（2 tokio workers，sample=1000）：
+     active_cpu_phase=12.511s
+     external_wait: spawn_issue=313.0ms park_settle=331.1ms external_wait_sleep=50ms
+                    sample_assert=0.47ms rss_kib=203344 threads=4 total=702.0ms
+```
+
+不得外推 ROAD-B-006 全门达成；背压/挂起维 100K 规模验证仍缺。
 
 ### 6.10 Lifecycle phase 10K 规模探针（2026-09-08 追加，W19-006 / ROAD-B-006）
 
