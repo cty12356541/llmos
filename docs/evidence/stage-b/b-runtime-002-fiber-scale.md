@@ -341,3 +341,18 @@ cargo test -p nlos-runtime-tokio --test activation_meter_scale -- --include-igno
 ```
 
 - **缺口更新**：100K activation-meter 探针本地/nightly 实跑数字仍缺；不得外推 ROAD-B-006 达成。
+
+#### 6.9.4 W19-PATCH：编排者收尾复跑 10K（2026-09-08）
+
+第八十增量登记「收尾员未复跑 10K」——编排者于本增量本地 `--include-ignored` 复跑确认 race-free 修复后探针仍绿：
+
+```text
+cargo test -p nlos-runtime-tokio --test activation_meter_scale ten_thousand_activation_meter_fibers_on_two_workers -- --include-ignored --nocapture
+  → 1 passed / 0 failed（2026-09-08 W19-PATCH，~12.6s wall）
+  → 10K profile（2 tokio workers，sample=1000）：
+     active_cpu_phase=12.506s
+     external_wait: spawn_issue=31.2ms park_settle=29.5ms external_wait_sleep=50ms
+                    sample_assert=0.46ms rss_kib=23792 threads=4 total=119.2ms
+```
+
+100K tier：编排者本增量尝试 `--include-ignored` 实跑（见波次 19 进度单）；若超时/未完成则如实登记。
