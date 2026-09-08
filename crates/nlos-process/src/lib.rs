@@ -138,9 +138,8 @@ impl fmt::Display for ProcessAuthorityError {
                 formatter,
                 "process binding is terminal ({state:?}); fiber registration and resume are fail-closed"
             ),
-            Self::PlatformKillAlreadySignaled => {
-                formatter.write_str("platform kill was already signaled for this binding generation")
-            }
+            Self::PlatformKillAlreadySignaled => formatter
+                .write_str("platform kill was already signaled for this binding generation"),
             Self::PlatformKillAdapter(error) => write!(formatter, "{error}"),
             Self::CorruptRecord(reason) => write!(formatter, "corrupt durable record: {reason}"),
             Self::LockPoisoned => formatter.write_str("process authority writer lock is poisoned"),
@@ -776,7 +775,8 @@ impl ProcessAuthority {
             let mut connection = self.lock()?;
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            if let Some(existing) = load_platform_kill_by_key(&transaction, request.idempotency_key)?
+            if let Some(existing) =
+                load_platform_kill_by_key(&transaction, request.idempotency_key)?
             {
                 if !platform_kill_matches_request(&existing, &request) {
                     return Err(ProcessAuthorityError::IdempotencyConflict);
@@ -821,10 +821,15 @@ impl ProcessAuthority {
             record
         };
 
-        adapter
+        match adapter
             .signal_platform_kill(receipt.process_id, receipt.process_generation)
-            .map_err(ProcessAuthorityError::PlatformKillAdapter)?;
-        Ok(PlatformKillDecision::Signaled(receipt))
+            .map_err(ProcessAuthorityError::PlatformKillAdapter)?
+        {
+            PlatformKillAdapterOutcome::Signaled => Ok(PlatformKillDecision::Signaled(receipt)),
+            PlatformKillAdapterOutcome::AlreadyTerminated => {
+                Ok(PlatformKillDecision::AlreadyTerminated(receipt))
+            }
+        }
     }
 
     /// Reads the durable platform-kill receipt for one Process generation, if

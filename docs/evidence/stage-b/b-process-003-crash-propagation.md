@@ -45,6 +45,21 @@ cargo fmt -p nlos-process -- --check → 通过
 
 - **仍 PARTIAL_PASS**：非 macOS/Windows 真 OS kill-9/spawn；runtime 侧 kill receipt 消费、Activation meter 联动、跨平台 fault matrix 未做；不等同 ROAD-B-006 整体达成。
 
+## 7. Platform kill AlreadyTerminated + inspect 读回（2026-09-08 追加，W19-P）
+
+- Owner：`nlos-process`（`PlatformKillAdapterOutcome::AlreadyTerminated` + `inspect_platform_kill_receipt` 集成测试）
+- **实现**：adapter 返回 `AlreadyTerminated` 时 durable receipt 已提交、`PlatformKillDecision::AlreadyTerminated` 读回；exact idempotency replay 不重复调用 adapter；`inspect_platform_kill_receipt` 按 `(process_id, process_generation)` 作用域读回，异 generation 返回 `None`、异 idempotency key 二次请求 `PlatformKillAlreadySignaled` fail-closed。
+- **验证**：
+
+```text
+cargo test -p nlos-process
+  → 22 passed / 0 failed（+2 platform_kill；2026-09-08 W19-P）
+cargo clippy -p nlos-process --all-targets -- -D warnings → 0 warning
+cargo fmt -p nlos-process -- --check → 通过
+```
+
+- **仍 PARTIAL_PASS**：非 macOS/Windows 真 OS kill-9/spawn；runtime 侧 kill receipt 消费、Activation meter 联动、跨平台 fault matrix 未做；不等同 ROAD-B-006 整体达成。
+
 ## 4. Runtime 侧 terminal 门（2026-09-05 追加，W15-P）
 
 - Owner：`nlos-runtime-tokio`（`src/replay.rs`、`src/snapshot.rs` + `tests/process_crash_propagation.rs`）

@@ -15,6 +15,8 @@ use nlos_types::{Generation, ProcessId};
 pub enum PlatformKillAdapterOutcome {
     /// The adapter accepted the kill signal (stub records it; noop discards).
     Signaled,
+    /// The host OS process was already terminated before the signal arrived.
+    AlreadyTerminated,
 }
 
 /// Platform-specific OS process kill signaling.
@@ -69,8 +71,7 @@ impl PlatformKillAdapter for StubPlatformKillAdapter {
         process_id: ProcessId,
         process_generation: Generation,
     ) -> Result<PlatformKillAdapterOutcome, PlatformKillAdapterError> {
-        self.lock_signals()
-            .push((process_id, process_generation));
+        self.lock_signals().push((process_id, process_generation));
         Ok(PlatformKillAdapterOutcome::Signaled)
     }
 }

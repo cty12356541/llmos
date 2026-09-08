@@ -4,6 +4,7 @@
 
 use nlos_process::{
     CreateIsolationDomainRequest, IsolationDomainDecision, MarkProcessTerminatedRequest,
+    PlatformKillAdapter, PlatformKillAdapterError, PlatformKillAdapterOutcome,
     PlatformKillDecision, ProcessAuthority, ProcessAuthorityError, ProcessBindingDecision,
     ProcessLifecycleState, PropagateCrashRequest, RegisterDelegatedProcessRequest,
     RequestPlatformKillRequest, StubPlatformKillAdapter,
@@ -222,4 +223,138 @@ fn request_platform_kill_replays_without_reinvoking_adapter() {
     assert!(matches!(replay, PlatformKillDecision::Replayed(_)));
     assert_eq!(replay.receipt(), &receipt);
     assert!(adapter.recorded_signals().is_empty());
+}
+
+#[derive(Debug, Default)]
+struct AlreadyTerminatedKillAdapter {
+    invocations: std::sync::Mutex<u32>,
+}
+
+impl AlreadyTerminatedKillAdapter {
+    fn invocations(&self) -> u32 {
+        *self
+            .invocations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+impl PlatformKillAdapter for AlreadyTerminatedKillAdapter {
+    fn signal_platform_kill(
+        &self,
+        _process_id: ProcessId,
+        _process_generation: Generation,
+    ) -> Result<PlatformKillAdapterOutcome, PlatformKillAdapterError> {
+        *self
+            .invocations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
+        Ok(PlatformKillAdapterOutcome::AlreadyTerminated)
+    }
+}
+
+#[test]
+fn request_platform_kill_already_terminated_commits_receipt_without_signaled() {
+    let root = TestRoot::new("already-terminated");
+    let fixture = open_fixture(&root, 64);
+    let adapter = AlreadyTerminatedKillAdapter::default();
+    let key = IdempotencyKey::from_bytes([0xE1; 16]);
+    let request = kill_request(&fixture, key);
+
+    let decision = fixture
+        .authority
+        .request_platform_kill(request, &adapter)
+        .expect("already terminated kill");
+    assert!(matches!(
+        decision,
+        PlatformKillDecision::AlreadyTerminated(_)
+    ));
+    assert_eq!(decision.receipt().idempotency_key, key);
+    assert_eq!(adapter.invocations(), 1);
+
+    assert_eq!(
+        fixture
+            .authority
+            .inspect_platform_kill_receipt(fixture.process_id, fixture.process_generation)
+            .expect("inspect kill receipt")
+            .as_ref(),
+        Some(decision.receipt())
+    );
+
+    let replay = fixture
+        .authority
+        .request_platform_kill(request, &adapter)
+        .expect("replay");
+    assert!(matches!(replay, PlatformKillDecision::Replayed(_)));
+    assert_eq!(replay.receipt(), decision.receipt());
+    assert_eq!(adapter.invocations(), 1);
+}
+
+#[test]
+fn inspect_platform_kill_receipt_generation_scoped_and_conflict_fail_closed() {
+    let root = TestRoot::new("inspect-generation");
+    let fixture = open_fixture(&root, 65);
+    let kill_key = IdempotencyKey::from_bytes([0xF1; 16]);
+    let receipt = fixture
+        .authority
+        .request_platform_kill(
+            kill_request(&fixture, kill_key),
+            &StubPlatformKillAdapter::new(),
+        )
+        .expect("kill")
+        .receipt()
+        .clone();
+
+    assert_eq!(
+        fixture
+            .authority
+            .inspect_platform_kill_receipt(fixture.process_id, fixture.process_generation)
+            .expect("inspect current generation")
+            .as_ref(),
+        Some(&receipt)
+    );
+    assert_eq!(
+        fixture
+            .authority
+            .inspect_platform_kill_receipt(
+                fixture.process_id,
+                fixture
+                    .process_generation
+                    .checked_next()
+                    .expect("next generation")
+            )
+            .expect("inspect stale generation"),
+        None
+    );
+
+    assert!(matches!(
+        fixture.authority.request_platform_kill(
+            kill_request(&fixture, IdempotencyKey::from_bytes([0xF2; 16])),
+            &StubPlatformKillAdapter::new()
+        ),
+        Err(ProcessAuthorityError::PlatformKillAlreadySignaled)
+    ));
+
+    let reopened = ProcessAuthority::open(root.path()).expect("reopen");
+    assert_eq!(
+        reopened
+            .inspect_platform_kill_receipt(fixture.process_id, fixture.process_generation)
+            .expect("inspect after reopen")
+            .as_ref(),
+        Some(&receipt)
+    );
+    let replay = reopened
+        .request_platform_kill(
+            RequestPlatformKillRequest {
+                process_id: fixture.process_id,
+                expected_process_generation: fixture.process_generation,
+                expected_process_fencing_token: receipt.process_fencing_token,
+                idempotency_key: kill_key,
+                killed_at_ms: receipt.killed_at_ms,
+            },
+            &StubPlatformKillAdapter::new(),
+        )
+        .expect("reopen idempotent replay");
+    assert!(matches!(replay, PlatformKillDecision::Replayed(_)));
+    assert_eq!(replay.receipt(), &receipt);
 }

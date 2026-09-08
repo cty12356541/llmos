@@ -382,6 +382,8 @@ pub struct RequestPlatformKillRequest {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PlatformKillDecision {
     Signaled(PlatformKillReceipt),
+    /// Durable receipt committed; adapter found the OS process already gone.
+    AlreadyTerminated(PlatformKillReceipt),
     Replayed(PlatformKillReceipt),
 }
 
@@ -389,7 +391,9 @@ impl PlatformKillDecision {
     #[must_use]
     pub const fn receipt(&self) -> &PlatformKillReceipt {
         match self {
-            Self::Signaled(receipt) | Self::Replayed(receipt) => receipt,
+            Self::Signaled(receipt)
+            | Self::AlreadyTerminated(receipt)
+            | Self::Replayed(receipt) => receipt,
         }
     }
 }
