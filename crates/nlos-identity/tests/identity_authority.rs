@@ -806,6 +806,7 @@ fn session_registers_replays_inspects_and_survives_restart() {
             .bootstrap_principal(bootstrap_request(80, &key))
             .unwrap()
             .binding();
+        assert_eq!(authority.count_trusted_local_sessions().unwrap(), 0);
         assert!(matches!(
             authority.inspect_session(SessionId::from_bytes([0xA0; 16])),
             Err(IdentityAuthorityError::SessionNotFound(_))
@@ -816,6 +817,7 @@ fn session_registers_replays_inspects_and_survives_restart() {
         let replay = authority.register_session(request).unwrap();
         assert!(matches!(replay, SessionRegistrationDecision::Replayed(_)));
         assert_eq!(first.record(), replay.record());
+        assert_eq!(authority.count_trusted_local_sessions().unwrap(), 1);
         let record = first.record();
         assert_eq!(record.session_id, request.session_id);
         assert_eq!(record.session_token_digest, request.session_token_digest);
@@ -831,6 +833,7 @@ fn session_registers_replays_inspects_and_survives_restart() {
     };
 
     let reopened = IdentityAuthority::open(root.path()).unwrap();
+    assert_eq!(reopened.count_trusted_local_sessions().unwrap(), 1);
     assert_eq!(reopened.inspect_session(record.session_id).unwrap(), record);
     assert!(matches!(
         reopened.register_session(RegisterSessionRequest {

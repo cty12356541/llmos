@@ -25,23 +25,20 @@ use ed25519_dalek::{Signature, VerifyingKey};
 use nlos_clock::AuthorityClock;
 use nlos_types::{
     ControlDomainId, Generation, IdempotencyKey, IdentitySnapshotId, KeyId, PrincipalId, ReceiptId,
-    SemanticEventId, SessionId,
+    SemanticEventId,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
 
 pub use model::{
-    BootstrapDecision, BootstrapPrincipalRequest, CustodyBindingDecision, CustodyProfile,
-    Ed25519PublicKey, Ed25519Signature, IdentityBinding, KeyCustodyRecord, KeyPurpose,
-    KeyRevocationDecision, KeyRevocationReceipt, KeyRotationDecision, KeyRotationReceipt,
-    RegisterCustodyBindingRequest, RegisterSessionRequest, RevokeKeyRequest, RotateKeyRequest,
-    SessionRegistrationDecision, TrustedLocalSessionRecord, VerifiedBarrierObservationSigner,
-    VerifiedSemanticAuthoritySigner, VerifiedSemanticSigner,
-    VerifyBarrierObservationSignatureRequest, VerifySemanticAuthoritySignatureRequest,
-    VerifySemanticSignatureRequest,
+    BootstrapDecision, BootstrapPrincipalRequest, Ed25519PublicKey, Ed25519Signature,
+    IdentityBinding, KeyPurpose, KeyRevocationDecision, KeyRevocationReceipt, KeyRotationDecision,
+    KeyRotationReceipt, RevokeKeyRequest, RotateKeyRequest, VerifiedBarrierObservationSigner,
+    VerifiedSemanticAuthoritySigner, VerifiedSemanticSigner, VerifyBarrierObservationSignatureRequest,
+    VerifySemanticAuthoritySignatureRequest, VerifySemanticSignatureRequest,
 };
 
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 2;
 const CHANGE_BOOTSTRAP: i64 = 1;
 const CHANGE_KEY_REVOCATION: i64 = 2;
 const CHANGE_KEY_ROTATION: i64 = 3;
@@ -61,9 +58,6 @@ pub enum IdentityAuthorityError {
     ControlDomainNotFound(ControlDomainId),
     IdentitySnapshotNotFound(IdentitySnapshotId),
     KeyNotFound(KeyId),
-    CustodyBindingNotFound(KeyId),
-    CustodyProfileUnsupported,
-    SessionNotFound(SessionId),
     IdempotencyConflict,
     IdentitySnapshotFenceConflict,
     KeyGenerationFenceConflict,
@@ -109,15 +103,6 @@ impl fmt::Display for IdentityAuthorityError {
                 write!(formatter, "identity snapshot {id:?} does not exist")
             }
             Self::KeyNotFound(id) => write!(formatter, "key {id:?} does not exist"),
-            Self::CustodyBindingNotFound(id) => {
-                write!(formatter, "custody binding for key {id:?} does not exist")
-            }
-            Self::CustodyProfileUnsupported => {
-                formatter.write_str("custody profile is not supported")
-            }
-            Self::SessionNotFound(id) => {
-                write!(formatter, "trusted local session {id:?} does not exist")
-            }
             Self::IdempotencyConflict => {
                 formatter.write_str("idempotency key was rebound to different identity input")
             }
@@ -201,19 +186,8 @@ impl IdentityAuthority {
             0 => {
                 schema::migrate_v1(&mut connection)?;
                 schema::migrate_v2(&mut connection)?;
-                schema::migrate_v3(&mut connection)?;
-                schema::migrate_v4(&mut connection)?;
             }
-            1 => {
-                schema::migrate_v2(&mut connection)?;
-                schema::migrate_v3(&mut connection)?;
-                schema::migrate_v4(&mut connection)?;
-            }
-            2 => {
-                schema::migrate_v3(&mut connection)?;
-                schema::migrate_v4(&mut connection)?;
-            }
-            3 => schema::migrate_v4(&mut connection)?,
+            1 => schema::migrate_v2(&mut connection)?,
             SCHEMA_VERSION => {}
             other => return Err(IdentityAuthorityError::SchemaVersionUnsupported(other)),
         }
@@ -967,231 +941,6 @@ impl IdentityAuthority {
         )
     }
 
-    /// Registers an immutable custody binding for one key generation under the
-    /// trusted-local software-only reference profile. Principal and control
-    /// domain are copied from the current durable binding; stale generation
-    /// fences fail closed.
-    ///
-    /// # Errors
-    ///
-    /// Fails on unknown keys, stale generation fences, unsupported custody
-    /// profiles, idempotency rebinding, or storage failure.
-    pub fn register_custody_binding(
-        &self,
-        request: RegisterCustodyBindingRequest,
-    ) -> Result<CustodyBindingDecision, IdentityAuthorityError> {
-        validate_custody_profile(request.custody_profile);
-        let mut connection = self.lock()?;
-        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        if let Some(existing) = load_custody_by_idempotency(&transaction, request.idempotency_key)?
-        {
-            if !custody_request_matches(existing, request) {
-                return Err(IdentityAuthorityError::IdempotencyConflict);
-            }
-            transaction.commit()?;
-            return Ok(CustodyBindingDecision::Replayed(existing));
-        }
-        if let Some(existing) = load_custody_by_generation(
-            &transaction,
-            request.key_id,
-            request.expected_key_generation,
-        )? {
-            if !custody_request_matches(existing, request) {
-                return Err(IdentityAuthorityError::IdempotencyConflict);
-            }
-            transaction.commit()?;
-            return Ok(CustodyBindingDecision::Replayed(existing));
-        }
-
-        let binding = load_current_binding(&transaction, request.key_id)?
-            .ok_or(IdentityAuthorityError::KeyNotFound(request.key_id))?;
-        if binding.key_generation != request.expected_key_generation {
-            return Err(IdentityAuthorityError::KeyGenerationFenceConflict);
-        }
-
-        let record = KeyCustodyRecord {
-            key_id: request.key_id,
-            key_generation: request.expected_key_generation,
-            principal_id: binding.principal_id,
-            control_domain_id: binding.control_domain_id,
-            custody_profile: request.custody_profile,
-            registered_at_ms: request.registered_at_ms,
-        };
-        transaction.execute(
-            "INSERT INTO key_custody_bindings (
-                idempotency_key, key_id, key_generation, principal_id,
-                control_domain_id, custody_profile, registered_at_ms
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![
-                request.idempotency_key.as_bytes().as_slice(),
-                record.key_id.as_bytes().as_slice(),
-                encode_generation(record.key_generation)?,
-                record.principal_id.as_bytes().as_slice(),
-                record.control_domain_id.as_bytes().as_slice(),
-                request.custody_profile.encode(),
-                encode_u64(record.registered_at_ms)?,
-            ],
-        )?;
-        transaction.commit()?;
-        Ok(CustodyBindingDecision::Registered(record))
-    }
-
-    /// Reads the durable custody binding for one exact key generation.
-    ///
-    /// # Errors
-    ///
-    /// Fails when no binding exists, storage is corrupt, or `SQLite` fails.
-    pub fn inspect_custody(
-        &self,
-        key_id: KeyId,
-        key_generation: Generation,
-    ) -> Result<KeyCustodyRecord, IdentityAuthorityError> {
-        let connection = self.lock()?;
-        load_custody_by_generation(&connection, key_id, key_generation)?
-            .ok_or(IdentityAuthorityError::CustodyBindingNotFound(key_id))
-    }
-
-    /// Reads the custody binding for the key's current generation.
-    ///
-    /// # Errors
-    ///
-    /// Fails when the key or its custody binding does not exist, storage is
-    /// corrupt, or `SQLite` fails.
-    pub fn inspect_current_custody(
-        &self,
-        key_id: KeyId,
-    ) -> Result<KeyCustodyRecord, IdentityAuthorityError> {
-        let connection = self.lock()?;
-        let binding = load_current_binding(&connection, key_id)?
-            .ok_or(IdentityAuthorityError::KeyNotFound(key_id))?;
-        load_custody_by_generation(&connection, key_id, binding.key_generation)?
-            .ok_or(IdentityAuthorityError::CustodyBindingNotFound(key_id))
-    }
-
-    /// Registers an immutable trusted-local session ingress receipt bound to
-    /// the current key generation. Principal and control domain are copied from
-    /// the durable binding; stale generation fences and revoked generations fail
-    /// closed.
-    ///
-    /// # Errors
-    ///
-    /// Fails on unknown keys, stale generation fences, revoked key generations,
-    /// invalid session validity, idempotency rebinding, or storage failure.
-    pub fn register_session(
-        &self,
-        request: RegisterSessionRequest,
-    ) -> Result<SessionRegistrationDecision, IdentityAuthorityError> {
-        validate_session_request(request)?;
-        let mut connection = self.lock()?;
-        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        if let Some(existing) = load_session_by_idempotency(&transaction, request.idempotency_key)?
-        {
-            if !session_request_matches(existing, request) {
-                return Err(IdentityAuthorityError::IdempotencyConflict);
-            }
-            transaction.commit()?;
-            return Ok(SessionRegistrationDecision::Replayed(existing));
-        }
-        if let Some(existing) = load_session_by_id(&transaction, request.session_id)? {
-            if !session_request_matches(existing, request) {
-                return Err(IdentityAuthorityError::IdempotencyConflict);
-            }
-            transaction.commit()?;
-            return Ok(SessionRegistrationDecision::Replayed(existing));
-        }
-
-        let binding = load_current_binding(&transaction, request.key_id)?
-            .ok_or(IdentityAuthorityError::KeyNotFound(request.key_id))?;
-        if binding.key_generation != request.expected_key_generation {
-            return Err(IdentityAuthorityError::KeyGenerationFenceConflict);
-        }
-        if binding.key_revoked_at_ms.is_some() {
-            return Err(IdentityAuthorityError::KeyRevoked);
-        }
-        ensure_key_generation_not_revoked(
-            &transaction,
-            request.key_id,
-            request.expected_key_generation,
-        )?;
-
-        let receipt_id = ReceiptId::from_bytes(derive_id(
-            b"nlos/trusted-local-session-receipt/id/v1",
-            &[
-                request.session_id.as_bytes(),
-                request.key_id.as_bytes(),
-                &binding.key_generation.get().to_be_bytes(),
-                request.idempotency_key.as_bytes(),
-            ],
-        ));
-        let record = TrustedLocalSessionRecord {
-            receipt_id,
-            session_id: request.session_id,
-            session_token_digest: request.session_token_digest,
-            key_id: request.key_id,
-            key_generation: binding.key_generation,
-            principal_id: binding.principal_id,
-            control_domain_id: binding.control_domain_id,
-            registered_at_ms: request.registered_at_ms,
-            expires_at_ms: request.expires_at_ms,
-        };
-        transaction.execute(
-            "INSERT INTO trusted_local_sessions (
-                idempotency_key, receipt_id, session_id, session_token_digest,
-                key_id, key_generation, principal_id, control_domain_id,
-                registered_at_ms, expires_at_ms
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-            params![
-                request.idempotency_key.as_bytes().as_slice(),
-                record.receipt_id.as_bytes().as_slice(),
-                record.session_id.as_bytes().as_slice(),
-                record.session_token_digest.as_slice(),
-                record.key_id.as_bytes().as_slice(),
-                encode_generation(record.key_generation)?,
-                record.principal_id.as_bytes().as_slice(),
-                record.control_domain_id.as_bytes().as_slice(),
-                encode_u64(record.registered_at_ms)?,
-                encode_u64(record.expires_at_ms)?,
-            ],
-        )?;
-        transaction.commit()?;
-        Ok(SessionRegistrationDecision::Registered(record))
-    }
-
-    /// Reads a durable trusted-local session ingress receipt.
-    ///
-    /// # Errors
-    ///
-    /// Fails when no session exists, the bound key generation is revoked,
-    /// storage is corrupt, or `SQLite` fails.
-    pub fn inspect_session(
-        &self,
-        session_id: SessionId,
-    ) -> Result<TrustedLocalSessionRecord, IdentityAuthorityError> {
-        let connection = self.lock()?;
-        let record = load_session_by_id(&connection, session_id)?
-            .ok_or(IdentityAuthorityError::SessionNotFound(session_id))?;
-        ensure_key_generation_not_revoked(&connection, record.key_id, record.key_generation)?;
-        Ok(record)
-    }
-
-    /// Returns the count of durable trusted-local session ingress receipts.
-    ///
-    /// This is a read-only aggregate over immutable session rows; idempotent
-    /// replays do not increase the count.
-    ///
-    /// # Errors
-    ///
-    /// Fails when storage is corrupt or `SQLite` fails.
-    pub fn count_trusted_local_sessions(&self) -> Result<u64, IdentityAuthorityError> {
-        let connection = self.lock()?;
-        let count: i64 = connection.query_row(
-            "SELECT COUNT(*) FROM trusted_local_sessions",
-            [],
-            |row| row.get(0),
-        )?;
-        decode_u64(count)
-    }
-
     fn lock(&self) -> Result<MutexGuard<'_, Connection>, IdentityAuthorityError> {
         self.connection
             .lock()
@@ -1282,72 +1031,6 @@ fn validate_rotate_request(request: RotateKeyRequest) -> Result<(), IdentityAuth
     }
     VerifyingKey::from_bytes(&request.new_public_key)
         .map_err(|_| IdentityAuthorityError::InvalidPublicKey)?;
-    Ok(())
-}
-
-fn validate_custody_profile(profile: CustodyProfile) {
-    match profile {
-        CustodyProfile::TrustedLocalSoftware => {}
-    }
-}
-
-fn custody_request_matches(
-    record: KeyCustodyRecord,
-    request: RegisterCustodyBindingRequest,
-) -> bool {
-    record.key_id == request.key_id
-        && record.key_generation == request.expected_key_generation
-        && record.custody_profile == request.custody_profile
-        && record.registered_at_ms == request.registered_at_ms
-}
-
-fn validate_session_request(request: RegisterSessionRequest) -> Result<(), IdentityAuthorityError> {
-    if request.registered_at_ms > request.expires_at_ms {
-        return Err(IdentityAuthorityError::InvalidKeyValidity);
-    }
-    Ok(())
-}
-
-fn session_request_matches(
-    record: TrustedLocalSessionRecord,
-    request: RegisterSessionRequest,
-) -> bool {
-    record.session_id == request.session_id
-        && record.session_token_digest == request.session_token_digest
-        && record.key_id == request.key_id
-        && record.key_generation == request.expected_key_generation
-        && record.registered_at_ms == request.registered_at_ms
-        && record.expires_at_ms == request.expires_at_ms
-}
-
-fn ensure_key_generation_not_revoked(
-    connection: &Connection,
-    key_id: KeyId,
-    key_generation: Generation,
-) -> Result<(), IdentityAuthorityError> {
-    let revoked_at: Option<i64> = connection.query_row(
-        "SELECT revoked_at_ms FROM key_versions WHERE key_id=?1 AND generation=?2",
-        params![
-            key_id.as_bytes().as_slice(),
-            encode_generation(key_generation)?,
-        ],
-        |row| row.get(0),
-    )?;
-    if revoked_at.is_some() {
-        return Err(IdentityAuthorityError::KeyRevoked);
-    }
-    let revocation_count: i64 = connection.query_row(
-        "SELECT COUNT(*) FROM key_revocations
-         WHERE key_id=?1 AND expected_key_generation=?2",
-        params![
-            key_id.as_bytes().as_slice(),
-            encode_generation(key_generation)?,
-        ],
-        |row| row.get(0),
-    )?;
-    if revocation_count > 0 {
-        return Err(IdentityAuthorityError::KeyRevoked);
-    }
     Ok(())
 }
 
@@ -1753,163 +1436,6 @@ fn load_rotation_by_key(
                 },
             })
         })
-        .transpose()
-}
-
-type CustodyRow = (Vec<u8>, i64, Vec<u8>, Vec<u8>, i64, i64);
-
-fn decode_custody_row(row: CustodyRow) -> Result<KeyCustodyRecord, IdentityAuthorityError> {
-    Ok(KeyCustodyRecord {
-        key_id: decode_id::<16, _>(row.0, KeyId::from_bytes, "key id")?,
-        key_generation: decode_generation(row.1)?,
-        principal_id: decode_id::<16, _>(row.2, PrincipalId::from_bytes, "principal id")?,
-        control_domain_id: decode_id::<16, _>(row.3, ControlDomainId::from_bytes, "domain id")?,
-        custody_profile: CustodyProfile::decode(row.4)
-            .ok_or(IdentityAuthorityError::CorruptRecord("custody profile"))?,
-        registered_at_ms: decode_u64(row.5)?,
-    })
-}
-
-fn load_custody_by_idempotency(
-    connection: &Connection,
-    idempotency_key: IdempotencyKey,
-) -> Result<Option<KeyCustodyRecord>, IdentityAuthorityError> {
-    connection
-        .query_row(
-            "SELECT key_id, key_generation, principal_id, control_domain_id,
-                    custody_profile, registered_at_ms
-             FROM key_custody_bindings WHERE idempotency_key=?1",
-            [idempotency_key.as_bytes().as_slice()],
-            |row| {
-                Ok((
-                    row.get::<_, Vec<u8>>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, Vec<u8>>(2)?,
-                    row.get::<_, Vec<u8>>(3)?,
-                    row.get::<_, i64>(4)?,
-                    row.get::<_, i64>(5)?,
-                ))
-            },
-        )
-        .optional()?
-        .map(decode_custody_row)
-        .transpose()
-}
-
-fn load_custody_by_generation(
-    connection: &Connection,
-    key_id: KeyId,
-    key_generation: Generation,
-) -> Result<Option<KeyCustodyRecord>, IdentityAuthorityError> {
-    connection
-        .query_row(
-            "SELECT key_id, key_generation, principal_id, control_domain_id,
-                    custody_profile, registered_at_ms
-             FROM key_custody_bindings
-             WHERE key_id=?1 AND key_generation=?2",
-            params![
-                key_id.as_bytes().as_slice(),
-                encode_generation(key_generation)?,
-            ],
-            |row| {
-                Ok((
-                    row.get::<_, Vec<u8>>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, Vec<u8>>(2)?,
-                    row.get::<_, Vec<u8>>(3)?,
-                    row.get::<_, i64>(4)?,
-                    row.get::<_, i64>(5)?,
-                ))
-            },
-        )
-        .optional()?
-        .map(decode_custody_row)
-        .transpose()
-}
-
-type SessionRow = (
-    Vec<u8>,
-    Vec<u8>,
-    Vec<u8>,
-    Vec<u8>,
-    i64,
-    Vec<u8>,
-    Vec<u8>,
-    i64,
-    i64,
-);
-
-fn decode_session_row(
-    row: SessionRow,
-) -> Result<TrustedLocalSessionRecord, IdentityAuthorityError> {
-    Ok(TrustedLocalSessionRecord {
-        receipt_id: decode_id::<16, _>(row.0, ReceiptId::from_bytes, "receipt id")?,
-        session_id: decode_id::<16, _>(row.1, SessionId::from_bytes, "session id")?,
-        session_token_digest: decode_array(row.2, "session token digest")?,
-        key_id: decode_id::<16, _>(row.3, KeyId::from_bytes, "key id")?,
-        key_generation: decode_generation(row.4)?,
-        principal_id: decode_id::<16, _>(row.5, PrincipalId::from_bytes, "principal id")?,
-        control_domain_id: decode_id::<16, _>(row.6, ControlDomainId::from_bytes, "domain id")?,
-        registered_at_ms: decode_u64(row.7)?,
-        expires_at_ms: decode_u64(row.8)?,
-    })
-}
-
-fn load_session_by_idempotency(
-    connection: &Connection,
-    idempotency_key: IdempotencyKey,
-) -> Result<Option<TrustedLocalSessionRecord>, IdentityAuthorityError> {
-    connection
-        .query_row(
-            "SELECT receipt_id, session_id, session_token_digest, key_id, key_generation,
-                    principal_id, control_domain_id, registered_at_ms, expires_at_ms
-             FROM trusted_local_sessions WHERE idempotency_key=?1",
-            [idempotency_key.as_bytes().as_slice()],
-            |row| {
-                Ok((
-                    row.get::<_, Vec<u8>>(0)?,
-                    row.get::<_, Vec<u8>>(1)?,
-                    row.get::<_, Vec<u8>>(2)?,
-                    row.get::<_, Vec<u8>>(3)?,
-                    row.get::<_, i64>(4)?,
-                    row.get::<_, Vec<u8>>(5)?,
-                    row.get::<_, Vec<u8>>(6)?,
-                    row.get::<_, i64>(7)?,
-                    row.get::<_, i64>(8)?,
-                ))
-            },
-        )
-        .optional()?
-        .map(decode_session_row)
-        .transpose()
-}
-
-fn load_session_by_id(
-    connection: &Connection,
-    session_id: SessionId,
-) -> Result<Option<TrustedLocalSessionRecord>, IdentityAuthorityError> {
-    connection
-        .query_row(
-            "SELECT receipt_id, session_id, session_token_digest, key_id, key_generation,
-                    principal_id, control_domain_id, registered_at_ms, expires_at_ms
-             FROM trusted_local_sessions WHERE session_id=?1",
-            [session_id.as_bytes().as_slice()],
-            |row| {
-                Ok((
-                    row.get::<_, Vec<u8>>(0)?,
-                    row.get::<_, Vec<u8>>(1)?,
-                    row.get::<_, Vec<u8>>(2)?,
-                    row.get::<_, Vec<u8>>(3)?,
-                    row.get::<_, i64>(4)?,
-                    row.get::<_, Vec<u8>>(5)?,
-                    row.get::<_, Vec<u8>>(6)?,
-                    row.get::<_, i64>(7)?,
-                    row.get::<_, i64>(8)?,
-                ))
-            },
-        )
-        .optional()?
-        .map(decode_session_row)
         .transpose()
 }
 

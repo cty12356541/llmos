@@ -54,3 +54,13 @@ cargo fmt -p nlos-identity --check
 - 三平台 CI 仍未完成。
 
 关联：`b-identity-003-custody.md` §4 开放项「session」中 trusted-local session ingress 最小前缀由此 Evidence 关闭；HSM/跨机 session、attestation ingress 仍开放。
+
+## 5. W20-I：trusted-local session count readback
+
+追加只读 inspect 前缀 `count_trusted_local_sessions()` → `u64`：
+
+- 对 `trusted_local_sessions` 表执行 `COUNT(*)`；无 schema 变更；
+- 计数反映 durable immutable session ingress receipt 行数；idempotent replay 不增加计数；
+- 与 `inspect_session(session_id)` 并列，供 inspect 面聚合展示活跃 session 登记规模。
+
+验证：`identity_authority.rs::session_registers_replays_inspects_and_survives_restart` 追加 count 断言（bootstrap 后 0、register/replay 后 1、重启后仍为 1）。
