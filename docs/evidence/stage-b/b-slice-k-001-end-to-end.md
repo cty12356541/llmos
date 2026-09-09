@@ -321,7 +321,8 @@ cargo fmt -p nlos-slice-k -- --check                       → 干净
 
 ```text
 cargo test -p nlos-slice-k                    → 12 passed / 0 failed（end_to_end 3 + competing_attempts 4 + lifecycle_uninstall 3 + application_registrations 2）
-cargo clippy -p nlos-slice-k --all-targets -- -D warnings  → 0 warning
+cargo clippy -p nlos-slice-k --all-targets -- -D warnings
+  → 依赖 crate `nlos-application` 既有 `too_many_lines` 告警（非本车道写集）阻塞全 `-D warnings` 门；本 crate 源码无新增 clippy 项
 ```
 
 ### 12.4 剩余缺口（如实登记）
