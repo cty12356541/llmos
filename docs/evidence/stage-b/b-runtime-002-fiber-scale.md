@@ -400,7 +400,45 @@ cargo test -p nlos-runtime-tokio --test lifecycle_scale ten_thousand_lifecycle_p
 
 - **勾销**：§6.8.2 中「100K 探针下分维 metering 规模验证（背压/挂起维仍为零占位的 100K 实跑未做）」→ 本 §6.10 10K 实跑（背压/挂起双维；100K tier 未登记）。
 - **如实保留（ROAD-B-006 剩余，Claim 维持 PARTIAL_PASS）**：
-  - 100K lifecycle phase 规模探针（本片仅 10K quick tier）；
+  - ~~100K lifecycle phase 规模探针（本片仅 10K quick tier）~~ → 本 §6.11 100K 实跑登记；
+  - fiber 体内自动触发背压/挂起（scheduler 边界 hook 已覆盖，admission 集成未做）；
+  - 100K 规模级 cancel 探针；
+  - runtime 侧 process crash 传播联动；
+  - 未声称 ROAD-B-006 整体达成。
+
+### 6.11 Lifecycle phase 100K 规模探针（2026-09-09 追加，W20-006 / ROAD-B-006）
+
+- Owner：`nlos-runtime-tokio`（`tests/lifecycle_scale.rs`）
+- 设计依据：v0.5 §28.2 ROAD-B-006 分维 Activation metering 规模验证；§6.10 10K quick tier 已证 backpressure_wait/suspended 双维相位 + 计量 + 线程有界性，本片补 100K full tier。
+- **实现（test-only，`#[ignore]` 探针）**：
+  - `lifecycle_scale.rs` 增 `FULL_COUNT=100_000` 与 `one_hundred_thousand_lifecycle_phase_fibers_on_two_workers`（镜像 §6.10 双 phase 形状，`METER_SUBSET=1_000` 前缀抽样）。
+  - 100K tier 省略前缀 fiber 的 `active_cpu < backpressure_wait` 断言：batch spawn 窗口内前缀 fiber 累积 spawn-window `active_cpu` 量级大于 parked `backpressure_wait`（10K 仍保留；功能级维分离由 `lifecycle_phase.rs` + §6.10 quick tier 覆盖）。
+- **新增测试**（`lifecycle_scale.rs`，累计 2 项 `#[ignore]`）：
+  1. `ten_thousand_lifecycle_phase_fibers_on_two_workers` — 10K quick tier（§6.10）；
+  2. `one_hundred_thousand_lifecycle_phase_fibers_on_two_workers` — 100K full tier（backpressure_wait + suspended 双 phase）。
+
+#### 6.11.1 验证门实测
+
+```text
+cargo test -p nlos-runtime-tokio --test lifecycle_scale
+  → 0 passed / 0 failed / 2 ignored（2026-09-09 W20-006；默认套件不跑 scale）
+cargo test -p nlos-runtime-tokio --test lifecycle_scale -- --include-ignored --nocapture
+  → 2 passed / 0 failed（2026-09-09 W20-006，100K ~1.2s test wall / ~220s cargo wall incl. compile，macOS arm64）
+  → 100K profile（2 tokio workers，sample=1000）：
+     backpressure_wait: spawn_issue=301.2ms enter_backpressure=44.8ms park_settle=30.9ms
+                        phase_sleep=50ms sample_assert=0.44ms resume_settle=30.6ms
+                        rss_kib=156032 threads=4 total=506.1ms
+     suspended:         spawn_issue=292.9ms enter_suspended=47.6ms park_settle=32.9ms
+                        phase_sleep=50ms sample_assert=0.42ms resume_settle=33.2ms
+                        threads=4 total=503.2ms
+     （1000 前缀 backpressure_wait/suspended≥40ms 且 external_wait=0；threads≤10 有界断言通过）
+```
+
+#### 6.11.2 缺口更新
+
+- **勾销**：§6.10.2「100K lifecycle phase 规模探针」→ 本 §6.11 100K 实跑（背压/挂起双维；`active_cpu` 维分离仍仅 10K/功能级）。
+- **如实保留（ROAD-B-006 剩余，Claim 维持 PARTIAL_PASS）**：
+  - 100K tier 前缀 fiber `active_cpu` 维分离断言（spawn 窗口 artifact，非 runtime 回归）；
   - fiber 体内自动触发背压/挂起（scheduler 边界 hook 已覆盖，admission 集成未做）；
   - 100K 规模级 cancel 探针；
   - runtime 侧 process crash 传播联动；
