@@ -1,15 +1,16 @@
 //! Acceptance tests for B-PROCESS-003 platform kill contract-layer minimum
 //! prefix: durable kill receipt, stub adapter invocation, terminal fail-closed,
-//! and idempotent replay. Does **not** exercise real macOS/Windows OS kill.
+//! idempotent replay, and (on Unix) real SIGTERM via [`PosixPlatformKillAdapter`].
 
 use nlos_process::{
     CreateIsolationDomainRequest, IsolationDomainDecision, MarkProcessTerminatedRequest,
     PlatformKillAdapter, PlatformKillAdapterError, PlatformKillAdapterOutcome,
-    PlatformKillDecision, ProcessAuthority, ProcessAuthorityError, ProcessBindingDecision,
-    ProcessLifecycleState, PropagateCrashRequest, RegisterDelegatedProcessRequest,
-    RequestPlatformKillRequest, StubPlatformKillAdapter,
+    PlatformKillDecision, PosixPlatformKillAdapter, ProcessAuthority, ProcessAuthorityError,
+    ProcessBindingDecision, ProcessLifecycleState, PropagateCrashRequest,
+    RegisterDelegatedProcessRequest, RequestPlatformKillRequest, StubPlatformKillAdapter,
 };
 use nlos_types::{Generation, IdempotencyKey, ProcessId, TaskAttemptId, TaskId};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -357,4 +358,32 @@ fn inspect_platform_kill_receipt_generation_scoped_and_conflict_fail_closed() {
         .expect("reopen idempotent replay");
     assert!(matches!(replay, PlatformKillDecision::Replayed(_)));
     assert_eq!(replay.receipt(), &receipt);
+}
+
+#[test]
+#[cfg(unix)]
+fn posix_platform_kill_adapter_signals_real_child_process() {
+    let root = TestRoot::new("posix-real-kill");
+    let fixture = open_fixture(&root, 70);
+    let mut child = std::process::Command::new("sleep")
+        .arg("600")
+        .spawn()
+        .expect("spawn sleep child");
+    let os_pid = child.id();
+
+    let mut pid_map = HashMap::new();
+    pid_map.insert(fixture.process_id, os_pid);
+    let adapter = PosixPlatformKillAdapter::new(pid_map);
+
+    let decision = fixture
+        .authority
+        .request_platform_kill(
+            kill_request(&fixture, IdempotencyKey::from_bytes([0x71; 16])),
+            &adapter,
+        )
+        .expect("posix platform kill");
+    assert!(matches!(decision, PlatformKillDecision::Signaled(_)));
+
+    let status = child.wait().expect("wait for signaled child");
+    assert!(!status.success());
 }

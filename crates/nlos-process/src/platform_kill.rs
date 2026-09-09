@@ -1,9 +1,10 @@
 //! Platform kill adapter contract (contract-layer minimum prefix).
 //!
-//! This module deliberately does **not** spawn or signal real macOS/Windows
-//! OS processes; consumers inject [`StubPlatformKillAdapter`] or
-//! [`NoopPlatformKillAdapter`] until native supervisors land.
+//! Contract tests use [`StubPlatformKillAdapter`] or [`NoopPlatformKillAdapter`].
+//! Unix hosts may inject [`PosixPlatformKillAdapter`] with an explicit
+//! `ProcessId` → OS pid map when signaling real child processes.
 
+use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 use std::sync::{Mutex, MutexGuard};
@@ -87,6 +88,60 @@ impl PlatformKillAdapter for NoopPlatformKillAdapter {
         _process_generation: Generation,
     ) -> Result<PlatformKillAdapterOutcome, PlatformKillAdapterError> {
         Ok(PlatformKillAdapterOutcome::Signaled)
+    }
+}
+
+/// Unix adapter that signals real OS processes via `kill(2)` and SIGTERM.
+///
+/// NLOS [`ProcessId`] values are authority-assigned identifiers; callers must
+/// inject the host pid mapping explicitly (typically from a process supervisor).
+#[derive(Debug)]
+pub struct PosixPlatformKillAdapter {
+    pid_map: HashMap<ProcessId, u32>,
+}
+
+impl PosixPlatformKillAdapter {
+    /// Creates an adapter backed by the supplied `ProcessId` → OS pid map.
+    #[must_use]
+    pub fn new(pid_map: HashMap<ProcessId, u32>) -> Self {
+        Self { pid_map }
+    }
+}
+
+#[cfg(unix)]
+impl PlatformKillAdapter for PosixPlatformKillAdapter {
+    fn signal_platform_kill(
+        &self,
+        process_id: ProcessId,
+        _process_generation: Generation,
+    ) -> Result<PlatformKillAdapterOutcome, PlatformKillAdapterError> {
+        use nix::errno::Errno;
+        use nix::sys::signal::{Signal, kill};
+        use nix::unistd::Pid;
+
+        let os_pid = self.pid_map.get(&process_id).ok_or(
+            PlatformKillAdapterError::Platform("os pid mapping not found for process id"),
+        )?;
+        match kill(Pid::from_raw((*os_pid).cast_signed()), Signal::SIGTERM) {
+            Ok(()) => Ok(PlatformKillAdapterOutcome::Signaled),
+            Err(Errno::ESRCH) => Ok(PlatformKillAdapterOutcome::AlreadyTerminated),
+            Err(_) => Err(PlatformKillAdapterError::Platform(
+                "kill(SIGTERM) failed for mapped os pid",
+            )),
+        }
+    }
+}
+
+#[cfg(windows)]
+impl PlatformKillAdapter for PosixPlatformKillAdapter {
+    fn signal_platform_kill(
+        &self,
+        _process_id: ProcessId,
+        _process_generation: Generation,
+    ) -> Result<PlatformKillAdapterOutcome, PlatformKillAdapterError> {
+        Err(PlatformKillAdapterError::Platform(
+            "posix platform kill adapter unavailable on windows",
+        ))
     }
 }
 

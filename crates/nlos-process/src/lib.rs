@@ -37,7 +37,7 @@ pub use model::{
 };
 pub use platform_kill::{
     NoopPlatformKillAdapter, PlatformKillAdapter, PlatformKillAdapterError,
-    PlatformKillAdapterOutcome, StubPlatformKillAdapter,
+    PlatformKillAdapterOutcome, PosixPlatformKillAdapter, StubPlatformKillAdapter,
 };
 
 #[derive(Debug)]
