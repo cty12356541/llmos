@@ -8,9 +8,12 @@
 //!   `CommitPermit`; idempotent permit replays bypass the gate. When admission
 //!   still passes but the projected active count crosses the soft threshold,
 //!   [`working_set_reclaim_advisory`] surfaces a typed
-//!   [`WorkingSetReclaimAdvisory`] on [`CommitPermitDecision`] (advisory only;
-//!   no reclaim execution). No Materialization Controller, Context Residency
-//!   Controller, or soft reclaim path enforces execution yet.
+//!   [`WorkingSetReclaimAdvisory`] on [`CommitPermitDecision`]; when advisory
+//!   is present on an issued permit, [`plan_working_set_reclaim_execution`]
+//!   surfaces the first [`ReclaimPolicy`] phase as
+//!   [`WorkingSetReclaimExecution`] (plan only; no controller eviction). No
+//!   Materialization Controller, Context Residency Controller, or soft
+//!   reclaim path enforces execution yet.
 //! - **No rehydrate.** Checkpoint/evict/rehydrate benchmarks and recovery
 //!   wiring are registered gaps in `docs/evidence/stage-b/b-task-scale-001.md`.
 //! - **Predicate surface.** [`WorkingSetPressure::needs_reclaim`] reports when
@@ -118,6 +121,34 @@ pub struct WorkingSetReclaimAdvisory {
     pub max_active_working_set: u64,
 }
 
+/// Planned first-phase reclaim step derived from an advisory signal.
+///
+/// This slice plans only phase index `0` of [`TASK_DEFAULT_RECLAIM_POLICY`]
+/// (`RebuildableCache`); later phases and actual eviction remain deferred.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WorkingSetReclaimExecution {
+    /// Stable sequence within the default policy (`0` = first phase).
+    pub execution_sequence: u8,
+    pub phase: ReclaimPhase,
+    pub advisory: WorkingSetReclaimAdvisory,
+}
+
+/// Plans the first reclaim phase when a soft-threshold advisory is present.
+///
+/// Controllers that land later may walk subsequent phases; this prefix always
+/// selects [`ReclaimPhase::RebuildableCache`] from
+/// [`TASK_DEFAULT_RECLAIM_POLICY`].
+#[must_use]
+pub fn plan_working_set_reclaim_execution(
+    advisory: &WorkingSetReclaimAdvisory,
+) -> WorkingSetReclaimExecution {
+    WorkingSetReclaimExecution {
+        execution_sequence: 0,
+        phase: TASK_DEFAULT_RECLAIM_POLICY.phases[0],
+        advisory: *advisory,
+    }
+}
+
 /// Observed store-wide working-set pressure against the authority tier.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct WorkingSetPressureSnapshot {
@@ -129,15 +160,19 @@ pub struct WorkingSetPressureSnapshot {
     pub reclaim_advisory: Option<WorkingSetReclaimAdvisory>,
 }
 
-/// Linearized `CommitPermit` request outcome plus optional reclaim advisory.
+/// Linearized `CommitPermit` request outcome plus optional reclaim prefix.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CommitPermitDecision {
     pub permit: PermitDecision,
     pub reclaim_advisory: Option<WorkingSetReclaimAdvisory>,
+    /// First-phase reclaim plan; present only when `permit` is issued and
+    /// `reclaim_advisory` is `Some`.
+    pub reclaim_execution: Option<WorkingSetReclaimExecution>,
 }
 
 /// Read-side snapshot of the authority's configured tier and issued permit
 /// count.
+#[must_use]
 pub fn inspect_working_set_pressure(
     profile: &ScaleProfile,
     active_count: u64,
@@ -159,6 +194,11 @@ pub fn inspect_working_set_pressure(
 ///
 /// `current_active` is the store-wide issued permit count before the
 /// candidate issuance; the advisory consults `current_active + 1`.
+///
+/// # Errors
+///
+/// Returns [`TaskStoreError::EpochExhausted`] when `current_active + 1`
+/// overflows.
 pub fn working_set_reclaim_advisory(
     profile: &ScaleProfile,
     current_active: u64,
@@ -238,7 +278,8 @@ pub fn enforce_working_set_admission(
 mod tests {
     use super::{
         CommitPermitDecision, ReclaimPhase, ReclaimPolicy, WorkingSetPressure,
-        WorkingSetReclaimAdvisory, enforce_working_set_admission, inspect_working_set_pressure,
+        WorkingSetReclaimAdvisory, WorkingSetReclaimExecution, enforce_working_set_admission,
+        inspect_working_set_pressure, plan_working_set_reclaim_execution,
         working_set_reclaim_advisory, TASK_DEFAULT_RECLAIM_POLICY,
     };
     use crate::TaskStoreError;
@@ -384,8 +425,30 @@ mod tests {
                 },
             },
             reclaim_advisory: Some(advisory),
+            reclaim_execution: None,
         };
         assert_eq!(decision.reclaim_advisory, Some(advisory));
+        assert!(decision.reclaim_execution.is_none());
+    }
+
+    #[test]
+    fn plan_execution_selects_first_rebuildable_cache_phase() {
+        let advisory = WorkingSetReclaimAdvisory {
+            profile_id: "task-advisory-unit",
+            projected_active_count: 2,
+            reclaim_threshold_count: 1,
+            reclaim_threshold_ratio: DEFAULT_RECLAIM_THRESHOLD_RATIO,
+            max_active_working_set: 2,
+        };
+        let execution = plan_working_set_reclaim_execution(&advisory);
+        assert_eq!(
+            execution,
+            WorkingSetReclaimExecution {
+                execution_sequence: 0,
+                phase: ReclaimPhase::RebuildableCache,
+                advisory,
+            }
+        );
     }
 
     #[test]

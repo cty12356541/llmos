@@ -50,7 +50,7 @@ use crate::model::{derive_closure_receipt_id, derive_permit_id, empty_effect_his
 use crate::pressure::{
     CommitPermitDecision, WorkingSetPressureSnapshot, enforce_working_set_admission,
     inspect_working_set_pressure as build_working_set_pressure_snapshot,
-    working_set_reclaim_advisory,
+    plan_working_set_reclaim_execution, working_set_reclaim_advisory,
 };
 use crate::scale::{ScaleProfile, TASK_PROFILE_10K};
 use crate::{
@@ -1704,6 +1704,7 @@ impl SqliteTaskAuthority {
             return Ok(CommitPermitDecision {
                 permit,
                 reclaim_advisory: None,
+                reclaim_execution: None,
             });
         }
         let attempt = load_attempt(&transaction, request.task_id, request.attempt_id)?;
@@ -1721,6 +1722,7 @@ impl SqliteTaskAuthority {
             return Ok(CommitPermitDecision {
                 permit,
                 reclaim_advisory: None,
+                reclaim_execution: None,
             });
         }
         let active_count = count_issued_permits(&transaction)?;
@@ -1738,14 +1740,20 @@ impl SqliteTaskAuthority {
             channel_authority,
             authority_lease,
         )?;
-        let reclaim_advisory = match &permit {
-            PermitDecision::Issued(_) => reclaim_advisory,
-            _ => None,
+        let (reclaim_advisory, reclaim_execution) = match &permit {
+            PermitDecision::Issued(_) => {
+                let execution = reclaim_advisory
+                    .as_ref()
+                    .map(plan_working_set_reclaim_execution);
+                (reclaim_advisory, execution)
+            }
+            _ => (None, None),
         };
         transaction.commit()?;
         Ok(CommitPermitDecision {
             permit,
             reclaim_advisory,
+            reclaim_execution,
         })
     }
 

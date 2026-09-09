@@ -146,3 +146,26 @@ cargo test -p nlos-task --test scale_profile_probe -- --ignored --nocapture
 1. 无 reclaim 执行/controller wiring；advisory 仅为 prefix 信号。
 2. `max_task_nodes` 未接入 `register_task`；checkpoint/rehydrate 与 TaskPlan/TaskNode 声明面仍待议题 35 ADR。
 3. 100K probe 数字仍待实跑。
+
+## 9. W20-004 reclaim execution 最小前缀（2026-09-09）
+
+### 已实现事实
+
+1. `WorkingSetReclaimExecution`：`execution_sequence`（恒为 `0`）+ 首相 `ReclaimPhase::RebuildableCache` + advisory 快照；**不执行** eviction 或后续 phase。
+2. `plan_working_set_reclaim_execution()`：从 [`TASK_DEFAULT_RECLAIM_POLICY`] 选取 phase index `0`。
+3. `CommitPermitDecision` 扩展 `reclaim_execution: Option<WorkingSetReclaimExecution>`；仅 `PermitDecision::Issued` 且 advisory 为 `Some` 时填充；replay / denied / conflict 路径均为 `None`。
+4. **诚实范围**：first-phase plan only；无 Materialization Controller、无 Context Residency Controller、无实际 cache eviction。
+
+### 验证门（W20-004 实跑）
+
+| 门 | 命令 | 结果 |
+| --- | --- | --- |
+| scale_profile 集成 | `cargo test -p nlos-task --test scale_profile` | PASS（8 passed，含 execution 两用例；2026-09-09 W20-004） |
+| pressure 单测 | `cargo test -p nlos-task pressure` | PASS（9 passed；2026-09-09 W20-004） |
+| clippy | `cargo clippy -p nlos-task --all-targets -- -D warnings` | PASS（2026-09-09 W20-004） |
+
+### 仍属缺口
+
+1. 无 controller 执行后续 phase（QoS / checkpoint-evict / kill）或实际 eviction。
+2. `max_task_nodes` 未接入 `register_task`；checkpoint/rehydrate 与 TaskPlan/TaskNode 声明面仍待议题 35 ADR。
+3. 100K probe 数字仍待实跑。
