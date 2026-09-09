@@ -127,6 +127,8 @@ fn print_inspect(runtime: &SliceKRuntime, chain: &HappyChain, prefix: &str) {
 /// application, then prints the aggregated registration inspect view
 /// (ROAD-B-002 background-task + process-binding wiring).
 fn demo_application_registrations(runtime: &Arc<SliceKRuntime>, chain: &HappyChain) {
+    // Single binding here; multi-binding inspect ordering is covered by
+    // `register_two_process_bindings_then_inspect_readback` (W21-002).
     println!("[slice-k] STEP 09a application-registrations begin");
     let background = runtime
         .register_background_task(

@@ -329,3 +329,33 @@ cargo clippy -p nlos-slice-k --all-targets -- -D warnings
 
 - **registration 不在 `run_happy_chain` 内**：登记步骤位于 happy chain 终端之后（与 demo STEP 09/09a 时序一致），主链函数仍只覆盖 sign→converge；registration 为纵切面 inspect 尾段接线。
 - **与 §11.4 一致**：无 UI Surface、probe 仍为登记计数 stand-in、lifecycle 与 registration 无联动。
+
+## 13. 多 Process binding inspect 接线（2026-09-10 追加：W21-002 ROAD-B-002）
+
+- **定位**：W18/W20 已落地单 background task + 单 process binding 登记与 inspect 读回；本车道追加**同一 package 下两条 process binding** 登记路径，经聚合 inspect 读回非空且稳定排序的 `process_bindings` 列表。
+- **写集**：`crates/nlos-slice-k/tests/application_registrations.rs`（新增 `register_two_process_bindings_then_inspect_readback`）、`src/bin/slice-k-demo.rs`（STEP 09a 注释指向本测试）、本 §。`nlos-application` 零改动（只读消费）。base HEAD 待 integrator 落库时填写。
+
+### 13.1 接线摘要
+
+| 接线点 | 行为 | 语义 |
+|---|---|---|
+| 双 binding 登记 | 同一 `package_id` 下 `register_process_binding` 两次，distinct `ProcessId`，不同 seed（不同 idempotency key + wall 时间戳） | B-APPLICATION-006 durable 登记；第二条须满足 `registered_at_ms` 单调性 |
+| inspect 读回 | `inspect_application_registrations(package_id)` | `process_bindings=2`；receipt 逐字段等于登记回执 |
+| 稳定排序 | `ApplicationAuthority::inspect_process_bindings` | `ORDER BY registered_at_ms ASC, idempotency_key ASC`（先登记先出；同毫秒时按 idempotency key 字节序） |
+| demo | STEP 09a 保持单 binding（W18-002 已有）；注释指向本测试 | 避免改动 demo 输出计数行 |
+
+### 13.2 测试与断言要点
+
+- `register_two_process_bindings_then_inspect_readback`：install → register 两条 distinct process binding → inspect 返回 2 条、顺序符合 authority 排序规则 → 各 binding 同 key 重放幂等 → `report_lines` 含 `process_bindings=2`。
+
+### 13.3 验证（定向 `-p` 命令）
+
+```text
+cargo test -p nlos-slice-k                    → 13 passed / 0 failed（end_to_end 3 + competing_attempts 4 + lifecycle_uninstall 3 + application_registrations 3）
+cargo clippy -p nlos-slice-k --all-targets -- -D warnings
+  → 依赖 crate 既有告警（非本车道写集）可能阻塞全 `-D warnings` 门；本 crate 源码无新增 clippy 项
+```
+
+### 13.4 剩余缺口（如实登记）
+
+- **与 §11.4/§12.4 一致**：无 UI Surface、无 spawn/kill、lifecycle 与 registration 无联动；demo 仍只演示单 binding 路径。

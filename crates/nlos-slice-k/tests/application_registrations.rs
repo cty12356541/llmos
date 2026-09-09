@@ -107,6 +107,90 @@ fn register_background_task_and_process_binding_then_inspect_readback() {
 }
 
 #[test]
+fn register_two_process_bindings_then_inspect_readback() {
+    let dir = TempDir::new("application-registrations-two-process");
+    let runtime = SliceKRuntime::open(dir.root()).expect("open slice-k runtime");
+    let seed = 0xF2_u8;
+    let publisher = runtime.bootstrap_publisher(seed).expect("publisher");
+    let package = runtime
+        .publish_signed_package(&publisher, seed, &fixture_bytes(seed, 48))
+        .expect("publish");
+    let verification = runtime
+        .verify_signed_package(&package, seed)
+        .expect("verify");
+    runtime
+        .install_verified_package(&verification, seed)
+        .expect("install");
+
+    let process_id_a = ProcessId::from_bytes([seed.wrapping_add(41); 16]);
+    let process_id_b = ProcessId::from_bytes([seed.wrapping_add(42); 16]);
+
+    let binding_a = runtime
+        .register_process_binding(
+            package.package_id,
+            process_id_a,
+            publisher.principal_id,
+            seed,
+        )
+        .expect("register first process binding");
+    assert_eq!(binding_a.process_id, process_id_a);
+
+    let binding_b = runtime
+        .register_process_binding(
+            package.package_id,
+            process_id_b,
+            publisher.principal_id,
+            seed.wrapping_add(1),
+        )
+        .expect("register second process binding");
+    assert_eq!(binding_b.process_id, process_id_b);
+
+    let inspect = runtime
+        .inspect_application_registrations(package.package_id)
+        .expect("inspect registrations");
+    assert_eq!(inspect.background_tasks.len(), 0);
+    assert_eq!(inspect.process_bindings.len(), 2);
+
+    // ApplicationAuthority orders by `registered_at_ms ASC, idempotency_key ASC`.
+    let mut stable_order = inspect.process_bindings.clone();
+    stable_order.sort_by(|left, right| {
+        left.registered_at_ms
+            .cmp(&right.registered_at_ms)
+            .then_with(|| {
+                left.idempotency_key
+                    .as_bytes()
+                    .cmp(right.idempotency_key.as_bytes())
+            })
+    });
+    assert_eq!(inspect.process_bindings, stable_order);
+    assert_eq!(inspect.process_bindings[0], binding_a);
+    assert_eq!(inspect.process_bindings[1], binding_b);
+
+    let replay_a = runtime
+        .register_process_binding(
+            package.package_id,
+            process_id_a,
+            publisher.principal_id,
+            seed,
+        )
+        .expect("first process binding replay");
+    assert_eq!(replay_a, binding_a);
+
+    let replay_b = runtime
+        .register_process_binding(
+            package.package_id,
+            process_id_b,
+            publisher.principal_id,
+            seed.wrapping_add(1),
+        )
+        .expect("second process binding replay");
+    assert_eq!(replay_b, binding_b);
+
+    let lines = inspect.report_lines();
+    assert!(lines.iter().any(|line| line == "process_bindings=2"));
+}
+
+#[test]
 fn uninstall_with_registered_background_task_is_fail_closed_via_probe() {
     let dir = TempDir::new("application-registrations-gate");
     let runtime = SliceKRuntime::open(dir.root()).expect("open slice-k runtime");
