@@ -899,11 +899,12 @@ async fn nl_sentences_compile_to_the_same_socket_receipts_as_direct_commands() {
     let health_check = parse_nl_command("health check").unwrap();
     let system_status = parse_nl_command("系统状态").unwrap();
     let spaced_health = parse_nl_command("查看 健康").unwrap();
+    let check_health = parse_nl_command("检查 健康").unwrap();
     assert_nl_socket_and_in_process_parity(
         &socket_path,
         &control,
         &ControlCommand::InspectHealth,
-        &[health_check, system_status, spaced_health],
+        &[health_check, system_status, spaced_health, check_health],
         None,
         None,
     )

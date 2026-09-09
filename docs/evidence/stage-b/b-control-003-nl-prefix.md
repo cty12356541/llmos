@@ -224,3 +224,30 @@
 1. **同义词仍为字面白名单**：`查看 系统`（缺「健康」）、`show health now`（尾部垃圾）等近邻形态继续 typed 拒绝。
 2. **无 pause/cancel ControlCommand**：NL 面不能编译暂停/取消类意图。
 3. **ROAD-B-005 仍 PARTIAL**：Trusted GUI 编译与确认面未实现。
+
+## W20-005 增量：NL inspect health 同义词白名单扩展（2026-09-09）
+
+> 状态：`PARTIAL_PASS`（单节点本地；ROAD-B-005 仍 PARTIAL——GUI 未接）
+>
+> 基线 HEAD：`b3b66ad`　　写集：`crates/nlos-system-control/**`、`docs/evidence/stage-b/b-control-003-nl-prefix.md`
+
+### 已实现事实
+
+1. **additive 同义词编译**（`src/nl.rs`，零新 `ControlCommand` 变体）：在 InspectHealth 白名单上追加 fail-closed ZH 变体：
+   - **InspectHealth**：`检查健康` / `检查 健康`（与 `检查 任务` / `检查 资源` 等「检查 + 对象」形态对齐）。
+2. **pause/cancel 命令面**：当前 `ControlCommand` 无 pause/cancel 变体——**无命令面，未添加**；`pause everything` / `cancel alert …` 继续 typed 拒绝。
+3. **等价路径证明**（`tests/control_command_cli.rs`）：`检查 健康` 对 InspectHealth——NL 解析→`dispatch_over_socket` 与直接构造 **逐字节 receipt 相等**；语法外 `检查健康了` 在 dispatch 前 typed 拒绝。
+
+### 验证
+
+验证环境：macOS（darwin，arm64），基线 HEAD `b3b66ad`。
+
+- `cargo test -p nlos-system-control`：**59 passed / 0 failed**（lib 23——含 nl 14、control 6、openmetrics 3；bin 0；`control_command_cli` 4；`control_ipc_auth` 9；其余 integration 22；doc-tests 1）。
+- `cargo clippy -p nlos-system-control --all-targets -- -D warnings`：通过（本 crate 零 warning）。
+- `cargo fmt -p nlos-system-control -- --check`：通过。
+
+### 已知限制（增量）
+
+1. **同义词仍为字面白名单**：`检查健康了`（尾部垃圾）、`show health now` 等近邻形态继续 typed 拒绝。
+2. **无 pause/cancel ControlCommand**：NL 面不能编译暂停/取消类意图。
+3. **ROAD-B-005 仍 PARTIAL**：Trusted GUI 编译与确认面未实现。

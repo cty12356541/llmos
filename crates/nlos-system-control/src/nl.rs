@@ -20,6 +20,7 @@
 //! inspect health | check health | show health | status health | health check
 //!   | inspect system health
 //!   | 查看健康 | 查看 健康 | 查看系统健康 | 查看 系统 健康 | 系统状态
+//!   | 检查健康 | 检查 健康
 //! export metrics | show metrics | get metrics | metrics
 //!   | 导出指标 | 导出 指标 | 指标
 //! inspect task <32-hex> | check task <32-hex> | show task <32-hex>
@@ -142,8 +143,8 @@ fn try_parse_inspect_health(tokens: &[&str]) -> Option<Result<ControlCommand, Co
         {
             Some(Ok(ControlCommand::InspectHealth))
         }
-        ["查看健康" | "查看系统健康" | "系统状态"]
-        | ["查看", "健康"]
+        ["查看健康" | "查看系统健康" | "系统状态" | "检查健康"]
+        | ["查看" | "检查", "健康"]
         | ["查看", "系统", "健康"] => Some(Ok(ControlCommand::InspectHealth)),
         [head, second, ..]
             if (is_read_verb(head) && second.eq_ignore_ascii_case("task"))
@@ -214,10 +215,8 @@ fn try_parse_inspect_task(tokens: &[&str]) -> Option<Result<ControlCommand, Cont
         [head, second, plan] if is_read_verb(head) && second.eq_ignore_ascii_case("task") => {
             Some(parse_hex_id(plan).map(|plan_id| ControlCommand::InspectTask { plan_id }))
         }
-        ["查看任务", plan]
-        | ["查看", "任务", plan]
-        | ["检查任务", plan]
-        | ["检查", "任务", plan] => {
+        ["查看任务" | "检查任务", plan]
+        | ["查看" | "检查", "任务", plan] => {
             Some(parse_hex_id(plan).map(|plan_id| ControlCommand::InspectTask { plan_id }))
         }
         _ => None,
@@ -260,10 +259,8 @@ fn try_parse_inspect_resource(tokens: &[&str]) -> Option<Result<ControlCommand, 
                     .map(|reservation_id| ControlCommand::InspectResource { reservation_id }),
             )
         }
-        ["查看资源", reservation_id]
-        | ["查看", "资源", reservation_id]
-        | ["检查资源", reservation_id]
-        | ["检查", "资源", reservation_id] => Some(
+        ["查看资源" | "检查资源", reservation_id]
+        | ["查看" | "检查", "资源", reservation_id] => Some(
             parse_hex_id(reservation_id)
                 .map(|reservation_id| ControlCommand::InspectResource { reservation_id }),
         ),
@@ -403,6 +400,9 @@ mod tests {
             "查看系统健康",
             "查看 系统 健康",
             "系统状态",
+            "检查健康",
+            "  检查健康  ",
+            "检查 健康",
         ] {
             assert_eq!(
                 parse_nl_command(sentence).unwrap(),
@@ -648,6 +648,7 @@ mod tests {
             format!("ack alert {PLAN_HEX_LOWER}").as_str(),
             format!("confirm alert {PLAN_HEX_LOWER} expecting").as_str(),
             "查看健康了",
+            "检查健康了",
             "查看任务",
             "查看 任务",
             format!("确认告警 {PLAN_HEX_UPPER} 期望").as_str(),
