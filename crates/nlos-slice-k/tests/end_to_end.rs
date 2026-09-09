@@ -185,6 +185,41 @@ async fn full_vertical_slice_produces_every_receipt_and_is_inspectable() {
         nlos_slice_k::short_hex(chain.process.process_id.as_bytes()),
         chain.process.process_generation.get()
     ))));
+
+    // ROAD-B-002 (W20-002): registration inspect wired into the full chain —
+    // the happy-chain Task and Process binding are registered against the
+    // installed application, then read back via the aggregated inspect path.
+    let background = runtime
+        .register_background_task(
+            chain.package.package_id,
+            chain.task_id,
+            chain.publisher.principal_id,
+            0xA0,
+        )
+        .expect("register background task");
+    let binding = runtime
+        .register_process_binding(
+            chain.package.package_id,
+            chain.process.process_id,
+            chain.publisher.principal_id,
+            0xA0,
+        )
+        .expect("register process binding");
+    let registrations = runtime
+        .inspect_application_registrations(chain.package.package_id)
+        .expect("inspect application registrations");
+    assert_eq!(registrations.background_tasks.len(), 1);
+    assert_eq!(registrations.process_bindings.len(), 1);
+    assert_eq!(registrations.background_tasks[0], background);
+    assert_eq!(registrations.process_bindings[0], binding);
+    assert_eq!(registrations.background_tasks[0].task_id, chain.task_id);
+    assert_eq!(
+        registrations.process_bindings[0].process_id,
+        chain.process.process_id
+    );
+    let reg_lines = registrations.report_lines();
+    assert!(reg_lines.iter().any(|line| line == "background_tasks=1"));
+    assert!(reg_lines.iter().any(|line| line == "process_bindings=1"));
 }
 
 #[tokio::test]

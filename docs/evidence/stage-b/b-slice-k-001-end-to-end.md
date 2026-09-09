@@ -299,3 +299,32 @@ cargo fmt -p nlos-slice-k -- --check                       → 干净
 - **无 UI Surface / spawn-kill**：registration 仅为 application authority durable 登记面；纵切面不物化 Process runtime 或调度后台 Task。
 - **probe 为登记计数 stand-in**：非 nlos-task 运行时 outstanding 探测；真实 running-task 计数仍由 caller 提供。
 - **lifecycle 与 registration 无联动**：disable/uninstall 不自动失效历史代际 registration receipts（与 B-APPLICATION-005/006 一致）。
+
+## 12. Registration inspect 接入完整纵切面链（2026-09-09 追加：W20-002 ROAD-B-002）
+
+- **定位**：W18-002 已落地 `inspect_application_registrations`、登记助手、demo STEP 09a 与 `application_registrations` 独立测试；本车道将其接线进完整 happy-chain 端到端路径——happy chain 终端后登记 happy-chain 的 Task/Process binding，经聚合 inspect 读回非空 registration 列表。
+- **写集**：仅 `crates/nlos-slice-k/tests/end_to_end.rs`（`full_vertical_slice_produces_every_receipt_and_is_inspectable` 追加 registration + inspect 断言）与本 §。demo STEP 09a 已存在（W18-002），无新增 bin 改动。`nlos-application` 零改动（只读消费）。base HEAD `b3b66ad`。
+
+### 12.1 接线摘要
+
+| 接线点 | 行为 | 语义 |
+|---|---|---|
+| 完整链测试 | happy chain 完成后 `register_background_task` + `register_process_binding`（seed `0xA0`，与链一致） | 登记 happy-chain 的 `task_id` 与 `process.process_id` |
+| inspect 读回 | `inspect_application_registrations(package_id)` | `background_tasks=1`、`process_bindings=1`；receipt 逐字段等于登记回执 |
+| demo | STEP 09a（W18-002 已有） | 同上路径，打印 `INSPECT-REGISTRATIONS` 行 |
+
+### 12.2 测试增强与断言要点
+
+- `full_vertical_slice_produces_every_receipt_and_is_inspectable`：在原有 12 步 inspect 断言之后追加 registration 登记 → `inspect_application_registrations` → 非空 `background_tasks`/`process_bindings`、receipt 与 chain 的 task/process 一致、`report_lines` 计数行正确。
+
+### 12.3 验证（base HEAD `b3b66ad` 工作区，定向 `-p` 命令）
+
+```text
+cargo test -p nlos-slice-k                    → 12 passed / 0 failed（end_to_end 3 + competing_attempts 4 + lifecycle_uninstall 3 + application_registrations 2）
+cargo clippy -p nlos-slice-k --all-targets -- -D warnings  → 0 warning
+```
+
+### 12.4 剩余缺口（如实登记）
+
+- **registration 不在 `run_happy_chain` 内**：登记步骤位于 happy chain 终端之后（与 demo STEP 09/09a 时序一致），主链函数仍只覆盖 sign→converge；registration 为纵切面 inspect 尾段接线。
+- **与 §11.4 一致**：无 UI Surface、probe 仍为登记计数 stand-in、lifecycle 与 registration 无联动。
