@@ -219,7 +219,8 @@ pub use resource_commit::{
 pub use pressure::{
     CommitPermitDecision, ReclaimPhase, ReclaimPolicy, WorkingSetPressure,
     WorkingSetPressureSnapshot, WorkingSetReclaimAdvisory, WorkingSetReclaimExecution,
-    enforce_working_set_admission, inspect_working_set_pressure,
+    WorkingSetReclaimOutcome, enforce_working_set_admission,
+    execute_working_set_reclaim_execution, inspect_working_set_pressure,
     plan_working_set_reclaim_execution, working_set_reclaim_advisory, TASK_DEFAULT_RECLAIM_POLICY,
 };
 pub use scale::{

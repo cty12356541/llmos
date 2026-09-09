@@ -11,9 +11,11 @@
 //!   [`WorkingSetReclaimAdvisory`] on [`CommitPermitDecision`]; when advisory
 //!   is present on an issued permit, [`plan_working_set_reclaim_execution`]
 //!   surfaces the first [`ReclaimPolicy`] phase as
-//!   [`WorkingSetReclaimExecution`] (plan only; no controller eviction). No
-//!   Materialization Controller, Context Residency Controller, or soft
-//!   reclaim path enforces execution yet.
+//!   [`WorkingSetReclaimExecution`]; when execution is planned on an issued
+//!   permit, [`execute_working_set_reclaim_execution`] surfaces a typed
+//!   [`WorkingSetReclaimOutcome`] for the `RebuildableCache` prefix (synthetic
+//!   evictable-unit counter only; no Context Residency Controller). Later
+//!   phases and full Materialization Controller wiring remain deferred.
 //! - **No rehydrate.** Checkpoint/evict/rehydrate benchmarks and recovery
 //!   wiring are registered gaps in `docs/evidence/stage-b/b-task-scale-001.md`.
 //! - **Predicate surface.** [`WorkingSetPressure::needs_reclaim`] reports when
@@ -149,6 +151,40 @@ pub fn plan_working_set_reclaim_execution(
     }
 }
 
+/// Typed outcome of executing one reclaim phase against a planned step.
+///
+/// This slice executes only [`ReclaimPhase::RebuildableCache`]; [`evicted_units`]
+/// is a synthetic stand-in for Context Residency Controller eviction counts.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WorkingSetReclaimOutcome {
+    pub execution_sequence: u8,
+    pub phase: ReclaimPhase,
+    /// Synthetic count of rebuildable cache units reclaimed in this prefix.
+    pub evicted_units: u64,
+    pub advisory: WorkingSetReclaimAdvisory,
+}
+
+/// Executes the first-phase `RebuildableCache` reclaim prefix for a planned step.
+///
+/// [`evicted_units`] is derived as the soft-threshold overshoot
+/// (`projected_active_count - reclaim_threshold_count`); it documents intent
+/// until a Context Residency Controller lands.
+#[must_use]
+pub fn execute_working_set_reclaim_execution(
+    execution: &WorkingSetReclaimExecution,
+) -> WorkingSetReclaimOutcome {
+    let overshoot = execution
+        .advisory
+        .projected_active_count
+        .saturating_sub(execution.advisory.reclaim_threshold_count);
+    WorkingSetReclaimOutcome {
+        execution_sequence: execution.execution_sequence,
+        phase: execution.phase,
+        evicted_units: overshoot,
+        advisory: execution.advisory,
+    }
+}
+
 /// Observed store-wide working-set pressure against the authority tier.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct WorkingSetPressureSnapshot {
@@ -168,6 +204,9 @@ pub struct CommitPermitDecision {
     /// First-phase reclaim plan; present only when `permit` is issued and
     /// `reclaim_advisory` is `Some`.
     pub reclaim_execution: Option<WorkingSetReclaimExecution>,
+    /// First-phase reclaim outcome; present only when `permit` is issued and
+    /// `reclaim_execution` is `Some`.
+    pub reclaim_outcome: Option<WorkingSetReclaimOutcome>,
 }
 
 /// Read-side snapshot of the authority's configured tier and issued permit
@@ -278,7 +317,8 @@ pub fn enforce_working_set_admission(
 mod tests {
     use super::{
         CommitPermitDecision, ReclaimPhase, ReclaimPolicy, WorkingSetPressure,
-        WorkingSetReclaimAdvisory, WorkingSetReclaimExecution, enforce_working_set_admission,
+        WorkingSetReclaimAdvisory, WorkingSetReclaimExecution, WorkingSetReclaimOutcome,
+        enforce_working_set_admission, execute_working_set_reclaim_execution,
         inspect_working_set_pressure, plan_working_set_reclaim_execution,
         working_set_reclaim_advisory, TASK_DEFAULT_RECLAIM_POLICY,
     };
@@ -426,9 +466,11 @@ mod tests {
             },
             reclaim_advisory: Some(advisory),
             reclaim_execution: None,
+            reclaim_outcome: None,
         };
         assert_eq!(decision.reclaim_advisory, Some(advisory));
         assert!(decision.reclaim_execution.is_none());
+        assert!(decision.reclaim_outcome.is_none());
     }
 
     #[test]
@@ -446,6 +488,28 @@ mod tests {
             WorkingSetReclaimExecution {
                 execution_sequence: 0,
                 phase: ReclaimPhase::RebuildableCache,
+                advisory,
+            }
+        );
+    }
+
+    #[test]
+    fn execute_outcome_reports_rebuildable_cache_overshoot() {
+        let advisory = WorkingSetReclaimAdvisory {
+            profile_id: "task-advisory-unit",
+            projected_active_count: 2,
+            reclaim_threshold_count: 1,
+            reclaim_threshold_ratio: DEFAULT_RECLAIM_THRESHOLD_RATIO,
+            max_active_working_set: 2,
+        };
+        let execution = plan_working_set_reclaim_execution(&advisory);
+        let outcome = execute_working_set_reclaim_execution(&execution);
+        assert_eq!(
+            outcome,
+            WorkingSetReclaimOutcome {
+                execution_sequence: 0,
+                phase: ReclaimPhase::RebuildableCache,
+                evicted_units: 1,
                 advisory,
             }
         );

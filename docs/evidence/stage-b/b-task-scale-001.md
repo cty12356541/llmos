@@ -169,3 +169,26 @@ cargo test -p nlos-task --test scale_profile_probe -- --ignored --nocapture
 1. 无 controller 执行后续 phase（QoS / checkpoint-evict / kill）或实际 eviction。
 2. `max_task_nodes` 未接入 `register_task`；checkpoint/rehydrate 与 TaskPlan/TaskNode 声明面仍待议题 35 ADR。
 3. 100K probe 数字仍待实跑。
+
+## 10. W21-004 reclaim execution outcome 最小前缀（2026-09-10）
+
+### 已实现事实
+
+1. `WorkingSetReclaimOutcome`：`execution_sequence` / `phase` / `evicted_units` + advisory 快照；**仅** `RebuildableCache` 首相执行前缀。
+2. `execute_working_set_reclaim_execution()`：从 planned step 派生 outcome；`evicted_units` 为 soft-threshold overshoot（`projected_active_count - reclaim_threshold_count`）合成计数，作为 Context Residency Controller 占位。
+3. `CommitPermitDecision` 扩展 `reclaim_outcome: Option<WorkingSetReclaimOutcome>`；仅 `PermitDecision::Issued` 且 `reclaim_execution` 为 `Some` 时填充；replay / denied / conflict 路径均为 `None`。
+4. **诚实范围**：首相 typed outcome only；无 Materialization Controller、无真实 cache eviction、无后续 phase 执行。
+
+### 验证门（W21-004 实跑）
+
+| 门 | 命令 | 结果 |
+| --- | --- | --- |
+| scale_profile 集成 | `cargo test -p nlos-task --test scale_profile` | PASS（10 passed，含 outcome 两用例；2026-09-10 W21-004） |
+| pressure 单测 | `cargo test -p nlos-task pressure` | PASS（10 passed，含 `execute_outcome_reports_rebuildable_cache_overshoot`；2026-09-10 W21-004） |
+| clippy | `cargo clippy -p nlos-task --all-targets -- -D warnings` | PASS（2026-09-10 W21-004） |
+
+### 仍属缺口
+
+1. 无后续 phase（QoS / checkpoint-evict / kill）执行或真实 Context Residency Controller eviction。
+2. `max_task_nodes` 未接入 `register_task`；checkpoint/rehydrate 与 TaskPlan/TaskNode 声明面仍待议题 35 ADR。
+3. 100K probe 数字仍待实跑。

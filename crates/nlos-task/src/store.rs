@@ -49,6 +49,7 @@ use crate::migrations::{
 use crate::model::{derive_closure_receipt_id, derive_permit_id, empty_effect_history_root};
 use crate::pressure::{
     CommitPermitDecision, WorkingSetPressureSnapshot, enforce_working_set_admission,
+    execute_working_set_reclaim_execution,
     inspect_working_set_pressure as build_working_set_pressure_snapshot,
     plan_working_set_reclaim_execution, working_set_reclaim_advisory,
 };
@@ -1705,6 +1706,7 @@ impl SqliteTaskAuthority {
                 permit,
                 reclaim_advisory: None,
                 reclaim_execution: None,
+                reclaim_outcome: None,
             });
         }
         let attempt = load_attempt(&transaction, request.task_id, request.attempt_id)?;
@@ -1723,6 +1725,7 @@ impl SqliteTaskAuthority {
                 permit,
                 reclaim_advisory: None,
                 reclaim_execution: None,
+                reclaim_outcome: None,
             });
         }
         let active_count = count_issued_permits(&transaction)?;
@@ -1740,20 +1743,24 @@ impl SqliteTaskAuthority {
             channel_authority,
             authority_lease,
         )?;
-        let (reclaim_advisory, reclaim_execution) = match &permit {
+        let (reclaim_advisory, reclaim_execution, reclaim_outcome) = match &permit {
             PermitDecision::Issued(_) => {
                 let execution = reclaim_advisory
                     .as_ref()
                     .map(plan_working_set_reclaim_execution);
-                (reclaim_advisory, execution)
+                let outcome = execution
+                    .as_ref()
+                    .map(execute_working_set_reclaim_execution);
+                (reclaim_advisory, execution, outcome)
             }
-            _ => (None, None),
+            _ => (None, None, None),
         };
         transaction.commit()?;
         Ok(CommitPermitDecision {
             permit,
             reclaim_advisory,
             reclaim_execution,
+            reclaim_outcome,
         })
     }
 
