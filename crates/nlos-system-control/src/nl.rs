@@ -18,9 +18,9 @@
 //!
 //! ```text
 //! inspect health | check health | show health | status health | health check
-//!   | inspect system health
+//!   | health status | inspect system health
 //!   | 查看健康 | 查看 健康 | 查看系统健康 | 查看 系统 健康 | 系统状态
-//!   | 检查健康 | 检查 健康
+//!   | 检查健康 | 检查 健康 | 健康状态 | 健康 状态
 //! export metrics | show metrics | get metrics | metrics
 //!   | 导出指标 | 导出 指标 | 指标
 //! inspect task <32-hex> | check task <32-hex> | show task <32-hex>
@@ -132,7 +132,8 @@ fn try_parse_inspect_health(tokens: &[&str]) -> Option<Result<ControlCommand, Co
             Some(Ok(ControlCommand::InspectHealth))
         }
         [first, second]
-            if first.eq_ignore_ascii_case("health") && second.eq_ignore_ascii_case("check") =>
+            if first.eq_ignore_ascii_case("health")
+                && (second.eq_ignore_ascii_case("check") || second.eq_ignore_ascii_case("status")) =>
         {
             Some(Ok(ControlCommand::InspectHealth))
         }
@@ -143,8 +144,9 @@ fn try_parse_inspect_health(tokens: &[&str]) -> Option<Result<ControlCommand, Co
         {
             Some(Ok(ControlCommand::InspectHealth))
         }
-        ["查看健康" | "查看系统健康" | "系统状态" | "检查健康"]
+        ["查看健康" | "查看系统健康" | "系统状态" | "检查健康" | "健康状态"]
         | ["查看" | "检查", "健康"]
+        | ["健康", "状态"]
         | ["查看", "系统", "健康"] => Some(Ok(ControlCommand::InspectHealth)),
         [head, second, ..]
             if (is_read_verb(head) && second.eq_ignore_ascii_case("task"))
@@ -380,6 +382,8 @@ mod tests {
             "status health",
             "health check",
             "HEALTH CHECK",
+            "health status",
+            "HEALTH STATUS",
             "inspect system health",
             "Inspect System Health",
         ] {
@@ -403,6 +407,9 @@ mod tests {
             "检查健康",
             "  检查健康  ",
             "检查 健康",
+            "健康状态",
+            "  健康状态  ",
+            "健康 状态",
         ] {
             assert_eq!(
                 parse_nl_command(sentence).unwrap(),
@@ -601,12 +608,14 @@ mod tests {
             "show health now",
             "check healthy",
             "health check now",
+            "health status now",
             "status health now",
             "status",
             "health",
             "inspect system health now",
             "查看 系统",
             "系统状态了",
+            "健康状态了",
             "show health now",
             "显示健康",
             "export",

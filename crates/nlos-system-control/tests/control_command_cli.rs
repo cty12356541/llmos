@@ -909,6 +909,19 @@ async fn nl_sentences_compile_to_the_same_socket_receipts_as_direct_commands() {
         None,
     )
     .await;
+    let health_status = parse_nl_command("health status").unwrap();
+    assert_eq!(health_status, ControlCommand::InspectHealth);
+    let zh_health_status = parse_nl_command("健康 状态").unwrap();
+    assert_eq!(zh_health_status, ControlCommand::InspectHealth);
+    assert_nl_socket_and_in_process_parity(
+        &socket_path,
+        &control,
+        &ControlCommand::InspectHealth,
+        &[health_status, zh_health_status],
+        None,
+        None,
+    )
+    .await;
 
     // Inspect task: NL sentences compile to the same command and produce
     // byte-identical receipts over socket and in-process dispatch.
