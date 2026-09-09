@@ -11,7 +11,7 @@
 - **Lineage fail-closed**：读路径重验 declared lineage edges + admission receipt 的 captured inputs，任一 parent 不在 `admission_receipts` 则 `DanglingLineage`。
 - **Verification 派生**（`[SEM-VERIFY-002]`）：扫描已 commit 的 Event-target VerificationEvent，收集 `TrustViewVerificationFact`；无适用 verification 时为 `Unverified`（不写事件）；最小前缀以最高 `log_seq` 派生 `verification_status`（非 TrustPolicy 聚合）。
 - **Judgment 观察**：收集 subject 作为 source/target 端点的 committed JudgmentEvent 事实行。
-- **Retraction 观察**：附带 `inspect_event_retraction` 同等 durable 撤回行（不删改目标行、不推导 Gate disposition）。
+- **Retraction 观察**（W21-S）：读取 append-only `event_retractions` 行，在 `TrustViewSnapshot` 暴露 `retracted: bool` 与 `retraction: Option<RetractionRecord>`（与 `inspect_event_retraction` 同等 durable 撤回事实；不删改目标行、不推导 Gate disposition）。
 - **存储**：纯 SQLite 读路径，无 schema 变更（沿用 schema v6）。
 
 ## 3. 验证

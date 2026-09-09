@@ -16,11 +16,13 @@ use nlos_semantic::{
     AppendAssertionRequest, AppendDecision, AppendTypedEventRequest, AssertionMode, EvaluatorKind,
     EventVerificationTarget, ImmutableEvaluatorReference, ImmutableEvaluatorReferenceKind,
     IssueDeclassificationDecision, IssueDeclassificationReceiptRequest, JudgmentRelation,
-    LocalProcessRef, SemanticAuthority, SemanticAuthorityError, StoreSigner, StoreSignerError,
-    TaintFlags, TrustViewJudgmentRole, TrustViewVerificationStatus, UnsignedAssertionEvent,
-    UnsignedJudgmentEvent, UnsignedVerificationEvent, VerificationOutcome, VerificationTarget,
-    content_digest, declassification_issue_authorization_id, encode_unsigned_assertion_event,
-    encode_unsigned_judgment_event, encode_unsigned_verification_event, semantic_event_id,
+    LocalProcessRef, RetractionMode, SemanticAuthority, SemanticAuthorityError, StoreSigner,
+    StoreSignerError, TaintFlags, TrustViewJudgmentRole, TrustViewVerificationStatus,
+    UnsignedAssertionEvent, UnsignedJudgmentEvent, UnsignedRetractionEvent,
+    UnsignedVerificationEvent, VerificationOutcome, VerificationTarget, content_digest,
+    declassification_issue_authorization_id, encode_unsigned_assertion_event,
+    encode_unsigned_judgment_event, encode_unsigned_retraction_event,
+    encode_unsigned_verification_event, semantic_event_id,
 };
 use nlos_types::{
     Generation, IdempotencyKey, NamespaceId, PrincipalId, ReceiptId, SemanticEventId,
@@ -184,6 +186,14 @@ fn fixture(root: &Root, seed: u8) -> Fixture {
 }
 
 fn append_capability(fixture: &Fixture, seed: u8) -> nlos_capability::CapabilityRecord {
+    append_capability_with_rights(fixture, seed, CapabilityRights::SEMANTIC_APPEND)
+}
+
+fn append_capability_with_rights(
+    fixture: &Fixture,
+    seed: u8,
+    rights: CapabilityRights,
+) -> nlos_capability::CapabilityRecord {
     fixture
         .capability
         .issue_root(
@@ -192,7 +202,7 @@ fn append_capability(fixture: &Fixture, seed: u8) -> nlos_capability::Capability
                 issuer_key_id: fixture.issuer.key_id,
                 holder_key_id: fixture.issuer.key_id,
                 target: fixture.scope,
-                rights: CapabilityRights::SEMANTIC_APPEND,
+                rights,
                 purpose_digest: fixture.purpose_digest,
                 valid_from_ms: 0,
                 valid_until_ms: 9_000,
@@ -426,6 +436,59 @@ fn append_verification(
     }
 }
 
+fn append_retraction(
+    fixture: &Fixture,
+    append_cap: &nlos_capability::CapabilityRecord,
+    seed: u8,
+    target: SemanticEventId,
+) -> SemanticEventId {
+    let event = UnsignedRetractionEvent {
+        scope: fixture.scope,
+        issuer: fixture.issuer.principal_id,
+        issuer_execution: LocalProcessRef {
+            process_id: fixture.process_binding.process_id,
+            generation: fixture.process_binding.process_generation,
+        },
+        control_domain: fixture.issuer.control_domain_id,
+        issued_at_unix_ns: 6_000_000_000 + u64::from(seed),
+        nonce: vec![seed.wrapping_add(140); 16],
+        declared_parents: Vec::new(),
+        valid_until_ms: None,
+        purpose_digest: fixture.purpose_digest,
+        key_id: fixture.issuer.key_id,
+        target_event_id: target,
+        mode: RetractionMode::Withdraw,
+        reason_digest: Some([0xdb; 32]),
+        authority_evidence_receipt_id: ReceiptId::from_bytes([seed.wrapping_add(0x70); 16]),
+    };
+    let canonical = encode_unsigned_retraction_event(&event).unwrap();
+    let event_id = semantic_event_id(&canonical);
+    let request = AppendTypedEventRequest {
+        canonical_unsigned_event: canonical,
+        claimed_event_id: event_id,
+        signature: fixture
+            .issuer_key
+            .sign(&nlos_identity::semantic_signature_message(event_id))
+            .to_bytes(),
+        capability: append_cap.handle,
+        captured_inputs: Vec::new(),
+        ingress_taint: TaintFlags::default(),
+        authz_policy_digest: [0x99; 32],
+        admission_limit_ms: Some(8_500),
+        admitted_at_ms: 2_700,
+    };
+    match fixture.semantic.append_retraction(
+        &fixture.identity,
+        &fixture.capability,
+        &fixture.process,
+        &fixture.store_signer,
+        &request,
+    ) {
+        Ok(AppendDecision::Admitted(_) | AppendDecision::Replayed(_)) => event_id,
+        Err(error) => panic!("retraction admission failed: {error}"),
+    }
+}
+
 #[test]
 fn trust_view_inherits_union_taint_without_declassification() {
     let root = Root::new("union-taint");
@@ -460,6 +523,7 @@ fn trust_view_inherits_union_taint_without_declassification() {
         TrustViewVerificationStatus::Unverified
     );
     assert!(view.judgment_facts.is_empty());
+    assert!(!view.retracted);
     assert!(view.retraction.is_none());
 }
 
@@ -560,6 +624,54 @@ fn trust_view_collects_verification_status_and_rejects_unknown_event() {
         fixture.semantic.inspect_trust_view(missing),
         Err(SemanticAuthorityError::EventNotFound(_))
     ));
+}
+
+#[test]
+fn trust_view_reflects_retraction_fact_without_affecting_unrelated_events() {
+    let root = Root::new("retraction");
+    let fixture = fixture(&root, 50);
+    let append_cap = append_capability(&fixture, 0xe1);
+    let retract_cap = append_capability_with_rights(
+        &fixture,
+        0xe2,
+        CapabilityRights::SEMANTIC_APPEND.union(CapabilityRights::SEMANTIC_RETRACT),
+    );
+    let retracted_target = append_assertion(
+        &fixture,
+        &append_cap,
+        1,
+        Vec::new(),
+        Vec::new(),
+        TaintFlags::PRIVATE,
+        None,
+    );
+    let unrelated = append_assertion(
+        &fixture,
+        &append_cap,
+        2,
+        Vec::new(),
+        Vec::new(),
+        TaintFlags::UNTRUSTED_INGRESS,
+        None,
+    );
+    let retraction_event_id = append_retraction(&fixture, &retract_cap, 3, retracted_target);
+
+    let retracted_view = fixture
+        .semantic
+        .inspect_trust_view(retracted_target)
+        .unwrap();
+    assert!(retracted_view.retracted);
+    let retraction = retracted_view
+        .retraction
+        .expect("retraction fact row");
+    assert_eq!(retraction.target_event_id, retracted_target);
+    assert_eq!(retraction.retraction_event_id, retraction_event_id);
+    assert_eq!(retraction.mode, RetractionMode::Withdraw);
+    assert_eq!(retraction.retracted_by, fixture.issuer.principal_id);
+
+    let unrelated_view = fixture.semantic.inspect_trust_view(unrelated).unwrap();
+    assert!(!unrelated_view.retracted);
+    assert!(unrelated_view.retraction.is_none());
 }
 
 #[test]

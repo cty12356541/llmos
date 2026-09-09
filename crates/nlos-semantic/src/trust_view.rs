@@ -45,6 +45,7 @@ pub(crate) fn inspect_trust_view(
     let verification_facts = load_verification_facts(connection, event_id)?;
     let judgment_facts = load_judgment_facts(connection, event_id)?;
     let retraction = load_event_retraction(connection, event_id)?;
+    let retracted = retraction.is_some();
     let verification_status = derive_verification_status(&verification_facts);
     Ok(TrustViewSnapshot {
         event_id,
@@ -53,6 +54,7 @@ pub(crate) fn inspect_trust_view(
         verification_status,
         verification_facts,
         judgment_facts,
+        retracted,
         retraction,
     })
 }

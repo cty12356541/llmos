@@ -755,6 +755,9 @@ pub struct TrustViewSnapshot {
     pub verification_status: TrustViewVerificationStatus,
     pub verification_facts: Vec<TrustViewVerificationFact>,
     pub judgment_facts: Vec<TrustViewJudgmentFact>,
+    /// Whether append-only `event_retractions` contains a row for this event.
+    pub retracted: bool,
+    /// Durable retraction fact when [`Self::retracted`] is true.
     pub retraction: Option<RetractionRecord>,
 }
 
