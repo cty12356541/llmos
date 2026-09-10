@@ -1,6 +1,7 @@
 //! Acceptance tests for B-PROCESS-003 platform kill contract-layer minimum
 //! prefix: durable kill receipt, stub adapter invocation, terminal fail-closed,
-//! idempotent replay, and (on Unix) real SIGTERM via [`PosixPlatformKillAdapter`].
+//! idempotent replay, (on Unix) real SIGTERM via [`PosixPlatformKillAdapter`],
+//! and (on non-Windows) stub rejection for [`WindowsPlatformKillAdapter`].
 
 use nlos_process::{
     CreateIsolationDomainRequest, IsolationDomainDecision, MarkProcessTerminatedRequest,
@@ -8,6 +9,7 @@ use nlos_process::{
     PlatformKillDecision, PosixPlatformKillAdapter, ProcessAuthority, ProcessAuthorityError,
     ProcessBindingDecision, ProcessLifecycleState, PropagateCrashRequest,
     RegisterDelegatedProcessRequest, RequestPlatformKillRequest, StubPlatformKillAdapter,
+    WindowsPlatformKillAdapter,
 };
 use nlos_types::{Generation, IdempotencyKey, ProcessId, TaskAttemptId, TaskId};
 use std::collections::HashMap;
@@ -386,4 +388,57 @@ fn posix_platform_kill_adapter_signals_real_child_process() {
 
     let status = child.wait().expect("wait for signaled child");
     assert!(!status.success());
+}
+
+#[test]
+#[cfg(not(windows))]
+fn windows_platform_kill_adapter_unavailable_on_non_windows() {
+    let root = TestRoot::new("windows-stub-reject");
+    let fixture = open_fixture(&root, 71);
+    let mut pid_map = HashMap::new();
+    pid_map.insert(fixture.process_id, std::process::id());
+    let adapter = WindowsPlatformKillAdapter::new(pid_map);
+
+    assert!(matches!(
+        adapter.signal_platform_kill(fixture.process_id, fixture.process_generation),
+        Err(PlatformKillAdapterError::Platform(
+            "windows platform kill adapter unavailable on non-windows"
+        ))
+    ));
+}
+
+#[test]
+#[cfg(not(windows))]
+fn windows_platform_kill_adapter_stub_rejects_via_authority_path() {
+    let root = TestRoot::new("windows-authority-stub");
+    let fixture = open_fixture(&root, 72);
+    let mut pid_map = HashMap::new();
+    pid_map.insert(fixture.process_id, std::process::id());
+    let adapter = WindowsPlatformKillAdapter::new(pid_map);
+
+    assert!(matches!(
+        fixture.authority.request_platform_kill(
+            kill_request(&fixture, IdempotencyKey::from_bytes([0x72; 16])),
+            &adapter,
+        ),
+        Err(ProcessAuthorityError::PlatformKillAdapter(
+            PlatformKillAdapterError::Platform(
+                "windows platform kill adapter unavailable on non-windows"
+            )
+        ))
+    ));
+}
+
+#[test]
+#[cfg(windows)]
+fn windows_platform_kill_adapter_missing_map_entry_returns_platform_error() {
+    let process_id = ProcessId::from_bytes([0x77; 16]);
+    let adapter = WindowsPlatformKillAdapter::new(HashMap::new());
+
+    assert!(matches!(
+        adapter.signal_platform_kill(process_id, Generation::INITIAL),
+        Err(PlatformKillAdapterError::Platform(
+            "os pid mapping not found for process id"
+        ))
+    ));
 }

@@ -2,7 +2,8 @@
 //!
 //! Contract tests use [`StubPlatformKillAdapter`] or [`NoopPlatformKillAdapter`].
 //! Unix hosts may inject [`PosixPlatformKillAdapter`] with an explicit
-//! `ProcessId` → OS pid map when signaling real child processes.
+//! `ProcessId` → OS pid map when signaling real child processes. Windows
+//! hosts may inject [`WindowsPlatformKillAdapter`] with the same map shape.
 
 use std::collections::HashMap;
 use std::error::Error;
@@ -119,9 +120,12 @@ impl PlatformKillAdapter for PosixPlatformKillAdapter {
         use nix::sys::signal::{Signal, kill};
         use nix::unistd::Pid;
 
-        let os_pid = self.pid_map.get(&process_id).ok_or(
-            PlatformKillAdapterError::Platform("os pid mapping not found for process id"),
-        )?;
+        let os_pid = self
+            .pid_map
+            .get(&process_id)
+            .ok_or(PlatformKillAdapterError::Platform(
+                "os pid mapping not found for process id",
+            ))?;
         match kill(Pid::from_raw((*os_pid).cast_signed()), Signal::SIGTERM) {
             Ok(()) => Ok(PlatformKillAdapterOutcome::Signaled),
             Err(Errno::ESRCH) => Ok(PlatformKillAdapterOutcome::AlreadyTerminated),
@@ -141,6 +145,79 @@ impl PlatformKillAdapter for PosixPlatformKillAdapter {
     ) -> Result<PlatformKillAdapterOutcome, PlatformKillAdapterError> {
         Err(PlatformKillAdapterError::Platform(
             "posix platform kill adapter unavailable on windows",
+        ))
+    }
+}
+
+/// Windows adapter that signals real OS processes via `TerminateProcess`.
+///
+/// NLOS [`ProcessId`] values are authority-assigned identifiers; callers must
+/// inject the host pid mapping explicitly (typically from a process supervisor).
+/// The workspace forbids `unsafe`, so this adapter uses `taskkill /F` (which
+/// invokes `TerminateProcess` under the hood) rather than binding Win32
+/// directly.
+#[derive(Debug)]
+pub struct WindowsPlatformKillAdapter {
+    pid_map: HashMap<ProcessId, u32>,
+}
+
+impl WindowsPlatformKillAdapter {
+    /// Creates an adapter backed by the supplied `ProcessId` → OS pid map.
+    #[must_use]
+    pub fn new(pid_map: HashMap<ProcessId, u32>) -> Self {
+        Self { pid_map }
+    }
+}
+
+#[cfg(windows)]
+impl PlatformKillAdapter for WindowsPlatformKillAdapter {
+    fn signal_platform_kill(
+        &self,
+        process_id: ProcessId,
+        _process_generation: Generation,
+    ) -> Result<PlatformKillAdapterOutcome, PlatformKillAdapterError> {
+        let os_pid = self
+            .pid_map
+            .get(&process_id)
+            .ok_or(PlatformKillAdapterError::Platform(
+                "os pid mapping not found for process id",
+            ))?;
+
+        let output = std::process::Command::new("taskkill")
+            .args(["/PID", &os_pid.to_string(), "/F", "/T"])
+            .output()
+            .map_err(|_| {
+                PlatformKillAdapterError::Platform("taskkill spawn failed for mapped os pid")
+            })?;
+
+        if output.status.success() {
+            return Ok(PlatformKillAdapterOutcome::Signaled);
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if output.status.code() == Some(128)
+            || stderr.contains("not found")
+            || stderr.contains("ERROR: The process") && stderr.contains("not found")
+        {
+            return Ok(PlatformKillAdapterOutcome::AlreadyTerminated);
+        }
+
+        Err(PlatformKillAdapterError::Platform(
+            "TerminateProcess equivalent failed for mapped os pid",
+        ))
+    }
+}
+
+#[cfg(not(windows))]
+impl PlatformKillAdapter for WindowsPlatformKillAdapter {
+    fn signal_platform_kill(
+        &self,
+        _process_id: ProcessId,
+        _process_generation: Generation,
+    ) -> Result<PlatformKillAdapterOutcome, PlatformKillAdapterError> {
+        let _ = &self.pid_map;
+        Err(PlatformKillAdapterError::Platform(
+            "windows platform kill adapter unavailable on non-windows",
         ))
     }
 }

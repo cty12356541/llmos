@@ -75,6 +75,21 @@ cargo fmt -p nlos-process -- --check → 通过
 
 - **仍 PARTIAL_PASS**：Windows 真 OS kill、supervisor 自动 pid 映射、runtime kill receipt 消费、Activation meter 联动、跨平台 fault matrix 未做；不等同 ROAD-B-006 整体达成。
 
+## 9. Windows platform kill adapter 最小前缀（2026-09-10 追加，W21-P）
+
+- Owner：`nlos-process`（`WindowsPlatformKillAdapter` + 非 Windows stub 测试）
+- **实现**：`WindowsPlatformKillAdapter` 接受 caller 注入的 `HashMap<ProcessId, u32>`（NLOS ProcessId ≠ OS pid）；Windows 上经 `taskkill /F /T` 发出 `TerminateProcess` 等价信号（工作区 forbid unsafe 故不直接绑定 `OpenProcess`/`TerminateProcess`），进程不存在 → `AlreadyTerminated`、成功 → `Signaled`；缺失 map 项 → `Platform` 错误；非 Windows cfg 返回 `Platform` 错误（镜像 `PosixPlatformKillAdapter` 在 Windows 上的 stub 分派）。
+- **验证**：
+
+```text
+cargo test -p nlos-process
+  → 25 passed / 0 failed（+2 platform_kill Windows stub；2026-09-10 W21-P）
+cargo clippy -p nlos-process --all-targets -- -D warnings → 0 warning
+cargo fmt -p nlos-process -- --check → 通过
+```
+
+- **仍 PARTIAL_PASS**：Windows 真 OS kill 集成测试（需 Windows host）、supervisor 自动 pid 映射、runtime kill receipt 消费、Activation meter 联动、跨平台 fault matrix 未做；不等同 ROAD-B-006 整体达成。
+
 ## 4. Runtime 侧 terminal 门（2026-09-05 追加，W15-P）
 
 - Owner：`nlos-runtime-tokio`（`src/replay.rs`、`src/snapshot.rs` + `tests/process_crash_propagation.rs`）
