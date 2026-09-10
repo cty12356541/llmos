@@ -256,6 +256,22 @@ impl FiberRecord {
         }
     }
 
+    /// Terminal transition that writes `elapsed_wall` and closes the open
+    /// metering phase in one critical section at the caller-supplied
+    /// `finished_at`; a separate terminal timestamp could close the final
+    /// segment past the wall interval's endpoint and break the
+    /// `active_cpu <= elapsed_wall` invariant.
+    fn finish_terminal(&self, state: FiberState, started_at: Instant, finished_at: Instant) {
+        let exit = fiber_exit_from_state(state);
+        {
+            let mut usage = lock_unpoisoned(&self.usage);
+            usage.usage.elapsed_wall = finished_at.saturating_duration_since(started_at);
+            usage.finalize(finished_at);
+        }
+        *lock_unpoisoned(&self.state) = state;
+        self.finish(exit);
+    }
+
     fn join(&self) -> FiberExit {
         let mut terminal = lock_unpoisoned(&self.terminal);
         while let TerminalOutcome::Pending = *terminal {
@@ -667,10 +683,6 @@ async fn run_fiber(
     };
 
     let finished_at = Instant::now();
-    {
-        let mut usage = lock_unpoisoned(&record.usage);
-        usage.usage.elapsed_wall = finished_at.saturating_duration_since(started_at);
-    }
     // The terminal transition and the wait-registry purges share one critical
     // section, so a wake either observes the live fiber (and hands off) or the
     // terminal state (and reports `NotWaiting`), never an orphaned buffer.
@@ -678,8 +690,7 @@ async fn run_fiber(
     // the terminated fiber generation, resolving their waits as `Cancelled`.
     let mut waits = lock_unpoisoned(&inner.waits);
     let mut channel_waits = lock_unpoisoned(&inner.channel_waits);
-    record.set_state(state);
-    record.finish(fiber_exit_from_state(state));
+    record.finish_terminal(state, started_at, finished_at);
     waits.retain(|key, _entry| !key.for_fiber(spec.fiber_id, spec.fiber_generation));
     channel_waits.retain(|key, _entry| !key.for_fiber(spec.fiber_id, spec.fiber_generation));
 }

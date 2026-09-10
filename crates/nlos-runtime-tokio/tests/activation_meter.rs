@@ -138,6 +138,41 @@ async fn compute_fiber_records_active_cpu_against_elapsed_wall() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn terminal_metering_keeps_active_cpu_bounded_by_elapsed_wall_under_stress() {
+    let runtime = runtime(8);
+    let scope = CancellationScopeId::from_bytes(id_bytes(33));
+
+    for round in 0..40 {
+        let handle = runtime
+            .spawn_fiber(
+                fiber_spec(round, scope),
+                Box::pin(async {
+                    let start = Instant::now();
+                    let mut acc = 0_u64;
+                    while start.elapsed() < Duration::from_millis(5) {
+                        acc = acc.wrapping_add(1);
+                    }
+                    let _ = acc;
+                    FiberExit::Completed
+                }),
+            )
+            .expect("spawn");
+
+        wait_for_state(&runtime, handle, FiberState::Completed).await;
+        let usage = runtime.activation_usage(handle).expect("usage");
+
+        assert!(
+            usage.active_cpu <= usage.elapsed_wall,
+            "round {round}: active_cpu={:?} exceeded elapsed_wall={:?}",
+            usage.active_cpu,
+            usage.elapsed_wall
+        );
+        assert_eq!(usage.external_wait, Duration::ZERO);
+        runtime.join_fiber(handle).expect("join");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn join_then_activation_usage_readback_is_stable() {
     let runtime = runtime(2);
     let scope = CancellationScopeId::from_bytes(id_bytes(32));

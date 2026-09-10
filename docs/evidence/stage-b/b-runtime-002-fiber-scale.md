@@ -487,3 +487,11 @@ cargo fmt -p nlos-runtime-tokio -- --check
 - **复现统计**：隔离复跑 3 次 → 1 failed / 2 passed；第二段全仓补跑中 nlos-runtime-tokio 整 crate（含该测试）通过。负载下与空载下均可触发，非确定性。
 - **初步归因（未修）**：终态 `elapsed_wall` 时间戳与最后一段 Running 退出的 `active_cpu` 累计时间戳为分离的 `Instant::now()` 调用，调度抖动下区间可倒挂。W14-M（commit `c3b2a10`）先在行为，非 W21-006 引入（该车道只新增只读聚合读，未触碰累计路径）。
 - **处置**：不改计量语义（需专门车道处理终态时间戳统一）；如实登记，根因待修。
+
+#### 6.13.1 根因修复（2026-09-10 同日收口）
+
+- **根因确认**：`run_fiber` 中 `finished_at`（写 `elapsed_wall`）→ 抢 `inner.waits`/`inner.channel_waits` 两锁 → `set_state(terminal)` 内部另取更晚的 `Instant::now()` 调 `finalize`，最后一段 Running 以 `now₂ > finished_at` 闭合，`active_cpu` 越界（实测越界 42ns–416ns，恰为锁窗口差）。
+- **修复（最小、单点）**：新增 `FiberRecord::finish_terminal(state, started_at, finished_at)` —— `elapsed_wall` 写入与 `finalize(finished_at)` 在**同一临界区、同一时间戳**完成（顺带消除"state 已 terminal 但 metering 未闭合"中间态），`run_fiber` 终态路径改用；`set_state` 的 Running 路径不变。
+- **红→绿证据**：新增压力回归 `terminal_metering_keeps_active_cpu_bounded_by_elapsed_wall_under_stress`（40 × 5ms 忙循环 fiber）——旧代码 **6/6 轮 FAILED**（`active_cpu=5.008208ms > elapsed_wall=5.007792ms` 等）；修复后 **10/10 轮 passed**；原 flaky 测试隔离复跑 5/5 passed。
+- **验证门（macOS arm64，2026-09-10）**：`cargo test -p nlos-runtime-tokio` → 55 passed / 0 failed；`cargo clippy -p nlos-runtime-tokio --all-targets -- -D warnings` → 0 warning；`cargo fmt -p nlos-runtime-tokio -- --check` → 通过。
+- **不变量恢复依据（构造性）**：所有计量段闭合 ≤ `finished_at`、首段开启 ≥ `started_at`、同一单调钟 saturating 运算，故 `active_cpu ≤ elapsed_wall` 恒成立。
