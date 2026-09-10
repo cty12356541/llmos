@@ -16,6 +16,7 @@ use tokio::runtime::Handle;
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 
 mod channel_wait;
+mod metrics;
 mod pump;
 mod replay;
 mod snapshot;
@@ -95,8 +96,10 @@ pub enum FiberLifecyclePhase {
 
 /// Read-side aggregate of lifecycle metering dimensions across live fibers.
 ///
-/// Prefix inspect surface linking `backpressure_wait` and `suspended` metering;
-/// not a full `OpenMetrics` export.
+/// Prefix inspect surface linking `backpressure_wait` and `suspended`
+/// metering; [`Self::to_open_metrics_text`] renders a minimal `OpenMetrics` /
+/// Prometheus text exposition prefix, not a full export (no scrape
+/// endpoint, auth, or retention).
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct LifecycleMeterAggregate {
     pub total_backpressure_wait: Duration,

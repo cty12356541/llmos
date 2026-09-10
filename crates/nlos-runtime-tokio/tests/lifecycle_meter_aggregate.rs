@@ -7,7 +7,7 @@ use std::future::pending;
 use std::time::Duration;
 
 use nlos_runtime::{FiberSpec, RuntimeAdapter};
-use nlos_runtime_tokio::{TokioRuntimeAdapter, TokioRuntimeConfig};
+use nlos_runtime_tokio::{LifecycleMeterAggregate, TokioRuntimeAdapter, TokioRuntimeConfig};
 use nlos_types::{
     AgentInstanceId, CancellationScopeId, ExecutionFiberId, Generation, ProcessId, ResourceGroupId,
     SchedulerDomainId,
@@ -131,4 +131,89 @@ async fn aggregate_on_empty_registry_is_zero() {
     assert_eq!(aggregate.sampled_fibers, 0);
     assert_eq!(aggregate.total_backpressure_wait, Duration::ZERO);
     assert_eq!(aggregate.total_suspended, Duration::ZERO);
+}
+
+// Spec-pinned nanosecond input: `1_500_000_000 ns → "1.5"` is exactly the
+// conversion under test, so the larger-unit suggestion would defeat the test.
+#[allow(clippy::duration_suboptimal_units)]
+#[test]
+fn open_metrics_text_matches_expected_format_snapshot() {
+    // Given: a known aggregate (pure function — no runtime needed)
+    let aggregate = LifecycleMeterAggregate {
+        total_backpressure_wait: Duration::from_nanos(1_500_000_000),
+        total_suspended: Duration::from_millis(250),
+        sampled_fibers: 3,
+    };
+    // When: rendering to OpenMetrics text
+    let text = aggregate.to_open_metrics_text();
+    // Then: exact snapshot, HELP before TYPE before one sample per metric
+    assert_eq!(
+        text,
+        concat!(
+            "# HELP nlos_fiber_backpressure_wait_seconds_total Cumulative time live fibers spent in scheduler/admission backpressure wait.\n",
+            "# TYPE nlos_fiber_backpressure_wait_seconds_total counter\n",
+            "nlos_fiber_backpressure_wait_seconds_total 1.5\n",
+            "# HELP nlos_fiber_suspended_seconds_total Cumulative time live fibers spent cooperatively suspended.\n",
+            "# TYPE nlos_fiber_suspended_seconds_total counter\n",
+            "nlos_fiber_suspended_seconds_total 0.25\n",
+            "# HELP nlos_fiber_sampled Number of live fibers sampled by the latest lifecycle meter aggregate inspect.\n",
+            "# TYPE nlos_fiber_sampled gauge\n",
+            "nlos_fiber_sampled 3\n",
+        )
+    );
+}
+
+#[test]
+fn open_metrics_text_on_zero_aggregate_reports_zero_values() {
+    // Given: the zero aggregate (what an empty registry inspect yields)
+    let aggregate = LifecycleMeterAggregate::default();
+    // When: rendering to OpenMetrics text
+    let text = aggregate.to_open_metrics_text();
+    // Then: every sample reports 0
+    assert_eq!(
+        text,
+        concat!(
+            "# HELP nlos_fiber_backpressure_wait_seconds_total Cumulative time live fibers spent in scheduler/admission backpressure wait.\n",
+            "# TYPE nlos_fiber_backpressure_wait_seconds_total counter\n",
+            "nlos_fiber_backpressure_wait_seconds_total 0\n",
+            "# HELP nlos_fiber_suspended_seconds_total Cumulative time live fibers spent cooperatively suspended.\n",
+            "# TYPE nlos_fiber_suspended_seconds_total counter\n",
+            "nlos_fiber_suspended_seconds_total 0\n",
+            "# HELP nlos_fiber_sampled Number of live fibers sampled by the latest lifecycle meter aggregate inspect.\n",
+            "# TYPE nlos_fiber_sampled gauge\n",
+            "nlos_fiber_sampled 0\n",
+        )
+    );
+}
+
+// Spec-pinned nanosecond input: see the snapshot test above.
+#[allow(clippy::duration_suboptimal_units)]
+#[test]
+fn open_metrics_text_converts_durations_to_fractional_seconds() {
+    // Given: 1.5s of backpressure wait and 50ms of suspension in one aggregate
+    let aggregate = LifecycleMeterAggregate {
+        total_backpressure_wait: Duration::from_nanos(1_500_000_000),
+        total_suspended: Duration::from_millis(50),
+        sampled_fibers: 1,
+    };
+    // When: rendering to OpenMetrics text
+    let text = aggregate.to_open_metrics_text();
+    // Then: nanoseconds → shortest round-trip float seconds, no trailing zeros
+    assert!(text.contains("nlos_fiber_backpressure_wait_seconds_total 1.5\n"));
+    assert!(text.contains("nlos_fiber_suspended_seconds_total 0.05\n"));
+}
+
+#[test]
+fn open_metrics_text_preserves_nanosecond_and_large_second_precision() {
+    // Given: sub-microsecond wait and a five-digit second total in one aggregate
+    let aggregate = LifecycleMeterAggregate {
+        total_backpressure_wait: Duration::from_nanos(42),
+        total_suspended: Duration::from_secs(100_000),
+        sampled_fibers: 0,
+    };
+    // When: rendering to OpenMetrics text
+    let text = aggregate.to_open_metrics_text();
+    // Then: nanosecond precision survives; no scientific notation at scale
+    assert!(text.contains("nlos_fiber_backpressure_wait_seconds_total 0.000000042\n"));
+    assert!(text.contains("nlos_fiber_suspended_seconds_total 100000\n"));
 }

@@ -495,3 +495,51 @@ cargo fmt -p nlos-runtime-tokio -- --check
 - **红→绿证据**：新增压力回归 `terminal_metering_keeps_active_cpu_bounded_by_elapsed_wall_under_stress`（40 × 5ms 忙循环 fiber）——旧代码 **6/6 轮 FAILED**（`active_cpu=5.008208ms > elapsed_wall=5.007792ms` 等）；修复后 **10/10 轮 passed**；原 flaky 测试隔离复跑 5/5 passed。
 - **验证门（macOS arm64，2026-09-10）**：`cargo test -p nlos-runtime-tokio` → 55 passed / 0 failed；`cargo clippy -p nlos-runtime-tokio --all-targets -- -D warnings` → 0 warning；`cargo fmt -p nlos-runtime-tokio -- --check` → 通过。
 - **不变量恢复依据（构造性）**：所有计量段闭合 ≤ `finished_at`、首段开启 ≥ `started_at`、同一单调钟 saturating 运算，故 `active_cpu ≤ elapsed_wall` 恒成立。
+
+### 6.14 OpenMetrics text exposition 最小前缀（2026-09-11，W22-006）
+
+- Owner：`nlos-runtime-tokio`（新增 `src/metrics.rs` + `src/lib.rs` +1 `mod` 行 + `tests/lifecycle_meter_aggregate.rs` +4 测试）；base HEAD `d039cd0`。
+- 设计依据：§6.12.2 登记的「完整 OpenMetrics / Prometheus export」缺口之**最小前缀**——纯函数 `LifecycleMeterAggregate::to_open_metrics_text(&self) -> String`，无 I/O、无状态、无错误路径（故无 typed error）、无 unsafe、零新依赖（禁 prometheus crate，手写 exposition）。不做 scrape 端点/auth/retention，本片如实登记为 prefix。未触碰 `nlos-runtime` trait 与 `run_fiber`/metering 语义（c84c91a 终态修复不变量保持只读）。
+- **实现要点**：
+  - 每指标 `# HELP` → `# TYPE` → 单行无 label sample，输出以换行结尾；
+  - Duration 经 `as_secs_f64()` + Rust 最短往返浮点格式化（无尾随零、无科学计数法，如 `1_500_000_000 ns → 1.5`、`42 ns → 0.000000042`）；
+  - 不输出 OpenMetrics 专属 `# EOF` 终止符与 timestamp/exemplar，保持 Prometheus 0.0.4 文本格式兼容（OpenMetrics 解析器同样接受该文本体）。
+- **指标命名表**：
+
+  | Aggregate 字段           | 指标名                                        | 类型    |
+  |--------------------------|-----------------------------------------------|---------|
+  | `total_backpressure_wait`| `nlos_fiber_backpressure_wait_seconds_total`  | counter |
+  | `total_suspended`        | `nlos_fiber_suspended_seconds_total`          | counter |
+  | `sampled_fibers`         | `nlos_fiber_sampled`                          | gauge   |
+
+- **新增测试**（并入 `lifecycle_meter_aggregate.rs`，纯函数测试无 runtime 开销）：
+  1. `open_metrics_text_matches_expected_format_snapshot` — 含 HELP/TYPE 行的完整快照（1.5s/250ms/3 fiber）；
+  2. `open_metrics_text_on_zero_aggregate_reports_zero_values` — 零值 aggregate（空 registry 等价态）全 0 输出；
+  3. `open_metrics_text_converts_durations_to_fractional_seconds` — `1_500_000_000 ns → "1.5"`、`50 ms → "0.05"`；
+  4. `open_metrics_text_preserves_nanosecond_and_large_second_precision` — `42 ns → "0.000000042"`、`100_000 s → "100000"`（无科学计数法）。
+- **pedantic lint 修复记录**：`clippy::doc_markdown` ×5（`OpenMetrics` 加反引号）；`clippy::duration_suboptimal_units` ×2（快照/换算测试对 `from_nanos(1_500_000_000)` scoped `#[allow]` + 理由注释——纳秒精确输入正是被测转换，lint 的更大单位建议会破坏测试意图，属误报豁免）。
+
+#### 6.14.1 验证门实测
+
+- 验证方式：先在**隔离 worktree**（base `d039cd0` + 仅本车道写集）实跑四门——因共享树当时有并行车道 `nlos-process` WIP 中间态导致依赖编译失败（非本车道写集，未触碰）；其恢复后共享树复跑，两处结果一致：
+
+```text
+cargo test -p nlos-runtime-tokio --test lifecycle_meter_aggregate
+  → 6 passed / 0 failed（2026-09-11 W22-006，worktree 与共享树一致，0.05s）
+cargo test -p nlos-runtime-tokio --test lifecycle_phase
+  → 4 passed / 0 failed（2026-09-11 W22-006，worktree 与共享树一致，0.05s）
+cargo clippy -p nlos-runtime-tokio --all-targets -- -D warnings
+  → exit 0（stable，2026-09-11 W22-006 共享树 1m08s；worktree 首跑暴露上述 7 处 pedantic 违规已全部修复）
+cargo fmt -p nlos-runtime-tokio -- --check
+  → 通过（2026-09-11 W22-006，worktree 与共享树一致）
+```
+
+#### 6.14.2 缺口更新
+
+- **勾销**：§6.12.2 中「完整 OpenMetrics / Prometheus export」缺口的**文本 exposition 前缀**部分 → 本 §6.14。
+- **如实保留（ROAD-B-006 剩余，Claim 维持 PARTIAL_PASS）**：
+  - scrape HTTP 端点 / auth / retention / label 维度（本片明确不做）；
+  - fiber 体内自动触发背压/挂起（scheduler 边界 hook 已覆盖，admission 集成未做）；
+  - 100K 规模级 cancel 探针；
+  - runtime 侧 process crash 传播联动；
+  - 未声称 ROAD-B-006 整体达成。
