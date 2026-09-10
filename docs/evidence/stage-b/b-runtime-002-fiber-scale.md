@@ -480,3 +480,10 @@ cargo fmt -p nlos-runtime-tokio -- --check
   - 100K 规模级 cancel 探针；
   - runtime 侧 process crash 传播联动；
   - 未声称 ROAD-B-006 整体达成。
+
+### 6.13 已知 flaky：active_cpu/elapsed_wall 终态竞态（2026-09-10 收尾复跑发现）
+
+- **现象**：`cargo test --workspace`（2026-09-10 第一段）中 `activation_meter::compute_fiber_records_active_cpu_against_elapsed_wall` 间歇失败于 `assert!(usage.active_cpu <= usage.elapsed_wall)`（activation_meter.rs:136）。
+- **复现统计**：隔离复跑 3 次 → 1 failed / 2 passed；第二段全仓补跑中 nlos-runtime-tokio 整 crate（含该测试）通过。负载下与空载下均可触发，非确定性。
+- **初步归因（未修）**：终态 `elapsed_wall` 时间戳与最后一段 Running 退出的 `active_cpu` 累计时间戳为分离的 `Instant::now()` 调用，调度抖动下区间可倒挂。W14-M（commit `c3b2a10`）先在行为，非 W21-006 引入（该车道只新增只读聚合读，未触碰累计路径）。
+- **处置**：不改计量语义（需专门车道处理终态时间戳统一）；如实登记，根因待修。
