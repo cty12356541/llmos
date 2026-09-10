@@ -8,6 +8,7 @@
 mod model;
 mod platform_kill;
 mod schema;
+mod supervisor_pid;
 
 use std::error::Error;
 use std::fmt;
@@ -39,6 +40,10 @@ pub use platform_kill::{
     NoopPlatformKillAdapter, PlatformKillAdapter, PlatformKillAdapterError,
     PlatformKillAdapterOutcome, PosixPlatformKillAdapter, StubPlatformKillAdapter,
     WindowsPlatformKillAdapter,
+};
+pub use supervisor_pid::{
+    RegisterSupervisorPidRequest, SupervisorPidDecision, SupervisorPidEntry, SupervisorPidRegistry,
+    SupervisorPidRegistryError,
 };
 
 #[derive(Debug)]

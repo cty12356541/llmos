@@ -90,6 +90,24 @@ cargo fmt -p nlos-process -- --check → 通过
 
 - **仍 PARTIAL_PASS**：Windows 真 OS kill 集成测试（需 Windows host）、supervisor 自动 pid 映射、runtime kill receipt 消费、Activation meter 联动、跨平台 fault matrix 未做；不等同 ROAD-B-006 整体达成。
 
+## 10. Supervisor pid registry 最小前缀（2026-09-11 追加，W22-P）
+
+- Owner：`nlos-process`（`src/supervisor_pid.rs` + `SupervisorPidRegistry`；base HEAD `d039cd0b`）
+- **写集**：新增 `SupervisorPidEntry` / `RegisterSupervisorPidRequest` / `SupervisorPidDecision`（`Registered`/`Replayed`/`Superseded`）/ `SupervisorPidRegistryError` / `SupervisorPidRegistry`（`register` / `unregister` / `lookup` / `pid_map`，`Mutex<HashMap<ProcessId, SupervisorPidEntry>>` 纯内存）；`lib.rs` 仅加 `mod` + `pub use` 导出。不接 OS、不碰 kill 调用、无新依赖、无 unsafe。
+- **语义决策（supersede + 单调代次栅栏，非纯拒绝）**：同 `(process_id, generation, os_pid)` 精确重放 → `Replayed`（保留原 `registered_at_ms`，不覆写）；同代次异 OS pid → `OsPidRebind` fail-closed（一个 process 代次只拥有一个 OS pid）；严格更新代次 → `Superseded` 显式收编（返回 previous + current）；严格旧代次 → `StaleProcessGeneration` fail-closed 零副作用；`unregister(process_id, expected_generation)` 只删当前代次匹配项，已缺席为幂等 `false`（镜像 `gc_fiber_entry_snapshot` 先例）。**理由**：`restore_process` 推进代次后 supervisor 必须能重挂新 OS pid，纯拒绝会让 registry 在 restore 后永久不可写；ProcessAuthority 的代次语义本就是「head 单调前进 + stale fence fail-closed」，supersede-with-monotonic-fence 是同一语义家族。`lookup` 未命中 → `ProcessNotRegistered(ProcessId)` typed 错误；`pid_map()` 快照即 `PosixPlatformKillAdapter::new` / `WindowsPlatformKillAdapter::new` 接受的 `HashMap<ProcessId, u32>` 形状，可直接喂给二者。
+- **验证**（并行车道占用共享 target 构建锁，故以 `CARGO_TARGET_DIR` 隔离目录实跑；命令与语义不变）：
+
+```text
+cargo test -p nlos-process
+  → 35 passed / 0 failed（lib 2 + fiber_cancel_propagation 3 + fiber_incarnation 3
+    + platform_kill 8 + process_authority 6 + process_crash_propagation 5
+    + supervisor_pid_registry 8（新增集成）+ lib 单元 2（新增）；2026-09-11 W22-P）
+cargo clippy -p nlos-process --all-targets -- -D warnings → 0 warning
+cargo fmt -p nlos-process -- --check → 通过
+```
+
+- **仍 PARTIAL_PASS**：supervisor 自动 pid 发现（spawn 时自动捕获并注册、与 authority binding 联动）、Windows 真 OS kill 集成测试、runtime kill receipt 消费、Activation meter 联动、跨平台 fault matrix 未做；不等同 ROAD-B-006 整体达成。
+
 ## 4. Runtime 侧 terminal 门（2026-09-05 追加，W15-P）
 
 - Owner：`nlos-runtime-tokio`（`src/replay.rs`、`src/snapshot.rs` + `tests/process_crash_propagation.rs`）
