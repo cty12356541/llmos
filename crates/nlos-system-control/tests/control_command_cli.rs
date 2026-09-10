@@ -945,6 +945,19 @@ async fn nl_sentences_compile_to_the_same_socket_receipts_as_direct_commands() {
         None,
     )
     .await;
+    let task_status = parse_nl_command(&format!("task status {plan_hex}")).unwrap();
+    assert_eq!(task_status, direct_task);
+    let zh_task_status = parse_nl_command(&format!("任务 状态 {plan_hex}")).unwrap();
+    assert_eq!(zh_task_status, direct_task);
+    assert_nl_socket_and_in_process_parity(
+        &socket_path,
+        &control,
+        &direct_task,
+        &[task_status, zh_task_status],
+        None,
+        None,
+    )
+    .await;
     let task_receipt = dispatch_in_process(
         &control,
         &direct_task,
@@ -1078,6 +1091,19 @@ async fn nl_sentences_compile_to_the_same_socket_receipts_as_direct_commands() {
         Some(&resource_stub),
     )
     .await;
+    let resource_status = parse_nl_command(&format!("resource status {reservation_hex}")).unwrap();
+    assert_eq!(resource_status, direct_resource);
+    let zh_resource_status = parse_nl_command(&format!("资源 状态 {reservation_hex}")).unwrap();
+    assert_eq!(zh_resource_status, direct_resource);
+    assert_nl_socket_and_in_process_parity(
+        &socket_path,
+        &control,
+        &direct_resource,
+        &[resource_status, zh_resource_status],
+        None,
+        Some(&resource_stub),
+    )
+    .await;
     let resource_receipt = dispatch_in_process(
         &control,
         &direct_resource,
@@ -1139,6 +1165,10 @@ async fn nl_sentences_compile_to_the_same_socket_receipts_as_direct_commands() {
         "pause everything",
         "show health now",
         "cancel alert a1b2c3d4e5f60718293a4b5c6d7e8f90 expecting 1",
+        "task status now",
+        "任务状态了",
+        "resource status now",
+        "资源状态了",
     ]);
 
     server.abort();

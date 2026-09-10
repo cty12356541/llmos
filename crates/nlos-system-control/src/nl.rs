@@ -24,16 +24,18 @@
 //! export metrics | show metrics | get metrics | metrics
 //!   | 导出指标 | 导出 指标 | 指标
 //! inspect task <32-hex> | check task <32-hex> | show task <32-hex>
-//!   | get task <32-hex> | status task <32-hex>
+//!   | get task <32-hex> | status task <32-hex> | task status <32-hex>
 //!   | 查看任务 <32位十六进制> | 查看 任务 <32位十六进制>
 //!   | 检查任务 <32位十六进制> | 检查 任务 <32位十六进制>
+//!   | 任务状态 <32位十六进制> | 任务 状态 <32位十六进制>
 //! inspect process <32-hex> | check process <32-hex> | show process <32-hex>
 //!   | get process <32-hex> | status process <32-hex>
 //!   | 检查进程 <32位十六进制> | 查看进程 <32位十六进制> | 查看 进程 <32位十六进制>
 //! inspect resource <32-hex> | check resource <32-hex> | show resource <32-hex>
-//!   | get resource <32-hex> | status resource <32-hex>
+//!   | get resource <32-hex> | status resource <32-hex> | resource status <32-hex>
 //!   | 查看资源 <32位十六进制> | 查看 资源 <32位十六进制>
 //!   | 检查资源 <32位十六进制> | 检查 资源 <32位十六进制>
+//!   | 资源状态 <32位十六进制> | 资源 状态 <32位十六进制>
 //! acknowledge alert <32-hex> expecting <n>
 //!   | ack alert <32-hex> expecting <n> | confirm alert <32-hex> expecting <n>
 //!   | 确认告警 <32位十六进制> 期望 <n> | 确认 告警 <32位十六进制> 期望 <n>
@@ -221,6 +223,14 @@ fn try_parse_inspect_task(tokens: &[&str]) -> Option<Result<ControlCommand, Cont
         ["查看任务" | "检查任务", plan] | ["查看" | "检查", "任务", plan] => {
             Some(parse_hex_id(plan).map(|plan_id| ControlCommand::InspectTask { plan_id }))
         }
+        [first, second, plan]
+            if first.eq_ignore_ascii_case("task") && second.eq_ignore_ascii_case("status") =>
+        {
+            Some(parse_hex_id(plan).map(|plan_id| ControlCommand::InspectTask { plan_id }))
+        }
+        ["任务状态", plan] | ["任务", "状态", plan] => {
+            Some(parse_hex_id(plan).map(|plan_id| ControlCommand::InspectTask { plan_id }))
+        }
         _ => None,
     }
 }
@@ -267,6 +277,18 @@ fn try_parse_inspect_resource(tokens: &[&str]) -> Option<Result<ControlCommand, 
                     .map(|reservation_id| ControlCommand::InspectResource { reservation_id }),
             )
         }
+        [first, second, reservation_id]
+            if first.eq_ignore_ascii_case("resource") && second.eq_ignore_ascii_case("status") =>
+        {
+            Some(
+                parse_hex_id(reservation_id)
+                    .map(|reservation_id| ControlCommand::InspectResource { reservation_id }),
+            )
+        }
+        ["资源状态", reservation_id] | ["资源", "状态", reservation_id] => Some(
+            parse_hex_id(reservation_id)
+                .map(|reservation_id| ControlCommand::InspectResource { reservation_id }),
+        ),
         [head, second, ..]
             if (is_read_verb(head) && second.eq_ignore_ascii_case("resource"))
                 || *second == "资源" =>
@@ -430,6 +452,8 @@ mod tests {
             "show task A1B2C3D4E5F60718293A4B5C6D7E8F90",
             "get task a1b2c3d4e5f60718293a4b5c6d7e8f90",
             "status task a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "task status a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "TASK STATUS A1B2C3D4E5F60718293A4B5C6D7E8F90",
         ] {
             assert_eq!(
                 parse_nl_command(sentence).unwrap(),
@@ -447,6 +471,8 @@ mod tests {
             "查看 任务 a1b2c3d4e5f60718293a4b5c6d7e8f90",
             "检查任务 a1b2c3d4e5f60718293a4b5c6d7e8f90",
             "检查 任务 a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "任务状态 a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "任务 状态 a1b2c3d4e5f60718293a4b5c6d7e8f90",
         ] {
             assert_eq!(
                 parse_nl_command(sentence).unwrap(),
@@ -503,6 +529,8 @@ mod tests {
             "show resource A1B2C3D4E5F60718293A4B5C6D7E8F90",
             "get resource a1b2c3d4e5f60718293a4b5c6d7e8f90",
             "status resource a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "resource status a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "RESOURCE STATUS A1B2C3D4E5F60718293A4B5C6D7E8F90",
         ] {
             assert_eq!(
                 parse_nl_command(sentence).unwrap(),
@@ -522,6 +550,8 @@ mod tests {
             "查看 资源 a1b2c3d4e5f60718293a4b5c6d7e8f90",
             "检查资源 a1b2c3d4e5f60718293a4b5c6d7e8f90",
             "检查 资源 a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "资源状态 a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "资源 状态 a1b2c3d4e5f60718293a4b5c6d7e8f90",
         ] {
             assert_eq!(
                 parse_nl_command(sentence).unwrap(),
@@ -634,12 +664,22 @@ mod tests {
             "inspect tasks a1b2c3d4e5f60718293a4b5c6d7e8f90",
             "inspect task 1234",
             "inspect task zz313233343536373839303132333435",
+            "task status",
+            "task status now",
+            "任务状态",
+            "任务 状态",
+            "任务状态了",
             "inspect process",
             "inspect processes a1b2c3d4e5f60718293a4b5c6d7e8f90",
             "inspect process 1234",
             "inspect resource",
             "inspect resources a1b2c3d4e5f60718293a4b5c6d7e8f90",
             "inspect resource 1234",
+            "resource status",
+            "resource status now",
+            "资源状态",
+            "资源 状态",
+            "资源状态了",
             "查看资源",
             "查看 资源",
             "检查资源",

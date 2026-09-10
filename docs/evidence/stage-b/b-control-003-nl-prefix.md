@@ -278,3 +278,31 @@
 1. **同义词仍为字面白名单**：`health status now`（尾部垃圾）、`健康状态了` 等近邻形态继续 typed 拒绝。
 2. **无 pause/cancel ControlCommand**：NL 面不能编译暂停/取消类意图。
 3. **ROAD-B-005 仍 PARTIAL**：Trusted GUI 编译与确认面未实现。
+
+## W22-005 增量：NL inspect status 同义词白名单扩展（2026-09-11）
+
+> 状态：`PARTIAL_PASS`（单节点本地；ROAD-B-005 仍 PARTIAL——GUI 未接）
+>
+> 基线 HEAD：`d039cd0`　　写集：`crates/nlos-system-control/**`、`docs/evidence/stage-b/b-control-003-nl-prefix.md`
+
+### 已实现事实
+
+1. **additive 同义词编译**（`src/nl.rs`，零新 `ControlCommand` 变体）：在 InspectTask/InspectResource 白名单上追加 fail-closed EN/ZH 变体（镜像 W21-005 的名词优先倒装 + ZH 名词复合形态）：
+   - **InspectTask**：`task status <32-hex>`（名词优先倒装，ASCII 大小写不敏感）；`任务状态 <32位十六进制>` / `任务 状态 <32位十六进制>`（与 `健康状态` / `健康 状态` 形态对齐）。
+   - **InspectResource**：`resource status <32-hex>`；`资源状态 <32位十六进制>` / `资源 状态 <32位十六进制>`。
+2. **pause/cancel 命令面**：当前 `ControlCommand` 无 pause/cancel 变体——**无命令面，未添加**；`pause everything` / `cancel alert …` 继续 typed 拒绝。
+3. **等价路径证明**（`tests/control_command_cli.rs`）：`task status <hex>` / `任务 状态 <hex>` 对 InspectTask、`resource status <hex>` / `资源 状态 <hex>` 对 InspectResource（wired stub inspector 面）——NL 解析→`dispatch_over_socket` 与直接构造 **逐字节 receipt 相等**；语法外 `task status now` / `任务状态了` / `resource status now` / `资源状态了` 在 dispatch 前 typed 拒绝。
+
+### 验证
+
+验证环境：macOS（darwin，arm64），基线 HEAD `d039cd0`。并行车道对 `nlos-process`/`nlos-resource`/`nlos-task`/`b-process-003` 等存在未提交改动，均在本写集之外、未触碰、未纳入提交；共享 `target/` 构建锁被并行车道持续占用，本车道验证以独立 `CARGO_TARGET_DIR` 实跑（默认 `default = ["cli"]` 特性面，不含 `process`/`resource` optional 依赖编译）。
+
+- `cargo test -p nlos-system-control`：**59 passed / 0 failed**（lib 23——含 nl 14；bin 0；`control_command_cli` 4；`control_ipc_auth` 9；`metrics_export_contract` 3；`metrics_openmetrics_render` 7；`recovery_control` 7；`system_control_failure_mapping` 5；`windows_named_pipe` 0（macOS 目标）；doc-tests 1）。
+- `cargo clippy -p nlos-system-control --all-targets -- -D warnings`：通过（本 crate 零 warning）。
+- `cargo fmt -p nlos-system-control -- --check`：首次实跑 3 处违规（均在本车道新增行内：resource 新臂 guard 折行、ZH 新臂体折叠、集成测试 `let resource_status` 折行），`cargo fmt -p nlos-system-control` 修复后复跑通过。
+
+### 已知限制（增量）
+
+1. **同义词仍为字面白名单**：`task status`（缺 hex）、`task status now`（尾部垃圾）、`任务状态` / `任务 状态`（缺 hex）、`任务状态了`、`resource status`（缺 hex）、`resource status now`、`资源状态` / `资源 状态`（缺 hex）、`资源状态了` 等近邻形态继续 typed 拒绝。
+2. **无 pause/cancel ControlCommand**：NL 面不能编译暂停/取消类意图。
+3. **ROAD-B-005 仍 PARTIAL**：Trusted GUI 编译与确认面未实现。
