@@ -359,3 +359,39 @@ cargo clippy -p nlos-slice-k --all-targets -- -D warnings
 ### 13.4 剩余缺口（如实登记）
 
 - **与 §11.4/§12.4 一致**：无 UI Surface、无 spawn/kill、lifecycle 与 registration 无联动；demo 仍只演示单 binding 路径。
+
+## 14. install 自动 orphan GC 前缀（2026-09-11，W22-001）
+
+- **定位**：把 §10 的「uninstall 后显式 orphan GC」推进为「新 install 提交前自动扫描并回收既存 orphan」（ROAD-B-001 最小前缀）。install 路径（`install_verified_package` / `install_verified_package_by_id`）在 install authority 调用**之前**默认执行一次 install 域 orphan GC pass；带 `AutoOrphanGc::Disabled` 参数显式关闭。只复用既有 `ArtifactStore::collect_orphan_blobs`（B-ARTIFACT-004）语义，零复制粘贴；`nlos-application`/`nlos-artifact` 零改动（只读消费）。
+- **写集**：`crates/nlos-slice-k/src/package.rs`（`AutoOrphanGc` 枚举；两个 install 入口拆出 `*_with_gc` 变体，原入口委托 `Enabled`；GC pass 收敛为私有 `orphan_gc_pass` 复用；新增 `install_orphan_gc` install 域入口）、`src/lib.rs`（导出 `AutoOrphanGc`）、`tests/install_orphan_gc.rs`（新增 2 用例）、本 §。base HEAD `d039cd0`。
+
+### 14.1 实现要点
+
+| 要点 | 决策 | 语义 |
+|---|---|---|
+| 幂等 key 隔离 | install 域 pass 用 `seeded_key(seed, 21)`（时钟）/ `seeded_key(seed, 22)`（幂等键）；手动 GC（§10）保持 `19/20` 不变 | install-time pass 与手动 pass 各自 exactly-once，receipt 互不别名。若共用 19/20，demo STEP 09d 的手动 GC 会被 install 时的空收集 replay 吞掉（collected=0、孤儿残留），§10.2 输出与 W17 测试即被破坏——已核实 demo happy chain seed `0x2A` 与 STEP 09d 同 seed，故必须独立偏移 |
+| 触发时序 | install authority 调用前执行 pass；GC 保守引用集含 staged（任意状态），install 目标 payload blob 已有 metadata 行，不受影响 | 失败 fail-closed（GC 错误阻断 install，typed error 传播）；重试时 pass 幂等 replay 后 install 继续 |
+| 默认开启 / opt-out | 原入口 `install_verified_package(_by_id)` 委托 `*_with_gc(..., AutoOrphanGc::Enabled)`，全仓调用点（demo、既有测试）零改动即获得默认行为；`Disabled` 完全跳过 pass，不消耗 21/22 key | 旁路后按需调用 `install_orphan_gc(seed)` 首次为 `Collected`，证明 opt-out 真未跑过 |
+| receipt 读回 | `install_orphan_gc(seed)` 再次调用 → `Replayed` 逐字节返回 install 时落库的 `GcReceipt` | install-time 自动回收的 receipt 可持久读回（CLI/NL 读回路径同形） |
+| 复用 | 手动/install 两个入口共享私有 `orphan_gc_pass(clock_key, idempotency_key)`，`ArtifactStore::collect_orphan_blobs` 语义零改动 | 无 GC 语义复制；无 unsafe；无新依赖；typed `SliceKResult` 贯穿 |
+
+### 14.2 测试与断言要点
+
+- `install_auto_orphan_gc_by_default_collects_preexisting_orphans_and_replays_receipt`：植入 1 orphan → **无参数原入口** install（证明默认开启）→ orphan 文件删除、`payload_digest` blob 存活 → `install_orphan_gc` 读回 `Replayed` 且 `collected_digests == [orphan]`、`collected_count == 1` → 同 key `Enabled` install 重放 receipt 相等（install 幂等不被自动 GC 破坏）。
+- `install_with_orphan_gc_disabled_keeps_preexisting_orphans_and_pass_still_collects_on_demand`：植入 1 orphan → `AutoOrphanGc::Disabled` install → orphan 文件仍在、payload blob 存活 → `install_orphan_gc` 首次 `Collected`（证明 21/22 key 未被消耗）→ orphan 删除 → 再调 `Replayed` 同 receipt。
+
+### 14.3 验证门（base HEAD `d039cd0`，全实跑，定向 `-p` 命令）
+
+```text
+cargo test -p nlos-slice-k                    → 15 passed / 0 failed（end_to_end 3 + competing_attempts 4 + lifecycle_uninstall 3 + application_registrations 3 + install_orphan_gc 2；lib/doc-tests 0）
+cargo clippy -p nlos-slice-k --all-targets -- -D warnings  → exit 0，0 warning（58.59s Finished）
+cargo fmt -p nlos-slice-k -- --check           → exit 0，干净
+```
+
+过程记录：首次 `cargo test` 因并行车道 `nlos-process`/`nlos-task` WIP（共享工作区、非本车道写集）编译失败与 cargo build 目录锁竞争两次阻塞等待；待其自愈后本 crate 全门实跑通过，上表为最终实跑输出，非估算。
+
+### 14.4 剩余缺口（如实登记）
+
+- **自动 GC 仅覆盖 install 前既存 orphan**：install 之后产生的 orphan（如 crash 残留）仍无后台 sweep/open-time GC（与 §10.5 一致，登记后续 ROAD-B-001 车道）。
+- **`Disabled` 为逐调用参数**：无 runtime 级全局开关；未做 retention 策略、PKG-UPDATE-001 rollback（不变，维持 §10.5 登记）。
+- **GC 单写者纪律沿用 crate 约定**：slice 顺序流内无并发 `put_revision` 与 GC 重叠；并行调用方纪律由 `nlos-artifact` 文档约束，本切片未新增跨线程证明。

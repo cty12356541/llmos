@@ -21,7 +21,8 @@ use nlos_process::{
     CreateIsolationDomainRequest, ProcessBindingRecord, RegisterDelegatedProcessRequest,
 };
 use nlos_types::{
-    ArtifactId, Generation, PackageId, PrincipalId, ProcessId, TaskAttemptId, TaskId,
+    ArtifactId, Generation, IdempotencyKey, PackageId, PrincipalId, ProcessId, TaskAttemptId,
+    TaskId,
 };
 
 use crate::error::SliceKResult;
@@ -42,6 +43,18 @@ pub struct PublishedPackage {
     pub signed: SignedPackage,
     pub payload_artifact: ArtifactId,
     pub payload_digest: ContentDigest,
+}
+
+/// Install-time orphan-GC policy (W22-001): whether one install runs the
+/// install-scoped orphan-blob GC pass ([`SliceKRuntime::install_orphan_gc`])
+/// before the install authority call.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AutoOrphanGc {
+    /// Default: the install-scoped pass runs first, collecting pre-existing
+    /// orphan blobs; its receipt is durably recorded and replayable.
+    Enabled,
+    /// Opt-out: no GC pass runs; pre-existing orphan blobs stay on disk.
+    Disabled,
 }
 
 impl SliceKRuntime {
@@ -158,17 +171,46 @@ impl SliceKRuntime {
 
     /// Installs the verified package (authority-first: the application
     /// authority reads the verification receipt back by id), returning the
-    /// immutable installation receipt.
+    /// immutable installation receipt. W22-001 default: one install-scoped
+    /// orphan-blob GC pass ([`Self::install_orphan_gc`]) runs before the
+    /// install authority call; pass [`AutoOrphanGc::Disabled`] via
+    /// [`Self::install_verified_package_with_gc`] to skip it.
     ///
     /// # Errors
     ///
-    /// Propagates application-authority errors; a `Replayed` decision
-    /// returns the durably recorded original receipt.
+    /// Propagates artifact-authority (orphan GC), application-authority,
+    /// and clock errors; a `Replayed` decision returns the durably recorded
+    /// original receipt.
     pub fn install_verified_package(
         &self,
         verification: &PackageVerificationReceipt,
         seed: u8,
     ) -> SliceKResult<InstallationReceipt> {
+        self.install_verified_package_with_gc(verification, seed, AutoOrphanGc::Enabled)
+    }
+
+    /// [`Self::install_verified_package`] with an explicit orphan-GC policy
+    /// (W22-001): [`AutoOrphanGc::Enabled`] runs the install-scoped pass
+    /// before the install authority call; [`AutoOrphanGc::Disabled`] skips
+    /// it entirely and leaves pre-existing orphan blobs on disk.
+    ///
+    /// # Errors
+    ///
+    /// Propagates artifact-authority (orphan GC, `Enabled` only),
+    /// application-authority, and clock errors; a `Replayed` decision
+    /// returns the durably recorded original receipt.
+    pub fn install_verified_package_with_gc(
+        &self,
+        verification: &PackageVerificationReceipt,
+        seed: u8,
+        orphan_gc: AutoOrphanGc,
+    ) -> SliceKResult<InstallationReceipt> {
+        match orphan_gc {
+            AutoOrphanGc::Enabled => {
+                self.install_orphan_gc(seed)?;
+            }
+            AutoOrphanGc::Disabled => {}
+        }
         let installed_at_ms = self.wall_now_ms(seeded_key(seed, 15))?;
         match self.applications.install_application(
             &self.artifacts,
@@ -184,17 +226,48 @@ impl SliceKRuntime {
 
     /// Installs the verified package referenced by an existing durable
     /// verification receipt id (authority-first readback), advancing the
-    /// installation generation on reinstall.
+    /// installation generation on reinstall. W22-001 default: the
+    /// install-scoped orphan-blob GC pass ([`Self::install_orphan_gc`])
+    /// runs before the install authority call; opt out via
+    /// [`Self::install_verified_package_by_id_with_gc`].
     ///
     /// # Errors
     ///
-    /// Propagates application-authority errors; a `Replayed` decision
-    /// returns the durably recorded original receipt.
+    /// Propagates artifact-authority (orphan GC), application-authority,
+    /// and clock errors; a `Replayed` decision returns the durably recorded
+    /// original receipt.
     pub fn install_verified_package_by_id(
         &self,
         verification_receipt_id: nlos_types::ReceiptId,
         seed: u8,
     ) -> SliceKResult<InstallationReceipt> {
+        self.install_verified_package_by_id_with_gc(
+            verification_receipt_id,
+            seed,
+            AutoOrphanGc::Enabled,
+        )
+    }
+
+    /// [`Self::install_verified_package_by_id`] with an explicit orphan-GC
+    /// policy (W22-001), mirroring [`Self::install_verified_package_with_gc`].
+    ///
+    /// # Errors
+    ///
+    /// Propagates artifact-authority (orphan GC, `Enabled` only),
+    /// application-authority, and clock errors; a `Replayed` decision
+    /// returns the durably recorded original receipt.
+    pub fn install_verified_package_by_id_with_gc(
+        &self,
+        verification_receipt_id: nlos_types::ReceiptId,
+        seed: u8,
+        orphan_gc: AutoOrphanGc,
+    ) -> SliceKResult<InstallationReceipt> {
+        match orphan_gc {
+            AutoOrphanGc::Enabled => {
+                self.install_orphan_gc(seed)?;
+            }
+            AutoOrphanGc::Disabled => {}
+        }
         let installed_at_ms = self.wall_now_ms(seeded_key(seed, 15))?;
         match self.applications.install_application(
             &self.artifacts,
@@ -208,19 +281,48 @@ impl SliceKRuntime {
         }
     }
 
-    /// Runs one explicit conservative orphan-blob GC pass over this runtime's
-    /// artifact store ([`ArtifactStore::collect_orphan_blobs`], B-ARTIFACT-004).
-    /// Caller discipline: manual invocation only; no automatic trigger.
+    /// Runs one explicit conservative orphan-blob GC pass over this
+    /// runtime's artifact store ([`ArtifactStore::collect_orphan_blobs`],
+    /// B-ARTIFACT-004) under the manual-invocation keys
+    /// `seeded_key(seed, 19/20)` (W17-001). Since W22-001 the install path
+    /// runs its own independent install-scoped pass
+    /// ([`Self::install_orphan_gc`], keys `seeded_key(seed, 21/22)`), so a
+    /// manual pass and an install-time pass never alias each other's
+    /// receipts.
     ///
     /// # Errors
     ///
     /// Propagates artifact-authority and clock errors.
     pub fn collect_orphan_blobs(&self, seed: u8) -> SliceKResult<CollectOrphanBlobsDecision> {
-        let collected_at_ms = self.wall_now_ms(seeded_key(seed, 19))?;
+        self.orphan_gc_pass(seeded_key(seed, 19), seeded_key(seed, 20))
+    }
+
+    /// The install-scoped orphan-blob GC pass (W22-001): one conservative
+    /// scan+collect of pre-existing orphan blobs, exactly-once under
+    /// `seeded_key(seed, 21/22)`. The install path invokes this
+    /// automatically before the install authority call
+    /// ([`AutoOrphanGc::Enabled`]); invoking it again replays the durably
+    /// recorded receipt unchanged — the readback path for the install-time
+    /// run. After an `AutoOrphanGc::Disabled` install this performs the
+    /// pass on demand instead (no key was consumed).
+    ///
+    /// # Errors
+    ///
+    /// Propagates artifact-authority and clock errors.
+    pub fn install_orphan_gc(&self, seed: u8) -> SliceKResult<CollectOrphanBlobsDecision> {
+        self.orphan_gc_pass(seeded_key(seed, 21), seeded_key(seed, 22))
+    }
+
+    fn orphan_gc_pass(
+        &self,
+        clock_key: IdempotencyKey,
+        idempotency_key: IdempotencyKey,
+    ) -> SliceKResult<CollectOrphanBlobsDecision> {
+        let collected_at_ms = self.wall_now_ms(clock_key)?;
         Ok(self
             .artifacts
             .collect_orphan_blobs(CollectOrphanBlobsRequest {
-                idempotency_key: seeded_key(seed, 20),
+                idempotency_key,
                 collected_at_ms,
             })?)
     }
