@@ -74,6 +74,7 @@ impl Drop for TempDir {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn full_vertical_slice_produces_every_receipt_and_is_inspectable() {
     let (_dir, runtime) = slice_runtime("happy");
     let adapter = slice_adapter();

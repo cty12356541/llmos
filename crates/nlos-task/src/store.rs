@@ -1392,9 +1392,7 @@ impl SqliteTaskAuthority {
         &self,
         request: PermitRequest,
     ) -> Result<PermitDecision, TaskStoreError> {
-        permit_only(self.request_commit_permit_inner(
-            None, None, None, None, None, request, None,
-        ))
+        permit_only(self.request_commit_permit_inner(None, None, None, None, None, request, None))
     }
 
     /// Runs the `CommitPermit` CAS with an immutable binding to a live
@@ -1652,9 +1650,9 @@ impl SqliteTaskAuthority {
         authorities: Authorities<'_>,
         request: PermitRequest,
     ) -> Result<PermitDecision, TaskStoreError> {
-        permit_only(self.request_commit_permit_decision_with_authorities_struct(
-            authorities, request,
-        ))
+        permit_only(
+            self.request_commit_permit_decision_with_authorities_struct(authorities, request),
+        )
     }
 
     /// Same as [`Self::request_commit_permit_with_authorities_struct`], but
@@ -1866,7 +1864,9 @@ impl SqliteTaskAuthority {
     /// # Errors
     ///
     /// Returns a storage error when the issued-permit count cannot be read.
-    pub fn inspect_working_set_pressure(&self) -> Result<WorkingSetPressureSnapshot, TaskStoreError> {
+    pub fn inspect_working_set_pressure(
+        &self,
+    ) -> Result<WorkingSetPressureSnapshot, TaskStoreError> {
         let connection = self.lock_connection()?;
         let active_count = count_issued_permits(&*connection)?;
         Ok(build_working_set_pressure_snapshot(
@@ -5914,12 +5914,10 @@ fn load_active_permit(
 }
 
 fn count_issued_permits(source: &impl SqlRead) -> Result<u64, TaskStoreError> {
-    let mut statement = source.prepare_statement(
-        "SELECT COUNT(*) FROM commit_permits WHERE permit_state = ?1",
-    )?;
+    let mut statement =
+        source.prepare_statement("SELECT COUNT(*) FROM commit_permits WHERE permit_state = ?1")?;
     let count: i64 = statement.query_row([PermitState::Issued.code()], |row| row.get(0))?;
-    u64::try_from(count)
-        .map_err(|_| TaskStoreError::CorruptRecord("negative issued permit count"))
+    u64::try_from(count).map_err(|_| TaskStoreError::CorruptRecord("negative issued permit count"))
 }
 
 fn permit_only(

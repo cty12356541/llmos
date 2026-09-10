@@ -244,7 +244,10 @@ fn cost_receipt_closes_empty_consumption_at_zero_high_water() {
         assert_eq!(finalized.high_water_seq, 0);
         assert_eq!(finalized.high_water, 0);
         assert_eq!(finalized.final_usage, 0);
-        assert_eq!(finalized.refund_credit, 80, "no-effect refunds the full hold");
+        assert_eq!(
+            finalized.refund_credit, 80,
+            "no-effect refunds the full hold"
+        );
         let aggregate = authority
             .inspect_cost_receipt(reservation.reservation_id)
             .unwrap();

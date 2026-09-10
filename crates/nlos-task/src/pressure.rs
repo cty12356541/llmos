@@ -316,16 +316,16 @@ pub fn enforce_working_set_admission(
 #[cfg(test)]
 mod tests {
     use super::{
-        CommitPermitDecision, ReclaimPhase, ReclaimPolicy, WorkingSetPressure,
-        WorkingSetReclaimAdvisory, WorkingSetReclaimExecution, WorkingSetReclaimOutcome,
-        enforce_working_set_admission, execute_working_set_reclaim_execution,
-        inspect_working_set_pressure, plan_working_set_reclaim_execution,
-        working_set_reclaim_advisory, TASK_DEFAULT_RECLAIM_POLICY,
+        CommitPermitDecision, ReclaimPhase, ReclaimPolicy, TASK_DEFAULT_RECLAIM_POLICY,
+        WorkingSetPressure, WorkingSetReclaimAdvisory, WorkingSetReclaimExecution,
+        WorkingSetReclaimOutcome, enforce_working_set_admission,
+        execute_working_set_reclaim_execution, inspect_working_set_pressure,
+        plan_working_set_reclaim_execution, working_set_reclaim_advisory,
     };
     use crate::TaskStoreError;
     use crate::model::PermitDecision;
     use crate::scale::{
-        ScaleProfile, DEFAULT_RECLAIM_THRESHOLD_RATIO, TASK_PROFILE_10K, TASK_PROFILE_100K,
+        DEFAULT_RECLAIM_THRESHOLD_RATIO, ScaleProfile, TASK_PROFILE_10K, TASK_PROFILE_100K,
     };
 
     #[test]

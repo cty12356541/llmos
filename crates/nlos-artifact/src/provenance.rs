@@ -32,7 +32,7 @@ use sha2::{Digest, Sha256};
 
 use crate::ArtifactError;
 use crate::model::{
-    ArtifactPublicationReceipt, ArtifactProvenanceReceipt, ProvenanceSourceKind,
+    ArtifactProvenanceReceipt, ArtifactPublicationReceipt, ProvenanceSourceKind,
     ProvenanceSourceTriple,
 };
 use crate::query::SqlRead;
@@ -61,11 +61,12 @@ impl ArtifactStore {
                 revision,
             },
         )?;
-        load_provenance_optional(&*connection, artifact_id, revision)?
-            .ok_or(ArtifactError::ProvenanceIncomplete {
+        load_provenance_optional(&*connection, artifact_id, revision)?.ok_or(
+            ArtifactError::ProvenanceIncomplete {
                 artifact_id,
                 revision,
-            })
+            },
+        )
     }
 
     /// Reads one immutable provenance receipt by identity.
@@ -142,10 +143,7 @@ pub(crate) fn insert_owner_derived_provenance(
     Ok(receipt)
 }
 
-pub(crate) fn derive_provenance_receipt_id(
-    artifact_id: ArtifactId,
-    revision: u64,
-) -> ReceiptId {
+pub(crate) fn derive_provenance_receipt_id(artifact_id: ArtifactId, revision: u64) -> ReceiptId {
     let mut hasher = Sha256::new();
     hasher.update(b"llmos/artifact-provenance-receipt/v1");
     hasher.update(artifact_id.as_bytes());
@@ -205,7 +203,9 @@ pub(crate) fn load_provenance_optional(
         artifact_id.as_bytes().as_slice(),
         encode_u64(revision)?,
     ])?;
-    rows.next()?.map(|row| decode_provenance_row(source, row)).transpose()
+    rows.next()?
+        .map(|row| decode_provenance_row(source, row))
+        .transpose()
 }
 
 fn load_provenance_by_receipt(
@@ -219,7 +219,9 @@ fn load_provenance_by_receipt(
          FROM artifact_provenance_receipts WHERE receipt_id = ?1",
     )?;
     let mut rows = statement.query([receipt_id.as_bytes().as_slice()])?;
-    rows.next()?.map(|row| decode_provenance_row(source, row)).transpose()
+    rows.next()?
+        .map(|row| decode_provenance_row(source, row))
+        .transpose()
 }
 
 fn decode_provenance_row(
@@ -230,7 +232,11 @@ fn decode_provenance_row(
     let source_kind = match source_kind_value {
         0 => ProvenanceSourceKind::CallerAssertedOpaque,
         1 => ProvenanceSourceKind::OwnerDerived,
-        _ => return Err(ArtifactError::CorruptRecord("unknown provenance source kind")),
+        _ => {
+            return Err(ArtifactError::CorruptRecord(
+                "unknown provenance source kind",
+            ));
+        }
     };
     let publication_receipt_id = optional_blob16(row, 7)?.map(ReceiptId::from_bytes);
     if (source_kind == ProvenanceSourceKind::CallerAssertedOpaque)
@@ -263,13 +269,16 @@ fn verify_owner_derived_binding(
     source: &impl SqlRead,
     receipt: &ArtifactProvenanceReceipt,
 ) -> Result<(), ArtifactError> {
-    let publication_id = receipt.publication_receipt_id.ok_or(ArtifactError::CorruptRecord(
-        "owner-derived provenance lacks publication receipt id",
-    ))?;
-    let publication = crate::publication::load_receipt_optional(source, publication_id)?
+    let publication_id = receipt
+        .publication_receipt_id
         .ok_or(ArtifactError::CorruptRecord(
-            "owner-derived provenance references missing publication receipt",
+            "owner-derived provenance lacks publication receipt id",
         ))?;
+    let publication = crate::publication::load_receipt_optional(source, publication_id)?.ok_or(
+        ArtifactError::CorruptRecord(
+            "owner-derived provenance references missing publication receipt",
+        ),
+    )?;
     if publication.artifact_id != receipt.artifact_id
         || publication.revision != receipt.revision
         || publication.receipt_id != publication_id

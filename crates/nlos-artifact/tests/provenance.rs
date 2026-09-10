@@ -70,7 +70,10 @@ fn put_records_caller_asserted_provenance_and_reads_require_it() {
         .expect("inspect provenance");
     assert_eq!(provenance.artifact_id, spec.artifact_id);
     assert_eq!(provenance.revision, committed.revision);
-    assert_eq!(provenance.source_kind, ProvenanceSourceKind::CallerAssertedOpaque);
+    assert_eq!(
+        provenance.source_kind,
+        ProvenanceSourceKind::CallerAssertedOpaque
+    );
     assert_eq!(provenance.source_triple, triple);
     assert_eq!(provenance.publication_receipt_id, None);
 
@@ -116,7 +119,10 @@ fn publish_records_owner_derived_provenance_bound_to_publication_receipt() {
         provenance.source_triple.source_b,
         staged.permit_id.into_bytes()
     );
-    assert_eq!(provenance.source_triple.source_digest, staged.write_set_root);
+    assert_eq!(
+        provenance.source_triple.source_digest,
+        staged.write_set_root
+    );
     assert_eq!(
         provenance.publication_receipt_id,
         Some(publication.receipt_id)
@@ -247,7 +253,8 @@ fn revision_without_provenance_fails_closed_on_byte_read_but_metadata_inspectabl
                 spec.artifact_id.as_bytes().as_slice(),
                 spec.idempotency_key.as_bytes().as_slice(),
                 spec.content_type,
-                spec.application_id.map(nlos_types::ApplicationId::into_bytes),
+                spec.application_id
+                    .map(nlos_types::ApplicationId::into_bytes),
                 spec.owner,
                 digest.as_bytes().as_slice(),
                 i64::try_from(spec.created_at_ms).unwrap(),
@@ -285,7 +292,12 @@ fn revision_without_provenance_fails_closed_on_byte_read_but_metadata_inspectabl
         store.get_revision(spec.artifact_id, 1, READ_NOW_MS),
         Err(ArtifactError::ProvenanceIncomplete { .. })
     ));
-    assert!(store.resolve_head(spec.artifact_id, READ_NOW_MS).unwrap().is_some());
+    assert!(
+        store
+            .resolve_head(spec.artifact_id, READ_NOW_MS)
+            .unwrap()
+            .is_some()
+    );
 }
 
 #[test]
@@ -295,7 +307,9 @@ fn provenance_receipt_is_immutable_and_survives_restart() {
     let spec = artifact_spec(4);
     store.create_artifact(spec.clone()).expect("create");
     let payload = bytes(0x44, 32);
-    store.put_revision(put(spec.artifact_id, 0, &payload)).expect("put");
+    store
+        .put_revision(put(spec.artifact_id, 0, &payload))
+        .expect("put");
     let provenance = store
         .inspect_provenance(spec.artifact_id, 1)
         .expect("inspect");
@@ -303,12 +317,17 @@ fn provenance_receipt_is_immutable_and_survives_restart() {
     drop(store);
 
     let raw = Connection::open(directory.root().join("metadata.db")).unwrap();
-    assert!(raw
-        .execute("UPDATE artifact_provenance_receipts SET created_at_ms=0", [])
-        .is_err());
-    assert!(raw
-        .execute("DELETE FROM artifact_provenance_receipts", [])
-        .is_err());
+    assert!(
+        raw.execute(
+            "UPDATE artifact_provenance_receipts SET created_at_ms=0",
+            []
+        )
+        .is_err()
+    );
+    assert!(
+        raw.execute("DELETE FROM artifact_provenance_receipts", [])
+            .is_err()
+    );
     drop(raw);
 
     let reopened = ArtifactStore::open(directory.root()).expect("reopen");
@@ -370,10 +389,7 @@ fn staged_publication_replay_does_not_duplicate_provenance() {
     let replay = store
         .publish_staged_revision(publish_request(&staged))
         .expect("replay");
-    assert!(matches!(
-        replay,
-        PublishStagedRevisionDecision::Replayed(_)
-    ));
+    assert!(matches!(replay, PublishStagedRevisionDecision::Replayed(_)));
     let provenance = store
         .inspect_provenance(artifact_id(6), 1)
         .expect("inspect");

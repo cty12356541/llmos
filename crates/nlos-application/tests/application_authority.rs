@@ -10,10 +10,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use nlos_application::{
     ActiveTaskActivityProbe, ApplicationAuthorityError, CompatibilityWindow,
-    DisableApplicationRequest, InstallApplicationRequest,
-    RegisterBackgroundTaskRequest, RegisterProcessBindingRequest,
-    RollbackApplicationRequest, UninstallApplicationRequest, UpdateApplicationRequest,
-    UpdateDecision, derive_application_id, derive_installation_id, pack_package_version,
+    DisableApplicationRequest, InstallApplicationRequest, RegisterBackgroundTaskRequest,
+    RegisterProcessBindingRequest, RollbackApplicationRequest, UninstallApplicationRequest,
+    UpdateApplicationRequest, UpdateDecision, derive_application_id, derive_installation_id,
+    pack_package_version,
 };
 use nlos_types::{Generation, IdempotencyKey, PackageId, ProcessId, ReceiptId, TaskId};
 use rusqlite::Connection;
@@ -1443,7 +1443,10 @@ fn update_compat_same_minor_accepts_patch_bump() {
             panic!("fresh key cannot replay an update, got {receipt:?}")
         }
     };
-    assert_eq!(updated_receipt.package_version, pack_package_version(1, 2, 5));
+    assert_eq!(
+        updated_receipt.package_version,
+        pack_package_version(1, 2, 5)
+    );
     assert_counts(&stack, 1, 2);
 }
 

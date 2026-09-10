@@ -142,10 +142,7 @@ async fn assert_active_cpu_metering_at_scale(subset: usize) -> Duration {
 /// Parks on an Operation wait registered from inside the fiber body so
 /// `run_fiber`'s initial `Running` transition cannot race test-thread
 /// registration.
-async fn park_on_operation_wait(
-    runtime: TokioRuntimeAdapter,
-    index: usize,
-) -> FiberExit {
+async fn park_on_operation_wait(runtime: TokioRuntimeAdapter, index: usize) -> FiberExit {
     let handle = FiberHandle {
         fiber_id: ExecutionFiberId::from_bytes(id_bytes(index)),
         generation: Generation::INITIAL,

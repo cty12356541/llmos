@@ -72,9 +72,10 @@ async fn await_all_lifecycle_phase(
     let started = Instant::now();
     tokio::time::timeout(budget, async {
         loop {
-            if handles.iter().all(|handle| {
-                runtime.inspect_lifecycle_phase(*handle) == Ok(expected)
-            }) {
+            if handles
+                .iter()
+                .all(|handle| runtime.inspect_lifecycle_phase(*handle) == Ok(expected))
+            {
                 return;
             }
             tokio::task::yield_now().await;

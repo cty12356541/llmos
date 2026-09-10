@@ -1184,11 +1184,10 @@ impl IdentityAuthority {
     /// Fails when storage is corrupt or `SQLite` fails.
     pub fn count_trusted_local_sessions(&self) -> Result<u64, IdentityAuthorityError> {
         let connection = self.lock()?;
-        let count: i64 = connection.query_row(
-            "SELECT COUNT(*) FROM trusted_local_sessions",
-            [],
-            |row| row.get(0),
-        )?;
+        let count: i64 =
+            connection.query_row("SELECT COUNT(*) FROM trusted_local_sessions", [], |row| {
+                row.get(0)
+            })?;
         decode_u64(count)
     }
 

@@ -661,9 +661,7 @@ fn trust_view_reflects_retraction_fact_without_affecting_unrelated_events() {
         .inspect_trust_view(retracted_target)
         .unwrap();
     assert!(retracted_view.retracted);
-    let retraction = retracted_view
-        .retraction
-        .expect("retraction fact row");
+    let retraction = retracted_view.retraction.expect("retraction fact row");
     assert_eq!(retraction.target_event_id, retracted_target);
     assert_eq!(retraction.retraction_event_id, retraction_event_id);
     assert_eq!(retraction.mode, RetractionMode::Withdraw);

@@ -358,7 +358,6 @@ pub(crate) fn load_artifact_head_endpoint_proof(
     })
 }
 
-
 /// Adds immutable per-revision provenance receipts (B-ARTIFACT-006 minimal
 /// prefix). Existing revisions stay without receipts until explicitly
 /// repaired; byte reads for those revisions fail closed.

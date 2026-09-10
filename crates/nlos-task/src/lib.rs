@@ -200,6 +200,13 @@ pub use participant::{
     ParticipantRecord, ParticipantRegistrationDecision, ParticipantRegistryBinding,
     ParticipantRegistryRecord, ParticipantRegistryState, ParticipantType,
 };
+pub use pressure::{
+    CommitPermitDecision, ReclaimPhase, ReclaimPolicy, TASK_DEFAULT_RECLAIM_POLICY,
+    WorkingSetPressure, WorkingSetPressureSnapshot, WorkingSetReclaimAdvisory,
+    WorkingSetReclaimExecution, WorkingSetReclaimOutcome, enforce_working_set_admission,
+    execute_working_set_reclaim_execution, inspect_working_set_pressure,
+    plan_working_set_reclaim_execution, working_set_reclaim_advisory,
+};
 pub use reconcile::{
     AdoptionReplay, AdoptionRequest, AuthorityLeaseAdoptionRequest, AuthorityLeaseCloseRequest,
     AuthorityLeaseCrossTermAdoptionRequest, AuthorityLeaseFinalizeRequest,
@@ -216,15 +223,8 @@ pub use resource_commit::{
     NestedResourceCostReceipt, ResourceFinalizeDecision, ResourceTaskCommitReceipt,
     SemanticResourceFinalizeDecision, SemanticResourceTaskCommitReceipt,
 };
-pub use pressure::{
-    CommitPermitDecision, ReclaimPhase, ReclaimPolicy, WorkingSetPressure,
-    WorkingSetPressureSnapshot, WorkingSetReclaimAdvisory, WorkingSetReclaimExecution,
-    WorkingSetReclaimOutcome, enforce_working_set_admission,
-    execute_working_set_reclaim_execution, inspect_working_set_pressure,
-    plan_working_set_reclaim_execution, working_set_reclaim_advisory, TASK_DEFAULT_RECLAIM_POLICY,
-};
 pub use scale::{
-    ScaleProfile, DEFAULT_RECLAIM_THRESHOLD_RATIO, TASK_PROFILE_10K, TASK_PROFILE_100K,
+    DEFAULT_RECLAIM_THRESHOLD_RATIO, ScaleProfile, TASK_PROFILE_10K, TASK_PROFILE_100K,
 };
 pub use semantic_commit::{
     FinalizeSemanticCommitRequest, NestedSemanticPublicationReceipt, PlanSemanticCommitRequest,

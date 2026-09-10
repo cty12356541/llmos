@@ -133,7 +133,8 @@ fn try_parse_inspect_health(tokens: &[&str]) -> Option<Result<ControlCommand, Co
         }
         [first, second]
             if first.eq_ignore_ascii_case("health")
-                && (second.eq_ignore_ascii_case("check") || second.eq_ignore_ascii_case("status")) =>
+                && (second.eq_ignore_ascii_case("check")
+                    || second.eq_ignore_ascii_case("status")) =>
         {
             Some(Ok(ControlCommand::InspectHealth))
         }
@@ -217,8 +218,7 @@ fn try_parse_inspect_task(tokens: &[&str]) -> Option<Result<ControlCommand, Cont
         [head, second, plan] if is_read_verb(head) && second.eq_ignore_ascii_case("task") => {
             Some(parse_hex_id(plan).map(|plan_id| ControlCommand::InspectTask { plan_id }))
         }
-        ["查看任务" | "检查任务", plan]
-        | ["查看" | "检查", "任务", plan] => {
+        ["查看任务" | "检查任务", plan] | ["查看" | "检查", "任务", plan] => {
             Some(parse_hex_id(plan).map(|plan_id| ControlCommand::InspectTask { plan_id }))
         }
         _ => None,
@@ -261,11 +261,12 @@ fn try_parse_inspect_resource(tokens: &[&str]) -> Option<Result<ControlCommand, 
                     .map(|reservation_id| ControlCommand::InspectResource { reservation_id }),
             )
         }
-        ["查看资源" | "检查资源", reservation_id]
-        | ["查看" | "检查", "资源", reservation_id] => Some(
-            parse_hex_id(reservation_id)
-                .map(|reservation_id| ControlCommand::InspectResource { reservation_id }),
-        ),
+        ["查看资源" | "检查资源", reservation_id] | ["查看" | "检查", "资源", reservation_id] => {
+            Some(
+                parse_hex_id(reservation_id)
+                    .map(|reservation_id| ControlCommand::InspectResource { reservation_id }),
+            )
+        }
         [head, second, ..]
             if (is_read_verb(head) && second.eq_ignore_ascii_case("resource"))
                 || *second == "资源" =>

@@ -1226,8 +1226,9 @@ impl ApplicationAuthority {
     ///
     /// Fails closed (zero durable state change) for an unknown or unreadable
     /// verification receipt, a missing/disabled/unchanged application, an
-    /// idempotency conflict, an update that would precede its own
-    /// verification, a lost generation CAS, or any storage failure.
+    ///    idempotency conflict, an update that would precede its own
+    ///    verification, a lost generation CAS, or any storage failure.
+    #[allow(clippy::too_many_lines)]
     pub fn update_application(
         &self,
         artifacts: &ArtifactStore,
