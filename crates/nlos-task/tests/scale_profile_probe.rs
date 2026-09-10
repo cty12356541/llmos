@@ -60,6 +60,11 @@ impl TestDatabase {
     fn open(&self) -> SqliteTaskAuthority {
         SqliteTaskAuthority::open(&self.path).expect("open task authority")
     }
+
+    fn open_with_profile(&self, profile: &'static nlos_task::ScaleProfile) -> SqliteTaskAuthority {
+        SqliteTaskAuthority::open_with_scale_profile(&self.path, profile)
+            .expect("open task authority with profile")
+    }
 }
 
 impl Drop for TestDatabase {
@@ -332,7 +337,7 @@ fn one_hundred_thousand_task_registrations_keep_the_permit_face_lazy() {
     // -- Scale database: 100K registered Tasks through the landed API. ------
     let rss_before = sample_rss_bytes();
     let scale_database = TestDatabase::new("metadata-100k");
-    let authority = scale_database.open();
+    let authority = scale_database.open_with_profile(&TASK_PROFILE_100K);
 
     let registration_started = Instant::now();
     for index in 0..TASK_NODE_COUNT_100K {

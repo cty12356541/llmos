@@ -192,3 +192,44 @@ cargo test -p nlos-task --test scale_profile_probe -- --ignored --nocapture
 1. 无后续 phase（QoS / checkpoint-evict / kill）执行或真实 Context Residency Controller eviction。
 2. `max_task_nodes` 未接入 `register_task`；checkpoint/rehydrate 与 TaskPlan/TaskNode 声明面仍待议题 35 ADR。
 3. 100K probe 数字仍待实跑。
+
+## 11. max_task_nodes admission gate 最小前缀（2026-09-11，W22-004）
+
+### Base HEAD
+
+开工 `d039cd0`；提交时 HEAD 已被并行车道推进至 `e09ff64`（W22-005），本车道写集与其无交集。
+
+### 写集
+
+- `crates/nlos-task/src/lib.rs`：新增 `TaskStoreError::TaskNodeAdmissionDenied { profile_id, task_count, max_task_nodes }` + Display 臂 + `enforce_task_node_admission` re-export。
+- `crates/nlos-task/src/pressure.rs`：新增 `enforce_task_node_admission(profile, current_count)`（对 `current_count + 1` consult [`ScaleProfile::admits_task_nodes`]，fail-closed）；模块 doc honest-scope 同步。
+- `crates/nlos-task/src/store.rs`：`register_task` net-new 路径在事务内 `count_registered_tasks`（`SELECT COUNT(*) FROM tasks`）后 consult 上限；`count_registered_tasks` helper。
+- `crates/nlos-task/src/scale.rs`：模块 doc honest-scope 同步（task registration 已 gated，soft reclaim 仍未）。
+- `crates/nlos-task/tests/scale_profile.rs`：`TASK_NODE_TEST_PROFILE`（max_task_nodes=2）+ 3 个集成用例。
+- `crates/nlos-task/tests/scale_profile_probe.rs`：100K probe 的 scale database 改绑 `open_with_profile(&TASK_PROFILE_100K)`——100K 探测显式声明 100K 档，此前默认 10K 绑定因 `max_task_nodes` 从未被强制而无感；本车道 gate 落地后该绑定为语义必需（否则 10_001 个注册即 fail-closed）。
+- 本 evidence 文件 §11。
+
+### 实现要点
+
+1. **镜像 W18-004 结构**（先例 7e01ce7）：typed error + `enforce_*_admission` 纯函数 + 单路径前缀 consult + 幂等 replay bypass。
+2. **检查点**：`register_task` 在 `load_task_optional` 命中（same-generation → `Existing`）与 `DuplicateTask` 分支之后、`insert_task` 之前——即仅 net-new 注册 consult；**idempotent replay（同 TaskId + 同 generation）绕过 gate**，cap 满时仍可 `Existing`。
+3. **fail-closed**：`projected = current + 1`（`checked_add`，溢出 → `EpochExhausted`），`admits_task_nodes` 为 inclusive 上界（`<=`），超限返回 `TaskNodeAdmissionDenied`，事务中止、不落任何行。
+4. **additive**：`ScaleProfile` 结构未改字段（`max_task_nodes` 早已存在，本车道只是接线）；无新依赖、无 unsafe、无既有行为路径改动（默认 10K 档下 ≤10_000 注册不受影响）。
+5. **既有面核验**：10K probe（注册恰 10_000，第 10_000 个 projected=10_000 inclusive 通过）无需改动；默认 `open()` 的其余测试注册量均远低于 10K。
+
+### 验证门（W22-004 实跑）
+
+| 门 | 命令 | 结果 |
+| --- | --- | --- |
+| fmt | `cargo fmt -p nlos-task -- --check` | PASS（先检出 1 处 import 排序 diff 于本车道 store.rs 写集内，`cargo fmt -p nlos-task` 修复后复跑 clean） |
+| scale_profile 集成 | `cargo test -p nlos-task --test scale_profile` | PASS（**13 passed; 0 failed**，含 task-node admission 三新用例；2026-09-11 W22-004） |
+| pressure 单测 | `cargo test -p nlos-task pressure`（约定形式）/ `cargo test -p nlos-task --lib pressure`（实跑形式） | PASS（**11 passed; 0 failed; 9 filtered out**，含 `enforce_task_node_admission_admits_at_cap_rejects_one_over` 新用例） |
+| clippy | `cargo clippy -p nlos-task --lib --test scale_profile --test scale_profile_probe -- -D warnings` | PASS（0 warning；2026-09-11 W22-004） |
+
+**共享工作区并行车道注明**：约定形式 `cargo test -p nlos-task pressure` 与 `cargo clippy -p nlos-task --all-targets -- -D warnings` 在本车道验证窗口内被并行车道（W22-R 对 `crates/nlos-resource` 的未提交 `demand`/`demand_capacity` 字段新增）阻塞——构造这些请求的 resource 依赖集成 target（三次实跑观测到 `resource_commit` / `participant_registry` / `mixed_semantic_resource_commit` / `resource_bridge_fault_injection`，均非本车道写集）以 E0063 编译失败（最终一次全形 clippy 实跑 exit=101、9 处 E0063、0 条本车道 warning）。本车道以上表 scoped 实跑为门；未触碰 nlos-resource 及受影响测试文件（规则 8）。满形 gate 待共享工作区收敛后由后续增量复跑。
+
+### 仍属缺口
+
+1. 无 controller 执行 reclaim；`max_task_nodes` gate 仅为注册路径前缀（TaskPlan/TaskNode 声明面落位后需迁移到真实声明单位）。
+2. checkpoint/rehydrate 与 TaskPlan/TaskNode 声明面仍待议题 35 ADR。
+3. 100K probe 数字仍待实跑（probe 现已绑对 100K 档）。

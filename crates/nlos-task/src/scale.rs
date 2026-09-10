@@ -11,9 +11,11 @@
 //!
 //! - **Prefix enforcement only.** [`crate::SqliteTaskAuthority::request_commit_permit`]
 //!   consults [`crate::WorkingSetPressure::admits`] via the authority's
-//!   configured [`ScaleProfile`] before issuing a new outstanding permit;
-//!   idempotent replays bypass the gate. Task registration and soft reclaim
-//!   are not enforced yet; gaps remain in
+//!   configured [`ScaleProfile`] before issuing a new outstanding permit,
+//!   and [`crate::SqliteTaskAuthority::register_task`] consults
+//!   [`Self::admits_task_nodes`] before a net-new durable Task registration;
+//!   idempotent permit and registration replays bypass the gates. Soft
+//!   reclaim is not enforced yet; gaps remain in
 //!   `docs/evidence/stage-b/b-task-scale-001.md`.
 //! - **Provisional dimension mapping.** The durable `TaskPlan`/`TaskNode`
 //!   declaration surface is not landed in this crate (`TaskSpec` carries no

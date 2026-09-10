@@ -42,6 +42,13 @@ static ADMISSION_TEST_PROFILE: ScaleProfile = ScaleProfile {
     reclaim_threshold_ratio: Some(90),
 };
 
+static TASK_NODE_TEST_PROFILE: ScaleProfile = ScaleProfile {
+    profile_id: "task-node-admission-test",
+    max_task_nodes: 2,
+    max_active_working_set: 64,
+    reclaim_threshold_ratio: Some(90),
+};
+
 static NEXT_DATABASE: AtomicU64 = AtomicU64::new(0);
 
 struct TestDatabase {
@@ -641,4 +648,85 @@ fn working_set_admission_replay_bypasses_gate_at_cap() {
         error,
         TaskStoreError::WorkingSetAdmissionDenied { .. }
     ));
+}
+
+#[test]
+fn task_node_admission_denies_over_cap() {
+    let database = TestDatabase::new("task-node-over-cap");
+    let authority = database.open_with_profile(&TASK_NODE_TEST_PROFILE);
+
+    for index in 0..TASK_NODE_TEST_PROFILE.max_task_nodes {
+        register_task(&authority, index);
+    }
+
+    let error = authority
+        .register_task(TaskSpec {
+            task_id: task_id(TASK_NODE_TEST_PROFILE.max_task_nodes),
+            task_generation: Generation::INITIAL,
+            registered_at_ms: 1_000,
+        })
+        .expect_err("must fail closed over task-node cap");
+    assert!(matches!(
+        error,
+        TaskStoreError::TaskNodeAdmissionDenied {
+            profile_id: "task-node-admission-test",
+            task_count: 3,
+            max_task_nodes: 2,
+        }
+    ));
+}
+
+#[test]
+fn task_node_admission_replay_bypasses_gate_at_cap() {
+    let database = TestDatabase::new("task-node-replay");
+    let authority = database.open_with_profile(&TASK_NODE_TEST_PROFILE);
+
+    for index in 0..TASK_NODE_TEST_PROFILE.max_task_nodes {
+        register_task(&authority, index);
+    }
+
+    let replay = authority
+        .register_task(TaskSpec {
+            task_id: task_id(0),
+            task_generation: Generation::INITIAL,
+            registered_at_ms: 1_000,
+        })
+        .expect("idempotent replay must bypass task-node admission gate at cap");
+    assert_eq!(
+        replay,
+        nlos_task::TaskRegistrationDecision::Existing(task_id(0))
+    );
+
+    let error = authority
+        .register_task(TaskSpec {
+            task_id: task_id(TASK_NODE_TEST_PROFILE.max_task_nodes),
+            task_generation: Generation::INITIAL,
+            registered_at_ms: 1_000,
+        })
+        .expect_err("fresh registration still blocked at cap");
+    assert!(matches!(
+        error,
+        TaskStoreError::TaskNodeAdmissionDenied { .. }
+    ));
+}
+
+#[test]
+fn task_node_admission_under_cap_keeps_existing_flow() {
+    let database = TestDatabase::new("task-node-under-cap");
+    let authority = database.open_with_profile(&TASK_NODE_TEST_PROFILE);
+
+    for index in 0..TASK_NODE_TEST_PROFILE.max_task_nodes {
+        register_task(&authority, index);
+    }
+
+    authority
+        .register_attempt(attempt_spec(0))
+        .expect("register attempt under task-node cap");
+    let decision = authority
+        .request_commit_permit_with_authorities_struct(
+            Authorities::default(),
+            permit_request(0, 0x30),
+        )
+        .expect("permit flow unaffected under task-node cap");
+    assert_eq!(issued_permit(decision).task_id, task_id(0));
 }

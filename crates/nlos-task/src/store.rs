@@ -48,8 +48,8 @@ use crate::migrations::{
 };
 use crate::model::{derive_closure_receipt_id, derive_permit_id, empty_effect_history_root};
 use crate::pressure::{
-    CommitPermitDecision, WorkingSetPressureSnapshot, enforce_working_set_admission,
-    execute_working_set_reclaim_execution,
+    CommitPermitDecision, WorkingSetPressureSnapshot, enforce_task_node_admission,
+    enforce_working_set_admission, execute_working_set_reclaim_execution,
     inspect_working_set_pressure as build_working_set_pressure_snapshot,
     plan_working_set_reclaim_execution, working_set_reclaim_advisory,
 };
@@ -369,11 +369,16 @@ impl SqliteTaskAuthority {
     /// empty effect-history root (`[TASK-EFFECT-ID-001]`), and
     /// `retry_fence_epoch = 0`. Repeating the exact specification returns
     /// `Existing`; reusing the task ID with a different generation is
-    /// rejected fail-closed.
+    /// rejected fail-closed. A net-new registration consults the bound
+    /// [`ScaleProfile`] logical task-node hard cap
+    /// (`[ROAD-B-004]` prefix) and is rejected fail-closed over cap;
+    /// idempotent replays bypass that gate.
     ///
     /// # Errors
     ///
-    /// Returns a storage error or `DuplicateTask` for conflicting reuse.
+    /// Returns a storage error, `DuplicateTask` for conflicting reuse, or
+    /// `TaskNodeAdmissionDenied` when a net-new registration would exceed
+    /// the configured task-node cap.
     pub fn register_task(
         &self,
         spec: TaskSpec,
@@ -387,6 +392,8 @@ impl SqliteTaskAuthority {
             }
             return Err(TaskStoreError::DuplicateTask);
         }
+        let task_count = count_registered_tasks(&transaction)?;
+        enforce_task_node_admission(self.scale_profile, task_count)?;
         let record = TaskRecord {
             task_id: spec.task_id,
             task_generation: spec.task_generation,
@@ -5918,6 +5925,12 @@ fn count_issued_permits(source: &impl SqlRead) -> Result<u64, TaskStoreError> {
         source.prepare_statement("SELECT COUNT(*) FROM commit_permits WHERE permit_state = ?1")?;
     let count: i64 = statement.query_row([PermitState::Issued.code()], |row| row.get(0))?;
     u64::try_from(count).map_err(|_| TaskStoreError::CorruptRecord("negative issued permit count"))
+}
+
+fn count_registered_tasks(source: &impl SqlRead) -> Result<u64, TaskStoreError> {
+    let mut statement = source.prepare_statement("SELECT COUNT(*) FROM tasks")?;
+    let count: i64 = statement.query_row([], |row| row.get(0))?;
+    u64::try_from(count).map_err(|_| TaskStoreError::CorruptRecord("negative task count"))
 }
 
 fn permit_only(

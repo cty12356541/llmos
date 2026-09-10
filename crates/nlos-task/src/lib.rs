@@ -203,9 +203,9 @@ pub use participant::{
 pub use pressure::{
     CommitPermitDecision, ReclaimPhase, ReclaimPolicy, TASK_DEFAULT_RECLAIM_POLICY,
     WorkingSetPressure, WorkingSetPressureSnapshot, WorkingSetReclaimAdvisory,
-    WorkingSetReclaimExecution, WorkingSetReclaimOutcome, enforce_working_set_admission,
-    execute_working_set_reclaim_execution, inspect_working_set_pressure,
-    plan_working_set_reclaim_execution, working_set_reclaim_advisory,
+    WorkingSetReclaimExecution, WorkingSetReclaimOutcome, enforce_task_node_admission,
+    enforce_working_set_admission, execute_working_set_reclaim_execution,
+    inspect_working_set_pressure, plan_working_set_reclaim_execution, working_set_reclaim_advisory,
 };
 pub use reconcile::{
     AdoptionReplay, AdoptionRequest, AuthorityLeaseAdoptionRequest, AuthorityLeaseCloseRequest,
@@ -579,6 +579,16 @@ pub enum TaskStoreError {
         /// Inclusive hard cap from the profile.
         max_active_working_set: u64,
     },
+    /// A net-new Task registration would exceed the configured
+    /// [`ScaleProfile`] logical task-node hard cap (`[ROAD-B-004]` prefix).
+    TaskNodeAdmissionDenied {
+        /// Tier identifier of the rejecting profile.
+        profile_id: &'static str,
+        /// Projected registered task count after the rejected registration.
+        task_count: u64,
+        /// Inclusive hard cap from the profile.
+        max_task_nodes: u64,
+    },
 }
 
 // A flat Display match grows linearly with the variant count; splitting
@@ -891,6 +901,14 @@ impl fmt::Display for TaskStoreError {
             } => write!(
                 formatter,
                 "working-set admission denied for profile {profile_id}: active_count {active_count} exceeds max {max_active_working_set}"
+            ),
+            Self::TaskNodeAdmissionDenied {
+                profile_id,
+                task_count,
+                max_task_nodes,
+            } => write!(
+                formatter,
+                "task-node admission denied for profile {profile_id}: task_count {task_count} exceeds max {max_task_nodes}"
             ),
         }
     }

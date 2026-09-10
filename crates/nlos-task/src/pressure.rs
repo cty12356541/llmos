@@ -5,7 +5,10 @@
 //!
 //! - **Prefix enforcement only.** [`crate::SqliteTaskAuthority::request_commit_permit`]
 //!   consults [`WorkingSetPressure::admits`] before issuing a new outstanding
-//!   `CommitPermit`; idempotent permit replays bypass the gate. When admission
+//!   `CommitPermit`, and [`crate::SqliteTaskAuthority::register_task`]
+//!   consults [`ScaleProfile::admits_task_nodes`] before a net-new durable
+//!   Task registration; idempotent permit and registration replays bypass the
+//!   gates. When admission
 //!   still passes but the projected active count crosses the soft threshold,
 //!   [`working_set_reclaim_advisory`] surfaces a typed
 //!   [`WorkingSetReclaimAdvisory`] on [`CommitPermitDecision`]; when advisory
@@ -313,12 +316,40 @@ pub fn enforce_working_set_admission(
     }
 }
 
+/// Fail-closed when a net-new durable Task registration would exceed the
+/// tier hard logical task-node cap.
+///
+/// `current_count` is the store-wide count of registered Tasks before the
+/// candidate registration; the gate consults `current_count + 1`.
+///
+/// # Errors
+///
+/// Returns [`TaskStoreError::TaskNodeAdmissionDenied`] when the projected
+/// count exceeds [`ScaleProfile::max_task_nodes`].
+pub fn enforce_task_node_admission(
+    profile: &ScaleProfile,
+    current_count: u64,
+) -> Result<(), TaskStoreError> {
+    let projected = current_count
+        .checked_add(1)
+        .ok_or(TaskStoreError::EpochExhausted)?;
+    if profile.admits_task_nodes(projected) {
+        Ok(())
+    } else {
+        Err(TaskStoreError::TaskNodeAdmissionDenied {
+            profile_id: profile.profile_id,
+            task_count: projected,
+            max_task_nodes: profile.max_task_nodes,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         CommitPermitDecision, ReclaimPhase, ReclaimPolicy, TASK_DEFAULT_RECLAIM_POLICY,
         WorkingSetPressure, WorkingSetReclaimAdvisory, WorkingSetReclaimExecution,
-        WorkingSetReclaimOutcome, enforce_working_set_admission,
+        WorkingSetReclaimOutcome, enforce_task_node_admission, enforce_working_set_admission,
         execute_working_set_reclaim_execution, inspect_working_set_pressure,
         plan_working_set_reclaim_execution, working_set_reclaim_advisory,
     };
@@ -391,6 +422,27 @@ mod tests {
                 profile_id: "task-admission-unit",
                 active_count: 3,
                 max_active_working_set: 2,
+            }
+        ));
+    }
+
+    #[test]
+    fn enforce_task_node_admission_admits_at_cap_rejects_one_over() {
+        let profile = ScaleProfile {
+            profile_id: "task-node-admission-unit",
+            max_task_nodes: 2,
+            max_active_working_set: 64,
+            reclaim_threshold_ratio: Some(DEFAULT_RECLAIM_THRESHOLD_RATIO),
+        };
+        enforce_task_node_admission(&profile, 0).expect("first slot");
+        enforce_task_node_admission(&profile, 1).expect("at cap");
+        let denied = enforce_task_node_admission(&profile, 2).unwrap_err();
+        assert!(matches!(
+            denied,
+            TaskStoreError::TaskNodeAdmissionDenied {
+                profile_id: "task-node-admission-unit",
+                task_count: 3,
+                max_task_nodes: 2,
             }
         ));
     }
