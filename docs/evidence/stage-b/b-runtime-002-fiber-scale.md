@@ -443,3 +443,40 @@ cargo test -p nlos-runtime-tokio --test lifecycle_scale -- --include-ignored --n
   - 100K 规模级 cancel 探针；
   - runtime 侧 process crash 传播联动；
   - 未声称 ROAD-B-006 整体达成。
+
+### 6.12 Lifecycle meter aggregate inspect prefix（2026-09-10 追加，W21-006 / ROAD-B-006）
+
+- Owner：`nlos-runtime-tokio`（`src/lib.rs` + `tests/lifecycle_meter_aggregate.rs` + `tests/lifecycle_scale.rs` 聚合日志）
+- 设计依据：v0.5 §28.2 ROAD-B-006 分维 Activation metering；§6.8–§6.11 backpressure/suspended 功能级 + 规模探针已落地，本片补 read-side **aggregate** 前缀，将背压/挂起计量与 inspect 面联动（非完整 OpenMetrics export）。
+- **实现（最小、additive，tokio-only）**：
+  - 公开 `LifecycleMeterAggregate { total_backpressure_wait, total_suspended, sampled_fibers }`。
+  - `TokioRuntimeAdapter::inspect_lifecycle_meter_aggregate()` 遍历内部 fiber registry，O(n) 求和各 live fiber 的 `activation_usage` 中 `backpressure_wait` / `suspended` 维；未改 `nlos-runtime` trait。
+  - `lifecycle_scale.rs` 10K/100K 探针在 phase_sleep 后断言 aggregate ≥ 全员下限并 eprintln 聚合读数。
+- **新增测试**（`lifecycle_meter_aggregate.rs`，2 项）：
+  1. `aggregate_sums_backpressure_and_suspended_across_live_fibers` — 6 fiber（2 背压 + 2 挂起 + 2 运行）：aggregate ≥ 各 parked handle 个体之和，`sampled_fibers = 6`。
+  2. `aggregate_on_empty_registry_is_zero` — 空 registry 返回零 aggregate。
+
+#### 6.12.1 验证门实测
+
+```text
+cargo test -p nlos-runtime-tokio --test lifecycle_meter_aggregate
+  → 2 passed / 0 failed（2026-09-10 W21-006）
+cargo test -p nlos-runtime-tokio --test lifecycle_phase
+  → 4 passed / 0 failed（2026-09-10 W21-006）
+cargo test -p nlos-runtime-tokio lifecycle
+  → 2 passed / 0 failed / 2 ignored（2026-09-10 W21-006 收尾复验；lifecycle 名过滤跨 test target 实际仅匹配 lifecycle_phase 2 项 + lifecycle_scale 2 项 ignored，车道初记 8/8 系误记，提交前修正）
+cargo clippy -p nlos-runtime-tokio --all-targets -- -D warnings
+  → exit 0（stable，2026-09-10 W21-006）
+cargo fmt -p nlos-runtime-tokio -- --check
+  → 本车道新增 hunk 3 处格式违规已修复（lifecycle_meter_aggregate.rs ×1、lifecycle_scale.rs ×2）；activation_meter_scale.rs:142 与 lifecycle_scale.rs:72 为先在漂移（非本车道 write-set），保留并如实登记
+```
+
+#### 6.12.2 缺口更新
+
+- **勾销**：§6.11.2 中 read-side aggregate inspect 前缀缺口 → 本 §6.12（O(n) 聚合 + 规模探针联动日志）。
+- **如实保留（ROAD-B-006 剩余，Claim 维持 PARTIAL_PASS）**：
+  - 完整 OpenMetrics / Prometheus export（本片为 prefix inspect，非 export）；
+  - fiber 体内自动触发背压/挂起（scheduler 边界 hook 已覆盖，admission 集成未做）；
+  - 100K 规模级 cancel 探针；
+  - runtime 侧 process crash 传播联动；
+  - 未声称 ROAD-B-006 整体达成。

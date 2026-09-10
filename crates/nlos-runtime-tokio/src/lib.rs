@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use futures_util::FutureExt;
 use nlos_runtime::{
@@ -91,6 +91,17 @@ pub enum FiberLifecyclePhase {
     WaitingExternal,
     BackpressureWait,
     Suspended,
+}
+
+/// Read-side aggregate of lifecycle metering dimensions across live fibers.
+///
+/// Prefix inspect surface linking `backpressure_wait` and `suspended` metering;
+/// not a full `OpenMetrics` export.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct LifecycleMeterAggregate {
+    pub total_backpressure_wait: Duration,
+    pub total_suspended: Duration,
+    pub sampled_fibers: usize,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -514,6 +525,24 @@ impl TokioRuntimeAdapter {
         let record = self.record_for(handle)?;
         record.resume_from_suspended();
         Ok(())
+    }
+
+    /// Sums `backpressure_wait` and `suspended` over every fiber in the internal registry.
+    ///
+    /// Complexity is O(n) in the number of live fibers.
+    #[must_use]
+    pub fn inspect_lifecycle_meter_aggregate(&self) -> LifecycleMeterAggregate {
+        let fibers = lock_unpoisoned(&self.inner.fibers);
+        let mut aggregate = LifecycleMeterAggregate {
+            sampled_fibers: fibers.len(),
+            ..LifecycleMeterAggregate::default()
+        };
+        for record in fibers.values() {
+            let usage = record.activation_usage_snapshot();
+            aggregate.total_backpressure_wait += usage.backpressure_wait;
+            aggregate.total_suspended += usage.suspended;
+        }
+        aggregate
     }
 }
 

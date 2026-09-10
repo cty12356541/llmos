@@ -160,6 +160,15 @@ async fn assert_backpressure_wait_at_scale(count: usize, subset: usize) -> Durat
         "host threads {threads} exceed fiber-count-independent bound {THREAD_BOUND}"
     );
 
+    let backpressure_aggregate = runtime.inspect_lifecycle_meter_aggregate();
+    assert_eq!(backpressure_aggregate.sampled_fibers, count);
+    let fiber_count = u32::try_from(count).expect("scale probe fiber count fits u32");
+    assert!(
+        backpressure_aggregate.total_backpressure_wait >= MIN_BACKPRESSURE_WAIT * fiber_count,
+        "aggregate backpressure_wait={:?} for {count} fibers",
+        backpressure_aggregate.total_backpressure_wait
+    );
+
     let sample_started = Instant::now();
     for (index, handle) in handles[..subset].iter().enumerate() {
         let usage = runtime.activation_usage(*handle).expect("usage");
@@ -203,7 +212,9 @@ async fn assert_backpressure_wait_at_scale(count: usize, subset: usize) -> Durat
         "{count}-fiber backpressure_wait profile (2 tokio workers, sample={subset}): \
          spawn_issue={spawn_issue:?} enter_backpressure={enter_elapsed:?} \
          park_settle={park_settle:?} phase_sleep={PHASE_SLEEP:?} sample_assert={sample_elapsed:?} \
-         resume_settle={resume_settle:?} rss_kib={rss_kib} threads={threads} total={total:?}"
+         resume_settle={resume_settle:?} rss_kib={rss_kib} threads={threads} \
+         aggregate_backpressure_wait={:?} aggregate_sampled_fibers={} total={total:?}",
+        backpressure_aggregate.total_backpressure_wait, backpressure_aggregate.sampled_fibers,
     );
     total
 }
@@ -257,6 +268,15 @@ async fn assert_suspended_at_scale(count: usize, subset: usize) -> Duration {
         "host threads {threads} exceed fiber-count-independent bound {THREAD_BOUND}"
     );
 
+    let suspended_aggregate = runtime.inspect_lifecycle_meter_aggregate();
+    assert_eq!(suspended_aggregate.sampled_fibers, count);
+    let fiber_count = u32::try_from(count).expect("scale probe fiber count fits u32");
+    assert!(
+        suspended_aggregate.total_suspended >= MIN_SUSPENDED * fiber_count,
+        "aggregate suspended={:?} for {count} fibers",
+        suspended_aggregate.total_suspended
+    );
+
     let sample_started = Instant::now();
     for (index, handle) in handles[..subset].iter().enumerate() {
         let usage = runtime.activation_usage(*handle).expect("usage");
@@ -291,7 +311,9 @@ async fn assert_suspended_at_scale(count: usize, subset: usize) -> Duration {
         "{count}-fiber suspended profile (2 tokio workers, sample={subset}): \
          spawn_issue={spawn_issue:?} enter_suspended={enter_elapsed:?} \
          park_settle={park_settle:?} phase_sleep={PHASE_SLEEP:?} sample_assert={sample_elapsed:?} \
-         resume_settle={resume_settle:?} threads={threads} total={total:?}"
+         resume_settle={resume_settle:?} threads={threads} \
+         aggregate_suspended={:?} aggregate_sampled_fibers={} total={total:?}",
+        suspended_aggregate.total_suspended, suspended_aggregate.sampled_fibers,
     );
     total
 }
