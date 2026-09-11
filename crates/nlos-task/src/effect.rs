@@ -1524,11 +1524,47 @@ impl SqliteTaskAuthority {
     ///
     /// Returns a not-found, holder, epoch, stale-head, cancel,
     /// expired-permit, slot-state, idempotency-conflict, or storage error.
+    /// A permit whose issuance bound an authority lease additionally fails
+    /// closed with the typed lease family (`TK-B2`); see
+    /// [`Self::request_effect_permit_with_authority_lease`].
     pub fn request_effect_permit(
         &self,
         request: PermitRequest,
     ) -> Result<EffectPermitDecision, TaskStoreError> {
-        self.request_effect_permit_inner(None, None, request)
+        self.request_effect_permit_inner(None, None, request, None)
+    }
+
+    /// Runs the `EffectPermit` issuance CAS behind the authority-lease fence
+    /// (`TK-B2`): a permit whose issuance bound a durable authority lease
+    /// must present that exact live lease here, exactly as the terminal
+    /// paths require it (see [`Self::finalize_commit_v3_with_authority_lease`]).
+    ///
+    /// This is the effect-plane mirror of the commit ladder's
+    /// [`Self::request_commit_permit_with_authority_lease`]: the fence is
+    /// opt-in at permit issuance, so a permit that was issued unbound keeps
+    /// the legacy unfenced behavior on every entry. After a lease takeover
+    /// the stale holder's mint attempt fails closed with a typed
+    /// lease-required / lease-mismatch / lease-fenced error before any
+    /// write, so the slot never leaves `Planned`. An exact idempotency
+    /// replay still returns the durable permit without consulting the
+    /// lease — the Task rows are the replay authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::request_effect_permit`], plus
+    /// [`TaskStoreError::AuthorityLeaseRequired`] when a lease-bound permit
+    /// is presented without its lease,
+    /// [`TaskStoreError::AuthorityLeaseBindingMismatch`] when the presented
+    /// lease is not the bound one, and
+    /// [`TaskStoreError::AuthorityLeaseFenced`] /
+    /// [`TaskStoreError::AuthorityLeaseExpired`] when the bound lease is no
+    /// longer the live one.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn request_effect_permit_with_authority_lease(
+        &self,
+        request: AuthorityLeaseEffectPermitRequest,
+    ) -> Result<EffectPermitDecision, TaskStoreError> {
+        self.request_effect_permit_inner(None, None, request.permit, Some(request.lease))
     }
 
     /// Runs the `EffectPermit` issuance CAS after re-reading the owning
@@ -1559,7 +1595,7 @@ impl SqliteTaskAuthority {
         operation_authority: &nlos_store::SqliteOperationStore,
         request: PermitRequest,
     ) -> Result<EffectPermitDecision, TaskStoreError> {
-        self.request_effect_permit_inner(Some(operation_authority), None, request)
+        self.request_effect_permit_inner(Some(operation_authority), None, request, None)
     }
 
     /// Runs the `EffectPermit` issuance CAS after re-reading the owning
@@ -1595,7 +1631,7 @@ impl SqliteTaskAuthority {
         channel_authority: &nlos_channel::ChannelAuthority,
         request: PermitRequest,
     ) -> Result<EffectPermitDecision, TaskStoreError> {
-        self.request_effect_permit_inner(None, Some(channel_authority), request)
+        self.request_effect_permit_inner(None, Some(channel_authority), request, None)
     }
 
     /// Runs the `EffectPermit` issuance CAS with the owner revalidations
@@ -1630,7 +1666,7 @@ impl SqliteTaskAuthority {
         authorities: EffectPermitAuthorities<'_>,
         request: PermitRequest,
     ) -> Result<EffectPermitDecision, TaskStoreError> {
-        self.request_effect_permit_inner(authorities.operation, authorities.channel, request)
+        self.request_effect_permit_inner(authorities.operation, authorities.channel, request, None)
     }
 
     #[allow(clippy::too_many_lines)] // Keep the one-transaction authority decision contiguous.
@@ -1639,6 +1675,7 @@ impl SqliteTaskAuthority {
         operation_authority: Option<&nlos_store::SqliteOperationStore>,
         channel_authority: Option<&nlos_channel::ChannelAuthority>,
         request: PermitRequest,
+        authority_lease: Option<crate::AuthorityLeaseRecord>,
     ) -> Result<EffectPermitDecision, TaskStoreError> {
         let mut connection = self.lock_connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -1687,6 +1724,17 @@ impl SqliteTaskAuthority {
             derive_effect_permit_id(request.permit_id, request.idempotency_key),
             request.valid_until_ms,
             request.requested_at_ms,
+        )?;
+        // `TK-B2`: a lease-bound permit's effect plane is fenced by the same
+        // live-lease validation as the terminal paths — the TTL check above
+        // keeps its pinned priority, the replay branch above stays first, and
+        // this gate runs strictly before any write. Unbound permits (the
+        // issuance opt-in default) pass untouched.
+        crate::reconcile::validate_permit_authority_lease(
+            &transaction,
+            &context.permit,
+            request.requested_at_ms,
+            authority_lease,
         )?;
         let slot = load_slot(&transaction, request.permit_id, request.effect_seq)?;
         if slot.state != SlotState::Planned {
@@ -1797,10 +1845,51 @@ impl SqliteTaskAuthority {
     /// # Errors
     ///
     /// Returns a not-found, holder, epoch, stale-head, cancel, token,
-    /// expired-permit, slot-state, or storage error.
+    /// expired-permit, slot-state, or storage error. A permit whose issuance
+    /// bound an authority lease additionally fails closed with the typed
+    /// lease family (`TK-B2`); see
+    /// [`Self::consume_dispatch_token_with_authority_lease`].
     pub fn consume_dispatch_token(
         &self,
         request: DispatchRequest,
+    ) -> Result<SlotRecord, TaskStoreError> {
+        self.consume_dispatch_token_inner(request, None)
+    }
+
+    /// Consumes the one-shot dispatch token behind the authority-lease fence
+    /// (`TK-B2`): a permit whose issuance bound a durable authority lease
+    /// must present that exact live lease, exactly as the terminal paths
+    /// require it.
+    ///
+    /// The fence is opt-in at permit issuance, so an unbound permit keeps
+    /// the legacy unfenced dispatch behavior. After a lease takeover the
+    /// stale holder's dispatch attempt fails closed with a typed
+    /// lease-required / lease-mismatch / lease-fenced error before any
+    /// write, so the slot stays `Permitted` for the no-effect path to
+    /// close and the token is never consumed by a fenced writer.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::consume_dispatch_token`], plus
+    /// [`TaskStoreError::AuthorityLeaseRequired`] when a lease-bound permit
+    /// is dispatched without its lease,
+    /// [`TaskStoreError::AuthorityLeaseBindingMismatch`] when the presented
+    /// lease is not the bound one, and
+    /// [`TaskStoreError::AuthorityLeaseFenced`] /
+    /// [`TaskStoreError::AuthorityLeaseExpired`] when the bound lease is no
+    /// longer the live one.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn consume_dispatch_token_with_authority_lease(
+        &self,
+        request: AuthorityLeaseDispatchRequest,
+    ) -> Result<SlotRecord, TaskStoreError> {
+        self.consume_dispatch_token_inner(request.dispatch, Some(request.lease))
+    }
+
+    fn consume_dispatch_token_inner(
+        &self,
+        request: DispatchRequest,
+        authority_lease: Option<crate::AuthorityLeaseRecord>,
     ) -> Result<SlotRecord, TaskStoreError> {
         let mut connection = self.lock_connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -1835,6 +1924,15 @@ impl SqliteTaskAuthority {
             effect_permit.effect_permit_id,
             effect_permit.valid_until_ms,
             request.dispatched_at_ms,
+        )?;
+        // `TK-B2`: the same live-lease fence as issuance, directly after the
+        // TTL gate and strictly before the token comparison and any write —
+        // a fenced writer can never consume the one-shot token.
+        crate::reconcile::validate_permit_authority_lease(
+            &transaction,
+            &context.permit,
+            request.dispatched_at_ms,
+            authority_lease,
         )?;
         let slot = load_slot(&transaction, request.permit_id, effect_permit.effect_seq)?;
         let presented_digest = dispatch_token_digest(&request.dispatch_token);
@@ -1902,10 +2000,52 @@ impl SqliteTaskAuthority {
     /// # Errors
     ///
     /// Returns a not-found, holder, epoch, slot-state, replay-conflict, or
-    /// storage error.
+    /// storage error. A permit whose issuance bound an authority lease
+    /// additionally fails closed with the typed lease family (`TK-B2`); see
+    /// [`Self::record_effect_outcome_with_authority_lease`].
     pub fn record_effect_outcome(
         &self,
         request: OutcomeRequest,
+    ) -> Result<EffectReceiptDecision, TaskStoreError> {
+        self.record_effect_outcome_inner(request, None)
+    }
+
+    /// Registers a `Dispatched` slot's outcome behind the authority-lease
+    /// fence (`TK-B2`): a permit whose issuance bound a durable authority
+    /// lease must present that exact live lease, exactly as the terminal
+    /// paths require it.
+    ///
+    /// The fence is opt-in at permit issuance, so an unbound permit keeps
+    /// the legacy unfenced behavior. Exact replays stay first: a request
+    /// byte-equal to the already-recorded outcome returns the original
+    /// receipt without consulting the lease. Every other path — closure or
+    /// uncertainty registration on a live dispatch — is refused with a
+    /// typed lease-required / lease-mismatch / lease-fenced error before
+    /// any write, so a fenced writer can never resolve another holder's
+    /// dispatch.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::record_effect_outcome`], plus
+    /// [`TaskStoreError::AuthorityLeaseRequired`] when a lease-bound permit
+    /// is mutated without its lease,
+    /// [`TaskStoreError::AuthorityLeaseBindingMismatch`] when the presented
+    /// lease is not the bound one, and
+    /// [`TaskStoreError::AuthorityLeaseFenced`] /
+    /// [`TaskStoreError::AuthorityLeaseExpired`] when the bound lease is no
+    /// longer the live one.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn record_effect_outcome_with_authority_lease(
+        &self,
+        request: AuthorityLeaseOutcomeRequest,
+    ) -> Result<EffectReceiptDecision, TaskStoreError> {
+        self.record_effect_outcome_inner(request.outcome, Some(request.lease))
+    }
+
+    fn record_effect_outcome_inner(
+        &self,
+        request: OutcomeRequest,
+        authority_lease: Option<crate::AuthorityLeaseRecord>,
     ) -> Result<EffectReceiptDecision, TaskStoreError> {
         let mut connection = self.lock_connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -1933,6 +2073,15 @@ impl SqliteTaskAuthority {
             }
             return Err(TaskStoreError::InvalidEffectSlotState { state: slot.state });
         }
+        // `TK-B2`: the live-lease fence, after the replay branch (which
+        // stays first) and strictly before the receipt write — a fenced
+        // writer can neither close nor leave uncertain a live dispatch.
+        crate::reconcile::validate_permit_authority_lease(
+            &transaction,
+            &context.permit,
+            request.recorded_at_ms,
+            authority_lease,
+        )?;
         let (domain, kind) = match request.outcome {
             Outcome::Closed { .. } => (
                 "llmos/task-effect-closed-receipt/v1",
@@ -2011,10 +2160,52 @@ impl SqliteTaskAuthority {
     /// # Errors
     ///
     /// Returns a not-found, holder, epoch, token, slot-state, condition,
-    /// replay-conflict, or storage error.
+    /// replay-conflict, or storage error. A permit whose issuance bound an
+    /// authority lease additionally fails closed with the typed lease family
+    /// (`TK-B2`); see [`Self::record_no_effect_with_authority_lease`].
     pub fn record_no_effect(
         &self,
         request: NoEffectRequest,
+    ) -> Result<EffectReceiptDecision, TaskStoreError> {
+        self.record_no_effect_inner(request, None)
+    }
+
+    /// Closes a slot as `NoEffect` behind the authority-lease fence
+    /// (`TK-B2`): a permit whose issuance bound a durable authority lease
+    /// must present that exact live lease, exactly as the terminal paths
+    /// require it.
+    ///
+    /// The fence is opt-in at permit issuance, so an unbound permit keeps
+    /// the legacy unfenced behavior. Exact replays stay first: a request
+    /// byte-equal to the recorded no-effect receipt returns the original
+    /// receipt without consulting the lease. Every other path — proving a
+    /// still-unconsumed token absent — is refused with a typed
+    /// lease-required / lease-mismatch / lease-fenced error before any
+    /// write, so a fenced writer can never rewrite another holder's
+    /// absence proof.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::record_no_effect`], plus
+    /// [`TaskStoreError::AuthorityLeaseRequired`] when a lease-bound permit
+    /// is mutated without its lease,
+    /// [`TaskStoreError::AuthorityLeaseBindingMismatch`] when the presented
+    /// lease is not the bound one, and
+    /// [`TaskStoreError::AuthorityLeaseFenced`] /
+    /// [`TaskStoreError::AuthorityLeaseExpired`] when the bound lease is no
+    /// longer the live one.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn record_no_effect_with_authority_lease(
+        &self,
+        request: AuthorityLeaseNoEffectRequest,
+    ) -> Result<EffectReceiptDecision, TaskStoreError> {
+        self.record_no_effect_inner(request.no_effect, Some(request.lease))
+    }
+
+    fn record_no_effect_inner(
+        &self,
+        request: NoEffectRequest,
+        authority_lease: Option<crate::AuthorityLeaseRecord>,
     ) -> Result<EffectReceiptDecision, TaskStoreError> {
         let mut connection = self.lock_connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -2060,6 +2251,15 @@ impl SqliteTaskAuthority {
         {
             return Err(TaskStoreError::ConditionNotBound);
         }
+        // `TK-B2`: the live-lease fence, after the replay branch (which
+        // stays first) and strictly before the receipt write — a fenced
+        // writer can never forge an absence proof for another holder.
+        crate::reconcile::validate_permit_authority_lease(
+            &transaction,
+            &context.permit,
+            request.recorded_at_ms,
+            authority_lease,
+        )?;
         let receipt = build_no_effect_receipt(&slot, &request);
         insert_effect_receipt(&transaction, &receipt)?;
         let control_epoch = context
@@ -2193,10 +2393,53 @@ impl SqliteTaskAuthority {
     ///
     /// Fails closed for an invalid binding, idempotency rebinding, a
     /// non-holder caller, a closed registration window, a conflicting
-    /// binding identity, or a storage/corruption failure.
+    /// binding identity, or a storage/corruption failure. A permit whose
+    /// issuance bound an authority lease additionally fails closed with the
+    /// typed lease family (`TK-B2`); see
+    /// [`Self::register_effect_binding_with_authority_lease`].
     pub fn register_effect_binding(
         &self,
         request: RegisterEffectBindingRequest,
+    ) -> Result<EffectBindingDecision, TaskStoreError> {
+        self.register_effect_binding_inner(request, None)
+    }
+
+    /// Registers the initiating fiber's identity behind the authority-lease
+    /// fence (`TK-B2`): a permit whose issuance bound a durable authority
+    /// lease must present that exact live lease, exactly as the terminal
+    /// paths require it.
+    ///
+    /// The fence is opt-in at permit issuance, so an unbound permit keeps
+    /// the legacy unfenced behavior. Exact replays stay first: both replay
+    /// branches (idempotency key and already-registered identity) return
+    /// the original registration without consulting the lease. The fresh
+    /// registration itself is refused with a typed lease-required /
+    /// lease-mismatch / lease-fenced error before any write, so a fenced
+    /// writer can never attribute an effect to its fiber.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::register_effect_binding`], plus
+    /// [`TaskStoreError::AuthorityLeaseRequired`] when a lease-bound permit
+    /// is mutated without its lease,
+    /// [`TaskStoreError::AuthorityLeaseBindingMismatch`] when the presented
+    /// lease is not the bound one, and
+    /// [`TaskStoreError::AuthorityLeaseFenced`] /
+    /// [`TaskStoreError::AuthorityLeaseExpired`] when the bound lease is no
+    /// longer the live one.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn register_effect_binding_with_authority_lease(
+        &self,
+        request: AuthorityLeaseEffectBindingRequest,
+    ) -> Result<EffectBindingDecision, TaskStoreError> {
+        self.register_effect_binding_inner(request.binding, Some(request.lease))
+    }
+
+    #[allow(clippy::too_many_lines)] // The registration transaction stays contiguous for audit.
+    fn register_effect_binding_inner(
+        &self,
+        request: RegisterEffectBindingRequest,
+        authority_lease: Option<crate::AuthorityLeaseRecord>,
     ) -> Result<EffectBindingDecision, TaskStoreError> {
         if request.binding.as_bytes().iter().all(|&byte| byte == 0) {
             return Err(TaskStoreError::InvalidFiberBinding);
@@ -2218,7 +2461,7 @@ impl SqliteTaskAuthority {
             return Ok(EffectBindingDecision::Replayed(Box::new(existing)));
         }
 
-        check_holder(
+        let context = check_holder(
             &transaction,
             request.task_id,
             request.attempt_id,
@@ -2251,6 +2494,16 @@ impl SqliteTaskAuthority {
             }
             return Err(TaskStoreError::EffectBindingConflict);
         }
+
+        // `TK-B2`: the live-lease fence, after both replay branches (which
+        // stay first) and strictly before the slot's binding CAS — a fenced
+        // writer can never attribute an effect to its own fiber.
+        crate::reconcile::validate_permit_authority_lease(
+            &transaction,
+            &context.permit,
+            request.registered_at_ms,
+            authority_lease,
+        )?;
 
         let registration_id = ReceiptId::from_bytes(sha256_prefix16(
             "llmos/task-effect-fiber-registration/v1",
@@ -2605,6 +2858,53 @@ pub struct RegisterEffectBindingRequest {
     pub fiber_generation: Generation,
     pub idempotency_key: IdempotencyKey,
     pub registered_at_ms: i64,
+}
+
+/// Opt-in `EffectPermit` issuance request presenting the same durable
+/// authority lease that was copied into the parent `CommitPermit` at
+/// issuance (`TK-B2`). Mirrors [`crate::AuthorityLeasePermitRequest`] on
+/// the commit ladder: the plain entry treats a lease-bound permit as an
+/// unpresented lease and fails closed with
+/// [`TaskStoreError::AuthorityLeaseRequired`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AuthorityLeaseEffectPermitRequest {
+    pub permit: PermitRequest,
+    pub lease: crate::AuthorityLeaseRecord,
+}
+
+/// Opt-in dispatch-token consumption request presenting the permit's
+/// issuance-time authority lease (`TK-B2`); see
+/// [`AuthorityLeaseEffectPermitRequest`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AuthorityLeaseDispatchRequest {
+    pub dispatch: DispatchRequest,
+    pub lease: crate::AuthorityLeaseRecord,
+}
+
+/// Opt-in outcome-registration request presenting the permit's
+/// issuance-time authority lease (`TK-B2`); see
+/// [`AuthorityLeaseEffectPermitRequest`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AuthorityLeaseOutcomeRequest {
+    pub outcome: OutcomeRequest,
+    pub lease: crate::AuthorityLeaseRecord,
+}
+
+/// Opt-in no-effect closure request presenting the permit's issuance-time
+/// authority lease (`TK-B2`); see [`AuthorityLeaseEffectPermitRequest`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AuthorityLeaseNoEffectRequest {
+    pub no_effect: NoEffectRequest,
+    pub lease: crate::AuthorityLeaseRecord,
+}
+
+/// Opt-in effect-fiber registration request presenting the permit's
+/// issuance-time authority lease (`TK-B2`); see
+/// [`AuthorityLeaseEffectPermitRequest`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AuthorityLeaseEffectBindingRequest {
+    pub binding: RegisterEffectBindingRequest,
+    pub lease: crate::AuthorityLeaseRecord,
 }
 
 /// One durable effect fiber registration, joined at read time with the

@@ -7,14 +7,15 @@ use nlos_semantic::{
     PublishSemanticPublicationRequest, SemanticAuthority, SemanticPublicationReceipt,
 };
 use nlos_task::{
-    AttemptSpec, AuthorityLeasePermitRequest, AuthorityLeaseRequest, EffectPermitDecision,
-    EffectPermitRequest, FinalizeRequest, FinalizeRequestV3, FinalizeSemanticCommitRequest,
-    LogicalEffectDescriptor, NestedSemanticPublicationReceipt, NoEffectReason, NoEffectRequest,
-    PermitDecision, PermitRequest, PlanSemanticCommitRequest, PlannedEffect,
-    PrepareSemanticFinalizeRequest, RecordSemanticPublicationsRequest, SemanticCommitPlanState,
-    SemanticFinalizeDecision, SnapshotBundle, SnapshotConsistency, SqliteTaskAuthority,
-    TaskSnapshotReceiptSpec, TaskSpec, TaskStoreError, TaskWriteSetEffectEndpointRequest,
-    TaskWriteSetRequest, TaskWriteSetSemanticAppendRequest, TaskWriteSetSemanticRequiredDurability,
+    AttemptSpec, AuthorityLeaseEffectPermitRequest, AuthorityLeaseNoEffectRequest,
+    AuthorityLeasePermitRequest, AuthorityLeaseRequest, EffectPermitDecision, EffectPermitRequest,
+    FinalizeRequest, FinalizeRequestV3, FinalizeSemanticCommitRequest, LogicalEffectDescriptor,
+    NestedSemanticPublicationReceipt, NoEffectReason, NoEffectRequest, PermitDecision,
+    PermitRequest, PlanSemanticCommitRequest, PlannedEffect, PrepareSemanticFinalizeRequest,
+    RecordSemanticPublicationsRequest, SemanticCommitPlanState, SemanticFinalizeDecision,
+    SnapshotBundle, SnapshotConsistency, SqliteTaskAuthority, TaskSnapshotReceiptSpec, TaskSpec,
+    TaskStoreError, TaskWriteSetEffectEndpointRequest, TaskWriteSetRequest,
+    TaskWriteSetSemanticAppendRequest, TaskWriteSetSemanticRequiredDurability,
     TaskWriteSetSemanticTarget, empty_effect_history_root,
 };
 use nlos_types::{
@@ -431,17 +432,22 @@ fn run_semantic_owner_receipt_lifecycle(with_effect: bool) {
         );
     }
     let (committed, replay_request) = if with_effect {
+        // The permit is lease-bound, so the effect plane must present the
+        // live lease (`TK-B2`).
         let issued = match task
-            .request_effect_permit(EffectPermitRequest {
-                task_id,
-                attempt_id,
-                attempt_generation: Generation::INITIAL,
-                permit_id: permit.permit_id,
-                permit_epoch: permit.permit_epoch,
-                effect_seq: 0,
-                idempotency_key: IdempotencyKey::from_bytes([0x77; 16]),
-                valid_until_ms: 1_000,
-                requested_at_ms: 11,
+            .request_effect_permit_with_authority_lease(AuthorityLeaseEffectPermitRequest {
+                permit: EffectPermitRequest {
+                    task_id,
+                    attempt_id,
+                    attempt_generation: Generation::INITIAL,
+                    permit_id: permit.permit_id,
+                    permit_epoch: permit.permit_epoch,
+                    effect_seq: 0,
+                    idempotency_key: IdempotencyKey::from_bytes([0x77; 16]),
+                    valid_until_ms: 1_000,
+                    requested_at_ms: 11,
+                },
+                lease: authority_lease,
             })
             .unwrap()
         {
@@ -449,16 +455,19 @@ fn run_semantic_owner_receipt_lifecycle(with_effect: bool) {
                 *issued
             }
         };
-        task.record_no_effect(NoEffectRequest {
-            task_id,
-            attempt_id,
-            attempt_generation: Generation::INITIAL,
-            permit_id: permit.permit_id,
-            permit_epoch: permit.permit_epoch,
-            effect_seq: 0,
-            reason: NoEffectReason::NotSelected,
-            dispatch_token: Some(issued.one_shot_dispatch_token),
-            recorded_at_ms: 12,
+        task.record_no_effect_with_authority_lease(AuthorityLeaseNoEffectRequest {
+            no_effect: NoEffectRequest {
+                task_id,
+                attempt_id,
+                attempt_generation: Generation::INITIAL,
+                permit_id: permit.permit_id,
+                permit_epoch: permit.permit_epoch,
+                effect_seq: 0,
+                reason: NoEffectReason::NotSelected,
+                dispatch_token: Some(issued.one_shot_dispatch_token),
+                recorded_at_ms: 12,
+            },
+            lease: authority_lease,
         })
         .unwrap();
         let finalize_request = FinalizeRequestV3 {

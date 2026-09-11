@@ -1493,7 +1493,13 @@ struct TerminalCtx<'a> {
     effective_registry_binding: Option<crate::ParticipantRegistryBinding>,
 }
 
-fn validate_permit_authority_lease(
+/// Fences a permit's mutation path by its issuance-time authority lease
+/// binding (`TK-B2`): shared unchanged by the terminal paths
+/// (finalize/close/adopt/reconcile) and the five effect-plane write entries
+/// (`crates/nlos-task/src/effect.rs`). Unbound permits (the issuance
+/// opt-in default) pass untouched; a bound permit must present the exact
+/// live lease.
+pub(crate) fn validate_permit_authority_lease(
     transaction: &Transaction<'_>,
     permit: &PermitRecord,
     now_ms: i64,

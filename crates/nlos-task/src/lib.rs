@@ -151,6 +151,8 @@ pub use commit::{
     PlanArtifactCommitRequest, RecordArtifactPublicationsRequest, artifact_publication_plan_root,
 };
 pub use effect::{
+    AuthorityLeaseDispatchRequest, AuthorityLeaseEffectBindingRequest,
+    AuthorityLeaseEffectPermitRequest, AuthorityLeaseNoEffectRequest, AuthorityLeaseOutcomeRequest,
     DispatchRequest, EffectBindingDecision, EffectFiberRegistrationRecord, EffectPermitAuthorities,
     EffectPermitDecision, EffectReceipt, EffectReceiptDecision, IssuedPermit,
     LogicalEffectDescriptor, NoEffectReason, NoEffectRequest, Outcome, OutcomeRequest,
