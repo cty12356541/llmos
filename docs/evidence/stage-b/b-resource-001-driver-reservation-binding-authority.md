@@ -53,3 +53,9 @@ Quote 声明每维 capacity（`CreateQuoteRequest.demand_capacity`），Reservat
 ### 边界
 
 demand 仅在 binding（reserve）时作为 admission 谓词校验；consume/finalize 的计量与退款仍只走单维 credit（多维 metering/refund 是后续车道）。capacity 与 demand 均为 caller 声明值（无 host 容量证明）；零 demand 恒过零 capacity。迁移幂等与 torn-schema fail-closed 已测，真实掉电矩阵未在本前缀重跑。测试文件 352 纯 LOC 超出 250 指引，遵循本仓库按主题单文件 integration-test 惯例（同目录既有文件 314–1010 行）未拆分。
+
+### 收尾 integrator 注记（2026-09-11，W22-R 超时救回）
+
+- 车道子 Agent 被编排方报告超时（30 分钟 inactivity）后实际自行恢复，resource 写集与 evidence 已由车道本体提交（commit `43d4014`）；收尾 integrator 复验其验证门并补齐下述依赖方修补。
+- **依赖方修补（车道写集墙所致）**：`ReserveRequest`/`CreateQuoteRequest` 新增必填字段后，`crates/nlos-task` 5 个测试文件构造点需补 `ResourceDemand::default()`（resource_commit/finalize_spec/mixed_semantic_resource_commit/participant_registry/resource_bridge_fault_injection，各 quote+reserve fixture 两处；零 demand = 旧单维语义，断言不变）。车道 prompt 写集禁触 nlos-task，属编排约束缺口，由 integrator 补齐并如实登记。
+- **复验门（2026-09-11 实跑）**：`cargo test -p nlos-resource` → 35 passed / 0 failed（9 targets）；受影响 nlos-task 目标 `--test resource_commit --test finalize_spec --test mixed_semantic_resource_commit --test participant_registry --test resource_bridge_fault_injection` → 7+7+13+11+6 = **44 passed / 0 failed**；`cargo clippy -p nlos-resource --all-targets -- -D warnings` → exit 0；`cargo fmt -p nlos-resource`/`-p nlos-task` `--check` → 均 clean。

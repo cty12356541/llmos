@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use nlos_resource::{
     AccountRecord, CreateAccountRequest, CreateQuoteRequest, DriverRecord, FinalizationReceipt,
     QuoteRecord, RegisterDriverRequest, ReservationRecord, ReserveRequest, ResourceAuthority,
+    ResourceDemand,
 };
 use nlos_task::{
     AttemptSpec, AuthorityLeasePermitRequest, AuthorityLeaseRequest, FinalizeRequest,
@@ -155,6 +156,7 @@ impl OwnerFixture {
                 operation_proposal_digest: [seed; 32],
                 pricing_version: [seed ^ 0x11; 32],
                 upper_bound,
+                demand_capacity: ResourceDemand::default(),
                 valid_until_ms: 9_000,
                 idempotency_key: IdempotencyKey::from_bytes([seed ^ 0x12; 16]),
                 created_at_ms: 1_000,
@@ -177,6 +179,7 @@ impl OwnerFixture {
                 call_id,
                 operation_id,
                 idempotency_key: key,
+                demand: ResourceDemand::default(),
                 reserved_at_ms: 1_100,
             })
             .expect("reserve")

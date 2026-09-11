@@ -1099,6 +1099,7 @@ fn verified_write_set_seal_binds_reserved_resource_owner_facts() {
             operation_proposal_digest: [0xd5; 32],
             pricing_version: [0xd6; 32],
             upper_bound: 25,
+            demand_capacity: nlos_resource::ResourceDemand::default(),
             valid_until_ms: 9_000,
             idempotency_key: IdempotencyKey::from_bytes([0xd7; 16]),
             created_at_ms: 1_000,
@@ -1112,6 +1113,7 @@ fn verified_write_set_seal_binds_reserved_resource_owner_facts() {
             call_id: CallId::from_bytes([0xd8; 16]),
             operation_id: OperationId::from_bytes([0xd9; 16]),
             idempotency_key: IdempotencyKey::from_bytes([0xda; 16]),
+            demand: nlos_resource::ResourceDemand::default(),
             reserved_at_ms: 1_100,
         })
         .unwrap()
