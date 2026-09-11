@@ -454,20 +454,74 @@ impl AuthorityLeaseDecision {
 }
 
 impl SqliteTaskAuthority {
-    /// Acquires, renews, or takes over the durable `TaskAuthority` lease.
+    /// Acquires, renews, or takes over the durable `TaskAuthority` lease
+    /// under the historical clock-trust contract.
     ///
     /// A live lease may only be renewed by its current holder. Once expired,
     /// a new holder advances the term and fencing epoch in one `SQLite`
     /// transaction; the previous token can never validate again.
     ///
+    /// This entry judges expiry from `requested_at_ms` exactly as reported,
+    /// so a caller whose clock runs ahead can report a future timestamp,
+    /// judge a live incumbent lease dead, and take it over with `term + 1`.
+    /// Callers with a wall-clock observation should use
+    /// [`Self::acquire_authority_lease_anchored`] instead, which clamps the
+    /// judgement so a self-reported time can only make the lease look more
+    /// alive, never more dead.
+    ///
     /// # Errors
     ///
     /// Returns a typed lease conflict, invalid request, storage, or
     /// monotonic-epoch error.
-    #[allow(clippy::too_many_lines)] // One transaction keeps lease CAS and history atomic.
     pub fn acquire_authority_lease(
         &self,
         request: AuthorityLeaseRequest,
+    ) -> Result<AuthorityLeaseDecision, TaskStoreError> {
+        self.acquire_lease_with_anchor(request, WallAnchor::Unanchored)
+    }
+
+    /// Acquires, renews, or takes over the durable `TaskAuthority` lease
+    /// with the takeover judgement anchored to a wall-clock observation.
+    ///
+    /// `clock_wall_ms` is the caller's best available wall-clock observation
+    /// (milliseconds since the Unix epoch). The store layer holds no clock
+    /// by repository convention, so the anchor is supplied by the calling
+    /// layer; where no clock-authority handle exists upstream, any honest
+    /// observation is accepted and the fail-closed direction below still
+    /// holds, in line with the `nlos-clock` wall high-water-mark idea.
+    ///
+    /// An incumbent lease is judged dead only when it is expired at
+    /// `min(requested_at_ms, clock_wall_ms)`: a self-reported timestamp in
+    /// the future, or lagging behind the wall, can only make the lease look
+    /// more alive, never widen the window in which a live lease is taken
+    /// over with `term + 1`.
+    ///
+    /// `clock_wall_ms == 0` means "no wall observation is available" and
+    /// fails closed: an incumbent lease is treated as live, so a challenger
+    /// gets [`TaskStoreError::AuthorityLeaseHeld`] while the incumbent
+    /// itself still renews. That is the conservative choice because without
+    /// an independent observation the challenger cannot prove the incumbent
+    /// dead, and refusing to advance the term only costs the challenger a
+    /// retry once it obtains a real observation — nobody is fenced on
+    /// missing evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed lease conflict, invalid request, storage, or
+    /// monotonic-epoch error.
+    pub fn acquire_authority_lease_anchored(
+        &self,
+        request: AuthorityLeaseRequest,
+        clock_wall_ms: u64,
+    ) -> Result<AuthorityLeaseDecision, TaskStoreError> {
+        self.acquire_lease_with_anchor(request, WallAnchor::Observed(clock_wall_ms))
+    }
+
+    #[allow(clippy::too_many_lines)] // One transaction keeps lease CAS and history atomic.
+    fn acquire_lease_with_anchor(
+        &self,
+        request: AuthorityLeaseRequest,
+        wall_anchor: WallAnchor,
     ) -> Result<AuthorityLeaseDecision, TaskStoreError> {
         let expires_at_ms = validate_request(&request)?;
         let mut connection = self.lock_connection()?;
@@ -491,7 +545,11 @@ impl SqliteTaskAuthority {
         let current = load_lease_optional(&transaction, authority_id)?;
 
         if let Some(current) = current {
-            let (term, transition) = if current.expires_at_ms > request.requested_at_ms {
+            let incumbent_live = match wall_anchor.effective_now_ms(request.requested_at_ms) {
+                Some(effective_now_ms) => current.expires_at_ms > effective_now_ms,
+                None => true,
+            };
+            let (term, transition) = if incumbent_live {
                 if current.holder_id != request.holder_id {
                     return Err(TaskStoreError::AuthorityLeaseHeld);
                 }
@@ -683,6 +741,34 @@ impl LeaseTransition {
             Self::Acquired => 1,
             Self::Renewed => 2,
             Self::TakenOver => 3,
+        }
+    }
+}
+
+/// Clock anchor for the authority-lease takeover judgement.
+#[derive(Clone, Copy)]
+enum WallAnchor {
+    /// No wall observation supplied: the judgement keeps the historical
+    /// contract and trusts `requested_at_ms` alone.
+    Unanchored,
+    /// Caller's wall-clock observation; `0` means no observation is
+    /// available and fails closed.
+    Observed(u64),
+}
+
+impl WallAnchor {
+    /// Effective observation instant for judging an incumbent lease dead
+    /// (`expires_at_ms > effective_now_ms` means live). `None` means the
+    /// incumbent cannot be proven dead under this anchor and must be
+    /// treated as live.
+    fn effective_now_ms(self, requested_at_ms: i64) -> Option<i64> {
+        match self {
+            Self::Unanchored => Some(requested_at_ms),
+            Self::Observed(0) => None,
+            Self::Observed(wall_ms) => {
+                let wall_ms = i64::try_from(wall_ms).unwrap_or(i64::MAX);
+                Some(requested_at_ms.min(wall_ms))
+            }
         }
     }
 }
