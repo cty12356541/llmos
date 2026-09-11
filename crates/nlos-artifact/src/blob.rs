@@ -277,6 +277,9 @@ fn sync_dir(path: &Path) -> Result<(), ArtifactError> {
 
     OpenOptions::new()
         .read(true)
+        // FlushFileBuffers requires a handle with write access; a read-only
+        // directory handle fails with ERROR_ACCESS_DENIED on strict builds.
+        .write(true)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
         .open(path)
         .and_then(|directory| directory.sync_all())
