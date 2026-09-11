@@ -383,6 +383,22 @@ pub enum TaskStoreError {
     EffectSlotNotFound,
     /// No `EffectPermit` with the given ID exists under the given task.
     EffectPermitNotFound,
+    /// The `EffectPermit`'s TTL is already past at the request-carried
+    /// observation time (`TK-B1` fail-closed TTL enforcement). Expiry is
+    /// STRICT: `observed_ms == valid_until_ms` is still inside the valid
+    /// window. The rejection happens before any write, so the durable
+    /// state is untouched and replaying the same request re-derives the
+    /// same rejection.
+    PermitExpired {
+        /// The expired effect permit's identity.
+        permit_id: EffectPermitId,
+        /// The expired permit's durable TTL boundary (still valid at
+        /// equality; expired only strictly beyond it).
+        valid_until_ms: u64,
+        /// The request-carried observation time that exceeded the TTL; the
+        /// store holds no clock.
+        observed_ms: u64,
+    },
     /// The caller presented a permit epoch different from the outstanding
     /// permit's epoch.
     PermitEpochMismatch,
@@ -715,6 +731,14 @@ impl fmt::Display for TaskStoreError {
             Self::EffectPermitNotFound => {
                 formatter.write_str("effect permit does not exist under task")
             }
+            Self::PermitExpired {
+                permit_id,
+                valid_until_ms,
+                observed_ms,
+            } => write!(
+                formatter,
+                "effect permit {permit_id:?} expired: valid_until_ms {valid_until_ms} is strictly before observed_ms {observed_ms}"
+            ),
             Self::PermitEpochMismatch => {
                 formatter.write_str("permit epoch mismatches the outstanding permit")
             }

@@ -1346,6 +1346,36 @@ fn check_commit_context(
     Ok(())
 }
 
+/// `TK-B1`: an `EffectPermit` past its TTL (`valid_until_ms`) must neither
+/// mint nor dispatch. Expiry is STRICT: `observed_ms == valid_until_ms` is
+/// still inside the valid window; only a strictly greater observation time
+/// rejects. The observation time is the request's own timestamp
+/// (`requested_at_ms` / `dispatched_at_ms`) — the store holds no clock.
+/// Both call sites reject before any write, so the rejection leaves zero
+/// partial state and replaying the same request re-derives it.
+fn check_effect_permit_ttl(
+    permit_id: EffectPermitId,
+    valid_until_ms: i64,
+    observed_ms: i64,
+) -> Result<(), TaskStoreError> {
+    if observed_ms > valid_until_ms {
+        return Err(TaskStoreError::PermitExpired {
+            permit_id,
+            valid_until_ms: expiry_payload_ms(valid_until_ms),
+            observed_ms: expiry_payload_ms(observed_ms),
+        });
+    }
+    Ok(())
+}
+
+/// `TK-B1` payload conversion: durable and request timestamps are signed
+/// SQLite integers, while the typed rejection reports `u64`. A negative
+/// (corrupt) input clamps to 0 — the fail-closed decision itself was
+/// already made in the signed domain by the strict comparison.
+fn expiry_payload_ms(value: i64) -> u64 {
+    u64::try_from(value).unwrap_or(0)
+}
+
 /// Borrowed owner-authority bundle for the struct-based `EffectPermit`
 /// issuance entry. Every field mirrors the exact `Option<&_>` authority slot
 /// the ladder constructors thread into `request_effect_permit_inner`, so one
@@ -1485,12 +1515,15 @@ impl SqliteTaskAuthority {
     /// `Planned` → `Permitted`, the one-shot dispatch token is minted, and
     /// the issued/outstanding roots are recomputed in the same transaction.
     /// Same key + same bytes replays the original permit (and token);
-    /// same key + different bytes fails closed.
+    /// same key + different bytes fails closed. A request whose own
+    /// `requested_at_ms` is already strictly past its `valid_until_ms`
+    /// never mints (`TK-B1`): a born-expired permit is refused fail-closed
+    /// before any write.
     ///
     /// # Errors
     ///
-    /// Returns a not-found, holder, epoch, stale-head, cancel, slot-state,
-    /// idempotency-conflict, or storage error.
+    /// Returns a not-found, holder, epoch, stale-head, cancel,
+    /// expired-permit, slot-state, idempotency-conflict, or storage error.
     pub fn request_effect_permit(
         &self,
         request: PermitRequest,
@@ -1646,6 +1679,15 @@ impl SqliteTaskAuthority {
         if crate::reconcile::has_adoption(&transaction, request.permit_id)? {
             return Err(TaskStoreError::AdoptionScopeViolation);
         }
+        // `TK-B1`: a request whose own observation time is already past
+        // the TTL it declares must never mint — a born-expired permit is
+        // refused before any write, so no row exists and replaying the
+        // same rejected bytes re-derives the same rejection.
+        check_effect_permit_ttl(
+            derive_effect_permit_id(request.permit_id, request.idempotency_key),
+            request.valid_until_ms,
+            request.requested_at_ms,
+        )?;
         let slot = load_slot(&transaction, request.permit_id, request.effect_seq)?;
         if slot.state != SlotState::Planned {
             return Err(TaskStoreError::InvalidEffectSlotState { state: slot.state });
@@ -1744,14 +1786,18 @@ impl SqliteTaskAuthority {
     /// cancellation committed in between yields a typed
     /// [`TaskStoreError::CancellationCommitted`] rejection and the slot
     /// stays `Permitted` for the cancel path to close as no-effect
-    /// (`[TASK-CANCEL-003]`). Presenting the same token twice fails closed
+    /// (`[TASK-CANCEL-003]`). The permit's TTL must also still cover the
+    /// dispatch (`TK-B1`): `dispatched_at_ms > valid_until_ms` is refused
+    /// fail-closed with [`TaskStoreError::PermitExpired`] and the slot
+    /// stays `Permitted` for the no-effect path to close. Presenting the
+    /// same token twice fails closed
     /// with [`TaskStoreError::DispatchTokenConsumed`]; a consumed token can
     /// never masquerade as unexecuted.
     ///
     /// # Errors
     ///
     /// Returns a not-found, holder, epoch, stale-head, cancel, token,
-    /// slot-state, or storage error.
+    /// expired-permit, slot-state, or storage error.
     pub fn consume_dispatch_token(
         &self,
         request: DispatchRequest,
@@ -1780,6 +1826,15 @@ impl SqliteTaskAuthority {
         crate::participant::validate_copied_binding(
             context.permit.participant_registry_binding,
             effect_permit.participant_registry_binding,
+        )?;
+        // `TK-B1`: the one-shot window closes at `valid_until_ms`; a
+        // dispatch observed strictly past it is refused fail-closed before
+        // any write, so the slot keeps its durable state and replaying
+        // the same request re-derives the same rejection.
+        check_effect_permit_ttl(
+            effect_permit.effect_permit_id,
+            effect_permit.valid_until_ms,
+            request.dispatched_at_ms,
         )?;
         let slot = load_slot(&transaction, request.permit_id, effect_permit.effect_seq)?;
         let presented_digest = dispatch_token_digest(&request.dispatch_token);
