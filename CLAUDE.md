@@ -61,7 +61,7 @@
 Windows 专项注意(本机实测教训):
 - 目录 fsync 句柄必须带写权限(`blob.rs` 的 `sync_dir`,PR #17)
 - 权威 `open` 的 `create_dir_all` 必须带 `file:` URI 守卫(f81f6d2 模式)
-- 已知既有失败:`nlos-process` 的 `pid_map` dead_code 会挂 workspace clippy,与本仓库新改动无关
+- 已知既有失败:无(曾存在 pid_map dead_code 挂 Windows clippy,7c08586/W23-001 已修复)
 
 ## 6. 推送与 PR
 
