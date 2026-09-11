@@ -19,7 +19,7 @@ use nlos_resource::{
     CreateAccountRequest, CreateQuoteRequest, FinalizationReceipt, FinalizeDecision,
     FinalizeReservationRequest, QuarantineDecision, QuarantineReservationRequest,
     RegisterDriverRequest, ReservationState, ReserveRequest, ResourceAuthority,
-    ResourceAuthorityError,
+    ResourceAuthorityError, ResourceDemand,
 };
 use nlos_types::{CallId, IdempotencyKey, OperationId, ReceiptId};
 use rusqlite::Connection;
@@ -70,6 +70,7 @@ fn quote_request(seed: u8, d: nlos_resource::DriverRecord, upper: u64) -> Create
         operation_proposal_digest: [seed.wrapping_add(3); 32],
         pricing_version: [seed.wrapping_add(4); 32],
         upper_bound: upper,
+        demand_capacity: ResourceDemand::default(),
         valid_until_ms: 10_000,
         idempotency_key: IdempotencyKey::from_bytes([seed.wrapping_add(5); 16]),
         created_at_ms: 1000,
@@ -86,6 +87,7 @@ fn reserve_request(
         call_id: CallId::from_bytes([seed.wrapping_add(6); 16]),
         operation_id: OperationId::from_bytes([seed.wrapping_add(7); 16]),
         idempotency_key: IdempotencyKey::from_bytes([seed.wrapping_add(8); 16]),
+        demand: ResourceDemand::default(),
         reserved_at_ms: 2000,
     }
 }

@@ -33,6 +33,7 @@ use nlos_resource::{
     ActivateReservationRequest, ConsumeDecision, ConsumeReservationRequest, CreateAccountRequest,
     CreateQuoteRequest, FinalizationReceipt, FinalizeDecision, FinalizeReservationRequest,
     RegisterDriverRequest, ReservationState, ResourceAuthority, ResourceAuthorityError,
+    ResourceDemand,
 };
 use nlos_store_fault::{FaultCode, FaultMode};
 use nlos_types::{CallId, IdempotencyKey, OperationId};
@@ -146,6 +147,7 @@ fn quote_request(d: nlos_resource::DriverRecord) -> CreateQuoteRequest {
         operation_proposal_digest: [0x43; 32],
         pricing_version: [0x44; 32],
         upper_bound: 100,
+        demand_capacity: ResourceDemand::default(),
         valid_until_ms: 10_000,
         idempotency_key: IdempotencyKey::from_bytes([0x45; 16]),
         created_at_ms: 1000,
@@ -164,6 +166,7 @@ fn reserve(
             call_id: CallId::from_bytes([0x46; 16]),
             operation_id: OperationId::from_bytes([0x47; 16]),
             idempotency_key: IdempotencyKey::from_bytes([0x48; 16]),
+            demand: ResourceDemand::default(),
             reserved_at_ms: 2000,
         })
         .unwrap()
@@ -529,6 +532,7 @@ fn fault_kill9_mid_finalize_tx_leaves_no_half_state() {
         call_id: CallId::from_bytes([0x46; 16]),
         operation_id: OperationId::from_bytes([0x47; 16]),
         idempotency_key: IdempotencyKey::from_bytes([0x48; 16]),
+        demand: ResourceDemand::default(),
         reserved_at_ms: 2000,
     }) {
         Ok(nlos_resource::ReservationDecision::Replayed(r)) => r,
@@ -613,6 +617,7 @@ fn fault_kill9_after_finalize_commit_preserves_settlement() {
         call_id: CallId::from_bytes([0x46; 16]),
         operation_id: OperationId::from_bytes([0x47; 16]),
         idempotency_key: IdempotencyKey::from_bytes([0x48; 16]),
+        demand: ResourceDemand::default(),
         reserved_at_ms: 2000,
     }) {
         Ok(nlos_resource::ReservationDecision::Replayed(r)) => r,
@@ -897,6 +902,7 @@ fn torn_wal_tail_hides_finalize_and_redo_is_durable() {
         call_id: CallId::from_bytes([0x46; 16]),
         operation_id: OperationId::from_bytes([0x47; 16]),
         idempotency_key: IdempotencyKey::from_bytes([0x48; 16]),
+        demand: ResourceDemand::default(),
         reserved_at_ms: 2000,
     }) {
         Ok(nlos_resource::ReservationDecision::Replayed(r)) => r,

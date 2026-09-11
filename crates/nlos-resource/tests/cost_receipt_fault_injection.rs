@@ -25,6 +25,7 @@ use nlos_resource::{
     ActivateReservationRequest, ConsumeDecision, ConsumeReservationRequest, CreateAccountRequest,
     CreateQuoteRequest, FinalizeDecision, FinalizeReservationRequest, RegisterDriverRequest,
     ReservationState, ResourceAuthority, ResourceAuthorityError, ResourceCostReceipt,
+    ResourceDemand,
 };
 use nlos_store_fault::{FaultCode, FaultMode};
 use nlos_types::{CallId, IdempotencyKey, OperationId, ReservationId};
@@ -137,6 +138,7 @@ fn quote_request(d: nlos_resource::DriverRecord) -> CreateQuoteRequest {
         operation_proposal_digest: [0x53; 32],
         pricing_version: [0x54; 32],
         upper_bound: 100,
+        demand_capacity: ResourceDemand::default(),
         valid_until_ms: 10_000,
         idempotency_key: IdempotencyKey::from_bytes([0x55; 16]),
         created_at_ms: 1000,
@@ -155,6 +157,7 @@ fn reserve(
             call_id: CallId::from_bytes([0x56; 16]),
             operation_id: OperationId::from_bytes([0x57; 16]),
             idempotency_key: IdempotencyKey::from_bytes([0x58; 16]),
+            demand: ResourceDemand::default(),
             reserved_at_ms: 2000,
         })
         .unwrap()

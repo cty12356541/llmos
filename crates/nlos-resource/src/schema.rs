@@ -568,6 +568,80 @@ pub(crate) fn migrate_v5(connection: &mut Connection) -> Result<(), ResourceAuth
          BEGIN SELECT RAISE(ABORT, 'reservation finalize binding is immutable'); END;
 
          PRAGMA user_version = 5;",
+     )?;
+    transaction.commit()?;
+    Ok(())
+}
+
+/// Adds multi-dimension Reservation demand admission columns: per-dimension
+/// capacity on quotes and declared demand on reservations. Legacy rows keep
+/// the all-zero default (the legacy single-credit dimension profile), so
+/// v1-v5 data read-back and admission behavior is unchanged.
+pub(crate) fn migrate_v6(connection: &mut Connection) -> Result<(), ResourceAuthorityError> {
+    fn table_columns(
+        connection: &Connection,
+        table: &str,
+    ) -> Result<Vec<String>, ResourceAuthorityError> {
+        // `table` is an internal literal ("quotes" / "reservations"), never
+        // caller input.
+        let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
+        statement
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(ResourceAuthorityError::from)
+    }
+    let capacity_columns = [
+        "capacity_cpu_shares",
+        "capacity_memory_mib",
+        "capacity_io_weight",
+    ];
+    let demand_columns = ["demand_cpu_shares", "demand_memory_mib", "demand_io_weight"];
+    let quote_columns = table_columns(connection, "quotes")?;
+    let reservation_columns = table_columns(connection, "reservations")?;
+    let has_capacity = capacity_columns
+        .iter()
+        .all(|c| quote_columns.iter().any(|n| n == c));
+    let has_demand = demand_columns
+        .iter()
+        .all(|c| reservation_columns.iter().any(|n| n == c));
+    let partial = capacity_columns
+        .iter()
+        .chain(demand_columns.iter())
+        .any(|c| {
+            quote_columns.iter().any(|n| n == c) || reservation_columns.iter().any(|n| n == c)
+        });
+    if has_capacity && has_demand {
+        connection.pragma_update(None, "user_version", 6)?;
+        return Ok(());
+    }
+    if partial {
+        return Err(ResourceAuthorityError::CorruptRecord(
+            "partial resource demand schema",
+        ));
+    }
+
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "ALTER TABLE quotes
+             ADD COLUMN capacity_cpu_shares INTEGER NOT NULL DEFAULT 0
+             CHECK(capacity_cpu_shares >= 0);
+         ALTER TABLE quotes
+             ADD COLUMN capacity_memory_mib INTEGER NOT NULL DEFAULT 0
+             CHECK(capacity_memory_mib >= 0);
+         ALTER TABLE quotes
+             ADD COLUMN capacity_io_weight INTEGER NOT NULL DEFAULT 0
+             CHECK(capacity_io_weight >= 0);
+         ALTER TABLE reservations
+             ADD COLUMN demand_cpu_shares INTEGER NOT NULL DEFAULT 0
+             CHECK(demand_cpu_shares >= 0);
+         ALTER TABLE reservations
+             ADD COLUMN demand_memory_mib INTEGER NOT NULL DEFAULT 0
+             CHECK(demand_memory_mib >= 0);
+         ALTER TABLE reservations
+             ADD COLUMN demand_io_weight INTEGER NOT NULL DEFAULT 0
+             CHECK(demand_io_weight >= 0);
+
+         PRAGMA user_version = 6;",
     )?;
     transaction.commit()?;
     Ok(())

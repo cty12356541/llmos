@@ -12,7 +12,7 @@ use nlos_resource::{
     ActivateReservationRequest, ActivationDecision, ConsumeReservationRequest,
     CreateAccountRequest, CreateQuoteRequest, FinalizeDecision, FinalizeReservationRequest,
     RegisterDriverRequest, ReservationState, ReserveRequest, ResourceAuthority,
-    ResourceAuthorityError,
+    ResourceAuthorityError, ResourceDemand,
 };
 use nlos_types::{CallId, IdempotencyKey, OperationId};
 
@@ -69,6 +69,7 @@ fn cost_receipt_is_owner_derived_and_replays_after_restart() {
                 operation_proposal_digest: [0x14; 32],
                 pricing_version: [0x15; 32],
                 upper_bound: 100,
+                demand_capacity: ResourceDemand::default(),
                 valid_until_ms: 10_000,
                 idempotency_key: IdempotencyKey::from_bytes([0x16; 16]),
                 created_at_ms: 1_000,
@@ -82,6 +83,7 @@ fn cost_receipt_is_owner_derived_and_replays_after_restart() {
                 call_id: CallId::from_bytes([0x17; 16]),
                 operation_id: OperationId::from_bytes([0x18; 16]),
                 idempotency_key: IdempotencyKey::from_bytes([0x19; 16]),
+                demand: ResourceDemand::default(),
                 reserved_at_ms: 2_000,
             })
             .unwrap()
@@ -193,6 +195,7 @@ fn cost_receipt_closes_empty_consumption_at_zero_high_water() {
                 operation_proposal_digest: [0x34; 32],
                 pricing_version: [0x35; 32],
                 upper_bound: 80,
+                demand_capacity: ResourceDemand::default(),
                 valid_until_ms: 10_000,
                 idempotency_key: IdempotencyKey::from_bytes([0x36; 16]),
                 created_at_ms: 1_000,
@@ -206,6 +209,7 @@ fn cost_receipt_closes_empty_consumption_at_zero_high_water() {
                 call_id: CallId::from_bytes([0x37; 16]),
                 operation_id: OperationId::from_bytes([0x38; 16]),
                 idempotency_key: IdempotencyKey::from_bytes([0x39; 16]),
+                demand: ResourceDemand::default(),
                 reserved_at_ms: 2_000,
             })
             .unwrap()
@@ -313,6 +317,7 @@ fn cost_receipt_requires_terminal_owner_state() {
             operation_proposal_digest: [0x24; 32],
             pricing_version: [0x25; 32],
             upper_bound: 5,
+            demand_capacity: ResourceDemand::default(),
             valid_until_ms: 10_000,
             idempotency_key: IdempotencyKey::from_bytes([0x26; 16]),
             created_at_ms: 1_000,
@@ -326,6 +331,7 @@ fn cost_receipt_requires_terminal_owner_state() {
             call_id: CallId::from_bytes([0x27; 16]),
             operation_id: OperationId::from_bytes([0x28; 16]),
             idempotency_key: IdempotencyKey::from_bytes([0x29; 16]),
+            demand: ResourceDemand::default(),
             reserved_at_ms: 2_000,
         })
         .unwrap()

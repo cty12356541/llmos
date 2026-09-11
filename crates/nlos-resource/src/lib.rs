@@ -113,6 +113,7 @@ pub struct CreateQuoteRequest {
     pub operation_proposal_digest: [u8; 32],
     pub pricing_version: [u8; 32],
     pub upper_bound: u64,
+    pub demand_capacity: ResourceDemand,
     pub valid_until_ms: u64,
     pub idempotency_key: IdempotencyKey,
     pub created_at_ms: u64,
@@ -128,6 +129,7 @@ pub struct QuoteRecord {
     pub operation_proposal_digest: [u8; 32],
     pub pricing_version: [u8; 32],
     pub upper_bound: u64,
+    pub demand_capacity: ResourceDemand,
     pub valid_until_ms: u64,
     pub created_at_ms: u64,
 }
@@ -153,7 +155,63 @@ pub struct ReserveRequest {
     pub call_id: CallId,
     pub operation_id: OperationId,
     pub idempotency_key: IdempotencyKey,
+    pub demand: ResourceDemand,
     pub reserved_at_ms: u64,
+}
+
+/// One named dimension of a multi-dimension resource demand. Admission
+/// compares the Reservation's declared demand with the Quote's declared
+/// capacity per dimension, in the fixed [`Self::ALL`] order.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DemandDimension {
+    CpuShares,
+    MemoryMib,
+    IoWeight,
+}
+impl DemandDimension {
+    /// Fixed per-dimension admission order (deterministic first-violation
+    /// reporting).
+    pub const ALL: [Self; 3] = [Self::CpuShares, Self::MemoryMib, Self::IoWeight];
+    #[must_use]
+    pub const fn demand_of(self, d: ResourceDemand) -> u64 {
+        match self {
+            Self::CpuShares => d.cpu_shares,
+            Self::MemoryMib => d.memory_mib,
+            Self::IoWeight => d.io_weight,
+        }
+    }
+    #[must_use]
+    pub const fn capacity_of(self, c: ResourceDemand) -> u64 {
+        match self {
+            Self::CpuShares => c.cpu_shares,
+            Self::MemoryMib => c.memory_mib,
+            Self::IoWeight => c.io_weight,
+        }
+    }
+}
+
+/// Multi-dimension resource demand declared by a Reservation (or capacity
+/// declared by a Quote). The zero value is the legacy single-credit
+/// dimension profile: a dimension with zero demand never exceeds any
+/// capacity, so pre-demand rows and requests keep their exact v1-v5
+/// admission behavior.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ResourceDemand {
+    pub cpu_shares: u64,
+    pub memory_mib: u64,
+    pub io_weight: u64,
+}
+impl ResourceDemand {
+    /// Returns the first dimension (fixed [`DemandDimension::ALL`] order)
+    /// where `self` exceeds `capacity`, with its demand and capacity values.
+    #[must_use]
+    pub fn exceedance_of(self, capacity: Self) -> Option<(DemandDimension, u64, u64)> {
+        DemandDimension::ALL.into_iter().find_map(|dimension| {
+            let demand = dimension.demand_of(self);
+            let bound = dimension.capacity_of(capacity);
+            (demand > bound).then_some((dimension, demand, bound))
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -181,6 +239,7 @@ pub struct ReservationRecord {
     pub driver_generation: Generation,
     pub driver_fencing_token: FencingToken,
     pub upper_bound: u64,
+    pub demand: ResourceDemand,
     pub activation_token: [u8; 32],
     pub state: ReservationState,
     pub created_at_ms: u64,
@@ -401,6 +460,11 @@ pub enum ResourceAuthorityError {
     StaleDriver,
     InvalidUpperBound,
     QuoteExpired,
+    DemandExceedsCapacity {
+        dimension: DemandDimension,
+        demand: u64,
+        capacity: u64,
+    },
     InsufficientCredit {
         available: u64,
         required: u64,
@@ -502,23 +566,31 @@ impl ResourceAuthority {
                 schema::migrate_v3(&mut c)?;
                 schema::migrate_v4(&mut c)?;
                 schema::migrate_v5(&mut c)?;
+                schema::migrate_v6(&mut c)?;
             }
             1 => {
                 schema::migrate_v2(&mut c)?;
                 schema::migrate_v3(&mut c)?;
                 schema::migrate_v4(&mut c)?;
                 schema::migrate_v5(&mut c)?;
+                schema::migrate_v6(&mut c)?;
             }
             2 | 3 => {
                 schema::migrate_v3(&mut c)?;
                 schema::migrate_v4(&mut c)?;
                 schema::migrate_v5(&mut c)?;
+                schema::migrate_v6(&mut c)?;
             }
             4 => {
                 schema::migrate_v4(&mut c)?;
                 schema::migrate_v5(&mut c)?;
+                schema::migrate_v6(&mut c)?;
             }
-            5 => schema::migrate_v5(&mut c)?,
+            5 => {
+                schema::migrate_v5(&mut c)?;
+                schema::migrate_v6(&mut c)?;
+            }
+            6 => schema::migrate_v6(&mut c)?,
             x => return Err(ResourceAuthorityError::SchemaVersionUnsupported(x)),
         }
         Ok(Self {
@@ -724,11 +796,12 @@ impl ResourceAuthority {
             operation_proposal_digest: q.operation_proposal_digest,
             pricing_version: q.pricing_version,
             upper_bound: q.upper_bound,
+            demand_capacity: q.demand_capacity,
             valid_until_ms: q.valid_until_ms,
             created_at_ms: q.created_at_ms,
         };
         tx.execute(
-            "INSERT INTO quotes VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+            "INSERT INTO quotes VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
             params![
                 id.as_bytes().as_slice(),
                 q.idempotency_key.as_bytes().as_slice(),
@@ -740,7 +813,10 @@ impl ResourceAuthority {
                 r.pricing_version.as_slice(),
                 eu(r.upper_bound)?,
                 eu(r.valid_until_ms)?,
-                eu(r.created_at_ms)?
+                eu(r.created_at_ms)?,
+                eu(r.demand_capacity.cpu_shares)?,
+                eu(r.demand_capacity.memory_mib)?,
+                eu(r.demand_capacity.io_weight)?
             ],
         )?;
         tx.commit()?;
@@ -762,6 +838,7 @@ impl ResourceAuthority {
                 || r.quote_id != q.quote_id
                 || r.call_id != q.call_id
                 || r.operation_id != q.operation_id
+                || r.demand != q.demand
             {
                 return Err(ResourceAuthorityError::IdempotencyConflict);
             }
@@ -777,6 +854,13 @@ impl ResourceAuthority {
         )?;
         if q.reserved_at_ms > qt.valid_until_ms {
             return Err(ResourceAuthorityError::QuoteExpired);
+        }
+        if let Some((dimension, demand, capacity)) = q.demand.exceedance_of(qt.demand_capacity) {
+            return Err(ResourceAuthorityError::DemandExceedsCapacity {
+                dimension,
+                demand,
+                capacity,
+            });
         }
         let a = account(&tx, q.account_id)?.ok_or(ResourceAuthorityError::AccountNotFound)?;
         if a.available_credit < qt.upper_bound {
@@ -804,7 +888,7 @@ impl ResourceAuthority {
                 required: qt.upper_bound,
             });
         }
-        tx.execute("INSERT INTO reservations VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,0,?13,NULL,NULL,0,0,NULL,NULL,NULL,NULL)",params![id.as_bytes().as_slice(),q.idempotency_key.as_bytes().as_slice(),q.account_id.as_bytes().as_slice(),q.quote_id.as_bytes().as_slice(),q.call_id.as_bytes().as_slice(),q.operation_id.as_bytes().as_slice(),qt.driver_id.as_bytes().as_slice(),qt.device_id.as_bytes().as_slice(),eg(qt.driver_generation)?,qt.driver_fencing_token.as_slice(),eu(qt.upper_bound)?,token.as_slice(),eu(q.reserved_at_ms)?])?;
+        tx.execute("INSERT INTO reservations VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,0,?13,NULL,NULL,0,0,NULL,NULL,NULL,NULL,?14,?15,?16)",params![id.as_bytes().as_slice(),q.idempotency_key.as_bytes().as_slice(),q.account_id.as_bytes().as_slice(),q.quote_id.as_bytes().as_slice(),q.call_id.as_bytes().as_slice(),q.operation_id.as_bytes().as_slice(),qt.driver_id.as_bytes().as_slice(),qt.device_id.as_bytes().as_slice(),eg(qt.driver_generation)?,qt.driver_fencing_token.as_slice(),eu(qt.upper_bound)?,token.as_slice(),eu(q.reserved_at_ms)?,eu(q.demand.cpu_shares)?,eu(q.demand.memory_mib)?,eu(q.demand.io_weight)?])?;
         let r = reservation(&tx, id)?.ok_or(ResourceAuthorityError::CorruptRecord(
             "new reservation absent",
         ))?;
@@ -1835,7 +1919,7 @@ fn account_by_key(
         .map(Option::flatten)
 }
 fn quote(c: &Connection, id: QuoteId) -> Result<Option<QuoteRecord>, ResourceAuthorityError> {
-    let x=c.query_row("SELECT driver_id,device_id,driver_generation,driver_fencing_token,operation_proposal_digest,pricing_version,upper_bound,valid_until_ms,created_at_ms FROM quotes WHERE quote_id=?1",[id.as_bytes().as_slice()],|r|Ok((r.get::<_,Vec<u8>>(0)?,r.get::<_,Vec<u8>>(1)?,r.get::<_,i64>(2)?,r.get::<_,Vec<u8>>(3)?,r.get::<_,Vec<u8>>(4)?,r.get::<_,Vec<u8>>(5)?,r.get::<_,i64>(6)?,r.get::<_,i64>(7)?,r.get::<_,i64>(8)?))).optional()?;
+    let x=c.query_row("SELECT driver_id,device_id,driver_generation,driver_fencing_token,operation_proposal_digest,pricing_version,upper_bound,valid_until_ms,created_at_ms,capacity_cpu_shares,capacity_memory_mib,capacity_io_weight FROM quotes WHERE quote_id=?1",[id.as_bytes().as_slice()],|r|Ok((r.get::<_,Vec<u8>>(0)?,r.get::<_,Vec<u8>>(1)?,r.get::<_,i64>(2)?,r.get::<_,Vec<u8>>(3)?,r.get::<_,Vec<u8>>(4)?,r.get::<_,Vec<u8>>(5)?,r.get::<_,i64>(6)?,r.get::<_,i64>(7)?,r.get::<_,i64>(8)?,r.get::<_,i64>(9)?,r.get::<_,i64>(10)?,r.get::<_,i64>(11)?))).optional()?;
     x.map(|x| {
         Ok(QuoteRecord {
             quote_id: id,
@@ -1848,6 +1932,11 @@ fn quote(c: &Connection, id: QuoteId) -> Result<Option<QuoteRecord>, ResourceAut
             upper_bound: du(x.6)?,
             valid_until_ms: du(x.7)?,
             created_at_ms: du(x.8)?,
+            demand_capacity: ResourceDemand {
+                cpu_shares: du(x.9)?,
+                memory_mib: du(x.10)?,
+                io_weight: du(x.11)?,
+            },
         })
     })
     .transpose()
@@ -1874,6 +1963,7 @@ fn quote_matches(r: QuoteRecord, q: CreateQuoteRequest) -> bool {
         && r.operation_proposal_digest == q.operation_proposal_digest
         && r.pricing_version == q.pricing_version
         && r.upper_bound == q.upper_bound
+        && r.demand_capacity == q.demand_capacity
         && r.valid_until_ms == q.valid_until_ms
 }
 fn reservation(
@@ -1900,8 +1990,11 @@ fn reservation(
         Option<i64>,
         Option<Vec<u8>>,
         Option<i64>,
+        i64,
+        i64,
+        i64,
     );
-    let x:R=match c.query_row("SELECT account_id,quote_id,call_id,operation_id,driver_id,device_id,driver_generation,driver_fencing_token,upper_bound,activation_token,state,created_at_ms,activation_receipt_id,usage_high_water_seq,usage_high_water,quarantine_receipt_id,quarantined_at_ms,finalize_receipt_id,finalized_at_ms FROM reservations WHERE reservation_id=?1",[id.as_bytes().as_slice()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?,r.get(9)?,r.get(10)?,r.get(11)?,r.get(12)?,r.get(13)?,r.get(14)?,r.get(15)?,r.get(16)?,r.get(17)?,r.get(18)?))).optional()?{Some(x)=>x,None=>return Ok(None)};
+    let x:R=match c.query_row("SELECT account_id,quote_id,call_id,operation_id,driver_id,device_id,driver_generation,driver_fencing_token,upper_bound,activation_token,state,created_at_ms,activation_receipt_id,usage_high_water_seq,usage_high_water,quarantine_receipt_id,quarantined_at_ms,finalize_receipt_id,finalized_at_ms,demand_cpu_shares,demand_memory_mib,demand_io_weight FROM reservations WHERE reservation_id=?1",[id.as_bytes().as_slice()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?,r.get(9)?,r.get(10)?,r.get(11)?,r.get(12)?,r.get(13)?,r.get(14)?,r.get(15)?,r.get(16)?,r.get(17)?,r.get(18)?,r.get(19)?,r.get(20)?,r.get(21)?))).optional()?{Some(x)=>x,None=>return Ok(None)};
     let quarantine_receipt_id = x.15.map(a16).transpose()?.map(ReceiptId::from_bytes);
     let finalize_receipt_id = x.17.map(a16).transpose()?.map(ReceiptId::from_bytes);
     Ok(Some(ReservationRecord {
@@ -1915,6 +2008,11 @@ fn reservation(
         driver_generation: dg(x.6)?,
         driver_fencing_token: a32(x.7)?,
         upper_bound: du(x.8)?,
+        demand: ResourceDemand {
+            cpu_shares: du(x.19)?,
+            memory_mib: du(x.20)?,
+            io_weight: du(x.21)?,
+        },
         activation_token: a32(x.9)?,
         state: match x.10 {
             0 => ReservationState::Reserved,

@@ -6,7 +6,7 @@ use nlos_resource::{
     ActivateReservationRequest, ActivationDecision, ConsumeDecision, ConsumeReservationRequest,
     CreateAccountRequest, CreateQuoteRequest, DriverRotationDecision, QuarantineDecision,
     QuarantineReservationRequest, RegisterDriverRequest, ReservationDecision, ReserveRequest,
-    ResourceAuthority, ResourceAuthorityError, RotateDriverRequest,
+    ResourceAuthority, ResourceAuthorityError, ResourceDemand, RotateDriverRequest,
 };
 use nlos_types::{CallId, IdempotencyKey, OperationId, ReceiptId};
 use rusqlite::Connection;
@@ -57,6 +57,7 @@ fn quote_request(seed: u8, d: nlos_resource::DriverRecord, upper: u64) -> Create
         operation_proposal_digest: [seed.wrapping_add(3); 32],
         pricing_version: [seed.wrapping_add(4); 32],
         upper_bound: upper,
+        demand_capacity: ResourceDemand::default(),
         valid_until_ms: 10_000,
         idempotency_key: IdempotencyKey::from_bytes([seed.wrapping_add(5); 16]),
         created_at_ms: 1000,
@@ -73,6 +74,7 @@ fn reserve_request(
         call_id: CallId::from_bytes([seed.wrapping_add(6); 16]),
         operation_id: OperationId::from_bytes([seed.wrapping_add(7); 16]),
         idempotency_key: IdempotencyKey::from_bytes([seed.wrapping_add(8); 16]),
+        demand: ResourceDemand::default(),
         reserved_at_ms: 2000,
     }
 }
@@ -625,8 +627,8 @@ fn endpoint_proofs_are_authority_assigned_rotate_and_survive_restart() {
     assert_eq!(
         raw.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .unwrap(),
-        5,
-        "schema v5 (finalize/refund overlay) is applied by the migration chain"
+        6,
+        "schema v6 (multi-dimension demand) is applied by the migration chain"
     );
     assert!(
         raw.execute(
