@@ -1,7 +1,8 @@
 //! Acceptance tests for B-PROCESS-003 platform kill contract-layer minimum
 //! prefix: durable kill receipt, stub adapter invocation, terminal fail-closed,
 //! idempotent replay, (on Unix) real SIGTERM via [`PosixPlatformKillAdapter`],
-//! and (on non-Windows) stub rejection for [`WindowsPlatformKillAdapter`].
+//! (on non-Windows) stub rejection for [`WindowsPlatformKillAdapter`], and
+//! each adapter's missing-map / cross-platform stub fail-closed paths.
 
 use nlos_process::{
     CreateIsolationDomainRequest, IsolationDomainDecision, MarkProcessTerminatedRequest,
@@ -439,6 +440,34 @@ fn windows_platform_kill_adapter_missing_map_entry_returns_platform_error() {
         adapter.signal_platform_kill(process_id, Generation::INITIAL),
         Err(PlatformKillAdapterError::Platform(
             "os pid mapping not found for process id"
+        ))
+    ));
+}
+
+#[test]
+#[cfg(unix)]
+fn posix_platform_kill_adapter_missing_map_entry_returns_platform_error() {
+    let process_id = ProcessId::from_bytes([0x78; 16]);
+    let adapter = PosixPlatformKillAdapter::new(HashMap::new());
+
+    assert!(matches!(
+        adapter.signal_platform_kill(process_id, Generation::INITIAL),
+        Err(PlatformKillAdapterError::Platform(
+            "os pid mapping not found for process id"
+        ))
+    ));
+}
+
+#[test]
+#[cfg(windows)]
+fn posix_platform_kill_adapter_unavailable_on_windows() {
+    let process_id = ProcessId::from_bytes([0x79; 16]);
+    let adapter = PosixPlatformKillAdapter::new(HashMap::new());
+
+    assert!(matches!(
+        adapter.signal_platform_kill(process_id, Generation::INITIAL),
+        Err(PlatformKillAdapterError::Platform(
+            "posix platform kill adapter unavailable on windows"
         ))
     ));
 }
