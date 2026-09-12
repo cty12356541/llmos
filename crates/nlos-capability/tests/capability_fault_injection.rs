@@ -29,7 +29,6 @@
 //! response whose bytes never reach durable storage; kill-9 / torn-WAL sweeps
 //! are out of scope for this minimum prefix.
 
-#![allow(deprecated)]
 #![allow(clippy::large_types_passed_by_value)] // fault matrix helpers mirror channel precedent
 
 use std::error::Error as _;
@@ -43,6 +42,8 @@ use nlos_capability::{
     CapabilityAuthority, CapabilityAuthorityError, CapabilityConsumptionDecision,
     CapabilityIssueDecision, CapabilityRecord, CapabilityRights, CapabilityTarget,
     ConsumeCapabilityRequest, DelegateCapabilityRequest, IssueRootCapabilityRequest,
+    SignedDelegateCapabilityRequest, SignedIssueRootCapabilityRequest, delegate_command_message,
+    issue_root_command_message,
 };
 use nlos_identity::{
     BootstrapPrincipalRequest, IdentityAuthority, IdentityBinding, KeyPurpose,
@@ -370,17 +371,35 @@ fn replayed_consume(
 fn issue_root(
     capability: &CapabilityAuthority,
     identity: &IdentityAuthority,
+    key: &SigningKey,
+    signer: &IdentityBinding,
     request: IssueRootCapabilityRequest,
 ) -> Result<CapabilityIssueDecision, CapabilityAuthorityError> {
-    capability.issue_root(identity, request)
+    capability.issue_root_signed(
+        identity,
+        SignedIssueRootCapabilityRequest {
+            command: request,
+            signer: signer.principal_id,
+            signature: key.sign(&issue_root_command_message(request)).to_bytes(),
+        },
+    )
 }
 
 fn delegate(
     capability: &CapabilityAuthority,
     identity: &IdentityAuthority,
+    key: &SigningKey,
+    signer: &IdentityBinding,
     request: DelegateCapabilityRequest,
 ) -> Result<CapabilityIssueDecision, CapabilityAuthorityError> {
-    capability.delegate(identity, request)
+    capability.delegate_signed(
+        identity,
+        SignedDelegateCapabilityRequest {
+            command: request,
+            signer: signer.principal_id,
+            signature: key.sign(&delegate_command_message(request)).to_bytes(),
+        },
+    )
 }
 
 fn consume(
@@ -396,6 +415,7 @@ fn fixture_with_parent(
     TestRoot,
     IdentityAuthority,
     CapabilityAuthority,
+    SigningKey,
     IdentityBinding,
     IdentityBinding,
     CapabilityRecord,
@@ -408,12 +428,21 @@ fn fixture_with_parent(
     let parent = issue_root(
         &capability,
         &identity,
+        &delegator_key,
+        &delegator,
         root_request(delegator, delegator, seed.wrapping_add(1), Some(10)),
     )
     .unwrap()
     .record();
-    let _ = delegator_key;
-    (root, identity, capability, delegator, recipient, parent)
+    (
+        root,
+        identity,
+        capability,
+        delegator_key,
+        delegator,
+        recipient,
+        parent,
+    )
 }
 
 fn fixture_with_issued(
@@ -433,6 +462,8 @@ fn fixture_with_issued(
     let record = issue_root(
         &capability,
         &identity,
+        &holder_key,
+        &holder,
         root_request(holder, holder, seed.wrapping_add(1), Some(3)),
     )
     .unwrap()
@@ -450,7 +481,7 @@ fn capability_precommit_ioerr_fails_typed_zero_phantom_converges() {
         let root = TestRoot::new("ioerr-issue");
         let database = root.database();
         let identity = IdentityAuthority::open(root.base()).expect("open identity");
-        let (_, holder) = bootstrap(&identity, 0x21);
+        let (holder_key, holder) = bootstrap(&identity, 0x21);
         let capability = open_fault(root.base());
         let request = root_request(holder, holder, 0x01, Some(5));
 
@@ -458,17 +489,21 @@ fn capability_precommit_ioerr_fails_typed_zero_phantom_converges() {
             remaining: 0,
             code: FaultCode::IoErr,
         });
-        let error = issue_root(&capability, &identity, request).expect_err("issue under IOERR");
+        let error = issue_root(&capability, &identity, &holder_key, &holder, request)
+            .expect_err("issue under IOERR");
         assert_sqlite_error_chain(&error, &["i/o", "ioerr"]);
         assert!(nlos_store_fault::writes_observed() > 0);
         nlos_store_fault::disarm();
         assert_counts(&database, EMPTY);
         assert_integrity(&database);
 
-        let (_, receipt) = issued(issue_root(&capability, &identity, request).unwrap());
+        let (_, receipt) =
+            issued(issue_root(&capability, &identity, &holder_key, &holder, request).unwrap());
         assert_counts(&database, ONE_ISSUED);
         assert_eq!(
-            replayed_issue(issue_root(&capability, &identity, request).unwrap()),
+            replayed_issue(
+                issue_root(&capability, &identity, &holder_key, &holder, request).unwrap()
+            ),
             receipt
         );
         assert_integrity(&database);
@@ -514,7 +549,7 @@ fn capability_precommit_enospc_fails_typed_zero_phantom_converges() {
         let root = TestRoot::new("full-issue");
         let database = root.database();
         let identity = IdentityAuthority::open(root.base()).expect("open identity");
-        let (_, holder) = bootstrap(&identity, 0x31);
+        let (holder_key, holder) = bootstrap(&identity, 0x31);
         let capability = open_fault(root.base());
         let request = root_request(holder, holder, 0x03, None);
 
@@ -522,15 +557,19 @@ fn capability_precommit_enospc_fails_typed_zero_phantom_converges() {
             remaining: 0,
             code: FaultCode::Full,
         });
-        let error = issue_root(&capability, &identity, request).expect_err("issue under ENOSPC");
+        let error = issue_root(&capability, &identity, &holder_key, &holder, request)
+            .expect_err("issue under ENOSPC");
         assert_sqlite_error_chain(&error, &["full"]);
         nlos_store_fault::disarm();
         assert_counts(&database, EMPTY);
 
-        let (_, receipt) = issued(issue_root(&capability, &identity, request).unwrap());
+        let (_, receipt) =
+            issued(issue_root(&capability, &identity, &holder_key, &holder, request).unwrap());
         assert_counts(&database, ONE_ISSUED);
         assert_eq!(
-            replayed_issue(issue_root(&capability, &identity, request).unwrap()),
+            replayed_issue(
+                issue_root(&capability, &identity, &holder_key, &holder, request).unwrap()
+            ),
             receipt
         );
         assert_integrity(&database);
@@ -538,7 +577,8 @@ fn capability_precommit_enospc_fails_typed_zero_phantom_converges() {
 
     {
         let _cwd = SandboxCwd::new("full-delegate");
-        let (root, identity, capability, delegator, recipient, parent) = fixture_with_parent(0x32);
+        let (root, identity, capability, delegator_key, delegator, recipient, parent) =
+            fixture_with_parent(0x32);
         let database = root.database();
         drop(capability);
         let capability = open_fault(root.base());
@@ -548,7 +588,8 @@ fn capability_precommit_enospc_fails_typed_zero_phantom_converges() {
             remaining: 0,
             code: FaultCode::Full,
         });
-        let error = delegate(&capability, &identity, request).expect_err("delegate under ENOSPC");
+        let error = delegate(&capability, &identity, &delegator_key, &delegator, request)
+            .expect_err("delegate under ENOSPC");
         assert_sqlite_error_chain(&error, &["full"]);
         nlos_store_fault::disarm();
         assert_counts(&database, ONE_ISSUED);
@@ -556,10 +597,13 @@ fn capability_precommit_enospc_fails_typed_zero_phantom_converges() {
 
         drop(capability);
         let capability = reopen(root.base());
-        let (_, receipt) = issued(delegate(&capability, &identity, request).unwrap());
+        let (_, receipt) =
+            issued(delegate(&capability, &identity, &delegator_key, &delegator, request).unwrap());
         assert_counts(&database, TWO_ISSUED);
         assert_eq!(
-            replayed_issue(delegate(&capability, &identity, request).unwrap()),
+            replayed_issue(
+                delegate(&capability, &identity, &delegator_key, &delegator, request).unwrap()
+            ),
             receipt
         );
         assert_integrity(&database);
@@ -576,15 +620,16 @@ fn capability_power_loss_invisible_commit_converges_for_issue_and_consume() {
         let root = TestRoot::new("pl-issue");
         let database = root.database();
         let identity = IdentityAuthority::open(root.base()).expect("open identity");
-        let (_, holder) = bootstrap(&identity, 0x41);
+        let (holder_key, holder) = bootstrap(&identity, 0x41);
         let capability = open_fault(root.base());
         let request = root_request(holder, holder, 0x05, Some(2));
 
         nlos_store_fault::arm(FaultMode::PowerLossAfter { remaining: 0 });
-        let phantom = match issue_root(&capability, &identity, request).unwrap() {
-            CapabilityIssueDecision::Issued(record, receipt) => (record, receipt),
-            CapabilityIssueDecision::Replayed(_, _) => panic!("phantom issue cannot replay"),
-        };
+        let phantom =
+            match issue_root(&capability, &identity, &holder_key, &holder, request).unwrap() {
+                CapabilityIssueDecision::Issued(record, receipt) => (record, receipt),
+                CapabilityIssueDecision::Replayed(_, _) => panic!("phantom issue cannot replay"),
+            };
         assert!(nlos_store_fault::writes_observed() > 0);
         nlos_store_fault::disarm();
         drop(capability);
@@ -593,11 +638,14 @@ fn capability_power_loss_invisible_commit_converges_for_issue_and_consume() {
         assert_integrity(&database);
 
         let capability = reopen(root.base());
-        let redo = issued(issue_root(&capability, &identity, request).unwrap());
+        let redo =
+            issued(issue_root(&capability, &identity, &holder_key, &holder, request).unwrap());
         assert_eq!(redo.0.handle, phantom.0.handle);
         assert_eq!(redo.1, phantom.1);
         assert_eq!(
-            replayed_issue(issue_root(&capability, &identity, request).unwrap()),
+            replayed_issue(
+                issue_root(&capability, &identity, &holder_key, &holder, request).unwrap()
+            ),
             phantom.1
         );
         assert_counts(&database, ONE_ISSUED);
@@ -641,20 +689,25 @@ fn capability_replay_storm_is_byte_equal_idempotent() {
         let root = TestRoot::new("storm-issue");
         let database = root.database();
         let identity = IdentityAuthority::open(root.base()).expect("open identity");
-        let (_, holder) = bootstrap(&identity, 0x51);
+        let (holder_key, holder) = bootstrap(&identity, 0x51);
         let capability = reopen(root.base());
         let request = root_request(holder, holder, 0x07, Some(4));
-        let (_, original) = issued(issue_root(&capability, &identity, request).unwrap());
+        let (_, original) =
+            issued(issue_root(&capability, &identity, &holder_key, &holder, request).unwrap());
 
         for round in 0..3 {
-            let replay = replayed_issue(issue_root(&capability, &identity, request).unwrap());
+            let replay = replayed_issue(
+                issue_root(&capability, &identity, &holder_key, &holder, request).unwrap(),
+            );
             assert_eq!(replay, original, "issue replay storm round {round}");
         }
         drop(capability);
 
         let capability = reopen(root.base());
         assert_eq!(
-            replayed_issue(issue_root(&capability, &identity, request).unwrap()),
+            replayed_issue(
+                issue_root(&capability, &identity, &holder_key, &holder, request).unwrap()
+            ),
             original
         );
         assert_counts(&database, ONE_ISSUED);

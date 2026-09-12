@@ -1,14 +1,13 @@
-#![allow(deprecated)] // Deprecated unsigned Capability entries stay the test front for issuing capabilities.
-
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ed25519_dalek::{Signer, SigningKey};
 use nlos_capability::{
-    AuthorizeSemanticRequest, CapabilityAuthority, CapabilityAuthorityError, CapabilityRights,
-    CapabilityTarget, ConsumeCapabilityRequest, DelegateCapabilityRequest,
-    IssueRootCapabilityRequest,
+    AuthorizeSemanticRequest, CapabilityAuthority, CapabilityAuthorityError,
+    CapabilityIssueDecision, CapabilityRights, CapabilityTarget, ConsumeCapabilityRequest,
+    DelegateCapabilityRequest, IssueRootCapabilityRequest, SignedDelegateCapabilityRequest,
+    SignedIssueRootCapabilityRequest, delegate_command_message, issue_root_command_message,
 };
 use nlos_identity::{
     BootstrapPrincipalRequest, IdentityAuthority, IdentityBinding, KeyPurpose,
@@ -139,6 +138,40 @@ fn delegate_to(
     }
 }
 
+fn signed_issue_root(
+    capability: &CapabilityAuthority,
+    identity: &IdentityAuthority,
+    key: &SigningKey,
+    signer: &IdentityBinding,
+    command: IssueRootCapabilityRequest,
+) -> Result<CapabilityIssueDecision, CapabilityAuthorityError> {
+    capability.issue_root_signed(
+        identity,
+        SignedIssueRootCapabilityRequest {
+            command,
+            signer: signer.principal_id,
+            signature: key.sign(&issue_root_command_message(command)).to_bytes(),
+        },
+    )
+}
+
+fn signed_delegate(
+    capability: &CapabilityAuthority,
+    identity: &IdentityAuthority,
+    key: &SigningKey,
+    signer: &IdentityBinding,
+    command: DelegateCapabilityRequest,
+) -> Result<CapabilityIssueDecision, CapabilityAuthorityError> {
+    capability.delegate_signed(
+        identity,
+        SignedDelegateCapabilityRequest {
+            command,
+            signer: signer.principal_id,
+            signature: key.sign(&delegate_command_message(command)).to_bytes(),
+        },
+    )
+}
+
 fn verified_signer(
     identity: &IdentityAuthority,
     key: &SigningKey,
@@ -163,31 +196,35 @@ fn verified_signer(
 fn delegate_narrows_namespace_target_within_parent_prefix() {
     let root = Root::new("narrow-delegate");
     let identity = IdentityAuthority::open(root.path()).unwrap();
-    let (_, delegator) = bootstrap(&identity, 10);
+    let (delegator_key, delegator) = bootstrap(&identity, 10);
     let (_, recipient) = bootstrap(&identity, 20);
     let capability = CapabilityAuthority::open(root.path()).unwrap();
     let parent_ns = namespace_id(0x44, 0x00);
     let child_ns = namespace_id(0x44, 0x55);
-    let parent = capability
-        .issue_root(
-            &identity,
-            root_namespace_request(delegator, delegator, parent_ns, 0x30),
-        )
-        .unwrap()
-        .record();
-    let child = capability
-        .delegate(
-            &identity,
-            delegate_to(
-                parent,
-                delegator,
-                recipient,
-                CapabilityTarget::Namespace(child_ns),
-                0x31,
-            ),
-        )
-        .unwrap()
-        .record();
+    let parent = signed_issue_root(
+        &capability,
+        &identity,
+        &delegator_key,
+        &delegator,
+        root_namespace_request(delegator, delegator, parent_ns, 0x30),
+    )
+    .unwrap()
+    .record();
+    let child = signed_delegate(
+        &capability,
+        &identity,
+        &delegator_key,
+        &delegator,
+        delegate_to(
+            parent,
+            delegator,
+            recipient,
+            CapabilityTarget::Namespace(child_ns),
+            0x31,
+        ),
+    )
+    .unwrap()
+    .record();
     assert_eq!(child.target, CapabilityTarget::Namespace(child_ns));
     assert_eq!(child.parent, Some(parent.handle));
 }
@@ -196,21 +233,26 @@ fn delegate_narrows_namespace_target_within_parent_prefix() {
 fn delegate_rejects_namespace_scope_amplification() {
     let root = Root::new("amplify-delegate");
     let identity = IdentityAuthority::open(root.path()).unwrap();
-    let (_, delegator) = bootstrap(&identity, 11);
+    let (delegator_key, delegator) = bootstrap(&identity, 11);
     let (_, recipient) = bootstrap(&identity, 21);
     let capability = CapabilityAuthority::open(root.path()).unwrap();
     let parent_ns = namespace_id(0x44, 0x00);
     let wider_ns = namespace_id(0x45, 0x00);
-    let parent = capability
-        .issue_root(
-            &identity,
-            root_namespace_request(delegator, delegator, parent_ns, 0x32),
-        )
-        .unwrap()
-        .record();
+    let parent = signed_issue_root(
+        &capability,
+        &identity,
+        &delegator_key,
+        &delegator,
+        root_namespace_request(delegator, delegator, parent_ns, 0x32),
+    )
+    .unwrap()
+    .record();
     assert!(matches!(
-        capability.delegate(
+        signed_delegate(
+            &capability,
             &identity,
+            &delegator_key,
+            &delegator,
             delegate_to(
                 parent,
                 delegator,
@@ -231,13 +273,15 @@ fn authorize_and_consume_accept_requested_target_within_capability_subtree() {
     let capability = CapabilityAuthority::open(root.path()).unwrap();
     let parent_ns = namespace_id(0x44, 0x00);
     let child_ns = namespace_id(0x44, 0x66);
-    let record = capability
-        .issue_root(
-            &identity,
-            root_namespace_request(holder, holder, parent_ns, 0x34),
-        )
-        .unwrap()
-        .record();
+    let record = signed_issue_root(
+        &capability,
+        &identity,
+        &holder_key,
+        &holder,
+        root_namespace_request(holder, holder, parent_ns, 0x34),
+    )
+    .unwrap()
+    .record();
     let event_id = SemanticEventId::from_bytes([0x99; 32]);
     let signer = verified_signer(&identity, &holder_key, holder, event_id, 2_000);
     let authorize = AuthorizeSemanticRequest {
@@ -274,19 +318,21 @@ fn authorize_and_consume_accept_requested_target_within_capability_subtree() {
 fn narrowed_delegate_replays_across_restart() {
     let root = Root::new("narrow-replay");
     let identity = IdentityAuthority::open(root.path()).unwrap();
-    let (_, delegator) = bootstrap(&identity, 13);
+    let (delegator_key, delegator) = bootstrap(&identity, 13);
     let (_, recipient) = bootstrap(&identity, 23);
     let parent_ns = namespace_id(0x44, 0x00);
     let child_ns = namespace_id(0x44, 0x77);
     let parent = {
         let capability = CapabilityAuthority::open(root.path()).unwrap();
-        capability
-            .issue_root(
-                &identity,
-                root_namespace_request(delegator, delegator, parent_ns, 0x36),
-            )
-            .unwrap()
-            .record()
+        signed_issue_root(
+            &capability,
+            &identity,
+            &delegator_key,
+            &delegator,
+            root_namespace_request(delegator, delegator, parent_ns, 0x36),
+        )
+        .unwrap()
+        .record()
     };
     let request = delegate_to(
         parent,
@@ -297,12 +343,13 @@ fn narrowed_delegate_replays_across_restart() {
     );
     let first = {
         let capability = CapabilityAuthority::open(root.path()).unwrap();
-        capability.delegate(&identity, request).unwrap()
+        signed_delegate(&capability, &identity, &delegator_key, &delegator, request).unwrap()
     };
     drop(identity);
     let identity = IdentityAuthority::open(root.path()).unwrap();
     let capability = CapabilityAuthority::open(root.path()).unwrap();
-    let replay = capability.delegate(&identity, request).unwrap();
+    let replay =
+        signed_delegate(&capability, &identity, &delegator_key, &delegator, request).unwrap();
     assert_eq!(first.record(), replay.record());
     assert_eq!(first.receipt(), replay.receipt());
 }
@@ -311,21 +358,26 @@ fn narrowed_delegate_replays_across_restart() {
 fn task_target_still_requires_exact_match() {
     let root = Root::new("task-exact");
     let identity = IdentityAuthority::open(root.path()).unwrap();
-    let (_, delegator) = bootstrap(&identity, 14);
+    let (delegator_key, delegator) = bootstrap(&identity, 14);
     let (recipient_key, recipient) = bootstrap(&identity, 24);
     let capability = CapabilityAuthority::open(root.path()).unwrap();
     let task_a = TaskId::from_bytes([0xaa; 16]);
     let task_b = TaskId::from_bytes([0xbb; 16]);
-    let parent = capability
-        .issue_root(
-            &identity,
-            root_task_request(delegator, delegator, task_a, 0x38),
-        )
-        .unwrap()
-        .record();
+    let parent = signed_issue_root(
+        &capability,
+        &identity,
+        &delegator_key,
+        &delegator,
+        root_task_request(delegator, delegator, task_a, 0x38),
+    )
+    .unwrap()
+    .record();
     assert!(matches!(
-        capability.delegate(
+        signed_delegate(
+            &capability,
             &identity,
+            &delegator_key,
+            &delegator,
             delegate_to(
                 parent,
                 delegator,
@@ -336,19 +388,21 @@ fn task_target_still_requires_exact_match() {
         ),
         Err(CapabilityAuthorityError::ScopeAmplification)
     ));
-    let exact = capability
-        .delegate(
-            &identity,
-            delegate_to(
-                parent,
-                delegator,
-                recipient,
-                CapabilityTarget::Task(task_a),
-                0x3a,
-            ),
-        )
-        .unwrap()
-        .record();
+    let exact = signed_delegate(
+        &capability,
+        &identity,
+        &delegator_key,
+        &delegator,
+        delegate_to(
+            parent,
+            delegator,
+            recipient,
+            CapabilityTarget::Task(task_a),
+            0x3a,
+        ),
+    )
+    .unwrap()
+    .record();
     let event_id = SemanticEventId::from_bytes([0xab; 32]);
     let signer = verified_signer(&identity, &recipient_key, recipient, event_id, 2_000);
     assert!(matches!(

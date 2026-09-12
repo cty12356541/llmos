@@ -1,5 +1,3 @@
-#![allow(deprecated)] // Deprecated unsigned Capability entries; the signed-entry migration is an ADR-0010 follow-up.
-
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -7,7 +5,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use ed25519_dalek::{Signer, SigningKey, Verifier};
 use nlos_capability::{
     CapabilityAuthority, CapabilityRights, CapabilityTarget, IssueRootCapabilityRequest,
-    RevokeCapabilityRequest,
+    RevokeCapabilityRequest, SignedIssueRootCapabilityRequest, SignedRevokeCapabilityRequest,
+    issue_root_command_message, revoke_command_message,
 };
 use nlos_identity::{BootstrapPrincipalRequest, IdentityAuthority, KeyPurpose};
 use nlos_process::{
@@ -146,21 +145,28 @@ fn fixture(root: &Root, seed: u8) -> Fixture {
         .record()
         .clone();
     let capability = CapabilityAuthority::open(root.path()).unwrap();
+    let command = IssueRootCapabilityRequest {
+        issuer_key_id: issuer.key_id,
+        holder_key_id: issuer.key_id,
+        target: CapabilityTarget::Namespace(NamespaceId::from_bytes([0x44; 16])),
+        rights: CapabilityRights::SEMANTIC_APPEND,
+        purpose_digest: Some([0x77; 32]),
+        valid_from_ms: 0,
+        valid_until_ms: 9_000,
+        delegation_depth_remaining: 0,
+        call_limit: None,
+        idempotency_key: IdempotencyKey::from_bytes([seed.wrapping_add(9); 16]),
+        issued_at_ms: 0,
+    };
     let capability_record = capability
-        .issue_root(
+        .issue_root_signed(
             &identity,
-            IssueRootCapabilityRequest {
-                issuer_key_id: issuer.key_id,
-                holder_key_id: issuer.key_id,
-                target: CapabilityTarget::Namespace(NamespaceId::from_bytes([0x44; 16])),
-                rights: CapabilityRights::SEMANTIC_APPEND,
-                purpose_digest: Some([0x77; 32]),
-                valid_from_ms: 0,
-                valid_until_ms: 9_000,
-                delegation_depth_remaining: 0,
-                call_limit: None,
-                idempotency_key: IdempotencyKey::from_bytes([seed.wrapping_add(9); 16]),
-                issued_at_ms: 0,
+            SignedIssueRootCapabilityRequest {
+                command,
+                signer: issuer.principal_id,
+                signature: issuer_key
+                    .sign(&issue_root_command_message(command))
+                    .to_bytes(),
             },
         )
         .unwrap()
@@ -722,15 +728,23 @@ fn committed_event_replays_after_capability_revoke_but_new_event_is_fenced() {
     let fixture = fixture(&root, 90);
     let original = request(&fixture, 7, Vec::new(), Vec::new(), TaintFlags::default());
     let receipt = append(&fixture, &original).receipt().clone();
+    let revoke_command = RevokeCapabilityRequest {
+        handle: fixture.capability_record.handle,
+        revoker_key_id: fixture.issuer.key_id,
+        idempotency_key: IdempotencyKey::from_bytes([0xd0; 16]),
+        revoked_at_ms: 3_000,
+    };
     fixture
         .capability
-        .revoke(
+        .revoke_signed(
             &fixture.identity,
-            RevokeCapabilityRequest {
-                handle: fixture.capability_record.handle,
-                revoker_key_id: fixture.issuer.key_id,
-                idempotency_key: IdempotencyKey::from_bytes([0xd0; 16]),
-                revoked_at_ms: 3_000,
+            SignedRevokeCapabilityRequest {
+                command: revoke_command,
+                signer: fixture.issuer.principal_id,
+                signature: fixture
+                    .issuer_key
+                    .sign(&revoke_command_message(revoke_command))
+                    .to_bytes(),
             },
         )
         .unwrap();

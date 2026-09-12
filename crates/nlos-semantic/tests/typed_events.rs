@@ -1,7 +1,6 @@
 //! B-SEMANTIC-006: admission of the §17.2/§17.3/§17.4 typed events
 //! (Judgment/Verification/Retraction): durable rows, idempotent replay,
 //! domain-separated signatures, and the append-only retraction ledger.
-#![allow(deprecated)]
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -10,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use ed25519_dalek::{Signer, SigningKey};
 use nlos_capability::{
     CapabilityAuthority, CapabilityHandle, CapabilityRights, CapabilityTarget,
-    IssueRootCapabilityRequest,
+    IssueRootCapabilityRequest, SignedIssueRootCapabilityRequest, issue_root_command_message,
 };
 use nlos_identity::{BootstrapPrincipalRequest, IdentityAuthority, KeyPurpose};
 use nlos_process::{
@@ -194,21 +193,28 @@ fn fixture(root: &Root, seed: u8) -> Fixture {
     let capability = CapabilityAuthority::open(root.path()).unwrap();
     let capability_target = CapabilityTarget::Namespace(NamespaceId::from_bytes([0x44; 16]));
     let purpose_digest = Some([0x77; 32]);
+    let command = IssueRootCapabilityRequest {
+        issuer_key_id: issuer_binding.key_id,
+        holder_key_id: issuer_binding.key_id,
+        target: capability_target,
+        rights: CapabilityRights::SEMANTIC_APPEND.union(CapabilityRights::SEMANTIC_RETRACT),
+        purpose_digest,
+        valid_from_ms: 0,
+        valid_until_ms: 9_000,
+        delegation_depth_remaining: 0,
+        call_limit: None,
+        idempotency_key: IdempotencyKey::from_bytes([seed.wrapping_add(9); 16]),
+        issued_at_ms: 0,
+    };
     let capability_record = capability
-        .issue_root(
+        .issue_root_signed(
             &identity,
-            IssueRootCapabilityRequest {
-                issuer_key_id: issuer_binding.key_id,
-                holder_key_id: issuer_binding.key_id,
-                target: capability_target,
-                rights: CapabilityRights::SEMANTIC_APPEND.union(CapabilityRights::SEMANTIC_RETRACT),
-                purpose_digest,
-                valid_from_ms: 0,
-                valid_until_ms: 9_000,
-                delegation_depth_remaining: 0,
-                call_limit: None,
-                idempotency_key: IdempotencyKey::from_bytes([seed.wrapping_add(9); 16]),
-                issued_at_ms: 0,
+            SignedIssueRootCapabilityRequest {
+                command,
+                signer: issuer_binding.principal_id,
+                signature: issuer_key
+                    .sign(&issue_root_command_message(command))
+                    .to_bytes(),
             },
         )
         .unwrap()
@@ -252,22 +258,31 @@ fn secondary_issuer(fixture: &Fixture, seed: u8, rights: CapabilityRights) -> Is
         .unwrap()
         .record()
         .clone();
+    let command = IssueRootCapabilityRequest {
+        issuer_key_id: fixture.issuer.binding.key_id,
+        holder_key_id: binding.key_id,
+        target: fixture.capability_target,
+        rights,
+        purpose_digest: fixture.purpose_digest,
+        valid_from_ms: 0,
+        valid_until_ms: 9_000,
+        delegation_depth_remaining: 0,
+        call_limit: None,
+        idempotency_key: IdempotencyKey::from_bytes([seed.wrapping_add(31); 16]),
+        issued_at_ms: 0,
+    };
     let record = fixture
         .capability
-        .issue_root(
+        .issue_root_signed(
             &fixture.identity,
-            IssueRootCapabilityRequest {
-                issuer_key_id: fixture.issuer.binding.key_id,
-                holder_key_id: binding.key_id,
-                target: fixture.capability_target,
-                rights,
-                purpose_digest: fixture.purpose_digest,
-                valid_from_ms: 0,
-                valid_until_ms: 9_000,
-                delegation_depth_remaining: 0,
-                call_limit: None,
-                idempotency_key: IdempotencyKey::from_bytes([seed.wrapping_add(31); 16]),
-                issued_at_ms: 0,
+            SignedIssueRootCapabilityRequest {
+                command,
+                signer: fixture.issuer.binding.principal_id,
+                signature: fixture
+                    .issuer
+                    .key
+                    .sign(&issue_root_command_message(command))
+                    .to_bytes(),
             },
         )
         .unwrap()
