@@ -36,6 +36,7 @@ async fn run_waiting_fiber_scale(count: usize) {
         tokio::runtime::Handle::current(),
         TokioRuntimeConfig {
             max_live_fibers: count,
+            ..TokioRuntimeConfig::default()
         },
     )
     .expect("runtime");

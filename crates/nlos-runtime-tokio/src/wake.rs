@@ -151,9 +151,11 @@ impl WakeSink for TokioWakeSink {
         let key = WaitKey::new(fiber, operation_id, operation_generation);
 
         let record = {
-            let fibers = lock_unpoisoned(&self.inner.fibers);
-            match fibers.get(&fiber.fiber_id) {
+            let registry = lock_unpoisoned(&self.inner.fibers);
+            match registry.get(&fiber.fiber_id) {
                 Some(record) if record.generation == fiber.generation => Arc::clone(record),
+                // A reaped generation reports `FiberGone` exactly like an
+                // unknown one: the wake is permanently undeliverable.
                 _ => return Ok(WakeOutcome::FiberGone),
             }
         };

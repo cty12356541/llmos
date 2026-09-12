@@ -640,9 +640,10 @@ impl TokioChannelWakeSink {
             if let Some(key) = resume {
                 // Mirror `TokioWakeSink::wake`: consuming a pending entry
                 // best-effort transitions the fiber back out of `WaitingIo`,
-                // never overwriting a lifecycle-set state.
-                let fibers = lock_unpoisoned(&self.inner.fibers);
-                if let Some(fiber_record) = fibers.get(&key.fiber_id)
+                // never overwriting a lifecycle-set state. A reaped record is
+                // simply absent — there is nothing left to resume.
+                let registry = lock_unpoisoned(&self.inner.fibers);
+                if let Some(fiber_record) = registry.get(&key.fiber_id)
                     && fiber_record.generation == key.fiber_generation
                 {
                     fiber_record.resume_from_wait();

@@ -129,8 +129,14 @@ fn op_spec(index: u64, owner: FiberHandle) -> OperationSpec {
 }
 
 fn runtime(max_live_fibers: usize) -> TokioRuntimeAdapter {
-    TokioRuntimeAdapter::new(Handle::current(), TokioRuntimeConfig { max_live_fibers })
-        .expect("runtime")
+    TokioRuntimeAdapter::new(
+        Handle::current(),
+        TokioRuntimeConfig {
+            max_live_fibers,
+            ..TokioRuntimeConfig::default()
+        },
+    )
+    .expect("runtime")
 }
 
 fn start_pump<S, W, R>(source: S, wake_sink: W, reconcile_sink: R, batch_limit: usize) -> OutboxPump

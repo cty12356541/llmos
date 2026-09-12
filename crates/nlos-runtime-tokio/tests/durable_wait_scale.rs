@@ -363,6 +363,7 @@ async fn run_durable_wait_fiber_scale(count: usize, subset: usize) {
         Handle::current(),
         TokioRuntimeConfig {
             max_live_fibers: count,
+            ..TokioRuntimeConfig::default()
         },
     )
     .expect("runtime adapter");

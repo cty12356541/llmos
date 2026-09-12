@@ -353,8 +353,14 @@ fn fiber_spec(index: usize, scope: CancellationScopeId, generation: Generation) 
 }
 
 fn runtime() -> TokioRuntimeAdapter {
-    TokioRuntimeAdapter::new(Handle::current(), TokioRuntimeConfig { max_live_fibers: 8 })
-        .expect("runtime")
+    TokioRuntimeAdapter::new(
+        Handle::current(),
+        TokioRuntimeConfig {
+            max_live_fibers: 8,
+            ..TokioRuntimeConfig::default()
+        },
+    )
+    .expect("runtime")
 }
 
 fn spawn_waiter(

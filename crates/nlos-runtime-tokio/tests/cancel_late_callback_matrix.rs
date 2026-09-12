@@ -203,8 +203,14 @@ fn register_request(channel: &ChannelRecord, target: u64, key_seed: u8) -> Regis
 }
 
 fn runtime(max_live_fibers: usize) -> TokioRuntimeAdapter {
-    TokioRuntimeAdapter::new(Handle::current(), TokioRuntimeConfig { max_live_fibers })
-        .expect("runtime")
+    TokioRuntimeAdapter::new(
+        Handle::current(),
+        TokioRuntimeConfig {
+            max_live_fibers,
+            ..TokioRuntimeConfig::default()
+        },
+    )
+    .expect("runtime")
 }
 
 async fn wait_for_state(runtime: &TokioRuntimeAdapter, handle: FiberHandle, expected: FiberState) {

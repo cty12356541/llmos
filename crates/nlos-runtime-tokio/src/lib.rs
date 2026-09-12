@@ -1,6 +1,6 @@
 //! Tokio-backed implementation of the runtime-independent NLOS fiber contract.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
@@ -79,6 +79,11 @@ impl CancellationScope {
 enum TerminalOutcome {
     Pending,
     Finished(FiberExit),
+    /// A join consumed the exit: the record was reaped from the registry and
+    /// its tombstone pushed. A joiner still holding an `Arc` clone of the
+    /// record sees this state and fails with
+    /// [`RuntimeError::FiberReaped`] instead of double-consuming the exit.
+    Consumed,
 }
 
 /// Scheduler / durable-wait lifecycle phase exposed at the runtime boundary.
@@ -224,6 +229,7 @@ impl UsageAccumulator {
 }
 
 struct FiberRecord {
+    fiber_id: ExecutionFiberId,
     generation: Generation,
     scope: Arc<CancellationScope>,
     state: Mutex<FiberState>,
@@ -232,11 +238,19 @@ struct FiberRecord {
     accepted_at: Instant,
     terminal: Mutex<TerminalOutcome>,
     terminal_notify: Condvar,
+    /// FIBER-REAP-003: set by `detach_fiber` on a live record so the terminal
+    /// transition reclaims it. Read inside the terminal critical section.
+    reap_on_terminal: AtomicBool,
 }
 
 impl FiberRecord {
-    fn new(generation: Generation, scope: Arc<CancellationScope>) -> Self {
+    fn new(
+        fiber_id: ExecutionFiberId,
+        generation: Generation,
+        scope: Arc<CancellationScope>,
+    ) -> Self {
         Self {
+            fiber_id,
             generation,
             scope,
             state: Mutex::new(FiberState::Ready),
@@ -248,14 +262,21 @@ impl FiberRecord {
             accepted_at: Instant::now(),
             terminal: Mutex::new(TerminalOutcome::Pending),
             terminal_notify: Condvar::new(),
+            reap_on_terminal: AtomicBool::new(false),
         }
     }
 
-    fn finish(&self, exit: FiberExit) {
+    fn finish(&self, exit: FiberExit, inner: &Inner) {
         let mut terminal = lock_unpoisoned(&self.terminal);
         if matches!(*terminal, TerminalOutcome::Pending) {
             *terminal = TerminalOutcome::Finished(exit);
             self.terminal_notify.notify_all();
+            // FIBER-REAP-003: a detached live fiber is reclaimed inside this
+            // terminal critical section — the same section a consuming join
+            // uses — so the record never outlives its terminal transition.
+            if self.reap_on_terminal.load(Ordering::Acquire) {
+                inner.reap_fiber(self.fiber_id, self.generation);
+            }
         }
     }
 
@@ -264,7 +285,13 @@ impl FiberRecord {
     /// `finished_at`; a separate terminal timestamp could close the final
     /// segment past the wall interval's endpoint and break the
     /// `active_cpu <= elapsed_wall` invariant.
-    fn finish_terminal(&self, state: FiberState, started_at: Instant, finished_at: Instant) {
+    fn finish_terminal(
+        &self,
+        state: FiberState,
+        started_at: Instant,
+        finished_at: Instant,
+        inner: &Inner,
+    ) {
         let exit = fiber_exit_from_state(state);
         {
             let mut usage = lock_unpoisoned(&self.usage);
@@ -272,24 +299,36 @@ impl FiberRecord {
             usage.finalize(finished_at);
         }
         *lock_unpoisoned(&self.state) = state;
-        self.finish(exit);
+        self.finish(exit, inner);
     }
 
-    /// Waits for the fiber generation's terminal outcome.
+    /// Waits for the fiber generation's terminal outcome; a successful wait
+    /// consumes it (FIBER-REAP-001): inside the terminal critical section the
+    /// record is reaped from the registry, its tombstone is pushed, and the
+    /// outcome transitions to [`TerminalOutcome::Consumed`] so a racing
+    /// second joiner holding an `Arc` clone cannot double-consume the exit.
     ///
-    /// Fail-closed across the runtime shutdown boundary: `shutdown_flag` set
-    /// by [`TokioRuntimeAdapter::shutdown`] makes a still-pending join return
-    /// [`RuntimeError::ShuttingDown`] instead of parking forever on a fiber
-    /// the executor may never finish. A generation that already reached a
-    /// terminal state still joins normally after shutdown; the terminal
+    /// Fail-closed across the runtime shutdown boundary: the shutdown flag
+    /// set by [`TokioRuntimeAdapter::shutdown`] makes a still-pending join
+    /// return [`RuntimeError::ShuttingDown`] instead of parking forever on a
+    /// fiber the executor may never finish. A generation that already reached
+    /// a terminal state still joins normally after shutdown; the terminal
     /// outcome is checked first.
-    fn join(&self, shutdown_flag: &AtomicBool) -> Result<FiberExit, RuntimeError> {
+    fn join(&self, inner: &Inner) -> Result<FiberExit, RuntimeError> {
         let mut terminal = lock_unpoisoned(&self.terminal);
         loop {
             if let TerminalOutcome::Finished(exit) = *terminal {
+                *terminal = TerminalOutcome::Consumed;
+                inner.reap_fiber(self.fiber_id, self.generation);
                 return Ok(exit);
             }
-            if shutdown_flag.load(Ordering::Acquire) {
+            if matches!(*terminal, TerminalOutcome::Consumed) {
+                return Err(RuntimeError::FiberReaped {
+                    fiber_id: self.fiber_id,
+                    generation: self.generation,
+                });
+            }
+            if inner.shutdown.load(Ordering::Acquire) {
                 return Err(RuntimeError::ShuttingDown);
             }
             terminal = self
@@ -420,8 +459,91 @@ impl FiberRecord {
     }
 }
 
+/// The fiber registry and its bounded tombstone ring under one lock
+/// (FIBER-REAP-001..005): the "record exists **or** tombstone hit" checks of
+/// join/detach/spawn are atomic against the reap path, and a reap is a
+/// single lock acquisition. Tombstones are pure memory (FIBER-REAP-005) and
+/// FIFO-bounded — a full ring evicts its oldest entry, after which the
+/// evicted identity is spawnable as a new fiber.
+struct FiberRegistry {
+    fibers: HashMap<ExecutionFiberId, Arc<FiberRecord>>,
+    tombstones: VecDeque<(ExecutionFiberId, Generation)>,
+    tombstone_capacity: usize,
+}
+
+impl FiberRegistry {
+    fn new(tombstone_capacity: usize) -> Self {
+        Self {
+            fibers: HashMap::new(),
+            tombstones: VecDeque::new(),
+            tombstone_capacity,
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.fibers.len()
+    }
+
+    fn get(&self, fiber_id: &ExecutionFiberId) -> Option<&Arc<FiberRecord>> {
+        self.fibers.get(fiber_id)
+    }
+
+    fn values(&self) -> std::collections::hash_map::Values<'_, ExecutionFiberId, Arc<FiberRecord>> {
+        self.fibers.values()
+    }
+
+    fn insert(&mut self, fiber_id: ExecutionFiberId, record: Arc<FiberRecord>) {
+        self.fibers.insert(fiber_id, record);
+    }
+
+    /// Resolves a handle against records first, then tombstones
+    /// (FIBER-REAP-002): a live record with a mismatched generation is stale
+    /// (`InvalidGeneration`); an absent record whose `(id, generation)` is in
+    /// the tombstone ring was reaped (`FiberReaped`); anything else keeps the
+    /// pre-existing unknown-handle rejection.
+    fn resolve(&self, handle: FiberHandle) -> Result<Arc<FiberRecord>, RuntimeError> {
+        if let Some(record) = self.fibers.get(&handle.fiber_id) {
+            if record.generation != handle.generation {
+                return Err(RuntimeError::InvalidGeneration);
+            }
+            return Ok(Arc::clone(record));
+        }
+        if self.tombstoned(&handle.fiber_id, handle.generation) {
+            return Err(RuntimeError::FiberReaped {
+                fiber_id: handle.fiber_id,
+                generation: handle.generation,
+            });
+        }
+        Err(RuntimeError::InvalidGeneration)
+    }
+
+    /// Whether the tombstone ring still fences this exact `(id, generation)`.
+    fn tombstoned(&self, fiber_id: &ExecutionFiberId, generation: Generation) -> bool {
+        self.tombstones
+            .iter()
+            .any(|(id, reaped_generation)| id == fiber_id && *reaped_generation == generation)
+    }
+
+    /// Removes the record and pushes its tombstone. Idempotent: a record that
+    /// is already gone (a racing consumer won the terminal critical section)
+    /// pushes nothing, so the ring never holds duplicates from one identity.
+    fn reap(&mut self, fiber_id: ExecutionFiberId, generation: Generation) {
+        if self.fibers.remove(&fiber_id).is_none() {
+            return;
+        }
+        // `0` is a zero-capacity ring: pure consumption, no window protection.
+        if self.tombstone_capacity == 0 {
+            return;
+        }
+        while self.tombstones.len() >= self.tombstone_capacity {
+            self.tombstones.pop_front();
+        }
+        self.tombstones.push_back((fiber_id, generation));
+    }
+}
+
 struct Inner {
-    fibers: Mutex<HashMap<ExecutionFiberId, Arc<FiberRecord>>>,
+    fibers: Mutex<FiberRegistry>,
     scopes: Mutex<HashMap<ScopeKey, Arc<CancellationScope>>>,
     waits: Mutex<HashMap<WaitKey, WaitEntry>>,
     channel_waits: Mutex<HashMap<ChannelWaitKey, WaitEntry>>,
@@ -429,17 +551,47 @@ struct Inner {
     admission: Arc<Semaphore>,
 }
 
+impl Inner {
+    /// Reaps a fiber record from the registry. Callers hold the record's
+    /// terminal mutex (the join consumption path, the detach terminal path,
+    /// or `run_fiber`'s terminal transition), so the reap is ordered inside
+    /// that existing critical section; the registry lock is a leaf relative
+    /// to every record lock — no path acquires a record lock while holding
+    /// it — so the added `terminal → registry` edge cannot cycle.
+    fn reap_fiber(&self, fiber_id: ExecutionFiberId, generation: Generation) {
+        lock_unpoisoned(&self.fibers).reap(fiber_id, generation);
+    }
+}
+
 /// Configuration for a [`TokioRuntimeAdapter`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TokioRuntimeConfig {
     /// Maximum number of admitted, non-terminal fibers.
     pub max_live_fibers: usize,
+    /// Capacity of the fiber tombstone ring (FIBER-REAP-001..005): reaped
+    /// `(fiber_id, generation)` pairs stay fenced (`DuplicateFiber` on
+    /// re-spawn, `FiberReaped` on re-join) until FIFO-evicted. `0` is a
+    /// zero-capacity ring — pure consumption, no window protection.
+    pub tombstone_capacity: usize,
+    /// Capacity of the scope tombstone ring (SCOPE-IDX-003, reserved for the
+    /// scope-registry task): `0` is a zero-capacity ring. Defined here so the
+    /// lifecycle-reaping configuration surface is stable across the W25
+    /// tasks; this adapter does not read it yet.
+    pub scope_tombstone_capacity: usize,
+    /// Bound of the orphaned `channel_waits` buffer (ORPHAN-001, reserved
+    /// for the orphan-bound task): `0` drops every orphaned entry. Defined
+    /// here so the lifecycle-reaping configuration surface is stable across
+    /// the W25 tasks; this adapter does not read it yet.
+    pub orphan_buffer_capacity: usize,
 }
 
 impl Default for TokioRuntimeConfig {
     fn default() -> Self {
         Self {
             max_live_fibers: 10_000,
+            tombstone_capacity: 65_536,
+            scope_tombstone_capacity: 65_536,
+            orphan_buffer_capacity: 1_024,
         }
     }
 }
@@ -465,7 +617,7 @@ impl TokioRuntimeAdapter {
         Ok(Self {
             handle,
             inner: Arc::new(Inner {
-                fibers: Mutex::new(HashMap::new()),
+                fibers: Mutex::new(FiberRegistry::new(config.tombstone_capacity)),
                 scopes: Mutex::new(HashMap::new()),
                 waits: Mutex::new(HashMap::new()),
                 channel_waits: Mutex::new(HashMap::new()),
@@ -502,14 +654,7 @@ impl TokioRuntimeAdapter {
     }
 
     fn record_for(&self, handle: FiberHandle) -> Result<Arc<FiberRecord>, RuntimeError> {
-        let fibers = lock_unpoisoned(&self.inner.fibers);
-        let record = fibers
-            .get(&handle.fiber_id)
-            .ok_or(RuntimeError::InvalidGeneration)?;
-        if record.generation != handle.generation {
-            return Err(RuntimeError::InvalidGeneration);
-        }
-        Ok(Arc::clone(record))
+        lock_unpoisoned(&self.inner.fibers).resolve(handle)
     }
 
     /// Returns the scheduler/durable-wait lifecycle phase for inspection.
@@ -574,12 +719,12 @@ impl TokioRuntimeAdapter {
     /// Complexity is O(n) in the number of live fibers.
     #[must_use]
     pub fn inspect_lifecycle_meter_aggregate(&self) -> LifecycleMeterAggregate {
-        let fibers = lock_unpoisoned(&self.inner.fibers);
+        let registry = lock_unpoisoned(&self.inner.fibers);
         let mut aggregate = LifecycleMeterAggregate {
-            sampled_fibers: fibers.len(),
+            sampled_fibers: registry.len(),
             ..LifecycleMeterAggregate::default()
         };
-        for record in fibers.values() {
+        for record in registry.values() {
             let usage = record.activation_usage_snapshot();
             aggregate.total_backpressure_wait += usage.backpressure_wait;
             aggregate.total_suspended += usage.suspended;
@@ -622,17 +767,29 @@ impl RuntimeAdapter for TokioRuntimeAdapter {
             return Err(RuntimeError::Cancelled);
         }
 
-        let record = Arc::new(FiberRecord::new(spec.fiber_generation, Arc::clone(&scope)));
+        let record = Arc::new(FiberRecord::new(
+            spec.fiber_id,
+            spec.fiber_generation,
+            Arc::clone(&scope),
+        ));
         {
-            let mut fibers = lock_unpoisoned(&self.inner.fibers);
-            if let Some(existing) = fibers.get(&spec.fiber_id) {
+            let mut registry = lock_unpoisoned(&self.inner.fibers);
+            if let Some(existing) = registry.get(&spec.fiber_id) {
                 return Err(if existing.generation == spec.fiber_generation {
                     RuntimeError::DuplicateFiber
                 } else {
                     RuntimeError::InvalidGeneration
                 });
             }
-            fibers.insert(spec.fiber_id, Arc::clone(&record));
+            // FIBER-REAP-004: the duplicate fence extends past the record's
+            // lifetime — a reaped `(id, generation)` whose tombstone is still
+            // in the ring stays `DuplicateFiber` (window protection). An
+            // evicted tombstone fences nothing: the identity spawns as a new
+            // fiber.
+            if registry.tombstoned(&spec.fiber_id, spec.fiber_generation) {
+                return Err(RuntimeError::DuplicateFiber);
+            }
+            registry.insert(spec.fiber_id, Arc::clone(&record));
         }
         // Admission succeeded: the generation is live from the caller's view
         // even before the executor polls the spawned task body.
@@ -679,11 +836,22 @@ impl RuntimeAdapter for TokioRuntimeAdapter {
 
     fn join_fiber(&self, handle: FiberHandle) -> Result<FiberExit, RuntimeError> {
         let record = self.record_for(handle)?;
-        record.join(&self.inner.shutdown)
+        record.join(&self.inner)
     }
 
     fn detach_fiber(&self, handle: FiberHandle) -> Result<(), RuntimeError> {
-        let _record = self.record_for(handle)?;
+        let record = self.record_for(handle)?;
+        // FIBER-REAP-003: mark first, then inspect the terminal outcome under
+        // its mutex. Either the terminal transition observes the flag and
+        // reaps inside its own critical section, or this inspection observes
+        // `Finished` and reaps in the same critical section a consuming join
+        // would use — the double-check closes the detach/terminal race, and
+        // `reap` itself is idempotent.
+        record.reap_on_terminal.store(true, Ordering::Release);
+        let terminal = lock_unpoisoned(&record.terminal);
+        if matches!(*terminal, TerminalOutcome::Finished(_)) {
+            self.inner.reap_fiber(record.fiber_id, record.generation);
+        }
         Ok(())
     }
 }
@@ -727,9 +895,11 @@ async fn run_fiber(
     // terminal state (and reports `NotWaiting`), never an orphaned buffer.
     // Both wait registries — Operation and Channel sequence — are purged for
     // the terminated fiber generation, resolving their waits as `Cancelled`.
+    // A fiber marked `reap_on_terminal` is additionally reclaimed inside the
+    // terminal critical section reached below (FIBER-REAP-003).
     let mut waits = lock_unpoisoned(&inner.waits);
     let mut channel_waits = lock_unpoisoned(&inner.channel_waits);
-    record.finish_terminal(state, started_at, finished_at);
+    record.finish_terminal(state, started_at, finished_at, &inner);
     waits.retain(|key, _entry| !key.for_fiber(spec.fiber_id, spec.fiber_generation));
     channel_waits.retain(|key, _entry| !key.for_fiber(spec.fiber_id, spec.fiber_generation));
 }

@@ -1,12 +1,15 @@
 //! Activation metering tests for [`TokioRuntimeAdapter`].
 //!
 //! Covers dimensional `external_wait` (`WaitingIo`) and `active_cpu` (`Running`)
-//! accumulation plus stable post-join readback.
+//! accumulation plus stable terminal readback around the one-shot join
+//! consumption (FIBER-REAP-001).
 
 use std::future::pending;
 use std::time::{Duration, Instant};
 
-use nlos_runtime::{FiberExit, FiberSpec, FiberState, RuntimeAdapter, WakeOutcome, WakeSink};
+use nlos_runtime::{
+    FiberExit, FiberSpec, FiberState, RuntimeAdapter, RuntimeError, WakeOutcome, WakeSink,
+};
 use nlos_runtime_tokio::{TokioRuntimeAdapter, TokioRuntimeConfig, WaitOutcome};
 use nlos_types::{
     AgentInstanceId, CancellationScopeId, ExecutionFiberId, Generation, OperationId, ProcessId,
@@ -42,8 +45,14 @@ fn operation(index: usize) -> OperationId {
 }
 
 fn runtime(max_live_fibers: usize) -> TokioRuntimeAdapter {
-    TokioRuntimeAdapter::new(Handle::current(), TokioRuntimeConfig { max_live_fibers })
-        .expect("runtime")
+    TokioRuntimeAdapter::new(
+        Handle::current(),
+        TokioRuntimeConfig {
+            max_live_fibers,
+            ..TokioRuntimeConfig::default()
+        },
+    )
+    .expect("runtime")
 }
 
 async fn wait_for_state(
@@ -172,6 +181,11 @@ async fn terminal_metering_keeps_active_cpu_bounded_by_elapsed_wall_under_stress
     }
 }
 
+/// Given/When/Then: given a fiber that reached `Completed`; when its usage is
+/// read back twice and it is then joined; then the pre-join readback is
+/// stable and metered (`elapsed_wall > 0`), and — since W25 FIBER-REAP-001
+/// made join a one-shot consumption — the post-join readback stably reports
+/// the typed `FiberReaped` error instead of the removed record's usage.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn join_then_activation_usage_readback_is_stable() {
     let runtime = runtime(2);
@@ -186,11 +200,20 @@ async fn join_then_activation_usage_readback_is_stable() {
         )
         .expect("spawn");
 
-    let exit = runtime.join_fiber(handle).expect("join");
-    assert_eq!(exit, FiberExit::Completed);
-
+    wait_for_state(&runtime, handle, FiberState::Completed).await;
     let first = runtime.activation_usage(handle).expect("first readback");
     let second = runtime.activation_usage(handle).expect("second readback");
     assert_eq!(first, second);
     assert!(first.elapsed_wall > Duration::ZERO);
+
+    let exit = runtime.join_fiber(handle).expect("join");
+    assert_eq!(exit, FiberExit::Completed);
+
+    assert_eq!(
+        runtime.activation_usage(handle),
+        Err(RuntimeError::FiberReaped {
+            fiber_id: handle.fiber_id,
+            generation: handle.generation
+        })
+    );
 }

@@ -177,8 +177,14 @@ fn register(authority: &WaitAuthority, request: RegisterWaitRequest) -> WaitReco
 }
 
 fn runtime() -> TokioRuntimeAdapter {
-    TokioRuntimeAdapter::new(Handle::current(), TokioRuntimeConfig { max_live_fibers: 4 })
-        .expect("runtime")
+    TokioRuntimeAdapter::new(
+        Handle::current(),
+        TokioRuntimeConfig {
+            max_live_fibers: 4,
+            ..TokioRuntimeConfig::default()
+        },
+    )
+    .expect("runtime")
 }
 
 /// Spawns a fiber that pends forever; returns its handle and scope for
