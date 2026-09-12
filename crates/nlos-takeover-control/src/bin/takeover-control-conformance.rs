@@ -13,7 +13,7 @@ use std::fmt::Write as _;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ed25519_dalek::{Signer, SigningKey};
 use nlos_identity::{BootstrapPrincipalRequest, IdentityAuthority, KeyPurpose};
@@ -99,6 +99,20 @@ fn lease_request(holder: u8, key: u8, requested_at_ms: i64, ttl_ms: i64) -> Auth
     }
 }
 
+/// Wall observation for the anchored lease entry: a bin/test-layer reading of
+/// the system clock, not a clock-authority handle. The fixture's logical
+/// timestamps are far below any real reading, so this anchor keeps the
+/// takeover judgement honest without changing its outcome. Returns `0`
+/// (fail-closed: incumbent treated as live) only when the system clock
+/// cannot produce a representable reading.
+fn observed_wall_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|elapsed| u64::try_from(elapsed.as_millis()).ok())
+        .unwrap_or(0)
+}
+
 fn fixture_attempt(task_id: TaskId) -> AttemptSpec {
     AttemptSpec {
         task_id,
@@ -133,7 +147,7 @@ fn prepare_fixture(
     authority.register_attempt(attempt)?;
 
     let first_lease = authority
-        .acquire_authority_lease(lease_request(1, 0xB1, 100, 100))?
+        .acquire_authority_lease_anchored(lease_request(1, 0xB1, 100, 100), observed_wall_ms())?
         .record();
     let permit =
         match authority.request_commit_permit_with_authority_lease(AuthorityLeasePermitRequest {
@@ -170,7 +184,7 @@ fn prepare_fixture(
     })?;
 
     let takeover_lease = authority
-        .acquire_authority_lease(lease_request(2, 0xB2, 201, 1_000))?
+        .acquire_authority_lease_anchored(lease_request(2, 0xB2, 201, 1_000), observed_wall_ms())?
         .record();
     let registry_binding = permit
         .participant_registry_binding
