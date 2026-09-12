@@ -18,8 +18,10 @@
 //!
 //! The scope group below covers SCOPE-IDX-001..004: the by-id index, the
 //! entry reference count reaped with the last referencing fiber record, and
-//! the bounded scope tombstone ring. The orphan buffer bound (ORPHAN-*) is a
-//! separate W25 task and is not covered here.
+//! the bounded scope tombstone ring. The orphan group at the bottom covers
+//! ORPHAN-001/002: the capacity bound of the orphaned `channel_waits` buffer
+//! (drop-oldest on overflow, monotonic health counter, zero capacity as pure
+//! rejection) and the fiber-bound normal path staying untouched.
 //!
 //! R1 pins (W25-001R): `FiberReaped` reaches every handle-addressed entry
 //! through the shared record resolution, not just `join_fiber` — the
@@ -29,19 +31,25 @@
 
 use std::future::pending;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use nlos_channel::{ChannelAuthority, ChannelDecision, CreateChannelRequest};
 use nlos_process::ProcessAuthority;
 use nlos_runtime::{FiberExit, FiberHandle, FiberSpec, FiberState, RuntimeAdapter, RuntimeError};
 use nlos_runtime_tokio::{
-    ChannelWaitError, ResumeRejection, SnapshotResumable, TokioRuntimeAdapter, TokioRuntimeConfig,
+    ChannelWaitError, DeliveryReport, ResumeRejection, SnapshotResumable, TokioRuntimeAdapter,
+    TokioRuntimeConfig, WaitOutcome,
 };
 use nlos_types::{
-    AgentInstanceId, CancellationScopeId, ExecutionFiberId, Generation, OperationId, ProcessId,
-    ResourceGroupId, SchedulerDomainId,
+    AgentInstanceId, CancellationScopeId, ChannelId, ExecutionFiberId, Generation, IdempotencyKey,
+    OperationId, ProcessId, ResourceGroupId, SchedulerDomainId,
 };
-use nlos_wait::BindingId;
+use nlos_wait::{
+    BindingId, RegisterDecision, RegisterWaitRequest, WaitAuthority, WaitRecord, WaitState,
+    WakeReport,
+};
 use tokio::runtime::Handle;
 
 fn id_bytes(value: usize) -> [u8; 16] {
@@ -766,4 +774,368 @@ async fn zero_scope_tombstone_capacity_fences_nothing() {
     wait_for_state(&runtime, respawned, FiberState::Completed).await;
     assert_eq!(runtime.join_fiber(respawned), Ok(FiberExit::Completed));
     assert_eq!(runtime.registered_scopes(), 0);
+}
+
+// ---------------------------------------------------------------------------
+// Orphaned channel-wait buffer bound (ORPHAN-001/002): an early delivery
+// that finds no registration buffers under the fiber-less placeholder key;
+// that buffer is capacity-bounded (`orphan_buffer_capacity`, FIFO
+// drop-oldest on overflow, monotonic `health()` drop counter, zero capacity
+// = pure rejection) while the fiber-bound normal path is untouched.
+//
+// Discrimination trick: the durable rows are kept `PENDING` and the delivery
+// report is synthesized from their records with a forced `Woken` state —
+// the documented race where the consumer delivers a flip the registering
+// fiber has not observed yet (`deliver` never reads the durable side). A
+// surviving buffer entry then resolves `wait_for_channel` immediately
+// (`Woken` via buffer consumption), a dropped one leaves the registration
+// pending, which is exactly the observable difference the bound creates.
+// ---------------------------------------------------------------------------
+
+/// Bounded observation window for "still pending" assertions.
+const PENDING_PROBE: Duration = Duration::from_millis(100);
+/// Generous bound for waits that must resolve.
+const RESOLVE: Duration = Duration::from_secs(5);
+
+fn orphan_runtime(orphan_buffer_capacity: usize) -> TokioRuntimeAdapter {
+    TokioRuntimeAdapter::new(
+        Handle::current(),
+        TokioRuntimeConfig {
+            max_live_fibers: 16,
+            orphan_buffer_capacity,
+            ..TokioRuntimeConfig::default()
+        },
+    )
+    .expect("runtime")
+}
+
+/// Opens a fresh channel/wait authority pair on the root.
+fn open_wait_pair(root: &Root) -> (Arc<ChannelAuthority>, WaitAuthority) {
+    let channel = Arc::new(ChannelAuthority::open(root.path()).expect("open channel authority"));
+    let wait = WaitAuthority::open(root.path(), Arc::clone(&channel)).expect("open wait authority");
+    (channel, wait)
+}
+
+fn orphan_channel(channel: &ChannelAuthority, seed: u8) -> ChannelId {
+    match channel
+        .create_channel(CreateChannelRequest {
+            capacity_bytes: 4_096,
+            policy_digest: [0x44; 32],
+            idempotency_key: IdempotencyKey::from_bytes([seed; 16]),
+            created_at_ms: 900,
+        })
+        .expect("create channel")
+    {
+        ChannelDecision::Created(record) => record.channel_id,
+        ChannelDecision::Replayed(_) => panic!("fresh create cannot replay"),
+    }
+}
+
+/// The registration request of the `index`-th (1-based) orphan wait: target
+/// and idempotency key both derive from the index, so distinct indexes are
+/// distinct durable rows.
+fn orphan_request(channel_id: ChannelId, index: u8) -> RegisterWaitRequest {
+    RegisterWaitRequest {
+        binding: BindingId::from_bytes([1; 16]),
+        channel_id,
+        target_sequence: u64::from(index),
+        idempotency_key: IdempotencyKey::from_bytes([index; 16]),
+        registered_at_ms: 1_000,
+    }
+}
+
+/// Registers one still-`PENDING` durable wait. Nothing is ever enqueued, so
+/// the channel high-water stays at zero and a later `wait_for_channel` can
+/// only resolve through the buffer (no self-flip).
+fn register_pending_wait(waits: &WaitAuthority, channel_id: ChannelId, index: u8) -> WaitRecord {
+    match waits
+        .register_wait(orphan_request(channel_id, index))
+        .expect("register wait")
+    {
+        RegisterDecision::Registered(record) => record,
+        RegisterDecision::Replayed(_) => panic!("fresh register cannot replay"),
+    }
+}
+
+/// The at-least-once delivery report for still-`PENDING` rows: record copies
+/// with a forced `Woken` state.
+fn orphan_report(records: &[WaitRecord]) -> WakeReport {
+    WakeReport {
+        woken: records
+            .iter()
+            .cloned()
+            .map(|mut record| {
+                record.state = WaitState::Woken;
+                record
+            })
+            .collect(),
+    }
+}
+
+/// Spawns a forever-pending waiter fiber for one `wait_for_channel` probe.
+fn spawn_orphan_waiter(
+    runtime: &TokioRuntimeAdapter,
+    index: usize,
+) -> (FiberHandle, CancellationScopeId) {
+    let scope = CancellationScopeId::from_bytes(id_bytes(500 + index));
+    let handle = runtime
+        .spawn_fiber(fiber_spec(600 + index, scope), Box::pin(pending()))
+        .expect("spawn waiter");
+    (handle, scope)
+}
+
+/// ORPHAN-001 — 超限丢最老 + 单调计数:given a capacity-4 orphan buffer; when
+/// six early unclaimed deliveries arrive and are consumed by registrations;
+/// then the two OLDEST entries were dropped (their registrations stay
+/// pending, the newest resolve immediately), and a second overflowing round
+/// accumulates the counter monotonically (4 total, never reset by the
+/// consumption in between).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn orphan_buffer_drops_oldest_beyond_capacity_and_counts_monotonically() {
+    let root = Root::new("orphan-bound");
+    let (channel, waits) = open_wait_pair(&root);
+    let channel_id = orphan_channel(&channel, 0xB0);
+    let runtime = orphan_runtime(4);
+    let sink = runtime.channel_wait_sink();
+
+    assert_eq!(
+        runtime.health().orphan_buffer_dropped_total,
+        0,
+        "a fresh adapter has dropped nothing"
+    );
+
+    // Round 1: six early unclaimed deliveries into a capacity-4 buffer.
+    let round1: Vec<WaitRecord> = (1_u8..=6)
+        .map(|index| register_pending_wait(&waits, channel_id, index))
+        .collect();
+    assert_eq!(
+        sink.deliver(&orphan_report(&round1)).expect("deliver"),
+        DeliveryReport {
+            delivered: 6,
+            buffered: 6
+        }
+    );
+    assert_eq!(
+        runtime.health().orphan_buffer_dropped_total,
+        2,
+        "the two oldest orphaned entries are dropped"
+    );
+
+    // Oldest dropped (1, 2): the late registrations find no buffered wake
+    // and stay pending.
+    for index in 1_u8..=2 {
+        let (handle, scope) = spawn_orphan_waiter(&runtime, index as usize);
+        let mut wait = runtime
+            .wait_for_channel(handle, &waits, orphan_request(channel_id, index))
+            .expect("register dropped orphan");
+        assert!(
+            tokio::time::timeout(PENDING_PROBE, &mut wait)
+                .await
+                .is_err(),
+            "the dropped oldest orphan must not wake its late registration"
+        );
+        runtime
+            .cancel_scope(scope, Generation::INITIAL)
+            .expect("cancel");
+    }
+
+    // Newest kept (3..=6): the registrations consume the buffered wakes.
+    for index in 3_u8..=6 {
+        let (handle, _scope) = spawn_orphan_waiter(&runtime, index as usize);
+        let wait = runtime
+            .wait_for_channel(handle, &waits, orphan_request(channel_id, index))
+            .expect("register surviving orphan");
+        assert_eq!(
+            tokio::time::timeout(RESOLVE, wait)
+                .await
+                .expect("surviving orphan resolves"),
+            WaitOutcome::Woken
+        );
+    }
+
+    // Round 2: the buffer is empty again (every survivor was consumed); four
+    // deliveries refill it, two more overflow it. The counter accumulates —
+    // consuming buffered entries never resets it.
+    let round2: Vec<WaitRecord> = (7_u8..=12)
+        .map(|index| register_pending_wait(&waits, channel_id, index))
+        .collect();
+    assert_eq!(
+        sink.deliver(&orphan_report(&round2))
+            .expect("deliver round 2"),
+        DeliveryReport {
+            delivered: 6,
+            buffered: 6
+        }
+    );
+    assert_eq!(
+        runtime.health().orphan_buffer_dropped_total,
+        4,
+        "drops accumulate monotonically across rounds and consumptions"
+    );
+
+    // FIFO across the round boundary: round 2 evicted its own oldest (7, 8);
+    // the newest (12) survived.
+    let (handle, scope) = spawn_orphan_waiter(&runtime, 20);
+    let mut dropped = runtime
+        .wait_for_channel(handle, &waits, orphan_request(channel_id, 7))
+        .expect("register round-2 dropped orphan");
+    assert!(
+        tokio::time::timeout(PENDING_PROBE, &mut dropped)
+            .await
+            .is_err(),
+        "the round-2 oldest was FIFO-evicted despite the empty refill"
+    );
+    runtime
+        .cancel_scope(scope, Generation::INITIAL)
+        .expect("cancel");
+
+    let (handle, _scope) = spawn_orphan_waiter(&runtime, 21);
+    let survived = runtime
+        .wait_for_channel(handle, &waits, orphan_request(channel_id, 12))
+        .expect("register round-2 surviving orphan");
+    assert_eq!(
+        tokio::time::timeout(RESOLVE, survived)
+            .await
+            .expect("round-2 newest resolves"),
+        WaitOutcome::Woken
+    );
+}
+
+/// ORPHAN-002 — fiber 绑定路径不受影响:given a live fiber-bound wait and an
+/// orphan buffer overflowing past its capacity; when the bound wake is
+/// delivered; then it hands off to the live receiver (immediate `Woken`,
+/// nothing buffered, nothing dropped) — the bound only ever clamps the
+/// fiber-less placeholder entries.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn orphan_bound_leaves_fiber_bound_waits_untouched() {
+    let root = Root::new("orphan-normal");
+    let (channel, waits) = open_wait_pair(&root);
+    let channel_id = orphan_channel(&channel, 0xB1);
+    let runtime = orphan_runtime(2);
+    let sink = runtime.channel_wait_sink();
+
+    let (handle, scope) = spawn_orphan_waiter(&runtime, 1);
+    let bound = register_pending_wait(&waits, channel_id, 1);
+    let mut wait = runtime
+        .wait_for_channel(handle, &waits, orphan_request(channel_id, 1))
+        .expect("register fiber-bound wait");
+    assert!(
+        tokio::time::timeout(PENDING_PROBE, &mut wait)
+            .await
+            .is_err(),
+        "the fiber-bound wait pends before its wake"
+    );
+
+    // Overflow the orphan buffer with four unclaimed early deliveries.
+    let orphans: Vec<WaitRecord> = (2_u8..=5)
+        .map(|index| register_pending_wait(&waits, channel_id, index))
+        .collect();
+    assert_eq!(
+        sink.deliver(&orphan_report(&orphans)).expect("deliver"),
+        DeliveryReport {
+            delivered: 4,
+            buffered: 4
+        }
+    );
+    assert_eq!(runtime.health().orphan_buffer_dropped_total, 2);
+
+    // The fiber-bound wake still hands off to the live receiver.
+    assert_eq!(
+        sink.deliver(&orphan_report(std::slice::from_ref(&bound)))
+            .expect("deliver bound wake"),
+        DeliveryReport {
+            delivered: 1,
+            buffered: 0
+        }
+    );
+    assert_eq!(
+        tokio::time::timeout(RESOLVE, wait)
+            .await
+            .expect("fiber-bound wait resolves"),
+        WaitOutcome::Woken
+    );
+    assert_eq!(
+        runtime.health().orphan_buffer_dropped_total,
+        2,
+        "a live handoff never drops and never counts"
+    );
+
+    runtime
+        .cancel_scope(scope, Generation::INITIAL)
+        .expect("cancel");
+}
+
+/// §2.4 zero-value semantics (orphan buffer) — 容量为零的纯拒绝:with
+/// `orphan_buffer_capacity = 0` every orphaned early delivery is dropped and
+/// counted — nothing is ever buffered, a late registration finds no wake —
+/// while the delivery itself still succeeds (at-least-once) and the
+/// fiber-bound normal path keeps working.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn zero_orphan_capacity_purely_rejects_every_orphaned_entry() {
+    let root = Root::new("orphan-zero");
+    let (channel, waits) = open_wait_pair(&root);
+    let channel_id = orphan_channel(&channel, 0xB2);
+    let runtime = orphan_runtime(0);
+    let sink = runtime.channel_wait_sink();
+
+    let orphans: Vec<WaitRecord> = (1_u8..=3)
+        .map(|index| register_pending_wait(&waits, channel_id, index))
+        .collect();
+    assert_eq!(
+        sink.deliver(&orphan_report(&orphans)).expect("deliver"),
+        DeliveryReport {
+            delivered: 3,
+            buffered: 3
+        },
+        "the deliveries themselves still succeed (at-least-once)"
+    );
+    assert_eq!(
+        runtime.health().orphan_buffer_dropped_total,
+        3,
+        "a zero-capacity buffer drops and counts every orphaned entry"
+    );
+
+    // Nothing was buffered: the late registration finds no wake.
+    let (handle, scope) = spawn_orphan_waiter(&runtime, 1);
+    let mut wait = runtime
+        .wait_for_channel(handle, &waits, orphan_request(channel_id, 1))
+        .expect("register over a zero-capacity buffer");
+    assert!(
+        tokio::time::timeout(PENDING_PROBE, &mut wait)
+            .await
+            .is_err(),
+        "a zero-capacity buffer never satisfies a registration"
+    );
+    runtime
+        .cancel_scope(scope, Generation::INITIAL)
+        .expect("cancel");
+
+    // The fiber-bound normal path is unaffected by the zero capacity.
+    let (handle, scope) = spawn_orphan_waiter(&runtime, 2);
+    let bound = register_pending_wait(&waits, channel_id, 4);
+    let wait = runtime
+        .wait_for_channel(handle, &waits, orphan_request(channel_id, 4))
+        .expect("register fiber-bound wait");
+    assert_eq!(
+        sink.deliver(&orphan_report(std::slice::from_ref(&bound)))
+            .expect("deliver bound wake"),
+        DeliveryReport {
+            delivered: 1,
+            buffered: 0
+        }
+    );
+    assert_eq!(
+        tokio::time::timeout(RESOLVE, wait)
+            .await
+            .expect("fiber-bound wait resolves"),
+        WaitOutcome::Woken
+    );
+    assert_eq!(
+        runtime.health().orphan_buffer_dropped_total,
+        3,
+        "the fiber-bound handoff leaves the drop counter untouched"
+    );
+    runtime
+        .cancel_scope(scope, Generation::INITIAL)
+        .expect("cancel");
 }

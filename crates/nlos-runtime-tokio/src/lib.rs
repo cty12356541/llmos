@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::panic::AssertUnwindSafe;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -22,7 +22,7 @@ mod replay;
 mod snapshot;
 mod wake;
 
-use channel_wait::ChannelWaitKey;
+use channel_wait::ChannelWaitRegistry;
 pub use channel_wait::{
     ChannelSequenceWait, ChannelWaitError, DeliveryReport, RearmReport, RearmedChannelWait,
     TokioChannelWakeSink,
@@ -682,7 +682,13 @@ struct Inner {
     fibers: Mutex<FiberRegistry>,
     scopes: Mutex<ScopeRegistry>,
     waits: Mutex<HashMap<WaitKey, WaitEntry>>,
-    channel_waits: Mutex<HashMap<ChannelWaitKey, WaitEntry>>,
+    channel_waits: Mutex<ChannelWaitRegistry>,
+    /// Monotonic count of orphaned Channel-wait buffer entries dropped by
+    /// the ORPHAN-001 capacity bound; never resets. Lock-free so
+    /// [`TokioRuntimeAdapter::health`] never touches the wait-registry
+    /// locks. Relaxed ordering suffices: the counter carries a count, no
+    /// inter-variable ordering.
+    orphan_buffer_dropped: AtomicU64,
     shutdown: AtomicBool,
     admission: Arc<Semaphore>,
 }
@@ -729,10 +735,14 @@ pub struct TokioRuntimeConfig {
     /// any other generation of the same id until FIFO-evicted. `0` is a
     /// zero-capacity ring — pure consumption, no window protection.
     pub scope_tombstone_capacity: usize,
-    /// Bound of the orphaned `channel_waits` buffer (ORPHAN-001, reserved
-    /// for the orphan-bound task): `0` drops every orphaned entry. Defined
-    /// here so the lifecycle-reaping configuration surface is stable across
-    /// the W25 tasks; this adapter does not read it yet.
+    /// Bound of the orphaned `channel_waits` buffer (ORPHAN-001): an early,
+    /// unclaimed Channel-wake delivery buffers under the fiber-less
+    /// placeholder key for at most this many entries — overflow drops the
+    /// OLDEST orphaned entry, and every drop advances the monotonic
+    /// [`RuntimeHealth::orphan_buffer_dropped_total`] counter. `0` is pure
+    /// rejection: every orphaned delivery is dropped and counted, nothing is
+    /// ever buffered. Fiber-bound waits are outside this bound and are
+    /// unaffected by it (ORPHAN-002).
     pub orphan_buffer_capacity: usize,
 }
 
@@ -745,6 +755,22 @@ impl Default for TokioRuntimeConfig {
             orphan_buffer_capacity: 1_024,
         }
     }
+}
+
+/// Lock-free health snapshot of the adapter's bounded internal structures.
+///
+/// Mirrors the [`PumpHealth`] convention: counters are readable without any
+/// registry lock, so a health probe never contends with the wait handoff
+/// paths.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RuntimeHealth {
+    /// Monotonic count of orphaned Channel-wait buffer entries dropped by
+    /// the capacity bound (ORPHAN-001): early, unclaimed deliveries beyond
+    /// [`TokioRuntimeConfig::orphan_buffer_capacity`] whose oldest entry was
+    /// evicted — plus every orphaned delivery while the capacity is zero
+    /// (pure rejection). Never resets. Fiber-bound waits are never dropped
+    /// and never counted (ORPHAN-002).
+    pub orphan_buffer_dropped_total: u64,
 }
 
 /// A Tokio executor adapter that preserves NLOS identity and cancellation.
@@ -771,7 +797,8 @@ impl TokioRuntimeAdapter {
                 fibers: Mutex::new(FiberRegistry::new(config.tombstone_capacity)),
                 scopes: Mutex::new(ScopeRegistry::new(config.scope_tombstone_capacity)),
                 waits: Mutex::new(HashMap::new()),
-                channel_waits: Mutex::new(HashMap::new()),
+                channel_waits: Mutex::new(ChannelWaitRegistry::new(config.orphan_buffer_capacity)),
+                orphan_buffer_dropped: AtomicU64::new(0),
                 shutdown: AtomicBool::new(false),
                 admission: Arc::new(Semaphore::new(config.max_live_fibers)),
             }),
@@ -781,6 +808,15 @@ impl TokioRuntimeAdapter {
     #[must_use]
     pub fn registered_fibers(&self) -> usize {
         lock_unpoisoned(&self.inner.fibers).len()
+    }
+
+    /// Returns a lock-free health snapshot of the adapter's bounded internal
+    /// structures (ORPHAN-001).
+    #[must_use]
+    pub fn health(&self) -> RuntimeHealth {
+        RuntimeHealth {
+            orphan_buffer_dropped_total: self.inner.orphan_buffer_dropped.load(Ordering::Relaxed),
+        }
     }
 
     /// Number of live scope entries (SCOPE-IDX-002): each is referenced by
