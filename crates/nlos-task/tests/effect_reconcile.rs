@@ -9,12 +9,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use nlos_task::{
     AdoptionReplay, AdoptionRequest, AttemptSpec, AuthorityLeaseAdoptionRequest,
-    AuthorityLeaseFinalizeRequest, AuthorityLeasePermitRequest, AuthorityLeaseReconcileRequest,
-    AuthorityLeaseRequest, AuthorityLeaseTakeoverFenceRequest, ClosePermitDecision,
-    ClosePermitRequest, EffectPermitDecision, EffectPermitRequest, FinalizeDecision,
-    FinalizeRequestV3, IssuedPermit, LogicalEffectDescriptor, NoEffectReason, NoEffectRequest,
-    Outcome, OutcomeRequest, PermitClosureOutcome, PermitDecision, PermitRecord, PermitRequest,
-    PermitState, PlannedEffect, ReconcileOutcome, ReconcileReplay, ReconcileRequest,
+    AuthorityLeaseDispatchRequest, AuthorityLeaseEffectPermitRequest,
+    AuthorityLeaseFinalizeRequest, AuthorityLeaseOutcomeRequest, AuthorityLeasePermitRequest,
+    AuthorityLeaseReconcileRequest, AuthorityLeaseRequest, AuthorityLeaseTakeoverFenceRequest,
+    ClosePermitDecision, ClosePermitRequest, EffectPermitDecision, EffectPermitRequest,
+    FinalizeDecision, FinalizeRequestV3, IssuedPermit, LogicalEffectDescriptor, NoEffectReason,
+    NoEffectRequest, Outcome, OutcomeRequest, PermitClosureOutcome, PermitDecision, PermitRecord,
+    PermitRequest, PermitState, PlannedEffect, ReconcileOutcome, ReconcileReplay, ReconcileRequest,
     RequiredSatisfaction, RequiredSatisfactionProof, SlotState, SnapshotBundle,
     SqliteTaskAuthority, TaskSpec, TaskStoreError, empty_effect_history_root,
     expected_success_assertion_digest,
@@ -384,24 +385,57 @@ fn setup_unknown_inner(
             .request_commit_permit(permit_request)
             .expect("permit"),
     });
-    let issued = issued_effect_permit(
-        authority
+    // A lease-bound permit must present its live lease on the effect plane
+    // (TK-B2); the unbound fixture keeps the plain entries.
+    let issued = issued_effect_permit(match authority_lease {
+        Some(lease) => authority
+            .request_effect_permit_with_authority_lease(AuthorityLeaseEffectPermitRequest {
+                permit: effect_request(&spec, &permit, 0, 0xe1),
+                lease,
+            })
+            .expect("issue slot 0"),
+        None => authority
             .request_effect_permit(effect_request(&spec, &permit, 0, 0xe1))
             .expect("issue slot 0"),
+    });
+    match authority_lease {
+        Some(lease) => {
+            authority
+                .consume_dispatch_token_with_authority_lease(AuthorityLeaseDispatchRequest {
+                    dispatch: dispatch_request(&spec, &permit, &issued),
+                    lease,
+                })
+                .expect("dispatch slot 0");
+        }
+        None => {
+            authority
+                .consume_dispatch_token(dispatch_request(&spec, &permit, &issued))
+                .expect("dispatch slot 0");
+        }
+    }
+    let uncertainty = outcome_request(
+        &spec,
+        &permit,
+        0,
+        Outcome::Unknown {
+            uncertainty_digest: [0x99; 32],
+        },
     );
-    authority
-        .consume_dispatch_token(dispatch_request(&spec, &permit, &issued))
-        .expect("dispatch slot 0");
-    authority
-        .record_effect_outcome(outcome_request(
-            &spec,
-            &permit,
-            0,
-            Outcome::Unknown {
-                uncertainty_digest: [0x99; 32],
-            },
-        ))
-        .expect("register uncertainty");
+    match authority_lease {
+        Some(lease) => {
+            authority
+                .record_effect_outcome_with_authority_lease(AuthorityLeaseOutcomeRequest {
+                    outcome: uncertainty,
+                    lease,
+                })
+                .expect("register uncertainty");
+        }
+        None => {
+            authority
+                .record_effect_outcome(uncertainty)
+                .expect("register uncertainty");
+        }
+    }
     drop(authority);
     (database, spec, permit, authority_lease)
 }

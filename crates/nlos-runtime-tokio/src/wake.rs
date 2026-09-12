@@ -18,7 +18,7 @@ use nlos_runtime::{FiberHandle, FiberState, RuntimeError, WakeOutcome, WakeSink}
 use nlos_types::{ExecutionFiberId, Generation, OperationId};
 use tokio::sync::oneshot;
 
-use crate::{Inner, TokioRuntimeAdapter, lock_unpoisoned};
+use crate::{FiberRecord, Inner, TokioRuntimeAdapter, lock_unpoisoned};
 
 /// The identity of one logical Operation wait: the waiting fiber generation
 /// plus the awaited Operation identity and generation.
@@ -212,14 +212,28 @@ impl TokioRuntimeAdapter {
     }
 
     /// Marks the runtime as shutting down: subsequent wakes and channel wake
-    /// deliveries fail with [`RuntimeError::ShuttingDown`] and every currently
+    /// deliveries fail with [`RuntimeError::ShuttingDown`], every currently
     /// registered wait — Operation and Channel sequence — resolves as
-    /// [`WaitOutcome::Cancelled`], so no wait can pend forever across the
-    /// shutdown boundary. The flag is one-way.
+    /// [`WaitOutcome::Cancelled`], and every join parked in
+    /// [`RuntimeAdapter::join_fiber`](nlos_runtime::RuntimeAdapter::join_fiber)
+    /// on a still-pending fiber wakes and fails with
+    /// [`RuntimeError::ShuttingDown`], so nothing can pend or park forever
+    /// across the shutdown boundary. Joins on already-terminal fibers keep
+    /// returning their stored exit. The method is idempotent and the flag is
+    /// one-way.
     pub fn shutdown(&self) {
         self.inner.shutdown.store(true, Ordering::Release);
         lock_unpoisoned(&self.inner.waits).clear();
         lock_unpoisoned(&self.inner.channel_waits).clear();
+        // Wake parked joiners so `join_fiber` fails closed. The records are
+        // snapshotted first so no registry lock is held while notifying.
+        let joiners: Vec<Arc<FiberRecord>> = lock_unpoisoned(&self.inner.fibers)
+            .values()
+            .map(Arc::clone)
+            .collect();
+        for record in &joiners {
+            record.notify_shutdown();
+        }
     }
 
     /// Registers a wait for the terminal wake of `operation_id` +

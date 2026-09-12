@@ -11,6 +11,7 @@ use ed25519_dalek::{Signer, SigningKey};
 use nlos_identity::{BootstrapPrincipalRequest, IdentityAuthority, KeyPurpose};
 use nlos_task::{
     AdoptionReplay, AttemptSpec, AuthorityLeaseCrossTermAdoptionRequest,
+    AuthorityLeaseDispatchRequest, AuthorityLeaseEffectPermitRequest, AuthorityLeaseOutcomeRequest,
     AuthorityLeasePermitRequest, AuthorityLeaseReconcileRequest, AuthorityLeaseRequest,
     AuthorityLeaseTakeoverFenceRequest, AuthoritySuccessorRegistryReopenRequest,
     AuthorityTakeoverBarrierReceiptRequest, BarrierObservationSignature,
@@ -362,43 +363,52 @@ fn cross_term_adoption_reconciles_old_permit_under_successor_proof() {
         .expect("original registry");
     let effect = issued_effect(
         authority
-            .request_effect_permit(nlos_task::EffectPermitRequest {
+            .request_effect_permit_with_authority_lease(AuthorityLeaseEffectPermitRequest {
+                permit: nlos_task::EffectPermitRequest {
+                    task_id: spec.task_id,
+                    attempt_id: spec.attempt_id,
+                    attempt_generation: spec.attempt_generation,
+                    permit_id: permit.permit_id,
+                    permit_epoch: permit.permit_epoch,
+                    effect_seq: 0,
+                    idempotency_key: IdempotencyKey::from_bytes([0x83; 16]),
+                    valid_until_ms: 10_000,
+                    requested_at_ms: 160,
+                },
+                lease: lease_one,
+            })
+            .expect("effect permit"),
+    );
+    authority
+        .consume_dispatch_token_with_authority_lease(AuthorityLeaseDispatchRequest {
+            dispatch: nlos_task::DispatchRequest {
+                task_id: spec.task_id,
+                attempt_id: spec.attempt_id,
+                attempt_generation: spec.attempt_generation,
+                permit_id: permit.permit_id,
+                permit_epoch: permit.permit_epoch,
+                effect_permit_id: effect.effect_permit_id,
+                dispatch_token: effect.one_shot_dispatch_token,
+                dispatched_at_ms: 170,
+            },
+            lease: lease_one,
+        })
+        .expect("dispatch");
+    authority
+        .record_effect_outcome_with_authority_lease(AuthorityLeaseOutcomeRequest {
+            outcome: OutcomeRequest {
                 task_id: spec.task_id,
                 attempt_id: spec.attempt_id,
                 attempt_generation: spec.attempt_generation,
                 permit_id: permit.permit_id,
                 permit_epoch: permit.permit_epoch,
                 effect_seq: 0,
-                idempotency_key: IdempotencyKey::from_bytes([0x83; 16]),
-                valid_until_ms: 10_000,
-                requested_at_ms: 160,
-            })
-            .expect("effect permit"),
-    );
-    authority
-        .consume_dispatch_token(nlos_task::DispatchRequest {
-            task_id: spec.task_id,
-            attempt_id: spec.attempt_id,
-            attempt_generation: spec.attempt_generation,
-            permit_id: permit.permit_id,
-            permit_epoch: permit.permit_epoch,
-            effect_permit_id: effect.effect_permit_id,
-            dispatch_token: effect.one_shot_dispatch_token,
-            dispatched_at_ms: 170,
-        })
-        .expect("dispatch");
-    authority
-        .record_effect_outcome(OutcomeRequest {
-            task_id: spec.task_id,
-            attempt_id: spec.attempt_id,
-            attempt_generation: spec.attempt_generation,
-            permit_id: permit.permit_id,
-            permit_epoch: permit.permit_epoch,
-            effect_seq: 0,
-            outcome: Outcome::Unknown {
-                uncertainty_digest: [0x84; 32],
+                outcome: Outcome::Unknown {
+                    uncertainty_digest: [0x84; 32],
+                },
+                recorded_at_ms: 180,
             },
-            recorded_at_ms: 180,
+            lease: lease_one,
         })
         .expect("unknown");
     assert!(matches!(

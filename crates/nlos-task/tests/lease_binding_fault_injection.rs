@@ -40,7 +40,8 @@ use std::time::Duration;
 use nlos_store_fault::{FaultCode, FaultMode};
 use nlos_task::{
     AdoptionReplay, AdoptionRequest, AttemptRegistrationDecision, AttemptSpec,
-    AuthorityLeaseAdoptionRequest, AuthorityLeaseDecision, AuthorityLeaseFinalizeRequest,
+    AuthorityLeaseAdoptionRequest, AuthorityLeaseDecision, AuthorityLeaseDispatchRequest,
+    AuthorityLeaseEffectPermitRequest, AuthorityLeaseFinalizeRequest, AuthorityLeaseOutcomeRequest,
     AuthorityLeasePermitRequest, AuthorityLeaseRecord, DispatchRequest, EffectPermitDecision,
     EffectPermitRequest, FinalizeDecision, FinalizeRequest, FinalizeRequestV3, IssuedPermit,
     LogicalEffectDescriptor, Outcome, OutcomeRequest, PermitDecision, PermitRecord, PermitRequest,
@@ -333,43 +334,52 @@ fn seed_quarantined_prefix(authority: &SqliteTaskAuthority) -> PlainPrefix {
     );
     let issued = issued_effect_permit(
         authority
-            .request_effect_permit(EffectPermitRequest {
+            .request_effect_permit_with_authority_lease(AuthorityLeaseEffectPermitRequest {
+                permit: EffectPermitRequest {
+                    task_id: spec.task_id,
+                    attempt_id: spec.attempt_id,
+                    attempt_generation: spec.attempt_generation,
+                    permit_id: permit.permit_id,
+                    permit_epoch: permit.permit_epoch,
+                    effect_seq: 0,
+                    idempotency_key: IdempotencyKey::from_bytes([0xe1; 16]),
+                    valid_until_ms: 10_000,
+                    requested_at_ms: 151,
+                },
+                lease,
+            })
+            .expect("issue effect permit"),
+    );
+    authority
+        .consume_dispatch_token_with_authority_lease(AuthorityLeaseDispatchRequest {
+            dispatch: DispatchRequest {
+                task_id: spec.task_id,
+                attempt_id: spec.attempt_id,
+                attempt_generation: spec.attempt_generation,
+                permit_id: permit.permit_id,
+                permit_epoch: permit.permit_epoch,
+                effect_permit_id: issued.effect_permit_id,
+                dispatch_token: issued.one_shot_dispatch_token,
+                dispatched_at_ms: 152,
+            },
+            lease,
+        })
+        .expect("consume dispatch token");
+    authority
+        .record_effect_outcome_with_authority_lease(AuthorityLeaseOutcomeRequest {
+            outcome: OutcomeRequest {
                 task_id: spec.task_id,
                 attempt_id: spec.attempt_id,
                 attempt_generation: spec.attempt_generation,
                 permit_id: permit.permit_id,
                 permit_epoch: permit.permit_epoch,
                 effect_seq: 0,
-                idempotency_key: IdempotencyKey::from_bytes([0xe1; 16]),
-                valid_until_ms: 10_000,
-                requested_at_ms: 151,
-            })
-            .expect("issue effect permit"),
-    );
-    authority
-        .consume_dispatch_token(DispatchRequest {
-            task_id: spec.task_id,
-            attempt_id: spec.attempt_id,
-            attempt_generation: spec.attempt_generation,
-            permit_id: permit.permit_id,
-            permit_epoch: permit.permit_epoch,
-            effect_permit_id: issued.effect_permit_id,
-            dispatch_token: issued.one_shot_dispatch_token,
-            dispatched_at_ms: 152,
-        })
-        .expect("consume dispatch token");
-    authority
-        .record_effect_outcome(OutcomeRequest {
-            task_id: spec.task_id,
-            attempt_id: spec.attempt_id,
-            attempt_generation: spec.attempt_generation,
-            permit_id: permit.permit_id,
-            permit_epoch: permit.permit_epoch,
-            effect_seq: 0,
-            outcome: Outcome::Unknown {
-                uncertainty_digest: [0x99; 32],
+                outcome: Outcome::Unknown {
+                    uncertainty_digest: [0x99; 32],
+                },
+                recorded_at_ms: 153,
             },
-            recorded_at_ms: 153,
+            lease,
         })
         .expect("register uncertainty");
     assert!(matches!(

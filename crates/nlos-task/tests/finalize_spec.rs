@@ -17,14 +17,15 @@ use nlos_resource::{
 };
 use nlos_semantic::SemanticAuthority;
 use nlos_task::{
-    AttemptSpec, AuthorityLeasePermitRequest, AuthorityLeaseRecord, AuthorityLeaseRequest,
-    EffectPermitDecision, EffectPermitRequest, FinalizeDecision, FinalizeRequest,
-    FinalizeRequestV3, FinalizeSpec, FinalizeSpecDecision, LogicalEffectDescriptor,
-    NestedResourceCostReceipt, NestedSemanticPublicationReceipt, NoEffectReason, NoEffectRequest,
-    ParticipantRegistryBinding, PermitDecision, PermitRecord, PermitRequest, PermitState,
-    PlanSemanticCommitRequest, PrepareSemanticFinalizeRequest, RecordSemanticPublicationsRequest,
-    SemanticCommitPlanId, SemanticCommitPlanState, SemanticFinalizeDecision, SnapshotBundle,
-    SnapshotConsistency, SqliteTaskAuthority, TaskSnapshotReceiptSpec, TaskSpec, TaskStoreError,
+    AttemptSpec, AuthorityLeaseEffectPermitRequest, AuthorityLeaseNoEffectRequest,
+    AuthorityLeasePermitRequest, AuthorityLeaseRecord, AuthorityLeaseRequest, EffectPermitDecision,
+    EffectPermitRequest, FinalizeDecision, FinalizeRequest, FinalizeRequestV3, FinalizeSpec,
+    FinalizeSpecDecision, LogicalEffectDescriptor, NestedResourceCostReceipt,
+    NestedSemanticPublicationReceipt, NoEffectReason, NoEffectRequest, ParticipantRegistryBinding,
+    PermitDecision, PermitRecord, PermitRequest, PermitState, PlanSemanticCommitRequest,
+    PrepareSemanticFinalizeRequest, RecordSemanticPublicationsRequest, SemanticCommitPlanId,
+    SemanticCommitPlanState, SemanticFinalizeDecision, SnapshotBundle, SnapshotConsistency,
+    SqliteTaskAuthority, TaskSnapshotReceiptSpec, TaskSpec, TaskStoreError,
     TaskWriteSetEffectEndpointRequest, TaskWriteSetRequest, TaskWriteSetResourceReservationRequest,
     TaskWriteSetSemanticAppendRequest, TaskWriteSetSemanticRequiredDurability,
     TaskWriteSetSemanticTarget, empty_effect_history_root,
@@ -602,39 +603,74 @@ fn drive_semantic_to_ready(
     (plan.plan_id, owner_copy)
 }
 
-/// Closes the single declared effect slot as a no-effect record.
+/// Closes the single declared effect slot as a no-effect record. A
+/// lease-bound permit presents its lease on the effect plane (`TK-B2`);
+/// an unbound permit keeps the plain entries.
 fn close_declared_effect(mixed: &MixedPermit) {
-    let issued = match mixed
-        .authority
-        .request_effect_permit(EffectPermitRequest {
-            task_id: task_id(),
-            attempt_id: attempt_spec().attempt_id,
-            attempt_generation: Generation::INITIAL,
-            permit_id: mixed.permit.permit_id,
-            permit_epoch: mixed.permit.permit_epoch,
-            effect_seq: 0,
-            idempotency_key: IdempotencyKey::from_bytes([0x77; 16]),
-            valid_until_ms: 9_000,
-            requested_at_ms: 1_550,
-        })
-        .expect("effect permit")
-    {
+    let issued = match mixed.lease {
+        Some(lease) => mixed
+            .authority
+            .request_effect_permit_with_authority_lease(AuthorityLeaseEffectPermitRequest {
+                permit: EffectPermitRequest {
+                    task_id: task_id(),
+                    attempt_id: attempt_spec().attempt_id,
+                    attempt_generation: Generation::INITIAL,
+                    permit_id: mixed.permit.permit_id,
+                    permit_epoch: mixed.permit.permit_epoch,
+                    effect_seq: 0,
+                    idempotency_key: IdempotencyKey::from_bytes([0x77; 16]),
+                    valid_until_ms: 9_000,
+                    requested_at_ms: 1_550,
+                },
+                lease,
+            })
+            .expect("effect permit"),
+        None => mixed
+            .authority
+            .request_effect_permit(EffectPermitRequest {
+                task_id: task_id(),
+                attempt_id: attempt_spec().attempt_id,
+                attempt_generation: Generation::INITIAL,
+                permit_id: mixed.permit.permit_id,
+                permit_epoch: mixed.permit.permit_epoch,
+                effect_seq: 0,
+                idempotency_key: IdempotencyKey::from_bytes([0x77; 16]),
+                valid_until_ms: 9_000,
+                requested_at_ms: 1_550,
+            })
+            .expect("effect permit"),
+    };
+    let issued = match issued {
         EffectPermitDecision::Issued(issued) | EffectPermitDecision::Replayed(issued) => *issued,
     };
-    mixed
-        .authority
-        .record_no_effect(NoEffectRequest {
-            task_id: task_id(),
-            attempt_id: attempt_spec().attempt_id,
-            attempt_generation: Generation::INITIAL,
-            permit_id: mixed.permit.permit_id,
-            permit_epoch: mixed.permit.permit_epoch,
-            effect_seq: 0,
-            reason: NoEffectReason::NotSelected,
-            dispatch_token: Some(issued.one_shot_dispatch_token),
-            recorded_at_ms: 1_560,
-        })
-        .expect("no effect");
+    let no_effect = NoEffectRequest {
+        task_id: task_id(),
+        attempt_id: attempt_spec().attempt_id,
+        attempt_generation: Generation::INITIAL,
+        permit_id: mixed.permit.permit_id,
+        permit_epoch: mixed.permit.permit_epoch,
+        effect_seq: 0,
+        reason: NoEffectReason::NotSelected,
+        dispatch_token: Some(issued.one_shot_dispatch_token),
+        recorded_at_ms: 1_560,
+    };
+    match mixed.lease {
+        Some(lease) => {
+            mixed
+                .authority
+                .record_no_effect_with_authority_lease(AuthorityLeaseNoEffectRequest {
+                    no_effect,
+                    lease,
+                })
+                .expect("no effect");
+        }
+        None => {
+            mixed
+                .authority
+                .record_no_effect(no_effect)
+                .expect("no effect");
+        }
+    }
 }
 
 /// Registers a bare task with one endpoint-free write set and permit (no

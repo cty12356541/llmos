@@ -275,17 +275,40 @@ impl FiberRecord {
         self.finish(exit);
     }
 
-    fn join(&self) -> FiberExit {
+    /// Waits for the fiber generation's terminal outcome.
+    ///
+    /// Fail-closed across the runtime shutdown boundary: `shutdown_flag` set
+    /// by [`TokioRuntimeAdapter::shutdown`] makes a still-pending join return
+    /// [`RuntimeError::ShuttingDown`] instead of parking forever on a fiber
+    /// the executor may never finish. A generation that already reached a
+    /// terminal state still joins normally after shutdown; the terminal
+    /// outcome is checked first.
+    fn join(&self, shutdown_flag: &AtomicBool) -> Result<FiberExit, RuntimeError> {
         let mut terminal = lock_unpoisoned(&self.terminal);
-        while let TerminalOutcome::Pending = *terminal {
+        loop {
+            if let TerminalOutcome::Finished(exit) = *terminal {
+                return Ok(exit);
+            }
+            if shutdown_flag.load(Ordering::Acquire) {
+                return Err(RuntimeError::ShuttingDown);
+            }
             terminal = self
                 .terminal_notify
                 .wait(terminal)
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
-        match *terminal {
-            TerminalOutcome::Finished(exit) => exit,
-            TerminalOutcome::Pending => unreachable!("terminal wait returned while still pending"),
+    }
+
+    /// Wakes joiners parked in [`Self::join`] across the runtime shutdown
+    /// boundary without fabricating a terminal outcome: the woken joiner
+    /// re-checks the adapter's shutdown flag and fails with
+    /// [`RuntimeError::ShuttingDown`]. Notifying while holding the terminal
+    /// mutex closes the lost-wakeup window between a joiner's flag check and
+    /// its condvar park. Terminal fibers have no parked joiner to fail.
+    fn notify_shutdown(&self) {
+        let terminal = lock_unpoisoned(&self.terminal);
+        if matches!(*terminal, TerminalOutcome::Pending) {
+            self.terminal_notify.notify_all();
         }
     }
 
@@ -571,6 +594,14 @@ impl RuntimeAdapter for TokioRuntimeAdapter {
         spec: FiberSpec,
         future: FiberFuture,
     ) -> Result<FiberHandle, RuntimeError> {
+        // Gate order, fail-closed: runtime shutdown first, so a spawn across
+        // the shutdown boundary never reaches `handle.spawn` on a dead
+        // executor (which would panic) and never registers an unrunnable
+        // fiber record.
+        if self.inner.shutdown.load(Ordering::Acquire) {
+            return Err(RuntimeError::ShuttingDown);
+        }
+
         if spec
             .deadline
             .is_some_and(|deadline| deadline <= Instant::now())
@@ -643,7 +674,7 @@ impl RuntimeAdapter for TokioRuntimeAdapter {
 
     fn join_fiber(&self, handle: FiberHandle) -> Result<FiberExit, RuntimeError> {
         let record = self.record_for(handle)?;
-        Ok(record.join())
+        record.join(&self.inner.shutdown)
     }
 
     fn detach_fiber(&self, handle: FiberHandle) -> Result<(), RuntimeError> {
