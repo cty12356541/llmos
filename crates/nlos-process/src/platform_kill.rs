@@ -95,17 +95,32 @@ impl PlatformKillAdapter for NoopPlatformKillAdapter {
 /// Unix adapter that signals real OS processes via `kill(2)` and SIGTERM.
 ///
 /// NLOS [`ProcessId`] values are authority-assigned identifiers; callers must
-/// inject the host pid mapping explicitly (typically from a process supervisor).
+/// inject the host pid mapping explicitly (typically from a process
+/// supervisor). The mapping is held and consulted on Unix hosts only; on
+/// other hosts the constructor discards it and signaling fails closed, so
+/// the type stays nameable cross-platform.
 #[derive(Debug)]
 pub struct PosixPlatformKillAdapter {
+    #[cfg(unix)]
     pid_map: HashMap<ProcessId, u32>,
 }
 
+#[cfg(unix)]
 impl PosixPlatformKillAdapter {
     /// Creates an adapter backed by the supplied `ProcessId` → OS pid map.
     #[must_use]
     pub fn new(pid_map: HashMap<ProcessId, u32>) -> Self {
         Self { pid_map }
+    }
+}
+
+#[cfg(not(unix))]
+impl PosixPlatformKillAdapter {
+    /// Creates an adapter that discards the supplied map: signaling always
+    /// fails closed on non-Unix hosts, so no mapping is ever consulted.
+    #[must_use]
+    pub fn new(_pid_map: HashMap<ProcessId, u32>) -> Self {
+        Self {}
     }
 }
 
@@ -152,20 +167,34 @@ impl PlatformKillAdapter for PosixPlatformKillAdapter {
 /// Windows adapter that signals real OS processes via `TerminateProcess`.
 ///
 /// NLOS [`ProcessId`] values are authority-assigned identifiers; callers must
-/// inject the host pid mapping explicitly (typically from a process supervisor).
-/// The workspace forbids `unsafe`, so this adapter uses `taskkill /F` (which
-/// invokes `TerminateProcess` under the hood) rather than binding Win32
-/// directly.
+/// inject the host pid mapping explicitly (typically from a process
+/// supervisor). The workspace forbids `unsafe`, so this adapter uses
+/// `taskkill /F` (which invokes `TerminateProcess` under the hood) rather
+/// than binding Win32 directly. The mapping is held and consulted on Windows
+/// hosts only; on other hosts the constructor discards it and signaling
+/// fails closed, so the type stays nameable cross-platform.
 #[derive(Debug)]
 pub struct WindowsPlatformKillAdapter {
+    #[cfg(windows)]
     pid_map: HashMap<ProcessId, u32>,
 }
 
+#[cfg(windows)]
 impl WindowsPlatformKillAdapter {
     /// Creates an adapter backed by the supplied `ProcessId` → OS pid map.
     #[must_use]
     pub fn new(pid_map: HashMap<ProcessId, u32>) -> Self {
         Self { pid_map }
+    }
+}
+
+#[cfg(not(windows))]
+impl WindowsPlatformKillAdapter {
+    /// Creates an adapter that discards the supplied map: signaling always
+    /// fails closed on non-Windows hosts, so no mapping is ever consulted.
+    #[must_use]
+    pub fn new(_pid_map: HashMap<ProcessId, u32>) -> Self {
+        Self {}
     }
 }
 
@@ -215,7 +244,6 @@ impl PlatformKillAdapter for WindowsPlatformKillAdapter {
         _process_id: ProcessId,
         _process_generation: Generation,
     ) -> Result<PlatformKillAdapterOutcome, PlatformKillAdapterError> {
-        let _ = &self.pid_map;
         Err(PlatformKillAdapterError::Platform(
             "windows platform kill adapter unavailable on non-windows",
         ))
