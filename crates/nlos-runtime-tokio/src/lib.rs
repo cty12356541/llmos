@@ -597,7 +597,12 @@ impl RuntimeAdapter for TokioRuntimeAdapter {
         // Gate order, fail-closed: runtime shutdown first, so a spawn across
         // the shutdown boundary never reaches `handle.spawn` on a dead
         // executor (which would panic) and never registers an unrunnable
-        // fiber record.
+        // fiber record. The gate closes the deterministic vector, not the
+        // race itself: a `shutdown()` running concurrently can still flip
+        // the flag after this check and the spawn then returns `Ok` —
+        // while the runtime stays alive the fiber is driven as usual, and
+        // an executor that has already died behaves exactly as it did
+        // before the gate existed.
         if self.inner.shutdown.load(Ordering::Acquire) {
             return Err(RuntimeError::ShuttingDown);
         }
