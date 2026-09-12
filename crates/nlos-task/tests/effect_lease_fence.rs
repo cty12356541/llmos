@@ -632,3 +632,65 @@ fn replay_branches_stay_ahead_of_the_lease_fence() {
         other @ EffectBindingDecision::Registered(_) => panic!("expected Replayed, got {other:?}"),
     }
 }
+
+/// Bullet ⑤: the expired-but-current lease. No takeover has happened, so
+/// the permit's bound lease is still byte-for-byte the durable one — it is
+/// simply past its own `expires_at_ms` (`4_500`). Presenting it at the
+/// effect plane fails closed with the `AuthorityLeaseExpired` family: not
+/// `AuthorityLeaseRequired` (a lease WAS presented) and not
+/// `AuthorityLeaseFenced` (nothing has superseded the lease bytes).
+#[test]
+fn expired_not_taken_over_lease_is_rejected_as_expired_not_fenced() {
+    let (database, spec, permit, lease_one) = bound_fixture();
+    let authority = database.open();
+
+    // Scenario control: the bound lease is still the durable one, and its
+    // rejection at the lease validator is expiry, not fencing.
+    assert!(matches!(
+        authority.validate_authority_lease(lease_one, 5_000),
+        Err(TaskStoreError::AuthorityLeaseExpired)
+    ));
+
+    // Mint (slot 4, fresh write target): the expired lease is presented
+    // and refused with the expiry family.
+    assert!(matches!(
+        authority.request_effect_permit_with_authority_lease(AuthorityLeaseEffectPermitRequest {
+            permit: effect_request(&spec, &permit, 4, 0xe4, 5_500),
+            lease: lease_one,
+        }),
+        Err(TaskStoreError::AuthorityLeaseExpired)
+    ));
+    assert_eq!(slot(&authority, &permit, 4).state, SlotState::Planned);
+
+    // Dispatch (slot 2, token re-read via the exact mint replay): the
+    // same expired lease is refused with the same family.
+    let slot_two = reread_effect_permit(
+        authority
+            .request_effect_permit(effect_request(&spec, &permit, 2, 0xe2, 3_110))
+            .expect("replayed mint without consulting the lease"),
+    );
+    assert!(matches!(
+        authority.consume_dispatch_token_with_authority_lease(AuthorityLeaseDispatchRequest {
+            dispatch: dispatch_request(&spec, &permit, &slot_two, 5_500),
+            lease: lease_one,
+        }),
+        Err(TaskStoreError::AuthorityLeaseExpired)
+    ));
+
+    // Zero partial state: the observed slot keeps its durable state and
+    // sequence, and the two expiry refusals added no control epoch.
+    let slot_four = slot(&authority, &permit, 4);
+    assert_eq!(slot_four.state, SlotState::Planned);
+    assert_eq!(slot_four.state_seq, 0);
+    let slot_two_record = slot(&authority, &permit, 2);
+    assert_eq!(slot_two_record.state, SlotState::Permitted);
+    assert_eq!(slot_two_record.state_seq, 1);
+    assert_eq!(
+        authority
+            .inspect_task(task_id())
+            .expect("head")
+            .control_epoch,
+        6,
+        "the refusals added no control epoch"
+    );
+}

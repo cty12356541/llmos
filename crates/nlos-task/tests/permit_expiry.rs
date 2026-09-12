@@ -16,13 +16,15 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use nlos_task::{
-    AttemptSpec, EffectPermitDecision, EffectPermitRequest, EffectReceiptDecision, IssuedPermit,
-    LogicalEffectDescriptor, NoEffectReason, NoEffectRequest, Outcome, OutcomeRequest,
-    PermitDecision, PermitRecord, PlannedEffect, SlotState, SnapshotBundle, SqliteTaskAuthority,
-    TaskSpec, TaskStoreError,
+    AttemptSpec, AuthorityLeaseDispatchRequest, AuthorityLeaseEffectPermitRequest,
+    AuthorityLeasePermitRequest, AuthorityLeaseRequest, EffectPermitDecision, EffectPermitRequest,
+    EffectReceiptDecision, IssuedPermit, LogicalEffectDescriptor, NoEffectReason, NoEffectRequest,
+    Outcome, OutcomeRequest, PermitDecision, PermitRecord, PlannedEffect, SlotState,
+    SnapshotBundle, SqliteTaskAuthority, TaskSpec, TaskStoreError,
 };
 use nlos_types::{
-    CancellationScopeId, Generation, IdempotencyKey, TaskAttemptId, TaskId, TaskSnapshotId,
+    CancellationScopeId, Generation, IdempotencyKey, ProcessId, TaskAttemptId, TaskId,
+    TaskSnapshotId,
 };
 
 static NEXT_DATABASE: AtomicU64 = AtomicU64::new(0);
@@ -136,6 +138,22 @@ fn commit_request(effects: Vec<PlannedEffect>) -> nlos_task::PermitRequest {
         idempotency_key: IdempotencyKey::from_bytes(bytes(0xb1)),
         valid_until_ms: 9_999,
         requested_at_ms: 3_000,
+    }
+}
+
+/// Minimal authority-lease request fixture (same shape as the
+/// `effect_lease_fence` suite), for the double-violation ordering test.
+fn lease_request(
+    holder_seed: u8,
+    key_seed: u8,
+    requested_at_ms: i64,
+    ttl_ms: i64,
+) -> AuthorityLeaseRequest {
+    AuthorityLeaseRequest {
+        holder_id: ProcessId::from_bytes(bytes(holder_seed)),
+        idempotency_key: IdempotencyKey::from_bytes(bytes(key_seed)),
+        requested_at_ms,
+        ttl_ms,
     }
 }
 
@@ -434,4 +452,86 @@ fn record_effect_outcome_rejection_family_unchanged_for_expired_permit() {
         .inspect_effect_slot(permit.permit_id, 0)
         .expect("slot");
     assert_eq!(slot.state, SlotState::NoEffect);
+}
+
+/// Bullet ⑤: double violation, pinned order (replay → TTL → lease). A
+/// lease-bound permit whose bound lease is past its own expiry (expired,
+/// never taken over) receives an effect request that is ITSELF past the
+/// `EffectPermit` TTL: both entries reject with `PermitExpired`, never
+/// with the lease family — the TTL gate keeps its priority ahead of the
+/// lease fence.
+#[test]
+fn permit_ttl_rejection_takes_priority_over_the_expired_lease_fence() {
+    let database = TestDatabase::new("double-violation");
+    let authority = database.open();
+    let spec = attempt_spec();
+    authority.register_task(task_spec()).expect("register task");
+    authority.register_attempt(spec).expect("register attempt");
+    // The lease is live at the 3_000 issuance (expires 3_500) and dead at
+    // every later observation; it is never taken over.
+    let lease = authority
+        .acquire_authority_lease(lease_request(0x81, 0x82, 2_500, 1_000))
+        .expect("authority lease")
+        .record();
+    let permit = issued_permit(
+        authority
+            .request_commit_permit_with_authority_lease(AuthorityLeasePermitRequest {
+                permit: commit_request(vec![planned(0)]),
+                lease,
+            })
+            .expect("lease-bound commit permit"),
+    );
+    assert_eq!(permit.authority_lease_binding, Some(lease.binding()));
+
+    // Issuance: a born-expired request (requested_at_ms 4_000 past its own
+    // valid_until_ms 3_000) presented with the expired lease (expires
+    // 3_500 < 4_000, binding exact, still the durable lease) — both
+    // invariants are violated at once; the TTL rejection wins.
+    let error = authority
+        .request_effect_permit_with_authority_lease(AuthorityLeaseEffectPermitRequest {
+            permit: effect_request(&spec, &permit, 0, 0xe1, 3_000, 4_000),
+            lease,
+        })
+        .expect_err("double violation must fail closed");
+    match error {
+        TaskStoreError::PermitExpired {
+            valid_until_ms,
+            observed_ms,
+            ..
+        } => {
+            assert_eq!(valid_until_ms, 3_000);
+            assert_eq!(observed_ms, 4_000);
+        }
+        other => panic!("expected PermitExpired ahead of the lease family, got {other:?}"),
+    }
+
+    // Dispatch: minted inside both windows behind the then-live lease,
+    // then dispatched past the permit TTL while presenting the now-expired
+    // lease — again `PermitExpired`, not the lease family.
+    let issued = issued_effect_permit(
+        authority
+            .request_effect_permit_with_authority_lease(AuthorityLeaseEffectPermitRequest {
+                permit: effect_request(&spec, &permit, 0, 0xe2, 3_600, 3_400),
+                lease,
+            })
+            .expect("mint inside both windows"),
+    );
+    assert!(matches!(
+        authority.consume_dispatch_token_with_authority_lease(AuthorityLeaseDispatchRequest {
+            dispatch: dispatch_request(&spec, &permit, &issued, 4_000),
+            lease,
+        }),
+        Err(TaskStoreError::PermitExpired {
+            valid_until_ms: 3_600,
+            observed_ms: 4_000,
+            ..
+        })
+    ));
+
+    // Zero partial state: the slot never left Permitted.
+    let slot = authority
+        .inspect_effect_slot(permit.permit_id, 0)
+        .expect("slot");
+    assert_eq!(slot.state, SlotState::Permitted);
+    assert_eq!(slot.state_seq, 1);
 }
