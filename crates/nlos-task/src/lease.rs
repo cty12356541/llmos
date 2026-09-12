@@ -547,6 +547,13 @@ impl SqliteTaskAuthority {
         if let Some(current) = current {
             let incumbent_live = match wall_anchor.effective_now_ms(request.requested_at_ms) {
                 Some(effective_now_ms) => current.expires_at_ms > effective_now_ms,
+                // Zero anchor (`Observed(0)`): liveness cannot be proven
+                // either way, so a truly expired lease held by the same
+                // holder is renewed instead of taken over as the legacy
+                // `requested_at_ms`-only contract would have it — the term
+                // does not advance, only `lease_epoch` does. The fencing
+                // token still rotates (its derivation also binds
+                // `lease_epoch`), so fencing correctness is unaffected.
                 None => true,
             };
             let (term, transition) = if incumbent_live {

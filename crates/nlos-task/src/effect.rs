@@ -1719,7 +1719,10 @@ impl SqliteTaskAuthority {
         // `TK-B1`: a request whose own observation time is already past
         // the TTL it declares must never mint — a born-expired permit is
         // refused before any write, so no row exists and replaying the
-        // same rejected bytes re-derives the same rejection.
+        // same rejected bytes re-derives the same rejection. The rejection
+        // payload's `permit_id` is the deterministically pre-derived id
+        // (identical to the one a passing mint below would assign); since
+        // the rejection persists nothing, the id is diagnostic-only.
         check_effect_permit_ttl(
             derive_effect_permit_id(request.permit_id, request.idempotency_key),
             request.valid_until_ms,
