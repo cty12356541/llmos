@@ -698,12 +698,16 @@ impl Inner {
     /// reference its record held (SCOPE-IDX-002). Callers hold the record's
     /// terminal mutex (the join consumption path, the detach terminal path,
     /// or `run_fiber`'s terminal transition), so both releases are ordered
-    /// inside that existing critical section; each registry lock is a leaf
-    /// relative to every record lock — no path acquires a record lock while
-    /// holding one — and the two registry locks are acquired sequentially,
-    /// never nested in one another, so no cycle forms. The scope release
-    /// runs only when this call performed the fiber reap, keeping the
-    /// reference pairing exact across racing consumers.
+    /// inside that existing critical section, matching the adapter's global
+    /// acquisition order `waits` → `channel_waits` → record `terminal` →
+    /// `fibers` → `scopes`. Registry locks are not leaves relative to every
+    /// record lock: the Channel-delivery resume path takes `record.state`
+    /// while holding `fibers`. That edge closes no cycle — no path holds
+    /// `record.state` and then acquires `terminal`, so nothing runs
+    /// backwards through the order — and the two registry locks here are
+    /// acquired sequentially, never nested in one another. The scope
+    /// release runs only when this call performed the fiber reap, keeping
+    /// the reference pairing exact across racing consumers.
     fn reap_fiber(&self, record: &FiberRecord) {
         let reaped = lock_unpoisoned(&self.fibers).reap(record.fiber_id, record.generation);
         if reaped {

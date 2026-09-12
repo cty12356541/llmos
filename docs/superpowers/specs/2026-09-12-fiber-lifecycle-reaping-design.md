@@ -26,16 +26,17 @@
 - `[SCOPE-IDX-001]` 新增 `by_id: HashMap<ScopeId, Vec<generation>>` 二级索引;`scope_for` 从持锁线性 `any()` 改为索引查询(O(1));`cancel_scope` 与 spawn 注册同步维护索引。
 - `[SCOPE-IDX-002]` scope 条目引用计数 = 引用它的未回收 fiber 记录数;归零即移除条目(含索引),scope id 入 scope 墓碑环。
 - `[SCOPE-IDX-003]` scope 墓碑环内同 id 再注册 → 维持现有 `InvalidGeneration` 拒绝;出环后允许以任意 generation 新建 scope。
+  - 注记(实现口径,经 W25 审查裁定):现有语义即只拒异代;环内存 `(id, generation)`,窗口内同 id 异代再注册才拒(`InvalidGeneration`),被回收的同 `(id, generation)` 可立即重建为未取消的新实例;已取消 scope 的取消态不越窗口存活。
 - `[SCOPE-IDX-004]` 既有"同 id 锁定首个 generation"语义在窗口内不变(现测试钉死的 `InvalidGeneration` 行为保留)。
 
 ### 2.3 orphaned channel_waits
 
-- `[ORPHAN-001]` 早到且无人认领的 `channel_waits` 缓冲条目加容量上界(默认 1024,`AdapterConfig::orphan_buffer_capacity`);超限丢最老,单调递增丢弃计数器加入 `health()` 快照。
+- `[ORPHAN-001]` 早到且无人认领的 `channel_waits` 缓冲条目加容量上界(默认 1024,`TokioRuntimeConfig::orphan_buffer_capacity`);超限丢最老,单调递增丢弃计数器加入 `health()` 快照。
 - `[ORPHAN-002]` 正常路径(fiber 绑定的等待)不受影响——终态 purge 行为不变。
 
 ### 2.4 配置
 
-- `AdapterConfig` 新增:`tombstone_capacity: usize`(fiber 墓碑,默认 65_536)、`scope_tombstone_capacity: usize`(默认 65_536)、`orphan_buffer_capacity: usize`(默认 1_024)。零值语义:`0` = 容量为零的环(即无窗口保护,纯消费语义)——显式合法,非"禁用功能"歧义。
+- `TokioRuntimeConfig` 新增:`tombstone_capacity: usize`(fiber 墓碑,默认 65_536)、`scope_tombstone_capacity: usize`(默认 65_536)、`orphan_buffer_capacity: usize`(默认 1_024)。零值语义:`0` = 容量为零的环(即无窗口保护,纯消费语义)——显式合法,非"禁用功能"歧义。
 
 ## 3. 内存账(设计目标兑现)
 
