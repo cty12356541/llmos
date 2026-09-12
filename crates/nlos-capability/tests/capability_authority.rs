@@ -1,5 +1,3 @@
-#![allow(deprecated)] // Deprecated unsigned Capability entries stay pinned as replay-equivalent to the signed entries.
-
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -121,6 +119,57 @@ fn delegate_request(
     }
 }
 
+fn signed_issue_root(
+    capability: &CapabilityAuthority,
+    identity: &IdentityAuthority,
+    key: &SigningKey,
+    signer: &nlos_identity::IdentityBinding,
+    command: IssueRootCapabilityRequest,
+) -> Result<CapabilityIssueDecision, CapabilityAuthorityError> {
+    capability.issue_root_signed(
+        identity,
+        SignedIssueRootCapabilityRequest {
+            command,
+            signer: signer.principal_id,
+            signature: key.sign(&issue_root_command_message(command)).to_bytes(),
+        },
+    )
+}
+
+fn signed_delegate(
+    capability: &CapabilityAuthority,
+    identity: &IdentityAuthority,
+    key: &SigningKey,
+    signer: &nlos_identity::IdentityBinding,
+    command: DelegateCapabilityRequest,
+) -> Result<CapabilityIssueDecision, CapabilityAuthorityError> {
+    capability.delegate_signed(
+        identity,
+        SignedDelegateCapabilityRequest {
+            command,
+            signer: signer.principal_id,
+            signature: key.sign(&delegate_command_message(command)).to_bytes(),
+        },
+    )
+}
+
+fn signed_revoke(
+    capability: &CapabilityAuthority,
+    identity: &IdentityAuthority,
+    key: &SigningKey,
+    signer: &nlos_identity::IdentityBinding,
+    command: RevokeCapabilityRequest,
+) -> Result<CapabilityRevocationDecision, CapabilityAuthorityError> {
+    capability.revoke_signed(
+        identity,
+        SignedRevokeCapabilityRequest {
+            command,
+            signer: signer.principal_id,
+            signature: key.sign(&revoke_command_message(command)).to_bytes(),
+        },
+    )
+}
+
 fn verified_signer(
     identity: &IdentityAuthority,
     key: &SigningKey,
@@ -144,23 +193,31 @@ fn verified_signer(
 #[test]
 fn root_issue_is_authority_bound_durable_and_exactly_replayable() {
     let root = Root::new("root");
-    let (request, expected_record, expected_receipt) = {
+    let (request, expected_record, expected_receipt, issuer_key, issuer) = {
         let identity = IdentityAuthority::open(root.path()).unwrap();
-        let (_, principal) = bootstrap(&identity, 10);
+        let (issuer_key, principal) = bootstrap(&identity, 10);
         let capability = CapabilityAuthority::open(root.path()).unwrap();
         let request = root_request(principal, principal, 0x70);
-        let first = capability.issue_root(&identity, request).unwrap();
+        let first =
+            signed_issue_root(&capability, &identity, &issuer_key, &principal, request).unwrap();
         assert!(matches!(first, CapabilityIssueDecision::Issued(_, _)));
-        let replay = capability.issue_root(&identity, request).unwrap();
+        let replay =
+            signed_issue_root(&capability, &identity, &issuer_key, &principal, request).unwrap();
         assert!(matches!(replay, CapabilityIssueDecision::Replayed(_, _)));
         assert_eq!(first.record(), replay.record());
         assert_eq!(first.receipt(), replay.receipt());
-        (request, first.record(), first.receipt())
+        (
+            request,
+            first.record(),
+            first.receipt(),
+            issuer_key,
+            principal,
+        )
     };
 
     let identity = IdentityAuthority::open(root.path()).unwrap();
     let capability = CapabilityAuthority::open(root.path()).unwrap();
-    let replay = capability.issue_root(&identity, request).unwrap();
+    let replay = signed_issue_root(&capability, &identity, &issuer_key, &issuer, request).unwrap();
     assert_eq!(replay.record(), expected_record);
     assert_eq!(replay.receipt(), expected_receipt);
     assert_eq!(
@@ -175,15 +232,22 @@ fn root_issue_is_authority_bound_durable_and_exactly_replayable() {
 fn delegation_attenuates_every_mechanical_dimension() {
     let root = Root::new("attenuate");
     let identity = IdentityAuthority::open(root.path()).unwrap();
-    let (_, delegator) = bootstrap(&identity, 20);
+    let (delegator_key, delegator) = bootstrap(&identity, 20);
     let (_, recipient) = bootstrap(&identity, 30);
     let capability = CapabilityAuthority::open(root.path()).unwrap();
-    let parent = capability
-        .issue_root(&identity, root_request(delegator, delegator, 0x71))
+    let parent = signed_issue_root(
+        &capability,
+        &identity,
+        &delegator_key,
+        &delegator,
+        root_request(delegator, delegator, 0x71),
+    )
+    .unwrap()
+    .record();
+    let valid = delegate_request(parent, delegator, recipient, 0x72);
+    let child = signed_delegate(&capability, &identity, &delegator_key, &delegator, valid)
         .unwrap()
         .record();
-    let valid = delegate_request(parent, delegator, recipient, 0x72);
-    let child = capability.delegate(&identity, valid).unwrap().record();
     assert_eq!(child.parent, Some(parent.handle));
     assert_eq!(child.holder, recipient.principal_id);
     assert!(child.rights.is_subset_of(parent.rights));
@@ -192,35 +256,41 @@ fn delegation_attenuates_every_mechanical_dimension() {
     amplified.idempotency_key = IdempotencyKey::from_bytes([0x73; 16]);
     amplified.rights = all_rights().union(CapabilityRights::SEMANTIC_ADJUDICATE);
     assert!(matches!(
-        capability.delegate(&identity, amplified),
+        signed_delegate(
+            &capability,
+            &identity,
+            &delegator_key,
+            &delegator,
+            amplified
+        ),
         Err(CapabilityAuthorityError::RightsAmplification)
     ));
     let mut scope = valid;
     scope.idempotency_key = IdempotencyKey::from_bytes([0x74; 16]);
     scope.target = CapabilityTarget::Namespace(NamespaceId::from_bytes([0xee; 16]));
     assert!(matches!(
-        capability.delegate(&identity, scope),
+        signed_delegate(&capability, &identity, &delegator_key, &delegator, scope),
         Err(CapabilityAuthorityError::ScopeAmplification)
     ));
     let mut validity = valid;
     validity.idempotency_key = IdempotencyKey::from_bytes([0x75; 16]);
     validity.valid_until_ms = 9_001;
     assert!(matches!(
-        capability.delegate(&identity, validity),
+        signed_delegate(&capability, &identity, &delegator_key, &delegator, validity),
         Err(CapabilityAuthorityError::ValidityAmplification)
     ));
     let mut limit = valid;
     limit.idempotency_key = IdempotencyKey::from_bytes([0x76; 16]);
     limit.call_limit = None;
     assert!(matches!(
-        capability.delegate(&identity, limit),
+        signed_delegate(&capability, &identity, &delegator_key, &delegator, limit),
         Err(CapabilityAuthorityError::CallLimitAmplification)
     ));
     let mut depth = valid;
     depth.idempotency_key = IdempotencyKey::from_bytes([0x77; 16]);
     depth.delegation_depth_remaining = 3;
     assert!(matches!(
-        capability.delegate(&identity, depth),
+        signed_delegate(&capability, &identity, &delegator_key, &delegator, depth),
         Err(CapabilityAuthorityError::DelegationDepthAmplification)
     ));
 }
@@ -229,18 +299,28 @@ fn delegation_attenuates_every_mechanical_dimension() {
 fn semantic_authorization_requires_verified_holder_scope_right_and_purpose() {
     let root = Root::new("authorize");
     let identity = IdentityAuthority::open(root.path()).unwrap();
-    let (_, issuer) = bootstrap(&identity, 40);
+    let (issuer_key, issuer) = bootstrap(&identity, 40);
     let (holder_key, holder) = bootstrap(&identity, 50);
     let (other_key, other) = bootstrap(&identity, 60);
     let capability = CapabilityAuthority::open(root.path()).unwrap();
-    let parent = capability
-        .issue_root(&identity, root_request(issuer, issuer, 0x78))
-        .unwrap()
-        .record();
-    let child = capability
-        .delegate(&identity, delegate_request(parent, issuer, holder, 0x79))
-        .unwrap()
-        .record();
+    let parent = signed_issue_root(
+        &capability,
+        &identity,
+        &issuer_key,
+        &issuer,
+        root_request(issuer, issuer, 0x78),
+    )
+    .unwrap()
+    .record();
+    let child = signed_delegate(
+        &capability,
+        &identity,
+        &issuer_key,
+        &issuer,
+        delegate_request(parent, issuer, holder, 0x79),
+    )
+    .unwrap()
+    .record();
     let event_id = SemanticEventId::from_bytes([0x88; 32]);
     let signer = verified_signer(&identity, &holder_key, holder, event_id, 2_000);
     let request = AuthorizeSemanticRequest {
@@ -282,21 +362,26 @@ fn semantic_authorization_requires_verified_holder_scope_right_and_purpose() {
 fn direct_revocation_is_replayable_and_generation_fenced() {
     let root = Root::new("revoke");
     let identity = IdentityAuthority::open(root.path()).unwrap();
-    let (_, issuer) = bootstrap(&identity, 70);
-    let (_, holder) = bootstrap(&identity, 80);
+    let (issuer_key, issuer) = bootstrap(&identity, 70);
+    let (holder_key, holder) = bootstrap(&identity, 80);
     let capability = CapabilityAuthority::open(root.path()).unwrap();
-    let record = capability
-        .issue_root(&identity, root_request(issuer, holder, 0x80))
-        .unwrap()
-        .record();
+    let record = signed_issue_root(
+        &capability,
+        &identity,
+        &issuer_key,
+        &issuer,
+        root_request(issuer, holder, 0x80),
+    )
+    .unwrap()
+    .record();
     let request = RevokeCapabilityRequest {
         handle: record.handle,
         revoker_key_id: holder.key_id,
         idempotency_key: IdempotencyKey::from_bytes([0x81; 16]),
         revoked_at_ms: 3_000,
     };
-    let first = capability.revoke(&identity, request).unwrap();
-    let replay = capability.revoke(&identity, request).unwrap();
+    let first = signed_revoke(&capability, &identity, &holder_key, &holder, request).unwrap();
+    let replay = signed_revoke(&capability, &identity, &holder_key, &holder, request).unwrap();
     assert_eq!(first.receipt(), replay.receipt());
     assert_eq!(first.receipt().resulting_generation.get(), 2);
     assert!(matches!(
@@ -304,8 +389,11 @@ fn direct_revocation_is_replayable_and_generation_fenced() {
         Err(CapabilityAuthorityError::GenerationFenceConflict)
     ));
     assert!(matches!(
-        capability.revoke(
+        signed_revoke(
+            &capability,
             &identity,
+            &holder_key,
+            &holder,
             RevokeCapabilityRequest {
                 idempotency_key: IdempotencyKey::from_bytes([0x82; 16]),
                 ..request
@@ -318,31 +406,43 @@ fn direct_revocation_is_replayable_and_generation_fenced() {
 #[test]
 fn ancestor_revocation_invalidates_descendants_after_restart() {
     let root = Root::new("ancestor");
-    let (child, parent, issuer_key_id) = {
+    let (child, parent, issuer_key, issuer) = {
         let identity = IdentityAuthority::open(root.path()).unwrap();
-        let (_, issuer) = bootstrap(&identity, 90);
+        let (issuer_key, issuer) = bootstrap(&identity, 90);
         let (_, holder) = bootstrap(&identity, 100);
         let capability = CapabilityAuthority::open(root.path()).unwrap();
-        let parent = capability
-            .issue_root(&identity, root_request(issuer, issuer, 0x83))
-            .unwrap()
-            .record();
-        let child = capability
-            .delegate(&identity, delegate_request(parent, issuer, holder, 0x84))
-            .unwrap()
-            .record();
-        capability
-            .revoke(
-                &identity,
-                RevokeCapabilityRequest {
-                    handle: parent.handle,
-                    revoker_key_id: issuer.key_id,
-                    idempotency_key: IdempotencyKey::from_bytes([0x85; 16]),
-                    revoked_at_ms: 3_000,
-                },
-            )
-            .unwrap();
-        (child, parent, issuer.key_id)
+        let parent = signed_issue_root(
+            &capability,
+            &identity,
+            &issuer_key,
+            &issuer,
+            root_request(issuer, issuer, 0x83),
+        )
+        .unwrap()
+        .record();
+        let child = signed_delegate(
+            &capability,
+            &identity,
+            &issuer_key,
+            &issuer,
+            delegate_request(parent, issuer, holder, 0x84),
+        )
+        .unwrap()
+        .record();
+        signed_revoke(
+            &capability,
+            &identity,
+            &issuer_key,
+            &issuer,
+            RevokeCapabilityRequest {
+                handle: parent.handle,
+                revoker_key_id: issuer.key_id,
+                idempotency_key: IdempotencyKey::from_bytes([0x85; 16]),
+                revoked_at_ms: 3_000,
+            },
+        )
+        .unwrap();
+        (child, parent, issuer_key, issuer)
     };
 
     let identity = IdentityAuthority::open(root.path()).unwrap();
@@ -352,11 +452,14 @@ fn ancestor_revocation_invalidates_descendants_after_restart() {
         Err(CapabilityAuthorityError::AncestorRevokedOrFenced)
     ));
     assert!(matches!(
-        capability.revoke(
+        signed_revoke(
+            &capability,
             &identity,
+            &issuer_key,
+            &issuer,
             RevokeCapabilityRequest {
                 handle: parent.handle,
-                revoker_key_id: issuer_key_id,
+                revoker_key_id: issuer.key_id,
                 idempotency_key: IdempotencyKey::from_bytes([0x86; 16]),
                 revoked_at_ms: 3_100,
             }
@@ -369,12 +472,17 @@ fn ancestor_revocation_invalidates_descendants_after_restart() {
 fn capability_descriptors_versions_and_receipts_are_ddl_protected() {
     let root = Root::new("immutable");
     let identity = IdentityAuthority::open(root.path()).unwrap();
-    let (_, principal) = bootstrap(&identity, 110);
+    let (principal_key, principal) = bootstrap(&identity, 110);
     let capability = CapabilityAuthority::open(root.path()).unwrap();
-    let record = capability
-        .issue_root(&identity, root_request(principal, principal, 0x87))
-        .unwrap()
-        .record();
+    let record = signed_issue_root(
+        &capability,
+        &identity,
+        &principal_key,
+        &principal,
+        root_request(principal, principal, 0x87),
+    )
+    .unwrap()
+    .record();
     drop(capability);
 
     let raw = Connection::open(root.path().join("capability-authority.db")).unwrap();
@@ -390,123 +498,4 @@ fn capability_descriptors_versions_and_receipts_are_ddl_protected() {
         raw.execute("DELETE FROM capability_issue_receipts", [])
             .is_err()
     );
-}
-
-/// The deprecated unsigned issue entry and the signed entry are two fronts
-/// of one durable authority: with the identical command, whichever entry
-/// executes first, the other replays the exact same durable capability.
-#[test]
-fn deprecated_unsigned_issue_replays_through_signed_entry() {
-    // Direction 1: the unsigned entry issues; the signed entry replays it.
-    let root = Root::new("equivalence-issue");
-    let identity = IdentityAuthority::open(root.path()).unwrap();
-    let (_, issuer) = bootstrap(&identity, 240);
-    let capability = CapabilityAuthority::open(root.path()).unwrap();
-    let command = root_request(issuer, issuer, 0x88);
-    let unsigned = capability.issue_root(&identity, command).unwrap();
-    assert!(matches!(unsigned, CapabilityIssueDecision::Issued(_, _)));
-    assert!(matches!(
-        capability.issue_root_signed(
-            &identity,
-            SignedIssueRootCapabilityRequest {
-                command,
-                signer: issuer.principal_id,
-                signature: signing_key(240)
-                    .sign(&issue_root_command_message(command))
-                    .to_bytes(),
-            },
-        ),
-        Ok(CapabilityIssueDecision::Replayed(record, _)) if record == unsigned.record(),
-    ));
-
-    // Direction 2: the signed entry issues; the unsigned entry replays it.
-    let root = Root::new("equivalence-issue-reverse");
-    let identity = IdentityAuthority::open(root.path()).unwrap();
-    let (_, issuer) = bootstrap(&identity, 244);
-    let capability = CapabilityAuthority::open(root.path()).unwrap();
-    let command = root_request(issuer, issuer, 0x90);
-    let signed = capability
-        .issue_root_signed(
-            &identity,
-            SignedIssueRootCapabilityRequest {
-                command,
-                signer: issuer.principal_id,
-                signature: signing_key(244)
-                    .sign(&issue_root_command_message(command))
-                    .to_bytes(),
-            },
-        )
-        .unwrap();
-    assert!(matches!(signed, CapabilityIssueDecision::Issued(_, _)));
-    assert!(matches!(
-        capability.issue_root(&identity, command),
-        Ok(CapabilityIssueDecision::Replayed(record, _)) if record == signed.record(),
-    ));
-}
-
-/// The deprecated unsigned delegate/revoke entries stay replay-equivalent to
-/// the signed entries for identical commands.
-#[test]
-fn deprecated_unsigned_delegate_and_revoke_replay_through_signed_entries() {
-    // Delegate, direction 1: the unsigned entry issues; the signed entry
-    // replays the exact same durable child capability.
-    let root = Root::new("equivalence-delegate");
-    let identity = IdentityAuthority::open(root.path()).unwrap();
-    let (_, delegator) = bootstrap(&identity, 245);
-    let (_, recipient) = bootstrap(&identity, 246);
-    let capability = CapabilityAuthority::open(root.path()).unwrap();
-    let parent = capability
-        .issue_root(&identity, root_request(delegator, delegator, 0x91))
-        .unwrap()
-        .record();
-    let command = delegate_request(parent, delegator, recipient, 0x92);
-    let unsigned = capability.delegate(&identity, command).unwrap();
-    assert!(matches!(unsigned, CapabilityIssueDecision::Issued(_, _)));
-    assert!(matches!(
-        capability.delegate_signed(
-            &identity,
-            SignedDelegateCapabilityRequest {
-                command,
-                signer: delegator.principal_id,
-                signature: signing_key(245)
-                    .sign(&delegate_command_message(command))
-                    .to_bytes(),
-            },
-        ),
-        Ok(CapabilityIssueDecision::Replayed(record, _)) if record == unsigned.record(),
-    ));
-
-    // Revoke, direction 2: the signed entry revokes; the unsigned entry
-    // replays the exact same durable revocation receipt.
-    let root = Root::new("equivalence-revoke");
-    let identity = IdentityAuthority::open(root.path()).unwrap();
-    let (_, holder) = bootstrap(&identity, 247);
-    let capability = CapabilityAuthority::open(root.path()).unwrap();
-    let record = capability
-        .issue_root(&identity, root_request(holder, holder, 0x93))
-        .unwrap()
-        .record();
-    let command = RevokeCapabilityRequest {
-        handle: record.handle,
-        revoker_key_id: holder.key_id,
-        idempotency_key: IdempotencyKey::from_bytes([0x94; 16]),
-        revoked_at_ms: 3_000,
-    };
-    let signed = capability
-        .revoke_signed(
-            &identity,
-            SignedRevokeCapabilityRequest {
-                command,
-                signer: holder.principal_id,
-                signature: signing_key(247)
-                    .sign(&revoke_command_message(command))
-                    .to_bytes(),
-            },
-        )
-        .unwrap();
-    assert!(matches!(signed, CapabilityRevocationDecision::Revoked(_)));
-    assert!(matches!(
-        capability.revoke(&identity, command),
-        Ok(CapabilityRevocationDecision::Replayed(receipt)) if receipt == signed.receipt(),
-    ));
 }

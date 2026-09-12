@@ -1,5 +1,3 @@
-#![allow(deprecated)]
-
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -7,6 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use ed25519_dalek::Signer;
 use nlos_capability::{
     CapabilityAuthority, CapabilityRights, CapabilityTarget, IssueRootCapabilityRequest,
+    SignedIssueRootCapabilityRequest, issue_root_command_message,
 };
 use nlos_identity::{BootstrapPrincipalRequest, IdentityAuthority, KeyPurpose};
 use nlos_process::{
@@ -147,21 +146,28 @@ fn fixture(root: &Root, seed: u8) -> Fixture {
     let scope = CapabilityTarget::Namespace(NamespaceId::from_bytes([0x44; 16]));
     let purpose_digest = Some([0x77; 32]);
     let capability = CapabilityAuthority::open(root.path()).unwrap();
+    let adjudicate_command = IssueRootCapabilityRequest {
+        issuer_key_id: issuer.key_id,
+        holder_key_id: issuer.key_id,
+        target: scope,
+        rights: CapabilityRights::SEMANTIC_ADJUDICATE,
+        purpose_digest,
+        valid_from_ms: 0,
+        valid_until_ms: 9_000,
+        delegation_depth_remaining: 0,
+        call_limit: None,
+        idempotency_key: IdempotencyKey::from_bytes([seed.wrapping_add(9); 16]),
+        issued_at_ms: 0,
+    };
     let adjudicate_capability = capability
-        .issue_root(
+        .issue_root_signed(
             &identity,
-            IssueRootCapabilityRequest {
-                issuer_key_id: issuer.key_id,
-                holder_key_id: issuer.key_id,
-                target: scope,
-                rights: CapabilityRights::SEMANTIC_ADJUDICATE,
-                purpose_digest,
-                valid_from_ms: 0,
-                valid_until_ms: 9_000,
-                delegation_depth_remaining: 0,
-                call_limit: None,
-                idempotency_key: IdempotencyKey::from_bytes([seed.wrapping_add(9); 16]),
-                issued_at_ms: 0,
+            SignedIssueRootCapabilityRequest {
+                command: adjudicate_command,
+                signer: issuer.principal_id,
+                signature: issuer_key
+                    .sign(&issue_root_command_message(adjudicate_command))
+                    .to_bytes(),
             },
         )
         .unwrap()
@@ -194,22 +200,30 @@ fn append_capability_with_rights(
     seed: u8,
     rights: CapabilityRights,
 ) -> nlos_capability::CapabilityRecord {
+    let command = IssueRootCapabilityRequest {
+        issuer_key_id: fixture.issuer.key_id,
+        holder_key_id: fixture.issuer.key_id,
+        target: fixture.scope,
+        rights,
+        purpose_digest: fixture.purpose_digest,
+        valid_from_ms: 0,
+        valid_until_ms: 9_000,
+        delegation_depth_remaining: 0,
+        call_limit: None,
+        idempotency_key: IdempotencyKey::from_bytes([seed; 16]),
+        issued_at_ms: 0,
+    };
     fixture
         .capability
-        .issue_root(
+        .issue_root_signed(
             &fixture.identity,
-            IssueRootCapabilityRequest {
-                issuer_key_id: fixture.issuer.key_id,
-                holder_key_id: fixture.issuer.key_id,
-                target: fixture.scope,
-                rights,
-                purpose_digest: fixture.purpose_digest,
-                valid_from_ms: 0,
-                valid_until_ms: 9_000,
-                delegation_depth_remaining: 0,
-                call_limit: None,
-                idempotency_key: IdempotencyKey::from_bytes([seed; 16]),
-                issued_at_ms: 0,
+            SignedIssueRootCapabilityRequest {
+                command,
+                signer: fixture.issuer.principal_id,
+                signature: fixture
+                    .issuer_key
+                    .sign(&issue_root_command_message(command))
+                    .to_bytes(),
             },
         )
         .unwrap()

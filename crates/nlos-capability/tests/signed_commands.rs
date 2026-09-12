@@ -5,13 +5,10 @@
 //! domain-separated command message, verified against the principal's
 //! current Identity key binding before any durable write. The durable
 //! decision digest covers only the semantic command, so replays never
-//! re-verify signatures and signed/deprecated entries stay inter-replayable.
-//! Stale key generations cannot be pinned by callers because verification
-//! resolves the binding by principal; the expressible rotation failure is
-//! key revocation, which fails closed everywhere except on replays of
-//! already-durable decisions.
-
-#![allow(deprecated)] // Bidirectional equivalence tests exercise the deprecated unsigned entries.
+//! re-verify signatures. Stale key generations cannot be pinned by callers
+//! because verification resolves the binding by principal; the expressible
+//! rotation failure is key revocation, which fails closed everywhere except
+//! on replays of already-durable decisions.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -613,45 +610,4 @@ fn replay_does_not_reverify_signature_after_key_revocation() {
         CapabilityIssueDecision::Replayed(record, _) if record == first.record(),
     ));
     assert_eq!(replay.receipt(), first.receipt());
-}
-
-/// The deprecated unsigned entries and the signed entries are two fronts of
-/// one durable authority: with identical commands, whichever entry executes
-/// first, the other replays the exact same durable decision.
-#[test]
-fn signed_and_unsigned_entries_are_inter_replayable() {
-    // Direction 1: the unsigned entry issues; the signed entry replays it.
-    let issue_dir = Root::new("equivalence-issue");
-    let identity = IdentityAuthority::open(issue_dir.path()).unwrap();
-    let (issuer_key, issuer) = bootstrap(&identity, 220);
-    let capability = CapabilityAuthority::open(issue_dir.path()).unwrap();
-    let command = root_request(&issuer, &issuer, 0xb5);
-    let unsigned = capability.issue_root(&identity, command).unwrap();
-    assert!(matches!(unsigned, CapabilityIssueDecision::Issued(_, _)));
-    assert!(matches!(
-        signed_issue_root(&capability, &identity, &issuer_key, &issuer, command),
-        Ok(CapabilityIssueDecision::Replayed(record, _)) if record == unsigned.record(),
-    ));
-
-    // Direction 2: the signed entry revokes; the unsigned entry replays it.
-    let revoke_dir = Root::new("equivalence-revoke");
-    let identity = IdentityAuthority::open(revoke_dir.path()).unwrap();
-    let (holder_key, holder) = bootstrap(&identity, 230);
-    let capability = CapabilityAuthority::open(revoke_dir.path()).unwrap();
-    let record = capability
-        .issue_root(&identity, root_request(&holder, &holder, 0xb6))
-        .unwrap()
-        .record();
-    let command = RevokeCapabilityRequest {
-        handle: record.handle,
-        revoker_key_id: holder.key_id,
-        idempotency_key: IdempotencyKey::from_bytes([0xb7; 16]),
-        revoked_at_ms: 3_000,
-    };
-    let signed = signed_revoke(&capability, &identity, &holder_key, &holder, command).unwrap();
-    assert!(matches!(signed, CapabilityRevocationDecision::Revoked(_)));
-    assert!(matches!(
-        capability.revoke(&identity, command),
-        Ok(CapabilityRevocationDecision::Replayed(receipt)) if receipt == signed.receipt(),
-    ));
 }

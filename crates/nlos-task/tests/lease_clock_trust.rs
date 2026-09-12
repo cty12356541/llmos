@@ -139,6 +139,52 @@ fn anchored_takeover_of_expired_lease_keeps_legacy_semantics() {
         .expect("successor lease is live");
 }
 
+/// Strict-boundary pin (the `expires_at_ms > effective_now_ms` means-live
+/// comment upgraded to assertions): the incumbent liveness judgement at
+/// `min(requested_at_ms, clock_wall_ms)` has no inclusive edge. One tick
+/// below the boundary the incumbent is live and a challenger is refused
+/// with `AuthorityLeaseHeld`; AT the boundary —
+/// `expires_at_ms == min(requested_at_ms, clock_wall_ms)` — the incumbent
+/// is already judged dead, so only strictly-greater leases are live and
+/// the takeover proceeds with `term + 1`.
+#[test]
+fn anchored_boundary_equality_judges_incumbent_dead_and_takes_over() {
+    let database = TestDatabase::new("boundary-equality");
+    let authority = database.open();
+    let first = authority
+        .acquire_authority_lease(request(0xa1, 0xb1, 100, 100))
+        .expect("initial lease")
+        .record();
+    assert_eq!(first.expires_at_ms, 200);
+
+    // One tick below the boundary: min(199, 199) = 199 < 200 → live.
+    assert!(matches!(
+        authority.acquire_authority_lease_anchored(request(0xa2, 0xb2, 199, 100), 199),
+        Err(TaskStoreError::AuthorityLeaseHeld)
+    ));
+    assert_eq!(
+        authority.inspect_authority_lease().expect("lease readback"),
+        first,
+        "the refused challenge leaves the incumbent untouched"
+    );
+
+    // At the boundary: expires_at_ms == min(200, 200) → judged dead.
+    let takeover = authority
+        .acquire_authority_lease_anchored(request(0xa2, 0xb2, 200, 100), 200)
+        .expect("boundary equality already proves the incumbent dead")
+        .record();
+    assert_eq!(takeover.term, 2);
+    assert_eq!(takeover.lease_epoch, 2);
+    assert_ne!(takeover.fencing_token, first.fencing_token);
+    assert!(matches!(
+        authority.validate_authority_lease(first, 250),
+        Err(TaskStoreError::AuthorityLeaseFenced)
+    ));
+    authority
+        .validate_authority_lease(takeover, 250)
+        .expect("successor lease is live");
+}
+
 /// Pinned zero-anchor semantics: `clock_wall_ms == 0` declares "no wall
 /// observation available" and fails closed. An initial acquisition (nothing
 /// to fence) still succeeds and the incumbent holder still renews, but a

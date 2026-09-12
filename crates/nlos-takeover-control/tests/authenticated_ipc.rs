@@ -267,9 +267,17 @@ fn register_task_attempt(authority: &SqliteTaskAuthority, seed: u8) -> AttemptSp
     attempt
 }
 
-fn fence_takeover(authority: &SqliteTaskAuthority, seed: u8) -> FrozenFence {
+fn fence_takeover(
+    authority: &SqliteTaskAuthority,
+    clock: &AuthorityClock,
+    seed: u8,
+) -> FrozenFence {
+    // Clock-authority anchor: the fixture's durable wall high-water
+    // (`WALL_ANCHOR_MS`), read without durable side effect — not a raw
+    // system-clock reading.
+    let wall_ms = clock.inspect_wall().expect("durable wall reading").as_u64();
     let lease_one = authority
-        .acquire_authority_lease(lease_request(1, seed, 100, 100))
+        .acquire_authority_lease_anchored(lease_request(1, seed, 100, 100), wall_ms)
         .expect("initial lease")
         .record();
     let attempt = register_task_attempt(authority, seed);
@@ -314,7 +322,10 @@ fn fence_takeover(authority: &SqliteTaskAuthority, seed: u8) -> FrozenFence {
         })
         .expect("close permit before takeover");
     let lease_two = authority
-        .acquire_authority_lease(lease_request(2, seed.wrapping_add(0x11), 201, 1_000))
+        .acquire_authority_lease_anchored(
+            lease_request(2, seed.wrapping_add(0x11), 201, 1_000),
+            wall_ms,
+        )
         .expect("takeover lease")
         .record();
     let frozen = authority
@@ -396,7 +407,7 @@ impl Fixture {
             0,
             10_000,
         );
-        let fence = fence_takeover(&authority, 0x45);
+        let fence = fence_takeover(&authority, clock.as_ref(), 0x45);
         Self {
             authority,
             identity,

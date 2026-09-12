@@ -119,8 +119,7 @@ pub struct IssueRootCapabilityRequest {
 /// Signature-gated root issuance (ADR-0010): the exact trusted command plus
 /// the acting issuer principal and its Ed25519 signature over
 /// `issue_root_command_message`. The durable decision digest covers only
-/// `command`, so signed and deprecated unsigned entries stay
-/// inter-replayable for identical commands.
+/// `command`, so an idempotent replay never re-verifies the signature.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SignedIssueRootCapabilityRequest {
     pub command: IssueRootCapabilityRequest,

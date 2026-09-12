@@ -228,32 +228,6 @@ impl CapabilityAuthority {
         })
     }
 
-    /// Issues a root capability through the deprecated unsigned trusted
-    /// authority API after resolving both issuer and holder from the Identity
-    /// authority.
-    ///
-    /// # Deprecated
-    ///
-    /// Unsigned capability commands carry no proof of the acting principal;
-    /// use [`CapabilityAuthority::issue_root_signed`] (ADR-0010). Removal is
-    /// a future breaking change.
-    ///
-    /// # Errors
-    ///
-    /// Fails on inactive identities, invalid bounds, idempotency conflict, or
-    /// storage failure.
-    #[deprecated(
-        since = "0.1.0",
-        note = "unsigned TCB entry; use `issue_root_signed` (ADR-0010)"
-    )]
-    pub fn issue_root(
-        &self,
-        identity: &IdentityAuthority,
-        request: IssueRootCapabilityRequest,
-    ) -> Result<CapabilityIssueDecision, CapabilityAuthorityError> {
-        self.issue_root_impl(identity, request, None)
-    }
-
     /// Issues a root capability through the signature-gated authority API:
     /// the acting issuer principal must present an Ed25519 signature over
     /// [`issue_root_command_message`] under its current Identity key binding.
@@ -277,15 +251,16 @@ impl CapabilityAuthority {
             signer: request.signer,
             signature: request.signature,
         };
-        self.issue_root_impl(identity, request.command, Some(proof))
+        self.issue_root_impl(identity, request.command, proof)
     }
 
-    /// Shared issuance body; `proof` is `Some` exactly for the signed entry.
+    /// Shared issuance body; every entry carries a verified command
+    /// signature (ADR-0010, W24-004).
     fn issue_root_impl(
         &self,
         identity: &IdentityAuthority,
         request: IssueRootCapabilityRequest,
-        proof: Option<CommandSignatureProof>,
+        proof: CommandSignatureProof,
     ) -> Result<CapabilityIssueDecision, CapabilityAuthorityError> {
         validate_bounds(
             request.valid_from_ms,
@@ -308,7 +283,7 @@ impl CapabilityAuthority {
             request.issued_at_ms,
         )?;
         let issuer = active_identity(identity, request.issuer_key_id, request.issued_at_ms)?;
-        require_signed_by(verified, &issuer)?;
+        require_signed_by(&verified, &issuer)?;
         let holder = active_identity(identity, request.holder_key_id, request.issued_at_ms)?;
         let record = new_record(
             request_digest,
@@ -333,33 +308,6 @@ impl CapabilityAuthority {
         )?;
         transaction.commit()?;
         Ok(CapabilityIssueDecision::Issued(record, receipt))
-    }
-
-    /// Delegates an active capability through the deprecated unsigned trusted
-    /// authority API while mechanically enforcing monotonic attenuation and
-    /// binding an immutable delegation Receipt.
-    ///
-    /// # Deprecated
-    ///
-    /// Unsigned capability commands carry no proof of the acting principal;
-    /// use [`CapabilityAuthority::delegate_signed`] (ADR-0010). Removal is a
-    /// future breaking change.
-    ///
-    /// # Errors
-    ///
-    /// Fails on stale/revoked ancestry, unauthenticated identities, any scope,
-    /// rights, purpose, validity, call-limit, or depth amplification, or storage
-    /// failure.
-    #[deprecated(
-        since = "0.1.0",
-        note = "unsigned TCB entry; use `delegate_signed` (ADR-0010)"
-    )]
-    pub fn delegate(
-        &self,
-        identity: &IdentityAuthority,
-        request: DelegateCapabilityRequest,
-    ) -> Result<CapabilityIssueDecision, CapabilityAuthorityError> {
-        self.delegate_impl(identity, request, None)
     }
 
     /// Delegates an active capability through the signature-gated authority
@@ -387,10 +335,11 @@ impl CapabilityAuthority {
             signer: request.signer,
             signature: request.signature,
         };
-        self.delegate_impl(identity, request.command, Some(proof))
+        self.delegate_impl(identity, request.command, proof)
     }
 
-    /// Shared delegation body; `proof` is `Some` exactly for the signed entry.
+    /// Shared delegation body; every entry carries a verified command
+    /// signature (ADR-0010, W24-004).
     ///
     /// # Errors
     ///
@@ -401,7 +350,7 @@ impl CapabilityAuthority {
         &self,
         identity: &IdentityAuthority,
         request: DelegateCapabilityRequest,
-        proof: Option<CommandSignatureProof>,
+        proof: CommandSignatureProof,
     ) -> Result<CapabilityIssueDecision, CapabilityAuthorityError> {
         validate_bounds(
             request.valid_from_ms,
@@ -427,7 +376,7 @@ impl CapabilityAuthority {
         )?;
         let delegator =
             active_identity(identity, request.delegator_key_id, request.delegated_at_ms)?;
-        require_signed_by(verified, &delegator)?;
+        require_signed_by(&verified, &delegator)?;
         if delegator.principal_id != parent.holder
             || delegator.control_domain_id != parent.holder_control_domain
         {
@@ -483,32 +432,6 @@ impl CapabilityAuthority {
         Ok(CapabilityIssueDecision::Issued(record, receipt))
     }
 
-    /// Revokes a capability by advancing its generation through the
-    /// deprecated unsigned trusted authority API. Issuer or holder may
-    /// revoke; descendants are invalidated by their stored parent generation.
-    ///
-    /// # Deprecated
-    ///
-    /// Unsigned capability commands carry no proof of the acting principal;
-    /// use [`CapabilityAuthority::revoke_signed`] (ADR-0010). Removal is a
-    /// future breaking change.
-    ///
-    /// # Errors
-    ///
-    /// Fails on stale generation, inactive/unauthorized revoker, idempotency
-    /// conflict, generation exhaustion, or storage failure.
-    #[deprecated(
-        since = "0.1.0",
-        note = "unsigned TCB entry; use `revoke_signed` (ADR-0010)"
-    )]
-    pub fn revoke(
-        &self,
-        identity: &IdentityAuthority,
-        request: RevokeCapabilityRequest,
-    ) -> Result<CapabilityRevocationDecision, CapabilityAuthorityError> {
-        self.revoke_impl(identity, request, None)
-    }
-
     /// Revokes a capability through the signature-gated authority API: the
     /// acting revoker principal must present an Ed25519 signature over
     /// [`revoke_command_message`] under its current Identity key binding. The
@@ -532,15 +455,16 @@ impl CapabilityAuthority {
             signer: request.signer,
             signature: request.signature,
         };
-        self.revoke_impl(identity, request.command, Some(proof))
+        self.revoke_impl(identity, request.command, proof)
     }
 
-    /// Shared revocation body; `proof` is `Some` exactly for the signed entry.
+    /// Shared revocation body; every entry carries a verified command
+    /// signature (ADR-0010, W24-004).
     fn revoke_impl(
         &self,
         identity: &IdentityAuthority,
         request: RevokeCapabilityRequest,
-        proof: Option<CommandSignatureProof>,
+        proof: CommandSignatureProof,
     ) -> Result<CapabilityRevocationDecision, CapabilityAuthorityError> {
         let request_digest = revoke_request_digest(request);
         let mut connection = self.lock()?;
@@ -562,7 +486,7 @@ impl CapabilityAuthority {
             request.revoked_at_ms,
         )?;
         let revoker = active_identity(identity, request.revoker_key_id, request.revoked_at_ms)?;
-        require_signed_by(verified, &revoker)?;
+        require_signed_by(&verified, &revoker)?;
         if revoker.principal_id != record.issuer && revoker.principal_id != record.holder {
             return Err(CapabilityAuthorityError::RevokerUnauthorized);
         }
@@ -797,22 +721,22 @@ fn active_identity(
 }
 
 /// The acting principal's signature over one Capability command message.
+#[derive(Clone, Copy)]
 struct CommandSignatureProof {
     signer: PrincipalId,
     signature: Ed25519Signature,
 }
 
-/// Verifies the command signature for signed entries; unsigned entries pass
-/// `None` and skip straight to the trusted TCB gates.
+/// Verifies the command signature every Capability command must carry: the
+/// acting principal's Ed25519 signature over the domain-separated command
+/// message under its current Identity key binding. The unsigned trusted path
+/// was removed in W24-004 (ADR-0010).
 fn verify_command_signature(
     identity: &IdentityAuthority,
-    proof: Option<CommandSignatureProof>,
+    proof: CommandSignatureProof,
     message: &[u8; 32],
     at_ms: u64,
-) -> Result<Option<VerifiedCapabilityCommandSigner>, CapabilityAuthorityError> {
-    let Some(proof) = proof else {
-        return Ok(None);
-    };
+) -> Result<VerifiedCapabilityCommandSigner, CapabilityAuthorityError> {
     identity
         .verify_capability_command_signature(VerifyCapabilityCommandSignatureRequest {
             message_digest: *message,
@@ -820,26 +744,24 @@ fn verify_command_signature(
             signature: proof.signature,
             verified_at_ms: at_ms,
         })
-        .map(Some)
         .map_err(command_signature_error)
 }
 
-/// Signed entries must prove that the declared behavior key is the current
+/// Every command must prove that the declared behavior key is the current
 /// key of the verifying principal, so a signature by any other principal is
 /// rejected even when it verifies cryptographically.
 fn require_signed_by(
-    verified: Option<VerifiedCapabilityCommandSigner>,
+    verified: &VerifiedCapabilityCommandSigner,
     binding: &IdentityBinding,
 ) -> Result<(), CapabilityAuthorityError> {
     match verified {
-        None => Ok(()),
-        Some(signer)
+        signer
             if signer.principal_id() == binding.principal_id
                 && signer.key_id() == binding.key_id =>
         {
             Ok(())
         }
-        Some(_) => Err(CapabilityAuthorityError::SignatureInvalid),
+        _ => Err(CapabilityAuthorityError::SignatureInvalid),
     }
 }
 

@@ -181,6 +181,20 @@ fn lease_record(decision: AuthorityLeaseDecision) -> nlos_task::AuthorityLeaseRe
     decision.record()
 }
 
+/// Wall observation for the anchored lease entry: a test-layer reading of
+/// the system clock, not a clock-authority handle. The fixture's logical
+/// timestamps are far below any real reading, so this anchor keeps the
+/// takeover judgement honest without changing its outcome. Returns `0`
+/// (fail-closed: incumbent treated as live) only when the system clock
+/// cannot produce a representable reading.
+fn observed_wall_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|elapsed| u64::try_from(elapsed.as_millis()).ok())
+        .unwrap_or(0)
+}
+
 fn register_task_attempt(authority: &SqliteTaskAuthority, seed: u8) -> AttemptSpec {
     let task_id = TaskId::from_bytes([seed; 16]);
     authority
@@ -248,7 +262,7 @@ fn finalize_request(
 fn fence_takeover(authority: &SqliteTaskAuthority, seed: u8) -> FrozenFence {
     let lease_one = lease_record(
         authority
-            .acquire_authority_lease(lease_request(1, seed, 100, 100))
+            .acquire_authority_lease_anchored(lease_request(1, seed, 100, 100), observed_wall_ms())
             .expect("initial lease"),
     );
     let attempt = register_task_attempt(authority, seed);
@@ -273,7 +287,10 @@ fn fence_takeover(authority: &SqliteTaskAuthority, seed: u8) -> FrozenFence {
         .expect("close permit before takeover");
     let lease_two = lease_record(
         authority
-            .acquire_authority_lease(lease_request(2, seed.wrapping_add(0x11), 201, 100))
+            .acquire_authority_lease_anchored(
+                lease_request(2, seed.wrapping_add(0x11), 201, 100),
+                observed_wall_ms(),
+            )
             .expect("takeover lease"),
     );
     assert_eq!(lease_two.term, lease_one.term + 1);

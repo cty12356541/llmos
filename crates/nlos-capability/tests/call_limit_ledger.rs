@@ -1,5 +1,3 @@
-#![allow(deprecated)] // Deprecated unsigned Capability entries stay the test front for issuing capabilities.
-
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -8,9 +6,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use ed25519_dalek::{Signer, SigningKey};
 use nlos_capability::{
-    CapabilityAuthority, CapabilityAuthorityError, CapabilityConsumptionDecision, CapabilityRecord,
-    CapabilityRights, CapabilityTarget, ConsumeCapabilityRequest, DelegateCapabilityRequest,
-    IssueRootCapabilityRequest,
+    CapabilityAuthority, CapabilityAuthorityError, CapabilityConsumptionDecision,
+    CapabilityIssueDecision, CapabilityRecord, CapabilityRights, CapabilityTarget,
+    ConsumeCapabilityRequest, DelegateCapabilityRequest, IssueRootCapabilityRequest,
+    SignedDelegateCapabilityRequest, SignedIssueRootCapabilityRequest, delegate_command_message,
+    issue_root_command_message,
 };
 use nlos_identity::{
     BootstrapPrincipalRequest, IdentityAuthority, IdentityBinding, KeyPurpose,
@@ -90,6 +90,40 @@ fn root_request(
     }
 }
 
+fn signed_issue_root(
+    capability: &CapabilityAuthority,
+    identity: &IdentityAuthority,
+    key: &SigningKey,
+    signer: &IdentityBinding,
+    command: IssueRootCapabilityRequest,
+) -> Result<CapabilityIssueDecision, CapabilityAuthorityError> {
+    capability.issue_root_signed(
+        identity,
+        SignedIssueRootCapabilityRequest {
+            command,
+            signer: signer.principal_id,
+            signature: key.sign(&issue_root_command_message(command)).to_bytes(),
+        },
+    )
+}
+
+fn signed_delegate(
+    capability: &CapabilityAuthority,
+    identity: &IdentityAuthority,
+    key: &SigningKey,
+    signer: &IdentityBinding,
+    command: DelegateCapabilityRequest,
+) -> Result<CapabilityIssueDecision, CapabilityAuthorityError> {
+    capability.delegate_signed(
+        identity,
+        SignedDelegateCapabilityRequest {
+            command,
+            signer: signer.principal_id,
+            signature: key.sign(&delegate_command_message(command)).to_bytes(),
+        },
+    )
+}
+
 fn consume_request(
     identity: &IdentityAuthority,
     key: &SigningKey,
@@ -137,10 +171,15 @@ fn consume_decrements_and_exhaustion_rejects_typed_with_zero_partial_state() {
     let identity = IdentityAuthority::open(root.path()).unwrap();
     let (holder_key, holder) = bootstrap(&identity, 10);
     let capability = CapabilityAuthority::open(root.path()).unwrap();
-    let record = capability
-        .issue_root(&identity, root_request(holder, holder, 0x20, Some(2)))
-        .unwrap()
-        .record();
+    let record = signed_issue_root(
+        &capability,
+        &identity,
+        &holder_key,
+        &holder,
+        root_request(holder, holder, 0x20, Some(2)),
+    )
+    .unwrap()
+    .record();
     assert_eq!(
         capability.call_limit_remaining(record.handle).unwrap(),
         Some(2)
@@ -209,10 +248,15 @@ fn consume_replay_is_free_conflicts_fail_closed_and_restart_persists() {
         let identity = IdentityAuthority::open(root.path()).unwrap();
         let (holder_key, holder) = bootstrap(&identity, 20);
         let capability = CapabilityAuthority::open(root.path()).unwrap();
-        let record = capability
-            .issue_root(&identity, root_request(holder, holder, 0x30, Some(3)))
-            .unwrap()
-            .record();
+        let record = signed_issue_root(
+            &capability,
+            &identity,
+            &holder_key,
+            &holder,
+            root_request(holder, holder, 0x30, Some(3)),
+        )
+        .unwrap()
+        .record();
         let first = capability
             .consume(consume_request(
                 &identity,
@@ -295,10 +339,15 @@ fn concurrent_consumption_linearizes_under_quota() {
     let (holder_key, holder) = bootstrap(&identity, 30);
     let capability = Arc::new(CapabilityAuthority::open(root.path()).unwrap());
     let record = Arc::new(
-        capability
-            .issue_root(&identity, root_request(holder, holder, 0x40, Some(3)))
-            .unwrap()
-            .record(),
+        signed_issue_root(
+            &capability,
+            &identity,
+            &holder_key,
+            &holder,
+            root_request(holder, holder, 0x40, Some(3)),
+        )
+        .unwrap()
+        .record(),
     );
     let holder = Arc::new(holder);
     let holder_key = Arc::new(holder_key);
@@ -359,10 +408,15 @@ fn unlimited_capability_never_exhausts_and_readback_is_none() {
     let identity = IdentityAuthority::open(root.path()).unwrap();
     let (holder_key, holder) = bootstrap(&identity, 40);
     let capability = CapabilityAuthority::open(root.path()).unwrap();
-    let record = capability
-        .issue_root(&identity, root_request(holder, holder, 0x60, None))
-        .unwrap()
-        .record();
+    let record = signed_issue_root(
+        &capability,
+        &identity,
+        &holder_key,
+        &holder,
+        root_request(holder, holder, 0x60, None),
+    )
+    .unwrap()
+    .record();
     assert_eq!(
         capability.call_limit_remaining(record.handle).unwrap(),
         None
@@ -400,33 +454,37 @@ fn delegated_budget_is_independent_not_pooled_with_parent() {
     let (delegator_key, delegator) = bootstrap(&identity, 50);
     let (recipient_key, recipient) = bootstrap(&identity, 60);
     let capability = CapabilityAuthority::open(root.path()).unwrap();
-    let parent = capability
-        .issue_root(
-            &identity,
-            root_request(delegator, delegator, 0x70, Some(10)),
-        )
-        .unwrap()
-        .record();
-    let child = capability
-        .delegate(
-            &identity,
-            DelegateCapabilityRequest {
-                parent: parent.handle,
-                delegator_key_id: delegator.key_id,
-                recipient_key_id: recipient.key_id,
-                target: parent.target,
-                rights: CapabilityRights::SEMANTIC_APPEND,
-                purpose_digest: parent.purpose_digest,
-                valid_from_ms: parent.valid_from_ms,
-                valid_until_ms: parent.valid_until_ms,
-                delegation_depth_remaining: 2,
-                call_limit: Some(5),
-                idempotency_key: IdempotencyKey::from_bytes([0x71; 16]),
-                delegated_at_ms: 1_100,
-            },
-        )
-        .unwrap()
-        .record();
+    let parent = signed_issue_root(
+        &capability,
+        &identity,
+        &delegator_key,
+        &delegator,
+        root_request(delegator, delegator, 0x70, Some(10)),
+    )
+    .unwrap()
+    .record();
+    let child = signed_delegate(
+        &capability,
+        &identity,
+        &delegator_key,
+        &delegator,
+        DelegateCapabilityRequest {
+            parent: parent.handle,
+            delegator_key_id: delegator.key_id,
+            recipient_key_id: recipient.key_id,
+            target: parent.target,
+            rights: CapabilityRights::SEMANTIC_APPEND,
+            purpose_digest: parent.purpose_digest,
+            valid_from_ms: parent.valid_from_ms,
+            valid_until_ms: parent.valid_until_ms,
+            delegation_depth_remaining: 2,
+            call_limit: Some(5),
+            idempotency_key: IdempotencyKey::from_bytes([0x71; 16]),
+            delegated_at_ms: 1_100,
+        },
+    )
+    .unwrap()
+    .record();
 
     for seed in 0..5u8 {
         capability
@@ -495,10 +553,15 @@ fn consume_enforces_semantic_admission_gates_without_spending() {
     let (holder_key, holder) = bootstrap(&identity, 70);
     let (_, outsider) = bootstrap(&identity, 80);
     let capability = CapabilityAuthority::open(root.path()).unwrap();
-    let record = capability
-        .issue_root(&identity, root_request(holder, holder, 0x80, Some(1)))
-        .unwrap()
-        .record();
+    let record = signed_issue_root(
+        &capability,
+        &identity,
+        &holder_key,
+        &holder,
+        root_request(holder, holder, 0x80, Some(1)),
+    )
+    .unwrap()
+    .record();
 
     assert!(matches!(
         capability.consume(consume_request(
@@ -555,10 +618,15 @@ fn consumption_rows_are_ddl_protected() {
     let identity = IdentityAuthority::open(root.path()).unwrap();
     let (holder_key, holder) = bootstrap(&identity, 90);
     let capability = CapabilityAuthority::open(root.path()).unwrap();
-    let record = capability
-        .issue_root(&identity, root_request(holder, holder, 0x90, Some(2)))
-        .unwrap()
-        .record();
+    let record = signed_issue_root(
+        &capability,
+        &identity,
+        &holder_key,
+        &holder,
+        root_request(holder, holder, 0x90, Some(2)),
+    )
+    .unwrap()
+    .record();
     capability
         .consume(consume_request(
             &identity,
