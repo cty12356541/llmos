@@ -86,7 +86,9 @@ impl TokioRuntimeAdapter {
     ///
     /// Gate order, fail-closed: runtime shutdown →
     /// [`RuntimeError::ShuttingDown`]; stale or unknown fiber handle →
-    /// [`RuntimeError::InvalidGeneration`]; terminal or already-cancelled
+    /// [`RuntimeError::InvalidGeneration`]; reaped generation
+    /// (join-consumed or detach-reclaimed handle) →
+    /// [`RuntimeError::FiberReaped`]; terminal or already-cancelled
     /// fiber → `Ok(None)` with zero durable side effect (the terminal GC,
     /// not a fresh snapshot, is what a terminal fiber's state calls for);
     /// then the process authority's write — which CAS's the presented
@@ -96,9 +98,10 @@ impl TokioRuntimeAdapter {
     ///
     /// # Errors
     ///
-    /// Returns [`ChannelWaitError::Runtime`] for shutdown and stale/unknown
-    /// fiber handles and [`ChannelWaitError::ProcessAuthority`] (including
-    /// the stale-incarnation CAS) for the durable write.
+    /// Returns [`ChannelWaitError::Runtime`] for shutdown, stale/unknown
+    /// fiber handles, and reaped generations ([`RuntimeError::FiberReaped`]),
+    /// and [`ChannelWaitError::ProcessAuthority`] (including the
+    /// stale-incarnation CAS) for the durable write.
     pub fn snapshot_handler_entry(
         &self,
         handle: FiberHandle,
@@ -132,6 +135,8 @@ impl TokioRuntimeAdapter {
     ///
     /// 1. runtime shutdown → [`RuntimeError::ShuttingDown`];
     /// 2. stale or unknown fiber handle → [`RuntimeError::InvalidGeneration`];
+    ///    a reaped generation (join-consumed or detach-reclaimed handle) →
+    ///    [`RuntimeError::FiberReaped`];
     /// 3. terminal or already-cancelled fiber → `Ok` with `restored: None`
     ///    (zero action, not an error);
     /// 4. the ADR-0012 generation gate: the binding's current registered
@@ -147,8 +152,9 @@ impl TokioRuntimeAdapter {
     ///
     /// # Errors
     ///
-    /// Returns [`ChannelWaitError::Runtime`] for shutdown and stale/unknown
-    /// fiber handles, [`ChannelWaitError::ProcessAuthority`] for the
+    /// Returns [`ChannelWaitError::Runtime`] for shutdown, stale/unknown
+    /// fiber handles, and reaped generations ([`RuntimeError::FiberReaped`]),
+    /// [`ChannelWaitError::ProcessAuthority`] for the
     /// incarnation readback, [`ChannelWaitError::StaleFiberIncarnation`] for
     /// the generation gate, [`ChannelWaitError::SnapshotUnavailable`] for a
     /// missing snapshot, and [`ChannelWaitError::ResumeRejected`] when the
@@ -195,12 +201,16 @@ impl TokioRuntimeAdapter {
     /// latest-only retention policy). Returns whether a snapshot existed.
     /// Unlike the write/restore entries this deliberately does NOT gate on
     /// the fiber being live — GC is exactly what a terminal fiber's state
-    /// calls for — but a stale or unknown handle is still rejected.
+    /// calls for — but a stale or unknown handle is still rejected, and a
+    /// reaped generation (join-consumed or detach-reclaimed handle) is
+    /// rejected with [`RuntimeError::FiberReaped`]: the record that would
+    /// authorize the GC is gone, so the durable side must not run either.
     ///
     /// # Errors
     ///
     /// Returns [`ChannelWaitError::Runtime`] for stale/unknown fiber handles
-    /// and [`ChannelWaitError::ProcessAuthority`] for the durable delete.
+    /// and reaped generations ([`RuntimeError::FiberReaped`]), and
+    /// [`ChannelWaitError::ProcessAuthority`] for the durable delete.
     pub fn gc_handler_entry_snapshot(
         &self,
         handle: FiberHandle,

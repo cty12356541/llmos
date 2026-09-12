@@ -250,7 +250,10 @@ impl TokioRuntimeAdapter {
     /// # Errors
     ///
     /// Returns [`RuntimeError::InvalidGeneration`] when `handle` is stale or
-    /// unknown, and [`RuntimeError::ShuttingDown`] after [`Self::shutdown`].
+    /// unknown, [`RuntimeError::FiberReaped`] when the generation's record
+    /// was already reaped (consumed by a join or reclaimed by a detach,
+    /// FIBER-REAP-002 via the shared handle resolution), and
+    /// [`RuntimeError::ShuttingDown`] after [`Self::shutdown`].
     pub fn wait_for_operation(
         &self,
         handle: FiberHandle,

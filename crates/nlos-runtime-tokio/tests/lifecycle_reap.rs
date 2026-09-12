@@ -18,16 +18,28 @@
 //!
 //! The scope-registry index (SCOPE-IDX-*) and orphan buffer bound
 //! (ORPHAN-*) are separate W25 tasks and are not covered here.
+//!
+//! R1 pins (W25-001R): `FiberReaped` reaches every handle-addressed entry
+//! through the shared record resolution, not just `join_fiber` — the
+//! Operation-wait registration, the inherent lifecycle inspection helper,
+//! and the durable snapshot-family GC are pinned to fail with the typed
+//! error for a join-consumed handle instead of silently proceeding.
 
 use std::future::pending;
-use std::time::Duration;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use nlos_process::ProcessAuthority;
 use nlos_runtime::{FiberExit, FiberHandle, FiberSpec, FiberState, RuntimeAdapter, RuntimeError};
-use nlos_runtime_tokio::{TokioRuntimeAdapter, TokioRuntimeConfig};
-use nlos_types::{
-    AgentInstanceId, CancellationScopeId, ExecutionFiberId, Generation, ProcessId, ResourceGroupId,
-    SchedulerDomainId,
+use nlos_runtime_tokio::{
+    ChannelWaitError, ResumeRejection, SnapshotResumable, TokioRuntimeAdapter, TokioRuntimeConfig,
 };
+use nlos_types::{
+    AgentInstanceId, CancellationScopeId, ExecutionFiberId, Generation, OperationId, ProcessId,
+    ResourceGroupId, SchedulerDomainId,
+};
+use nlos_wait::BindingId;
 use tokio::runtime::Handle;
 
 fn id_bytes(value: usize) -> [u8; 16] {
@@ -290,4 +302,158 @@ async fn zero_tombstone_capacity_is_pure_consumption() {
     runtime
         .spawn_fiber(fiber_spec(1, scope), Box::pin(pending()))
         .expect("zero-capacity ring fences nothing");
+}
+
+// ---------------------------------------------------------------------------
+// R1 pins (W25-001R): the FiberReaped externalization through the shared
+// handle resolution. Minimal fixtures only — the reaped-handle gate fires
+// before any durable interaction, so a bare process authority (never
+// touched) and an stub snapshot suffice.
+// ---------------------------------------------------------------------------
+
+static NEXT_ROOT: AtomicU64 = AtomicU64::new(1);
+
+struct Root(PathBuf);
+
+impl Root {
+    fn new(label: &str) -> Self {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let sequence = NEXT_ROOT.fetch_add(1, Ordering::Relaxed);
+        Self(std::env::temp_dir().join(format!(
+            "nlos-runtime-tokio-lifecycle-reap-{label}-{}-{nonce}-{sequence}",
+            std::process::id()
+        )))
+    }
+
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for Root {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Snapshot-family stub: the values are never read — a reaped handle fails
+/// the shared resolution before the process authority is touched.
+struct StubSnapshot {
+    binding_id: BindingId,
+    process_id: ProcessId,
+    incarnation: Generation,
+}
+
+impl SnapshotResumable for StubSnapshot {
+    fn binding(&self) -> BindingId {
+        self.binding_id
+    }
+
+    fn process_id(&self) -> ProcessId {
+        self.process_id
+    }
+
+    fn expected_incarnation(&self) -> Generation {
+        self.incarnation
+    }
+
+    fn handler_input(&self) -> Vec<u8> {
+        b"entry".to_vec()
+    }
+
+    fn resume_from_entry(&self, _input: &[u8]) -> Result<(), ResumeRejection> {
+        Ok(())
+    }
+}
+
+/// R1 pin — `FiberReaped` 外延(Operation wait):given a join-consumed handle;
+/// when an Operation wait is registered for it; then the registration fails
+/// with `FiberReaped` — it must NOT resolve ready-`Cancelled` the way a
+/// still-registered terminal fiber would.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reaped_handle_rejects_operation_wait_with_fiber_reaped() {
+    let runtime = runtime(4, 65_536);
+    let scope = CancellationScopeId::from_bytes(id_bytes(46));
+    let handle = runtime
+        .spawn_fiber(
+            fiber_spec(1, scope),
+            Box::pin(async { FiberExit::Completed }),
+        )
+        .expect("spawn");
+
+    wait_for_state(&runtime, handle, FiberState::Completed).await;
+    assert_eq!(runtime.join_fiber(handle), Ok(FiberExit::Completed));
+
+    let operation = OperationId::from_bytes(id_bytes(61));
+    let error = runtime
+        .wait_for_operation(handle, operation, Generation::INITIAL)
+        .err()
+        .expect("a reaped generation must reject the Operation wait");
+    assert_eq!(error, reaped(handle));
+}
+
+/// R1 pin — `FiberReaped` 外延(固有句柄方法):given a join-consumed handle;
+/// when the inherent lifecycle inspection helpers resolve it; then they fail
+/// with `FiberReaped` (one representative; the backpressure/suspend helpers
+/// share the same resolution path).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reaped_handle_rejects_lifecycle_helpers_with_fiber_reaped() {
+    let runtime = runtime(4, 65_536);
+    let scope = CancellationScopeId::from_bytes(id_bytes(47));
+    let handle = runtime
+        .spawn_fiber(
+            fiber_spec(1, scope),
+            Box::pin(async { FiberExit::Completed }),
+        )
+        .expect("spawn");
+
+    wait_for_state(&runtime, handle, FiberState::Completed).await;
+    assert_eq!(runtime.join_fiber(handle), Ok(FiberExit::Completed));
+
+    assert_eq!(runtime.inspect_lifecycle_phase(handle), Err(reaped(handle)));
+    assert_eq!(runtime.begin_backpressure_wait(handle), Err(reaped(handle)));
+}
+
+/// R1 pin — `FiberReaped` 外延(snapshot 族 GC):given a join-consumed handle;
+/// when the durable snapshot-family GC is invoked for it; then it fails with
+/// `ChannelWaitError::Runtime(FiberReaped)` — unlike a still-registered
+/// terminal fiber (which the GC entry deliberately serves), a reaped
+/// generation no longer authorizes any durable side effect.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reaped_handle_rejects_snapshot_gc_with_runtime_fiber_reaped() {
+    let root = Root::new("reap-gc");
+    let process = ProcessAuthority::open(root.path()).expect("open process authority");
+    let runtime = runtime(4, 65_536);
+    let scope = CancellationScopeId::from_bytes(id_bytes(48));
+    let handle = runtime
+        .spawn_fiber(
+            fiber_spec(1, scope),
+            Box::pin(async { FiberExit::Completed }),
+        )
+        .expect("spawn");
+
+    wait_for_state(&runtime, handle, FiberState::Completed).await;
+    assert_eq!(runtime.join_fiber(handle), Ok(FiberExit::Completed));
+
+    let snapshot = StubSnapshot {
+        binding_id: BindingId::from_bytes(id_bytes(62)),
+        process_id: ProcessId::from_bytes(id_bytes(1)),
+        incarnation: Generation::INITIAL,
+    };
+    let error = runtime
+        .gc_handler_entry_snapshot(handle, &process, &snapshot)
+        .expect_err("a reaped generation must fail the snapshot-family GC");
+    match error {
+        ChannelWaitError::Runtime(RuntimeError::FiberReaped {
+            fiber_id,
+            generation,
+        }) => {
+            assert_eq!(fiber_id, handle.fiber_id);
+            assert_eq!(generation, handle.generation);
+        }
+        other => panic!("expected Runtime(FiberReaped), got {other:?}"),
+    }
 }

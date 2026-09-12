@@ -661,7 +661,10 @@ impl TokioRuntimeAdapter {
     ///
     /// # Errors
     ///
-    /// Returns [`RuntimeError::InvalidGeneration`] when the handle is stale.
+    /// Returns [`RuntimeError::InvalidGeneration`] when the handle is stale,
+    /// and [`RuntimeError::FiberReaped`] when the generation's record was
+    /// already reaped (consumed by a join or reclaimed by a detach,
+    /// FIBER-REAP-002 via the shared handle resolution).
     pub fn inspect_lifecycle_phase(
         &self,
         handle: FiberHandle,
@@ -674,7 +677,10 @@ impl TokioRuntimeAdapter {
     ///
     /// # Errors
     ///
-    /// Returns [`RuntimeError::InvalidGeneration`] when the handle is stale.
+    /// Returns [`RuntimeError::InvalidGeneration`] when the handle is stale,
+    /// and [`RuntimeError::FiberReaped`] when the generation's record was
+    /// already reaped (consumed by a join or reclaimed by a detach,
+    /// FIBER-REAP-002 via the shared handle resolution).
     pub fn begin_backpressure_wait(&self, handle: FiberHandle) -> Result<(), RuntimeError> {
         let record = self.record_for(handle)?;
         record.begin_backpressure_wait();
@@ -685,7 +691,10 @@ impl TokioRuntimeAdapter {
     ///
     /// # Errors
     ///
-    /// Returns [`RuntimeError::InvalidGeneration`] when the handle is stale.
+    /// Returns [`RuntimeError::InvalidGeneration`] when the handle is stale,
+    /// and [`RuntimeError::FiberReaped`] when the generation's record was
+    /// already reaped (consumed by a join or reclaimed by a detach,
+    /// FIBER-REAP-002 via the shared handle resolution).
     pub fn resume_from_backpressure_wait(&self, handle: FiberHandle) -> Result<(), RuntimeError> {
         let record = self.record_for(handle)?;
         record.resume_from_backpressure_wait();
@@ -696,7 +705,10 @@ impl TokioRuntimeAdapter {
     ///
     /// # Errors
     ///
-    /// Returns [`RuntimeError::InvalidGeneration`] when the handle is stale.
+    /// Returns [`RuntimeError::InvalidGeneration`] when the handle is stale,
+    /// and [`RuntimeError::FiberReaped`] when the generation's record was
+    /// already reaped (consumed by a join or reclaimed by a detach,
+    /// FIBER-REAP-002 via the shared handle resolution).
     pub fn begin_suspended(&self, handle: FiberHandle) -> Result<(), RuntimeError> {
         let record = self.record_for(handle)?;
         record.begin_suspended();
@@ -707,7 +719,10 @@ impl TokioRuntimeAdapter {
     ///
     /// # Errors
     ///
-    /// Returns [`RuntimeError::InvalidGeneration`] when the handle is stale.
+    /// Returns [`RuntimeError::InvalidGeneration`] when the handle is stale,
+    /// and [`RuntimeError::FiberReaped`] when the generation's record was
+    /// already reaped (consumed by a join or reclaimed by a detach,
+    /// FIBER-REAP-002 via the shared handle resolution).
     pub fn resume_from_suspended(&self, handle: FiberHandle) -> Result<(), RuntimeError> {
         let record = self.record_for(handle)?;
         record.resume_from_suspended();

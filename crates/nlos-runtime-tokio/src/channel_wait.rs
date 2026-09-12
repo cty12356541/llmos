@@ -13,6 +13,8 @@
 //!
 //! 1. runtime shutdown → `Runtime(ShuttingDown)`;
 //! 2. stale or unknown fiber handle → `Runtime(InvalidGeneration)`;
+//!    a reaped generation (join-consumed or detach-reclaimed handle) →
+//!    `Runtime(FiberReaped)`;
 //! 3. terminal fiber or already-cancelled scope → ready
 //!    [`WaitOutcome::Cancelled`] (no durable side effect);
 //! 4. durable registration ([`RegisterDecision::Registered`] or
@@ -118,9 +120,10 @@ impl ChannelWaitKey {
 #[derive(Debug)]
 pub enum ChannelWaitError {
     /// The runtime rejected the wait: [`RuntimeError::ShuttingDown`] after
-    /// [`TokioRuntimeAdapter::shutdown`], or
+    /// [`TokioRuntimeAdapter::shutdown`],
     /// [`RuntimeError::InvalidGeneration`] for a stale or unknown fiber
-    /// handle.
+    /// handle, or [`RuntimeError::FiberReaped`] for a generation whose record
+    /// was already reaped (consumed by a join or reclaimed by a detach).
     Runtime(RuntimeError),
     /// The durable wait authority failed (registration, row readback,
     /// high-water read or the self-flip notification).
@@ -689,10 +692,12 @@ impl TokioRuntimeAdapter {
     ///
     /// # Errors
     ///
-    /// Returns [`ChannelWaitError::Runtime`] for shutdown and stale/unknown
-    /// fiber handles, [`ChannelWaitError::WaitAuthority`] for durable
-    /// authority failures, and [`ChannelWaitError::RecordMismatch`] when the
-    /// durable row does not match the request.
+    /// Returns [`ChannelWaitError::Runtime`] for shutdown, stale/unknown
+    /// fiber handles, and reaped generations ([`RuntimeError::FiberReaped`]:
+    /// the handle's record was consumed by a join or reclaimed by a detach),
+    /// [`ChannelWaitError::WaitAuthority`] for durable authority failures,
+    /// and [`ChannelWaitError::RecordMismatch`] when the durable row does not
+    /// match the request.
     pub fn wait_for_channel(
         &self,
         handle: FiberHandle,
@@ -795,6 +800,8 @@ impl TokioRuntimeAdapter {
     ///
     /// 1. runtime shutdown → [`RuntimeError::ShuttingDown`];
     /// 2. stale or unknown fiber handle → [`RuntimeError::InvalidGeneration`];
+    ///    a reaped generation (join-consumed or detach-reclaimed handle) →
+    ///    [`RuntimeError::FiberReaped`];
     /// 3. terminal fiber or already-cancelled scope → an empty
     ///    [`RearmReport`] (the ready-`Cancelled` analog: nothing is armed,
     ///    zero durable side effects), not an error.
@@ -825,9 +832,10 @@ impl TokioRuntimeAdapter {
     ///
     /// # Errors
     ///
-    /// Returns [`ChannelWaitError::Runtime`] for shutdown and stale/unknown
-    /// fiber handles, and [`ChannelWaitError::WaitAuthority`] for durable
-    /// authority failures (enumeration, high-water reads, the self-flip).
+    /// Returns [`ChannelWaitError::Runtime`] for shutdown, stale/unknown
+    /// fiber handles, and reaped generations ([`RuntimeError::FiberReaped`]),
+    /// and [`ChannelWaitError::WaitAuthority`] for durable authority failures
+    /// (enumeration, high-water reads, the self-flip).
     pub fn rearm_channel_waits(
         &self,
         handle: FiberHandle,
