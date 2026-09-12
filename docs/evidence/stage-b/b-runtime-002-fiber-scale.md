@@ -543,3 +543,11 @@ cargo fmt -p nlos-runtime-tokio -- --check
   - 100K 规模级 cancel 探针；
   - runtime 侧 process crash 传播联动；
   - 未声称 ROAD-B-006 整体达成。
+
+### 6.15 「终态占位」语义窗口化（2026-09-12 追加，W25 / ROAD-B-006；对 §6.1 历史表述的登记性追加说明，原文不删）
+
+- **说明对象**：§6.1 场景 5（`respawn_after_cancel_is_fenced_by_scope_and_fiber_generations`）中「终态 fiber 身份仍占位（同 id 同代 → `DuplicateFiber`；同 id 换 fiber 代 → `InvalidGeneration`）」一句，系 2026-09-02 当时**无界注册表**语义的实测记录；本节追加说明 W25 之后的语义更新，历史证据原文保留。
+- **fiber 侧（commit `1c28bcc`，[FIBER-REAP-001..005]）**：「占位」由**永久**改为**有界窗口**——join 成功消费或 detach 回收在 terminal 临界区内移除记录，`(id, generation)` 入 FIFO 墓碑环（`tombstone_capacity` 默认 65 536，满则挤出最老、被挤出后同 id 视为新 fiber 放行 spawn；容量 0 = 纯消费无窗口）。**窗口内语义与 §6.1 原文逐字一致**（同 id 同代 → `DuplicateFiber`）；窗口外退化为既有未知句柄 `InvalidGeneration`；对已回收句柄的 join/句柄操作 → `RuntimeError::FiberReaped`（fail-closed）。
+- **scope 侧（commit `d1425c4`，[SCOPE-IDX-001..004]）**：§6.1 场景 5 的「同 scope id 换 cancellation_generation → `InvalidGeneration`」（scope 单代次绑定）同样窗口化——scope 条目按引用计数归零移除（末条未回收 fiber 记录释放时），scope 墓碑环（`scope_tombstone_capacity` 默认 65 536）内同 id 异代注册维持 `InvalidGeneration`，挤出/零容量后放行。**已取消 scope 的 cancelled 态不随墓碑存活**：同 `(id, generation)` 回收后重建的是未取消新实例（有界内存的显式代价，与 fiber 环「挤出即新身份」同理）。
+- **场景 5 测试零改动保持绿**：该 fiber/scope 全程未被 join/detach，防重由**活记录**承担；墓碑环只在记录被消费后接管窗口（W25 全量门 `lifecycle_reap` 18/18、`cancel_late_callback_matrix` 6/6）。
+- 设计定稿 spec：`docs/superpowers/specs/2026-09-12-fiber-lifecycle-reaping-design.md`；登记：stage-b-progress 第八十八增量。
