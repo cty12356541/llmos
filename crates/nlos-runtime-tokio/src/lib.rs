@@ -232,6 +232,10 @@ struct FiberRecord {
     fiber_id: ExecutionFiberId,
     generation: Generation,
     scope: Arc<CancellationScope>,
+    /// Registry key of the scope this record references, carried so the reap
+    /// path can release the scope's reference without a lookup
+    /// (SCOPE-IDX-002).
+    scope_key: ScopeKey,
     state: Mutex<FiberState>,
     lifecycle_phase: Mutex<FiberLifecyclePhase>,
     usage: Mutex<UsageAccumulator>,
@@ -248,11 +252,13 @@ impl FiberRecord {
         fiber_id: ExecutionFiberId,
         generation: Generation,
         scope: Arc<CancellationScope>,
+        scope_key: ScopeKey,
     ) -> Self {
         Self {
             fiber_id,
             generation,
             scope,
+            scope_key,
             state: Mutex::new(FiberState::Ready),
             lifecycle_phase: Mutex::new(FiberLifecyclePhase::Running),
             usage: Mutex::new(UsageAccumulator {
@@ -275,7 +281,7 @@ impl FiberRecord {
             // terminal critical section — the same section a consuming join
             // uses — so the record never outlives its terminal transition.
             if self.reap_on_terminal.load(Ordering::Acquire) {
-                inner.reap_fiber(self.fiber_id, self.generation);
+                inner.reap_fiber(self);
             }
         }
     }
@@ -319,7 +325,7 @@ impl FiberRecord {
         loop {
             if let TerminalOutcome::Finished(exit) = *terminal {
                 *terminal = TerminalOutcome::Consumed;
-                inner.reap_fiber(self.fiber_id, self.generation);
+                inner.reap_fiber(self);
                 return Ok(exit);
             }
             if matches!(*terminal, TerminalOutcome::Consumed) {
@@ -527,9 +533,139 @@ impl FiberRegistry {
     /// Removes the record and pushes its tombstone. Idempotent: a record that
     /// is already gone (a racing consumer won the terminal critical section)
     /// pushes nothing, so the ring never holds duplicates from one identity.
-    fn reap(&mut self, fiber_id: ExecutionFiberId, generation: Generation) {
+    /// Returns whether this call performed the reap, so the caller can pair
+    /// exactly one scope-reference release with one fiber reap
+    /// (SCOPE-IDX-002).
+    fn reap(&mut self, fiber_id: ExecutionFiberId, generation: Generation) -> bool {
         if self.fibers.remove(&fiber_id).is_none() {
+            return false;
+        }
+        // `0` is a zero-capacity ring: pure consumption, no window protection.
+        if self.tombstone_capacity == 0 {
+            return true;
+        }
+        while self.tombstones.len() >= self.tombstone_capacity {
+            self.tombstones.pop_front();
+        }
+        self.tombstones.push_back((fiber_id, generation));
+        true
+    }
+}
+
+/// One live scope entry (SCOPE-IDX-002): the [`CancellationScope`] plus its
+/// reference count. The count is the number of outstanding acquisitions —
+/// every unreaped fiber record referencing the scope holds exactly one, and
+/// an in-flight spawn holds one between its scope resolution and its
+/// admission outcome — so at quiescence it equals the unreaped record count.
+struct ScopeEntry {
+    scope: Arc<CancellationScope>,
+    refs: usize,
+}
+
+/// The scope registry, its by-id index, and its bounded tombstone ring under
+/// one lock (SCOPE-IDX-001..004): registration, cancellation, and release
+/// are atomic against each other, and each is a single short critical
+/// section that never nests with the wait registries or a record lock being
+/// held on the other side.
+///
+/// The ring stores `(id, generation)`: within the window it fences
+/// re-registration of the id under any other generation — the existing
+/// "first generation locks the id" `InvalidGeneration` rejection
+/// (SCOPE-IDX-004) extended past the entry's lifetime (SCOPE-IDX-003) —
+/// while the reaped generation itself re-registers a fresh scope. A
+/// FIFO-evicted id is free for any generation. Tombstones are pure memory,
+/// mirroring FIBER-REAP-005.
+struct ScopeRegistry {
+    scopes: HashMap<ScopeKey, ScopeEntry>,
+    /// Secondary index (SCOPE-IDX-001): live generations per scope id.
+    /// Registration locks an id to its first generation (SCOPE-IDX-004), so a
+    /// non-empty vector holds exactly one generation today; the general
+    /// shape keeps the index maintenance local to acquire/release.
+    by_id: HashMap<CancellationScopeId, Vec<Generation>>,
+    tombstones: VecDeque<ScopeKey>,
+    tombstone_capacity: usize,
+}
+
+impl ScopeRegistry {
+    fn new(tombstone_capacity: usize) -> Self {
+        Self {
+            scopes: HashMap::new(),
+            by_id: HashMap::new(),
+            tombstones: VecDeque::new(),
+            tombstone_capacity,
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.scopes.len()
+    }
+
+    /// Resolves the scope for `key`, creating it on first registration and
+    /// taking one reference. O(1) through the by-id index (SCOPE-IDX-001): a
+    /// live entry locks its id to the registered generation
+    /// (SCOPE-IDX-004); the tombstone ring extends that lock past the
+    /// entry's lifetime (SCOPE-IDX-003); the reaped generation itself
+    /// re-registers a fresh scope. Rejection is
+    /// [`RuntimeError::InvalidGeneration`] in both fence cases.
+    fn acquire(&mut self, key: ScopeKey) -> Result<Arc<CancellationScope>, RuntimeError> {
+        if let Some(generations) = self.by_id.get(&key.id) {
+            if !generations.contains(&key.generation) {
+                return Err(RuntimeError::InvalidGeneration);
+            }
+        } else if self
+            .tombstones
+            .iter()
+            .any(|fenced| fenced.id == key.id && fenced.generation != key.generation)
+        {
+            return Err(RuntimeError::InvalidGeneration);
+        }
+        let entry = self.scopes.entry(key).or_insert_with(|| ScopeEntry {
+            scope: Arc::new(CancellationScope::new()),
+            refs: 0,
+        });
+        entry.refs += 1;
+        let generations = self.by_id.entry(key.id).or_default();
+        if !generations.contains(&key.generation) {
+            generations.push(key.generation);
+        }
+        Ok(Arc::clone(&entry.scope))
+    }
+
+    /// Cancels the scope at the exact `(id, generation)`. Unknown and already
+    /// reaped scope ids fail closed with [`RuntimeError::InvalidGeneration`]
+    /// — a reaped scope is indistinguishable from a never-registered one and
+    /// is never silently absorbed.
+    fn cancel(&self, id: CancellationScopeId, generation: Generation) -> Result<(), RuntimeError> {
+        let entry = self
+            .scopes
+            .get(&ScopeKey { id, generation })
+            .ok_or(RuntimeError::InvalidGeneration)?;
+        entry.scope.cancel();
+        Ok(())
+    }
+
+    /// Releases one reference (SCOPE-IDX-002). When the last reference drops,
+    /// the entry and its index rows are removed and the `(id, generation)`
+    /// enters the tombstone ring — whether the final release came from a
+    /// reaped record or a failed admission, the window left behind is the
+    /// same generation lock. A no-op for an already-removed entry.
+    fn release(&mut self, key: &ScopeKey) {
+        let reaped = match self.scopes.get_mut(key) {
+            Some(entry) => {
+                entry.refs = entry.refs.saturating_sub(1);
+                entry.refs == 0
+            }
+            None => false,
+        };
+        if !reaped {
             return;
+        }
+        self.scopes.remove(key);
+        if let Some(generations) = self.by_id.get_mut(&key.id) {
+            generations.retain(|generation| *generation != key.generation);
+            if generations.is_empty() {
+                self.by_id.remove(&key.id);
+            }
         }
         // `0` is a zero-capacity ring: pure consumption, no window protection.
         if self.tombstone_capacity == 0 {
@@ -538,13 +674,13 @@ impl FiberRegistry {
         while self.tombstones.len() >= self.tombstone_capacity {
             self.tombstones.pop_front();
         }
-        self.tombstones.push_back((fiber_id, generation));
+        self.tombstones.push_back(*key);
     }
 }
 
 struct Inner {
     fibers: Mutex<FiberRegistry>,
-    scopes: Mutex<HashMap<ScopeKey, Arc<CancellationScope>>>,
+    scopes: Mutex<ScopeRegistry>,
     waits: Mutex<HashMap<WaitKey, WaitEntry>>,
     channel_waits: Mutex<HashMap<ChannelWaitKey, WaitEntry>>,
     shutdown: AtomicBool,
@@ -552,14 +688,28 @@ struct Inner {
 }
 
 impl Inner {
-    /// Reaps a fiber record from the registry. Callers hold the record's
+    /// Reaps a fiber record from the registry and releases the scope
+    /// reference its record held (SCOPE-IDX-002). Callers hold the record's
     /// terminal mutex (the join consumption path, the detach terminal path,
-    /// or `run_fiber`'s terminal transition), so the reap is ordered inside
-    /// that existing critical section; the registry lock is a leaf relative
-    /// to every record lock — no path acquires a record lock while holding
-    /// it — so the added `terminal → registry` edge cannot cycle.
-    fn reap_fiber(&self, fiber_id: ExecutionFiberId, generation: Generation) {
-        lock_unpoisoned(&self.fibers).reap(fiber_id, generation);
+    /// or `run_fiber`'s terminal transition), so both releases are ordered
+    /// inside that existing critical section; each registry lock is a leaf
+    /// relative to every record lock — no path acquires a record lock while
+    /// holding one — and the two registry locks are acquired sequentially,
+    /// never nested in one another, so no cycle forms. The scope release
+    /// runs only when this call performed the fiber reap, keeping the
+    /// reference pairing exact across racing consumers.
+    fn reap_fiber(&self, record: &FiberRecord) {
+        let reaped = lock_unpoisoned(&self.fibers).reap(record.fiber_id, record.generation);
+        if reaped {
+            lock_unpoisoned(&self.scopes).release(&record.scope_key);
+        }
+    }
+
+    /// Balances a scope acquisition whose admission failed. Callers invoke it
+    /// outside every other registry critical section, keeping the scopes lock
+    /// an independent short section with no nesting edge.
+    fn release_scope(&self, key: &ScopeKey) {
+        lock_unpoisoned(&self.scopes).release(key);
     }
 }
 
@@ -573,10 +723,11 @@ pub struct TokioRuntimeConfig {
     /// re-spawn, `FiberReaped` on re-join) until FIFO-evicted. `0` is a
     /// zero-capacity ring — pure consumption, no window protection.
     pub tombstone_capacity: usize,
-    /// Capacity of the scope tombstone ring (SCOPE-IDX-003, reserved for the
-    /// scope-registry task): `0` is a zero-capacity ring. Defined here so the
-    /// lifecycle-reaping configuration surface is stable across the W25
-    /// tasks; this adapter does not read it yet.
+    /// Capacity of the scope tombstone ring (SCOPE-IDX-003): a reaped
+    /// `(scope_id, generation)` — its entry left the registry with its last
+    /// referencing fiber record — stays fenced against re-registration under
+    /// any other generation of the same id until FIFO-evicted. `0` is a
+    /// zero-capacity ring — pure consumption, no window protection.
     pub scope_tombstone_capacity: usize,
     /// Bound of the orphaned `channel_waits` buffer (ORPHAN-001, reserved
     /// for the orphan-bound task): `0` drops every orphaned entry. Defined
@@ -618,7 +769,7 @@ impl TokioRuntimeAdapter {
             handle,
             inner: Arc::new(Inner {
                 fibers: Mutex::new(FiberRegistry::new(config.tombstone_capacity)),
-                scopes: Mutex::new(HashMap::new()),
+                scopes: Mutex::new(ScopeRegistry::new(config.scope_tombstone_capacity)),
                 waits: Mutex::new(HashMap::new()),
                 channel_waits: Mutex::new(HashMap::new()),
                 shutdown: AtomicBool::new(false),
@@ -632,25 +783,23 @@ impl TokioRuntimeAdapter {
         lock_unpoisoned(&self.inner.fibers).len()
     }
 
-    fn scope_for(&self, spec: &FiberSpec) -> Result<Arc<CancellationScope>, RuntimeError> {
-        let key = ScopeKey {
-            id: spec.cancellation_scope_id,
-            generation: spec.cancellation_generation,
-        };
-        let mut scopes = lock_unpoisoned(&self.inner.scopes);
+    /// Number of live scope entries (SCOPE-IDX-002): each is referenced by
+    /// at least one unreaped fiber record — or, transiently, one in-flight
+    /// admission. A reaped scope leaves this count and persists only as a
+    /// tombstone in the bounded ring.
+    #[must_use]
+    pub fn registered_scopes(&self) -> usize {
+        lock_unpoisoned(&self.inner.scopes).len()
+    }
 
-        if scopes
-            .keys()
-            .any(|existing| existing.id == key.id && existing.generation != key.generation)
-        {
-            return Err(RuntimeError::InvalidGeneration);
-        }
-
-        Ok(Arc::clone(
-            scopes
-                .entry(key)
-                .or_insert_with(|| Arc::new(CancellationScope::new())),
-        ))
+    /// Resolves the cancellation scope for a spawn, creating it on first
+    /// registration and taking one reference (SCOPE-IDX-001): an O(1) by-id
+    /// index lookup replaces the former linear key scan. The reference is
+    /// either carried by the admitted record — released when the record is
+    /// reaped — or balanced out by [`Inner::release_scope`] when admission
+    /// fails.
+    fn scope_for(&self, key: ScopeKey) -> Result<Arc<CancellationScope>, RuntimeError> {
+        lock_unpoisoned(&self.inner.scopes).acquire(key)
     }
 
     fn record_for(&self, handle: FiberHandle) -> Result<Arc<FiberRecord>, RuntimeError> {
@@ -777,8 +926,13 @@ impl RuntimeAdapter for TokioRuntimeAdapter {
         let permit = Arc::clone(&self.inner.admission)
             .try_acquire_owned()
             .map_err(|_| RuntimeError::QueueFull)?;
-        let scope = self.scope_for(&spec)?;
+        let scope_key = ScopeKey {
+            id: spec.cancellation_scope_id,
+            generation: spec.cancellation_generation,
+        };
+        let scope = self.scope_for(scope_key)?;
         if scope.is_cancelled() {
+            self.inner.release_scope(&scope_key);
             return Err(RuntimeError::Cancelled);
         }
 
@@ -786,25 +940,34 @@ impl RuntimeAdapter for TokioRuntimeAdapter {
             spec.fiber_id,
             spec.fiber_generation,
             Arc::clone(&scope),
+            scope_key,
         ));
-        {
+        // FIBER-REAP-004: the duplicate fence extends past the record's
+        // lifetime — a reaped `(id, generation)` whose tombstone is still
+        // in the ring stays `DuplicateFiber` (window protection). An
+        // evicted tombstone fences nothing: the identity spawns as a new
+        // fiber. On success the record carries the scope reference acquired
+        // above; on a rejected admission the reference is balanced out after
+        // this critical section ends, so the fibers and scopes registry
+        // locks never nest (SCOPE-IDX-002).
+        let admission = {
             let mut registry = lock_unpoisoned(&self.inner.fibers);
             if let Some(existing) = registry.get(&spec.fiber_id) {
-                return Err(if existing.generation == spec.fiber_generation {
+                Err(if existing.generation == spec.fiber_generation {
                     RuntimeError::DuplicateFiber
                 } else {
                     RuntimeError::InvalidGeneration
-                });
+                })
+            } else if registry.tombstoned(&spec.fiber_id, spec.fiber_generation) {
+                Err(RuntimeError::DuplicateFiber)
+            } else {
+                registry.insert(spec.fiber_id, Arc::clone(&record));
+                Ok(())
             }
-            // FIBER-REAP-004: the duplicate fence extends past the record's
-            // lifetime — a reaped `(id, generation)` whose tombstone is still
-            // in the ring stays `DuplicateFiber` (window protection). An
-            // evicted tombstone fences nothing: the identity spawns as a new
-            // fiber.
-            if registry.tombstoned(&spec.fiber_id, spec.fiber_generation) {
-                return Err(RuntimeError::DuplicateFiber);
-            }
-            registry.insert(spec.fiber_id, Arc::clone(&record));
+        };
+        if let Err(error) = admission {
+            self.inner.release_scope(&scope_key);
+            return Err(error);
         }
         // Admission succeeded: the generation is live from the caller's view
         // even before the executor polls the spawned task body.
@@ -827,15 +990,7 @@ impl RuntimeAdapter for TokioRuntimeAdapter {
         scope_id: CancellationScopeId,
         generation: Generation,
     ) -> Result<(), RuntimeError> {
-        let scopes = lock_unpoisoned(&self.inner.scopes);
-        let scope = scopes
-            .get(&ScopeKey {
-                id: scope_id,
-                generation,
-            })
-            .ok_or(RuntimeError::InvalidGeneration)?;
-        scope.cancel();
-        Ok(())
+        lock_unpoisoned(&self.inner.scopes).cancel(scope_id, generation)
     }
 
     fn inspect(&self, handle: FiberHandle) -> Result<FiberState, RuntimeError> {
@@ -865,7 +1020,7 @@ impl RuntimeAdapter for TokioRuntimeAdapter {
         record.reap_on_terminal.store(true, Ordering::Release);
         let terminal = lock_unpoisoned(&record.terminal);
         if matches!(*terminal, TerminalOutcome::Finished(_)) {
-            self.inner.reap_fiber(record.fiber_id, record.generation);
+            self.inner.reap_fiber(&record);
         }
         Ok(())
     }

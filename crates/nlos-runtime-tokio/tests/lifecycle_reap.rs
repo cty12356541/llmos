@@ -16,8 +16,10 @@
 //! - §2.4: `tombstone_capacity = 0` is a zero-capacity ring — pure
 //!   consumption with no window protection.
 //!
-//! The scope-registry index (SCOPE-IDX-*) and orphan buffer bound
-//! (ORPHAN-*) are separate W25 tasks and are not covered here.
+//! The scope group below covers SCOPE-IDX-001..004: the by-id index, the
+//! entry reference count reaped with the last referencing fiber record, and
+//! the bounded scope tombstone ring. The orphan buffer bound (ORPHAN-*) is a
+//! separate W25 task and is not covered here.
 //!
 //! R1 pins (W25-001R): `FiberReaped` reaches every handle-addressed entry
 //! through the shared record resolution, not just `join_fiber` — the
@@ -79,6 +81,24 @@ fn runtime(max_live_fibers: usize, tombstone_capacity: usize) -> TokioRuntimeAda
         config(max_live_fibers, tombstone_capacity),
     )
     .expect("runtime")
+}
+
+/// Scope-registry runtime: the fiber tombstone ring keeps its default while
+/// `scope_tombstone_capacity` varies.
+fn scope_runtime(max_live_fibers: usize, scope_tombstone_capacity: usize) -> TokioRuntimeAdapter {
+    TokioRuntimeAdapter::new(
+        Handle::current(),
+        TokioRuntimeConfig {
+            max_live_fibers,
+            scope_tombstone_capacity,
+            ..TokioRuntimeConfig::default()
+        },
+    )
+    .expect("runtime")
+}
+
+fn next_generation() -> Generation {
+    Generation::INITIAL.checked_next().expect("next generation")
 }
 
 fn reaped(handle: FiberHandle) -> RuntimeError {
@@ -456,4 +476,294 @@ async fn reaped_handle_rejects_snapshot_gc_with_runtime_fiber_reaped() {
         }
         other => panic!("expected Runtime(FiberReaped), got {other:?}"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Scope registry (SCOPE-IDX-001..004): by-id index, reference-count reaping,
+// and the bounded scope tombstone ring. Observation surface:
+// `registered_scopes()` counts live scope entries — an entry stays
+// registered while at least one unreaped fiber record (or an in-flight
+// admission) references it, and persists only as a tombstone afterwards.
+// ---------------------------------------------------------------------------
+
+/// SCOPE-IDX-001 / SCOPE-IDX-004 — 乱序注册/查询/取消的索引正确性:given
+/// scopes registered under scrambled ids with one live fiber each; when they
+/// are cancelled in reverse registration order and generation fences are
+/// probed; then the by-id index resolves exactly the targeted scope — the
+/// cancelled fiber terminates, every other fiber keeps running, a mismatched
+/// generation on a live id is `InvalidGeneration`, and the exact
+/// `(id, generation)` keeps answering cancels while unreaped.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn out_of_order_scope_ids_index_query_and_cancel_correctly() {
+    let runtime = runtime(16, 65_536);
+    // Ids whose hash-map bucket order differs from the registration order.
+    let ids: Vec<CancellationScopeId> = (0..8)
+        .map(|index| CancellationScopeId::from_bytes(id_bytes(9_000 + (index * 37) % 101)))
+        .collect();
+    let handles: Vec<_> = ids
+        .iter()
+        .enumerate()
+        .map(|(index, scope)| {
+            runtime
+                .spawn_fiber(fiber_spec(100 + index, *scope), Box::pin(pending()))
+                .expect("spawn")
+        })
+        .collect();
+    assert_eq!(
+        runtime.registered_scopes(),
+        8,
+        "one live entry per distinct scope id"
+    );
+
+    for (slot, scope) in ids.iter().enumerate().rev() {
+        runtime
+            .cancel_scope(*scope, Generation::INITIAL)
+            .expect("cancel");
+        wait_for_state(&runtime, handles[slot], FiberState::Cancelled).await;
+    }
+    assert_eq!(
+        runtime.registered_scopes(),
+        8,
+        "cancelled scopes stay registered while their fibers are unreaped"
+    );
+
+    let mut bumped = fiber_spec(200, ids[3]);
+    bumped.cancellation_generation = next_generation();
+    assert_eq!(
+        runtime.spawn_fiber(bumped, Box::pin(pending())),
+        Err(RuntimeError::InvalidGeneration),
+        "a live scope id is locked to its first generation"
+    );
+    assert_eq!(
+        runtime.cancel_scope(ids[3], Generation::INITIAL),
+        Ok(()),
+        "the exact (id, generation) keeps resolving through the index"
+    );
+}
+
+/// SCOPE-IDX-002 — 最后 fiber 回收后条目消失:given a scope shared by two
+/// fibers and a neighboring single-fiber scope; when fibers are joined one
+/// by one; then the shared entry survives until its LAST record is reaped,
+/// the neighbor is unaffected, and a cancel against the reaped scope fails
+/// closed with `InvalidGeneration` instead of panicking or succeeding.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn scope_entry_is_reaped_after_its_last_fiber_record() {
+    let runtime = runtime(8, 65_536);
+    let scope = CancellationScopeId::from_bytes(id_bytes(60));
+    let neighbor = CancellationScopeId::from_bytes(id_bytes(61));
+
+    let first = runtime
+        .spawn_fiber(
+            fiber_spec(1, scope),
+            Box::pin(async { FiberExit::Completed }),
+        )
+        .expect("spawn first");
+    let second = runtime
+        .spawn_fiber(
+            fiber_spec(2, scope),
+            Box::pin(async { FiberExit::Completed }),
+        )
+        .expect("spawn second");
+    let bystander = runtime
+        .spawn_fiber(
+            fiber_spec(3, neighbor),
+            Box::pin(async { FiberExit::Completed }),
+        )
+        .expect("spawn bystander");
+    assert_eq!(runtime.registered_scopes(), 2);
+
+    wait_for_state(&runtime, first, FiberState::Completed).await;
+    wait_for_state(&runtime, second, FiberState::Completed).await;
+    assert_eq!(
+        runtime.registered_scopes(),
+        2,
+        "terminal-but-unreaped records keep their scope registered"
+    );
+
+    assert_eq!(runtime.join_fiber(first), Ok(FiberExit::Completed));
+    assert_eq!(
+        runtime.registered_scopes(),
+        2,
+        "one unreaped record still references the shared scope"
+    );
+
+    assert_eq!(runtime.join_fiber(second), Ok(FiberExit::Completed));
+    assert_eq!(
+        runtime.registered_scopes(),
+        1,
+        "the last reap removes the entry; the neighbor is unaffected"
+    );
+
+    assert_eq!(
+        runtime.cancel_scope(scope, Generation::INITIAL),
+        Err(RuntimeError::InvalidGeneration),
+        "a reaped scope fails cancellation closed"
+    );
+
+    assert_eq!(runtime.join_fiber(bystander), Ok(FiberExit::Completed));
+    assert_eq!(runtime.registered_scopes(), 0);
+}
+
+/// SCOPE-IDX-002 (balancing) — 失败准入的引用归还:given a reaped scope id
+/// whose only outstanding reference is a spawn attempt that then fails the
+/// fiber tombstone fence; when the attempt is rejected; then the acquisition
+/// is balanced out and no scope entry leaks. This also pins the window
+/// semantics: the reaped `(id, generation)` itself re-registers a fresh
+/// scope — only a mismatched generation is fenced (SCOPE-IDX-003/004).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn failed_admission_balances_its_scope_reference() {
+    let runtime = runtime(4, 65_536);
+    let scope = CancellationScopeId::from_bytes(id_bytes(62));
+
+    let handle = runtime
+        .spawn_fiber(
+            fiber_spec(1, scope),
+            Box::pin(async { FiberExit::Completed }),
+        )
+        .expect("spawn");
+    wait_for_state(&runtime, handle, FiberState::Completed).await;
+    assert_eq!(runtime.join_fiber(handle), Ok(FiberExit::Completed));
+    assert_eq!(
+        runtime.registered_scopes(),
+        0,
+        "the scope was reaped with its record"
+    );
+
+    // The scope stage passes (same generation as the tombstone) but the
+    // fiber identity fence rejects the re-spawn.
+    assert_eq!(
+        runtime.spawn_fiber(fiber_spec(1, scope), Box::pin(pending())),
+        Err(RuntimeError::DuplicateFiber)
+    );
+    assert_eq!(
+        runtime.registered_scopes(),
+        0,
+        "a rejected admission must not leave a scope entry behind"
+    );
+}
+
+/// SCOPE-IDX-003 / SCOPE-IDX-004 — 窗口内同 id 的代次锁:given a scope whose
+/// last fiber was reaped (its `(id, generation)` entered the tombstone
+/// ring); when a fresh fiber registers the same id under a different
+/// generation; then the registration stays `InvalidGeneration` — the
+/// tombstone extends the first-generation lock past the entry's lifetime —
+/// while a different id registers freely.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tombstoned_scope_id_fences_mismatched_generation_within_window() {
+    let runtime = runtime(4, 65_536);
+    let scope = CancellationScopeId::from_bytes(id_bytes(63));
+    let other = CancellationScopeId::from_bytes(id_bytes(64));
+
+    let handle = runtime
+        .spawn_fiber(
+            fiber_spec(1, scope),
+            Box::pin(async { FiberExit::Completed }),
+        )
+        .expect("spawn");
+    wait_for_state(&runtime, handle, FiberState::Completed).await;
+    assert_eq!(runtime.join_fiber(handle), Ok(FiberExit::Completed));
+    assert_eq!(
+        runtime.registered_scopes(),
+        0,
+        "the scope id now exists only as a tombstone"
+    );
+
+    let mut bumped = fiber_spec(2, scope);
+    bumped.cancellation_generation = next_generation();
+    assert_eq!(
+        runtime.spawn_fiber(bumped, Box::pin(pending())),
+        Err(RuntimeError::InvalidGeneration),
+        "the tombstone keeps the id locked to its reaped generation"
+    );
+
+    let control = runtime
+        .spawn_fiber(
+            fiber_spec(3, other),
+            Box::pin(async { FiberExit::Completed }),
+        )
+        .expect("a different id registers freely");
+    wait_for_state(&runtime, control, FiberState::Completed).await;
+    assert_eq!(runtime.join_fiber(control), Ok(FiberExit::Completed));
+    assert_eq!(runtime.registered_scopes(), 0);
+}
+
+/// SCOPE-IDX-003 (eviction) — 容量为 1 的 scope 墓碑环挤出后放行:with
+/// `scope_tombstone_capacity = 1`; when a second scope id is reaped; then
+/// the first id's tombstone is FIFO-evicted and the id accepts a fresh
+/// registration under a new generation — the same registration that was
+/// `InvalidGeneration` inside the window.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn scope_tombstone_ring_capacity_one_evicts_and_allows_new_generation() {
+    let runtime = scope_runtime(8, 1);
+    let first = CancellationScopeId::from_bytes(id_bytes(65));
+    let second = CancellationScopeId::from_bytes(id_bytes(66));
+
+    let a = runtime
+        .spawn_fiber(
+            fiber_spec(1, first),
+            Box::pin(async { FiberExit::Completed }),
+        )
+        .expect("spawn first-scope fiber");
+    wait_for_state(&runtime, a, FiberState::Completed).await;
+    assert_eq!(runtime.join_fiber(a), Ok(FiberExit::Completed));
+
+    let mut bumped = fiber_spec(2, first);
+    bumped.cancellation_generation = next_generation();
+    assert_eq!(
+        runtime.spawn_fiber(bumped, Box::pin(pending())),
+        Err(RuntimeError::InvalidGeneration),
+        "within the window the mismatched generation stays fenced"
+    );
+
+    // Reaping a second scope evicts the first tombstone (FIFO, capacity 1).
+    let b = runtime
+        .spawn_fiber(
+            fiber_spec(3, second),
+            Box::pin(async { FiberExit::Completed }),
+        )
+        .expect("spawn second-scope fiber");
+    wait_for_state(&runtime, b, FiberState::Completed).await;
+    assert_eq!(runtime.join_fiber(b), Ok(FiberExit::Completed));
+
+    let mut evicted = fiber_spec(4, first);
+    evicted.cancellation_generation = next_generation();
+    let respawned = runtime
+        .spawn_fiber(evicted, Box::pin(async { FiberExit::Completed }))
+        .expect("an evicted scope id accepts a new generation");
+    wait_for_state(&runtime, respawned, FiberState::Completed).await;
+    assert_eq!(runtime.join_fiber(respawned), Ok(FiberExit::Completed));
+    assert_eq!(runtime.registered_scopes(), 0);
+}
+
+/// §2.4 zero-value semantics (scope ring) — 容量为零的 scope 墓碑环:with
+/// `scope_tombstone_capacity = 0` a reaped scope id fences nothing — a
+/// different generation may register immediately (pure consumption, no
+/// window protection); the entry itself is still reaped with its record.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn zero_scope_tombstone_capacity_fences_nothing() {
+    let runtime = scope_runtime(4, 0);
+    let scope = CancellationScopeId::from_bytes(id_bytes(67));
+
+    let handle = runtime
+        .spawn_fiber(
+            fiber_spec(1, scope),
+            Box::pin(async { FiberExit::Completed }),
+        )
+        .expect("spawn");
+    wait_for_state(&runtime, handle, FiberState::Completed).await;
+    assert_eq!(runtime.join_fiber(handle), Ok(FiberExit::Completed));
+    assert_eq!(
+        runtime.registered_scopes(),
+        0,
+        "the entry is still reaped with its record"
+    );
+
+    let mut bumped = fiber_spec(2, scope);
+    bumped.cancellation_generation = next_generation();
+    let respawned = runtime
+        .spawn_fiber(bumped, Box::pin(async { FiberExit::Completed }))
+        .expect("a zero-capacity ring fences nothing");
+    wait_for_state(&runtime, respawned, FiberState::Completed).await;
+    assert_eq!(runtime.join_fiber(respawned), Ok(FiberExit::Completed));
+    assert_eq!(runtime.registered_scopes(), 0);
 }
