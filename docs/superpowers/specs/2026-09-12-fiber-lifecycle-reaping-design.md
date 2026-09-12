@@ -62,7 +62,7 @@
 ## 6. 写集与文件
 
 - `crates/nlos-runtime/src/lib.rs`:`FiberReaped` 变体 + 契约文档
-- `crates/nlos-runtime-tokio/src/lib.rs`:fibers 回收、detach、墓碑、AdapterConfig
+- `crates/nlos-runtime-tokio/src/lib.rs`:fibers 回收、detach、墓碑、TokioRuntimeConfig
 - `crates/nlos-runtime-tokio/src/channel_wait.rs`:orphan 上界 + 计数器
 - `crates/nlos-runtime-tokio/tests/lifecycle_reap.rs`:新套件
 - W25-D:stage-b-progress 第八十八增量
