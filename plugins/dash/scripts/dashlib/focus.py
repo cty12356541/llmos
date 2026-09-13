@@ -11,7 +11,8 @@ from typing import Optional
 def read_focus(repo: Path) -> Optional[str]:
     try:
         return json.loads((repo / ".dash" / "focus.json").read_text(encoding="utf-8"))["target"]
-    except (OSError, ValueError, KeyError):
+    except (OSError, ValueError, KeyError, TypeError):
+        # TypeError:合法 JSON 但非对象(如 "T9")→ 字符串下标取值即抛;视为无焦
         return None
 
 

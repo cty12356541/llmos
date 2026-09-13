@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+from datetime import datetime
 from pathlib import Path
 
 from .model import Activity, Fragment, Milestone, Task
@@ -58,9 +59,11 @@ def load_session(state_path: Path, now_iso: str) -> Fragment:
                         agents.pop(key)
                         break
         elif kind == "stop":
-            for key in agents:
-                if key[0] == sess:
-                    agents[key].last_event = f"turn_end {ts[11:16]}"
+            # R19:turn_end 先标注残余 agent 的最后事件,再整会话清落
+            # (前台 agent 不活过回合,不清则面板滞留幽灵"在跑"项)
+            for key in [k for k in agents if k[0] == sess]:
+                agents[key].last_event = f"turn_end {ts[11:16]}"
+                agents.pop(key)
     for sess, labels in first_order.items():
         active = latest.get(sess, [])
         for n, label in enumerate(labels):
@@ -123,13 +126,19 @@ def _resolve(ledger: str, n: int):
     return "pending", ""
 
 
+def _mtime(p: Path) -> float:
+    """mtime 排序键守卫:不存在或 stat 失败一律 0(spec §9:glob 与 stat 之间文件可能消失)。"""
+    try:
+        return p.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
 def load_sdd(root: Path, now_iso: str):
     frag = Fragment(source="sdd")
     barriers = []
-    # R12:按 mtime 取最新工作区——同日期多工作区时按路径名排序会选错"最新";
-    # key 带 p.exists() 守卫:dag.json 可能在 glob 与 stat 之间消失(spec §9 降级语义)
-    workspaces = sorted((root / ".superpowers" / "sdd").glob("*/dag.json"),
-                        key=lambda p: p.stat().st_mtime if p.exists() else 0)
+    # R12:按 mtime 取最新工作区——同日期多工作区时按路径名排序会选错"最新"
+    workspaces = sorted((root / ".superpowers" / "sdd").glob("*/dag.json"), key=_mtime)
     if not workspaces:
         return frag, barriers
     parsed = []                  # [(milestone, tasks, barriers)] 旧→新;单源损坏只跳过
@@ -138,6 +147,13 @@ def load_sdd(root: Path, now_iso: str):
             dag = json.loads(path.read_text(encoding="utf-8"))
             ledger_p = path.parent / "progress.md"
             ledger = ledger_p.read_text(encoding="utf-8") if ledger_p.exists() else ""
+            # R18:活跃任务 since=本工作区 progress.md mtime(「台账 2h 无跃迁→⚑」的
+            # 近似语义);台账缺失时 since=None(不可判停,不虚报)
+            try:
+                ledger_since = (datetime.fromtimestamp(ledger_p.stat().st_mtime)
+                                .astimezone().isoformat(timespec="seconds"))
+            except OSError:
+                ledger_since = None
             states = {n: _resolve(ledger, n) for n in (int(k) for k in dag["tasks"])}
             done = sum(1 for s, _ in states.values() if s == "done")
             active = any(s == "active" for s, _ in states.values())
@@ -151,13 +167,17 @@ def load_sdd(root: Path, now_iso: str):
                 state, note = states[n]
                 ws_tasks.append(Task(id=f"T{n}", label=dag["tasks"][str(n)]["label"],
                                      state=state, lane=lane_of.get(n, "无车道"),
-                                     source="sdd", note=note))
+                                     source="sdd", note=note,
+                                     since=ledger_since if state == "active" else None))
             ws_barriers = []
             for b in dag.get("barriers", []):
                 gate = "+".join(f"T{n}" for n in b["after"])
                 unlocks = " ".join(f"T{n}" for n in b["unlocks"])
                 ws_barriers.append(f"屏障 {b['id']}: {gate} → {unlocks}")
-        except (json.JSONDecodeError, KeyError, TypeError, OSError):
+        # UnicodeDecodeError/JSONDecodeError 均为 ValueError 子类,显式列出以自文档;
+        # ValueError 另兜住非数字任务键(int("abc"))——spec §9:损坏源跳过,不白屏
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError,
+                KeyError, TypeError, OSError):
             frag.warnings.append("sdd 源不可用")   # git+session 分片照常出面板
             continue
         parsed.append((ms, ws_tasks, ws_barriers))

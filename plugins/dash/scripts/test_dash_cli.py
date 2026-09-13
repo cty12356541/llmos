@@ -32,6 +32,27 @@ class TestFocusCli(unittest.TestCase):
             r = run(["render", "panel"], d)
             self.assertIn("聚焦 zz", r.stdout)   # 无匹配任务也显示聚焦头
 
+    def test_nonobject_focus_json_renders_unfocused(self):
+        # C2:focus.json 是合法 JSON 但非对象(如 "T9")→ 视为无焦,面板不聚焦、不炸
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / ".dash").mkdir()
+            (Path(d) / ".dash" / "focus.json").write_text('"T9"', encoding="utf-8")
+            r = run(["render", "panel"], d)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertNotIn("聚焦", r.stdout)   # 面板按无焦渲染
+
+    def test_corrupt_sdd_workspace_render_exits_zero(self):
+        # C1 CLI 面:非数字任务键的 dag.json 只降级告警,render panel 退出码 0
+        with tempfile.TemporaryDirectory() as d:
+            ws = Path(d) / ".superpowers" / "sdd" / "2026-09-13-W1"
+            ws.mkdir(parents=True)
+            (ws / "dag.json").write_text(
+                '{"wave": "W1", "lanes": [], "tasks": {"abc": {"label": "x"}}, "barriers": []}',
+                encoding="utf-8")
+            r = run(["render", "panel"], d)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("sdd 源不可用", r.stdout)
+
     def test_nonobject_config_warns(self):
         # 顶层非对象(数组/null)即损坏,与解析失败同告警,不得静默降级
         for payload in ("[1, 2, 3]", "null"):
@@ -62,6 +83,14 @@ class TestSend(unittest.TestCase):
             self.assertEqual(r.returncode, 2, r.stdout)
             self.assertIn("用法", r.stderr)
             self.assertNotIn("Traceback", r.stderr)   # 守卫兜住,不裸抛 ValueError
+
+    def test_watch_interval_clamped_to_1s(self):
+        # Minor 9:interval 0 夹到 1s(页脚回显实际值),防刷新环退化为忙轮询
+        # (负数形如 "-3" 在参数解析层已被当 flag 过滤,不会进入 interval)
+        with tempfile.TemporaryDirectory() as d:
+            r = run(["watch", "0", "--once"], d)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("· 1s 刷新", r.stdout)
 
     def test_send_degrades_without_tmux(self):
         import os

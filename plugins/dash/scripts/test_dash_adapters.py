@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from dashlib.adapters import load_git, load_sdd, load_session
@@ -45,7 +46,8 @@ class TestSessionAdapter(unittest.TestCase):
             self.assertEqual(by_id["todo-s1-0"].since, "2026-09-13T14:50:00+08:00")
             self.assertEqual(by_id["todo-s1-1"].since, "2026-09-13T14:50:00+08:00")
 
-    def test_active_agent_activity(self):
+    def test_turn_end_drops_session_agents(self):
+        # R19:前台 agent 不活过回合——turn_end 后该会话残余 agent 清落,activity 为空
         with tempfile.TemporaryDirectory() as d:
             p = write_events(Path(d), [
                 {"ts": "2026-09-13T14:30:00+08:00", "kind": "agent", "event": "spawned",
@@ -54,10 +56,22 @@ class TestSessionAdapter(unittest.TestCase):
                  "session": "s1", "summary": ""},
             ])
             frag = load_session(p, NOW)
-            self.assertEqual(len(frag.activity), 1)
-            self.assertEqual(frag.activity[0].label, "探索写集")
-            self.assertEqual(frag.activity[0].since, "2026-09-13T14:30:00+08:00")
-            self.assertEqual(frag.activity[0].last_event, "turn_end 14:58")
+            self.assertEqual(frag.activity, [])
+
+    def test_turn_end_scoped_to_own_session(self):
+        # R19:清落只针对当事会话——s1 的 turn_end 不得带走 s2 的在跑 agent
+        with tempfile.TemporaryDirectory() as d:
+            p = write_events(Path(d), [
+                {"ts": "2026-09-13T14:30:00+08:00", "kind": "agent", "event": "spawned",
+                 "session": "s1", "summary": "A"},
+                {"ts": "2026-09-13T14:31:00+08:00", "kind": "agent", "event": "spawned",
+                 "session": "s2", "summary": "B"},
+                {"ts": "2026-09-13T14:58:00+08:00", "kind": "stop", "event": "turn_end",
+                 "session": "s1", "summary": ""},
+            ])
+            frag = load_session(p, NOW)
+            self.assertEqual([a.label for a in frag.activity], ["B"])
+            self.assertEqual(frag.activity[0].last_event, "")   # s2 未被 s1 的 turn_end 波及
 
     def test_completed_agent_dropped(self):
         with tempfile.TemporaryDirectory() as d:
@@ -232,6 +246,52 @@ class TestSddAdapter(unittest.TestCase):
             self.assertEqual(len(frag.tasks), 3)            # tasks 只出自最新工作区
             self.assertNotIn("旧波次独有任务", [t.label for t in frag.tasks])
             self.assertEqual(barriers, ["屏障 1: T6 → T9"])  # 屏障只出自最新工作区
+
+    def test_corrupt_payload_kinds_skip_workspace(self):
+        # C1:非数字任务键(int("abc")→ValueError)与非 UTF-8 dag.json
+        # (UnicodeDecodeError)均按损坏源跳过并告警,不得炸掉渲染路径(spec §9)
+        def bad_key(ws):
+            (ws / "dag.json").write_text(json.dumps(
+                {"wave": "W1", "lanes": [], "tasks": {"abc": {"label": "x"}},
+                 "barriers": []}), encoding="utf-8")
+
+        def bad_utf8(ws):
+            (ws / "dag.json").write_bytes(b"\xff\xfe{}")
+
+        for maker in (bad_key, bad_utf8):
+            with self.subTest(maker=maker.__name__):
+                with tempfile.TemporaryDirectory() as d:
+                    ws = Path(d) / ".superpowers" / "sdd" / "2026-09-13-W1"
+                    ws.mkdir(parents=True)
+                    maker(ws)
+                    frag, barriers = load_sdd(Path(d), NOW)
+                    self.assertEqual(frag.warnings, ["sdd 源不可用"])
+                    self.assertEqual((frag.tasks, frag.milestones, barriers), ([], [], []))
+
+    def test_active_task_since_is_ledger_mtime(self):
+        # R18:活跃任务 since=本工作区 progress.md mtime(「台账 2h 无跃迁→⚑」近似语义)
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            make_workspace(root, done_all=False)     # T6 active(dispatched)
+            ledger = root / ".superpowers" / "sdd" / "2026-09-13-W26" / "progress.md"
+            mtime = (datetime.fromisoformat(NOW) - timedelta(hours=1)).timestamp()
+            os.utime(ledger, (mtime, mtime))
+            frag, _ = load_sdd(root, NOW)
+            by_id = {t.id: t for t in frag.tasks}
+            self.assertEqual(by_id["T6"].since,
+                             datetime.fromtimestamp(mtime).astimezone().isoformat(timespec="seconds"))
+            self.assertIsNone(by_id["T1"].since)    # done 不带 since
+            self.assertIsNone(by_id["T9"].since)    # pending 不带 since
+
+    def test_ledger_missing_degrades_without_since(self):
+        # R18 守卫:progress.md 缺失(→ 空台账、全 pending)不炸,since 一律 None
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            make_workspace(root, done_all=False)
+            (root / ".superpowers" / "sdd" / "2026-09-13-W26" / "progress.md").unlink()
+            frag, _ = load_sdd(root, NOW)
+            self.assertEqual(frag.warnings, [])
+            self.assertTrue(all(t.since is None for t in frag.tasks))
 
 
 if __name__ == "__main__":

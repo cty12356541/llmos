@@ -65,9 +65,10 @@ def main() -> int:
         body = render_mermaid(model)
         print(body)
         if "--inject" in args:
-            # 与 load_sdd 同一选区口径:mtime 取最新工作区(key 带 exists 守卫)
+            # 与 load_sdd 同一选区口径:mtime 取最新工作区(复用同一 _mtime 守卫)
+            from dashlib.adapters import _mtime
             workspaces = sorted((repo / ".superpowers" / "sdd").glob("*/dag.json"),
-                                key=lambda p: p.stat().st_mtime if p.exists() else 0)
+                                key=_mtime)
             if not workspaces:
                 print("dash: 无 .superpowers/sdd/*/dag.json 工作区,跳过注入")
                 return 0
@@ -97,7 +98,7 @@ def main() -> int:
         body = [a for a in args[1:] if not a.startswith("-")]
         if body:
             try:
-                interval = int(body[0])
+                interval = max(1, int(body[0]))   # 下限 1s:防 0/负值把刷新环退化成忙轮询
             except ValueError:
                 print(f"用法:dash watch [interval秒,整数] [--once];无法解析 {body[0]!r}", file=sys.stderr)
                 return 2
@@ -128,7 +129,7 @@ def main() -> int:
                         if ch == "q":
                             return 0
                         if ch == "f":
-                            print("聚焦目标(milestone|lane|task id):", end=" ", flush=True)
+                            print("聚焦目标(task id):", end=" ", flush=True)
                             write_focus(repo, sys.stdin.readline().strip())
                             break
                         if ch == "c":
@@ -156,7 +157,7 @@ def main() -> int:
         from dashlib.sendkeys import DEFAULT_PANE, compose_prompt, send_to_conversation
         target = read_focus(repo)
         if not target:
-            print("dash send: 无焦点;先 dash focus <milestone|lane|task id>", file=sys.stderr)
+            print("dash send: 无焦点;先 dash focus <task id>", file=sys.stderr)
             return 1
         pane = None
         if "--pane" in args and args.index("--pane") + 1 < len(args):
