@@ -1284,7 +1284,7 @@ const PLAN_COLUMNS: &str = "plan_id, task_id, permit_id, attempt_id,
      attempt_generation, write_set_root, semantic_append_set_root,
      expected_semantic_count, plan_state, task_receipt_id, created_at_ms, updated_at_ms";
 
-fn load_plan_optional(
+pub(crate) fn load_plan_optional(
     source: &impl SqlRead,
     plan_id: SemanticCommitPlanId,
 ) -> Result<Option<SemanticCommitPlanRecord>, TaskStoreError> {
