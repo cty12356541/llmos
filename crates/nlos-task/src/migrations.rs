@@ -1443,18 +1443,34 @@ pub(crate) fn migrate_v41(connection: &mut Connection) -> Result<(), TaskStoreEr
 /// `task_semantic_commit_plans`) plus its immutable alert receipts. Purely
 /// additive; idempotent and re-runnable.
 pub(crate) fn migrate_v42(connection: &mut Connection) -> Result<(), TaskStoreError> {
-    // 镜像 migrate_v40 的存在性守卫风格(migrations.rs:1342):表已存在则只补 user_version
-    let exists: i64 = connection.query_row(
-        "SELECT COUNT(*) FROM sqlite_master WHERE type='table'
-         AND name = 'task_semantic_recovery'",
+    // The complete group is five named sqlite_master parts: two tables,
+    // the due index, and the two immutability triggers.
+    let complete_schema_parts: i64 = connection.query_row(
+        "SELECT (SELECT COUNT(*) FROM sqlite_master
+                 WHERE type='table' AND name IN (
+                     'task_semantic_recovery',
+                     'task_semantic_recovery_alert_receipts'))
+              + (SELECT COUNT(*) FROM sqlite_master
+                 WHERE type='index' AND name = 'task_semantic_recovery_due')
+              + (SELECT COUNT(*) FROM sqlite_master
+                 WHERE type='trigger' AND name IN (
+                     'task_semantic_recovery_alert_receipts_immutable_update',
+                     'task_semantic_recovery_alert_receipts_immutable_delete'))",
         [],
         |row| row.get(0),
     )?;
-    if exists == 0 {
-        connection.execute_batch(SCHEMA_V42_SQL)?;
-    } else {
+    if complete_schema_parts == 5 {
         connection.pragma_update(None, "user_version", 42)?;
+        return Ok(());
     }
+    if complete_schema_parts != 0 {
+        return Err(TaskStoreError::CorruptRecord(
+            "partial semantic recovery ledger schema",
+        ));
+    }
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(SCHEMA_V42_SQL)?;
+    transaction.commit()?;
     Ok(())
 }
 
