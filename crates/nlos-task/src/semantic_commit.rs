@@ -763,6 +763,11 @@ impl SqliteTaskAuthority {
             receipt_id,
             request.finalized_at_ms,
         )?;
+        crate::recovery::resolve_semantic_recovery(
+            &transaction,
+            plan.plan_id,
+            request.finalized_at_ms,
+        )?;
         transaction.commit()?;
         Ok(SemanticFinalizeDecision::Committed(Box::new(
             SemanticTaskCommitReceipt {

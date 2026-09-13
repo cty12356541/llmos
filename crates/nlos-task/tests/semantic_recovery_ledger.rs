@@ -4,7 +4,10 @@
 //! threshold) and read back consistently through `inspect_semantic_recovery`.
 //! Task 3 extends the same lane: due scanning (state/time filters plus the
 //! ledger-less rescan), CAS resume from `Escalated`, and the mirrored
-//! summary counts.
+//! summary counts. Task 4 adds the alert surface (escalated listing,
+//! idempotent acknowledgement with immutable receipts) and proves that a
+//! successful Semantic finalize resolves the ledger while a lost ledger row
+//! never blocks convergence to the unique terminal state.
 //!
 //! The store/plan fixture mirrors the construction in
 //! `nlos-commit-coordinator`'s `semantic_pending_restart_scan.rs` (via
@@ -17,19 +20,24 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use nlos_artifact::ArtifactStore;
-use nlos_semantic::SemanticAuthority;
+use nlos_capability::CapabilityTarget;
+use nlos_semantic::{PublishSemanticPublicationRequest, SemanticAuthority};
 use nlos_task::{
-    AttemptSpec, ParticipantRegistryBinding, PermitDecision, PermitRequest,
-    PlanSemanticCommitRequest, SemanticRecoveryFailureRequest, SemanticRecoveryFailureSource,
-    SemanticRecoveryRecord, SemanticRecoveryResumeRequest, SemanticRecoveryState,
-    SemanticRecoverySummary, SnapshotBundle, SnapshotConsistency, SqliteTaskAuthority,
-    TaskSnapshotReceiptSpec, TaskSpec, TaskStoreError, TaskWriteSetRequest,
-    TaskWriteSetSemanticAppendRequest, TaskWriteSetSemanticRequiredDurability,
-    TaskWriteSetSemanticTarget, empty_effect_history_root,
+    AttemptSpec, EffectPermitDecision, EffectPermitRequest, FinalizeSemanticCommitRequest,
+    LogicalEffectDescriptor, NestedSemanticPublicationReceipt, NoEffectReason, NoEffectRequest,
+    ParticipantRegistryBinding, PermitDecision, PermitRequest, PlanSemanticCommitRequest,
+    PlannedEffect, PrepareSemanticFinalizeRequest, RecordSemanticPublicationsRequest,
+    SemanticCommitPlanState, SemanticFinalizeDecision, SemanticRecoveryAlertAcknowledgeDecision,
+    SemanticRecoveryAlertAcknowledgeRequest, SemanticRecoveryFailureRequest,
+    SemanticRecoveryFailureSource, SemanticRecoveryRecord, SemanticRecoveryResumeRequest,
+    SemanticRecoveryState, SemanticRecoverySummary, SemanticTaskCommitReceipt, SnapshotBundle,
+    SnapshotConsistency, SqliteTaskAuthority, TaskSnapshotReceiptSpec, TaskSpec, TaskStoreError,
+    TaskWriteSetEffectEndpointRequest, TaskWriteSetRequest, TaskWriteSetSemanticAppendRequest,
+    TaskWriteSetSemanticRequiredDurability, TaskWriteSetSemanticTarget, empty_effect_history_root,
 };
 use nlos_types::{
-    CancellationScopeId, Generation, IdempotencyKey, NamespaceId, ReceiptId, SemanticEventId,
-    TaskAttemptId, TaskId, TaskSnapshotId,
+    CancellationScopeId, Generation, IdempotencyKey, NamespaceId, PrincipalId, ReceiptId,
+    SemanticEventId, TaskAttemptId, TaskId, TaskSnapshotId,
 };
 use rusqlite::Connection;
 
@@ -148,12 +156,24 @@ fn seed_semantic_authority(
 /// Builds a task authority holding one non-Finalized semantic commit plan,
 /// reusing the `semantic_pending_restart_scan.rs` construction: seeded
 /// Semantic authority, sealed write set with one durable semantic append,
-/// commit permit, then `plan_semantic_commit`.
+/// commit permit, then `plan_semantic_commit`. With `with_effect` the sealed
+/// write set additionally declares one non-required Semantic-admission
+/// effect slot — the shape the persisted mixed-finalize envelope requires.
+/// The fixture is returned so callers that drive the owner authority keep
+/// the temp directories alive for the whole test.
 // The reference fixture drives the deprecated unbound seal/permit entry
 // points; mirroring it verbatim keeps this ledger fixture reviewable
 // against its source.
 #[allow(deprecated)]
-fn semantic_store_with_pending_plan() -> (SqliteTaskAuthority, nlos_task::SemanticCommitPlanId) {
+#[allow(clippy::too_many_lines)] // One verbatim fixture construction, mirroring its source.
+fn build_semantic_store_with_pending_plan(
+    with_effect: bool,
+) -> (
+    Fixture,
+    SqliteTaskAuthority,
+    SemanticAuthority,
+    nlos_task::SemanticCommitPlanId,
+) {
     let fixture = Fixture::new();
     let (semantic, event_id, admission_receipt_id, durability_receipt_id) =
         seed_semantic_authority(&fixture.semantic_root);
@@ -214,6 +234,16 @@ fn semantic_store_with_pending_plan() -> (SqliteTaskAuthority, nlos_task::Semant
         3,
     )
     .unwrap();
+    let planned_effects = if with_effect {
+        vec![mixed_effect(task_id)]
+    } else {
+        Vec::new()
+    };
+    let effect_endpoints = if with_effect {
+        vec![TaskWriteSetEffectEndpointRequest::SemanticAdmission { effect_seq: 0 }]
+    } else {
+        Vec::new()
+    };
     let write_set = task
         .seal_task_write_set_with_semantic_authority(
             &artifact,
@@ -234,8 +264,8 @@ fn semantic_store_with_pending_plan() -> (SqliteTaskAuthority, nlos_task::Semant
                     durability_receipt_id: Some(durability_receipt_id),
                 }],
                 resource_reservations: Vec::new(),
-                planned_effects: Vec::new(),
-                effect_endpoints: Vec::new(),
+                planned_effects,
+                effect_endpoints,
                 idempotency_key: IdempotencyKey::from_bytes([0x20; 16]),
                 sealed_at_ms: 4,
             },
@@ -253,7 +283,11 @@ fn semantic_store_with_pending_plan() -> (SqliteTaskAuthority, nlos_task::Semant
             attempt_id,
             attempt_generation: Generation::INITIAL,
             write_set_root: write_set.write_set_root,
-            planned_effects: Vec::new(),
+            planned_effects: if with_effect {
+                vec![mixed_effect(task_id)]
+            } else {
+                Vec::new()
+            },
             idempotency_key: IdempotencyKey::from_bytes([0x21; 16]),
             valid_until_ms: 1_000,
             requested_at_ms: 5,
@@ -275,7 +309,32 @@ fn semantic_store_with_pending_plan() -> (SqliteTaskAuthority, nlos_task::Semant
         .unwrap()
         .record()
         .plan_id;
-    (task, plan)
+    (fixture, task, semantic, plan)
+}
+
+/// One non-required Semantic-admission effect declaration, mirroring
+/// `semantic_commit.rs`'s `mixed_effect` fixture shape.
+fn mixed_effect(task_id: TaskId) -> PlannedEffect {
+    PlannedEffect {
+        descriptor: LogicalEffectDescriptor {
+            task_id,
+            task_generation: Generation::INITIAL,
+            intent_spec_id: [0x73; 32],
+            stable_action_slot: 1,
+            target_authority_object_id: [0x74; 32],
+            effect_class: 1,
+            idempotency_scope: 1,
+        },
+        required: false,
+        required_condition_digest: None,
+        success_criteria_digest: [0x75; 32],
+        action_proposal_digest: [0x76; 32],
+    }
+}
+
+fn semantic_store_with_pending_plan() -> (SqliteTaskAuthority, nlos_task::SemanticCommitPlanId) {
+    let (_fixture, task, _semantic, plan_id) = build_semantic_store_with_pending_plan(false);
+    (task, plan_id)
 }
 
 #[test]
@@ -542,8 +601,8 @@ fn summarize_counts_semantic_recovery_states() {
             resolved: 0,
         }
     );
-    // resume 后重回 retrying;resolve 路径(SEM-RECOV-004 finalize 联动)在
-    // 后续任务落地,当前 resolved 恒为 0
+    // resume 后重回 retrying;本用例不驱动 finalize,故 resolved 恒为 0
+    // (resolve 路径由 Task 4 的 finalize 用例覆盖)
     authority
         .resume_semantic_recovery(SemanticRecoveryResumeRequest {
             plan_id,
@@ -559,5 +618,475 @@ fn summarize_counts_semantic_recovery_states() {
             unacknowledged_escalated: 0,
             resolved: 0,
         }
+    );
+}
+
+/// Drives the ledger to the fixed escalation threshold (eight consecutive
+/// failures at the shared test delays) and returns the durable escalated
+/// record.
+fn escalate_plan(
+    authority: &SqliteTaskAuthority,
+    plan_id: nlos_task::SemanticCommitPlanId,
+) -> SemanticRecoveryRecord {
+    let mut expected = 0u64;
+    let mut escalated = None;
+    for t in (1_000i64..=8_000).step_by(1_000) {
+        let record = record_failure(authority, plan_id, expected, t);
+        expected = record.total_failures;
+        escalated = Some(record);
+    }
+    escalated.expect("eight failures recorded")
+}
+
+/// Manually replays the coordinator's converge prefix from
+/// `semantic_pending_restart_scan.rs` without the coordinator crate:
+/// authorize the publication, let the owner authority publish, and consume
+/// the nested receipt set until the plan is `Ready`.
+fn converge_semantic_plan_to_ready(
+    task: &SqliteTaskAuthority,
+    semantic: &SemanticAuthority,
+    plan_id: nlos_task::SemanticCommitPlanId,
+    now_ms: i64,
+) {
+    task.authorize_semantic_publication(plan_id, now_ms)
+        .expect("authorize semantic publication");
+    let progress = task.inspect_semantic_commit_progress(plan_id).unwrap();
+    assert_eq!(progress.plan.state, SemanticCommitPlanState::Publishing);
+    let expectation = task
+        .inspect_semantic_commit_expectations(plan_id)
+        .unwrap()
+        .into_iter()
+        .next()
+        .expect("fixture declares one Semantic publication");
+    let owner = semantic
+        .publish_semantic_publication(PublishSemanticPublicationRequest {
+            task_id: progress.plan.task_id,
+            permit_id: progress.plan.permit_id,
+            write_set_root: progress.plan.write_set_root,
+            event_id: expectation.event_id,
+            target: match expectation.target {
+                TaskWriteSetSemanticTarget::Namespace(namespace) => {
+                    CapabilityTarget::Namespace(namespace)
+                }
+                TaskWriteSetSemanticTarget::Task(task) => CapabilityTarget::Task(task),
+            },
+            admission_receipt_id: expectation.admission_receipt_id,
+            durability_receipt_id: expectation.durability_receipt_id,
+            published_at_ms: u64::try_from(now_ms).expect("non-negative converge clock"),
+        })
+        .expect("owner publishes sealed expectation")
+        .receipt();
+    let nested = NestedSemanticPublicationReceipt {
+        receipt_id: owner.receipt_id,
+        task_id: owner.task_id,
+        permit_id: owner.permit_id,
+        write_set_root: owner.write_set_root,
+        event_id: owner.event_id,
+        target: expectation.target,
+        log_seq: owner.log_seq,
+        admission_receipt_id: owner.admission_receipt_id,
+        durability_receipt_id: owner.durability_receipt_id,
+        semantic_checkpoint_after: owner.semantic_checkpoint_after,
+        created_at_ms: owner.created_at_ms,
+    };
+    let updated = task
+        .record_semantic_publications(
+            semantic,
+            RecordSemanticPublicationsRequest {
+                plan_id,
+                receipts: vec![nested],
+                observed_at_ms: now_ms,
+            },
+        )
+        .expect("consume owner publication receipt");
+    assert_eq!(updated.plan.state, SemanticCommitPlanState::Ready);
+}
+
+/// Drives the full `semantic_pending_restart_scan.rs` converge loop to the
+/// terminal finalize (no persisted mixed envelope in this shape, so the
+/// coordinator's `finalize_ready` lands on `finalize_semantic_commit`).
+fn converge_semantic_plan(
+    task: &SqliteTaskAuthority,
+    semantic: &SemanticAuthority,
+    plan_id: nlos_task::SemanticCommitPlanId,
+    now_ms: i64,
+) -> SemanticTaskCommitReceipt {
+    converge_semantic_plan_to_ready(task, semantic, plan_id, now_ms);
+    let decision = task
+        .finalize_semantic_commit(FinalizeSemanticCommitRequest {
+            plan_id,
+            finalized_at_ms: now_ms,
+        })
+        .expect("terminal semantic finalize");
+    match decision {
+        SemanticFinalizeDecision::Committed(receipt)
+        | SemanticFinalizeDecision::Replayed(receipt) => *receipt,
+    }
+}
+
+#[test]
+#[allow(clippy::too_many_lines)] // Lifecycle stays adjacent for audit, mirroring the artifact alert test.
+fn alert_lifecycle_and_finalize_resolves_ledger() {
+    let (fixture, authority, semantic, plan_id) = build_semantic_store_with_pending_plan(false);
+    // 失败至升级阈值,产生告警
+    let escalated = escalate_plan(&authority, plan_id);
+    assert_eq!(escalated.state, SemanticRecoveryState::Escalated);
+    let alerts = authority.list_semantic_recovery_alerts().unwrap();
+    assert_eq!(alerts.len(), 1);
+    assert_eq!(alerts[0].recovery, escalated);
+    assert_eq!(alerts[0].acknowledgement, None);
+    assert_eq!(
+        authority
+            .summarize_semantic_recovery()
+            .unwrap()
+            .unacknowledged_escalated,
+        1
+    );
+    let request = SemanticRecoveryAlertAcknowledgeRequest {
+        plan_id,
+        expected_total_failures: escalated.total_failures,
+        principal_id: PrincipalId::from_bytes([0x71; 16]),
+        idempotency_key: IdempotencyKey::from_bytes([0x72; 16]),
+        acknowledged_at_ms: 9_000,
+    };
+    let SemanticRecoveryAlertAcknowledgeDecision::Acknowledged(receipt) = authority
+        .acknowledge_semantic_recovery_alert(request)
+        .unwrap()
+    else {
+        panic!("first acknowledgement must create a receipt");
+    };
+    assert_eq!(receipt.plan_id, plan_id);
+    assert_eq!(receipt.total_failures, 8);
+    assert_eq!(receipt.acknowledged_at_ms, 9_000);
+    // 确认不 resume:台账保持 Escalated,且告警已确认
+    assert_eq!(
+        authority
+            .inspect_semantic_recovery(plan_id)
+            .unwrap()
+            .unwrap()
+            .state,
+        SemanticRecoveryState::Escalated
+    );
+    assert_eq!(
+        authority
+            .summarize_semantic_recovery()
+            .unwrap()
+            .unacknowledged_escalated,
+        0
+    );
+    // 同 key 重放 Acknowledged→Replayed:同一 receipt,不双记
+    assert_eq!(
+        authority
+            .acknowledge_semantic_recovery_alert(request)
+            .unwrap(),
+        SemanticRecoveryAlertAcknowledgeDecision::Replayed(receipt)
+    );
+    let alerts = authority.list_semantic_recovery_alerts().unwrap();
+    assert_eq!(alerts.len(), 1);
+    assert_eq!(alerts[0].acknowledgement, Some(receipt));
+    // finalize 成功(手动 converge,镜像 semantic_pending_restart_scan 驱动)
+    // → 同一事务内置 Resolved,总失败史保留
+    let committed = converge_semantic_plan(&authority, &semantic, plan_id, 10_000);
+    assert_eq!(committed.task_receipt.new_head_commit_seq, 1);
+    let resolved = authority
+        .inspect_semantic_recovery(plan_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(resolved.state, SemanticRecoveryState::Resolved);
+    assert_eq!(resolved.total_failures, 8);
+    assert_eq!(resolved.consecutive_failures, 0);
+    assert_eq!(resolved.resolved_at_ms, Some(10_000));
+    assert_eq!(resolved.escalated_at_ms, None);
+    assert_eq!(resolved.next_retry_at_ms, None);
+    // Resolved 后:告警面清空、到期扫描不返回、汇总 resolved=1
+    assert!(
+        authority
+            .list_semantic_recovery_alerts()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        authority
+            .list_due_semantic_commit_plans(10, i64::MAX)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        authority.summarize_semantic_recovery().unwrap(),
+        SemanticRecoverySummary {
+            retrying: 0,
+            escalated: 0,
+            unacknowledged_escalated: 0,
+            resolved: 1,
+        }
+    );
+    // 自愈:删台账行后重开,plan 终态不变,重扫不产生幻影收敛。
+    // 已确认的告警 receipt 以外键钉住台账行(v42 完整性),模拟"已确认
+    // 行丢失"的损坏路径需先关外键强制(镜像 migrate_v40 的 pragma 模式)
+    drop(authority);
+    let raw = Connection::open(&fixture.task_path).unwrap();
+    raw.pragma_update(None, "foreign_keys", "OFF").unwrap();
+    raw.execute(
+        "DELETE FROM task_semantic_recovery WHERE plan_id = ?1",
+        [plan_id.as_bytes().as_slice()],
+    )
+    .unwrap();
+    drop(raw);
+    let reopened = SqliteTaskAuthority::open(&fixture.task_path).unwrap();
+    assert!(
+        reopened
+            .inspect_semantic_recovery(plan_id)
+            .unwrap()
+            .is_none()
+    );
+    // Finalized plan 不回到期扫描
+    assert!(
+        reopened
+            .list_due_semantic_commit_plans(10, i64::MAX)
+            .unwrap()
+            .is_empty()
+    );
+    // 幂等重放 finalize:终态唯一,不复活台账行
+    let replay = reopened
+        .finalize_semantic_commit(FinalizeSemanticCommitRequest {
+            plan_id,
+            finalized_at_ms: 11_000,
+        })
+        .unwrap();
+    assert!(matches!(replay, SemanticFinalizeDecision::Replayed(_)));
+    assert_eq!(replay.receipt(), &committed);
+    assert!(
+        reopened
+            .inspect_semantic_recovery(plan_id)
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn alert_acknowledgement_fences_and_receipts_are_immutable() {
+    let (fixture, authority, _semantic, plan_id) = build_semantic_store_with_pending_plan(false);
+    // 负确认时间戳被拒
+    assert!(matches!(
+        authority.acknowledge_semantic_recovery_alert(SemanticRecoveryAlertAcknowledgeRequest {
+            plan_id,
+            expected_total_failures: 0,
+            principal_id: PrincipalId::from_bytes([0x81; 16]),
+            idempotency_key: IdempotencyKey::from_bytes([0x82; 16]),
+            acknowledged_at_ms: -1,
+        }),
+        Err(TaskStoreError::InvalidSemanticRecoveryPolicy { .. })
+    ));
+    // 无台账行:告警身份不存在复用既有 SemanticCommitPlanNotFound
+    // (镜像 artifact 的 ArtifactRecoveryNotFound 语义,不新增变体)
+    assert!(matches!(
+        authority.acknowledge_semantic_recovery_alert(SemanticRecoveryAlertAcknowledgeRequest {
+            plan_id,
+            expected_total_failures: 0,
+            principal_id: PrincipalId::from_bytes([0x81; 16]),
+            idempotency_key: IdempotencyKey::from_bytes([0x82; 16]),
+            acknowledged_at_ms: 1_000,
+        }),
+        Err(TaskStoreError::SemanticCommitPlanNotFound)
+    ));
+    let escalated = escalate_plan(&authority, plan_id);
+    // 过期 CAS 先拒(镜像 artifact 告警确认的失败计数围栏)
+    assert!(matches!(
+        authority.acknowledge_semantic_recovery_alert(SemanticRecoveryAlertAcknowledgeRequest {
+            plan_id,
+            expected_total_failures: escalated.total_failures - 1,
+            principal_id: PrincipalId::from_bytes([0x81; 16]),
+            idempotency_key: IdempotencyKey::from_bytes([0x82; 16]),
+            acknowledged_at_ms: 9_000,
+        }),
+        Err(TaskStoreError::SemanticRecoveryCasMismatch {
+            expected: 7,
+            current: 8
+        })
+    ));
+    let request = SemanticRecoveryAlertAcknowledgeRequest {
+        plan_id,
+        expected_total_failures: escalated.total_failures,
+        principal_id: PrincipalId::from_bytes([0x81; 16]),
+        idempotency_key: IdempotencyKey::from_bytes([0x82; 16]),
+        acknowledged_at_ms: 9_000,
+    };
+    let receipt = authority
+        .acknowledge_semantic_recovery_alert(request)
+        .unwrap()
+        .receipt();
+    // 同 key 换 principal → IdempotencyConflict(receipt 不可变,不可改写归属)
+    assert!(matches!(
+        authority.acknowledge_semantic_recovery_alert(SemanticRecoveryAlertAcknowledgeRequest {
+            principal_id: PrincipalId::from_bytes([0x83; 16]),
+            ..request
+        }),
+        Err(TaskStoreError::IdempotencyConflict)
+    ));
+    // resume(Escalated→Retrying)后:非 Escalated 状态拒绝确认
+    authority
+        .resume_semantic_recovery(SemanticRecoveryResumeRequest {
+            plan_id,
+            expected_total_failures: escalated.total_failures,
+            resumed_at_ms: 9_500,
+        })
+        .unwrap();
+    assert!(matches!(
+        authority.acknowledge_semantic_recovery_alert(SemanticRecoveryAlertAcknowledgeRequest {
+            plan_id,
+            expected_total_failures: escalated.total_failures,
+            principal_id: PrincipalId::from_bytes([0x84; 16]),
+            idempotency_key: IdempotencyKey::from_bytes([0x85; 16]),
+            acknowledged_at_ms: 9_600,
+        }),
+        Err(TaskStoreError::InvalidSemanticRecoveryState {
+            state: SemanticRecoveryState::Retrying
+        })
+    ));
+    // DDL 不可变触发器:UPDATE/DELETE 告警 receipt 直接 ABORT(v42)
+    drop(authority);
+    let raw = Connection::open(&fixture.task_path).unwrap();
+    assert!(
+        raw.execute(
+            "UPDATE task_semantic_recovery_alert_receipts
+             SET acknowledged_at_ms = acknowledged_at_ms + 1 WHERE receipt_id = ?1",
+            [receipt.receipt_id.as_bytes().as_slice()],
+        )
+        .is_err()
+    );
+    assert!(
+        raw.execute(
+            "DELETE FROM task_semantic_recovery_alert_receipts WHERE receipt_id = ?1",
+            [receipt.receipt_id.as_bytes().as_slice()],
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn ledger_row_loss_before_finalize_still_converges() {
+    let (fixture, authority, semantic, plan_id) = build_semantic_store_with_pending_plan(false);
+    escalate_plan(&authority, plan_id);
+    // 删台账行(台账损坏/丢失):plan 本身仍是 durable 事实
+    drop(authority);
+    let raw = Connection::open(&fixture.task_path).unwrap();
+    raw.execute(
+        "DELETE FROM task_semantic_recovery WHERE plan_id = ?1",
+        [plan_id.as_bytes().as_slice()],
+    )
+    .unwrap();
+    drop(raw);
+    let reopened = SqliteTaskAuthority::open(&fixture.task_path).unwrap();
+    assert!(
+        reopened
+            .inspect_semantic_recovery(plan_id)
+            .unwrap()
+            .is_none()
+    );
+    // 无台账行的 incomplete plan 立即可扫(SEM-RECOV-005 自愈重建调度)
+    let due = reopened.list_due_semantic_commit_plans(10, 0).unwrap();
+    assert_eq!(due.len(), 1);
+    assert_eq!(due[0].plan_id, plan_id);
+    // converge 到唯一终态;台账无行可置,不产生幻影行
+    let committed = converge_semantic_plan(&reopened, &semantic, plan_id, 20_000);
+    assert_eq!(committed.task_receipt.new_head_commit_seq, 1);
+    assert_eq!(
+        reopened
+            .inspect_semantic_commit_progress(plan_id)
+            .unwrap()
+            .plan
+            .state,
+        SemanticCommitPlanState::Finalized
+    );
+    assert!(
+        reopened
+            .inspect_semantic_recovery(plan_id)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        reopened
+            .list_due_semantic_commit_plans(10, i64::MAX)
+            .unwrap()
+            .is_empty()
+    );
+    // 再次 finalize:幂等重放,终态不变
+    let replay = reopened
+        .finalize_semantic_commit(FinalizeSemanticCommitRequest {
+            plan_id,
+            finalized_at_ms: 21_000,
+        })
+        .unwrap();
+    assert!(matches!(replay, SemanticFinalizeDecision::Replayed(_)));
+    assert_eq!(replay.receipt(), &committed);
+}
+
+#[test]
+fn persisted_envelope_finalize_resolves_ledger() {
+    let (_fixture, authority, semantic, plan_id) = build_semantic_store_with_pending_plan(true);
+    let escalated = escalate_plan(&authority, plan_id);
+    assert_eq!(escalated.state, SemanticRecoveryState::Escalated);
+    // 手动 converge 到 Ready,再走持久化 mixed envelope 的 v3 finalize
+    // (reconcile.rs finalize_commit_v3_with_persisted_semantic_envelope)
+    converge_semantic_plan_to_ready(&authority, &semantic, plan_id, 20_000);
+    authority
+        .prepare_semantic_finalize(PrepareSemanticFinalizeRequest {
+            plan_id,
+            required_satisfaction: Vec::new(),
+            fenced_participant_digest: [0; 32],
+            prepared_at_ms: 21_000,
+        })
+        .unwrap();
+    let plan = authority.inspect_semantic_commit_plan(plan_id).unwrap();
+    let permit = authority
+        .inspect_permit(plan.task_id, plan.permit_id)
+        .unwrap();
+    let issued = match authority
+        .request_effect_permit(EffectPermitRequest {
+            task_id: plan.task_id,
+            attempt_id: plan.attempt_id,
+            attempt_generation: plan.attempt_generation,
+            permit_id: plan.permit_id,
+            permit_epoch: permit.permit_epoch,
+            effect_seq: 0,
+            idempotency_key: IdempotencyKey::from_bytes([0x77; 16]),
+            valid_until_ms: 30_000,
+            requested_at_ms: 21_000,
+        })
+        .unwrap()
+    {
+        EffectPermitDecision::Issued(issued) | EffectPermitDecision::Replayed(issued) => *issued,
+    };
+    authority
+        .record_no_effect(NoEffectRequest {
+            task_id: plan.task_id,
+            attempt_id: plan.attempt_id,
+            attempt_generation: plan.attempt_generation,
+            permit_id: plan.permit_id,
+            permit_epoch: permit.permit_epoch,
+            effect_seq: 0,
+            reason: NoEffectReason::NotSelected,
+            dispatch_token: Some(issued.one_shot_dispatch_token),
+            recorded_at_ms: 22_000,
+        })
+        .unwrap();
+    let decision = authority
+        .finalize_commit_v3_with_persisted_semantic_envelope(&semantic, plan_id, 23_000)
+        .unwrap();
+    assert!(matches!(decision, SemanticFinalizeDecision::Committed(_)));
+    // 成功事务内置 Resolved(SEM-RECOV-004 的 mixed finalize 接线点)
+    let resolved = authority
+        .inspect_semantic_recovery(plan_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(resolved.state, SemanticRecoveryState::Resolved);
+    assert_eq!(resolved.total_failures, 8);
+    assert_eq!(resolved.resolved_at_ms, Some(23_000));
+    assert_eq!(resolved.escalated_at_ms, None);
+    assert!(
+        authority
+            .list_semantic_recovery_alerts()
+            .unwrap()
+            .is_empty()
     );
 }

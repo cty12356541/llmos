@@ -220,6 +220,8 @@ pub use recovery::{
     ArtifactRecoveryAlertAcknowledgeRequest, ArtifactRecoveryAlertReceipt,
     ArtifactRecoveryFailureRequest, ArtifactRecoveryFailureSource, ArtifactRecoveryRecord,
     ArtifactRecoveryResumeRequest, ArtifactRecoveryState, ArtifactRecoverySummary,
+    SemanticRecoveryAlert, SemanticRecoveryAlertAcknowledgeDecision,
+    SemanticRecoveryAlertAcknowledgeRequest, SemanticRecoveryAlertReceipt,
     SemanticRecoveryFailureRequest, SemanticRecoveryFailureSource, SemanticRecoveryRecord,
     SemanticRecoveryResumeRequest, SemanticRecoveryState, SemanticRecoverySummary,
 };
