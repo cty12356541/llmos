@@ -81,3 +81,17 @@ Windows 专项注意(本机实测教训):
 - 一切推进计划/路线图只按波次编号组织(延续 main 上"波次 N"惯例),不出现"今天/本周"等时间刻度
 - 波次完成 = 全部车道过验收门,与日期无关;完成即进下一波次
 - 波次内的车道依赖规则:写集不相交可并行,同文件必须串行(如 effect.rs)
+
+## 9. 工作流偏好:优先使用 Superpowers 技能
+
+> 维护者偏好(2026-09-13 起生效):Agent 推进本项目时,优先调用 superpowers 技能族承接流程,而不是即兴行事。
+> 技能流程与本仓库既有协议是互补关系:技能管"怎么做事",AGENTS.md/渐进披露规则管"结果记到哪"。
+
+- **创造性工作(新机制/新车道)先 brainstorming**:对应本仓库"spec 先行、维护者批准方向"的既有惯例(参照 W25-000 模式),brainstorm 产出定稿后再动代码
+- **bug/测试失败先 systematic-debugging**:根因定位后最小修复;环境性 flake 按既有惯例记档,不得反复盲试
+- **实现走 test-driven-development**:先红后绿,与本仓库"失败测试→最小实现→审查"车道闭环一致
+- **多步任务先 writing-plans、执行用 subagent-driven-development / dispatching-parallel-agents**:车道划分遵守 §6.1 写集不相交才并行
+- **需要隔离的功能开发用 using-git-worktrees**:与"功能走独立分支"的分支模型衔接,避免共享脏工作区
+- **完成前必须 verification-before-completion**:证据先于断言,对应 §5 验证门与 §7 回执真实性要求
+- **合并前 requesting-code-review,收到反馈走 receiving-code-review**:技术严谨优先于顺从
+- 技能不可用或场景不匹配时如实说明,退回本文件与 AGENTS.md 的手写协议,不得静默跳过
