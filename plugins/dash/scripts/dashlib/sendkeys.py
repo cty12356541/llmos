@@ -10,7 +10,8 @@ DEFAULT_PANE = "llmos-dag:0.0"
 
 
 def compose_prompt(target: str, label: str) -> str:
-    return f"聚焦 {target}({label}):汇总当前障碍、最近回执与下一步建议"
+    who = f"{target}({label})" if label else target   # R17:空 label 省略空括号,不出悬垂 ()
+    return f"聚焦 {who}:汇总当前障碍、最近回执与下一步建议"
 
 
 def send_to_conversation(prompt: str, pane: Optional[str]) -> str:

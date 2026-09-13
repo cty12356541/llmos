@@ -75,7 +75,11 @@ def main() -> int:
         interval = 5
         body = [a for a in args[1:] if not a.startswith("-")]
         if body:
-            interval = int(body[0])
+            try:
+                interval = int(body[0])
+            except ValueError:
+                print(f"用法:dash watch [interval秒,整数] [--once];无法解析 {body[0]!r}", file=sys.stderr)
+                return 2
         once = "--once" in args
         from dashlib.focus import read_focus, write_focus
         from dashlib.sendkeys import DEFAULT_PANE, compose_prompt, send_to_conversation
@@ -113,8 +117,10 @@ def main() -> int:
                             target = read_focus(repo) or "当前波次"
                             t = next((t for t in model.tasks if t.id == target), None)
                             prompt = compose_prompt(target, t.label if t else "")
-                            print(send_to_conversation(prompt, pane), flush=True)
-                            _time.sleep(2)   # 降级文本停留片刻供复制,否则下一帧立即清屏
+                            result = send_to_conversation(prompt, pane)
+                            print(result, flush=True)
+                            if result != "sent":
+                                _time.sleep(2)   # 仅降级文本停留供复制;成功送达不拖慢刷新
                             break
                     else:
                         _time.sleep(0.1)

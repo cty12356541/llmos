@@ -50,6 +50,19 @@ class TestSend(unittest.TestCase):
         self.assertEqual(compose_prompt("T9", "全仓验证门"),
                          "聚焦 T9(全仓验证门):汇总当前障碍、最近回执与下一步建议")
 
+    def test_compose_prompt_empty_label(self):
+        # R17:空 label(默认 ⏎ 路径 "当前波次" 无匹配任务)省略空括号,不出悬垂 ()
+        from dashlib.sendkeys import compose_prompt
+        self.assertEqual(compose_prompt("T9", ""),
+                         "聚焦 T9:汇总当前障碍、最近回执与下一步建议")
+
+    def test_watch_bad_interval_usage(self):
+        with tempfile.TemporaryDirectory() as d:
+            r = run(["watch", "5s"], d)
+            self.assertEqual(r.returncode, 2, r.stdout)
+            self.assertIn("用法", r.stderr)
+            self.assertNotIn("Traceback", r.stderr)   # 守卫兜住,不裸抛 ValueError
+
     def test_send_degrades_without_tmux(self):
         import os
         from dashlib.sendkeys import send_to_conversation
