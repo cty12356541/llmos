@@ -9,22 +9,32 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 
 def _build_model(repo: Path):
+    """构建统一模型;返回 (model, now_iso)。
+
+    oneline 走 statusline 路径,config.json 是用户可编辑文件:
+    读取/解析/阈值提取任一损坏(OSError/ValueError/KeyError/TypeError)
+    一律降级默认值,绝不抛错。
+    """
     from datetime import datetime
     from dashlib.adapters import load_session, load_git, load_sdd
     from dashlib.merge import merge
     now = datetime.now().astimezone().isoformat(timespec="seconds")
-    config = {}
-    cfg = repo / ".dash" / "config.json"
-    if cfg.exists():
+    threshold_h = 2.0
+    try:
         import json
-        config = json.loads(cfg.read_text(encoding="utf-8"))
+        cfg = repo / ".dash" / "config.json"
+        config = json.loads(cfg.read_text(encoding="utf-8")) if cfg.exists() else {}
+        if not isinstance(config, dict):
+            config = {}   # 顶层非对象(数组/null 等)即损坏,视同 {}(默认生效)
+        threshold_h = float(config.get("stalled_threshold_h", 2.0))
+    except (OSError, ValueError, KeyError, TypeError):
+        threshold_h = 2.0   # 降级:config 视同 {},默认阈值生效
     frags = [load_session(repo / ".dash" / "state.jsonl", now),
              load_git(repo, now)]
     sdd_frag, barriers = load_sdd(repo, now)
     frags.append(sdd_frag)
-    model = merge(repo.resolve().name, frags, barriers, now,
-                  threshold_h=float(config.get("stalled_threshold_h", 2.0)))
-    return model
+    model = merge(repo.resolve().name, frags, barriers, now, threshold_h=threshold_h)
+    return model, now
 
 
 def main() -> int:
@@ -33,11 +43,17 @@ def main() -> int:
         print(__doc__)
         return 2
     repo = Path.cwd()
+    if args[0] == "render" and len(args) > 1 and args[1] == "panel":
+        from dashlib.render_panel import render_panel
+        model, now = _build_model(repo)
+        print(render_panel(model, focus=None, now_iso=now))   # focus 读取 T9 接线
+        return 0
     if args[0] == "oneline":
         from dashlib.render_oneline import render_oneline
-        print(render_oneline(_build_model(repo)))
+        model, _now = _build_model(repo)
+        print(render_oneline(model))
         return 0
-    print(f"dash: 未实现子命令 {args[0]}", file=sys.stderr)
+    print(f"dash: 未实现子命令 {' '.join(args)}", file=sys.stderr)
     return 2
 
 
