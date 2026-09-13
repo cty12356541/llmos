@@ -177,7 +177,8 @@ def main() -> None:
     if args:
         workspace = Path(args[0])
     else:
-        candidates = sorted((root / ".superpowers" / "sdd").glob("*/dag.json"))
+        candidates = sorted((root / ".superpowers" / "sdd").glob("*/dag.json"),
+                            key=lambda p: p.stat().st_mtime)
         if not candidates:
             sys.exit("no workspace with dag.json under .superpowers/sdd/")
         workspace = candidates[-1].parent
