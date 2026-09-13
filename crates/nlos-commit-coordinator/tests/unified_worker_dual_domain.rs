@@ -31,9 +31,9 @@ use nlos_task::{
     ArtifactCommitPlanState, ArtifactPublicationExpectation, ArtifactRecoveryResumeRequest,
     ArtifactRecoveryState, AttemptSpec, PermitDecision, PermitRequest, PlanArtifactCommitRequest,
     PlanSemanticCommitRequest, SemanticCommitPlanId, SemanticCommitPlanState,
-    SemanticRecoveryFailureSource, SemanticRecoveryState, SnapshotBundle, SnapshotConsistency,
-    SqliteTaskAuthority, TaskSnapshotReceiptSpec, TaskSpec, TaskWriteSetRequest,
-    TaskWriteSetSemanticAppendRequest, TaskWriteSetSemanticRequiredDurability,
+    SemanticRecoveryFailureSource, SemanticRecoveryResumeRequest, SemanticRecoveryState,
+    SnapshotBundle, SnapshotConsistency, SqliteTaskAuthority, TaskSnapshotReceiptSpec, TaskSpec,
+    TaskWriteSetRequest, TaskWriteSetSemanticAppendRequest, TaskWriteSetSemanticRequiredDurability,
     TaskWriteSetSemanticTarget, artifact_publication_plan_root, empty_effect_history_root,
 };
 use nlos_types::{
@@ -610,11 +610,13 @@ fn worker_converges_pending_semantic_plan_without_caller() {
     assert!(running.last_failures.is_empty());
     assert_eq!(running.retry_delay, None);
     // Clean convergence never opens a semantic ledger row, so every durable
-    // semantic gauge stays zero. `semantic_durable_resolved` in particular
-    // remains 0 until the SEM-RECOV-004 finalize->resolve linkage lands with
-    // the semantic alert surface in the nlos-task lane; it cannot be driven
-    // from this crate's write set, and no cross-authority atomicity between
-    // plan finalize and ledger resolve is claimed here.
+    // semantic gauge stays zero. `semantic_durable_resolved` only moves on
+    // the failure path: finalizing a plan that has an open ledger row flips
+    // it to `Resolved` inside the same TaskAuthority finalize transaction
+    // (the SEM-RECOV-004 linkage, landed in the nlos-task lane). That loop
+    // is asserted by the dedicated escalate->resume->resolve composite test
+    // below; this scenario substitutes the zero-gauge assertion because its
+    // write set never opens a ledger row.
     assert_eq!(running.semantic_durable_retrying, 0);
     assert_eq!(running.semantic_durable_escalated, 0);
     assert_eq!(running.semantic_durable_unacknowledged_escalated, 0);
@@ -864,6 +866,102 @@ fn semantic_authority_failures_escalate_ledger_without_faulting_domain() {
         "authorize succeeded; the owner publication never landed"
     );
     assert!(progress.publications.is_empty());
+    worker.stop();
+}
+
+#[test]
+fn escalated_semantic_recovery_resumes_converges_and_resolves_ledger() {
+    // W26 core claim, failure half: the worker drives the full recovery
+    // loop — durable failure accounting escalates the ledger, an operator
+    // resumes the terminal row by CAS, the worker reconverges the plan, and
+    // the finalize->resolve linkage (SEM-RECOV-004) lands the ledger in
+    // `Resolved`.
+    let _serialization = fault_lock();
+    nlos_store_fault::register(VFS_NAME).unwrap();
+    nlos_store_fault::disarm();
+    let _fault_guard = FaultDisarmGuard;
+    let databases = TestAuthorities::new("dual-domain-semantic-resume-loop");
+    let pending = prepare_semantic(&databases, 0xa2);
+    let (tasks, artifacts) = databases.open();
+    let semantic = Arc::new(
+        SemanticAuthority::open_with_vfs(&databases.semantic_root, Some(VFS_NAME)).unwrap(),
+    );
+    // Same fault construction as the escalation test above: owner-side
+    // writes fail, so failures are plan-level and belong in the ledger.
+    nlos_store_fault::arm(FaultMode::FailWritesAfter {
+        remaining: 0,
+        code: FaultCode::IoErr,
+    });
+    let tasks = Arc::new(tasks);
+    let mut worker = TaskAuthorityCommitRecoveryWorker::start_with_semantic_authority(
+        Arc::clone(&tasks),
+        Arc::new(artifacts),
+        Some(Arc::clone(&semantic)),
+        RecoveryWorkerConfig {
+            scan_limit: 16,
+            poll_interval: Duration::from_millis(10),
+            max_backoff: Duration::from_millis(40),
+            failure_threshold: 3,
+        },
+    )
+    .unwrap();
+
+    // Failure accounting half: the ledger row reaches its `Escalated`
+    // terminal state (asserted on the ledger itself, not just the gauge;
+    // the row is stable afterwards because escalation leaves the due scan).
+    wait_until_within(
+        || {
+            tasks
+                .inspect_semantic_recovery(pending.plan)
+                .unwrap()
+                .is_some_and(|record| record.state == SemanticRecoveryState::Escalated)
+        },
+        Duration::from_secs(10),
+    );
+    let escalated = tasks
+        .inspect_semantic_recovery(pending.plan)
+        .unwrap()
+        .expect("escalated ledger row");
+    assert_eq!(escalated.next_retry_at_ms, None);
+
+    // Repair, then the manual resume half: the CAS on `total_failures`
+    // requeues the escalated row as due for the next worker scan.
+    nlos_store_fault::disarm();
+    tasks
+        .resume_semantic_recovery(SemanticRecoveryResumeRequest {
+            plan_id: pending.plan,
+            expected_total_failures: escalated.total_failures,
+            resumed_at_ms: escalated.last_failed_at_ms,
+        })
+        .unwrap();
+
+    // Automatic convergence half: the worker alone finalizes the plan and
+    // the same finalize transaction resolves the ledger row.
+    wait_until_within(
+        || worker.health().semantic_total_finalized >= 1,
+        Duration::from_secs(10),
+    );
+    assert_eq!(
+        tasks
+            .inspect_semantic_commit_progress(pending.plan)
+            .unwrap()
+            .plan
+            .state,
+        SemanticCommitPlanState::Finalized
+    );
+    let resolved = tasks
+        .inspect_semantic_recovery(pending.plan)
+        .unwrap()
+        .expect("resolved ledger row");
+    assert_eq!(resolved.state, SemanticRecoveryState::Resolved);
+    assert_eq!(
+        resolved.total_failures, escalated.total_failures,
+        "resolution preserves the durable failure history"
+    );
+    let health = worker.health();
+    assert_eq!(health.semantic_durable_resolved, 1);
+    assert_eq!(health.semantic_durable_escalated, 0);
+    assert_eq!(health.semantic_durable_unacknowledged_escalated, 0);
     worker.stop();
 }
 
