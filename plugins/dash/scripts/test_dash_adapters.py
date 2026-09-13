@@ -6,7 +6,7 @@ import time
 import unittest
 from pathlib import Path
 
-from dashlib.adapters import load_git, load_session
+from dashlib.adapters import load_git, load_sdd, load_session
 from dashlib.model import Fragment
 
 
@@ -143,6 +143,56 @@ class TestGitAdapter(unittest.TestCase):
             frag = load_git(Path(d), NOW)
             self.assertEqual(frag.velocity, {})
             self.assertEqual(frag.warnings, ["git 源不可用"])
+
+
+def make_workspace(tmp: Path, wave="W26", done_all=True):
+    ws = tmp / ".superpowers" / "sdd" / f"2026-09-13-{wave}"
+    ws.mkdir(parents=True)
+    (ws / "dag.json").write_text(json.dumps({
+        "wave": wave, "title": "统一恢复面",
+        "lanes": [{"id": "a", "name": "semantic-ledger", "tasks": [1]},
+                  {"id": "b", "name": "worker-dual", "tasks": [6]}],
+        "tasks": {"1": {"label": "schema v42 表组"}, "6": {"label": "cycle 拆分双域"},
+                  "9": {"label": "全仓验证门"}},
+        "barriers": [{"id": "1", "after": [6], "unlocks": [9]}],
+    }, ensure_ascii=False), encoding="utf-8")
+    ledger = "# ledger\n"
+    ledger += "Task 1: complete (commits aaa..bbb, review clean)\n"
+    ledger += ("Task 6: complete\n" if done_all else "Task 6: dispatched\n")
+    ledger += "Task 9: complete\n" if done_all else ""
+    (ws / "progress.md").write_text(ledger, encoding="utf-8")
+    return ws
+
+
+class TestSddAdapter(unittest.TestCase):
+    def test_states_and_lanes(self):
+        with tempfile.TemporaryDirectory() as d:
+            make_workspace(Path(d), done_all=False)
+            frag, barriers = load_sdd(Path(d), NOW)
+            by_id = {t.id: t for t in frag.tasks}
+            self.assertEqual(by_id["T1"].state, "done")
+            self.assertEqual(by_id["T1"].lane, "semantic-ledger")
+            self.assertEqual(by_id["T6"].state, "active")
+            self.assertIn("dispatched", by_id["T6"].note)
+            self.assertEqual(by_id["T9"].lane, "无车道")
+            self.assertEqual(by_id["T9"].state, "pending")
+            self.assertEqual(barriers, ["屏障 1: T6 → T9"])
+            self.assertEqual(frag.milestones[0].id, "W26")
+            self.assertEqual(frag.milestones[0].state, "active")
+
+    def test_all_done_milestone(self):
+        with tempfile.TemporaryDirectory() as d:
+            make_workspace(Path(d), done_all=True)
+            frag, _ = load_sdd(Path(d), NOW)
+            self.assertEqual(frag.milestones[0].state, "done")
+            self.assertEqual(frag.milestones[0].tasks_done, 3)
+            # T9 pending→done 需要 ledger 有行;done_all=True 时写了 Task 9: complete
+
+    def test_no_workspace_empty(self):
+        with tempfile.TemporaryDirectory() as d:
+            frag, barriers = load_sdd(Path(d), NOW)
+            self.assertEqual((frag.tasks, frag.milestones, barriers), ([], [], []))
+            self.assertEqual(frag.warnings, [])
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ v1 简化注记:todo 快照 summary 只带 in_progress 项(R10 起,空串=无在
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -105,3 +106,53 @@ def load_git(repo: Path, now_iso: str) -> Fragment:
         if tag:
             frag.milestones.append(Milestone(id=tag, state="done"))
     return frag
+
+
+ACTIVE_WORDS = ("dispatched", "in-review", "in-progress", "fix round")
+
+
+def _resolve(ledger: str, n: int):
+    """返回 (state, note);语义与 scripts/render_dag.py resolve_status 一致。"""
+    for line in ledger.splitlines():
+        m = re.match(rf"Task {n}\s*: complete", line)
+        if m:
+            return "done", ""
+        m = re.match(rf"Task {n}\s*: (\S[^;(]*)", line)
+        if m and any(w in m.group(1) for w in ACTIVE_WORDS):
+            return "active", m.group(1).strip()
+    return "pending", ""
+
+
+def load_sdd(root: Path, now_iso: str):
+    frag = Fragment(source="sdd")
+    barriers = []
+    # R12:按 mtime 取最新工作区——同日期多工作区时按路径名排序会选错"最新"
+    workspaces = sorted((root / ".superpowers" / "sdd").glob("*/dag.json"),
+                        key=lambda p: p.stat().st_mtime)
+    if not workspaces:
+        return frag, barriers
+    for path in workspaces:      # 全部工作区 → 历史波次里程碑
+        dag = json.loads(path.read_text(encoding="utf-8"))
+        ledger_p = path.parent / "progress.md"
+        ledger = ledger_p.read_text(encoding="utf-8") if ledger_p.exists() else ""
+        states = {n: _resolve(ledger, n) for n in (int(k) for k in dag["tasks"])}
+        done = sum(1 for s, _ in states.values() if s == "done")
+        active = any(s == "active" for s, _ in states.values())
+        latest = path == workspaces[-1]
+        frag.milestones.append(Milestone(
+            id=dag["wave"], title=dag.get("title", ""),
+            state="active" if active else ("done" if done == len(states) else "planned"),
+            tasks_done=done, tasks_total=len(states)))
+        if not latest:
+            continue
+        lane_of = {n: lane["name"] for lane in dag["lanes"] for n in lane["tasks"]}
+        for n in sorted(states):
+            state, note = states[n]
+            frag.tasks.append(Task(id=f"T{n}", label=dag["tasks"][str(n)]["label"],
+                                   state=state, lane=lane_of.get(n, "无车道"),
+                                   source="sdd", note=note))
+        for b in dag.get("barriers", []):
+            gate = "+".join(f"T{n}" for n in b["after"])
+            unlocks = " ".join(f"T{n}" for n in b["unlocks"])
+            barriers.append(f"屏障 {b['id']}: {gate} → {unlocks}")
+    return frag, barriers
