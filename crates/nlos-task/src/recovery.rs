@@ -1,12 +1,14 @@
-//! Durable retry and escalation ledger for Artifact commit recovery.
+//! Durable retry and escalation ledger for Artifact and Semantic commit
+//! recovery.
 
 use nlos_types::{IdempotencyKey, PrincipalId, ReceiptId};
 use rusqlite::params;
 use sha2::{Digest, Sha256};
 
 use crate::commit::{ArtifactCommitPlanId, ArtifactCommitPlanRecord, ArtifactCommitPlanState};
+use crate::semantic_commit::{SemanticCommitPlanId, SemanticCommitPlanState};
 use crate::store::{SqlRead, SqliteTaskAuthority, encode_u64, u64_from_blob};
-use crate::{TaskStoreError, commit};
+use crate::{TaskStoreError, commit, semantic_commit};
 
 const JITTER_MIN_BPS: u64 = 8_000;
 const JITTER_SPAN_BPS: u64 = 4_001;
@@ -146,6 +148,93 @@ impl ArtifactRecoveryAlertAcknowledgeDecision {
 pub struct ArtifactRecoveryAlert {
     pub recovery: ArtifactRecoveryRecord,
     pub acknowledgement: Option<ArtifactRecoveryAlertReceipt>,
+}
+
+/// Escalation threshold for the Semantic recovery ledger. The Artifact
+/// ledger receives its threshold per request from the recovery worker
+/// (`failure_threshold`, default 8); the Semantic ledger fixes the same
+/// default because its request carries no threshold field.
+const SEMANTIC_ESCALATION_THRESHOLD: u64 = 8;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SemanticRecoveryState {
+    Retrying,
+    Escalated,
+    Resolved,
+}
+
+impl SemanticRecoveryState {
+    const fn code(self) -> i64 {
+        match self {
+            Self::Retrying => 0,
+            Self::Escalated => 1,
+            Self::Resolved => 2,
+        }
+    }
+
+    fn from_code(code: i64) -> Result<Self, TaskStoreError> {
+        match code {
+            0 => Ok(Self::Retrying),
+            1 => Ok(Self::Escalated),
+            2 => Ok(Self::Resolved),
+            _ => Err(TaskStoreError::CorruptRecord(
+                "unknown Semantic recovery state",
+            )),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SemanticRecoveryFailureSource {
+    TaskAuthority,
+    SemanticAuthority,
+    Coordinator,
+}
+
+impl SemanticRecoveryFailureSource {
+    const fn code(self) -> i64 {
+        match self {
+            Self::TaskAuthority => 0,
+            Self::SemanticAuthority => 1,
+            Self::Coordinator => 2,
+        }
+    }
+
+    fn from_code(code: i64) -> Result<Self, TaskStoreError> {
+        match code {
+            0 => Ok(Self::TaskAuthority),
+            1 => Ok(Self::SemanticAuthority),
+            2 => Ok(Self::Coordinator),
+            _ => Err(TaskStoreError::CorruptRecord(
+                "unknown Semantic recovery failure source",
+            )),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SemanticRecoveryFailureRequest {
+    pub plan_id: SemanticCommitPlanId,
+    pub expected_total_failures: u64,
+    pub source: SemanticRecoveryFailureSource,
+    pub observed_at_ms: i64,
+    pub base_delay_ms: u64,
+    pub max_delay_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SemanticRecoveryRecord {
+    pub plan_id: SemanticCommitPlanId,
+    pub state: SemanticRecoveryState,
+    pub consecutive_failures: u64,
+    pub total_failures: u64,
+    pub last_source: SemanticRecoveryFailureSource,
+    pub first_failed_at_ms: i64,
+    pub last_failed_at_ms: i64,
+    pub next_retry_at_ms: Option<i64>,
+    pub escalated_at_ms: Option<i64>,
+    pub resolved_at_ms: Option<i64>,
+    pub updated_at_ms: i64,
 }
 
 impl SqliteTaskAuthority {
@@ -498,6 +587,110 @@ impl SqliteTaskAuthority {
     }
 }
 
+impl SqliteTaskAuthority {
+    /// Appends one failed Semantic recovery cycle and computes its durable
+    /// next due time or escalation state.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed policy/state/not-found error, epoch exhaustion, or a
+    /// storage failure. No partial ledger update is committed on error.
+    pub fn record_semantic_recovery_failure(
+        &self,
+        request: SemanticRecoveryFailureRequest,
+    ) -> Result<SemanticRecoveryRecord, TaskStoreError> {
+        semantic_validate_request(request)?;
+        let mut connection = self.lock_connection()?;
+        let transaction =
+            connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let plan = semantic_commit::load_plan_optional(&transaction, request.plan_id)?
+            .ok_or(TaskStoreError::SemanticCommitPlanNotFound)?;
+        if plan.state == SemanticCommitPlanState::Finalized {
+            return Err(TaskStoreError::InvalidSemanticRecoveryState {
+                state: SemanticRecoveryState::Resolved,
+            });
+        }
+        let prior = semantic_load_optional(&transaction, request.plan_id)?;
+        let current_total = prior.map_or(0, |record| record.total_failures);
+        if current_total != request.expected_total_failures {
+            return Err(TaskStoreError::SemanticRecoveryCasMismatch {
+                expected: request.expected_total_failures,
+                current: current_total,
+            });
+        }
+        if let Some(record) = prior
+            && record.state != SemanticRecoveryState::Retrying
+        {
+            return Err(TaskStoreError::InvalidSemanticRecoveryState {
+                state: record.state,
+            });
+        }
+        if prior.is_some_and(|record| request.observed_at_ms < record.last_failed_at_ms) {
+            return Err(TaskStoreError::InvalidSemanticRecoveryPolicy {
+                reason: "failure timestamp regresses durable history",
+            });
+        }
+        let consecutive = prior
+            .map_or(0, |record| record.consecutive_failures)
+            .checked_add(1)
+            .ok_or(TaskStoreError::EpochExhausted)?;
+        let total = current_total
+            .checked_add(1)
+            .ok_or(TaskStoreError::EpochExhausted)?;
+        let escalated = consecutive >= SEMANTIC_ESCALATION_THRESHOLD;
+        let next_retry_at_ms = if escalated {
+            None
+        } else {
+            Some(
+                request
+                    .observed_at_ms
+                    .checked_add(
+                        i64::try_from(capped_exponential_delay(&request, consecutive)).map_err(
+                            |_| TaskStoreError::InvalidSemanticRecoveryPolicy {
+                                reason: "retry delay exceeds i64 milliseconds",
+                            },
+                        )?,
+                    )
+                    .ok_or(TaskStoreError::EpochExhausted)?,
+            )
+        };
+        let record = SemanticRecoveryRecord {
+            plan_id: request.plan_id,
+            state: if escalated {
+                SemanticRecoveryState::Escalated
+            } else {
+                SemanticRecoveryState::Retrying
+            },
+            consecutive_failures: consecutive,
+            total_failures: total,
+            last_source: request.source,
+            first_failed_at_ms: prior
+                .map_or(request.observed_at_ms, |record| record.first_failed_at_ms),
+            last_failed_at_ms: request.observed_at_ms,
+            next_retry_at_ms,
+            escalated_at_ms: escalated.then_some(request.observed_at_ms),
+            resolved_at_ms: None,
+            updated_at_ms: request.observed_at_ms,
+        };
+        semantic_upsert(&transaction, &record)?;
+        transaction.commit()?;
+        Ok(record)
+    }
+
+    /// Reads the optional durable Semantic recovery ledger for one plan.
+    ///
+    /// # Errors
+    ///
+    /// Returns corrupt-record or storage failures.
+    pub fn inspect_semantic_recovery(
+        &self,
+        plan_id: SemanticCommitPlanId,
+    ) -> Result<Option<SemanticRecoveryRecord>, TaskStoreError> {
+        let connection = self.lock_connection()?;
+        semantic_load_optional(&*connection, plan_id)
+    }
+}
+
 fn count_from_i64(value: i64) -> Result<u64, rusqlite::Error> {
     u64::try_from(value).map_err(|_| rusqlite::Error::IntegralValueOutOfRange(0, value))
 }
@@ -710,6 +903,105 @@ fn load_optional(
         consecutive_failures: u64_from_blob(row, 1)?,
         total_failures: u64_from_blob(row, 2)?,
         last_source: ArtifactRecoveryFailureSource::from_code(row.get(3)?)?,
+        first_failed_at_ms: row.get(4)?,
+        last_failed_at_ms: row.get(5)?,
+        next_retry_at_ms: row.get(6)?,
+        escalated_at_ms: row.get(7)?,
+        resolved_at_ms: row.get(8)?,
+        updated_at_ms: row.get(9)?,
+    }))
+}
+
+fn semantic_validate_request(
+    request: SemanticRecoveryFailureRequest,
+) -> Result<(), TaskStoreError> {
+    let reason = if request.observed_at_ms < 0 {
+        Some("failure timestamp must be non-negative")
+    } else if request.base_delay_ms == 0 {
+        Some("base delay must be non-zero")
+    } else if request.max_delay_ms < request.base_delay_ms {
+        Some("maximum delay must be at least base delay")
+    } else {
+        None
+    };
+    reason.map_or(Ok(()), |reason| {
+        Err(TaskStoreError::InvalidSemanticRecoveryPolicy { reason })
+    })
+}
+
+/// Exponential capped backoff: the Artifact ledger's capped exponential
+/// term (`base * 2^(consecutive - 1)`, saturating at `max_delay_ms`) with
+/// the per-plan jitter factor omitted, so the Semantic retry due time is a
+/// pure function of the request and durable count.
+fn capped_exponential_delay(request: &SemanticRecoveryFailureRequest, consecutive: u64) -> u64 {
+    let exponent = u32::try_from(consecutive.saturating_sub(1))
+        .unwrap_or(u32::MAX)
+        .min(63);
+    request
+        .base_delay_ms
+        .checked_mul(1_u64 << exponent)
+        .unwrap_or(request.max_delay_ms)
+        .min(request.max_delay_ms)
+}
+
+fn semantic_upsert(
+    transaction: &rusqlite::Transaction<'_>,
+    record: &SemanticRecoveryRecord,
+) -> Result<(), TaskStoreError> {
+    transaction.execute(
+        "INSERT INTO task_semantic_recovery (
+            plan_id, recovery_state, consecutive_failures, total_failures,
+            last_failure_source, first_failed_at_ms, last_failed_at_ms,
+            next_retry_at_ms, escalated_at_ms, resolved_at_ms, updated_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+         ON CONFLICT(plan_id) DO UPDATE SET
+            recovery_state = excluded.recovery_state,
+            consecutive_failures = excluded.consecutive_failures,
+            total_failures = excluded.total_failures,
+            last_failure_source = excluded.last_failure_source,
+            first_failed_at_ms = excluded.first_failed_at_ms,
+            last_failed_at_ms = excluded.last_failed_at_ms,
+            next_retry_at_ms = excluded.next_retry_at_ms,
+            escalated_at_ms = excluded.escalated_at_ms,
+            resolved_at_ms = excluded.resolved_at_ms,
+            updated_at_ms = excluded.updated_at_ms",
+        params![
+            record.plan_id.as_bytes().as_slice(),
+            record.state.code(),
+            encode_u64(record.consecutive_failures).as_slice(),
+            encode_u64(record.total_failures).as_slice(),
+            record.last_source.code(),
+            record.first_failed_at_ms,
+            record.last_failed_at_ms,
+            record.next_retry_at_ms,
+            record.escalated_at_ms,
+            record.resolved_at_ms,
+            record.updated_at_ms,
+        ],
+    )?;
+    Ok(())
+}
+
+fn semantic_load_optional(
+    reader: &impl SqlRead,
+    plan_id: SemanticCommitPlanId,
+) -> Result<Option<SemanticRecoveryRecord>, TaskStoreError> {
+    let mut statement = reader.prepare_statement(
+        "SELECT recovery_state, consecutive_failures, total_failures,
+         last_failure_source, first_failed_at_ms, last_failed_at_ms,
+         next_retry_at_ms, escalated_at_ms, resolved_at_ms, updated_at_ms
+         FROM task_semantic_recovery WHERE plan_id = ?1",
+    )?;
+    let mut rows = statement.query([plan_id.as_bytes().as_slice()])?;
+    let Some(row) = rows.next()? else {
+        return Ok(None);
+    };
+    Ok(Some(SemanticRecoveryRecord {
+        plan_id,
+        state: SemanticRecoveryState::from_code(row.get(0)?)?,
+        consecutive_failures: u64_from_blob(row, 1)?,
+        total_failures: u64_from_blob(row, 2)?,
+        last_source: SemanticRecoveryFailureSource::from_code(row.get(3)?)?,
         first_failed_at_ms: row.get(4)?,
         last_failed_at_ms: row.get(5)?,
         next_retry_at_ms: row.get(6)?,
