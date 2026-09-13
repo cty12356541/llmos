@@ -136,6 +136,7 @@ mod migrations;
 mod model;
 mod participant;
 mod pressure;
+mod receipt;
 mod reconcile;
 mod recovery;
 mod resource_commit;
@@ -209,6 +210,7 @@ pub use pressure::{
     enforce_working_set_admission, execute_working_set_reclaim_execution,
     inspect_working_set_pressure, plan_working_set_reclaim_execution, working_set_reclaim_advisory,
 };
+pub use receipt::TaskCommitReceipt;
 pub use reconcile::{
     AdoptionReplay, AdoptionRequest, AuthorityLeaseAdoptionRequest, AuthorityLeaseCloseRequest,
     AuthorityLeaseCrossTermAdoptionRequest, AuthorityLeaseFinalizeRequest,
