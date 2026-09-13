@@ -1,11 +1,12 @@
 # plugins/dash/scripts/test_dash_adapters.py
 import json
+import subprocess
 import tempfile
 import time
 import unittest
 from pathlib import Path
 
-from dashlib.adapters import load_session
+from dashlib.adapters import load_git, load_session
 from dashlib.model import Fragment
 
 
@@ -17,6 +18,11 @@ def write_events(tmp: Path, events):
 
 
 NOW = "2026-09-13T15:00:00+08:00"
+
+
+def sh(cmd, cwd):
+    subprocess.run(cmd, shell=True, cwd=cwd, check=True,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 class TestSessionAdapter(unittest.TestCase):
@@ -106,6 +112,37 @@ class TestSessionAdapter(unittest.TestCase):
             t0 = time.perf_counter()
             load_session(p, NOW)
             self.assertLess(time.perf_counter() - t0, 0.1)
+
+
+class TestGitAdapter(unittest.TestCase):
+    def test_synthetic_repo(self):
+        with tempfile.TemporaryDirectory() as d:
+            sh("git init -q && git config user.email t@t && git config user.name t", d)
+            (Path(d) / "a.txt").write_text("1")
+            sh("git add -A && git commit -qm 'c1'", d)
+            sh("git tag v1.0.0", d)
+            (Path(d) / "a.txt").write_text("2")
+            sh("git add -A && git commit -qm 'c2'", d)
+            frag = load_git(Path(d), NOW)
+            self.assertEqual(frag.source, "git")
+            self.assertEqual(frag.velocity["commits_7d"], 2)
+            self.assertEqual(frag.velocity["dirty_files"], 0)
+            self.assertEqual([m.id for m in frag.milestones], ["v1.0.0"])
+            self.assertEqual(frag.milestones[0].state, "done")
+
+    def test_dirty_files_counted(self):
+        with tempfile.TemporaryDirectory() as d:
+            sh("git init -q && git config user.email t@t && git config user.name t", d)
+            (Path(d) / "a.txt").write_text("1")
+            (Path(d) / "b.txt").write_text("2")
+            frag = load_git(Path(d), NOW)
+            self.assertEqual(frag.velocity["dirty_files"], 2)
+
+    def test_non_repo_degrades(self):
+        with tempfile.TemporaryDirectory() as d:
+            frag = load_git(Path(d), NOW)
+            self.assertEqual(frag.velocity, {})
+            self.assertEqual(frag.warnings, ["git 源不可用"])
 
 
 if __name__ == "__main__":

@@ -7,9 +7,10 @@ v1 简化注记:todo 快照 summary 只带 in_progress 项(R10 起,空串=无在
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
-from .model import Activity, Fragment, Task
+from .model import Activity, Fragment, Milestone, Task
 
 
 def _iter_events(state_path: Path):
@@ -67,4 +68,40 @@ def load_session(state_path: Path, now_iso: str) -> Fragment:
                                    state=state, lane="会话",
                                    since=first_seen[(sess, label)], source="session"))
     frag.activity = list(agents.values())
+    return frag
+
+
+def _git(repo: Path, *args: str):
+    r = subprocess.run(["git", "-C", str(repo), *args],
+                       capture_output=True, text=True, timeout=5)
+    if r.returncode != 0:
+        raise RuntimeError(r.stderr.strip())
+    return r.stdout
+
+
+def _try_git(repo: Path, *args: str):
+    """单条 git 探测失败(含超时/无 git)返回 None,由调用方决定字段级降级。"""
+    try:
+        return _git(repo, *args)
+    except (RuntimeError, OSError, subprocess.SubprocessError):
+        return None
+
+
+def load_git(repo: Path, now_iso: str) -> Fragment:
+    frag = Fragment(source="git")
+    if _try_git(repo, "rev-parse", "--git-dir") is None:
+        frag.warnings.append("git 源不可用")   # 非仓/无 git:空分片降级,不白屏
+        return frag
+    # 已确认是仓库;unborn HEAD(尚无首提交)只缺 branch/log,字段级降级,不整片清空
+    branch = _try_git(repo, "rev-parse", "--abbrev-ref", "HEAD")
+    if branch is not None:
+        frag.velocity["branch"] = branch.strip()
+    commits = _try_git(repo, "log", "--since=7.days", "--oneline")
+    frag.velocity["commits_7d"] = 0 if commits is None else len(commits.splitlines())
+    dirty = _try_git(repo, "status", "--porcelain")
+    frag.velocity["dirty_files"] = 0 if dirty is None else len(dirty.splitlines())
+    tags = _try_git(repo, "tag", "--sort=-creatordate") or ""
+    for tag in tags.splitlines()[:5]:
+        if tag:
+            frag.milestones.append(Milestone(id=tag, state="done"))
     return frag
