@@ -20,6 +20,8 @@ python3 "${CLAUDE_PLUGIN_ROOT}/scripts/dash" focus T9       # 状态跃迁时聚
 
 派发/过审/修复环/完成任务时:回复末尾附 `render panel` 输出,并执行
 `dash focus <任务id>` 把面板镜头带到现场;波次收尾执行 `dash focus clear`。
+状态跃迁附图时同时执行
+`python3 "${CLAUDE_PLUGIN_ROOT}/scripts/dash" render mermaid --inject` 刷新台账 DAG 节。
 
 ## 诚实约束
 

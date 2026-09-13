@@ -37,13 +37,14 @@ python3 plugins/dash/scripts/dash oneline        # 单行摘要
 
 ## `.dash/` 运行时目录
 
-会话事件(`state.jsonl`)、焦点(`focus.json`)与配置(`config.json`)都写在仓库根 `.dash/` 下,是会话本地运行时,加入 `.gitignore`:
+会话事件(`state.jsonl`)、焦点(`focus.json`)与配置(`config.json`)都写在仓库根 `.dash/` 下,是会话本地运行时。gitignore 用两行形式(`.dash/` 整目录忽略时 git 不再下钻,`!` 例外不会生效;`/*` 只忽略目录内容,例外才能重新纳入):
 
 ```
-.dash/
+.dash/*
+!.dash/config.json
 ```
 
-其中 `config.json` 是唯一人工编辑文件;若想团队共享配置,可自行改用 `!` 例外规则单独提交它。
+`config.json` 是唯一人工编辑文件,按上式可随仓库提交、团队共享;不需要共享则只写第一行即可。
 
 ## 配置
 
@@ -54,6 +55,7 @@ python3 plugins/dash/scripts/dash oneline        # 单行摘要
 ```
 
 - `stalled_threshold_h`:任务无活动多少小时判为停滞(缺省 `2.0`)。config 缺失/损坏/字段非法时自动降级缺省值,并在面板附 warning,绝不抛错。
+- ⚑ 判定是近似语义:sdd 源活跃任务的 `since` 取该波次 `progress.md` 的文件 mtime,即「台账超过阈值小时无跃迁→⚑」;session 源任务用事件首见时刻。
 
 ## tmux 联动:`DASH_TMUX_TARGET`
 
@@ -73,7 +75,7 @@ python3 plugins/dash/scripts/dash watch 5  # f 聚焦 c 散焦 ⏎ 送对话 q �
 | `dash render mermaid [--inject]` | Mermaid 源码;`--inject` 写回最新 `.superpowers/sdd/*/progress.md`(唯一显式写副作用,且仅在 `--inject` 门后) |
 | `dash oneline` | statusline 单行(无 ANSI,零副作用) |
 | `dash watch [interval] [--once]` | 常驻刷新(缺省 5s);单键 f/c/⏎/q;`--once` 渲染一帧即退 |
-| `dash focus <milestone\|lane\|task id>` / `dash focus clear` | 设置 / 清除面板焦点(下次面板刷新生效) |
+| `dash focus <task id>` / `dash focus clear` | 设置 / 清除面板焦点(下次面板刷新生效;v1 只按任务 id 聚焦,无匹配时面板优雅降级显示聚焦头) |
 | `dash send [--pane <target>]` | 把焦点现场提示送进主对话(tmux send-keys;`--pane` 覆盖 `DASH_TMUX_TARGET`;无焦点时报错退出 1) |
 
 `dash`(无参数)打印用法,退出码 2。
