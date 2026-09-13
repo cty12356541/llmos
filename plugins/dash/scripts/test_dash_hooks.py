@@ -54,6 +54,24 @@ class TestRecordEvent(unittest.TestCase):
             ev = json.loads(p.read_text(encoding="utf-8").strip().splitlines()[-1])
             self.assertEqual((ev["kind"], ev["event"]), ("stop", "turn_end"))
 
+    def test_subagent_stop_completed(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "state.jsonl"
+            record_event.main(json.dumps({"hook_event_name": "SubagentStop",
+                                          "session_id": "s1", "cwd": "/tmp"}), p)
+            ev = json.loads(p.read_text(encoding="utf-8").strip().splitlines()[-1])
+            self.assertEqual((ev["kind"], ev["event"]), ("agent", "completed"))
+
+    def test_todo_all_completed_empty_summary(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "state.jsonl"
+            record_event.main(hook_payload("TodoWrite",
+                                           {"todos": [{"content": "甲", "status": "completed"},
+                                                      {"content": "乙", "status": "completed"}]}), p)
+            ev = json.loads(p.read_text(encoding="utf-8").strip().splitlines()[-1])
+            self.assertEqual(ev["kind"], "todo")
+            self.assertEqual(ev["summary"], "")        # 空串=无在途项,事件仍落盘
+
     def test_unknown_tool_skipped(self):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "state.jsonl"

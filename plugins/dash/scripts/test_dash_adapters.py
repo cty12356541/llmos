@@ -30,10 +30,13 @@ class TestSessionAdapter(unittest.TestCase):
             ])
             frag = load_session(p, NOW)
             self.assertEqual(frag.source, "session")
-            states = {t.id: t.state for t in frag.tasks}
-            self.assertEqual(states["todo-s1-0"], "active")
-            self.assertEqual(states["todo-s1-1"], "done")   # 第二快照中消失→done
-            self.assertEqual(frag.tasks[0].since, "2026-09-13T14:50:00+08:00")
+            by_id = {t.id: t for t in frag.tasks}
+            self.assertEqual(by_id["todo-s1-0"].label, "修面板")
+            self.assertEqual(by_id["todo-s1-0"].state, "done")   # 最新快照无此标签→done
+            self.assertEqual(by_id["todo-s1-1"].label, "写测试")
+            self.assertEqual(by_id["todo-s1-1"].state, "active")
+            self.assertEqual(by_id["todo-s1-0"].since, "2026-09-13T14:50:00+08:00")
+            self.assertEqual(by_id["todo-s1-1"].since, "2026-09-13T14:50:00+08:00")
 
     def test_active_agent_activity(self):
         with tempfile.TemporaryDirectory() as d:
@@ -47,6 +50,7 @@ class TestSessionAdapter(unittest.TestCase):
             self.assertEqual(len(frag.activity), 1)
             self.assertEqual(frag.activity[0].label, "探索写集")
             self.assertEqual(frag.activity[0].since, "2026-09-13T14:30:00+08:00")
+            self.assertEqual(frag.activity[0].last_event, "turn_end 14:58")
 
     def test_completed_agent_dropped(self):
         with tempfile.TemporaryDirectory() as d:
@@ -57,6 +61,31 @@ class TestSessionAdapter(unittest.TestCase):
                  "session": "s1", "summary": "跑测试"},
             ])
             self.assertEqual(load_session(p, NOW).activity, [])
+
+    def test_agent_completed_empty_summary_pops_oldest(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = write_events(Path(d), [
+                {"ts": "2026-09-13T14:00:00+08:00", "kind": "agent", "event": "spawned",
+                 "session": "s1", "summary": "A"},
+                {"ts": "2026-09-13T14:05:00+08:00", "kind": "agent", "event": "spawned",
+                 "session": "s1", "summary": "B"},
+                {"ts": "2026-09-13T14:10:00+08:00", "kind": "agent", "event": "completed",
+                 "session": "s1", "summary": ""},
+            ])
+            frag = load_session(p, NOW)
+            self.assertEqual([a.label for a in frag.activity], ["B"])  # FIFO 弹出 A
+
+    def test_empty_todo_snapshot_completes_all(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = write_events(Path(d), [
+                {"ts": "2026-09-13T14:00:00+08:00", "kind": "todo", "event": "updated",
+                 "session": "s1", "summary": "甲;乙"},
+                {"ts": "2026-09-13T14:20:00+08:00", "kind": "todo", "event": "updated",
+                 "session": "s1", "summary": ""},
+            ])
+            frag = load_session(p, NOW)
+            self.assertEqual([t.state for t in frag.tasks], ["done", "done"])
+            self.assertEqual({t.since for t in frag.tasks}, {"2026-09-13T14:00:00+08:00"})
 
     def test_corrupt_lines_skipped(self):
         with tempfile.TemporaryDirectory() as d:

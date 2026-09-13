@@ -1,8 +1,8 @@
 # plugins/dash/scripts/dashlib/adapters.py
 """适配器层:session(事件重放)/ git(快照派生)/ sdd(台账深语义)。
 
-v1 简化注记:todo 快照 summary 只带 in_progress 项,同快照内无法区分
-pending/completed 的细粒度——快照间消失即 done,存在即 active。
+v1 简化注记:todo 快照 summary 只带 in_progress 项(R10 起,空串=无在途),
+以标签身份跨快照配对——最新快照存在即 active,缺席即 done。
 """
 from __future__ import annotations
 
@@ -31,34 +31,40 @@ def _iter_events(state_path: Path):
 
 def load_session(state_path: Path, now_iso: str) -> Fragment:
     frag = Fragment(source="session")
-    todo_first: dict = {}     # (session, idx) -> first ts
-    todo_seen: dict = {}      # session -> {idx: label}
-    prev_labels: dict = {}    # session -> [labels]
-    agents: dict = {}         # session|summary -> Activity
+    first_seen: dict = {}     # (session, label) -> first ts
+    first_order: dict = {}    # session -> [labels 首现顺序]
+    latest: dict = {}         # session -> 最新快照 labels(在途集合)
+    agents: dict = {}         # session|summary -> Activity(插入序=生成序)
     for ev in _iter_events(state_path):
         sess, kind = ev.get("session", ""), ev.get("kind", "")
         ts, summary = ev.get("ts", ""), ev.get("summary", "")
         if kind == "todo":
             labels = [s for s in summary.split(";") if s]
-            for idx, label in enumerate(labels):
-                todo_first.setdefault((sess, idx), ts)
-            prev_labels[sess] = labels
+            for label in labels:
+                first_seen.setdefault((sess, label), ts)
+                if label not in first_order.setdefault(sess, []):
+                    first_order[sess].append(label)
+            latest[sess] = labels        # 最新快照=在途集合(R10)
         elif kind == "agent":
             if ev.get("event") == "spawned":
                 agents[(sess, summary)] = Activity("agent", summary, ts)
-            else:
+            elif summary:                # 带摘要:按 (session, summary) 精确配对
                 agents.pop((sess, summary), None)
+            else:                        # 空摘要(SubagentStop):FIFO 弹出最早仍在途的(R9)
+                for key in agents:
+                    if key[0] == sess:
+                        agents.pop(key)
+                        break
         elif kind == "stop":
             for key in agents:
                 if key[0] == sess:
                     agents[key].last_event = f"turn_end {ts[11:16]}"
-    for (sess, idx), ts in sorted(todo_first.items()):
-        labels = prev_labels.get(sess, [])
-        if idx >= len(labels):        # 后续快照消失 → 完成
-            state = "done"
-        else:
-            state = "active"
-        frag.tasks.append(Task(id=f"todo-{sess}-{idx}", label=labels[idx] if idx < len(labels) else f"#{idx}",
-                               state=state, lane="会话", since=ts, source="session"))
+    for sess, labels in first_order.items():
+        active = latest.get(sess, [])
+        for n, label in enumerate(labels):
+            state = "active" if label in active else "done"   # 最新快照缺席 → done
+            frag.tasks.append(Task(id=f"todo-{sess}-{n}", label=label,
+                                   state=state, lane="会话",
+                                   since=first_seen[(sess, label)], source="session"))
     frag.activity = list(agents.values())
     return frag
