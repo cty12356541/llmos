@@ -1,0 +1,6 @@
+{
+  "name": "dash",
+  "version": "0.1.0",
+  "description": "Lightweight project DAG dashboard for Claude Code: session-native + git, zero config, SDD ledger as deep-semantics adapter",
+  "displayName": "dash"
+}
