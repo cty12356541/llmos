@@ -58,6 +58,7 @@ class Model:
     stalled: List[str] = field(default_factory=list)
     velocity: Dict[str, int] = field(default_factory=dict)
     warnings: List[str] = field(default_factory=list)
+    barriers: List[str] = field(default_factory=list)
 
 
 def _parse(ts: str) -> datetime:
