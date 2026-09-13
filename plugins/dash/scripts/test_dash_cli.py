@@ -44,5 +44,30 @@ class TestFocusCli(unittest.TestCase):
                     self.assertIn("config 损坏,已用缺省阈值", r.stdout)
 
 
+class TestSend(unittest.TestCase):
+    def test_compose_prompt(self):
+        from dashlib.sendkeys import compose_prompt
+        self.assertEqual(compose_prompt("T9", "全仓验证门"),
+                         "聚焦 T9(全仓验证门):汇总当前障碍、最近回执与下一步建议")
+
+    def test_send_degrades_without_tmux(self):
+        import os
+        from dashlib.sendkeys import send_to_conversation
+        env = dict(os.environ, PATH="/nonexistent")
+        # 注:brief 原文 sys.path 插的是 .../dashlib 子目录,`from dashlib.sendkeys`
+        # 需要包父目录(scripts/)在路径上,照抄会 ModuleNotFoundError——改为插父目录
+        r = subprocess.run([sys.executable, "-c",
+                            "import sys;sys.path.insert(0,%r);from dashlib.sendkeys import send_to_conversation;"
+                            "print(send_to_conversation('聚焦 T9', None))" % str(Path(__file__).parent)],
+                           capture_output=True, text=True, env=env)
+        self.assertIn("聚焦 T9", r.stdout)   # 无 tmux → 打印可复制文本,不失败
+
+    def test_watch_once_renders_frame(self):
+        with tempfile.TemporaryDirectory() as d:
+            r = run(["watch", "--once"], d)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("dash", r.stdout.lower())   # 空仓也有友好空态
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -68,6 +68,78 @@ def main() -> int:
         write_focus(repo, args[1])
         print(f"聚焦 {args[1]}(面板下次刷新生效;⏎ 送主对话)")
         return 0
+    if args[0] == "watch":
+        import os
+        import select
+        import time as _time
+        interval = 5
+        body = [a for a in args[1:] if not a.startswith("-")]
+        if body:
+            interval = int(body[0])
+        once = "--once" in args
+        from dashlib.focus import read_focus, write_focus
+        from dashlib.sendkeys import DEFAULT_PANE, compose_prompt, send_to_conversation
+        # 与 send 同一解析序:env DASH_TMUX_TARGET → 默认 llmos-dag:0.0(pane 不存在时降级打印)
+        pane = os.environ.get("DASH_TMUX_TARGET", DEFAULT_PANE)
+        tty = sys.stdin.isatty()
+        if tty:
+            import termios
+            import tty as _tty
+            old = termios.tcgetattr(sys.stdin.fileno())
+            # cbreak:canonical 模式下按键要等 ⏎ 才送达,且 f 后 readline 会吞残留换行
+            _tty.setcbreak(sys.stdin.fileno())
+        try:
+            while True:
+                model, now = _build_model(repo)
+                from dashlib.render_panel import render_panel
+                print("\033[2J\033[H" + render_panel(model, read_focus(repo), now), flush=True)
+                print(f"\n[dash watch] f聚焦 c散焦 ⏎送对话 q退出 · {interval}s 刷新", flush=True)
+                if once:
+                    return 0
+                deadline = _time.monotonic() + interval
+                while _time.monotonic() < deadline:
+                    if tty and select.select([sys.stdin], [], [], 0.2)[0]:
+                        ch = sys.stdin.read(1)
+                        if ch == "q":
+                            return 0
+                        if ch == "f":
+                            print("聚焦目标(milestone|lane|task id):", end=" ", flush=True)
+                            write_focus(repo, sys.stdin.readline().strip())
+                            break
+                        if ch == "c":
+                            write_focus(repo, None)
+                            break
+                        if ch == "\n" or ch == "\r":
+                            target = read_focus(repo) or "当前波次"
+                            t = next((t for t in model.tasks if t.id == target), None)
+                            prompt = compose_prompt(target, t.label if t else "")
+                            print(send_to_conversation(prompt, pane), flush=True)
+                            _time.sleep(2)   # 降级文本停留片刻供复制,否则下一帧立即清屏
+                            break
+                    else:
+                        _time.sleep(0.1)
+        finally:
+            if tty:
+                import termios
+                termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, old)
+        return 0
+    if args[0] == "send":
+        import os
+        from dashlib.focus import read_focus
+        from dashlib.sendkeys import DEFAULT_PANE, compose_prompt, send_to_conversation
+        target = read_focus(repo)
+        if not target:
+            print("dash send: 无焦点;先 dash focus <milestone|lane|task id>", file=sys.stderr)
+            return 1
+        pane = None
+        if "--pane" in args and args.index("--pane") + 1 < len(args):
+            pane = args[args.index("--pane") + 1]
+        if pane is None:
+            pane = os.environ.get("DASH_TMUX_TARGET", DEFAULT_PANE)
+        model, _now = _build_model(repo)
+        t = next((t for t in model.tasks if t.id == target), None)
+        print(send_to_conversation(compose_prompt(target, t.label if t else ""), pane))
+        return 0
     print(f"dash: 未实现子命令 {' '.join(args)}", file=sys.stderr)
     return 2
 
