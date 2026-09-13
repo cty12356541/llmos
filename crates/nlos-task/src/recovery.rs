@@ -254,6 +254,46 @@ pub struct SemanticRecoverySummary {
     pub resolved: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SemanticRecoveryAlertAcknowledgeRequest {
+    pub plan_id: SemanticCommitPlanId,
+    pub expected_total_failures: u64,
+    pub principal_id: PrincipalId,
+    pub idempotency_key: IdempotencyKey,
+    pub acknowledged_at_ms: i64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SemanticRecoveryAlertReceipt {
+    pub receipt_id: ReceiptId,
+    pub plan_id: SemanticCommitPlanId,
+    pub total_failures: u64,
+    pub principal_id: PrincipalId,
+    pub idempotency_key: IdempotencyKey,
+    pub acknowledged_at_ms: i64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SemanticRecoveryAlertAcknowledgeDecision {
+    Acknowledged(SemanticRecoveryAlertReceipt),
+    Replayed(SemanticRecoveryAlertReceipt),
+}
+
+impl SemanticRecoveryAlertAcknowledgeDecision {
+    #[must_use]
+    pub const fn receipt(self) -> SemanticRecoveryAlertReceipt {
+        match self {
+            Self::Acknowledged(receipt) | Self::Replayed(receipt) => receipt,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SemanticRecoveryAlert {
+    pub recovery: SemanticRecoveryRecord,
+    pub acknowledgement: Option<SemanticRecoveryAlertReceipt>,
+}
+
 impl SqliteTaskAuthority {
     /// Appends one failed recovery cycle and computes its durable next due
     /// time or escalation state.
@@ -739,6 +779,145 @@ impl SqliteTaskAuthority {
             .map_err(TaskStoreError::from)
     }
 
+    /// Returns a bounded, stable list of escalated Semantic recovery alerts
+    /// and their optional immutable acknowledgement receipt.
+    ///
+    /// Deviation from the Artifact mirror (`list_artifact_recovery_alerts`):
+    /// the W26-001 interface pins a zero-argument shape, so no `limit` is
+    /// taken; the result stays bounded by the escalated-state filter and is
+    /// ordered by escalation time then plan id. A ledger row that vanishes
+    /// between the two read passes reports
+    /// [`TaskStoreError::SemanticCommitPlanNotFound`] — the dedicated
+    /// ledger-not-found variant of the artifact family
+    /// (`ArtifactRecoveryNotFound`) is deliberately not added, so the
+    /// plan-not-found variant is reused (see `resume_semantic_recovery`).
+    ///
+    /// # Errors
+    ///
+    /// Returns corrupt-record or storage failures.
+    pub fn list_semantic_recovery_alerts(
+        &self,
+    ) -> Result<Vec<SemanticRecoveryAlert>, TaskStoreError> {
+        let connection = self.lock_connection()?;
+        let mut statement = connection.prepare(
+            "SELECT plan_id FROM task_semantic_recovery
+             WHERE recovery_state = ?1
+             ORDER BY escalated_at_ms, plan_id",
+        )?;
+        let mut rows = statement.query(params![SemanticRecoveryState::Escalated.code()])?;
+        let mut plan_ids = Vec::new();
+        while let Some(row) = rows.next()? {
+            plan_ids.push(SemanticCommitPlanId::from_bytes(crate::store::blob16(
+                row, 0,
+            )?));
+        }
+        drop(rows);
+        drop(statement);
+        plan_ids
+            .into_iter()
+            .map(|plan_id| {
+                let recovery = semantic_load_optional(&*connection, plan_id)?
+                    .ok_or(TaskStoreError::SemanticCommitPlanNotFound)?;
+                let acknowledgement = semantic_load_alert_receipt_optional(
+                    &*connection,
+                    plan_id,
+                    recovery.total_failures,
+                )?;
+                Ok(SemanticRecoveryAlert {
+                    recovery,
+                    acknowledgement,
+                })
+            })
+            .collect()
+    }
+
+    /// Acknowledges one exact Semantic escalation instance without resuming
+    /// it. The failure-count CAS prevents a stale UI from acknowledging a
+    /// later escalation, and the immutable receipt (enforced by the v42
+    /// triggers on `task_semantic_recovery_alert_receipts`) makes exact
+    /// retries restart-safe: a replay of the same idempotency key returns
+    /// [`SemanticRecoveryAlertAcknowledgeDecision::Replayed`] with the
+    /// original bytes and never double-records
+    /// (`UNIQUE(plan_id, total_failures)`).
+    ///
+    /// A missing ledger row reports
+    /// [`TaskStoreError::SemanticCommitPlanNotFound`]: the artifact family's
+    /// dedicated `ArtifactRecoveryNotFound` variant has no Semantic
+    /// counterpart because this lane adds no `TaskStoreError` variants.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found, stale-CAS, invalid-state/timestamp, idempotency,
+    /// or storage failures. No partial acknowledgement is committed on
+    /// error.
+    pub fn acknowledge_semantic_recovery_alert(
+        &self,
+        request: SemanticRecoveryAlertAcknowledgeRequest,
+    ) -> Result<SemanticRecoveryAlertAcknowledgeDecision, TaskStoreError> {
+        if request.acknowledged_at_ms < 0 {
+            return Err(TaskStoreError::InvalidSemanticRecoveryPolicy {
+                reason: "acknowledgement timestamp must be non-negative",
+            });
+        }
+        let mut connection = self.lock_connection()?;
+        let transaction =
+            connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        if let Some(receipt) =
+            semantic_load_alert_receipt_by_idempotency_key(&transaction, request.idempotency_key)?
+        {
+            if receipt.plan_id != request.plan_id
+                || receipt.total_failures != request.expected_total_failures
+                || receipt.principal_id != request.principal_id
+            {
+                return Err(TaskStoreError::IdempotencyConflict);
+            }
+            transaction.commit()?;
+            return Ok(SemanticRecoveryAlertAcknowledgeDecision::Replayed(receipt));
+        }
+        let recovery = semantic_load_optional(&transaction, request.plan_id)?
+            .ok_or(TaskStoreError::SemanticCommitPlanNotFound)?;
+        if recovery.total_failures != request.expected_total_failures {
+            return Err(TaskStoreError::SemanticRecoveryCasMismatch {
+                expected: request.expected_total_failures,
+                current: recovery.total_failures,
+            });
+        }
+        if recovery.state != SemanticRecoveryState::Escalated {
+            return Err(TaskStoreError::InvalidSemanticRecoveryState {
+                state: recovery.state,
+            });
+        }
+        if request.acknowledged_at_ms < recovery.last_failed_at_ms {
+            return Err(TaskStoreError::InvalidSemanticRecoveryPolicy {
+                reason: "acknowledgement timestamp regresses durable history",
+            });
+        }
+        if let Some(receipt) = semantic_load_alert_receipt_optional(
+            &transaction,
+            request.plan_id,
+            request.expected_total_failures,
+        )? {
+            transaction.commit()?;
+            return Ok(SemanticRecoveryAlertAcknowledgeDecision::Replayed(receipt));
+        }
+        let receipt = SemanticRecoveryAlertReceipt {
+            receipt_id: derive_semantic_alert_receipt_id(
+                request.plan_id,
+                request.expected_total_failures,
+            ),
+            plan_id: request.plan_id,
+            total_failures: request.expected_total_failures,
+            principal_id: request.principal_id,
+            idempotency_key: request.idempotency_key,
+            acknowledged_at_ms: request.acknowledged_at_ms,
+        };
+        semantic_insert_alert_receipt(&transaction, &receipt)?;
+        transaction.commit()?;
+        Ok(SemanticRecoveryAlertAcknowledgeDecision::Acknowledged(
+            receipt,
+        ))
+    }
+
     /// Lists non-finalized Semantic plans whose durable retry time is due.
     /// Escalated plans are excluded until an explicit CAS resume. A plan
     /// with no ledger row is returned immediately: the plan itself is the
@@ -797,7 +976,13 @@ impl SqliteTaskAuthority {
     /// a CAS. A plan with no ledger row reports
     /// [`TaskStoreError::SemanticCommitPlanNotFound`]; a dedicated Semantic
     /// ledger-not-found variant mirroring the artifact family's
-    /// `ArtifactRecoveryNotFound` is deferred to the alert-surface task.
+    /// `ArtifactRecoveryNotFound` is deliberately not added (this lane adds
+    /// no `TaskStoreError` variants), so the plan-not-found variant is
+    /// reused. Known mirrored wart (tracked, unchanged):
+    /// `resume_artifact_recovery` likewise does not re-read the plan, so an
+    /// `Escalated` row for an already-`Finalized` plan can be resumed into
+    /// an orphan `Retrying` row — the due scan excludes `Finalized` plans,
+    /// so the orphan never re-enters scheduling and stays inert.
     ///
     /// # Errors
     ///
@@ -860,6 +1045,32 @@ pub(crate) fn resolve_recovery(
          WHERE plan_id = ?4 AND recovery_state != ?1",
         params![
             ArtifactRecoveryState::Resolved.code(),
+            encode_u64(0).as_slice(),
+            resolved_at_ms,
+            plan_id.as_bytes().as_slice(),
+        ],
+    )?;
+    Ok(())
+}
+
+/// Semantic mirror of [`resolve_recovery`]: flips any non-`Resolved` ledger
+/// row for one plan to `Resolved` inside the caller's finalize transaction
+/// (`SEM-RECOV-004`). Total failure history is preserved; a missing row is
+/// a no-op so a lost ledger row never blocks or re-derives from a
+/// successful finalize. The `WHERE recovery_state != ?1` guard makes
+/// repeated calls idempotent.
+pub(crate) fn resolve_semantic_recovery(
+    transaction: &rusqlite::Transaction<'_>,
+    plan_id: SemanticCommitPlanId,
+    resolved_at_ms: i64,
+) -> Result<(), TaskStoreError> {
+    transaction.execute(
+        "UPDATE task_semantic_recovery SET recovery_state = ?1,
+         consecutive_failures = ?2, next_retry_at_ms = NULL,
+         escalated_at_ms = NULL, resolved_at_ms = ?3, updated_at_ms = ?3
+         WHERE plan_id = ?4 AND recovery_state != ?1",
+        params![
+            SemanticRecoveryState::Resolved.code(),
             encode_u64(0).as_slice(),
             resolved_at_ms,
             plan_id.as_bytes().as_slice(),
@@ -991,6 +1202,93 @@ fn load_alert_receipt<P: rusqlite::Params>(
     Ok(Some(ArtifactRecoveryAlertReceipt {
         receipt_id: ReceiptId::from_bytes(crate::store::blob16(row, 0)?),
         plan_id: ArtifactCommitPlanId::from_bytes(crate::store::blob16(row, 1)?),
+        total_failures: u64_from_blob(row, 2)?,
+        principal_id: PrincipalId::from_bytes(crate::store::blob16(row, 3)?),
+        idempotency_key: IdempotencyKey::from_bytes(crate::store::blob16(row, 4)?),
+        acknowledged_at_ms: row.get(5)?,
+    }))
+}
+
+fn derive_semantic_alert_receipt_id(
+    plan_id: SemanticCommitPlanId,
+    total_failures: u64,
+) -> ReceiptId {
+    let mut hasher = Sha256::new();
+    hasher.update(b"llmos/task-semantic-recovery-alert-ack/v1\0");
+    hasher.update(plan_id.as_bytes());
+    hasher.update(total_failures.to_be_bytes());
+    let digest: [u8; 32] = hasher.finalize().into();
+    let mut id = [0_u8; 16];
+    id.copy_from_slice(&digest[..16]);
+    ReceiptId::from_bytes(id)
+}
+
+fn semantic_insert_alert_receipt(
+    transaction: &rusqlite::Transaction<'_>,
+    receipt: &SemanticRecoveryAlertReceipt,
+) -> Result<(), TaskStoreError> {
+    transaction.execute(
+        "INSERT INTO task_semantic_recovery_alert_receipts (
+            receipt_id, plan_id, total_failures, principal_id,
+            idempotency_key, acknowledged_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            receipt.receipt_id.as_bytes().as_slice(),
+            receipt.plan_id.as_bytes().as_slice(),
+            encode_u64(receipt.total_failures).as_slice(),
+            receipt.principal_id.as_bytes().as_slice(),
+            receipt.idempotency_key.as_bytes().as_slice(),
+            receipt.acknowledged_at_ms,
+        ],
+    )?;
+    Ok(())
+}
+
+fn semantic_load_alert_receipt_optional(
+    reader: &impl SqlRead,
+    plan_id: SemanticCommitPlanId,
+    total_failures: u64,
+) -> Result<Option<SemanticRecoveryAlertReceipt>, TaskStoreError> {
+    semantic_load_alert_receipt(
+        reader,
+        "SELECT receipt_id, plan_id, total_failures, principal_id,
+                idempotency_key, acknowledged_at_ms
+         FROM task_semantic_recovery_alert_receipts
+         WHERE plan_id = ?1 AND total_failures = ?2",
+        params![
+            plan_id.as_bytes().as_slice(),
+            encode_u64(total_failures).as_slice()
+        ],
+    )
+}
+
+fn semantic_load_alert_receipt_by_idempotency_key(
+    reader: &impl SqlRead,
+    idempotency_key: IdempotencyKey,
+) -> Result<Option<SemanticRecoveryAlertReceipt>, TaskStoreError> {
+    semantic_load_alert_receipt(
+        reader,
+        "SELECT receipt_id, plan_id, total_failures, principal_id,
+                idempotency_key, acknowledged_at_ms
+         FROM task_semantic_recovery_alert_receipts
+         WHERE idempotency_key = ?1",
+        [idempotency_key.as_bytes().as_slice()],
+    )
+}
+
+fn semantic_load_alert_receipt<P: rusqlite::Params>(
+    reader: &impl SqlRead,
+    sql: &str,
+    params: P,
+) -> Result<Option<SemanticRecoveryAlertReceipt>, TaskStoreError> {
+    let mut statement = reader.prepare_statement(sql)?;
+    let mut rows = statement.query(params)?;
+    let Some(row) = rows.next()? else {
+        return Ok(None);
+    };
+    Ok(Some(SemanticRecoveryAlertReceipt {
+        receipt_id: ReceiptId::from_bytes(crate::store::blob16(row, 0)?),
+        plan_id: SemanticCommitPlanId::from_bytes(crate::store::blob16(row, 1)?),
         total_failures: u64_from_blob(row, 2)?,
         principal_id: PrincipalId::from_bytes(crate::store::blob16(row, 3)?),
         idempotency_key: IdempotencyKey::from_bytes(crate::store::blob16(row, 4)?),

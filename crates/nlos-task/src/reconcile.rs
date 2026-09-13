@@ -2636,6 +2636,11 @@ impl SqliteTaskAuthority {
                     receipt.receipt_id,
                     request.base.finalized_at_ms,
                 )?;
+                crate::recovery::resolve_semantic_recovery(
+                    &transaction,
+                    plan.plan_id,
+                    request.base.finalized_at_ms,
+                )?;
                 transaction.commit()?;
                 Ok(FinalizeImplResult::Combined(
                     SemanticResourceFinalizeDecision::Committed(Box::new(
@@ -2661,6 +2666,11 @@ impl SqliteTaskAuthority {
                     &transaction,
                     plan.plan_id,
                     receipt.receipt_id,
+                    request.base.finalized_at_ms,
+                )?;
+                crate::recovery::resolve_semantic_recovery(
+                    &transaction,
+                    plan.plan_id,
                     request.base.finalized_at_ms,
                 )?;
                 transaction.commit()?;
