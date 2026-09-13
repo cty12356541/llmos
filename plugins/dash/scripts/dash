@@ -8,11 +8,35 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 
+def _build_model(repo: Path):
+    from datetime import datetime
+    from dashlib.adapters import load_session, load_git, load_sdd
+    from dashlib.merge import merge
+    now = datetime.now().astimezone().isoformat(timespec="seconds")
+    config = {}
+    cfg = repo / ".dash" / "config.json"
+    if cfg.exists():
+        import json
+        config = json.loads(cfg.read_text(encoding="utf-8"))
+    frags = [load_session(repo / ".dash" / "state.jsonl", now),
+             load_git(repo, now)]
+    sdd_frag, barriers = load_sdd(repo, now)
+    frags.append(sdd_frag)
+    model = merge(repo.resolve().name, frags, barriers, now,
+                  threshold_h=float(config.get("stalled_threshold_h", 2.0)))
+    return model
+
+
 def main() -> int:
     args = sys.argv[1:]
     if not args:
         print(__doc__)
         return 2
+    repo = Path.cwd()
+    if args[0] == "oneline":
+        from dashlib.render_oneline import render_oneline
+        print(render_oneline(_build_model(repo)))
+        return 0
     print(f"dash: 未实现子命令 {args[0]}", file=sys.stderr)
     return 2
 
