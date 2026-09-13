@@ -324,6 +324,15 @@ fn health(plan_id: nlos_task::ArtifactCommitPlanId) -> StubHealth {
         durable_escalated: 1,
         durable_unacknowledged_escalated: 1,
         durable_resolved: 0,
+        semantic_durable_retrying: 0,
+        semantic_durable_escalated: 0,
+        semantic_durable_unacknowledged_escalated: 0,
+        semantic_durable_resolved: 0,
+        semantic_consecutive_failed_cycles: 0,
+        semantic_total_inspected: 0,
+        semantic_total_finalized: 0,
+        semantic_domain_faulted: false,
+        artifact_domain_faulted: false,
     })
 }
 

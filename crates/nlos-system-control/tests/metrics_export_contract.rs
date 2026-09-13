@@ -114,6 +114,15 @@ impl RecoveryHealthSource for FlappingHealth {
             durable_escalated: 1_000 + generation,
             durable_unacknowledged_escalated: 1_100 + generation,
             durable_resolved: 1_200 + generation,
+            semantic_durable_retrying: 0,
+            semantic_durable_escalated: 0,
+            semantic_durable_unacknowledged_escalated: 0,
+            semantic_durable_resolved: 0,
+            semantic_consecutive_failed_cycles: 0,
+            semantic_total_inspected: 0,
+            semantic_total_finalized: 0,
+            semantic_domain_faulted: false,
+            artifact_domain_faulted: false,
         }
     }
 }
@@ -131,6 +140,15 @@ fn health() -> FixedHealth {
         durable_escalated: 7,
         durable_unacknowledged_escalated: 2,
         durable_resolved: 11,
+        semantic_durable_retrying: 0,
+        semantic_durable_escalated: 0,
+        semantic_durable_unacknowledged_escalated: 0,
+        semantic_durable_resolved: 0,
+        semantic_consecutive_failed_cycles: 0,
+        semantic_total_inspected: 0,
+        semantic_total_finalized: 0,
+        semantic_domain_faulted: false,
+        artifact_domain_faulted: false,
     })
 }
 
