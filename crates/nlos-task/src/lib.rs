@@ -136,6 +136,7 @@ mod migrations;
 mod model;
 mod participant;
 mod pressure;
+mod receipt;
 mod reconcile;
 mod recovery;
 mod resource_commit;
@@ -209,6 +210,7 @@ pub use pressure::{
     enforce_working_set_admission, execute_working_set_reclaim_execution,
     inspect_working_set_pressure, plan_working_set_reclaim_execution, working_set_reclaim_advisory,
 };
+pub use receipt::TaskCommitReceipt;
 pub use reconcile::{
     AdoptionReplay, AdoptionRequest, AuthorityLeaseAdoptionRequest, AuthorityLeaseCloseRequest,
     AuthorityLeaseCrossTermAdoptionRequest, AuthorityLeaseFinalizeRequest,
@@ -220,6 +222,10 @@ pub use recovery::{
     ArtifactRecoveryAlertAcknowledgeRequest, ArtifactRecoveryAlertReceipt,
     ArtifactRecoveryFailureRequest, ArtifactRecoveryFailureSource, ArtifactRecoveryRecord,
     ArtifactRecoveryResumeRequest, ArtifactRecoveryState, ArtifactRecoverySummary,
+    SemanticRecoveryAlert, SemanticRecoveryAlertAcknowledgeDecision,
+    SemanticRecoveryAlertAcknowledgeRequest, SemanticRecoveryAlertReceipt,
+    SemanticRecoveryFailureRequest, SemanticRecoveryFailureSource, SemanticRecoveryRecord,
+    SemanticRecoveryResumeRequest, SemanticRecoveryState, SemanticRecoverySummary,
 };
 pub use resource_commit::{
     NestedResourceCostReceipt, ResourceFinalizeDecision, ResourceTaskCommitReceipt,
@@ -311,6 +317,20 @@ pub enum TaskStoreError {
     /// The requested recovery transition is invalid for its durable state.
     InvalidArtifactRecoveryState {
         state: ArtifactRecoveryState,
+    },
+    /// Semantic recovery retry timing or timestamp is invalid.
+    InvalidSemanticRecoveryPolicy {
+        reason: &'static str,
+    },
+    /// A Semantic recovery update used a stale failure-count CAS.
+    SemanticRecoveryCasMismatch {
+        expected: u64,
+        current: u64,
+    },
+    /// The requested Semantic recovery transition is invalid for its durable
+    /// state.
+    InvalidSemanticRecoveryState {
+        state: SemanticRecoveryState,
     },
     /// The task ID is already registered with a different specification.
     DuplicateTask,
@@ -686,6 +706,19 @@ impl fmt::Display for TaskStoreError {
                 write!(
                     formatter,
                     "Artifact recovery state {state:?} rejects the transition"
+                )
+            }
+            Self::InvalidSemanticRecoveryPolicy { reason } => {
+                write!(formatter, "invalid Semantic recovery policy: {reason}")
+            }
+            Self::SemanticRecoveryCasMismatch { expected, current } => write!(
+                formatter,
+                "Semantic recovery CAS expected {expected} failures but found {current}"
+            ),
+            Self::InvalidSemanticRecoveryState { state } => {
+                write!(
+                    formatter,
+                    "Semantic recovery state {state:?} rejects the transition"
                 )
             }
             Self::DuplicateTask => formatter.write_str("task ID re-registered with new spec"),

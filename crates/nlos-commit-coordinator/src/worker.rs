@@ -7,14 +7,23 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use nlos_artifact::ArtifactStore;
+use nlos_semantic::SemanticAuthority;
 use nlos_task::{
     ArtifactCommitPlanId, ArtifactRecoveryFailureRequest, ArtifactRecoveryFailureSource,
-    ArtifactRecoveryState, SqliteTaskAuthority,
+    ArtifactRecoveryState, SemanticRecoveryFailureRequest, SemanticRecoveryFailureSource,
+    SemanticRecoveryState, SqliteTaskAuthority,
 };
 
-use crate::{ArtifactCommitCoordinator, CoordinatorError};
+use crate::{
+    ArtifactCommitCoordinator, ConvergeSemanticCommitRequest, CoordinatorError,
+    SemanticCommitCoordinator,
+};
 
-struct CycleOutcome {
+/// One domain half's result for a single worker cycle. The artifact half
+/// fills the durable gauges from the artifact recovery summary; the semantic
+/// half fills its own from the semantic recovery summary when the worker was
+/// started with a semantic authority.
+struct DomainCycleOutcome {
     inspected: usize,
     finalized: usize,
     failures: Vec<RecoveryWorkerFailure>,
@@ -24,6 +33,40 @@ struct CycleOutcome {
     durable_escalated: u64,
     durable_unacknowledged_escalated: u64,
     durable_resolved: u64,
+}
+
+impl DomainCycleOutcome {
+    /// Quiescent outcome: nothing inspected, nothing failed, no durable
+    /// gauges. Represents the semantic half of a worker started without a
+    /// semantic authority and any domain half skipped after its per-domain
+    /// fault bit was set.
+    fn empty() -> Self {
+        Self {
+            inspected: 0,
+            finalized: 0,
+            failures: Vec::new(),
+            retry_delay: None,
+            infrastructure_failure: false,
+            durable_retrying: 0,
+            durable_escalated: 0,
+            durable_unacknowledged_escalated: 0,
+            durable_resolved: 0,
+        }
+    }
+
+    /// Worker-level infrastructure failure that prevented the half from
+    /// running at all (for example an unreadable system clock).
+    fn worker_infrastructure_failure(message: String) -> Self {
+        Self {
+            infrastructure_failure: true,
+            failures: vec![RecoveryWorkerFailure {
+                plan_id: None,
+                authority: RecoveryFailureAuthority::Worker,
+                message,
+            }],
+            ..Self::empty()
+        }
+    }
 }
 
 /// Lifecycle tuning for the TaskAuthority-owned commit recovery worker.
@@ -81,6 +124,10 @@ pub struct RecoveryWorkerFailure {
 }
 
 /// Read-only snapshot for `TaskAuthority` service health and supervision.
+///
+/// The pre-existing counter/gauge fields describe the artifact domain; the
+/// `semantic_*` fields mirror them for the semantic domain and stay zero for
+/// a worker started without a semantic authority.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RecoveryWorkerHealth {
     pub state: RecoveryWorkerState,
@@ -94,6 +141,25 @@ pub struct RecoveryWorkerHealth {
     pub durable_escalated: u64,
     pub durable_unacknowledged_escalated: u64,
     pub durable_resolved: u64,
+    /// Semantic-domain durable recovery gauges, mirroring the artifact
+    /// `durable_*` fields above.
+    pub semantic_durable_retrying: u64,
+    pub semantic_durable_escalated: u64,
+    pub semantic_durable_unacknowledged_escalated: u64,
+    pub semantic_durable_resolved: u64,
+    /// Semantic-domain consecutive infrastructure-failed cycles, mirroring
+    /// `consecutive_failed_cycles` for the semantic half of the cycle.
+    pub semantic_consecutive_failed_cycles: usize,
+    pub semantic_total_inspected: u64,
+    pub semantic_total_finalized: u64,
+    /// Per-domain fault bits. `true` stops scanning that domain only;
+    /// `RecoveryWorkerState::Faulted` remains the thread-level terminal
+    /// state. A faulted semantic domain leaves the artifact half running;
+    /// the artifact bit is set on the same transition that faults the
+    /// thread, because an exhausted artifact-domain failure budget has
+    /// always terminated the worker.
+    pub semantic_domain_faulted: bool,
+    pub artifact_domain_faulted: bool,
 }
 
 impl Default for RecoveryWorkerHealth {
@@ -110,6 +176,15 @@ impl Default for RecoveryWorkerHealth {
             durable_escalated: 0,
             durable_unacknowledged_escalated: 0,
             durable_resolved: 0,
+            semantic_durable_retrying: 0,
+            semantic_durable_escalated: 0,
+            semantic_durable_unacknowledged_escalated: 0,
+            semantic_durable_resolved: 0,
+            semantic_consecutive_failed_cycles: 0,
+            semantic_total_inspected: 0,
+            semantic_total_finalized: 0,
+            semantic_domain_faulted: false,
+            artifact_domain_faulted: false,
         }
     }
 }
@@ -140,11 +215,13 @@ impl Error for RecoveryWorkerStartError {
     }
 }
 
-/// TaskAuthority-owned lifecycle handle for Artifact commit recovery.
+/// TaskAuthority-owned lifecycle handle for artifact and Semantic commit
+/// recovery.
 ///
 /// The worker owns no canonical state. Its dedicated thread opens no third
-/// store: it drives the supplied `TaskAuthority` and `ArtifactAuthority` and can
-/// always be replaced after a crash from their durable prefix.
+/// store: it drives the supplied `TaskAuthority` and `ArtifactAuthority`
+/// (plus the optional `SemanticAuthority`) and can always be replaced after
+/// a crash from their durable prefix.
 pub struct TaskAuthorityCommitRecoveryWorker {
     stop_tx: SyncSender<()>,
     join: Option<JoinHandle<()>>,
@@ -152,8 +229,11 @@ pub struct TaskAuthorityCommitRecoveryWorker {
 }
 
 impl TaskAuthorityCommitRecoveryWorker {
-    /// Starts a dedicated worker. The first bounded pending scan runs
-    /// immediately; `poll_interval` applies only after that scan.
+    /// Starts a dedicated worker whose semantic half stays quiescent: no
+    /// semantic authority is supplied, so only artifact plans are scanned and
+    /// every `semantic_*` health field remains at its zero default. Use
+    /// [`Self::start_with_semantic_authority`] to drive Semantic commit
+    /// convergence on the same thread.
     ///
     /// # Errors
     ///
@@ -164,6 +244,25 @@ impl TaskAuthorityCommitRecoveryWorker {
         artifacts: Arc<ArtifactStore>,
         config: RecoveryWorkerConfig,
     ) -> Result<Self, RecoveryWorkerStartError> {
+        Self::start_with_semantic_authority(tasks, artifacts, None, config)
+    }
+
+    /// Starts a dedicated worker driving both recovery domains: the artifact
+    /// half scans `ArtifactCommitPlan`s and the semantic half (when
+    /// `semantic` is `Some`) scans due `SemanticCommitPlan`s through the same
+    /// `TaskAuthority`. The first bounded pending scan runs immediately;
+    /// `poll_interval` applies only after that scan.
+    ///
+    /// # Errors
+    ///
+    /// Returns before spawning for an invalid config, or when the OS cannot
+    /// create the worker thread.
+    pub fn start_with_semantic_authority(
+        tasks: Arc<SqliteTaskAuthority>,
+        artifacts: Arc<ArtifactStore>,
+        semantic: Option<Arc<SemanticAuthority>>,
+        config: RecoveryWorkerConfig,
+    ) -> Result<Self, RecoveryWorkerStartError> {
         validate_config(config)?;
         let (stop_tx, stop_rx) = sync_channel(1);
         let health = Arc::new(Mutex::new(RecoveryWorkerHealth::default()));
@@ -172,7 +271,14 @@ impl TaskAuthorityCommitRecoveryWorker {
             .name("task-authority-commit-recovery".to_string())
             .spawn(move || {
                 let outcome = catch_unwind(AssertUnwindSafe(|| {
-                    run_worker(&tasks, &artifacts, config, &stop_rx, &thread_health);
+                    run_worker(
+                        &tasks,
+                        &artifacts,
+                        semantic.as_deref(),
+                        config,
+                        &stop_rx,
+                        &thread_health,
+                    );
                 }));
                 if outcome.is_err() {
                     let mut current = lock(&thread_health);
@@ -241,74 +347,47 @@ fn validate_config(config: RecoveryWorkerConfig) -> Result<(), RecoveryWorkerSta
 fn run_worker(
     tasks: &SqliteTaskAuthority,
     artifacts: &ArtifactStore,
+    semantic: Option<&SemanticAuthority>,
     config: RecoveryWorkerConfig,
     stop_rx: &Receiver<()>,
     health: &Mutex<RecoveryWorkerHealth>,
 ) {
     lock(health).state = RecoveryWorkerState::Running;
     loop {
-        let outcome = now_ms().map_or_else(
-            |message| CycleOutcome {
-                inspected: 0,
-                finalized: 0,
-                failures: vec![RecoveryWorkerFailure {
-                    plan_id: None,
-                    authority: RecoveryFailureAuthority::Worker,
-                    message,
-                }],
-                retry_delay: None,
-                infrastructure_failure: true,
-                durable_retrying: 0,
-                durable_escalated: 0,
-                durable_unacknowledged_escalated: 0,
-                durable_resolved: 0,
-            },
-            |timestamp| durable_cycle(tasks, artifacts, config, timestamp),
-        );
-
-        let delay = {
-            let mut current = lock(health);
-            current.completed_cycles = current.completed_cycles.saturating_add(1);
-            current.total_inspected = current
-                .total_inspected
-                .saturating_add(u64::try_from(outcome.inspected).unwrap_or(u64::MAX));
-            current.total_finalized = current
-                .total_finalized
-                .saturating_add(u64::try_from(outcome.finalized).unwrap_or(u64::MAX));
-            current.durable_retrying = outcome.durable_retrying;
-            current.durable_escalated = outcome.durable_escalated;
-            current.durable_unacknowledged_escalated = outcome.durable_unacknowledged_escalated;
-            current.durable_resolved = outcome.durable_resolved;
-            if outcome.failures.is_empty() {
-                current.consecutive_failed_cycles = 0;
-                current.retry_delay = None;
-                current.last_failures.clear();
-                current.state = RecoveryWorkerState::Running;
-                config.poll_interval
-            } else if outcome.infrastructure_failure {
-                current.consecutive_failed_cycles =
-                    current.consecutive_failed_cycles.saturating_add(1);
-                current.last_failures = outcome.failures;
-                if current.consecutive_failed_cycles >= config.failure_threshold {
-                    current.state = RecoveryWorkerState::Faulted;
-                    current.retry_delay = None;
-                    return;
-                }
-                let delay = retry_delay(config, current.consecutive_failed_cycles);
-                current.state = RecoveryWorkerState::BackingOff;
-                current.retry_delay = Some(delay);
-                delay
-            } else {
-                current.consecutive_failed_cycles = 0;
-                current.last_failures = outcome.failures;
-                current.retry_delay = outcome.retry_delay;
-                current.state = if outcome.retry_delay.is_some() {
-                    RecoveryWorkerState::BackingOff
-                } else {
-                    RecoveryWorkerState::Running
+        let (artifact, semantic) = match now_ms() {
+            Ok(timestamp) => {
+                // One cycle drives the artifact half and then the semantic
+                // half. A faulted semantic domain is skipped while the
+                // artifact half keeps scanning; an artifact-domain fault is
+                // terminal for the whole thread (the pre-existing Faulted
+                // transition), so the artifact half needs no skip check. A
+                // worker started without a semantic authority runs no
+                // semantic half at all.
+                let artifact = artifact_cycle(tasks, artifacts, config, timestamp);
+                let semantic = match semantic {
+                    Some(authority) => {
+                        if lock(health).semantic_domain_faulted {
+                            DomainCycleOutcome::empty()
+                        } else {
+                            semantic_cycle(tasks, authority, config, timestamp)
+                        }
+                    }
+                    None => DomainCycleOutcome::empty(),
                 };
-                outcome.retry_delay.unwrap_or(config.poll_interval)
+                (artifact, semantic)
             }
+            // An unusable clock blocks both halves before either can run.
+            // It is accounted against the artifact-domain failure budget —
+            // the budget that has always terminated the worker thread — and
+            // surfaces as exactly one Worker-authority failure.
+            Err(message) => (
+                DomainCycleOutcome::worker_infrastructure_failure(message),
+                DomainCycleOutcome::empty(),
+            ),
+        };
+
+        let Some(delay) = account_cycle(config, health, artifact, semantic) else {
+            return;
         };
 
         match stop_rx.recv_timeout(delay) {
@@ -323,19 +402,140 @@ fn run_worker(
     }
 }
 
+/// Aggregates both domain halves into one health update and returns the
+/// delay before the next cycle, or `None` when the worker thread faulted
+/// terminally.
+fn account_cycle(
+    config: RecoveryWorkerConfig,
+    health: &Mutex<RecoveryWorkerHealth>,
+    artifact: DomainCycleOutcome,
+    semantic: DomainCycleOutcome,
+) -> Option<Duration> {
+    let artifact_infra = artifact.infrastructure_failure;
+    let semantic_infra = semantic.infrastructure_failure;
+    let mut failures = artifact.failures;
+    failures.extend(semantic.failures);
+    let plan_retry_delay = min_option_duration(artifact.retry_delay, semantic.retry_delay);
+
+    let mut current = lock(health);
+    current.completed_cycles = current.completed_cycles.saturating_add(1);
+    current.total_inspected = current
+        .total_inspected
+        .saturating_add(u64::try_from(artifact.inspected).unwrap_or(u64::MAX));
+    current.total_finalized = current
+        .total_finalized
+        .saturating_add(u64::try_from(artifact.finalized).unwrap_or(u64::MAX));
+    current.durable_retrying = artifact.durable_retrying;
+    current.durable_escalated = artifact.durable_escalated;
+    current.durable_unacknowledged_escalated = artifact.durable_unacknowledged_escalated;
+    current.durable_resolved = artifact.durable_resolved;
+    current.semantic_total_inspected = current
+        .semantic_total_inspected
+        .saturating_add(u64::try_from(semantic.inspected).unwrap_or(u64::MAX));
+    current.semantic_total_finalized = current
+        .semantic_total_finalized
+        .saturating_add(u64::try_from(semantic.finalized).unwrap_or(u64::MAX));
+    current.semantic_durable_retrying = semantic.durable_retrying;
+    current.semantic_durable_escalated = semantic.durable_escalated;
+    current.semantic_durable_unacknowledged_escalated = semantic.durable_unacknowledged_escalated;
+    current.semantic_durable_resolved = semantic.durable_resolved;
+
+    // Per-domain consecutive infrastructure-failure accounting. The existing
+    // `consecutive_failed_cycles` field is the artifact-domain counter; the
+    // semantic domain counts independently against the same threshold. A
+    // skipped (faulted) semantic domain neither counts nor resets.
+    //
+    // Pinned decision (W26-002): setting `semantic_domain_faulted` does NOT
+    // clear `semantic_consecutive_failed_cycles`. The bit is sticky for the
+    // life of the worker instance, so clearing the counter on that
+    // transition would leave a permanently faulted domain with a zeroed
+    // counter — an unexplainable health surface. The counter stays at the
+    // threshold as the evidence of why the bit was set; a fresh worker
+    // instance starts both at zero.
+    if artifact_infra {
+        current.consecutive_failed_cycles = current.consecutive_failed_cycles.saturating_add(1);
+    } else {
+        current.consecutive_failed_cycles = 0;
+    }
+    if semantic_infra {
+        current.semantic_consecutive_failed_cycles =
+            current.semantic_consecutive_failed_cycles.saturating_add(1);
+        if current.semantic_consecutive_failed_cycles >= config.failure_threshold {
+            current.semantic_domain_faulted = true;
+        }
+    } else if !current.semantic_domain_faulted {
+        current.semantic_consecutive_failed_cycles = 0;
+    }
+
+    if failures.is_empty() {
+        current.retry_delay = None;
+        current.last_failures.clear();
+        current.state = RecoveryWorkerState::Running;
+        return Some(config.poll_interval);
+    }
+    current.last_failures = failures;
+    if !artifact_infra && !semantic_infra {
+        // Plan-level failures only: the affected plans retry on their own
+        // durable schedule; neither domain's failure budget is consumed.
+        current.retry_delay = plan_retry_delay;
+        current.state = if plan_retry_delay.is_some() {
+            RecoveryWorkerState::BackingOff
+        } else {
+            RecoveryWorkerState::Running
+        };
+        return Some(plan_retry_delay.unwrap_or(config.poll_interval));
+    }
+    // Infrastructure failure. An exhausted artifact-domain budget is the
+    // pre-existing thread-level Faulted transition.
+    if artifact_infra && current.consecutive_failed_cycles >= config.failure_threshold {
+        current.artifact_domain_faulted = true;
+        current.state = RecoveryWorkerState::Faulted;
+        current.retry_delay = None;
+        return None;
+    }
+    let mut backoff = None;
+    if artifact_infra {
+        backoff = Some(retry_delay(config, current.consecutive_failed_cycles));
+    }
+    if semantic_infra && !current.semantic_domain_faulted {
+        let semantic_backoff = retry_delay(config, current.semantic_consecutive_failed_cycles);
+        backoff = Some(backoff.map_or(semantic_backoff, |current| current.max(semantic_backoff)));
+    }
+    if let Some(delay) = backoff {
+        current.retry_delay = Some(delay);
+        current.state = RecoveryWorkerState::BackingOff;
+        Some(delay)
+    } else {
+        // The only infrastructure failures came from a domain that just
+        // faulted; it will not be scanned again, so the thread resumes
+        // its normal poll cadence.
+        current.retry_delay = None;
+        current.state = RecoveryWorkerState::Running;
+        Some(config.poll_interval)
+    }
+}
+
+fn min_option_duration(first: Option<Duration>, second: Option<Duration>) -> Option<Duration> {
+    match (first, second) {
+        (Some(first), Some(second)) => Some(first.min(second)),
+        (first, None) => first,
+        (None, second) => second,
+    }
+}
+
 // Keeping one cycle linear makes the external converge result and its
 // TaskAuthority ledger CAS visibly adjacent for crash-window review.
 #[allow(clippy::too_many_lines)]
-fn durable_cycle(
+fn artifact_cycle(
     tasks: &SqliteTaskAuthority,
     artifacts: &ArtifactStore,
     config: RecoveryWorkerConfig,
     now_ms: i64,
-) -> CycleOutcome {
+) -> DomainCycleOutcome {
     let plans = match tasks.list_due_artifact_commit_plans(config.scan_limit, now_ms) {
         Ok(plans) => plans,
         Err(error) => {
-            return CycleOutcome {
+            return DomainCycleOutcome {
                 inspected: 0,
                 finalized: 0,
                 failures: vec![failure_of(None, &CoordinatorError::Task(error))],
@@ -348,7 +548,7 @@ fn durable_cycle(
             };
         }
     };
-    let mut outcome = CycleOutcome {
+    let mut outcome = DomainCycleOutcome {
         inspected: plans.len(),
         finalized: 0,
         failures: Vec::new(),
@@ -437,6 +637,141 @@ fn durable_cycle(
         }
     }
     outcome
+}
+
+/// Semantic-domain half of one cycle: scan the due Semantic plans, converge
+/// each through the coordinator, and record plan-level failures in the
+/// durable semantic recovery ledger with a compare-and-swap on the plan's
+/// total-failure count. Storage failures on this path (scan, ledger read,
+/// ledger append, summary) are infrastructure failures that consume the
+/// semantic domain's failure budget; owner/coordinator rejections are
+/// plan-level and only advance the ledger.
+// Keeping one cycle linear makes the external converge result and its
+// TaskAuthority ledger CAS visibly adjacent for crash-window review.
+#[allow(clippy::too_many_lines)]
+fn semantic_cycle(
+    tasks: &SqliteTaskAuthority,
+    semantic: &SemanticAuthority,
+    config: RecoveryWorkerConfig,
+    now_ms: i64,
+) -> DomainCycleOutcome {
+    let plans = match tasks.list_due_semantic_commit_plans(config.scan_limit, now_ms) {
+        Ok(plans) => plans,
+        Err(error) => {
+            return DomainCycleOutcome {
+                inspected: 0,
+                finalized: 0,
+                failures: vec![failure_of(None, &CoordinatorError::Task(error))],
+                retry_delay: None,
+                infrastructure_failure: true,
+                durable_retrying: 0,
+                durable_escalated: 0,
+                durable_unacknowledged_escalated: 0,
+                durable_resolved: 0,
+            };
+        }
+    };
+    let mut outcome = DomainCycleOutcome {
+        inspected: plans.len(),
+        finalized: 0,
+        failures: Vec::new(),
+        retry_delay: None,
+        infrastructure_failure: false,
+        durable_retrying: 0,
+        durable_escalated: 0,
+        durable_unacknowledged_escalated: 0,
+        durable_resolved: 0,
+    };
+    let coordinator = SemanticCommitCoordinator::new(tasks, semantic);
+    for plan in plans {
+        match coordinator.converge(ConvergeSemanticCommitRequest {
+            plan_id: plan.plan_id,
+            now_ms,
+        }) {
+            Ok(_) => outcome.finalized += 1,
+            Err(error) => {
+                // The health failure surface types plan identity as
+                // `ArtifactCommitPlanId` (pre-dual shape); a Semantic plan id
+                // cannot be laundered into it, so semantic entries carry no
+                // plan id. Durable per-plan identity lives in the semantic
+                // recovery ledger (`inspect_semantic_recovery`); widening the
+                // health failure struct belongs to the semantic alert
+                // surface, which owns its SABI consumers.
+                outcome.failures.push(failure_of(None, &error));
+                let current = match tasks.inspect_semantic_recovery(plan.plan_id) {
+                    Ok(record) => record.map_or(0, |record| record.total_failures),
+                    Err(ledger_error) => {
+                        outcome.infrastructure_failure = true;
+                        outcome
+                            .failures
+                            .push(failure_of(None, &CoordinatorError::Task(ledger_error)));
+                        continue;
+                    }
+                };
+                match tasks.record_semantic_recovery_failure(SemanticRecoveryFailureRequest {
+                    plan_id: plan.plan_id,
+                    expected_total_failures: current,
+                    source: semantic_recovery_source(&error),
+                    observed_at_ms: now_ms,
+                    // Both ledgers receive the same config-derived bounds
+                    // (`poll_interval`/`max_backoff`), but they do not share
+                    // a delay distribution: the artifact ledger jitters per
+                    // plan while the semantic ledger is a pure capped
+                    // exponential. Equal retry times across the two domains
+                    // must not be assumed by callers or tests.
+                    base_delay_ms: duration_ms(config.poll_interval),
+                    max_delay_ms: duration_ms(config.max_backoff),
+                }) {
+                    Ok(record) if record.state == SemanticRecoveryState::Retrying => {
+                        let delay_ms = record.next_retry_at_ms.unwrap_or(now_ms) - now_ms;
+                        let delay = Duration::from_millis(u64::try_from(delay_ms).unwrap_or(0));
+                        outcome.retry_delay = Some(
+                            outcome
+                                .retry_delay
+                                .map_or(delay, |current| current.min(delay)),
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(ledger_error) => {
+                        outcome.infrastructure_failure = true;
+                        outcome
+                            .failures
+                            .push(failure_of(None, &CoordinatorError::Task(ledger_error)));
+                    }
+                }
+            }
+        }
+    }
+    match tasks.summarize_semantic_recovery() {
+        Ok(summary) => {
+            outcome.durable_retrying = summary.retrying;
+            outcome.durable_escalated = summary.escalated;
+            outcome.durable_unacknowledged_escalated = summary.unacknowledged_escalated;
+            outcome.durable_resolved = summary.resolved;
+        }
+        Err(error) => {
+            outcome.infrastructure_failure = true;
+            outcome
+                .failures
+                .push(failure_of(None, &CoordinatorError::Task(error)));
+        }
+    }
+    outcome
+}
+
+/// Maps one semantic-domain coordinator failure to the durable ledger's
+/// failure source. Unlike the artifact mapping, a `CoordinatorError::Semantic`
+/// is the semantic domain's own owner authority; `CoordinatorError::Artifact`
+/// cannot occur on the semantic path and falls back to `Coordinator` so the
+/// mapping stays total.
+const fn semantic_recovery_source(error: &CoordinatorError) -> SemanticRecoveryFailureSource {
+    match error {
+        CoordinatorError::Task(_) => SemanticRecoveryFailureSource::TaskAuthority,
+        CoordinatorError::Semantic(_) => SemanticRecoveryFailureSource::SemanticAuthority,
+        CoordinatorError::InvalidTimestamp | CoordinatorError::Artifact(_) => {
+            SemanticRecoveryFailureSource::Coordinator
+        }
+    }
 }
 
 fn duration_ms(duration: Duration) -> u64 {

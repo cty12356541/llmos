@@ -1,7 +1,7 @@
 # 统一恢复面设计(Semantic 恢复台账 + worker 双域驱动 + 统一 TaskCommitReceipt)
 
 - **日期**:2026-09-13
-- **状态**:已获维护者批准的方向(chat 批准,本文为定稿 spec)
+- **状态**:已实现(2026-09-13,W26 四车道,Evidence: [b-task-008c2g-unified-recovery.md](../../evidence/stage-b/b-task-008c2g-unified-recovery.md));方向经维护者批准(chat 批准,本文为定稿 spec)
 - **波次**:W26
 - **背景依据**:[ADR-0013 跨 authority verify-then-commit 契约](../../management/adrs/0013-cross-authority-verify-then-commit-contract.md)、[ADR-0005 authority-first 顺序](../../management/adrs/0005-task-write-set-authority-first.md)、`b-task-006h`–`006k` 恢复台账/worker 证据、`b-task-008c2g-coord` 系列收敛证据
 

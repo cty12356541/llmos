@@ -1369,7 +1369,7 @@ fn check_effect_permit_ttl(
 }
 
 /// `TK-B1` payload conversion: durable and request timestamps are signed
-/// SQLite integers, while the typed rejection reports `u64`. A negative
+/// `SQLite` integers, while the typed rejection reports `u64`. A negative
 /// (corrupt) input clamps to 0 — the fail-closed decision itself was
 /// already made in the signed domain by the strict comparison.
 fn expiry_payload_ms(value: i64) -> u64 {

@@ -1,4 +1,4 @@
-//! Linear `SQLite` schema migration chain (v1 → v41) for the durable
+//! Linear `SQLite` schema migration chain (v1 → v42) for the durable
 //! `TaskAuthority`.
 //!
 //! Every `migrate_vN` advances `user_version` by exactly one step, committed
@@ -1437,6 +1437,43 @@ pub(crate) fn migrate_v41(connection: &mut Connection) -> Result<(), TaskStoreEr
     Ok(())
 }
 
+/// v41 → v42 lands the Semantic recovery ledger table group: one
+/// recovery row per semantic commit plan (mirroring the Artifact recovery
+/// ledger of v8/v9 column-for-column, with the foreign key re-pointed at
+/// `task_semantic_commit_plans`) plus its immutable alert receipts. Purely
+/// additive; idempotent and re-runnable.
+pub(crate) fn migrate_v42(connection: &mut Connection) -> Result<(), TaskStoreError> {
+    // The complete group is five named sqlite_master parts: two tables,
+    // the due index, and the two immutability triggers.
+    let complete_schema_parts: i64 = connection.query_row(
+        "SELECT (SELECT COUNT(*) FROM sqlite_master
+                 WHERE type='table' AND name IN (
+                     'task_semantic_recovery',
+                     'task_semantic_recovery_alert_receipts'))
+              + (SELECT COUNT(*) FROM sqlite_master
+                 WHERE type='index' AND name = 'task_semantic_recovery_due')
+              + (SELECT COUNT(*) FROM sqlite_master
+                 WHERE type='trigger' AND name IN (
+                     'task_semantic_recovery_alert_receipts_immutable_update',
+                     'task_semantic_recovery_alert_receipts_immutable_delete'))",
+        [],
+        |row| row.get(0),
+    )?;
+    if complete_schema_parts == 5 {
+        connection.pragma_update(None, "user_version", 42)?;
+        return Ok(());
+    }
+    if complete_schema_parts != 0 {
+        return Err(TaskStoreError::CorruptRecord(
+            "partial semantic recovery ledger schema",
+        ));
+    }
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(SCHEMA_V42_SQL)?;
+    transaction.commit()?;
+    Ok(())
+}
+
 const SCHEMA_V13_SQL: &str = "CREATE TABLE task_write_sets (
         task_id BLOB NOT NULL CHECK(length(task_id) = 16),
         attempt_id BLOB NOT NULL CHECK(length(attempt_id) = 16),
@@ -2728,3 +2765,50 @@ const SCHEMA_V41_SQL: &str = "ALTER TABLE effect_slots
     BEFORE DELETE ON effect_fiber_registrations
     BEGIN SELECT RAISE(ABORT, 'effect fiber registration is immutable'); END;
     PRAGMA user_version = 41;";
+
+pub(crate) const SCHEMA_V42_SQL: &str = "CREATE TABLE task_semantic_recovery (
+        plan_id BLOB PRIMARY KEY NOT NULL CHECK(length(plan_id) = 16),
+        recovery_state INTEGER NOT NULL CHECK(recovery_state IN (0, 1, 2)),
+        consecutive_failures BLOB NOT NULL CHECK(length(consecutive_failures) = 8),
+        total_failures BLOB NOT NULL CHECK(length(total_failures) = 8),
+        last_failure_source INTEGER NOT NULL CHECK(last_failure_source IN (0, 1, 2)),
+        first_failed_at_ms INTEGER NOT NULL CHECK(first_failed_at_ms >= 0),
+        last_failed_at_ms INTEGER NOT NULL CHECK(last_failed_at_ms >= first_failed_at_ms),
+        next_retry_at_ms INTEGER,
+        escalated_at_ms INTEGER,
+        resolved_at_ms INTEGER,
+        updated_at_ms INTEGER NOT NULL CHECK(updated_at_ms >= 0),
+        FOREIGN KEY(plan_id) REFERENCES task_semantic_commit_plans(plan_id),
+        CHECK(total_failures >= consecutive_failures),
+        CHECK((recovery_state = 0) = (next_retry_at_ms IS NOT NULL)),
+        CHECK((recovery_state = 1) = (escalated_at_ms IS NOT NULL)),
+        CHECK((recovery_state = 2) = (resolved_at_ms IS NOT NULL))
+     ) STRICT;
+
+     CREATE INDEX task_semantic_recovery_due
+        ON task_semantic_recovery(recovery_state, next_retry_at_ms, plan_id);
+
+     CREATE TABLE task_semantic_recovery_alert_receipts (
+        receipt_id BLOB PRIMARY KEY NOT NULL CHECK(length(receipt_id) = 16),
+        plan_id BLOB NOT NULL CHECK(length(plan_id) = 16),
+        total_failures BLOB NOT NULL CHECK(length(total_failures) = 8),
+        principal_id BLOB NOT NULL CHECK(length(principal_id) = 16),
+        idempotency_key BLOB NOT NULL UNIQUE CHECK(length(idempotency_key) = 16),
+        acknowledged_at_ms INTEGER NOT NULL CHECK(acknowledged_at_ms >= 0),
+        FOREIGN KEY(plan_id) REFERENCES task_semantic_recovery(plan_id),
+        UNIQUE(plan_id, total_failures)
+     ) STRICT;
+
+     CREATE TRIGGER task_semantic_recovery_alert_receipts_immutable_update
+     BEFORE UPDATE ON task_semantic_recovery_alert_receipts
+     BEGIN
+        SELECT RAISE(ABORT, 'Semantic recovery alert receipts are immutable');
+     END;
+
+     CREATE TRIGGER task_semantic_recovery_alert_receipts_immutable_delete
+     BEFORE DELETE ON task_semantic_recovery_alert_receipts
+     BEGIN
+        SELECT RAISE(ABORT, 'Semantic recovery alert receipts are immutable');
+     END;
+
+     PRAGMA user_version = 42;";

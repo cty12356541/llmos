@@ -547,14 +547,14 @@ fn effect_binding_write_window_converges_by_idempotent_replay() {
         .expect("list after window matrix");
     assert_eq!(listed, vec![expected.clone()]);
 
-    // The reopened authority ran the v41 migration idempotently: the schema
-    // version stays 41 and the migrated registrations survive re-open again.
+    // The reopened authority opens cleanly at the current schema version
+    // (42) and the migrated registrations survive re-open again.
     {
         let raw = Connection::open(&database.path).expect("open raw connection");
         assert_eq!(
             raw.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .expect("read version"),
-            41
+            42
         );
     }
     let reopened = database.open();
