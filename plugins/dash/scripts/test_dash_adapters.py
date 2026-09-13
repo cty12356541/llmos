@@ -1,5 +1,6 @@
 # plugins/dash/scripts/test_dash_adapters.py
 import json
+import os
 import subprocess
 import tempfile
 import time
@@ -193,6 +194,44 @@ class TestSddAdapter(unittest.TestCase):
             frag, barriers = load_sdd(Path(d), NOW)
             self.assertEqual((frag.tasks, frag.milestones, barriers), ([], [], []))
             self.assertEqual(frag.warnings, [])
+
+    def test_corrupt_workspace_skipped(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            good = make_workspace(root, wave="W25", done_all=True)
+            bad = root / ".superpowers" / "sdd" / "2026-09-13-W26"
+            bad.mkdir()
+            (bad / "dag.json").write_text("{ 损坏的 json", encoding="utf-8")
+            os.utime(good / "dag.json", (1_000_000_000, 1_000_000_000))
+            os.utime(bad / "dag.json", (2_000_000_000, 2_000_000_000))
+            frag, barriers = load_sdd(root, NOW)          # 损坏源(且是最新)不白屏
+            self.assertEqual(frag.warnings, ["sdd 源不可用"])
+            self.assertEqual([t.id for t in frag.tasks], ["T1", "T6", "T9"])  # 出自唯一可解析源
+            self.assertEqual(frag.milestones[0].id, "W25")
+            self.assertEqual(barriers, ["屏障 1: T6 → T9"])
+
+    def test_two_workspaces_order_by_mtime(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            old = make_workspace(root, wave="W27", done_all=True)
+            new = make_workspace(root, wave="W25", done_all=False)
+            dag = json.loads((old / "dag.json").read_text(encoding="utf-8"))
+            dag["tasks"]["2"] = {"label": "旧波次独有任务"}
+            dag["barriers"] = [{"id": "0", "after": [1], "unlocks": [6]}]
+            (old / "dag.json").write_text(json.dumps(dag, ensure_ascii=False), encoding="utf-8")
+            ledger = (old / "progress.md").read_text(encoding="utf-8")
+            (old / "progress.md").write_text(ledger + "Task 2: complete\n", encoding="utf-8")
+            # 名字序(W25<W27)与 mtime 序相反:钉死 R12——最新按 mtime 定,不按路径名
+            os.utime(old / "dag.json", (1_000_000_000, 1_000_000_000))
+            os.utime(new / "dag.json", (2_000_000_000, 2_000_000_000))
+            frag, barriers = load_sdd(root, NOW)
+            self.assertEqual([m.id for m in frag.milestones], ["W27", "W25"])  # 旧→新累计
+            self.assertEqual(frag.milestones[-1].id, "W25")                    # 当前波次在末位
+            self.assertEqual(frag.milestones[0].state, "done")
+            self.assertEqual(frag.milestones[-1].state, "active")
+            self.assertEqual(len(frag.tasks), 3)            # tasks 只出自最新工作区
+            self.assertNotIn("旧波次独有任务", [t.label for t in frag.tasks])
+            self.assertEqual(barriers, ["屏障 1: T6 → T9"])  # 屏障只出自最新工作区
 
 
 if __name__ == "__main__":

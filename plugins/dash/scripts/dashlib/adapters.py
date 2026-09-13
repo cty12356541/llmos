@@ -126,33 +126,44 @@ def _resolve(ledger: str, n: int):
 def load_sdd(root: Path, now_iso: str):
     frag = Fragment(source="sdd")
     barriers = []
-    # R12:按 mtime 取最新工作区——同日期多工作区时按路径名排序会选错"最新"
+    # R12:按 mtime 取最新工作区——同日期多工作区时按路径名排序会选错"最新";
+    # key 带 p.exists() 守卫:dag.json 可能在 glob 与 stat 之间消失(spec §9 降级语义)
     workspaces = sorted((root / ".superpowers" / "sdd").glob("*/dag.json"),
-                        key=lambda p: p.stat().st_mtime)
+                        key=lambda p: p.stat().st_mtime if p.exists() else 0)
     if not workspaces:
         return frag, barriers
-    for path in workspaces:      # 全部工作区 → 历史波次里程碑
-        dag = json.loads(path.read_text(encoding="utf-8"))
-        ledger_p = path.parent / "progress.md"
-        ledger = ledger_p.read_text(encoding="utf-8") if ledger_p.exists() else ""
-        states = {n: _resolve(ledger, n) for n in (int(k) for k in dag["tasks"])}
-        done = sum(1 for s, _ in states.values() if s == "done")
-        active = any(s == "active" for s, _ in states.values())
-        latest = path == workspaces[-1]
-        frag.milestones.append(Milestone(
-            id=dag["wave"], title=dag.get("title", ""),
-            state="active" if active else ("done" if done == len(states) else "planned"),
-            tasks_done=done, tasks_total=len(states)))
-        if not latest:
+    parsed = []                  # [(milestone, tasks, barriers)] 旧→新;单源损坏只跳过
+    for path in workspaces:      # 全部工作区 → 历史波次里程碑(spec §9:损坏源不白屏)
+        try:
+            dag = json.loads(path.read_text(encoding="utf-8"))
+            ledger_p = path.parent / "progress.md"
+            ledger = ledger_p.read_text(encoding="utf-8") if ledger_p.exists() else ""
+            states = {n: _resolve(ledger, n) for n in (int(k) for k in dag["tasks"])}
+            done = sum(1 for s, _ in states.values() if s == "done")
+            active = any(s == "active" for s, _ in states.values())
+            lane_of = {n: lane["name"] for lane in dag["lanes"] for n in lane["tasks"]}
+            ms = Milestone(
+                id=dag["wave"], title=dag.get("title", ""),
+                state="active" if active else ("done" if done == len(states) else "planned"),
+                tasks_done=done, tasks_total=len(states))
+            ws_tasks = []
+            for n in sorted(states):
+                state, note = states[n]
+                ws_tasks.append(Task(id=f"T{n}", label=dag["tasks"][str(n)]["label"],
+                                     state=state, lane=lane_of.get(n, "无车道"),
+                                     source="sdd", note=note))
+            ws_barriers = []
+            for b in dag.get("barriers", []):
+                gate = "+".join(f"T{n}" for n in b["after"])
+                unlocks = " ".join(f"T{n}" for n in b["unlocks"])
+                ws_barriers.append(f"屏障 {b['id']}: {gate} → {unlocks}")
+        except (json.JSONDecodeError, KeyError, TypeError, OSError):
+            frag.warnings.append("sdd 源不可用")   # git+session 分片照常出面板
             continue
-        lane_of = {n: lane["name"] for lane in dag["lanes"] for n in lane["tasks"]}
-        for n in sorted(states):
-            state, note = states[n]
-            frag.tasks.append(Task(id=f"T{n}", label=dag["tasks"][str(n)]["label"],
-                                   state=state, lane=lane_of.get(n, "无车道"),
-                                   source="sdd", note=note))
-        for b in dag.get("barriers", []):
-            gate = "+".join(f"T{n}" for n in b["after"])
-            unlocks = " ".join(f"T{n}" for n in b["unlocks"])
-            barriers.append(f"屏障 {b['id']}: {gate} → {unlocks}")
+        parsed.append((ms, ws_tasks, ws_barriers))
+    for i, (ms, ws_tasks, ws_barriers) in enumerate(parsed):
+        frag.milestones.append(ms)
+        if i == len(parsed) - 1:     # 最新"可解析"工作区:tasks/barriers 只出自它
+            frag.tasks.extend(ws_tasks)
+            barriers.extend(ws_barriers)
     return frag, barriers
