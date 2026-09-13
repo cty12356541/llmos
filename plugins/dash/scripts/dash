@@ -27,6 +27,7 @@ def _build_model(repo: Path):
         config = json.loads(cfg.read_text(encoding="utf-8")) if cfg.exists() else {}
         if not isinstance(config, dict):
             config = {}   # 顶层非对象(数组/null 等)即损坏,视同 {}(默认生效)
+            config_degraded = True
         threshold_h = float(config.get("stalled_threshold_h", 2.0))
     except (OSError, ValueError, KeyError, TypeError):
         threshold_h = 2.0   # 降级:config 视同 {},默认阈值生效
@@ -59,7 +60,7 @@ def main() -> int:
         print(render_oneline(model))
         return 0
     if args[0] == "focus":
-        from dashlib.focus import read_focus, write_focus
+        from dashlib.focus import write_focus
         if len(args) < 2 or args[1] == "clear":
             write_focus(repo, None)
             print("已散焦")

@@ -32,6 +32,17 @@ class TestFocusCli(unittest.TestCase):
             r = run(["render", "panel"], d)
             self.assertIn("聚焦 zz", r.stdout)   # 无匹配任务也显示聚焦头
 
+    def test_nonobject_config_warns(self):
+        # 顶层非对象(数组/null)即损坏,与解析失败同告警,不得静默降级
+        for payload in ("[1, 2, 3]", "null"):
+            with self.subTest(payload=payload):
+                with tempfile.TemporaryDirectory() as d:
+                    (Path(d) / ".dash").mkdir()
+                    (Path(d) / ".dash" / "config.json").write_text(payload, encoding="utf-8")
+                    r = run(["render", "panel"], d)
+                    self.assertEqual(r.returncode, 0, r.stderr)
+                    self.assertIn("config 损坏,已用缺省阈值", r.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
