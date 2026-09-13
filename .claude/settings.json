@@ -1,7 +1,7 @@
 {
   "statusLine": {
     "type": "command",
-    "command": "python3 scripts/render_dag.py --oneline 2>/dev/null || true",
+    "command": "python3 plugins/dash/scripts/dash oneline 2>/dev/null || true",
     "refreshInterval": 30
   }
 }
