@@ -20,6 +20,7 @@ def _build_model(repo: Path):
     from dashlib.merge import merge
     now = datetime.now().astimezone().isoformat(timespec="seconds")
     threshold_h = 2.0
+    config_degraded = False
     try:
         import json
         cfg = repo / ".dash" / "config.json"
@@ -29,11 +30,14 @@ def _build_model(repo: Path):
         threshold_h = float(config.get("stalled_threshold_h", 2.0))
     except (OSError, ValueError, KeyError, TypeError):
         threshold_h = 2.0   # 降级:config 视同 {},默认阈值生效
+        config_degraded = True
     frags = [load_session(repo / ".dash" / "state.jsonl", now),
              load_git(repo, now)]
     sdd_frag, barriers = load_sdd(repo, now)
     frags.append(sdd_frag)
     model = merge(repo.resolve().name, frags, barriers, now, threshold_h=threshold_h)
+    if config_degraded:
+        model.warnings.append("config 损坏,已用缺省阈值")
     return model, now
 
 
@@ -45,13 +49,23 @@ def main() -> int:
     repo = Path.cwd()
     if args[0] == "render" and len(args) > 1 and args[1] == "panel":
         from dashlib.render_panel import render_panel
+        from dashlib.focus import read_focus
         model, now = _build_model(repo)
-        print(render_panel(model, focus=None, now_iso=now))   # focus 读取 T9 接线
+        print(render_panel(model, focus=read_focus(repo), now_iso=now))
         return 0
     if args[0] == "oneline":
         from dashlib.render_oneline import render_oneline
         model, _now = _build_model(repo)
         print(render_oneline(model))
+        return 0
+    if args[0] == "focus":
+        from dashlib.focus import read_focus, write_focus
+        if len(args) < 2 or args[1] == "clear":
+            write_focus(repo, None)
+            print("已散焦")
+            return 0
+        write_focus(repo, args[1])
+        print(f"聚焦 {args[1]}(面板下次刷新生效;⏎ 送主对话)")
         return 0
     print(f"dash: 未实现子命令 {' '.join(args)}", file=sys.stderr)
     return 2
