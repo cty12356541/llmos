@@ -7,16 +7,22 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use nlos_artifact::ArtifactStore;
+use nlos_semantic::SemanticAuthority;
 use nlos_task::{
     ArtifactCommitPlanId, ArtifactRecoveryFailureRequest, ArtifactRecoveryFailureSource,
-    ArtifactRecoveryState, SqliteTaskAuthority,
+    ArtifactRecoveryState, SemanticRecoveryFailureRequest, SemanticRecoveryFailureSource,
+    SemanticRecoveryState, SqliteTaskAuthority,
 };
 
-use crate::{ArtifactCommitCoordinator, CoordinatorError};
+use crate::{
+    ArtifactCommitCoordinator, ConvergeSemanticCommitRequest, CoordinatorError,
+    SemanticCommitCoordinator,
+};
 
 /// One domain half's result for a single worker cycle. The artifact half
 /// fills the durable gauges from the artifact recovery summary; the semantic
-/// half fills its own once the semantic scan is wired in a follow-up lane.
+/// half fills its own from the semantic recovery summary when the worker was
+/// started with a semantic authority.
 struct DomainCycleOutcome {
     inspected: usize,
     finalized: usize,
@@ -31,8 +37,9 @@ struct DomainCycleOutcome {
 
 impl DomainCycleOutcome {
     /// Quiescent outcome: nothing inspected, nothing failed, no durable
-    /// gauges. Represents the unwired semantic stub and any domain half
-    /// skipped after its per-domain fault bit was set.
+    /// gauges. Represents the semantic half of a worker started without a
+    /// semantic authority and any domain half skipped after its per-domain
+    /// fault bit was set.
     fn empty() -> Self {
         Self {
             inspected: 0,
@@ -119,8 +126,8 @@ pub struct RecoveryWorkerFailure {
 /// Read-only snapshot for `TaskAuthority` service health and supervision.
 ///
 /// The pre-existing counter/gauge fields describe the artifact domain; the
-/// `semantic_*` fields mirror them for the semantic domain and stay zero
-/// until the semantic half of the cycle is wired in a follow-up lane.
+/// `semantic_*` fields mirror them for the semantic domain and stay zero for
+/// a worker started without a semantic authority.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RecoveryWorkerHealth {
     pub state: RecoveryWorkerState,
@@ -208,11 +215,13 @@ impl Error for RecoveryWorkerStartError {
     }
 }
 
-/// TaskAuthority-owned lifecycle handle for Artifact commit recovery.
+/// TaskAuthority-owned lifecycle handle for artifact and Semantic commit
+/// recovery.
 ///
 /// The worker owns no canonical state. Its dedicated thread opens no third
-/// store: it drives the supplied `TaskAuthority` and `ArtifactAuthority` and can
-/// always be replaced after a crash from their durable prefix.
+/// store: it drives the supplied `TaskAuthority` and `ArtifactAuthority`
+/// (plus the optional `SemanticAuthority`) and can always be replaced after
+/// a crash from their durable prefix.
 pub struct TaskAuthorityCommitRecoveryWorker {
     stop_tx: SyncSender<()>,
     join: Option<JoinHandle<()>>,
@@ -220,8 +229,11 @@ pub struct TaskAuthorityCommitRecoveryWorker {
 }
 
 impl TaskAuthorityCommitRecoveryWorker {
-    /// Starts a dedicated worker. The first bounded pending scan runs
-    /// immediately; `poll_interval` applies only after that scan.
+    /// Starts a dedicated worker whose semantic half stays quiescent: no
+    /// semantic authority is supplied, so only artifact plans are scanned and
+    /// every `semantic_*` health field remains at its zero default. Use
+    /// [`Self::start_with_semantic_authority`] to drive Semantic commit
+    /// convergence on the same thread.
     ///
     /// # Errors
     ///
@@ -232,6 +244,25 @@ impl TaskAuthorityCommitRecoveryWorker {
         artifacts: Arc<ArtifactStore>,
         config: RecoveryWorkerConfig,
     ) -> Result<Self, RecoveryWorkerStartError> {
+        Self::start_with_semantic_authority(tasks, artifacts, None, config)
+    }
+
+    /// Starts a dedicated worker driving both recovery domains: the artifact
+    /// half scans `ArtifactCommitPlan`s and the semantic half (when
+    /// `semantic` is `Some`) scans due `SemanticCommitPlan`s through the same
+    /// `TaskAuthority`. The first bounded pending scan runs immediately;
+    /// `poll_interval` applies only after that scan.
+    ///
+    /// # Errors
+    ///
+    /// Returns before spawning for an invalid config, or when the OS cannot
+    /// create the worker thread.
+    pub fn start_with_semantic_authority(
+        tasks: Arc<SqliteTaskAuthority>,
+        artifacts: Arc<ArtifactStore>,
+        semantic: Option<Arc<SemanticAuthority>>,
+        config: RecoveryWorkerConfig,
+    ) -> Result<Self, RecoveryWorkerStartError> {
         validate_config(config)?;
         let (stop_tx, stop_rx) = sync_channel(1);
         let health = Arc::new(Mutex::new(RecoveryWorkerHealth::default()));
@@ -240,7 +271,14 @@ impl TaskAuthorityCommitRecoveryWorker {
             .name("task-authority-commit-recovery".to_string())
             .spawn(move || {
                 let outcome = catch_unwind(AssertUnwindSafe(|| {
-                    run_worker(&tasks, &artifacts, config, &stop_rx, &thread_health);
+                    run_worker(
+                        &tasks,
+                        &artifacts,
+                        semantic.as_deref(),
+                        config,
+                        &stop_rx,
+                        &thread_health,
+                    );
                 }));
                 if outcome.is_err() {
                     let mut current = lock(&thread_health);
@@ -309,6 +347,7 @@ fn validate_config(config: RecoveryWorkerConfig) -> Result<(), RecoveryWorkerSta
 fn run_worker(
     tasks: &SqliteTaskAuthority,
     artifacts: &ArtifactStore,
+    semantic: Option<&SemanticAuthority>,
     config: RecoveryWorkerConfig,
     stop_rx: &Receiver<()>,
     health: &Mutex<RecoveryWorkerHealth>,
@@ -321,12 +360,19 @@ fn run_worker(
                 // half. A faulted semantic domain is skipped while the
                 // artifact half keeps scanning; an artifact-domain fault is
                 // terminal for the whole thread (the pre-existing Faulted
-                // transition), so the artifact half needs no skip check.
+                // transition), so the artifact half needs no skip check. A
+                // worker started without a semantic authority runs no
+                // semantic half at all.
                 let artifact = artifact_cycle(tasks, artifacts, config, timestamp);
-                let semantic = if lock(health).semantic_domain_faulted {
-                    DomainCycleOutcome::empty()
-                } else {
-                    semantic_cycle_stub(tasks, config, timestamp)
+                let semantic = match semantic {
+                    Some(authority) => {
+                        if lock(health).semantic_domain_faulted {
+                            DomainCycleOutcome::empty()
+                        } else {
+                            semantic_cycle(tasks, authority, config, timestamp)
+                        }
+                    }
+                    None => DomainCycleOutcome::empty(),
                 };
                 (artifact, semantic)
             }
@@ -398,6 +444,14 @@ fn account_cycle(
     // `consecutive_failed_cycles` field is the artifact-domain counter; the
     // semantic domain counts independently against the same threshold. A
     // skipped (faulted) semantic domain neither counts nor resets.
+    //
+    // Pinned decision (W26-002): setting `semantic_domain_faulted` does NOT
+    // clear `semantic_consecutive_failed_cycles`. The bit is sticky for the
+    // life of the worker instance, so clearing the counter on that
+    // transition would leave a permanently faulted domain with a zeroed
+    // counter — an unexplainable health surface. The counter stays at the
+    // threshold as the evidence of why the bit was set; a fresh worker
+    // instance starts both at zero.
     if artifact_infra {
         current.consecutive_failed_cycles = current.consecutive_failed_cycles.saturating_add(1);
     } else {
@@ -585,16 +639,139 @@ fn artifact_cycle(
     outcome
 }
 
-/// Semantic-domain half of one cycle. The real semantic scan is wired in a
-/// follow-up lane; until then this stub returns the quiescent outcome so
-/// the semantic health projection stays zeroed and the artifact half's
-/// behavior is unchanged.
-fn semantic_cycle_stub(
-    _tasks: &SqliteTaskAuthority,
-    _config: RecoveryWorkerConfig,
-    _now_ms: i64,
+/// Semantic-domain half of one cycle: scan the due Semantic plans, converge
+/// each through the coordinator, and record plan-level failures in the
+/// durable semantic recovery ledger with a compare-and-swap on the plan's
+/// total-failure count. Storage failures on this path (scan, ledger read,
+/// ledger append, summary) are infrastructure failures that consume the
+/// semantic domain's failure budget; owner/coordinator rejections are
+/// plan-level and only advance the ledger.
+// Keeping one cycle linear makes the external converge result and its
+// TaskAuthority ledger CAS visibly adjacent for crash-window review.
+#[allow(clippy::too_many_lines)]
+fn semantic_cycle(
+    tasks: &SqliteTaskAuthority,
+    semantic: &SemanticAuthority,
+    config: RecoveryWorkerConfig,
+    now_ms: i64,
 ) -> DomainCycleOutcome {
-    DomainCycleOutcome::empty()
+    let plans = match tasks.list_due_semantic_commit_plans(config.scan_limit, now_ms) {
+        Ok(plans) => plans,
+        Err(error) => {
+            return DomainCycleOutcome {
+                inspected: 0,
+                finalized: 0,
+                failures: vec![failure_of(None, &CoordinatorError::Task(error))],
+                retry_delay: None,
+                infrastructure_failure: true,
+                durable_retrying: 0,
+                durable_escalated: 0,
+                durable_unacknowledged_escalated: 0,
+                durable_resolved: 0,
+            };
+        }
+    };
+    let mut outcome = DomainCycleOutcome {
+        inspected: plans.len(),
+        finalized: 0,
+        failures: Vec::new(),
+        retry_delay: None,
+        infrastructure_failure: false,
+        durable_retrying: 0,
+        durable_escalated: 0,
+        durable_unacknowledged_escalated: 0,
+        durable_resolved: 0,
+    };
+    let coordinator = SemanticCommitCoordinator::new(tasks, semantic);
+    for plan in plans {
+        match coordinator.converge(ConvergeSemanticCommitRequest {
+            plan_id: plan.plan_id,
+            now_ms,
+        }) {
+            Ok(_) => outcome.finalized += 1,
+            Err(error) => {
+                // The health failure surface types plan identity as
+                // `ArtifactCommitPlanId` (pre-dual shape); a Semantic plan id
+                // cannot be laundered into it, so semantic entries carry no
+                // plan id. Durable per-plan identity lives in the semantic
+                // recovery ledger (`inspect_semantic_recovery`); widening the
+                // health failure struct belongs to the semantic alert
+                // surface, which owns its SABI consumers.
+                outcome.failures.push(failure_of(None, &error));
+                let current = match tasks.inspect_semantic_recovery(plan.plan_id) {
+                    Ok(record) => record.map_or(0, |record| record.total_failures),
+                    Err(ledger_error) => {
+                        outcome.infrastructure_failure = true;
+                        outcome
+                            .failures
+                            .push(failure_of(None, &CoordinatorError::Task(ledger_error)));
+                        continue;
+                    }
+                };
+                match tasks.record_semantic_recovery_failure(SemanticRecoveryFailureRequest {
+                    plan_id: plan.plan_id,
+                    expected_total_failures: current,
+                    source: semantic_recovery_source(&error),
+                    observed_at_ms: now_ms,
+                    // Both ledgers receive the same config-derived bounds
+                    // (`poll_interval`/`max_backoff`), but they do not share
+                    // a delay distribution: the artifact ledger jitters per
+                    // plan while the semantic ledger is a pure capped
+                    // exponential. Equal retry times across the two domains
+                    // must not be assumed by callers or tests.
+                    base_delay_ms: duration_ms(config.poll_interval),
+                    max_delay_ms: duration_ms(config.max_backoff),
+                }) {
+                    Ok(record) if record.state == SemanticRecoveryState::Retrying => {
+                        let delay_ms = record.next_retry_at_ms.unwrap_or(now_ms) - now_ms;
+                        let delay = Duration::from_millis(u64::try_from(delay_ms).unwrap_or(0));
+                        outcome.retry_delay = Some(
+                            outcome
+                                .retry_delay
+                                .map_or(delay, |current| current.min(delay)),
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(ledger_error) => {
+                        outcome.infrastructure_failure = true;
+                        outcome
+                            .failures
+                            .push(failure_of(None, &CoordinatorError::Task(ledger_error)));
+                    }
+                }
+            }
+        }
+    }
+    match tasks.summarize_semantic_recovery() {
+        Ok(summary) => {
+            outcome.durable_retrying = summary.retrying;
+            outcome.durable_escalated = summary.escalated;
+            outcome.durable_unacknowledged_escalated = summary.unacknowledged_escalated;
+            outcome.durable_resolved = summary.resolved;
+        }
+        Err(error) => {
+            outcome.infrastructure_failure = true;
+            outcome
+                .failures
+                .push(failure_of(None, &CoordinatorError::Task(error)));
+        }
+    }
+    outcome
+}
+
+/// Maps one semantic-domain coordinator failure to the durable ledger's
+/// failure source. Unlike the artifact mapping, a `CoordinatorError::Semantic`
+/// is the semantic domain's own owner authority; `CoordinatorError::Artifact`
+/// cannot occur on the semantic path and falls back to `Coordinator` so the
+/// mapping stays total.
+const fn semantic_recovery_source(error: &CoordinatorError) -> SemanticRecoveryFailureSource {
+    match error {
+        CoordinatorError::Task(_) => SemanticRecoveryFailureSource::TaskAuthority,
+        CoordinatorError::Semantic(_) => SemanticRecoveryFailureSource::SemanticAuthority,
+        CoordinatorError::InvalidTimestamp | CoordinatorError::Artifact(_) => {
+            SemanticRecoveryFailureSource::Coordinator
+        }
+    }
 }
 
 fn duration_ms(duration: Duration) -> u64 {
