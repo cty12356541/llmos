@@ -1,6 +1,9 @@
 //! Structured join/detach contract tests for [`TokioRuntimeAdapter`].
 //!
-//! Covers join waiting, generation fencing, terminal idempotence, and implicit
+//! Covers join waiting, generation fencing, one-shot terminal consumption
+//! (FIBER-REAP-001/002: a join reaps the record, a re-join reports
+//! `FiberReaped`), detach handle validation (FIBER-REAP-003; the reaping
+//! effect itself is covered by `tests/lifecycle_reap.rs`), and implicit
 //! detach admission recovery without leaking bounded slots.
 
 use std::future::pending;
@@ -68,7 +71,10 @@ async fn join_in_background(
 async fn join_waits_for_fiber_completion() {
     let runtime = TokioRuntimeAdapter::new(
         tokio::runtime::Handle::current(),
-        TokioRuntimeConfig { max_live_fibers: 2 },
+        TokioRuntimeConfig {
+            max_live_fibers: 2,
+            ..TokioRuntimeConfig::default()
+        },
     )
     .expect("runtime");
     let scope = CancellationScopeId::from_bytes(id_bytes(20));
@@ -90,14 +96,25 @@ async fn join_waits_for_fiber_completion() {
     started.wait().await;
     let exit = join_handle.await.expect("join future").expect("join_fiber");
     assert_eq!(exit, FiberExit::Completed);
-    assert_eq!(runtime.inspect(handle), Ok(FiberState::Completed));
+    // FIBER-REAP-001: the join consumed the record; handle-addressed
+    // inspection of the reaped generation reports the typed error.
+    assert_eq!(
+        runtime.inspect(handle),
+        Err(RuntimeError::FiberReaped {
+            fiber_id: handle.fiber_id,
+            generation: handle.generation
+        })
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stale_generation_join_is_rejected() {
     let runtime = TokioRuntimeAdapter::new(
         tokio::runtime::Handle::current(),
-        TokioRuntimeConfig { max_live_fibers: 1 },
+        TokioRuntimeConfig {
+            max_live_fibers: 1,
+            ..TokioRuntimeConfig::default()
+        },
     )
     .expect("runtime");
     let scope = CancellationScopeId::from_bytes(id_bytes(21));
@@ -123,11 +140,18 @@ async fn stale_generation_join_is_rejected() {
     );
 }
 
+/// FIBER-REAP-001/002 — join 一次性消费:given a fiber already in its
+/// terminal state; when it is joined; then the stored exit is returned
+/// exactly once and every further join of the reaped handle reports
+/// `FiberReaped` (pre-W25 this replayed the exit forever).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn join_on_terminal_fiber_is_idempotent() {
+async fn join_on_terminal_fiber_consumes_the_record_once() {
     let runtime = TokioRuntimeAdapter::new(
         tokio::runtime::Handle::current(),
-        TokioRuntimeConfig { max_live_fibers: 1 },
+        TokioRuntimeConfig {
+            max_live_fibers: 1,
+            ..TokioRuntimeConfig::default()
+        },
     )
     .expect("runtime");
     let scope = CancellationScopeId::from_bytes(id_bytes(22));
@@ -141,14 +165,23 @@ async fn join_on_terminal_fiber_is_idempotent() {
     wait_for_state(&runtime, handle, FiberState::Completed).await;
 
     assert_eq!(runtime.join_fiber(handle), Ok(FiberExit::Completed));
-    assert_eq!(runtime.join_fiber(handle), Ok(FiberExit::Completed));
+    assert_eq!(
+        runtime.join_fiber(handle),
+        Err(RuntimeError::FiberReaped {
+            fiber_id: handle.fiber_id,
+            generation: handle.generation
+        })
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn implicit_detach_recovers_admission_without_join() {
     let runtime = TokioRuntimeAdapter::new(
         tokio::runtime::Handle::current(),
-        TokioRuntimeConfig { max_live_fibers: 1 },
+        TokioRuntimeConfig {
+            max_live_fibers: 1,
+            ..TokioRuntimeConfig::default()
+        },
     )
     .expect("runtime");
     let scope = CancellationScopeId::from_bytes(id_bytes(23));
@@ -181,7 +214,10 @@ async fn implicit_detach_recovers_admission_without_join() {
 async fn join_returns_cancelled_after_scope_cancel() {
     let runtime = TokioRuntimeAdapter::new(
         tokio::runtime::Handle::current(),
-        TokioRuntimeConfig { max_live_fibers: 1 },
+        TokioRuntimeConfig {
+            max_live_fibers: 1,
+            ..TokioRuntimeConfig::default()
+        },
     )
     .expect("runtime");
     let scope = CancellationScopeId::from_bytes(id_bytes(25));
@@ -196,14 +232,28 @@ async fn join_returns_cancelled_after_scope_cancel() {
 
     let exit = join_handle.await.expect("join future").expect("join_fiber");
     assert_eq!(exit, FiberExit::Cancelled);
-    assert_eq!(runtime.inspect(handle), Ok(FiberState::Cancelled));
+    // FIBER-REAP-001: the join consumed the record.
+    assert_eq!(
+        runtime.inspect(handle),
+        Err(RuntimeError::FiberReaped {
+            fiber_id: handle.fiber_id,
+            generation: handle.generation
+        })
+    );
 }
 
+/// FIBER-REAP-003 keep-side: detach keeps its existing handle validation
+/// (live record required, stale generation rejected) while additionally
+/// marking the record for terminal reclamation (the reaping effect is
+/// covered by `tests/lifecycle_reap.rs`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn explicit_detach_is_a_noop_that_validates_handle() {
+async fn explicit_detach_validates_handle() {
     let runtime = TokioRuntimeAdapter::new(
         tokio::runtime::Handle::current(),
-        TokioRuntimeConfig { max_live_fibers: 1 },
+        TokioRuntimeConfig {
+            max_live_fibers: 1,
+            ..TokioRuntimeConfig::default()
+        },
     )
     .expect("runtime");
     let scope = CancellationScopeId::from_bytes(id_bytes(24));

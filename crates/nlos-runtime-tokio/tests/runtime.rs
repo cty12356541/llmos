@@ -52,7 +52,10 @@ async fn wait_for_state(
 async fn cancellation_is_structured_and_generation_fenced() {
     let runtime = TokioRuntimeAdapter::new(
         tokio::runtime::Handle::current(),
-        TokioRuntimeConfig { max_live_fibers: 2 },
+        TokioRuntimeConfig {
+            max_live_fibers: 2,
+            ..TokioRuntimeConfig::default()
+        },
     )
     .expect("runtime");
     let scope = CancellationScopeId::from_bytes(id_bytes(10));
@@ -76,7 +79,10 @@ async fn cancellation_is_structured_and_generation_fenced() {
 async fn admission_is_bounded() {
     let runtime = TokioRuntimeAdapter::new(
         tokio::runtime::Handle::current(),
-        TokioRuntimeConfig { max_live_fibers: 1 },
+        TokioRuntimeConfig {
+            max_live_fibers: 1,
+            ..TokioRuntimeConfig::default()
+        },
     )
     .expect("runtime");
     let scope = CancellationScopeId::from_bytes(id_bytes(11));
@@ -95,7 +101,10 @@ async fn admission_is_bounded() {
 async fn completed_fiber_records_wall_and_scheduler_time() {
     let runtime = TokioRuntimeAdapter::new(
         tokio::runtime::Handle::current(),
-        TokioRuntimeConfig { max_live_fibers: 1 },
+        TokioRuntimeConfig {
+            max_live_fibers: 1,
+            ..TokioRuntimeConfig::default()
+        },
     )
     .expect("runtime");
     let scope = CancellationScopeId::from_bytes(id_bytes(12));
@@ -120,7 +129,10 @@ async fn completed_fiber_records_wall_and_scheduler_time() {
 async fn panicking_fiber_is_reported_as_failed() {
     let runtime = TokioRuntimeAdapter::new(
         tokio::runtime::Handle::current(),
-        TokioRuntimeConfig { max_live_fibers: 1 },
+        TokioRuntimeConfig {
+            max_live_fibers: 1,
+            ..TokioRuntimeConfig::default()
+        },
     )
     .expect("runtime");
     let scope = CancellationScopeId::from_bytes(id_bytes(13));

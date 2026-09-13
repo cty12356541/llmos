@@ -441,8 +441,10 @@ impl TokioRuntimeAdapter {
     ///
     /// # Errors
     ///
-    /// Returns [`ChannelWaitError::Runtime`] for shutdown and stale/unknown
-    /// fiber handles, [`ChannelWaitError::WaitAuthority`] /
+    /// Returns [`ChannelWaitError::Runtime`] for shutdown, stale/unknown
+    /// fiber handles, and reaped generations ([`RuntimeError::FiberReaped`]:
+    /// the handle's record was consumed by a join or reclaimed by a detach),
+    /// [`ChannelWaitError::WaitAuthority`] /
     /// [`ChannelWaitError::ChannelAuthority`] /
     /// [`ChannelWaitError::TaskAuthority`] for durable authority failures
     /// (projection, high-water reads, the self-flip),

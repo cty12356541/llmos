@@ -59,8 +59,14 @@ fn fiber_spec(index: usize, scope: CancellationScopeId) -> FiberSpec {
 }
 
 fn runtime(max_live_fibers: usize) -> TokioRuntimeAdapter {
-    TokioRuntimeAdapter::new(Handle::current(), TokioRuntimeConfig { max_live_fibers })
-        .expect("runtime")
+    TokioRuntimeAdapter::new(
+        Handle::current(),
+        TokioRuntimeConfig {
+            max_live_fibers,
+            ..TokioRuntimeConfig::default()
+        },
+    )
+    .expect("runtime")
 }
 
 async fn await_all_lifecycle_phase(

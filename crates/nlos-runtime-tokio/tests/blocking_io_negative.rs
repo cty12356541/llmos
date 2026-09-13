@@ -270,6 +270,7 @@ async fn threads_after_blocking_io_park(count: usize, pattern: BlockingIoPattern
         Handle::current(),
         TokioRuntimeConfig {
             max_live_fibers: count,
+            ..TokioRuntimeConfig::default()
         },
     )
     .expect("runtime adapter");

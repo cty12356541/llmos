@@ -77,6 +77,14 @@ pub enum RuntimeError {
     DeadlineExceeded,
     QueueFull,
     ShuttingDown,
+    /// The fiber generation's record was already reaped: a join consumed its
+    /// terminal exit, or a detach reclaimed it. The `(fiber_id, generation)`
+    /// pair is carried so callers can attribute the rejection without a
+    /// registry lookup.
+    FiberReaped {
+        fiber_id: ExecutionFiberId,
+        generation: Generation,
+    },
 }
 
 impl fmt::Display for RuntimeError {
@@ -88,6 +96,7 @@ impl fmt::Display for RuntimeError {
             Self::DeadlineExceeded => "execution fiber deadline was exceeded",
             Self::QueueFull => "runtime admission queue is full",
             Self::ShuttingDown => "runtime is shutting down",
+            Self::FiberReaped { .. } => "execution fiber record was already reaped",
         })
     }
 }
@@ -105,7 +114,11 @@ pub trait RuntimeAdapter: Send + Sync {
     /// concurrently without requiring a join (implicit detach). Callers that
     /// need to observe completion use [`Self::join_fiber`]; callers that
     /// explicitly relinquish join obligation may call [`Self::detach_fiber`]
-    /// for auditability (it does not change scheduling).
+    /// to reclaim the record (it does not change scheduling). A fiber that is
+    /// neither joined nor detached keeps its terminal record registered —
+    /// within a bounded tombstone window a re-spawn of the same
+    /// `(fiber_id, generation)` stays [`RuntimeError::DuplicateFiber`] even
+    /// after the record itself was reclaimed.
     ///
     /// # Errors
     ///
@@ -120,28 +133,39 @@ pub trait RuntimeAdapter: Send + Sync {
     /// Waits until the fiber generation reaches a terminal state and returns
     /// its [`FiberExit`].
     ///
-    /// Joining an already-terminal fiber is idempotent and returns the stored
-    /// exit without blocking. A stale handle generation MUST be rejected with
+    /// A successful join is one-shot consumption: the terminal exit is
+    /// handed to exactly one joiner and the fiber's runtime record is
+    /// reclaimed. Joining an already-terminal fiber that has not been
+    /// consumed returns the stored exit without blocking. A re-join of a
+    /// reaped generation MUST be rejected with [`RuntimeError::FiberReaped`];
+    /// a stale handle generation MUST be rejected with
     /// [`RuntimeError::InvalidGeneration`]. This contract MUST NOT expose an
     /// executor-local task handle.
     ///
     /// # Errors
     ///
-    /// Returns [`RuntimeError::InvalidGeneration`] when the handle is stale,
-    /// or an availability error when the runtime cannot accept the join.
+    /// Returns [`RuntimeError::FiberReaped`] when the generation's record was
+    /// already consumed by a join or reclaimed by a detach,
+    /// [`RuntimeError::InvalidGeneration`] when the handle is stale, or an
+    /// availability error when the runtime cannot accept the join.
     fn join_fiber(&self, handle: FiberHandle) -> Result<FiberExit, RuntimeError>;
 
-    /// Documents explicit relinquishment of join obligation for a live or
-    /// terminal fiber generation.
+    /// Explicitly relinquishes join obligation for a live or terminal fiber
+    /// generation and reclaims its runtime record.
     ///
-    /// [`Self::spawn_fiber`] is already implicitly detached; this method
-    /// validates the handle and records the intent for structured-concurrency
-    /// audits without changing scheduling or admission.
+    /// [`Self::spawn_fiber`] is already implicitly detached (the fiber runs
+    /// without requiring a join); this method validates the handle and
+    /// documents the relinquishment for structured-concurrency audits. An
+    /// already-terminal record is reclaimed immediately; a live one is
+    /// reclaimed when it reaches its terminal state. Scheduling and
+    /// admission are unchanged. After the record is reclaimed, a join of the
+    /// same handle reports [`RuntimeError::FiberReaped`].
     ///
     /// # Errors
     ///
-    /// Returns [`RuntimeError::InvalidGeneration`] when the handle is stale,
-    /// or an availability error when the runtime cannot answer.
+    /// Returns [`RuntimeError::FiberReaped`] when the generation's record was
+    /// already consumed, [`RuntimeError::InvalidGeneration`] when the handle
+    /// is stale, or an availability error when the runtime cannot answer.
     fn detach_fiber(&self, handle: FiberHandle) -> Result<(), RuntimeError>;
 
     /// Cancels a structured cancellation scope.

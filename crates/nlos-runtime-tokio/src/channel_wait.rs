@@ -13,6 +13,8 @@
 //!
 //! 1. runtime shutdown → `Runtime(ShuttingDown)`;
 //! 2. stale or unknown fiber handle → `Runtime(InvalidGeneration)`;
+//!    a reaped generation (join-consumed or detach-reclaimed handle) →
+//!    `Runtime(FiberReaped)`;
 //! 3. terminal fiber or already-cancelled scope → ready
 //!    [`WaitOutcome::Cancelled`] (no durable side effect);
 //! 4. durable registration ([`RegisterDecision::Registered`] or
@@ -47,7 +49,19 @@
 //! The durable rows are otherwise read-only to rearm, and fiber execution
 //! state is not rebuilt — the restarted fiber's own code must call rearm
 //! (or re-register) after it is spawned.
+//!
+//! Bounded orphan buffer (ORPHAN-001): an early delivery that finds no
+//! registration buffers under the fiber-less placeholder key, and that
+//! buffer is capacity-bounded through
+//! [`crate::TokioRuntimeConfig::orphan_buffer_capacity`] — overflow drops
+//! the OLDEST orphaned entry (FIFO), a zero capacity rejects every orphaned
+//! entry, and every drop advances the monotonic
+//! [`crate::RuntimeHealth::orphan_buffer_dropped_total`] counter exposed by
+//! [`TokioRuntimeAdapter::health`]. Fiber-bound entries — live `Pending`
+//! registrations and re-buffered wakes under a real fiber key — are outside
+//! the bound and behave exactly as before (ORPHAN-002).
 
+use std::collections::{HashMap, VecDeque, hash_map};
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
@@ -112,15 +126,120 @@ impl ChannelWaitKey {
     }
 }
 
+/// The Channel sequence wait registry: the shared wait map plus the FIFO
+/// order queue of its orphaned (placeholder-keyed) buffer entries, under the
+/// single pre-existing `channel_waits` lock so the ORPHAN-001 capacity clamp
+/// is a short critical section with no new lock edges.
+///
+/// Data-structure choice: the wait map stays a `HashMap` — key lookups and
+/// by-`WaitId` scans are unchanged — while insertion age lives in a
+/// lightweight `VecDeque<WaitId>` companion, because `HashMap` iteration
+/// order is unspecified and drop-oldest needs true FIFO. Queue invariant:
+/// every id in `orphan_order` has a live orphaned `Buffered` entry in `map`
+/// (`remove` and `retain` keep it exact), so `orphan_order.len()` IS the
+/// live orphaned count and eviction pops the true oldest.
+pub(crate) struct ChannelWaitRegistry {
+    map: HashMap<ChannelWaitKey, WaitEntry>,
+    orphan_order: VecDeque<WaitId>,
+    orphan_capacity: usize,
+}
+
+impl ChannelWaitRegistry {
+    pub(crate) fn new(orphan_capacity: usize) -> Self {
+        Self {
+            map: HashMap::new(),
+            orphan_order: VecDeque::new(),
+            orphan_capacity,
+        }
+    }
+
+    pub(crate) fn get(&self, key: &ChannelWaitKey) -> Option<&WaitEntry> {
+        self.map.get(key)
+    }
+
+    pub(crate) fn iter(&self) -> hash_map::Iter<'_, ChannelWaitKey, WaitEntry> {
+        self.map.iter()
+    }
+
+    /// Plain insert for fiber-bound entries — live `Pending` registrations
+    /// and re-buffered wakes under a real fiber key. Those are purged with
+    /// their fiber and are deliberately outside the orphan bound
+    /// (ORPHAN-002); the orphaned placeholder path is [`Self::buffer_orphan`],
+    /// the only insert that clamps.
+    pub(crate) fn insert(&mut self, key: ChannelWaitKey, entry: WaitEntry) {
+        self.map.insert(key, entry);
+    }
+
+    pub(crate) fn remove(&mut self, key: &ChannelWaitKey) -> Option<WaitEntry> {
+        // Keep the order queue exact when an orphaned placeholder entry is
+        // consumed, so its age slot does not outlive its entry.
+        if *key == ChannelWaitKey::orphaned(key.wait_id)
+            && let Some(position) = self.orphan_order.iter().position(|id| *id == key.wait_id)
+        {
+            self.orphan_order.remove(position);
+        }
+        self.map.remove(key)
+    }
+
+    /// Drops entries whose `keep` predicate fails (the fiber lifecycle
+    /// terminal purge). Orphaned placeholder keys are fiber-less and never
+    /// match a real fiber, but the queue reconciliation runs regardless so
+    /// the invariant survives even the reserved zero-fiber-identity alias.
+    pub(crate) fn retain(&mut self, mut keep: impl FnMut(&ChannelWaitKey, &mut WaitEntry) -> bool) {
+        self.map.retain(|key, entry| keep(key, entry));
+        self.orphan_order
+            .retain(|id| self.map.contains_key(&ChannelWaitKey::orphaned(*id)));
+    }
+
+    /// Drops every entry (the shutdown path, which resolves all pending
+    /// waits by dropping their senders). The orphaned order queue empties
+    /// with the map; the drop counter deliberately does NOT reset — it is a
+    /// monotonic health counter, and shutdown is not a drop.
+    pub(crate) fn clear(&mut self) {
+        self.map.clear();
+        self.orphan_order.clear();
+    }
+
+    /// Buffers one orphaned (placeholder-keyed) early wake under the
+    /// capacity bound (ORPHAN-001): at capacity the OLDEST orphaned entry is
+    /// evicted first (FIFO); a zero capacity is pure rejection — nothing is
+    /// ever buffered. Returns how many entries were dropped so the caller
+    /// advances the monotonic health counter. A repeat buffer for an
+    /// already-buffered wait is a no-op that keeps the entry's original age.
+    pub(crate) fn buffer_orphan(&mut self, wait_id: WaitId) -> usize {
+        if self.orphan_capacity == 0 {
+            return 1;
+        }
+        let key = ChannelWaitKey::orphaned(wait_id);
+        if self.map.contains_key(&key) {
+            return 0;
+        }
+        let mut dropped = 0_usize;
+        while self.orphan_order.len() >= self.orphan_capacity {
+            match self.orphan_order.pop_front() {
+                Some(oldest) => {
+                    self.map.remove(&ChannelWaitKey::orphaned(oldest));
+                    dropped += 1;
+                }
+                None => break,
+            }
+        }
+        self.orphan_order.push_back(wait_id);
+        self.map.insert(key, WaitEntry::Buffered);
+        dropped
+    }
+}
+
 /// Failure modes of [`TokioRuntimeAdapter::wait_for_channel`],
 /// [`TokioRuntimeAdapter::rearm_channel_waits`],
 /// [`TokioRuntimeAdapter::resume_binding`] and the B-path snapshot entries.
 #[derive(Debug)]
 pub enum ChannelWaitError {
     /// The runtime rejected the wait: [`RuntimeError::ShuttingDown`] after
-    /// [`TokioRuntimeAdapter::shutdown`], or
+    /// [`TokioRuntimeAdapter::shutdown`],
     /// [`RuntimeError::InvalidGeneration`] for a stale or unknown fiber
-    /// handle.
+    /// handle, or [`RuntimeError::FiberReaped`] for a generation whose record
+    /// was already reaped (consumed by a join or reclaimed by a detach).
     Runtime(RuntimeError),
     /// The durable wait authority failed (registration, row readback,
     /// high-water read or the self-flip notification).
@@ -251,7 +370,10 @@ pub struct DeliveryReport {
     /// How many of those deliveries were buffered instead of handed to a live
     /// receiver: an early delivery (no registration yet), a repeat delivery
     /// hitting an already-buffered key, or a consumed receiver that was
-    /// already gone.
+    /// already gone. An early delivery past the orphan bound is dropped —
+    /// not buffered — and still counts here (it was not handed to a live
+    /// receiver); the drops are counted monotonically in
+    /// [`TokioRuntimeAdapter::health`]'s `orphan_buffer_dropped_total`.
     pub buffered: usize,
 }
 
@@ -571,6 +693,13 @@ impl TokioChannelWakeSink {
     /// is idempotent and still reports success, as at-least-once redelivery
     /// requires. An empty report is a valid, successful no-op.
     ///
+    /// The orphaned placeholder buffer is capacity-bounded (ORPHAN-001):
+    /// overflow drops the OLDEST orphaned entry, a zero capacity drops every
+    /// orphaned entry, and every drop advances the monotonic
+    /// `orphan_buffer_dropped_total` counter of [`TokioRuntimeAdapter::health`].
+    /// The delivery itself still succeeds — the durable wake already
+    /// happened. Fiber-bound entries are never dropped (ORPHAN-002).
+    ///
     /// Delivery never blocks on fiber execution and never touches the
     /// durable rows; the report is the consumer's at-least-once view of the
     /// authority's `PENDING -> WOKEN` flips.
@@ -627,11 +756,19 @@ impl TokioChannelWakeSink {
                     if !already_buffered {
                         // Early delivery on an unregistered wait: buffer
                         // under the placeholder key so the eventual
-                        // registration consumes it immediately.
-                        channel_waits.insert(
-                            ChannelWaitKey::orphaned(record.wait_id),
-                            WaitEntry::Buffered,
-                        );
+                        // registration consumes it immediately — under the
+                        // ORPHAN-001 capacity bound, which drops the oldest
+                        // orphaned entry (or this one, at zero capacity) and
+                        // counts every drop in the monotonic health counter.
+                        // Relaxed ordering: the counter carries a count, no
+                        // inter-variable ordering.
+                        let dropped = channel_waits.buffer_orphan(record.wait_id);
+                        if dropped > 0 {
+                            self.inner.orphan_buffer_dropped.fetch_add(
+                                u64::try_from(dropped).unwrap_or(u64::MAX),
+                                Ordering::Relaxed,
+                            );
+                        }
                     }
                     buffered += 1;
                     None
@@ -640,9 +777,10 @@ impl TokioChannelWakeSink {
             if let Some(key) = resume {
                 // Mirror `TokioWakeSink::wake`: consuming a pending entry
                 // best-effort transitions the fiber back out of `WaitingIo`,
-                // never overwriting a lifecycle-set state.
-                let fibers = lock_unpoisoned(&self.inner.fibers);
-                if let Some(fiber_record) = fibers.get(&key.fiber_id)
+                // never overwriting a lifecycle-set state. A reaped record is
+                // simply absent — there is nothing left to resume.
+                let registry = lock_unpoisoned(&self.inner.fibers);
+                if let Some(fiber_record) = registry.get(&key.fiber_id)
                     && fiber_record.generation == key.fiber_generation
                 {
                     fiber_record.resume_from_wait();
@@ -688,10 +826,12 @@ impl TokioRuntimeAdapter {
     ///
     /// # Errors
     ///
-    /// Returns [`ChannelWaitError::Runtime`] for shutdown and stale/unknown
-    /// fiber handles, [`ChannelWaitError::WaitAuthority`] for durable
-    /// authority failures, and [`ChannelWaitError::RecordMismatch`] when the
-    /// durable row does not match the request.
+    /// Returns [`ChannelWaitError::Runtime`] for shutdown, stale/unknown
+    /// fiber handles, and reaped generations ([`RuntimeError::FiberReaped`]:
+    /// the handle's record was consumed by a join or reclaimed by a detach),
+    /// [`ChannelWaitError::WaitAuthority`] for durable authority failures,
+    /// and [`ChannelWaitError::RecordMismatch`] when the durable row does not
+    /// match the request.
     pub fn wait_for_channel(
         &self,
         handle: FiberHandle,
@@ -794,6 +934,8 @@ impl TokioRuntimeAdapter {
     ///
     /// 1. runtime shutdown → [`RuntimeError::ShuttingDown`];
     /// 2. stale or unknown fiber handle → [`RuntimeError::InvalidGeneration`];
+    ///    a reaped generation (join-consumed or detach-reclaimed handle) →
+    ///    [`RuntimeError::FiberReaped`];
     /// 3. terminal fiber or already-cancelled scope → an empty
     ///    [`RearmReport`] (the ready-`Cancelled` analog: nothing is armed,
     ///    zero durable side effects), not an error.
@@ -824,9 +966,10 @@ impl TokioRuntimeAdapter {
     ///
     /// # Errors
     ///
-    /// Returns [`ChannelWaitError::Runtime`] for shutdown and stale/unknown
-    /// fiber handles, and [`ChannelWaitError::WaitAuthority`] for durable
-    /// authority failures (enumeration, high-water reads, the self-flip).
+    /// Returns [`ChannelWaitError::Runtime`] for shutdown, stale/unknown
+    /// fiber handles, and reaped generations ([`RuntimeError::FiberReaped`]),
+    /// and [`ChannelWaitError::WaitAuthority`] for durable authority failures
+    /// (enumeration, high-water reads, the self-flip).
     pub fn rearm_channel_waits(
         &self,
         handle: FiberHandle,

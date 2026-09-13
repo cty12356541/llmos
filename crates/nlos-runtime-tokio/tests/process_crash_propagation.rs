@@ -127,8 +127,14 @@ fn open_process_fixture(root: &Root, seed: u8) -> ProcessFixture {
 }
 
 fn runtime() -> TokioRuntimeAdapter {
-    TokioRuntimeAdapter::new(Handle::current(), TokioRuntimeConfig { max_live_fibers: 4 })
-        .expect("runtime")
+    TokioRuntimeAdapter::new(
+        Handle::current(),
+        TokioRuntimeConfig {
+            max_live_fibers: 4,
+            ..TokioRuntimeConfig::default()
+        },
+    )
+    .expect("runtime")
 }
 
 fn spawn_fiber(adapter: &TokioRuntimeAdapter, index: usize) -> FiberHandle {
