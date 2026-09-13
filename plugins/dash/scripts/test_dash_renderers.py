@@ -11,18 +11,33 @@ def model(tasks, activity=None, stalled=None):
 
 
 class TestOneline(unittest.TestCase):
-    def test_format(self):
+    def test_format_with_active_milestone(self):
+        # I7:单行带上活跃里程碑 id;▶ 口径按 spec §4 只数 active+stalled(本例 T2)
+        from dashlib.model import Milestone
         m = model([Task("T1", "a", "done", source="sdd"),
                    Task("T2", "b", "active", source="sdd"),
                    Task("T3", "c", "pending", source="sdd")],
                   activity=[Activity("agent", "x", "2026-09-13T14:00:00+08:00"),
                             Activity("agent", "y", "2026-09-13T14:00:00+08:00")],
                   stalled=["T9(6h)"])
+        m.milestones = [Milestone("W26", title="统一恢复面", state="active",
+                                  tasks_done=1, tasks_total=3)]
         from dashlib.render_oneline import render_oneline
-        # ▶ 口径按 spec §4:只数任务状态 active+stalled(本例 T2);T9 仅是
-        # ⚑ 告警标记、无任务记录,不计入 ▶(brief 原字面 ▶2 与 spec 矛盾,已正为 ▶1)。
         self.assertEqual(render_oneline(m),
-                         "[dash] llmos ✓1▶1·1 ⚑1 ·2ag")
+                         "[dash] llmos W26 ✓1▶1·1 ⚑1 ·2ag")
+
+    def test_format_without_active_milestone_omits_token(self):
+        # I7:无活跃里程碑(全 done/纯 git 仓库)时里程碑 token 整体省略
+        from dashlib.model import Milestone
+        m = model([Task("T1", "a", "done", source="sdd"),
+                   Task("T2", "b", "active", source="sdd"),
+                   Task("T3", "c", "pending", source="sdd")],
+                  activity=[Activity("agent", "x", "2026-09-13T14:00:00+08:00")],
+                  stalled=[])
+        m.milestones = [Milestone("W25", title="旧波次", state="done",
+                                  tasks_done=7, tasks_total=7)]
+        from dashlib.render_oneline import render_oneline
+        self.assertEqual(render_oneline(m), "[dash] llmos ✓1▶1·1 ⚑0 ·1ag")
 
 
 NOW = "2026-09-13T15:00:00+08:00"
@@ -66,6 +81,20 @@ class TestPanel(unittest.TestCase):
         self.assertIn("其余:", plain)
         self.assertNotIn("schema v42 表组", plain)        # 非焦点任务被压缩
 
+    def test_all_done_milestone_neutral_placeholder(self):
+        # Minor 8:无 active 也无 planned(全部完成)时用中性"—",
+        # 不虚报"进行中"、也不出"下一步"
+        from dashlib.model import Milestone
+        from dashlib.render_panel import render_panel
+        m = model([Task("T1", "a", "done", source="sdd")])
+        m.milestones = [Milestone("W27", title="收尾", state="done",
+                                  tasks_done=3, tasks_total=3)]
+        out = render_panel(m, focus=None, now_iso=NOW)
+        plain = out.replace("\x1b[0m", "")
+        self.assertIn("—", plain)
+        self.assertNotIn("进行中", plain)
+        self.assertNotIn("下一步", plain)
+
 
 class TestHtmlMermaid(unittest.TestCase):
     def test_html_selfcontained(self):
@@ -76,6 +105,14 @@ class TestHtmlMermaid(unittest.TestCase):
         self.assertNotIn("http://", out)        # 零外链
         self.assertIn("prefers-color-scheme", out)
         self.assertIn("T9 全仓验证门", out)
+
+    def test_html_escapes_label_markup(self):
+        # HTML 快照是唯一标记上下文:label 含 < 必须转义,不得注入活标签
+        from dashlib.render_html import render_html
+        m = model([Task("T1", "注入 <script>alert(1)</script>", "done", source="sdd")])
+        out = render_html(m, NOW)
+        self.assertIn("&lt;script&gt;", out)
+        self.assertNotIn("<script>", out)
 
     def test_mermaid_laneless_and_barrier(self):
         from dashlib.render_mermaid import render_mermaid
@@ -95,6 +132,22 @@ class TestHtmlMermaid(unittest.TestCase):
             first = (ws / "progress.md").read_text(encoding="utf-8")
             inject_mermaid(ws, "```mermaid\nflowchart LR\n```\n")
             self.assertEqual(first, (ws / "progress.md").read_text(encoding="utf-8"))
+
+    def test_inject_backslash_in_block_is_literal(self):
+        # Minor 10:注入块含反斜杠(如 \1)时替换必须按字面写入;
+        # 字符串替换式 re.sub 会把 \1 当组引用(抛 invalid group reference)
+        import tempfile
+        from pathlib import Path
+        from dashlib.render_mermaid import inject_mermaid
+        section = '```mermaid\nflowchart LR\n  A["x\\1y"]\n```'
+        with tempfile.TemporaryDirectory() as d:
+            ws = Path(d)
+            (ws / "progress.md").write_text("# ledger\n", encoding="utf-8")
+            inject_mermaid(ws, section)                 # 首次=追加,无替换路径
+            inject_mermaid(ws, section)                 # 二次=替换路径,反斜杠按字面
+            text = (ws / "progress.md").read_text(encoding="utf-8")
+            self.assertIn("x\\1y", text)
+            self.assertEqual(text.count("x\\1y"), 1)    # 幂等
 
 
 if __name__ == "__main__":

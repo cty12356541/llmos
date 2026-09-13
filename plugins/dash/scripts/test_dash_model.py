@@ -1,6 +1,5 @@
 # plugins/dash/scripts/test_dash_model.py
 import unittest
-from datetime import datetime, timedelta, timezone
 
 from dashlib.model import Task, is_stalled, age, display_width
 

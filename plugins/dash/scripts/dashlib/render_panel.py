@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from .model import Model, Task, age, display_width
+from .model import Model, Task, age
 
 C = {"done": "\033[32m", "active": "\033[34m", "pending": "\033[90m",
      "blocked": "\033[90m", "stalled": "\033[33m", "end": "\033[0m", "bold": "\033[1m"}
@@ -61,7 +61,12 @@ def render_panel(model: Model, focus: Optional[str], now_iso: str, width: int = 
             bar = ""
         lines.append(f"  {C['done'] if m.state == 'done' else C['active']}{m.id} {m.title} {bar} {m.state}{C['end']}")
     planned = [m for m in model.milestones if m.state == "planned"]
-    lines.append(f"  下一步:待启动 {planned[0].id}" if planned and not active_ms else "  进行中")
+    if planned and not active_ms:
+        lines.append(f"  下一步:待启动 {planned[0].id}")
+    elif active_ms:
+        lines.append("  进行中")
+    else:
+        lines.append("  —")   # 全部完成/全新仓库:中性占位,不虚报"进行中"
     lines.append("─" * width)
     # 区块 C:车道/任务(仅 sdd 源)
     sdd_tasks = [t for t in model.tasks if t.source == "sdd"]

@@ -47,7 +47,8 @@ def inject_mermaid(workspace: Path, section: str) -> None:
     text = path.read_text(encoding="utf-8") if path.exists() else ""
     block = f"<!-- dag:begin -->\n{section}\n<!-- dag:end -->"
     if "<!-- dag:begin -->" in text:
-        text = re.sub(r"<!-- dag:begin -->.*?<!-- dag:end -->", block, text, flags=re.S)
+        # lambda 替换:block 按字面写入,不解释 \1 等反斜杠转义(内容含 \ 时 re.sub 字符串替换会抛/错写)
+        text = re.sub(r"<!-- dag:begin -->.*?<!-- dag:end -->", lambda _: block, text, flags=re.S)
     else:
         text = text.rstrip() + "\n\n## DAG\n\n" + block + "\n"
     path.write_text(text, encoding="utf-8")
