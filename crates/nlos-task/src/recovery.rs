@@ -6,7 +6,9 @@ use rusqlite::params;
 use sha2::{Digest, Sha256};
 
 use crate::commit::{ArtifactCommitPlanId, ArtifactCommitPlanRecord, ArtifactCommitPlanState};
-use crate::semantic_commit::{SemanticCommitPlanId, SemanticCommitPlanState};
+use crate::semantic_commit::{
+    SemanticCommitPlanId, SemanticCommitPlanRecord, SemanticCommitPlanState,
+};
 use crate::store::{SqlRead, SqliteTaskAuthority, encode_u64, u64_from_blob};
 use crate::{TaskStoreError, commit, semantic_commit};
 
@@ -223,6 +225,13 @@ pub struct SemanticRecoveryFailureRequest {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SemanticRecoveryResumeRequest {
+    pub plan_id: SemanticCommitPlanId,
+    pub expected_total_failures: u64,
+    pub resumed_at_ms: i64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SemanticRecoveryRecord {
     pub plan_id: SemanticCommitPlanId,
     pub state: SemanticRecoveryState,
@@ -235,6 +244,14 @@ pub struct SemanticRecoveryRecord {
     pub escalated_at_ms: Option<i64>,
     pub resolved_at_ms: Option<i64>,
     pub updated_at_ms: i64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SemanticRecoverySummary {
+    pub retrying: u64,
+    pub escalated: u64,
+    pub unacknowledged_escalated: u64,
+    pub resolved: u64,
 }
 
 impl SqliteTaskAuthority {
@@ -688,6 +705,142 @@ impl SqliteTaskAuthority {
     ) -> Result<Option<SemanticRecoveryRecord>, TaskStoreError> {
         let connection = self.lock_connection()?;
         semantic_load_optional(&*connection, plan_id)
+    }
+
+    /// Returns bounded aggregate counts for the local operations health
+    /// surface without exposing diagnostic strings.
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage failure or corrupt negative count.
+    pub fn summarize_semantic_recovery(&self) -> Result<SemanticRecoverySummary, TaskStoreError> {
+        let connection = self.lock_connection()?;
+        let mut statement = connection.prepare(
+            "SELECT
+                COALESCE(SUM(CASE WHEN recovery_state = 0 THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN recovery_state = 1 THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN recovery_state = 1 AND NOT EXISTS (
+                    SELECT 1 FROM task_semantic_recovery_alert_receipts AS receipts
+                    WHERE receipts.plan_id = task_semantic_recovery.plan_id
+                      AND receipts.total_failures = task_semantic_recovery.total_failures
+                ) THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN recovery_state = 2 THEN 1 ELSE 0 END), 0)
+             FROM task_semantic_recovery",
+        )?;
+        statement
+            .query_row([], |row| {
+                Ok(SemanticRecoverySummary {
+                    retrying: count_from_i64(row.get(0)?)?,
+                    escalated: count_from_i64(row.get(1)?)?,
+                    unacknowledged_escalated: count_from_i64(row.get(2)?)?,
+                    resolved: count_from_i64(row.get(3)?)?,
+                })
+            })
+            .map_err(TaskStoreError::from)
+    }
+
+    /// Lists non-finalized Semantic plans whose durable retry time is due.
+    /// Escalated plans are excluded until an explicit CAS resume. A plan
+    /// with no ledger row is returned immediately: the plan itself is the
+    /// durable fact and a lost ledger row is rebuilt by rescanning it
+    /// (spec SEM-RECOV-005).
+    ///
+    /// # Errors
+    ///
+    /// Returns an invalid timestamp, corrupt-record, or storage failure.
+    pub fn list_due_semantic_commit_plans(
+        &self,
+        limit: usize,
+        now_ms: i64,
+    ) -> Result<Vec<SemanticCommitPlanRecord>, TaskStoreError> {
+        if now_ms < 0 {
+            return Err(TaskStoreError::InvalidSemanticRecoveryPolicy {
+                reason: "scan timestamp must be non-negative",
+            });
+        }
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let connection = self.lock_connection()?;
+        let mut statement = connection.prepare(
+            "SELECT plans.plan_id FROM task_semantic_commit_plans AS plans
+             LEFT JOIN task_semantic_recovery AS recovery ON recovery.plan_id = plans.plan_id
+             WHERE plans.plan_state != ?1 AND (
+                recovery.plan_id IS NULL OR
+                (recovery.recovery_state = ?2 AND recovery.next_retry_at_ms <= ?3)
+             )
+             ORDER BY plans.created_at_ms, plans.plan_id LIMIT ?4",
+        )?;
+        let mut rows = statement.query(params![
+            SemanticCommitPlanState::Finalized.code(),
+            SemanticRecoveryState::Retrying.code(),
+            now_ms,
+            i64::try_from(limit).unwrap_or(i64::MAX),
+        ])?;
+        let mut ids = Vec::new();
+        while let Some(row) = rows.next()? {
+            ids.push(SemanticCommitPlanId::from_bytes(crate::store::blob16(
+                row, 0,
+            )?));
+        }
+        drop(rows);
+        drop(statement);
+        ids.into_iter()
+            .map(|plan_id| {
+                semantic_commit::load_plan_optional(&*connection, plan_id)?
+                    .ok_or(TaskStoreError::SemanticCommitPlanNotFound)
+            })
+            .collect()
+    }
+
+    /// Requeues one escalated Semantic plan using its total-failure count as
+    /// a CAS. A plan with no ledger row reports
+    /// [`TaskStoreError::SemanticCommitPlanNotFound`]; a dedicated Semantic
+    /// ledger-not-found variant mirroring the artifact family's
+    /// `ArtifactRecoveryNotFound` is deferred to the alert-surface task.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found, stale-CAS, invalid-state/timestamp, or storage
+    /// failures. Total failure history is preserved.
+    pub fn resume_semantic_recovery(
+        &self,
+        request: SemanticRecoveryResumeRequest,
+    ) -> Result<SemanticRecoveryRecord, TaskStoreError> {
+        if request.resumed_at_ms < 0 {
+            return Err(TaskStoreError::InvalidSemanticRecoveryPolicy {
+                reason: "resume timestamp must be non-negative",
+            });
+        }
+        let mut connection = self.lock_connection()?;
+        let transaction =
+            connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let mut record = semantic_load_optional(&transaction, request.plan_id)?
+            .ok_or(TaskStoreError::SemanticCommitPlanNotFound)?;
+        if record.total_failures != request.expected_total_failures {
+            return Err(TaskStoreError::SemanticRecoveryCasMismatch {
+                expected: request.expected_total_failures,
+                current: record.total_failures,
+            });
+        }
+        if record.state != SemanticRecoveryState::Escalated {
+            return Err(TaskStoreError::InvalidSemanticRecoveryState {
+                state: record.state,
+            });
+        }
+        if request.resumed_at_ms < record.last_failed_at_ms {
+            return Err(TaskStoreError::InvalidSemanticRecoveryPolicy {
+                reason: "resume timestamp regresses durable history",
+            });
+        }
+        record.state = SemanticRecoveryState::Retrying;
+        record.consecutive_failures = 0;
+        record.next_retry_at_ms = Some(request.resumed_at_ms);
+        record.escalated_at_ms = None;
+        record.updated_at_ms = request.resumed_at_ms;
+        semantic_upsert(&transaction, &record)?;
+        transaction.commit()?;
+        Ok(record)
     }
 }
 

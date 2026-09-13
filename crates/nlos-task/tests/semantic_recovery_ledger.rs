@@ -2,6 +2,9 @@
 //! durable CAS-guarded ledger row (total-failure count compare-and-swap,
 //! exponential capped backoff, escalation after the fixed consecutive
 //! threshold) and read back consistently through `inspect_semantic_recovery`.
+//! Task 3 extends the same lane: due scanning (state/time filters plus the
+//! ledger-less rescan), CAS resume from `Escalated`, and the mirrored
+//! summary counts.
 //!
 //! The store/plan fixture mirrors the construction in
 //! `nlos-commit-coordinator`'s `semantic_pending_restart_scan.rs` (via
@@ -18,7 +21,8 @@ use nlos_semantic::SemanticAuthority;
 use nlos_task::{
     AttemptSpec, ParticipantRegistryBinding, PermitDecision, PermitRequest,
     PlanSemanticCommitRequest, SemanticRecoveryFailureRequest, SemanticRecoveryFailureSource,
-    SemanticRecoveryState, SnapshotBundle, SnapshotConsistency, SqliteTaskAuthority,
+    SemanticRecoveryRecord, SemanticRecoveryResumeRequest, SemanticRecoveryState,
+    SemanticRecoverySummary, SnapshotBundle, SnapshotConsistency, SqliteTaskAuthority,
     TaskSnapshotReceiptSpec, TaskSpec, TaskStoreError, TaskWriteSetRequest,
     TaskWriteSetSemanticAppendRequest, TaskWriteSetSemanticRequiredDurability,
     TaskWriteSetSemanticTarget, empty_effect_history_root,
@@ -314,4 +318,246 @@ fn record_failure_roundtrips_and_cas_rejects_stale_expected() {
         .unwrap()
         .unwrap();
     assert_eq!(read.total_failures, 1);
+}
+
+/// Records one Semantic recovery failure with the shared test delays
+/// (base 100 ms, capped 5 000 ms) and returns the durable record.
+fn record_failure(
+    authority: &SqliteTaskAuthority,
+    plan_id: nlos_task::SemanticCommitPlanId,
+    expected_total_failures: u64,
+    observed_at_ms: i64,
+) -> SemanticRecoveryRecord {
+    authority
+        .record_semantic_recovery_failure(SemanticRecoveryFailureRequest {
+            plan_id,
+            expected_total_failures,
+            source: SemanticRecoveryFailureSource::Coordinator,
+            observed_at_ms,
+            base_delay_ms: 100,
+            max_delay_ms: 5_000,
+        })
+        .expect("record semantic recovery failure")
+}
+
+#[test]
+fn due_scan_filters_state_and_time_and_resume_requeues() {
+    let (authority, plan_id) = semantic_store_with_pending_plan();
+    // 无台账行的 incomplete plan 立即可扫:台账丢失重扫 durable plan 重建
+    // 调度(spec SEM-RECOV-005,镜像 artifact 版 LEFT JOIN 的"无台账即到期")
+    let ledgerless = authority.list_due_semantic_commit_plans(10, 0).unwrap();
+    assert_eq!(ledgerless.len(), 1);
+    assert_eq!(ledgerless[0].plan_id, plan_id);
+    // 三次失败推高 next_retry
+    let mut expected = 0u64;
+    for t in [1_000i64, 2_000, 3_000] {
+        let rec = record_failure(&authority, plan_id, expected, t);
+        expected = rec.total_failures;
+    }
+    // 第三次失败 consecutive=3 → 退避 100 * 2^2 = 400 → next_retry = 3_400
+    // 未到期:不返回
+    assert!(
+        authority
+            .list_due_semantic_commit_plans(10, 3_000)
+            .unwrap()
+            .is_empty()
+    );
+    // 到期:返回该 plan
+    let due = authority.list_due_semantic_commit_plans(10, 3_500).unwrap();
+    assert_eq!(due.len(), 1);
+    assert_eq!(due[0].plan_id, plan_id);
+    // limit=0 返回空(镜像 list_incomplete 的守卫)
+    assert!(
+        authority
+            .list_due_semantic_commit_plans(0, 3_500)
+            .unwrap()
+            .is_empty()
+    );
+    // 负扫描时间戳被拒(镜像 artifact 守卫)
+    assert!(matches!(
+        authority.list_due_semantic_commit_plans(10, -1),
+        Err(TaskStoreError::InvalidSemanticRecoveryPolicy { .. })
+    ));
+    // 连续失败达到固定阈值 8 后 Escalated:不进扫描
+    for t in (4_000i64..=8_000).step_by(1_000) {
+        let rec = record_failure(&authority, plan_id, expected, t);
+        expected = rec.total_failures;
+    }
+    assert_eq!(expected, 8);
+    assert!(
+        authority
+            .list_due_semantic_commit_plans(10, i64::MAX)
+            .unwrap()
+            .is_empty()
+    );
+    // resume(Escalated→Retrying CAS)后重回调度,总失败史保留
+    let resumed = authority
+        .resume_semantic_recovery(SemanticRecoveryResumeRequest {
+            plan_id,
+            expected_total_failures: expected,
+            resumed_at_ms: 10_000,
+        })
+        .unwrap();
+    assert_eq!(resumed.state, SemanticRecoveryState::Retrying);
+    assert_eq!(resumed.consecutive_failures, 0);
+    assert_eq!(resumed.total_failures, 8);
+    assert_eq!(resumed.next_retry_at_ms, Some(10_000));
+    assert_eq!(resumed.escalated_at_ms, None);
+    let requed = authority
+        .list_due_semantic_commit_plans(10, 10_000)
+        .unwrap();
+    assert_eq!(requed.len(), 1);
+    assert_eq!(requed[0].plan_id, plan_id);
+}
+
+#[test]
+fn escalation_threshold_pinned_at_eight_and_backoff_saturates() {
+    let (authority, plan_id) = semantic_store_with_pending_plan();
+    let mut expected = 0u64;
+    let mut records = Vec::new();
+    for t in (1_000i64..=8_000).step_by(1_000) {
+        let rec = record_failure(&authority, plan_id, expected, t);
+        expected = rec.total_failures;
+        records.push(rec);
+    }
+    // 指数封顶退避是请求与连续计数的纯函数(无 jitter):
+    // consecutive=k → 100 * 2^(k-1),封顶 5 000
+    assert_eq!(records[0].next_retry_at_ms, Some(1_000 + 100)); // 2^0
+    assert_eq!(records[2].next_retry_at_ms, Some(3_000 + 400)); // 2^2
+    assert_eq!(records[5].next_retry_at_ms, Some(6_000 + 3_200)); // 2^5
+    assert_eq!(records[6].next_retry_at_ms, Some(7_000 + 5_000)); // 2^6=6400 → 封顶
+    // 第 7 次失败仍未升级
+    assert_eq!(records[6].state, SemanticRecoveryState::Retrying);
+    assert!(records[6].next_retry_at_ms.is_some());
+    // 第 8 次(阈值常量 = 8)进 Escalated,记录形状钉死
+    let escalated = records[7];
+    assert_eq!(escalated.consecutive_failures, 8);
+    assert_eq!(escalated.total_failures, 8);
+    assert_eq!(escalated.state, SemanticRecoveryState::Escalated);
+    assert_eq!(escalated.next_retry_at_ms, None); // Escalated 后不再调度
+    assert_eq!(escalated.escalated_at_ms, Some(8_000)); // 触发失败时刻置时
+    assert_eq!(escalated.resolved_at_ms, None);
+    // 台账读回一致
+    let read = authority
+        .inspect_semantic_recovery(plan_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(read, escalated);
+}
+
+#[test]
+fn resume_rejects_missing_ledger_stale_cas_and_non_escalated_state() {
+    let (authority, plan_id) = semantic_store_with_pending_plan();
+    // 负 resume 时间戳被拒
+    assert!(matches!(
+        authority.resume_semantic_recovery(SemanticRecoveryResumeRequest {
+            plan_id,
+            expected_total_failures: 0,
+            resumed_at_ms: -1,
+        }),
+        Err(TaskStoreError::InvalidSemanticRecoveryPolicy { .. })
+    ));
+    // 无台账行:无可恢复的调度(镜像 artifact 的 ledger-not-found 语义;
+    // 复用既有 SemanticCommitPlanNotFound 变体)
+    assert!(matches!(
+        authority.resume_semantic_recovery(SemanticRecoveryResumeRequest {
+            plan_id,
+            expected_total_failures: 0,
+            resumed_at_ms: 1_000,
+        }),
+        Err(TaskStoreError::SemanticCommitPlanNotFound)
+    ));
+    let first = record_failure(&authority, plan_id, 0, 1_000);
+    assert_eq!(first.total_failures, 1);
+    // 过期 CAS 先于状态校验被拒
+    assert!(matches!(
+        authority.resume_semantic_recovery(SemanticRecoveryResumeRequest {
+            plan_id,
+            expected_total_failures: 0,
+            resumed_at_ms: 2_000,
+        }),
+        Err(TaskStoreError::SemanticRecoveryCasMismatch {
+            expected: 0,
+            current: 1
+        })
+    ));
+    // 非 Escalated 状态拒绝 resume
+    assert!(matches!(
+        authority.resume_semantic_recovery(SemanticRecoveryResumeRequest {
+            plan_id,
+            expected_total_failures: 1,
+            resumed_at_ms: 2_000,
+        }),
+        Err(TaskStoreError::InvalidSemanticRecoveryState {
+            state: SemanticRecoveryState::Retrying
+        })
+    ));
+    // 升级后:resume 时间戳回退被拒
+    let mut expected = first.total_failures;
+    for t in (2_000i64..=8_000).step_by(1_000) {
+        expected = record_failure(&authority, plan_id, expected, t).total_failures;
+    }
+    assert_eq!(expected, 8);
+    assert!(matches!(
+        authority.resume_semantic_recovery(SemanticRecoveryResumeRequest {
+            plan_id,
+            expected_total_failures: 8,
+            resumed_at_ms: 7_999,
+        }),
+        Err(TaskStoreError::InvalidSemanticRecoveryPolicy { .. })
+    ));
+}
+
+#[test]
+fn summarize_counts_semantic_recovery_states() {
+    let (authority, plan_id) = semantic_store_with_pending_plan();
+    assert_eq!(
+        authority.summarize_semantic_recovery().unwrap(),
+        SemanticRecoverySummary::default()
+    );
+    // 一次失败 → retrying=1
+    let first = record_failure(&authority, plan_id, 0, 1_000);
+    assert_eq!(
+        authority.summarize_semantic_recovery().unwrap(),
+        SemanticRecoverySummary {
+            retrying: 1,
+            escalated: 0,
+            unacknowledged_escalated: 0,
+            resolved: 0,
+        }
+    );
+    // 连续 8 次 → Escalated;semantic 告警确认面尚未开放(W26 后续任务),
+    // 全部 escalated 均未确认
+    let mut expected = first.total_failures;
+    for t in (2_000i64..=8_000).step_by(1_000) {
+        expected = record_failure(&authority, plan_id, expected, t).total_failures;
+    }
+    assert_eq!(expected, 8);
+    assert_eq!(
+        authority.summarize_semantic_recovery().unwrap(),
+        SemanticRecoverySummary {
+            retrying: 0,
+            escalated: 1,
+            unacknowledged_escalated: 1,
+            resolved: 0,
+        }
+    );
+    // resume 后重回 retrying;resolve 路径(SEM-RECOV-004 finalize 联动)在
+    // 后续任务落地,当前 resolved 恒为 0
+    authority
+        .resume_semantic_recovery(SemanticRecoveryResumeRequest {
+            plan_id,
+            expected_total_failures: 8,
+            resumed_at_ms: 9_000,
+        })
+        .unwrap();
+    assert_eq!(
+        authority.summarize_semantic_recovery().unwrap(),
+        SemanticRecoverySummary {
+            retrying: 1,
+            escalated: 0,
+            unacknowledged_escalated: 0,
+            resolved: 0,
+        }
+    );
 }

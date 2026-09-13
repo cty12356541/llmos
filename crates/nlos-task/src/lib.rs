@@ -221,7 +221,7 @@ pub use recovery::{
     ArtifactRecoveryFailureRequest, ArtifactRecoveryFailureSource, ArtifactRecoveryRecord,
     ArtifactRecoveryResumeRequest, ArtifactRecoveryState, ArtifactRecoverySummary,
     SemanticRecoveryFailureRequest, SemanticRecoveryFailureSource, SemanticRecoveryRecord,
-    SemanticRecoveryState,
+    SemanticRecoveryResumeRequest, SemanticRecoveryState, SemanticRecoverySummary,
 };
 pub use resource_commit::{
     NestedResourceCostReceipt, ResourceFinalizeDecision, ResourceTaskCommitReceipt,
