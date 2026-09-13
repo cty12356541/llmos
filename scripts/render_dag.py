@@ -122,10 +122,21 @@ def inject(workspace: Path, section: str) -> None:
     ledger_path.write_text(text, encoding="utf-8")
 
 
+def oneline_view(dag: dict, status: dict[int, str]) -> str:
+    """statusline 单行模式(C 方案):一行车道状态摘要,无 ANSI 依赖,写入文件零副作用。"""
+    counts = {s: sum(1 for v in status.values() if v == s) for s in ("done", "active", "pending")}
+    active = [f"T{n}" for n, s in sorted(status.items()) if s == "active"]
+    bar = "".join(MARKS[s] for n in sorted(status) for s in [status[n]])
+    tail = f" ▶{','.join(active)}" if active else (" 全部完成" if counts["pending"] == 0 and counts["active"] == 0 else "")
+    return f"[dag] {dag['wave']} {dag['title']} {bar} ✓{counts['done']} ▶{counts['active']} ·{counts['pending']}{tail}"
+
+
 def main() -> None:
     root = Path(__file__).resolve().parent.parent
-    if len(sys.argv) > 1:
-        workspace = Path(sys.argv[1])
+    args = [a for a in sys.argv[1:] if not a.startswith("-")]
+    oneline = "--oneline" in sys.argv
+    if args:
+        workspace = Path(args[0])
     else:
         candidates = sorted((root / ".superpowers" / "sdd").glob("*/dag.json"))
         if not candidates:
@@ -133,6 +144,9 @@ def main() -> None:
         workspace = candidates[-1].parent
     dag, ledger = load(workspace)
     status = {n: resolve_status(ledger, n) for n in (int(k) for k in dag["tasks"])}
+    if oneline:
+        print(oneline_view(dag, status))
+        return
     print(terminal_view(dag, status))
     (workspace / "dag.md").write_text(mermaid(dag, status) + "\n", encoding="utf-8")
     inject(workspace, mermaid(dag, status))
