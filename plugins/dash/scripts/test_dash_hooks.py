@@ -46,6 +46,20 @@ class TestRecordEvent(unittest.TestCase):
             ev = json.loads(p.read_text(encoding="utf-8").strip().splitlines()[-1])
             self.assertEqual((ev["kind"], ev["event"]), ("stop", "turn_end"))
 
+    def test_real_stop_payload_without_tool_name(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "state.jsonl"
+            record_event.main(json.dumps({"hook_event_name": "Stop",
+                                          "session_id": "sess-1", "cwd": "/tmp"}), p)
+            ev = json.loads(p.read_text(encoding="utf-8").strip().splitlines()[-1])
+            self.assertEqual((ev["kind"], ev["event"]), ("stop", "turn_end"))
+
+    def test_unknown_tool_skipped(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "state.jsonl"
+            record_event.main(hook_payload("Whatever"), p)
+            self.assertFalse(p.exists())               # 未知工具不落盘
+
     def test_garbage_stdin_never_raises(self):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "state.jsonl"

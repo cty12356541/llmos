@@ -30,6 +30,8 @@ def main(stdin_text: str, state_path: Path) -> None:
     try:
         payload = json.loads(stdin_text or "{}")
         kind = TOOL_KIND.get(payload.get("tool_name", ""))
+        if kind is None and payload.get("hook_event_name") == "Stop":
+            kind = "stop"
         if kind is None:
             return
         event = {"ts": datetime.now().astimezone().isoformat(timespec="seconds"),
