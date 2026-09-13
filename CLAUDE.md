@@ -94,5 +94,6 @@ Windows 专项注意(本机实测教训):
 - **多步任务先 writing-plans、执行用 subagent-driven-development / dispatching-parallel-agents**:车道划分遵守 §6.1 写集不相交才并行
 - **需要隔离的功能开发用 using-git-worktrees**:与"功能走独立分支"的分支模型衔接,避免共享脏工作区
 - **完成前必须 verification-before-completion**:证据先于断言,对应 §5 验证门与 §7 回执真实性要求
+- **波次进行中状态跃迁必附 DAG**:任何任务 dispatched/过审/修复环/完成时,回复末尾自动附 `python3 scripts/render_dag.py` 的终端车道图(维护者 2026-09-13 要求,目的:大型 AI 开发中维护者能持续把握当前状态);无波次工作区时跳过,不刷屏
 - **合并前 requesting-code-review,收到反馈走 receiving-code-review**:技术严谨优先于顺从
 - 技能不可用或场景不匹配时如实说明,退回本文件与 AGENTS.md 的手写协议,不得静默跳过
