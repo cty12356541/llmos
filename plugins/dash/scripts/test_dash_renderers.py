@@ -67,5 +67,35 @@ class TestPanel(unittest.TestCase):
         self.assertNotIn("schema v42 表组", plain)        # 非焦点任务被压缩
 
 
+class TestHtmlMermaid(unittest.TestCase):
+    def test_html_selfcontained(self):
+        from dashlib.render_html import render_html
+        out = render_html(full_model(), NOW)
+        self.assertTrue(out.startswith("<!DOCTYPE html>"))
+        self.assertIn("<style>", out)
+        self.assertNotIn("http://", out)        # 零外链
+        self.assertIn("prefers-color-scheme", out)
+        self.assertIn("T9 全仓验证门", out)
+
+    def test_mermaid_laneless_and_barrier(self):
+        from dashlib.render_mermaid import render_mermaid
+        out = render_mermaid(full_model())
+        self.assertIn('T9["T9 全仓验证门"]:::pending', out)   # 无车道顶层节点带类
+        self.assertIn("T6 -.-> T9", out)                      # 屏障虚线
+        self.assertIn("subgraph", out)
+
+    def test_inject_idempotent(self):
+        import tempfile
+        from pathlib import Path
+        from dashlib.render_mermaid import inject_mermaid
+        with tempfile.TemporaryDirectory() as d:
+            ws = Path(d)
+            (ws / "progress.md").write_text("# ledger\n", encoding="utf-8")
+            inject_mermaid(ws, "```mermaid\nflowchart LR\n```\n")
+            first = (ws / "progress.md").read_text(encoding="utf-8")
+            inject_mermaid(ws, "```mermaid\nflowchart LR\n```\n")
+            self.assertEqual(first, (ws / "progress.md").read_text(encoding="utf-8"))
+
+
 if __name__ == "__main__":
     unittest.main()

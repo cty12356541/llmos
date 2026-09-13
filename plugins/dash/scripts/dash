@@ -54,6 +54,27 @@ def main() -> int:
         model, now = _build_model(repo)
         print(render_panel(model, focus=read_focus(repo), now_iso=now))
         return 0
+    if args[0] == "render" and len(args) > 1 and args[1] == "html":
+        from dashlib.render_html import render_html
+        model, now = _build_model(repo)
+        print(render_html(model, now))
+        return 0
+    if args[0] == "render" and len(args) > 1 and args[1] == "mermaid":
+        from dashlib.render_mermaid import inject_mermaid, render_mermaid
+        model, _now = _build_model(repo)
+        body = render_mermaid(model)
+        print(body)
+        if "--inject" in args:
+            # 与 load_sdd 同一选区口径:mtime 取最新工作区(key 带 exists 守卫)
+            workspaces = sorted((repo / ".superpowers" / "sdd").glob("*/dag.json"),
+                                key=lambda p: p.stat().st_mtime if p.exists() else 0)
+            if not workspaces:
+                print("dash: 无 .superpowers/sdd/*/dag.json 工作区,跳过注入")
+                return 0
+            ws = workspaces[-1].parent
+            inject_mermaid(ws, body)   # 唯一显式写副作用,且仅在 --inject 门后
+            print(f"mermaid → {ws / 'progress.md'}")
+        return 0
     if args[0] == "oneline":
         from dashlib.render_oneline import render_oneline
         model, _now = _build_model(repo)
