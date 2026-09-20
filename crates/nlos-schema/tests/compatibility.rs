@@ -3,10 +3,13 @@ use nlos_schema::sabi::v1::{
     AcknowledgeSemanticRecoveryAlertCommand, ArtifactRecoveryAlertStatus, ArtifactRecoveryMetrics,
     ArtifactRecoveryOperationsSnapshot, BarrierObservationEvidence, BarrierObservationRecord,
     BarrierObservationSignature, BarrierObservationTarget, CallerIdentity, CancelCommand,
-    CancelOperationRequest, CapabilityHandle, ControlCommand, ControlCommandLifecycleState,
-    ControlCommandResult, ControlCommandSource, ControlScope, Envelope, ExchangeRequest,
-    ExchangeResponse, GetSystemControlRequest, KillCommand, NegotiateServiceResponse,
-    OperationLifecycleState, OperationReference, OperationStatus, PauseCommand,
+    CancelOperationRequest, CapabilityHandle, ContextResidencyTier, ControlCommand,
+    ControlCommandLifecycleState, ControlCommandResult, ControlCommandSource, ControlScope,
+    DurableOperationSnapshot, DurableOperationState, DurableOperationStatus, Envelope,
+    ExchangeRequest, ExchangeResponse, ExecutionFiberLifecycleState,
+    ExecutionFiberOperationsSnapshot, ExecutionFiberPhase, ExecutionFiberStatus,
+    GetSystemControlRequest, KillCommand, NegotiateServiceResponse, OperationLifecycleState,
+    OperationReference, OperationStatus, PauseCommand, PlanNodeKind, PlanNodeLifecycleState,
     PrincipalHandshakeAttestation, PrincipalHandshakeChallenge, QueryOperationRequest,
     ReceiptReference, ReclaimCommand, RecoveryFailureAuthority, RecoveryFailureSummary,
     RecoveryWorkerLifecycleState, RegisterWaitRequest, ResolveServiceRequest,
@@ -15,33 +18,42 @@ use nlos_schema::sabi::v1::{
     ResumeSemanticRecoveryCommand, RetryDirective, SabiErrorCode, SabiFailure, SabiRequestContext,
     SabiResponseContext, SchemaIdentity, SemanticRecoveryAlertStatus, SemanticRecoveryMetrics,
     SemanticRecoveryOperationsSnapshot, SubmitBarrierObservationRequest,
-    SubmitControlCommandRequest, SystemControlView, TaskExecutionBinding, ThrottleCommand,
-    control_command, envelope as envelope_message, local_rpc,
+    SubmitControlCommandRequest, SystemControlView, TaskExecutionBinding, TaskGroupLifecycleState,
+    TaskGroupMemberStatus, TaskGroupMemberType, TaskGroupMembershipState,
+    TaskGroupOperationsSnapshot, TaskGroupStatus, TaskNodeOperationsSnapshot, TaskNodeStatus,
+    ThrottleCommand, TopicOperationsSnapshot, TopicStatus, control_command,
+    envelope as envelope_message, local_rpc,
 };
 use nlos_schema::{
     CommonSemanticsError, CompatibilityError, HANDSHAKE_NONCE_BYTES, HANDSHAKE_SIGNATURE_BYTES,
     MAX_ENVELOPE_BYTES, MAX_HANDSHAKE_CHANNEL_BINDING_BYTES, MAX_PRINCIPAL_HANDSHAKE_PAYLOAD_BYTES,
     MAX_SERVICE_DIRECTORY_PAYLOAD_BYTES, MAX_SYSTEM_CONTROL_ALERTS,
-    MAX_TAKEOVER_CONTROL_PAYLOAD_BYTES, MAX_WAIT_CONTROL_PAYLOAD_BYTES, MethodSemantics,
-    SABI_ENVELOPE_SCHEMA, SABI_OPERATION_CONTROL_SCHEMA, SABI_PRINCIPAL_HANDSHAKE_SCHEMA,
-    SABI_SERVICE_DIRECTORY_SCHEMA, SABI_SYSTEM_CONTROL_SCHEMA, SABI_TAKEOVER_CONTROL_SCHEMA,
-    SABI_WAIT_CONTROL_SCHEMA, decode_artifact_recovery_operations_snapshot,
-    decode_barrier_observation_record, decode_cancel_operation_request,
-    decode_control_command_result, decode_exchange_request, decode_exchange_response,
-    decode_get_system_control_request, decode_operation_status,
-    decode_principal_handshake_attestation, decode_principal_handshake_challenge,
-    decode_query_operation_request, decode_register_wait_request, decode_resolve_service_request,
+    MAX_SYSTEM_CONTROL_TOPIC_NAME_BYTES, MAX_TAKEOVER_CONTROL_PAYLOAD_BYTES,
+    MAX_WAIT_CONTROL_PAYLOAD_BYTES, MethodSemantics, SABI_ENVELOPE_SCHEMA,
+    SABI_OPERATION_CONTROL_SCHEMA, SABI_PRINCIPAL_HANDSHAKE_SCHEMA, SABI_SERVICE_DIRECTORY_SCHEMA,
+    SABI_SYSTEM_CONTROL_SCHEMA, SABI_TAKEOVER_CONTROL_SCHEMA, SABI_WAIT_CONTROL_SCHEMA,
+    decode_artifact_recovery_operations_snapshot, decode_barrier_observation_record,
+    decode_cancel_operation_request, decode_control_command_result,
+    decode_durable_operation_snapshot, decode_exchange_request, decode_exchange_response,
+    decode_execution_fiber_operations_snapshot, decode_get_system_control_request,
+    decode_operation_status, decode_principal_handshake_attestation,
+    decode_principal_handshake_challenge, decode_query_operation_request,
+    decode_register_wait_request, decode_resolve_service_request,
     decode_resource_recovery_operations_snapshot, decode_sabi_envelope,
     decode_semantic_recovery_operations_snapshot, decode_submit_barrier_observation_request,
-    decode_submit_control_command_request, encode_artifact_recovery_operations_snapshot,
-    encode_barrier_observation_record, encode_cancel_operation_request,
-    encode_control_command_result, encode_exchange_request, encode_exchange_response,
-    encode_get_system_control_request, encode_operation_status,
-    encode_principal_handshake_attestation, encode_principal_handshake_challenge,
-    encode_query_operation_request, encode_register_wait_request, encode_resolve_service_request,
-    encode_resolve_service_response, encode_resource_recovery_operations_snapshot,
-    encode_sabi_envelope, encode_semantic_recovery_operations_snapshot,
-    encode_submit_barrier_observation_request, encode_submit_control_command_request,
+    decode_submit_control_command_request, decode_task_group_operations_snapshot,
+    decode_task_node_operations_snapshot, decode_topic_operations_snapshot,
+    encode_artifact_recovery_operations_snapshot, encode_barrier_observation_record,
+    encode_cancel_operation_request, encode_control_command_result,
+    encode_durable_operation_snapshot, encode_exchange_request, encode_exchange_response,
+    encode_execution_fiber_operations_snapshot, encode_get_system_control_request,
+    encode_operation_status, encode_principal_handshake_attestation,
+    encode_principal_handshake_challenge, encode_query_operation_request,
+    encode_register_wait_request, encode_resolve_service_request, encode_resolve_service_response,
+    encode_resource_recovery_operations_snapshot, encode_sabi_envelope,
+    encode_semantic_recovery_operations_snapshot, encode_submit_barrier_observation_request,
+    encode_submit_control_command_request, encode_task_group_operations_snapshot,
+    encode_task_node_operations_snapshot, encode_topic_operations_snapshot,
     operation_control_schema_identity, principal_handshake_schema_identity, registry_frozen,
     schema_registry, service_directory_schema_identity, system_control_schema_identity,
     takeover_control_schema_identity, validate_sabi_request_context,
@@ -197,11 +209,12 @@ fn registry_exposes_the_supported_contract() {
     // W27-A bumped the minor for the additive semantic-domain extension,
     // W28-D bumped it again for the additive operation-level command arms,
     // W29-D bumped it once more for the additive kill/throttle/reclaim
-    // arms, and W28-C-3b bumped it for the additive resource-domain
-    // recovery extension (ADR-0017 G8); ADR-0014 permits additive extension
-    // of a frozen entry.
+    // arms, W28-C-3b bumped it for the additive resource-domain
+    // recovery extension (ADR-0017 G8), and W32-G bumped it for the
+    // additive per-layer inspect views (B5-3); ADR-0014 permits additive
+    // extension of a frozen entry.
     assert_eq!(system_control.major, 1);
-    assert_eq!(system_control.minor, 4);
+    assert_eq!(system_control.minor, 5);
     let takeover_control = registry
         .iter()
         .find(|entry| entry.name == SABI_TAKEOVER_CONTROL_SCHEMA)
@@ -410,6 +423,9 @@ fn semantic_recovery_control_payloads_are_typed_bounded_and_fail_closed() {
         schema: Some(system_control_schema_identity()),
         view: SystemControlView::SemanticCommitRecovery.into(),
         alert_limit: 8,
+        target_id: Vec::new(),
+        plan_id: Vec::new(),
+        target_generation: 0,
     };
     let get_wire = encode_get_system_control_request(&get).unwrap();
     assert_eq!(decode_get_system_control_request(&get_wire).unwrap(), get);
@@ -500,9 +516,24 @@ const RESOURCE_RECOVERY_SNAPSHOT_GOLDEN_HEX: &str = concat!(
     "180320b81728c81a30ac1b2001",
 );
 
+/// The literal v1.4 `SystemControl` identity of the W28-C-3b resource
+/// extension's freeze point (the registry minor has since advanced to 5
+/// through the W29-D additive arms and the W32-G per-layer views; frozen
+/// goldens stay pinned at their creation minor, mirroring
+/// [`w27a_semantic_identity`] and [`w28d_operation_identity`]).
+fn w28c_resource_identity() -> SchemaIdentity {
+    SchemaIdentity {
+        name: SABI_SYSTEM_CONTROL_SCHEMA.to_owned(),
+        major: 1,
+        minor: 4,
+        critical_extension_ids: Vec::new(),
+        non_critical_extension_ids: Vec::new(),
+    }
+}
+
 fn resource_recovery_snapshot() -> ResourceRecoveryOperationsSnapshot {
     ResourceRecoveryOperationsSnapshot {
-        schema: Some(system_control_schema_identity()),
+        schema: Some(w28c_resource_identity()),
         metrics: Some(ResourceRecoveryMetrics {
             total_inspected: 15,
             total_finalized: 7,
@@ -564,6 +595,9 @@ fn resource_recovery_control_payloads_are_typed_bounded_and_fail_closed() {
         schema: Some(system_control_schema_identity()),
         view: SystemControlView::ResourceCommitRecovery.into(),
         alert_limit: 8,
+        target_id: Vec::new(),
+        plan_id: Vec::new(),
+        target_generation: 0,
     };
     let get_wire = encode_get_system_control_request(&get).unwrap();
     assert_eq!(decode_get_system_control_request(&get_wire).unwrap(), get);
@@ -964,6 +998,9 @@ fn system_control_payloads_are_typed_bounded_and_sanitized() {
         schema: Some(system_control_schema_identity()),
         view: SystemControlView::ArtifactCommitRecovery.into(),
         alert_limit: 8,
+        target_id: Vec::new(),
+        plan_id: Vec::new(),
+        target_generation: 0,
     };
     let get_wire = encode_get_system_control_request(&get).unwrap();
     assert_eq!(decode_get_system_control_request(&get_wire).unwrap(), get);
@@ -1523,4 +1560,437 @@ fn exchange_wrappers_preserve_unknown_fields_and_require_an_envelope() {
         encode_exchange_response(&ExchangeResponse { envelope: None }),
         Err(CompatibilityError::MissingExchangeEnvelope)
     );
+}
+
+// W32-G (B5-3): per-layer inspect views — deterministic fixtures and
+// fail-closed addressing/status bounds for the five additive snapshots.
+
+fn w32g_layer_get(view: SystemControlView, target_id: Vec<u8>) -> GetSystemControlRequest {
+    GetSystemControlRequest {
+        schema: Some(system_control_schema_identity()),
+        view: view.into(),
+        alert_limit: 8,
+        target_id,
+        plan_id: Vec::new(),
+        target_generation: 0,
+    }
+}
+
+fn task_group_snapshot() -> TaskGroupOperationsSnapshot {
+    TaskGroupOperationsSnapshot {
+        schema: Some(system_control_schema_identity()),
+        group: Some(TaskGroupStatus {
+            group_id: vec![0x91; 16],
+            task_id: vec![0x92; 16],
+            parent_group_id: Vec::new(),
+            state: TaskGroupLifecycleState::Open.into(),
+            membership_generation: 3,
+            state_seq: 1,
+            depth: 0,
+            cancel_epoch: 0,
+            created_at_ms: 1_000,
+            updated_at_ms: 1_500,
+        }),
+        members: vec![
+            TaskGroupMemberStatus {
+                member_type: TaskGroupMemberType::TaskAttempt.into(),
+                member_id: vec![0x93; 16],
+                membership_state: TaskGroupMembershipState::Active.into(),
+                membership_generation: 1,
+                admission_receipt: Some(ReceiptReference {
+                    receipt_id: vec![0x94; 16],
+                }),
+                removal_receipt: None,
+            },
+            TaskGroupMemberStatus {
+                member_type: TaskGroupMemberType::ChildGroup.into(),
+                member_id: vec![0x95; 16],
+                membership_state: TaskGroupMembershipState::Removed.into(),
+                membership_generation: 2,
+                admission_receipt: Some(ReceiptReference {
+                    receipt_id: vec![0x96; 16],
+                }),
+                removal_receipt: Some(ReceiptReference {
+                    receipt_id: vec![0x97; 16],
+                }),
+            },
+        ],
+        members_truncated: false,
+    }
+}
+
+fn task_node_snapshot() -> TaskNodeOperationsSnapshot {
+    TaskNodeOperationsSnapshot {
+        schema: Some(system_control_schema_identity()),
+        node: Some(TaskNodeStatus {
+            plan_id: vec![0xA1; 16],
+            node_id: vec![0xA2; 16],
+            kind: PlanNodeKind::Executable.into(),
+            state: PlanNodeLifecycleState::Eligible.into(),
+            declared_revision: 4,
+            node_digest: vec![0xA3; 32],
+            transition_count: 2,
+            residency_tier: ContextResidencyTier::MetadataOnly.into(),
+            residency_transition_count: 0,
+            first_declared_at_ms: 2_000,
+            updated_at_ms: 2_400,
+        }),
+    }
+}
+
+fn execution_fiber_snapshot() -> ExecutionFiberOperationsSnapshot {
+    ExecutionFiberOperationsSnapshot {
+        schema: Some(system_control_schema_identity()),
+        fiber: Some(ExecutionFiberStatus {
+            fiber_id: vec![0xB1; 16],
+            generation: 2,
+            state: ExecutionFiberLifecycleState::Running.into(),
+            lifecycle_phase: ExecutionFiberPhase::WaitingExternal.into(),
+            active_cpu_ms: 11,
+            elapsed_wall_ms: 40,
+            scheduler_wait_ms: 3,
+            external_wait_ms: 20,
+            backpressure_wait_ms: 1,
+            suspended_ms: 0,
+        }),
+    }
+}
+
+fn topic_snapshot() -> TopicOperationsSnapshot {
+    TopicOperationsSnapshot {
+        schema: Some(system_control_schema_identity()),
+        topic: Some(TopicStatus {
+            topic_id: vec![0xC1; 16],
+            channel_id: vec![0xC2; 16],
+            channel_generation: 5,
+            name: b"stage-b/inspect".to_vec(),
+            active_subscriptions: 2,
+            policy_digest: vec![0xC3; 32],
+            created_at_ms: 3_000,
+        }),
+    }
+}
+
+fn durable_operation_snapshot() -> DurableOperationSnapshot {
+    DurableOperationSnapshot {
+        schema: Some(system_control_schema_identity()),
+        operation: Some(DurableOperationStatus {
+            operation_id: vec![0xD1; 16],
+            generation: 1,
+            state: DurableOperationState::Dispatched.into(),
+            cancel_epoch: 0,
+            owner_fiber_id: vec![0xB1; 16],
+            owner_fiber_generation: 2,
+            outcome_receipt: None,
+        }),
+    }
+}
+
+#[test]
+fn w32g_layer_view_requests_carry_fail_closed_addressing() {
+    let plain = w32g_layer_get(SystemControlView::TaskGroup, vec![0x91; 16]);
+    assert_eq!(
+        decode_get_system_control_request(&encode_get_system_control_request(&plain).unwrap())
+            .unwrap(),
+        plain
+    );
+
+    let mut missing = plain.clone();
+    missing.target_id = Vec::new();
+    assert_eq!(
+        encode_get_system_control_request(&missing),
+        Err(CompatibilityError::InvalidSystemControlIdentifier)
+    );
+
+    let mut oversize = plain;
+    oversize.target_id = vec![0x91; 17];
+    assert_eq!(
+        encode_get_system_control_request(&oversize),
+        Err(CompatibilityError::InvalidSystemControlIdentifier)
+    );
+
+    let mut stray_plan = w32g_layer_get(SystemControlView::TaskGroup, vec![0x91; 16]);
+    stray_plan.plan_id = vec![0xA1; 16];
+    assert_eq!(
+        encode_get_system_control_request(&stray_plan),
+        Err(CompatibilityError::InvalidSystemControlIdentifier)
+    );
+
+    let mut node = w32g_layer_get(SystemControlView::TaskNode, vec![0xA2; 16]);
+    node.plan_id = vec![0xA1; 16];
+    assert!(encode_get_system_control_request(&node).is_ok());
+    node.plan_id = Vec::new();
+    assert_eq!(
+        encode_get_system_control_request(&node),
+        Err(CompatibilityError::InvalidSystemControlIdentifier)
+    );
+
+    let mut fiber = w32g_layer_get(SystemControlView::ExecutionFiber, vec![0xB1; 16]);
+    fiber.target_generation = 2;
+    assert!(encode_get_system_control_request(&fiber).is_ok());
+    fiber.target_generation = 0;
+    assert_eq!(
+        encode_get_system_control_request(&fiber),
+        Err(CompatibilityError::InvalidSystemControlIdentifier)
+    );
+
+    let mut operation = w32g_layer_get(SystemControlView::Operation, vec![0xD1; 16]);
+    operation.target_generation = 1;
+    assert!(encode_get_system_control_request(&operation).is_ok());
+    operation.target_generation = 0;
+    assert_eq!(
+        encode_get_system_control_request(&operation),
+        Err(CompatibilityError::InvalidSystemControlIdentifier)
+    );
+
+    let topic = w32g_layer_get(SystemControlView::Topic, vec![0xC1; 16]);
+    assert!(encode_get_system_control_request(&topic).is_ok());
+
+    let mut recovery = w32g_layer_get(SystemControlView::ArtifactCommitRecovery, Vec::new());
+    assert!(encode_get_system_control_request(&recovery).is_ok());
+    recovery.target_id = vec![0x91; 16];
+    assert_eq!(
+        encode_get_system_control_request(&recovery),
+        Err(CompatibilityError::InvalidSystemControlIdentifier)
+    );
+    recovery.target_id = Vec::new();
+    recovery.target_generation = 1;
+    assert_eq!(
+        encode_get_system_control_request(&recovery),
+        Err(CompatibilityError::InvalidSystemControlIdentifier)
+    );
+}
+
+#[test]
+fn w32g_task_group_snapshot_roundtrips_and_fails_closed() {
+    let snapshot = task_group_snapshot();
+    let wire = encode_task_group_operations_snapshot(&snapshot).unwrap();
+    assert_eq!(
+        decode_task_group_operations_snapshot(&wire).unwrap(),
+        snapshot
+    );
+
+    let mut missing = snapshot.clone();
+    missing.group = None;
+    assert_eq!(
+        encode_task_group_operations_snapshot(&missing),
+        Err(CompatibilityError::MissingSystemControlLayerStatus)
+    );
+
+    let mut unspecified = snapshot.clone();
+    unspecified.group.as_mut().unwrap().state = TaskGroupLifecycleState::Unspecified.into();
+    assert_eq!(
+        encode_task_group_operations_snapshot(&unspecified),
+        Err(CompatibilityError::InvalidSystemControlLayerStatus)
+    );
+
+    let mut bad_member_id = snapshot.clone();
+    bad_member_id.members[0].member_id = vec![0x93; 15];
+    assert_eq!(
+        encode_task_group_operations_snapshot(&bad_member_id),
+        Err(CompatibilityError::InvalidSystemControlLayerStatus)
+    );
+
+    let mut no_admission = snapshot.clone();
+    no_admission.members[0].admission_receipt = None;
+    assert_eq!(
+        encode_task_group_operations_snapshot(&no_admission),
+        Err(CompatibilityError::InvalidSystemControlLayerStatus)
+    );
+
+    let mut too_many = snapshot;
+    too_many.members = vec![too_many.members[0].clone(); MAX_SYSTEM_CONTROL_ALERTS + 1];
+    assert_eq!(
+        encode_task_group_operations_snapshot(&too_many),
+        Err(CompatibilityError::InvalidSystemControlLayerStatus)
+    );
+}
+
+#[test]
+fn w32g_task_node_snapshot_roundtrips_and_fails_closed() {
+    let snapshot = task_node_snapshot();
+    let wire = encode_task_node_operations_snapshot(&snapshot).unwrap();
+    assert_eq!(
+        decode_task_node_operations_snapshot(&wire).unwrap(),
+        snapshot
+    );
+
+    let mut missing = snapshot.clone();
+    missing.node = None;
+    assert_eq!(
+        encode_task_node_operations_snapshot(&missing),
+        Err(CompatibilityError::MissingSystemControlLayerStatus)
+    );
+
+    let mut bad_digest = snapshot.clone();
+    bad_digest.node.as_mut().unwrap().node_digest = vec![0xA3; 31];
+    assert_eq!(
+        encode_task_node_operations_snapshot(&bad_digest),
+        Err(CompatibilityError::InvalidSystemControlLayerStatus)
+    );
+
+    let mut unspecified_residency = snapshot;
+    unspecified_residency.node.as_mut().unwrap().residency_tier =
+        ContextResidencyTier::Unspecified.into();
+    assert_eq!(
+        encode_task_node_operations_snapshot(&unspecified_residency),
+        Err(CompatibilityError::InvalidSystemControlLayerStatus)
+    );
+}
+
+#[test]
+fn w32g_execution_fiber_snapshot_roundtrips_and_fails_closed() {
+    let snapshot = execution_fiber_snapshot();
+    let wire = encode_execution_fiber_operations_snapshot(&snapshot).unwrap();
+    assert_eq!(
+        decode_execution_fiber_operations_snapshot(&wire).unwrap(),
+        snapshot
+    );
+
+    let mut zero_generation = snapshot.clone();
+    zero_generation.fiber.as_mut().unwrap().generation = 0;
+    assert_eq!(
+        encode_execution_fiber_operations_snapshot(&zero_generation),
+        Err(CompatibilityError::InvalidSystemControlLayerStatus)
+    );
+
+    let mut unspecified_phase = snapshot;
+    unspecified_phase.fiber.as_mut().unwrap().lifecycle_phase =
+        ExecutionFiberPhase::Unspecified.into();
+    assert_eq!(
+        encode_execution_fiber_operations_snapshot(&unspecified_phase),
+        Err(CompatibilityError::InvalidSystemControlLayerStatus)
+    );
+}
+
+#[test]
+fn w32g_topic_snapshot_roundtrips_and_fails_closed() {
+    let snapshot = topic_snapshot();
+    let wire = encode_topic_operations_snapshot(&snapshot).unwrap();
+    assert_eq!(decode_topic_operations_snapshot(&wire).unwrap(), snapshot);
+
+    let mut long_name = snapshot.clone();
+    long_name.topic.as_mut().unwrap().name = vec![b'n'; MAX_SYSTEM_CONTROL_TOPIC_NAME_BYTES + 1];
+    assert_eq!(
+        encode_topic_operations_snapshot(&long_name),
+        Err(CompatibilityError::InvalidSystemControlLayerStatus)
+    );
+
+    let mut nul_name = snapshot.clone();
+    nul_name.topic.as_mut().unwrap().name = b"stage-b\0inspect".to_vec();
+    assert_eq!(
+        encode_topic_operations_snapshot(&nul_name),
+        Err(CompatibilityError::InvalidSystemControlLayerStatus)
+    );
+
+    let mut bad_digest = snapshot;
+    bad_digest.topic.as_mut().unwrap().policy_digest = vec![0xC3; 32 - 1];
+    assert_eq!(
+        encode_topic_operations_snapshot(&bad_digest),
+        Err(CompatibilityError::InvalidSystemControlLayerStatus)
+    );
+}
+
+#[test]
+fn w32g_durable_operation_snapshot_roundtrips_and_fails_closed() {
+    let snapshot = durable_operation_snapshot();
+    let wire = encode_durable_operation_snapshot(&snapshot).unwrap();
+    assert_eq!(decode_durable_operation_snapshot(&wire).unwrap(), snapshot);
+
+    let mut terminal = snapshot.clone();
+    terminal.operation.as_mut().unwrap().state = DurableOperationState::Completed.into();
+    terminal.operation.as_mut().unwrap().outcome_receipt = Some(ReceiptReference {
+        receipt_id: vec![0xD2; 16],
+    });
+    assert!(encode_durable_operation_snapshot(&terminal).is_ok());
+
+    let mut terminal_without_receipt = terminal.clone();
+    terminal_without_receipt
+        .operation
+        .as_mut()
+        .unwrap()
+        .outcome_receipt = None;
+    assert_eq!(
+        encode_durable_operation_snapshot(&terminal_without_receipt),
+        Err(CompatibilityError::InvalidSystemControlLayerStatus)
+    );
+
+    let mut live_with_receipt = snapshot;
+    live_with_receipt
+        .operation
+        .as_mut()
+        .unwrap()
+        .outcome_receipt = Some(ReceiptReference {
+        receipt_id: vec![0xD2; 16],
+    });
+    assert_eq!(
+        encode_durable_operation_snapshot(&live_with_receipt),
+        Err(CompatibilityError::InvalidSystemControlLayerStatus)
+    );
+}
+
+/// W32-G per-layer snapshot goldens, pinned at the v1.5 identity of the
+/// views' creation point (Rust-side prost field order; TS/Python fixtures
+/// remain out of this lane's write-set, mirroring the W28-D/W29-D precedent).
+type LayerGolden = (&'static str, Vec<u8>, fn() -> Vec<u8>);
+
+#[test]
+fn w32g_layer_snapshots_pin_the_deterministic_golden_bytes() {
+    let cases: [LayerGolden; 5] = [
+        (
+            "task_group",
+            decode_hex(concat!(
+                "0a1d0a176e6c6f732e736162692e53797374656d436f6e74726f6c10011805",
+                "12300a10919191919191919191919191919191911210929292929292929292",
+                "9292929292929220012803300148e80750dc0b1a2c08021210939393939393",
+                "93939393939393939393180120012a120a1094949494949494949494949494",
+                "9494941a400801121095959595959595959595959595959595180220022a12",
+                "0a109696969696969696969696969696969632120a10979797979797979797",
+                "97979797979797",
+            )),
+            || encode_task_group_operations_snapshot(&task_group_snapshot()).unwrap(),
+        ),
+        (
+            "task_node",
+            decode_hex(concat!(
+                "0a1d0a176e6c6f732e736162692e53797374656d436f6e74726f6c10011805",
+                "12560a10a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a11210a2a2a2a2a2a2a2a2a2",
+                "a2a2a2a2a2a2a21802200328043220a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3",
+                "a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a33802400150d00f58e012",
+            )),
+            || encode_task_node_operations_snapshot(&task_node_snapshot()).unwrap(),
+        ),
+        (
+            "fiber",
+            decode_hex(concat!(
+                "0a1d0a176e6c6f732e736162692e53797374656d436f6e74726f6c10011805",
+                "12220a10b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1100218032002280b302838",
+                "0340144801",
+            )),
+            || encode_execution_fiber_operations_snapshot(&execution_fiber_snapshot()).unwrap(),
+        ),
+        (
+            "topic",
+            decode_hex(concat!(
+                "0a1d0a176e6c6f732e736162692e53797374656d436f6e74726f6c10011805",
+                "125e0a10c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c11210c2c2c2c2c2c2c2c2c2",
+                "c2c2c2c2c2c2c21805220f73746167652d622f696e737065637428023220c3",
+                "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+                "38b817",
+            )),
+            || encode_topic_operations_snapshot(&topic_snapshot()).unwrap(),
+        ),
+        (
+            "operation",
+            decode_hex(concat!(
+                "0a1d0a176e6c6f732e736162692e53797374656d436f6e74726f6c10011805",
+                "122a0a10d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1100118022a10b1b1b1b1b1",
+                "b1b1b1b1b1b1b1b1b1b1b13002",
+            )),
+            || encode_durable_operation_snapshot(&durable_operation_snapshot()).unwrap(),
+        ),
+    ];
+    for (name, golden, encode) in cases {
+        assert_eq!(encode(), golden, "{name} golden mismatch");
+    }
 }

@@ -20,6 +20,11 @@
 //! system-control-cli <SOCKET> inspect-task <PLAN_ID_HEX_32>
 //! system-control-cli <SOCKET> inspect-process <PROCESS_ID_HEX_32>
 //! system-control-cli <SOCKET> inspect-resource <RESERVATION_ID_HEX_32>
+//! system-control-cli <SOCKET> inspect-task-group <GROUP_ID_HEX_32>
+//! system-control-cli <SOCKET> inspect-task-node <PLAN_ID_HEX_32> <NODE_ID_HEX_32>
+//! system-control-cli <SOCKET> inspect-fiber <FIBER_ID_HEX_32> <GENERATION>
+//! system-control-cli <SOCKET> inspect-topic <TOPIC_ID_HEX_32>
+//! system-control-cli <SOCKET> inspect-operation <OPERATION_ID_HEX_32> <GENERATION>
 //! system-control-cli <SOCKET> ack-recovery-alert <COMMAND_ID_HEX_32> <PLAN_ID_HEX_32> <EXPECTED_FAILURES> <REASON>
 //! system-control-cli <SOCKET> ack-semantic-recovery-alert <COMMAND_ID_HEX_32> <PLAN_ID_HEX_32> <EXPECTED_FAILURES> <REASON>
 //! system-control-cli <SOCKET> resume-semantic-recovery <COMMAND_ID_HEX_32> <PLAN_ID_HEX_32> <EXPECTED_FAILURES> <REASON>
@@ -63,6 +68,11 @@ const USAGE: &str = "usage: system-control-cli <SOCKET> inspect-health \
 | inspect-task <PLAN_ID_HEX_32> \
 | inspect-process <PROCESS_ID_HEX_32> \
 | inspect-resource <RESERVATION_ID_HEX_32> \
+| inspect-task-group <GROUP_ID_HEX_32> \
+| inspect-task-node <PLAN_ID_HEX_32> <NODE_ID_HEX_32> \
+| inspect-fiber <FIBER_ID_HEX_32> <GENERATION> \
+| inspect-topic <TOPIC_ID_HEX_32> \
+| inspect-operation <OPERATION_ID_HEX_32> <GENERATION> \
  | ack-recovery-alert <COMMAND_ID_HEX_32> <PLAN_ID_HEX_32> <EXPECTED_FAILURES> <REASON> \
  | ack-semantic-recovery-alert <COMMAND_ID_HEX_32> <PLAN_ID_HEX_32> <EXPECTED_FAILURES> <REASON> \
  | resume-semantic-recovery <COMMAND_ID_HEX_32> <PLAN_ID_HEX_32> <EXPECTED_FAILURES> <REASON> \
@@ -125,6 +135,44 @@ fn parsed_command(arguments: &[String]) -> Result<ControlCommand, ControlError> 
         "inspect-resource" if arguments.len() == 2 => Ok(ControlCommand::InspectResource {
             reservation_id: parse_hex_id(&arguments[1])?,
         }),
+        "inspect-task-group" if arguments.len() == 2 => Ok(ControlCommand::InspectTaskGroup {
+            group_id: parse_hex_id(&arguments[1])?,
+        }),
+        "inspect-task-node" if arguments.len() == 3 => Ok(ControlCommand::InspectTaskNode {
+            plan_id: parse_hex_id(&arguments[1])?,
+            node_id: parse_hex_id(&arguments[2])?,
+        }),
+        "inspect-fiber" if arguments.len() == 3 => {
+            let generation = parse_u64(&arguments[2]).map_err(|_| {
+                ControlError::InvalidCommand("fiber generation must be a non-zero u64")
+            })?;
+            if generation == 0 {
+                return Err(ControlError::InvalidCommand(
+                    "fiber generation must be a non-zero u64",
+                ));
+            }
+            Ok(ControlCommand::InspectExecutionFiber {
+                fiber_id: parse_hex_id(&arguments[1])?,
+                generation,
+            })
+        }
+        "inspect-topic" if arguments.len() == 2 => Ok(ControlCommand::InspectTopic {
+            topic_id: parse_hex_id(&arguments[1])?,
+        }),
+        "inspect-operation" if arguments.len() == 3 => {
+            let generation = parse_u64(&arguments[2]).map_err(|_| {
+                ControlError::InvalidCommand("operation generation must be a non-zero u64")
+            })?;
+            if generation == 0 {
+                return Err(ControlError::InvalidCommand(
+                    "operation generation must be a non-zero u64",
+                ));
+            }
+            Ok(ControlCommand::InspectOperation {
+                operation_id: parse_hex_id(&arguments[1])?,
+                generation,
+            })
+        }
         "ack-recovery-alert" if arguments.len() == 5 => {
             Ok(ControlCommand::AcknowledgeRecoveryAlert {
                 control_command_id: parse_hex_id(&arguments[1])?,
@@ -218,8 +266,82 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 #[cfg(unix)]
+#[allow(clippy::too_many_lines)] // One bounded summary line per outcome keeps the CLI contract auditable.
+fn layer_summary(receipt: &ControlReceipt) -> Option<String> {
+    Some(match receipt.outcome.as_ref().ok()? {
+        ControlOutcome::TaskGroupInspected(inspection) => format!(
+            "outcome=task_group_inspected group_id={} task_id={} state={:?} \
+             membership_generation={} state_seq={} depth={} cancel_epoch={} \
+             members={} members_truncated={}",
+            hex(&inspection.group_id),
+            hex(&inspection.task_id),
+            inspection.state,
+            inspection.membership_generation,
+            inspection.state_seq,
+            inspection.depth,
+            inspection.cancel_epoch,
+            inspection.members.len(),
+            inspection.members_truncated,
+        ),
+        ControlOutcome::TaskNodeInspected(inspection) => format!(
+            "outcome=task_node_inspected plan_id={} node_id={} kind={:?} state={:?} \
+             declared_revision={} residency={:?} transition_count={}",
+            hex(&inspection.plan_id),
+            hex(&inspection.node_id),
+            inspection.kind,
+            inspection.state,
+            inspection.declared_revision,
+            inspection.residency_tier,
+            inspection.transition_count,
+        ),
+        ControlOutcome::ExecutionFiberInspected(inspection) => format!(
+            "outcome=execution_fiber_inspected fiber_id={} generation={} state={:?} \
+             phase={:?} active_cpu_ms={} elapsed_wall_ms={}",
+            hex(&inspection.fiber_id),
+            inspection.generation,
+            inspection.state,
+            inspection.lifecycle_phase,
+            inspection.active_cpu_ms,
+            inspection.elapsed_wall_ms,
+        ),
+        ControlOutcome::TopicInspected(inspection) => format!(
+            "outcome=topic_inspected topic_id={} channel_id={} channel_generation={} \
+             active_subscriptions={}",
+            hex(&inspection.topic_id),
+            hex(&inspection.channel_id),
+            inspection.channel_generation,
+            inspection.active_subscriptions,
+        ),
+        ControlOutcome::DurableOperationInspected(inspection) => format!(
+            "outcome=operation_inspected operation_id={} generation={} state={:?} \
+             cancel_epoch={} owner_fiber={} outcome_receipt={}",
+            hex(&inspection.operation_id),
+            inspection.generation,
+            inspection.state,
+            inspection.cancel_epoch,
+            hex(&inspection.owner_fiber_id),
+            inspection
+                .outcome_receipt_id
+                .as_deref()
+                .map_or_else(|| "none".to_owned(), hex),
+        ),
+        _ => return None,
+    })
+}
+
+#[allow(clippy::too_many_lines)] // One bounded summary line per outcome keeps the CLI contract auditable.
 fn summary(receipt: &ControlReceipt) -> String {
+    if let Some(layer) = layer_summary(receipt) {
+        return layer;
+    }
     match receipt.outcome.as_ref() {
+        Ok(
+            ControlOutcome::TaskGroupInspected(_)
+            | ControlOutcome::TaskNodeInspected(_)
+            | ControlOutcome::ExecutionFiberInspected(_)
+            | ControlOutcome::TopicInspected(_)
+            | ControlOutcome::DurableOperationInspected(_),
+        ) => unreachable!("layer outcomes are summarized by layer_summary"),
         Ok(ControlOutcome::Inspected(inspection)) => format!(
             "outcome=inspected worker_state={:?} completed_cycles={} \
              durable_retrying={} durable_escalated={} \

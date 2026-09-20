@@ -260,3 +260,27 @@ fn malformed_correlation_falls_back_to_a_bounded_request_id() {
     };
     assert_eq!(context.correlation_id, request.request_id);
 }
+
+#[test]
+fn w32g_layer_inspection_failures_are_bounded_and_forwarded() {
+    assert_mapping(
+        &SystemControlError::LayerInspectionUnwired,
+        SabiErrorCode::NotFound,
+        RetryDirective::DoNotRetry,
+    );
+    let failure = SystemControlError::LayerInspection(SabiFailure {
+        code: SabiErrorCode::NotFound.into(),
+        retry: RetryDirective::DoNotRetry.into(),
+        safe_message: "requested topic was not found".to_owned(),
+    })
+    .to_sabi_failure();
+    assert_eq!(failure.code, i32::from(SabiErrorCode::NotFound));
+    assert_eq!(failure.retry, i32::from(RetryDirective::DoNotRetry));
+    assert_eq!(failure.safe_message, "requested topic was not found");
+
+    assert_mapping(
+        &SystemControlError::Task(TaskStoreError::GroupNotFound),
+        SabiErrorCode::NotFound,
+        RetryDirective::DoNotRetry,
+    );
+}

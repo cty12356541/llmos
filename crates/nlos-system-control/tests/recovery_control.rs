@@ -299,6 +299,9 @@ fn get_exchange_request() -> ExchangeRequest {
                 schema: Some(system_control_schema_identity()),
                 view: SystemControlView::ArtifactCommitRecovery.into(),
                 alert_limit: 8,
+                target_id: Vec::new(),
+                plan_id: Vec::new(),
+                target_generation: 0,
             })
             .unwrap(),
         )),
@@ -391,6 +394,9 @@ fn get_returns_bounded_typed_health_without_local_diagnostics() {
         schema: Some(system_control_schema_identity()),
         view: SystemControlView::ArtifactCommitRecovery.into(),
         alert_limit: 8,
+        target_id: Vec::new(),
+        plan_id: Vec::new(),
+        target_generation: 0,
     })
     .unwrap();
     let response = control
@@ -424,6 +430,9 @@ fn get_returns_bounded_typed_health_without_local_diagnostics() {
                         schema: Some(system_control_schema_identity()),
                         view: SystemControlView::ArtifactCommitRecovery.into(),
                         alert_limit: 8,
+                        target_id: Vec::new(),
+                        plan_id: Vec::new(),
+                        target_generation: 0,
                     },)
                     .unwrap()
                 ),
@@ -1174,6 +1183,9 @@ fn semantic_get_envelope(alert_limit: u32) -> Envelope {
             schema: Some(system_control_schema_identity()),
             view: SystemControlView::SemanticCommitRecovery.into(),
             alert_limit,
+            target_id: Vec::new(),
+            plan_id: Vec::new(),
+            target_generation: 0,
         })
         .unwrap(),
     )
@@ -1255,6 +1267,9 @@ fn semantic_get_routes_by_view_and_reports_authoritative_ledger_facts() {
                     schema: Some(system_control_schema_identity()),
                     view: SystemControlView::ArtifactCommitRecovery.into(),
                     alert_limit: 8,
+                    target_id: Vec::new(),
+                    plan_id: Vec::new(),
+                    target_generation: 0,
                 })
                 .unwrap(),
             ),
@@ -1572,6 +1587,9 @@ fn resource_get_envelope(alert_limit: u32) -> Envelope {
             schema: Some(system_control_schema_identity()),
             view: SystemControlView::ResourceCommitRecovery.into(),
             alert_limit,
+            target_id: Vec::new(),
+            plan_id: Vec::new(),
+            target_generation: 0,
         })
         .unwrap(),
     )
@@ -1873,4 +1891,436 @@ async fn resource_escalated_plan_is_acknowledged_and_resumed_over_real_ipc() {
             .state,
         ResourceRecoveryState::Retrying
     );
+}
+
+// W32-G (B5-3): per-layer inspect views — unwired fail-closed defaults,
+// wired stub receipts, and the real TaskAuthority-backed TaskGroup view.
+
+struct StubLayerSources {
+    node: Option<nlos_system_control::control::TaskNodeInspection>,
+    fiber: Option<nlos_system_control::control::ExecutionFiberInspection>,
+    topic: Option<nlos_system_control::control::TopicInspection>,
+    operation: Option<nlos_system_control::control::DurableOperationInspection>,
+}
+
+impl nlos_system_control::TaskNodeInspectSource for StubLayerSources {
+    fn inspect_task_node(
+        &self,
+        plan_id: [u8; 16],
+        node_id: [u8; 16],
+    ) -> Result<nlos_system_control::control::TaskNodeInspection, SabiFailure> {
+        match &self.node {
+            Some(inspection) if inspection.plan_id == plan_id && inspection.node_id == node_id => {
+                Ok(inspection.clone())
+            }
+            _ => Err(SabiFailure {
+                code: SabiErrorCode::NotFound.into(),
+                retry: RetryDirective::DoNotRetry.into(),
+                safe_message: "requested task node was not found".to_owned(),
+            }),
+        }
+    }
+}
+
+impl nlos_system_control::ExecutionFiberInspectSource for StubLayerSources {
+    fn inspect_execution_fiber(
+        &self,
+        fiber_id: [u8; 16],
+        generation: u64,
+    ) -> Result<nlos_system_control::control::ExecutionFiberInspection, SabiFailure> {
+        match &self.fiber {
+            Some(inspection)
+                if inspection.fiber_id == fiber_id && inspection.generation == generation =>
+            {
+                Ok(inspection.clone())
+            }
+            _ => Err(SabiFailure {
+                code: SabiErrorCode::NotFound.into(),
+                retry: RetryDirective::DoNotRetry.into(),
+                safe_message: "requested execution fiber handle was not found".to_owned(),
+            }),
+        }
+    }
+}
+
+impl nlos_system_control::TopicInspectSource for StubLayerSources {
+    fn inspect_topic(
+        &self,
+        topic_id: [u8; 16],
+    ) -> Result<nlos_system_control::control::TopicInspection, SabiFailure> {
+        match &self.topic {
+            Some(inspection) if inspection.topic_id == topic_id => Ok(inspection.clone()),
+            _ => Err(SabiFailure {
+                code: SabiErrorCode::NotFound.into(),
+                retry: RetryDirective::DoNotRetry.into(),
+                safe_message: "requested topic was not found".to_owned(),
+            }),
+        }
+    }
+}
+
+impl nlos_system_control::OperationInspectSource for StubLayerSources {
+    fn inspect_operation(
+        &self,
+        operation_id: [u8; 16],
+        generation: u64,
+    ) -> Result<nlos_system_control::control::DurableOperationInspection, SabiFailure> {
+        match &self.operation {
+            Some(inspection)
+                if inspection.operation_id == operation_id
+                    && inspection.generation == generation =>
+            {
+                Ok(inspection.clone())
+            }
+            _ => Err(SabiFailure {
+                code: SabiErrorCode::NotFound.into(),
+                retry: RetryDirective::DoNotRetry.into(),
+                safe_message: "requested operation row was not found".to_owned(),
+            }),
+        }
+    }
+}
+
+fn stub_layer_sources() -> StubLayerSources {
+    use nlos_schema::sabi::v1::{
+        ContextResidencyTier, DurableOperationState, ExecutionFiberLifecycleState,
+        ExecutionFiberPhase, PlanNodeKind, PlanNodeLifecycleState,
+    };
+    StubLayerSources {
+        node: Some(nlos_system_control::control::TaskNodeInspection {
+            plan_id: [0xA1; 16],
+            node_id: [0xA2; 16],
+            kind: PlanNodeKind::Executable,
+            state: PlanNodeLifecycleState::Eligible,
+            declared_revision: 4,
+            node_digest: vec![0xA3; 32],
+            transition_count: 2,
+            residency_tier: ContextResidencyTier::MetadataOnly,
+            residency_transition_count: 0,
+            first_declared_at_ms: 2_000,
+            updated_at_ms: 2_400,
+        }),
+        fiber: Some(nlos_system_control::control::ExecutionFiberInspection {
+            fiber_id: [0xB1; 16],
+            generation: 2,
+            state: ExecutionFiberLifecycleState::Running,
+            lifecycle_phase: ExecutionFiberPhase::WaitingExternal,
+            active_cpu_ms: 11,
+            elapsed_wall_ms: 40,
+            scheduler_wait_ms: 3,
+            external_wait_ms: 20,
+            backpressure_wait_ms: 1,
+            suspended_ms: 0,
+        }),
+        topic: Some(nlos_system_control::control::TopicInspection {
+            topic_id: [0xC1; 16],
+            channel_id: [0xC2; 16],
+            channel_generation: 5,
+            name: b"stage-b/inspect".to_vec(),
+            active_subscriptions: 2,
+            policy_digest: vec![0xC3; 32],
+            created_at_ms: 3_000,
+        }),
+        operation: Some(nlos_system_control::control::DurableOperationInspection {
+            operation_id: [0xD1; 16],
+            generation: 1,
+            state: DurableOperationState::Dispatched,
+            cancel_epoch: 0,
+            owner_fiber_id: [0xB1; 16],
+            owner_fiber_generation: 2,
+            outcome_receipt_id: None,
+        }),
+    }
+}
+
+fn layer_get_envelope(
+    view: SystemControlView,
+    target_id: Vec<u8>,
+    plan_id: Vec<u8>,
+    target_generation: u64,
+) -> Envelope {
+    let mut request = request_context(Vec::new());
+    request.correlation_id = vec![0x44; 16];
+    let mut envelope = envelope(GET_METHOD, request, Vec::new());
+    envelope.payload = encode_get_system_control_request(&GetSystemControlRequest {
+        schema: Some(system_control_schema_identity()),
+        view: view.into(),
+        alert_limit: 8,
+        target_id,
+        plan_id,
+        target_generation,
+    })
+    .unwrap();
+    envelope
+}
+
+fn w32g_group_fixture(authority: &SqliteTaskAuthority) -> nlos_types::TaskGroupId {
+    use nlos_task::{
+        AttemptSpec, CompletionMode, FailureMode, GroupBinding, GroupSpec, SnapshotBundle, TaskSpec,
+    };
+    let task_id = TaskId::from_bytes([0x11; 16]);
+    authority
+        .register_task(TaskSpec {
+            task_id,
+            task_generation: Generation::INITIAL,
+            registered_at_ms: 1_000,
+            application_id: None,
+            plan_revision: None,
+        })
+        .unwrap();
+    let group_id = nlos_types::TaskGroupId::from_bytes([0x91; 16]);
+    authority
+        .register_group(GroupSpec {
+            group_id,
+            task_id,
+            task_generation: Generation::INITIAL,
+            parent_group_id: None,
+            group_policy_digest: [0x91; 32],
+            completion_mode: CompletionMode::All,
+            failure_mode: FailureMode::CollectAll,
+            max_children: 4,
+            max_depth: 1,
+            resource_group_id: None,
+            resource_account_digest: None,
+            cancellation_scope_id: CancellationScopeId::from_bytes([0x92; 16]),
+            registered_at_ms: 1_500,
+        })
+        .unwrap();
+    let record = authority.inspect_group(group_id).unwrap();
+    let binding = GroupBinding {
+        group_id,
+        expected_membership_generation: record.membership_generation,
+        expected_membership_root: record.membership_root,
+        expected_group_policy_digest: record.group_policy_digest,
+    };
+    authority
+        .register_attempt_in_group(
+            AttemptSpec {
+                task_id,
+                attempt_id: TaskAttemptId::from_bytes([0x93; 16]),
+                attempt_generation: Generation::INITIAL,
+                snapshot: SnapshotBundle {
+                    snapshot_id: TaskSnapshotId::from_bytes([0x94; 16]),
+                    snapshot_digest: [0x95; 32],
+                    expected_head_commit_seq: 0,
+                    effect_history_root: empty_effect_history_root(),
+                    retry_fence_epoch: 0,
+                },
+                cancellation_scope_id: CancellationScopeId::from_bytes([0x96; 16]),
+                cancellation_generation: Generation::INITIAL,
+                idempotency_key: IdempotencyKey::from_bytes([0x97; 16]),
+                registered_at_ms: 2_000,
+            },
+            binding,
+        )
+        .unwrap();
+    group_id
+}
+
+#[test]
+fn w32g_layer_views_refuse_fail_closed_without_sources() {
+    let database = TestDatabase::new();
+    let authority = database.open();
+    let plan_id = create_escalated_plan(&authority);
+    let stub_health = health(plan_id);
+    let control = RecoverySystemControl::new(&authority, &stub_health, &CapabilityPolicy);
+    for (view, target_id, plan, generation) in [
+        (
+            SystemControlView::TaskNode,
+            vec![0xA2; 16],
+            vec![0xA1; 16],
+            0_u64,
+        ),
+        (
+            SystemControlView::ExecutionFiber,
+            vec![0xB1; 16],
+            Vec::new(),
+            2_u64,
+        ),
+        (SystemControlView::Topic, vec![0xC1; 16], Vec::new(), 0_u64),
+        (
+            SystemControlView::Operation,
+            vec![0xD1; 16],
+            Vec::new(),
+            1_u64,
+        ),
+    ] {
+        let response = control.handle_for_ipc(
+            &layer_get_envelope(view, target_id, plan, generation),
+            10,
+            6_000,
+        );
+        let Some(envelope::CommonContext::ResponseContext(context)) =
+            response.common_context.as_ref()
+        else {
+            panic!("expected response context");
+        };
+        let failure = context.failure.as_ref().unwrap();
+        assert_eq!(failure.code, i32::from(SabiErrorCode::NotFound));
+        assert_eq!(failure.retry, i32::from(RetryDirective::DoNotRetry));
+        assert_eq!(
+            failure.safe_message,
+            "layer inspection backend is not wired"
+        );
+        assert!(context.receipts.is_empty());
+    }
+}
+
+#[test]
+fn w32g_layer_views_route_to_wired_sources_with_typed_snapshots() {
+    use nlos_system_control::control::{ControlCommand, ControlOutcome, dispatch_in_process};
+    let database = TestDatabase::new();
+    let authority = database.open();
+    let plan_id = create_escalated_plan(&authority);
+    let sources = stub_layer_sources();
+    let stub_health = health(plan_id);
+    let control = RecoverySystemControl::new(&authority, &stub_health, &CapabilityPolicy)
+        .with_task_node_source(&sources)
+        .with_execution_fiber_source(&sources)
+        .with_topic_source(&sources)
+        .with_operation_source(&sources);
+
+    let node_receipt = dispatch_in_process(
+        &control,
+        &ControlCommand::InspectTaskNode {
+            plan_id: [0xA1; 16],
+            node_id: [0xA2; 16],
+        },
+        10,
+        6_000,
+        None,
+        None,
+    )
+    .unwrap();
+    let ControlOutcome::TaskNodeInspected(node) = node_receipt.outcome.as_ref().unwrap() else {
+        panic!("expected task node inspection receipt");
+    };
+    assert_eq!(node.plan_id, [0xA1; 16]);
+    assert_eq!(node.declared_revision, 4);
+    assert_eq!(node.node_digest, vec![0xA3; 32]);
+
+    let fiber_receipt = dispatch_in_process(
+        &control,
+        &ControlCommand::InspectExecutionFiber {
+            fiber_id: [0xB1; 16],
+            generation: 2,
+        },
+        10,
+        6_000,
+        None,
+        None,
+    )
+    .unwrap();
+    let ControlOutcome::ExecutionFiberInspected(fiber) = fiber_receipt.outcome.as_ref().unwrap()
+    else {
+        panic!("expected execution fiber inspection receipt");
+    };
+    assert_eq!(fiber.fiber_id, [0xB1; 16]);
+    assert_eq!(fiber.elapsed_wall_ms, 40);
+
+    let topic_receipt = dispatch_in_process(
+        &control,
+        &ControlCommand::InspectTopic {
+            topic_id: [0xC1; 16],
+        },
+        10,
+        6_000,
+        None,
+        None,
+    )
+    .unwrap();
+    let ControlOutcome::TopicInspected(topic) = topic_receipt.outcome.as_ref().unwrap() else {
+        panic!("expected topic inspection receipt");
+    };
+    assert_eq!(topic.name, b"stage-b/inspect".to_vec());
+    assert_eq!(topic.active_subscriptions, 2);
+
+    let operation_receipt = dispatch_in_process(
+        &control,
+        &ControlCommand::InspectOperation {
+            operation_id: [0xD1; 16],
+            generation: 1,
+        },
+        10,
+        6_000,
+        None,
+        None,
+    )
+    .unwrap();
+    let ControlOutcome::DurableOperationInspected(operation) =
+        operation_receipt.outcome.as_ref().unwrap()
+    else {
+        panic!("expected durable operation inspection receipt");
+    };
+    assert_eq!(operation.owner_fiber_id, [0xB1; 16]);
+    assert!(operation.outcome_receipt_id.is_none());
+
+    let missing = dispatch_in_process(
+        &control,
+        &ControlCommand::InspectTopic {
+            topic_id: [0xEE; 16],
+        },
+        10,
+        6_000,
+        None,
+        None,
+    )
+    .unwrap();
+    let Err(failure) = missing.outcome.as_ref() else {
+        panic!("expected typed failure for a missing topic");
+    };
+    assert_eq!(failure.code, i32::from(SabiErrorCode::NotFound));
+    assert_eq!(failure.safe_message, "requested topic was not found");
+}
+
+#[test]
+fn w32g_task_group_view_reads_the_real_task_authority() {
+    use nlos_schema::sabi::v1::TaskGroupLifecycleState;
+    use nlos_system_control::control::{ControlCommand, ControlOutcome, dispatch_in_process};
+    let database = TestDatabase::new();
+    let authority = database.open();
+    let group_id = w32g_group_fixture(&authority);
+    let plan_id = create_escalated_plan(&authority);
+    let stub_health = health(plan_id);
+    let control = RecoverySystemControl::new(&authority, &stub_health, &CapabilityPolicy);
+
+    let receipt = dispatch_in_process(
+        &control,
+        &ControlCommand::InspectTaskGroup {
+            group_id: *group_id.as_bytes(),
+        },
+        10,
+        6_000,
+        None,
+        None,
+    )
+    .unwrap();
+    let ControlOutcome::TaskGroupInspected(group) = receipt.outcome.as_ref().unwrap() else {
+        panic!("expected task group inspection receipt");
+    };
+    assert_eq!(group.group_id, *group_id.as_bytes());
+    assert_eq!(group.task_id, [0x11; 16]);
+    assert_eq!(group.parent_group_id, None);
+    assert_eq!(group.state, TaskGroupLifecycleState::Open);
+    assert_eq!(group.members.len(), 1);
+    assert_eq!(group.members[0].member_id, [0x93; 16]);
+    assert_eq!(group.members[0].admission_receipt_id.len(), 16);
+    assert!(!group.members_truncated);
+
+    let missing = dispatch_in_process(
+        &control,
+        &ControlCommand::InspectTaskGroup {
+            group_id: [0xEE; 16],
+        },
+        10,
+        6_000,
+        None,
+        None,
+    )
+    .unwrap();
+    let Err(failure) = missing.outcome.as_ref() else {
+        panic!("expected typed failure for a missing group");
+    };
+    assert_eq!(failure.code, i32::from(SabiErrorCode::NotFound));
+    assert_eq!(failure.retry, i32::from(RetryDirective::DoNotRetry));
 }

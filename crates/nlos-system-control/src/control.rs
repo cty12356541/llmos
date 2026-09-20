@@ -25,19 +25,23 @@ use nlos_schema::sabi::v1::{
     AcknowledgeArtifactRecoveryAlertCommand, AcknowledgeResourceRecoveryAlertCommand,
     AcknowledgeSemanticRecoveryAlertCommand, ArtifactRecoveryMetrics,
     ArtifactRecoveryOperationsSnapshot, CallerIdentity, CancelCommand, CapabilityHandle,
-    ControlCommandSource, ControlScope, Envelope, GetSystemControlRequest, KillCommand,
-    PauseCommand, ReceiptReference, ReclaimCommand, ResourceRecoveryMetrics,
-    ResourceRecoveryOperationsSnapshot, ResumeCommand, ResumeResourceRecoveryCommand,
-    ResumeSemanticRecoveryCommand, SabiErrorCode, SabiFailure, SabiRequestContext,
-    SemanticRecoveryMetrics, SemanticRecoveryOperationsSnapshot, SubmitControlCommandRequest,
-    SystemControlView, ThrottleCommand, control_command, envelope,
+    ContextResidencyTier, ControlCommandSource, ControlScope, DurableOperationState, Envelope,
+    ExecutionFiberLifecycleState, ExecutionFiberPhase, GetSystemControlRequest, KillCommand,
+    PauseCommand, PlanNodeKind, PlanNodeLifecycleState, ReceiptReference, ReclaimCommand,
+    ResourceRecoveryMetrics, ResourceRecoveryOperationsSnapshot, ResumeCommand,
+    ResumeResourceRecoveryCommand, ResumeSemanticRecoveryCommand, SabiErrorCode, SabiFailure,
+    SabiRequestContext, SemanticRecoveryMetrics, SemanticRecoveryOperationsSnapshot,
+    SubmitControlCommandRequest, SystemControlView, TaskGroupLifecycleState, TaskGroupMemberType,
+    TaskGroupMembershipState, ThrottleCommand, control_command, envelope,
 };
 use nlos_schema::{
     CompatibilityError, REQUEST_ID_BYTES, SABI_ENVELOPE_SCHEMA,
     decode_artifact_recovery_operations_snapshot, decode_control_command_result,
+    decode_durable_operation_snapshot, decode_execution_fiber_operations_snapshot,
     decode_resource_recovery_operations_snapshot, decode_semantic_recovery_operations_snapshot,
-    encode_get_system_control_request, encode_submit_control_command_request,
-    system_control_schema_identity,
+    decode_task_group_operations_snapshot, decode_task_node_operations_snapshot,
+    decode_topic_operations_snapshot, encode_get_system_control_request,
+    encode_submit_control_command_request, system_control_schema_identity,
 };
 
 use crate::openmetrics::OpenMetricsRenderer;
@@ -116,6 +120,37 @@ pub enum ControlCommand {
     /// [`ResourceInspector`] wired at dispatch time; the recovery GET envelope
     /// is still crossed for authorization parity.
     InspectResource { reservation_id: [u8; 16] },
+    /// Inspect one `TaskGroup` by its 16-byte group id (W32-G, B5-3). The
+    /// handler reads the durable group and its bounded member list straight
+    /// from the `TaskAuthority` it already owns; the receipt crosses as one
+    /// typed `TaskGroupOperationsSnapshot`.
+    InspectTaskGroup { group_id: [u8; 16] },
+    /// Inspect one plan `TaskNode` by its 16-byte owning plan id and 16-byte
+    /// node id (W32-G, B5-3). Node ids are plan-scoped derivations, so both
+    /// halves address the read; the handler reads through the pluggable
+    /// [`crate::TaskNodeInspectSource`] seam (nlos-plan authority data).
+    InspectTaskNode {
+        plan_id: [u8; 16],
+        node_id: [u8; 16],
+    },
+    /// Inspect one execution fiber by its 16-byte fiber id and non-zero
+    /// handle generation (W32-G, B5-3). The handler reads the runtime
+    /// snapshot surface (state, lifecycle phase, bounded usage meters)
+    /// through the pluggable [`crate::ExecutionFiberInspectSource`] seam.
+    InspectExecutionFiber { fiber_id: [u8; 16], generation: u64 },
+    /// Inspect one durable topic row by its 16-byte topic id (W32-G, B5-3):
+    /// bounded channel linkage, admitted name, policy digest, and the
+    /// active-subscription count, read through the pluggable
+    /// [`crate::TopicInspectSource`] seam.
+    InspectTopic { topic_id: [u8; 16] },
+    /// Inspect one durable operation state-machine row by its 16-byte
+    /// operation id and non-zero handle generation (W32-G, B5-3): state,
+    /// cancel epoch, owner fiber handle, and the terminal outcome receipt,
+    /// read through the pluggable [`crate::OperationInspectSource`] seam.
+    InspectOperation {
+        operation_id: [u8; 16],
+        generation: u64,
+    },
     /// Acknowledge one escalated recovery alert. `control_command_id` is the
     /// idempotency identity (§25.3) and is bound to the request idempotency
     /// key by the handler; `expected_total_failures` is the CAS expectation.
@@ -245,6 +280,11 @@ impl ControlCommand {
             Self::InspectTask { plan_id } => *plan_id,
             Self::InspectProcess { process_id } => *process_id,
             Self::InspectResource { reservation_id } => *reservation_id,
+            Self::InspectTaskGroup { group_id } => *group_id,
+            Self::InspectTaskNode { node_id, .. } => *node_id,
+            Self::InspectExecutionFiber { fiber_id, .. } => *fiber_id,
+            Self::InspectTopic { topic_id } => *topic_id,
+            Self::InspectOperation { operation_id, .. } => *operation_id,
             Self::AcknowledgeRecoveryAlert {
                 control_command_id, ..
             }
@@ -292,6 +332,11 @@ impl ControlCommand {
             Self::InspectTask { plan_id } => *plan_id,
             Self::InspectProcess { process_id } => *process_id,
             Self::InspectResource { reservation_id } => *reservation_id,
+            Self::InspectTaskGroup { group_id } => *group_id,
+            Self::InspectTaskNode { node_id, .. } => *node_id,
+            Self::InspectExecutionFiber { fiber_id, .. } => *fiber_id,
+            Self::InspectTopic { topic_id } => *topic_id,
+            Self::InspectOperation { operation_id, .. } => *operation_id,
             Self::AcknowledgeRecoveryAlert {
                 control_command_id, ..
             }
@@ -516,6 +561,94 @@ impl ResourceInspector for UnwiredResourceInspector {
     }
 }
 
+/// Bounded read-only facts for one `TaskGroup` inspection (W32-G, B5-3).
+/// Wire enum types carry the state classes; the shared decode path already
+/// rejects unspecified values, so a decoded inspection never carries one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TaskGroupInspection {
+    pub group_id: [u8; 16],
+    pub task_id: [u8; 16],
+    pub parent_group_id: Option<[u8; 16]>,
+    pub state: TaskGroupLifecycleState,
+    pub membership_generation: u64,
+    pub state_seq: u64,
+    pub depth: u64,
+    pub cancel_epoch: u64,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+    pub members: Vec<TaskGroupMemberInsight>,
+    pub members_truncated: bool,
+}
+
+/// One durable group membership row as reported by the authority.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TaskGroupMemberInsight {
+    pub member_type: TaskGroupMemberType,
+    pub member_id: [u8; 16],
+    pub membership_state: TaskGroupMembershipState,
+    pub membership_generation: u64,
+    pub admission_receipt_id: Vec<u8>,
+    pub removal_receipt_id: Option<Vec<u8>>,
+}
+
+/// Bounded read-only facts for one plan `TaskNode` inspection (W32-G, B5-3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TaskNodeInspection {
+    pub plan_id: [u8; 16],
+    pub node_id: [u8; 16],
+    pub kind: PlanNodeKind,
+    pub state: PlanNodeLifecycleState,
+    pub declared_revision: u64,
+    pub node_digest: Vec<u8>,
+    pub transition_count: u64,
+    pub residency_tier: ContextResidencyTier,
+    pub residency_transition_count: u64,
+    pub first_declared_at_ms: u64,
+    pub updated_at_ms: u64,
+}
+
+/// Bounded runtime-snapshot facts for one execution fiber inspection
+/// (W32-G, B5-3); every time meter is a whole-millisecond projection.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExecutionFiberInspection {
+    pub fiber_id: [u8; 16],
+    pub generation: u64,
+    pub state: ExecutionFiberLifecycleState,
+    pub lifecycle_phase: ExecutionFiberPhase,
+    pub active_cpu_ms: u64,
+    pub elapsed_wall_ms: u64,
+    pub scheduler_wait_ms: u64,
+    pub external_wait_ms: u64,
+    pub backpressure_wait_ms: u64,
+    pub suspended_ms: u64,
+}
+
+/// Bounded read-only facts for one durable topic row inspection (W32-G,
+/// B5-3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TopicInspection {
+    pub topic_id: [u8; 16],
+    pub channel_id: [u8; 16],
+    pub channel_generation: u64,
+    pub name: Vec<u8>,
+    pub active_subscriptions: u64,
+    pub policy_digest: Vec<u8>,
+    pub created_at_ms: u64,
+}
+
+/// Bounded read-only facts for one durable operation state-machine row
+/// (W32-G, B5-3); terminal states carry their outcome receipt id.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DurableOperationInspection {
+    pub operation_id: [u8; 16],
+    pub generation: u64,
+    pub state: DurableOperationState,
+    pub cancel_epoch: u64,
+    pub owner_fiber_id: [u8; 16],
+    pub owner_fiber_generation: u64,
+    pub outcome_receipt_id: Option<Vec<u8>>,
+}
+
 /// Deterministic `OpenMetrics` text produced by one metrics export command.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MetricsExport {
@@ -536,6 +669,16 @@ pub enum ControlOutcome {
     ProcessInspected(ProcessInspection),
     /// Read-only resource reservation cost inspection completed.
     ResourceInspected(ResourceInspection),
+    /// Read-only `TaskGroup` inspection completed (W32-G, B5-3).
+    TaskGroupInspected(TaskGroupInspection),
+    /// Read-only plan `TaskNode` inspection completed (W32-G, B5-3).
+    TaskNodeInspected(TaskNodeInspection),
+    /// Read-only execution fiber runtime inspection completed (W32-G, B5-3).
+    ExecutionFiberInspected(ExecutionFiberInspection),
+    /// Read-only durable topic inspection completed (W32-G, B5-3).
+    TopicInspected(TopicInspection),
+    /// Read-only durable operation inspection completed (W32-G, B5-3).
+    DurableOperationInspected(DurableOperationInspection),
     /// Read-only metrics export completed.
     MetricsExported(MetricsExport),
     /// Mutation accepted by the `TaskAuthority`; authoritative receipt id.
@@ -634,6 +777,63 @@ impl From<CompatibilityError> for ControlError {
     }
 }
 
+/// Compiles one W32-G per-layer read command into its `(method, payload)`
+/// GET arm; read-only, so the shared envelope tail is left to the caller.
+fn layer_view_get_arm(
+    command: &ControlCommand,
+) -> Option<Result<(&'static str, Vec<u8>), ControlError>> {
+    let (view, target_id, plan_id, target_generation) = match command {
+        ControlCommand::InspectTaskGroup { group_id } => {
+            (SystemControlView::TaskGroup, *group_id, Vec::new(), 0)
+        }
+        ControlCommand::InspectTaskNode { plan_id, node_id } => {
+            (SystemControlView::TaskNode, *node_id, plan_id.to_vec(), 0)
+        }
+        ControlCommand::InspectExecutionFiber {
+            fiber_id,
+            generation,
+        } => {
+            if let Err(error) = validate_layer_generation(*generation) {
+                return Some(Err(error));
+            }
+            (
+                SystemControlView::ExecutionFiber,
+                *fiber_id,
+                Vec::new(),
+                *generation,
+            )
+        }
+        ControlCommand::InspectTopic { topic_id } => {
+            (SystemControlView::Topic, *topic_id, Vec::new(), 0)
+        }
+        ControlCommand::InspectOperation {
+            operation_id,
+            generation,
+        } => {
+            if let Err(error) = validate_layer_generation(*generation) {
+                return Some(Err(error));
+            }
+            (
+                SystemControlView::Operation,
+                *operation_id,
+                Vec::new(),
+                *generation,
+            )
+        }
+        _ => return None,
+    };
+    Some(
+        encode_get_system_control_request(&layer_view_request(
+            view,
+            target_id,
+            plan_id,
+            target_generation,
+        ))
+        .map(|payload| (GET_METHOD, payload))
+        .map_err(ControlError::from),
+    )
+}
+
 /// Compiles one [`ControlCommand`] into the same SABI request envelope the
 /// structured API would send. This is the single compilation point shared by
 /// the in-process dispatcher and the CLI binary (§25.3 `[CTRL-PARITY-001]`).
@@ -651,28 +851,25 @@ pub fn build_request_envelope(command: &ControlCommand) -> Result<Envelope, Cont
         | ControlCommand::InspectResource { .. }
         | ControlCommand::ExportMetrics => (
             GET_METHOD,
-            encode_get_system_control_request(&GetSystemControlRequest {
-                schema: Some(system_control_schema_identity()),
-                view: SystemControlView::ArtifactCommitRecovery.into(),
-                alert_limit: INSPECT_ALERT_LIMIT,
-            })?,
+            recovery_view_payload(SystemControlView::ArtifactCommitRecovery)?,
         ),
         ControlCommand::InspectSemanticHealth | ControlCommand::ExportSemanticMetrics => (
             GET_METHOD,
-            encode_get_system_control_request(&GetSystemControlRequest {
-                schema: Some(system_control_schema_identity()),
-                view: SystemControlView::SemanticCommitRecovery.into(),
-                alert_limit: INSPECT_ALERT_LIMIT,
-            })?,
+            recovery_view_payload(SystemControlView::SemanticCommitRecovery)?,
         ),
         ControlCommand::InspectResourceHealth | ControlCommand::ExportResourceMetrics => (
             GET_METHOD,
-            encode_get_system_control_request(&GetSystemControlRequest {
-                schema: Some(system_control_schema_identity()),
-                view: SystemControlView::ResourceCommitRecovery.into(),
-                alert_limit: INSPECT_ALERT_LIMIT,
-            })?,
+            recovery_view_payload(SystemControlView::ResourceCommitRecovery)?,
         ),
+        layer_command @ (ControlCommand::InspectTaskGroup { .. }
+        | ControlCommand::InspectTaskNode { .. }
+        | ControlCommand::InspectExecutionFiber { .. }
+        | ControlCommand::InspectTopic { .. }
+        | ControlCommand::InspectOperation { .. }) => {
+            layer_view_get_arm(layer_command).ok_or(ControlError::InvalidCommand(
+                "per-layer read commands must compile through the layer view arm",
+            ))??
+        }
         ControlCommand::AcknowledgeRecoveryAlert { .. }
         | ControlCommand::AcknowledgeSemanticRecoveryAlert { .. }
         | ControlCommand::ResumeSemanticRecovery { .. }
@@ -731,6 +928,50 @@ pub fn build_request_envelope(command: &ControlCommand) -> Result<Envelope, Cont
         ))),
         payload,
     })
+}
+
+fn recovery_view_payload(view: SystemControlView) -> Result<Vec<u8>, ControlError> {
+    encode_get_system_control_request(&GetSystemControlRequest {
+        schema: Some(system_control_schema_identity()),
+        view: view.into(),
+        alert_limit: INSPECT_ALERT_LIMIT,
+        target_id: Vec::new(),
+        plan_id: Vec::new(),
+        target_generation: 0,
+    })
+    .map_err(ControlError::from)
+}
+
+/// Builds the W32-G per-layer `get` request: the view, its primary target,
+/// the plan-scoped secondary target, and the handle generation, under the
+/// shared bounded `alert_limit`.
+fn layer_view_request(
+    view: SystemControlView,
+    target_id: [u8; 16],
+    plan_id: Vec<u8>,
+    target_generation: u64,
+) -> GetSystemControlRequest {
+    GetSystemControlRequest {
+        schema: Some(system_control_schema_identity()),
+        view: view.into(),
+        alert_limit: INSPECT_ALERT_LIMIT,
+        target_id: target_id.to_vec(),
+        plan_id,
+        target_generation,
+    }
+}
+
+/// Rejects a zero handle generation before the wire — the runtime and
+/// operation authorities resolve handles by (id, generation) and zero is
+/// never a valid generation.
+fn validate_layer_generation(generation: u64) -> Result<(), ControlError> {
+    if generation == 0 {
+        Err(ControlError::InvalidCommand(
+            "handle generation must be a non-zero generation",
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 /// Addressing and CAS expectation of one mutation variant: the operational
@@ -1025,6 +1266,147 @@ fn decoded_snapshot(
         ));
     }
     Ok(snapshot)
+}
+
+fn fixed16_or_defect(bytes: &[u8]) -> Result<[u8; 16], ControlError> {
+    bytes
+        .try_into()
+        .map_err(|_| ControlError::UnexpectedResponse("layer status carried an invalid identifier"))
+}
+
+fn decoded_task_group_inspection(response: &Envelope) -> Result<TaskGroupInspection, ControlError> {
+    let snapshot = decode_task_group_operations_snapshot(&response.payload)?;
+    if snapshot.members.len() > usize::try_from(INSPECT_ALERT_LIMIT).unwrap_or(usize::MAX) {
+        return Err(ControlError::UnexpectedResponse(
+            "snapshot exceeded the requested member bound",
+        ));
+    }
+    let group = snapshot.group.ok_or(ControlError::Schema(
+        CompatibilityError::MissingSystemControlLayerStatus,
+    ))?;
+    Ok(TaskGroupInspection {
+        group_id: fixed16_or_defect(&group.group_id)?,
+        task_id: fixed16_or_defect(&group.task_id)?,
+        parent_group_id: if group.parent_group_id.is_empty() {
+            None
+        } else {
+            Some(fixed16_or_defect(&group.parent_group_id)?)
+        },
+        state: TaskGroupLifecycleState::try_from(group.state)
+            .map_err(|_| ControlError::UnexpectedResponse("unspecified task group state"))?,
+        membership_generation: group.membership_generation,
+        state_seq: group.state_seq,
+        depth: group.depth,
+        cancel_epoch: group.cancel_epoch,
+        created_at_ms: group.created_at_ms,
+        updated_at_ms: group.updated_at_ms,
+        members: snapshot
+            .members
+            .into_iter()
+            .map(|member| {
+                Ok(TaskGroupMemberInsight {
+                    member_type: TaskGroupMemberType::try_from(member.member_type).map_err(
+                        |_| ControlError::UnexpectedResponse("unspecified task group member type"),
+                    )?,
+                    member_id: fixed16_or_defect(&member.member_id)?,
+                    membership_state: TaskGroupMembershipState::try_from(member.membership_state)
+                        .map_err(|_| {
+                        ControlError::UnexpectedResponse("unspecified task group membership state")
+                    })?,
+                    membership_generation: member.membership_generation,
+                    admission_receipt_id: member
+                        .admission_receipt
+                        .map(|receipt| receipt.receipt_id)
+                        .ok_or(ControlError::UnexpectedResponse(
+                            "task group member carried no admission receipt",
+                        ))?,
+                    removal_receipt_id: member.removal_receipt.map(|receipt| receipt.receipt_id),
+                })
+            })
+            .collect::<Result<Vec<_>, ControlError>>()?,
+        members_truncated: snapshot.members_truncated,
+    })
+}
+
+fn decoded_task_node_inspection(response: &Envelope) -> Result<TaskNodeInspection, ControlError> {
+    let snapshot = decode_task_node_operations_snapshot(&response.payload)?;
+    let node = snapshot.node.ok_or(ControlError::Schema(
+        CompatibilityError::MissingSystemControlLayerStatus,
+    ))?;
+    Ok(TaskNodeInspection {
+        plan_id: fixed16_or_defect(&node.plan_id)?,
+        node_id: fixed16_or_defect(&node.node_id)?,
+        kind: PlanNodeKind::try_from(node.kind)
+            .map_err(|_| ControlError::UnexpectedResponse("unspecified plan node kind"))?,
+        state: PlanNodeLifecycleState::try_from(node.state)
+            .map_err(|_| ControlError::UnexpectedResponse("unspecified plan node state"))?,
+        declared_revision: node.declared_revision,
+        node_digest: node.node_digest,
+        transition_count: node.transition_count,
+        residency_tier: ContextResidencyTier::try_from(node.residency_tier)
+            .map_err(|_| ControlError::UnexpectedResponse("unspecified context residency tier"))?,
+        residency_transition_count: node.residency_transition_count,
+        first_declared_at_ms: node.first_declared_at_ms,
+        updated_at_ms: node.updated_at_ms,
+    })
+}
+
+fn decoded_execution_fiber_inspection(
+    response: &Envelope,
+) -> Result<ExecutionFiberInspection, ControlError> {
+    let snapshot = decode_execution_fiber_operations_snapshot(&response.payload)?;
+    let fiber = snapshot.fiber.ok_or(ControlError::Schema(
+        CompatibilityError::MissingSystemControlLayerStatus,
+    ))?;
+    Ok(ExecutionFiberInspection {
+        fiber_id: fixed16_or_defect(&fiber.fiber_id)?,
+        generation: fiber.generation,
+        state: ExecutionFiberLifecycleState::try_from(fiber.state)
+            .map_err(|_| ControlError::UnexpectedResponse("unspecified execution fiber state"))?,
+        lifecycle_phase: ExecutionFiberPhase::try_from(fiber.lifecycle_phase)
+            .map_err(|_| ControlError::UnexpectedResponse("unspecified execution fiber phase"))?,
+        active_cpu_ms: fiber.active_cpu_ms,
+        elapsed_wall_ms: fiber.elapsed_wall_ms,
+        scheduler_wait_ms: fiber.scheduler_wait_ms,
+        external_wait_ms: fiber.external_wait_ms,
+        backpressure_wait_ms: fiber.backpressure_wait_ms,
+        suspended_ms: fiber.suspended_ms,
+    })
+}
+
+fn decoded_topic_inspection(response: &Envelope) -> Result<TopicInspection, ControlError> {
+    let snapshot = decode_topic_operations_snapshot(&response.payload)?;
+    let topic = snapshot.topic.ok_or(ControlError::Schema(
+        CompatibilityError::MissingSystemControlLayerStatus,
+    ))?;
+    Ok(TopicInspection {
+        topic_id: fixed16_or_defect(&topic.topic_id)?,
+        channel_id: fixed16_or_defect(&topic.channel_id)?,
+        channel_generation: topic.channel_generation,
+        name: topic.name,
+        active_subscriptions: topic.active_subscriptions,
+        policy_digest: topic.policy_digest,
+        created_at_ms: topic.created_at_ms,
+    })
+}
+
+fn decoded_durable_operation_inspection(
+    response: &Envelope,
+) -> Result<DurableOperationInspection, ControlError> {
+    let snapshot = decode_durable_operation_snapshot(&response.payload)?;
+    let operation = snapshot.operation.ok_or(ControlError::Schema(
+        CompatibilityError::MissingSystemControlLayerStatus,
+    ))?;
+    Ok(DurableOperationInspection {
+        operation_id: fixed16_or_defect(&operation.operation_id)?,
+        generation: operation.generation,
+        state: DurableOperationState::try_from(operation.state)
+            .map_err(|_| ControlError::UnexpectedResponse("unspecified durable operation state"))?,
+        cancel_epoch: operation.cancel_epoch,
+        owner_fiber_id: fixed16_or_defect(&operation.owner_fiber_id)?,
+        owner_fiber_generation: operation.owner_fiber_generation,
+        outcome_receipt_id: operation.outcome_receipt.map(|receipt| receipt.receipt_id),
+    })
 }
 
 fn decoded_semantic_snapshot(
@@ -1451,6 +1833,25 @@ impl ControlReceipt {
                 ControlCommand::InspectResource { reservation_id } => {
                     compose_resource_inspection(resource, *reservation_id)
                 }
+                ControlCommand::InspectTaskGroup { .. } => Ok(ControlOutcome::TaskGroupInspected(
+                    decoded_task_group_inspection(response)?,
+                )),
+                ControlCommand::InspectTaskNode { .. } => Ok(ControlOutcome::TaskNodeInspected(
+                    decoded_task_node_inspection(response)?,
+                )),
+                ControlCommand::InspectExecutionFiber { .. } => {
+                    Ok(ControlOutcome::ExecutionFiberInspected(
+                        decoded_execution_fiber_inspection(response)?,
+                    ))
+                }
+                ControlCommand::InspectTopic { .. } => Ok(ControlOutcome::TopicInspected(
+                    decoded_topic_inspection(response)?,
+                )),
+                ControlCommand::InspectOperation { .. } => {
+                    Ok(ControlOutcome::DurableOperationInspected(
+                        decoded_durable_operation_inspection(response)?,
+                    ))
+                }
                 ControlCommand::AcknowledgeRecoveryAlert { .. }
                 | ControlCommand::AcknowledgeSemanticRecoveryAlert { .. }
                 | ControlCommand::AcknowledgeResourceRecoveryAlert { .. } => {
@@ -1515,31 +1916,7 @@ impl ControlReceipt {
                 push_bytes(&mut bytes, export.openmetrics_text.as_bytes());
             }
             Ok(ControlOutcome::SemanticInspected(inspection)) => {
-                bytes.push(6);
-                bytes.extend_from_slice(&inspection.total_inspected.to_le_bytes());
-                bytes.extend_from_slice(&inspection.total_finalized.to_le_bytes());
-                bytes.extend_from_slice(&inspection.consecutive_failed_cycles.to_le_bytes());
-                bytes.extend_from_slice(&inspection.durable_retrying.to_le_bytes());
-                bytes.extend_from_slice(&inspection.durable_escalated.to_le_bytes());
-                bytes.extend_from_slice(&inspection.durable_unacknowledged_escalated.to_le_bytes());
-                bytes.extend_from_slice(&inspection.durable_resolved.to_le_bytes());
-                bytes.push(u8::from(inspection.domain_faulted));
-                bytes.extend_from_slice(
-                    &u32::try_from(inspection.alerts.len())
-                        .unwrap_or(u32::MAX)
-                        .to_le_bytes(),
-                );
-                for alert in &inspection.alerts {
-                    push_bytes(&mut bytes, &alert.plan_id);
-                    bytes.extend_from_slice(&alert.total_failures.to_le_bytes());
-                    match alert.acknowledged_receipt_id.as_ref() {
-                        Some(receipt_id) => {
-                            bytes.push(1);
-                            push_bytes(&mut bytes, receipt_id);
-                        }
-                        None => bytes.push(0),
-                    }
-                }
+                push_semantic_inspection(&mut bytes, inspection);
             }
             Ok(ControlOutcome::ProcessInspected(inspection)) => {
                 bytes.push(4);
@@ -1585,8 +1962,148 @@ impl ControlReceipt {
             Ok(ControlOutcome::OperationReclaimed { receipt_id }) => {
                 push_tagged_receipt(&mut bytes, 13, receipt_id);
             }
+            Ok(ControlOutcome::TaskGroupInspected(inspection)) => {
+                push_task_group_inspection(&mut bytes, inspection);
+            }
+            Ok(ControlOutcome::TaskNodeInspected(inspection)) => {
+                push_task_node_inspection(&mut bytes, inspection);
+            }
+            Ok(ControlOutcome::ExecutionFiberInspected(inspection)) => {
+                push_execution_fiber_inspection(&mut bytes, inspection);
+            }
+            Ok(ControlOutcome::TopicInspected(inspection)) => {
+                push_topic_inspection(&mut bytes, inspection);
+            }
+            Ok(ControlOutcome::DurableOperationInspected(inspection)) => {
+                push_durable_operation_inspection(&mut bytes, inspection);
+            }
         }
         bytes
+    }
+}
+
+fn push_semantic_inspection(bytes: &mut Vec<u8>, inspection: &SemanticRecoveryInspection) {
+    bytes.push(6);
+    bytes.extend_from_slice(&inspection.total_inspected.to_le_bytes());
+    bytes.extend_from_slice(&inspection.total_finalized.to_le_bytes());
+    bytes.extend_from_slice(&inspection.consecutive_failed_cycles.to_le_bytes());
+    bytes.extend_from_slice(&inspection.durable_retrying.to_le_bytes());
+    bytes.extend_from_slice(&inspection.durable_escalated.to_le_bytes());
+    bytes.extend_from_slice(&inspection.durable_unacknowledged_escalated.to_le_bytes());
+    bytes.extend_from_slice(&inspection.durable_resolved.to_le_bytes());
+    bytes.push(u8::from(inspection.domain_faulted));
+    bytes.extend_from_slice(
+        &u32::try_from(inspection.alerts.len())
+            .unwrap_or(u32::MAX)
+            .to_le_bytes(),
+    );
+    for alert in &inspection.alerts {
+        push_bytes(bytes, &alert.plan_id);
+        bytes.extend_from_slice(&alert.total_failures.to_le_bytes());
+        match alert.acknowledged_receipt_id.as_ref() {
+            Some(receipt_id) => {
+                bytes.push(1);
+                push_bytes(bytes, receipt_id);
+            }
+            None => bytes.push(0),
+        }
+    }
+}
+
+fn push_task_group_inspection(bytes: &mut Vec<u8>, inspection: &TaskGroupInspection) {
+    bytes.push(15);
+    bytes.extend_from_slice(&inspection.group_id);
+    bytes.extend_from_slice(&inspection.task_id);
+    match inspection.parent_group_id {
+        Some(parent) => {
+            bytes.push(1);
+            bytes.extend_from_slice(&parent);
+        }
+        None => bytes.push(0),
+    }
+    bytes.extend_from_slice(&i32::from(inspection.state).to_le_bytes());
+    bytes.extend_from_slice(&inspection.membership_generation.to_le_bytes());
+    bytes.extend_from_slice(&inspection.state_seq.to_le_bytes());
+    bytes.extend_from_slice(&inspection.depth.to_le_bytes());
+    bytes.extend_from_slice(&inspection.cancel_epoch.to_le_bytes());
+    bytes.extend_from_slice(&inspection.created_at_ms.to_le_bytes());
+    bytes.extend_from_slice(&inspection.updated_at_ms.to_le_bytes());
+    bytes.push(u8::from(inspection.members_truncated));
+    bytes.extend_from_slice(
+        &u32::try_from(inspection.members.len())
+            .unwrap_or(u32::MAX)
+            .to_le_bytes(),
+    );
+    for member in &inspection.members {
+        bytes.extend_from_slice(&i32::from(member.member_type).to_le_bytes());
+        bytes.extend_from_slice(&member.member_id);
+        bytes.extend_from_slice(&i32::from(member.membership_state).to_le_bytes());
+        bytes.extend_from_slice(&member.membership_generation.to_le_bytes());
+        push_bytes(bytes, &member.admission_receipt_id);
+        match member.removal_receipt_id.as_ref() {
+            Some(receipt_id) => {
+                bytes.push(1);
+                push_bytes(bytes, receipt_id);
+            }
+            None => bytes.push(0),
+        }
+    }
+}
+
+fn push_task_node_inspection(bytes: &mut Vec<u8>, inspection: &TaskNodeInspection) {
+    bytes.push(16);
+    bytes.extend_from_slice(&inspection.plan_id);
+    bytes.extend_from_slice(&inspection.node_id);
+    bytes.extend_from_slice(&i32::from(inspection.kind).to_le_bytes());
+    bytes.extend_from_slice(&i32::from(inspection.state).to_le_bytes());
+    bytes.extend_from_slice(&inspection.declared_revision.to_le_bytes());
+    push_bytes(bytes, &inspection.node_digest);
+    bytes.extend_from_slice(&inspection.transition_count.to_le_bytes());
+    bytes.extend_from_slice(&i32::from(inspection.residency_tier).to_le_bytes());
+    bytes.extend_from_slice(&inspection.residency_transition_count.to_le_bytes());
+    bytes.extend_from_slice(&inspection.first_declared_at_ms.to_le_bytes());
+    bytes.extend_from_slice(&inspection.updated_at_ms.to_le_bytes());
+}
+
+fn push_execution_fiber_inspection(bytes: &mut Vec<u8>, inspection: &ExecutionFiberInspection) {
+    bytes.push(17);
+    bytes.extend_from_slice(&inspection.fiber_id);
+    bytes.extend_from_slice(&inspection.generation.to_le_bytes());
+    bytes.extend_from_slice(&i32::from(inspection.state).to_le_bytes());
+    bytes.extend_from_slice(&i32::from(inspection.lifecycle_phase).to_le_bytes());
+    bytes.extend_from_slice(&inspection.active_cpu_ms.to_le_bytes());
+    bytes.extend_from_slice(&inspection.elapsed_wall_ms.to_le_bytes());
+    bytes.extend_from_slice(&inspection.scheduler_wait_ms.to_le_bytes());
+    bytes.extend_from_slice(&inspection.external_wait_ms.to_le_bytes());
+    bytes.extend_from_slice(&inspection.backpressure_wait_ms.to_le_bytes());
+    bytes.extend_from_slice(&inspection.suspended_ms.to_le_bytes());
+}
+
+fn push_topic_inspection(bytes: &mut Vec<u8>, inspection: &TopicInspection) {
+    bytes.push(18);
+    bytes.extend_from_slice(&inspection.topic_id);
+    bytes.extend_from_slice(&inspection.channel_id);
+    bytes.extend_from_slice(&inspection.channel_generation.to_le_bytes());
+    push_bytes(bytes, &inspection.name);
+    bytes.extend_from_slice(&inspection.active_subscriptions.to_le_bytes());
+    push_bytes(bytes, &inspection.policy_digest);
+    bytes.extend_from_slice(&inspection.created_at_ms.to_le_bytes());
+}
+
+fn push_durable_operation_inspection(bytes: &mut Vec<u8>, inspection: &DurableOperationInspection) {
+    bytes.push(19);
+    bytes.extend_from_slice(&inspection.operation_id);
+    bytes.extend_from_slice(&inspection.generation.to_le_bytes());
+    bytes.extend_from_slice(&i32::from(inspection.state).to_le_bytes());
+    bytes.extend_from_slice(&inspection.cancel_epoch.to_le_bytes());
+    bytes.extend_from_slice(&inspection.owner_fiber_id);
+    bytes.extend_from_slice(&inspection.owner_fiber_generation.to_le_bytes());
+    match inspection.outcome_receipt_id.as_ref() {
+        Some(receipt_id) => {
+            bytes.push(1);
+            push_bytes(bytes, receipt_id);
+        }
+        None => bytes.push(0),
     }
 }
 
@@ -2314,6 +2831,135 @@ mod tests {
                 }),
                 Err(ControlError::InvalidCommand(
                     "throttle percent must be a whole percent from 1 to 100"
+                ))
+            ));
+        }
+    }
+
+    #[test]
+    fn w32g_layer_command_ids_are_deterministic_per_variant() {
+        assert_eq!(
+            ControlCommand::InspectTaskGroup {
+                group_id: [0x91; 16]
+            }
+            .control_command_id(),
+            [0x91; 16]
+        );
+        assert_eq!(
+            ControlCommand::InspectTaskNode {
+                plan_id: [0xA1; 16],
+                node_id: [0xA2; 16]
+            }
+            .control_command_id(),
+            [0xA2; 16]
+        );
+        assert_eq!(
+            ControlCommand::InspectExecutionFiber {
+                fiber_id: [0xB1; 16],
+                generation: 2
+            }
+            .control_command_id(),
+            [0xB1; 16]
+        );
+        assert_eq!(
+            ControlCommand::InspectTopic {
+                topic_id: [0xC1; 16]
+            }
+            .control_command_id(),
+            [0xC1; 16]
+        );
+        assert_eq!(
+            ControlCommand::InspectOperation {
+                operation_id: [0xD1; 16],
+                generation: 1
+            }
+            .control_command_id(),
+            [0xD1; 16]
+        );
+    }
+
+    #[test]
+    fn w32g_layer_read_envelopes_carry_view_targeting() {
+        let group = build_request_envelope(&ControlCommand::InspectTaskGroup {
+            group_id: [0x91; 16],
+        })
+        .unwrap();
+        assert_eq!(group.method, GET_METHOD);
+        let group_payload = decode_get_system_control_request(&group.payload).unwrap();
+        assert_eq!(
+            group_payload.view,
+            i32::from(nlos_schema::sabi::v1::SystemControlView::TaskGroup)
+        );
+        assert_eq!(group_payload.target_id, vec![0x91; 16]);
+        assert!(group_payload.plan_id.is_empty());
+
+        let node = build_request_envelope(&ControlCommand::InspectTaskNode {
+            plan_id: [0xA1; 16],
+            node_id: [0xA2; 16],
+        })
+        .unwrap();
+        let node_payload = decode_get_system_control_request(&node.payload).unwrap();
+        assert_eq!(
+            node_payload.view,
+            i32::from(nlos_schema::sabi::v1::SystemControlView::TaskNode)
+        );
+        assert_eq!(node_payload.target_id, vec![0xA2; 16]);
+        assert_eq!(node_payload.plan_id, vec![0xA1; 16]);
+
+        let fiber = build_request_envelope(&ControlCommand::InspectExecutionFiber {
+            fiber_id: [0xB1; 16],
+            generation: 2,
+        })
+        .unwrap();
+        let fiber_payload = decode_get_system_control_request(&fiber.payload).unwrap();
+        assert_eq!(
+            fiber_payload.view,
+            i32::from(nlos_schema::sabi::v1::SystemControlView::ExecutionFiber)
+        );
+        assert_eq!(fiber_payload.target_id, vec![0xB1; 16]);
+        assert_eq!(fiber_payload.target_generation, 2);
+
+        let topic = build_request_envelope(&ControlCommand::InspectTopic {
+            topic_id: [0xC1; 16],
+        })
+        .unwrap();
+        let topic_payload = decode_get_system_control_request(&topic.payload).unwrap();
+        assert_eq!(
+            topic_payload.view,
+            i32::from(nlos_schema::sabi::v1::SystemControlView::Topic)
+        );
+        assert_eq!(topic_payload.target_id, vec![0xC1; 16]);
+
+        let operation = build_request_envelope(&ControlCommand::InspectOperation {
+            operation_id: [0xD1; 16],
+            generation: 1,
+        })
+        .unwrap();
+        let operation_payload = decode_get_system_control_request(&operation.payload).unwrap();
+        assert_eq!(
+            operation_payload.view,
+            i32::from(nlos_schema::sabi::v1::SystemControlView::Operation)
+        );
+        assert_eq!(operation_payload.target_id, vec![0xD1; 16]);
+        assert_eq!(operation_payload.target_generation, 1);
+    }
+
+    #[test]
+    fn w32g_layer_reads_reject_zero_generation_before_the_wire() {
+        for command in [
+            ControlCommand::InspectExecutionFiber {
+                fiber_id: [0xB1; 16],
+                generation: 0,
+            },
+            ControlCommand::InspectOperation {
+                operation_id: [0xD1; 16],
+                generation: 0,
+            },
+        ] {
+            assert!(matches!(
+                build_request_envelope(&command),
+                Err(ControlError::InvalidCommand(
+                    "handle generation must be a non-zero generation"
                 ))
             ));
         }
