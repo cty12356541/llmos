@@ -218,10 +218,11 @@ pub use participant::{
 pub use pressure::{
     CommitPermitDecision, ReclaimPhase, ReclaimPolicy, TASK_DEFAULT_RECLAIM_POLICY,
     WorkingSetPressure, WorkingSetPressureSnapshot, WorkingSetReclaimAdvisory,
-    WorkingSetReclaimExecution, WorkingSetReclaimOutcome, enforce_task_node_admission,
-    enforce_task_registration_admission, enforce_working_set_admission,
-    execute_working_set_reclaim_execution, inspect_working_set_pressure,
-    plan_working_set_reclaim_execution, working_set_reclaim_advisory,
+    WorkingSetReclaimEviction, WorkingSetReclaimExecution, WorkingSetReclaimExecutionReport,
+    WorkingSetReclaimExecutionRequest, WorkingSetReclaimOutcome, WorkingSetReclaimPhaseReport,
+    enforce_task_node_admission, enforce_task_registration_admission,
+    enforce_working_set_admission, execute_working_set_reclaim_execution,
+    inspect_working_set_pressure, plan_working_set_reclaim_execution, working_set_reclaim_advisory,
 };
 pub use receipt::TaskCommitReceipt;
 pub use reconcile::{
@@ -723,6 +724,18 @@ pub enum TaskStoreError {
         /// Inclusive hard cap from the profile.
         max_task_registrations: u64,
     },
+    /// A driven reclaim execution presented an advisory warrant minted
+    /// against a different [`ScaleProfile`] tier than the authority's
+    /// bound profile (W31-C closure gate).
+    ReclaimExecutionProfileMismatch {
+        advisory_profile_id: &'static str,
+        authority_profile_id: &'static str,
+    },
+    /// A driven reclaim execution named a phase sequence index outside
+    /// [`crate::TASK_DEFAULT_RECLAIM_POLICY`] (W31-C closure gate).
+    ReclaimExecutionSequenceOutOfRange {
+        sequence: u8,
+    },
     /// An idempotent registration replay for an existing task repeated a
     /// different association (application or plan revision) than the
     /// durable declaration (ADR-0016 决定 3: the association is
@@ -1128,6 +1141,17 @@ impl fmt::Display for TaskStoreError {
             } => write!(
                 formatter,
                 "task-registration admission denied for profile {profile_id}: registration_count {registration_count} exceeds max {max_task_registrations}"
+            ),
+            Self::ReclaimExecutionProfileMismatch {
+                advisory_profile_id,
+                authority_profile_id,
+            } => write!(
+                formatter,
+                "reclaim execution warrant minted for profile {advisory_profile_id} but authority binds {authority_profile_id}"
+            ),
+            Self::ReclaimExecutionSequenceOutOfRange { sequence } => write!(
+                formatter,
+                "reclaim execution sequence {sequence} is outside the default policy"
             ),
             Self::TaskAssociationConflict { task_id } => write!(
                 formatter,

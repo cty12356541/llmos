@@ -932,7 +932,7 @@ fn load_cross_adoption_by_id(
     rows.next()?.map(decode_cross_adoption_row).transpose()
 }
 
-fn load_adoption_by_permit(
+pub(crate) fn load_adoption_by_permit(
     source: &impl SqlRead,
     task_id: TaskId,
     permit_id: CommitPermitId,

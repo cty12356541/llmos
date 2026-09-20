@@ -3,7 +3,7 @@
 //!
 //! Honest scope of this skeleton:
 //!
-//! - **Prefix enforcement only.** [`crate::SqliteTaskAuthority::request_commit_permit`]
+//! - **Prefix enforcement plus one real closure path.** [`crate::SqliteTaskAuthority::request_commit_permit`]
 //!   consults [`WorkingSetPressure::admits`] before issuing a new outstanding
 //!   `CommitPermit`, and [`crate::SqliteTaskAuthority::register_task`]
 //!   consults [`ScaleProfile::admits_task_registrations`] before a net-new
@@ -20,14 +20,24 @@
 //!   [`WorkingSetReclaimExecution`]; when execution is planned on an issued
 //!   permit, [`execute_working_set_reclaim_execution`] surfaces a typed
 //!   [`WorkingSetReclaimOutcome`] for the `RebuildableCache` prefix (synthetic
-//!   evictable-unit counter only; no Context Residency Controller). Later
-//!   phases and full Materialization Controller wiring remain deferred.
-//! - **No rehydrate.** Checkpoint/evict/rehydrate benchmarks and recovery
-//!   wiring are registered gaps in `docs/evidence/stage-b/b-task-scale-001.md`.
+//!   evictable-unit counter only; no Context Residency Controller).
+//!   [`crate::SqliteTaskAuthority::drive_working_set_reclaim`] then drives a
+//!   planned execution to completion through the authority's real closure
+//!   paths (W31-C): the `CheckpointEvict` phase closes evictable issued
+//!   permits through the public `close_permit` path
+//!   (`CancelledBeforeEffect`), while `RebuildableCache`,
+//!   `DegradeBackgroundQos`, and `Kill` report `face_absent` with zero
+//!   units — this authority owns no cache, `QoS`, or kill face in this slice.
+//! - **No rehydrate in this crate.** The measured checkpoint/evict/rehydrate
+//!   cycle for fibers is the runtime B path
+//!   (`nlos-runtime-tokio` snapshot/resume, W31-C evidence); a Task-plane
+//!   rehydrate face remains a registered gap.
 //! - **Predicate surface.** [`WorkingSetPressure::needs_reclaim`] reports when
 //!   the observed active working set crosses the tier's soft threshold;
 //!   [`crate::ScaleProfile::admits_active_working_set`] remains the hard
 //!   inclusive upper bound checked by [`enforce_working_set_admission`].
+
+use nlos_types::{CommitPermitId, ReceiptId, TaskId};
 
 use crate::TaskStoreError;
 use crate::model::PermitDecision;
@@ -232,6 +242,61 @@ pub fn inspect_working_set_pressure(
         admits: pressure.admits(),
         reclaim_advisory,
     }
+}
+
+/// Controller request to drive one planned reclaim execution to completion
+/// through the authority's real closure paths (W31-C).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WorkingSetReclaimExecutionRequest {
+    /// The planned step this drive executes — the advisory warrant surfaced
+    /// on an issued `CommitPermitDecision`.
+    pub execution: WorkingSetReclaimExecution,
+    pub executed_at_ms: i64,
+}
+
+/// One durably evicted working-set member of a driven reclaim execution.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WorkingSetReclaimEviction {
+    pub task_id: TaskId,
+    pub permit_id: CommitPermitId,
+    /// The `TaskPermitClosureReceipt` written by the public close path.
+    pub closure_receipt_id: ReceiptId,
+}
+
+/// Per-phase execution fact of one driven reclaim execution.
+///
+/// `face_absent` marks phases this authority has no real face for in this
+/// slice (`RebuildableCache`, `DegradeBackgroundQos`, `Kill`): their zero
+/// `evicted_units` is an honest absence, never a success claim.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WorkingSetReclaimPhaseReport {
+    pub phase: ReclaimPhase,
+    /// Working-set units durably evicted by this phase's real closure path.
+    pub evicted_units: u64,
+    pub face_absent: bool,
+}
+
+/// Readback of one reclaim execution driven to completion: the phase walk
+/// with real per-phase facts, the durable evictions, and the observed
+/// pre/post working-set counts (W31-C).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkingSetReclaimExecutionReport {
+    /// The warrant this drive executed (planned step + advisory snapshot).
+    pub execution: WorkingSetReclaimExecution,
+    /// Phases walked in [`TASK_DEFAULT_RECLAIM_POLICY`] order from the
+    /// planned step's sequence index.
+    pub phases: Vec<WorkingSetReclaimPhaseReport>,
+    /// Permits durably closed by the `CheckpointEvict` phase, in eviction
+    /// order.
+    pub evictions: Vec<WorkingSetReclaimEviction>,
+    /// Store-wide issued-permit count observed before the first closure.
+    pub pre_active_count: u64,
+    /// Store-wide issued-permit count observed after the last closure.
+    pub post_active_count: u64,
+    /// The soft threshold count the execution targeted.
+    pub reclaim_threshold_count: u64,
+    /// Whether the post count is back at or below the soft threshold.
+    pub pressure_relieved: bool,
 }
 
 /// Reports whether a projected net-new issuance should surface reclaim
