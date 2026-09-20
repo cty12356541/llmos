@@ -9,7 +9,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use ed25519_dalek::{Signer, SigningKey};
 use nlos_artifact::{
     ContentDigest, CreateArtifactSpec, PackageEntryRole, PackageManifest, PackageManifestEntry,
-    ProvenanceSourceTriple, PutRevisionRequest, SignedPackage, package_manifest_message,
+    PackageTaskKind, PackageTaskTemplate, ProvenanceSourceTriple, PutRevisionRequest,
+    SignedPackage, SignedPackageWithTasks, package_manifest_message,
+    package_manifest_with_tasks_message,
 };
 use nlos_identity::{BootstrapPrincipalRequest, IdentityAuthority, IdentityBinding, KeyPurpose};
 use nlos_types::{ApplicationId, ArtifactId, IdempotencyKey, PackageId};
@@ -167,6 +169,39 @@ pub fn sign_package(identity: &TestIdentity, manifest: PackageManifest) -> Signe
     let digest = package_manifest_message(&manifest);
     SignedPackage {
         manifest,
+        signer: identity.binding.principal_id,
+        signature: identity.key.sign(&digest).to_bytes(),
+    }
+}
+
+/// One template whose digest-bound bodies are re-derivable from its node
+/// key (the compile-equivalence tests rely on this).
+pub fn task_template(
+    node_key: [u8; 16],
+    kind: PackageTaskKind,
+    dependency_keys: Vec<[u8; 16]>,
+) -> PackageTaskTemplate {
+    PackageTaskTemplate {
+        node_key,
+        kind,
+        binding_digest: ContentDigest::of_bytes(&node_key).into_bytes(),
+        dependency_keys,
+        input_selectors_digest: ContentDigest::of_bytes(b"input-selectors").into_bytes(),
+        output_contract_digest: ContentDigest::of_bytes(b"output-contract").into_bytes(),
+        policy_digest: ContentDigest::of_bytes(b"policy").into_bytes(),
+        resource_ceiling_digest: ContentDigest::of_bytes(b"resource-ceiling").into_bytes(),
+    }
+}
+
+pub fn sign_templated_package(
+    identity: &TestIdentity,
+    manifest: PackageManifest,
+    tasks: Vec<PackageTaskTemplate>,
+) -> SignedPackageWithTasks {
+    let digest = package_manifest_with_tasks_message(&manifest, &tasks);
+    SignedPackageWithTasks {
+        manifest,
+        tasks,
         signer: identity.binding.principal_id,
         signature: identity.key.sign(&digest).to_bytes(),
     }

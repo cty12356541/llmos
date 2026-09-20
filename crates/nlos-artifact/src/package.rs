@@ -8,10 +8,21 @@
 //! verification leaves one immutable `package_verification_receipts` row
 //! (schema v4).
 //!
-//! Verification is fail-closed in a fixed order:
+//! The additive `tasks` template segment face (ADR-0016 决定 1, W28-B) is
+//! a parallel shape: a [`SignedPackageWithTasks`] carries the same base
+//! manifest plus [`PackageTaskTemplate`]s, signed as one message over
+//! [`package_manifest_with_tasks_message`] and verified by
+//! [`ArtifactStore::verify_package_with_tasks`]. The legacy face above is
+//! byte-for-byte untouched (G6: old signed packages verify and install
+//! identically), and the two message domains make cross-face signature
+//! reuse impossible.
+//!
+//! Verification is fail-closed in a fixed order (both faces share one
+//! pipeline; only the shape validation and the signed digest differ):
 //!
 //! 1. Manifest shape validation (bounded entry names, non-empty, unique
-//!    names).
+//!    names; the templated face additionally validates the task-template
+//!    segment shape via [`validate_task_templates`]).
 //! 2. Idempotent replay: an existing receipt for the caller's idempotency
 //!    key is the durable authority and replays **without re-verification**
 //!    (ADR-0010 replay precedent), so a receipt stays replayable even after
@@ -30,8 +41,10 @@
 //! Explicitly out of scope for later Slice K slices: installation/update
 //! lifecycle, the full §23.2 manifest (applications, components, imports,
 //! exports, resources, data, lifecycle, security), trust-root and
-//! signature-chain policy (exactly one signing principal is verified), and
-//! cross-process transport of the signed envelope.
+//! signature-chain policy (exactly one signing principal is verified),
+//! cross-process transport of the signed envelope, and compiling the task
+//! templates into plan proposals (the `nlos-application` template half of
+//! W28-B; this crate owns only the manifest face and its shape authority).
 
 use std::collections::HashSet;
 
@@ -54,6 +67,24 @@ use crate::store::{ArtifactStore, encode_u64};
 /// manifests can produce the same byte stream (mirrors the Capability
 /// command message style, extended with length prefixes for names).
 const MANIFEST_MESSAGE_DOMAIN: &[u8] = b"llmos/artifact/package-manifest/v1";
+
+/// Domain separator for the task-templated manifest message (the additive
+/// `tasks` segment face, ADR-0016 决定 1). The domain is distinct from
+/// [`MANIFEST_MESSAGE_DOMAIN`], so a templated digest can never collide
+/// with a legacy manifest digest: a signature over one message is useless
+/// as a signature over the other, which is exactly the strip/inject
+/// tamper boundary the segment needs.
+const TASK_TEMPLATED_MANIFEST_DOMAIN: &[u8] = b"llmos/artifact/package-manifest-with-tasks/v1";
+
+/// Structural admission bound on one manifest's task-template segment.
+/// Mirrors `nlos-plan`'s `MAX_DECLARED_NODES_PER_REVISION` (a segment
+/// compiles 1:1 into plan nodes); each crate owns its own constant so a
+/// later plan-side retune never silently moves the manifest face.
+pub const MAX_TASK_TEMPLATES_PER_MANIFEST: usize = 100_000;
+
+/// Structural admission bound on one template's dependency edges. Mirrors
+/// `nlos-plan`'s `MAX_DEPENDENCIES_PER_NODE`.
+pub const MAX_TASK_DEPENDENCIES_PER_TEMPLATE: usize = 256;
 
 /// Role of one manifest entry. A minimal §23.2 component-kind subset; the
 /// role is declarative metadata inside the signed digest, not enforced
@@ -108,10 +139,90 @@ pub struct SignedPackage {
     pub signature: Ed25519Signature,
 }
 
+/// What a declared template node executes as. The two-value surface and
+/// its one-byte wire encoding mirror `nlos-plan`'s `PlanNodeKind`
+/// (`AgentRole = 1`, `Executable = 2`); the manifest face keeps its own
+/// enum so the signed package schema stays independent of the plan
+/// authority's type evolution, while the compiler's total mapping keeps
+/// the two faces from drifting apart (`[PLAN-OVERRIDE-001]`).
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[repr(u8)]
+pub enum PackageTaskKind {
+    /// An `AgentRole` binding.
+    AgentRole = 1,
+    /// An executable binding.
+    Executable = 2,
+}
+
+impl PackageTaskKind {
+    #[must_use]
+    pub const fn encode(self) -> u8 {
+        self as u8
+    }
+}
+
+/// One declared task-node template of a package's `tasks` segment
+/// (ADR-0016 决定 1). The fields are exactly the declaration fields of
+/// the plan face (`nlos-plan`'s `PlanNodeDeclaration`): the segment
+/// answers *where a declaration comes from* — signed and immutable with
+/// the package — never *what a declaration is*, which stays owned by the
+/// plan authority (`[PLAN-OVERRIDE-001]`: no second declaration dialect).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PackageTaskTemplate {
+    /// Declaration-local stable identity, unique within the segment. The
+    /// plan authority derives the durable `TaskNodeId` from
+    /// `(plan_id, node_key)`, so the same key addresses the same logical
+    /// node across plan revisions.
+    pub node_key: [u8; 16],
+    pub kind: PackageTaskKind,
+    /// Digest of the bound `AgentRole`/executable identity.
+    pub binding_digest: [u8; 32],
+    /// Dependencies by declaration-local `node_key`, in declared order
+    /// (declaration order participates in proposal equality exactly as a
+    /// direct declaration's order does).
+    pub dependency_keys: Vec<[u8; 16]>,
+    /// Digest of the input-selector list.
+    pub input_selectors_digest: [u8; 32],
+    /// Digest of the output contract.
+    pub output_contract_digest: [u8; 32],
+    /// Digest of the failure/retry/reducer policy.
+    pub policy_digest: [u8; 32],
+    /// Digest of the requested resource upper bound.
+    pub resource_ceiling_digest: [u8; 32],
+}
+
+/// A [`PackageManifest`] carrying the additive `tasks` template segment,
+/// plus the acting principal's Ed25519 signature over
+/// [`package_manifest_with_tasks_message`] — one signature covering the
+/// base manifest and the segment as a single message, so neither can be
+/// stripped or altered without invalidating it. The struct is flat on
+/// purpose: embedding a [`SignedPackage`] would carry a second, legacy
+/// signature whose verification would silently drop the segment (a
+/// downgrade surface).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SignedPackageWithTasks {
+    pub manifest: PackageManifest,
+    pub tasks: Vec<PackageTaskTemplate>,
+    pub signer: PrincipalId,
+    pub signature: Ed25519Signature,
+}
+
 /// Request to verify one signed package against the artifact store heads.
 #[derive(Clone, Copy, Debug)]
 pub struct VerifyPackageRequest<'a> {
     pub signed: &'a SignedPackage,
+    /// Caller-supplied exactly-once key for the verification receipt.
+    pub idempotency_key: IdempotencyKey,
+    /// Caller-supplied verification timestamp (ms since Unix epoch); also
+    /// gates the signing key's validity window in `nlos-identity`.
+    pub verified_at_ms: u64,
+}
+
+/// Request to verify one task-templated signed package against the
+/// artifact store heads.
+#[derive(Clone, Copy, Debug)]
+pub struct VerifyPackageWithTasksRequest<'a> {
+    pub signed: &'a SignedPackageWithTasks,
     /// Caller-supplied exactly-once key for the verification receipt.
     pub idempotency_key: IdempotencyKey,
     /// Caller-supplied verification timestamp (ms since Unix epoch); also
@@ -191,6 +302,107 @@ pub fn package_manifest_message(manifest: &PackageManifest) -> [u8; 32] {
     hasher.finalize().into()
 }
 
+/// Computes the exact domain-separated digest signed by the signer of a
+/// [`SignedPackageWithTasks`].
+///
+/// Framing: the templated domain, the *legacy* [`package_manifest_message`]
+/// digest of the base manifest (the segment chains the already-canonical
+/// base digest, so the base framing exists in exactly one place), then the
+/// task count (u64 BE) and, per template in declared order, the node key,
+/// kind byte, binding digest, a length-prefixed dependency-key list (u64 BE
+/// count, keys in declared order), and the selector/contract/policy/ceiling
+/// digests. No two distinct templated packages can produce the same
+/// message bytes, and no templated digest can collide with a legacy one
+/// (distinct domains).
+#[must_use]
+pub fn package_manifest_with_tasks_message(
+    manifest: &PackageManifest,
+    tasks: &[PackageTaskTemplate],
+) -> [u8; 32] {
+    let base = package_manifest_message(manifest);
+    let mut hasher = Sha256::new();
+    hasher.update(TASK_TEMPLATED_MANIFEST_DOMAIN);
+    hasher.update(base);
+    hasher.update(u64::try_from(tasks.len()).unwrap_or(u64::MAX).to_be_bytes());
+    for template in tasks {
+        hasher.update(template.node_key);
+        hasher.update([template.kind.encode()]);
+        hasher.update(template.binding_digest);
+        hasher.update(
+            u64::try_from(template.dependency_keys.len())
+                .unwrap_or(u64::MAX)
+                .to_be_bytes(),
+        );
+        for dependency in &template.dependency_keys {
+            hasher.update(*dependency);
+        }
+        hasher.update(template.input_selectors_digest);
+        hasher.update(template.output_contract_digest);
+        hasher.update(template.policy_digest);
+        hasher.update(template.resource_ceiling_digest);
+    }
+    hasher.finalize().into()
+}
+
+/// Validates the `tasks` segment shape: non-empty, within the admission
+/// bounds, unique node keys, no self-dependencies, and every dependency
+/// resolving to a key declared in the same segment.
+///
+/// Deliberately *not* checked here: dependency cycles. DAG admission is
+/// the plan authority's single-owner rule (`[PLAN-DAG-001]`); the manifest
+/// face guarantees reference-locality only, and a compiled proposal flows
+/// through the plan authority's own admission like any direct declaration.
+/// This function is the one shape authority shared by
+/// [`ArtifactStore::verify_package_with_tasks`] and the `nlos-application`
+/// template compiler, so the two faces cannot drift apart.
+///
+/// # Errors
+///
+/// Returns [`ArtifactError::PackageManifestInvalid`] for every violation
+/// above.
+pub fn validate_task_templates(tasks: &[PackageTaskTemplate]) -> Result<(), ArtifactError> {
+    if tasks.is_empty() {
+        return Err(ArtifactError::PackageManifestInvalid(
+            "task template segment must declare at least one template",
+        ));
+    }
+    if tasks.len() > MAX_TASK_TEMPLATES_PER_MANIFEST {
+        return Err(ArtifactError::PackageManifestInvalid(
+            "too many task templates",
+        ));
+    }
+    let mut seen = HashSet::with_capacity(tasks.len());
+    for template in tasks {
+        if !seen.insert(template.node_key) {
+            return Err(ArtifactError::PackageManifestInvalid(
+                "duplicate task template node key",
+            ));
+        }
+        if template.dependency_keys.len() > MAX_TASK_DEPENDENCIES_PER_TEMPLATE {
+            return Err(ArtifactError::PackageManifestInvalid(
+                "task template dependency set exceeds the admission bound",
+            ));
+        }
+        for dependency in &template.dependency_keys {
+            if *dependency == template.node_key {
+                return Err(ArtifactError::PackageManifestInvalid(
+                    "task template depends on itself",
+                ));
+            }
+        }
+    }
+    for template in tasks {
+        for dependency in &template.dependency_keys {
+            if !seen.contains(dependency) {
+                return Err(ArtifactError::PackageManifestInvalid(
+                    "task template dependency references an undeclared node key",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 impl ArtifactStore {
     /// Verifies a signed package: manifest shape, the signer's current
     /// identity key binding (`nlos-identity`), and every entry's content
@@ -222,18 +434,79 @@ impl ArtifactStore {
         validate_manifest(&request.signed.manifest)?;
         let manifest_digest =
             ContentDigest::from_bytes(package_manifest_message(&request.signed.manifest));
+        self.verify_signed_package(
+            identity,
+            &PackageVerificationCore {
+                manifest: &request.signed.manifest,
+                manifest_digest,
+                signer: request.signed.signer,
+                signature: request.signed.signature,
+                idempotency_key: request.idempotency_key,
+                verified_at_ms: request.verified_at_ms,
+            },
+        )
+    }
 
+    /// Verifies a task-templated signed package: base manifest shape,
+    /// `tasks` segment shape, the signer's current identity key binding
+    /// (`nlos-identity`) over the combined
+    /// [`package_manifest_with_tasks_message`] digest, and every entry's
+    /// content binding against the artifact store heads. On success
+    /// commits one immutable verification receipt in the same table and
+    /// shape as the legacy face — the receipt's `manifest_digest` is the
+    /// templated digest, which covers the base manifest and the segment
+    /// as one message.
+    ///
+    /// This is the additive face of ADR-0016 决定 1: the legacy
+    /// [`ArtifactStore::verify_package`] path is untouched (old signed
+    /// packages verify byte-identically, G6), and the two domains make a
+    /// signature over one face useless over the other — a segment cannot
+    /// be stripped from or injected into a verified package.
+    ///
+    /// # Errors
+    ///
+    /// Same typed fail-closed set as [`ArtifactStore::verify_package`],
+    /// plus [`ArtifactError::PackageManifestInvalid`] for malformed task
+    /// template segments.
+    pub fn verify_package_with_tasks(
+        &self,
+        identity: &IdentityAuthority,
+        request: VerifyPackageWithTasksRequest<'_>,
+    ) -> Result<PackageVerificationDecision, ArtifactError> {
+        validate_manifest(&request.signed.manifest)?;
+        validate_task_templates(&request.signed.tasks)?;
+        let manifest_digest = ContentDigest::from_bytes(package_manifest_with_tasks_message(
+            &request.signed.manifest,
+            &request.signed.tasks,
+        ));
+        self.verify_signed_package(
+            identity,
+            &PackageVerificationCore {
+                manifest: &request.signed.manifest,
+                manifest_digest,
+                signer: request.signed.signer,
+                signature: request.signed.signature,
+                idempotency_key: request.idempotency_key,
+                verified_at_ms: request.verified_at_ms,
+            },
+        )
+    }
+
+    /// The one verification pipeline both signed-package faces share.
+    /// Only the manifest digest (and the shape validation that precedes
+    /// this call) differs between the faces; content binding, replay, and
+    /// the receipt commit are identical.
+    fn verify_signed_package(
+        &self,
+        identity: &IdentityAuthority,
+        core: &PackageVerificationCore<'_>,
+    ) -> Result<PackageVerificationDecision, ArtifactError> {
         let mut connection = self.lock_connection()?;
         // Replay first, never re-verifying: the durable receipt is the
         // authority (ADR-0010 replay precedent), so a receipt stays
         // replayable even after the signing key is later revoked.
-        if let Some(existing) = load_receipt_by_key(&*connection, request.idempotency_key)? {
-            if !receipt_replays(
-                &existing,
-                manifest_digest,
-                request.signed.signer,
-                request.signed.signature,
-            ) {
+        if let Some(existing) = load_receipt_by_key(&*connection, core.idempotency_key)? {
+            if !receipt_replays(&existing, core.manifest_digest, core.signer, core.signature) {
                 return Err(ArtifactError::IdempotencyConflict);
             }
             return Ok(PackageVerificationDecision::Replayed(existing));
@@ -244,10 +517,10 @@ impl ArtifactStore {
         // typed fail-closed errors here.
         let verified = identity
             .verify_capability_command_signature(VerifyCapabilityCommandSignatureRequest {
-                message_digest: manifest_digest.into_bytes(),
-                principal: request.signed.signer,
-                signature: request.signed.signature,
-                verified_at_ms: request.verified_at_ms,
+                message_digest: core.manifest_digest.into_bytes(),
+                principal: core.signer,
+                signature: core.signature,
+                verified_at_ms: core.verified_at_ms,
             })
             .map_err(package_signature_error)?;
 
@@ -258,18 +531,13 @@ impl ArtifactStore {
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         // A concurrent verification may have committed the same idempotency
         // key while the identity check ran; the durable row wins.
-        if let Some(existing) = load_receipt_by_key(&transaction, request.idempotency_key)? {
-            if !receipt_replays(
-                &existing,
-                manifest_digest,
-                request.signed.signer,
-                request.signed.signature,
-            ) {
+        if let Some(existing) = load_receipt_by_key(&transaction, core.idempotency_key)? {
+            if !receipt_replays(&existing, core.manifest_digest, core.signer, core.signature) {
                 return Err(ArtifactError::IdempotencyConflict);
             }
             return Ok(PackageVerificationDecision::Replayed(existing));
         }
-        for entry in &request.signed.manifest.entries {
+        for entry in &core.manifest.entries {
             let artifact = load_artifact_optional(&transaction, entry.artifact_id)?
                 .ok_or(ArtifactError::ArtifactNotFound(entry.artifact_id))?;
             let actual = if artifact.head_revision == 0 {
@@ -287,19 +555,19 @@ impl ArtifactStore {
         }
 
         let receipt = PackageVerificationReceipt {
-            receipt_id: derive_receipt_id(request.idempotency_key, manifest_digest),
-            manifest_digest,
-            package_id: request.signed.manifest.package_id,
-            package_version: request.signed.manifest.version,
-            entry_count: u64::try_from(request.signed.manifest.entries.len())
+            receipt_id: derive_receipt_id(core.idempotency_key, core.manifest_digest),
+            manifest_digest: core.manifest_digest,
+            package_id: core.manifest.package_id,
+            package_version: core.manifest.version,
+            entry_count: u64::try_from(core.manifest.entries.len())
                 .map_err(|_| ArtifactError::PackageManifestInvalid("too many entries"))?,
             signer: verified.principal_id(),
             key_id: verified.key_id(),
             key_generation: verified.key_generation(),
-            signature: request.signed.signature,
-            verified_at_ms: request.verified_at_ms,
+            signature: core.signature,
+            verified_at_ms: core.verified_at_ms,
         };
-        insert_receipt(&transaction, &receipt, request.idempotency_key)?;
+        insert_receipt(&transaction, &receipt, core.idempotency_key)?;
         transaction.commit()?;
         Ok(PackageVerificationDecision::Verified(receipt))
     }
@@ -340,6 +608,19 @@ fn validate_manifest(manifest: &PackageManifest) -> Result<(), ArtifactError> {
         }
     }
     Ok(())
+}
+
+/// Everything the shared verification pipeline needs about one
+/// signed-package face; only the manifest digest (and the shape
+/// validation preceding the core) differs between the legacy face and
+/// the task-templated face.
+struct PackageVerificationCore<'a> {
+    manifest: &'a PackageManifest,
+    manifest_digest: ContentDigest,
+    signer: PrincipalId,
+    signature: Ed25519Signature,
+    idempotency_key: IdempotencyKey,
+    verified_at_ms: u64,
 }
 
 /// Signed entries must carry the declared signer's valid signature; a
@@ -487,8 +768,9 @@ mod tests {
     use nlos_types::{ArtifactId, PackageId};
 
     use super::{
-        ContentDigest, PackageEntryRole, PackageManifest, PackageManifestEntry,
-        package_manifest_message,
+        ContentDigest, PackageEntryRole, PackageManifest, PackageManifestEntry, PackageTaskKind,
+        PackageTaskTemplate, package_manifest_message, package_manifest_with_tasks_message,
+        validate_task_templates,
     };
 
     fn manifest_with_names(names: &[&str]) -> PackageManifest {
@@ -533,5 +815,123 @@ mod tests {
         let mut version_flipped = manifest_with_names(&["alpha", "beta"]);
         version_flipped.version = 2;
         assert_ne!(package_manifest_message(&version_flipped), digest);
+    }
+
+    fn template(node_key: [u8; 16], kind: PackageTaskKind) -> PackageTaskTemplate {
+        PackageTaskTemplate {
+            node_key,
+            kind,
+            binding_digest: ContentDigest::of_bytes(b"binding").into_bytes(),
+            dependency_keys: vec![],
+            input_selectors_digest: ContentDigest::of_bytes(b"selectors").into_bytes(),
+            output_contract_digest: ContentDigest::of_bytes(b"contract").into_bytes(),
+            policy_digest: ContentDigest::of_bytes(b"policy").into_bytes(),
+            resource_ceiling_digest: ContentDigest::of_bytes(b"ceiling").into_bytes(),
+        }
+    }
+
+    /// The templated message must chain the legacy digest and make every
+    /// declared template field participate: kind, binding, dependency set
+    /// and order, body digests, template count, and template order. The
+    /// templated digest of any segment also differs from the legacy digest
+    /// of the same base manifest (distinct domains, no cross-face reuse).
+    #[test]
+    fn templated_message_framing_is_canonical() {
+        let base = manifest_with_names(&["alpha"]);
+        let standalone = template([0x01; 16], PackageTaskKind::AgentRole);
+        let digest = package_manifest_with_tasks_message(&base, std::slice::from_ref(&standalone));
+        assert_eq!(
+            digest,
+            package_manifest_with_tasks_message(&base, std::slice::from_ref(&standalone)),
+            "deterministic"
+        );
+        assert_ne!(
+            digest,
+            package_manifest_message(&base),
+            "templated and legacy digests live in distinct domains"
+        );
+
+        // Base manifest changes move the templated digest too (chaining).
+        let mut version_flipped = base.clone();
+        version_flipped.version = 2;
+        assert_ne!(
+            package_manifest_with_tasks_message(
+                &version_flipped,
+                std::slice::from_ref(&standalone)
+            ),
+            digest
+        );
+
+        // Kind participates.
+        let kind_flipped = template([0x01; 16], PackageTaskKind::Executable);
+        assert_ne!(
+            package_manifest_with_tasks_message(&base, &[kind_flipped]),
+            digest
+        );
+
+        // Every digest-bound body participates.
+        let mut policy_flipped = standalone.clone();
+        policy_flipped.policy_digest = ContentDigest::of_bytes(b"other-policy").into_bytes();
+        assert_ne!(
+            package_manifest_with_tasks_message(&base, &[policy_flipped]),
+            digest
+        );
+
+        // Node key, dependency set, dependency order, template count, and
+        // template order all participate.
+        let mut with_dependency = standalone.clone();
+        with_dependency.dependency_keys = vec![[0x02; 16]];
+        assert_ne!(
+            package_manifest_with_tasks_message(&base, std::slice::from_ref(&with_dependency)),
+            digest
+        );
+        let mut dependency_reordered = standalone.clone();
+        dependency_reordered.node_key = [0x03; 16];
+        dependency_reordered.dependency_keys = vec![[0x02; 16], [0x04; 16]];
+        let ordered = package_manifest_with_tasks_message(&base, &[dependency_reordered.clone()]);
+        dependency_reordered.dependency_keys = vec![[0x04; 16], [0x02; 16]];
+        assert_ne!(
+            package_manifest_with_tasks_message(&base, &[dependency_reordered]),
+            ordered,
+            "dependency order participates"
+        );
+        let keyed = template([0x05; 16], PackageTaskKind::AgentRole);
+        assert_ne!(
+            package_manifest_with_tasks_message(&base, std::slice::from_ref(&keyed)),
+            digest
+        );
+        assert_ne!(
+            package_manifest_with_tasks_message(&base, &[keyed.clone(), standalone.clone()]),
+            package_manifest_with_tasks_message(&base, &[standalone, keyed]),
+            "template order participates"
+        );
+    }
+
+    #[test]
+    fn task_template_shape_validation_matches_the_declared_rules() {
+        let ok = template([0x01; 16], PackageTaskKind::AgentRole);
+        assert!(validate_task_templates(std::slice::from_ref(&ok)).is_ok());
+        assert!(
+            validate_task_templates(&[]).is_err(),
+            "an empty segment is malformed"
+        );
+        assert!(
+            validate_task_templates(&[ok.clone(), ok.clone()]).is_err(),
+            "duplicate node keys are malformed"
+        );
+
+        let mut self_dependent = template([0x02; 16], PackageTaskKind::AgentRole);
+        self_dependent.dependency_keys = vec![[0x02; 16]];
+        assert!(
+            validate_task_templates(&[self_dependent]).is_err(),
+            "a self-dependency is malformed"
+        );
+
+        let mut dangling = template([0x03; 16], PackageTaskKind::AgentRole);
+        dangling.dependency_keys = vec![[0x9f; 16]];
+        assert!(
+            validate_task_templates(&[dangling]).is_err(),
+            "a dangling dependency is malformed"
+        );
     }
 }

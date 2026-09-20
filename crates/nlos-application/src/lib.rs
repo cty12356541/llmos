@@ -77,8 +77,17 @@
 //! transaction and queries the task authority for live task activity,
 //! failing closed (typed refusal, zero durable state) when that query
 //! cannot be answered.
+//!
+//! Since W28-B (ADR-0016 决定 1, the manifest template half), this crate
+//! also compiles a task-templated package's `tasks` segment into the
+//! `TaskPlan` proposal a caller would declare directly
+//! ([`compile_task_templates`]): proposal data only, no plan store
+//! opened (`[PLAN-OVERRIDE-001]` — the manifest answers where a
+//! declaration comes from, never what it is). Install-time instantiation
+//! wiring is a later Slice K lane.
 
 mod schema;
+mod task_templates;
 
 use std::error::Error;
 use std::fmt;
@@ -94,6 +103,8 @@ use nlos_types::{
 };
 use rusqlite::{Connection, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
+
+pub use task_templates::{TaskTemplateError, compile_task_templates};
 
 /// Domain separator for the authority-derived [`ApplicationId`]: one
 /// application identity per package identity, derived exactly like the
