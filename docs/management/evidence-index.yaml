@@ -826,3 +826,9 @@
   scope: "非内核视角开发→sign→install→run→update→uninstall 样板（examples/sample-app + lifecycle.sh + slice-k 无头全链测试）"
   assurance: H3
   date: "2026-09-21"
+- id: b-task-008c2g-complete-writeset
+  path: docs/evidence/stage-b/b-task-008c2g-complete-writeset.md
+  title: "B-TASK-008C2G-COMPLETE-WRITESET：六域混合写集闭环验收（B3-3）"
+  scope: "Effect/Artifact/Semantic/Resource/Operation/Channel 混合写集 seal→唯一 permit→终结→统一 TaskCommitReceipt + kill-window 矩阵（W30-A）"
+  assurance: H3
+  date: "2026-09-20"
