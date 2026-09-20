@@ -123,6 +123,9 @@ pub enum MockDriverError {
     /// A payload field is outside the bounded contract (identifier width or
     /// a zero generation).
     InvalidRequest,
+    /// The provider RPC boundary is unreachable (degraded provider); no
+    /// durable state was touched.
+    ProviderUnreachable,
     /// The durable operation authority rejected the request.
     Store(StoreError),
 }
@@ -139,6 +142,9 @@ impl fmt::Display for MockDriverError {
             }
             Self::InvalidRequest => {
                 formatter.write_str("mock driver request field is out of contract")
+            }
+            Self::ProviderUnreachable => {
+                formatter.write_str("provider rpc boundary is unreachable")
             }
             Self::Store(error) => {
                 write!(
@@ -157,7 +163,10 @@ impl Error for MockDriverError {
             Self::Codec(error) => Some(error),
             Self::Common(error) => Some(error),
             Self::Store(error) => Some(error),
-            Self::UnknownMethod | Self::AuthorizationDenied(_) | Self::InvalidRequest => None,
+            Self::UnknownMethod
+            | Self::AuthorizationDenied(_)
+            | Self::InvalidRequest
+            | Self::ProviderUnreachable => None,
         }
     }
 }
@@ -183,6 +192,15 @@ impl From<CommonSemanticsError> for MockDriverError {
 impl From<StoreError> for MockDriverError {
     fn from(error: StoreError) -> Self {
         Self::Store(error)
+    }
+}
+
+impl From<crate::provider::ProviderError> for MockDriverError {
+    fn from(error: crate::provider::ProviderError) -> Self {
+        match error {
+            crate::provider::ProviderError::Unreachable => Self::ProviderUnreachable,
+            crate::provider::ProviderError::Store(store) => Self::Store(store),
+        }
     }
 }
 
@@ -218,6 +236,11 @@ impl MockDriverError {
                 SabiErrorCode::Rights,
                 RetryDirective::DoNotRetry,
                 "mock driver authorization denied",
+            ),
+            Self::ProviderUnreachable => (
+                SabiErrorCode::HostLost,
+                RetryDirective::RetrySameIdempotencyKey,
+                "provider rpc boundary is unreachable; retry the same request bytes",
             ),
             Self::Store(error) => store_failure(error),
         };

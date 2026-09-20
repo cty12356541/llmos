@@ -9,11 +9,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use nlos_driver_mock::provider::{
-    CompleteProviderOperation, DispatchProviderOperation, MockProvider, derive_provider_outcome,
+    CompleteProviderOperation, DispatchProviderOperation, MockProvider, ProviderError,
+    derive_provider_outcome,
 };
 use nlos_operation::{CompletionOutcome, OperationHandle, OperationSpec};
 use nlos_runtime::FiberHandle;
-use nlos_store::{RegistrationDecision, SqliteOperationStore, StoreError};
+use nlos_store::{RegistrationDecision, SqliteOperationStore};
 use nlos_types::{
     CallbackId, CancellationScopeId, ExecutionFiberId, Generation, OperationId, ReceiptId,
 };
@@ -250,9 +251,9 @@ fn register_conflicting_spec_reuse_is_rejected() {
     };
     assert!(matches!(
         provider.register(conflicting),
-        Err(StoreError::Operation(
+        Err(ProviderError::Store(nlos_store::StoreError::Operation(
             nlos_operation::OperationError::DuplicateOperation
-        ))
+        )))
     ));
 }
 
@@ -267,8 +268,12 @@ fn complete_before_dispatch_is_rejected() {
             callback_id: callback_id(0x46),
             seed: [0x11; 32],
         }),
-        Err(StoreError::Operation(
-            nlos_operation::OperationError::InvalidState
+        // W30-C: the completion ticket is reconstructed from the durable
+        // dispatch activation, so an undispatched operation fails on the
+        // missing activation proof (still a typed fail-closed rejection
+        // with zero partial state).
+        Err(ProviderError::Store(
+            nlos_store::StoreError::DispatchPreparationNotFound
         ))
     ));
 }
@@ -290,9 +295,9 @@ fn complete_with_forged_callback_is_rejected() {
             callback_id: callback_id(0x5E),
             seed: [0x12; 32],
         }),
-        Err(StoreError::Operation(
+        Err(ProviderError::Store(nlos_store::StoreError::Operation(
             nlos_operation::OperationError::InvalidGeneration
-        ))
+        )))
     ));
 }
 
@@ -320,9 +325,9 @@ fn complete_with_different_seed_after_terminal_is_callback_conflict() {
             callback_id: callback_id(0x48),
             seed: [0x14; 32],
         }),
-        Err(StoreError::Operation(
+        Err(ProviderError::Store(nlos_store::StoreError::Operation(
             nlos_operation::OperationError::CallbackIdentityConflict
-        ))
+        )))
     ));
 }
 
