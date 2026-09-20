@@ -406,7 +406,7 @@ def run(root: Path) -> tuple[list, dict]:
     stats["claims"] = check_claims(claims, root, index_paths, rank_by_path, findings) if claims is not None else {}
     stats["risks"] = check_risks(risks, root, index_paths, findings) if risks is not None else {}
     stats["index"] = len(index) if isinstance(index, list) else 0
-    stats["on_disk"] = len(list((root / EVIDENCE_DIR).glob("*.md"))) if (root / EVIDENCE_DIR).is_dir() else 0
+    stats["on_disk"] = len(list((root / EVIDENCE_DIR).rglob("*.md"))) if (root / EVIDENCE_DIR).is_dir() else 0
     return findings, stats
 
 
