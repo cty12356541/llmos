@@ -1063,4 +1063,68 @@ public static class SabiCodec
         m.Signature = Array.Empty<byte>();
         m.UnknownFields = Array.Empty<byte>();
     }
+
+    // ------------------------------------------------------------------
+    // ResolveServiceRequest
+    // ------------------------------------------------------------------
+
+    public static byte[] Marshal(ResolveServiceRequest m)
+    {
+        var b = new List<byte>();
+        if (m.Schema != null)
+        {
+            PutMessage(b, 1, Marshal(m.Schema));
+        }
+        if (m.Service.Length > 0)
+        {
+            PutString(b, 2, m.Service);
+        }
+        b.AddRange(m.UnknownFields);
+        return b.ToArray();
+    }
+
+    public static void Unmarshal(ResolveServiceRequest m, byte[] buf)
+    {
+        const string msg = "ResolveServiceRequest";
+        Reset(m);
+        int i = 0;
+        while (i < buf.Length)
+        {
+            int tagStart = i;
+            (ulong tag, int tagLen) = Wire.Uvarint(buf, i);
+            i += tagLen;
+            int field = (int)(tag >> 3);
+            var wt = (WireType)(tag & 7);
+            if (field == 0)
+            {
+                throw new WireException(WireError.FieldZero, $"sabi: {msg}: field number 0");
+            }
+            switch (field)
+            {
+                case 1 when wt == WireType.Len:
+                    (byte[] v1, int n1) = Wire.Bytes(buf, i);
+                    m.Schema = new SchemaIdentity();
+                    Unmarshal(m.Schema, v1);
+                    i += n1;
+                    break;
+                case 2 when wt == WireType.Len:
+                    (byte[] v2, int n2) = Wire.Bytes(buf, i);
+                    m.Service = System.Text.Encoding.UTF8.GetString(v2);
+                    i += n2;
+                    break;
+                default:
+                    int nu = Wire.SkipValue(buf, i, wt);
+                    m.UnknownFields = AppendUnknown(m.UnknownFields, buf, tagStart, i, nu);
+                    i += nu;
+                    break;
+            }
+        }
+    }
+
+    private static void Reset(ResolveServiceRequest m)
+    {
+        m.Schema = null;
+        m.Service = "";
+        m.UnknownFields = Array.Empty<byte>();
+    }
 }
