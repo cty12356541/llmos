@@ -50,6 +50,20 @@ jobs:
         with:
           python-version: "3.13"
 
+      # W29-G（B-SDK-LANG-EVAL）：Go/C# golden 探针所需工具链，与本地证据
+      # 记录的版本对齐（Go 1.27.x、.NET SDK 8.0.4xx feature band）。
+      - name: Install Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.27"
+          # sdk/go 零第三方依赖（无 go.sum），显式关闭依赖缓存避免空缓存告警。
+          cache: false
+
+      - name: Install .NET SDK
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: "8.0.x"
+
       - name: Install schema runtimes
         run: |
           npm ci --ignore-scripts
@@ -65,6 +79,22 @@ jobs:
           npm run schema:typecheck
           npm run schema:test:typescript
           python tests/conformance/schema/envelope.py
+
+      # W29-G（B-SDK-LANG-EVAL）：双语言 Envelope 家族 golden 探针与
+      # TS/Python conformance 同门——三平台字节级一致是冻结 wire 的验收门。
+      # GOTOOLCHAIN=local 防止 runner 侧自动下载工具链绕过上面的版本钉扎。
+      - name: Run Go golden probe
+        working-directory: sdk/go
+        env:
+          GOTOOLCHAIN: local
+        run: |
+          go version
+          go test ./... -count=1
+
+      - name: Run C# golden probe
+        run: |
+          dotnet --version
+          dotnet run --project sdk/csharp/llmos-sabi-probe/llmos-sabi-probe.csproj
 
       - name: Test cross-language local IPC clients
         run: |
