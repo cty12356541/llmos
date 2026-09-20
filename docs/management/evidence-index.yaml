@@ -838,7 +838,7 @@
   scope: "订阅/投递/ack 全链经既有 Topic 权威 + wait commit 侧 notify 接线 + 无影子 fanout 负证（W33-D/X-1 前半）"
   assurance: H3
   date: "2026-09-21"
- id: b-search-001-minimal-service
+- id: b-search-001-minimal-service
   path: docs/evidence/stage-b/b-search-001-minimal-service.md
   title: "B-SEARCH-001：Search 最小服务（语义断言只读查询面）"
   scope: "断言 selector 查询 + trust-view 活 join + 派生内存索引（可重建非 canonical）+ 零 semantic 权威写入负证（W33-E/X-1 后半）"

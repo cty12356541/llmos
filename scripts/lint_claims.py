@@ -354,8 +354,8 @@ def check_index(index, root: Path, findings: list):
             rank_by_path[path] = SUPPORT_RANK[e["assurance"]]
         if not isinstance(e["date"], str) or not DATE_RE.match(e["date"]):
             findings.append(("ERROR", where, f"date 必须为 YYYY-MM-DD: {e['date']!r}"))
-    # (d) 目录双向一致
-    on_disk = {f"{EVIDENCE_DIR}/{p.name}" for p in sorted((root / EVIDENCE_DIR).glob("*.md"))} \
+    # (d) 目录双向一致(递归含子目录,如 reviews/)
+    on_disk = {f"{EVIDENCE_DIR}/{p.relative_to(root / EVIDENCE_DIR)}" for p in sorted((root / EVIDENCE_DIR).rglob("*.md"))} \
         if (root / EVIDENCE_DIR).is_dir() else set()
     for missing_in_index in sorted(on_disk - seen_paths):
         findings.append(("ERROR", "evidence-index", f"目录文件未收录: {missing_in_index}"))
