@@ -24,5 +24,6 @@ node_modules/
 # OS
 .DS_Store
 
-# dash 插件运行状态(config/focus/state)
+# dash 插件运行状态(config/focus/state) + agentdash 插件运行时事件目录
 .dash/
+.agentdash/
