@@ -14,12 +14,12 @@ use nlos_ipc::{
 };
 use nlos_schema::sabi::v1::{
     AcknowledgeArtifactRecoveryAlertCommand, AcknowledgeSemanticRecoveryAlertCommand,
-    CallerIdentity, CapabilityHandle, ControlCommand, ControlCommandSource, ControlScope, Envelope,
-    ExchangeRequest, ExchangeResponse, GetSystemControlRequest, LocalEndpoint, LocalTransportKind,
-    NegotiateServiceRequest, ReceiptReference, ResumeSemanticRecoveryCommand, RetryDirective,
-    SabiErrorCode, SabiRequestContext, ServiceCandidate, ServiceVersion,
-    SubmitControlCommandRequest, SystemControlView, control_command, envelope,
-    negotiate_service_response,
+    CallerIdentity, CancelCommand, CapabilityHandle, ControlCommand, ControlCommandSource,
+    ControlScope, Envelope, ExchangeRequest, ExchangeResponse, GetSystemControlRequest,
+    LocalEndpoint, LocalTransportKind, NegotiateServiceRequest, PauseCommand, ReceiptReference,
+    ResumeCommand, ResumeSemanticRecoveryCommand, RetryDirective, SabiErrorCode, SabiFailure,
+    SabiRequestContext, ServiceCandidate, ServiceVersion, SubmitControlCommandRequest,
+    SystemControlView, control_command, envelope, negotiate_service_response,
 };
 use nlos_schema::{
     MethodSemantics, SABI_ENVELOPE_SCHEMA, SABI_SYSTEM_CONTROL_SCHEMA,
@@ -30,8 +30,9 @@ use nlos_schema::{
 };
 use nlos_service_directory::{ServiceRegistration, SnapshotDirectory};
 use nlos_system_control::{
-    GET_METHOD, RecoveryCounter, RecoveryGauge, RecoveryHealthSource, RecoveryMetricsSink,
-    RecoverySystemControl, SUBMIT_METHOD, SYSTEM_CONTROL_SERVICE, SystemControlAuthorizer,
+    GET_METHOD, OperationCommandExecutor, OperationControlRequest, RecoveryCounter, RecoveryGauge,
+    RecoveryHealthSource, RecoveryMetricsSink, RecoverySystemControl, SUBMIT_METHOD,
+    SYSTEM_CONTROL_SERVICE, SystemControlAuthorizer,
 };
 use nlos_task::{
     ArtifactPublicationExpectation, ArtifactRecoveryFailureRequest, ArtifactRecoveryFailureSource,
@@ -732,6 +733,185 @@ fn submit_rejects_forged_issuer_and_mismatched_command_key_without_receipt() {
             .acknowledgement,
         None
     );
+}
+
+const OPERATION_TARGET_ID: [u8; 16] = [0x81; 16];
+const OPERATION_COMMAND_ID: [u8; 16] = [0x61; 16];
+const OPERATION_CAS: u64 = 5;
+
+fn operation_submit_envelope(arm: control_command::Command) -> Envelope {
+    let submit = SubmitControlCommandRequest {
+        schema: Some(system_control_schema_identity()),
+        command: Some(ControlCommand {
+            control_command_id: OPERATION_COMMAND_ID.to_vec(),
+            issuer_principal_id: vec![0x31; 16],
+            source: ControlCommandSource::Cli.into(),
+            scope: ControlScope::Operation.into(),
+            target_id: OPERATION_TARGET_ID.to_vec(),
+            expected_generation_or_revision: OPERATION_CAS,
+            command: Some(arm),
+            reason: "operator pauses the escalated operation".to_owned(),
+        }),
+    };
+    envelope(
+        SUBMIT_METHOD,
+        request_context(OPERATION_COMMAND_ID.to_vec()),
+        encode_submit_control_command_request(&submit).unwrap(),
+    )
+}
+
+/// One request served by [`RecordingOperationExecutor`].
+struct ExecutedOperation {
+    arm: &'static str,
+    target_id: [u8; 16],
+    expected_generation_or_revision: u64,
+    issuer_principal_id: [u8; 16],
+    idempotency_key: [u8; 16],
+    requested_at_ms: i64,
+}
+
+/// Deterministic stub executor: records every request it serves and answers
+/// with a receipt id whose first byte names the executed arm.
+struct RecordingOperationExecutor {
+    requests: std::sync::Mutex<Vec<ExecutedOperation>>,
+}
+
+impl RecordingOperationExecutor {
+    fn receipt(arm_tag: u8) -> ReceiptId {
+        let mut id = OPERATION_TARGET_ID;
+        id[0] = arm_tag;
+        ReceiptId::from_bytes(id)
+    }
+
+    fn record(&self, arm: &'static str, request: &OperationControlRequest) {
+        self.requests.lock().unwrap().push(ExecutedOperation {
+            arm,
+            target_id: request.target_id,
+            expected_generation_or_revision: request.expected_generation_or_revision,
+            issuer_principal_id: request.issuer_principal_id,
+            idempotency_key: request.idempotency_key,
+            requested_at_ms: request.requested_at_ms,
+        });
+    }
+}
+
+impl OperationCommandExecutor for RecordingOperationExecutor {
+    fn pause_operation(&self, request: OperationControlRequest) -> Result<ReceiptId, SabiFailure> {
+        self.record("pause", &request);
+        Ok(Self::receipt(1))
+    }
+
+    fn resume_operation(&self, request: OperationControlRequest) -> Result<ReceiptId, SabiFailure> {
+        self.record("resume", &request);
+        Ok(Self::receipt(2))
+    }
+
+    fn cancel_operation(&self, request: OperationControlRequest) -> Result<ReceiptId, SabiFailure> {
+        self.record("cancel", &request);
+        Err(SabiFailure {
+            code: SabiErrorCode::Conflict.into(),
+            retry: RetryDirective::DoNotRetry.into(),
+            safe_message: "stub executor rejects cancels".to_owned(),
+        })
+    }
+}
+
+#[test]
+fn operation_commands_refuse_fail_closed_without_an_executor() {
+    let database = TestDatabase::new();
+    let authority = database.open();
+    let plan_id = create_escalated_plan(&authority);
+    let health = health(plan_id);
+    let control = RecoverySystemControl::new(&authority, &health, &CapabilityPolicy);
+    for arm in [
+        control_command::Command::PauseOperation(PauseCommand {}),
+        control_command::Command::ResumeOperation(ResumeCommand {}),
+        control_command::Command::CancelOperation(CancelCommand {}),
+    ] {
+        let response = control.handle_for_ipc(&operation_submit_envelope(arm), 10, 6_000);
+        let Some(envelope::CommonContext::ResponseContext(context)) =
+            response.common_context.as_ref()
+        else {
+            panic!("expected response context");
+        };
+        let failure = context.failure.as_ref().unwrap();
+        assert_eq!(failure.code, i32::from(SabiErrorCode::NotFound));
+        assert_eq!(failure.retry, i32::from(RetryDirective::DoNotRetry));
+        assert_eq!(
+            failure.safe_message,
+            "operation control execution backend is not wired"
+        );
+        assert!(context.receipts.is_empty());
+    }
+}
+
+#[test]
+fn operation_commands_route_to_the_wired_executor_with_typed_receipts() {
+    let database = TestDatabase::new();
+    let authority = database.open();
+    let plan_id = create_escalated_plan(&authority);
+    let health = health(plan_id);
+    let executor = RecordingOperationExecutor {
+        requests: std::sync::Mutex::new(Vec::new()),
+    };
+    let control = RecoverySystemControl::new(&authority, &health, &CapabilityPolicy)
+        .with_operation_executor(&executor);
+
+    let pause = control.handle_for_ipc(
+        &operation_submit_envelope(control_command::Command::PauseOperation(PauseCommand {})),
+        10,
+        6_000,
+    );
+    let result = decode_control_command_result(&pause.payload).unwrap();
+    assert_eq!(result.control_command_id, OPERATION_COMMAND_ID.to_vec());
+    assert_eq!(
+        result.receipt.unwrap().receipt_id,
+        RecordingOperationExecutor::receipt(1).into_bytes().to_vec()
+    );
+    validate_sabi_response_context(&pause, MethodSemantics::MUTATION).unwrap();
+
+    let resume = control.handle_for_ipc(
+        &operation_submit_envelope(control_command::Command::ResumeOperation(ResumeCommand {})),
+        10,
+        6_000,
+    );
+    let result = decode_control_command_result(&resume.payload).unwrap();
+    assert_eq!(
+        result.receipt.unwrap().receipt_id,
+        RecordingOperationExecutor::receipt(2).into_bytes().to_vec()
+    );
+
+    // An executor rejection crosses as the bounded failure it produced —
+    // class, retry directive, and safe message forwarded verbatim, with no
+    // receipt evidence.
+    let cancel = control.handle_for_ipc(
+        &operation_submit_envelope(control_command::Command::CancelOperation(CancelCommand {})),
+        10,
+        6_000,
+    );
+    let Some(envelope::CommonContext::ResponseContext(context)) = cancel.common_context.as_ref()
+    else {
+        panic!("expected response context");
+    };
+    let failure = context.failure.as_ref().unwrap();
+    assert_eq!(failure.code, i32::from(SabiErrorCode::Conflict));
+    assert_eq!(failure.retry, i32::from(RetryDirective::DoNotRetry));
+    assert_eq!(failure.safe_message, "stub executor rejects cancels");
+    assert!(cancel.payload.is_empty());
+    assert!(context.receipts.is_empty());
+
+    let requests = executor.requests.lock().unwrap();
+    assert_eq!(
+        requests.iter().map(|entry| entry.arm).collect::<Vec<_>>(),
+        vec!["pause", "resume", "cancel"]
+    );
+    for entry in requests.iter() {
+        assert_eq!(entry.target_id, OPERATION_TARGET_ID);
+        assert_eq!(entry.expected_generation_or_revision, OPERATION_CAS);
+        assert_eq!(entry.issuer_principal_id, [0x31; 16]);
+        assert_eq!(entry.idempotency_key, OPERATION_COMMAND_ID);
+        assert_eq!(entry.requested_at_ms, 6_000);
+    }
 }
 
 #[test]

@@ -90,10 +90,11 @@ const SABI_OPERATION_CONTROL_V1: SchemaDescriptor = SchemaDescriptor {
 const SABI_SYSTEM_CONTROL_V1: SchemaDescriptor = SchemaDescriptor {
     name: SABI_SYSTEM_CONTROL_SCHEMA,
     major: 1,
-    // Minor 1 records the W27-A additive semantic-domain extension (new
-    // view value, failure-authority value, snapshot/command message types,
-    // and oneof arms) under the ADR-0014 freeze rules.
-    minor: 1,
+    // Minor 1 recorded the W27-A additive semantic-domain extension; minor 2
+    // records the W28-D additive operation-level command arms
+    // (PauseCommand/ResumeCommand/CancelCommand oneof entries 11..=13) under
+    // the ADR-0014 freeze rules. The entry stays frozen.
+    minor: 2,
     supported_critical_extensions: &[],
     frozen: true,
 };
@@ -718,7 +719,7 @@ pub fn system_control_schema_identity() -> sabi::v1::SchemaIdentity {
     sabi::v1::SchemaIdentity {
         name: SABI_SYSTEM_CONTROL_SCHEMA.to_owned(),
         major: 1,
-        minor: 1,
+        minor: 2,
         critical_extension_ids: Vec::new(),
         non_critical_extension_ids: Vec::new(),
     }

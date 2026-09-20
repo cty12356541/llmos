@@ -33,7 +33,7 @@ use nlos_task::{
     SemanticRecoveryResumeRequest, SqliteTaskAuthority, TaskStoreError,
     semantic_recovery_resume_reference,
 };
-use nlos_types::{IdempotencyKey, PrincipalId};
+use nlos_types::{IdempotencyKey, PrincipalId, ReceiptId};
 
 pub const SYSTEM_CONTROL_SERVICE: &str = "system_control";
 pub const GET_METHOD: &str = "get";
@@ -81,6 +81,15 @@ pub mod openmetrics;
 #[cfg(all(unix, feature = "cli"))]
 pub mod auth;
 
+/// Discriminates the operation-level arms routed through
+/// [`RecoverySystemControl::execute_operation_control`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OperationArm {
+    Pause,
+    Resume,
+    Cancel,
+}
+
 /// Policy boundary used by every `SystemControl` entry point. Implementations
 /// are expected to validate the supplied capability handles against their
 /// authority; mere handle presence is not authorization.
@@ -110,6 +119,78 @@ pub trait SystemControlAuthorizer {
 
 pub trait RecoveryHealthSource {
     fn recovery_health(&self) -> RecoveryWorkerHealth;
+}
+
+/// One operation-level control request as handed to the
+/// [`OperationCommandExecutor`] seam: the 16-byte operational target, its
+/// explicit CAS expectation, the issuing principal, the §25.3 idempotency
+/// identity, and the handler's wall-clock reading.
+pub struct OperationControlRequest {
+    pub target_id: [u8; 16],
+    pub expected_generation_or_revision: u64,
+    pub issuer_principal_id: [u8; 16],
+    pub idempotency_key: [u8; 16],
+    pub requested_at_ms: i64,
+}
+
+/// Pluggable execution seam for the operation-level `ControlCommand` arms
+/// (`pause_operation`/`resume_operation`/`cancel_operation`, W28-D). The
+/// command surface — wire arms, envelope compilation, authorization,
+/// idempotency binding, typed receipts — is owned by the
+/// `SystemControl.submit` handler; implementations of this trait own the
+/// actual state transitions (process suspend/resume/kill wiring lands in the
+/// W29-D lane). The default [`UnwiredOperationCommandExecutor`] refuses
+/// fail-closed, mirroring the unwired inspector stubs. `Send + Sync` is part
+/// of the contract: handlers are held across async IPC service loops.
+pub trait OperationCommandExecutor: Send + Sync {
+    /// Pauses the operational target under the explicit CAS expectation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a bounded, crossing-safe [`SabiFailure`] when the backing
+    /// executor rejects the transition (absent target, CAS mismatch, state
+    /// mismatch, or an unwired backend).
+    fn pause_operation(&self, request: OperationControlRequest) -> Result<ReceiptId, SabiFailure>;
+    /// Resumes the operational target; same contract as
+    /// [`Self::pause_operation`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a bounded [`SabiFailure`] for a rejected transition.
+    fn resume_operation(&self, request: OperationControlRequest) -> Result<ReceiptId, SabiFailure>;
+    /// Cancels the operational target; same contract as
+    /// [`Self::pause_operation`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a bounded [`SabiFailure`] for a rejected transition.
+    fn cancel_operation(&self, request: OperationControlRequest) -> Result<ReceiptId, SabiFailure>;
+}
+
+/// Default stub used when no operation-level execution backend is wired.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct UnwiredOperationCommandExecutor;
+
+impl OperationCommandExecutor for UnwiredOperationCommandExecutor {
+    fn pause_operation(&self, _: OperationControlRequest) -> Result<ReceiptId, SabiFailure> {
+        Err(unwired_operation_failure())
+    }
+
+    fn resume_operation(&self, _: OperationControlRequest) -> Result<ReceiptId, SabiFailure> {
+        Err(unwired_operation_failure())
+    }
+
+    fn cancel_operation(&self, _: OperationControlRequest) -> Result<ReceiptId, SabiFailure> {
+        Err(unwired_operation_failure())
+    }
+}
+
+fn unwired_operation_failure() -> SabiFailure {
+    SabiFailure {
+        code: SabiErrorCode::NotFound.into(),
+        retry: RetryDirective::DoNotRetry.into(),
+        safe_message: "operation control execution backend is not wired".to_owned(),
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -238,6 +319,13 @@ pub enum SystemControlError {
     /// ADR-0011 authenticated exchange (fail-closed; no time is guessed).
     /// Never produced by the local trust-domain paths.
     ClockWallUnavailable,
+    /// No [`OperationCommandExecutor`] is wired, so an operation-level
+    /// command arm refuses fail-closed (W29-D wires the real executors).
+    OperationControlExecutionUnwired,
+    /// The wired [`OperationCommandExecutor`] rejected the transition with
+    /// an already-bounded, crossing-safe failure; [`Self::to_sabi_failure`]
+    /// forwards it verbatim.
+    OperationExecution(SabiFailure),
 }
 
 impl fmt::Display for SystemControlError {
@@ -264,6 +352,14 @@ impl fmt::Display for SystemControlError {
             Self::ClockWallUnavailable => {
                 formatter.write_str("authority clock refused to serve a wall reading")
             }
+            Self::OperationControlExecutionUnwired => {
+                formatter.write_str("operation control execution backend is not wired")
+            }
+            Self::OperationExecution(failure) => write!(
+                formatter,
+                "operation control execution rejected the command: {}",
+                failure.safe_message
+            ),
         }
     }
 }
@@ -280,7 +376,9 @@ impl Error for SystemControlError {
             | Self::CommandIdempotencyMismatch
             | Self::InvalidRecoveryAlert
             | Self::UnboundedCorrelation
-            | Self::ClockWallUnavailable => None,
+            | Self::ClockWallUnavailable
+            | Self::OperationControlExecutionUnwired
+            | Self::OperationExecution(_) => None,
         }
     }
 }
@@ -325,6 +423,8 @@ impl SystemControlError {
     /// | SQLite storage failure | `DURABILITY` | `RETRY_SAME_IDEMPOTENCY_KEY` |
     /// | unavailable durability/corrupt local state | `DURABILITY`/`DRIVER` | `DO_NOT_RETRY` |
     /// | unknown method | `NOT_SUPPORTED` | `DO_NOT_RETRY` |
+    /// | operation executor unwired | `NOT_FOUND` | `DO_NOT_RETRY` |
+    /// | executor rejection | bounded passthrough | bounded passthrough |
     #[must_use]
     pub fn to_sabi_failure(&self) -> SabiFailure {
         let (code, retry, safe_message) = match self {
@@ -373,6 +473,16 @@ impl SystemControlError {
                 RetryDirective::DoNotRetry,
                 "authority clock refused a wall reading; do not retry",
             ),
+            Self::OperationControlExecutionUnwired => (
+                SabiErrorCode::NotFound,
+                RetryDirective::DoNotRetry,
+                "operation control execution backend is not wired",
+            ),
+            // The executor already produced a bounded, crossing-safe
+            // failure; forward its class, retry directive, and message.
+            Self::OperationExecution(failure) => {
+                return failure.clone();
+            }
             Self::Task(error) => task_store_failure(error),
         };
         SabiFailure {
@@ -513,6 +623,7 @@ pub struct RecoverySystemControl<'a, H, A> {
     tasks: &'a SqliteTaskAuthority,
     health: &'a H,
     authorizer: &'a A,
+    operation_executor: Option<&'a dyn OperationCommandExecutor>,
 }
 
 impl<'a, H, A> RecoverySystemControl<'a, H, A>
@@ -526,7 +637,20 @@ where
             tasks,
             health,
             authorizer,
+            operation_executor: None,
         }
+    }
+
+    /// Wires the pluggable operation-level execution seam
+    /// ([`OperationCommandExecutor`]). Without it the pause/resume/cancel
+    /// arms refuse fail-closed with a typed `NOT_FOUND` failure.
+    #[must_use]
+    pub const fn with_operation_executor(
+        mut self,
+        executor: &'a dyn OperationCommandExecutor,
+    ) -> Self {
+        self.operation_executor = Some(executor);
+        self
     }
 
     /// Handles one validated-envelope-shaped request without introducing a
@@ -668,6 +792,36 @@ where
                 .map_err(RecoveryMetricsExportError::Sink)?;
         }
         Ok(())
+    }
+
+    /// Routes one operation-level arm to the pluggable executor seam. The
+    /// authorization, caller/issuer binding, and idempotency checks have
+    /// already run on the shared submit path; this half only owns the state
+    /// transition and its receipt id.
+    fn execute_operation_control(
+        &self,
+        arm: OperationArm,
+        command: &sabi::v1::ControlCommand,
+        caller: &nlos_schema::sabi::v1::CallerIdentity,
+        context: &SabiRequestContext,
+        now_wall_ms: i64,
+    ) -> Result<ReceiptId, SystemControlError> {
+        let Some(executor) = self.operation_executor else {
+            return Err(SystemControlError::OperationControlExecutionUnwired);
+        };
+        let request = OperationControlRequest {
+            target_id: fixed16(&command.target_id)?,
+            expected_generation_or_revision: command.expected_generation_or_revision,
+            issuer_principal_id: fixed16(&caller.principal_id)?,
+            idempotency_key: fixed16(&context.idempotency_key)?,
+            requested_at_ms: now_wall_ms,
+        };
+        let execution = match arm {
+            OperationArm::Pause => executor.pause_operation(request),
+            OperationArm::Resume => executor.resume_operation(request),
+            OperationArm::Cancel => executor.cancel_operation(request),
+        };
+        execution.map_err(SystemControlError::OperationExecution)
     }
 
     fn handle_get(
@@ -860,6 +1014,30 @@ where
                         })?;
                 semantic_recovery_resume_reference(resumed.plan_id, resumed.total_failures)
             }
+            Some(sabi::v1::control_command::Command::PauseOperation(_)) => self
+                .execute_operation_control(
+                    OperationArm::Pause,
+                    command,
+                    caller,
+                    context,
+                    now_wall_ms,
+                )?,
+            Some(sabi::v1::control_command::Command::ResumeOperation(_)) => self
+                .execute_operation_control(
+                    OperationArm::Resume,
+                    command,
+                    caller,
+                    context,
+                    now_wall_ms,
+                )?,
+            Some(sabi::v1::control_command::Command::CancelOperation(_)) => self
+                .execute_operation_control(
+                    OperationArm::Cancel,
+                    command,
+                    caller,
+                    context,
+                    now_wall_ms,
+                )?,
             // The shared decoder already rejects a payload without a known
             // command arm, so an un-routed command cannot reach this point.
             None => return Err(CompatibilityError::MissingSystemControlCommand.into()),

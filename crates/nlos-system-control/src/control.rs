@@ -23,11 +23,11 @@ use std::fmt;
 use nlos_commit_coordinator::RecoveryWorkerState;
 use nlos_schema::sabi::v1::{
     AcknowledgeArtifactRecoveryAlertCommand, AcknowledgeSemanticRecoveryAlertCommand,
-    ArtifactRecoveryMetrics, ArtifactRecoveryOperationsSnapshot, CallerIdentity, CapabilityHandle,
-    ControlCommandSource, ControlScope, Envelope, GetSystemControlRequest, ReceiptReference,
-    ResumeSemanticRecoveryCommand, SabiErrorCode, SabiFailure, SabiRequestContext,
-    SemanticRecoveryMetrics, SemanticRecoveryOperationsSnapshot, SubmitControlCommandRequest,
-    SystemControlView, control_command, envelope,
+    ArtifactRecoveryMetrics, ArtifactRecoveryOperationsSnapshot, CallerIdentity, CancelCommand,
+    CapabilityHandle, ControlCommandSource, ControlScope, Envelope, GetSystemControlRequest,
+    PauseCommand, ReceiptReference, ResumeCommand, ResumeSemanticRecoveryCommand, SabiErrorCode,
+    SabiFailure, SabiRequestContext, SemanticRecoveryMetrics, SemanticRecoveryOperationsSnapshot,
+    SubmitControlCommandRequest, SystemControlView, control_command, envelope,
 };
 use nlos_schema::{
     CompatibilityError, REQUEST_ID_BYTES, SABI_ENVELOPE_SCHEMA,
@@ -130,6 +130,34 @@ pub enum ControlCommand {
         expected_total_failures: u64,
         reason: String,
     },
+    /// Pause one operational target under an explicit CAS expectation
+    /// (`expected_generation_or_revision`). B5-1 first half (W28-D): the
+    /// command surface — envelope compilation, authorization, idempotency
+    /// binding, typed receipt — is complete; execution routes to the
+    /// pluggable [`crate::OperationCommandExecutor`] seam, whose default
+    /// stub refuses fail-closed until the W29-D lane wires real executors.
+    PauseOperation {
+        control_command_id: [u8; 16],
+        target_id: [u8; 16],
+        expected_generation_or_revision: u64,
+        reason: String,
+    },
+    /// Resume one paused operational target; same seam contract as
+    /// [`Self::PauseOperation`].
+    ResumeOperation {
+        control_command_id: [u8; 16],
+        target_id: [u8; 16],
+        expected_generation_or_revision: u64,
+        reason: String,
+    },
+    /// Cancel one operational target; same seam contract as
+    /// [`Self::PauseOperation`].
+    CancelOperation {
+        control_command_id: [u8; 16],
+        target_id: [u8; 16],
+        expected_generation_or_revision: u64,
+        reason: String,
+    },
 }
 
 impl ControlCommand {
@@ -153,6 +181,15 @@ impl ControlCommand {
             }
             | Self::ResumeSemanticRecovery {
                 control_command_id, ..
+            }
+            | Self::PauseOperation {
+                control_command_id, ..
+            }
+            | Self::ResumeOperation {
+                control_command_id, ..
+            }
+            | Self::CancelOperation {
+                control_command_id, ..
             } => *control_command_id,
         }
     }
@@ -173,6 +210,15 @@ impl ControlCommand {
                 control_command_id, ..
             }
             | Self::ResumeSemanticRecovery {
+                control_command_id, ..
+            }
+            | Self::PauseOperation {
+                control_command_id, ..
+            }
+            | Self::ResumeOperation {
+                control_command_id, ..
+            }
+            | Self::CancelOperation {
                 control_command_id, ..
             } => *control_command_id,
         }
@@ -366,6 +412,14 @@ pub enum ControlOutcome {
     /// Semantic resume accepted: the ledger row returned to `Retrying`.
     /// `receipt_id` names the deterministic resume outcome.
     Resumed { receipt_id: Vec<u8> },
+    /// Operation-level pause accepted by the wired
+    /// [`crate::OperationCommandExecutor`]; `receipt_id` names the executed
+    /// pause transition.
+    OperationPaused { receipt_id: Vec<u8> },
+    /// Operation-level resume accepted by the executor seam.
+    OperationResumed { receipt_id: Vec<u8> },
+    /// Operation-level cancel accepted by the executor seam.
+    OperationCancelled { receipt_id: Vec<u8> },
 }
 
 /// Typed receipt for one dispatched [`ControlCommand`] (§24.3 posture in
@@ -470,37 +524,27 @@ pub fn build_request_envelope(command: &ControlCommand) -> Result<Envelope, Cont
                 alert_limit: INSPECT_ALERT_LIMIT,
             })?,
         ),
-        ControlCommand::AcknowledgeRecoveryAlert {
-            control_command_id,
-            plan_id,
-            expected_total_failures,
-            reason,
-        }
-        | ControlCommand::AcknowledgeSemanticRecoveryAlert {
-            control_command_id,
-            plan_id,
-            expected_total_failures,
-            reason,
-        }
-        | ControlCommand::ResumeSemanticRecovery {
-            control_command_id,
-            plan_id,
-            expected_total_failures,
-            reason,
-        } => {
+        ControlCommand::AcknowledgeRecoveryAlert { .. }
+        | ControlCommand::AcknowledgeSemanticRecoveryAlert { .. }
+        | ControlCommand::ResumeSemanticRecovery { .. }
+        | ControlCommand::PauseOperation { .. }
+        | ControlCommand::ResumeOperation { .. }
+        | ControlCommand::CancelOperation { .. } => {
+            let reason = mutation_reason(command);
             if reason.is_empty() {
                 return Err(ControlError::InvalidCommand(
-                    "recovery mutations require a non-empty bounded reason",
+                    "control mutations require a non-empty bounded reason",
                 ));
             }
+            let (target_id, cas) = mutation_address(command);
             (
                 SUBMIT_METHOD,
                 encode_submit_control_command_request(&SubmitControlCommandRequest {
                     schema: Some(system_control_schema_identity()),
                     command: Some(sabi_wire_command(
-                        *control_command_id,
-                        *plan_id,
-                        *expected_total_failures,
+                        command.control_command_id(),
+                        target_id,
+                        cas,
                         reason,
                         command,
                     )),
@@ -526,10 +570,61 @@ pub fn build_request_envelope(command: &ControlCommand) -> Result<Envelope, Cont
     })
 }
 
+/// Addressing and CAS expectation of one mutation variant: the operational
+/// target id and the compare-and-swap value the command must carry on the
+/// wire. Read-only variants never reach the submit arm that calls this.
+fn mutation_address(command: &ControlCommand) -> ([u8; 16], u64) {
+    match command {
+        ControlCommand::PauseOperation {
+            target_id,
+            expected_generation_or_revision,
+            ..
+        }
+        | ControlCommand::ResumeOperation {
+            target_id,
+            expected_generation_or_revision,
+            ..
+        }
+        | ControlCommand::CancelOperation {
+            target_id,
+            expected_generation_or_revision,
+            ..
+        } => (*target_id, *expected_generation_or_revision),
+        ControlCommand::AcknowledgeRecoveryAlert {
+            plan_id,
+            expected_total_failures,
+            ..
+        }
+        | ControlCommand::AcknowledgeSemanticRecoveryAlert {
+            plan_id,
+            expected_total_failures,
+            ..
+        }
+        | ControlCommand::ResumeSemanticRecovery {
+            plan_id,
+            expected_total_failures,
+            ..
+        } => (*plan_id, *expected_total_failures),
+        _ => unreachable!("read-only variants never reach the submit arm"),
+    }
+}
+
+fn mutation_reason(command: &ControlCommand) -> &str {
+    match command {
+        ControlCommand::AcknowledgeRecoveryAlert { reason, .. }
+        | ControlCommand::AcknowledgeSemanticRecoveryAlert { reason, .. }
+        | ControlCommand::ResumeSemanticRecovery { reason, .. }
+        | ControlCommand::PauseOperation { reason, .. }
+        | ControlCommand::ResumeOperation { reason, .. }
+        | ControlCommand::CancelOperation { reason, .. } => reason,
+        _ => unreachable!("read-only variants never reach the submit arm"),
+    }
+}
+
 fn sabi_wire_command(
     control_command_id: [u8; 16],
-    plan_id: [u8; 16],
-    expected_total_failures: u64,
+    target_id: [u8; 16],
+    cas: u64,
     reason: &str,
     command: &ControlCommand,
 ) -> nlos_schema::sabi::v1::ControlCommand {
@@ -542,6 +637,15 @@ fn sabi_wire_command(
         ControlCommand::ResumeSemanticRecovery { .. } => {
             control_command::Command::ResumeSemanticRecovery(ResumeSemanticRecoveryCommand {})
         }
+        ControlCommand::PauseOperation { .. } => {
+            control_command::Command::PauseOperation(PauseCommand {})
+        }
+        ControlCommand::ResumeOperation { .. } => {
+            control_command::Command::ResumeOperation(ResumeCommand {})
+        }
+        ControlCommand::CancelOperation { .. } => {
+            control_command::Command::CancelOperation(CancelCommand {})
+        }
         // The remaining mutation arm is the artifact acknowledgement; the
         // read-only variants never reach this helper.
         _ => control_command::Command::AcknowledgeArtifactRecoveryAlert(
@@ -553,8 +657,8 @@ fn sabi_wire_command(
         issuer_principal_id: LOCAL_ISSUER_PRINCIPAL_ID.to_vec(),
         source: ControlCommandSource::Cli.into(),
         scope: ControlScope::Operation.into(),
-        target_id: plan_id.to_vec(),
-        expected_generation_or_revision: expected_total_failures,
+        target_id: target_id.to_vec(),
+        expected_generation_or_revision: cas,
         command: Some(wire_command),
         reason: reason.to_owned(),
     }
@@ -569,6 +673,15 @@ fn request_context(command: &ControlCommand) -> SabiRequestContext {
             control_command_id, ..
         }
         | ControlCommand::ResumeSemanticRecovery {
+            control_command_id, ..
+        }
+        | ControlCommand::PauseOperation {
+            control_command_id, ..
+        }
+        | ControlCommand::ResumeOperation {
+            control_command_id, ..
+        }
+        | ControlCommand::CancelOperation {
             control_command_id, ..
         } => control_command_id.to_vec(),
         _ => Vec::new(),
@@ -653,6 +766,26 @@ pub async fn dispatch_over_socket(
         .await
         .map_err(ControlError::Ipc)?;
     ControlReceipt::compose(command, response.envelope(), process, resource)
+}
+
+/// Projects one completed mutation response into its authoritative receipt
+/// id, fail-closed on a foreign command echo or missing receipt reference.
+fn decoded_result_receipt(
+    command: &ControlCommand,
+    response: &Envelope,
+) -> Result<Vec<u8>, ControlError> {
+    let result = decode_control_command_result(&response.payload)?;
+    if result.control_command_id != command.control_command_id().to_vec() {
+        return Err(ControlError::UnexpectedResponse(
+            "result echoed a foreign control command id",
+        ));
+    }
+    result
+        .receipt
+        .map(|ReceiptReference { receipt_id }| receipt_id)
+        .ok_or(ControlError::UnexpectedResponse(
+            "completed command carried no receipt reference",
+        ))
 }
 
 fn decoded_snapshot(
@@ -959,35 +1092,22 @@ impl ControlReceipt {
                 }
                 ControlCommand::AcknowledgeRecoveryAlert { .. }
                 | ControlCommand::AcknowledgeSemanticRecoveryAlert { .. } => {
-                    let result = decode_control_command_result(&response.payload)?;
-                    if result.control_command_id != command.control_command_id().to_vec() {
-                        return Err(ControlError::UnexpectedResponse(
-                            "result echoed a foreign control command id",
-                        ));
-                    }
-                    let receipt_id = result
-                        .receipt
-                        .map(|ReceiptReference { receipt_id }| receipt_id)
-                        .ok_or(ControlError::UnexpectedResponse(
-                            "completed command carried no receipt reference",
-                        ))?;
-                    Ok(ControlOutcome::Acknowledged { receipt_id })
+                    Ok(ControlOutcome::Acknowledged {
+                        receipt_id: decoded_result_receipt(command, response)?,
+                    })
                 }
-                ControlCommand::ResumeSemanticRecovery { .. } => {
-                    let result = decode_control_command_result(&response.payload)?;
-                    if result.control_command_id != command.control_command_id().to_vec() {
-                        return Err(ControlError::UnexpectedResponse(
-                            "result echoed a foreign control command id",
-                        ));
-                    }
-                    let receipt_id = result
-                        .receipt
-                        .map(|ReceiptReference { receipt_id }| receipt_id)
-                        .ok_or(ControlError::UnexpectedResponse(
-                            "completed command carried no receipt reference",
-                        ))?;
-                    Ok(ControlOutcome::Resumed { receipt_id })
-                }
+                ControlCommand::ResumeSemanticRecovery { .. } => Ok(ControlOutcome::Resumed {
+                    receipt_id: decoded_result_receipt(command, response)?,
+                }),
+                ControlCommand::PauseOperation { .. } => Ok(ControlOutcome::OperationPaused {
+                    receipt_id: decoded_result_receipt(command, response)?,
+                }),
+                ControlCommand::ResumeOperation { .. } => Ok(ControlOutcome::OperationResumed {
+                    receipt_id: decoded_result_receipt(command, response)?,
+                }),
+                ControlCommand::CancelOperation { .. } => Ok(ControlOutcome::OperationCancelled {
+                    receipt_id: decoded_result_receipt(command, response)?,
+                }),
             }
         };
         Ok(Self {
@@ -1014,31 +1134,7 @@ impl ControlReceipt {
                 push_bytes(&mut bytes, failure.safe_message.as_bytes());
             }
             Ok(ControlOutcome::Inspected(inspection)) => {
-                bytes.push(1);
-                bytes.extend_from_slice(
-                    &encode_worker_lifecycle(inspection.worker_state).to_le_bytes(),
-                );
-                bytes.extend_from_slice(&inspection.completed_cycles.to_le_bytes());
-                bytes.extend_from_slice(&inspection.durable_retrying.to_le_bytes());
-                bytes.extend_from_slice(&inspection.durable_escalated.to_le_bytes());
-                bytes.extend_from_slice(&inspection.durable_unacknowledged_escalated.to_le_bytes());
-                bytes.extend_from_slice(&inspection.durable_resolved.to_le_bytes());
-                bytes.extend_from_slice(
-                    &u32::try_from(inspection.alerts.len())
-                        .unwrap_or(u32::MAX)
-                        .to_le_bytes(),
-                );
-                for alert in &inspection.alerts {
-                    push_bytes(&mut bytes, &alert.plan_id);
-                    bytes.extend_from_slice(&alert.total_failures.to_le_bytes());
-                    match alert.acknowledged_receipt_id.as_ref() {
-                        Some(receipt_id) => {
-                            bytes.push(1);
-                            push_bytes(&mut bytes, receipt_id);
-                        }
-                        None => bytes.push(0),
-                    }
-                }
+                push_artifact_inspection(&mut bytes, inspection);
             }
             Ok(ControlOutcome::MetricsExported(export)) => {
                 bytes.push(3);
@@ -1089,15 +1185,55 @@ impl ControlReceipt {
                 bytes.extend_from_slice(&inspection.consumption_count.to_le_bytes());
             }
             Ok(ControlOutcome::Acknowledged { receipt_id }) => {
-                bytes.push(2);
-                push_bytes(&mut bytes, receipt_id);
+                push_tagged_receipt(&mut bytes, 2, receipt_id);
             }
             Ok(ControlOutcome::Resumed { receipt_id }) => {
-                bytes.push(7);
-                push_bytes(&mut bytes, receipt_id);
+                push_tagged_receipt(&mut bytes, 7, receipt_id);
+            }
+            Ok(ControlOutcome::OperationPaused { receipt_id }) => {
+                push_tagged_receipt(&mut bytes, 8, receipt_id);
+            }
+            Ok(ControlOutcome::OperationResumed { receipt_id }) => {
+                push_tagged_receipt(&mut bytes, 9, receipt_id);
+            }
+            Ok(ControlOutcome::OperationCancelled { receipt_id }) => {
+                push_tagged_receipt(&mut bytes, 10, receipt_id);
             }
         }
         bytes
+    }
+}
+
+/// Appends one outcome discriminator byte and the length-prefixed receipt
+/// id — the shared shape of every receipt-only outcome.
+fn push_tagged_receipt(bytes: &mut Vec<u8>, tag: u8, receipt_id: &[u8]) {
+    bytes.push(tag);
+    push_bytes(bytes, receipt_id);
+}
+
+fn push_artifact_inspection(bytes: &mut Vec<u8>, inspection: &RecoveryInspection) {
+    bytes.push(1);
+    bytes.extend_from_slice(&encode_worker_lifecycle(inspection.worker_state).to_le_bytes());
+    bytes.extend_from_slice(&inspection.completed_cycles.to_le_bytes());
+    bytes.extend_from_slice(&inspection.durable_retrying.to_le_bytes());
+    bytes.extend_from_slice(&inspection.durable_escalated.to_le_bytes());
+    bytes.extend_from_slice(&inspection.durable_unacknowledged_escalated.to_le_bytes());
+    bytes.extend_from_slice(&inspection.durable_resolved.to_le_bytes());
+    bytes.extend_from_slice(
+        &u32::try_from(inspection.alerts.len())
+            .unwrap_or(u32::MAX)
+            .to_le_bytes(),
+    );
+    for alert in &inspection.alerts {
+        push_bytes(bytes, &alert.plan_id);
+        bytes.extend_from_slice(&alert.total_failures.to_le_bytes());
+        match alert.acknowledged_receipt_id.as_ref() {
+            Some(receipt_id) => {
+                bytes.push(1);
+                push_bytes(bytes, receipt_id);
+            }
+            None => bytes.push(0),
+        }
     }
 }
 
@@ -1253,6 +1389,36 @@ mod tests {
             .control_command_id(),
             [0x54; 16]
         );
+        assert_eq!(
+            ControlCommand::PauseOperation {
+                control_command_id: [0x61; 16],
+                target_id: [0x81; 16],
+                expected_generation_or_revision: 5,
+                reason: "operator pauses the operation".to_owned(),
+            }
+            .control_command_id(),
+            [0x61; 16]
+        );
+        assert_eq!(
+            ControlCommand::ResumeOperation {
+                control_command_id: [0x62; 16],
+                target_id: [0x81; 16],
+                expected_generation_or_revision: 5,
+                reason: "operator resumes the operation".to_owned(),
+            }
+            .control_command_id(),
+            [0x62; 16]
+        );
+        assert_eq!(
+            ControlCommand::CancelOperation {
+                control_command_id: [0x63; 16],
+                target_id: [0x81; 16],
+                expected_generation_or_revision: 5,
+                reason: "operator cancels the operation".to_owned(),
+            }
+            .control_command_id(),
+            [0x63; 16]
+        );
     }
 
     #[test]
@@ -1383,5 +1549,89 @@ mod tests {
             }),
             Err(ControlError::InvalidCommand(_))
         ));
+    }
+
+    #[test]
+    fn operation_mutation_envelopes_carry_the_wire_arms() {
+        for (command, expected_arm) in [
+            (
+                ControlCommand::PauseOperation {
+                    control_command_id: [0x61; 16],
+                    target_id: [0x81; 16],
+                    expected_generation_or_revision: 5,
+                    reason: "operator pauses the operation".to_owned(),
+                },
+                0,
+            ),
+            (
+                ControlCommand::ResumeOperation {
+                    control_command_id: [0x62; 16],
+                    target_id: [0x81; 16],
+                    expected_generation_or_revision: 5,
+                    reason: "operator resumes the operation".to_owned(),
+                },
+                1,
+            ),
+            (
+                ControlCommand::CancelOperation {
+                    control_command_id: [0x63; 16],
+                    target_id: [0x81; 16],
+                    expected_generation_or_revision: 5,
+                    reason: "operator cancels the operation".to_owned(),
+                },
+                2,
+            ),
+        ] {
+            let envelope = build_request_envelope(&command).unwrap();
+            assert_eq!(envelope.method, SUBMIT_METHOD);
+            let payload = decode_submit_control_command_request(&envelope.payload).unwrap();
+            let wire_command = payload.command.unwrap();
+            let matched = match wire_command.command {
+                Some(control_command::Command::PauseOperation(PauseCommand {})) => 0,
+                Some(control_command::Command::ResumeOperation(ResumeCommand {})) => 1,
+                Some(control_command::Command::CancelOperation(CancelCommand {})) => 2,
+                _ => panic!("expected an operation-level arm"),
+            };
+            assert_eq!(matched, expected_arm);
+            assert_eq!(wire_command.target_id, vec![0x81; 16]);
+            assert_eq!(wire_command.expected_generation_or_revision, 5);
+            let Some(envelope::CommonContext::RequestContext(context)) = envelope.common_context
+            else {
+                panic!("request context expected");
+            };
+            assert_eq!(
+                context.idempotency_key,
+                command.control_command_id().to_vec()
+            );
+        }
+    }
+
+    #[test]
+    fn operation_mutations_reject_empty_reason_before_the_wire() {
+        for command in [
+            ControlCommand::PauseOperation {
+                control_command_id: [0x61; 16],
+                target_id: [0x81; 16],
+                expected_generation_or_revision: 5,
+                reason: String::new(),
+            },
+            ControlCommand::ResumeOperation {
+                control_command_id: [0x62; 16],
+                target_id: [0x81; 16],
+                expected_generation_or_revision: 5,
+                reason: String::new(),
+            },
+            ControlCommand::CancelOperation {
+                control_command_id: [0x63; 16],
+                target_id: [0x81; 16],
+                expected_generation_or_revision: 5,
+                reason: String::new(),
+            },
+        ] {
+            assert!(matches!(
+                build_request_envelope(&command),
+                Err(ControlError::InvalidCommand(_))
+            ));
+        }
     }
 }

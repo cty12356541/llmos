@@ -130,6 +130,17 @@ message AcknowledgeSemanticRecoveryAlertCommand {}
 
 message ResumeSemanticRecoveryCommand {}
 
+// B5-1 first half (W28-D): typed operation-level control arms. Like the
+// recovery commands above, the payloads stay empty — the operational target
+// rides the shared `target_id` field and the CAS expectation rides
+// `expected_generation_or_revision`. Real execution wiring (process
+// suspend/resume/kill) lands in the W29-D lane.
+message PauseCommand {}
+
+message ResumeCommand {}
+
+message CancelCommand {}
+
 message ControlCommand {
   bytes control_command_id = 1;
   bytes issuer_principal_id = 2;
@@ -141,6 +152,9 @@ message ControlCommand {
     AcknowledgeArtifactRecoveryAlertCommand acknowledge_artifact_recovery_alert = 7;
     AcknowledgeSemanticRecoveryAlertCommand acknowledge_semantic_recovery_alert = 9;
     ResumeSemanticRecoveryCommand resume_semantic_recovery = 10;
+    PauseCommand pause_operation = 11;
+    ResumeCommand resume_operation = 12;
+    CancelCommand cancel_operation = 13;
   }
   string reason = 8;
 }

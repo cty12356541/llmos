@@ -39,6 +39,13 @@
 //! acknowledge alert <32-hex> expecting <n>
 //!   | ack alert <32-hex> expecting <n> | confirm alert <32-hex> expecting <n>
 //!   | 确认告警 <32位十六进制> 期望 <n> | 确认 告警 <32位十六进制> 期望 <n>
+//! pause operation <32-hex> expecting <n>
+//!   | halt operation <32-hex> expecting <n> | suspend operation <32-hex> expecting <n>
+//!   | 暂停操作 <32位十六进制> 期望 <n> | 暂停 操作 <32位十六进制> 期望 <n>
+//! resume operation <32-hex> expecting <n>
+//!   | 恢复操作 <32位十六进制> 期望 <n> | 恢复 操作 <32位十六进制> 期望 <n>
+//! cancel operation <32-hex> expecting <n> | abort operation <32-hex> expecting <n>
+//!   | 取消操作 <32位十六进制> 期望 <n> | 取消 操作 <32位十六进制> 期望 <n>
 //! ```
 //!
 //! Derivation rules for the acknowledgement form: the `<32-hex>` argument is
@@ -51,6 +58,14 @@
 //! value for a state-changing command would violate `[NL-AMBIG-001]`; the
 //! audit reason is the fixed [`NL_ACK_REASON`], so receipts record the
 //! issuing surface without embedding the raw sentence.
+//!
+//! The operation-level pause/resume/cancel forms follow the same rules
+//! verbatim: the `<32-hex>` argument is the operational target id, the
+//! command identity derives from that target (one target, one pause
+//! identity, replay-safe), `<n>` is the explicit
+//! `expected_generation_or_revision` CAS expectation, and the audit reason
+//! is the fixed per-verb [`NL_PAUSE_REASON`]/[`NL_RESUME_REASON`]/
+//! [`NL_CANCEL_REASON`].
 //!
 //! Anything outside the whitelist — unknown verbs, wrong arity, malformed
 //! identifiers, non-decimal counts — fails with a typed
@@ -66,13 +81,24 @@ use crate::control::{ControlCommand, ControlError, parse_hex_id};
 pub const NL_ACK_REASON: &str =
     "acknowledged through the restricted natural-language control prefix";
 
+/// See [`NL_ACK_REASON`]; per-verb audit reasons for the operation-level
+/// forms.
+pub const NL_PAUSE_REASON: &str = "paused through the restricted natural-language control prefix";
+/// See [`NL_ACK_REASON`].
+pub const NL_RESUME_REASON: &str = "resumed through the restricted natural-language control prefix";
+/// See [`NL_ACK_REASON`].
+pub const NL_CANCEL_REASON: &str =
+    "cancelled through the restricted natural-language control prefix";
+
 /// Legal grammar, named verbatim in every rejection message.
 const GRAMMAR_HELP: &str = "valid forms: \"inspect health\" | \"export metrics\" | \
 \"inspect task <32-hex>\" | \"inspect process <32-hex>\" | \"inspect resource <32-hex>\" | \
-\"acknowledge alert <32-hex> expecting <count>\" | \"查看健康\" | \
+\"acknowledge alert <32-hex> expecting <count>\" | \
+\"pause|resume|cancel operation <32-hex> expecting <count>\" | \"查看健康\" | \
 \"导出指标\" | \"查看任务 <32位十六进制>\" | \"检查进程 <32位十六进制>\" | \
 \"查看资源 <32位十六进制>\" | \
-\"确认告警 <32位十六进制> 期望 <次数>\"";
+\"确认告警 <32位十六进制> 期望 <次数>\" | \
+\"暂停|恢复|取消操作 <32位十六进制> 期望 <次数>\"";
 
 /// Compiles one restricted-grammar English or Chinese imperative sentence
 /// into a [`ControlCommand`] for the existing dispatch paths. Pure function:
@@ -105,6 +131,9 @@ pub fn parse_nl_command(input: &str) -> Result<ControlCommand, ControlError> {
     if let Some(result) = try_parse_acknowledgement(&tokens) {
         return result;
     }
+    if let Some(result) = try_parse_operation_control(&tokens) {
+        return result;
+    }
     Err(ControlError::InvalidCommand(GRAMMAR_HELP))
 }
 
@@ -126,6 +155,20 @@ fn is_ack_verb(token: &str) -> bool {
     token.eq_ignore_ascii_case("acknowledge")
         || token.eq_ignore_ascii_case("ack")
         || token.eq_ignore_ascii_case("confirm")
+}
+
+fn is_pause_verb(token: &str) -> bool {
+    token.eq_ignore_ascii_case("pause")
+        || token.eq_ignore_ascii_case("halt")
+        || token.eq_ignore_ascii_case("suspend")
+}
+
+fn is_operation_resume_verb(token: &str) -> bool {
+    token.eq_ignore_ascii_case("resume")
+}
+
+fn is_cancel_verb(token: &str) -> bool {
+    token.eq_ignore_ascii_case("cancel") || token.eq_ignore_ascii_case("abort")
 }
 
 fn try_parse_inspect_health(tokens: &[&str]) -> Option<Result<ControlCommand, ControlError>> {
@@ -335,17 +378,101 @@ fn acknowledge(
     })
 }
 
+/// Compiles the operation-level pause form: the command identity derives
+/// from the target id (replay-safe) and the CAS expectation is explicit.
+fn pause_operation_command(
+    target_hex: &str,
+    expected_generation_or_revision: u64,
+) -> Result<ControlCommand, ControlError> {
+    let target_id = parse_hex_id(target_hex)?;
+    Ok(ControlCommand::PauseOperation {
+        control_command_id: target_id,
+        target_id,
+        expected_generation_or_revision,
+        reason: NL_PAUSE_REASON.to_owned(),
+    })
+}
+
+fn resume_operation_command(
+    target_hex: &str,
+    expected_generation_or_revision: u64,
+) -> Result<ControlCommand, ControlError> {
+    let target_id = parse_hex_id(target_hex)?;
+    Ok(ControlCommand::ResumeOperation {
+        control_command_id: target_id,
+        target_id,
+        expected_generation_or_revision,
+        reason: NL_RESUME_REASON.to_owned(),
+    })
+}
+
+fn cancel_operation_command(
+    target_hex: &str,
+    expected_generation_or_revision: u64,
+) -> Result<ControlCommand, ControlError> {
+    let target_id = parse_hex_id(target_hex)?;
+    Ok(ControlCommand::CancelOperation {
+        control_command_id: target_id,
+        target_id,
+        expected_generation_or_revision,
+        reason: NL_CANCEL_REASON.to_owned(),
+    })
+}
+
+fn try_parse_operation_control(tokens: &[&str]) -> Option<Result<ControlCommand, ControlError>> {
+    match tokens {
+        [head, second, target, third, count]
+            if is_pause_verb(head)
+                && second.eq_ignore_ascii_case("operation")
+                && third.eq_ignore_ascii_case("expecting") =>
+        {
+            Some(parse_count(count).and_then(|n| pause_operation_command(target, n)))
+        }
+        [head, second, target, third, count]
+            if is_operation_resume_verb(head)
+                && second.eq_ignore_ascii_case("operation")
+                && third.eq_ignore_ascii_case("expecting") =>
+        {
+            Some(parse_count(count).and_then(|n| resume_operation_command(target, n)))
+        }
+        [head, second, target, third, count]
+            if is_cancel_verb(head)
+                && second.eq_ignore_ascii_case("operation")
+                && third.eq_ignore_ascii_case("expecting") =>
+        {
+            Some(parse_count(count).and_then(|n| cancel_operation_command(target, n)))
+        }
+        ["暂停操作", target, "期望", count] | ["暂停", "操作", target, "期望", count] => {
+            Some(parse_count(count).and_then(|n| pause_operation_command(target, n)))
+        }
+        ["恢复操作", target, "期望", count] | ["恢复", "操作", target, "期望", count] => {
+            Some(parse_count(count).and_then(|n| resume_operation_command(target, n)))
+        }
+        ["取消操作", target, "期望", count] | ["取消", "操作", target, "期望", count] => {
+            Some(parse_count(count).and_then(|n| cancel_operation_command(target, n)))
+        }
+        [head, ..]
+            if is_pause_verb(head) || is_operation_resume_verb(head) || is_cancel_verb(head) =>
+        {
+            Some(Err(ControlError::InvalidCommand(
+                "\"pause|resume|cancel operation\" expects \"<32-hex> expecting <count>\"",
+            )))
+        }
+        _ => None,
+    }
+}
+
 /// Parses the plain decimal CAS expectation. Digits only: no sign, no
 /// separator, no overflow past the 64-bit bound.
 fn parse_count(token: &str) -> Result<u64, ControlError> {
     if !token.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err(ControlError::InvalidCommand(
-            "acknowledgement CAS expectation must be a plain decimal count (digits only)",
+            "CAS expectation must be a plain decimal count (digits only)",
         ));
     }
-    token.parse::<u64>().map_err(|_| {
-        ControlError::InvalidCommand("acknowledgement CAS expectation exceeds the 64-bit bound")
-    })
+    token
+        .parse::<u64>()
+        .map_err(|_| ControlError::InvalidCommand("CAS expectation exceeds the 64-bit bound"))
 }
 
 #[cfg(test)]
@@ -631,6 +758,119 @@ mod tests {
     }
 
     #[test]
+    fn english_operation_control_forms_parse_with_derived_identity() {
+        let pause =
+            parse_nl_command("pause operation a1b2c3d4e5f60718293a4b5c6d7e8f90 expecting 4")
+                .unwrap();
+        assert_eq!(
+            pause,
+            ControlCommand::PauseOperation {
+                control_command_id: plan_id(),
+                target_id: plan_id(),
+                expected_generation_or_revision: 4,
+                reason: NL_PAUSE_REASON.to_owned(),
+            }
+        );
+        for sentence in [
+            "  HALT  Operation \t A1B2C3D4E5F60718293A4B5C6D7E8F90 \t EXPECTING  4 ",
+            "suspend operation a1b2c3d4e5f60718293a4b5c6d7e8f90 expecting 4",
+        ] {
+            assert_eq!(
+                parse_nl_command(sentence).unwrap(),
+                pause,
+                "sentence: {sentence:?}"
+            );
+        }
+        let resume =
+            parse_nl_command("resume operation a1b2c3d4e5f60718293a4b5c6d7e8f90 expecting 5")
+                .unwrap();
+        assert_eq!(
+            resume,
+            ControlCommand::ResumeOperation {
+                control_command_id: plan_id(),
+                target_id: plan_id(),
+                expected_generation_or_revision: 5,
+                reason: NL_RESUME_REASON.to_owned(),
+            }
+        );
+        let cancel =
+            parse_nl_command("cancel operation a1b2c3d4e5f60718293a4b5c6d7e8f90 expecting 6")
+                .unwrap();
+        assert_eq!(
+            cancel,
+            ControlCommand::CancelOperation {
+                control_command_id: plan_id(),
+                target_id: plan_id(),
+                expected_generation_or_revision: 6,
+                reason: NL_CANCEL_REASON.to_owned(),
+            }
+        );
+        assert_eq!(
+            parse_nl_command("abort operation a1b2c3d4e5f60718293a4b5c6d7e8f90 expecting 6")
+                .unwrap(),
+            cancel
+        );
+    }
+
+    #[test]
+    fn chinese_operation_control_forms_parse_with_derived_identity() {
+        assert_eq!(
+            parse_nl_command("暂停操作 a1b2c3d4e5f60718293a4b5c6d7e8f90 期望 4").unwrap(),
+            ControlCommand::PauseOperation {
+                control_command_id: plan_id(),
+                target_id: plan_id(),
+                expected_generation_or_revision: 4,
+                reason: NL_PAUSE_REASON.to_owned(),
+            }
+        );
+        assert_eq!(
+            parse_nl_command("暂停 操作 A1B2C3D4E5F60718293A4B5C6D7E8F90 期望 4").unwrap(),
+            ControlCommand::PauseOperation {
+                control_command_id: plan_id(),
+                target_id: plan_id(),
+                expected_generation_or_revision: 4,
+                reason: NL_PAUSE_REASON.to_owned(),
+            }
+        );
+        assert_eq!(
+            parse_nl_command("恢复操作 a1b2c3d4e5f60718293a4b5c6d7e8f90 期望 5").unwrap(),
+            ControlCommand::ResumeOperation {
+                control_command_id: plan_id(),
+                target_id: plan_id(),
+                expected_generation_or_revision: 5,
+                reason: NL_RESUME_REASON.to_owned(),
+            }
+        );
+        assert_eq!(
+            parse_nl_command("恢复 操作 a1b2c3d4e5f60718293a4b5c6d7e8f90 期望 5").unwrap(),
+            ControlCommand::ResumeOperation {
+                control_command_id: plan_id(),
+                target_id: plan_id(),
+                expected_generation_or_revision: 5,
+                reason: NL_RESUME_REASON.to_owned(),
+            }
+        );
+        assert_eq!(
+            parse_nl_command("取消操作 a1b2c3d4e5f60718293a4b5c6d7e8f90 期望 6").unwrap(),
+            ControlCommand::CancelOperation {
+                control_command_id: plan_id(),
+                target_id: plan_id(),
+                expected_generation_or_revision: 6,
+                reason: NL_CANCEL_REASON.to_owned(),
+            }
+        );
+        assert_eq!(
+            parse_nl_command("取消 操作 a1b2c3d4e5f60718293a4b5c6d7e8f90 期望 6").unwrap(),
+            ControlCommand::CancelOperation {
+                control_command_id: plan_id(),
+                target_id: plan_id(),
+                expected_generation_or_revision: 6,
+                reason: NL_CANCEL_REASON.to_owned(),
+            }
+        );
+    }
+
+    #[test]
     fn out_of_grammar_inputs_fail_typed_with_a_reason() {
         let long_count = "9".repeat(21);
         for input in [
@@ -697,6 +937,22 @@ mod tests {
             format!("acknowledge alert {PLAN_HEX_LOWER} expecting 1 extra").as_str(),
             format!("ack alert {PLAN_HEX_LOWER}").as_str(),
             format!("confirm alert {PLAN_HEX_LOWER} expecting").as_str(),
+            "pause",
+            "pause operation",
+            format!("pause operation {PLAN_HEX_LOWER}").as_str(),
+            format!("pause operation {PLAN_HEX_LOWER} expecting").as_str(),
+            format!("pause operation {PLAN_HEX_LOWER} expecting -2").as_str(),
+            format!("pause task {PLAN_HEX_LOWER} expecting 1").as_str(),
+            "resume operation",
+            "suspend",
+            format!("cancel operation {PLAN_HEX_LOWER} expecting 1 extra").as_str(),
+            format!("abort alert {PLAN_HEX_LOWER} expecting 1").as_str(),
+            "暂停操作",
+            format!("暂停操作 {PLAN_HEX_LOWER}").as_str(),
+            format!("暂停操作 {PLAN_HEX_LOWER} 期望").as_str(),
+            format!("暂停 操作 {PLAN_HEX_LOWER} 期望 一").as_str(),
+            "恢复操作",
+            format!("取消操作 {PLAN_HEX_LOWER} 期望了 6").as_str(),
             "查看健康了",
             "检查健康了",
             "查看任务",

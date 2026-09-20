@@ -20,7 +20,10 @@ use nlos_system_control::control::{
     ControlCommand, ControlOutcome, ProcessInspection, ProcessInspector, RecoveryWorkerLifecycle,
     ResourceInspection, ResourceInspector, dispatch_in_process, parse_hex_id,
 };
-use nlos_system_control::{RecoveryHealthSource, RecoverySystemControl, SystemControlAuthorizer};
+use nlos_system_control::{
+    OperationCommandExecutor, OperationControlRequest, RecoveryHealthSource, RecoverySystemControl,
+    SystemControlAuthorizer,
+};
 use nlos_task::{
     ArtifactCommitPlanId, ArtifactPublicationExpectation, ArtifactRecoveryFailureRequest,
     ArtifactRecoveryFailureSource, AttemptSpec, PermitDecision, PermitRequest,
@@ -28,7 +31,7 @@ use nlos_task::{
     empty_effect_history_root,
 };
 use nlos_types::{
-    ArtifactId, CancellationScopeId, Generation, IdempotencyKey, TaskAttemptId, TaskId,
+    ArtifactId, CancellationScopeId, Generation, IdempotencyKey, ReceiptId, TaskAttemptId, TaskId,
     TaskSnapshotId,
 };
 
@@ -596,6 +599,15 @@ mod socket_harness {
         authority: Arc<SqliteTaskAuthority>,
         health: StubHealth,
     ) -> tokio::task::JoinHandle<()> {
+        serve_forever_with_executor(listener, authority, health, None)
+    }
+
+    pub fn serve_forever_with_executor(
+        listener: UnixListenerAdapter,
+        authority: Arc<SqliteTaskAuthority>,
+        health: StubHealth,
+        executor: Option<Arc<dyn OperationCommandExecutor + Send + Sync>>,
+    ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             loop {
                 // An idle accept window is normal: the transport bounds
@@ -611,13 +623,18 @@ mod socket_harness {
                 let _ = serve_one(stream, TransportConfig::default(), peer, &AllowPeer, {
                     let health = health.clone();
                     let authority = Arc::clone(&authority);
+                    let executor = executor.clone();
                     move |validated| {
-                        let response = RecoverySystemControl::new(
+                        let control = RecoverySystemControl::new(
                             authority.as_ref(),
                             &health,
                             &CapabilityPolicy,
-                        )
-                        .handle_for_ipc(
+                        );
+                        let control = match executor.as_ref() {
+                            Some(executor) => control.with_operation_executor(executor.as_ref()),
+                            None => control,
+                        };
+                        let response = control.handle_for_ipc(
                             validated.envelope(),
                             MONOTONIC_NOW_NS,
                             WALL_NOW_MS,
@@ -1350,7 +1367,220 @@ async fn nl_sentences_compile_to_the_same_socket_receipts_as_direct_commands() {
         "任务状态了",
         "resource status now",
         "资源状态了",
+        "pause operation a1b2c3d4e5f60718293a4b5c6d7e8f90 expecting",
+        "resume task a1b2c3d4e5f60718293a4b5c6d7e8f90 expecting 1",
+        "暂停操作 a1b2c3d4e5f60718293a4b5c6d7e8f90",
     ]);
+
+    server.abort();
+    fs::remove_file(&socket_path).unwrap();
+}
+
+const OPERATION_TARGET_ID: [u8; 16] = [0x81; 16];
+const OPERATION_CAS: u64 = 4;
+
+/// Deterministic stub executor whose receipt id names the executed arm in
+/// its first byte (mirrors `recovery_control`'s recording stub).
+struct DeterministicOperationExecutor;
+
+fn operation_receipt(arm_tag: u8) -> [u8; 16] {
+    let mut id = OPERATION_TARGET_ID;
+    id[0] = arm_tag;
+    id
+}
+
+impl OperationCommandExecutor for DeterministicOperationExecutor {
+    fn pause_operation(&self, _: OperationControlRequest) -> Result<ReceiptId, SabiFailure> {
+        Ok(ReceiptId::from_bytes(operation_receipt(1)))
+    }
+
+    fn resume_operation(&self, _: OperationControlRequest) -> Result<ReceiptId, SabiFailure> {
+        Ok(ReceiptId::from_bytes(operation_receipt(2)))
+    }
+
+    fn cancel_operation(&self, _: OperationControlRequest) -> Result<ReceiptId, SabiFailure> {
+        Ok(ReceiptId::from_bytes(operation_receipt(3)))
+    }
+}
+
+/// W28-D parity gate: the pause/resume/cancel command surface compiles from
+/// direct construction, NL sentences (EN/ZH/synonyms), and the CLI into the
+/// same wire command, and all three dispatch paths answer with
+/// byte-identical typed receipts through the wired executor seam. This is
+/// the constructive first half of ROAD-B-005's operation-level control
+/// requirement (B5-1); the real executors land in W29-D.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn operation_control_commands_are_byte_identical_across_nl_cli_and_direct_paths() {
+    use nlos_system_control::control::dispatch_over_socket;
+    use nlos_system_control::nl::{
+        NL_CANCEL_REASON, NL_PAUSE_REASON, NL_RESUME_REASON, parse_nl_command,
+    };
+
+    use socket_harness::{
+        assert_in_process_socket_and_cli_parity, assert_nl_socket_and_in_process_parity,
+        bind_socket, run_cli, serve_forever_with_executor,
+    };
+
+    let database = Arc::new(TestDatabase::new());
+    let authority = Arc::new(database.open());
+    let plan_id = create_escalated_plan(authority.as_ref());
+    let socket_path = database.path.with_extension("sock");
+    let listener = bind_socket(&socket_path);
+    let server = serve_forever_with_executor(
+        listener,
+        Arc::clone(&authority),
+        health(&plan_id),
+        Some(Arc::new(DeterministicOperationExecutor)),
+    );
+    let stub_health = health(&plan_id);
+    let control = RecoverySystemControl::new(authority.as_ref(), &stub_health, &CapabilityPolicy)
+        .with_operation_executor(&DeterministicOperationExecutor);
+
+    let target_hex = hex(&OPERATION_TARGET_ID);
+    for (label, reason, nl_sentences, cli_operation, expected_receipt, expected_outcome) in [
+        (
+            "pause",
+            NL_PAUSE_REASON,
+            vec![
+                format!("pause operation {target_hex} expecting {OPERATION_CAS}"),
+                format!("halt operation {target_hex} expecting {OPERATION_CAS}"),
+                format!("暂停操作 {target_hex} 期望 {OPERATION_CAS}"),
+                format!("暂停 操作 {target_hex} 期望 {OPERATION_CAS}"),
+            ],
+            "pause-operation",
+            operation_receipt(1),
+            8_u8,
+        ),
+        (
+            "resume",
+            NL_RESUME_REASON,
+            vec![
+                format!("resume operation {target_hex} expecting {OPERATION_CAS}"),
+                format!("恢复操作 {target_hex} 期望 {OPERATION_CAS}"),
+                format!("恢复 操作 {target_hex} 期望 {OPERATION_CAS}"),
+            ],
+            "resume-operation",
+            operation_receipt(2),
+            9_u8,
+        ),
+        (
+            "cancel",
+            NL_CANCEL_REASON,
+            vec![
+                format!("cancel operation {target_hex} expecting {OPERATION_CAS}"),
+                format!("abort operation {target_hex} expecting {OPERATION_CAS}"),
+                format!("取消操作 {target_hex} 期望 {OPERATION_CAS}"),
+                format!("取消 操作 {target_hex} 期望 {OPERATION_CAS}"),
+            ],
+            "cancel-operation",
+            operation_receipt(3),
+            10_u8,
+        ),
+    ] {
+        let operation = match label {
+            "pause" => ControlCommand::PauseOperation {
+                control_command_id: OPERATION_TARGET_ID,
+                target_id: OPERATION_TARGET_ID,
+                expected_generation_or_revision: OPERATION_CAS,
+                reason: reason.to_owned(),
+            },
+            "resume" => ControlCommand::ResumeOperation {
+                control_command_id: OPERATION_TARGET_ID,
+                target_id: OPERATION_TARGET_ID,
+                expected_generation_or_revision: OPERATION_CAS,
+                reason: reason.to_owned(),
+            },
+            _ => ControlCommand::CancelOperation {
+                control_command_id: OPERATION_TARGET_ID,
+                target_id: OPERATION_TARGET_ID,
+                expected_generation_or_revision: OPERATION_CAS,
+                reason: reason.to_owned(),
+            },
+        };
+        for sentence in &nl_sentences {
+            assert_eq!(
+                parse_nl_command(sentence).unwrap(),
+                operation,
+                "{label} sentence {sentence:?}"
+            );
+        }
+        let nl_commands: Vec<ControlCommand> = nl_sentences
+            .iter()
+            .map(|sentence| parse_nl_command(sentence).unwrap())
+            .collect();
+        assert_nl_socket_and_in_process_parity(
+            &socket_path,
+            &control,
+            &operation,
+            &nl_commands,
+            None,
+            None,
+        )
+        .await;
+        assert_in_process_socket_and_cli_parity(
+            &socket_path,
+            &control,
+            &operation,
+            &[
+                cli_operation,
+                &hex(&OPERATION_TARGET_ID),
+                &hex(&OPERATION_TARGET_ID),
+                &OPERATION_CAS.to_string(),
+                reason,
+            ],
+            None,
+            None,
+        )
+        .await;
+        let receipt = dispatch_over_socket(&socket_path, &operation, None, None)
+            .await
+            .unwrap();
+        match receipt.outcome.as_ref().unwrap() {
+            ControlOutcome::OperationPaused { receipt_id }
+            | ControlOutcome::OperationResumed { receipt_id }
+            | ControlOutcome::OperationCancelled { receipt_id } => {
+                assert_eq!(receipt_id, &expected_receipt.to_vec());
+            }
+            other => panic!("expected an operation-level outcome, got {other:?}"),
+        }
+        // Deterministic encoding: 16 command id bytes, u32 length prefix,
+        // 16 correlation bytes, then the outcome tag byte.
+        assert_eq!(receipt.to_bytes()[16 + 4 + 16], expected_outcome);
+    }
+
+    // The unwired default is exercised against the same socket contract in
+    // `recovery_control`; here the denial path proves the authorizer still
+    // fronts the new arms on the shared submit route.
+    let denied = ControlCommand::PauseOperation {
+        control_command_id: DENIED_COMMAND_ID,
+        target_id: OPERATION_TARGET_ID,
+        expected_generation_or_revision: OPERATION_CAS,
+        reason: DENIED_REASON.to_owned(),
+    };
+    let denied_reference =
+        dispatch_in_process(&control, &denied, MONOTONIC_NOW_NS, WALL_NOW_MS, None, None).unwrap();
+    let Err(failure) = denied_reference.outcome.as_ref() else {
+        panic!("expected typed policy failure");
+    };
+    assert_eq!(failure.code, i32::from(SabiErrorCode::Rights));
+    let cli_denied = run_cli(
+        &socket_path,
+        &[
+            "pause-operation",
+            &hex(&DENIED_COMMAND_ID),
+            &target_hex,
+            &OPERATION_CAS.to_string(),
+            DENIED_REASON,
+        ],
+    );
+    assert_eq!(cli_denied.status.code(), Some(1));
+    let stdout = String::from_utf8(cli_denied.stdout.clone()).unwrap();
+    assert!(stdout.contains("outcome=failure"));
+    assert_eq!(
+        socket_harness::cli_receipt_bytes(&cli_denied),
+        denied_reference.to_bytes()
+    );
 
     server.abort();
     fs::remove_file(&socket_path).unwrap();
