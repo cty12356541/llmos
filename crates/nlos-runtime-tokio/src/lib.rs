@@ -11,10 +11,11 @@ use nlos_runtime::{
     ActivationUsage, FiberExit, FiberFuture, FiberHandle, FiberSpec, FiberState, RuntimeAdapter,
     RuntimeError,
 };
-use nlos_types::{CancellationScopeId, ExecutionFiberId, Generation};
+use nlos_types::{CancellationScopeId, ExecutionFiberId, Generation, ProcessId};
 use tokio::runtime::Handle;
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 
+mod batch_cancel;
 mod channel_wait;
 mod metrics;
 mod pump;
@@ -22,6 +23,7 @@ mod replay;
 mod snapshot;
 mod wake;
 
+pub use batch_cancel::ProcessFiberCancelReport;
 use channel_wait::ChannelWaitRegistry;
 pub use channel_wait::{
     ChannelSequenceWait, ChannelWaitError, DeliveryReport, RearmReport, RearmedChannelWait,
@@ -231,6 +233,12 @@ impl UsageAccumulator {
 struct FiberRecord {
     fiber_id: ExecutionFiberId,
     generation: Generation,
+    /// The process fault domain this fiber was spawned under, captured from
+    /// the spec so the batch-cancel sweep (`crate::batch_cancel`) can fence
+    /// scopes by `(process_id, process_generation)` without an authority
+    /// lookup.
+    process_id: ProcessId,
+    process_generation: Generation,
     scope: Arc<CancellationScope>,
     /// Registry key of the scope this record references, carried so the reap
     /// path can release the scope's reference without a lookup
@@ -251,12 +259,16 @@ impl FiberRecord {
     fn new(
         fiber_id: ExecutionFiberId,
         generation: Generation,
+        process_id: ProcessId,
+        process_generation: Generation,
         scope: Arc<CancellationScope>,
         scope_key: ScopeKey,
     ) -> Self {
         Self {
             fiber_id,
             generation,
+            process_id,
+            process_generation,
             scope,
             scope_key,
             state: Mutex::new(FiberState::Ready),
@@ -979,6 +991,8 @@ impl RuntimeAdapter for TokioRuntimeAdapter {
         let record = Arc::new(FiberRecord::new(
             spec.fiber_id,
             spec.fiber_generation,
+            spec.process_id,
+            spec.process_generation,
             Arc::clone(&scope),
             scope_key,
         ));
