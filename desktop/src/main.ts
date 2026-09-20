@@ -1,12 +1,15 @@
 import "./style.css";
 
 import {
+  controlPlaneFacts,
+  costFactCheck,
   exportMetrics,
   exportSemanticMetrics,
   getConfig,
   inspectHealth,
   inspectProcess,
   inspectResource,
+  inspectResourceCost,
   inspectResourceHealth,
   inspectSemanticHealth,
   inspectTask,
@@ -18,6 +21,7 @@ import {
 import type {
   ConfigDto,
   ControlActionInput,
+  FactCheckDto,
   OutcomeDto,
   ReceiptDto,
 } from "./types";
@@ -167,9 +171,13 @@ function renderOutcome(outcome: OutcomeDto): HTMLElement {
       card.append(
         fieldRow("reservation_id", outcome.reservationIdHex),
         fieldRow("account_id", outcome.accountIdHex),
-        fieldRow("upper_bound", String(outcome.upperBound)),
-        fieldRow("usage_high_water", String(outcome.usageHighWater)),
-        fieldRow("consumption_count", String(outcome.consumptionCount)),
+        fieldRow("upper_bound(预留预算上限)", String(outcome.upperBound)),
+        fieldRow("usage_high_water(结转用量)", String(outcome.usageHighWater)),
+        fieldRow("consumption_count(消费回执数)", String(outcome.consumptionCount)),
+        fieldRow(
+          "结余(派生 = upper_bound − usage_high_water)",
+          String(outcome.upperBound - outcome.usageHighWater),
+        ),
       );
       break;
     }
@@ -613,6 +621,204 @@ function operationControlCard(): HTMLElement {
   return panel;
 }
 
+/** W32-D:无 IPC inspect 面的权威事实缺口登记(本视图不渲染,只声明缺席)。
+ * 每一条都对应 crates/ 中的真实权威数据,但控制面没有暴露它的命令/视图。 */
+const IPC_SURFACE_GAPS: ReadonlyArray<{ fact: string; detail: string }> = [
+  {
+    fact: "能力签发/衰减/撤销账本",
+    detail: "nlos-capability 的 CapabilityRecord(issuer/holder/rights/target/有效期/衰减深度)与撤销回执——ControlCommand 无对应 arm,proto 无视图",
+  },
+  {
+    fact: "能力调用限额与消耗",
+    detail: "call_limit_remaining 与 capability_consumption_rows(剩余额度/消费回执)——无 IPC inspect 面",
+  },
+  {
+    fact: "资源报价事实",
+    detail: "QuoteRecord 的 demand_capacity/pricing_version/valid_until——只有 upper_bound 进入有界成本回执投影",
+  },
+  {
+    fact: "预留状态机与多维需求",
+    detail: "Reserved/Active/Quarantined/Finalized 状态与 cpu_shares/memory_mib/io_weight 需求——不在 ResourceInspection 五个有界字段内",
+  },
+  {
+    fact: "账户预算余额",
+    detail: "resource_accounts 的 initial/available credit——无 inspect 面",
+  },
+  {
+    fact: "结清明细回执",
+    detail: "FinalizationReceipt.refund_credit 与逐条 ConsumptionReceipt(只有高水位与条数进入投影)——无 IPC 面",
+  },
+];
+
+function authorizationFactsCard(config: ConfigDto): HTMLElement {
+  const panel = el("section", { className: "card" });
+  panel.append(el("h3", { text: "控制面授权事实(本会话可见)" }));
+  panel.append(
+    fieldRow("会话 principal(ADR-0011 认证身份)", config.principalHex ?? "(未配置)"),
+    fieldRow("资源权威接线(resource_root)", config.resourceRoot ?? "(未配置——成本查询保持未接线形态)"),
+  );
+  const factsBox = el("div");
+  controlPlaneFacts()
+    .then((facts) => {
+      factsBox.append(
+        fieldRow("SystemControl 服务", facts.service),
+        fieldRow(
+          "控制能力句柄(客户端每条派发携带)",
+          `slot=${facts.capabilitySlot} generation=${facts.capabilityGeneration}`,
+        ),
+      );
+    })
+    .catch((error: unknown) => showError(factsBox, error));
+  panel.append(factsBox);
+  panel.append(
+    el("p", {
+      className: "muted",
+      text: "以上是客户端路径事实:每条派发信封携带该固定能力句柄,服务端授权检查拒绝时回执为类型化 RIGHTS 失败。逐 principal 的能力签发/衰减/撤销账本无 IPC inspect 面(见下方缺口登记),本视图不渲染任何未暴露的权威数据。",
+    }),
+  );
+
+  const verify = el("button", { text: "验证控制面授权(真实 dispatch)" });
+  const verifyResult = el("div");
+  verify.addEventListener("click", () => {
+    void runReceiptAction(verifyResult, inspectResourceHealth);
+  });
+  panel.append(verify, verifyResult);
+  return panel;
+}
+
+function budgetCostCard(): HTMLElement {
+  const panel = el("section", { className: "card" });
+  panel.append(el("h3", { text: "预算/成本可见性(InspectResource 有界成本事实)" }));
+  panel.append(
+    el("p", {
+      className: "muted",
+      text: "输入 reservation_id(32 hex)经认证入口派发 InspectResource;会话配置 resource_root 指向本地资源权威根目录时,由真实 ResourceAuthorityInspector 组装 upper_bound/usage_high_water/consumption_count 等有界事实;未配置时回执为诚实的类型化 NOT_FOUND(未接线,与 CLI 字节一致),不伪造数据。",
+    }),
+  );
+  const { row, input } = labeledInput("reservation id(32 hex)", "32 hex 字符 reservation_id", "");
+  panel.append(row);
+  const result = el("div");
+  const button = el("button", { text: "查询成本(经认证 IPC)" });
+  button.addEventListener("click", () => {
+    const id = input.value.trim();
+    if (!HEX32.test(id)) {
+      result.replaceChildren(
+        el("p", { className: "muted", text: "请先输入 32 位 hex 的 reservation_id。" }),
+      );
+      return;
+    }
+    void runReceiptAction(result, () => inspectResourceCost(id.toLowerCase()));
+  });
+  panel.append(button, result);
+  return panel;
+}
+
+function costFactCheckCard(): HTMLElement {
+  const panel = el("section", { className: "card" });
+  panel.append(el("h3", { text: "成本事实自检(渲染事实 vs 直接复检)" }));
+  panel.append(
+    el("p", {
+      className: "muted",
+      text: "同一 reservation 两次独立经认证入口派发 InspectResource,逐字段比较有界成本事实并比对 receipt hex。已结清(FINALIZED)预留事实不可变,两次必须一致;未接线形态两侧同为类型化 NOT_FOUND,亦如实可比。",
+    }),
+  );
+  const { row, input } = labeledInput("reservation id(32 hex)", "32 hex 字符 reservation_id", "");
+  panel.append(row);
+  const result = el("div");
+  const button = el("button", { text: "运行成本自检" });
+  button.addEventListener("click", () => {
+    const id = input.value.trim();
+    if (!HEX32.test(id)) {
+      result.replaceChildren(
+        el("p", { className: "muted", text: "请先输入 32 位 hex 的 reservation_id。" }),
+      );
+      return;
+    }
+    result.replaceChildren(el("p", { className: "muted", text: "比对中……" }));
+    costFactCheck(id.toLowerCase())
+      .then((check: FactCheckDto) => {
+        result.replaceChildren(renderFactCheck(check));
+      })
+      .catch((error: unknown) => showError(result, error));
+  });
+  panel.append(button, result);
+  return panel;
+}
+
+function renderFactCheck(check: FactCheckDto): HTMLElement {
+  const card = el("section", { className: check.matched ? "card ok" : "card error" });
+  card.append(
+    el("h3", { text: check.matched ? "一致(matched)" : "不一致(mismatch)" }),
+    fieldRow("reservation_id", check.reservationIdHex),
+    fieldRow("receipt_hex 一致", String(check.receiptHexMatched)),
+  );
+  const firstRow = fieldRow("第一次派发 receipt", check.firstReceiptHex);
+  firstRow.classList.add("mono");
+  const secondRow = fieldRow("复检 receipt", check.secondReceiptHex);
+  secondRow.classList.add("mono");
+  card.append(firstRow, secondRow);
+  const table = el("table", { className: "data-table" });
+  const header = el("tr");
+  header.append(
+    el("th", { text: "字段" }),
+    el("th", { text: "渲染值" }),
+    el("th", { text: "复检值" }),
+    el("th", { text: "一致" }),
+  );
+  const head = el("thead");
+  head.append(header);
+  const body = el("tbody");
+  for (const row of check.rows) {
+    const tr = el("tr");
+    tr.append(
+      el("td", { text: row.field }),
+      el("td", { text: row.first }),
+      el("td", { text: row.second }),
+      el("td", { text: row.matched ? "✓" : "✗" }),
+    );
+    body.append(tr);
+  }
+  table.append(head, body);
+  card.append(table);
+  return card;
+}
+
+function gapRegisterCard(): HTMLElement {
+  const panel = el("section", { className: "card" });
+  panel.append(el("h3", { text: "缺口登记:无 IPC inspect 面的权威事实(本视图不渲染)" }));
+  panel.append(
+    el("p", {
+      className: "muted",
+      text: "以下事实存在于本地权威(crate 已持久化),但控制面没有暴露它们的 inspect 命令/视图——按诚实纪律不发明数据,登记待后续车道补 IPC 面(证据 b-gui-001 §W32-D)。",
+    }),
+  );
+  const table = el("table", { className: "data-table" });
+  const header = el("tr");
+  header.append(el("th", { text: "权威事实" }), el("th", { text: "缺口说明" }));
+  const head = el("thead");
+  head.append(header);
+  const body = el("tbody");
+  for (const gap of IPC_SURFACE_GAPS) {
+    const tr = el("tr");
+    tr.append(el("td", { text: gap.fact }), el("td", { text: gap.detail }));
+    body.append(tr);
+  }
+  table.append(head, body);
+  panel.append(table);
+  return panel;
+}
+
+function permissionView(config: ConfigDto): HTMLElement {
+  const wrap = el("div");
+  wrap.append(
+    authorizationFactsCard(config),
+    budgetCostCard(),
+    costFactCheckCard(),
+    gapRegisterCard(),
+  );
+  return wrap;
+}
+
 function controlView(): HTMLElement {
   const wrap = el("div");
   wrap.append(recoveryAlertsCard(), operationControlCard());
@@ -634,8 +840,10 @@ function parityView(): HTMLElement {
   for (const operation of [
     "inspect-health",
     "inspect-semantic-health",
+    "inspect-resource-health",
     "export-metrics",
     "export-semantic-metrics",
+    "export-resource-metrics",
     "inspect-task",
     "inspect-process",
     "inspect-resource",
@@ -762,6 +970,11 @@ function configView(initial: ConfigDto): HTMLElement {
     initial.cliPath ?? "../../target/debug/system-control-cli",
     initial.cliPath ?? "",
   );
+  const resourceRoot = labeledInput(
+    "resource_root(本地资源权威根目录;预算/成本可见性)",
+    initial.resourceRoot ?? "",
+    initial.resourceRoot ?? "",
+  );
   const status = el("p", { className: "muted", text: `配置来源:${initial.source}` });
   const save = el("button", { text: "保存会话配置" });
   save.addEventListener("click", () => {
@@ -771,13 +984,23 @@ function configView(initial: ConfigDto): HTMLElement {
       keyFile: keyFile.input.value.trim() || null,
       cliSocket: cliSocket.input.value.trim() || null,
       cliPath: cliPath.input.value.trim() || null,
+      resourceRoot: resourceRoot.input.value.trim() || null,
     })
       .then((saved) => {
         status.textContent = `配置来源:${saved.source}(已保存)`;
       })
       .catch((error: unknown) => showError(status.parentElement ?? panel, error));
   });
-  panel.append(socket.row, principal.row, keyFile.row, cliSocket.row, cliPath.row, save, status);
+  panel.append(
+    socket.row,
+    principal.row,
+    keyFile.row,
+    cliSocket.row,
+    cliPath.row,
+    resourceRoot.row,
+    save,
+    status,
+  );
   return panel;
 }
 
@@ -874,6 +1097,7 @@ async function bootstrap(): Promise<void> {
   );
   register("metrics", "指标导出", metricsView());
   register("control", "控制动作", controlView());
+  register("permission", "权限/预算", permissionView(config));
   const parity = el("div");
   parity.append(parityView(), parityWriteCard());
   register("parity", "一致性自检", parity);

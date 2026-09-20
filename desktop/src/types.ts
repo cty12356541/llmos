@@ -114,8 +114,35 @@ export interface ConfigDto {
   keyFile: string | null;
   cliSocket: string | null;
   cliPath: string | null;
+  /** W32-D:本地资源权威根目录(预算/成本可见性的接线;null=未接线)。 */
+  resourceRoot: string | null;
   source: "env" | "session" | "unset";
   platformSupported: boolean;
+}
+
+/** W32-D 控制面授权事实(客户端路径常量,非 inspect 数据)。 */
+export interface ControlPlaneFactsDto {
+  service: string;
+  capabilitySlot: number;
+  capabilityGeneration: number;
+}
+
+/** W32-D 一致性自检的一行事实比对(渲染值 vs 复检值)。 */
+export interface FactRowDto {
+  field: string;
+  first: string;
+  second: string;
+  matched: boolean;
+}
+
+/** W32-D 一致性自检结果:同一 reservation 两次独立认证派发的比对。 */
+export interface FactCheckDto {
+  reservationIdHex: string;
+  matched: boolean;
+  receiptHexMatched: boolean;
+  firstReceiptHex: string;
+  secondReceiptHex: string;
+  rows: FactRowDto[];
 }
 
 export interface ParityDto {
