@@ -554,6 +554,7 @@ cargo fmt -p nlos-runtime-tokio -- --check
 
 ### 6.16 Runtime 侧 batch cancel 传播联动（2026-09-20 追加，W27-C / B-PROCESS-003 §W16-003 / ROAD-B-006）
 
+
 - Owner：`nlos-runtime-tokio`（新增 `src/batch_cancel.rs` + `src/lib.rs` FiberRecord 增 process 身份字段 + `tests/batch_cancel.rs`）；base HEAD `3d81a90`。
 - 设计依据：`b-process-003-crash-propagation.md` §5（process 侧 `propagate_cancel_to_fibers` 已落地，runtime 侧「cancel receipt 消费接线」缺口）；v0.5 §28.2 ROAD-B-006「Process crash propagation」runtime 联动；W9-C late-callback 语义（不复活、不 panic）。
 - **实现（最小、additive，tokio-only）**：
@@ -572,8 +573,7 @@ cargo fmt -p nlos-runtime-tokio -- --check
   5. `batch_cancel_respawn_is_fenced_and_linkage_replay_is_idempotent` — respawn 守卫（已取消 scope → `Cancelled`；scope id 换代次 → `InvalidGeneration`；新 scope runtime 可 spawn 而 durable 注册被 `FiberIncarnationCancelled` 拒）+ 同 key 联动重放幂等（`Replayed`、计数确定性）。
   6. `batch_cancel_fails_closed_on_authority_gates_without_runtime_side_effect` — Active process（`CorruptRecord`）与 stale fencing token（`StaleProcessBinding`）：均 fail-closed 零 runtime 副作用（fiber 保持 Running、scope 未取消可继续 spawn），正确围栏事后仍生效。
 - TDD：红（`ProcessFiberCancelReport` / `cancel_process_fibers` 未定义，E0432/E0599）→ 绿（6/6）。
-
-#### 6.16.1 验证门实测
+#### 6.16.1 验证门实测（W27-C 车道分支口径）
 
 ```text
 cargo test -p nlos-runtime-tokio --test batch_cancel
@@ -588,7 +588,7 @@ cargo fmt -p nlos-runtime-tokio -- --check                → 通过（stable，
 
 测试确定性：无 wall-clock 裸 sleep——等待经 `wait_for_state`（10s 预算有界轮询）/`tokio::time::timeout`（`RESOLVE` 5s），settle 复用 §6 既有 20ms 有界模式。
 
-#### 6.16.2 缺口更新
+#### 6.16.2 缺口更新（W27-C）
 
 - **勾销**：§6.8.2/§6.9.2/§6.11.2/§6.12.2 反复登记的「runtime 侧 process crash 传播联动」之 **batch cancel 部分** → 本 §6.16（kill receipt 消费仍缺）；`b-process-003` §5「runtime 侧 cancel receipt 消费接线」的 batch-cancel 前缀同此勾销（该文件归 W27-C 外车道，未改动）。
 - **如实保留（ROAD-B-006 剩余，Claim 维持 PARTIAL_PASS）**：
@@ -596,3 +596,40 @@ cargo fmt -p nlos-runtime-tokio -- --check                → 通过（stable，
   - runtime 侧 spawn 不做 process 门（fresh scope 的 runtime spawn 合法，durable 侧 fail-closed 承担 incarnation 围栏——本片有意分工，非缺口冒充）；跨 process 共享 scope 的整体取消为 scope 树语义的显式代价；
   - sweep 为 O(n) 注册表扫描 + O(n·m) scope 去重（n 命中 fiber / m 去重 scope），100K 规模级 batch cancel 探针未纳入（同 §5 O(n) 特征家族）；
   - 未声称 ROAD-B-006 整体达成。
+
+### 6.17 Wake latency/fairness 确定性测试（2026-09-20 追加，W27-F / B-RUNTIME 开放项）
+
+- Owner：`nlos-runtime-tokio`（`tests/wake_fairness.rs`，**test-only 零 src 侵入**；未触碰 W27-C 车道在途的 cancel/batch 代码与测试）
+- 设计依据：§3 `B-RUNTIME` 行开放项「wake latency/fairness」；[PoC-0004](./poc-0004-outbox-wake-consumer.md) 的 `TokioWakeSink` → `wait_for_operation` 唤醒路径（B-OUTBOX 闭环的 runtime 端点）。
+- **确定性方法论**（不使用墙钟）：
+  - 全部测试跑在 `current_thread` runtime；进度以**调度轮数**计量——driver 任务一次 `yield_now().await` = 一轮（对就绪队列的一遍扫描）。
+  - 全程零 `tokio::time` 依赖：被饿死的 wait 永久 pending → 确定性触发轮数上界断言失败；被送达的 wake 在小常数轮内被观察到。
+  - tokio paused time 不可用（workspace `tokio` 依赖未启用 `test-util` feature），且本片测试不注册任何 timer——轮数计量单独即完全确定；如后续 workspace 启用 `test-util` 可再补虚拟时钟断言。
+- **新增测试**（`wake_fairness.rs`，3 项）：
+  1. `woken_fiber_observes_wake_within_bounded_scheduler_rounds` — 8 个 fiber 在**自身 task 体内**注册 Operation wait 并挂起；背靠背 burst 唤醒（唤醒间零调度）后，全部在 ≤4 轮内观察到 `Woken`（观察到轮号 ∈ [1, LATENCY_ROUND_BOUND] 逐个断言）。
+  2. `burst_wake_is_fair_across_waiters_under_yield_load` — 32 waiter + 8 个只 yield 的竞争 fiber（单调度器上交错但永不阻塞）；burst 后全部 waiter ≤8 轮观察到 `Woken`，**最慢−最快 ≤4 轮（无饿死）**，竞争 fiber 亦在有界轮数内完成。
+  3. `burst_wake_with_interleaved_cancel_never_drops_wakes` — 8 fiber 交错风暴（wake(i) 后紧跟偶数 fiber 的 scope cancel，零调度间隔）：偶数（先唤醒后取消）wait 收敛 `Cancelled` 且 fiber 终态唯一 `Cancelled`；奇数幸存者 `Woken`；被 drop 的 wait 之 wake 走重缓冲路径，**在其他 scope 取消风暴后仍存活**——同 key 重新注册 ≤2 轮内消费为 `Woken`；对已取消 fiber 的再唤醒如实报告 `NotWaiting`，无静默吞 wake。
+- **既有覆盖勘察（防重复）**：`wake.rs`（幂等/early-wake/重缓冲/终态围栏/shutdown 的**正确性**面）、`outbox.rs`/`pump.rs`（durable 链路端到端）均不计量延迟/公平性；本片为首批 scheduler-step 级 bound 计量。
+
+#### 6.17.1 验证门实测（W27-F 车道分支口径）
+
+```text
+cargo test -p nlos-runtime-tokio --test wake_fairness
+  → 3 passed / 0 failed（多次复跑稳定：修复 clippy 后连续 2 次专项 + 全量 3 次均绿）
+cargo test -p nlos-runtime-tokio
+  → 113 passed / 0 failed / 8 ignored（22 集成 test target + lib 全绿；110 既有 + 3 wake_fairness；
+    ignored = durable_wait_scale 2 + scale.rs 100K 1 + blocking_io_negative 10K 1
+              + activation_meter_scale 2 + lifecycle_scale 2，与既有口径一致）
+cargo fmt -p nlos-runtime-tokio -- --check                    → 通过（stable）
+cargo clippy -p nlos-runtime-tokio --all-targets -- -D warnings
+  → exit 0（stable；首跑 2 处 pedantic `ignored_unit_patterns` 已修）
+```
+
+#### 6.17.2 缺口更新（W27-F）
+
+- **勾销**：§3 `B-RUNTIME` 行「wake latency/fairness」的**功能级确定性测试**（scheduler-step 级 latency bound + burst fairness 无饿死 + 交错 cancel 不丢 wake）→ 本 §6.17。
+- **如实保留（不外推）**：
+  - SQLite → pump OS 线程 → `TokioWakeSink` 的**端到端墙钟延迟分布**（PoC-0004 §6 已登记「真实规模 backpressure 计量」，非本片口径）；
+  - `multi_thread`/work-stealing 下的公平性形状（本片为 `current_thread` 确定性口径，多 worker 的交错属不同问题）；
+  - 100K 规模 wake 风暴探针（与 §5 已登记的 100K cancel 探针同族，未纳入）；
+  - ROAD-B-006 其余未决项不变，Claim 维持 `PARTIAL_PASS`。
