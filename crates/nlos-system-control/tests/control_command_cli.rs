@@ -45,16 +45,23 @@ const DENIED_REASON: &str = "denied: exercising the policy denial path";
 const PROCESS_ID: [u8; 16] = [0x77; 16];
 const RESERVATION_ID: [u8; 16] = [0x88; 16];
 
+// 仅被 #[cfg(unix)] 的 socket/CLI parity 测试使用；Windows 腿编译时置空避免 dead_code
+#[cfg(unix)]
 const SEMANTIC_PLAN_ID: [u8; 16] = [0x71; 16];
+#[cfg(unix)]
 const SEMANTIC_ACK_COMMAND_ID: [u8; 16] = [0x53; 16];
+#[cfg(unix)]
 const SEMANTIC_RESUME_COMMAND_ID: [u8; 16] = [0x54; 16];
+#[cfg(unix)]
 const SEMANTIC_TOTAL_FAILURES: u64 = 8;
+#[cfg(unix)]
 const SEMANTIC_REASON: &str = "inspected semantic recovery evidence";
 
 /// Seeds one escalated semantic recovery ledger row directly (see the
 /// `recovery_control` fixture note: the `Escalated` transition is W26-tested
 /// inside `nlos-task`; the per-connection foreign key is left unchecked by
 /// the raw seeding connection).
+#[cfg(unix)]
 fn seed_escalated_semantic_recovery(database: &TestDatabase) {
     let raw = rusqlite::Connection::open(&database.path).unwrap();
     raw.pragma_update(None, "foreign_keys", "OFF").unwrap();
@@ -77,6 +84,7 @@ fn seed_escalated_semantic_recovery(database: &TestDatabase) {
 /// acknowledgement, one resume consumes the `Escalated` state, so the
 /// byte-parity harness re-arms the durable input between the reference
 /// dispatch and the CLI dispatch of the same resume command.
+#[cfg(unix)]
 fn reset_escalated_semantic_recovery(database: &TestDatabase) {
     let raw = rusqlite::Connection::open(&database.path).unwrap();
     raw.execute(
