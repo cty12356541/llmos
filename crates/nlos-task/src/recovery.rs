@@ -294,6 +294,148 @@ pub struct SemanticRecoveryAlert {
     pub acknowledgement: Option<SemanticRecoveryAlertReceipt>,
 }
 
+/// Escalation threshold for the Resource recovery ledger, pinned to the
+/// same fixed default as the Semantic mirror (ADR-0017 decision L-B:
+/// backoff formula and escalation threshold stay v42-shaped, adding no
+/// new configuration surface).
+const RESOURCE_ESCALATION_THRESHOLD: u64 = 8;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ResourceRecoveryState {
+    Retrying,
+    Escalated,
+    Resolved,
+}
+
+impl ResourceRecoveryState {
+    const fn code(self) -> i64 {
+        match self {
+            Self::Retrying => 0,
+            Self::Escalated => 1,
+            Self::Resolved => 2,
+        }
+    }
+
+    fn from_code(code: i64) -> Result<Self, TaskStoreError> {
+        match code {
+            0 => Ok(Self::Retrying),
+            1 => Ok(Self::Escalated),
+            2 => Ok(Self::Resolved),
+            _ => Err(TaskStoreError::CorruptRecord(
+                "unknown Resource recovery state",
+            )),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ResourceRecoveryFailureSource {
+    TaskAuthority,
+    ResourceAuthority,
+    Coordinator,
+}
+
+impl ResourceRecoveryFailureSource {
+    const fn code(self) -> i64 {
+        match self {
+            Self::TaskAuthority => 0,
+            Self::ResourceAuthority => 1,
+            Self::Coordinator => 2,
+        }
+    }
+
+    fn from_code(code: i64) -> Result<Self, TaskStoreError> {
+        match code {
+            0 => Ok(Self::TaskAuthority),
+            1 => Ok(Self::ResourceAuthority),
+            2 => Ok(Self::Coordinator),
+            _ => Err(TaskStoreError::CorruptRecord(
+                "unknown Resource recovery failure source",
+            )),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ResourceRecoveryFailureRequest {
+    pub plan_id: crate::resource_commit::ResourceCommitPlanId,
+    pub expected_total_failures: u64,
+    pub source: ResourceRecoveryFailureSource,
+    pub observed_at_ms: i64,
+    pub base_delay_ms: u64,
+    pub max_delay_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ResourceRecoveryResumeRequest {
+    pub plan_id: crate::resource_commit::ResourceCommitPlanId,
+    pub expected_total_failures: u64,
+    pub resumed_at_ms: i64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ResourceRecoveryRecord {
+    pub plan_id: crate::resource_commit::ResourceCommitPlanId,
+    pub state: ResourceRecoveryState,
+    pub consecutive_failures: u64,
+    pub total_failures: u64,
+    pub last_source: ResourceRecoveryFailureSource,
+    pub first_failed_at_ms: i64,
+    pub last_failed_at_ms: i64,
+    pub next_retry_at_ms: Option<i64>,
+    pub escalated_at_ms: Option<i64>,
+    pub resolved_at_ms: Option<i64>,
+    pub updated_at_ms: i64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ResourceRecoverySummary {
+    pub retrying: u64,
+    pub escalated: u64,
+    pub unacknowledged_escalated: u64,
+    pub resolved: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ResourceRecoveryAlertAcknowledgeRequest {
+    pub plan_id: crate::resource_commit::ResourceCommitPlanId,
+    pub expected_total_failures: u64,
+    pub principal_id: PrincipalId,
+    pub idempotency_key: IdempotencyKey,
+    pub acknowledged_at_ms: i64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ResourceRecoveryAlertReceipt {
+    pub receipt_id: ReceiptId,
+    pub plan_id: crate::resource_commit::ResourceCommitPlanId,
+    pub total_failures: u64,
+    pub principal_id: PrincipalId,
+    pub idempotency_key: IdempotencyKey,
+    pub acknowledged_at_ms: i64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ResourceRecoveryAlertAcknowledgeDecision {
+    Acknowledged(ResourceRecoveryAlertReceipt),
+    Replayed(ResourceRecoveryAlertReceipt),
+}
+
+impl ResourceRecoveryAlertAcknowledgeDecision {
+    #[must_use]
+    pub const fn receipt(self) -> ResourceRecoveryAlertReceipt {
+        match self {
+            Self::Acknowledged(receipt) | Self::Replayed(receipt) => receipt,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ResourceRecoveryAlert {
+    pub recovery: ResourceRecoveryRecord,
+    pub acknowledgement: Option<ResourceRecoveryAlertReceipt>,
+}
+
 impl SqliteTaskAuthority {
     /// Appends one failed recovery cycle and computes its durable next due
     /// time or escalation state.
@@ -1029,6 +1171,369 @@ impl SqliteTaskAuthority {
     }
 }
 
+impl SqliteTaskAuthority {
+    /// Appends one failed Resource recovery cycle and computes its durable
+    /// next due time or escalation state (SEM-RECOV-001..007 mirrored for
+    /// the Resource coordinator domain).
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed policy/state/not-found error, epoch exhaustion, or a
+    /// storage failure. No partial ledger update is committed on error.
+    pub fn record_resource_recovery_failure(
+        &self,
+        request: ResourceRecoveryFailureRequest,
+    ) -> Result<ResourceRecoveryRecord, TaskStoreError> {
+        resource_validate_request(request)?;
+        let mut connection = self.lock_connection()?;
+        let transaction =
+            connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let plan =
+            crate::resource_commit::load_resource_plan_optional(&transaction, request.plan_id)?
+                .ok_or(TaskStoreError::ResourceCommitPlanNotFound)?;
+        if plan.state == crate::resource_commit::ResourceCommitPlanState::Finalized {
+            return Err(TaskStoreError::InvalidResourceRecoveryState {
+                state: ResourceRecoveryState::Resolved,
+            });
+        }
+        let prior = resource_load_optional(&transaction, request.plan_id)?;
+        let current_total = prior.map_or(0, |record| record.total_failures);
+        if current_total != request.expected_total_failures {
+            return Err(TaskStoreError::ResourceRecoveryCasMismatch {
+                expected: request.expected_total_failures,
+                current: current_total,
+            });
+        }
+        if let Some(record) = prior
+            && record.state != ResourceRecoveryState::Retrying
+        {
+            return Err(TaskStoreError::InvalidResourceRecoveryState {
+                state: record.state,
+            });
+        }
+        if prior.is_some_and(|record| request.observed_at_ms < record.last_failed_at_ms) {
+            return Err(TaskStoreError::InvalidResourceRecoveryPolicy {
+                reason: "failure timestamp regresses durable history",
+            });
+        }
+        let consecutive = prior
+            .map_or(0, |record| record.consecutive_failures)
+            .checked_add(1)
+            .ok_or(TaskStoreError::EpochExhausted)?;
+        let total = current_total
+            .checked_add(1)
+            .ok_or(TaskStoreError::EpochExhausted)?;
+        let escalated = consecutive >= RESOURCE_ESCALATION_THRESHOLD;
+        let next_retry_at_ms = if escalated {
+            None
+        } else {
+            Some(
+                request
+                    .observed_at_ms
+                    .checked_add(
+                        i64::try_from(resource_capped_exponential_delay(&request, consecutive))
+                            .map_err(|_| TaskStoreError::InvalidResourceRecoveryPolicy {
+                                reason: "retry delay exceeds i64 milliseconds",
+                            })?,
+                    )
+                    .ok_or(TaskStoreError::EpochExhausted)?,
+            )
+        };
+        let record = ResourceRecoveryRecord {
+            plan_id: request.plan_id,
+            state: if escalated {
+                ResourceRecoveryState::Escalated
+            } else {
+                ResourceRecoveryState::Retrying
+            },
+            consecutive_failures: consecutive,
+            total_failures: total,
+            last_source: request.source,
+            first_failed_at_ms: prior
+                .map_or(request.observed_at_ms, |record| record.first_failed_at_ms),
+            last_failed_at_ms: request.observed_at_ms,
+            next_retry_at_ms,
+            escalated_at_ms: escalated.then_some(request.observed_at_ms),
+            resolved_at_ms: None,
+            updated_at_ms: request.observed_at_ms,
+        };
+        resource_upsert(&transaction, &record)?;
+        transaction.commit()?;
+        Ok(record)
+    }
+
+    /// Reads the optional durable Resource recovery ledger for one plan.
+    ///
+    /// # Errors
+    ///
+    /// Returns corrupt-record or storage failures.
+    pub fn inspect_resource_recovery(
+        &self,
+        plan_id: crate::resource_commit::ResourceCommitPlanId,
+    ) -> Result<Option<ResourceRecoveryRecord>, TaskStoreError> {
+        let connection = self.lock_connection()?;
+        resource_load_optional(&*connection, plan_id)
+    }
+
+    /// Returns bounded aggregate counts for the local operations health
+    /// surface without exposing diagnostic strings.
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage failure or corrupt negative count.
+    pub fn summarize_resource_recovery(&self) -> Result<ResourceRecoverySummary, TaskStoreError> {
+        let connection = self.lock_connection()?;
+        let mut statement = connection.prepare(
+            "SELECT
+                COALESCE(SUM(CASE WHEN recovery_state = 0 THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN recovery_state = 1 THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN recovery_state = 1 AND NOT EXISTS (
+                    SELECT 1 FROM task_resource_recovery_alert_receipts AS receipts
+                    WHERE receipts.plan_id = task_resource_recovery.plan_id
+                      AND receipts.total_failures = task_resource_recovery.total_failures
+                ) THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN recovery_state = 2 THEN 1 ELSE 0 END), 0)
+             FROM task_resource_recovery",
+        )?;
+        statement
+            .query_row([], |row| {
+                Ok(ResourceRecoverySummary {
+                    retrying: count_from_i64(row.get(0)?)?,
+                    escalated: count_from_i64(row.get(1)?)?,
+                    unacknowledged_escalated: count_from_i64(row.get(2)?)?,
+                    resolved: count_from_i64(row.get(3)?)?,
+                })
+            })
+            .map_err(TaskStoreError::from)
+    }
+
+    /// Returns a bounded, stable list of escalated Resource recovery alerts
+    /// and their optional immutable acknowledgement receipt (zero-argument
+    /// shape pinned like the Semantic mirror).
+    ///
+    /// # Errors
+    ///
+    /// Returns corrupt-record or storage failures.
+    pub fn list_resource_recovery_alerts(
+        &self,
+    ) -> Result<Vec<ResourceRecoveryAlert>, TaskStoreError> {
+        let connection = self.lock_connection()?;
+        let mut statement = connection.prepare(
+            "SELECT plan_id FROM task_resource_recovery
+             WHERE recovery_state = ?1
+             ORDER BY escalated_at_ms, plan_id",
+        )?;
+        let mut rows = statement.query(params![ResourceRecoveryState::Escalated.code()])?;
+        let mut plan_ids = Vec::new();
+        while let Some(row) = rows.next()? {
+            plan_ids.push(crate::resource_commit::ResourceCommitPlanId::from_bytes(
+                crate::store::blob16(row, 0)?,
+            ));
+        }
+        drop(rows);
+        drop(statement);
+        plan_ids
+            .into_iter()
+            .map(|plan_id| {
+                let recovery = resource_load_optional(&*connection, plan_id)?
+                    .ok_or(TaskStoreError::ResourceCommitPlanNotFound)?;
+                let acknowledgement = resource_load_alert_receipt_optional(
+                    &*connection,
+                    plan_id,
+                    recovery.total_failures,
+                )?;
+                Ok(ResourceRecoveryAlert {
+                    recovery,
+                    acknowledgement,
+                })
+            })
+            .collect()
+    }
+
+    /// Acknowledges one exact Resource escalation instance without resuming
+    /// it. The failure-count CAS prevents a stale UI from acknowledging a
+    /// later escalation, and the immutable receipt (enforced by the v43
+    /// triggers on `task_resource_recovery_alert_receipts`) makes exact
+    /// retries restart-safe.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found, stale-CAS, invalid-state/timestamp, idempotency,
+    /// or storage failures. No partial acknowledgement is committed on
+    /// error.
+    pub fn acknowledge_resource_recovery_alert(
+        &self,
+        request: ResourceRecoveryAlertAcknowledgeRequest,
+    ) -> Result<ResourceRecoveryAlertAcknowledgeDecision, TaskStoreError> {
+        if request.acknowledged_at_ms < 0 {
+            return Err(TaskStoreError::InvalidResourceRecoveryPolicy {
+                reason: "acknowledgement timestamp must be non-negative",
+            });
+        }
+        let mut connection = self.lock_connection()?;
+        let transaction =
+            connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        if let Some(receipt) =
+            resource_load_alert_receipt_by_idempotency_key(&transaction, request.idempotency_key)?
+        {
+            if receipt.plan_id != request.plan_id
+                || receipt.total_failures != request.expected_total_failures
+                || receipt.principal_id != request.principal_id
+            {
+                return Err(TaskStoreError::IdempotencyConflict);
+            }
+            transaction.commit()?;
+            return Ok(ResourceRecoveryAlertAcknowledgeDecision::Replayed(receipt));
+        }
+        let recovery = resource_load_optional(&transaction, request.plan_id)?
+            .ok_or(TaskStoreError::ResourceCommitPlanNotFound)?;
+        if recovery.total_failures != request.expected_total_failures {
+            return Err(TaskStoreError::ResourceRecoveryCasMismatch {
+                expected: request.expected_total_failures,
+                current: recovery.total_failures,
+            });
+        }
+        if recovery.state != ResourceRecoveryState::Escalated {
+            return Err(TaskStoreError::InvalidResourceRecoveryState {
+                state: recovery.state,
+            });
+        }
+        if request.acknowledged_at_ms < recovery.last_failed_at_ms {
+            return Err(TaskStoreError::InvalidResourceRecoveryPolicy {
+                reason: "acknowledgement timestamp regresses durable history",
+            });
+        }
+        if let Some(receipt) = resource_load_alert_receipt_optional(
+            &transaction,
+            request.plan_id,
+            request.expected_total_failures,
+        )? {
+            transaction.commit()?;
+            return Ok(ResourceRecoveryAlertAcknowledgeDecision::Replayed(receipt));
+        }
+        let receipt = ResourceRecoveryAlertReceipt {
+            receipt_id: derive_resource_alert_receipt_id(
+                request.plan_id,
+                request.expected_total_failures,
+            ),
+            plan_id: request.plan_id,
+            total_failures: request.expected_total_failures,
+            principal_id: request.principal_id,
+            idempotency_key: request.idempotency_key,
+            acknowledged_at_ms: request.acknowledged_at_ms,
+        };
+        resource_insert_alert_receipt(&transaction, &receipt)?;
+        transaction.commit()?;
+        Ok(ResourceRecoveryAlertAcknowledgeDecision::Acknowledged(
+            receipt,
+        ))
+    }
+
+    /// Lists non-finalized Resource plans whose durable retry time is due.
+    /// Escalated plans are excluded until an explicit CAS resume. A plan
+    /// with no ledger row is returned immediately: the plan itself is the
+    /// durable fact and a lost ledger row is rebuilt by rescanning it
+    /// (SEM-RECOV-005 mirrored).
+    ///
+    /// # Errors
+    ///
+    /// Returns an invalid timestamp, corrupt-record, or storage failure.
+    pub fn list_due_resource_commit_plans(
+        &self,
+        limit: usize,
+        now_ms: i64,
+    ) -> Result<Vec<crate::resource_commit::ResourceCommitPlanRecord>, TaskStoreError> {
+        if now_ms < 0 {
+            return Err(TaskStoreError::InvalidResourceRecoveryPolicy {
+                reason: "scan timestamp must be non-negative",
+            });
+        }
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let connection = self.lock_connection()?;
+        let mut statement = connection.prepare(
+            "SELECT plans.plan_id FROM task_resource_commit_plans AS plans
+             LEFT JOIN task_resource_recovery AS recovery ON recovery.plan_id = plans.plan_id
+             WHERE plans.plan_state != ?1 AND (
+                recovery.plan_id IS NULL OR
+                (recovery.recovery_state = ?2 AND recovery.next_retry_at_ms <= ?3)
+             )
+             ORDER BY plans.created_at_ms, plans.plan_id LIMIT ?4",
+        )?;
+        let mut rows = statement.query(params![
+            crate::resource_commit::ResourceCommitPlanState::Finalized.code(),
+            ResourceRecoveryState::Retrying.code(),
+            now_ms,
+            i64::try_from(limit).unwrap_or(i64::MAX),
+        ])?;
+        let mut ids = Vec::new();
+        while let Some(row) = rows.next()? {
+            ids.push(crate::resource_commit::ResourceCommitPlanId::from_bytes(
+                crate::store::blob16(row, 0)?,
+            ));
+        }
+        drop(rows);
+        drop(statement);
+        ids.into_iter()
+            .map(|plan_id| {
+                crate::resource_commit::load_resource_plan_optional(&*connection, plan_id)?
+                    .ok_or(TaskStoreError::ResourceCommitPlanNotFound)
+            })
+            .collect()
+    }
+
+    /// Requeues one escalated Resource plan using its total-failure count as
+    /// a CAS. Total failure history is preserved; the mirrored
+    /// already-finalized wart of the Semantic resume applies unchanged
+    /// (an orphan Retrying row for a Finalized plan never re-enters
+    /// scheduling because the due scan excludes Finalized plans).
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found, stale-CAS, invalid-state/timestamp, or storage
+    /// failures. Total failure history is preserved.
+    pub fn resume_resource_recovery(
+        &self,
+        request: ResourceRecoveryResumeRequest,
+    ) -> Result<ResourceRecoveryRecord, TaskStoreError> {
+        if request.resumed_at_ms < 0 {
+            return Err(TaskStoreError::InvalidResourceRecoveryPolicy {
+                reason: "resume timestamp must be non-negative",
+            });
+        }
+        let mut connection = self.lock_connection()?;
+        let transaction =
+            connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let mut record = resource_load_optional(&transaction, request.plan_id)?
+            .ok_or(TaskStoreError::ResourceCommitPlanNotFound)?;
+        if record.total_failures != request.expected_total_failures {
+            return Err(TaskStoreError::ResourceRecoveryCasMismatch {
+                expected: request.expected_total_failures,
+                current: record.total_failures,
+            });
+        }
+        if record.state != ResourceRecoveryState::Escalated {
+            return Err(TaskStoreError::InvalidResourceRecoveryState {
+                state: record.state,
+            });
+        }
+        if request.resumed_at_ms < record.last_failed_at_ms {
+            return Err(TaskStoreError::InvalidResourceRecoveryPolicy {
+                reason: "resume timestamp regresses durable history",
+            });
+        }
+        record.state = ResourceRecoveryState::Retrying;
+        record.consecutive_failures = 0;
+        record.next_retry_at_ms = Some(request.resumed_at_ms);
+        record.escalated_at_ms = None;
+        record.updated_at_ms = request.resumed_at_ms;
+        resource_upsert(&transaction, &record)?;
+        transaction.commit()?;
+        Ok(record)
+    }
+}
+
 fn count_from_i64(value: i64) -> Result<u64, rusqlite::Error> {
     u64::try_from(value).map_err(|_| rusqlite::Error::IntegralValueOutOfRange(0, value))
 }
@@ -1071,6 +1576,30 @@ pub(crate) fn resolve_semantic_recovery(
          WHERE plan_id = ?4 AND recovery_state != ?1",
         params![
             SemanticRecoveryState::Resolved.code(),
+            encode_u64(0).as_slice(),
+            resolved_at_ms,
+            plan_id.as_bytes().as_slice(),
+        ],
+    )?;
+    Ok(())
+}
+
+/// Resource-domain mirror of [`resolve_semantic_recovery`]: flips any
+/// non-`Resolved` Resource ledger row to `Resolved` inside the caller's
+/// terminal transaction. Total failure history is preserved; a missing row
+/// is a no-op; repeated calls are idempotent.
+pub(crate) fn resolve_resource_recovery(
+    transaction: &rusqlite::Transaction<'_>,
+    plan_id: crate::resource_commit::ResourceCommitPlanId,
+    resolved_at_ms: i64,
+) -> Result<(), TaskStoreError> {
+    transaction.execute(
+        "UPDATE task_resource_recovery SET recovery_state = ?1,
+         consecutive_failures = ?2, next_retry_at_ms = NULL,
+         escalated_at_ms = NULL, resolved_at_ms = ?3, updated_at_ms = ?3
+         WHERE plan_id = ?4 AND recovery_state != ?1",
+        params![
+            ResourceRecoveryState::Resolved.code(),
             encode_u64(0).as_slice(),
             resolved_at_ms,
             plan_id.as_bytes().as_slice(),
@@ -1476,6 +2005,196 @@ fn semantic_load_optional(
         consecutive_failures: u64_from_blob(row, 1)?,
         total_failures: u64_from_blob(row, 2)?,
         last_source: SemanticRecoveryFailureSource::from_code(row.get(3)?)?,
+        first_failed_at_ms: row.get(4)?,
+        last_failed_at_ms: row.get(5)?,
+        next_retry_at_ms: row.get(6)?,
+        escalated_at_ms: row.get(7)?,
+        resolved_at_ms: row.get(8)?,
+        updated_at_ms: row.get(9)?,
+    }))
+}
+
+fn resource_validate_request(
+    request: ResourceRecoveryFailureRequest,
+) -> Result<(), TaskStoreError> {
+    let reason = if request.observed_at_ms < 0 {
+        Some("failure timestamp must be non-negative")
+    } else if request.base_delay_ms == 0 {
+        Some("base delay must be non-zero")
+    } else if request.max_delay_ms < request.base_delay_ms {
+        Some("maximum delay must be at least base delay")
+    } else {
+        None
+    };
+    reason.map_or(Ok(()), |reason| {
+        Err(TaskStoreError::InvalidResourceRecoveryPolicy { reason })
+    })
+}
+
+/// Resource-domain capped exponential backoff, pinned to the Semantic
+/// mirror's pure function (`base * 2^(consecutive - 1)`, saturating at
+/// `max_delay_ms`, no per-plan jitter).
+fn resource_capped_exponential_delay(
+    request: &ResourceRecoveryFailureRequest,
+    consecutive: u64,
+) -> u64 {
+    let exponent = u32::try_from(consecutive.saturating_sub(1))
+        .unwrap_or(u32::MAX)
+        .min(63);
+    request
+        .base_delay_ms
+        .checked_mul(1_u64 << exponent)
+        .unwrap_or(request.max_delay_ms)
+        .min(request.max_delay_ms)
+}
+
+fn derive_resource_alert_receipt_id(
+    plan_id: crate::resource_commit::ResourceCommitPlanId,
+    total_failures: u64,
+) -> ReceiptId {
+    let mut hasher = Sha256::new();
+    hasher.update(b"llmos/task-resource-recovery-alert-ack/v1\0");
+    hasher.update(plan_id.as_bytes());
+    hasher.update(total_failures.to_be_bytes());
+    let digest: [u8; 32] = hasher.finalize().into();
+    let mut id = [0_u8; 16];
+    id.copy_from_slice(&digest[..16]);
+    ReceiptId::from_bytes(id)
+}
+
+fn resource_insert_alert_receipt(
+    transaction: &rusqlite::Transaction<'_>,
+    receipt: &ResourceRecoveryAlertReceipt,
+) -> Result<(), TaskStoreError> {
+    transaction.execute(
+        "INSERT INTO task_resource_recovery_alert_receipts (
+            receipt_id, plan_id, total_failures, principal_id,
+            idempotency_key, acknowledged_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            receipt.receipt_id.as_bytes().as_slice(),
+            receipt.plan_id.as_bytes().as_slice(),
+            encode_u64(receipt.total_failures).as_slice(),
+            receipt.principal_id.as_bytes().as_slice(),
+            receipt.idempotency_key.as_bytes().as_slice(),
+            receipt.acknowledged_at_ms,
+        ],
+    )?;
+    Ok(())
+}
+
+fn resource_load_alert_receipt_optional(
+    reader: &impl SqlRead,
+    plan_id: crate::resource_commit::ResourceCommitPlanId,
+    total_failures: u64,
+) -> Result<Option<ResourceRecoveryAlertReceipt>, TaskStoreError> {
+    resource_load_alert_receipt(
+        reader,
+        "SELECT receipt_id, plan_id, total_failures, principal_id,
+                idempotency_key, acknowledged_at_ms
+         FROM task_resource_recovery_alert_receipts
+         WHERE plan_id = ?1 AND total_failures = ?2",
+        params![
+            plan_id.as_bytes().as_slice(),
+            encode_u64(total_failures).as_slice()
+        ],
+    )
+}
+
+fn resource_load_alert_receipt_by_idempotency_key(
+    reader: &impl SqlRead,
+    idempotency_key: IdempotencyKey,
+) -> Result<Option<ResourceRecoveryAlertReceipt>, TaskStoreError> {
+    resource_load_alert_receipt(
+        reader,
+        "SELECT receipt_id, plan_id, total_failures, principal_id,
+                idempotency_key, acknowledged_at_ms
+         FROM task_resource_recovery_alert_receipts
+         WHERE idempotency_key = ?1",
+        [idempotency_key.as_bytes().as_slice()],
+    )
+}
+
+fn resource_load_alert_receipt<P: rusqlite::Params>(
+    reader: &impl SqlRead,
+    sql: &str,
+    params: P,
+) -> Result<Option<ResourceRecoveryAlertReceipt>, TaskStoreError> {
+    let mut statement = reader.prepare_statement(sql)?;
+    let mut rows = statement.query(params)?;
+    let Some(row) = rows.next()? else {
+        return Ok(None);
+    };
+    Ok(Some(ResourceRecoveryAlertReceipt {
+        receipt_id: ReceiptId::from_bytes(crate::store::blob16(row, 0)?),
+        plan_id: crate::resource_commit::ResourceCommitPlanId::from_bytes(crate::store::blob16(
+            row, 1,
+        )?),
+        total_failures: u64_from_blob(row, 2)?,
+        principal_id: PrincipalId::from_bytes(crate::store::blob16(row, 3)?),
+        idempotency_key: IdempotencyKey::from_bytes(crate::store::blob16(row, 4)?),
+        acknowledged_at_ms: row.get(5)?,
+    }))
+}
+
+fn resource_upsert(
+    transaction: &rusqlite::Transaction<'_>,
+    record: &ResourceRecoveryRecord,
+) -> Result<(), TaskStoreError> {
+    transaction.execute(
+        "INSERT INTO task_resource_recovery (
+            plan_id, recovery_state, consecutive_failures, total_failures,
+            last_failure_source, first_failed_at_ms, last_failed_at_ms,
+            next_retry_at_ms, escalated_at_ms, resolved_at_ms, updated_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+         ON CONFLICT(plan_id) DO UPDATE SET
+            recovery_state = excluded.recovery_state,
+            consecutive_failures = excluded.consecutive_failures,
+            total_failures = excluded.total_failures,
+            last_failure_source = excluded.last_failure_source,
+            first_failed_at_ms = excluded.first_failed_at_ms,
+            last_failed_at_ms = excluded.last_failed_at_ms,
+            next_retry_at_ms = excluded.next_retry_at_ms,
+            escalated_at_ms = excluded.escalated_at_ms,
+            resolved_at_ms = excluded.resolved_at_ms,
+            updated_at_ms = excluded.updated_at_ms",
+        params![
+            record.plan_id.as_bytes().as_slice(),
+            record.state.code(),
+            encode_u64(record.consecutive_failures).as_slice(),
+            encode_u64(record.total_failures).as_slice(),
+            record.last_source.code(),
+            record.first_failed_at_ms,
+            record.last_failed_at_ms,
+            record.next_retry_at_ms,
+            record.escalated_at_ms,
+            record.resolved_at_ms,
+            record.updated_at_ms,
+        ],
+    )?;
+    Ok(())
+}
+
+fn resource_load_optional(
+    reader: &impl SqlRead,
+    plan_id: crate::resource_commit::ResourceCommitPlanId,
+) -> Result<Option<ResourceRecoveryRecord>, TaskStoreError> {
+    let mut statement = reader.prepare_statement(
+        "SELECT recovery_state, consecutive_failures, total_failures,
+         last_failure_source, first_failed_at_ms, last_failed_at_ms,
+         next_retry_at_ms, escalated_at_ms, resolved_at_ms, updated_at_ms
+         FROM task_resource_recovery WHERE plan_id = ?1",
+    )?;
+    let mut rows = statement.query([plan_id.as_bytes().as_slice()])?;
+    let Some(row) = rows.next()? else {
+        return Ok(None);
+    };
+    Ok(Some(ResourceRecoveryRecord {
+        plan_id,
+        state: ResourceRecoveryState::from_code(row.get(0)?)?,
+        consecutive_failures: u64_from_blob(row, 1)?,
+        total_failures: u64_from_blob(row, 2)?,
+        last_source: ResourceRecoveryFailureSource::from_code(row.get(3)?)?,
         first_failed_at_ms: row.get(4)?,
         last_failed_at_ms: row.get(5)?,
         next_retry_at_ms: row.get(6)?,

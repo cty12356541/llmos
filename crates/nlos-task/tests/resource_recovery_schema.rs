@@ -1,9 +1,11 @@
-//! W26-001 schema acceptance: the v42 migration lands the Semantic
-//! recovery ledger table group — one recovery row per semantic commit
-//! plan plus immutable alert receipts — additively on top of v41, in one
-//! `BEGIN IMMEDIATE` transaction. Reopening at the current version skips
-//! migration dispatch entirely; a partially landed schema group fails
-//! closed instead of being blind-stamped to the new version.
+//! W28-C schema acceptance: the v43 migration lands the Resource
+//! prepare/finalize coordinator table group — the mutable plan table with
+//! identity-immutability triggers, the immutable finalize envelope and its
+//! satisfactions, and the v42-shaped Resource recovery ledger (one row per
+//! resource commit plan plus immutable alert receipts) — additively on top
+//! of v42, in one `BEGIN IMMEDIATE` transaction. Reopening at the current
+//! version skips migration dispatch entirely; a partially landed schema
+//! group fails closed instead of being blind-stamped to the new version.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -23,7 +25,7 @@ impl TestDatabase {
         let sequence = NEXT_DATABASE.fetch_add(1, Ordering::Relaxed);
         Self {
             path: std::env::temp_dir().join(format!(
-                "nlos-task-semantic-recovery-{name}-{}-{sequence}.sqlite3",
+                "nlos-task-resource-recovery-{name}-{}-{sequence}.sqlite3",
                 std::process::id()
             )),
         }
@@ -57,23 +59,25 @@ fn suffix_path(path: &Path, suffix: &str) -> PathBuf {
 }
 
 #[test]
-fn schema_v42_creates_semantic_recovery_tables_idempotently() {
-    let database = TestDatabase::new("v42");
+fn schema_v43_creates_resource_coordinator_tables_idempotently() {
+    let database = TestDatabase::new("v43");
     // Opening a fresh database runs the full chain to the current
-    // version (v43 since the Resource coordinator group landed): both
-    // v42 tables exist and user_version = 43.
+    // version: all five new tables exist and user_version = 43.
     drop(database.open());
     let raw = Connection::open(&database.path).expect("open raw connection");
     let count: i64 = raw
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table'
-             AND name IN ('task_semantic_recovery',
-                          'task_semantic_recovery_alert_receipts')",
+             AND name IN ('task_resource_commit_plans',
+                          'task_resource_finalize_envelopes',
+                          'task_resource_finalize_satisfactions',
+                          'task_resource_recovery',
+                          'task_resource_recovery_alert_receipts')",
             [],
             |row| row.get(0),
         )
-        .expect("count semantic recovery tables");
-    assert_eq!(count, 2);
+        .expect("count resource coordinator tables");
+    assert_eq!(count, 5);
     let version: i64 = raw
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("read user_version");
@@ -92,35 +96,35 @@ fn schema_v42_creates_semantic_recovery_tables_idempotently() {
 }
 
 #[test]
-fn partial_semantic_recovery_schema_fails_closed_on_reopen() {
-    // A crash between the v42 batch statements could commit the recovery
-    // table without its receipts table, due index, or immutability
-    // triggers. Seeding that half-state (construction mirrors the v38
-    // downgrade fixture in resource_commit.rs) must fail closed on
-    // reopen: the migration refuses to blind-stamp user_version = 42
-    // over a partial schema group.
-    let database = TestDatabase::new("partial-v42");
+fn partial_resource_coordinator_schema_fails_closed_on_reopen() {
+    // A crash between the v43 batch statements could commit the plan and
+    // envelope tables without the satisfactions table, recovery ledger, or
+    // immutability triggers. Seeding that half-state (construction mirrors
+    // the v42 partial fixture in semantic_recovery_schema.rs) must fail
+    // closed on reopen: the migration refuses to blind-stamp
+    // user_version = 43 over a partial schema group.
+    let database = TestDatabase::new("partial-v43");
     drop(database.open());
     let raw = Connection::open(&database.path).expect("open raw connection");
     raw.execute_batch(
-        "DROP TABLE task_semantic_recovery_alert_receipts;
-         DROP INDEX task_semantic_recovery_due;
-         PRAGMA user_version = 41;",
+        "DROP TABLE task_resource_recovery_alert_receipts;
+         DROP TABLE task_resource_finalize_satisfactions;
+         PRAGMA user_version = 42;",
     )
-    .expect("seed partial v42 schema");
+    .expect("seed partial v43 schema");
     drop(raw);
 
     assert!(matches!(
         SqliteTaskAuthority::open(&database.path),
         Err(TaskStoreError::CorruptRecord(
-            "partial semantic recovery ledger schema",
+            "partial resource prepare/finalize schema",
         ))
     ));
 
-    // The half-state itself is untouched: no blind stamping to 42.
+    // The half-state itself is untouched: no blind stamping to 43.
     let raw = Connection::open(&database.path).expect("reopen raw connection");
     let version: i64 = raw
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("read user_version after failed reopen");
-    assert_eq!(version, 41);
+    assert_eq!(version, 42);
 }

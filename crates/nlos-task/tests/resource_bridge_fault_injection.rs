@@ -39,7 +39,16 @@
 //!   N≥2 times plus reopen: every call `Replayed`, one receipt row set;
 //! - W6 mixed double-sided joint visibility — both nested evidence sets
 //!   appear and disappear together with the receipt (single Immediate
-//!   transaction), asserted both ways.
+//!   transaction), asserted both ways;
+//! - WE1/WE2/WE3 envelope boundary windows (W28-C-4, ADR-0017 附录 A
+//!   G7) — the same matrix extended to the durable prepare/finalize
+//!   envelope coordinator: crash after `prepare` before owner finalize
+//!   (plan stays `Planned`, not-due semantics hold, the same request
+//!   keeps advancing); crash after owner FINALIZED before Task finalize
+//!   (`PowerLossAfter` both directions and torn WAL tail: the plan flip,
+//!   nested rows, receipt, permit close, and head advance are ONE
+//!   transaction, so no partially visible terminal state can exist and
+//!   both directions replay byte-equal).
 //!
 //! **Crash semantics disclaimer** (as in every prior matrix): kill-9
 //! simulates *process* crashes; the OS page cache survives process
@@ -71,10 +80,11 @@ use nlos_task::{
     AttemptSpec, AuthorityLeasePermitRequest, AuthorityLeaseRecord, AuthorityLeaseRequest,
     FinalizeRequest, FinalizeRequestV3, NestedResourceCostReceipt,
     NestedSemanticPublicationReceipt, ParticipantRegistryBinding, PermitDecision, PermitRecord,
-    PermitRequest, PermitState, PlanSemanticCommitRequest, RecordSemanticPublicationsRequest,
-    ResourceFinalizeDecision, SemanticCommitPlanId, SemanticCommitPlanState,
-    SemanticResourceFinalizeDecision, SnapshotBundle, SnapshotConsistency, SqliteTaskAuthority,
-    TaskSnapshotReceiptSpec, TaskSpec, TaskStoreError, TaskWriteSetRequest,
+    PermitRequest, PermitState, PlanSemanticCommitRequest, PrepareResourceFinalizeRequest,
+    RecordSemanticPublicationsRequest, ResourceCommitPlanId, ResourceCommitPlanState,
+    ResourceConvergeDecision, ResourceFinalizeDecision, SemanticCommitPlanId,
+    SemanticCommitPlanState, SemanticResourceFinalizeDecision, SnapshotBundle, SnapshotConsistency,
+    SqliteTaskAuthority, TaskSnapshotReceiptSpec, TaskSpec, TaskStoreError, TaskWriteSetRequest,
     TaskWriteSetResourceReservationRequest, TaskWriteSetSemanticAppendRequest,
     TaskWriteSetSemanticRequiredDurability, TaskWriteSetSemanticTarget, empty_effect_history_root,
 };
@@ -1171,6 +1181,8 @@ fn crash_child_helper() {
     match scenario.as_str() {
         "resource-bridge-commit" => child_resource_bridge_commit(&layout),
         "mixed-bridge-commit" => child_mixed_bridge_commit(&layout),
+        "resource-envelope-prepare" => child_resource_envelope_prepare(&layout),
+        "resource-envelope-converge" => child_resource_envelope_converge(&layout),
         other => panic!("unknown crash child scenario {other}"),
     }
 }
@@ -1258,6 +1270,92 @@ fn decode_mixed_marker(marker: &str) -> (CommitPermitId, SemanticCommitPlanId) {
     let plan = hex_decode_plan(parts.next().expect("plan id"));
     assert!(parts.next().is_none(), "marker carries exactly two ids");
     (permit, plan)
+}
+
+/// The durable envelope request of the envelope coordinator fixture
+/// (identical identity bytes in-process and in the crash child).
+fn envelope_prepare_request(permit_id: CommitPermitId) -> PrepareResourceFinalizeRequest {
+    PrepareResourceFinalizeRequest {
+        task_id: task_id(),
+        attempt_id: attempt_spec().attempt_id,
+        attempt_generation: Generation::INITIAL,
+        permit_id,
+        idempotency_key: IdempotencyKey::from_bytes([0x43; 16]),
+        required_satisfaction: Vec::new(),
+        fenced_participant_digest: [0x45; 32],
+        prepared_at_ms: 1_450,
+    }
+}
+
+/// Decodes the `READY <permit-hex> <plan-hex>` marker of the resource
+/// envelope crash-child scenarios.
+fn decode_envelope_marker(marker: &str) -> (CommitPermitId, ResourceCommitPlanId) {
+    let mut parts = marker
+        .trim()
+        .strip_prefix("READY ")
+        .expect("marker")
+        .split(' ');
+    let permit = hex_decode_permit(parts.next().expect("permit id"));
+    let plan = ResourceCommitPlanId::from_bytes(hex_decode16(parts.next().expect("plan id")));
+    assert!(parts.next().is_none(), "marker carries exactly two ids");
+    (permit, plan)
+}
+
+/// Child fixture (WE1): setup + `prepare_resource_finalize` committed,
+/// owner deliberately left unsettled; the kill lands AFTER the prepare
+/// transaction (the crash-after-prepare / before-owner-finalize window).
+fn child_resource_envelope_prepare(layout: &Layout) -> ! {
+    let owner = OwnerFixture::new(&layout.resource_root(), 0xa1);
+    let reservations = bridge_reservations(&owner);
+    let task = SqliteTaskAuthority::open(layout.task_path()).expect("open task authority");
+    let (permit, _) =
+        setup_resource_bridge(&task, layout, &owner, &reservations, PermitPath::Plain);
+    let plan_id = task
+        .prepare_resource_finalize(envelope_prepare_request(permit.permit_id))
+        .expect("prepare envelope")
+        .record()
+        .plan_id;
+    announce(&format!(
+        "READY {} {}",
+        hex_encode(permit.permit_id.as_bytes()),
+        hex_encode(plan_id.as_bytes())
+    ));
+    let _keepers = (task, owner);
+    loop {
+        std::thread::park();
+    }
+}
+
+/// Child fixture (WE2 Phase B / WE3): the full envelope coordinator
+/// lifecycle — setup, prepare, owner settle, and the plan-threaded
+/// converge terminal transaction fully committed; the kill lands AFTER
+/// the commit point and leaves the WAL on disk. The marker carries the
+/// permit id and the resource plan id.
+fn child_resource_envelope_converge(layout: &Layout) -> ! {
+    let owner = OwnerFixture::new(&layout.resource_root(), 0xa1);
+    let reservations = bridge_reservations(&owner);
+    let task = SqliteTaskAuthority::open(layout.task_path()).expect("open task authority");
+    let (permit, _) =
+        setup_resource_bridge(&task, layout, &owner, &reservations, PermitPath::Plain);
+    let plan_id = task
+        .prepare_resource_finalize(envelope_prepare_request(permit.permit_id))
+        .expect("prepare envelope")
+        .record()
+        .plan_id;
+    settle_bridge_reservations(&owner, &reservations);
+    let decision = task
+        .converge_resource_commit_plan(&owner.authority, plan_id, 1_700)
+        .expect("envelope converge commit");
+    assert!(matches!(decision, ResourceConvergeDecision::Finalized(_)));
+    announce(&format!(
+        "READY {} {}",
+        hex_encode(permit.permit_id.as_bytes()),
+        hex_encode(plan_id.as_bytes())
+    ));
+    let _keepers = (task, owner);
+    loop {
+        std::thread::park();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2387,4 +2485,467 @@ fn bridge_fault_mixed_rung_replay_storm_keeps_both_sets_single_and_byte_equal() 
         1
     );
     assert_integrity(&root.layout.task_path());
+}
+
+// ---------------------------------------------------------------------------
+// WE1/WE2/WE3 × envelope coordinator (W28-C-4, ADR-0017 附录 A G7)
+// ---------------------------------------------------------------------------
+
+/// Reads the sealed Reservation ids of the permit's write set straight
+/// from the durable Task rows (the crash parent has no owner handles).
+fn sealed_reservation_ids(path: &Path, task: &TaskId) -> Vec<[u8; 16]> {
+    let connection = Connection::open(path).expect("open raw reader");
+    let mut statement = connection
+        .prepare(
+            "SELECT reservation_id FROM task_write_set_resource_reservations
+             WHERE task_id = ?1 ORDER BY reservation_id",
+        )
+        .expect("prepare sealed reservation scan");
+    let mut rows = statement
+        .query([task.as_bytes().as_slice()])
+        .expect("query sealed reservations");
+    let mut ids = Vec::new();
+    while let Some(row) = rows.next().expect("next sealed reservation") {
+        let blob: Vec<u8> = row.get(0).expect("reservation blob");
+        let mut id = [0_u8; 16];
+        id.copy_from_slice(&blob);
+        ids.push(id);
+    }
+    ids
+}
+
+/// Settles the two sealed bridge reservations through a bare reopened
+/// owner handle (the crash parent holds no `OwnerFixture`): the
+/// upper-100 reservation consumes 30→37 (refund 63), the upper-25 one
+/// consumes 10 (refund 15).
+fn settle_sealed(owner: &ResourceAuthority, reservations: &[ReservationRecord]) {
+    for reservation in reservations {
+        let activation = owner
+            .activate(nlos_resource::ActivateReservationRequest {
+                reservation_id: reservation.reservation_id,
+                call_id: reservation.call_id,
+                operation_id: reservation.operation_id,
+                driver_id: reservation.driver_id,
+                driver_generation: reservation.driver_generation,
+                driver_fencing_token: reservation.driver_fencing_token,
+                activation_token: reservation.activation_token,
+                activated_at_ms: 1_400,
+            })
+            .expect("activate sealed reservation")
+            .receipt();
+        let (consumptions, final_usage) = if reservation.upper_bound == 100 {
+            (vec![(1, 30), (2, 37)], 37)
+        } else {
+            (vec![(1, 10)], 10)
+        };
+        for (index, (sequence, cumulative_usage)) in consumptions.iter().enumerate() {
+            owner
+                .consume(nlos_resource::ConsumeReservationRequest {
+                    reservation_id: reservation.reservation_id,
+                    operation_id: reservation.operation_id,
+                    activation_receipt_id: activation.receipt_id,
+                    sequence: *sequence,
+                    cumulative_usage: *cumulative_usage,
+                    consumed_at_ms: 1_500 + 10 * (index as u64),
+                })
+                .expect("consume sealed reservation");
+        }
+        let final_seq = consumptions.last().map_or(0, |(sequence, _)| *sequence);
+        owner
+            .finalize_reservation(nlos_resource::FinalizeReservationRequest {
+                reservation_id: reservation.reservation_id,
+                operation_id: reservation.operation_id,
+                activation_receipt_id: activation.receipt_id,
+                effect_closed_proof_digest: [0x2a; 32],
+                final_seq,
+                final_usage,
+                finalized_at_ms: 1_600,
+            })
+            .expect("owner finalize sealed reservation");
+    }
+}
+
+/// WE1(envelope 窗口 i):prepare 事务提交后、owner finalize 前进程崩溃。
+/// 期望:重开后 plan 仍 `Planned`;G4 语义成立(owner 未结算 ⇒ converge
+/// 返回 NotDue、零 owner 变更、零台账行);owner 逐项结算后同请求继续
+/// 推进到唯一终态,重放逐字节相等。
+#[test]
+#[allow(clippy::too_many_lines)]
+fn envelope_window_crash_after_prepare_before_owner_finalize_keeps_g4_semantics() {
+    let _serialization = fault_lock();
+    nlos_store_fault::disarm();
+    let root = TestRoot::new("env-prepare-crash");
+    let mut child = spawn_child("resource-envelope-prepare", &root.layout);
+    let marker = await_marker(&mut child);
+    let (permit_id, plan_id) = decode_envelope_marker(&marker);
+    kill_and_reap(&mut child);
+
+    let recovered = reopen_task(&root.layout);
+    let plan = recovered
+        .inspect_resource_commit_plan(plan_id)
+        .expect("plan survives the crash");
+    assert_eq!(plan.state, ResourceCommitPlanState::Planned);
+    assert_eq!(plan.permit_id, permit_id);
+    assert_permit_issued_at_prefix(&recovered, permit_id);
+    assert!(
+        recovered
+            .inspect_resource_finalize_envelope(plan_id)
+            .expect("envelope")
+            .is_some(),
+        "durable envelope survives the crash"
+    );
+    assert_integrity(&root.layout.task_path());
+
+    // G4 语义在崩溃窗口后依然成立:owner 未结算 ⇒ NotDue、零 owner 变更、
+    // 零台账行、plan 保持可 inspect 的 durable fact。
+    let owner = ResourceAuthority::open(root.layout.resource_root()).expect("reopen owner");
+    let sealed_ids = sealed_reservation_ids(&root.layout.task_path(), &task_id());
+    assert_eq!(sealed_ids.len(), 2);
+    let mut reservations_before = Vec::new();
+    for id in &sealed_ids {
+        let record = owner
+            .inspect_reservation(nlos_types::ReservationId::from_bytes(*id))
+            .expect("sealed reservation known to the owner");
+        assert_eq!(record.state, nlos_resource::ReservationState::Reserved);
+        reservations_before.push(record);
+    }
+    let decision = recovered
+        .converge_resource_commit_plan(&owner, plan_id, 1_800)
+        .expect("converge inside the window");
+    assert!(matches!(decision, ResourceConvergeDecision::NotDue(_)));
+    for record in &reservations_before {
+        assert_eq!(
+            owner
+                .inspect_reservation(record.reservation_id)
+                .expect("owner untouched"),
+            *record,
+            "not-due converge must not mutate the owner"
+        );
+    }
+    assert_eq!(
+        raw_count(
+            &root.layout.task_path(),
+            "SELECT COUNT(*) FROM task_resource_recovery"
+        ),
+        0
+    );
+    assert_eq!(
+        recovered
+            .inspect_resource_commit_plan(plan_id)
+            .unwrap()
+            .state,
+        ResourceCommitPlanState::Planned
+    );
+    assert_integrity(&root.layout.task_path());
+
+    // 同请求继续推进:owner 逐项结算后 converge 收敛到唯一终态,重放逐字节
+    // 相等(镜像 W1–W6 的收敛断言式样)。
+    settle_sealed(&owner, &reservations_before);
+    let redone = match recovered
+        .converge_resource_commit_plan(&owner, plan_id, 1_900)
+        .expect("converge after owner settle")
+    {
+        ResourceConvergeDecision::Finalized(receipt) => *receipt,
+        other => panic!("expected Finalized, got {other:?}"),
+    };
+    assert_full_two_reservation_aggregate(&redone.resource_cost_receipts);
+    assert_eq!(redone.task_receipt.new_head_commit_seq, 1);
+    let plan = recovered
+        .inspect_resource_commit_plan(plan_id)
+        .expect("plan");
+    assert_eq!(plan.state, ResourceCommitPlanState::Finalized);
+    assert_eq!(plan.task_receipt_id, Some(redone.task_receipt.receipt_id));
+    let replay = match recovered
+        .converge_resource_commit_plan(&owner, plan_id, 1_950)
+        .expect("replay converge")
+    {
+        ResourceConvergeDecision::Replayed(receipt) => *receipt,
+        other => panic!("expected Replayed, got {other:?}"),
+    };
+    assert_eq!(replay, redone, "replay must be byte-stable");
+    assert_eq!(
+        raw_count(
+            &root.layout.task_path(),
+            "SELECT COUNT(*) FROM task_resource_cost_receipts"
+        ),
+        2,
+        "replays must not append a second nested set"
+    );
+    assert_integrity(&root.layout.task_path());
+    drop(recovered);
+    drop(root);
+}
+
+/// WE2(envelope 窗口 ii):owner 全部 FINALIZED 后、Task finalize 前的提交
+/// 点断电。Phase A(`PowerLossAfter`):converge "报告成功"但重开后完全
+/// 不可见——plan 翻转、嵌套行、回执、permit 关闭、head 推进作为同一事务
+/// 一起消失;同请求重做 → `Finalized` 与幻影决策逐字节相等。Phase
+/// B(kill-9 after commit):完全可见、恰一套嵌套行;两方向重放均逐字节
+/// 相等,绝无部分可见。
+#[test]
+#[allow(clippy::too_many_lines)]
+fn envelope_window_power_loss_after_owner_finalized_before_task_finalize_converges_both_ways() {
+    let _serialization = fault_lock();
+    nlos_store_fault::disarm();
+    envelope_power_loss_invisible_redo_byte_equal();
+    envelope_kill9_after_converge_visible_replay_byte_equal();
+}
+
+fn envelope_power_loss_invisible_redo_byte_equal() {
+    let root = TestRoot::new("env-power-loss");
+    let owner = OwnerFixture::new(&root.layout.resource_root(), 0xa1);
+    let reservations = bridge_reservations(&owner);
+    let authority = open_task_shim(&root.layout);
+    let (permit, _) = setup_resource_bridge(
+        &authority,
+        &root.layout,
+        &owner,
+        &reservations,
+        PermitPath::Plain,
+    );
+    let plan_id = authority
+        .prepare_resource_finalize(envelope_prepare_request(permit.permit_id))
+        .expect("prepare envelope")
+        .record()
+        .plan_id;
+    settle_bridge_reservations(&owner, &reservations);
+
+    nlos_store_fault::arm(FaultMode::PowerLossAfter { remaining: 0 });
+    let phantom = match authority
+        .converge_resource_commit_plan(&owner.authority, plan_id, 1_700)
+        .expect("power loss drops the terminal transaction silently")
+    {
+        ResourceConvergeDecision::Finalized(receipt) => *receipt,
+        other => panic!("expected Finalized phantom, got {other:?}"),
+    };
+    nlos_store_fault::disarm();
+    // The surviving connection keeps a wal-index referencing frames the
+    // disk never saw; it must die first (as a real power loss would kill
+    // it) so recovery sees durable bytes alone (W3 Phase A precedent).
+    drop(authority);
+
+    let recovered = reopen_task(&root.layout);
+    assert_permit_issued_at_prefix(&recovered, permit.permit_id);
+    assert_no_terminal_bridge_rows(&root.layout.task_path());
+    assert_eq!(
+        recovered
+            .inspect_resource_commit_plan(plan_id)
+            .expect("plan")
+            .state,
+        ResourceCommitPlanState::Planned,
+        "the plan flip rode the lost transaction and is gone with it"
+    );
+    assert_eq!(
+        raw_count(
+            &root.layout.task_path(),
+            "SELECT COUNT(*) FROM task_resource_recovery"
+        ),
+        0
+    );
+    assert_integrity(&root.layout.task_path());
+
+    let redone = match recovered
+        .converge_resource_commit_plan(&owner.authority, plan_id, 1_700)
+        .expect("redo converge after power loss")
+    {
+        ResourceConvergeDecision::Finalized(receipt) => *receipt,
+        other => panic!("expected Finalized redo, got {other:?}"),
+    };
+    assert_eq!(
+        redone, phantom,
+        "redo must be byte-equal to the silently lost decision"
+    );
+    assert_full_two_reservation_aggregate(&redone.resource_cost_receipts);
+    assert_eq!(
+        recovered
+            .inspect_resource_commit_plan(plan_id)
+            .unwrap()
+            .state,
+        ResourceCommitPlanState::Finalized
+    );
+    let replay = match recovered
+        .converge_resource_commit_plan(&owner.authority, plan_id, 1_999)
+        .expect("replay converge")
+    {
+        ResourceConvergeDecision::Replayed(receipt) => *receipt,
+        other => panic!("expected Replayed, got {other:?}"),
+    };
+    assert_eq!(replay, redone, "replay must be byte-stable");
+    assert_integrity(&root.layout.task_path());
+    drop(recovered);
+    drop(root);
+}
+
+fn envelope_kill9_after_converge_visible_replay_byte_equal() {
+    let root = TestRoot::new("env-kill9-converge");
+    let mut child = spawn_child("resource-envelope-converge", &root.layout);
+    let marker = await_marker(&mut child);
+    let (permit_id, plan_id) = decode_envelope_marker(&marker);
+    kill_and_reap(&mut child);
+
+    let recovered = reopen_task(&root.layout);
+    let plan = recovered
+        .inspect_resource_commit_plan(plan_id)
+        .expect("plan survives the committed converge");
+    assert_eq!(plan.state, ResourceCommitPlanState::Finalized);
+    assert_eq!(plan.permit_id, permit_id);
+    assert!(plan.task_receipt_id.is_some());
+    assert_eq!(
+        recovered
+            .inspect_permit(task_id(), permit_id)
+            .expect("permit")
+            .state,
+        PermitState::Closed,
+        "committed converge must survive the kill"
+    );
+    assert_eq!(
+        recovered
+            .inspect_task(task_id())
+            .expect("head")
+            .head_commit_seq,
+        1
+    );
+    assert_eq!(
+        raw_count(
+            &root.layout.task_path(),
+            "SELECT COUNT(*) FROM task_receipts"
+        ),
+        1
+    );
+    assert_eq!(
+        raw_count(
+            &root.layout.task_path(),
+            "SELECT COUNT(*) FROM task_resource_cost_receipts"
+        ),
+        2
+    );
+    assert_eq!(
+        raw_count(
+            &root.layout.task_path(),
+            "SELECT COUNT(*) FROM task_resource_cost_consumptions"
+        ),
+        3
+    );
+    assert_integrity(&root.layout.task_path());
+
+    // Replay consults only the durable Task rows: an empty Resource
+    // authority proves the finalized-plan converge path never re-reads
+    // the owner (G3 只读 Task 行的镜像)。
+    let replay_owner =
+        ResourceAuthority::open(root.layout.empty_replay_resource_root()).expect("empty owner");
+    let replay_one = match recovered
+        .converge_resource_commit_plan(&replay_owner, plan_id, 9_999)
+        .expect("visible replay")
+    {
+        ResourceConvergeDecision::Replayed(receipt) => *receipt,
+        other => panic!("expected Replayed, got {other:?}"),
+    };
+    assert_full_two_reservation_aggregate(&replay_one.resource_cost_receipts);
+    let replay_two = match recovered
+        .converge_resource_commit_plan(&replay_owner, plan_id, 9_999)
+        .expect("second replay")
+    {
+        ResourceConvergeDecision::Replayed(receipt) => *receipt,
+        other => panic!("expected Replayed, got {other:?}"),
+    };
+    assert_eq!(replay_two, replay_one, "replay must be byte-stable");
+    assert_eq!(
+        raw_count(
+            &root.layout.task_path(),
+            "SELECT COUNT(*) FROM task_receipts"
+        ),
+        1,
+        "replays must not append a second receipt"
+    );
+    assert_integrity(&root.layout.task_path());
+    drop(recovered);
+    drop(root);
+}
+
+/// WE3(envelope 窗口 ii,torn WAL tail):子进程提交完整 converge 终结事务
+/// 后被杀,父进程把 WAL 最后一个 commit 帧截去一半。期望:终结事务整体
+/// 隐藏(plan 翻转与嵌套行/回执/permit 关闭/head 推进一起消失,已提交
+/// 前缀 task/attempt/write-set/permit/envelope 保留);同请求重做 →
+/// `Finalized`、聚合完整;重开后重放逐字节相等、行数恰一套。
+#[test]
+#[allow(clippy::too_many_lines)]
+fn envelope_window_torn_wal_tail_discards_plan_flip_with_bridge_together() {
+    let _serialization = fault_lock();
+    nlos_store_fault::disarm();
+    let root = TestRoot::new("env-torn-wal");
+    let mut child = spawn_child("resource-envelope-converge", &root.layout);
+    let marker = await_marker(&mut child);
+    let (permit_id, plan_id) = decode_envelope_marker(&marker);
+    kill_and_reap(&mut child);
+    truncate_wal_inside_last_commit(&root.layout.task_path());
+
+    let recovered = reopen_task(&root.layout);
+    assert_permit_issued_at_prefix(&recovered, permit_id);
+    assert_no_terminal_bridge_rows(&root.layout.task_path());
+    assert_eq!(
+        recovered
+            .inspect_resource_commit_plan(plan_id)
+            .expect("plan")
+            .state,
+        ResourceCommitPlanState::Planned,
+        "the torn tail must discard the plan flip together with the bridge"
+    );
+    assert!(
+        recovered
+            .inspect_resource_finalize_envelope(plan_id)
+            .expect("envelope")
+            .is_some(),
+        "the durable prefix keeps the envelope"
+    );
+    assert_eq!(
+        raw_count(
+            &root.layout.task_path(),
+            "SELECT COUNT(*) FROM task_resource_recovery"
+        ),
+        0
+    );
+    assert_integrity(&root.layout.task_path());
+
+    let owner = ResourceAuthority::open(root.layout.resource_root()).expect("reopen owner");
+    let redone = match recovered
+        .converge_resource_commit_plan(&owner, plan_id, 1_800)
+        .expect("redo converge after torn tail")
+    {
+        ResourceConvergeDecision::Finalized(receipt) => *receipt,
+        other => panic!("expected Finalized redo, got {other:?}"),
+    };
+    assert_full_two_reservation_aggregate(&redone.resource_cost_receipts);
+    assert_eq!(
+        recovered
+            .inspect_resource_commit_plan(plan_id)
+            .unwrap()
+            .state,
+        ResourceCommitPlanState::Finalized
+    );
+    let replay = match recovered
+        .converge_resource_commit_plan(&owner, plan_id, 1_999)
+        .expect("replay converge")
+    {
+        ResourceConvergeDecision::Replayed(receipt) => *receipt,
+        other => panic!("expected Replayed, got {other:?}"),
+    };
+    assert_eq!(replay, redone, "replay must be byte-stable");
+    assert_eq!(
+        raw_count(
+            &root.layout.task_path(),
+            "SELECT COUNT(*) FROM task_resource_cost_receipts"
+        ),
+        2,
+        "redo keeps exactly one nested set"
+    );
+    assert_eq!(
+        raw_count(
+            &root.layout.task_path(),
+            "SELECT COUNT(*) FROM task_resource_cost_consumptions"
+        ),
+        3
+    );
+    assert_integrity(&root.layout.task_path());
+    drop(recovered);
+    drop(root);
 }
