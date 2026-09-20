@@ -17,6 +17,10 @@ pub const DEPENDENCIES_ROOT_DOMAIN: &[u8] = b"llmos/plan/dependencies-root/v1";
 pub const REVISION_DIGEST_DOMAIN: &[u8] = b"llmos/plan/revision-digest/v1";
 /// Domain separator for the state-transition voucher id.
 pub const VOUCHER_ID_DOMAIN: &[u8] = b"llmos/plan/transition-voucher-id/v1";
+/// Domain separator for the resolution receipt id.
+pub const RESOLUTION_ID_DOMAIN: &[u8] = b"llmos/plan/resolution-id/v1";
+/// Domain separator for the resolution receipt content digest.
+pub const RESOLUTION_DIGEST_DOMAIN: &[u8] = b"llmos/plan/resolution-digest/v1";
 
 /// Structural admission bound for one plan revision's declared node set.
 /// The 100K logical-node tier is the G2 benchmark target (W31); this bound
@@ -333,6 +337,97 @@ pub struct ChainVerification {
     pub head_revision: Option<u64>,
     /// The newest revision's digest, `None` for an unknown plan.
     pub head_digest: Option<[u8; 32]>,
+}
+
+/// Typed selector naming the plan revision a resolution is computed
+/// against (ADR-0016 决定 5: typed selector → version/generation-carrying
+/// handle; `[PLAN-DEPENDENCY-001]`). `Current` pins exactly once, at the
+/// head observed when the resolution commits — it never floats to later
+/// revisions.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum PlanRevisionSelector {
+    /// Resolve whatever revision is the plan's current head.
+    Current(TaskPlanId),
+    /// Resolve exactly the named revision.
+    At { plan_id: TaskPlanId, revision: u64 },
+}
+
+impl PlanRevisionSelector {
+    /// The plan this selector addresses.
+    #[must_use]
+    pub const fn plan_id(&self) -> TaskPlanId {
+        match self {
+            Self::Current(plan_id) | Self::At { plan_id, .. } => *plan_id,
+        }
+    }
+}
+
+/// Request to resolve one plan revision's declared dependency DAG
+/// (topological order + edge set) into a durable resolution receipt.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResolvePlanRequest {
+    pub selector: PlanRevisionSelector,
+    /// Exactly-once key for the resolution receipt.
+    pub idempotency_key: IdempotencyKey,
+    /// Caller-supplied observation time (ms); the store holds no clock.
+    pub resolved_at_ms: u64,
+}
+
+/// The durable resolution receipt — simultaneously the
+/// version/generation-carrying handle (ADR-0016 决定 5). Every field is
+/// pinned at resolution time; later plan revisions never change it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlanResolutionHandle {
+    pub resolution_id: ReceiptId,
+    pub plan_id: TaskPlanId,
+    /// The generation this resolution was computed against.
+    pub revision: u64,
+    /// The revision digest this resolution was computed against.
+    pub plan_digest: [u8; 32],
+    /// Digest over (plan, revision, plan digest, order, edges); the
+    /// receipt's own content root.
+    pub resolution_digest: [u8; 32],
+    /// Topological order (dependencies first), deterministic under the
+    /// minimum-`TaskNodeId` tiebreak.
+    pub resolved_order: Vec<TaskNodeId>,
+    /// Canonical edge set, `(dependent, dependency)` pairs, sorted.
+    pub resolved_edges: Vec<(TaskNodeId, TaskNodeId)>,
+    pub idempotency_key: IdempotencyKey,
+    pub resolved_at_ms: u64,
+}
+
+/// Outcome of one `resolve_plan` call.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PlanResolutionDecision {
+    /// First execution of this key: the resolution receipt committed.
+    Resolved(PlanResolutionHandle),
+    /// Durable replay: the original receipt is returned byte-equal.
+    Replayed(PlanResolutionHandle),
+}
+
+impl PlanResolutionDecision {
+    /// The handle this call denotes, whichever branch.
+    #[must_use]
+    pub fn handle(self) -> PlanResolutionHandle {
+        match self {
+            Self::Resolved(handle) | Self::Replayed(handle) => handle,
+        }
+    }
+}
+
+/// One node's declared shape **as pinned by a resolution**: read from the
+/// revision's immutable declared-shape rows, never from the mutable
+/// current node rows (G4: a later revision must not silently change an
+/// in-flight resolution's view).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResolvedPlanNode {
+    pub node_id: TaskNodeId,
+    pub node_key: [u8; 16],
+    pub kind: PlanNodeKind,
+    /// The node's shape digest as declared in the resolution's revision.
+    pub node_digest: [u8; 32],
+    /// 1-based position in the resolved topological order.
+    pub position: u64,
 }
 
 pub(crate) fn encode_kind(kind: PlanNodeKind) -> i64 {

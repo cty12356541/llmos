@@ -24,7 +24,7 @@ use crate::model::{
     PlanRevisionReceipt, PlanView, REVISION_DIGEST_DOMAIN, TASK_NODE_ID_DOMAIN, VOUCHER_ID_DOMAIN,
     decode_kind, decode_state, encode_kind, encode_state,
 };
-use crate::schema::{SCHEMA_VERSION, migrate_v1};
+use crate::schema::{SCHEMA_VERSION, migrate_v1, migrate_v2};
 
 /// A single-writer `SQLite` plan authority.
 pub struct SqlitePlanAuthority {
@@ -87,7 +87,11 @@ impl SqlitePlanAuthority {
 
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
         match version {
-            0 => migrate_v1(&mut connection)?,
+            0 => {
+                migrate_v1(&mut connection)?;
+                migrate_v2(&mut connection)?;
+            }
+            1 => migrate_v2(&mut connection)?,
             SCHEMA_VERSION => {}
             other => return Err(PlanStoreError::SchemaVersionUnsupported(other)),
         }
@@ -96,7 +100,7 @@ impl SqlitePlanAuthority {
         })
     }
 
-    fn lock(&self) -> Result<MutexGuard<'_, Connection>, PlanStoreError> {
+    pub(crate) fn lock(&self) -> Result<MutexGuard<'_, Connection>, PlanStoreError> {
         self.connection
             .lock()
             .map_err(|_| PlanStoreError::LockPoisoned)
@@ -231,6 +235,7 @@ impl SqlitePlanAuthority {
                 encode_u64(request.applied_at_ms)?,
             ],
         )?;
+        persist_revision_shape(&transaction, plan_id, revision, &request.nodes, &digests)?;
         transaction.commit()?;
 
         Ok(PlanRevisionDecision::Applied(PlanRevisionReceipt {
@@ -568,10 +573,17 @@ fn validate_declaration(nodes: &[PlanNodeDeclaration]) -> Result<(), PlanStoreEr
                 reason: "node dependency set exceeds the admission bound",
             });
         }
+        let mut declared_dependencies =
+            std::collections::HashSet::with_capacity(node.dependency_keys.len());
         for dependency in &node.dependency_keys {
             if *dependency == node.node_key {
                 return Err(PlanStoreError::InvalidRequest {
                     reason: "node depends on itself",
+                });
+            }
+            if !declared_dependencies.insert(*dependency) {
+                return Err(PlanStoreError::InvalidRequest {
+                    reason: "duplicate dependency key in one node",
                 });
             }
         }
@@ -672,7 +684,7 @@ fn derive_plan_id(key: &IdempotencyKey) -> TaskPlanId {
     TaskPlanId::from_bytes(digest16(PLAN_ID_DOMAIN, &[key.as_bytes()]))
 }
 
-fn derive_node_id(plan_id: TaskPlanId, node_key: &[u8; 16]) -> TaskNodeId {
+pub(crate) fn derive_node_id(plan_id: TaskPlanId, node_key: &[u8; 16]) -> TaskNodeId {
     TaskNodeId::from_bytes(digest16(
         TASK_NODE_ID_DOMAIN,
         &[plan_id.as_bytes(), node_key],
@@ -694,7 +706,11 @@ fn derive_voucher_id(
     ))
 }
 
-fn nodes_root(plan_id: TaskPlanId, revision: u64, digests: &[([u8; 32], TaskNodeId)]) -> [u8; 32] {
+pub(crate) fn nodes_root(
+    plan_id: TaskPlanId,
+    revision: u64,
+    digests: &[([u8; 32], TaskNodeId)],
+) -> [u8; 32] {
     let mut entries: Vec<(TaskNodeId, [u8; 32])> = digests
         .iter()
         .map(|(digest, node_id)| (*node_id, *digest))
@@ -724,6 +740,18 @@ fn dependencies_root(
             edges.push((from, derive_node_id(plan_id, dependency)));
         }
     }
+    dependencies_root_of_edges(plan_id, revision, &edges)
+}
+
+/// The dependencies root over a canonical `(dependent, dependency)` edge
+/// set (byte-identical to the declaration-driven path; shared with the
+/// resolver's resolve-time root re-verification).
+pub(crate) fn dependencies_root_of_edges(
+    plan_id: TaskPlanId,
+    revision: u64,
+    edges: &[(TaskNodeId, TaskNodeId)],
+) -> [u8; 32] {
+    let mut edges = edges.to_vec();
     edges.sort_unstable();
     let mut hasher = Sha256::new();
     hasher.update(DEPENDENCIES_ROOT_DOMAIN);
@@ -765,7 +793,7 @@ fn revision_digest(
     hasher.finalize().into()
 }
 
-fn digest16(domain: &[u8], parts: &[&[u8]]) -> [u8; 16] {
+pub(crate) fn digest16(domain: &[u8], parts: &[&[u8]]) -> [u8; 16] {
     let mut hasher = Sha256::new();
     hasher.update(domain);
     for part in parts {
@@ -782,15 +810,15 @@ fn digest16(domain: &[u8], parts: &[&[u8]]) -> [u8; 16] {
 // durable row helpers
 // ---------------------------------------------------------------------------
 
-fn encode_u64(value: u64) -> Result<i64, PlanStoreError> {
+pub(crate) fn encode_u64(value: u64) -> Result<i64, PlanStoreError> {
     i64::try_from(value).map_err(|_| PlanStoreError::CorruptRecord("u64 exceeds SQLite"))
 }
 
-fn decode_u64(value: i64) -> Result<u64, PlanStoreError> {
+pub(crate) fn decode_u64(value: i64) -> Result<u64, PlanStoreError> {
     u64::try_from(value).map_err(|_| PlanStoreError::CorruptRecord("negative integer"))
 }
 
-fn load_plan_head(
+pub(crate) fn load_plan_head(
     connection: &Connection,
     plan_id: TaskPlanId,
 ) -> Result<Option<PlanView>, PlanStoreError> {
@@ -893,7 +921,7 @@ fn decode_revision_row(row: RevisionRow) -> Result<PlanRevisionReceipt, PlanStor
     })
 }
 
-fn load_revision_receipt(
+pub(crate) fn load_revision_receipt(
     connection: &Connection,
     plan_id: TaskPlanId,
     revision: u64,
@@ -973,7 +1001,7 @@ fn decode_node_row(row: NodeRow) -> Result<PlanNodeRecord, PlanStoreError> {
     })
 }
 
-fn load_plan_node(
+pub(crate) fn load_plan_node(
     connection: &Connection,
     plan_id: TaskPlanId,
     node_id: TaskNodeId,
@@ -1039,13 +1067,13 @@ fn load_voucher_by_key(
         .transpose()
 }
 
-fn fixed16(bytes: Vec<u8>, field: &'static str) -> Result<[u8; 16], PlanStoreError> {
+pub(crate) fn fixed16(bytes: Vec<u8>, field: &'static str) -> Result<[u8; 16], PlanStoreError> {
     bytes
         .try_into()
         .map_err(|_| PlanStoreError::CorruptRecord(field))
 }
 
-fn fixed32(bytes: Vec<u8>, field: &'static str) -> Result<[u8; 32], PlanStoreError> {
+pub(crate) fn fixed32(bytes: Vec<u8>, field: &'static str) -> Result<[u8; 32], PlanStoreError> {
     bytes
         .try_into()
         .map_err(|_| PlanStoreError::CorruptRecord(field))
@@ -1128,6 +1156,48 @@ fn upsert_plan_nodes(
                     ],
                 )?;
             }
+        }
+    }
+    Ok(())
+}
+
+/// Persists the revision's complete declared shape (node set + dependency
+/// edges) beside its immutable receipt (schema v2, same transaction). These
+/// rows are the resolver's durable input; they are write-once and are
+/// re-verified against the receipt's roots at every resolution.
+fn persist_revision_shape(
+    transaction: &rusqlite::Transaction<'_>,
+    plan_id: TaskPlanId,
+    revision: u64,
+    nodes: &[PlanNodeDeclaration],
+    digests: &[([u8; 32], TaskNodeId)],
+) -> Result<(), PlanStoreError> {
+    for (node, (digest, node_id)) in nodes.iter().zip(digests) {
+        transaction.execute(
+            "INSERT INTO plan_revision_nodes (
+                plan_id, revision, task_node_id, node_key, node_kind, node_digest
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                plan_id.as_bytes().as_slice(),
+                encode_u64(revision)?,
+                node_id.as_bytes().as_slice(),
+                node.node_key.as_slice(),
+                encode_kind(node.kind),
+                digest.as_slice(),
+            ],
+        )?;
+        for dependency in &node.dependency_keys {
+            transaction.execute(
+                "INSERT INTO plan_revision_edges (
+                    plan_id, revision, dependent_node_id, dependency_node_id
+                 ) VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    plan_id.as_bytes().as_slice(),
+                    encode_u64(revision)?,
+                    node_id.as_bytes().as_slice(),
+                    derive_node_id(plan_id, dependency).as_bytes().as_slice(),
+                ],
+            )?;
         }
     }
     Ok(())
