@@ -49,9 +49,21 @@ async fn main() {
         fixture.socket_plain().display()
     );
     println!("export LLMOS_DESKTOP_CLI={}", repo_cli_path().display());
+    println!(
+        "export LLMOS_DESKTOP_RESOURCE_ROOT={}",
+        fixture.resource_root().display()
+    );
     println!();
     println!("# 演示数据:escalated 恢复计划(任务查询/一致性自检用)");
     println!("plan_id = {}", fixture.plan_id_hex());
+    let facts = fixture.reservation_facts();
+    println!();
+    println!(
+        "# 演示数据:已结清资源预留(「权限/预算」视图与成本自检用;upper_bound={} usage_high_water={} consumption_count={})",
+        facts.upper_bound, facts.usage_high_water, facts.consumption_count
+    );
+    println!("reservation_id = {}", facts.reservation_id_hex);
+    println!("account_id    = {}", facts.account_id_hex);
     println!();
     println!("# CLI 一致性手动比对(先 cargo build -p nlos-system-control):");
     println!(

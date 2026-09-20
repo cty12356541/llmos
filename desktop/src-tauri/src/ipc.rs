@@ -19,11 +19,19 @@
 use std::sync::Mutex;
 
 use ed25519_dalek::{Signer, SigningKey};
-use nlos_system_control::control::{ControlCommand, parse_hex_id};
+use nlos_resource::ResourceAuthority;
+use nlos_system_control::control::{
+    CONTROL_CAPABILITY_GENERATION, CONTROL_CAPABILITY_SLOT, ControlCommand, ResourceInspector,
+    parse_hex_id,
+};
+use nlos_system_control::resource_inspector::ResourceAuthorityInspector;
 use nlos_types::PrincipalId;
 use serde::Deserialize;
 
-use crate::dto::{ConfigDto, ConfigSourceDto, ParityDto, ReceiptDto, receipt_dto};
+use crate::dto::{
+    ConfigDto, ConfigSourceDto, ControlPlaneFactsDto, FactCheckDto, ParityDto, ReceiptDto,
+    fact_check_dto, receipt_dto,
+};
 use crate::error::{DesktopError, from_control_error};
 
 /// 环境变量名(README 记录;GUI 内可会话级覆盖)。
@@ -32,6 +40,8 @@ pub const ENV_PRINCIPAL: &str = "LLMOS_DESKTOP_PRINCIPAL";
 pub const ENV_KEY_FILE: &str = "LLMOS_DESKTOP_KEY_FILE";
 pub const ENV_CLI_SOCKET: &str = "LLMOS_DESKTOP_CLI_SOCKET";
 pub const ENV_CLI: &str = "LLMOS_DESKTOP_CLI";
+/// W32-D:本地资源权威根目录(预算/成本可见性的 ResourceAuthority 接线)。
+pub const ENV_RESOURCE_ROOT: &str = "LLMOS_DESKTOP_RESOURCE_ROOT";
 
 /// `cargo run`/`tauri dev` 的 cwd 是 `src-tauri`,仓库 target 目录在此相对路径下。
 const DEFAULT_CLI_PATH: &str = "../../target/debug/system-control-cli";
@@ -44,6 +54,7 @@ pub struct SessionConfig {
     pub key_file: Option<String>,
     pub cli_socket: Option<String>,
     pub cli_path: Option<String>,
+    pub resource_root: Option<String>,
     pub source: ConfigSourceDto,
 }
 
@@ -62,6 +73,7 @@ impl AppState {
             ENV_KEY_FILE,
             ENV_CLI_SOCKET,
             ENV_CLI,
+            ENV_RESOURCE_ROOT,
         ]
         .iter()
         .any(|name| env(name).is_some());
@@ -77,6 +89,7 @@ impl AppState {
                 key_file: env(ENV_KEY_FILE),
                 cli_socket: env(ENV_CLI_SOCKET),
                 cli_path: env(ENV_CLI),
+                resource_root: env(ENV_RESOURCE_ROOT),
                 source,
             }),
         }
@@ -104,6 +117,7 @@ fn config_dto(config: &SessionConfig) -> ConfigDto {
         key_file: config.key_file.clone(),
         cli_socket: config.cli_socket.clone(),
         cli_path: config.cli_path.clone(),
+        resource_root: config.resource_root.clone(),
         source: config.source,
         platform_supported: cfg!(unix),
     }
@@ -164,6 +178,22 @@ pub async fn dispatch_control(
     key_file: &str,
     command: ControlCommand,
 ) -> Result<ReceiptDto, DesktopError> {
+    dispatch_control_with_resource(socket, principal_hex, key_file, command, None).await
+}
+
+/// [`dispatch_control`] 的 W32-D 扩展核心:额外接受可选资源 inspector。
+/// `InspectResource` 的有界成本事实在回执投影时由客户端侧 inspector 组装
+/// (上游 `ControlReceipt::compose` 契约);`None` 保持未接线形态,回执为
+/// 类型化 `NOT_FOUND`,与 CLI(同样未接线)字节一致——CLI parity 比对
+/// 恒走 [`dispatch_control`],不受本参数影响。
+#[cfg(unix)]
+pub async fn dispatch_control_with_resource(
+    socket: &str,
+    principal_hex: &str,
+    key_file: &str,
+    command: ControlCommand,
+    resource: Option<&dyn ResourceInspector>,
+) -> Result<ReceiptDto, DesktopError> {
     use nlos_system_control::auth::dispatch_over_authenticated_socket;
 
     let principal = PrincipalId::from_bytes(principal_bytes(principal_hex)?);
@@ -175,7 +205,7 @@ pub async fn dispatch_control(
         |digest| Ok(key.sign(digest).to_bytes()),
         &command,
         None,
-        None,
+        resource,
     )
     .await
     .map_err(|error| from_control_error(&error))?;
@@ -188,6 +218,17 @@ pub async fn dispatch_control(
     _principal_hex: &str,
     _key_file: &str,
     _command: ControlCommand,
+) -> Result<ReceiptDto, DesktopError> {
+    Err(DesktopError::unsupported_platform())
+}
+
+#[cfg(not(unix))]
+pub async fn dispatch_control_with_resource(
+    _socket: &str,
+    _principal_hex: &str,
+    _key_file: &str,
+    _command: ControlCommand,
+    _resource: Option<&dyn ResourceInspector>,
 ) -> Result<ReceiptDto, DesktopError> {
     Err(DesktopError::unsupported_platform())
 }
@@ -219,6 +260,7 @@ pub struct SetConfigInput {
     pub key_file: Option<String>,
     pub cli_socket: Option<String>,
     pub cli_path: Option<String>,
+    pub resource_root: Option<String>,
 }
 
 #[tauri::command]
@@ -242,6 +284,7 @@ pub fn set_config(
         key_file: cleaned(&input.key_file),
         cli_socket: cleaned(&input.cli_socket),
         cli_path: cleaned(&input.cli_path),
+        resource_root: cleaned(&input.resource_root),
         source: ConfigSourceDto::Session,
     };
     state.replace(next)?;
@@ -305,6 +348,113 @@ pub fn inspect_resource(
 ) -> Result<ReceiptDto, DesktopError> {
     let reservation_id = principal_bytes(&reservation_id_hex)?;
     dispatch_configured(&state, ControlCommand::InspectResource { reservation_id })
+}
+
+/// W32-D:打开会话配置指向的本地资源权威(未配置/空白 → `None`,保持
+/// 未接线形态)。每次派发即时打开(WAL 多进程读安全),进程内不缓存句柄。
+fn open_resource_authority(
+    resource_root: Option<&str>,
+) -> Result<Option<ResourceAuthority>, DesktopError> {
+    let Some(root) = resource_root.map(str::trim).filter(|root| !root.is_empty()) else {
+        return Ok(None);
+    };
+    ResourceAuthority::open(root)
+        .map(Some)
+        .map_err(|error| DesktopError::config(format!("打开本地资源权威失败({root}): {error}")))
+}
+
+/// W32-D 预算/成本查询核心:InspectResource 经认证入口派发;配置了
+/// resource_root 时以真实 `ResourceAuthorityInspector` 组装有界成本事实,
+/// 未配置时 inspector 传 `None`,回执为诚实的类型化 `NOT_FOUND`。
+pub async fn dispatch_cost_inspect(
+    socket: &str,
+    principal_hex: &str,
+    key_file: &str,
+    authority: Option<&ResourceAuthority>,
+    reservation_id: [u8; 16],
+) -> Result<ReceiptDto, DesktopError> {
+    let command = ControlCommand::InspectResource { reservation_id };
+    match authority {
+        Some(authority) => {
+            let inspector = ResourceAuthorityInspector::new(authority);
+            dispatch_control_with_resource(
+                socket,
+                principal_hex,
+                key_file,
+                command,
+                Some(&inspector),
+            )
+            .await
+        }
+        None => {
+            dispatch_control_with_resource(socket, principal_hex, key_file, command, None).await
+        }
+    }
+}
+
+/// W32-D 预算/成本可见性命令:「权限/预算」视图的资源成本查询入口。
+#[tauri::command]
+pub fn inspect_resource_cost(
+    state: tauri::State<'_, AppState>,
+    reservation_id_hex: String,
+) -> Result<ReceiptDto, DesktopError> {
+    let config = state.snapshot()?;
+    let reservation_id = principal_bytes(&reservation_id_hex)?;
+    let (socket, principal, key_file) = required(&config)?;
+    let authority = open_resource_authority(config.resource_root.as_deref())?;
+    tauri::async_runtime::block_on(dispatch_cost_inspect(
+        &socket,
+        &principal,
+        &key_file,
+        authority.as_ref(),
+        reservation_id,
+    ))
+}
+
+/// W32-D 一致性自检(渲染事实 vs 直接复检):同一 reservation 两次独立
+/// 认证派发 InspectResource,逐字段比较有界成本事实并比对 receipt hex。
+/// 已结清(FINALIZED)预留的事实不可变,两次必须一致;未接线形态两侧
+/// 同为类型化 NOT_FOUND,字节同样可比。
+#[tauri::command]
+pub fn cost_fact_check(
+    state: tauri::State<'_, AppState>,
+    reservation_id_hex: String,
+) -> Result<FactCheckDto, DesktopError> {
+    let config = state.snapshot()?;
+    let reservation_id = principal_bytes(&reservation_id_hex)?;
+    let (socket, principal, key_file) = required(&config)?;
+    let authority = open_resource_authority(config.resource_root.as_deref())?;
+    let first = tauri::async_runtime::block_on(dispatch_cost_inspect(
+        &socket,
+        &principal,
+        &key_file,
+        authority.as_ref(),
+        reservation_id,
+    ))?;
+    let second = tauri::async_runtime::block_on(dispatch_cost_inspect(
+        &socket,
+        &principal,
+        &key_file,
+        authority.as_ref(),
+        reservation_id,
+    ))?;
+    Ok(fact_check_dto(
+        &reservation_id_hex.trim().to_lowercase(),
+        &first,
+        &second,
+    ))
+}
+
+/// W32-D 控制面授权事实(客户端路径常量,非 inspect 数据):每条派发
+/// 携带的固定控制能力句柄与服务名。逐 principal 的能力签发/衰减/撤销
+/// 账本无 IPC inspect 面,由「权限/预算」视图的缺口登记列出。
+#[tauri::command]
+pub fn control_plane_facts() -> ControlPlaneFactsDto {
+    ControlPlaneFactsDto {
+        service: nlos_system_control::SYSTEM_CONTROL_SERVICE.to_owned(),
+        capability_slot: CONTROL_CAPABILITY_SLOT,
+        capability_generation: CONTROL_CAPABILITY_GENERATION,
+    }
 }
 
 /// §25.3 idempotency 身份:每次提交新生成 16 字节(/dev/urandom;认证入口
@@ -556,10 +706,18 @@ fn parity_command(
             ControlCommand::InspectSemanticHealth,
             vec!["inspect-semantic-health".into()],
         )),
+        "inspect-resource-health" => Ok((
+            ControlCommand::InspectResourceHealth,
+            vec!["inspect-resource-health".into()],
+        )),
         "export-metrics" => Ok((ControlCommand::ExportMetrics, vec!["export-metrics".into()])),
         "export-semantic-metrics" => Ok((
             ControlCommand::ExportSemanticMetrics,
             vec!["export-semantic-metrics".into()],
+        )),
+        "export-resource-metrics" => Ok((
+            ControlCommand::ExportResourceMetrics,
+            vec!["export-resource-metrics".into()],
         )),
         "inspect-task" => {
             let plan_id = target()?;
@@ -743,6 +901,16 @@ mod tests {
         let (command, args) = parity_command("inspect-health", None).unwrap();
         assert_eq!(command, ControlCommand::InspectHealth);
         assert_eq!(args, vec!["inspect-health".to_owned()]);
+    }
+
+    #[test]
+    fn parity_command_covers_resource_domain_reads() {
+        let (command, args) = parity_command("inspect-resource-health", None).unwrap();
+        assert_eq!(command, ControlCommand::InspectResourceHealth);
+        assert_eq!(args, vec!["inspect-resource-health".to_owned()]);
+        let (command, args) = parity_command("export-resource-metrics", None).unwrap();
+        assert_eq!(command, ControlCommand::ExportResourceMetrics);
+        assert_eq!(args, vec!["export-resource-metrics".to_owned()]);
     }
 
     fn control_action(action: ControlAction) -> Result<ControlCommand, DesktopError> {

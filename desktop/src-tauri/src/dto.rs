@@ -122,8 +122,41 @@ pub struct ConfigDto {
     pub key_file: Option<String>,
     pub cli_socket: Option<String>,
     pub cli_path: Option<String>,
+    pub resource_root: Option<String>,
     pub source: ConfigSourceDto,
     pub platform_supported: bool,
+}
+
+/// W32-D 控制面授权事实:客户端路径常量(非 inspect 数据)。
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ControlPlaneFactsDto {
+    pub service: String,
+    pub capability_slot: u64,
+    pub capability_generation: u64,
+}
+
+/// W32-D 一致性自检的一行事实比对(渲染值 vs 复检值)。
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FactRowDto {
+    pub field: String,
+    pub first: String,
+    pub second: String,
+    pub matched: bool,
+}
+
+/// W32-D 一致性自检结果:同一 reservation 两次独立认证派发的有界成本
+/// 事实逐字段比对 + receipt hex 比对。
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FactCheckDto {
+    pub reservation_id_hex: String,
+    pub matched: bool,
+    pub receipt_hex_matched: bool,
+    pub first_receipt_hex: String,
+    pub second_receipt_hex: String,
+    pub rows: Vec<FactRowDto>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize)]
@@ -320,5 +353,100 @@ pub fn receipt_dto(receipt: &ControlReceipt) -> ReceiptDto {
         correlation_id_hex: hex(&receipt.correlation_id),
         receipt_hex: receipt_to_hex(receipt),
         outcome,
+    }
+}
+
+fn fact_row(field: &str, first: &str, second: &str) -> FactRowDto {
+    FactRowDto {
+        field: field.to_owned(),
+        first: first.to_owned(),
+        second: second.to_owned(),
+        matched: first == second,
+    }
+}
+
+/// 非 ResourceInspected 形态(如未接线的类型化失败)的一行摘要标签:
+/// 保留失败码,绝不把失败伪装成事实。
+fn outcome_label(outcome: &OutcomeDto) -> String {
+    match outcome {
+        OutcomeDto::ResourceInspected { .. } => "resource_inspected".to_owned(),
+        OutcomeDto::Failure { code, .. } => format!("failure/{code}"),
+        OutcomeDto::Inspected { .. } => "inspected".to_owned(),
+        OutcomeDto::SemanticInspected { .. } => "semantic_inspected".to_owned(),
+        OutcomeDto::ResourceRecoveryInspected { .. } => "resource_recovery_inspected".to_owned(),
+        OutcomeDto::ProcessInspected { .. } => "process_inspected".to_owned(),
+        OutcomeDto::MetricsExported { .. } => "metrics_exported".to_owned(),
+        OutcomeDto::Acknowledged { .. } => "acknowledged".to_owned(),
+        OutcomeDto::Resumed { .. } => "resumed".to_owned(),
+        OutcomeDto::OperationPaused { .. } => "operation_paused".to_owned(),
+        OutcomeDto::OperationResumed { .. } => "operation_resumed".to_owned(),
+        OutcomeDto::OperationCancelled { .. } => "operation_cancelled".to_owned(),
+        OutcomeDto::OperationKilled { .. } => "operation_killed".to_owned(),
+        OutcomeDto::OperationThrottled { .. } => "operation_throttled".to_owned(),
+        OutcomeDto::OperationReclaimed { .. } => "operation_reclaimed".to_owned(),
+    }
+}
+
+/// 两次独立派发的回执 → [`FactCheckDto`](渲染事实 vs 直接复检)。
+/// 双 ResourceInspected 时逐字段比较五个有界事实;否则比较形态标签
+/// (未接线形态两侧同为 `failure/NOT_FOUND` 亦如实可比)。
+#[must_use]
+pub fn fact_check_dto(
+    reservation_id_hex: &str,
+    first: &ReceiptDto,
+    second: &ReceiptDto,
+) -> FactCheckDto {
+    let rows = match (&first.outcome, &second.outcome) {
+        (
+            OutcomeDto::ResourceInspected {
+                reservation_id_hex: first_id,
+                account_id_hex: first_account,
+                upper_bound: first_bound,
+                usage_high_water: first_water,
+                consumption_count: first_count,
+            },
+            OutcomeDto::ResourceInspected {
+                reservation_id_hex: second_id,
+                account_id_hex: second_account,
+                upper_bound: second_bound,
+                usage_high_water: second_water,
+                consumption_count: second_count,
+            },
+        ) => vec![
+            fact_row("reservation_id", first_id, second_id),
+            fact_row("account_id", first_account, second_account),
+            fact_row(
+                "upper_bound",
+                &first_bound.to_string(),
+                &second_bound.to_string(),
+            ),
+            fact_row(
+                "usage_high_water",
+                &first_water.to_string(),
+                &second_water.to_string(),
+            ),
+            fact_row(
+                "consumption_count",
+                &first_count.to_string(),
+                &second_count.to_string(),
+            ),
+        ],
+        (first_outcome, second_outcome) => {
+            vec![fact_row(
+                "outcome",
+                &outcome_label(first_outcome),
+                &outcome_label(second_outcome),
+            )]
+        }
+    };
+    let receipt_hex_matched = first.receipt_hex == second.receipt_hex;
+    let matched = receipt_hex_matched && rows.iter().all(|row| row.matched);
+    FactCheckDto {
+        reservation_id_hex: reservation_id_hex.to_owned(),
+        matched,
+        receipt_hex_matched,
+        first_receipt_hex: first.receipt_hex.clone(),
+        second_receipt_hex: second.receipt_hex.clone(),
+        rows,
     }
 }

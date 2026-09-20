@@ -1,6 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 
-import type { ConfigDto, ControlActionInput, ParityDto, ReceiptDto } from "./types";
+import type {
+  ConfigDto,
+  ControlActionInput,
+  ControlPlaneFactsDto,
+  FactCheckDto,
+  ParityDto,
+  ReceiptDto,
+} from "./types";
 
 export async function getConfig(): Promise<ConfigDto> {
   return invoke("get_config");
@@ -12,6 +19,7 @@ export interface SetConfigInput {
   keyFile?: string | null;
   cliSocket?: string | null;
   cliPath?: string | null;
+  resourceRoot?: string | null;
 }
 
 export async function setConfig(input: SetConfigInput): Promise<ConfigDto> {
@@ -48,6 +56,21 @@ export async function inspectProcess(processIdHex: string): Promise<ReceiptDto> 
 
 export async function inspectResource(reservationIdHex: string): Promise<ReceiptDto> {
   return invoke("inspect_resource", { reservationIdHex });
+}
+
+/** W32-D:预算/成本查询(会话 resource_root 接线时组装真实有界成本事实)。 */
+export async function inspectResourceCost(reservationIdHex: string): Promise<ReceiptDto> {
+  return invoke("inspect_resource_cost", { reservationIdHex });
+}
+
+/** W32-D 一致性自检:同一 reservation 两次独立认证派发,渲染事实 vs 直接复检。 */
+export async function costFactCheck(reservationIdHex: string): Promise<FactCheckDto> {
+  return invoke("cost_fact_check", { reservationIdHex });
+}
+
+/** W32-D 控制面授权事实(客户端路径常量)。 */
+export async function controlPlaneFacts(): Promise<ControlPlaneFactsDto> {
+  return invoke("control_plane_facts");
 }
 
 export async function parityCheck(

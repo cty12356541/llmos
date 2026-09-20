@@ -29,6 +29,11 @@ use nlos_identity::{BootstrapDecision, BootstrapPrincipalRequest, IdentityAuthor
 use nlos_ipc::handshake::transport::ServerHandshakeContext;
 use nlos_ipc::unix::UnixListenerAdapter;
 use nlos_ipc::{OutboundResponse, PeerAuthorizer, PeerIdentity, TransportConfig, serve_one};
+use nlos_resource::{
+    ActivateReservationRequest, ActivationDecision, ConsumeReservationRequest,
+    CreateAccountRequest, CreateQuoteRequest, FinalizeDecision, FinalizeReservationRequest,
+    RegisterDriverRequest, ReserveRequest, ResourceAuthority, ResourceDemand,
+};
 use nlos_schema::sabi::v1::{ControlCommand as SabiWireCommand, ExchangeResponse};
 use nlos_system_control::auth::authenticated_serve_one_control;
 use nlos_system_control::control::{CONTROL_CAPABILITY_GENERATION, CONTROL_CAPABILITY_SLOT};
@@ -40,8 +45,8 @@ use nlos_task::{
     empty_effect_history_root,
 };
 use nlos_types::{
-    ArtifactId, CancellationScopeId, Generation, IdempotencyKey, TaskAttemptId, TaskId,
-    TaskSnapshotId,
+    ArtifactId, CallId, CancellationScopeId, Generation, IdempotencyKey, OperationId,
+    TaskAttemptId, TaskId, TaskSnapshotId,
 };
 use tokio::task::JoinHandle;
 
@@ -333,6 +338,137 @@ fn create_escalated_plan(
     Ok(plan.plan_id)
 }
 
+/// 结清预留的确定性演示事实(预算/成本视图与一致性自检共用)。
+struct SettledReservation {
+    resource_root: PathBuf,
+    reservation_id: [u8; 16],
+    account_id: [u8; 16],
+    upper_bound: u64,
+    usage_high_water: u64,
+    consumption_count: u32,
+}
+
+/// W32-D:在 `root/resource` 下装配一条完整的真实资源权威链
+/// (driver → account → quote → reserve → activate → consume×2 → finalize),
+/// 产出一条已结清(FINALIZED)的预留——`inspect_cost_receipt` 只对结清
+/// 预留开放,且其事实此后不可变,是预算/成本视图与一致性自检的确定性
+/// 演示数据。上界 100、两次消费(30/70)、高水位 70。
+fn create_settled_reservation(root: &Path) -> Result<SettledReservation, FixtureError> {
+    let fail = |reason: &str| FixtureError::Task(reason.to_owned());
+    let resource_root = root.join("resource");
+    let authority = ResourceAuthority::open(&resource_root).map_err(|_| fail("open resource"))?;
+    let driver = authority
+        .register_driver(RegisterDriverRequest {
+            profile_digest: [0xB1; 32],
+            idempotency_key: IdempotencyKey::from_bytes([0xB2; 16]),
+            created_at_ms: 10_000,
+        })
+        .map_err(|_| fail("register_driver"))?
+        .record();
+    let account = authority
+        .create_account(CreateAccountRequest {
+            initial_credit: 1_000,
+            idempotency_key: IdempotencyKey::from_bytes([0xB3; 16]),
+            created_at_ms: 10_100,
+        })
+        .map_err(|_| fail("create_account"))?;
+    let quote = authority
+        .create_quote(CreateQuoteRequest {
+            driver_id: driver.driver_id,
+            driver_generation: driver.generation,
+            driver_fencing_token: driver.fencing_token,
+            operation_proposal_digest: [0xB4; 32],
+            pricing_version: [0xB5; 32],
+            upper_bound: 100,
+            demand_capacity: ResourceDemand {
+                cpu_shares: 4,
+                memory_mib: 256,
+                io_weight: 50,
+            },
+            valid_until_ms: 100_000,
+            idempotency_key: IdempotencyKey::from_bytes([0xB6; 16]),
+            created_at_ms: 10_200,
+        })
+        .map_err(|_| fail("create_quote"))?
+        .record();
+    let call_id = CallId::from_bytes([0xB7; 16]);
+    let operation_id = OperationId::from_bytes([0xB8; 16]);
+    let reservation = authority
+        .reserve(ReserveRequest {
+            account_id: account.account_id,
+            quote_id: quote.quote_id,
+            call_id,
+            operation_id,
+            idempotency_key: IdempotencyKey::from_bytes([0xB9; 16]),
+            demand: ResourceDemand {
+                cpu_shares: 2,
+                memory_mib: 128,
+                io_weight: 25,
+            },
+            reserved_at_ms: 10_300,
+        })
+        .map_err(|_| fail("reserve"))?
+        .record();
+    let ActivationDecision::Activated(activation) = authority
+        .activate(ActivateReservationRequest {
+            reservation_id: reservation.reservation_id,
+            call_id,
+            operation_id,
+            driver_id: driver.driver_id,
+            driver_generation: driver.generation,
+            driver_fencing_token: driver.fencing_token,
+            activation_token: reservation.activation_token,
+            activated_at_ms: 10_400,
+        })
+        .map_err(|_| fail("activate"))?
+    else {
+        return Err(fail("fresh activation"));
+    };
+    for (sequence, cumulative_usage, consumed_at_ms) in [(1, 30, 10_500u64), (2, 70, 10_600u64)] {
+        authority
+            .consume(ConsumeReservationRequest {
+                reservation_id: reservation.reservation_id,
+                operation_id,
+                activation_receipt_id: activation.receipt_id,
+                sequence,
+                cumulative_usage,
+                consumed_at_ms,
+            })
+            .map_err(|_| fail("consume"))?;
+    }
+    let FinalizeDecision::Finalized(finalization) = authority
+        .finalize_reservation(FinalizeReservationRequest {
+            reservation_id: reservation.reservation_id,
+            operation_id,
+            activation_receipt_id: activation.receipt_id,
+            effect_closed_proof_digest: [0xBA; 32],
+            final_seq: 2,
+            final_usage: 70,
+            finalized_at_ms: 10_700,
+        })
+        .map_err(|_| fail("finalize"))?
+    else {
+        return Err(fail("fresh finalization"));
+    };
+    Ok(SettledReservation {
+        resource_root,
+        reservation_id: *reservation.reservation_id.as_bytes(),
+        account_id: *account.account_id.as_bytes(),
+        upper_bound: reservation.upper_bound,
+        usage_high_water: finalization.high_water,
+        consumption_count: 2,
+    })
+}
+
+/// 已结清预留的确定性成本事实(集成测试断言用)。
+pub struct ReservationFacts {
+    pub reservation_id_hex: String,
+    pub account_id_hex: String,
+    pub upper_bound: u64,
+    pub usage_high_water: u64,
+    pub consumption_count: u32,
+}
+
 /// 一次性开发夹具:双入口(认证/plain)服务 + 客户端接线参数。
 pub struct DevFixture {
     /// keepalive:TempRoot 只为借用其 Drop(夹具释放时清理临时目录)。
@@ -351,6 +487,13 @@ pub struct DevFixture {
     principal_hex: String,
     key_seed_hex: String,
     plan_id_hex: String,
+    resource_root: PathBuf,
+    reservation_id_hex: String,
+    account_id_hex: String,
+    /// 结清预留的确定性成本事实(上界 100、两次消费、高水位 70)。
+    settled_upper_bound: u64,
+    settled_usage_high_water: u64,
+    settled_consumption_count: u32,
 }
 
 impl DevFixture {
@@ -432,6 +575,7 @@ impl DevFixture {
             Some(UnixListenerAdapter::bind(&socket_authenticated).map_err(FixtureError::Bind)?);
         let listener_plain =
             Some(UnixListenerAdapter::bind(&socket_plain).map_err(FixtureError::Bind)?);
+        let settled = create_settled_reservation(&root.0)?;
 
         Ok(Self {
             root,
@@ -448,6 +592,12 @@ impl DevFixture {
             principal_hex: hex(binding.principal_id.as_bytes()),
             key_seed_hex: hex(&key_seed),
             plan_id_hex: hex(plan_id.as_bytes()),
+            resource_root: settled.resource_root,
+            reservation_id_hex: hex(&settled.reservation_id),
+            account_id_hex: hex(&settled.account_id),
+            settled_upper_bound: settled.upper_bound,
+            settled_usage_high_water: settled.usage_high_water,
+            settled_consumption_count: settled.consumption_count,
         })
     }
 
@@ -474,6 +624,24 @@ impl DevFixture {
     #[must_use]
     pub fn plan_id_hex(&self) -> &str {
         &self.plan_id_hex
+    }
+
+    /// W32-D:本地资源权威根目录(预算/成本视图的 resource_root 接线值)。
+    #[must_use]
+    pub fn resource_root(&self) -> &Path {
+        &self.resource_root
+    }
+
+    /// W32-D:已结清预留 id(32 hex)与其确定性成本事实。
+    #[must_use]
+    pub fn reservation_facts(&self) -> ReservationFacts {
+        ReservationFacts {
+            reservation_id_hex: self.reservation_id_hex.clone(),
+            account_id_hex: self.account_id_hex.clone(),
+            upper_bound: self.settled_upper_bound,
+            usage_high_water: self.settled_usage_high_water,
+            consumption_count: self.settled_consumption_count,
+        }
     }
 
     /// 把 Ed25519 种子写入 `0600` 密钥文件(客户端派发时读取)。

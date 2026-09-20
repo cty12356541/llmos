@@ -30,6 +30,9 @@ pub fn run() {
             ipc::submit_control,
             ipc::parity_check,
             ipc::parity_check_write,
+            ipc::control_plane_facts,
+            ipc::inspect_resource_cost,
+            ipc::cost_fact_check,
         ])
         .run(tauri::generate_context!())
     {

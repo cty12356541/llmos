@@ -1,8 +1,8 @@
-# B-GUI-001:可信 Tauri 任务管理器壳(W32-A 只读半 + W32-B 写入半 + W32-C parity 钉死)
+# B-GUI-001:可信 Tauri 任务管理器壳(W32-A 只读半 + W32-B 写入半 + W32-C parity 钉死 + W32-D 权限/预算可见)
 
-> 状态:`PARTIAL PASS`(读半 W32-A + 写入半 W32-B + parity 钉死 W32-C 已落地)
+> 状态:`PARTIAL PASS`(读半 W32-A + 写入半 W32-B + parity 钉死 W32-C + 权限/预算可见 W32-D 已落地)
 >
-> 日期:2026-09-20(W32-A)/ 2026-09-21(§W32-B)/ 2026-09-21(§W32-C)
+> 日期:2026-09-20(W32-A)/ 2026-09-21(§W32-B、§W32-C、§W32-D)
 >
 > 对应:`ROAD-B-005`/B5-4 读半边、`[SABI-AUTH-001]`、`[CTRL-PARITY-001]`、[ADR-0011](../../management/adrs/0011-ipc-principal-auth-signature-passthrough.md)、[B-TASK-006L](./b-task-006l-system-control-recovery-handler.md)、[B-SCHEMA-006](./b-schema-006-typescript-python-ipc-clients.md)
 
@@ -143,3 +143,60 @@ gate(B5-6):GUI↔NL↔CLI 三路径 Receipt 逐字节相等测试入库。
 
 - `crates/nlos-system-control/tests/triple_path_receipt_parity.rs`(新增,唯一代码写集)。
 - 本证据文件 §W32-C 与头部状态行、`docs/management/evidence-index.yaml` b-gui-001 行更新。
+
+## §W32-D 权限/预算可见半(2026-09-21)
+
+### W32-D.1 实现范围
+
+gate:「权限变更 UI 可见且与 authority 一致」的最小诚实版(B5-5 前半:授权/预算/成本可见)。纪律:只渲染 inspect 面真实暴露的事实;无 IPC 面的权威事实登记缺口,不发明数据。
+
+1. **「权限/预算」视图(前端四卡)**:
+   - **控制面授权事实**:会话 principal(ADR-0011 认证身份)、resource_root 接线状态、SystemControl 服务名与固定控制能力句柄(`CONTROL_CAPABILITY_SLOT=9`/`GENERATION=1`)——均为客户端路径事实(每条派发信封携带,`request_context` 组装;服务端授权检查拒绝时回执为类型化 `RIGHTS` 失败),显式标注「非 inspect 数据」;「验证控制面授权」按钮经真实 dispatch(`inspect-resource-health`)取回执佐证。
+   - **预算/成本查询**:`inspect_resource_cost` 经认证入口派发 `InspectResource`;会话配置 `resource_root`(env `LLMOS_DESKTOP_RESOURCE_ROOT` 或连接配置页,不落盘)时由后端以真实 `ResourceAuthorityInspector`(每次派发即时 `ResourceAuthority::open`,WAL 多进程读安全,不缓存句柄)组装五个有界事实(reservation_id/account_id/upper_bound/usage_high_water/consumption_count,投影自权威 `inspect_cost_receipt`——只对已结清 FINALIZED 预留开放的不可变聚合)+ 一行明确标注「派生」的结余(upper_bound − usage_high_water,确定性算术,非新事实);未配置时 inspector 传 `None`,回执为诚实的类型化 `NOT_FOUND`(与 CLI 字节一致),绝不伪造预算数据。
+   - **成本事实自检**:`cost_fact_check` 把同一 reservation 两次独立经认证入口派发,逐字段比较渲染事实与直接复检 + receipt hex 比对(结清事实不可变 → 必须 matched;未接线形态两侧同 `failure/NOT_FOUND` 亦如实可比)。
+   - **缺口登记卡(静态)**:列出无 IPC inspect 面的权威事实(见 W32-D.3),声明「本视图不渲染」。
+2. **后端命令面**:`dispatch_control_with_resource`(认证 dispatch 核心的可选 inspector 扩展;`dispatch_control` 保持 None/None 委托,既有命令与 parity 路径字节不变)+ `inspect_resource_cost`/`cost_fact_check`/`control_plane_facts` 三命令;`SessionConfig` 增 `resource_root`;`Cargo.toml` 增 `nlos-resource` path dep 并对 `nlos-system-control` 启用 `resource` feature(上游既有 `ResourceAuthorityInspector` 适配器,零 crates/ 改动)。
+3. **一致性纪律(parity 模式不受影响)**:CLI 字节比对路径(`parity_check`/`dispatch_control`)恒未接线——有专门集成测试钉死(`parity_dispatch_path_never_wires_the_resource_inspector`);接线后的成本回执与 CLI(未接线)字节不同属预期,该路径是「本地权威直读视图」而非 CLI parity 面;「与 authority 一致」由 `resource_cost_inspect_matches_authority_facts` 对权威 `inspect_cost_receipt` 直接读数逐字段钉死(含消费回执表行数 == consumption_count)。
+4. **开发夹具扩展**:devfixture 增真实 `ResourceAuthority` 全链(driver→account→quote→reserve→activate→consume×2→finalize),产出已结清预留(上界 100/高水位 70/2 次消费);`dev_server` 打印 `LLMOS_DESKTOP_RESOURCE_ROOT` 与 reservation_id/account_id。
+5. **顺带清偿 W32-B deferred minor**:`parity_check` operation 下拉补 `inspect-resource-health`/`export-resource-metrics`(两条快照类读命令,GUI 未接线 vs CLI 未接线字节一致)。
+
+### W32-D.2 验证(本机实跑,macOS/darwin arm64)
+
+- `desktop/`:`npm install` → `npm run build`(tsc 严格 + vite 7)通过。
+- `desktop/src-tauri/`:`cargo fmt --check` 通过;`cargo clippy --all-targets --features dev-fixture -- -D warnings` 与默认 feature 两态 0 warning;`cargo build` 通过。
+- `cargo test --features dev-fixture`:**19 项全过**(7 单元 + 4 读侧 + 4 写侧 + 4 权限侧新增):
+  - `resource_cost_inspect_matches_authority_facts`:经认证入口 + 真实 inspector 的成本回执五字段 == 夹具确定性事实,且 == 权威 `inspect_cost_receipt` 直接读数(upper_bound/finalization.high_water/consumptions.len())——「与 authority 一致」活体证据;
+  - `cost_fact_check_matches_across_two_dispatches`:两次独立派发 fact_check 全行 matched + receipt hex 相同;
+  - `unwired_cost_inspect_stays_typed_not_found_and_matches_plain_entry`:未接线形态类型化 `NOT_FOUND`(「not wired」),且与 plain 入口(CLI 同路)receipt 字节一致;未接线形态下 fact_check 亦 matched;
+  - `parity_dispatch_path_never_wires_the_resource_inspector`:`dispatch_control`(CLI parity 路径)在配置了权威的环境下仍回未接线 `NOT_FOUND`(接线不泄漏进 parity 面);
+  - 单元:`parity_command_covers_resource_domain_reads`(下拉新增两命令的编译点)。
+- 真实 CLI 活体探针:`cargo build -p nlos-system-control` 后 `LLMOS_SYSTEM_CONTROL_CLI=… cargo test --test authenticated_read_side -- --ignored` 通过(真实二进制 plain 入口 receipt hex 与 GUI 认证入口逐字节相等)。
+- `dev_server` 实跑:打印 `LLMOS_DESKTOP_RESOURCE_ROOT=<临时目录>/resource`、`reservation_id`/`account_id` 与确定性事实(upper_bound=100 usage_high_water=70 consumption_count=2)。
+- 未运行/未验证:GUI 窗口内交互式点按(同 W32-A/B 限制,无 Accessibility/Screen Recording;以命令层集成测试 + 夹具数据替代,README 演示步骤供人工复验);宿主生产资源权威的自动发现(resource_root 由 operator 显式提供)。
+
+### W32-D.3 缺口登记:权威事实存在、IPC inspect 面不存在(不渲染,待后续车道)
+
+以下事实已在本地权威持久化(crate 有真实数据与读数 API),但 `ControlCommand` 无对应 arm、`system_control.proto` 无对应视图——本波次不发明数据,UI 以静态缺口卡声明缺席:
+
+| # | 权威事实 | 权威读数 API(crates 内) | 缺的 IPC 面 |
+| --- | --- | --- | --- |
+| 1 | 能力签发/衰减/撤销账本(CapabilityRecord:issuer/holder/rights/target/有效期/衰减深度/parent 链) | `nlos-capability::CapabilityAuthority::inspect_active` | 无 ControlCommand arm,proto 无 capability 视图 |
+| 2 | 能力调用限额剩余与消耗回执 | `CapabilityAuthority::call_limit_remaining` / `capability_consumption_rows` | 同上 |
+| 3 | 资源报价明细(demand_capacity 三维/pricing_version/valid_until/报价上界) | `nlos-resource::ResourceAuthority::inspect_quote` | 只有 upper_bound 进入 `ResourceInspection` 有界投影;报价本身无视图 |
+| 4 | 预留状态机(Reserved/Active/Quarantined/Finalized)与多维需求(cpu_shares/memory_mib/io_weight) | `inspect_permit_binding` / `ReservationRecord.demand` | 不在五个有界字段内 |
+| 5 | 账户预算余额(initial/available credit) | `resource_accounts` 表(经 create/reserve 间接可推) | 无 inspect 面 |
+| 6 | 结清明细回执(FinalizationReceipt.refund_credit、逐条 ConsumptionReceipt) | `inspect_cost_receipt` 聚合内 | 只有高水位与条数进入投影;明细无 IPC 面 |
+
+补面属后续车道(需同时扩 proto 视图与 ControlCommand,超出本车道写集);本登记同时复制到 UI 缺口卡(`desktop/src/main.ts::IPC_SURFACE_GAPS`)。
+
+### W32-D.4 边界与遗留
+
+1. **生产接线形态**:宿主 NLOS 的资源权威根目录由 operator 以 `resource_root` 显式提供(夹具演示全自动);后续宿主接线波次可改为权威广播/约定路径发现。
+2. **`RIGHTS` 拒绝形态**:渲染逻辑就绪(授权验证卡按回执 `RIGHTS` 码判红),开发夹具授权策略固定通过固定句柄,不产生该形态;活体证据待 W32-C Rights 形态矩阵。
+3. **`tauri build` 完整打包**:同前波次边界(`bundle.active=false`)。
+4. `docs/management/stage-b-progress.md` 波次表更新不在本车道写集(integrator 收口)。
+
+### W32-D.5 工件清单(本波次写集)
+
+- `desktop/src-tauri/src/{ipc,dto,lib,devfixture}.rs`、`desktop/src-tauri/Cargo.toml`、`desktop/src-tauri/examples/dev_server.rs`、`desktop/src-tauri/tests/authenticated_permission_side.rs`(新增)、`desktop/src/{main,ipc,types}.ts`、`desktop/README.md`。
+- 本证据文件 §W32-D(唯一 desktop/ 外写集工件)。
