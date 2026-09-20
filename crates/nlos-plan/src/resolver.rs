@@ -545,11 +545,11 @@ fn decode_order_blob(bytes: &[u8]) -> Result<Vec<TaskNodeId>, PlanStoreError> {
         return Err(PlanStoreError::CorruptRecord("resolved order width"));
     }
     bytes
-        .chunks_exact(16)
+        .as_chunks::<16>()
+        .0
+        .iter()
         .map(|chunk| {
-            let node: [u8; 16] = chunk
-                .try_into()
-                .map_err(|_| PlanStoreError::CorruptRecord("resolved order chunk"))?;
+            let node = *chunk;
             Ok(TaskNodeId::from_bytes(node))
         })
         .collect()
@@ -560,11 +560,11 @@ fn decode_edges_blob(bytes: &[u8]) -> Result<Vec<(TaskNodeId, TaskNodeId)>, Plan
         return Err(PlanStoreError::CorruptRecord("resolved edges width"));
     }
     bytes
-        .chunks_exact(32)
+        .as_chunks::<32>()
+        .0
+        .iter()
         .map(|chunk| {
-            let pair: [u8; 32] = chunk
-                .try_into()
-                .map_err(|_| PlanStoreError::CorruptRecord("resolved edges chunk"))?;
+            let pair: [u8; 32] = *chunk;
             Ok((
                 TaskNodeId::from_bytes(
                     pair[..16]
