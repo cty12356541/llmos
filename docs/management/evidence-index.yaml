@@ -814,3 +814,9 @@
   scope: "keygen/build/verify 三命令 + 可复现签名包文件 + 权威验签管线复用（W33-A/B1-4）"
   assurance: H3
   date: "2026-09-21"
+- id: b-driver-001-mock-provider-plane
+  path: docs/evidence/stage-b/b-driver-001-mock-provider-plane.md
+  title: "B-DRIVER-001：最小 provider driver plane（确定性 fake provider）"
+  scope: "nlos-driver-mock 注册/派发/完成全链 + 认证 IPC + 重启 replay（W30-B；cache 降级/fence 递延 W30-C）"
+  assurance: H3
+  date: "2026-09-20"
