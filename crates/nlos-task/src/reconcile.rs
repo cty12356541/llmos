@@ -2245,7 +2245,7 @@ impl SqliteTaskAuthority {
         request: &FinalizeRequestV3,
         legacy: bool,
     ) -> Result<FinalizeDecision, TaskStoreError> {
-        match self.finalize_impl_inner(request, legacy, None, None, None)? {
+        match self.finalize_impl_inner(request, legacy, None, None, None, None)? {
             FinalizeImplResult::Plain(decision) => Ok(decision),
             _ => Err(TaskStoreError::CorruptRecord(
                 "non-plain finalize result returned through plain API",
@@ -2259,7 +2259,7 @@ impl SqliteTaskAuthority {
         legacy: bool,
         authority_lease: Option<AuthorityLeaseRecord>,
     ) -> Result<FinalizeDecision, TaskStoreError> {
-        match self.finalize_impl_inner(request, legacy, authority_lease, None, None)? {
+        match self.finalize_impl_inner(request, legacy, authority_lease, None, None, None)? {
             FinalizeImplResult::Plain(decision) => Ok(decision),
             _ => Err(TaskStoreError::CorruptRecord(
                 "non-plain finalize result returned through plain API",
@@ -2272,7 +2272,7 @@ impl SqliteTaskAuthority {
         request: &FinalizeRequestV3,
         plan_id: SemanticCommitPlanId,
     ) -> Result<SemanticFinalizeDecision, TaskStoreError> {
-        match self.finalize_impl_inner(request, false, None, Some(plan_id), None)? {
+        match self.finalize_impl_inner(request, false, None, Some(plan_id), None, None)? {
             FinalizeImplResult::Semantic(decision) => Ok(decision),
             _ => Err(TaskStoreError::CorruptRecord(
                 "non-Semantic finalize result returned through Semantic API",
@@ -2291,6 +2291,7 @@ impl SqliteTaskAuthority {
             false,
             Some(authority_lease),
             Some(plan_id),
+            None,
             None,
         )? {
             FinalizeImplResult::Semantic(decision) => Ok(decision),
@@ -2315,11 +2316,40 @@ impl SqliteTaskAuthority {
             false,
             authority_lease,
             None,
+            None,
             Some(resource_receipts),
         )? {
             FinalizeImplResult::Resource(decision) => Ok(decision),
             _ => Err(TaskStoreError::CorruptRecord(
                 "non-Resource finalize result returned through Resource API",
+            )),
+        }
+    }
+
+    /// Plan-threaded Resource v3 finalize core used by
+    /// `converge_resource_commit_plan`: identical to
+    /// [`Self::finalize_impl_with_resource_receipts`], and additionally
+    /// flips the Resource finalize plan to `Finalized` (bound to the
+    /// terminal Task receipt) and resolves the Resource recovery ledger
+    /// inside the same terminal Task transaction — on both the fresh
+    /// commit and the closed-permit replay path.
+    pub(crate) fn finalize_impl_with_resource_plan(
+        &self,
+        request: &FinalizeRequestV3,
+        resource_plan_id: crate::resource_commit::ResourceCommitPlanId,
+        resource_receipts: &[NestedResourceCostReceipt],
+    ) -> Result<ResourceFinalizeDecision, TaskStoreError> {
+        match self.finalize_impl_inner(
+            request,
+            false,
+            None,
+            None,
+            Some(resource_plan_id),
+            Some(resource_receipts),
+        )? {
+            FinalizeImplResult::Resource(decision) => Ok(decision),
+            _ => Err(TaskStoreError::CorruptRecord(
+                "non-Resource finalize result returned through Resource plan API",
             )),
         }
     }
@@ -2340,6 +2370,7 @@ impl SqliteTaskAuthority {
             false,
             authority_lease,
             Some(semantic_plan_id),
+            None,
             Some(resource_receipts),
         )? {
             FinalizeImplResult::Combined(decision) => Ok(decision),
@@ -2356,6 +2387,7 @@ impl SqliteTaskAuthority {
         legacy: bool,
         authority_lease: Option<AuthorityLeaseRecord>,
         semantic_plan_id: Option<SemanticCommitPlanId>,
+        resource_plan_id: Option<crate::resource_commit::ResourceCommitPlanId>,
         resource_receipts: Option<&[NestedResourceCostReceipt]>,
     ) -> Result<FinalizeImplResult, TaskStoreError> {
         let mut connection = self.lock_connection()?;
@@ -2478,6 +2510,19 @@ impl SqliteTaskAuthority {
                             request.base.task_id,
                             &nested,
                         )?;
+                        if let Some(plan_id) = resource_plan_id {
+                            crate::resource_commit::bind_resource_plan_receipt(
+                                &transaction,
+                                plan_id,
+                                receipt.receipt_id,
+                                request.base.finalized_at_ms,
+                            )?;
+                            crate::recovery::resolve_resource_recovery(
+                                &transaction,
+                                plan_id,
+                                request.base.finalized_at_ms,
+                            )?;
+                        }
                         transaction.commit()?;
                         return Ok(FinalizeImplResult::Resource(
                             ResourceFinalizeDecision::Replayed(Box::new(
@@ -2653,6 +2698,22 @@ impl SqliteTaskAuthority {
                 ))
             }
             (None, Some(receipts)) => {
+                if let Some(plan_id) = resource_plan_id {
+                    // The plan flip and ledger resolve ride the SAME
+                    // terminal transaction as the receipt/nested rows, so
+                    // the whole bridge appears and disappears together.
+                    crate::resource_commit::bind_resource_plan_receipt(
+                        &transaction,
+                        plan_id,
+                        receipt.receipt_id,
+                        request.base.finalized_at_ms,
+                    )?;
+                    crate::recovery::resolve_resource_recovery(
+                        &transaction,
+                        plan_id,
+                        request.base.finalized_at_ms,
+                    )?;
+                }
                 transaction.commit()?;
                 Ok(FinalizeImplResult::Resource(
                     ResourceFinalizeDecision::Committed(Box::new(ResourceTaskCommitReceipt {

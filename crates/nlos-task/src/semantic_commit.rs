@@ -879,7 +879,7 @@ fn ensure_no_effect_slots(
     Ok(())
 }
 
-fn validate_finalize_satisfaction_shape(
+pub(crate) fn validate_finalize_satisfaction_shape(
     slots: &[crate::SlotRecord],
     satisfactions: &[RequiredSatisfaction],
 ) -> Result<(), TaskStoreError> {

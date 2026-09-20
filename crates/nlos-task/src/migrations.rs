@@ -1,4 +1,4 @@
-//! Linear `SQLite` schema migration chain (v1 → v42) for the durable
+//! Linear `SQLite` schema migration chain (v1 → v43) for the durable
 //! `TaskAuthority`.
 //!
 //! Every `migrate_vN` advances `user_version` by exactly one step, committed
@@ -1474,6 +1474,54 @@ pub(crate) fn migrate_v42(connection: &mut Connection) -> Result<(), TaskStoreEr
     Ok(())
 }
 
+/// v42 → v43 lands the Resource prepare/finalize coordinator table group
+/// (ADR-0017 decision R-C): the mutable resource commit plan table with
+/// identity-immutability triggers, the immutable finalize envelope and its
+/// satisfactions (mirroring the v26 semantic envelope shape), and the
+/// Resource recovery ledger mirroring v42 column-for-column with the
+/// foreign key re-pointed at `task_resource_commit_plans`. Purely
+/// additive; idempotent and re-runnable.
+pub(crate) fn migrate_v43(connection: &mut Connection) -> Result<(), TaskStoreError> {
+    // The complete group is fourteen named sqlite_master parts: five
+    // tables, the due index, and eight immutability triggers.
+    let complete_schema_parts: i64 = connection.query_row(
+        "SELECT (SELECT COUNT(*) FROM sqlite_master
+                 WHERE type='table' AND name IN (
+                     'task_resource_commit_plans',
+                     'task_resource_finalize_envelopes',
+                     'task_resource_finalize_satisfactions',
+                     'task_resource_recovery',
+                     'task_resource_recovery_alert_receipts'))
+              + (SELECT COUNT(*) FROM sqlite_master
+                 WHERE type='index' AND name = 'task_resource_recovery_due')
+              + (SELECT COUNT(*) FROM sqlite_master
+                 WHERE type='trigger' AND name IN (
+                     'task_resource_commit_plan_identity_immutable',
+                     'task_resource_commit_plan_no_delete',
+                     'task_resource_finalize_envelope_immutable_update',
+                     'task_resource_finalize_envelope_no_delete',
+                     'task_resource_finalize_satisfaction_immutable_update',
+                     'task_resource_finalize_satisfaction_immutable_delete',
+                     'task_resource_recovery_alert_receipts_immutable_update',
+                     'task_resource_recovery_alert_receipts_immutable_delete'))",
+        [],
+        |row| row.get(0),
+    )?;
+    if complete_schema_parts == 14 {
+        connection.pragma_update(None, "user_version", 43)?;
+        return Ok(());
+    }
+    if complete_schema_parts != 0 {
+        return Err(TaskStoreError::CorruptRecord(
+            "partial resource prepare/finalize schema",
+        ));
+    }
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(SCHEMA_V43_SQL)?;
+    transaction.commit()?;
+    Ok(())
+}
+
 const SCHEMA_V13_SQL: &str = "CREATE TABLE task_write_sets (
         task_id BLOB NOT NULL CHECK(length(task_id) = 16),
         attempt_id BLOB NOT NULL CHECK(length(attempt_id) = 16),
@@ -2806,9 +2854,138 @@ pub(crate) const SCHEMA_V42_SQL: &str = "CREATE TABLE task_semantic_recovery (
      END;
 
      CREATE TRIGGER task_semantic_recovery_alert_receipts_immutable_delete
-     BEFORE DELETE ON task_semantic_recovery_alert_receipts
+      BEFORE DELETE ON task_semantic_recovery_alert_receipts
+      BEGIN
+         SELECT RAISE(ABORT, 'Semantic recovery alert receipts are immutable');
+      END;
+
+      PRAGMA user_version = 42;";
+
+const SCHEMA_V43_SQL: &str = "CREATE TABLE task_resource_commit_plans (
+        plan_id BLOB PRIMARY KEY NOT NULL CHECK(length(plan_id) = 16),
+        task_id BLOB NOT NULL CHECK(length(task_id) = 16),
+        permit_id BLOB NOT NULL UNIQUE CHECK(length(permit_id) = 16),
+        idempotency_key BLOB NOT NULL CHECK(length(idempotency_key) = 16),
+        attempt_id BLOB NOT NULL CHECK(length(attempt_id) = 16),
+        attempt_generation BLOB NOT NULL CHECK(length(attempt_generation) = 8),
+        write_set_root BLOB NOT NULL CHECK(length(write_set_root) = 32),
+        resource_reservation_set_root BLOB NOT NULL CHECK(length(resource_reservation_set_root) = 32),
+        expected_reservation_count BLOB NOT NULL CHECK(length(expected_reservation_count) = 8),
+        plan_state INTEGER NOT NULL CHECK(plan_state IN (0, 1)),
+        task_receipt_id BLOB CHECK(task_receipt_id IS NULL OR length(task_receipt_id) = 16),
+        created_at_ms INTEGER NOT NULL,
+        updated_at_ms INTEGER NOT NULL,
+        UNIQUE(task_id, idempotency_key),
+        FOREIGN KEY(task_id) REFERENCES tasks(task_id),
+        FOREIGN KEY(permit_id) REFERENCES commit_permits(permit_id),
+        CHECK((plan_state = 1) = (task_receipt_id IS NOT NULL))
+     ) STRICT;
+
+     CREATE TRIGGER task_resource_commit_plan_identity_immutable
+     BEFORE UPDATE ON task_resource_commit_plans
+     WHEN OLD.plan_id IS NOT NEW.plan_id
+       OR OLD.task_id IS NOT NEW.task_id
+       OR OLD.permit_id IS NOT NEW.permit_id
+       OR OLD.idempotency_key IS NOT NEW.idempotency_key
+       OR OLD.attempt_id IS NOT NEW.attempt_id
+       OR OLD.attempt_generation IS NOT NEW.attempt_generation
+       OR OLD.write_set_root IS NOT NEW.write_set_root
+       OR OLD.resource_reservation_set_root IS NOT NEW.resource_reservation_set_root
+       OR OLD.expected_reservation_count IS NOT NEW.expected_reservation_count
+       OR OLD.created_at_ms IS NOT NEW.created_at_ms
      BEGIN
-        SELECT RAISE(ABORT, 'Semantic recovery alert receipts are immutable');
+        SELECT RAISE(ABORT, 'resource commit plan identity is immutable');
      END;
 
-     PRAGMA user_version = 42;";
+     CREATE TRIGGER task_resource_commit_plan_no_delete
+     BEFORE DELETE ON task_resource_commit_plans
+     BEGIN
+        SELECT RAISE(ABORT, 'resource commit plan is durable evidence');
+     END;
+
+     CREATE TABLE task_resource_finalize_envelopes (
+        plan_id BLOB PRIMARY KEY NOT NULL CHECK(length(plan_id) = 16),
+        fenced_participant_digest BLOB NOT NULL CHECK(length(fenced_participant_digest) = 32),
+        prepared_at_ms INTEGER NOT NULL CHECK(prepared_at_ms >= 0),
+        FOREIGN KEY(plan_id) REFERENCES task_resource_commit_plans(plan_id)
+     ) STRICT;
+
+     CREATE TABLE task_resource_finalize_satisfactions (
+        plan_id BLOB NOT NULL CHECK(length(plan_id) = 16),
+        effect_seq BLOB NOT NULL CHECK(length(effect_seq) = 8),
+        proof_kind INTEGER NOT NULL CHECK(proof_kind IN (0, 1)),
+        proof_digest BLOB NOT NULL CHECK(length(proof_digest) = 32),
+        PRIMARY KEY(plan_id, effect_seq),
+        FOREIGN KEY(plan_id) REFERENCES task_resource_finalize_envelopes(plan_id)
+     ) STRICT;
+
+     CREATE TRIGGER task_resource_finalize_envelope_immutable_update
+     BEFORE UPDATE ON task_resource_finalize_envelopes
+     BEGIN
+        SELECT RAISE(ABORT, 'resource finalize envelope is immutable');
+     END;
+
+     CREATE TRIGGER task_resource_finalize_envelope_no_delete
+     BEFORE DELETE ON task_resource_finalize_envelopes
+     BEGIN
+        SELECT RAISE(ABORT, 'resource finalize envelope is durable evidence');
+     END;
+
+     CREATE TRIGGER task_resource_finalize_satisfaction_immutable_update
+     BEFORE UPDATE ON task_resource_finalize_satisfactions
+     BEGIN
+        SELECT RAISE(ABORT, 'resource finalize satisfaction is immutable');
+     END;
+
+     CREATE TRIGGER task_resource_finalize_satisfaction_immutable_delete
+     BEFORE DELETE ON task_resource_finalize_satisfactions
+     BEGIN
+        SELECT RAISE(ABORT, 'resource finalize satisfaction is durable evidence');
+     END;
+
+     CREATE TABLE task_resource_recovery (
+        plan_id BLOB PRIMARY KEY NOT NULL CHECK(length(plan_id) = 16),
+        recovery_state INTEGER NOT NULL CHECK(recovery_state IN (0, 1, 2)),
+        consecutive_failures BLOB NOT NULL CHECK(length(consecutive_failures) = 8),
+        total_failures BLOB NOT NULL CHECK(length(total_failures) = 8),
+        last_failure_source INTEGER NOT NULL CHECK(last_failure_source IN (0, 1, 2)),
+        first_failed_at_ms INTEGER NOT NULL CHECK(first_failed_at_ms >= 0),
+        last_failed_at_ms INTEGER NOT NULL CHECK(last_failed_at_ms >= first_failed_at_ms),
+        next_retry_at_ms INTEGER,
+        escalated_at_ms INTEGER,
+        resolved_at_ms INTEGER,
+        updated_at_ms INTEGER NOT NULL CHECK(updated_at_ms >= 0),
+        FOREIGN KEY(plan_id) REFERENCES task_resource_commit_plans(plan_id),
+        CHECK(total_failures >= consecutive_failures),
+        CHECK((recovery_state = 0) = (next_retry_at_ms IS NOT NULL)),
+        CHECK((recovery_state = 1) = (escalated_at_ms IS NOT NULL)),
+        CHECK((recovery_state = 2) = (resolved_at_ms IS NOT NULL))
+     ) STRICT;
+
+     CREATE INDEX task_resource_recovery_due
+        ON task_resource_recovery(recovery_state, next_retry_at_ms, plan_id);
+
+     CREATE TABLE task_resource_recovery_alert_receipts (
+        receipt_id BLOB PRIMARY KEY NOT NULL CHECK(length(receipt_id) = 16),
+        plan_id BLOB NOT NULL CHECK(length(plan_id) = 16),
+        total_failures BLOB NOT NULL CHECK(length(total_failures) = 8),
+        principal_id BLOB NOT NULL CHECK(length(principal_id) = 16),
+        idempotency_key BLOB NOT NULL UNIQUE CHECK(length(idempotency_key) = 16),
+        acknowledged_at_ms INTEGER NOT NULL CHECK(acknowledged_at_ms >= 0),
+        FOREIGN KEY(plan_id) REFERENCES task_resource_recovery(plan_id),
+        UNIQUE(plan_id, total_failures)
+     ) STRICT;
+
+     CREATE TRIGGER task_resource_recovery_alert_receipts_immutable_update
+     BEFORE UPDATE ON task_resource_recovery_alert_receipts
+     BEGIN
+        SELECT RAISE(ABORT, 'Resource recovery alert receipts are immutable');
+     END;
+
+     CREATE TRIGGER task_resource_recovery_alert_receipts_immutable_delete
+     BEFORE DELETE ON task_resource_recovery_alert_receipts
+     BEGIN
+        SELECT RAISE(ABORT, 'Resource recovery alert receipts are immutable');
+     END;
+
+     PRAGMA user_version = 43;";

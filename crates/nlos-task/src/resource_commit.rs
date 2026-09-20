@@ -15,18 +15,38 @@
 //! single-authority validation precedents (Semantic owner-proof re-read +
 //! READY publication plan, Resource FINALIZED aggregate re-read) and then
 //! persists BOTH nested evidence sets in one terminal Task transaction.
+//!
+//! The prepare/finalize coordinator half (ADR-0017 decision R-C, schema
+//! v43) persists the terminal request identity as an immutable envelope
+//! plus a mutable plan state machine so a restart can converge the Task
+//! side from durable bytes alone: the owner half (per-reservation
+//! `finalize_reservation`) stays with the caller or a future
+//! enforcement-gateway, and a plan whose owner reservations are not all
+//! FINALIZED is *not due* — converge makes zero owner mutation and
+//! records zero ledger failure, keeping the plan an inspectable durable
+//! fact.
+
+use std::fmt;
 
 use nlos_types::{
-    CallId, OperationId, QuoteId, ReceiptId, ReservationId, ResourceAccountId, TaskId,
+    CallId, CommitPermitId, Generation, IdempotencyKey, OperationId, QuoteId, ReceiptId,
+    ReservationId, ResourceAccountId, TaskAttemptId, TaskId,
 };
-use rusqlite::{Row, Transaction, params};
+use rusqlite::{Row, Transaction, TransactionBehavior, params};
+use sha2::{Digest, Sha256};
 
+use crate::effect::list_slots;
 use crate::reconcile::{FinalizeRequestV3, validate_semantic_finalization};
-use crate::semantic_commit::{NestedSemanticPublicationReceipt, SemanticCommitPlanId};
-use crate::store::{SqlRead, SqliteTaskAuthority, blob16, blob32, encode_u64, u64_from_blob};
+use crate::semantic_commit::{
+    NestedSemanticPublicationReceipt, SemanticCommitPlanId, validate_finalize_satisfaction_shape,
+};
+use crate::store::{
+    SqlRead, SqliteTaskAuthority, blob16, blob32, encode_u64, generation_from_blob, load_attempt,
+    load_permit_by_id, load_task, load_write_set_by_root, optional_blob16, u64_from_blob,
+};
 use crate::{
-    AuthorityLeaseRecord, PermitState, TaskReceiptRecord, TaskStoreError, TaskWriteSetRecord,
-    TaskWriteSetResourceReservation,
+    AuthorityLeaseRecord, FinalizeRequest, PermitState, RequiredSatisfaction, TaskReceiptRecord,
+    TaskStoreError, TaskWriteSetRecord, TaskWriteSetResourceReservation,
 };
 
 /// Owner-derived full cost aggregate nested under one terminal Task
@@ -602,4 +622,675 @@ fn validate_parent_closure(
         ));
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// prepare/finalize coordinator (ADR-0017 decision R-C, schema v43)
+// ---------------------------------------------------------------------------
+
+/// Durable state of a Task-side Resource finalize plan. `Planned` is the
+/// only pre-terminal state: the owner-side settle steps belong to the
+/// caller/gateway, and the single Task-side terminal step (the
+/// resource-aware v3 finalize transaction) flips the plan to `Finalized`
+/// inside that same transaction.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ResourceCommitPlanState {
+    Planned,
+    Finalized,
+}
+
+impl ResourceCommitPlanState {
+    pub(crate) const fn code(self) -> i64 {
+        match self {
+            Self::Planned => 0,
+            Self::Finalized => 1,
+        }
+    }
+
+    pub(crate) fn from_code(code: i64) -> Result<Self, TaskStoreError> {
+        match code {
+            0 => Ok(Self::Planned),
+            1 => Ok(Self::Finalized),
+            _ => Err(TaskStoreError::CorruptRecord(
+                "unknown resource commit plan state",
+            )),
+        }
+    }
+}
+
+/// Authority-derived identity of one Resource finalize plan.
+#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ResourceCommitPlanId([u8; 16]);
+
+impl ResourceCommitPlanId {
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; 16]) -> Self {
+        Self(bytes)
+    }
+
+    #[must_use]
+    pub const fn into_bytes(self) -> [u8; 16] {
+        self.0
+    }
+
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 16] {
+        &self.0
+    }
+}
+
+impl fmt::Debug for ResourceCommitPlanId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ResourceCommitPlanId(")?;
+        for byte in self.0 {
+            write!(formatter, "{byte:02x}")?;
+        }
+        formatter.write_str(")")
+    }
+}
+
+/// Request to durably bind the Resource finalize envelope to one issued
+/// permit. The Reservation set is derived from the sealed `TaskWriteSet`;
+/// caller-supplied cost facts are never accepted.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PrepareResourceFinalizeRequest {
+    pub task_id: TaskId,
+    pub attempt_id: TaskAttemptId,
+    pub attempt_generation: Generation,
+    pub permit_id: CommitPermitId,
+    pub idempotency_key: IdempotencyKey,
+    pub required_satisfaction: Vec<RequiredSatisfaction>,
+    pub fenced_participant_digest: [u8; 32],
+    pub prepared_at_ms: i64,
+}
+
+/// Immutable durable Resource finalize envelope bound to one plan. These
+/// are exactly the `FinalizeRequestV3` bytes that cannot be re-derived
+/// from the plan/permit identity; exact retries replay byte-for-byte.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResourceFinalizeEnvelopeRecord {
+    pub plan_id: ResourceCommitPlanId,
+    pub required_satisfaction: Vec<RequiredSatisfaction>,
+    pub fenced_participant_digest: [u8; 32],
+    pub prepared_at_ms: i64,
+}
+
+/// Idempotent result of preparing the Resource finalize envelope.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ResourceFinalizeEnvelopeDecision {
+    Prepared(Box<ResourceFinalizeEnvelopeRecord>),
+    Replayed(Box<ResourceFinalizeEnvelopeRecord>),
+}
+
+impl ResourceFinalizeEnvelopeDecision {
+    #[must_use]
+    pub fn record(&self) -> &ResourceFinalizeEnvelopeRecord {
+        match self {
+            Self::Prepared(record) | Self::Replayed(record) => record,
+        }
+    }
+}
+
+/// Durable Resource finalize plan.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResourceCommitPlanRecord {
+    pub plan_id: ResourceCommitPlanId,
+    pub task_id: TaskId,
+    pub permit_id: CommitPermitId,
+    pub attempt_id: TaskAttemptId,
+    pub attempt_generation: Generation,
+    pub write_set_root: [u8; 32],
+    pub resource_reservation_set_root: [u8; 32],
+    pub expected_reservation_count: u64,
+    pub state: ResourceCommitPlanState,
+    pub task_receipt_id: Option<ReceiptId>,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+/// Bounded decision of one coordinator converge step. `NotDue` is the
+/// honest boundary of decision R-C: the owner is not settled, so nothing
+/// is mutated and nothing is recorded — the plan remains an inspectable
+/// durable fact for the operations surface.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ResourceConvergeDecision {
+    Finalized(Box<ResourceTaskCommitReceipt>),
+    Replayed(Box<ResourceTaskCommitReceipt>),
+    NotDue(Box<ResourceCommitPlanRecord>),
+}
+
+enum OwnerSettlement {
+    Settled,
+    NotSettled,
+}
+
+impl SqliteTaskAuthority {
+    /// Persists the Resource finalize envelope (terminal request identity)
+    /// and the plan state machine for one issued permit in a single
+    /// transaction. The Reservation set is derived from the permit's
+    /// sealed `TaskWriteSet`; the envelope is immutable and exact retries
+    /// replay its bytes. Owner-side settlement is NOT driven here.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed not-found/holder/stale-head error, a typed
+    /// invalid-plan error for write sets without Reservations or with
+    /// Semantic appends (the combined rung stays on its direct API), or a
+    /// storage error. No partial plan/envelope row is committed on error.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn prepare_resource_finalize(
+        &self,
+        request: PrepareResourceFinalizeRequest,
+    ) -> Result<ResourceFinalizeEnvelopeDecision, TaskStoreError> {
+        if request.prepared_at_ms < 0 {
+            return Err(TaskStoreError::InvalidResourcePlan {
+                reason: "resource finalize envelope timestamp must be non-negative",
+            });
+        }
+        let plan_id = derive_resource_plan_id(request.permit_id);
+        let mut connection = self.lock_connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(existing_plan) = load_resource_plan_optional(&transaction, plan_id)? {
+            let envelope = load_finalize_envelope_optional(&transaction, plan_id)?.ok_or(
+                TaskStoreError::CorruptRecord("resource commit plan lacks its finalize envelope"),
+            )?;
+            let same_request = existing_plan.task_id == request.task_id
+                && existing_plan.permit_id == request.permit_id
+                && existing_plan.attempt_id == request.attempt_id
+                && existing_plan.attempt_generation == request.attempt_generation
+                && envelope.required_satisfaction == request.required_satisfaction
+                && envelope.fenced_participant_digest == request.fenced_participant_digest
+                && envelope.prepared_at_ms == request.prepared_at_ms;
+            if !same_request {
+                return Err(TaskStoreError::InvalidResourcePlan {
+                    reason: "resource finalize envelope request conflicts with durable bytes",
+                });
+            }
+            transaction.commit()?;
+            return Ok(ResourceFinalizeEnvelopeDecision::Replayed(Box::new(
+                envelope,
+            )));
+        }
+        let envelope = prepare_new_resource_finalize(&transaction, &request, plan_id)?;
+        transaction.commit()?;
+        Ok(ResourceFinalizeEnvelopeDecision::Prepared(Box::new(
+            envelope,
+        )))
+    }
+
+    /// Reads one durable Resource finalize plan.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TaskStoreError::ResourceCommitPlanNotFound`] or a
+    /// corrupt-record/storage error.
+    pub fn inspect_resource_commit_plan(
+        &self,
+        plan_id: ResourceCommitPlanId,
+    ) -> Result<ResourceCommitPlanRecord, TaskStoreError> {
+        let connection = self.lock_connection()?;
+        load_resource_plan_optional(&*connection, plan_id)?
+            .ok_or(TaskStoreError::ResourceCommitPlanNotFound)
+    }
+
+    /// Reads the immutable Resource finalize envelope, if one was prepared
+    /// for the plan.
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage or corrupt-record error.
+    pub fn inspect_resource_finalize_envelope(
+        &self,
+        plan_id: ResourceCommitPlanId,
+    ) -> Result<Option<ResourceFinalizeEnvelopeRecord>, TaskStoreError> {
+        let connection = self.lock_connection()?;
+        load_finalize_envelope_optional(&*connection, plan_id)
+    }
+
+    /// Lists non-finalized Resource finalize plans in stable
+    /// identity order for a restart coordinator scan.
+    ///
+    /// # Errors
+    ///
+    /// Returns a corrupt-record or storage error.
+    pub fn list_incomplete_resource_commit_plans(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<ResourceCommitPlanRecord>, TaskStoreError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let connection = self.lock_connection()?;
+        let mut statement = connection.prepare(
+            "SELECT plan_id FROM task_resource_commit_plans
+             WHERE plan_state != ?1 ORDER BY created_at_ms, plan_id LIMIT ?2",
+        )?;
+        let mut rows = statement.query(params![
+            ResourceCommitPlanState::Finalized.code(),
+            i64::try_from(limit).unwrap_or(i64::MAX),
+        ])?;
+        let mut ids = Vec::new();
+        while let Some(row) = rows.next()? {
+            ids.push(ResourceCommitPlanId::from_bytes(blob16(row, 0)?));
+        }
+        drop(rows);
+        drop(statement);
+        ids.into_iter()
+            .map(|plan_id| {
+                load_resource_plan_optional(&*connection, plan_id)?
+                    .ok_or(TaskStoreError::ResourceCommitPlanNotFound)
+            })
+            .collect()
+    }
+
+    /// Converges one incomplete Resource finalize plan from durable bytes
+    /// alone (ADR-0017 decision R-C): when every sealed Reservation is
+    /// FINALIZED on the owner, the Task side converges through the
+    /// existing resource-aware v3 single-transaction path (re-reading the
+    /// FINALIZED owner aggregate before the transaction, then flipping
+    /// the plan inside it); when any Reservation is not settled — or is
+    /// unknown to this owner — the plan is *not due* and this call makes
+    /// zero owner mutation and zero ledger write. A finalized plan
+    /// replays from the durable Task rows only.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed plan/envelope error, the resource-aware v3
+    /// lifecycle errors, or [`TaskStoreError::ResourceParticipantAuthority`]
+    /// when the owner read itself fails (an infrastructure failure the
+    /// caller may ledger). The not-due outcome is a decision, not an
+    /// error.
+    pub fn converge_resource_commit_plan(
+        &self,
+        resource_authority: &nlos_resource::ResourceAuthority,
+        plan_id: ResourceCommitPlanId,
+        now_ms: i64,
+    ) -> Result<ResourceConvergeDecision, TaskStoreError> {
+        if now_ms < 0 {
+            return Err(TaskStoreError::InvalidResourceRecoveryPolicy {
+                reason: "converge timestamp must be non-negative",
+            });
+        }
+        let plan = self.inspect_resource_commit_plan(plan_id)?;
+        let envelope = self.inspect_resource_finalize_envelope(plan_id)?.ok_or(
+            TaskStoreError::CorruptRecord("resource commit plan lacks its finalize envelope"),
+        )?;
+        let request = FinalizeRequestV3 {
+            base: FinalizeRequest {
+                task_id: plan.task_id,
+                attempt_id: plan.attempt_id,
+                attempt_generation: plan.attempt_generation,
+                permit_id: plan.permit_id,
+                new_effect_history_root: [0; 32],
+                new_retry_fence_epoch: 0,
+                finalized_at_ms: now_ms,
+            },
+            required_satisfaction: envelope.required_satisfaction,
+            fenced_participant_digest: envelope.fenced_participant_digest,
+        };
+        if plan.state == ResourceCommitPlanState::Finalized {
+            return match self.finalize_impl_with_resource_plan(&request, plan_id, &[])? {
+                ResourceFinalizeDecision::Replayed(receipt) => {
+                    Ok(ResourceConvergeDecision::Replayed(receipt))
+                }
+                ResourceFinalizeDecision::Committed(_) => Err(TaskStoreError::CorruptRecord(
+                    "finalized Resource plan converged through a fresh commit",
+                )),
+            };
+        }
+        let write_set = {
+            let connection = self.lock_connection()?;
+            let permit = load_permit_by_id(&*connection, plan.task_id, plan.permit_id)?;
+            let record = load_write_set_by_root(&*connection, plan.task_id, permit.write_set_root)?
+                .ok_or(TaskStoreError::TaskWriteSetNotFound)?;
+            if record.write_set_root != crate::model::task_write_set_root(&record) {
+                return Err(TaskStoreError::CorruptRecord(
+                    "TaskWriteSet canonical root mismatch before Resource converge",
+                ));
+            }
+            record
+        };
+        validate_resource_plan_against_write_set(&plan, &write_set)?;
+        match owner_settlement(resource_authority, &write_set)? {
+            OwnerSettlement::NotSettled => Ok(ResourceConvergeDecision::NotDue(Box::new(plan))),
+            OwnerSettlement::Settled => {
+                let receipts = verify_owner_cost_receipts(resource_authority, &write_set)?;
+                match self.finalize_impl_with_resource_plan(&request, plan_id, &receipts)? {
+                    ResourceFinalizeDecision::Committed(receipt) => {
+                        Ok(ResourceConvergeDecision::Finalized(receipt))
+                    }
+                    ResourceFinalizeDecision::Replayed(receipt) => {
+                        Ok(ResourceConvergeDecision::Replayed(receipt))
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Validates the permit/attempt/head/write-set context of a fresh prepare
+/// and inserts the plan row plus the immutable envelope (and satisfaction
+/// rows) inside the caller's `Immediate` transaction; the caller commits.
+fn prepare_new_resource_finalize(
+    transaction: &Transaction<'_>,
+    request: &PrepareResourceFinalizeRequest,
+    plan_id: ResourceCommitPlanId,
+) -> Result<ResourceFinalizeEnvelopeRecord, TaskStoreError> {
+    let permit = load_permit_by_id(transaction, request.task_id, request.permit_id)?;
+    if permit.state != PermitState::Issued {
+        return Err(TaskStoreError::PermitNotIssued);
+    }
+    let attempt = load_attempt(transaction, request.task_id, request.attempt_id)?;
+    if attempt.attempt_generation != request.attempt_generation {
+        return Err(TaskStoreError::InvalidGeneration);
+    }
+    if permit.attempt_id != request.attempt_id
+        || permit.attempt_generation != request.attempt_generation
+    {
+        return Err(TaskStoreError::NotPermitHolder);
+    }
+    let task = load_task(transaction, request.task_id)?;
+    if task.record.head_commit_seq != permit.expected_head_commit_seq
+        || task.record.head_effect_history_root != permit.expected_effect_history_root
+        || task.record.retry_fence_epoch != permit.expected_retry_fence_epoch
+    {
+        return Err(TaskStoreError::StaleTaskHead);
+    }
+    let write_set = load_write_set_by_root(transaction, request.task_id, permit.write_set_root)?
+        .ok_or(TaskStoreError::TaskWriteSetNotFound)?;
+    if write_set.write_set_root != crate::model::task_write_set_root(&write_set) {
+        return Err(TaskStoreError::CorruptRecord(
+            "TaskWriteSet canonical root mismatch before Resource finalize preparation",
+        ));
+    }
+    if !write_set.semantic_appends.is_empty() {
+        return Err(TaskStoreError::InvalidResourcePlan {
+            reason: "resource finalize envelope requires a write set without Semantic appends",
+        });
+    }
+    let mut sealed = write_set.resource_reservations.clone();
+    sealed.sort_unstable_by_key(|reservation| reservation.reservation_id);
+    if sealed
+        .windows(2)
+        .any(|pair| pair[0].reservation_id == pair[1].reservation_id)
+    {
+        return Err(TaskStoreError::TaskWriteSetResourceReservationConflict);
+    }
+    if sealed.is_empty() {
+        return Err(TaskStoreError::InvalidResourcePlan {
+            reason: "sealed TaskWriteSet has no Resource reservations",
+        });
+    }
+    let slots = list_slots(transaction, permit.permit_id)?;
+    if slots.is_empty() {
+        if !request.required_satisfaction.is_empty() {
+            return Err(TaskStoreError::InvalidResourcePlan {
+                reason: "satisfaction proofs require declared Effect slots",
+            });
+        }
+    } else {
+        validate_finalize_satisfaction_shape(&slots, &request.required_satisfaction)?;
+    }
+    let expected_reservation_count = u64::try_from(sealed.len())
+        .map_err(|_| TaskStoreError::CorruptRecord("Resource reservation count exceeds u64"))?;
+    let plan = ResourceCommitPlanRecord {
+        plan_id,
+        task_id: request.task_id,
+        permit_id: request.permit_id,
+        attempt_id: request.attempt_id,
+        attempt_generation: request.attempt_generation,
+        write_set_root: write_set.write_set_root,
+        resource_reservation_set_root: write_set.resource_reservation_set_root,
+        expected_reservation_count,
+        state: ResourceCommitPlanState::Planned,
+        task_receipt_id: None,
+        created_at_ms: request.prepared_at_ms,
+        updated_at_ms: request.prepared_at_ms,
+    };
+    insert_resource_plan(transaction, &plan, request.idempotency_key)?;
+    let envelope = ResourceFinalizeEnvelopeRecord {
+        plan_id,
+        required_satisfaction: request.required_satisfaction.clone(),
+        fenced_participant_digest: request.fenced_participant_digest,
+        prepared_at_ms: request.prepared_at_ms,
+    };
+    insert_finalize_envelope(transaction, &envelope)?;
+    Ok(envelope)
+}
+
+fn owner_settlement(
+    resource_authority: &nlos_resource::ResourceAuthority,
+    record: &TaskWriteSetRecord,
+) -> Result<OwnerSettlement, TaskStoreError> {
+    for expected in &record.resource_reservations {
+        match resource_authority.inspect_reservation(expected.reservation_id) {
+            Ok(owner) => {
+                if owner.state != nlos_resource::ReservationState::Finalized {
+                    return Ok(OwnerSettlement::NotSettled);
+                }
+            }
+            Err(nlos_resource::ResourceAuthorityError::ReservationNotFound) => {
+                return Ok(OwnerSettlement::NotSettled);
+            }
+            Err(other) => return Err(TaskStoreError::ResourceParticipantAuthority(other)),
+        }
+    }
+    Ok(OwnerSettlement::Settled)
+}
+
+fn validate_resource_plan_against_write_set(
+    plan: &ResourceCommitPlanRecord,
+    record: &TaskWriteSetRecord,
+) -> Result<(), TaskStoreError> {
+    let expected_count = u64::try_from(record.resource_reservations.len())
+        .map_err(|_| TaskStoreError::CorruptRecord("Resource reservation count exceeds u64"))?;
+    if plan.write_set_root != record.write_set_root
+        || plan.resource_reservation_set_root != record.resource_reservation_set_root
+        || plan.expected_reservation_count != expected_count
+    {
+        return Err(TaskStoreError::CorruptRecord(
+            "Resource commit plan disagrees with sealed TaskWriteSet",
+        ));
+    }
+    Ok(())
+}
+
+fn derive_resource_plan_id(permit_id: CommitPermitId) -> ResourceCommitPlanId {
+    let mut hasher = Sha256::new();
+    hasher.update(b"llmos/task-resource-commit-plan/v1");
+    hasher.update(permit_id.as_bytes());
+    let digest = hasher.finalize();
+    let mut bytes = [0_u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    ResourceCommitPlanId::from_bytes(bytes)
+}
+
+const RESOURCE_PLAN_COLUMNS: &str = "plan_id, task_id, permit_id, attempt_id,
+     attempt_generation, write_set_root, resource_reservation_set_root,
+     expected_reservation_count, plan_state, task_receipt_id, created_at_ms, updated_at_ms";
+
+fn insert_resource_plan(
+    transaction: &Transaction<'_>,
+    record: &ResourceCommitPlanRecord,
+    idempotency_key: IdempotencyKey,
+) -> Result<(), TaskStoreError> {
+    transaction.execute(
+        "INSERT INTO task_resource_commit_plans (
+            plan_id, task_id, permit_id, idempotency_key, attempt_id,
+            attempt_generation, write_set_root, resource_reservation_set_root,
+            expected_reservation_count, plan_state, task_receipt_id,
+            created_at_ms, updated_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, ?11, ?11)",
+        params![
+            record.plan_id.as_bytes().as_slice(),
+            record.task_id.as_bytes().as_slice(),
+            record.permit_id.as_bytes().as_slice(),
+            idempotency_key.as_bytes().as_slice(),
+            record.attempt_id.as_bytes().as_slice(),
+            encode_u64(record.attempt_generation.get()).as_slice(),
+            record.write_set_root.as_slice(),
+            record.resource_reservation_set_root.as_slice(),
+            encode_u64(record.expected_reservation_count).as_slice(),
+            record.state.code(),
+            record.created_at_ms,
+        ],
+    )?;
+    Ok(())
+}
+
+pub(crate) fn load_resource_plan_optional(
+    source: &impl SqlRead,
+    plan_id: ResourceCommitPlanId,
+) -> Result<Option<ResourceCommitPlanRecord>, TaskStoreError> {
+    let mut statement = source.prepare_statement(&format!(
+        "SELECT {RESOURCE_PLAN_COLUMNS} FROM task_resource_commit_plans WHERE plan_id = ?1"
+    ))?;
+    let mut rows = statement.query([plan_id.as_bytes().as_slice()])?;
+    rows.next()?.map(decode_resource_plan_row).transpose()
+}
+
+fn decode_resource_plan_row(row: &Row<'_>) -> Result<ResourceCommitPlanRecord, TaskStoreError> {
+    Ok(ResourceCommitPlanRecord {
+        plan_id: ResourceCommitPlanId::from_bytes(blob16(row, 0)?),
+        task_id: TaskId::from_bytes(blob16(row, 1)?),
+        permit_id: CommitPermitId::from_bytes(blob16(row, 2)?),
+        attempt_id: TaskAttemptId::from_bytes(blob16(row, 3)?),
+        attempt_generation: generation_from_blob(row, 4)?,
+        write_set_root: blob32(row, 5)?,
+        resource_reservation_set_root: blob32(row, 6)?,
+        expected_reservation_count: u64_from_blob(row, 7)?,
+        state: ResourceCommitPlanState::from_code(row.get(8)?)?,
+        task_receipt_id: optional_blob16(row, 9)?.map(ReceiptId::from_bytes),
+        created_at_ms: row.get(10)?,
+        updated_at_ms: row.get(11)?,
+    })
+}
+
+/// Flips a `Planned` Resource finalize plan to `Finalized` bound to one
+/// Task receipt inside the caller's terminal transaction, or verifies an
+/// already-finalized plan binds exactly that receipt (idempotent replay).
+pub(crate) fn bind_resource_plan_receipt(
+    transaction: &Transaction<'_>,
+    plan_id: ResourceCommitPlanId,
+    receipt_id: ReceiptId,
+    now_ms: i64,
+) -> Result<(), TaskStoreError> {
+    let plan = load_resource_plan_optional(transaction, plan_id)?
+        .ok_or(TaskStoreError::ResourceCommitPlanNotFound)?;
+    match plan.state {
+        ResourceCommitPlanState::Finalized => {
+            if plan.task_receipt_id != Some(receipt_id) {
+                return Err(TaskStoreError::CorruptRecord(
+                    "finalized Resource plan binds a different Task receipt",
+                ));
+            }
+            Ok(())
+        }
+        ResourceCommitPlanState::Planned => {
+            let changed = transaction.execute(
+                "UPDATE task_resource_commit_plans
+                 SET plan_state = ?1, task_receipt_id = ?2, updated_at_ms = ?3
+                 WHERE plan_id = ?4 AND plan_state = ?5 AND task_receipt_id IS NULL",
+                params![
+                    ResourceCommitPlanState::Finalized.code(),
+                    receipt_id.as_bytes().as_slice(),
+                    now_ms,
+                    plan_id.as_bytes().as_slice(),
+                    ResourceCommitPlanState::Planned.code(),
+                ],
+            )?;
+            if changed != 1 {
+                return Err(TaskStoreError::CorruptRecord(
+                    "resource commit plan finalize compare-and-swap failed",
+                ));
+            }
+            Ok(())
+        }
+    }
+}
+
+fn insert_finalize_envelope(
+    transaction: &Transaction<'_>,
+    envelope: &ResourceFinalizeEnvelopeRecord,
+) -> Result<(), TaskStoreError> {
+    transaction.execute(
+        "INSERT INTO task_resource_finalize_envelopes (
+            plan_id, fenced_participant_digest, prepared_at_ms
+         ) VALUES (?1, ?2, ?3)",
+        params![
+            envelope.plan_id.as_bytes().as_slice(),
+            envelope.fenced_participant_digest.as_slice(),
+            envelope.prepared_at_ms,
+        ],
+    )?;
+    for satisfaction in &envelope.required_satisfaction {
+        let (proof_kind, proof_digest) = match satisfaction.proof {
+            crate::RequiredSatisfactionProof::EffectClosedSuccess {
+                success_assertion_digest,
+            } => (0_i64, success_assertion_digest),
+            crate::RequiredSatisfactionProof::ConditionNotApplicable {
+                condition_false_proof_digest,
+            } => (1_i64, condition_false_proof_digest),
+        };
+        transaction.execute(
+            "INSERT INTO task_resource_finalize_satisfactions (
+                plan_id, effect_seq, proof_kind, proof_digest
+             ) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                envelope.plan_id.as_bytes().as_slice(),
+                encode_u64(satisfaction.effect_seq).as_slice(),
+                proof_kind,
+                proof_digest.as_slice(),
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+fn load_finalize_envelope_optional(
+    source: &impl SqlRead,
+    plan_id: ResourceCommitPlanId,
+) -> Result<Option<ResourceFinalizeEnvelopeRecord>, TaskStoreError> {
+    let (fenced_participant_digest, prepared_at_ms) = {
+        let mut statement = source.prepare_statement(
+            "SELECT fenced_participant_digest, prepared_at_ms
+             FROM task_resource_finalize_envelopes WHERE plan_id = ?1",
+        )?;
+        let mut rows = statement.query([plan_id.as_bytes().as_slice()])?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+        (blob32(row, 0)?, row.get::<_, i64>(1)?)
+    };
+    let mut statement = source.prepare_statement(
+        "SELECT effect_seq, proof_kind, proof_digest
+         FROM task_resource_finalize_satisfactions
+         WHERE plan_id = ?1 ORDER BY effect_seq",
+    )?;
+    let mut rows = statement.query([plan_id.as_bytes().as_slice()])?;
+    let mut required_satisfaction = Vec::new();
+    while let Some(row) = rows.next()? {
+        let effect_seq = u64_from_blob(row, 0)?;
+        let proof_digest = blob32(row, 2)?;
+        let proof = match row.get::<_, i64>(1)? {
+            0 => crate::RequiredSatisfactionProof::EffectClosedSuccess {
+                success_assertion_digest: proof_digest,
+            },
+            1 => crate::RequiredSatisfactionProof::ConditionNotApplicable {
+                condition_false_proof_digest: proof_digest,
+            },
+            _ => {
+                return Err(TaskStoreError::CorruptRecord(
+                    "unknown resource finalize proof kind",
+                ));
+            }
+        };
+        required_satisfaction.push(RequiredSatisfaction { effect_seq, proof });
+    }
+    Ok(Some(ResourceFinalizeEnvelopeRecord {
+        plan_id,
+        required_satisfaction,
+        fenced_participant_digest,
+        prepared_at_ms,
+    }))
 }

@@ -223,6 +223,10 @@ pub use recovery::{
     ArtifactRecoveryAlertAcknowledgeRequest, ArtifactRecoveryAlertReceipt,
     ArtifactRecoveryFailureRequest, ArtifactRecoveryFailureSource, ArtifactRecoveryRecord,
     ArtifactRecoveryResumeRequest, ArtifactRecoveryState, ArtifactRecoverySummary,
+    ResourceRecoveryAlert, ResourceRecoveryAlertAcknowledgeDecision,
+    ResourceRecoveryAlertAcknowledgeRequest, ResourceRecoveryAlertReceipt,
+    ResourceRecoveryFailureRequest, ResourceRecoveryFailureSource, ResourceRecoveryRecord,
+    ResourceRecoveryResumeRequest, ResourceRecoveryState, ResourceRecoverySummary,
     SemanticRecoveryAlert, SemanticRecoveryAlertAcknowledgeDecision,
     SemanticRecoveryAlertAcknowledgeRequest, SemanticRecoveryAlertReceipt,
     SemanticRecoveryFailureRequest, SemanticRecoveryFailureSource, SemanticRecoveryRecord,
@@ -230,8 +234,10 @@ pub use recovery::{
     semantic_recovery_resume_reference,
 };
 pub use resource_commit::{
-    NestedResourceCostReceipt, ResourceFinalizeDecision, ResourceTaskCommitReceipt,
-    SemanticResourceFinalizeDecision, SemanticResourceTaskCommitReceipt,
+    NestedResourceCostReceipt, PrepareResourceFinalizeRequest, ResourceCommitPlanId,
+    ResourceCommitPlanRecord, ResourceCommitPlanState, ResourceConvergeDecision,
+    ResourceFinalizeDecision, ResourceFinalizeEnvelopeDecision, ResourceFinalizeEnvelopeRecord,
+    ResourceTaskCommitReceipt, SemanticResourceFinalizeDecision, SemanticResourceTaskCommitReceipt,
 };
 pub use scale::{
     DEFAULT_RECLAIM_THRESHOLD_RATIO, ScaleProfile, TASK_PROFILE_10K, TASK_PROFILE_100K,
@@ -333,6 +339,28 @@ pub enum TaskStoreError {
     /// state.
     InvalidSemanticRecoveryState {
         state: SemanticRecoveryState,
+    },
+    /// No Resource finalize plan with this identity exists.
+    ResourceCommitPlanNotFound,
+    /// A Resource finalize plan or envelope invariant was violated; the
+    /// request fails closed with zero Task terminal mutation (ADR-0017
+    /// decision R-C gate G1).
+    InvalidResourcePlan {
+        reason: &'static str,
+    },
+    /// Resource recovery retry timing or timestamp is invalid.
+    InvalidResourceRecoveryPolicy {
+        reason: &'static str,
+    },
+    /// A Resource recovery update used a stale failure-count CAS.
+    ResourceRecoveryCasMismatch {
+        expected: u64,
+        current: u64,
+    },
+    /// The requested Resource recovery transition is invalid for its
+    /// durable state.
+    InvalidResourceRecoveryState {
+        state: ResourceRecoveryState,
     },
     /// The task ID is already registered with a different specification.
     DuplicateTask,
@@ -721,6 +749,25 @@ impl fmt::Display for TaskStoreError {
                 write!(
                     formatter,
                     "Semantic recovery state {state:?} rejects the transition"
+                )
+            }
+            Self::ResourceCommitPlanNotFound => {
+                formatter.write_str("resource commit plan does not exist")
+            }
+            Self::InvalidResourcePlan { reason } => {
+                write!(formatter, "invalid resource finalize plan: {reason}")
+            }
+            Self::InvalidResourceRecoveryPolicy { reason } => {
+                write!(formatter, "invalid Resource recovery policy: {reason}")
+            }
+            Self::ResourceRecoveryCasMismatch { expected, current } => write!(
+                formatter,
+                "Resource recovery CAS expected {expected} failures but found {current}"
+            ),
+            Self::InvalidResourceRecoveryState { state } => {
+                write!(
+                    formatter,
+                    "Resource recovery state {state:?} rejects the transition"
                 )
             }
             Self::DuplicateTask => formatter.write_str("task ID re-registered with new spec"),
