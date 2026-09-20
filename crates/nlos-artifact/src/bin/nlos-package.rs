@@ -316,6 +316,7 @@ fn derive_principal(key: &DevKey) -> Result<nlos_types::PrincipalId, ToolError> 
     Ok(decision.binding().principal_id)
 }
 
+#[cfg_attr(not(unix), allow(unused_variables))]
 fn restrict_permissions(path: &str) {
     #[cfg(unix)]
     {
