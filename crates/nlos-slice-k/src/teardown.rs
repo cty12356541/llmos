@@ -105,6 +105,7 @@ struct BindingTeardownStep {
 /// # Panics
 ///
 /// Never panics by construction; every authority refusal is a typed error.
+#[cfg_attr(not(unix), allow(unused_variables))]
 pub fn run_application_teardown(
     runtime: &Arc<SliceKRuntime>,
     adapter: &TokioRuntimeAdapter,
