@@ -22,9 +22,12 @@ nlos-operation = { path = "../nlos-operation" }
 nlos-process = { path = "../nlos-process" }
 nlos-runtime = { path = "../nlos-runtime" }
 nlos-runtime-tokio = { path = "../nlos-runtime-tokio" }
+nlos-schema = { path = "../nlos-schema" }
 nlos-store = { path = "../nlos-store" }
+nlos-system-control = { path = "../nlos-system-control", default-features = false, features = ["process"] }
 nlos-task = { path = "../nlos-task" }
 nlos-types = { path = "../nlos-types" }
+sha2.workspace = true
 tokio.workspace = true
 
 [lints]
