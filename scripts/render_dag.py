@@ -12,6 +12,11 @@ Outputs:
   - stdout:      ANSI lane view for the terminal
   - dag.md:      Mermaid flowchart (GitHub renders natively)
   - progress.md: `## DAG` section refreshed between <!-- dag:begin/end -->
+
+Flags:
+  --oneline  single-line summary for statusline, no file writes
+  --view     full terminal view WITHOUT writing dag.md / progress.md
+             (常驻面板专用只读出口:避免与 integrator 并发写台账)
 """
 from __future__ import annotations
 
@@ -24,6 +29,17 @@ from pathlib import Path
 ANSI = {"done": "\033[32m", "active": "\033[34m", "pending": "\033[90m", "end": "\033[0m"}
 MARKS = {"done": "✓", "active": "▶", "pending": "·"}
 ACTIVE_WORDS = ("dispatched", "in-review", "in-progress", "fix round")
+
+
+def visible_len(s: str) -> int:
+    """码点宽度近似(与既有列内边同口径;CJK 偏窄是全文件已知近似)。"""
+    return len(re.sub(r"\033\[[0-9;]*m", "", s))
+
+
+def laneless_tasks(dag: dict, status: dict) -> list:
+    """tasks 里有、lanes 里没有的任务(integrator 阶段任务,如 W26 的 T9/T10)。"""
+    in_lanes = {n for lane in dag["lanes"] for n in lane["tasks"]}
+    return [n for n in sorted(status) if n not in in_lanes]
 
 
 def resolve_status(ledger: str, n: int) -> str:
@@ -67,9 +83,28 @@ def terminal_view(dag: dict, status: dict[int, str]) -> str:
         cells = []
         for col, lane in zip(rows, lanes):
             cell = col[i] if i < len(col) else ""
-            pad = " " * max(0, 20 - len(re.sub(r"\033\[[0-9;]*m", "", cell)))
+            pad = " " * max(0, 20 - visible_len(cell))
             cells.append(cell + pad)
         lines.append("   ".join(cells).rstrip())
+    # 无车道任务:不进车道网格,但必须可见,否则头部计数(覆盖全部 tasks)
+    # 与网格行数矛盾,活跃时出现「▶N 却无行可指」
+    laneless = laneless_tasks(dag, status)
+    if laneless:
+        head, cont = "\033[1m无车道\033[0m  ", " " * 8
+        cells = [
+            f"{ANSI[status[n]]}{MARKS[status[n]]} T{n} {dag['tasks'][str(n)]['label']}{ANSI['end']}"
+            for n in laneless
+        ]
+        segs, used, first_line = [], 0, True
+        for cell in cells:
+            w = visible_len(cell)
+            if segs and used + 3 + w > width:
+                lines.append((head if first_line else cont) + "   ".join(segs))
+                first_line, segs, used = False, [], 0
+            segs.append(cell)
+            used = used + (3 if len(segs) > 1 else 0) + w
+        if segs:
+            lines.append((head if first_line else cont) + "   ".join(segs))
     lines.append("─" * width)
     for b in dag.get("barriers", []):
         gate = "+".join(f"T{n}" for n in b["after"])
@@ -93,6 +128,9 @@ def mermaid(dag: dict, status: dict[int, str]) -> str:
                 out.append(f"    T{prev} --> T{n}")
             prev = n
         out.append("  end")
+    for n in laneless_tasks(dag, status):  # 无车道任务:顶层节点,带状态类
+        label = dag["tasks"][str(n)]["label"].replace('"', "'")
+        out.append(f"  T{n}[\"T{n} {label}\"]:::{cls[status[n]]}")
     for b in dag.get("barriers", []):
         after, unlocks = b["after"], b["unlocks"]
         if len(unlocks) == 1:
@@ -135,10 +173,12 @@ def main() -> None:
     root = Path(__file__).resolve().parent.parent
     args = [a for a in sys.argv[1:] if not a.startswith("-")]
     oneline = "--oneline" in sys.argv
+    view_only = "--view" in sys.argv
     if args:
         workspace = Path(args[0])
     else:
-        candidates = sorted((root / ".superpowers" / "sdd").glob("*/dag.json"))
+        candidates = sorted((root / ".superpowers" / "sdd").glob("*/dag.json"),
+                            key=lambda p: p.stat().st_mtime)
         if not candidates:
             sys.exit("no workspace with dag.json under .superpowers/sdd/")
         workspace = candidates[-1].parent
@@ -148,6 +188,8 @@ def main() -> None:
         print(oneline_view(dag, status))
         return
     print(terminal_view(dag, status))
+    if view_only:  # 只读出口:常驻面板用,不碰 dag.md / progress.md
+        return
     (workspace / "dag.md").write_text(mermaid(dag, status) + "\n", encoding="utf-8")
     inject(workspace, mermaid(dag, status))
     print(f"\nmermaid → {workspace / 'dag.md'}(并已注入 progress.md 的 ## DAG 节)")
