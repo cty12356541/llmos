@@ -4,9 +4,9 @@
 >
 > 日期：2026-09-21
 >
-> 对应：[进度单 §6.5.3](../../management/stage-b-progress.md) W33-A 车道行（B1-4，验收门「样板包可构建、可验签」）；ROAD-B-001 生态门（为 B1-5 第三方样板应用提供非内核视角开发路径）
+> 对应：[进度单 §6.5.3](../../management/stage-b-progress.md) W33-A 车道行（B1-4，验收门「样板包可构建、可验签」）与 W33-C 车道行（X-3 中，验收门「包结构/manifest/验签一致性检查器」，见 §6）；ROAD-B-001 生态门（为 B1-5 第三方样板应用提供非内核视角开发路径）
 >
-> 实现：`crates/nlos-artifact/src/bin/nlos-package.rs`（唯一新增源文件）；开发者文档 [docs/developers/packaging.md](../../developers/packaging.md)
+> 实现：`crates/nlos-artifact/src/bin/nlos-package.rs`（W33-A 唯一新增源文件；W33-C 增量见 §6.1）、`crates/nlos-artifact/src/{package_file.rs, conformance.rs}`（W33-C）；开发者文档 [docs/developers/packaging.md](../../developers/packaging.md)、[docs/developers/package-conformance.md](../../developers/package-conformance.md)
 >
 > 依赖前序：B-ARTIFACT-003（`verify_package` 签名验证面）、B-PLAN-002/W28-B（`tasks` 模板段与 `verify_package_with_tasks`）、B-APPLICATION-001（receipt→安装 digest-binding，本切片只消费其入参语义）
 
@@ -66,3 +66,45 @@ python3 scripts/lint_claims.py                                 # PASS：135/135�
 ## 5. 未运行项（显式列出）
 
 未运行 `cargo test --workspace`（任务边界禁）、三平台 CI/MSRV/Pages（波次屏障统一跑；CI clippy 1.98 的 `chunks_exact` 新 lint 已知且本切片未用该模式）、真实断电矩阵（无新 durable 协议——复用既有 store/identity 提交路径）。
+
+## 6. W33-C：包一致性 conformance kit（X-3 中，2026-09-21）
+
+### 6.1 目标与实现事实
+
+验收门「包结构/manifest/验签一致性检查器」：对**任意** `nlos/package-file/v1` 包文件（不限于本 CLI 构建）离线运行带稳定规则号的规则集，与 `verify`（单包权威准入）互补。
+
+- **前置 refactor（独立提交）**：包文件 codec 自 bin 提升为库模块 `package_file.rs`——magic/签名者描述子/entry/task 帧、`manifest()`/`manifest_entry()` 投影与 `derive_artifact_id` 迁移，decode 失败改 typed `PackageFileError`（Display 字符串与既有 CLI 报文一致）。单一 codec 权威（本仓纪律），bin 行为/退出码零变化。
+- **conformance 模块（`src/conformance.rs`）**：17 条规则 `PKG-CONF-001..042` 分四组——结构（001 magic/002 帧/003 entry 名/004 枚举字节）、manifest schema 含 tasks 形状（010 非空/011 名唯一/012 node key 唯一/013 无自依赖/014 依赖局部性/015/016 容量界）、签名链与摘要一致（020 内嵌公钥验签于正确面域分隔摘要、030 载荷摘要、031 artifact_id 按文档派生）、兼容窗与元数据（040 窗非空、041 窗 ≤ i64::MAX——身份台账 SQLite INTEGER 界、042 version ≠ 0）。`check_package_file` 结构失败 fail-stop（更深层不可信），解码成功后全部规则一次收集。012–016 与 `validate_task_templates` 同域两实现（权威判定 vs 规则号粒度），agreement 测试钉死。库侧 ed25519 新用途为**验签**（非签名），Cargo.toml 注释同步更新。
+- **CLI 面**：`nlos-package conformance <PKGFILE>` 子命令（exit 0 CONFORMANT / 6 NONCONFORMANT / 2 不可读 / 1 用法），finding 逐行 `PKG-CONF-### <detail>` 输出至 stdout。
+- **文档**：[package-conformance.md](../../developers/package-conformance.md) 规则表（每条含权威来源标注：格式/验签路径/构建惯例/kit 级，kit 严于内核准入处如实标注）；packaging.md §1/退出码表/§8 交叉引用；bin 头契约同步。
+
+### 6.2 验证证据
+
+新增测试 30（净增 26，codec 测试 2 个自 bin 随迁并加 typed 断言）：
+
+- **集成（`tests/package_conformance.rs`，20，真实二进制）**：W33-A CLI 构建的包两面（legacy/templated）conformance 净通过；库面手造净包（非本 CLI 产物）净通过；每规则 fixture 精确命中——001 坏 magic、002 截断+尾随、003 非 UTF-8/NUL/超长名、004 未知 role/kind 字节（字节手术）、010 空清单、011 重名、012/013/014 模板形状、016 依赖容量界（258 模板全引用合法）、020 签名字节翻转、020+031×2 version 篡改多 finding 报告形、030 载荷篡改（签名不覆盖载荷字节，单命中）、031 偏离派生（正确签名）、040 反置窗、041 u64::MAX 窗（描述子未签名，单命中）、042 零版本；usage exit 1。
+- **库单测（conformance 6 + package_file 4）**：规则号稳定且互异（`PKG-CONF-0NN` 格式）、空输入→001、最小手造包净通过、decode 失败→对应结构规则（含 040 映射）、task 规则与 `validate_task_templates` 一致性、015 界（100 001 模板，仅库级，见 §6.3）、codec 双面 round-trip、typed 失败分类、artifact-id 确定性与名边界、manifest 投影全字段。
+
+既有面零回归（W33-A `package_sdk_cli` 7、`package_signature`/`package_task_templates` 原样绿）。本地验证（2026-09-21）：
+
+```text
+cargo test -p nlos-artifact                                        # PASS：114 passed / 0 failed（净增 26）
+cargo clippy -p nlos-artifact --all-targets --all-features -- -D warnings   # PASS：exit 0
+cargo fmt -p nlos-artifact -- --check                              # PASS
+python3 scripts/lint_claims.py                                     # PASS（§6.2 落档时点）
+```
+
+真机手工演练（同日）：CLI 构建包 `conformance` → `CONFORMANT`/exit 0；首字节破坏 → `PKG-CONF-001` + `NONCONFORMANT … findings 1`/exit 6。
+
+### 6.3 已知限制与 deferred minors
+
+- 结构失败（001/002 及解码层拒绝）一次只报一个 finding 后停止；修复后重跑（文档 §1 已述）。
+- `PKG-CONF-042`（version ≠ 0）为 kit 级要求，内核侧无对应拒绝路径（文档与规则表已如实标注权威来源）。
+- `PKG-CONF-031`/`042` 使 kit 严于 `verify`（偏离派生的 artifact_id 仍可通过 verify 物化）——面向生产者契约，属设计意图非缺陷。
+- 015 容量界仅库级测试覆盖（100 001 模板包 ~18MB，CLI fixture 性价比低，如实登记）。
+- 不含开发者目录布局检查（`build` 输入面，packaging.md §2）。
+- evidence-index scope 行同步收录 W33-C（AGENTS 规则 4）。
+
+### 6.4 未运行项（W33-C）
+
+未运行 `cargo test --workspace`（任务边界禁）、三平台 CI（波次屏障统一跑）。

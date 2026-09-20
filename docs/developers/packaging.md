@@ -12,6 +12,7 @@
 nlos-package keygen --seed <HEX64> [--out <KEYFILE>]        # 默认 KEYFILE = nlos-package.devkey
 nlos-package build <DIR> --key <KEYFILE> [--out <PKGFILE>]  # 默认 PKGFILE = <package_id_hex>.v<version>.nlospkg
 nlos-package verify <PKGFILE> [--store <DIR>] [--identity <DIR>] [--at-ms <U64>]
+nlos-package conformance <PKGFILE>                          # W33-C 一致性检查器，见 package-conformance.md
 ```
 
 二进制位于 `crates/nlos-artifact/src/bin/nlos-package.rs`，`cargo build -p nlos-artifact` 后在 `target/debug/nlos-package`（或 `target/release/`）。
@@ -93,12 +94,13 @@ signer ca53… key 2056…
 
 | 码 | 含义 |
 |---|---|
-| 0 | 成功（verify 输出 VERIFIED/REPLAYED） |
+| 0 | 成功（verify 输出 VERIFIED/REPLAYED；conformance 输出 CONFORMANT） |
 | 1 | 用法错误 |
-| 2 | 输入畸形：manifest/密钥文件/包文件解析或形状（重复 entry 名、悬空依赖、截断包…） |
+| 2 | 输入畸形：manifest/密钥文件/包文件解析或形状（重复 entry 名、悬空依赖、截断包…）；conformance 亦用于文件不可读 |
 | 3 | 验签/身份失败：签名不符、principal 未知、密钥吊销、幂等冲突 |
 | 4 | 内容绑定失败：载荷与声明摘要不符（篡改载荷） |
 | 5 | 内部 I/O 或存储失败 |
+| 6 | conformance 发现违规（`PKG-CONF-###`，规则表见 [package-conformance.md](package-conformance.md)） |
 
 ### 篡改语义（负门）
 
@@ -117,5 +119,6 @@ signer ca53… key 2056…
 
 - [B-ARTIFACT-003](../evidence/stage-b/b-artifact-003-package-signature.md)：签名验证最小前缀与失败语义
 - [B-PLAN-002](../evidence/stage-b/b-plan-002-manifest-template.md)：tasks 模板段与 G6/`[PLAN-OVERRIDE-001]`
-- [B-ARTIFACT-007](../evidence/stage-b/b-artifact-007-package-sdk.md)：本 CLI 的证据文件
+- [B-ARTIFACT-007](../evidence/stage-b/b-artifact-007-package-sdk.md)：本 CLI 的证据文件（§6 为 W33-C conformance kit）
+- [package-conformance.md](package-conformance.md)：W33-C 包一致性检查器与 `PKG-CONF-###` 规则表
 - [B-APPLICATION-001](../evidence/stage-b/b-application-001-installation-authority.md)：receipt → 安装权威

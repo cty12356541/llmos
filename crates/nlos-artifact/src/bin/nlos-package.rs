@@ -16,6 +16,7 @@
 //! nlos-package keygen --seed <HEX64> [--out <KEYFILE>]
 //! nlos-package build <DIR> --key <KEYFILE> [--out <PKGFILE>]
 //! nlos-package verify <PKGFILE> [--store <DIR>] [--identity <DIR>] [--at-ms <U64>]
+//! nlos-package conformance <PKGFILE>
 //! ```
 //!
 //! # Determinism
@@ -30,7 +31,18 @@
 //! `0` success · `1` usage · `2` malformed input (manifest, key file,
 //! package file, shape) · `3` signature/identity verification failure ·
 //! `4` content-binding failure (tampered payload) · `5` internal I/O or
-//! store failure.
+//! store failure · `6` conformance findings (see
+//! docs/developers/package-conformance.md).
+//!
+//! # Conformance (W33-C)
+//!
+//! `conformance` is the offline producer-side gate: it runs the
+//! crate-level rule set (`nlos_artifact::check_package_file`) over ANY
+//! `nlos/package-file/v1` package — not just ones built by this CLI —
+//! and prints every typed `PKG-CONF-###` finding. Unlike `verify`, it
+//! needs no store or identity authority and never admits a package; it
+//! checks the format invariants (structure, manifest schema, signature
+//! against the embedded descriptor, digest consistency, window sanity).
 //!
 //! # Trust boundary (dev toolchain only)
 //!
@@ -47,32 +59,29 @@ use std::process::ExitCode;
 
 use ed25519_dalek::{Signer, SigningKey};
 use nlos_artifact::{
-    ArtifactError, ArtifactStore, ContentDigest, CreateArtifactSpec, PackageEntryRole,
-    PackageManifest, PackageManifestEntry, PackageTaskKind, PackageTaskTemplate,
-    PackageVerificationDecision, ProvenanceSourceTriple, PutRevisionRequest, SignedPackage,
-    SignedPackageWithTasks, VerifyPackageRequest, VerifyPackageWithTasksRequest,
+    ArtifactError, ArtifactStore, ContentDigest, CreateArtifactSpec, MAX_ENTRY_NAME_BYTES,
+    PackageEntryRole, PackageFile, PackageFileEntry, PackageManifest, PackageTaskKind,
+    PackageTaskTemplate, PackageVerificationDecision, ProvenanceSourceTriple, PutRevisionRequest,
+    SignedPackage, SignedPackageWithTasks, SignerDescriptor, VerifyPackageRequest,
+    VerifyPackageWithTasksRequest, decode_package_file, derive_artifact_id,
     package_manifest_message, package_manifest_with_tasks_message, validate_task_templates,
 };
-use nlos_identity::{BootstrapPrincipalRequest, IdentityAuthority, KeyPurpose};
+use nlos_identity::{BootstrapPrincipalRequest, IdentityAuthority};
 use nlos_types::{ArtifactId, IdempotencyKey, PackageId};
 use sha2::{Digest, Sha256};
 
 const USAGE: &str = "usage: nlos-package keygen --seed <HEX64> [--out <KEYFILE>] \
- | build <DIR> --key <KEYFILE> [--out <PKGFILE>] \
- | verify <PKGFILE> [--store <DIR>] [--identity <DIR>] [--at-ms <U64>]";
+  | build <DIR> --key <KEYFILE> [--out <PKGFILE>] \
+  | verify <PKGFILE> [--store <DIR>] [--identity <DIR>] [--at-ms <U64>] \
+  | conformance <PKGFILE>";
 
 /// Domain separators for CLI-owned derivations; each derivation is plain
 /// SHA-256 over `domain ‖ input` (the crate's receipt-id precedent).
-const ARTIFACT_ID_DOMAIN: &[u8] = b"llmos/package-file/artifact-id/v1";
 const CREATE_KEY_DOMAIN: &[u8] = b"llmos/package-file/create-key/v1";
 const VERIFY_KEY_DOMAIN: &[u8] = b"llmos/package-file/verify-key/v1";
 const KEYGEN_PROFILE_DOMAIN: &[u8] = b"llmos/package-keygen/profile/v1";
 const KEYGEN_POLICY_DOMAIN: &[u8] = b"llmos/package-keygen/policy/v1";
 const KEYGEN_BOOTSTRAP_DOMAIN: &[u8] = b"llmos/package-keygen/bootstrap-key/v1";
-
-/// Developer-manifest and package-file entry-name bound; mirrors the
-/// artifact authority's `MAX_TEXT_COMPONENT_BYTES`.
-const MAX_ENTRY_NAME_BYTES: usize = 255;
 
 /// Typed CLI failure, mapped onto the documented exit codes.
 #[derive(Debug)]
@@ -87,6 +96,9 @@ enum ToolError {
     Binding(String),
     /// Internal I/O or store failure (exit 5).
     Internal(String),
+    /// Conformance findings (exit 6); the findings themselves are
+    /// already printed to stdout by the conformance command.
+    Conformance(usize),
 }
 
 impl ToolError {
@@ -101,6 +113,7 @@ impl ToolError {
             Self::Signature(_) => 3,
             Self::Binding(_) => 4,
             Self::Internal(_) => 5,
+            Self::Conformance(_) => 6,
         }
     }
 }
@@ -143,6 +156,7 @@ fn main() -> ExitCode {
         "keygen" => keygen_command(&arguments[1..]),
         "build" => build_command(&arguments[1..]),
         "verify" => verify_command(&arguments[1..]),
+        "conformance" => conformance_command(&arguments[1..]),
         _ => Err(ToolError::Usage),
     };
     match result {
@@ -166,6 +180,7 @@ impl ToolError {
             | Self::Signature(text)
             | Self::Binding(text)
             | Self::Internal(text) => text.clone(),
+            Self::Conformance(count) => format!("package conformance violations: {count}"),
         }
     }
 }
@@ -470,12 +485,7 @@ fn manifest_of(
         version,
         entries: entries
             .iter()
-            .map(|entry| PackageManifestEntry {
-                name: entry.name.clone(),
-                artifact_id: ArtifactId::from_bytes(entry.artifact_id),
-                digest: ContentDigest::from_bytes(entry.digest),
-                role: entry.role,
-            })
+            .map(PackageFileEntry::manifest_entry)
             .collect(),
     }
 }
@@ -730,246 +740,6 @@ fn safe_join(base: &Path, relative: &str) -> Result<PathBuf, ToolError> {
 }
 
 // ---------------------------------------------------------------------------
-// Package file codec
-// ---------------------------------------------------------------------------
-
-const PACKAGE_FILE_MAGIC: &[u8] = b"nlos/package-file/v1";
-
-/// Public signer descriptor embedded in every package file: the exact
-/// material `nlos-identity` needs to bootstrap (or replay) the signer
-/// principal at verify time. No secret travels with the package.
-struct SignerDescriptor {
-    public_key: [u8; 32],
-    profile_digest: [u8; 32],
-    policy_digest: [u8; 32],
-    bootstrap_key: [u8; 16],
-    valid_from_ms: u64,
-    valid_until_ms: u64,
-}
-
-impl SignerDescriptor {
-    fn bootstrap_request(&self) -> BootstrapPrincipalRequest {
-        BootstrapPrincipalRequest {
-            principal_profile_digest: self.profile_digest,
-            control_domain_policy_digest: self.policy_digest,
-            public_key: self.public_key,
-            key_purpose: KeyPurpose::SemanticSigning,
-            key_valid_from_ms: self.valid_from_ms,
-            key_valid_until_ms: self.valid_until_ms,
-            idempotency_key: IdempotencyKey::from_bytes(self.bootstrap_key),
-            created_at_ms: self.valid_from_ms,
-        }
-    }
-}
-
-struct PackageFileEntry {
-    name: String,
-    role: PackageEntryRole,
-    artifact_id: [u8; 16],
-    digest: [u8; 32],
-    payload: Vec<u8>,
-}
-
-struct PackageFile {
-    descriptor: SignerDescriptor,
-    package_id: PackageId,
-    version: u64,
-    entries: Vec<PackageFileEntry>,
-    tasks: Vec<PackageTaskTemplate>,
-    signature: [u8; 64],
-}
-
-impl PackageFile {
-    fn encode(&self) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(PACKAGE_FILE_MAGIC);
-        bytes.extend_from_slice(&self.descriptor.public_key);
-        bytes.extend_from_slice(&self.descriptor.profile_digest);
-        bytes.extend_from_slice(&self.descriptor.policy_digest);
-        bytes.extend_from_slice(&self.descriptor.bootstrap_key);
-        bytes.extend_from_slice(&self.descriptor.valid_from_ms.to_be_bytes());
-        bytes.extend_from_slice(&self.descriptor.valid_until_ms.to_be_bytes());
-        bytes.extend_from_slice(self.package_id.as_bytes());
-        bytes.extend_from_slice(&self.version.to_be_bytes());
-        extend_count(&mut bytes, self.entries.len());
-        for entry in &self.entries {
-            extend_count(&mut bytes, entry.name.len());
-            bytes.extend_from_slice(entry.name.as_bytes());
-            bytes.push(entry.role.encode());
-            bytes.extend_from_slice(&entry.artifact_id);
-            bytes.extend_from_slice(&entry.digest);
-            extend_count(&mut bytes, entry.payload.len());
-            bytes.extend_from_slice(&entry.payload);
-        }
-        extend_count(&mut bytes, self.tasks.len());
-        for task in &self.tasks {
-            bytes.extend_from_slice(&task.node_key);
-            bytes.push(task.kind.encode());
-            bytes.extend_from_slice(&task.binding_digest);
-            extend_count(&mut bytes, task.dependency_keys.len());
-            for dependency in &task.dependency_keys {
-                bytes.extend_from_slice(dependency);
-            }
-            bytes.extend_from_slice(&task.input_selectors_digest);
-            bytes.extend_from_slice(&task.output_contract_digest);
-            bytes.extend_from_slice(&task.policy_digest);
-            bytes.extend_from_slice(&task.resource_ceiling_digest);
-        }
-        bytes.extend_from_slice(&self.signature);
-        bytes
-    }
-}
-
-fn extend_count(bytes: &mut Vec<u8>, count: usize) {
-    bytes.extend_from_slice(&u64::try_from(count).unwrap_or(u64::MAX).to_be_bytes());
-}
-
-struct Decoder<'a> {
-    bytes: &'a [u8],
-    position: usize,
-}
-
-impl<'a> Decoder<'a> {
-    fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, position: 0 }
-    }
-
-    fn take(&mut self, len: usize, what: &str) -> Result<&'a [u8], String> {
-        let end = self
-            .position
-            .checked_add(len)
-            .filter(|end| *end <= self.bytes.len())
-            .ok_or_else(|| format!("truncated package file at {what}"))?;
-        let slice = &self.bytes[self.position..end];
-        self.position = end;
-        Ok(slice)
-    }
-
-    fn take_array<const N: usize>(&mut self, what: &str) -> Result<[u8; N], String> {
-        let mut array = [0_u8; N];
-        array.copy_from_slice(self.take(N, what)?);
-        Ok(array)
-    }
-
-    fn take_count(&mut self, what: &str) -> Result<usize, String> {
-        let raw = u64::from_be_bytes(self.take_array::<8>(what)?);
-        usize::try_from(raw).map_err(|_| format!("{what} count exceeds platform usize"))
-    }
-
-    fn finish(self) -> Result<(), String> {
-        if self.position == self.bytes.len() {
-            Ok(())
-        } else {
-            Err(format!(
-                "trailing bytes after signature: {}",
-                self.bytes.len() - self.position
-            ))
-        }
-    }
-}
-
-fn decode_package_file(bytes: &[u8]) -> Result<PackageFile, ToolError> {
-    let context = "package file";
-    let mut decoder = Decoder::new(bytes);
-    let fail = |error: String| ToolError::input(context, &error);
-
-    let magic = decoder
-        .take(PACKAGE_FILE_MAGIC.len(), "magic")
-        .map_err(fail)?;
-    if magic != PACKAGE_FILE_MAGIC {
-        return Err(fail("bad magic".to_string()));
-    }
-    let descriptor = SignerDescriptor {
-        public_key: decoder.take_array("signer public key").map_err(fail)?,
-        profile_digest: decoder.take_array("profile digest").map_err(fail)?,
-        policy_digest: decoder.take_array("policy digest").map_err(fail)?,
-        bootstrap_key: decoder.take_array("bootstrap key").map_err(fail)?,
-        valid_from_ms: u64::from_be_bytes(decoder.take_array("key valid-from").map_err(fail)?),
-        valid_until_ms: u64::from_be_bytes(decoder.take_array("key valid-until").map_err(fail)?),
-    };
-    if descriptor.valid_from_ms > descriptor.valid_until_ms {
-        return Err(fail("signer key validity window is empty".to_string()));
-    }
-    let package_id = PackageId::from_bytes(decoder.take_array("package id").map_err(fail)?);
-    let version = u64::from_be_bytes(decoder.take_array("version").map_err(fail)?);
-
-    let entry_count = decoder.take_count("entry count").map_err(fail)?;
-    let mut entries = Vec::new();
-    for _ in 0..entry_count {
-        let name_len = decoder.take_count("entry name length").map_err(fail)?;
-        if name_len == 0 || name_len > MAX_ENTRY_NAME_BYTES {
-            return Err(fail("entry name length out of bounds".to_string()));
-        }
-        let name_bytes = decoder.take(name_len, "entry name").map_err(fail)?;
-        let name = String::from_utf8(name_bytes.to_vec())
-            .map_err(|_| fail("entry name is not UTF-8".to_string()))?;
-        if name.contains('\0') {
-            return Err(fail("entry name contains NUL".to_string()));
-        }
-        let role_byte = decoder.take_array::<1>("entry role").map_err(fail)?[0];
-        let role = match role_byte {
-            1 => PackageEntryRole::Executable,
-            2 => PackageEntryRole::BackgroundService,
-            3 => PackageEntryRole::Data,
-            _ => return Err(fail(format!("unknown entry role byte {role_byte}"))),
-        };
-        let artifact_id = decoder.take_array("entry artifact id").map_err(fail)?;
-        let digest = decoder.take_array("entry digest").map_err(fail)?;
-        let payload_len = decoder.take_count("entry payload length").map_err(fail)?;
-        let payload = decoder
-            .take(payload_len, "entry payload")
-            .map_err(fail)?
-            .to_vec();
-        entries.push(PackageFileEntry {
-            name,
-            role,
-            artifact_id,
-            digest,
-            payload,
-        });
-    }
-
-    let task_count = decoder.take_count("task count").map_err(fail)?;
-    let mut tasks = Vec::new();
-    for _ in 0..task_count {
-        let node_key = decoder.take_array("task node key").map_err(fail)?;
-        let kind_byte = decoder.take_array::<1>("task kind").map_err(fail)?[0];
-        let kind = match kind_byte {
-            1 => PackageTaskKind::AgentRole,
-            2 => PackageTaskKind::Executable,
-            _ => return Err(fail(format!("unknown task kind byte {kind_byte}"))),
-        };
-        let binding_digest = decoder.take_array("task binding").map_err(fail)?;
-        let dependency_count = decoder.take_count("task dependency count").map_err(fail)?;
-        let mut dependency_keys = Vec::with_capacity(dependency_count);
-        for _ in 0..dependency_count {
-            dependency_keys.push(decoder.take_array("task dependency").map_err(fail)?);
-        }
-        tasks.push(PackageTaskTemplate {
-            node_key,
-            kind,
-            binding_digest,
-            dependency_keys,
-            input_selectors_digest: decoder.take_array("task inputs").map_err(fail)?,
-            output_contract_digest: decoder.take_array("task outputs").map_err(fail)?,
-            policy_digest: decoder.take_array("task policy").map_err(fail)?,
-            resource_ceiling_digest: decoder.take_array("task ceiling").map_err(fail)?,
-        });
-    }
-
-    let signature = decoder.take_array("signature").map_err(fail)?;
-    decoder.finish().map_err(fail)?;
-    Ok(PackageFile {
-        descriptor,
-        package_id,
-        version,
-        entries,
-        tasks,
-        signature,
-    })
-}
-
-// ---------------------------------------------------------------------------
 // verify
 // ---------------------------------------------------------------------------
 
@@ -1009,7 +779,8 @@ fn verify_command(arguments: &[String]) -> Result<(), ToolError> {
 
     let bytes = fs::read(&package_path)
         .map_err(|error| ToolError::input("read package", &format!("{package_path}: {error}")))?;
-    let package = decode_package_file(&bytes)?;
+    let package = decode_package_file(&bytes)
+        .map_err(|error| ToolError::input("package file", &error.to_string()))?;
 
     let mut temporary: Vec<TempDir> = Vec::new();
     let store_directory = ensure_root(store.as_deref(), "verify-store", &mut temporary)?;
@@ -1166,6 +937,46 @@ fn materialize_entry(
 }
 
 // ---------------------------------------------------------------------------
+// conformance
+// ---------------------------------------------------------------------------
+
+/// Offline producer-side rule check over one package file: collects the
+/// typed `PKG-CONF-###` findings of the crate's conformance kit and
+/// prints one line per finding plus a summary. Clean reports exit 0,
+/// violations exit 6; an unreadable file is a typed input failure (2).
+fn conformance_command(arguments: &[String]) -> Result<(), ToolError> {
+    let mut package_path = None;
+    parse_flags(arguments, &mut |_, _| false, &mut |token| {
+        if package_path.is_none() {
+            package_path = Some(token.to_string());
+            true
+        } else {
+            false
+        }
+    })?;
+    let Some(package_path) = package_path else {
+        return Err(ToolError::Usage);
+    };
+
+    let bytes = fs::read(&package_path)
+        .map_err(|error| ToolError::input("read package", &format!("{package_path}: {error}")))?;
+    let report = nlos_artifact::check_package_file(&bytes);
+    for finding in &report.findings {
+        println!("{} {}", finding.rule.id(), finding.detail);
+    }
+    if report.is_conformant() {
+        println!("CONFORMANT {package_path}");
+        Ok(())
+    } else {
+        println!(
+            "NONCONFORMANT {package_path} findings {}",
+            report.findings.len()
+        );
+        Err(ToolError::Conformance(report.findings.len()))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // shared helpers
 // ---------------------------------------------------------------------------
 
@@ -1251,19 +1062,6 @@ fn derive_32(domain: &[u8], input: &[u8]) -> [u8; 32] {
     hasher.finalize().into()
 }
 
-fn derive_artifact_id(package_id: PackageId, version: u64, name: &str) -> [u8; 16] {
-    let mut hasher = Sha256::new();
-    hasher.update(ARTIFACT_ID_DOMAIN);
-    hasher.update(package_id.as_bytes());
-    hasher.update(version.to_be_bytes());
-    hasher.update(u64::try_from(name.len()).unwrap_or(u64::MAX).to_be_bytes());
-    hasher.update(name.as_bytes());
-    let digest = hasher.finalize();
-    let mut bytes = [0_u8; 16];
-    bytes.copy_from_slice(&digest[..16]);
-    bytes
-}
-
 /// The verify idempotency key is derived from the manifest digest, so
 /// re-verifying the same package against a persistent store replays the
 /// same durable receipt instead of committing a second one.
@@ -1302,11 +1100,7 @@ impl Drop for TempDir {
 
 #[cfg(test)]
 mod fixture {
-    use super::{DevKey, PackageFile, PackageFileEntry, SignerDescriptor};
-    use ed25519_dalek::SigningKey;
-    use nlos_artifact::{PackageEntryRole, PackageTaskKind, PackageTaskTemplate};
-    use nlos_types::PackageId;
-    use sha2::{Digest, Sha256};
+    use super::DevKey;
 
     pub fn dev_key(seed: u8) -> DevKey {
         DevKey {
@@ -1318,60 +1112,13 @@ mod fixture {
             valid_until_ms: u64::MAX,
         }
     }
-
-    pub fn package_file(with_tasks: bool) -> PackageFile {
-        let key = dev_key(0x5a);
-        let payload_entry = |name: &str, artifact: [u8; 16], body: &[u8]| PackageFileEntry {
-            name: name.to_string(),
-            role: PackageEntryRole::Executable,
-            artifact_id: artifact,
-            digest: {
-                let mut hasher = Sha256::new();
-                hasher.update(body);
-                hasher.finalize().into()
-            },
-            payload: body.to_vec(),
-        };
-        let tasks = if with_tasks {
-            vec![PackageTaskTemplate {
-                node_key: [0x33; 16],
-                kind: PackageTaskKind::AgentRole,
-                binding_digest: [0x44; 32],
-                dependency_keys: vec![[0x55; 16]],
-                input_selectors_digest: [0x66; 32],
-                output_contract_digest: [0x77; 32],
-                policy_digest: [0x88; 32],
-                resource_ceiling_digest: [0x99; 32],
-            }]
-        } else {
-            Vec::new()
-        };
-        PackageFile {
-            descriptor: SignerDescriptor {
-                public_key: SigningKey::from_bytes(&key.seed).verifying_key().to_bytes(),
-                profile_digest: key.profile_digest,
-                policy_digest: key.policy_digest,
-                bootstrap_key: key.bootstrap_key,
-                valid_from_ms: key.valid_from_ms,
-                valid_until_ms: key.valid_until_ms,
-            },
-            package_id: PackageId::from_bytes([0xab; 16]),
-            version: 1 << 32 | 2 << 16 | 3,
-            entries: vec![
-                payload_entry("hello", [0x11; 16], b"payload-hello"),
-                payload_entry("config", [0x22; 16], b"payload-config"),
-            ],
-            tasks,
-            signature: [0xcd; 64],
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_ENTRY_NAME_BYTES, PACKAGE_FILE_MAGIC, decode_package_file, derive_artifact_id, fixture,
-        hex_array, numbered_lines, parse_dev_key, parse_dev_manifest, parse_version, scalar_line,
+        fixture, hex_array, numbered_lines, parse_dev_key, parse_dev_manifest, parse_version,
+        scalar_line,
     };
     use nlos_artifact::PackageEntryRole;
 
@@ -1455,46 +1202,6 @@ task = 1112131415161718191a1b1c1d1e1f20 executable b.txt i.txt o.txt p.txt c.txt
             "44".repeat(16),
         );
         assert!(parse_dev_key(&reversed_window).is_err());
-    }
-
-    #[test]
-    fn package_codec_round_trips_and_fails_closed() {
-        for with_tasks in [false, true] {
-            let package = fixture::package_file(with_tasks);
-            let encoded = package.encode();
-            assert_eq!(&encoded[..PACKAGE_FILE_MAGIC.len()], PACKAGE_FILE_MAGIC);
-            let decoded = decode_package_file(&encoded).expect("decode");
-            assert_eq!(decoded.package_id.as_bytes(), package.package_id.as_bytes());
-            assert_eq!(decoded.version, package.version);
-            assert_eq!(decoded.entries.len(), package.entries.len());
-            assert_eq!(decoded.entries[0].payload, package.entries[0].payload);
-            assert_eq!(decoded.entries[0].digest, package.entries[0].digest);
-            assert_eq!(decoded.tasks, package.tasks);
-            assert_eq!(decoded.signature, package.signature);
-            assert_eq!(decoded.descriptor.public_key, package.descriptor.public_key);
-
-            assert!(decode_package_file(&encoded[..encoded.len() - 1]).is_err());
-            let mut trailing = encoded.clone();
-            trailing.push(0);
-            assert!(decode_package_file(&trailing).is_err());
-        }
-    }
-
-    #[test]
-    fn artifact_id_is_deterministic_and_name_bounded() {
-        let package_id = nlos_types::PackageId::from_bytes([9; 16]);
-        let first = derive_artifact_id(package_id, 1, "alpha");
-        assert_eq!(first, derive_artifact_id(package_id, 1, "alpha"));
-        assert_ne!(first, derive_artifact_id(package_id, 2, "alpha"));
-        assert_ne!(
-            first,
-            derive_artifact_id(package_id, 1, &"x".repeat(MAX_ENTRY_NAME_BYTES))
-        );
-        // Length prefix participates: a name boundary shift moves the id.
-        assert_ne!(
-            derive_artifact_id(package_id, 1, "ab"),
-            derive_artifact_id(package_id, 1, "a")
-        );
     }
 
     #[test]
