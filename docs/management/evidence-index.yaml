@@ -838,3 +838,9 @@
   scope: "订阅/投递/ack 全链经既有 Topic 权威 + wait commit 侧 notify 接线 + 无影子 fanout 负证（W33-D/X-1 前半）"
   assurance: H3
   date: "2026-09-21"
+- id: b-debug-001-minimal-face
+  path: docs/evidence/stage-b/b-debug-001-minimal-face.md
+  title: "B-DEBUG-001：最小 debugger 面（fiber snapshot/replay inspect CLI）"
+  scope: "nlos-debug 三命令只读检查面：snapshot inspect（durable fiber/wait 面）+ replay 事件流回放走查（真 BindingEventProjection/ResumePlan）+ recovery 三域台账；钉版本 preflight + 只读枚举 + tripwire 三层零 mutation 纪律（W33-G/X-3 后半）"
+  assurance: H3
+  date: "2026-09-21"
