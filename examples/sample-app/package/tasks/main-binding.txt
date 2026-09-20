@@ -1,0 +1,2 @@
+agent-role binding: sample-app main node v1.0.0
+consumes task templates via the plan proposal face

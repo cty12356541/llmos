@@ -1,0 +1,1 @@
+input-selector: installed application view + config entry digest

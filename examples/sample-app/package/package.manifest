@@ -1,0 +1,18 @@
+# sample-app v1.0.0 — third-party developer manifest
+# 行式格式：`#` 注释、空行忽略；标量 `key = value`；记录行可重复。
+# 参见 docs/developers/packaging.md（仓库内）或你手上的 NLOS 打包指南。
+
+package-id = 9a1c7d3e5f0b2a4c6d8e0f1a2b3c4d5e
+version = 1.0.0
+
+# entries：entry = <name> <role> <path>
+# - sample-driver：可执行载荷（本样例中是数据形态的驱动入口描述；
+#   内核侧载荷执行面是后续车道，见证据文件的诚实范围声明）。
+# - sample-config：数据载荷。
+entry = sample-driver executable app.bin
+entry = sample-config data assets/config.bin
+
+# tasks 模板段（ADR-0016 决定 1 / W28-B）：五个文件字段取文件内容摘要。
+# 两个模板：service 依赖 main（段内依赖链）。
+task = 01fa3c57b9d1e2f4a6b8c0d2e4f6a8b0 agent-role tasks/main-binding.txt tasks/main-inputs.txt tasks/main-outputs.txt tasks/main-policy.txt tasks/main-ceiling.txt
+task = 02ce7a19d5f3b1a9c7e5d3f1b9a7c5e3 executable tasks/service-binding.txt tasks/service-inputs.txt tasks/service-outputs.txt tasks/service-policy.txt tasks/service-ceiling.txt deps=01fa3c57b9d1e2f4a6b8c0d2e4f6a8b0
