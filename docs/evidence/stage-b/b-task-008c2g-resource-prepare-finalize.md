@@ -1,6 +1,6 @@
 # B-TASK-008C2G-RES-PREPARE-FINALIZE：Resource 跨 authority prepare/finalize 有界 coordinator（ADR-0017 决定 R-C，车道 W28-C）
 
-状态：`PARTIAL_PASS`（2026-09-20，W28-C-1/C-2/C-4 落地；W28-C-3 worker 接线与 G8 运维面按写集边界递延，见 §6）
+状态：`PARTIAL_PASS`（2026-09-20，W28-C-1/C-2/C-4 + W28-C-3 worker 第三域接线落地；G8 运维面按写集边界递延至接线车道，见 §6/§8）
 
 > 对应：[ADR-0017](../../management/adrs/0017-resource-operation-cross-authority-prepare-finalize.md)（决定 1 R-C + 附录 A 车道表 W28-C-1..5 与验收门 G1–G7）、[B-TASK-008C2G-RES-COMMIT](b-task-008c2g-resource-cost-commit.md)（resource-aware v3 单事务路径 + W1–W6 桥接矩阵，本车道原样复用并扩展）、[B-TASK-008C2G-UNIFIED-RECOVERY](b-task-008c2g-unified-recovery.md)（v42 台账/plan 模式，逐条镜像）、[B-RESOURCE-005](b-resource-005-finalize-refund.md)/[B-RESOURCE-006](b-resource-006-cost-receipt-aggregate.md)（owner FINALIZED 门与 `inspect_cost_receipt` 聚合）
 >
@@ -18,7 +18,7 @@
 |---|---|---|
 | G1 envelope/plan 不变量：exact replay、immutable 触发器、冲突 typed fail-closed、迁移幂等 + partial fail-closed | `SCHEMA_V43_SQL`（plan 身份不可变触发器 + no-delete、envelope/satisfaction 双不可变触发器）；`prepare_resource_finalize`（逐字节 replay / `InvalidResourcePlan` 冲突拒绝，零终结变更）；`migrate_v43`（14 命名部件存在性守卫，`v42 [SEM-RECOV-006]` 模式） | `prepare_persists_envelope_and_plan_and_exact_replays`、`prepare_fails_closed_for_non_resource_write_sets_and_non_issued_permits`、`schema_v43_creates_resource_coordinator_tables_idempotently`、`partial_resource_coordinator_schema_fails_closed_on_reopen` |
 | G2 既有 verify-then-commit 语义零回归：v3/mixed 全部既有测试逐位不变；permit Closed 重放只读 Task 行；envelope 只增不改终结事务结构 | `reconcile.rs` 仅给 `finalize_impl_inner` 增 `resource_plan_id: Option<_>` 参数（既有 6 个包装点全部传 `None`）；终结事务仍为 `insert_receipt → nested → close → head` 单事务，plan 翻转 + `resolve_resource_recovery` 追加在 head 推进之后同事务内（`bind_resource_plan_receipt`） | `resource_commit` 6/6、`mixed_semantic_resource_commit` 7/7、`resource_bridge_fault_injection` W1–W6 11/11 照绿；replay 只读 Task 行由 WE2 Phase B（空 owner converge 重放）与 `replay_after_restart_reads_only_task_rows` 双向证明 |
-| G3 无 caller 收敛（核心门，nlos-task 半边）：prepare → owner 逐项 finalize → 丢弃重开 → 仅凭 durable plan/envelope + owner 读收敛唯一终态 | `converge_resource_commit_plan`（plan+envelope 重建 `FinalizeRequestV3`；owner 结算门 ⇒ `verify_owner_cost_receipts` ⇒ `finalize_impl_with_resource_plan`）；`list_incomplete_resource_commit_plans` 重启扫描 | `converge_pending_after_restart_reaches_unique_terminal_state_without_caller`（plan FINALIZED、恰一套嵌套行、head +1、显式 replay 逐字节相等、扫描清空）；worker 周期驱动半边属 W28-C-3（nlos-commit-coordinator，本轮写集外，见 §6） |
+| G3 无 caller 收敛（核心门，nlos-task 半边）：prepare → owner 逐项 finalize → 丢弃重开 → 仅凭 durable plan/envelope + owner 读收敛唯一终态 | `converge_resource_commit_plan`（plan+envelope 重建 `FinalizeRequestV3`；owner 结算门 ⇒ `verify_owner_cost_receipts` ⇒ `finalize_impl_with_resource_plan`）；`list_incomplete_resource_commit_plans` 重启扫描 | `converge_pending_after_restart_reaches_unique_terminal_state_without_caller`（plan FINALIZED、恰一套嵌套行、head +1、显式 replay 逐字节相等、扫描清空）；worker 周期驱动半边已由 W28-C-3 落地（`worker_converges_pending_resource_plan_without_caller`，见 §8） |
 | G4 not-due 负向门：owner 未结算 ⇒ converge 对 owner 零变更、plan 不记失败/不退避/不 escalate；stuck plan 可 inspect | `owner_settlement`（逐 Reservation `inspect_reservation` 只读；Reserved/Active/Quarantined/`ReservationNotFound` ⇒ `NotDue` 决策而非错误；其余 owner 读失败 ⇒ `ResourceParticipantAuthority` infra 错误供 worker 记账）；converge not-due 路径零 SQL 写 | `converge_not_due_leaves_owner_untouched_and_records_nothing`（ReservationRecord/AccountRecord 前后逐字段相等 + 台账 0 行 + plan Planned + 扫描仍返回）、`envelope_window_crash_after_prepare_before_owner_finalize_keeps_g4_semantics`（WE1 崩溃窗口后同样成立）、`not_due_converge_records_no_failure_and_due_converge_resolves_ledger` |
 | G5 台账镜像：`SEM-RECOV-001..007` 逐条镜像（CAS 单增、due scan 过滤、Escalated 显式 resume、finalize 置 Resolved、infra 失败入退避、迁移幂等、告警 acknowledge 面） | `recovery.rs` resource 域（`task_resource_recovery` + alert 表 = v42 列级镜像，FK 指向 `task_resource_commit_plans`）；`RESOURCE_ESCALATION_THRESHOLD = 8` 与退避公式钉死为 v42 同款（L-B，不新增配置面） | `resource_recovery_ledger` 8/8（CAS/due-scan/resume/escalation 钉死/summarize/告警幂等回执/收敛 resolve/丢行自愈）+ `resource_recovery_schema` 2/2；F1–F4 故障注入矩阵行未在本轮建（worker 半边递延，见 §6，丢行自愈已有语义级测试） |
 | G7 桥接 kill-window 扩展矩阵：envelope 边界两窗口 + PowerLossAfter 双向 + torn WAL tail | `resource_bridge_fault_injection.rs` WE1/WE2/WE3（新增 kill-9 子场景 `resource-envelope-prepare`/`resource-envelope-converge`） | 见 §4 矩阵表，每行 `PRAGMA integrity_check` = ok |
@@ -59,9 +59,9 @@
 
 ## 6. 已知限制与 deferred minors（如实登记）
 
-- **W28-C-3 worker 第三域驱动未接线（G3 worker 半边 + G6 三域隔离）**：`resource_cycle`（artifact→semantic→resource 顺序）与 `RecoveryWorkerHealth` resource 域字段属 `nlos-commit-coordinator` 写集，本轮按写集纪律未触碰。nlos-task 半边已就绪：`list_due_resource_commit_plans`（退避/Escalated 过滤 + 无台账即到期）、`record_resource_recovery_failure`（CAS/退避/escalation）、`converge_resource_commit_plan`（NotDue/infra 错误二分，worker 据此只对 infra 失败记账）——接线车道可直接消费。
-- **G8 运维面递延（命名债）**：resource 域 Escalated 告警/resume 尚无 IPC/CLI 通道（W27-A 通道家族在 `nlos-system-control`，本轮写集外）；进程内 Rust API（`list_resource_recovery_alerts`/`acknowledge_resource_recovery_alert`/`resume_resource_recovery`）已可用。ADR-0017 运维责任条款要求 W28-C 硬门可达——按本轮写集限制登记为递延项，随接线车道补齐，不构成「对运维面整体不可见」的静默缺陷（本条即显式登记）。
-- **台账 F1–F4 故障注入矩阵行未建**：v42 语义级镜像已由 8 项台账测试 + 丢行自愈覆盖；kill-9/IoErr/PowerLossAfter 对 `task_resource_recovery` 表自身的注入随 worker 接线车道补（沿 `semantic_recovery_fault_matrix` 模板）。
+- **W28-C-3 worker 第三域驱动已落地（G3 worker 半边 + G6 三域隔离）**：`resource_cycle`（artifact→semantic→resource 顺序）与 `RecoveryWorkerHealth` resource 域字段已在 `nlos-commit-coordinator` 落地（`start_with_semantic_and_resource_authorities` additive 接缝），消费 nlos-task 半边的 `list_due_resource_commit_plans`/`record_resource_recovery_failure`/`converge_resource_commit_plan`——实现与验证见 §8。
+- **G8 运维面递延（命名债）**：resource 域 Escalated 告警/resume 尚无 IPC/CLI 通道（W27-A 通道家族在 `nlos-system-control`，W28-C-3 写集外）；进程内 Rust API（`list_resource_recovery_alerts`/`acknowledge_resource_recovery_alert`/`resume_resource_recovery`）已可用，且 worker 驱动的 escalate→resume→resolve 全环已证（§8 `resource_plan_failures_back_off_escalate_resume_and_resolve_through_worker`）。ADR-0017 运维责任条款要求 W28-C 硬门可达——按写集限制登记为递延项，随 G8 接线车道补齐，不构成「对运维面整体不可见」的静默缺陷（本条即显式登记）。
+- **台账 F1–F4 故障注入矩阵行未建**：v42 语义级镜像已由 8 项台账测试 + 丢行自愈覆盖；W28-C-3 已补 worker 路径的台账行为（plan 级失败入账/退避/escalation/resume/resolve 全环 + 台账 INSERT 被拒时的 infra 二分，见 §8），但 kill-9/IoErr/PowerLossAfter 对 `task_resource_recovery` 表自身的注入（`semantic_recovery_fault_matrix` 模板）落在 nlos-task 测试写集，仍递延。
 - **组合 rung（Semantic+Resource）不经 plan coordinator**：`prepare_resource_finalize` 对带 Semantic appends 的 write set typed fail-closed——混合 rung 的 Task 侧恢复由 semantic plan/envelope 机制拥有（`FinalizeSpec` 组合面已可用）；按 ADR 决定 1「既有 resource-aware v3 单事务路径」的单路径裁定，不扩混合面。
 - **lease-bound permit 不自动收敛**：converge 不携带 `AuthorityLeaseRecord`（镜像 semantic coordinator `finalize_ready` 同界）；lease-bound 资源 plan 的 converge 会得到 typed `AuthorityLeaseRequired`，作为 worker 可记账的失败面。候选后续：converge 变体接受 lease 或从 durable lease 表重读。
 - **not-due 的 NotFound 语义**：owner 不认识某 sealed Reservation（`ReservationNotFound`）判 NotDue 而非 infra 错误——「本 owner 上未结算」的诚实读法；误接线 authority 会表现为永久 stuck plan（可 inspect），由运维面/Gateway 通道处置。
@@ -74,3 +74,45 @@
 - **`cargo test --workspace`：未整跑**——车道纪律限定定向门（本轮写集仅 nlos-task + docs；依赖面以 `cargo check -p nlos-commit-coordinator -p nlos-system-control` 覆盖编译完整性）。
 - **stage-b-progress.md / ADR-0017 附录勾稽 / evidence 索引：未更新**——本轮 MUST NOT 边界，由 W28-C-5 证据落档车道或控制器屏障统一执行。
 - nlos-resource 生产代码零改动（owner 侧无新 API 需求，`inspect_reservation` 只读复用），`cargo test -p nlos-resource` 未跑（未触碰）。
+
+## 8. W28-C-3：worker 第三域驱动（G3 worker 半边 + G6 三域隔离，2026-09-20）
+
+> 车道：W28-C-3（ADR-0017 附录 A）。基线：分支 `feat/w28-c3`，base `55c7f45`（含 W28-C 主干合入 `c1dc510`，schema v43）；写集 = `crates/nlos-commit-coordinator`（`src/worker.rs`、`Cargo.toml` 新增 `nlos-resource` 依赖、新增 `tests/unified_worker_tri_domain.rs`）+ 本证据文件。nlos-task/nlos-resource 零改动（只读消费）。
+
+### 8.1 实现
+
+- **`resource_cycle` 第三域半边**（`worker.rs`，镜像 `semantic_cycle` 结构）：`list_due_resource_commit_plans` 扫描（退避/Escalated 过滤 + 无台账行即到期）→ 逐 plan `converge_resource_commit_plan`（直接消费 nlos-task plan API，不经新 coordinator 类型）→ `Ok(NotDue)` 是决策不是失败：零台账写、零 retry_delay（ADR-0017 G4，owner 未结算的 plan 每轮保持可扫描的 durable fact）；`Err` ⇒ `inspect_resource_recovery` 读 CAS 基线 → `record_resource_recovery_failure`（CAS 单增 + `base×2^(n-1)` 封顶退避，阈值 8 钉死在 nlos-task）；扫描/台账读/台账写/summary 的存储失败置 infra 位、只消耗 resource 域自身失败预算。收尾 `summarize_resource_recovery` 回填四个 durable 量表。
+- **失败源映射**：`TaskStoreError::ResourceParticipantAuthority`（owner 读失败）⇒ 台账 source `ResourceAuthority`，其余 ⇒ `TaskAuthority`；健康面 `RecoveryFailureAuthority` 沿语义域先例把 owner 读失败标为 `Coordinator`（该粗粒度枚举无 resource 变体——nlos-system-control 的 SABI 映射对其穷尽匹配，扩枚举属 G8 运维面车道），精确 source 以 durable 台账为准。
+- **`RecoveryWorkerHealth` 第三域字段**（8 个，逐字段镜像 semantic 波次模式）：`resource_durable_{retrying,escalated,unacknowledged_escalated,resolved}`、`resource_consecutive_failed_cycles`、`resource_total_inspected/finalized`、`resource_domain_faulted`（sticky 故障位）。`account_cycle` 泛化为三域聚合：artifact 预算耗尽仍是线程级 Faulted（既有语义）；semantic/resource 各自独立计数、独立置位（`account_isolated_domain_failures`，W26-002「置位不清计数」可观测性决定逐字镜像）；infra 退避取未故障域的最大值。
+- **接缝（additive）**：新增 `start_with_semantic_and_resource_authorities(tasks, artifacts, semantic: Option, resource: Option, config)`；`start`/`start_with_semantic_authority` 签名与行为不变（委托新入口传 `None`），旧调用方零改动。cycle 顺序钉死 artifact→semantic→resource（W28-C-3 车道行）；无 resource authority 的 worker 其 resource 域投影保持全零（与无 semantic authority 的 semantic 投影同构）。
+
+### 8.2 测试（`tests/unified_worker_tri_domain.rs`，7/7）
+
+fixture：artifact/semantic 半边照抄 `unified_worker_dual_domain.rs`；resource 半边移植 nlos-task `resource_prepare_finalize.rs` 的 OwnerFixture/two_reservations/settle 形状并按 seed 派生身份（三域共存于同一 TaskAuthority；permit/quote 的 valid_until 取 i64 安全大值以适配 worker 真实时钟）。
+
+| 门 | 测试 | 断言要点 | 结果 |
+|---|---|---|---|
+| G6（旧接缝零回归 + 默认值） | `recovery_worker_health_defaults_keep_resource_domain_quiescent`、`worker_without_resource_authority_keeps_resource_domain_quiescent` | 默认全零/假；`start_with_semantic_authority` 下 pending resource plan 不被扫描、resource 投影全零、plan 保持 Planned | PASS |
+| **G3（worker 半边，核心门）** | `worker_converges_pending_resource_plan_without_caller` | prepare → owner 逐项 FINALIZED → 丢弃 caller → 仅凭 worker 周期收敛：plan FINALIZED 绑 receipt、head +1、恰一套嵌套 receipt（= owner 聚合逐字段）、2 回执/3 consumption、扫描清空、显式 replay 两次逐字节相等、台账 0 行、健康面干净（inspected/finalized 各 1、无失败、无退避、无故障位） | PASS |
+| G4（worker 半边负向门） | `not_due_resource_plan_records_no_failure_and_keeps_scanning` | owner 全 Reserved ⇒ 连续 ≥3 轮 NotDue：零台账行（表计数 0）、无失败/退避/escalate、plan 保持 Planned 且 due scan 持续返回、owner ReservationRecord 逐字段不变 | PASS |
+| G6（三域单轮全收敛） | `tri_domain_pending_plans_converge_in_one_worker` | 三域各一 pending，同一 worker 全收敛；三域 inspected/finalized 各 1/1、三 task head 均 +1、无失败、三故障位独立为假 | PASS |
+| G6（三域故障隔离核心） | `resource_domain_fault_is_isolated_from_artifact_and_semantic_convergence` | plan 翻转 + 台账 INSERT 双触发器持续注入 ⇒ resource 域连 infra 3 轮达阈值只置本域 Faulted（计数器停在 3，W26-002 镜像）；artifact/semantic 照常收敛（head 均 +1）、线程保持 Running、故障后 resource 域被跳过（inspected 不再增长） | PASS |
+| G5/交付 1（worker 驱动台账全环） | `resource_plan_failures_back_off_escalate_resume_and_resolve_through_worker` | plan 级失败（仅 plan 翻转触发器）入账退避 → 台账 8 连败 Escalated（next_retry NULL、source TaskAuthority、不耗 worker 预算、unack 告警量表 1）→ 修复合闸 + CAS resume → worker 自动收敛（plan FINALIZED、head +1）且同一终结事务把台账置 Resolved（total_failures 历史保留） | PASS |
+
+### 8.3 验证（命令与结果）
+
+工具链：`rustc 1.97.1 (8bab26f4f 2026-07-14)` / `cargo 1.97.1`，macOS/arm64 本地实跑（worktree `llmos-w28-c3`，分支 `feat/w28-c3`）。
+
+- TDD RED：先写 `tests/unified_worker_tri_domain.rs` → 25 个编译错误全部指向缺失面（`nlos_resource` 未接线 + `start_with_semantic_and_resource_authorities`/`resource_*` 健康字段不存在）；实现后转绿。
+- 新增测试单列：`cargo test -p nlos-commit-coordinator --test unified_worker_tri_domain` → **7/7**，复跑 2 次稳定（含故障注入/escalation 全环，无时序抖动）。
+- 零回归：`cargo test -p nlos-commit-coordinator` → **12 test targets / 58 passed / 0 failed**（基线 51 + 恰为 7 新测试；`unified_worker_dual_domain` 8/8、`restart_convergence` 11/11、`semantic_*` 家族 25/25 逐一照绿）。
+- `cargo check -p nlos-task` 通过（消费面零破坏）；`cargo check -p nlos-system-control` 通过（下游 `RecoveryWorkerHealth` 消费者编译完整——第三域字段纯 additive，粗粒度 `RecoveryFailureAuthority` 枚举未扩）。
+- `cargo clippy -p nlos-commit-coordinator --all-targets --all-features -- -D warnings` → **exit 0 / 0 error**；`cargo fmt -p nlos-commit-coordinator -- --check` 通过；`git diff --check` 通过。
+- LSP 诊断：daemon 请求超时（与 W26/W27/W28-C 各增量同状）；以 `cargo check` + `clippy -D warnings` 替代并记录，二者均通过。
+- 新增生产代码 0 `unsafe`、0 `unwrap/expect`（除 fixture `unwrap` 沿测试先例）；`account_cycle` 106 行持 `#[allow(clippy::too_many_lines)]`（沿 `artifact_cycle`/`semantic_cycle` 既有线性审阅惯例）。
+
+### 8.4 递延与移交（本车道视角）
+
+- **G8 运维面（显式移交）**：resource 域 Escalated 告警/resume 的 IPC/CLI 接线（`nlos-system-control`，W27-A 通道家族扩展 + 必要时 `RecoveryFailureAuthority`/SABI 枚举扩 resource 变体）不在本车道写集——见 §6 既有登记；worker 侧 escalate→resume→resolve 全环与进程内 API 已可用，接线车道可直接消费。
+- **台账 F1–F4 kill-9/PowerLoss 注入矩阵行**：属 nlos-task 测试写集（`semantic_recovery_fault_matrix` 模板），仍递延（§6）。
+- 未执行：push / PR / 三平台 CI / `cargo test --workspace`（车道纪律，波次屏障统一）；stage-b-progress.md / ADR-0017 附录勾稽 / evidence 索引（W28-C-5 或控制器屏障）。
