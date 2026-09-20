@@ -430,6 +430,8 @@ impl SliceKRuntime {
             task_id,
             task_generation: initial_generation(),
             registered_at_ms,
+            application_id: None,
+            plan_revision: None,
         })?;
         self.tasks.register_attempt(nlos_task::AttemptSpec {
             task_id,

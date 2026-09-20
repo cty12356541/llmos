@@ -284,6 +284,14 @@ fn health(plan_id: &ArtifactCommitPlanId) -> StubHealth {
         semantic_total_finalized: 0,
         semantic_domain_faulted: false,
         artifact_domain_faulted: false,
+        resource_durable_retrying: 0,
+        resource_durable_escalated: 0,
+        resource_durable_unacknowledged_escalated: 0,
+        resource_durable_resolved: 0,
+        resource_consecutive_failed_cycles: 0,
+        resource_total_inspected: 0,
+        resource_total_finalized: 0,
+        resource_domain_faulted: false,
     })
 }
 
@@ -306,6 +314,8 @@ fn create_escalated_plan(authority: &SqliteTaskAuthority) -> ArtifactCommitPlanI
             task_id,
             task_generation: Generation::INITIAL,
             registered_at_ms: 1_000,
+            application_id: None,
+            plan_revision: None,
         })
         .unwrap();
     let attempt = AttemptSpec {

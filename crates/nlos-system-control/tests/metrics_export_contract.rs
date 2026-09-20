@@ -124,6 +124,15 @@ impl RecoveryHealthSource for FlappingHealth {
             semantic_total_finalized: 850 + generation,
             semantic_domain_faulted: false,
             artifact_domain_faulted: false,
+            resource_durable_retrying: 1_700 + generation,
+            resource_durable_escalated: 1_800 + generation,
+            resource_durable_unacknowledged_escalated: 1_900 + generation,
+            resource_durable_resolved: 2_000 + generation,
+            resource_consecutive_failed_cycles: usize::try_from(600 + generation)
+                .expect("test generation fits usize"),
+            resource_total_inspected: 950 + generation,
+            resource_total_finalized: 980 + generation,
+            resource_domain_faulted: false,
         }
     }
 }
@@ -150,6 +159,14 @@ fn health() -> FixedHealth {
         semantic_total_finalized: 43,
         semantic_domain_faulted: true,
         artifact_domain_faulted: false,
+        resource_durable_retrying: 0,
+        resource_durable_escalated: 0,
+        resource_durable_unacknowledged_escalated: 0,
+        resource_durable_resolved: 0,
+        resource_consecutive_failed_cycles: 0,
+        resource_total_inspected: 0,
+        resource_total_finalized: 0,
+        resource_domain_faulted: false,
     })
 }
 

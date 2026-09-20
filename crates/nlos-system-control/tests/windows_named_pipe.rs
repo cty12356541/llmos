@@ -138,6 +138,8 @@ fn create_escalated_plan(authority: &SqliteTaskAuthority) -> nlos_task::Artifact
             task_id,
             task_generation: Generation::INITIAL,
             registered_at_ms: 1_000,
+            application_id: None,
+            plan_revision: None,
         })
         .unwrap();
     let attempt = AttemptSpec {

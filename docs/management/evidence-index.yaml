@@ -802,3 +802,9 @@
   scope: "schema v43 envelope/plan + 第三域恢复台账 + G7 envelope 窗口 kill-window 矩阵（W28-C）"
   assurance: H3
   date: "2026-09-20"
+- id: b-gui-001-task-manager-shell
+  path: docs/evidence/stage-b/b-gui-001-task-manager-shell.md
+  title: "B-GUI-001：可信 Tauri 任务管理器壳（只读半）"
+  scope: "认证 SystemControl IPC 接入 + inspect 视图 + parity 自检（W32-A；写半边 W32-B 递延）"
+  assurance: H3
+  date: "2026-09-20"

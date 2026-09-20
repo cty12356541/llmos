@@ -187,6 +187,8 @@ fn setup_effect_slot(
         task_id,
         task_generation: Generation::INITIAL,
         registered_at_ms: 1_000,
+        application_id: None,
+        plan_revision: None,
     })
     .expect("register task");
     let attempt_id = TaskAttemptId::from_bytes(id_bytes(70 + usize::from(seed)));
