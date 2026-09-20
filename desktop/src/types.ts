@@ -63,6 +63,68 @@ export type OutcomeDto =
       usageHighWater: number;
       consumptionCount: number;
     }
+  | {
+      kind: "task_group_inspected";
+      groupIdHex: string;
+      taskIdHex: string;
+      parentGroupIdHex: string | null;
+      state: string;
+      membershipGeneration: number;
+      stateSeq: number;
+      depth: number;
+      cancelEpoch: number;
+      createdAtMs: number;
+      updatedAtMs: number;
+      memberCount: number;
+      membersTruncated: boolean;
+    }
+  | {
+      kind: "task_node_inspected";
+      planIdHex: string;
+      nodeIdHex: string;
+      nodeKind: string;
+      state: string;
+      declaredRevision: number;
+      nodeDigestHex: string;
+      transitionCount: number;
+      residencyTier: string;
+      residencyTransitionCount: number;
+      firstDeclaredAtMs: number;
+      updatedAtMs: number;
+    }
+  | {
+      kind: "execution_fiber_inspected";
+      fiberIdHex: string;
+      generation: number;
+      state: string;
+      lifecyclePhase: string;
+      activeCpuMs: number;
+      elapsedWallMs: number;
+      schedulerWaitMs: number;
+      externalWaitMs: number;
+      backpressureWaitMs: number;
+      suspendedMs: number;
+    }
+  | {
+      kind: "topic_inspected";
+      topicIdHex: string;
+      channelIdHex: string;
+      channelGeneration: number;
+      nameHex: string;
+      activeSubscriptions: number;
+      policyDigestHex: string;
+      createdAtMs: number;
+    }
+  | {
+      kind: "durable_operation_inspected";
+      operationIdHex: string;
+      generation: number;
+      state: string;
+      cancelEpoch: number;
+      ownerFiberIdHex: string;
+      ownerFiberGeneration: number;
+      outcomeReceiptIdHex: string | null;
+    }
   | { kind: "metrics_exported"; openmetricsText: string }
   | { kind: "failure"; code: string; retry: string; safeMessage: string }
   | { kind: "acknowledged"; receiptIdHex: string }

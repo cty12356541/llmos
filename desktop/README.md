@@ -1,4 +1,4 @@
-# llmos 任务管理器桌面壳(Tauri 2,W32-A 只读半 + W32-B 写入半 + W32-D 权限/预算可见)
+# llmos 任务管理器桌面壳(Tauri 2,W32-A 只读半 + W32-B 写入半 + W32-D 权限/预算可见 + W32-E 资源监控)
 
 可信桌面 Task Manager 外壳:TypeScript 前端 + Rust 后端命令层。后端每条
 inspect/控制命令都经 **ADR-0011 challenge-response 认证入口**
@@ -7,8 +7,10 @@ SystemControl IPC 服务,前端渲染 SABI Receipt 数据。W32-B 加入授权�
 动作(ack/resume/pause/cancel/kill/throttle/reclaim)的 GUI 派发与
 Receipt 展示;W32-D 加入可信权限 UI 最小版(B5-5 前半):授权/预算/成本
 可见——`InspectResource` 有界成本事实经真实 `ResourceAuthorityInspector`
-组装,与权威及 CLI parity 一致。**parity 钉死是 W32-C**——本壳只带读路径
-自检 + 一条 pause-operation 写路径探针 + W32-D 成本事实自检。
+组装,与权威及 CLI parity 一致。W32-E 加入 Resource Monitor 最小版
+(B5-5 后半):消费既有 OpenMetrics 指标面(三恢复域只读导出命令)并
+结构化展示,带刷新,无任何新控制路径。**parity 钉死是 W32-C**——本壳
+只带读路径自检 + 一条 pause-operation 写路径探针 + W32-D 成本事实自检。
 
 目录独立:本目录自带 `package.json` 与 `src-tauri/Cargo.toml`(后者含空
 `[workspace]` 表,是独立 workspace 根),不改动仓库根 `Cargo.toml` 的
@@ -19,7 +21,7 @@ members,对 `crates/` 的依赖只以相对 path dep 出现在 `src-tauri/Cargo.
 ```text
 desktop/
 ├── index.html / vite.config.ts / tsconfig.json / package.json   # 前端壳
-├── src/                    # TypeScript 前端(views:恢复/语义/资源/任务/进程/资源查询/指标/控制动作/权限预算/一致性自检/配置)
+├── src/                    # TypeScript 前端(views:恢复/语义/资源/任务/进程/资源查询/指标/资源监控/控制动作/权限预算/一致性自检/配置)
 └── src-tauri/
     ├── Cargo.toml          # 独立 workspace 根;path deps → ../../crates/*
     ├── tauri.conf.json     # bundle.active=false(打包/签名是后续波次)
@@ -33,7 +35,8 @@ desktop/
     └── tests/
         ├── authenticated_read_side.rs       # W32-A:认证读侧集成测试
         ├── authenticated_write_side.rs      # W32-B:认证写侧集成测试
-        └── authenticated_permission_side.rs # W32-D:权限/预算/成本集成测试
+        ├── authenticated_permission_side.rs # W32-D:权限/预算/成本集成测试
+        └── resource_monitor_metrics_side.rs # W32-E:三域指标消费 + parity 集成测试
 ```
 
 ## 构建与运行(本机 macOS 验证过)
@@ -111,6 +114,14 @@ plan_id 下发 ack/resume 应得到类型化 `NOT_FOUND`(域路由不串);
 `ResourceCostReceipt` 投影,结余派生行 = 30);「成本事实自检」对同一
 reservation 运行应显示 `matched`(结清事实不可变)。「一致性自检」下拉
 已补 `inspect-resource-health`/`export-resource-metrics`(W32-B 遗留小项)。
+「资源监控」页点「刷新(三域,经认证 IPC)」应显示三域结构化指标表:
+artifact 域含 worker 生命周期(`backing_off=1`)、
+`nlos_artifact_recovery_cycles_total 4`、plans_inspected=3、
+plans_finalized=2、retry_delay=250ms、durable_escalated=1;semantic/
+resource 域目录逐族在场(夹具上全 0);每域卡片页脚有 receipt hex,
+`<details>` 可展开原始 OpenMetrics 文本,与 CLI
+`system-control-cli <plain_socket> export-metrics` 输出的 `RECEIPT`
+hex 一致。
 
 ## 授权控制动作(W32-B 写入半)
 
@@ -159,6 +170,37 @@ reservation 运行应显示 `matched`(结清事实不可变)。「一致性自�
   账户余额、结清明细回执(refund_credit/逐条 ConsumptionReceipt)——
   均无 IPC inspect 面,视图不渲染,以静态缺口表列出(证据
   `b-gui-001` §W32-D 逐条登记,供后续车道补面)。
+
+## 资源监控视图(W32-E Resource Monitor 最小版,B5-5 后半)
+
+- **消费机制(既有指标面,零新面)**:OpenMetrics 文本**已经**经 SABI
+  IPC 可达——`ExportMetrics` / `ExportSemanticMetrics` /
+  `ExportResourceMetrics` 是三条既有只读 `ControlCommand`(W27-A/G8
+  目录),回执 outcome 即 `MetricsExported { openmetrics_text }`
+  (`OpenMetricsRenderer::render` 的确定性文本)。视图每次刷新对三域各
+  经认证入口派发一条导出命令(后端 `export_metrics` /
+  `export_semantic_metrics` / `export_resource_metrics` 三个薄命令,
+  其中 resource 域为 W32-E 补接线——W32-A 只接了前两域),**无任何新
+  控制路径、无 in-process 回退**。
+- **结构化展示**:前端 `src/openmetrics.ts` 对确定性文本做严格解析
+  (`# TYPE` 族头 + 无标签/带标签十进制样本行),按域分组渲染计数/
+  gauge 表(指标族/类型/标签/值);计数器值为 u64 十进制文本,按原样
+  显示不做数值换算。无法识别的行原样显示,不静默丢弃;解析出的族若
+  前缀不属于该域,单独分组如实呈现。
+- **刷新**:手动「刷新(三域,经认证 IPC)」+ 可选 5 秒自动刷新;每次
+  刷新都是三条完整的真实认证 dispatch(拉模型)。每域卡片页脚恒显
+  `control_command_id`/`correlation_id`/`receipt_hex`(与 CLI
+  `RECEIPT` 行同一等价契约);原始 OpenMetrics 文本折叠在
+  `<details>` 内可展开比对。
+- **集成测试**(`tests/resource_monitor_metrics_side.rs`):(1) 三域
+  导出经认证入口回执携带 OpenMetrics 文本,artifact/semantic/resource
+  目录逐族在场且取值 == 夹具权威健康事实(不发明指标);(2) 同批命令
+  经 plain 入口(CLI 同路)派发,receipt 字节一致。
+- **缺口登记(诚实边界)**:无 scrape/流式指标端点(B-TASK-006M 未竟
+  项,刷新即重新拉取);宿主级资源用量指标(进程 CPU/内存/IO、预留
+  实时用量)无任何既有导出面——指标目录只覆盖恢复目录(三域 26 族 +
+  worker 生命周期),视图不发明;以上在视图内以静态缺口卡列出(证据
+  `b-gui-001` §W32-E)。
 
 ## 一致性自检(parity approach)
 

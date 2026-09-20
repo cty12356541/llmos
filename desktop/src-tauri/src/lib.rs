@@ -23,6 +23,7 @@ pub fn run() {
             ipc::inspect_semantic_health,
             ipc::export_metrics,
             ipc::export_semantic_metrics,
+            ipc::export_resource_metrics,
             ipc::inspect_task,
             ipc::inspect_process,
             ipc::inspect_resource,

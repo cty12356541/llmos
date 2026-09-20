@@ -4,6 +4,7 @@ import {
   controlPlaneFacts,
   costFactCheck,
   exportMetrics,
+  exportResourceMetrics,
   exportSemanticMetrics,
   getConfig,
   inspectHealth,
@@ -18,6 +19,8 @@ import {
   setConfig,
   submitControl,
 } from "./ipc";
+import type { MetricFamily, RecoveryDomainId } from "./openmetrics";
+import { familyDomain, parseOpenMetricsText } from "./openmetrics";
 import type {
   ConfigDto,
   ControlActionInput,
@@ -217,9 +220,7 @@ function renderOutcome(outcome: OutcomeDto): HTMLElement {
   return card;
 }
 
-function renderReceipt(receipt: ReceiptDto): HTMLElement {
-  const wrap = el("div");
-  wrap.append(renderOutcome(receipt.outcome));
+function receiptFooter(receipt: ReceiptDto): HTMLElement {
   const footer = el("section", { className: "card receipt-footer" });
   footer.append(
     fieldRow("control_command_id", receipt.controlCommandIdHex),
@@ -228,7 +229,13 @@ function renderReceipt(receipt: ReceiptDto): HTMLElement {
   const receiptRow = fieldRow("receipt (to_bytes hex)", receipt.receiptHex);
   receiptRow.classList.add("mono");
   footer.append(receiptRow);
-  wrap.append(footer);
+  return footer;
+}
+
+function renderReceipt(receipt: ReceiptDto): HTMLElement {
+  const wrap = el("div");
+  wrap.append(renderOutcome(receipt.outcome));
+  wrap.append(receiptFooter(receipt));
   return wrap;
 }
 
@@ -1032,6 +1039,227 @@ function metricsView(): HTMLElement {
   return panel;
 }
 
+/** W32-E:指标面缺口登记(诚实边界——存在与否都明说,不发明数据)。 */
+const METRICS_SURFACE_GAPS: ReadonlyArray<{ fact: string; detail: string }> = [
+  {
+    fact: "scrape/流式指标端点",
+    detail: "B-TASK-006M 未竟项:无 HTTP scrape/订阅端点——本监控的「刷新」即重新经认证入口派发只读导出命令(拉模型,每次都是完整真实 dispatch)",
+  },
+  {
+    fact: "宿主级资源用量指标",
+    detail: "进程 CPU/内存/IO、预留实时用量等无任何既有导出面;指标目录只覆盖恢复目录(三域 26 族 + worker 生命周期),本视图不发明",
+  },
+  {
+    fact: "resource 域 GUI 导出接线(已关闭,留档)",
+    detail: "W32-A 只接了 artifact/semantic 两域导出命令;W32-E 补 resource 域只读接线(既有 ControlCommand::ExportResourceMetrics,无新控制路径)",
+  },
+];
+
+const MONITOR_REFRESH_MS = 5000;
+
+interface MonitorDomain {
+  id: RecoveryDomainId;
+  label: string;
+  export: () => Promise<ReceiptDto>;
+}
+
+const MONITOR_DOMAINS: MonitorDomain[] = [
+  {
+    id: "artifact",
+    label: "artifact 域(恢复工作器生命周期 + 计数/gauge)",
+    export: exportMetrics,
+  },
+  {
+    id: "semantic",
+    label: "semantic 域(W27-A 语义恢复目录)",
+    export: exportSemanticMetrics,
+  },
+  {
+    id: "resource",
+    label: "resource 域(G8 资源恢复目录)",
+    export: exportResourceMetrics,
+  },
+];
+
+function formatLabels(labels: Readonly<Record<string, string>>): string {
+  const entries = Object.entries(labels);
+  if (entries.length === 0) {
+    return "—";
+  }
+  return entries.map(([key, value]) => `${key}="${value}"`).join(", ");
+}
+
+function metricsFamiliesTable(families: MetricFamily[]): HTMLElement {
+  const table = el("table", { className: "data-table" });
+  const header = el("tr");
+  header.append(
+    el("th", { text: "指标族" }),
+    el("th", { text: "类型" }),
+    el("th", { text: "标签" }),
+    el("th", { text: "值" }),
+  );
+  const head = el("thead");
+  head.append(header);
+  const body = el("tbody");
+  for (const family of families) {
+    if (family.samples.length === 0) {
+      const row = el("tr");
+      const cell = el("td", { text: `${family.name}(无样本)` });
+      cell.colSpan = 4;
+      row.append(cell);
+      body.append(row);
+      continue;
+    }
+    family.samples.forEach((sample, index) => {
+      const row = el("tr");
+      if (index === 0) {
+        const nameCell = el("td", { text: family.name });
+        nameCell.rowSpan = family.samples.length;
+        const kindCell = el("td", { text: family.kind });
+        kindCell.rowSpan = family.samples.length;
+        row.append(nameCell, kindCell);
+      }
+      row.append(
+        el("td", { text: formatLabels(sample.labels) }),
+        el("td", { text: sample.value }),
+      );
+      body.append(row);
+    });
+  }
+  table.append(head, body);
+  return table;
+}
+
+function renderMonitorDomainCard(domain: MonitorDomain, receipt: ReceiptDto): HTMLElement {
+  const card = el("section", { className: "card" });
+  card.append(el("h3", { text: domain.label }));
+  if (receipt.outcome.kind !== "metrics_exported") {
+    card.append(renderOutcome(receipt.outcome));
+    card.append(receiptFooter(receipt));
+    return card;
+  }
+  const parsed = parseOpenMetricsText(receipt.outcome.openmetricsText);
+  const own: MetricFamily[] = [];
+  const foreign: MetricFamily[] = [];
+  for (const family of parsed.families) {
+    if (familyDomain(family.name) === domain.id) {
+      own.push(family);
+    } else {
+      foreign.push(family);
+    }
+  }
+  card.append(
+    el("p", {
+      className: "muted",
+      text: `本域 ${own.length} 个指标族(共解析 ${parsed.families.length} 族);取数时间 ${new Date().toLocaleTimeString()}`,
+    }),
+  );
+  card.append(metricsFamiliesTable(own));
+  if (foreign.length > 0) {
+    card.append(el("h4", { text: "非本域前缀的族(按导出文本如实显示)" }));
+    card.append(metricsFamiliesTable(foreign));
+  }
+  if (parsed.unparsedLines.length > 0) {
+    card.append(el("h4", { text: "未识别行(如实显示,不静默丢弃)" }));
+    card.append(el("pre", { className: "metrics", text: parsed.unparsedLines.join("\n") }));
+  }
+  const details = el("details");
+  details.append(el("summary", { text: "原始 OpenMetrics 文本(receipt 载荷)" }));
+  details.append(el("pre", { className: "metrics", text: receipt.outcome.openmetricsText }));
+  card.append(details);
+  card.append(receiptFooter(receipt));
+  return card;
+}
+
+function metricsGapRegisterCard(): HTMLElement {
+  const panel = el("section", { className: "card" });
+  panel.append(el("h3", { text: "指标面缺口登记(消费边界)" }));
+  panel.append(
+    el("p", {
+      className: "muted",
+      text: "本视图消费的 OpenMetrics 面经 SABI IPC 真实可达(三条既有只读导出命令,回执携带文本);以下缺口如实登记,不渲染任何未导出的数据(证据 b-gui-001 §W32-E)。",
+    }),
+  );
+  const table = el("table", { className: "data-table" });
+  const header = el("tr");
+  header.append(el("th", { text: "缺口" }), el("th", { text: "说明" }));
+  const head = el("thead");
+  head.append(header);
+  const body = el("tbody");
+  for (const gap of METRICS_SURFACE_GAPS) {
+    const tr = el("tr");
+    tr.append(el("td", { text: gap.fact }), el("td", { text: gap.detail }));
+    body.append(tr);
+  }
+  table.append(head, body);
+  panel.append(table);
+  return panel;
+}
+
+function resourceMonitorView(): HTMLElement {
+  const wrap = el("div");
+  const panel = el("section", { className: "card" });
+  panel.append(el("h3", { text: "Resource Monitor(OpenMetrics 消费,只读)" }));
+  panel.append(
+    el("p", {
+      className: "muted",
+      text: "消费既有指标面:三个恢复域各经认证入口派发一条既有只读导出命令(ExportMetrics / ExportSemanticMetrics / ExportResourceMetrics),回执携带 OpenMetrics 文本,前端结构化渲染计数/gauge;无任何新控制路径。计数器值为 u64 十进制文本,按原样显示不做数值换算。",
+    }),
+  );
+  const refresh = el("button", { text: "刷新(三域,经认证 IPC)" });
+  const autoLabel = el("label", { text: " 自动刷新(5 秒)" });
+  const auto = el("input");
+  auto.type = "checkbox";
+  autoLabel.prepend(auto);
+  const status = el("p", { className: "muted", text: "尚未取数;点击刷新或勾选自动刷新。" });
+  const domainsBox = el("div");
+  const boxes = new Map<RecoveryDomainId, HTMLElement>();
+  for (const domain of MONITOR_DOMAINS) {
+    const box = el("div");
+    boxes.set(domain.id, box);
+    domainsBox.append(box);
+  }
+  panel.append(refresh, autoLabel, status, domainsBox);
+
+  const fetchAll = (): void => {
+    status.textContent = "刷新中……";
+    let pending = MONITOR_DOMAINS.length;
+    for (const domain of MONITOR_DOMAINS) {
+      const box = boxes.get(domain.id);
+      if (box === undefined) {
+        continue;
+      }
+      domain
+        .export()
+        .then((receipt) => {
+          box.replaceChildren(renderMonitorDomainCard(domain, receipt));
+        })
+        .catch((error: unknown) => showError(box, error))
+        .finally(() => {
+          pending -= 1;
+          if (pending === 0) {
+            status.textContent = `最近刷新:${new Date().toLocaleTimeString()}`;
+          }
+        });
+    }
+  };
+
+  let timer = 0;
+  refresh.addEventListener("click", fetchAll);
+  auto.addEventListener("change", () => {
+    if (auto.checked) {
+      fetchAll();
+      timer = window.setInterval(fetchAll, MONITOR_REFRESH_MS);
+    } else {
+      window.clearInterval(timer);
+      timer = 0;
+    }
+  });
+
+  wrap.append(panel, metricsGapRegisterCard());
+  return wrap;
+}
+
 async function bootstrap(): Promise<void> {
   const app = document.querySelector("#app");
   if (app === null) {
@@ -1096,6 +1324,7 @@ async function bootstrap(): Promise<void> {
     }),
   );
   register("metrics", "指标导出", metricsView());
+  register("monitor", "资源监控", resourceMonitorView());
   register("control", "控制动作", controlView());
   register("permission", "权限/预算", permissionView(config));
   const parity = el("div");

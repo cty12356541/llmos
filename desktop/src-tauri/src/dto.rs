@@ -4,8 +4,10 @@
 
 use nlos_schema::sabi::v1::{RetryDirective, SabiErrorCode, SabiFailure};
 use nlos_system_control::control::{
-    ControlOutcome, ControlReceipt, ProcessInspection, RecoveryInspection, ResourceInspection,
-    ResourceRecoveryInspection, SemanticRecoveryInspection, receipt_to_hex,
+    ControlOutcome, ControlReceipt, DurableOperationInspection, ExecutionFiberInspection,
+    ProcessInspection, RecoveryInspection, ResourceInspection, ResourceRecoveryInspection,
+    SemanticRecoveryInspection, TaskGroupInspection, TaskNodeInspection, TopicInspection,
+    receipt_to_hex,
 };
 
 /// 一条 escalated 告警(artifact/semantic 共用形态)。
@@ -66,6 +68,66 @@ pub enum OutcomeDto {
         upper_bound: u64,
         usage_high_water: u64,
         consumption_count: u32,
+    },
+    /// W32-G(SABI v1.5)五层 inspect 形态:显式补齐穷尽匹配(本壳尚无
+    /// 对应 GUI 命令接线,投影为有界标量事实;成员行以计数 + 截断标志
+    /// 呈现,不逐行展开)。
+    TaskGroupInspected {
+        group_id_hex: String,
+        task_id_hex: String,
+        parent_group_id_hex: Option<String>,
+        state: String,
+        membership_generation: u64,
+        state_seq: u64,
+        depth: u64,
+        cancel_epoch: u64,
+        created_at_ms: i64,
+        updated_at_ms: i64,
+        member_count: u64,
+        members_truncated: bool,
+    },
+    TaskNodeInspected {
+        plan_id_hex: String,
+        node_id_hex: String,
+        node_kind: String,
+        state: String,
+        declared_revision: u64,
+        node_digest_hex: String,
+        transition_count: u64,
+        residency_tier: String,
+        residency_transition_count: u64,
+        first_declared_at_ms: u64,
+        updated_at_ms: u64,
+    },
+    ExecutionFiberInspected {
+        fiber_id_hex: String,
+        generation: u64,
+        state: String,
+        lifecycle_phase: String,
+        active_cpu_ms: u64,
+        elapsed_wall_ms: u64,
+        scheduler_wait_ms: u64,
+        external_wait_ms: u64,
+        backpressure_wait_ms: u64,
+        suspended_ms: u64,
+    },
+    TopicInspected {
+        topic_id_hex: String,
+        channel_id_hex: String,
+        channel_generation: u64,
+        name_hex: String,
+        active_subscriptions: u64,
+        policy_digest_hex: String,
+        created_at_ms: u64,
+    },
+    DurableOperationInspected {
+        operation_id_hex: String,
+        generation: u64,
+        state: String,
+        cancel_epoch: u64,
+        owner_fiber_id_hex: String,
+        owner_fiber_generation: u64,
+        outcome_receipt_id_hex: Option<String>,
     },
     MetricsExported {
         openmetrics_text: String,
@@ -307,6 +369,78 @@ fn resource_inspected_dto(inspection: &ResourceInspection) -> OutcomeDto {
     }
 }
 
+fn task_group_inspected_dto(inspection: &TaskGroupInspection) -> OutcomeDto {
+    OutcomeDto::TaskGroupInspected {
+        group_id_hex: hex(&inspection.group_id),
+        task_id_hex: hex(&inspection.task_id),
+        parent_group_id_hex: inspection.parent_group_id.map(|id| hex(&id)),
+        state: format!("{:?}", inspection.state),
+        membership_generation: inspection.membership_generation,
+        state_seq: inspection.state_seq,
+        depth: inspection.depth,
+        cancel_epoch: inspection.cancel_epoch,
+        created_at_ms: inspection.created_at_ms,
+        updated_at_ms: inspection.updated_at_ms,
+        member_count: u64::try_from(inspection.members.len()).unwrap_or(u64::MAX),
+        members_truncated: inspection.members_truncated,
+    }
+}
+
+fn task_node_inspected_dto(inspection: &TaskNodeInspection) -> OutcomeDto {
+    OutcomeDto::TaskNodeInspected {
+        plan_id_hex: hex(&inspection.plan_id),
+        node_id_hex: hex(&inspection.node_id),
+        node_kind: format!("{:?}", inspection.kind),
+        state: format!("{:?}", inspection.state),
+        declared_revision: inspection.declared_revision,
+        node_digest_hex: hex(&inspection.node_digest),
+        transition_count: inspection.transition_count,
+        residency_tier: format!("{:?}", inspection.residency_tier),
+        residency_transition_count: inspection.residency_transition_count,
+        first_declared_at_ms: inspection.first_declared_at_ms,
+        updated_at_ms: inspection.updated_at_ms,
+    }
+}
+
+fn execution_fiber_inspected_dto(inspection: &ExecutionFiberInspection) -> OutcomeDto {
+    OutcomeDto::ExecutionFiberInspected {
+        fiber_id_hex: hex(&inspection.fiber_id),
+        generation: inspection.generation,
+        state: format!("{:?}", inspection.state),
+        lifecycle_phase: format!("{:?}", inspection.lifecycle_phase),
+        active_cpu_ms: inspection.active_cpu_ms,
+        elapsed_wall_ms: inspection.elapsed_wall_ms,
+        scheduler_wait_ms: inspection.scheduler_wait_ms,
+        external_wait_ms: inspection.external_wait_ms,
+        backpressure_wait_ms: inspection.backpressure_wait_ms,
+        suspended_ms: inspection.suspended_ms,
+    }
+}
+
+fn topic_inspected_dto(inspection: &TopicInspection) -> OutcomeDto {
+    OutcomeDto::TopicInspected {
+        topic_id_hex: hex(&inspection.topic_id),
+        channel_id_hex: hex(&inspection.channel_id),
+        channel_generation: inspection.channel_generation,
+        name_hex: hex(&inspection.name),
+        active_subscriptions: inspection.active_subscriptions,
+        policy_digest_hex: hex(&inspection.policy_digest),
+        created_at_ms: inspection.created_at_ms,
+    }
+}
+
+fn durable_operation_inspected_dto(inspection: &DurableOperationInspection) -> OutcomeDto {
+    OutcomeDto::DurableOperationInspected {
+        operation_id_hex: hex(&inspection.operation_id),
+        generation: inspection.generation,
+        state: format!("{:?}", inspection.state),
+        cancel_epoch: inspection.cancel_epoch,
+        owner_fiber_id_hex: hex(&inspection.owner_fiber_id),
+        owner_fiber_generation: inspection.owner_fiber_generation,
+        outcome_receipt_id_hex: inspection.outcome_receipt_id.as_ref().map(|id| hex(id)),
+    }
+}
+
 /// [`ControlReceipt`] → [`ReceiptDto`] 的单一投影点(穷尽匹配,无通配臂:
 /// 新的 outcome 变体必须落成显式 DTO 形态,不得静默丢进失败)。
 #[must_use]
@@ -319,6 +453,15 @@ pub fn receipt_dto(receipt: &ControlReceipt) -> ReceiptDto {
         }
         Ok(ControlOutcome::ProcessInspected(inspection)) => process_inspected_dto(inspection),
         Ok(ControlOutcome::ResourceInspected(inspection)) => resource_inspected_dto(inspection),
+        Ok(ControlOutcome::TaskGroupInspected(inspection)) => task_group_inspected_dto(inspection),
+        Ok(ControlOutcome::TaskNodeInspected(inspection)) => task_node_inspected_dto(inspection),
+        Ok(ControlOutcome::ExecutionFiberInspected(inspection)) => {
+            execution_fiber_inspected_dto(inspection)
+        }
+        Ok(ControlOutcome::TopicInspected(inspection)) => topic_inspected_dto(inspection),
+        Ok(ControlOutcome::DurableOperationInspected(inspection)) => {
+            durable_operation_inspected_dto(inspection)
+        }
         Ok(ControlOutcome::MetricsExported(export)) => OutcomeDto::MetricsExported {
             openmetrics_text: export.openmetrics_text.clone(),
         },
@@ -375,6 +518,11 @@ fn outcome_label(outcome: &OutcomeDto) -> String {
         OutcomeDto::SemanticInspected { .. } => "semantic_inspected".to_owned(),
         OutcomeDto::ResourceRecoveryInspected { .. } => "resource_recovery_inspected".to_owned(),
         OutcomeDto::ProcessInspected { .. } => "process_inspected".to_owned(),
+        OutcomeDto::TaskGroupInspected { .. } => "task_group_inspected".to_owned(),
+        OutcomeDto::TaskNodeInspected { .. } => "task_node_inspected".to_owned(),
+        OutcomeDto::ExecutionFiberInspected { .. } => "execution_fiber_inspected".to_owned(),
+        OutcomeDto::TopicInspected { .. } => "topic_inspected".to_owned(),
+        OutcomeDto::DurableOperationInspected { .. } => "durable_operation_inspected".to_owned(),
         OutcomeDto::MetricsExported { .. } => "metrics_exported".to_owned(),
         OutcomeDto::Acknowledged { .. } => "acknowledged".to_owned(),
         OutcomeDto::Resumed { .. } => "resumed".to_owned(),

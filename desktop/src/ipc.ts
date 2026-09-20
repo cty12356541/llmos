@@ -46,6 +46,11 @@ export async function exportSemanticMetrics(): Promise<ReceiptDto> {
   return invoke("export_semantic_metrics");
 }
 
+/** W32-E 资源监控:resource 域(G8)OpenMetrics 导出(既有只读命令的 GUI 接线)。 */
+export async function exportResourceMetrics(): Promise<ReceiptDto> {
+  return invoke("export_resource_metrics");
+}
+
 export async function inspectTask(planIdHex: string): Promise<ReceiptDto> {
   return invoke("inspect_task", { planIdHex });
 }
