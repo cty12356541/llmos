@@ -11,9 +11,11 @@
 //! durable receipt through an EMPTY pid map (short-circuit proof: a
 //! broken replay would fail closed on the missing mapping).
 
+#[cfg(unix)]
 use std::collections::HashMap;
 use std::sync::Arc;
 
+#[cfg(unix)]
 use nlos_process::PosixPlatformKillAdapter;
 use nlos_runtime::{FiberState, RuntimeAdapter as _};
 use nlos_runtime_tokio::{TokioRuntimeAdapter, TokioRuntimeConfig};
