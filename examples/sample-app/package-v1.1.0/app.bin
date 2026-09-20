@@ -1,0 +1,4 @@
+sample-app driver entry v1.1.0
+consumed via the public driver/runtime surfaces:
+task -> attempt -> process -> fiber driver-operation -> artifact + task-commit-receipt
+v1.1.0: same-major update; adds the staged-migration drill to the lifecycle

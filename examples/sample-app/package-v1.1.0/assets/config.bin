@@ -1,0 +1,4 @@
+sample-app config v1.1.0
+refresh-interval-ms = 30000
+max-retries = 3
+retention-revisions = 2

@@ -1,0 +1,1 @@
+resource-ceiling: 1 Os process, 1 supervisor pid registration
