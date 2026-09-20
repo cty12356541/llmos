@@ -29,6 +29,7 @@ import type {
   ReceiptDto,
 } from "./types";
 import { MUTATION_OUTCOME_KINDS } from "./types";
+import { taskSpaceView } from "./views/task-space";
 
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -1303,6 +1304,7 @@ async function bootstrap(): Promise<void> {
       dispatch: inspectTask,
     }),
   );
+  register("task-space", "任务空间", taskSpaceView());
   register(
     "process",
     "进程查询",
