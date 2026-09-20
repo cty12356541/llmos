@@ -838,7 +838,7 @@
   scope: "订阅/投递/ack 全链经既有 Topic 权威 + wait commit 侧 notify 接线 + 无影子 fanout 负证（W33-D/X-1 前半）"
   assurance: H3
   date: "2026-09-21"
-- id: b-search-001-minimal-service
+ id: b-search-001-minimal-service
   path: docs/evidence/stage-b/b-search-001-minimal-service.md
   title: "B-SEARCH-001：Search 最小服务（语义断言只读查询面）"
   scope: "断言 selector 查询 + trust-view 活 join + 派生内存索引（可重建非 canonical）+ 零 semantic 权威写入负证（W33-E/X-1 后半）"
@@ -848,5 +848,17 @@
   path: docs/evidence/stage-b/b-debug-001-minimal-face.md
   title: "B-DEBUG-001：最小 debugger 面（fiber snapshot/replay inspect CLI）"
   scope: "nlos-debug 三命令只读检查面：snapshot inspect（durable fiber/wait 面）+ replay 事件流回放走查（真 BindingEventProjection/ResumePlan）+ recovery 三域台账；钉版本 preflight + 只读枚举 + tripwire 三层零 mutation 纪律（W33-G/X-3 后半）"
+  assurance: H3
+  date: "2026-09-21"
+- id: w33h-road-b001-b002-review
+  path: docs/evidence/stage-b/reviews/w33h-road-b001-b002.md
+  title: "W33-H：ROAD-B-001/002 门证据评审（review 记录）"
+  scope: "两门逐条证据评审 + B-001 构造性证据评估（四具名边界）+ §6 行更新建议；抽样复跑 W29-E/W33-B 绿、slice-k-demo 09d 登记 defect HEAD 复现（W33-H）"
+  assurance: H3
+  date: "2026-09-21"
+- id: w31g-road-b004-gates
+  path: docs/evidence/stage-b/reviews/w31g-road-b004-gates.md
+  title: "W31-G：ROAD-B-004 门证据评审记录（G1–G6 逐门）"
+  scope: "docs-only 评审（无新测试）：G1–G6 证伪条件逐门对照 B-PLAN-001/002 与 B-TASK-SCALE-001 具名证据，六门均裁 SATISFIED-WITH-BOUNDARIES；开放项与 ADR-0016 复审触发器对照在案"
   assurance: H3
   date: "2026-09-21"
