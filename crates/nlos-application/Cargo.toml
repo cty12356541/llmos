@@ -8,6 +8,11 @@ repository.workspace = true
 
 [dependencies]
 nlos-artifact = { path = "../nlos-artifact" }
+# TaskAuthority read surface backing the uninstall/rollback activity gate
+# (W27-D): the gate resolves the package's durable background-task
+# registrations inside its own transaction, then queries this authority
+# for task liveness. Read-only consumer; no task-side writes.
+nlos-task = { path = "../nlos-task" }
 nlos-types = { path = "../nlos-types" }
 rusqlite.workspace = true
 # Authority-derived ApplicationId/InstallationId (domain-separated SHA-256),

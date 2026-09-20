@@ -128,6 +128,7 @@
 //! attempt state machine are represented as permit/slot states rather
 //! than attempt states here.
 
+mod activity;
 mod commit;
 mod effect;
 mod group;

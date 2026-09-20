@@ -397,6 +397,7 @@ dependencies = [
  "nlos-artifact",
  "nlos-identity",
  "nlos-store-fault",
+ "nlos-task",
  "nlos-types",
  "rusqlite",
  "sha2",
