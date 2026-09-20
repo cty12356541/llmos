@@ -2,7 +2,7 @@ use rusqlite::{Connection, TransactionBehavior};
 
 use crate::ApplicationAuthorityError;
 
-pub(crate) const SCHEMA_VERSION: i64 = 7;
+pub(crate) const SCHEMA_VERSION: i64 = 8;
 
 /// Creates the durable application/installation authority schema v1: the
 /// per-package `applications` singleton (current installation generation +
@@ -875,6 +875,98 @@ pub(crate) fn migrate_v7(connection: &mut Connection) -> Result<(), ApplicationA
         END;
 
         PRAGMA user_version=7;",
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
+
+/// Adds schema v8: the immutable `application_surface_registrations`
+/// table that makes [`crate::ApplicationAuthority::register_surfaces`]
+/// replayable (W32-F / B2-2, the UI-Surface dimension of ROAD-B-002).
+///
+/// - One row per declared surface of one registration call: the call's
+///   idempotency key plus the declaration order (`surface_index`) is the
+///   primary key, so one key addresses exactly one declared segment.
+/// - The row is a *fact* carrier mirroring the v5 background-task and v6
+///   process-binding registrations: immutable, durable, per-surface
+///   identity unique within one installation generation
+///   (`UNIQUE(application_id, surface_id, application_generation)`), and
+///   bound to the exact installed package content by the manifest digest
+///   that was current when the segment was registered.
+/// - The AFTER INSERT state-bounds guard ties every registration row to
+///   an application that is *installed at its current generation* — the
+///   registration and the installation state it names commit in one
+///   transaction and live and die together.
+pub(crate) fn migrate_v8(connection: &mut Connection) -> Result<(), ApplicationAuthorityError> {
+    let table_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type='table' AND name = 'application_surface_registrations'",
+        [],
+        |row| row.get(0),
+    )?;
+    let trigger_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN (
+            'application_surface_registrations_immutable_update',
+            'application_surface_registrations_no_delete',
+            'application_surface_registrations_state_bounds'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if table_count == 1 && trigger_count == 3 {
+        connection.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        return Ok(());
+    }
+    if table_count != 0 || trigger_count != 0 {
+        return Err(ApplicationAuthorityError::CorruptRecord(
+            "partial application surface registration schema",
+        ));
+    }
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "CREATE TABLE application_surface_registrations (
+            idempotency_key BLOB NOT NULL CHECK(length(idempotency_key)=16),
+            surface_index INTEGER NOT NULL CHECK(surface_index >= 0),
+            application_id BLOB NOT NULL CHECK(length(application_id)=16),
+            surface_id BLOB NOT NULL CHECK(length(surface_id)=16),
+            surface_kind INTEGER NOT NULL CHECK(surface_kind IN (1, 2)),
+            title TEXT NOT NULL
+                CHECK(length(title) >= 1 AND length(title) <= 255
+                      AND instr(title, char(0)) = 0),
+            entry_name TEXT
+                CHECK(entry_name IS NULL
+                      OR (length(entry_name) >= 1 AND length(entry_name) <= 255
+                          AND instr(entry_name, char(0)) = 0)),
+            package_manifest_digest BLOB NOT NULL
+                CHECK(length(package_manifest_digest)=32),
+            registrant_principal BLOB NOT NULL CHECK(length(registrant_principal)=16),
+            application_generation INTEGER NOT NULL CHECK(application_generation >= 1),
+            registered_at_ms INTEGER NOT NULL CHECK(registered_at_ms >= 0),
+            PRIMARY KEY(idempotency_key, surface_index),
+            UNIQUE(application_id, surface_id, application_generation),
+            FOREIGN KEY(application_id) REFERENCES applications(application_id)
+        ) STRICT;
+        CREATE TRIGGER application_surface_registrations_immutable_update
+            BEFORE UPDATE ON application_surface_registrations BEGIN
+            SELECT RAISE(ABORT, 'application surface registration is immutable');
+        END;
+        CREATE TRIGGER application_surface_registrations_no_delete
+            BEFORE DELETE ON application_surface_registrations BEGIN
+            SELECT RAISE(ABORT, 'application surface registration is durable');
+        END;
+        CREATE TRIGGER application_surface_registrations_state_bounds
+            AFTER INSERT ON application_surface_registrations
+            WHEN (SELECT status FROM applications WHERE application_id = NEW.application_id) != 1
+                OR NEW.application_generation != (
+                    SELECT current_installation_generation FROM applications
+                    WHERE application_id = NEW.application_id)
+                OR NEW.package_manifest_digest != (
+                    SELECT package_manifest_digest FROM applications
+                    WHERE application_id = NEW.application_id)
+        BEGIN
+            SELECT RAISE(ABORT, 'application surface registration requires the installed application at its current generation and manifest digest');
+        END;
+        PRAGMA user_version=8;",
     )?;
     transaction.commit()?;
     Ok(())

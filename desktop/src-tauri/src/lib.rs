@@ -8,6 +8,7 @@
 pub mod dto;
 pub mod error;
 pub mod ipc;
+pub mod surfaces;
 
 /// 开发夹具:仅在 `dev-fixture` feature 下编译(dev_server 示例与集成测试)。
 #[cfg(feature = "dev-fixture")]
@@ -34,6 +35,7 @@ pub fn run() {
             ipc::control_plane_facts,
             ipc::inspect_resource_cost,
             ipc::cost_fact_check,
+            ipc::present_surfaces,
         ])
         .run(tauri::generate_context!())
     {

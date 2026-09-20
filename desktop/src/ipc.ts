@@ -7,6 +7,7 @@ import type {
   FactCheckDto,
   ParityDto,
   ReceiptDto,
+  SurfacesPresentationDto,
 } from "./types";
 
 export async function getConfig(): Promise<ConfigDto> {
@@ -20,6 +21,7 @@ export interface SetConfigInput {
   cliSocket?: string | null;
   cliPath?: string | null;
   resourceRoot?: string | null;
+  applicationRoot?: string | null;
 }
 
 export async function setConfig(input: SetConfigInput): Promise<ConfigDto> {
@@ -76,6 +78,11 @@ export async function costFactCheck(reservationIdHex: string): Promise<FactCheck
 /** W32-D 控制面授权事实(客户端路径常量)。 */
 export async function controlPlaneFacts(): Promise<ControlPlaneFactsDto> {
   return invoke("control_plane_facts");
+}
+
+/** W32-F:按包身份呈现应用声明的可呈现表面(本地应用权威直读)。 */
+export async function presentSurfaces(packageIdHex: string): Promise<SurfacesPresentationDto> {
+  return invoke("present_surfaces", { packageIdHex });
 }
 
 export async function parityCheck(

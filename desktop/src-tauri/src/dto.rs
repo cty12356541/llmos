@@ -185,6 +185,8 @@ pub struct ConfigDto {
     pub cli_socket: Option<String>,
     pub cli_path: Option<String>,
     pub resource_root: Option<String>,
+    /// W32-F:本地应用权威根目录(UI Surface 呈现接线;null=未接线)。
+    pub application_root: Option<String>,
     pub source: ConfigSourceDto,
     pub platform_supported: bool,
 }
@@ -242,7 +244,7 @@ pub struct ParityDto {
     pub cli_stderr: Option<String>,
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     let mut output = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
         use std::fmt::Write as _;

@@ -42,6 +42,8 @@ pub const ENV_CLI_SOCKET: &str = "LLMOS_DESKTOP_CLI_SOCKET";
 pub const ENV_CLI: &str = "LLMOS_DESKTOP_CLI";
 /// W32-D:本地资源权威根目录(预算/成本可见性的 ResourceAuthority 接线)。
 pub const ENV_RESOURCE_ROOT: &str = "LLMOS_DESKTOP_RESOURCE_ROOT";
+/// W32-F:本地应用权威根目录(UI Surface 呈现的 ApplicationAuthority 接线)。
+pub const ENV_APPLICATION_ROOT: &str = "LLMOS_DESKTOP_APPLICATION_ROOT";
 
 /// `cargo run`/`tauri dev` 的 cwd 是 `src-tauri`,仓库 target 目录在此相对路径下。
 const DEFAULT_CLI_PATH: &str = "../../target/debug/system-control-cli";
@@ -55,6 +57,7 @@ pub struct SessionConfig {
     pub cli_socket: Option<String>,
     pub cli_path: Option<String>,
     pub resource_root: Option<String>,
+    pub application_root: Option<String>,
     pub source: ConfigSourceDto,
 }
 
@@ -74,6 +77,7 @@ impl AppState {
             ENV_CLI_SOCKET,
             ENV_CLI,
             ENV_RESOURCE_ROOT,
+            ENV_APPLICATION_ROOT,
         ]
         .iter()
         .any(|name| env(name).is_some());
@@ -90,6 +94,7 @@ impl AppState {
                 cli_socket: env(ENV_CLI_SOCKET),
                 cli_path: env(ENV_CLI),
                 resource_root: env(ENV_RESOURCE_ROOT),
+                application_root: env(ENV_APPLICATION_ROOT),
                 source,
             }),
         }
@@ -118,6 +123,7 @@ fn config_dto(config: &SessionConfig) -> ConfigDto {
         cli_socket: config.cli_socket.clone(),
         cli_path: config.cli_path.clone(),
         resource_root: config.resource_root.clone(),
+        application_root: config.application_root.clone(),
         source: config.source,
         platform_supported: cfg!(unix),
     }
@@ -261,6 +267,7 @@ pub struct SetConfigInput {
     pub cli_socket: Option<String>,
     pub cli_path: Option<String>,
     pub resource_root: Option<String>,
+    pub application_root: Option<String>,
 }
 
 #[tauri::command]
@@ -285,6 +292,7 @@ pub fn set_config(
         cli_socket: cleaned(&input.cli_socket),
         cli_path: cleaned(&input.cli_path),
         resource_root: cleaned(&input.resource_root),
+        application_root: cleaned(&input.application_root),
         source: ConfigSourceDto::Session,
     };
     state.replace(next)?;
@@ -454,6 +462,20 @@ pub fn cost_fact_check(
         &first,
         &second,
     ))
+}
+
+/// W32-F 表面呈现命令:按包身份读回应用声明的可呈现表面(本地应用
+/// 权威直读视图,与权限/预算视图的 cost 查询同机制,非 CLI parity 面)。
+#[tauri::command]
+pub fn present_surfaces(
+    state: tauri::State<'_, AppState>,
+    package_id_hex: String,
+) -> Result<crate::surfaces::SurfacesPresentationDto, DesktopError> {
+    let config = state.snapshot()?;
+    let package_id = nlos_types::PackageId::from_bytes(principal_bytes(&package_id_hex)?);
+    let authority =
+        crate::surfaces::open_configured_application_authority(config.application_root.as_deref())?;
+    crate::surfaces::present_surfaces_core(&authority, package_id)
 }
 
 /// W32-D 控制面授权事实(客户端路径常量,非 inspect 数据):每条派发

@@ -1,4 +1,4 @@
-# llmos 任务管理器桌面壳(Tauri 2,W32-A 只读半 + W32-B 写入半 + W32-D 权限/预算可见 + W32-E 资源监控)
+# llmos 任务管理器桌面壳(Tauri 2,W32-A 只读半 + W32-B 写入半 + W32-D 权限/预算可见 + W32-E 资源监控 + W32-F 应用表面呈现)
 
 可信桌面 Task Manager 外壳:TypeScript 前端 + Rust 后端命令层。后端每条
 inspect/控制命令都经 **ADR-0011 challenge-response 认证入口**
@@ -9,7 +9,10 @@ Receipt 展示;W32-D 加入可信权限 UI 最小版(B5-5 前半):授权/预算/
 可见——`InspectResource` 有界成本事实经真实 `ResourceAuthorityInspector`
 组装,与权威及 CLI parity 一致。W32-E 加入 Resource Monitor 最小版
 (B5-5 后半):消费既有 OpenMetrics 指标面(三恢复域只读导出命令)并
-结构化展示,带刷新,无任何新控制路径。**parity 钉死是 W32-C**——本壳
+结构化展示,带刷新,无任何新控制路径。W32-F 加入应用表面呈现(B2-2 /
+ROAD-B-002 第四能力维度):Application 声明的 UI Surface 经本地应用
+权威读回并以窗口/面板卡呈现(声明 → 呈现最小链,非窗口管理系统)。
+**parity 钉死是 W32-C**——本壳
 只带读路径自检 + 一条 pause-operation 写路径探针 + W32-D 成本事实自检。
 
 目录独立:本目录自带 `package.json` 与 `src-tauri/Cargo.toml`(后者含空
@@ -21,7 +24,7 @@ members,对 `crates/` 的依赖只以相对 path dep 出现在 `src-tauri/Cargo.
 ```text
 desktop/
 ├── index.html / vite.config.ts / tsconfig.json / package.json   # 前端壳
-├── src/                    # TypeScript 前端(views:恢复/语义/资源/任务/进程/资源查询/指标/资源监控/控制动作/权限预算/一致性自检/配置)
+├── src/                    # TypeScript 前端(views:恢复/语义/资源/任务/进程/资源查询/指标/资源监控/应用表面/控制动作/权限预算/一致性自检/配置)
 └── src-tauri/
     ├── Cargo.toml          # 独立 workspace 根;path deps → ../../crates/*
     ├── tauri.conf.json     # bundle.active=false(打包/签名是后续波次)
@@ -30,13 +33,15 @@ desktop/
     │   ├── ipc.rs          # 认证 IPC 客户端接线 + 全部 #[tauri::command](读 + W32-B 写)
     │   ├── dto.rs          # ControlReceipt → JSON DTO 单一投影点(含 receipt_hex;穷尽匹配无通配臂)
     │   ├── error.rs        # 类型化 DesktopError { code, message },零 unwrap
+    │   ├── surfaces.rs     # W32-F:UI Surface 呈现核心(本地应用权威直读投影)
     │   └── devfixture.rs   # feature `dev-fixture`:双入口开发夹具服务(+W32-D 结清资源链)
     ├── examples/dev_server.rs        # 开发夹具服务器(认证 + plain 双入口)
     └── tests/
         ├── authenticated_read_side.rs       # W32-A:认证读侧集成测试
         ├── authenticated_write_side.rs      # W32-B:认证写侧集成测试
         ├── authenticated_permission_side.rs # W32-D:权限/预算/成本集成测试
-        └── resource_monitor_metrics_side.rs # W32-E:三域指标消费 + parity 集成测试
+        ├── resource_monitor_metrics_side.rs # W32-E:三域指标消费 + parity 集成测试
+        └── surface_presentation_side.rs     # W32-F:声明→呈现最小链集成测试
 ```
 
 ## 构建与运行(本机 macOS 验证过)
@@ -74,6 +79,7 @@ GUI 三要素 + 自检二要素,来源按优先级:环境变量 → 「连接配
 | `LLMOS_DESKTOP_CLI_SOCKET` | (仅自检)plain 入口 socket,供 CLI 比对 |
 | `LLMOS_DESKTOP_CLI` | (仅自检)`system-control-cli` 二进制路径;缺省探测 `../../target/debug/system-control-cli` |
 | `LLMOS_DESKTOP_RESOURCE_ROOT` | (W32-D,仅权限/预算视图)本地资源权威根目录(`resource-authority.db` 所在目录);未设置时成本查询保持未接线形态 |
+| `LLMOS_DESKTOP_APPLICATION_ROOT` | (W32-F,仅应用表面视图)本地应用权威根目录(`application-authority.db` 所在目录);未设置时表面呈现为类型化 CONFIG 拒绝(无未接线回退形态) |
 
 私钥在每次派发时从密钥文件读取,进程内不缓存、不入仓库、不写日志。
 
@@ -201,6 +207,43 @@ hex 一致。
   实时用量)无任何既有导出面——指标目录只覆盖恢复目录(三域 26 族 +
   worker 生命周期),视图不发明;以上在视图内以静态缺口卡列出(证据
   `b-gui-001` §W32-E)。
+
+## 应用表面视图(W32-F UI Surface 呈现,B2-2 / ROAD-B-002 第四能力维度)
+
+「Application 声明 surface → 窗口呈现」最小链(声明 → 呈现,非窗口管理系统):
+
+- **机制(W32-D resource_root 同款本地权威直读)**:会话配置
+  `application_root`(`LLMOS_DESKTOP_APPLICATION_ROOT` 或「连接配置」页)
+  指向本地应用权威根目录时,`present_surfaces` 命令按包身份(32 hex)
+  经真实 `ApplicationAuthority` 读回该应用的 durable 表面登记
+  (`inspect_surfaces`,nlos-application schema v8),投影为呈现 DTO。
+  每次呈现即时打开权威(WAL 多进程读安全),不缓存句柄。
+- **窗口形呈现**:当前安装代际的每个已登记表面以窗口/面板卡呈现——
+  标题栏(kind 徽标 + 声明 title)+ 元数据行(surface_id/kind/title/
+  entry_name 声明内容引用/登记幂等键/时间)+ 明示的内容占位(「呈现
+  声明元数据;entry 载荷渲染属后续车道」)。DTO 不发明任何字段:呈现
+  的每一行都是 durable 声明事实的逐位投影。
+- **stale 代际不呈现**(DUI-WINDOW-001 最小版):内容更新推进代际后,
+  旧代际的登记仍是 durable 事实(`inspect_surfaces` 可读)但不再进入
+  可呈现集;gen 2 重声明后恢复呈现。非 `installed` 状态(disabled/
+  uninstalled)如实投影为空集 + 状态行,不报错。从未安装的包是类型化
+  `NOT_FOUND`(事实读回);未配置 `application_root` 是类型化 `CONFIG`
+  拒绝——本视图没有未接线回退形态,不配置即不呈现。
+- **声明侧(`crates/nlos-application`)**:manifest additive `surfaces`
+  段——`PackageSurfaceDeclaration { surface_id, kind(window|panel),
+  title, entry_name? }` + 共享 typed 校验
+  (`validate_surface_declarations`:非空/唯一 id/文本界),登记面
+  `register_surfaces` 把声明段绑定到安装代际与 manifest digest(声明
+  陈旧内容 → 类型化拒绝,不静默改绑),幂等 replay 逐位相等。应用侧
+  (样板驱动)经公共 API 登记;桌面只消费 inspect 面。
+- **集成测试**(`tests/surface_presentation_side.rs`):小夹具样例包
+  (带 surfaces 声明段)→ 真实验签 → install → 登记 → **第二个独立权威
+  句柄上的桌面呈现**(读者进程形态)逐字段断言;stale 代际空集、重声明
+  恢复、未知包 NOT_FOUND、未配置 CONFIG 拒绝均钉死。
+- **呈现边界登记(诚实边界)**:entry 载荷内容渲染(artifact 字节→表
+  面内容)、表面生命周期(REGISTERED→…→CLOSED)、焦点/输入路由、窗口
+  几何/多窗口编排、Surface 域 SABI ControlCommand IPC 面——均不在本最
+  小链内,视图以静态缺口卡声明缺席(证据 b-gui-001 §W32-F)。
 
 ## 一致性自检(parity approach)
 

@@ -178,8 +178,30 @@ export interface ConfigDto {
   cliPath: string | null;
   /** W32-D:本地资源权威根目录(预算/成本可见性的接线;null=未接线)。 */
   resourceRoot: string | null;
+  /** W32-F:本地应用权威根目录(UI Surface 呈现的接线;null=未接线)。 */
+  applicationRoot: string | null;
   source: "env" | "session" | "unset";
   platformSupported: boolean;
+}
+
+/** W32-F:一条可呈现表面(durable 声明事实的投影,desktop/src-tauri/src/surfaces.rs 为权威)。 */
+export interface PresentedSurfaceDto {
+  surfaceIdHex: string;
+  kind: "window" | "panel";
+  title: string;
+  entryName: string | null;
+  registrationKeyHex: string;
+  registeredAtMs: number;
+}
+
+/** W32-F:一个应用的呈现事实(当前 durable 状态 + 当前代际可呈现表面集)。 */
+export interface SurfacesPresentationDto {
+  applicationIdHex: string;
+  packageIdHex: string;
+  applicationGeneration: number;
+  status: "installed" | "disabled" | "uninstalled";
+  packageManifestDigestHex: string;
+  presentableSurfaces: PresentedSurfaceDto[];
 }
 
 /** W32-D 控制面授权事实(客户端路径常量,非 inspect 数据)。 */

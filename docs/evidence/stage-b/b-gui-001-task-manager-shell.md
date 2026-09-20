@@ -1,10 +1,10 @@
-# B-GUI-001:可信 Tauri 任务管理器壳(W32-A 只读半 + W32-B 写入半 + W32-C parity 钉死 + W32-D 权限/预算可见 + W32-E 资源监控)
+# B-GUI-001:可信 Tauri 任务管理器壳(W32-A 只读半 + W32-B 写入半 + W32-C parity 钉死 + W32-D 权限/预算可见 + W32-E 资源监控 + W32-F 应用表面呈现)
 
-> 状态:`PARTIAL PASS`(读半 W32-A + 写入半 W32-B + parity 钉死 W32-C + 权限/预算可见 W32-D + 资源监控 W32-E 已落地)
+> 状态:`PARTIAL PASS`(读半 W32-A + 写入半 W32-B + parity 钉死 W32-C + 权限/预算可见 W32-D + 资源监控 W32-E + 应用表面呈现 W32-F 已落地)
 >
-> 日期:2026-09-20(W32-A)/ 2026-09-21(§W32-B、§W32-C、§W32-D、§W32-E)
+> 日期:2026-09-20(W32-A)/ 2026-09-21(§W32-B、§W32-C、§W32-D、§W32-E、§W32-F)
 >
-> 对应:`ROAD-B-005`/B5-4 读半边、`[SABI-AUTH-001]`、`[CTRL-PARITY-001]`、[ADR-0011](../../management/adrs/0011-ipc-principal-auth-signature-passthrough.md)、[B-TASK-006L](./b-task-006l-system-control-recovery-handler.md)、[B-SCHEMA-006](./b-schema-006-typescript-python-ipc-clients.md)
+> 对应:`ROAD-B-005`/B5-4 读半边、`ROAD-B-002`/B2-2 UI Surface 维度(§W32-F)、`[SABI-AUTH-001]`、`[CTRL-PARITY-001]`、[ADR-0011](../../management/adrs/0011-ipc-principal-auth-signature-passthrough.md)、[B-TASK-006L](./b-task-006l-system-control-recovery-handler.md)、[B-SCHEMA-006](./b-schema-006-typescript-python-ipc-clients.md)
 
 ## 1. 实现范围
 
@@ -239,3 +239,53 @@ gate(B5-5 后半):「消费既有 metrics 面,无新控制路径」——Resourc
 
 - `desktop/src-tauri/src/{ipc,dto,lib}.rs`、`desktop/src-tauri/tests/resource_monitor_metrics_side.rs`(新增)、`desktop/src/{main,ipc,types,openmetrics}.ts`(`openmetrics.ts` 新增)、`desktop/README.md`。
 - 本证据文件 §W32-E 与头部状态行、`docs/management/evidence-index.yaml` b-gui-001 行更新。
+
+## §W32-F 应用表面呈现(2026-09-21)
+
+> 车道:W32-F / B2-2——ROAD-B-002 四能力维度中「UI Surface」的声明→呈现最小链(W33-H review §4 行 6 判定的唯一硬阻塞项)。按本文件 W32-x 节先例落档于 b-gui-001(横跨 nlos-application manifest 半 + desktop 呈现半)。
+
+### W32-F.1 实现范围
+
+gate 措辞:「Application 声明 surface→窗口呈现最小链」。判定口径:声明 → 呈现,不是窗口管理系统(无生命周期管理/焦点路由/几何/多窗口编排)。
+
+1. **manifest additive `surfaces` 段(`crates/nlos-application`,W28-B tasks 段先例)**:
+   - 声明模型 `PackageSurfaceDeclaration { surface_id(16B 段内唯一), kind(Window|Panel), title, entry_name?(manifest entry 名的内容引用) }` + 共享 typed 校验 `validate_surface_declarations`(非空、准入界 100K、唯一 id、title/entry 文本界 1..=255B 无 NUL——`PackageTaskTemplate` 同款纪律);
+   - **durable 登记面(schema v8 `application_surface_registrations`)**:`register_surfaces` 把一个声明段按幂等键登记到应用**当前安装代际**,并做**内容绑定**——请求声明的 manifest digest 必须等于应用行当前安装的 manifest digest(声明陈旧内容 → 类型化 `SurfaceManifestMismatch` 拒绝,绝不静默改绑);DDL 三 trigger(不可变/不可删/state-bounds:installed 状态 + 当前代际 + digest 相等)与 v5/v6 登记面同构。表面身份在一代内唯一(`UNIQUE(application_id, surface_id, generation)`),代际推进(update)后重开准入;
+   - **inspect 面**:`inspect_surfaces(package_id)` 按登记序+声明序逐位读回声明内容——呈现侧的发现面,durable 行即应用声明的事实;
+   - 签名包文件格式(`nlos/package-file/v1`)在 nlos-artifact(本车道写集外),故声明段以应用侧公共 API 登记并经 manifest digest 绑定到已验签安装的内容(install 的 digest-binding 纪律的最小镜像),不发明第二签名面。
+2. **desktop 呈现(`desktop/src-tauri/src/surfaces.rs` + `ipc.rs` present_surfaces 命令 + `main.ts`「应用表面」视图)**:
+   - 机制 = W32-D resource_root 同款本地权威直读:会话配置 `application_root`(env `LLMOS_DESKTOP_APPLICATION_ROOT` 或连接配置页)→ 每次呈现即时 `ApplicationAuthority::open`(WAL 多进程读安全,不缓存句柄)→ `inspect_application` + `inspect_surfaces` → DTO 投影。本视图**没有未接线回退形态**:未配置 → 类型化 `CONFIG` 拒绝;
+   - **stale 代际不呈现**(DUI-WINDOW-001 最小版):只呈现登记在当前安装代际的表面;update 推进代际后旧登记仍是 durable 事实但不进可呈现集,gen 2 重声明后恢复;非 installed 状态如实投影空集 + 状态行;从未安装的包 → 新增类型化错误码 `NOT_FOUND`(事实读回,非重试面);
+   - **窗口形呈现**:每个可呈现表面渲染为窗口/面板卡(标题栏 kind 徽标 + 声明 title;元数据行 surface_id/kind/title/entry_name/登记幂等键/时间;明示内容占位)。DTO 零发明字段——呈现的每一行是 durable 声明事实的逐位投影;entry 载荷渲染属后续车道(缺口卡登记)。
+3. **端到端最小链测试**(`desktop/src-tauri/tests/surface_presentation_side.rs`,W32-A parity-mode 风格——对命令层呈现数据无头断言):小夹具样例包(单 entry + surfaces 声明段)→ 真实签名验签(ArtifactStore + IdentityAuthority 权威管线)→ `install_application`(verify-then-commit)→ `register_surfaces`(代际+digest 绑定)→ **第二个独立打开的权威句柄上的桌面呈现**(读者进程形态)→ 逐字段断言(application_id/generation/status/manifest_digest hex、两表面声明序、kind/title/entry、登记键 hex)。
+
+### W32-F.2 验证(本机实跑,macOS/darwin arm64,rustc 1.97.1,Node 26.3.0)
+
+- `crates/nlos-application`:`cargo fmt --check` 通过;`cargo clippy --all-targets --all-features -- -D warnings` 0 warning;`cargo test -p nlos-application` **85 passed / 0 failed**(单元 12[含 surfaces 校验/编码 3 项] + application_authority 43 + 故障注入 7 + migration 11 + manifest_task_templates 4 + **surface_registration 8 新增**)。既有 goldens(含 W28-B g6 逐字节面)零改动全绿——v8 是纯增量迁移,additivity golden 成立(surface_registration 首测同时断言登记不动应用行任何字段)。
+- `desktop/`:`npm install` → `npm run build`(tsc 严格 + vite 7)通过;`desktop/src-tauri/`:`cargo fmt --check` 通过;`cargo clippy --all-targets --features dev-fixture -- -D warnings` 与默认 feature 两态 0 warning;`cargo test --features dev-fixture` **25 项全过**(单元 9[含 surfaces 单元 2 项] + 4 读侧 + 4 写侧 + 4 权限侧 + 2 监控侧 + **2 表面链新增**):
+  - `declared_surfaces_present_through_the_desktop_command_face`:验签→install→登记→第二句柄呈现,全字段 == 安装/登记事实;未配置 application_root 类型化 `CONFIG`;
+  - `stale_generation_and_unknown_package_present_honestly`:update 代际 1→2 后旧登记不呈现(durable 行仍在)、gen 2 重声明恢复呈现(title v2)、未知包类型化 `NOT_FOUND`。
+- `python3 scripts/lint_claims.py`:PASS(143/143,索引含本节所在文件既有行,无新增文件)。
+- 未运行/未验证:GUI 窗口内交互式点按(同前波次限制;以命令层集成测试替代,README「应用表面」演示步骤供人工复验);`--workspace` 全仓门/三平台 CI(波次屏障统一跑);nlos-application 非 Unix 契约道未本机实测(SQLite+std,平台无关代码)。
+
+### W32-F.3 呈现边界登记(诚实边界;视图内静态缺口卡同步)
+
+| # | 缺口 | 说明 |
+| --- | --- | --- |
+| 1 | entry 载荷内容渲染 | `entry_name` 引用的 manifest entry 载荷字节(artifact store 物化内容)未进入呈现——视图渲染声明元数据 + 内容占位,不伪造内容 |
+| 2 | 表面生命周期管理 | REGISTERED→CREATED→PRESENTED↔HIDDEN→CLOSED 状态机、open/close 动作、stale 隔离执行器——本链只有 durable 声明与呈现过滤 |
+| 3 | 焦点/输入路由与几何 | DUI-WINDOW-001/DUI-INPUT-001 的 focus/input route、accessibility tree、窗口几何/多窗口编排——未建模 |
+| 4 | Surface 域 SABI IPC 面 | 呈现走本地权威直读(application_root 接线,与 W32-D 成本查询同机制);Surface 域 ControlCommand(register/create/present/…)不在本波次 |
+
+### W32-F.4 边界与遗留
+
+1. **登记入口是库 API**:`register_surfaces` 由应用侧(样板驱动形态)调用;`sample-app-driver` 子命令与 `nlos package` CLI 段解析属后续车道(nlos-artifact 写集外,packaging.md 的 manifest 行式扩展随之)。
+2. **单读者直读形态**:application_root 由 operator 显式提供;宿主权威广播/约定路径发现、呈现经 SystemControl IPC 的面属后续接线。
+3. deferred minors:登记不进 W27-D 活动门解析源(表面非活动物,无 teardown 语义——与 background task 面有意不同);`tauri build` 完整打包同前波次边界。
+4. `docs/management/stage-b-progress.md` 波次表/W33-H §5 行更新建议的采纳不在本车道写集(controller/integrator 收口)。
+
+### W32-F.5 工件清单(本波次写集)
+
+- `crates/nlos-application/src/{surfaces.rs(新增),lib.rs,schema.rs}`、`crates/nlos-application/tests/surface_registration.rs`(新增)。
+- `desktop/src-tauri/src/{surfaces.rs(新增),ipc.rs,dto.rs,error.rs,lib.rs}`、`desktop/src-tauri/Cargo.toml`(+nlos-application path dep;dev-fixture 增 nlos-artifact 可选依赖)、`desktop/src-tauri/tests/surface_presentation_side.rs`(新增)、`desktop/src/{main,ipc,types}.ts`、`desktop/src/style.css`、`desktop/README.md`。
+- 本证据文件 §W32-F 与头部状态行、`docs/management/evidence-index.yaml` b-gui-001 行更新。
