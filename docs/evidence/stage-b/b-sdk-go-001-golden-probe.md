@@ -1,7 +1,7 @@
 # Evidence B-SDK-GO-001：Go 最小 golden 探针（冻结 wire v1-beta 逐字节比对）
 
-- 状态：**PARTIAL_PASS**
-- 日期：2026-08-29
+- 状态：**PARTIAL_PASS**（2026-09-20 W29-G 解封复验零漂移 + ServiceDirectory.ResolveRequest 扩面，见 §8）
+- 日期：2026-08-29（初版）；2026-09-20（§8 W29-G 追加）
 - 仓库 HEAD：`b0badd5892e30eb46f060f53f902616712339085`（任务开始时基线，无漂移）
 - 工作包：`B-SDK-LANG-EVAL`（2026-08-29「解封末位排队」首片，先例 B-SCHEMA-002/006）
 - 冻结纪律依据：[ADR-0014](../../management/adrs/0014-schema-channel-freeze-v1-beta.md)
@@ -80,7 +80,7 @@ ok  example.com/llmos/sdk-go/wire  0.296s   # 6/6 PASS
 1. **非完整 SDK**：仅手写 2 条目 frozen wire 面；无 options/map/zigzag/fixed 编码、无反射/描述符、无 UTF-8 校验、无 service 桩、无 oneof 类型化 API（双臂用 panic 而非 typed error）、无 conformance 框架集成。
 2. **无 IPC 客户端**：不含 LocalRpcService 传输层（先例 TS/Python 的 ipc 客户端能力未实现）。
 3. **C# 未开**：第四/五语言中仅 Go 探针，C# 排队未启动。
-4. **覆盖面 2/7 registry 条目**：ServiceDirectory、OperationControl、SystemControl、TakeoverControl、WaitControl 未覆盖。
+4. **覆盖面 2/7 registry 条目**（§8 扩面后为 3/7）：OperationControl、SystemControl、TakeoverControl、WaitControl 及 `nlos.canonical.DigestEnvelope` 家族未覆盖。
 5. Go 工具链为临时下载供给，未进入机器 PATH 与 CI；与 protobuf-go 生成代码的交叉比对未做（无 protoc-gen-go）。
 6. 解码不校验重复 oneof 臂（后到覆盖），解码枚举不做未知值 fail-closed（proto3 保留未知值，语义校验归 SDK 校验层，本探针无该层）。
 
@@ -94,5 +94,60 @@ ok  example.com/llmos/sdk-go/wire  0.296s   # 6/6 PASS
 
 ## 7. Evidence 交叉引用
 
-- 冻结 golden（只读消费）：`schema/golden/nlos.sabi.Envelope-v1.hex`、`...Envelope-common-request-v1.hex`、`...Envelope-common-uncertain-v1.hex`、`...PrincipalHandshake-v1.hex`
+- 冻结 golden（只读消费）：`schema/golden/nlos.sabi.Envelope-v1.hex`、`...Envelope-common-request-v1.hex`、`...Envelope-common-uncertain-v1.hex`、`...PrincipalHandshake-v1.hex`（§8 扩面后另消费 `...ServiceDirectory.ResolveRequest-v1.hex`）
 - 三语言先例：`tests/conformance/schema/envelope.py`、`envelope.ts`；[b-schema-002](b-schema-002-cross-language-generation.md)、[b-schema-006](b-schema-006-typescript-python-ipc-clients.md)
+
+## 8. W29-G 解封复验与扩面记录：ServiceDirectory.ResolveRequest golden（2026-09-20 追加）
+
+- 触发：2026-08-04 后移决定（[语言 SDK 计划 §4](../../management/language-sdk-support-plan.md)）所等待的 `B-TASK`/EffectPermit 纵切面已落地，W29-G 车道解封；车道职责为对当前冻结 wire 复验既有探针并补 Envelope 家族 golden 缺口。
+- 验证时仓库 HEAD：`55c7f4548e31c00e99cfb79f1a81c7df0a3850a7`（运行全程无漂移；探针基线提交为 `b8fd98c`）。
+
+### 8.1 解封复验：冻结 wire 漂移核验（结论：零漂移）
+
+对探针覆盖的三个 `.proto` 自探针提交以来做差量核验：
+
+```console
+$ git log --oneline b8fd98c..HEAD -- schema/nlos/sabi/v1/envelope.proto \
+    schema/nlos/sabi/v1/principal_handshake.proto schema/nlos/sabi/v1/service_directory.proto
+（空输出：三个 proto 零改动）
+$ git log --oneline b8fd98c..HEAD -- schema/nlos/sabi/v1/
+33da024 feat(nlos-schema): SystemControl v1.1 语义域恢复运维面 additive 契约 (W27-A)
+c974030 feat(nlos-schema): SystemControl v1.2 操作级 pause/resume/cancel additive 命令契约 (W28-D)
+```
+
+期间的 wire 增量只有 `system_control.proto` 的 v1.1（W27-A）与 v1.2（W28-D），REGISTRY（`crates/nlos-schema/src/lib.rs` `SABI_SYSTEM_CONTROL_V1`）对两者的注释均声明为 ADR-0014 freeze 下的 additive 扩展且条目保持 frozen；它们不触及探针实现的任何消息面。冻结 golden 文件本身自 `b0badd5` 后零改动。**因此探针代码与 golden 期望零修改即通过复验——不存在需要用期望更新去掩盖的字节差**；若复验失败将按任务书先对照 REGISTRY 判定 additivity 再处置。
+
+### 8.2 扩面：Envelope 家族 golden 缺口
+
+Rust 侧断言过的 sabi 家族 golden 共 5 条（Envelope-v1、common-request、common-uncertain、PrincipalHandshake、ServiceDirectory.ResolveRequest），本探针此前覆盖前 4 条。本次补齐第 5 条 `nlos.sabi.ServiceDirectory.ResolveRequest-v1.hex`（Rust 参考 `crates/nlos-schema/tests/compatibility.rs` `service_directory_payload_has_its_own_identity_and_bound`；TS/Python 参考 `tests/conformance/schema/envelope.py` L87–101），Go/C# 双语言自此与 Rust 的 sabi golden 集完全对齐。`nlos.canonical.DigestEnvelope-v1/-preimage-v1` 属确定性 CBOR canonical 家族（非 protobuf wire），不在本探针 codec 面，维持未覆盖。
+
+| 路径 | 操作 | 说明 |
+|---|---|---|
+| `sdk/go/sabi/messages.go` | 修改 | 新增 `ResolveServiceRequest`（field 1 schema / field 2 service）；包文档同步 |
+| `sdk/go/sabi/marshal.go` | 修改 | 新增 `ResolveServiceRequest.Marshal`（确定性契约同文件头） |
+| `sdk/go/sabi/unmarshal.go` | 修改 | 新增 `ResolveServiceRequest.Unmarshal`（last-wins、未知字段捕获、fail-closed） |
+| `sdk/go/sabi/golden_test.go` | 修改 | 新增 `TestServiceDirectoryResolveRequestGolden`：encode byte-equal（43 字节）＋ 解码 schema/service 断言 ＋ roundtrip byte-equal |
+
+输入值域：schema `{nlos.sabi.ServiceDirectory, major=1, minor=0}`（minor 零值按 proto3 省略）、service=`operation`。写集外零改动；golden/schema 只读消费。
+
+### 8.3 验证门命令与结果（W29-G）
+
+```console
+$ <tmp>/w29g/go/bin/go version                     # go version go1.27.0 darwin/arm64（临时下载，SHA256 与 §2 记录一致）
+$ cd sdk/go && GOTOOLCHAIN=local go test ./... -count=1 -v
+# 解封基线（扩面前）：ok sabi 10 tests + ok wire 6 tests = 16/16 PASS
+# 扩面后：ok  example.com/llmos/sdk-go/sabi   （11 tests）+ ok wire（6 tests）= 17/17 PASS
+$ gofmt -l .        # 无输出
+$ go vet ./...      # 无告警
+```
+
+**数字：解封基线 16/16、扩面后 17/17 全 PASS（0 FAIL）。**
+
+### 8.4 CI 接线
+
+`rust-cross-platform.yml` verify job（三平台矩阵）新增 `Install Go`（setup-go@v7，`go-version: "1.27"`，`cache: false`——模块零依赖无 go.sum）、`Install .NET SDK`（setup-dotnet@v6，`8.0.x` feature band）与 `Run Go golden probe`（`GOTOOLCHAIN=local go test ./... -count=1`）步骤，与 TS/Python conformance 步骤同门相邻。接线随本车道提交，但任务禁 push，**尚未经真实 CI run 验证**；首个合并后 run 结果以前缀 `Run Go golden probe` 的步骤日志为准。
+
+### 8.5 已知限制增量（对 §5 的覆盖更新）
+
+- 覆盖面更新为 **3/7 registry 条目**（`nlos.sabi.Envelope` v1.1、`nlos.sabi.PrincipalHandshake`、`nlos.sabi.ServiceDirectory` v1.0）；`nlos.canonical.DigestEnvelope`（CBOR 家族）与 OperationControl/SystemControl/TakeoverControl/WaitControl 仍未覆盖。
+- `ResolveServiceRequest` 仅实现 golden 消费面；`ResolveServiceResponse`/`NegotiateServiceRequest`（含 oneof result）等 ServiceDirectory 其余消息未实现。

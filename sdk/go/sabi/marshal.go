@@ -324,3 +324,18 @@ func (m *PrincipalHandshakeAttestation) Marshal() []byte {
 	}
 	return append(b, m.UnknownFields...)
 }
+
+// Marshal encodes m deterministically, as specified in marshal.go.
+func (m *ResolveServiceRequest) Marshal() []byte {
+	if m == nil {
+		return nil
+	}
+	var b []byte
+	if m.Schema != nil {
+		b = putMessage(b, 1, m.Schema.Marshal())
+	}
+	if m.Service != "" {
+		b = putString(b, 2, m.Service)
+	}
+	return append(b, m.UnknownFields...)
+}
