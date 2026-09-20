@@ -13,9 +13,9 @@ use std::time::Duration;
 
 use nlos_operation::OperationHandle;
 use nlos_types::{
-    ArtifactId, CancellationScopeId, ChannelId, CommitPermitId, Generation, IdempotencyKey,
-    OperationId, ProcessId, ReceiptId, TaskAttemptId, TaskAuthorityAssignmentId, TaskId,
-    TaskSnapshotId,
+    ApplicationId, ArtifactId, CancellationScopeId, ChannelId, CommitPermitId, Generation,
+    IdempotencyKey, OperationId, ProcessId, ReceiptId, TaskAttemptId, TaskAuthorityAssignmentId,
+    TaskId, TaskPlanId, TaskSnapshotId,
 };
 use rusqlite::{Connection, OpenFlags, Transaction, TransactionBehavior, params};
 
@@ -45,10 +45,11 @@ use crate::migrations::{
     migrate_v23, migrate_v24, migrate_v25, migrate_v26, migrate_v27, migrate_v28, migrate_v29,
     migrate_v30, migrate_v31, migrate_v32, migrate_v33, migrate_v34, migrate_v35, migrate_v36,
     migrate_v37, migrate_v38, migrate_v39, migrate_v40, migrate_v41, migrate_v42, migrate_v43,
+    migrate_v44,
 };
 use crate::model::{derive_closure_receipt_id, derive_permit_id, empty_effect_history_root};
 use crate::pressure::{
-    CommitPermitDecision, WorkingSetPressureSnapshot, enforce_task_node_admission,
+    CommitPermitDecision, WorkingSetPressureSnapshot, enforce_task_registration_admission,
     enforce_working_set_admission, execute_working_set_reclaim_execution,
     inspect_working_set_pressure as build_working_set_pressure_snapshot,
     plan_working_set_reclaim_execution, working_set_reclaim_advisory,
@@ -58,15 +59,15 @@ use crate::{
     AttemptHandle, AttemptRecord, AttemptRegistrationDecision, AttemptSpec, AttemptState,
     CancelDecision, CancelRequest, ClosedAttempt, PermitConflict, PermitDecision, PermitRecord,
     PermitRequest, PermitState, PlannedEffect, ReceiptOutcome, SnapshotBundle, SnapshotConsistency,
-    TaskReceiptRecord, TaskRecord, TaskRegistrationDecision, TaskSnapshotReceiptRecord,
-    TaskSnapshotReceiptSpec, TaskSpec, TaskState, TaskStoreError, TaskWriteSetArtifactRead,
-    TaskWriteSetArtifactWrite, TaskWriteSetDecision, TaskWriteSetEffectEndpoint,
-    TaskWriteSetEffectEndpointKind, TaskWriteSetEffectEndpointRequest, TaskWriteSetRecord,
-    TaskWriteSetRequest, TaskWriteSetSemanticAppend, TaskWriteSetSemanticRequiredDurability,
-    TaskWriteSetSemanticTarget,
+    TaskPlanRevisionRef, TaskReceiptRecord, TaskRecord, TaskRegistrationDecision,
+    TaskSnapshotReceiptRecord, TaskSnapshotReceiptSpec, TaskSpec, TaskState, TaskStoreError,
+    TaskWriteSetArtifactRead, TaskWriteSetArtifactWrite, TaskWriteSetDecision,
+    TaskWriteSetEffectEndpoint, TaskWriteSetEffectEndpointKind, TaskWriteSetEffectEndpointRequest,
+    TaskWriteSetRecord, TaskWriteSetRequest, TaskWriteSetSemanticAppend,
+    TaskWriteSetSemanticRequiredDurability, TaskWriteSetSemanticTarget,
 };
 
-const SCHEMA_VERSION: i64 = 43;
+const SCHEMA_VERSION: i64 = 44;
 
 /// A single-writer `SQLite` task authority.
 ///
@@ -357,6 +358,7 @@ impl SqliteTaskAuthority {
             migrate_v41(&mut connection)?;
             migrate_v42(&mut connection)?;
             migrate_v43(&mut connection)?;
+            migrate_v44(&mut connection)?;
         }
 
         Ok(Self {
@@ -371,16 +373,20 @@ impl SqliteTaskAuthority {
     /// empty effect-history root (`[TASK-EFFECT-ID-001]`), and
     /// `retry_fence_epoch = 0`. Repeating the exact specification returns
     /// `Existing`; reusing the task ID with a different generation is
-    /// rejected fail-closed. A net-new registration consults the bound
-    /// [`ScaleProfile`] logical task-node hard cap
-    /// (`[ROAD-B-004]` prefix) and is rejected fail-closed over cap;
+    /// rejected fail-closed, as is a replay whose application/plan
+    /// association differs from the durable declaration (ADR-0016 决定 3:
+    /// the association is declaration identity; legacy `NULL` rows cannot
+    /// be re-bound). A net-new registration consults the bound
+    /// [`ScaleProfile`] task-registration hard cap (ADR-0016 决定 4 second
+    /// explicit dimension) and is rejected fail-closed over cap;
     /// idempotent replays bypass that gate.
     ///
     /// # Errors
     ///
-    /// Returns a storage error, `DuplicateTask` for conflicting reuse, or
-    /// `TaskNodeAdmissionDenied` when a net-new registration would exceed
-    /// the configured task-node cap.
+    /// Returns a storage error, `DuplicateTask` for conflicting reuse,
+    /// `TaskAssociationConflict` for a mismatched association replay, or
+    /// `TaskRegistrationAdmissionDenied` when a net-new registration would
+    /// exceed the configured task-registration cap.
     pub fn register_task(
         &self,
         spec: TaskSpec,
@@ -388,14 +394,21 @@ impl SqliteTaskAuthority {
         let mut connection = self.lock_connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         if let Some(existing) = load_task_optional(&transaction, spec.task_id)? {
-            if existing.record.task_generation == spec.task_generation {
-                transaction.commit()?;
-                return Ok(TaskRegistrationDecision::Existing(spec.task_id));
+            if existing.record.task_generation != spec.task_generation {
+                return Err(TaskStoreError::DuplicateTask);
             }
-            return Err(TaskStoreError::DuplicateTask);
+            if existing.record.application_id != spec.application_id
+                || existing.record.plan_revision != spec.plan_revision
+            {
+                return Err(TaskStoreError::TaskAssociationConflict {
+                    task_id: spec.task_id,
+                });
+            }
+            transaction.commit()?;
+            return Ok(TaskRegistrationDecision::Existing(spec.task_id));
         }
         let task_count = count_registered_tasks(&transaction)?;
-        enforce_task_node_admission(self.scale_profile, task_count)?;
+        enforce_task_registration_admission(self.scale_profile, task_count)?;
         let record = TaskRecord {
             task_id: spec.task_id,
             task_generation: spec.task_generation,
@@ -407,6 +420,8 @@ impl SqliteTaskAuthority {
             permit_epoch: 0,
             state: TaskState::Active,
             active_permit: None,
+            application_id: spec.application_id,
+            plan_revision: spec.plan_revision,
             created_at_ms: spec.registered_at_ms,
             updated_at_ms: spec.registered_at_ms,
         };
@@ -4481,12 +4496,16 @@ impl SqlRead for Transaction<'_> {
 }
 
 fn insert_task(transaction: &Transaction<'_>, record: &TaskRecord) -> Result<(), TaskStoreError> {
+    let plan_revision_blob = record
+        .plan_revision
+        .map(|plan_revision| encode_u64(plan_revision.revision));
     transaction.execute(
         "INSERT INTO tasks (
             task_id, task_generation, head_commit_seq, head_effect_history_root,
             retry_fence_epoch, control_epoch, cancel_epoch, permit_epoch,
-            task_state, revision, created_at_ms, updated_at_ms
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, ?11)",
+            task_state, revision, created_at_ms, updated_at_ms,
+            application_id, plan_id, plan_revision
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, ?11, ?12, ?13, ?14)",
         params![
             record.task_id.as_bytes().as_slice(),
             encode_u64(record.task_generation.get()).as_slice(),
@@ -4499,6 +4518,15 @@ fn insert_task(transaction: &Transaction<'_>, record: &TaskRecord) -> Result<(),
             record.state.code(),
             record.created_at_ms,
             record.updated_at_ms,
+            record
+                .application_id
+                .as_ref()
+                .map(|application_id| application_id.as_bytes().as_slice()),
+            record
+                .plan_revision
+                .as_ref()
+                .map(|plan_revision| plan_revision.plan_id.as_bytes().as_slice()),
+            plan_revision_blob.as_ref().map(<[u8; 8]>::as_slice),
         ],
     )?;
     Ok(())
@@ -4542,7 +4570,8 @@ pub(crate) fn update_task(
 
 const TASK_COLUMNS: &str = "task_id, task_generation, head_commit_seq, head_effect_history_root,
      retry_fence_epoch, control_epoch, cancel_epoch, permit_epoch,
-     task_state, revision, created_at_ms, updated_at_ms";
+     task_state, revision, created_at_ms, updated_at_ms,
+     application_id, plan_id, plan_revision";
 
 pub(crate) fn load_task(
     source: &impl SqlRead,
@@ -4567,6 +4596,22 @@ fn decode_task_row(row: &rusqlite::Row<'_>) -> Result<StoredTask, TaskStoreError
     if revision < 0 {
         return Err(TaskStoreError::CorruptRecord("negative task revision"));
     }
+    let plan_id = optional_blob16(row, 13)?.map(TaskPlanId::from_bytes);
+    let plan_revision_blob = optional_blob::<8>(row, 14)?;
+    let plan_revision = match (plan_id, plan_revision_blob) {
+        (Some(plan_id), Some(revision_blob)) => Some(TaskPlanRevisionRef {
+            plan_id,
+            revision: u64::from_be_bytes(revision_blob),
+        }),
+        // A total reference names both halves or neither (决定 3); a
+        // half-written pair is corruption, not a decode default.
+        (None, None) => None,
+        (Some(_), None) | (None, Some(_)) => {
+            return Err(TaskStoreError::CorruptRecord(
+                "partial task plan association",
+            ));
+        }
+    };
     Ok(StoredTask {
         record: TaskRecord {
             task_id: TaskId::from_bytes(blob16(row, 0)?),
@@ -4579,6 +4624,8 @@ fn decode_task_row(row: &rusqlite::Row<'_>) -> Result<StoredTask, TaskStoreError
             permit_epoch: u64_from_blob(row, 7)?,
             state: TaskState::from_code(row.get(8)?)?,
             active_permit: None,
+            application_id: optional_blob16(row, 12)?.map(ApplicationId::from_bytes),
+            plan_revision,
             created_at_ms: row.get(10)?,
             updated_at_ms: row.get(11)?,
         },

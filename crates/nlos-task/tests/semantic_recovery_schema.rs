@@ -77,18 +77,18 @@ fn schema_v42_creates_semantic_recovery_tables_idempotently() {
     let version: i64 = raw
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("read user_version");
-    assert_eq!(version, 43);
+    assert_eq!(version, 44);
     drop(raw);
 
     // Reopening at the current version skips migration dispatch
     // altogether (the `12..=SCHEMA_VERSION` match arm in
-    // `open_with_vfs_and_scale_profile`); user_version stays 43.
+    // `open_with_vfs_and_scale_profile`); user_version stays 44.
     drop(database.open());
     let raw = Connection::open(&database.path).expect("reopen raw connection");
     let version: i64 = raw
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("reread user_version");
-    assert_eq!(version, 43);
+    assert_eq!(version, 44);
 }
 
 #[test]

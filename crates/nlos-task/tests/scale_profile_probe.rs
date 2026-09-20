@@ -132,6 +132,8 @@ fn register_task(authority: &SqliteTaskAuthority, index: u64) {
             task_id: task_id(index),
             task_generation: Generation::INITIAL,
             registered_at_ms: 1_000,
+            application_id: None,
+            plan_revision: None,
         })
         .expect("register task");
 }
@@ -213,6 +215,9 @@ fn percentile(sorted: &[Duration], per_myriad: u32) -> Duration {
 #[ignore = "explicit ROAD-B-004 front-slice 10K Task lazy-permit scale probe"]
 #[allow(clippy::too_many_lines)]
 fn ten_thousand_task_registrations_keep_the_permit_face_lazy() {
+    // 口径 note (ADR-0016 决定 4): this probe measures the registration
+    // dimension; the register gate consults `max_task_registrations`.
+    assert!(TASK_PROFILE_10K.admits_task_registrations(TASK_NODE_COUNT));
     assert!(TASK_PROFILE_10K.admits_task_nodes(TASK_NODE_COUNT));
     assert!(TASK_PROFILE_10K.admits_active_working_set(ACTIVE_WORKING_SET));
 
@@ -322,6 +327,9 @@ const ACTIVE_WORKING_SET_100K: u64 = TASK_PROFILE_100K.max_active_working_set;
 #[ignore = "explicit ROAD-B-004 front-slice 100K Task lazy-permit scale probe"]
 #[allow(clippy::too_many_lines)]
 fn one_hundred_thousand_task_registrations_keep_the_permit_face_lazy() {
+    // 口径 note (ADR-0016 决定 4): registration dimension, same as the 10K
+    // probe; the scale database below binds TASK_PROFILE_100K explicitly.
+    assert!(TASK_PROFILE_100K.admits_task_registrations(TASK_NODE_COUNT_100K));
     assert!(TASK_PROFILE_100K.admits_task_nodes(TASK_NODE_COUNT_100K));
     assert!(TASK_PROFILE_100K.admits_active_working_set(ACTIVE_WORKING_SET_100K));
 

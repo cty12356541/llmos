@@ -76,6 +76,8 @@ fn task_id() -> TaskId {
 
 fn task_spec() -> TaskSpec {
     TaskSpec {
+        application_id: None,
+        plan_revision: None,
         task_id: task_id(),
         task_generation: Generation::INITIAL,
         registered_at_ms: 1_000,
@@ -988,7 +990,7 @@ fn golden_v2_database_migrates_losslessly_to_v3() {
         let version: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read user_version");
-        assert_eq!(version, 43, "migration stamps the current schema version");
+        assert_eq!(version, 44, "migration stamps the current schema version");
     }
 
     // All v2 data intact.

@@ -212,6 +212,8 @@ fn activate_operation(
 fn registered_attempt(authority: &SqliteTaskAuthority, seed: u8) -> AttemptSpec {
     authority
         .register_task(TaskSpec {
+            application_id: None,
+            plan_revision: None,
             task_id: task_id(),
             task_generation: Generation::INITIAL,
             registered_at_ms: 1_000,

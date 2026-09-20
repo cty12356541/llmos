@@ -1,4 +1,4 @@
-//! Linear `SQLite` schema migration chain (v1 → v43) for the durable
+//! Linear `SQLite` schema migration chain (v1 → v44) for the durable
 //! `TaskAuthority`.
 //!
 //! Every `migrate_vN` advances `user_version` by exactly one step, committed
@@ -2989,3 +2989,62 @@ const SCHEMA_V43_SQL: &str = "CREATE TABLE task_resource_commit_plans (
      END;
 
      PRAGMA user_version = 43;";
+
+/// v43 → v44 lands the ADR-0016 决定 3 `TaskSpec` association columns on the
+/// task declaration path: nullable `application_id`, `plan_id`, and
+/// `plan_revision` on `tasks`, plus a trigger refusing association rewrites
+/// on the mutable task row. Purely additive and idempotent: existing rows
+/// backfill NULL (never an invented reference); registration without
+/// association keeps writing NULL and every pre-v44 path is unchanged.
+pub(crate) fn migrate_v44(connection: &mut Connection) -> Result<(), TaskStoreError> {
+    // The complete step is four named schema parts: the three association
+    // columns and the immutability trigger.
+    let association_columns: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('tasks')
+         WHERE name IN ('application_id', 'plan_id', 'plan_revision')",
+        [],
+        |row| row.get(0),
+    )?;
+    let trigger_present: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master
+            WHERE type='trigger' AND name='task_association_immutable'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if association_columns == 3 && trigger_present {
+        connection.pragma_update(None, "user_version", 44)?;
+        return Ok(());
+    }
+    if association_columns != 0 || trigger_present {
+        return Err(TaskStoreError::CorruptRecord(
+            "partial task association schema",
+        ));
+    }
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(SCHEMA_V44_SQL)?;
+    transaction.commit()?;
+    Ok(())
+}
+
+const SCHEMA_V44_SQL: &str = "ALTER TABLE tasks
+     ADD COLUMN application_id BLOB
+         CHECK(application_id IS NULL OR length(application_id) = 16);
+     ALTER TABLE tasks
+     ADD COLUMN plan_id BLOB
+         CHECK(plan_id IS NULL OR length(plan_id) = 16);
+     ALTER TABLE tasks
+     ADD COLUMN plan_revision BLOB
+         CHECK(plan_revision IS NULL OR length(plan_revision) = 8);
+
+     CREATE TRIGGER task_association_immutable
+     BEFORE UPDATE ON tasks
+     WHEN old.application_id IS NOT new.application_id
+       OR old.plan_id IS NOT new.plan_id
+       OR old.plan_revision IS NOT new.plan_revision
+     BEGIN
+        SELECT RAISE(ABORT, 'task association is immutable');
+     END;
+
+     PRAGMA user_version = 44;";

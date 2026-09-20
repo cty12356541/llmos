@@ -291,6 +291,8 @@ fn setup_task_and_permit(
     let authority = database.open();
     authority
         .register_task(TaskSpec {
+            application_id: None,
+            plan_revision: None,
             task_id: task_id(),
             task_generation: Generation::INITIAL,
             registered_at_ms: 1_000,
@@ -815,6 +817,8 @@ fn v38_database_migrates_to_v39_and_preserves_legacy_receipts() {
         let authority = database.open();
         authority
             .register_task(TaskSpec {
+                application_id: None,
+                plan_revision: None,
                 task_id: task_id(),
                 task_generation: Generation::INITIAL,
                 registered_at_ms: 1_000,
@@ -873,7 +877,7 @@ fn v38_database_migrates_to_v39_and_preserves_legacy_receipts() {
     let version: i64 = raw
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("schema version");
-    assert_eq!(version, 43);
+    assert_eq!(version, 44);
 
     // Then the prior Task receipt stays readable with an empty nested set.
     assert_eq!(

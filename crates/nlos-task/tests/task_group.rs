@@ -85,6 +85,8 @@ fn task_id() -> TaskId {
 
 fn task_spec() -> TaskSpec {
     TaskSpec {
+        application_id: None,
+        plan_revision: None,
         task_id: task_id(),
         task_generation: Generation::INITIAL,
         registered_at_ms: 1_000,
@@ -592,6 +594,8 @@ fn group_registration_enforces_acyclic_tree_and_single_root() {
     ));
     // Parent in a different task refused.
     let other_task = TaskSpec {
+        application_id: None,
+        plan_revision: None,
         task_id: TaskId::from_bytes(bytes(0x02)),
         task_generation: Generation::INITIAL,
         registered_at_ms: 1_100,
@@ -1220,7 +1224,7 @@ fn schema_v4_upgrades_to_v5_without_inventing_group_bindings() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("schema version");
-    assert_eq!(version, 43);
+    assert_eq!(version, 44);
 }
 
 /// Builds the cancellation fixture: root group + child group with an
@@ -1953,7 +1957,7 @@ fn golden_v3_database_migrates_losslessly_to_v4() {
         let version: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read user_version");
-        assert_eq!(version, 43, "migration stamps the current schema version");
+        assert_eq!(version, 44, "migration stamps the current schema version");
     }
 
     // All v3 data intact.

@@ -588,6 +588,8 @@ fn setup_resource_bridge(
 ) -> (PermitRecord, Option<AuthorityLeaseRecord>) {
     authority
         .register_task(TaskSpec {
+            application_id: None,
+            plan_revision: None,
             task_id: task_id(),
             task_generation: Generation::INITIAL,
             registered_at_ms: 1_000,
@@ -744,6 +746,8 @@ fn setup_mixed_bridge(
     let (_, event_id, admission_receipt_id, durability_receipt_id, target) = seed;
     authority
         .register_task(TaskSpec {
+            application_id: None,
+            plan_revision: None,
             task_id: task_id(),
             task_generation: Generation::INITIAL,
             registered_at_ms: 1_000,

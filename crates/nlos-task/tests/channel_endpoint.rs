@@ -176,6 +176,8 @@ fn register_task_attempt_and_channel_participant(
 ) -> ChannelFixture {
     authority
         .register_task(TaskSpec {
+            application_id: None,
+            plan_revision: None,
             task_id: task_id(),
             task_generation: Generation::INITIAL,
             registered_at_ms: 1_000,
@@ -439,6 +441,8 @@ fn channel_endpoint_requires_prior_participant_registration() {
     let authority = database.open();
     authority
         .register_task(TaskSpec {
+            application_id: None,
+            plan_revision: None,
             task_id: task_id(),
             task_generation: Generation::INITIAL,
             registered_at_ms: 1_000,
@@ -543,7 +547,7 @@ fn schema_migrates_v39_endpoint_check_to_v40() {
     let version: i64 = raw
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 43);
+    assert_eq!(version, 44);
     let endpoint_sql: String = raw
         .query_row(
             "SELECT sql FROM sqlite_master

@@ -268,6 +268,8 @@ fn cross_term_adoption_reconciles_old_permit_under_successor_proof() {
 
     authority
         .register_task(TaskSpec {
+            application_id: None,
+            plan_revision: None,
             task_id: task_id(),
             task_generation: Generation::INITIAL,
             registered_at_ms: 1,
