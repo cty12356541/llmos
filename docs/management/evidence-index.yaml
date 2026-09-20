@@ -778,3 +778,15 @@
   scope: "Durable Outbox → Tokio Fiber Wake Consumer 集成证据"
   assurance: POC
   date: "2026-08-01"
+- id: b-plan-001-declaration-surface
+  path: docs/evidence/stage-b/b-plan-001-declaration-surface.md
+  title: "B-PLAN-001：nlos-plan 声明面状态权威骨架（TaskPlan/TaskNode state face）"
+  scope: "nlos-plan authority 骨架——revision digest 链/节点状态机/G1 证伪/重启 replay/F1-F4（W28-A）"
+  assurance: H3
+  date: "2026-09-20"
+- id: w27-f-ci-run-links
+  path: docs/evidence/stage-b/w27-f-ci-run-links.md
+  title: "W27-F：W26 CI/Pages run 链补登勘察（B3-5 前半）"
+  scope: "W26 三平台+MSRV/Pages run 链接只读勘察与行映射（W27-F）"
+  assurance: H3
+  date: "2026-09-20"
