@@ -8,6 +8,11 @@ repository.workspace = true
 
 [dependencies]
 nlos-artifact = { path = "../nlos-artifact" }
+# Plan-declaration schema for compiling the package manifest `tasks`
+# template segment into a TaskPlan proposal (ADR-0016 决定 1, W28-B
+# template half). Read-only consumer of nlos-plan's public declaration
+# types; this crate never opens a plan store.
+nlos-plan = { path = "../nlos-plan" }
 # TaskAuthority read surface backing the uninstall/rollback activity gate
 # (W27-D): the gate resolves the package's durable background-task
 # registrations inside its own transaction, then queries this authority

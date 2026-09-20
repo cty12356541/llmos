@@ -55,6 +55,22 @@
 //! never re-verify. See `package` for the exact fail-closed order and the
 //! scope boundaries.
 //!
+//! # Task-templated package face (W28-B, ADR-0016 决定 1)
+//!
+//! [`ArtifactStore::verify_package_with_tasks`] verifies the additive
+//! `tasks` template segment face: a
+//! [`SignedPackageWithTasks`](crate::SignedPackageWithTasks) carries the
+//! base manifest plus task templates, and the signer's Ed25519 signature
+//! covers both as one domain-separated message
+//! ([`package_manifest_with_tasks_message`]). The legacy face above stays
+//! byte-for-byte untouched (G6: old signed packages verify and install
+//! identically), and the two message domains make cross-face signature
+//! reuse impossible — a segment can be neither stripped from nor injected
+//! into a verified package. Compiling the verified segment into a plan
+//! proposal is the `nlos-application` half of W28-B; this crate owns only
+//! the manifest face and its shared shape authority
+//! ([`validate_task_templates`]).
+//!
 //! # Explicit orphan GC (minimal prefix)
 //!
 //! [`ArtifactStore::collect_orphan_blobs`] is the only artifact-blob
@@ -153,8 +169,11 @@ pub use model::{
     StageRevisionRequest, StagedRevisionRecord, StagedRevisionState, StagingId,
 };
 pub use package::{
-    PackageEntryRole, PackageManifest, PackageManifestEntry, PackageVerificationDecision,
-    PackageVerificationReceipt, SignedPackage, VerifyPackageRequest, package_manifest_message,
+    MAX_TASK_DEPENDENCIES_PER_TEMPLATE, MAX_TASK_TEMPLATES_PER_MANIFEST, PackageEntryRole,
+    PackageManifest, PackageManifestEntry, PackageTaskKind, PackageTaskTemplate,
+    PackageVerificationDecision, PackageVerificationReceipt, SignedPackage, SignedPackageWithTasks,
+    VerifyPackageRequest, VerifyPackageWithTasksRequest, package_manifest_message,
+    package_manifest_with_tasks_message, validate_task_templates,
 };
 pub use publication::staging_id_for;
 pub use retention::{RetentionRecord, SetRetentionDecision, SetRetentionRequest};

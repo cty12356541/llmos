@@ -396,6 +396,7 @@ dependencies = [
  "ed25519-dalek",
  "nlos-artifact",
  "nlos-identity",
+ "nlos-plan",
  "nlos-store-fault",
  "nlos-task",
  "nlos-types",
