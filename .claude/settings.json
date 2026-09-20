@@ -1,7 +1,7 @@
 {
   "statusLine": {
     "type": "command",
-    "command": "python3 /Users/lipunima/projects/claude-dash/scripts/dash oneline 2>/dev/null || true",
+    "command": "agentdash oneline 2>/dev/null || true",
     "refreshInterval": 30
   }
 }
