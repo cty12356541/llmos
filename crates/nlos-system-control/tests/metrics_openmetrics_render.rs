@@ -38,6 +38,10 @@ nlos_artifact_recovery_plans_finalized_total 31
 nlos_semantic_recovery_plans_inspected_total 37
 # TYPE nlos_semantic_recovery_plans_finalized_total counter
 nlos_semantic_recovery_plans_finalized_total 23
+# TYPE nlos_resource_recovery_plans_inspected_total counter
+nlos_resource_recovery_plans_inspected_total 19
+# TYPE nlos_resource_recovery_plans_finalized_total counter
+nlos_resource_recovery_plans_finalized_total 14
 # TYPE nlos_artifact_recovery_consecutive_failed_cycles gauge
 nlos_artifact_recovery_consecutive_failed_cycles 3
 # TYPE nlos_artifact_recovery_retry_delay_milliseconds gauge
@@ -64,6 +68,18 @@ nlos_semantic_recovery_durable_unacknowledged_escalated 0
 nlos_semantic_recovery_durable_resolved 0
 # TYPE nlos_semantic_recovery_domain_faulted gauge
 nlos_semantic_recovery_domain_faulted 1
+# TYPE nlos_resource_recovery_consecutive_failed_cycles gauge
+nlos_resource_recovery_consecutive_failed_cycles 4
+# TYPE nlos_resource_recovery_durable_retrying gauge
+nlos_resource_recovery_durable_retrying 0
+# TYPE nlos_resource_recovery_durable_escalated gauge
+nlos_resource_recovery_durable_escalated 0
+# TYPE nlos_resource_recovery_durable_unacknowledged_escalated gauge
+nlos_resource_recovery_durable_unacknowledged_escalated 0
+# TYPE nlos_resource_recovery_durable_resolved gauge
+nlos_resource_recovery_durable_resolved 0
+# TYPE nlos_resource_recovery_domain_faulted gauge
+nlos_resource_recovery_domain_faulted 0
 "#;
 
 fn record_full_catalog(renderer: &mut OpenMetricsRenderer) {
@@ -84,6 +100,12 @@ fn record_full_catalog(renderer: &mut OpenMetricsRenderer) {
         .expect("u64 values are always admissible");
     renderer
         .set_counter_total(RecoveryCounter::SemanticPlansFinalized, 23)
+        .expect("u64 values are always admissible");
+    renderer
+        .set_counter_total(RecoveryCounter::ResourcePlansInspected, 19)
+        .expect("u64 values are always admissible");
+    renderer
+        .set_counter_total(RecoveryCounter::ResourcePlansFinalized, 14)
         .expect("u64 values are always admissible");
     renderer
         .set_gauge(RecoveryGauge::ConsecutiveFailedCycles, 3)
@@ -123,6 +145,24 @@ fn record_full_catalog(renderer: &mut OpenMetricsRenderer) {
         .expect("u64 values are always admissible");
     renderer
         .set_gauge(RecoveryGauge::SemanticDomainFaulted, 1)
+        .expect("u64 values are always admissible");
+    renderer
+        .set_gauge(RecoveryGauge::ResourceConsecutiveFailedCycles, 4)
+        .expect("u64 values are always admissible");
+    renderer
+        .set_gauge(RecoveryGauge::ResourceDurableRetrying, 0)
+        .expect("u64 values are always admissible");
+    renderer
+        .set_gauge(RecoveryGauge::ResourceDurableEscalated, 0)
+        .expect("u64 values are always admissible");
+    renderer
+        .set_gauge(RecoveryGauge::ResourceDurableUnacknowledgedEscalated, 0)
+        .expect("u64 values are always admissible");
+    renderer
+        .set_gauge(RecoveryGauge::ResourceDurableResolved, 0)
+        .expect("u64 values are always admissible");
+    renderer
+        .set_gauge(RecoveryGauge::ResourceDomainFaulted, 0)
         .expect("u64 values are always admissible");
 }
 
@@ -225,13 +265,13 @@ impl CountingHealth {
                 semantic_total_finalized: 23,
                 semantic_domain_faulted: true,
                 artifact_domain_faulted: false,
-                resource_durable_retrying: 0,
-                resource_durable_escalated: 0,
-                resource_durable_unacknowledged_escalated: 0,
-                resource_durable_resolved: 0,
-                resource_consecutive_failed_cycles: 0,
-                resource_total_inspected: 0,
-                resource_total_finalized: 0,
+                resource_durable_retrying: 9,
+                resource_durable_escalated: 10,
+                resource_durable_unacknowledged_escalated: 4,
+                resource_durable_resolved: 13,
+                resource_consecutive_failed_cycles: 4,
+                resource_total_inspected: 19,
+                resource_total_finalized: 14,
                 resource_domain_faulted: false,
             },
             reads: AtomicU64::new(0),
@@ -274,6 +314,8 @@ fn families_use_catalog_names_in_canonical_order() {
         (RecoveryCounter::FinalizedPlans.name(), "counter"),
         (RecoveryCounter::SemanticPlansInspected.name(), "counter"),
         (RecoveryCounter::SemanticPlansFinalized.name(), "counter"),
+        (RecoveryCounter::ResourcePlansInspected.name(), "counter"),
+        (RecoveryCounter::ResourcePlansFinalized.name(), "counter"),
         (RecoveryGauge::ConsecutiveFailedCycles.name(), "gauge"),
         (RecoveryGauge::RetryDelayMilliseconds.name(), "gauge"),
         (RecoveryGauge::DurableRetrying.name(), "gauge"),
@@ -296,6 +338,18 @@ fn families_use_catalog_names_in_canonical_order() {
         ),
         (RecoveryGauge::SemanticDurableResolved.name(), "gauge"),
         (RecoveryGauge::SemanticDomainFaulted.name(), "gauge"),
+        (
+            RecoveryGauge::ResourceConsecutiveFailedCycles.name(),
+            "gauge",
+        ),
+        (RecoveryGauge::ResourceDurableRetrying.name(), "gauge"),
+        (RecoveryGauge::ResourceDurableEscalated.name(), "gauge"),
+        (
+            RecoveryGauge::ResourceDurableUnacknowledgedEscalated.name(),
+            "gauge",
+        ),
+        (RecoveryGauge::ResourceDurableResolved.name(), "gauge"),
+        (RecoveryGauge::ResourceDomainFaulted.name(), "gauge"),
     ];
     let text = full_catalog_text();
 

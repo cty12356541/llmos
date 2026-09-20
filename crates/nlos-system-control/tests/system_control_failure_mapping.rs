@@ -14,7 +14,7 @@ use nlos_schema::{
     CommonSemanticsError, CompatibilityError, REQUEST_ID_BYTES, SABI_ENVELOPE_SCHEMA,
 };
 use nlos_system_control::{SYSTEM_CONTROL_SERVICE, SystemControlError, failure_envelope};
-use nlos_task::{ArtifactRecoveryState, TaskStoreError};
+use nlos_task::{ArtifactRecoveryState, ResourceRecoveryState, TaskStoreError};
 
 fn assert_mapping(
     error: &SystemControlError,
@@ -130,6 +130,37 @@ fn recovery_task_failures_preserve_retry_safety() {
     assert_mapping(
         &SystemControlError::Task(TaskStoreError::CorruptRecord("private durable detail")),
         SabiErrorCode::Driver,
+        RetryDirective::DoNotRetry,
+    );
+}
+
+#[test]
+fn resource_recovery_task_failures_preserve_retry_safety() {
+    assert_mapping(
+        &SystemControlError::Task(TaskStoreError::ResourceCommitPlanNotFound),
+        SabiErrorCode::NotFound,
+        RetryDirective::DoNotRetry,
+    );
+    assert_mapping(
+        &SystemControlError::Task(TaskStoreError::ResourceRecoveryCasMismatch {
+            expected: 8,
+            current: 9,
+        }),
+        SabiErrorCode::Conflict,
+        RetryDirective::DoNotRetry,
+    );
+    assert_mapping(
+        &SystemControlError::Task(TaskStoreError::InvalidResourceRecoveryState {
+            state: ResourceRecoveryState::Escalated,
+        }),
+        SabiErrorCode::State,
+        RetryDirective::DoNotRetry,
+    );
+    assert_mapping(
+        &SystemControlError::Task(TaskStoreError::InvalidResourceRecoveryPolicy {
+            reason: "resume timestamp regresses durable history",
+        }),
+        SabiErrorCode::InvalidArgument,
         RetryDirective::DoNotRetry,
     );
 }

@@ -12,7 +12,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file nlos/sabi/v1/system_control.proto.
  */
 export const file_nlos_sabi_v1_system_control: GenFile = /*@__PURE__*/
-  fileDesc("CiFubG9zL3NhYmkvdjEvc3lzdGVtX2NvbnRyb2wucHJvdG8SDG5sb3Muc2FiaS52MSKLAQoXR2V0U3lzdGVtQ29udHJvbFJlcXVlc3QSLAoGc2NoZW1hGAEgASgLMhwubmxvcy5zYWJpLnYxLlNjaGVtYUlkZW50aXR5Ei0KBHZpZXcYAiABKA4yHy5ubG9zLnNhYmkudjEuU3lzdGVtQ29udHJvbFZpZXcSEwoLYWxlcnRfbGltaXQYAyABKA0iZAoWUmVjb3ZlcnlGYWlsdXJlU3VtbWFyeRIPCgdwbGFuX2lkGAEgASgMEjkKCWF1dGhvcml0eRgCIAEoDjImLm5sb3Muc2FiaS52MS5SZWNvdmVyeUZhaWx1cmVBdXRob3JpdHkiyAMKF0FydGlmYWN0UmVjb3ZlcnlNZXRyaWNzEkAKDHdvcmtlcl9zdGF0ZRgBIAEoDjIqLm5sb3Muc2FiaS52MS5SZWNvdmVyeVdvcmtlckxpZmVjeWNsZVN0YXRlEhgKEGNvbXBsZXRlZF9jeWNsZXMYAiABKAQSFwoPdG90YWxfaW5zcGVjdGVkGAMgASgEEhcKD3RvdGFsX2ZpbmFsaXplZBgEIAEoBBIhChljb25zZWN1dGl2ZV9mYWlsZWRfY3ljbGVzGAUgASgEEhsKDnJldHJ5X2RlbGF5X21zGAYgASgESACIAQESGAoQZHVyYWJsZV9yZXRyeWluZxgHIAEoBBIZChFkdXJhYmxlX2VzY2FsYXRlZBgIIAEoBBIoCiBkdXJhYmxlX3VuYWNrbm93bGVkZ2VkX2VzY2FsYXRlZBgJIAEoBBIYChBkdXJhYmxlX3Jlc29sdmVkGAogASgEEjsKDWxhc3RfZmFpbHVyZXMYCyADKAsyJC5ubG9zLnNhYmkudjEuUmVjb3ZlcnlGYWlsdXJlU3VtbWFyeRIWCg5kb21haW5fZmF1bHRlZBgMIAEoCEIRCg9fcmV0cnlfZGVsYXlfbXMinwIKG0FydGlmYWN0UmVjb3ZlcnlBbGVydFN0YXR1cxIPCgdwbGFuX2lkGAEgASgMEhYKDnRvdGFsX2ZhaWx1cmVzGAIgASgEEkYKFmxhc3RfZmFpbHVyZV9hdXRob3JpdHkYAyABKA4yJi5ubG9zLnNhYmkudjEuUmVjb3ZlcnlGYWlsdXJlQXV0aG9yaXR5EhoKEmZpcnN0X2ZhaWxlZF9hdF9tcxgEIAEoAxIZChFsYXN0X2ZhaWxlZF9hdF9tcxgFIAEoAxIXCg9lc2NhbGF0ZWRfYXRfbXMYBiABKAMSPwoXYWNrbm93bGVkZ2VtZW50X3JlY2VpcHQYByABKAsyHi5ubG9zLnNhYmkudjEuUmVjZWlwdFJlZmVyZW5jZSLfAQoiQXJ0aWZhY3RSZWNvdmVyeU9wZXJhdGlvbnNTbmFwc2hvdBIsCgZzY2hlbWEYASABKAsyHC5ubG9zLnNhYmkudjEuU2NoZW1hSWRlbnRpdHkSNgoHbWV0cmljcxgCIAEoCzIlLm5sb3Muc2FiaS52MS5BcnRpZmFjdFJlY292ZXJ5TWV0cmljcxI5CgZhbGVydHMYAyADKAsyKS5ubG9zLnNhYmkudjEuQXJ0aWZhY3RSZWNvdmVyeUFsZXJ0U3RhdHVzEhgKEGFsZXJ0c190cnVuY2F0ZWQYBCABKAgi/wEKF1NlbWFudGljUmVjb3ZlcnlNZXRyaWNzEhcKD3RvdGFsX2luc3BlY3RlZBgBIAEoBBIXCg90b3RhbF9maW5hbGl6ZWQYAiABKAQSIQoZY29uc2VjdXRpdmVfZmFpbGVkX2N5Y2xlcxgDIAEoBBIYChBkdXJhYmxlX3JldHJ5aW5nGAQgASgEEhkKEWR1cmFibGVfZXNjYWxhdGVkGAUgASgEEigKIGR1cmFibGVfdW5hY2tub3dsZWRnZWRfZXNjYWxhdGVkGAYgASgEEhgKEGR1cmFibGVfcmVzb2x2ZWQYByABKAQSFgoOZG9tYWluX2ZhdWx0ZWQYCCABKAginwIKG1NlbWFudGljUmVjb3ZlcnlBbGVydFN0YXR1cxIPCgdwbGFuX2lkGAEgASgMEhYKDnRvdGFsX2ZhaWx1cmVzGAIgASgEEkYKFmxhc3RfZmFpbHVyZV9hdXRob3JpdHkYAyABKA4yJi5ubG9zLnNhYmkudjEuUmVjb3ZlcnlGYWlsdXJlQXV0aG9yaXR5EhoKEmZpcnN0X2ZhaWxlZF9hdF9tcxgEIAEoAxIZChFsYXN0X2ZhaWxlZF9hdF9tcxgFIAEoAxIXCg9lc2NhbGF0ZWRfYXRfbXMYBiABKAMSPwoXYWNrbm93bGVkZ2VtZW50X3JlY2VpcHQYByABKAsyHi5ubG9zLnNhYmkudjEuUmVjZWlwdFJlZmVyZW5jZSLfAQoiU2VtYW50aWNSZWNvdmVyeU9wZXJhdGlvbnNTbmFwc2hvdBIsCgZzY2hlbWEYASABKAsyHC5ubG9zLnNhYmkudjEuU2NoZW1hSWRlbnRpdHkSNgoHbWV0cmljcxgCIAEoCzIlLm5sb3Muc2FiaS52MS5TZW1hbnRpY1JlY292ZXJ5TWV0cmljcxI5CgZhbGVydHMYAyADKAsyKS5ubG9zLnNhYmkudjEuU2VtYW50aWNSZWNvdmVyeUFsZXJ0U3RhdHVzEhgKEGFsZXJ0c190cnVuY2F0ZWQYBCABKAgiKQonQWNrbm93bGVkZ2VBcnRpZmFjdFJlY292ZXJ5QWxlcnRDb21tYW5kIikKJ0Fja25vd2xlZGdlU2VtYW50aWNSZWNvdmVyeUFsZXJ0Q29tbWFuZCIfCh1SZXN1bWVTZW1hbnRpY1JlY292ZXJ5Q29tbWFuZCIOCgxQYXVzZUNvbW1hbmQiDwoNUmVzdW1lQ29tbWFuZCIPCg1DYW5jZWxDb21tYW5kIg0KC0tpbGxDb21tYW5kIisKD1Rocm90dGxlQ29tbWFuZBIYChB0aHJvdHRsZV9wZXJjZW50GAEgASgEIhAKDlJlY2xhaW1Db21tYW5kIvIGCg5Db250cm9sQ29tbWFuZBIaChJjb250cm9sX2NvbW1hbmRfaWQYASABKAwSGwoTaXNzdWVyX3ByaW5jaXBhbF9pZBgCIAEoDBIyCgZzb3VyY2UYAyABKA4yIi5ubG9zLnNhYmkudjEuQ29udHJvbENvbW1hbmRTb3VyY2USKQoFc2NvcGUYBCABKA4yGi5ubG9zLnNhYmkudjEuQ29udHJvbFNjb3BlEhEKCXRhcmdldF9pZBgFIAEoDBInCh9leHBlY3RlZF9nZW5lcmF0aW9uX29yX3JldmlzaW9uGAYgASgEEmQKI2Fja25vd2xlZGdlX2FydGlmYWN0X3JlY292ZXJ5X2FsZXJ0GAcgASgLMjUubmxvcy5zYWJpLnYxLkFja25vd2xlZGdlQXJ0aWZhY3RSZWNvdmVyeUFsZXJ0Q29tbWFuZEgAEmQKI2Fja25vd2xlZGdlX3NlbWFudGljX3JlY292ZXJ5X2FsZXJ0GAkgASgLMjUubmxvcy5zYWJpLnYxLkFja25vd2xlZGdlU2VtYW50aWNSZWNvdmVyeUFsZXJ0Q29tbWFuZEgAEk8KGHJlc3VtZV9zZW1hbnRpY19yZWNvdmVyeRgKIAEoCzIrLm5sb3Muc2FiaS52MS5SZXN1bWVTZW1hbnRpY1JlY292ZXJ5Q29tbWFuZEgAEjUKD3BhdXNlX29wZXJhdGlvbhgLIAEoCzIaLm5sb3Muc2FiaS52MS5QYXVzZUNvbW1hbmRIABI3ChByZXN1bWVfb3BlcmF0aW9uGAwgASgLMhsubmxvcy5zYWJpLnYxLlJlc3VtZUNvbW1hbmRIABI3ChBjYW5jZWxfb3BlcmF0aW9uGA0gASgLMhsubmxvcy5zYWJpLnYxLkNhbmNlbENvbW1hbmRIABIzCg5raWxsX29wZXJhdGlvbhgOIAEoCzIZLm5sb3Muc2FiaS52MS5LaWxsQ29tbWFuZEgAEjsKEnRocm90dGxlX29wZXJhdGlvbhgPIAEoCzIdLm5sb3Muc2FiaS52MS5UaHJvdHRsZUNvbW1hbmRIABI5ChFyZWNsYWltX29wZXJhdGlvbhgQIAEoCzIcLm5sb3Muc2FiaS52MS5SZWNsYWltQ29tbWFuZEgAEg4KBnJlYXNvbhgIIAEoCUIJCgdjb21tYW5kInoKG1N1Ym1pdENvbnRyb2xDb21tYW5kUmVxdWVzdBIsCgZzY2hlbWEYASABKAsyHC5ubG9zLnNhYmkudjEuU2NoZW1hSWRlbnRpdHkSLQoHY29tbWFuZBgCIAEoCzIcLm5sb3Muc2FiaS52MS5Db250cm9sQ29tbWFuZCLMAQoUQ29udHJvbENvbW1hbmRSZXN1bHQSLAoGc2NoZW1hGAEgASgLMhwubmxvcy5zYWJpLnYxLlNjaGVtYUlkZW50aXR5EhoKEmNvbnRyb2xfY29tbWFuZF9pZBgCIAEoDBI5CgVzdGF0ZRgDIAEoDjIqLm5sb3Muc2FiaS52MS5Db250cm9sQ29tbWFuZExpZmVjeWNsZVN0YXRlEi8KB3JlY2VpcHQYBCABKAsyHi5ubG9zLnNhYmkudjEuUmVjZWlwdFJlZmVyZW5jZSr9AQoUQ29udHJvbENvbW1hbmRTb3VyY2USJgoiQ09OVFJPTF9DT01NQU5EX1NPVVJDRV9VTlNQRUNJRklFRBAAEiYKIkNPTlRST0xfQ09NTUFORF9TT1VSQ0VfVFJVU1RFRF9HVUkQARIjCh9DT05UUk9MX0NPTU1BTkRfU09VUkNFX05MX1NIRUxMEAISHgoaQ09OVFJPTF9DT01NQU5EX1NPVVJDRV9DTEkQAxIpCiVDT05UUk9MX0NPTU1BTkRfU09VUkNFX1NUUlVDVFVSRURfQVBJEAQSJQohQ09OVFJPTF9DT01NQU5EX1NPVVJDRV9BVVRPTUFUSU9OEAUqZAoMQ29udHJvbFNjb3BlEh0KGUNPTlRST0xfU0NPUEVfVU5TUEVDSUZJRUQQABIYChRDT05UUk9MX1NDT1BFX1NZU1RFTRABEhsKF0NPTlRST0xfU0NPUEVfT1BFUkFUSU9OEAIqnAEKEVN5c3RlbUNvbnRyb2xWaWV3EiMKH1NZU1RFTV9DT05UUk9MX1ZJRVdfVU5TUEVDSUZJRUQQABIwCixTWVNURU1fQ09OVFJPTF9WSUVXX0FSVElGQUNUX0NPTU1JVF9SRUNPVkVSWRABEjAKLFNZU1RFTV9DT05UUk9MX1ZJRVdfU0VNQU5USUNfQ09NTUlUX1JFQ09WRVJZEAIqtQIKHFJlY292ZXJ5V29ya2VyTGlmZWN5Y2xlU3RhdGUSLworUkVDT1ZFUllfV09SS0VSX0xJRkVDWUNMRV9TVEFURV9VTlNQRUNJRklFRBAAEiwKKFJFQ09WRVJZX1dPUktFUl9MSUZFQ1lDTEVfU1RBVEVfU1RBUlRJTkcQARIrCidSRUNPVkVSWV9XT1JLRVJfTElGRUNZQ0xFX1NUQVRFX1JVTk5JTkcQAhIvCitSRUNPVkVSWV9XT1JLRVJfTElGRUNZQ0xFX1NUQVRFX0JBQ0tJTkdfT0ZGEAMSKwonUkVDT1ZFUllfV09SS0VSX0xJRkVDWUNMRV9TVEFURV9GQVVMVEVEEAQSKwonUkVDT1ZFUllfV09SS0VSX0xJRkVDWUNMRV9TVEFURV9TVE9QUEVEEAUqkAIKGFJlY292ZXJ5RmFpbHVyZUF1dGhvcml0eRIqCiZSRUNPVkVSWV9GQUlMVVJFX0FVVEhPUklUWV9VTlNQRUNJRklFRBAAEiMKH1JFQ09WRVJZX0ZBSUxVUkVfQVVUSE9SSVRZX1RBU0sQARInCiNSRUNPVkVSWV9GQUlMVVJFX0FVVEhPUklUWV9BUlRJRkFDVBACEioKJlJFQ09WRVJZX0ZBSUxVUkVfQVVUSE9SSVRZX0NPT1JESU5BVE9SEAMSJQohUkVDT1ZFUllfRkFJTFVSRV9BVVRIT1JJVFlfV09SS0VSEAQSJwojUkVDT1ZFUllfRkFJTFVSRV9BVVRIT1JJVFlfU0VNQU5USUMQBSrbAQocQ29udHJvbENvbW1hbmRMaWZlY3ljbGVTdGF0ZRIvCitDT05UUk9MX0NPTU1BTkRfTElGRUNZQ0xFX1NUQVRFX1VOU1BFQ0lGSUVEEAASLQopQ09OVFJPTF9DT01NQU5EX0xJRkVDWUNMRV9TVEFURV9DT01QTEVURUQQARIsCihDT05UUk9MX0NPTU1BTkRfTElGRUNZQ0xFX1NUQVRFX1JFSkVDVEVEEAISLQopQ09OVFJPTF9DT01NQU5EX0xJRkVDWUNMRV9TVEFURV9VTkNFUlRBSU4QA2IGcHJvdG8z", [file_nlos_sabi_v1_envelope]);
+  fileDesc("CiFubG9zL3NhYmkvdjEvc3lzdGVtX2NvbnRyb2wucHJvdG8SDG5sb3Muc2FiaS52MSKLAQoXR2V0U3lzdGVtQ29udHJvbFJlcXVlc3QSLAoGc2NoZW1hGAEgASgLMhwubmxvcy5zYWJpLnYxLlNjaGVtYUlkZW50aXR5Ei0KBHZpZXcYAiABKA4yHy5ubG9zLnNhYmkudjEuU3lzdGVtQ29udHJvbFZpZXcSEwoLYWxlcnRfbGltaXQYAyABKA0iZAoWUmVjb3ZlcnlGYWlsdXJlU3VtbWFyeRIPCgdwbGFuX2lkGAEgASgMEjkKCWF1dGhvcml0eRgCIAEoDjImLm5sb3Muc2FiaS52MS5SZWNvdmVyeUZhaWx1cmVBdXRob3JpdHkiyAMKF0FydGlmYWN0UmVjb3ZlcnlNZXRyaWNzEkAKDHdvcmtlcl9zdGF0ZRgBIAEoDjIqLm5sb3Muc2FiaS52MS5SZWNvdmVyeVdvcmtlckxpZmVjeWNsZVN0YXRlEhgKEGNvbXBsZXRlZF9jeWNsZXMYAiABKAQSFwoPdG90YWxfaW5zcGVjdGVkGAMgASgEEhcKD3RvdGFsX2ZpbmFsaXplZBgEIAEoBBIhChljb25zZWN1dGl2ZV9mYWlsZWRfY3ljbGVzGAUgASgEEhsKDnJldHJ5X2RlbGF5X21zGAYgASgESACIAQESGAoQZHVyYWJsZV9yZXRyeWluZxgHIAEoBBIZChFkdXJhYmxlX2VzY2FsYXRlZBgIIAEoBBIoCiBkdXJhYmxlX3VuYWNrbm93bGVkZ2VkX2VzY2FsYXRlZBgJIAEoBBIYChBkdXJhYmxlX3Jlc29sdmVkGAogASgEEjsKDWxhc3RfZmFpbHVyZXMYCyADKAsyJC5ubG9zLnNhYmkudjEuUmVjb3ZlcnlGYWlsdXJlU3VtbWFyeRIWCg5kb21haW5fZmF1bHRlZBgMIAEoCEIRCg9fcmV0cnlfZGVsYXlfbXMinwIKG0FydGlmYWN0UmVjb3ZlcnlBbGVydFN0YXR1cxIPCgdwbGFuX2lkGAEgASgMEhYKDnRvdGFsX2ZhaWx1cmVzGAIgASgEEkYKFmxhc3RfZmFpbHVyZV9hdXRob3JpdHkYAyABKA4yJi5ubG9zLnNhYmkudjEuUmVjb3ZlcnlGYWlsdXJlQXV0aG9yaXR5EhoKEmZpcnN0X2ZhaWxlZF9hdF9tcxgEIAEoAxIZChFsYXN0X2ZhaWxlZF9hdF9tcxgFIAEoAxIXCg9lc2NhbGF0ZWRfYXRfbXMYBiABKAMSPwoXYWNrbm93bGVkZ2VtZW50X3JlY2VpcHQYByABKAsyHi5ubG9zLnNhYmkudjEuUmVjZWlwdFJlZmVyZW5jZSLfAQoiQXJ0aWZhY3RSZWNvdmVyeU9wZXJhdGlvbnNTbmFwc2hvdBIsCgZzY2hlbWEYASABKAsyHC5ubG9zLnNhYmkudjEuU2NoZW1hSWRlbnRpdHkSNgoHbWV0cmljcxgCIAEoCzIlLm5sb3Muc2FiaS52MS5BcnRpZmFjdFJlY292ZXJ5TWV0cmljcxI5CgZhbGVydHMYAyADKAsyKS5ubG9zLnNhYmkudjEuQXJ0aWZhY3RSZWNvdmVyeUFsZXJ0U3RhdHVzEhgKEGFsZXJ0c190cnVuY2F0ZWQYBCABKAgi/wEKF1NlbWFudGljUmVjb3ZlcnlNZXRyaWNzEhcKD3RvdGFsX2luc3BlY3RlZBgBIAEoBBIXCg90b3RhbF9maW5hbGl6ZWQYAiABKAQSIQoZY29uc2VjdXRpdmVfZmFpbGVkX2N5Y2xlcxgDIAEoBBIYChBkdXJhYmxlX3JldHJ5aW5nGAQgASgEEhkKEWR1cmFibGVfZXNjYWxhdGVkGAUgASgEEigKIGR1cmFibGVfdW5hY2tub3dsZWRnZWRfZXNjYWxhdGVkGAYgASgEEhgKEGR1cmFibGVfcmVzb2x2ZWQYByABKAQSFgoOZG9tYWluX2ZhdWx0ZWQYCCABKAginwIKG1NlbWFudGljUmVjb3ZlcnlBbGVydFN0YXR1cxIPCgdwbGFuX2lkGAEgASgMEhYKDnRvdGFsX2ZhaWx1cmVzGAIgASgEEkYKFmxhc3RfZmFpbHVyZV9hdXRob3JpdHkYAyABKA4yJi5ubG9zLnNhYmkudjEuUmVjb3ZlcnlGYWlsdXJlQXV0aG9yaXR5EhoKEmZpcnN0X2ZhaWxlZF9hdF9tcxgEIAEoAxIZChFsYXN0X2ZhaWxlZF9hdF9tcxgFIAEoAxIXCg9lc2NhbGF0ZWRfYXRfbXMYBiABKAMSPwoXYWNrbm93bGVkZ2VtZW50X3JlY2VpcHQYByABKAsyHi5ubG9zLnNhYmkudjEuUmVjZWlwdFJlZmVyZW5jZSLfAQoiU2VtYW50aWNSZWNvdmVyeU9wZXJhdGlvbnNTbmFwc2hvdBIsCgZzY2hlbWEYASABKAsyHC5ubG9zLnNhYmkudjEuU2NoZW1hSWRlbnRpdHkSNgoHbWV0cmljcxgCIAEoCzIlLm5sb3Muc2FiaS52MS5TZW1hbnRpY1JlY292ZXJ5TWV0cmljcxI5CgZhbGVydHMYAyADKAsyKS5ubG9zLnNhYmkudjEuU2VtYW50aWNSZWNvdmVyeUFsZXJ0U3RhdHVzEhgKEGFsZXJ0c190cnVuY2F0ZWQYBCABKAgi/wEKF1Jlc291cmNlUmVjb3ZlcnlNZXRyaWNzEhcKD3RvdGFsX2luc3BlY3RlZBgBIAEoBBIXCg90b3RhbF9maW5hbGl6ZWQYAiABKAQSIQoZY29uc2VjdXRpdmVfZmFpbGVkX2N5Y2xlcxgDIAEoBBIYChBkdXJhYmxlX3JldHJ5aW5nGAQgASgEEhkKEWR1cmFibGVfZXNjYWxhdGVkGAUgASgEEigKIGR1cmFibGVfdW5hY2tub3dsZWRnZWRfZXNjYWxhdGVkGAYgASgEEhgKEGR1cmFibGVfcmVzb2x2ZWQYByABKAQSFgoOZG9tYWluX2ZhdWx0ZWQYCCABKAginwIKG1Jlc291cmNlUmVjb3ZlcnlBbGVydFN0YXR1cxIPCgdwbGFuX2lkGAEgASgMEhYKDnRvdGFsX2ZhaWx1cmVzGAIgASgEEkYKFmxhc3RfZmFpbHVyZV9hdXRob3JpdHkYAyABKA4yJi5ubG9zLnNhYmkudjEuUmVjb3ZlcnlGYWlsdXJlQXV0aG9yaXR5EhoKEmZpcnN0X2ZhaWxlZF9hdF9tcxgEIAEoAxIZChFsYXN0X2ZhaWxlZF9hdF9tcxgFIAEoAxIXCg9lc2NhbGF0ZWRfYXRfbXMYBiABKAMSPwoXYWNrbm93bGVkZ2VtZW50X3JlY2VpcHQYByABKAsyHi5ubG9zLnNhYmkudjEuUmVjZWlwdFJlZmVyZW5jZSLfAQoiUmVzb3VyY2VSZWNvdmVyeU9wZXJhdGlvbnNTbmFwc2hvdBIsCgZzY2hlbWEYASABKAsyHC5ubG9zLnNhYmkudjEuU2NoZW1hSWRlbnRpdHkSNgoHbWV0cmljcxgCIAEoCzIlLm5sb3Muc2FiaS52MS5SZXNvdXJjZVJlY292ZXJ5TWV0cmljcxI5CgZhbGVydHMYAyADKAsyKS5ubG9zLnNhYmkudjEuUmVzb3VyY2VSZWNvdmVyeUFsZXJ0U3RhdHVzEhgKEGFsZXJ0c190cnVuY2F0ZWQYBCABKAgiKQonQWNrbm93bGVkZ2VBcnRpZmFjdFJlY292ZXJ5QWxlcnRDb21tYW5kIikKJ0Fja25vd2xlZGdlU2VtYW50aWNSZWNvdmVyeUFsZXJ0Q29tbWFuZCIfCh1SZXN1bWVTZW1hbnRpY1JlY292ZXJ5Q29tbWFuZCIpCidBY2tub3dsZWRnZVJlc291cmNlUmVjb3ZlcnlBbGVydENvbW1hbmQiHwodUmVzdW1lUmVzb3VyY2VSZWNvdmVyeUNvbW1hbmQiDgoMUGF1c2VDb21tYW5kIg8KDVJlc3VtZUNvbW1hbmQiDwoNQ2FuY2VsQ29tbWFuZCINCgtLaWxsQ29tbWFuZCIrCg9UaHJvdHRsZUNvbW1hbmQSGAoQdGhyb3R0bGVfcGVyY2VudBgBIAEoBCIQCg5SZWNsYWltQ29tbWFuZCKpCAoOQ29udHJvbENvbW1hbmQSGgoSY29udHJvbF9jb21tYW5kX2lkGAEgASgMEhsKE2lzc3Vlcl9wcmluY2lwYWxfaWQYAiABKAwSMgoGc291cmNlGAMgASgOMiIubmxvcy5zYWJpLnYxLkNvbnRyb2xDb21tYW5kU291cmNlEikKBXNjb3BlGAQgASgOMhoubmxvcy5zYWJpLnYxLkNvbnRyb2xTY29wZRIRCgl0YXJnZXRfaWQYBSABKAwSJwofZXhwZWN0ZWRfZ2VuZXJhdGlvbl9vcl9yZXZpc2lvbhgGIAEoBBJkCiNhY2tub3dsZWRnZV9hcnRpZmFjdF9yZWNvdmVyeV9hbGVydBgHIAEoCzI1Lm5sb3Muc2FiaS52MS5BY2tub3dsZWRnZUFydGlmYWN0UmVjb3ZlcnlBbGVydENvbW1hbmRIABJkCiNhY2tub3dsZWRnZV9zZW1hbnRpY19yZWNvdmVyeV9hbGVydBgJIAEoCzI1Lm5sb3Muc2FiaS52MS5BY2tub3dsZWRnZVNlbWFudGljUmVjb3ZlcnlBbGVydENvbW1hbmRIABJPChhyZXN1bWVfc2VtYW50aWNfcmVjb3ZlcnkYCiABKAsyKy5ubG9zLnNhYmkudjEuUmVzdW1lU2VtYW50aWNSZWNvdmVyeUNvbW1hbmRIABI1Cg9wYXVzZV9vcGVyYXRpb24YCyABKAsyGi5ubG9zLnNhYmkudjEuUGF1c2VDb21tYW5kSAASNwoQcmVzdW1lX29wZXJhdGlvbhgMIAEoCzIbLm5sb3Muc2FiaS52MS5SZXN1bWVDb21tYW5kSAASNwoQY2FuY2VsX29wZXJhdGlvbhgNIAEoCzIbLm5sb3Muc2FiaS52MS5DYW5jZWxDb21tYW5kSAASMwoOa2lsbF9vcGVyYXRpb24YDiABKAsyGS5ubG9zLnNhYmkudjEuS2lsbENvbW1hbmRIABI7ChJ0aHJvdHRsZV9vcGVyYXRpb24YDyABKAsyHS5ubG9zLnNhYmkudjEuVGhyb3R0bGVDb21tYW5kSAASOQoRcmVjbGFpbV9vcGVyYXRpb24YECABKAsyHC5ubG9zLnNhYmkudjEuUmVjbGFpbUNvbW1hbmRIABJkCiNhY2tub3dsZWRnZV9yZXNvdXJjZV9yZWNvdmVyeV9hbGVydBgRIAEoCzI1Lm5sb3Muc2FiaS52MS5BY2tub3dsZWRnZVJlc291cmNlUmVjb3ZlcnlBbGVydENvbW1hbmRIABJPChhyZXN1bWVfcmVzb3VyY2VfcmVjb3ZlcnkYEiABKAsyKy5ubG9zLnNhYmkudjEuUmVzdW1lUmVzb3VyY2VSZWNvdmVyeUNvbW1hbmRIABIOCgZyZWFzb24YCCABKAlCCQoHY29tbWFuZCJ6ChtTdWJtaXRDb250cm9sQ29tbWFuZFJlcXVlc3QSLAoGc2NoZW1hGAEgASgLMhwubmxvcy5zYWJpLnYxLlNjaGVtYUlkZW50aXR5Ei0KB2NvbW1hbmQYAiABKAsyHC5ubG9zLnNhYmkudjEuQ29udHJvbENvbW1hbmQizAEKFENvbnRyb2xDb21tYW5kUmVzdWx0EiwKBnNjaGVtYRgBIAEoCzIcLm5sb3Muc2FiaS52MS5TY2hlbWFJZGVudGl0eRIaChJjb250cm9sX2NvbW1hbmRfaWQYAiABKAwSOQoFc3RhdGUYAyABKA4yKi5ubG9zLnNhYmkudjEuQ29udHJvbENvbW1hbmRMaWZlY3ljbGVTdGF0ZRIvCgdyZWNlaXB0GAQgASgLMh4ubmxvcy5zYWJpLnYxLlJlY2VpcHRSZWZlcmVuY2Uq/QEKFENvbnRyb2xDb21tYW5kU291cmNlEiYKIkNPTlRST0xfQ09NTUFORF9TT1VSQ0VfVU5TUEVDSUZJRUQQABImCiJDT05UUk9MX0NPTU1BTkRfU09VUkNFX1RSVVNURURfR1VJEAESIwofQ09OVFJPTF9DT01NQU5EX1NPVVJDRV9OTF9TSEVMTBACEh4KGkNPTlRST0xfQ09NTUFORF9TT1VSQ0VfQ0xJEAMSKQolQ09OVFJPTF9DT01NQU5EX1NPVVJDRV9TVFJVQ1RVUkVEX0FQSRAEEiUKIUNPTlRST0xfQ09NTUFORF9TT1VSQ0VfQVVUT01BVElPThAFKmQKDENvbnRyb2xTY29wZRIdChlDT05UUk9MX1NDT1BFX1VOU1BFQ0lGSUVEEAASGAoUQ09OVFJPTF9TQ09QRV9TWVNURU0QARIbChdDT05UUk9MX1NDT1BFX09QRVJBVElPThACKs4BChFTeXN0ZW1Db250cm9sVmlldxIjCh9TWVNURU1fQ09OVFJPTF9WSUVXX1VOU1BFQ0lGSUVEEAASMAosU1lTVEVNX0NPTlRST0xfVklFV19BUlRJRkFDVF9DT01NSVRfUkVDT1ZFUlkQARIwCixTWVNURU1fQ09OVFJPTF9WSUVXX1NFTUFOVElDX0NPTU1JVF9SRUNPVkVSWRACEjAKLFNZU1RFTV9DT05UUk9MX1ZJRVdfUkVTT1VSQ0VfQ09NTUlUX1JFQ09WRVJZEAMqtQIKHFJlY292ZXJ5V29ya2VyTGlmZWN5Y2xlU3RhdGUSLworUkVDT1ZFUllfV09SS0VSX0xJRkVDWUNMRV9TVEFURV9VTlNQRUNJRklFRBAAEiwKKFJFQ09WRVJZX1dPUktFUl9MSUZFQ1lDTEVfU1RBVEVfU1RBUlRJTkcQARIrCidSRUNPVkVSWV9XT1JLRVJfTElGRUNZQ0xFX1NUQVRFX1JVTk5JTkcQAhIvCitSRUNPVkVSWV9XT1JLRVJfTElGRUNZQ0xFX1NUQVRFX0JBQ0tJTkdfT0ZGEAMSKwonUkVDT1ZFUllfV09SS0VSX0xJRkVDWUNMRV9TVEFURV9GQVVMVEVEEAQSKwonUkVDT1ZFUllfV09SS0VSX0xJRkVDWUNMRV9TVEFURV9TVE9QUEVEEAUquQIKGFJlY292ZXJ5RmFpbHVyZUF1dGhvcml0eRIqCiZSRUNPVkVSWV9GQUlMVVJFX0FVVEhPUklUWV9VTlNQRUNJRklFRBAAEiMKH1JFQ09WRVJZX0ZBSUxVUkVfQVVUSE9SSVRZX1RBU0sQARInCiNSRUNPVkVSWV9GQUlMVVJFX0FVVEhPUklUWV9BUlRJRkFDVBACEioKJlJFQ09WRVJZX0ZBSUxVUkVfQVVUSE9SSVRZX0NPT1JESU5BVE9SEAMSJQohUkVDT1ZFUllfRkFJTFVSRV9BVVRIT1JJVFlfV09SS0VSEAQSJwojUkVDT1ZFUllfRkFJTFVSRV9BVVRIT1JJVFlfU0VNQU5USUMQBRInCiNSRUNPVkVSWV9GQUlMVVJFX0FVVEhPUklUWV9SRVNPVVJDRRAGKtsBChxDb250cm9sQ29tbWFuZExpZmVjeWNsZVN0YXRlEi8KK0NPTlRST0xfQ09NTUFORF9MSUZFQ1lDTEVfU1RBVEVfVU5TUEVDSUZJRUQQABItCilDT05UUk9MX0NPTU1BTkRfTElGRUNZQ0xFX1NUQVRFX0NPTVBMRVRFRBABEiwKKENPTlRST0xfQ09NTUFORF9MSUZFQ1lDTEVfU1RBVEVfUkVKRUNURUQQAhItCilDT05UUk9MX0NPTU1BTkRfTElGRUNZQ0xFX1NUQVRFX1VOQ0VSVEFJThADYgZwcm90bzM", [file_nlos_sabi_v1_envelope]);
 
 /**
  * @generated from message nlos.sabi.v1.GetSystemControlRequest
@@ -360,6 +360,145 @@ export const SemanticRecoveryOperationsSnapshotSchema: GenMessage<SemanticRecove
   messageDesc(file_nlos_sabi_v1_system_control, 7);
 
 /**
+ * Resource-domain projection (W28-C-3b, ADR-0017 G8): mirrors the semantic
+ * messages field-for-field over the schema v43 `task_resource_recovery`
+ * ledger. Worker lifecycle and cross-domain counters stay on
+ * `ArtifactRecoveryMetrics`; this message carries only the resource half.
+ *
+ * @generated from message nlos.sabi.v1.ResourceRecoveryMetrics
+ */
+export type ResourceRecoveryMetrics = Message<"nlos.sabi.v1.ResourceRecoveryMetrics"> & {
+  /**
+   * @generated from field: uint64 total_inspected = 1;
+   */
+  totalInspected: bigint;
+
+  /**
+   * @generated from field: uint64 total_finalized = 2;
+   */
+  totalFinalized: bigint;
+
+  /**
+   * @generated from field: uint64 consecutive_failed_cycles = 3;
+   */
+  consecutiveFailedCycles: bigint;
+
+  /**
+   * @generated from field: uint64 durable_retrying = 4;
+   */
+  durableRetrying: bigint;
+
+  /**
+   * @generated from field: uint64 durable_escalated = 5;
+   */
+  durableEscalated: bigint;
+
+  /**
+   * @generated from field: uint64 durable_unacknowledged_escalated = 6;
+   */
+  durableUnacknowledgedEscalated: bigint;
+
+  /**
+   * @generated from field: uint64 durable_resolved = 7;
+   */
+  durableResolved: bigint;
+
+  /**
+   * Sticky: the resource half stopped scanning after exhausting its own
+   * failure budget while the artifact and semantic halves keep running.
+   *
+   * @generated from field: bool domain_faulted = 8;
+   */
+  domainFaulted: boolean;
+};
+
+/**
+ * Describes the message nlos.sabi.v1.ResourceRecoveryMetrics.
+ * Use `create(ResourceRecoveryMetricsSchema)` to create a new message.
+ */
+export const ResourceRecoveryMetricsSchema: GenMessage<ResourceRecoveryMetrics> = /*@__PURE__*/
+  messageDesc(file_nlos_sabi_v1_system_control, 8);
+
+/**
+ * @generated from message nlos.sabi.v1.ResourceRecoveryAlertStatus
+ */
+export type ResourceRecoveryAlertStatus = Message<"nlos.sabi.v1.ResourceRecoveryAlertStatus"> & {
+  /**
+   * @generated from field: bytes plan_id = 1;
+   */
+  planId: Uint8Array;
+
+  /**
+   * @generated from field: uint64 total_failures = 2;
+   */
+  totalFailures: bigint;
+
+  /**
+   * @generated from field: nlos.sabi.v1.RecoveryFailureAuthority last_failure_authority = 3;
+   */
+  lastFailureAuthority: RecoveryFailureAuthority;
+
+  /**
+   * @generated from field: int64 first_failed_at_ms = 4;
+   */
+  firstFailedAtMs: bigint;
+
+  /**
+   * @generated from field: int64 last_failed_at_ms = 5;
+   */
+  lastFailedAtMs: bigint;
+
+  /**
+   * @generated from field: int64 escalated_at_ms = 6;
+   */
+  escalatedAtMs: bigint;
+
+  /**
+   * @generated from field: nlos.sabi.v1.ReceiptReference acknowledgement_receipt = 7;
+   */
+  acknowledgementReceipt?: ReceiptReference | undefined;
+};
+
+/**
+ * Describes the message nlos.sabi.v1.ResourceRecoveryAlertStatus.
+ * Use `create(ResourceRecoveryAlertStatusSchema)` to create a new message.
+ */
+export const ResourceRecoveryAlertStatusSchema: GenMessage<ResourceRecoveryAlertStatus> = /*@__PURE__*/
+  messageDesc(file_nlos_sabi_v1_system_control, 9);
+
+/**
+ * @generated from message nlos.sabi.v1.ResourceRecoveryOperationsSnapshot
+ */
+export type ResourceRecoveryOperationsSnapshot = Message<"nlos.sabi.v1.ResourceRecoveryOperationsSnapshot"> & {
+  /**
+   * @generated from field: nlos.sabi.v1.SchemaIdentity schema = 1;
+   */
+  schema?: SchemaIdentity | undefined;
+
+  /**
+   * @generated from field: nlos.sabi.v1.ResourceRecoveryMetrics metrics = 2;
+   */
+  metrics?: ResourceRecoveryMetrics | undefined;
+
+  /**
+   * @generated from field: repeated nlos.sabi.v1.ResourceRecoveryAlertStatus alerts = 3;
+   */
+  alerts: ResourceRecoveryAlertStatus[];
+
+  /**
+   * @generated from field: bool alerts_truncated = 4;
+   */
+  alertsTruncated: boolean;
+};
+
+/**
+ * Describes the message nlos.sabi.v1.ResourceRecoveryOperationsSnapshot.
+ * Use `create(ResourceRecoveryOperationsSnapshotSchema)` to create a new message.
+ */
+export const ResourceRecoveryOperationsSnapshotSchema: GenMessage<ResourceRecoveryOperationsSnapshot> = /*@__PURE__*/
+  messageDesc(file_nlos_sabi_v1_system_control, 10);
+
+/**
  * @generated from message nlos.sabi.v1.AcknowledgeArtifactRecoveryAlertCommand
  */
 export type AcknowledgeArtifactRecoveryAlertCommand = Message<"nlos.sabi.v1.AcknowledgeArtifactRecoveryAlertCommand"> & {
@@ -370,7 +509,7 @@ export type AcknowledgeArtifactRecoveryAlertCommand = Message<"nlos.sabi.v1.Ackn
  * Use `create(AcknowledgeArtifactRecoveryAlertCommandSchema)` to create a new message.
  */
 export const AcknowledgeArtifactRecoveryAlertCommandSchema: GenMessage<AcknowledgeArtifactRecoveryAlertCommand> = /*@__PURE__*/
-  messageDesc(file_nlos_sabi_v1_system_control, 8);
+  messageDesc(file_nlos_sabi_v1_system_control, 11);
 
 /**
  * @generated from message nlos.sabi.v1.AcknowledgeSemanticRecoveryAlertCommand
@@ -383,7 +522,7 @@ export type AcknowledgeSemanticRecoveryAlertCommand = Message<"nlos.sabi.v1.Ackn
  * Use `create(AcknowledgeSemanticRecoveryAlertCommandSchema)` to create a new message.
  */
 export const AcknowledgeSemanticRecoveryAlertCommandSchema: GenMessage<AcknowledgeSemanticRecoveryAlertCommand> = /*@__PURE__*/
-  messageDesc(file_nlos_sabi_v1_system_control, 9);
+  messageDesc(file_nlos_sabi_v1_system_control, 12);
 
 /**
  * @generated from message nlos.sabi.v1.ResumeSemanticRecoveryCommand
@@ -396,7 +535,37 @@ export type ResumeSemanticRecoveryCommand = Message<"nlos.sabi.v1.ResumeSemantic
  * Use `create(ResumeSemanticRecoveryCommandSchema)` to create a new message.
  */
 export const ResumeSemanticRecoveryCommandSchema: GenMessage<ResumeSemanticRecoveryCommand> = /*@__PURE__*/
-  messageDesc(file_nlos_sabi_v1_system_control, 10);
+  messageDesc(file_nlos_sabi_v1_system_control, 13);
+
+/**
+ * W28-C-3b (ADR-0017 G8): the resource-domain mirror of the semantic
+ * recovery arms, addressing `task_resource_commit_plans` rows through the
+ * shared `target_id` / `expected_generation_or_revision` CAS contract.
+ *
+ * @generated from message nlos.sabi.v1.AcknowledgeResourceRecoveryAlertCommand
+ */
+export type AcknowledgeResourceRecoveryAlertCommand = Message<"nlos.sabi.v1.AcknowledgeResourceRecoveryAlertCommand"> & {
+};
+
+/**
+ * Describes the message nlos.sabi.v1.AcknowledgeResourceRecoveryAlertCommand.
+ * Use `create(AcknowledgeResourceRecoveryAlertCommandSchema)` to create a new message.
+ */
+export const AcknowledgeResourceRecoveryAlertCommandSchema: GenMessage<AcknowledgeResourceRecoveryAlertCommand> = /*@__PURE__*/
+  messageDesc(file_nlos_sabi_v1_system_control, 14);
+
+/**
+ * @generated from message nlos.sabi.v1.ResumeResourceRecoveryCommand
+ */
+export type ResumeResourceRecoveryCommand = Message<"nlos.sabi.v1.ResumeResourceRecoveryCommand"> & {
+};
+
+/**
+ * Describes the message nlos.sabi.v1.ResumeResourceRecoveryCommand.
+ * Use `create(ResumeResourceRecoveryCommandSchema)` to create a new message.
+ */
+export const ResumeResourceRecoveryCommandSchema: GenMessage<ResumeResourceRecoveryCommand> = /*@__PURE__*/
+  messageDesc(file_nlos_sabi_v1_system_control, 15);
 
 /**
  * B5-1 first half (W28-D): typed operation-level control arms. Like the
@@ -415,7 +584,7 @@ export type PauseCommand = Message<"nlos.sabi.v1.PauseCommand"> & {
  * Use `create(PauseCommandSchema)` to create a new message.
  */
 export const PauseCommandSchema: GenMessage<PauseCommand> = /*@__PURE__*/
-  messageDesc(file_nlos_sabi_v1_system_control, 11);
+  messageDesc(file_nlos_sabi_v1_system_control, 16);
 
 /**
  * @generated from message nlos.sabi.v1.ResumeCommand
@@ -428,7 +597,7 @@ export type ResumeCommand = Message<"nlos.sabi.v1.ResumeCommand"> & {
  * Use `create(ResumeCommandSchema)` to create a new message.
  */
 export const ResumeCommandSchema: GenMessage<ResumeCommand> = /*@__PURE__*/
-  messageDesc(file_nlos_sabi_v1_system_control, 12);
+  messageDesc(file_nlos_sabi_v1_system_control, 17);
 
 /**
  * @generated from message nlos.sabi.v1.CancelCommand
@@ -441,7 +610,7 @@ export type CancelCommand = Message<"nlos.sabi.v1.CancelCommand"> & {
  * Use `create(CancelCommandSchema)` to create a new message.
  */
 export const CancelCommandSchema: GenMessage<CancelCommand> = /*@__PURE__*/
-  messageDesc(file_nlos_sabi_v1_system_control, 13);
+  messageDesc(file_nlos_sabi_v1_system_control, 18);
 
 /**
  * B5-1 second half + B5-2 (W29-D): the remaining operation-level arms.
@@ -460,7 +629,7 @@ export type KillCommand = Message<"nlos.sabi.v1.KillCommand"> & {
  * Use `create(KillCommandSchema)` to create a new message.
  */
 export const KillCommandSchema: GenMessage<KillCommand> = /*@__PURE__*/
-  messageDesc(file_nlos_sabi_v1_system_control, 14);
+  messageDesc(file_nlos_sabi_v1_system_control, 19);
 
 /**
  * `throttle_percent` is the whole-percent level the operational target is
@@ -480,7 +649,7 @@ export type ThrottleCommand = Message<"nlos.sabi.v1.ThrottleCommand"> & {
  * Use `create(ThrottleCommandSchema)` to create a new message.
  */
 export const ThrottleCommandSchema: GenMessage<ThrottleCommand> = /*@__PURE__*/
-  messageDesc(file_nlos_sabi_v1_system_control, 15);
+  messageDesc(file_nlos_sabi_v1_system_control, 20);
 
 /**
  * @generated from message nlos.sabi.v1.ReclaimCommand
@@ -493,7 +662,7 @@ export type ReclaimCommand = Message<"nlos.sabi.v1.ReclaimCommand"> & {
  * Use `create(ReclaimCommandSchema)` to create a new message.
  */
 export const ReclaimCommandSchema: GenMessage<ReclaimCommand> = /*@__PURE__*/
-  messageDesc(file_nlos_sabi_v1_system_control, 16);
+  messageDesc(file_nlos_sabi_v1_system_control, 21);
 
 /**
  * @generated from message nlos.sabi.v1.ControlCommand
@@ -586,6 +755,18 @@ export type ControlCommand = Message<"nlos.sabi.v1.ControlCommand"> & {
      */
     value: ReclaimCommand;
     case: "reclaimOperation";
+  } | {
+    /**
+     * @generated from field: nlos.sabi.v1.AcknowledgeResourceRecoveryAlertCommand acknowledge_resource_recovery_alert = 17;
+     */
+    value: AcknowledgeResourceRecoveryAlertCommand;
+    case: "acknowledgeResourceRecoveryAlert";
+  } | {
+    /**
+     * @generated from field: nlos.sabi.v1.ResumeResourceRecoveryCommand resume_resource_recovery = 18;
+     */
+    value: ResumeResourceRecoveryCommand;
+    case: "resumeResourceRecovery";
   } | { case: undefined; value?: undefined };
 
   /**
@@ -599,7 +780,7 @@ export type ControlCommand = Message<"nlos.sabi.v1.ControlCommand"> & {
  * Use `create(ControlCommandSchema)` to create a new message.
  */
 export const ControlCommandSchema: GenMessage<ControlCommand> = /*@__PURE__*/
-  messageDesc(file_nlos_sabi_v1_system_control, 17);
+  messageDesc(file_nlos_sabi_v1_system_control, 22);
 
 /**
  * @generated from message nlos.sabi.v1.SubmitControlCommandRequest
@@ -621,7 +802,7 @@ export type SubmitControlCommandRequest = Message<"nlos.sabi.v1.SubmitControlCom
  * Use `create(SubmitControlCommandRequestSchema)` to create a new message.
  */
 export const SubmitControlCommandRequestSchema: GenMessage<SubmitControlCommandRequest> = /*@__PURE__*/
-  messageDesc(file_nlos_sabi_v1_system_control, 18);
+  messageDesc(file_nlos_sabi_v1_system_control, 23);
 
 /**
  * @generated from message nlos.sabi.v1.ControlCommandResult
@@ -653,7 +834,7 @@ export type ControlCommandResult = Message<"nlos.sabi.v1.ControlCommandResult"> 
  * Use `create(ControlCommandResultSchema)` to create a new message.
  */
 export const ControlCommandResultSchema: GenMessage<ControlCommandResult> = /*@__PURE__*/
-  messageDesc(file_nlos_sabi_v1_system_control, 19);
+  messageDesc(file_nlos_sabi_v1_system_control, 24);
 
 /**
  * @generated from enum nlos.sabi.v1.ControlCommandSource
@@ -740,6 +921,11 @@ export enum SystemControlView {
    * @generated from enum value: SYSTEM_CONTROL_VIEW_SEMANTIC_COMMIT_RECOVERY = 2;
    */
   SEMANTIC_COMMIT_RECOVERY = 2,
+
+  /**
+   * @generated from enum value: SYSTEM_CONTROL_VIEW_RESOURCE_COMMIT_RECOVERY = 3;
+   */
+  RESOURCE_COMMIT_RECOVERY = 3,
 }
 
 /**
@@ -822,6 +1008,11 @@ export enum RecoveryFailureAuthority {
    * @generated from enum value: RECOVERY_FAILURE_AUTHORITY_SEMANTIC = 5;
    */
   SEMANTIC = 5,
+
+  /**
+   * @generated from enum value: RECOVERY_FAILURE_AUTHORITY_RESOURCE = 6;
+   */
+  RESOURCE = 6,
 }
 
 /**

@@ -57,6 +57,17 @@ const SEMANTIC_TOTAL_FAILURES: u64 = 8;
 #[cfg(unix)]
 const SEMANTIC_REASON: &str = "inspected semantic recovery evidence";
 
+#[cfg(unix)]
+const RESOURCE_PLAN_ID: [u8; 16] = [0x81; 16];
+#[cfg(unix)]
+const RESOURCE_ACK_COMMAND_ID: [u8; 16] = [0x57; 16];
+#[cfg(unix)]
+const RESOURCE_RESUME_COMMAND_ID: [u8; 16] = [0x58; 16];
+#[cfg(unix)]
+const RESOURCE_TOTAL_FAILURES: u64 = 8;
+#[cfg(unix)]
+const RESOURCE_REASON: &str = "inspected resource recovery evidence";
+
 /// Seeds one escalated semantic recovery ledger row directly (see the
 /// `recovery_control` fixture note: the `Escalated` transition is W26-tested
 /// inside `nlos-task`; the per-connection foreign key is left unchecked by
@@ -95,6 +106,48 @@ fn reset_escalated_semantic_recovery(database: &TestDatabase) {
         rusqlite::params![
             SEMANTIC_PLAN_ID.as_slice(),
             SEMANTIC_TOTAL_FAILURES.to_be_bytes().as_slice(),
+        ],
+    )
+    .unwrap();
+}
+
+/// Seeds one escalated `task_resource_recovery` ledger row directly (the
+/// W28-C `Escalated` transition is tested inside `nlos-task`; the
+/// per-connection foreign key to `task_resource_commit_plans` is left
+/// unchecked by the raw seeding connection).
+#[cfg(unix)]
+fn seed_escalated_resource_recovery(database: &TestDatabase) {
+    let raw = rusqlite::Connection::open(&database.path).unwrap();
+    raw.pragma_update(None, "foreign_keys", "OFF").unwrap();
+    raw.execute(
+        "INSERT INTO task_resource_recovery (
+            plan_id, recovery_state, consecutive_failures, total_failures,
+            last_failure_source, first_failed_at_ms, last_failed_at_ms,
+            next_retry_at_ms, escalated_at_ms, resolved_at_ms, updated_at_ms
+        ) VALUES (?1, 1, ?2, ?3, 1, 1000, 1400, NULL, 1500, NULL, 1500)",
+        rusqlite::params![
+            RESOURCE_PLAN_ID.as_slice(),
+            RESOURCE_TOTAL_FAILURES.to_be_bytes().as_slice(),
+            RESOURCE_TOTAL_FAILURES.to_be_bytes().as_slice(),
+        ],
+    )
+    .unwrap();
+}
+
+/// Resource mirror of [`reset_escalated_semantic_recovery`]: re-arms the
+/// `Escalated` row between the reference dispatch and the CLI dispatch of
+/// the same resume command.
+#[cfg(unix)]
+fn reset_escalated_resource_recovery(database: &TestDatabase) {
+    let raw = rusqlite::Connection::open(&database.path).unwrap();
+    raw.execute(
+        "UPDATE task_resource_recovery
+         SET recovery_state = 1, consecutive_failures = ?2, next_retry_at_ms = NULL,
+             escalated_at_ms = 1500, resolved_at_ms = NULL, updated_at_ms = 1500
+         WHERE plan_id = ?1",
+        rusqlite::params![
+            RESOURCE_PLAN_ID.as_slice(),
+            RESOURCE_TOTAL_FAILURES.to_be_bytes().as_slice(),
         ],
     )
     .unwrap();
@@ -1798,6 +1851,276 @@ async fn kill_throttle_reclaim_commands_are_byte_identical_across_nl_cli_and_dir
     );
     assert_eq!(refused.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&refused.stderr).contains("usage:"));
+
+    server.abort();
+    fs::remove_file(&socket_path).unwrap();
+}
+
+/// W28-C-3b (ADR-0017 G8) parity gate: the resource recovery command
+/// surface — domain health/metrics reads and the escalated-plan
+/// acknowledge/resume mutations — compiles from direct construction, NL
+/// sentences (EN/ZH/synonyms), and the CLI into the same wire command, and
+/// all three dispatch paths answer with byte-identical typed receipts over
+/// the real `task_resource_recovery` ledger.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn resource_recovery_commands_are_byte_identical_across_nl_cli_and_direct_paths() {
+    use nlos_system_control::control::dispatch_over_socket;
+    use nlos_system_control::nl::{
+        NL_RESOURCE_ACK_REASON, NL_RESOURCE_RESUME_REASON, parse_nl_command,
+    };
+    use nlos_system_control::resource_recovery_resume_reference;
+
+    use socket_harness::{
+        assert_in_process_socket_and_cli_parity, assert_nl_socket_and_in_process_parity,
+        bind_socket, cli_receipt_bytes, run_cli, serve_forever,
+    };
+
+    let database = Arc::new(TestDatabase::new());
+    let authority = Arc::new(database.open());
+    let plan_id = create_escalated_plan(authority.as_ref());
+    seed_escalated_resource_recovery(&database);
+    let resource_plan = nlos_task::ResourceCommitPlanId::from_bytes(RESOURCE_PLAN_ID);
+    let socket_path = database.path.with_extension("sock");
+    let listener = bind_socket(&socket_path);
+    let server = serve_forever(listener, Arc::clone(&authority), health(&plan_id));
+    let stub_health = health(&plan_id);
+    let control = RecoverySystemControl::new(authority.as_ref(), &stub_health, &CapabilityPolicy);
+
+    // Inspect: NL sentences (EN canonical/synonyms, ZH) compile to the same
+    // domain read, so every dispatch answers with byte-identical receipts.
+    let nl_inspect = parse_nl_command("inspect resource recovery").unwrap();
+    assert_eq!(nl_inspect, ControlCommand::InspectResourceHealth);
+    let nl_inspect_zh = parse_nl_command("查看资源恢复").unwrap();
+    assert_eq!(nl_inspect_zh, ControlCommand::InspectResourceHealth);
+    let nl_inspect_status = parse_nl_command("resource recovery status").unwrap();
+    assert_eq!(nl_inspect_status, ControlCommand::InspectResourceHealth);
+    let inspection = dispatch_in_process(
+        &control,
+        &ControlCommand::InspectResourceHealth,
+        MONOTONIC_NOW_NS,
+        WALL_NOW_MS,
+        None,
+        None,
+    )
+    .unwrap();
+    let ControlOutcome::ResourceRecoveryInspected(resource_inspection) =
+        inspection.outcome.as_ref().unwrap()
+    else {
+        panic!("expected resource recovery inspection receipt");
+    };
+    assert_eq!(resource_inspection.alerts.len(), 1);
+    assert_eq!(resource_inspection.alerts[0].plan_id, RESOURCE_PLAN_ID);
+    assert_eq!(resource_inspection.durable_escalated, 1);
+    assert_nl_socket_and_in_process_parity(
+        &socket_path,
+        &control,
+        &ControlCommand::InspectResourceHealth,
+        &[nl_inspect, nl_inspect_zh, nl_inspect_status],
+        None,
+        None,
+    )
+    .await;
+    assert_in_process_socket_and_cli_parity(
+        &socket_path,
+        &control,
+        &ControlCommand::InspectResourceHealth,
+        &["inspect-resource-health"],
+        None,
+        None,
+    )
+    .await;
+
+    // Export: the resource-domain metrics projection renders the
+    // `nlos_resource_recovery_*` catalog through the same paths.
+    let nl_export = parse_nl_command("export resource metrics").unwrap();
+    assert_eq!(nl_export, ControlCommand::ExportResourceMetrics);
+    assert_eq!(
+        parse_nl_command("导出资源指标").unwrap(),
+        ControlCommand::ExportResourceMetrics
+    );
+    assert_nl_socket_and_in_process_parity(
+        &socket_path,
+        &control,
+        &ControlCommand::ExportResourceMetrics,
+        &[nl_export],
+        None,
+        None,
+    )
+    .await;
+    assert_in_process_socket_and_cli_parity(
+        &socket_path,
+        &control,
+        &ControlCommand::ExportResourceMetrics,
+        &["export-resource-metrics"],
+        None,
+        None,
+    )
+    .await;
+    let export_receipt = dispatch_over_socket(
+        &socket_path,
+        &ControlCommand::ExportResourceMetrics,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let ControlOutcome::MetricsExported(export) = export_receipt.outcome.as_ref().unwrap() else {
+        panic!("expected metrics export receipt");
+    };
+    assert!(
+        export
+            .openmetrics_text
+            .contains("nlos_resource_recovery_durable_escalated")
+    );
+
+    // Acknowledge: EN/ZH sentences and the CLI compile to the same
+    // fully-determined mutation the direct construction spells out, and the
+    // idempotent replay answers with the same receipt bytes.
+    let direct_ack = ControlCommand::AcknowledgeResourceRecoveryAlert {
+        control_command_id: RESOURCE_ACK_COMMAND_ID,
+        plan_id: RESOURCE_PLAN_ID,
+        expected_total_failures: RESOURCE_TOTAL_FAILURES,
+        reason: RESOURCE_REASON.to_owned(),
+    };
+    assert_in_process_socket_and_cli_parity(
+        &socket_path,
+        &control,
+        &direct_ack,
+        &[
+            "ack-resource-recovery-alert",
+            &hex(&RESOURCE_ACK_COMMAND_ID),
+            &hex(&RESOURCE_PLAN_ID),
+            &RESOURCE_TOTAL_FAILURES.to_string(),
+            RESOURCE_REASON,
+        ],
+        None,
+        None,
+    )
+    .await;
+    let nl_ack = parse_nl_command(&format!(
+        "acknowledge resource alert {} expecting {RESOURCE_TOTAL_FAILURES}",
+        hex(&RESOURCE_PLAN_ID)
+    ))
+    .unwrap();
+    assert_eq!(
+        nl_ack,
+        ControlCommand::AcknowledgeResourceRecoveryAlert {
+            control_command_id: RESOURCE_PLAN_ID,
+            plan_id: RESOURCE_PLAN_ID,
+            expected_total_failures: RESOURCE_TOTAL_FAILURES,
+            reason: NL_RESOURCE_ACK_REASON.to_owned(),
+        }
+    );
+    let nl_ack_zh = parse_nl_command(&format!(
+        "确认资源告警 {} 期望 {RESOURCE_TOTAL_FAILURES}",
+        hex(&RESOURCE_PLAN_ID)
+    ))
+    .unwrap();
+    assert_nl_socket_and_in_process_parity(
+        &socket_path,
+        &control,
+        &nl_ack,
+        &[nl_ack.clone(), nl_ack_zh],
+        None,
+        None,
+    )
+    .await;
+    assert!(
+        authority
+            .list_resource_recovery_alerts()
+            .unwrap()
+            .first()
+            .unwrap()
+            .acknowledgement
+            .is_some()
+    );
+
+    // Resume: the ledger row returns to `Retrying`; the receipt names the
+    // deterministic domain-separated resume outcome, and the re-armed CLI
+    // dispatch of the same command answers byte-identically.
+    let resume = ControlCommand::ResumeResourceRecovery {
+        control_command_id: RESOURCE_RESUME_COMMAND_ID,
+        plan_id: RESOURCE_PLAN_ID,
+        expected_total_failures: RESOURCE_TOTAL_FAILURES,
+        reason: RESOURCE_REASON.to_owned(),
+    };
+    let resume_reference =
+        dispatch_in_process(&control, &resume, MONOTONIC_NOW_NS, WALL_NOW_MS, None, None).unwrap();
+    let ControlOutcome::Resumed { receipt_id } = resume_reference.outcome.as_ref().unwrap() else {
+        panic!("expected resumed receipt");
+    };
+    assert_eq!(
+        receipt_id,
+        &resource_recovery_resume_reference(resource_plan, RESOURCE_TOTAL_FAILURES)
+            .as_bytes()
+            .to_vec()
+    );
+    assert_eq!(
+        authority
+            .inspect_resource_recovery(resource_plan)
+            .unwrap()
+            .unwrap()
+            .state,
+        nlos_task::ResourceRecoveryState::Retrying
+    );
+
+    let nl_resume = parse_nl_command(&format!(
+        "resume resource recovery {} expecting {RESOURCE_TOTAL_FAILURES}",
+        hex(&RESOURCE_PLAN_ID)
+    ))
+    .unwrap();
+    assert_eq!(
+        nl_resume,
+        ControlCommand::ResumeResourceRecovery {
+            control_command_id: RESOURCE_PLAN_ID,
+            plan_id: RESOURCE_PLAN_ID,
+            expected_total_failures: RESOURCE_TOTAL_FAILURES,
+            reason: NL_RESOURCE_RESUME_REASON.to_owned(),
+        }
+    );
+
+    reset_escalated_resource_recovery(&database);
+    let nl_resume_receipt = dispatch_over_socket(&socket_path, &nl_resume, None, None)
+        .await
+        .unwrap();
+    let ControlOutcome::Resumed { receipt_id } = nl_resume_receipt.outcome.as_ref().unwrap() else {
+        panic!("expected NL resumed receipt");
+    };
+    assert_eq!(
+        receipt_id,
+        &resource_recovery_resume_reference(resource_plan, RESOURCE_TOTAL_FAILURES)
+            .as_bytes()
+            .to_vec()
+    );
+
+    reset_escalated_resource_recovery(&database);
+    let cli_resume = run_cli(
+        &socket_path,
+        &[
+            "resume-resource-recovery",
+            &hex(&RESOURCE_RESUME_COMMAND_ID),
+            &hex(&RESOURCE_PLAN_ID),
+            &RESOURCE_TOTAL_FAILURES.to_string(),
+            RESOURCE_REASON,
+        ],
+    );
+    assert!(
+        cli_resume.status.success(),
+        "cli resource resume failed: code={:?} stdout={} stderr={}",
+        cli_resume.status.code(),
+        String::from_utf8_lossy(&cli_resume.stdout),
+        String::from_utf8_lossy(&cli_resume.stderr),
+    );
+    assert_eq!(cli_receipt_bytes(&cli_resume), resume_reference.to_bytes());
+    assert_eq!(
+        authority
+            .inspect_resource_recovery(resource_plan)
+            .unwrap()
+            .unwrap()
+            .state,
+        nlos_task::ResourceRecoveryState::Retrying
+    );
 
     server.abort();
     fs::remove_file(&socket_path).unwrap();

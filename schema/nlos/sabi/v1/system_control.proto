@@ -23,6 +23,7 @@ enum SystemControlView {
   SYSTEM_CONTROL_VIEW_UNSPECIFIED = 0;
   SYSTEM_CONTROL_VIEW_ARTIFACT_COMMIT_RECOVERY = 1;
   SYSTEM_CONTROL_VIEW_SEMANTIC_COMMIT_RECOVERY = 2;
+  SYSTEM_CONTROL_VIEW_RESOURCE_COMMIT_RECOVERY = 3;
 }
 
 enum RecoveryWorkerLifecycleState {
@@ -41,6 +42,7 @@ enum RecoveryFailureAuthority {
   RECOVERY_FAILURE_AUTHORITY_COORDINATOR = 3;
   RECOVERY_FAILURE_AUTHORITY_WORKER = 4;
   RECOVERY_FAILURE_AUTHORITY_SEMANTIC = 5;
+  RECOVERY_FAILURE_AUTHORITY_RESOURCE = 6;
 }
 
 message GetSystemControlRequest {
@@ -124,11 +126,52 @@ message SemanticRecoveryOperationsSnapshot {
   bool alerts_truncated = 4;
 }
 
+// Resource-domain projection (W28-C-3b, ADR-0017 G8): mirrors the semantic
+// messages field-for-field over the schema v43 `task_resource_recovery`
+// ledger. Worker lifecycle and cross-domain counters stay on
+// `ArtifactRecoveryMetrics`; this message carries only the resource half.
+message ResourceRecoveryMetrics {
+  uint64 total_inspected = 1;
+  uint64 total_finalized = 2;
+  uint64 consecutive_failed_cycles = 3;
+  uint64 durable_retrying = 4;
+  uint64 durable_escalated = 5;
+  uint64 durable_unacknowledged_escalated = 6;
+  uint64 durable_resolved = 7;
+  // Sticky: the resource half stopped scanning after exhausting its own
+  // failure budget while the artifact and semantic halves keep running.
+  bool domain_faulted = 8;
+}
+
+message ResourceRecoveryAlertStatus {
+  bytes plan_id = 1;
+  uint64 total_failures = 2;
+  RecoveryFailureAuthority last_failure_authority = 3;
+  int64 first_failed_at_ms = 4;
+  int64 last_failed_at_ms = 5;
+  int64 escalated_at_ms = 6;
+  ReceiptReference acknowledgement_receipt = 7;
+}
+
+message ResourceRecoveryOperationsSnapshot {
+  SchemaIdentity schema = 1;
+  ResourceRecoveryMetrics metrics = 2;
+  repeated ResourceRecoveryAlertStatus alerts = 3;
+  bool alerts_truncated = 4;
+}
+
 message AcknowledgeArtifactRecoveryAlertCommand {}
 
 message AcknowledgeSemanticRecoveryAlertCommand {}
 
 message ResumeSemanticRecoveryCommand {}
+
+// W28-C-3b (ADR-0017 G8): the resource-domain mirror of the semantic
+// recovery arms, addressing `task_resource_commit_plans` rows through the
+// shared `target_id` / `expected_generation_or_revision` CAS contract.
+message AcknowledgeResourceRecoveryAlertCommand {}
+
+message ResumeResourceRecoveryCommand {}
 
 // B5-1 first half (W28-D): typed operation-level control arms. Like the
 // recovery commands above, the payloads stay empty — the operational target
@@ -173,6 +216,8 @@ message ControlCommand {
     KillCommand kill_operation = 14;
     ThrottleCommand throttle_operation = 15;
     ReclaimCommand reclaim_operation = 16;
+    AcknowledgeResourceRecoveryAlertCommand acknowledge_resource_recovery_alert = 17;
+    ResumeResourceRecoveryCommand resume_resource_recovery = 18;
   }
   string reason = 8;
 }

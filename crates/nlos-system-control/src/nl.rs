@@ -23,6 +23,14 @@
 //!   | 检查健康 | 检查 健康 | 健康状态 | 健康 状态
 //! export metrics | show metrics | get metrics | metrics
 //!   | 导出指标 | 导出 指标 | 指标
+//! inspect resource recovery | check resource recovery | show resource recovery
+//!   | get resource recovery | status resource recovery | resource recovery status
+//!   | resource recovery check
+//!   | 查看资源恢复 | 查看 资源 恢复 | 检查资源恢复 | 检查 资源 恢复
+//!   | 资源恢复状态 | 资源恢复 状态
+//! export resource metrics | show resource metrics | get resource metrics
+//!   | resource metrics
+//!   | 导出资源指标 | 导出 资源 指标 | 资源指标
 //! inspect task <32-hex> | check task <32-hex> | show task <32-hex>
 //!   | get task <32-hex> | status task <32-hex> | task status <32-hex>
 //!   | 查看任务 <32位十六进制> | 查看 任务 <32位十六进制>
@@ -39,6 +47,12 @@
 //! acknowledge alert <32-hex> expecting <n>
 //!   | ack alert <32-hex> expecting <n> | confirm alert <32-hex> expecting <n>
 //!   | 确认告警 <32位十六进制> 期望 <n> | 确认 告警 <32位十六进制> 期望 <n>
+//! acknowledge resource alert <32-hex> expecting <n>
+//!   | ack resource alert <32-hex> expecting <n>
+//!   | confirm resource alert <32-hex> expecting <n>
+//!   | 确认资源告警 <32位十六进制> 期望 <n> | 确认 资源 告警 <32位十六进制> 期望 <n>
+//! resume resource recovery <32-hex> expecting <n>
+//!   | 恢复资源恢复 <32位十六进制> 期望 <n> | 恢复 资源恢复 <32位十六进制> 期望 <n>
 //! pause operation <32-hex> expecting <n>
 //!   | halt operation <32-hex> expecting <n> | suspend operation <32-hex> expecting <n>
 //!   | 暂停操作 <32位十六进制> 期望 <n> | 暂停 操作 <32位十六进制> 期望 <n>
@@ -82,6 +96,14 @@
 //! audit reasons are the fixed per-verb [`NL_KILL_REASON`]/
 //! [`NL_THROTTLE_REASON`]/[`NL_RECLAIM_REASON`].
 //!
+//! The W28-C-3b resource recovery forms follow the same rules verbatim: the
+//! acknowledgement targets the escalated resource plan (command identity
+//! derives from the plan id, replay-safe), the resume form requeues the
+//! escalated resource plan under its explicit CAS expectation, and the audit
+//! reasons are the fixed [`NL_RESOURCE_ACK_REASON`]/
+//! [`NL_RESOURCE_RESUME_REASON`]. The read forms carry no argument — the
+//! domain health and metrics projections are aggregate snapshots.
+//!
 //! Anything outside the whitelist — unknown verbs, wrong arity, malformed
 //! identifiers, non-decimal counts — fails with a typed
 //! [`ControlError::InvalidCommand`] whose message names the violated bound
@@ -112,16 +134,28 @@ pub const NL_THROTTLE_REASON: &str =
 /// See [`NL_ACK_REASON`].
 pub const NL_RECLAIM_REASON: &str =
     "reclaimed through the restricted natural-language control prefix";
+/// See [`NL_ACK_REASON`]; W28-C-3b resource recovery forms.
+pub const NL_RESOURCE_ACK_REASON: &str =
+    "resource alert acknowledged through the restricted natural-language control prefix";
+/// See [`NL_ACK_REASON`].
+pub const NL_RESOURCE_RESUME_REASON: &str =
+    "resource recovery resumed through the restricted natural-language control prefix";
 
 /// Legal grammar, named verbatim in every rejection message.
 const GRAMMAR_HELP: &str = "valid forms: \"inspect health\" | \"export metrics\" | \
+\"inspect resource recovery\" | \"export resource metrics\" | \
 \"inspect task <32-hex>\" | \"inspect process <32-hex>\" | \"inspect resource <32-hex>\" | \
 \"acknowledge alert <32-hex> expecting <count>\" | \
+\"acknowledge resource alert <32-hex> expecting <count>\" | \
+\"resume resource recovery <32-hex> expecting <count>\" | \
 \"pause|resume|cancel|kill|reclaim operation <32-hex> expecting <count>\" | \
 \"throttle operation <32-hex> to <percent> expecting <count>\" | \"查看健康\" | \
-\"导出指标\" | \"查看任务 <32位十六进制>\" | \"检查进程 <32位十六进制>\" | \
+\"导出指标\" | \"查看资源恢复\" | \"导出资源指标\" | \
+\"查看任务 <32位十六进制>\" | \"检查进程 <32位十六进制>\" | \
 \"查看资源 <32位十六进制>\" | \
 \"确认告警 <32位十六进制> 期望 <次数>\" | \
+\"确认资源告警 <32位十六进制> 期望 <次数>\" | \
+\"恢复资源恢复 <32位十六进制> 期望 <次数>\" | \
 \"暂停|恢复|取消|终止|回收操作 <32位十六进制> 期望 <次数>\" | \
 \"限流操作 <32位十六进制> 到 <百分比> 期望 <次数>\"";
 
@@ -139,6 +173,9 @@ const GRAMMAR_HELP: &str = "valid forms: \"inspect health\" | \"export metrics\"
 pub fn parse_nl_command(input: &str) -> Result<ControlCommand, ControlError> {
     let tokens: Vec<&str> = input.split_whitespace().collect();
     if let Some(result) = try_parse_inspect_health(&tokens) {
+        return result;
+    }
+    if let Some(result) = try_parse_resource_recovery(&tokens) {
         return result;
     }
     if let Some(result) = try_parse_export_metrics(&tokens) {
@@ -208,6 +245,10 @@ fn is_reclaim_verb(token: &str) -> bool {
     token.eq_ignore_ascii_case("reclaim")
 }
 
+fn is_resource_recovery_resume_verb(token: &str) -> bool {
+    token.eq_ignore_ascii_case("resume")
+}
+
 fn try_parse_inspect_health(tokens: &[&str]) -> Option<Result<ControlCommand, ControlError>> {
     match tokens {
         [head, second] if is_read_verb(head) && second.eq_ignore_ascii_case("health") => {
@@ -255,12 +296,128 @@ fn try_parse_inspect_health(tokens: &[&str]) -> Option<Result<ControlCommand, Co
         [head, second, ..] if is_read_verb(head) && second.eq_ignore_ascii_case("metrics") => None,
         [head, ..] if is_read_verb(head) || *head == "查看" || *head == "检查" => {
             Some(Err(ControlError::InvalidCommand(
-                "\"inspect\" expects \"health\", \"task <32-hex>\", \"process <32-hex>\", \
-                 or \"resource <32-hex>\"",
+                "\"inspect\" expects \"health\", \"resource recovery\", \"task <32-hex>\", \
+                 \"process <32-hex>\", or \"resource <32-hex>\"",
             )))
         }
         _ => None,
     }
+}
+
+/// Compiles the W28-C-3b resource recovery forms: the two aggregate read
+/// projections (domain health, domain metrics) and the two escalated-plan
+/// mutations (acknowledge, resume), with the same deterministic identity
+/// derivation rules as the artifact and operation-level forms.
+fn try_parse_resource_recovery(tokens: &[&str]) -> Option<Result<ControlCommand, ControlError>> {
+    match tokens {
+        [head, second, third]
+            if is_read_verb(head)
+                && second.eq_ignore_ascii_case("resource")
+                && third.eq_ignore_ascii_case("recovery") =>
+        {
+            Some(Ok(ControlCommand::InspectResourceHealth))
+        }
+        [first, second, third]
+            if first.eq_ignore_ascii_case("resource")
+                && second.eq_ignore_ascii_case("recovery")
+                && (third.eq_ignore_ascii_case("status")
+                    || third.eq_ignore_ascii_case("check")
+                    || third.eq_ignore_ascii_case("health")) =>
+        {
+            Some(Ok(ControlCommand::InspectResourceHealth))
+        }
+        ["查看资源恢复" | "检查资源恢复" | "资源恢复状态"]
+        | ["查看" | "检查", "资源", "恢复"]
+        | ["资源恢复", "状态"] => Some(Ok(ControlCommand::InspectResourceHealth)),
+        [head, second, third]
+            if is_metrics_verb(head)
+                && second.eq_ignore_ascii_case("resource")
+                && third.eq_ignore_ascii_case("metrics") =>
+        {
+            Some(Ok(ControlCommand::ExportResourceMetrics))
+        }
+        [first, second]
+            if first.eq_ignore_ascii_case("resource") && second.eq_ignore_ascii_case("metrics") =>
+        {
+            Some(Ok(ControlCommand::ExportResourceMetrics))
+        }
+        ["导出资源指标" | "资源指标"] | ["导出", "资源", "指标"] => {
+            Some(Ok(ControlCommand::ExportResourceMetrics))
+        }
+        [head, second, third, plan, fourth, count]
+            if is_ack_verb(head)
+                && second.eq_ignore_ascii_case("resource")
+                && third.eq_ignore_ascii_case("alert")
+                && fourth.eq_ignore_ascii_case("expecting") =>
+        {
+            Some(parse_count(count).and_then(|n| acknowledge_resource_alert(plan, n)))
+        }
+        ["确认资源告警", plan, "期望", count] => {
+            Some(parse_count(count).and_then(|n| acknowledge_resource_alert(plan, n)))
+        }
+        ["确认", "资源", "告警", plan, "期望", count] => {
+            Some(parse_count(count).and_then(|n| acknowledge_resource_alert(plan, n)))
+        }
+        [head, second, third, plan, fourth, count]
+            if is_resource_recovery_resume_verb(head)
+                && second.eq_ignore_ascii_case("resource")
+                && third.eq_ignore_ascii_case("recovery")
+                && fourth.eq_ignore_ascii_case("expecting") =>
+        {
+            Some(parse_count(count).and_then(|n| resume_resource_recovery_command(plan, n)))
+        }
+        ["恢复资源恢复", plan, "期望", count] | ["恢复", "资源恢复", plan, "期望", count] => {
+            Some(parse_count(count).and_then(|n| resume_resource_recovery_command(plan, n)))
+        }
+        [head, second, ..] if is_ack_verb(head) && second.eq_ignore_ascii_case("resource") => {
+            Some(Err(ControlError::InvalidCommand(
+                "\"acknowledge resource alert\" expects \"<32-hex> expecting <count>\"",
+            )))
+        }
+        ["确认资源告警", ..] | ["确认", "资源", ..] => Some(Err(
+            ControlError::InvalidCommand("\"确认资源告警\" 期望 \"<32位十六进制> 期望 <次数>\""),
+        )),
+        [head, second, ..]
+            if is_resource_recovery_resume_verb(head)
+                && second.eq_ignore_ascii_case("resource") =>
+        {
+            Some(Err(ControlError::InvalidCommand(
+                "\"resume resource recovery\" expects \"<32-hex> expecting <count>\"",
+            )))
+        }
+        ["恢复资源恢复", ..] | ["恢复", "资源恢复", ..] => Some(Err(
+            ControlError::InvalidCommand("\"恢复资源恢复\" 期望 \"<32位十六进制> 期望 <次数>\""),
+        )),
+        _ => None,
+    }
+}
+
+/// Compiles the resource acknowledgement with the deterministic derivation
+/// rules documented at the module level (identity = plan id, replay-safe).
+fn acknowledge_resource_alert(
+    plan_hex: &str,
+    expected_total_failures: u64,
+) -> Result<ControlCommand, ControlError> {
+    let plan_id = parse_hex_id(plan_hex)?;
+    Ok(ControlCommand::AcknowledgeResourceRecoveryAlert {
+        control_command_id: plan_id,
+        plan_id,
+        expected_total_failures,
+        reason: NL_RESOURCE_ACK_REASON.to_owned(),
+    })
+}
+
+fn resume_resource_recovery_command(
+    plan_hex: &str,
+    expected_total_failures: u64,
+) -> Result<ControlCommand, ControlError> {
+    let plan_id = parse_hex_id(plan_hex)?;
+    Ok(ControlCommand::ResumeResourceRecovery {
+        control_command_id: plan_id,
+        plan_id,
+        expected_total_failures,
+        reason: NL_RESOURCE_RESUME_REASON.to_owned(),
+    })
 }
 
 fn try_parse_export_metrics(tokens: &[&str]) -> Option<Result<ControlCommand, ControlError>> {
@@ -1143,6 +1300,198 @@ mod tests {
                 reason: NL_RECLAIM_REASON.to_owned(),
             }
         );
+    }
+
+    #[test]
+    fn english_resource_recovery_read_forms_parse() {
+        for sentence in [
+            "inspect resource recovery",
+            "INSPECT RESOURCE RECOVERY",
+            "Inspect\tResource\tRecovery",
+            "check resource recovery",
+            "show resource recovery",
+            "get resource recovery",
+            "status resource recovery",
+            "resource recovery status",
+            "RESOURCE RECOVERY STATUS",
+            "resource recovery check",
+            "resource recovery health",
+        ] {
+            assert_eq!(
+                parse_nl_command(sentence).unwrap(),
+                ControlCommand::InspectResourceHealth,
+                "sentence: {sentence:?}"
+            );
+        }
+        for sentence in [
+            "export resource metrics",
+            "EXPORT RESOURCE METRICS",
+            "show resource metrics",
+            "get resource metrics",
+            "resource metrics",
+            "RESOURCE METRICS",
+        ] {
+            assert_eq!(
+                parse_nl_command(sentence).unwrap(),
+                ControlCommand::ExportResourceMetrics,
+                "sentence: {sentence:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn chinese_resource_recovery_read_forms_parse() {
+        for sentence in [
+            "查看资源恢复",
+            "  查看资源恢复  ",
+            "查看 资源 恢复",
+            "检查资源恢复",
+            "检查 资源 恢复",
+            "资源恢复状态",
+            "资源恢复 状态",
+        ] {
+            assert_eq!(
+                parse_nl_command(sentence).unwrap(),
+                ControlCommand::InspectResourceHealth,
+                "sentence: {sentence:?}"
+            );
+        }
+        for sentence in ["导出资源指标", "导出 资源 指标", "资源指标"] {
+            assert_eq!(
+                parse_nl_command(sentence).unwrap(),
+                ControlCommand::ExportResourceMetrics,
+                "sentence: {sentence:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn english_resource_recovery_mutations_parse_with_derived_identity() {
+        let acknowledge = parse_nl_command(
+            "acknowledge resource alert a1b2c3d4e5f60718293a4b5c6d7e8f90 expecting 8",
+        )
+        .unwrap();
+        assert_eq!(
+            acknowledge,
+            ControlCommand::AcknowledgeResourceRecoveryAlert {
+                control_command_id: plan_id(),
+                plan_id: plan_id(),
+                expected_total_failures: 8,
+                reason: NL_RESOURCE_ACK_REASON.to_owned(),
+            }
+        );
+        for sentence in [
+            "  ACK  Resource  Alert  A1B2C3D4E5F60718293A4B5C6D7E8F90 \t EXPECTING  8 ",
+            "ack resource alert a1b2c3d4e5f60718293a4b5c6d7e8f90 expecting 8",
+            "confirm resource alert a1b2c3d4e5f60718293a4b5c6d7e8f90 expecting 8",
+        ] {
+            assert_eq!(
+                parse_nl_command(sentence).unwrap(),
+                acknowledge,
+                "sentence: {sentence:?}"
+            );
+        }
+        let resume = parse_nl_command(
+            "resume resource recovery a1b2c3d4e5f60718293a4b5c6d7e8f90 expecting 8",
+        )
+        .unwrap();
+        assert_eq!(
+            resume,
+            ControlCommand::ResumeResourceRecovery {
+                control_command_id: plan_id(),
+                plan_id: plan_id(),
+                expected_total_failures: 8,
+                reason: NL_RESOURCE_RESUME_REASON.to_owned(),
+            }
+        );
+        assert_eq!(
+            parse_nl_command(
+                "  RESUME   Resource  Recovery  A1B2C3D4E5F60718293A4B5C6D7E8F90  EXPECTING  8 "
+            )
+            .unwrap(),
+            resume
+        );
+    }
+
+    #[test]
+    fn chinese_resource_recovery_mutations_parse_with_derived_identity() {
+        assert_eq!(
+            parse_nl_command("确认资源告警 a1b2c3d4e5f60718293a4b5c6d7e8f90 期望 8").unwrap(),
+            ControlCommand::AcknowledgeResourceRecoveryAlert {
+                control_command_id: plan_id(),
+                plan_id: plan_id(),
+                expected_total_failures: 8,
+                reason: NL_RESOURCE_ACK_REASON.to_owned(),
+            }
+        );
+        assert_eq!(
+            parse_nl_command("确认 资源 告警 A1B2C3D4E5F60718293A4B5C6D7E8F90 期望 8").unwrap(),
+            ControlCommand::AcknowledgeResourceRecoveryAlert {
+                control_command_id: plan_id(),
+                plan_id: plan_id(),
+                expected_total_failures: 8,
+                reason: NL_RESOURCE_ACK_REASON.to_owned(),
+            }
+        );
+        assert_eq!(
+            parse_nl_command("恢复资源恢复 a1b2c3d4e5f60718293a4b5c6d7e8f90 期望 8").unwrap(),
+            ControlCommand::ResumeResourceRecovery {
+                control_command_id: plan_id(),
+                plan_id: plan_id(),
+                expected_total_failures: 8,
+                reason: NL_RESOURCE_RESUME_REASON.to_owned(),
+            }
+        );
+        assert_eq!(
+            parse_nl_command("恢复 资源恢复 A1B2C3D4E5F60718293A4B5C6D7E8F90 期望 8").unwrap(),
+            ControlCommand::ResumeResourceRecovery {
+                control_command_id: plan_id(),
+                plan_id: plan_id(),
+                expected_total_failures: 8,
+                reason: NL_RESOURCE_RESUME_REASON.to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn resource_recovery_out_of_grammar_inputs_fail_typed_with_a_reason() {
+        for input in [
+            "inspect resource recovery now",
+            "resource recovery",
+            "resource recovery status now",
+            "查看 资源",
+            "检查资源恢复了",
+            "资源恢复状态了",
+            "export resource metric",
+            "resource metrics now",
+            "导出资源指标了",
+            "acknowledge resource alert",
+            "ack resource alert a1b2c3d4e5f60718293a4b5c6d7e8f90 expecting",
+            format!("acknowledge resource alert {PLAN_HEX_LOWER} expecting -1").as_str(),
+            format!("acknowledge resource alert {PLAN_HEX_LOWER} expecting 1 extra").as_str(),
+            format!("ack resource alert {PLAN_HEX_LOWER} expecting 1.5").as_str(),
+            "resume resource recovery",
+            format!("resume resource recovery {PLAN_HEX_LOWER}").as_str(),
+            format!("resume resource recovery {PLAN_HEX_LOWER} expecting").as_str(),
+            format!("resume resource {PLAN_HEX_LOWER} expecting 8").as_str(),
+            format!("resume resource alert {PLAN_HEX_LOWER} expecting 8").as_str(),
+            "确认资源告警",
+            format!("确认资源告警 {PLAN_HEX_LOWER} 期望").as_str(),
+            format!("确认 资源 告警 {PLAN_HEX_LOWER} 期望 一").as_str(),
+            "恢复资源恢复",
+            format!("恢复资源恢复 {PLAN_HEX_LOWER} 期望").as_str(),
+            format!("恢复 资源恢复 {PLAN_HEX_LOWER} 期望 一").as_str(),
+        ] {
+            match parse_nl_command(input) {
+                Err(ControlError::InvalidCommand(reason)) => {
+                    assert!(
+                        !reason.is_empty(),
+                        "rejection for {input:?} carries no reason"
+                    );
+                }
+                other => panic!("expected typed rejection for {input:?}, got {other:?}"),
+            }
+        }
     }
 
     #[test]

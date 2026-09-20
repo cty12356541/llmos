@@ -13,14 +13,18 @@
 //! ```text
 //! system-control-cli <SOCKET> inspect-health
 //! system-control-cli <SOCKET> inspect-semantic-health
+//! system-control-cli <SOCKET> inspect-resource-health
 //! system-control-cli <SOCKET> export-metrics
 //! system-control-cli <SOCKET> export-semantic-metrics
+//! system-control-cli <SOCKET> export-resource-metrics
 //! system-control-cli <SOCKET> inspect-task <PLAN_ID_HEX_32>
 //! system-control-cli <SOCKET> inspect-process <PROCESS_ID_HEX_32>
 //! system-control-cli <SOCKET> inspect-resource <RESERVATION_ID_HEX_32>
 //! system-control-cli <SOCKET> ack-recovery-alert <COMMAND_ID_HEX_32> <PLAN_ID_HEX_32> <EXPECTED_FAILURES> <REASON>
 //! system-control-cli <SOCKET> ack-semantic-recovery-alert <COMMAND_ID_HEX_32> <PLAN_ID_HEX_32> <EXPECTED_FAILURES> <REASON>
 //! system-control-cli <SOCKET> resume-semantic-recovery <COMMAND_ID_HEX_32> <PLAN_ID_HEX_32> <EXPECTED_FAILURES> <REASON>
+//! system-control-cli <SOCKET> ack-resource-recovery-alert <COMMAND_ID_HEX_32> <PLAN_ID_HEX_32> <EXPECTED_FAILURES> <REASON>
+//! system-control-cli <SOCKET> resume-resource-recovery <COMMAND_ID_HEX_32> <PLAN_ID_HEX_32> <EXPECTED_FAILURES> <REASON>
 //! system-control-cli <SOCKET> pause-operation <COMMAND_ID_HEX_32> <TARGET_ID_HEX_32> <EXPECTED_REVISION> <REASON>
 //! system-control-cli <SOCKET> resume-operation <COMMAND_ID_HEX_32> <TARGET_ID_HEX_32> <EXPECTED_REVISION> <REASON>
 //! system-control-cli <SOCKET> cancel-operation <COMMAND_ID_HEX_32> <TARGET_ID_HEX_32> <EXPECTED_REVISION> <REASON>
@@ -52,14 +56,18 @@ use nlos_system_control::control::{
 #[cfg(unix)]
 const USAGE: &str = "usage: system-control-cli <SOCKET> inspect-health \
 | inspect-semantic-health \
+| inspect-resource-health \
 | export-metrics \
 | export-semantic-metrics \
+| export-resource-metrics \
 | inspect-task <PLAN_ID_HEX_32> \
 | inspect-process <PROCESS_ID_HEX_32> \
 | inspect-resource <RESERVATION_ID_HEX_32> \
  | ack-recovery-alert <COMMAND_ID_HEX_32> <PLAN_ID_HEX_32> <EXPECTED_FAILURES> <REASON> \
  | ack-semantic-recovery-alert <COMMAND_ID_HEX_32> <PLAN_ID_HEX_32> <EXPECTED_FAILURES> <REASON> \
  | resume-semantic-recovery <COMMAND_ID_HEX_32> <PLAN_ID_HEX_32> <EXPECTED_FAILURES> <REASON> \
+ | ack-resource-recovery-alert <COMMAND_ID_HEX_32> <PLAN_ID_HEX_32> <EXPECTED_FAILURES> <REASON> \
+ | resume-resource-recovery <COMMAND_ID_HEX_32> <PLAN_ID_HEX_32> <EXPECTED_FAILURES> <REASON> \
  | pause-operation <COMMAND_ID_HEX_32> <TARGET_ID_HEX_32> <EXPECTED_REVISION> <REASON> \
  | resume-operation <COMMAND_ID_HEX_32> <TARGET_ID_HEX_32> <EXPECTED_REVISION> <REASON> \
  | cancel-operation <COMMAND_ID_HEX_32> <TARGET_ID_HEX_32> <EXPECTED_REVISION> <REASON> \
@@ -88,6 +96,7 @@ fn parse_throttle_percent(value: &str) -> Result<u64, ControlError> {
 }
 
 #[cfg(unix)]
+#[allow(clippy::too_many_lines)] // The flat subcommand table stays in one auditable dispatch.
 fn parsed_command(arguments: &[String]) -> Result<ControlCommand, ControlError> {
     let Some(operation) = arguments.first().map(String::as_str) else {
         return Err(ControlError::InvalidCommand("missing control operation"));
@@ -97,9 +106,15 @@ fn parsed_command(arguments: &[String]) -> Result<ControlCommand, ControlError> 
         "inspect-semantic-health" if arguments.len() == 1 => {
             Ok(ControlCommand::InspectSemanticHealth)
         }
+        "inspect-resource-health" if arguments.len() == 1 => {
+            Ok(ControlCommand::InspectResourceHealth)
+        }
         "export-metrics" if arguments.len() == 1 => Ok(ControlCommand::ExportMetrics),
         "export-semantic-metrics" if arguments.len() == 1 => {
             Ok(ControlCommand::ExportSemanticMetrics)
+        }
+        "export-resource-metrics" if arguments.len() == 1 => {
+            Ok(ControlCommand::ExportResourceMetrics)
         }
         "inspect-task" if arguments.len() == 2 => Ok(ControlCommand::InspectTask {
             plan_id: parse_hex_id(&arguments[1])?,
@@ -128,6 +143,22 @@ fn parsed_command(arguments: &[String]) -> Result<ControlCommand, ControlError> 
         }
         "resume-semantic-recovery" if arguments.len() == 5 => {
             Ok(ControlCommand::ResumeSemanticRecovery {
+                control_command_id: parse_hex_id(&arguments[1])?,
+                plan_id: parse_hex_id(&arguments[2])?,
+                expected_total_failures: parse_u64(&arguments[3])?,
+                reason: arguments[4].clone(),
+            })
+        }
+        "ack-resource-recovery-alert" if arguments.len() == 5 => {
+            Ok(ControlCommand::AcknowledgeResourceRecoveryAlert {
+                control_command_id: parse_hex_id(&arguments[1])?,
+                plan_id: parse_hex_id(&arguments[2])?,
+                expected_total_failures: parse_u64(&arguments[3])?,
+                reason: arguments[4].clone(),
+            })
+        }
+        "resume-resource-recovery" if arguments.len() == 5 => {
+            Ok(ControlCommand::ResumeResourceRecovery {
                 control_command_id: parse_hex_id(&arguments[1])?,
                 plan_id: parse_hex_id(&arguments[2])?,
                 expected_total_failures: parse_u64(&arguments[3])?,
@@ -203,6 +234,21 @@ fn summary(receipt: &ControlReceipt) -> String {
         ),
         Ok(ControlOutcome::SemanticInspected(inspection)) => format!(
             "outcome=semantic_inspected total_inspected={} total_finalized={} \
+             consecutive_failed_cycles={} domain_faulted={} \
+             durable_retrying={} durable_escalated={} \
+             durable_unacknowledged_escalated={} durable_resolved={} alerts={}",
+            inspection.total_inspected,
+            inspection.total_finalized,
+            inspection.consecutive_failed_cycles,
+            inspection.domain_faulted,
+            inspection.durable_retrying,
+            inspection.durable_escalated,
+            inspection.durable_unacknowledged_escalated,
+            inspection.durable_resolved,
+            inspection.alerts.len(),
+        ),
+        Ok(ControlOutcome::ResourceRecoveryInspected(inspection)) => format!(
+            "outcome=resource_recovery_inspected total_inspected={} total_finalized={} \
              consecutive_failed_cycles={} domain_faulted={} \
              durable_retrying={} durable_escalated={} \
              durable_unacknowledged_escalated={} durable_resolved={} alerts={}",

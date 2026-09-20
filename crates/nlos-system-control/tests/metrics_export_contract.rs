@@ -159,13 +159,13 @@ fn health() -> FixedHealth {
         semantic_total_finalized: 43,
         semantic_domain_faulted: true,
         artifact_domain_faulted: false,
-        resource_durable_retrying: 0,
-        resource_durable_escalated: 0,
-        resource_durable_unacknowledged_escalated: 0,
-        resource_durable_resolved: 0,
-        resource_consecutive_failed_cycles: 0,
-        resource_total_inspected: 0,
-        resource_total_finalized: 0,
+        resource_durable_retrying: 9,
+        resource_durable_escalated: 10,
+        resource_durable_unacknowledged_escalated: 4,
+        resource_durable_resolved: 13,
+        resource_consecutive_failed_cycles: 6,
+        resource_total_inspected: 47,
+        resource_total_finalized: 45,
         resource_domain_faulted: false,
     })
 }
@@ -295,6 +295,8 @@ fn export_emits_complete_typed_catalog_in_stable_order() {
             Event::Counter(RecoveryCounter::FinalizedPlans, 31),
             Event::Counter(RecoveryCounter::SemanticPlansInspected, 41),
             Event::Counter(RecoveryCounter::SemanticPlansFinalized, 43),
+            Event::Counter(RecoveryCounter::ResourcePlansInspected, 47),
+            Event::Counter(RecoveryCounter::ResourcePlansFinalized, 45),
             Event::Gauge(RecoveryGauge::ConsecutiveFailedCycles, 3),
             Event::Gauge(RecoveryGauge::RetryDelayMilliseconds, 1_234),
             Event::Gauge(RecoveryGauge::DurableRetrying, 0),
@@ -308,8 +310,18 @@ fn export_emits_complete_typed_catalog_in_stable_order() {
             Event::Gauge(RecoveryGauge::SemanticDurableUnacknowledgedEscalated, 0),
             Event::Gauge(RecoveryGauge::SemanticDurableResolved, 0),
             Event::Gauge(RecoveryGauge::SemanticDomainFaulted, 1),
+            Event::Gauge(RecoveryGauge::ResourceConsecutiveFailedCycles, 6),
+            Event::Gauge(RecoveryGauge::ResourceDurableRetrying, 0),
+            Event::Gauge(RecoveryGauge::ResourceDurableEscalated, 0),
+            Event::Gauge(RecoveryGauge::ResourceDurableUnacknowledgedEscalated, 0),
+            Event::Gauge(RecoveryGauge::ResourceDurableResolved, 0),
+            Event::Gauge(RecoveryGauge::ResourceDomainFaulted, 0),
         ]
     );
+}
+
+#[test]
+fn catalog_names_pin_the_tri_domain_whitelist() {
     assert_eq!(
         [
             RecoveryCounter::CompletedCycles.name(),
@@ -317,6 +329,8 @@ fn export_emits_complete_typed_catalog_in_stable_order() {
             RecoveryCounter::FinalizedPlans.name(),
             RecoveryCounter::SemanticPlansInspected.name(),
             RecoveryCounter::SemanticPlansFinalized.name(),
+            RecoveryCounter::ResourcePlansInspected.name(),
+            RecoveryCounter::ResourcePlansFinalized.name(),
         ],
         [
             "nlos_artifact_recovery_cycles_total",
@@ -324,6 +338,8 @@ fn export_emits_complete_typed_catalog_in_stable_order() {
             "nlos_artifact_recovery_plans_finalized_total",
             "nlos_semantic_recovery_plans_inspected_total",
             "nlos_semantic_recovery_plans_finalized_total",
+            "nlos_resource_recovery_plans_inspected_total",
+            "nlos_resource_recovery_plans_finalized_total",
         ]
     );
     assert_eq!(
@@ -341,6 +357,12 @@ fn export_emits_complete_typed_catalog_in_stable_order() {
             RecoveryGauge::SemanticDurableUnacknowledgedEscalated.name(),
             RecoveryGauge::SemanticDurableResolved.name(),
             RecoveryGauge::SemanticDomainFaulted.name(),
+            RecoveryGauge::ResourceConsecutiveFailedCycles.name(),
+            RecoveryGauge::ResourceDurableRetrying.name(),
+            RecoveryGauge::ResourceDurableEscalated.name(),
+            RecoveryGauge::ResourceDurableUnacknowledgedEscalated.name(),
+            RecoveryGauge::ResourceDurableResolved.name(),
+            RecoveryGauge::ResourceDomainFaulted.name(),
         ],
         [
             "nlos_artifact_recovery_consecutive_failed_cycles",
@@ -356,6 +378,12 @@ fn export_emits_complete_typed_catalog_in_stable_order() {
             "nlos_semantic_recovery_durable_unacknowledged_escalated",
             "nlos_semantic_recovery_durable_resolved",
             "nlos_semantic_recovery_domain_faulted",
+            "nlos_resource_recovery_consecutive_failed_cycles",
+            "nlos_resource_recovery_durable_retrying",
+            "nlos_resource_recovery_durable_escalated",
+            "nlos_resource_recovery_durable_unacknowledged_escalated",
+            "nlos_resource_recovery_durable_resolved",
+            "nlos_resource_recovery_domain_faulted",
         ]
     );
 }
@@ -382,6 +410,8 @@ fn export_uses_one_health_generation_for_the_complete_catalog() {
             Event::Counter(RecoveryCounter::FinalizedPlans, 201),
             Event::Counter(RecoveryCounter::SemanticPlansInspected, 801),
             Event::Counter(RecoveryCounter::SemanticPlansFinalized, 851),
+            Event::Counter(RecoveryCounter::ResourcePlansInspected, 951),
+            Event::Counter(RecoveryCounter::ResourcePlansFinalized, 981),
             Event::Gauge(RecoveryGauge::ConsecutiveFailedCycles, 301),
             Event::Gauge(RecoveryGauge::RetryDelayMilliseconds, 401),
             // These four values come from the live empty TaskAuthority, not
@@ -398,6 +428,13 @@ fn export_uses_one_health_generation_for_the_complete_catalog() {
             Event::Gauge(RecoveryGauge::SemanticDurableUnacknowledgedEscalated, 0),
             Event::Gauge(RecoveryGauge::SemanticDurableResolved, 0),
             Event::Gauge(RecoveryGauge::SemanticDomainFaulted, 0),
+            Event::Gauge(RecoveryGauge::ResourceConsecutiveFailedCycles, 601),
+            // Same single-generation rule for the resource durable gauges.
+            Event::Gauge(RecoveryGauge::ResourceDurableRetrying, 0),
+            Event::Gauge(RecoveryGauge::ResourceDurableEscalated, 0),
+            Event::Gauge(RecoveryGauge::ResourceDurableUnacknowledgedEscalated, 0),
+            Event::Gauge(RecoveryGauge::ResourceDurableResolved, 0),
+            Event::Gauge(RecoveryGauge::ResourceDomainFaulted, 0),
         ]
     );
 }
@@ -432,8 +469,10 @@ fn export_stops_at_first_sink_failure_for_every_sink_stage() {
                 Event::Counter(RecoveryCounter::FinalizedPlans, 31),
                 Event::Counter(RecoveryCounter::SemanticPlansInspected, 41),
                 Event::Counter(RecoveryCounter::SemanticPlansFinalized, 43),
+                Event::Counter(RecoveryCounter::ResourcePlansInspected, 47),
+                Event::Counter(RecoveryCounter::ResourcePlansFinalized, 45),
             ],
-            (1, 5, 1),
+            (1, 7, 1),
         ),
     ] {
         let mut sink = FailingSink::new(stage);

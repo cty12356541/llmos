@@ -75,17 +75,20 @@ const WORKER_STATE_LABELS: [(RecoveryWorkerState, &str); 5] = [
 ];
 
 /// Canonical render order for counters, mirroring `export_metrics`.
-const COUNTER_ORDER: [RecoveryCounter; 5] = [
+const COUNTER_ORDER: [RecoveryCounter; 7] = [
     RecoveryCounter::CompletedCycles,
     RecoveryCounter::InspectedPlans,
     RecoveryCounter::FinalizedPlans,
     RecoveryCounter::SemanticPlansInspected,
     RecoveryCounter::SemanticPlansFinalized,
+    RecoveryCounter::ResourcePlansInspected,
+    RecoveryCounter::ResourcePlansFinalized,
 ];
 
 /// Canonical render order for gauges, mirroring `export_metrics`: the
-/// artifact-domain gauges first, then the semantic-domain gauges.
-const GAUGE_ORDER: [RecoveryGauge; 13] = [
+/// artifact-domain gauges first, then the semantic-domain gauges, then the
+/// resource-domain gauges.
+const GAUGE_ORDER: [RecoveryGauge; 19] = [
     RecoveryGauge::ConsecutiveFailedCycles,
     RecoveryGauge::RetryDelayMilliseconds,
     RecoveryGauge::DurableRetrying,
@@ -99,6 +102,12 @@ const GAUGE_ORDER: [RecoveryGauge; 13] = [
     RecoveryGauge::SemanticDurableUnacknowledgedEscalated,
     RecoveryGauge::SemanticDurableResolved,
     RecoveryGauge::SemanticDomainFaulted,
+    RecoveryGauge::ResourceConsecutiveFailedCycles,
+    RecoveryGauge::ResourceDurableRetrying,
+    RecoveryGauge::ResourceDurableEscalated,
+    RecoveryGauge::ResourceDurableUnacknowledgedEscalated,
+    RecoveryGauge::ResourceDurableResolved,
+    RecoveryGauge::ResourceDomainFaulted,
 ];
 
 const fn counter_slot(counter: RecoveryCounter) -> usize {
@@ -108,6 +117,8 @@ const fn counter_slot(counter: RecoveryCounter) -> usize {
         RecoveryCounter::FinalizedPlans => 2,
         RecoveryCounter::SemanticPlansInspected => 3,
         RecoveryCounter::SemanticPlansFinalized => 4,
+        RecoveryCounter::ResourcePlansInspected => 5,
+        RecoveryCounter::ResourcePlansFinalized => 6,
     }
 }
 
@@ -126,6 +137,12 @@ const fn gauge_slot(gauge: RecoveryGauge) -> usize {
         RecoveryGauge::SemanticDurableUnacknowledgedEscalated => 10,
         RecoveryGauge::SemanticDurableResolved => 11,
         RecoveryGauge::SemanticDomainFaulted => 12,
+        RecoveryGauge::ResourceConsecutiveFailedCycles => 13,
+        RecoveryGauge::ResourceDurableRetrying => 14,
+        RecoveryGauge::ResourceDurableEscalated => 15,
+        RecoveryGauge::ResourceDurableUnacknowledgedEscalated => 16,
+        RecoveryGauge::ResourceDurableResolved => 17,
+        RecoveryGauge::ResourceDomainFaulted => 18,
     }
 }
 
