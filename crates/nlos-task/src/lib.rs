@@ -208,7 +208,7 @@ pub use model::{
     TaskWriteSetSemanticAppend, TaskWriteSetSemanticAppendRequest, TaskWriteSetSemanticRead,
     TaskWriteSetSemanticRequiredDurability, TaskWriteSetSemanticTarget, empty_effect_history_root,
 };
-pub use nlos_types::{EffectPermitId, EffectSlotId, TaskGroupId, TaskId};
+pub use nlos_types::{EffectPermitId, EffectSlotId, OperationId, TaskGroupId, TaskId};
 pub use participant::{
     ParticipantRecord, ParticipantRegistrationDecision, ParticipantRegistryBinding,
     ParticipantRegistryRecord, ParticipantRegistryState, ParticipantType,
@@ -627,6 +627,45 @@ pub enum TaskStoreError {
     ProcessParticipantAuthority(nlos_process::ProcessAuthorityError),
     /// Operation authority proof readback failed before Task mutation.
     OperationParticipantAuthority(nlos_store::StoreError),
+    /// The Operation dispatch sealed into a `TaskWriteSet` endpoint was
+    /// never durably prepared at the owner (still merely Registered); the
+    /// verify gate fails closed naming the Operation (ADR-0017 O-B).
+    OperationDispatchNotPrepared {
+        /// The Operation whose sealed endpoint lacks any preparation.
+        operation_id: OperationId,
+        /// The generation sealed into the endpoint binding.
+        generation: u64,
+    },
+    /// The Operation dispatch sealed into a `TaskWriteSet` endpoint was
+    /// durably prepared but never activated at the owner (the Operation is
+    /// still Registered, so activation may still arrive); the verify gate
+    /// fails closed naming the Operation (ADR-0017 O-B).
+    OperationDispatchNotActivated {
+        /// The Operation whose preparation was never activated.
+        operation_id: OperationId,
+        /// The generation sealed into the endpoint binding.
+        generation: u64,
+    },
+    /// The Operation dispatch sealed into a `TaskWriteSet` endpoint was
+    /// canceled at the owner before activation (terminal
+    /// `CancelledBeforeEffect` — the preparation can never activate); the
+    /// verify gate fails closed naming the Operation (ADR-0017 O-B).
+    OperationDispatchCancelled {
+        /// The Operation whose preparation was canceled before activation.
+        operation_id: OperationId,
+        /// The generation sealed into the endpoint binding.
+        generation: u64,
+    },
+    /// The generation sealed into a `TaskWriteSet` Operation endpoint is
+    /// stale (or unknown to the consulted owner) at verify time; the gate
+    /// fails closed naming the Operation and its sealed generation
+    /// (ADR-0017 O-B).
+    OperationDispatchStaleGeneration {
+        /// The Operation whose sealed generation drifted.
+        operation_id: OperationId,
+        /// The generation sealed into the endpoint binding.
+        sealed_generation: u64,
+    },
     /// Channel authority proof readback failed before Task mutation.
     ChannelParticipantAuthority(nlos_channel::ChannelAuthorityError),
     /// Identity authority verification failed for a signed barrier
@@ -1014,6 +1053,34 @@ impl fmt::Display for TaskStoreError {
                     "Operation participant proof verification failed: {error}"
                 )
             }
+            Self::OperationDispatchNotPrepared {
+                operation_id,
+                generation,
+            } => write!(
+                formatter,
+                "operation {operation_id:?} generation {generation} has no durable dispatch preparation"
+            ),
+            Self::OperationDispatchNotActivated {
+                operation_id,
+                generation,
+            } => write!(
+                formatter,
+                "operation {operation_id:?} generation {generation} was prepared but never activated"
+            ),
+            Self::OperationDispatchCancelled {
+                operation_id,
+                generation,
+            } => write!(
+                formatter,
+                "operation {operation_id:?} generation {generation} dispatch was canceled before activation"
+            ),
+            Self::OperationDispatchStaleGeneration {
+                operation_id,
+                sealed_generation,
+            } => write!(
+                formatter,
+                "operation {operation_id:?} sealed generation {sealed_generation} is stale or unknown at the owner"
+            ),
             Self::ChannelParticipantAuthority(error) => {
                 write!(
                     formatter,

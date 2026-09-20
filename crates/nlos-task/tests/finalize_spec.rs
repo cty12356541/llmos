@@ -1069,6 +1069,7 @@ fn persisted_envelope_plus_resource_commits_combined_and_replays() {
                     persisted_envelope: Some(1_700),
                     authority_lease: Some(lease),
                     resource_authority: Some(&owner.authority),
+                    operation_authority: None,
                 },
             )
             .expect("envelope+resource spec finalize");
@@ -1128,6 +1129,7 @@ fn persisted_envelope_plus_resource_commits_combined_and_replays() {
                 persisted_envelope: Some(9_999),
                 authority_lease: Some(lease),
                 resource_authority: Some(&empty_resource),
+                operation_authority: None,
             },
         )
         .expect("envelope+resource spec replay against empty owners");
