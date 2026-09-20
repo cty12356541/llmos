@@ -25,6 +25,7 @@ default = []
 # SqliteTaskAuthority,并同时开放 ADR-0011 认证入口与 plain 入口两个
 # Unix socket 服务循环。dev_server 示例与集成测试共享;不进生产二进制语义。
 dev-fixture = [
+    "dep:nlos-artifact",
     "dep:nlos-clock",
     "dep:nlos-commit-coordinator",
     "dep:nlos-identity",
@@ -39,6 +40,8 @@ required-features = ["dev-fixture"]
 
 [dependencies]
 ed25519-dalek = { version = "3.0.0", default-features = false, features = ["fast"] }
+# W32-F:UI Surface 呈现的本地应用权威直读(ApplicationAuthority inspect 面)。
+nlos-application = { path = "../../crates/nlos-application" }
 nlos-resource = { path = "../../crates/nlos-resource" }
 nlos-schema = { path = "../../crates/nlos-schema" }
 nlos-system-control = { path = "../../crates/nlos-system-control", features = ["cli", "resource"] }
@@ -48,6 +51,7 @@ serde_json = "1"
 tauri = { version = "2", features = [] }
 
 # dev-fixture 可选依赖(与示例/测试共享,默认不启用)。
+nlos-artifact = { path = "../../crates/nlos-artifact", optional = true }
 nlos-clock = { path = "../../crates/nlos-clock", optional = true }
 nlos-commit-coordinator = { path = "../../crates/nlos-commit-coordinator", optional = true }
 nlos-identity = { path = "../../crates/nlos-identity", optional = true }

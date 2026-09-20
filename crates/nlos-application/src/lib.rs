@@ -106,6 +106,7 @@
 
 mod migration;
 mod schema;
+mod surfaces;
 mod task_templates;
 
 use std::error::Error;
@@ -129,6 +130,10 @@ pub use migration::{
     MigrationHealthReport, MigrationHealthState, MigrationRollbackReceipt, MigrationState,
     MigrationStepRecord, MigrationView, RecordMigrationStepDecision, RecordMigrationStepRequest,
     RollbackMigrationDecision, RollbackPackageMigrationRequest,
+};
+pub use surfaces::{
+    MAX_SURFACE_TEXT_BYTES, MAX_SURFACES_PER_SEGMENT, PackageSurfaceDeclaration,
+    PackageSurfaceKind, SurfaceSegmentError, validate_surface_declarations,
 };
 pub use task_templates::{TaskTemplateError, compile_task_templates};
 
@@ -578,6 +583,64 @@ impl RegisterProcessBindingDecision {
     }
 }
 
+/// Immutable durable proof that one declared `surfaces` segment was
+/// registered as one application installation's UI-Surface set (W32-F /
+/// B2-2): one receipt per declared surface, sharing the registration
+/// call's idempotency key and timestamp. The declared content is part of
+/// the durable fact — inspect returns exactly what was declared, bitwise,
+/// so a presenter never renders anything the application did not declare.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SurfaceRegistrationReceipt {
+    pub application_id: ApplicationId,
+    /// Declaration order within the registered segment (dense from 0).
+    pub surface_index: u64,
+    pub surface_id: [u8; 16],
+    pub kind: PackageSurfaceKind,
+    pub title: String,
+    pub entry_name: Option<String>,
+    /// The manifest digest of the installed package content the segment
+    /// was registered against (the content binding; equals the
+    /// application row's manifest digest at registration time).
+    pub package_manifest_digest: ContentDigest,
+    pub registrant_principal: PrincipalId,
+    pub application_generation: Generation,
+    pub idempotency_key: IdempotencyKey,
+    pub registered_at_ms: u64,
+}
+
+/// Request to register one declared `surfaces` segment against an
+/// installed application. Authority-bound: the caller supplies the
+/// declared segment and the manifest digest of the package content it
+/// was declared for; the authority pins both to the application's
+/// current installation generation and refuses a digest mismatch
+/// fail-closed (a declaration naming stale content never silently
+/// overrides the installed generation).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RegisterSurfacesRequest {
+    pub package_id: PackageId,
+    /// Manifest digest of the package content the segment declares
+    /// against (a caller that just installed or verified knows it from
+    /// the verification/installation receipt). Must equal the
+    /// application row's current manifest digest.
+    pub declared_manifest_digest: ContentDigest,
+    pub surfaces: Vec<PackageSurfaceDeclaration>,
+    pub registrant_principal: PrincipalId,
+    pub idempotency_key: IdempotencyKey,
+    pub registered_at_ms: u64,
+}
+
+/// Outcome of one [`ApplicationAuthority::register_surfaces`] call: the
+/// whole registered segment, in declaration order, whichever branch.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RegisterSurfacesDecision {
+    /// First execution of this key: the segment's rows committed at the
+    /// application's current generation.
+    Registered(Vec<SurfaceRegistrationReceipt>),
+    /// Durable replay: this key already registered and the recorded
+    /// original segment is returned unchanged.
+    Replayed(Vec<SurfaceRegistrationReceipt>),
+}
+
 /// Fail-closed typed errors of the application/installation authority.
 /// Every variant is a hard refusal: the caller never receives an
 /// installation whose durability is in doubt, and a rejected install
@@ -718,6 +781,26 @@ pub enum ApplicationAuthorityError {
     ProcessAlreadyRegistered {
         application_id: ApplicationId,
         process_id: ProcessId,
+    },
+    /// The declared `surfaces` segment violates the manifest shape
+    /// contract (the shared [`surfaces::validate_surface_declarations`]
+    /// authority refused it).
+    SurfaceSegment(SurfaceSegmentError),
+    /// The declared manifest digest does not match the application's
+    /// current installation content; a surface declaration naming stale
+    /// package content is refused fail-closed, never silently rebound.
+    SurfaceManifestMismatch {
+        application_id: ApplicationId,
+        installed_manifest_digest: ContentDigest,
+        declared_manifest_digest: ContentDigest,
+    },
+    /// The surface identity is already registered for this application
+    /// at the current installation generation; re-declaring after a
+    /// generation advance is a fresh registration, a same-generation
+    /// redeclaration under a new key is a typed refusal.
+    SurfaceAlreadyRegistered {
+        application_id: ApplicationId,
+        surface_id: [u8; 16],
     },
     /// No migration drill exists under this idempotency key.
     MigrationNotFound { idempotency_key: IdempotencyKey },
@@ -1023,6 +1106,29 @@ impl fmt::Display for ApplicationAuthorityError {
                 formatter,
                 "process {process_id:?} is already bound to application {application_id:?} at the current generation; replay the original idempotency key instead of issuing a new command"
             ),
+            Self::SurfaceSegment(error) => write!(
+                formatter,
+                "surface segment violates the manifest shape contract: {error}"
+            ),
+            Self::SurfaceManifestMismatch {
+                application_id,
+                installed_manifest_digest,
+                declared_manifest_digest,
+            } => write!(
+                formatter,
+                "surface declaration of application {application_id:?} names manifest digest \
+                 {declared_manifest_digest:?} but the current installation content is \
+                 {installed_manifest_digest:?}; redeclare against the installed content"
+            ),
+            Self::SurfaceAlreadyRegistered {
+                application_id,
+                surface_id,
+            } => write!(
+                formatter,
+                "surface {surface_id:?} is already registered for application \
+                 {application_id:?} at the current generation; a generation advance is \
+                 required before redeclaring it"
+            ),
             Self::MigrationNotFound { idempotency_key } => write!(
                 formatter,
                 "no package migration drill exists under key {idempotency_key:?}"
@@ -1210,7 +1316,7 @@ impl ApplicationAuthority {
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
         match version {
             0 => schema::migrate_v1(&mut connection)?,
-            1..=7 => {}
+            1..=8 => {}
             other => return Err(ApplicationAuthorityError::SchemaVersionUnsupported(other)),
         }
         if version < 2 {
@@ -1228,8 +1334,11 @@ impl ApplicationAuthority {
         if version < 6 {
             schema::migrate_v6(&mut connection)?;
         }
-        if version < schema::SCHEMA_VERSION {
+        if version < 7 {
             schema::migrate_v7(&mut connection)?;
+        }
+        if version < 8 {
+            schema::migrate_v8(&mut connection)?;
         }
         Ok(Self {
             connection: Mutex::new(connection),
@@ -2229,6 +2338,156 @@ impl ApplicationAuthority {
         Ok(receipts)
     }
 
+    /// Reads one application's every durable surface registration by
+    /// package identity, registration order first, declaration order
+    /// within a registration. An unknown application lists as empty —
+    /// a legitimate read outcome, not an error. This is the presenter's
+    /// discovery face: the durable rows are exactly what the
+    /// application declared, bitwise.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed on a storage error.
+    pub fn inspect_surfaces(
+        &self,
+        package_id: PackageId,
+    ) -> Result<Vec<SurfaceRegistrationReceipt>, ApplicationAuthorityError> {
+        let connection = self.lock()?;
+        let application_id = derive_application_id(package_id);
+        let mut statement = connection.prepare(
+            "SELECT application_id, surface_index, surface_id, surface_kind,
+                    title, entry_name, package_manifest_digest,
+                    registrant_principal, application_generation,
+                    idempotency_key, registered_at_ms
+             FROM application_surface_registrations
+             WHERE application_id = ?1
+             ORDER BY registered_at_ms ASC, idempotency_key ASC, surface_index ASC",
+        )?;
+        let mut rows = statement.query([application_id.as_bytes().as_slice()])?;
+        let mut receipts = Vec::new();
+        while let Some(row) = rows.next()? {
+            receipts.push(decode_surface_registration_row(row)?);
+        }
+        Ok(receipts)
+    }
+
+    /// Registers one declared `surfaces` segment as the UI-Surface set
+    /// of an installed application's current generation (W32-F / B2-2),
+    /// pinned to the installation's manifest content.
+    ///
+    /// Fail-closed order (mirroring the v5/v6 registration faces plus
+    /// the content binding):
+    ///
+    /// 1. **Segment shape**: the shared validator
+    ///    ([`surfaces::validate_surface_declarations`]) refuses an
+    ///    empty, oversized, duplicate-id, or text-unbounded segment.
+    /// 2. **Replay**: the durable rows under the request's idempotency
+    ///    key are the authority; a byte-equal re-registration replays
+    ///    unchanged, and the same key with any other shape is a typed
+    ///    [`ApplicationAuthorityError::IdempotencyConflict`].
+    /// 3. **State + content binding**: the application must exist, be
+    ///    `installed`, the timestamp must not precede the row's last
+    ///    update, and the declared manifest digest must equal the
+    ///    current installation's manifest digest.
+    /// 4. **Per-surface admission**: no surface identity may already be
+    ///    registered at the current generation (a generation advance
+    ///    opens fresh admission).
+    ///
+    /// # Errors
+    ///
+    /// Fails closed (zero durable state change) for a malformed
+    /// segment, an unknown package, a disabled/uninstalled application,
+    /// an idempotency conflict, a duplicate surface identity, a manifest
+    /// digest mismatch, a timestamp preceding the last application
+    /// update, or any storage failure.
+    pub fn register_surfaces(
+        &self,
+        request: &RegisterSurfacesRequest,
+    ) -> Result<RegisterSurfacesDecision, ApplicationAuthorityError> {
+        surfaces::validate_surface_declarations(&request.surfaces)
+            .map_err(ApplicationAuthorityError::SurfaceSegment)?;
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(existing) =
+            load_surface_registrations_by_key(&transaction, request.idempotency_key)?
+        {
+            if surface_replay_conflicts(&existing, request) {
+                return Err(ApplicationAuthorityError::IdempotencyConflict);
+            }
+            transaction.commit()?;
+            return Ok(RegisterSurfacesDecision::Replayed(existing));
+        }
+        let application = load_application_by_package(&transaction, request.package_id)?.ok_or(
+            ApplicationAuthorityError::ApplicationNotFound {
+                package_id: request.package_id,
+            },
+        )?;
+        match application.status {
+            ApplicationStatus::Uninstalled => {
+                return Err(ApplicationAuthorityError::ApplicationUninstalled {
+                    application_id: application.application_id,
+                });
+            }
+            ApplicationStatus::Disabled => {
+                return Err(ApplicationAuthorityError::ApplicationDisabled {
+                    application_id: application.application_id,
+                });
+            }
+            ApplicationStatus::Installed => {}
+        }
+        if request.registered_at_ms < application.updated_at_ms {
+            return Err(ApplicationAuthorityError::RegistrationPrecedesLastUpdate {
+                last_updated_at_ms: application.updated_at_ms,
+                registered_at_ms: request.registered_at_ms,
+            });
+        }
+        if request.declared_manifest_digest != application.package_manifest_digest {
+            return Err(ApplicationAuthorityError::SurfaceManifestMismatch {
+                application_id: application.application_id,
+                installed_manifest_digest: application.package_manifest_digest,
+                declared_manifest_digest: request.declared_manifest_digest,
+            });
+        }
+        for declaration in &request.surfaces {
+            if load_surface_registration_at_generation(
+                &transaction,
+                application.application_id,
+                declaration.surface_id,
+                application.current_installation_generation,
+            )?
+            .is_some()
+            {
+                return Err(ApplicationAuthorityError::SurfaceAlreadyRegistered {
+                    application_id: application.application_id,
+                    surface_id: declaration.surface_id,
+                });
+            }
+        }
+        let receipts = request
+            .surfaces
+            .iter()
+            .enumerate()
+            .map(|(index, declaration)| SurfaceRegistrationReceipt {
+                application_id: application.application_id,
+                surface_index: index as u64,
+                surface_id: declaration.surface_id,
+                kind: declaration.kind,
+                title: declaration.title.clone(),
+                entry_name: declaration.entry_name.clone(),
+                package_manifest_digest: request.declared_manifest_digest,
+                registrant_principal: request.registrant_principal,
+                application_generation: application.current_installation_generation,
+                idempotency_key: request.idempotency_key,
+                registered_at_ms: request.registered_at_ms,
+            })
+            .collect::<Vec<_>>();
+        for receipt in &receipts {
+            insert_surface_registration(&transaction, receipt)?;
+        }
+        transaction.commit()?;
+        Ok(RegisterSurfacesDecision::Registered(receipts))
+    }
+
     /// Reads an application's current durable state by package identity
     /// without any durable side effect. `None` means the package has never
     /// been installed — a legitimate read outcome, not an error.
@@ -2875,6 +3134,127 @@ fn decode_process_binding_row(
         application_generation: decode_generation(row, 3)?,
         idempotency_key: IdempotencyKey::from_bytes(blob16(row, 4)?),
         registered_at_ms: decode_u64(row, 5)?,
+    })
+}
+
+/// A durable replay conflicts iff any recorded fact differs from the
+/// request: the addressed application, the registrant, the timestamp,
+/// the bound manifest digest, or any declared surface bitwise. Rows load
+/// ordered by their dense `surface_index`, so enumerated alignment is
+/// the declaration order.
+fn surface_replay_conflicts(
+    existing: &[SurfaceRegistrationReceipt],
+    request: &RegisterSurfacesRequest,
+) -> bool {
+    let Some(first) = existing.first() else {
+        return true;
+    };
+    first.application_id != derive_application_id(request.package_id)
+        || first.registrant_principal != request.registrant_principal
+        || first.registered_at_ms != request.registered_at_ms
+        || first.package_manifest_digest != request.declared_manifest_digest
+        || existing.len() != request.surfaces.len()
+        || existing.iter().enumerate().any(|(position, row)| {
+            let Some(declaration) = request.surfaces.get(position) else {
+                return true;
+            };
+            row.surface_index != position as u64
+                || row.surface_id != declaration.surface_id
+                || row.kind != declaration.kind
+                || row.title != declaration.title
+                || row.entry_name != declaration.entry_name
+        })
+}
+
+fn load_surface_registrations_by_key(
+    source: &Connection,
+    key: IdempotencyKey,
+) -> Result<Option<Vec<SurfaceRegistrationReceipt>>, ApplicationAuthorityError> {
+    let mut statement = source.prepare(
+        "SELECT application_id, surface_index, surface_id, surface_kind,
+                title, entry_name, package_manifest_digest,
+                registrant_principal, application_generation,
+                idempotency_key, registered_at_ms
+         FROM application_surface_registrations
+         WHERE idempotency_key = ?1
+         ORDER BY surface_index ASC",
+    )?;
+    let mut rows = statement.query([key.as_bytes().as_slice()])?;
+    let mut receipts = Vec::new();
+    while let Some(row) = rows.next()? {
+        receipts.push(decode_surface_registration_row(row)?);
+    }
+    Ok((!receipts.is_empty()).then_some(receipts))
+}
+
+fn load_surface_registration_at_generation(
+    source: &Connection,
+    application_id: ApplicationId,
+    surface_id: [u8; 16],
+    generation: Generation,
+) -> Result<Option<SurfaceRegistrationReceipt>, ApplicationAuthorityError> {
+    let mut statement = source.prepare(
+        "SELECT application_id, surface_index, surface_id, surface_kind,
+                title, entry_name, package_manifest_digest,
+                registrant_principal, application_generation,
+                idempotency_key, registered_at_ms
+         FROM application_surface_registrations
+         WHERE application_id = ?1 AND surface_id = ?2 AND application_generation = ?3",
+    )?;
+    let mut rows = statement.query(params![
+        application_id.as_bytes().as_slice(),
+        surface_id.as_slice(),
+        encode_generation(generation)?,
+    ])?;
+    rows.next()?
+        .map(decode_surface_registration_row)
+        .transpose()
+}
+
+fn insert_surface_registration(
+    transaction: &Connection,
+    receipt: &SurfaceRegistrationReceipt,
+) -> Result<(), ApplicationAuthorityError> {
+    transaction.execute(
+        "INSERT INTO application_surface_registrations (
+            idempotency_key, surface_index, application_id, surface_id,
+            surface_kind, title, entry_name, package_manifest_digest,
+            registrant_principal, application_generation, registered_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        params![
+            receipt.idempotency_key.as_bytes().as_slice(),
+            i64::try_from(receipt.surface_index)
+                .map_err(|_| ApplicationAuthorityError::CorruptRecord("surface index"))?,
+            receipt.application_id.as_bytes().as_slice(),
+            receipt.surface_id.as_slice(),
+            i64::from(receipt.kind.encode()),
+            receipt.title,
+            receipt.entry_name,
+            receipt.package_manifest_digest.as_bytes().as_slice(),
+            receipt.registrant_principal.as_bytes().as_slice(),
+            encode_generation(receipt.application_generation)?,
+            encode_u64(receipt.registered_at_ms)?,
+        ],
+    )?;
+    Ok(())
+}
+
+fn decode_surface_registration_row(
+    row: &rusqlite::Row<'_>,
+) -> Result<SurfaceRegistrationReceipt, ApplicationAuthorityError> {
+    Ok(SurfaceRegistrationReceipt {
+        application_id: ApplicationId::from_bytes(blob16(row, 0)?),
+        surface_index: decode_u64(row, 1)?,
+        surface_id: blob16(row, 2)?,
+        kind: PackageSurfaceKind::decode(row.get(3)?)
+            .map_err(|_| ApplicationAuthorityError::CorruptRecord("surface kind"))?,
+        title: row.get(4)?,
+        entry_name: row.get(5)?,
+        package_manifest_digest: ContentDigest::from_bytes(blob32(row, 6)?),
+        registrant_principal: PrincipalId::from_bytes(blob16(row, 7)?),
+        application_generation: decode_generation(row, 8)?,
+        idempotency_key: IdempotencyKey::from_bytes(blob16(row, 9)?),
+        registered_at_ms: decode_u64(row, 10)?,
     })
 }
 

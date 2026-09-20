@@ -19,6 +19,8 @@ pub enum ErrorCode {
     Control,
     /// 当前平台没有认证入口可用(认证 dispatch 目前仅 Unix)。
     UnsupportedPlatform,
+    /// 请求的权威事实不存在(如从未安装的包)——事实读回,不是可重试错误。
+    NotFound,
     /// 不应发生的一致性缺口(防御性,不承载业务语义)。
     Internal,
 }

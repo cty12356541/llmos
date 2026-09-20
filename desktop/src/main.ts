@@ -16,6 +16,7 @@ import {
   inspectTask,
   parityCheck,
   parityCheckWrite,
+  presentSurfaces,
   setConfig,
   submitControl,
 } from "./ipc";
@@ -26,7 +27,9 @@ import type {
   ControlActionInput,
   FactCheckDto,
   OutcomeDto,
+  PresentedSurfaceDto,
   ReceiptDto,
+  SurfacesPresentationDto,
 } from "./types";
 import { MUTATION_OUTCOME_KINDS } from "./types";
 
@@ -826,6 +829,146 @@ function permissionView(config: ConfigDto): HTMLElement {
   return wrap;
 }
 
+/** W32-F:呈现边界登记(声明→呈现最小链之外的面,不发明)。 */
+const SURFACE_PRESENTATION_GAPS: ReadonlyArray<{ fact: string; detail: string }> = [
+  {
+    fact: "载荷内容渲染",
+    detail:
+      "entry_name 引用的 manifest entry 载荷字节(artifact store 物化内容)未进入呈现——本视图渲染声明元数据 + 内容占位,不伪造内容",
+  },
+  {
+    fact: "表面生命周期管理",
+    detail:
+      "REGISTERED→CREATED→PRESENTED↔HIDDEN→CLOSED 状态机、open/close 动作、stale 表面隔离执行器——本链只有 durable 声明与呈现过滤(stale 代际不呈现)",
+  },
+  {
+    fact: "焦点/输入路由与几何",
+    detail: "[DUI-WINDOW-001]/[DUI-INPUT-001] 的 focus/input route、accessibility tree、窗口几何/多窗口编排——均未建模",
+  },
+  {
+    fact: "呈现经 ControlCommand 的 IPC 面",
+    detail:
+      "表面呈现是本地应用权威直读视图(application_root 接线,与 W32-D 成本查询同机制);Surface 域的 SABI ControlCommand 面(register/create/present/…)不在本波次",
+  },
+];
+
+function surfaceWindowCard(surface: PresentedSurfaceDto, index: number): HTMLElement {
+  const window = el("section", { className: "card surface-window" });
+  const titleBar = el("div", { className: "surface-titlebar" });
+  const badge = el("span", {
+    className: `surface-kind ${surface.kind}`,
+    text: surface.kind === "window" ? "窗口 window" : "面板 panel",
+  });
+  titleBar.append(badge, el("strong", { text: surface.title }), el("span", { className: "muted", text: `#${index + 1}` }));
+  window.append(titleBar);
+  const body = el("div", { className: "surface-body" });
+  body.append(
+    fieldRow("surface_id", surface.surfaceIdHex),
+    fieldRow("kind", surface.kind),
+    fieldRow("title", surface.title),
+    fieldRow("entry_name(声明的内容引用)", surface.entryName ?? "(无——元数据-only 声明)"),
+    fieldRow("registration_key", surface.registrationKeyHex),
+    fieldRow("registered_at_ms", String(surface.registeredAtMs)),
+  );
+  const placeholder = el("p", {
+    className: "muted surface-placeholder",
+    text: "表面内容占位:本最小链呈现声明的元数据;entry 载荷渲染属后续车道(缺口登记)。",
+  });
+  body.append(placeholder);
+  window.append(body);
+  return window;
+}
+
+function renderSurfacesPresentation(presentation: SurfacesPresentationDto): HTMLElement {
+  const wrap = el("div");
+  const summary = el("section", { className: "card" });
+  summary.append(el("h3", { text: "应用表面呈现(本地应用权威直读)" }));
+  summary.append(
+    fieldRow("application_id", presentation.applicationIdHex),
+    fieldRow("package_id", presentation.packageIdHex),
+    fieldRow("application_generation", String(presentation.applicationGeneration)),
+    fieldRow("status", presentation.status),
+    fieldRow("package_manifest_digest", presentation.packageManifestDigestHex),
+    fieldRow(
+      "可呈现表面数",
+      String(presentation.presentableSurfaces.length),
+    ),
+  );
+  if (presentation.status !== "installed") {
+    summary.append(
+      el("p", {
+        className: "muted",
+        text: `应用状态为 ${presentation.status}:无可呈现表面(非 installed 状态不呈现,如实显示空集)。`,
+      }),
+    );
+  } else if (presentation.presentableSurfaces.length === 0) {
+    summary.append(
+      el("p", {
+        className: "muted",
+        text: "当前代际没有已登记的表面声明:该安装未声明 UI Surface(或声明登记在更早代际,stale 不呈现)。",
+      }),
+    );
+  }
+  wrap.append(summary);
+  presentation.presentableSurfaces.forEach((surface, index) => {
+    wrap.append(surfaceWindowCard(surface, index));
+  });
+  return wrap;
+}
+
+function surfaceGapRegisterCard(): HTMLElement {
+  const panel = el("section", { className: "card" });
+  panel.append(el("h3", { text: "呈现边界登记:声明→呈现最小链之外的面(本视图不发明)" }));
+  const table = el("table", { className: "data-table" });
+  const header = el("tr");
+  header.append(el("th", { text: "缺口" }), el("th", { text: "说明" }));
+  const head = el("thead");
+  head.append(header);
+  const body = el("tbody");
+  for (const gap of SURFACE_PRESENTATION_GAPS) {
+    const tr = el("tr");
+    tr.append(el("td", { text: gap.fact }), el("td", { text: gap.detail }));
+    body.append(tr);
+  }
+  table.append(head, body);
+  panel.append(table);
+  return panel;
+}
+
+function appSurfacesView(): HTMLElement {
+  const wrap = el("div");
+  const panel = el("section", { className: "card" });
+  panel.append(el("h3", { text: "应用表面(声明 → 窗口呈现最小链)" }));
+  panel.append(
+    el("p", {
+      className: "muted",
+      text: "输入包 id(32 hex),经本地应用权威(application_root 接线)读回该应用声明的 UI Surface:只呈现 durable 登记的声明事实(surface id/kind/title/entry 引用),当前安装代际的表面以窗口/面板卡呈现;stale 代际与未安装状态如实为空。登记面由应用侧(sample-app-driver 或样板驱动)经公共 ApplicationAuthority API 完成。",
+    }),
+  );
+  const { row, input } = labeledInput("包 id(32 hex)", "32 hex 字符 package_id", "");
+  panel.append(row);
+  const result = el("div");
+  const button = el("button", { text: "呈现(经本地应用权威)" });
+  button.addEventListener("click", () => {
+    const id = input.value.trim();
+    if (!HEX32.test(id)) {
+      result.replaceChildren(
+        el("p", { className: "muted", text: "请先输入 32 位 hex 的 package_id。" }),
+      );
+      return;
+    }
+    result.replaceChildren(el("p", { className: "muted", text: "读回中……" }));
+    presentSurfaces(id.toLowerCase())
+      .then((presentation) => {
+        result.replaceChildren(renderSurfacesPresentation(presentation));
+      })
+      .catch((error: unknown) => showError(result, error));
+  });
+  panel.append(button, result);
+  wrap.append(panel, surfaceGapRegisterCard());
+  return wrap;
+}
+
 function controlView(): HTMLElement {
   const wrap = el("div");
   wrap.append(recoveryAlertsCard(), operationControlCard());
@@ -982,6 +1125,11 @@ function configView(initial: ConfigDto): HTMLElement {
     initial.resourceRoot ?? "",
     initial.resourceRoot ?? "",
   );
+  const applicationRoot = labeledInput(
+    "application_root(本地应用权威根目录;UI Surface 呈现)",
+    initial.applicationRoot ?? "",
+    initial.applicationRoot ?? "",
+  );
   const status = el("p", { className: "muted", text: `配置来源:${initial.source}` });
   const save = el("button", { text: "保存会话配置" });
   save.addEventListener("click", () => {
@@ -992,6 +1140,7 @@ function configView(initial: ConfigDto): HTMLElement {
       cliSocket: cliSocket.input.value.trim() || null,
       cliPath: cliPath.input.value.trim() || null,
       resourceRoot: resourceRoot.input.value.trim() || null,
+      applicationRoot: applicationRoot.input.value.trim() || null,
     })
       .then((saved) => {
         status.textContent = `配置来源:${saved.source}(已保存)`;
@@ -1005,6 +1154,7 @@ function configView(initial: ConfigDto): HTMLElement {
     cliSocket.row,
     cliPath.row,
     resourceRoot.row,
+    applicationRoot.row,
     save,
     status,
   );
@@ -1325,6 +1475,7 @@ async function bootstrap(): Promise<void> {
   );
   register("metrics", "指标导出", metricsView());
   register("monitor", "资源监控", resourceMonitorView());
+  register("surfaces", "应用表面", appSurfacesView());
   register("control", "控制动作", controlView());
   register("permission", "权限/预算", permissionView(config));
   const parity = el("div");
