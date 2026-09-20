@@ -844,3 +844,9 @@
   scope: "断言 selector 查询 + trust-view 活 join + 派生内存索引（可重建非 canonical）+ 零 semantic 权威写入负证（W33-E/X-1 后半）"
   assurance: H3
   date: "2026-09-21"
+- id: b-debug-001-minimal-face
+  path: docs/evidence/stage-b/b-debug-001-minimal-face.md
+  title: "B-DEBUG-001：最小 debugger 面（fiber snapshot/replay inspect CLI）"
+  scope: "nlos-debug 三命令只读检查面：snapshot inspect（durable fiber/wait 面）+ replay 事件流回放走查（真 BindingEventProjection/ResumePlan）+ recovery 三域台账；钉版本 preflight + 只读枚举 + tripwire 三层零 mutation 纪律（W33-G/X-3 后半）"
+  assurance: H3
+  date: "2026-09-21"

@@ -598,6 +598,7 @@ dependencies = [
  "nlos-task",
  "nlos-types",
  "nlos-wait",
+ "rusqlite",
  "tokio",
 ]
 
