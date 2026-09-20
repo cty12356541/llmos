@@ -611,6 +611,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "nlos-search"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "nlos-capability",
+ "nlos-identity",
+ "nlos-process",
+ "nlos-semantic",
+ "nlos-types",
+ "rusqlite",
+]
+
+[[package]]
 name = "nlos-semantic"
 version = "0.1.0"
 dependencies = [
