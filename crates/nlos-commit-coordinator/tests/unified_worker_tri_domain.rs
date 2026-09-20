@@ -1128,6 +1128,19 @@ fn tri_domain_pending_plans_converge_in_one_worker() {
                 .is_ok_and(|plan| plan.state == ResourceCommitPlanState::Finalized)
     });
 
+    // 与 dual_domain 同款读侧竞态防护:plan 终态先于计数递增可见(慢 runner
+    // run 35524875669 命中),对计数同样有界轮询。
+    wait_until_within(|| {
+        let h = worker.health();
+        h.state == RecoveryWorkerState::Running
+            && h.total_inspected == 1
+            && h.total_finalized == 1
+            && h.semantic_total_inspected == 1
+            && h.semantic_total_finalized == 1
+            && h.resource_total_inspected == 1
+            && h.resource_total_finalized == 1
+    });
+
     let health = worker.health();
     assert_eq!(health.state, RecoveryWorkerState::Running);
     assert_eq!(health.total_inspected, 1);
@@ -1218,6 +1231,7 @@ fn resource_plan_failures_back_off_escalate_resume_and_resolve_through_worker() 
         escalated.last_source,
         nlos_task::ResourceRecoveryFailureSource::TaskAuthority
     );
+    wait_until(|| worker.health().resource_durable_escalated >= 1);
     let health = worker.health();
     assert_eq!(health.state, RecoveryWorkerState::Running);
     assert_eq!(health.resource_durable_escalated, 1);
