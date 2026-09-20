@@ -13,18 +13,20 @@ use nlos_ipc::{
     LocalRpcClient, OutboundResponse, PeerAuthorizer, PeerIdentity, TransportConfig, serve_one,
 };
 use nlos_schema::sabi::v1::{
-    AcknowledgeArtifactRecoveryAlertCommand, CallerIdentity, CapabilityHandle, ControlCommand,
-    ControlCommandSource, ControlScope, Envelope, ExchangeRequest, ExchangeResponse,
-    GetSystemControlRequest, LocalEndpoint, LocalTransportKind, NegotiateServiceRequest,
-    ReceiptReference, RetryDirective, SabiErrorCode, SabiRequestContext, ServiceCandidate,
-    ServiceVersion, SubmitControlCommandRequest, SystemControlView, control_command, envelope,
+    AcknowledgeArtifactRecoveryAlertCommand, AcknowledgeSemanticRecoveryAlertCommand,
+    CallerIdentity, CapabilityHandle, ControlCommand, ControlCommandSource, ControlScope, Envelope,
+    ExchangeRequest, ExchangeResponse, GetSystemControlRequest, LocalEndpoint, LocalTransportKind,
+    NegotiateServiceRequest, ReceiptReference, ResumeSemanticRecoveryCommand, RetryDirective,
+    SabiErrorCode, SabiRequestContext, ServiceCandidate, ServiceVersion,
+    SubmitControlCommandRequest, SystemControlView, control_command, envelope,
     negotiate_service_response,
 };
 use nlos_schema::{
     MethodSemantics, SABI_ENVELOPE_SCHEMA, SABI_SYSTEM_CONTROL_SCHEMA,
     decode_artifact_recovery_operations_snapshot, decode_control_command_result,
-    encode_get_system_control_request, encode_submit_control_command_request,
-    system_control_schema_identity, validate_sabi_response_context,
+    decode_semantic_recovery_operations_snapshot, encode_get_system_control_request,
+    encode_submit_control_command_request, system_control_schema_identity,
+    validate_sabi_response_context,
 };
 use nlos_service_directory::{ServiceRegistration, SnapshotDirectory};
 use nlos_system_control::{
@@ -33,11 +35,12 @@ use nlos_system_control::{
 };
 use nlos_task::{
     ArtifactPublicationExpectation, ArtifactRecoveryFailureRequest, ArtifactRecoveryFailureSource,
-    AttemptSpec, PermitDecision, PermitRequest, PlanArtifactCommitRequest, SnapshotBundle,
-    SqliteTaskAuthority, TaskSpec, artifact_publication_plan_root, empty_effect_history_root,
+    AttemptSpec, PermitDecision, PermitRequest, PlanArtifactCommitRequest, SemanticCommitPlanId,
+    SemanticRecoveryState, SnapshotBundle, SqliteTaskAuthority, TaskSpec,
+    artifact_publication_plan_root, empty_effect_history_root, semantic_recovery_resume_reference,
 };
 use nlos_types::{
-    ArtifactId, CancellationScopeId, Generation, IdempotencyKey, TaskAttemptId, TaskId,
+    ArtifactId, CancellationScopeId, Generation, IdempotencyKey, ReceiptId, TaskAttemptId, TaskId,
     TaskSnapshotId,
 };
 use tokio::io::duplex;
@@ -431,7 +434,7 @@ fn metrics_export_uses_stable_catalog_and_live_task_authority_gauges() {
     control.export_metrics(&mut metrics).unwrap();
 
     assert_eq!(metrics.state, Some(RecoveryWorkerState::BackingOff));
-    assert_eq!(metrics.counters.len(), 3);
+    assert_eq!(metrics.counters.len(), 5);
     assert!(
         metrics
             .counters
@@ -762,7 +765,396 @@ fn service_directory_negotiates_the_system_control_contract() {
         supported_transport_kinds: vec![LocalTransportKind::UnixSocket.into()],
     });
     let negotiate_service_response::Result::Binding(binding) = response.result.unwrap() else {
-        panic!("expected SystemControl binding")
+        panic!("expected SystemControl binding");
     };
     assert_eq!(binding.candidate.unwrap().service, SYSTEM_CONTROL_SERVICE);
+}
+
+const SEMANTIC_PLAN_ID: [u8; 16] = [0x71; 16];
+const SEMANTIC_ACK_COMMAND_ID: [u8; 16] = [0x53; 16];
+const SEMANTIC_RESUME_COMMAND_ID: [u8; 16] = [0x54; 16];
+const SEMANTIC_TOTAL_FAILURES: u64 = 8;
+
+/// Seeds one escalated `task_semantic_recovery` ledger row straight into the
+/// task database. The `Escalated` transition itself is W26-tested inside
+/// `nlos-task`; this fixture only manufactures the durable operations-face
+/// input the `SystemControl` handler reads. The recovery table's foreign key
+/// to `task_semantic_commit_plans` is enforced per-connection, so a raw
+/// seeding connection leaves it unchecked.
+fn seed_escalated_semantic_recovery(database: &TestDatabase) -> SemanticCommitPlanId {
+    let authority = database.open();
+    let summary = authority.summarize_semantic_recovery().unwrap();
+    assert_eq!(summary.escalated, 0, "fixture expects an empty ledger");
+    drop(authority);
+
+    let raw = rusqlite::Connection::open(&database.path).unwrap();
+    raw.pragma_update(None, "foreign_keys", "OFF").unwrap();
+    raw.execute(
+        "INSERT INTO task_semantic_recovery (
+            plan_id, recovery_state, consecutive_failures, total_failures,
+            last_failure_source, first_failed_at_ms, last_failed_at_ms,
+            next_retry_at_ms, escalated_at_ms, resolved_at_ms, updated_at_ms
+        ) VALUES (?1, 1, ?2, ?3, 1, 1000, 1400, NULL, 1500, NULL, 1500)",
+        rusqlite::params![
+            SEMANTIC_PLAN_ID.as_slice(),
+            SEMANTIC_TOTAL_FAILURES.to_be_bytes().as_slice(),
+            SEMANTIC_TOTAL_FAILURES.to_be_bytes().as_slice(),
+        ],
+    )
+    .unwrap();
+    SemanticCommitPlanId::from_bytes(SEMANTIC_PLAN_ID)
+}
+
+fn semantic_health(plan_id: nlos_task::ArtifactCommitPlanId) -> StubHealth {
+    StubHealth(RecoveryWorkerHealth {
+        state: RecoveryWorkerState::Running,
+        completed_cycles: 21,
+        total_inspected: 5,
+        total_finalized: 4,
+        consecutive_failed_cycles: 0,
+        retry_delay: None,
+        last_failures: vec![RecoveryWorkerFailure {
+            plan_id: Some(plan_id),
+            authority: WorkerFailureAuthority::Coordinator,
+            message: "secret local database path must not cross IPC".to_owned(),
+        }],
+        durable_retrying: 0,
+        durable_escalated: 0,
+        durable_unacknowledged_escalated: 0,
+        durable_resolved: 0,
+        semantic_durable_retrying: 2,
+        semantic_durable_escalated: 3,
+        semantic_durable_unacknowledged_escalated: 3,
+        semantic_durable_resolved: 7,
+        semantic_consecutive_failed_cycles: 4,
+        semantic_total_inspected: 13,
+        semantic_total_finalized: 6,
+        semantic_domain_faulted: false,
+        artifact_domain_faulted: false,
+    })
+}
+
+fn semantic_get_envelope(alert_limit: u32) -> Envelope {
+    envelope(
+        GET_METHOD,
+        request_context(Vec::new()),
+        encode_get_system_control_request(&GetSystemControlRequest {
+            schema: Some(system_control_schema_identity()),
+            view: SystemControlView::SemanticCommitRecovery.into(),
+            alert_limit,
+        })
+        .unwrap(),
+    )
+}
+
+fn semantic_submit_envelope(
+    command_id: [u8; 16],
+    command: control_command::Command,
+    expected_total_failures: u64,
+) -> Envelope {
+    let submit = SubmitControlCommandRequest {
+        schema: Some(system_control_schema_identity()),
+        command: Some(ControlCommand {
+            control_command_id: command_id.to_vec(),
+            issuer_principal_id: vec![0x31; 16],
+            source: ControlCommandSource::Cli.into(),
+            scope: ControlScope::Operation.into(),
+            target_id: SEMANTIC_PLAN_ID.to_vec(),
+            expected_generation_or_revision: expected_total_failures,
+            command: Some(command),
+            reason: "operator inspected durable semantic recovery state".to_owned(),
+        }),
+    };
+    envelope(
+        SUBMIT_METHOD,
+        request_context(command_id.to_vec()),
+        encode_submit_control_command_request(&submit).unwrap(),
+    )
+}
+
+#[test]
+fn semantic_get_routes_by_view_and_reports_authoritative_ledger_facts() {
+    let database = TestDatabase::new();
+    let authority = database.open();
+    let plan_id = create_escalated_plan(&authority);
+    seed_escalated_semantic_recovery(&database);
+    let health = semantic_health(plan_id);
+    let control = RecoverySystemControl::new(&authority, &health, &CapabilityPolicy);
+
+    let response = control
+        .handle(&semantic_get_envelope(8), 10, 6_000)
+        .unwrap();
+    validate_sabi_response_context(&response, MethodSemantics::QUERY).unwrap();
+    let snapshot = decode_semantic_recovery_operations_snapshot(&response.payload).unwrap();
+    let metrics = snapshot.metrics.as_ref().unwrap();
+    // The durable gauges must come from the live semantic ledger, not the
+    // deliberately different worker cache in `semantic_health`.
+    assert_eq!(metrics.durable_retrying, 0);
+    assert_eq!(metrics.durable_escalated, 1);
+    assert_eq!(metrics.durable_unacknowledged_escalated, 1);
+    assert_eq!(metrics.durable_resolved, 0);
+    assert_eq!(metrics.total_inspected, 13);
+    assert_eq!(metrics.total_finalized, 6);
+    assert_eq!(metrics.consecutive_failed_cycles, 4);
+    assert!(!metrics.domain_faulted);
+    assert_eq!(snapshot.alerts.len(), 1);
+    assert_eq!(snapshot.alerts[0].plan_id, SEMANTIC_PLAN_ID);
+    assert_eq!(snapshot.alerts[0].total_failures, SEMANTIC_TOTAL_FAILURES);
+    assert_eq!(
+        snapshot.alerts[0].last_failure_authority,
+        i32::from(nlos_schema::sabi::v1::RecoveryFailureAuthority::Semantic)
+    );
+    assert_eq!(snapshot.alerts[0].escalated_at_ms, 1_500);
+    assert_eq!(snapshot.alerts[0].acknowledgement_receipt, None);
+    assert!(!snapshot.alerts_truncated);
+    assert!(
+        !response
+            .payload
+            .windows(6)
+            .any(|window| window == b"secret")
+    );
+
+    let artifact = control
+        .handle(
+            &envelope(
+                GET_METHOD,
+                request_context(Vec::new()),
+                encode_get_system_control_request(&GetSystemControlRequest {
+                    schema: Some(system_control_schema_identity()),
+                    view: SystemControlView::ArtifactCommitRecovery.into(),
+                    alert_limit: 8,
+                })
+                .unwrap(),
+            ),
+            10,
+            6_000,
+        )
+        .unwrap();
+    let artifact_snapshot =
+        decode_artifact_recovery_operations_snapshot(&artifact.payload).unwrap();
+    assert_eq!(artifact_snapshot.alerts.len(), 1);
+    assert_eq!(artifact_snapshot.alerts[0].plan_id, plan_id.as_bytes());
+}
+
+#[test]
+fn semantic_acknowledge_replays_idempotently_with_typed_cas_failures() {
+    let database = TestDatabase::new();
+    let authority = database.open();
+    let plan_id = create_escalated_plan(&authority);
+    seed_escalated_semantic_recovery(&database);
+    let health = semantic_health(plan_id);
+    let control = RecoverySystemControl::new(&authority, &health, &CapabilityPolicy);
+
+    let stale_cas = control
+        .handle(
+            &semantic_submit_envelope(
+                SEMANTIC_ACK_COMMAND_ID,
+                control_command::Command::AcknowledgeSemanticRecoveryAlert(
+                    AcknowledgeSemanticRecoveryAlertCommand {},
+                ),
+                SEMANTIC_TOTAL_FAILURES + 1,
+            ),
+            10,
+            6_000,
+        )
+        .unwrap_err();
+    let failure = stale_cas.to_sabi_failure();
+    assert_eq!(failure.code, i32::from(SabiErrorCode::Conflict));
+    assert_eq!(failure.retry, i32::from(RetryDirective::DoNotRetry));
+
+    let acknowledged = control
+        .handle(
+            &semantic_submit_envelope(
+                SEMANTIC_ACK_COMMAND_ID,
+                control_command::Command::AcknowledgeSemanticRecoveryAlert(
+                    AcknowledgeSemanticRecoveryAlertCommand {},
+                ),
+                SEMANTIC_TOTAL_FAILURES,
+            ),
+            10,
+            6_000,
+        )
+        .unwrap();
+    validate_sabi_response_context(&acknowledged, MethodSemantics::MUTATION).unwrap();
+    let ack_result = decode_control_command_result(&acknowledged.payload).unwrap();
+    let ack_receipt = ack_result.receipt.unwrap();
+    assert_eq!(ack_receipt.receipt_id.len(), 16);
+
+    let replay = control
+        .handle(
+            &semantic_submit_envelope(
+                SEMANTIC_ACK_COMMAND_ID,
+                control_command::Command::AcknowledgeSemanticRecoveryAlert(
+                    AcknowledgeSemanticRecoveryAlertCommand {},
+                ),
+                SEMANTIC_TOTAL_FAILURES,
+            ),
+            10,
+            7_000,
+        )
+        .unwrap();
+    assert_eq!(
+        decode_control_command_result(&replay.payload)
+            .unwrap()
+            .receipt,
+        Some(ack_receipt.clone())
+    );
+    let alerts = authority.list_semantic_recovery_alerts().unwrap();
+    assert_eq!(alerts.len(), 1);
+    assert_eq!(
+        alerts[0].acknowledgement.map(|receipt| receipt.receipt_id),
+        Some(ReceiptId::from_bytes(
+            ack_receipt.receipt_id.clone().try_into().unwrap()
+        ))
+    );
+}
+
+#[test]
+fn semantic_resume_requeues_the_escalated_ledger_with_typed_replay_failure() {
+    let database = TestDatabase::new();
+    let authority = database.open();
+    let plan_id = create_escalated_plan(&authority);
+    seed_escalated_semantic_recovery(&database);
+    let semantic_plan = SemanticCommitPlanId::from_bytes(SEMANTIC_PLAN_ID);
+    let health = semantic_health(plan_id);
+    let control = RecoverySystemControl::new(&authority, &health, &CapabilityPolicy);
+
+    let resumed = control
+        .handle(
+            &semantic_submit_envelope(
+                SEMANTIC_RESUME_COMMAND_ID,
+                control_command::Command::ResumeSemanticRecovery(ResumeSemanticRecoveryCommand {}),
+                SEMANTIC_TOTAL_FAILURES,
+            ),
+            10,
+            6_000,
+        )
+        .unwrap();
+    validate_sabi_response_context(&resumed, MethodSemantics::MUTATION).unwrap();
+    let resume_result = decode_control_command_result(&resumed.payload).unwrap();
+    let resume_reference = resume_result.receipt.unwrap();
+    assert_eq!(
+        resume_reference.receipt_id,
+        semantic_recovery_resume_reference(semantic_plan, SEMANTIC_TOTAL_FAILURES)
+            .as_bytes()
+            .to_vec()
+    );
+    let record = authority
+        .inspect_semantic_recovery(semantic_plan)
+        .unwrap()
+        .unwrap();
+    assert_eq!(record.state, SemanticRecoveryState::Retrying);
+    assert_eq!(record.total_failures, SEMANTIC_TOTAL_FAILURES);
+    assert_eq!(record.consecutive_failures, 0);
+    assert_eq!(record.next_retry_at_ms, Some(6_000));
+    assert_eq!(record.escalated_at_ms, None);
+
+    let replayed_resume = control
+        .handle(
+            &semantic_submit_envelope(
+                SEMANTIC_RESUME_COMMAND_ID,
+                control_command::Command::ResumeSemanticRecovery(ResumeSemanticRecoveryCommand {}),
+                SEMANTIC_TOTAL_FAILURES,
+            ),
+            10,
+            7_000,
+        )
+        .unwrap_err();
+    let replay_failure = replayed_resume.to_sabi_failure();
+    assert_eq!(replay_failure.code, i32::from(SabiErrorCode::State));
+    assert_eq!(replay_failure.retry, i32::from(RetryDirective::DoNotRetry));
+}
+
+#[tokio::test]
+async fn semantic_escalated_plan_is_acknowledged_and_resumed_over_real_ipc() {
+    let database = Arc::new(TestDatabase::new());
+    let authority = Arc::new(database.open());
+    let plan_id = create_escalated_plan(&authority);
+    seed_escalated_semantic_recovery(&database);
+    let semantic_plan = SemanticCommitPlanId::from_bytes(SEMANTIC_PLAN_ID);
+
+    let acknowledge_request = ExchangeRequest {
+        envelope: Some(semantic_submit_envelope(
+            SEMANTIC_ACK_COMMAND_ID,
+            control_command::Command::AcknowledgeSemanticRecoveryAlert(
+                AcknowledgeSemanticRecoveryAlertCommand {},
+            ),
+            SEMANTIC_TOTAL_FAILURES,
+        )),
+    };
+    let config = transport_config();
+    let (client_stream, server_stream) = duplex(64 * 1024);
+    let server_authority = Arc::clone(&authority);
+    let server_health = semantic_health(plan_id);
+    let server = tokio::spawn(async move {
+        serve_one(
+            server_stream,
+            config,
+            PeerIdentity::InMemory,
+            &AllowPeer,
+            move |validated| {
+                let response = RecoverySystemControl::new(
+                    server_authority.as_ref(),
+                    &server_health,
+                    &CapabilityPolicy,
+                )
+                .handle_for_ipc(validated.envelope(), 10, 6_000);
+                async move {
+                    Ok(OutboundResponse::Typed(ExchangeResponse {
+                        envelope: Some(response),
+                    }))
+                }
+            },
+        )
+        .await
+    });
+    let response = LocalRpcClient::new(client_stream, config)
+        .exchange_validated(acknowledge_request)
+        .await
+        .unwrap();
+    server.await.unwrap().unwrap();
+
+    let response_envelope = response.envelope();
+    validate_sabi_response_context(response_envelope, MethodSemantics::MUTATION).unwrap();
+    let result = decode_control_command_result(&response_envelope.payload).unwrap();
+    let ack_receipt = result.receipt.unwrap();
+    assert_eq!(ack_receipt.receipt_id.len(), 16);
+    assert_eq!(
+        response_envelope
+            .common_context
+            .as_ref()
+            .and_then(|context| match context {
+                envelope::CommonContext::ResponseContext(context) => context.receipts.first(),
+                envelope::CommonContext::RequestContext(_) => None,
+            }),
+        Some(&ack_receipt)
+    );
+
+    let resume_request = ExchangeRequest {
+        envelope: Some(semantic_submit_envelope(
+            SEMANTIC_RESUME_COMMAND_ID,
+            control_command::Command::ResumeSemanticRecovery(ResumeSemanticRecoveryCommand {}),
+            SEMANTIC_TOTAL_FAILURES,
+        )),
+    };
+    let resume_health = semantic_health(plan_id);
+    let resume = RecoverySystemControl::new(authority.as_ref(), &resume_health, &CapabilityPolicy)
+        .handle(resume_request.envelope.as_ref().unwrap(), 10, 6_000)
+        .unwrap();
+    validate_sabi_response_context(&resume, MethodSemantics::MUTATION).unwrap();
+    let resume_result = decode_control_command_result(&resume.payload).unwrap();
+    assert_eq!(
+        resume_result.receipt.unwrap().receipt_id,
+        semantic_recovery_resume_reference(semantic_plan, SEMANTIC_TOTAL_FAILURES)
+            .as_bytes()
+            .to_vec()
+    );
+    assert_eq!(
+        authority
+            .inspect_semantic_recovery(semantic_plan)
+            .unwrap()
+            .unwrap()
+            .state,
+        SemanticRecoveryState::Retrying
+    );
 }

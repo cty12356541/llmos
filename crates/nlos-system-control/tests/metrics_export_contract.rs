@@ -114,13 +114,14 @@ impl RecoveryHealthSource for FlappingHealth {
             durable_escalated: 1_000 + generation,
             durable_unacknowledged_escalated: 1_100 + generation,
             durable_resolved: 1_200 + generation,
-            semantic_durable_retrying: 0,
-            semantic_durable_escalated: 0,
-            semantic_durable_unacknowledged_escalated: 0,
-            semantic_durable_resolved: 0,
-            semantic_consecutive_failed_cycles: 0,
-            semantic_total_inspected: 0,
-            semantic_total_finalized: 0,
+            semantic_durable_retrying: 1_300 + generation,
+            semantic_durable_escalated: 1_400 + generation,
+            semantic_durable_unacknowledged_escalated: 1_500 + generation,
+            semantic_durable_resolved: 1_600 + generation,
+            semantic_consecutive_failed_cycles: usize::try_from(700 + generation)
+                .expect("test generation fits usize"),
+            semantic_total_inspected: 800 + generation,
+            semantic_total_finalized: 850 + generation,
             semantic_domain_faulted: false,
             artifact_domain_faulted: false,
         }
@@ -140,14 +141,14 @@ fn health() -> FixedHealth {
         durable_escalated: 7,
         durable_unacknowledged_escalated: 2,
         durable_resolved: 11,
-        semantic_durable_retrying: 0,
-        semantic_durable_escalated: 0,
-        semantic_durable_unacknowledged_escalated: 0,
-        semantic_durable_resolved: 0,
-        semantic_consecutive_failed_cycles: 0,
-        semantic_total_inspected: 0,
-        semantic_total_finalized: 0,
-        semantic_domain_faulted: false,
+        semantic_durable_retrying: 6,
+        semantic_durable_escalated: 8,
+        semantic_durable_unacknowledged_escalated: 3,
+        semantic_durable_resolved: 12,
+        semantic_consecutive_failed_cycles: 5,
+        semantic_total_inspected: 41,
+        semantic_total_finalized: 43,
+        semantic_domain_faulted: true,
         artifact_domain_faulted: false,
     })
 }
@@ -275,12 +276,21 @@ fn export_emits_complete_typed_catalog_in_stable_order() {
             Event::Counter(RecoveryCounter::CompletedCycles, 17),
             Event::Counter(RecoveryCounter::InspectedPlans, 29),
             Event::Counter(RecoveryCounter::FinalizedPlans, 31),
+            Event::Counter(RecoveryCounter::SemanticPlansInspected, 41),
+            Event::Counter(RecoveryCounter::SemanticPlansFinalized, 43),
             Event::Gauge(RecoveryGauge::ConsecutiveFailedCycles, 3),
             Event::Gauge(RecoveryGauge::RetryDelayMilliseconds, 1_234),
             Event::Gauge(RecoveryGauge::DurableRetrying, 0),
             Event::Gauge(RecoveryGauge::DurableEscalated, 0),
             Event::Gauge(RecoveryGauge::DurableUnacknowledgedEscalated, 0),
             Event::Gauge(RecoveryGauge::DurableResolved, 0),
+            Event::Gauge(RecoveryGauge::ArtifactDomainFaulted, 0),
+            Event::Gauge(RecoveryGauge::SemanticConsecutiveFailedCycles, 5),
+            Event::Gauge(RecoveryGauge::SemanticDurableRetrying, 0),
+            Event::Gauge(RecoveryGauge::SemanticDurableEscalated, 0),
+            Event::Gauge(RecoveryGauge::SemanticDurableUnacknowledgedEscalated, 0),
+            Event::Gauge(RecoveryGauge::SemanticDurableResolved, 0),
+            Event::Gauge(RecoveryGauge::SemanticDomainFaulted, 1),
         ]
     );
     assert_eq!(
@@ -288,11 +298,15 @@ fn export_emits_complete_typed_catalog_in_stable_order() {
             RecoveryCounter::CompletedCycles.name(),
             RecoveryCounter::InspectedPlans.name(),
             RecoveryCounter::FinalizedPlans.name(),
+            RecoveryCounter::SemanticPlansInspected.name(),
+            RecoveryCounter::SemanticPlansFinalized.name(),
         ],
         [
             "nlos_artifact_recovery_cycles_total",
             "nlos_artifact_recovery_plans_inspected_total",
             "nlos_artifact_recovery_plans_finalized_total",
+            "nlos_semantic_recovery_plans_inspected_total",
+            "nlos_semantic_recovery_plans_finalized_total",
         ]
     );
     assert_eq!(
@@ -303,6 +317,13 @@ fn export_emits_complete_typed_catalog_in_stable_order() {
             RecoveryGauge::DurableEscalated.name(),
             RecoveryGauge::DurableUnacknowledgedEscalated.name(),
             RecoveryGauge::DurableResolved.name(),
+            RecoveryGauge::ArtifactDomainFaulted.name(),
+            RecoveryGauge::SemanticConsecutiveFailedCycles.name(),
+            RecoveryGauge::SemanticDurableRetrying.name(),
+            RecoveryGauge::SemanticDurableEscalated.name(),
+            RecoveryGauge::SemanticDurableUnacknowledgedEscalated.name(),
+            RecoveryGauge::SemanticDurableResolved.name(),
+            RecoveryGauge::SemanticDomainFaulted.name(),
         ],
         [
             "nlos_artifact_recovery_consecutive_failed_cycles",
@@ -311,6 +332,13 @@ fn export_emits_complete_typed_catalog_in_stable_order() {
             "nlos_artifact_recovery_durable_escalated",
             "nlos_artifact_recovery_durable_unacknowledged_escalated",
             "nlos_artifact_recovery_durable_resolved",
+            "nlos_artifact_recovery_domain_faulted",
+            "nlos_semantic_recovery_consecutive_failed_cycles",
+            "nlos_semantic_recovery_durable_retrying",
+            "nlos_semantic_recovery_durable_escalated",
+            "nlos_semantic_recovery_durable_unacknowledged_escalated",
+            "nlos_semantic_recovery_durable_resolved",
+            "nlos_semantic_recovery_domain_faulted",
         ]
     );
 }
@@ -335,6 +363,8 @@ fn export_uses_one_health_generation_for_the_complete_catalog() {
             Event::Counter(RecoveryCounter::CompletedCycles, 1),
             Event::Counter(RecoveryCounter::InspectedPlans, 101),
             Event::Counter(RecoveryCounter::FinalizedPlans, 201),
+            Event::Counter(RecoveryCounter::SemanticPlansInspected, 801),
+            Event::Counter(RecoveryCounter::SemanticPlansFinalized, 851),
             Event::Gauge(RecoveryGauge::ConsecutiveFailedCycles, 301),
             Event::Gauge(RecoveryGauge::RetryDelayMilliseconds, 401),
             // These four values come from the live empty TaskAuthority, not
@@ -343,6 +373,14 @@ fn export_uses_one_health_generation_for_the_complete_catalog() {
             Event::Gauge(RecoveryGauge::DurableEscalated, 0),
             Event::Gauge(RecoveryGauge::DurableUnacknowledgedEscalated, 0),
             Event::Gauge(RecoveryGauge::DurableResolved, 0),
+            Event::Gauge(RecoveryGauge::ArtifactDomainFaulted, 0),
+            Event::Gauge(RecoveryGauge::SemanticConsecutiveFailedCycles, 701),
+            // Same single-generation rule for the semantic durable gauges.
+            Event::Gauge(RecoveryGauge::SemanticDurableRetrying, 0),
+            Event::Gauge(RecoveryGauge::SemanticDurableEscalated, 0),
+            Event::Gauge(RecoveryGauge::SemanticDurableUnacknowledgedEscalated, 0),
+            Event::Gauge(RecoveryGauge::SemanticDurableResolved, 0),
+            Event::Gauge(RecoveryGauge::SemanticDomainFaulted, 0),
         ]
     );
 }
@@ -375,8 +413,10 @@ fn export_stops_at_first_sink_failure_for_every_sink_stage() {
                 Event::Counter(RecoveryCounter::CompletedCycles, 17),
                 Event::Counter(RecoveryCounter::InspectedPlans, 29),
                 Event::Counter(RecoveryCounter::FinalizedPlans, 31),
+                Event::Counter(RecoveryCounter::SemanticPlansInspected, 41),
+                Event::Counter(RecoveryCounter::SemanticPlansFinalized, 43),
             ],
-            (1, 3, 1),
+            (1, 5, 1),
         ),
     ] {
         let mut sink = FailingSink::new(stage);

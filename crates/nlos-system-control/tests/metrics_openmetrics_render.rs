@@ -34,6 +34,10 @@ nlos_artifact_recovery_cycles_total 17
 nlos_artifact_recovery_plans_inspected_total 29
 # TYPE nlos_artifact_recovery_plans_finalized_total counter
 nlos_artifact_recovery_plans_finalized_total 31
+# TYPE nlos_semantic_recovery_plans_inspected_total counter
+nlos_semantic_recovery_plans_inspected_total 37
+# TYPE nlos_semantic_recovery_plans_finalized_total counter
+nlos_semantic_recovery_plans_finalized_total 23
 # TYPE nlos_artifact_recovery_consecutive_failed_cycles gauge
 nlos_artifact_recovery_consecutive_failed_cycles 3
 # TYPE nlos_artifact_recovery_retry_delay_milliseconds gauge
@@ -46,6 +50,20 @@ nlos_artifact_recovery_durable_escalated 0
 nlos_artifact_recovery_durable_unacknowledged_escalated 0
 # TYPE nlos_artifact_recovery_durable_resolved gauge
 nlos_artifact_recovery_durable_resolved 0
+# TYPE nlos_artifact_recovery_domain_faulted gauge
+nlos_artifact_recovery_domain_faulted 0
+# TYPE nlos_semantic_recovery_consecutive_failed_cycles gauge
+nlos_semantic_recovery_consecutive_failed_cycles 2
+# TYPE nlos_semantic_recovery_durable_retrying gauge
+nlos_semantic_recovery_durable_retrying 0
+# TYPE nlos_semantic_recovery_durable_escalated gauge
+nlos_semantic_recovery_durable_escalated 0
+# TYPE nlos_semantic_recovery_durable_unacknowledged_escalated gauge
+nlos_semantic_recovery_durable_unacknowledged_escalated 0
+# TYPE nlos_semantic_recovery_durable_resolved gauge
+nlos_semantic_recovery_durable_resolved 0
+# TYPE nlos_semantic_recovery_domain_faulted gauge
+nlos_semantic_recovery_domain_faulted 1
 "#;
 
 fn record_full_catalog(renderer: &mut OpenMetricsRenderer) {
@@ -60,6 +78,12 @@ fn record_full_catalog(renderer: &mut OpenMetricsRenderer) {
         .expect("u64 values are always admissible");
     renderer
         .set_counter_total(RecoveryCounter::FinalizedPlans, 31)
+        .expect("u64 values are always admissible");
+    renderer
+        .set_counter_total(RecoveryCounter::SemanticPlansInspected, 37)
+        .expect("u64 values are always admissible");
+    renderer
+        .set_counter_total(RecoveryCounter::SemanticPlansFinalized, 23)
         .expect("u64 values are always admissible");
     renderer
         .set_gauge(RecoveryGauge::ConsecutiveFailedCycles, 3)
@@ -78,6 +102,27 @@ fn record_full_catalog(renderer: &mut OpenMetricsRenderer) {
         .expect("u64 values are always admissible");
     renderer
         .set_gauge(RecoveryGauge::DurableResolved, 0)
+        .expect("u64 values are always admissible");
+    renderer
+        .set_gauge(RecoveryGauge::ArtifactDomainFaulted, 0)
+        .expect("u64 values are always admissible");
+    renderer
+        .set_gauge(RecoveryGauge::SemanticConsecutiveFailedCycles, 2)
+        .expect("u64 values are always admissible");
+    renderer
+        .set_gauge(RecoveryGauge::SemanticDurableRetrying, 0)
+        .expect("u64 values are always admissible");
+    renderer
+        .set_gauge(RecoveryGauge::SemanticDurableEscalated, 0)
+        .expect("u64 values are always admissible");
+    renderer
+        .set_gauge(RecoveryGauge::SemanticDurableUnacknowledgedEscalated, 0)
+        .expect("u64 values are always admissible");
+    renderer
+        .set_gauge(RecoveryGauge::SemanticDurableResolved, 0)
+        .expect("u64 values are always admissible");
+    renderer
+        .set_gauge(RecoveryGauge::SemanticDomainFaulted, 1)
         .expect("u64 values are always admissible");
 }
 
@@ -171,14 +216,14 @@ impl CountingHealth {
                 durable_escalated: 7,
                 durable_unacknowledged_escalated: 2,
                 durable_resolved: 11,
-                semantic_durable_retrying: 0,
-                semantic_durable_escalated: 0,
-                semantic_durable_unacknowledged_escalated: 0,
-                semantic_durable_resolved: 0,
-                semantic_consecutive_failed_cycles: 0,
-                semantic_total_inspected: 0,
-                semantic_total_finalized: 0,
-                semantic_domain_faulted: false,
+                semantic_durable_retrying: 6,
+                semantic_durable_escalated: 8,
+                semantic_durable_unacknowledged_escalated: 3,
+                semantic_durable_resolved: 12,
+                semantic_consecutive_failed_cycles: 2,
+                semantic_total_inspected: 37,
+                semantic_total_finalized: 23,
+                semantic_domain_faulted: true,
                 artifact_domain_faulted: false,
             },
             reads: AtomicU64::new(0),
@@ -219,6 +264,8 @@ fn families_use_catalog_names_in_canonical_order() {
         (RecoveryCounter::CompletedCycles.name(), "counter"),
         (RecoveryCounter::InspectedPlans.name(), "counter"),
         (RecoveryCounter::FinalizedPlans.name(), "counter"),
+        (RecoveryCounter::SemanticPlansInspected.name(), "counter"),
+        (RecoveryCounter::SemanticPlansFinalized.name(), "counter"),
         (RecoveryGauge::ConsecutiveFailedCycles.name(), "gauge"),
         (RecoveryGauge::RetryDelayMilliseconds.name(), "gauge"),
         (RecoveryGauge::DurableRetrying.name(), "gauge"),
@@ -228,6 +275,19 @@ fn families_use_catalog_names_in_canonical_order() {
             "gauge",
         ),
         (RecoveryGauge::DurableResolved.name(), "gauge"),
+        (RecoveryGauge::ArtifactDomainFaulted.name(), "gauge"),
+        (
+            RecoveryGauge::SemanticConsecutiveFailedCycles.name(),
+            "gauge",
+        ),
+        (RecoveryGauge::SemanticDurableRetrying.name(), "gauge"),
+        (RecoveryGauge::SemanticDurableEscalated.name(), "gauge"),
+        (
+            RecoveryGauge::SemanticDurableUnacknowledgedEscalated.name(),
+            "gauge",
+        ),
+        (RecoveryGauge::SemanticDurableResolved.name(), "gauge"),
+        (RecoveryGauge::SemanticDomainFaulted.name(), "gauge"),
     ];
     let text = full_catalog_text();
 

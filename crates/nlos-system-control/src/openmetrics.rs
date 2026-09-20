@@ -75,20 +75,30 @@ const WORKER_STATE_LABELS: [(RecoveryWorkerState, &str); 5] = [
 ];
 
 /// Canonical render order for counters, mirroring `export_metrics`.
-const COUNTER_ORDER: [RecoveryCounter; 3] = [
+const COUNTER_ORDER: [RecoveryCounter; 5] = [
     RecoveryCounter::CompletedCycles,
     RecoveryCounter::InspectedPlans,
     RecoveryCounter::FinalizedPlans,
+    RecoveryCounter::SemanticPlansInspected,
+    RecoveryCounter::SemanticPlansFinalized,
 ];
 
-/// Canonical render order for gauges, mirroring `export_metrics`.
-const GAUGE_ORDER: [RecoveryGauge; 6] = [
+/// Canonical render order for gauges, mirroring `export_metrics`: the
+/// artifact-domain gauges first, then the semantic-domain gauges.
+const GAUGE_ORDER: [RecoveryGauge; 13] = [
     RecoveryGauge::ConsecutiveFailedCycles,
     RecoveryGauge::RetryDelayMilliseconds,
     RecoveryGauge::DurableRetrying,
     RecoveryGauge::DurableEscalated,
     RecoveryGauge::DurableUnacknowledgedEscalated,
     RecoveryGauge::DurableResolved,
+    RecoveryGauge::ArtifactDomainFaulted,
+    RecoveryGauge::SemanticConsecutiveFailedCycles,
+    RecoveryGauge::SemanticDurableRetrying,
+    RecoveryGauge::SemanticDurableEscalated,
+    RecoveryGauge::SemanticDurableUnacknowledgedEscalated,
+    RecoveryGauge::SemanticDurableResolved,
+    RecoveryGauge::SemanticDomainFaulted,
 ];
 
 const fn counter_slot(counter: RecoveryCounter) -> usize {
@@ -96,6 +106,8 @@ const fn counter_slot(counter: RecoveryCounter) -> usize {
         RecoveryCounter::CompletedCycles => 0,
         RecoveryCounter::InspectedPlans => 1,
         RecoveryCounter::FinalizedPlans => 2,
+        RecoveryCounter::SemanticPlansInspected => 3,
+        RecoveryCounter::SemanticPlansFinalized => 4,
     }
 }
 
@@ -107,6 +119,13 @@ const fn gauge_slot(gauge: RecoveryGauge) -> usize {
         RecoveryGauge::DurableEscalated => 3,
         RecoveryGauge::DurableUnacknowledgedEscalated => 4,
         RecoveryGauge::DurableResolved => 5,
+        RecoveryGauge::ArtifactDomainFaulted => 6,
+        RecoveryGauge::SemanticConsecutiveFailedCycles => 7,
+        RecoveryGauge::SemanticDurableRetrying => 8,
+        RecoveryGauge::SemanticDurableEscalated => 9,
+        RecoveryGauge::SemanticDurableUnacknowledgedEscalated => 10,
+        RecoveryGauge::SemanticDurableResolved => 11,
+        RecoveryGauge::SemanticDomainFaulted => 12,
     }
 }
 
@@ -166,8 +185,8 @@ impl Error for OpenMetricsRenderError {}
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct OpenMetricsRenderer {
     worker_state: Option<RecoveryWorkerState>,
-    counters: [Option<u64>; 3],
-    gauges: [Option<u64>; 6],
+    counters: [Option<u64>; COUNTER_ORDER.len()],
+    gauges: [Option<u64>; GAUGE_ORDER.len()],
 }
 
 impl OpenMetricsRenderer {
@@ -176,8 +195,8 @@ impl OpenMetricsRenderer {
     pub const fn new() -> Self {
         Self {
             worker_state: None,
-            counters: [None; 3],
-            gauges: [None; 6],
+            counters: [None; COUNTER_ORDER.len()],
+            gauges: [None; GAUGE_ORDER.len()],
         }
     }
 

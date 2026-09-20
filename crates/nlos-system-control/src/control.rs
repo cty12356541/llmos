@@ -22,16 +22,18 @@ use std::fmt;
 
 use nlos_commit_coordinator::RecoveryWorkerState;
 use nlos_schema::sabi::v1::{
-    AcknowledgeArtifactRecoveryAlertCommand, ArtifactRecoveryMetrics,
-    ArtifactRecoveryOperationsSnapshot, CallerIdentity, CapabilityHandle, ControlCommandSource,
-    ControlScope, Envelope, GetSystemControlRequest, ReceiptReference, SabiErrorCode, SabiFailure,
-    SabiRequestContext, SubmitControlCommandRequest, SystemControlView, control_command, envelope,
+    AcknowledgeArtifactRecoveryAlertCommand, AcknowledgeSemanticRecoveryAlertCommand,
+    ArtifactRecoveryMetrics, ArtifactRecoveryOperationsSnapshot, CallerIdentity, CapabilityHandle,
+    ControlCommandSource, ControlScope, Envelope, GetSystemControlRequest, ReceiptReference,
+    ResumeSemanticRecoveryCommand, SabiErrorCode, SabiFailure, SabiRequestContext,
+    SemanticRecoveryMetrics, SemanticRecoveryOperationsSnapshot, SubmitControlCommandRequest,
+    SystemControlView, control_command, envelope,
 };
 use nlos_schema::{
     CompatibilityError, REQUEST_ID_BYTES, SABI_ENVELOPE_SCHEMA,
     decode_artifact_recovery_operations_snapshot, decode_control_command_result,
-    encode_get_system_control_request, encode_submit_control_command_request,
-    system_control_schema_identity,
+    decode_semantic_recovery_operations_snapshot, encode_get_system_control_request,
+    encode_submit_control_command_request, system_control_schema_identity,
 };
 
 use crate::openmetrics::OpenMetricsRenderer;
@@ -58,8 +60,12 @@ const LOCAL_REQUEST_ID: [u8; 16] = [0x35; 16];
 const LOCAL_PROCESS_GENERATION: u64 = 1;
 const INSPECT_HEALTH_COMMAND_ID: [u8; 16] = [0xC0; 16];
 const EXPORT_METRICS_COMMAND_ID: [u8; 16] = [0xC1; 16];
+const INSPECT_SEMANTIC_HEALTH_COMMAND_ID: [u8; 16] = [0xC2; 16];
+const EXPORT_SEMANTIC_METRICS_COMMAND_ID: [u8; 16] = [0xC3; 16];
 const INSPECT_CORRELATION_ID: [u8; 16] = [0x34; 16];
 const EXPORT_METRICS_CORRELATION_ID: [u8; 16] = [0x36; 16];
+const INSPECT_SEMANTIC_CORRELATION_ID: [u8; 16] = [0x37; 16];
+const EXPORT_SEMANTIC_METRICS_CORRELATION_ID: [u8; 16] = [0x38; 16];
 
 /// Bounded control operations for the minimal prefix (§25.3). The read
 /// variants reuse the `get` snapshot; the mutation variant is the one real
@@ -71,11 +77,17 @@ pub enum ControlCommand {
     /// Inspect aggregate recovery health (worker lifecycle plus durable
     /// retrying/escalated/resolved gauges).
     InspectHealth,
+    /// Inspect the semantic-domain recovery half: semantic worker counters,
+    /// durable gauges, fault bit, and escalated semantic alerts.
+    InspectSemanticHealth,
     /// Export one authoritative recovery metrics snapshot as deterministic
     /// `OpenMetrics` text. Uses the same `get` handler path as inspection and
     /// projects the typed catalog through the backend-neutral exporter boundary
     /// (`export_metrics` parity).
     ExportMetrics,
+    /// Export the semantic-domain half of the same catalog as deterministic
+    /// `OpenMetrics` text through the semantic `get` view.
+    ExportSemanticMetrics,
     /// Inspect one recovery plan/task by its 16-byte plan id; the receipt
     /// reports only that plan's alert.
     InspectTask { plan_id: [u8; 16] },
@@ -98,6 +110,26 @@ pub enum ControlCommand {
         expected_total_failures: u64,
         reason: String,
     },
+    /// Acknowledge one escalated semantic recovery alert. Same §25.3 identity
+    /// and CAS contract as [`Self::AcknowledgeRecoveryAlert`], routed to the
+    /// semantic ledger.
+    AcknowledgeSemanticRecoveryAlert {
+        control_command_id: [u8; 16],
+        plan_id: [u8; 16],
+        expected_total_failures: u64,
+        reason: String,
+    },
+    /// Resume one escalated semantic recovery plan: the ledger row returns to
+    /// `Retrying` under the `expected_total_failures` CAS, so the recovery
+    /// worker re-enters it on its next due scan. The receipt reference names
+    /// the deterministic resume outcome (see
+    /// `nlos_task::semantic_recovery_resume_reference`).
+    ResumeSemanticRecovery {
+        control_command_id: [u8; 16],
+        plan_id: [u8; 16],
+        expected_total_failures: u64,
+        reason: String,
+    },
 }
 
 impl ControlCommand {
@@ -107,11 +139,19 @@ impl ControlCommand {
     pub const fn control_command_id(&self) -> [u8; 16] {
         match self {
             Self::InspectHealth => INSPECT_HEALTH_COMMAND_ID,
+            Self::InspectSemanticHealth => INSPECT_SEMANTIC_HEALTH_COMMAND_ID,
             Self::ExportMetrics => EXPORT_METRICS_COMMAND_ID,
+            Self::ExportSemanticMetrics => EXPORT_SEMANTIC_METRICS_COMMAND_ID,
             Self::InspectTask { plan_id } => *plan_id,
             Self::InspectProcess { process_id } => *process_id,
             Self::InspectResource { reservation_id } => *reservation_id,
             Self::AcknowledgeRecoveryAlert {
+                control_command_id, ..
+            }
+            | Self::AcknowledgeSemanticRecoveryAlert {
+                control_command_id, ..
+            }
+            | Self::ResumeSemanticRecovery {
                 control_command_id, ..
             } => *control_command_id,
         }
@@ -120,11 +160,19 @@ impl ControlCommand {
     const fn correlation_id(&self) -> [u8; 16] {
         match self {
             Self::InspectHealth => INSPECT_CORRELATION_ID,
+            Self::InspectSemanticHealth => INSPECT_SEMANTIC_CORRELATION_ID,
             Self::ExportMetrics => EXPORT_METRICS_CORRELATION_ID,
+            Self::ExportSemanticMetrics => EXPORT_SEMANTIC_METRICS_CORRELATION_ID,
             Self::InspectTask { plan_id } => *plan_id,
             Self::InspectProcess { process_id } => *process_id,
             Self::InspectResource { reservation_id } => *reservation_id,
             Self::AcknowledgeRecoveryAlert {
+                control_command_id, ..
+            }
+            | Self::AcknowledgeSemanticRecoveryAlert {
+                control_command_id, ..
+            }
+            | Self::ResumeSemanticRecovery {
                 control_command_id, ..
             } => *control_command_id,
         }
@@ -143,6 +191,31 @@ pub struct RecoveryInspection {
     pub durable_resolved: u64,
     /// Bounded alert list exactly as the handler returned it.
     pub alerts: Vec<RecoveryAlertInsight>,
+}
+
+/// Typed facts carried by a successful semantic-domain inspection: the
+/// semantic half of the worker health plus the escalated semantic alerts.
+/// There is no per-domain worker lifecycle — the shared lifecycle stays on
+/// [`RecoveryInspection`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SemanticRecoveryInspection {
+    pub total_inspected: u64,
+    pub total_finalized: u64,
+    pub consecutive_failed_cycles: u64,
+    pub durable_retrying: u64,
+    pub durable_escalated: u64,
+    pub durable_unacknowledged_escalated: u64,
+    pub durable_resolved: u64,
+    pub domain_faulted: bool,
+    pub alerts: Vec<SemanticRecoveryAlertInsight>,
+}
+
+/// One semantic recovery alert as reported by the authoritative snapshot.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SemanticRecoveryAlertInsight {
+    pub plan_id: Vec<u8>,
+    pub total_failures: u64,
+    pub acknowledged_receipt_id: Option<Vec<u8>>,
 }
 
 /// Worker lifecycle as observed by the recovery worker.
@@ -280,6 +353,8 @@ pub struct MetricsExport {
 pub enum ControlOutcome {
     /// Read-only inspection completed.
     Inspected(RecoveryInspection),
+    /// Read-only semantic-domain inspection completed.
+    SemanticInspected(SemanticRecoveryInspection),
     /// Read-only process binding inspection completed.
     ProcessInspected(ProcessInspection),
     /// Read-only resource reservation cost inspection completed.
@@ -288,6 +363,9 @@ pub enum ControlOutcome {
     MetricsExported(MetricsExport),
     /// Mutation accepted by the `TaskAuthority`; authoritative receipt id.
     Acknowledged { receipt_id: Vec<u8> },
+    /// Semantic resume accepted: the ledger row returned to `Retrying`.
+    /// `receipt_id` names the deterministic resume outcome.
+    Resumed { receipt_id: Vec<u8> },
 }
 
 /// Typed receipt for one dispatched [`ControlCommand`] (§24.3 posture in
@@ -384,7 +462,27 @@ pub fn build_request_envelope(command: &ControlCommand) -> Result<Envelope, Cont
                 alert_limit: INSPECT_ALERT_LIMIT,
             })?,
         ),
+        ControlCommand::InspectSemanticHealth | ControlCommand::ExportSemanticMetrics => (
+            GET_METHOD,
+            encode_get_system_control_request(&GetSystemControlRequest {
+                schema: Some(system_control_schema_identity()),
+                view: SystemControlView::SemanticCommitRecovery.into(),
+                alert_limit: INSPECT_ALERT_LIMIT,
+            })?,
+        ),
         ControlCommand::AcknowledgeRecoveryAlert {
+            control_command_id,
+            plan_id,
+            expected_total_failures,
+            reason,
+        }
+        | ControlCommand::AcknowledgeSemanticRecoveryAlert {
+            control_command_id,
+            plan_id,
+            expected_total_failures,
+            reason,
+        }
+        | ControlCommand::ResumeSemanticRecovery {
             control_command_id,
             plan_id,
             expected_total_failures,
@@ -392,7 +490,7 @@ pub fn build_request_envelope(command: &ControlCommand) -> Result<Envelope, Cont
         } => {
             if reason.is_empty() {
                 return Err(ControlError::InvalidCommand(
-                    "acknowledgement requires a non-empty bounded reason",
+                    "recovery mutations require a non-empty bounded reason",
                 ));
             }
             (
@@ -404,6 +502,7 @@ pub fn build_request_envelope(command: &ControlCommand) -> Result<Envelope, Cont
                         *plan_id,
                         *expected_total_failures,
                         reason,
+                        command,
                     )),
                 })?,
             )
@@ -432,7 +531,23 @@ fn sabi_wire_command(
     plan_id: [u8; 16],
     expected_total_failures: u64,
     reason: &str,
+    command: &ControlCommand,
 ) -> nlos_schema::sabi::v1::ControlCommand {
+    let wire_command = match command {
+        ControlCommand::AcknowledgeSemanticRecoveryAlert { .. } => {
+            control_command::Command::AcknowledgeSemanticRecoveryAlert(
+                AcknowledgeSemanticRecoveryAlertCommand {},
+            )
+        }
+        ControlCommand::ResumeSemanticRecovery { .. } => {
+            control_command::Command::ResumeSemanticRecovery(ResumeSemanticRecoveryCommand {})
+        }
+        // The remaining mutation arm is the artifact acknowledgement; the
+        // read-only variants never reach this helper.
+        _ => control_command::Command::AcknowledgeArtifactRecoveryAlert(
+            AcknowledgeArtifactRecoveryAlertCommand {},
+        ),
+    };
     nlos_schema::sabi::v1::ControlCommand {
         control_command_id: control_command_id.to_vec(),
         issuer_principal_id: LOCAL_ISSUER_PRINCIPAL_ID.to_vec(),
@@ -440,9 +555,7 @@ fn sabi_wire_command(
         scope: ControlScope::Operation.into(),
         target_id: plan_id.to_vec(),
         expected_generation_or_revision: expected_total_failures,
-        command: Some(control_command::Command::AcknowledgeArtifactRecoveryAlert(
-            AcknowledgeArtifactRecoveryAlertCommand {},
-        )),
+        command: Some(wire_command),
         reason: reason.to_owned(),
     }
 }
@@ -450,6 +563,12 @@ fn sabi_wire_command(
 fn request_context(command: &ControlCommand) -> SabiRequestContext {
     let idempotency_key = match command {
         ControlCommand::AcknowledgeRecoveryAlert {
+            control_command_id, ..
+        }
+        | ControlCommand::AcknowledgeSemanticRecoveryAlert {
+            control_command_id, ..
+        }
+        | ControlCommand::ResumeSemanticRecovery {
             control_command_id, ..
         } => control_command_id.to_vec(),
         _ => Vec::new(),
@@ -548,6 +667,18 @@ fn decoded_snapshot(
     Ok(snapshot)
 }
 
+fn decoded_semantic_snapshot(
+    response: &Envelope,
+) -> Result<SemanticRecoveryOperationsSnapshot, ControlError> {
+    let snapshot = decode_semantic_recovery_operations_snapshot(&response.payload)?;
+    if snapshot.alerts.len() > usize::try_from(INSPECT_ALERT_LIMIT).unwrap_or(usize::MAX) {
+        return Err(ControlError::UnexpectedResponse(
+            "snapshot exceeded the requested alert bound",
+        ));
+    }
+    Ok(snapshot)
+}
+
 fn decoded_inspection(response: &Envelope) -> Result<RecoveryInspection, ControlError> {
     let snapshot = decoded_snapshot(response)?;
     let metrics = snapshot.metrics.ok_or(ControlError::Schema(
@@ -565,6 +696,36 @@ fn decoded_inspection(response: &Envelope) -> Result<RecoveryInspection, Control
             .alerts
             .into_iter()
             .map(|alert| RecoveryAlertInsight {
+                plan_id: alert.plan_id,
+                total_failures: alert.total_failures,
+                acknowledged_receipt_id: alert
+                    .acknowledgement_receipt
+                    .map(|receipt| receipt.receipt_id),
+            })
+            .collect(),
+    })
+}
+
+fn decoded_semantic_inspection(
+    response: &Envelope,
+) -> Result<SemanticRecoveryInspection, ControlError> {
+    let snapshot = decoded_semantic_snapshot(response)?;
+    let metrics = snapshot.metrics.ok_or(ControlError::Schema(
+        CompatibilityError::MissingSystemControlMetrics,
+    ))?;
+    Ok(SemanticRecoveryInspection {
+        total_inspected: metrics.total_inspected,
+        total_finalized: metrics.total_finalized,
+        consecutive_failed_cycles: metrics.consecutive_failed_cycles,
+        durable_retrying: metrics.durable_retrying,
+        durable_escalated: metrics.durable_escalated,
+        durable_unacknowledged_escalated: metrics.durable_unacknowledged_escalated,
+        durable_resolved: metrics.durable_resolved,
+        domain_faulted: metrics.domain_faulted,
+        alerts: snapshot
+            .alerts
+            .into_iter()
+            .map(|alert| SemanticRecoveryAlertInsight {
                 plan_id: alert.plan_id,
                 total_failures: alert.total_failures,
                 acknowledged_receipt_id: alert
@@ -616,6 +777,63 @@ fn render_metrics_export(metrics: &ArtifactRecoveryMetrics) -> Result<MetricsExp
             metrics.durable_unacknowledged_escalated,
         ),
         (RecoveryGauge::DurableResolved, metrics.durable_resolved),
+        (
+            RecoveryGauge::ArtifactDomainFaulted,
+            u64::from(metrics.domain_faulted),
+        ),
+    ] {
+        renderer
+            .set_gauge(gauge, value)
+            .map_err(map_renderer_error)?;
+    }
+    Ok(MetricsExport {
+        openmetrics_text: renderer.render(),
+    })
+}
+
+fn render_semantic_metrics_export(
+    metrics: &SemanticRecoveryMetrics,
+) -> Result<MetricsExport, ControlError> {
+    let mut renderer = OpenMetricsRenderer::new();
+    for (counter, value) in [
+        (
+            RecoveryCounter::SemanticPlansInspected,
+            metrics.total_inspected,
+        ),
+        (
+            RecoveryCounter::SemanticPlansFinalized,
+            metrics.total_finalized,
+        ),
+    ] {
+        renderer
+            .set_counter_total(counter, value)
+            .map_err(map_renderer_error)?;
+    }
+    for (gauge, value) in [
+        (
+            RecoveryGauge::SemanticConsecutiveFailedCycles,
+            metrics.consecutive_failed_cycles,
+        ),
+        (
+            RecoveryGauge::SemanticDurableRetrying,
+            metrics.durable_retrying,
+        ),
+        (
+            RecoveryGauge::SemanticDurableEscalated,
+            metrics.durable_escalated,
+        ),
+        (
+            RecoveryGauge::SemanticDurableUnacknowledgedEscalated,
+            metrics.durable_unacknowledged_escalated,
+        ),
+        (
+            RecoveryGauge::SemanticDurableResolved,
+            metrics.durable_resolved,
+        ),
+        (
+            RecoveryGauge::SemanticDomainFaulted,
+            u64::from(metrics.domain_faulted),
+        ),
     ] {
         renderer
             .set_gauge(gauge, value)
@@ -699,6 +917,9 @@ impl ControlReceipt {
                 ControlCommand::InspectHealth => {
                     Ok(ControlOutcome::Inspected(decoded_inspection(response)?))
                 }
+                ControlCommand::InspectSemanticHealth => Ok(ControlOutcome::SemanticInspected(
+                    decoded_semantic_inspection(response)?,
+                )),
                 ControlCommand::ExportMetrics => {
                     let snapshot = decoded_snapshot(response)?;
                     let metrics = snapshot.metrics.ok_or(ControlError::Schema(
@@ -707,6 +928,15 @@ impl ControlReceipt {
                     Ok(ControlOutcome::MetricsExported(render_metrics_export(
                         &metrics,
                     )?))
+                }
+                ControlCommand::ExportSemanticMetrics => {
+                    let snapshot = decoded_semantic_snapshot(response)?;
+                    let metrics = snapshot.metrics.ok_or(ControlError::Schema(
+                        CompatibilityError::MissingSystemControlMetrics,
+                    ))?;
+                    Ok(ControlOutcome::MetricsExported(
+                        render_semantic_metrics_export(&metrics)?,
+                    ))
                 }
                 ControlCommand::InspectTask { plan_id } => {
                     let mut inspected = decoded_inspection(response)?;
@@ -727,7 +957,8 @@ impl ControlReceipt {
                 ControlCommand::InspectResource { reservation_id } => {
                     compose_resource_inspection(resource, *reservation_id)
                 }
-                ControlCommand::AcknowledgeRecoveryAlert { .. } => {
+                ControlCommand::AcknowledgeRecoveryAlert { .. }
+                | ControlCommand::AcknowledgeSemanticRecoveryAlert { .. } => {
                     let result = decode_control_command_result(&response.payload)?;
                     if result.control_command_id != command.control_command_id().to_vec() {
                         return Err(ControlError::UnexpectedResponse(
@@ -741,6 +972,21 @@ impl ControlReceipt {
                             "completed command carried no receipt reference",
                         ))?;
                     Ok(ControlOutcome::Acknowledged { receipt_id })
+                }
+                ControlCommand::ResumeSemanticRecovery { .. } => {
+                    let result = decode_control_command_result(&response.payload)?;
+                    if result.control_command_id != command.control_command_id().to_vec() {
+                        return Err(ControlError::UnexpectedResponse(
+                            "result echoed a foreign control command id",
+                        ));
+                    }
+                    let receipt_id = result
+                        .receipt
+                        .map(|ReceiptReference { receipt_id }| receipt_id)
+                        .ok_or(ControlError::UnexpectedResponse(
+                            "completed command carried no receipt reference",
+                        ))?;
+                    Ok(ControlOutcome::Resumed { receipt_id })
                 }
             }
         };
@@ -798,6 +1044,33 @@ impl ControlReceipt {
                 bytes.push(3);
                 push_bytes(&mut bytes, export.openmetrics_text.as_bytes());
             }
+            Ok(ControlOutcome::SemanticInspected(inspection)) => {
+                bytes.push(6);
+                bytes.extend_from_slice(&inspection.total_inspected.to_le_bytes());
+                bytes.extend_from_slice(&inspection.total_finalized.to_le_bytes());
+                bytes.extend_from_slice(&inspection.consecutive_failed_cycles.to_le_bytes());
+                bytes.extend_from_slice(&inspection.durable_retrying.to_le_bytes());
+                bytes.extend_from_slice(&inspection.durable_escalated.to_le_bytes());
+                bytes.extend_from_slice(&inspection.durable_unacknowledged_escalated.to_le_bytes());
+                bytes.extend_from_slice(&inspection.durable_resolved.to_le_bytes());
+                bytes.push(u8::from(inspection.domain_faulted));
+                bytes.extend_from_slice(
+                    &u32::try_from(inspection.alerts.len())
+                        .unwrap_or(u32::MAX)
+                        .to_le_bytes(),
+                );
+                for alert in &inspection.alerts {
+                    push_bytes(&mut bytes, &alert.plan_id);
+                    bytes.extend_from_slice(&alert.total_failures.to_le_bytes());
+                    match alert.acknowledged_receipt_id.as_ref() {
+                        Some(receipt_id) => {
+                            bytes.push(1);
+                            push_bytes(&mut bytes, receipt_id);
+                        }
+                        None => bytes.push(0),
+                    }
+                }
+            }
             Ok(ControlOutcome::ProcessInspected(inspection)) => {
                 bytes.push(4);
                 bytes.extend_from_slice(&inspection.process_id);
@@ -817,6 +1090,10 @@ impl ControlReceipt {
             }
             Ok(ControlOutcome::Acknowledged { receipt_id }) => {
                 bytes.push(2);
+                push_bytes(&mut bytes, receipt_id);
+            }
+            Ok(ControlOutcome::Resumed { receipt_id }) => {
+                bytes.push(7);
                 push_bytes(&mut bytes, receipt_id);
             }
         }
@@ -880,6 +1157,7 @@ pub fn parse_hex_id(value: &str) -> Result<[u8; REQUEST_ID_BYTES], ControlError>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nlos_schema::{decode_get_system_control_request, decode_submit_control_command_request};
 
     #[test]
     fn parse_hex_id_is_fail_closed() {
@@ -913,8 +1191,16 @@ mod tests {
             INSPECT_HEALTH_COMMAND_ID
         );
         assert_eq!(
+            ControlCommand::InspectSemanticHealth.control_command_id(),
+            INSPECT_SEMANTIC_HEALTH_COMMAND_ID
+        );
+        assert_eq!(
             ControlCommand::ExportMetrics.control_command_id(),
             EXPORT_METRICS_COMMAND_ID
+        );
+        assert_eq!(
+            ControlCommand::ExportSemanticMetrics.control_command_id(),
+            EXPORT_SEMANTIC_METRICS_COMMAND_ID
         );
         assert_eq!(
             ControlCommand::InspectTask {
@@ -946,6 +1232,26 @@ mod tests {
             }
             .control_command_id(),
             [0x41; 16]
+        );
+        assert_eq!(
+            ControlCommand::AcknowledgeSemanticRecoveryAlert {
+                control_command_id: [0x53; 16],
+                plan_id: [0x71; 16],
+                expected_total_failures: 8,
+                reason: "inspected semantic recovery evidence".to_owned(),
+            }
+            .control_command_id(),
+            [0x53; 16]
+        );
+        assert_eq!(
+            ControlCommand::ResumeSemanticRecovery {
+                control_command_id: [0x54; 16],
+                plan_id: [0x71; 16],
+                expected_total_failures: 8,
+                reason: "operator resumes the escalated semantic plan".to_owned(),
+            }
+            .control_command_id(),
+            [0x54; 16]
         );
     }
 
@@ -998,5 +1304,84 @@ mod tests {
             panic!("request context expected");
         };
         assert_eq!(context.idempotency_key, vec![0x41; 16]);
+    }
+
+    #[test]
+    fn semantic_read_envelopes_use_the_semantic_commit_recovery_view() {
+        let inspect = build_request_envelope(&ControlCommand::InspectSemanticHealth).unwrap();
+        assert_eq!(inspect.method, GET_METHOD);
+        let export = build_request_envelope(&ControlCommand::ExportSemanticMetrics).unwrap();
+        assert_eq!(export.method, GET_METHOD);
+        assert_eq!(inspect.payload, export.payload);
+        let payload = decode_get_system_control_request(&inspect.payload).unwrap();
+        assert_eq!(
+            payload.view,
+            i32::from(nlos_schema::sabi::v1::SystemControlView::SemanticCommitRecovery)
+        );
+    }
+
+    #[test]
+    fn semantic_mutation_envelopes_carry_the_domain_commands() {
+        let acknowledge =
+            build_request_envelope(&ControlCommand::AcknowledgeSemanticRecoveryAlert {
+                control_command_id: [0x53; 16],
+                plan_id: [0x71; 16],
+                expected_total_failures: 8,
+                reason: "inspected semantic recovery evidence".to_owned(),
+            })
+            .unwrap();
+        assert_eq!(acknowledge.method, SUBMIT_METHOD);
+        let acknowledge_payload =
+            decode_submit_control_command_request(&acknowledge.payload).unwrap();
+        let acknowledge_command = acknowledge_payload.command.unwrap();
+        assert!(matches!(
+            acknowledge_command.command,
+            Some(control_command::Command::AcknowledgeSemanticRecoveryAlert(
+                _
+            ))
+        ));
+        assert_eq!(acknowledge_command.target_id, vec![0x71; 16]);
+        assert_eq!(acknowledge_command.expected_generation_or_revision, 8);
+        let Some(envelope::CommonContext::RequestContext(context)) = acknowledge.common_context
+        else {
+            panic!("request context expected");
+        };
+        assert_eq!(context.idempotency_key, vec![0x53; 16]);
+
+        let resume = build_request_envelope(&ControlCommand::ResumeSemanticRecovery {
+            control_command_id: [0x54; 16],
+            plan_id: [0x71; 16],
+            expected_total_failures: 8,
+            reason: "operator resumes the escalated semantic plan".to_owned(),
+        })
+        .unwrap();
+        assert_eq!(resume.method, SUBMIT_METHOD);
+        let resume_payload = decode_submit_control_command_request(&resume.payload).unwrap();
+        assert!(matches!(
+            resume_payload.command.unwrap().command,
+            Some(control_command::Command::ResumeSemanticRecovery(_))
+        ));
+    }
+
+    #[test]
+    fn semantic_mutations_reject_empty_reason_before_the_wire() {
+        assert!(matches!(
+            build_request_envelope(&ControlCommand::AcknowledgeSemanticRecoveryAlert {
+                control_command_id: [0x53; 16],
+                plan_id: [0x71; 16],
+                expected_total_failures: 8,
+                reason: String::new(),
+            }),
+            Err(ControlError::InvalidCommand(_))
+        ));
+        assert!(matches!(
+            build_request_envelope(&ControlCommand::ResumeSemanticRecovery {
+                control_command_id: [0x54; 16],
+                plan_id: [0x71; 16],
+                expected_total_failures: 8,
+                reason: String::new(),
+            }),
+            Err(ControlError::InvalidCommand(_))
+        ));
     }
 }
