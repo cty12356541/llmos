@@ -1,109 +1,153 @@
-# 风险台账（risks.yaml，schema v1，W27-E / X-4 种子）
+# 风险台账（risks.yaml，schema v1，W27-E 种子 + W34-B 收官波回填）
 #
 # 纪律：
-# - 九类来自管理机制 README §9，条目一一对应；severity 按 影响×发生概率×不可逆性 保守评定；
-# - status 只反映已有 Evidence 支撑的缓解现状，可稀疏，诚实优先；无证据支撑的缓解不得写 mitigated；
-# - P0 阻止阶段退出；P1 须有缓解措施与复查点（owner 字段 v1 未强制，v2 候选）。
+# - 九类来自管理机制 README §9；severity 按 影响×发生概率×不可逆性 保守评定；
+# - status 只反映已有 Evidence 支撑的缓解现状，诚实优先；无证据支撑的缓解不得写 mitigated；
+# - P0 阻止阶段退出（当前 P0=0，正式确认见 docs/management/exit-unknown-risks.md W34-C）；
+# - P1 须有缓解措施与复查点（owner 字段 v1 未强制，owner 于 exit-unknown-risks.md 逐项登记，v2 候选）；
+# - 收官波（W27–W33）登记 residual 已逐项入账：release-profile 口径（RISK-B-07）、Windows 实杀（RISK-B-10）、
+#   GUI 真机战役（RISK-B-06）、multi-cell（RISK-B-11）、单人知识（RISK-B-08）、slice-k-demo 09d defect（RISK-B-12）。
 
 - id: RISK-B-01
   category: security-bypass
   severity: P1
   status: partial
   description: "安全与权限旁路：reference monitor、IPC 认证或 sandbox 隔离存在未验证旁路"
-  mitigation: "Capability attenuation/fence authority + kill-window 故障矩阵已有单节点证据；SystemControl IPC challenge-response 认证 opt-in 落地（ADR-0011）；双层隔离已定案（ADR-0015）；真实 Capability authorizer 与 principal-level peer attestation 仍未接线"
+  mitigation: "Capability attenuation/fence authority + kill-window 故障矩阵已有单节点证据；SystemControl IPC challenge-response 认证 opt-in 落地（ADR-0011）且 GUI 壳以认证入口为唯一 IPC 路径（B-GUI-001，无明文捷径）；双层隔离已定案（ADR-0015）；签名强制收敛（W24-004，无签名 TCB 入口删除）；真实 Capability authorizer、principal-level peer attestation 与 Windows 认证面仍未接线（W34-A §5/§6 residual 沿引）"
   evidence_refs:
     - docs/evidence/stage-b/b-capability-001-durable-attenuation-authority.md
     - docs/evidence/stage-b/b-capability-004-fault-matrix.md
     - docs/evidence/stage-b/b-control-002-control-ipc-auth.md
     - docs/evidence/stage-b/b-task-008c2g-takeover-control-ipc.md
-  review_point: "阶段 B 退出评审门（stage-b-progress §6.5.5）；threat review + bypass test（README §7）"
+    - docs/evidence/stage-b/b-gui-001-task-manager-shell.md
+  review_point: "阶段 B 退出评审门（stage-b-progress §6.5.5）；threat review + bypass test（README §7）；真实 Capability authorizer 接线时复审"
 
 - id: RISK-B-02
   category: durable-state-loss
   severity: P1
   status: partial
   description: "durable 状态丢失或双重提交：崩溃窗口/撕裂写导致 permit 重复或收据丢失"
-  mitigation: "双 Attempt 唯一 CommitPermit + kill-window/torn-WAL/静默丢写故障矩阵覆盖 task/effect/takeover/coordinator 表组；分层掉电证据阶梯已开道（层 1 APFS fault-VFS 校准）；真实硬件掉电未做（X-6）"
+  mitigation: "双 Attempt 唯一 CommitPermit + kill-window/torn-WAL/静默丢写故障矩阵覆盖 task/effect/takeover/coordinator 表组；统一恢复面（schema v42）双域自动收敛；六域混合写集 seal→permit→终结→统一 TaskCommitReceipt 闭环验收（W30-A，e2e 3/3 + 故障矩阵 9/9）；分层掉电证据阶梯已开道（层 1 APFS fault-VFS 校准、层 2 dm-flakey CI run 33895972272）；真实硬件掉电未做（X-6 登记态）；Artifact 混合终结门为结构性登记（W30-A §3）"
   evidence_refs:
     - docs/evidence/stage-b/b-task-001-fault-injection.md
     - docs/evidence/stage-b/b-task-003-crash-windows.md
     - docs/evidence/stage-b/b-task-003-fault-injection.md
     - docs/evidence/stage-b/b-task-008c2g-takeover-fault-matrix.md
+    - docs/evidence/stage-b/b-task-008c2g-complete-writeset.md
     - docs/evidence/stage-b/b-store-fs-semantics-001-apfs-calibration.md
-  review_point: "阶段 B 退出评审门；X-6 分层掉电证据推进"
+  review_point: "阶段 B 退出评审门；X-6 分层掉电与 M4/M6/M8 校准推进；Artifact 混合终结门补齐时复审"
 
 - id: RISK-B-03
   category: resource-oversell
   severity: P1
   status: partial
   description: "Resource/Budget 超卖：Reservation/消耗记账旁路或高水位失效"
-  mitigation: "strict ACTIVE consume high-water、QUARANTINED freeze、finalize/refund 同事务退款与聚合回读已有单节点证据；Task 侧 cost-receipt 消费接线 PARTIAL PASS；真实 enforcement shim 与平台 Device adapter 未做"
+  mitigation: "strict ACTIVE consume high-water、QUARANTINED freeze、finalize/refund 同事务退款与聚合回读已有单节点证据；Task 侧 cost-receipt 消费接线（schema v39/40）+ 混合 rung 双 authority 预校验 + 桥接 kill-window 矩阵；ADR-0017 Resource 跨 authority prepare/finalize 有界 coordinator（schema v43 + G1–G7）定案实现；真实 enforcement shim 与平台 Device adapter 未做"
   evidence_refs:
     - docs/evidence/stage-b/b-resource-003-consumption-high-water.md
     - docs/evidence/stage-b/b-resource-004-quarantine-freeze.md
     - docs/evidence/stage-b/b-resource-005-finalize-refund.md
     - docs/evidence/stage-b/b-resource-006-cost-receipt-aggregate.md
     - docs/evidence/stage-b/b-task-008c2g-resource-cost-commit.md
-  review_point: "阶段 B 退出评审门；B-RESOURCE 未决项清零时复审"
+    - docs/evidence/stage-b/b-task-008c2g-resource-prepare-finalize.md
+  review_point: "阶段 B 退出评审门；真实 enforcement shim 落地时复审"
 
 - id: RISK-B-04
   category: cancel-effect-unknown
   severity: P1
   status: partial
   description: "cancellation/effect unknown：取消后副作用状态不可判定或恢复发散"
-  mitigation: "EFFECT_UNKNOWN quarantine/reconcile、跨 Attempt effect history 与 retry fence 已有单节点证据；统一恢复面（schema v42）把两域恢复补齐为自动收敛；provider 面 effect fence（B3-4）未落地"
+  mitigation: "EFFECT_UNKNOWN quarantine/reconcile、跨 Attempt effect history 与 retry fence 已有单节点证据；统一恢复面（schema v42）把两域恢复补齐为自动收敛；六域写集统一终结（W30-A）与 provider 降级/投机副作用 fence（W30-C：陈旧 generation typed 拒绝、cancel epoch 优先于迟到投机完成、fence 窗口重启恰一次提交）闭合；teardown 链（kill→crash terminal→cancel→门→uninstalled，W30-D）与 W27-C 双域联动（durable 拒绝→runtime 零副作用）在案；pause/resume/cancel 宿主执行器未接线（命令面 parity 已完备）"
   evidence_refs:
     - docs/evidence/stage-b/b-task-003-reconcile-effect-history.md
     - docs/evidence/stage-b/b-task-008c2g-unified-recovery.md
-  review_point: "阶段 B 退出评审门；B3-4 provider driver plane 落地时复审"
+    - docs/evidence/stage-b/b-task-008c2g-complete-writeset.md
+    - docs/evidence/stage-b/b-driver-001-mock-provider-plane.md
+  review_point: "阶段 B 退出评审门；pause/resume/cancel 宿主执行器接线时复审"
 
 - id: RISK-B-05
   category: premature-format-freeze
   severity: P1
   status: partial
   description: "ABI/数据格式过早冻结：SABI/Task/Effect 语义未稳时冻结公共契约"
-  mitigation: "ADR-0014 schema 通道 v1-beta 冻结（additive-only）+ REGISTRY 冻结标记与 breaking gate；Task/Effect 语义稳定前不冻结 SABI（议题 31/32 顺序变更）；冻结面之外仍有过早冻结压力需持续审查"
+  mitigation: "ADR-0014 schema 通道 v1-beta 冻结（additive-only）+ REGISTRY 冻结标记与 breaking gate；SABI 演进只走 additive（v1.2 命令臂→v1.4 parity→v1.5 五视图，全程零 breaking）；manifest tasks 模板段以平行签名面实现 additive（旧包兼容硬门绿）；Task/Effect 语义稳定前不冻结 SABI（议题 31/32 顺序变更）；driver payload codec 未进冻结通道（ADR-0014 纪律下需显式决策——W34-A §3 residual）"
   evidence_refs:
     - docs/evidence/stage-b/b-schema-002-cross-language-generation.md
     - docs/evidence/stage-b/b-schema-015-registry-freeze-marker.md
-  review_point: "每四个周期技术选型复审（README §11）；SABI 冻结决策前必复审"
+    - docs/evidence/stage-b/b-plan-002-manifest-template.md
+  review_point: "每四个周期技术选型复审（README §11）；SABI 冻结决策与 driver codec 入通道决策前必复审"
 
 - id: RISK-B-06
   category: runtime-ui-lockin
   severity: P2
   status: partial
-  description: "runtime 或 UI 技术锁定：执行引擎或 GUI 框架选型不可逆地限制演进"
-  mitigation: "runtime 选型经 ADR-0001 显式决策（含退出策略）；隔离机制经四维对比实验定案（ADR-0015）；GUI（Tauri）仅为计划（B5-4），未启动未锁定"
+  description: "runtime 或 UI 技术锁定：执行引擎或 GUI 框架选型不可逆地限制演进；GUI 真实可用性未经真机战役验证"
+  mitigation: "runtime 选型经 ADR-0001 显式决策（含退出策略）；隔离机制经四维对比实验定案（ADR-0015）；GUI（Tauri）已落地 desktop/（W32-A..F+W33-F）——锁定风险缓解为架构约束：GUI 只经 SystemControl 认证 IPC 单控制路径（无旁路）、四路径 Receipt parity 钉死（20 命令家族）、SABI 只走 additive，换壳成本受限于壳本身；GUI 真机战役（computer-use 交互清单）未跑——现有证据形态为命令层集成测试 + 窗口注册 + CLI 活体冒烟（B-GUI-001 §2 逐波次登记）"
   evidence_refs:
     - docs/evidence/stage-b/poc-0001-tokio-fiber-runtime.md
     - docs/evidence/stage-b/b-sandbox-001-isolation-comparison.md
-  review_point: "B5-4 GUI 启动前必须 ADR 化（README §7）"
+    - docs/evidence/stage-b/b-gui-001-task-manager-shell.md
+  review_point: "GUI 真机战役（computer-use 清单）收尾时复审；desktop 引入新重依赖前须过 README §7 选型门"
 
 - id: RISK-B-07
   category: scale-impersonation
   severity: P1
   status: partial
-  description: "规模目标被冷 metadata 数量冒充：以注册行或 waiting Fiber 冒充 10K/100K 逻辑 TaskNode"
-  mitigation: "ScaleProfile 前片明确「waiting Fiber 不能替代 TaskNode benchmark」并已 10K 实跑；100K 为 ignore 探针；TaskNode 声明面（W28+）挂接前 benchmark 不成立"
+  description: "规模目标被冷 metadata 数量冒充或以 debug/test 口径外推：以注册行/waiting Fiber 冒充 10K/100K 逻辑 TaskNode，或以单平台 debug-profile 数字冒充生产量级"
+  mitigation: "W31-G 评审 G1–G6 全 SATISFIED-WITH-BOUNDARIES：100K 逻辑 TaskNode（plan_nodes 持久计数，waiting Fiber 不作代理）惰性有界实跑（每节点 508–553B、RSS 增量≪界、点读平坦）；100K 注册维 probe 首跑；working-set 比例矩阵 5 cell + checkpoint/rehydrate 实测 + reclaim 实执行闭环；Task 注册近似已退役并显式注明——但全部数字为 debug/test profile、单平台 macOS 口径，release 复测与多平台未做，各 claim 已按口径限定（ROAD-B-004/006 limitations）；「PID 级 Agent 容量」「coroutine 级大规模并发」生产量级声明未做"
   evidence_refs:
     - docs/evidence/stage-b/b-task-scale-001.md
     - docs/evidence/stage-b/b-runtime-002-fiber-scale.md
-  review_point: "ROAD-B-004 退出门评审（B4-7/B4-9 benchmark）"
+    - docs/evidence/stage-b/b-plan-001-declaration-surface.md
+    - docs/evidence/stage-b/reviews/w31g-road-b004-gates.md
+    - docs/evidence/stage-b/reviews/w34a-six-gate-matrix.md
+  review_point: "release-profile 复测 + Linux/Windows 多平台数字落证据时复审；任何生产量级声明发布前必复审"
 
 - id: RISK-B-08
   category: single-person-dependency
   severity: P1
   status: open
-  description: "单人关键知识和维护依赖：关键子系统知识集中于单一实现者"
-  mitigation: ""
+  description: "单人关键知识和维护依赖：关键子系统知识集中于单一实现者（全部 W27–W33 收官车道由单人控制器串行集成）"
+  mitigation: "缓解为登记态而非闭环：知识外化载体已全库化——143+ 证据文件逐车道留痕、ADR-0001..0017、机器台账（claims/risks/evidence-index + lint）、§6.5.3 全量车道编排与增量日志、W34-C 未知风险清单逐项登记 owner/缓解/退役证据；阶段 C 首个新增维护者接入前，单人依赖实质未变"
   evidence_refs: []
-  review_point: "阶段 B 退出评审时给出关键知识分布清单（README §7「未知风险清单」要求）"
+  review_point: "W34-D 用户门对 owner 分配与阶段 C 人员接入明确表态；每四个周期复审知识分布清单"
 
 - id: RISK-B-09
   category: third-party-supply-chain
   severity: P2
   status: open
-  description: "第三方依赖 license、供应链和停止维护（核心为 bundled SQLite/Wasmtime/Tokio 生态）"
+  description: "第三方依赖 license、供应链和停止维护（核心为 bundled SQLite/Wasmtime/Tokio 生态；收官波新增 desktop Tauri/Node 工具链面——node_modules 未入库、锁文件在库）"
   mitigation: ""
   evidence_refs: []
-  review_point: "每四个周期依赖/选型复审（README §11）；新依赖须过 §7 技术选型记录门槛"
+  review_point: "每四个周期依赖/选型复审（README §11）；新依赖须过 §7 技术选型记录门槛；desktop 依赖树首次升级时专项复审"
+
+- id: RISK-B-10
+  category: cancel-effect-unknown
+  severity: P1
+  status: open
+  description: "Windows 实机终止语义未证：platform kill adapter（taskkill /F/T）仅有 CI 契约道证据，且步骤绿也不含 live-child 实杀断言；第二 Process spawn→kill 全链（W29-F）为 Unix 实证，Windows 实杀（B6-2/B2-1 同源）未做——Windows 上终止效果与进程树行为不可证"
+  mitigation: "WindowsPlatformKillAdapter 已入库；W28-F CI 步骤「Test platform kill contract on Windows」在 run 35511878717 windows-latest 腿 step 级 success（job 级因无关 Clippy 步失败，根因已修——W34-A §6 residual 4 精确口径，防「run 绿」误读）；当前 HEAD run 35531478487 重验中；实机实杀递延登记并由 claims 限定口径（ROAD-B-002/006 limitations）"
+  evidence_refs:
+    - docs/evidence/stage-b/b-process-003-crash-propagation.md
+    - docs/evidence/stage-b/reviews/w34a-six-gate-matrix.md
+  review_point: "阶段 C 首个 Windows 实机验证车道（live-child 实杀 + B2-1 双活三层场景）落地时复审；W34-D 裁量移交登记"
+
+- id: RISK-B-11
+  category: durable-state-loss
+  severity: P1
+  status: open
+  description: "多 Cell/跨机器原子提交无证据：单机 bounded convergence 与统一恢复面已证，跨 Cell barrier/远端物理 cleanup 证明/跨机器原子性未设计未实现；若把单机结论外推为分布式能力即构成状态丢失风险"
+  mitigation: "全部 claim 已显式限定「跨机器原子提交/多 Cell 不在本 claim 范围」（ROAD-B-003 及 §3 各行 limitations）；多 Cell 语义属阶段 C 范围；kill-9=页缓存存活的进程崩溃建模不外推真实断电/跨 Cell/三权威原子性（W31-G/W34-A 沿引）"
+  evidence_refs:
+    - docs/evidence/stage-b/b-task-008c2g-complete-writeset.md
+  review_point: "阶段 C 多 Cell PoC 开档时复审；任何跨机/多 Cell 声明发布前必复审"
+
+- id: RISK-B-12
+  category: durable-state-loss
+  severity: P1
+  status: open
+  description: "slice-k-demo STEP 09d 登记 defect（collected_digests==[] panic，期望双 planted digest）：W28-E auto-GC blast radius 嫌疑，W33-H 在评审 HEAD 复现、至今未处置；若根因证明为生产 GC 误收在册 blob，则即刻升级 P0（durable 状态丢失）并阻止阶段退出"
+  mitigation: "当前定级依据：demo 级缺陷（测试面不受影响；W33-B lifecycle.sh 为现行构造性演示且绿）；缺陷登记在案（B-SLICE-K-001 §15.3/§16.4）；W34-D 裁量修复或显式退役 demo 09d；B-001 门 claim 已携带该 residual（ROAD-B-001 limitations）"
+  evidence_refs:
+    - docs/evidence/stage-b/reviews/w33h-road-b001-b002.md
+  review_point: "W34-D 用户门（修复或退役决定）；根因定位完成时按结果重定级"

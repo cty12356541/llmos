@@ -862,3 +862,9 @@
   scope: "docs-only 评审（无新测试）：G1–G6 证伪条件逐门对照 B-PLAN-001/002 与 B-TASK-SCALE-001 具名证据，六门均裁 SATISFIED-WITH-BOUNDARIES；开放项与 ADR-0016 复审触发器对照在案"
   assurance: H3
   date: "2026-09-21"
+- id: w34a-six-gate-matrix-review
+  path: docs/evidence/stage-b/reviews/w34a-six-gate-matrix.md
+  title: "W34-A：六门证据矩阵与退出门 readiness 评审（review 记录）"
+  scope: "ROAD-B-001..006 + 横切 X-1..X-6 全门矩阵：三门新评审（B-003 六条款逐项/B-005 层×动作/B-006 条款逐一，具名测试引用）+ W32-F 增补评审闭合 B-002 唯一硬缺口 + W33-H/W31-G 状态更新；裁决 B-002/003/004/006 SATISFIED-WITH-BOUNDARIES、B-001/005 PARTIAL-residuals；§6.5.5 五条件 readiness 逐条（CI run 35531478487 in_progress、W34-B/C/D 待做）；§6 B-006 行 run 35511878717 措辞勘误（step 级绿/job 级 Clippy 失败）"
+  assurance: H3
+  date: "2026-09-21"

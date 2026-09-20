@@ -1,49 +1,69 @@
-# 需求 Claim 台账（claims.yaml，schema v1，W27-E / X-4 最小诚实种子）
+# 需求 Claim 台账（claims.yaml，schema v1，W34-B 全量回填）
 #
 # 纪律：
-# - 只登记 stage-b-progress §3/§6 已断言的事实（source 字段给出出处行与基线 commit），不发明 claim；
+# - 只登记 stage-b-progress §3/§6.5 行已断言的事实（source 字段给出出处行与基线 commit），不发明 claim；
 # - assurance ≤ 被引证据可支撑等级（Claim≤Evidence，由 scripts/lint_claims.py 机械校验）；
-# - 全量回填（逐 Requirement ID 铺满）等六门 Evidence 齐后再做（§6.5.2 依赖链），本种子不冒充全量；
+# - 退出门裁定约束 status：ROAD-B-001/002 按 W33-H 评审裁 PARTIAL；ROAD-B-004 六门 SATISFIED-WITH-BOUNDARIES
+#   （W31-G）仍登记 PARTIAL_PASS——具名边界随裁定带入 limitations，release 复测等开放项未清即不升 DONE；
+# - ROAD-B-003/005/006 尚无独立 review 记录（W34-A 补），按 §6 行「局部推进」措辞登记，不冒充收口；
+# - 行文滞后的 §3 未决项凡已被索引内后续证据收口者，在 limitations 注明收口证据；未收口者原样携带；
 # - 不得把 PARTIAL 事实登记为 DONE。
+
+# ===== 退出门（§6 ROAD-B-001..006）=====
 
 - requirement_id: ROAD-B-001
   stage: B
   status: PARTIAL_PASS
   implementation_refs:
     - crates/nlos-application
+    - crates/nlos-artifact/src/bin/nlos-package.rs
+    - examples/sample-app
   test_refs:
-    - crates/nlos-slice-k
+    - crates/nlos-application/tests
+    - crates/nlos-slice-k/tests
   evidence_refs:
     - docs/evidence/stage-b/b-application-001-installation-authority.md
     - docs/evidence/stage-b/b-application-002-update.md
     - docs/evidence/stage-b/b-application-003-uninstall.md
     - docs/evidence/stage-b/b-application-004-rollback.md
+    - docs/evidence/stage-b/b-artifact-004-gc-orphan-collection.md
+    - docs/evidence/stage-b/b-artifact-007-package-sdk.md
+    - docs/evidence/stage-b/b-application-007-third-party-sample.md
     - docs/evidence/stage-b/b-slice-k-001-end-to-end.md
+    - docs/evidence/stage-b/reviews/w33h-road-b001-b002.md
   assurance: H3
   limitations:
-    - "自动 GC 触发（周期/阈值）未做，仅 install-scoped pass 与显式 orphan GC"
-    - "migration runner / health check / 原子切换未做"
-    - "真实 Task activity 探针接线未做（W27-D）"
-    - "Package SDK/打包工具链与第三方样板全周期演示未做（退出门构造性证据）"
-  source: "stage-b-progress.md §6 ROAD-B-001 行（base 3d81a90）：install/update/uninstall/rollback 已有单节点 H3，Slice K uninstall+GC PARTIAL PASS"
+    - "构造性证明为 PARTIAL（W33-H §2 四具名边界，W34-A §1 沿引不删）：载荷执行面未做、Os 服务替身为 sleep 子进程、消费端为库驱动（nlos package install CLI 未做）、模板编译只到 proposal"
+    - "slice-k-demo STEP 09d 登记 defect 待处置（W33-H/W34-A 在 HEAD 复现；W33-B lifecycle.sh 为现行构造性演示且绿）——W34-D 裁量修复或显式退役"
+    - "三平台 CI 收口未完成：workspace 全仓门已收（275 二进制/1536 passed/0 failed），有效载体为 HEAD a01fd57 run 35531478487（W34-A 评审时 in_progress；7dc9e57 的 run 35531386660 被后续 push 取代 cancelled）；CI 绿 + 链接回填是本门晋升最后屏障动作"
+    - "证据口径：单节点、单写者、macOS/arm64 实跑 + 非 Unix 契约道"
+    - "deferred minors：迁移面 kill-9 矩阵/abandon 命令/跨进程并发注入、patch-downgrade 拒绝、跨进程 uninstall 审批、capability revoke、uninstall 不解除 artifact 引用、GC 跨进程并发 tick 未证明"
+  source: "stage-b-progress.md §6 ROAD-B-001 行 + §3 B-APPLICATION/B-ARTIFACT/B-SLICE-K 行（base a01fd57）；W33-H 评审 + W34-A §1 状态更新：构造性证明成立、裁决 PARTIAL-residuals（近收口）"
 
 - requirement_id: ROAD-B-002
   stage: B
   status: PARTIAL_PASS
   implementation_refs:
     - crates/nlos-application
+    - crates/nlos-process
+    - desktop
   test_refs:
-    - crates/nlos-slice-k
+    - crates/nlos-application/tests
+    - crates/nlos-slice-k/tests
   evidence_refs:
     - docs/evidence/stage-b/b-application-005-background-task-registration.md
     - docs/evidence/stage-b/b-application-006-process-binding.md
     - docs/evidence/stage-b/b-slice-k-001-end-to-end.md
+    - docs/evidence/stage-b/b-gui-001-task-manager-shell.md
+    - docs/evidence/stage-b/reviews/w33h-road-b001-b002.md
+    - docs/evidence/stage-b/reviews/w34a-six-gate-matrix.md
   assurance: H3
   limitations:
-    - "后台 Task/多 Process binding 仅为 durable 登记最小前缀，无运行时执行接线"
-    - "UI Surface 声明与呈现未做（B2-2，与 B5-4 GUI 同车道）"
-    - "第二 Process spawn→platform kill 全链未做（B2-1）"
-  source: "stage-b-progress.md §6 ROAD-B-002 行（base 3d81a90）：后台 Task 登记与多 Process binding 登记 PARTIAL PASS，Slice K inspect 已接线"
+    - "UI Surface（W32-F）已闭合 W33-H 所裁唯一硬缺口（merge e5d7115，W34-A §2.2 增补评审）：manifest surfaces 段 + schema v8 登记面 + desktop 呈现最小链；W32-F 四呈现边界沿引（载荷内容渲染/生命周期状态机/本地权威直读非 IPC/登记入口为库 API）"
+    - "Windows 实杀（B6-2 同源）未做：第二 Process spawn→kill 全链为 Unix 实证 + 非 Unix 契约道（CI leg 验证）"
+    - "生命周期 NL 动词（uninstall/disable application 不在白名单）、supervisor 自动 pid 发现/unregister、restore_process 复活链、干净退出终态路径、teardown 无并发竞争面登记递延"
+    - "demo STEP 12b 因 09d 登记 defect 不可达（沿 b-slice-k-001 §15.4）"
+  source: "stage-b-progress.md §6 ROAD-B-002 行 + §3 B-APPLICATION/B-SLICE-K 行（base a01fd57）；W33-H 评审 + W34-A §2.2 增补：裁决 SATISFIED-WITH-BOUNDARIES；本 claim 因具名边界与登记 residual 未清仍为 PARTIAL_PASS"
 
 - requirement_id: ROAD-B-003
   stage: B
@@ -51,9 +71,10 @@
   implementation_refs:
     - crates/nlos-task
     - crates/nlos-commit-coordinator
-    - crates/nlos-artifact
+    - crates/nlos-driver-mock
+    - crates/nlos-resource
   test_refs:
-    - crates/nlos-task/tests/task_authority.rs
+    - crates/nlos-task/tests
   evidence_refs:
     - docs/evidence/stage-b/b-task-001-task-authority-commit-permit.md
     - docs/evidence/stage-b/b-task-002-effect-permit-dispatch.md
@@ -63,48 +84,64 @@
     - docs/evidence/stage-b/b-artifact-002-staged-publication.md
     - docs/evidence/stage-b/b-task-road-b003-gaps.md
     - docs/evidence/stage-b/b-task-008c2g-unified-recovery.md
+    - docs/evidence/stage-b/b-task-008c2g-resource-prepare-finalize.md
+    - docs/evidence/stage-b/b-task-008c2g-complete-writeset.md
+    - docs/evidence/stage-b/b-driver-001-mock-provider-plane.md
+    - docs/evidence/stage-b/reviews/w34a-six-gate-matrix.md
   assurance: H3
   limitations:
-    - "Resource/Operation 跨 authority prepare/finalize 入口评估未决（W27-B），complete TaskWriteSet 六域闭环未完成（B3-3）"
-    - "handle 泄漏/snapshot 漂移仅 task 层测试面（b-task-road-b003-gaps），provider cache/投机副作用 fence 未落地（B3-4）"
-    - "统一恢复面 CI 待 push 后触发；跨机器原子提交不在本 claim 范围"
-  source: "stage-b-progress.md §6 ROAD-B-003 行（base 3d81a90）：双 Attempt/cancel/commit/effect fence 已有单节点 H3，W26 统一恢复面 PARTIAL PASS"
+    - "provider 面载体为确定性 mock（B3-4 计划即「确定性 fake provider + 真实 IPC」按计划交付）；真实 driver、生产级 cache 策略（熔断迟滞/探测退避）显式不在切片；认证 transport 仅 Unix（Windows named-pipe 未接）；driver payload codec 未进 nlos-schema 冻结 protobuf 通道（ADR-0014 纪律下需显式决策）"
+    - "三平台复验（B3-5）随当前 CI run 35531478487（W34-A 评审时 in_progress），绿后回填方可收口"
+    - "kill-9=页缓存存活的进程崩溃建模；真实断电/跨 Cell/三权威原子性不外推"
+    - "六域闭环口径：seal/permit 层六域全闭；终结回执层 Artifact 混合终结门缺失（结构性登记，矩阵行 5/6 钉死）+ Channel 面到 endpoint binding 为止（W30-A §3）"
+  source: "stage-b-progress.md §6 ROAD-B-003 行 + §3 B-TASK 行（base a01fd57）；W34-A §3 新评审：门六条款全部具名测试闭合，裁决 SATISFIED-WITH-BOUNDARIES（提案，控制器集成为准）；本 claim 因具名边界未清仍为 PARTIAL_PASS"
 
 - requirement_id: ROAD-B-004
   stage: B
   status: PARTIAL_PASS
   implementation_refs:
+    - crates/nlos-plan
     - crates/nlos-task/src/scale.rs
   test_refs:
+    - crates/nlos-plan/tests
     - crates/nlos-task/tests/scale_profile.rs
     - crates/nlos-task/tests/scale_profile_probe.rs
   evidence_refs:
+    - docs/evidence/stage-b/b-plan-001-declaration-surface.md
+    - docs/evidence/stage-b/b-plan-002-manifest-template.md
     - docs/evidence/stage-b/b-task-scale-001.md
+    - docs/evidence/stage-b/reviews/w31g-road-b004-gates.md
+    - docs/evidence/stage-b/reviews/w34a-six-gate-matrix.md
   assurance: H3
   limitations:
-    - "仅 10K 实跑；100K 为 #[ignore] 注册探针（TaskNode 声明面未挂，W28+）"
-    - "working-set 比例 benchmark、pressure/reclaim controller 实执行与 rehydrate 未做"
-    - "waiting Fiber 不能替代 TaskNode benchmark（冒充即风险 RISK-B-07）"
-  source: "stage-b-progress.md §6 ROAD-B-004 行（base 3d81a90）：ScaleProfile 骨架 + 10K 实跑 PARTIAL PASS"
+    - "全部规模数字为 debug/test profile、单平台 macOS（release 复测、Linux/Windows 多平台与 CI 化未做）；「未完成前不得声称 PID 级 Agent 容量」——生产量级声明以 release/多平台复测为前置"
+    - "G3 五条件仅依赖+admission 两条件已强制；Namespace/ResourceContract/fanout gate 仍为声明 digest，授权面无权威承载"
+    - "G4 生态 selector 半边（Package/Skill/Tool/Model/Artifact/Topic/外部服务 typed selector）未落；apply 侧 TaskNode 维 admission consult 仍缺（仅物化半边接线）"
+    - "Task 面 reclaim 闭环与 plan 侧 residency 轴未互连；PINNED tier 未落；比例矩阵无 100K@50% cell 且 occupancy 只单调填充、无回收再入场动态；调度器自身规模探针未跑"
+    - "故障矩阵 kill-9=页缓存存活的进程崩溃；真实断电/跨 Cell/三权威原子性未测；G6 边界 1 的 CI 半边待当前 run 35531478487 绿后解除"
+  source: "stage-b-progress.md §6 ROAD-B-004 行（base a01fd57）；W31-G 评审：G1–G6 全 SATISFIED-WITH-BOUNDARIES、无一 NOT-SATISFIED；W34-A §4 维持裁决（具名边界随裁定带入 limitations）"
 
 - requirement_id: ROAD-B-005
   stage: B
   status: PARTIAL_PASS
   implementation_refs:
     - crates/nlos-system-control
+    - desktop
   test_refs:
-    - crates/nlos-system-control/tests/control_command_cli.rs
-    - crates/nlos-system-control/tests/control_ipc_auth.rs
+    - crates/nlos-system-control/tests
   evidence_refs:
     - docs/evidence/stage-b/b-control-001-control-command-cli.md
     - docs/evidence/stage-b/b-control-002-control-ipc-auth.md
     - docs/evidence/stage-b/b-control-003-nl-prefix.md
+    - docs/evidence/stage-b/b-gui-001-task-manager-shell.md
+    - docs/evidence/stage-b/reviews/w34a-six-gate-matrix.md
   assurance: H3
   limitations:
-    - "pause/resume/cancel/kill/throttle/reclaim ControlCommand 变体未做（B5-1）"
-    - "Trusted GUI（Tauri Task Manager）与多层手动调度未做（B5-4）"
-    - "GUI↔NL↔CLI Receipt parity 钉死测试未做（B5-6）"
-  source: "stage-b-progress.md §6 ROAD-B-005 行（base 3d81a90）：NL/CLI/IPC 控制与 inspect 已有单节点 H3"
+    - "七层中 Application 层控制面完全缺位（无 ControlCommand arm、生命周期动词不在 NL 白名单）；AgentInstance 未独立分面建模"
+    - "pause/resume/cancel 命令/回执/parity 面完备但真实执行器未接线（UnwiredOperationCommandExecutor typed NOT_FOUND）；kill/throttle/reclaim 三条真实 authority 路径已接（throttle 不落 durable、reclaim 为合成可重建计数，W29-D §383/384 登记）"
+    - "GUI 真机战役（computer-use 清单）未跑——GUI 证据形态为命令层集成测试 + 窗口注册 + CLI 活体冒烟；五层 inspect 的 desktop 派发接线未做（W33-F ③）"
+    - "semantic 域 NL 语法空缺（typed 拒绝钉死）；desktop 测试不在根 workspace CI；Windows 无 GUI 认证面；同路证明条款已由 W32-C 四路径 parity（20 命令家族）钉死"
+  source: "stage-b-progress.md §6 ROAD-B-005 行 + §3 B-CONTROL 行（base a01fd57）；W34-A §5 新评审：裁决 PARTIAL-residuals（提案，控制器集成为准）"
 
 - requirement_id: ROAD-B-006
   stage: B
@@ -113,18 +150,39 @@
     - crates/nlos-runtime-tokio
     - crates/nlos-process
   test_refs:
-    - crates/nlos-runtime-tokio/tests/activation_meter_scale.rs
-    - crates/nlos-process/tests/process_crash_propagation.rs
+    - crates/nlos-runtime-tokio/tests
+    - crates/nlos-process/tests
   evidence_refs:
+    - docs/evidence/stage-b/poc-0001-tokio-fiber-runtime.md
     - docs/evidence/stage-b/b-runtime-002-fiber-scale.md
     - docs/evidence/stage-b/b-process-003-crash-propagation.md
-    - docs/evidence/stage-b/poc-0001-tokio-fiber-runtime.md
+    - docs/evidence/stage-b/reviews/w34a-six-gate-matrix.md
   assurance: H3
   limitations:
-    - "runtime 侧 fiber 批量 cancel 联动未做（W27-C）；Windows 实机 platform kill 未做（B6-2）"
-    - "wake latency/fairness 测试未做（W27-F）；完整 BirthDecision 未做（B6-5）"
-    - "100K lifecycle/activation-meter 探针部分为 ignore 定档，未纳入默认测试门"
-  source: "stage-b-progress.md §6 ROAD-B-006 行（base 3d81a90）：100K fiber/crash 传播/platform kill 前缀已有单节点 H3，仍为 PARTIAL_PASS"
+    - "单平台 macOS arm64、debug/test profile 数字；多平台（Linux/Windows）与 release-profile 复测未做；「coroutine 级大规模并发」生产量级声明以此为前置"
+    - "100K 规模级 cancel/batch-cancel 探针未纳入（O(n²)/O(n) 终态 purge 特征家族登记）；wake fairness 为 current_thread 确定性口径（多 worker 交错与端到端墙钟不外推）"
+    - "runtime kill receipt 消费与 Activation meter 联动未接线；B6-4 跨平台 supervisor spawn/suspend/kill、B6-5 完整 BirthDecision 登记"
+    - "Windows 实杀精确口径（W34-A §6 residual 4）：run 35511878717 的 platform kill 步骤 step 级 success、job 级因无关 Clippy 步失败（根因已修）；且步骤绿也不含 live-child 实杀断言——「Windows 真 OS kill 集成测试」仅收窄「CI 复验已跑」半维（RISK-B-10）"
+    - "100K fiber/activation-meter 探针为 #[ignore] 定档，常规 CI 不跑"
+  source: "stage-b-progress.md §6 ROAD-B-006 行 + §3 B-RUNTIME 行（base a01fd57）；W34-A §6 新评审：门六条款全部具名测试/探针闭合，裁决 SATISFIED-WITH-BOUNDARIES（提案）；本 claim 因具名边界未清仍为 PARTIAL_PASS"
+
+# ===== §3 工作包行（按进度单 §3 表序）=====
+
+- requirement_id: B-MGMT
+  stage: B
+  status: DONE
+  implementation_refs:
+    - docs/management/README.md
+    - docs/management/project-knowledge-progressive-disclosure.md
+    - docs/management/ledger-schema.md
+  test_refs:
+    - scripts/test_lint_claims.py
+  evidence_refs: []
+  assurance: DESIGN
+  limitations:
+    - "机器台账 schema v1 已冻结（W27-E/X-4）并于 W34-B 全量回填（本变更）；未知风险清单 W34-C 另出（docs/management/exit-unknown-risks.md）"
+    - "DESIGN 级：管理机制本身无 docs/evidence/stage-b 工件，验证面为 lint 机械门与退出评审"
+  source: "stage-b-progress.md §3 B-MGMT 行（base a01fd57）：DONE"
 
 - requirement_id: B-TYPES
   stage: B
@@ -137,7 +195,144 @@
   assurance: H2
   limitations:
     - "public schema 已定 v1-beta 通道冻结（ADR-0014，additive-only）；生成约束冻结标记已落地（B-SCHEMA-015），后续演进只走 additive"
-  source: "stage-b-progress.md §3 B-TYPES 行（base 3d81a90）：DONE；nominal ID/Generation/CancelEpoch 由 nlos-types 承载，006P 扩展共享 identity spine"
+  source: "stage-b-progress.md §3 B-TYPES 行（base a01fd57）：DONE；nominal ID/Generation/CancelEpoch 由 nlos-types 承载，006P 扩展共享 identity spine"
+
+- requirement_id: B-IDENTITY
+  stage: B
+  status: IN_PROGRESS
+  implementation_refs:
+    - crates/nlos-identity
+  test_refs:
+    - crates/nlos-identity/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-identity-001-principal-key-authority.md
+    - docs/evidence/stage-b/b-identity-002-key-rotation.md
+    - docs/evidence/stage-b/b-identity-003-custody.md
+    - docs/evidence/stage-b/b-identity-004-session-ingress.md
+  assurance: H3
+  limitations:
+    - "多 Principal domain merge/split、HSM/跨机 session、attestation ingress 扩展、grace-period 双签未做"
+    - "三平台 CI 复验与真实掉电未做（§3 行登记）"
+  source: "stage-b-progress.md §3 B-IDENTITY 行（base a01fd57）：IN_PROGRESS；001–004 各最小前缀 PARTIAL PASS"
+
+- requirement_id: B-CAPABILITY
+  stage: B
+  status: IN_PROGRESS
+  implementation_refs:
+    - crates/nlos-capability
+  test_refs:
+    - crates/nlos-capability/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-capability-001-durable-attenuation-authority.md
+    - docs/evidence/stage-b/b-capability-002-call-limit-ledger.md
+    - docs/evidence/stage-b/b-capability-003-namespace-hierarchy.md
+    - docs/evidence/stage-b/b-capability-004-fault-matrix.md
+  assurance: H3
+  limitations:
+    - "跨进程认证入口、通用 object/right registry、kill-9/torn-WAL/revoke 扩展窗、authority 侧 Namespace 派生 API 未做"
+    - "无签名 TCB 入口已收敛为强制签名（W24-004：issue_root/delegate/revoke 删除，签名版为唯一入口）"
+  source: "stage-b-progress.md §3 B-CAPABILITY 行（base a01fd57）：IN_PROGRESS；001–004 各最小前缀 PARTIAL PASS"
+
+- requirement_id: B-SEMANTIC
+  stage: B
+  status: IN_PROGRESS
+  implementation_refs:
+    - crates/nlos-semantic
+  test_refs:
+    - crates/nlos-semantic/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-semantic-001-durable-assertion-admission.md
+    - docs/evidence/stage-b/b-semantic-002a-canonical-intent-spec-body.md
+    - docs/evidence/stage-b/b-semantic-002b-durable-spec-event-admission.md
+    - docs/evidence/stage-b/b-semantic-003-outbox-owner-readback.md
+    - docs/evidence/stage-b/b-semantic-004-outbox-ack-writer.md
+    - docs/evidence/stage-b/b-semantic-006-judgment-verification-retraction.md
+    - docs/evidence/stage-b/b-semantic-007-declassification.md
+    - docs/evidence/stage-b/b-semantic-008-trust-view.md
+    - docs/evidence/stage-b/b-semantic-009-fault-matrix.md
+  assurance: H3
+  limitations:
+    - "batch DAG、TrustPolicy/Gate/vector checkpoint、跨进程 endpoint 签名/attestation、declassification policy 解引用与 Spec/Judgment 路径未做"
+    - "kill-9/torn-WAL 扩展窗未做（§3 行登记）"
+  source: "stage-b-progress.md §3 B-SEMANTIC 行（base a01fd57）：IN_PROGRESS；001–009 各最小前缀 PARTIAL PASS"
+
+- requirement_id: B-PARTICIPANT
+  stage: B
+  status: IN_PROGRESS
+  implementation_refs:
+    - crates/nlos-task
+  test_refs:
+    - crates/nlos-task/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-task-007a-self-participant-registry.md
+    - docs/evidence/stage-b/b-task-007b1-authority-endpoint-proofs.md
+    - docs/evidence/stage-b/b-task-007b2-verified-participant-registration.md
+    - docs/evidence/stage-b/b-task-007c1-resource-endpoint-proofs.md
+    - docs/evidence/stage-b/b-task-007c2-verified-resource-registration.md
+    - docs/evidence/stage-b/b-task-007d1-participant-binding-propagation.md
+    - docs/evidence/stage-b/b-task-008c2g-operation-endpoint-binding.md
+    - docs/evidence/stage-b/b-op-fence-002-operation-endpoint-proof.md
+  assurance: H3
+  limitations:
+    - "行内登记未决项（Channel endpoint、跨 authority/TaskWriteSet activation、takeover/adoption coverage、fault matrix）已部分由后续切片收口（B-CHANNEL-001 Task 侧接线、W30-A 六域闭环、cross-term adoption）"
+    - "剩余：外部 provider proof/attestation、多 Cell、成套 fault matrix 覆盖"
+  source: "stage-b-progress.md §3 B-PARTICIPANT 行（base a01fd57）：IN_PROGRESS；007A–008C2G-OP 各最小前缀 PARTIAL PASS"
+
+- requirement_id: B-RUNTIME
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-runtime
+    - crates/nlos-runtime-tokio
+  test_refs:
+    - crates/nlos-runtime-tokio/tests
+  evidence_refs:
+    - docs/evidence/stage-b/poc-0001-tokio-fiber-runtime.md
+    - docs/evidence/stage-b/b-runtime-002-fiber-scale.md
+    - docs/evidence/stage-b/b-process-003-crash-propagation.md
+  assurance: H3
+  limitations:
+    - "跨平台 supervisor spawn/suspend/kill、完整 BirthDecision、runtime kill receipt 消费与 meter 联动未做"
+    - "100K 探针为 #[ignore] 定档（常规 CI 不跑）；wake latency/fairness 测试为 current_thread 确定性口径（多 worker 交错不外推——W34-A §6 residual 2）"
+  source: "stage-b-progress.md §3 B-RUNTIME 行（base a01fd57）：PARTIAL_PASS"
+
+- requirement_id: B-OP-FENCE
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-operation
+    - crates/nlos-store
+  test_refs:
+    - crates/nlos-store/tests
+  evidence_refs:
+    - docs/evidence/stage-b/poc-0002-operation-callback-fence.md
+    - docs/evidence/stage-b/b-op-fence-002-operation-endpoint-proof.md
+    - docs/evidence/stage-b/b-op-fence-003-dispatch-activation-readback.md
+    - docs/evidence/stage-b/b-task-008c2g-operation-endpoint-binding.md
+  assurance: H3
+  limitations:
+    - "跨 authority/TaskWriteSet activation 已部分收口（W29-C prepare→activate 接线、W30-A 六域闭环）；Driver authentication、EffectPermit completion、progress/stream callback 未做"
+    - "Channel endpoint 已由 B-CHANNEL-001 前缀接线；跨进程签名/租约/attestation 未做"
+  source: "stage-b-progress.md §3 B-OP-FENCE 行（base a01fd57）：PARTIAL_PASS"
+
+- requirement_id: B-STORE
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-store
+  test_refs:
+    - crates/nlos-store/tests
+  evidence_refs:
+    - docs/evidence/stage-b/poc-0003-sqlite-operation-authority.md
+    - docs/evidence/stage-b/b-schema-010-durable-idempotency-result.md
+    - docs/evidence/stage-b/b-schema-011-durable-idempotency-ipc.md
+    - docs/evidence/stage-b/b-schema-012-deadline-cancel-state-machine.md
+    - docs/evidence/stage-b/b-schema-013-operation-control-timer-worker.md
+  assurance: H3
+  limitations:
+    - "100K 逐条生产写入、真实硬件掉电/更多文件系统超出当前证据"
+    - "分层掉电阶梯（X-6）：层 1 APFS 校准与层 2 dm-flakey CI 已有，M4/M6/M8 模型校准未做"
+  source: "stage-b-progress.md §3 B-STORE 行（base a01fd57）：PARTIAL_PASS；F1–F7、真实重连、server restart、durable no-effect 与 cancel epoch CAS 已验证"
 
 - requirement_id: B-OUTBOX
   stage: B
@@ -153,7 +348,7 @@
     - "持久 apply 失败（stopped_at 路径）暂无 health 信号（observability 后续项）"
     - "Faulted 恢复依赖外部监督（归 B-PROCESS）；PumpHealth.last_error 跨 IPC 脱敏未做（归 B-CONTROL/B-SCHEMA）"
     - "Buffered 驻留仅随 fiber 终态清理（归 B-PROCESS/Slice K）"
-  source: "stage-b-progress.md §3 B-OUTBOX 行（base 3d81a90）：DONE；PoC-0004 + 2026-08-01 remediation 已补齐并各有测试"
+  source: "stage-b-progress.md §3 B-OUTBOX 行（base a01fd57）：DONE；PoC-0004 + 2026-08-01 remediation 已补齐并各有测试"
 
 - requirement_id: B-STORE-FAULT
   stage: B
@@ -167,4 +362,833 @@
   assurance: H3
   limitations:
     - "100K 逐条生产写入、真实硬件掉电与更多文件系统保留为扩展 Evidence（不阻塞本工作包）；分层掉电证据推进见 X-6"
-  source: "stage-b-progress.md §3 B-STORE-FAULT 行（base 3d81a90）：DONE；F1–F7 全部通过，三平台 CI run 30714584445"
+  source: "stage-b-progress.md §3 B-STORE-FAULT 行（base a01fd57）：DONE；F1–F7 全部通过，三平台 CI run 30714584445"
+
+- requirement_id: B-SCHEMA
+  stage: B
+  status: IN_PROGRESS
+  implementation_refs:
+    - crates/nlos-schema
+    - crates/nlos-service-directory
+    - crates/nlos-canonical
+    - crates/nlos-ipc
+    - schema
+    - gen
+    - sdk
+    - fuzz
+  test_refs:
+    - crates/nlos-schema/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-schema-001-protobuf-envelope.md
+    - docs/evidence/stage-b/b-schema-002-cross-language-generation.md
+    - docs/evidence/stage-b/b-schema-003-deterministic-cbor.md
+    - docs/evidence/stage-b/b-schema-004-schema-fuzz-smoke.md
+    - docs/evidence/stage-b/b-schema-005-local-typed-ipc.md
+    - docs/evidence/stage-b/b-schema-006-typescript-python-ipc-clients.md
+    - docs/evidence/stage-b/b-schema-007-service-directory-negotiation.md
+    - docs/evidence/stage-b/b-schema-008-cross-language-directory-chain.md
+    - docs/evidence/stage-b/b-schema-009-common-sabi-semantics.md
+    - docs/evidence/stage-b/b-schema-010-durable-idempotency-result.md
+    - docs/evidence/stage-b/b-schema-011-durable-idempotency-ipc.md
+    - docs/evidence/stage-b/b-schema-012-deadline-cancel-state-machine.md
+    - docs/evidence/stage-b/b-schema-013-operation-control-timer-worker.md
+    - docs/evidence/stage-b/b-schema-014-system-control-recovery-contract.md
+    - docs/evidence/stage-b/b-schema-015-registry-freeze-marker.md
+    - docs/evidence/stage-b/b-sdk-go-001-golden-probe.md
+    - docs/evidence/stage-b/b-sdk-csharp-001-golden-probe.md
+  assurance: H3
+  limitations:
+    - "Namespace bootstrap authority、生产目录 watch/lease/rebind、持久 deadline queue/restart recovery、Receipt authority 未做"
+    - "双向 peer auth、Python Proactor 稳定 profile、CBOR 跨语言、长期 fuzz、actual signing 未做（§3 行登记）"
+  source: "stage-b-progress.md §3 B-SCHEMA 行（base a01fd57）：IN_PROGRESS；001–015 各切片 PARTIAL PASS，SABI 已扩至 v1.5（W32-G，additive）"
+
+- requirement_id: B-TASK-006L
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-task
+    - crates/nlos-system-control
+  test_refs:
+    - crates/nlos-task/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-task-006l-system-control-recovery-handler.md
+  assurance: H3
+  limitations:
+    - "认证模型已定并落地三服务 opt-in 入口（ADR-0011；challenge-response + AuthorityClock）；全量生产 caller 迁移收尾（唯二裸 handle 在 conformance 冻结面）"
+    - "多入口 parity 遗留外部场景项（§4.105 前行注）"
+  source: "stage-b-progress.md §3 B-TASK-006L 行（base a01fd57）：PARTIAL_PASS"
+
+- requirement_id: B-TASK-006M
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-task
+  test_refs:
+    - crates/nlos-task/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-task-006m-recovery-metrics-export.md
+  assurance: H3
+  limitations:
+    - "具体 OpenMetrics/ETW/signpost adapter、scrape auth、retention/alert rules、生产 metrics sink 未做"
+  source: "stage-b-progress.md §3 B-TASK-006M 行（base a01fd57）：PARTIAL_PASS"
+
+- requirement_id: B-SDK-LANG-EVAL
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - docs/management/language-sdk-support-plan.md
+  test_refs: []
+  evidence_refs:
+    - docs/evidence/stage-b/b-sdk-go-001-golden-probe.md
+    - docs/evidence/stage-b/b-sdk-csharp-001-golden-probe.md
+  assurance: H2
+  limitations:
+    - "官方语言集合评估未定案（Java/Kotlin、Swift、C/C++ 需求驱动复审）；Go/C# golden 探针已解封执行且复验零漂移（X-3 前半，W29-G/W34-A §7）"
+    - "Rust/TypeScript/Python 三语言现有 PARTIAL PASS 证据保持有效（§5 行 1281）；TS/Python conformance 未钉 W28-D/W29-D/W32-G 新臂/新视图 golden（Deferred minor，W34-A §7 X-3 行）；长期 SDK packaging/维护面未决"
+  source: "stage-b-progress.md §3 B-SDK-LANG-EVAL 行 + §6.5.3 W29-G 行 + §5 行 1281 + W34-A §7（base a01fd57）：§3 行状态字段仍为 READY（行文滞后于探针解封执行），按证据登记 PARTIAL_PASS"
+
+- requirement_id: B-SANDBOX
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - docs/management/adrs/0015-dual-layer-untrusted-execution-isolation.md
+  test_refs: []
+  evidence_refs:
+    - docs/evidence/stage-b/b-sandbox-001-isolation-comparison.md
+  assurance: H3
+  limitations:
+    - "单平台 macOS 对比实验；Linux rlimit 补测、Seatbelt、Component Model/p2 未覆盖（ADR-0015 复审触发器）"
+    - "结论已经 ADR-0015 定案（双层隔离：独立 host Process + 进程内 Wasmtime 按信任档分层），候选已晋升 canonical"
+  source: "stage-b-progress.md §3 B-SANDBOX 行（base a01fd57）：PARTIAL_PASS（结论已定案）"
+
+- requirement_id: B-PROCESS
+  stage: B
+  status: IN_PROGRESS
+  implementation_refs:
+    - crates/nlos-process
+  test_refs:
+    - crates/nlos-process/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-process-001-durable-execution-binding-authority.md
+    - docs/evidence/stage-b/b-process-003-crash-propagation.md
+  assurance: H3
+  limitations:
+    - "完整 BirthDecision、多 authority prepare/activate、macOS/Windows/Linux spawn/suspend/kill 全谱、checkpoint、IsolationUnit 与 resource mapping 未做"
+    - "Windows 实机 platform kill 未做（POSIX 已有；Windows 为 adapter 前缀 + CI 契约道——RISK-B-10）"
+  source: "stage-b-progress.md §3 B-PROCESS 行（base a01fd57）：IN_PROGRESS；001/003 各最小前缀 PARTIAL PASS"
+
+- requirement_id: B-PROCESS-002
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-process
+    - crates/nlos-runtime-tokio
+  test_refs:
+    - crates/nlos-process/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-process-002-fiber-replay.md
+  assurance: H3
+  limitations:
+    - "跨进程 replay、真实掉电、绑定语义解释文档化未做（ADR-0012 全量落地后遗留）"
+  source: "stage-b-progress.md §3 B-PROCESS-002 行（base a01fd57）：PARTIAL_PASS"
+
+- requirement_id: B-RESOURCE
+  stage: B
+  status: IN_PROGRESS
+  implementation_refs:
+    - crates/nlos-resource
+  test_refs:
+    - crates/nlos-resource/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-resource-001-driver-reservation-binding-authority.md
+    - docs/evidence/stage-b/b-resource-003-consumption-high-water.md
+    - docs/evidence/stage-b/b-resource-004-quarantine-freeze.md
+    - docs/evidence/stage-b/b-resource-005-finalize-refund.md
+    - docs/evidence/stage-b/b-task-007c1-resource-endpoint-proofs.md
+  assurance: H3
+  limitations:
+    - "完整 Ledger/risk/rebate、AdmissionPlan、ControllerBinding、真实 enforcement shim 与平台 Device adapter 未做"
+    - "多维 demand 谓词（W22-R）与跨 authority prepare/finalize（ADR-0017/W28-C）已落地为前缀"
+  source: "stage-b-progress.md §3 B-RESOURCE 行（base a01fd57）：IN_PROGRESS；001/003/004/005 各最小前缀 PARTIAL PASS"
+
+- requirement_id: B-TASK
+  stage: B
+  status: IN_PROGRESS
+  implementation_refs:
+    - crates/nlos-task
+    - crates/nlos-plan
+  test_refs:
+    - crates/nlos-task/tests
+    - crates/nlos-plan/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-task-001-task-authority-commit-permit.md
+    - docs/evidence/stage-b/b-task-002-effect-permit-dispatch.md
+    - docs/evidence/stage-b/b-task-003-reconcile-effect-history.md
+    - docs/evidence/stage-b/b-task-004-task-group.md
+    - docs/evidence/stage-b/b-task-005-commit-group-binding.md
+    - docs/evidence/stage-b/b-task-006e-cross-authority-coordinator.md
+    - docs/evidence/stage-b/b-task-006p-shared-nominal-identity-spine.md
+    - docs/evidence/stage-b/b-task-008a-verified-write-set-seal.md
+    - docs/evidence/stage-b/b-task-008c1-planned-effect-write-set-binding.md
+    - docs/evidence/stage-b/b-task-008c2g-complete-writeset.md
+    - docs/evidence/stage-b/b-plan-001-declaration-surface.md
+  assurance: H3
+  limitations:
+    - "行内「complete TaskWriteSet 未实现」已由 W30-A 六域混合写集闭环收口（b-task-008c2g-complete-writeset）；legacy no-seal planned-effect path 收敛同批完成"
+    - "剩余：apply 侧 TaskNode 维 admission consult（W31-G 边界 4）、真实 provider、多 Cell、真实硬件掉电"
+  source: "stage-b-progress.md §3 B-TASK 行（base a01fd57）：IN_PROGRESS；001–008C2G/plan 声明面全系列见 §3/§4 对应行"
+
+- requirement_id: B-TASK-008C2G-RES
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-task
+  test_refs:
+    - crates/nlos-task/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-task-008c2g-resource-permit-owner-revalidation.md
+  assurance: H3
+  limitations:
+    - "行内未决项（activation/consume/finalize、publication receipt、跨 authority complete）已由 W28-C（b-task-008c2g-resource-prepare-finalize）与 W30-A 六域闭环收口"
+    - "本切片边界为 permit 前 owner 复核；lease 围栏梯级入口已由 W23-004 扩展"
+  source: "stage-b-progress.md §3 B-TASK-008C2G-RES 行（base a01fd57）：PARTIAL_PASS"
+
+- requirement_id: B-TASK-008C2G-ART
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-task
+  test_refs:
+    - crates/nlos-task/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-task-008c2g-artifact-permit-owner-revalidation.md
+  assurance: H3
+  limitations:
+    - "Artifact staging/publication receipt consumption 与统一 TaskCommitReceipt 接线已由 006B/统一恢复面（W26）收口；本切片边界为 permit 前 owner 复核"
+  source: "stage-b-progress.md §3 B-TASK-008C2G-ART 行（base a01fd57）：PARTIAL_PASS"
+
+- requirement_id: B-TASK-008C2G-PROCESS
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-task
+  test_refs:
+    - crates/nlos-task/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-task-008c2g-process-permit-owner-revalidation.md
+  assurance: H3
+  limitations:
+    - "Process rotation/跨 authority prepare→activate 已由 ADR-0017/W28-C 与 W29-F 第二 Process 全链扩展；Operation/Channel linkage 见 B-CHANNEL-001/B-OP-FENCE 各行"
+  source: "stage-b-progress.md §3 B-TASK-008C2G-PROCESS 行（base a01fd57）：PARTIAL_PASS"
+
+- requirement_id: B-TASK-008C2G-OP
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-task
+  test_refs:
+    - crates/nlos-task/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-task-008c2g-operation-endpoint-binding.md
+  assurance: H3
+  limitations:
+    - "跨 authority/TaskWriteSet prepare→activate/dispatch 已由 W29-C 接线；跨进程认证、Channel endpoint（B-CHANNEL-001）、统一 TaskCommitReceipt（W30-A）按各自切片登记"
+  source: "stage-b-progress.md §3 B-TASK-008C2G-OP 行（base a01fd57）：PARTIAL_PASS"
+
+- requirement_id: B-RESOURCE-002
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-resource
+  test_refs:
+    - crates/nlos-resource/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-resource-002-activation-receipt-readback.md
+  assurance: H3
+  limitations:
+    - "CLOSING/UNCERTAIN 与跨 authority lifecycle 未实现；Task 消费接线已由 B-TASK-008C2G-RES-COMMIT 承接"
+  source: "stage-b-progress.md §3 B-RESOURCE-002 行（base a01fd57）：PARTIAL_PASS"
+
+- requirement_id: B-SEMANTIC-003
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-semantic
+  test_refs:
+    - crates/nlos-semantic/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-semantic-003-outbox-owner-readback.md
+  assurance: H3
+  limitations:
+    - "跨进程 consumer/ACK（认证入口已落 ADR-0011）、checkpoint/publication receipt 已由 005/008C2G-SEM 接线；owner ACK writer 见 B-SEMANTIC-004"
+  source: "stage-b-progress.md §3 B-SEMANTIC-003 行（base a01fd57）：PARTIAL_PASS"
+
+- requirement_id: B-SEMANTIC-004
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-semantic
+  test_refs:
+    - crates/nlos-semantic/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-semantic-004-outbox-ack-writer.md
+  assurance: H3
+  limitations:
+    - "跨进程 consumer 认证/租约未做；checkpoint/publication receipt 接线已由后续切片收口"
+  source: "stage-b-progress.md §3 B-SEMANTIC-004 行（base a01fd57）：PARTIAL_PASS"
+
+- requirement_id: B-SEMANTIC-005
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-semantic
+  test_refs:
+    - crates/nlos-semantic/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-semantic-005-publication-receipt-producer.md
+  assurance: H3
+  limitations:
+    - "跨 authority prepare/consume/recovery 已由 COORD 系列切片部分收口；Trust View/vector checkpoint、多 Cell 未实现"
+  source: "stage-b-progress.md §3 B-SEMANTIC-005 行（base a01fd57）：PARTIAL_PASS"
+
+- requirement_id: B-TASK-008C2G-SEM
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-task
+  test_refs:
+    - crates/nlos-task/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-task-008c2g-semantic-publication-consumer.md
+  assurance: H3
+  limitations:
+    - "统一恢复面（W26）与六域混合写集（W30-A）已扩；外部 provider proof/attestation、Trust View/vector checkpoint、多 Cell 未实现"
+  source: "stage-b-progress.md §3 B-TASK-008C2G-SEM 行（base a01fd57）：PARTIAL_PASS"
+
+- requirement_id: B-TASK-008C2G-COORD
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-task
+    - crates/nlos-commit-coordinator
+  test_refs:
+    - crates/nlos-task/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-task-008c2g-semantic-coordinator.md
+    - docs/evidence/stage-b/b-task-008c2g-takeover-fault-matrix.md
+    - docs/evidence/stage-b/b-task-008c2g-successor-registry.md
+    - docs/evidence/stage-b/b-task-008c2g-cross-term-adoption.md
+  assurance: H3
+  limitations:
+    - "NLOS principal→participant 授权绑定、远端 barrier/物理 cleanup 证明、Artifact/Semantic high-level 跨 term、rotation 专属故障矩阵、外部 provider proof/attestation、多 Cell 未实现"
+  source: "stage-b-progress.md §3 B-TASK-008C2G-COORD 行（base a01fd57）：PARTIAL_PASS；schema v26–v38 takeover 表组全链在案"
+
+- requirement_id: B-TASK-008C2G-IPC-CONFORMANCE
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-takeover-control
+  test_refs:
+    - crates/nlos-takeover-control/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-task-008c2g-takeover-control-ipc.md
+  assurance: H3
+  limitations:
+    - "长时真实端点 soak（§5.2 已落分钟级）、真实 Capability authorizer、principal-level peer attestation、长期 SDK packaging 未实现"
+  source: "stage-b-progress.md §3 B-TASK-008C2G-IPC-CONFORMANCE 行（base a01fd57）：PARTIAL_PASS（§4.91）"
+
+- requirement_id: B-TASK-008C2G-IPC-CONCURRENCY
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-takeover-control
+  test_refs:
+    - crates/nlos-takeover-control/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-task-008c2g-takeover-control-ipc.md
+  assurance: H3
+  limitations:
+    - "分钟级长时真实端点 soak、真实 Capability authorizer、principal-level peer attestation 未实现（部分由后续切片 §5.2 扩展）"
+  source: "stage-b-progress.md §3 B-TASK-008C2G-IPC-CONCURRENCY 行（base a01fd57）：PARTIAL_PASS（§4.92）"
+
+- requirement_id: B-TASK-008C2G-IPC-FAULT-MAPPING
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-takeover-control
+  test_refs:
+    - crates/nlos-takeover-control/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-task-008c2g-takeover-control-ipc.md
+  assurance: H3
+  limitations:
+    - "长时/高数量连接压力（§4.98/§5.2 已扩）、真实 Capability authorizer、principal-level peer attestation 未实现"
+  source: "stage-b-progress.md §3 B-TASK-008C2G-IPC-FAULT-MAPPING 行（base a01fd57）：PARTIAL_PASS（§4.93）"
+
+- requirement_id: B-TASK-008C2G-IPC-POWERLOSS
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-takeover-control
+  test_refs:
+    - crates/nlos-takeover-control/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-task-008c2g-takeover-control-ipc.md
+  assurance: H3
+  limitations:
+    - "真实断电不等同（fault VFS 模拟）、真实 Capability authorizer、principal-level peer attestation 未实现"
+  source: "stage-b-progress.md §3 B-TASK-008C2G-IPC-POWERLOSS 行（base a01fd57）：PARTIAL_PASS（§4.94）"
+
+- requirement_id: B-TASK-008C2G-IPC-CRASH-RESTART
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-takeover-control
+  test_refs:
+    - crates/nlos-takeover-control/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-task-008c2g-takeover-control-ipc.md
+  assurance: H3
+  limitations:
+    - "真实断电、时间窗 anti-replay、真实 Capability authorizer、principal-level peer attestation 未实现；随机/信号级崩溃矩阵已由后续切片（§4.99/§5.1）扩展"
+  source: "stage-b-progress.md §3 B-TASK-008C2G-IPC-CRASH-RESTART 行（base a01fd57）：PARTIAL_PASS（§4.95）"
+
+- requirement_id: B-TASK-008C2G-IPC-MULTI-CONNECTION
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-takeover-control
+  test_refs:
+    - crates/nlos-takeover-control/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-task-008c2g-takeover-control-ipc.md
+  assurance: H3
+  limitations:
+    - "分钟级/长时连接 soak（§5.2 已落）、随机/信号级崩溃矩阵（§4.99/§5.1 已落）、真实断电、真实 Capability authorizer、principal-level peer attestation 未实现"
+  source: "stage-b-progress.md §3 B-TASK-008C2G-IPC-MULTI-CONNECTION 行（base a01fd57）：PARTIAL_PASS（§4.96）"
+
+- requirement_id: B-TASK-008C2G-IPC-WAL-TAIL
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-takeover-control
+  test_refs:
+    - crates/nlos-takeover-control/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-task-008c2g-takeover-control-ipc.md
+  assurance: H3
+  limitations:
+    - "真实断电不等同（截断 WAL 模拟）、真实 Capability authorizer、principal-level peer attestation 未实现"
+  source: "stage-b-progress.md §3 B-TASK-008C2G-IPC-WAL-TAIL 行（base a01fd57）：PARTIAL_PASS（§4.97）"
+
+- requirement_id: B-TASK-008C2G-IPC-HIGH-CONNECTION-SOAK
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-takeover-control
+  test_refs:
+    - crates/nlos-takeover-control/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-task-008c2g-takeover-control-ipc.md
+  assurance: H3
+  limitations:
+    - "分钟级/长时连接 soak（§5.2 已落）、随机/信号级崩溃矩阵（已落）、真实断电、真实 Capability authorizer、principal-level peer attestation 未实现"
+  source: "stage-b-progress.md §3 B-TASK-008C2G-IPC-HIGH-CONNECTION-SOAK 行（base a01fd57）：PARTIAL_PASS（§4.98）"
+
+- requirement_id: B-TASK-008C2G-IPC-SIGNAL-CRASH-MATRIX
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-takeover-control
+  test_refs:
+    - crates/nlos-takeover-control/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-task-008c2g-takeover-control-ipc.md
+  assurance: H3
+  limitations:
+    - "随机外部时刻注入（§5.3 已落）、真实断电、时间窗 anti-replay、真实 Capability authorizer、principal-level peer attestation 未实现"
+  source: "stage-b-progress.md §3 B-TASK-008C2G-IPC-SIGNAL-CRASH-MATRIX 行（base a01fd57）：PARTIAL_PASS（§4.99）"
+
+- requirement_id: B-TASK-008C2G-IPC-RANDOM-CRASH-MATRIX
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-takeover-control
+  test_refs:
+    - crates/nlos-takeover-control/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-task-008c2g-takeover-control-ipc.md
+  assurance: H3
+  limitations:
+    - "随机外部时刻注入（§5.3 已落）、真实断电、时间窗 anti-replay、真实 Capability authorizer、principal-level peer attestation、长期 SDK facade 未实现"
+  source: "stage-b-progress.md §3 B-TASK-008C2G-IPC-RANDOM-CRASH-MATRIX 行（base a01fd57）：PARTIAL_PASS（§5.1）"
+
+- requirement_id: B-TASK-008C2G-IPC-LONG-SOAK
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-takeover-control
+  test_refs:
+    - crates/nlos-takeover-control/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-task-008c2g-takeover-control-ipc.md
+  assurance: H3
+  limitations:
+    - "随机外部时刻注入、真实断电、时间窗 anti-replay、真实 Capability authorizer、principal-level peer attestation、长期 SDK facade 未实现"
+  source: "stage-b-progress.md §3 B-TASK-008C2G-IPC-LONG-SOAK 行（base a01fd57）：PARTIAL_PASS（§5.2）"
+
+- requirement_id: B-TASK-008C2G-IPC-EXTERNAL-TIMING-KILL
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-takeover-control
+  test_refs:
+    - crates/nlos-takeover-control/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-task-008c2g-takeover-control-ipc.md
+  assurance: H3
+  limitations:
+    - "不等同具体 commit phase、真实断电、trusted-clock anti-replay、真实 Capability authorizer、Principal peer attestation 未实现"
+  source: "stage-b-progress.md §3 B-TASK-008C2G-IPC-EXTERNAL-TIMING-KILL 行（base a01fd57）：PARTIAL_PASS（§5.3）"
+
+- requirement_id: B-TASK-008C2G-IPC-TYPED-ADAPTER
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-takeover-control
+  test_refs:
+    - crates/nlos-takeover-control/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-task-008c2g-takeover-control-ipc.md
+  assurance: H3
+  limitations:
+    - "全量生产 caller 迁移、真实 Capability authorizer、principal-level peer attestation、trusted-clock anti-replay 未实现"
+  source: "stage-b-progress.md §3 B-TASK-008C2G-IPC-TYPED-ADAPTER 行（base a01fd57）：PARTIAL_PASS（§5.4）"
+
+- requirement_id: B-TASK-008C2G-COORD-SEM-FAULT-1
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-task
+    - crates/nlos-commit-coordinator
+  test_refs:
+    - crates/nlos-task/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-task-008c2g-semantic-coordinator.md
+  assurance: H3
+  limitations:
+    - "仅本地 SQLite/VFS 证据；真实硬件掉电、跨机器原子提交、三平台复验、外部 provider proof/attestation、Trust View/vector checkpoint 未实现"
+  source: "stage-b-progress.md §3 B-TASK-008C2G-COORD-SEM-FAULT-1 行（base a01fd57）：PARTIAL_PASS（§5.1）"
+
+- requirement_id: B-TASK-008C2G-COORD-SEM-MIXED-RESTART
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-task
+    - crates/nlos-commit-coordinator
+  test_refs:
+    - crates/nlos-task/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-task-008c2g-semantic-coordinator.md
+  assurance: H3
+  limitations:
+    - "仅单机 bounded recovery；完整 TaskWriteSet 已由 W30-A 收口；跨 authority 原子提交、外部 provider proof/attestation、Trust View/vector checkpoint 未实现"
+  source: "stage-b-progress.md §3 B-TASK-008C2G-COORD-SEM-MIXED-RESTART 行（base a01fd57）：PARTIAL_PASS（§5.3）"
+
+- requirement_id: B-TASK-008C2G-COORD-SEM-MIXED-FAULT
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-task
+    - crates/nlos-commit-coordinator
+  test_refs:
+    - crates/nlos-task/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-task-008c2g-semantic-coordinator.md
+  assurance: H3
+  limitations:
+    - "本地 SQLite/VFS 故障模型；真实硬件掉电、跨机器原子提交、外部 provider proof/attestation、Trust View/vector checkpoint 未实现"
+  source: "stage-b-progress.md §3 B-TASK-008C2G-COORD-SEM-MIXED-FAULT 行（base a01fd57）：PARTIAL_PASS（§5.4）"
+
+- requirement_id: B-TASK-008C2G-COORD-ARTIFACT-RESTART-SCAN
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-commit-coordinator
+  test_refs:
+    - crates/nlos-commit-coordinator/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-task-006e-cross-authority-coordinator.md
+  assurance: H3
+  limitations:
+    - "仍是单机 bounded recovery；更广泛六域接线已由 W30-A 收口；跨机器原子提交与真实掉电未实现"
+  source: "stage-b-progress.md §3 B-TASK-008C2G-COORD-ARTIFACT-RESTART-SCAN 行（base a01fd57）：PARTIAL_PASS（§6.1–§6.2）"
+
+- requirement_id: B-TASK-008C2G-CROSS-TERM-ADOPTION
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-task
+  test_refs:
+    - crates/nlos-task/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-task-008c2g-cross-term-adoption.md
+  assurance: H3
+  limitations:
+    - "远端 cleanup/endpoint attestation、Artifact/Semantic high-level 跨 term、rotation 专属故障矩阵未实现"
+  source: "stage-b-progress.md §3 B-TASK-008C2G-CROSS-TERM-ADOPTION 行（base a01fd57）：PARTIAL_PASS（schema v38）"
+
+- requirement_id: B-RESOURCE-003
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-resource
+  test_refs:
+    - crates/nlos-resource/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-resource-003-consumption-high-water.md
+  assurance: H3
+  limitations:
+    - "CLOSING/UNCERTAIN、risk/unknown usage、late rebate 未实现；跨 authority resource/cost receipt 已由 B-TASK-008C2G-RES-COMMIT 承接"
+  source: "stage-b-progress.md §3 B-RESOURCE-003 行（base a01fd57）：PARTIAL_PASS"
+
+- requirement_id: B-RESOURCE-004
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-resource
+  test_refs:
+    - crates/nlos-resource/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-resource-004-quarantine-freeze.md
+  assurance: H3
+  limitations:
+    - "endpoint 签名 final usage proof 未实现；QUARANTINED→FINALIZED 证明后解冻与 ACTIVE finalize/refund 见 B-RESOURCE-005"
+  source: "stage-b-progress.md §3 B-RESOURCE-004 行（base a01fd57）：PARTIAL_PASS"
+
+- requirement_id: B-RESOURCE-005
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-resource
+  test_refs:
+    - crates/nlos-resource/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-resource-005-finalize-refund.md
+  assurance: H3
+  limitations:
+    - "endpoint 签名 proof、risk/rebate ledger 未实现；TaskCommitReceipt resource consumption 接线已由 W30-A 部分收口"
+  source: "stage-b-progress.md §3 B-RESOURCE-005 行（base a01fd57）：PARTIAL_PASS"
+
+- requirement_id: B-RESOURCE-006
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-resource
+  test_refs:
+    - crates/nlos-resource/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-resource-006-cost-receipt-aggregate.md
+  assurance: H3
+  limitations:
+    - "Task 消费接线已由 B-TASK-008C2G-RES-COMMIT 承接；endpoint 签名 effect proof、真实掉电未实现"
+  source: "stage-b-progress.md §3 B-RESOURCE-006 行（base a01fd57）：PARTIAL_PASS"
+
+- requirement_id: B-TASK-008C2G-RES-COMMIT
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-task
+  test_refs:
+    - crates/nlos-task/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-task-008c2g-resource-cost-commit.md
+  assurance: H3
+  limitations:
+    - "跨 authority 契约已由 ADR-0013/ADR-0017 定案并实现（W28-C 有界 coordinator）；真实掉电按分层阶梯策略（层 1/层 2 已有，真机未做）"
+  source: "stage-b-progress.md §3 B-TASK-008C2G-RES-COMMIT 行（base a01fd57）：PARTIAL_PASS；混合 rung + kill-window 矩阵在案"
+
+- requirement_id: B-OP-FENCE-002
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-store
+  test_refs:
+    - crates/nlos-store/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-op-fence-002-operation-endpoint-proof.md
+  assurance: H3
+  limitations:
+    - "跨 authority/TaskWriteSet activation 已由 W29-C 接线；跨进程签名/租约/attestation、Channel endpoint（已前缀接线）、Operation completion 未实现"
+  source: "stage-b-progress.md §3 B-OP-FENCE-002 行（base a01fd57）：PARTIAL_PASS"
+
+- requirement_id: B-OP-FENCE-003
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-store
+  test_refs:
+    - crates/nlos-store/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-op-fence-003-dispatch-activation-readback.md
+  assurance: H3
+  limitations:
+    - "跨 authority activation 已由 W29-C 接线（TaskWriteSet 消费侧）；Channel linkage、corruption-fault 注入矩阵、真实掉电未实现"
+  source: "stage-b-progress.md §3 B-OP-FENCE-003 行（base a01fd57）：PARTIAL_PASS"
+
+- requirement_id: B-CHANNEL-001
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-channel
+  test_refs:
+    - crates/nlos-channel/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-channel-001-endpoint-authority.md
+  assurance: H3
+  limitations:
+    - "Topic routing/fanout 与 payer accounting 已移交 B-TOPIC-001（ADR-0007）；ack 消费身份绑定已关闭（第五十增量前系列）"
+    - "跨进程/多机语义、真实掉电未实现；queue delivery 故障矩阵与 D-1 反例修复后 27 passed"
+  source: "stage-b-progress.md §3 B-CHANNEL-001 行（base a01fd57）：PARTIAL_PASS"
+
+- requirement_id: B-TOPIC-001
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-topic
+  test_refs:
+    - crates/nlos-topic/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-topic-001-topic-service-single-log-fanout.md
+  assurance: H3
+  limitations:
+    - "运行时自动 republish、扣费/信用执行面（ledger 为记账承诺）、共享 channel 分摊、跨进程/多机、真实掉电未实现"
+  source: "stage-b-progress.md §3 B-TOPIC-001 行（base a01fd57）：PARTIAL_PASS；扣费/信用 admission、retention 执行、payer 计量已落（86 passed）"
+
+- requirement_id: B-WAIT-001
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-wait
+    - crates/nlos-runtime-tokio
+  test_refs:
+    - crates/nlos-wait/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-wait-001-durable-wait-registry.md
+  assurance: H3
+  limitations:
+    - "fiber 执行状态重建（B-PROCESS 检查点域）、per-channel notify 水位扩展、真实掉电未实现；跨进程等待本地 IPC 前缀已落地、认证实现未决（模型 ADR-0011 已定）"
+  source: "stage-b-progress.md §3 B-WAIT-001 行（base a01fd57）：PARTIAL_PASS；WakeSink 消费接线与 rehydration 已落"
+
+- requirement_id: B-CONTROL
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-system-control
+    - desktop
+  test_refs:
+    - crates/nlos-system-control/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-control-001-control-command-cli.md
+    - docs/evidence/stage-b/b-control-002-control-ipc-auth.md
+    - docs/evidence/stage-b/b-control-003-nl-prefix.md
+    - docs/evidence/stage-b/b-gui-001-task-manager-shell.md
+  assurance: H3
+  limitations:
+    - "命令面已扩至全命令家族（W28-D/W29-D + W32-G 四层 inspect，SABI v1.5 additive）；真实执行接线仅 kill/throttle/reclaim 三条（pause/resume/cancel 执行器未接线，UnwiredOperationCommandExecutor typed NOT_FOUND——W34-A §5.2）"
+    - "GUI 已接（W32-A..F，本行「GUI 路径未接」为行文滞后）；剩余：Application 层控制命令/生命周期 NL 动词、ResourceInspector 生产接线、多层手动调度深度、GUI 真机战役"
+  source: "stage-b-progress.md §3 B-CONTROL 行 + W34-A §5（base a01fd57）：PARTIAL_PASS"
+
+- requirement_id: B-ARTIFACT
+  stage: B
+  status: IN_PROGRESS
+  implementation_refs:
+    - crates/nlos-artifact
+    - crates/nlos-artifact/src/bin/nlos-package.rs
+  test_refs:
+    - crates/nlos-artifact/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-artifact-001-content-addressed-store.md
+    - docs/evidence/stage-b/b-artifact-002-staged-publication.md
+    - docs/evidence/stage-b/b-artifact-003-package-signature.md
+    - docs/evidence/stage-b/b-artifact-004-gc-orphan-collection.md
+    - docs/evidence/stage-b/b-artifact-005-retention-policy.md
+    - docs/evidence/stage-b/b-artifact-006-provenance.md
+    - docs/evidence/stage-b/b-artifact-007-package-sdk.md
+  assurance: H3
+  limitations:
+    - "加密/lineage/backfill/legal hold、sync/对象存储后端、真实 ENOSPC 探针未做；Task registry/operation admission 接线已由 008C2B/OP 切片承接"
+  source: "stage-b-progress.md §3 B-ARTIFACT 行（base a01fd57）：IN_PROGRESS；001–007 各最小前缀 PARTIAL PASS"
+
+- requirement_id: B-SLICE-K
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-slice-k
+    - examples/sample-app
+  test_refs:
+    - crates/nlos-slice-k/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-slice-k-001-end-to-end.md
+    - docs/evidence/stage-b/b-application-007-third-party-sample.md
+  assurance: H3
+  limitations:
+    - "单机单进程演示级；application↔task 关联已下沉（W29-A TaskSpec 关联字段）、teardown 链与 NL 控制真全链已落（W30-D）、自动 GC tick 已落（W28-E）"
+    - "demo STEP 09d 登记 defect 待处置（W33-H HEAD 复现）；W33-B lifecycle.sh 为现行构造性演示"
+  source: "stage-b-progress.md §3 B-SLICE-K 行（base a01fd57）：PARTIAL_PASS"
+
+# ===== §6.5.3 收官波最小服务（X-1/X-2/X-3）=====
+
+- requirement_id: X-1-NOTIFY
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-notify
+  test_refs:
+    - crates/nlos-notify/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-notify-001-minimal-service.md
+  assurance: H3
+  limitations:
+    - "薄服务层（订阅/投递/ack 全链经既有 Topic 权威）；无影子 fanout 负证已钉；跨进程/多机、真实掉电未做"
+  source: "stage-b-progress.md §6.5.3 W33-D 行 + 第九十一增量（base a01fd57）：W33-D/X-1 前半已落"
+
+- requirement_id: X-1-SEARCH
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-search
+  test_refs:
+    - crates/nlos-search/tests
+  evidence_refs:
+    - docs/evidence/stage-b/b-search-001-minimal-service.md
+  assurance: H3
+  limitations:
+    - "只读查询面（断言 selector + trust-view 活 join + 派生内存索引，可重建非 canonical）；零 semantic 权威写入负证已钉；索引规模/刷新策略未扩展"
+  source: "stage-b-progress.md §6.5.3 W33-E 行 + 第九十一增量（base a01fd57）：W33-E/X-1 后半已落"
+
+- requirement_id: X-2-TASK-SPACE
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - desktop
+  test_refs: []
+  evidence_refs:
+    - docs/evidence/stage-b/b-gui-001-task-manager-shell.md
+  assurance: H3
+  limitations:
+    - "只读任务列表/详情视图（复用 Task Manager 读侧，零新后端命令）；五层 inspect 的 desktop 派发接线未做（W33-F ③，渲染器已就绪）；列表=escalated 行+follow，无全量枚举 IPC 面（W34-A §7 X-2 行）；完整桌面归阶段 D"
+  source: "stage-b-progress.md §6.5.3 W33-F 行 + 第九十一增量 + W34-A §7（base a01fd57）：X-2 已落（b-gui-001 scope 含 Task Space），裁决 SATISFIED-WITH-BOUNDARIES（提案）"
+
+- requirement_id: X-3-DEBUG
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-runtime-tokio/src/bin/nlos-debug.rs
+  test_refs: []
+  evidence_refs:
+    - docs/evidence/stage-b/b-debug-001-minimal-face.md
+  assurance: H3
+  limitations:
+    - "只读检查面（snapshot inspect + replay 事件流回放走查 + recovery 三域台账）；tripwire 三层零 mutation 纪律；无交互式调试/断点"
+  source: "stage-b-progress.md §6.5.3 W33-G 行 + 第九十一增量 + W34-A §7（base a01fd57）：X-3 后半已落（W33-G），裁决 SATISFIED-WITH-BOUNDARIES（提案）"
