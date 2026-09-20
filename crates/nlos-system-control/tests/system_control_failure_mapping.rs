@@ -7,8 +7,8 @@
 use std::path::PathBuf;
 
 use nlos_schema::sabi::v1::{
-    CallerIdentity, Envelope, RetryDirective, SabiErrorCode, SabiRequestContext, SchemaIdentity,
-    envelope,
+    CallerIdentity, Envelope, RetryDirective, SabiErrorCode, SabiFailure, SabiRequestContext,
+    SchemaIdentity, envelope,
 };
 use nlos_schema::{
     CommonSemanticsError, CompatibilityError, REQUEST_ID_BYTES, SABI_ENVELOPE_SCHEMA,
@@ -70,6 +70,23 @@ fn request_contract_and_identity_failures_are_terminal_and_bounded() {
         &SystemControlError::InvalidRecoveryAlert,
         SabiErrorCode::Driver,
         RetryDirective::DoNotRetry,
+    );
+    assert_mapping(
+        &SystemControlError::OperationControlExecutionUnwired,
+        SabiErrorCode::NotFound,
+        RetryDirective::DoNotRetry,
+    );
+    let executor_failure = SystemControlError::OperationExecution(SabiFailure {
+        code: SabiErrorCode::Conflict.into(),
+        retry: RetryDirective::DoNotRetry.into(),
+        safe_message: "operation executor rejected the transition".to_owned(),
+    });
+    let mapped = executor_failure.to_sabi_failure();
+    assert_eq!(mapped.code, i32::from(SabiErrorCode::Conflict));
+    assert_eq!(mapped.retry, i32::from(RetryDirective::DoNotRetry));
+    assert_eq!(
+        mapped.safe_message,
+        "operation executor rejected the transition"
     );
 }
 

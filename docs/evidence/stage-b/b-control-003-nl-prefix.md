@@ -306,3 +306,39 @@
 1. **同义词仍为字面白名单**：`task status`（缺 hex）、`task status now`（尾部垃圾）、`任务状态` / `任务 状态`（缺 hex）、`任务状态了`、`resource status`（缺 hex）、`resource status now`、`资源状态` / `资源 状态`（缺 hex）、`资源状态了` 等近邻形态继续 typed 拒绝。
 2. **无 pause/cancel ControlCommand**：NL 面不能编译暂停/取消类意图。
 3. **ROAD-B-005 仍 PARTIAL**：Trusted GUI 编译与确认面未实现。
+
+## W28-D 增量：pause/resume/cancel ControlCommand 变体 + typed Receipt（B5-1 前半，2026-09-20）
+
+> 状态：`PARTIAL_PASS`（单节点本地；B5-1 前半——命令面完成，真实执行接线归 W29-D；ROAD-B-005 仍 PARTIAL——GUI 未接）
+>
+> 基线 HEAD：`6c7a404`　　写集：`schema/nlos/sabi/v1/system_control.proto`、`gen/`、`crates/nlos-schema`、`crates/nlos-system-control`、本证据文件
+
+### 已实现事实
+
+1. **SABI v1.2 additive 命令臂**（ADR-0014 冻结通道 additive 扩列，镜像 W27-A 先例）：`PauseCommand`/`ResumeCommand`/`CancelCommand` 三空消息 + `ControlCommand.command` oneof 新臂 `pause_operation=11`/`resume_operation=12`/`cancel_operation=13`。寻址与 CAS 沿用共享 `target_id` + `expected_generation_or_revision` 字段（与既有 recovery 命令同构，payload 保持最小诚实）；结果复用既有 `ControlCommandResult`，无新结果消息。`frozen: true` 不变，REGISTRY minor 晋 2（W27-A 的 minor 晋升先例适用于"新命令臂"批量），`system_control_schema_identity()` 随升；gen/ TS/Python 生成物经 `buf generate` 同步。
+2. **nlos-schema**：`SABI_SYSTEM_CONTROL_V1.minor 1→2`（描述注释记录两次 additive 扩列出处）；`compatibility.rs` 注册表断言随升；W27-A semantic 快照 golden 改为字面钉死 v1.1 identity（`w27a_semantic_identity()`——与 TS/Python conformance fixture 的字面 minor=1 完全同构），**冻结 golden 字节零改动**；新增 W28-D 三臂 `SubmitControlCommandRequest` 确定性 golden hex（prost 字段序：oneof 臂先于 reason——与 Python 字段号序不同的合法编码，已在常量文档注明），三臂共享前缀常量 + round-trip + 既有界（reason NUL、target 长度）fail-closed 断言。
+3. **nlos-system-control 命令面**（`src/control.rs`）：`ControlCommand::PauseOperation`/`ResumeOperation`/`CancelOperation { control_command_id, target_id, expected_generation_or_revision, reason }` 三变体——mutation arm 并入既有 SUBMIT 编译（`mutation_address`/`mutation_reason` 提取共享寻址/CAS/reason；空 reason 在 wire 前 typed 拒绝；幂等键=command id 绑定不变）；`ControlOutcome::OperationPaused`/`OperationResumed`/`OperationCancelled { receipt_id }` 三 typed Receipt（`to_bytes` 判别 tag 8/9/10），receipt 投影复用抽取出的 `decoded_result_receipt`（含 foreign command-id echo 与缺失 receipt 的 fail-closed）。
+4. **可插拔执行 seam**（`src/lib.rs`）：`OperationCommandExecutor` trait（`pause_operation`/`resume_operation`/`cancel_operation(OperationControlRequest) -> Result<ReceiptId, SabiFailure>`，`Send + Sync` 为契约部分——auth 测试的 async serve 循环即刻证明了该要求）+ `OperationControlRequest { target_id, expected_generation_or_revision, issuer_principal_id, idempotency_key, requested_at_ms }` + 默认 `UnwiredOperationCommandExecutor`（typed `NOT_FOUND`/`DO_NOT_RETRY` fail-closed，镜像 Unwired inspector stub 模式）。`RecoverySystemControl` 增 `operation_executor` 私有字段与 `with_operation_executor` builder——**`new()` 签名不变**，既有全部调用点零改动。`handle_submit` 三新臂在共享授权/issuer/幂等检查之后路由至 seam；执行器拒绝经 `SystemControlError::OperationExecution(SabiFailure)` 原样转发（bounded passthrough，映射表备案），未接线为 `OperationControlExecutionUnwired`。
+5. **CLI parity**（`src/bin/system-control-cli.rs`）：`pause-operation`/`resume-operation`/`cancel-operation <COMMAND_ID_HEX_32> <TARGET_ID_HEX_32> <EXPECTED_REVISION> <REASON>` 三子命令 + summary 行 `outcome=operation_paused|operation_resumed|operation_cancelled receipt_id=…`。
+6. **NL 双语白名单**（`src/nl.rs`）：`pause|halt|suspend operation <32-hex> expecting <n>`；`resume operation …`；`cancel|abort operation …`；`暂停操作|暂停 操作 … 期望 <n>`；`恢复操作|恢复 操作 …`；`取消操作|取消 操作 …`。派生规则与 ack 逐字镜像：command id 派生自 target id（一 target 一 pause/resume/cancel 幂等身份，重放安全）、CAS 期望显式（`[NL-AMBIG-001]`）、固定 reason `NL_PAUSE_REASON`/`NL_RESUME_REASON`/`NL_CANCEL_REASON`（原始句子不跨界）。`cancel alert …` 仍 typed 拒绝（名词不匹配），`pause everything` 仍拒绝。
+7. **等价路径门**（`tests/control_command_cli.rs` 新 `operation_control_commands_are_byte_identical_across_nl_cli_and_direct_paths`）：wired `DeterministicOperationExecutor` 的真 Unix socket 服务（`serve_forever_with_executor` 扩展）上，三命令 × {直接构造, NL EN/ZH/同义词句, CLI 子命令} 三面 receipt **逐字节相等**；receipt_id 等于确定性派生值，outcome tag 钉死 8/9/10；`denied:` reason 的 RIGHTS 拒绝路径 CLI exit 1 且字节相等。handler 面（`tests/recovery_control.rs` +2）：未接线默认 typed `NOT_FOUND` 拒绝（三臂、无 receipt 证据）；接线后请求字段（target/CAS/issuer/幂等键/墙钟）逐项断言 + 执行器 Conflict 拒绝 bounded 原样转发。`system_control_failure_mapping.rs` 补两新错误变体映射（未接线 NOT_FOUND、passthrough 断言）。
+8. **测试账**：nlos-schema 24/24（+1 golden 测试）；nlos-system-control 73/73——lib 30（nl 16、control 11、openmetrics 3）、`control_command_cli` 5、`recovery_control` 13、`system_control_failure_mapping` 5、`control_ipc_auth` 9、metrics 3+7、windows 0、doc-tests 1。
+
+### 验证
+
+验证环境：macOS（darwin，arm64），基线 HEAD `6c7a404`，分支 `feat/w28-d`。工作区无其他车道未提交改动（本车道独占写集）。
+
+- `cargo test -p nlos-schema -p nlos-system-control`：**97 passed / 0 failed**。
+- `cargo clippy -p nlos-schema -p nlos-system-control --all-targets -- -D warnings`：通过（0 warning / 0 error）。
+- `cargo fmt -p nlos-schema -p nlos-system-control --check`：通过。
+- `cargo check -p nlos-system-control --no-default-features`：通过（非 cli 形态编译）。
+- `buf lint` + `buf format -d --exit-code`：通过。
+- `buf generate` + normalize + `check-generated-schema`：生成物与提交基线一致（提交后验证）。
+
+### 已知限制（增量）
+
+1. **执行 seam 默认未接线**：`UnwiredOperationCommandExecutor` typed `NOT_FOUND` 拒绝；真实执行（pause→Process suspend、kill/throttle/reclaim 等）归 W29-D（B5-1 后半 + B5-2），本车道只交付命令面。
+2. **operation-level NL 无 `恢复语义恢复` 等领域特化形态**：`resume operation` 为通用操作级恢复；`ResumeSemanticRecovery` 仍仅 CLI/direct 面（既有状态，非本车道回归）。
+3. **TS/Python conformance 未加新臂 golden**：写集排除 `tests/conformance/`；Rust 侧 golden 已钉 prost 序字节，TS/Python fixture 维持既有快照。三语言生成物（gen/）已同步。Deferred minor：conformance 侧补钉三臂 hex。
+4. **REGISTRY minor 晋 2 的既有 golden 兼容**：W27-A semantic golden 以字面 v1.1 identity 钉死（与 TS/Python 同构），不随 REGISTRY minor 漂移；此为冻结 golden 的钉定纪律，非字节改动。
+5. **ROAD-B-005 仍 PARTIAL**：Trusted GUI 未接；多层手动调度的执行半边（W29-D）未做。

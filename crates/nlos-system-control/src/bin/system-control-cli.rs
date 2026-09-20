@@ -21,6 +21,9 @@
 //! system-control-cli <SOCKET> ack-recovery-alert <COMMAND_ID_HEX_32> <PLAN_ID_HEX_32> <EXPECTED_FAILURES> <REASON>
 //! system-control-cli <SOCKET> ack-semantic-recovery-alert <COMMAND_ID_HEX_32> <PLAN_ID_HEX_32> <EXPECTED_FAILURES> <REASON>
 //! system-control-cli <SOCKET> resume-semantic-recovery <COMMAND_ID_HEX_32> <PLAN_ID_HEX_32> <EXPECTED_FAILURES> <REASON>
+//! system-control-cli <SOCKET> pause-operation <COMMAND_ID_HEX_32> <TARGET_ID_HEX_32> <EXPECTED_REVISION> <REASON>
+//! system-control-cli <SOCKET> resume-operation <COMMAND_ID_HEX_32> <TARGET_ID_HEX_32> <EXPECTED_REVISION> <REASON>
+//! system-control-cli <SOCKET> cancel-operation <COMMAND_ID_HEX_32> <TARGET_ID_HEX_32> <EXPECTED_REVISION> <REASON>
 //! ```
 //!
 //! # Output and exit contract
@@ -51,9 +54,12 @@ const USAGE: &str = "usage: system-control-cli <SOCKET> inspect-health \
 | inspect-task <PLAN_ID_HEX_32> \
 | inspect-process <PROCESS_ID_HEX_32> \
 | inspect-resource <RESERVATION_ID_HEX_32> \
-| ack-recovery-alert <COMMAND_ID_HEX_32> <PLAN_ID_HEX_32> <EXPECTED_FAILURES> <REASON> \
-| ack-semantic-recovery-alert <COMMAND_ID_HEX_32> <PLAN_ID_HEX_32> <EXPECTED_FAILURES> <REASON> \
-| resume-semantic-recovery <COMMAND_ID_HEX_32> <PLAN_ID_HEX_32> <EXPECTED_FAILURES> <REASON>";
+ | ack-recovery-alert <COMMAND_ID_HEX_32> <PLAN_ID_HEX_32> <EXPECTED_FAILURES> <REASON> \
+ | ack-semantic-recovery-alert <COMMAND_ID_HEX_32> <PLAN_ID_HEX_32> <EXPECTED_FAILURES> <REASON> \
+ | resume-semantic-recovery <COMMAND_ID_HEX_32> <PLAN_ID_HEX_32> <EXPECTED_FAILURES> <REASON> \
+ | pause-operation <COMMAND_ID_HEX_32> <TARGET_ID_HEX_32> <EXPECTED_REVISION> <REASON> \
+ | resume-operation <COMMAND_ID_HEX_32> <TARGET_ID_HEX_32> <EXPECTED_REVISION> <REASON> \
+ | cancel-operation <COMMAND_ID_HEX_32> <TARGET_ID_HEX_32> <EXPECTED_REVISION> <REASON>";
 
 #[cfg(unix)]
 fn parse_u64(value: &str) -> Result<u64, ControlError> {
@@ -109,6 +115,24 @@ fn parsed_command(arguments: &[String]) -> Result<ControlCommand, ControlError> 
                 reason: arguments[4].clone(),
             })
         }
+        "pause-operation" if arguments.len() == 5 => Ok(ControlCommand::PauseOperation {
+            control_command_id: parse_hex_id(&arguments[1])?,
+            target_id: parse_hex_id(&arguments[2])?,
+            expected_generation_or_revision: parse_u64(&arguments[3])?,
+            reason: arguments[4].clone(),
+        }),
+        "resume-operation" if arguments.len() == 5 => Ok(ControlCommand::ResumeOperation {
+            control_command_id: parse_hex_id(&arguments[1])?,
+            target_id: parse_hex_id(&arguments[2])?,
+            expected_generation_or_revision: parse_u64(&arguments[3])?,
+            reason: arguments[4].clone(),
+        }),
+        "cancel-operation" if arguments.len() == 5 => Ok(ControlCommand::CancelOperation {
+            control_command_id: parse_hex_id(&arguments[1])?,
+            target_id: parse_hex_id(&arguments[2])?,
+            expected_generation_or_revision: parse_u64(&arguments[3])?,
+            reason: arguments[4].clone(),
+        }),
         _ => Err(ControlError::InvalidCommand("unknown operation or arity")),
     }
 }
@@ -178,6 +202,15 @@ fn summary(receipt: &ControlReceipt) -> String {
         }
         Ok(ControlOutcome::Resumed { receipt_id }) => {
             format!("outcome=resumed receipt_id={}", hex(receipt_id))
+        }
+        Ok(ControlOutcome::OperationPaused { receipt_id }) => {
+            format!("outcome=operation_paused receipt_id={}", hex(receipt_id))
+        }
+        Ok(ControlOutcome::OperationResumed { receipt_id }) => {
+            format!("outcome=operation_resumed receipt_id={}", hex(receipt_id))
+        }
+        Ok(ControlOutcome::OperationCancelled { receipt_id }) => {
+            format!("outcome=operation_cancelled receipt_id={}", hex(receipt_id))
         }
         Err(failure) => format!(
             "outcome=failure code={} retry={} message={}",
