@@ -666,6 +666,21 @@ fn both_domains_converge_in_one_worker() {
         Duration::from_secs(10),
     );
 
+    // 计数器与 plan 终态在同一 worker 迭代内先后落定——对计数器同样做有界
+    // 轮询，消除「plan 已 Finalized 而计数尚未递增」的读侧竞态（慢 runner
+    // 上曾真实命中：Windows CI run 35522355445 两条失败均此形态）。
+    wait_until_within(
+        || {
+            let h = worker.health();
+            h.state == RecoveryWorkerState::Running
+                && h.total_inspected == 1
+                && h.total_finalized == 1
+                && h.semantic_total_inspected == 1
+                && h.semantic_total_finalized == 1
+        },
+        Duration::from_secs(10),
+    );
+
     let running = worker.health();
     assert_eq!(running.state, RecoveryWorkerState::Running);
     assert_eq!(running.total_inspected, 1);
@@ -1090,6 +1105,13 @@ fn mixed_semantic_infra_and_artifact_plan_failures_use_separate_budgets() {
             tasks
                 .inspect_artifact_commit_plan(artifact_pending.plan)
                 .is_ok_and(|plan| plan.state == ArtifactCommitPlanState::Finalized)
+        },
+        Duration::from_secs(10),
+    );
+    wait_until_within(
+        || {
+            let h = worker.health();
+            h.state == RecoveryWorkerState::Running && h.total_finalized == 1
         },
         Duration::from_secs(10),
     );
