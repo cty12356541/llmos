@@ -22,19 +22,18 @@
 //! - idempotency keys on both write faces: replays return the durably
 //!   recorded original receipt/voucher, never a second effect.
 //!
-//! Explicitly out of scope (separate lanes per ADR-0016): the application
-//! manifest template face (W28-B compiles templates into this same
-//! schema), the Dependency Resolver and its durable resolution receipts
-//! (W29-B), `TaskSpec` association fields and `ScaleProfile` re-dimensioning
-//! (W29-A), materialization gating against Task/Resource authorities
-//! (ADR-0013 verify-then-commit wiring), and any IPC/CLI surface. This
-//! skeleton records state-machine vouchers; it does not execute,
-//! authorize, or materialize anything.
+//! Explicitly remaining outside this crate (per ADR-0016 lane splits):
+//! the production consult wiring that maps the Task authority's
+//! admission answer onto the scheduler's consult boundary (assembler
+//! territory, slice-k), dispatch decisions (派发决策留控制器 — the W31-F
+//! scheduler only selects nodes for materialization and drives the
+//! W31-A gate), and any IPC/CLI surface.
 
 mod materialization;
 mod model;
 mod residency;
 mod resolver;
+mod scheduler;
 mod schema;
 mod store;
 
@@ -57,6 +56,11 @@ pub use model::{
     MaterializationResolutionDecision,
 };
 use nlos_types::{IdempotencyKey, ReceiptId, TaskNodeId, TaskPlanId};
+pub use scheduler::{
+    AdmissionConsult, AdmissionConsultOutcome, DEFAULT_DECISION_LOG_CAPACITY,
+    MaterializationScheduler, SchedulerDecision, SchedulerDecisionRecord, SchedulerPassSummary,
+    SelectionEntry, SelectionKind, SelectionReport, SelectionSkipReason, SkipEntry,
+};
 pub use store::SqlitePlanAuthority;
 
 /// Errors produced by the durable plan authority.

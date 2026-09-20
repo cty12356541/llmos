@@ -986,7 +986,7 @@ type NodeRow = (
     i64,
 );
 
-fn raw_node_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<NodeRow> {
+pub(crate) fn raw_node_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<NodeRow> {
     Ok((
         row.get::<_, Vec<u8>>(0)?,
         row.get::<_, Vec<u8>>(1)?,
@@ -1003,7 +1003,7 @@ fn raw_node_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<NodeRow> {
     ))
 }
 
-fn decode_node_row(row: NodeRow) -> Result<PlanNodeRecord, PlanStoreError> {
+pub(crate) fn decode_node_row(row: NodeRow) -> Result<PlanNodeRecord, PlanStoreError> {
     Ok(PlanNodeRecord {
         plan_id: TaskPlanId::from_bytes(fixed16(row.0, "node plan id")?),
         node_id: TaskNodeId::from_bytes(fixed16(row.1, "node id")?),

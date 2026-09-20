@@ -1,12 +1,12 @@
-# B-PLAN-001：nlos-plan 声明面状态权威骨架（TaskPlan/TaskNode state face）+ Dependency Resolver + Context Residency 分级 + 10K/100K 逻辑 TaskNode benchmark + 惰性物化门
+# B-PLAN-001：nlos-plan 声明面状态权威骨架（TaskPlan/TaskNode state face）+ Dependency Resolver + Context Residency 分级 + 10K/100K 逻辑 TaskNode benchmark + 惰性物化门 + 分层 Scheduler 最小版
 
-状态：`PARTIAL_PASS`（**W28-A 状态面骨架 + W29-B Dependency Resolver + W31-E Context residency 分级最小版 + W31-D 10K/100K 逻辑 TaskNode benchmark + W31-A 惰性物化门（G3）**，2026-09-21）
+状态：`PARTIAL_PASS`（**W28-A 状态面骨架 + W29-B Dependency Resolver + W31-E Context residency 分级最小版 + W31-D 10K/100K 逻辑 TaskNode benchmark + W31-A 惰性物化门（G3）+ W31-F 分层 Scheduler 最小版**，2026-09-21）
 
-> 对应：[ADR-0016 决定 2](../../management/adrs/0016-task-plan-declaration-surface.md)（独立 `nlos-plan` authority）与 [决定 5](../../management/adrs/0016-task-plan-declaration-surface.md)（Resolver 结果 durable）与 [决定 4](../../management/adrs/0016-task-plan-declaration-surface.md)（ScaleProfile 维度正规化）；[议题 35 §6](../../discussions/35-TaskPlan声明面设计.md) 验收门 G1（§2–§6，W28-A）、G4（§7，W29-B）、G2/G5（§9，W31-D）与 G3（§10，W31-A）；[进度单 §6.5.3](../../management/stage-b-progress.md) W28-A / W29-B / W31-E / W31-D / W31-A 车道行
+> 对应：[ADR-0016 决定 2](../../management/adrs/0016-task-plan-declaration-surface.md)（独立 `nlos-plan` authority）与 [决定 5](../../management/adrs/0016-task-plan-declaration-surface.md)（Resolver 结果 durable）与 [决定 4](../../management/adrs/0016-task-plan-declaration-surface.md)（ScaleProfile 维度正规化）；[议题 35 §6](../../discussions/35-TaskPlan声明面设计.md) 验收门 G1（§2–§6，W28-A）、G4（§7，W29-B）、G2/G5（§9，W31-D）与 G3（§10，W31-A）；[进度单 §6.5.3](../../management/stage-b-progress.md) W28-A / W29-B / W31-E / W31-D / W31-A / W31-F 车道行
 >
-> 实现：crate `crates/nlos-plan`（schema v1：`plans` / `plan_revisions` / `plan_nodes` / `plan_node_transitions` 四表 + 12 trigger；schema v2 additive：`plan_revision_nodes` / `plan_revision_edges` / `plan_resolution_receipts` 三表 + 8 trigger；schema v3 additive：`plan_node_residency_transitions` 一表 + `plan_nodes` 两列 + 4 trigger；schema v4 additive：`plan_materialization_requests` 一表 + 1 partial unique index + 5 trigger）+ `tests/tasknode_scale_probe.rs`（§9 规模探针）+ `tests/materialization_gate.rs` / `tests/materialization_fault_matrix.rs`（§10 G3 证伪与物化门故障矩阵）+ `crates/nlos-task/src/materialization.rs`（§10 Task 侧消费接线）
+> 实现：crate `crates/nlos-plan`（schema v1：`plans` / `plan_revisions` / `plan_nodes` / `plan_node_transitions` 四表 + 12 trigger；schema v2 additive：`plan_revision_nodes` / `plan_revision_edges` / `plan_resolution_receipts` 三表 + 8 trigger；schema v3 additive：`plan_node_residency_transitions` 一表 + `plan_nodes` 两列 + 4 trigger；schema v4 additive：`plan_materialization_requests` 一表 + 1 partial unique index + 5 trigger）+ `tests/tasknode_scale_probe.rs`（§9 规模探针）+ `tests/materialization_gate.rs` / `tests/materialization_fault_matrix.rs`（§10 G3 证伪与物化门故障矩阵）+ `crates/nlos-task/src/materialization.rs`（§10 Task 侧消费接线）+ `src/scheduler.rs` / `tests/scheduler.rs`（§11 W31-F 两层调度器）
 >
-> 范围纪律：W28-A 只落**状态权威落点**（§1–§6）；W29-B 只落 **Dependency Resolver**（§7，B4-3）；W31-E 只落 **Context residency 分级最小版**（§8，B4-5）；W31-D 只落 **10K/100K 逻辑 TaskNode benchmark**（§9，B4-9，G2/G5 后半）；W31-A 只落**惰性物化门**（§10，B4-4，G3——request/resolve 门 + Task 侧 admission consult 接线 + 存储层 MATERIALIZING 边门禁）。manifest 模板面（W28-B）与 TaskSpec 关联字段（W29-A 已落）不在本 evidence 声明范围。
+> 范围纪律：W28-A 只落**状态权威落点**（§1–§6）；W29-B 只落 **Dependency Resolver**（§7，B4-3）；W31-E 只落 **Context residency 分级最小版**（§8，B4-5）；W31-D 只落 **10K/100K 逻辑 TaskNode benchmark**（§9，B4-9，G2/G5 后半）；W31-A 只落**惰性物化门**（§10，B4-4，G3——request/resolve 门 + Task 侧 admission consult 接线 + 存储层 MATERIALIZING 边门禁）；W31-F 只落**分层 Scheduler 最小版**（§11，B4-6——Global/Worker 两层 + 物化窗口调度 + 决策 inspect）。manifest 模板面（W28-B）与 TaskSpec 关联字段（W29-A 已落）不在本 evidence 声明范围。
 
 ## 1. 本切片目标
 
@@ -445,3 +445,82 @@ resolve 侧提交内再核：declared-revision CAS          节点停在 WAITING
 - **push 与 PR：未执行**——派工单 MUST NOT；由控制器统一执行。
 - **`cargo test --workspace`：未运行**——派工单 MUST NOT（波次屏障由控制器收口；W30-A 并行车道持 nlos-task 测试文件写集）。
 - **三平台 CI / MSRV：未运行**——待 push 后 CI 触发。
+
+## 11. W31-F：分层 Scheduler 最小版（B4-6）
+
+> 对应：[进度单 §6.5.3](../../management/stage-b-progress.md) W31-F 车道行（验收门：窗口收缩联动 W31-A；调度决策可 inspect）；[v0.5 §25.2.2「Global → Cell → Worker 分层调度」](../../design/06-架构设计总纲-v0.5.md)（行 4511-4538，阶段 B 取「单机分层 Scheduler」两层最小形态）、[行 4503 `[SCALE-MATERIALIZE-001]`](../../design/06-架构设计总纲-v0.5.md)（Materialization Controller 窗口语义）、[行 4538 `[SCHED-BACKPRESSURE-001]`](../../design/06-架构设计总纲-v0.5.md)、§28.2 交付项「TaskPlan/TaskNode、Dependency Resolver、惰性物化、Context residency 和单机分层 Scheduler」；语义链 [议题 28 定案 3](../../discussions/28-海量Agent执行与多层手动调度.md)；[ADR-0016 决定 2](../../management/adrs/0016-task-plan-declaration-surface.md)（落点 nlos-plan）。
+>
+> 状态：`PASS`（本切片范围）；形态为「足以支撑 benchmark 的两层」，非完整 OS 调度器。派发决策（dispatch）留控制器——本调度器只做物化选择与门的驱动。
+
+### 11.1 设计：两层形态、选择策略与窗口语义
+
+调度器是 W31-A 门之上的**纯组合层**：无第二状态机、无第二写面、零 schema 变更（内存策略态 + 既有权威 durable 面）。
+
+```text
+Global 层 select（纯读，durable plan 状态扫描）          Worker 层 drive（把选择映射到 W31-A 门）
+───────────────────────────────────────────            ──────────────────────────────────────
+候选 = 状态可等待物化（DECLARED..WAITING_*/             每个选择：
+  REHYDRATING，无 PENDING 门轮）且声明依赖               ├ AdoptPendingGateRound：采纳崩溃遗留的
+全部 COMPLETED                                            │  durable PENDING 轮（原幂等键续解析）
+排序 = ready-FIFO：(first_declared_at_ms,                ├ NewGateRound：按 (node_id, 重试轮次)
+  TaskNodeId 字节)——确定性、零 wall-clock                 │  域分隔派生幂等键开新轮
+预算 = window − 占用席位                                   ├ consult（AdmissionConsult trait 边界）
+  席位 = PENDING 门轮 + 窗口带节点                          │  ├ Admitted → resolve APPROVED
+  （MATERIALIZING/ACTIVE/CHECKPOINTED/                     │  ├ Denied   → resolve REJECTED → 窗口收缩
+  REHYDRATING；EVICTED/终态已释放）                        │  └ Err      → ConsultFailed，轮留 PENDING
+PENDING 轮总是入选（已持席位，解析即收敛）                  └ 拒绝 −1 席/次（下界 1）；批准不增长
+```
+
+- **选择策略（定案）**：ready-FIFO——依赖就绪候选按 `(first_declared_at_ms, TaskNodeId)` 字节序。理由：确定性可测、零 wall-clock 启发、不预支 priority/deadline/locality 词汇（`[SCHED-QUEUE-001]` 的策略维度属控制器后续策略面）；且候选集本身依赖就绪才入围，到达序即最小拓扑就绪优先。文档化于 `src/scheduler.rs` 模块头。
+- **窗口收缩联动 W31-A（车道门 #1）**：窗口是物化并发上界（席位口径与 §10.4 窗口计数约定一致）；每次 admission 拒绝收缩 1 席，下界 1——持续压力下每 pass 恰一条 durable typed 拒绝探针（压力可见），完全停新物化是控制器决定（`set_window(0)`）；批准永不自动增长，唯一增长路径是控制器杠杆 `set_window`。拒绝的 durable 事实本体即 W31-A 请求行（typed 原因 + `resolved_at_ms`），调度器不复制。
+- **崩溃窗口联动（车道门 #4 前半）**：门轮中断（request 已提交、verdict 未解析——§10.5 F2 窗口）由下一 pass 采纳收敛：Global 层把 PENDING 轮分类为采纳选择，Worker 层用原幂等键 consult+resolve；新轮幂等键 `digest(llmos/plan/scheduler-request-key/v1, node_id, 重试轮次)`，重试轮次读自节点 durable 请求历史——重启后同轮同键、解析后新轮新键。存储级 kill 窗口（事务中 kill-9、I/O 错误、静默丢写）已由 §10.5 F1–F4 故障矩阵钉死，本层不重复注入。
+- **调度决策可 inspect（车道门 #2）**：typed 决策轨迹 `SchedulerDecision`（Selected{kind}/Skipped{typed reason}/Approved{voucher}/Rejected{typed reason}/ConsultFailed/DriveRefused{typed error}）+ 每轮 `SchedulerPassSummary`（window_before/after、selected/skipped/approved/rejected）。**诚实选择：内存有界 ring（默认 1024 条，可配）**——durable 审计轨迹就是 W31-A 的请求行/凭证（`inspect_materialization_request` / `inspect_node_materialization_requests`），再做 durable 决策日志即复制权威；内存轨迹重启即失，如实声明。
+- **不可绕门（车道门 #3）**：调度器对 MATERIALIZING 无任何写路径——一切效果经 `request_materialization`/`resolve_materialization`；裸边仍被 §10.1 存储层 trigger 拒绝（测试复验）。consult 经 `AdmissionConsult` trait 注入（`Ok(Admitted|Denied)` 为裁决、`Err` 为 consult 自身故障留 PENDING 待采纳），nlos-task 保持 dev-dep 不进公共面；Task 权威到 trait 的 1:1 映射为组装器接线（slice-k；G3 与本测试各自内联携带）。
+
+### 11.2 TDD 红→绿记录
+
+1. **红**：`tests/scheduler.rs` 先写就（6 用例）后首跑，编译面红——`error[E0432] unresolved imports nlos_plan::{AdmissionConsult, AdmissionConsultOutcome, MaterializationScheduler, SchedulerDecision, SelectionKind, SelectionSkipReason, …}`：调度器 API 面不存在。
+2. **绿**：`src/scheduler.rs`（+ `model.rs` 域分隔常量、lib.rs 导出、四枚 crate 内 helper 提升 pub(crate)：`unresolved_dependencies`/`REQUEST_COLUMNS`/`raw_request_row`/`decode_request_row`（materialization.rs）、`raw_node_row`/`decode_node_row`（store.rs）——零语义变更）落地后 6 用例全绿；其间一次断言修正（崩溃采纳用例误assume a/b FIFO 末位序，改为存在性断言——节点 id 为派生摘要，序不硬编码）。
+
+### 11.3 实现事实
+
+- **`crates/nlos-plan/src/scheduler.rs`**（新模块，~650 行含文档）：`AdmissionConsult`/`AdmissionConsultOutcome`（Worker 层 consult 边界）、`MaterializationScheduler`（`new`/`with_decision_log_capacity`/`window`/`set_window`/`decisions` + 两层显式公共面 `select`（Global）与 `drive`（Worker）+ `run_pass` 组合）、typed 读回 `SelectionReport`/`SelectionEntry`/`SelectionKind`/`SkipEntry`/`SelectionSkipReason`/`SchedulerDecision`/`SchedulerDecisionRecord`/`SchedulerPassSummary`。Global 层一条 SQL 扫描（`ORDER BY first_declared_at_ms, task_node_id`）+ 一条 PENDING 轮查询 + 一条窗口带计数；依赖就绪复用 W31-A 的 `unresolved_dependencies`（同一就绪谓词，无双写）。存储错误（`PlanStoreError::Sqlite`）中止 pass；typed 门拒绝逐节点落 `DriveRefused` 决策。
+- **`model.rs`**：`SCHEDULER_REQUEST_KEY_DOMAIN` 域分隔常量（沿 v1 命名链）。
+- **lib.rs**：`mod scheduler` + 公共导出；crate 头「out of scope」段随 W29-B/W31-A 已落地事实刷新（现为：生产期 consult 映射接线归 slice-k 组装器、派发决策留控制器、IPC/CLI 面）。
+- **nlos-task：零触碰**（派工单边界遵守；消费路径 API 经 dev-dep 只读使用）。
+- **零 schema 变更**：SCHEMA_VERSION 保持 4；调度器无 durable 行（§11.1 诚实选择）。
+
+### 11.4 测试（`tests/scheduler.rs`，6 passed）
+
+| 用例 | 覆盖 | 结果 |
+|---|---|---|
+| `selection_is_deterministic_ready_fifo_bounded_by_window` | 车道门·确定性：混合就绪/未就绪/已取消 + 双 revision 时间分层；选择序独立于 `list_plan_nodes` 复算逐位相等（`(first_declared_at_ms, node_id)`）；窗口上界截断（第三就绪节点 `WindowExhausted`）；`DependenciesNotReady{unresolved:[dep]}` / `NotAwaitingMaterialization{Cancelled}` typed skip；全新调度器实例重放 byte-equal；未知 plan typed `PlanNotFound` | PASS |
+| `window_shrinks_on_admission_rejection_and_is_inspectable` | 车道门·窗口收缩联动：真实 Task 消费路径（零 working-set 档）下 4 拒绝 → `window 4→1`（下界）summary/`window()` 双面可 inspect；pass2 恰 1 选择 3 skip；0 节点越界；每节点 1 行 durable typed `WorkingSetFull` 拒绝；决策轨迹 4 条 Rejected | PASS |
+| `scheduler_cannot_materialize_past_admission_gate` | 车道门·不可绕门：拒绝 consult 三 pass 后 0 节点 MATERIALIZING；裸 `WAITING_RESOURCE→MATERIALIZING` 仍存储层 ABORT；换宽档后同面 2 批准、各恰 1 行 APPROVED 请求行（只经门） | PASS |
+| `crashed_gate_round_converges_via_adoption_on_next_pass` | 车道门·崩溃窗口：手工遗留 PENDING 轮（§10.5 F2 窗口语义）→ 重启调度器分类 `AdoptPendingGateRound{原键}`（`seats_in_use=1` 计席位）、原键解析 APPROVED、节点历史恰 1 行；并行节点走派生新键 | PASS |
+| `consult_failure_leaves_pending_round_and_next_pass_adopts` | consult 自身故障（trait `Err` 路径）：`ConsultFailed` 决策可 inspect、轮留 durable PENDING、窗口不收缩（无裁决）；恢复后同轮采纳解析、历史仍 1 行 | PASS |
+| `controller_lever_and_seat_release_drive_progress` | 控制器杠杆与席位释放：window 1 下第二节点 `WindowExhausted` 双 pass；`MATERIALIZING→ACTIVE→COMPLETED` 释放席位后第三 pass 批准；`set_window` 为唯一增长路径（无自动增长） | PASS |
+
+### 11.5 已知限制与 deferred minors（如实登记）
+
+- **cancelled 节点的遗留 PENDING 轮泄漏席位**：节点在门轮 PENDING 期间被取消（`→ CANCELLED` 合法裸边）后，该死轮仍计席位且 Global 层按 `NotAwaitingMaterialization` 跳过（不采纳）。cancel-vs-in-flight-round 对账归控制器/W31-C（reclaim 车道）；最小版如实登记。
+- **重放拒绝也收缩窗口**：`ReplayedRejected`（并发行为者已解析同键拒绝后的重驱动）保守计一次收缩——窗口下界 1 保证不因重放放大而熄火；并发双调度器场景仅由单飞行约束（§10.1 partial unique index）+ typed `MaterializationRequestAlreadyPending` 拒绝兜底，无跨进程互斥。
+- **多 plan 公平性未做**：pass 以单 plan 为域；跨 plan 公平/priority/deadline/locality 整形属 `[SCHED-QUEUE-001]` 策略面与控制器（MUST NOT 边界内如实不做）。
+- **决策轨迹内存态**：重启即失（§11.1 诚实选择）；durable 事实以 W31-A inspect 面为准。
+- **Global 层扫描为逐节点依赖校验**（N 次 `unresolved_dependencies` 查询）：100K 量级扫描吞吐未做 benchmark 门（G2/G5 归 W31-D/G 评审口径）；调度器自身规模探针未运行，如实登记。
+- **生产期 consult 映射接线（Task 权威→`AdmissionConsult`）未落**：按 W31-A §10.7 既定分工归 slice-k 组装器；两处测试内联携带同一 1:1 映射。
+
+### 11.6 验证门（W31-F 实跑）
+
+| 门 | 命令 | 结果 |
+| --- | --- | --- |
+| fmt | `cargo fmt -p nlos-plan -- --check` | PASS |
+| 全量测试 | `cargo test -p nlos-plan` | PASS（14 target 全 ok，60 passed / 0 failed / 2 ignored 即两探针；W31-A 54 基线零回归 + 6 新调度器用例） |
+| clippy | `cargo clippy -p nlos-plan --all-features --all-targets` | PASS（0 warning；未使用 `chunks_exact`，CI clippy 纪律） |
+
+### 11.7 未运行项（W31-F，显式列出）
+
+- **push 与 PR：未执行**——派工单 MUST NOT；由控制器统一执行。
+- **`cargo test --workspace`：未运行**——派工单 MUST NOT（波次屏障由控制器收口）。
+- **三平台 CI / MSRV：未运行**——待 push 后 CI 触发。
+- **调度器规模/吞吐探针：未运行**——本切片验收门为收缩联动 + 决策 inspect 两语义门；benchmark 矩阵归 W31-B/G 口径。
