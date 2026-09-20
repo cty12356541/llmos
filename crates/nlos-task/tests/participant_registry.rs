@@ -168,6 +168,8 @@ fn task_registration_assigns_durable_self_participant_and_receipts() {
         let authority = database.open();
         authority
             .register_task(TaskSpec {
+                application_id: None,
+                plan_revision: None,
                 task_id: task_id(),
                 task_generation: Generation::INITIAL,
                 registered_at_ms: 1_000,
@@ -221,6 +223,8 @@ fn permit_atomically_freezes_and_binds_exact_registry_generation_root() {
         let authority = database.open();
         authority
             .register_task(TaskSpec {
+                application_id: None,
+                plan_revision: None,
                 task_id: task_id(),
                 task_generation: Generation::INITIAL,
                 registered_at_ms: 1_000,
@@ -261,6 +265,8 @@ fn effect_permit_dispatch_and_task_receipt_copy_and_revalidate_registry_binding(
     let authority = database.open();
     authority
         .register_task(TaskSpec {
+            application_id: None,
+            plan_revision: None,
             task_id: task_id(),
             task_generation: Generation::INITIAL,
             registered_at_ms: 1_000,
@@ -400,6 +406,8 @@ fn verified_write_set_seal_binds_receipted_snapshot_and_artifact_reads() {
     let authority = database.open();
     authority
         .register_task(TaskSpec {
+            application_id: None,
+            plan_revision: None,
             task_id: task_id(),
             task_generation: Generation::INITIAL,
             registered_at_ms: 1_000,
@@ -586,6 +594,8 @@ fn verified_operation_endpoint_is_rechecked_during_seal_and_permit() {
     let authority = database.open();
     authority
         .register_task(TaskSpec {
+            application_id: None,
+            plan_revision: None,
             task_id: task_id(),
             task_generation: Generation::INITIAL,
             registered_at_ms: 1_000,
@@ -740,6 +750,8 @@ fn verified_write_set_seal_binds_planned_effects_to_permit_and_replays_after_res
     let authority = database.open();
     authority
         .register_task(TaskSpec {
+            application_id: None,
+            plan_revision: None,
             task_id: task_id(),
             task_generation: Generation::INITIAL,
             registered_at_ms: 1_000,
@@ -916,6 +928,8 @@ fn artifact_write_declaration_binds_post_permit_publication_plan() {
     let authority = database.open();
     authority
         .register_task(TaskSpec {
+            application_id: None,
+            plan_revision: None,
             task_id: task_id(),
             task_generation: Generation::INITIAL,
             registered_at_ms: 1_000,
@@ -1121,6 +1135,8 @@ fn verified_write_set_seal_binds_reserved_resource_owner_facts() {
     let authority = database.open();
     authority
         .register_task(TaskSpec {
+            application_id: None,
+            plan_revision: None,
             task_id: task_id(),
             task_generation: Generation::INITIAL,
             registered_at_ms: 1_000,
@@ -1335,6 +1351,8 @@ fn verified_write_set_seal_binds_semantic_event_readback_and_append() {
     let authority = database.open();
     authority
         .register_task(TaskSpec {
+            application_id: None,
+            plan_revision: None,
             task_id: task_id(),
             task_generation: Generation::INITIAL,
             registered_at_ms: 1_000,
@@ -1545,6 +1563,8 @@ fn next_competition_creates_new_registry_generation_instead_of_unfreezing_old() 
     let authority = database.open();
     authority
         .register_task(TaskSpec {
+            application_id: None,
+            plan_revision: None,
             task_id: task_id(),
             task_generation: Generation::INITIAL,
             registered_at_ms: 1_000,
@@ -1604,6 +1624,8 @@ fn verified_artifact_and_semantic_registration_cas_replays_and_survives_restart(
     let authority = database.open();
     authority
         .register_task(TaskSpec {
+            application_id: None,
+            plan_revision: None,
             task_id: task_id(),
             task_generation: Generation::INITIAL,
             registered_at_ms: 1_000,
@@ -1690,6 +1712,8 @@ fn stale_or_frozen_registration_fails_without_mutating_registry() {
     let authority = database.open();
     authority
         .register_task(TaskSpec {
+            application_id: None,
+            plan_revision: None,
             task_id: task_id(),
             task_generation: Generation::INITIAL,
             registered_at_ms: 1_000,
@@ -1792,6 +1816,8 @@ fn verified_resource_registration_tracks_driver_rotation_and_replays() {
     let authority = database.open();
     authority
         .register_task(TaskSpec {
+            application_id: None,
+            plan_revision: None,
             task_id: task_id(),
             task_generation: Generation::INITIAL,
             registered_at_ms: 1_000,

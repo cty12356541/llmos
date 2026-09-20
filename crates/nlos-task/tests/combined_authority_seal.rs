@@ -203,6 +203,8 @@ fn register_task_attempt_and_both_participants(
 ) -> MixedFixture {
     authority
         .register_task(TaskSpec {
+            application_id: None,
+            plan_revision: None,
             task_id: task_id(),
             task_generation: Generation::INITIAL,
             registered_at_ms: 1_000,
@@ -756,6 +758,8 @@ fn register_authority_free_attempt(
 ) -> AttemptSpec {
     authority
         .register_task(TaskSpec {
+            application_id: None,
+            plan_revision: None,
             task_id: task,
             task_generation: Generation::INITIAL,
             registered_at_ms: 1_000,

@@ -233,3 +233,68 @@ cargo test -p nlos-task --test scale_profile_probe -- --ignored --nocapture
 1. 无 controller 执行 reclaim；`max_task_nodes` gate 仅为注册路径前缀（TaskPlan/TaskNode 声明面落位后需迁移到真实声明单位）。
 2. checkpoint/rehydrate 与 TaskPlan/TaskNode 声明面仍待议题 35 ADR。
 3. 100K probe 数字仍待实跑（probe 现已绑对 100K 档）。
+
+## 12. W29-A TaskSpec 关联字段 + ScaleProfile 维度正规化（2026-09-20）
+
+> 对应：[ADR-0016](../../management/adrs/0016-task-plan-declaration-surface.md) 决定 3（TaskSpec 最小关联字段）+ 决定 4（ScaleProfile 维度正规化）；进度单 §6.5.3 W29-A（nlos-task 串行 slot 2，slot 1 为 W28-C 的 v43）。
+
+### Base HEAD
+
+开工 `55c7f45`（分支 `feat/w29-a`，串行 slot，无并行 nlos-task 写车道）。
+
+### 写集
+
+- `crates/nlos-task/src/migrations.rs`：`migrate_v44` + `SCHEMA_V44_SQL`（header doc v1→v44）。
+- `crates/nlos-task/src/model.rs`：`TaskPlanRevisionRef { plan_id, revision }` 新类型；`TaskSpec`/`TaskRecord` 各加 `application_id`/`plan_revision` 两 `Option` 字段。
+- `crates/nlos-task/src/store.rs`：`SCHEMA_VERSION = 44`、迁移链尾接 `migrate_v44`、`register_task` gate 切换 + 关联 replay 身份校验、`insert_task`/`TASK_COLUMNS`/`decode_task_row` 落读三列。
+- `crates/nlos-task/src/scale.rs`：`ScaleProfile` 新增 `max_task_registrations` 第二显式维度 + `admits_task_registrations`；两档常量补维度；模块 doc 口径切换。
+- `crates/nlos-task/src/pressure.rs`：`enforce_task_registration_admission` 新 gate（→ `TaskRegistrationAdmissionDenied`）；`enforce_task_node_admission` 保留为 TaskNode 维度 consult 面（doc 注明 W30-D 接线缺口）。
+- `crates/nlos-task/src/lib.rs`：`TaskRegistrationAdmissionDenied` / `TaskAssociationConflict` 错误变体 + Display；re-export；crate doc 补 v44 段。
+- `crates/nlos-task/src/activity.rs` + 全部测试文件的既有 `TaskSpec` 构造点补 `None` 关联字段（纯机械，零语义改动）；schema 版本 pin `assert_eq!(version, 43…)` → 44（artifact_commit_plan ×3、resource_commit、channel_endpoint、takeover_completion、semantic_recovery_schema ×2、resource_recovery_schema ×2、authority_lease、task_group ×2、barrier_signature、effect_history、effect_permit、effect_fiber_registration）。
+- `crates/nlos-task/tests/task_association.rs`（新）、`tests/scale_profile.rs`、`tests/scale_profile_probe.rs`。
+- 本 evidence 文件 §12。
+
+### 已实现事实（决定 3）
+
+1. **additive schema v44**：`tasks` 表加三 nullable 列 `application_id BLOB(16)`、`plan_id BLOB(16)`、`plan_revision BLOB(8)`（u64 大端 blob，house 编码），加 `task_association_immutable` trigger（`BEFORE UPDATE … WHEN old.x IS NOT new.x` 拒绝关联改写，与 `commit_permits_single_active` 同为 defense-in-depth）；迁移幂等可重跑（部分态 fail-closed `CorruptRecord`）；既有行 backfill NULL，不发明引用。
+2. **字段形状**：`TaskSpec { application_id: Option<ApplicationId>, plan_revision: Option<TaskPlanRevisionRef { plan_id: TaskPlanId, revision: u64 }> }`——两关联字段独立可选；plan 引用为总对（plan_id 与 revision 同有同无，半对 decode 为 corruption）。类型全部来自既有 `nlos-types` 依赖，**无需新增 nlos-plan 依赖**（运行期核验按决定 3 留在物化/permit 边界，ADR-0013 verify-then-commit，W30-D 接线）。
+3. **关联是声明身份**：同 task_id + 同 generation 但关联不同（含 legacy NULL 行再绑定、含反向丢弃关联）→ `TaskAssociationConflict { task_id }` fail-closed，durable 行不动；generation 冲突仍先判 `DuplicateTask`（检查顺序保持）。无关联注册与 replay 行为逐字节不变（零回归）。
+4. **读回**：`inspect_task`（`TaskRecord`）回读两字段；`update_task` 等 head 变更路径不触碰关联列（trigger 兜底），cancel/permit/finalize 后关联存活（测试覆盖）。
+
+### 已实现事实（决定 4，口径切换）
+
+1. **第二显式维度**：`ScaleProfile` 新增 `max_task_registrations`；`TASK_PROFILE_10K = (10_000 nodes / 10_000 registrations / 512)`、`TASK_PROFILE_100K = (100_000 / 100_000 / 5_120)`——两维度同量级。
+2. **口径切换**：`register_task` admission 从 `admits_task_nodes`（W22-004 临时映射）切换为 `enforce_task_registration_admission` → `TaskRegistrationAdmissionDenied { profile_id, registration_count, max_task_registrations }`（镜像 W22 错误形状）；replay bypass 语义不变。**已发布 §3 数字测的本来就是注册维度**，切换后该维度的量级与强制口径不变，§3 数字仍有效；`max_task_nodes` 自此正规化为声明 TaskNode（`nlos-plan` `plan_nodes` 持久计数）维度，其 consult 面 `enforce_task_node_admission` + `TaskNodeAdmissionDenied` 保留，store 路径暂无调用方（W30-D 关联下沉接线，禁止在新接线前宣称 TaskNode 维度已强制）。禁止新旧口径混写：code（scale.rs/pressure.rs/scale_profile.rs/probe doc）与本节为唯一口径声明处。
+3. **每维度独立强制**：注册维度在 `register_task` 强制（与 TaskNode 维度饱和与否无关，测试钉死）；TaskNode 维度当前仅谓词面。
+
+### probe 重跑（原样誊录，G5 基线量级对齐）
+
+命令：`cargo test -p nlos-task --test scale_profile_probe -- --ignored --nocapture`（debug/test profile，单平台 macOS，fsync 逐注册事务）。
+
+```
+10K task profile (single platform): registrations=10000 register_total=2.077848375s register_mean=2.077848ms permit_p50_100=448.5µs permit_p95_100=549.917µs permit_max_100=1.023625ms permit_p50_10k=409.834µs permit_p95_10k=492.625µs permit_max_10k=2.827542ms working_set=512 working_set_total=191.097333ms working_set_p50=398.917µs working_set_p95=468.334µs inspect4=185.417µs database_bytes=7700480 rss_before=Some(9961472) rss_after=Some(13434880)
+100K task profile (single platform): registrations=100000 register_total=28.342086459s register_mean=28.342086ms permit_p50_100=451.125µs permit_p95_100=553.417µs permit_max_100=906.958µs permit_p50_100k=346.042µs permit_p95_100k=393.958µs permit_max_100k=3.0895ms working_set=5120 working_set_total=2.275001583s working_set_p50=395.209µs working_set_p95=446.625µs inspect4=170.375µs database_bytes=70041600 rss_before=Some(9961472) rss_after=Some(13467648)
+test result: ok. 2 passed; 0 failed; ... finished in 31.96s
+```
+
+要点：
+
+1. **口径**：两 probe 均为**注册维度**（决定 4 后 register gate 强制的维度）；`register_mean` 字段为 probe 既有打印口径（total 秒数值标 ms 单位），与 §3 已发布数字同口径可比。
+2. 10K 复跑与 §3 已发布数字同量级（permit p95_10k 492.625µs vs 发布 391.291µs，同 run 基线 549.917µs 的 ~0.9x，绝对面 <100ms 限；惰性成立）。
+3. **100K probe 首次实跑**（补 §4 缺口 #3 / §3.1 待实跑项）：100_000 注册 28.34s，permit p95_100k = 393.958µs ≤ 同 run 100 基线 553.417µs（~0.71x，惰性成立）；5_120 活跃工作集发放 2.275s；落盘 70,041,600 字节。仍为 debug/test profile 单平台数字，不宣称 G2/G5 正式达成（W31 gate）。
+
+### 验证门（W29-A 实跑）
+
+| 门 | 命令 | 结果 |
+| --- | --- | --- |
+| fmt | `cargo fmt -p nlos-task -- --check` | PASS |
+| 全量测试 | `cargo test -p nlos-task` | PASS（**347 passed / 0 failed / 2 ignored**；基线 340 + 新增 7：task_association 4 + scale_profile 注册维度 3 换 3 增 1 独立用例 + pressure/scale 单测 2；W28-C 340 全保持绿） |
+| clippy | `cargo clippy -p nlos-task --all-targets -- -D warnings` | PASS（修 `doc_markdown` ×2、`redundant_closure_for_method_calls` ×1 后） |
+| probes | `cargo test -p nlos-task --test scale_profile_probe -- --ignored --nocapture` | PASS（本节数字） |
+
+### 仍属缺口
+
+1. `max_task_nodes`（声明 TaskNode 维度）无 store 调用方：接线在 W30-D 关联下沉（跨 authority consult `nlos-plan` `plan_nodes` 计数）前不得宣称强制。
+2. 关联字段仅存引用：物化/permit 边界的 ADR-0013 verify-then-commit 核验未接线（W29-C/W30-D）；manifest 模板段到 TaskSpec 关联的实例化（候选 C 桥）在 B-APPLICATION 车道。
+3. checkpoint/rehydrate 基准、release profile 与多平台复测仍未做；G2/G5 100K 正式 gate 在 W31。
+4. b-plan 侧 evidence 一行引用未落（W29-A 写集限定本文件为唯一 primary；b-plan 车道自行回指本节即可）。

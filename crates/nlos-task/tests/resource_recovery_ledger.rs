@@ -230,6 +230,8 @@ fn build_pending_plan() -> (
     let authority = fixture.open_task();
     authority
         .register_task(TaskSpec {
+            application_id: None,
+            plan_revision: None,
             task_id: task_id(),
             task_generation: Generation::INITIAL,
             registered_at_ms: 1_000,

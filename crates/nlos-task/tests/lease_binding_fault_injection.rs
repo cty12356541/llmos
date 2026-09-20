@@ -195,6 +195,8 @@ fn attempt_spec() -> AttemptSpec {
 fn register_task_attempt(authority: &SqliteTaskAuthority) -> AttemptSpec {
     assert!(matches!(
         authority.register_task(TaskSpec {
+            application_id: None,
+            plan_revision: None,
             task_id: task_id(),
             task_generation: Generation::INITIAL,
             registered_at_ms: 1,

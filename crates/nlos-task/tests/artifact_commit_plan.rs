@@ -90,6 +90,8 @@ fn register_and_issue_with_effects(
     let task_id = TaskId::from_bytes([0x01; 16]);
     authority
         .register_task(TaskSpec {
+            application_id: None,
+            plan_revision: None,
             task_id,
             task_generation: Generation::INITIAL,
             registered_at_ms: 1_000,
@@ -630,6 +632,8 @@ fn v5_database_migrates_to_v6_without_changing_existing_task() {
         let authority = database.open();
         authority
             .register_task(TaskSpec {
+                application_id: None,
+                plan_revision: None,
                 task_id: TaskId::from_bytes([0x33; 16]),
                 task_generation: Generation::INITIAL,
                 registered_at_ms: 1_000,
@@ -664,7 +668,7 @@ fn v5_database_migrates_to_v6_without_changing_existing_task() {
     let version: i64 = raw
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 43);
+    assert_eq!(version, 44);
 }
 
 #[test]
@@ -1038,7 +1042,7 @@ fn v7_database_migrates_to_v8_without_inventing_recovery_history() {
     let version: i64 = raw
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 43);
+    assert_eq!(version, 44);
 }
 
 #[test]
@@ -1225,5 +1229,5 @@ fn v8_database_migrates_to_v9_without_inventing_alert_receipts() {
     let version: i64 = raw
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 43);
+    assert_eq!(version, 44);
 }

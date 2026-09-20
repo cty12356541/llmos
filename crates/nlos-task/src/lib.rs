@@ -108,6 +108,15 @@
 //! finalize rung layers the Semantic owner-proof re-read and READY
 //! publication-plan gate on top of the same Resource verification and
 //! persists both nested sets in one terminal Task transaction.
+//! Schema v44 (ADR-0016 决定 3) additively associates each Task
+//! declaration with an optional `application_id` and plan revision
+//! reference; references are stored only — runtime verification stays at
+//! the materialization/permit boundaries (ADR-0013 verify-then-commit) —
+//! and legacy rows keep a `NULL` association rather than an invented one.
+//! In the same step (决定 4) the `ScaleProfile` task-node dimension was
+//! normalized to declared `TaskNode` counts while Task registration keeps
+//! the independent `max_task_registrations` bound enforced by
+//! `register_task` admission.
 //! Verify-then-commit is not
 //! cross-authority atomicity.
 //! Compensation execution
@@ -189,17 +198,17 @@ pub use model::{
     FinalizeRequest, PermitClosureOutcome, PermitConflict, PermitDecision, PermitRecord,
     PermitRequest, PermitState, PlannedEffect, QuarantineReceiptRecord, ReceiptOutcome,
     ReconcileOutcome, ReconciliationReceiptRecord, RequiredSatisfaction, RequiredSatisfactionProof,
-    SnapshotBundle, SnapshotConsistency, TaskReceiptRecord, TaskRecord, TaskRegistrationDecision,
-    TaskSnapshotReceiptRecord, TaskSnapshotReceiptSpec, TaskSpec, TaskState,
-    TaskWriteSetArtifactRead, TaskWriteSetArtifactWrite, TaskWriteSetArtifactWriteRequest,
-    TaskWriteSetDecision, TaskWriteSetEffectEndpoint, TaskWriteSetEffectEndpointKind,
-    TaskWriteSetEffectEndpointRequest, TaskWriteSetProcessBinding,
+    SnapshotBundle, SnapshotConsistency, TaskPlanRevisionRef, TaskReceiptRecord, TaskRecord,
+    TaskRegistrationDecision, TaskSnapshotReceiptRecord, TaskSnapshotReceiptSpec, TaskSpec,
+    TaskState, TaskWriteSetArtifactRead, TaskWriteSetArtifactWrite,
+    TaskWriteSetArtifactWriteRequest, TaskWriteSetDecision, TaskWriteSetEffectEndpoint,
+    TaskWriteSetEffectEndpointKind, TaskWriteSetEffectEndpointRequest, TaskWriteSetProcessBinding,
     TaskWriteSetProcessBindingRequest, TaskWriteSetRecord, TaskWriteSetRequest,
     TaskWriteSetResourceReservation, TaskWriteSetResourceReservationRequest,
     TaskWriteSetSemanticAppend, TaskWriteSetSemanticAppendRequest, TaskWriteSetSemanticRead,
     TaskWriteSetSemanticRequiredDurability, TaskWriteSetSemanticTarget, empty_effect_history_root,
 };
-pub use nlos_types::{EffectPermitId, EffectSlotId, TaskGroupId};
+pub use nlos_types::{EffectPermitId, EffectSlotId, TaskGroupId, TaskId};
 pub use participant::{
     ParticipantRecord, ParticipantRegistrationDecision, ParticipantRegistryBinding,
     ParticipantRegistryRecord, ParticipantRegistryState, ParticipantType,
@@ -208,8 +217,9 @@ pub use pressure::{
     CommitPermitDecision, ReclaimPhase, ReclaimPolicy, TASK_DEFAULT_RECLAIM_POLICY,
     WorkingSetPressure, WorkingSetPressureSnapshot, WorkingSetReclaimAdvisory,
     WorkingSetReclaimExecution, WorkingSetReclaimOutcome, enforce_task_node_admission,
-    enforce_working_set_admission, execute_working_set_reclaim_execution,
-    inspect_working_set_pressure, plan_working_set_reclaim_execution, working_set_reclaim_advisory,
+    enforce_task_registration_admission, enforce_working_set_admission,
+    execute_working_set_reclaim_execution, inspect_working_set_pressure,
+    plan_working_set_reclaim_execution, working_set_reclaim_advisory,
 };
 pub use receipt::TaskCommitReceipt;
 pub use reconcile::{
@@ -647,15 +657,39 @@ pub enum TaskStoreError {
         /// Inclusive hard cap from the profile.
         max_active_working_set: u64,
     },
-    /// A net-new Task registration would exceed the configured
-    /// [`ScaleProfile`] logical task-node hard cap (`[ROAD-B-004]` prefix).
+    /// A net-new plan-side declaration or association would exceed the
+    /// configured [`ScaleProfile`] declared-`TaskNode` hard cap
+    /// (ADR-0016 决定 4 normalized dimension; consulted at the
+    /// plan-association/materialization boundary, W30-D gap).
     TaskNodeAdmissionDenied {
         /// Tier identifier of the rejecting profile.
         profile_id: &'static str,
-        /// Projected registered task count after the rejected registration.
+        /// Projected declared `TaskNode` count after the rejected
+        /// declaration/association.
         task_count: u64,
         /// Inclusive hard cap from the profile.
         max_task_nodes: u64,
+    },
+    /// A net-new Task registration would exceed the configured
+    /// [`ScaleProfile`] task-registration hard cap — the independent
+    /// second explicit dimension kept by ADR-0016 决定 4 and enforced by
+    /// `register_task` admission.
+    TaskRegistrationAdmissionDenied {
+        /// Tier identifier of the rejecting profile.
+        profile_id: &'static str,
+        /// Projected registered task count after the rejected registration.
+        registration_count: u64,
+        /// Inclusive hard cap from the profile.
+        max_task_registrations: u64,
+    },
+    /// An idempotent registration replay for an existing task repeated a
+    /// different association (application or plan revision) than the
+    /// durable declaration (ADR-0016 决定 3: the association is
+    /// declaration identity and is never rewritten, legacy `NULL` rows
+    /// included).
+    TaskAssociationConflict {
+        /// The registered task whose durable association was mismatched.
+        task_id: TaskId,
     },
 }
 
@@ -1017,6 +1051,18 @@ impl fmt::Display for TaskStoreError {
             } => write!(
                 formatter,
                 "task-node admission denied for profile {profile_id}: task_count {task_count} exceeds max {max_task_nodes}"
+            ),
+            Self::TaskRegistrationAdmissionDenied {
+                profile_id,
+                registration_count,
+                max_task_registrations,
+            } => write!(
+                formatter,
+                "task-registration admission denied for profile {profile_id}: registration_count {registration_count} exceeds max {max_task_registrations}"
+            ),
+            Self::TaskAssociationConflict { task_id } => write!(
+                formatter,
+                "task {task_id:?} already registered with a different application/plan association"
             ),
         }
     }

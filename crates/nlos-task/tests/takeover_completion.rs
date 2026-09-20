@@ -161,6 +161,8 @@ fn register_task_attempt(authority: &SqliteTaskAuthority, seed: u8) -> nlos_task
     let task_id = TaskId::from_bytes([seed; 16]);
     authority
         .register_task(TaskSpec {
+            application_id: None,
+            plan_revision: None,
             task_id,
             task_generation: Generation::INITIAL,
             registered_at_ms: 1,
@@ -913,7 +915,7 @@ fn v36_schema_migrates_to_v37_with_child_fk_intact_and_activates() {
     let version: i64 = raw
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("read migrated schema version");
-    assert_eq!(version, 43);
+    assert_eq!(version, 44);
     let trigger_sql: String = raw
         .query_row(
             "SELECT sql FROM sqlite_master

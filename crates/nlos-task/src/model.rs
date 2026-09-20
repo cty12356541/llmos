@@ -9,10 +9,11 @@
 //! mandated by the full §25.1 contract.
 
 use nlos_types::{
-    AgentInstanceId, ArtifactId, CallId, CancellationScopeId, ChannelId, CommitPermitId, DeviceId,
-    DriverId, Generation, IdempotencyKey, IsolationDomainId, NamespaceId, OperationId, ProcessId,
-    QuoteId, ReceiptId, ReservationId, ResourceAccountId, SemanticEventId, TaskAttemptId,
-    TaskAuthorityAssignmentId, TaskId, TaskParticipantId, TaskSnapshotId,
+    AgentInstanceId, ApplicationId, ArtifactId, CallId, CancellationScopeId, ChannelId,
+    CommitPermitId, DeviceId, DriverId, Generation, IdempotencyKey, IsolationDomainId, NamespaceId,
+    OperationId, ProcessId, QuoteId, ReceiptId, ReservationId, ResourceAccountId, SemanticEventId,
+    TaskAttemptId, TaskAuthorityAssignmentId, TaskId, TaskParticipantId, TaskPlanId,
+    TaskSnapshotId,
 };
 use sha2::{Digest, Sha256};
 
@@ -34,11 +35,27 @@ pub fn empty_effect_history_root() -> [u8; 32] {
     hasher.finalize().into()
 }
 
+/// Plan revision reference stored on a `TaskSpec` association
+/// (ADR-0016 决定 3): the declared plan identity plus the exact revision
+/// the Task was declared against. The pair is total — a stored reference
+/// always names both halves; runtime verification happens at the
+/// materialization/permit boundaries (ADR-0013 verify-then-commit), not
+/// at registration.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TaskPlanRevisionRef {
+    pub plan_id: TaskPlanId,
+    pub revision: u64,
+}
+
 /// Durable specification of a registered Task.
 ///
 /// Registration is idempotent on `task_id`: repeating the exact same
 /// specification returns the existing record, while reusing the ID with a
-/// different generation is rejected fail-closed.
+/// different generation is rejected fail-closed. Since schema v44
+/// (ADR-0016 决定 3) a spec may additionally carry the application and
+/// plan-revision association; the association is part of the declaration
+/// identity, so a replay with a different association is rejected
+/// fail-closed. Legacy pre-v44 rows carry no association (`None`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TaskSpec {
     pub task_id: TaskId,
@@ -46,6 +63,12 @@ pub struct TaskSpec {
     /// Caller-supplied registration time in milliseconds (wall-clock is not
     /// part of the authority's causality; it is stored for observability).
     pub registered_at_ms: i64,
+    /// Application association (ADR-0016 决定 3); `None` when the Task is
+    /// not declared from an installed application (legacy rows included).
+    pub application_id: Option<ApplicationId>,
+    /// Plan revision association (ADR-0016 决定 3); `None` for Tasks
+    /// declared outside any `TaskPlan` revision (legacy rows included).
+    pub plan_revision: Option<TaskPlanRevisionRef>,
 }
 
 /// Frozen-input core shared by a full `TaskSnapshot` and its durable receipt.
@@ -1146,6 +1169,14 @@ pub struct TaskRecord {
     /// The currently outstanding permit, if any. A `Closed` permit is not
     /// reported here; the CAS gate recomputes eligibility from permit rows.
     pub active_permit: Option<CommitPermitId>,
+    /// Application association declared at registration (ADR-0016 决定 3,
+    /// schema v44). `None` for rows registered before v44 or without an
+    /// application; immutable once registered.
+    pub application_id: Option<ApplicationId>,
+    /// Plan revision association declared at registration (ADR-0016
+    /// 决定 3, schema v44). `None` for rows registered before v44 or
+    /// outside any plan; immutable once registered.
+    pub plan_revision: Option<TaskPlanRevisionRef>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
 }

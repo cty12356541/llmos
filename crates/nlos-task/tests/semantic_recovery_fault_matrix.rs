@@ -255,6 +255,8 @@ fn build_authorities_at(
         SqliteTaskAuthority::open(task_path).expect("open Task authority")
     };
     task.register_task(TaskSpec {
+        application_id: None,
+        plan_revision: None,
         task_id,
         task_generation: Generation::INITIAL,
         registered_at_ms: 1,

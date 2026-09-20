@@ -199,6 +199,8 @@ fn build_semantic_store_with_pending_plan(
     };
     let task = SqliteTaskAuthority::open(&fixture.task_path).expect("open Task authority");
     task.register_task(TaskSpec {
+        application_id: None,
+        plan_revision: None,
         task_id,
         task_generation: Generation::INITIAL,
         registered_at_ms: 1,

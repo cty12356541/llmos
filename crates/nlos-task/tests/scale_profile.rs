@@ -12,10 +12,17 @@
 //! `docs/evidence/stage-b/b-task-scale-001.md`; this default-suite test only
 //! asserts semantics plus a pathological-slowness guard.
 //!
-//! Honest mapping: `TaskSpec` carries no plan field, so the ROAD-B-004
-//! "logical `TaskNode`" dimension is provisionally carried by durable `Task`
-//! registrations; the TaskPlan/TaskNode declaration surface, Dependency
-//! Resolver, and checkpoint/rehydrate benchmarks are registered gaps.
+//! Honest mapping since ADR-0016 决定 4 (W29-A): `TaskSpec` now carries the
+//! plan revision association, and `ScaleProfile::max_task_nodes` is
+//! normalized to the declared `TaskNode` (`plan_nodes`) count — enforced at
+//! the plan-association/materialization boundary (W30-D gap, still
+//! unenforced in this crate). Durable `Task` registrations are the
+//! independent second explicit dimension (`max_task_registrations`) and
+//! are what `register_task` admission enforces below; the published 10K
+//! probe numbers therefore measure the registration dimension (口径 switch
+//! noted in `docs/evidence/stage-b/b-task-scale-001.md` §W29-A). The
+//! Dependency Resolver wiring and checkpoint/rehydrate benchmarks remain
+//! registered gaps.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -38,6 +45,7 @@ const ACTIVE_SAMPLE: u64 = 16;
 static ADMISSION_TEST_PROFILE: ScaleProfile = ScaleProfile {
     profile_id: "task-admission-test",
     max_task_nodes: 64,
+    max_task_registrations: 64,
     max_active_working_set: 2,
     reclaim_threshold_ratio: Some(90),
 };
@@ -45,6 +53,15 @@ static ADMISSION_TEST_PROFILE: ScaleProfile = ScaleProfile {
 static TASK_NODE_TEST_PROFILE: ScaleProfile = ScaleProfile {
     profile_id: "task-node-admission-test",
     max_task_nodes: 2,
+    max_task_registrations: 64,
+    max_active_working_set: 64,
+    reclaim_threshold_ratio: Some(90),
+};
+
+static TASK_REGISTRATION_TEST_PROFILE: ScaleProfile = ScaleProfile {
+    profile_id: "task-registration-admission-test",
+    max_task_nodes: 64,
+    max_task_registrations: 2,
     max_active_working_set: 64,
     reclaim_threshold_ratio: Some(90),
 };
@@ -117,6 +134,8 @@ fn register_task(authority: &SqliteTaskAuthority, index: u64) {
             task_id: task_id(index),
             task_generation: Generation::INITIAL,
             registered_at_ms: 1_000,
+            application_id: None,
+            plan_revision: None,
         })
         .expect("register task");
     assert_eq!(
@@ -183,8 +202,10 @@ fn task_10k_tier_is_published_and_registration_face_stays_key_scoped() {
     }
     let registration_elapsed = registered.elapsed();
 
-    // Tier predicate: the landed registration face stays inside the tier.
-    assert!(TASK_PROFILE_10K.admits_task_nodes(REGISTRATION_COUNT));
+    // Tier predicate: the landed registration face stays inside the tier's
+    // registration dimension (决定 4: `register_task` admission consults
+    // `max_task_registrations`, not `max_task_nodes`).
+    assert!(TASK_PROFILE_10K.admits_task_registrations(REGISTRATION_COUNT));
 
     // Re-registering an existing spec is idempotent via the same PK lookup.
     let replay = authority
@@ -192,6 +213,8 @@ fn task_10k_tier_is_published_and_registration_face_stays_key_scoped() {
             task_id: task_id(0),
             task_generation: Generation::INITIAL,
             registered_at_ms: 1_000,
+            application_id: None,
+            plan_revision: None,
         })
         .expect("re-register task");
     assert_eq!(
@@ -650,38 +673,46 @@ fn working_set_admission_replay_bypasses_gate_at_cap() {
     ));
 }
 
-#[test]
-fn task_node_admission_denies_over_cap() {
-    let database = TestDatabase::new("task-node-over-cap");
-    let authority = database.open_with_profile(&TASK_NODE_TEST_PROFILE);
+// 口径 note (ADR-0016 决定 4, W29-A): before W29-A the register gate
+// consulted `max_task_nodes` (W22-004, provisional mapping); since the
+// normalization it consults the explicit registration dimension. The
+// `max_task_nodes` dimension counts declared TaskNodes and is enforced at
+// the plan-association/materialization boundary (W30-D, registered gap).
 
-    for index in 0..TASK_NODE_TEST_PROFILE.max_task_nodes {
+#[test]
+fn task_registration_admission_denies_over_cap() {
+    let database = TestDatabase::new("task-registration-over-cap");
+    let authority = database.open_with_profile(&TASK_REGISTRATION_TEST_PROFILE);
+
+    for index in 0..TASK_REGISTRATION_TEST_PROFILE.max_task_registrations {
         register_task(&authority, index);
     }
 
     let error = authority
         .register_task(TaskSpec {
-            task_id: task_id(TASK_NODE_TEST_PROFILE.max_task_nodes),
+            task_id: task_id(TASK_REGISTRATION_TEST_PROFILE.max_task_registrations),
             task_generation: Generation::INITIAL,
             registered_at_ms: 1_000,
+            application_id: None,
+            plan_revision: None,
         })
-        .expect_err("must fail closed over task-node cap");
+        .expect_err("must fail closed over registration cap");
     assert!(matches!(
         error,
-        TaskStoreError::TaskNodeAdmissionDenied {
-            profile_id: "task-node-admission-test",
-            task_count: 3,
-            max_task_nodes: 2,
+        TaskStoreError::TaskRegistrationAdmissionDenied {
+            profile_id: "task-registration-admission-test",
+            registration_count: 3,
+            max_task_registrations: 2,
         }
     ));
 }
 
 #[test]
-fn task_node_admission_replay_bypasses_gate_at_cap() {
-    let database = TestDatabase::new("task-node-replay");
-    let authority = database.open_with_profile(&TASK_NODE_TEST_PROFILE);
+fn task_registration_admission_replay_bypasses_gate_at_cap() {
+    let database = TestDatabase::new("task-registration-replay");
+    let authority = database.open_with_profile(&TASK_REGISTRATION_TEST_PROFILE);
 
-    for index in 0..TASK_NODE_TEST_PROFILE.max_task_nodes {
+    for index in 0..TASK_REGISTRATION_TEST_PROFILE.max_task_registrations {
         register_task(&authority, index);
     }
 
@@ -690,8 +721,10 @@ fn task_node_admission_replay_bypasses_gate_at_cap() {
             task_id: task_id(0),
             task_generation: Generation::INITIAL,
             registered_at_ms: 1_000,
+            application_id: None,
+            plan_revision: None,
         })
-        .expect("idempotent replay must bypass task-node admission gate at cap");
+        .expect("idempotent replay must bypass registration admission gate at cap");
     assert_eq!(
         replay,
         nlos_task::TaskRegistrationDecision::Existing(task_id(0))
@@ -699,34 +732,63 @@ fn task_node_admission_replay_bypasses_gate_at_cap() {
 
     let error = authority
         .register_task(TaskSpec {
-            task_id: task_id(TASK_NODE_TEST_PROFILE.max_task_nodes),
+            task_id: task_id(TASK_REGISTRATION_TEST_PROFILE.max_task_registrations),
             task_generation: Generation::INITIAL,
             registered_at_ms: 1_000,
+            application_id: None,
+            plan_revision: None,
         })
         .expect_err("fresh registration still blocked at cap");
     assert!(matches!(
         error,
-        TaskStoreError::TaskNodeAdmissionDenied { .. }
+        TaskStoreError::TaskRegistrationAdmissionDenied { .. }
     ));
 }
 
 #[test]
-fn task_node_admission_under_cap_keeps_existing_flow() {
-    let database = TestDatabase::new("task-node-under-cap");
-    let authority = database.open_with_profile(&TASK_NODE_TEST_PROFILE);
+fn task_registration_admission_under_cap_keeps_existing_flow() {
+    let database = TestDatabase::new("task-registration-under-cap");
+    let authority = database.open_with_profile(&TASK_REGISTRATION_TEST_PROFILE);
 
-    for index in 0..TASK_NODE_TEST_PROFILE.max_task_nodes {
+    for index in 0..TASK_REGISTRATION_TEST_PROFILE.max_task_registrations {
         register_task(&authority, index);
     }
 
     authority
         .register_attempt(attempt_spec(0))
-        .expect("register attempt under task-node cap");
+        .expect("register attempt under registration cap");
     let decision = authority
         .request_commit_permit_with_authorities_struct(
             Authorities::default(),
             permit_request(0, 0x30),
         )
-        .expect("permit flow unaffected under task-node cap");
+        .expect("permit flow unaffected under registration cap");
     assert_eq!(issued_permit(decision).task_id, task_id(0));
+}
+
+#[test]
+fn task_registration_and_task_node_dimensions_are_independently_enforced() {
+    // Dimension 1 (registration): the deny above fires with the task-node
+    // dimension wide open.
+    assert!(!TASK_REGISTRATION_TEST_PROFILE.admits_task_registrations(3));
+    assert!(TASK_REGISTRATION_TEST_PROFILE.admits_task_nodes(3));
+
+    // Dimension 2 (declared TaskNodes): saturating `max_task_nodes` no
+    // longer blocks registration — after 决定 4 the registration path does
+    // not consult that dimension. Its durable counter lives in the
+    // `nlos-plan` authority; consult wiring at the association/
+    // materialization boundary is the W30-D lane (registered gap, see
+    // b-task-scale-001.md §W29-A).
+    let database = TestDatabase::new("task-node-dimension-independent");
+    let authority = database.open_with_profile(&TASK_NODE_TEST_PROFILE);
+
+    register_task(&authority, 0);
+    register_task(&authority, 1);
+    assert!(!TASK_NODE_TEST_PROFILE.admits_task_nodes(3));
+    register_task(&authority, 2);
+
+    let readback = authority
+        .inspect_task(task_id(2))
+        .expect("inspect third task");
+    assert_eq!(readback.task_id, task_id(2));
 }
