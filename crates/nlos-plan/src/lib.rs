@@ -32,6 +32,7 @@
 //! authorize, or materialize anything.
 
 mod model;
+mod residency;
 mod resolver;
 mod schema;
 mod store;
@@ -41,10 +42,12 @@ use std::fmt;
 
 pub use model::{
     ApplyPlanRevisionRequest, ChainVerification, MAX_DECLARED_NODES_PER_REVISION,
-    MAX_DEPENDENCIES_PER_NODE, NodeTransitionDecision, NodeTransitionRequest,
-    NodeTransitionVoucher, PlanNodeDeclaration, PlanNodeKind, PlanNodeRecord, PlanNodeState,
-    PlanResolutionDecision, PlanResolutionHandle, PlanRevisionDecision, PlanRevisionReceipt,
-    PlanRevisionSelector, PlanView, ResolvePlanRequest, ResolvedPlanNode,
+    MAX_DEPENDENCIES_PER_NODE, NodeResidencyTier, NodeResidencyView, NodeTransitionDecision,
+    NodeTransitionRequest, NodeTransitionVoucher, PlanNodeDeclaration, PlanNodeKind,
+    PlanNodeRecord, PlanNodeState, PlanResolutionDecision, PlanResolutionHandle,
+    PlanRevisionDecision, PlanRevisionReceipt, PlanRevisionSelector, PlanView,
+    ResidencyTransitionDecision, ResidencyTransitionRequest, ResidencyTransitionVoucher,
+    ResolvePlanRequest, ResolvedPlanNode,
 };
 use nlos_types::{ReceiptId, TaskNodeId, TaskPlanId};
 pub use store::SqlitePlanAuthority;
@@ -92,6 +95,21 @@ pub enum PlanStoreError {
         node_id: TaskNodeId,
         from: PlanNodeState,
         to: PlanNodeState,
+    },
+    /// The requested residency tier transition is not a legal edge of
+    /// the conservative W31-E set (a single adjacent step along the
+    /// 议题 28 chain; no self-loops, no skips, no `PINNED`).
+    IllegalResidencyTransition {
+        node_id: TaskNodeId,
+        from: NodeResidencyTier,
+        to: NodeResidencyTier,
+    },
+    /// The requested residency tier transition's `from_tier` does not
+    /// match the node's durable tier (tier CAS failure).
+    ResidencyTierCasMismatch {
+        node_id: TaskNodeId,
+        expected_from: NodeResidencyTier,
+        current: NodeResidencyTier,
     },
     /// The transition's expected declared revision does not match the
     /// node's durable declared revision (`[PLAN-DAG-001]` fence).
@@ -145,6 +163,7 @@ pub enum PlanStoreError {
 }
 
 impl fmt::Display for PlanStoreError {
+    #[allow(clippy::too_many_lines)] // One match arm per typed error keeps diagnostics exhaustive.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Sqlite(error) => write!(formatter, "SQLite plan authority failure: {error}"),
@@ -190,6 +209,18 @@ impl fmt::Display for PlanStoreError {
             Self::IllegalNodeTransition { node_id, from, to } => write!(
                 formatter,
                 "node {node_id:?} transition {from:?} -> {to:?} is not a legal edge"
+            ),
+            Self::IllegalResidencyTransition { node_id, from, to } => write!(
+                formatter,
+                "node {node_id:?} residency transition {from:?} -> {to:?} is not a legal tier edge"
+            ),
+            Self::ResidencyTierCasMismatch {
+                node_id,
+                expected_from,
+                current,
+            } => write!(
+                formatter,
+                "node {node_id:?} residency tier CAS expected {expected_from:?} but found {current:?}"
             ),
             Self::StaleNodeRevision {
                 node_id,

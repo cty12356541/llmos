@@ -1,12 +1,12 @@
-# B-PLAN-001：nlos-plan 声明面状态权威骨架（TaskPlan/TaskNode state face）+ Dependency Resolver
+# B-PLAN-001：nlos-plan 声明面状态权威骨架（TaskPlan/TaskNode state face）+ Dependency Resolver + Context Residency 分级
 
-状态：`PARTIAL_PASS`（**W28-A 状态面骨架 + W29-B Dependency Resolver**，2026-09-20）
+状态：`PARTIAL_PASS`（**W28-A 状态面骨架 + W29-B Dependency Resolver + W31-E Context residency 分级最小版**，2026-09-20）
 
-> 对应：[ADR-0016 决定 2](../../management/adrs/0016-task-plan-declaration-surface.md)（独立 `nlos-plan` authority）与 [决定 5](../../management/adrs/0016-task-plan-declaration-surface.md)（Resolver 结果 durable）；[议题 35 §6](../../discussions/35-TaskPlan声明面设计.md) 验收门 G1（§2–§6，W28-A）与 G4（§7，W29-B）；[进度单 §6.5.3](../../management/stage-b-progress.md) W28-A / W29-B 车道行
+> 对应：[ADR-0016 决定 2](../../management/adrs/0016-task-plan-declaration-surface.md)（独立 `nlos-plan` authority）与 [决定 5](../../management/adrs/0016-task-plan-declaration-surface.md)（Resolver 结果 durable）；[议题 35 §6](../../discussions/35-TaskPlan声明面设计.md) 验收门 G1（§2–§6，W28-A）与 G4（§7，W29-B）；[进度单 §6.5.3](../../management/stage-b-progress.md) W28-A / W29-B / W31-E 车道行
 >
-> 实现：crate `crates/nlos-plan`（schema v1：`plans` / `plan_revisions` / `plan_nodes` / `plan_node_transitions` 四表 + 12 trigger；schema v2 additive：`plan_revision_nodes` / `plan_revision_edges` / `plan_resolution_receipts` 三表 + 8 trigger）
+> 实现：crate `crates/nlos-plan`（schema v1：`plans` / `plan_revisions` / `plan_nodes` / `plan_node_transitions` 四表 + 12 trigger；schema v2 additive：`plan_revision_nodes` / `plan_revision_edges` / `plan_resolution_receipts` 三表 + 8 trigger；schema v3 additive：`plan_node_residency_transitions` 一表 + `plan_nodes` 两列 + 4 trigger）
 >
-> 范围纪律：W28-A 只落**状态权威落点**（§1–§6）；W29-B 只落 **Dependency Resolver**（§7，B4-3）。manifest 模板面（W28-B）、TaskSpec 关联字段与 ScaleProfile 维度重绑（W29-A）、物化门 ADR-0013 接线、100K benchmark（W31/G2）均不在本 evidence 声明范围。
+> 范围纪律：W28-A 只落**状态权威落点**（§1–§6）；W29-B 只落 **Dependency Resolver**（§7，B4-3）；W31-E 只落 **Context residency 分级最小版**（§8，B4-5）。manifest 模板面（W28-B）、TaskSpec 关联字段与 ScaleProfile 维度重绑（W29-A）、物化门 ADR-0013 接线、100K benchmark（W31/G2）均不在本 evidence 声明范围。
 
 ## 1. 本切片目标
 
@@ -197,3 +197,80 @@ cargo clippy -p nlos-plan --all-targets -- -D warnings   # exit 0 / 0 warning
 - **`cargo test --workspace`：未运行**——派工单 MUST NOT（波次屏障由控制器收口）。
 - **三平台 CI / MSRV：未运行**——待 push 后 CI 触发。
 - **G2/G5 数字指标、100K benchmark：未运行**——W31 车道。
+
+## 8. W31-E：Context residency 分级最小版（B4-5）
+
+> 对应：[进度单 §6.5.3](../../management/stage-b-progress.md) W31-E 车道行（验收门：分级读回 + evict 边界测试）；规范 [v0.5 §25.2.1「驻留与惰性物化」](../../design/06-架构设计总纲-v0.5.md)（`ResidencyClass` 定义与 `EVICTED (residency=WARM|COLD)` 语义）与 §28.2 阶段 B「Context residency」交付项；语义链 [议题 28 定案 2](../../discussions/28-海量Agent执行与多层手动调度.md)（`METADATA_ONLY → COLD → WARM → HOT → RUNNING`，`↘ PINNED`）
+
+### 8.1 分级模型与合法边集（规范引用）
+
+**五级 tier**（`NodeResidencyTier`，判别值 1–5 按链序）：`METADATA_ONLY`（仅 TaskNode/AgentRole/依赖与资源声明——`[SCALE-LOGICAL-001]` 有界 durable metadata，每个声明节点的默认 tier）→ `COLD`（checkpoint/Artifact 位于持久存储）→ `WARM`（代码/索引/部分 Context 可快速恢复）→ `HOT`（Process/AgentInstance 已物化）→ `RUNNING`（当前占用执行槽）。逐字对应 v0.5 §25.2.1 `ResidencyClass` 前五级；链序取议题 28 定案 2 线性链。
+
+**合法边集（保守）**：沿链**单步相邻 ±1**（上行 rehydrate / 下行 evict 双向）；自环、跳级（如 HOT→COLD 一步、METADATA_ONLY→RUNNING）一律 `IllegalResidencyTransition` typed 拒绝。依据：议题 28 呈线性链；§25.2.1 驱逐落点 `EVICTED (residency=WARM|COLD)` 即 HOT→WARM→COLD 逐级下走的姿态；无规范文本要求跨级跳迁；每步一凭证使 HOT→WARM→COLD 驱逐与 rehydrate 全程逐级可审计。
+
+**分离轴纪律**：residency 与 §25.2.1 生命周期状态机互为独立轴——独立凭证表（`plan_node_residency_transitions`）、独立 per-node 稠密序列（从 1 起）、独立幂等键、独立 tier CAS（`ResidencyTierCasMismatch`）；residency 合法性**不查询**生命周期状态，生命周期推进也**不触碰** tier 列（互零耦合守卫，测试 `residency_axis_is_orthogonal_to_lifecycle_state_machine` 钉死）。两轴唯一共享的纪律是 `[PLAN-DAG-001]` declared-revision CAS：重塑 revision 推进后，持旧 revision 视图的飞行中 residency 迁移被 `StaleNodeRevision` typed 拒绝（与生命周期面同一 fence 语义，`residency_transition_cas_fences_stale_tier_and_revision` 钉死）。
+
+**PINNED 显式不在本 lane**：v0.5 §25.2.1 第六级 `PINNED` 受 `[SCALE-PIN-001]` 约束（每 pin 必须绑定 ResourceAllocation、owner、reason、上界、expiry/renewal 与 release/fence procedure）——Resource 权威面语义，随物化/资源车道（B4-4 及后续）落，不在 nlos-plan 最小版伪造。
+
+### 8.2 实现事实
+
+| 面 | 内容 |
+|---|---|
+| schema v3（additive，单 `BEGIN IMMEDIATE`） | `plan_nodes` 增 `residency_tier INTEGER NOT NULL DEFAULT 1`（1=METADATA_ONLY；回填语义：v3 之前权威只记声明、未承载任何执行足迹，保守口径即 metadata-only）与 `residency_transition_count`；新表 `plan_node_residency_transitions`（voucher：idempotency_key UNIQUE、`(plan,node,seq)` UNIQUE、from/to tier CHECK 1–5、observed_revision、时间戳；STRICT） |
+| 存储 trigger（4） | `plan_nodes_residency_adjacent`（BEFORE UPDATE OF residency_tier：非相邻变更 ABORT——裸 SQL 跳级在存储层拒绝）；voucher immutable / no_delete；`plan_node_residency_transitions_seq_bound`（voucher 必须是该节点 residency 序列第 N 条稠密衔接） |
+| G1 互操作 | residency 列**不是 shape**：`plan_nodes_executed_shape_frozen` 只拦 (declared_revision, node_digest, node_kind)，不拦 tier 迁移——已越过执行边界（G1 冻结）的节点可被 evict（HOT→WARM→COLD 正是其语义），且 identity/shape/state/生命周期凭证全部原样保留（`evicted_to_cold_node_preserves_metadata_facts` 钉死：digest/kind/revision/key/state/生命周期凭证数逐位不变，revision 链仍 verify） |
+| 写面 `record_residency_transition` | 幂等重放先行（durable voucher 为权威，重放逐位返回原凭证；重绑 `IdempotencyConflict`）→ 合法边（`IllegalResidencyTransition`）→ revision CAS（`StaleNodeRevision`）→ tier CAS（`ResidencyTierCasMismatch`）→ 时间戳下界（`InvalidRequest`）→ voucher INSERT + 节点 tier/count/updated_at 推进同事务 |
+| 读面（分级读回） | `inspect_node_residency` 返回 `NodeResidencyView { tier, transition_count, last_voucher }`（tier + 最后一张迁移凭证一次读回）；`inspect_node_residency_vouchers` 全序列审计列表；`PlanNodeRecord` 增 `residency_tier` / `residency_transition_count`（`inspect_node`/`list_plan_nodes` 同步读回） |
+| ID 派生 | `voucher_id = H("llmos/plan/residency-voucher-id/v1")` 截 16B，输入 `(幂等键, node_id, to_tier)`——与生命周期 voucher 域分隔，无碰撞 |
+| 打开路径 | 迁移链 0→v1→v2→v3、1→v2→v3、2→v3、3=头；未知版本 `SchemaVersionUnsupported` fail-closed；v2 戳记幂等再迁移路径测试覆盖 |
+
+### 8.3 TDD 红→绿记录
+
+1. **红 #0（测试先行）**：`tests/residency.rs` 先写就——`cargo test -p nlos-plan --test residency` 编译失败 **29 errors**（E0425/E0432/E0599/E0609：tier 类型、三 API、record 字段均不存在）。
+2. **绿**：model/schema/store/residency 四面落齐后同套件 10/10 绿；W28-A 17 项、W29-B 14 项零回归（G1/G4 测试逐条原样通过，未触碰任何断言）。
+
+### 8.4 测试清单（新增 10；另 1 处既有测试版本期望更新，见 8.6）
+
+| 测试（`tests/residency.rs`） | 覆盖 |
+|---|---|
+| `nodes_default_to_metadata_only_tier` | 默认 tier=METADATA_ONLY、count=0、last_voucher=None；未知节点双读面 None |
+| `residency_round_trip_walks_adjacent_chain_and_reads_back` | 沿链全上下往返（METADATA_ONLY→COLD→WARM→HOT→RUNNING→…→METADATA_ONLY→COLD），每步凭证稠密、tier+last_voucher 同步读回；全程生命周期轴零触碰 |
+| `illegal_residency_edges_fail_typed` | 5×5 全矩阵纯函数断言（相邻 ±1 且非自环为唯一合法集）；API 面 12 条非法边（跳级+自环）逐条 `IllegalResidencyTransition` 且携带 from/to；拒绝后 durable tier 不动；未知节点 typed |
+| `residency_transition_cas_fences_stale_tier_and_revision` | tier CAS（期望 COLD 实为 METADATA_ONLY）与 revision CAS（revision 2 重塑后持旧视图被拒）；纠正后合法提交且重塑未重置 residency 轴；时间戳早于首声明拒绝 |
+| `residency_eviction_is_idempotent_and_replay_safe` | evict 边界：HOT→WARM→COLD 逐键重放 byte-equal 原凭证；重绑 typed 冲突；恰 5 张凭证（3 上 2 下）；落点 tier=COLD |
+| `evicted_to_cold_node_preserves_metadata_facts` | 执行冻结（ACTIVE）节点 evict 到 COLD：node_key/kind/declared_revision/node_digest/state/生命周期凭证逐位保留；revision 链仍 verify；分级读回 tier=COLD + last_voucher（G2 姿态） |
+| `residency_axis_is_orthogonal_to_lifecycle_state_machine` | DECLARED/ELIGIBLE 节点可独立持 COLD；两轴计数/凭证序列互不污染；residency evict 不驱动生命周期 |
+| `residency_restart_replay_converges` | 三段重启：升链后重启重放全键 byte-equal→evict→再重启；恒 5 凭证零漂移；integrity ok |
+| `schema_v3_migration_paths` | fresh→v3、reopen、v2 戳记幂等再迁移（事实存活）、99 拒绝、integrity ok |
+| `storage_triggers_guard_raw_residency_rewrites` | 裸 SQL 跳级 UPDATE / voucher UPDATE / voucher DELETE 全 ABORT；事后分级读回原样 |
+
+### 8.5 验证证据
+
+本地实跑（macOS，rustc/cargo 1.97.1，分支 `feat/w31-e`）：
+
+```text
+cargo test -p nlos-plan                              # 8 个含测试 target 全 ok / 0 failed（41 项）
+                                                     #   authority 7 + g1_revision_immutability 3
+                                                     #   + plan_fault_matrix 5 + restart_replay 2（W28-A 零回归）
+                                                     #   + g4_resolution_fencing 3 + resolver 9
+                                                     #   + resolver_restart_replay 2（W29-B 零回归）
+                                                     #   + residency 10（W31-E 新增）
+cargo fmt --all --check                              # 通过（0 差异）
+cargo clippy -p nlos-plan --all-targets -- -D warnings   # exit 0 / 0 warning
+```
+
+### 8.6 已知限制与 deferred minors（如实登记）
+
+- **PINNED 未落**（见 8.1）：随 Resource/物化车道按 `[SCALE-PIN-001]` 全语义落，本权威届时 additive 扩。
+- **生命周期↔residency 运行期联动不在本权威强制**：§25.2.1 注释语义（`ACTIVE (residency=HOT; runtime=RUNNABLE|RUNNING|BLOCKED)` 等）是 Materialization/Residency Controller 的运行期不变量（`[SCALE-MATERIALIZE-001]`/`[SCALE-CONTEXT-001]`），归 B4-4/W31-A 及后续 Residency Controller 车道；本权威只记 tier 轴，不做跨轴强制（分离轴纪律）。
+- **resident bytes / pin reason / rebuild cost / last-use 台账未落**：`[SCALE-CONTEXT-001]` 的完整 Context Residency Controller 面（工作集字节计量、回收类、pressure 排序）不在本 lane；本 lane 是 plan-node tier 轴最小版。
+- **无 IPC/CLI 面**：沿 ADR-0016 骨架范围纪律（本 crate 无控制面），tier 读写仅库面。
+- **residency 面 kill-window 故障矩阵未单独扩**：车道门为「分级读回 + evict 边界测试」，已以重启 replay 三段矩阵钉收敛；voucher+节点推进同一事务（沿 W28-A 纪律）。物化门（W31-A）接线如需 kill 注入矩阵，按 B-TASK-008C2G 模式补。
+- **W29-B `schema_v2_migration_paths` 版本期望 2→3 更新**：迁移链头随 v3 推进，断言语义不变（fresh→头、reopen、v1 戳记幂等再迁移、99 拒绝、integrity）——非测试弱化；G1/G4 全部断言零触碰。
+
+### 8.7 未运行项（W31-E，显式列出）
+
+- **push 与 PR：未执行**——派工单 MUST NOT；由控制器统一执行。
+- **`cargo test --workspace`：未运行**——派工单 MUST NOT（波次屏障由控制器收口）。
+- **三平台 CI / MSRV：未运行**——待 push 后 CI 触发。
+- **G2/G5 数字指标、100K benchmark、working-set 比例矩阵：未运行**——W31-B/W31-D 车道。
