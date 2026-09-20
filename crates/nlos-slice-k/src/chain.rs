@@ -11,11 +11,12 @@ use nlos_artifact::{ContentDigest, staging_id_for};
 use nlos_operation::OperationHandle;
 #[cfg(not(unix))]
 use nlos_process::NoopPlatformKillAdapter;
+#[cfg(unix)]
+use nlos_process::PosixPlatformKillAdapter;
 use nlos_process::{
-    PlatformKillDecision, PosixPlatformKillAdapter, ProcessBindingRecord, ProcessLifecycleState,
-    ProcessTerminalRecord, PropagateCancelToFibersRequest, PropagateCrashRequest,
-    RegisterFiberIncarnationRequest, RegisterSupervisorPidRequest, RequestPlatformKillRequest,
-    SupervisorPidRegistry,
+    PlatformKillDecision, ProcessBindingRecord, ProcessLifecycleState, ProcessTerminalRecord,
+    PropagateCancelToFibersRequest, PropagateCrashRequest, RegisterFiberIncarnationRequest,
+    RegisterSupervisorPidRequest, RequestPlatformKillRequest, SupervisorPidRegistry,
 };
 use nlos_runtime::{FiberHandle, RuntimeAdapter};
 use nlos_runtime_tokio::{ProcessFiberCancelReport, TokioRuntimeAdapter};
