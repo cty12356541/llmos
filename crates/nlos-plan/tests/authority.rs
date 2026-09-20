@@ -6,8 +6,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use nlos_plan::{
-    ApplyPlanRevisionRequest, NodeTransitionDecision, NodeTransitionRequest, PlanNodeDeclaration,
-    PlanNodeKind, PlanNodeState, PlanRevisionDecision, PlanStoreError, SqlitePlanAuthority,
+    ApplyPlanRevisionRequest, MaterializationAdmission, MaterializationAdmissionVerdict,
+    MaterializationRequest, MaterializationResolution, NodeTransitionDecision,
+    NodeTransitionRequest, PlanNodeDeclaration, PlanNodeKind, PlanNodeState, PlanRevisionDecision,
+    PlanStoreError, SqlitePlanAuthority,
 };
 use nlos_types::{IdempotencyKey, TaskPlanId};
 use rusqlite::Connection;
@@ -68,6 +70,36 @@ fn first_plan(authority: &SqlitePlanAuthority) -> TaskPlanId {
         .expect("apply revision 1")
         .receipt()
         .plan_id
+}
+
+/// Crosses the materialization boundary through the W31-A gate: one
+/// pending request plus one approving resolution (each contributing one
+/// `→ MATERIALIZING` voucher through the storage-layer gate).
+fn gate_into_materializing(
+    authority: &SqlitePlanAuthority,
+    plan_id: TaskPlanId,
+    node_id: nlos_types::TaskNodeId,
+    key: u8,
+) {
+    authority
+        .request_materialization(MaterializationRequest {
+            plan_id,
+            node_id,
+            idempotency_key: IdempotencyKey::from_bytes([key; 16]),
+            requested_at_ms: 2_000,
+        })
+        .expect("gate request");
+    authority
+        .resolve_materialization(MaterializationResolution {
+            request_key: IdempotencyKey::from_bytes([key; 16]),
+            verdict: MaterializationAdmissionVerdict::Approved(MaterializationAdmission {
+                profile_id: "task-10k".to_string(),
+                projected_task_nodes: 1,
+                projected_active_working_set: 1,
+            }),
+            resolved_at_ms: 2_001,
+        })
+        .expect("gate approval");
 }
 
 #[test]
@@ -236,6 +268,7 @@ fn revision_on_unknown_plan_and_structural_negatives_fail_typed() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)] // One test walks the full edge set with typed fences.
 fn transition_vouchers_walk_the_state_machine_with_typed_fences() {
     let root = Root::new("machine");
     let authority = SqlitePlanAuthority::open(&root.0).expect("open");
@@ -284,6 +317,10 @@ fn transition_vouchers_walk_the_state_machine_with_typed_fences() {
         .expect_err("unknown node");
     assert!(matches!(unknown_node, PlanStoreError::NodeNotFound { .. }));
 
+    // The walk keeps one voucher per step; the two `→ MATERIALIZING`
+    // entries go through the W31-A gate (request + approving
+    // resolution), since the storage layer refuses raw materializing
+    // vouchers without a gate-approved request.
     let walk = [
         (PlanNodeState::Declared, PlanNodeState::Eligible, 0xa1),
         (
@@ -309,6 +346,15 @@ fn transition_vouchers_walk_the_state_machine_with_typed_fences() {
         (PlanNodeState::Active, PlanNodeState::Completed, 0xaa),
     ];
     for (from, to, key) in walk {
+        if to == PlanNodeState::Materializing {
+            gate_into_materializing(&authority, plan_id, node_id, key);
+            let record = authority
+                .inspect_node(plan_id, node_id)
+                .expect("inspect")
+                .expect("node");
+            assert_eq!(record.state, to);
+            continue;
+        }
         let decision = step(from, to, key).expect("legal step");
         assert!(matches!(decision, NodeTransitionDecision::Recorded(_)));
     }

@@ -13,8 +13,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use nlos_plan::{
-    ApplyPlanRevisionRequest, NodeTransitionDecision, NodeTransitionRequest, PlanNodeDeclaration,
-    PlanNodeKind, PlanNodeState, PlanRevisionDecision, PlanStoreError, SqlitePlanAuthority,
+    ApplyPlanRevisionRequest, MaterializationAdmission, MaterializationAdmissionVerdict,
+    MaterializationRequest, MaterializationRequestDecision, MaterializationResolution,
+    MaterializationResolutionDecision, NodeTransitionDecision, NodeTransitionRequest,
+    PlanNodeDeclaration, PlanNodeKind, PlanNodeState, PlanRevisionDecision, PlanStoreError,
+    SqlitePlanAuthority,
 };
 use nlos_types::{IdempotencyKey, TaskPlanId};
 use rusqlite::Connection;
@@ -150,18 +153,16 @@ fn restart_between_every_effect_replays_once_and_converges() {
     assert_eq!(raw_count(&db_path, "plan_nodes"), 2);
 
     // Effect 2..4: walk node a across the execution boundary with a
-    // restart between every voucher; every key replays exactly once.
+    // restart between every effect; every key replays exactly once. The
+    // `→ MATERIALIZING` entry goes through the W31-A gate (one pending
+    // request effect + one approving resolution effect), since the raw
+    // materializing edge is storage-gated.
     let walk = [
         (PlanNodeState::Declared, PlanNodeState::Eligible, 0xc1),
         (
             PlanNodeState::Eligible,
             PlanNodeState::WaitingAuthorization,
             0xc2,
-        ),
-        (
-            PlanNodeState::WaitingAuthorization,
-            PlanNodeState::Materializing,
-            0xc3,
         ),
     ];
     for (from, to, key) in walk {
@@ -182,6 +183,58 @@ fn restart_between_every_effect_replays_once_and_converges() {
             .expect("node");
         assert_eq!(row.state, to, "replay does not advance the state twice");
     }
+
+    // Effect 3a: the gate request. Crash. Replay converges.
+    let gate_request = MaterializationRequest {
+        plan_id,
+        node_id: node_a,
+        idempotency_key: IdempotencyKey::from_bytes([0xc3; 16]),
+        requested_at_ms: 2_000,
+    };
+    let requested = authority
+        .request_materialization(gate_request)
+        .expect("gate request");
+    assert!(matches!(
+        requested,
+        MaterializationRequestDecision::Requested(_)
+    ));
+    drop(authority);
+    authority = SqlitePlanAuthority::open(&db_path).expect("reopen after gate request");
+    let request_replay = authority
+        .request_materialization(gate_request)
+        .expect("gate request replay");
+    assert!(matches!(
+        request_replay,
+        MaterializationRequestDecision::Replayed(_)
+    ));
+
+    // Effect 3b: the approving resolution. Crash. Replay converges.
+    let gate_resolution = MaterializationResolution {
+        request_key: IdempotencyKey::from_bytes([0xc3; 16]),
+        verdict: MaterializationAdmissionVerdict::Approved(MaterializationAdmission {
+            profile_id: "task-10k".to_string(),
+            projected_task_nodes: 2,
+            projected_active_working_set: 1,
+        }),
+        resolved_at_ms: 2_500,
+    };
+    let approved = authority
+        .resolve_materialization(gate_resolution.clone())
+        .expect("gate approval");
+    assert!(matches!(
+        approved,
+        MaterializationResolutionDecision::Approved(_)
+    ));
+    drop(authority);
+    authority = SqlitePlanAuthority::open(&db_path).expect("reopen after gate approval");
+    let approval_replay = authority
+        .resolve_materialization(gate_resolution)
+        .expect("gate approval replay");
+    assert!(matches!(
+        approval_replay,
+        MaterializationResolutionDecision::ReplayedApproved(_)
+    ));
+    assert_eq!(raw_count(&db_path, "plan_materialization_requests"), 1);
     let frozen = authority
         .inspect_node(plan_id, node_a)
         .expect("inspect")

@@ -23,6 +23,15 @@ pub const RESIDENCY_VOUCHER_ID_DOMAIN: &[u8] = b"llmos/plan/residency-voucher-id
 pub const RESOLUTION_ID_DOMAIN: &[u8] = b"llmos/plan/resolution-id/v1";
 /// Domain separator for the resolution receipt content digest.
 pub const RESOLUTION_DIGEST_DOMAIN: &[u8] = b"llmos/plan/resolution-digest/v1";
+/// Domain separator for the materialization request id (W31-A gate).
+pub const MATERIALIZATION_REQUEST_ID_DOMAIN: &[u8] = b"llmos/plan/materialization-request-id/v1";
+/// Domain separator for the derived idempotency key of the
+/// state-driving vouchers a gate request records (W31-A gate).
+pub const MATERIALIZATION_DRIVE_KEY_DOMAIN: &[u8] = b"llmos/plan/materialization-drive-key/v1";
+/// Domain separator for the derived idempotency key of the
+/// `WAITING_* → MATERIALIZING` approval voucher (W31-A gate).
+pub const MATERIALIZATION_APPROVAL_KEY_DOMAIN: &[u8] =
+    b"llmos/plan/materialization-approval-key/v1";
 
 /// Structural admission bound for one plan revision's declared node set.
 /// The 100K logical-node tier is the G2 benchmark target (W31); this bound
@@ -579,6 +588,179 @@ pub struct ResolvedPlanNode {
     pub node_digest: [u8; 32],
     /// 1-based position in the resolved topological order.
     pub position: u64,
+}
+
+/// Request to open one materialization gate round for a node (W31-A,
+/// ADR-0016 G3; the readiness half of the ADR-0013 verify-then-commit
+/// protocol). The authority drives the node forward through the legal
+/// §25.2.1 edges (`DECLARED/BLOCKED_DEPENDENCY → ELIGIBLE →
+/// WAITING_RESOURCE`, as dense vouchers), verifies dependency readiness
+/// (every declared dependency must be `COMPLETED`), and records one
+/// durable pending request the Task side consumes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MaterializationRequest {
+    pub plan_id: TaskPlanId,
+    pub node_id: TaskNodeId,
+    /// Exactly-once key for the request.
+    pub idempotency_key: IdempotencyKey,
+    /// Caller-supplied observation time (ms).
+    pub requested_at_ms: u64,
+}
+
+/// The Task-side admission verdict one resolution commits (the commit
+/// half of the ADR-0013 protocol). `Approved` carries the admission facts
+/// the Task authority's consumption path consulted; `Rejected` carries
+/// the typed window-shrink reason — the node stays `WAITING_*`, the plan
+/// does not fail.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MaterializationAdmissionVerdict {
+    Approved(MaterializationAdmission),
+    Rejected(MaterializationRejection),
+}
+
+/// Admission facts recorded on an approved materialization request: the
+/// tier that answered and the projected counts the consult admitted
+/// (ADR-0016 决定 4 dimensions).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MaterializationAdmission {
+    pub profile_id: String,
+    pub projected_task_nodes: u64,
+    pub projected_active_working_set: u64,
+}
+
+/// Typed reason a materialization request was rejected (the observable
+/// window-shrink fact, `[SCALE-MATERIALIZE-001]` /
+/// `[SCHED-BACKPRESSURE-001]` posture).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MaterializationRejection {
+    /// The tier's active working-set dimension denied the projection
+    /// (`WorkingSetAdmissionDenied` on the Task side).
+    WorkingSetFull {
+        profile_id: String,
+        active_count: u64,
+        max_active_working_set: u64,
+    },
+    /// The tier's declared-TaskNode dimension denied the projection
+    /// (`TaskNodeAdmissionDenied` on the Task side, ADR-0016 决定 4).
+    TaskNodeCapExceeded {
+        profile_id: String,
+        task_count: u64,
+        max_task_nodes: u64,
+    },
+}
+
+/// Request to resolve one pending materialization request with the
+/// Task-side admission verdict. The approval path re-verifies dependency
+/// readiness and the declared-revision fence, then commits the request
+/// row and the `WAITING_* → MATERIALIZING` voucher in one transaction.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MaterializationResolution {
+    /// The pending request's exactly-once key.
+    pub request_key: IdempotencyKey,
+    pub verdict: MaterializationAdmissionVerdict,
+    pub resolved_at_ms: u64,
+}
+
+/// Lifecycle status of one durable materialization request.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum MaterializationRequestStatus {
+    /// Recorded, awaiting the Task-side admission verdict.
+    Pending,
+    /// Admission approved; the node crossed into `MATERIALIZING` in the
+    /// same transaction (`approved_voucher_id` names the voucher).
+    Approved,
+    /// Admission rejected (typed reason recorded); the node stayed
+    /// `WAITING_*` — the window shrank, the plan did not fail.
+    Rejected,
+}
+
+impl MaterializationRequestStatus {
+    pub(crate) fn decode(value: i64) -> Result<Self, crate::PlanStoreError> {
+        match value {
+            1 => Ok(Self::Pending),
+            2 => Ok(Self::Approved),
+            3 => Ok(Self::Rejected),
+            _ => Err(crate::PlanStoreError::CorruptRecord(
+                "unknown materialization status",
+            )),
+        }
+    }
+}
+
+/// Durable readback of one materialization request (either lifecycle
+/// half included).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MaterializationRequestRecord {
+    pub request_id: ReceiptId,
+    pub plan_id: TaskPlanId,
+    pub node_id: TaskNodeId,
+    pub idempotency_key: IdempotencyKey,
+    /// The node's declared-shape revision observed when the request was
+    /// recorded; a reshaping revision fences the resolution
+    /// (`[PLAN-DAG-001]`, G4-consistent CAS).
+    pub observed_declared_revision: u64,
+    pub status: MaterializationRequestStatus,
+    /// The admission facts, `Approved` rows only.
+    pub admission: Option<MaterializationAdmission>,
+    /// The typed rejection, `Rejected` rows only.
+    pub rejection: Option<MaterializationRejection>,
+    /// The `WAITING_* → MATERIALIZING` voucher an approval committed.
+    pub approved_voucher_id: Option<ReceiptId>,
+    pub requested_at_ms: u64,
+    pub resolved_at_ms: Option<u64>,
+}
+
+/// Outcome of one `request_materialization` call.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MaterializationRequestDecision {
+    /// First execution of this key: the pending request (and any driving
+    /// vouchers) committed.
+    Requested(MaterializationRequestRecord),
+    /// Durable replay: the original record is returned unchanged.
+    Replayed(MaterializationRequestRecord),
+}
+
+impl MaterializationRequestDecision {
+    /// The record this call denotes, whichever branch.
+    #[must_use]
+    pub fn record(self) -> MaterializationRequestRecord {
+        match self {
+            Self::Requested(record) | Self::Replayed(record) => record,
+        }
+    }
+}
+
+/// One approved materialization: the resolved request plus the
+/// `WAITING_* → MATERIALIZING` voucher committed with it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MaterializationApproval {
+    pub request: MaterializationRequestRecord,
+    pub voucher: NodeTransitionVoucher,
+}
+
+/// Outcome of one `resolve_materialization` call.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MaterializationResolutionDecision {
+    /// First execution: admission approved, the node is `MATERIALIZING`.
+    Approved(MaterializationApproval),
+    /// First execution: admission rejected (typed reason on the record);
+    /// the node stays `WAITING_*`.
+    Rejected(MaterializationRequestRecord),
+    /// Durable replay of a prior approval.
+    ReplayedApproved(MaterializationApproval),
+    /// Durable replay of a prior rejection.
+    ReplayedRejected(MaterializationRequestRecord),
+}
+
+impl MaterializationResolutionDecision {
+    /// The request record this call denotes, whichever branch.
+    #[must_use]
+    pub const fn record(&self) -> &MaterializationRequestRecord {
+        match self {
+            Self::Approved(approval) | Self::ReplayedApproved(approval) => &approval.request,
+            Self::Rejected(record) | Self::ReplayedRejected(record) => record,
+        }
+    }
 }
 
 pub(crate) fn encode_kind(kind: PlanNodeKind) -> i64 {

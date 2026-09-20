@@ -9,7 +9,7 @@ use rusqlite::{Connection, TransactionBehavior};
 
 use crate::PlanStoreError;
 
-pub(crate) const SCHEMA_VERSION: i64 = 3;
+pub(crate) const SCHEMA_VERSION: i64 = 4;
 
 /// Creates the durable plan authority schema v1: the per-plan
 /// `plans` current-state head (monotonic current revision), the immutable
@@ -189,6 +189,74 @@ pub(crate) fn migrate_v3(connection: &mut Connection) -> Result<(), PlanStoreErr
 
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     transaction.execute_batch(SCHEMA_V3_SQL)?;
+    transaction.commit()?;
+    Ok(())
+}
+
+/// Advances a v3 database to v4 (additive, one `BEGIN IMMEDIATE`
+/// transaction): the W31-A lazy-materialization gate (ADR-0016 G3,
+/// B4-4). `plan_materialization_requests` carries the durable
+/// verify-then-commit protocol rows — `PENDING` requests the Task-side
+/// consumption path answers, `APPROVED` rows carrying the admission
+/// facts, `REJECTED` rows carrying the typed window-shrink reason. Two
+/// storage-layer invariants close the G3 falsification paths:
+/// - `plan_node_transitions_materializing_gated`: no voucher may enter
+///   `MATERIALIZING` unless the node has an `APPROVED` request — the raw
+///   `record_node_transition` face is closed for that edge;
+/// - `plan_materialization_requests_one_pending`: at most one in-flight
+///   request per node, and resolution is one-way (`PENDING` is the only
+///   updatable status; identity columns are frozen).
+pub(crate) fn migrate_v4(connection: &mut Connection) -> Result<(), PlanStoreError> {
+    let table_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+          WHERE type='table' AND name = 'plan_materialization_requests'",
+        [],
+        |row| row.get(0),
+    )?;
+    let trigger_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN (
+            'plan_materialization_requests_no_delete',
+            'plan_materialization_requests_pending_shape',
+            'plan_materialization_requests_resolve_once',
+            'plan_materialization_requests_resolved_shape',
+            'plan_node_transitions_materializing_gated'
+          )",
+        [],
+        |row| row.get(0),
+    )?;
+    let index_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+          WHERE type='index' AND name = 'plan_materialization_requests_one_pending'",
+        [],
+        |row| row.get(0),
+    )?;
+    if table_count == 1 && trigger_count == 5 && index_count == 1 {
+        connection.pragma_update(None, "user_version", 4)?;
+        return Ok(());
+    }
+    if table_count != 0 || trigger_count != 0 || index_count != 0 {
+        return Err(PlanStoreError::CorruptRecord(
+            "partial plan authority v4 schema",
+        ));
+    }
+    let v3_tables: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+          WHERE type='table' AND name IN (
+            'plans', 'plan_revisions', 'plan_nodes', 'plan_node_transitions',
+            'plan_revision_nodes', 'plan_revision_edges', 'plan_resolution_receipts',
+            'plan_node_residency_transitions'
+          )",
+        [],
+        |row| row.get(0),
+    )?;
+    if v3_tables != 8 {
+        return Err(PlanStoreError::CorruptRecord(
+            "plan authority v3 schema missing",
+        ));
+    }
+
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(SCHEMA_V4_SQL)?;
     transaction.commit()?;
     Ok(())
 }
@@ -465,3 +533,97 @@ BEGIN
 END;
 
 PRAGMA user_version = 3;";
+
+pub(crate) const SCHEMA_V4_SQL: &str = "CREATE TABLE plan_materialization_requests (
+    request_id BLOB PRIMARY KEY NOT NULL CHECK(length(request_id) = 16),
+    idempotency_key BLOB NOT NULL UNIQUE CHECK(length(idempotency_key) = 16),
+    plan_id BLOB NOT NULL CHECK(length(plan_id) = 16),
+    task_node_id BLOB NOT NULL CHECK(length(task_node_id) = 16),
+    observed_declared_revision INTEGER NOT NULL CHECK(observed_declared_revision >= 1),
+    status INTEGER NOT NULL CHECK(status IN (1, 2, 3)),
+    admission_profile TEXT,
+    admitted_task_nodes INTEGER,
+    admitted_active_working_set INTEGER,
+    approved_voucher_id BLOB CHECK(
+        approved_voucher_id IS NULL OR length(approved_voucher_id) = 16
+    ),
+    rejection_kind INTEGER NOT NULL DEFAULT 0 CHECK(rejection_kind IN (0, 1, 2)),
+    rejection_profile TEXT,
+    rejection_observed INTEGER,
+    rejection_cap INTEGER,
+    requested_at_ms INTEGER NOT NULL CHECK(requested_at_ms >= 0),
+    resolved_at_ms INTEGER CHECK(resolved_at_ms IS NULL OR resolved_at_ms >= 0),
+    FOREIGN KEY(plan_id, task_node_id) REFERENCES plan_nodes(plan_id, task_node_id)
+) STRICT;
+
+CREATE TRIGGER plan_materialization_requests_no_delete
+BEFORE DELETE ON plan_materialization_requests BEGIN
+    SELECT RAISE(ABORT, 'materialization request is durable');
+END;
+
+CREATE TRIGGER plan_materialization_requests_pending_shape
+AFTER INSERT ON plan_materialization_requests
+WHEN NEW.status != 1
+    OR NEW.admission_profile IS NOT NULL
+    OR NEW.admitted_task_nodes IS NOT NULL
+    OR NEW.admitted_active_working_set IS NOT NULL
+    OR NEW.approved_voucher_id IS NOT NULL
+    OR NEW.rejection_kind != 0
+    OR NEW.rejection_profile IS NOT NULL
+    OR NEW.rejection_observed IS NOT NULL
+    OR NEW.rejection_cap IS NOT NULL
+    OR NEW.resolved_at_ms IS NOT NULL
+BEGIN
+    SELECT RAISE(ABORT, 'new materialization requests must be pending');
+END;
+
+CREATE TRIGGER plan_materialization_requests_resolve_once
+BEFORE UPDATE ON plan_materialization_requests
+WHEN OLD.status != 1
+    OR NEW.status NOT IN (2, 3)
+    OR NEW.request_id != OLD.request_id
+    OR NEW.idempotency_key != OLD.idempotency_key
+    OR NEW.plan_id != OLD.plan_id
+    OR NEW.task_node_id != OLD.task_node_id
+    OR NEW.observed_declared_revision != OLD.observed_declared_revision
+    OR NEW.requested_at_ms != OLD.requested_at_ms
+BEGIN
+    SELECT RAISE(ABORT, 'materialization request resolution is one-way');
+END;
+
+CREATE TRIGGER plan_materialization_requests_resolved_shape
+BEFORE UPDATE ON plan_materialization_requests
+WHEN (NEW.status = 2 AND (
+        NEW.admission_profile IS NULL
+        OR NEW.admitted_task_nodes IS NULL
+        OR NEW.admitted_active_working_set IS NULL
+        OR NEW.approved_voucher_id IS NULL
+        OR NEW.rejection_kind != 0
+        OR NEW.resolved_at_ms IS NULL))
+  OR (NEW.status = 3 AND (
+        NEW.rejection_kind NOT IN (1, 2)
+        OR NEW.admission_profile IS NOT NULL
+        OR NEW.admitted_task_nodes IS NOT NULL
+        OR NEW.admitted_active_working_set IS NOT NULL
+        OR NEW.approved_voucher_id IS NOT NULL
+        OR NEW.resolved_at_ms IS NULL))
+BEGIN
+    SELECT RAISE(ABORT, 'materialization resolution shape mismatch');
+END;
+
+CREATE UNIQUE INDEX plan_materialization_requests_one_pending
+ON plan_materialization_requests(task_node_id) WHERE status = 1;
+
+CREATE TRIGGER plan_node_transitions_materializing_gated
+BEFORE INSERT ON plan_node_transitions
+WHEN NEW.to_state = 6 AND NOT EXISTS (
+    SELECT 1 FROM plan_materialization_requests
+    WHERE plan_id = NEW.plan_id
+      AND task_node_id = NEW.task_node_id
+      AND status = 2
+)
+BEGIN
+    SELECT RAISE(ABORT, 'MATERIALIZING entry requires a gate-approved materialization request');
+END;
+
+PRAGMA user_version = 4;";
