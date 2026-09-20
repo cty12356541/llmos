@@ -19,6 +19,7 @@ use nlos_types::{
 };
 use rusqlite::{Connection, OpenFlags, Transaction, TransactionBehavior, params};
 
+use crate::effect::{SlotState, list_slots};
 use crate::lease::{
     AuthorityAssignmentRecord, AuthorityAssignmentState, AuthorityLeasePermitRequest,
     AuthorityLeaseRecord, AuthorityLeaseTakeoverFenceRecord, AuthorityLeaseTakeoverFenceRequest,
@@ -49,22 +50,26 @@ use crate::migrations::{
 };
 use crate::model::{derive_closure_receipt_id, derive_permit_id, empty_effect_history_root};
 use crate::pressure::{
-    CommitPermitDecision, WorkingSetPressureSnapshot, enforce_task_registration_admission,
+    CommitPermitDecision, ReclaimPhase, TASK_DEFAULT_RECLAIM_POLICY, WorkingSetPressureSnapshot,
+    WorkingSetReclaimEviction, WorkingSetReclaimExecutionReport, WorkingSetReclaimExecutionRequest,
+    WorkingSetReclaimPhaseReport, enforce_task_registration_admission,
     enforce_working_set_admission, execute_working_set_reclaim_execution,
     inspect_working_set_pressure as build_working_set_pressure_snapshot,
     plan_working_set_reclaim_execution, working_set_reclaim_advisory,
 };
+use crate::reconcile::load_adoption_by_permit;
 use crate::scale::{ScaleProfile, TASK_PROFILE_10K};
 use crate::{
     AttemptHandle, AttemptRecord, AttemptRegistrationDecision, AttemptSpec, AttemptState,
-    CancelDecision, CancelRequest, ClosedAttempt, PermitConflict, PermitDecision, PermitRecord,
-    PermitRequest, PermitState, PlannedEffect, ReceiptOutcome, SnapshotBundle, SnapshotConsistency,
-    TaskPlanRevisionRef, TaskReceiptRecord, TaskRecord, TaskRegistrationDecision,
-    TaskSnapshotReceiptRecord, TaskSnapshotReceiptSpec, TaskSpec, TaskState, TaskStoreError,
-    TaskWriteSetArtifactRead, TaskWriteSetArtifactWrite, TaskWriteSetDecision,
-    TaskWriteSetEffectEndpoint, TaskWriteSetEffectEndpointKind, TaskWriteSetEffectEndpointRequest,
-    TaskWriteSetRecord, TaskWriteSetRequest, TaskWriteSetSemanticAppend,
-    TaskWriteSetSemanticRequiredDurability, TaskWriteSetSemanticTarget,
+    CancelDecision, CancelRequest, ClosePermitDecision, ClosePermitRequest, ClosedAttempt,
+    PermitClosureOutcome, PermitConflict, PermitDecision, PermitRecord, PermitRequest, PermitState,
+    PlannedEffect, ReceiptOutcome, SnapshotBundle, SnapshotConsistency, TaskPlanRevisionRef,
+    TaskReceiptRecord, TaskRecord, TaskRegistrationDecision, TaskSnapshotReceiptRecord,
+    TaskSnapshotReceiptSpec, TaskSpec, TaskState, TaskStoreError, TaskWriteSetArtifactRead,
+    TaskWriteSetArtifactWrite, TaskWriteSetDecision, TaskWriteSetEffectEndpoint,
+    TaskWriteSetEffectEndpointKind, TaskWriteSetEffectEndpointRequest, TaskWriteSetRecord,
+    TaskWriteSetRequest, TaskWriteSetSemanticAppend, TaskWriteSetSemanticRequiredDurability,
+    TaskWriteSetSemanticTarget,
 };
 
 const SCHEMA_VERSION: i64 = 44;
@@ -1903,6 +1908,132 @@ impl SqliteTaskAuthority {
             self.scale_profile,
             active_count,
         ))
+    }
+
+    /// Drives one planned reclaim execution to completion through the
+    /// authority's real closure paths (W31-C, `[RSM-RECLAIM-001]` subset).
+    ///
+    /// The walk starts at the planned step's sequence index of
+    /// [`crate::TASK_DEFAULT_RECLAIM_POLICY`] and visits every later phase
+    /// in order. Only `CheckpointEvict` has a real face in this authority:
+    /// it selects issued permits in `(created_at_ms, permit_id)` order
+    /// (FIFO, oldest first), skips structurally non-evictable members
+    /// (any effect slot outside `NoEffect`/`ConfirmedNoEffect`, permits
+    /// bound to an authority lease, permits with an adoption record), and
+    /// closes the rest through the public [`Self::close_permit`] path with
+    /// `CancelledBeforeEffect` until the observed active count is back at
+    /// or below the tier's soft threshold. The permit row is the durable
+    /// checkpoint of the working-set member; the closure receipt is the
+    /// eviction record. `RebuildableCache`, `DegradeBackgroundQos`, and
+    /// `Kill` report `face_absent` with zero units — this authority owns
+    /// no cache, `QoS`, or kill face in this slice; an unrelieved remainder
+    /// is reported as `pressure_relieved == false`, never fabricated.
+    ///
+    /// Controller-loop semantics, stated honestly: the pre-count and
+    /// candidate snapshot are one consistent read, each eviction is an
+    /// individually linearized public closure, and the post-count is a
+    /// fresh read afterwards — concurrent issuances or closures between
+    /// those points are observed, not fenced. Re-driving after relief is
+    /// the legal no-op (zero evictions); every closure stays idempotent
+    /// under its own receipt on replay.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TaskStoreError::ReclaimExecutionProfileMismatch`] when the
+    /// warrant's advisory tier differs from the authority's bound profile,
+    /// [`TaskStoreError::ReclaimExecutionSequenceOutOfRange`] for a
+    /// sequence index outside the default policy, and propagates any
+    /// non-skip closure failure verbatim (the skip set is the structurally
+    /// non-evictable members rediscovered between the snapshot and the
+    /// close: `OutstandingEffectSlots`, `PermitHasEffects`).
+    pub fn drive_working_set_reclaim(
+        &self,
+        request: WorkingSetReclaimExecutionRequest,
+    ) -> Result<WorkingSetReclaimExecutionReport, TaskStoreError> {
+        let execution = request.execution;
+        if execution.advisory.profile_id != self.scale_profile.profile_id {
+            return Err(TaskStoreError::ReclaimExecutionProfileMismatch {
+                advisory_profile_id: execution.advisory.profile_id,
+                authority_profile_id: self.scale_profile.profile_id,
+            });
+        }
+        let start = usize::from(execution.execution_sequence);
+        if start >= TASK_DEFAULT_RECLAIM_POLICY.phases.len() {
+            return Err(TaskStoreError::ReclaimExecutionSequenceOutOfRange {
+                sequence: execution.execution_sequence,
+            });
+        }
+
+        let reclaim_threshold_count = self.scale_profile.reclaim_threshold_count();
+        let (pre_active_count, candidates) = {
+            let connection = self.lock_connection()?;
+            (
+                count_issued_permits(&*connection)?,
+                list_issued_permits_in_eviction_order(&*connection)?,
+            )
+        };
+
+        let mut evictions = Vec::new();
+        let mut phases = Vec::new();
+        for &phase in &TASK_DEFAULT_RECLAIM_POLICY.phases[start..] {
+            if phase != ReclaimPhase::CheckpointEvict {
+                phases.push(WorkingSetReclaimPhaseReport {
+                    phase,
+                    evicted_units: 0,
+                    face_absent: true,
+                });
+                continue;
+            }
+            let mut evicted_units = 0_u64;
+            for permit in &candidates {
+                if pre_active_count.saturating_sub(evicted_units) <= reclaim_threshold_count {
+                    break;
+                }
+                let evictable = {
+                    let connection = self.lock_connection()?;
+                    permit_is_reclaim_evictable(&*connection, permit)?
+                };
+                if !evictable {
+                    continue;
+                }
+                let decision = self.close_permit(ClosePermitRequest {
+                    task_id: permit.task_id,
+                    attempt_id: permit.attempt_id,
+                    attempt_generation: permit.attempt_generation,
+                    permit_id: permit.permit_id,
+                    outcome: PermitClosureOutcome::CancelledBeforeEffect,
+                    fenced_participant_digest: [0; 32],
+                    closed_at_ms: request.executed_at_ms,
+                })?;
+                if let ClosePermitDecision::Closed(receipt) = decision {
+                    evicted_units += 1;
+                    evictions.push(WorkingSetReclaimEviction {
+                        task_id: permit.task_id,
+                        permit_id: permit.permit_id,
+                        closure_receipt_id: receipt.receipt_id,
+                    });
+                }
+            }
+            phases.push(WorkingSetReclaimPhaseReport {
+                phase,
+                evicted_units,
+                face_absent: false,
+            });
+        }
+
+        let post_active_count = {
+            let connection = self.lock_connection()?;
+            count_issued_permits(&*connection)?
+        };
+        Ok(WorkingSetReclaimExecutionReport {
+            pressure_relieved: post_active_count <= reclaim_threshold_count,
+            execution,
+            phases,
+            evictions,
+            pre_active_count,
+            post_active_count,
+            reclaim_threshold_count,
+        })
     }
 
     /// Reads the current durable participant registry for a Task.
@@ -5980,6 +6111,41 @@ fn count_issued_permits(source: &impl SqlRead) -> Result<u64, TaskStoreError> {
         source.prepare_statement("SELECT COUNT(*) FROM commit_permits WHERE permit_state = ?1")?;
     let count: i64 = statement.query_row([PermitState::Issued.code()], |row| row.get(0))?;
     u64::try_from(count).map_err(|_| TaskStoreError::CorruptRecord("negative issued permit count"))
+}
+
+fn list_issued_permits_in_eviction_order(
+    source: &impl SqlRead,
+) -> Result<Vec<PermitRecord>, TaskStoreError> {
+    let mut statement = source.prepare_statement(&format!(
+        "SELECT {PERMIT_COLUMNS} FROM commit_permits
+         WHERE permit_state = ?1
+         ORDER BY created_at_ms, permit_id"
+    ))?;
+    let mut rows = statement.query([PermitState::Issued.code()])?;
+    let mut permits = Vec::new();
+    while let Some(row) = rows.next()? {
+        permits.push(decode_permit_row(row)?);
+    }
+    Ok(permits)
+}
+
+fn permit_is_reclaim_evictable(
+    source: &impl SqlRead,
+    permit: &PermitRecord,
+) -> Result<bool, TaskStoreError> {
+    if permit.authority_lease_binding.is_some() {
+        return Ok(false);
+    }
+    if load_adoption_by_permit(source, permit.task_id, permit.permit_id)?.is_some() {
+        return Ok(false);
+    }
+    let slots = list_slots(source, permit.permit_id)?;
+    Ok(slots.iter().all(|slot| {
+        matches!(
+            slot.state,
+            SlotState::NoEffect | SlotState::ConfirmedNoEffect
+        )
+    }))
 }
 
 fn count_registered_tasks(source: &impl SqlRead) -> Result<u64, TaskStoreError> {

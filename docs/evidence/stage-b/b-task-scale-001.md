@@ -298,3 +298,79 @@ test result: ok. 2 passed; 0 failed; ... finished in 31.96s
 2. 关联字段仅存引用：物化/permit 边界的 ADR-0013 verify-then-commit 核验未接线（W29-C/W30-D）；manifest 模板段到 TaskSpec 关联的实例化（候选 C 桥）在 B-APPLICATION 车道。
 3. checkpoint/rehydrate 基准、release profile 与多平台复测仍未做；G2/G5 100K 正式 gate 在 W31。
 4. b-plan 侧 evidence 一行引用未落（W29-A 写集限定本文件为唯一 primary；b-plan 车道自行回指本节即可）。
+
+## 13. W31-C reclaim 实执行闭环 + checkpoint/rehydrate 基准（2026-09-21）
+
+> 对应：[进度单 §6.5.3](../../management/stage-b-progress.md) W31-C 车道行（`checkpoint/rehydrate benchmark + reclaim 实执行（B4-8）`；验收门：rehydrate 实测数据；reclaim 执行闭环）；residency 分级读面为 W31-E（`b-plan-001-declaration-surface.md` §8，本车道只读引用其 `EVICTED (residency=WARM|COLD)`/REHYDRATING 语义，未触碰 `nlos-plan`）。
+
+### Base HEAD
+
+开工 `b65255e`（分支 `feat/w31-c`）；提交时无并行写集（本车道独占 `nlos-task` src 与两 crate 测试写集）。
+
+### 写集
+
+- `crates/nlos-task/src/pressure.rs`：模块 honest-scope 更新 + 4 个新公开类型（`WorkingSetReclaimExecutionRequest` / `WorkingSetReclaimEviction` / `WorkingSetReclaimPhaseReport` / `WorkingSetReclaimExecutionReport`）。
+- `crates/nlos-task/src/store.rs`：`SqliteTaskAuthority::drive_working_set_reclaim` 公开方法 + `list_issued_permits_in_eviction_order` / `permit_is_reclaim_evictable` 私有 helper + imports。
+- `crates/nlos-task/src/reconcile.rs`：`load_adoption_by_permit` 私有 → `pub(crate)`（一行可见性提升，无语义改动）。
+- `crates/nlos-task/src/lib.rs`：`TaskStoreError` 两新变体（`ReclaimExecutionProfileMismatch` / `ReclaimExecutionSequenceOutOfRange`）+ Display 臂 + pressure 面 re-export 扩展。
+- `crates/nlos-task/tests/reclaim_execution.rs`（新，4 用例）、`tests/reclaim_execution_probe.rs`（新，2 个 `#[ignore]` 基准）。
+- `crates/nlos-runtime-tokio/tests/checkpoint_rehydrate_scale.rs`（新：1 默认套件档 + 2 个 `#[ignore]` 档）。
+- 本 evidence 文件 §13。
+
+### 已实现事实 1：reclaim 实执行闭环（deliverable 1）
+
+1. **公开驱动面**：`drive_working_set_reclaim(WorkingSetReclaimExecutionRequest) -> WorkingSetReclaimExecutionReport`——把 permit decision 上浮的 `WorkingSetReclaimExecution`（advisory warrant）驱动到完成；报告按 `TASK_DEFAULT_RECLAIM_POLICY` 从 planned step 的 sequence 起逐相给出 `WorkingSetReclaimPhaseReport { phase, evicted_units, face_absent }`。
+2. **真实 CheckpointEvict 面**：按 `(created_at_ms, permit_id)` FIFO 枚举 issued permit，逐个经**公开 `close_permit` 路径**以 `CancelledBeforeEffect` 关闭（每次关闭一条独立 `BEGIN IMMEDIATE` 事务 + `TaskPermitClosureReceipt`），直到 observed active count 回落至软阈值；permit 行即工作集成员的 durable checkpoint，closure receipt 即驱逐记录。结构性不可驱逐成员被跳过：任一 effect slot 不在 `NoEffect`/`ConfirmedNoEffect`、绑定了 authority lease、或存在 adoption 记录。
+3. **诚实面**：`RebuildableCache`/`DegradeBackgroundQos`/`Kill` 三相 `face_absent=true`、`evicted_units=0`（本权威无 cache/`QoS`/kill 面）；无可驱逐成员时 `pressure_relieved=false` 如实报告缺口，kill 相不伪造执行。W21 的合成 outcome（`execute_working_set_reclaim_execution`，overshoot 计数）原样保留为 planning-derived 前缀，未削弱。
+4. **controller-loop 语义（非单事务 CAS）**：pre-count/candidates 一致读 → 逐个线性化公开关闭 → post-count 新读；并发变化被观察而非被 fence（doc 声明）。重复驱动=合法 no-op（受害者已 Closed 不再入枚举）；每张 closure receipt 各自幂等。
+5. **typed 门**：warrant 的 advisory tier ≠ authority 绑定 profile → `ReclaimExecutionProfileMismatch` fail-closed；sequence 越界 → `ReclaimExecutionSequenceOutOfRange`；非 skip 集关闭失败原样传播。
+6. **readback 证明执行（非 planning）**：混合态工作集（已关闭 permit ×1、无槽位 plain permit ×4、`Planned` 槽位 permit ×1、`NoEffect` 槽位 permit ×1）压过软阈值后驱动——恰好驱逐 overshoot（2 个最旧 plain permit），`Planned` 槽位成员保持 `Issued`；读回三面：`inspect_working_set_pressure`（active 6→4、needs_reclaim true→false）、`inspect_permit`（受害者 `Closed`）、`inspect_receipt`（每张 closure receipt `CancelledBeforeEffect` 且绑定原 permit）。
+
+### 已实现事实 2：checkpoint/rehydrate 基准（deliverable 2，ADR-0012 决定 2 B 路径）
+
+1. **三档**（`tests/checkpoint_rehydrate_scale.rs`）：默认套件档 24 节点（每跑常规套件即证闭环）+ `#[ignore]` quick 500 + full 5_000。`#[ignore]` 语义与既有 scale probe 一致。
+2. **每节点循环**：checkpoint = process binding + fiber incarnation + `snapshot_handler_entry` 公开写（64B entry input）；evict = 整个 runtime drop（全部内存 fiber 消失，durable `fiber_entry_snapshots` 存活，RSS 采样佐证）；rehydrate = 新 runtime 按需逐节点 next incarnation + `resume_from_snapshot`，handler 从 entry input 重执行并经正常 runtime 入口重注册 durable Channel wait。
+3. **硬断言（全档全节点）**：每节点 restore 返回 `restored: Some` 且 input 逐位相等；fiber 停在 `WaitingIo`；durable wait 行恰好 1 条且 `PENDING`；两相总时长低于宽松上限。分位数只记录不断言。
+4. **durable bytes 口径**：authority root 下全部 db+WAL 文件之和（排除瞬态 `-shm`）；开发中曾因只统计 `-wal`（文件名为 `*.db` 非 `*.sqlite3`）导致跨档字节巧合相等——已修正为全文件口径（教训记录在此防复犯）。
+
+### probe 实跑数字（原样誊录，debug/test profile 单平台 macOS）
+
+命令：`cargo test -p nlos-task --test reclaim_execution_probe -- --ignored --nocapture`
+
+```
+reclaim execution benchmark (10k, single platform): cap=512 threshold=460 fill_total=412.741959ms fill_p50=444.125µs fill_p95=559.834µs evicted=52 drive_total=25.5915ms evictions_per_second=2031.9 durable_bytes_before_drive=5844736 durable_bytes_after_drive=5889792 durable_bytes_delta=45056 rss_before=Some(9420800) rss_after=Some(12484608)
+reclaim execution benchmark (100k, single platform): cap=5120 threshold=4608 fill_total=3.815146375s fill_p50=395.417µs fill_p95=475.125µs evicted=512 drive_total=185.644625ms evictions_per_second=2758.0 durable_bytes_before_drive=12861256 durable_bytes_after_drive=13049672 durable_bytes_delta=188416 rss_before=Some(9568256) rss_after=Some(17858560)
+```
+
+命令：`cargo test -p nlos-runtime-tokio --test checkpoint_rehydrate_scale -- --include-ignored --nocapture`
+
+```
+checkpoint/rehydrate benchmark (small, single platform): nodes=24 input_bytes=64 checkpoint_total=15.238125ms checkpoint_p50=645.25µs checkpoint_p95=756.792µs checkpoint_max=776.875µs rehydrate_total=13.2525ms rehydrate_p50=512.042µs rehydrate_p95=589.417µs rehydrate_max=1.535041ms rehydrates_per_second=1811.0 durable_bytes_after_checkpoint=2451424 durable_bytes_after_rehydrate=3254824 rss_before=Some(8093696) rss_after_evict=Some(8486912) rss_after=Some(8847360)
+checkpoint/rehydrate benchmark (quick, single platform): nodes=500 input_bytes=64 checkpoint_total=227.699833ms checkpoint_p50=424.625µs checkpoint_p95=658.041µs checkpoint_max=1.027834ms rehydrate_total=230.870667ms rehydrate_p50=442.375µs rehydrate_p95=504µs rehydrate_max=5.905916ms rehydrates_per_second=2165.7 durable_bytes_after_checkpoint=5260464 durable_bytes_after_rehydrate=9605552 rss_before=Some(7913472) rss_after_evict=Some(11812864) rss_after=Some(15204352)
+checkpoint/rehydrate benchmark (full, single platform): nodes=5000 input_bytes=64 checkpoint_total=2.352062166s checkpoint_p50=420.334µs checkpoint_p95=513.042µs checkpoint_max=6.243833ms rehydrate_total=2.416840792s rehydrate_p50=456.458µs rehydrate_p95=523.125µs rehydrate_max=6.630417ms rehydrates_per_second=2068.8 durable_bytes_after_checkpoint=11486384 durable_bytes_after_rehydrate=18059696 rss_before=Some(8093696) rss_after_evict=Some(20840448) rss_after=Some(32456704)
+```
+
+要点：
+
+1. **两 gate 均有实测数据**：reclaim 闭环驱逐吞吐 2_031.9–2_758.0 evictions/s（52/512 单位，drive 25.6ms/185.6ms，恰好=overshoot）；rehydrate 按需恢复吞吐 1_811.0–2_165.7 nodes/s（5_000 节点 2.42s，p50 456µs / p95 523µs）。**重档全部真实实跑**（最长单档 <5s，远低于 15 分钟登记线），无「注册未跑」项。
+2. rehydrate 延迟与节点数不退化（quick p50 442µs vs full p50 456µs，~1.03x）——按需逐节点路径为点查（per-binding snapshot/incarnation/wait 行），无全表扫描面。
+3. durable bytes 随档位线性（24→2.45/3.25MB；500→5.26/9.61MB；5_000→11.49/18.06MB，checkpoint 后→rehydrate 后增量主要是 wait 行与 incarnation 层）；reclaim 驱逐的 durable 足迹 = 每受害者一张 receipt + 状态推进（52 单位 45,056B；512 单位 188,416B，~368B/单位）。
+4. 仍为 debug/test profile 单平台（macOS，WAL，fsync 语义同 §3 口径）；release profile 与多平台复测未做，不据此宣称 G2/G5 正式达成。
+
+### 验证门（W31-C 实跑）
+
+| 门 | 命令 | 结果 |
+| --- | --- | --- |
+| fmt | `cargo fmt -p nlos-task -p nlos-runtime-tokio` 后 `-- --check` | PASS |
+| 全量测试（nlos-task） | `cargo test -p nlos-task` | PASS（**371 passed / 0 failed / 4 ignored**；W29-A 347 基线 + W31-A 增量 + 本车道 4 新用例，既有 reclaim/advisory 前缀用例零回归） |
+| 全量测试（nlos-runtime-tokio） | `cargo test -p nlos-runtime-tokio` | PASS（**120 passed / 0 failed / 10 ignored**；W25 生命周期/snapshot/resume 套件零改动零回归，新增默认档 1 用例） |
+| clippy | `cargo clippy -p nlos-task -p nlos-runtime-tokio --all-targets --all-features -- -D warnings` | PASS（修 `doc_markdown` ×2、`cast_possible_wrap/truncation/precision_loss`、`unnested_or_patterns`、`collapsible_if`、`needless_range_loop`、`duration_suboptimal_units`、`unused_async`、`too_many_lines` 后） |
+| reclaim probes | `cargo test -p nlos-task --test reclaim_execution_probe -- --ignored --nocapture` | PASS（本节数字） |
+| checkpoint/rehydrate probes | `cargo test -p nlos-runtime-tokio --test checkpoint_rehydrate_scale -- --include-ignored --nocapture` | PASS（本节数字；默认档亦随全量套件每跑过） |
+
+### 仍属缺口（递延 minors）
+
+1. `nlos-plan` residency 轴（W31-E）与 Task 面 reclaim 闭环**尚未互连**：本车道的驱逐在 Task 工作集（permit 关闭），不驱动 `record_residency_transition`；plan 侧 tier 走迁的执行侧驱动（checkpoint→evict→rehydrate 作用于 plan node 的 HOT→WARM→COLD）待 Materialization/Residency controller 车道接线。
+2. `RebuildableCache`/`DegradeBackgroundQos`/`Kill` 三相在 `nlos-task` 无真实面（`face_absent` 如实报告）；cache/QoS 面分别依赖 W31-E 之后的 Context 面与调度车道。
+3. reclaim 驱动为 controller-loop 语义（逐受害者线性化，非单事务 CAS）；需要跨权威原子性时应由上层 controller 编排，本面不虚构 fence。
+4. 基准数字为 debug/test profile 单平台；release profile、多平台与更长 input payload 矩阵未做（G2/G5 正式 gate 复测口径不变）。
