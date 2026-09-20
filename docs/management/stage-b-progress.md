@@ -1289,6 +1289,136 @@ TaskGroup membership generation/root CAS + Admission/Removal Receipt            
 
 阶段 B 当前总体状态：`IN_PROGRESS / NOT EXITED`。
 
+## 6.5 阶段 B 收官编排计划（W27 起 → 阶段退出门）
+
+> 2026-09-20 编排。本节把 §3 主要未决项、§5 下一验收门与 §6 退出门缺口，按 [v0.5 §28.2 必须交付清单与退出门](../design/06-架构设计总纲-v0.5.md#282-阶段-b单机通用应用平台) 汇总为到阶段 B 退出的完整波次编排。
+>
+> 滚动细化纪律：仅 W27 保持车道级精确，W28–W34 为主题级方向编排；每波屏障（定向门 + 全仓测试 + fmt/clippy 双 0 + 本表 §3/§5/§6 同步 + 三平台 CI/Pages）过后，由编排者把下一波细化为车道并在增量日志追加。本节不改变 §5「唯一主线 `IN_PROGRESS` 工作包」约束与 §7 更新协议；实现完成仍以增量日志与 §3/§4 行为准，本节只承诺编排不承诺完成。
+
+### 6.5.1 剩余工作总清单（按退出门归组）
+
+**ROAD-B-003（complete TaskWriteSet 与 provider 面收口）**
+
+| # | 事项 | 来源 |
+|---|---|---|
+| B3-1 | semantic 恢复运维面接线：SABI 契约扩展 + semantic 域 metrics/Acknowledge/CLI 通道 + 三语言 conformance | W26 终审补登（W27 首选车道） |
+| B3-2 | Resource/Operation 跨 authority prepare/finalize 入口评估（ADR-0013 三域样本），采纳则实现 coordinator | §5 W26 段（W27+ 候选） |
+| B3-3 | complete TaskWriteSet 六域闭环（Effect/Artifact/Semantic/Resource/Operation/Channel 混合写集 → 唯一 permit → 统一 TaskCommitReceipt） | §5 长注 |
+| B3-4 | 最小 provider driver plane（确定性 fake provider + 真实 IPC）→ provider cache 降级与投机副作用 fence 测试 | §6 B-003 行（provider 面未落地，两项暂不适用） |
+| B3-5 | W26 CI/Pages run 补登；handle 泄漏/snapshot 漂移与新增切片三平台复验 | §6 B-003 行 |
+
+**ROAD-B-004（TaskPlan 声明面与规模证据）**
+
+| # | 事项 | 来源 |
+|---|---|---|
+| B4-1 | 议题 35 用户决策（BLOCKED-on-user，见 6.5.4） | 讨论索引 #35（讨论中） |
+| B4-2 | TaskPlan/TaskNode 声明面实现 + TaskSpec 自由字段（Slice K application↔task 关联下沉） | §6 B-004 行 / B-SLICE-K 未决项 |
+| B4-3 | Dependency Resolver 最小版（拓扑排序 + 环检测 fail-closed） | §28.2 |
+| B4-4 | 惰性物化接线（TaskNode→Process/AgentInstance 按需物化；复用 working-set/`max_task_nodes` admission） | §28.2 / B-TASK-SCALE-001 |
+| B4-5 | Context residency 分级最小版（METADATA/COLD/WARM/HOT/RUNNING） | §28.2（议题 28） |
+| B4-6 | 单机分层 Scheduler 最小版（足以支撑 benchmark 的两层形态） | §28.2（议题 28） |
+| B4-7 | working-set 比例 benchmark（10K/100K × 不同 active 比例矩阵） | ROAD-B-004 门 |
+| B4-8 | pressure/reclaim controller 实执行 + checkpoint/rehydrate benchmark | ROAD-B-004 门 / §6 |
+| B4-9 | 10K/100K logical TaskNode benchmark（挂声明面；waiting Fiber 不冒充 TaskNode） | ROAD-B-004 门 |
+
+**ROAD-B-005（多层手动控制与 GUI）**
+
+| # | 事项 | 来源 |
+|---|---|---|
+| B5-1 | pause/resume/cancel/kill/throttle/reclaim ControlCommand 变体 + typed Receipt | §6 B-005 行 |
+| B5-2 | 控制操作执行接线：pause→Process suspend；kill→platform kill adapter；throttle→ResourceDemand/ScaleProfile；reclaim→WorkingSetReclaim | §6 B-005 行 |
+| B5-3 | 各层 inspect 补齐（TaskGroup/TaskNode、ExecutionFiber、Topic/Operation） | ROAD-B-005 门 |
+| B5-4 | Tauri 可信 Task Manager 最小 GUI（经 SystemControl IPC，与 NL/CLI 同 Receipt） | §28.2 / B-CONTROL 未决项 |
+| B5-5 | Resource Monitor 与可信权限 UI 最小版 | §28.2 |
+| B5-6 | GUI↔NL↔CLI Receipt parity 钉死测试 | ROAD-B-005 门 |
+
+**ROAD-B-006（runtime 收口）**
+
+| # | 事项 | 来源 |
+|---|---|---|
+| B6-1 | runtime 侧 fiber 批量 cancel 联动（process 侧已落地） | §6 B-006 行 |
+| B6-2 | Windows 实机 platform kill（CI 复验） | §6 B-006 行 |
+| B6-3 | wake latency/fairness 测试 | §3 B-RUNTIME 未决项 |
+| B6-4 | 跨平台 supervisor spawn/suspend/kill（POSIX SIGTERM 已有） | §3 B-RUNTIME/B-PROCESS 未决项 |
+| B6-5 | 完整 BirthDecision | §3 B-RUNTIME 未决项 |
+
+**ROAD-B-001（第三方 Application 全周期）**
+
+| # | 事项 | 来源 |
+|---|---|---|
+| B1-1 | 真实 Task activity 探针接线（`ActiveTaskActivityProbe` → TaskAuthority 真实查询） | §6 B-001 行 |
+| B1-2 | 自动 GC 触发（install-scoped pass 已有，缺周期/阈值触发） | §6 B-001 行 |
+| B1-3 | PKG migration runner + health check + 原子切换 | §6 B-001 行 |
+| B1-4 | Package SDK/打包工具链 + 开发者文档 | ROAD-B-001 门 |
+| B1-5 | 第三方样板 Application 全周期演示（非内核视角开发→安装/更新/卸载）= 退出门构造性证据 | ROAD-B-001 门 |
+
+**ROAD-B-002（多 Process 与 UI Surface）**
+
+| # | 事项 | 来源 |
+|---|---|---|
+| B2-1 | Application 第二 Process spawn→platform kill 全链 | §6 B-002 行 |
+| B2-2 | UI Surface 声明与最小呈现（与 B5-4 GUI 同车道） | §6 B-002 行 |
+| B2-3 | 多 Process/IsolationDomain Slice K 接线演示 | §6 B-002 行 |
+
+**横切（§28.2 必须交付 + 管理机制）**
+
+| # | 事项 | 来源 |
+|---|---|---|
+| X-1 | Notification 最小服务（Topic/Channel/Wait 之上薄服务层）与 Search 最小服务 | §28.2（Notification 有基础，Search 未启动） |
+| X-2 | 最小 Task Space（完整桌面归阶段 D） | §28.2（未启动） |
+| X-3 | SDK/debugger/conformance 收口：Go/C# 探针解封执行（末位）；最小 debugger 调试面 | §28.2 / B-SDK-LANG-EVAL |
+| X-4 | claims/risks/evidence 机器台账（[管理机制 §8](./README.md#8-需求与证据台账)；Slice K 已验证字段充分性，解除「不批量生成」前提） | §3 B-MGMT 未决项 |
+| X-5 | 三平台 CI/Pages 复验与 run 链接补登（每波屏障固定动作） | §7 协议 |
+| X-6 | 真实掉电分层证据推进（层 2 dm-flakey workflow 已有；M4/M6/M8 校准） | B-STORE-FS-SEMANTICS-001 |
+
+### 6.5.2 关键依赖链
+
+```text
+议题 35 决策（用户）→ B4-2 声明面 → { B4-3 Resolver、B4-4 惰性物化、B4-5 residency、B4-9 TaskNode benchmark、B2-3/Slice K 关联下沉 }
+B3-2 入口评估 → 跨 authority coordinator → B3-3 complete TaskWriteSet → ROAD-B-003 收口
+B3-4 provider 面 → { provider cache 降级、投机副作用 fence } → ROAD-B-003 六项全关
+B5-1 命令变体 → B5-2 执行接线 → { B5-4 Task Manager GUI、B5-5 权限 UI/Resource Monitor、B2-2 UI Surface } → ROAD-B-005
+B1-4 Package SDK → B1-5 第三方样板 → ROAD-B-001
+B6-1..B6-5 相互独立可并行 → ROAD-B-006
+六门 Evidence 齐 → X-4 claims 全量回填 → 未知风险清单 + P0 清零 → 阶段 B 退出评审（6.5.5）
+```
+
+### 6.5.3 波次编排
+
+W27（定向波，车道级精确；六车道写集两两不相交，可并行）：
+
+| 车道 | 事项 | 主要写集 | 验收门 |
+|---|---|---|---|
+| W27-A | B3-1 semantic 恢复运维面接线 | nlos-schema、nlos-system-control、nlos-task、gen/ | semantic 域 `Escalated`→人工 resume 经 IPC/CLI 全链可达；semantic metrics/ack 不再借用 artifact 命名；三语言 conformance golden；既有恢复面测试零回归 |
+| W27-B | B3-2 Resource/Operation prepare/finalize 入口评估 | docs/management（ADR 草案/评估记录，无代码写集） | 采纳或否决决策 + 理由；采纳则给出 W28 实现切片定义；三域样本是否需要台账泛化一并裁定 |
+| W27-C | B6-1 runtime fiber 批量 cancel 联动 | nlos-runtime-tokio | 批量 cancel 传播 + late-callback 矩阵；runtime 定向门全绿 |
+| W27-D | B1-1 真实 Task activity 探针接线 | nlos-application、nlos-task | uninstall/rollback 门改经真实 TaskAuthority 查询；两 crate 定向门绿 |
+| W27-E | X-4 机器台账起步 | docs/management + claims/risks/evidence 索引文件 | schema 定稿 + stage-b 现有 evidence 回填索引 + Claim≤Evidence lint 脚本首版 |
+| W27-F | B3-5 W26 CI/Pages run 补登 + B6-3 wake latency/fairness | docs + nlos-runtime-tokio | W26 三平台/Pages run 链接入 §3 对应行；wake latency/fairness 测试绿 |
+
+W28（TaskWriteSet 前置波）：B3-2 coordinator 实现（依 W27-B 采纳）；B4-2 TaskPlan 声明面第一切片（依 6.5.4 决策①）；B5-1 pause/resume/cancel 变体；B1-2 自动 GC 触发；B6-2 Windows 实机 platform kill 复验。
+W29（接线波）：Operation dispatch 跨 authority prepare→activate；B4-3/B4-4 Resolver + 惰性物化；B5-1 剩余变体（kill/throttle/reclaim）+ B5-2 执行接线；B1-3 migration runner；B2-1 第二 Process spawn-kill；X-3 Go/C# 探针（末位）。
+W30（ROAD-B-003 收口波）：B3-3 complete TaskWriteSet 六域闭环验收；B3-4 provider 面 + cache 降级/投机 fence；Slice K Task/Process teardown + NL 接线（依 B4-2）；B3-5 三平台复验收口。
+W31（ROAD-B-004 收口波）：B4-7 working-set 比例 benchmark；B4-8 reclaim/rehydrate 实执行 benchmark；B4-9 TaskNode benchmark；B4-5/B4-6 residency + 分层 Scheduler 最小版。
+W32（ROAD-B-005/002 GUI 波）：B5-4 Tauri Task Manager GUI + B5-6 parity；B5-5 权限 UI/Resource Monitor；B2-2 UI Surface；B5-3 各层 inspect 补齐。
+W33（ROAD-B-001 生态波 + 最小服务）：B1-4 Package SDK；B1-5 第三方样板全周期；X-1 Notification/Search；X-2 最小 Task Space；X-3 最小 debugger（依 6.5.4 决策②）。
+W34（退出评审波）：六门证据矩阵补漏；X-4 claims 全量 + lint；未知风险清单 + P0 清零；阶段 B 退出评审（6.5.5）。
+
+### 6.5.4 用户决策点（BLOCKED-on-user）
+
+1. **议题 35 TaskPlan 声明面**：四候选 + 推荐倾向 + 需用户决策清单（manifest 扩 task 模板字段与 schema 冻结纪律交互等，见[议题 35](../discussions/35-TaskPlan声明面设计.md)）——阻塞 B4-2 起的 ROAD-B-004 主链与 Slice K 关联下沉；W27 内呈现决策清单，建议尽早拍板。
+2. **最小服务裁剪边界**：X-1 Search、X-2 Task Space、X-3 debugger 的 B 阶段最小版定义（v0.5 §28.2 列入必须交付，最小范围默认按 W33 所列口径，如有收紧/放宽需在此确认）。
+
+### 6.5.5 阶段 B 退出评审门
+
+§6「阶段 B 当前总体状态」从 `IN_PROGRESS / NOT EXITED` 翻转，必须同时满足：
+
+1. ROAD-B-001..006 六门各有 Evidence review 记录（证据等级按 v0.5 H0–H8 分级），无一 P0 未决风险；
+2. claims/risks/evidence 机器台账全量回填，Claim≤Evidence lint 通过；
+3. 未知风险清单显式列出，各项有 owner 与缓解措施；
+4. [管理机制 §7](./README.md#7-评审与决策机制)「Stage 退出或 production claim」要求的 Evidence review + 未知风险清单 + 明确批准完成；
+5. 本节全部车道 DONE，或经批准显式移交阶段 C 并在本节登记。
+
 ## 7. 进度更新协议
 
 以后每个实现或验证工作包完成时，必须在同一个 canonical commit 中同步：
