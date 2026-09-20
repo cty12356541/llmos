@@ -1,12 +1,12 @@
-# B-PLAN-001：nlos-plan 声明面状态权威骨架（TaskPlan/TaskNode state face）+ Dependency Resolver + Context Residency 分级
+# B-PLAN-001：nlos-plan 声明面状态权威骨架（TaskPlan/TaskNode state face）+ Dependency Resolver + Context Residency 分级 + 10K/100K 逻辑 TaskNode benchmark
 
-状态：`PARTIAL_PASS`（**W28-A 状态面骨架 + W29-B Dependency Resolver + W31-E Context residency 分级最小版**，2026-09-20）
+状态：`PARTIAL_PASS`（**W28-A 状态面骨架 + W29-B Dependency Resolver + W31-E Context residency 分级最小版 + W31-D 10K/100K 逻辑 TaskNode benchmark**，2026-09-20）
 
-> 对应：[ADR-0016 决定 2](../../management/adrs/0016-task-plan-declaration-surface.md)（独立 `nlos-plan` authority）与 [决定 5](../../management/adrs/0016-task-plan-declaration-surface.md)（Resolver 结果 durable）；[议题 35 §6](../../discussions/35-TaskPlan声明面设计.md) 验收门 G1（§2–§6，W28-A）与 G4（§7，W29-B）；[进度单 §6.5.3](../../management/stage-b-progress.md) W28-A / W29-B / W31-E 车道行
+> 对应：[ADR-0016 决定 2](../../management/adrs/0016-task-plan-declaration-surface.md)（独立 `nlos-plan` authority）与 [决定 5](../../management/adrs/0016-task-plan-declaration-surface.md)（Resolver 结果 durable）与 [决定 4](../../management/adrs/0016-task-plan-declaration-surface.md)（ScaleProfile 维度正规化）；[议题 35 §6](../../discussions/35-TaskPlan声明面设计.md) 验收门 G1（§2–§6，W28-A）、G4（§7，W29-B）与 G2/G5（§9，W31-D）；[进度单 §6.5.3](../../management/stage-b-progress.md) W28-A / W29-B / W31-E / W31-D 车道行
 >
-> 实现：crate `crates/nlos-plan`（schema v1：`plans` / `plan_revisions` / `plan_nodes` / `plan_node_transitions` 四表 + 12 trigger；schema v2 additive：`plan_revision_nodes` / `plan_revision_edges` / `plan_resolution_receipts` 三表 + 8 trigger；schema v3 additive：`plan_node_residency_transitions` 一表 + `plan_nodes` 两列 + 4 trigger）
+> 实现：crate `crates/nlos-plan`（schema v1：`plans` / `plan_revisions` / `plan_nodes` / `plan_node_transitions` 四表 + 12 trigger；schema v2 additive：`plan_revision_nodes` / `plan_revision_edges` / `plan_resolution_receipts` 三表 + 8 trigger；schema v3 additive：`plan_node_residency_transitions` 一表 + `plan_nodes` 两列 + 4 trigger）+ `tests/tasknode_scale_probe.rs`（§9 规模探针）
 >
-> 范围纪律：W28-A 只落**状态权威落点**（§1–§6）；W29-B 只落 **Dependency Resolver**（§7，B4-3）；W31-E 只落 **Context residency 分级最小版**（§8，B4-5）。manifest 模板面（W28-B）、TaskSpec 关联字段与 ScaleProfile 维度重绑（W29-A）、物化门 ADR-0013 接线、100K benchmark（W31/G2）均不在本 evidence 声明范围。
+> 范围纪律：W28-A 只落**状态权威落点**（§1–§6）；W29-B 只落 **Dependency Resolver**（§7，B4-3）；W31-E 只落 **Context residency 分级最小版**（§8，B4-5）；W31-D 只落 **10K/100K 逻辑 TaskNode benchmark**（§9，B4-9，G2/G5 后半）。manifest 模板面（W28-B）、TaskSpec 关联字段与 ScaleProfile 维度重绑（W29-A）、物化门 ADR-0013 接线均不在本 evidence 声明范围。
 
 ## 1. 本切片目标
 
@@ -92,7 +92,7 @@ cargo clippy -p nlos-plan --all-targets -- -D warnings   # exit 0 / 0 warning
 - **历史 revision 节点集不可从 `plan_nodes` 行重建**：`plan_nodes` 是每节点单行（有界 metadata 姿态），历史 revision 的完整节点集在 v1 仅由 `nodes_root`/digest 链见证（apply 时校验，之后由不可变 trigger 保真）；`verify_revision_chain` 验证链结构与存储 digest 公式，不重推导历史 nodes_root。**W29-B 更新**：schema v2 起每 revision 的声明形状（节点集+边集）持久于 `plan_revision_nodes`/`plan_revision_edges`（§7.1），v2 后 revision 的形状可逐位重建并经 root 复核；v2 前 revision 无形状行，解析按 `RevisionShapeUnavailable` fail-closed。
 - **pre-execution 节点同形重声明仍推进 `declared_revision`**：revision 是全量声明、节点随当前 revision 走（已测试钉死该语义）；副作用是飞行中迁移以 `StaleNodeRevision` 被拒（typed，非静默）。若未来要求「未变形不推进」，属行为决策变更，需同移测试钉死。
 - **apply 无调用方 revision CAS**：单写者 + `BEGIN IMMEDIATE` 串行化下并发 revision 为「最后合法全量声明胜」（链式衔接，无静默改写）；`expected_current_revision` CAS 登记为 deferred minor。
-- **结构性上界非规模声明**：100K/256 仅为拒绝无界声明；G2（惰性有界、RSS/metadata 上界、100K probe）属 W31，本 evidence 不作任何数字声明。
+- **结构性上界非规模声明**：100K/256 仅为拒绝无界声明；G2（惰性有界、RSS/metadata 上界、100K probe）属 W31（**W31-D 更新**：该组数字指标已由 §9 落地）。
 - 其余 deferred：无 golden DDL 文件（nlos-task golden_v*.sql 先例，schema 首次 churn 时补）；`plan_nodes` 无 `(plan_id, node_state)` 索引（读面仅按 node id，规模车道再评估）；`plan_digest` UNIQUE 依赖密码学抗碰撞性质。
 
 ## 6. 未运行项（显式列出，W28-A）
@@ -273,4 +273,73 @@ cargo clippy -p nlos-plan --all-targets -- -D warnings   # exit 0 / 0 warning
 - **push 与 PR：未执行**——派工单 MUST NOT；由控制器统一执行。
 - **`cargo test --workspace`：未运行**——派工单 MUST NOT（波次屏障由控制器收口）。
 - **三平台 CI / MSRV：未运行**——待 push 后 CI 触发。
-- **G2/G5 数字指标、100K benchmark、working-set 比例矩阵：未运行**——W31-B/W31-D 车道。
+- **G2/G5 数字指标、100K benchmark、working-set 比例矩阵：未运行**——W31-B 车道（**W31-D 更新**：G2/G5 数字指标与 100K benchmark 已由 §9 落地；working-set 比例矩阵仍归 W31-B）。
+
+## 9. W31-D：10K/100K 逻辑 TaskNode benchmark（B4-9；G2/G5 后半）
+
+> 对应：[进度单 §6.5.3](../../management/stage-b-progress.md) W31-D 车道行（验收门：100K METADATA_ONLY 惰性有界——RSS/metadata 上界；Task 注册近似退役注明）；[议题 35 §6](../../discussions/35-TaskPlan声明面设计.md) G2（惰性有界）与 G5（维度正规化）后半；`[SCALE-LOGICAL-001]`/`[PERF-SCALE-001]`；[ROAD-B-004](../../design/06-架构设计总纲-v0.5.md) §28.2。
+>
+> 状态：`PASS`（本切片范围）；ROAD-B-004 整体收口归 W31-G 六门评审，本节不宣称整体达成。
+
+### 9.1 口径与诚实规则（先行声明）
+
+1. **逻辑 TaskNode = `nlos-plan` `plan_nodes` 持久计数**。探针经已落地公共 API `apply_plan_revision` 声明真实节点集，落真实 `plan_nodes`/`plan_revision_nodes`/`plan_revision_edges` 行——**waiting Fiber 不作为 TaskNode 代理**（ROAD-B-003 §6 行诚实规则的沿用）。
+2. **Task 注册近似退役注明**（G5 显式条款）：ADR-0016 决定 4 已把 `ScaleProfile::max_task_nodes` 正规化为 TaskNode（`plan_nodes`）持久计数，Task 注册保留独立第二维度；旧近似口径的注册维度 10K/100K 数字见 [B-TASK-SCALE-001](b-task-scale-001.md) §3/§3.1/§12（§12 为口径切换后的复跑）。本节为新口径首次 10K/100K 全量实跑，两口径数字**不混写**。
+3. **确定性纪律**：吞吐数字只记录、不断言；断言仅硬上界（每节点 durable 字节 ≤ 4096B、声明+解析活动 RSS 增量 ≤ 256MiB@10K / 768MiB@100K、活动字节增量 ≤ 256B/节点 + 64KiB）与惰性对比面（点读 p95 ≤ 基线 ×16 且 < 100ms，镜像 B-TASK-SCALE-001 探针姿态）。
+
+### 9.2 benchmark 设计（`tests/tasknode_scale_probe.rs`）
+
+- **两档 `#[ignore]` 探针**（10_000 / 100_000 节点，各一个 revision 携带全量节点集、单事务一次 fsync 应用）+ 默认套件内 500 节点全管线 smoke 与纯函数生成器测试（保持探针 helper 不腐化）。
+- **混合依赖形状**（确定性构造，G5 要求的 resolved/pending 混合）：约 90% 链式 dependent（`i%10≠0` 依赖前驱，「pending」面）、约 9% 独立 root（零依赖，「resolved/eligible」面）、约 1% hub 叶（非零 100 倍数额外依赖 0 号节点，给 resolver dependents 面加压）；所有边严格指向更小 index，构造上无环。两档边数 9,099 / 90,999（10K/100K）。
+- **测量面**：①声明吞吐（apply 总时）；②metadata 足迹（干净关闭后主库+WAL 字节数、每节点分摊、进程 RSS 三点采样）；③惰性点读（`inspect_node`/`inspect_node_residency` 各 64 散布样本 vs 100 节点基线库）；④resolver/分级读回规模面（`resolve_plan` 全图解析、`inspect_resolved_nodes` 批量钉住视图读回、64 个 root 节点 `DECLARED→ELIGIBLE` 生命周期样本、8 个样本节点 `METADATA_ONLY→COLD→WARM→HOT` 上行 + `HOT→WARM→COLD` evict 下行 residency 全链）。
+- **evict 对比**（METADATA_ONLY vs COLD/WARM tier）：tier 走位后断言分级读回 tier=COLD、恰 5 张凭证、且节点 metadata 事实（node_key/kind/declared_revision/node_digest）逐位保留 + revision 链仍 verify——即 **G2 姿态：tier 与足迹无关，durable metadata 有界地板不随 residency 变化**；residency 凭证按迁移逐张追加（每步独立事务计时）。
+
+### 9.3 实跑数字（原样誊录）
+
+命令：`cargo test -p nlos-plan --test tasknode_scale_probe -- --ignored --nocapture`（debug/test profile，单平台 macOS arm64，两档同 run，全程 7.5s）。
+
+```
+10K declare phase: nodes=10000 apply_total=595.789042ms bytes_after_apply=5120000 per_node_after_apply=512 rss_after_declare=Some(49152000)
+10K logical TaskNode profile (single platform): nodes=10000 edges=9099 apply_total=595.789042ms resolve_total=58.974875ms resolved_view_total=21.237542ms inspect_p50_base=10.958µs inspect_p95_base=14.041µs inspect_p95_scale=13.958µs inspect_max_scale=24.5µs residency_p50_base=10.958µs residency_p95_base=12.958µs residency_p95_scale=10.625µs residency_max_scale=11.708µs eligible_sample=64 eligible_total=7.915914ms eligible_max=174.75µs evict_sample=8 evict_walk_total=4.554625ms tier_step_max=128.916µs baseline_database_bytes=296648 bytes_after_apply=5120000 bytes_after_activity=5578752 per_node_after_apply=512 per_node_after_activity=557 activity_delta=458752 rss_before=Some(5865472) rss_after_declare=Some(49152000) rss_after_activity=Some(52740096)
+test ten_thousand_logical_task_nodes_stay_lazy_and_bounded ... ok
+100K declare phase: nodes=100000 apply_total=6.384175667s bytes_after_apply=50872320 per_node_after_apply=508 rss_after_declare=Some(59244544)
+100K logical TaskNode profile (single platform): nodes=100000 edges=90999 apply_total=6.384175667s resolve_total=712.785583ms resolved_view_total=272.266875ms inspect_p50_base=10.916µs inspect_p95_base=11.584µs inspect_p95_scale=14.167µs inspect_max_scale=67.166µs residency_p50_base=11.125µs residency_p95_base=12.791µs residency_p95_scale=10.875µs residency_max_scale=12.125µs eligible_sample=64 eligible_total=7.252124ms eligible_max=384.333µs evict_sample=8 evict_walk_total=4.469458ms tier_step_max=153.667µs baseline_database_bytes=296648 bytes_after_apply=50872320 bytes_after_activity=55394304 per_node_after_apply=508 per_node_after_activity=553 activity_delta=4521984 rss_before=Some(5865472) rss_after_declare=Some(59244544) rss_after_activity=Some(97648640)
+test one_hundred_thousand_logical_task_nodes_stay_lazy_and_bounded ... ok
+```
+
+### 9.4 要点解读（G2/G5 对表）
+
+| G2 证伪条件 | 实测 | 判定 |
+|---|---|---|
+| metadata 随节点数超线性 | 每节点 durable 字节：10K=512B(声明)/557B(终态)，100K=508B/553B——**两档逐量级一致（线性）**，远低于 4096B 硬上界；解析活动增量 458,752B/4,521,984B ≈ 45.9B/45.2B 每节点（回执内联 order/edges blob 为主） | 未证伪 |
+| 未物化节点预占执行资源 | 全部节点 METADATA_ONLY 声明 + 全图解析后进程 RSS 增量 ≈ 46.9MiB@10K / 91.8MiB@100K（SQLite 页缓存 + 解析向量为主要构成），≪ 256MiB/768MiB 硬上界；零进程/线程/会话预占面 | 未证伪 |
+| （惰性读面退化） | `inspect_node` p95：100K 库 14.167µs vs 同 run 100 节点基线 11.584µs（~1.22x，≤16x 断言限）；`inspect_node_residency` p95 10.875µs < 基线 12.791µs（~0.85x）——key-scoped（`plan_nodes` PK）成立 | 未证伪 |
+
+- **resolver 规模面**：100K 节点 + 90,999 边全图解析（root 复核 + Kahn + 双 digest + 回执落库单事务）712.8ms；批量钉住视图读回 `inspect_resolved_nodes` 272.3ms（O(population) by design，记录不断言）。
+- **声明吞吐**（记录非断言）：10K=595.8ms（59.6µs/节点）、100K=6.384s（63.8µs/节点）——线性外推无超线性拐点；单事务一次 fsync（对比 B-TASK-SCALE-001 注册维度逐注册 fsync 的 28.3s/100K，声明面按 revision 批量提交）。
+- **residency/evict**：tier 单步 ≤ 153.7µs（8 节点 ×5 步全链 4.5ms），跨 evict metadata 事实逐位保留（断言）；COLD/WARM/HOT tier 不改变 per-node durable 地板（tier 为单整数列，凭证按迁移追加）。
+- **G5 口径**：本节 100K 档即 `TASK_PROFILE_100K.max_task_nodes = 100_000`（nlos-task 侧常量）对应的逻辑 TaskNode 计数维度；两维度（TaskNode/Task 注册）数字分列于本节与 B-TASK-SCALE-001 §12，近似映射已退役。
+
+### 9.5 验证门（W31-D 实跑）
+
+| 门 | 命令 | 结果 |
+| --- | --- | --- |
+| fmt | `cargo fmt -p nlos-plan -- --check` | PASS |
+| 全量测试 | `cargo test -p nlos-plan` | PASS（11 个含测试 target 全 ok，43 passed / 0 failed / 2 ignored 即两探针；W28-A 17 + W29-B 14 + W31-E 10 零回归，+3 新默认套件用例） |
+| clippy | `cargo clippy -p nlos-plan --all-targets -- -D warnings` | PASS（修 `doc_markdown` ×2、`manual_is_multiple_of` ×4 后） |
+| 探针实跑 | `cargo test -p nlos-plan --test tasknode_scale_probe -- --ignored --nocapture` | PASS（§9.3 两档数字，单 run 7.5s） |
+
+### 9.6 已知限制与 deferred minors（如实登记）
+
+- **debug/test profile 单平台数字**：release profile 复测、多平台（Linux/Windows）与 CI 化未做；RSS 读数仅 macOS 可移植（`ps`），其余 target 如实 `None`。
+- **ScaleProfile admission 未接线**：`max_task_nodes` 的 store 路径 consult（跨 authority 读 `plan_nodes` 计数）仍缺（W29-A §12 缺口 #1 / W30-D 接线位）；本 benchmark 钉死逻辑计数与上界事实，不声称 admission 已强制。
+- **`inspect_resolution` 按 id 读回为 O(population)**：回执内联 order/edges blob 解码 + digest 复核随节点数线性（W29-B §7.6 已登记的写放大同源）；批量面记录于 `inspect_resolved_nodes`，未做分页。
+- **应用形状为合成混合图**：链段 + hub 叶 + 独立 root；真实 workload 形状（深链/宽扇出矩阵）未扫——按 ADR-0016 骨架范围属后续规模车道可选项。
+- **checkpoint/rehydrate benchmark、working-set 比例矩阵**：W31-B/W31-C 车道，非本节。
+
+### 9.7 未运行项（W31-D，显式列出）
+
+- **push 与 PR：未执行**——派工单 MUST NOT；由控制器统一执行。
+- **`cargo test --workspace`：未运行**——派工单 MUST NOT（波次屏障由控制器收口）。
+- **三平台 CI / MSRV：未运行**——待 push 后 CI 触发。
+- **release profile / 多平台复测：未运行**——见 §9.6。
