@@ -108,6 +108,22 @@ cargo fmt -p nlos-process -- --check → 通过
 
 - **仍 PARTIAL_PASS**：supervisor 自动 pid 发现（spawn 时自动捕获并注册、与 authority binding 联动）、Windows 真 OS kill 集成测试、runtime kill receipt 消费、Activation meter 联动、跨平台 fault matrix 未做；不等同 ROAD-B-006 整体达成。
 
+## 11. Windows 实机 CI 复验脚手架（2026-09-20 追加，W28-F，B6-2）
+
+- Owner：`.github/workflows/rust-cross-platform.yml`（`verify` job）+ 本证据文件；本车道不写 Rust 代码（测试目标 W21-P 已冻结）。
+- **实现（脚手架）**：`verify` job（matrix `ubuntu-latest`/`windows-latest`/`macos-latest`）新增 Windows 腿限定步骤 `Test platform kill contract on Windows`（`if: runner.os == 'Windows'`），执行 `cargo test -p nlos-process --test platform_kill`；置于 `Test workspace` 之前，使证据步骤先于全仓测试落账。触发面沿用既有 workflow：push 到 main / pull_request / 夜间 schedule / workflow_dispatch（本车道未 push、未 dispatch——Windows 实跑由控制器在波次屏障 push 后触发）。
+- **预期矩阵（Windows 腿）**：测试目标 `platform_kill`（`crates/nlos-process/tests/platform_kill.rs`）在 Windows 上应执行 **7 passed / 0 failed**——平台无关合同层 5 项（stub 成功回执、terminal fail-closed、幂等 replay、AlreadyTerminated 回执、inspect 代次作用域）+ `#[cfg(windows)]` 2 项（`windows_platform_kill_adapter_missing_map_entry_returns_platform_error`、`posix_platform_kill_adapter_unavailable_on_windows`）；`#[cfg(unix)]`/`#[cfg(not(windows))]` 各项在 Windows 编译期剔除；无 `#[ignore]` 项。
+- **本地验证（macOS，cfg stub 编译面，不冒充 Windows 结果）**：
+
+```text
+python3 -c "import yaml; yaml.safe_load(open('.github/workflows/rust-cross-platform.yml'))" → 解析通过
+actionlint → 本机未安装，以结构化人工审查替代（步骤序、if 条件、缩进与既有 job 一致）
+cargo test -p nlos-process --test platform_kill --no-run → 编译通过（macOS 上走 cfg stub 分支；2026-09-20 W28-F）
+```
+
+- **Windows run 链接**：**PENDING**——预期载体为 workflow `Rust cross-platform verification` 的 `verify (windows-latest)` 腿步骤 `Test platform kill contract on Windows`；控制器屏障 push 后回填 `https://github.com/cty12356541/llmos/actions/runs/<run_id>` 于本行与台账 §6.5 W28-F 行。基线参考：截至 2026-09-20 main 最新 run 35506588229 中 `windows-latest` 腿为 success（同 run 的 `macos-latest` 腿有与本项无关的既有失败，回填时以 job 级结论为准，勿以 run 级 conclusion 误判）。
+- **边界（诚实登记）**：本步骤验证 Windows 实机上 `platform_kill` 目标编译 + 上述 7 项测试通过；`taskkill /F /T` 成功路径与 `AlreadyTerminated` 映射路径**无 live-child 实杀测试**（W21-P 未写，本车道不补），故即使 run 绿也不等价「Windows 真 OS kill 集成测试」整体达成——§9/§10 的该项 PARTIAL 边界仅在「实机 CI 复验已跑」这半个维度上收窄；是否足以关闭 B6-2 由控制器在屏障裁定。
+
 ## 4. Runtime 侧 terminal 门（2026-09-05 追加，W15-P）
 
 - Owner：`nlos-runtime-tokio`（`src/replay.rs`、`src/snapshot.rs` + `tests/process_crash_propagation.rs`）

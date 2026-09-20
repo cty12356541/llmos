@@ -81,6 +81,14 @@ jobs:
         if: runner.os == 'Linux' && github.event_name == 'pull_request'
         run: npx --no-install buf breaking --against '.git#branch=origin/${{ github.base_ref }},subdir=schema'
 
+      # B6-2（W28-F）：Windows 实机 platform kill 复验锚点。cargo test --workspace
+      # 已隐式覆盖本目标，但独立具名步骤让 windows-latest 腿的 run 日志里出现
+      # platform_kill 测试组，供证据文件回填精确 run 链接；置于 Test workspace
+      # 之前，即使后续全仓测试失败也不影响本步骤先行落账。
+      - name: Test platform kill contract on Windows
+        if: runner.os == 'Windows'
+        run: cargo test -p nlos-process --test platform_kill
+
       - name: Test workspace
         run: cargo test --workspace
 
