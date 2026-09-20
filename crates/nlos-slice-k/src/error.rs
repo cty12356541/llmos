@@ -45,6 +45,17 @@ pub enum SliceKError {
     Runtime(RuntimeError),
     /// The cross-authority commit coordinator refused a convergence step.
     Coordinator(CoordinatorError),
+    /// The teardown lane refused a durable state this chain never produces
+    /// (e.g. a binding terminal without a platform-kill receipt — an
+    /// out-of-band crash): the assembly names the refusal instead of
+    /// guessing a transition the authorities do not offer.
+    TeardownState(&'static str),
+    /// The system-control prefix refused an NL command (out-of-grammar
+    /// sentence or dispatch-contract defect); handler rejections surface
+    /// as typed receipt failures inside
+    /// [`ControlReceipt::outcome`](nlos_system_control::control::ControlReceipt::outcome),
+    /// not here.
+    Control(nlos_system_control::control::ControlError),
     /// A wall-clock millisecond value does not fit the callee's `i64`
     /// timestamp domain.
     TimestampOverflow(u64),
@@ -71,6 +82,10 @@ impl fmt::Display for SliceKError {
             }
             Self::Runtime(error) => write!(formatter, "fiber runtime: {error}"),
             Self::Coordinator(error) => write!(formatter, "commit coordinator: {error}"),
+            Self::TeardownState(reason) => {
+                write!(formatter, "teardown state refusal: {reason}")
+            }
+            Self::Control(error) => write!(formatter, "system-control prefix: {error}"),
             Self::TimestampOverflow(value) => {
                 write!(
                     formatter,
@@ -102,7 +117,8 @@ impl Error for SliceKError {
             Self::BatchCancel(error) => Some(error),
             Self::Runtime(error) => Some(error),
             Self::Coordinator(error) => Some(error),
-            Self::TimestampOverflow(_) | Self::SizeOverflow(_) => None,
+            Self::TeardownState(_) | Self::TimestampOverflow(_) | Self::SizeOverflow(_) => None,
+            Self::Control(error) => Some(error),
         }
     }
 }

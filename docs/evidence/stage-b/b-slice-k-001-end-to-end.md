@@ -61,7 +61,7 @@ cargo run -p nlos-slice-k --bin slice-k-demo                          → 跑通
 
 ## 4. 缺口清单（链路中发现的真实缺口与最小绕行）
 
-1. **Application↔Task 关联无权威字段**：`TaskSpec` 当前只有 `task_id/task_generation/registered_at_ms`，没有可引用 `application_id` 或 manifest digest 的自由字段；绕行：关联关系停留在 slice 编排层（`HappyChain` 同时持有两者并同窗打印），未做确定性 ID 派生（避免发明语义）。**待 TaskAuthority 后续 schema 扩展声明式关联字段**。
+1. ~~**Application↔Task 关联无权威字段**：`TaskSpec` 当前只有 `task_id/task_generation/registered_at_ms`，没有可引用 `application_id` 或 manifest digest 的自由字段；绕行：关联关系停留在 slice 编排层（`HappyChain` 同时持有两者并同窗打印），未做确定性 ID 派生（避免发明语义）。**待 TaskAuthority 后续 schema 扩展声明式关联字段**。~~ **已勾销（2026-09-20，§16）**：W29-A 落地 schema v44 `TaskSpec.application_id/plan_revision`（ADR-0016 决定 3）后，本车道把关联下沉进 durable task 行——`register_task_and_attempt_for` 全量形态 + `run_second_process_pair` 双 Task 均携带安装回执的 `application_id` 注册，`task_spec_association_lands_in_durable_task_rows_and_survives_reopen` 证明关联字段落行且 crash 后存活（`plan_revision` 声明面同步验证；teardown 链不涉 plan 权威故为 `None`，属如实声明而非缺失）。
 2. **`request_commit_permit` 梯子构造器已 deprecated**：landed API 的权威入口已是 `*_with_authorities_struct`；本链按任务书要求采用 `Authorities` struct 入口（`Authorities::default()`），无绕行，仅登记（ladder 旧入口在本仓库部分测试先例中仍以 `#[allow(deprecated)]` 存在）。
 3. **identity key validity 与真实 wall 时钟的域差**：identity 权威按逻辑 ms 比较 validity，`u64::MAX` 会撞 SQLite i64 列；绕行：fixture 用 `i64::MAX as u64` 作为 `key_valid_until_ms`。属 fixture 级取值选择，非权威缺陷。
 4. ~~**ProcessAuthority 未入链**：FiberSpec 的 `agent_instance_id/process_id` 等为 fixture 标识，未经 `nlos-process` 权威注册（`register_fiber_incarnation`/binding 已存在但非本链最小路径）；纵切面的 Process/AgentInstance 段以标识传递代替权威物化。~~ **已勾销（2026-08-30，§8）**：`SliceKRuntime` 已持有 `ProcessAuthority`，三条链（happy/cancel/recovery）与 competing_attempts 车道的全部 fiber 均在 spawn 前经 `create_isolation_domain + register_delegated_process` 权威物化，FiberSpec 的 process/agent 字段改从注册回执取；crash recovery 断言绑定存活与重放幂等。遗留子项：fiber incarnation/snapshot 层（`register_fiber_incarnation`/`write_fiber_entry_snapshot`）仍未入链（见 §8.4）。
@@ -71,7 +71,7 @@ cargo run -p nlos-slice-k --bin slice-k-demo                          → 跑通
 
 - **单机单进程**：全部权威为单写者 SQLite；纵切面未含跨进程 IPC（CLI 走进程内 dispatch 替身）、未含 ADR-0011 签名贯穿的线上传输。
 - **演示级而非产品级**：id/key 为种子 fixture 值；竞争语义已由进程内顺序线性化测试覆盖（§7），尚未覆盖真并发线程交织下的 permit CAS 竞争、无 multi-party、无策略引擎；错误面为组装层透传。
-- **NL 路径未接**：inspect/control 的自然语言面不存在，仅稳定文本输出可供后续 NL 层消费。
+- **NL 路径未接**：inspect/control 的自然语言面不存在，仅稳定文本输出可供后续 NL 层消费。**（2026-09-20 更新：进程内 NL 面已由 §16 接线——白名单句子经 `ControlCommand`/`SystemControl` handler 真全链驱动 process inspect/kill；CLI/IPC 传输面与应用生命周期动词仍未接，见 §16.5。）**
 - **crash 模型为 drop+reopen**：kill -9 类比（OS 页缓存存活），真实掉电由各权威自身既有的 fault 矩阵覆盖，本车道未重复建设。
 - **fiber replay 语义**：恢复靠 commit-coordinator 重放 durable 前缀（landed 机制），不是重跑 fiber future；进程内 fiber 状态机随进程消失。
 - **未运行项**：`cargo --workspace` 级 test/clippy/fmt（任务约束仅允许 `-p nlos-slice-k` 定向命令）；Windows 实机未验证（纯 SQLite+std + 双工具链门作为代理证据）；CI 接线未做；e2e 未覆盖「验签失败→拒装」负路径（verify-then-commit fail-closed 已由 nlos-artifact/nlos-application 各自证据覆盖）。
@@ -214,7 +214,7 @@ cargo clippy -p nlos-slice-k --all-targets -- -D warnings
 
 ### 9.5 剩余缺口（如实登记）
 
-- **无 Task/Process teardown**：uninstall 不停止、不等待 happy-chain 上已 Committed 的 Task/Process（与 B-APPLICATION-003 限制一致）；纵切面只接线 application 终态 CAS。
+- ~~**无 Task/Process teardown**：uninstall 不停止、不等待 happy-chain 上已 Committed 的 Task/Process（与 B-APPLICATION-003 限制一致）；纵切面只接线 application 终态 CAS。~~ **已勾销（2026-09-20，§16）**：W30-D teardown 链把 uninstall 与 Task/Process 终态打通（W27-D 活动门 + W29-F kill 链 + `cancel_task`）。
 - **无 rollback/GC**：uninstalled 行 durable 保留；无物理删行或 artifact GC。
 - **lifecycle 与纵切面主链无联动**：happy chain 的 Task/Attempt/Process 在 uninstall 后仍 inspect 可读——符合当前权威语义，非 slice 发明。
 
@@ -448,3 +448,56 @@ cargo fmt -p nlos-slice-k -p nlos-process -- --check            → 通过
 - **supervisor 自动 pid 发现/unregister 未做**：pid 仍由 caller 注入；terminal 后的 registry 摘除策略（本链 kill 后未 unregister 第二 pid，登记为 caller policy）留待后续车道。
 - **restore→复活重放未做**：kill 后 `restore_process` 推进代际重挂（supersede 路径）在 W22-P 单测已覆盖，未纳入本纵切面链。
 - **多 fiber/多 scope 变体、Activation meter 联动、demo STEP 09d 基线 panic 修复**（W28-E 域）不在本车道。
+
+## 16. uninstall→Task/Process teardown + NL 控制接线 + 关联下沉（2026-09-20 追加：W30-D B2-3 gap-1 closure）
+
+- **定位**：勾销 Slice K 遗留尾缺口——uninstall 与其 Task/Process 后果打通。三件事：(1) **teardown 链**：application uninstall ⇒ 已登记 background tasks + process bindings 经已落地机械（W27-D 真活动门、W29-F kill→crash→linkage 链、`cancel_task` 栅栏）全部驱动到终态，重跑幂等 replay；(2) **NL 控制接线**：自然语言控制命令经**真** Slice K 全链（NL 白名单编译器 → `ControlCommand` → SABI envelope → `SystemControl` handler → 落地 executor/inspector seam → 本 runtime 的真权威），零旁路；(3) **关联下沉验证**：application→task 关联改走 `TaskSpec.application_id/plan_revision`（§4 缺口 1 勾销），durable task 行可证。`nlos-application`/`nlos-task`/`nlos-system-control` 零改动（只读消费）。
+- **写集**：`crates/nlos-slice-k/**`（新增 `src/teardown.rs`、`src/nl.rs`、`tests/application_teardown.rs`、`tests/nl_control.rs`；`src/{chain,package,error,lib}.rs`、`Cargo.toml` 两行依赖）与本 §、§4 缺口 1 勾销、§9.5 首条勾销。`Cargo.lock` 增量为 cargo 自动解析（`nlos-system-control`[process,无默认 feature] + `nlos-schema` + `sha2` 三条依赖边），未手编。base HEAD `91203ac`。
+
+### 16.1 teardown 链设计（`run_application_teardown`）
+
+| 阶段 | 调用序 | 语义 |
+|---|---|---|
+| 读登记 | `inspect_application_registrations(package_id)`（稳定排序） | 拆解对象 = durable 登记面本身（2 binding + 2 background task），非 slice 内存态 |
+| 每 binding | `inspect_process_terminal` 分流：无 terminal ⇒ 活 binding 取代际/fence + 派生键新钟读；有 terminal ⇒ **replay 分支**从 durable kill receipt + terminal marker 逐字节重建原请求 | 实体集运行期才发现 ⇒ 幂等键取实体 id 的域分隔 SHA-256 派生（`nlos/slice-k/teardown-key/v1`，与 process 权威派生 discipline 同族），重跑重建字节相等请求 |
+| kill | `request_platform_kill`（Unix 真 POSIX adapter 喂 supervisor `pid_map`；非 Unix noop 合同） | durable receipt 先落库再打信号（at-least-once）；replay 同键短路、**不调 adapter**（空 registry 重跑即证） |
+| terminal | `propagate_crash` | binding → `Crashed` 终态；同事务自动写 fiber batch-cancel receipts |
+| linkage | `cancel_process_fibers`（W27-C 原样消费） | scope tree-cancel：live fiber → 唯一 `Cancelled`；replay 时 `already_terminal == matched`（不重驱） |
+| 每 task | `cancel_task`（同派生键） | 首跑 `Applied{epoch=1, closed_attempts=1}`；重跑 `Replayed` |
+| 收尾 | `uninstall_application_gated_by_task_activity`（W27-D 生产门，键 17/18） | 门内解析登记 + 查询 task 权威 outstanding：teardown 前 2（typed `ApplicationActiveTasksRunning` 拒绝、零 durable 状态）；teardown 后 0 ⇒ `Uninstalled`；同键重跑 `Replayed`（不再咨询门），异键 typed `ApplicationAlreadyUninstalled` |
+
+### 16.2 NL 接线设计（`dispatch_nl_command`，`src/nl.rs`）
+
+- **零 system-control 改动**：句子 → `parse_nl_command`（EN/ZH 白名单原样消费）→ `dispatch_in_process` → `RecoverySystemControl::handle`（envelope 编译 + authorize seam + §25.3 幂等绑定）→ seam 接本 runtime 真权威：`ProcessAuthorityInspector`（inspect 面）与 `ProcessAuthorityKillExecutor`（kill 面：CAS 代际门 + supervisor pid 查询 + durable platform kill）。
+- **无应用生命周期 NL 动词**（`uninstall/disable application` 不在白名单）——按任务书「STOP and report」纪律登记为缺口（§16.5），未绕行、未扩 grammar（扩白名单需动 `nlos-system-control` 写集，超出本车道）。
+- NL kill 幂等：命令身份从 target id 派生 ⇒ 同一句子重放同键 durable receipt；本 dispatcher 的 wall 钟读按键（SHA-16[domain‖command_id]）取自 runtime clock，同句重放同读 ⇒ executor 请求逐字节相等。
+- 两个 slice 级 fixture：`SliceKControlPolicy`（allow-all，占位在宿主注真实 policy 的同一 seam；parity 契约是 NL 与 CLI/IPC 过**同一** `authorize_submit`）、`RunningRecoveryHealth`（demo 运行态的 worker health 报告）。
+
+### 16.3 测试与断言要点（`tests/application_teardown.rs` 2 + `tests/nl_control.rs` 1；Unix/非 Unix 双车道同体）
+
+- `uninstall_teardown_drives_tasks_and_bindings_terminal_then_replays`（Unix 真 `sleep 600` 双子进程；非 Unix noop 合同名 `..._contract_via_noop_adapter_on_non_unix`）：关联先行断言（双 Task `application_id == Some(chain application)`）→ 门拒绝（`active_task_count == 2`、应用仍 installed）→ teardown（kill 2×`Signaled`、crash 2×`Crashed`、linkage `canceled_scopes==1`/receipts==1、cancel 2×`Applied`、真子进程信号死）→ 终态全面（fiber 双 `Cancelled`、write fiber 保持 `Completed`、双 scope 拒新 fiber、binding/incarnation fail-closed `Crashed`、Task `Cancelled` epoch=1、attempt `Cancelled`、outstanding=0、application `Uninstalled`）→ **空 registry 整链重跑**（kill 2×`Replayed` 且 receipt 逐字节相等、crash/linkage/cancel replay、uninstall receipt 相等）→ 异键 uninstall typed 拒绝 + 原键继续 replay → crash-drop + reopen（terminal/关联/uninstall/登记 2+2 全部存活）→ 重开 runtime 上第三次 teardown 全 replay（marker 同键 `Replayed`）。
+- `task_spec_association_lands_in_durable_task_rows_and_survives_reopen`：`register_task_and_attempt_for(0xF0, Some(app), Some(plan_revision))` → `inspect_task` 双字段读回相等；legacy 形态 `register_task_and_attempt(0xF1)` 仍 `None/None`；drop+reopen 后关联 durable 存活。
+- `nl_control_routes_through_the_full_control_chain`（Unix 真双子进程；非 Unix noop 合同）：EN/ZH 双形 `inspect process` → `ProcessInspected` 权威事实（generation/task_id 相等）；未知 process typed receipt failure；`kill operation <hex> expecting 1` → `OperationKilled` + durable kill receipt（幂等键 == 派生命令 id == target id）+ 真子进程信号死；**同句经空 pid map adapter 重放**（receipt id 相等 ⇒ durable 短路于 adapter 前）；stale CAS（expecting 9）typed 拒绝且零 durable 副作用；隔离（首进程 OS 子/fiber/binding/NL inspect 全部无恙）；out-of-grammar（含 `uninstall application ...`——应用生命周期动词不存在于白名单）typed `ControlError::InvalidCommand` 拒绝。
+
+### 16.4 验证（base HEAD `91203ac` 工作区，macOS 实跑，定向 `-p` 命令，`CARGO_TARGET_DIR` 隔离）
+
+```text
+cargo test -p nlos-slice-k
+  → 19 passed / 0 failed（end_to_end 4 + competing_attempts 4 + lifecycle_uninstall 3
+    + application_registrations 3 + install_orphan_gc 2 + application_teardown 2 + nl_control 1；
+    W29-F 隔离用例原样全绿——spawn 阶段新增登记为纯增量）
+cargo clippy -p nlos-slice-k --all-targets -- -D warnings           → 0 warning
+cargo +nightly-2026-08-01 clippy（同前）                              → 0 warning
+cargo fmt -p nlos-slice-k -- --check（stable + nightly-2026-08-01）   → 干净
+```
+
+新代码无 `.chunks_exact(N).map()`（CI clippy 1.98 新 lint 面）；demo bin 未接线本车道（§15.3 登记的 STEP 09d 基线 panic [W28-E 域] 在本 base 仍复现，teardown/NL 段位不可达，行为由上述端到端测试以同一组合函数覆盖）。
+
+### 16.5 剩余缺口（如实登记）
+
+- **无应用生命周期 NL 动词**：`uninstall/disable application` 不在 NL 白名单；接线需扩 `nlos-system-control` grammar（超出本车道写集），按任务书纪律上报不改。现有 NL 面覆盖 process 级 inspect/kill。
+- **teardown 语义选型**：沿 W29-F 以 `propagate_crash`（`Crashed`）落 terminal；「operator kill → supervisor 观测干净退出 → `mark_process_terminated`」替代路径仍未接线（与 §15.4 一致）。
+- **kill 与 NL kill 幂等键不同源**：teardown 键为实体 id 域分隔派生，NL kill 键为派生命令 id（== target id）；同一 process 先经 NL kill 再跑 teardown 会因 `PlatformKillAlreadySignaled` fail-closed——本车道两场景分立（各自 root），未发明合并语义。
+- **supervisor unregister / `restore_process` 复活 / fiber incarnation 快照层**：维持 §15.4 登记。
+- **teardown 无并发竞争面**：进程内顺序线性化；真并发交织下的 kill/cancel 竞态沿用 §7.4 边界。
+- **未运行项**：`cargo --workspace` 级命令（任务约束）；Windows 实机（`#[cfg(not(unix))]` 合同用例由既有 cross-platform CI windows-latest 腿在控制器屏障 push 后验证）；demo bin 接线（STEP 09d 基线 panic 未修，W28-E 域）。

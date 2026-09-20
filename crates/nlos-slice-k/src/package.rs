@@ -354,6 +354,46 @@ impl SliceKRuntime {
         }
     }
 
+    /// Uninstalls one application through the production activity gate
+    /// (W27-D, [`ApplicationAuthority::
+    /// uninstall_application_with_task_activity_gate`]): inside the gate's
+    /// own transaction the package's durably registered background Tasks are
+    /// resolved and their liveness is queried on this runtime's task
+    /// authority — a fresh uninstall is refused with
+    /// `ApplicationActiveTasksRunning` while any registered Task is still
+    /// outstanding (`Active`), and unanswerable queries fail closed. Durable
+    /// replay under the same `seeded_key(seed, 17/18)` never consults the
+    /// gate. The teardown lane (W30-D) drives the registered Tasks and
+    /// Process bindings to their terminal states first, so this call is
+    /// what proves the gate open.
+    ///
+    /// # Errors
+    ///
+    /// Propagates application-authority errors (including
+    /// `ApplicationActiveTasksRunning` and `TaskActivityQueryFailed`); a
+    /// `Replayed` decision returns the durably recorded original receipt.
+    pub fn uninstall_application_gated_by_task_activity(
+        &self,
+        package_id: PackageId,
+        seed: u8,
+    ) -> SliceKResult<UninstallReceipt> {
+        let uninstalled_at_ms = self.wall_now_ms(seeded_key(seed, 17))?;
+        match self
+            .applications
+            .uninstall_application_with_task_activity_gate(
+                &self.tasks,
+                UninstallApplicationRequest {
+                    package_id,
+                    idempotency_key: seeded_key(seed, 18),
+                    uninstalled_at_ms,
+                },
+            )? {
+            UninstallDecision::Uninstalled(receipt) | UninstallDecision::Replayed(receipt) => {
+                Ok(receipt)
+            }
+        }
+    }
+
     /// Registers one background Task against an installed application
     /// ([`ApplicationAuthority::register_background_task`], B-APPLICATION-005).
     ///
@@ -422,6 +462,27 @@ impl SliceKRuntime {
         &self,
         seed: u8,
     ) -> SliceKResult<(TaskId, TaskAttemptId, nlos_types::CancellationScopeId)> {
+        self.register_task_and_attempt_for(seed, None, None)
+    }
+
+    /// [`Self::register_task_and_attempt`] with the schema-v44 declaration
+    /// association (ADR-0016 决定 3, W29-A): the durable Task row carries
+    /// `application_id` / `plan_revision` verbatim — the association the
+    /// slice previously could only hold in its own orchestration layer
+    /// (B-SLICE-K-001 §4 gap 1). The association is part of the
+    /// declaration identity (a replay with a different association is
+    /// refused by the task authority); verification of the reference
+    /// happens at the materialization/permit boundaries, not here.
+    ///
+    /// # Errors
+    ///
+    /// Propagates task-authority and clock errors.
+    pub fn register_task_and_attempt_for(
+        &self,
+        seed: u8,
+        application_id: Option<nlos_types::ApplicationId>,
+        plan_revision: Option<nlos_task::TaskPlanRevisionRef>,
+    ) -> SliceKResult<(TaskId, TaskAttemptId, nlos_types::CancellationScopeId)> {
         let task_id = TaskId::from_bytes([seed.wrapping_add(20); 16]);
         let attempt_id = TaskAttemptId::from_bytes([seed.wrapping_add(21); 16]);
         let scope_id = nlos_types::CancellationScopeId::from_bytes([seed.wrapping_add(22); 16]);
@@ -430,8 +491,8 @@ impl SliceKRuntime {
             task_id,
             task_generation: initial_generation(),
             registered_at_ms,
-            application_id: None,
-            plan_revision: None,
+            application_id,
+            plan_revision,
         })?;
         self.tasks.register_attempt(nlos_task::AttemptSpec {
             task_id,

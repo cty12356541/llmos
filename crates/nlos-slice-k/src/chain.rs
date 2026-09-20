@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use nlos_application::ProcessBindingReceipt;
+use nlos_application::{BackgroundTaskRegistrationReceipt, ProcessBindingReceipt};
 use nlos_artifact::{ContentDigest, staging_id_for};
 use nlos_operation::OperationHandle;
 #[cfg(not(unix))]
@@ -430,6 +430,13 @@ pub const SECOND_MATERIALIZE_SEED_OFFSET: u8 = 0x40;
 /// offsets 32–33 of its seed; the first binding uses the scenario seed).
 pub const SECOND_BINDING_SEED_OFFSET: u8 = 0x02;
 
+/// Seed offset of the second background-task registration relative to the
+/// scenario seed (`register_background_task` consumes offsets 30–31 of its
+/// seed; the first background task uses the scenario seed). Chosen so the
+/// derived key band (`seed+0x24/0x25`) stays clear of the second binding
+/// band (`seed+0x22/0x23`) and the second Task band (`seed+0x34…0x3A`).
+pub const SECOND_BACKGROUND_TASK_SEED_OFFSET: u8 = 0x06;
+
 /// Everything the spawn phase of the second-process lane (ROAD-B-002
 /// B2-1) durably produced: one installed application owning TWO process
 /// bindings, each process materialized, supervised (os pid entries) and
@@ -453,6 +460,11 @@ pub struct SecondProcessPair {
     pub process_second: ProcessBindingRecord,
     pub binding_receipt_first: ProcessBindingReceipt,
     pub binding_receipt_second: ProcessBindingReceipt,
+    /// The durable background-task registrations of both processes' Tasks
+    /// (B-APPLICATION-005) — the exact registration set the W27-D uninstall
+    /// activity gate counts.
+    pub background_receipt_first: BackgroundTaskRegistrationReceipt,
+    pub background_receipt_second: BackgroundTaskRegistrationReceipt,
     /// The in-memory supervisor registry holding both os pid entries
     /// (W22-P); `pid_map()` is the exact kill-adapter feed shape.
     pub registry: SupervisorPidRegistry,
@@ -500,6 +512,7 @@ pub struct SecondProcessKill {
 ///
 /// Panics if the operation-only write fiber reports a commit plan —
 /// unreachable by construction (`permit: None`).
+#[allow(clippy::too_many_lines)]
 pub async fn run_second_process_pair(
     runtime: &Arc<SliceKRuntime>,
     adapter: &TokioRuntimeAdapter,
@@ -512,11 +525,20 @@ pub async fn run_second_process_pair(
     let verification = runtime.verify_signed_package(&package, seed)?;
     let installation = runtime.install_verified_package(&verification, seed)?;
 
-    let (task_id_first, attempt_id_first, scope_first) = runtime.register_task_and_attempt(seed)?;
+    // W30-D association sinking (§4 gap 1 closure): both Tasks are declared
+    // with the installed application's id, so the association lives in the
+    // durable task rows (`TaskSpec.application_id`, W29-A) — not only in
+    // this struct. No plan authority participates in this lane, so the plan
+    // revision stays `None` (declared outside any TaskPlan revision).
+    let (task_id_first, attempt_id_first, scope_first) =
+        runtime.register_task_and_attempt_for(seed, Some(installation.application_id), None)?;
     let process_first =
         runtime.materialize_process(seed, task_id_first, attempt_id_first, Generation::INITIAL)?;
-    let (task_id_second, attempt_id_second, scope_second) =
-        runtime.register_task_and_attempt(seed.wrapping_add(SECOND_TASK_SEED_OFFSET))?;
+    let (task_id_second, attempt_id_second, scope_second) = runtime.register_task_and_attempt_for(
+        seed.wrapping_add(SECOND_TASK_SEED_OFFSET),
+        Some(installation.application_id),
+        None,
+    )?;
     let process_second = runtime.materialize_process(
         seed.wrapping_add(SECOND_MATERIALIZE_SEED_OFFSET),
         task_id_second,
@@ -535,6 +557,18 @@ pub async fn run_second_process_pair(
         process_second.process_id,
         publisher.principal_id,
         seed.wrapping_add(SECOND_BINDING_SEED_OFFSET),
+    )?;
+    let background_receipt_first = runtime.register_background_task(
+        package.package_id,
+        task_id_first,
+        publisher.principal_id,
+        seed,
+    )?;
+    let background_receipt_second = runtime.register_background_task(
+        package.package_id,
+        task_id_second,
+        publisher.principal_id,
+        seed.wrapping_add(SECOND_BACKGROUND_TASK_SEED_OFFSET),
     )?;
 
     let registry = SupervisorPidRegistry::new();
@@ -584,6 +618,8 @@ pub async fn run_second_process_pair(
         process_second,
         binding_receipt_first,
         binding_receipt_second,
+        background_receipt_first,
+        background_receipt_second,
         registry,
         supervisor_registered_at_ms,
         os_pid_first,

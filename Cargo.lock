@@ -615,9 +615,12 @@ dependencies = [
  "nlos-process",
  "nlos-runtime",
  "nlos-runtime-tokio",
+ "nlos-schema",
  "nlos-store",
+ "nlos-system-control",
  "nlos-task",
  "nlos-types",
+ "sha2",
  "tokio",
 ]
 
