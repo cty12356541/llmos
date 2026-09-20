@@ -808,3 +808,9 @@
   scope: "认证 SystemControl IPC 接入 + inspect 视图 + parity 自检（W32-A；写半边 W32-B 递延）"
   assurance: H3
   date: "2026-09-20"
+- id: b-artifact-007-package-sdk
+  path: docs/evidence/stage-b/b-artifact-007-package-sdk.md
+  title: "B-ARTIFACT-007：Package SDK 开发者工具链（nlos-package CLI）"
+  scope: "keygen/build/verify 三命令 + 可复现签名包文件 + 权威验签管线复用（W33-A/B1-4）"
+  assurance: H3
+  date: "2026-09-21"
