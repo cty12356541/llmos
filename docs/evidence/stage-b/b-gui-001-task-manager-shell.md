@@ -1,8 +1,8 @@
-# B-GUI-001:可信 Tauri 任务管理器壳(W32-A 只读半 + W32-B 写入半 + W32-C parity 钉死 + W32-D 权限/预算可见)
+# B-GUI-001:可信 Tauri 任务管理器壳(W32-A 只读半 + W32-B 写入半 + W32-C parity 钉死 + W32-D 权限/预算可见 + W32-E 资源监控)
 
-> 状态:`PARTIAL PASS`(读半 W32-A + 写入半 W32-B + parity 钉死 W32-C + 权限/预算可见 W32-D 已落地)
+> 状态:`PARTIAL PASS`(读半 W32-A + 写入半 W32-B + parity 钉死 W32-C + 权限/预算可见 W32-D + 资源监控 W32-E 已落地)
 >
-> 日期:2026-09-20(W32-A)/ 2026-09-21(§W32-B、§W32-C、§W32-D)
+> 日期:2026-09-20(W32-A)/ 2026-09-21(§W32-B、§W32-C、§W32-D、§W32-E)
 >
 > 对应:`ROAD-B-005`/B5-4 读半边、`[SABI-AUTH-001]`、`[CTRL-PARITY-001]`、[ADR-0011](../../management/adrs/0011-ipc-principal-auth-signature-passthrough.md)、[B-TASK-006L](./b-task-006l-system-control-recovery-handler.md)、[B-SCHEMA-006](./b-schema-006-typescript-python-ipc-clients.md)
 
@@ -200,3 +200,42 @@ gate:「权限变更 UI 可见且与 authority 一致」的最小诚实版(B5-5 
 
 - `desktop/src-tauri/src/{ipc,dto,lib,devfixture}.rs`、`desktop/src-tauri/Cargo.toml`、`desktop/src-tauri/examples/dev_server.rs`、`desktop/src-tauri/tests/authenticated_permission_side.rs`(新增)、`desktop/src/{main,ipc,types}.ts`、`desktop/README.md`。
 - 本证据文件 §W32-D(唯一 desktop/ 外写集工件)。
+
+## §W32-E 资源监控半(2026-09-21)
+
+### W32-E.1 实现范围
+
+gate(B5-5 后半):「消费既有 metrics 面,无新控制路径」——Resource Monitor 最小版 = OpenMetrics 消费 + 展示。
+
+1. **消费机制(结论:OpenMetrics 文本经 SABI IPC 真实可达,无需回退)**:`ControlCommand::ExportMetrics`/`ExportSemanticMetrics`/`ExportResourceMetrics`(W27-A semantic 目录 + G8 resource 目录 + artifact 基线目录的三条既有只读命令)的回执 outcome 即 `ControlOutcome::MetricsExported { openmetrics_text }`——运行时 `OpenMetricsRenderer::render` 的确定性 `text/plain; version=0.0.4` 文本。桌面后端因此**不走** in-process/self-check 回退:每次取数就是一条经 ADR-0011 认证入口的真实 dispatch,与 CLI 同一回执面(集成测试钉死字节一致)。后端唯一增量是 `export_resource_metrics` 薄命令——resource 域导出的 GUI 接线(W32-A 只接了 artifact/semantic 两域),消费既有命令面,非新控制路径。
+2. **「资源监控」视图**(`desktop/src/main.ts`):手动「刷新(三域,经认证 IPC)」+ 可选 5 秒自动刷新(每次刷新 = 三条完整真实认证 dispatch,拉模型)。三域各一张卡:结构化指标表(指标族/类型/标签/值),由 `desktop/src/openmetrics.ts` 对确定性文本做严格解析——未识别的行原样显示、不静默丢弃;前缀不属于本域的族单独分组如实呈现;计数器值是 u64 十进制文本,按原样显示不做 JS number 换算(u64 超出安全整数会失真)。原始 OpenMetrics 文本折叠在 `<details>` 内可展开比对;卡片页脚恒显 `control_command_id`/`correlation_id`/`receipt_hex`(与 CLI `RECEIPT` 行同一等价契约)。类型化失败(非 `metrics_exported` outcome)按既有 SabiFailure 卡渲染,不伪造零值。
+3. **无新控制路径**:视图纯展示,唯一派发面是三条只读导出命令;W32-B 动作面零改动(`submit_control` 不被本视图触碰);视图内静态「指标面缺口登记」卡声明消费边界。
+4. **顺带清偿(写集内必要债,W32-B §5 同款先例)**:W32-G(SABI v1.5,已在 HEAD 合入)给 `ControlOutcome` 增加了五个四层 inspect 变体(TaskGroup/TaskNode/ExecutionFiber/Topic/DurableOperation Inspected),desktop 是独立 workspace 不进根 CI,`dto.rs` 的穷尽匹配在基线即编译失败(E0004,`cargo check` 可复现)——本波次以显式 DTO 形态补齐(有界标量投影;TaskGroup 成员行以计数 + 截断标志呈现,不逐行展开;TaskNode 的 `PlanNodeKind` 字段命名 `node_kind` 以避让 serde tag `kind`;`types.ts` 同步镜像)。五个视图的 GUI 命令接线属后续车道。
+
+### W32-E.2 验证(本机实跑,macOS/darwin arm64)
+
+- `desktop/`:`npm install` → `npm run build`(tsc 严格 + vite 7)通过。
+- `desktop/src-tauri/`:`cargo fmt --check` 通过;`cargo clippy --all-targets --features dev-fixture -- -D warnings` 与默认 feature 两态 0 warning;`cargo build` 通过(基线 E0004 已由 §W32-E.1 第 4 条清偿)。
+- `cargo test --features dev-fixture`:**21 项全过**(7 单元 + 4 读侧 + 4 写侧 + 4 权限侧 + 2 监控侧新增):
+  - `metrics_exports_carry_three_recovery_domains_over_authenticated_entry`:三条导出命令经认证入口回执均 `metrics_exported`,三域目录逐族在场且取值 == 夹具权威健康事实(artifact:worker_state `backing_off`=1、cycles_total=4、plans_inspected=3、plans_finalized=2、durable_escalated=1;semantic/resource 目录在场、夹具上全 0)——消费既有面,不发明指标;
+  - `metrics_export_receipts_match_plain_entry_bytes`:同批三条命令经 plain 入口(CLI 同路)派发,认证 vs plain receipt hex 逐字节相等(三域导出纳入 GUI↔CLI parity 面)。
+- 真实 CLI 活体冒烟:`cargo build -p nlos-system-control` 后 `dev_server` 启动,真实 `system-control-cli <plain_socket> export-metrics | export-semantic-metrics | export-resource-metrics` 三命令均回 `outcome=metrics_exported`(文本 1363/832/832 字节);receipt hex 解码确认 worker 生命周期状态机样本(`backing_off` 1、其余 0)与目录族名/取值。
+- 未运行/未验证:GUI 窗口内交互式点按(同前波次限制,无 Accessibility/Screen Recording 权限;以命令层集成测试 + 夹具 CLI 冒烟替代,README「资源监控」演示步骤供人工复验)。
+
+### W32-E.3 指标面缺口登记(消费边界;视图内静态卡同步)
+
+1. **scrape/流式指标端点不存在**(B-TASK-006M 未竟项:HTTP scrape/ETW/订阅端点、retention/alert rules)——「自动刷新」是每 5 秒三条只读导出命令的重新真实派发(拉模型),不是推送流。
+2. **宿主级资源用量指标无既有导出面**:进程 CPU/内存/IO、预留实时用量等不在恢复指标目录(三域 26 族 + worker 生命周期)内,任何既有面都不导出——视图不发明(本最小版「资源监控」语义 = 三恢复域资源指标监控;宿主用量目录待后续指标车道扩目录)。
+3. **resource 域 GUI 导出接线缺口(W32-A 遗留,本波次关闭留档)**:W32-A 只接了 artifact/semantic 两域导出命令;W32-E 以既有 `ControlCommand::ExportResourceMetrics` 补上(只读;SABI 面本身无缺口)。
+
+### W32-E.4 边界与遗留
+
+1. **任务预案第 3 条不触发**:「metrics-over-IPC 缺面则回退 in-process/self-check 模式」——实测 OpenMetrics 文本经 IPC 回执可达,消费全走认证入口,无回退路径、无第二套指标源。
+2. **deferred minors**:自动刷新固定 5 秒、无偏好设置;视图切走不打断刷新计时器;前端解析器无独立测试基建(仓库 desktop 无 TS 测试运行器,解析纪律由 Rust 集成测试对同一确定性文本钉死 + 未识别行如实显示兜底)。
+3. **五层 inspect(SABI v1.5)GUI 接线**未做(`dto.rs`/`types.ts` 形态已补齐穷尽;命令与视图属后续车道)。
+4. `docs/management/stage-b-progress.md` 波次表更新不在本车道写集(integrator 收口)。
+
+### W32-E.5 工件清单(本波次写集)
+
+- `desktop/src-tauri/src/{ipc,dto,lib}.rs`、`desktop/src-tauri/tests/resource_monitor_metrics_side.rs`(新增)、`desktop/src/{main,ipc,types,openmetrics}.ts`(`openmetrics.ts` 新增)、`desktop/README.md`。
+- 本证据文件 §W32-E 与头部状态行、`docs/management/evidence-index.yaml` b-gui-001 行更新。

@@ -323,6 +323,17 @@ pub fn export_semantic_metrics(
     dispatch_configured(&state, ControlCommand::ExportSemanticMetrics)
 }
 
+/// W32-E 资源监控:resource 域(G8)指标导出——既有只读命令
+/// `ControlCommand::ExportResourceMetrics` 的 GUI 接线(W32-A 只接了
+/// artifact/semantic 两域)。与另外两条导出命令同路经认证入口,回执携带
+/// OpenMetrics 文本;无任何新控制路径。
+#[tauri::command]
+pub fn export_resource_metrics(
+    state: tauri::State<'_, AppState>,
+) -> Result<ReceiptDto, DesktopError> {
+    dispatch_configured(&state, ControlCommand::ExportResourceMetrics)
+}
+
 #[tauri::command]
 pub fn inspect_task(
     state: tauri::State<'_, AppState>,

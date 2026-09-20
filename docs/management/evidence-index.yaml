@@ -804,8 +804,8 @@
   date: "2026-09-20"
 - id: b-gui-001-task-manager-shell
   path: docs/evidence/stage-b/b-gui-001-task-manager-shell.md
-  title: "B-GUI-001：可信 Tauri 任务管理器壳（读半 + 写半 + parity 钉死）"
-  scope: "认证 SystemControl IPC 接入 + inspect 视图 + parity 自检（W32-A）+ 授权写动作与 Receipt 展示（W32-B）+ GUI↔NL↔CLI Receipt 三路径逐字节相等仓库级测试矩阵（W32-C/B5-6，triple_path_receipt_parity 6 项）"
+  title: "B-GUI-001：可信 Tauri 任务管理器壳（读半 + 写半 + parity 钉死 + 权限/预算 + 资源监控）"
+  scope: "认证 SystemControl IPC 接入 + inspect 视图 + parity 自检（W32-A）+ 授权写动作与 Receipt 展示（W32-B）+ GUI↔NL↔CLI Receipt 三路径逐字节相等仓库级测试矩阵（W32-C/B5-6，triple_path_receipt_parity 6 项）+ 权限/预算/成本可见（W32-D）+ OpenMetrics 三域消费与资源监控视图（W32-E/B5-5 后半，只读导出命令 + 刷新展示，无新控制路径）"
   assurance: H3
   date: "2026-09-21"
 - id: b-artifact-007-package-sdk
