@@ -15,6 +15,7 @@ members = [
     "crates/nlos-plan",
     "crates/nlos-store-fault",
     "crates/nlos-task",
+    "crates/nlos-driver-mock",
     "crates/nlos-identity",
     "crates/nlos-capability",
     "crates/nlos-channel",
