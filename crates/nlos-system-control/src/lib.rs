@@ -68,6 +68,27 @@ pub mod process_inspector;
 #[cfg(feature = "resource")]
 pub mod resource_inspector;
 
+/// Optional kill-arm [`OperationCommandExecutor`] backed by the durable
+/// [`nlos_process::ProcessAuthority`] platform-kill path and the
+/// [`nlos_process::SupervisorPidRegistry`] (`process` feature, W29-D).
+#[cfg(feature = "process")]
+pub mod process_kill_executor;
+
+/// Optional throttle-arm [`OperationCommandExecutor`] backed by
+/// [`nlos_resource::ResourceAuthority`] demand rows (`resource` feature,
+/// W29-D).
+#[cfg(feature = "resource")]
+pub mod resource_throttle_executor;
+
+/// Reclaim-arm [`OperationCommandExecutor`] driving the nlos-task
+/// working-set reclaim entry (W29-D; `nlos-task` is a core dependency, so
+/// this module needs no feature gate).
+pub mod working_set_reclaim_executor;
+
+/// Domain-separated `ReceiptId` derivation shared by the authority-backed
+/// operation executors.
+mod executor_receipt;
+
 /// Deterministic OpenMetrics text exposition (`text/plain; version=0.0.4`)
 /// for the recovery metrics catalog: the first concrete backend for
 /// [`RecoveryMetricsSink`], with no scraping transport. See the module
@@ -88,6 +109,9 @@ enum OperationArm {
     Pause,
     Resume,
     Cancel,
+    Kill,
+    Throttle { throttle_percent: u64 },
+    Reclaim,
 }
 
 /// Policy boundary used by every `SystemControl` entry point. Implementations
@@ -133,15 +157,17 @@ pub struct OperationControlRequest {
     pub requested_at_ms: i64,
 }
 
-/// Pluggable execution seam for the operation-level `ControlCommand` arms
-/// (`pause_operation`/`resume_operation`/`cancel_operation`, W28-D). The
-/// command surface — wire arms, envelope compilation, authorization,
-/// idempotency binding, typed receipts — is owned by the
-/// `SystemControl.submit` handler; implementations of this trait own the
-/// actual state transitions (process suspend/resume/kill wiring lands in the
-/// W29-D lane). The default [`UnwiredOperationCommandExecutor`] refuses
-/// fail-closed, mirroring the unwired inspector stubs. `Send + Sync` is part
-/// of the contract: handlers are held across async IPC service loops.
+/// Pluggable execution seam for the operation-level `ControlCommand` arms.
+/// W28-D landed the pause/resume/cancel command surface; W29-D adds the
+/// kill/throttle/reclaim arms and wires the first real executors (see
+/// [`crate::process_kill_executor`], [`crate::resource_throttle_executor`],
+/// and [`crate::working_set_reclaim_executor`]). The command surface — wire
+/// arms, envelope compilation, authorization, idempotency binding, typed
+/// receipts — stays owned by the `SystemControl.submit` handler;
+/// implementations of this trait own the actual authority transitions. The
+/// default [`UnwiredOperationCommandExecutor`] refuses fail-closed,
+/// mirroring the unwired inspector stubs. `Send + Sync` is part of the
+/// contract: handlers are held across async IPC service loops.
 pub trait OperationCommandExecutor: Send + Sync {
     /// Pauses the operational target under the explicit CAS expectation.
     ///
@@ -165,6 +191,46 @@ pub trait OperationCommandExecutor: Send + Sync {
     ///
     /// Returns a bounded [`SabiFailure`] for a rejected transition.
     fn cancel_operation(&self, request: OperationControlRequest) -> Result<ReceiptId, SabiFailure>;
+    /// Kills the operational target (W29-D). For the process authority
+    /// executor the target is a `ProcessId` and the CAS expectation is its
+    /// process generation; the receipt id is derived from the authority's
+    /// durable platform-kill receipt.
+    ///
+    /// # Errors
+    ///
+    /// Returns a bounded [`SabiFailure`] when the backing authority rejects
+    /// the kill (absent process, generation CAS mismatch, terminal binding,
+    /// absent supervisor pid mapping, or an unwired backend).
+    fn kill_operation(&self, request: OperationControlRequest) -> Result<ReceiptId, SabiFailure>;
+    /// Throttles the operational target down to `throttle_percent` percent
+    /// of its current declared demand (W29-D; whole percent `1..=100`,
+    /// already enforced before the wire). The resource demand executor
+    /// reads the target's reservation demand and quote capacity from the
+    /// `ResourceAuthority` and derives the receipt id from the
+    /// authority-driven before/after adjustment.
+    ///
+    /// # Errors
+    ///
+    /// Returns a bounded [`SabiFailure`] when the backing authority rejects
+    /// the adjustment (absent reservation or quote, revision CAS mismatch,
+    /// or an unwired backend).
+    fn throttle_operation(
+        &self,
+        request: OperationControlRequest,
+        throttle_percent: u64,
+    ) -> Result<ReceiptId, SabiFailure>;
+    /// Reclaims the operational target's working set (W29-D). The
+    /// working-set executor drives the nlos-task reclaim
+    /// advisory→plan→execute entry against the observed occupancy and
+    /// derives the receipt id from its typed outcome.
+    ///
+    /// # Errors
+    ///
+    /// Returns a bounded [`SabiFailure`] when there is no reclaim advisory
+    /// (the working set is below the soft threshold) or the backend is
+    /// unwired.
+    fn reclaim_operation(&self, request: OperationControlRequest)
+    -> Result<ReceiptId, SabiFailure>;
 }
 
 /// Default stub used when no operation-level execution backend is wired.
@@ -181,6 +247,22 @@ impl OperationCommandExecutor for UnwiredOperationCommandExecutor {
     }
 
     fn cancel_operation(&self, _: OperationControlRequest) -> Result<ReceiptId, SabiFailure> {
+        Err(unwired_operation_failure())
+    }
+
+    fn kill_operation(&self, _: OperationControlRequest) -> Result<ReceiptId, SabiFailure> {
+        Err(unwired_operation_failure())
+    }
+
+    fn throttle_operation(
+        &self,
+        _: OperationControlRequest,
+        _: u64,
+    ) -> Result<ReceiptId, SabiFailure> {
+        Err(unwired_operation_failure())
+    }
+
+    fn reclaim_operation(&self, _: OperationControlRequest) -> Result<ReceiptId, SabiFailure> {
         Err(unwired_operation_failure())
     }
 }
@@ -820,6 +902,11 @@ where
             OperationArm::Pause => executor.pause_operation(request),
             OperationArm::Resume => executor.resume_operation(request),
             OperationArm::Cancel => executor.cancel_operation(request),
+            OperationArm::Kill => executor.kill_operation(request),
+            OperationArm::Throttle { throttle_percent } => {
+                executor.throttle_operation(request, throttle_percent)
+            }
+            OperationArm::Reclaim => executor.reclaim_operation(request),
         };
         execution.map_err(SystemControlError::OperationExecution)
     }
@@ -949,6 +1036,7 @@ where
         Ok(health)
     }
 
+    #[allow(clippy::too_many_lines)] // The nine submit arms stay flat in one auditable dispatch.
     fn handle_submit(
         &self,
         request: &Envelope,
@@ -1033,6 +1121,32 @@ where
             Some(sabi::v1::control_command::Command::CancelOperation(_)) => self
                 .execute_operation_control(
                     OperationArm::Cancel,
+                    command,
+                    caller,
+                    context,
+                    now_wall_ms,
+                )?,
+            Some(sabi::v1::control_command::Command::KillOperation(_)) => self
+                .execute_operation_control(
+                    OperationArm::Kill,
+                    command,
+                    caller,
+                    context,
+                    now_wall_ms,
+                )?,
+            Some(sabi::v1::control_command::Command::ThrottleOperation(throttle)) => self
+                .execute_operation_control(
+                    OperationArm::Throttle {
+                        throttle_percent: throttle.throttle_percent,
+                    },
+                    command,
+                    caller,
+                    context,
+                    now_wall_ms,
+                )?,
+            Some(sabi::v1::control_command::Command::ReclaimOperation(_)) => self
+                .execute_operation_control(
+                    OperationArm::Reclaim,
                     command,
                     caller,
                     context,

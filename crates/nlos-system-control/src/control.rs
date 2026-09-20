@@ -25,9 +25,10 @@ use nlos_schema::sabi::v1::{
     AcknowledgeArtifactRecoveryAlertCommand, AcknowledgeSemanticRecoveryAlertCommand,
     ArtifactRecoveryMetrics, ArtifactRecoveryOperationsSnapshot, CallerIdentity, CancelCommand,
     CapabilityHandle, ControlCommandSource, ControlScope, Envelope, GetSystemControlRequest,
-    PauseCommand, ReceiptReference, ResumeCommand, ResumeSemanticRecoveryCommand, SabiErrorCode,
-    SabiFailure, SabiRequestContext, SemanticRecoveryMetrics, SemanticRecoveryOperationsSnapshot,
-    SubmitControlCommandRequest, SystemControlView, control_command, envelope,
+    KillCommand, PauseCommand, ReceiptReference, ReclaimCommand, ResumeCommand,
+    ResumeSemanticRecoveryCommand, SabiErrorCode, SabiFailure, SabiRequestContext,
+    SemanticRecoveryMetrics, SemanticRecoveryOperationsSnapshot, SubmitControlCommandRequest,
+    SystemControlView, ThrottleCommand, control_command, envelope,
 };
 use nlos_schema::{
     CompatibilityError, REQUEST_ID_BYTES, SABI_ENVELOPE_SCHEMA,
@@ -135,7 +136,7 @@ pub enum ControlCommand {
     /// command surface — envelope compilation, authorization, idempotency
     /// binding, typed receipt — is complete; execution routes to the
     /// pluggable [`crate::OperationCommandExecutor`] seam, whose default
-    /// stub refuses fail-closed until the W29-D lane wires real executors.
+    /// stub refuses fail-closed until a host wires an executor.
     PauseOperation {
         control_command_id: [u8; 16],
         target_id: [u8; 16],
@@ -153,6 +154,40 @@ pub enum ControlCommand {
     /// Cancel one operational target; same seam contract as
     /// [`Self::PauseOperation`].
     CancelOperation {
+        control_command_id: [u8; 16],
+        target_id: [u8; 16],
+        expected_generation_or_revision: u64,
+        reason: String,
+    },
+    /// Kill one operational target: for the process authority executor the
+    /// `target_id` addresses a `ProcessId` and the CAS expectation is the
+    /// process generation (B5-1 second half, W29-D). Execution routes to
+    /// [`crate::OperationCommandExecutor::kill_operation`]; the receipt id
+    /// is derived from the authority's durable platform-kill receipt.
+    KillOperation {
+        control_command_id: [u8; 16],
+        target_id: [u8; 16],
+        expected_generation_or_revision: u64,
+        reason: String,
+    },
+    /// Throttle one operational target down to `throttle_percent` percent of
+    /// its current declared demand (B5-2, W29-D; whole percent `1..=100`,
+    /// rejected before the wire otherwise). Execution routes to
+    /// [`crate::OperationCommandExecutor::throttle_operation`]; the resource
+    /// demand executor derives the receipt id from the authority-driven
+    /// before/after demand adjustment.
+    ThrottleOperation {
+        control_command_id: [u8; 16],
+        target_id: [u8; 16],
+        expected_generation_or_revision: u64,
+        throttle_percent: u64,
+        reason: String,
+    },
+    /// Reclaim one operational target's working set (B5-2, W29-D). Execution
+    /// routes to [`crate::OperationCommandExecutor::reclaim_operation`]; the
+    /// working-set executor drives the nlos-task reclaim advisory→plan→
+    /// execute entry and derives the receipt id from its typed outcome.
+    ReclaimOperation {
         control_command_id: [u8; 16],
         target_id: [u8; 16],
         expected_generation_or_revision: u64,
@@ -190,6 +225,15 @@ impl ControlCommand {
             }
             | Self::CancelOperation {
                 control_command_id, ..
+            }
+            | Self::KillOperation {
+                control_command_id, ..
+            }
+            | Self::ThrottleOperation {
+                control_command_id, ..
+            }
+            | Self::ReclaimOperation {
+                control_command_id, ..
             } => *control_command_id,
         }
     }
@@ -219,6 +263,15 @@ impl ControlCommand {
                 control_command_id, ..
             }
             | Self::CancelOperation {
+                control_command_id, ..
+            }
+            | Self::KillOperation {
+                control_command_id, ..
+            }
+            | Self::ThrottleOperation {
+                control_command_id, ..
+            }
+            | Self::ReclaimOperation {
                 control_command_id, ..
             } => *control_command_id,
         }
@@ -420,6 +473,16 @@ pub enum ControlOutcome {
     OperationResumed { receipt_id: Vec<u8> },
     /// Operation-level cancel accepted by the executor seam.
     OperationCancelled { receipt_id: Vec<u8> },
+    /// Operation-level kill accepted by the executor seam (W29-D); the
+    /// receipt id is derived from the backing authority's durable
+    /// platform-kill receipt.
+    OperationKilled { receipt_id: Vec<u8> },
+    /// Operation-level throttle accepted by the executor seam (W29-D); the
+    /// receipt id is derived from the authority-driven demand adjustment.
+    OperationThrottled { receipt_id: Vec<u8> },
+    /// Operation-level reclaim accepted by the executor seam (W29-D); the
+    /// receipt id is derived from the nlos-task reclaim execution outcome.
+    OperationReclaimed { receipt_id: Vec<u8> },
 }
 
 /// Typed receipt for one dispatched [`ControlCommand`] (§24.3 posture in
@@ -529,11 +592,23 @@ pub fn build_request_envelope(command: &ControlCommand) -> Result<Envelope, Cont
         | ControlCommand::ResumeSemanticRecovery { .. }
         | ControlCommand::PauseOperation { .. }
         | ControlCommand::ResumeOperation { .. }
-        | ControlCommand::CancelOperation { .. } => {
+        | ControlCommand::CancelOperation { .. }
+        | ControlCommand::KillOperation { .. }
+        | ControlCommand::ThrottleOperation { .. }
+        | ControlCommand::ReclaimOperation { .. } => {
             let reason = mutation_reason(command);
             if reason.is_empty() {
                 return Err(ControlError::InvalidCommand(
                     "control mutations require a non-empty bounded reason",
+                ));
+            }
+            if let ControlCommand::ThrottleOperation {
+                throttle_percent, ..
+            } = command
+                && !(1..=100).contains(throttle_percent)
+            {
+                return Err(ControlError::InvalidCommand(
+                    "throttle percent must be a whole percent from 1 to 100",
                 ));
             }
             let (target_id, cas) = mutation_address(command);
@@ -589,6 +664,21 @@ fn mutation_address(command: &ControlCommand) -> ([u8; 16], u64) {
             target_id,
             expected_generation_or_revision,
             ..
+        }
+        | ControlCommand::KillOperation {
+            target_id,
+            expected_generation_or_revision,
+            ..
+        }
+        | ControlCommand::ThrottleOperation {
+            target_id,
+            expected_generation_or_revision,
+            ..
+        }
+        | ControlCommand::ReclaimOperation {
+            target_id,
+            expected_generation_or_revision,
+            ..
         } => (*target_id, *expected_generation_or_revision),
         ControlCommand::AcknowledgeRecoveryAlert {
             plan_id,
@@ -616,7 +706,10 @@ fn mutation_reason(command: &ControlCommand) -> &str {
         | ControlCommand::ResumeSemanticRecovery { reason, .. }
         | ControlCommand::PauseOperation { reason, .. }
         | ControlCommand::ResumeOperation { reason, .. }
-        | ControlCommand::CancelOperation { reason, .. } => reason,
+        | ControlCommand::CancelOperation { reason, .. }
+        | ControlCommand::KillOperation { reason, .. }
+        | ControlCommand::ThrottleOperation { reason, .. }
+        | ControlCommand::ReclaimOperation { reason, .. } => reason,
         _ => unreachable!("read-only variants never reach the submit arm"),
     }
 }
@@ -645,6 +738,17 @@ fn sabi_wire_command(
         }
         ControlCommand::CancelOperation { .. } => {
             control_command::Command::CancelOperation(CancelCommand {})
+        }
+        ControlCommand::KillOperation { .. } => {
+            control_command::Command::KillOperation(KillCommand {})
+        }
+        ControlCommand::ThrottleOperation {
+            throttle_percent, ..
+        } => control_command::Command::ThrottleOperation(ThrottleCommand {
+            throttle_percent: *throttle_percent,
+        }),
+        ControlCommand::ReclaimOperation { .. } => {
+            control_command::Command::ReclaimOperation(ReclaimCommand {})
         }
         // The remaining mutation arm is the artifact acknowledgement; the
         // read-only variants never reach this helper.
@@ -682,6 +786,15 @@ fn request_context(command: &ControlCommand) -> SabiRequestContext {
             control_command_id, ..
         }
         | ControlCommand::CancelOperation {
+            control_command_id, ..
+        }
+        | ControlCommand::KillOperation {
+            control_command_id, ..
+        }
+        | ControlCommand::ThrottleOperation {
+            control_command_id, ..
+        }
+        | ControlCommand::ReclaimOperation {
             control_command_id, ..
         } => control_command_id.to_vec(),
         _ => Vec::new(),
@@ -1108,6 +1221,17 @@ impl ControlReceipt {
                 ControlCommand::CancelOperation { .. } => Ok(ControlOutcome::OperationCancelled {
                     receipt_id: decoded_result_receipt(command, response)?,
                 }),
+                ControlCommand::KillOperation { .. } => Ok(ControlOutcome::OperationKilled {
+                    receipt_id: decoded_result_receipt(command, response)?,
+                }),
+                ControlCommand::ThrottleOperation { .. } => {
+                    Ok(ControlOutcome::OperationThrottled {
+                        receipt_id: decoded_result_receipt(command, response)?,
+                    })
+                }
+                ControlCommand::ReclaimOperation { .. } => Ok(ControlOutcome::OperationReclaimed {
+                    receipt_id: decoded_result_receipt(command, response)?,
+                }),
             }
         };
         Ok(Self {
@@ -1198,6 +1322,15 @@ impl ControlReceipt {
             }
             Ok(ControlOutcome::OperationCancelled { receipt_id }) => {
                 push_tagged_receipt(&mut bytes, 10, receipt_id);
+            }
+            Ok(ControlOutcome::OperationKilled { receipt_id }) => {
+                push_tagged_receipt(&mut bytes, 11, receipt_id);
+            }
+            Ok(ControlOutcome::OperationThrottled { receipt_id }) => {
+                push_tagged_receipt(&mut bytes, 12, receipt_id);
+            }
+            Ok(ControlOutcome::OperationReclaimed { receipt_id }) => {
+                push_tagged_receipt(&mut bytes, 13, receipt_id);
             }
         }
         bytes
@@ -1422,6 +1555,41 @@ mod tests {
     }
 
     #[test]
+    fn w29d_command_ids_are_deterministic_per_variant() {
+        assert_eq!(
+            ControlCommand::KillOperation {
+                control_command_id: [0x64; 16],
+                target_id: [0x82; 16],
+                expected_generation_or_revision: 6,
+                reason: "operator kills the operation".to_owned(),
+            }
+            .control_command_id(),
+            [0x64; 16]
+        );
+        assert_eq!(
+            ControlCommand::ThrottleOperation {
+                control_command_id: [0x65; 16],
+                target_id: [0x82; 16],
+                expected_generation_or_revision: 6,
+                throttle_percent: 50,
+                reason: "operator throttles the operation".to_owned(),
+            }
+            .control_command_id(),
+            [0x65; 16]
+        );
+        assert_eq!(
+            ControlCommand::ReclaimOperation {
+                control_command_id: [0x66; 16],
+                target_id: [0x82; 16],
+                expected_generation_or_revision: 6,
+                reason: "operator reclaims the working set".to_owned(),
+            }
+            .control_command_id(),
+            [0x66; 16]
+        );
+    }
+
+    #[test]
     fn acknowledgement_rejects_empty_reason_before_the_wire() {
         assert!(matches!(
             build_request_envelope(&ControlCommand::AcknowledgeRecoveryAlert {
@@ -1607,6 +1775,58 @@ mod tests {
     }
 
     #[test]
+    fn w29d_mutation_envelopes_carry_the_wire_arms_and_percent() {
+        for (command, matched_arm) in [
+            (
+                ControlCommand::KillOperation {
+                    control_command_id: [0x64; 16],
+                    target_id: [0x82; 16],
+                    expected_generation_or_revision: 6,
+                    reason: "operator kills the operation".to_owned(),
+                },
+                control_command::Command::KillOperation(KillCommand {}),
+            ),
+            (
+                ControlCommand::ThrottleOperation {
+                    control_command_id: [0x65; 16],
+                    target_id: [0x82; 16],
+                    expected_generation_or_revision: 6,
+                    throttle_percent: 50,
+                    reason: "operator throttles the operation".to_owned(),
+                },
+                control_command::Command::ThrottleOperation(ThrottleCommand {
+                    throttle_percent: 50,
+                }),
+            ),
+            (
+                ControlCommand::ReclaimOperation {
+                    control_command_id: [0x66; 16],
+                    target_id: [0x82; 16],
+                    expected_generation_or_revision: 6,
+                    reason: "operator reclaims the working set".to_owned(),
+                },
+                control_command::Command::ReclaimOperation(ReclaimCommand {}),
+            ),
+        ] {
+            let envelope = build_request_envelope(&command).unwrap();
+            assert_eq!(envelope.method, SUBMIT_METHOD);
+            let payload = decode_submit_control_command_request(&envelope.payload).unwrap();
+            let wire_command = payload.command.unwrap();
+            assert_eq!(wire_command.command, Some(matched_arm));
+            assert_eq!(wire_command.target_id, vec![0x82; 16]);
+            assert_eq!(wire_command.expected_generation_or_revision, 6);
+            let Some(envelope::CommonContext::RequestContext(context)) = envelope.common_context
+            else {
+                panic!("request context expected");
+            };
+            assert_eq!(
+                context.idempotency_key,
+                command.control_command_id().to_vec()
+            );
+        }
+    }
+
+    #[test]
     fn operation_mutations_reject_empty_reason_before_the_wire() {
         for command in [
             ControlCommand::PauseOperation {
@@ -1627,10 +1847,47 @@ mod tests {
                 expected_generation_or_revision: 5,
                 reason: String::new(),
             },
+            ControlCommand::KillOperation {
+                control_command_id: [0x64; 16],
+                target_id: [0x82; 16],
+                expected_generation_or_revision: 6,
+                reason: String::new(),
+            },
+            ControlCommand::ThrottleOperation {
+                control_command_id: [0x65; 16],
+                target_id: [0x82; 16],
+                expected_generation_or_revision: 6,
+                throttle_percent: 50,
+                reason: String::new(),
+            },
+            ControlCommand::ReclaimOperation {
+                control_command_id: [0x66; 16],
+                target_id: [0x82; 16],
+                expected_generation_or_revision: 6,
+                reason: String::new(),
+            },
         ] {
             assert!(matches!(
                 build_request_envelope(&command),
                 Err(ControlError::InvalidCommand(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn throttle_mutations_reject_out_of_range_percent_before_the_wire() {
+        for throttle_percent in [0, 101, u64::MAX] {
+            assert!(matches!(
+                build_request_envelope(&ControlCommand::ThrottleOperation {
+                    control_command_id: [0x65; 16],
+                    target_id: [0x82; 16],
+                    expected_generation_or_revision: 6,
+                    throttle_percent,
+                    reason: "operator throttles the operation".to_owned(),
+                }),
+                Err(ControlError::InvalidCommand(
+                    "throttle percent must be a whole percent from 1 to 100"
+                ))
             ));
         }
     }

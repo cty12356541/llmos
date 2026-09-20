@@ -16,10 +16,11 @@ use nlos_schema::sabi::v1::{
     AcknowledgeArtifactRecoveryAlertCommand, AcknowledgeSemanticRecoveryAlertCommand,
     CallerIdentity, CancelCommand, CapabilityHandle, ControlCommand, ControlCommandSource,
     ControlScope, Envelope, ExchangeRequest, ExchangeResponse, GetSystemControlRequest,
-    LocalEndpoint, LocalTransportKind, NegotiateServiceRequest, PauseCommand, ReceiptReference,
-    ResumeCommand, ResumeSemanticRecoveryCommand, RetryDirective, SabiErrorCode, SabiFailure,
-    SabiRequestContext, ServiceCandidate, ServiceVersion, SubmitControlCommandRequest,
-    SystemControlView, control_command, envelope, negotiate_service_response,
+    KillCommand, LocalEndpoint, LocalTransportKind, NegotiateServiceRequest, PauseCommand,
+    ReceiptReference, ReclaimCommand, ResumeCommand, ResumeSemanticRecoveryCommand, RetryDirective,
+    SabiErrorCode, SabiFailure, SabiRequestContext, ServiceCandidate, ServiceVersion,
+    SubmitControlCommandRequest, SystemControlView, ThrottleCommand, control_command, envelope,
+    negotiate_service_response,
 };
 use nlos_schema::{
     MethodSemantics, SABI_ENVELOPE_SCHEMA, SABI_SYSTEM_CONTROL_SCHEMA,
@@ -768,6 +769,7 @@ struct ExecutedOperation {
     issuer_principal_id: [u8; 16],
     idempotency_key: [u8; 16],
     requested_at_ms: i64,
+    throttle_percent: Option<u64>,
 }
 
 /// Deterministic stub executor: records every request it serves and answers
@@ -784,6 +786,15 @@ impl RecordingOperationExecutor {
     }
 
     fn record(&self, arm: &'static str, request: &OperationControlRequest) {
+        self.record_with_percent(arm, request, None);
+    }
+
+    fn record_with_percent(
+        &self,
+        arm: &'static str,
+        request: &OperationControlRequest,
+        throttle_percent: Option<u64>,
+    ) {
         self.requests.lock().unwrap().push(ExecutedOperation {
             arm,
             target_id: request.target_id,
@@ -791,6 +802,7 @@ impl RecordingOperationExecutor {
             issuer_principal_id: request.issuer_principal_id,
             idempotency_key: request.idempotency_key,
             requested_at_ms: request.requested_at_ms,
+            throttle_percent,
         });
     }
 }
@@ -814,6 +826,28 @@ impl OperationCommandExecutor for RecordingOperationExecutor {
             safe_message: "stub executor rejects cancels".to_owned(),
         })
     }
+
+    fn kill_operation(&self, request: OperationControlRequest) -> Result<ReceiptId, SabiFailure> {
+        self.record("kill", &request);
+        Ok(Self::receipt(4))
+    }
+
+    fn throttle_operation(
+        &self,
+        request: OperationControlRequest,
+        throttle_percent: u64,
+    ) -> Result<ReceiptId, SabiFailure> {
+        self.record_with_percent("throttle", &request, Some(throttle_percent));
+        Ok(Self::receipt(5))
+    }
+
+    fn reclaim_operation(
+        &self,
+        request: OperationControlRequest,
+    ) -> Result<ReceiptId, SabiFailure> {
+        self.record("reclaim", &request);
+        Ok(Self::receipt(6))
+    }
 }
 
 #[test]
@@ -827,6 +861,11 @@ fn operation_commands_refuse_fail_closed_without_an_executor() {
         control_command::Command::PauseOperation(PauseCommand {}),
         control_command::Command::ResumeOperation(ResumeCommand {}),
         control_command::Command::CancelOperation(CancelCommand {}),
+        control_command::Command::KillOperation(KillCommand {}),
+        control_command::Command::ThrottleOperation(ThrottleCommand {
+            throttle_percent: 50,
+        }),
+        control_command::Command::ReclaimOperation(ReclaimCommand {}),
     ] {
         let response = control.handle_for_ipc(&operation_submit_envelope(arm), 10, 6_000);
         let Some(envelope::CommonContext::ResponseContext(context)) =
@@ -912,6 +951,86 @@ fn operation_commands_route_to_the_wired_executor_with_typed_receipts() {
         assert_eq!(entry.idempotency_key, OPERATION_COMMAND_ID);
         assert_eq!(entry.requested_at_ms, 6_000);
     }
+}
+
+/// W29-D arms through the same seam: the kill/throttle/reclaim wire
+/// commands carry their typed receipt ids back, and throttle additionally
+/// forwards the whole-percent level to the executor.
+#[test]
+fn w29d_operation_arms_route_to_the_wired_executor_with_typed_receipts() {
+    let database = TestDatabase::new();
+    let authority = database.open();
+    let plan_id = create_escalated_plan(&authority);
+    let health = health(plan_id);
+    let executor = RecordingOperationExecutor {
+        requests: std::sync::Mutex::new(Vec::new()),
+    };
+    let control = RecoverySystemControl::new(&authority, &health, &CapabilityPolicy)
+        .with_operation_executor(&executor);
+
+    let kill = control.handle_for_ipc(
+        &operation_submit_envelope(control_command::Command::KillOperation(KillCommand {})),
+        10,
+        6_000,
+    );
+    let result = decode_control_command_result(&kill.payload).unwrap();
+    assert_eq!(
+        result.receipt.unwrap().receipt_id,
+        RecordingOperationExecutor::receipt(4).into_bytes().to_vec()
+    );
+
+    let throttle = control.handle_for_ipc(
+        &operation_submit_envelope(control_command::Command::ThrottleOperation(
+            ThrottleCommand {
+                throttle_percent: 50,
+            },
+        )),
+        10,
+        6_000,
+    );
+    let result = decode_control_command_result(&throttle.payload).unwrap();
+    assert_eq!(
+        result.receipt.unwrap().receipt_id,
+        RecordingOperationExecutor::receipt(5).into_bytes().to_vec()
+    );
+
+    let reclaim = control.handle_for_ipc(
+        &operation_submit_envelope(control_command::Command::ReclaimOperation(
+            ReclaimCommand {},
+        )),
+        10,
+        6_000,
+    );
+    let result = decode_control_command_result(&reclaim.payload).unwrap();
+    assert_eq!(
+        result.receipt.unwrap().receipt_id,
+        RecordingOperationExecutor::receipt(6).into_bytes().to_vec()
+    );
+    validate_sabi_response_context(&reclaim, MethodSemantics::MUTATION).unwrap();
+
+    let requests = executor.requests.lock().unwrap();
+    assert_eq!(
+        requests.iter().map(|entry| entry.arm).collect::<Vec<_>>(),
+        vec!["kill", "throttle", "reclaim"]
+    );
+    for entry in requests.iter() {
+        assert_eq!(entry.target_id, OPERATION_TARGET_ID);
+        assert_eq!(entry.expected_generation_or_revision, OPERATION_CAS);
+        assert_eq!(entry.issuer_principal_id, [0x31; 16]);
+        assert_eq!(entry.idempotency_key, OPERATION_COMMAND_ID);
+        assert_eq!(entry.requested_at_ms, 6_000);
+    }
+    let throttle_entry = requests
+        .iter()
+        .find(|entry| entry.arm == "throttle")
+        .unwrap();
+    assert_eq!(throttle_entry.throttle_percent, Some(50));
+    assert!(
+        requests
+            .iter()
+            .filter(|entry| entry.arm != "throttle")
+            .all(|entry| entry.throttle_percent.is_none())
+    );
 }
 
 #[test]

@@ -342,3 +342,48 @@
 3. **TS/Python conformance 未加新臂 golden**：写集排除 `tests/conformance/`；Rust 侧 golden 已钉 prost 序字节，TS/Python fixture 维持既有快照。三语言生成物（gen/）已同步。Deferred minor：conformance 侧补钉三臂 hex。
 4. **REGISTRY minor 晋 2 的既有 golden 兼容**：W27-A semantic golden 以字面 v1.1 identity 钉死（与 TS/Python 同构），不随 REGISTRY minor 漂移；此为冻结 golden 的钉定纪律，非字节改动。
 5. **ROAD-B-005 仍 PARTIAL**：Trusted GUI 未接；多层手动调度的执行半边（W29-D）未做。
+
+## W29-D 增量：kill/throttle/reclaim 变体 + 真实 authority 执行接线（B5-1 后半 + B5-2，2026-09-20）
+
+> 状态：`PARTIAL_PASS`（单节点本地；三变体命令面 + 三条真实 authority 执行路径完成——计划行验收"每变体 typed Receipt 且执行路径真达对应 authority"达成；ROAD-B-005 仍 PARTIAL——GUI 未接、pause/resume/cancel 的宿主执行器仍为 seam 待接）
+>
+> 基线 HEAD：`55c7f45`（W29-F merge 后）　　写集：`schema/`、`gen/`、`crates/nlos-schema`、`crates/nlos-system-control`、`crates/nlos-resource`（限流权威面 + `inspect_quote`）、本证据文件；`crates/nlos-task` 只读消费、`crates/nlos-process` 零改动（`request_platform_kill`/`SupervisorPidRegistry`/platform 适配器全部复用 W22-P/W29-F 既有公共面）
+
+### 已实现事实
+
+1. **SABI v1.3 additive 命令臂**（ADR-0014 冻结通道 additive 扩列，镜像 W27-A/W28-D 先例）：`KillCommand`/`ReclaimCommand` 空消息 + `ThrottleCommand{throttle_percent=1}` + `ControlCommand.command` oneof 新臂 `kill_operation=14`/`throttle_operation=15`/`reclaim_operation=16`。kill/reclaim 寻址与 CAS 沿用共享 `target_id` + `expected_generation_or_revision`；throttle 单独携带 `1..=100` 整数百分比（`validate_control_command` 编解码双侧 fail-closed，越界复用 `InvalidSystemControlIdentifier`）。结果复用 `ControlCommandResult`，无新结果消息。REGISTRY minor 晋 3（frozen 不变），`system_control_schema_identity()` 随升；gen/ TS/Python 经 `buf generate` 同步。
+2. **nlos-schema 兼容金样**：注册表断言随升；W28-D 操作级 golden 改字面钉死 v1.2 identity（`w28d_operation_identity()`，与 W27-A `w27a_semantic_identity` 钉定纪律同构，冻结 golden 字节零改动）；新增三臂 v1.3 确定性 golden hex（throttle/reclaim 臂长各别 `0x69`/`0x68`——oneof 载荷字节数不同导致命令长度前缀不同，已在常量注释注明）+ round-trip + percent `0`/`101` fail-closed。
+3. **nlos-resource 限流权威面**（计划行 throttle→ResourceDemand 的 authority 侧）：`ResourceDemand::throttled_to_percent`（逐维 saturating 缩放；`100` 严格恒等——`u64::MAX` 上 saturating-mul-再除会破坏恒等，已特判并在测试钉死；`<100` 只收缩并截断；`0` 归零）+ `throttle_demand`/`DemandThrottle`（before/after/容量 + `exceedance_of` 固定序首次越界报告）+ `ResourceAuthority::inspect_quote`（镜像 `inspect_reservation` 的只读回查，暴露 quote 行声明的 per-dimension `demand_capacity`）。
+4. **命令面**（`src/control.rs`）：`ControlCommand::KillOperation`/`ThrottleOperation{+throttle_percent}`/`ReclaimOperation` 三变体并入既有 SUBMIT 编译（共享寻址/CAS/reason 提取；空 reason 与越界 percent 均在 wire 前 typed 拒绝；幂等键=command id 绑定不变）；`ControlOutcome::OperationKilled`/`OperationThrottled`/`OperationReclaimed { receipt_id }` typed Receipt（`to_bytes` tag 11/12/13），投影复用 `decoded_result_receipt` fail-closed 路径。
+5. **执行 seam 扩展**（`src/lib.rs`）：`OperationCommandExecutor` 增 `kill_operation`/`throttle_operation(+throttle_percent)`/`reclaim_operation` 三方法（非默认实现——实现方必须显式表态每个臂，未拥有臂 fail-closed 拒绝）；`OperationArm` 增 `Kill`/`Throttle{percent}`/`Reclaim`；`handle_submit` 三新臂在共享授权/issuer/幂等检查后路由至 seam。`with_operation_executor`/`new()` 签名不变。
+6. **三条真实执行路径**（每变体 typed Receipt，receipt id = 域分隔 SHA-256 截断 16 字节，**由 authority 自身回执事实派生**——不经 authority 调用不可能产生，重放幂等重derive 同一 id）：
+   - **kill→SupervisorPidRegistry/platform kill**（`process_kill_executor.rs`，`process` feature）：`inspect_active_process_binding`（权威 head：generation+fencing token）→ generation CAS 检查（`CONFLICT`）→ `SupervisorPidRegistry::lookup`（缺映射 `NOT_FOUND`；映射 generation 落后于 head `STATE`）→ `request_platform_kill`（**durable 回执先落库**，再调注入的 `PlatformKillAdapter` 信号 OS——at-least-once；宿主以 `registry.pid_map()` 喂 `Posix/WindowsPlatformKillAdapter`，测试用 `StubPlatformKillAdapter` 验证信号事实）。负墙钟 `INVALID_ARGUMENT`，全部拒绝零 durable 副作用。
+   - **throttle→ResourceDemand**（`resource_throttle_executor.rs`，`resource` feature）：`inspect_reservation`（target=reservation；当前声明 demand + `usage_high_water_seq` 作为 revision CAS——reserve 时 demand 不可变，无 generation 可比，usage 序为该行唯一单调修订号）→ `inspect_quote`（声明的 per-dimension 容量）→ `throttle_demand`（权威调整 + admission）。**缺口如实记录**：调整在此计算并校验，不落 durable——reservation 模型无 demand 调整 mutation，持久的 re-reservation 归 Resource coordinator 车道。
+   - **reclaim→WorkingSetReclaim**（`working_set_reclaim_executor.rs`，无 feature 门——nlos-task 为核心依赖）：`WorkingSetOccupancySource` trait + `FixedWorkingSetOccupancy`（宿主持有观测——**缺口如实记录**：nlos-task 无对外 store-wide 活跃计数入口，`inspect_working_set_pressure` 为纯函数）→ `inspect_working_set_pressure`（CAS = 观测到的活跃计数，移动即 `CONFLICT`；低于软阈值 `STATE` 拒绝——无可回收即不伪造回收）→ `plan_working_set_reclaim_execution` → `execute_working_set_reclaim_execution`（nlos-task 唯一对外 reclaim 执行入口；`evicted_units` 为 nlos-task 文档明示的合成可重建缓存计数，Context Residency Controller 未落）。
+7. **CLI**：`kill-operation`/`reclaim-operation <CMD_ID> <TARGET> <REVISION> <REASON>`、`throttle-operation <CMD_ID> <TARGET> <PERCENT_1_TO_100> <REVISION> <REASON>` + summary 行（`outcome=operation_killed|throttled|reclaimed receipt_id=…`）。
+8. **NL 双语白名单**：`kill|terminate operation <32-hex> expecting <n>`；`throttle operation <32-hex> to <n> percent expecting <n>`；`reclaim operation <32-hex> expecting <n>`；`终止操作|终止 操作`、`限流操作|限流 操作 … 到 <n> 百分比 期望 <n>`、`回收操作|回收 操作`。派生规则逐字镜像 pause（command id 派生自 target、显式 CAS、固定 per-verb reason）；百分比同样显式（`[NL-AMBIG-001]`——静默猜 throttle 级别与猜 CAS 同罪）。`kill task`/`throttle task`/`terminate alert` 等近邻形态 typed 拒绝。
+9. **等价路径门**（`control_command_cli.rs` 新 `kill_throttle_reclaim_commands_are_byte_identical_across_nl_cli_and_direct_paths`）：wired 确定性执行器的真 Unix socket 服务上，三命令 × {直接构造, NL EN/ZH/同义词, CLI} 三面 receipt 逐字节相等，outcome tag 钉死 11/12/13；CLI 越界百分比（`101`）exit 2 且打印 usage。
+10. **authority 接线门**（新 `tests/operation_executor_authorities.rs`，kill/throttle 模块 `cfg(process/resource)`）：每变体三测试——真实 authority 驱动（kill：StubAdapter 信号记录 + durable 回执存在 + 重放同 id；throttle：同输入同 id、不同百分比不同 id；reclaim：同观测同 id、不同观测不同 id）+ fail-closed 拒绝矩阵（CAS 错配/缺 supervisor 映射/负墙钟；CAS 错配/缺 reservation/越界百分比；低于软阈值/观测移动）+ 经共享 handler 的端到端（dispatch_in_process 的 `OperationKilled/Throttled/Reclaimed` receipt id 与直接执行器调用逐字节一致）。
+11. **既有 feature 门修复（根因）**：`cargo check -p nlos-system-control --features process,resource` 在基线 HEAD 即坏——W29-F 给 `ProcessAuthorityError` 增 `PlatformKillAlreadySignaled`/`PlatformKillAdapter`、W28-C 系给 `ResourceAuthorityError` 增 `DemandExceedsCapacity` 时未同步 feature 门控的 `process_inspector.rs`/`resource_inspector.rs` 错误映射（后者另有 `map_err` 传 owned 给 `&Error` 形参的既有类型错）。本车道顺带修复（kill 映射 `CONFLICT`/`DRIVER`、demand 归 `INVALID_ARGUMENT` 组、闭包传引用），否则新执行器无法编译。CI 未覆盖该 feature 组合为独立缺口（见下）。
+
+### 验证
+
+验证环境：macOS（darwin，arm64），基线 HEAD `55c7f45`，分支 `feat/w29-d`。工作区无其他车道未提交改动（本车道独占写集）。
+
+- `cargo test -p nlos-schema -p nlos-system-control -p nlos-process -p nlos-resource`：**183 passed / 0 failed**（schema 25；system-control 84——lib 36、`control_command_cli` 6、`recovery_control` 14、`operation_executor_authorities` 3（默认仅 reclaim 模块）、`control_ipc_auth` 9、failure_mapping 5、metrics 3+7、doc 1；process 36；resource 38）。
+- `cargo test -p nlos-system-control --features process,resource`：**90 passed / 0 failed**（`operation_executor_authorities` 全 9 测试开跑：kill 3 + throttle 3 + reclaim 3）。
+- `cargo clippy -p nlos-system-control -p nlos-schema -p nlos-resource --all-targets`（默认与 `--features process,resource` 两态）：0 warning / 0 error。
+- `cargo fmt -p nlos-system-control -p nlos-schema -p nlos-resource -p nlos-process -- --check`：通过。
+- `cargo check -p nlos-system-control --no-default-features`（及 `+ --features process,resource`）：通过（非 cli 形态编译）。
+- `buf lint` + `buf format -d --exit-code`：通过。
+- `npm run schema:check-generated`：提交后复验（生成物与提交基线一致）。
+
+### 已知限制（增量）
+
+1. **throttle 无 durable 写**：reservations 的 demand 在 reserve 时不可变声明；调整经 authority 类型计算 + admission 校验（receipt id 由 before/after 维度值派生），持久的 demand_after 落库（re-reservation）归 Resource coordinator 车道。
+2. **reclaim 执行入口为纯函数链**：nlos-task 对外只有 advisory→plan→execute 纯函数族（`evicted_units` 为其文档明示的合成计数），无 durable reclaim mutation、无 Context Residency Controller、rehydrate 仍为 B-TASK-SCALE-001 备案缺口；活跃计数由宿主观测供给（nlos-task 无 store-wide 活跃计数公共入口）。本车道只读消费、零改 nlos-task。
+3. **pause/resume/cancel 真实执行器仍缺**：W28-D seam 契约不变，三新真实执行器仅覆盖 kill/throttle/reclaim（计划行本就如此切分）；pause→Process suspend 等宿主执行器递延。
+4. **`--features process,resource` 组合此前无 CI 门**：基线即坏而无人发现（见"已实现事实"11）；本车道修复后两态均绿，但 CI 矩阵未扩——deferred minor：CI 补该组合。
+5. **kill receipt id 为派生值非 authority 原生 ReceiptId**：nlos-process 的 `PlatformKillReceipt` 无原生 ReceiptId 字段；以域分隔 SHA-256 覆盖其全部字段（process_id/generation/fencing_token/idempotency_key/killed_at_ms）派生，等价证明力（缺任一 authority 事实即不可复现），非伪造。
+6. **TS/Python conformance 未加新臂 golden**：与 W28-D 同因（写集排除 `tests/conformance/`）；gen/ 三语言生成物已同步。Deferred minor：conformance 侧补钉三臂 hex。
+7. **ROAD-B-005 仍 PARTIAL**：Trusted GUI 未接；多层手动调度的剩余半边（宿主 pause/resume/cancel 执行器、GUI 确认面）递延。

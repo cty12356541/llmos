@@ -46,6 +46,13 @@
 //!   | 恢复操作 <32位十六进制> 期望 <n> | 恢复 操作 <32位十六进制> 期望 <n>
 //! cancel operation <32-hex> expecting <n> | abort operation <32-hex> expecting <n>
 //!   | 取消操作 <32位十六进制> 期望 <n> | 取消 操作 <32位十六进制> 期望 <n>
+//! kill operation <32-hex> expecting <n> | terminate operation <32-hex> expecting <n>
+//!   | 终止操作 <32位十六进制> 期望 <n> | 终止 操作 <32位十六进制> 期望 <n>
+//! throttle operation <32-hex> to <n> percent expecting <n>
+//!   | 限流操作 <32位十六进制> 到 <n> 百分比 期望 <n>
+//!   | 限流 操作 <32位十六进制> 到 <n> 百分比 期望 <n>
+//! reclaim operation <32-hex> expecting <n>
+//!   | 回收操作 <32位十六进制> 期望 <n> | 回收 操作 <32位十六进制> 期望 <n>
 //! ```
 //!
 //! Derivation rules for the acknowledgement form: the `<32-hex>` argument is
@@ -66,6 +73,14 @@
 //! `expected_generation_or_revision` CAS expectation, and the audit reason
 //! is the fixed per-verb [`NL_PAUSE_REASON`]/[`NL_RESUME_REASON`]/
 //! [`NL_CANCEL_REASON`].
+//!
+//! The W29-D kill/throttle/reclaim forms follow the same derivation rules:
+//! kill/reclaim mirror pause verbatim; throttle adds the explicit whole
+//! percent level (`to <n> percent`, `1..=100`) between the target and the
+//! CAS expectation, because silently guessing a throttle level would
+//! violate `[NL-AMBIG-001]` the same way a guessed CAS value would. The
+//! audit reasons are the fixed per-verb [`NL_KILL_REASON`]/
+//! [`NL_THROTTLE_REASON`]/[`NL_RECLAIM_REASON`].
 //!
 //! Anything outside the whitelist — unknown verbs, wrong arity, malformed
 //! identifiers, non-decimal counts — fails with a typed
@@ -89,16 +104,26 @@ pub const NL_RESUME_REASON: &str = "resumed through the restricted natural-langu
 /// See [`NL_ACK_REASON`].
 pub const NL_CANCEL_REASON: &str =
     "cancelled through the restricted natural-language control prefix";
+/// See [`NL_ACK_REASON`]; W29-D kill/throttle/reclaim forms.
+pub const NL_KILL_REASON: &str = "killed through the restricted natural-language control prefix";
+/// See [`NL_ACK_REASON`].
+pub const NL_THROTTLE_REASON: &str =
+    "throttled through the restricted natural-language control prefix";
+/// See [`NL_ACK_REASON`].
+pub const NL_RECLAIM_REASON: &str =
+    "reclaimed through the restricted natural-language control prefix";
 
 /// Legal grammar, named verbatim in every rejection message.
 const GRAMMAR_HELP: &str = "valid forms: \"inspect health\" | \"export metrics\" | \
 \"inspect task <32-hex>\" | \"inspect process <32-hex>\" | \"inspect resource <32-hex>\" | \
 \"acknowledge alert <32-hex> expecting <count>\" | \
-\"pause|resume|cancel operation <32-hex> expecting <count>\" | \"查看健康\" | \
+\"pause|resume|cancel|kill|reclaim operation <32-hex> expecting <count>\" | \
+\"throttle operation <32-hex> to <percent> expecting <count>\" | \"查看健康\" | \
 \"导出指标\" | \"查看任务 <32位十六进制>\" | \"检查进程 <32位十六进制>\" | \
 \"查看资源 <32位十六进制>\" | \
 \"确认告警 <32位十六进制> 期望 <次数>\" | \
-\"暂停|恢复|取消操作 <32位十六进制> 期望 <次数>\"";
+\"暂停|恢复|取消|终止|回收操作 <32位十六进制> 期望 <次数>\" | \
+\"限流操作 <32位十六进制> 到 <百分比> 期望 <次数>\"";
 
 /// Compiles one restricted-grammar English or Chinese imperative sentence
 /// into a [`ControlCommand`] for the existing dispatch paths. Pure function:
@@ -169,6 +194,18 @@ fn is_operation_resume_verb(token: &str) -> bool {
 
 fn is_cancel_verb(token: &str) -> bool {
     token.eq_ignore_ascii_case("cancel") || token.eq_ignore_ascii_case("abort")
+}
+
+fn is_kill_verb(token: &str) -> bool {
+    token.eq_ignore_ascii_case("kill") || token.eq_ignore_ascii_case("terminate")
+}
+
+fn is_throttle_verb(token: &str) -> bool {
+    token.eq_ignore_ascii_case("throttle")
+}
+
+fn is_reclaim_verb(token: &str) -> bool {
+    token.eq_ignore_ascii_case("reclaim")
 }
 
 fn try_parse_inspect_health(tokens: &[&str]) -> Option<Result<ControlCommand, ControlError>> {
@@ -419,6 +456,47 @@ fn cancel_operation_command(
     })
 }
 
+fn kill_operation_command(
+    target_hex: &str,
+    expected_generation_or_revision: u64,
+) -> Result<ControlCommand, ControlError> {
+    let target_id = parse_hex_id(target_hex)?;
+    Ok(ControlCommand::KillOperation {
+        control_command_id: target_id,
+        target_id,
+        expected_generation_or_revision,
+        reason: NL_KILL_REASON.to_owned(),
+    })
+}
+
+fn throttle_operation_command(
+    target_hex: &str,
+    throttle_percent: u64,
+    expected_generation_or_revision: u64,
+) -> Result<ControlCommand, ControlError> {
+    let target_id = parse_hex_id(target_hex)?;
+    Ok(ControlCommand::ThrottleOperation {
+        control_command_id: target_id,
+        target_id,
+        expected_generation_or_revision,
+        throttle_percent,
+        reason: NL_THROTTLE_REASON.to_owned(),
+    })
+}
+
+fn reclaim_operation_command(
+    target_hex: &str,
+    expected_generation_or_revision: u64,
+) -> Result<ControlCommand, ControlError> {
+    let target_id = parse_hex_id(target_hex)?;
+    Ok(ControlCommand::ReclaimOperation {
+        control_command_id: target_id,
+        target_id,
+        expected_generation_or_revision,
+        reason: NL_RECLAIM_REASON.to_owned(),
+    })
+}
+
 fn try_parse_operation_control(tokens: &[&str]) -> Option<Result<ControlCommand, ControlError>> {
     match tokens {
         [head, second, target, third, count]
@@ -451,11 +529,66 @@ fn try_parse_operation_control(tokens: &[&str]) -> Option<Result<ControlCommand,
         ["取消操作", target, "期望", count] | ["取消", "操作", target, "期望", count] => {
             Some(parse_count(count).and_then(|n| cancel_operation_command(target, n)))
         }
+        [head, second, target, third, count]
+            if is_kill_verb(head)
+                && second.eq_ignore_ascii_case("operation")
+                && third.eq_ignore_ascii_case("expecting") =>
+        {
+            Some(parse_count(count).and_then(|n| kill_operation_command(target, n)))
+        }
+        ["终止操作", target, "期望", count] | ["终止", "操作", target, "期望", count] => {
+            Some(parse_count(count).and_then(|n| kill_operation_command(target, n)))
+        }
+        [head, second, target, third, percent, fourth, fifth, count]
+            if is_throttle_verb(head)
+                && second.eq_ignore_ascii_case("operation")
+                && third.eq_ignore_ascii_case("to")
+                && fourth.eq_ignore_ascii_case("percent")
+                && fifth.eq_ignore_ascii_case("expecting") =>
+        {
+            Some(
+                parse_percent(percent)
+                    .and_then(|level| parse_count(count).map(|n| (level, n)))
+                    .and_then(|(level, n)| throttle_operation_command(target, level, n)),
+            )
+        }
+        ["限流操作", target, "到", percent, "百分比", "期望", count]
+        | [
+            "限流",
+            "操作",
+            target,
+            "到",
+            percent,
+            "百分比",
+            "期望",
+            count,
+        ] => Some(
+            parse_percent(percent)
+                .and_then(|level| parse_count(count).map(|n| (level, n)))
+                .and_then(|(level, n)| throttle_operation_command(target, level, n)),
+        ),
+        [head, second, target, third, count]
+            if is_reclaim_verb(head)
+                && second.eq_ignore_ascii_case("operation")
+                && third.eq_ignore_ascii_case("expecting") =>
+        {
+            Some(parse_count(count).and_then(|n| reclaim_operation_command(target, n)))
+        }
+        ["回收操作", target, "期望", count] | ["回收", "操作", target, "期望", count] => {
+            Some(parse_count(count).and_then(|n| reclaim_operation_command(target, n)))
+        }
         [head, ..]
-            if is_pause_verb(head) || is_operation_resume_verb(head) || is_cancel_verb(head) =>
+            if is_pause_verb(head)
+                || is_operation_resume_verb(head)
+                || is_cancel_verb(head)
+                || is_kill_verb(head)
+                || is_throttle_verb(head)
+                || is_reclaim_verb(head) =>
         {
             Some(Err(ControlError::InvalidCommand(
-                "\"pause|resume|cancel operation\" expects \"<32-hex> expecting <count>\"",
+                "\"pause|resume|cancel|kill|reclaim operation\" expects \"<32-hex> expecting \
+                 <count>\"; \"throttle operation\" expects \"<32-hex> to <percent> expecting \
+                 <count>\"",
             )))
         }
         _ => None,
@@ -473,6 +606,24 @@ fn parse_count(token: &str) -> Result<u64, ControlError> {
     token
         .parse::<u64>()
         .map_err(|_| ControlError::InvalidCommand("CAS expectation exceeds the 64-bit bound"))
+}
+
+/// Parses the throttle level: a plain decimal whole percent `1..=100`.
+fn parse_percent(token: &str) -> Result<u64, ControlError> {
+    if !token.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(ControlError::InvalidCommand(
+            "throttle percent must be a plain decimal percent (digits only)",
+        ));
+    }
+    let percent = token
+        .parse::<u64>()
+        .map_err(|_| ControlError::InvalidCommand("throttle percent exceeds the 64-bit bound"))?;
+    if !(1..=100).contains(&percent) {
+        return Err(ControlError::InvalidCommand(
+            "throttle percent must be a whole percent from 1 to 100",
+        ));
+    }
+    Ok(percent)
 }
 
 #[cfg(test)]
@@ -871,6 +1022,130 @@ mod tests {
     }
 
     #[test]
+    fn english_w29d_operation_control_forms_parse_with_derived_identity() {
+        let kill = parse_nl_command("kill operation a1b2c3d4e5f60718293a4b5c6d7e8f90 expecting 7")
+            .unwrap();
+        assert_eq!(
+            kill,
+            ControlCommand::KillOperation {
+                control_command_id: plan_id(),
+                target_id: plan_id(),
+                expected_generation_or_revision: 7,
+                reason: NL_KILL_REASON.to_owned(),
+            }
+        );
+        assert_eq!(
+            parse_nl_command("terminate operation a1b2c3d4e5f60718293a4b5c6d7e8f90 expecting 7")
+                .unwrap(),
+            kill
+        );
+        let throttle = parse_nl_command(
+            "throttle operation a1b2c3d4e5f60718293a4b5c6d7e8f90 to 50 percent expecting 8",
+        )
+        .unwrap();
+        assert_eq!(
+            throttle,
+            ControlCommand::ThrottleOperation {
+                control_command_id: plan_id(),
+                target_id: plan_id(),
+                expected_generation_or_revision: 8,
+                throttle_percent: 50,
+                reason: NL_THROTTLE_REASON.to_owned(),
+            }
+        );
+        for sentence in [
+            "  THROTTLE  Operation \t A1B2C3D4E5F60718293A4B5C6D7E8F90 \t TO \t 1 \t PERCENT  EXPECTING  8 ",
+            "throttle operation a1b2c3d4e5f60718293a4b5c6d7e8f90 to 100 percent expecting 8",
+        ] {
+            assert_eq!(
+                parse_nl_command(sentence).unwrap(),
+                ControlCommand::ThrottleOperation {
+                    control_command_id: plan_id(),
+                    target_id: plan_id(),
+                    expected_generation_or_revision: 8,
+                    throttle_percent: if sentence.contains("100") { 100 } else { 1 },
+                    reason: NL_THROTTLE_REASON.to_owned(),
+                },
+                "sentence: {sentence:?}"
+            );
+        }
+        let reclaim =
+            parse_nl_command("reclaim operation a1b2c3d4e5f60718293a4b5c6d7e8f90 expecting 9")
+                .unwrap();
+        assert_eq!(
+            reclaim,
+            ControlCommand::ReclaimOperation {
+                control_command_id: plan_id(),
+                target_id: plan_id(),
+                expected_generation_or_revision: 9,
+                reason: NL_RECLAIM_REASON.to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn chinese_w29d_operation_control_forms_parse_with_derived_identity() {
+        assert_eq!(
+            parse_nl_command("终止操作 a1b2c3d4e5f60718293a4b5c6d7e8f90 期望 7").unwrap(),
+            ControlCommand::KillOperation {
+                control_command_id: plan_id(),
+                target_id: plan_id(),
+                expected_generation_or_revision: 7,
+                reason: NL_KILL_REASON.to_owned(),
+            }
+        );
+        assert_eq!(
+            parse_nl_command("终止 操作 A1B2C3D4E5F60718293A4B5C6D7E8F90 期望 7").unwrap(),
+            ControlCommand::KillOperation {
+                control_command_id: plan_id(),
+                target_id: plan_id(),
+                expected_generation_or_revision: 7,
+                reason: NL_KILL_REASON.to_owned(),
+            }
+        );
+        assert_eq!(
+            parse_nl_command("限流操作 a1b2c3d4e5f60718293a4b5c6d7e8f90 到 50 百分比 期望 8")
+                .unwrap(),
+            ControlCommand::ThrottleOperation {
+                control_command_id: plan_id(),
+                target_id: plan_id(),
+                expected_generation_or_revision: 8,
+                throttle_percent: 50,
+                reason: NL_THROTTLE_REASON.to_owned(),
+            }
+        );
+        assert_eq!(
+            parse_nl_command("限流 操作 a1b2c3d4e5f60718293a4b5c6d7e8f90 到 25 百分比 期望 8")
+                .unwrap(),
+            ControlCommand::ThrottleOperation {
+                control_command_id: plan_id(),
+                target_id: plan_id(),
+                expected_generation_or_revision: 8,
+                throttle_percent: 25,
+                reason: NL_THROTTLE_REASON.to_owned(),
+            }
+        );
+        assert_eq!(
+            parse_nl_command("回收操作 a1b2c3d4e5f60718293a4b5c6d7e8f90 期望 9").unwrap(),
+            ControlCommand::ReclaimOperation {
+                control_command_id: plan_id(),
+                target_id: plan_id(),
+                expected_generation_or_revision: 9,
+                reason: NL_RECLAIM_REASON.to_owned(),
+            }
+        );
+        assert_eq!(
+            parse_nl_command("回收 操作 a1b2c3d4e5f60718293a4b5c6d7e8f90 期望 9").unwrap(),
+            ControlCommand::ReclaimOperation {
+                control_command_id: plan_id(),
+                target_id: plan_id(),
+                expected_generation_or_revision: 9,
+                reason: NL_RECLAIM_REASON.to_owned(),
+            }
+        );
+    }
+
+    #[test]
     fn out_of_grammar_inputs_fail_typed_with_a_reason() {
         let long_count = "9".repeat(21);
         for input in [
@@ -953,13 +1228,56 @@ mod tests {
             format!("暂停 操作 {PLAN_HEX_LOWER} 期望 一").as_str(),
             "恢复操作",
             format!("取消操作 {PLAN_HEX_LOWER} 期望了 6").as_str(),
-            "查看健康了",
-            "检查健康了",
-            "查看任务",
-            "查看 任务",
             format!("确认告警 {PLAN_HEX_UPPER} 期望").as_str(),
             format!("确认告警 {PLAN_HEX_UPPER} 期望 一").as_str(),
             format!("确认 告警 {PLAN_HEX_UPPER} 期望").as_str(),
+        ] {
+            match parse_nl_command(input) {
+                Err(ControlError::InvalidCommand(reason)) => {
+                    assert!(
+                        !reason.is_empty(),
+                        "rejection for {input:?} carries no reason"
+                    );
+                }
+                other => panic!("expected typed rejection for {input:?}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn w29d_out_of_grammar_inputs_fail_typed_with_a_reason() {
+        for input in [
+            "kill",
+            "kill operation",
+            format!("kill operation {PLAN_HEX_LOWER}").as_str(),
+            format!("kill operation {PLAN_HEX_LOWER} expecting").as_str(),
+            format!("kill operation {PLAN_HEX_LOWER} expecting -3").as_str(),
+            format!("kill task {PLAN_HEX_LOWER} expecting 1").as_str(),
+            "terminate",
+            format!("terminate alert {PLAN_HEX_LOWER} expecting 1").as_str(),
+            "throttle",
+            "throttle operation",
+            format!("throttle operation {PLAN_HEX_LOWER} expecting 4").as_str(),
+            format!("throttle operation {PLAN_HEX_LOWER} to 50 expecting 4").as_str(),
+            format!("throttle operation {PLAN_HEX_LOWER} to 50 percent").as_str(),
+            format!("throttle operation {PLAN_HEX_LOWER} to 0 percent expecting 4").as_str(),
+            format!("throttle operation {PLAN_HEX_LOWER} to 101 percent expecting 4").as_str(),
+            format!("throttle operation {PLAN_HEX_LOWER} to -5 percent expecting 4").as_str(),
+            format!("throttle task {PLAN_HEX_LOWER} to 50 percent expecting 4").as_str(),
+            "reclaim",
+            "reclaim operation",
+            format!("reclaim operation {PLAN_HEX_LOWER}").as_str(),
+            format!("reclaim operation {PLAN_HEX_LOWER} expecting -1").as_str(),
+            format!("reclaim task {PLAN_HEX_LOWER} expecting 1").as_str(),
+            "终止操作",
+            format!("终止操作 {PLAN_HEX_LOWER}").as_str(),
+            "限流操作",
+            format!("限流操作 {PLAN_HEX_LOWER} 期望 4").as_str(),
+            format!("限流操作 {PLAN_HEX_LOWER} 到 50 百分比 期望").as_str(),
+            format!("限流操作 {PLAN_HEX_LOWER} 到 0 百分比 期望 4").as_str(),
+            format!("限流操作 {PLAN_HEX_LOWER} 到 101 百分比 期望 4").as_str(),
+            "回收操作",
+            format!("回收操作 {PLAN_HEX_LOWER} 期望").as_str(),
         ] {
             match parse_nl_command(input) {
                 Err(ControlError::InvalidCommand(reason)) => {

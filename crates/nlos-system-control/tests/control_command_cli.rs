@@ -1409,6 +1409,22 @@ impl OperationCommandExecutor for DeterministicOperationExecutor {
     fn cancel_operation(&self, _: OperationControlRequest) -> Result<ReceiptId, SabiFailure> {
         Ok(ReceiptId::from_bytes(operation_receipt(3)))
     }
+
+    fn kill_operation(&self, _: OperationControlRequest) -> Result<ReceiptId, SabiFailure> {
+        Ok(ReceiptId::from_bytes(operation_receipt(4)))
+    }
+
+    fn throttle_operation(
+        &self,
+        _: OperationControlRequest,
+        _: u64,
+    ) -> Result<ReceiptId, SabiFailure> {
+        Ok(ReceiptId::from_bytes(operation_receipt(5)))
+    }
+
+    fn reclaim_operation(&self, _: OperationControlRequest) -> Result<ReceiptId, SabiFailure> {
+        Ok(ReceiptId::from_bytes(operation_receipt(6)))
+    }
 }
 
 /// W28-D parity gate: the pause/resume/cancel command surface compiles from
@@ -1589,6 +1605,189 @@ async fn operation_control_commands_are_byte_identical_across_nl_cli_and_direct_
         socket_harness::cli_receipt_bytes(&cli_denied),
         denied_reference.to_bytes()
     );
+
+    server.abort();
+    fs::remove_file(&socket_path).unwrap();
+}
+
+/// W29-D parity gate: the kill/throttle/reclaim command surface compiles
+/// from direct construction, NL sentences (EN/ZH/synonyms), and the CLI
+/// into the same wire command, and all three dispatch paths answer with
+/// byte-identical typed receipts through the wired executor seam (B5-1
+/// second half + B5-2; real authority executors are covered feature-gated
+/// in `operation_executor_authorities`).
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn kill_throttle_reclaim_commands_are_byte_identical_across_nl_cli_and_direct_paths() {
+    use nlos_system_control::control::dispatch_over_socket;
+    use nlos_system_control::nl::{
+        NL_KILL_REASON, NL_RECLAIM_REASON, NL_THROTTLE_REASON, parse_nl_command,
+    };
+
+    use socket_harness::{
+        assert_in_process_socket_and_cli_parity, assert_nl_socket_and_in_process_parity,
+        bind_socket, run_cli, serve_forever_with_executor,
+    };
+
+    let database = Arc::new(TestDatabase::new());
+    let authority = Arc::new(database.open());
+    let plan_id = create_escalated_plan(authority.as_ref());
+    let socket_path = database.path.with_extension("sock");
+    let listener = bind_socket(&socket_path);
+    let server = serve_forever_with_executor(
+        listener,
+        Arc::clone(&authority),
+        health(&plan_id),
+        Some(Arc::new(DeterministicOperationExecutor)),
+    );
+    let stub_health = health(&plan_id);
+    let control = RecoverySystemControl::new(authority.as_ref(), &stub_health, &CapabilityPolicy)
+        .with_operation_executor(&DeterministicOperationExecutor);
+
+    let target_hex = hex(&OPERATION_TARGET_ID);
+    let throttle_percent = 50_u64;
+    for (label, reason, nl_sentences, cli_args, expected_receipt, expected_outcome) in [
+        (
+            "kill",
+            NL_KILL_REASON,
+            vec![
+                format!("kill operation {target_hex} expecting {OPERATION_CAS}"),
+                format!("terminate operation {target_hex} expecting {OPERATION_CAS}"),
+                format!("终止操作 {target_hex} 期望 {OPERATION_CAS}"),
+                format!("终止 操作 {target_hex} 期望 {OPERATION_CAS}"),
+            ],
+            vec![
+                "kill-operation".to_owned(),
+                target_hex.clone(),
+                target_hex.clone(),
+                OPERATION_CAS.to_string(),
+                NL_KILL_REASON.to_owned(),
+            ],
+            operation_receipt(4),
+            11_u8,
+        ),
+        (
+            "throttle",
+            NL_THROTTLE_REASON,
+            vec![
+                format!(
+                    "throttle operation {target_hex} to {throttle_percent} percent expecting {OPERATION_CAS}"
+                ),
+                format!("限流操作 {target_hex} 到 {throttle_percent} 百分比 期望 {OPERATION_CAS}"),
+                format!("限流 操作 {target_hex} 到 {throttle_percent} 百分比 期望 {OPERATION_CAS}"),
+            ],
+            vec![
+                "throttle-operation".to_owned(),
+                target_hex.clone(),
+                target_hex.clone(),
+                throttle_percent.to_string(),
+                OPERATION_CAS.to_string(),
+                NL_THROTTLE_REASON.to_owned(),
+            ],
+            operation_receipt(5),
+            12_u8,
+        ),
+        (
+            "reclaim",
+            NL_RECLAIM_REASON,
+            vec![
+                format!("reclaim operation {target_hex} expecting {OPERATION_CAS}"),
+                format!("回收操作 {target_hex} 期望 {OPERATION_CAS}"),
+                format!("回收 操作 {target_hex} 期望 {OPERATION_CAS}"),
+            ],
+            vec![
+                "reclaim-operation".to_owned(),
+                target_hex.clone(),
+                target_hex.clone(),
+                OPERATION_CAS.to_string(),
+                NL_RECLAIM_REASON.to_owned(),
+            ],
+            operation_receipt(6),
+            13_u8,
+        ),
+    ] {
+        let operation = match label {
+            "kill" => ControlCommand::KillOperation {
+                control_command_id: OPERATION_TARGET_ID,
+                target_id: OPERATION_TARGET_ID,
+                expected_generation_or_revision: OPERATION_CAS,
+                reason: reason.to_owned(),
+            },
+            "throttle" => ControlCommand::ThrottleOperation {
+                control_command_id: OPERATION_TARGET_ID,
+                target_id: OPERATION_TARGET_ID,
+                expected_generation_or_revision: OPERATION_CAS,
+                throttle_percent,
+                reason: reason.to_owned(),
+            },
+            _ => ControlCommand::ReclaimOperation {
+                control_command_id: OPERATION_TARGET_ID,
+                target_id: OPERATION_TARGET_ID,
+                expected_generation_or_revision: OPERATION_CAS,
+                reason: reason.to_owned(),
+            },
+        };
+        for sentence in &nl_sentences {
+            assert_eq!(
+                parse_nl_command(sentence).unwrap(),
+                operation,
+                "{label} sentence {sentence:?}"
+            );
+        }
+        let nl_commands: Vec<ControlCommand> = nl_sentences
+            .iter()
+            .map(|sentence| parse_nl_command(sentence).unwrap())
+            .collect();
+        assert_nl_socket_and_in_process_parity(
+            &socket_path,
+            &control,
+            &operation,
+            &nl_commands,
+            None,
+            None,
+        )
+        .await;
+        let cli_reference: Vec<&str> = cli_args.iter().map(String::as_str).collect();
+        assert_in_process_socket_and_cli_parity(
+            &socket_path,
+            &control,
+            &operation,
+            &cli_reference,
+            None,
+            None,
+        )
+        .await;
+        let receipt = dispatch_over_socket(&socket_path, &operation, None, None)
+            .await
+            .unwrap();
+        match receipt.outcome.as_ref().unwrap() {
+            ControlOutcome::OperationKilled { receipt_id }
+            | ControlOutcome::OperationThrottled { receipt_id }
+            | ControlOutcome::OperationReclaimed { receipt_id } => {
+                assert_eq!(receipt_id, &expected_receipt.to_vec());
+            }
+            other => panic!("expected a W29-D operation-level outcome, got {other:?}"),
+        }
+        // Deterministic encoding: 16 command id bytes, u32 length prefix,
+        // 16 correlation bytes, then the outcome tag byte.
+        assert_eq!(receipt.to_bytes()[16 + 4 + 16], expected_outcome);
+    }
+
+    // The out-of-domain throttle percent refuses before the wire on the CLI
+    // surface too.
+    let refused = run_cli(
+        &socket_path,
+        &[
+            "throttle-operation",
+            &target_hex,
+            &target_hex,
+            "101",
+            &OPERATION_CAS.to_string(),
+            "operator throttles the reservation demand",
+        ],
+    );
+    assert_eq!(refused.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("usage:"));
 
     server.abort();
     fs::remove_file(&socket_path).unwrap();
