@@ -148,6 +148,13 @@ pub struct FinalizeSpec<'a> {
     /// Resource owner whose FINALIZED cost aggregates are re-read and
     /// nested under the terminal Task receipt.
     pub resource_authority: Option<&'a nlos_resource::ResourceAuthority>,
+    /// Operation owner whose durable dispatch activation receipts are
+    /// re-read for every sealed `OperationBinding` endpoint before the
+    /// terminal Task transaction opens (ADR-0017 O-B verify half;
+    /// `[TASK-COMMIT-002]` slot evidence-chain owner revalidation).
+    /// Guard-only: nothing new is persisted and the Operation is never
+    /// transitioned by the Task side.
+    pub operation_authority: Option<&'a nlos_store::SqliteOperationStore>,
 }
 
 // The owner stores are opaque SQLite handles without `Debug`, and the
@@ -162,6 +169,7 @@ impl std::fmt::Debug for FinalizeSpec<'_> {
             .field("persisted_envelope", &self.persisted_envelope.is_some())
             .field("authority_lease", &self.authority_lease.is_some())
             .field("resource_authority", &self.resource_authority.is_some())
+            .field("operation_authority", &self.operation_authority.is_some())
             .finish()
     }
 }
@@ -2067,7 +2075,16 @@ impl SqliteTaskAuthority {
     /// - `resource_authority` (with optional Semantic guard) matches the
     ///   Resource rungs (returns [`FinalizeSpecDecision::Resource`]);
     /// - `semantic_plan` + `resource_authority` matches the combined rungs
-    ///   (returns [`FinalizeSpecDecision::Combined`]).
+    ///   (returns [`FinalizeSpecDecision::Combined`]);
+    /// - `operation_authority` composes with every rung above: before the
+    ///   terminal Task transaction opens, the owner's durable dispatch
+    ///   activation receipt is re-read for every sealed `OperationBinding`
+    ///   endpoint (ADR-0017 O-B verify half; prepared-but-never-activated,
+    ///   canceled, and stale-generation preparations fail closed with the
+    ///   typed `OperationDispatch*` errors naming the Operation). A closed
+    ///   permit replays from the durable Task rows without consulting the
+    ///   Operation authority, and nothing new is persisted on the Task or
+    ///   Operation side — the gate is guard-only.
     ///
     /// Missing required authorities fail closed before any owner read:
     /// `semantic_plan` without `semantic_authority`, and
@@ -2077,7 +2094,11 @@ impl SqliteTaskAuthority {
     /// # Errors
     ///
     /// Returns the union of the ladder constructors' errors plus the two
-    /// spec-shape conflicts above.
+    /// spec-shape conflicts above, and — when `operation_authority` is
+    /// set — the typed `OperationDispatchNotPrepared` /
+    /// `OperationDispatchNotActivated` / `OperationDispatchCancelled` /
+    /// `OperationDispatchStaleGeneration` rejections naming the Operation
+    /// whose sealed preparation failed the owner activation re-read.
     #[allow(clippy::needless_pass_by_value)]
     pub fn finalize_commit_v3_with_spec(
         &self,
@@ -2115,6 +2136,7 @@ impl SqliteTaskAuthority {
                 let receipts = self.verify_owners_for_spec_finalize(
                     Some(semantic_authority),
                     Some(resource_authority),
+                    spec.operation_authority,
                     &request,
                 )?;
                 let decision = self.finalize_impl_with_semantic_and_resource_receipts(
@@ -2131,7 +2153,12 @@ impl SqliteTaskAuthority {
                     .ok_or(TaskStoreError::TaskWriteSetConflict {
                         reason: "spec-based finalize with a Semantic plan requires the Semantic authority",
                     })?;
-                self.verify_owners_for_spec_finalize(Some(semantic_authority), None, &request)?;
+                self.verify_owners_for_spec_finalize(
+                    Some(semantic_authority),
+                    None,
+                    spec.operation_authority,
+                    &request,
+                )?;
                 let decision = match spec.authority_lease {
                     Some(lease) => self.finalize_impl_with_semantic_plan_and_authority_lease(
                         &request, plan_id, lease,
@@ -2144,6 +2171,7 @@ impl SqliteTaskAuthority {
                 let receipts = self.verify_owners_for_spec_finalize(
                     spec.semantic_authority,
                     Some(resource_authority),
+                    spec.operation_authority,
                     &request,
                 )?;
                 let decision = self.finalize_impl_with_resource_receipts(
@@ -2154,8 +2182,13 @@ impl SqliteTaskAuthority {
                 Ok(FinalizeSpecDecision::Resource(decision))
             }
             (None, None) => {
-                if let Some(semantic_authority) = spec.semantic_authority {
-                    self.verify_owners_for_spec_finalize(Some(semantic_authority), None, &request)?;
+                if spec.semantic_authority.is_some() || spec.operation_authority.is_some() {
+                    self.verify_owners_for_spec_finalize(
+                        spec.semantic_authority,
+                        None,
+                        spec.operation_authority,
+                        &request,
+                    )?;
                 }
                 let decision = match spec.authority_lease {
                     Some(lease) => {
@@ -2169,17 +2202,20 @@ impl SqliteTaskAuthority {
     }
 
     /// Loads the sealed write set of an issued permit once and re-reads the
-    /// Semantic owner proofs (guard only, when requested) and every sealed
-    /// Reservation's FINALIZED owner aggregate (when requested) before the
-    /// Task transaction opens. Non-issued permits and legacy permits
-    /// without a sealed write set validate nothing and return an empty
-    /// receipt set (replay inserts/reads no rows). This replicates the
-    /// pre-transaction halves of the ladder constructors exactly, in one
-    /// shared code path for the struct-based entry.
+    /// Semantic owner proofs (guard only, when requested), every sealed
+    /// Reservation's FINALIZED owner aggregate (when requested), and every
+    /// sealed `OperationBinding` endpoint's dispatch activation receipt
+    /// (when requested, ADR-0017 O-B) before the Task transaction opens.
+    /// Non-issued permits and legacy permits without a sealed write set
+    /// validate nothing and return an empty receipt set (replay inserts/
+    /// reads no rows). This replicates the pre-transaction halves of the
+    /// ladder constructors exactly, in one shared code path for the
+    /// struct-based entry.
     fn verify_owners_for_spec_finalize(
         &self,
         semantic_authority: Option<&nlos_semantic::SemanticAuthority>,
         resource_authority: Option<&nlos_resource::ResourceAuthority>,
+        operation_authority: Option<&nlos_store::SqliteOperationStore>,
         request: &FinalizeRequestV3,
     ) -> Result<Vec<NestedResourceCostReceipt>, TaskStoreError> {
         let permit = self.inspect_permit(request.base.task_id, request.base.permit_id)?;
@@ -2202,6 +2238,12 @@ impl SqliteTaskAuthority {
         }
         if let Some(semantic_authority) = semantic_authority {
             validate_semantic_finalization(semantic_authority, &record)?;
+        }
+        if let Some(operation_authority) = operation_authority {
+            crate::effect::verify_sealed_operation_activation_endpoints(
+                operation_authority,
+                &record,
+            )?;
         }
         match resource_authority {
             Some(resource_authority) => {

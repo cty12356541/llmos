@@ -390,9 +390,10 @@ fn activation_gate_fails_closed_on_registered_only_operation_and_recovers_after_
     // Then: the typed owner rejection surfaces and no token is minted.
     assert!(matches!(
         result,
-        Err(nlos_task::TaskStoreError::OperationParticipantAuthority(
-            nlos_store::StoreError::DispatchPreparationNotFound
-        ))
+        Err(nlos_task::TaskStoreError::OperationDispatchNotPrepared {
+            operation_id,
+            generation: 1,
+        }) if operation_id == slot.operation.operation_id
     ));
     let stored = authority
         .inspect_effect_slot(slot.commit_permit.permit_id, 0)
@@ -429,9 +430,10 @@ fn activation_gate_fails_closed_on_prepared_only_operation() {
     // Then: the typed unactivated rejection surfaces and no token is minted.
     assert!(matches!(
         result,
-        Err(nlos_task::TaskStoreError::OperationParticipantAuthority(
-            nlos_store::StoreError::OperationNotActivated
-        ))
+        Err(nlos_task::TaskStoreError::OperationDispatchNotActivated {
+            operation_id,
+            generation: 1,
+        }) if operation_id == slot.operation.operation_id
     ));
     let stored = authority
         .inspect_effect_slot(slot.commit_permit.permit_id, 0)
@@ -462,9 +464,10 @@ fn activation_gate_fails_closed_on_stale_sealed_generation() {
     // Then: the stale-generation rejection surfaces and no token is minted.
     assert!(matches!(
         result,
-        Err(nlos_task::TaskStoreError::OperationParticipantAuthority(
-            nlos_store::StoreError::Operation(nlos_operation::OperationError::InvalidGeneration)
-        ))
+        Err(nlos_task::TaskStoreError::OperationDispatchStaleGeneration {
+            operation_id,
+            sealed_generation: 1,
+        }) if operation_id == slot.operation.operation_id
     ));
     let stored = authority
         .inspect_effect_slot(slot.commit_permit.permit_id, 0)
