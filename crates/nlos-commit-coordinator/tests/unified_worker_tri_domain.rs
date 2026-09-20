@@ -1130,7 +1130,7 @@ fn tri_domain_pending_plans_converge_in_one_worker() {
 
     // 与 dual_domain 同款读侧竞态防护:plan 终态先于计数递增可见(慢 runner
     // run 35524875669 命中),对计数同样有界轮询。
-    wait_until_within(|| {
+    wait_until(|| {
         let h = worker.health();
         h.state == RecoveryWorkerState::Running
             && h.total_inspected == 1
