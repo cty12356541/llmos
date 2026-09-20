@@ -16,6 +16,7 @@ use nlos_schema::sabi;
 use nlos_schema::sabi::v1::{
     ArtifactRecoveryAlertStatus, ArtifactRecoveryMetrics, ArtifactRecoveryOperationsSnapshot,
     ControlCommandLifecycleState, Envelope, ReceiptReference, RecoveryFailureSummary,
+    ResourceRecoveryAlertStatus, ResourceRecoveryMetrics, ResourceRecoveryOperationsSnapshot,
     RetryDirective, SabiErrorCode, SabiFailure, SabiRequestContext, SabiResponseContext,
     SemanticRecoveryAlertStatus, SemanticRecoveryMetrics, SemanticRecoveryOperationsSnapshot,
     SystemControlView, envelope,
@@ -24,14 +25,15 @@ use nlos_schema::{
     CommonSemanticsError, CompatibilityError, MAX_SYSTEM_CONTROL_FAILURES, MethodSemantics,
     REQUEST_ID_BYTES, decode_get_system_control_request, decode_submit_control_command_request,
     encode_artifact_recovery_operations_snapshot, encode_control_command_result,
-    encode_semantic_recovery_operations_snapshot, system_control_schema_identity,
-    validate_sabi_request_context,
+    encode_resource_recovery_operations_snapshot, encode_semantic_recovery_operations_snapshot,
+    system_control_schema_identity, validate_sabi_request_context,
 };
 use nlos_task::{
     ArtifactCommitPlanId, ArtifactRecoveryAlertAcknowledgeRequest, ArtifactRecoveryFailureSource,
-    SemanticCommitPlanId, SemanticRecoveryAlertAcknowledgeRequest, SemanticRecoveryFailureSource,
-    SemanticRecoveryResumeRequest, SqliteTaskAuthority, TaskStoreError,
-    semantic_recovery_resume_reference,
+    ResourceCommitPlanId, ResourceRecoveryAlertAcknowledgeRequest, ResourceRecoveryFailureSource,
+    ResourceRecoveryResumeRequest, SemanticCommitPlanId, SemanticRecoveryAlertAcknowledgeRequest,
+    SemanticRecoveryFailureSource, SemanticRecoveryResumeRequest, SqliteTaskAuthority,
+    TaskStoreError, semantic_recovery_resume_reference,
 };
 use nlos_types::{IdempotencyKey, PrincipalId, ReceiptId};
 
@@ -282,6 +284,8 @@ pub enum RecoveryCounter {
     FinalizedPlans,
     SemanticPlansInspected,
     SemanticPlansFinalized,
+    ResourcePlansInspected,
+    ResourcePlansFinalized,
 }
 
 impl RecoveryCounter {
@@ -293,6 +297,8 @@ impl RecoveryCounter {
             Self::FinalizedPlans => "nlos_artifact_recovery_plans_finalized_total",
             Self::SemanticPlansInspected => "nlos_semantic_recovery_plans_inspected_total",
             Self::SemanticPlansFinalized => "nlos_semantic_recovery_plans_finalized_total",
+            Self::ResourcePlansInspected => "nlos_resource_recovery_plans_inspected_total",
+            Self::ResourcePlansFinalized => "nlos_resource_recovery_plans_finalized_total",
         }
     }
 }
@@ -312,6 +318,12 @@ pub enum RecoveryGauge {
     SemanticDurableUnacknowledgedEscalated,
     SemanticDurableResolved,
     SemanticDomainFaulted,
+    ResourceConsecutiveFailedCycles,
+    ResourceDurableRetrying,
+    ResourceDurableEscalated,
+    ResourceDurableUnacknowledgedEscalated,
+    ResourceDurableResolved,
+    ResourceDomainFaulted,
 }
 
 impl RecoveryGauge {
@@ -337,6 +349,16 @@ impl RecoveryGauge {
             }
             Self::SemanticDurableResolved => "nlos_semantic_recovery_durable_resolved",
             Self::SemanticDomainFaulted => "nlos_semantic_recovery_domain_faulted",
+            Self::ResourceConsecutiveFailedCycles => {
+                "nlos_resource_recovery_consecutive_failed_cycles"
+            }
+            Self::ResourceDurableRetrying => "nlos_resource_recovery_durable_retrying",
+            Self::ResourceDurableEscalated => "nlos_resource_recovery_durable_escalated",
+            Self::ResourceDurableUnacknowledgedEscalated => {
+                "nlos_resource_recovery_durable_unacknowledged_escalated"
+            }
+            Self::ResourceDurableResolved => "nlos_resource_recovery_durable_resolved",
+            Self::ResourceDomainFaulted => "nlos_resource_recovery_domain_faulted",
         }
     }
 }
@@ -597,6 +619,7 @@ fn task_store_failure(error: &TaskStoreError) -> (SabiErrorCode, RetryDirective,
         | Task::SnapshotReceiptNotFound
         | Task::ArtifactCommitPlanNotFound
         | Task::SemanticCommitPlanNotFound
+        | Task::ResourceCommitPlanNotFound
         | Task::ArtifactRecoveryNotFound
         | Task::EffectSlotNotFound
         | Task::EffectPermitNotFound
@@ -610,6 +633,7 @@ fn task_store_failure(error: &TaskStoreError) -> (SabiErrorCode, RetryDirective,
         ),
         Task::ArtifactRecoveryCasMismatch { .. }
         | Task::SemanticRecoveryCasMismatch { .. }
+        | Task::ResourceRecoveryCasMismatch { .. }
         | Task::IdempotencyConflict
         | Task::SnapshotConflict
         | Task::ArtifactPublicationConflict { .. }
@@ -630,6 +654,7 @@ fn task_store_failure(error: &TaskStoreError) -> (SabiErrorCode, RetryDirective,
         | Task::SemanticCommitPlanNotReady { .. }
         | Task::InvalidArtifactRecoveryState { .. }
         | Task::InvalidSemanticRecoveryState { .. }
+        | Task::InvalidResourceRecoveryState { .. }
         | Task::AuthorityLeaseHeld
         | Task::AuthorityLeaseExpired
         | Task::AuthorityLeaseRequired
@@ -666,6 +691,7 @@ fn task_store_failure(error: &TaskStoreError) -> (SabiErrorCode, RetryDirective,
         ),
         Task::InvalidArtifactRecoveryPolicy { .. }
         | Task::InvalidSemanticRecoveryPolicy { .. }
+        | Task::InvalidResourceRecoveryPolicy { .. }
         | Task::InvalidAuthorityLease { .. }
         | Task::InvalidSnapshotReceipt { .. }
         | Task::InvalidArtifactPublicationPlan { .. }
@@ -776,16 +802,17 @@ where
         }
     }
 
-    /// Exports one authoritative dual-domain metrics snapshot through a
+    /// Exports one authoritative tri-domain metrics snapshot through a
     /// backend-neutral sink: the artifact catalog first, then the semantic
-    /// catalog. Durable gauges are read from the live `TaskAuthority`
-    /// summaries of both recovery ledgers; every other value comes from a
-    /// single worker health generation. Diagnostic strings and per-plan
-    /// identities are not metrics.
+    /// catalog, then the resource catalog. Durable gauges are read from the
+    /// live `TaskAuthority` summaries of all three recovery ledgers; every
+    /// other value comes from a single worker health generation. Diagnostic
+    /// strings and per-plan identities are not metrics.
     ///
     /// # Errors
     ///
     /// Returns a `TaskAuthority` read failure or the first sink error.
+    #[allow(clippy::too_many_lines)] // The tri-domain catalog stays flat in one auditable export order.
     pub fn export_metrics<S: RecoveryMetricsSink>(
         &self,
         sink: &mut S,
@@ -807,6 +834,14 @@ where
         health.semantic_durable_escalated = semantic.escalated;
         health.semantic_durable_unacknowledged_escalated = semantic.unacknowledged_escalated;
         health.semantic_durable_resolved = semantic.resolved;
+        let resource = self
+            .tasks
+            .summarize_resource_recovery()
+            .map_err(RecoveryMetricsExportError::Task)?;
+        health.resource_durable_retrying = resource.retrying;
+        health.resource_durable_escalated = resource.escalated;
+        health.resource_durable_unacknowledged_escalated = resource.unacknowledged_escalated;
+        health.resource_durable_resolved = resource.resolved;
         sink.record_worker_state(health.state)
             .map_err(RecoveryMetricsExportError::Sink)?;
         for (counter, value) in [
@@ -820,6 +855,14 @@ where
             (
                 RecoveryCounter::SemanticPlansFinalized,
                 health.semantic_total_finalized,
+            ),
+            (
+                RecoveryCounter::ResourcePlansInspected,
+                health.resource_total_inspected,
+            ),
+            (
+                RecoveryCounter::ResourcePlansFinalized,
+                health.resource_total_finalized,
             ),
         ] {
             sink.set_counter_total(counter, value)
@@ -868,6 +911,30 @@ where
             (
                 RecoveryGauge::SemanticDomainFaulted,
                 u64::from(health.semantic_domain_faulted),
+            ),
+            (
+                RecoveryGauge::ResourceConsecutiveFailedCycles,
+                u64::try_from(health.resource_consecutive_failed_cycles).unwrap_or(u64::MAX),
+            ),
+            (
+                RecoveryGauge::ResourceDurableRetrying,
+                health.resource_durable_retrying,
+            ),
+            (
+                RecoveryGauge::ResourceDurableEscalated,
+                health.resource_durable_escalated,
+            ),
+            (
+                RecoveryGauge::ResourceDurableUnacknowledgedEscalated,
+                health.resource_durable_unacknowledged_escalated,
+            ),
+            (
+                RecoveryGauge::ResourceDurableResolved,
+                health.resource_durable_resolved,
+            ),
+            (
+                RecoveryGauge::ResourceDomainFaulted,
+                u64::from(health.resource_domain_faulted),
             ),
         ] {
             sink.set_gauge(gauge, value)
@@ -924,6 +991,9 @@ where
             .map_err(SystemControlError::AuthorizationDenied)?;
         if payload.view == i32::from(SystemControlView::SemanticCommitRecovery) {
             return self.handle_get_semantic(request, context, payload.alert_limit);
+        }
+        if payload.view == i32::from(SystemControlView::ResourceCommitRecovery) {
+            return self.handle_get_resource(request, context, payload.alert_limit);
         }
         let requested = usize::try_from(payload.alert_limit).unwrap_or(usize::MAX);
         let alerts = self
@@ -1016,6 +1086,55 @@ where
         ))
     }
 
+    /// Resource-domain `get` (W28-C-3b, ADR-0017 G8): mirrors the semantic
+    /// view — the v43 ledger API pins the same zero-argument alert listing,
+    /// so the bounded snapshot truncates at the requested `alert_limit`.
+    fn handle_get_resource(
+        &self,
+        request: &Envelope,
+        context: &SabiRequestContext,
+        alert_limit: u32,
+    ) -> Result<Envelope, SystemControlError> {
+        let requested = usize::try_from(alert_limit).unwrap_or(usize::MAX);
+        let escalated = self.tasks.list_resource_recovery_alerts()?;
+        let alerts_truncated = escalated.len() > requested;
+        let alerts = escalated
+            .into_iter()
+            .take(requested)
+            .map(|alert| {
+                let recovery = alert.recovery;
+                Ok(ResourceRecoveryAlertStatus {
+                    plan_id: recovery.plan_id.as_bytes().to_vec(),
+                    total_failures: recovery.total_failures,
+                    last_failure_authority: resource_failure_authority(recovery.last_source).into(),
+                    first_failed_at_ms: recovery.first_failed_at_ms,
+                    last_failed_at_ms: recovery.last_failed_at_ms,
+                    escalated_at_ms: recovery
+                        .escalated_at_ms
+                        .ok_or(SystemControlError::InvalidRecoveryAlert)?,
+                    acknowledgement_receipt: alert.acknowledgement.map(|receipt| {
+                        ReceiptReference {
+                            receipt_id: receipt.receipt_id.into_bytes().to_vec(),
+                        }
+                    }),
+                })
+            })
+            .collect::<Result<Vec<_>, SystemControlError>>()?;
+        let health = self.authoritative_resource_health()?;
+        let snapshot = ResourceRecoveryOperationsSnapshot {
+            schema: Some(system_control_schema_identity()),
+            metrics: Some(resource_metrics(&health)),
+            alerts,
+            alerts_truncated,
+        };
+        Ok(response_envelope(
+            request,
+            context.correlation_id.clone(),
+            encode_resource_recovery_operations_snapshot(&snapshot)?,
+            Vec::new(),
+        ))
+    }
+
     fn authoritative_health(&self) -> Result<RecoveryWorkerHealth, TaskStoreError> {
         let durable = self.tasks.summarize_artifact_recovery()?;
         let mut health = self.health.recovery_health();
@@ -1036,7 +1155,17 @@ where
         Ok(health)
     }
 
-    #[allow(clippy::too_many_lines)] // The nine submit arms stay flat in one auditable dispatch.
+    fn authoritative_resource_health(&self) -> Result<RecoveryWorkerHealth, TaskStoreError> {
+        let durable = self.tasks.summarize_resource_recovery()?;
+        let mut health = self.health.recovery_health();
+        health.resource_durable_retrying = durable.retrying;
+        health.resource_durable_escalated = durable.escalated;
+        health.resource_durable_unacknowledged_escalated = durable.unacknowledged_escalated;
+        health.resource_durable_resolved = durable.resolved;
+        Ok(health)
+    }
+
+    #[allow(clippy::too_many_lines)] // The eleven submit arms stay flat in one auditable dispatch.
     fn handle_submit(
         &self,
         request: &Envelope,
@@ -1101,6 +1230,30 @@ where
                             resumed_at_ms: now_wall_ms,
                         })?;
                 semantic_recovery_resume_reference(resumed.plan_id, resumed.total_failures)
+            }
+            Some(sabi::v1::control_command::Command::AcknowledgeResourceRecoveryAlert(_)) => {
+                self.tasks
+                    .acknowledge_resource_recovery_alert(ResourceRecoveryAlertAcknowledgeRequest {
+                        plan_id: ResourceCommitPlanId::from_bytes(fixed16(&command.target_id)?),
+                        expected_total_failures: command.expected_generation_or_revision,
+                        principal_id: PrincipalId::from_bytes(fixed16(&caller.principal_id)?),
+                        idempotency_key: IdempotencyKey::from_bytes(fixed16(
+                            &context.idempotency_key,
+                        )?),
+                        acknowledged_at_ms: now_wall_ms,
+                    })?
+                    .receipt()
+                    .receipt_id
+            }
+            Some(sabi::v1::control_command::Command::ResumeResourceRecovery(_)) => {
+                let resumed =
+                    self.tasks
+                        .resume_resource_recovery(ResourceRecoveryResumeRequest {
+                            plan_id: ResourceCommitPlanId::from_bytes(fixed16(&command.target_id)?),
+                            expected_total_failures: command.expected_generation_or_revision,
+                            resumed_at_ms: now_wall_ms,
+                        })?;
+                resource_recovery_resume_reference(resumed.plan_id, resumed.total_failures)
             }
             Some(sabi::v1::control_command::Command::PauseOperation(_)) => self
                 .execute_operation_control(
@@ -1216,6 +1369,39 @@ fn semantic_metrics(health: &RecoveryWorkerHealth) -> SemanticRecoveryMetrics {
     }
 }
 
+fn resource_metrics(health: &RecoveryWorkerHealth) -> ResourceRecoveryMetrics {
+    ResourceRecoveryMetrics {
+        total_inspected: health.resource_total_inspected,
+        total_finalized: health.resource_total_finalized,
+        consecutive_failed_cycles: u64::try_from(health.resource_consecutive_failed_cycles)
+            .unwrap_or(u64::MAX),
+        durable_retrying: health.resource_durable_retrying,
+        durable_escalated: health.resource_durable_escalated,
+        durable_unacknowledged_escalated: health.resource_durable_unacknowledged_escalated,
+        durable_resolved: health.resource_durable_resolved,
+        domain_faulted: health.resource_domain_faulted,
+    }
+}
+
+/// Deterministic 16-byte reference naming one resource recovery resume
+/// outcome (`Escalated`→`Retrying` at one `total_failures` revision),
+/// mirroring `nlos_task::semantic_recovery_resume_reference` verbatim under
+/// a resource-domain label. `nlos-task` (read-only in the W28-C-3b lane)
+/// exports no public resource twin yet, so this crate owns the formula; it
+/// is stable across idempotent replays of the same resume command and
+/// domain-separated from the alert acknowledgement derivation
+/// (`llmos/task-resource-recovery-alert-ack/v1`, owned by nlos-task).
+#[must_use]
+pub fn resource_recovery_resume_reference(
+    plan_id: ResourceCommitPlanId,
+    total_failures: u64,
+) -> ReceiptId {
+    executor_receipt::derive_executor_receipt_id(
+        b"llmos/task-resource-recovery-resume/v1\0",
+        &[plan_id.as_bytes(), &total_failures.to_be_bytes()],
+    )
+}
+
 const fn worker_state(state: RecoveryWorkerState) -> sabi::v1::RecoveryWorkerLifecycleState {
     match state {
         RecoveryWorkerState::Starting => sabi::v1::RecoveryWorkerLifecycleState::Starting,
@@ -1260,6 +1446,20 @@ const fn semantic_failure_authority(
             sabi::v1::RecoveryFailureAuthority::Semantic
         }
         SemanticRecoveryFailureSource::Coordinator => {
+            sabi::v1::RecoveryFailureAuthority::Coordinator
+        }
+    }
+}
+
+const fn resource_failure_authority(
+    authority: ResourceRecoveryFailureSource,
+) -> sabi::v1::RecoveryFailureAuthority {
+    match authority {
+        ResourceRecoveryFailureSource::TaskAuthority => sabi::v1::RecoveryFailureAuthority::Task,
+        ResourceRecoveryFailureSource::ResourceAuthority => {
+            sabi::v1::RecoveryFailureAuthority::Resource
+        }
+        ResourceRecoveryFailureSource::Coordinator => {
             sabi::v1::RecoveryFailureAuthority::Coordinator
         }
     }

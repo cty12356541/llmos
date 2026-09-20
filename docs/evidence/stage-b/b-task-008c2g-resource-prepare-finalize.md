@@ -1,6 +1,6 @@
 # B-TASK-008C2G-RES-PREPARE-FINALIZE：Resource 跨 authority prepare/finalize 有界 coordinator（ADR-0017 决定 R-C，车道 W28-C）
 
-状态：`PARTIAL_PASS`（2026-09-20，W28-C-1/C-2/C-4 + W28-C-3 worker 第三域接线落地；G8 运维面按写集边界递延至接线车道，见 §6/§8）
+状态：`PARTIAL_PASS`（2026-09-20，W28-C-1/C-2/C-4 + W28-C-3 worker 第三域接线落地；2026-09-21 G8 运维面递延已由接线车道 W28-C-3b 补齐，见 §9；台账 F1–F4 注入矩阵行仍递延，见 §6）
 
 > 对应：[ADR-0017](../../management/adrs/0017-resource-operation-cross-authority-prepare-finalize.md)（决定 1 R-C + 附录 A 车道表 W28-C-1..5 与验收门 G1–G7）、[B-TASK-008C2G-RES-COMMIT](b-task-008c2g-resource-cost-commit.md)（resource-aware v3 单事务路径 + W1–W6 桥接矩阵，本车道原样复用并扩展）、[B-TASK-008C2G-UNIFIED-RECOVERY](b-task-008c2g-unified-recovery.md)（v42 台账/plan 模式，逐条镜像）、[B-RESOURCE-005](b-resource-005-finalize-refund.md)/[B-RESOURCE-006](b-resource-006-cost-receipt-aggregate.md)（owner FINALIZED 门与 `inspect_cost_receipt` 聚合）
 >
@@ -60,7 +60,7 @@
 ## 6. 已知限制与 deferred minors（如实登记）
 
 - **W28-C-3 worker 第三域驱动已落地（G3 worker 半边 + G6 三域隔离）**：`resource_cycle`（artifact→semantic→resource 顺序）与 `RecoveryWorkerHealth` resource 域字段已在 `nlos-commit-coordinator` 落地（`start_with_semantic_and_resource_authorities` additive 接缝），消费 nlos-task 半边的 `list_due_resource_commit_plans`/`record_resource_recovery_failure`/`converge_resource_commit_plan`——实现与验证见 §8。
-- **G8 运维面递延（命名债）**：resource 域 Escalated 告警/resume 尚无 IPC/CLI 通道（W27-A 通道家族在 `nlos-system-control`，W28-C-3 写集外）；进程内 Rust API（`list_resource_recovery_alerts`/`acknowledge_resource_recovery_alert`/`resume_resource_recovery`）已可用，且 worker 驱动的 escalate→resume→resolve 全环已证（§8 `resource_plan_failures_back_off_escalate_resume_and_resolve_through_worker`）。ADR-0017 运维责任条款要求 W28-C 硬门可达——按写集限制登记为递延项，随 G8 接线车道补齐，不构成「对运维面整体不可见」的静默缺陷（本条即显式登记）。
+- **G8 运维面递延（命名债）→ 已由 W28-C-3b 补齐（2026-09-21，见 §9）**：resource 域 Escalated 告警/resume 的 IPC/CLI/NL 通道与 `nlos_resource_recovery_*` 指标已按 W27-A 通道家族模式接入 `nlos-system-control`（SABI v1.4 additive）；本条不再构成递延项。
 - **台账 F1–F4 故障注入矩阵行未建**：v42 语义级镜像已由 8 项台账测试 + 丢行自愈覆盖；W28-C-3 已补 worker 路径的台账行为（plan 级失败入账/退避/escalation/resume/resolve 全环 + 台账 INSERT 被拒时的 infra 二分，见 §8），但 kill-9/IoErr/PowerLossAfter 对 `task_resource_recovery` 表自身的注入（`semantic_recovery_fault_matrix` 模板）落在 nlos-task 测试写集，仍递延。
 - **组合 rung（Semantic+Resource）不经 plan coordinator**：`prepare_resource_finalize` 对带 Semantic appends 的 write set typed fail-closed——混合 rung 的 Task 侧恢复由 semantic plan/envelope 机制拥有（`FinalizeSpec` 组合面已可用）；按 ADR 决定 1「既有 resource-aware v3 单事务路径」的单路径裁定，不扩混合面。
 - **lease-bound permit 不自动收敛**：converge 不携带 `AuthorityLeaseRecord`（镜像 semantic coordinator `finalize_ready` 同界）；lease-bound 资源 plan 的 converge 会得到 typed `AuthorityLeaseRequired`，作为 worker 可记账的失败面。候选后续：converge 变体接受 lease 或从 durable lease 表重读。
@@ -116,3 +116,53 @@ fixture：artifact/semantic 半边照抄 `unified_worker_dual_domain.rs`；resou
 - **G8 运维面（显式移交）**：resource 域 Escalated 告警/resume 的 IPC/CLI 接线（`nlos-system-control`，W27-A 通道家族扩展 + 必要时 `RecoveryFailureAuthority`/SABI 枚举扩 resource 变体）不在本车道写集——见 §6 既有登记；worker 侧 escalate→resume→resolve 全环与进程内 API 已可用，接线车道可直接消费。
 - **台账 F1–F4 kill-9/PowerLoss 注入矩阵行**：属 nlos-task 测试写集（`semantic_recovery_fault_matrix` 模板），仍递延（§6）。
 - 未执行：push / PR / 三平台 CI / `cargo test --workspace`（车道纪律，波次屏障统一）；stage-b-progress.md / ADR-0017 附录勾稽 / evidence 索引（W28-C-5 或控制器屏障）。
+
+## 9. W28-C-3b：G8 运维面接线（resource 域 SystemControl 通道 + 指标，2026-09-21）
+
+> 车道：W28-C-3b（ADR-0017 附录 A G8，W28-C §6 命名债的补齐车道）。基线：分支 `feat/w28-c3b`，base `91203ac`；写集 = `schema/` + `gen/` + `crates/nlos-schema` + `crates/nlos-system-control` + 本证据文件。`nlos-task`/`nlos-commit-coordinator` 只读消费（零改动，`cargo check -p nlos-task -p nlos-commit-coordinator` 通过）。
+
+### 9.1 实现（W27-A 语义域模式逐条镜像）
+
+- **SABI additive（`nlos.sabi.SystemControl` v1.4 minor，ADR-0014 冻结规则下纯增量）**：`SystemControlView` 增 `RESOURCE_COMMIT_RECOVERY = 3`；`RecoveryFailureAuthority` 增 `RESOURCE = 6`；新消息 `ResourceRecoveryMetrics`/`ResourceRecoveryAlertStatus`/`ResourceRecoveryOperationsSnapshot`（逐字段镜像语义域三消息）；`ControlCommand` oneof 增 `acknowledge_resource_recovery_alert = 17` 与 `resume_resource_recovery = 18`（空载荷，目标走共享 `target_id`、CAS 走 `expected_generation_or_revision`）。`nlos-schema` REGISTRY minor 3→4、`system_control_schema_identity()` 同步；新增 `encode/decode/validate_resource_recovery_operations_snapshot`（告警界规则与语义域逐字相同）。
+- **`nlos-system-control` handler**：`handle_get` 按 view 路由到 `handle_get_resource`（`list_resource_recovery_alerts` 零参列单 + `alert_limit` 截断 + `authoritative_resource_health` 以 `summarize_resource_recovery` 活账覆盖 durable 量表）；`handle_submit` 增 Acknowledge/Resume 两臂，直连 `acknowledge_resource_recovery_alert`/`resume_resource_recovery`；`resource_failure_authority` 把台账 source 映射到 SABI（`ResourceAuthority`→`Resource`）。
+- **resume 参考号派生**：`nlos-task` 未导出 resource 版 `resume_reference`（本车道只读），故由 `nlos-system-control` 持有 `pub fn resource_recovery_resume_reference`（`llmos/task-resource-recovery-resume/v1\0` 域分离，复用 `executor_receipt` 的 SHA-256 截断助手，公式与 semantic 版逐字镜像并以字节级单测钉死；与 nlos-task 的 `llmos/task-resource-recovery-alert-ack/v1` 告警回执域分离）。
+- **指标目录扩展（`nlos_resource_recovery_*`）**：`RecoveryCounter` 增 `ResourcePlansInspected/ResourcePlansFinalized`；`RecoveryGauge` 增 `ResourceConsecutiveFailedCycles`/`ResourceDurable{Retrying,Escalated,UnacknowledgedEscalated,Resolved}`/`ResourceDomainFaulted`（共 2 counter + 6 gauge）；`export_metrics` 扩为三域聚合（resource durable 量表同样取活账），`OpenMetricsRenderer` 目录序/槽位同步扩为 7/19。
+- **失败面映射**：`task_store_failure` 四臂补 resource 变体——`ResourceCommitPlanNotFound`→`NOT_FOUND`、`ResourceRecoveryCasMismatch`→`CONFLICT`、`InvalidResourceRecoveryState`→`STATE`、`InvalidResourceRecoveryPolicy`→`INVALID_ARGUMENT`（全部 `DO_NOT_RETRY`；此前落到兜底 `DRIVER`，属 G8 接线必须修正的映射缺口）。
+- **NL 双语受限语法**：读 `inspect resource recovery | resource recovery status/check/health`（ZH：查看资源恢复/查看 资源 恢复/检查资源恢复/资源恢复状态）、`export resource metrics | resource metrics`（ZH：导出资源指标/资源指标）；写 `acknowledge resource alert <32-hex> expecting <n>`（ZH：确认资源告警/确认 资源 告警 … 期望 …）、`resume resource recovery <32-hex> expecting <n>`（ZH：恢复资源恢复/恢复 资源恢复 … 期望 …）。命令身份按语义域先例从 plan id 派生（replay-safe），审计 reason 固定 `NL_RESOURCE_ACK_REASON`/`NL_RESOURCE_RESUME_REASON`；新 matcher 排在既有 resource（reservation）检查与 ack 匹配器之前，越界输入回指名合法形式的 typed 拒绝。
+- **CLI**：`inspect-resource-health`/`export-resource-metrics`/`ack-resource-recovery-alert <CMD> <PLAN> <FAILURES> <REASON>`/`resume-resource-recovery <CMD> <PLAN> <FAILURES> <REASON>`；`ControlCommand` 增 `InspectResourceHealth`/`ExportResourceMetrics`/`AcknowledgeResourceRecoveryAlert`/`ResumeResourceRecovery`，`ControlOutcome` 增 `ResourceRecoveryInspected`（确定性编码 tag 14）。
+
+### 9.2 测试与金标
+
+| 层 | 测试 | 要点 |
+|---|---|---|
+| schema | `resource_recovery_snapshot_pins_the_cross_language_golden_bytes` | Rust 侧金标 hex 钉死快照编码/解码/再编码三向逐字节相等（fixture 值与语义域金标互异，identity 钉 v1.4 创建点） |
+| schema | `resource_recovery_control_payloads_are_typed_bounded_and_fail_closed` | view=3 get、oneof 17/18 round-trip；告警超界/回执畸形/authority 未指定/缺 metrics 四类 fail-closed |
+| schema | 既有 W29-D 金标适配 | `kill_throttle_reclaim_arms_round_trip_and_pin_their_bounds` 的 fixture 身份改为钉在 v1.3 创建点（`w29d_identity`，沿 `w27a_semantic_identity` 冻结金标先例）——旧金标字节零漂移，minor 断言 3→4 |
+| handler | `resource_get_routes_by_view_and_reports_authoritative_ledger_facts` | 活账覆盖 worker 缓存、`Resource` authority 映射、语义域视图零泄漏 |
+| handler | `resource_acknowledge_replays_idempotently_with_typed_cas_failures` | 陈旧 CAS→`CONFLICT`；同键重放回执逐字节相等 |
+| handler | `resource_resume_requeues_the_escalated_ledger_with_typed_replay_failure` | 回执=域分离参考号、台账回 Retrying、再 resume→`STATE` |
+| handler | `resource_escalated_plan_is_acknowledged_and_resumed_over_real_ipc` | 真实 duplex IPC 全环 + 回执上 envelope receipts |
+| parity | `resource_recovery_commands_are_byte_identical_across_nl_cli_and_direct_paths` | NL（EN/ZH/同义词）/CLI/直构三路 `ControlReceipt::to_bytes()` 逐字节相等；resume 消费 Escalated 后 fixture 重装再验 CLI/NL；回执等于 `resource_recovery_resume_reference` |
+| 指标 | `catalog_names_pin_the_tri_domain_whitelist` + `export_emits_complete_typed_catalog_in_stable_order`/`export_uses_one_health_generation...`/`export_stops_at_first_sink_failure...` 扩展 | 三域目录稳定序、单 health 世代、7 counter/19 gauge、首错截断 |
+| 指标 | `metrics_openmetrics_render` 全目录文本扩展 | `FULL_CATALOG_TEXT` 钉死含 `nlos_resource_recovery_*` 的完整 exposition |
+| 映射 | `resource_recovery_task_failures_preserve_retry_safety` | 四个 resource `TaskStoreError` 变体的 SABI 码/重试位 |
+| 单元 | nl.rs 5 个新测试 + control.rs 5 个新测试 | EN/ZH 全形式、越界 typed 拒绝、命令 id 决定性、wire 臂、空 reason 上线前拒绝、参考号公式字节钉死 |
+
+### 9.3 验证（命令与结果）
+
+工具链：`rustc 1.97.1 (8bab26f4f2026-07-14)` / `cargo 1.97.1`，macOS/arm64 本地实跑（worktree `llmos-w28-c3b`，分支 `feat/w28-c3b`，基线 `91203ac` 工作区 clean 起步）。
+
+- TDD 顺序：proto + schema 测试先行（金标 hex 由实现编码后钉死）；NL/CLI/handler 测试与实现同波迭代（NL 位参绑定与大小写两处 RED 均被测试捕获后修正，未削弱断言）。
+- `cargo test -p nlos-schema -p nlos-system-control` → **128 passed / 0 failed / 0 ignored**（基线 109 → +19 项新测试：schema 金标/契约 +2、lib 单元（nl 5 + control 5）+10、`control_command_cli` parity +1、`recovery_control` +4、`metrics_export_contract` 目录名 +1、`system_control_failure_mapping` +1；`control_ipc_auth` 9/9、`operation_executor_authorities` 3/3、`windows_named_pipe` 照绿）；parity/IPC 目报复跑稳定。
+- `cargo clippy -p nlos-schema -p nlos-system-control --all-targets --all-features -- -D warnings` → **exit 0 / 0 error**（新增 2 处 `too_many_lines` allow 均沿本 crate「flat 单点审计」既有注释惯例：submit 十一臂/CLI 子命令表；`export_metrics`、`parsed_command`）；`cargo fmt -- --check` 通过；`git diff --check` 通过。
+- `buf lint` + `buf format -d --exit-code` 通过；`npm run schema:generate` 产出 `gen/python` + `gen/typescript` 三语言同步（Rust 走 prost build.rs）；`npm run schema:check-generated` 提交后于 clean 树通过。
+- 新增生产代码 0 `unsafe`、0 `unwrap/expect`；新测试 helper 全部 `#[cfg(unix)]` 门控（沿本文件 semantic 先例，规避 Windows dead_code clippy）。
+- LSP 诊断：daemon 请求超时（与 W26/W27/W28-C 各增量同状）；以 `cargo check` + `clippy -D warnings` 替代并记录，二者均通过。
+
+### 9.4 递延与移交（本车道视角）
+
+- **ADR-0017 G8 运维面（W28-C 半边）**：resource 域 Escalated 告警确认/resume/指标经 W27-A 通道家族（SABI→handler→NL/CLI/直构三路 parity）可达——§6 命名债关闭；`cargo test --workspace` 与三平台 CI 仍按波次屏障由控制器统一执行（G8 全量门）。
+- **TS/Python conformance 金标 fixture**：`tests/conformance/schema/envelope.{ts,py}` 未加 resource 快照金标（车道写集外）；Rust 金标 + gen 同步已覆盖 schema 漂移门，跨语言字面 fixture 随后续 conformance 车道补。
+- **`resource_recovery_resume_reference` 归属**：公式现由 `nlos-system-control` 持有并以单测字节钉死；若 `nlos-task` 后续导出同名公共函数，二者必须逐字节一致（域标签 `llmos/task-resource-recovery-resume/v1\0` 已在此登记）。
+- **worker `last_failures` 粗粒度 authority**：`RecoveryFailureAuthority`（coordinator 侧）无 resource 变体且 `last_failures` 仍为 artifact 域独占——G8 面不需要（resource 精确 source 走台账 `ResourceAuthority`→SABI `Resource`），扩枚举留待确有 worker 级 resource 失败摘要需求时再做。
+- 未执行：push / PR / 三平台 CI / `cargo test --workspace`（MUST NOT + 波次屏障）；stage-b-progress.md / ADR-0017 附录勾稽 / evidence 索引（W28-C-5 或控制器屏障）。

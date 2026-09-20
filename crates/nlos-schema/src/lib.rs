@@ -93,10 +93,13 @@ const SABI_SYSTEM_CONTROL_V1: SchemaDescriptor = SchemaDescriptor {
     // Minor 1 recorded the W27-A additive semantic-domain extension; minor 2
     // recorded the W28-D additive operation-level command arms
     // (PauseCommand/ResumeCommand/CancelCommand oneof entries 11..=13); minor
-    // 3 records the W29-D additive kill/throttle/reclaim arms (oneof entries
-    // 14..=16 plus the ThrottleCommand.throttle_percent bound) under the
-    // ADR-0014 freeze rules. The entry stays frozen.
-    minor: 3,
+    // 3 recorded the W29-D additive kill/throttle/reclaim arms (oneof entries
+    // 14..=16 plus the ThrottleCommand.throttle_percent bound); minor 4
+    // records the W28-C-3b additive resource-domain extension (ADR-0017 G8:
+    // ResourceCommitRecovery view 3, RecoveryFailureAuthority.Resource 6,
+    // the Resource recovery snapshot messages, and oneof entries 17..=18)
+    // under the ADR-0014 freeze rules. The entry stays frozen.
+    minor: 4,
     supported_critical_extensions: &[],
     frozen: true,
 };
@@ -721,7 +724,7 @@ pub fn system_control_schema_identity() -> sabi::v1::SchemaIdentity {
     sabi::v1::SchemaIdentity {
         name: SABI_SYSTEM_CONTROL_SCHEMA.to_owned(),
         major: 1,
-        minor: 3,
+        minor: 4,
         critical_extension_ids: Vec::new(),
         non_critical_extension_ids: Vec::new(),
     }
@@ -881,6 +884,34 @@ pub fn decode_semantic_recovery_operations_snapshot(
     let snapshot: sabi::v1::SemanticRecoveryOperationsSnapshot =
         decode_bounded_with_limit(wire, MAX_SYSTEM_CONTROL_PAYLOAD_BYTES)?;
     validate_semantic_recovery_operations_snapshot(&snapshot)?;
+    Ok(snapshot)
+}
+
+/// Encodes a bounded, sanitized Resource recovery operations snapshot
+/// (W28-C-3b, ADR-0017 G8: the semantic mirror over the v43 resource
+/// ledger).
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed metrics, alerts, or identities.
+pub fn encode_resource_recovery_operations_snapshot(
+    snapshot: &sabi::v1::ResourceRecoveryOperationsSnapshot,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_resource_recovery_operations_snapshot(snapshot)?;
+    encode_bounded_with_limit(snapshot, MAX_SYSTEM_CONTROL_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded, sanitized Resource recovery operations snapshot.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_resource_recovery_operations_snapshot(
+    wire: &[u8],
+) -> Result<sabi::v1::ResourceRecoveryOperationsSnapshot, CompatibilityError> {
+    let snapshot: sabi::v1::ResourceRecoveryOperationsSnapshot =
+        decode_bounded_with_limit(wire, MAX_SYSTEM_CONTROL_PAYLOAD_BYTES)?;
+    validate_resource_recovery_operations_snapshot(&snapshot)?;
     Ok(snapshot)
 }
 
@@ -2049,6 +2080,44 @@ fn validate_control_command(
 /// facts on `ArtifactRecoveryMetrics`).
 fn validate_semantic_recovery_operations_snapshot(
     snapshot: &sabi::v1::SemanticRecoveryOperationsSnapshot,
+) -> Result<(), CompatibilityError> {
+    validate_system_control_identity(snapshot.schema.as_ref())?;
+    if snapshot.metrics.is_none() {
+        return Err(CompatibilityError::MissingSystemControlMetrics);
+    }
+    if snapshot.alerts.len() > MAX_SYSTEM_CONTROL_ALERTS {
+        return Err(CompatibilityError::TooManySystemControlAlerts);
+    }
+    for alert in &snapshot.alerts {
+        if alert.plan_id.len() != REQUEST_ID_BYTES
+            || alert.total_failures == 0
+            || alert.first_failed_at_ms < 0
+            || alert.last_failed_at_ms < alert.first_failed_at_ms
+            || alert.escalated_at_ms < alert.last_failed_at_ms
+        {
+            return Err(CompatibilityError::InvalidSystemControlAlert);
+        }
+        let authority = sabi::v1::RecoveryFailureAuthority::try_from(alert.last_failure_authority)
+            .map_err(|_| CompatibilityError::InvalidSystemControlAlert)?;
+        if authority == sabi::v1::RecoveryFailureAuthority::Unspecified {
+            return Err(CompatibilityError::InvalidSystemControlAlert);
+        }
+        if alert
+            .acknowledgement_receipt
+            .as_ref()
+            .is_some_and(|receipt| receipt.receipt_id.len() != REQUEST_ID_BYTES)
+        {
+            return Err(CompatibilityError::InvalidReceiptReference);
+        }
+    }
+    Ok(())
+}
+
+/// Resource-domain mirror of [`validate_semantic_recovery_operations_snapshot`]
+/// (W28-C-3b, ADR-0017 G8): identical alert rules over the v43 resource
+/// ledger projection.
+fn validate_resource_recovery_operations_snapshot(
+    snapshot: &sabi::v1::ResourceRecoveryOperationsSnapshot,
 ) -> Result<(), CompatibilityError> {
     validate_system_control_identity(snapshot.schema.as_ref())?;
     if snapshot.metrics.is_none() {
