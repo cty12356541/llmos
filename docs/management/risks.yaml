@@ -1,0 +1,109 @@
+# 风险台账（risks.yaml，schema v1，W27-E / X-4 种子）
+#
+# 纪律：
+# - 九类来自管理机制 README §9，条目一一对应；severity 按 影响×发生概率×不可逆性 保守评定；
+# - status 只反映已有 Evidence 支撑的缓解现状，可稀疏，诚实优先；无证据支撑的缓解不得写 mitigated；
+# - P0 阻止阶段退出；P1 须有缓解措施与复查点（owner 字段 v1 未强制，v2 候选）。
+
+- id: RISK-B-01
+  category: security-bypass
+  severity: P1
+  status: partial
+  description: "安全与权限旁路：reference monitor、IPC 认证或 sandbox 隔离存在未验证旁路"
+  mitigation: "Capability attenuation/fence authority + kill-window 故障矩阵已有单节点证据；SystemControl IPC challenge-response 认证 opt-in 落地（ADR-0011）；双层隔离已定案（ADR-0015）；真实 Capability authorizer 与 principal-level peer attestation 仍未接线"
+  evidence_refs:
+    - docs/evidence/stage-b/b-capability-001-durable-attenuation-authority.md
+    - docs/evidence/stage-b/b-capability-004-fault-matrix.md
+    - docs/evidence/stage-b/b-control-002-control-ipc-auth.md
+    - docs/evidence/stage-b/b-task-008c2g-takeover-control-ipc.md
+  review_point: "阶段 B 退出评审门（stage-b-progress §6.5.5）；threat review + bypass test（README §7）"
+
+- id: RISK-B-02
+  category: durable-state-loss
+  severity: P1
+  status: partial
+  description: "durable 状态丢失或双重提交：崩溃窗口/撕裂写导致 permit 重复或收据丢失"
+  mitigation: "双 Attempt 唯一 CommitPermit + kill-window/torn-WAL/静默丢写故障矩阵覆盖 task/effect/takeover/coordinator 表组；分层掉电证据阶梯已开道（层 1 APFS fault-VFS 校准）；真实硬件掉电未做（X-6）"
+  evidence_refs:
+    - docs/evidence/stage-b/b-task-001-fault-injection.md
+    - docs/evidence/stage-b/b-task-003-crash-windows.md
+    - docs/evidence/stage-b/b-task-003-fault-injection.md
+    - docs/evidence/stage-b/b-task-008c2g-takeover-fault-matrix.md
+    - docs/evidence/stage-b/b-store-fs-semantics-001-apfs-calibration.md
+  review_point: "阶段 B 退出评审门；X-6 分层掉电证据推进"
+
+- id: RISK-B-03
+  category: resource-oversell
+  severity: P1
+  status: partial
+  description: "Resource/Budget 超卖：Reservation/消耗记账旁路或高水位失效"
+  mitigation: "strict ACTIVE consume high-water、QUARANTINED freeze、finalize/refund 同事务退款与聚合回读已有单节点证据；Task 侧 cost-receipt 消费接线 PARTIAL PASS；真实 enforcement shim 与平台 Device adapter 未做"
+  evidence_refs:
+    - docs/evidence/stage-b/b-resource-003-consumption-high-water.md
+    - docs/evidence/stage-b/b-resource-004-quarantine-freeze.md
+    - docs/evidence/stage-b/b-resource-005-finalize-refund.md
+    - docs/evidence/stage-b/b-resource-006-cost-receipt-aggregate.md
+    - docs/evidence/stage-b/b-task-008c2g-resource-cost-commit.md
+  review_point: "阶段 B 退出评审门；B-RESOURCE 未决项清零时复审"
+
+- id: RISK-B-04
+  category: cancel-effect-unknown
+  severity: P1
+  status: partial
+  description: "cancellation/effect unknown：取消后副作用状态不可判定或恢复发散"
+  mitigation: "EFFECT_UNKNOWN quarantine/reconcile、跨 Attempt effect history 与 retry fence 已有单节点证据；统一恢复面（schema v42）把两域恢复补齐为自动收敛；provider 面 effect fence（B3-4）未落地"
+  evidence_refs:
+    - docs/evidence/stage-b/b-task-003-reconcile-effect-history.md
+    - docs/evidence/stage-b/b-task-008c2g-unified-recovery.md
+  review_point: "阶段 B 退出评审门；B3-4 provider driver plane 落地时复审"
+
+- id: RISK-B-05
+  category: premature-format-freeze
+  severity: P1
+  status: partial
+  description: "ABI/数据格式过早冻结：SABI/Task/Effect 语义未稳时冻结公共契约"
+  mitigation: "ADR-0014 schema 通道 v1-beta 冻结（additive-only）+ REGISTRY 冻结标记与 breaking gate；Task/Effect 语义稳定前不冻结 SABI（议题 31/32 顺序变更）；冻结面之外仍有过早冻结压力需持续审查"
+  evidence_refs:
+    - docs/evidence/stage-b/b-schema-002-cross-language-generation.md
+    - docs/evidence/stage-b/b-schema-015-registry-freeze-marker.md
+  review_point: "每四个周期技术选型复审（README §11）；SABI 冻结决策前必复审"
+
+- id: RISK-B-06
+  category: runtime-ui-lockin
+  severity: P2
+  status: partial
+  description: "runtime 或 UI 技术锁定：执行引擎或 GUI 框架选型不可逆地限制演进"
+  mitigation: "runtime 选型经 ADR-0001 显式决策（含退出策略）；隔离机制经四维对比实验定案（ADR-0015）；GUI（Tauri）仅为计划（B5-4），未启动未锁定"
+  evidence_refs:
+    - docs/evidence/stage-b/poc-0001-tokio-fiber-runtime.md
+    - docs/evidence/stage-b/b-sandbox-001-isolation-comparison.md
+  review_point: "B5-4 GUI 启动前必须 ADR 化（README §7）"
+
+- id: RISK-B-07
+  category: scale-impersonation
+  severity: P1
+  status: partial
+  description: "规模目标被冷 metadata 数量冒充：以注册行或 waiting Fiber 冒充 10K/100K 逻辑 TaskNode"
+  mitigation: "ScaleProfile 前片明确「waiting Fiber 不能替代 TaskNode benchmark」并已 10K 实跑；100K 为 ignore 探针；TaskNode 声明面（W28+）挂接前 benchmark 不成立"
+  evidence_refs:
+    - docs/evidence/stage-b/b-task-scale-001.md
+    - docs/evidence/stage-b/b-runtime-002-fiber-scale.md
+  review_point: "ROAD-B-004 退出门评审（B4-7/B4-9 benchmark）"
+
+- id: RISK-B-08
+  category: single-person-dependency
+  severity: P1
+  status: open
+  description: "单人关键知识和维护依赖：关键子系统知识集中于单一实现者"
+  mitigation: ""
+  evidence_refs: []
+  review_point: "阶段 B 退出评审时给出关键知识分布清单（README §7「未知风险清单」要求）"
+
+- id: RISK-B-09
+  category: third-party-supply-chain
+  severity: P2
+  status: open
+  description: "第三方依赖 license、供应链和停止维护（核心为 bundled SQLite/Wasmtime/Tokio 生态）"
+  mitigation: ""
+  evidence_refs: []
+  review_point: "每四个周期依赖/选型复审（README §11）；新依赖须过 §7 技术选型记录门槛"

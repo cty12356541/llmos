@@ -1,0 +1,780 @@
+# 阶段 B 证据索引（evidence-index.yaml，schema v1，W27-E / X-4 生成）
+#
+# - 覆盖 docs/evidence/stage-b/ 全部文件；由 scripts/lint_claims.py 校验与目录双向一致。
+# - assurance 为该证据工件可支撑的最高 claim 等级（保守评定）：POC=实验/PoC，H2=模型/生成/golden 级，
+#   H3=单进程/单节点 durable 或真实 IPC 证据，H4=单节点纵切面；POC 证据最多支撑 H3 claim。
+# - date 优先取文件头声明的日期；未声明者取 git 首次提交日期（生成时快照）。
+- id: b-application-001-installation-authority
+  path: docs/evidence/stage-b/b-application-001-installation-authority.md
+  title: "B-APPLICATION-001：Application/Installation durable 权威最小前缀"
+  scope: "Application/Installation durable 权威最小前缀"
+  assurance: H3
+  date: "2026-08-30"
+- id: b-application-002-update
+  path: docs/evidence/stage-b/b-application-002-update.md
+  title: "B-APPLICATION-002：Application update 最小前缀（installed 状态内）"
+  scope: "Application update 最小前缀（installed 状态内）"
+  assurance: H3
+  date: "2026-09-04"
+- id: b-application-003-uninstall
+  path: docs/evidence/stage-b/b-application-003-uninstall.md
+  title: "B-APPLICATION-003：Application uninstall 最小前缀（installed|disabled → uninstalled）"
+  scope: "Application uninstall 最小前缀（installed|disabled → uninstalled）"
+  assurance: H3
+  date: "2026-09-04"
+- id: b-application-004-rollback
+  path: docs/evidence/stage-b/b-application-004-rollback.md
+  title: "B-APPLICATION-004：Application rollback 最小前缀（disabled|uninstalled → installed，代际 -1）"
+  scope: "Application rollback 最小前缀（disabled|uninstalled → installed，代际 -1）"
+  assurance: H3
+  date: "2026-09-05"
+- id: b-application-005-background-task-registration
+  path: docs/evidence/stage-b/b-application-005-background-task-registration.md
+  title: "B-APPLICATION-005：Application 后台 Task 登记最小前缀（ROAD-B-002）"
+  scope: "Application 后台 Task 登记最小前缀（ROAD-B-002）"
+  assurance: H3
+  date: "2026-09-05"
+- id: b-application-006-process-binding
+  path: docs/evidence/stage-b/b-application-006-process-binding.md
+  title: "B-APPLICATION-006：Application 多 Process binding 登记最小前缀（ROAD-B-002）"
+  scope: "Application 多 Process binding 登记最小前缀（ROAD-B-002）"
+  assurance: H3
+  date: "2026-09-06"
+- id: b-artifact-001-content-addressed-store
+  path: docs/evidence/stage-b/b-artifact-001-content-addressed-store.md
+  title: "B-ARTIFACT-001：内容寻址 Artifact 存储（blob + SQLite 元数据 + 崩溃安全提交/恢复）"
+  scope: "内容寻址 Artifact 存储（blob + SQLite 元数据 + 崩溃安全提交/恢复）"
+  assurance: H3
+  date: "2026-08-05"
+- id: b-artifact-002-staged-publication
+  path: docs/evidence/stage-b/b-artifact-002-staged-publication.md
+  title: "B-ARTIFACT-002：Artifact staged revision 与 publication receipt"
+  scope: "Artifact staged revision 与 publication receipt"
+  assurance: H3
+  date: "2026-08-09"
+- id: b-artifact-003-package-signature
+  path: docs/evidence/stage-b/b-artifact-003-package-signature.md
+  title: "B-ARTIFACT-003：Package envelope 签名验证最小前缀"
+  scope: "Package envelope 签名验证最小前缀"
+  assurance: H3
+  date: "2026-08-29"
+- id: b-artifact-004-gc-orphan-collection
+  path: docs/evidence/stage-b/b-artifact-004-gc-orphan-collection.md
+  title: "B-ARTIFACT-004：显式保守 GC——孤儿 blob 清理与不可变 GC 回执（最小前缀）"
+  scope: "显式保守 GC——孤儿 blob 清理与不可变 GC 回执（最小前缀）"
+  assurance: H3
+  date: "2026-08-30"
+- id: b-artifact-005-retention-policy
+  path: docs/evidence/stage-b/b-artifact-005-retention-policy.md
+  title: "B-ARTIFACT-005：retention policy 最小前缀——per-artifact 时间上界、fail-closed 过期拒绝与「只标记不删」的 GC 协同"
+  scope: "retention policy 最小前缀——per-artifact 时间上界、fail-closed 过期拒绝与「只标记不删」的 GC 协同"
+  assurance: H3
+  date: "2026-09-03"
+- id: b-artifact-006-provenance
+  path: docs/evidence/stage-b/b-artifact-006-provenance.md
+  title: "B-ARTIFACT-006：Per-revision Provenance 最小前缀"
+  scope: "Per-revision Provenance 最小前缀"
+  assurance: H3
+  date: "2026-09-05"
+- id: b-capability-001-durable-attenuation-authority
+  path: docs/evidence/stage-b/b-capability-001-durable-attenuation-authority.md
+  title: "B-CAPABILITY-001：Durable Capability attenuation authority"
+  scope: "Durable Capability attenuation authority"
+  assurance: H3
+  date: "2026-08-09"
+- id: b-capability-002-call-limit-ledger
+  path: docs/evidence/stage-b/b-capability-002-call-limit-ledger.md
+  title: "B-CAPABILITY-002：Call-limit 消耗账本（最小前缀）"
+  scope: "Call-limit 消耗账本（最小前缀）"
+  assurance: H3
+  date: "2026-09-01"
+- id: b-capability-003-namespace-hierarchy
+  path: docs/evidence/stage-b/b-capability-003-namespace-hierarchy.md
+  title: "B-CAPABILITY-003：Namespace hierarchy narrowing（最小前缀）"
+  scope: "Namespace hierarchy narrowing（最小前缀）"
+  assurance: H3
+  date: "2026-09-04"
+- id: b-capability-004-fault-matrix
+  path: docs/evidence/stage-b/b-capability-004-fault-matrix.md
+  title: "B-CAPABILITY-004：Kill-window 故障矩阵（最小前缀）"
+  scope: "Kill-window 故障矩阵（最小前缀）"
+  assurance: H3
+  date: "2026-09-05"
+- id: b-channel-001-endpoint-authority
+  path: docs/evidence/stage-b/b-channel-001-endpoint-authority.md
+  title: "B-CHANNEL-001：Durable Channel endpoint authority"
+  scope: "Durable Channel endpoint authority"
+  assurance: H3
+  date: "2026-08-24"
+- id: b-clock-001-authority-clock
+  path: docs/evidence/stage-b/b-clock-001-authority-clock.md
+  title: "B-CLOCK-001：AuthorityClock 本地单调时钟权威（最小前缀）"
+  scope: "AuthorityClock 本地单调时钟权威（最小前缀）"
+  assurance: H3
+  date: "2026-08-29"
+- id: b-control-001-control-command-cli
+  path: docs/evidence/stage-b/b-control-001-control-command-cli.md
+  title: "B-CONTROL-001：ControlCommand/Receipt 类型面与 CLI 入口"
+  scope: "ControlCommand/Receipt 类型面与 CLI 入口"
+  assurance: H3
+  date: "2026-08-29"
+- id: b-control-002-control-ipc-auth
+  path: docs/evidence/stage-b/b-control-002-control-ipc-auth.md
+  title: "B-CONTROL-002：SystemControl IPC 面接入 ADR-0011 认证（opt-in）"
+  scope: "SystemControl IPC 面接入 ADR-0011 认证（opt-in）"
+  assurance: H3
+  date: "2026-08-30"
+- id: b-control-003-nl-prefix
+  path: docs/evidence/stage-b/b-control-003-nl-prefix.md
+  title: "B-CONTROL-003：SystemControl 自然语言控制前缀（受限语法编译器）"
+  scope: "SystemControl 自然语言控制前缀（受限语法编译器）"
+  assurance: H3
+  date: "2026-08-30"
+- id: b-identity-001-principal-key-authority
+  path: docs/evidence/stage-b/b-identity-001-principal-key-authority.md
+  title: "B-IDENTITY-001：Principal / ControlDomain / signing-key authority"
+  scope: "Principal / ControlDomain / signing-key authority"
+  assurance: H3
+  date: "2026-08-09"
+- id: b-identity-002-key-rotation
+  path: docs/evidence/stage-b/b-identity-002-key-rotation.md
+  title: "B-IDENTITY-002：Signing-key rotation 最小前缀"
+  scope: "Signing-key rotation 最小前缀"
+  assurance: H3
+  date: "2026-09-04"
+- id: b-identity-003-custody
+  path: docs/evidence/stage-b/b-identity-003-custody.md
+  title: "B-IDENTITY-003：Private-key custody 最小前缀"
+  scope: "Private-key custody 最小前缀"
+  assurance: H3
+  date: "2026-09-05"
+- id: b-identity-004-session-ingress
+  path: docs/evidence/stage-b/b-identity-004-session-ingress.md
+  title: "B-IDENTITY-004：Trusted-local session ingress 最小前缀"
+  scope: "Trusted-local session ingress 最小前缀"
+  assurance: H3
+  date: "2026-09-05"
+- id: b-op-fence-002-operation-endpoint-proof
+  path: docs/evidence/stage-b/b-op-fence-002-operation-endpoint-proof.md
+  title: "B-OP-FENCE-002：Operation owner endpoint proof/readback"
+  scope: "Operation owner endpoint proof/readback"
+  assurance: H3
+  date: "2026-08-23"
+- id: b-op-fence-003-dispatch-activation-readback
+  path: docs/evidence/stage-b/b-op-fence-003-dispatch-activation-readback.md
+  title: "B-OP-FENCE-003：Operation dispatch activation proof/readback"
+  scope: "Operation dispatch activation proof/readback"
+  assurance: H3
+  date: "2026-08-24"
+- id: b-process-001-durable-execution-binding-authority
+  path: docs/evidence/stage-b/b-process-001-durable-execution-binding-authority.md
+  title: "B-PROCESS-001：durable execution binding authority"
+  scope: "durable execution binding authority"
+  assurance: H3
+  date: "2026-08-09"
+- id: b-process-002-fiber-replay
+  path: docs/evidence/stage-b/b-process-002-fiber-replay.md
+  title: "B-PROCESS-002：Fiber replay 最小前缀（事件溯源续跑）"
+  scope: "Fiber replay 最小前缀（事件溯源续跑）"
+  assurance: H3
+  date: "2026-08-29"
+- id: b-process-003-crash-propagation
+  path: docs/evidence/stage-b/b-process-003-crash-propagation.md
+  title: "B-PROCESS-003：process crash propagation / terminal lifecycle 最小前缀"
+  scope: "process crash propagation / terminal lifecycle 最小前缀"
+  assurance: H3
+  date: "2026-09-05"
+- id: b-resource-001-driver-reservation-binding-authority
+  path: docs/evidence/stage-b/b-resource-001-driver-reservation-binding-authority.md
+  title: "B-RESOURCE-001：Driver / Reservation binding authority"
+  scope: "Driver / Reservation binding authority"
+  assurance: H3
+  date: "2026-08-09"
+- id: b-resource-002-activation-receipt-readback
+  path: docs/evidence/stage-b/b-resource-002-activation-receipt-readback.md
+  title: "B-RESOURCE-002：Resource activation receipt owner 回读"
+  scope: "Resource activation receipt owner 回读"
+  assurance: H3
+  date: "2026-08-15"
+- id: b-resource-003-consumption-high-water
+  path: docs/evidence/stage-b/b-resource-003-consumption-high-water.md
+  title: "B-RESOURCE-003：Resource consume high-water"
+  scope: "Resource consume high-water"
+  assurance: H3
+  date: "2026-08-15"
+- id: b-resource-004-quarantine-freeze
+  path: docs/evidence/stage-b/b-resource-004-quarantine-freeze.md
+  title: "B-RESOURCE-004：Resource quarantine freeze"
+  scope: "Resource quarantine freeze"
+  assurance: H3
+  date: "2026-08-15"
+- id: b-resource-005-finalize-refund
+  path: docs/evidence/stage-b/b-resource-005-finalize-refund.md
+  title: "B-RESOURCE-005：Reservation finalize/refund 双重记账结算"
+  scope: "Reservation finalize/refund 双重记账结算"
+  assurance: H3
+  date: "2026-08-23"
+- id: b-resource-006-cost-receipt-aggregate
+  path: docs/evidence/stage-b/b-resource-006-cost-receipt-aggregate.md
+  title: "B-RESOURCE-006：Owner 侧 Resource cost-receipt 聚合回读"
+  scope: "Owner 侧 Resource cost-receipt 聚合回读"
+  assurance: H3
+  date: "2026-08-24"
+- id: b-runtime-002-fiber-scale
+  path: docs/evidence/stage-b/b-runtime-002-fiber-scale.md
+  title: "B-RUNTIME-002：100K dormant/waiting Fiber 承载证明（ROAD-B-006 前片）"
+  scope: "100K dormant/waiting Fiber 承载证明（ROAD-B-006 前片）"
+  assurance: H3
+  date: "2026-09-02"
+- id: b-sandbox-001-isolation-comparison
+  path: docs/evidence/stage-b/b-sandbox-001-isolation-comparison.md
+  title: "b-sandbox-001-isolation-comparison：Wasmtime/WASI 与独立 host Process 隔离对比实验"
+  scope: "Wasmtime/WASI 与独立 host Process 隔离对比实验"
+  assurance: POC
+  date: "2026-08-29"
+- id: b-schema-001-protobuf-envelope
+  path: docs/evidence/stage-b/b-schema-001-protobuf-envelope.md
+  title: "B-SCHEMA-001：Protobuf 公共兼容信封初始证据"
+  scope: "Protobuf 公共兼容信封初始证据"
+  assurance: H2
+  date: "2026-08-02"
+- id: b-schema-002-cross-language-generation
+  path: docs/evidence/stage-b/b-schema-002-cross-language-generation.md
+  title: "B-SCHEMA-002：跨语言生成、漂移与 breaking gate 证据"
+  scope: "跨语言生成、漂移与 breaking gate 证据"
+  assurance: H2
+  date: "2026-08-02"
+- id: b-schema-003-deterministic-cbor
+  path: docs/evidence/stage-b/b-schema-003-deterministic-cbor.md
+  title: "B-SCHEMA-003：Deterministic CBOR 与签名域初始证据"
+  scope: "Deterministic CBOR 与签名域初始证据"
+  assurance: H2
+  date: "2026-08-02"
+- id: b-schema-004-schema-fuzz-smoke
+  path: docs/evidence/stage-b/b-schema-004-schema-fuzz-smoke.md
+  title: "B-SCHEMA-004：Protobuf / deterministic CBOR fuzz smoke 证据"
+  scope: "Protobuf / deterministic CBOR fuzz smoke 证据"
+  assurance: H2
+  date: "2026-08-02"
+- id: b-schema-005-local-typed-ipc
+  path: docs/evidence/stage-b/b-schema-005-local-typed-ipc.md
+  title: "B-SCHEMA-005：本地 typed IPC 与平台适配初始证据"
+  scope: "本地 typed IPC 与平台适配初始证据"
+  assurance: H3
+  date: "2026-08-02"
+- id: b-schema-006-typescript-python-ipc-clients
+  path: docs/evidence/stage-b/b-schema-006-typescript-python-ipc-clients.md
+  title: "B-SCHEMA-006：TypeScript/Python 真实本地 IPC client 初始证据"
+  scope: "TypeScript/Python 真实本地 IPC client 初始证据"
+  assurance: H3
+  date: "2026-08-02"
+- id: b-schema-007-service-directory-negotiation
+  path: docs/evidence/stage-b/b-schema-007-service-directory-negotiation.md
+  title: "B-SCHEMA-007：ServiceDirectory 协议与确定性协商内核初始证据"
+  scope: "ServiceDirectory 协议与确定性协商内核初始证据"
+  assurance: H2
+  date: "2026-08-02"
+- id: b-schema-008-cross-language-directory-chain
+  path: docs/evidence/stage-b/b-schema-008-cross-language-directory-chain.md
+  title: "B-SCHEMA-008：跨语言 ServiceDirectory 两跳 IPC 初始证据"
+  scope: "跨语言 ServiceDirectory 两跳 IPC 初始证据"
+  assurance: H3
+  date: "2026-08-02"
+- id: b-schema-009-common-sabi-semantics
+  path: docs/evidence/stage-b/b-schema-009-common-sabi-semantics.md
+  title: "B-SCHEMA-009：common SABI 元数据与安全重试语义初始证据"
+  scope: "common SABI 元数据与安全重试语义初始证据"
+  assurance: H3
+  date: "2026-08-02"
+- id: b-schema-010-durable-idempotency-result
+  path: docs/evidence/stage-b/b-schema-010-durable-idempotency-result.md
+  title: "B-SCHEMA-010：durable same-key dedup/result 初始证据"
+  scope: "durable same-key dedup/result 初始证据"
+  assurance: H3
+  date: "2026-08-02"
+- id: b-schema-011-durable-idempotency-ipc
+  path: docs/evidence/stage-b/b-schema-011-durable-idempotency-ipc.md
+  title: "B-SCHEMA-011：durable idempotency 真实 SABI 重连初始证据"
+  scope: "durable idempotency 真实 SABI 重连初始证据"
+  assurance: H3
+  date: "2026-08-02"
+- id: b-schema-012-deadline-cancel-state-machine
+  path: docs/evidence/stage-b/b-schema-012-deadline-cancel-state-machine.md
+  title: "B-SCHEMA-012：deadline/cancel durable 服务端状态机初始证据"
+  scope: "deadline/cancel durable 服务端状态机初始证据"
+  assurance: H3
+  date: "2026-08-02"
+- id: b-schema-013-operation-control-timer-worker
+  path: docs/evidence/stage-b/b-schema-013-operation-control-timer-worker.md
+  title: "B-SCHEMA-013：OperationControl 与异步 deadline worker 初始证据"
+  scope: "OperationControl 与异步 deadline worker 初始证据"
+  assurance: H3
+  date: "2026-08-02"
+- id: b-schema-014-system-control-recovery-contract
+  path: docs/evidence/stage-b/b-schema-014-system-control-recovery-contract.md
+  title: "B-SCHEMA-014：SystemControl recovery contract"
+  scope: "SystemControl recovery contract"
+  assurance: H3
+  date: "2026-08-09"
+- id: b-schema-015-registry-freeze-marker
+  path: docs/evidence/stage-b/b-schema-015-registry-freeze-marker.md
+  title: "B-SCHEMA-015：REGISTRY 冻结标记（ADR-0014 决定 1 后续实现切片）"
+  scope: "REGISTRY 冻结标记（ADR-0014 决定 1 后续实现切片）"
+  assurance: H2
+  date: "2026-08-30"
+- id: b-sdk-csharp-001-golden-probe
+  path: docs/evidence/stage-b/b-sdk-csharp-001-golden-probe.md
+  title: "Evidence B-SDK-CSHARP-001：C# 最小 golden 探针（冻结 wire v1-beta 逐字节比对）"
+  scope: "C# 最小 golden 探针（冻结 wire v1-beta 逐字节比对）"
+  assurance: H2
+  date: "2026-08-30"
+- id: b-sdk-go-001-golden-probe
+  path: docs/evidence/stage-b/b-sdk-go-001-golden-probe.md
+  title: "Evidence B-SDK-GO-001：Go 最小 golden 探针（冻结 wire v1-beta 逐字节比对）"
+  scope: "Go 最小 golden 探针（冻结 wire v1-beta 逐字节比对）"
+  assurance: H2
+  date: "2026-08-29"
+- id: b-semantic-001-durable-assertion-admission
+  path: docs/evidence/stage-b/b-semantic-001-durable-assertion-admission.md
+  title: "B-SEMANTIC-001：Durable Assertion admission authority"
+  scope: "Durable Assertion admission authority"
+  assurance: H3
+  date: "2026-08-09"
+- id: b-semantic-002a-canonical-intent-spec-body
+  path: docs/evidence/stage-b/b-semantic-002a-canonical-intent-spec-body.md
+  title: "B-SEMANTIC-002A：Canonical IntentSpec body identity"
+  scope: "Canonical IntentSpec body identity"
+  assurance: H2
+  date: "2026-08-09"
+- id: b-semantic-002b-durable-spec-event-admission
+  path: docs/evidence/stage-b/b-semantic-002b-durable-spec-event-admission.md
+  title: "B-SEMANTIC-002B：Durable SpecEvent admission"
+  scope: "Durable SpecEvent admission"
+  assurance: H3
+  date: "2026-08-09"
+- id: b-semantic-003-outbox-owner-readback
+  path: docs/evidence/stage-b/b-semantic-003-outbox-owner-readback.md
+  title: "B-SEMANTIC-003：Semantic outbox owner 回读"
+  scope: "Semantic outbox owner 回读"
+  assurance: H3
+  date: "2026-08-15"
+- id: b-semantic-004-outbox-ack-writer
+  path: docs/evidence/stage-b/b-semantic-004-outbox-ack-writer.md
+  title: "B-SEMANTIC-004：Semantic outbox owner ACK writer"
+  scope: "Semantic outbox owner ACK writer"
+  assurance: H3
+  date: "2026-08-15"
+- id: b-semantic-005-publication-receipt-producer
+  path: docs/evidence/stage-b/b-semantic-005-publication-receipt-producer.md
+  title: "B-SEMANTIC-005：Semantic publication receipt producer"
+  scope: "Semantic publication receipt producer"
+  assurance: H3
+  date: "2026-08-16"
+- id: b-semantic-006-judgment-verification-retraction
+  path: docs/evidence/stage-b/b-semantic-006-judgment-verification-retraction.md
+  title: "B-SEMANTIC-006：Judgment/Verification/Retraction typed 事件 admission"
+  scope: "Judgment/Verification/Retraction typed 事件 admission"
+  assurance: H3
+  date: "2026-09-02"
+- id: b-semantic-007-declassification
+  path: docs/evidence/stage-b/b-semantic-007-declassification.md
+  title: "B-SEMANTIC-007：Declassification receipt 最小前缀"
+  scope: "Declassification receipt 最小前缀"
+  assurance: H3
+  date: "2026-09-04"
+- id: b-semantic-008-trust-view
+  path: docs/evidence/stage-b/b-semantic-008-trust-view.md
+  title: "B-SEMANTIC-008：Trust View 最小前缀"
+  scope: "Trust View 最小前缀"
+  assurance: H3
+  date: "2026-09-05"
+- id: b-semantic-009-fault-matrix
+  path: docs/evidence/stage-b/b-semantic-009-fault-matrix.md
+  title: "B-SEMANTIC-009：Admission kill-window 故障矩阵最小前缀"
+  scope: "Admission kill-window 故障矩阵最小前缀"
+  assurance: H3
+  date: "2026-09-05"
+- id: b-slice-k-001-end-to-end
+  path: docs/evidence/stage-b/b-slice-k-001-end-to-end.md
+  title: "B-SLICE-K-001：第一纵切面端到端（signed Package → … → inspect）"
+  scope: "第一纵切面端到端（signed Package → … → inspect）"
+  assurance: H4
+  date: "2026-08-30"
+- id: b-store-fs-semantics-001-apfs-calibration
+  path: docs/evidence/stage-b/b-store-fs-semantics-001-apfs-calibration.md
+  title: "B-STORE-FS-SEMANTICS-001：层 1 文件系统语义矩阵 — fault VFS 模型在 APFS 上的校准"
+  scope: "层 1 文件系统语义矩阵 — fault VFS 模型在 APFS 上的校准"
+  assurance: POC
+  date: "2026-08-29"
+- id: b-task-001-fault-injection
+  path: docs/evidence/stage-b/b-task-001-fault-injection.md
+  title: "B-TASK-001：TaskAuthority fault-injection 增量证据（F1–F4 对齐矩阵）"
+  scope: "TaskAuthority fault-injection 增量证据（F1–F4 对齐矩阵）"
+  assurance: H3
+  date: "2026-08-04"
+- id: b-task-001-task-authority-commit-permit
+  path: docs/evidence/stage-b/b-task-001-task-authority-commit-permit.md
+  title: "B-TASK-001：durable TaskAuthority 与双 Attempt 唯一 CommitPermit 初始证据"
+  scope: "durable TaskAuthority 与双 Attempt 唯一 CommitPermit 初始证据"
+  assurance: H3
+  date: "2026-08-04"
+- id: b-task-002-effect-permit-dispatch
+  path: docs/evidence/stage-b/b-task-002-effect-permit-dispatch.md
+  title: "B-TASK-002：EffectPermit 签发与逐槽 EffectSlot 状态机初始证据"
+  scope: "EffectPermit 签发与逐槽 EffectSlot 状态机初始证据"
+  assurance: H3
+  date: "2026-08-04"
+- id: b-task-003-crash-windows
+  path: docs/evidence/stage-b/b-task-003-crash-windows.md
+  title: "B-TASK-003：三点崩溃窗口与 effect 表组故障注入增量证据"
+  scope: "三点崩溃窗口与 effect 表组故障注入增量证据"
+  assurance: H3
+  date: "2026-08-05"
+- id: b-task-003-fault-injection
+  path: docs/evidence/stage-b/b-task-003-fault-injection.md
+  title: "B-TASK-003：schema-v3 表组（quarantine / adoption / reconcile / effect-history / finalize-proofs）故障注入增量证据"
+  scope: "schema-v3 表组（quarantine / adoption / reconcile / effect-history / finalize-proofs）故障注入增量证据"
+  assurance: H3
+  date: "2026-08-05"
+- id: b-task-003-reconcile-effect-history
+  path: docs/evidence/stage-b/b-task-003-reconcile-effect-history.md
+  title: "B-TASK-003：EFFECT_UNKNOWN quarantine/reconcile、跨 Attempt effect history 与 retry fence、required slot 成功语义初始证据"
+  scope: "EFFECT_UNKNOWN quarantine/reconcile、跨 Attempt effect history 与 retry fence、required slot 成功语义初始证据"
+  assurance: H3
+  date: "2026-08-05"
+- id: b-task-004-task-group
+  path: docs/evidence/stage-b/b-task-004-task-group.md
+  title: "B-TASK-004：TaskGroup 组织层——membership generation/root CAS、Admission/Removal Receipt、树状取消与聚合状态初始证据"
+  scope: "TaskGroup 组织层——membership generation/root CAS、Admission/Removal Receipt、树状取消与聚合状态初始证据"
+  assurance: H3
+  date: "2026-08-05"
+- id: b-task-005-commit-group-binding
+  path: docs/evidence/stage-b/b-task-005-commit-group-binding.md
+  title: "B-TASK-005：WriteSet / CommitPermit / TaskCommitReceipt 组绑定证据"
+  scope: "WriteSet / CommitPermit / TaskCommitReceipt 组绑定证据"
+  assurance: H3
+  date: "2026-08-09"
+- id: b-task-006-artifact-commit-plan
+  path: docs/evidence/stage-b/b-task-006-artifact-commit-plan.md
+  title: "B-TASK-006A：Artifact publication plan 与 CommitPermit 持久绑定"
+  scope: "Artifact publication plan 与 CommitPermit 持久绑定"
+  assurance: H3
+  date: "2026-08-09"
+- id: b-task-006b-artifact-publication-progress
+  path: docs/evidence/stage-b/b-task-006b-artifact-publication-progress.md
+  title: "B-TASK-006B：Artifact publication receipt 消费与 partial/ready 状态"
+  scope: "Artifact publication receipt 消费与 partial/ready 状态"
+  assurance: H3
+  date: "2026-08-09"
+- id: b-task-006c-artifact-publication-authorization
+  path: docs/evidence/stage-b/b-task-006c-artifact-publication-authorization.md
+  title: "B-TASK-006C：Artifact publication 授权与 membership freeze"
+  scope: "Artifact publication 授权与 membership freeze"
+  assurance: H3
+  date: "2026-08-09"
+- id: b-task-006d-artifact-prepared-finalize
+  path: docs/evidence/stage-b/b-task-006d-artifact-prepared-finalize.md
+  title: "B-TASK-006D：Artifact prepared finalize 与 nested Task receipt"
+  scope: "Artifact prepared finalize 与 nested Task receipt"
+  assurance: H3
+  date: "2026-08-09"
+- id: b-task-006e-cross-authority-coordinator
+  path: docs/evidence/stage-b/b-task-006e-cross-authority-coordinator.md
+  title: "B-TASK-006E：单机 cross-authority commit coordinator"
+  scope: "单机 cross-authority commit coordinator"
+  assurance: H3
+  date: "2026-08-09"
+- id: b-task-006f-coordinator-fault-matrix
+  path: docs/evidence/stage-b/b-task-006f-coordinator-fault-matrix.md
+  title: "B-TASK-006F：cross-authority coordinator 写故障矩阵"
+  scope: "cross-authority coordinator 写故障矩阵"
+  assurance: H3
+  date: "2026-08-09"
+- id: b-task-006g-pending-scan-isolation
+  path: docs/evidence/stage-b/b-task-006g-pending-scan-isolation.md
+  title: "B-TASK-006G：pending scan 逐 plan 隔离与健康报告"
+  scope: "pending scan 逐 plan 隔离与健康报告"
+  assurance: H3
+  date: "2026-08-09"
+- id: b-task-006h-task-authority-recovery-worker
+  path: docs/evidence/stage-b/b-task-006h-task-authority-recovery-worker.md
+  title: "B-TASK-006H：TaskAuthority-owned commit recovery worker"
+  scope: "TaskAuthority-owned commit recovery worker"
+  assurance: H3
+  date: "2026-08-09"
+- id: b-task-006i-durable-recovery-ledger
+  path: docs/evidence/stage-b/b-task-006i-durable-recovery-ledger.md
+  title: "B-TASK-006I：durable recovery ledger 与 deterministic jitter"
+  scope: "durable recovery ledger 与 deterministic jitter"
+  assurance: H3
+  date: "2026-08-09"
+- id: b-task-006j-worker-durable-scheduling-health
+  path: docs/evidence/stage-b/b-task-006j-worker-durable-scheduling-health.md
+  title: "B-TASK-006J：worker durable scheduling 与 operations health"
+  scope: "worker durable scheduling 与 operations health"
+  assurance: H3
+  date: "2026-08-09"
+- id: b-task-006k-durable-recovery-alert-acknowledgement
+  path: docs/evidence/stage-b/b-task-006k-durable-recovery-alert-acknowledgement.md
+  title: "B-TASK-006K：durable recovery alert acknowledgement"
+  scope: "durable recovery alert acknowledgement"
+  assurance: H3
+  date: "2026-08-09"
+- id: b-task-006l-system-control-recovery-handler
+  path: docs/evidence/stage-b/b-task-006l-system-control-recovery-handler.md
+  title: "B-TASK-006L：SystemControl recovery handler"
+  scope: "SystemControl recovery handler"
+  assurance: H3
+  date: "2026-08-23"
+- id: b-task-006m-recovery-metrics-export
+  path: docs/evidence/stage-b/b-task-006m-recovery-metrics-export.md
+  title: "B-TASK-006M：recovery metrics export"
+  scope: "recovery metrics export"
+  assurance: H3
+  date: "2026-08-23"
+- id: b-task-006n-dual-authority-vfs-process-fault-matrix
+  path: docs/evidence/stage-b/b-task-006n-dual-authority-vfs-process-fault-matrix.md
+  title: "B-TASK-006N：dual-authority VFS / process crash fault matrix"
+  scope: "dual-authority VFS / process crash fault matrix"
+  assurance: H3
+  date: "2026-08-09"
+- id: b-task-006o-durable-task-snapshot-receipt
+  path: docs/evidence/stage-b/b-task-006o-durable-task-snapshot-receipt.md
+  title: "B-TASK-006O：durable TaskSnapshotReceipt"
+  scope: "durable TaskSnapshotReceipt"
+  assurance: H3
+  date: "2026-08-09"
+- id: b-task-006p-shared-nominal-identity-spine
+  path: docs/evidence/stage-b/b-task-006p-shared-nominal-identity-spine.md
+  title: "B-TASK-006P：共享 nominal identity spine"
+  scope: "共享 nominal identity spine"
+  assurance: H3
+  date: "2026-08-09"
+- id: b-task-007a-self-participant-registry
+  path: docs/evidence/stage-b/b-task-007a-self-participant-registry.md
+  title: "B-TASK-007A：TaskStore self-participant registry"
+  scope: "TaskStore self-participant registry"
+  assurance: H3
+  date: "2026-08-09"
+- id: b-task-007b1-authority-endpoint-proofs
+  path: docs/evidence/stage-b/b-task-007b1-authority-endpoint-proofs.md
+  title: "B-TASK-007B1：Artifact/Semantic authority endpoint proofs"
+  scope: "Artifact/Semantic authority endpoint proofs"
+  assurance: H3
+  date: "2026-08-09"
+- id: b-task-007b2-verified-participant-registration
+  path: docs/evidence/stage-b/b-task-007b2-verified-participant-registration.md
+  title: "B-TASK-007B2：TaskAuthority verified participant registration CAS"
+  scope: "TaskAuthority verified participant registration CAS"
+  assurance: H3
+  date: "2026-08-11"
+- id: b-task-007c1-resource-endpoint-proofs
+  path: docs/evidence/stage-b/b-task-007c1-resource-endpoint-proofs.md
+  title: "B-TASK-007C1：Driver gateway / Resource-Ledger endpoint proofs"
+  scope: "Driver gateway / Resource-Ledger endpoint proofs"
+  assurance: H3
+  date: "2026-08-11"
+- id: b-task-007c2-verified-resource-registration
+  path: docs/evidence/stage-b/b-task-007c2-verified-resource-registration.md
+  title: "B-TASK-007C2：TaskAuthority verified Driver/Resource registration"
+  scope: "TaskAuthority verified Driver/Resource registration"
+  assurance: H3
+  date: "2026-08-11"
+- id: b-task-007d1-participant-binding-propagation
+  path: docs/evidence/stage-b/b-task-007d1-participant-binding-propagation.md
+  title: "B-TASK-007D1：EffectPermit / Task Receipt participant binding"
+  scope: "EffectPermit / Task Receipt participant binding"
+  assurance: H3
+  date: "2026-08-11"
+- id: b-task-008a-verified-write-set-seal
+  path: docs/evidence/stage-b/b-task-008a-verified-write-set-seal.md
+  title: "B-TASK-008A：authority-verified snapshot/read-set seal"
+  scope: "authority-verified snapshot/read-set seal"
+  assurance: H3
+  date: "2026-08-13"
+- id: b-task-008b1-process-write-set-binding
+  path: docs/evidence/stage-b/b-task-008b1-process-write-set-binding.md
+  title: "B-TASK-008B1：Process/AgentInstance/IsolationDomain owner binding"
+  scope: "Process/AgentInstance/IsolationDomain owner binding"
+  assurance: H3
+  date: "2026-08-13"
+- id: b-task-008b2-semantic-resource-write-set-binding
+  path: docs/evidence/stage-b/b-task-008b2-semantic-resource-write-set-binding.md
+  title: "B-TASK-008B2：Semantic / Resource owner readback"
+  scope: "Semantic / Resource owner readback"
+  assurance: H3
+  date: "2026-08-13"
+- id: b-task-008c1-planned-effect-write-set-binding
+  path: docs/evidence/stage-b/b-task-008c1-planned-effect-write-set-binding.md
+  title: "B-TASK-008C1：sealed TaskWriteSet planned-effect binding"
+  scope: "sealed TaskWriteSet planned-effect binding"
+  assurance: H3
+  date: "2026-08-14"
+- id: b-task-008c2a-effect-endpoint-binding
+  path: docs/evidence/stage-b/b-task-008c2a-effect-endpoint-binding.md
+  title: "B-TASK-008C2A：planned effect owner endpoint binding"
+  scope: "planned effect owner endpoint binding"
+  assurance: H3
+  date: "2026-08-14"
+- id: b-task-008c2b-artifact-write-publication-binding
+  path: docs/evidence/stage-b/b-task-008c2b-artifact-write-publication-binding.md
+  title: "B-TASK-008C2B：Artifact proposed-write 与 publication plan binding"
+  scope: "Artifact proposed-write 与 publication plan binding"
+  assurance: H3
+  date: "2026-08-14"
+- id: b-task-008c2c-semantic-append-binding
+  path: docs/evidence/stage-b/b-task-008c2c-semantic-append-binding.md
+  title: "B-TASK-008C2C：Semantic 追加声明与直接耐久收据绑定"
+  scope: "Semantic 追加声明与直接耐久收据绑定"
+  assurance: H3
+  date: "2026-08-14"
+- id: b-task-008c2d-semantic-durability-observation
+  path: docs/evidence/stage-b/b-task-008c2d-semantic-durability-observation.md
+  title: "B-TASK-008C2D：Semantic DurabilityReceipt 观察与可选绑定"
+  scope: "Semantic DurabilityReceipt 观察与可选绑定"
+  assurance: H3
+  date: "2026-08-14"
+- id: b-task-008c2e-semantic-finalization-guard
+  path: docs/evidence/stage-b/b-task-008c2e-semantic-finalization-guard.md
+  title: "B-TASK-008C2E：Semantic 收据终结前权威复核"
+  scope: "Semantic 收据终结前权威复核"
+  assurance: H3
+  date: "2026-08-15"
+- id: b-task-008c2f-semantic-admission-policy-binding
+  path: docs/evidence/stage-b/b-task-008c2f-semantic-admission-policy-binding.md
+  title: "B-TASK-008C2F：Semantic admission-policy 声明与 owner 绑定"
+  scope: "Semantic admission-policy 声明与 owner 绑定"
+  assurance: H3
+  date: "2026-08-15"
+- id: b-task-008c2g-artifact-permit-owner-revalidation
+  path: docs/evidence/stage-b/b-task-008c2g-artifact-permit-owner-revalidation.md
+  title: "B-TASK-008C2G-ART：Artifact head permit 前 owner 复核"
+  scope: "Artifact head permit 前 owner 复核"
+  assurance: H3
+  date: "2026-08-15"
+- id: b-task-008c2g-barrier-principal-signature
+  path: docs/evidence/stage-b/b-task-008c2g-barrier-principal-signature.md
+  title: "B-TASK-008C2G-BARRIER-SIG：takeover barrier observation principal 签名验证"
+  scope: "takeover barrier observation principal 签名验证"
+  assurance: H3
+  date: "2026-08-18"
+- id: b-task-008c2g-cross-term-adoption
+  path: docs/evidence/stage-b/b-task-008c2g-cross-term-adoption.md
+  title: "B-TASK-008C2G-CROSS-TERM-ADOPTION：旧 quarantined permit 的 successor-term adoption"
+  scope: "旧 quarantined permit 的 successor-term adoption"
+  assurance: H3
+  date: "2026-08-19"
+- id: b-task-008c2g-operation-endpoint-binding
+  path: docs/evidence/stage-b/b-task-008c2g-operation-endpoint-binding.md
+  title: "B-TASK-008C2G-OP：Operation endpoint 的 TaskWriteSet / participant registry 接线"
+  scope: "Operation endpoint 的 TaskWriteSet / participant registry 接线"
+  assurance: H3
+  date: "2026-08-15"
+- id: b-task-008c2g-process-permit-owner-revalidation
+  path: docs/evidence/stage-b/b-task-008c2g-process-permit-owner-revalidation.md
+  title: "B-TASK-008C2G-PROCESS：Process binding permit 前 owner 复核"
+  scope: "Process binding permit 前 owner 复核"
+  assurance: H3
+  date: "2026-08-15"
+- id: b-task-008c2g-resource-cost-commit
+  path: docs/evidence/stage-b/b-task-008c2g-resource-cost-commit.md
+  title: "B-TASK-008C2G：Task 侧 Resource cost-receipt 桥接（owner-derived 全量聚合）"
+  scope: "Task 侧 Resource cost-receipt 桥接（owner-derived 全量聚合）"
+  assurance: H3
+  date: "2026-08-24"
+- id: b-task-008c2g-resource-permit-owner-revalidation
+  path: docs/evidence/stage-b/b-task-008c2g-resource-permit-owner-revalidation.md
+  title: "B-TASK-008C2G-RES：Resource Reservation permit 前 owner 复核"
+  scope: "Resource Reservation permit 前 owner 复核"
+  assurance: H3
+  date: "2026-08-15"
+- id: b-task-008c2g-semantic-coordinator
+  path: docs/evidence/stage-b/b-task-008c2g-semantic-coordinator.md
+  title: "B-TASK-008C2G-COORD：Semantic publication cross-authority coordinator"
+  scope: "Semantic publication cross-authority coordinator"
+  assurance: H3
+  date: "2026-08-23"
+- id: b-task-008c2g-semantic-publication-consumer
+  path: docs/evidence/stage-b/b-task-008c2g-semantic-publication-consumer.md
+  title: "B-TASK-008C2G-SEM：TaskAuthority Semantic publication consumer 与混合终结"
+  scope: "TaskAuthority Semantic publication consumer 与混合终结"
+  assurance: H3
+  date: "2026-08-16"
+- id: b-task-008c2g-successor-registry
+  path: docs/evidence/stage-b/b-task-008c2g-successor-registry.md
+  title: "B-TASK-008C2G-SUCCESSOR-REGISTRY：successor term registry 重开与新 permit 接线"
+  scope: "successor term registry 重开与新 permit 接线"
+  assurance: H3
+  date: "2026-08-18"
+- id: b-task-008c2g-takeover-completion
+  path: docs/evidence/stage-b/b-task-008c2g-takeover-completion.md
+  title: "B-TASK-008C2G-COMPLETION：takeover 完成与 successor assignment 激活"
+  scope: "takeover 完成与 successor assignment 激活"
+  assurance: H3
+  date: "2026-08-18"
+- id: b-task-008c2g-takeover-control-ipc
+  path: docs/evidence/stage-b/b-task-008c2g-takeover-control-ipc.md
+  title: "B-TASK-008C2G-IPC：TakeoverControl 跨进程签名 barrier 提交服务"
+  scope: "TakeoverControl 跨进程签名 barrier 提交服务"
+  assurance: H3
+  date: "2026-08-23"
+- id: b-task-008c2g-takeover-fault-matrix
+  path: docs/evidence/stage-b/b-task-008c2g-takeover-fault-matrix.md
+  title: "B-TASK-008C2G-FAULT：takeover fence 表组故障注入矩阵"
+  scope: "takeover fence 表组故障注入矩阵"
+  assurance: H3
+  date: "2026-08-17"
+- id: b-task-008c2g-unified-recovery
+  path: docs/evidence/stage-b/b-task-008c2g-unified-recovery.md
+  title: "B-TASK-008C2G-UNIFIED-RECOVERY：统一恢复面（semantic 恢复台账 + worker 双域驱动 + 统一 TaskCommitReceipt）"
+  scope: "统一恢复面（semantic 恢复台账 + worker 双域驱动 + 统一 TaskCommitReceipt）"
+  assurance: H3
+  date: "2026-09-13"
+- id: b-task-road-b003-gaps
+  path: docs/evidence/stage-b/b-task-road-b003-gaps.md
+  title: "ROAD-B-003 任务层补齐证据：跨 Task handle 泄漏与 snapshot 漂移"
+  scope: "跨 Task handle 泄漏与 snapshot 漂移"
+  assurance: H3
+  date: "2026-08-31"
+- id: b-task-scale-001
+  path: docs/evidence/stage-b/b-task-scale-001.md
+  title: "B-TASK-SCALE-001：ROAD-B-004 前片 ScaleProfile 骨架与 10K 已落地维度规模证明"
+  scope: "ROAD-B-004 前片 ScaleProfile 骨架与 10K 已落地维度规模证明"
+  assurance: H3
+  date: "2026-08-30"
+- id: b-topic-001-topic-service-single-log-fanout
+  path: docs/evidence/stage-b/b-topic-001-topic-service-single-log-fanout.md
+  title: "B-TOPIC-001：Topic 服务层单 log fanout 最小前缀"
+  scope: "Topic 服务层单 log fanout 最小前缀"
+  assurance: H3
+  date: "2026-08-28"
+- id: b-wait-001-durable-wait-registry
+  path: docs/evidence/stage-b/b-wait-001-durable-wait-registry.md
+  title: "B-WAIT-001：Durable wait registry（commit + wakeup 前缀）"
+  scope: "Durable wait registry（commit + wakeup 前缀）"
+  assurance: H3
+  date: "2026-08-29"
+- id: poc-0001-tokio-fiber-runtime
+  path: docs/evidence/stage-b/poc-0001-tokio-fiber-runtime.md
+  title: "PoC-0001：Tokio ExecutionFiber Runtime 初始证据"
+  scope: "Tokio ExecutionFiber Runtime 初始证据"
+  assurance: POC
+  date: "2026-07-29"
+- id: poc-0002-operation-callback-fence
+  path: docs/evidence/stage-b/poc-0002-operation-callback-fence.md
+  title: "PoC-0002：Operation Callback Fence 初始证据"
+  scope: "Operation Callback Fence 初始证据"
+  assurance: POC
+  date: "2026-07-29"
+- id: poc-0003-sqlite-operation-authority
+  path: docs/evidence/stage-b/poc-0003-sqlite-operation-authority.md
+  title: "PoC-0003：SQLite Operation Authority 初始证据"
+  scope: "SQLite Operation Authority 初始证据"
+  assurance: POC
+  date: "2026-07-29"
+- id: poc-0004-outbox-wake-consumer
+  path: docs/evidence/stage-b/poc-0004-outbox-wake-consumer.md
+  title: "PoC-0004：Durable Outbox → Tokio Fiber Wake Consumer 集成证据"
+  scope: "Durable Outbox → Tokio Fiber Wake Consumer 集成证据"
+  assurance: POC
+  date: "2026-08-01"
