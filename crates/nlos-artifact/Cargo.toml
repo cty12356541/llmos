@@ -7,10 +7,12 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-# Ed25519 signing for the `nlos-package` developer CLI (src/bin): builds
-# sign package manifests over the same `SigningKey` type the crate's tests
-# use. Promoted from dev-dependencies because src/bin targets cannot link
-# dev-dependencies; the library itself never signs (W33-A evidence §2).
+# Ed25519 for the package surface: the `nlos-package` bin signs package
+# manifests (src/bin), and the library's conformance kit verifies the
+# signature-chain rule against the embedded signer descriptor (W33-C).
+# Promoted from dev-dependencies by W33-A because src/bin targets cannot
+# link dev-dependencies; the signing key construction mirrors the
+# crate's tests (W33-A evidence §2).
 ed25519-dalek.workspace = true
 nlos-identity = { path = "../nlos-identity" }
 nlos-types = { path = "../nlos-types" }

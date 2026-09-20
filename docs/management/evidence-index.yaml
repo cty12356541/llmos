@@ -811,7 +811,7 @@
 - id: b-artifact-007-package-sdk
   path: docs/evidence/stage-b/b-artifact-007-package-sdk.md
   title: "B-ARTIFACT-007：Package SDK 开发者工具链（nlos-package CLI）"
-  scope: "keygen/build/verify 三命令 + 可复现签名包文件 + 权威验签管线复用（W33-A/B1-4）"
+  scope: "keygen/build/verify 三命令 + 可复现签名包文件 + 权威验签管线复用（W33-A/B1-4）；§6 conformance kit：包结构/manifest/验签一致性检查器 PKG-CONF-001..042（W33-C/X-3）"
   assurance: H3
   date: "2026-09-21"
 - id: b-driver-001-mock-provider-plane

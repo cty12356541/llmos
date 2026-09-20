@@ -137,6 +137,7 @@
 mod auto_gc;
 mod blob;
 mod cache;
+mod conformance;
 mod gc;
 mod model;
 mod package;
@@ -160,6 +161,7 @@ use nlos_types::{ArtifactId, PrincipalId};
 pub use auto_gc::{
     AutoGcHealth, AutoGcSkipReason, AutoGcTickDecision, AutoOrphanGcPolicy, TickAutoGcRequest,
 };
+pub use conformance::{ConformanceFinding, ConformanceReport, ConformanceRule, check_package_file};
 pub use gc::{CollectOrphanBlobsDecision, CollectOrphanBlobsRequest, GcReceipt};
 pub use model::{
     ArtifactHeadEndpointProof, ArtifactProvenanceReceipt, ArtifactPublicationReceipt,

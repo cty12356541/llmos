@@ -16,6 +16,7 @@
 //! nlos-package keygen --seed <HEX64> [--out <KEYFILE>]
 //! nlos-package build <DIR> --key <KEYFILE> [--out <PKGFILE>]
 //! nlos-package verify <PKGFILE> [--store <DIR>] [--identity <DIR>] [--at-ms <U64>]
+//! nlos-package conformance <PKGFILE>
 //! ```
 //!
 //! # Determinism
@@ -30,7 +31,18 @@
 //! `0` success · `1` usage · `2` malformed input (manifest, key file,
 //! package file, shape) · `3` signature/identity verification failure ·
 //! `4` content-binding failure (tampered payload) · `5` internal I/O or
-//! store failure.
+//! store failure · `6` conformance findings (see
+//! docs/developers/package-conformance.md).
+//!
+//! # Conformance (W33-C)
+//!
+//! `conformance` is the offline producer-side gate: it runs the
+//! crate-level rule set (`nlos_artifact::check_package_file`) over ANY
+//! `nlos/package-file/v1` package — not just ones built by this CLI —
+//! and prints every typed `PKG-CONF-###` finding. Unlike `verify`, it
+//! needs no store or identity authority and never admits a package; it
+//! checks the format invariants (structure, manifest schema, signature
+//! against the embedded descriptor, digest consistency, window sanity).
 //!
 //! # Trust boundary (dev toolchain only)
 //!
@@ -59,8 +71,9 @@ use nlos_types::{ArtifactId, IdempotencyKey, PackageId};
 use sha2::{Digest, Sha256};
 
 const USAGE: &str = "usage: nlos-package keygen --seed <HEX64> [--out <KEYFILE>] \
- | build <DIR> --key <KEYFILE> [--out <PKGFILE>] \
- | verify <PKGFILE> [--store <DIR>] [--identity <DIR>] [--at-ms <U64>]";
+  | build <DIR> --key <KEYFILE> [--out <PKGFILE>] \
+  | verify <PKGFILE> [--store <DIR>] [--identity <DIR>] [--at-ms <U64>] \
+  | conformance <PKGFILE>";
 
 /// Domain separators for CLI-owned derivations; each derivation is plain
 /// SHA-256 over `domain ‖ input` (the crate's receipt-id precedent).
@@ -83,6 +96,9 @@ enum ToolError {
     Binding(String),
     /// Internal I/O or store failure (exit 5).
     Internal(String),
+    /// Conformance findings (exit 6); the findings themselves are
+    /// already printed to stdout by the conformance command.
+    Conformance(usize),
 }
 
 impl ToolError {
@@ -97,6 +113,7 @@ impl ToolError {
             Self::Signature(_) => 3,
             Self::Binding(_) => 4,
             Self::Internal(_) => 5,
+            Self::Conformance(_) => 6,
         }
     }
 }
@@ -139,6 +156,7 @@ fn main() -> ExitCode {
         "keygen" => keygen_command(&arguments[1..]),
         "build" => build_command(&arguments[1..]),
         "verify" => verify_command(&arguments[1..]),
+        "conformance" => conformance_command(&arguments[1..]),
         _ => Err(ToolError::Usage),
     };
     match result {
@@ -162,6 +180,7 @@ impl ToolError {
             | Self::Signature(text)
             | Self::Binding(text)
             | Self::Internal(text) => text.clone(),
+            Self::Conformance(count) => format!("package conformance violations: {count}"),
         }
     }
 }
@@ -915,6 +934,46 @@ fn materialize_entry(
         })
         .map_err(from_artifact_error)?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// conformance
+// ---------------------------------------------------------------------------
+
+/// Offline producer-side rule check over one package file: collects the
+/// typed `PKG-CONF-###` findings of the crate's conformance kit and
+/// prints one line per finding plus a summary. Clean reports exit 0,
+/// violations exit 6; an unreadable file is a typed input failure (2).
+fn conformance_command(arguments: &[String]) -> Result<(), ToolError> {
+    let mut package_path = None;
+    parse_flags(arguments, &mut |_, _| false, &mut |token| {
+        if package_path.is_none() {
+            package_path = Some(token.to_string());
+            true
+        } else {
+            false
+        }
+    })?;
+    let Some(package_path) = package_path else {
+        return Err(ToolError::Usage);
+    };
+
+    let bytes = fs::read(&package_path)
+        .map_err(|error| ToolError::input("read package", &format!("{package_path}: {error}")))?;
+    let report = nlos_artifact::check_package_file(&bytes);
+    for finding in &report.findings {
+        println!("{} {}", finding.rule.id(), finding.detail);
+    }
+    if report.is_conformant() {
+        println!("CONFORMANT {package_path}");
+        Ok(())
+    } else {
+        println!(
+            "NONCONFORMANT {package_path} findings {}",
+            report.findings.len()
+        );
+        Err(ToolError::Conformance(report.findings.len()))
+    }
 }
 
 // ---------------------------------------------------------------------------
