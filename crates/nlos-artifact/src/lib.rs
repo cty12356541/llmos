@@ -61,9 +61,23 @@
 //! deletion path: it removes blobs under `artifacts/blobs/` whose digest
 //! no committed revision, no staged revision (any state), and no head
 //! references, and records exactly what it removed in one immutable GC
-//! receipt replayable by idempotency key across restarts. It is never
-//! triggered automatically. See the `gc` module for the conservative
-//! judgement rule and the crash-window semantics.
+//! receipt replayable by idempotency key across restarts. See the `gc`
+//! module for the conservative judgement rule and the crash-window
+//! semantics.
+//!
+//! # Automatic orphan-GC trigger (W28-E)
+//!
+//! [`ArtifactStore::tick_auto_gc`] evaluates a periodic or threshold
+//! trigger condition on an explicit, caller-driven tick and, when it is
+//! met, runs one pass of the *unchanged* explicit core under a key from
+//! the trigger's own derived idempotency-key space — there is still no
+//! second deletion path. No background thread and no open-time sweep:
+//! the caller owns the clock and the cadence.
+//! [`AutoOrphanGcPolicy::Disabled`](crate::AutoOrphanGcPolicy::Disabled)
+//! is a full bypass, and [`ArtifactStore::inspect_auto_gc_health`]
+//! reads back the durable trigger counters (passes, orphans collected,
+//! failures, last pass/failure times). See the `auto_gc` module for the
+//! pass protocol and crash windows.
 //!
 //! # Retention policy (minimal prefix, B-ARTIFACT-005)
 //!
@@ -88,10 +102,12 @@
 //!   blob layer is confined to the internal `blob` module so a later slice
 //!   can lift it behind a backend trait.
 //! - GC is an explicit conservative orphan sweep only
-//!   (`collect_orphan_blobs`): no automatic/scheduled trigger, no
-//!   cross-artifact or external reference tracking. Retention is a
-//!   minimal read-visibility upper bound only (`set_retention`): no
-//!   automatic cleanup or retention-GC, no TTL renewal engine, no
+//!   (`collect_orphan_blobs`): no cross-artifact or external reference
+//!   tracking, and no crate-owned schedule, background thread, or
+//!   open-time sweep — automatic triggering is one explicit
+//!   caller-driven tick (`tick_auto_gc`) over the same core. Retention
+//!   is a minimal read-visibility upper bound only (`set_retention`):
+//!   no automatic cleanup or retention-GC, no TTL renewal engine, no
 //!   per-revision bounds. No encryption, provenance chains, or legal
 //!   hold. Package
 //!   verification is a minimal prefix only: no installation/update
@@ -102,6 +118,7 @@
 //!   latency stays predictable and recovery reporting is an operator
 //!   decision. Callers may invoke it immediately after open.
 
+mod auto_gc;
 mod blob;
 mod cache;
 mod gc;
@@ -123,6 +140,9 @@ use std::path::PathBuf;
 use nlos_identity::IdentityAuthorityError;
 use nlos_types::{ArtifactId, PrincipalId};
 
+pub use auto_gc::{
+    AutoGcHealth, AutoGcSkipReason, AutoGcTickDecision, AutoOrphanGcPolicy, TickAutoGcRequest,
+};
 pub use gc::{CollectOrphanBlobsDecision, CollectOrphanBlobsRequest, GcReceipt};
 pub use model::{
     ArtifactHeadEndpointProof, ArtifactProvenanceReceipt, ArtifactPublicationReceipt,

@@ -47,15 +47,20 @@
 //!
 //! # Scope and honesty boundaries
 //!
-//! Explicit invocation only: no automatic trigger, schedule, or open-time
-//! sweep. Retention expiry (`retention` module) never feeds this module:
-//! an expired artifact's revisions are still committed reference rows, so
-//! expired-but-referenced blobs are mechanically not orphans and the
-//! fail-safe direction is unchanged. Physical reclamation of expired
-//! artifacts is separate follow-up work. No cross-artifact or external
-//! reference tracking — a blob referenced only from outside this store is
-//! by construction an orphan *to this store*. Presence, not integrity,
-//! decides candidacy; full-blob re-hashing remains an audit concern.
+//! This module's entry is explicit-only. The automatic trigger
+//! (`auto_gc` module, W28-E) adds no second deletion path: every
+//! triggered pass is one [`ArtifactStore::collect_orphan_blobs`] call
+//! under a derived key from the trigger's own key space. There is still
+//! no schedule of the crate's own, no background thread, and no
+//! open-time sweep. Retention expiry (`retention` module) never feeds
+//! this module: an expired artifact's revisions are still committed
+//! reference rows, so expired-but-referenced blobs are mechanically not
+//! orphans and the fail-safe direction is unchanged. Physical
+//! reclamation of expired artifacts is separate follow-up work. No
+//! cross-artifact or external reference tracking — a blob referenced
+//! only from outside this store is by construction an orphan *to this
+//! store*. Presence, not integrity, decides candidacy; full-blob
+//! re-hashing remains an audit concern.
 
 use std::collections::HashSet;
 
@@ -140,12 +145,7 @@ impl ArtifactStore {
             return Ok(CollectOrphanBlobsDecision::Replayed(existing));
         }
 
-        let mut referenced: HashSet<ContentDigest> = load_all_revision_digests(&transaction)?
-            .into_iter()
-            .map(|(_, _, digest)| digest)
-            .collect();
-        referenced.extend(load_all_staged_digests_any_state(&transaction)?);
-        referenced.extend(load_all_head_digests(&transaction)?);
+        let referenced = referenced_digests(&transaction)?;
 
         let scan = blob::scan_blobs(&self.paths().artifacts.blobs)?;
         let scanned_blob_count = u64::try_from(scan.present.len()).unwrap_or(u64::MAX);
@@ -187,6 +187,37 @@ impl ArtifactStore {
         load_receipt_optional(&*connection, receipt_id)?
             .ok_or(ArtifactError::GcReceiptNotFound(receipt_id))
     }
+
+    /// Read-only count of current orphan candidates: the same
+    /// present-minus-referenced diff [`ArtifactStore::collect_orphan_blobs`]
+    /// computes, without deleting anything. The auto-GC threshold probe
+    /// (`auto_gc` module) is the only caller; a racy count can cause at
+    /// most one extra conservative pass, never a wrong deletion.
+    pub(crate) fn count_orphan_candidates(&self) -> Result<u64, ArtifactError> {
+        let connection = self.lock_connection()?;
+        let referenced = referenced_digests(&*connection)?;
+        let scan = blob::scan_blobs(&self.paths().artifacts.blobs)?;
+        Ok(u64::try_from(
+            scan.present
+                .iter()
+                .filter(|digest| !referenced.contains(*digest))
+                .count(),
+        )
+        .unwrap_or(u64::MAX))
+    }
+}
+
+/// The three-layer conservative reference set: every committed revision
+/// digest, every staged digest in any state, and every live head. Any
+/// blob named here is retained by [`ArtifactStore::collect_orphan_blobs`].
+fn referenced_digests(source: &impl SqlRead) -> Result<HashSet<ContentDigest>, ArtifactError> {
+    let mut referenced: HashSet<ContentDigest> = load_all_revision_digests(source)?
+        .into_iter()
+        .map(|(_, _, digest)| digest)
+        .collect();
+    referenced.extend(load_all_staged_digests_any_state(source)?);
+    referenced.extend(load_all_head_digests(source)?);
+    Ok(referenced)
 }
 
 /// Every staged digest regardless of release state: the deliberately

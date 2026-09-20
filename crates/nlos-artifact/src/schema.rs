@@ -293,6 +293,34 @@ pub(crate) fn migrate_v6(connection: &mut Connection) -> Result<(), ArtifactErro
     Ok(())
 }
 
+/// Adds the mutable singleton automatic-GC state row (W28-E): health
+/// counters plus the pass index that anchors the trigger's derived
+/// idempotency-key space. Deliberately NOT immutable-trigger-protected:
+/// it is an aggregate health counter, not an authority record — the
+/// per-pass GC receipts stay immutable.
+pub(crate) fn migrate_v8(connection: &mut Connection) -> Result<(), ArtifactError> {
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "CREATE TABLE artifact_auto_gc_state (
+            singleton INTEGER PRIMARY KEY NOT NULL CHECK(singleton = 0),
+            passes_completed INTEGER NOT NULL CHECK(passes_completed >= 0),
+            orphans_collected_total INTEGER NOT NULL CHECK(orphans_collected_total >= 0),
+            failure_count INTEGER NOT NULL CHECK(failure_count >= 0),
+            last_pass_at_ms INTEGER CHECK(last_pass_at_ms IS NULL OR last_pass_at_ms >= 0),
+            last_failure_at_ms INTEGER CHECK(last_failure_at_ms IS NULL OR last_failure_at_ms >= 0)
+        ) STRICT;
+
+        INSERT INTO artifact_auto_gc_state (
+            singleton, passes_completed, orphans_collected_total, failure_count,
+            last_pass_at_ms, last_failure_at_ms
+        ) VALUES (0, 0, 0, 0, NULL, NULL);
+
+        PRAGMA user_version = 8;",
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
+
 pub(crate) fn insert_artifact_head_endpoint_proof(
     transaction: &Transaction<'_>,
     artifact_id: ArtifactId,
