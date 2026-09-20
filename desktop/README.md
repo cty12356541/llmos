@@ -1,10 +1,12 @@
-# llmos 任务管理器桌面壳(Tauri 2,W32-A 只读半)
+# llmos 任务管理器桌面壳(Tauri 2,W32-A 只读半 + W32-B 写入半)
 
 可信桌面 Task Manager 外壳:TypeScript 前端 + Rust 后端命令层。后端每条
-inspect 命令都经 **ADR-0011 challenge-response 认证入口**
+inspect/控制命令都经 **ADR-0011 challenge-response 认证入口**
 (`nlos-system-control` 的 `dispatch_over_authenticated_socket`)连接真实
-SystemControl IPC 服务,前端渲染 SABI Receipt 数据。**写入/控制动作是
-W32-B;parity 钉死是 W32-C**——本壳不含任何 mutation 派发路径。
+SystemControl IPC 服务,前端渲染 SABI Receipt 数据。W32-B 加入授权控制
+动作(ack/resume/pause/cancel/kill/throttle/reclaim)的 GUI 派发与
+Receipt 展示。**parity 钉死是 W32-C**——本壳只带读路径自检 + 一条
+pause-operation 写路径探针。
 
 目录独立:本目录自带 `package.json` 与 `src-tauri/Cargo.toml`(后者含空
 `[workspace]` 表,是独立 workspace 根),不改动仓库根 `Cargo.toml` 的
@@ -15,18 +17,20 @@ members,对 `crates/` 的依赖只以相对 path dep 出现在 `src-tauri/Cargo.
 ```text
 desktop/
 ├── index.html / vite.config.ts / tsconfig.json / package.json   # 前端壳
-├── src/                    # TypeScript 前端(views:恢复/语义/任务/进程/资源/指标/一致性自检/配置)
+├── src/                    # TypeScript 前端(views:恢复/语义/资源/任务/进程/资源查询/指标/控制动作/一致性自检/配置)
 └── src-tauri/
     ├── Cargo.toml          # 独立 workspace 根;path deps → ../../crates/*
     ├── tauri.conf.json     # bundle.active=false(打包/签名是后续波次)
     ├── src/
     │   ├── lib.rs          # 命令注册
-    │   ├── ipc.rs          # 认证 IPC 客户端接线 + 全部 #[tauri::command]
-    │   ├── dto.rs          # ControlReceipt → JSON DTO 单一投影点(含 receipt_hex)
+    │   ├── ipc.rs          # 认证 IPC 客户端接线 + 全部 #[tauri::command](读 + W32-B 写)
+    │   ├── dto.rs          # ControlReceipt → JSON DTO 单一投影点(含 receipt_hex;穷尽匹配无通配臂)
     │   ├── error.rs        # 类型化 DesktopError { code, message },零 unwrap
     │   └── devfixture.rs   # feature `dev-fixture`:双入口开发夹具服务
     ├── examples/dev_server.rs        # 开发夹具服务器(认证 + plain 双入口)
-    └── tests/authenticated_read_side.rs  # 认证入口真实 dispatch 集成测试
+    └── tests/
+        ├── authenticated_read_side.rs   # W32-A:认证读侧集成测试
+        └── authenticated_write_side.rs  # W32-B:认证写侧集成测试
 ```
 
 ## 构建与运行(本机 macOS 验证过)
@@ -86,31 +90,67 @@ npm run tauri dev
 
 夹具演示数据:恢复总览应显示 worker `BackingOff`、`durable_escalated=1`、
 一条 escalated 告警;「任务查询」输入夹具打印的 `plan_id`;「一致性自检」
-选 `inspect-health` 运行应显示 `matched`。
+选 `inspect-health` 运行应显示 `matched`;「控制动作」页在 artifact 域
+「巡检读取告警」后对夹具告警点「确认告警(ack)」应得到 acknowledged
+回执(真实 TaskAuthority CAS mutation),回「恢复总览」刷新可见
+`durable_unacknowledged_escalated=0`;在 semantic/resource 域对同一
+plan_id 下发 ack/resume 应得到类型化 `NOT_FOUND`(域路由不串);
+「操作控制」下发任意动作(如 pause)在夹具上得到类型化
+`NOT_FOUND`(executor 未接线)——kill 需两步确认。「一致性自检」页
+「写路径自检」选默认参数运行应显示 `matched`(两侧同为确定性失败回执)。
+
+## 授权控制动作(W32-B 写入半)
+
+- **动作面**:恢复告警 `ack`/`resume`(artifact/semantic/resource 三域)
+  与操作控制 `pause`/`resume`/`cancel`/`kill`/`throttle`/`reclaim`,
+  全部经后端 `submit_control` 单一入口:动作 → 真实 `ControlCommand`
+  (§25.3 命令身份在派发时由 /dev/urandom 新生成)→ ADR-0011 认证入口。
+  CAS 预期取自 inspect 状态(告警行的 `total_failures`;操作目标的
+  generation/revision,进程可先经「进程查询」读取)。
+- **Receipt 展示**:每个动作按类型渲染(acknowledged/resumed/
+  operation_* 各自标题 + `receipt_reference`),回执页脚恒显
+  `control_command_id`/`correlation_id`/`receipt_hex`;类型化失败
+  (SabiFailure)与成功形态视觉区分(红/绿边框),无原始错误倾倒。
+- **kill 两步确认**:kill-operation 首次点击只武装(5 秒窗口,按钮变红
+  并提示),再次点击才真正下发;纯应用内,无新控制路径。
+- **边界**:操作执行 seam(`OperationCommandExecutor`)的宿主接线是后续
+  波次——夹具/未接线宿主上 pause 族回执为类型化 `NOT_FOUND`(executor
+  未接线),派发与回执本身真实完整;恢复告警 ack/resume 在夹具上是真实
+  mutation。
 
 ## 一致性自检(parity approach)
 
-- **运行时自检(已实现)**:GUI 的 `parity_check` 把同一只读命令派发两次——
+- **运行时自检·读路径(已实现)**:GUI 的 `parity_check` 把同一只读命令派发两次——
   GUI 经认证入口,真实 `system-control-cli` 二进制经 plain 入口——比对两侧
   `ControlReceipt::to_bytes` 的 hex(CLI stdout 首行 `RECEIPT <hex>`)。
   这与 B-TASK-006L 已固化的「in-process / plain-IPC / authenticated 三入口
   receipt 字节级一致」契约同源,桌面侧每次交换后也在回执页显示
   `receipt_hex` 供人工比对。
-- **CI 钉死(W32-C)**:把 `parity_check` 的比对逻辑下沉为仓库级测试——同一
+- **运行时自检·写路径探针(W32-B)**:`parity_check_write` 把同一方法扩展到
+  一条写路径命令(pause-operation):每次运行生成新 §25.3 命令 id,GUI 与
+  CLI 以字节同一的命令各派发一次,比对 receipt hex。开发夹具(未接线
+  executor)上两侧同为确定性类型化 `NOT_FOUND` 失败回执,应显示 matched;
+  已接线执行器的宿主上第一次派发可能真实暂停目标、第二次按 idempotency/CAS
+  纪律回 `CONFLICT`——mismatch 如实显示,这正是纪律在工作。集成测试
+  `operation_commands_dispatch_real_submits_with_typed_unwired_failures`
+  已在测试内钉住「同字节 pause 命令,认证入口与 plain 入口失败回执逐字节
+  相等」。
+- **CI 钉死(W32-C)**:把 parity 比对逻辑下沉为仓库级测试——同一
   夹具同时服务三入口,断言 GUI(认证)、CLI 子进程(plain)与 in-process
   三份 receipt hex 逐字节相等;矩阵覆盖成功读、typed NotFound、typed Rights
-  拒绝三形态(对齐 `control_ipc_auth.rs` 的既有 parity 测试)。本目录的
+  拒绝三形态(对齐 `control_ipc_auth.rs` 的既有 parity 测试),并把写路径
+  扩展为成功/失败多形态。本目录的
   `tests/authenticated_read_side.rs::authenticated_inspect_health_matches_plain_entry_bytes`
-  已是它的最小前驱(认证 vs plain 字节一致)。
+  与上述写侧断言是它的最小前驱(认证 vs plain 字节一致)。
 
 ## 边界与后续波次
 
-- **只读半**:命令面只有 `get` 投影(health/semantic/task/process/resource/
-  metrics);ack/resume/pause/cancel 等 mutation 一律不存在于本壳(W32-B)。
 - **process/resource inspector 未接线**:`InspectProcess`/`InspectResource`
   的回执仍是完整认证 GET 交换,但客户端侧 inspector 传 `None`,失败面为
   类型化 `NOT_FOUND`(「backend is not wired」)——与 CLI 行为一致(parity
-  不破坏)。接入宿主 ProcessAuthority/ResourceAuthority 属后续接线。
+  不破坏)。接入宿主 ProcessAuthority/ResourceAuthority 属后续接线;操作
+  控制(pause/kill 族)的 `OperationCommandExecutor` 宿主接线同理,未接线
+  时的回执形态与 inspector 一致(类型化 NOT_FOUND,不伪造成功)。
 - **平台**:认证入口(`nlos-system-control::auth`)目前仅 Unix;Windows
   named-pipe 认证接线、bundle/图标/签名、多窗口为后续波次。
 - **tauri.conf.json** `bundle.active=false`:`cargo build` 可全量编译链接,

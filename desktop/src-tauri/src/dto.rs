@@ -5,7 +5,7 @@
 use nlos_schema::sabi::v1::{RetryDirective, SabiErrorCode, SabiFailure};
 use nlos_system_control::control::{
     ControlOutcome, ControlReceipt, ProcessInspection, RecoveryInspection, ResourceInspection,
-    SemanticRecoveryInspection, receipt_to_hex,
+    ResourceRecoveryInspection, SemanticRecoveryInspection, receipt_to_hex,
 };
 
 /// 一条 escalated 告警(artifact/semantic 共用形态)。
@@ -17,7 +17,7 @@ pub struct RecoveryAlertDto {
     pub acknowledged_receipt_id_hex: Option<String>,
 }
 
-/// 只读命令结果;mutation 结果在 W32-A 不可达,显式单独形态而非伪造失败。
+/// 一条派发命令的回执结果:只读巡检形态 + W32-B 写入形态 + 类型化失败。
 #[derive(Clone, Debug, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum OutcomeDto {
@@ -31,6 +31,17 @@ pub enum OutcomeDto {
         alerts: Vec<RecoveryAlertDto>,
     },
     SemanticInspected {
+        total_inspected: u64,
+        total_finalized: u64,
+        consecutive_failed_cycles: u64,
+        domain_faulted: bool,
+        durable_retrying: u64,
+        durable_escalated: u64,
+        durable_unacknowledged_escalated: u64,
+        durable_resolved: u64,
+        alerts: Vec<RecoveryAlertDto>,
+    },
+    ResourceRecoveryInspected {
         total_inspected: u64,
         total_finalized: u64,
         consecutive_failed_cycles: u64,
@@ -64,7 +75,30 @@ pub enum OutcomeDto {
         retry: String,
         safe_message: String,
     },
-    UnexpectedMutation {
+    /// W32-B 写入半:mutation 回执的第一类形态——各携带权威 receipt 引用
+    /// (§24.3),由「控制动作」视图按动作类型化渲染。
+    Acknowledged {
+        receipt_id_hex: String,
+    },
+    Resumed {
+        receipt_id_hex: String,
+    },
+    OperationPaused {
+        receipt_id_hex: String,
+    },
+    OperationResumed {
+        receipt_id_hex: String,
+    },
+    OperationCancelled {
+        receipt_id_hex: String,
+    },
+    OperationKilled {
+        receipt_id_hex: String,
+    },
+    OperationThrottled {
+        receipt_id_hex: String,
+    },
+    OperationReclaimed {
         receipt_id_hex: String,
     },
 }
@@ -167,6 +201,32 @@ fn semantic_alerts(inspection: &SemanticRecoveryInspection) -> Vec<RecoveryAlert
         .collect()
 }
 
+fn resource_recovery_alerts(inspection: &ResourceRecoveryInspection) -> Vec<RecoveryAlertDto> {
+    inspection
+        .alerts
+        .iter()
+        .map(|alert| RecoveryAlertDto {
+            plan_id_hex: hex(&alert.plan_id),
+            total_failures: alert.total_failures,
+            acknowledged_receipt_id_hex: alert.acknowledged_receipt_id.clone().map(|id| hex(&id)),
+        })
+        .collect()
+}
+
+fn resource_recovery_inspected_dto(inspection: &ResourceRecoveryInspection) -> OutcomeDto {
+    OutcomeDto::ResourceRecoveryInspected {
+        total_inspected: inspection.total_inspected,
+        total_finalized: inspection.total_finalized,
+        consecutive_failed_cycles: inspection.consecutive_failed_cycles,
+        domain_faulted: inspection.domain_faulted,
+        durable_retrying: inspection.durable_retrying,
+        durable_escalated: inspection.durable_escalated,
+        durable_unacknowledged_escalated: inspection.durable_unacknowledged_escalated,
+        durable_resolved: inspection.durable_resolved,
+        alerts: resource_recovery_alerts(inspection),
+    }
+}
+
 fn inspected_dto(inspection: &RecoveryInspection) -> OutcomeDto {
     OutcomeDto::Inspected {
         worker_state: format!("{:?}", inspection.worker_state),
@@ -214,24 +274,43 @@ fn resource_inspected_dto(inspection: &ResourceInspection) -> OutcomeDto {
     }
 }
 
-/// [`ControlReceipt`] → [`ReceiptDto`] 的单一投影点。
+/// [`ControlReceipt`] → [`ReceiptDto`] 的单一投影点(穷尽匹配,无通配臂:
+/// 新的 outcome 变体必须落成显式 DTO 形态,不得静默丢进失败)。
 #[must_use]
 pub fn receipt_dto(receipt: &ControlReceipt) -> ReceiptDto {
     let outcome = match receipt.outcome.as_ref() {
         Ok(ControlOutcome::Inspected(inspection)) => inspected_dto(inspection),
         Ok(ControlOutcome::SemanticInspected(inspection)) => semantic_inspected_dto(inspection),
+        Ok(ControlOutcome::ResourceRecoveryInspected(inspection)) => {
+            resource_recovery_inspected_dto(inspection)
+        }
         Ok(ControlOutcome::ProcessInspected(inspection)) => process_inspected_dto(inspection),
         Ok(ControlOutcome::ResourceInspected(inspection)) => resource_inspected_dto(inspection),
         Ok(ControlOutcome::MetricsExported(export)) => OutcomeDto::MetricsExported {
             openmetrics_text: export.openmetrics_text.clone(),
         },
-        // W32-A 只派发读命令;mutation 回执不可达,但类型必须穷尽且不得
-        // 伪造失败——单独形态透出。
-        Ok(ControlOutcome::Acknowledged { receipt_id })
-        | Ok(ControlOutcome::Resumed { receipt_id })
-        | Ok(ControlOutcome::OperationPaused { receipt_id })
-        | Ok(ControlOutcome::OperationResumed { receipt_id })
-        | Ok(ControlOutcome::OperationCancelled { receipt_id }) => OutcomeDto::UnexpectedMutation {
+        Ok(ControlOutcome::Acknowledged { receipt_id }) => OutcomeDto::Acknowledged {
+            receipt_id_hex: hex(receipt_id),
+        },
+        Ok(ControlOutcome::Resumed { receipt_id }) => OutcomeDto::Resumed {
+            receipt_id_hex: hex(receipt_id),
+        },
+        Ok(ControlOutcome::OperationPaused { receipt_id }) => OutcomeDto::OperationPaused {
+            receipt_id_hex: hex(receipt_id),
+        },
+        Ok(ControlOutcome::OperationResumed { receipt_id }) => OutcomeDto::OperationResumed {
+            receipt_id_hex: hex(receipt_id),
+        },
+        Ok(ControlOutcome::OperationCancelled { receipt_id }) => OutcomeDto::OperationCancelled {
+            receipt_id_hex: hex(receipt_id),
+        },
+        Ok(ControlOutcome::OperationKilled { receipt_id }) => OutcomeDto::OperationKilled {
+            receipt_id_hex: hex(receipt_id),
+        },
+        Ok(ControlOutcome::OperationThrottled { receipt_id }) => OutcomeDto::OperationThrottled {
+            receipt_id_hex: hex(receipt_id),
+        },
+        Ok(ControlOutcome::OperationReclaimed { receipt_id }) => OutcomeDto::OperationReclaimed {
             receipt_id_hex: hex(receipt_id),
         },
         Err(failure) => failure_dto(failure),

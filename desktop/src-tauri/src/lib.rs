@@ -1,8 +1,9 @@
-//! llmos 任务管理器 Tauri 壳(W32-A 只读半)。
+//! llmos 任务管理器 Tauri 壳(W32-A 只读半 + W32-B 写入半)。
 //!
 //! 后端命令层(`ipc`)经 ADR-0011 认证入口连接真实 SystemControl IPC;
-//! 前端渲染 SABI Receipt 数据。写入/控制动作(W32-B)与 parity 钉死
-//! (W32-C)不在本壳的实现范围内。
+//! 前端渲染 SABI Receipt 数据。W32-B 增加授权控制动作
+//! (ack/resume/pause/cancel/kill/throttle/reclaim)的 GUI 派发与 Receipt
+//! 展示;parity 钉死(W32-C)不在本壳的实现范围内。
 
 pub mod dto;
 pub mod error;
@@ -25,7 +26,10 @@ pub fn run() {
             ipc::inspect_task,
             ipc::inspect_process,
             ipc::inspect_resource,
+            ipc::inspect_resource_health,
+            ipc::submit_control,
             ipc::parity_check,
+            ipc::parity_check_write,
         ])
         .run(tauri::generate_context!())
     {

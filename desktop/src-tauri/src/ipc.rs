@@ -1,14 +1,20 @@
-//! 认证 SystemControl IPC 客户端接线(W32-A 只读半)。
+//! 认证 SystemControl IPC 客户端接线(W32-A 只读半 + W32-B 写入半)。
 //!
-//! 每个只读命令都通过 [`nlos_system_control::auth::dispatch_over_authenticated_socket`]
+//! 每条命令——inspect 读或授权控制写——都通过
+//! [`nlos_system_control::auth::dispatch_over_authenticated_socket`]
 //! ——ADR-0011 challenge-response 认证入口——到达真实 SystemControl 服务,
 //! 没有 plain socket 捷径。principal 私钥不入仓库:会话配置来自环境变量或
 //! GUI 会话内设置,签名密钥始终从 operator 提供的 `0600` 密钥文件在派发时读取。
 //!
+//! 写入半(W32-B):`submit_control` 把 GUI 的授权动作编译为真实
+//! `ControlCommand`(§25.3 idempotency 身份在派发时新生成;CAS 预期由
+//! 前端从 inspect 状态带入),经同一认证入口派发并投影 Receipt。
+//!
 //! 一致性自检(`parity_check`)把同一只读命令再经真实 `system-control-cli`
 //! 二进制(plain 入口,本地信任域)派发一次,比对两侧
 //! `ControlReceipt::to_bytes` hex——与 B-TASK-006L 已固化的三入口字节一致
-//! 契约同源。写入/控制动作是 W32-B,本模块不提供任何 mutation 派发。
+//! 契约同源。`parity_check_write` 把同一自检扩展到一条写路径命令
+//! (pause-operation 探针);完整写路径 parity 矩阵钉死是 W32-C。
 
 use std::sync::Mutex;
 
@@ -149,10 +155,10 @@ fn required(config: &SessionConfig) -> Result<(String, String, String), DesktopE
     ))
 }
 
-/// 经 ADR-0011 认证入口派发一条只读命令并投影 Receipt(纯函数核心,
-/// 由 Tauri 命令与集成测试共用)。
+/// 经 ADR-0011 认证入口派发一条命令(inspect 读与 W32-B 授权写共用)并
+/// 投影 Receipt(纯函数核心,由 Tauri 命令与集成测试共用)。
 #[cfg(unix)]
-pub async fn dispatch_read(
+pub async fn dispatch_control(
     socket: &str,
     principal_hex: &str,
     key_file: &str,
@@ -177,7 +183,7 @@ pub async fn dispatch_read(
 }
 
 #[cfg(not(unix))]
-pub async fn dispatch_read(
+pub async fn dispatch_control(
     _socket: &str,
     _principal_hex: &str,
     _key_file: &str,
@@ -196,7 +202,7 @@ fn dispatch_configured(
 ) -> Result<ReceiptDto, DesktopError> {
     let config = state.snapshot()?;
     let (socket, principal, key_file) = required(&config)?;
-    tauri::async_runtime::block_on(dispatch_read(&socket, &principal, &key_file, command))
+    tauri::async_runtime::block_on(dispatch_control(&socket, &principal, &key_file, command))
 }
 
 #[tauri::command]
@@ -254,6 +260,14 @@ pub fn inspect_semantic_health(
     dispatch_configured(&state, ControlCommand::InspectSemanticHealth)
 }
 
+/// 资源域恢复巡检(W32-B 补接线:G8 资源恢复动作的 CAS 预期来源)。
+#[tauri::command]
+pub fn inspect_resource_health(
+    state: tauri::State<'_, AppState>,
+) -> Result<ReceiptDto, DesktopError> {
+    dispatch_configured(&state, ControlCommand::InspectResourceHealth)
+}
+
 #[tauri::command]
 pub fn export_metrics(state: tauri::State<'_, AppState>) -> Result<ReceiptDto, DesktopError> {
     dispatch_configured(&state, ControlCommand::ExportMetrics)
@@ -291,6 +305,238 @@ pub fn inspect_resource(
 ) -> Result<ReceiptDto, DesktopError> {
     let reservation_id = principal_bytes(&reservation_id_hex)?;
     dispatch_configured(&state, ControlCommand::InspectResource { reservation_id })
+}
+
+/// §25.3 idempotency 身份:每次提交新生成 16 字节(/dev/urandom;认证入口
+/// 仅 Unix,非 Unix 面在派发前就以类型化 UNSUPPORTED_PLATFORM 拒绝)。
+#[cfg(unix)]
+fn fresh_command_id() -> Result<[u8; 16], DesktopError> {
+    use std::io::Read;
+
+    let mut file = std::fs::File::open("/dev/urandom")
+        .map_err(|error| DesktopError::internal(format!("打开 /dev/urandom 失败: {error}")))?;
+    let mut id = [0u8; 16];
+    file.read_exact(&mut id)
+        .map_err(|error| DesktopError::internal(format!("读取命令 id 失败: {error}")))?;
+    Ok(id)
+}
+
+#[cfg(not(unix))]
+fn fresh_command_id() -> Result<[u8; 16], DesktopError> {
+    Err(DesktopError::unsupported_platform())
+}
+
+/// GUI 授权动作(SABI v1.4 命令面;serde tag 与 CLI operation 名一致)。
+#[derive(Clone, Debug, Deserialize)]
+#[serde(tag = "action", rename_all = "kebab-case")]
+pub enum ControlAction {
+    AckRecoveryAlert {
+        plan_id_hex: String,
+        expected_total_failures: u64,
+        reason: String,
+    },
+    AckSemanticRecoveryAlert {
+        plan_id_hex: String,
+        expected_total_failures: u64,
+        reason: String,
+    },
+    ResumeSemanticRecovery {
+        plan_id_hex: String,
+        expected_total_failures: u64,
+        reason: String,
+    },
+    AckResourceRecoveryAlert {
+        plan_id_hex: String,
+        expected_total_failures: u64,
+        reason: String,
+    },
+    ResumeResourceRecovery {
+        plan_id_hex: String,
+        expected_total_failures: u64,
+        reason: String,
+    },
+    PauseOperation {
+        target_id_hex: String,
+        expected_revision: u64,
+        reason: String,
+    },
+    ResumeOperation {
+        target_id_hex: String,
+        expected_revision: u64,
+        reason: String,
+    },
+    CancelOperation {
+        target_id_hex: String,
+        expected_revision: u64,
+        reason: String,
+    },
+    KillOperation {
+        target_id_hex: String,
+        expected_revision: u64,
+        reason: String,
+    },
+    ThrottleOperation {
+        target_id_hex: String,
+        expected_revision: u64,
+        throttle_percent: u64,
+        reason: String,
+    },
+    ReclaimOperation {
+        target_id_hex: String,
+        expected_revision: u64,
+        reason: String,
+    },
+}
+
+/// 动作 → [`ControlCommand`] 的单一编译点(派发前类型化校验:32 hex 目标、
+/// 非空 reason;throttle 百分比镜像上游 1..=100 wire 前拒绝规则)。
+/// Tauri `submit_control` 命令与集成测试共用(测试注入确定性命令 id)。
+pub fn build_control_command(
+    action: ControlAction,
+    control_command_id: [u8; 16],
+) -> Result<ControlCommand, DesktopError> {
+    let reason = |raw: &str| -> Result<String, DesktopError> {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            Err(DesktopError::config(
+                "控制动作需要非空 reason(有界操作理由)",
+            ))
+        } else {
+            Ok(trimmed.to_owned())
+        }
+    };
+    match action {
+        ControlAction::AckRecoveryAlert {
+            plan_id_hex,
+            expected_total_failures,
+            reason: raw,
+        } => Ok(ControlCommand::AcknowledgeRecoveryAlert {
+            control_command_id,
+            plan_id: principal_bytes(&plan_id_hex)?,
+            expected_total_failures,
+            reason: reason(&raw)?,
+        }),
+        ControlAction::AckSemanticRecoveryAlert {
+            plan_id_hex,
+            expected_total_failures,
+            reason: raw,
+        } => Ok(ControlCommand::AcknowledgeSemanticRecoveryAlert {
+            control_command_id,
+            plan_id: principal_bytes(&plan_id_hex)?,
+            expected_total_failures,
+            reason: reason(&raw)?,
+        }),
+        ControlAction::ResumeSemanticRecovery {
+            plan_id_hex,
+            expected_total_failures,
+            reason: raw,
+        } => Ok(ControlCommand::ResumeSemanticRecovery {
+            control_command_id,
+            plan_id: principal_bytes(&plan_id_hex)?,
+            expected_total_failures,
+            reason: reason(&raw)?,
+        }),
+        ControlAction::AckResourceRecoveryAlert {
+            plan_id_hex,
+            expected_total_failures,
+            reason: raw,
+        } => Ok(ControlCommand::AcknowledgeResourceRecoveryAlert {
+            control_command_id,
+            plan_id: principal_bytes(&plan_id_hex)?,
+            expected_total_failures,
+            reason: reason(&raw)?,
+        }),
+        ControlAction::ResumeResourceRecovery {
+            plan_id_hex,
+            expected_total_failures,
+            reason: raw,
+        } => Ok(ControlCommand::ResumeResourceRecovery {
+            control_command_id,
+            plan_id: principal_bytes(&plan_id_hex)?,
+            expected_total_failures,
+            reason: reason(&raw)?,
+        }),
+        ControlAction::PauseOperation {
+            target_id_hex,
+            expected_revision,
+            reason: raw,
+        } => Ok(ControlCommand::PauseOperation {
+            control_command_id,
+            target_id: principal_bytes(&target_id_hex)?,
+            expected_generation_or_revision: expected_revision,
+            reason: reason(&raw)?,
+        }),
+        ControlAction::ResumeOperation {
+            target_id_hex,
+            expected_revision,
+            reason: raw,
+        } => Ok(ControlCommand::ResumeOperation {
+            control_command_id,
+            target_id: principal_bytes(&target_id_hex)?,
+            expected_generation_or_revision: expected_revision,
+            reason: reason(&raw)?,
+        }),
+        ControlAction::CancelOperation {
+            target_id_hex,
+            expected_revision,
+            reason: raw,
+        } => Ok(ControlCommand::CancelOperation {
+            control_command_id,
+            target_id: principal_bytes(&target_id_hex)?,
+            expected_generation_or_revision: expected_revision,
+            reason: reason(&raw)?,
+        }),
+        ControlAction::KillOperation {
+            target_id_hex,
+            expected_revision,
+            reason: raw,
+        } => Ok(ControlCommand::KillOperation {
+            control_command_id,
+            target_id: principal_bytes(&target_id_hex)?,
+            expected_generation_or_revision: expected_revision,
+            reason: reason(&raw)?,
+        }),
+        ControlAction::ThrottleOperation {
+            target_id_hex,
+            expected_revision,
+            throttle_percent,
+            reason: raw,
+        } => {
+            if !(1..=100).contains(&throttle_percent) {
+                return Err(DesktopError::config(
+                    "throttle_percent 必须是 1..=100 的整数百分比(与上游 wire 前拒绝同规)",
+                ));
+            }
+            Ok(ControlCommand::ThrottleOperation {
+                control_command_id,
+                target_id: principal_bytes(&target_id_hex)?,
+                expected_generation_or_revision: expected_revision,
+                throttle_percent,
+                reason: reason(&raw)?,
+            })
+        }
+        ControlAction::ReclaimOperation {
+            target_id_hex,
+            expected_revision,
+            reason: raw,
+        } => Ok(ControlCommand::ReclaimOperation {
+            control_command_id,
+            target_id: principal_bytes(&target_id_hex)?,
+            expected_generation_or_revision: expected_revision,
+            reason: reason(&raw)?,
+        }),
+    }
+}
+
+/// W32-B 写入半唯一入口:授权动作 → 真实 ControlCommand → 认证 IPC。
+/// 回执(含类型化失败)完整返回前端渲染,后端不改写失败。
+#[tauri::command]
+pub fn submit_control(
+    state: tauri::State<'_, AppState>,
+    action: ControlAction,
+) -> Result<ReceiptDto, DesktopError> {
+    let command = build_control_command(action, fresh_command_id()?)?;
+    dispatch_configured(&state, command)
 }
 
 /// 只读 operation → (ControlCommand, CLI 参数)。mutation 一律拒绝。
@@ -346,12 +592,12 @@ fn parity_command(
             ))
         }
         _ => Err(DesktopError::config(format!(
-            "未知或非只读 operation: {operation}(mutation 是 W32-B)"
+            "未知或非只读 operation: {operation}(读路径自检只收 inspect/export;写路径探针见 parity_check_write)"
         ))),
     }
 }
 
-/// 一致性自检:同一只读命令,GUI 经认证入口派发一次,真实
+/// 一致性自检(读路径):同一只读命令,GUI 经认证入口派发一次,真实
 /// `system-control-cli` 经 plain socket 派发一次,比对 receipt hex。
 #[tauri::command]
 pub fn parity_check(
@@ -363,8 +609,26 @@ pub fn parity_check(
     let (command, cli_args) = parity_command(&operation, target_hex.as_deref())?;
     let (socket, principal, key_file) = required(&config)?;
     let gui =
-        tauri::async_runtime::block_on(dispatch_read(&socket, &principal, &key_file, command))?;
+        tauri::async_runtime::block_on(dispatch_control(&socket, &principal, &key_file, command))?;
+    let cli = run_cli(&config, &cli_args)?;
+    Ok(ParityDto {
+        operation,
+        matched: cli.receipt_hex.as_deref() == Some(gui.receipt_hex.as_str()),
+        gui_receipt_hex: gui.receipt_hex,
+        cli_receipt_hex: cli.receipt_hex,
+        cli_exit_code: cli.exit_code,
+        cli_stderr: cli.stderr,
+    })
+}
 
+/// 一次真实 `system-control-cli` 子进程运行的首行 `RECEIPT <hex>` 投影。
+struct CliRun {
+    receipt_hex: Option<String>,
+    exit_code: Option<i32>,
+    stderr: Option<String>,
+}
+
+fn run_cli(config: &SessionConfig, cli_args: &[String]) -> Result<CliRun, DesktopError> {
     let cli_socket = config.cli_socket.clone().ok_or_else(|| {
         DesktopError::config("一致性自检需要 cli_socket(plain 入口;开发夹具提供)")
     })?;
@@ -374,7 +638,7 @@ pub fn parity_check(
         .unwrap_or_else(|| DEFAULT_CLI_PATH.to_owned());
     let output = std::process::Command::new(&cli_path)
         .arg(&cli_socket)
-        .args(&cli_args)
+        .args(cli_args)
         .output()
         .map_err(|error| {
             DesktopError::ipc(format!("启动 system-control-cli({cli_path})失败: {error}"))
@@ -386,13 +650,57 @@ pub fn parity_check(
         .and_then(|line| line.strip_prefix("RECEIPT "))
         .map(str::to_owned);
     let stderr = String::from_utf8_lossy(&output.stderr);
+    Ok(CliRun {
+        receipt_hex: cli_receipt_hex,
+        exit_code: output.status.code(),
+        stderr: (!stderr.trim().is_empty()).then(|| stderr.trim().to_owned()),
+    })
+}
+
+/// W32-B 写路径一致性探针:同一条 pause-operation 命令(同 command id、
+/// 目标、CAS、reason——两侧字节同一),GUI 经认证入口、真实 CLI 经 plain
+/// 入口各派发一次,比对 receipt hex。开发夹具未接线操作执行器时两侧同为
+/// 确定性的类型化 `NOT_FOUND`(executor 未接线)失败回执,字节可比;在
+/// 已接线执行器的宿主上,第一次派发可能真实暂停目标、第二次按 idempotency/
+/// CAS 纪律回 CONFLICT——matched=false 即如实显示。完整写路径 parity 矩阵
+/// (成功/NotFound/Rights 三形态)钉死属 W32-C。
+#[tauri::command]
+pub fn parity_check_write(
+    state: tauri::State<'_, AppState>,
+    command_id_hex: String,
+    target_hex: String,
+    expected_revision: u64,
+    reason: String,
+) -> Result<ParityDto, DesktopError> {
+    let config = state.snapshot()?;
+    let trimmed_reason = reason.trim();
+    if trimmed_reason.is_empty() {
+        return Err(DesktopError::config("写路径自检需要非空 reason"));
+    }
+    let command = ControlCommand::PauseOperation {
+        control_command_id: principal_bytes(&command_id_hex)?,
+        target_id: principal_bytes(&target_hex)?,
+        expected_generation_or_revision: expected_revision,
+        reason: trimmed_reason.to_owned(),
+    };
+    let (socket, principal, key_file) = required(&config)?;
+    let gui =
+        tauri::async_runtime::block_on(dispatch_control(&socket, &principal, &key_file, command))?;
+    let cli_args = vec![
+        "pause-operation".to_owned(),
+        command_id_hex.trim().to_owned(),
+        target_hex.trim().to_owned(),
+        expected_revision.to_string(),
+        trimmed_reason.to_owned(),
+    ];
+    let cli = run_cli(&config, &cli_args)?;
     Ok(ParityDto {
-        operation,
-        matched: cli_receipt_hex.as_deref() == Some(gui.receipt_hex.as_str()),
+        operation: "pause-operation".to_owned(),
+        matched: cli.receipt_hex.as_deref() == Some(gui.receipt_hex.as_str()),
         gui_receipt_hex: gui.receipt_hex,
-        cli_receipt_hex,
-        cli_exit_code: output.status.code(),
-        cli_stderr: (!stderr.trim().is_empty()).then(|| stderr.trim().to_owned()),
+        cli_receipt_hex: cli.receipt_hex,
+        cli_exit_code: cli.exit_code,
+        cli_stderr: cli.stderr,
     })
 }
 
@@ -435,5 +743,89 @@ mod tests {
         let (command, args) = parity_command("inspect-health", None).unwrap();
         assert_eq!(command, ControlCommand::InspectHealth);
         assert_eq!(args, vec!["inspect-health".to_owned()]);
+    }
+
+    fn control_action(action: ControlAction) -> Result<ControlCommand, DesktopError> {
+        build_control_command(action, [0xC9; 16])
+    }
+
+    #[test]
+    fn build_control_command_rejects_empty_reason_and_bad_inputs() {
+        let ack = ControlAction::AckRecoveryAlert {
+            plan_id_hex: "31".repeat(16),
+            expected_total_failures: 1,
+            reason: "   ".to_owned(),
+        };
+        assert_eq!(control_action(ack).unwrap_err().code, ErrorCode::Config);
+
+        let bad_target = ControlAction::KillOperation {
+            target_id_hex: "zz".repeat(16),
+            expected_revision: 3,
+            reason: "operator kill".to_owned(),
+        };
+        assert_eq!(
+            control_action(bad_target).unwrap_err().code,
+            ErrorCode::Config
+        );
+
+        for percent in [0u64, 101] {
+            let throttle = ControlAction::ThrottleOperation {
+                target_id_hex: "31".repeat(16),
+                expected_revision: 7,
+                throttle_percent: percent,
+                reason: "throttle".to_owned(),
+            };
+            assert_eq!(
+                control_action(throttle).unwrap_err().code,
+                ErrorCode::Config,
+                "percent {percent} must be rejected before the wire"
+            );
+        }
+    }
+
+    #[test]
+    fn build_control_command_trims_reason_and_binds_command_identity() {
+        let command = control_action(ControlAction::PauseOperation {
+            target_id_hex: "31".repeat(16),
+            expected_revision: 5,
+            reason: "  pause for maintenance  ".to_owned(),
+        })
+        .unwrap();
+        let ControlCommand::PauseOperation {
+            control_command_id,
+            target_id,
+            expected_generation_or_revision,
+            reason,
+        } = command
+        else {
+            panic!("expected pause command");
+        };
+        assert_eq!(control_command_id, [0xC9; 16]);
+        assert_eq!(target_id, [0x31; 16]);
+        assert_eq!(expected_generation_or_revision, 5);
+        assert_eq!(reason, "pause for maintenance");
+
+        let throttle = control_action(ControlAction::ThrottleOperation {
+            target_id_hex: "41".repeat(16),
+            expected_revision: 2,
+            throttle_percent: 50,
+            reason: "cap demand".to_owned(),
+        })
+        .unwrap();
+        let ControlCommand::ThrottleOperation {
+            throttle_percent, ..
+        } = throttle
+        else {
+            panic!("expected throttle command");
+        };
+        assert_eq!(throttle_percent, 50);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fresh_command_id_is_unique_per_call() {
+        let first = fresh_command_id().unwrap();
+        let second = fresh_command_id().unwrap();
+        assert_ne!(first, second);
     }
 }

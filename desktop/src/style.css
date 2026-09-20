@@ -163,3 +163,17 @@ pre.metrics {
 .receipt-footer {
   background: rgba(128, 128, 128, 0.08);
 }
+
+button.danger {
+  background: rgba(228, 86, 73, 0.28);
+  border-color: rgba(228, 86, 73, 0.8);
+}
+
+button.danger:hover {
+  background: rgba(228, 86, 73, 0.45);
+}
+
+.confirm-hint {
+  color: rgba(200, 60, 50, 0.95);
+  font-weight: 600;
+}

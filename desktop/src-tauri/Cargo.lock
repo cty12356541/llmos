@@ -2113,6 +2113,7 @@ dependencies = [
 name = "nlos-artifact"
 version = "0.1.0"
 dependencies = [
+ "ed25519-dalek",
  "nlos-identity",
  "nlos-types",
  "rusqlite",
@@ -2153,6 +2154,7 @@ version = "0.1.0"
 dependencies = [
  "nlos-artifact",
  "nlos-capability",
+ "nlos-resource",
  "nlos-semantic",
  "nlos-task",
  "nlos-types",
