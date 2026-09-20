@@ -31,6 +31,9 @@ import {
   RecoveryFailureAuthority,
   RecoveryFailureSummarySchema,
   RecoveryWorkerLifecycleState,
+  SemanticRecoveryAlertStatusSchema,
+  SemanticRecoveryMetricsSchema,
+  SemanticRecoveryOperationsSnapshotSchema,
 } from "../../../gen/typescript/nlos/sabi/v1/system_control_pb.ts";
 
 const schemaName = "nlos.sabi.Envelope";
@@ -335,4 +338,92 @@ assert.equal(withoutRetryDelay.metrics?.retryDelayMs, undefined);
 assert.notDeepEqual(
   toBinary(ArtifactRecoveryOperationsSnapshotSchema, withoutRetryDelay),
   artifactRecoverySnapshotGolden,
+);
+
+const semanticRecoverySnapshotGoldenHex =
+  "0a1d0a176e6c6f732e736162692e53797374656d436f6e74726f6c10011801" +
+  "1210080d10061802200428033001380940011a330a10717171717171717171" +
+  "717171717171711008180520e80728f80a30dc0b3a120a1072727272727272" +
+  "7272727272727272721a1f0a10737373737373737373737373737373731008" +
+  "180320d00f28e01230c4132001";
+const semanticRecoverySnapshotGolden = Uint8Array.from(
+  Buffer.from(semanticRecoverySnapshotGoldenHex, "hex"),
+);
+
+const semanticRecoverySnapshot = create(
+  SemanticRecoveryOperationsSnapshotSchema,
+  {
+    schema: create(SchemaIdentitySchema, {
+      name: "nlos.sabi.SystemControl",
+      major: 1,
+      minor: 1,
+      criticalExtensionIds: [],
+      nonCriticalExtensionIds: [],
+    }),
+    metrics: create(SemanticRecoveryMetricsSchema, {
+      totalInspected: 13n,
+      totalFinalized: 6n,
+      consecutiveFailedCycles: 2n,
+      durableRetrying: 4n,
+      durableEscalated: 3n,
+      durableUnacknowledgedEscalated: 1n,
+      durableResolved: 9n,
+      domainFaulted: true,
+    }),
+    alerts: [
+      create(SemanticRecoveryAlertStatusSchema, {
+        planId: new Uint8Array(16).fill(0x71),
+        totalFailures: 8n,
+        lastFailureAuthority: RecoveryFailureAuthority.SEMANTIC,
+        firstFailedAtMs: 1000n,
+        lastFailedAtMs: 1400n,
+        escalatedAtMs: 1500n,
+        acknowledgementReceipt: create(ReceiptReferenceSchema, {
+          receiptId: new Uint8Array(16).fill(0x72),
+        }),
+      }),
+      create(SemanticRecoveryAlertStatusSchema, {
+        planId: new Uint8Array(16).fill(0x73),
+        totalFailures: 8n,
+        lastFailureAuthority: RecoveryFailureAuthority.COORDINATOR,
+        firstFailedAtMs: 2000n,
+        lastFailedAtMs: 2400n,
+        escalatedAtMs: 2500n,
+      }),
+    ],
+    alertsTruncated: true,
+  },
+);
+assert.deepEqual(
+  toBinary(SemanticRecoveryOperationsSnapshotSchema, semanticRecoverySnapshot),
+  semanticRecoverySnapshotGolden,
+);
+
+const decodedSemanticRecoverySnapshot = fromBinary(
+  SemanticRecoveryOperationsSnapshotSchema,
+  semanticRecoverySnapshotGolden,
+);
+assert.equal(decodedSemanticRecoverySnapshot.schema?.minor, 1);
+assert.equal(decodedSemanticRecoverySnapshot.metrics?.totalInspected, 13n);
+assert.equal(decodedSemanticRecoverySnapshot.metrics?.domainFaulted, true);
+assert.equal(
+  decodedSemanticRecoverySnapshot.metrics?.durableUnacknowledgedEscalated,
+  1n,
+);
+assert.equal(
+  decodedSemanticRecoverySnapshot.alerts[0]?.lastFailureAuthority,
+  RecoveryFailureAuthority.SEMANTIC,
+);
+assert.ok(decodedSemanticRecoverySnapshot.alerts[0]?.acknowledgementReceipt);
+assert.equal(
+  decodedSemanticRecoverySnapshot.alerts[1]?.acknowledgementReceipt,
+  undefined,
+);
+assert.equal(decodedSemanticRecoverySnapshot.alertsTruncated, true);
+assert.deepEqual(
+  toBinary(
+    SemanticRecoveryOperationsSnapshotSchema,
+    decodedSemanticRecoverySnapshot,
+  ),
+  semanticRecoverySnapshotGolden,
 );
