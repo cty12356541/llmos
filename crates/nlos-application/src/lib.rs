@@ -85,7 +85,26 @@
 //! opened (`[PLAN-OVERRIDE-001]` — the manifest answers where a
 //! declaration comes from, never what it is). Install-time instantiation
 //! wiring is a later Slice K lane.
+//!
+//! Since W29-E (B1-3), the crate also carries the `[PKG-UPDATE-001]`
+//! staged migration runner (schema v7, the `migration` module): a
+//! same-major revision change with data/schema consequences runs as a
+//! durable drill — [`ApplicationAuthority::migrate_application`] commits
+//! the frozen baseline/target binding in `pending`,
+//! [`ApplicationAuthority::record_migration_step`] advances strictly
+//! ordered immutable step marks through `running` (crash between steps
+//! converges on restart),
+//! [`ApplicationAuthority::run_migration_health_check`] records one
+//! terminal typed verdict after re-verifying the target binding, and
+//! then exactly one of [`ApplicationAuthority::
+//! activate_package_migration`] (the atomic switch: generation CAS +1,
+//! installation receipt, and the drill's `done` transition in one
+//! transaction) or [`ApplicationAuthority::
+//! rollback_package_migration`] (the PKG-level failed-health rollback:
+//! `failed` + an immutable receipt, the application row untouched
+//! because the prior revision stayed active) terminates the drill.
 
+mod migration;
 mod schema;
 mod task_templates;
 
@@ -104,6 +123,13 @@ use nlos_types::{
 use rusqlite::{Connection, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
 
+pub use migration::{
+    ActivateMigrationDecision, ActivatePackageMigrationRequest, MigrateApplicationRequest,
+    MigrateDecision, MigrationHealthContext, MigrationHealthDecision, MigrationHealthProbe,
+    MigrationHealthReport, MigrationHealthState, MigrationRollbackReceipt, MigrationState,
+    MigrationStepRecord, MigrationView, RecordMigrationStepDecision, RecordMigrationStepRequest,
+    RollbackMigrationDecision, RollbackPackageMigrationRequest,
+};
 pub use task_templates::{TaskTemplateError, compile_task_templates};
 
 /// Domain separator for the authority-derived [`ApplicationId`]: one
@@ -693,6 +719,90 @@ pub enum ApplicationAuthorityError {
         application_id: ApplicationId,
         process_id: ProcessId,
     },
+    /// No migration drill exists under this idempotency key.
+    MigrationNotFound { idempotency_key: IdempotencyKey },
+    /// A migration drill must declare at least one step; a zero-step
+    /// drill has no staged migration to run.
+    MigrationStepCountZero,
+    /// The application already has a live (pending/running) migration
+    /// drill; at most one drill per application may be in flight.
+    MigrationAlreadyLive {
+        application_id: ApplicationId,
+        live_idempotency_key: IdempotencyKey,
+    },
+    /// The drill is terminal (`done`/`failed`); only its durable replays
+    /// are accepted, never a fresh command.
+    MigrationTerminal {
+        application_id: ApplicationId,
+        state: MigrationState,
+    },
+    /// The drill is still `pending` (no step recorded yet); health
+    /// checks, activation, and rollback require the running state.
+    MigrationNotRunning {
+        application_id: ApplicationId,
+        state: MigrationState,
+    },
+    /// The requested step index is not the next unrecorded index.
+    MigrationStepOutOfOrder {
+        requested_step_index: u64,
+        expected_step_index: u64,
+        declared_step_count: u64,
+    },
+    /// Every declared step of this drill is already recorded; there is
+    /// no further step to complete.
+    MigrationDrillComplete {
+        idempotency_key: IdempotencyKey,
+        declared_step_count: u64,
+    },
+    /// The step timestamp precedes the drill's last durable update.
+    MigrationStepPrecedesLastUpdate {
+        last_updated_at_ms: u64,
+        completed_at_ms: u64,
+    },
+    /// The drill has unrecorded steps; health checks and activation
+    /// require the whole declared drill.
+    MigrationStepsIncomplete {
+        completed_step_count: u64,
+        declared_step_count: u64,
+    },
+    /// The health-check timestamp precedes the drill's last durable
+    /// update.
+    HealthCheckPrecedesLastUpdate {
+        last_updated_at_ms: u64,
+        checked_at_ms: u64,
+    },
+    /// The migration request timestamp precedes the target package's
+    /// verification timestamp.
+    MigrationPrecedesVerification {
+        verified_at_ms: u64,
+        requested_at_ms: u64,
+    },
+    /// The activation timestamp precedes the recorded health check.
+    ActivationPrecedesHealthCheck {
+        health_checked_at_ms: u64,
+        activated_at_ms: u64,
+    },
+    /// Activation requires a recorded health verdict; none exists yet.
+    MigrationHealthUnchecked { idempotency_key: IdempotencyKey },
+    /// Activation is impossible after a failed verdict; the drill must
+    /// take the PKG rollback path instead.
+    MigrationHealthFailed { idempotency_key: IdempotencyKey },
+    /// The PKG rollback path requires a failed health verdict.
+    MigrationRequiresFailedHealth { health: MigrationHealthState },
+    /// The rollback timestamp precedes the recorded failed verdict.
+    MigrationRollbackPrecedesHealthCheck {
+        health_checked_at_ms: u64,
+        rolled_back_at_ms: u64,
+    },
+    /// The application's current generation no longer matches the
+    /// drill's frozen baseline (e.g. the direct update channel advanced
+    /// it while the drill was live); the drill cannot activate or roll
+    /// back onto a moved baseline.
+    MigrationBaselineMoved {
+        application_id: ApplicationId,
+        from_generation: Generation,
+        current_generation: Generation,
+    },
 }
 
 pub trait ActiveTaskActivityProbe {
@@ -913,6 +1023,129 @@ impl fmt::Display for ApplicationAuthorityError {
                 formatter,
                 "process {process_id:?} is already bound to application {application_id:?} at the current generation; replay the original idempotency key instead of issuing a new command"
             ),
+            Self::MigrationNotFound { idempotency_key } => write!(
+                formatter,
+                "no package migration drill exists under key {idempotency_key:?}"
+            ),
+            Self::MigrationStepCountZero => {
+                formatter.write_str("a package migration drill must declare at least one step")
+            }
+            Self::MigrationAlreadyLive {
+                application_id,
+                live_idempotency_key,
+            } => write!(
+                formatter,
+                "application {application_id:?} already has a live migration drill under key \
+                 {live_idempotency_key:?}; at most one drill may be in flight per application"
+            ),
+            Self::MigrationTerminal {
+                application_id,
+                state,
+            } => write!(
+                formatter,
+                "migration drill of application {application_id:?} is terminal \
+                 ({state:?}); replay the original idempotency key instead of issuing \
+                 a new command"
+            ),
+            Self::MigrationNotRunning {
+                application_id,
+                state,
+            } => write!(
+                formatter,
+                "migration drill of application {application_id:?} is {state:?}; \
+                 health checks, activation, and rollback require a running drill"
+            ),
+            Self::MigrationStepOutOfOrder {
+                requested_step_index,
+                expected_step_index,
+                declared_step_count,
+            } => write!(
+                formatter,
+                "migration step {requested_step_index} is not the next unrecorded step \
+                 (expected {expected_step_index} of {declared_step_count} declared)"
+            ),
+            Self::MigrationDrillComplete {
+                idempotency_key,
+                declared_step_count,
+            } => write!(
+                formatter,
+                "migration drill {idempotency_key:?} already recorded all \
+                 {declared_step_count} declared step(s); there is no further step"
+            ),
+            Self::MigrationStepPrecedesLastUpdate {
+                last_updated_at_ms,
+                completed_at_ms,
+            } => write!(
+                formatter,
+                "migration step timestamp {completed_at_ms} precedes the drill's \
+                 last durable update {last_updated_at_ms}"
+            ),
+            Self::MigrationStepsIncomplete {
+                completed_step_count,
+                declared_step_count,
+            } => write!(
+                formatter,
+                "migration drill completed {completed_step_count} of \
+                 {declared_step_count} declared step(s); health checks and activation \
+                 require the whole drill"
+            ),
+            Self::HealthCheckPrecedesLastUpdate {
+                last_updated_at_ms,
+                checked_at_ms,
+            } => write!(
+                formatter,
+                "migration health check timestamp {checked_at_ms} precedes the drill's \
+                 last durable update {last_updated_at_ms}"
+            ),
+            Self::MigrationPrecedesVerification {
+                verified_at_ms,
+                requested_at_ms,
+            } => write!(
+                formatter,
+                "migration request timestamp {requested_at_ms} precedes verification \
+                 timestamp {verified_at_ms}"
+            ),
+            Self::ActivationPrecedesHealthCheck {
+                health_checked_at_ms,
+                activated_at_ms,
+            } => write!(
+                formatter,
+                "migration activation timestamp {activated_at_ms} precedes the recorded \
+                 health check {health_checked_at_ms}"
+            ),
+            Self::MigrationHealthUnchecked { idempotency_key } => write!(
+                formatter,
+                "migration drill {idempotency_key:?} has no recorded health verdict; \
+                 run the health check before activating"
+            ),
+            Self::MigrationHealthFailed { idempotency_key } => write!(
+                formatter,
+                "migration drill {idempotency_key:?} failed its health check; take the \
+                 PKG rollback path instead of activating"
+            ),
+            Self::MigrationRequiresFailedHealth { health } => write!(
+                formatter,
+                "the PKG migration rollback requires a failed health verdict, \
+                 not {health:?}"
+            ),
+            Self::MigrationRollbackPrecedesHealthCheck {
+                health_checked_at_ms,
+                rolled_back_at_ms,
+            } => write!(
+                formatter,
+                "migration rollback timestamp {rolled_back_at_ms} precedes the recorded \
+                 failed health check {health_checked_at_ms}"
+            ),
+            Self::MigrationBaselineMoved {
+                application_id,
+                from_generation,
+                current_generation,
+            } => write!(
+                formatter,
+                "application {application_id:?} is at generation {current_generation:?}, \
+                 no longer at the drill's frozen baseline {from_generation:?}; the drill \
+                 cannot activate or roll back onto a moved baseline"
+            ),
         }
     }
 }
@@ -977,7 +1210,7 @@ impl ApplicationAuthority {
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
         match version {
             0 => schema::migrate_v1(&mut connection)?,
-            1..=6 => {}
+            1..=7 => {}
             other => return Err(ApplicationAuthorityError::SchemaVersionUnsupported(other)),
         }
         if version < 2 {
@@ -992,8 +1225,11 @@ impl ApplicationAuthority {
         if version < 5 {
             schema::migrate_v5(&mut connection)?;
         }
-        if version < schema::SCHEMA_VERSION {
+        if version < 6 {
             schema::migrate_v6(&mut connection)?;
+        }
+        if version < schema::SCHEMA_VERSION {
+            schema::migrate_v7(&mut connection)?;
         }
         Ok(Self {
             connection: Mutex::new(connection),

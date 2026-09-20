@@ -2,7 +2,7 @@ use rusqlite::{Connection, TransactionBehavior};
 
 use crate::ApplicationAuthorityError;
 
-pub(crate) const SCHEMA_VERSION: i64 = 6;
+pub(crate) const SCHEMA_VERSION: i64 = 7;
 
 /// Creates the durable application/installation authority schema v1: the
 /// per-package `applications` singleton (current installation generation +
@@ -657,6 +657,224 @@ pub(crate) fn migrate_v6(connection: &mut Connection) -> Result<(), ApplicationA
             SELECT RAISE(ABORT, 'application process binding requires the installed application at its current generation');
         END;
         PRAGMA user_version=6;",
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
+
+/// Adds schema v7: the PKG migration-runner tables (W29-E, B1-3) —
+/// `application_migrations` (the per-application staged-migration state
+/// machine: pending/running/done/failed), `application_migration_steps`
+/// (the durable per-step completion marks that make a drill resumable
+/// across crashes), and `application_migration_rollback_receipts` (the
+/// immutable fact of one failed-health PKG-level rollback, which is
+/// deliberately distinct from the lifecycle
+/// `application_rollback_receipts` of schema v4).
+///
+/// - The migration row is a *state-machine* row (like `applications`),
+///   not an immutable receipt: `state`, `health_state`,
+///   `health_checked_at_ms`, `activated_installation_id`, and
+///   `updated_at_ms` are the only mutable columns; every binding column
+///   (identities, baseline, target, declared step count, creation time)
+///   is frozen by trigger, and the state lattice is
+///   `pending → running → done|failed` with terminal `done`/`failed`.
+/// - The health verdict is terminal once recorded (`unchecked →
+///   passed|failed`, never re-recorded): the durable verdict is the
+///   authority and replay never re-consults the probe. `done` requires a
+///   passed verdict plus the activated installation; `failed` requires
+///   the failed verdict.
+/// - Step rows are immutable and strictly ordered: an insert is only
+///   legal while the drill is live, at exactly `1 + completed` and
+///   within the declared step count — a crash between steps converges by
+///   replaying the recorded prefix and continuing at the next index.
+/// - The partial unique index enforces one live drill per application;
+///   terminal migrations accumulate as durable history.
+/// - The rollback receipt's state-bounds guard ties it to a migration
+///   that is *already failed at a failed verdict* — the state transition
+///   and the receipt commit share one transaction and live and die
+///   together.
+#[allow(clippy::too_many_lines)]
+pub(crate) fn migrate_v7(connection: &mut Connection) -> Result<(), ApplicationAuthorityError> {
+    let table_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type='table' AND name IN (
+            'application_migrations',
+            'application_migration_steps',
+            'application_migration_rollback_receipts'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    let trigger_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN (
+            'application_migrations_frozen_binding',
+            'application_migrations_legal_transition',
+            'application_migrations_no_delete',
+            'application_migration_steps_immutable_update',
+            'application_migration_steps_no_delete',
+            'application_migration_steps_live_ordered',
+            'application_migration_rollback_receipts_immutable_update',
+            'application_migration_rollback_receipts_no_delete',
+            'application_migration_rollback_receipts_state_bounds'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    let index_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type='index' AND name = 'application_migrations_one_live_per_application'",
+        [],
+        |row| row.get(0),
+    )?;
+    if table_count == 3 && trigger_count == 9 && index_count == 1 {
+        connection.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        return Ok(());
+    }
+    if table_count != 0 || trigger_count != 0 || index_count != 0 {
+        return Err(ApplicationAuthorityError::CorruptRecord(
+            "partial application migration schema",
+        ));
+    }
+
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "CREATE TABLE application_migrations (
+            idempotency_key BLOB PRIMARY KEY NOT NULL
+                CHECK(length(idempotency_key)=16),
+            application_id BLOB NOT NULL CHECK(length(application_id)=16),
+            package_id BLOB NOT NULL CHECK(length(package_id)=16),
+            from_generation INTEGER NOT NULL CHECK(from_generation >= 1),
+            from_manifest_digest BLOB NOT NULL
+                CHECK(length(from_manifest_digest)=32),
+            from_package_version INTEGER NOT NULL CHECK(from_package_version >= 0),
+            package_verification_receipt_id BLOB NOT NULL
+                CHECK(length(package_verification_receipt_id)=16),
+            target_manifest_digest BLOB NOT NULL
+                CHECK(length(target_manifest_digest)=32),
+            target_package_version INTEGER NOT NULL CHECK(target_package_version >= 0),
+            compatibility_window INTEGER NOT NULL CHECK(compatibility_window IN (1, 2)),
+            step_count INTEGER NOT NULL CHECK(step_count >= 1),
+            state INTEGER NOT NULL CHECK(state IN (1, 2, 3, 4)),
+            health_state INTEGER NOT NULL CHECK(health_state IN (0, 1, 2)),
+            health_checked_at_ms INTEGER,
+            activated_installation_id BLOB
+                CHECK(activated_installation_id IS NULL
+                      OR length(activated_installation_id)=16),
+            created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0),
+            updated_at_ms INTEGER NOT NULL CHECK(updated_at_ms >= created_at_ms),
+            FOREIGN KEY(application_id) REFERENCES applications(application_id),
+            FOREIGN KEY(activated_installation_id)
+                REFERENCES installation_receipts(installation_id)
+        ) STRICT;
+
+        CREATE TRIGGER application_migrations_frozen_binding
+        BEFORE UPDATE ON application_migrations
+        WHEN NEW.idempotency_key != OLD.idempotency_key
+            OR NEW.application_id != OLD.application_id
+            OR NEW.package_id != OLD.package_id
+            OR NEW.from_generation != OLD.from_generation
+            OR NEW.from_manifest_digest != OLD.from_manifest_digest
+            OR NEW.from_package_version != OLD.from_package_version
+            OR NEW.package_verification_receipt_id
+                != OLD.package_verification_receipt_id
+            OR NEW.target_manifest_digest != OLD.target_manifest_digest
+            OR NEW.target_package_version != OLD.target_package_version
+            OR NEW.compatibility_window != OLD.compatibility_window
+            OR NEW.step_count != OLD.step_count
+            OR NEW.created_at_ms != OLD.created_at_ms
+        BEGIN
+            SELECT RAISE(ABORT, 'application migration binding is frozen');
+        END;
+        CREATE TRIGGER application_migrations_legal_transition
+        BEFORE UPDATE ON application_migrations
+        WHEN (OLD.state = 1 AND NEW.state NOT IN (1, 2))
+            OR (OLD.state = 2 AND NEW.state NOT IN (2, 3, 4))
+            OR (OLD.state IN (3, 4) AND NEW.state != OLD.state)
+            OR (NEW.state = 3
+                AND (NEW.health_state != 1
+                     OR NEW.activated_installation_id IS NULL))
+            OR (NEW.state != 3 AND NEW.activated_installation_id IS NOT NULL)
+            OR (NEW.state = 4 AND NEW.health_state != 2)
+            OR (OLD.activated_installation_id IS NOT NULL
+                AND NEW.activated_installation_id != OLD.activated_installation_id)
+            OR (OLD.health_state = 0 AND NEW.health_state NOT IN (0, 1, 2))
+            OR (OLD.health_state IN (1, 2)
+                AND NEW.health_state != OLD.health_state)
+            OR ((NEW.health_state = 0) != (NEW.health_checked_at_ms IS NULL))
+            OR NEW.updated_at_ms < OLD.updated_at_ms
+        BEGIN
+            SELECT RAISE(ABORT, 'application migration transition is not legal');
+        END;
+        CREATE TRIGGER application_migrations_no_delete
+        BEFORE DELETE ON application_migrations BEGIN
+            SELECT RAISE(ABORT, 'application migration row is durable');
+        END;
+
+        CREATE UNIQUE INDEX application_migrations_one_live_per_application
+        ON application_migrations(application_id) WHERE state IN (1, 2);
+
+        CREATE TABLE application_migration_steps (
+            idempotency_key BLOB NOT NULL CHECK(length(idempotency_key)=16),
+            step_index INTEGER NOT NULL CHECK(step_index >= 1),
+            completed_at_ms INTEGER NOT NULL CHECK(completed_at_ms >= 0),
+            PRIMARY KEY(idempotency_key, step_index),
+            FOREIGN KEY(idempotency_key)
+                REFERENCES application_migrations(idempotency_key)
+        ) STRICT;
+
+        CREATE TRIGGER application_migration_steps_immutable_update
+        BEFORE UPDATE ON application_migration_steps BEGIN
+            SELECT RAISE(ABORT, 'application migration step is immutable');
+        END;
+        CREATE TRIGGER application_migration_steps_no_delete
+        BEFORE DELETE ON application_migration_steps BEGIN
+            SELECT RAISE(ABORT, 'application migration step is durable');
+        END;
+        CREATE TRIGGER application_migration_steps_live_ordered
+        BEFORE INSERT ON application_migration_steps
+        WHEN (SELECT state FROM application_migrations
+              WHERE idempotency_key = NEW.idempotency_key) NOT IN (1, 2)
+            OR NEW.step_index > (SELECT step_count FROM application_migrations
+                                 WHERE idempotency_key = NEW.idempotency_key)
+            OR NEW.step_index != 1 + (SELECT COUNT(*) FROM application_migration_steps
+                                      WHERE idempotency_key = NEW.idempotency_key)
+        BEGIN
+            SELECT RAISE(ABORT, 'application migration step is out of the declared live drill order');
+        END;
+
+        CREATE TABLE application_migration_rollback_receipts (
+            idempotency_key BLOB PRIMARY KEY NOT NULL
+                CHECK(length(idempotency_key)=16),
+            application_id BLOB NOT NULL CHECK(length(application_id)=16),
+            abandoned_target_manifest_digest BLOB NOT NULL
+                CHECK(length(abandoned_target_manifest_digest)=32),
+            retained_generation INTEGER NOT NULL CHECK(retained_generation >= 1),
+            retained_manifest_digest BLOB NOT NULL
+                CHECK(length(retained_manifest_digest)=32),
+            rolled_back_at_ms INTEGER NOT NULL CHECK(rolled_back_at_ms >= 0),
+            FOREIGN KEY(idempotency_key)
+                REFERENCES application_migrations(idempotency_key)
+        ) STRICT;
+
+        CREATE TRIGGER application_migration_rollback_receipts_immutable_update
+        BEFORE UPDATE ON application_migration_rollback_receipts BEGIN
+            SELECT RAISE(ABORT, 'application migration rollback receipt is immutable');
+        END;
+        CREATE TRIGGER application_migration_rollback_receipts_no_delete
+        BEFORE DELETE ON application_migration_rollback_receipts BEGIN
+            SELECT RAISE(ABORT, 'application migration rollback receipt is durable');
+        END;
+        CREATE TRIGGER application_migration_rollback_receipts_state_bounds
+        AFTER INSERT ON application_migration_rollback_receipts
+        WHEN (SELECT state FROM application_migrations
+              WHERE idempotency_key = NEW.idempotency_key) != 4
+            OR (SELECT health_state FROM application_migrations
+                WHERE idempotency_key = NEW.idempotency_key) != 2
+        BEGIN
+            SELECT RAISE(ABORT, 'application migration rollback receipt requires the failed migration at a failed verdict');
+        END;
+
+        PRAGMA user_version=7;",
     )?;
     transaction.commit()?;
     Ok(())
