@@ -32,6 +32,7 @@
 //! authorize, or materialize anything.
 
 mod model;
+mod resolver;
 mod schema;
 mod store;
 
@@ -42,9 +43,10 @@ pub use model::{
     ApplyPlanRevisionRequest, ChainVerification, MAX_DECLARED_NODES_PER_REVISION,
     MAX_DEPENDENCIES_PER_NODE, NodeTransitionDecision, NodeTransitionRequest,
     NodeTransitionVoucher, PlanNodeDeclaration, PlanNodeKind, PlanNodeRecord, PlanNodeState,
-    PlanRevisionDecision, PlanRevisionReceipt, PlanView,
+    PlanResolutionDecision, PlanResolutionHandle, PlanRevisionDecision, PlanRevisionReceipt,
+    PlanRevisionSelector, PlanView, ResolvePlanRequest, ResolvedPlanNode,
 };
-use nlos_types::{TaskNodeId, TaskPlanId};
+use nlos_types::{ReceiptId, TaskNodeId, TaskPlanId};
 pub use store::SqlitePlanAuthority;
 
 /// Errors produced by the durable plan authority.
@@ -101,6 +103,27 @@ pub enum PlanStoreError {
     /// The dependency graph of a declared revision contains a cycle
     /// (`[PLAN-DAG-001]`).
     PlanCycle,
+    /// The dependency graph a resolution was computed over contains a
+    /// cycle; the members name the cycle participants (`[PLAN-DAG-001]`
+    /// requires a DAG, `[PLAN-DEPENDENCY-001]` fails closed). Reachable
+    /// only from inconsistent durable shape rows — the apply path already
+    /// refuses cyclic declarations with [`PlanStoreError::PlanCycle`].
+    PlanCycleMembers {
+        plan_id: TaskPlanId,
+        revision: u64,
+        /// `TaskNodeId`s on the cycle, deterministically sorted.
+        members: Vec<TaskNodeId>,
+    },
+    /// The revision carries no durable declared-shape rows (applied before
+    /// schema v2 persisted per-revision shape, or the rows were lost).
+    /// Resolving it fails closed; the shape is never silently re-derived
+    /// from mutable current rows.
+    RevisionShapeUnavailable {
+        plan_id: TaskPlanId,
+        revision: u64,
+    },
+    /// No resolution receipt with the given id exists.
+    ResolutionNotFound(ReceiptId),
     /// The requested node state transition's `from_state` does not match
     /// the node's durable state (state CAS failure).
     NodeStateCasMismatch {
@@ -177,6 +200,25 @@ impl fmt::Display for PlanStoreError {
                 "node {node_id:?} declared revision CAS expected {expected} but found {current}"
             ),
             Self::PlanCycle => formatter.write_str("declared dependency graph contains a cycle"),
+            Self::PlanCycleMembers {
+                plan_id,
+                revision,
+                members,
+            } => write!(
+                formatter,
+                "revision {revision} of plan {plan_id:?} contains a dependency cycle among {} node(s):",
+                members.len()
+            ),
+            Self::RevisionShapeUnavailable { plan_id, revision } => write!(
+                formatter,
+                "revision {revision} of plan {plan_id:?} has no durable declared shape to resolve"
+            ),
+            Self::ResolutionNotFound(resolution_id) => {
+                write!(
+                    formatter,
+                    "plan resolution receipt {resolution_id:?} does not exist"
+                )
+            }
             Self::NodeStateCasMismatch {
                 node_id,
                 expected_from,
