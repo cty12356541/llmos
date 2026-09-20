@@ -551,3 +551,48 @@ cargo fmt -p nlos-runtime-tokio -- --check
 - **scope 侧（commit `d1425c4`，[SCOPE-IDX-001..004]）**：§6.1 场景 5 的「同 scope id 换 cancellation_generation → `InvalidGeneration`」（scope 单代次绑定）同样窗口化——scope 条目按引用计数归零移除（末条未回收 fiber 记录释放时），scope 墓碑环（`scope_tombstone_capacity` 默认 65 536）内同 id 异代注册维持 `InvalidGeneration`，挤出/零容量后放行。**已取消 scope 的 cancelled 态不随墓碑存活**：同 `(id, generation)` 回收后重建的是未取消新实例（有界内存的显式代价，与 fiber 环「挤出即新身份」同理）。
 - **场景 5 测试零改动保持绿**：该 fiber/scope 全程未被 join/detach，防重由**活记录**承担；墓碑环只在记录被消费后接管窗口（W25 全量门 `lifecycle_reap` 18/18、`cancel_late_callback_matrix` 6/6）。
 - 设计定稿 spec：`docs/superpowers/specs/2026-09-12-fiber-lifecycle-reaping-design.md`；登记：stage-b-progress 第八十八增量。
+
+### 6.16 Runtime 侧 batch cancel 传播联动（2026-09-20 追加，W27-C / B-PROCESS-003 §W16-003 / ROAD-B-006）
+
+- Owner：`nlos-runtime-tokio`（新增 `src/batch_cancel.rs` + `src/lib.rs` FiberRecord 增 process 身份字段 + `tests/batch_cancel.rs`）；base HEAD `3d81a90`。
+- 设计依据：`b-process-003-crash-propagation.md` §5（process 侧 `propagate_cancel_to_fibers` 已落地，runtime 侧「cancel receipt 消费接线」缺口）；v0.5 §28.2 ROAD-B-006「Process crash propagation」runtime 联动；W9-C late-callback 语义（不复活、不 panic）。
+- **实现（最小、additive，tokio-only）**：
+  - `FiberRecord` 增 `process_id` / `process_generation`（spawn 时从 `FiberSpec` 捕获，纯内存反规范化，无权威查找）。
+  - 公开 `TokioRuntimeAdapter::cancel_process_fibers(process: &ProcessAuthority, request: PropagateCancelToFibersRequest) -> Result<ProcessFiberCancelReport, ChannelWaitError>`：先消费 process 侧传播（`propagate_cancel_to_fibers` 幂等重放，拒绝即零 runtime 副作用 fail-closed），再按 `(process_id, expected_process_generation)` 围栏扫活注册表，对命中的去重 scope 集逐一经 `ScopeRegistry::cancel` tree-cancel。锁序遵守全局序（`fibers` 下读 record.state = 既有 delivery-resume 许可边；`scopes` 在 `fibers` 守卫释放后单独短临界区）。
+  - `ProcessFiberCancelReport { decision, matched_fibers, already_terminal, canceled_scopes, vanished_scopes }`：计数均为**本次调用**观测值（幂等重放报自己的视图，非累计历史）；`vanished_scopes` = 扫描与取消之间被 join/detach 回收干净的 scope（构造性良性）。
+- **设计决策（batch cancel → scopes/generations 映射）**：
+  1. **围栏选 scope、scope 内全取消**：runtime 唯一取消树节点是 scope（[FIBER-CANCEL-001]），故选择按 process 身份/代次围栏，取消按 scope 整体——与被围栏外 fiber 共享的 scope 会整体取消（scope 是树节点）；被围栏 process 的 fiber 若在新 scope 中则仍存活（其 durable incarnation 由 process 权威 fail-closed，见 `b-process-003` §5）。
+  2. **双域分工**：durable 侧作废 incarnation（receipt + inspect/resume fail-closed），runtime 侧取消 scope；一次联动调用按此顺序执行，durable 拒绝（stale fence / idempotency rebinding / Active process）→ runtime 零副作用。
+  3. **终态唯一不动**：scope cancel 不触 fiber state；终态仍只由 fiber 自身 lifecycle 写入（biased-select），`already_terminal` 只作报告计数。已终态 fiber 的 scope 仍取消（幂等，且封死向已取消 scope 的 respawn）。
+- **新增测试**（`batch_cancel.rs`，6 项，防重复勘察见文件头 coverage map——单 scope 语义不重测，本文件只测 batch 维度）：
+  1. `batch_cancel_drives_mixed_state_cohort_to_unique_terminals` — running ×2（共享 scope）+ durable wait 挂起 + 已 Completed：一次批量取消 → 非终态全部唯一 `Cancelled`、终态保持 `Completed`、report 计数精确（matched=4/terminal=1/scopes=3/receipts=2）、durable 行保持 `PENDING`、durable incarnation inspect fail-closed。
+  2. `batch_cancel_is_fenced_by_process_identity_and_generation` — 同 process id 异 process 代次 + 异 process id：均不被波及（matched=1）。
+  3. `wake_then_batch_cancel_keeps_unique_cancelled_terminal_and_durable_wake` — 先唤醒后批量取消：终态唯一 `Cancelled`、join 返回 `Cancelled`、durable 行保持 `WOKEN`。
+  4. `late_callbacks_after_batch_cancel_buffer_without_panic_or_resurrection` — 批量取消后晚到 callback：channel 投递 `buffered=1` 不 panic、Operation wake `NotWaiting`、新 Operation 注册 ready `Cancelled`、rearm 空报告、状态稳定 `Cancelled`、durable 事实仍可被无关新 waiter 消费（`Woken`）。
+  5. `batch_cancel_respawn_is_fenced_and_linkage_replay_is_idempotent` — respawn 守卫（已取消 scope → `Cancelled`；scope id 换代次 → `InvalidGeneration`；新 scope runtime 可 spawn 而 durable 注册被 `FiberIncarnationCancelled` 拒）+ 同 key 联动重放幂等（`Replayed`、计数确定性）。
+  6. `batch_cancel_fails_closed_on_authority_gates_without_runtime_side_effect` — Active process（`CorruptRecord`）与 stale fencing token（`StaleProcessBinding`）：均 fail-closed 零 runtime 副作用（fiber 保持 Running、scope 未取消可继续 spawn），正确围栏事后仍生效。
+- TDD：红（`ProcessFiberCancelReport` / `cancel_process_fibers` 未定义，E0432/E0599）→ 绿（6/6）。
+
+#### 6.16.1 验证门实测
+
+```text
+cargo test -p nlos-runtime-tokio --test batch_cancel
+  → 6 passed / 0 failed（2026-09-20 W27-C；连续 5 轮复跑均绿，0.08–0.10s/轮）
+cargo test -p nlos-runtime-tokio
+  → 116 passed / 0 failed / 8 ignored（23 个 test target 全绿；110 既有 + 6 batch_cancel；
+    ignored = durable_wait_scale 2 + scale.rs 100K 1 + blocking_io_negative 10K 1
+              + activation_meter_scale 2 + lifecycle_scale 2，与既有口径一致）
+cargo clippy -p nlos-runtime-tokio --all-targets -- -D warnings → exit 0（stable，2026-09-20 W27-C）
+cargo fmt -p nlos-runtime-tokio -- --check                → 通过（stable，2026-09-20 W27-C）
+```
+
+测试确定性：无 wall-clock 裸 sleep——等待经 `wait_for_state`（10s 预算有界轮询）/`tokio::time::timeout`（`RESOLVE` 5s），settle 复用 §6 既有 20ms 有界模式。
+
+#### 6.16.2 缺口更新
+
+- **勾销**：§6.8.2/§6.9.2/§6.11.2/§6.12.2 反复登记的「runtime 侧 process crash 传播联动」之 **batch cancel 部分** → 本 §6.16（kill receipt 消费仍缺）；`b-process-003` §5「runtime 侧 cancel receipt 消费接线」的 batch-cancel 前缀同此勾销（该文件归 W27-C 外车道，未改动）。
+- **如实保留（ROAD-B-006 剩余，Claim 维持 PARTIAL_PASS）**：
+  - runtime kill receipt 消费（`request_platform_kill` 联动）与 Activation meter 联动；
+  - runtime 侧 spawn 不做 process 门（fresh scope 的 runtime spawn 合法，durable 侧 fail-closed 承担 incarnation 围栏——本片有意分工，非缺口冒充）；跨 process 共享 scope 的整体取消为 scope 树语义的显式代价；
+  - sweep 为 O(n) 注册表扫描 + O(n·m) scope 去重（n 命中 fiber / m 去重 scope），100K 规模级 batch cancel 探针未纳入（同 §5 O(n) 特征家族）；
+  - 未声称 ROAD-B-006 整体达成。
