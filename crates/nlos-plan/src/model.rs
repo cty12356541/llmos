@@ -17,6 +17,8 @@ pub const DEPENDENCIES_ROOT_DOMAIN: &[u8] = b"llmos/plan/dependencies-root/v1";
 pub const REVISION_DIGEST_DOMAIN: &[u8] = b"llmos/plan/revision-digest/v1";
 /// Domain separator for the state-transition voucher id.
 pub const VOUCHER_ID_DOMAIN: &[u8] = b"llmos/plan/transition-voucher-id/v1";
+/// Domain separator for the residency-transition voucher id.
+pub const RESIDENCY_VOUCHER_ID_DOMAIN: &[u8] = b"llmos/plan/residency-voucher-id/v1";
 /// Domain separator for the resolution receipt id.
 pub const RESOLUTION_ID_DOMAIN: &[u8] = b"llmos/plan/resolution-id/v1";
 /// Domain separator for the resolution receipt content digest.
@@ -168,6 +170,76 @@ impl PlanNodeState {
     }
 }
 
+/// v0.5 §25.2.1 `ResidencyClass` subset for the W31-E minimal lane
+/// (议题 28 定案 2): the Context residency tier of one plan node —
+/// where the node's working set lives. This is a **separate axis** from
+/// the §25.2.1 execution state machine ([`PlanNodeState`]): the two
+/// advance independently and neither observes the other's vouchers.
+///
+/// The spec's sixth class `PINNED` is deliberately absent:
+/// `[SCALE-PIN-001]` binds every pin to a `ResourceAllocation`, owner,
+/// reason, upper bound, and expiry/renewal — a Resource-authority face
+/// outside this lane (deferred, see evidence §8).
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum NodeResidencyTier {
+    /// Only `TaskNode`/`AgentRole` dependency and resource declarations
+    /// (the `[SCALE-LOGICAL-001]` bounded durable metadata row). The
+    /// default tier of every declared node.
+    MetadataOnly,
+    /// Checkpoint/Artifact resides in persistent storage.
+    Cold,
+    /// Code, index, or partial Context quickly recoverable.
+    Warm,
+    /// `Process`/`AgentInstance` materialized, waiting to run.
+    Hot,
+    /// Currently holding a CPU/GPU/model/Driver execution slot.
+    Running,
+}
+
+impl NodeResidencyTier {
+    /// Stable one-byte wire discriminant (also the hash-input encoding);
+    /// the ordering is the 议题 28 linear chain
+    /// `METADATA_ONLY → COLD → WARM → HOT → RUNNING`.
+    pub(crate) const fn discriminant(self) -> u8 {
+        match self {
+            Self::MetadataOnly => 1,
+            Self::Cold => 2,
+            Self::Warm => 3,
+            Self::Hot => 4,
+            Self::Running => 5,
+        }
+    }
+
+    const fn encode(self) -> i64 {
+        self.discriminant() as i64
+    }
+
+    fn decode(value: i64) -> Result<Self, crate::PlanStoreError> {
+        match value {
+            1 => Ok(Self::MetadataOnly),
+            2 => Ok(Self::Cold),
+            3 => Ok(Self::Warm),
+            4 => Ok(Self::Hot),
+            5 => Ok(Self::Running),
+            _ => Err(crate::PlanStoreError::CorruptRecord(
+                "unknown residency tier",
+            )),
+        }
+    }
+
+    /// The conservative legal residency edge set: a single adjacent step
+    /// along the 议题 28 linear chain, in either direction (eviction walks
+    /// down, rehydration walks up). Self-loops and multi-tier skips are
+    /// illegal — every step is one typed voucher, so a HOT→WARM→COLD
+    /// eviction and its rehydration are always fully auditable. Residency
+    /// legality never consults the lifecycle state machine.
+    #[must_use]
+    pub const fn tier_transition_is_legal(from: Self, to: Self) -> bool {
+        let delta = to.discriminant() as i16 - from.discriminant() as i16;
+        delta == 1 || delta == -1
+    }
+}
+
 /// One node's declaration inside a plan revision. Dependency edges are
 /// structured (declaration-local `node_key` references, `[PLAN-DAG-001]`);
 /// the remaining metadata bodies are digest-bound (their parsed models are
@@ -270,6 +342,11 @@ pub struct PlanNodeRecord {
     pub state: PlanNodeState,
     /// Number of state-transition vouchers recorded for this node.
     pub transition_count: u64,
+    /// The node's Context residency tier (§25.2.1 residency axis,
+    /// separate from `state`).
+    pub residency_tier: NodeResidencyTier,
+    /// Number of residency-transition vouchers recorded for this node.
+    pub residency_transition_count: u64,
     pub first_declared_at_ms: u64,
     pub updated_at_ms: u64,
 }
@@ -325,6 +402,80 @@ impl NodeTransitionDecision {
             Self::Recorded(voucher) | Self::Replayed(voucher) => voucher,
         }
     }
+}
+
+/// Request to record one residency tier transition (W31-E, v0.5 §25.2.1
+/// residency axis). The tier CAS and the declared-revision CAS mirror
+/// the lifecycle face's fences; the two voucher faces are otherwise
+/// fully independent.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ResidencyTransitionRequest {
+    pub plan_id: TaskPlanId,
+    pub node_id: TaskNodeId,
+    /// CAS on the node's current residency tier.
+    pub from_tier: NodeResidencyTier,
+    pub to_tier: NodeResidencyTier,
+    /// CAS on the node's declared-shape revision (the same
+    /// `[PLAN-DAG-001]` fence the lifecycle face applies: a reshaping
+    /// revision fences in-flight residency moves that observed the
+    /// pre-reshape revision).
+    pub expected_declared_revision: u64,
+    /// Exactly-once key for the voucher.
+    pub idempotency_key: IdempotencyKey,
+    /// Caller-supplied observation time (ms).
+    pub transitioned_at_ms: u64,
+}
+
+/// Immutable voucher of one recorded residency tier transition.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResidencyTransitionVoucher {
+    pub voucher_id: ReceiptId,
+    pub plan_id: TaskPlanId,
+    pub node_id: TaskNodeId,
+    /// Dense per-node residency sequence, starting at 1 (independent of
+    /// the lifecycle voucher sequence).
+    pub transition_seq: u64,
+    pub from_tier: NodeResidencyTier,
+    pub to_tier: NodeResidencyTier,
+    /// The node's declared-shape revision observed by the transition.
+    pub observed_revision: u64,
+    pub idempotency_key: IdempotencyKey,
+    pub transitioned_at_ms: u64,
+}
+
+/// Outcome of one `record_residency_transition` call.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ResidencyTransitionDecision {
+    /// First execution of this key: the voucher committed with the tier
+    /// CAS.
+    Recorded(ResidencyTransitionVoucher),
+    /// Durable replay: the original voucher is returned unchanged.
+    Replayed(ResidencyTransitionVoucher),
+}
+
+impl ResidencyTransitionDecision {
+    /// The voucher this call denotes, whichever branch.
+    #[must_use]
+    pub const fn voucher(self) -> ResidencyTransitionVoucher {
+        match self {
+            Self::Recorded(voucher) | Self::Replayed(voucher) => voucher,
+        }
+    }
+}
+
+/// Typed graded readback of one node's residency axis (W31-E lane gate
+/// 分级读回): the current tier and the last transition voucher in one
+/// read.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NodeResidencyView {
+    pub plan_id: TaskPlanId,
+    pub node_id: TaskNodeId,
+    pub tier: NodeResidencyTier,
+    /// Number of residency-transition vouchers recorded for the node.
+    pub transition_count: u64,
+    /// The node's newest residency voucher, `None` before the first
+    /// transition.
+    pub last_voucher: Option<ResidencyTransitionVoucher>,
 }
 
 /// Result of walking one plan's immutable revision chain.
@@ -444,4 +595,12 @@ pub(crate) fn encode_state(state: PlanNodeState) -> i64 {
 
 pub(crate) fn decode_state(value: i64) -> Result<PlanNodeState, crate::PlanStoreError> {
     PlanNodeState::decode(value)
+}
+
+pub(crate) fn encode_tier(tier: NodeResidencyTier) -> i64 {
+    tier.encode()
+}
+
+pub(crate) fn decode_tier(value: i64) -> Result<NodeResidencyTier, crate::PlanStoreError> {
+    NodeResidencyTier::decode(value)
 }

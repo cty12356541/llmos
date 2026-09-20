@@ -571,16 +571,17 @@ fn missing_revision_shape_fails_typed_never_rederived() {
     );
 }
 
-/// The v2 migration paths: fresh databases open at v2, reopens recognize
-/// v2, a v1-versioned database holding the v2 schema re-migrates
-/// idempotently, and unknown versions fail typed.
+/// The v2 migration chain: fresh databases open at the chain head (v3
+/// after W31-E), reopens recognize it, a v1-versioned database holding
+/// the newer schemas re-migrates idempotently along the chain, and
+/// unknown versions fail typed.
 #[test]
 fn schema_v2_migration_paths() {
     let root = Root::new("migration");
     let db_path = root.0.join("plan.sqlite3");
     std::fs::create_dir_all(&root.0).expect("create db directory");
     let authority = SqlitePlanAuthority::open(&db_path).expect("fresh open");
-    assert_eq!(user_version(&db_path), 2);
+    assert_eq!(user_version(&db_path), 3);
     let plan_id = authority
         .apply_plan_revision(revision_request(None, vec![node(0x0a, 0x11, &[])], 0x01))
         .expect("revision 1")
@@ -589,18 +590,18 @@ fn schema_v2_migration_paths() {
     let handle = resolve_current(&authority, plan_id, 0x51);
     drop(authority);
 
-    let reopened = SqlitePlanAuthority::open(&db_path).expect("reopen at v2");
-    assert_eq!(user_version(&db_path), 2);
+    let reopened = SqlitePlanAuthority::open(&db_path).expect("reopen at head");
+    assert_eq!(user_version(&db_path), 3);
     drop(reopened);
 
-    // A database stamped v1 whose v2 schema already exists re-migrates
-    // idempotently (no partial-state error, version restored to 2).
+    // A database stamped v1 whose newer schemas already exist re-migrates
+    // idempotently (no partial-state error, version restored to the head).
     let raw = Connection::open(&db_path).expect("raw writer");
     raw.pragma_update(None, "user_version", 1)
         .expect("stamp v1");
     drop(raw);
     let remigrated = SqlitePlanAuthority::open(&db_path).expect("idempotent re-migration");
-    assert_eq!(user_version(&db_path), 2);
+    assert_eq!(user_version(&db_path), 3);
     assert_eq!(
         remigrated
             .inspect_resolution(handle.resolution_id)

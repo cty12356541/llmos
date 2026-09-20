@@ -19,12 +19,13 @@ use crate::PlanStoreError;
 use crate::model::{
     ApplyPlanRevisionRequest, ChainVerification, DEPENDENCIES_ROOT_DOMAIN,
     MAX_DECLARED_NODES_PER_REVISION, MAX_DEPENDENCIES_PER_NODE, NODES_ROOT_DOMAIN,
-    NodeTransitionDecision, NodeTransitionRequest, NodeTransitionVoucher, PLAN_ID_DOMAIN,
-    PlanNodeDeclaration, PlanNodeKind, PlanNodeRecord, PlanNodeState, PlanRevisionDecision,
-    PlanRevisionReceipt, PlanView, REVISION_DIGEST_DOMAIN, TASK_NODE_ID_DOMAIN, VOUCHER_ID_DOMAIN,
-    decode_kind, decode_state, encode_kind, encode_state,
+    NodeResidencyTier, NodeTransitionDecision, NodeTransitionRequest, NodeTransitionVoucher,
+    PLAN_ID_DOMAIN, PlanNodeDeclaration, PlanNodeKind, PlanNodeRecord, PlanNodeState,
+    PlanRevisionDecision, PlanRevisionReceipt, PlanView, REVISION_DIGEST_DOMAIN,
+    TASK_NODE_ID_DOMAIN, VOUCHER_ID_DOMAIN, decode_kind, decode_state, decode_tier, encode_kind,
+    encode_state, encode_tier,
 };
-use crate::schema::{SCHEMA_VERSION, migrate_v1, migrate_v2};
+use crate::schema::{SCHEMA_VERSION, migrate_v1, migrate_v2, migrate_v3};
 
 /// A single-writer `SQLite` plan authority.
 pub struct SqlitePlanAuthority {
@@ -90,8 +91,13 @@ impl SqlitePlanAuthority {
             0 => {
                 migrate_v1(&mut connection)?;
                 migrate_v2(&mut connection)?;
+                migrate_v3(&mut connection)?;
             }
-            1 => migrate_v2(&mut connection)?,
+            1 => {
+                migrate_v2(&mut connection)?;
+                migrate_v3(&mut connection)?;
+            }
+            2 => migrate_v3(&mut connection)?,
             SCHEMA_VERSION => {}
             other => return Err(PlanStoreError::SchemaVersionUnsupported(other)),
         }
@@ -309,6 +315,7 @@ impl SqlitePlanAuthority {
         let mut statement = connection.prepare(
             "SELECT plan_id, task_node_id, node_key, node_kind, declared_revision,
                     node_digest, node_state, transition_count,
+                    residency_tier, residency_transition_count,
                     first_declared_at_ms, updated_at_ms
              FROM plan_nodes WHERE plan_id = ?1 ORDER BY task_node_id",
         )?;
@@ -969,6 +976,8 @@ type NodeRow = (
     i64,
     i64,
     i64,
+    i64,
+    i64,
 );
 
 fn raw_node_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<NodeRow> {
@@ -983,6 +992,8 @@ fn raw_node_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<NodeRow> {
         row.get::<_, i64>(7)?,
         row.get::<_, i64>(8)?,
         row.get::<_, i64>(9)?,
+        row.get::<_, i64>(10)?,
+        row.get::<_, i64>(11)?,
     ))
 }
 
@@ -996,8 +1007,10 @@ fn decode_node_row(row: NodeRow) -> Result<PlanNodeRecord, PlanStoreError> {
         node_digest: fixed32(row.5, "node digest")?,
         state: decode_state(row.6)?,
         transition_count: decode_u64(row.7)?,
-        first_declared_at_ms: decode_u64(row.8)?,
-        updated_at_ms: decode_u64(row.9)?,
+        residency_tier: decode_tier(row.8)?,
+        residency_transition_count: decode_u64(row.9)?,
+        first_declared_at_ms: decode_u64(row.10)?,
+        updated_at_ms: decode_u64(row.11)?,
     })
 }
 
@@ -1010,6 +1023,7 @@ pub(crate) fn load_plan_node(
         .query_row(
             "SELECT plan_id, task_node_id, node_key, node_kind, declared_revision,
                     node_digest, node_state, transition_count,
+                    residency_tier, residency_transition_count,
                     first_declared_at_ms, updated_at_ms
              FROM plan_nodes WHERE plan_id = ?1 AND task_node_id = ?2",
             params![plan_id.as_bytes().as_slice(), node_id.as_bytes().as_slice()],
@@ -1115,8 +1129,9 @@ fn upsert_plan_nodes(
                     "INSERT INTO plan_nodes (
                         plan_id, task_node_id, node_key, node_kind, declared_revision,
                         node_digest, node_state, transition_count,
+                        residency_tier, residency_transition_count,
                         first_declared_at_ms, updated_at_ms
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, 0, ?7, ?7)",
+                      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, 0, ?8, 0, ?7, ?7)",
                     params![
                         plan_id.as_bytes().as_slice(),
                         node_id.as_bytes().as_slice(),
@@ -1125,6 +1140,7 @@ fn upsert_plan_nodes(
                         encode_u64(revision)?,
                         digest.as_slice(),
                         encode_u64(applied_at_ms)?,
+                        encode_tier(NodeResidencyTier::MetadataOnly),
                     ],
                 )?;
             }

@@ -9,7 +9,7 @@ use rusqlite::{Connection, TransactionBehavior};
 
 use crate::PlanStoreError;
 
-pub(crate) const SCHEMA_VERSION: i64 = 2;
+pub(crate) const SCHEMA_VERSION: i64 = 3;
 
 /// Creates the durable plan authority schema v1: the per-plan
 /// `plans` current-state head (monotonic current revision), the immutable
@@ -129,6 +129,66 @@ pub(crate) fn migrate_v2(connection: &mut Connection) -> Result<(), PlanStoreErr
 
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     transaction.execute_batch(SCHEMA_V2_SQL)?;
+    transaction.commit()?;
+    Ok(())
+}
+
+/// Advances a v2 database to v3 (additive, one `BEGIN IMMEDIATE`
+/// transaction): the Context residency axis of the W31-E minimal lane
+/// (v0.5 §25.2.1 `ResidencyClass`, 议题 28 定案 2). `plan_nodes` gains a
+/// `residency_tier` column (backfilled to `METADATA_ONLY` — before this
+/// migration the authority recorded declarations only, so the
+/// conservative per-node tier is metadata-only) and a
+/// `residency_transition_count` sequence anchor; the immutable
+/// `plan_node_residency_transitions` carries the tier-transition
+/// vouchers (a separate axis from `plan_node_transitions`: own table,
+/// own dense sequence, own idempotency keys). Residency columns are not
+/// shape: the G1 executed-shape-freeze trigger never blocks a tier
+/// move, so evicting an execution-frozen node stays legal — while the
+/// storage-layer adjacency guard refuses any raw skip-tier rewrite.
+pub(crate) fn migrate_v3(connection: &mut Connection) -> Result<(), PlanStoreError> {
+    let table_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type='table' AND name = 'plan_node_residency_transitions'",
+        [],
+        |row| row.get(0),
+    )?;
+    let trigger_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN (
+            'plan_nodes_residency_adjacent',
+            'plan_node_residency_transitions_immutable_update',
+            'plan_node_residency_transitions_no_delete',
+            'plan_node_residency_transitions_seq_bound'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if table_count == 1 && trigger_count == 4 {
+        connection.pragma_update(None, "user_version", 3)?;
+        return Ok(());
+    }
+    if table_count != 0 || trigger_count != 0 {
+        return Err(PlanStoreError::CorruptRecord(
+            "partial plan authority v3 schema",
+        ));
+    }
+    let v2_tables: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type='table' AND name IN (
+            'plans', 'plan_revisions', 'plan_nodes', 'plan_node_transitions',
+            'plan_revision_nodes', 'plan_revision_edges', 'plan_resolution_receipts'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if v2_tables != 7 {
+        return Err(PlanStoreError::CorruptRecord(
+            "plan authority v2 schema missing",
+        ));
+    }
+
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(SCHEMA_V3_SQL)?;
     transaction.commit()?;
     Ok(())
 }
@@ -357,3 +417,51 @@ BEFORE DELETE ON plan_resolution_receipts BEGIN
 END;
 
 PRAGMA user_version = 2;";
+
+pub(crate) const SCHEMA_V3_SQL: &str = "ALTER TABLE plan_nodes
+    ADD COLUMN residency_tier INTEGER NOT NULL DEFAULT 1
+    CHECK(residency_tier BETWEEN 1 AND 5);
+ALTER TABLE plan_nodes
+    ADD COLUMN residency_transition_count INTEGER NOT NULL DEFAULT 0
+    CHECK(residency_transition_count >= 0);
+
+CREATE TABLE plan_node_residency_transitions (
+    voucher_id BLOB PRIMARY KEY NOT NULL CHECK(length(voucher_id) = 16),
+    idempotency_key BLOB NOT NULL UNIQUE CHECK(length(idempotency_key) = 16),
+    plan_id BLOB NOT NULL CHECK(length(plan_id) = 16),
+    task_node_id BLOB NOT NULL CHECK(length(task_node_id) = 16),
+    transition_seq INTEGER NOT NULL CHECK(transition_seq >= 1),
+    from_tier INTEGER NOT NULL CHECK(from_tier BETWEEN 1 AND 5),
+    to_tier INTEGER NOT NULL CHECK(to_tier BETWEEN 1 AND 5),
+    observed_revision INTEGER NOT NULL CHECK(observed_revision >= 1),
+    transitioned_at_ms INTEGER NOT NULL CHECK(transitioned_at_ms >= 0),
+    UNIQUE(plan_id, task_node_id, transition_seq),
+    FOREIGN KEY(plan_id, task_node_id) REFERENCES plan_nodes(plan_id, task_node_id)
+) STRICT;
+
+CREATE TRIGGER plan_nodes_residency_adjacent
+BEFORE UPDATE OF residency_tier ON plan_nodes
+WHEN NEW.residency_tier != OLD.residency_tier
+    AND ABS(NEW.residency_tier - OLD.residency_tier) != 1
+BEGIN
+    SELECT RAISE(ABORT, 'residency tier transitions must be adjacent');
+END;
+CREATE TRIGGER plan_node_residency_transitions_immutable_update
+BEFORE UPDATE ON plan_node_residency_transitions BEGIN
+    SELECT RAISE(ABORT, 'plan node residency voucher is immutable');
+END;
+CREATE TRIGGER plan_node_residency_transitions_no_delete
+BEFORE DELETE ON plan_node_residency_transitions BEGIN
+    SELECT RAISE(ABORT, 'plan node residency voucher is durable');
+END;
+CREATE TRIGGER plan_node_residency_transitions_seq_bound
+AFTER INSERT ON plan_node_residency_transitions
+WHEN NEW.transition_seq != (
+    SELECT residency_transition_count + 1 FROM plan_nodes
+    WHERE plan_id = NEW.plan_id AND task_node_id = NEW.task_node_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'residency voucher is not the next dense sequence');
+END;
+
+PRAGMA user_version = 3;";
