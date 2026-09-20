@@ -1,0 +1,27 @@
+[package]
+name = "nlos-driver-mock"
+description = "Deterministic fake provider driver plane over durable Operation prepare/activate and authenticated typed IPC."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+minicbor.workspace = true
+nlos-clock = { path = "../nlos-clock" }
+nlos-identity = { path = "../nlos-identity" }
+nlos-ipc = { path = "../nlos-ipc" }
+nlos-operation = { path = "../nlos-operation" }
+nlos-runtime = { path = "../nlos-runtime" }
+nlos-schema = { path = "../nlos-schema" }
+nlos-store = { path = "../nlos-store" }
+nlos-types = { path = "../nlos-types" }
+sha2.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+ed25519-dalek.workspace = true
+
+[lints]
+workspace = true
