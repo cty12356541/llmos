@@ -90,7 +90,10 @@ const SABI_OPERATION_CONTROL_V1: SchemaDescriptor = SchemaDescriptor {
 const SABI_SYSTEM_CONTROL_V1: SchemaDescriptor = SchemaDescriptor {
     name: SABI_SYSTEM_CONTROL_SCHEMA,
     major: 1,
-    minor: 0,
+    // Minor 1 records the W27-A additive semantic-domain extension (new
+    // view value, failure-authority value, snapshot/command message types,
+    // and oneof arms) under the ADR-0014 freeze rules.
+    minor: 1,
     supported_critical_extensions: &[],
     frozen: true,
 };
@@ -715,7 +718,7 @@ pub fn system_control_schema_identity() -> sabi::v1::SchemaIdentity {
     sabi::v1::SchemaIdentity {
         name: SABI_SYSTEM_CONTROL_SCHEMA.to_owned(),
         major: 1,
-        minor: 0,
+        minor: 1,
         critical_extension_ids: Vec::new(),
         non_critical_extension_ids: Vec::new(),
     }
@@ -849,6 +852,32 @@ pub fn decode_artifact_recovery_operations_snapshot(
     let snapshot: sabi::v1::ArtifactRecoveryOperationsSnapshot =
         decode_bounded_with_limit(wire, MAX_SYSTEM_CONTROL_PAYLOAD_BYTES)?;
     validate_artifact_recovery_operations_snapshot(&snapshot)?;
+    Ok(snapshot)
+}
+
+/// Encodes a bounded, sanitized Semantic recovery operations snapshot.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed metrics, alerts, or identities.
+pub fn encode_semantic_recovery_operations_snapshot(
+    snapshot: &sabi::v1::SemanticRecoveryOperationsSnapshot,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_semantic_recovery_operations_snapshot(snapshot)?;
+    encode_bounded_with_limit(snapshot, MAX_SYSTEM_CONTROL_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded, sanitized Semantic recovery operations snapshot.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_semantic_recovery_operations_snapshot(
+    wire: &[u8],
+) -> Result<sabi::v1::SemanticRecoveryOperationsSnapshot, CompatibilityError> {
+    let snapshot: sabi::v1::SemanticRecoveryOperationsSnapshot =
+        decode_bounded_with_limit(wire, MAX_SYSTEM_CONTROL_PAYLOAD_BYTES)?;
+    validate_semantic_recovery_operations_snapshot(&snapshot)?;
     Ok(snapshot)
 }
 
@@ -2001,6 +2030,45 @@ fn validate_control_command(
     }
     if command.reason.len() > MAX_CONTROL_REASON_BYTES || command.reason.contains('\0') {
         return Err(CompatibilityError::UnsafeControlReason);
+    }
+    Ok(())
+}
+
+/// Semantic-domain mirror of [`validate_artifact_recovery_operations_snapshot`]:
+/// the alert rules are identical, while the metrics carry no worker
+/// lifecycle and no last-failure summaries (those remain the shared worker
+/// facts on `ArtifactRecoveryMetrics`).
+fn validate_semantic_recovery_operations_snapshot(
+    snapshot: &sabi::v1::SemanticRecoveryOperationsSnapshot,
+) -> Result<(), CompatibilityError> {
+    validate_system_control_identity(snapshot.schema.as_ref())?;
+    if snapshot.metrics.is_none() {
+        return Err(CompatibilityError::MissingSystemControlMetrics);
+    }
+    if snapshot.alerts.len() > MAX_SYSTEM_CONTROL_ALERTS {
+        return Err(CompatibilityError::TooManySystemControlAlerts);
+    }
+    for alert in &snapshot.alerts {
+        if alert.plan_id.len() != REQUEST_ID_BYTES
+            || alert.total_failures == 0
+            || alert.first_failed_at_ms < 0
+            || alert.last_failed_at_ms < alert.first_failed_at_ms
+            || alert.escalated_at_ms < alert.last_failed_at_ms
+        {
+            return Err(CompatibilityError::InvalidSystemControlAlert);
+        }
+        let authority = sabi::v1::RecoveryFailureAuthority::try_from(alert.last_failure_authority)
+            .map_err(|_| CompatibilityError::InvalidSystemControlAlert)?;
+        if authority == sabi::v1::RecoveryFailureAuthority::Unspecified {
+            return Err(CompatibilityError::InvalidSystemControlAlert);
+        }
+        if alert
+            .acknowledgement_receipt
+            .as_ref()
+            .is_some_and(|receipt| receipt.receipt_id.len() != REQUEST_ID_BYTES)
+        {
+            return Err(CompatibilityError::InvalidReceiptReference);
+        }
     }
     Ok(())
 }

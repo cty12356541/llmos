@@ -715,6 +715,7 @@ fn metrics(health: RecoveryWorkerHealth) -> ArtifactRecoveryMetrics {
         durable_escalated: health.durable_escalated,
         durable_unacknowledged_escalated: health.durable_unacknowledged_escalated,
         durable_resolved: health.durable_resolved,
+        domain_faulted: health.artifact_domain_faulted,
         last_failures: health
             .last_failures
             .into_iter()
