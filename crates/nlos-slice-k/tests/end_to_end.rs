@@ -12,17 +12,36 @@
 //!    the crash-recovery analogue: every authority dropped mid-chain,
 //!    reopened over the same root, converged to the identical durable
 //!    terminal state, idempotent under a second drain.
+//! 4. `second_process_platform_kill_isolates_first_and_replays_after_reopen`
+//!    (Unix) — ROAD-B-002 B2-1: one application driving TWO process
+//!    bindings concurrently; the second process spawns (real OS child +
+//!    runtime fiber + durable incarnation), is platform-killed through the
+//!    real POSIX adapter fed by the supervisor pid registry, its binding
+//!    goes terminal (crash propagation + W27-C batch-cancel linkage), the
+//!    first process/fiber/OS child is untouched (isolation), and everything
+//!    replays idempotently after a crash-drop + reopen. Non-Unix hosts run
+//!    the same chain against the noop contract adapter.
 
+use std::collections::HashMap;
+use std::future::pending;
 use std::sync::Arc;
 
 use nlos_application::ApplicationStatus;
 use nlos_artifact::{
     ContentDigest, PackageVerificationDecision, VerifyPackageRequest, package_manifest_message,
 };
+use nlos_process::{
+    FiberCancelPropagationDecision, PlatformKillDecision, PosixPlatformKillAdapter,
+    ProcessAuthorityError, ProcessLifecycleState, ProcessTerminalDecision,
+    PropagateCancelToFibersRequest, PropagateCrashRequest, RegisterSupervisorPidRequest,
+    RequestPlatformKillRequest, SupervisorPidDecision, SupervisorPidRegistry,
+};
 use nlos_runtime::{FiberExit, FiberSpec, FiberState, RuntimeAdapter as _, RuntimeError};
 use nlos_runtime_tokio::{TokioRuntimeAdapter, TokioRuntimeConfig};
 use nlos_slice_k::{
-    ChainQuery, SliceKRuntime, run_cancel_path, run_happy_chain, run_recovery_prefix, seeded_key,
+    ChainQuery, SECOND_BINDING_SEED_OFFSET, SECOND_MATERIALIZE_SEED_OFFSET, SliceKRuntime,
+    run_cancel_path, run_happy_chain, run_recovery_prefix, run_second_process_pair,
+    run_second_process_platform_kill, seeded_key,
 };
 use nlos_task::{AttemptState, CancelDecision, PermitDecision, PermitState, TaskState};
 use nlos_types::{ExecutionFiberId, Generation, ResourceGroupId, SchedulerDomainId};
@@ -443,4 +462,457 @@ async fn drop_reopen_replays_durable_prefix_to_consistent_terminal_state() {
         reopened_publisher.principal_id, pre_verification.signer,
         "identity authority reopened with the same principal"
     );
+}
+
+/// Polls the adapter until the fiber reaches `expected` (the
+/// `batch_cancel.rs` wait pattern; bounded by a generous timeout).
+async fn wait_for_fiber_state(
+    adapter: &TokioRuntimeAdapter,
+    handle: nlos_runtime::FiberHandle,
+    expected: FiberState,
+) {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if adapter.inspect(handle) == Ok(expected) {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("fiber did not reach expected state");
+}
+
+/// One live-fiber spec linked to `process` under its attempt's scope (the
+/// chain's live-execution shape; distinct id offsets from the chain band).
+fn live_probe_spec(
+    seed: u8,
+    fiber_offset: u8,
+    scope: nlos_types::CancellationScopeId,
+    attempt: nlos_types::TaskAttemptId,
+    process: &nlos_process::ProcessBindingRecord,
+) -> FiberSpec {
+    FiberSpec {
+        fiber_id: ExecutionFiberId::from_bytes([seed.wrapping_add(fiber_offset); 16]),
+        fiber_generation: Generation::INITIAL,
+        agent_instance_id: process.agent_instance_id,
+        agent_generation: process.agent_instance_generation,
+        process_id: process.process_id,
+        process_generation: process.process_generation,
+        task_attempt_id: Some(attempt),
+        cancellation_scope_id: scope,
+        cancellation_generation: Generation::INITIAL,
+        resource_group_id: ResourceGroupId::from_bytes([seed.wrapping_add(160); 16]),
+        scheduler_domain_id: SchedulerDomainId::from_bytes([seed.wrapping_add(161); 16]),
+        deadline: None,
+    }
+}
+
+/// Shared body of the second-process kill chain (B2-1): runs the pair
+/// spawn phase, asserts both processes alive/inspectable, runs the
+/// platform-kill chain, asserts the kill terminal facts and the first
+/// process's isolation, then crash-drops, reopens, and asserts the
+/// idempotent replay of bindings / pids / kills. `real_children` carries
+/// the OS children on Unix (`None` on the non-Unix contract lane).
+#[allow(clippy::too_many_lines)]
+async fn second_process_kill_chain_body(
+    dir: &TempDir,
+    seed: u8,
+    mut real_children: Option<(std::process::Child, std::process::Child)>,
+) {
+    let (runtime, adapter) = {
+        let slice = Arc::new(SliceKRuntime::open(dir.root()).expect("open slice-k runtime"));
+        let adapter = slice_adapter();
+        (slice, adapter)
+    };
+    let (os_pid_first, os_pid_second) = match &mut real_children {
+        Some((first, second)) => (first.id(), second.id()),
+        None => (std::process::id(), std::process::id()),
+    };
+
+    let pair = run_second_process_pair(&runtime, &adapter, seed, os_pid_first, os_pid_second)
+        .await
+        .expect("second process pair");
+    let second = &pair.process_second;
+    let first = &pair.process_first;
+
+    // Both processes of the one application are alive and inspectable:
+    // active durable bindings, two registered application bindings, two
+    // supervisor pid entries, live runtime fibers, a completed durable
+    // write under the second process, and (on Unix) two live OS children.
+    assert_eq!(
+        runtime
+            .process
+            .inspect_active_process_binding(first.process_id)
+            .expect("first binding active"),
+        *first
+    );
+    assert_eq!(
+        runtime
+            .process
+            .inspect_active_process_binding(second.process_id)
+            .expect("second binding active before the kill"),
+        *second
+    );
+    let registrations = runtime
+        .inspect_application_registrations(pair.package_id)
+        .expect("registration inspect before the kill");
+    assert_eq!(registrations.process_bindings.len(), 2);
+    assert!(
+        registrations
+            .process_bindings
+            .contains(&pair.binding_receipt_first)
+    );
+    assert!(
+        registrations
+            .process_bindings
+            .contains(&pair.binding_receipt_second)
+    );
+    assert_eq!(pair.registry.pid_map().len(), 2);
+    wait_for_fiber_state(&adapter, pair.fiber_first, FiberState::Running).await;
+    wait_for_fiber_state(&adapter, pair.fiber_second, FiberState::Running).await;
+    wait_for_fiber_state(&adapter, pair.fiber_second_write, FiberState::Completed).await;
+    assert!(pair.write_outcome_second.plan_id.is_none());
+    runtime
+        .process
+        .inspect_fiber_incarnation(second.process_id, pair.fiber_second.fiber_id)
+        .expect("second incarnation inspectable while active");
+    if let Some((first_child, second_child)) = &mut real_children {
+        assert!(first_child.try_wait().expect("first child alive").is_none());
+        assert!(
+            second_child
+                .try_wait()
+                .expect("second child alive")
+                .is_none()
+        );
+    }
+
+    // The kill chain: durable receipt → real adapter signal → binding
+    // terminal (crash propagation, auto batch-cancel receipts) → W27-C
+    // runtime linkage.
+    let kill = run_second_process_platform_kill(&runtime, &adapter, &pair)
+        .await
+        .expect("second process platform kill chain");
+    assert!(
+        matches!(kill.kill, PlatformKillDecision::Signaled(_)),
+        "the kill chain must report Signaled, got {:?}",
+        kill.kill
+    );
+    if let Some((_, second_child)) = &mut real_children {
+        let status = second_child.wait().expect("wait for killed child");
+        assert!(!status.success(), "the real OS child died by signal");
+    }
+
+    assert_eq!(kill.linkage.matched_fibers, 2);
+    assert_eq!(kill.linkage.already_terminal, 1);
+    assert_eq!(kill.linkage.canceled_scopes, 1);
+    assert_eq!(kill.linkage.vanished_scopes, 0);
+    assert_eq!(kill.linkage.decision.receipts().len(), 1);
+    assert_eq!(
+        kill.linkage.decision.receipts()[0].binding,
+        pair.fiber_second.fiber_id
+    );
+
+    wait_for_fiber_state(&adapter, pair.fiber_second, FiberState::Cancelled).await;
+    assert_eq!(
+        adapter.inspect(pair.fiber_second_write),
+        Ok(FiberState::Completed)
+    );
+
+    // Isolation: the first process is untouched at every level — OS child,
+    // runtime fiber, cancellation scope, durable binding and incarnation.
+    if let Some((first_child, _)) = &mut real_children {
+        assert!(
+            first_child
+                .try_wait()
+                .expect("first child still alive")
+                .is_none(),
+            "the SIGTERM must reach only the second process's os pid"
+        );
+    }
+    assert_eq!(
+        adapter.inspect(pair.fiber_first),
+        Ok(FiberState::Running),
+        "the first process's live fiber keeps running"
+    );
+    let isolation_probe = adapter
+        .spawn_fiber(
+            live_probe_spec(seed, 151, pair.scope_first, pair.attempt_id_first, first),
+            Box::pin(pending()),
+        )
+        .expect("the first attempt's scope still admits fibers");
+    wait_for_fiber_state(&adapter, isolation_probe, FiberState::Running).await;
+    assert!(matches!(
+        adapter.spawn_fiber(
+            live_probe_spec(seed, 152, pair.scope_second, pair.attempt_id_second, second,),
+            Box::pin(pending()),
+        ),
+        Err(RuntimeError::Cancelled)
+    ));
+    assert_eq!(
+        runtime
+            .process
+            .inspect_active_process_binding(first.process_id)
+            .expect("first binding stays active"),
+        *first
+    );
+    runtime
+        .process
+        .inspect_fiber_incarnation(first.process_id, pair.fiber_first.fiber_id)
+        .expect("first incarnation is not cancelled");
+
+    // Terminal facts of the second process: binding fail-closed, durable
+    // kill receipt and terminal marker readback.
+    assert!(matches!(
+        runtime
+            .process
+            .inspect_active_process_binding(second.process_id),
+        Err(ProcessAuthorityError::ProcessBindingTerminal(
+            ProcessLifecycleState::Crashed
+        ))
+    ));
+    assert!(matches!(
+        runtime
+            .process
+            .inspect_fiber_incarnation(second.process_id, pair.fiber_second.fiber_id),
+        Err(ProcessAuthorityError::FiberIncarnationCancelled(
+            ProcessLifecycleState::Crashed
+        ))
+    ));
+    assert_eq!(
+        runtime
+            .process
+            .inspect_platform_kill_receipt(second.process_id, second.process_generation)
+            .expect("kill receipt inspect"),
+        Some(kill.kill.receipt().clone())
+    );
+    assert_eq!(
+        runtime
+            .process
+            .inspect_process_terminal(second.process_id)
+            .expect("terminal marker inspect"),
+        Some(kill.crash.clone())
+    );
+
+    if let Some((first_child, _)) = &mut real_children {
+        first_child.kill().expect("cleanup first child");
+        first_child.wait().expect("reap first child");
+    }
+
+    // Crash-drop analogue: every authority and the runtime dropped without
+    // any close; the durable bytes under the root survive.
+    drop(adapter);
+    drop(runtime);
+    let reopened = Arc::new(SliceKRuntime::open(dir.root()).expect("reopen slice-k runtime"));
+    let fresh_adapter = slice_adapter();
+
+    // The terminal state of the second process and the aliveness of the
+    // first survive the reopen verbatim.
+    assert!(matches!(
+        reopened
+            .process
+            .inspect_active_process_binding(second.process_id),
+        Err(ProcessAuthorityError::ProcessBindingTerminal(
+            ProcessLifecycleState::Crashed
+        ))
+    ));
+    assert_eq!(
+        reopened
+            .process
+            .inspect_active_process_binding(first.process_id)
+            .expect("first binding active after reopen"),
+        *first
+    );
+    assert_eq!(
+        reopened
+            .process
+            .inspect_platform_kill_receipt(second.process_id, second.process_generation)
+            .expect("kill receipt after reopen"),
+        Some(kill.kill.receipt().clone())
+    );
+    assert_eq!(
+        reopened
+            .process
+            .inspect_process_terminal(second.process_id)
+            .expect("terminal marker after reopen"),
+        Some(kill.crash.clone())
+    );
+    assert!(matches!(
+        reopened
+            .process
+            .inspect_fiber_incarnation(second.process_id, pair.fiber_second.fiber_id),
+        Err(ProcessAuthorityError::FiberIncarnationCancelled(
+            ProcessLifecycleState::Crashed
+        ))
+    ));
+    reopened
+        .process
+        .inspect_fiber_incarnation(first.process_id, pair.fiber_first.fiber_id)
+        .expect("first incarnation survives the reopen");
+
+    // Application process bindings replay idempotently: both receipts are
+    // still registered and the same registrations replay byte-identically.
+    let replay_first = reopened
+        .register_process_binding(
+            pair.package_id,
+            first.process_id,
+            pair.registrant_principal,
+            seed,
+        )
+        .expect("first binding registration replay");
+    assert_eq!(replay_first, pair.binding_receipt_first);
+    let replay_second = reopened
+        .register_process_binding(
+            pair.package_id,
+            second.process_id,
+            pair.registrant_principal,
+            seed.wrapping_add(SECOND_BINDING_SEED_OFFSET),
+        )
+        .expect("second binding registration replay");
+    assert_eq!(replay_second, pair.binding_receipt_second);
+    let reopened_registrations = reopened
+        .inspect_application_registrations(pair.package_id)
+        .expect("registration inspect after reopen");
+    assert_eq!(reopened_registrations.process_bindings.len(), 2);
+
+    // Process materialization replays idempotently: both delegated
+    // bindings return byte-identically under their original seeds.
+    assert_eq!(
+        reopened
+            .materialize_process(
+                seed,
+                pair.task_id_first,
+                pair.attempt_id_first,
+                Generation::INITIAL
+            )
+            .expect("first materialization replay"),
+        *first
+    );
+    assert_eq!(
+        reopened
+            .materialize_process(
+                seed.wrapping_add(SECOND_MATERIALIZE_SEED_OFFSET),
+                pair.task_id_second,
+                pair.attempt_id_second,
+                Generation::INITIAL,
+            )
+            .expect("second materialization replay"),
+        *second
+    );
+
+    // The kill replays without re-signaling: a fresh adapter with an EMPTY
+    // pid map still succeeds because the durable receipt short-circuits
+    // before any adapter invocation (a broken replay would fail closed on
+    // the missing map entry / unavailable adapter).
+    let kill_replay = reopened
+        .process
+        .request_platform_kill(
+            RequestPlatformKillRequest {
+                process_id: kill.kill.receipt().process_id,
+                expected_process_generation: kill.kill.receipt().process_generation,
+                expected_process_fencing_token: kill.kill.receipt().process_fencing_token,
+                idempotency_key: kill.kill.receipt().idempotency_key,
+                killed_at_ms: kill.kill.receipt().killed_at_ms,
+            },
+            &PosixPlatformKillAdapter::new(HashMap::new()),
+        )
+        .expect("kill replay after reopen");
+    assert!(matches!(kill_replay, PlatformKillDecision::Replayed(_)));
+    assert_eq!(kill_replay.receipt(), kill.kill.receipt());
+
+    let crash_replay = reopened
+        .process
+        .propagate_crash(PropagateCrashRequest {
+            process_id: kill.crash.process_id,
+            expected_process_generation: kill.crash.process_generation,
+            expected_process_fencing_token: kill.crash.process_fencing_token,
+            idempotency_key: kill.crash.idempotency_key,
+            marked_at_ms: kill.crash.marked_at_ms,
+        })
+        .expect("crash marker replay after reopen");
+    assert!(matches!(crash_replay, ProcessTerminalDecision::Replayed(_)));
+    assert_eq!(crash_replay.record(), &kill.crash);
+
+    // The W27-C linkage replays on the fresh runtime: the durable batch is
+    // Replayed with identical receipts and the empty runtime registry
+    // matches zero live fibers.
+    let linkage_replay = fresh_adapter
+        .cancel_process_fibers(
+            &reopened.process,
+            PropagateCancelToFibersRequest {
+                process_id: second.process_id,
+                expected_process_generation: second.process_generation,
+                expected_process_fencing_token: second.process_fencing_token,
+                lifecycle_state: ProcessLifecycleState::Crashed,
+                idempotency_key: kill.crash.idempotency_key,
+                cancelled_at_ms: kill.crash.marked_at_ms,
+            },
+        )
+        .expect("linkage replay after reopen");
+    assert!(matches!(
+        linkage_replay.decision,
+        FiberCancelPropagationDecision::Replayed(_)
+    ));
+    assert_eq!(linkage_replay.matched_fibers, 0);
+    assert_eq!(linkage_replay.canceled_scopes, 0);
+    assert_eq!(
+        linkage_replay.decision.receipts(),
+        kill.linkage.decision.receipts()
+    );
+
+    // The supervisor registry is in-memory: after the restart a supervisor
+    // re-registers the surviving first process idempotently.
+    let restarted = SupervisorPidRegistry::new();
+    restarted
+        .register(RegisterSupervisorPidRequest {
+            process_id: first.process_id,
+            process_generation: first.process_generation,
+            os_pid: os_pid_first,
+            registered_at_ms: pair.supervisor_registered_at_ms,
+        })
+        .expect("restart registers the surviving process");
+    assert!(matches!(
+        restarted.register(RegisterSupervisorPidRequest {
+            process_id: first.process_id,
+            process_generation: first.process_generation,
+            os_pid: os_pid_first,
+            registered_at_ms: pair.supervisor_registered_at_ms,
+        }),
+        Ok(SupervisorPidDecision::Replayed(_))
+    ));
+
+    // No commit plan ever existed on this chain; the converge drain is the
+    // idempotent no-op.
+    let now_ms = reopened
+        .wall_now_i64(seeded_key(seed, 150))
+        .expect("post-reopen wall reading");
+    assert!(
+        reopened
+            .converge_pending(16, now_ms)
+            .expect("drain after reopen")
+            .is_empty()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(unix)]
+async fn second_process_platform_kill_isolates_first_and_replays_after_reopen() {
+    let dir = TempDir::new("second-kill");
+    let child_first = std::process::Command::new("sleep")
+        .arg("600")
+        .spawn()
+        .expect("spawn first real child");
+    let child_second = std::process::Command::new("sleep")
+        .arg("600")
+        .spawn()
+        .expect("spawn second real child");
+
+    second_process_kill_chain_body(&dir, 0xD0, Some((child_first, child_second))).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(not(unix))]
+async fn second_process_kill_chain_contract_via_noop_adapter_on_non_unix() {
+    let dir = TempDir::new("second-kill-contract");
+    second_process_kill_chain_body(&dir, 0xD0, None).await;
 }

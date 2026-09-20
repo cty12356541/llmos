@@ -12,6 +12,7 @@ use nlos_commit_coordinator::CoordinatorError;
 use nlos_identity::IdentityAuthorityError;
 use nlos_process::ProcessAuthorityError;
 use nlos_runtime::RuntimeError;
+use nlos_runtime_tokio::ChannelWaitError;
 use nlos_store::StoreError;
 use nlos_task::TaskStoreError;
 
@@ -34,6 +35,12 @@ pub enum SliceKError {
     Clock(AuthorityClockError),
     /// The operation store refused a driver-operation step.
     Operation(StoreError),
+    /// The supervisor pid registry refused a registration (second-process
+    /// kill chain spawn phase).
+    SupervisorPid(nlos_process::SupervisorPidRegistryError),
+    /// The runtime batch-cancel linkage refused the propagation
+    /// (second-process kill chain).
+    BatchCancel(ChannelWaitError),
     /// The tokio runtime adapter refused a fiber admission or cancel.
     Runtime(RuntimeError),
     /// The cross-authority commit coordinator refused a convergence step.
@@ -56,6 +63,12 @@ impl fmt::Display for SliceKError {
             Self::Task(error) => write!(formatter, "task authority: {error}"),
             Self::Clock(error) => write!(formatter, "clock authority: {error}"),
             Self::Operation(error) => write!(formatter, "operation store: {error}"),
+            Self::SupervisorPid(error) => {
+                write!(formatter, "supervisor pid registry: {error}")
+            }
+            Self::BatchCancel(error) => {
+                write!(formatter, "runtime batch-cancel linkage: {error}")
+            }
             Self::Runtime(error) => write!(formatter, "fiber runtime: {error}"),
             Self::Coordinator(error) => write!(formatter, "commit coordinator: {error}"),
             Self::TimestampOverflow(value) => {
@@ -85,6 +98,8 @@ impl Error for SliceKError {
             Self::Task(error) => Some(error),
             Self::Clock(error) => Some(error),
             Self::Operation(error) => Some(error),
+            Self::SupervisorPid(error) => Some(error),
+            Self::BatchCancel(error) => Some(error),
             Self::Runtime(error) => Some(error),
             Self::Coordinator(error) => Some(error),
             Self::TimestampOverflow(_) | Self::SizeOverflow(_) => None,
@@ -137,6 +152,18 @@ impl From<AuthorityClockError> for SliceKError {
 impl From<StoreError> for SliceKError {
     fn from(error: StoreError) -> Self {
         Self::Operation(error)
+    }
+}
+
+impl From<nlos_process::SupervisorPidRegistryError> for SliceKError {
+    fn from(error: nlos_process::SupervisorPidRegistryError) -> Self {
+        Self::SupervisorPid(error)
+    }
+}
+
+impl From<ChannelWaitError> for SliceKError {
+    fn from(error: ChannelWaitError) -> Self {
+        Self::BatchCancel(error)
     }
 }
 
