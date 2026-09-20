@@ -1,6 +1,6 @@
 # 35. TaskPlan/TaskNode 声明面设计（ROAD-B-004 剩余核心）
 
-> 状态：讨论中（设计候选，未定案）
+> 状态：已定案（2026-09-20，转实施）——采纳 §5 推荐组合「B 为主 + C 模板来源」，六项参数定案见 [ADR-0016](../management/adrs/0016-task-plan-declaration-surface.md) 与本文 §9；A 否决、D 仅收缩路径
 > 日期：2026-09-01
 > 关联：v0.5 行 304-305、360-362、374、437、991（对象模型与 Task Space 职责）、行 3588-3658（§24.1.1 TaskPlan/TaskNode 原文与六条 PLAN-*）、行 4460-4509（§25.2 惰性物化与驻留分级）、行 4814（[PERF-SCALE-001]）、行 4881（[ROAD-B-004]）、行 3441-3506（§23.2 最小 Package Manifest）；[B-TASK-SCALE-001](../evidence/stage-b/b-task-scale-001.md)（ROAD-B-004 前片与缺口清单）；[B-SLICE-K-001](../evidence/stage-b/b-slice-k-001-end-to-end.md) 缺口 1（TaskSpec 无自由字段）；[B-APPLICATION-001](../evidence/stage-b/b-application-001-installation-authority.md)（manifest 最小子集）；[B-SCHEMA-015](../evidence/stage-b/b-schema-015-registry-freeze-marker.md) 与 [ADR-0014](../management/adrs/0014-schema-channel-freeze-v1-beta.md)（冻结纪律）；[ADR-0013](../management/adrs/0013-cross-authority-verify-then-commit-contract.md)（跨权威提交契约）；[议题 34](./34-fiber执行状态重建设计.md)（讨论格式与「ADR 定案前不实现」先例）
 
@@ -128,3 +128,17 @@
 ## 8. 结论
 
 不定案。规范面（v0.5 行 3588-3658、4460-4509）已定，本议题只解决落点：四候选已对照已落地事实（F1-F6）列明架构、durable 面、交互、迁移成本与被否风险；倾向 B 为主、C 为模板来源的组合。待 §7 六项决策后晋升 ADR，ADR 定案前 ROAD-B-004 剩余核心不进入实现。
+
+## 9. 定案记录（2026-09-20）
+
+> §8 为历史结论，保留不改。本节为定案事实。
+
+- **授权**：2026-09-20 用户指令「直接按你的建议来」，授权编排者按本文 §5 推荐倾向直接定案（表述先例同议题 34 / ADR-0009 决策批次）。
+- **定案**：采纳组合候选——**B（独立 `nlos-plan` authority）为主 + C（manifest tasks 模板段）作模板来源**；A 否决；D 登记为收缩路径。§7 六项决策逐项定案：
+  1. manifest 扩 tasks 模板段：采纳，additive 纪律延伸至 package schema 与验签 golden，旧包兼容为负路径硬门；
+  2. 状态权威落点：B（独立 crate）；TaskAuthority 加最小关联字段；
+  3. 关联方式：TaskSpec 一次 additive 迁移加 `application_id` + plan revision 引用；物化/permit 边界仍按 ADR-0013 核验；
+  4. ScaleProfile：`max_task_nodes` 正规化为 TaskNode 持久计数，Task 注册保留第二独立维度，TASK_PROFILE_10K 口径切换显式注明并按 G5 重跑；
+  5. resolver 结果 durable（immutable 解析 receipt）；
+  6. 晋升载体即 [ADR-0016](../management/adrs/0016-task-plan-declaration-surface.md)（ACCEPTED），验收语义门沿用本文 §6 G1–G6。
+- **转实施**：实现车道进入[进度单 §6.5.3](../management/stage-b-progress.md)波次编排（W28-A 起声明面车道）。

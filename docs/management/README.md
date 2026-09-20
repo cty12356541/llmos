@@ -204,6 +204,7 @@ P0 风险阻止 Stage 退出；P1 必须有 owner、缓解措施和明确复查�
 - 跨 authority verify-then-commit 契约：[ADR-0013](./adrs/0013-cross-authority-verify-then-commit-contract.md)
 - Schema 注册表通道冻结 v1-beta：[ADR-0014](./adrs/0014-schema-channel-freeze-v1-beta.md)
 - 不可信代码执行双层隔离（独立 host Process + 进程内 Wasmtime 按信任档分层）：[ADR-0015](./adrs/0015-dual-layer-untrusted-execution-isolation.md)
+- TaskPlan/TaskNode 声明面落点（独立 nlos-plan authority + manifest 模板来源组合）：[ADR-0016](./adrs/0016-task-plan-declaration-surface.md)
 - 多语言 SDK 支持评估：[language-sdk-support-plan.md](./language-sdk-support-plan.md)
 - 规范路线：[v0.5 第 28.2 节](../design/06-架构设计总纲-v0.5.md#282-阶段-b单机通用应用平台)
 - 执行层级决策：[议题 29](../discussions/29-现代系统执行层级与机制迁移.md)
