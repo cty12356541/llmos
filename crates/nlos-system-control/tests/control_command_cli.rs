@@ -1466,19 +1466,24 @@ async fn nl_sentences_compile_to_the_same_socket_receipts_as_direct_commands() {
     fs::remove_file(&socket_path).unwrap();
 }
 
+#[cfg(unix)]
 const OPERATION_TARGET_ID: [u8; 16] = [0x81; 16];
+#[cfg(unix)]
 const OPERATION_CAS: u64 = 4;
 
 /// Deterministic stub executor whose receipt id names the executed arm in
 /// its first byte (mirrors `recovery_control`'s recording stub).
+#[cfg(unix)]
 struct DeterministicOperationExecutor;
 
+#[cfg(unix)]
 fn operation_receipt(arm_tag: u8) -> [u8; 16] {
     let mut id = OPERATION_TARGET_ID;
     id[0] = arm_tag;
     id
 }
 
+#[cfg(unix)]
 impl OperationCommandExecutor for DeterministicOperationExecutor {
     fn pause_operation(&self, _: OperationControlRequest) -> Result<ReceiptId, SabiFailure> {
         Ok(ReceiptId::from_bytes(operation_receipt(1)))
@@ -2149,6 +2154,7 @@ async fn resource_recovery_commands_are_byte_identical_across_nl_cli_and_direct_
 // the TaskAuthority-owned TaskGroup view produce byte-identical receipts
 // across direct construction, the restricted NL surface, and the CLI.
 
+#[cfg(unix)]
 struct StubLayerSources {
     node: nlos_system_control::control::TaskNodeInspection,
     fiber: nlos_system_control::control::ExecutionFiberInspection,
@@ -2156,6 +2162,7 @@ struct StubLayerSources {
     operation: nlos_system_control::control::DurableOperationInspection,
 }
 
+#[cfg(unix)]
 impl nlos_system_control::TaskNodeInspectSource for StubLayerSources {
     fn inspect_task_node(
         &self,
@@ -2174,6 +2181,7 @@ impl nlos_system_control::TaskNodeInspectSource for StubLayerSources {
     }
 }
 
+#[cfg(unix)]
 impl nlos_system_control::ExecutionFiberInspectSource for StubLayerSources {
     fn inspect_execution_fiber(
         &self,
@@ -2192,6 +2200,7 @@ impl nlos_system_control::ExecutionFiberInspectSource for StubLayerSources {
     }
 }
 
+#[cfg(unix)]
 impl nlos_system_control::TopicInspectSource for StubLayerSources {
     fn inspect_topic(
         &self,
@@ -2209,6 +2218,7 @@ impl nlos_system_control::TopicInspectSource for StubLayerSources {
     }
 }
 
+#[cfg(unix)]
 impl nlos_system_control::OperationInspectSource for StubLayerSources {
     fn inspect_operation(
         &self,
@@ -2227,6 +2237,7 @@ impl nlos_system_control::OperationInspectSource for StubLayerSources {
     }
 }
 
+#[cfg(unix)]
 fn stub_layer_sources() -> StubLayerSources {
     use nlos_schema::sabi::v1::{
         ContextResidencyTier, DurableOperationState, ExecutionFiberLifecycleState,
@@ -2279,6 +2290,7 @@ fn stub_layer_sources() -> StubLayerSources {
     }
 }
 
+#[cfg(unix)]
 fn w32g_group_fixture(authority: &SqliteTaskAuthority) -> nlos_types::TaskGroupId {
     use nlos_task::{
         AttemptSpec, CompletionMode, FailureMode, GroupBinding, GroupSpec, SnapshotBundle, TaskSpec,
