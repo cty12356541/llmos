@@ -395,3 +395,56 @@ cargo fmt -p nlos-slice-k -- --check           → exit 0，干净
 - **自动 GC 仅覆盖 install 前既存 orphan**：install 之后产生的 orphan（如 crash 残留）仍无后台 sweep/open-time GC（与 §10.5 一致，登记后续 ROAD-B-001 车道）。
 - **`Disabled` 为逐调用参数**：无 runtime 级全局开关；未做 retention 策略、PKG-UPDATE-001 rollback（不变，维持 §10.5 登记）。
 - **GC 单写者纪律沿用 crate 约定**：slice 顺序流内无并发 `put_revision` 与 GC 重叠；并行调用方纪律由 `nlos-artifact` 文档约束，本切片未新增跨线程证明。
+
+## 15. Application 第二 Process spawn→platform kill 全链（2026-09-20 追加：W29-F ROAD-B-002 B2-1）
+
+- **定位**：B-APPLICATION-006 的多 binding 登记、W22-P 的 supervisor pid registry、W19/20/21-P 的平台 kill adapter、W27-C 的 runtime batch-cancel 联动均已各自落地；本车道补上**端到端缺口**——一个 Application 并发驱动**两条** Process binding：第二 Process 物化 → 真实 OS 子进程 + runtime fiber + durable incarnation 三层 spawn → `request_platform_kill`（真 POSIX adapter，pid_map 来自 supervisor registry）→ binding terminal（crash 传播）→ W27-C `cancel_process_fibers` 联动 → 第一 Process 全层隔离 → crash-drop + reopen 后 bindings/pids/kills 幂等 replay。
+- **写集**：`crates/nlos-slice-k/src/chain.rs`（`SecondProcessPair` / `SecondProcessKill` + `run_second_process_pair` / `run_second_process_platform_kill` + 种子偏移常量 + 私有 `spawn_pair_fibers` / `linked_live_spec`）、`src/error.rs`（`SupervisorPid` / `BatchCancel` 两个 typed 变体）、`src/lib.rs`（导出）、`tests/end_to_end.rs`（共享链体 + 2 用例）、`src/bin/slice-k-demo.rs`（STEP 12b）、本 §。`nlos-process` / `nlos-runtime-tokio` / `nlos-application` 零改动（只读消费公开 API；W27-C 的 `cancel_process_fibers` 按原样使用）。base HEAD `6c7a404`。
+
+### 15.1 链路接线（authority 调用序）
+
+| 阶段 | 调用 | 语义 |
+|---|---|---|
+| spawn·application | `bootstrap_publisher` → `publish_signed_package` → `verify_signed_package` → `install_verified_package` | 一个 Application 一次安装 |
+| spawn·双 Process | `register_task_and_attempt(seed)` + `materialize_process(seed,…)`；`register_task_and_attempt(seed+0x20)` + `materialize_process(seed+0x40,…)` | 第二 Process 走独立 Task/Attempt + 独立 IsolationDomain/委托 binding（键带 `SECOND_TASK_SEED_OFFSET=0x20` / `SECOND_MATERIALIZE_SEED_OFFSET=0x40` / `SECOND_BINDING_SEED_OFFSET=0x02`，与首 Process 键带无碰撞） |
+| spawn·双登记 | `register_process_binding` ×2（seed / seed+2） | B-APPLICATION-006 durable receipts，`process_bindings=2` |
+| spawn·supervisor | `SupervisorPidRegistry::register` ×2（NLOS ProcessId+generation → OS pid） | W22-P；`pid_map()` 即 adapter 喂入形状 |
+| spawn·fiber 三层 | 第二 Process：`spawn_write_fiber`（operation-only，register→dispatch→complete，「已运行」）+ live pending fiber；第一 Process：live pending fiber；两 live fiber 各 `register_fiber_incarnation`（Active 期注册，batch-cancel receipt 面） | 「双活」= active binding + live fiber +（Unix）活 OS 子进程 |
+| kill·① | `request_platform_kill(第二, PosixPlatformKillAdapter::new(registry.pid_map()))`（Unix 真子进程 SIGTERM；非 Unix 走 `NoopPlatformKillAdapter` 合同路径） | durable kill receipt 先落库再调 adapter（at-least-once） |
+| kill·② | `propagate_crash(第二)`（key=seed+123） | binding → `Crashed` terminal；同事务自动写 fiber batch-cancel receipts（§5 语义） |
+| kill·③ | `cancel_process_fibers(同 key=seed+123)`（W27-C，原样消费） | durable 批量决策 `Replayed` + runtime 侧 scope tree-cancel：第二 Process 的 live fiber → 唯一 `Cancelled`，首 Process scope/fiber 不动 |
+
+### 15.2 测试与断言要点（`tests/end_to_end.rs`）
+
+- **`second_process_platform_kill_isolates_first_and_replays_after_reopen`**（`#[cfg(unix)]`，macOS/Linux 实跑，house POSIX 真子进程模式——两个真实 `sleep 600` 子进程）与 **`second_process_kill_chain_contract_via_noop_adapter_on_non_unix`**（`#[cfg(not(unix))]`，Windows CI 合同覆盖）共享 `second_process_kill_chain_body`：
+  1. **双活可检**：双 binding `inspect_active_process_binding` 逐字节相等；`process_bindings=2` 且含双 receipt；`pid_map()==2`；双 live fiber `Running`；第二 write fiber `Completed`（plan 无）；双 OS 子进程 `try_wait()==None`；第二 incarnation 可检。
+  2. **kill**：`Signaled`；真子进程 `wait()` 非 success（信号死）；linkage report `matched_fibers==2 / already_terminal==1 / canceled_scopes==1 / vanished==0 / receipts==1`（恰为第二 live fiber 的 incarnation）；live fiber → `Cancelled`，write fiber 终态不被改写。
+  3. **隔离**（OS/runtime/durable 三层）：首 OS 子进程仍活（SIGTERM 只达第二 pid）；首 live fiber `Running`；首 scope 仍收新 fiber（探针 spawn 成功）而第二 scope 拒绝（`RuntimeError::Cancelled`）；首 binding active、首 incarnation 可检。
+  4. **terminal 持久**：第二 binding/`inspect_fiber_incarnation` 以 `ProcessBindingTerminal(Crashed)` / `FiberIncarnationCancelled(Crashed)` fail-closed；kill receipt 与 terminal marker inspect 相等。
+  5. **reopen replay**：drop 全部权威（kill -9 类比）→ 同 root 重开——terminal/隔离事实逐字节存活；双 `register_process_binding` 同 key replay 相等且 inspect 仍 2 条；双 `materialize_process` replay 相等；`request_platform_kill` 同 key 用**空 pid_map 的 POSIX adapter** replay（durable receipt 先短路、不调 adapter——坏 replay 会因缺映射 fail-closed）；`propagate_crash` replay 相等；`cancel_process_fibers` 在全新 runtime 上 `Replayed`（receipts 相等、`matched_fibers==0`）；supervisor 重启后首 Process pid 重注册→`Replayed`；`converge_pending` 空转（无 plan 幂等）。
+- 复用 `run_happy_chain` 家族键带纪律：场景键带 120–139 + 141/142（id）+ 124/125–143，第二 Process 经 `seed+0x20/0x40/0x02` 平移复用 20–26/110–114/32–33 键带，同 authority 内零碰撞（含 clock）。
+
+### 15.3 验证（base HEAD `6c7a404` 工作区，macOS 实跑，定向 `-p` 命令，`CARGO_TARGET_DIR` 隔离）
+
+```text
+cargo test -p nlos-process -p nlos-slice-k
+  → 52 passed / 0 failed
+    （nlos-process 36：lib 2 + fiber_cancel_propagation 3 + fiber_incarnation 3 + platform_kill 9
+      + process_authority 6 + process_crash_propagation 5 + supervisor_pid_registry 8，零改动全绿）
+    （nlos-slice-k 16：application_registrations 3 + competing_attempts 4 + end_to_end 4（+1 新）
+      + install_orphan_gc 2 + lifecycle_uninstall 3）
+cargo clippy -p nlos-slice-k -p nlos-process --all-targets -- -D warnings → 0 warning
+cargo fmt -p nlos-slice-k -p nlos-process -- --check            → 通过
+```
+
+- **非 Unix 编译面**：本机 Windows 交叉 `cargo check --target x86_64-pc-windows-{msvc,gnu}` 均在 `libsqlite3-sys` C 工具链处失败（环境限制，非本车道代码）；`#[cfg(not(unix))]` 合同用例由既有 cross-platform CI（`rust-cross-platform.yml` windows-latest 腿）在控制器屏障 push 后验证——与 W28-F 的安排同构。
+
+- **demo STEP 12b 已接线**（Unix 真 `sleep 600` 双子进程 + receipt 行 + 隔离行；非 Unix 打印 noop 合同路径说明）；**但 base HEAD `6c7a404` 上 demo bin 在更早的 STEP 09d 即 panic**（`cargo run -p nlos-slice-k --bin slice-k-demo` → orphan GC `collected_digests==[]` 期望双 planted digest；`git stash` 后干净 base 复现同样失败，嫌疑落在 W28-E `866ce07` auto-GC 波次的 blast radius，与本车道写集无关、测试面不受影响），故 STEP 12b 的演示输出暂无法在 demo 全程中抵达——链路行为由上述端到端测试全程覆盖（同一组合函数）。
+
+### 15.4 剩余缺口（如实登记）
+
+- **Windows 实杀未覆盖**：非 Unix 只跑 noop 合同路径（与 W21-P/W28-F 的既有边界一致——Windows live-child 实杀仍 PENDING）。
+- **kill→terminal 语义选型**：本链以 `propagate_crash`（`Crashed`）落 terminal（OS 信号死 ≠ 干净 join；与 W27-C 联动测试同族）；「operator 请求 kill → supervisor 观测干净退出 → `mark_process_terminated`」的替代路径未接线。
+- **supervisor 自动 pid 发现/unregister 未做**：pid 仍由 caller 注入；terminal 后的 registry 摘除策略（本链 kill 后未 unregister 第二 pid，登记为 caller policy）留待后续车道。
+- **restore→复活重放未做**：kill 后 `restore_process` 推进代际重挂（supersede 路径）在 W22-P 单测已覆盖，未纳入本纵切面链。
+- **多 fiber/多 scope 变体、Activation meter 联动、demo STEP 09d 基线 panic 修复**（W28-E 域）不在本车道。

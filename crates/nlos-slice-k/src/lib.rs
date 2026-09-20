@@ -47,7 +47,10 @@ mod package;
 mod runtime;
 
 pub use chain::{
-    CancelFacts, HappyChain, RecoveryPrefix, run_cancel_path, run_happy_chain, run_recovery_prefix,
+    CancelFacts, HappyChain, RecoveryPrefix, SECOND_BINDING_SEED_OFFSET,
+    SECOND_MATERIALIZE_SEED_OFFSET, SECOND_TASK_SEED_OFFSET, SecondProcessKill, SecondProcessPair,
+    run_cancel_path, run_happy_chain, run_recovery_prefix, run_second_process_pair,
+    run_second_process_platform_kill,
 };
 pub use error::{SliceKError, SliceKResult};
 pub use fiber::{FiberOutcome, WriteFiberJob, spawn_write_fiber};
