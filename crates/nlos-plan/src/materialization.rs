@@ -554,7 +554,7 @@ fn apply_rejection(
 
 /// The node's declared dependencies (from its pinned declared-revision
 /// shape) whose durable state is not `COMPLETED`.
-fn unresolved_dependencies(
+pub(crate) fn unresolved_dependencies(
     connection: &Connection,
     node: &PlanNodeRecord,
 ) -> Result<Vec<TaskNodeId>, PlanStoreError> {
@@ -678,7 +678,7 @@ type RequestRow = (
     Option<i64>,
 );
 
-fn raw_request_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RequestRow> {
+pub(crate) fn raw_request_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RequestRow> {
     Ok((
         row.get::<_, Vec<u8>>(0)?,
         row.get::<_, Vec<u8>>(1)?,
@@ -699,7 +699,9 @@ fn raw_request_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RequestRow> {
     ))
 }
 
-fn decode_request_row(row: RequestRow) -> Result<MaterializationRequestRecord, PlanStoreError> {
+pub(crate) fn decode_request_row(
+    row: RequestRow,
+) -> Result<MaterializationRequestRecord, PlanStoreError> {
     let status = MaterializationRequestStatus::decode(row.5)?;
     let admission = match (&row.6, row.7, row.8) {
         (Some(profile), Some(task_nodes), Some(working_set)) => Some(MaterializationAdmission {
@@ -760,7 +762,7 @@ fn decode_request_row(row: RequestRow) -> Result<MaterializationRequestRecord, P
     })
 }
 
-const REQUEST_COLUMNS: &str = "request_id, idempotency_key, plan_id, task_node_id,
+pub(crate) const REQUEST_COLUMNS: &str = "request_id, idempotency_key, plan_id, task_node_id,
         observed_declared_revision, status,
         admission_profile, admitted_task_nodes, admitted_active_working_set,
         approved_voucher_id, rejection_kind, rejection_profile,

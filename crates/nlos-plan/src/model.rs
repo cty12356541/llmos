@@ -32,6 +32,11 @@ pub const MATERIALIZATION_DRIVE_KEY_DOMAIN: &[u8] = b"llmos/plan/materialization
 /// `WAITING_* → MATERIALIZING` approval voucher (W31-A gate).
 pub const MATERIALIZATION_APPROVAL_KEY_DOMAIN: &[u8] =
     b"llmos/plan/materialization-approval-key/v1";
+/// Domain separator for the Worker tier's per-round materialization
+/// request keys (W31-F): digest over (node id, per-node retry round),
+/// so a restarted scheduler derives the same key for the same round and
+/// a fresh key after each durable resolution.
+pub const SCHEDULER_REQUEST_KEY_DOMAIN: &[u8] = b"llmos/plan/scheduler-request-key/v1";
 
 /// Structural admission bound for one plan revision's declared node set.
 /// The 100K logical-node tier is the G2 benchmark target (W31); this bound
