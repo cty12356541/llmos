@@ -24,6 +24,9 @@
 //! system-control-cli <SOCKET> pause-operation <COMMAND_ID_HEX_32> <TARGET_ID_HEX_32> <EXPECTED_REVISION> <REASON>
 //! system-control-cli <SOCKET> resume-operation <COMMAND_ID_HEX_32> <TARGET_ID_HEX_32> <EXPECTED_REVISION> <REASON>
 //! system-control-cli <SOCKET> cancel-operation <COMMAND_ID_HEX_32> <TARGET_ID_HEX_32> <EXPECTED_REVISION> <REASON>
+//! system-control-cli <SOCKET> kill-operation <COMMAND_ID_HEX_32> <TARGET_ID_HEX_32> <EXPECTED_REVISION> <REASON>
+//! system-control-cli <SOCKET> throttle-operation <COMMAND_ID_HEX_32> <TARGET_ID_HEX_32> <PERCENT_1_TO_100> <EXPECTED_REVISION> <REASON>
+//! system-control-cli <SOCKET> reclaim-operation <COMMAND_ID_HEX_32> <TARGET_ID_HEX_32> <EXPECTED_REVISION> <REASON>
 //! ```
 //!
 //! # Output and exit contract
@@ -59,13 +62,29 @@ const USAGE: &str = "usage: system-control-cli <SOCKET> inspect-health \
  | resume-semantic-recovery <COMMAND_ID_HEX_32> <PLAN_ID_HEX_32> <EXPECTED_FAILURES> <REASON> \
  | pause-operation <COMMAND_ID_HEX_32> <TARGET_ID_HEX_32> <EXPECTED_REVISION> <REASON> \
  | resume-operation <COMMAND_ID_HEX_32> <TARGET_ID_HEX_32> <EXPECTED_REVISION> <REASON> \
- | cancel-operation <COMMAND_ID_HEX_32> <TARGET_ID_HEX_32> <EXPECTED_REVISION> <REASON>";
+ | cancel-operation <COMMAND_ID_HEX_32> <TARGET_ID_HEX_32> <EXPECTED_REVISION> <REASON> \
+ | kill-operation <COMMAND_ID_HEX_32> <TARGET_ID_HEX_32> <EXPECTED_REVISION> <REASON> \
+ | throttle-operation <COMMAND_ID_HEX_32> <TARGET_ID_HEX_32> <PERCENT_1_TO_100> <EXPECTED_REVISION> <REASON> \
+ | reclaim-operation <COMMAND_ID_HEX_32> <TARGET_ID_HEX_32> <EXPECTED_REVISION> <REASON>";
 
 #[cfg(unix)]
 fn parse_u64(value: &str) -> Result<u64, ControlError> {
     value
         .parse::<u64>()
         .map_err(|_| ControlError::InvalidCommand("expected failure count must be a u64"))
+}
+
+#[cfg(unix)]
+fn parse_throttle_percent(value: &str) -> Result<u64, ControlError> {
+    let percent = parse_u64(value).map_err(|_| {
+        ControlError::InvalidCommand("throttle percent must be a plain decimal u64")
+    })?;
+    if !(1..=100).contains(&percent) {
+        return Err(ControlError::InvalidCommand(
+            "throttle percent must be a whole percent from 1 to 100",
+        ));
+    }
+    Ok(percent)
 }
 
 #[cfg(unix)]
@@ -128,6 +147,25 @@ fn parsed_command(arguments: &[String]) -> Result<ControlCommand, ControlError> 
             reason: arguments[4].clone(),
         }),
         "cancel-operation" if arguments.len() == 5 => Ok(ControlCommand::CancelOperation {
+            control_command_id: parse_hex_id(&arguments[1])?,
+            target_id: parse_hex_id(&arguments[2])?,
+            expected_generation_or_revision: parse_u64(&arguments[3])?,
+            reason: arguments[4].clone(),
+        }),
+        "kill-operation" if arguments.len() == 5 => Ok(ControlCommand::KillOperation {
+            control_command_id: parse_hex_id(&arguments[1])?,
+            target_id: parse_hex_id(&arguments[2])?,
+            expected_generation_or_revision: parse_u64(&arguments[3])?,
+            reason: arguments[4].clone(),
+        }),
+        "throttle-operation" if arguments.len() == 6 => Ok(ControlCommand::ThrottleOperation {
+            control_command_id: parse_hex_id(&arguments[1])?,
+            target_id: parse_hex_id(&arguments[2])?,
+            throttle_percent: parse_throttle_percent(&arguments[3])?,
+            expected_generation_or_revision: parse_u64(&arguments[4])?,
+            reason: arguments[5].clone(),
+        }),
+        "reclaim-operation" if arguments.len() == 5 => Ok(ControlCommand::ReclaimOperation {
             control_command_id: parse_hex_id(&arguments[1])?,
             target_id: parse_hex_id(&arguments[2])?,
             expected_generation_or_revision: parse_u64(&arguments[3])?,
@@ -211,6 +249,15 @@ fn summary(receipt: &ControlReceipt) -> String {
         }
         Ok(ControlOutcome::OperationCancelled { receipt_id }) => {
             format!("outcome=operation_cancelled receipt_id={}", hex(receipt_id))
+        }
+        Ok(ControlOutcome::OperationKilled { receipt_id }) => {
+            format!("outcome=operation_killed receipt_id={}", hex(receipt_id))
+        }
+        Ok(ControlOutcome::OperationThrottled { receipt_id }) => {
+            format!("outcome=operation_throttled receipt_id={}", hex(receipt_id))
+        }
+        Ok(ControlOutcome::OperationReclaimed { receipt_id }) => {
+            format!("outcome=operation_reclaimed receipt_id={}", hex(receipt_id))
         }
         Err(failure) => format!(
             "outcome=failure code={} retry={} message={}",

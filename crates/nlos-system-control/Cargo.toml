@@ -13,7 +13,6 @@ cli = [
     "dep:nlos-ipc",
     "dep:nlos-clock",
     "dep:nlos-identity",
-    "dep:sha2",
     "dep:tokio",
 ]
 process = ["dep:nlos-process"]
@@ -34,7 +33,7 @@ nlos-types = { path = "../nlos-types" }
 nlos-ipc = { path = "../nlos-ipc", optional = true }
 nlos-process = { path = "../nlos-process", optional = true }
 nlos-resource = { path = "../nlos-resource", optional = true }
-sha2 = { workspace = true, optional = true }
+sha2 = { workspace = true }
 tokio = { workspace = true, optional = true }
 
 [dev-dependencies]

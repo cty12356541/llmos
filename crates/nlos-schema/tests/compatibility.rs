@@ -5,15 +5,16 @@ use nlos_schema::sabi::v1::{
     BarrierObservationTarget, CallerIdentity, CancelCommand, CancelOperationRequest,
     CapabilityHandle, ControlCommand, ControlCommandLifecycleState, ControlCommandResult,
     ControlCommandSource, ControlScope, Envelope, ExchangeRequest, ExchangeResponse,
-    GetSystemControlRequest, NegotiateServiceResponse, OperationLifecycleState, OperationReference,
-    OperationStatus, PauseCommand, PrincipalHandshakeAttestation, PrincipalHandshakeChallenge,
-    QueryOperationRequest, ReceiptReference, RecoveryFailureAuthority, RecoveryFailureSummary,
-    RecoveryWorkerLifecycleState, RegisterWaitRequest, ResolveServiceRequest,
-    ResolveServiceResponse, ResumeCommand, ResumeSemanticRecoveryCommand, RetryDirective,
-    SabiErrorCode, SabiFailure, SabiRequestContext, SabiResponseContext, SchemaIdentity,
-    SemanticRecoveryAlertStatus, SemanticRecoveryMetrics, SemanticRecoveryOperationsSnapshot,
-    SubmitBarrierObservationRequest, SubmitControlCommandRequest, SystemControlView,
-    TaskExecutionBinding, control_command, envelope as envelope_message, local_rpc,
+    GetSystemControlRequest, KillCommand, NegotiateServiceResponse, OperationLifecycleState,
+    OperationReference, OperationStatus, PauseCommand, PrincipalHandshakeAttestation,
+    PrincipalHandshakeChallenge, QueryOperationRequest, ReceiptReference, ReclaimCommand,
+    RecoveryFailureAuthority, RecoveryFailureSummary, RecoveryWorkerLifecycleState,
+    RegisterWaitRequest, ResolveServiceRequest, ResolveServiceResponse, ResumeCommand,
+    ResumeSemanticRecoveryCommand, RetryDirective, SabiErrorCode, SabiFailure, SabiRequestContext,
+    SabiResponseContext, SchemaIdentity, SemanticRecoveryAlertStatus, SemanticRecoveryMetrics,
+    SemanticRecoveryOperationsSnapshot, SubmitBarrierObservationRequest,
+    SubmitControlCommandRequest, SystemControlView, TaskExecutionBinding, ThrottleCommand,
+    control_command, envelope as envelope_message, local_rpc,
 };
 use nlos_schema::{
     CommonSemanticsError, CompatibilityError, HANDSHAKE_NONCE_BYTES, HANDSHAKE_SIGNATURE_BYTES,
@@ -190,11 +191,12 @@ fn registry_exposes_the_supported_contract() {
         .iter()
         .find(|entry| entry.name == SABI_SYSTEM_CONTROL_SCHEMA)
         .unwrap();
-    // W27-A bumped the minor for the additive semantic-domain extension and
-    // W28-D bumped it again for the additive operation-level command arms;
-    // ADR-0014 permits additive extension of a frozen entry.
+    // W27-A bumped the minor for the additive semantic-domain extension,
+    // W28-D bumped it again for the additive operation-level command arms,
+    // and W29-D bumped it once more for the additive kill/throttle/reclaim
+    // arms; ADR-0014 permits additive extension of a frozen entry.
     assert_eq!(system_control.major, 1);
-    assert_eq!(system_control.minor, 2);
+    assert_eq!(system_control.minor, 3);
     let takeover_control = registry
         .iter()
         .find(|entry| entry.name == SABI_TAKEOVER_CONTROL_SCHEMA)
@@ -326,8 +328,9 @@ const SEMANTIC_RECOVERY_SNAPSHOT_GOLDEN_HEX: &str = concat!(
 );
 
 /// The literal v1.1 `SystemControl` identity pinned by the W27-A goldens
-/// (the registry minor has since advanced to 2 for the W28-D additive
-/// command arms; frozen goldens stay pinned at their creation minor).
+/// (the registry minor has since advanced to 3 through the W28-D and W29-D
+/// additive command arms; frozen goldens stay pinned at their creation
+/// minor).
 fn w27a_semantic_identity() -> SchemaIdentity {
     SchemaIdentity {
         name: SABI_SYSTEM_CONTROL_SCHEMA.to_owned(),
@@ -487,7 +490,7 @@ fn operation_level_submit(
     control_command_id: Vec<u8>,
 ) -> SubmitControlCommandRequest {
     SubmitControlCommandRequest {
-        schema: Some(system_control_schema_identity()),
+        schema: Some(w28d_operation_identity()),
         command: Some(ControlCommand {
             control_command_id,
             issuer_principal_id: vec![0x32; 16],
@@ -498,6 +501,20 @@ fn operation_level_submit(
             command: Some(arm),
             reason: "operator pauses the escalated operation".to_owned(),
         }),
+    }
+}
+
+/// The literal v1.2 `SystemControl` identity of the W28-D operation-level
+/// freeze point (the registry minor advanced to 3 with the W29-D additive
+/// arms; frozen goldens stay pinned at their creation minor, mirroring
+/// [`w27a_semantic_identity`]).
+fn w28d_operation_identity() -> SchemaIdentity {
+    SchemaIdentity {
+        name: SABI_SYSTEM_CONTROL_SCHEMA.to_owned(),
+        major: 1,
+        minor: 2,
+        critical_extension_ids: Vec::new(),
+        non_critical_extension_ids: Vec::new(),
     }
 }
 
@@ -568,6 +585,88 @@ fn operation_level_control_payloads_round_trip_and_pin_golden_bytes() {
         encode_submit_control_command_request(&short_target),
         Err(CompatibilityError::InvalidSystemControlIdentifier)
     );
+}
+
+/// W29-D additive command arms compile, round-trip, pin their deterministic
+/// wire bytes, and enforce the `throttle_percent` whole-percent bound
+/// (Rust-side golden vectors; prost field order, oneof arm before `reason`).
+#[test]
+fn kill_throttle_reclaim_arms_round_trip_and_pin_their_bounds() {
+    // The same addressing shape as the W28-D prefix, with the schema
+    // identity advanced to the v1.3 W29-D additive minor. The command
+    // length prefix varies per arm (the throttle arm carries 4 payload
+    // bytes against the empty arms' 2), so it stays per-entry.
+    const OPERATION_LEVEL_SUBMIT_HEAD_V1_3_HEX: &str =
+        "0a1d0a176e6c6f732e736162692e53797374656d436f6e74726f6c1001180312";
+    const OPERATION_LEVEL_SUBMIT_BODY_V1_3_HEX: &str = concat!(
+        "0a106161616161616161616161616161616112103232323232323232323232",
+        "3232323232180320022a10818181818181818181818181818181813005",
+    );
+    fn w29d_submit(arm: control_command::Command) -> SubmitControlCommandRequest {
+        SubmitControlCommandRequest {
+            schema: Some(system_control_schema_identity()),
+            command: Some(ControlCommand {
+                control_command_id: vec![0x61; 16],
+                issuer_principal_id: vec![0x32; 16],
+                source: ControlCommandSource::Cli.into(),
+                scope: ControlScope::Operation.into(),
+                target_id: vec![0x81; 16],
+                expected_generation_or_revision: 5,
+                command: Some(arm),
+                reason: "operator pauses the escalated operation".to_owned(),
+            }),
+        }
+    }
+    for (label, arm, command_len_hex, arm_field_hex) in [
+        (
+            "kill",
+            control_command::Command::KillOperation(KillCommand {}),
+            "67",
+            "7200",
+        ),
+        (
+            "throttle",
+            control_command::Command::ThrottleOperation(ThrottleCommand {
+                throttle_percent: 50,
+            }),
+            "69",
+            "7a020832",
+        ),
+        (
+            "reclaim",
+            control_command::Command::ReclaimOperation(ReclaimCommand {}),
+            "68",
+            "820100",
+        ),
+    ] {
+        let request = w29d_submit(arm);
+        let wire = encode_submit_control_command_request(&request)
+            .unwrap_or_else(|error| panic!("{label} arm must encode: {error}"));
+        assert_eq!(
+            decode_submit_control_command_request(&wire).unwrap(),
+            request,
+            "{label} arm must round-trip"
+        );
+        let golden = format!(
+            "{OPERATION_LEVEL_SUBMIT_HEAD_V1_3_HEX}{command_len_hex}\
+             {OPERATION_LEVEL_SUBMIT_BODY_V1_3_HEX}{arm_field_hex}\
+             {OPERATION_LEVEL_SUBMIT_REASON_HEX}"
+        );
+        assert_eq!(wire, decode_hex(&golden), "{label} arm golden bytes");
+    }
+
+    for out_of_range in [0_u64, 101] {
+        let request = w29d_submit(control_command::Command::ThrottleOperation(
+            ThrottleCommand {
+                throttle_percent: out_of_range,
+            },
+        ));
+        assert_eq!(
+            encode_submit_control_command_request(&request),
+            Err(CompatibilityError::InvalidSystemControlIdentifier),
+            "throttle percent {out_of_range} must fail closed before the wire"
+        );
+    }
 }
 
 fn attestation() -> PrincipalHandshakeAttestation {

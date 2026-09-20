@@ -141,6 +141,21 @@ message ResumeCommand {}
 
 message CancelCommand {}
 
+// B5-1 second half + B5-2 (W29-D): the remaining operation-level arms.
+// Kill and Reclaim keep the empty-payload contract — `target_id` addresses
+// the process (kill) or the working-set owner (reclaim) and the CAS
+// expectation rides `expected_generation_or_revision`. Throttle alone
+// carries a payload because no shared field expresses the throttle level.
+message KillCommand {}
+
+// `throttle_percent` is the whole-percent level the operational target is
+// throttled down to (1..=100 of the current declared demand).
+message ThrottleCommand {
+  uint64 throttle_percent = 1;
+}
+
+message ReclaimCommand {}
+
 message ControlCommand {
   bytes control_command_id = 1;
   bytes issuer_principal_id = 2;
@@ -155,6 +170,9 @@ message ControlCommand {
     PauseCommand pause_operation = 11;
     ResumeCommand resume_operation = 12;
     CancelCommand cancel_operation = 13;
+    KillCommand kill_operation = 14;
+    ThrottleCommand throttle_operation = 15;
+    ReclaimCommand reclaim_operation = 16;
   }
   string reason = 8;
 }
