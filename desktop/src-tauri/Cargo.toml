@@ -1,0 +1,55 @@
+[package]
+name = "llmos-desktop"
+description = "llmos 任务管理器 Tauri 壳(W32-A 只读半:认证 SystemControl IPC + inspect 视图)。"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+license = "Apache-2.0"
+repository = "https://github.com/cty12356541/llmos"
+publish = false
+
+# 本 manifest 自带空 [workspace],因此它是独立 workspace 根,cargo 不会把
+# desktop/src-tauri 并入仓库根 workspace(根 Cargo.toml 的 members 不变)。
+[workspace]
+
+[lib]
+name = "llmos_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[features]
+default = []
+# 开发夹具:临时目录中装配真实 IdentityAuthority / AuthorityClock /
+# SqliteTaskAuthority,并同时开放 ADR-0011 认证入口与 plain 入口两个
+# Unix socket 服务循环。dev_server 示例与集成测试共享;不进生产二进制语义。
+dev-fixture = [
+    "dep:nlos-clock",
+    "dep:nlos-commit-coordinator",
+    "dep:nlos-identity",
+    "dep:nlos-ipc",
+    "dep:nlos-task",
+    "dep:tokio",
+]
+
+[[example]]
+name = "dev_server"
+required-features = ["dev-fixture"]
+
+[dependencies]
+ed25519-dalek = { version = "3.0.0", default-features = false, features = ["fast"] }
+nlos-schema = { path = "../../crates/nlos-schema" }
+nlos-system-control = { path = "../../crates/nlos-system-control", features = ["cli"] }
+nlos-types = { path = "../../crates/nlos-types" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = [] }
+
+# dev-fixture 可选依赖(与示例/测试共享,默认不启用)。
+nlos-clock = { path = "../../crates/nlos-clock", optional = true }
+nlos-commit-coordinator = { path = "../../crates/nlos-commit-coordinator", optional = true }
+nlos-identity = { path = "../../crates/nlos-identity", optional = true }
+nlos-ipc = { path = "../../crates/nlos-ipc", optional = true }
+nlos-task = { path = "../../crates/nlos-task", optional = true }
+tokio = { version = "1.48", features = ["rt-multi-thread", "macros", "time"], optional = true }

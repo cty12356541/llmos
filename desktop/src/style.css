@@ -1,0 +1,165 @@
+:root {
+  color-scheme: light dark;
+  font-family: -apple-system, "SF Pro Text", "PingFang SC", "Helvetica Neue", sans-serif;
+  font-size: 14px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 720px;
+}
+
+#app {
+  height: 100vh;
+}
+
+.layout {
+  display: flex;
+  height: 100vh;
+}
+
+.sidebar {
+  width: 180px;
+  flex-shrink: 0;
+  padding: 12px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border-right: 1px solid rgba(128, 128, 128, 0.35);
+}
+
+.sidebar .tab {
+  text-align: left;
+  border: none;
+  background: transparent;
+  padding: 8px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.sidebar .tab.active {
+  background: rgba(64, 128, 255, 0.18);
+  font-weight: 600;
+}
+
+.main {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 20px;
+}
+
+.view {
+  display: none;
+}
+
+.view.active {
+  display: block;
+}
+
+.card {
+  border: 1px solid rgba(128, 128, 128, 0.35);
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin-bottom: 14px;
+}
+
+.card h3 {
+  margin-top: 0;
+}
+
+.card.ok {
+  border-color: rgba(46, 160, 67, 0.7);
+}
+
+.card.error {
+  border-color: rgba(228, 86, 73, 0.8);
+}
+
+.field-row {
+  display: flex;
+  gap: 10px;
+  padding: 3px 0;
+  align-items: baseline;
+}
+
+.field-row.mono .field-value,
+.field-value.mono {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.field-label {
+  min-width: 240px;
+  color: rgba(128, 128, 128, 0.95);
+  flex-shrink: 0;
+}
+
+.field-value {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 12.5px;
+  word-break: break-all;
+}
+
+.data-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 12.5px;
+}
+
+.data-table th,
+.data-table td {
+  border: 1px solid rgba(128, 128, 128, 0.3);
+  padding: 4px 8px;
+  text-align: left;
+  word-break: break-all;
+}
+
+button {
+  padding: 6px 14px;
+  border-radius: 6px;
+  border: 1px solid rgba(128, 128, 128, 0.45);
+  cursor: pointer;
+  margin: 6px 8px 6px 0;
+  background: rgba(64, 128, 255, 0.12);
+}
+
+button:hover {
+  background: rgba(64, 128, 255, 0.24);
+}
+
+input,
+select {
+  flex: 1;
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(128, 128, 128, 0.45);
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 12.5px;
+}
+
+pre.metrics {
+  background: rgba(128, 128, 128, 0.12);
+  padding: 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  overflow-x: auto;
+}
+
+.muted {
+  color: rgba(128, 128, 128, 0.95);
+}
+
+.hidden {
+  display: none;
+}
+
+.receipt-footer {
+  background: rgba(128, 128, 128, 0.08);
+}
