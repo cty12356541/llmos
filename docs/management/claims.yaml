@@ -1,0 +1,170 @@
+# 需求 Claim 台账（claims.yaml，schema v1，W27-E / X-4 最小诚实种子）
+#
+# 纪律：
+# - 只登记 stage-b-progress §3/§6 已断言的事实（source 字段给出出处行与基线 commit），不发明 claim；
+# - assurance ≤ 被引证据可支撑等级（Claim≤Evidence，由 scripts/lint_claims.py 机械校验）；
+# - 全量回填（逐 Requirement ID 铺满）等六门 Evidence 齐后再做（§6.5.2 依赖链），本种子不冒充全量；
+# - 不得把 PARTIAL 事实登记为 DONE。
+
+- requirement_id: ROAD-B-001
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-application
+  test_refs:
+    - crates/nlos-slice-k
+  evidence_refs:
+    - docs/evidence/stage-b/b-application-001-installation-authority.md
+    - docs/evidence/stage-b/b-application-002-update.md
+    - docs/evidence/stage-b/b-application-003-uninstall.md
+    - docs/evidence/stage-b/b-application-004-rollback.md
+    - docs/evidence/stage-b/b-slice-k-001-end-to-end.md
+  assurance: H3
+  limitations:
+    - "自动 GC 触发（周期/阈值）未做，仅 install-scoped pass 与显式 orphan GC"
+    - "migration runner / health check / 原子切换未做"
+    - "真实 Task activity 探针接线未做（W27-D）"
+    - "Package SDK/打包工具链与第三方样板全周期演示未做（退出门构造性证据）"
+  source: "stage-b-progress.md §6 ROAD-B-001 行（base 3d81a90）：install/update/uninstall/rollback 已有单节点 H3，Slice K uninstall+GC PARTIAL PASS"
+
+- requirement_id: ROAD-B-002
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-application
+  test_refs:
+    - crates/nlos-slice-k
+  evidence_refs:
+    - docs/evidence/stage-b/b-application-005-background-task-registration.md
+    - docs/evidence/stage-b/b-application-006-process-binding.md
+    - docs/evidence/stage-b/b-slice-k-001-end-to-end.md
+  assurance: H3
+  limitations:
+    - "后台 Task/多 Process binding 仅为 durable 登记最小前缀，无运行时执行接线"
+    - "UI Surface 声明与呈现未做（B2-2，与 B5-4 GUI 同车道）"
+    - "第二 Process spawn→platform kill 全链未做（B2-1）"
+  source: "stage-b-progress.md §6 ROAD-B-002 行（base 3d81a90）：后台 Task 登记与多 Process binding 登记 PARTIAL PASS，Slice K inspect 已接线"
+
+- requirement_id: ROAD-B-003
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-task
+    - crates/nlos-commit-coordinator
+    - crates/nlos-artifact
+  test_refs:
+    - crates/nlos-task/tests/task_authority.rs
+  evidence_refs:
+    - docs/evidence/stage-b/b-task-001-task-authority-commit-permit.md
+    - docs/evidence/stage-b/b-task-002-effect-permit-dispatch.md
+    - docs/evidence/stage-b/b-task-003-reconcile-effect-history.md
+    - docs/evidence/stage-b/b-task-004-task-group.md
+    - docs/evidence/stage-b/b-task-005-commit-group-binding.md
+    - docs/evidence/stage-b/b-artifact-002-staged-publication.md
+    - docs/evidence/stage-b/b-task-road-b003-gaps.md
+    - docs/evidence/stage-b/b-task-008c2g-unified-recovery.md
+  assurance: H3
+  limitations:
+    - "Resource/Operation 跨 authority prepare/finalize 入口评估未决（W27-B），complete TaskWriteSet 六域闭环未完成（B3-3）"
+    - "handle 泄漏/snapshot 漂移仅 task 层测试面（b-task-road-b003-gaps），provider cache/投机副作用 fence 未落地（B3-4）"
+    - "统一恢复面 CI 待 push 后触发；跨机器原子提交不在本 claim 范围"
+  source: "stage-b-progress.md §6 ROAD-B-003 行（base 3d81a90）：双 Attempt/cancel/commit/effect fence 已有单节点 H3，W26 统一恢复面 PARTIAL PASS"
+
+- requirement_id: ROAD-B-004
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-task/src/scale.rs
+  test_refs:
+    - crates/nlos-task/tests/scale_profile.rs
+    - crates/nlos-task/tests/scale_profile_probe.rs
+  evidence_refs:
+    - docs/evidence/stage-b/b-task-scale-001.md
+  assurance: H3
+  limitations:
+    - "仅 10K 实跑；100K 为 #[ignore] 注册探针（TaskNode 声明面未挂，W28+）"
+    - "working-set 比例 benchmark、pressure/reclaim controller 实执行与 rehydrate 未做"
+    - "waiting Fiber 不能替代 TaskNode benchmark（冒充即风险 RISK-B-07）"
+  source: "stage-b-progress.md §6 ROAD-B-004 行（base 3d81a90）：ScaleProfile 骨架 + 10K 实跑 PARTIAL PASS"
+
+- requirement_id: ROAD-B-005
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-system-control
+  test_refs:
+    - crates/nlos-system-control/tests/control_command_cli.rs
+    - crates/nlos-system-control/tests/control_ipc_auth.rs
+  evidence_refs:
+    - docs/evidence/stage-b/b-control-001-control-command-cli.md
+    - docs/evidence/stage-b/b-control-002-control-ipc-auth.md
+    - docs/evidence/stage-b/b-control-003-nl-prefix.md
+  assurance: H3
+  limitations:
+    - "pause/resume/cancel/kill/throttle/reclaim ControlCommand 变体未做（B5-1）"
+    - "Trusted GUI（Tauri Task Manager）与多层手动调度未做（B5-4）"
+    - "GUI↔NL↔CLI Receipt parity 钉死测试未做（B5-6）"
+  source: "stage-b-progress.md §6 ROAD-B-005 行（base 3d81a90）：NL/CLI/IPC 控制与 inspect 已有单节点 H3"
+
+- requirement_id: ROAD-B-006
+  stage: B
+  status: PARTIAL_PASS
+  implementation_refs:
+    - crates/nlos-runtime-tokio
+    - crates/nlos-process
+  test_refs:
+    - crates/nlos-runtime-tokio/tests/activation_meter_scale.rs
+    - crates/nlos-process/tests/process_crash_propagation.rs
+  evidence_refs:
+    - docs/evidence/stage-b/b-runtime-002-fiber-scale.md
+    - docs/evidence/stage-b/b-process-003-crash-propagation.md
+    - docs/evidence/stage-b/poc-0001-tokio-fiber-runtime.md
+  assurance: H3
+  limitations:
+    - "runtime 侧 fiber 批量 cancel 联动未做（W27-C）；Windows 实机 platform kill 未做（B6-2）"
+    - "wake latency/fairness 测试未做（W27-F）；完整 BirthDecision 未做（B6-5）"
+    - "100K lifecycle/activation-meter 探针部分为 ignore 定档，未纳入默认测试门"
+  source: "stage-b-progress.md §6 ROAD-B-006 行（base 3d81a90）：100K fiber/crash 传播/platform kill 前缀已有单节点 H3，仍为 PARTIAL_PASS"
+
+- requirement_id: B-TYPES
+  stage: B
+  status: DONE
+  implementation_refs:
+    - crates/nlos-types
+  test_refs: []
+  evidence_refs:
+    - docs/evidence/stage-b/b-task-006p-shared-nominal-identity-spine.md
+  assurance: H2
+  limitations:
+    - "public schema 已定 v1-beta 通道冻结（ADR-0014，additive-only）；生成约束冻结标记已落地（B-SCHEMA-015），后续演进只走 additive"
+  source: "stage-b-progress.md §3 B-TYPES 行（base 3d81a90）：DONE；nominal ID/Generation/CancelEpoch 由 nlos-types 承载，006P 扩展共享 identity spine"
+
+- requirement_id: B-OUTBOX
+  stage: B
+  status: DONE
+  implementation_refs:
+    - crates/nlos-outbox
+  test_refs:
+    - crates/nlos-outbox/tests/drain.rs
+  evidence_refs:
+    - docs/evidence/stage-b/poc-0004-outbox-wake-consumer.md
+  assurance: H3
+  limitations:
+    - "持久 apply 失败（stopped_at 路径）暂无 health 信号（observability 后续项）"
+    - "Faulted 恢复依赖外部监督（归 B-PROCESS）；PumpHealth.last_error 跨 IPC 脱敏未做（归 B-CONTROL/B-SCHEMA）"
+    - "Buffered 驻留仅随 fiber 终态清理（归 B-PROCESS/Slice K）"
+  source: "stage-b-progress.md §3 B-OUTBOX 行（base 3d81a90）：DONE；PoC-0004 + 2026-08-01 remediation 已补齐并各有测试"
+
+- requirement_id: B-STORE-FAULT
+  stage: B
+  status: DONE
+  implementation_refs:
+    - crates/nlos-store-fault
+  test_refs:
+    - crates/nlos-store-fault/tests
+  evidence_refs:
+    - docs/evidence/stage-b/poc-0003-sqlite-operation-authority.md
+  assurance: H3
+  limitations:
+    - "100K 逐条生产写入、真实硬件掉电与更多文件系统保留为扩展 Evidence（不阻塞本工作包）；分层掉电证据推进见 X-6"
+  source: "stage-b-progress.md §3 B-STORE-FAULT 行（base 3d81a90）：DONE；F1–F7 全部通过，三平台 CI run 30714584445"
