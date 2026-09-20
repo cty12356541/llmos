@@ -140,6 +140,7 @@ mod cache;
 mod gc;
 mod model;
 mod package;
+mod package_file;
 mod provenance;
 mod publication;
 mod query;
@@ -174,6 +175,10 @@ pub use package::{
     PackageVerificationDecision, PackageVerificationReceipt, SignedPackage, SignedPackageWithTasks,
     VerifyPackageRequest, VerifyPackageWithTasksRequest, package_manifest_message,
     package_manifest_with_tasks_message, validate_task_templates,
+};
+pub use package_file::{
+    MAX_ENTRY_NAME_BYTES, PACKAGE_FILE_MAGIC, PackageFile, PackageFileEntry, PackageFileError,
+    SignerDescriptor, decode_package_file, derive_artifact_id,
 };
 pub use publication::staging_id_for;
 pub use retention::{RetentionRecord, SetRetentionDecision, SetRetentionRequest};
