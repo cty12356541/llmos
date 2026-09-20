@@ -44,6 +44,31 @@
 //!   | 查看资源 <32位十六进制> | 查看 资源 <32位十六进制>
 //!   | 检查资源 <32位十六进制> | 检查 资源 <32位十六进制>
 //!   | 资源状态 <32位十六进制> | 资源 状态 <32位十六进制>
+//! inspect task group <32-hex> | check task group <32-hex> | show task group <32-hex>
+//!   | get task group <32-hex> | status task group <32-hex>
+//!   | task group status <32-hex>
+//!   | 查看任务组 <32位十六进制> | 查看 任务组 <32位十六进制> | 检查任务组 <32位十六进制>
+//!   | 任务组状态 <32位十六进制> | 任务组 状态 <32位十六进制>
+//! inspect task node <32-hex> <32-hex> | check task node <32-hex> <32-hex>
+//!   | show task node <32-hex> <32-hex> | get task node <32-hex> <32-hex>
+//!   | status task node <32-hex> <32-hex> | task node status <32-hex> <32-hex>
+//!   | 查看任务节点 <32位十六进制> <32位十六进制> | 查看 任务节点 <32位十六进制> <32位十六进制>
+//!   | 检查任务节点 <32位十六进制> <32位十六进制>
+//!   | 任务节点状态 <32位十六进制> <32位十六进制>
+//! inspect fiber <32-hex> generation <n> | check fiber <32-hex> generation <n>
+//!   | show fiber <32-hex> generation <n> | get fiber <32-hex> generation <n>
+//!   | status fiber <32-hex> generation <n> | fiber status <32-hex> generation <n>
+//!   | 查看纤程 <32位十六进制> 世代 <n> | 查看 纤程 <32位十六进制> 世代 <n>
+//!   | 纤程状态 <32位十六进制> 世代 <n>
+//! inspect topic <32-hex> | check topic <32-hex> | show topic <32-hex>
+//!   | get topic <32-hex> | status topic <32-hex> | topic status <32-hex>
+//!   | 查看主题 <32位十六进制> | 查看 主题 <32位十六进制>
+//!   | 主题状态 <32位十六进制> | 主题 状态 <32位十六进制>
+//! inspect operation <32-hex> generation <n> | check operation <32-hex> generation <n>
+//!   | show operation <32-hex> generation <n> | get operation <32-hex> generation <n>
+//!   | status operation <32-hex> generation <n> | operation status <32-hex> generation <n>
+//!   | 查看操作 <32位十六进制> 世代 <n> | 查看 操作 <32位十六进制> 世代 <n>
+//!   | 操作状态 <32位十六进制> 世代 <n>
 //! acknowledge alert <32-hex> expecting <n>
 //!   | ack alert <32-hex> expecting <n> | confirm alert <32-hex> expecting <n>
 //!   | 确认告警 <32位十六进制> 期望 <n> | 确认 告警 <32位十六进制> 期望 <n>
@@ -145,6 +170,9 @@ pub const NL_RESOURCE_RESUME_REASON: &str =
 const GRAMMAR_HELP: &str = "valid forms: \"inspect health\" | \"export metrics\" | \
 \"inspect resource recovery\" | \"export resource metrics\" | \
 \"inspect task <32-hex>\" | \"inspect process <32-hex>\" | \"inspect resource <32-hex>\" | \
+\"inspect task group <32-hex>\" | \"inspect task node <32-hex> <32-hex>\" | \
+\"inspect fiber <32-hex> generation <count>\" | \"inspect topic <32-hex>\" | \
+\"inspect operation <32-hex> generation <count>\" | \
 \"acknowledge alert <32-hex> expecting <count>\" | \
 \"acknowledge resource alert <32-hex> expecting <count>\" | \
 \"resume resource recovery <32-hex> expecting <count>\" | \
@@ -188,6 +216,9 @@ pub fn parse_nl_command(input: &str) -> Result<ControlCommand, ControlError> {
         return result;
     }
     if let Some(result) = try_parse_inspect_resource(&tokens) {
+        return result;
+    }
+    if let Some(result) = try_parse_layer_inspects(&tokens) {
         return result;
     }
     if let Some(result) = try_parse_acknowledgement(&tokens) {
@@ -290,6 +321,21 @@ fn try_parse_inspect_health(tokens: &[&str]) -> Option<Result<ControlCommand, Co
             if (is_read_verb(head) && second.eq_ignore_ascii_case("resource"))
                 || (*head == "查看" && *second == "资源")
                 || (*head == "检查" && *second == "资源") =>
+        {
+            None
+        }
+        [head, second, ..]
+            if (is_read_verb(head)
+                && (second.eq_ignore_ascii_case("fiber")
+                    || second.eq_ignore_ascii_case("topic")
+                    || second.eq_ignore_ascii_case("operation")))
+                || (*head == "查看"
+                    && (*second == "纤程"
+                        || *second == "主题"
+                        || *second == "操作"
+                        || *second == "任务组"
+                        || *second == "任务节点"))
+                || (*head == "检查" && (*second == "任务组" || *second == "任务节点")) =>
         {
             None
         }
@@ -536,6 +582,275 @@ fn try_parse_inspect_resource(tokens: &[&str]) -> Option<Result<ControlCommand, 
         }
         _ => None,
     }
+}
+
+/// Compiles the W32-G per-layer read forms (B5-3): `TaskGroup`, `TaskNode`,
+/// `ExecutionFiber`, `Topic`, and durable `Operation` inspections. The command
+/// identity derives from the addressed target (one target, one inspect
+/// identity, replay-safe); the fiber and operation forms carry the handle
+/// generation explicitly because silently guessing a handle generation
+/// would violate `[NL-AMBIG-001]` exactly like a guessed CAS value.
+fn try_parse_layer_inspects(tokens: &[&str]) -> Option<Result<ControlCommand, ControlError>> {
+    try_parse_layer_inspects_en(tokens)
+        .or_else(|| try_parse_layer_status_forms(tokens))
+        .or_else(|| try_parse_layer_inspects_zh(tokens))
+}
+
+fn try_parse_layer_inspects_en(tokens: &[&str]) -> Option<Result<ControlCommand, ControlError>> {
+    match tokens {
+        [head, second, third, group]
+            if is_read_verb(head)
+                && second.eq_ignore_ascii_case("task")
+                && third.eq_ignore_ascii_case("group") =>
+        {
+            Some(parse_hex_id(group).map(|group_id| ControlCommand::InspectTaskGroup { group_id }))
+        }
+        [head, second, third, plan, node]
+            if is_read_verb(head)
+                && second.eq_ignore_ascii_case("task")
+                && third.eq_ignore_ascii_case("node") =>
+        {
+            Some(
+                parse_hex_id(plan)
+                    .and_then(|plan_id| parse_hex_id(node).map(|node_id| (plan_id, node_id)))
+                    .map(|(plan_id, node_id)| ControlCommand::InspectTaskNode { plan_id, node_id }),
+            )
+        }
+        [head, second, fiber, third, generation]
+            if is_read_verb(head)
+                && second.eq_ignore_ascii_case("fiber")
+                && third.eq_ignore_ascii_case("generation") =>
+        {
+            Some(
+                parse_hex_id(fiber)
+                    .and_then(|fiber_id| {
+                        parse_generation(generation).map(|generation| (fiber_id, generation))
+                    })
+                    .map(
+                        |(fiber_id, generation)| ControlCommand::InspectExecutionFiber {
+                            fiber_id,
+                            generation,
+                        },
+                    ),
+            )
+        }
+        [head, second, topic] if is_read_verb(head) && second.eq_ignore_ascii_case("topic") => {
+            Some(parse_hex_id(topic).map(|topic_id| ControlCommand::InspectTopic { topic_id }))
+        }
+        [head, second, operation, third, generation]
+            if is_read_verb(head)
+                && second.eq_ignore_ascii_case("operation")
+                && third.eq_ignore_ascii_case("generation") =>
+        {
+            Some(
+                parse_hex_id(operation)
+                    .and_then(|operation_id| {
+                        parse_generation(generation).map(|generation| (operation_id, generation))
+                    })
+                    .map(
+                        |(operation_id, generation)| ControlCommand::InspectOperation {
+                            operation_id,
+                            generation,
+                        },
+                    ),
+            )
+        }
+        [head, second, ..]
+            if is_read_verb(head)
+                && (second.eq_ignore_ascii_case("fiber")
+                    || second.eq_ignore_ascii_case("topic")
+                    || second.eq_ignore_ascii_case("operation")) =>
+        {
+            Some(Err(ControlError::InvalidCommand(
+                "\"inspect fiber|operation\" expects \"<32-hex> generation <count>\"; \
+                 \"inspect topic\" expects \"<32-hex>\"",
+            )))
+        }
+        _ => None,
+    }
+}
+
+fn try_parse_layer_status_forms(tokens: &[&str]) -> Option<Result<ControlCommand, ControlError>> {
+    match tokens {
+        [first, second, third, group]
+            if first.eq_ignore_ascii_case("task")
+                && second.eq_ignore_ascii_case("group")
+                && third.eq_ignore_ascii_case("status") =>
+        {
+            Some(parse_hex_id(group).map(|group_id| ControlCommand::InspectTaskGroup { group_id }))
+        }
+        [first, second, third, plan, node]
+            if first.eq_ignore_ascii_case("task")
+                && second.eq_ignore_ascii_case("node")
+                && third.eq_ignore_ascii_case("status") =>
+        {
+            Some(
+                parse_hex_id(plan)
+                    .and_then(|plan_id| parse_hex_id(node).map(|node_id| (plan_id, node_id)))
+                    .map(|(plan_id, node_id)| ControlCommand::InspectTaskNode { plan_id, node_id }),
+            )
+        }
+        [first, second, fiber, third, generation]
+            if first.eq_ignore_ascii_case("fiber")
+                && second.eq_ignore_ascii_case("status")
+                && third.eq_ignore_ascii_case("generation") =>
+        {
+            Some(
+                parse_hex_id(fiber)
+                    .and_then(|fiber_id| {
+                        parse_generation(generation).map(|generation| (fiber_id, generation))
+                    })
+                    .map(
+                        |(fiber_id, generation)| ControlCommand::InspectExecutionFiber {
+                            fiber_id,
+                            generation,
+                        },
+                    ),
+            )
+        }
+        [first, second, topic]
+            if first.eq_ignore_ascii_case("topic") && second.eq_ignore_ascii_case("status") =>
+        {
+            Some(parse_hex_id(topic).map(|topic_id| ControlCommand::InspectTopic { topic_id }))
+        }
+        [first, second, operation, third, generation]
+            if first.eq_ignore_ascii_case("operation")
+                && second.eq_ignore_ascii_case("status")
+                && third.eq_ignore_ascii_case("generation") =>
+        {
+            Some(
+                parse_hex_id(operation)
+                    .and_then(|operation_id| {
+                        parse_generation(generation).map(|generation| (operation_id, generation))
+                    })
+                    .map(
+                        |(operation_id, generation)| ControlCommand::InspectOperation {
+                            operation_id,
+                            generation,
+                        },
+                    ),
+            )
+        }
+        _ => None,
+    }
+}
+
+fn try_parse_layer_inspects_zh(tokens: &[&str]) -> Option<Result<ControlCommand, ControlError>> {
+    match tokens {
+        ["查看任务组" | "检查任务组", group] | ["查看" | "检查", "任务组", group] => {
+            Some(parse_hex_id(group).map(|group_id| ControlCommand::InspectTaskGroup { group_id }))
+        }
+        ["任务组状态", group] | ["任务组", "状态", group] => {
+            Some(parse_hex_id(group).map(|group_id| ControlCommand::InspectTaskGroup { group_id }))
+        }
+        ["查看任务节点" | "检查任务节点", plan, node]
+        | ["查看" | "检查", "任务节点", plan, node] => Some(
+            parse_hex_id(plan)
+                .and_then(|plan_id| parse_hex_id(node).map(|node_id| (plan_id, node_id)))
+                .map(|(plan_id, node_id)| ControlCommand::InspectTaskNode { plan_id, node_id }),
+        ),
+        ["任务节点状态", plan, node] | ["任务节点", "状态", plan, node] => Some(
+            parse_hex_id(plan)
+                .and_then(|plan_id| parse_hex_id(node).map(|node_id| (plan_id, node_id)))
+                .map(|(plan_id, node_id)| ControlCommand::InspectTaskNode { plan_id, node_id }),
+        ),
+        ["查看纤程", fiber, "世代", generation] | ["查看", "纤程", fiber, "世代", generation] => {
+            Some(
+                parse_hex_id(fiber)
+                    .and_then(|fiber_id| {
+                        parse_generation(generation).map(|generation| (fiber_id, generation))
+                    })
+                    .map(
+                        |(fiber_id, generation)| ControlCommand::InspectExecutionFiber {
+                            fiber_id,
+                            generation,
+                        },
+                    ),
+            )
+        }
+        ["纤程状态", fiber, "世代", generation] | ["纤程", "状态", fiber, "世代", generation] => {
+            Some(
+                parse_hex_id(fiber)
+                    .and_then(|fiber_id| {
+                        parse_generation(generation).map(|generation| (fiber_id, generation))
+                    })
+                    .map(
+                        |(fiber_id, generation)| ControlCommand::InspectExecutionFiber {
+                            fiber_id,
+                            generation,
+                        },
+                    ),
+            )
+        }
+        ["查看主题", topic] | ["查看", "主题", topic] => {
+            Some(parse_hex_id(topic).map(|topic_id| ControlCommand::InspectTopic { topic_id }))
+        }
+        ["主题状态", topic] | ["主题", "状态", topic] => {
+            Some(parse_hex_id(topic).map(|topic_id| ControlCommand::InspectTopic { topic_id }))
+        }
+        ["查看操作", operation, "世代", generation]
+        | ["查看", "操作", operation, "世代", generation] => Some(
+            parse_hex_id(operation)
+                .and_then(|operation_id| {
+                    parse_generation(generation).map(|generation| (operation_id, generation))
+                })
+                .map(
+                    |(operation_id, generation)| ControlCommand::InspectOperation {
+                        operation_id,
+                        generation,
+                    },
+                ),
+        ),
+        ["操作状态", operation, "世代", generation]
+        | ["操作", "状态", operation, "世代", generation] => Some(
+            parse_hex_id(operation)
+                .and_then(|operation_id| {
+                    parse_generation(generation).map(|generation| (operation_id, generation))
+                })
+                .map(
+                    |(operation_id, generation)| ControlCommand::InspectOperation {
+                        operation_id,
+                        generation,
+                    },
+                ),
+        ),
+        ["查看纤程", ..] | ["查看", "纤程", ..] => Some(Err(ControlError::InvalidCommand(
+            "\"查看纤程\" 期望 \"<32位十六进制> 世代 <次数>\"",
+        ))),
+        ["查看操作", ..] | ["查看", "操作", ..] => Some(Err(ControlError::InvalidCommand(
+            "\"查看操作\" 期望 \"<32位十六进制> 世代 <次数>\"",
+        ))),
+        ["查看任务组" | "检查任务组", ..] | ["查看" | "检查", "任务组", ..] => {
+            Some(Err(ControlError::InvalidCommand(
+                "\"查看任务组\" 期望 \"<32位十六进制>\"",
+            )))
+        }
+        ["查看任务节点" | "检查任务节点", ..] | ["查看" | "检查", "任务节点", ..] => {
+            Some(Err(ControlError::InvalidCommand(
+                "\"查看任务节点\" 期望 \"<32位十六进制> <32位十六进制>\"",
+            )))
+        }
+        _ => None,
+    }
+}
+
+/// Parses the fiber/operation handle generation: a positive plain decimal
+/// (the runtime and operation authorities never resolve generation zero).
+fn parse_generation(token: &str) -> Result<u64, ControlError> {
+    if !token.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(ControlError::InvalidCommand(
+            "handle generation must be a plain decimal count (digits only)",
+        ));
+    }
+    let generation = token
+        .parse::<u64>()
+        .map_err(|_| ControlError::InvalidCommand("handle generation exceeds the 64-bit bound"))?;
+    if generation == 0 {
+        return Err(ControlError::InvalidCommand(
+            "handle generation must be a positive generation",
+        ));
+    }
+    Ok(generation)
 }
 
 fn try_parse_acknowledgement(tokens: &[&str]) -> Option<Result<ControlCommand, ControlError>> {
@@ -1638,5 +1953,215 @@ mod tests {
                 other => panic!("expected typed rejection for {input:?}, got {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn english_w32g_layer_forms_parse() {
+        for sentence in [
+            "inspect task group a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "CHECK TASK GROUP A1B2C3D4E5F60718293A4B5C6D7E8F90",
+            "show task group a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "get task group a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "status task group a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "task group status a1b2c3d4e5f60718293a4b5c6d7e8f90",
+        ] {
+            assert_eq!(
+                parse_nl_command(sentence).unwrap(),
+                ControlCommand::InspectTaskGroup {
+                    group_id: plan_id()
+                },
+                "sentence: {sentence:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn english_w32g_two_id_and_generation_forms_parse() {
+        let node_hex = "31".repeat(16);
+        assert_eq!(
+            parse_nl_command(&format!(
+                "inspect task node a1b2c3d4e5f60718293a4b5c6d7e8f90 {node_hex}"
+            ))
+            .unwrap(),
+            ControlCommand::InspectTaskNode {
+                plan_id: plan_id(),
+                node_id: [0x31; 16],
+            }
+        );
+        assert_eq!(
+            parse_nl_command(&format!(
+                "task node status a1b2c3d4e5f60718293a4b5c6d7e8f90 {node_hex}"
+            ))
+            .unwrap(),
+            ControlCommand::InspectTaskNode {
+                plan_id: plan_id(),
+                node_id: [0x31; 16],
+            }
+        );
+        assert_eq!(
+            parse_nl_command("inspect fiber a1b2c3d4e5f60718293a4b5c6d7e8f90 generation 2")
+                .unwrap(),
+            ControlCommand::InspectExecutionFiber {
+                fiber_id: plan_id(),
+                generation: 2,
+            }
+        );
+        assert_eq!(
+            parse_nl_command("fiber status a1b2c3d4e5f60718293a4b5c6d7e8f90 generation 3").unwrap(),
+            ControlCommand::InspectExecutionFiber {
+                fiber_id: plan_id(),
+                generation: 3,
+            }
+        );
+        assert_eq!(
+            parse_nl_command("inspect topic a1b2c3d4e5f60718293a4b5c6d7e8f90").unwrap(),
+            ControlCommand::InspectTopic {
+                topic_id: plan_id()
+            }
+        );
+        assert_eq!(
+            parse_nl_command("topic status a1b2c3d4e5f60718293a4b5c6d7e8f90").unwrap(),
+            ControlCommand::InspectTopic {
+                topic_id: plan_id()
+            }
+        );
+        assert_eq!(
+            parse_nl_command("inspect operation a1b2c3d4e5f60718293a4b5c6d7e8f90 generation 4")
+                .unwrap(),
+            ControlCommand::InspectOperation {
+                operation_id: plan_id(),
+                generation: 4,
+            }
+        );
+        assert_eq!(
+            parse_nl_command("operation status a1b2c3d4e5f60718293a4b5c6d7e8f90 generation 5")
+                .unwrap(),
+            ControlCommand::InspectOperation {
+                operation_id: plan_id(),
+                generation: 5,
+            }
+        );
+    }
+
+    #[test]
+    fn chinese_w32g_layer_forms_parse() {
+        assert_eq!(
+            parse_nl_command("查看任务组 a1b2c3d4e5f60718293a4b5c6d7e8f90").unwrap(),
+            ControlCommand::InspectTaskGroup {
+                group_id: plan_id()
+            }
+        );
+        assert_eq!(
+            parse_nl_command("查看 任务组 a1b2c3d4e5f60718293a4b5c6d7e8f90").unwrap(),
+            ControlCommand::InspectTaskGroup {
+                group_id: plan_id()
+            }
+        );
+        assert_eq!(
+            parse_nl_command("任务组状态 a1b2c3d4e5f60718293a4b5c6d7e8f90").unwrap(),
+            ControlCommand::InspectTaskGroup {
+                group_id: plan_id()
+            }
+        );
+        assert_eq!(
+            parse_nl_command(
+                "查看任务节点 a1b2c3d4e5f60718293a4b5c6d7e8f90 31313131313131313131313131313131"
+            )
+            .unwrap(),
+            ControlCommand::InspectTaskNode {
+                plan_id: plan_id(),
+                node_id: [0x31; 16],
+            }
+        );
+        assert_eq!(
+            parse_nl_command(
+                "查看 任务节点 a1b2c3d4e5f60718293a4b5c6d7e8f90 31313131313131313131313131313131"
+            )
+            .unwrap(),
+            ControlCommand::InspectTaskNode {
+                plan_id: plan_id(),
+                node_id: [0x31; 16],
+            }
+        );
+        assert_eq!(
+            parse_nl_command("查看纤程 a1b2c3d4e5f60718293a4b5c6d7e8f90 世代 2").unwrap(),
+            ControlCommand::InspectExecutionFiber {
+                fiber_id: plan_id(),
+                generation: 2,
+            }
+        );
+        assert_eq!(
+            parse_nl_command("查看 纤程 a1b2c3d4e5f60718293a4b5c6d7e8f90 世代 2").unwrap(),
+            ControlCommand::InspectExecutionFiber {
+                fiber_id: plan_id(),
+                generation: 2,
+            }
+        );
+        assert_eq!(
+            parse_nl_command("查看主题 a1b2c3d4e5f60718293a4b5c6d7e8f90").unwrap(),
+            ControlCommand::InspectTopic {
+                topic_id: plan_id()
+            }
+        );
+        assert_eq!(
+            parse_nl_command("主题状态 a1b2c3d4e5f60718293a4b5c6d7e8f90").unwrap(),
+            ControlCommand::InspectTopic {
+                topic_id: plan_id()
+            }
+        );
+        assert_eq!(
+            parse_nl_command("查看操作 a1b2c3d4e5f60718293a4b5c6d7e8f90 世代 4").unwrap(),
+            ControlCommand::InspectOperation {
+                operation_id: plan_id(),
+                generation: 4,
+            }
+        );
+        assert_eq!(
+            parse_nl_command("操作状态 a1b2c3d4e5f60718293a4b5c6d7e8f90 世代 4").unwrap(),
+            ControlCommand::InspectOperation {
+                operation_id: plan_id(),
+                generation: 4,
+            }
+        );
+    }
+
+    #[test]
+    fn w32g_layer_forms_reject_bad_arity_and_generation() {
+        for input in [
+            "inspect task group",
+            "inspect task group now",
+            "inspect task node a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "inspect fiber a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "inspect fiber a1b2c3d4e5f60718293a4b5c6d7e8f90 generation",
+            "inspect fiber a1b2c3d4e5f60718293a4b5c6d7e8f90 generation 0",
+            "inspect fiber a1b2c3d4e5f60718293a4b5c6d7e8f90 generation -1",
+            "inspect topic",
+            "inspect operation a1b2c3d4e5f60718293a4b5c6d7e8f90 generation 0",
+            "查看任务组",
+            "查看纤程 a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "查看纤程 a1b2c3d4e5f60718293a4b5c6d7e8f90 世代 0",
+            "查看主题",
+            "查看操作 a1b2c3d4e5f60718293a4b5c6d7e8f90 世代 0",
+        ] {
+            assert!(
+                matches!(
+                    parse_nl_command(input),
+                    Err(ControlError::InvalidCommand(_))
+                ),
+                "sentence: {input:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn w32g_layer_forms_leave_existing_task_grammar_untouched() {
+        assert_eq!(
+            parse_nl_command("inspect task a1b2c3d4e5f60718293a4b5c6d7e8f90").unwrap(),
+            ControlCommand::InspectTask { plan_id: plan_id() }
+        );
+        assert!(matches!(
+            parse_nl_command("task status now"),
+            Err(ControlError::InvalidCommand(_))
+        ));
     }
 }

@@ -35,6 +35,10 @@ pub const MAX_PRINCIPAL_HANDSHAKE_PAYLOAD_BYTES: usize = 4 * 1024;
 pub const MAX_SYSTEM_CONTROL_ALERTS: usize = 256;
 pub const MAX_SYSTEM_CONTROL_FAILURES: usize = 64;
 pub const MAX_CONTROL_REASON_BYTES: usize = 512;
+/// Bounded topic-name projection on the W32-G `Topic` inspect view. The
+/// topic authority admits free-form names; anything longer than this bound
+/// is a local diagnostic and refuses to cross the boundary.
+pub const MAX_SYSTEM_CONTROL_TOPIC_NAME_BYTES: usize = 256;
 pub const REQUEST_ID_BYTES: usize = 16;
 pub const SHA256_DIGEST_BYTES: usize = 32;
 /// Ed25519 challenge nonces are exactly 32 bytes on the handshake wire.
@@ -95,11 +99,15 @@ const SABI_SYSTEM_CONTROL_V1: SchemaDescriptor = SchemaDescriptor {
     // (PauseCommand/ResumeCommand/CancelCommand oneof entries 11..=13); minor
     // 3 recorded the W29-D additive kill/throttle/reclaim arms (oneof entries
     // 14..=16 plus the ThrottleCommand.throttle_percent bound); minor 4
-    // records the W28-C-3b additive resource-domain extension (ADR-0017 G8:
+    // recorded the W28-C-3b additive resource-domain extension (ADR-0017 G8:
     // ResourceCommitRecovery view 3, RecoveryFailureAuthority.Resource 6,
-    // the Resource recovery snapshot messages, and oneof entries 17..=18)
-    // under the ADR-0014 freeze rules. The entry stays frozen.
-    minor: 4,
+    // the Resource recovery snapshot messages, and oneof entries 17..=18);
+    // minor 5 records the W32-G additive per-layer inspect views (B5-3:
+    // TaskGroup/TaskNode/ExecutionFiber/Topic/Operation views 4..=8, the
+    // GetSystemControlRequest addressing fields 4..=6, and the per-layer
+    // snapshot messages) under the ADR-0014 freeze rules. The entry stays
+    // frozen.
+    minor: 5,
     supported_critical_extensions: &[],
     frozen: true,
 };
@@ -180,6 +188,8 @@ pub enum CompatibilityError {
     InvalidSystemControlIdentifier,
     InvalidSystemControlAlertLimit,
     InvalidSystemControlAlert,
+    InvalidSystemControlLayerStatus,
+    MissingSystemControlLayerStatus,
     TooManySystemControlAlerts,
     TooManySystemControlFailures,
     UnsafeControlReason,
@@ -276,6 +286,12 @@ impl fmt::Display for CompatibilityError {
             }
             Self::InvalidSystemControlAlert => {
                 formatter.write_str("SystemControl recovery alert is malformed")
+            }
+            Self::InvalidSystemControlLayerStatus => {
+                formatter.write_str("SystemControl layer status is malformed")
+            }
+            Self::MissingSystemControlLayerStatus => {
+                formatter.write_str("SystemControl snapshot is missing its layer status")
             }
             Self::TooManySystemControlAlerts => {
                 formatter.write_str("SystemControl snapshot contains too many alerts")
@@ -724,7 +740,7 @@ pub fn system_control_schema_identity() -> sabi::v1::SchemaIdentity {
     sabi::v1::SchemaIdentity {
         name: SABI_SYSTEM_CONTROL_SCHEMA.to_owned(),
         major: 1,
-        minor: 4,
+        minor: 5,
         critical_extension_ids: Vec::new(),
         non_critical_extension_ids: Vec::new(),
     }
@@ -912,6 +928,136 @@ pub fn decode_resource_recovery_operations_snapshot(
     let snapshot: sabi::v1::ResourceRecoveryOperationsSnapshot =
         decode_bounded_with_limit(wire, MAX_SYSTEM_CONTROL_PAYLOAD_BYTES)?;
     validate_resource_recovery_operations_snapshot(&snapshot)?;
+    Ok(snapshot)
+}
+
+/// Encodes a bounded, sanitized `TaskGroup` inspect snapshot (W32-G, B5-3).
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed statuses, members, or identities.
+pub fn encode_task_group_operations_snapshot(
+    snapshot: &sabi::v1::TaskGroupOperationsSnapshot,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_task_group_operations_snapshot(snapshot)?;
+    encode_bounded_with_limit(snapshot, MAX_SYSTEM_CONTROL_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded, sanitized `TaskGroup` inspect snapshot.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_task_group_operations_snapshot(
+    wire: &[u8],
+) -> Result<sabi::v1::TaskGroupOperationsSnapshot, CompatibilityError> {
+    let snapshot: sabi::v1::TaskGroupOperationsSnapshot =
+        decode_bounded_with_limit(wire, MAX_SYSTEM_CONTROL_PAYLOAD_BYTES)?;
+    validate_task_group_operations_snapshot(&snapshot)?;
+    Ok(snapshot)
+}
+
+/// Encodes a bounded, sanitized `TaskNode` inspect snapshot (W32-G, B5-3).
+///
+/// # Errors
+///
+/// Returns a compatibility error for a malformed node status or identity.
+pub fn encode_task_node_operations_snapshot(
+    snapshot: &sabi::v1::TaskNodeOperationsSnapshot,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_task_node_operations_snapshot(snapshot)?;
+    encode_bounded_with_limit(snapshot, MAX_SYSTEM_CONTROL_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded, sanitized `TaskNode` inspect snapshot.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_task_node_operations_snapshot(
+    wire: &[u8],
+) -> Result<sabi::v1::TaskNodeOperationsSnapshot, CompatibilityError> {
+    let snapshot: sabi::v1::TaskNodeOperationsSnapshot =
+        decode_bounded_with_limit(wire, MAX_SYSTEM_CONTROL_PAYLOAD_BYTES)?;
+    validate_task_node_operations_snapshot(&snapshot)?;
+    Ok(snapshot)
+}
+
+/// Encodes a bounded, sanitized `ExecutionFiber` inspect snapshot (W32-G, B5-3).
+///
+/// # Errors
+///
+/// Returns a compatibility error for a malformed fiber status or identity.
+pub fn encode_execution_fiber_operations_snapshot(
+    snapshot: &sabi::v1::ExecutionFiberOperationsSnapshot,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_execution_fiber_operations_snapshot(snapshot)?;
+    encode_bounded_with_limit(snapshot, MAX_SYSTEM_CONTROL_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded, sanitized `ExecutionFiber` inspect snapshot.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_execution_fiber_operations_snapshot(
+    wire: &[u8],
+) -> Result<sabi::v1::ExecutionFiberOperationsSnapshot, CompatibilityError> {
+    let snapshot: sabi::v1::ExecutionFiberOperationsSnapshot =
+        decode_bounded_with_limit(wire, MAX_SYSTEM_CONTROL_PAYLOAD_BYTES)?;
+    validate_execution_fiber_operations_snapshot(&snapshot)?;
+    Ok(snapshot)
+}
+
+/// Encodes a bounded, sanitized `Topic` inspect snapshot (W32-G, B5-3).
+///
+/// # Errors
+///
+/// Returns a compatibility error for a malformed topic status, identity, or name bound.
+pub fn encode_topic_operations_snapshot(
+    snapshot: &sabi::v1::TopicOperationsSnapshot,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_topic_operations_snapshot(snapshot)?;
+    encode_bounded_with_limit(snapshot, MAX_SYSTEM_CONTROL_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded, sanitized `Topic` inspect snapshot.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_topic_operations_snapshot(
+    wire: &[u8],
+) -> Result<sabi::v1::TopicOperationsSnapshot, CompatibilityError> {
+    let snapshot: sabi::v1::TopicOperationsSnapshot =
+        decode_bounded_with_limit(wire, MAX_SYSTEM_CONTROL_PAYLOAD_BYTES)?;
+    validate_topic_operations_snapshot(&snapshot)?;
+    Ok(snapshot)
+}
+
+/// Encodes a bounded, sanitized durable `Operation` inspect snapshot (W32-G, B5-3).
+///
+/// # Errors
+///
+/// Returns a compatibility error for a malformed operation status or identity.
+pub fn encode_durable_operation_snapshot(
+    snapshot: &sabi::v1::DurableOperationSnapshot,
+) -> Result<Vec<u8>, CompatibilityError> {
+    validate_durable_operation_snapshot(snapshot)?;
+    encode_bounded_with_limit(snapshot, MAX_SYSTEM_CONTROL_PAYLOAD_BYTES)
+}
+
+/// Decodes a bounded, sanitized durable `Operation` inspect snapshot.
+///
+/// # Errors
+///
+/// Returns a compatibility error for malformed, incompatible, or oversized input.
+pub fn decode_durable_operation_snapshot(
+    wire: &[u8],
+) -> Result<sabi::v1::DurableOperationSnapshot, CompatibilityError> {
+    let snapshot: sabi::v1::DurableOperationSnapshot =
+        decode_bounded_with_limit(wire, MAX_SYSTEM_CONTROL_PAYLOAD_BYTES)?;
+    validate_durable_operation_snapshot(&snapshot)?;
     Ok(snapshot)
 }
 
@@ -1981,6 +2127,50 @@ fn validate_get_system_control_request(
     {
         return Err(CompatibilityError::InvalidSystemControlAlertLimit);
     }
+    validate_view_addressing(
+        view,
+        &request.target_id,
+        &request.plan_id,
+        request.target_generation,
+    )
+}
+
+/// Fail-closed addressing contract of the W32-G per-layer views: views 4..=8
+/// address exactly one target, the `TaskNode` view additionally names its
+/// owning plan, the fiber/operation views additionally carry a non-zero
+/// handle generation, and the recovery views 1..=3 admit none of the three
+/// additive fields.
+fn validate_view_addressing(
+    view: sabi::v1::SystemControlView,
+    target_id: &[u8],
+    plan_id: &[u8],
+    target_generation: u64,
+) -> Result<(), CompatibilityError> {
+    use sabi::v1::SystemControlView;
+    let invalid = || CompatibilityError::InvalidSystemControlIdentifier;
+    match view {
+        SystemControlView::TaskGroup | SystemControlView::Topic => {
+            if target_id.len() != REQUEST_ID_BYTES || !plan_id.is_empty() {
+                return Err(invalid());
+            }
+        }
+        SystemControlView::TaskNode => {
+            if target_id.len() != REQUEST_ID_BYTES || plan_id.len() != REQUEST_ID_BYTES {
+                return Err(invalid());
+            }
+        }
+        SystemControlView::ExecutionFiber | SystemControlView::Operation => {
+            if target_id.len() != REQUEST_ID_BYTES || !plan_id.is_empty() || target_generation == 0
+            {
+                return Err(invalid());
+            }
+        }
+        _ => {
+            if !target_id.is_empty() || !plan_id.is_empty() || target_generation != 0 {
+                return Err(invalid());
+            }
+        }
+    }
     Ok(())
 }
 
@@ -2149,6 +2339,169 @@ fn validate_resource_recovery_operations_snapshot(
         }
     }
     Ok(())
+}
+
+/// W32-G `TaskGroup` inspect validation: bounded identities, specified enums,
+/// a present admission receipt per member, and monotonic timestamps.
+fn validate_task_group_operations_snapshot(
+    snapshot: &sabi::v1::TaskGroupOperationsSnapshot,
+) -> Result<(), CompatibilityError> {
+    use sabi::v1::{TaskGroupLifecycleState, TaskGroupMemberType, TaskGroupMembershipState};
+    validate_system_control_identity(snapshot.schema.as_ref())?;
+    let group = snapshot
+        .group
+        .as_ref()
+        .ok_or(CompatibilityError::MissingSystemControlLayerStatus)?;
+    if group.group_id.len() != REQUEST_ID_BYTES
+        || group.task_id.len() != REQUEST_ID_BYTES
+        || (!group.parent_group_id.is_empty() && group.parent_group_id.len() != REQUEST_ID_BYTES)
+        || group.created_at_ms < 0
+        || group.updated_at_ms < group.created_at_ms
+    {
+        return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+    }
+    let state = TaskGroupLifecycleState::try_from(group.state)
+        .map_err(|_| CompatibilityError::InvalidSystemControlLayerStatus)?;
+    if state == TaskGroupLifecycleState::Unspecified {
+        return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+    }
+    if snapshot.members.len() > MAX_SYSTEM_CONTROL_ALERTS {
+        return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+    }
+    for member in &snapshot.members {
+        let member_type = TaskGroupMemberType::try_from(member.member_type)
+            .map_err(|_| CompatibilityError::InvalidSystemControlLayerStatus)?;
+        let membership = TaskGroupMembershipState::try_from(member.membership_state)
+            .map_err(|_| CompatibilityError::InvalidSystemControlLayerStatus)?;
+        if member_type == TaskGroupMemberType::Unspecified
+            || membership == TaskGroupMembershipState::Unspecified
+            || member.member_id.len() != REQUEST_ID_BYTES
+            || member
+                .admission_receipt
+                .as_ref()
+                .is_none_or(|receipt| receipt.receipt_id.len() != REQUEST_ID_BYTES)
+            || member
+                .removal_receipt
+                .as_ref()
+                .is_some_and(|receipt| receipt.receipt_id.len() != REQUEST_ID_BYTES)
+        {
+            return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+        }
+    }
+    Ok(())
+}
+
+/// W32-G `TaskNode` inspect validation: bounded identities, specified enums,
+/// the pinned 32-byte node digest, and monotonic timestamps.
+fn validate_task_node_operations_snapshot(
+    snapshot: &sabi::v1::TaskNodeOperationsSnapshot,
+) -> Result<(), CompatibilityError> {
+    use sabi::v1::{ContextResidencyTier, PlanNodeKind, PlanNodeLifecycleState};
+    validate_system_control_identity(snapshot.schema.as_ref())?;
+    let node = snapshot
+        .node
+        .as_ref()
+        .ok_or(CompatibilityError::MissingSystemControlLayerStatus)?;
+    let kind = PlanNodeKind::try_from(node.kind)
+        .map_err(|_| CompatibilityError::InvalidSystemControlLayerStatus)?;
+    let state = PlanNodeLifecycleState::try_from(node.state)
+        .map_err(|_| CompatibilityError::InvalidSystemControlLayerStatus)?;
+    let residency = ContextResidencyTier::try_from(node.residency_tier)
+        .map_err(|_| CompatibilityError::InvalidSystemControlLayerStatus)?;
+    if kind == PlanNodeKind::Unspecified
+        || state == PlanNodeLifecycleState::Unspecified
+        || residency == ContextResidencyTier::Unspecified
+        || node.plan_id.len() != REQUEST_ID_BYTES
+        || node.node_id.len() != REQUEST_ID_BYTES
+        || node.node_digest.len() != SHA256_DIGEST_BYTES
+        || node.updated_at_ms < node.first_declared_at_ms
+    {
+        return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+    }
+    Ok(())
+}
+
+/// W32-G `ExecutionFiber` inspect validation: bounded identity, non-zero
+/// generation, specified state and phase enums.
+fn validate_execution_fiber_operations_snapshot(
+    snapshot: &sabi::v1::ExecutionFiberOperationsSnapshot,
+) -> Result<(), CompatibilityError> {
+    use sabi::v1::{ExecutionFiberLifecycleState, ExecutionFiberPhase};
+    validate_system_control_identity(snapshot.schema.as_ref())?;
+    let fiber = snapshot
+        .fiber
+        .as_ref()
+        .ok_or(CompatibilityError::MissingSystemControlLayerStatus)?;
+    let state = ExecutionFiberLifecycleState::try_from(fiber.state)
+        .map_err(|_| CompatibilityError::InvalidSystemControlLayerStatus)?;
+    let phase = ExecutionFiberPhase::try_from(fiber.lifecycle_phase)
+        .map_err(|_| CompatibilityError::InvalidSystemControlLayerStatus)?;
+    if state == ExecutionFiberLifecycleState::Unspecified
+        || phase == ExecutionFiberPhase::Unspecified
+        || fiber.fiber_id.len() != REQUEST_ID_BYTES
+        || fiber.generation == 0
+    {
+        return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+    }
+    Ok(())
+}
+
+/// W32-G Topic inspect validation: bounded identities, the admitted name
+/// bound, and the pinned 32-byte policy digest.
+fn validate_topic_operations_snapshot(
+    snapshot: &sabi::v1::TopicOperationsSnapshot,
+) -> Result<(), CompatibilityError> {
+    validate_system_control_identity(snapshot.schema.as_ref())?;
+    let topic = snapshot
+        .topic
+        .as_ref()
+        .ok_or(CompatibilityError::MissingSystemControlLayerStatus)?;
+    if topic.topic_id.len() != REQUEST_ID_BYTES
+        || topic.channel_id.len() != REQUEST_ID_BYTES
+        || topic.policy_digest.len() != SHA256_DIGEST_BYTES
+        || topic.name.len() > MAX_SYSTEM_CONTROL_TOPIC_NAME_BYTES
+        || topic.name.contains(&0)
+    {
+        return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+    }
+    Ok(())
+}
+
+/// W32-G durable Operation inspect validation: bounded identity, non-zero
+/// handle generations, and the terminal-state receipt rule (terminal states
+/// carry exactly one outcome receipt; non-terminal states carry none).
+fn validate_durable_operation_snapshot(
+    snapshot: &sabi::v1::DurableOperationSnapshot,
+) -> Result<(), CompatibilityError> {
+    use sabi::v1::DurableOperationState;
+    validate_system_control_identity(snapshot.schema.as_ref())?;
+    let operation = snapshot
+        .operation
+        .as_ref()
+        .ok_or(CompatibilityError::MissingSystemControlLayerStatus)?;
+    let state = DurableOperationState::try_from(operation.state)
+        .map_err(|_| CompatibilityError::InvalidSystemControlLayerStatus)?;
+    if state == DurableOperationState::Unspecified
+        || operation.operation_id.len() != REQUEST_ID_BYTES
+        || operation.generation == 0
+        || operation.owner_fiber_id.len() != REQUEST_ID_BYTES
+        || operation.owner_fiber_generation == 0
+    {
+        return Err(CompatibilityError::InvalidSystemControlLayerStatus);
+    }
+    let terminal = matches!(
+        state,
+        DurableOperationState::Completed
+            | DurableOperationState::Failed
+            | DurableOperationState::CancelledBeforeEffect
+            | DurableOperationState::PartialEffect
+            | DurableOperationState::EffectUnknown
+    );
+    match (&operation.outcome_receipt, terminal) {
+        (Some(receipt), true) if receipt.receipt_id.len() == REQUEST_ID_BYTES => Ok(()),
+        (None, false) => Ok(()),
+        _ => Err(CompatibilityError::InvalidSystemControlLayerStatus),
+    }
 }
 
 fn validate_control_command_result(

@@ -30,9 +30,10 @@ use nlos_schema::{
 };
 use nlos_task::{
     ArtifactCommitPlanId, ArtifactRecoveryAlertAcknowledgeRequest, ArtifactRecoveryFailureSource,
-    ResourceCommitPlanId, ResourceRecoveryAlertAcknowledgeRequest, ResourceRecoveryFailureSource,
+    GroupMemberType, GroupState, MembershipState, ResourceCommitPlanId,
+    ResourceRecoveryAlertAcknowledgeRequest, ResourceRecoveryFailureSource,
     ResourceRecoveryResumeRequest, SemanticCommitPlanId, SemanticRecoveryAlertAcknowledgeRequest,
-    SemanticRecoveryFailureSource, SemanticRecoveryResumeRequest, SqliteTaskAuthority,
+    SemanticRecoveryFailureSource, SemanticRecoveryResumeRequest, SqliteTaskAuthority, TaskGroupId,
     TaskStoreError, semantic_recovery_resume_reference,
 };
 use nlos_types::{IdempotencyKey, PrincipalId, ReceiptId};
@@ -69,6 +70,28 @@ pub mod process_inspector;
 /// [`nlos_resource::ResourceAuthority`] (`resource` feature).
 #[cfg(feature = "resource")]
 pub mod resource_inspector;
+
+/// Optional [`TaskNodeInspectSource`] adapter backed by the durable
+/// [`nlos_plan::SqlitePlanAuthority`] (`plan` feature, W32-G).
+#[cfg(feature = "plan")]
+pub mod plan_inspector;
+
+/// Optional [`ExecutionFiberInspectSource`] adapter backed by the
+/// [`nlos_runtime_tokio::TokioRuntimeAdapter`] snapshot surface (`runtime`
+/// feature, W32-G).
+#[cfg(feature = "runtime")]
+pub mod fiber_inspector;
+
+/// Optional [`TopicInspectSource`] adapter backed by the durable
+/// [`nlos_topic::TopicAuthority`] rows (`topic` feature, W32-G).
+#[cfg(feature = "topic")]
+pub mod topic_inspector;
+
+/// Optional [`OperationInspectSource`] adapter backed by the durable
+/// [`nlos_store::SqliteOperationStore`] state-machine rows (`store`
+/// feature, W32-G).
+#[cfg(feature = "store")]
+pub mod operation_inspector;
 
 /// Optional kill-arm [`OperationCommandExecutor`] backed by the durable
 /// [`nlos_process::ProcessAuthority`] platform-kill path and the
@@ -277,6 +300,135 @@ fn unwired_operation_failure() -> SabiFailure {
     }
 }
 
+fn unwired_layer_failure() -> SabiFailure {
+    SabiFailure {
+        code: SabiErrorCode::NotFound.into(),
+        retry: RetryDirective::DoNotRetry.into(),
+        safe_message: "layer inspection backend is not wired".to_owned(),
+    }
+}
+
+/// Pluggable read-only `TaskNode` inspection seam (W32-G, B5-3). The handler
+/// owns only the envelope, authorization, and projection; hosts wire an
+/// adapter over the plan authority (see [`crate::plan_inspector`] with the
+/// `plan` feature) or leave the default [`UnwiredTaskNodeInspectSource`] in
+/// place. `Send + Sync` is part of the contract: handlers are held across
+/// async IPC service loops.
+pub trait TaskNodeInspectSource: Send + Sync {
+    /// Returns one bounded plan-node snapshot or a sanitized failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SabiFailure`] when the backing authority rejects the read
+    /// (absent node, absent plan, or an unwired backend).
+    fn inspect_task_node(
+        &self,
+        plan_id: [u8; 16],
+        node_id: [u8; 16],
+    ) -> Result<control::TaskNodeInspection, SabiFailure>;
+}
+
+/// Default stub used when no `TaskNode` inspection backend is wired.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct UnwiredTaskNodeInspectSource;
+
+impl TaskNodeInspectSource for UnwiredTaskNodeInspectSource {
+    fn inspect_task_node(
+        &self,
+        _: [u8; 16],
+        _: [u8; 16],
+    ) -> Result<control::TaskNodeInspection, SabiFailure> {
+        Err(unwired_layer_failure())
+    }
+}
+
+/// Pluggable read-only execution-fiber inspection seam (W32-G, B5-3) over
+/// the runtime snapshot surface (see [`crate::fiber_inspector`] with the
+/// `runtime` feature).
+pub trait ExecutionFiberInspectSource: Send + Sync {
+    /// Returns one bounded fiber snapshot — state, lifecycle phase, and
+    /// whole-millisecond usage meters — or a sanitized failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SabiFailure`] when the runtime rejects the handle (unknown
+    /// or reaped fiber, or an unwired backend).
+    fn inspect_execution_fiber(
+        &self,
+        fiber_id: [u8; 16],
+        generation: u64,
+    ) -> Result<control::ExecutionFiberInspection, SabiFailure>;
+}
+
+/// Default stub used when no execution-fiber inspection backend is wired.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct UnwiredExecutionFiberInspectSource;
+
+impl ExecutionFiberInspectSource for UnwiredExecutionFiberInspectSource {
+    fn inspect_execution_fiber(
+        &self,
+        _: [u8; 16],
+        _: u64,
+    ) -> Result<control::ExecutionFiberInspection, SabiFailure> {
+        Err(unwired_layer_failure())
+    }
+}
+
+/// Pluggable read-only topic inspection seam (W32-G, B5-3) over the durable
+/// topic rows (see [`crate::topic_inspector`] with the `topic` feature).
+pub trait TopicInspectSource: Send + Sync {
+    /// Returns one bounded durable topic snapshot or a sanitized failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SabiFailure`] when the backing authority rejects the read
+    /// (absent topic or an unwired backend).
+    fn inspect_topic(&self, topic_id: [u8; 16]) -> Result<control::TopicInspection, SabiFailure>;
+}
+
+/// Default stub used when no topic inspection backend is wired.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct UnwiredTopicInspectSource;
+
+impl TopicInspectSource for UnwiredTopicInspectSource {
+    fn inspect_topic(&self, _: [u8; 16]) -> Result<control::TopicInspection, SabiFailure> {
+        Err(unwired_layer_failure())
+    }
+}
+
+/// Pluggable read-only durable-operation inspection seam (W32-G, B5-3) over
+/// the operation store's state-machine rows (see [`crate::operation_inspector`]
+/// with the `store` feature).
+pub trait OperationInspectSource: Send + Sync {
+    /// Returns one bounded durable operation snapshot — state, cancel epoch,
+    /// owner fiber handle, and terminal outcome receipt — or a sanitized
+    /// failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SabiFailure`] when the backing store rejects the read
+    /// (absent or stale-generation row or an unwired backend).
+    fn inspect_operation(
+        &self,
+        operation_id: [u8; 16],
+        generation: u64,
+    ) -> Result<control::DurableOperationInspection, SabiFailure>;
+}
+
+/// Default stub used when no durable-operation inspection backend is wired.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct UnwiredOperationInspectSource;
+
+impl OperationInspectSource for UnwiredOperationInspectSource {
+    fn inspect_operation(
+        &self,
+        _: [u8; 16],
+        _: u64,
+    ) -> Result<control::DurableOperationInspection, SabiFailure> {
+        Err(unwired_layer_failure())
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RecoveryCounter {
     CompletedCycles,
@@ -430,6 +582,13 @@ pub enum SystemControlError {
     /// an already-bounded, crossing-safe failure; [`Self::to_sabi_failure`]
     /// forwards it verbatim.
     OperationExecution(SabiFailure),
+    /// No backing source is wired for one W32-G per-layer inspect view, so
+    /// the read refuses fail-closed.
+    LayerInspectionUnwired,
+    /// A wired per-layer inspection source rejected the read with an
+    /// already-bounded, crossing-safe failure; [`Self::to_sabi_failure`]
+    /// forwards it verbatim.
+    LayerInspection(SabiFailure),
 }
 
 impl fmt::Display for SystemControlError {
@@ -464,6 +623,14 @@ impl fmt::Display for SystemControlError {
                 "operation control execution rejected the command: {}",
                 failure.safe_message
             ),
+            Self::LayerInspectionUnwired => {
+                formatter.write_str("layer inspection backend is not wired")
+            }
+            Self::LayerInspection(failure) => write!(
+                formatter,
+                "layer inspection source rejected the read: {}",
+                failure.safe_message
+            ),
         }
     }
 }
@@ -482,7 +649,9 @@ impl Error for SystemControlError {
             | Self::UnboundedCorrelation
             | Self::ClockWallUnavailable
             | Self::OperationControlExecutionUnwired
-            | Self::OperationExecution(_) => None,
+            | Self::OperationExecution(_)
+            | Self::LayerInspectionUnwired
+            | Self::LayerInspection(_) => None,
         }
     }
 }
@@ -582,9 +751,15 @@ impl SystemControlError {
                 RetryDirective::DoNotRetry,
                 "operation control execution backend is not wired",
             ),
-            // The executor already produced a bounded, crossing-safe
-            // failure; forward its class, retry directive, and message.
-            Self::OperationExecution(failure) => {
+            Self::LayerInspectionUnwired => (
+                SabiErrorCode::NotFound,
+                RetryDirective::DoNotRetry,
+                "layer inspection backend is not wired",
+            ),
+            // The executor or inspection source already produced a bounded,
+            // crossing-safe failure; forward its class, retry directive, and
+            // message verbatim.
+            Self::OperationExecution(failure) | Self::LayerInspection(failure) => {
                 return failure.clone();
             }
             Self::Task(error) => task_store_failure(error),
@@ -732,6 +907,10 @@ pub struct RecoverySystemControl<'a, H, A> {
     health: &'a H,
     authorizer: &'a A,
     operation_executor: Option<&'a dyn OperationCommandExecutor>,
+    task_node_source: Option<&'a dyn TaskNodeInspectSource>,
+    fiber_source: Option<&'a dyn ExecutionFiberInspectSource>,
+    topic_source: Option<&'a dyn TopicInspectSource>,
+    operation_source: Option<&'a dyn OperationInspectSource>,
 }
 
 impl<'a, H, A> RecoverySystemControl<'a, H, A>
@@ -746,6 +925,10 @@ where
             health,
             authorizer,
             operation_executor: None,
+            task_node_source: None,
+            fiber_source: None,
+            topic_source: None,
+            operation_source: None,
         }
     }
 
@@ -758,6 +941,39 @@ where
         executor: &'a dyn OperationCommandExecutor,
     ) -> Self {
         self.operation_executor = Some(executor);
+        self
+    }
+
+    /// Wires the pluggable `TaskNode` inspection seam (W32-G, B5-3). Without
+    /// it the `TASK_NODE` view refuses fail-closed with a typed `NOT_FOUND`
+    /// failure.
+    #[must_use]
+    pub const fn with_task_node_source(mut self, source: &'a dyn TaskNodeInspectSource) -> Self {
+        self.task_node_source = Some(source);
+        self
+    }
+
+    /// Wires the pluggable execution-fiber inspection seam (W32-G, B5-3).
+    #[must_use]
+    pub const fn with_execution_fiber_source(
+        mut self,
+        source: &'a dyn ExecutionFiberInspectSource,
+    ) -> Self {
+        self.fiber_source = Some(source);
+        self
+    }
+
+    /// Wires the pluggable topic inspection seam (W32-G, B5-3).
+    #[must_use]
+    pub const fn with_topic_source(mut self, source: &'a dyn TopicInspectSource) -> Self {
+        self.topic_source = Some(source);
+        self
+    }
+
+    /// Wires the pluggable durable-operation inspection seam (W32-G, B5-3).
+    #[must_use]
+    pub const fn with_operation_source(mut self, source: &'a dyn OperationInspectSource) -> Self {
+        self.operation_source = Some(source);
         self
     }
 
@@ -995,6 +1211,21 @@ where
         if payload.view == i32::from(SystemControlView::ResourceCommitRecovery) {
             return self.handle_get_resource(request, context, payload.alert_limit);
         }
+        if payload.view == i32::from(SystemControlView::TaskGroup) {
+            return self.handle_get_task_group(request, context, &payload);
+        }
+        if payload.view == i32::from(SystemControlView::TaskNode) {
+            return self.handle_get_task_node(request, context, &payload);
+        }
+        if payload.view == i32::from(SystemControlView::ExecutionFiber) {
+            return self.handle_get_execution_fiber(request, context, &payload);
+        }
+        if payload.view == i32::from(SystemControlView::Topic) {
+            return self.handle_get_topic(request, context, &payload);
+        }
+        if payload.view == i32::from(SystemControlView::Operation) {
+            return self.handle_get_operation(request, context, &payload);
+        }
         let requested = usize::try_from(payload.alert_limit).unwrap_or(usize::MAX);
         let alerts = self
             .tasks
@@ -1131,6 +1362,210 @@ where
             request,
             context.correlation_id.clone(),
             encode_resource_recovery_operations_snapshot(&snapshot)?,
+            Vec::new(),
+        ))
+    }
+
+    /// `TaskGroup` view (W32-G, B5-3): reads the durable group and its
+    /// bounded member list straight from the `TaskAuthority` the handler
+    /// already owns; `alert_limit` bounds the member projection.
+    fn handle_get_task_group(
+        &self,
+        request: &Envelope,
+        context: &SabiRequestContext,
+        payload: &sabi::v1::GetSystemControlRequest,
+    ) -> Result<Envelope, SystemControlError> {
+        let group_id = TaskGroupId::from_bytes(fixed16(&payload.target_id)?);
+        let record = self.tasks.inspect_group(group_id)?;
+        let requested = usize::try_from(payload.alert_limit).unwrap_or(usize::MAX);
+        let members = self.tasks.list_group_members(group_id)?;
+        let members_truncated = members.len() > requested;
+        let members = members
+            .into_iter()
+            .take(requested)
+            .map(|member| sabi::v1::TaskGroupMemberStatus {
+                member_type: task_group_member_type(member.member_type).into(),
+                member_id: member.member_id.to_vec(),
+                membership_state: task_group_membership_state(member.membership_state).into(),
+                membership_generation: member.membership_generation,
+                admission_receipt: Some(ReceiptReference {
+                    receipt_id: member.admission_receipt_id.into_bytes().to_vec(),
+                }),
+                removal_receipt: member
+                    .removal_receipt_id
+                    .map(|receipt_id| ReceiptReference {
+                        receipt_id: receipt_id.into_bytes().to_vec(),
+                    }),
+            })
+            .collect();
+        let snapshot = sabi::v1::TaskGroupOperationsSnapshot {
+            schema: Some(system_control_schema_identity()),
+            group: Some(sabi::v1::TaskGroupStatus {
+                group_id: record.group_id.into_bytes().to_vec(),
+                task_id: record.task_id.into_bytes().to_vec(),
+                parent_group_id: record
+                    .parent_group_id
+                    .map_or_else(Vec::new, |parent| parent.into_bytes().to_vec()),
+                state: task_group_state(record.state).into(),
+                membership_generation: record.membership_generation,
+                state_seq: record.state_seq,
+                depth: record.depth,
+                cancel_epoch: record.cancel_epoch,
+                created_at_ms: record.created_at_ms,
+                updated_at_ms: record.updated_at_ms,
+            }),
+            members,
+            members_truncated,
+        };
+        Ok(response_envelope(
+            request,
+            context.correlation_id.clone(),
+            nlos_schema::encode_task_group_operations_snapshot(&snapshot)?,
+            Vec::new(),
+        ))
+    }
+
+    /// `TaskNode` view (W32-G, B5-3): bounded plan-authority read through the
+    /// pluggable [`TaskNodeInspectSource`] seam.
+    fn handle_get_task_node(
+        &self,
+        request: &Envelope,
+        context: &SabiRequestContext,
+        payload: &sabi::v1::GetSystemControlRequest,
+    ) -> Result<Envelope, SystemControlError> {
+        let Some(source) = self.task_node_source else {
+            return Err(SystemControlError::LayerInspectionUnwired);
+        };
+        let inspection = source
+            .inspect_task_node(fixed16(&payload.plan_id)?, fixed16(&payload.target_id)?)
+            .map_err(SystemControlError::LayerInspection)?;
+        let snapshot = sabi::v1::TaskNodeOperationsSnapshot {
+            schema: Some(system_control_schema_identity()),
+            node: Some(sabi::v1::TaskNodeStatus {
+                plan_id: inspection.plan_id.to_vec(),
+                node_id: inspection.node_id.to_vec(),
+                kind: inspection.kind.into(),
+                state: inspection.state.into(),
+                declared_revision: inspection.declared_revision,
+                node_digest: inspection.node_digest,
+                transition_count: inspection.transition_count,
+                residency_tier: inspection.residency_tier.into(),
+                residency_transition_count: inspection.residency_transition_count,
+                first_declared_at_ms: inspection.first_declared_at_ms,
+                updated_at_ms: inspection.updated_at_ms,
+            }),
+        };
+        Ok(response_envelope(
+            request,
+            context.correlation_id.clone(),
+            nlos_schema::encode_task_node_operations_snapshot(&snapshot)?,
+            Vec::new(),
+        ))
+    }
+
+    /// `ExecutionFiber` view (W32-G, B5-3): runtime snapshot read through the
+    /// pluggable [`ExecutionFiberInspectSource`] seam.
+    fn handle_get_execution_fiber(
+        &self,
+        request: &Envelope,
+        context: &SabiRequestContext,
+        payload: &sabi::v1::GetSystemControlRequest,
+    ) -> Result<Envelope, SystemControlError> {
+        let Some(source) = self.fiber_source else {
+            return Err(SystemControlError::LayerInspectionUnwired);
+        };
+        let inspection = source
+            .inspect_execution_fiber(fixed16(&payload.target_id)?, payload.target_generation)
+            .map_err(SystemControlError::LayerInspection)?;
+        let snapshot = sabi::v1::ExecutionFiberOperationsSnapshot {
+            schema: Some(system_control_schema_identity()),
+            fiber: Some(sabi::v1::ExecutionFiberStatus {
+                fiber_id: inspection.fiber_id.to_vec(),
+                generation: inspection.generation,
+                state: inspection.state.into(),
+                lifecycle_phase: inspection.lifecycle_phase.into(),
+                active_cpu_ms: inspection.active_cpu_ms,
+                elapsed_wall_ms: inspection.elapsed_wall_ms,
+                scheduler_wait_ms: inspection.scheduler_wait_ms,
+                external_wait_ms: inspection.external_wait_ms,
+                backpressure_wait_ms: inspection.backpressure_wait_ms,
+                suspended_ms: inspection.suspended_ms,
+            }),
+        };
+        Ok(response_envelope(
+            request,
+            context.correlation_id.clone(),
+            nlos_schema::encode_execution_fiber_operations_snapshot(&snapshot)?,
+            Vec::new(),
+        ))
+    }
+
+    /// Topic view (W32-G, B5-3): durable topic row read through the
+    /// pluggable [`TopicInspectSource`] seam.
+    fn handle_get_topic(
+        &self,
+        request: &Envelope,
+        context: &SabiRequestContext,
+        payload: &sabi::v1::GetSystemControlRequest,
+    ) -> Result<Envelope, SystemControlError> {
+        let Some(source) = self.topic_source else {
+            return Err(SystemControlError::LayerInspectionUnwired);
+        };
+        let inspection = source
+            .inspect_topic(fixed16(&payload.target_id)?)
+            .map_err(SystemControlError::LayerInspection)?;
+        let snapshot = sabi::v1::TopicOperationsSnapshot {
+            schema: Some(system_control_schema_identity()),
+            topic: Some(sabi::v1::TopicStatus {
+                topic_id: inspection.topic_id.to_vec(),
+                channel_id: inspection.channel_id.to_vec(),
+                channel_generation: inspection.channel_generation,
+                name: inspection.name,
+                active_subscriptions: inspection.active_subscriptions,
+                policy_digest: inspection.policy_digest,
+                created_at_ms: inspection.created_at_ms,
+            }),
+        };
+        Ok(response_envelope(
+            request,
+            context.correlation_id.clone(),
+            nlos_schema::encode_topic_operations_snapshot(&snapshot)?,
+            Vec::new(),
+        ))
+    }
+
+    /// Operation view (W32-G, B5-3): durable state-machine row read through
+    /// the pluggable [`OperationInspectSource`] seam.
+    fn handle_get_operation(
+        &self,
+        request: &Envelope,
+        context: &SabiRequestContext,
+        payload: &sabi::v1::GetSystemControlRequest,
+    ) -> Result<Envelope, SystemControlError> {
+        let Some(source) = self.operation_source else {
+            return Err(SystemControlError::LayerInspectionUnwired);
+        };
+        let inspection = source
+            .inspect_operation(fixed16(&payload.target_id)?, payload.target_generation)
+            .map_err(SystemControlError::LayerInspection)?;
+        let snapshot = sabi::v1::DurableOperationSnapshot {
+            schema: Some(system_control_schema_identity()),
+            operation: Some(sabi::v1::DurableOperationStatus {
+                operation_id: inspection.operation_id.to_vec(),
+                generation: inspection.generation,
+                state: inspection.state.into(),
+                cancel_epoch: inspection.cancel_epoch,
+                owner_fiber_id: inspection.owner_fiber_id.to_vec(),
+                owner_fiber_generation: inspection.owner_fiber_generation,
+                outcome_receipt: inspection
+                    .outcome_receipt_id
+                    .map(|receipt_id| ReceiptReference { receipt_id }),
+            }),
+        };
+        Ok(response_envelope(
+            request,
+            context.correlation_id.clone(),
+            nlos_schema::encode_durable_operation_snapshot(&snapshot)?,
             Vec::new(),
         ))
     }
@@ -1409,6 +1844,42 @@ const fn worker_state(state: RecoveryWorkerState) -> sabi::v1::RecoveryWorkerLif
         RecoveryWorkerState::BackingOff => sabi::v1::RecoveryWorkerLifecycleState::BackingOff,
         RecoveryWorkerState::Faulted => sabi::v1::RecoveryWorkerLifecycleState::Faulted,
         RecoveryWorkerState::Stopped => sabi::v1::RecoveryWorkerLifecycleState::Stopped,
+    }
+}
+
+const fn task_group_state(state: GroupState) -> sabi::v1::TaskGroupLifecycleState {
+    use nlos_task::GroupState as Source;
+    match state {
+        Source::Open => sabi::v1::TaskGroupLifecycleState::Open,
+        Source::Sealed => sabi::v1::TaskGroupLifecycleState::Sealed,
+        Source::CancelRequested => sabi::v1::TaskGroupLifecycleState::CancelRequested,
+        Source::Cancelling => sabi::v1::TaskGroupLifecycleState::Cancelling,
+        Source::Quiescing => sabi::v1::TaskGroupLifecycleState::Quiescing,
+        Source::Completed => sabi::v1::TaskGroupLifecycleState::Completed,
+        Source::Failed => sabi::v1::TaskGroupLifecycleState::Failed,
+        Source::Partial => sabi::v1::TaskGroupLifecycleState::Partial,
+        Source::Cancelled => sabi::v1::TaskGroupLifecycleState::Cancelled,
+        Source::Uncertain => sabi::v1::TaskGroupLifecycleState::Uncertain,
+        Source::Recovering => sabi::v1::TaskGroupLifecycleState::Recovering,
+        Source::Quarantined => sabi::v1::TaskGroupLifecycleState::Quarantined,
+        Source::EffectUnknown => sabi::v1::TaskGroupLifecycleState::EffectUnknown,
+    }
+}
+
+const fn task_group_member_type(member_type: GroupMemberType) -> sabi::v1::TaskGroupMemberType {
+    match member_type {
+        GroupMemberType::ChildGroup => sabi::v1::TaskGroupMemberType::ChildGroup,
+        GroupMemberType::TaskAttempt => sabi::v1::TaskGroupMemberType::TaskAttempt,
+        GroupMemberType::AgentInstance => sabi::v1::TaskGroupMemberType::AgentInstance,
+    }
+}
+
+const fn task_group_membership_state(
+    membership: MembershipState,
+) -> sabi::v1::TaskGroupMembershipState {
+    match membership {
+        MembershipState::Active => sabi::v1::TaskGroupMembershipState::Active,
+        MembershipState::Removed => sabi::v1::TaskGroupMembershipState::Removed,
     }
 }
 

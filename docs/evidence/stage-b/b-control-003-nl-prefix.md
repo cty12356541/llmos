@@ -387,3 +387,49 @@
 5. **kill receipt id 为派生值非 authority 原生 ReceiptId**：nlos-process 的 `PlatformKillReceipt` 无原生 ReceiptId 字段；以域分隔 SHA-256 覆盖其全部字段（process_id/generation/fencing_token/idempotency_key/killed_at_ms）派生，等价证明力（缺任一 authority 事实即不可复现），非伪造。
 6. **TS/Python conformance 未加新臂 golden**：与 W28-D 同因（写集排除 `tests/conformance/`）；gen/ 三语言生成物已同步。Deferred minor：conformance 侧补钉三臂 hex。
 7. **ROAD-B-005 仍 PARTIAL**：Trusted GUI 未接；多层手动调度的剩余半边（宿主 pause/resume/cancel 执行器、GUI 确认面）递延。
+
+## W32-G 增量：各层 inspect 补齐——TaskGroup/TaskNode/ExecutionFiber/Topic/Operation inspect Receipt（B5-3，2026-09-21）
+
+> 状态：`PARTIAL_PASS`（单节点本地；B5-3 计划行"每层 inspect Receipt 齐"达成——四层五个只读视图全部 typed Receipt 化并三路 parity；ROAD-B-005 仍 PARTIAL——Trusted GUI 宿主执行器等归其余 B5 车道）
+>
+> 基线 HEAD：`b65255e`（W32 波开基线）　　写集：`schema/nlos/sabi/v1/system_control.proto`、`gen/`、`crates/nlos-schema`、`crates/nlos-system-control`（含新 features `plan`/`runtime`/`topic`/`store` 与四个 feature 门适配器）、本证据文件；`crates/nlos-plan`/`nlos-runtime`/`nlos-runtime-tokio`/`nlos-topic`/`nlos-store`/`nlos-operation`/`nlos-channel` 只读消费（零改动，仅作为新增 optional 依赖）
+
+### 已实现事实
+
+1. **SABI v1.5 additive 视图**（ADR-0014 冻结通道 additive 扩列，镜像 W27-A/W28-D/W29-D/W28-C-3b 先例）：`SystemControlView` 新值 `TASK_GROUP=4`/`TASK_NODE=5`/`EXECUTION_FIBER=6`/`TOPIC=7`/`OPERATION=8`（B5-3 四层中 Topic/Operation 一层由两个互补视图覆盖）；`GetSystemControlRequest` additive 寻址字段 `target_id=4`/`plan_id=5`/`target_generation=6`（新视图必填 16 字节目标，TaskNode 视图额外要求 16 字节 plan_id，fiber/operation 视图额外要求非零 handle generation，recovery 视图 1..=3 三字段必须为空——`validate_view_addressing` 编解码双侧 fail-closed）；五个快照消息族（`TaskGroupOperationsSnapshot`/`TaskNodeOperationsSnapshot`/`ExecutionFiberOperationsSnapshot`/`TopicOperationsSnapshot`/`DurableOperationSnapshot`）+ 九个状态枚举（TaskGroup 13 态/成员类型/成员资格、PlanNode 13 态/ContextResidency 5 级/kind、Fiber 10 态/4 相位、DurableOperation 8 态）。REGISTRY minor 晋 5（frozen 不变），`system_control_schema_identity()` 随升；gen/ TS/Python 经 `buf generate` 同步。
+2. **nlos-schema 兼容面**：五个快照 encode/decode 对（bounded 64KiB + 逐字段校验：16 字节 id、32 字节 digest、指定枚举非 Unspecified、成员≤256、TaskGroup 成员必须携带 admission receipt、operation 终态必须且仅携带一个 outcome receipt、topic name ≤256 且无 NUL——`MAX_SYSTEM_CONTROL_TOPIC_NAME_BYTES`）；新错误变体 `MissingSystemControlLayerStatus`/`InvalidSystemControlLayerStatus`；W28-C-3b resource golden 改字面钉死 v1.4 identity（`w28c_resource_identity()`，与 w27a/w28d 钉定纪律同构，冻结 golden 字节零改动）；新增五个 v1.5 确定性 golden hex（Rust prost 字段序，钉死快照字节）。
+3. **数据源与 seam**（handler 侧、镜像 `OperationCommandExecutor` 模式；`new()` 签名不变，既有调用点零改动）：
+   - **TaskGroup**：handler 直读自有 `SqliteTaskAuthority`——`inspect_group`（GroupRecord 13 态映射）+ `list_group_members`（成员按 `alert_limit` 截断 + `members_truncated` 旗标，Admission/Removal receipt 以 `ReceiptReference` 投影）；`GroupNotFound` 经既有 Task 映射为 `NOT_FOUND`。
+   - **TaskNode/ExecutionFiber/Topic/Operation**：四个 pluggable seam（`TaskNodeInspectSource`/`ExecutionFiberInspectSource`/`TopicInspectSource`/`OperationInspectSource`，返回 typed inspection 或 bounded `SabiFailure`，`Send+Sync` 契约）+ `Unwired*` 默认 stub（typed `NOT_FOUND` fail-closed）；`with_*_source` builder 接线；来源拒绝经 `SystemControlError::LayerInspection(SabiFailure)` bounded 原样转发，未接线为 `LayerInspectionUnwired`。
+4. **四个真实适配器**（feature 门控，目标 crate 零改动）：
+   - `plan_inspector.rs`（`plan` feature）：`PlanAuthorityTaskNodeSource` over `SqlitePlanAuthority::inspect_node`——PlanNodeRecord（kind/13 态/declared_revision/32 字节 node_digest/transition_count/residency_tier/residency_transition_count/时间戳）全字段投影；`Ok(None)`/`NodeNotFound`→`NOT_FOUND`。
+   - `fiber_inspector.rs`（`runtime` feature）：`TokioExecutionFiberSource` over `TokioRuntimeAdapter` 只读三面（`inspect`/`inspect_lifecycle_phase`/`activation_usage`，Duration→毫秒饱和投影）；runtime 无专用 not-found——`InvalidGeneration`→`NOT_FOUND`（handle 未知名）、`FiberReaped`→`NOT_FOUND`（已回收名）。
+   - `topic_inspector.rs`（`topic` feature）：`TopicAuthoritySource` over `TopicAuthority::inspect_topic`——channel 绑定（id+generation）、admitted name（超界/NUL 早拒 `INVALID_ARGUMENT`，不让畸形投影上线）、active_subscriptions、policy digest；`TopicNotFound`→`NOT_FOUND`。
+   - `operation_inspector.rs`（`store` feature）：`OperationStoreSource` over `SqliteOperationStore::inspect`——8 态状态机行 + cancel_epoch + owner fiber handle + 终态 outcome receipt；store 行缺失与 stale generation 同面（`OperationError::InvalidGeneration`）→一条诚实命名歧义的 `NOT_FOUND`。
+5. **命令面**（`src/control.rs`）：`InspectTaskGroup{group_id}`/`InspectTaskNode{plan_id,node_id}`/`InspectExecutionFiber{fiber_id,generation}`/`InspectTopic{topic_id}`/`InspectOperation{operation_id,generation}` 五只读变体（GET 编译经 `layer_view_get_arm`，命令 id/关联 id 派生自目标 id——scoped-read 同 InspectTask/Process/Resource 先例；fiber/operation 的零 generation 在 wire 前 typed 拒绝）；`ControlOutcome::TaskGroupInspected`/`TaskNodeInspected`/`ExecutionFiberInspected`/`TopicInspected`/`DurableOperationInspected` typed Receipt（`to_bytes` 判别 tag 15..19，wire 枚举经 schema 校验后投影，compose 侧 `fixed16_or_defect` fail-closed）。
+6. **CLI**：`inspect-task-group <GROUP_HEX_32>`、`inspect-task-node <PLAN_HEX_32> <NODE_HEX_32>`、`inspect-fiber <FIBER_HEX_32> <GENERATION>`、`inspect-topic <TOPIC_HEX_32>`、`inspect-operation <OPERATION_HEX_32> <GENERATION>` 五子命令 + summary 行（`outcome=task_group_inspected|task_node_inspected|execution_fiber_inspected|topic_inspected|operation_inspected …`）。
+7. **NL 双语白名单**：`inspect|check|show|get|status task group <32-hex>`、名词倒装 `task group status <32-hex>`；`inspect task node <PLAN> <NODE>` 及倒装；`inspect fiber <32-hex> generation <n>`（EN）`查看纤程 <32位十六进制> 世代 <n>`（ZH）及倒装；`inspect topic <32-hex>`/`查看主题`；`inspect operation <32-hex> generation <n>`/`查看操作 … 世代 <n>`。派生规则镜像 scoped-read 先例（command id 派生自目标 id、重放安全）；handle generation 显式且必须为正（`[NL-AMBIG-001]`——静默猜 generation 与猜 CAS 同罪，零/负/非十进制 typed 拒绝）；`inspect task group now`/`查看任务节点`（缺参）等近邻形态 typed 拒绝。
+8. **等价路径门**（`control_command_cli.rs` 新 `w32g_layer_reads_are_byte_identical_across_nl_cli_and_direct_paths`）：wired 四 stub 源 + 真实 TaskAuthority（含真实 group+成员 fixture）的真 Unix socket 服务上，五命令 × {直接构造, NL EN/ZH/倒装句, CLI 子命令} 三面 receipt **逐字节相等**。handler 面（`recovery_control.rs` +3）：四源未接线默认 typed `NOT_FOUND`（含 `layer inspection backend is not wired` 消息钉死）；wired stub receipt 字段逐项断言；TaskGroup 真权威 roundtrip（Open 态+1 成员+admission receipt）+ 缺失组 typed `NOT_FOUND`。`system_control_failure_mapping.rs` +1（两新变体 bounded 映射 + passthrough 断言）。
+9. **权威接线门**（新 `tests/layer_inspector_authorities.rs`，cfg 门控于四 feature 之和）：plan（真实 `apply_plan_revision`→`inspect_node` 回读 Declared/MetadataOnly/digest 长度 + 缺节点/缺 plan typed `NOT_FOUND`）、runtime（真实 spawn fiber→有界轮询至 Running 态读 state/phase/米表 + 未知 handle `NOT_FOUND` + 零 generation `INVALID_ARGUMENT`）、topic（真实 Channel+Topic 权威建 topic→读回 name/订阅数/digest + 缺失 `NOT_FOUND`）、store（真实 register→Registered 行 + owner fiber + 缺失/stale 同 `NOT_FOUND`）；每适配器另各一条经共享 handler 的端到端（`dispatch_in_process` receipt 与直接调用逐项相等）。
+10. **测试账**：`cargo test -p nlos-schema -p nlos-system-control`（默认 features）**148 passed / 0 failed**——schema compatibility 34（+W32-G 六 payload 门 + 五 golden 钉死）；system-control lib 54（nl 新五测试）、`control_command_cli` 8（+parity 1）、`recovery_control` 21（+3）、`system_control_failure_mapping` 7（+1）、`layer_inspector_authorities` 0（默认关）、metrics 4+7、`operation_executor_authorities` 3、`control_ipc_auth` 9、doc 1。`--features plan,runtime,topic,store` **121 passed / 0 failed**（`layer_inspector_authorities` 7 测试开跑：plan 2 + runtime 1 + topic 2 + store 2）。
+
+### 验证
+
+验证环境：macOS（darwin，arm64），基线 HEAD `b65255e`，分支 `feat/w32-g`。工作区无其他车道未提交改动（本车道独占写集）。
+
+- `cargo test -p nlos-schema -p nlos-system-control`：**148 passed / 0 failed**（默认 features）。
+- `cargo test -p nlos-system-control --features plan,runtime,topic,store`：**121 passed / 0 failed**。
+- `cargo clippy -p nlos-schema -p nlos-system-control --all-targets --all-features -- -D warnings`：通过（0 warning / 0 error；`--all-features` 覆盖 cli+process+resource+plan+runtime+topic+store 全组合）。
+- `cargo fmt -p nlos-schema -p nlos-system-control -- --check`：通过。
+- `cargo check -p nlos-system-control --no-default-features`（及 `--features process,resource`）：通过（非 cli 形态编译，W29-D 教训的 CI 空白组合本地复验）。
+- `buf lint` + `buf format -d --exit-code`：通过。
+- `npm run schema:generate` 两次运行输出稳定；`npm run schema:check-generated`：提交后复验（生成物与提交基线一致）。
+
+### 已知限制（增量）
+
+1. **fiber 无列表面**：nlos-runtime-tokio 只暴露 `registered_fibers()` 计数与聚合米表，无 fiber id 枚举 API——ExecutionFiber inspect 只能寻址已知 handle（spawn 回执或宿主登记），整池枚举为登记缺口（W33-G debugger 面同类依赖）；本车道零改 runtime crate，缺口在此登记。
+2. **`WaitingModel`/`WaitingIo` 仅经 runtime 自有 wait 机制进入**：fiber 视图对普通 parked future 的可观测态为 `Running`；WaitingIo/WaitingModel 相位的 inspect 覆盖依赖 channel/model-wait 接线场景（测试以 Running 态钉死，注释已注明语义）。
+3. **operation 行缺失与 stale generation 不可区分**：nlos-store 的 `inspect` 对两者同返 `OperationError::InvalidGeneration`，适配器以一条命名歧义的 `NOT_FOUND` 如实报告；分离需 store 侧新 readback 变体（登记缺口）。
+4. **TS/Python conformance 未加五快照 golden**：与 W28-D/W29-D 同因（写集排除 `tests/conformance/`）；gen/ 三语言生成物已同步。Deferred minor：conformance 侧补钉五快照 hex。
+5. **GUI（W32-A/B）面未接五新视图**：desktop/ 在其他车道写集；五视图为纯 additive GET，GUI 侧消费归 B5-4 后续。
+6. **ROAD-B-005 仍 PARTIAL**：Trusted GUI 宿主执行器（pause/resume/cancel 的 W28-D seam 接线）等归其余 B5 车道；本车道只交付 B5-3 只读 inspect 面。

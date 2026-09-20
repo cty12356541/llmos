@@ -24,6 +24,14 @@ enum SystemControlView {
   SYSTEM_CONTROL_VIEW_ARTIFACT_COMMIT_RECOVERY = 1;
   SYSTEM_CONTROL_VIEW_SEMANTIC_COMMIT_RECOVERY = 2;
   SYSTEM_CONTROL_VIEW_RESOURCE_COMMIT_RECOVERY = 3;
+  // B5-3 per-layer inspect views (W32-G): one bounded snapshot per
+  // organizational/execution layer. Views 4..=8 address exactly one target
+  // through the additive `target_id`/`plan_id`/`target_generation` fields.
+  SYSTEM_CONTROL_VIEW_TASK_GROUP = 4;
+  SYSTEM_CONTROL_VIEW_TASK_NODE = 5;
+  SYSTEM_CONTROL_VIEW_EXECUTION_FIBER = 6;
+  SYSTEM_CONTROL_VIEW_TOPIC = 7;
+  SYSTEM_CONTROL_VIEW_OPERATION = 8;
 }
 
 enum RecoveryWorkerLifecycleState {
@@ -49,6 +57,18 @@ message GetSystemControlRequest {
   SchemaIdentity schema = 1;
   SystemControlView view = 2;
   uint32 alert_limit = 3;
+  // B5-3 (W32-G) additive per-layer addressing: the primary 16-byte target
+  // (group_id / node_id / fiber_id / topic_id / operation_id) for views 4..=8,
+  // empty for the recovery views 1..=3. The bounded member list of the
+  // TASK_GROUP view reuses `alert_limit` as its truncation bound.
+  bytes target_id = 4;
+  // Owning plan for the TASK_NODE view (node ids are plan-scoped derivations);
+  // empty for every other view.
+  bytes plan_id = 5;
+  // Handle generation for the EXECUTION_FIBER and OPERATION views (both
+  // authorities resolve handles by id + generation); zero for every other
+  // view.
+  uint64 target_generation = 6;
 }
 
 // Deliberately excludes local diagnostic strings. A trusted local operator
@@ -158,6 +178,212 @@ message ResourceRecoveryOperationsSnapshot {
   ResourceRecoveryMetrics metrics = 2;
   repeated ResourceRecoveryAlertStatus alerts = 3;
   bool alerts_truncated = 4;
+}
+
+// B5-3 per-layer inspect projections (W32-G). Each snapshot mirrors one
+// authority's durable or runtime state through bounded identities, typed
+// state classes, and counters only — the same discipline as the recovery
+// snapshots above. Local diagnostics (paths, SQLite messages, digests beyond
+// the pinned authority fields) never cross the boundary.
+
+enum TaskGroupLifecycleState {
+  TASK_GROUP_LIFECYCLE_STATE_UNSPECIFIED = 0;
+  TASK_GROUP_LIFECYCLE_STATE_OPEN = 1;
+  TASK_GROUP_LIFECYCLE_STATE_SEALED = 2;
+  TASK_GROUP_LIFECYCLE_STATE_CANCEL_REQUESTED = 3;
+  TASK_GROUP_LIFECYCLE_STATE_CANCELLING = 4;
+  TASK_GROUP_LIFECYCLE_STATE_QUIESCING = 5;
+  TASK_GROUP_LIFECYCLE_STATE_COMPLETED = 6;
+  TASK_GROUP_LIFECYCLE_STATE_FAILED = 7;
+  TASK_GROUP_LIFECYCLE_STATE_PARTIAL = 8;
+  TASK_GROUP_LIFECYCLE_STATE_CANCELLED = 9;
+  TASK_GROUP_LIFECYCLE_STATE_UNCERTAIN = 10;
+  TASK_GROUP_LIFECYCLE_STATE_RECOVERING = 11;
+  TASK_GROUP_LIFECYCLE_STATE_QUARANTINED = 12;
+  TASK_GROUP_LIFECYCLE_STATE_EFFECT_UNKNOWN = 13;
+}
+
+enum TaskGroupMemberType {
+  TASK_GROUP_MEMBER_TYPE_UNSPECIFIED = 0;
+  TASK_GROUP_MEMBER_TYPE_CHILD_GROUP = 1;
+  TASK_GROUP_MEMBER_TYPE_TASK_ATTEMPT = 2;
+  TASK_GROUP_MEMBER_TYPE_AGENT_INSTANCE = 3;
+}
+
+enum TaskGroupMembershipState {
+  TASK_GROUP_MEMBERSHIP_STATE_UNSPECIFIED = 0;
+  TASK_GROUP_MEMBERSHIP_STATE_ACTIVE = 1;
+  TASK_GROUP_MEMBERSHIP_STATE_REMOVED = 2;
+}
+
+message TaskGroupStatus {
+  bytes group_id = 1;
+  bytes task_id = 2;
+  // Empty when the group is a tree root.
+  bytes parent_group_id = 3;
+  TaskGroupLifecycleState state = 4;
+  uint64 membership_generation = 5;
+  uint64 state_seq = 6;
+  uint64 depth = 7;
+  uint64 cancel_epoch = 8;
+  int64 created_at_ms = 9;
+  int64 updated_at_ms = 10;
+}
+
+message TaskGroupMemberStatus {
+  TaskGroupMemberType member_type = 1;
+  bytes member_id = 2;
+  TaskGroupMembershipState membership_state = 3;
+  uint64 membership_generation = 4;
+  ReceiptReference admission_receipt = 5;
+  ReceiptReference removal_receipt = 6;
+}
+
+message TaskGroupOperationsSnapshot {
+  SchemaIdentity schema = 1;
+  TaskGroupStatus group = 2;
+  repeated TaskGroupMemberStatus members = 3;
+  bool members_truncated = 4;
+}
+
+enum PlanNodeKind {
+  PLAN_NODE_KIND_UNSPECIFIED = 0;
+  PLAN_NODE_KIND_AGENT_ROLE = 1;
+  PLAN_NODE_KIND_EXECUTABLE = 2;
+}
+
+enum PlanNodeLifecycleState {
+  PLAN_NODE_LIFECYCLE_STATE_UNSPECIFIED = 0;
+  PLAN_NODE_LIFECYCLE_STATE_DECLARED = 1;
+  PLAN_NODE_LIFECYCLE_STATE_BLOCKED_DEPENDENCY = 2;
+  PLAN_NODE_LIFECYCLE_STATE_ELIGIBLE = 3;
+  PLAN_NODE_LIFECYCLE_STATE_WAITING_AUTHORIZATION = 4;
+  PLAN_NODE_LIFECYCLE_STATE_WAITING_RESOURCE = 5;
+  PLAN_NODE_LIFECYCLE_STATE_MATERIALIZING = 6;
+  PLAN_NODE_LIFECYCLE_STATE_ACTIVE = 7;
+  PLAN_NODE_LIFECYCLE_STATE_CHECKPOINTED = 8;
+  PLAN_NODE_LIFECYCLE_STATE_EVICTED = 9;
+  PLAN_NODE_LIFECYCLE_STATE_REHYDRATING = 10;
+  PLAN_NODE_LIFECYCLE_STATE_COMPLETED = 11;
+  PLAN_NODE_LIFECYCLE_STATE_FAILED = 12;
+  PLAN_NODE_LIFECYCLE_STATE_CANCELLED = 13;
+}
+
+enum ContextResidencyTier {
+  CONTEXT_RESIDENCY_TIER_UNSPECIFIED = 0;
+  CONTEXT_RESIDENCY_TIER_METADATA_ONLY = 1;
+  CONTEXT_RESIDENCY_TIER_COLD = 2;
+  CONTEXT_RESIDENCY_TIER_WARM = 3;
+  CONTEXT_RESIDENCY_TIER_HOT = 4;
+  CONTEXT_RESIDENCY_TIER_RUNNING = 5;
+}
+
+message TaskNodeStatus {
+  bytes plan_id = 1;
+  bytes node_id = 2;
+  PlanNodeKind kind = 3;
+  PlanNodeLifecycleState state = 4;
+  uint64 declared_revision = 5;
+  // SHA-256 digest of the declared node content at `declared_revision`.
+  bytes node_digest = 6;
+  uint64 transition_count = 7;
+  ContextResidencyTier residency_tier = 8;
+  uint64 residency_transition_count = 9;
+  uint64 first_declared_at_ms = 10;
+  uint64 updated_at_ms = 11;
+}
+
+message TaskNodeOperationsSnapshot {
+  SchemaIdentity schema = 1;
+  TaskNodeStatus node = 2;
+}
+
+enum ExecutionFiberLifecycleState {
+  EXECUTION_FIBER_LIFECYCLE_STATE_UNSPECIFIED = 0;
+  EXECUTION_FIBER_LIFECYCLE_STATE_CREATED = 1;
+  EXECUTION_FIBER_LIFECYCLE_STATE_READY = 2;
+  EXECUTION_FIBER_LIFECYCLE_STATE_RUNNING = 3;
+  EXECUTION_FIBER_LIFECYCLE_STATE_WAITING_IO = 4;
+  EXECUTION_FIBER_LIFECYCLE_STATE_WAITING_MODEL = 5;
+  EXECUTION_FIBER_LIFECYCLE_STATE_WAITING_TOOL = 6;
+  EXECUTION_FIBER_LIFECYCLE_STATE_SUSPENDED = 7;
+  EXECUTION_FIBER_LIFECYCLE_STATE_COMPLETED = 8;
+  EXECUTION_FIBER_LIFECYCLE_STATE_FAILED = 9;
+  EXECUTION_FIBER_LIFECYCLE_STATE_CANCELLED = 10;
+}
+
+enum ExecutionFiberPhase {
+  EXECUTION_FIBER_PHASE_UNSPECIFIED = 0;
+  EXECUTION_FIBER_PHASE_RUNNING = 1;
+  EXECUTION_FIBER_PHASE_WAITING_EXTERNAL = 2;
+  EXECUTION_FIBER_PHASE_BACKPRESSURE_WAIT = 3;
+  EXECUTION_FIBER_PHASE_SUSPENDED = 4;
+}
+
+// Runtime-snapshot projection of one execution fiber. All time meters are
+// bounded whole-millisecond projections of the adapter's Duration meters.
+message ExecutionFiberStatus {
+  bytes fiber_id = 1;
+  uint64 generation = 2;
+  ExecutionFiberLifecycleState state = 3;
+  ExecutionFiberPhase lifecycle_phase = 4;
+  uint64 active_cpu_ms = 5;
+  uint64 elapsed_wall_ms = 6;
+  uint64 scheduler_wait_ms = 7;
+  uint64 external_wait_ms = 8;
+  uint64 backpressure_wait_ms = 9;
+  uint64 suspended_ms = 10;
+}
+
+message ExecutionFiberOperationsSnapshot {
+  SchemaIdentity schema = 1;
+  ExecutionFiberStatus fiber = 2;
+}
+
+message TopicStatus {
+  bytes topic_id = 1;
+  bytes channel_id = 2;
+  uint64 channel_generation = 3;
+  // Bounded declared topic name (authority-admitted bytes, NUL-free).
+  bytes name = 4;
+  uint64 active_subscriptions = 5;
+  // SHA-256 digest of the admitted topic policy.
+  bytes policy_digest = 6;
+  uint64 created_at_ms = 7;
+}
+
+message TopicOperationsSnapshot {
+  SchemaIdentity schema = 1;
+  TopicStatus topic = 2;
+}
+
+enum DurableOperationState {
+  DURABLE_OPERATION_STATE_UNSPECIFIED = 0;
+  DURABLE_OPERATION_STATE_REGISTERED = 1;
+  DURABLE_OPERATION_STATE_DISPATCHED = 2;
+  DURABLE_OPERATION_STATE_CANCEL_REQUESTED = 3;
+  DURABLE_OPERATION_STATE_COMPLETED = 4;
+  DURABLE_OPERATION_STATE_FAILED = 5;
+  DURABLE_OPERATION_STATE_CANCELLED_BEFORE_EFFECT = 6;
+  DURABLE_OPERATION_STATE_PARTIAL_EFFECT = 7;
+  DURABLE_OPERATION_STATE_EFFECT_UNKNOWN = 8;
+}
+
+// Durable state-machine row of one operation (the execution half of the
+// Topic/Operation layer). Terminal states carry their outcome receipt.
+message DurableOperationStatus {
+  bytes operation_id = 1;
+  uint64 generation = 2;
+  DurableOperationState state = 3;
+  uint64 cancel_epoch = 4;
+  bytes owner_fiber_id = 5;
+  uint64 owner_fiber_generation = 6;
+  ReceiptReference outcome_receipt = 7;
+}
+
+message DurableOperationSnapshot {
+  SchemaIdentity schema = 1;
+  DurableOperationStatus operation = 2;
 }
 
 message AcknowledgeArtifactRecoveryAlertCommand {}

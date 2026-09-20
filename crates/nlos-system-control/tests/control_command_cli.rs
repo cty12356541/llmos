@@ -679,6 +679,16 @@ mod socket_harness {
         health: StubHealth,
         executor: Option<Arc<dyn OperationCommandExecutor + Send + Sync>>,
     ) -> tokio::task::JoinHandle<()> {
+        serve_forever_with_backends(listener, authority, health, executor, None)
+    }
+
+    pub fn serve_forever_with_backends(
+        listener: UnixListenerAdapter,
+        authority: Arc<SqliteTaskAuthority>,
+        health: StubHealth,
+        executor: Option<Arc<dyn OperationCommandExecutor + Send + Sync>>,
+        layer_sources: Option<Arc<StubLayerSources>>,
+    ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             loop {
                 // An idle accept window is normal: the transport bounds
@@ -695,6 +705,7 @@ mod socket_harness {
                     let health = health.clone();
                     let authority = Arc::clone(&authority);
                     let executor = executor.clone();
+                    let layer_sources = layer_sources.clone();
                     move |validated| {
                         let control = RecoverySystemControl::new(
                             authority.as_ref(),
@@ -703,6 +714,14 @@ mod socket_harness {
                         );
                         let control = match executor.as_ref() {
                             Some(executor) => control.with_operation_executor(executor.as_ref()),
+                            None => control,
+                        };
+                        let control = match layer_sources.as_ref() {
+                            Some(sources) => control
+                                .with_task_node_source(sources.as_ref())
+                                .with_execution_fiber_source(sources.as_ref())
+                                .with_topic_source(sources.as_ref())
+                                .with_operation_source(sources.as_ref()),
                             None => control,
                         };
                         let response = control.handle_for_ipc(
@@ -2124,4 +2143,397 @@ async fn resource_recovery_commands_are_byte_identical_across_nl_cli_and_direct_
 
     server.abort();
     fs::remove_file(&socket_path).unwrap();
+}
+
+// W32-G (B5-3): per-layer inspect parity — the four source-backed views and
+// the TaskAuthority-owned TaskGroup view produce byte-identical receipts
+// across direct construction, the restricted NL surface, and the CLI.
+
+struct StubLayerSources {
+    node: nlos_system_control::control::TaskNodeInspection,
+    fiber: nlos_system_control::control::ExecutionFiberInspection,
+    topic: nlos_system_control::control::TopicInspection,
+    operation: nlos_system_control::control::DurableOperationInspection,
+}
+
+impl nlos_system_control::TaskNodeInspectSource for StubLayerSources {
+    fn inspect_task_node(
+        &self,
+        plan_id: [u8; 16],
+        node_id: [u8; 16],
+    ) -> Result<nlos_system_control::control::TaskNodeInspection, SabiFailure> {
+        if self.node.plan_id == plan_id && self.node.node_id == node_id {
+            Ok(self.node.clone())
+        } else {
+            Err(SabiFailure {
+                code: SabiErrorCode::NotFound.into(),
+                retry: nlos_schema::sabi::v1::RetryDirective::DoNotRetry.into(),
+                safe_message: "requested task node was not found".to_owned(),
+            })
+        }
+    }
+}
+
+impl nlos_system_control::ExecutionFiberInspectSource for StubLayerSources {
+    fn inspect_execution_fiber(
+        &self,
+        fiber_id: [u8; 16],
+        generation: u64,
+    ) -> Result<nlos_system_control::control::ExecutionFiberInspection, SabiFailure> {
+        if self.fiber.fiber_id == fiber_id && self.fiber.generation == generation {
+            Ok(self.fiber.clone())
+        } else {
+            Err(SabiFailure {
+                code: SabiErrorCode::NotFound.into(),
+                retry: nlos_schema::sabi::v1::RetryDirective::DoNotRetry.into(),
+                safe_message: "requested execution fiber handle was not found".to_owned(),
+            })
+        }
+    }
+}
+
+impl nlos_system_control::TopicInspectSource for StubLayerSources {
+    fn inspect_topic(
+        &self,
+        topic_id: [u8; 16],
+    ) -> Result<nlos_system_control::control::TopicInspection, SabiFailure> {
+        if self.topic.topic_id == topic_id {
+            Ok(self.topic.clone())
+        } else {
+            Err(SabiFailure {
+                code: SabiErrorCode::NotFound.into(),
+                retry: nlos_schema::sabi::v1::RetryDirective::DoNotRetry.into(),
+                safe_message: "requested topic was not found".to_owned(),
+            })
+        }
+    }
+}
+
+impl nlos_system_control::OperationInspectSource for StubLayerSources {
+    fn inspect_operation(
+        &self,
+        operation_id: [u8; 16],
+        generation: u64,
+    ) -> Result<nlos_system_control::control::DurableOperationInspection, SabiFailure> {
+        if self.operation.operation_id == operation_id && self.operation.generation == generation {
+            Ok(self.operation.clone())
+        } else {
+            Err(SabiFailure {
+                code: SabiErrorCode::NotFound.into(),
+                retry: nlos_schema::sabi::v1::RetryDirective::DoNotRetry.into(),
+                safe_message: "requested operation row was not found".to_owned(),
+            })
+        }
+    }
+}
+
+fn stub_layer_sources() -> StubLayerSources {
+    use nlos_schema::sabi::v1::{
+        ContextResidencyTier, DurableOperationState, ExecutionFiberLifecycleState,
+        ExecutionFiberPhase, PlanNodeKind, PlanNodeLifecycleState,
+    };
+    StubLayerSources {
+        node: nlos_system_control::control::TaskNodeInspection {
+            plan_id: [0xA1; 16],
+            node_id: [0xA2; 16],
+            kind: PlanNodeKind::Executable,
+            state: PlanNodeLifecycleState::Eligible,
+            declared_revision: 4,
+            node_digest: vec![0xA3; 32],
+            transition_count: 2,
+            residency_tier: ContextResidencyTier::MetadataOnly,
+            residency_transition_count: 0,
+            first_declared_at_ms: 2_000,
+            updated_at_ms: 2_400,
+        },
+        fiber: nlos_system_control::control::ExecutionFiberInspection {
+            fiber_id: [0xB1; 16],
+            generation: 2,
+            state: ExecutionFiberLifecycleState::Running,
+            lifecycle_phase: ExecutionFiberPhase::WaitingExternal,
+            active_cpu_ms: 11,
+            elapsed_wall_ms: 40,
+            scheduler_wait_ms: 3,
+            external_wait_ms: 20,
+            backpressure_wait_ms: 1,
+            suspended_ms: 0,
+        },
+        topic: nlos_system_control::control::TopicInspection {
+            topic_id: [0xC1; 16],
+            channel_id: [0xC2; 16],
+            channel_generation: 5,
+            name: b"stage-b/inspect".to_vec(),
+            active_subscriptions: 2,
+            policy_digest: vec![0xC3; 32],
+            created_at_ms: 3_000,
+        },
+        operation: nlos_system_control::control::DurableOperationInspection {
+            operation_id: [0xD1; 16],
+            generation: 1,
+            state: DurableOperationState::Dispatched,
+            cancel_epoch: 0,
+            owner_fiber_id: [0xB1; 16],
+            owner_fiber_generation: 2,
+            outcome_receipt_id: None,
+        },
+    }
+}
+
+fn w32g_group_fixture(authority: &SqliteTaskAuthority) -> nlos_types::TaskGroupId {
+    use nlos_task::{
+        AttemptSpec, CompletionMode, FailureMode, GroupBinding, GroupSpec, SnapshotBundle, TaskSpec,
+    };
+    let task_id = TaskId::from_bytes([0x11; 16]);
+    authority
+        .register_task(TaskSpec {
+            task_id,
+            task_generation: Generation::INITIAL,
+            registered_at_ms: 1_000,
+            application_id: None,
+            plan_revision: None,
+        })
+        .unwrap();
+    let group_id = nlos_types::TaskGroupId::from_bytes([0x91; 16]);
+    authority
+        .register_group(GroupSpec {
+            group_id,
+            task_id,
+            task_generation: Generation::INITIAL,
+            parent_group_id: None,
+            group_policy_digest: [0x91; 32],
+            completion_mode: CompletionMode::All,
+            failure_mode: FailureMode::CollectAll,
+            max_children: 4,
+            max_depth: 1,
+            resource_group_id: None,
+            resource_account_digest: None,
+            cancellation_scope_id: CancellationScopeId::from_bytes([0x92; 16]),
+            registered_at_ms: 1_500,
+        })
+        .unwrap();
+    let record = authority.inspect_group(group_id).unwrap();
+    let binding = GroupBinding {
+        group_id,
+        expected_membership_generation: record.membership_generation,
+        expected_membership_root: record.membership_root,
+        expected_group_policy_digest: record.group_policy_digest,
+    };
+    authority
+        .register_attempt_in_group(
+            AttemptSpec {
+                task_id,
+                attempt_id: TaskAttemptId::from_bytes([0x93; 16]),
+                attempt_generation: Generation::INITIAL,
+                snapshot: SnapshotBundle {
+                    snapshot_id: TaskSnapshotId::from_bytes([0x94; 16]),
+                    snapshot_digest: [0x95; 32],
+                    expected_head_commit_seq: 0,
+                    effect_history_root: empty_effect_history_root(),
+                    retry_fence_epoch: 0,
+                },
+                cancellation_scope_id: CancellationScopeId::from_bytes([0x96; 16]),
+                cancellation_generation: Generation::INITIAL,
+                idempotency_key: IdempotencyKey::from_bytes([0x97; 16]),
+                registered_at_ms: 2_000,
+            },
+            binding,
+        )
+        .unwrap();
+    group_id
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn w32g_layer_reads_are_byte_identical_across_nl_cli_and_direct_paths() {
+    use socket_harness::{
+        assert_in_process_socket_and_cli_parity, assert_nl_socket_and_in_process_parity,
+        bind_socket, serve_forever_with_backends,
+    };
+
+    let database = Arc::new(TestDatabase::new());
+    let authority = Arc::new(database.open());
+    let group_id = w32g_group_fixture(authority.as_ref());
+    let plan_id = create_escalated_plan(authority.as_ref());
+    let stub_health = health(&plan_id);
+    let sources = Arc::new(stub_layer_sources());
+    let socket_path = database.path.with_extension("sock");
+    let listener = bind_socket(&socket_path);
+    let server = serve_forever_with_backends(
+        listener,
+        Arc::clone(&authority),
+        health(&plan_id),
+        None,
+        Some(Arc::clone(&sources)),
+    );
+    let control = RecoverySystemControl::new(authority.as_ref(), &stub_health, &CapabilityPolicy)
+        .with_task_node_source(sources.as_ref())
+        .with_execution_fiber_source(sources.as_ref())
+        .with_topic_source(sources.as_ref())
+        .with_operation_source(sources.as_ref());
+
+    assert_in_process_socket_and_cli_parity(
+        &socket_path,
+        &control,
+        &ControlCommand::InspectTaskGroup {
+            group_id: *group_id.as_bytes(),
+        },
+        &["inspect-task-group", &hex(group_id.as_bytes())],
+        None,
+        None,
+    )
+    .await;
+    assert_nl_socket_and_in_process_parity(
+        &socket_path,
+        &control,
+        &ControlCommand::InspectTaskGroup {
+            group_id: *group_id.as_bytes(),
+        },
+        &[
+            nlos_system_control::nl::parse_nl_command(&format!(
+                "查看任务组 {}",
+                hex(group_id.as_bytes())
+            ))
+            .unwrap(),
+            nlos_system_control::nl::parse_nl_command(&format!(
+                "task group status {}",
+                hex(group_id.as_bytes())
+            ))
+            .unwrap(),
+        ],
+        None,
+        None,
+    )
+    .await;
+
+    let node_hex_a1 = hex(&[0xA1; 16]);
+    let node_hex_a2 = hex(&[0xA2; 16]);
+    assert_in_process_socket_and_cli_parity(
+        &socket_path,
+        &control,
+        &ControlCommand::InspectTaskNode {
+            plan_id: [0xA1; 16],
+            node_id: [0xA2; 16],
+        },
+        &["inspect-task-node", &node_hex_a1, &node_hex_a2],
+        None,
+        None,
+    )
+    .await;
+    assert_nl_socket_and_in_process_parity(
+        &socket_path,
+        &control,
+        &ControlCommand::InspectTaskNode {
+            plan_id: [0xA1; 16],
+            node_id: [0xA2; 16],
+        },
+        &[
+            nlos_system_control::nl::parse_nl_command(&format!(
+                "查看任务节点 {node_hex_a1} {node_hex_a2}"
+            ))
+            .unwrap(),
+            nlos_system_control::nl::parse_nl_command(&format!(
+                "inspect task node {node_hex_a1} {node_hex_a2}"
+            ))
+            .unwrap(),
+        ],
+        None,
+        None,
+    )
+    .await;
+
+    let fiber_hex = hex(&[0xB1; 16]);
+    assert_in_process_socket_and_cli_parity(
+        &socket_path,
+        &control,
+        &ControlCommand::InspectExecutionFiber {
+            fiber_id: [0xB1; 16],
+            generation: 2,
+        },
+        &["inspect-fiber", &fiber_hex, "2"],
+        None,
+        None,
+    )
+    .await;
+    assert_nl_socket_and_in_process_parity(
+        &socket_path,
+        &control,
+        &ControlCommand::InspectExecutionFiber {
+            fiber_id: [0xB1; 16],
+            generation: 2,
+        },
+        &[
+            nlos_system_control::nl::parse_nl_command(&format!("查看纤程 {fiber_hex} 世代 2"))
+                .unwrap(),
+            nlos_system_control::nl::parse_nl_command(&format!(
+                "fiber status {fiber_hex} generation 2"
+            ))
+            .unwrap(),
+        ],
+        None,
+        None,
+    )
+    .await;
+
+    let topic_hex = hex(&[0xC1; 16]);
+    assert_in_process_socket_and_cli_parity(
+        &socket_path,
+        &control,
+        &ControlCommand::InspectTopic {
+            topic_id: [0xC1; 16],
+        },
+        &["inspect-topic", &topic_hex],
+        None,
+        None,
+    )
+    .await;
+    assert_nl_socket_and_in_process_parity(
+        &socket_path,
+        &control,
+        &ControlCommand::InspectTopic {
+            topic_id: [0xC1; 16],
+        },
+        &[
+            nlos_system_control::nl::parse_nl_command(&format!("查看主题 {topic_hex}")).unwrap(),
+            nlos_system_control::nl::parse_nl_command(&format!("topic status {topic_hex}"))
+                .unwrap(),
+        ],
+        None,
+        None,
+    )
+    .await;
+
+    let operation_hex = hex(&[0xD1; 16]);
+    assert_in_process_socket_and_cli_parity(
+        &socket_path,
+        &control,
+        &ControlCommand::InspectOperation {
+            operation_id: [0xD1; 16],
+            generation: 1,
+        },
+        &["inspect-operation", &operation_hex, "1"],
+        None,
+        None,
+    )
+    .await;
+    assert_nl_socket_and_in_process_parity(
+        &socket_path,
+        &control,
+        &ControlCommand::InspectOperation {
+            operation_id: [0xD1; 16],
+            generation: 1,
+        },
+        &[
+            nlos_system_control::nl::parse_nl_command(&format!("查看操作 {operation_hex} 世代 1"))
+                .unwrap(),
+            nlos_system_control::nl::parse_nl_command(&format!(
+                "operation status {operation_hex} generation 1"
+            ))
+            .unwrap(),
+        ],
+        None,
+        None,
+    )
+    .await;
+
+    server.abort();
 }
