@@ -329,6 +329,7 @@ fn layer_summary(receipt: &ControlReceipt) -> Option<String> {
     })
 }
 
+#[cfg(unix)]
 #[allow(clippy::too_many_lines)] // One bounded summary line per outcome keeps the CLI contract auditable.
 fn summary(receipt: &ControlReceipt) -> String {
     if let Some(layer) = layer_summary(receipt) {
