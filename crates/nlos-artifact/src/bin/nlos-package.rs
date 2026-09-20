@@ -316,14 +316,14 @@ fn derive_principal(key: &DevKey) -> Result<nlos_types::PrincipalId, ToolError> 
     Ok(decision.binding().principal_id)
 }
 
-fn restrict_permissions(path: &str) {
+fn restrict_permissions(_path: &str) {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        if let Ok(metadata) = fs::metadata(path) {
+        if let Ok(metadata) = fs::metadata(_path) {
             let mut permissions = metadata.permissions();
             permissions.set_mode(0o600);
-            let _ = fs::set_permissions(path, permissions);
+            let _ = fs::set_permissions(_path, permissions);
         }
     }
 }
