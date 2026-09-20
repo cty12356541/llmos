@@ -12,6 +12,7 @@ members = [
     "crates/nlos-runtime",
     "crates/nlos-runtime-tokio",
     "crates/nlos-outbox",
+    "crates/nlos-plan",
     "crates/nlos-store-fault",
     "crates/nlos-task",
     "crates/nlos-identity",
