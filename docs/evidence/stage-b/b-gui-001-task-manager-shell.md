@@ -1,8 +1,8 @@
-# B-GUI-001:可信 Tauri 任务管理器壳(W32-A 只读半 + W32-B 写入半)
+# B-GUI-001:可信 Tauri 任务管理器壳(W32-A 只读半 + W32-B 写入半 + W32-C parity 钉死)
 
-> 状态:`PARTIAL PASS`(读半 W32-A + 写入半 W32-B 已落地;parity 钉死 W32-C 未做)
+> 状态:`PARTIAL PASS`(读半 W32-A + 写入半 W32-B + parity 钉死 W32-C 已落地)
 >
-> 日期:2026-09-20(W32-A)/ 2026-09-21(§W32-B)
+> 日期:2026-09-20(W32-A)/ 2026-09-21(§W32-B)/ 2026-09-21(§W32-C)
 >
 > 对应:`ROAD-B-005`/B5-4 读半边、`[SABI-AUTH-001]`、`[CTRL-PARITY-001]`、[ADR-0011](../../management/adrs/0011-ipc-principal-auth-signature-passthrough.md)、[B-TASK-006L](./b-task-006l-system-control-recovery-handler.md)、[B-SCHEMA-006](./b-schema-006-typescript-python-ipc-clients.md)
 
@@ -84,3 +84,62 @@ gate:「pause/cancel/kill/throttle/reclaim 真实下发 ControlCommand」+ Recei
 
 - `desktop/src-tauri/src/{ipc,dto,lib,devfixture}.rs`、`desktop/src-tauri/tests/authenticated_write_side.rs`(新增)、`tests/authenticated_read_side.rs`(import 更名)、`desktop/src/{main,ipc,types}.ts`、`desktop/src/style.css`、`desktop/README.md`。
 - 本证据文件 §W32-B(唯一 desktop/ 外写集工件)。
+
+## §W32-C GUI↔NL↔CLI Receipt parity 钉死(2026-09-21)
+
+### W32-C.1 实现范围
+
+gate(B5-6):GUI↔NL↔CLI 三路径 Receipt 逐字节相等测试入库。
+
+1. **仓库级 parity 套件**:`crates/nlos-system-control/tests/triple_path_receipt_parity.rs`(新增,随 `cargo test --workspace` 进 CI)。对 SABI v1.4 全部 20 个 `ControlCommand` 变体按家族分组,一个双入口夹具(ADR-0011 认证入口 + plain 入口服务同一个 `SqliteTaskAuthority`——artifact escalated 计划 + semantic/resource escalated ledger 行、同一 `StubHealth`、同一 `CapabilityPolicy`、同一 `DeterministicOperationExecutor`)同时服务四路派发,任何字节差只能来自派发路径本身:
+   - **direct**:`dispatch_in_process` 参考投影;
+   - **NL**:`parse_nl_command` 句子编译(先断言编译结果 == 直接构造的同一命令)再经 plain 入口派发;
+   - **CLI**:真实 `system-control-cli` 二进制子进程(`CARGO_BIN_EXE_*`,plain 入口,stdout 首行 `RECEIPT <hex>`);
+   - **GUI**:GUI 后端命令层的 dispatch 核心经认证入口派发(见下)。
+   三入口时间常量贯穿一致(`FixedWall(42_000)` + monotonic 10),回执时间戳字节可比。
+2. **GUI 腿的诚实机制(选定并文档化)**:desktop 后端命令层 `desktop/src-tauri/src/ipc.rs::dispatch_control` 是 `nlos_system_control::auth::dispatch_over_authenticated_socket` 的薄类型化外壳(principal/密钥文件解析 + Ed25519 签名闭包 + DTO 投影,`receipt_hex` 恒为 `receipt_to_hex` 输出)。仓库级测试无法依赖 desktop crate(独立 workspace、tauri 依赖树、`npm run build` 前置),因此 GUI 腿直接驱动**同一 dispatch 核心**经 ADR-0011 认证入口——GUI 的唯一接线方式,与 W32-A README 对 W32-C 的设计预告一致。外壳函数本身的字节透明性另由 desktop 侧 W32-A/B 集成测试活体钉住(真实调用 `dispatch_control`,认证 vs plain 回执字节一致;`build_control_command` 编译点单测)。**desktop 后端零改动**——headless 钩子已存在(pub `dispatch_control`/`build_control_command`),无需新增测试钩子。
+3. **三形态矩阵**(对齐 `control_ipc_auth.rs` 既有 parity 测试,扩展到全家族 + CLI 子进程腿):成功读;typed `NotFound`(missing plan 的 InspectTask、未接线 inspector 的 InspectProcess/InspectResource——CLI 与 GUI 生产形态同为客户端 inspector `None`);typed `Rights`(denied 前缀 reason 的 ack 与 pause;NL 语法固定审计 reason 无法表达拒绝,该腿仅在 direct/CLI/GUI 三路,已注明)。mutation 家族:ack 幂等重放同字节(四路连续派发同一命令);resume 类每腿派发前重置 ledger 行回到 `Escalated`(与 `control_command_cli.rs` 同法),并在断言中确认真实 CAS mutation 生效(acknowledged / Retrying)。
+4. **NL 语法边界钉死**:SABI v1.4 NL 语法无 semantic 域形式——4 个代表性 semantic 句子(`inspect semantic health`/`export semantic metrics`/`acknowledge semantic alert …`/`resume semantic recovery …`)断言为 typed `InvalidCommand`(派发前拒绝);semantic 家族跑 direct/CLI/GUI 三腿字节一致。补齐 semantic NL 语法属后续波次(本波写集不含 `nl.rs`)。
+5. **平台纪律**:整文件 `#![cfg(all(unix, feature = "cli"))]`,Windows 腿零编译(本波两次 Windows clippy 事故的预防)。夹具 socket 路径命名压缩(`nlos-sc-3p-*`):per-user TMPDIR(`/var/folders/…/T/`)下路径逼近 macOS `SUN_LEN`(104 字节)上限,首版长命名在最长 label 上间歇性触发 socket2 `SUN_LEN` 拒绝——已定位并以短前缀 + 连续 8 轮重复运行零 flake 复验。
+
+### W32-C.2 覆盖矩阵(命令家族 × 路径)
+
+| 家族 | 命令 | direct | NL | CLI | GUI | 回执形态 |
+|---|---|---|---|---|---|---|
+| 聚合巡检 | InspectHealth / InspectSemanticHealth / InspectResourceHealth | ✓ | ✓ / –(typed reject 钉) / ✓ | ✓ | ✓ | 成功 |
+| 指标导出 | ExportMetrics / ExportSemanticMetrics / ExportResourceMetrics | ✓ | ✓ / –(typed reject 钉) / ✓ | ✓ | ✓ | 成功 |
+| 范围巡检 | InspectTask(escalated 计划) | ✓ | ✓ | ✓ | ✓ | 成功 |
+| 范围巡检 | InspectTask(missing plan) | ✓ | ✓ | ✓ | ✓ | typed NotFound |
+| 范围巡检 | InspectProcess / InspectResource(inspector 未接线) | ✓ | ✓ | ✓ | ✓ | typed NotFound |
+| artifact 恢复 | AcknowledgeRecoveryAlert | ✓ | ✓(命令 id 派生自 plan id) | ✓ | ✓ | 成功,幂等重放同字节 |
+| semantic 恢复 | AcknowledgeSemanticRecoveryAlert / ResumeSemanticRecovery | ✓ | –(typed reject 钉) | ✓ | ✓ | 成功,resume 每腿重臂 |
+| resource 恢复 | AcknowledgeResourceRecoveryAlert / ResumeResourceRecovery | ✓ | ✓(命令 id 派生自 plan id) | ✓ | ✓ | 成功,resume 每腿重臂 |
+| 操作控制 | Pause / Resume / Cancel / Kill / Throttle / Reclaim Operation | ✓ | ✓(命令 id 派生自 target id) | ✓ | ✓ | 成功(确定性执行器缝) |
+| 拒绝形态 | AcknowledgeRecoveryAlert / PauseOperation(denied reason) | ✓ | –(NL 固定 reason) | ✓ | ✓ | typed Rights |
+
+测试名(`triple_path_receipt_parity`,6 项):
+
+1. `inspect_export_family_receipts_are_byte_identical_across_direct_nl_cli_and_gui_paths`
+2. `scoped_inspect_family_receipts_are_byte_identical_across_direct_nl_cli_and_gui_paths`
+3. `artifact_recovery_family_receipts_are_byte_identical_across_direct_nl_cli_and_gui_paths`
+4. `semantic_recovery_family_receipts_are_byte_identical_across_direct_nl_cli_and_gui_paths`
+5. `resource_recovery_family_receipts_are_byte_identical_across_direct_nl_cli_and_gui_paths`
+6. `operation_family_receipts_are_byte_identical_across_direct_nl_cli_and_gui_paths`
+
+### W32-C.3 验证(本机实跑,macOS/darwin arm64)
+
+- `cargo test -p nlos-system-control`:**全绿**(既有 12 个测试目标无回归;新套件 6 项全过)。新套件连续 8+ 轮重复运行零 flake(SUN_LEN 路径竞态修复后)。
+- `cargo fmt --check`、`cargo clippy --all-targets --all-features -- -D warnings`、`cargo clippy --all-targets -- -D warnings`:0 warning。
+- desktop(未改任何 desktop 代码,确认外壳活体证据仍绿):`npm run build` 通过;`desktop/src-tauri` `cargo test --features dev-fixture` 8 项全过(4 读 + 4 写;1 项 ignore 为 CLI 二进制探针)。
+- 未运行/未验证:Windows 实机(整文件 cfg 空,零 Windows 腿代码);`--no-default-features` clippy 在基线即失败(`control_command_cli.rs` 既有状态,非本波引入,CI 使用默认 feature 集)。
+
+### W32-C.4 边界与遗留
+
+1. **NL semantic 语法空缺**:semantic 域命令无 NL 形式(已钉为 typed 拒绝);补语法是后续波次的 `nl.rs` 写集。
+2. **GUI 腿层级**:仓库级测试驱动 dispatch 核心而非 Tauri 命令包装(`tauri::State` 无法 headless 构造);外壳层字节透明由 desktop 侧集成测试活体覆盖。desktop Rust 测试不在根 workspace CI(`cargo test --workspace` 不含独立 workspace 的 `desktop/src-tauri`;手动步骤在 desktop README)。
+3. **deferred minors**:NL 同义词覆盖在 W32-C 取样(canonical EN + ZH 各一),全量同义词表已由 `control_command_cli.rs` 钉死;`parity_check` 读路径下拉的 resource 域读命令补齐(W32-B 遗留)仍未做。
+
+### W32-C.5 工件清单(本波次写集)
+
+- `crates/nlos-system-control/tests/triple_path_receipt_parity.rs`(新增,唯一代码写集)。
+- 本证据文件 §W32-C 与头部状态行、`docs/management/evidence-index.yaml` b-gui-001 行更新。
