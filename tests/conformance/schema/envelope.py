@@ -289,3 +289,83 @@ assert (
     without_retry_delay.SerializeToString(deterministic=True)
     != artifact_snapshot_golden
 )
+
+
+SEMANTIC_RECOVERY_SNAPSHOT_GOLDEN_HEX = (
+    "0a1d0a176e6c6f732e736162692e53797374656d436f6e74726f6c10011801"
+    "1210080d10061802200428033001380940011a330a10717171717171717171"
+    "717171717171711008180520e80728f80a30dc0b3a120a1072727272727272"
+    "7272727272727272721a1f0a10737373737373737373737373737373731008"
+    "180320d00f28e01230c4132001"
+)
+
+
+def semantic_recovery_snapshot() -> system_control_pb2.SemanticRecoveryOperationsSnapshot:
+    return system_control_pb2.SemanticRecoveryOperationsSnapshot(
+        schema=envelope_pb2.SchemaIdentity(
+            name="nlos.sabi.SystemControl",
+            major=1,
+            minor=1,
+        ),
+        metrics=system_control_pb2.SemanticRecoveryMetrics(
+            total_inspected=13,
+            total_finalized=6,
+            consecutive_failed_cycles=2,
+            durable_retrying=4,
+            durable_escalated=3,
+            durable_unacknowledged_escalated=1,
+            durable_resolved=9,
+            domain_faulted=True,
+        ),
+        alerts=[
+            system_control_pb2.SemanticRecoveryAlertStatus(
+                plan_id=bytes([0x71]) * 16,
+                total_failures=8,
+                last_failure_authority=(
+                    system_control_pb2.RECOVERY_FAILURE_AUTHORITY_SEMANTIC
+                ),
+                first_failed_at_ms=1000,
+                last_failed_at_ms=1400,
+                escalated_at_ms=1500,
+                acknowledgement_receipt=envelope_pb2.ReceiptReference(
+                    receipt_id=bytes([0x72]) * 16
+                ),
+            ),
+            system_control_pb2.SemanticRecoveryAlertStatus(
+                plan_id=bytes([0x73]) * 16,
+                total_failures=8,
+                last_failure_authority=(
+                    system_control_pb2.RECOVERY_FAILURE_AUTHORITY_COORDINATOR
+                ),
+                first_failed_at_ms=2000,
+                last_failed_at_ms=2400,
+                escalated_at_ms=2500,
+            ),
+        ],
+        alerts_truncated=True,
+    )
+
+
+semantic_snapshot = semantic_recovery_snapshot()
+semantic_snapshot_golden = bytes.fromhex(SEMANTIC_RECOVERY_SNAPSHOT_GOLDEN_HEX)
+assert semantic_snapshot.SerializeToString(deterministic=True) == semantic_snapshot_golden
+
+decoded_semantic_snapshot = (
+    system_control_pb2.SemanticRecoveryOperationsSnapshot.FromString(
+        semantic_snapshot_golden
+    )
+)
+assert decoded_semantic_snapshot.schema.minor == 1
+assert decoded_semantic_snapshot.metrics.total_inspected == 13
+assert decoded_semantic_snapshot.metrics.domain_faulted is True
+assert decoded_semantic_snapshot.metrics.durable_unacknowledged_escalated == 1
+assert decoded_semantic_snapshot.alerts[0].last_failure_authority == (
+    system_control_pb2.RECOVERY_FAILURE_AUTHORITY_SEMANTIC
+)
+assert decoded_semantic_snapshot.alerts[0].HasField("acknowledgement_receipt")
+assert not decoded_semantic_snapshot.alerts[1].HasField("acknowledgement_receipt")
+assert decoded_semantic_snapshot.alerts_truncated is True
+assert (
+    decoded_semantic_snapshot.SerializeToString(deterministic=True)
+    == semantic_snapshot_golden
+)

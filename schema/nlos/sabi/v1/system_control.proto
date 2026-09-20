@@ -22,6 +22,7 @@ enum ControlScope {
 enum SystemControlView {
   SYSTEM_CONTROL_VIEW_UNSPECIFIED = 0;
   SYSTEM_CONTROL_VIEW_ARTIFACT_COMMIT_RECOVERY = 1;
+  SYSTEM_CONTROL_VIEW_SEMANTIC_COMMIT_RECOVERY = 2;
 }
 
 enum RecoveryWorkerLifecycleState {
@@ -39,6 +40,7 @@ enum RecoveryFailureAuthority {
   RECOVERY_FAILURE_AUTHORITY_ARTIFACT = 2;
   RECOVERY_FAILURE_AUTHORITY_COORDINATOR = 3;
   RECOVERY_FAILURE_AUTHORITY_WORKER = 4;
+  RECOVERY_FAILURE_AUTHORITY_SEMANTIC = 5;
 }
 
 message GetSystemControlRequest {
@@ -66,6 +68,9 @@ message ArtifactRecoveryMetrics {
   uint64 durable_unacknowledged_escalated = 9;
   uint64 durable_resolved = 10;
   repeated RecoveryFailureSummary last_failures = 11;
+  // Sticky: the artifact half stopped scanning after exhausting its own
+  // failure budget (the thread-level state stays authoritative for the run).
+  bool domain_faulted = 12;
 }
 
 message ArtifactRecoveryAlertStatus {
@@ -85,7 +90,45 @@ message ArtifactRecoveryOperationsSnapshot {
   bool alerts_truncated = 4;
 }
 
+// Semantic-domain projection of the dual-domain recovery worker health and
+// the durable `task_semantic_recovery` ledger. The worker lifecycle and
+// per-cycle counters it shares with the artifact domain stay on
+// `ArtifactRecoveryMetrics`; this message carries only the semantic half.
+message SemanticRecoveryMetrics {
+  uint64 total_inspected = 1;
+  uint64 total_finalized = 2;
+  uint64 consecutive_failed_cycles = 3;
+  uint64 durable_retrying = 4;
+  uint64 durable_escalated = 5;
+  uint64 durable_unacknowledged_escalated = 6;
+  uint64 durable_resolved = 7;
+  // Sticky: the semantic half stopped scanning after exhausting its own
+  // failure budget while the artifact half keeps running.
+  bool domain_faulted = 8;
+}
+
+message SemanticRecoveryAlertStatus {
+  bytes plan_id = 1;
+  uint64 total_failures = 2;
+  RecoveryFailureAuthority last_failure_authority = 3;
+  int64 first_failed_at_ms = 4;
+  int64 last_failed_at_ms = 5;
+  int64 escalated_at_ms = 6;
+  ReceiptReference acknowledgement_receipt = 7;
+}
+
+message SemanticRecoveryOperationsSnapshot {
+  SchemaIdentity schema = 1;
+  SemanticRecoveryMetrics metrics = 2;
+  repeated SemanticRecoveryAlertStatus alerts = 3;
+  bool alerts_truncated = 4;
+}
+
 message AcknowledgeArtifactRecoveryAlertCommand {}
+
+message AcknowledgeSemanticRecoveryAlertCommand {}
+
+message ResumeSemanticRecoveryCommand {}
 
 message ControlCommand {
   bytes control_command_id = 1;
@@ -96,6 +139,8 @@ message ControlCommand {
   uint64 expected_generation_or_revision = 6;
   oneof command {
     AcknowledgeArtifactRecoveryAlertCommand acknowledge_artifact_recovery_alert = 7;
+    AcknowledgeSemanticRecoveryAlertCommand acknowledge_semantic_recovery_alert = 9;
+    ResumeSemanticRecoveryCommand resume_semantic_recovery = 10;
   }
   string reason = 8;
 }

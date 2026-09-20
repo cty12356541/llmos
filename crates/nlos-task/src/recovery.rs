@@ -1223,6 +1223,29 @@ fn derive_semantic_alert_receipt_id(
     ReceiptId::from_bytes(id)
 }
 
+/// Deterministic 16-byte reference naming one semantic recovery resume
+/// outcome (`Escalated`→`Retrying` at one `total_failures` revision).
+///
+/// The resume transition itself is the durable evidence — the ledger row
+/// moves under the same CAS the command carried — but unlike an
+/// acknowledgement no receipt row is stored, so this reference only names
+/// the outcome: it is stable across idempotent replays of the same resume
+/// command and domain-separated from the alert acknowledgement derivation.
+#[must_use]
+pub fn semantic_recovery_resume_reference(
+    plan_id: SemanticCommitPlanId,
+    total_failures: u64,
+) -> ReceiptId {
+    let mut hasher = Sha256::new();
+    hasher.update(b"llmos/task-semantic-recovery-resume/v1\0");
+    hasher.update(plan_id.as_bytes());
+    hasher.update(total_failures.to_be_bytes());
+    let digest: [u8; 32] = hasher.finalize().into();
+    let mut id = [0_u8; 16];
+    id.copy_from_slice(&digest[..16]);
+    ReceiptId::from_bytes(id)
+}
+
 fn semantic_insert_alert_receipt(
     transaction: &rusqlite::Transaction<'_>,
     receipt: &SemanticRecoveryAlertReceipt,
@@ -1510,3 +1533,44 @@ pub(crate) const SCHEMA_V9_SQL: &str = "CREATE TABLE task_artifact_recovery_aler
      END;
 
      PRAGMA user_version = 9;";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn semantic_recovery_resume_reference_pins_the_domain_separated_formula() {
+        let plan_id = SemanticCommitPlanId::from_bytes([0x71; 16]);
+
+        let mut hasher = Sha256::new();
+        hasher.update(b"llmos/task-semantic-recovery-resume/v1\0");
+        hasher.update(plan_id.as_bytes());
+        hasher.update(8_u64.to_be_bytes());
+        let digest: [u8; 32] = hasher.finalize().into();
+        let mut expected = [0_u8; 16];
+        expected.copy_from_slice(&digest[..16]);
+
+        let reference = semantic_recovery_resume_reference(plan_id, 8);
+        assert_eq!(reference.as_bytes(), &expected);
+        assert_eq!(
+            semantic_recovery_resume_reference(plan_id, 8),
+            reference,
+            "idempotent replays of one resume command name the same reference"
+        );
+        assert_ne!(
+            semantic_recovery_resume_reference(plan_id, 9),
+            reference,
+            "each CAS revision names a distinct reference"
+        );
+        assert_ne!(
+            semantic_recovery_resume_reference(SemanticCommitPlanId::from_bytes([0x72; 16]), 8),
+            reference,
+            "each plan names a distinct reference"
+        );
+        assert_ne!(
+            semantic_recovery_resume_reference(plan_id, 8),
+            derive_semantic_alert_receipt_id(plan_id, 8),
+            "resume references never collide with acknowledgement receipts"
+        );
+    }
+}

@@ -42,6 +42,53 @@ const DENIED_REASON: &str = "denied: exercising the policy denial path";
 const PROCESS_ID: [u8; 16] = [0x77; 16];
 const RESERVATION_ID: [u8; 16] = [0x88; 16];
 
+const SEMANTIC_PLAN_ID: [u8; 16] = [0x71; 16];
+const SEMANTIC_ACK_COMMAND_ID: [u8; 16] = [0x53; 16];
+const SEMANTIC_RESUME_COMMAND_ID: [u8; 16] = [0x54; 16];
+const SEMANTIC_TOTAL_FAILURES: u64 = 8;
+const SEMANTIC_REASON: &str = "inspected semantic recovery evidence";
+
+/// Seeds one escalated semantic recovery ledger row directly (see the
+/// `recovery_control` fixture note: the `Escalated` transition is W26-tested
+/// inside `nlos-task`; the per-connection foreign key is left unchecked by
+/// the raw seeding connection).
+fn seed_escalated_semantic_recovery(database: &TestDatabase) {
+    let raw = rusqlite::Connection::open(&database.path).unwrap();
+    raw.pragma_update(None, "foreign_keys", "OFF").unwrap();
+    raw.execute(
+        "INSERT INTO task_semantic_recovery (
+            plan_id, recovery_state, consecutive_failures, total_failures,
+            last_failure_source, first_failed_at_ms, last_failed_at_ms,
+            next_retry_at_ms, escalated_at_ms, resolved_at_ms, updated_at_ms
+        ) VALUES (?1, 1, ?2, ?3, 1, 1000, 1400, NULL, 1500, NULL, 1500)",
+        rusqlite::params![
+            SEMANTIC_PLAN_ID.as_slice(),
+            SEMANTIC_TOTAL_FAILURES.to_be_bytes().as_slice(),
+            SEMANTIC_TOTAL_FAILURES.to_be_bytes().as_slice(),
+        ],
+    )
+    .unwrap();
+}
+
+/// Returns the semantic ledger row to its seeded `Escalated` shape. Unlike an
+/// acknowledgement, one resume consumes the `Escalated` state, so the
+/// byte-parity harness re-arms the durable input between the reference
+/// dispatch and the CLI dispatch of the same resume command.
+fn reset_escalated_semantic_recovery(database: &TestDatabase) {
+    let raw = rusqlite::Connection::open(&database.path).unwrap();
+    raw.execute(
+        "UPDATE task_semantic_recovery
+         SET recovery_state = 1, consecutive_failures = ?2, next_retry_at_ms = NULL,
+             escalated_at_ms = 1500, resolved_at_ms = NULL, updated_at_ms = 1500
+         WHERE plan_id = ?1",
+        rusqlite::params![
+            SEMANTIC_PLAN_ID.as_slice(),
+            SEMANTIC_TOTAL_FAILURES.to_be_bytes().as_slice(),
+        ],
+    )
+    .unwrap();
+}
+
 struct StubProcessInspector {
     snapshot: ProcessInspection,
 }
@@ -826,6 +873,131 @@ async fn cli_and_in_process_paths_produce_byte_identical_receipts() {
             .unwrap()
             .acknowledgement
             .is_some()
+    );
+
+    // Semantic channel: the escalated semantic plan is visible through the
+    // semantic inspection, acknowledged, and resumed through the same
+    // in-process / socket / CLI paths, byte-identically.
+    seed_escalated_semantic_recovery(&database);
+    let semantic_plan = nlos_task::SemanticCommitPlanId::from_bytes(SEMANTIC_PLAN_ID);
+
+    let semantic_inspection = dispatch_in_process(
+        &control,
+        &ControlCommand::InspectSemanticHealth,
+        MONOTONIC_NOW_NS,
+        WALL_NOW_MS,
+        None,
+        None,
+    )
+    .unwrap();
+    let ControlOutcome::SemanticInspected(inspection) =
+        semantic_inspection.outcome.as_ref().unwrap()
+    else {
+        panic!("expected semantic inspection receipt");
+    };
+    assert_eq!(inspection.alerts.len(), 1);
+    assert_eq!(inspection.alerts[0].plan_id, SEMANTIC_PLAN_ID);
+
+    assert_in_process_socket_and_cli_parity(
+        &socket_path,
+        &control,
+        &ControlCommand::InspectSemanticHealth,
+        &["inspect-semantic-health"],
+        None,
+        None,
+    )
+    .await;
+    assert_in_process_socket_and_cli_parity(
+        &socket_path,
+        &control,
+        &ControlCommand::ExportSemanticMetrics,
+        &["export-semantic-metrics"],
+        None,
+        None,
+    )
+    .await;
+
+    let semantic_acknowledge = ControlCommand::AcknowledgeSemanticRecoveryAlert {
+        control_command_id: SEMANTIC_ACK_COMMAND_ID,
+        plan_id: SEMANTIC_PLAN_ID,
+        expected_total_failures: SEMANTIC_TOTAL_FAILURES,
+        reason: SEMANTIC_REASON.to_owned(),
+    };
+    assert_in_process_socket_and_cli_parity(
+        &socket_path,
+        &control,
+        &semantic_acknowledge,
+        &[
+            "ack-semantic-recovery-alert",
+            &hex(&SEMANTIC_ACK_COMMAND_ID),
+            &hex(&SEMANTIC_PLAN_ID),
+            &SEMANTIC_TOTAL_FAILURES.to_string(),
+            SEMANTIC_REASON,
+        ],
+        None,
+        None,
+    )
+    .await;
+
+    let semantic_resume = ControlCommand::ResumeSemanticRecovery {
+        control_command_id: SEMANTIC_RESUME_COMMAND_ID,
+        plan_id: SEMANTIC_PLAN_ID,
+        expected_total_failures: SEMANTIC_TOTAL_FAILURES,
+        reason: SEMANTIC_REASON.to_owned(),
+    };
+    let resume_reference = dispatch_in_process(
+        &control,
+        &semantic_resume,
+        MONOTONIC_NOW_NS,
+        WALL_NOW_MS,
+        None,
+        None,
+    )
+    .unwrap();
+    let ControlOutcome::Resumed { receipt_id } = resume_reference.outcome.as_ref().unwrap() else {
+        panic!("expected resumed receipt");
+    };
+    assert_eq!(
+        receipt_id,
+        &nlos_task::semantic_recovery_resume_reference(semantic_plan, SEMANTIC_TOTAL_FAILURES)
+            .as_bytes()
+            .to_vec()
+    );
+    assert_eq!(
+        authority
+            .inspect_semantic_recovery(semantic_plan)
+            .unwrap()
+            .unwrap()
+            .state,
+        nlos_task::SemanticRecoveryState::Retrying
+    );
+
+    reset_escalated_semantic_recovery(&database);
+    let cli_resume = run_cli(
+        &socket_path,
+        &[
+            "resume-semantic-recovery",
+            &hex(&SEMANTIC_RESUME_COMMAND_ID),
+            &hex(&SEMANTIC_PLAN_ID),
+            &SEMANTIC_TOTAL_FAILURES.to_string(),
+            SEMANTIC_REASON,
+        ],
+    );
+    assert!(
+        cli_resume.status.success(),
+        "cli resume failed: code={:?} stdout={} stderr={}",
+        cli_resume.status.code(),
+        String::from_utf8_lossy(&cli_resume.stdout),
+        String::from_utf8_lossy(&cli_resume.stderr),
+    );
+    assert_eq!(cli_receipt_bytes(&cli_resume), resume_reference.to_bytes());
+    assert_eq!(
+        authority
+            .inspect_semantic_recovery(semantic_plan)
+            .unwrap()
+            .unwrap()
+            .state,
+        nlos_task::SemanticRecoveryState::Retrying
     );
 
     server.abort();

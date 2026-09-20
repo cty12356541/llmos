@@ -12,11 +12,15 @@
 //!
 //! ```text
 //! system-control-cli <SOCKET> inspect-health
+//! system-control-cli <SOCKET> inspect-semantic-health
 //! system-control-cli <SOCKET> export-metrics
+//! system-control-cli <SOCKET> export-semantic-metrics
 //! system-control-cli <SOCKET> inspect-task <PLAN_ID_HEX_32>
 //! system-control-cli <SOCKET> inspect-process <PROCESS_ID_HEX_32>
 //! system-control-cli <SOCKET> inspect-resource <RESERVATION_ID_HEX_32>
 //! system-control-cli <SOCKET> ack-recovery-alert <COMMAND_ID_HEX_32> <PLAN_ID_HEX_32> <EXPECTED_FAILURES> <REASON>
+//! system-control-cli <SOCKET> ack-semantic-recovery-alert <COMMAND_ID_HEX_32> <PLAN_ID_HEX_32> <EXPECTED_FAILURES> <REASON>
+//! system-control-cli <SOCKET> resume-semantic-recovery <COMMAND_ID_HEX_32> <PLAN_ID_HEX_32> <EXPECTED_FAILURES> <REASON>
 //! ```
 //!
 //! # Output and exit contract
@@ -41,11 +45,15 @@ use nlos_system_control::control::{
 
 #[cfg(unix)]
 const USAGE: &str = "usage: system-control-cli <SOCKET> inspect-health \
+| inspect-semantic-health \
 | export-metrics \
+| export-semantic-metrics \
 | inspect-task <PLAN_ID_HEX_32> \
 | inspect-process <PROCESS_ID_HEX_32> \
 | inspect-resource <RESERVATION_ID_HEX_32> \
-| ack-recovery-alert <COMMAND_ID_HEX_32> <PLAN_ID_HEX_32> <EXPECTED_FAILURES> <REASON>";
+| ack-recovery-alert <COMMAND_ID_HEX_32> <PLAN_ID_HEX_32> <EXPECTED_FAILURES> <REASON> \
+| ack-semantic-recovery-alert <COMMAND_ID_HEX_32> <PLAN_ID_HEX_32> <EXPECTED_FAILURES> <REASON> \
+| resume-semantic-recovery <COMMAND_ID_HEX_32> <PLAN_ID_HEX_32> <EXPECTED_FAILURES> <REASON>";
 
 #[cfg(unix)]
 fn parse_u64(value: &str) -> Result<u64, ControlError> {
@@ -61,7 +69,13 @@ fn parsed_command(arguments: &[String]) -> Result<ControlCommand, ControlError> 
     };
     match operation {
         "inspect-health" if arguments.len() == 1 => Ok(ControlCommand::InspectHealth),
+        "inspect-semantic-health" if arguments.len() == 1 => {
+            Ok(ControlCommand::InspectSemanticHealth)
+        }
         "export-metrics" if arguments.len() == 1 => Ok(ControlCommand::ExportMetrics),
+        "export-semantic-metrics" if arguments.len() == 1 => {
+            Ok(ControlCommand::ExportSemanticMetrics)
+        }
         "inspect-task" if arguments.len() == 2 => Ok(ControlCommand::InspectTask {
             plan_id: parse_hex_id(&arguments[1])?,
         }),
@@ -73,6 +87,22 @@ fn parsed_command(arguments: &[String]) -> Result<ControlCommand, ControlError> 
         }),
         "ack-recovery-alert" if arguments.len() == 5 => {
             Ok(ControlCommand::AcknowledgeRecoveryAlert {
+                control_command_id: parse_hex_id(&arguments[1])?,
+                plan_id: parse_hex_id(&arguments[2])?,
+                expected_total_failures: parse_u64(&arguments[3])?,
+                reason: arguments[4].clone(),
+            })
+        }
+        "ack-semantic-recovery-alert" if arguments.len() == 5 => {
+            Ok(ControlCommand::AcknowledgeSemanticRecoveryAlert {
+                control_command_id: parse_hex_id(&arguments[1])?,
+                plan_id: parse_hex_id(&arguments[2])?,
+                expected_total_failures: parse_u64(&arguments[3])?,
+                reason: arguments[4].clone(),
+            })
+        }
+        "resume-semantic-recovery" if arguments.len() == 5 => {
+            Ok(ControlCommand::ResumeSemanticRecovery {
                 control_command_id: parse_hex_id(&arguments[1])?,
                 plan_id: parse_hex_id(&arguments[2])?,
                 expected_total_failures: parse_u64(&arguments[3])?,
@@ -109,6 +139,21 @@ fn summary(receipt: &ControlReceipt) -> String {
             inspection.durable_resolved,
             inspection.alerts.len(),
         ),
+        Ok(ControlOutcome::SemanticInspected(inspection)) => format!(
+            "outcome=semantic_inspected total_inspected={} total_finalized={} \
+             consecutive_failed_cycles={} domain_faulted={} \
+             durable_retrying={} durable_escalated={} \
+             durable_unacknowledged_escalated={} durable_resolved={} alerts={}",
+            inspection.total_inspected,
+            inspection.total_finalized,
+            inspection.consecutive_failed_cycles,
+            inspection.domain_faulted,
+            inspection.durable_retrying,
+            inspection.durable_escalated,
+            inspection.durable_unacknowledged_escalated,
+            inspection.durable_resolved,
+            inspection.alerts.len(),
+        ),
         Ok(ControlOutcome::ProcessInspected(inspection)) => format!(
             "outcome=process_inspected process_id={} generation={} task_id={}",
             hex(&inspection.process_id),
@@ -130,6 +175,9 @@ fn summary(receipt: &ControlReceipt) -> String {
         ),
         Ok(ControlOutcome::Acknowledged { receipt_id }) => {
             format!("outcome=acknowledged receipt_id={}", hex(receipt_id))
+        }
+        Ok(ControlOutcome::Resumed { receipt_id }) => {
+            format!("outcome=resumed receipt_id={}", hex(receipt_id))
         }
         Err(failure) => format!(
             "outcome=failure code={} retry={} message={}",

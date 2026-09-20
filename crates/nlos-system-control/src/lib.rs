@@ -16,17 +16,22 @@ use nlos_schema::sabi;
 use nlos_schema::sabi::v1::{
     ArtifactRecoveryAlertStatus, ArtifactRecoveryMetrics, ArtifactRecoveryOperationsSnapshot,
     ControlCommandLifecycleState, Envelope, ReceiptReference, RecoveryFailureSummary,
-    RetryDirective, SabiErrorCode, SabiFailure, SabiRequestContext, SabiResponseContext, envelope,
+    RetryDirective, SabiErrorCode, SabiFailure, SabiRequestContext, SabiResponseContext,
+    SemanticRecoveryAlertStatus, SemanticRecoveryMetrics, SemanticRecoveryOperationsSnapshot,
+    SystemControlView, envelope,
 };
 use nlos_schema::{
     CommonSemanticsError, CompatibilityError, MAX_SYSTEM_CONTROL_FAILURES, MethodSemantics,
     REQUEST_ID_BYTES, decode_get_system_control_request, decode_submit_control_command_request,
     encode_artifact_recovery_operations_snapshot, encode_control_command_result,
-    system_control_schema_identity, validate_sabi_request_context,
+    encode_semantic_recovery_operations_snapshot, system_control_schema_identity,
+    validate_sabi_request_context,
 };
 use nlos_task::{
     ArtifactCommitPlanId, ArtifactRecoveryAlertAcknowledgeRequest, ArtifactRecoveryFailureSource,
-    SqliteTaskAuthority, TaskStoreError,
+    SemanticCommitPlanId, SemanticRecoveryAlertAcknowledgeRequest, SemanticRecoveryFailureSource,
+    SemanticRecoveryResumeRequest, SqliteTaskAuthority, TaskStoreError,
+    semantic_recovery_resume_reference,
 };
 use nlos_types::{IdempotencyKey, PrincipalId};
 
@@ -112,6 +117,8 @@ pub enum RecoveryCounter {
     CompletedCycles,
     InspectedPlans,
     FinalizedPlans,
+    SemanticPlansInspected,
+    SemanticPlansFinalized,
 }
 
 impl RecoveryCounter {
@@ -121,6 +128,8 @@ impl RecoveryCounter {
             Self::CompletedCycles => "nlos_artifact_recovery_cycles_total",
             Self::InspectedPlans => "nlos_artifact_recovery_plans_inspected_total",
             Self::FinalizedPlans => "nlos_artifact_recovery_plans_finalized_total",
+            Self::SemanticPlansInspected => "nlos_semantic_recovery_plans_inspected_total",
+            Self::SemanticPlansFinalized => "nlos_semantic_recovery_plans_finalized_total",
         }
     }
 }
@@ -133,6 +142,13 @@ pub enum RecoveryGauge {
     DurableEscalated,
     DurableUnacknowledgedEscalated,
     DurableResolved,
+    ArtifactDomainFaulted,
+    SemanticConsecutiveFailedCycles,
+    SemanticDurableRetrying,
+    SemanticDurableEscalated,
+    SemanticDurableUnacknowledgedEscalated,
+    SemanticDurableResolved,
+    SemanticDomainFaulted,
 }
 
 impl RecoveryGauge {
@@ -147,6 +163,17 @@ impl RecoveryGauge {
                 "nlos_artifact_recovery_durable_unacknowledged_escalated"
             }
             Self::DurableResolved => "nlos_artifact_recovery_durable_resolved",
+            Self::ArtifactDomainFaulted => "nlos_artifact_recovery_domain_faulted",
+            Self::SemanticConsecutiveFailedCycles => {
+                "nlos_semantic_recovery_consecutive_failed_cycles"
+            }
+            Self::SemanticDurableRetrying => "nlos_semantic_recovery_durable_retrying",
+            Self::SemanticDurableEscalated => "nlos_semantic_recovery_durable_escalated",
+            Self::SemanticDurableUnacknowledgedEscalated => {
+                "nlos_semantic_recovery_durable_unacknowledged_escalated"
+            }
+            Self::SemanticDurableResolved => "nlos_semantic_recovery_durable_resolved",
+            Self::SemanticDomainFaulted => "nlos_semantic_recovery_domain_faulted",
         }
     }
 }
@@ -390,6 +417,7 @@ fn task_store_failure(error: &TaskStoreError) -> (SabiErrorCode, RetryDirective,
             "requested recovery authority object was not found",
         ),
         Task::ArtifactRecoveryCasMismatch { .. }
+        | Task::SemanticRecoveryCasMismatch { .. }
         | Task::IdempotencyConflict
         | Task::SnapshotConflict
         | Task::ArtifactPublicationConflict { .. }
@@ -409,6 +437,7 @@ fn task_store_failure(error: &TaskStoreError) -> (SabiErrorCode, RetryDirective,
         Task::ArtifactCommitPlanNotReady { .. }
         | Task::SemanticCommitPlanNotReady { .. }
         | Task::InvalidArtifactRecoveryState { .. }
+        | Task::InvalidSemanticRecoveryState { .. }
         | Task::AuthorityLeaseHeld
         | Task::AuthorityLeaseExpired
         | Task::AuthorityLeaseRequired
@@ -444,6 +473,7 @@ fn task_store_failure(error: &TaskStoreError) -> (SabiErrorCode, RetryDirective,
             "recovery authority state rejects this request",
         ),
         Task::InvalidArtifactRecoveryPolicy { .. }
+        | Task::InvalidSemanticRecoveryPolicy { .. }
         | Task::InvalidAuthorityLease { .. }
         | Task::InvalidSnapshotReceipt { .. }
         | Task::InvalidArtifactPublicationPlan { .. }
@@ -540,8 +570,12 @@ where
         }
     }
 
-    /// Exports one authoritative metrics snapshot through a backend-neutral
-    /// sink. Diagnostic strings and per-plan identities are not metrics.
+    /// Exports one authoritative dual-domain metrics snapshot through a
+    /// backend-neutral sink: the artifact catalog first, then the semantic
+    /// catalog. Durable gauges are read from the live `TaskAuthority`
+    /// summaries of both recovery ledgers; every other value comes from a
+    /// single worker health generation. Diagnostic strings and per-plan
+    /// identities are not metrics.
     ///
     /// # Errors
     ///
@@ -550,15 +584,37 @@ where
         &self,
         sink: &mut S,
     ) -> Result<(), RecoveryMetricsExportError<S::Error>> {
-        let health = self
-            .authoritative_health()
+        let mut health = self.health.recovery_health();
+        let artifact = self
+            .tasks
+            .summarize_artifact_recovery()
             .map_err(RecoveryMetricsExportError::Task)?;
+        health.durable_retrying = artifact.retrying;
+        health.durable_escalated = artifact.escalated;
+        health.durable_unacknowledged_escalated = artifact.unacknowledged_escalated;
+        health.durable_resolved = artifact.resolved;
+        let semantic = self
+            .tasks
+            .summarize_semantic_recovery()
+            .map_err(RecoveryMetricsExportError::Task)?;
+        health.semantic_durable_retrying = semantic.retrying;
+        health.semantic_durable_escalated = semantic.escalated;
+        health.semantic_durable_unacknowledged_escalated = semantic.unacknowledged_escalated;
+        health.semantic_durable_resolved = semantic.resolved;
         sink.record_worker_state(health.state)
             .map_err(RecoveryMetricsExportError::Sink)?;
         for (counter, value) in [
             (RecoveryCounter::CompletedCycles, health.completed_cycles),
             (RecoveryCounter::InspectedPlans, health.total_inspected),
             (RecoveryCounter::FinalizedPlans, health.total_finalized),
+            (
+                RecoveryCounter::SemanticPlansInspected,
+                health.semantic_total_inspected,
+            ),
+            (
+                RecoveryCounter::SemanticPlansFinalized,
+                health.semantic_total_finalized,
+            ),
         ] {
             sink.set_counter_total(counter, value)
                 .map_err(RecoveryMetricsExportError::Sink)?;
@@ -579,6 +635,34 @@ where
                 health.durable_unacknowledged_escalated,
             ),
             (RecoveryGauge::DurableResolved, health.durable_resolved),
+            (
+                RecoveryGauge::ArtifactDomainFaulted,
+                u64::from(health.artifact_domain_faulted),
+            ),
+            (
+                RecoveryGauge::SemanticConsecutiveFailedCycles,
+                u64::try_from(health.semantic_consecutive_failed_cycles).unwrap_or(u64::MAX),
+            ),
+            (
+                RecoveryGauge::SemanticDurableRetrying,
+                health.semantic_durable_retrying,
+            ),
+            (
+                RecoveryGauge::SemanticDurableEscalated,
+                health.semantic_durable_escalated,
+            ),
+            (
+                RecoveryGauge::SemanticDurableUnacknowledgedEscalated,
+                health.semantic_durable_unacknowledged_escalated,
+            ),
+            (
+                RecoveryGauge::SemanticDurableResolved,
+                health.semantic_durable_resolved,
+            ),
+            (
+                RecoveryGauge::SemanticDomainFaulted,
+                u64::from(health.semantic_domain_faulted),
+            ),
         ] {
             sink.set_gauge(gauge, value)
                 .map_err(RecoveryMetricsExportError::Sink)?;
@@ -597,6 +681,9 @@ where
         self.authorizer
             .authorize_get(context, &payload)
             .map_err(SystemControlError::AuthorizationDenied)?;
+        if payload.view == i32::from(SystemControlView::SemanticCommitRecovery) {
+            return self.handle_get_semantic(request, context, payload.alert_limit);
+        }
         let requested = usize::try_from(payload.alert_limit).unwrap_or(usize::MAX);
         let alerts = self
             .tasks
@@ -639,6 +726,55 @@ where
         ))
     }
 
+    /// Semantic-domain `get`: the W26 ledger API pins a zero-argument alert
+    /// listing (no query limit), so the bounded snapshot truncates the full
+    /// escalated list at the requested `alert_limit` here.
+    fn handle_get_semantic(
+        &self,
+        request: &Envelope,
+        context: &SabiRequestContext,
+        alert_limit: u32,
+    ) -> Result<Envelope, SystemControlError> {
+        let requested = usize::try_from(alert_limit).unwrap_or(usize::MAX);
+        let escalated = self.tasks.list_semantic_recovery_alerts()?;
+        let alerts_truncated = escalated.len() > requested;
+        let alerts = escalated
+            .into_iter()
+            .take(requested)
+            .map(|alert| {
+                let recovery = alert.recovery;
+                Ok(SemanticRecoveryAlertStatus {
+                    plan_id: recovery.plan_id.as_bytes().to_vec(),
+                    total_failures: recovery.total_failures,
+                    last_failure_authority: semantic_failure_authority(recovery.last_source).into(),
+                    first_failed_at_ms: recovery.first_failed_at_ms,
+                    last_failed_at_ms: recovery.last_failed_at_ms,
+                    escalated_at_ms: recovery
+                        .escalated_at_ms
+                        .ok_or(SystemControlError::InvalidRecoveryAlert)?,
+                    acknowledgement_receipt: alert.acknowledgement.map(|receipt| {
+                        ReceiptReference {
+                            receipt_id: receipt.receipt_id.into_bytes().to_vec(),
+                        }
+                    }),
+                })
+            })
+            .collect::<Result<Vec<_>, SystemControlError>>()?;
+        let health = self.authoritative_semantic_health()?;
+        let snapshot = SemanticRecoveryOperationsSnapshot {
+            schema: Some(system_control_schema_identity()),
+            metrics: Some(semantic_metrics(&health)),
+            alerts,
+            alerts_truncated,
+        };
+        Ok(response_envelope(
+            request,
+            context.correlation_id.clone(),
+            encode_semantic_recovery_operations_snapshot(&snapshot)?,
+            Vec::new(),
+        ))
+    }
+
     fn authoritative_health(&self) -> Result<RecoveryWorkerHealth, TaskStoreError> {
         let durable = self.tasks.summarize_artifact_recovery()?;
         let mut health = self.health.recovery_health();
@@ -646,6 +782,16 @@ where
         health.durable_escalated = durable.escalated;
         health.durable_unacknowledged_escalated = durable.unacknowledged_escalated;
         health.durable_resolved = durable.resolved;
+        Ok(health)
+    }
+
+    fn authoritative_semantic_health(&self) -> Result<RecoveryWorkerHealth, TaskStoreError> {
+        let durable = self.tasks.summarize_semantic_recovery()?;
+        let mut health = self.health.recovery_health();
+        health.semantic_durable_retrying = durable.retrying;
+        health.semantic_durable_escalated = durable.escalated;
+        health.semantic_durable_unacknowledged_escalated = durable.unacknowledged_escalated;
+        health.semantic_durable_resolved = durable.resolved;
         Ok(health)
     }
 
@@ -675,17 +821,51 @@ where
         self.authorizer
             .authorize_submit(context, command)
             .map_err(SystemControlError::AuthorizationDenied)?;
-        let decision = self.tasks.acknowledge_artifact_recovery_alert(
-            ArtifactRecoveryAlertAcknowledgeRequest {
-                plan_id: ArtifactCommitPlanId::from_bytes(fixed16(&command.target_id)?),
-                expected_total_failures: command.expected_generation_or_revision,
-                principal_id: PrincipalId::from_bytes(fixed16(&caller.principal_id)?),
-                idempotency_key: IdempotencyKey::from_bytes(fixed16(&context.idempotency_key)?),
-                acknowledged_at_ms: now_wall_ms,
-            },
-        )?;
+        let receipt_id = match command.command {
+            Some(sabi::v1::control_command::Command::AcknowledgeArtifactRecoveryAlert(_)) => {
+                self.tasks
+                    .acknowledge_artifact_recovery_alert(ArtifactRecoveryAlertAcknowledgeRequest {
+                        plan_id: ArtifactCommitPlanId::from_bytes(fixed16(&command.target_id)?),
+                        expected_total_failures: command.expected_generation_or_revision,
+                        principal_id: PrincipalId::from_bytes(fixed16(&caller.principal_id)?),
+                        idempotency_key: IdempotencyKey::from_bytes(fixed16(
+                            &context.idempotency_key,
+                        )?),
+                        acknowledged_at_ms: now_wall_ms,
+                    })?
+                    .receipt()
+                    .receipt_id
+            }
+            Some(sabi::v1::control_command::Command::AcknowledgeSemanticRecoveryAlert(_)) => {
+                self.tasks
+                    .acknowledge_semantic_recovery_alert(SemanticRecoveryAlertAcknowledgeRequest {
+                        plan_id: SemanticCommitPlanId::from_bytes(fixed16(&command.target_id)?),
+                        expected_total_failures: command.expected_generation_or_revision,
+                        principal_id: PrincipalId::from_bytes(fixed16(&caller.principal_id)?),
+                        idempotency_key: IdempotencyKey::from_bytes(fixed16(
+                            &context.idempotency_key,
+                        )?),
+                        acknowledged_at_ms: now_wall_ms,
+                    })?
+                    .receipt()
+                    .receipt_id
+            }
+            Some(sabi::v1::control_command::Command::ResumeSemanticRecovery(_)) => {
+                let resumed =
+                    self.tasks
+                        .resume_semantic_recovery(SemanticRecoveryResumeRequest {
+                            plan_id: SemanticCommitPlanId::from_bytes(fixed16(&command.target_id)?),
+                            expected_total_failures: command.expected_generation_or_revision,
+                            resumed_at_ms: now_wall_ms,
+                        })?;
+                semantic_recovery_resume_reference(resumed.plan_id, resumed.total_failures)
+            }
+            // The shared decoder already rejects a payload without a known
+            // command arm, so an un-routed command cannot reach this point.
+            None => return Err(CompatibilityError::MissingSystemControlCommand.into()),
+        };
         let receipt = ReceiptReference {
-            receipt_id: decision.receipt().receipt_id.into_bytes().to_vec(),
+            receipt_id: receipt_id.into_bytes().to_vec(),
         };
         let result = sabi::v1::ControlCommandResult {
             schema: Some(system_control_schema_identity()),
@@ -715,6 +895,7 @@ fn metrics(health: RecoveryWorkerHealth) -> ArtifactRecoveryMetrics {
         durable_escalated: health.durable_escalated,
         durable_unacknowledged_escalated: health.durable_unacknowledged_escalated,
         durable_resolved: health.durable_resolved,
+        domain_faulted: health.artifact_domain_faulted,
         last_failures: health
             .last_failures
             .into_iter()
@@ -726,6 +907,20 @@ fn metrics(health: RecoveryWorkerHealth) -> ArtifactRecoveryMetrics {
                 authority: worker_failure_authority(failure.authority).into(),
             })
             .collect(),
+    }
+}
+
+fn semantic_metrics(health: &RecoveryWorkerHealth) -> SemanticRecoveryMetrics {
+    SemanticRecoveryMetrics {
+        total_inspected: health.semantic_total_inspected,
+        total_finalized: health.semantic_total_finalized,
+        consecutive_failed_cycles: u64::try_from(health.semantic_consecutive_failed_cycles)
+            .unwrap_or(u64::MAX),
+        durable_retrying: health.semantic_durable_retrying,
+        durable_escalated: health.semantic_durable_escalated,
+        durable_unacknowledged_escalated: health.semantic_durable_unacknowledged_escalated,
+        durable_resolved: health.semantic_durable_resolved,
+        domain_faulted: health.semantic_domain_faulted,
     }
 }
 
@@ -759,6 +954,20 @@ const fn recovery_failure_authority(
             sabi::v1::RecoveryFailureAuthority::Artifact
         }
         ArtifactRecoveryFailureSource::Coordinator => {
+            sabi::v1::RecoveryFailureAuthority::Coordinator
+        }
+    }
+}
+
+const fn semantic_failure_authority(
+    authority: SemanticRecoveryFailureSource,
+) -> sabi::v1::RecoveryFailureAuthority {
+    match authority {
+        SemanticRecoveryFailureSource::TaskAuthority => sabi::v1::RecoveryFailureAuthority::Task,
+        SemanticRecoveryFailureSource::SemanticAuthority => {
+            sabi::v1::RecoveryFailureAuthority::Semantic
+        }
+        SemanticRecoveryFailureSource::Coordinator => {
             sabi::v1::RecoveryFailureAuthority::Coordinator
         }
     }

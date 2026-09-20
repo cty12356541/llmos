@@ -642,6 +642,7 @@ dependencies = [
  "nlos-service-directory",
  "nlos-task",
  "nlos-types",
+ "rusqlite",
  "sha2",
  "tokio",
 ]

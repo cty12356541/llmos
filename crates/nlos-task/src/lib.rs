@@ -226,6 +226,7 @@ pub use recovery::{
     SemanticRecoveryAlertAcknowledgeRequest, SemanticRecoveryAlertReceipt,
     SemanticRecoveryFailureRequest, SemanticRecoveryFailureSource, SemanticRecoveryRecord,
     SemanticRecoveryResumeRequest, SemanticRecoveryState, SemanticRecoverySummary,
+    semantic_recovery_resume_reference,
 };
 pub use resource_commit::{
     NestedResourceCostReceipt, ResourceFinalizeDecision, ResourceTaskCommitReceipt,
