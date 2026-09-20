@@ -67,7 +67,16 @@
 //! creation wiring (the next Slice K longitudinal slice), multi-party
 //! installer approval (exactly one installer principal is recorded, taken
 //! from the verified receipt's signer), §23.2's full manifest
-//! applications/components model, and any cross-process transport.
+//! applications/components model, and any cross-process transport. The
+//! uninstall/rollback activity gate exists in two shapes: a pluggable
+//! caller-supplied [`ActiveTaskActivityProbe`] seam, and — since W27-D —
+//! the production wiring [`ApplicationAuthority::
+//! uninstall_application_with_task_activity_gate`] / [`ApplicationAuthority::
+//! rollback_application_with_task_activity_gate`], which resolves the
+//! package's durable background-task registrations inside the gate's own
+//! transaction and queries the task authority for live task activity,
+//! failing closed (typed refusal, zero durable state) when that query
+//! cannot be answered.
 
 mod schema;
 
@@ -78,6 +87,7 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use nlos_artifact::{ArtifactError, ArtifactStore, ContentDigest, PackageVerificationReceipt};
+use nlos_task::{SqliteTaskAuthority, TaskStoreError};
 use nlos_types::{
     ApplicationId, Generation, IdempotencyKey, InstallationId, PackageId, PrincipalId, ProcessId,
     ReceiptId, TaskId,
@@ -651,6 +661,15 @@ pub enum ApplicationAuthorityError {
         package_id: PackageId,
         active_task_count: u64,
     },
+    /// The task-authority activity query backing the uninstall/rollback
+    /// gate could not be answered; the fresh mutation is refused
+    /// fail-closed with zero durable state. Durable replays under the
+    /// original idempotency key never consult the query and are
+    /// unaffected.
+    TaskActivityQueryFailed {
+        package_id: PackageId,
+        error: TaskStoreError,
+    },
     RegistrationPrecedesLastUpdate {
         last_updated_at_ms: u64,
         registered_at_ms: u64,
@@ -667,6 +686,41 @@ pub enum ApplicationAuthorityError {
 
 pub trait ActiveTaskActivityProbe {
     fn outstanding_task_count(&self, package_id: PackageId) -> u64;
+}
+
+/// The activity consult one gated uninstall/rollback performs between its
+/// pre-mutation validation and the status CAS. The gate's writer
+/// transaction is open while the consult runs, so both shapes are
+/// deadlock-free by construction: the probe seam is an inert caller
+/// value, and the task-authority shape reads this authority's
+/// registrations from the already-open transaction (never re-entering
+/// `ApplicationAuthority`) and queries the task authority's own separate
+/// store.
+enum TaskActivitySource<'a> {
+    Probe(&'a dyn ActiveTaskActivityProbe),
+    TaskAuthority(&'a SqliteTaskAuthority),
+}
+
+impl TaskActivitySource<'_> {
+    fn outstanding_task_count(
+        &self,
+        source: &Connection,
+        application_id: ApplicationId,
+        package_id: PackageId,
+    ) -> Result<u64, ApplicationAuthorityError> {
+        match self {
+            Self::Probe(probe) => Ok(probe.outstanding_task_count(package_id)),
+            Self::TaskAuthority(tasks) => {
+                let task_ids = load_registered_background_task_ids(source, application_id)?;
+                tasks
+                    .inspect_outstanding_task_count(&task_ids)
+                    .map_err(|error| ApplicationAuthorityError::TaskActivityQueryFailed {
+                        package_id,
+                        error,
+                    })
+            }
+        }
+    }
 }
 
 impl fmt::Display for ApplicationAuthorityError {
@@ -822,6 +876,11 @@ impl fmt::Display for ApplicationAuthorityError {
                 formatter,
                 "package {package_id:?} has {active_task_count} active task(s); uninstall and rollback are refused until they finish"
             ),
+            Self::TaskActivityQueryFailed { package_id, error } => write!(
+                formatter,
+                "task activity query for package {package_id:?} failed; \
+                 uninstall/rollback are refused fail-closed: {error}"
+            ),
             Self::RegistrationPrecedesLastUpdate {
                 last_updated_at_ms,
                 registered_at_ms,
@@ -853,6 +912,7 @@ impl Error for ApplicationAuthorityError {
             Self::Sqlite(error) => Some(error),
             Self::Io(error) => Some(error),
             Self::Artifact(error) => Some(error),
+            Self::TaskActivityQueryFailed { error, .. } => Some(error),
             _ => None,
         }
     }
@@ -1415,13 +1475,41 @@ impl ApplicationAuthority {
         request: UninstallApplicationRequest,
         probe: &impl ActiveTaskActivityProbe,
     ) -> Result<UninstallDecision, ApplicationAuthorityError> {
-        self.uninstall_application_internal(request, Some(probe))
+        self.uninstall_application_internal(request, Some(TaskActivitySource::Probe(probe)))
+    }
+
+    /// Refuses a fresh uninstall while any of the package's durably
+    /// registered background Tasks is still outstanding in the task
+    /// authority — the production activity gate (W27-D). Inside the
+    /// gate's own writer transaction the package's background-task
+    /// registrations are resolved (the same transactional view the
+    /// uninstall itself will commit), then
+    /// [`SqliteTaskAuthority::inspect_outstanding_task_count`] is queried
+    /// against the task authority's separate store: a registration
+    /// without a durable task row is a promise, not activity, and a task
+    /// that reached its terminal state is not activity either. A query
+    /// that cannot be answered is a typed fail-closed refusal
+    /// ([`ApplicationAuthorityError::TaskActivityQueryFailed`]) with zero
+    /// durable state; durable replay under the same idempotency key
+    /// never consults the query.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::uninstall_application`], plus
+    /// [`ApplicationAuthorityError::ApplicationActiveTasksRunning`] and
+    /// [`ApplicationAuthorityError::TaskActivityQueryFailed`].
+    pub fn uninstall_application_with_task_activity_gate(
+        &self,
+        tasks: &SqliteTaskAuthority,
+        request: UninstallApplicationRequest,
+    ) -> Result<UninstallDecision, ApplicationAuthorityError> {
+        self.uninstall_application_internal(request, Some(TaskActivitySource::TaskAuthority(tasks)))
     }
 
     fn uninstall_application_internal(
         &self,
         request: UninstallApplicationRequest,
-        probe: Option<&dyn ActiveTaskActivityProbe>,
+        activity: Option<TaskActivitySource<'_>>,
     ) -> Result<UninstallDecision, ApplicationAuthorityError> {
         let mut connection = self.lock()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -1459,8 +1547,12 @@ impl ApplicationAuthority {
             });
         }
 
-        if let Some(probe) = probe {
-            let active_task_count = probe.outstanding_task_count(request.package_id);
+        if let Some(activity) = activity {
+            let active_task_count = activity.outstanding_task_count(
+                &transaction,
+                application.application_id,
+                request.package_id,
+            )?;
             if active_task_count > 0 {
                 return Err(ApplicationAuthorityError::ApplicationActiveTasksRunning {
                     package_id: request.package_id,
@@ -1558,13 +1650,36 @@ impl ApplicationAuthority {
         request: RollbackApplicationRequest,
         probe: &impl ActiveTaskActivityProbe,
     ) -> Result<RollbackDecision, ApplicationAuthorityError> {
-        self.rollback_application_internal(request, Some(probe))
+        self.rollback_application_internal(request, Some(TaskActivitySource::Probe(probe)))
+    }
+
+    /// Refuses a fresh rollback while any of the package's durably
+    /// registered background Tasks is still outstanding in the task
+    /// authority — the production activity gate (W27-D), mirroring
+    /// [`Self::uninstall_application_with_task_activity_gate`]:
+    /// registrations are resolved inside the gate's own transaction and
+    /// task liveness is queried on the task authority's separate store;
+    /// an unanswerable query is a typed fail-closed refusal
+    /// ([`ApplicationAuthorityError::TaskActivityQueryFailed`]) with
+    /// zero durable state, and durable replay never consults the query.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::rollback_application`], plus
+    /// [`ApplicationAuthorityError::ApplicationActiveTasksRunning`] and
+    /// [`ApplicationAuthorityError::TaskActivityQueryFailed`].
+    pub fn rollback_application_with_task_activity_gate(
+        &self,
+        tasks: &SqliteTaskAuthority,
+        request: RollbackApplicationRequest,
+    ) -> Result<RollbackDecision, ApplicationAuthorityError> {
+        self.rollback_application_internal(request, Some(TaskActivitySource::TaskAuthority(tasks)))
     }
 
     fn rollback_application_internal(
         &self,
         request: RollbackApplicationRequest,
-        probe: Option<&dyn ActiveTaskActivityProbe>,
+        activity: Option<TaskActivitySource<'_>>,
     ) -> Result<RollbackDecision, ApplicationAuthorityError> {
         let mut connection = self.lock()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -1620,8 +1735,12 @@ impl ApplicationAuthority {
             generation: to_generation,
         })?;
 
-        if let Some(probe) = probe {
-            let active_task_count = probe.outstanding_task_count(request.package_id);
+        if let Some(activity) = activity {
+            let active_task_count = activity.outstanding_task_count(
+                &transaction,
+                application.application_id,
+                request.package_id,
+            )?;
             if active_task_count > 0 {
                 return Err(ApplicationAuthorityError::ApplicationActiveTasksRunning {
                     package_id: request.package_id,
@@ -2413,6 +2532,26 @@ fn load_background_task_registration_by_key(
     rows.next()?
         .map(decode_background_task_registration_row)
         .transpose()
+}
+
+/// Distinct task identities durably registered as background tasks of one
+/// application across every installation generation (the same task may be
+/// re-registered after a generation advance; activity counts identities,
+/// not registration rows).
+fn load_registered_background_task_ids(
+    source: &Connection,
+    application_id: ApplicationId,
+) -> Result<Vec<TaskId>, ApplicationAuthorityError> {
+    let mut statement = source.prepare(
+        "SELECT DISTINCT task_id FROM application_background_task_registrations
+         WHERE application_id = ?1 ORDER BY task_id",
+    )?;
+    let mut rows = statement.query([application_id.as_bytes().as_slice()])?;
+    let mut task_ids = Vec::new();
+    while let Some(row) = rows.next()? {
+        task_ids.push(TaskId::from_bytes(blob16(row, 0)?));
+    }
+    Ok(task_ids)
 }
 fn load_background_task_registration_at_generation(
     source: &Connection,

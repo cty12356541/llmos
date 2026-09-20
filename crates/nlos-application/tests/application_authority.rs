@@ -2119,6 +2119,388 @@ fn rollback_with_active_tasks_is_refused_with_zero_state() {
     assert_rollback_counts(&stack, 0);
 }
 
+/// Real TaskAuthority-backed activity gate fixtures: a task authority
+/// database inside the test stack root, plus small wrappers over the
+/// public task APIs the gate consults (register → `Active`, cancel →
+/// terminal `Cancelled`).
+fn open_task_authority(stack: &TestStack) -> nlos_task::SqliteTaskAuthority {
+    nlos_task::SqliteTaskAuthority::open(stack.root.root().join("task-authority.sqlite3"))
+        .expect("open task authority")
+}
+
+fn registered_active_task(tasks: &nlos_task::SqliteTaskAuthority, id: TaskId) {
+    match tasks.register_task(nlos_task::TaskSpec {
+        task_id: id,
+        task_generation: Generation::INITIAL,
+        registered_at_ms: 1_000,
+    }) {
+        Ok(
+            nlos_task::TaskRegistrationDecision::Created(created)
+            | nlos_task::TaskRegistrationDecision::Existing(created),
+        ) => {
+            assert_eq!(created, id);
+        }
+        Err(error) => panic!("register task {id:?}: {error}"),
+    }
+}
+
+fn cancelled_task(tasks: &nlos_task::SqliteTaskAuthority, id: TaskId) {
+    let decision = tasks
+        .cancel_task(nlos_task::CancelRequest {
+            task_id: id,
+            idempotency_key: IdempotencyKey::from_bytes([id.as_bytes()[0] ^ 0x5E; 16]),
+            requested_at_ms: 2_000,
+        })
+        .expect("cancel task");
+    assert!(matches!(
+        decision,
+        nlos_task::CancelDecision::Applied { .. }
+    ));
+}
+
+fn tamper_task_state(stack: &TestStack, id: TaskId, state: i64) {
+    let connection = Connection::open(stack.root.root().join("task-authority.sqlite3"))
+        .expect("open raw task tamper");
+    connection
+        .execute(
+            "UPDATE tasks SET task_state = ?1 WHERE task_id = ?2",
+            rusqlite::params![state, id.as_bytes().as_slice()],
+        )
+        .expect("tamper task state");
+}
+
+#[test]
+fn uninstall_task_activity_gate_opens_without_outstanding_tasks() {
+    let stack = TestStack::new(&label("uninstall-task-activity-open"), 0x52);
+    let verified = stack.verify_package(0x41, 1, key(0xF0), 1_000);
+    let authority = open_authority(stack.root.root());
+    let tasks = open_task_authority(&stack);
+    installed(
+        &authority,
+        &stack.artifacts,
+        verified.receipt_id,
+        0x01,
+        2_000,
+    );
+
+    // A registration-only task (no durable TaskAuthority row) is a
+    // promise, not activity; a registered task that already reached its
+    // terminal Cancelled state is not activity either. Both must leave
+    // the real-query gate open — a registration counter would refuse.
+    let principal = stack.identity.binding.principal_id;
+    background_task_registered(
+        &authority,
+        verified.package_id,
+        task_id(0xA1),
+        principal,
+        0x0B,
+        3_000,
+    );
+    let cancelled_id = task_id(0xA2);
+    background_task_registered(
+        &authority,
+        verified.package_id,
+        cancelled_id,
+        principal,
+        0x0C,
+        3_000,
+    );
+    registered_active_task(&tasks, cancelled_id);
+    cancelled_task(&tasks, cancelled_id);
+
+    let receipt = authority
+        .uninstall_application_with_task_activity_gate(
+            &tasks,
+            UninstallApplicationRequest {
+                package_id: verified.package_id,
+                idempotency_key: key(0x0A),
+                uninstalled_at_ms: 4_000,
+            },
+        )
+        .expect("no outstanding task activity must allow uninstall");
+    assert!(matches!(
+        receipt,
+        nlos_application::UninstallDecision::Uninstalled(_)
+    ));
+    assert_uninstall_counts(&stack, 1);
+}
+
+#[test]
+fn uninstall_task_activity_gate_refuses_while_task_active_then_converges() {
+    let stack = TestStack::new(&label("uninstall-task-activity-closed"), 0x53);
+    let verified = stack.verify_package(0x41, 1, key(0xF0), 1_000);
+    let authority = open_authority(stack.root.root());
+    let tasks = open_task_authority(&stack);
+    installed(
+        &authority,
+        &stack.artifacts,
+        verified.receipt_id,
+        0x01,
+        2_000,
+    );
+    let active_id = task_id(0xA1);
+    background_task_registered(
+        &authority,
+        verified.package_id,
+        active_id,
+        stack.identity.binding.principal_id,
+        0x0B,
+        3_000,
+    );
+    registered_active_task(&tasks, active_id);
+
+    let error = authority
+        .uninstall_application_with_task_activity_gate(
+            &tasks,
+            UninstallApplicationRequest {
+                package_id: verified.package_id,
+                idempotency_key: key(0x0A),
+                uninstalled_at_ms: 4_000,
+            },
+        )
+        .expect_err("one durable Active task must block fresh uninstall");
+    assert!(matches!(
+        error,
+        ApplicationAuthorityError::ApplicationActiveTasksRunning {
+            package_id,
+            active_task_count: 1,
+        } if package_id == verified.package_id
+    ));
+    assert_uninstall_counts(&stack, 0);
+    let view = authority
+        .inspect_application(verified.package_id)
+        .expect("inspect")
+        .expect("exists");
+    assert_eq!(view.status, nlos_application::ApplicationStatus::Installed);
+
+    // The gate is a live query: once the task reaches its terminal state,
+    // the same fresh command converges on the next key.
+    cancelled_task(&tasks, active_id);
+    let receipt = authority
+        .uninstall_application_with_task_activity_gate(
+            &tasks,
+            UninstallApplicationRequest {
+                package_id: verified.package_id,
+                idempotency_key: key(0x0D),
+                uninstalled_at_ms: 5_000,
+            },
+        )
+        .expect("terminal task activity must re-open the gate");
+    assert!(matches!(
+        receipt,
+        nlos_application::UninstallDecision::Uninstalled(_)
+    ));
+    assert_uninstall_counts(&stack, 1);
+}
+
+#[test]
+fn uninstall_task_activity_gate_fails_closed_on_task_store_error() {
+    let stack = TestStack::new(&label("uninstall-task-activity-error"), 0x54);
+    let verified = stack.verify_package(0x41, 1, key(0xF0), 1_000);
+    let authority = open_authority(stack.root.root());
+    let tasks = open_task_authority(&stack);
+    installed(
+        &authority,
+        &stack.artifacts,
+        verified.receipt_id,
+        0x01,
+        2_000,
+    );
+    let active_id = task_id(0xA1);
+    background_task_registered(
+        &authority,
+        verified.package_id,
+        active_id,
+        stack.identity.binding.principal_id,
+        0x0B,
+        3_000,
+    );
+    registered_active_task(&tasks, active_id);
+    tamper_task_state(&stack, active_id, 7);
+
+    let error = authority
+        .uninstall_application_with_task_activity_gate(
+            &tasks,
+            UninstallApplicationRequest {
+                package_id: verified.package_id,
+                idempotency_key: key(0x0A),
+                uninstalled_at_ms: 4_000,
+            },
+        )
+        .expect_err("an unreadable activity query must refuse fail-closed");
+    assert!(matches!(
+        error,
+        ApplicationAuthorityError::TaskActivityQueryFailed {
+            package_id,
+            ..
+        } if package_id == verified.package_id
+    ));
+    assert_uninstall_counts(&stack, 0);
+    let view = authority
+        .inspect_application(verified.package_id)
+        .expect("inspect")
+        .expect("exists");
+    assert_eq!(view.status, nlos_application::ApplicationStatus::Installed);
+
+    // The refusal poisoned nothing: once the stored state decodes again
+    // (healed straight to the terminal Cancelled code, so the healed
+    // query reports no outstanding activity), the same fresh command
+    // converges.
+    tamper_task_state(&stack, active_id, 1);
+    let receipt = authority
+        .uninstall_application_with_task_activity_gate(
+            &tasks,
+            UninstallApplicationRequest {
+                package_id: verified.package_id,
+                idempotency_key: key(0x0D),
+                uninstalled_at_ms: 5_000,
+            },
+        )
+        .expect("healed activity query must allow uninstall");
+    assert!(matches!(
+        receipt,
+        nlos_application::UninstallDecision::Uninstalled(_)
+    ));
+}
+
+#[test]
+fn uninstall_task_activity_gate_replay_bypasses_task_activity_query() {
+    let stack = TestStack::new(&label("uninstall-task-activity-replay"), 0x55);
+    let verified = stack.verify_package(0x41, 1, key(0xF0), 1_000);
+    let authority = open_authority(stack.root.root());
+    let tasks = open_task_authority(&stack);
+    installed(
+        &authority,
+        &stack.artifacts,
+        verified.receipt_id,
+        0x01,
+        2_000,
+    );
+    let later_active = task_id(0xA1);
+    background_task_registered(
+        &authority,
+        verified.package_id,
+        later_active,
+        stack.identity.binding.principal_id,
+        0x0B,
+        3_000,
+    );
+
+    // Gate consult happens while the task has no durable row: uninstall
+    // commits its receipt under key 0x0A.
+    let receipt = authority
+        .uninstall_application_with_task_activity_gate(
+            &tasks,
+            UninstallApplicationRequest {
+                package_id: verified.package_id,
+                idempotency_key: key(0x0A),
+                uninstalled_at_ms: 4_000,
+            },
+        )
+        .expect("no durable task row yet: uninstall proceeds");
+    let original = match receipt {
+        nlos_application::UninstallDecision::Uninstalled(original) => original,
+        other @ nlos_application::UninstallDecision::Replayed(_) => {
+            panic!("fresh key must uninstall, got {other:?}")
+        }
+    };
+
+    // Activity (and even an undecodable query) appears after the fact:
+    // the durable receipt replays byte-equal without consulting the
+    // task authority at all.
+    registered_active_task(&tasks, later_active);
+    tamper_task_state(&stack, later_active, 7);
+    let replay = authority
+        .uninstall_application_with_task_activity_gate(
+            &tasks,
+            UninstallApplicationRequest {
+                package_id: verified.package_id,
+                idempotency_key: key(0x0A),
+                uninstalled_at_ms: 4_000,
+            },
+        )
+        .expect("replay must bypass the activity query");
+    assert!(matches!(
+        replay,
+        nlos_application::UninstallDecision::Replayed(r) if r == original
+    ));
+}
+
+#[test]
+fn rollback_task_activity_gate_refuses_then_converges() {
+    let stack = TestStack::new(&label("rollback-task-activity"), 0x56);
+    let first = stack.verify_package(0x41, 1, key(0xF0), 1_000);
+    let second = stack.verify_package(0x41, 2, key(0xF1), 2_000);
+    let authority = open_authority(stack.root.root());
+    let tasks = open_task_authority(&stack);
+    installed(&authority, &stack.artifacts, first.receipt_id, 0x01, 2_000);
+    updated(
+        &authority,
+        &stack.artifacts,
+        first.package_id,
+        second.receipt_id,
+        0x02,
+        3_000,
+    );
+    // Background-task registration requires an installed application, so
+    // the registration lands before the disable that makes rollback
+    // admissible.
+    let active_id = task_id(0xA1);
+    background_task_registered(
+        &authority,
+        first.package_id,
+        active_id,
+        stack.identity.binding.principal_id,
+        0x0C,
+        4_000,
+    );
+    registered_active_task(&tasks, active_id);
+    disabled(&authority, first.package_id, 0x0B, 5_000);
+
+    let error = authority
+        .rollback_application_with_task_activity_gate(
+            &tasks,
+            RollbackApplicationRequest {
+                package_id: first.package_id,
+                idempotency_key: key(0x0A),
+                rollback_at_ms: 6_000,
+            },
+        )
+        .expect_err("one durable Active task must block fresh rollback");
+    assert!(matches!(
+        error,
+        ApplicationAuthorityError::ApplicationActiveTasksRunning {
+            package_id,
+            active_task_count: 1,
+        } if package_id == first.package_id
+    ));
+    assert_rollback_counts(&stack, 0);
+
+    cancelled_task(&tasks, active_id);
+    let receipt = authority
+        .rollback_application_with_task_activity_gate(
+            &tasks,
+            RollbackApplicationRequest {
+                package_id: first.package_id,
+                idempotency_key: key(0x0D),
+                rollback_at_ms: 7_000,
+            },
+        )
+        .expect("terminal task activity must re-open the rollback gate");
+    match receipt {
+        nlos_application::RollbackDecision::RolledBack(receipt) => {
+            assert_eq!(
+                receipt.from_generation,
+                Generation::INITIAL.checked_next().unwrap()
+            );
+            assert_eq!(receipt.to_generation, Generation::INITIAL);
+        }
+        other @ nlos_application::RollbackDecision::Replayed(_) => {
+            panic!("fresh key must roll back, got {other:?}")
+        }
+    }
+}
+
 #[test]
 fn background_task_registration_replays_idempotently() {
     let stack = TestStack::new(&label("bg-task-register"), 0x50);
