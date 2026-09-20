@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 
-import type { ConfigDto, ParityDto, ReceiptDto } from "./types";
+import type { ConfigDto, ControlActionInput, ParityDto, ReceiptDto } from "./types";
 
 export async function getConfig(): Promise<ConfigDto> {
   return invoke("get_config");
@@ -24,6 +24,10 @@ export async function inspectHealth(): Promise<ReceiptDto> {
 
 export async function inspectSemanticHealth(): Promise<ReceiptDto> {
   return invoke("inspect_semantic_health");
+}
+
+export async function inspectResourceHealth(): Promise<ReceiptDto> {
+  return invoke("inspect_resource_health");
 }
 
 export async function exportMetrics(): Promise<ReceiptDto> {
@@ -51,4 +55,24 @@ export async function parityCheck(
   targetHex?: string | null,
 ): Promise<ParityDto> {
   return invoke("parity_check", { operation, targetHex: targetHex ?? null });
+}
+
+/** W32-B 写路径唯一入口:授权动作 → 真实 ControlCommand → 认证 IPC。 */
+export async function submitControl(action: ControlActionInput): Promise<ReceiptDto> {
+  return invoke("submit_control", { action });
+}
+
+/** 写路径一致性探针(pause-operation):同命令 GUI 认证入口 vs CLI plain 入口。 */
+export async function parityCheckWrite(
+  commandIdHex: string,
+  targetHex: string,
+  expectedRevision: number,
+  reason: string,
+): Promise<ParityDto> {
+  return invoke("parity_check_write", {
+    commandIdHex,
+    targetHex,
+    expectedRevision,
+    reason,
+  });
 }

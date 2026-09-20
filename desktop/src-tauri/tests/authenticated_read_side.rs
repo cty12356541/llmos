@@ -9,7 +9,7 @@
 use llmos_desktop_lib::devfixture::DevFixture;
 use llmos_desktop_lib::dto::OutcomeDto;
 use llmos_desktop_lib::error::ErrorCode;
-use llmos_desktop_lib::ipc::dispatch_read;
+use llmos_desktop_lib::ipc::dispatch_control;
 use nlos_system_control::control::{ControlCommand, ControlReceipt, receipt_to_hex};
 
 fn write_key_file(fixture: &DevFixture, label: &str) -> String {
@@ -29,7 +29,7 @@ async fn authenticated_inspect_health_matches_plain_entry_bytes() {
     let _loops = fixture.serve_forever();
 
     // 1) GUI 后端:认证入口 dispatch。
-    let gui = dispatch_read(
+    let gui = dispatch_control(
         fixture
             .socket_authenticated()
             .display()
@@ -82,7 +82,7 @@ async fn inspect_task_by_plan_id_round_trips_the_escalated_alert() {
 
     let plan_id =
         nlos_system_control::control::parse_hex_id(fixture.plan_id_hex()).expect("fixture plan id");
-    let receipt = dispatch_read(
+    let receipt = dispatch_control(
         fixture
             .socket_authenticated()
             .display()
@@ -109,7 +109,7 @@ async fn unwired_inspectors_surface_typed_not_found_failures() {
     let key_file = write_key_file(&fixture, "t3");
     let _loops = fixture.serve_forever();
 
-    let receipt = dispatch_read(
+    let receipt = dispatch_control(
         fixture
             .socket_authenticated()
             .display()
@@ -144,7 +144,7 @@ async fn missing_endpoint_maps_to_typed_handshake_error() {
     let _loops = fixture.serve_forever();
 
     let missing = std::env::temp_dir().join("llmosdt-missing-endpoint.sock");
-    let error = dispatch_read(
+    let error = dispatch_control(
         missing.display().to_string().as_str(),
         fixture.principal_hex(),
         &key_file,
@@ -170,7 +170,7 @@ async fn cli_binary_receipt_matches_authenticated_entry() {
     let key_file = write_key_file(&fixture, "t5");
     let _loops = fixture.serve_forever();
 
-    let gui = dispatch_read(
+    let gui = dispatch_control(
         fixture
             .socket_authenticated()
             .display()
