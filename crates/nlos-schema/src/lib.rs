@@ -91,10 +91,12 @@ const SABI_SYSTEM_CONTROL_V1: SchemaDescriptor = SchemaDescriptor {
     name: SABI_SYSTEM_CONTROL_SCHEMA,
     major: 1,
     // Minor 1 recorded the W27-A additive semantic-domain extension; minor 2
-    // records the W28-D additive operation-level command arms
-    // (PauseCommand/ResumeCommand/CancelCommand oneof entries 11..=13) under
-    // the ADR-0014 freeze rules. The entry stays frozen.
-    minor: 2,
+    // recorded the W28-D additive operation-level command arms
+    // (PauseCommand/ResumeCommand/CancelCommand oneof entries 11..=13); minor
+    // 3 records the W29-D additive kill/throttle/reclaim arms (oneof entries
+    // 14..=16 plus the ThrottleCommand.throttle_percent bound) under the
+    // ADR-0014 freeze rules. The entry stays frozen.
+    minor: 3,
     supported_critical_extensions: &[],
     frozen: true,
 };
@@ -719,7 +721,7 @@ pub fn system_control_schema_identity() -> sabi::v1::SchemaIdentity {
     sabi::v1::SchemaIdentity {
         name: SABI_SYSTEM_CONTROL_SCHEMA.to_owned(),
         major: 1,
-        minor: 2,
+        minor: 3,
         critical_extension_ids: Vec::new(),
         non_critical_extension_ids: Vec::new(),
     }
@@ -2028,6 +2030,12 @@ fn validate_control_command(
     }
     if command.command.is_none() {
         return Err(CompatibilityError::MissingSystemControlCommand);
+    }
+    if let Some(sabi::v1::control_command::Command::ThrottleOperation(throttle)) =
+        command.command.as_ref()
+        && !(1..=100).contains(&throttle.throttle_percent)
+    {
+        return Err(CompatibilityError::InvalidSystemControlIdentifier);
     }
     if command.reason.len() > MAX_CONTROL_REASON_BYTES || command.reason.contains('\0') {
         return Err(CompatibilityError::UnsafeControlReason);
