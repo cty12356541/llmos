@@ -367,6 +367,12 @@ impl SqliteTaskAuthority {
         })
     }
 
+    /// The configured [`ScaleProfile`] tier (W31-A materialization
+    /// consult read face).
+    pub(crate) fn scale_profile(&self) -> &'static ScaleProfile {
+        self.scale_profile
+    }
+
     /// Registers a Task idempotently.
     ///
     /// The initial `TaskHead` is `commit_seq = 0`, the domain-separated

@@ -142,6 +142,7 @@ mod commit;
 mod effect;
 mod group;
 mod lease;
+mod materialization;
 mod migrations;
 mod model;
 mod participant;
@@ -191,6 +192,7 @@ pub use lease::{
     CompleteAuthorityTakeoverRequest, MAX_AUTHORITY_LEASE_TTL_MS,
     barrier_observation_signature_message,
 };
+pub use materialization::{MaterializationAdmissionFacts, admit_plan_materialization};
 pub use model::{
     AdoptionReceiptRecord, AttemptHandle, AttemptRecord, AttemptRegistrationDecision, AttemptSpec,
     AttemptState, CancelDecision, CancelRequest, ClosePermitDecision, ClosePermitRequest,

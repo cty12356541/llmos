@@ -1,12 +1,12 @@
-# B-PLAN-001：nlos-plan 声明面状态权威骨架（TaskPlan/TaskNode state face）+ Dependency Resolver + Context Residency 分级 + 10K/100K 逻辑 TaskNode benchmark
+# B-PLAN-001：nlos-plan 声明面状态权威骨架（TaskPlan/TaskNode state face）+ Dependency Resolver + Context Residency 分级 + 10K/100K 逻辑 TaskNode benchmark + 惰性物化门
 
-状态：`PARTIAL_PASS`（**W28-A 状态面骨架 + W29-B Dependency Resolver + W31-E Context residency 分级最小版 + W31-D 10K/100K 逻辑 TaskNode benchmark**，2026-09-20）
+状态：`PARTIAL_PASS`（**W28-A 状态面骨架 + W29-B Dependency Resolver + W31-E Context residency 分级最小版 + W31-D 10K/100K 逻辑 TaskNode benchmark + W31-A 惰性物化门（G3）**，2026-09-21）
 
-> 对应：[ADR-0016 决定 2](../../management/adrs/0016-task-plan-declaration-surface.md)（独立 `nlos-plan` authority）与 [决定 5](../../management/adrs/0016-task-plan-declaration-surface.md)（Resolver 结果 durable）与 [决定 4](../../management/adrs/0016-task-plan-declaration-surface.md)（ScaleProfile 维度正规化）；[议题 35 §6](../../discussions/35-TaskPlan声明面设计.md) 验收门 G1（§2–§6，W28-A）、G4（§7，W29-B）与 G2/G5（§9，W31-D）；[进度单 §6.5.3](../../management/stage-b-progress.md) W28-A / W29-B / W31-E / W31-D 车道行
+> 对应：[ADR-0016 决定 2](../../management/adrs/0016-task-plan-declaration-surface.md)（独立 `nlos-plan` authority）与 [决定 5](../../management/adrs/0016-task-plan-declaration-surface.md)（Resolver 结果 durable）与 [决定 4](../../management/adrs/0016-task-plan-declaration-surface.md)（ScaleProfile 维度正规化）；[议题 35 §6](../../discussions/35-TaskPlan声明面设计.md) 验收门 G1（§2–§6，W28-A）、G4（§7，W29-B）、G2/G5（§9，W31-D）与 G3（§10，W31-A）；[进度单 §6.5.3](../../management/stage-b-progress.md) W28-A / W29-B / W31-E / W31-D / W31-A 车道行
 >
-> 实现：crate `crates/nlos-plan`（schema v1：`plans` / `plan_revisions` / `plan_nodes` / `plan_node_transitions` 四表 + 12 trigger；schema v2 additive：`plan_revision_nodes` / `plan_revision_edges` / `plan_resolution_receipts` 三表 + 8 trigger；schema v3 additive：`plan_node_residency_transitions` 一表 + `plan_nodes` 两列 + 4 trigger）+ `tests/tasknode_scale_probe.rs`（§9 规模探针）
+> 实现：crate `crates/nlos-plan`（schema v1：`plans` / `plan_revisions` / `plan_nodes` / `plan_node_transitions` 四表 + 12 trigger；schema v2 additive：`plan_revision_nodes` / `plan_revision_edges` / `plan_resolution_receipts` 三表 + 8 trigger；schema v3 additive：`plan_node_residency_transitions` 一表 + `plan_nodes` 两列 + 4 trigger；schema v4 additive：`plan_materialization_requests` 一表 + 1 partial unique index + 5 trigger）+ `tests/tasknode_scale_probe.rs`（§9 规模探针）+ `tests/materialization_gate.rs` / `tests/materialization_fault_matrix.rs`（§10 G3 证伪与物化门故障矩阵）+ `crates/nlos-task/src/materialization.rs`（§10 Task 侧消费接线）
 >
-> 范围纪律：W28-A 只落**状态权威落点**（§1–§6）；W29-B 只落 **Dependency Resolver**（§7，B4-3）；W31-E 只落 **Context residency 分级最小版**（§8，B4-5）；W31-D 只落 **10K/100K 逻辑 TaskNode benchmark**（§9，B4-9，G2/G5 后半）。manifest 模板面（W28-B）、TaskSpec 关联字段与 ScaleProfile 维度重绑（W29-A）、物化门 ADR-0013 接线均不在本 evidence 声明范围。
+> 范围纪律：W28-A 只落**状态权威落点**（§1–§6）；W29-B 只落 **Dependency Resolver**（§7，B4-3）；W31-E 只落 **Context residency 分级最小版**（§8，B4-5）；W31-D 只落 **10K/100K 逻辑 TaskNode benchmark**（§9，B4-9，G2/G5 后半）；W31-A 只落**惰性物化门**（§10，B4-4，G3——request/resolve 门 + Task 侧 admission consult 接线 + 存储层 MATERIALIZING 边门禁）。manifest 模板面（W28-B）与 TaskSpec 关联字段（W29-A 已落）不在本 evidence 声明范围。
 
 ## 1. 本切片目标
 
@@ -343,3 +343,105 @@ test one_hundred_thousand_logical_task_nodes_stay_lazy_and_bounded ... ok
 - **`cargo test --workspace`：未运行**——派工单 MUST NOT（波次屏障由控制器收口）。
 - **三平台 CI / MSRV：未运行**——待 push 后 CI 触发。
 - **release profile / 多平台复测：未运行**——见 §9.6。
+
+## 10. W31-A：惰性物化门（B4-4；G3）
+
+> 对应：[进度单 §6.5.3](../../management/stage-b-progress.md) W31-A 车道行（验收门：G3 证伪测试；物化门崩溃窗口故障矩阵）；[议题 35 §6](../../discussions/35-TaskPlan声明面设计.md) G3 逐字（「仅依赖+授权+Namespace+ResourceContract+fanout gate 全满足的节点进入 MATERIALIZING；窗口收缩停止新物化并 checkpoint/evict」；证伪条件「未满足依赖的节点可物化，或窗口收缩后仍新增物化」）；[v0.5 行 3650 `[PLAN-LAZY-001]`](../../design/06-架构设计总纲-v0.5.md)、[行 4503 `[SCALE-MATERIALIZE-001]`](../../design/06-架构设计总纲-v0.5.md)、§25.2.1 状态机（行 4488-4499）；[ADR-0013](../../management/adrs/0013-cross-authority-verify-then-commit-contract.md) verify-then-commit 契约；[ADR-0016 决定 3/4](../../management/adrs/0016-task-plan-declaration-surface.md)。
+>
+> 状态：`PASS`（本切片范围）；G3 五条件中的依赖就绪 + Task admission 两面已强制（见 §10.7 诚实边界），六门整体评审归 W31-G。
+
+### 10.1 设计：门协议与状态边
+
+物化门是逻辑声明面（`plan_nodes`）到物理执行（Task/Process runtime）的桥，按 ADR-0013 拆在两个权威上：
+
+```text
+plan 权威（readiness 事实 + commit）          task 权威（admission consult，只读消费）
+────────────────────────────────────────      ─────────────────────────────────────
+request_materialization                        answer_plan_materialization
+  ├ 依赖就绪校验：节点 pinned revision 的        ├ enforce_task_node_admission
+  │ 声明依赖逐个须 COMPLETED                     │   （其余声明节点数 +1 ≤ max_task_nodes）
+  │  不满足 → typed DependenciesNotReady        ├ enforce_working_set_admission
+  │  （DECLARED 节点先落 BLOCKED_DEPENDENCY 凭证）│   （未决 CommitPermit 数 +1 ≤ max_active_working_set）
+  ├ 状态推进（合法边、稠密凭证、单事务）：        └ 返回 admission facts 或 typed denial
+  │   DECLARED/BLOCKED_DEPENDENCY → ELIGIBLE
+  │   → WAITING_RESOURCE（已 WAITING/REHYDRATING resolve_materialization(verdict)
+  │   则不再重复推进）                             ├ APPROVED：请求行翻 APPROVED（记 admission facts）
+  └ 落一行 durable PENDING 请求（幂等键）          │   + WAITING_* → MATERIALIZING 凭证【同一事务】
+                                                  └ REJECTED：请求行翻 REJECTED（记 typed 原因）
+resolve 侧提交内再核：declared-revision CAS          节点停在 WAITING_*——窗口收缩，plan 不失败
+（StaleNodeRevision）+ 依赖就绪复核 + 节点态 CAS
+```
+
+- **状态边**：门驱动的合法边严格取 §25.2.1 `transition_is_legal` 既有子集（`DECLARED→BLOCKED_DEPENDENCY|ELIGIBLE`、`BLOCKED_DEPENDENCY→ELIGIBLE`、`ELIGIBLE→WAITING_RESOURCE`、`WAITING_AUTHORIZATION|WAITING_RESOURCE|REHYDRATING→MATERIALIZING`）；批准凭证即一张普通 `plan_node_transitions` 凭证（复用既有 voucher 表/稠密序列/CAS 语义），不引入第二状态机方言。
+- **存储层门禁（G3 证伪 #1 的第三层）**：`plan_node_transitions_materializing_gated` trigger 拒绝一切无 APPROVED 请求行的 `to_state = MATERIALIZING` 凭证插入——裸 `record_node_transition` 面从此对该边关闭（W28-A 骨架该边开放，属「本 lane 加 GATE 逻辑」的显式语义升级；既有 4 个测试文件的该边走查改为过门获取批准，断言零弱化，见 §10.6）。
+- **单飞行请求**：`plan_materialization_requests_one_pending` partial unique index（每节点至多一行 PENDING）；`resolve_once` / `resolved_shape` / `pending_shape` / `no_delete` trigger 承载「PENDING 是唯一可更新状态、身份列冻结、解析形状列匹配」。
+- **窗口收缩可观测**：拒绝是 durable 的——请求行携带 typed 原因（`WorkingSetFull{profile, active_count, max}` / `TaskNodeCapExceeded{profile, task_count, max}`）+ `resolved_at_ms`，节点停留 `WAITING_RESOURCE`，重试须新键新请求（历史保留为审计轨迹）；批准行携带 admission facts（profile + 两维投影计数）+ `approved_voucher_id` 链接到翻转凭证。
+- **checkpoint/evict 组合面**（`[SCALE-MATERIALIZE-001]` 收缩响应的 W31-A 范围）：拒绝后既有生命周期的 `ACTIVE→CHECKPOINTED→EVICTED` 与 W31-E residency `HOT→WARM→COLD` 逐级下走可组合收敛，再入场（`EVICTED→REHYDRATING→` 过门 `MATERIALIZING`）必须走新门轮（G3 测试 #4 钉死）；窗口整形的控制器策略归 W31-F。
+
+### 10.2 TDD 红→绿记录（G3 red first）
+
+1. **红**：`tests/materialization_gate.rs` 先写就（含 6 个用例）后首跑，编译面即红——`error[E0432] unresolved imports nlos_plan::{MaterializationRequest, MaterializationResolution, …}`、`error[E0599] no method named answer_plan_materialization / request_materialization / resolve_materialization / inspect_materialization_request / inspect_declared_task_node_count`：门 API 面不存在。
+2. **更实质的系统级红（lane 前事实）**：W28-A 骨架上裸 `record_node_transition(ELIGIBLE→WAITING_RESOURCE→MATERIALIZING)` 对依赖未满足节点直接成功——改造前 `tests/authority.rs` §25.2.1 全边走查测试正是（合法地）这样裸走该边的；即 G3 证伪条件 #1 在 lane 前的系统上成立。
+3. **绿**：schema v4 + `materialization.rs` + nlos-task 接线落地后 6 用例全绿（含裸边存储层 ABORT、伪造 resolution typed 拒绝两条 bypass 面断言）；既有 4 文件过门改造后全量零回归。
+
+### 10.3 实现事实
+
+- **schema v4**（additive，单事务）：`plan_materialization_requests`（16 列 STRICT：request_id PK / 幂等键 UNIQUE / (plan_id, task_node_id) FK plan_nodes / `observed_declared_revision`（请求钉住的声明 revision，resolve CAS 依据）/ status(1,2,3) / 批准列组 admission_profile·admitted_task_nodes·admitted_active_working_set·approved_voucher_id / 拒绝列组 rejection_kind(0/1/2)·rejection_profile·rejection_observed·rejection_cap / requested_at_ms·resolved_at_ms）+ §10.1 所列 5 trigger + 1 partial unique index；`migrate_v4` 沿线性链（0/1/2/3 → 4），v3 表在场校验、部分态拒绝。
+- **`crates/nlos-plan/src/materialization.rs`**：`request_materialization` / `resolve_materialization` / `inspect_materialization_request` / `inspect_node_materialization_requests`（历史，requested_at+rowid 序）/ `inspect_declared_task_node_count`（store-wide `plan_nodes` 计数，决定 4 维度读面）；域分隔派生：request_id、drive 凭证幂等键（step 域分隔）、approval 凭证幂等键各自独立域，杜绝跨表键碰撞。typed 错误新增四枚：`DependenciesNotReady{node_id, unresolved}` / `MaterializationRequestNotFound(key)` / `MaterializationRequestAlreadyPending{node_id, pending_key}` / `NodeNotAwaitingMaterialization{node_id, current}`。
+- **Task 侧接线（`crates/nlos-task/src/materialization.rs`，最小 additive）**：`MaterializationAdmissionFacts{profile_id, projected_task_nodes, projected_active_working_set}` + 自由函数 `admit_plan_materialization(profile, other_declared_task_nodes, active_working_set)`（先 task-node 维后 working-set 维，denial 复用既有 typed `TaskNodeAdmissionDenied` / `WorkingSetAdmissionDenied`，即拒绝的 typed 原因本体）+ `SqliteTaskAuthority::answer_plan_materialization(other_declared_task_nodes)`（内部读自身未决 permit 数，`scale_profile()` 为新增 pub(crate) 读面）。**只读消费：Task 侧零 schema 变更、零新 durable 行**（组合事实按 ADR-0013 嵌套回执姿态落在 plan 侧请求行上）。**新增 nlos-task 公共 API 两枚 + pub(crate) 读面一枚——按派工单显式 REPORT**。
+- **nlos-plan dev-dependency `nlos-task`**：G3 证伪测试需真实 Task 权威走消费路径；无环（nlos-task 不依赖 nlos-plan），公共面不新增编译依赖。
+- **consult 语义（决定 4 口径注记）**：task-node 维度按「其余声明节点数 +1（候选自身）≤ max_task_nodes」投影——物化边界确认「含候选的声明集适配 tier」；working-set 维度按「未决 CommitPermit +1 ≤ max_active_working_set」投影。声明面（apply 时）的 admission consult 仍是 W30-D 登记缺口，本 lane 关闭的是其物化半边（W29-A §12 缺口 #1 的边界接线）。
+
+### 10.4 G3 证伪测试（`tests/materialization_gate.rs`，6 passed）
+
+| 用例 | 覆盖 | 结果 |
+|---|---|---|
+| `g3_unmet_dependency_cannot_materialize_through_any_face` | 证伪 #1 三层闭合：门 typed 拒绝（`DependenciesNotReady`，节点落 `BLOCKED_DEPENDENCY`）；伪造 resolution → `MaterializationRequestNotFound`；裸 `WAITING_RESOURCE→MATERIALIZING` → 存储层 trigger ABORT（Sqlite typed），节点停留、全 plan 恰 1 节点越界 | PASS |
+| `g3_admission_denial_shrinks_window_with_typed_durable_reason` | 证伪 #2：真实消费路径（`G3_NODE_CAP_ONE` tier）下拒绝不可绕——durable typed 原因（`TaskNodeCapExceeded{task-10k 档位名, 2, 1}`）经读回逐位相等；节点停 `WAITING_RESOURCE`、窗口 0、B 节点不受牵连（plan 不失败）；拒绝后裸边仍 ABORT；重放 `ReplayedRejected`、异 verdict `IdempotencyConflict`；宽 tier 下新键重试收敛（历史 rejected+approved 两行） | PASS |
+| `g3_working_set_dimension_denies_and_window_stops_growing` | working-set 维度（零上界 tier）：typed `WorkingSetFull{.., active_count:1, max:0}` + 窗口 0 | PASS |
+| `g3_window_shrink_composes_with_checkpoint_evict_and_residency_eviction` | 收缩响应组合：拒绝后 `ACTIVE→CHECKPOINTED→EVICTED` + residency `HOT→WARM→COLD`（W28-A/W31-E 既有面）收敛到窗口 0；`EVICTED→REHYDRATING` 后再入场必须过新门轮 | PASS |
+| `gate_request_drives_legal_edges_is_idempotent_and_single_pending` | 门权威语义：`DECLARED→ELIGIBLE→WAITING_RESOURCE` 双稠密凭证、幂等重放、同节点第二 PENDING typed 拒绝、越界节点再请求 typed 拒绝 | PASS |
+| `gate_resolve_is_fenced_by_declared_revision_cas` | G4 一致 fence：reshape 后 resolve `StaleNodeRevision{expected:1, current:2}`、节点不越界 | PASS |
+
+### 10.5 物化门崩溃窗口故障矩阵（`tests/materialization_fault_matrix.rs`，F1–F4 + helper，5 passed）
+
+故障模型与 harness 与 §4/`plan_fault_matrix.rs` 逐字同源（kill-9 子进程 + piped READY、`FAULT_LOCK` 串行、`nlos-store-fault` VFS、逐行 `integrity_check` ok；断电语义 disclaimer 同 §4）：
+
+| 行 | 崩溃窗口 | 收敛断言 | 结果 |
+|---|---|---|---|
+| F1 `fault_kill9_mid_request_tx_rolls_back_and_real_request_converges` | request 事务中 kill-9（幻影 PENDING 行携真实幂等键） | 回滚零行、真实 request `Requested`（双驱动凭证）、同键 `Replayed` 恒单行 | PASS |
+| F2 `fault_kill9_between_request_and_approval_converges_uniquely` | request 提交后、approval 前 kill-9 | PENDING 单行 + `WAITING_RESOURCE` + 双凭证逐位存续；旧视图重放由持久行应答；重启后 approval 收敛 `MATERIALIZING`（行翻 APPROVED 不加行、第三张凭证同事务）；resolution 重放 `ReplayedApproved` 凭证恒三张 | PASS |
+| F3 `fault_io_error_on_approval_fails_closed_and_retry_succeeds` | approval 事务硬 I/O 错误（`FailWritesAfter{0, IoErr}`） | typed `Sqlite` 失败（错误链含 I/O 条件）不假成功；请求仍 PENDING、节点仍 `WAITING_RESOURCE`、凭证恒两张；disarm 后同一 resolution 成功收敛 | PASS |
+| F4 `fault_silent_write_loss_on_approval_redo_resolves_once_and_converges` | approval 静默丢写（`PowerLossAfter{0}`，幻影「成功」） | 重开只见落盘前缀（PENDING/`WAITING_RESOURCE`/两凭证/integrity ok）——**不存在 approved-但未翻状态的窗口**（verdict 与状态翻转同一事务，即「crash after approval before node state flip」行的答案：该窗口在存储上不可达）；redo 恰解析一次；二次重开验证真持久 + 重放幂等 | PASS |
+
+### 10.6 既有测试过门改造（断言零弱化清单）
+
+- `tests/authority.rs` 全边走查：两处 `→ MATERIALIZING`（0xa3/0xa8）改为 `gate_into_materializing` 过门（请求+批准各贡献恰一张凭证），凭证总数/断言不变。
+- `tests/g1_revision_immutability.rs` `drive_to_materializing`：第三步改过门；G1 三用例全部断言原样（冻结语义不受影响——G1 测试零弱化）。
+- `tests/residency.rs` `evicted_to_cold_node_preserves_metadata_facts`：越界改过门 + 显式断言 gated 状态/冻结；residency 断言原样（零弱化）。
+- `tests/restart_replay.rs`：walk 拆为两裸步 + 门请求/门批准两个 effect，保持「每 effect 间重启、每键重放恰一次」结构；`transition_count == 3` 与 rebound 键断言不变。
+- `tests/residency.rs` / `tests/resolver.rs` migration 版本期望 3→4（随链头推进；语义不变，同 W31-E §8.6 先例）。
+
+### 10.7 已知限制与 deferred minors（如实登记）
+
+- **G3 五条件的诚实边界**：仅依赖就绪 + Task admission（working-set / max_task_nodes 两维）已强制；Namespace / ResourceContract / fanout gate 仍是声明 digest（对应权威未落，W28-A 姿态沿用）。授权面（WAITING_AUTHORIZATION 的解除）无权威承载——门接受该态节点进入并按同一 consult 批准（§25.2.1 该边合法），授权 enforcement 属后续车道。
+- **approval 真实性边界（ADR-0013 分工的直接推论）**：plan 侧验证 verdict 的绑定/形状/revision fence/依赖就绪，admission 真理由 Task 权威所有；「admission 说否仍获批准」的组合不可能性经消费路径成立（G3 测试即证），与 Task 嵌套 owner 回执同构。持有 plan 库写权限的调用者手工构造 Approved verdict 属同级的越权前提（本地单进程无跨权威签名面），与既有全部权威面（含 `record_node_transition` 本身）信任模型一致，不额外声明防护。
+- **窗口整形策略 = W31-F**（priority/deadline/locality/pressure 的 window shaping 与调度决策 inspect）；checkpoint/evict 控制器自动化 = W31-C/W31-F（本 lane 提供门 + §10.4 #4 的可组合面）。
+- **物化窗口计数的观测面未做成 API**：测试经 `list_plan_nodes` 过滤 {MATERIALIZING/ACTIVE/CHECKPOINTED/REHYDRATING} 计窗（EVICTED 已释放席位）；如 W31-F 需要专用 inspect 计数 API 按需补。
+- **working-set 维度计数口径**：nlos-task 未决 `CommitPermit` 数（现成 durable 事实），非 plan 侧物化窗口数——两权威词汇有意不混写（ADR-0016 决定 4 分维纪律）。
+- **故障矩阵 verdict 为手工构造**：F1–F4 测 plan 侧崩溃窗口（请求/批准事务），真实 consult 路径由 G3 测试覆盖；Task 侧零 durable 写，无 Task 侧崩溃窗口可注入（ADR-0013 该半边无两阶段）。
+- **nlos-plan dev-dep nlos-task**：仅测试接线；若后续需要生产期组合器（verdict 映射 wiring），落位归 W31-F/slice-k 组装器（本 lane 的映射 wiring 在 G3 测试内，5 行）。
+
+### 10.8 验证门（W31-A 实跑）
+
+| 门 | 命令 | 结果 |
+| --- | --- | --- |
+| fmt | `cargo fmt -p nlos-plan -p nlos-task` | PASS |
+| 全量测试 | `cargo test -p nlos-plan -p nlos-task` | PASS（nlos-plan 13 target 54 passed / 0 failed / 2 ignored（探针）；nlos-task 47 target 355 passed / 0 failed——G6 零回归） |
+| clippy | `cargo clippy -p nlos-plan -p nlos-task --all-features --all-targets` | PASS（0 warning；未使用 `chunks_exact`，CI clippy 1.98 纪律） |
+
+### 10.9 未运行项（W31-A，显式列出）
+
+- **push 与 PR：未执行**——派工单 MUST NOT；由控制器统一执行。
+- **`cargo test --workspace`：未运行**——派工单 MUST NOT（波次屏障由控制器收口；W30-A 并行车道持 nlos-task 测试文件写集）。
+- **三平台 CI / MSRV：未运行**——待 push 后 CI 触发。
