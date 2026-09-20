@@ -1,8 +1,7 @@
-# B-GUI-001:可信 Tauri 任务管理器壳(W32-A 只读半 + W32-B 写入半 + W32-C parity 钉死 + W32-D 权限/预算可见 + W32-E 资源监控 + W32-F 应用表面呈现)
+# B-GUI-001:可信 Tauri 任务管理器壳(W32-A 只读半 + W32-B 写入半 + W32-C parity 钉死 + W32-D 权限/预算可见 + W32-E 资源监控 + W32-F UI Surface + W33-F Task Space)
 
-> 状态:`PARTIAL PASS`(读半 W32-A + 写入半 W32-B + parity 钉死 W32-C + 权限/预算可见 W32-D + 资源监控 W32-E + 应用表面呈现 W32-F 已落地)
+> 状态:`PARTIAL PASS`(读半 W32-A + 写入半 W32-B + parity 钉死 W32-C + 权限/预算可见 W32-D + 资源监控 W32-E + UI Surface W32-F + Task Space W33-F 已落地)
 >
-> 日期:2026-09-20(W32-A)/ 2026-09-21(§W32-B、§W32-C、§W32-D、§W32-E、§W32-F)
 >
 > 对应:`ROAD-B-005`/B5-4 读半边、`ROAD-B-002`/B2-2 UI Surface 维度(§W32-F)、`[SABI-AUTH-001]`、`[CTRL-PARITY-001]`、[ADR-0011](../../management/adrs/0011-ipc-principal-auth-signature-passthrough.md)、[B-TASK-006L](./b-task-006l-system-control-recovery-handler.md)、[B-SCHEMA-006](./b-schema-006-typescript-python-ipc-clients.md)
 
@@ -240,7 +239,7 @@ gate(B5-5 后半):「消费既有 metrics 面,无新控制路径」——Resourc
 - `desktop/src-tauri/src/{ipc,dto,lib}.rs`、`desktop/src-tauri/tests/resource_monitor_metrics_side.rs`(新增)、`desktop/src/{main,ipc,types,openmetrics}.ts`(`openmetrics.ts` 新增)、`desktop/README.md`。
 - 本证据文件 §W32-E 与头部状态行、`docs/management/evidence-index.yaml` b-gui-001 行更新。
 
-## §W32-F 应用表面呈现(2026-09-21)
+ §W32-F 应用表面呈现(2026-09-21)
 
 > 车道:W32-F / B2-2——ROAD-B-002 四能力维度中「UI Surface」的声明→呈现最小链(W33-H review §4 行 6 判定的唯一硬阻塞项)。按本文件 W32-x 节先例落档于 b-gui-001(横跨 nlos-application manifest 半 + desktop 呈现半)。
 
@@ -289,3 +288,47 @@ gate 措辞:「Application 声明 surface→窗口呈现最小链」。判定口
 - `crates/nlos-application/src/{surfaces.rs(新增),lib.rs,schema.rs}`、`crates/nlos-application/tests/surface_registration.rs`(新增)。
 - `desktop/src-tauri/src/{surfaces.rs(新增),ipc.rs,dto.rs,error.rs,lib.rs}`、`desktop/src-tauri/Cargo.toml`(+nlos-application path dep;dev-fixture 增 nlos-artifact 可选依赖)、`desktop/src-tauri/tests/surface_presentation_side.rs`(新增)、`desktop/src/{main,ipc,types}.ts`、`desktop/src/style.css`、`desktop/README.md`。
 - 本证据文件 §W32-F 与头部状态行、`docs/management/evidence-index.yaml` b-gui-001 行更新。
+
+## §W33-F 最小 Task Space(2026-09-21)
+
+### W33-F.1 实现范围
+
+gate(进度单 §6.5.3 W33-F 行,§6.5.4 决策点 2):「最小 Task Space(X-2):任务列表/详情只读视图——**复用 Task Manager 读侧**」;完整桌面归阶段 D。文件边界:本车道在 desktop/ 的写集 = **仅新增** `desktop/src/views/task-space/` + 主壳一行视图注册(「任务空间」侧栏 tab,紧随「任务查询」);不改任何既有桌面文件的其他行(与并行车道 W32-F 的 manifest/surface 写集零交集)。
+
+1. **零新后端命令,gate 成立**:视图全部数据经 Task Manager 既有认证只读命令面(`desktop/src/ipc.ts` 既有导出,后端 `src-tauri` 零改动):列表扫描 = `InspectHealth`/`InspectSemanticHealth`/`InspectResourceHealth` 三域巡检;存在性验证与详情 = `InspectTask`;关联实体 = `InspectProcess`/`InspectResourceCost`(后者为 W32-D 接线面,`resource_root` 未配置时回诚实类型化 `NOT_FOUND`,不伪造)。**无任何 mutation 派发路径**(`submit_control` 不被本视图引用;渲染层对 mutation outcome 形态显式拒绝渲染,保住只读边界的可见性)。
+2. **任务列表**(`views/task-space/model.ts` + `index.ts`):三域巡检回执的 escalated 告警行按 `plan_id` 聚合成任务行——每行带域告警关联(`total_failures` + acknowledged 确认态,来自告警行事实)+ 来源标记(巡检发现/手动关注);聚合为纯前端投影,不发明任何字段。手动关注(follow):输入 `plan_id` 经 `InspectTask` 验证在恢复快照中存在才入列(未知计划 = 类型化 `NOT_FOUND` 回执如实展示,不入列);follow 集合为会话内存态。刷新 = 三条完整真实认证 dispatch(拉模型);域派发失败如实降级(该域无聚合事实 + 状态行提示),不静默。
+3. **任务详情面板**:选中行自动派发 `InspectTask`(单计划告警回执,页脚恒显 `control_command_id`/`correlation_id`/`receipt_hex`)+ 跨域关联行(最新扫描事实)+ 关联实体查询(按操作者已知 `process_id`/`reservation_id`,枚举面缺口见 W33-F.3)。回执渲染层(`views/task-space/receipts.ts`)对 `OutcomeDto` 全形态穷尽匹配:恢复三域/进程/成本六读侧形态照主壳同形渲染;**W32-G 五层 inspect 形态(task_group/task_node/execution_fiber/topic/durable_operation inspected)渲染器全量就绪**(`types.ts` 既有导出——Task Space 详情面的数据丰富度来源);mutation 形态显式拒绝。
+4. **与 Task Manager 视图的互导航**:详情页「跳转 Task Manager 视图」按钮组(恢复总览/语义恢复/任务查询/进程查询/资源查询/一致性自检)按侧栏 tab 文本激活既有视图(DOM 查询 + click,零主壳改动);反向导航 = 侧栏「任务空间」tab(注册行即入口)。
+5. **一致性(house parity 纪律)**:视图消费的每张回执与 CLI 同命令输出**同一字节**——本视图零后端改动,不产生新 parity 面;GUI 认证入口 ↔ CLI plain 入口字节一致由既有 W32-C 三路径矩阵与 `authenticated_read_side` 集成测试继续钉死;扫描卡页脚逐域列出巡检回执 `receipt_hex`(与 `system-control-cli <plain_socket> inspect-health` 等命令的 `RECEIPT` 行同一等价契约,供人工比对)。
+
+### W33-F.2 验证(本机实跑,macOS/darwin arm64)
+
+- `desktop/`:`npm install` → `npm run build`(tsc 严格 + vite 7)通过;产物 bundle 内 grep 命中「任务空间」/`task-space` 视图代码(注册与视图确实入包)。
+- 数据面活体冒烟(dev fixture + 真实 CLI,GUI 窗口点按受限的既有替代法,同 W32-A/B/D/E 各波):`cargo build -p nlos-system-control` 后 `npm run dev:server` 起真实权威夹具(escalated 计划 `e1860803…671`),真实 `system-control-cli` 经 plain 入口跑本视图消费的同名只读命令,逐项与本视图投影对上:
+  - `inspect-health` → `outcome=inspected worker_state=BackingOff … durable_escalated=1 alerts=1`(告警行 plan_id = `e1860803…671`)——列表将聚合出的唯一任务行(artifact 域关联 `total_failures=1/未确认`);
+  - `inspect-semantic-health` / `inspect-resource-health` → 两域 `alerts=0`——列表如实无此二域关联行;
+  - `inspect-task e1860803…671` → `outcome=inspected … alerts=1`(单计划过滤)——详情面板自动派发将渲染的回执(含 `RECEIPT` hex);
+  - `inspect-task 4141…41`(未知计划)→ `outcome=failure code=3 message=requested recovery task was not found…`——follow 负路径:类型化失败如实展示、不入列。
+- 未运行/未验证:GUI 窗口内交互式点按(同前波次限制,无 Accessibility/Screen Recording;以 build + CLI 活体冒烟 + 既有命令层集成测试替代);W32-G 五层 inspect 的 GUI 派发(未接线,见 W33-F.3-③)。
+
+### W33-F.3 缺口登记:任务事实存在、本视图不渲染(诚实边界,视图内静态卡同步)
+
+| # | 任务事实 | 现状 | 缺口 |
+| --- | --- | --- | --- |
+| ① | 任务/TaskGroup 全量枚举 | 恢复巡检只投影 escalated 告警行 | 无 IPC 列表命令——列表 = 三域 escalated 计划行 + follow 集合;全量枚举待后续 IPC 面 |
+| ② | W29-A 关联字段(`application_id`/`plan_revision`,tasks 表 v44 三列) | 权威已持久化,`inspect_task` 读回 | 可达读面(`InspectTask` 告警投影)不携带——无 IPC 投影,视图不发明;待 inspect 面扩列 |
+| ③ | W32-G 五层 inspect(TaskGroup/TaskNode/ExecutionFiber/Topic/Operation) | SABI v1.5 命令 + CLI/NL 三路 parity 已落地;`types.ts` 五 outcome 形态已投影 | **desktop 命令层(src-tauri `ipc.rs`/`lib.rs`)未接线**——本车道文件边界不含 `src-tauri`,视图不派发;渲染形态已就绪,接线(对既有 ControlCommand 的薄 GUI 壳命令,`export_resource_metrics` 先例)属后续车道;今日操作者路径:`system-control-cli <plain_socket> inspect-task-node <plan> <node>` 等 |
+| ④ | fiber/operation 列表面 | 上游 W32-G 已登记(runtime 无 fiber 枚举 API;store 行缺失与 stale generation 不可区分) | Task Space 层级浏览同受此约束 |
+
+### W33-F.4 边界与遗留(deferred minors)
+
+1. **W32-G 五层 inspect 的 GUI 派发接线**(最重要递延):「任务 → 计划节点」完整链在桌面侧的最后一段;渲染器已就绪,接线后 W33-F.3-③ 缺口即闭。
+2. follow 集合为会话内存态(不落盘——与连接配置同纪律);无自动刷新(手动拉模型,同「恢复总览」形态)。
+3. 前端无 TS 测试运行器(仓库 desktop 无该基建,W32-E 同款登记):聚合/渲染逻辑由 tsc 严格模式类型钉死 + 数据等价由既有 Rust parity 集成测试钉死。
+4. `docs/management/stage-b-progress.md` 波次表更新不在本车道写集(integrator 收口)。
+
+### W33-F.5 工件清单(本波次写集)
+
+- `desktop/src/views/task-space/{dom,receipts,model,index}.ts`(全部新增,本车道在 desktop/ 的唯一代码写集)。
+- `desktop/src/main.ts`:两行注册(`import { taskSpaceView } …` + `register("task-space", "任务空间", taskSpaceView())`)——新视图模块挂载的最小必要改动,此外零行。
+- 本证据文件 §W33-F 与头部状态行、`docs/management/evidence-index.yaml` b-gui-001 行更新。
