@@ -790,3 +790,15 @@
   scope: "W26 三平台+MSRV/Pages run 链接只读勘察与行映射（W27-F）"
   assurance: H3
   date: "2026-09-20"
+- id: b-plan-002-manifest-template
+  path: docs/evidence/stage-b/b-plan-002-manifest-template.md
+  title: "B-PLAN-002：package manifest tasks 模板段（声明面模板面）"
+  scope: "manifest tasks additive 段 + G6 旧包验装负门 + PLAN-OVERRIDE-001 编译等价（W28-B）"
+  assurance: H3
+  date: "2026-09-20"
+- id: b-task-008c2g-resource-prepare-finalize
+  path: docs/evidence/stage-b/b-task-008c2g-resource-prepare-finalize.md
+  title: "B-TASK-008C2G-RES-PF：Resource 跨 authority prepare/finalize 有界 coordinator"
+  scope: "schema v43 envelope/plan + 第三域恢复台账 + G7 envelope 窗口 kill-window 矩阵（W28-C）"
+  assurance: H3
+  date: "2026-09-20"
