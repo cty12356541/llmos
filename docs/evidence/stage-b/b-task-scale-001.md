@@ -298,3 +298,83 @@ test result: ok. 2 passed; 0 failed; ... finished in 31.96s
 2. 关联字段仅存引用：物化/permit 边界的 ADR-0013 verify-then-commit 核验未接线（W29-C/W30-D）；manifest 模板段到 TaskSpec 关联的实例化（候选 C 桥）在 B-APPLICATION 车道。
 3. checkpoint/rehydrate 基准、release profile 与多平台复测仍未做；G2/G5 100K 正式 gate 在 W31。
 4. b-plan 侧 evidence 一行引用未落（W29-A 写集限定本文件为唯一 primary；b-plan 车道自行回指本节即可）。
+
+## 13. W31-B working-set 比例矩阵基准（2026-09-21）
+
+> 对应：进度单 §6.5.3 W31-B 车道行（验收门：比例矩阵数据落 evidence；admission 不退化）；[ROAD-B-004](../../design/06-架构设计总纲-v0.5.md) §28.2（10K/100K × active working-set ratio 矩阵）；[ADR-0016 决定 4](../../management/adrs/0016-task-plan-declaration-surface.md)（维度口径纪律）；W31-A consult 面（`answer_plan_materialization`，§10.3）与 W31-D 逻辑 TaskNode benchmark（`nlos-plan` 侧 `tasknode_scale_probe.rs`——两口径不混写）。
+>
+> 状态：`PASS`（本切片范围）；ROAD-B-004 整体收口归 W31-G 六门评审，本节不宣称整体达成。
+
+### Base HEAD / 写集
+
+开工 `b65255e`（分支 `feat/w31-b`，nlos-task 无并行写车道）。
+
+- `crates/nlos-task/tests/working_set_ratio_probe.rs`（新，唯一代码写集——benchmark test file only，零 src admission 逻辑改动）。
+- 本 evidence 文件 §13 + `docs/management/evidence-index.yaml` 本文件行 scope/date 更新。
+
+### 口径与诚实规则（先行声明）
+
+1. **working-set 维度 = 未决 `CommitPermit` 计数**：W18-004 admission 前缀、W19-004 advisory、W20/W21 execution/outcome 链与 `inspect_working_set_pressure` 读面测的就是这个 durable 事实；不与 plan 侧物化窗口计数混写（W31-A §10.7 词汇纪律）。
+2. **逻辑 population 由每 cell profile 注册维度承载**（`max_task_registrations == population`，两声明维度同量级）；声明 TaskNode（`plan_nodes`）维度的 10K/100K 数字归 W31-D §9，两口径分列不混写。
+3. **诚实档位（显式声明常量，非运行期计算）**：10K × {1%, 10%, 50%}（工作集 100/1000/5000）+ 100K × {1%, 10%}（1000/10000），软阈值一律 90%（与已发布档同值）。超过已发布档 ~5% 工作集姿态的 cell（10K@10%/50%、100K@10%）是对 admission **机制**的刻意超比例探测：每 cell 绑 per-cell profile，且探针与纯测试双向断言**已发布档本身在该占用上 fail-closed**（`enforce_working_set_admission` 锚定；已发布档 5% admits / 6% denies 姿态另钉）——本矩阵不声称已发布档支持 >5% 活跃比例。
+4. **确定性纪律（本车道门「no assertion on wall-clock」，比 W31-D §9.1 更严）**：全部计时数字只记录、**零 wall-clock 断言**（含病态慢守卫也不加）；「admission 不退化」以每 ratio 位置的精确事实承载——cap 内逐笔 `Issued`、advisory 恰在 `(threshold, cap]` 投影带内携带且五字段逐位相等、execution/outcome 链在带内首笔与 cap 笔形状精确（sequence 0 / RebuildableCache / `evicted_units = projected − threshold`）、pressure 快照在 {0, threshold, threshold+1, cap} 计数点与独立推导期望逐位相等、cap+1 issuance 以 typed 三元组 fail-closed、拒后快照不变、cap 上幂等 replay 绕过 gate 与全部 advisory/execution/outcome 前缀。
+
+### benchmark 设计（`tests/working_set_ratio_probe.rs`）
+
+每 cell 一条管线（默认套件 500 population 三比例 smoke 走同一管线，探针 helper 不腐化）：
+
+1. 注册 population 任务（fsync 逐注册事务）；
+2. 空载 pressure 快照 + W31-A consult（`answer_plan_materialization(0)` → 精确 facts）；
+3. 为全部 active 槽注册 attempt（散布 ID 空间：`ordinal × population / active`）；
+4. 填充循环（每笔 issuance 逐位断言，含 {threshold, threshold+1, cap} 计数点的 pressure 快照 + 软阈值下 consult facts）；
+5. 饱和后 consult 两维 verdict 精确：工作集维 `WorkingSetAdmissionDenied{active+1, active}`；task-node 维先判（`TaskNodeAdmissionDenied{max+1, max}`，与工作集饱和无关）；
+6. cap+1 issuance typed fail-closed——经**已占用任务上的竞争第二 attempt**探测（admission 前缀在 `compete_for_permit` 之前 consult；cell profile 注册维度无余位，deny 面由此探针形状承载）；拒后快照不变；
+7. cap 上幂等 replay 绕过 gate 与全部前缀。
+
+纯测试 `matrix_cells_declare_exact_ratios_and_published_tier_anchors` 钉 cell 表算术：`active × 100 == population × ratio%` 精确整数比、advisory 带非空（`0 < threshold < active < population`）、两声明维度恰等于 population、已发布档 5% admits/6% denies、published-tier 锚定逐 cell 一致。
+
+### 实跑数字（原样誊录）
+
+命令（两档分跑，同一测试二进制）：`cargo test -p nlos-task --test working_set_ratio_probe -- --ignored --nocapture ten_thousand`（11.38s）与 `... one_hundred`（95.38s）。debug/test profile，单平台 macOS arm64。**逐 cell 墙钟**：10K 三 cell 合计 11.4s；100K@1% ≈ 39.3s、100K@10% ≈ 56.0s——均远低于 15 分钟预算，无 not-run 登记项。
+
+```
+W31-B ratio matrix cell task-ratio-10k-1pct (single platform): population=10000 ratio=1% active=100 threshold=90 published_within=true register_total=2.104871334s attempts_total=14.204875ms fill_total=40.039125ms fill_p50=371.625µs fill_p95=417.875µs fill_max=3.061709ms inspect_empty=20.125µs inspect_at_threshold=Some(13.291µs) inspect_at_threshold_plus_one=Some(11.792µs) inspect_at_cap=Some(13.875µs) consult_empty=9.375µs consult_below_cap=Some(10.083µs) consult_ws_saturated=10.833µs consult_tn_saturated=10.292µs deny_latency=73.166µs replay_latency=54.5µs database_bytes=7299072 rss_before=Some(2310144) rss_after=Some(8650752)
+W31-B ratio matrix cell task-ratio-10k-10pct (single platform): population=10000 ratio=10% active=1000 threshold=900 published_within=false register_total=2.05391675s attempts_total=168.340916ms fill_total=518.181291ms fill_p50=440.084µs fill_p95=830.375µs fill_max=5.893292ms inspect_empty=26.084µs inspect_at_threshold=Some(33.667µs) inspect_at_threshold_plus_one=Some(36.459µs) inspect_at_cap=Some(35.542µs) consult_empty=11.5µs consult_below_cap=Some(27.542µs) consult_ws_saturated=30.75µs consult_tn_saturated=29.792µs deny_latency=104.25µs replay_latency=63.541µs database_bytes=8126464 rss_before=Some(8650752) rss_after=Some(8896512)
+W31-B ratio matrix cell task-ratio-10k-50pct (single platform): population=10000 ratio=50% active=5000 threshold=4500 published_within=false register_total=2.345455417s attempts_total=809.550958ms fill_total=2.957148083s fill_p50=510.833µs fill_p95=943.375µs fill_max=11.777333ms inspect_empty=25.75µs inspect_at_threshold=Some(107µs) inspect_at_threshold_plus_one=Some(100.417µs) inspect_at_cap=Some(114.333µs) consult_empty=11.833µs consult_below_cap=Some(97.917µs) consult_ws_saturated=107µs consult_tn_saturated=99.334µs deny_latency=193.083µs replay_latency=311.542µs database_bytes=11677696 rss_before=Some(8863744) rss_after=Some(8634368)
+test ten_thousand_population_ratio_matrix_admits_correctly ... ok
+```
+
+```
+W31-B ratio matrix cell task-ratio-100k-1pct (single platform): population=100000 ratio=1% active=1000 threshold=900 published_within=true register_total=38.616019875s attempts_total=123.938583ms fill_total=523.261875ms fill_p50=364.5µs fill_p95=475.583µs fill_max=73.624542ms inspect_empty=19.416µs inspect_at_threshold=Some(26.75µs) inspect_at_threshold_plus_one=Some(24.291µs) inspect_at_cap=Some(28.625µs) consult_empty=9.083µs consult_below_cap=Some(22.708µs) consult_ws_saturated=24.708µs consult_tn_saturated=23.75µs deny_latency=84.542µs replay_latency=51.416µs database_bytes=66351104 rss_before=Some(2310144) rss_after=Some(8372224)
+W31-B ratio matrix cell task-ratio-100k-10pct (single platform): population=100000 ratio=10% active=10000 threshold=9000 published_within=false register_total=48.551397791s attempts_total=2.063702833s fill_total=5.253356959s fill_p50=445.916µs fill_p95=563.583µs fill_max=66.326333ms inspect_empty=1.561959ms inspect_at_threshold=Some(155.5µs) inspect_at_threshold_plus_one=Some(155.833µs) inspect_at_cap=Some(181.708µs) consult_empty=12.042µs consult_below_cap=Some(150.458µs) consult_ws_saturated=172.875µs consult_tn_saturated=165.084µs deny_latency=233.75µs replay_latency=305.292µs database_bytes=74395648 rss_before=Some(8388608) rss_after=Some(7913472)
+test one_hundred_thousand_population_ratio_matrix_admits_correctly ... ok
+```
+
+### 要点解读（记录面，非断言面）
+
+| 面 | 实测 | 解读 |
+| --- | --- | --- |
+| admission 决策正确性 | 5 cell 全部逐位断言通过（cap 内逐笔 Issued、advisory 带精确、cap+1 typed deny、replay 绕过、consult 两维 verdict 精确） | **admission 不退化成立**（每 ratio 位置精确事实，零 wall-clock 断言） |
+| issuance 成本 vs active 数 | fill p95：100→417.9µs、1000→830.4µs(10K)/475.6µs(100K)、5000→943.4µs、10000→563.6µs | 100x active 增长下 p95 仅 ~1.1–2.3x（COUNT 未决 permit + key-scoped CAS；噪声区间内近常数，亚线性） |
+| issuance 成本 vs population | 同 active=1000：10K 库 p95 830.4µs vs 100K 库 p95 475.6µs | 同 ratio 同 active 下与 population 无正相关（惰性成立姿态的记录面） |
+| pressure 读回 | inspect p95（threshold/cap 点）：13.9µs@100 → 35.5µs@1000(10K) / 28.6µs@1000(100K) → 114.3µs@5000 → 181.7µs@10000 | `COUNT(issued permits)` 为 O(active)（by design）；同 active 跨 population 同量级（35.5 vs 28.6µs） |
+| deny / replay / consult | deny 73–234µs、replay 51–312µs、饱和 consult 24–173µs 随 active 线性 | fail-closed 与幂等面在全部 ratio 位置保持在亚毫秒量级 |
+| 足迹 | 落盘 7.3–74.4MB（随 population/active）；RSS 峰值 ~8.9MB | 记录面；与 §12 注册维 100K 落盘（70MB）同量级 |
+
+### 验证门（W31-B 实跑）
+
+| 门 | 命令 | 结果 |
+| --- | --- | --- |
+| fmt | `cargo fmt -p nlos-task -- --check` | PASS |
+| 全量测试 | `cargo test -p nlos-task` | PASS（50 个 test-result 行合计 **369 passed / 0 failed / 4 ignored**（2 为既有 scale_profile_probe 探针 + 本车道 2 新探针）；基线 367 + 本车道默认套件 2 新用例） |
+| clippy | `cargo clippy -p nlos-task --all-features --all-targets -- -D warnings` | PASS（修 `doc_markdown` ×4、`unnecessary_unwrap` ×1、`collapsible_if` ×1 后；未使用 `chunks_exact`，CI clippy 1.98 纪律） |
+| 10K 探针 | `cargo test -p nlos-task --test working_set_ratio_probe -- --ignored --nocapture ten_thousand` | PASS（本节三 cell 数字，11.38s） |
+| 100K 探针 | `cargo test -p nlos-task --test working_set_ratio_probe -- --ignored --nocapture one_hundred` | PASS（本节两 cell 数字，95.38s；每 cell ≤ 15 分钟预算） |
+
+### 仍属缺口 / deferred minors（如实登记）
+
+1. **计时零断言**（车道门「no assertion on wall-clock」）：admission/pressure 成本只记录；COUNT 未决 permit 面（O(active)）的回归防护是否加相对断言归后续车道决定。
+2. **debug/test profile 单平台数字**：release 复测、多平台与 CI 化未做；RSS 读数仅 macOS 可移植（`ps`），其余 target 如实 `None`。
+3. **矩阵未含 100K@50%**（50_000 工作集）：10K@50% 已覆盖超比例姿态，且 100K 注册维每注册 fsync（~50s/cell）使该 cell 性价比低——登记为**档位选择**，非测量缺口。
+4. **occupancy 只单调填充**：无回收后再入场循环；pressure/advisory 在 reclaim 边界的动态行为归 reclaim controller 车道（W31-C/W31-F）。
+5. push / PR / workspace 全量门：MUST NOT，控制器统一收口。

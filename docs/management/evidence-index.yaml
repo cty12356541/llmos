@@ -739,9 +739,9 @@
 - id: b-task-scale-001
   path: docs/evidence/stage-b/b-task-scale-001.md
   title: "B-TASK-SCALE-001：ROAD-B-004 前片 ScaleProfile 骨架与 10K 已落地维度规模证明"
-  scope: "ROAD-B-004 前片 ScaleProfile 骨架与 10K 已落地维度规模证明"
+  scope: "ROAD-B-004 前片 ScaleProfile 骨架与 10K 已落地维度规模证明；§13 W31-B working-set 比例矩阵基准（10K/100K × active-ratio，admission/pressure/advisory 精确断言）"
   assurance: H3
-  date: "2026-08-30"
+  date: "2026-09-21"
 - id: b-topic-001-topic-service-single-log-fanout
   path: docs/evidence/stage-b/b-topic-001-topic-service-single-log-fanout.md
   title: "B-TOPIC-001：Topic 服务层单 log fanout 最小前缀"
