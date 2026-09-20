@@ -2133,6 +2133,8 @@ fn registered_active_task(tasks: &nlos_task::SqliteTaskAuthority, id: TaskId) {
         task_id: id,
         task_generation: Generation::INITIAL,
         registered_at_ms: 1_000,
+        application_id: None,
+        plan_revision: None,
     }) {
         Ok(
             nlos_task::TaskRegistrationDecision::Created(created)

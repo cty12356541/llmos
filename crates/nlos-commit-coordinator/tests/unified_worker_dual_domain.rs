@@ -141,6 +141,8 @@ fn prepare_single(databases: &TestAuthorities, seed: u8) -> PreparedSingle {
             task_id,
             task_generation: Generation::INITIAL,
             registered_at_ms: 1_000,
+            application_id: None,
+            plan_revision: None,
         })
         .unwrap();
     let attempt = AttemptSpec {
@@ -358,6 +360,8 @@ fn prepare_semantic(databases: &TestAuthorities, seed: u8) -> PreparedSemantic {
             task_id,
             task_generation: Generation::INITIAL,
             registered_at_ms: 1_000,
+            application_id: None,
+            plan_revision: None,
         })
         .unwrap();
     let snapshot_receipt = ReceiptId::from_bytes([seed.wrapping_add(21); 16]);

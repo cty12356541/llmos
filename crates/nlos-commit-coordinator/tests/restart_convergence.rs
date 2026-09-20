@@ -139,6 +139,8 @@ fn prepare_single(databases: &TestAuthorities, seed: u8) -> PreparedSingle {
             task_id,
             task_generation: Generation::INITIAL,
             registered_at_ms: 1_000,
+            application_id: None,
+            plan_revision: None,
         })
         .unwrap();
     let attempt = AttemptSpec {
@@ -350,6 +352,8 @@ fn every_cross_authority_prefix_converges_after_restart() {
                 task_id,
                 task_generation: Generation::INITIAL,
                 registered_at_ms: 1_000,
+                application_id: None,
+                plan_revision: None,
             })
             .unwrap();
         let attempt = AttemptSpec {
