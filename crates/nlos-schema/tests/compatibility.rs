@@ -2,15 +2,15 @@ use nlos_schema::sabi::v1::{
     AcknowledgeArtifactRecoveryAlertCommand, AcknowledgeSemanticRecoveryAlertCommand,
     ArtifactRecoveryAlertStatus, ArtifactRecoveryMetrics, ArtifactRecoveryOperationsSnapshot,
     BarrierObservationEvidence, BarrierObservationRecord, BarrierObservationSignature,
-    BarrierObservationTarget, CallerIdentity, CancelOperationRequest, CapabilityHandle,
-    ControlCommand, ControlCommandLifecycleState, ControlCommandResult, ControlCommandSource,
-    ControlScope, Envelope, ExchangeRequest, ExchangeResponse, GetSystemControlRequest,
-    NegotiateServiceResponse, OperationLifecycleState, OperationReference, OperationStatus,
-    PrincipalHandshakeAttestation, PrincipalHandshakeChallenge, QueryOperationRequest,
-    ReceiptReference, RecoveryFailureAuthority, RecoveryFailureSummary,
+    BarrierObservationTarget, CallerIdentity, CancelCommand, CancelOperationRequest,
+    CapabilityHandle, ControlCommand, ControlCommandLifecycleState, ControlCommandResult,
+    ControlCommandSource, ControlScope, Envelope, ExchangeRequest, ExchangeResponse,
+    GetSystemControlRequest, NegotiateServiceResponse, OperationLifecycleState, OperationReference,
+    OperationStatus, PauseCommand, PrincipalHandshakeAttestation, PrincipalHandshakeChallenge,
+    QueryOperationRequest, ReceiptReference, RecoveryFailureAuthority, RecoveryFailureSummary,
     RecoveryWorkerLifecycleState, RegisterWaitRequest, ResolveServiceRequest,
-    ResolveServiceResponse, ResumeSemanticRecoveryCommand, RetryDirective, SabiErrorCode,
-    SabiFailure, SabiRequestContext, SabiResponseContext, SchemaIdentity,
+    ResolveServiceResponse, ResumeCommand, ResumeSemanticRecoveryCommand, RetryDirective,
+    SabiErrorCode, SabiFailure, SabiRequestContext, SabiResponseContext, SchemaIdentity,
     SemanticRecoveryAlertStatus, SemanticRecoveryMetrics, SemanticRecoveryOperationsSnapshot,
     SubmitBarrierObservationRequest, SubmitControlCommandRequest, SystemControlView,
     TaskExecutionBinding, control_command, envelope as envelope_message, local_rpc,
@@ -190,10 +190,11 @@ fn registry_exposes_the_supported_contract() {
         .iter()
         .find(|entry| entry.name == SABI_SYSTEM_CONTROL_SCHEMA)
         .unwrap();
-    // W27-A bumped the minor for the additive semantic-domain extension
-    // (ADR-0014 permits additive extension of a frozen entry).
+    // W27-A bumped the minor for the additive semantic-domain extension and
+    // W28-D bumped it again for the additive operation-level command arms;
+    // ADR-0014 permits additive extension of a frozen entry.
     assert_eq!(system_control.major, 1);
-    assert_eq!(system_control.minor, 1);
+    assert_eq!(system_control.minor, 2);
     let takeover_control = registry
         .iter()
         .find(|entry| entry.name == SABI_TAKEOVER_CONTROL_SCHEMA)
@@ -313,8 +314,9 @@ fn generated_encoding_matches_principal_handshake_golden_vector() {
 /// Fixed deterministic bytes for one `SemanticRecoveryOperationsSnapshot`,
 /// byte-identical to the TypeScript and Python conformance goldens
 /// (B-SCHEMA-014-METRICS-GOLDEN pattern extended by W27-A). The schema
-/// identity carries the v1.1 minor this build stamps on `SystemControl`
-/// payloads.
+/// identity stays pinned at the v1.1 minor of the W27-A freeze point —
+/// like the TS/Python fixtures, which hardcode the same literal identity —
+/// so the frozen golden bytes do not drift when the registry minor advances.
 const SEMANTIC_RECOVERY_SNAPSHOT_GOLDEN_HEX: &str = concat!(
     "0a1d0a176e6c6f732e736162692e53797374656d436f6e74726f6c1001",
     "18011210080d10061802200428033001380940011a330a107171717171",
@@ -323,9 +325,22 @@ const SEMANTIC_RECOVERY_SNAPSHOT_GOLDEN_HEX: &str = concat!(
     "7373737373731008180320d00f28e01230c4132001",
 );
 
+/// The literal v1.1 `SystemControl` identity pinned by the W27-A goldens
+/// (the registry minor has since advanced to 2 for the W28-D additive
+/// command arms; frozen goldens stay pinned at their creation minor).
+fn w27a_semantic_identity() -> SchemaIdentity {
+    SchemaIdentity {
+        name: SABI_SYSTEM_CONTROL_SCHEMA.to_owned(),
+        major: 1,
+        minor: 1,
+        critical_extension_ids: Vec::new(),
+        non_critical_extension_ids: Vec::new(),
+    }
+}
+
 fn semantic_recovery_snapshot() -> SemanticRecoveryOperationsSnapshot {
     SemanticRecoveryOperationsSnapshot {
-        schema: Some(system_control_schema_identity()),
+        schema: Some(w27a_semantic_identity()),
         metrics: Some(SemanticRecoveryMetrics {
             total_inspected: 13,
             total_finalized: 6,
@@ -462,6 +477,96 @@ fn semantic_recovery_control_payloads_are_typed_bounded_and_fail_closed() {
     assert_eq!(
         encode_semantic_recovery_operations_snapshot(&missing_metrics),
         Err(CompatibilityError::MissingSystemControlMetrics)
+    );
+}
+
+/// One W28-D operation-level `ControlCommand` submit request for the given
+/// oneof arm, addressing a 16-byte operational target under CAS expectation 5.
+fn operation_level_submit(
+    arm: control_command::Command,
+    control_command_id: Vec<u8>,
+) -> SubmitControlCommandRequest {
+    SubmitControlCommandRequest {
+        schema: Some(system_control_schema_identity()),
+        command: Some(ControlCommand {
+            control_command_id,
+            issuer_principal_id: vec![0x32; 16],
+            source: ControlCommandSource::Cli.into(),
+            scope: ControlScope::Operation.into(),
+            target_id: vec![0x81; 16],
+            expected_generation_or_revision: 5,
+            command: Some(arm),
+            reason: "operator pauses the escalated operation".to_owned(),
+        }),
+    }
+}
+
+/// W28-D additive command arms compile, round-trip, and pin their
+/// deterministic wire bytes (Rust-side golden vectors).
+/// Shared wire prefix of the three W28-D arm fixtures: the v1.2 schema
+/// identity and the `ControlCommand` addressing fields up to the CAS
+/// expectation. The pinned bytes are prost field order — the oneof arm
+/// precedes `reason` — which is the encoding this build puts on the wire.
+const OPERATION_LEVEL_SUBMIT_PREFIX_HEX: &str = concat!(
+    "0a1d0a176e6c6f732e736162692e53797374656d436f6e74726f6c1001180212",
+    "670a106161616161616161616161616161616112103232323232323232323232",
+    "3232323232180320022a10818181818181818181818181818181813005",
+);
+const OPERATION_LEVEL_SUBMIT_REASON_HEX: &str = "42276f70657261746f72207061757365732074686520657363616c6174656420\
+     6f7065726174696f6e";
+
+#[test]
+fn operation_level_control_payloads_round_trip_and_pin_golden_bytes() {
+    for (label, arm, arm_field_hex) in [
+        (
+            "pause",
+            control_command::Command::PauseOperation(PauseCommand {}),
+            "5a00",
+        ),
+        (
+            "resume",
+            control_command::Command::ResumeOperation(ResumeCommand {}),
+            "6200",
+        ),
+        (
+            "cancel",
+            control_command::Command::CancelOperation(CancelCommand {}),
+            "6a00",
+        ),
+    ] {
+        let request = operation_level_submit(arm, vec![0x61; 16]);
+        let wire = encode_submit_control_command_request(&request)
+            .unwrap_or_else(|error| panic!("{label} arm must encode: {error}"));
+        assert_eq!(
+            decode_submit_control_command_request(&wire).unwrap(),
+            request,
+            "{label} arm must round-trip"
+        );
+        let golden = format!(
+            "{OPERATION_LEVEL_SUBMIT_PREFIX_HEX}{arm_field_hex}\
+             {OPERATION_LEVEL_SUBMIT_REASON_HEX}"
+        );
+        assert_eq!(wire, decode_hex(&golden), "{label} arm golden bytes");
+    }
+
+    // The shared per-command bounds apply to the new arms unchanged.
+    let mut unsafe_reason = operation_level_submit(
+        control_command::Command::PauseOperation(PauseCommand {}),
+        vec![0x61; 16],
+    );
+    unsafe_reason.command.as_mut().unwrap().reason.push('\0');
+    assert_eq!(
+        encode_submit_control_command_request(&unsafe_reason),
+        Err(CompatibilityError::UnsafeControlReason)
+    );
+    let mut short_target = operation_level_submit(
+        control_command::Command::CancelOperation(CancelCommand {}),
+        vec![0x61; 16],
+    );
+    short_target.command.as_mut().unwrap().target_id.pop();
+    assert_eq!(
+        encode_submit_control_command_request(&short_target),
+        Err(CompatibilityError::InvalidSystemControlIdentifier)
     );
 }
 
