@@ -11,8 +11,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use nlos_plan::{
-    ApplyPlanRevisionRequest, NodeResidencyTier, NodeTransitionRequest, PlanNodeDeclaration,
-    PlanNodeKind, PlanNodeState, PlanStoreError, ResidencyTransitionDecision,
+    ApplyPlanRevisionRequest, MaterializationAdmission, MaterializationAdmissionVerdict,
+    MaterializationRequest, MaterializationResolution, NodeResidencyTier, NodeTransitionRequest,
+    PlanNodeDeclaration, PlanNodeKind, PlanNodeState, PlanStoreError, ResidencyTransitionDecision,
     ResidencyTransitionRequest, SqlitePlanAuthority,
 };
 use nlos_types::{IdempotencyKey, TaskPlanId};
@@ -499,9 +500,10 @@ fn evicted_to_cold_node_preserves_metadata_facts() {
     let authority = SqlitePlanAuthority::open(&root.0).expect("open");
     let plan_id = first_plan(&authority);
     let node_id = first_node_id(&authority, plan_id);
-    // Cross the execution boundary so the node's shape is G1-frozen while
-    // it carries residency, then evict: the frozen METADATA facts must
-    // survive the eviction untouched (G2 posture).
+    // Cross the execution boundary through the W31-A materialization
+    // gate so the node's shape is G1-frozen while it carries residency,
+    // then evict: the frozen METADATA facts must survive the eviction
+    // untouched (G2 posture).
     for (from, to, key) in [
         (PlanNodeState::Declared, PlanNodeState::Eligible, 0x71),
         (
@@ -509,12 +511,6 @@ fn evicted_to_cold_node_preserves_metadata_facts() {
             PlanNodeState::WaitingAuthorization,
             0x72,
         ),
-        (
-            PlanNodeState::WaitingAuthorization,
-            PlanNodeState::Materializing,
-            0x73,
-        ),
-        (PlanNodeState::Materializing, PlanNodeState::Active, 0x74),
     ] {
         authority
             .record_node_transition(NodeTransitionRequest {
@@ -528,6 +524,42 @@ fn evicted_to_cold_node_preserves_metadata_facts() {
             })
             .expect("lifecycle step");
     }
+    authority
+        .request_materialization(MaterializationRequest {
+            plan_id,
+            node_id,
+            idempotency_key: IdempotencyKey::from_bytes([0x73; 16]),
+            requested_at_ms: 2_000,
+        })
+        .expect("gate request");
+    authority
+        .resolve_materialization(MaterializationResolution {
+            request_key: IdempotencyKey::from_bytes([0x73; 16]),
+            verdict: MaterializationAdmissionVerdict::Approved(MaterializationAdmission {
+                profile_id: "task-10k".to_string(),
+                projected_task_nodes: 1,
+                projected_active_working_set: 1,
+            }),
+            resolved_at_ms: 2_100,
+        })
+        .expect("gate approval crosses the execution boundary");
+    let gated = authority
+        .inspect_node(plan_id, node_id)
+        .expect("inspect")
+        .expect("node");
+    assert_eq!(gated.state, PlanNodeState::Materializing);
+    assert!(gated.state.is_execution_frozen());
+    authority
+        .record_node_transition(NodeTransitionRequest {
+            plan_id,
+            node_id,
+            from_state: PlanNodeState::Materializing,
+            to_state: PlanNodeState::Active,
+            expected_declared_revision: 1,
+            idempotency_key: IdempotencyKey::from_bytes([0x74; 16]),
+            transitioned_at_ms: 2_200,
+        })
+        .expect("lifecycle step");
     let before = authority
         .inspect_node(plan_id, node_id)
         .expect("inspect before")
@@ -730,7 +762,7 @@ fn schema_v3_migration_paths() {
     let db_path = root.0.join("plan.sqlite3");
     std::fs::create_dir_all(&root.0).expect("create db directory");
     let authority = SqlitePlanAuthority::open(&db_path).expect("fresh open");
-    assert_eq!(user_version(&db_path), 3);
+    assert_eq!(user_version(&db_path), 4);
     let plan_id = first_plan(&authority);
     let node_id = first_node_id(&authority, plan_id);
     let decision = residency_step(
@@ -745,7 +777,7 @@ fn schema_v3_migration_paths() {
     drop(authority);
 
     let reopened = SqlitePlanAuthority::open(&db_path).expect("reopen at v3");
-    assert_eq!(user_version(&db_path), 3);
+    assert_eq!(user_version(&db_path), 4);
     let view = reopened
         .inspect_node_residency(plan_id, node_id)
         .expect("view after reopen")
@@ -759,13 +791,13 @@ fn schema_v3_migration_paths() {
     drop(reopened);
 
     // A database stamped v2 whose v3 schema already exists re-migrates
-    // idempotently (no partial-state error, version restored to 3).
+    // idempotently (no partial-state error, version restored to the head).
     let raw = Connection::open(&db_path).expect("raw writer");
     raw.pragma_update(None, "user_version", 2)
         .expect("stamp v2");
     drop(raw);
     let remigrated = SqlitePlanAuthority::open(&db_path).expect("idempotent re-migration");
-    assert_eq!(user_version(&db_path), 3);
+    assert_eq!(user_version(&db_path), 4);
     let view = remigrated
         .inspect_node_residency(plan_id, node_id)
         .expect("view after re-migration")

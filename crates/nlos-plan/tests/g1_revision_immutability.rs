@@ -13,8 +13,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use nlos_plan::{
-    ApplyPlanRevisionRequest, NodeTransitionDecision, NodeTransitionRequest, PlanNodeDeclaration,
-    PlanNodeKind, PlanNodeState, PlanRevisionDecision, PlanStoreError, SqlitePlanAuthority,
+    ApplyPlanRevisionRequest, MaterializationAdmission, MaterializationAdmissionVerdict,
+    MaterializationRequest, MaterializationResolution, NodeTransitionDecision,
+    NodeTransitionRequest, PlanNodeDeclaration, PlanNodeKind, PlanNodeState, PlanRevisionDecision,
+    PlanStoreError, SqlitePlanAuthority,
 };
 use nlos_types::{IdempotencyKey, TaskNodeId, TaskPlanId};
 use rusqlite::Connection;
@@ -112,8 +114,8 @@ fn node_id_of(
 }
 
 /// Drives one node across the execution boundary: DECLARED → ELIGIBLE →
-/// `WAITING_AUTHORIZATION` → `MATERIALIZING` (the §25.2.1 path), where its
-/// declared shape becomes frozen.
+/// `WAITING_AUTHORIZATION` → gate-approved `MATERIALIZING` (the §25.2.1
+/// path), where its declared shape becomes frozen.
 fn drive_to_materializing(
     authority: &SqlitePlanAuthority,
     plan_id: TaskPlanId,
@@ -137,15 +139,25 @@ fn drive_to_materializing(
         1,
         0xe2,
     );
-    transition(
-        authority,
-        plan_id,
-        node_id,
-        PlanNodeState::WaitingAuthorization,
-        PlanNodeState::Materializing,
-        1,
-        0xe3,
-    );
+    authority
+        .request_materialization(MaterializationRequest {
+            plan_id,
+            node_id,
+            idempotency_key: IdempotencyKey::from_bytes([0xe3; 16]),
+            requested_at_ms: 2_000,
+        })
+        .expect("gate request");
+    authority
+        .resolve_materialization(MaterializationResolution {
+            request_key: IdempotencyKey::from_bytes([0xe3; 16]),
+            verdict: MaterializationAdmissionVerdict::Approved(MaterializationAdmission {
+                profile_id: "task-10k".to_string(),
+                projected_task_nodes: 2,
+                projected_active_working_set: 1,
+            }),
+            resolved_at_ms: 2_500,
+        })
+        .expect("gate approval crosses the execution boundary");
 }
 
 /// G1 primary: a new revision that re-declares an executed node with a

@@ -31,6 +31,7 @@
 //! skeleton records state-machine vouchers; it does not execute,
 //! authorize, or materialize anything.
 
+mod materialization;
 mod model;
 mod residency;
 mod resolver;
@@ -49,7 +50,13 @@ pub use model::{
     ResidencyTransitionDecision, ResidencyTransitionRequest, ResidencyTransitionVoucher,
     ResolvePlanRequest, ResolvedPlanNode,
 };
-use nlos_types::{ReceiptId, TaskNodeId, TaskPlanId};
+pub use model::{
+    MaterializationAdmission, MaterializationAdmissionVerdict, MaterializationApproval,
+    MaterializationRejection, MaterializationRequest, MaterializationRequestDecision,
+    MaterializationRequestRecord, MaterializationRequestStatus, MaterializationResolution,
+    MaterializationResolutionDecision,
+};
+use nlos_types::{IdempotencyKey, ReceiptId, TaskNodeId, TaskPlanId};
 pub use store::SqlitePlanAuthority;
 
 /// Errors produced by the durable plan authority.
@@ -160,6 +167,30 @@ pub enum PlanStoreError {
     InvalidRequest {
         reason: &'static str,
     },
+    /// The materialization gate refused to open a request: at least one
+    /// declared dependency of the node's pinned revision shape is not
+    /// `COMPLETED` (W31-A, G3 falsification #1;
+    /// `[PLAN-LAZY-001]`). `unresolved` names the dependency nodes,
+    /// deterministically sorted.
+    DependenciesNotReady {
+        node_id: TaskNodeId,
+        unresolved: Vec<TaskNodeId>,
+    },
+    /// No materialization request with the given exactly-once key exists.
+    MaterializationRequestNotFound(IdempotencyKey),
+    /// The node already carries an in-flight pending materialization
+    /// request under a different key; one gate round per node.
+    MaterializationRequestAlreadyPending {
+        node_id: TaskNodeId,
+        /// The pending round's exactly-once key (diagnostic only).
+        pending_key: IdempotencyKey,
+    },
+    /// The node's durable state cannot await materialization (past the
+    /// execution boundary, evicted, or terminal).
+    NodeNotAwaitingMaterialization {
+        node_id: TaskNodeId,
+        current: PlanNodeState,
+    },
 }
 
 impl fmt::Display for PlanStoreError {
@@ -265,6 +296,28 @@ impl fmt::Display for PlanStoreError {
             Self::InvalidRequest { reason } => {
                 write!(formatter, "invalid plan request: {reason}")
             }
+            Self::DependenciesNotReady {
+                node_id,
+                unresolved,
+            } => write!(
+                formatter,
+                "node {node_id:?} has {} unresolved dependency/dependencies; materialization gate refuses (PLAN-LAZY-001)",
+                unresolved.len()
+            ),
+            Self::MaterializationRequestNotFound(key) => {
+                write!(formatter, "materialization request {key:?} does not exist")
+            }
+            Self::MaterializationRequestAlreadyPending {
+                node_id,
+                pending_key,
+            } => write!(
+                formatter,
+                "node {node_id:?} already has a pending materialization request ({pending_key:?})"
+            ),
+            Self::NodeNotAwaitingMaterialization { node_id, current } => write!(
+                formatter,
+                "node {node_id:?} in state {current:?} cannot await materialization"
+            ),
         }
     }
 }
