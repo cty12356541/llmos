@@ -832,3 +832,9 @@
   scope: "Effect/Artifact/Semantic/Resource/Operation/Channel 混合写集 seal→唯一 permit→终结→统一 TaskCommitReceipt + kill-window 矩阵（W30-A）"
   assurance: H3
   date: "2026-09-20"
+- id: b-notify-001-minimal-service
+  path: docs/evidence/stage-b/b-notify-001-minimal-service.md
+  title: "B-NOTIFY-001：Notification 最小服务（Topic/Channel/Wait 薄服务层）"
+  scope: "订阅/投递/ack 全链经既有 Topic 权威 + wait commit 侧 notify 接线 + 无影子 fanout 负证（W33-D/X-1 前半）"
+  assurance: H3
+  date: "2026-09-21"

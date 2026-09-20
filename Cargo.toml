@@ -30,6 +30,7 @@ members = [
     "crates/nlos-topic",
     "crates/nlos-wait",
     "crates/nlos-wait-control",
+    "crates/nlos-notify",
 ]
 exclude = ["fuzz"]
 resolver = "3"

@@ -518,6 +518,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "nlos-notify"
+version = "0.1.0"
+dependencies = [
+ "nlos-channel",
+ "nlos-topic",
+ "nlos-types",
+ "nlos-wait",
+ "rusqlite",
+ "sha2",
+]
+
+[[package]]
 name = "nlos-operation"
 version = "0.1.0"
 dependencies = [
