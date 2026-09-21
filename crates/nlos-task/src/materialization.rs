@@ -28,17 +28,19 @@ use crate::store::SqliteTaskAuthority;
 use crate::{TaskStoreError, enforce_task_node_admission, enforce_working_set_admission};
 
 /// Production reclaim×residency drive (W36-P8; W31-G §8.2.5): the Task
-/// authority owns permit closure; this boundary is invoked **inside**
-/// [`SqliteTaskAuthority::drive_working_set_reclaim`] so an eviction
-/// records the plan-side residency walk in the same call. `Err` is
-/// fail-closed (PINNED / CAS / consult failure) — never a silent skip.
+/// authority owns permit closure; this boundary is invoked **per
+/// victim, before** [`SqliteTaskAuthority::drive_working_set_reclaim`]
+/// calls `close_permit`, so a PINNED refusal leaves Task occupancy
+/// unchanged. `Err` is fail-closed (PINNED / CAS / consult failure) —
+/// never a silent skip after a Task write.
 pub trait ReclaimResidencyDrive {
     /// The drive's own failure type (plan-side refusals stay with the
     /// implementation; Task errors convert via `From`).
     type Error;
 
-    /// Records one adjacent residency evict step per durably closed
-    /// working-set member.
+    /// Records one adjacent residency evict step for the candidate
+    /// victims. Invoked with a single pending member (closure receipt
+    /// not yet minted) **before** Task permit close.
     ///
     /// # Errors
     ///

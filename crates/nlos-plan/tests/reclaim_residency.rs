@@ -71,13 +71,14 @@ impl ReclaimResidencyDrive for BoundPlanResidency<'_> {
     ) -> Result<(), ReclaimDriveError> {
         let mapped = evictions
             .iter()
-            .enumerate()
-            .map(|(index, eviction)| {
+            .map(|eviction| {
+                let mut key = [0xd0; 16];
+                key[8..].copy_from_slice(&eviction.task_id.as_bytes()[8..]);
                 Ok(ReclaimResidencyEviction {
                     plan_id: self.plan_id,
                     node_id: self.node_for(eviction.task_id)?,
                     expected_declared_revision: 1,
-                    idempotency_key: IdempotencyKey::from_bytes(id_bytes(0xd0, index as u64)),
+                    idempotency_key: IdempotencyKey::from_bytes(key),
                     transitioned_at_ms: u64::try_from(executed_at_ms.saturating_add(100))
                         .expect("executed_at_ms is non-negative"),
                 })
@@ -314,8 +315,9 @@ fn reclaim_drive_records_plan_residency_evict_step() {
     );
 }
 
-/// A PINNED victim refuses the residency step: Task may have closed the
-/// permit, but the plan ledger does not silently walk.
+/// A PINNED victim refuses on the production drive **before** Task
+/// permit close: plan stays HOT and working-set occupancy does not
+/// shrink (the two ledgers stay in the same direction).
 #[test]
 fn reclaim_residency_refuses_pinned_victim() {
     let root = Root::new("pinned-refuse");
@@ -363,6 +365,10 @@ fn reclaim_residency_refuses_pinned_victim() {
     let _ = issue_permit(&task, 0);
     let second = issue_permit(&task, 1);
     let warrant = second.reclaim_execution.expect("warrant");
+    let before = task
+        .inspect_working_set_pressure()
+        .expect("pressure before PINNED refuse");
+    assert_eq!(before.active_count, 2, "both permits are still issued");
     let binding = BoundPlanResidency {
         plan: &plan,
         plan_id,
@@ -391,4 +397,11 @@ fn reclaim_residency_refuses_pinned_victim() {
             NodeResidencyTier::Hot
         );
     }
+    let after = task
+        .inspect_working_set_pressure()
+        .expect("pressure after PINNED refuse");
+    assert_eq!(
+        after.active_count, before.active_count,
+        "PINNED refuse must not shrink Task while plan stays HOT"
+    );
 }

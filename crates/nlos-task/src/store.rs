@@ -1946,8 +1946,9 @@ impl SqliteTaskAuthority {
     /// non-skip closure failure verbatim (the skip set is the structurally
     /// non-evictable members rediscovered between the snapshot and the
     /// close: `OutstandingEffectSlots`, `PermitHasEffects`), and
-    /// propagates the residency drive's own typed refusal (W31-G
-    /// §8.2.5 — an eviction records the plan-side walk in this call).
+    /// propagates the residency drive's own typed refusal **before**
+    /// `close_permit` (W31-G §8.2.5 — PINNED must not shrink Task
+    /// while the plan axis stays put).
     pub fn drive_working_set_reclaim<R>(
         &self,
         request: WorkingSetReclaimExecutionRequest,
@@ -2005,6 +2006,18 @@ impl SqliteTaskAuthority {
                 if !evictable {
                     continue;
                 }
+                // Residency walk (or PINNED refuse) before close: a
+                // typed refuse must not shrink Task occupancy while
+                // the plan axis stays put (W31-G §8.2.5). The receipt
+                // id is not yet minted; plan-side drives key on task_id.
+                residency.drive_reclaim_residency(
+                    &[WorkingSetReclaimEviction {
+                        task_id: permit.task_id,
+                        permit_id: permit.permit_id,
+                        closure_receipt_id: ReceiptId::from_bytes([0; 16]),
+                    }],
+                    request.executed_at_ms,
+                )?;
                 let decision = self.close_permit(ClosePermitRequest {
                     task_id: permit.task_id,
                     attempt_id: permit.attempt_id,
@@ -2034,7 +2047,6 @@ impl SqliteTaskAuthority {
             let connection = self.lock_connection()?;
             count_issued_permits(&*connection)?
         };
-        residency.drive_reclaim_residency(&evictions, request.executed_at_ms)?;
         Ok(WorkingSetReclaimExecutionReport {
             pressure_relieved: post_active_count <= reclaim_threshold_count,
             execution,
