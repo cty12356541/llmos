@@ -433,3 +433,46 @@
 4. **TS/Python conformance 未加五快照 golden**：与 W28-D/W29-D 同因（写集排除 `tests/conformance/`）；gen/ 三语言生成物已同步。Deferred minor：conformance 侧补钉五快照 hex。
 5. **GUI（W32-A/B）面未接五新视图**：desktop/ 在其他车道写集；五视图为纯 additive GET，GUI 侧消费归 B5-4 后续。
 6. **ROAD-B-005 仍 PARTIAL**：Trusted GUI 宿主执行器（pause/resume/cancel 的 W28-D seam 接线）等归其余 B5 车道；本车道只交付 B5-3 只读 inspect 面。
+
+## W35-P11 增量：Application 层生命周期控制面前片——disable/uninstall 命令臂 + 真实 ApplicationAuthority 执行接线（移交#11 前片，2026-09-21）
+
+> 状态：`PARTIAL_PASS`（单节点本地；移交#11 前片范围——COMMAND 面 + 生命周期 NL 动词 + 执行接线到真实 nlos-application 权威；W34-A §5 裁决的「七层中 Application 层缺位」的控制动词半边收口，Application 层 inspect（GET 面）与 supervisor pid 发现仍归 C-APP-CONTROL 其余半边）
+>
+> 基线 HEAD：`051a656`（feat/w35-p11 分支基）　　实现 commits：`fe5a3fa`（nlos-schema v1.6 契约）+ `0fa76bb`（system-control 面）　　写集：`schema/`、`gen/`、`crates/nlos-schema`、`crates/nlos-system-control`（含新 feature `application` 与 `application_lifecycle_executor` 适配器）、本证据文件；`crates/nlos-application` **零改动**（W27-D gate 测试零触碰——MUST NOT 边界遵守，仅公共 API 消费）
+
+### 已实现事实
+
+1. **SABI v1.6 additive 命令臂**（ADR-0014 冻结通道 additive 扩列，镜像 W27-A/W28-D/W29-D/W28-C-3b/W32-G 先例）：`DisableApplicationCommand`/`UninstallApplicationCommand` 两空消息 + `ControlCommand.command` oneof 新臂 `disable_application=19`/`uninstall_application=20`。寻址沿用共享 `target_id`（16 字节 package 身份——ApplicationId 由权威自 package 派生）+ `expected_generation_or_revision`（应用当前安装代 CAS；disable/uninstall 迁移不移动安装代，权威 schema DDL 保证）。结果复用既有 `ControlCommandResult`，无新结果消息。REGISTRY minor 晋 5→6（frozen 不变），`system_control_schema_identity()` 随升；gen/ TS/Python 经 `buf generate` 同步。
+2. **nlos-schema 兼容面**：注册表断言随升；W32-G 五层快照 golden 改字面钉死 v1.5 identity（`w32g_layer_identity()`，与 w27a/w28c/w28d 钉定纪律同构——冻结 golden 字节零改动）；新增两臂 v1.6 确定性 golden hex + round-trip（prost 字段序，两臂同为三线字节——双字节 field-19/20 tag + 零长度，共享 `0x68` 命令长度前缀）。
+3. **命令面**（`src/control.rs`）：`ControlCommand::DisableApplication`/`UninstallApplication { control_command_id, package_id, expected_generation_or_revision, reason }` 两变体并入既有 SUBMIT 编译（`mutation_address`/`mutation_reason` 提取共享寻址/CAS/reason；空 reason wire 前 typed 拒绝；幂等键=command id 绑定不变）；`ControlOutcome::ApplicationDisabled`/`ApplicationUninstalled { receipt_id }` typed Receipt（`to_bytes` 判别 tag 20/21），投影复用 `decoded_result_receipt` fail-closed 路径。
+4. **可插拔执行 seam**（`src/lib.rs`，独立于 operation seam——Application 层为独立控制面）：`ApplicationCommandExecutor` trait（`disable_application`/`uninstall_application(ApplicationControlRequest) -> Result<ReceiptId, SabiFailure>`，`Send + Sync` 契约）+ `ApplicationControlRequest { package_id, expected_generation_or_revision, issuer_principal_id, idempotency_key, requested_at_ms }` + 默认 `UnwiredApplicationCommandExecutor`（typed `NOT_FOUND` fail-closed）。`RecoverySystemControl` 增 `application_executor` 字段与 `with_application_executor` builder——**`new()` 签名不变**，既有全部调用点零改动（workspace check 证明零下游破坏：desktop `build_control_command` 匹配自身 action 枚举，additive 不触及）。`handle_submit` 两新臂在共享授权/issuer/幂等检查之后路由至 seam；执行器拒绝经 `SystemControlError::ApplicationExecution(SabiFailure)` bounded 原样转发，未接线为 `ApplicationControlExecutionUnwired`。
+5. **真实执行接线**（`src/application_lifecycle_executor.rs`，新 `application` feature；receipt id = 域分隔 SHA-256 截断 16 字节，由权威自身回执事实派生——不经 authority 调用不可能产生，durable 重放重 derive 同一 id）：
+   - **disable→`disable_application`**：`inspect_application`（权威 head：状态 + 当前安装代）→ 安装代 CAS 检查（`CONFLICT`）→ 权威 `installed → disabled` 可逆迁移（**无活动门**——disable 可回滚）；receipt id 覆盖 application_id/generation/idempotency_key/disabled_at_ms。
+   - **uninstall→W27-D 真实活动门 + `uninstall_application_with_task_activity_gate`**：同 head/CAS 预检 → 权威在门自身 writer 事务内解析 package 的 durable 后台任务登记并查询 `SqliteTaskAuthority` 活跃任务（登记无 task 行是 promise 非活动；终态 task 非活动）→ 有活跃任务 typed `STATE`（"application still has outstanding task activity"）零 durable 副作用；门通过后 `installed|disabled → uninstalled` 终态迁移 + uninstall receipt。负墙钟 `INVALID_ARGUMENT`；缺包 `NOT_FOUND`；权威错误按类映射（终态 `STATE`、时间序 `INVALID_ARGUMENT`、幂等冲突 `CONFLICT`、存储 `DURABILITY`、活动查询失败 `DRIVER` fail-closed）。
+6. **CLI**：`disable-application`/`uninstall-application <COMMAND_ID_HEX_32> <PACKAGE_ID_HEX_32> <EXPECTED_GENERATION> <REASON>` 两子命令 + summary 行（`outcome=application_disabled|application_uninstalled receipt_id=…`）。
+7. **NL 双语白名单**：`disable application <32-hex> expecting <n>`；`uninstall application <32-hex> expecting <n>`；`禁用应用|禁用 应用 <32位十六进制> 期望 <n>`；`卸载应用|卸载 应用 <32位十六进制> 期望 <n>`。派生规则逐字镜像 operation 家族（command id 派生自 package id——一 package 一 disable/uninstall 幂等身份，重放安全；CAS 期望显式 `[NL-AMBIG-001]`；固定 per-verb reason `NL_DISABLE_REASON`/`NL_UNINSTALL_REASON`——原始句子不跨界）。EN 本片只入 canonical 两动词（登记缺口原文即 disable/uninstall application；同义词扩展沿 W13-C/W18-C/W19-C 同义词白名单节奏归后续）。近邻形态 typed 拒绝：`disable operation`/`uninstall task`/缺参/非十进制/31 位 hex/`inspect application`（GET 面不在本片）。
+8. **四路等价门**（`triple_path_receipt_parity.rs` 新 `application_family_receipts_are_byte_identical_across_direct_nl_cli_and_gui_paths`）：fixture 双入口（认证 + plain）增 `DeterministicApplicationExecutor` stub 接线后，disable/uninstall × {直接构造, NL EN/ZH, CLI 子命令, GUI dispatch core} 四路 receipt **逐字节相等**；outcome tag 钉死 20/21；`denied:` reason 的 RIGHTS 拒绝路径三面（direct/CLI/GUI）字节相等（NL 固定 reason 不可表达 denial，与 operation 家族同口径）。
+9. **handler 面 + 权威接线门**：`recovery_control.rs` +2（未接线默认 typed `NOT_FOUND`（消息钉死 "application control execution backend is not wired"）；wired stub 请求字段逐项断言（package/CAS/issuer/幂等键/墙钟）+ `STATE` 拒绝 bounded 原样转发无 receipt 证据）；`system_control_failure_mapping.rs` +2（两新错误变体映射 + passthrough 断言）；新 `tests/application_lifecycle_authorities.rs`（`application` feature 门，4 测试）：真实签名包（Ed25519 + 真实 `verify_package`）→ 真实 `install_application`（gen 1）fixture 上——驱动门（disable 权威状态翻转 + 重放同 id；uninstall 权威终态 + disable/uninstall receipt id 不同）、**W27-D 门开合**（注册后台任务 + 活跃 task 行 → typed `STATE` 拒绝零 durable 副作用；task 终态后 fresh key 收敛）、拒绝矩阵（CAS 错配 `CONFLICT` 消息钉死/缺包 `NOT_FOUND`/负墙钟 `INVALID_ARGUMENT`，全部零状态迁移）、共享 handler 端到端（`dispatch_in_process` 的 `ApplicationDisabled`/`ApplicationUninstalled` receipt id 与直接执行器调用逐字节一致——handler 路径经 durable replay 幂等）。
+10. **测试账**：`cargo test -p nlos-schema -p nlos-system-control`（默认 features）**164 passed / 0 failed**——schema 35（+1 v1.6 golden）；system-control 129——lib 60（nl +3、control +3）、`control_command_cli` 8、`recovery_control` 23（+2）、`system_control_failure_mapping` 7（+2）、`triple_path_receipt_parity` 7（+1）、`operation_executor_authorities` 3、`control_ipc_auth` 9、metrics 4+7、windows 0、doc 1。`--features application` **133 passed**（`application_lifecycle_authorities` 4 开跑）；`--features process,resource,plan,runtime,topic,store`（W32-G 组合）142 passed 零回归；`--all-features` **146 passed / 0 failed**。
+
+### 验证
+
+验证环境：macOS（darwin，arm64），分支 `feat/w35-p11`（基线 `051a656`）。工作区无其他车道未提交改动（本车道独占写集；node_modules 为本地工具链安装，不入库）。
+
+- `cargo test -p nlos-schema -p nlos-system-control`：**164 passed / 0 failed**（默认 features）。
+- `cargo test -p nlos-system-control --features application`：**133 passed / 0 failed**；`--features process,resource,plan,runtime,topic,store`：142 / 0；`--all-features`：**146 / 0**。
+- `cargo clippy -p nlos-system-control -p nlos-schema --all-targets --all-features -- -D warnings`（及默认态）：0 warning / 0 error。
+- `cargo fmt -p nlos-system-control -p nlos-schema -- --check`：通过。
+- `cargo check -p nlos-system-control --no-default-features`（及 `+ --features application`）：通过（非 cli 形态编译）；`cargo check --workspace`：零下游破坏。
+- `buf lint` + `buf format -d --exit-code`：通过。
+- `npm run schema:generate` 两次运行输出稳定；`npm run schema:check-generated`：通过（生成物与提交基线一致）。
+- `python3 scripts/lint_claims.py`：PASS（0 ERROR 0 INFO；evidence-index 144/144——本片无新证据文件，扩展既有 b-control-003 条目）。
+
+### 已知限制（增量）
+
+1. **前片只覆盖控制动词半边**：Application 层 inspect（GET 视图）未做——ROAD-B-005 §5.1 「Application 行」的 inspect 仍缺位，归 C-APP-CONTROL 后片；GUI（desktop）面未接两新臂（`build_control_command` 单一编译点未扩，desktop/ 属其他车道写集，additive 不破坏）。
+2. **TS/Python conformance 未加两新臂 golden**：与 W28-D/W29-D/W32-G 同因（写集排除 `tests/conformance/`）；gen/ 三语言生成物已同步。C-CONFORMANCE-GOLDEN #13 收口条款「后续新增 SABI 臂随波屏障钉死」——本臂 golden 补钉登记为 deferred minor。
+3. **安装代 CAS 为控制面预检**：权威自身在事务内做状态 CAS（安装代不随 disable/uninstall 移动，故 CAS 语义为「命令所见代 == 权威当前代」的乐观预检，镜像 kill 执行器对 process generation 的预检先例）；权威迁移的终审在自身 `Immediate` 事务。
+4. **EN 无 uninstall/remove 同义词变体**：本片按登记缺口原文只入 canonical `disable`/`uninstall` 两动词（ZH 双拼式照旧）；同义词白名单扩展沿 W13-C/W18-C/W19-C 节奏归后续增量。
+5. **supervisor 自动 pid 发现/unregister**：C-APP-CONTROL 行原第二半边，不在本片范围（任务书 MUST NOT 边界）。
+6. **ROAD-B-005 其余 residuals 不因本片改变**：AgentInstance 未分面、pause/resume/cancel 宿主执行器、GUI 真机战役、semantic NL 语法、desktop 不在根 CI、Windows GUI（W34-A §5 沿引）。
