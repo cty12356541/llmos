@@ -185,6 +185,11 @@ P0 风险阻止 Stage 退出；P1 必须有 owner、缓解措施和明确复查�
 
 限制在制品：每位实现者最多一个主要 `IN_PROGRESS` Work Package；紧急故障除外。
 
+## 11.5 阶段 C 管理入口（当前活跃阶段）
+
+- 阶段 C 权威进度单与编排：[stage-c-progress.md](./stage-c-progress.md)（2026-09-22 决策点 0 批准生效；W35 起波次编排 §C.5.3；决策点裁定与否决窗口 §C.5.4）
+- 阶段 B 已 EXITED：[stage-b-progress.md](./stage-b-progress.md)（§6.5.6 十七项移交清单为 C 册输入）
+
 ## 12. 阶段 B 管理入口
 
 阶段 B 当前管理入口：
