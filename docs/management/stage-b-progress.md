@@ -1509,7 +1509,7 @@ B6-1..B6-5 相互独立可并行 → ROAD-B-006
 
 退出评审中具名、未在本阶段闭合的登记项，全部显式移交：
 
-1. slice-k-demo STEP 09d defect 根因处置（RISK-B-12 升级条款随行：若证明为生产 GC 误收在册 blob 即升 P0 并重开退出前提）——**已处置**（2026-09-21，分支 `fix/w34-09d-defect` 未 push，[B-SLICE-K-001 §17](../evidence/stage-b/b-slice-k-001-end-to-end.md)：durable 取证证明收集者为 W22-001 install-scoped pass 合法收集构造性 orphan（receipt 在册、referenced blob 全存活、W28-E tick 零触发），P0 升级条款经证排除、RISK-B-12 已 closed；demo 级修复 + 解掩的 STEP 12b 键带碰撞修复 + 2 条回归钉死，demo 全程 EXIT=0、136 passed/0 failed）；
+1. slice-k-demo STEP 09d defect 根因处置（RISK-B-12 升级条款随行：若证明为生产 GC 误收在册 blob 即升 P0 并重开退出前提）——**已处置**（2026-09-21，merge `87ef288` 已推 origin/main，[B-SLICE-K-001 §17](../evidence/stage-b/b-slice-k-001-end-to-end.md)：durable 取证证明收集者为 W22-001 install-scoped pass 合法收集构造性 orphan（receipt 在册、referenced blob 全存活、W28-E tick 零触发），P0 升级条款经证排除、RISK-B-12 已 closed；demo 级修复 + 解掩的 STEP 12b 键带碰撞修复 + 2 条回归钉死，demo 全程 EXIT=0、136 passed/0 failed）；
 2. 载荷执行面 + `nlos package install` CLI（B-001 边界）；
 3. GUI 真机战役（computer-use 清单：面板/focus/送对话/statusline/hooks 实时性/HTML/降级三连）；Windows GUI；
 4. Windows live-child 实杀测试（`taskkill /F /T` 成功路径无真实子进程断言——W28-F 只闭合「CI 复验已跑」半维）；

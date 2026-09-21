@@ -1,6 +1,6 @@
 # 阶段 C 权威进度单（草案）
 
-> **状态：`PLAN-DRAFT`（编排计划草案，已提交待批准——控制器评审修订于 HEAD `87ef288`，决策点 0 = 维护者批准）。** 本文件为 stage-b-progress §6.5 的后继编排草案：由 17 项移交清单（[stage-b-progress §6.5.6](./stage-b-progress.md)）与 [v0.5 §28.3 阶段 C 定义](../design/06-架构设计总纲-v0.5.md) 构造。起草基线 HEAD `ebbeddc`（2026-09-21，工作区 clean 起步）；**未 git commit——控制器先评审**（本任务边界：只写本文件）。
+> **状态：`PLAN-DRAFT`（编排计划草案，已提交待批准——控制器评审修订于 HEAD `87ef288`，决策点 0 = 维护者批准）。** 本文件为 stage-b-progress §6.5 的后继编排草案：由 17 项移交清单（[stage-b-progress §6.5.6](./stage-b-progress.md)）与 [v0.5 §28.3 阶段 C 定义](../design/06-架构设计总纲-v0.5.md) 构造。起草基线 HEAD `ebbeddc`（2026-09-21）；控制器评审修订后于 `053f523` 落库（起草期"未提交"边界已由控制器集成收口）。
 >
 > 评审输入（只读引用）：三份门评审记录 [W31-G](../evidence/stage-b/reviews/w31g-road-b004-gates.md)、[W33-H](../evidence/stage-b/reviews/w33h-road-b001-b002.md)、[W34-A](../evidence/stage-b/reviews/w34a-six-gate-matrix.md) + 退出未知风险清单 [exit-unknown-risks.md](./exit-unknown-risks.md)（W34-C，评审包第四输入；`reviews/` 目录现存三份记录，W34-C 清单为其随附）。ADR-0013/0016/0017；[risks.yaml](./risks.yaml)（P0 条款）；[claims.yaml](./claims.yaml)。
 >
