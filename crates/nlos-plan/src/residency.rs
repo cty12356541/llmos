@@ -74,6 +74,14 @@ impl SqlitePlanAuthority {
                 to: request.to_tier,
             });
         }
+        let (pinned, _) =
+            crate::pin::load_pin_state(&transaction, request.plan_id, request.node_id)?;
+        if pinned && request.to_tier.discriminant() < request.from_tier.discriminant() {
+            return Err(PlanStoreError::PinnedNodeNotEvictable {
+                node_id: request.node_id,
+                tier: node.residency_tier,
+            });
+        }
         if node.declared_revision != request.expected_declared_revision {
             return Err(PlanStoreError::StaleNodeRevision {
                 node_id: request.node_id,

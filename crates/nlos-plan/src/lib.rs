@@ -33,6 +33,7 @@
 mod artifact_source;
 mod materialization;
 mod model;
+mod pin;
 mod residency;
 mod resolver;
 mod scheduler;
@@ -50,12 +51,12 @@ pub use model::{
     EcosystemResolutionDecision, EcosystemResolutionHandle, EcosystemSelector,
     EcosystemSourceLookup, FanoutCondition, GenerationExpectation, MAX_CONDITION_NAMESPACES,
     MAX_DECLARED_NODES_PER_REVISION, MAX_DEPENDENCIES_PER_NODE, NamespaceCondition, NodeConditions,
-    NodeResidencyTier, NodeResidencyView, NodeTransitionDecision, NodeTransitionRequest,
-    NodeTransitionVoucher, PlanNodeDeclaration, PlanNodeKind, PlanNodeRecord, PlanNodeState,
-    PlanResolutionDecision, PlanResolutionHandle, PlanRevisionDecision, PlanRevisionReceipt,
-    PlanRevisionSelector, PlanView, ResidencyTransitionDecision, ResidencyTransitionRequest,
-    ResidencyTransitionVoucher, ResolveEcosystemRequest, ResolvePlanRequest, ResolvedPlanNode,
-    ResourceContractCondition,
+    NodePinDecision, NodePinRequest, NodePinView, NodePinVoucher, NodeResidencyTier,
+    NodeResidencyView, NodeTransitionDecision, NodeTransitionRequest, NodeTransitionVoucher,
+    PlanNodeDeclaration, PlanNodeKind, PlanNodeRecord, PlanNodeState, PlanResolutionDecision,
+    PlanResolutionHandle, PlanRevisionDecision, PlanRevisionReceipt, PlanRevisionSelector,
+    PlanView, ResidencyTransitionDecision, ResidencyTransitionRequest, ResidencyTransitionVoucher,
+    ResolveEcosystemRequest, ResolvePlanRequest, ResolvedPlanNode, ResourceContractCondition,
 };
 pub use model::{
     MaterializationAdmission, MaterializationAdmissionVerdict, MaterializationApproval,
@@ -118,7 +119,9 @@ pub enum PlanStoreError {
     },
     /// The requested residency tier transition is not a legal edge of
     /// the conservative W31-E set (a single adjacent step along the
-    /// 议题 28 chain; no self-loops, no skips, no `PINNED`).
+    /// 议题 28 chain; no self-loops, no skips). PINNED is an overlay,
+    /// not a sixth discriminant — eviction of a pinned node is
+    /// [`Self::PinnedNodeNotEvictable`].
     IllegalResidencyTransition {
         node_id: TaskNodeId,
         from: NodeResidencyTier,
@@ -130,6 +133,20 @@ pub enum PlanStoreError {
         node_id: TaskNodeId,
         expected_from: NodeResidencyTier,
         current: NodeResidencyTier,
+    },
+    /// Eviction of a PINNED node is refused (W36-P8; `[SCALE-PIN-001]`
+    /// minimal overlay): the residency axis does not move. Unpin
+    /// (degrade) first.
+    PinnedNodeNotEvictable {
+        node_id: TaskNodeId,
+        tier: NodeResidencyTier,
+    },
+    /// The pin/unpin overlay CAS missed: the node is already in the
+    /// requested pin state.
+    PinStateCasMismatch {
+        node_id: TaskNodeId,
+        expected_pinned: bool,
+        current: bool,
     },
     /// The transition's expected declared revision does not match the
     /// node's durable declared revision (`[PLAN-DAG-001]` fence).
@@ -317,6 +334,18 @@ impl fmt::Display for PlanStoreError {
             } => write!(
                 formatter,
                 "node {node_id:?} residency tier CAS expected {expected_from:?} but found {current:?}"
+            ),
+            Self::PinnedNodeNotEvictable { node_id, tier } => write!(
+                formatter,
+                "node {node_id:?} is PINNED at {tier:?} and cannot be evicted"
+            ),
+            Self::PinStateCasMismatch {
+                node_id,
+                expected_pinned,
+                current,
+            } => write!(
+                formatter,
+                "node {node_id:?} pin CAS expected pinned={expected_pinned} but found {current}"
             ),
             Self::StaleNodeRevision {
                 node_id,

@@ -9,7 +9,7 @@ use rusqlite::{Connection, TransactionBehavior};
 
 use crate::PlanStoreError;
 
-pub(crate) const SCHEMA_VERSION: i64 = 6;
+pub(crate) const SCHEMA_VERSION: i64 = 7;
 
 /// Creates the durable plan authority schema v1: the per-plan
 /// `plans` current-state head (monotonic current revision), the immutable
@@ -364,6 +364,51 @@ pub(crate) fn migrate_v6(connection: &mut Connection) -> Result<(), PlanStoreErr
 
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     transaction.execute_batch(SCHEMA_V6_SQL)?;
+    transaction.commit()?;
+    Ok(())
+}
+
+/// Advances a v6 database to v7 (additive, one `BEGIN IMMEDIATE`
+/// transaction): the PINNED overlay (W36-P8; W31-G §8.2.6). `plan_nodes`
+/// gains `pinned` (default unpinned) and `pin_transition_count`; the
+/// immutable `plan_node_pin_transitions` table carries pin/unpin
+/// vouchers. The 5-tier residency CHECK is untouched — PINNED is not a
+/// sixth discriminant.
+pub(crate) fn migrate_v7(connection: &mut Connection) -> Result<(), PlanStoreError> {
+    let column_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('plan_nodes')
+          WHERE name = 'pinned'",
+        [],
+        |row| row.get(0),
+    )?;
+    if column_count == 1 {
+        connection.pragma_update(None, "user_version", 7)?;
+        return Ok(());
+    }
+    if column_count != 0 {
+        return Err(PlanStoreError::CorruptRecord(
+            "partial plan authority v7 schema",
+        ));
+    }
+    let v6_tables: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+          WHERE type='table' AND name IN (
+            'plans', 'plan_revisions', 'plan_nodes', 'plan_node_transitions',
+            'plan_revision_nodes', 'plan_revision_edges', 'plan_resolution_receipts',
+            'plan_node_residency_transitions', 'plan_materialization_requests',
+            'ecosystem_resolution_receipts'
+          )",
+        [],
+        |row| row.get(0),
+    )?;
+    if v6_tables != 10 {
+        return Err(PlanStoreError::CorruptRecord(
+            "plan authority v6 schema missing",
+        ));
+    }
+
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(SCHEMA_V7_SQL)?;
     transaction.commit()?;
     Ok(())
 }
@@ -760,3 +805,44 @@ pub(crate) const SCHEMA_V6_SQL: &str = "ALTER TABLE plan_revision_nodes
     ADD COLUMN conditions_body BLOB;
 
 PRAGMA user_version = 6;";
+
+pub(crate) const SCHEMA_V7_SQL: &str = "ALTER TABLE plan_nodes
+    ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0
+    CHECK(pinned IN (0, 1));
+ALTER TABLE plan_nodes
+    ADD COLUMN pin_transition_count INTEGER NOT NULL DEFAULT 0
+    CHECK(pin_transition_count >= 0);
+
+CREATE TABLE plan_node_pin_transitions (
+    voucher_id BLOB PRIMARY KEY NOT NULL CHECK(length(voucher_id) = 16),
+    idempotency_key BLOB NOT NULL UNIQUE CHECK(length(idempotency_key) = 16),
+    plan_id BLOB NOT NULL CHECK(length(plan_id) = 16),
+    task_node_id BLOB NOT NULL CHECK(length(task_node_id) = 16),
+    transition_seq INTEGER NOT NULL CHECK(transition_seq >= 1),
+    from_pinned INTEGER NOT NULL CHECK(from_pinned IN (0, 1)),
+    to_pinned INTEGER NOT NULL CHECK(to_pinned IN (0, 1)),
+    observed_revision INTEGER NOT NULL CHECK(observed_revision >= 1),
+    transitioned_at_ms INTEGER NOT NULL CHECK(transitioned_at_ms >= 0),
+    UNIQUE(plan_id, task_node_id, transition_seq),
+    FOREIGN KEY(plan_id, task_node_id) REFERENCES plan_nodes(plan_id, task_node_id)
+) STRICT;
+
+CREATE TRIGGER plan_node_pin_transitions_immutable_update
+BEFORE UPDATE ON plan_node_pin_transitions BEGIN
+    SELECT RAISE(ABORT, 'plan node pin voucher is immutable');
+END;
+CREATE TRIGGER plan_node_pin_transitions_no_delete
+BEFORE DELETE ON plan_node_pin_transitions BEGIN
+    SELECT RAISE(ABORT, 'plan node pin voucher is durable');
+END;
+CREATE TRIGGER plan_node_pin_transitions_seq_bound
+AFTER INSERT ON plan_node_pin_transitions
+WHEN NEW.transition_seq != (
+    SELECT pin_transition_count + 1 FROM plan_nodes
+    WHERE plan_id = NEW.plan_id AND task_node_id = NEW.task_node_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'pin voucher is not the next dense sequence');
+END;
+
+PRAGMA user_version = 7;";

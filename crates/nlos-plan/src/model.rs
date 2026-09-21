@@ -21,6 +21,8 @@ pub const REVISION_DIGEST_DOMAIN: &[u8] = b"llmos/plan/revision-digest/v1";
 pub const VOUCHER_ID_DOMAIN: &[u8] = b"llmos/plan/transition-voucher-id/v1";
 /// Domain separator for the residency-transition voucher id.
 pub const RESIDENCY_VOUCHER_ID_DOMAIN: &[u8] = b"llmos/plan/residency-voucher-id/v1";
+/// Domain separator for the PINNED-overlay voucher id (W36-P8).
+pub const PIN_VOUCHER_ID_DOMAIN: &[u8] = b"llmos/plan/pin-voucher-id/v1";
 /// Domain separator for the resolution receipt id.
 pub const RESOLUTION_ID_DOMAIN: &[u8] = b"llmos/plan/resolution-id/v1";
 /// Domain separator for the resolution receipt content digest.
@@ -668,6 +670,61 @@ pub struct NodeResidencyView {
     /// The node's newest residency voucher, `None` before the first
     /// transition.
     pub last_voucher: Option<ResidencyTransitionVoucher>,
+}
+
+/// Request to pin or unpin one plan node (W36-P8 PINNED overlay).
+///
+/// Pin and unpin share the request shape; the write face (`record_node_pin`
+/// vs `record_node_unpin`) is the intent. The declared-revision CAS is
+/// the same `[PLAN-DAG-001]` fence the residency axis uses.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NodePinRequest {
+    pub plan_id: TaskPlanId,
+    pub node_id: TaskNodeId,
+    pub expected_declared_revision: u64,
+    pub idempotency_key: IdempotencyKey,
+    pub transitioned_at_ms: u64,
+}
+
+/// Immutable voucher of one pin/unpin overlay transition.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NodePinVoucher {
+    pub voucher_id: ReceiptId,
+    pub plan_id: TaskPlanId,
+    pub node_id: TaskNodeId,
+    pub transition_seq: u64,
+    pub from_pinned: bool,
+    pub to_pinned: bool,
+    pub observed_revision: u64,
+    pub idempotency_key: IdempotencyKey,
+    pub transitioned_at_ms: u64,
+}
+
+/// Outcome of one pin/unpin call.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum NodePinDecision {
+    Recorded(NodePinVoucher),
+    Replayed(NodePinVoucher),
+}
+
+impl NodePinDecision {
+    /// The voucher this call denotes, whichever branch.
+    #[must_use]
+    pub fn voucher(self) -> NodePinVoucher {
+        match self {
+            Self::Recorded(voucher) | Self::Replayed(voucher) => voucher,
+        }
+    }
+}
+
+/// Typed readback of one node's PINNED overlay.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NodePinView {
+    pub plan_id: TaskPlanId,
+    pub node_id: TaskNodeId,
+    pub pinned: bool,
+    pub transition_count: u64,
+    pub last_voucher: Option<NodePinVoucher>,
 }
 
 /// Result of walking one plan's immutable revision chain.

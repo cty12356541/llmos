@@ -27,6 +27,7 @@ use crate::model::{
 };
 use crate::schema::{
     SCHEMA_VERSION, migrate_v1, migrate_v2, migrate_v3, migrate_v4, migrate_v5, migrate_v6,
+    migrate_v7,
 };
 
 /// A single-writer `SQLite` plan authority.
@@ -143,6 +144,7 @@ impl SqlitePlanAuthority {
                 migrate_v4(&mut connection)?;
                 migrate_v5(&mut connection)?;
                 migrate_v6(&mut connection)?;
+                migrate_v7(&mut connection)?;
             }
             1 => {
                 migrate_v2(&mut connection)?;
@@ -150,23 +152,31 @@ impl SqlitePlanAuthority {
                 migrate_v4(&mut connection)?;
                 migrate_v5(&mut connection)?;
                 migrate_v6(&mut connection)?;
+                migrate_v7(&mut connection)?;
             }
             2 => {
                 migrate_v3(&mut connection)?;
                 migrate_v4(&mut connection)?;
                 migrate_v5(&mut connection)?;
                 migrate_v6(&mut connection)?;
+                migrate_v7(&mut connection)?;
             }
             3 => {
                 migrate_v4(&mut connection)?;
                 migrate_v5(&mut connection)?;
                 migrate_v6(&mut connection)?;
+                migrate_v7(&mut connection)?;
             }
             4 => {
                 migrate_v5(&mut connection)?;
                 migrate_v6(&mut connection)?;
+                migrate_v7(&mut connection)?;
             }
-            5 => migrate_v6(&mut connection)?,
+            5 => {
+                migrate_v6(&mut connection)?;
+                migrate_v7(&mut connection)?;
+            }
+            6 => migrate_v7(&mut connection)?,
             SCHEMA_VERSION => {}
             other => return Err(PlanStoreError::SchemaVersionUnsupported(other)),
         }
