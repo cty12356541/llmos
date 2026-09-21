@@ -648,6 +648,11 @@ cargo clippy -p nlos-runtime-tokio --all-targets -- -D warnings
 - **B2 修复 CI 确认**：dispatch run [35558019156](https://github.com/cty12356541/llmos/actions/runs/35558019156)（`--no-fail-fast` 首个全量 scale-probe）：`ten_thousand_task_registrations_keep_the_permit_face_lazy ... ok`（上 run 失败项转绿）；blocking_io_negative 三探针保持绿；**279 测试二进制全 ok**——含全部 W31/W35 新探针（tasknode 10K/100K、比例矩阵、rehydrate 三档、100K batch-cancel 比值、多 worker fairness、墙钟首割）首次同时在 CI 全绿。
 - **家族第三例（末层）**：唯一残败 = `ten_thousand_lifecycle_phase_fibers_on_two_workers`（W19-006 引入，从未上 CI）:fiber 0 `active_cpu=127ms vs backpressure_wait=66ms` 倒挂——逐纤断言对 spawn 窗口敏感（前缀纤在 10K spawn 窗口累积 active 段，慢 runner 拉长窗口即倒挂；其姊妹 activation_meter 探针同 run 通过）。修复：per-fiber 比较改**队列聚合比值**（子集总 active < 总 wait——「等待主导」的人口级真不变量，spawn 窗口污染摊销；每纤 MIN 下限与 external_wait=0 保留），本地双档 1.29s 绿。终证 run #3 PENDING。
 
+
+#### 6.18.2.2 终证全绿（2026-09-22，W35-B 闭合）
+
+- dispatch run [35560466719](https://github.com/cty12356541/llmos/actions/runs/35560466719)（`3d423c3`）：**五 job 全 success，含 Scale probe (include-ignored) 首个全绿**——阻塞家族三例（blocking_io_negative 计量窗口、scale_profile_probe checkpoint 债+静默重开、lifecycle 比值饱和门）修复全部 CI 确认；`--no-fail-fast` 下全部被 ignore 探针（W8/W19/W20/W31/W35 各代）首次同时在 CI 全绿。移交 #14 至此完整闭合（含其暴露并连带修复的家族二、三例）。W35-P6 三新探针（§6.19）同 run 在列。
+
 #### 6.18.2 W35-B2 裁决与修复：scale_profile_probe 10K permit p95 CI 假失败（2026-09-22 追加，W35-B2 / ROAD-B-004 前片，分支 fix/w35-b2-scale-probe）
 
 - Owner：`nlos-task`（`tests/scale_profile_probe.rs`，**test-only 零 src 侵入**）
