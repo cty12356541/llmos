@@ -717,6 +717,18 @@ impl NodePinDecision {
     }
 }
 
+/// One Task-side reclaim eviction bound to a plan node (W36-P8;
+/// W31-G §8.2.5). The assembler owns the `task_id → node` map; this
+/// request is the plan-facing write the Task ledger cannot issue.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReclaimResidencyEviction {
+    pub plan_id: TaskPlanId,
+    pub node_id: TaskNodeId,
+    pub expected_declared_revision: u64,
+    pub idempotency_key: IdempotencyKey,
+    pub transitioned_at_ms: u64,
+}
+
 /// Typed readback of one node's PINNED overlay.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NodePinView {

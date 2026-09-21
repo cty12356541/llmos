@@ -55,8 +55,9 @@ pub use model::{
     NodeResidencyView, NodeTransitionDecision, NodeTransitionRequest, NodeTransitionVoucher,
     PlanNodeDeclaration, PlanNodeKind, PlanNodeRecord, PlanNodeState, PlanResolutionDecision,
     PlanResolutionHandle, PlanRevisionDecision, PlanRevisionReceipt, PlanRevisionSelector,
-    PlanView, ResidencyTransitionDecision, ResidencyTransitionRequest, ResidencyTransitionVoucher,
-    ResolveEcosystemRequest, ResolvePlanRequest, ResolvedPlanNode, ResourceContractCondition,
+    PlanView, ReclaimResidencyEviction, ResidencyTransitionDecision, ResidencyTransitionRequest,
+    ResidencyTransitionVoucher, ResolveEcosystemRequest, ResolvePlanRequest, ResolvedPlanNode,
+    ResourceContractCondition,
 };
 pub use model::{
     MaterializationAdmission, MaterializationAdmissionVerdict, MaterializationApproval,

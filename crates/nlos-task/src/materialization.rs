@@ -20,6 +20,9 @@
 //! deliberate wiring (caller-owned), keeping the two authority
 //! vocabularies decoupled.
 
+use nlos_types::{CommitPermitId, TaskId};
+
+use crate::pressure::WorkingSetReclaimExecutionReport;
 use crate::scale::ScaleProfile;
 use crate::store::SqliteTaskAuthority;
 use crate::{TaskStoreError, enforce_task_node_admission, enforce_working_set_admission};
@@ -118,5 +121,20 @@ impl SqliteTaskAuthority {
                 max_task_nodes: profile.max_task_nodes,
             })
         }
+    }
+
+    /// The Task half of the reclaim×residency seam (W36-P8; W31-G §8.2.5):
+    /// identities of durably evicted working-set members, in eviction
+    /// order. The assembler binds each `task_id` to a plan node; the
+    /// plan authority records the matching residency step.
+    #[must_use]
+    pub fn reclaim_residency_victims(
+        report: &WorkingSetReclaimExecutionReport,
+    ) -> Vec<(TaskId, CommitPermitId)> {
+        report
+            .evictions
+            .iter()
+            .map(|eviction| (eviction.task_id, eviction.permit_id))
+            .collect()
     }
 }
