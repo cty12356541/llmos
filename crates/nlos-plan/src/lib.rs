@@ -70,7 +70,7 @@ pub use scheduler::{
     SelectionEntry, SelectionKind, SelectionReport, SelectionSkipReason, SkipEntry,
 };
 pub use selector::{EcosystemResolutionError, EcosystemSelectorSource};
-pub use store::SqlitePlanAuthority;
+pub use store::{DeclarationAdmissionConsult, DeclarationAdmissionOutcome, SqlitePlanAuthority};
 
 /// Errors produced by the durable plan authority.
 ///
@@ -238,6 +238,24 @@ pub enum PlanStoreError {
     InvalidNodeConditions {
         reason: &'static str,
     },
+    /// The apply-time declared-population consult denied the revision:
+    /// the projected store-wide declared-TaskNode population exceeds the
+    /// Task tier's `max_task_nodes` dimension (W36-P8; W31-G §8.2.4 —
+    /// the declaration half of the W31-A consult, ADR-0016 决定 4).
+    /// Nothing was written; the reason body is owned by the Task
+    /// authority.
+    DeclarationAdmissionDenied {
+        /// Tier identifier of the denying profile.
+        profile_id: String,
+        /// The projected store-wide declared-TaskNode population.
+        projected_task_nodes: u64,
+        /// Inclusive hard cap of the declared-TaskNode dimension.
+        max_task_nodes: u64,
+    },
+    /// The apply-time declared-population consult itself failed
+    /// (transport/storage posture). The gated apply fails closed — no
+    /// revision is committed without a verified admission (ADR-0013).
+    DeclarationConsultUnavailable,
 }
 
 impl fmt::Display for PlanStoreError {
@@ -394,6 +412,17 @@ impl fmt::Display for PlanStoreError {
             ),
             Self::InvalidNodeConditions { reason } => {
                 write!(formatter, "invalid node gate conditions: {reason}")
+            }
+            Self::DeclarationAdmissionDenied {
+                profile_id,
+                projected_task_nodes,
+                max_task_nodes,
+            } => write!(
+                formatter,
+                "plan revision admission denied by tier {profile_id}: projected {projected_task_nodes} declared task nodes exceed max_task_nodes {max_task_nodes}"
+            ),
+            Self::DeclarationConsultUnavailable => {
+                formatter.write_str("plan revision admission consult failed; apply fails closed")
             }
         }
     }

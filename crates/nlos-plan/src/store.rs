@@ -34,6 +34,52 @@ pub struct SqlitePlanAuthority {
     connection: Mutex<Connection>,
 }
 
+/// The answer of one apply-time declared-population consult
+/// (W36-P8; W31-G §8.2.4): the Task tier either admits the projected
+/// store-wide declared-TaskNode population or denies it with the
+/// dimension's reason body (the Task authority owns the tier identity
+/// and cap, mirroring the W31-A materialization consult vocabulary).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DeclarationAdmissionOutcome {
+    /// The projected population fits the tier's `max_task_nodes`.
+    Admits,
+    /// The tier's declared-TaskNode dimension denied the projection.
+    Denied {
+        /// Tier identifier of the denying profile.
+        profile_id: String,
+        /// Inclusive hard cap of the declared-TaskNode dimension.
+        max_task_nodes: u64,
+    },
+}
+
+/// The apply-time declared-population admission consult boundary
+/// (W36-P8; W31-G §8.2.4): the Task authority's cross-authority answer
+/// to "does a plan revision projecting this many declared `TaskNode`s
+/// still fit the tier?" — a read-only consult through the W31-A seam
+/// posture (the same boundary shape as the W31-F `AdmissionConsult`;
+/// the 1:1 mapping from `SqliteTaskAuthority::answer_plan_declaration`
+/// is assembler wiring, slice-k territory). `Err` denotes a failed
+/// consult (transport/storage posture) — never a denial; the gated
+/// apply fails closed on it.
+pub trait DeclarationAdmissionConsult {
+    /// The consult's own failure type (diagnostics stay with the
+    /// implementation; the plan side records only the fact).
+    type Error;
+
+    /// Consults the Task-side declared-TaskNode dimension for one
+    /// projected store-wide population.
+    ///
+    /// # Errors
+    ///
+    /// `Err` denotes a failed consult (transport/storage posture), not
+    /// a denial — a denial is the
+    /// `Ok(DeclarationAdmissionOutcome::Denied)` answer.
+    fn consult_plan_declaration(
+        &self,
+        projected_task_nodes: u64,
+    ) -> Result<DeclarationAdmissionOutcome, Self::Error>;
+}
+
 impl SqlitePlanAuthority {
     /// Opens or creates a plan authority database and validates its schema.
     ///
@@ -214,70 +260,141 @@ impl SqlitePlanAuthority {
             dependencies_root,
         );
 
-        if revision == 1 {
-            transaction.execute(
-                "INSERT INTO plans (
-                    plan_id, current_revision, created_at_ms, updated_at_ms
-                 ) VALUES (?1, 1, ?2, ?2)",
-                params![
-                    plan_id.as_bytes().as_slice(),
-                    encode_u64(request.applied_at_ms)?,
-                ],
-            )?;
-        } else {
-            transaction.execute(
-                "UPDATE plans
-                 SET current_revision = ?2, updated_at_ms = ?3
-                 WHERE plan_id = ?1",
-                params![
-                    plan_id.as_bytes().as_slice(),
-                    encode_u64(revision)?,
-                    encode_u64(request.applied_at_ms)?,
-                ],
-            )?;
-        }
-
-        upsert_plan_nodes(
+        let receipt = write_revision(
             &transaction,
+            &request,
             plan_id,
             revision,
-            &request.nodes,
-            &digests,
-            request.applied_at_ms,
-        )?;
-
-        transaction.execute(
-            "INSERT INTO plan_revisions (
-                plan_id, revision, idempotency_key, parent_revision_digest,
-                nodes_root, dependencies_root, plan_digest,
-                declared_node_count, applied_at_ms
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![
-                plan_id.as_bytes().as_slice(),
-                encode_u64(revision)?,
-                request.idempotency_key.as_bytes().as_slice(),
-                parent_digest.as_ref().map(<[u8; 32]>::as_slice),
-                nodes_root.as_slice(),
-                dependencies_root.as_slice(),
-                plan_digest.as_slice(),
-                encode_u64(request.nodes.len() as u64)?,
-                encode_u64(request.applied_at_ms)?,
-            ],
-        )?;
-        persist_revision_shape(&transaction, plan_id, revision, &request.nodes, &digests)?;
-        transaction.commit()?;
-
-        Ok(PlanRevisionDecision::Applied(PlanRevisionReceipt {
-            plan_id,
-            revision,
-            idempotency_key: request.idempotency_key,
-            parent_revision_digest: parent_digest,
+            parent_digest,
             nodes_root,
             dependencies_root,
             plan_digest,
-            declared_node_count: request.nodes.len() as u64,
-            applied_at_ms: request.applied_at_ms,
-        }))
+            &digests,
+        )?;
+        transaction.commit()?;
+
+        Ok(PlanRevisionDecision::Applied(receipt))
+    }
+
+    /// Applies one plan revision behind the apply-time declared-population
+    /// admission consult (W36-P8; W31-G §8.2.4 — the declaration half the
+    /// W31-A materialization consult left open). The projection is the
+    /// store-wide persisted `plan_nodes` count plus the node keys this
+    /// revision declares that no row carries yet (rows are lifetime
+    /// metadata, so each new key is exactly one future row); the consult
+    /// answers inside the already-open `BEGIN IMMEDIATE` transaction, so
+    /// the verified population and the committed revision are one
+    /// consistent snapshot. A denial is a typed refusal before any write;
+    /// a failed consult fails closed (ADR-0013: cannot verify ⇒ do not
+    /// commit). Idempotent replays bypass the consult — the durable
+    /// receipt is the authority, mirroring the registration-gate
+    /// discipline.
+    ///
+    /// # Errors
+    ///
+    /// Same surface as [`Self::apply_plan_revision`], plus
+    /// [`PlanStoreError::DeclarationAdmissionDenied`] when the Task tier
+    /// denies the projected population and
+    /// [`PlanStoreError::DeclarationConsultUnavailable`] when the consult
+    /// itself fails.
+    pub fn apply_plan_revision_with_admission<C: DeclarationAdmissionConsult>(
+        &self,
+        request: ApplyPlanRevisionRequest,
+        consult: &C,
+    ) -> Result<PlanRevisionDecision, PlanStoreError> {
+        validate_declaration(&request.nodes)?;
+        let plan_id = match request.plan_id {
+            Some(plan_id) => plan_id,
+            None => derive_plan_id(&request.idempotency_key),
+        };
+        let digests: Vec<([u8; 32], TaskNodeId)> = request
+            .nodes
+            .iter()
+            .map(|node| (node_digest(node), derive_node_id(plan_id, &node.node_key)))
+            .collect();
+
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+        // Idempotent replay first: the durable receipt is the authority
+        // (the consult is bypassed exactly like the registration gate).
+        if let Some(existing) = load_revision_receipt_by_key(&transaction, request.idempotency_key)?
+        {
+            let replay_nodes_root = nodes_root(plan_id, existing.revision, &digests);
+            let replay_dependencies_root =
+                dependencies_root(plan_id, existing.revision, &request.nodes);
+            if existing.plan_id != plan_id
+                || existing.nodes_root != replay_nodes_root
+                || existing.dependencies_root != replay_dependencies_root
+                || existing.declared_node_count != request.nodes.len() as u64
+                || existing.applied_at_ms != request.applied_at_ms
+            {
+                return Err(PlanStoreError::IdempotencyConflict);
+            }
+            transaction.commit()?;
+            return Ok(PlanRevisionDecision::Replayed(existing));
+        }
+
+        let (revision, parent_digest) = if request.plan_id.is_none() {
+            (1, None)
+        } else {
+            let current = load_plan_head(&transaction, plan_id)?
+                .ok_or(PlanStoreError::PlanNotFound(plan_id))?;
+            let parent = load_revision_digest(&transaction, plan_id, current.current_revision)?
+                .ok_or(PlanStoreError::CorruptRecord(
+                    "plan head has no revision receipt",
+                ))?;
+            (current.current_revision + 1, Some(parent))
+        };
+
+        let (projected, fresh) =
+            projected_declared_population(&transaction, plan_id, &request.nodes)?;
+        // Growth-only consult: a reshape that adds no `plan_nodes` row
+        // is not a declaration-population admission question (the
+        // lifetime rows already exist — possibly via the consult-free
+        // plain face). Replay already bypasses; no-growth follows the
+        // same discipline so an already-over-tier store can still
+        // reshape without a silent new-key pass.
+        if fresh > 0 {
+            match consult.consult_plan_declaration(projected) {
+                Ok(DeclarationAdmissionOutcome::Admits) => {}
+                Ok(DeclarationAdmissionOutcome::Denied {
+                    profile_id,
+                    max_task_nodes,
+                }) => {
+                    return Err(PlanStoreError::DeclarationAdmissionDenied {
+                        profile_id,
+                        projected_task_nodes: projected,
+                        max_task_nodes,
+                    });
+                }
+                Err(_) => return Err(PlanStoreError::DeclarationConsultUnavailable),
+            }
+        }
+
+        let nodes_root = nodes_root(plan_id, revision, &digests);
+        let dependencies_root = dependencies_root(plan_id, revision, &request.nodes);
+        let plan_digest = revision_digest(
+            plan_id,
+            revision,
+            parent_digest,
+            nodes_root,
+            dependencies_root,
+        );
+        let receipt = write_revision(
+            &transaction,
+            &request,
+            plan_id,
+            revision,
+            parent_digest,
+            nodes_root,
+            dependencies_root,
+            plan_digest,
+            &digests,
+        )?;
+        transaction.commit()?;
+
+        Ok(PlanRevisionDecision::Applied(receipt))
     }
 
     /// Reads one plan's current head, `None` when the plan does not exist.
@@ -1291,4 +1408,123 @@ fn persist_revision_shape(
         }
     }
     Ok(())
+}
+
+/// The revision write set shared by both apply faces: plan head advance,
+/// node upserts, the immutable receipt link, and the declared shape rows
+/// (one auditable transaction; callers own the surrounding consult/replay
+/// protocol and the commit).
+fn write_revision(
+    transaction: &rusqlite::Transaction<'_>,
+    request: &ApplyPlanRevisionRequest,
+    plan_id: TaskPlanId,
+    revision: u64,
+    parent_digest: Option<[u8; 32]>,
+    nodes_root: [u8; 32],
+    dependencies_root: [u8; 32],
+    plan_digest: [u8; 32],
+    digests: &[([u8; 32], TaskNodeId)],
+) -> Result<PlanRevisionReceipt, PlanStoreError> {
+    if revision == 1 {
+        transaction.execute(
+            "INSERT INTO plans (
+                plan_id, current_revision, created_at_ms, updated_at_ms
+             ) VALUES (?1, 1, ?2, ?2)",
+            params![
+                plan_id.as_bytes().as_slice(),
+                encode_u64(request.applied_at_ms)?,
+            ],
+        )?;
+    } else {
+        transaction.execute(
+            "UPDATE plans
+             SET current_revision = ?2, updated_at_ms = ?3
+             WHERE plan_id = ?1",
+            params![
+                plan_id.as_bytes().as_slice(),
+                encode_u64(revision)?,
+                encode_u64(request.applied_at_ms)?,
+            ],
+        )?;
+    }
+
+    upsert_plan_nodes(
+        transaction,
+        plan_id,
+        revision,
+        &request.nodes,
+        digests,
+        request.applied_at_ms,
+    )?;
+
+    transaction.execute(
+        "INSERT INTO plan_revisions (
+            plan_id, revision, idempotency_key, parent_revision_digest,
+            nodes_root, dependencies_root, plan_digest,
+            declared_node_count, applied_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            plan_id.as_bytes().as_slice(),
+            encode_u64(revision)?,
+            request.idempotency_key.as_bytes().as_slice(),
+            parent_digest.as_ref().map(<[u8; 32]>::as_slice),
+            nodes_root.as_slice(),
+            dependencies_root.as_slice(),
+            plan_digest.as_slice(),
+            encode_u64(request.nodes.len() as u64)?,
+            encode_u64(request.applied_at_ms)?,
+        ],
+    )?;
+    persist_revision_shape(transaction, plan_id, revision, &request.nodes, digests)?;
+
+    Ok(PlanRevisionReceipt {
+        plan_id,
+        revision,
+        idempotency_key: request.idempotency_key,
+        parent_revision_digest: parent_digest,
+        nodes_root,
+        dependencies_root,
+        plan_digest,
+        declared_node_count: request.nodes.len() as u64,
+        applied_at_ms: request.applied_at_ms,
+    })
+}
+
+/// The store-wide declared-TaskNode population this revision projects
+/// and the number of new keys it would insert: every persisted
+/// `plan_nodes` row (lifetime metadata, all plans) plus the declared
+/// keys that carry no row under this plan yet — each new key is
+/// exactly one future row (ADR-0016 决定 4 dimension).
+fn projected_declared_population(
+    transaction: &rusqlite::Transaction<'_>,
+    plan_id: TaskPlanId,
+    nodes: &[PlanNodeDeclaration],
+) -> Result<(u64, u64), PlanStoreError> {
+    let existing: i64 =
+        transaction.query_row("SELECT COUNT(*) FROM plan_nodes", [], |row| row.get(0))?;
+    let mut statement =
+        transaction.prepare("SELECT node_key FROM plan_nodes WHERE plan_id = ?1")?;
+    let declared_keys = statement.query_map([plan_id.as_bytes().as_slice()], |row| {
+        row.get::<_, Vec<u8>>(0)
+    })?;
+    let mut known = std::collections::HashSet::new();
+    for key in declared_keys {
+        known.insert(fixed16(key?, "plan node key")?);
+    }
+    let fresh = u64::try_from(
+        nodes
+            .iter()
+            .filter(|node| !known.contains(&node.node_key))
+            .count(),
+    )
+    .map_err(|_| PlanStoreError::InvalidRequest {
+        reason: "projected declared population overflows",
+    })?;
+    let projected = u64::try_from(existing)
+        .ok()
+        .and_then(|existing| existing.checked_add(fresh))
+        .ok_or(PlanStoreError::InvalidRequest {
+            reason: "projected declared population overflows",
+        })?;
+    Ok((projected, fresh))
 }

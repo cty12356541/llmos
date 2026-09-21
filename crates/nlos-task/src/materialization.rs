@@ -93,4 +93,30 @@ impl SqliteTaskAuthority {
             snapshot.active_count,
         )
     }
+
+    /// Answers the plan-declaration (apply-time) consult over the
+    /// declared-TaskNode dimension only (W36-P8; W31-G §8.2.4 — the
+    /// declaration half the materialization consult left open): whether
+    /// a projected store-wide declared-`TaskNode` population still fits
+    /// the configured [`ScaleProfile`]'s `max_task_nodes`. Read-only
+    /// cross-authority consult — no Task-side durable write, the same
+    /// ADR-0013 posture as [`Self::answer_plan_materialization`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TaskStoreError::TaskNodeAdmissionDenied`] as the typed
+    /// denial; no other failure surface (the projection is caller-owned
+    /// plan-side data).
+    pub fn answer_plan_declaration(&self, projected_task_nodes: u64) -> Result<(), TaskStoreError> {
+        let profile = self.scale_profile();
+        if profile.admits_task_nodes(projected_task_nodes) {
+            Ok(())
+        } else {
+            Err(TaskStoreError::TaskNodeAdmissionDenied {
+                profile_id: profile.profile_id,
+                task_count: projected_task_nodes,
+                max_task_nodes: profile.max_task_nodes,
+            })
+        }
+    }
 }
