@@ -1,6 +1,7 @@
 //! Acceptance tests for B-PROCESS-003 platform kill contract-layer minimum
 //! prefix: durable kill receipt, stub adapter invocation, terminal fail-closed,
 //! idempotent replay, (on Unix) real SIGTERM via [`PosixPlatformKillAdapter`],
+//! (on Windows) real `taskkill /F /T` via [`WindowsPlatformKillAdapter`],
 //! (on non-Windows) stub rejection for [`WindowsPlatformKillAdapter`], and
 //! each adapter's missing-map / cross-platform stub fail-closed paths.
 
@@ -442,6 +443,156 @@ fn windows_platform_kill_adapter_missing_map_entry_returns_platform_error() {
             "os pid mapping not found for process id"
         ))
     ));
+}
+
+// Windows runner images carry no `sleep` binary. powershell.exe (Windows
+// PowerShell 5.1) ships on every windows-2019/2022/2025 image, and spawning
+// it directly — no `cmd /c` wrapper — keeps the `Child` pid in 1:1
+// correspondence with the OS pid the adapter must terminate. `-NoProfile`
+// sidesteps profile / execution-policy flakiness on CI hosts.
+#[cfg(windows)]
+fn spawn_sleeper() -> std::process::Child {
+    use std::process::{Command, Stdio};
+
+    Command::new("powershell")
+        .args(["-NoProfile", "-Command", "Start-Sleep -Seconds 600"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn powershell sleeper child")
+}
+
+#[cfg(windows)]
+fn wait_for_exit(
+    child: &mut std::process::Child,
+    timeout: std::time::Duration,
+) -> Option<std::process::ExitStatus> {
+    use std::time::Instant;
+
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(status) = child.try_wait().expect("poll sleeper child") {
+            return Some(status);
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+#[cfg(windows)]
+fn platform_kill_real_child(
+    fixture: &Fixture,
+    adapter: &WindowsPlatformKillAdapter,
+    key: IdempotencyKey,
+    child: &mut std::process::Child,
+) -> nlos_process::PlatformKillReceipt {
+    let decision = fixture
+        .authority
+        .request_platform_kill(kill_request(fixture, key), adapter)
+        .expect("windows platform kill");
+    assert!(matches!(decision, PlatformKillDecision::Signaled(_)));
+    assert_eq!(decision.receipt().idempotency_key, key);
+    assert_eq!(
+        fixture
+            .authority
+            .inspect_platform_kill_receipt(fixture.process_id, fixture.process_generation)
+            .expect("inspect kill receipt")
+            .as_ref(),
+        Some(decision.receipt())
+    );
+
+    // The mapped OS pid is really dead — forced termination, not a stub.
+    let status = wait_for_exit(child, std::time::Duration::from_secs(30))
+        .expect("child terminated within 30s of taskkill /F /T");
+    assert!(!status.success());
+    decision.receipt().clone()
+}
+
+#[test]
+#[cfg(windows)]
+fn windows_platform_kill_adapter_terminates_real_child_process() {
+    use nlos_process::{RegisterSupervisorPidRequest, SupervisorPidRegistry};
+
+    let root = TestRoot::new("windows-real-kill");
+    let killed = open_fixture(&root, 73);
+    let bystander = open_fixture(&root, 74);
+
+    let mut killed_child = spawn_sleeper();
+    let mut bystander_child = spawn_sleeper();
+
+    let registry = SupervisorPidRegistry::new();
+    for (fixture, os_pid) in [
+        (&killed, killed_child.id()),
+        (&bystander, bystander_child.id()),
+    ] {
+        registry
+            .register(RegisterSupervisorPidRequest {
+                process_id: fixture.process_id,
+                process_generation: fixture.process_generation,
+                os_pid,
+                registered_at_ms: 3_000,
+            })
+            .expect("register supervisor pid");
+    }
+
+    assert!(
+        killed_child
+            .try_wait()
+            .expect("poll killed child")
+            .is_none()
+    );
+    assert!(
+        bystander_child
+            .try_wait()
+            .expect("poll bystander child")
+            .is_none()
+    );
+
+    let adapter = WindowsPlatformKillAdapter::new(registry.pid_map());
+    let key = IdempotencyKey::from_bytes([0x73; 16]);
+    let request = kill_request(&killed, key);
+    let receipt = platform_kill_real_child(&killed, &adapter, key, &mut killed_child);
+
+    // Referenced isolation: the bystander pid sits in the same pid_map yet is
+    // untouched by the kill aimed at the other process identity (OS and
+    // durable layers both).
+    assert!(
+        bystander_child
+            .try_wait()
+            .expect("poll bystander child")
+            .is_none()
+    );
+    bystander
+        .authority
+        .inspect_active_process_binding(bystander.process_id)
+        .expect("bystander binding stays active");
+
+    // Re-signaling the now-dead pid maps to AlreadyTerminated, not an error.
+    assert!(matches!(
+        adapter.signal_platform_kill(killed.process_id, killed.process_generation),
+        Ok(PlatformKillAdapterOutcome::AlreadyTerminated)
+    ));
+
+    // Exact-idempotency replay never re-invokes the adapter: an empty-map
+    // adapter would fail closed if the adapter were consulted again.
+    let replay = killed
+        .authority
+        .request_platform_kill(request, &WindowsPlatformKillAdapter::new(HashMap::new()))
+        .expect("replay windows platform kill");
+    assert!(matches!(replay, PlatformKillDecision::Replayed(_)));
+    assert_eq!(replay.receipt(), &receipt);
+
+    // Bystander teardown through its own binding — a second real Signaled —
+    // so the sleeper never outlives the test run.
+    platform_kill_real_child(
+        &bystander,
+        &adapter,
+        IdempotencyKey::from_bytes([0x74; 16]),
+        &mut bystander_child,
+    );
 }
 
 #[test]
