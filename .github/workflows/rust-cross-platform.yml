@@ -151,8 +151,10 @@ jobs:
       # --include-ignored 会执行两个被 #[ignore] 标记的规模探针：
       # crates/nlos-store/tests/store_scale.rs（10 万 Operation 元数据）
       # crates/nlos-runtime-tokio/tests/scale.rs（10 万 fiber）
+      # --no-fail-fast：单个失败二进制不得掩盖后续二进制（scale_profile_probe
+      # 曾因此 15 天未在夜间暴露，见 b-runtime-002 §6.18.2）；任一失败 job 仍红。
       - name: Test workspace including ignored scale probes
-        run: cargo test --workspace -- --include-ignored
+        run: cargo test --workspace --no-fail-fast -- --include-ignored
 
   msrv:
     name: MSRV 1.97

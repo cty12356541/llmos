@@ -26,6 +26,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use nlos_task::{
@@ -42,6 +44,31 @@ const LAZY_SAMPLE: u64 = 64;
 const ACTIVE_WORKING_SET: u64 = TASK_PROFILE_10K.max_active_working_set;
 
 static NEXT_DATABASE: AtomicU64 = AtomicU64::new(0);
+
+/// libtest runs the two tiers of this binary in parallel by default, and a
+/// tier's permit-measurement window must not overlap the sibling tier's
+/// registration fsync storm: run 35553547243 (2-vCPU) measured the 10K
+/// permit p95 at 25× its baseline while the 100K tier was still
+/// registering (§6.18.2 of b-runtime-002-fiber-scale.md). Each probe holds
+/// this slot for its whole body and takes its baseline only after
+/// acquiring it — same discipline as the `blocking_io_negative` probes.
+static PROBE_SERIALIZE: Mutex<()> = Mutex::new(());
+
+fn acquire_probe_slot() -> MutexGuard<'static, ()> {
+    // A panicked probe poisons the slot without corrupting any shared
+    // state; the sibling tier still deserves its own measurement window.
+    PROBE_SERIALIZE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Dropping the last connection to a WAL database checkpoints and removes
+/// the WAL, so reopening yields a burst-free store; the settle drains the
+/// runner's IO queue after the registration burst. Both faces of the
+/// laziness ratio settle identically, so disk speed cancels out.
+fn settle_io_before_measurement() {
+    thread::sleep(Duration::from_millis(250));
+}
 
 struct TestDatabase {
     path: PathBuf,
@@ -215,18 +242,24 @@ fn percentile(sorted: &[Duration], per_myriad: u32) -> Duration {
 #[ignore = "explicit ROAD-B-004 front-slice 10K Task lazy-permit scale probe"]
 #[allow(clippy::too_many_lines)]
 fn ten_thousand_task_registrations_keep_the_permit_face_lazy() {
+    let _probe_slot = acquire_probe_slot();
     // 口径 note (ADR-0016 决定 4): this probe measures the registration
     // dimension; the register gate consults `max_task_registrations`.
     assert!(TASK_PROFILE_10K.admits_task_registrations(TASK_NODE_COUNT));
     assert!(TASK_PROFILE_10K.admits_task_nodes(TASK_NODE_COUNT));
     assert!(TASK_PROFILE_10K.admits_active_working_set(ACTIVE_WORKING_SET));
 
-    // -- Baseline database: identical request shape over 100 tasks. --------
+    // -- Baseline database: identical request shape over 100 tasks. The
+    // baseline face settles and reopens exactly like the scale face below,
+    // so the ratio compares like-for-like store states. ---------------------
     let baseline_database = TestDatabase::new("baseline-100");
     let baseline = baseline_database.open();
     for index in 0..BASELINE_COUNT {
         register_task(&baseline, index);
     }
+    drop(baseline);
+    settle_io_before_measurement();
+    let baseline = baseline_database.open();
     let baseline_latencies = permit_latency_sample(&baseline, LAZY_SAMPLE, 0x30);
     drop(baseline);
 
@@ -240,6 +273,13 @@ fn ten_thousand_task_registrations_keep_the_permit_face_lazy() {
         register_task(&authority, index);
     }
     let registration_elapsed = registration_started.elapsed();
+
+    // Measurement hygiene: close-checkpoint the registration burst away and
+    // reopen before timing permits, so the window measures permit cost on a
+    // 10K-population store rather than burst residue on the IO path.
+    drop(authority);
+    settle_io_before_measurement();
+    let authority = scale_database.open();
 
     // Laziness assertion, relative face: the same 64 permit requests on the
     // 10K database must stay within a small constant factor of the baseline
@@ -327,18 +367,23 @@ const ACTIVE_WORKING_SET_100K: u64 = TASK_PROFILE_100K.max_active_working_set;
 #[ignore = "explicit ROAD-B-004 front-slice 100K Task lazy-permit scale probe"]
 #[allow(clippy::too_many_lines)]
 fn one_hundred_thousand_task_registrations_keep_the_permit_face_lazy() {
+    let _probe_slot = acquire_probe_slot();
     // 口径 note (ADR-0016 决定 4): registration dimension, same as the 10K
     // probe; the scale database below binds TASK_PROFILE_100K explicitly.
     assert!(TASK_PROFILE_100K.admits_task_registrations(TASK_NODE_COUNT_100K));
     assert!(TASK_PROFILE_100K.admits_task_nodes(TASK_NODE_COUNT_100K));
     assert!(TASK_PROFILE_100K.admits_active_working_set(ACTIVE_WORKING_SET_100K));
 
-    // -- Baseline database: identical request shape over 100 tasks. --------
+    // -- Baseline database: identical request shape over 100 tasks, on the
+    // same settled-reopen footing as the 10K probe's baseline face. --------
     let baseline_database = TestDatabase::new("baseline-100-100k");
     let baseline = baseline_database.open();
     for index in 0..BASELINE_COUNT {
         register_task(&baseline, index);
     }
+    drop(baseline);
+    settle_io_before_measurement();
+    let baseline = baseline_database.open();
     let baseline_latencies = permit_latency_sample(&baseline, LAZY_SAMPLE, 0x50);
     drop(baseline);
 
@@ -352,6 +397,12 @@ fn one_hundred_thousand_task_registrations_keep_the_permit_face_lazy() {
         register_task(&authority, index);
     }
     let registration_elapsed = registration_started.elapsed();
+
+    // Measurement hygiene, same as the 10K probe: close-checkpoint the
+    // registration burst away and reopen before timing permits.
+    drop(authority);
+    settle_io_before_measurement();
+    let authority = scale_database.open_with_profile(&TASK_PROFILE_100K);
 
     let scale_latencies = permit_latency_sample(&authority, LAZY_SAMPLE, 0x50);
     let baseline_p95 = percentile(&baseline_latencies, 9_500);

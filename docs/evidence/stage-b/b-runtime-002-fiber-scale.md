@@ -642,6 +642,24 @@ cargo clippy -p nlos-runtime-tokio --all-targets -- -D warnings
 - **#14 修复 CI 确认**：手动 workflow_dispatch run [35553547243](https://github.com/cty12356541/llmos/actions/runs/35553547243)（2026-09-21）Scale probe job 内三探针全绿——`blocking_io_on_durable_wait_path_grows_threads_sublinearly`/`ten_thousand_blocking_io_fibers_stay_thread_bounded`/`misplaced_blocking_sleep_stays_thread_bounded` 均 ok，**自探针引入（09-05/09-06）以来首次在 CI 通过**；§6.18 PENDING 收口。
 - **新发现（W35-B2 车道）**：同 run 的 scale-probe job 在 nlos-task `scale_profile_probe::ten_thousand_task_registrations_keep_the_permit_face_lazy` 失败（p95 基线 2.370ms → 10K 59.03ms，CI ubuntu 2-vCPU）；本地 macOS 双档（10K/100K）全绿 41.94s。夜间 job 因无 `--no-fail-fast` 自 09-06 起提前中止于 blocking_io_negative，该探针**从未在 CI 被执行**——#14 修复使夜间首次越过早段、暴露此从未验证项。初判环境画像敏感（fsync/checkpoint 债 vs 真回归待 W35-B2 裁决）；夜间整体仍红归此新项，登记跟进。
 
+#### 6.18.2 W35-B2 裁决与修复：scale_profile_probe 10K permit p95 CI 假失败（2026-09-22 追加，W35-B2 / ROAD-B-004 前片，分支 fix/w35-b2-scale-probe）
+
+- Owner：`nlos-task`（`tests/scale_profile_probe.rs`，**test-only 零 src 侵入**）
+- **现象复核**（gh 实拉 run 35553547243 失败日志时间戳）：scale_profile_probe 二进制 02:40:11 起**双探针并行**（libtest 默认并发，2-vCPU）——02:41:11 双双 `running for over 60 seconds`；10K 档 02:41:28 FAILED（比值 24.9 > 16；绝对面 59.03ms < 100ms 通过）时 **100K 档仍在注册风暴中**（直至 02:52:17 才 ok，二进制全程 725.51s）。
+- **根因裁决**（四假设逐一）：
+  - **H4 同二进制并行干扰（主因，成立；#14 同类机制 refined）**：非前序二进制残留（cargo 逐二进制串行），而是**本二进制内 10K/100K 两探针线程并行**——10K 档 permit 测量窗正落在 100K 档 ~12 分钟注册 fsync 风暴中段（慢速共享盘 + 2-vCPU 争用 → p95 抬升 ~25×）。不对称性自洽：100K 档基线与测量双双落在噪声期、比值对称相抵故通过；10K 档基线在安静窗、测量在风暴中 → 比值爆表。本地结构性复现（10 核 M5/NVMe，方向性证据）：安静 p95 418.583µs vs 姊妹线程注册风暴下 1.097709ms（**2.6×**；CI 2-vCPU 将同机制放大至 25×）。
+  - **H1 WAL/checkpoint 债（次因，尾巴级）**：注册期 autocheckpoint(1000 页) 正常运转——本地实测注册 10K 后 drop 时 **WAL 残留 0 字节**（末连接关闭 checkpoint+删 WAL 生效）；残余仅尾部 <1000 页 + 盘队列排空，不足以把 p95(61/64，需 ≥4 慢样本) 抬到 59ms。以测量卫生吸收，不单独立案。
+  - **H2 本波 schema 回归（排除，硬证据）**：真 v44 10K 库 EXPLAIN QUERY PLAN——permit 面全部 `SEARCH ... USING INDEX`（tasks/task_attempts PK 自动索引、`UNIQUE(task_id,idempotency_key)`、部分索引 `commit_permits_single_active`）；`COUNT(*) WHERE permit_state` 走**覆盖部分索引 SCAN = O(active)**，与任务种群无关；v43 新表探针期为空表、v44 仅加可空列+UPDATE 触发器（常数成本）。且同 run 同 runner 上 100K 档（10× 种群）同 16× 界通过——真种群级回归必先击穿 100K 档。
+  - **H3 界值按拓扑重标（拒绝）**：界没错，测量窗被污染——同 run 100K 档同界通过即 runner 拓扑上的实证；按 #14 先例改测量免疫力，不放宽界。
+- **修复**（不删、不 disable、不弱化种群无关性不变量；**断言公式原样保留** `scale_p95 ≤ 16×baseline_p95 ∧ scale_p95 < 100ms`）：
+  1. **串行槽**：`static PROBE_SERIALIZE: Mutex<()>`（同 §6.18 `blocking_io_negative` 纪律，毒锁容忍获取）——每探针持槽全程、获槽后才测基线，消除二进制内双探针并行。
+  2. **测量卫生（对称重开）**：基线面与规模面同纪律——注册后 `drop`（末连接关闭 → checkpoint+删 WAL）→ 250ms 静默 → 重开 → 才测 permit；两面同状态对照，盘速在比值中相消。
+- **CI 卫生伴随修复**：scale-probe job 的 `cargo test --workspace -- --include-ignored` 补 **`--no-fail-fast`**（.github/workflows/rust-cross-platform.yml）——单一失败二进制不再掩盖后续二进制（本探针即因此自 09-06 起 15 天未在夜间暴露）；任一失败 job 仍红。
+- **验证门实测**（2026-09-22，macOS arm64 M5 10 核，stable 1.97.1）：
+  - `cargo test -p nlos-task --test scale_profile_probe -- --include-ignored --nocapture` → **2/2 绿 45.38s**（串行生效：100K 档先完）；10K 档基线 p95 3.680708ms（max 63.348792ms 离群被 p95 吸收）vs 10K p95 1.071291ms（**比值 0.29**）；100K 档 722.291µs vs 1.965041ms（**比值 2.72**）。
+  - `cargo test -p nlos-task` → **52 个测试二进制全绿**；`cargo clippy --workspace --all-targets -- -D warnings` 与 `cargo clippy --workspace --all-features --all-targets -- -D warnings` 双 exit 0；`cargo fmt --all -- --check` 通过。
+- **PENDING**：最终证明为下一次 dispatch/schedule 的 scale-probe run——10K 档在安静测量窗下比值应落 ~1-3×（CI fsync 慢，绝对值预计 ~2-4ms 量级），且 `--no-fail-fast` 下全部测试二进制结果一次摊开；届时回填 run 链接。本修复**未 push**。
+
 - Owner：`nlos-runtime-tokio`（`tests/blocking_io_negative.rs`，**test-only 零 src 侵入**）
 - **现象核对**（gh 实拉 schedule run 日志修正登记口径）：
   - 失败并非自 09-13 始：含 W15-B 探针（`9b262f3`，09-05 15:29 +0800 落 main）后的**首个**夜间 run（09-06，run 34059387440）scale-probe 即在 blocking_io_negative 失败——该探针**在 CI 夜间从未绿过**；09-07..09-09 三夜 scale-probe 被 §6.13 已知 flaky（activation_meter，c84c91a 09-10 修复）提前阻断未及本二进制；09-10 起每夜复现（run 34531189566 / 34649167653 / 34718891386 / 34783031057 … 最新 35537656798）。移交清单「自 09-13」为首次登记口径。
