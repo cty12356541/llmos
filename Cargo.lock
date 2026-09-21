@@ -655,6 +655,7 @@ dependencies = [
  "nlos-artifact",
  "nlos-clock",
  "nlos-commit-coordinator",
+ "nlos-driver-mock",
  "nlos-identity",
  "nlos-operation",
  "nlos-process",

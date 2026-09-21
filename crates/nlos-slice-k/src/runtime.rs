@@ -3,6 +3,7 @@
 //! directory, plus the in-process inspect view the demo prints.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use nlos_application::{
     ApplicationAuthority, ApplicationStatus, ApplicationView, BackgroundTaskRegistrationReceipt,
@@ -49,8 +50,12 @@ pub struct SliceKRuntime {
     pub tasks: SqliteTaskAuthority,
     /// Authority clock (durable monotonic tick + wall high-water).
     pub clock: AuthorityClock,
-    /// Durable operation store (driver operations owned by fibers).
-    pub operations: SqliteOperationStore,
+    /// Durable operation store (driver operations owned by fibers). Shared
+    /// behind an `Arc` so the payload-execution lane can bind the same
+    /// durable authority into the `nlos-driver-mock` provider face
+    /// ([`MockProvider::new`](nlos_driver_mock::MockProvider::new)) without
+    /// opening a second connection to the same database.
+    pub operations: Arc<SqliteOperationStore>,
 }
 
 impl SliceKRuntime {
@@ -70,7 +75,7 @@ impl SliceKRuntime {
         let applications = ApplicationAuthority::open(root.join("applications"))?;
         let tasks = SqliteTaskAuthority::open(root.join("tasks.sqlite3"))?;
         let clock = AuthorityClock::open(root.join("clock"))?;
-        let operations = SqliteOperationStore::open(root.join("operations.sqlite3"))?;
+        let operations = Arc::new(SqliteOperationStore::open(root.join("operations.sqlite3"))?);
         Ok(Self {
             root,
             identity,

@@ -9,6 +9,7 @@ use nlos_application::ApplicationAuthorityError;
 use nlos_artifact::ArtifactError;
 use nlos_clock::AuthorityClockError;
 use nlos_commit_coordinator::CoordinatorError;
+use nlos_driver_mock::ProviderError;
 use nlos_identity::IdentityAuthorityError;
 use nlos_process::ProcessAuthorityError;
 use nlos_runtime::RuntimeError;
@@ -35,6 +36,15 @@ pub enum SliceKError {
     Clock(AuthorityClockError),
     /// The operation store refused a driver-operation step.
     Operation(StoreError),
+    /// The driver-mock provider face refused a payload-execution step
+    /// (unreachable RPC or a durable operation-authority rejection such as
+    /// a callback-identity conflict on a mutated payload).
+    Driver(ProviderError),
+    /// The payload-execution lane refused a durable state this call cannot
+    /// execute: no application under the package identity, a non-installed
+    /// status, a missing installation receipt, or an executable entry that
+    /// was never materialized into the artifact authority.
+    PayloadState(&'static str),
     /// The supervisor pid registry refused a registration (second-process
     /// kill chain spawn phase).
     SupervisorPid(nlos_process::SupervisorPidRegistryError),
@@ -74,6 +84,10 @@ impl fmt::Display for SliceKError {
             Self::Task(error) => write!(formatter, "task authority: {error}"),
             Self::Clock(error) => write!(formatter, "clock authority: {error}"),
             Self::Operation(error) => write!(formatter, "operation store: {error}"),
+            Self::Driver(error) => write!(formatter, "driver provider face: {error}"),
+            Self::PayloadState(reason) => {
+                write!(formatter, "payload execution state refusal: {reason}")
+            }
             Self::SupervisorPid(error) => {
                 write!(formatter, "supervisor pid registry: {error}")
             }
@@ -113,11 +127,15 @@ impl Error for SliceKError {
             Self::Task(error) => Some(error),
             Self::Clock(error) => Some(error),
             Self::Operation(error) => Some(error),
+            Self::Driver(error) => Some(error),
+            Self::PayloadState(_)
+            | Self::TeardownState(_)
+            | Self::TimestampOverflow(_)
+            | Self::SizeOverflow(_) => None,
             Self::SupervisorPid(error) => Some(error),
             Self::BatchCancel(error) => Some(error),
             Self::Runtime(error) => Some(error),
             Self::Coordinator(error) => Some(error),
-            Self::TeardownState(_) | Self::TimestampOverflow(_) | Self::SizeOverflow(_) => None,
             Self::Control(error) => Some(error),
         }
     }
@@ -168,6 +186,12 @@ impl From<AuthorityClockError> for SliceKError {
 impl From<StoreError> for SliceKError {
     fn from(error: StoreError) -> Self {
         Self::Operation(error)
+    }
+}
+
+impl From<ProviderError> for SliceKError {
+    fn from(error: ProviderError) -> Self {
+        Self::Driver(error)
     }
 }
 
