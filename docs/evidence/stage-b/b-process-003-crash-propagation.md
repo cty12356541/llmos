@@ -1,6 +1,6 @@
 # B-PROCESS-003：process crash propagation / terminal lifecycle 最小前缀
 
-- 状态：`PARTIAL_PASS`（ROAD-B-006 process crash propagation 合同层最小前缀；runtime 侧 join/cancel 联动、macOS/Windows 真 OS kill、Activation meter 未做）
+- 状态：`PARTIAL_PASS`（ROAD-B-006 process crash propagation 合同层最小前缀；runtime 侧 kill receipt 消费联动、Activation meter 未做；Windows live-child 实杀测试已落地（§12）、CI 实证 PENDING）
 - 日期：2026-09-05
 - 设计依据：v0.5 §28.2 ROAD-B-006「Process crash propagation」；`[FIBER-FAIL-001]` Fiber 共享 Process 故障域
 - 关联：`B-PROCESS-001` durable binding authority；W12-P 波次 13 车道
@@ -123,6 +123,28 @@ cargo test -p nlos-process --test platform_kill --no-run → 编译通过（macO
 
 - **Windows run 链接**：**PENDING**——预期载体为 workflow `Rust cross-platform verification` 的 `verify (windows-latest)` 腿步骤 `Test platform kill contract on Windows`；控制器屏障 push 后回填 `https://github.com/cty12356541/llmos/actions/runs/<run_id>` 于本行与台账 §6.5 W28-F 行。基线参考：截至 2026-09-20 main 最新 run 35506588229 中 `windows-latest` 腿为 success（同 run 的 `macos-latest` 腿有与本项无关的既有失败，回填时以 job 级结论为准，勿以 run 级 conclusion 误判）。
 - **边界（诚实登记）**：本步骤验证 Windows 实机上 `platform_kill` 目标编译 + 上述 7 项测试通过；`taskkill /F /T` 成功路径与 `AlreadyTerminated` 映射路径**无 live-child 实杀测试**（W21-P 未写，本车道不补），故即使 run 绿也不等价「Windows 真 OS kill 集成测试」整体达成——§9/§10 的该项 PARTIAL 边界仅在「实机 CI 复验已跑」这半个维度上收窄；是否足以关闭 B6-2 由控制器在屏障裁定。
+
+## 12. Windows live-child 实杀测试（2026-09-21 追加，W35-P4，阶段 C 移交#4 / C-WIN-KILL 前半）
+
+- Owner：`crates/nlos-process/tests/platform_kill.rs`（`#[cfg(windows)]` `windows_platform_kill_adapter_terminates_real_child_process` + `spawn_sleeper` / `wait_for_exit` / `platform_kill_real_child` 三个 cfg(windows) 辅助）+ 本证据文件；产品代码零改动（W21-P adapter 冻结面原样消费）。base HEAD `051a656`，分支 `feat/w35-p4`（未 push，控制器屏障统一处置）。
+- **定位**：关闭 §11 登记的半个维度缺口——W28-F CI 步骤绿仅证「Windows 实机编译 + 7 项 fail-closed/stub 面」，`taskkill /F /T` 成功路径与 `AlreadyTerminated` 映射路径无真实子进程断言（W34-A §6 residual 4 / exit-unknown-risks U-2 / RISK-B-10「CI 复验已跑 half-dimension only」）。
+- **实现（测试设计，W29-F 三层模式收缩到本合同面：durable binding + supervisor pid registry + 真实 OS 子进程；fiber 层属 b-slice-k-001 §15 域，不在本面）**：同 root 双 handle 双 binding（被杀 seed 73 / 旁观 seed 74，沿用本文件 `request_platform_kill_fail_closed_on_terminal_binding` 的同 root 双 fixture 模式；kill key `0x73`/`0x74` 沿 0x7x 家族，与 seed 字节族无碰撞）；`SupervisorPidRegistry` 双注册后 `pid_map()` 喂 `WindowsPlatformKillAdapter`（两 pid 同在 map——隔离断言取强形式：杀 A 时 B 的 pid 也在被咨询的 map 里）。断言链：① 双活可检（双子进程 `try_wait()==None`）→ ② kill 被杀者：`Signaled` + durable receipt 落库、`inspect_platform_kill_receipt` 读回相等 → ③ **真死断言**：`try_wait` 100ms 轮询、30s 截止窗口内退出且非 success（`taskkill /F` 强杀退出码非 0）→ ④ 引用隔离（OS 层旁观者仍活 + durable 层旁观者 binding 仍 active）→ ⑤ adapter 级对已死 pid 重发 → `AlreadyTerminated`（taskkill exit 128 判据同源）→ ⑥ authority 级同 key replay 换**空 pid_map adapter** 仍成功（证明 durable receipt 短路、不重调 adapter；若误调会 missing-map fail-closed——W29-F 空 map 探针手法）→ ⑦ 旁观者经自身 binding 二次真杀清场（兼证第二个 `Signaled`；不向 runner 泄漏 600s sleeper）。
+- **子进程选型**：windows-2019/2022/2025 镜像无 `sleep` 等价 cmd；选 `powershell -NoProfile -Command "Start-Sleep -Seconds 600"` 直接 spawn——powershell.exe（Windows PowerShell 5.1）在所有 GitHub Windows runner 镜像必在；不经 `cmd /c ping` 包装使 `Child` pid 与被杀 OS pid 1:1 对应（cmd 包装会引入「cmd 死 / ping 孤儿」树语义噪声，真死断言歧义）；`-NoProfile` 规避 profile/执行策略加载抖动；OS pid 在 spawn 返回即存在，PowerShell 1-2s 初始化延迟不影响可杀性与断言。
+- **验证（macOS 本地，cfg 编译面 + 临时激活等价面；Windows 实跑 PENDING——如实登记，不冒充 Windows 结果）**：
+
+```text
+cargo test -p nlos-process
+  → 36 passed / 0 failed（platform_kill 目标 9：windows-gated 新测试本地 cfg 剔除；既有 9 项零回归）
+cargo clippy -p nlos-process --all-targets -- -D warnings → 0 warning
+cargo fmt -p nlos-process -- --check → 通过
+cfg(windows)→cfg(all()) 临时激活等价编译 + clippy（仅 4 条翻转标记自身告警，复原后 0）→ 类型/lint 面验证通过；已复原
+cargo check -p nlos-process --all-targets --target x86_64-pc-windows-msvc
+  → libsqlite3-sys C 交叉编译失败（宿主 clang 无 MSVC SDK；既有环境限制，b-slice-k-001 §15.3 同源，非本车道代码）
+```
+
+- **Windows CI 预期矩阵（腿更新）**：W28-F 步骤 `Test platform kill contract on Windows` 现应 **8 passed / 0 failed**（§11 的 7 项 + 本实杀 1 项）；workflow 零改动，新测试自动搭乘既有步骤。
+- **Windows run 链接**：**PENDING**——控制器屏障 push 后回填 `https://github.com/cty12356541/llmos/actions/runs/<run_id>`（workflow `Rust cross-platform verification` 的 `verify (windows-latest)` 腿）。
+- **边界（如实登记）**：run 绿回填前，「Windows 真 OS kill 集成测试」维持测试已写、实证 PENDING——本 § 不据此把 §9/§10 的 PARTIAL 边界改写为已收窄；U-2 全口径中的权限边界/孤儿场景矩阵与 B2-1 双活三层场景的 Windows 臂（b-slice-k-001 §15.4）不在本车道；`AlreadyTerminated` 断言依赖 en-US runner locale 的 taskkill stderr 语义（适配器 exit-code 128 主判据同源；GitHub hosted runner 为 en-US）。
 
 ## 4. Runtime 侧 terminal 门（2026-09-05 追加，W15-P）
 
