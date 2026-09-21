@@ -35,19 +35,22 @@ mod residency;
 mod resolver;
 mod scheduler;
 mod schema;
+mod selector;
 mod store;
 
 use std::error::Error;
 use std::fmt;
 
 pub use model::{
-    ApplyPlanRevisionRequest, ChainVerification, MAX_DECLARED_NODES_PER_REVISION,
+    ApplyPlanRevisionRequest, ChainVerification, EcosystemEntityKind, EcosystemEntityState,
+    EcosystemResolutionDecision, EcosystemResolutionHandle, EcosystemSelector,
+    EcosystemSourceLookup, GenerationExpectation, MAX_DECLARED_NODES_PER_REVISION,
     MAX_DEPENDENCIES_PER_NODE, NodeResidencyTier, NodeResidencyView, NodeTransitionDecision,
     NodeTransitionRequest, NodeTransitionVoucher, PlanNodeDeclaration, PlanNodeKind,
     PlanNodeRecord, PlanNodeState, PlanResolutionDecision, PlanResolutionHandle,
     PlanRevisionDecision, PlanRevisionReceipt, PlanRevisionSelector, PlanView,
     ResidencyTransitionDecision, ResidencyTransitionRequest, ResidencyTransitionVoucher,
-    ResolvePlanRequest, ResolvedPlanNode,
+    ResolveEcosystemRequest, ResolvePlanRequest, ResolvedPlanNode,
 };
 pub use model::{
     MaterializationAdmission, MaterializationAdmissionVerdict, MaterializationApproval,
@@ -61,6 +64,7 @@ pub use scheduler::{
     MaterializationScheduler, SchedulerDecision, SchedulerDecisionRecord, SchedulerPassSummary,
     SelectionEntry, SelectionKind, SelectionReport, SelectionSkipReason, SkipEntry,
 };
+pub use selector::{EcosystemResolutionError, EcosystemSelectorSource};
 pub use store::SqlitePlanAuthority;
 
 /// Errors produced by the durable plan authority.
@@ -195,6 +199,33 @@ pub enum PlanStoreError {
         node_id: TaskNodeId,
         current: PlanNodeState,
     },
+    /// No ecosystem source is registered for the selector's entity kind
+    /// (W36-P7: the source's `kinds()` declaration does not cover it);
+    /// the resolution fails closed instead of panicking or guessing.
+    EcosystemSourceUnavailable {
+        kind: crate::model::EcosystemEntityKind,
+    },
+    /// The source answered that the selector's entity id is unknown — a
+    /// typed miss, never silently treated as "resolved against nothing".
+    EcosystemEntityNotFound {
+        kind: crate::model::EcosystemEntityKind,
+        entity_id: [u8; 16],
+    },
+    /// The selector's expected generation does not match the entity's
+    /// current generation (G4 fence, ecosystem half: stale generation ⇒
+    /// typed fail-closed in either direction — behind or ahead).
+    StaleEcosystemGeneration {
+        kind: crate::model::EcosystemEntityKind,
+        entity_id: [u8; 16],
+        expected: u64,
+        current: u64,
+    },
+    /// No ecosystem resolution receipt with the given id exists.
+    EcosystemResolutionNotFound(ReceiptId),
+    /// A stored ecosystem receipt row carries an entity kind outside the
+    /// closed enum (fail-closed readback; the kind domain grows only via
+    /// schema migrations).
+    EcosystemKindUnknown(i64),
 }
 
 impl fmt::Display for PlanStoreError {
@@ -321,6 +352,33 @@ impl fmt::Display for PlanStoreError {
             Self::NodeNotAwaitingMaterialization { node_id, current } => write!(
                 formatter,
                 "node {node_id:?} in state {current:?} cannot await materialization"
+            ),
+            Self::EcosystemSourceUnavailable { kind } => write!(
+                formatter,
+                "no ecosystem selector source is registered for kind {kind:?} (fail closed)"
+            ),
+            Self::EcosystemEntityNotFound { kind, entity_id } => write!(
+                formatter,
+                "ecosystem entity {entity_id:02x?} of kind {kind:?} does not exist"
+            ),
+            Self::StaleEcosystemGeneration {
+                kind,
+                entity_id,
+                expected,
+                current,
+            } => write!(
+                formatter,
+                "ecosystem entity {entity_id:02x?} of kind {kind:?} generation CAS expected {expected} but found {current}"
+            ),
+            Self::EcosystemResolutionNotFound(resolution_id) => {
+                write!(
+                    formatter,
+                    "ecosystem resolution receipt {resolution_id:?} does not exist"
+                )
+            }
+            Self::EcosystemKindUnknown(value) => write!(
+                formatter,
+                "stored ecosystem receipt carries unknown entity kind {value}"
             ),
         }
     }

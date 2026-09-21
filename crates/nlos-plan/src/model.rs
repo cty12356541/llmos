@@ -1,7 +1,7 @@
 //! Domain model of the durable `TaskPlan`/`TaskNode` declaration authority
 //! (ADR-0016 决定 2, v0.5 §24.1.1/§25.2.1 skeleton subset).
 
-use nlos_types::{IdempotencyKey, ReceiptId, TaskNodeId, TaskPlanId};
+use nlos_types::{ArtifactId, IdempotencyKey, PackageId, ReceiptId, TaskNodeId, TaskPlanId};
 
 /// Domain separator for the authority-derived [`TaskPlanId`].
 pub const PLAN_ID_DOMAIN: &[u8] = b"llmos/plan/plan-id/v1";
@@ -32,11 +32,14 @@ pub const MATERIALIZATION_DRIVE_KEY_DOMAIN: &[u8] = b"llmos/plan/materialization
 /// `WAITING_* → MATERIALIZING` approval voucher (W31-A gate).
 pub const MATERIALIZATION_APPROVAL_KEY_DOMAIN: &[u8] =
     b"llmos/plan/materialization-approval-key/v1";
-/// Domain separator for the Worker tier's per-round materialization
-/// request keys (W31-F): digest over (node id, per-node retry round),
-/// so a restarted scheduler derives the same key for the same round and
-/// a fresh key after each durable resolution.
+/// Domain separator for the scheduler request keys (W31-F): digest over
+/// (node id, per-node retry round), so a restarted scheduler derives the
+/// same key for the same round and a fresh key after each durable
+/// resolution.
 pub const SCHEDULER_REQUEST_KEY_DOMAIN: &[u8] = b"llmos/plan/scheduler-request-key/v1";
+/// Domain separator for the ecosystem resolution receipt id (W36-P7,
+/// ADR-0016 决定 5 ecosystem half; `[PLAN-DEPENDENCY-001]`).
+pub const ECOSYSTEM_RESOLUTION_ID_DOMAIN: &[u8] = b"llmos/plan/ecosystem-resolution-id/v1";
 
 /// Structural admission bound for one plan revision's declared node set.
 /// The 100K logical-node tier is the G2 benchmark target (W31); this bound
@@ -593,6 +596,165 @@ pub struct ResolvedPlanNode {
     pub node_digest: [u8; 32],
     /// 1-based position in the resolved topological order.
     pub position: u64,
+}
+
+/// The closed kind set of ecosystem entities the resolver's selector
+/// half addresses (W36-P7; `[PLAN-DEPENDENCY-001]`: "Package、Skill、
+/// Tool、Model、Artifact、Topic 和外部服务依赖 MUST 在计划中以 typed
+/// selector 声明，并在执行前解析为带版本/generation 的 handle"). A kind
+/// enters this enum only once its authority exposes a generation-carrying
+/// readback; kinds without one stay in the lane evidence's deferred
+/// register (Topic has no advancing topic-level generation; Skill/Tool/
+/// Model/外部服务 have no authority at all yet).
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum EcosystemEntityKind {
+    /// An application installed from one package (`nlos-application`:
+    /// keyed by `PackageId`; generation = installation generation).
+    Application,
+    /// One artifact's head (`nlos-artifact`: generation = head revision).
+    Artifact,
+}
+
+impl EcosystemEntityKind {
+    /// Stable one-byte wire discriminant (also the hash-input encoding).
+    pub(crate) const fn discriminant(self) -> u8 {
+        match self {
+            Self::Application => 1,
+            Self::Artifact => 2,
+        }
+    }
+
+    pub(crate) const fn encode(self) -> i64 {
+        self.discriminant() as i64
+    }
+
+    pub(crate) fn decode(value: i64) -> Result<Self, crate::PlanStoreError> {
+        match value {
+            1 => Ok(Self::Application),
+            2 => Ok(Self::Artifact),
+            _ => Err(crate::PlanStoreError::EcosystemKindUnknown(value)),
+        }
+    }
+}
+
+/// The generation side of an ecosystem selector, mirroring
+/// [`PlanRevisionSelector`]: `Current` pins whatever generation the
+/// source observes when the resolution commits (exactly once, never
+/// floating); `At` demands one exact generation and fails the typed
+/// stale fence on any mismatch.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum GenerationExpectation {
+    Current,
+    At(u64),
+}
+
+/// Typed ecosystem selector (W36-P7): entity kind + nominal id +
+/// generation expectation — the `[PLAN-DEPENDENCY-001]` declaration form
+/// for ecosystem dependencies, resolved by
+/// [`crate::SqlitePlanAuthority::resolve_ecosystem_selector`] into a
+/// durable generation-carrying handle.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum EcosystemSelector {
+    Application {
+        package_id: PackageId,
+        expectation: GenerationExpectation,
+    },
+    Artifact {
+        artifact_id: ArtifactId,
+        expectation: GenerationExpectation,
+    },
+}
+
+impl EcosystemSelector {
+    #[must_use]
+    pub const fn kind(&self) -> EcosystemEntityKind {
+        match self {
+            Self::Application { .. } => EcosystemEntityKind::Application,
+            Self::Artifact { .. } => EcosystemEntityKind::Artifact,
+        }
+    }
+
+    #[must_use]
+    pub const fn entity_id(&self) -> [u8; 16] {
+        match self {
+            Self::Application { package_id, .. } => *package_id.as_bytes(),
+            Self::Artifact { artifact_id, .. } => *artifact_id.as_bytes(),
+        }
+    }
+
+    #[must_use]
+    pub const fn expectation(&self) -> GenerationExpectation {
+        match self {
+            Self::Application { expectation, .. } | Self::Artifact { expectation, .. } => {
+                *expectation
+            }
+        }
+    }
+}
+
+/// Generation-carrying readback of one ecosystem entity, as plain data
+/// (the boundary crossing between a source authority and this resolver).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EcosystemEntityState {
+    /// Dense, monotonic, never zero.
+    pub generation: u64,
+    /// The generation's content anchor (e.g. package manifest digest,
+    /// head content digest).
+    pub content_digest: [u8; 32],
+}
+
+/// One source lookup's answer: `NotFound` is a typed miss (the entity id
+/// is unknown to the source), not an error.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EcosystemSourceLookup {
+    Found(EcosystemEntityState),
+    NotFound,
+}
+
+/// Request to resolve one ecosystem selector into a durable resolution
+/// receipt (the ecosystem half of ADR-0016 决定 5).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ResolveEcosystemRequest {
+    pub selector: EcosystemSelector,
+    /// Exactly-once key for the resolution receipt.
+    pub idempotency_key: IdempotencyKey,
+    /// Caller-supplied observation time (ms); the store holds no clock.
+    pub resolved_at_ms: u64,
+}
+
+/// The durable ecosystem resolution receipt — simultaneously the
+/// generation-carrying handle. Every field is pinned at resolution time;
+/// later generations in the source never change it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EcosystemResolutionHandle {
+    pub resolution_id: ReceiptId,
+    pub kind: EcosystemEntityKind,
+    pub entity_id: [u8; 16],
+    /// The generation this resolution was computed against.
+    pub generation: u64,
+    /// The entity's content digest as observed at that generation.
+    pub content_digest: [u8; 32],
+    pub idempotency_key: IdempotencyKey,
+    pub resolved_at_ms: u64,
+}
+
+/// Outcome of one `resolve_ecosystem_selector` call.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EcosystemResolutionDecision {
+    /// First execution of this key: the resolution receipt committed.
+    Resolved(EcosystemResolutionHandle),
+    /// Durable replay: the original receipt is returned byte-equal.
+    Replayed(EcosystemResolutionHandle),
+}
+
+impl EcosystemResolutionDecision {
+    /// The handle this call denotes, whichever branch.
+    #[must_use]
+    pub const fn handle(self) -> EcosystemResolutionHandle {
+        match self {
+            Self::Resolved(handle) | Self::Replayed(handle) => handle,
+        }
+    }
 }
 
 /// Request to open one materialization gate round for a node (W31-A,
