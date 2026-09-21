@@ -145,9 +145,10 @@
 - id: RISK-B-12
   category: durable-state-loss
   severity: P1
-  status: open
-  description: "slice-k-demo STEP 09d 登记 defect（collected_digests==[] panic，期望双 planted digest）：W28-E auto-GC blast radius 嫌疑，W33-H 在评审 HEAD 复现、至今未处置；若根因证明为生产 GC 误收在册 blob，则即刻升级 P0（durable 状态丢失）并阻止阶段退出"
-  mitigation: "当前定级依据：demo 级缺陷（测试面不受影响；W33-B lifecycle.sh 为现行构造性演示且绿）；缺陷登记在案（B-SLICE-K-001 §15.3/§16.4）；W34-D 裁量修复或显式退役 demo 09d；B-001 门 claim 已携带该 residual（ROAD-B-001 limitations）"
+  status: closed
+  description: "slice-k-demo STEP 09d 登记 defect（collected_digests==[] panic）——已根因处置（B-SLICE-K-001 §17）：收集者为 W22-001 install-scoped pass（09c 拒绝安装探针前置执行），非 W28-E tick（零触发、全仓无生产调用点）；两枚 planted digest 构造性无引用、收集 receipt durable 在册、全部 referenced blob 存活——「生产 GC 误收在册 blob」P0 升级条款经 durable 取证排除"
+  mitigation: "demo 级修复落地（分支 fix/w34-09d-defect）：0x2F 拒绝探针 AutoOrphanGc::Disabled（09d 手动 pass 恢复 collected=2/scanned=4）；解掩的 STEP 12b 键带碰撞改种子 0xA0；lifecycle_uninstall +2 回归钉死（拒绝探针默认收集=设计行为 / Disabled 保留 orphan 给手动 pass）；nlos-slice-k + nlos-artifact 136 passed/0 failed，demo 全程 EXIT=0"
   evidence_refs:
     - docs/evidence/stage-b/reviews/w33h-road-b001-b002.md
-  review_point: "W34-D 用户门（修复或退役决定）；根因定位完成时按结果重定级"
+    - docs/evidence/stage-b/b-slice-k-001-end-to-end.md
+  review_point: "已闭环（2026-09-21，W34-D 移交#1 处置车道）；GC 三层保守引用集语义若变更（如 staged 状态收紧）时按 §17.2 口径复验"

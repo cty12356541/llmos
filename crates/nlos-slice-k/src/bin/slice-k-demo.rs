@@ -12,9 +12,9 @@ use nlos_artifact::CollectOrphanBlobsDecision;
 use nlos_runtime::RuntimeAdapter as _;
 use nlos_runtime_tokio::{TokioRuntimeAdapter, TokioRuntimeConfig};
 use nlos_slice_k::{
-    ChainQuery, HappyChain, SliceKRuntime, artifact_blob_path, plant_orphan_artifact_blob,
-    run_cancel_path, run_happy_chain, run_recovery_prefix, run_second_process_pair,
-    run_second_process_platform_kill, seeded_key, short_hex,
+    AutoOrphanGc, ChainQuery, HappyChain, SliceKRuntime, artifact_blob_path,
+    plant_orphan_artifact_blob, run_cancel_path, run_happy_chain, run_recovery_prefix,
+    run_second_process_pair, run_second_process_platform_kill, seeded_key, short_hex,
 };
 
 fn receipt_line(kind: &str, id: &[u8], detail: &str) {
@@ -248,9 +248,17 @@ fn demo_uninstall(runtime: &Arc<SliceKRuntime>, chain: &HappyChain) {
             uninstall.application_generation.get()
         ),
     );
+    // The refusal probe must not mutate blob state: the default Enabled
+    // install-scoped pass (W22-001) runs BEFORE the authority refusal and
+    // would legitimately collect the planted orphans, leaving STEP 09d's
+    // explicit pass empty (B-SLICE-K-001 §17, RISK-B-12 root cause).
     assert!(
         runtime
-            .install_verified_package_by_id(chain.verification_receipt_id, 0x2F)
+            .install_verified_package_by_id_with_gc(
+                chain.verification_receipt_id,
+                0x2F,
+                AutoOrphanGc::Disabled,
+            )
             .is_err(),
         "installing over an uninstalled application must fail closed"
     );
@@ -364,7 +372,12 @@ async fn demo_second_process_kill(runtime: &Arc<SliceKRuntime>, adapter: &TokioR
     #[cfg(not(unix))]
     let (os_pid_first, os_pid_second) = (std::process::id(), std::process::id());
 
-    let pair = run_second_process_pair(runtime, adapter, 0x30, os_pid_first, os_pid_second)
+    // Seed-band discipline: this scenario's key family (seed offsets
+    // 12..37 plus the sub-seed bands) must stay disjoint from every key
+    // the earlier steps already consumed on this shared runtime — a
+    // colliding clock key would replay its stale durable reading and
+    // trip `InstallationPrecedesVerification` (B-SLICE-K-001 §17).
+    let pair = run_second_process_pair(runtime, adapter, 0xA0, os_pid_first, os_pid_second)
         .await
         .expect("second process pair");
     println!(
