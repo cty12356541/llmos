@@ -642,6 +642,12 @@ cargo clippy -p nlos-runtime-tokio --all-targets -- -D warnings
 - **#14 修复 CI 确认**：手动 workflow_dispatch run [35553547243](https://github.com/cty12356541/llmos/actions/runs/35553547243)（2026-09-21）Scale probe job 内三探针全绿——`blocking_io_on_durable_wait_path_grows_threads_sublinearly`/`ten_thousand_blocking_io_fibers_stay_thread_bounded`/`misplaced_blocking_sleep_stays_thread_bounded` 均 ok，**自探针引入（09-05/09-06）以来首次在 CI 通过**；§6.18 PENDING 收口。
 - **新发现（W35-B2 车道）**：同 run 的 scale-probe job 在 nlos-task `scale_profile_probe::ten_thousand_task_registrations_keep_the_permit_face_lazy` 失败（p95 基线 2.370ms → 10K 59.03ms，CI ubuntu 2-vCPU）；本地 macOS 双档（10K/100K）全绿 41.94s。夜间 job 因无 `--no-fail-fast` 自 09-06 起提前中止于 blocking_io_negative，该探针**从未在 CI 被执行**——#14 修复使夜间首次越过早段、暴露此从未验证项。初判环境画像敏感（fsync/checkpoint 债 vs 真回归待 W35-B2 裁决）；夜间整体仍红归此新项，登记跟进。
 
+
+#### 6.18.2.1 终证与家族第三例（2026-09-22 追加，W35-B 终局）
+
+- **B2 修复 CI 确认**：dispatch run [35558019156](https://github.com/cty12356541/llmos/actions/runs/35558019156)（`--no-fail-fast` 首个全量 scale-probe）：`ten_thousand_task_registrations_keep_the_permit_face_lazy ... ok`（上 run 失败项转绿）；blocking_io_negative 三探针保持绿；**279 测试二进制全 ok**——含全部 W31/W35 新探针（tasknode 10K/100K、比例矩阵、rehydrate 三档、100K batch-cancel 比值、多 worker fairness、墙钟首割）首次同时在 CI 全绿。
+- **家族第三例（末层）**：唯一残败 = `ten_thousand_lifecycle_phase_fibers_on_two_workers`（W19-006 引入，从未上 CI）:fiber 0 `active_cpu=127ms vs backpressure_wait=66ms` 倒挂——逐纤断言对 spawn 窗口敏感（前缀纤在 10K spawn 窗口累积 active 段，慢 runner 拉长窗口即倒挂；其姊妹 activation_meter 探针同 run 通过）。修复：per-fiber 比较改**队列聚合比值**（子集总 active < 总 wait——「等待主导」的人口级真不变量，spawn 窗口污染摊销；每纤 MIN 下限与 external_wait=0 保留），本地双档 1.29s 绿。终证 run #3 PENDING。
+
 #### 6.18.2 W35-B2 裁决与修复：scale_profile_probe 10K permit p95 CI 假失败（2026-09-22 追加，W35-B2 / ROAD-B-004 前片，分支 fix/w35-b2-scale-probe）
 
 - Owner：`nlos-task`（`tests/scale_profile_probe.rs`，**test-only 零 src 侵入**）

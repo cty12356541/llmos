@@ -177,6 +177,14 @@ async fn assert_backpressure_wait_at_scale(count: usize, subset: usize) -> Durat
     );
 
     let sample_started = Instant::now();
+    // 队列聚合比值断言(§6.18 校准纪律第三例,run 35558019156):per-fiber
+    // active_cpu < backpressure_wait 的逐纤形式对 spawn 窗口敏感——前缀纤
+    // 维(尤其 fiber 0)在 10K spawn 窗口内累积 active 段,慢 runner(2-vCPU
+    // CI)拉长窗口即倒挂(实测 127ms vs 66ms);人口级不变量「等待主导」
+    // 用聚合表达:子集总 active ≤ 总 wait(等待占比过半),spawn 窗口污染
+    // 摊销进队列,与单机快慢解耦。每纤下限与 external_wait=0 断言保留。
+    let mut subset_total_active = Duration::ZERO;
+    let mut subset_total_wait = Duration::ZERO;
     for (index, handle) in handles[..subset].iter().enumerate() {
         let usage = runtime.activation_usage(*handle).expect("usage");
         assert!(
@@ -185,16 +193,14 @@ async fn assert_backpressure_wait_at_scale(count: usize, subset: usize) -> Durat
             usage.backpressure_wait
         );
         assert_eq!(usage.external_wait, Duration::ZERO);
-        // Prefix fibers accumulate spawn-window active_cpu at 100K; dimensional
-        // separation is covered at 10K (`lifecycle_phase.rs` + quick tier).
-        if count <= QUICK_COUNT {
-            assert!(
-                usage.active_cpu < usage.backpressure_wait,
-                "fiber {index}: active_cpu={:?} should stay small vs backpressure_wait={:?}",
-                usage.active_cpu,
-                usage.backpressure_wait
-            );
-        }
+        subset_total_active += usage.active_cpu;
+        subset_total_wait += usage.backpressure_wait;
+    }
+    if count <= QUICK_COUNT {
+        assert!(
+            subset_total_active < subset_total_wait,
+            "cohort active_cpu={subset_total_active:?} should stay below cohort backpressure_wait={subset_total_wait:?} (waiting-dominated population)",
+        );
     }
     let sample_elapsed = sample_started.elapsed();
 
