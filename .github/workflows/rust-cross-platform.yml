@@ -156,6 +156,52 @@ jobs:
       - name: Test workspace including ignored scale probes
         run: cargo test --workspace --no-fail-fast -- --include-ignored
 
+  scale-probe-release:
+    # 移交#5（W36 lane C / C-SCALE-RELEASE / RISK-B-07 / U-1，b-scale-release-001）：
+    # release-profile 规模探针多平台重测。与 scale-probe（debug）同门：仅
+    # schedule/workflow_dispatch，push/PR 一律跳过。探针家族与断言零改动——
+    # §6.18 校准纪律（饱和门/比值界/种群比例界）在 release 下原样成立，
+    # 本 job 只换 profile 与平台矩阵，不发布任何生产量级声明。
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    name: Scale probe release (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          # 独立 key 前缀，避免 release 工件与同 workflow 内 debug 工件混写
+          # 缓存键（msrv job 同款纪律）。
+          key: scale-release-${{ runner.os }}
+
+      # 成本纪律：-p + --test 精确钉探针 test 目标（连带其 lib 依赖链），
+      # 不做全 workspace release 构建。三家族分步：task 注册/permit 面 →
+      # plan 逻辑 TaskNode 面 → runtime 生命周期/计量/batch-cancel 面。
+      # --no-fail-fast（cargo 级）：单二进制失败不掩盖后续二进制（§6.18.2
+      # 教训）；--nocapture：探针 profile 行（本管线的测量数字）进 run 日志。
+      # 后两步 !cancelled()：前序家族失败时仍摊开其余家族结果（job 整体仍红）。
+      - name: Release scale probes (nlos-task)
+        run: cargo test --release --no-fail-fast -p nlos-task --test scale_profile --test scale_profile_probe -- --include-ignored --nocapture
+
+      - name: Release scale probes (nlos-plan)
+        if: ${{ !cancelled() }}
+        run: cargo test --release --no-fail-fast -p nlos-plan --test tasknode_scale_probe -- --include-ignored --nocapture
+
+      - name: Release scale probes (nlos-runtime-tokio)
+        if: ${{ !cancelled() }}
+        run: cargo test --release --no-fail-fast -p nlos-runtime-tokio --test lifecycle_scale --test activation_meter_scale --test batch_cancel_scale -- --include-ignored --nocapture
+
   msrv:
     name: MSRV 1.97
     runs-on: ubuntu-latest
