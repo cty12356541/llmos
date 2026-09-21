@@ -110,6 +110,12 @@ pub mod resource_throttle_executor;
 /// this module needs no feature gate).
 pub mod working_set_reclaim_executor;
 
+/// Optional [`ApplicationCommandExecutor`] adapter backed by the real
+/// [`nlos_application::ApplicationAuthority`] lifecycle transitions
+/// (`application` feature, W35-P11 移交#11 前片).
+#[cfg(feature = "application")]
+pub mod application_lifecycle_executor;
+
 /// Domain-separated `ReceiptId` derivation shared by the authority-backed
 /// operation executors.
 mod executor_receipt;
@@ -137,6 +143,14 @@ enum OperationArm {
     Kill,
     Throttle { throttle_percent: u64 },
     Reclaim,
+}
+
+/// Discriminates the application-lifecycle arms routed through
+/// [`RecoverySystemControl::execute_application_control`] (W35-P11).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ApplicationArm {
+    Disable,
+    Uninstall,
 }
 
 /// Policy boundary used by every `SystemControl` entry point. Implementations
@@ -297,6 +311,87 @@ fn unwired_operation_failure() -> SabiFailure {
         code: SabiErrorCode::NotFound.into(),
         retry: RetryDirective::DoNotRetry.into(),
         safe_message: "operation control execution backend is not wired".to_owned(),
+    }
+}
+
+/// One application-lifecycle control request as handed to the
+/// [`ApplicationCommandExecutor`] seam (W35-P11, 移交#11 前片): the 16-byte
+/// package identity (the application singleton is authority-derived from
+/// it), its explicit CAS expectation — the application's current
+/// installation generation — the issuing principal, the §25.3 idempotency
+/// identity, and the handler's wall-clock reading.
+pub struct ApplicationControlRequest {
+    pub package_id: [u8; 16],
+    pub expected_generation_or_revision: u64,
+    pub issuer_principal_id: [u8; 16],
+    pub idempotency_key: [u8; 16],
+    pub requested_at_ms: i64,
+}
+
+/// Pluggable execution seam for the application-lifecycle
+/// `ControlCommand` arms (W35-P11). The command surface — wire arms,
+/// envelope compilation, authorization, idempotency binding, typed
+/// receipts — stays owned by the `SystemControl.submit` handler;
+/// implementations of this trait own the actual authority transitions.
+/// The real adapter ([`crate::application_lifecycle_executor`], `application`
+/// feature) drives the `nlos-application` authority; the default
+/// [`UnwiredApplicationCommandExecutor`] refuses fail-closed, mirroring the
+/// operation executor stub. `Send + Sync` is part of the contract: handlers
+/// are held across async IPC service loops.
+pub trait ApplicationCommandExecutor: Send + Sync {
+    /// Disables the installed application under the package identity and
+    /// explicit installation-generation CAS expectation. Disable has no
+    /// activity gate: the `installed → disabled` transition is reversible
+    /// by rollback.
+    ///
+    /// # Errors
+    ///
+    /// Returns a bounded, crossing-safe [`SabiFailure`] when the backing
+    /// authority rejects the transition (absent application, generation CAS
+    /// mismatch, terminal state, or an unwired backend).
+    fn disable_application(
+        &self,
+        request: ApplicationControlRequest,
+    ) -> Result<ReceiptId, SabiFailure>;
+    /// Uninstalls the installed or disabled application; same addressing
+    /// contract, but the real executor runs the W27-D task-activity gate —
+    /// the `SqliteTaskAuthority` live query — before the terminal
+    /// transition commits.
+    ///
+    /// # Errors
+    ///
+    /// Returns a bounded [`SabiFailure`] when the backing authority rejects
+    /// the transition (absent application, generation CAS mismatch,
+    /// outstanding task activity, terminal state, or an unwired backend).
+    fn uninstall_application(
+        &self,
+        request: ApplicationControlRequest,
+    ) -> Result<ReceiptId, SabiFailure>;
+}
+
+/// Default stub used when no application-lifecycle execution backend is
+/// wired.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct UnwiredApplicationCommandExecutor;
+
+impl ApplicationCommandExecutor for UnwiredApplicationCommandExecutor {
+    fn disable_application(&self, _: ApplicationControlRequest) -> Result<ReceiptId, SabiFailure> {
+        Err(unwired_application_failure())
+    }
+
+    fn uninstall_application(
+        &self,
+        _: ApplicationControlRequest,
+    ) -> Result<ReceiptId, SabiFailure> {
+        Err(unwired_application_failure())
+    }
+}
+
+fn unwired_application_failure() -> SabiFailure {
+    SabiFailure {
+        code: SabiErrorCode::NotFound.into(),
+        retry: RetryDirective::DoNotRetry.into(),
+        safe_message: "application control execution backend is not wired".to_owned(),
     }
 }
 
@@ -582,6 +677,14 @@ pub enum SystemControlError {
     /// an already-bounded, crossing-safe failure; [`Self::to_sabi_failure`]
     /// forwards it verbatim.
     OperationExecution(SabiFailure),
+    /// No [`ApplicationCommandExecutor`] is wired, so an
+    /// application-lifecycle command arm refuses fail-closed (W35-P11
+    /// wires the real executor behind the `application` feature).
+    ApplicationControlExecutionUnwired,
+    /// The wired [`ApplicationCommandExecutor`] rejected the transition
+    /// with an already-bounded, crossing-safe failure;
+    /// [`Self::to_sabi_failure`] forwards it verbatim.
+    ApplicationExecution(SabiFailure),
     /// No backing source is wired for one W32-G per-layer inspect view, so
     /// the read refuses fail-closed.
     LayerInspectionUnwired,
@@ -623,6 +726,14 @@ impl fmt::Display for SystemControlError {
                 "operation control execution rejected the command: {}",
                 failure.safe_message
             ),
+            Self::ApplicationControlExecutionUnwired => {
+                formatter.write_str("application control execution backend is not wired")
+            }
+            Self::ApplicationExecution(failure) => write!(
+                formatter,
+                "application control execution rejected the command: {}",
+                failure.safe_message
+            ),
             Self::LayerInspectionUnwired => {
                 formatter.write_str("layer inspection backend is not wired")
             }
@@ -650,6 +761,8 @@ impl Error for SystemControlError {
             | Self::ClockWallUnavailable
             | Self::OperationControlExecutionUnwired
             | Self::OperationExecution(_)
+            | Self::ApplicationControlExecutionUnwired
+            | Self::ApplicationExecution(_)
             | Self::LayerInspectionUnwired
             | Self::LayerInspection(_) => None,
         }
@@ -698,6 +811,8 @@ impl SystemControlError {
     /// | unknown method | `NOT_SUPPORTED` | `DO_NOT_RETRY` |
     /// | operation executor unwired | `NOT_FOUND` | `DO_NOT_RETRY` |
     /// | executor rejection | bounded passthrough | bounded passthrough |
+    /// | application executor unwired | `NOT_FOUND` | `DO_NOT_RETRY` |
+    /// | application executor rejection | bounded passthrough | bounded passthrough |
     #[must_use]
     pub fn to_sabi_failure(&self) -> SabiFailure {
         let (code, retry, safe_message) = match self {
@@ -751,6 +866,11 @@ impl SystemControlError {
                 RetryDirective::DoNotRetry,
                 "operation control execution backend is not wired",
             ),
+            Self::ApplicationControlExecutionUnwired => (
+                SabiErrorCode::NotFound,
+                RetryDirective::DoNotRetry,
+                "application control execution backend is not wired",
+            ),
             Self::LayerInspectionUnwired => (
                 SabiErrorCode::NotFound,
                 RetryDirective::DoNotRetry,
@@ -759,7 +879,9 @@ impl SystemControlError {
             // The executor or inspection source already produced a bounded,
             // crossing-safe failure; forward its class, retry directive, and
             // message verbatim.
-            Self::OperationExecution(failure) | Self::LayerInspection(failure) => {
+            Self::OperationExecution(failure)
+            | Self::ApplicationExecution(failure)
+            | Self::LayerInspection(failure) => {
                 return failure.clone();
             }
             Self::Task(error) => task_store_failure(error),
@@ -907,6 +1029,7 @@ pub struct RecoverySystemControl<'a, H, A> {
     health: &'a H,
     authorizer: &'a A,
     operation_executor: Option<&'a dyn OperationCommandExecutor>,
+    application_executor: Option<&'a dyn ApplicationCommandExecutor>,
     task_node_source: Option<&'a dyn TaskNodeInspectSource>,
     fiber_source: Option<&'a dyn ExecutionFiberInspectSource>,
     topic_source: Option<&'a dyn TopicInspectSource>,
@@ -925,6 +1048,7 @@ where
             health,
             authorizer,
             operation_executor: None,
+            application_executor: None,
             task_node_source: None,
             fiber_source: None,
             topic_source: None,
@@ -941,6 +1065,19 @@ where
         executor: &'a dyn OperationCommandExecutor,
     ) -> Self {
         self.operation_executor = Some(executor);
+        self
+    }
+
+    /// Wires the pluggable application-lifecycle execution seam
+    /// ([`ApplicationCommandExecutor`], W35-P11). Without it the
+    /// disable/uninstall arms refuse fail-closed with a typed `NOT_FOUND`
+    /// failure.
+    #[must_use]
+    pub const fn with_application_executor(
+        mut self,
+        executor: &'a dyn ApplicationCommandExecutor,
+    ) -> Self {
+        self.application_executor = Some(executor);
         self
     }
 
@@ -1192,6 +1329,35 @@ where
             OperationArm::Reclaim => executor.reclaim_operation(request),
         };
         execution.map_err(SystemControlError::OperationExecution)
+    }
+
+    /// Routes one application-lifecycle arm to the pluggable executor seam
+    /// (W35-P11). The authorization, caller/issuer binding, and
+    /// idempotency checks have already run on the shared submit path; this
+    /// half only owns the authority transition and its receipt id.
+    fn execute_application_control(
+        &self,
+        arm: ApplicationArm,
+        command: &sabi::v1::ControlCommand,
+        caller: &nlos_schema::sabi::v1::CallerIdentity,
+        context: &SabiRequestContext,
+        now_wall_ms: i64,
+    ) -> Result<ReceiptId, SystemControlError> {
+        let Some(executor) = self.application_executor else {
+            return Err(SystemControlError::ApplicationControlExecutionUnwired);
+        };
+        let request = ApplicationControlRequest {
+            package_id: fixed16(&command.target_id)?,
+            expected_generation_or_revision: command.expected_generation_or_revision,
+            issuer_principal_id: fixed16(&caller.principal_id)?,
+            idempotency_key: fixed16(&context.idempotency_key)?,
+            requested_at_ms: now_wall_ms,
+        };
+        let execution = match arm {
+            ApplicationArm::Disable => executor.disable_application(request),
+            ApplicationArm::Uninstall => executor.uninstall_application(request),
+        };
+        execution.map_err(SystemControlError::ApplicationExecution)
     }
 
     fn handle_get(
@@ -1600,7 +1766,7 @@ where
         Ok(health)
     }
 
-    #[allow(clippy::too_many_lines)] // The eleven submit arms stay flat in one auditable dispatch.
+    #[allow(clippy::too_many_lines)] // The thirteen submit arms stay flat in one auditable dispatch.
     fn handle_submit(
         &self,
         request: &Envelope,
@@ -1735,6 +1901,22 @@ where
             Some(sabi::v1::control_command::Command::ReclaimOperation(_)) => self
                 .execute_operation_control(
                     OperationArm::Reclaim,
+                    command,
+                    caller,
+                    context,
+                    now_wall_ms,
+                )?,
+            Some(sabi::v1::control_command::Command::DisableApplication(_)) => self
+                .execute_application_control(
+                    ApplicationArm::Disable,
+                    command,
+                    caller,
+                    context,
+                    now_wall_ms,
+                )?,
+            Some(sabi::v1::control_command::Command::UninstallApplication(_)) => self
+                .execute_application_control(
+                    ApplicationArm::Uninstall,
                     command,
                     caller,
                     context,

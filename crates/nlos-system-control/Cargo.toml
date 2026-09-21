@@ -21,6 +21,7 @@ plan = ["dep:nlos-plan"]
 runtime = ["dep:nlos-runtime", "dep:nlos-runtime-tokio"]
 topic = ["dep:nlos-topic"]
 store = ["dep:nlos-store", "dep:nlos-operation"]
+application = ["dep:nlos-application"]
 
 [[bin]]
 name = "system-control-cli"
@@ -43,6 +44,7 @@ nlos-runtime-tokio = { path = "../nlos-runtime-tokio", optional = true }
 nlos-topic = { path = "../nlos-topic", optional = true }
 nlos-store = { path = "../nlos-store", optional = true }
 nlos-operation = { path = "../nlos-operation", optional = true }
+nlos-application = { path = "../nlos-application", optional = true }
 sha2 = { workspace = true }
 tokio = { workspace = true, optional = true }
 
@@ -51,6 +53,8 @@ ed25519-dalek.workspace = true
 nlos-ipc = { path = "../nlos-ipc" }
 nlos-service-directory = { path = "../nlos-service-directory" }
 nlos-channel = { path = "../nlos-channel" }
+nlos-artifact = { path = "../nlos-artifact" }
+nlos-identity = { path = "../nlos-identity" }
 rusqlite.workspace = true
 tokio.workspace = true
 

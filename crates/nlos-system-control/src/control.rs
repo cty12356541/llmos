@@ -25,14 +25,15 @@ use nlos_schema::sabi::v1::{
     AcknowledgeArtifactRecoveryAlertCommand, AcknowledgeResourceRecoveryAlertCommand,
     AcknowledgeSemanticRecoveryAlertCommand, ArtifactRecoveryMetrics,
     ArtifactRecoveryOperationsSnapshot, CallerIdentity, CancelCommand, CapabilityHandle,
-    ContextResidencyTier, ControlCommandSource, ControlScope, DurableOperationState, Envelope,
-    ExecutionFiberLifecycleState, ExecutionFiberPhase, GetSystemControlRequest, KillCommand,
-    PauseCommand, PlanNodeKind, PlanNodeLifecycleState, ReceiptReference, ReclaimCommand,
-    ResourceRecoveryMetrics, ResourceRecoveryOperationsSnapshot, ResumeCommand,
-    ResumeResourceRecoveryCommand, ResumeSemanticRecoveryCommand, SabiErrorCode, SabiFailure,
-    SabiRequestContext, SemanticRecoveryMetrics, SemanticRecoveryOperationsSnapshot,
+    ContextResidencyTier, ControlCommandSource, ControlScope, DisableApplicationCommand,
+    DurableOperationState, Envelope, ExecutionFiberLifecycleState, ExecutionFiberPhase,
+    GetSystemControlRequest, KillCommand, PauseCommand, PlanNodeKind, PlanNodeLifecycleState,
+    ReceiptReference, ReclaimCommand, ResourceRecoveryMetrics, ResourceRecoveryOperationsSnapshot,
+    ResumeCommand, ResumeResourceRecoveryCommand, ResumeSemanticRecoveryCommand, SabiErrorCode,
+    SabiFailure, SabiRequestContext, SemanticRecoveryMetrics, SemanticRecoveryOperationsSnapshot,
     SubmitControlCommandRequest, SystemControlView, TaskGroupLifecycleState, TaskGroupMemberType,
-    TaskGroupMembershipState, ThrottleCommand, control_command, envelope,
+    TaskGroupMembershipState, ThrottleCommand, UninstallApplicationCommand, control_command,
+    envelope,
 };
 use nlos_schema::{
     CompatibilityError, REQUEST_ID_BYTES, SABI_ENVELOPE_SCHEMA,
@@ -263,6 +264,31 @@ pub enum ControlCommand {
         expected_generation_or_revision: u64,
         reason: String,
     },
+    /// Disable one installed application (W35-P11, 移交#11 前片). The target
+    /// is the 16-byte package identity — the application singleton is
+    /// authority-derived from it — and the CAS expectation is the
+    /// application's current installation generation. Execution routes to
+    /// the pluggable [`crate::ApplicationCommandExecutor::disable_application`]
+    /// seam; disable has no activity gate (the `installed → disabled`
+    /// transition is reversible by rollback).
+    DisableApplication {
+        control_command_id: [u8; 16],
+        package_id: [u8; 16],
+        expected_generation_or_revision: u64,
+        reason: String,
+    },
+    /// Uninstall one installed or disabled application (W35-P11, 移交#11
+    /// 前片); same addressing contract as [`Self::DisableApplication`].
+    /// Execution routes to
+    /// [`crate::ApplicationCommandExecutor::uninstall_application`]; the
+    /// real executor drives the W27-D task-activity gate before the
+    /// terminal transition commits.
+    UninstallApplication {
+        control_command_id: [u8; 16],
+        package_id: [u8; 16],
+        expected_generation_or_revision: u64,
+        reason: String,
+    },
 }
 
 impl ControlCommand {
@@ -317,6 +343,12 @@ impl ControlCommand {
             }
             | Self::ReclaimOperation {
                 control_command_id, ..
+            }
+            | Self::DisableApplication {
+                control_command_id, ..
+            }
+            | Self::UninstallApplication {
+                control_command_id, ..
             } => *control_command_id,
         }
     }
@@ -368,6 +400,12 @@ impl ControlCommand {
                 control_command_id, ..
             }
             | Self::ReclaimOperation {
+                control_command_id, ..
+            }
+            | Self::DisableApplication {
+                control_command_id, ..
+            }
+            | Self::UninstallApplication {
                 control_command_id, ..
             } => *control_command_id,
         }
@@ -704,6 +742,14 @@ pub enum ControlOutcome {
     /// Operation-level reclaim accepted by the executor seam (W29-D); the
     /// receipt id is derived from the nlos-task reclaim execution outcome.
     OperationReclaimed { receipt_id: Vec<u8> },
+    /// Application disable accepted by the application executor seam
+    /// (W35-P11, 移交#11 前片); the receipt id is derived from the
+    /// application authority's durable disable receipt facts.
+    ApplicationDisabled { receipt_id: Vec<u8> },
+    /// Application uninstall accepted by the application executor seam;
+    /// the receipt id is derived from the application authority's durable
+    /// uninstall receipt facts (the W27-D activity gate ran first).
+    ApplicationUninstalled { receipt_id: Vec<u8> },
 }
 
 /// Typed receipt for one dispatched [`ControlCommand`] (§24.3 posture in
@@ -880,7 +926,9 @@ pub fn build_request_envelope(command: &ControlCommand) -> Result<Envelope, Cont
         | ControlCommand::CancelOperation { .. }
         | ControlCommand::KillOperation { .. }
         | ControlCommand::ThrottleOperation { .. }
-        | ControlCommand::ReclaimOperation { .. } => {
+        | ControlCommand::ReclaimOperation { .. }
+        | ControlCommand::DisableApplication { .. }
+        | ControlCommand::UninstallApplication { .. } => {
             let reason = mutation_reason(command);
             if reason.is_empty() {
                 return Err(ControlError::InvalidCommand(
@@ -1009,6 +1057,16 @@ fn mutation_address(command: &ControlCommand) -> ([u8; 16], u64) {
             expected_generation_or_revision,
             ..
         } => (*target_id, *expected_generation_or_revision),
+        ControlCommand::DisableApplication {
+            package_id,
+            expected_generation_or_revision,
+            ..
+        }
+        | ControlCommand::UninstallApplication {
+            package_id,
+            expected_generation_or_revision,
+            ..
+        } => (*package_id, *expected_generation_or_revision),
         ControlCommand::AcknowledgeRecoveryAlert {
             plan_id,
             expected_total_failures,
@@ -1050,7 +1108,9 @@ fn mutation_reason(command: &ControlCommand) -> &str {
         | ControlCommand::CancelOperation { reason, .. }
         | ControlCommand::KillOperation { reason, .. }
         | ControlCommand::ThrottleOperation { reason, .. }
-        | ControlCommand::ReclaimOperation { reason, .. } => reason,
+        | ControlCommand::ReclaimOperation { reason, .. }
+        | ControlCommand::DisableApplication { reason, .. }
+        | ControlCommand::UninstallApplication { reason, .. } => reason,
         _ => unreachable!("read-only variants never reach the submit arm"),
     }
 }
@@ -1098,6 +1158,12 @@ fn sabi_wire_command(
         }),
         ControlCommand::ReclaimOperation { .. } => {
             control_command::Command::ReclaimOperation(ReclaimCommand {})
+        }
+        ControlCommand::DisableApplication { .. } => {
+            control_command::Command::DisableApplication(DisableApplicationCommand {})
+        }
+        ControlCommand::UninstallApplication { .. } => {
+            control_command::Command::UninstallApplication(UninstallApplicationCommand {})
         }
         // The remaining mutation arm is the artifact acknowledgement; the
         // read-only variants never reach this helper.
@@ -1150,6 +1216,12 @@ fn request_context(command: &ControlCommand) -> SabiRequestContext {
             control_command_id, ..
         }
         | ControlCommand::ReclaimOperation {
+            control_command_id, ..
+        }
+        | ControlCommand::DisableApplication {
+            control_command_id, ..
+        }
+        | ControlCommand::UninstallApplication {
             control_command_id, ..
         } => control_command_id.to_vec(),
         _ => Vec::new(),
@@ -1788,6 +1860,7 @@ impl ControlReceipt {
     ///
     /// Returns [`ControlError`] when the response shape does not match the
     /// command or the frozen payload contract.
+    #[allow(clippy::too_many_lines)] // The per-variant outcome projections stay flat in one auditable match.
     pub fn compose(
         command: &ControlCommand,
         response: &Envelope,
@@ -1883,6 +1956,16 @@ impl ControlReceipt {
                 ControlCommand::ReclaimOperation { .. } => Ok(ControlOutcome::OperationReclaimed {
                     receipt_id: decoded_result_receipt(command, response)?,
                 }),
+                ControlCommand::DisableApplication { .. } => {
+                    Ok(ControlOutcome::ApplicationDisabled {
+                        receipt_id: decoded_result_receipt(command, response)?,
+                    })
+                }
+                ControlCommand::UninstallApplication { .. } => {
+                    Ok(ControlOutcome::ApplicationUninstalled {
+                        receipt_id: decoded_result_receipt(command, response)?,
+                    })
+                }
             }
         };
         Ok(Self {
@@ -1961,6 +2044,12 @@ impl ControlReceipt {
             }
             Ok(ControlOutcome::OperationReclaimed { receipt_id }) => {
                 push_tagged_receipt(&mut bytes, 13, receipt_id);
+            }
+            Ok(ControlOutcome::ApplicationDisabled { receipt_id }) => {
+                push_tagged_receipt(&mut bytes, 20, receipt_id);
+            }
+            Ok(ControlOutcome::ApplicationUninstalled { receipt_id }) => {
+                push_tagged_receipt(&mut bytes, 21, receipt_id);
             }
             Ok(ControlOutcome::TaskGroupInspected(inspection)) => {
                 push_task_group_inspection(&mut bytes, inspection);
@@ -2960,6 +3049,95 @@ mod tests {
                 build_request_envelope(&command),
                 Err(ControlError::InvalidCommand(
                     "handle generation must be a non-zero generation"
+                ))
+            ));
+        }
+    }
+
+    #[test]
+    fn w35p11_command_ids_are_deterministic_per_variant() {
+        assert_eq!(
+            ControlCommand::DisableApplication {
+                control_command_id: [0x67; 16],
+                package_id: [0xE1; 16],
+                expected_generation_or_revision: 3,
+                reason: "operator disables the application".to_owned(),
+            }
+            .control_command_id(),
+            [0x67; 16]
+        );
+        assert_eq!(
+            ControlCommand::UninstallApplication {
+                control_command_id: [0x68; 16],
+                package_id: [0xE1; 16],
+                expected_generation_or_revision: 3,
+                reason: "operator uninstalls the application".to_owned(),
+            }
+            .control_command_id(),
+            [0x68; 16]
+        );
+    }
+
+    #[test]
+    fn w35p11_mutation_envelopes_carry_the_wire_arms_and_package_addressing() {
+        for (command, matched_arm) in [
+            (
+                ControlCommand::DisableApplication {
+                    control_command_id: [0x67; 16],
+                    package_id: [0xE1; 16],
+                    expected_generation_or_revision: 3,
+                    reason: "operator disables the application".to_owned(),
+                },
+                control_command::Command::DisableApplication(DisableApplicationCommand {}),
+            ),
+            (
+                ControlCommand::UninstallApplication {
+                    control_command_id: [0x68; 16],
+                    package_id: [0xE1; 16],
+                    expected_generation_or_revision: 3,
+                    reason: "operator uninstalls the application".to_owned(),
+                },
+                control_command::Command::UninstallApplication(UninstallApplicationCommand {}),
+            ),
+        ] {
+            let envelope = build_request_envelope(&command).unwrap();
+            assert_eq!(envelope.method, SUBMIT_METHOD);
+            let payload = decode_submit_control_command_request(&envelope.payload).unwrap();
+            let wire_command = payload.command.unwrap();
+            assert_eq!(wire_command.command, Some(matched_arm));
+            assert_eq!(wire_command.target_id, vec![0xE1; 16]);
+            assert_eq!(wire_command.expected_generation_or_revision, 3);
+            let Some(envelope::CommonContext::RequestContext(context)) = envelope.common_context
+            else {
+                panic!("request context expected");
+            };
+            assert_eq!(
+                context.idempotency_key,
+                command.control_command_id().to_vec()
+            );
+        }
+    }
+
+    #[test]
+    fn w35p11_mutations_reject_empty_reason_before_the_wire() {
+        for command in [
+            ControlCommand::DisableApplication {
+                control_command_id: [0x67; 16],
+                package_id: [0xE1; 16],
+                expected_generation_or_revision: 3,
+                reason: String::new(),
+            },
+            ControlCommand::UninstallApplication {
+                control_command_id: [0x68; 16],
+                package_id: [0xE1; 16],
+                expected_generation_or_revision: 3,
+                reason: String::new(),
+            },
+        ] {
+            assert!(matches!(
+                build_request_envelope(&command),
+                Err(ControlError::InvalidCommand(
+                    "control mutations require a non-empty bounded reason"
                 ))
             ));
         }

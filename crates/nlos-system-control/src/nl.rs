@@ -92,6 +92,10 @@
 //!   | 限流 操作 <32位十六进制> 到 <n> 百分比 期望 <n>
 //! reclaim operation <32-hex> expecting <n>
 //!   | 回收操作 <32位十六进制> 期望 <n> | 回收 操作 <32位十六进制> 期望 <n>
+//! disable application <32-hex> expecting <n>
+//!   | 禁用应用 <32位十六进制> 期望 <n> | 禁用 应用 <32位十六进制> 期望 <n>
+//! uninstall application <32-hex> expecting <n>
+//!   | 卸载应用 <32位十六进制> 期望 <n> | 卸载 应用 <32位十六进制> 期望 <n>
 //! ```
 //!
 //! Derivation rules for the acknowledgement form: the `<32-hex>` argument is
@@ -120,6 +124,15 @@
 //! violate `[NL-AMBIG-001]` the same way a guessed CAS value would. The
 //! audit reasons are the fixed per-verb [`NL_KILL_REASON`]/
 //! [`NL_THROTTLE_REASON`]/[`NL_RECLAIM_REASON`].
+//!
+//! The W35-P11 application-lifecycle forms follow the same derivation
+//! rules: the `<32-hex>` argument is the package identity (the application
+//! singleton is authority-derived from it), the command identity derives
+//! from that package id (one package, one disable/uninstall identity,
+//! replay-safe), `<n>` is the explicit application installation generation
+//! — the CAS expectation — and the audit reasons are the fixed
+//! [`NL_DISABLE_REASON`]/[`NL_UNINSTALL_REASON`]. There is no application
+//! inspect form in this slice.
 //!
 //! The W28-C-3b resource recovery forms follow the same rules verbatim: the
 //! acknowledgement targets the escalated resource plan (command identity
@@ -165,6 +178,12 @@ pub const NL_RESOURCE_ACK_REASON: &str =
 /// See [`NL_ACK_REASON`].
 pub const NL_RESOURCE_RESUME_REASON: &str =
     "resource recovery resumed through the restricted natural-language control prefix";
+/// See [`NL_ACK_REASON`]; W35-P11 application-lifecycle forms.
+pub const NL_DISABLE_REASON: &str =
+    "application disabled through the restricted natural-language control prefix";
+/// See [`NL_ACK_REASON`].
+pub const NL_UNINSTALL_REASON: &str =
+    "application uninstalled through the restricted natural-language control prefix";
 
 /// Legal grammar, named verbatim in every rejection message.
 const GRAMMAR_HELP: &str = "valid forms: \"inspect health\" | \"export metrics\" | \
@@ -177,7 +196,8 @@ const GRAMMAR_HELP: &str = "valid forms: \"inspect health\" | \"export metrics\"
 \"acknowledge resource alert <32-hex> expecting <count>\" | \
 \"resume resource recovery <32-hex> expecting <count>\" | \
 \"pause|resume|cancel|kill|reclaim operation <32-hex> expecting <count>\" | \
-\"throttle operation <32-hex> to <percent> expecting <count>\" | \"查看健康\" | \
+\"throttle operation <32-hex> to <percent> expecting <count>\" | \
+\"disable|uninstall application <32-hex> expecting <count>\" | \"查看健康\" | \
 \"导出指标\" | \"查看资源恢复\" | \"导出资源指标\" | \
 \"查看任务 <32位十六进制>\" | \"检查进程 <32位十六进制>\" | \
 \"查看资源 <32位十六进制>\" | \
@@ -185,7 +205,8 @@ const GRAMMAR_HELP: &str = "valid forms: \"inspect health\" | \"export metrics\"
 \"确认资源告警 <32位十六进制> 期望 <次数>\" | \
 \"恢复资源恢复 <32位十六进制> 期望 <次数>\" | \
 \"暂停|恢复|取消|终止|回收操作 <32位十六进制> 期望 <次数>\" | \
-\"限流操作 <32位十六进制> 到 <百分比> 期望 <次数>\"";
+\"限流操作 <32位十六进制> 到 <百分比> 期望 <次数>\" | \
+\"禁用|卸载应用 <32位十六进制> 期望 <次数>\"";
 
 /// Compiles one restricted-grammar English or Chinese imperative sentence
 /// into a [`ControlCommand`] for the existing dispatch paths. Pure function:
@@ -225,6 +246,9 @@ pub fn parse_nl_command(input: &str) -> Result<ControlCommand, ControlError> {
         return result;
     }
     if let Some(result) = try_parse_operation_control(&tokens) {
+        return result;
+    }
+    if let Some(result) = try_parse_application_control(&tokens) {
         return result;
     }
     Err(ControlError::InvalidCommand(GRAMMAR_HELP))
@@ -274,6 +298,14 @@ fn is_throttle_verb(token: &str) -> bool {
 
 fn is_reclaim_verb(token: &str) -> bool {
     token.eq_ignore_ascii_case("reclaim")
+}
+
+fn is_disable_application_verb(token: &str) -> bool {
+    token.eq_ignore_ascii_case("disable")
+}
+
+fn is_uninstall_application_verb(token: &str) -> bool {
+    token.eq_ignore_ascii_case("uninstall")
 }
 
 fn is_resource_recovery_resume_verb(token: &str) -> bool {
@@ -1067,6 +1099,76 @@ fn try_parse_operation_control(tokens: &[&str]) -> Option<Result<ControlCommand,
     }
 }
 
+/// Compiles the W35-P11 application-lifecycle forms (移交#11 前片):
+/// `disable application` and `uninstall application`, each addressing the
+/// 16-byte package identity under an explicit installation-generation CAS
+/// expectation. The command identity derives from the package id (one
+/// package, one disable/uninstall identity, replay-safe); silently guessing
+/// a CAS value would violate `[NL-AMBIG-001]`, so the expectation is a
+/// required token.
+fn try_parse_application_control(tokens: &[&str]) -> Option<Result<ControlCommand, ControlError>> {
+    match tokens {
+        [head, second, package, third, count]
+            if is_disable_application_verb(head)
+                && second.eq_ignore_ascii_case("application")
+                && third.eq_ignore_ascii_case("expecting") =>
+        {
+            Some(parse_count(count).and_then(|n| disable_application_command(package, n)))
+        }
+        ["禁用应用", package, "期望", count] | ["禁用", "应用", package, "期望", count] => {
+            Some(parse_count(count).and_then(|n| disable_application_command(package, n)))
+        }
+        [head, second, package, third, count]
+            if is_uninstall_application_verb(head)
+                && second.eq_ignore_ascii_case("application")
+                && third.eq_ignore_ascii_case("expecting") =>
+        {
+            Some(parse_count(count).and_then(|n| uninstall_application_command(package, n)))
+        }
+        ["卸载应用", package, "期望", count] | ["卸载", "应用", package, "期望", count] => {
+            Some(parse_count(count).and_then(|n| uninstall_application_command(package, n)))
+        }
+        ["禁用应用", ..] | ["禁用", "应用", ..] => Some(Err(ControlError::InvalidCommand(
+            "\"禁用应用\" 期望 \"<32位十六进制> 期望 <次数>\"",
+        ))),
+        ["卸载应用", ..] | ["卸载", "应用", ..] => Some(Err(ControlError::InvalidCommand(
+            "\"卸载应用\" 期望 \"<32位十六进制> 期望 <次数>\"",
+        ))),
+        [head, ..] if is_disable_application_verb(head) || is_uninstall_application_verb(head) => {
+            Some(Err(ControlError::InvalidCommand(
+                "\"disable|uninstall application\" expects \"<32-hex> expecting <count>\"",
+            )))
+        }
+        _ => None,
+    }
+}
+
+fn disable_application_command(
+    package_hex: &str,
+    expected_generation_or_revision: u64,
+) -> Result<ControlCommand, ControlError> {
+    let package_id = parse_hex_id(package_hex)?;
+    Ok(ControlCommand::DisableApplication {
+        control_command_id: package_id,
+        package_id,
+        expected_generation_or_revision,
+        reason: NL_DISABLE_REASON.to_owned(),
+    })
+}
+
+fn uninstall_application_command(
+    package_hex: &str,
+    expected_generation_or_revision: u64,
+) -> Result<ControlCommand, ControlError> {
+    let package_id = parse_hex_id(package_hex)?;
+    Ok(ControlCommand::UninstallApplication {
+        control_command_id: package_id,
+        package_id,
+        expected_generation_or_revision,
+        reason: NL_UNINSTALL_REASON.to_owned(),
+    })
+}
+
 /// Parses the plain decimal CAS expectation. Digits only: no sign, no
 /// separator, no overflow past the 64-bit bound.
 fn parse_count(token: &str) -> Result<u64, ControlError> {
@@ -1615,6 +1717,105 @@ mod tests {
                 reason: NL_RECLAIM_REASON.to_owned(),
             }
         );
+    }
+
+    #[test]
+    fn english_application_lifecycle_forms_parse_with_derived_identity() {
+        assert_eq!(
+            parse_nl_command("disable application a1b2c3d4e5f60718293a4b5c6d7e8f90 expecting 4")
+                .unwrap(),
+            ControlCommand::DisableApplication {
+                control_command_id: plan_id(),
+                package_id: plan_id(),
+                expected_generation_or_revision: 4,
+                reason: NL_DISABLE_REASON.to_owned(),
+            }
+        );
+        assert_eq!(
+            parse_nl_command("DISABLE APPLICATION A1B2C3D4E5F60718293A4B5C6D7E8F90 EXPECTING 4")
+                .unwrap(),
+            ControlCommand::DisableApplication {
+                control_command_id: plan_id(),
+                package_id: plan_id(),
+                expected_generation_or_revision: 4,
+                reason: NL_DISABLE_REASON.to_owned(),
+            }
+        );
+        assert_eq!(
+            parse_nl_command("uninstall application a1b2c3d4e5f60718293a4b5c6d7e8f90 expecting 4")
+                .unwrap(),
+            ControlCommand::UninstallApplication {
+                control_command_id: plan_id(),
+                package_id: plan_id(),
+                expected_generation_or_revision: 4,
+                reason: NL_UNINSTALL_REASON.to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn chinese_application_lifecycle_forms_parse_with_derived_identity() {
+        assert_eq!(
+            parse_nl_command("禁用应用 a1b2c3d4e5f60718293a4b5c6d7e8f90 期望 4").unwrap(),
+            ControlCommand::DisableApplication {
+                control_command_id: plan_id(),
+                package_id: plan_id(),
+                expected_generation_or_revision: 4,
+                reason: NL_DISABLE_REASON.to_owned(),
+            }
+        );
+        assert_eq!(
+            parse_nl_command("禁用 应用 A1B2C3D4E5F60718293A4B5C6D7E8F90 期望 4").unwrap(),
+            ControlCommand::DisableApplication {
+                control_command_id: plan_id(),
+                package_id: plan_id(),
+                expected_generation_or_revision: 4,
+                reason: NL_DISABLE_REASON.to_owned(),
+            }
+        );
+        assert_eq!(
+            parse_nl_command("卸载应用 a1b2c3d4e5f60718293a4b5c6d7e8f90 期望 4").unwrap(),
+            ControlCommand::UninstallApplication {
+                control_command_id: plan_id(),
+                package_id: plan_id(),
+                expected_generation_or_revision: 4,
+                reason: NL_UNINSTALL_REASON.to_owned(),
+            }
+        );
+        assert_eq!(
+            parse_nl_command("卸载 应用 a1b2c3d4e5f60718293a4b5c6d7e8f90 期望 4").unwrap(),
+            ControlCommand::UninstallApplication {
+                control_command_id: plan_id(),
+                package_id: plan_id(),
+                expected_generation_or_revision: 4,
+                reason: NL_UNINSTALL_REASON.to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn application_lifecycle_near_misses_are_typed_rejections() {
+        for sentence in [
+            "disable application a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "disable application a1b2c3d4e5f60718293a4b5c6d7e8f90 expecting",
+            "disable application a1b2c3d4e5f60718293a4b5c6d7e8f9 expecting 4",
+            "disable application a1b2c3d4e5f60718293a4b5c6d7e8f90 expecting -4",
+            "disable operation a1b2c3d4e5f60718293a4b5c6d7e8f90 expecting 4",
+            "uninstall task a1b2c3d4e5f60718293a4b5c6d7e8f90 expecting 4",
+            "uninstall application a1b2c3d4e5f60718293a4b5c6d7e8f90 expecting 0x4",
+            "禁用应用 a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "卸载应用",
+            "卸载 应用 a1b2c3d4e5f60718293a4b5c6d7e8f90 期望",
+            "inspect application a1b2c3d4e5f60718293a4b5c6d7e8f90",
+        ] {
+            assert!(
+                matches!(
+                    parse_nl_command(sentence),
+                    Err(ControlError::InvalidCommand(_))
+                ),
+                "expected typed NL rejection for {sentence:?}"
+            );
+        }
     }
 
     #[test]
