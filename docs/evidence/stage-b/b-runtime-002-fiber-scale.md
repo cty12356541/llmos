@@ -633,3 +633,24 @@ cargo clippy -p nlos-runtime-tokio --all-targets -- -D warnings
   - `multi_thread`/work-stealing 下的公平性形状（本片为 `current_thread` 确定性口径，多 worker 的交错属不同问题）；
   - 100K 规模 wake 风暴探针（与 §5 已登记的 100K cancel 探针同族，未纳入）；
   - ROAD-B-006 其余未决项不变，Claim 维持 `PARTIAL_PASS`。
+
+### 6.18 夜间 scale-probe blocking_io_negative 既有失败：根因排查与测量方法学校准（2026-09-21 追加，W34 移交项 #14 / ROAD-B-006）
+
+- Owner：`nlos-runtime-tokio`（`tests/blocking_io_negative.rs`，**test-only 零 src 侵入**）
+- **现象核对**（gh 实拉 schedule run 日志修正登记口径）：
+  - 失败并非自 09-13 始：含 W15-B 探针（`9b262f3`，09-05 15:29 +0800 落 main）后的**首个**夜间 run（09-06，run 34059387440）scale-probe 即在 blocking_io_negative 失败——该探针**在 CI 夜间从未绿过**；09-07..09-09 三夜 scale-probe 被 §6.13 已知 flaky（activation_meter，c84c91a 09-10 修复）提前阻断未及本二进制；09-10 起每夜复现（run 34531189566 / 34649167653 / 34718891386 / 34783031057 … 最新 35537656798）。移交清单「自 09-13」为首次登记口径。
+  - 三个 panic 点（:334/:353/:384）全部是**绝对线程上界断言**，非比较（sub-linear）断言；09-13 腿实测 `26 > 16`（test1）、`15 > 10`（test2），10K 探针当晚 ok、最新 run 在 :384（`+2` 断言）失败。
+- **根因裁决**（四个假设逐一）：
+  - **H4 测试方法学缺陷（主因，成立）**：`process_thread_count()` 是**进程级**读数，绝对上界（16/10）隐含「探针是进程内唯一线程消费者」假设——只在 W15-B 本地口径（`--test-threads=1`，安静基线 ~4 线程，见 §6.7/本波本地记录）成立。夜间 job `cargo test --workspace -- --include-ignored` 以 libtest 默认并发（ubuntu-latest 4 vCPU）**同进程并行**执行三探针，各自 runtime（2 worker + 至多 8 blocking pool）互相计入读数 → 26/15 确定性假失败。
+  - **10K 档潜在标定错误（次因，成立）**：`threads_after ≤ threads_before + 2` 与探针自身 spawn_blocking 池矛盾（基线后合法新增至多 8 线程）——隔离执行实测 **4→12 必失败**；并发下仅靠兄弟探针线程抬高基线偶合通过（W15-B 本地从未隔离实跑 10K 档：§6.7 验证门口径「2 passed / 1 ignored」）。最新 run :384 失败即此，属按并发时相漂移的 flaky。
+  - **H1 runner 拓扑（裁决：仅经并发暴露，界值本身不敏感）**：全部界值由探针 runtime 自身形状推导（`worker_threads=2` + `max_blocking_threads=8` + 余量），与主机核数无关，**无需**按 `available_parallelism` 缩放；主机拓扑只经 libtest 默认并发进入测量，由串行化槽消除。
+  - **H3 W19–W25 漂移（排除）**：失败自 09-06 即存在，先于 W25（09-12/13 落 main）；且同提交 verify 腿（push，无 `--include-ignored`，仅 2 探针并发，~16≤16 惊险通过）为绿。H2 CI 噪声（排除）：本机 macOS M5 默认并发复现数字与 CI **逐字一致**（26/15），确定性假失败。
+- **修复**（不删、不 disable、不弱化探针含义；`fix/w34-scale-probe` 分支）：
+  1. 三探针共享 `static PROBE_SERIALIZE: Mutex<()>`——独占测量窗口，基线在持槽后测（test2 相应由 `#[tokio::test]` 改同步 `#[test]` + `bounded_runtime().block_on`，槽内建 runtime；并规避 clippy pedantic `await_holding_lock`）。
+  2. 绝对上界重锚为**基线相对增长界**：spawn_blocking 模式 `BLOCKING_IO_GROWTH_BOUND = 2+8+2 = 12`（= W15-B 绝对界 16 − 安静基线 4，数值等效）；误用模式 `MISPLACED_GROWTH_BOUND = 6`（= 10 − 4）；10K 档以 `+12` 替换自相矛盾的 `+2`。比较断言（low vs high +15）**原样保留**。增长界对兄弟/残留线程（tokio blocking pool 空闲 ~10s 驻留）免疫；探针含义不变——真回归（每 fiber 一线程）在 256/10K 规模下将以百/千级增长击穿任何界。
+- **验证门实测**（2026-09-21，macOS arm64 M5 10 核，stable 1.97.1，修复前先复现后修复）：
+  - 修复前：默认并发（=CI 口径）test1 `26 > 16`、test2 `15 > 10`（与 CI 09-13 腿逐字一致）；`--test-threads=1` test1/test2 绿、10K `4→12` 失败（标定错误实证）。
+  - 修复后（`--include-ignored`）：默认并发连续 4 轮 **3/3 绿**——test1 fibers 32→256 threads 13→13 ~ 14→14（基线 3-4，增长界 12）；10K before 2-3 → after 12-13（**增长 +10 = 2 worker + 8 blocking pool，恰为推导值**）；misplaced 2→4（+2 = 自有 worker，界 6）。`--test-threads=1` 亦 3/3 绿（test1 12→12 基线 2；10K 2→12；misplaced 2→4）。
+  - `cargo test -p nlos-runtime-tokio` → **128 passed / 0 failed / 11 ignored**；`cargo fmt --all -- --check` 通过；`cargo clippy -p nlos-runtime-tokio --all-targets -- -D warnings` exit 0。
+- **PENDING**：最终证明为下一个 schedule 触发的 scale-probe run（ubuntu-latest，`--include-ignored`）三探针绿，届时回填 run 链接。本修复**未 push**。
+- **缺口更新**：移交清单 §6.5.6 #14 由「专项排查」推进为「已排查修复、PENDING 夜间复证」；`durable_wait_scale.rs` 的绝对 `THREAD_BOUND=10` 具同型暴露面（其两探针均无 blocking pool、独立测试二进制、当前夜间绿）——如实登记不在本片扩改，留待其首个假失败时同法校准。
