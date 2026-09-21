@@ -636,6 +636,12 @@ cargo clippy -p nlos-runtime-tokio --all-targets -- -D warnings
 
 ### 6.18 夜间 scale-probe blocking_io_negative 既有失败：根因排查与测量方法学校准（2026-09-21 追加，W34 移交项 #14 / ROAD-B-006）
 
+
+#### 6.18.1 CI 复证与后续发现（2026-09-22 追加，W35-B）
+
+- **#14 修复 CI 确认**：手动 workflow_dispatch run [35553547243](https://github.com/cty12356541/llmos/actions/runs/35553547243)（2026-09-21）Scale probe job 内三探针全绿——`blocking_io_on_durable_wait_path_grows_threads_sublinearly`/`ten_thousand_blocking_io_fibers_stay_thread_bounded`/`misplaced_blocking_sleep_stays_thread_bounded` 均 ok，**自探针引入（09-05/09-06）以来首次在 CI 通过**；§6.18 PENDING 收口。
+- **新发现（W35-B2 车道）**：同 run 的 scale-probe job 在 nlos-task `scale_profile_probe::ten_thousand_task_registrations_keep_the_permit_face_lazy` 失败（p95 基线 2.370ms → 10K 59.03ms，CI ubuntu 2-vCPU）；本地 macOS 双档（10K/100K）全绿 41.94s。夜间 job 因无 `--no-fail-fast` 自 09-06 起提前中止于 blocking_io_negative，该探针**从未在 CI 被执行**——#14 修复使夜间首次越过早段、暴露此从未验证项。初判环境画像敏感（fsync/checkpoint 债 vs 真回归待 W35-B2 裁决）；夜间整体仍红归此新项，登记跟进。
+
 - Owner：`nlos-runtime-tokio`（`tests/blocking_io_negative.rs`，**test-only 零 src 侵入**）
 - **现象核对**（gh 实拉 schedule run 日志修正登记口径）：
   - 失败并非自 09-13 始：含 W15-B 探针（`9b262f3`，09-05 15:29 +0800 落 main）后的**首个**夜间 run（09-06，run 34059387440）scale-probe 即在 blocking_io_negative 失败——该探针**在 CI 夜间从未绿过**；09-07..09-09 三夜 scale-probe 被 §6.13 已知 flaky（activation_meter，c84c91a 09-10 修复）提前阻断未及本二进制；09-10 起每夜复现（run 34531189566 / 34649167653 / 34718891386 / 34783031057 … 最新 35537656798）。移交清单「自 09-13」为首次登记口径。
