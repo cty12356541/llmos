@@ -65,13 +65,13 @@ use nlos_system_control::auth::{
 };
 use nlos_system_control::control::{ControlCommand, ControlOutcome, dispatch_in_process};
 use nlos_system_control::nl::{
-    NL_ACK_REASON, NL_CANCEL_REASON, NL_KILL_REASON, NL_PAUSE_REASON, NL_RECLAIM_REASON,
-    NL_RESOURCE_ACK_REASON, NL_RESOURCE_RESUME_REASON, NL_RESUME_REASON, NL_THROTTLE_REASON,
-    parse_nl_command,
+    NL_ACK_REASON, NL_CANCEL_REASON, NL_DISABLE_REASON, NL_KILL_REASON, NL_PAUSE_REASON,
+    NL_RECLAIM_REASON, NL_RESOURCE_ACK_REASON, NL_RESOURCE_RESUME_REASON, NL_RESUME_REASON,
+    NL_THROTTLE_REASON, NL_UNINSTALL_REASON, parse_nl_command,
 };
 use nlos_system_control::{
-    OperationCommandExecutor, OperationControlRequest, RecoveryHealthSource, RecoverySystemControl,
-    SystemControlAuthorizer,
+    ApplicationCommandExecutor, ApplicationControlRequest, OperationCommandExecutor,
+    OperationControlRequest, RecoveryHealthSource, RecoverySystemControl, SystemControlAuthorizer,
 };
 use nlos_task::{
     ArtifactCommitPlanId, ArtifactPublicationExpectation, ArtifactRecoveryFailureRequest,
@@ -107,6 +107,9 @@ const MISSING_PLAN_ID: [u8; 16] = [0xEE; 16];
 const OPERATION_TARGET_ID: [u8; 16] = [0x91; 16];
 const OPERATION_CAS: u64 = 4;
 const THROTTLE_PERCENT: u64 = 50;
+
+const APPLICATION_PACKAGE_ID: [u8; 16] = [0xE1; 16];
+const APPLICATION_CAS: u64 = 3;
 
 const DENIED_COMMAND_ID: [u8; 16] = [0x7E; 16];
 const DENIED_REASON: &str = "denied: four-path typed Rights parity probe";
@@ -335,6 +338,30 @@ impl OperationCommandExecutor for DeterministicOperationExecutor {
 
     fn reclaim_operation(&self, _: OperationControlRequest) -> Result<ReceiptId, SabiFailure> {
         Ok(ReceiptId::from_bytes(operation_receipt(6)))
+    }
+}
+
+/// Deterministic application executor stub (same shape): each arm's receipt
+/// id names the executed arm in its first byte, so the application-family
+/// receipts are success-shaped and byte-comparable.
+struct DeterministicApplicationExecutor;
+
+fn application_receipt(arm_tag: u8) -> [u8; 16] {
+    let mut id = APPLICATION_PACKAGE_ID;
+    id[0] = arm_tag;
+    id
+}
+
+impl ApplicationCommandExecutor for DeterministicApplicationExecutor {
+    fn disable_application(&self, _: ApplicationControlRequest) -> Result<ReceiptId, SabiFailure> {
+        Ok(ReceiptId::from_bytes(application_receipt(7)))
+    }
+
+    fn uninstall_application(
+        &self,
+        _: ApplicationControlRequest,
+    ) -> Result<ReceiptId, SabiFailure> {
+        Ok(ReceiptId::from_bytes(application_receipt(8)))
     }
 }
 
@@ -587,7 +614,8 @@ impl ParityFixture {
                 loop {
                     let control =
                         RecoverySystemControl::new(tasks.as_ref(), &health, &CapabilityPolicy)
-                            .with_operation_executor(&DeterministicOperationExecutor);
+                            .with_operation_executor(&DeterministicOperationExecutor)
+                            .with_application_executor(&DeterministicApplicationExecutor);
                     let nonce_value = nonce_counter.fetch_add(1, Ordering::Relaxed);
                     let mut nonce = [0u8; 32];
                     nonce[..8].copy_from_slice(&nonce_value.to_be_bytes());
@@ -638,6 +666,7 @@ impl ParityFixture {
                                 &CapabilityPolicy,
                             )
                             .with_operation_executor(&DeterministicOperationExecutor)
+                            .with_application_executor(&DeterministicApplicationExecutor)
                             .handle_for_ipc(
                                 validated.envelope(),
                                 MONOTONIC_NOW_NS,
@@ -661,6 +690,7 @@ impl ParityFixture {
     fn reference_control(&self) -> RecoverySystemControl<'_, StubHealth, CapabilityPolicy> {
         RecoverySystemControl::new(self.tasks.as_ref(), &self.health, &CapabilityPolicy)
             .with_operation_executor(&DeterministicOperationExecutor)
+            .with_application_executor(&DeterministicApplicationExecutor)
     }
 
     /// One four-path reference dispatch (used for shape assertions).
@@ -1423,6 +1453,124 @@ async fn operation_family_receipts_are_byte_identical_across_direct_nl_cli_and_g
             &hex(&DENIED_COMMAND_ID),
             &target_hex,
             &OPERATION_CAS.to_string(),
+            DENIED_REASON,
+        ],
+    )
+    .await;
+    let denied_reference = fixture.dispatch_reference(&denied);
+    let Err(denial) = denied_reference.outcome.as_ref() else {
+        panic!("expected typed Rights failure");
+    };
+    assert_eq!(denial.code, i32::from(SabiErrorCode::Rights));
+}
+
+/// Application lifecycle family (W35-P11, 移交#11 前片): the NL forms
+/// derive the command identity from the package id, the deterministic
+/// application executor answers both arms, and all four paths agree
+/// byte-for-byte. The `denied`-prefixed disable pins the typed Rights
+/// shape across direct, CLI, and GUI.
+#[tokio::test(flavor = "multi_thread")]
+async fn application_family_receipts_are_byte_identical_across_direct_nl_cli_and_gui_paths() {
+    let (fixture, key, principal) = ParityFixture::spawn("app", 0x77);
+    fixture.serve();
+    let package_hex = hex(&APPLICATION_PACKAGE_ID);
+    let generation = APPLICATION_CAS.to_string();
+
+    let disable_sentences = [
+        format!("disable application {package_hex} expecting {generation}"),
+        format!("禁用 应用 {package_hex} 期望 {generation}"),
+    ];
+    let disable = ControlCommand::DisableApplication {
+        control_command_id: APPLICATION_PACKAGE_ID,
+        package_id: APPLICATION_PACKAGE_ID,
+        expected_generation_or_revision: APPLICATION_CAS,
+        reason: NL_DISABLE_REASON.to_owned(),
+    };
+    parity(
+        &fixture,
+        &key,
+        principal,
+        "disable-application",
+        &disable,
+        disable_sentences
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .as_slice(),
+        &[
+            "disable-application",
+            &package_hex,
+            &package_hex,
+            &generation,
+            NL_DISABLE_REASON,
+        ],
+    )
+    .await;
+    let disable_reference = fixture.dispatch_reference(&disable);
+    let ControlOutcome::ApplicationDisabled { receipt_id } =
+        disable_reference.outcome.as_ref().unwrap()
+    else {
+        panic!("expected an application-disabled receipt");
+    };
+    assert_eq!(receipt_id.as_slice(), &application_receipt(7));
+
+    let uninstall_sentences = [
+        format!("uninstall application {package_hex} expecting {generation}"),
+        format!("卸载应用 {package_hex} 期望 {generation}"),
+    ];
+    let uninstall = ControlCommand::UninstallApplication {
+        control_command_id: APPLICATION_PACKAGE_ID,
+        package_id: APPLICATION_PACKAGE_ID,
+        expected_generation_or_revision: APPLICATION_CAS,
+        reason: NL_UNINSTALL_REASON.to_owned(),
+    };
+    parity(
+        &fixture,
+        &key,
+        principal,
+        "uninstall-application",
+        &uninstall,
+        uninstall_sentences
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .as_slice(),
+        &[
+            "uninstall-application",
+            &package_hex,
+            &package_hex,
+            &generation,
+            NL_UNINSTALL_REASON,
+        ],
+    )
+    .await;
+    let uninstall_reference = fixture.dispatch_reference(&uninstall);
+    let ControlOutcome::ApplicationUninstalled { receipt_id } =
+        uninstall_reference.outcome.as_ref().unwrap()
+    else {
+        panic!("expected an application-uninstalled receipt");
+    };
+    assert_eq!(receipt_id.as_slice(), &application_receipt(8));
+
+    // Typed Rights shape on direct, CLI, and GUI paths: a denied disable.
+    let denied = ControlCommand::DisableApplication {
+        control_command_id: DENIED_COMMAND_ID,
+        package_id: APPLICATION_PACKAGE_ID,
+        expected_generation_or_revision: APPLICATION_CAS,
+        reason: DENIED_REASON.to_owned(),
+    };
+    parity(
+        &fixture,
+        &key,
+        principal,
+        "disable-application-denied",
+        &denied,
+        &[],
+        &[
+            "disable-application",
+            &hex(&DENIED_COMMAND_ID),
+            &package_hex,
+            &generation,
             DENIED_REASON,
         ],
     )

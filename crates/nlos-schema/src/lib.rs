@@ -102,12 +102,15 @@ const SABI_SYSTEM_CONTROL_V1: SchemaDescriptor = SchemaDescriptor {
     // recorded the W28-C-3b additive resource-domain extension (ADR-0017 G8:
     // ResourceCommitRecovery view 3, RecoveryFailureAuthority.Resource 6,
     // the Resource recovery snapshot messages, and oneof entries 17..=18);
-    // minor 5 records the W32-G additive per-layer inspect views (B5-3:
+    // minor 5 recorded the W32-G additive per-layer inspect views (B5-3:
     // TaskGroup/TaskNode/ExecutionFiber/Topic/Operation views 4..=8, the
     // GetSystemControlRequest addressing fields 4..=6, and the per-layer
-    // snapshot messages) under the ADR-0014 freeze rules. The entry stays
-    // frozen.
-    minor: 5,
+    // snapshot messages); minor 6 records the W35-P11 additive
+    // application-lifecycle command arms (移交#11 前片:
+    // DisableApplicationCommand/UninstallApplicationCommand oneof entries
+    // 19..=20, empty payloads over the shared package-identity addressing)
+    // under the ADR-0014 freeze rules. The entry stays frozen.
+    minor: 6,
     supported_critical_extensions: &[],
     frozen: true,
 };
@@ -740,7 +743,7 @@ pub fn system_control_schema_identity() -> sabi::v1::SchemaIdentity {
     sabi::v1::SchemaIdentity {
         name: SABI_SYSTEM_CONTROL_SCHEMA.to_owned(),
         major: 1,
-        minor: 5,
+        minor: 6,
         critical_extension_ids: Vec::new(),
         non_critical_extension_ids: Vec::new(),
     }

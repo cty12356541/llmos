@@ -83,7 +83,9 @@ const USAGE: &str = "usage: system-control-cli <SOCKET> inspect-health \
  | cancel-operation <COMMAND_ID_HEX_32> <TARGET_ID_HEX_32> <EXPECTED_REVISION> <REASON> \
  | kill-operation <COMMAND_ID_HEX_32> <TARGET_ID_HEX_32> <EXPECTED_REVISION> <REASON> \
  | throttle-operation <COMMAND_ID_HEX_32> <TARGET_ID_HEX_32> <PERCENT_1_TO_100> <EXPECTED_REVISION> <REASON> \
- | reclaim-operation <COMMAND_ID_HEX_32> <TARGET_ID_HEX_32> <EXPECTED_REVISION> <REASON>";
+ | reclaim-operation <COMMAND_ID_HEX_32> <TARGET_ID_HEX_32> <EXPECTED_REVISION> <REASON> \
+ | disable-application <COMMAND_ID_HEX_32> <PACKAGE_ID_HEX_32> <EXPECTED_GENERATION> <REASON> \
+ | uninstall-application <COMMAND_ID_HEX_32> <PACKAGE_ID_HEX_32> <EXPECTED_GENERATION> <REASON>";
 
 #[cfg(unix)]
 fn parse_u64(value: &str) -> Result<u64, ControlError> {
@@ -250,6 +252,20 @@ fn parsed_command(arguments: &[String]) -> Result<ControlCommand, ControlError> 
             expected_generation_or_revision: parse_u64(&arguments[3])?,
             reason: arguments[4].clone(),
         }),
+        "disable-application" if arguments.len() == 5 => Ok(ControlCommand::DisableApplication {
+            control_command_id: parse_hex_id(&arguments[1])?,
+            package_id: parse_hex_id(&arguments[2])?,
+            expected_generation_or_revision: parse_u64(&arguments[3])?,
+            reason: arguments[4].clone(),
+        }),
+        "uninstall-application" if arguments.len() == 5 => {
+            Ok(ControlCommand::UninstallApplication {
+                control_command_id: parse_hex_id(&arguments[1])?,
+                package_id: parse_hex_id(&arguments[2])?,
+                expected_generation_or_revision: parse_u64(&arguments[3])?,
+                reason: arguments[4].clone(),
+            })
+        }
         _ => Err(ControlError::InvalidCommand("unknown operation or arity")),
     }
 }
@@ -428,6 +444,16 @@ fn summary(receipt: &ControlReceipt) -> String {
         Ok(ControlOutcome::OperationReclaimed { receipt_id }) => {
             format!("outcome=operation_reclaimed receipt_id={}", hex(receipt_id))
         }
+        Ok(ControlOutcome::ApplicationDisabled { receipt_id }) => {
+            format!(
+                "outcome=application_disabled receipt_id={}",
+                hex(receipt_id)
+            )
+        }
+        Ok(ControlOutcome::ApplicationUninstalled { receipt_id }) => format!(
+            "outcome=application_uninstalled receipt_id={}",
+            hex(receipt_id)
+        ),
         Err(failure) => format!(
             "outcome=failure code={} retry={} message={}",
             failure.code, failure.retry, failure.safe_message,

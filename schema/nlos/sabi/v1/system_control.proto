@@ -425,6 +425,15 @@ message ThrottleCommand {
 
 message ReclaimCommand {}
 
+// 移交#11 前片 (W35-P11): Application-layer lifecycle control arms. Both
+// keep the empty-payload contract — `target_id` addresses the 16-byte
+// package identity (application identity is authority-derived from it) and
+// the CAS expectation rides `expected_generation_or_revision` as the
+// application's current installation generation.
+message DisableApplicationCommand {}
+
+message UninstallApplicationCommand {}
+
 message ControlCommand {
   bytes control_command_id = 1;
   bytes issuer_principal_id = 2;
@@ -444,6 +453,8 @@ message ControlCommand {
     ReclaimCommand reclaim_operation = 16;
     AcknowledgeResourceRecoveryAlertCommand acknowledge_resource_recovery_alert = 17;
     ResumeResourceRecoveryCommand resume_resource_recovery = 18;
+    DisableApplicationCommand disable_application = 19;
+    UninstallApplicationCommand uninstall_application = 20;
   }
   string reason = 8;
 }

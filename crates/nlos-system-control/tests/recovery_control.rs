@@ -15,12 +15,13 @@ use nlos_ipc::{
 use nlos_schema::sabi::v1::{
     AcknowledgeArtifactRecoveryAlertCommand, AcknowledgeResourceRecoveryAlertCommand,
     AcknowledgeSemanticRecoveryAlertCommand, CallerIdentity, CancelCommand, CapabilityHandle,
-    ControlCommand, ControlCommandSource, ControlScope, Envelope, ExchangeRequest,
-    ExchangeResponse, GetSystemControlRequest, KillCommand, LocalEndpoint, LocalTransportKind,
-    NegotiateServiceRequest, PauseCommand, ReceiptReference, ReclaimCommand, ResumeCommand,
-    ResumeResourceRecoveryCommand, ResumeSemanticRecoveryCommand, RetryDirective, SabiErrorCode,
-    SabiFailure, SabiRequestContext, ServiceCandidate, ServiceVersion, SubmitControlCommandRequest,
-    SystemControlView, ThrottleCommand, control_command, envelope, negotiate_service_response,
+    ControlCommand, ControlCommandSource, ControlScope, DisableApplicationCommand, Envelope,
+    ExchangeRequest, ExchangeResponse, GetSystemControlRequest, KillCommand, LocalEndpoint,
+    LocalTransportKind, NegotiateServiceRequest, PauseCommand, ReceiptReference, ReclaimCommand,
+    ResumeCommand, ResumeResourceRecoveryCommand, ResumeSemanticRecoveryCommand, RetryDirective,
+    SabiErrorCode, SabiFailure, SabiRequestContext, ServiceCandidate, ServiceVersion,
+    SubmitControlCommandRequest, SystemControlView, ThrottleCommand, UninstallApplicationCommand,
+    control_command, envelope, negotiate_service_response,
 };
 use nlos_schema::{
     MethodSemantics, SABI_ENVELOPE_SCHEMA, SABI_SYSTEM_CONTROL_SCHEMA,
@@ -31,9 +32,10 @@ use nlos_schema::{
 };
 use nlos_service_directory::{ServiceRegistration, SnapshotDirectory};
 use nlos_system_control::{
-    GET_METHOD, OperationCommandExecutor, OperationControlRequest, RecoveryCounter, RecoveryGauge,
-    RecoveryHealthSource, RecoveryMetricsSink, RecoverySystemControl, SUBMIT_METHOD,
-    SYSTEM_CONTROL_SERVICE, SystemControlAuthorizer, resource_recovery_resume_reference,
+    ApplicationCommandExecutor, ApplicationControlRequest, GET_METHOD, OperationCommandExecutor,
+    OperationControlRequest, RecoveryCounter, RecoveryGauge, RecoveryHealthSource,
+    RecoveryMetricsSink, RecoverySystemControl, SUBMIT_METHOD, SYSTEM_CONTROL_SERVICE,
+    SystemControlAuthorizer, resource_recovery_resume_reference,
 };
 use nlos_task::{
     ArtifactPublicationExpectation, ArtifactRecoveryFailureRequest, ArtifactRecoveryFailureSource,
@@ -1065,6 +1067,182 @@ fn w29d_operation_arms_route_to_the_wired_executor_with_typed_receipts() {
             .filter(|entry| entry.arm != "throttle")
             .all(|entry| entry.throttle_percent.is_none())
     );
+}
+
+const APPLICATION_PACKAGE_ID: [u8; 16] = [0xE1; 16];
+const APPLICATION_COMMAND_ID: [u8; 16] = [0x67; 16];
+const APPLICATION_CAS: u64 = 3;
+
+fn application_submit_envelope(arm: control_command::Command) -> Envelope {
+    let submit = SubmitControlCommandRequest {
+        schema: Some(system_control_schema_identity()),
+        command: Some(ControlCommand {
+            control_command_id: APPLICATION_COMMAND_ID.to_vec(),
+            issuer_principal_id: vec![0x31; 16],
+            source: ControlCommandSource::Cli.into(),
+            scope: ControlScope::Operation.into(),
+            target_id: APPLICATION_PACKAGE_ID.to_vec(),
+            expected_generation_or_revision: APPLICATION_CAS,
+            command: Some(arm),
+            reason: "operator drives the application lifecycle".to_owned(),
+        }),
+    };
+    envelope(
+        SUBMIT_METHOD,
+        request_context(APPLICATION_COMMAND_ID.to_vec()),
+        encode_submit_control_command_request(&submit).unwrap(),
+    )
+}
+
+struct ExecutedApplication {
+    arm: &'static str,
+    package_id: [u8; 16],
+    expected_generation_or_revision: u64,
+    issuer_principal_id: [u8; 16],
+    idempotency_key: [u8; 16],
+    requested_at_ms: i64,
+}
+
+/// Deterministic application executor stub: records every request it serves,
+/// answers disable with a receipt, and refuses uninstall with a bounded
+/// failure (mirroring `RecordingOperationExecutor`'s cancel refusal).
+struct RecordingApplicationExecutor {
+    requests: std::sync::Mutex<Vec<ExecutedApplication>>,
+}
+
+impl RecordingApplicationExecutor {
+    fn receipt(arm_tag: u8) -> ReceiptId {
+        let mut id = APPLICATION_PACKAGE_ID;
+        id[0] = arm_tag;
+        ReceiptId::from_bytes(id)
+    }
+
+    fn record(&self, arm: &'static str, request: &ApplicationControlRequest) {
+        self.requests.lock().unwrap().push(ExecutedApplication {
+            arm,
+            package_id: request.package_id,
+            expected_generation_or_revision: request.expected_generation_or_revision,
+            issuer_principal_id: request.issuer_principal_id,
+            idempotency_key: request.idempotency_key,
+            requested_at_ms: request.requested_at_ms,
+        });
+    }
+}
+
+impl ApplicationCommandExecutor for RecordingApplicationExecutor {
+    fn disable_application(
+        &self,
+        request: ApplicationControlRequest,
+    ) -> Result<ReceiptId, SabiFailure> {
+        self.record("disable", &request);
+        Ok(Self::receipt(7))
+    }
+
+    fn uninstall_application(
+        &self,
+        request: ApplicationControlRequest,
+    ) -> Result<ReceiptId, SabiFailure> {
+        self.record("uninstall", &request);
+        Err(SabiFailure {
+            code: SabiErrorCode::State.into(),
+            retry: RetryDirective::DoNotRetry.into(),
+            safe_message: "stub executor refuses uninstalls".to_owned(),
+        })
+    }
+}
+
+#[test]
+fn application_commands_refuse_fail_closed_without_an_executor() {
+    let database = TestDatabase::new();
+    let authority = database.open();
+    let plan_id = create_escalated_plan(&authority);
+    let health = health(plan_id);
+    let control = RecoverySystemControl::new(&authority, &health, &CapabilityPolicy);
+    for arm in [
+        control_command::Command::DisableApplication(DisableApplicationCommand {}),
+        control_command::Command::UninstallApplication(UninstallApplicationCommand {}),
+    ] {
+        let response = control.handle_for_ipc(&application_submit_envelope(arm), 10, 6_000);
+        let Some(envelope::CommonContext::ResponseContext(context)) =
+            response.common_context.as_ref()
+        else {
+            panic!("expected response context");
+        };
+        let failure = context.failure.as_ref().unwrap();
+        assert_eq!(failure.code, i32::from(SabiErrorCode::NotFound));
+        assert_eq!(failure.retry, i32::from(RetryDirective::DoNotRetry));
+        assert_eq!(
+            failure.safe_message,
+            "application control execution backend is not wired"
+        );
+        assert!(context.receipts.is_empty());
+    }
+}
+
+/// W35-P11 arms through the application seam: the disable wire command
+/// carries its typed receipt id back, the executor rejection crosses as the
+/// bounded failure it produced, and every request field (package identity,
+/// installation-generation CAS, issuer, idempotency key, wall clock) is
+/// forwarded intact.
+#[test]
+fn w35p11_application_arms_route_to_the_wired_executor_with_typed_receipts() {
+    let database = TestDatabase::new();
+    let authority = database.open();
+    let plan_id = create_escalated_plan(&authority);
+    let health = health(plan_id);
+    let executor = RecordingApplicationExecutor {
+        requests: std::sync::Mutex::new(Vec::new()),
+    };
+    let control = RecoverySystemControl::new(&authority, &health, &CapabilityPolicy)
+        .with_application_executor(&executor);
+
+    let disable = control.handle_for_ipc(
+        &application_submit_envelope(control_command::Command::DisableApplication(
+            DisableApplicationCommand {},
+        )),
+        10,
+        6_000,
+    );
+    let result = decode_control_command_result(&disable.payload).unwrap();
+    assert_eq!(result.control_command_id, APPLICATION_COMMAND_ID.to_vec());
+    assert_eq!(
+        result.receipt.unwrap().receipt_id,
+        RecordingApplicationExecutor::receipt(7)
+            .into_bytes()
+            .to_vec()
+    );
+    validate_sabi_response_context(&disable, MethodSemantics::MUTATION).unwrap();
+
+    let uninstall = control.handle_for_ipc(
+        &application_submit_envelope(control_command::Command::UninstallApplication(
+            UninstallApplicationCommand {},
+        )),
+        10,
+        6_000,
+    );
+    let Some(envelope::CommonContext::ResponseContext(context)) = uninstall.common_context.as_ref()
+    else {
+        panic!("expected response context");
+    };
+    let failure = context.failure.as_ref().unwrap();
+    assert_eq!(failure.code, i32::from(SabiErrorCode::State));
+    assert_eq!(failure.retry, i32::from(RetryDirective::DoNotRetry));
+    assert_eq!(failure.safe_message, "stub executor refuses uninstalls");
+    assert!(uninstall.payload.is_empty());
+    assert!(context.receipts.is_empty());
+
+    let requests = executor.requests.lock().unwrap();
+    assert_eq!(
+        requests.iter().map(|entry| entry.arm).collect::<Vec<_>>(),
+        vec!["disable", "uninstall"]
+    );
+    for entry in requests.iter() {
+        assert_eq!(entry.package_id, APPLICATION_PACKAGE_ID);
+        assert_eq!(entry.expected_generation_or_revision, APPLICATION_CAS);
+        assert_eq!(entry.issuer_principal_id, [0x31; 16]);
+        assert_eq!(entry.idempotency_key, APPLICATION_COMMAND_ID);
+        assert_eq!(entry.requested_at_ms, 6_000);
+    }
 }
 
 #[test]
