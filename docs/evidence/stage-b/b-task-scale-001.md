@@ -454,3 +454,37 @@ checkpoint/rehydrate benchmark (full, single platform): nodes=5000 input_bytes=6
 2. `RebuildableCache`/`DegradeBackgroundQos`/`Kill` 三相在 `nlos-task` 无真实面（`face_absent` 如实报告）；cache/QoS 面分别依赖 W31-E 之后的 Context 面与调度车道。
 3. reclaim 驱动为 controller-loop 语义（逐受害者线性化，非单事务 CAS）；需要跨权威原子性时应由上层 controller 编排，本面不虚构 fence。
 4. 基准数字为 debug/test profile 单平台；release profile、多平台与更长 input payload 矩阵未做（G2/G5 正式 gate 复测口径不变）。
+
+## 15. W36-P8：reclaim × residency 互连 + 100K@50% 与回收再入场（C-PLAN-HARDEN 移交#8）
+
+> 对应：W31-G §8.2.5 / §8.2.7（矩阵半边）；实现分支 `feat/w36-p8`。apply consult / PINNED / 调度器探针见 [B-PLAN-001](b-plan-001-declaration-surface.md) §13。
+>
+> 状态：`PASS`（本切片范围）；100K@50% 为 `#[ignore]` 可复跑 cell。
+
+### 15.1 Task reclaim × plan residency（闭合 §14 缺口 #1）
+
+Task 面 `drive_working_set_reclaim` 仍只关 permit。新增缝：
+
+- `SqliteTaskAuthority::reclaim_residency_victims`（`nlos-task` `materialization.rs`）：按驱逐序暴露 `(task_id, permit_id)`。
+- `SqlitePlanAuthority::apply_reclaim_residency`：对绑定 plan node 走一步驱逐（HOT→WARM）；PINNED 受害者 typed `PinnedNodeNotEvictable`，plan 账本不静默下行。
+
+1:1 `task_id → node` 绑定为组装器/测试所有（与 apply-admission consult 映射同姿态）。测试 `crates/nlos-plan/tests/reclaim_residency.rs` — 2 passed。
+
+### 15.2 比例矩阵 100K@50% + 回收再入场（§8.2.7 / 原 §13 缺口）
+
+`CELL_100K_50PCT`（`max_active_working_set=50_000`）加入声明矩阵（9 cell）。`run_working_set_ratio_matrix_cell` 在 cap 填满后 `drive_working_set_reclaim` 再对未占用 population 成员重新入场：occupancy 必须先降后升，不再只单调填充。默认套件 500-population smoke 三比例覆盖该动态。
+
+100K@50% 实跑命令（`#[ignore]`，debug/test，单平台 macOS）：
+
+```sh
+cargo test -p nlos-task --test working_set_ratio_probe --offline \
+  -- --ignored --nocapture one_hundred_thousand_population_fifty_percent_ratio_matrix_and_reentry
+```
+
+平台：macOS arm64，debug/test profile，`CARGO_TARGET_DIR=/tmp/nlos-w36-p8-target`。ignore：是。本切片已实跑（97.61s）：
+
+```text
+W31-B ratio matrix cell task-ratio-100k-50pct (single platform): population=100000 ratio=50% active=50000 threshold=45000 published_within=false register_total=36.795725125s attempts_total=7.370871458s fill_total=43.053389209s fill_p50=772.834µs fill_p95=1.227042ms fill_max=34.565583ms inspect_empty=440.875µs inspect_at_threshold=Some(714µs) inspect_at_threshold_plus_one=Some(755.791µs) inspect_at_cap=Some(763.458µs) consult_empty=10.667µs consult_below_cap=Some(703.5µs) consult_ws_saturated=744.167µs consult_tn_saturated=728.917µs deny_latency=1.014084ms replay_latency=233.708µs reclaim_total=2.971261s reenter_total=7.2792665s reclaim_pre=50000 reclaim_post=45000 database_bytes=117952512 rss_before=Some(2408448) rss_after=Some(14483456)
+```
+
+occupancy 动态：fill 到 50_000 → reclaim 到 45_000 → reenter 回到 50_000。published `TASK_PROFILE_100K` 对该占用 fail-closed（`published_within=false`），与超比例探测口径一致。

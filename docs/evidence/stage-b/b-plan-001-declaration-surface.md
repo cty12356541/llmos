@@ -632,3 +632,45 @@ G3 三条件结构化（`tests/structured_conditions.rs`，5 passed）：
 - **`cargo test --workspace`：未运行**——派工单 MUST NOT（波次屏障由控制器收口；并行车道持 nlos-task/nlos-process 写集）。
 - **三平台 CI / MSRV：未运行**——待 push 后 CI 触发。
 - **release profile 复测：未运行**——本 lane 无 benchmark 声明，沿 §9 口径不涉及。
+
+## 13. W36-P8：apply 侧 admission consult + PINNED overlay + 调度器规模探针（C-PLAN-HARDEN 移交#8）
+
+> 对应：W31-G §8.2.4 / §8.2.6 / §8.2.7（调度器半边）；实现分支 `feat/w36-p8`（worktree `llmos-w36-p8`）。reclaim×residency 与 100K@50% 矩阵见 [B-TASK-SCALE-001](b-task-scale-001.md) §15。
+>
+> 状态：`PASS`（本切片范围，带 PINNED 台账边界）；未 push。
+
+### 13.1 apply 侧 TaskNode 维 admission consult（§8.2.4）
+
+声明面 gated apply `SqlitePlanAuthority::apply_plan_revision_with_admission` 在写入前 consult 店面级 projected `plan_nodes` 人口（既有行 + 本修订新 key）。Task 侧 `SqliteTaskAuthority::answer_plan_declaration` 只读回答 `max_task_nodes` 维。超档 typed `DeclarationAdmissionDenied` 且零 durable 行；consult 故障 `DeclarationConsultUnavailable` fail-closed；幂等重放与无增长 reshape 绕过 consult。plain `apply_plan_revision` 面保持咨询无关。
+
+测试：`crates/nlos-plan/tests/apply_admission.rs` — 6 passed（deny 零副作用、replay 绕过、店面级累积、跨 plan 累积、consult 故障 fail-closed、plain/gated 交错）。
+
+### 13.2 PINNED overlay 最小档（§8.2.6）
+
+schema v7 additive：`plan_nodes.pinned` / `pin_transition_count` + 写一次 `plan_node_pin_transitions`。PINNED 是 5 级 residency 轴上的 overlay，**不是**第六 `NodeResidencyTier` discriminant（写集外 `ContextResidencyTier` 映射保持可编译）。驱逐方向 residency 走迁对已 pin 节点 typed `PinnedNodeNotEvictable`；unpin 是降级路径，之后 HOT→WARM 恢复。
+
+测试：`crates/nlos-plan/tests/pinned.rs` — 4 passed。
+
+**本切片明确不做的 `[SCALE-PIN-001]` 台账（不得声称已落）：**
+
+- ResourceAllocation / owner 绑定
+- pin-reason
+- resident-bytes
+- rebuild-cost
+- expiry / renewal
+- release / fence procedure
+- SABI `ContextResidencyTier::Pinned` 线值
+- 独立 bulkhead / 规模等级降级
+
+### 13.3 调度器自身规模探针（§8.2.7 / 原 §11.5 缺口）
+
+`tests/scheduler_scale_probe.rs`：独立节点 ready-FIFO select + 全窗 drive。默认套件 48 节点 smoke 每跑；10K `#[ignore]` 可复跑。
+
+平台：macOS arm64，debug/test profile，`CARGO_TARGET_DIR=/tmp/nlos-w36-p8-target`。
+
+```text
+cargo test -p nlos-plan --test scheduler_scale_probe --offline -- --ignored --nocapture
+W36-P8 scheduler scale probe (single platform): nodes=10000 apply_total=433.194542ms select_total=72.26775ms drive_total=11.815111291s selected=10000 approved=10000
+```
+
+未跑 100K 调度器扫描（§11.5 原登记的 N 次 `unresolved_dependencies` 吞吐仍以 10K 为可复跑上限）。release / 多平台未跑。
