@@ -12,7 +12,7 @@
 |---|---|---|
 | `claims.yaml` | 需求→状态→证据的 Release Claim 台账 | 只登记 [stage-b-progress §3/§4/§6](./stage-b-progress.md) 已断言的事实；全量回填等六门 Evidence 齐 |
 | `risks.yaml` | 风险台账（[README §9](./README.md#9-风险管理) 九类） | 现状可稀疏，诚实优先 |
-| `evidence-index.yaml` | `docs/evidence/stage-b/` 全量索引 | 与目录**双向一致**（lint 检查） |
+| `evidence-index.yaml` | `docs/evidence/<stage>/` 全量索引（v2 扩域：任意 stage 目录；v1 曾限定 stage-b） | 与目录**双向一致**（lint 检查） |
 
 ## 2. 引用文法（三种 refs 共用）
 
@@ -31,7 +31,7 @@
 | `status` | ✓ | `DONE` `PARTIAL_PASS` `IN_PROGRESS` `READY` `BLOCKED` `NOT_STARTED`（stage-b-progress §2） | `PARTIAL_PASS` 只能声称 Evidence 覆盖的局部范围 |
 | `implementation_refs` | ✓ | list[str]，可空 | 路径或 commit 串 |
 | `test_refs` | ✓ | list[str]，可空 | 路径或 commit 串 |
-| `evidence_refs` | ✓ | list[str]，可空 | **只允许** `docs/evidence/stage-b/` 下已被索引的路径 |
+| `evidence_refs` | ✓ | list[str]，可空 | **只允许** `docs/evidence/<stage>/` 下已被索引的路径（v2 扩域） |
 | `assurance` | ✓ | `DESIGN` `H0`–`H8` | v0.5 §47 证据阶梯；`DESIGN`=仅有设计 |
 | `limitations` | ✓ | list[str] | `status=PARTIAL_PASS` 时必须非空 |
 | `source` | ✓ | str，非空 | 断言出处（stage-b-progress §3/§6 行 + 基线 commit），防无出处发明 claim |
@@ -54,7 +54,7 @@
 | 字段 | 必填 | 类型/枚举 | 说明 |
 |---|---|---|---|
 | `id` | ✓ | str，唯一 | 取文件名 stem |
-| `path` | ✓ | str，唯一 | `docs/evidence/stage-b/<file>`，必须存在 |
+| `path` | ✓ | str，唯一 | `docs/evidence/<stage>/<file>`，必须存在（v2 扩域） |
 | `title` | ✓ | str | 证据文件 H1 |
 | `scope` | ✓ | str | 一行范围（v1 取标题释义句） |
 | `assurance` | ✓ | `POC` `H0`–`H8` | 该工件可支撑的**最高** claim 等级（保守评定；不可为 `DESIGN`） |
@@ -68,7 +68,7 @@
 2. `assurance≠DESIGN` ⇒ `evidence_refs` ≥ 1 条，且 `rank(assurance) ≤ max(rank(被引索引条目))`；
 3. 全部 refs 可解析（路径存在/commit 形状合法；evidence_refs 须已在索引中）；
 4. 枚举合法、必填字段齐、无未知字段（FROZEN）、ID 唯一；
-5. 索引与 `docs/evidence/stage-b/` 目录双向一致。
+5. 索引与 `docs/evidence/<stage>/` 目录双向一致（v2 扩域，additive：v1 行为对 stage-b 不变）。
 
 lint 退出码：0=PASS，1=任何 ERROR；发现按文件逐条打印。
 

@@ -25,7 +25,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 CLAIMS_PATH = "docs/management/claims.yaml"
 RISKS_PATH = "docs/management/risks.yaml"
 INDEX_PATH = "docs/management/evidence-index.yaml"
-EVIDENCE_DIR = "docs/evidence/stage-b"
+EVIDENCE_ROOT = "docs/evidence"  # v2: 扩域任意 stage 目录(stage-b/stage-c/...);v1 曾限定 stage-b
 
 CLAIM_STATUSES = {"DONE", "PARTIAL_PASS", "IN_PROGRESS", "READY", "BLOCKED", "NOT_STARTED"}
 CLAIM_ASSURANCES = {"DESIGN", "H0", "H1", "H2", "H3", "H4", "H5", "H6", "H7", "H8"}
@@ -199,8 +199,8 @@ def _check_ref_list(where: str, refs, field: str, root: Path, index_paths: set,
             findings.append(("ERROR", where, f"{field} 含非字符串/空引用"))
             continue
         if evidence_only:
-            if not ref.startswith(EVIDENCE_DIR + "/"):
-                findings.append(("ERROR", where, f"evidence_refs 越界（仅允许 {EVIDENCE_DIR}/）: {ref}"))
+            if not ref.startswith(EVIDENCE_ROOT + "/"):
+                findings.append(("ERROR", where, f"evidence_refs 越界（仅允许 {EVIDENCE_ROOT}/<stage>/）: {ref}"))
             elif ref not in index_paths:
                 findings.append(("ERROR", where, f"evidence_refs 未收录进 evidence-index: {ref}"))
             else:
@@ -344,8 +344,8 @@ def check_index(index, root: Path, findings: list):
         if path in seen_paths:
             findings.append(("ERROR", where, f"path 重复: {path}"))
         seen_paths.add(path)
-        if not path.startswith(EVIDENCE_DIR + "/") or not path.endswith(".md"):
-            findings.append(("ERROR", where, f"path 必须形如 {EVIDENCE_DIR}/<file>.md: {path}"))
+        if not re.fullmatch(rf"{EVIDENCE_ROOT}/[\w.-]+/[^/].*\.md", path):
+            findings.append(("ERROR", where, f"path 必须形如 {EVIDENCE_ROOT}/<stage>/<file>.md: {path}"))
         elif not (root / path).is_file():
             findings.append(("ERROR", where, f"path 指向不存在的文件: {path}"))
         if e["assurance"] not in EVIDENCE_ASSURANCES:
@@ -355,8 +355,10 @@ def check_index(index, root: Path, findings: list):
         if not isinstance(e["date"], str) or not DATE_RE.match(e["date"]):
             findings.append(("ERROR", where, f"date 必须为 YYYY-MM-DD: {e['date']!r}"))
     # (d) 目录双向一致(递归含子目录,如 reviews/)
-    on_disk = {f"{EVIDENCE_DIR}/{p.relative_to(root / EVIDENCE_DIR)}" for p in sorted((root / EVIDENCE_DIR).rglob("*.md"))} \
-        if (root / EVIDENCE_DIR).is_dir() else set()
+    on_disk = set()
+    if (root / EVIDENCE_ROOT).is_dir():
+        for p in sorted((root / EVIDENCE_ROOT).rglob("*.md")):
+            on_disk.add(p.relative_to(root).as_posix())
     for missing_in_index in sorted(on_disk - seen_paths):
         findings.append(("ERROR", "evidence-index", f"目录文件未收录: {missing_in_index}"))
     for orphan in sorted(seen_paths - on_disk):
@@ -406,7 +408,7 @@ def run(root: Path) -> tuple[list, dict]:
     stats["claims"] = check_claims(claims, root, index_paths, rank_by_path, findings) if claims is not None else {}
     stats["risks"] = check_risks(risks, root, index_paths, findings) if risks is not None else {}
     stats["index"] = len(index) if isinstance(index, list) else 0
-    stats["on_disk"] = len(list((root / EVIDENCE_DIR).rglob("*.md"))) if (root / EVIDENCE_DIR).is_dir() else 0
+    stats["on_disk"] = len(list((root / EVIDENCE_ROOT).rglob("*.md"))) if (root / EVIDENCE_ROOT).is_dir() else 0
     return findings, stats
 
 
