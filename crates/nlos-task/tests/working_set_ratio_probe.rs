@@ -4,7 +4,7 @@
 //! 矩阵（诚实档位选择，全部为显式声明常量）：
 //!
 //! - 10K population × {1%, 10%, 50%} active → 工作集 100 / 1000 / 5000；
-//! - 100K population × {1%, 10%} active → 工作集 1000 / 10000；
+//! - 100K population × {1%, 10%, 50%} active → 工作集 1000 / 10000 / 50000；
 //! - 默认套件另有 500 population 三比例 smoke（同一管线，小规模全断言）。
 //!
 //! 口径（ADR-0016 决定 4 维度纪律，沿 W31-A §10.7 词汇规则）：
@@ -16,7 +16,7 @@
 //!    （`max_task_registrations == population`，两声明维度同量级）；声明
 //!    `TaskNode`（`plan_nodes`）维度的 10K/100K 数字归 W31-D
 //!    （`nlos-plan` `tasknode_scale_probe.rs`），两口径不混写。
-//! 3. **超过已发布档 ~5% 工作集姿态的 cell（10K@10%/50%、100K@10%）是
+//! 3. **超过已发布档 ~5% 工作集姿态的 cell（10K@10%/50%、100K@10%/50%）是
 //!    对 admission 机制的刻意超比例探测**：每 cell 用显式 per-cell
 //!    `ScaleProfile`（`max_active_working_set == population × ratio`）；
 //!    已发布 `TASK_PROFILE_10K`/`TASK_PROFILE_100K` 本身在该占用上必须
@@ -44,6 +44,7 @@
 //!
 //! 实测数字原样誊录进 `docs/evidence/stage-b/b-task-scale-001.md` §13。
 
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -53,8 +54,8 @@ use nlos_task::{
     AttemptSpec, Authorities, DEFAULT_RECLAIM_THRESHOLD_RATIO, MaterializationAdmissionFacts,
     PermitDecision, PermitRequest, ReclaimPhase, ScaleProfile, SnapshotBundle, SqliteTaskAuthority,
     TASK_PROFILE_10K, TASK_PROFILE_100K, TaskSpec, TaskStoreError, WorkingSetPressureSnapshot,
-    WorkingSetReclaimAdvisory, WorkingSetReclaimExecution, WorkingSetReclaimOutcome,
-    empty_effect_history_root, enforce_working_set_admission,
+    WorkingSetReclaimAdvisory, WorkingSetReclaimExecution, WorkingSetReclaimExecutionRequest,
+    WorkingSetReclaimOutcome, empty_effect_history_root, enforce_working_set_admission,
 };
 use nlos_types::{
     CancellationScopeId, Generation, IdempotencyKey, TaskAttemptId, TaskId, TaskSnapshotId,
@@ -123,6 +124,14 @@ static CELL_100K_10PCT: ScaleProfile = ScaleProfile {
     max_task_nodes: 100_000,
     max_task_registrations: 100_000,
     max_active_working_set: 10_000,
+    reclaim_threshold_ratio: Some(DEFAULT_RECLAIM_THRESHOLD_RATIO),
+};
+
+static CELL_100K_50PCT: ScaleProfile = ScaleProfile {
+    profile_id: "task-ratio-100k-50pct",
+    max_task_nodes: 100_000,
+    max_task_registrations: 100_000,
+    max_active_working_set: 50_000,
     reclaim_threshold_ratio: Some(DEFAULT_RECLAIM_THRESHOLD_RATIO),
 };
 
@@ -509,6 +518,7 @@ fn run_working_set_ratio_matrix_cell(cell: &MatrixCell, print: bool) {
     let mut inspect_at_threshold_plus_one = None;
     let mut inspect_at_cap = None;
     let mut consult_below_cap = None;
+    let mut last_execution = None;
     for ordinal in 0..active {
         let projected = ordinal + 1;
         let started = Instant::now();
@@ -587,6 +597,7 @@ fn run_working_set_ratio_matrix_cell(cell: &MatrixCell, print: bool) {
             inspect_at_threshold_plus_one = Some(started.elapsed());
         }
         if projected == active {
+            last_execution = decision.reclaim_execution;
             let started = Instant::now();
             assert_eq!(
                 authority
@@ -688,6 +699,58 @@ fn run_working_set_ratio_matrix_cell(cell: &MatrixCell, print: bool) {
     assert!(replay.reclaim_execution.is_none());
     assert!(replay.reclaim_outcome.is_none());
 
+    // -- Reclaim then re-enter: occupancy must not only monotonically fill
+    //    (W36-P8; W31-G §8.2.7). Drive the cap issuance's warrant, then
+    //    issue on unused population members until occupancy rises again.
+    let execution = last_execution.expect("cap issuance surfaces a reclaim warrant");
+    let reclaim_started = Instant::now();
+    let reclaim_report = authority
+        .drive_working_set_reclaim(WorkingSetReclaimExecutionRequest {
+            execution,
+            executed_at_ms: 8_000,
+        })
+        .expect("drive reclaim after cap fill");
+    let reclaim_elapsed = reclaim_started.elapsed();
+    assert!(
+        reclaim_report.post_active_count < reclaim_report.pre_active_count,
+        "reclaim must drop occupancy"
+    );
+    assert_eq!(reclaim_report.pre_active_count, active);
+    assert_eq!(reclaim_report.post_active_count, threshold);
+
+    let used: HashSet<u64> = (0..active)
+        .map(|ordinal| sample_position(ordinal, population, active))
+        .collect();
+    let reenter = reclaim_report.pre_active_count - reclaim_report.post_active_count;
+    let unused: Vec<u64> = (0..population)
+        .filter(|index| !used.contains(index))
+        .take(usize::try_from(reenter).expect("reenter fits usize"))
+        .collect();
+    assert_eq!(unused.len() as u64, reenter);
+
+    let reenter_started = Instant::now();
+    for index in unused {
+        authority
+            .register_attempt(attempt_spec(index))
+            .expect("register reentry attempt");
+        let decision = authority
+            .request_commit_permit_decision_with_authorities_struct(
+                Authorities::default(),
+                permit_request(index, 0x50),
+            )
+            .expect("reentry issuance");
+        assert_issued(decision.permit, index);
+    }
+    let reenter_elapsed = reenter_started.elapsed();
+    let after_reenter = authority
+        .inspect_working_set_pressure()
+        .expect("inspect after reentry");
+    assert!(
+        after_reenter.active_count > reclaim_report.post_active_count,
+        "reentry must raise occupancy after reclaim"
+    );
+    assert_eq!(after_reenter.active_count, active);
+
     let rss_after = sample_rss_bytes();
     drop(authority);
     let database_bytes = file_size(&database.path);
@@ -709,11 +772,15 @@ fn run_working_set_ratio_matrix_cell(cell: &MatrixCell, print: bool) {
              consult_ws_saturated={consult_ws_elapsed:?} \
              consult_tn_saturated={consult_tn_elapsed:?} \
              deny_latency={deny_elapsed:?} replay_latency={replay_elapsed:?} \
+             reclaim_total={reclaim_elapsed:?} reenter_total={reenter_elapsed:?} \
+             reclaim_pre={:?} reclaim_post={:?} \
              database_bytes={database_bytes} \
              rss_before={rss_before:?} rss_after={rss_after:?}",
             fill_latencies[fill_latencies.len() / 2],
             percentile(&fill_latencies, 9_500),
             fill_latencies[fill_latencies.len() - 1],
+            reclaim_report.pre_active_count,
+            reclaim_report.post_active_count,
         );
     }
 }
@@ -724,7 +791,12 @@ fn matrix_cells_declare_exact_ratios_and_published_tier_anchors() {
     cells.extend(SMOKE_CELLS);
     cells.extend(TEN_K_CELLS);
     cells.extend(HUNDRED_K_CELLS);
-    assert_eq!(cells.len(), 8);
+    cells.push(MatrixCell {
+        profile: &CELL_100K_50PCT,
+        population: 100_000,
+        ratio_percent: 50,
+    });
+    assert_eq!(cells.len(), 9);
 
     for cell in cells {
         let profile = cell.profile;
@@ -790,4 +862,17 @@ fn one_hundred_thousand_population_ratio_matrix_admits_correctly() {
     for cell in HUNDRED_K_CELLS {
         run_working_set_ratio_matrix_cell(&cell, true);
     }
+}
+
+#[test]
+#[ignore = "explicit W36-P8 100K@50% working-set ratio cell + reclaim-reentry (W31-G §8.2.7)"]
+fn one_hundred_thousand_population_fifty_percent_ratio_matrix_and_reentry() {
+    run_working_set_ratio_matrix_cell(
+        &MatrixCell {
+            profile: &CELL_100K_50PCT,
+            population: 100_000,
+            ratio_percent: 50,
+        },
+        true,
+    );
 }
