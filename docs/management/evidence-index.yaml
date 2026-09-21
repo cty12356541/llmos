@@ -232,6 +232,12 @@
   scope: "Wasmtime/WASI 与独立 host Process 隔离对比实验"
   assurance: POC
   date: "2026-08-29"
+- id: b-scale-release-001
+  path: docs/evidence/stage-b/b-scale-release-001.md
+  title: "B-SCALE-RELEASE-001：release-profile 多平台规模重测管线 + 首批同机对照数字（移交#5 前片）"
+  scope: "release 规模探针 CI 管线（三 OS 矩阵）+ 五探针家族同机 release↔debug 首批数字与校准裁决"
+  assurance: H3
+  date: "2026-09-21"
 - id: b-schema-001-protobuf-envelope
   path: docs/evidence/stage-b/b-schema-001-protobuf-envelope.md
   title: "B-SCHEMA-001：Protobuf 公共兼容信封初始证据"
