@@ -1522,7 +1522,7 @@ B6-1..B6-5 相互独立可并行 → ROAD-B-006
 11. Application 层控制面与生命周期 NL 动词（uninstall/disable application）；supervisor 自动 pid 发现/unregister；
 12. `restore_process` 复活链、干净退出终态路径、teardown 并发竞争面、teardown/NL kill 幂等键同源；
 13. TS/Python conformance 对 SABI v1.2–v1.5 新臂/新视图的 golden 钉死；
-14. 夜间 scale-probe 既有失败（自 2026-09-13，blocking_io_negative 探针）专项排查——已排查修复（[B-RUNTIME-002](../evidence/stage-b/b-runtime-002-fiber-scale.md) §6.18：根因为进程级线程读数 × libtest 默认并发的测量方法学缺陷 + 10K 档 `+2` 标定错误，本地双模式 3/3 绿；实际自 09-06 首夜即败，非 09-13；**PENDING 下一个 schedule run 复证**，分支 `fix/w34-scale-probe` 未 push）；
+14. 夜间 scale-probe 既有失败（自 2026-09-13，blocking_io_negative 探针）专项排查——已排查修复（[B-RUNTIME-002](../evidence/stage-b/b-runtime-002-fiber-scale.md) §6.18：根因为进程级线程读数 × libtest 默认并发的测量方法学缺陷 + 10K 档 `+2` 标定错误，本地双模式 3/3 绿；实际自 09-06 首夜即败，非 09-13；复证全绿闭合（2026-09-22：家族三例修复 + `--no-fail-fast` 可见性根除，dispatch run [35560466719](https://github.com/cty12356541/llmos/actions/runs/35560466719) 五 job 首全绿含 scale-probe 历史首绿，merge `ebbeddc`/`4df55d6`/`3d423c3`，§6.18.2.1-6.19）；
 15. 多 Cell / 分布式（阶段 C 本体）；Notification/Search 超最小面扩展；完整桌面（Task Space 全量枚举 IPC 面、五层 desktop 派发）；
 16. 真实硬件掉电与 M4/M6/M8 模型校准（层 3+）；
 17. 生产 signing key custody / enforcement-gateway reconciliation authority（ADR-0017 约束 4 的终态承载）。
