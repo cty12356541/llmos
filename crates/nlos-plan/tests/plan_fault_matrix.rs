@@ -121,7 +121,7 @@ fn revision_request(
 
 fn apply_revision_one(authority: &SqlitePlanAuthority) -> PlanRevisionDecision {
     authority
-        .apply_plan_revision(revision_request(None, vec![node(0x0a, 0x01)], 0x11))
+        .apply_plan_revision_ungated(revision_request(None, vec![node(0x0a, 0x01)], 0x11))
         .expect("apply revision 1")
 }
 
@@ -389,7 +389,7 @@ fn fault_kill9_after_apply_commit_keeps_prefix_and_replays_from_receipt() {
 
     // The caller continues honestly to revision 2.
     let second = authority
-        .apply_plan_revision(revision_request(
+        .apply_plan_revision_ungated(revision_request(
             Some(plan_id),
             vec![node(0x0a, 0x01), node(0x0b, 0x02)],
             0x12,
@@ -457,7 +457,7 @@ fn fault_io_error_on_apply_fails_closed_and_retry_succeeds() {
         code: FaultCode::IoErr,
     });
     let error = authority
-        .apply_plan_revision(revision_request(
+        .apply_plan_revision_ungated(revision_request(
             Some(plan_id),
             vec![node(0x0a, 0x01), node(0x0b, 0x02)],
             0x12,
@@ -487,7 +487,7 @@ fn fault_io_error_on_apply_fails_closed_and_retry_succeeds() {
     // Removing the fault makes the very same request succeed.
     nlos_store_fault::disarm();
     let retried = authority
-        .apply_plan_revision(revision_request(
+        .apply_plan_revision_ungated(revision_request(
             Some(plan_id),
             vec![node(0x0a, 0x01), node(0x0b, 0x02)],
             0x12,
@@ -526,7 +526,7 @@ fn fault_silent_write_loss_redo_applies_once_and_converges() {
 
     nlos_store_fault::arm(FaultMode::PowerLossAfter { remaining: 0 });
     let phantom = authority
-        .apply_plan_revision(revision_request(
+        .apply_plan_revision_ungated(revision_request(
             Some(plan_id),
             vec![node(0x0a, 0x01), node(0x0b, 0x02)],
             0x12,
@@ -554,7 +554,7 @@ fn fault_silent_write_loss_redo_applies_once_and_converges() {
 
     // The lost revision is redoable and applies exactly once.
     let redone = recovered
-        .apply_plan_revision(revision_request(
+        .apply_plan_revision_ungated(revision_request(
             Some(plan_id),
             vec![node(0x0a, 0x01), node(0x0b, 0x02)],
             0x12,

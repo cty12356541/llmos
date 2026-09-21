@@ -58,7 +58,7 @@ fn node(key: u8, payload: u8) -> PlanNodeDeclaration {
 
 fn first_plan(authority: &SqlitePlanAuthority) -> TaskPlanId {
     authority
-        .apply_plan_revision(ApplyPlanRevisionRequest {
+        .apply_plan_revision_ungated(ApplyPlanRevisionRequest {
             plan_id: None,
             nodes: vec![node(0x01, 0x11)],
             idempotency_key: IdempotencyKey::from_bytes([0x01; 16]),

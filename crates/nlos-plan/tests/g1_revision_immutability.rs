@@ -171,7 +171,7 @@ fn g1_executed_node_revision_cannot_be_rewritten_by_new_revision() {
     let root = Root::new("rewrite");
     let authority = SqlitePlanAuthority::open(&root.0).expect("open authority");
     let first = authority
-        .apply_plan_revision(revision_request(
+        .apply_plan_revision_ungated(revision_request(
             None,
             vec![node(0x0a, 0x01), node_with_dependency(0x0b, 0x02, 0x0a)],
             0x11,
@@ -187,7 +187,7 @@ fn g1_executed_node_revision_cannot_be_rewritten_by_new_revision() {
 
     // The rewrite attempt: revision 2 re-declares the executed node A with
     // a different shape digest.
-    let attempt = authority.apply_plan_revision(revision_request(
+    let attempt = authority.apply_plan_revision_ungated(revision_request(
         Some(plan_id),
         vec![node(0x0a, 0x7f), node_with_dependency(0x0b, 0x02, 0x0a)],
         0x12,
@@ -230,7 +230,7 @@ fn g1_frozen_node_redeclared_bit_identical_keeps_original_revision_and_digest() 
     let root = Root::new("identical");
     let authority = SqlitePlanAuthority::open(&root.0).expect("open authority");
     let first = authority
-        .apply_plan_revision(revision_request(
+        .apply_plan_revision_ungated(revision_request(
             None,
             vec![node(0x0a, 0x01), node_with_dependency(0x0b, 0x02, 0x0a)],
             0x21,
@@ -250,7 +250,7 @@ fn g1_frozen_node_redeclared_bit_identical_keeps_original_revision_and_digest() 
         .expect("node b exists");
 
     let second = authority
-        .apply_plan_revision(revision_request(
+        .apply_plan_revision_ungated(revision_request(
             Some(plan_id),
             vec![node(0x0a, 0x01), node_with_dependency(0x0b, 0x42, 0x0a)],
             0x22,
@@ -298,7 +298,7 @@ fn g1_storage_triggers_block_raw_rewrites() {
     let root = Root::new("trigger");
     let authority = SqlitePlanAuthority::open(&root.0).expect("open authority");
     let first = authority
-        .apply_plan_revision(revision_request(
+        .apply_plan_revision_ungated(revision_request(
             None,
             vec![node(0x0a, 0x01), node_with_dependency(0x0b, 0x02, 0x0a)],
             0x31,

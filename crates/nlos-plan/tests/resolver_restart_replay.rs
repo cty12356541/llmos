@@ -103,7 +103,7 @@ fn restart_between_resolver_effects_replays_once_and_converges() {
     std::fs::create_dir_all(&root.0).expect("create db directory");
     let mut authority = SqlitePlanAuthority::open(&db_path).expect("open");
     let plan_id = authority
-        .apply_plan_revision(revision_request(
+        .apply_plan_revision_ungated(revision_request(
             None,
             vec![node(0x0a, 0x11, &[]), node(0x0b, 0x22, &[0x0a])],
             0x01,
@@ -156,7 +156,7 @@ fn restart_between_resolver_effects_replays_once_and_converges() {
     // old key's replay answers from the original receipt pinned to
     // revision 1 — never the new head; a fresh resolution pins revision 2.
     authority
-        .apply_plan_revision(revision_request(
+        .apply_plan_revision_ungated(revision_request(
             Some(plan_id),
             vec![
                 node(0x0a, 0x11, &[]),
@@ -208,7 +208,7 @@ fn restart_preserves_pinned_view_across_post_crash_reshape() {
     std::fs::create_dir_all(&root.0).expect("create db directory");
     let mut authority = SqlitePlanAuthority::open(&db_path).expect("open");
     let plan_id = authority
-        .apply_plan_revision(revision_request(
+        .apply_plan_revision_ungated(revision_request(
             None,
             vec![node(0x0a, 0x11, &[]), node(0x0b, 0x22, &[0x0a])],
             0x01,
@@ -231,7 +231,7 @@ fn restart_preserves_pinned_view_across_post_crash_reshape() {
     // Restart, then reshape the unresolved node b in revision 2.
     authority = SqlitePlanAuthority::open(&db_path).expect("reopen");
     authority
-        .apply_plan_revision(revision_request(
+        .apply_plan_revision_ungated(revision_request(
             Some(plan_id),
             vec![node(0x0a, 0x11, &[]), node(0x0b, 0x99, &[0x0a])],
             0x02,

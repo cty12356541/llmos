@@ -205,6 +205,31 @@ impl SqlitePlanAuthority {
     /// be freely re-shaped, added, or dropped; their declared revision
     /// advances to the applied revision.
     ///
+    /// A Task-side declared-population consult is mandatory (W31-G
+    /// §8.2.4). This face carries no consult argument, so it is a typed
+    /// refusal ([`PlanStoreError::DeclarationConsultUnavailable`]) with
+    /// zero durable writes — never a silent admit. Production callers
+    /// use [`Self::apply_plan_revision_with_admission`]. The consult-free
+    /// bypass is [`Self::apply_plan_revision_ungated`] and is a
+    /// test/fixture-only surface.
+    ///
+    /// # Errors
+    ///
+    /// Always [`PlanStoreError::DeclarationConsultUnavailable`].
+    #[allow(clippy::needless_pass_by_value)] // The owned request is the caller's exactly-once intent (house API shape).
+    pub fn apply_plan_revision(
+        &self,
+        request: ApplyPlanRevisionRequest,
+    ) -> Result<PlanRevisionDecision, PlanStoreError> {
+        let _ = request;
+        Err(PlanStoreError::DeclarationConsultUnavailable)
+    }
+
+    /// Test/fixture-only consult-free apply. Production declaration
+    /// must go through [`Self::apply_plan_revision_with_admission`]; the
+    /// public default [`Self::apply_plan_revision`] typed-denies a
+    /// missing consult (W31-G §8.2.4).
+    ///
     /// # Errors
     ///
     /// Fails typed on structural violations (empty set, duplicate keys,
@@ -212,7 +237,7 @@ impl SqlitePlanAuthority {
     /// idempotency rebinding, on unknown plans, and on storage failure.
     #[allow(clippy::needless_pass_by_value)] // The owned request is the caller's exactly-once intent (house API shape).
     #[allow(clippy::too_many_lines)] // One auditable transaction carries the full revision write set.
-    pub fn apply_plan_revision(
+    pub fn apply_plan_revision_ungated(
         &self,
         request: ApplyPlanRevisionRequest,
     ) -> Result<PlanRevisionDecision, PlanStoreError> {
@@ -302,11 +327,12 @@ impl SqlitePlanAuthority {
     ///
     /// # Errors
     ///
-    /// Same surface as [`Self::apply_plan_revision`], plus
-    /// [`PlanStoreError::DeclarationAdmissionDenied`] when the Task tier
-    /// denies the projected population and
+    /// Same structural surface as [`Self::apply_plan_revision_ungated`],
+    /// plus [`PlanStoreError::DeclarationAdmissionDenied`] when the Task
+    /// tier denies the projected population and
     /// [`PlanStoreError::DeclarationConsultUnavailable`] when the consult
-    /// itself fails.
+    /// itself fails. This is the production declaration face; the
+    /// no-consult default [`Self::apply_plan_revision`] typed-denies.
     pub fn apply_plan_revision_with_admission<C: DeclarationAdmissionConsult>(
         &self,
         request: ApplyPlanRevisionRequest,
@@ -361,10 +387,9 @@ impl SqlitePlanAuthority {
             projected_declared_population(&transaction, plan_id, &request.nodes)?;
         // Growth-only consult: a reshape that adds no `plan_nodes` row
         // is not a declaration-population admission question (the
-        // lifetime rows already exist — possibly via the consult-free
-        // plain face). Replay already bypasses; no-growth follows the
-        // same discipline so an already-over-tier store can still
-        // reshape without a silent new-key pass.
+        // lifetime rows already exist). Replay already bypasses;
+        // no-growth follows the same discipline so an already-over-tier
+        // store can still reshape without a silent new-key pass.
         if fresh > 0 {
             match consult.consult_plan_declaration(projected) {
                 Ok(DeclarationAdmissionOutcome::Admits) => {}

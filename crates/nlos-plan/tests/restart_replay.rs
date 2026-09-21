@@ -122,7 +122,7 @@ fn restart_between_every_effect_replays_once_and_converges() {
 
     // Effect 1: revision 1 (plan creation). Crash. Replay converges.
     let first_receipt = authority
-        .apply_plan_revision(revision_request(
+        .apply_plan_revision_ungated(revision_request(
             None,
             vec![node(0x0a, 0x01), node(0x0b, 0x02)],
             0x11,
@@ -141,7 +141,7 @@ fn restart_between_every_effect_replays_once_and_converges() {
     authority = SqlitePlanAuthority::open(&db_path).expect("reopen after effect 1");
 
     let replay = authority
-        .apply_plan_revision(revision_request(
+        .apply_plan_revision_ungated(revision_request(
             None,
             vec![node(0x0a, 0x01), node(0x0b, 0x02)],
             0x11,
@@ -258,7 +258,7 @@ fn restart_between_every_effect_replays_once_and_converges() {
     // Effect 5: revision 2 (frozen node re-declared bit-identically, node
     // b reshaped, node c added). Crash. Replay converges.
     let second_receipt = authority
-        .apply_plan_revision(revision_request(
+        .apply_plan_revision_ungated(revision_request(
             Some(plan_id),
             vec![node(0x0a, 0x01), node(0x0b, 0x42), node(0x0c, 0x43)],
             0x12,
@@ -269,7 +269,7 @@ fn restart_between_every_effect_replays_once_and_converges() {
     authority = SqlitePlanAuthority::open(&db_path).expect("reopen after effect 5");
 
     let replay2 = authority
-        .apply_plan_revision(revision_request(
+        .apply_plan_revision_ungated(revision_request(
             Some(plan_id),
             vec![node(0x0a, 0x01), node(0x0b, 0x42), node(0x0c, 0x43)],
             0x12,
@@ -325,7 +325,7 @@ fn restart_preserves_cas_fences_against_pre_crash_views() {
     std::fs::create_dir_all(&root.0).expect("create db directory");
     let authority = SqlitePlanAuthority::open(&db_path).expect("open");
     let plan_id = authority
-        .apply_plan_revision(revision_request(None, vec![node(0x0a, 0x01)], 0x21))
+        .apply_plan_revision_ungated(revision_request(None, vec![node(0x0a, 0x01)], 0x21))
         .expect("revision 1")
         .receipt()
         .plan_id;

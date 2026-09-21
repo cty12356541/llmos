@@ -176,7 +176,7 @@ fn reclaim_drive_records_plan_residency_evict_step() {
     let task = root.task();
 
     let plan_id = plan
-        .apply_plan_revision(ApplyPlanRevisionRequest {
+        .apply_plan_revision_ungated(ApplyPlanRevisionRequest {
             plan_id: None,
             nodes: vec![node(0x0a, 1), node(0x0b, 2)],
             idempotency_key: IdempotencyKey::from_bytes([0x11; 16]),
@@ -272,7 +272,7 @@ fn reclaim_residency_refuses_pinned_victim() {
     let task = root.task();
 
     let plan_id = plan
-        .apply_plan_revision(ApplyPlanRevisionRequest {
+        .apply_plan_revision_ungated(ApplyPlanRevisionRequest {
             plan_id: None,
             nodes: vec![node(0x0a, 1), node(0x0b, 2)],
             idempotency_key: IdempotencyKey::from_bytes([0x11; 16]),

@@ -91,7 +91,7 @@ fn run_scheduler_scale_cell(count: u64, print: bool) {
     let authority = SqlitePlanAuthority::open(root.0.join("plan.sqlite3")).expect("open plan");
     let apply_started = Instant::now();
     let plan_id = authority
-        .apply_plan_revision(ApplyPlanRevisionRequest {
+        .apply_plan_revision_ungated(ApplyPlanRevisionRequest {
             plan_id: None,
             nodes: (0..count).map(node).collect(),
             idempotency_key: IdempotencyKey::from_bytes([0x51; 16]),

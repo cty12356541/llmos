@@ -89,7 +89,7 @@ fn revision_request(
 
 fn apply_first(authority: &SqlitePlanAuthority, nodes: Vec<PlanNodeDeclaration>) -> TaskPlanId {
     authority
-        .apply_plan_revision(revision_request(None, nodes, 0x01))
+        .apply_plan_revision_ungated(revision_request(None, nodes, 0x01))
         .expect("revision 1")
         .receipt()
         .plan_id
@@ -245,7 +245,7 @@ fn conditions_digest_fold_is_bit_compatible_and_order_free() {
     // Same node key, same condition set, different declaration order,
     // different plan: the digest is order- and plan-independent.
     let other_plan = authority
-        .apply_plan_revision(revision_request(
+        .apply_plan_revision_ungated(revision_request(
             None,
             vec![node(0x0b, 0x11, Some(conditions(&[0x0a, 0x0d], 4)))],
             0x11,
@@ -261,7 +261,7 @@ fn conditions_digest_fold_is_bit_compatible_and_order_free() {
         .expect("node")
         .node_digest;
     let third_plan = authority
-        .apply_plan_revision(revision_request(
+        .apply_plan_revision_ungated(revision_request(
             None,
             vec![node(0x0b, 0x11, Some(conditions(&[0x0d, 0x0a], 4)))],
             0x12,
@@ -281,7 +281,7 @@ fn conditions_digest_fold_is_bit_compatible_and_order_free() {
 
     // A different fanout bound changes the digest.
     let fourth_plan = authority
-        .apply_plan_revision(revision_request(
+        .apply_plan_revision_ungated(revision_request(
             None,
             vec![node(0x0b, 0x11, Some(conditions(&[0x0a], 5)))],
             0x13,
@@ -338,7 +338,7 @@ fn structured_conditions_invalid_forms_fail_typed() {
         conditions(&[0x0a], 0),
     ];
     for invalid in invalid_sets {
-        let result = authority.apply_plan_revision(revision_request(
+        let result = authority.apply_plan_revision_ungated(revision_request(
             None,
             vec![node(0x0a, 0x11, Some(invalid))],
             0x02,
@@ -389,7 +389,7 @@ fn frozen_node_conditions_rewrite_is_refused_typed() {
         .expect("node")
         .node_digest;
     authority
-        .apply_plan_revision(revision_request(
+        .apply_plan_revision_ungated(revision_request(
             Some(plan_id),
             vec![node(0x0a, 0x11, Some(conditions(&[0x0b, 0x0a], 4)))],
             0x03,
@@ -407,7 +407,7 @@ fn frozen_node_conditions_rewrite_is_refused_typed() {
     );
 
     assert!(matches!(
-        authority.apply_plan_revision(revision_request(
+        authority.apply_plan_revision_ungated(revision_request(
             Some(plan_id),
             vec![node(0x0a, 0x11, Some(conditions(&[0x0b, 0x0a], 5)))],
             0x04,

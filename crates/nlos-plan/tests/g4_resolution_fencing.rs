@@ -115,7 +115,7 @@ fn g4_resolution_pins_shapes_against_later_revision_reshape() {
     let root = Root::new("pin-shape");
     let authority = SqlitePlanAuthority::open(&root.0).expect("open authority");
     let first_receipt = authority
-        .apply_plan_revision(revision_request(
+        .apply_plan_revision_ungated(revision_request(
             None,
             vec![
                 node(0x0a, 0x11),
@@ -162,7 +162,7 @@ fn g4_resolution_pins_shapes_against_later_revision_reshape() {
     // Revision 2 reshapes the still-unresolved nodes b and c (legal:
     // nothing crossed the execution boundary).
     authority
-        .apply_plan_revision(revision_request(
+        .apply_plan_revision_ungated(revision_request(
             Some(plan_id),
             vec![
                 node(0x0a, 0x11),
@@ -238,7 +238,7 @@ fn g4_current_selector_pins_once_and_receipt_never_floats() {
     let root = Root::new("pin-once");
     let authority = SqlitePlanAuthority::open(&root.0).expect("open authority");
     let first_receipt = authority
-        .apply_plan_revision(revision_request(None, vec![node(0x0a, 0x11)], 0x01))
+        .apply_plan_revision_ungated(revision_request(None, vec![node(0x0a, 0x11)], 0x01))
         .expect("revision 1")
         .receipt();
     let plan_id = first_receipt.plan_id;
@@ -271,7 +271,7 @@ fn g4_current_selector_pins_once_and_receipt_never_floats() {
     assert_ne!(same_head.resolution_id, original.resolution_id);
 
     authority
-        .apply_plan_revision(revision_request(
+        .apply_plan_revision_ungated(revision_request(
             Some(plan_id),
             vec![node(0x0a, 0x11), node(0x0d, 0x44)],
             0x02,
@@ -321,7 +321,7 @@ fn g4_stale_resolution_revision_cannot_drive_transitions_past_fence() {
     let root = Root::new("fence");
     let authority = SqlitePlanAuthority::open(&root.0).expect("open authority");
     let plan_id = authority
-        .apply_plan_revision(revision_request(None, vec![node(0x0a, 0x11)], 0x01))
+        .apply_plan_revision_ungated(revision_request(None, vec![node(0x0a, 0x11)], 0x01))
         .expect("revision 1")
         .receipt()
         .plan_id;
@@ -336,7 +336,7 @@ fn g4_stale_resolution_revision_cannot_drive_transitions_past_fence() {
     assert_eq!(resolution.revision, 1);
 
     authority
-        .apply_plan_revision(revision_request(
+        .apply_plan_revision_ungated(revision_request(
             Some(plan_id),
             vec![node(0x0a, 0x22)],
             0x02,

@@ -72,7 +72,7 @@ fn revision_request(
 
 fn first_plan(authority: &SqlitePlanAuthority) -> TaskPlanId {
     authority
-        .apply_plan_revision(revision_request(None, vec![node(0x01, 0x11)], 0x01))
+        .apply_plan_revision_ungated(revision_request(None, vec![node(0x01, 0x11)], 0x01))
         .expect("apply revision 1")
         .receipt()
         .plan_id
@@ -388,7 +388,7 @@ fn residency_transition_cas_fences_stale_tier_and_revision() {
     // that observed the pre-reshape revision ([PLAN-DAG-001] fence,
     // same discipline as the lifecycle face).
     authority
-        .apply_plan_revision(revision_request(
+        .apply_plan_revision_ungated(revision_request(
             Some(plan_id),
             vec![node(0x01, 0x12)],
             0x02,

@@ -125,7 +125,7 @@ fn revision_request(key: u8) -> ApplyPlanRevisionRequest {
 
 fn apply_revision_one(authority: &SqlitePlanAuthority) -> TaskPlanId {
     authority
-        .apply_plan_revision(revision_request(0x11))
+        .apply_plan_revision_ungated(revision_request(0x11))
         .expect("apply revision 1")
         .receipt()
         .plan_id

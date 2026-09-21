@@ -2,15 +2,17 @@
 //! (W31-G §8.2.4: 声明面 apply 时 TaskNode 维 admission consult 仍缺 —
 //! only the materialization half was wired by W31-A).
 //!
-//! [`SqlitePlanAuthority::apply_plan_revision_with_admission`] consults
-//! the Task tier through the [`nlos_plan::DeclarationAdmissionConsult`]
-//! seam (the W31-A consult posture) before any durable write: the
-//! projection is the store-wide persisted `plan_nodes` count plus the
-//! keys this revision declares that carry no row yet. A denial is the
-//! typed [`nlos_plan::PlanStoreError::DeclarationAdmissionDenied`] with
-//! zero durable effects; a failed consult fails closed; idempotent
-//! replays bypass the consult (the registration-gate discipline). The
-//! plain `apply_plan_revision` face is unchanged.
+//! [`SqlitePlanAuthority::apply_plan_revision`] is the production
+//! declaration face and must consult or typed-deny (W31-G §8.2.4): a
+//! missing consult is [`PlanStoreError::DeclarationConsultUnavailable`],
+//! never a silent admit. [`SqlitePlanAuthority::apply_plan_revision_with_admission`]
+//! is the consult-bearing production path. The consult-free bypass is
+//! explicitly named `apply_plan_revision_ungated` and is test/fixture
+//! only. The projection is the store-wide persisted `plan_nodes` count
+//! plus the keys this revision declares that carry no row yet. A denial
+//! is the typed [`nlos_plan::PlanStoreError::DeclarationAdmissionDenied`]
+//! with zero durable effects; a failed consult fails closed; idempotent
+//! replays bypass the consult (the registration-gate discipline).
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -428,50 +430,63 @@ fn failed_consult_fails_closed_with_zero_durable_effects() {
     assert_eq!(recovered.calls(), 1);
 }
 
-/// The plain face is untouched by the gated addition: applying without
-/// a consult is legal at any population (structural bounds aside), the
-/// two faces' receipts interleave on one chain, and the Infallible
-/// consult demonstrates the boundary accepts transport-free impls.
+/// Default apply without a consult is a typed refusal: zero durable
+/// rows (W31-G §8.2.4 — cannot silent pass).
 #[test]
-fn plain_face_stays_consult_free_and_faces_interleave() {
-    let root = Root::new("plain-face");
+fn default_apply_without_consult_fails_closed() {
+    let root = Root::new("default-deny");
     let plan = root.plan();
-    let task = root.task();
-    let consult = TaskDeclarationConsult(&task);
-
-    // Plain face: three nodes, no consult, admitted (the structural
-    // 100K bound is the only population bound on this face).
-    let plain = plan
+    let denied = plan
         .apply_plan_revision(request(
             None,
             vec![node(0x0a, 1), node(0x0b, 2), node(0x0c, 3)],
             0x11,
             1_000,
         ))
-        .expect("plain face admits without a consult");
-    let plan_id = plain.receipt().plan_id;
+        .expect_err("default apply without consult must fail closed");
+    assert!(matches!(
+        denied,
+        PlanStoreError::DeclarationConsultUnavailable
+    ));
+    assert_eq!(plan_node_rows(&root.0.join("plan.sqlite3")), 0);
+}
 
-    // Gated face on the same plan: re-declaring the same keys projects
-    // no growth, so the tier admits the reshape.
-    let gated = plan
+/// Production consult path still admits a no-growth reshape and denies
+/// growth past the Task tier (the former "faces interleave" coverage,
+/// now started from the gated face rather than a silent ungated apply).
+#[test]
+fn gated_apply_admits_reshape_and_denies_growth() {
+    let root = Root::new("gated-reshape");
+    let plan = root.plan();
+    let task = root.task();
+    let consult = TaskDeclarationConsult(&task);
+
+    let first = plan
+        .apply_plan_revision_with_admission(
+            request(None, vec![node(0x0a, 1), node(0x0b, 2)], 0x11, 1_000),
+            &consult,
+        )
+        .expect("first revision at the cap is admitted");
+    let plan_id = first.receipt().plan_id;
+
+    let reshaped = plan
         .apply_plan_revision_with_admission(
             request(
                 Some(plan_id),
-                vec![node(0x0a, 1), node(0x0b, 2), node(0x0c, 3)],
+                vec![node(0x0a, 1), node(0x0b, 2)],
                 0x12,
                 2_000,
             ),
             &consult,
         )
         .expect("gated reshape of existing keys stays admitted");
-    assert_eq!(gated.receipt().revision, 2);
+    assert_eq!(reshaped.receipt().revision, 2);
 
-    // Any growth through the gated face is still denied at 3 > 2.
     let denied = plan
         .apply_plan_revision_with_admission(
             request(
                 Some(plan_id),
-                vec![node(0x0a, 1), node(0x0b, 2), node(0x0c, 3), node(0x0d, 4)],
+                vec![node(0x0a, 1), node(0x0b, 2), node(0x0c, 3)],
                 0x13,
                 3_000,
             ),
@@ -481,7 +496,7 @@ fn plain_face_stays_consult_free_and_faces_interleave() {
     assert!(matches!(
         denied,
         PlanStoreError::DeclarationAdmissionDenied {
-            projected_task_nodes: 4,
+            projected_task_nodes: 3,
             ..
         }
     ));

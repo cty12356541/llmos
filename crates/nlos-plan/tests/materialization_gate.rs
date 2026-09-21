@@ -271,7 +271,7 @@ fn g3_unmet_dependency_cannot_materialize_through_any_face() {
     // A ← B ← C: B blocks on A, C blocks on B. A is walked to COMPLETED
     // through the gate so only C's dependency (B) stays unmet.
     let plan_id = plan
-        .apply_plan_revision(revision_request(
+        .apply_plan_revision_ungated(revision_request(
             None,
             vec![
                 node(0x0a, 0x01),
@@ -406,7 +406,7 @@ fn g3_admission_denial_shrinks_window_with_typed_durable_reason() {
     let plan = SqlitePlanAuthority::open(root.0.join("plan.sqlite3")).expect("open plan");
     let task = open_task(&root, &G3_NODE_CAP_ONE);
     let plan_id = plan
-        .apply_plan_revision(revision_request(
+        .apply_plan_revision_ungated(revision_request(
             None,
             vec![node(0x0a, 0x01), node(0x0b, 0x02)],
             0x11,
@@ -533,7 +533,7 @@ fn g3_working_set_dimension_denies_and_window_stops_growing() {
     let plan = SqlitePlanAuthority::open(root.0.join("plan.sqlite3")).expect("open plan");
     let task = open_task(&root, &G3_ZERO_WORKING_SET);
     let plan_id = plan
-        .apply_plan_revision(revision_request(None, vec![node(0x0a, 0x01)], 0x11))
+        .apply_plan_revision_ungated(revision_request(None, vec![node(0x0a, 0x01)], 0x11))
         .expect("apply revision 1")
         .receipt()
         .plan_id;
@@ -573,7 +573,7 @@ fn g3_window_shrink_composes_with_checkpoint_evict_and_residency_eviction() {
     let wide = open_task(&root, &TASK_PROFILE_10K);
     let tiny = open_task(&root, &G3_NODE_CAP_ONE);
     let plan_id = plan
-        .apply_plan_revision(revision_request(
+        .apply_plan_revision_ungated(revision_request(
             None,
             vec![node(0x0a, 0x01), node(0x0b, 0x02)],
             0x11,
@@ -725,7 +725,7 @@ fn gate_request_drives_legal_edges_is_idempotent_and_single_pending() {
     let root = Root::new("auth");
     let plan = SqlitePlanAuthority::open(root.0.join("plan.sqlite3")).expect("open plan");
     let plan_id = plan
-        .apply_plan_revision(revision_request(None, vec![node(0x0a, 0x01)], 0x11))
+        .apply_plan_revision_ungated(revision_request(None, vec![node(0x0a, 0x01)], 0x11))
         .expect("apply revision 1")
         .receipt()
         .plan_id;
@@ -809,7 +809,7 @@ fn gate_resolve_is_fenced_by_declared_revision_cas() {
     let root = Root::new("fence");
     let plan = SqlitePlanAuthority::open(root.0.join("plan.sqlite3")).expect("open plan");
     let plan_id = plan
-        .apply_plan_revision(revision_request(
+        .apply_plan_revision_ungated(revision_request(
             None,
             vec![node(0x0a, 0x01), node(0x0b, 0x02)],
             0x11,
@@ -828,7 +828,7 @@ fn gate_resolve_is_fenced_by_declared_revision_cas() {
     .expect("request at revision 1");
 
     // Reshape the (still pre-execution) node with revision 2.
-    plan.apply_plan_revision(revision_request(
+    plan.apply_plan_revision_ungated(revision_request(
         Some(plan_id),
         vec![node(0x0a, 0x7f), node(0x0b, 0x02)],
         0x12,
