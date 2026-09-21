@@ -5,24 +5,25 @@ use nlos_schema::sabi::v1::{
     BarrierObservationSignature, BarrierObservationTarget, CallerIdentity, CancelCommand,
     CancelOperationRequest, CapabilityHandle, ContextResidencyTier, ControlCommand,
     ControlCommandLifecycleState, ControlCommandResult, ControlCommandSource, ControlScope,
-    DurableOperationSnapshot, DurableOperationState, DurableOperationStatus, Envelope,
-    ExchangeRequest, ExchangeResponse, ExecutionFiberLifecycleState,
-    ExecutionFiberOperationsSnapshot, ExecutionFiberPhase, ExecutionFiberStatus,
-    GetSystemControlRequest, KillCommand, NegotiateServiceResponse, OperationLifecycleState,
-    OperationReference, OperationStatus, PauseCommand, PlanNodeKind, PlanNodeLifecycleState,
-    PrincipalHandshakeAttestation, PrincipalHandshakeChallenge, QueryOperationRequest,
-    ReceiptReference, ReclaimCommand, RecoveryFailureAuthority, RecoveryFailureSummary,
-    RecoveryWorkerLifecycleState, RegisterWaitRequest, ResolveServiceRequest,
-    ResolveServiceResponse, ResourceRecoveryAlertStatus, ResourceRecoveryMetrics,
-    ResourceRecoveryOperationsSnapshot, ResumeCommand, ResumeResourceRecoveryCommand,
-    ResumeSemanticRecoveryCommand, RetryDirective, SabiErrorCode, SabiFailure, SabiRequestContext,
-    SabiResponseContext, SchemaIdentity, SemanticRecoveryAlertStatus, SemanticRecoveryMetrics,
-    SemanticRecoveryOperationsSnapshot, SubmitBarrierObservationRequest,
-    SubmitControlCommandRequest, SystemControlView, TaskExecutionBinding, TaskGroupLifecycleState,
-    TaskGroupMemberStatus, TaskGroupMemberType, TaskGroupMembershipState,
-    TaskGroupOperationsSnapshot, TaskGroupStatus, TaskNodeOperationsSnapshot, TaskNodeStatus,
-    ThrottleCommand, TopicOperationsSnapshot, TopicStatus, control_command,
-    envelope as envelope_message, local_rpc,
+    DisableApplicationCommand, DurableOperationSnapshot, DurableOperationState,
+    DurableOperationStatus, Envelope, ExchangeRequest, ExchangeResponse,
+    ExecutionFiberLifecycleState, ExecutionFiberOperationsSnapshot, ExecutionFiberPhase,
+    ExecutionFiberStatus, GetSystemControlRequest, KillCommand, NegotiateServiceResponse,
+    OperationLifecycleState, OperationReference, OperationStatus, PauseCommand, PlanNodeKind,
+    PlanNodeLifecycleState, PrincipalHandshakeAttestation, PrincipalHandshakeChallenge,
+    QueryOperationRequest, ReceiptReference, ReclaimCommand, RecoveryFailureAuthority,
+    RecoveryFailureSummary, RecoveryWorkerLifecycleState, RegisterWaitRequest,
+    ResolveServiceRequest, ResolveServiceResponse, ResourceRecoveryAlertStatus,
+    ResourceRecoveryMetrics, ResourceRecoveryOperationsSnapshot, ResumeCommand,
+    ResumeResourceRecoveryCommand, ResumeSemanticRecoveryCommand, RetryDirective, SabiErrorCode,
+    SabiFailure, SabiRequestContext, SabiResponseContext, SchemaIdentity,
+    SemanticRecoveryAlertStatus, SemanticRecoveryMetrics, SemanticRecoveryOperationsSnapshot,
+    SubmitBarrierObservationRequest, SubmitControlCommandRequest, SystemControlView,
+    TaskExecutionBinding, TaskGroupLifecycleState, TaskGroupMemberStatus, TaskGroupMemberType,
+    TaskGroupMembershipState, TaskGroupOperationsSnapshot, TaskGroupStatus,
+    TaskNodeOperationsSnapshot, TaskNodeStatus, ThrottleCommand, TopicOperationsSnapshot,
+    TopicStatus, UninstallApplicationCommand, control_command, envelope as envelope_message,
+    local_rpc,
 };
 use nlos_schema::{
     CommonSemanticsError, CompatibilityError, HANDSHAKE_NONCE_BYTES, HANDSHAKE_SIGNATURE_BYTES,
@@ -210,11 +211,12 @@ fn registry_exposes_the_supported_contract() {
     // W28-D bumped it again for the additive operation-level command arms,
     // W29-D bumped it once more for the additive kill/throttle/reclaim
     // arms, W28-C-3b bumped it for the additive resource-domain
-    // recovery extension (ADR-0017 G8), and W32-G bumped it for the
-    // additive per-layer inspect views (B5-3); ADR-0014 permits additive
-    // extension of a frozen entry.
+    // recovery extension (ADR-0017 G8), W32-G bumped it for the
+    // additive per-layer inspect views (B5-3), and W35-P11 bumped it
+    // for the additive application-lifecycle command arms (移交#11 前片);
+    // ADR-0014 permits additive extension of a frozen entry.
     assert_eq!(system_control.major, 1);
-    assert_eq!(system_control.minor, 5);
+    assert_eq!(system_control.minor, 6);
     let takeover_control = registry
         .iter()
         .find(|entry| entry.name == SABI_TAKEOVER_CONTROL_SCHEMA)
@@ -870,6 +872,67 @@ fn kill_throttle_reclaim_arms_round_trip_and_pin_their_bounds() {
             Err(CompatibilityError::InvalidSystemControlIdentifier),
             "throttle percent {out_of_range} must fail closed before the wire"
         );
+    }
+}
+
+/// W35-P11 additive application-lifecycle arms compile, round-trip, and pin
+/// their deterministic wire bytes (Rust-side golden vectors; prost field
+/// order, oneof arm before `reason`; both arms carry three wire bytes — the
+/// two-byte field-19/20 tag plus a zero length — so they share one command
+/// length prefix).
+#[test]
+fn w35p11_application_lifecycle_arms_round_trip_and_pin_golden_bytes() {
+    fn w35p11_identity() -> SchemaIdentity {
+        SchemaIdentity {
+            name: SABI_SYSTEM_CONTROL_SCHEMA.to_owned(),
+            major: 1,
+            minor: 6,
+            critical_extension_ids: Vec::new(),
+            non_critical_extension_ids: Vec::new(),
+        }
+    }
+    fn application_level_submit(arm: control_command::Command) -> SubmitControlCommandRequest {
+        SubmitControlCommandRequest {
+            schema: Some(w35p11_identity()),
+            command: Some(ControlCommand {
+                control_command_id: vec![0x61; 16],
+                issuer_principal_id: vec![0x32; 16],
+                source: ControlCommandSource::Cli.into(),
+                scope: ControlScope::Operation.into(),
+                target_id: vec![0x81; 16],
+                expected_generation_or_revision: 5,
+                command: Some(arm),
+                reason: "operator pauses the escalated operation".to_owned(),
+            }),
+        }
+    }
+    for (label, arm, arm_field_hex) in [
+        (
+            "disable",
+            control_command::Command::DisableApplication(DisableApplicationCommand {}),
+            "9a0100",
+        ),
+        (
+            "uninstall",
+            control_command::Command::UninstallApplication(UninstallApplicationCommand {}),
+            "a20100",
+        ),
+    ] {
+        let request = application_level_submit(arm);
+        let wire = encode_submit_control_command_request(&request)
+            .unwrap_or_else(|error| panic!("{label} arm must encode: {error}"));
+        assert_eq!(
+            decode_submit_control_command_request(&wire).unwrap(),
+            request,
+            "{label} arm must round-trip"
+        );
+        let golden = concat!(
+            "0a1d0a176e6c6f732e736162692e53797374656d436f6e74726f6c1001180612",
+            "680a106161616161616161616161616161616112103232323232323232323232",
+            "3232323232180320022a10818181818181818181818181818181813005",
+        );
+        let golden = format!("{golden}{arm_field_hex}{OPERATION_LEVEL_SUBMIT_REASON_HEX}");
+        assert_eq!(wire, decode_hex(&golden), "{label} arm golden bytes");
     }
 }
 
@@ -1565,6 +1628,21 @@ fn exchange_wrappers_preserve_unknown_fields_and_require_an_envelope() {
 // W32-G (B5-3): per-layer inspect views — deterministic fixtures and
 // fail-closed addressing/status bounds for the five additive snapshots.
 
+/// The literal v1.5 `SystemControl` identity of the W32-G per-layer-view
+/// freeze point (the registry minor has since advanced to 6 through the
+/// W35-P11 additive application-lifecycle arms; frozen goldens stay pinned
+/// at their creation minor, mirroring [`w27a_semantic_identity`] and
+/// [`w28d_operation_identity`]).
+fn w32g_layer_identity() -> SchemaIdentity {
+    SchemaIdentity {
+        name: SABI_SYSTEM_CONTROL_SCHEMA.to_owned(),
+        major: 1,
+        minor: 5,
+        critical_extension_ids: Vec::new(),
+        non_critical_extension_ids: Vec::new(),
+    }
+}
+
 fn w32g_layer_get(view: SystemControlView, target_id: Vec<u8>) -> GetSystemControlRequest {
     GetSystemControlRequest {
         schema: Some(system_control_schema_identity()),
@@ -1578,7 +1656,7 @@ fn w32g_layer_get(view: SystemControlView, target_id: Vec<u8>) -> GetSystemContr
 
 fn task_group_snapshot() -> TaskGroupOperationsSnapshot {
     TaskGroupOperationsSnapshot {
-        schema: Some(system_control_schema_identity()),
+        schema: Some(w32g_layer_identity()),
         group: Some(TaskGroupStatus {
             group_id: vec![0x91; 16],
             task_id: vec![0x92; 16],
@@ -1621,7 +1699,7 @@ fn task_group_snapshot() -> TaskGroupOperationsSnapshot {
 
 fn task_node_snapshot() -> TaskNodeOperationsSnapshot {
     TaskNodeOperationsSnapshot {
-        schema: Some(system_control_schema_identity()),
+        schema: Some(w32g_layer_identity()),
         node: Some(TaskNodeStatus {
             plan_id: vec![0xA1; 16],
             node_id: vec![0xA2; 16],
@@ -1640,7 +1718,7 @@ fn task_node_snapshot() -> TaskNodeOperationsSnapshot {
 
 fn execution_fiber_snapshot() -> ExecutionFiberOperationsSnapshot {
     ExecutionFiberOperationsSnapshot {
-        schema: Some(system_control_schema_identity()),
+        schema: Some(w32g_layer_identity()),
         fiber: Some(ExecutionFiberStatus {
             fiber_id: vec![0xB1; 16],
             generation: 2,
@@ -1658,7 +1736,7 @@ fn execution_fiber_snapshot() -> ExecutionFiberOperationsSnapshot {
 
 fn topic_snapshot() -> TopicOperationsSnapshot {
     TopicOperationsSnapshot {
-        schema: Some(system_control_schema_identity()),
+        schema: Some(w32g_layer_identity()),
         topic: Some(TopicStatus {
             topic_id: vec![0xC1; 16],
             channel_id: vec![0xC2; 16],
@@ -1673,7 +1751,7 @@ fn topic_snapshot() -> TopicOperationsSnapshot {
 
 fn durable_operation_snapshot() -> DurableOperationSnapshot {
     DurableOperationSnapshot {
-        schema: Some(system_control_schema_identity()),
+        schema: Some(w32g_layer_identity()),
         operation: Some(DurableOperationStatus {
             operation_id: vec![0xD1; 16],
             generation: 1,
