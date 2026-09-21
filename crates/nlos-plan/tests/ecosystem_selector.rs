@@ -656,3 +656,119 @@ fn ecosystem_unknown_kind_and_tampered_rows_fail_typed_closed() {
     );
     assert_integrity(&db_path);
 }
+
+/// Real-surface adapter round-trip under the `artifact-source` feature:
+/// a live `ArtifactStore` head (revisions advanced by real `put_revision`
+/// CAS writes) resolves through the plan authority, pins its content
+/// digest, and the advance fences stale generations on both the resolve
+/// and verify faces.
+#[cfg(feature = "artifact-source")]
+mod artifact_adapter {
+    use nlos_artifact::{
+        ArtifactStore, ContentDigest, CreateArtifactSpec, ProvenanceSourceTriple,
+        PutRevisionRequest,
+    };
+    use nlos_plan::{
+        ArtifactSelectorSource, EcosystemEntityKind, GenerationExpectation, PlanStoreError,
+        ResolveEcosystemRequest, SqlitePlanAuthority,
+    };
+    use nlos_types::{ArtifactId, IdempotencyKey};
+
+    use crate::{Root, art_selector, resolve_request};
+
+    fn put(store: &ArtifactStore, artifact: ArtifactId, expected_head: u64, bytes: &[u8], key: u8) {
+        store
+            .put_revision(PutRevisionRequest {
+                artifact_id: artifact,
+                expected_head_revision: expected_head,
+                bytes,
+                created_at_ms: 1_000,
+                provenance: ProvenanceSourceTriple {
+                    source_a: [key; 16],
+                    source_b: [key; 16],
+                    source_digest: ContentDigest::from_bytes([key; 32]),
+                },
+            })
+            .expect("put revision");
+    }
+
+    #[test]
+    fn artifact_source_resolves_real_head_and_fences_on_advance() {
+        let root = Root::new("artifact-adapter");
+        let db_path = root.0.join("plan.sqlite3");
+        std::fs::create_dir_all(&root.0).expect("create db directory");
+        let store = ArtifactStore::open(&root.0).expect("open artifact store");
+        let artifact = ArtifactId::from_bytes([0x44; 16]);
+        store
+            .create_artifact(CreateArtifactSpec {
+                artifact_id: artifact,
+                idempotency_key: IdempotencyKey::from_bytes([0x45; 16]),
+                content_type: "application/octet-stream".to_owned(),
+                application_id: None,
+                owner: None,
+                created_at_ms: 1_000,
+            })
+            .expect("create artifact");
+        put(&store, artifact, 0, b"v1", 0x46);
+        put(&store, artifact, 1, b"v2", 0x47);
+
+        let authority = SqlitePlanAuthority::open(&db_path).expect("open authority");
+        let source = ArtifactSelectorSource::new(&store, 2_000);
+        let handle = authority
+            .resolve_ecosystem_selector(
+                &source,
+                resolve_request(art_selector(0x44, GenerationExpectation::At(2)), 0x51),
+            )
+            .expect("resolve real artifact head")
+            .handle();
+        assert_eq!(handle.kind, EcosystemEntityKind::Artifact);
+        assert_eq!(handle.generation, 2);
+        assert_eq!(
+            handle.content_digest,
+            ContentDigest::of_bytes(b"v2").into_bytes()
+        );
+        assert_eq!(
+            authority
+                .verify_ecosystem_resolution_current(&source, handle.resolution_id)
+                .expect("fresh head verifies"),
+            handle
+        );
+
+        put(&store, artifact, 2, b"v3", 0x48);
+        assert!(matches!(
+            authority.resolve_ecosystem_selector(
+                &source,
+                resolve_request(art_selector(0x44, GenerationExpectation::At(2)), 0x52,)
+            ),
+            Err(nlos_plan::EcosystemResolutionError::Plan(
+                PlanStoreError::StaleEcosystemGeneration {
+                    expected: 2,
+                    current: 3,
+                    ..
+                }
+            ))
+        ));
+        assert!(matches!(
+            authority.verify_ecosystem_resolution_current(&source, handle.resolution_id),
+            Err(nlos_plan::EcosystemResolutionError::Plan(
+                PlanStoreError::StaleEcosystemGeneration {
+                    expected: 2,
+                    current: 3,
+                    ..
+                }
+            ))
+        ));
+
+        let unknown = ResolveEcosystemRequest {
+            selector: art_selector(0xee, GenerationExpectation::Current),
+            idempotency_key: IdempotencyKey::from_bytes([0x53; 16]),
+            resolved_at_ms: 7_000,
+        };
+        assert!(matches!(
+            authority.resolve_ecosystem_selector(&source, unknown),
+            Err(nlos_plan::EcosystemResolutionError::Plan(
+                PlanStoreError::EcosystemEntityNotFound { .. }
+            ))
+        ));
+    }
+}

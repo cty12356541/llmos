@@ -29,6 +29,8 @@
 //! scheduler only selects nodes for materialization and drives the
 //! W31-A gate), and any IPC/CLI surface.
 
+#[cfg(feature = "artifact-source")]
+mod artifact_source;
 mod materialization;
 mod model;
 mod residency;
@@ -41,6 +43,8 @@ mod store;
 use std::error::Error;
 use std::fmt;
 
+#[cfg(feature = "artifact-source")]
+pub use artifact_source::{ArtifactSelectorSource, ArtifactSourceError};
 pub use model::{
     ApplyPlanRevisionRequest, ChainVerification, EcosystemEntityKind, EcosystemEntityState,
     EcosystemResolutionDecision, EcosystemResolutionHandle, EcosystemSelector,

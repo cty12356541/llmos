@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 nlos-types = { path = "../nlos-types" }
+nlos-artifact = { path = "../nlos-artifact", optional = true }
 rusqlite.workspace = true
 sha2.workspace = true
 
@@ -15,6 +16,12 @@ sha2.workspace = true
 nlos-store-fault = { path = "../nlos-store-fault" }
 nlos-task = { path = "../nlos-task" }
 rusqlite.workspace = true
+
+[features]
+# Real-surface ecosystem source for `EcosystemEntityKind::Artifact`
+# (W36-P7): keeps the default dependency graph unchanged — the plan
+# authority stays decoupled unless the assembler opts in.
+artifact-source = ["dep:nlos-artifact"]
 
 [lints]
 workspace = true

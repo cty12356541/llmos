@@ -564,6 +564,7 @@ dependencies = [
 name = "nlos-plan"
 version = "0.1.0"
 dependencies = [
+ "nlos-artifact",
  "nlos-store-fault",
  "nlos-task",
  "nlos-types",
