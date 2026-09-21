@@ -53,6 +53,7 @@ fn node(key: u8, payload: u8) -> PlanNodeDeclaration {
         output_contract_digest: [payload; 32],
         policy_digest: [payload; 32],
         resource_ceiling_digest: [payload; 32],
+        conditions: None,
     }
 }
 
@@ -762,7 +763,7 @@ fn schema_v3_migration_paths() {
     let db_path = root.0.join("plan.sqlite3");
     std::fs::create_dir_all(&root.0).expect("create db directory");
     let authority = SqlitePlanAuthority::open(&db_path).expect("fresh open");
-    assert_eq!(user_version(&db_path), 5);
+    assert_eq!(user_version(&db_path), 6);
     let plan_id = first_plan(&authority);
     let node_id = first_node_id(&authority, plan_id);
     let decision = residency_step(
@@ -777,7 +778,7 @@ fn schema_v3_migration_paths() {
     drop(authority);
 
     let reopened = SqlitePlanAuthority::open(&db_path).expect("reopen at v3");
-    assert_eq!(user_version(&db_path), 5);
+    assert_eq!(user_version(&db_path), 6);
     let view = reopened
         .inspect_node_residency(plan_id, node_id)
         .expect("view after reopen")
@@ -797,7 +798,7 @@ fn schema_v3_migration_paths() {
         .expect("stamp v2");
     drop(raw);
     let remigrated = SqlitePlanAuthority::open(&db_path).expect("idempotent re-migration");
-    assert_eq!(user_version(&db_path), 5);
+    assert_eq!(user_version(&db_path), 6);
     let view = remigrated
         .inspect_node_residency(plan_id, node_id)
         .expect("view after re-migration")

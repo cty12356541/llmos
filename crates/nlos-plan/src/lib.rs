@@ -44,13 +44,14 @@ use std::fmt;
 pub use model::{
     ApplyPlanRevisionRequest, ChainVerification, EcosystemEntityKind, EcosystemEntityState,
     EcosystemResolutionDecision, EcosystemResolutionHandle, EcosystemSelector,
-    EcosystemSourceLookup, GenerationExpectation, MAX_DECLARED_NODES_PER_REVISION,
-    MAX_DEPENDENCIES_PER_NODE, NodeResidencyTier, NodeResidencyView, NodeTransitionDecision,
-    NodeTransitionRequest, NodeTransitionVoucher, PlanNodeDeclaration, PlanNodeKind,
-    PlanNodeRecord, PlanNodeState, PlanResolutionDecision, PlanResolutionHandle,
-    PlanRevisionDecision, PlanRevisionReceipt, PlanRevisionSelector, PlanView,
-    ResidencyTransitionDecision, ResidencyTransitionRequest, ResidencyTransitionVoucher,
-    ResolveEcosystemRequest, ResolvePlanRequest, ResolvedPlanNode,
+    EcosystemSourceLookup, FanoutCondition, GenerationExpectation, MAX_CONDITION_NAMESPACES,
+    MAX_DECLARED_NODES_PER_REVISION, MAX_DEPENDENCIES_PER_NODE, NamespaceCondition, NodeConditions,
+    NodeResidencyTier, NodeResidencyView, NodeTransitionDecision, NodeTransitionRequest,
+    NodeTransitionVoucher, PlanNodeDeclaration, PlanNodeKind, PlanNodeRecord, PlanNodeState,
+    PlanResolutionDecision, PlanResolutionHandle, PlanRevisionDecision, PlanRevisionReceipt,
+    PlanRevisionSelector, PlanView, ResidencyTransitionDecision, ResidencyTransitionRequest,
+    ResidencyTransitionVoucher, ResolveEcosystemRequest, ResolvePlanRequest, ResolvedPlanNode,
+    ResourceContractCondition,
 };
 pub use model::{
     MaterializationAdmission, MaterializationAdmissionVerdict, MaterializationApproval,
@@ -226,6 +227,13 @@ pub enum PlanStoreError {
     /// closed enum (fail-closed readback; the kind domain grows only via
     /// schema migrations).
     EcosystemKindUnknown(i64),
+    /// A node's structured G3 condition set violates a structural rule
+    /// (W36-P7): empty/duplicate/over-bound namespace set, an all-zero
+    /// resource contract, or a zero fanout bound. The digest-only
+    /// declaration form is unaffected.
+    InvalidNodeConditions {
+        reason: &'static str,
+    },
 }
 
 impl fmt::Display for PlanStoreError {
@@ -380,6 +388,9 @@ impl fmt::Display for PlanStoreError {
                 formatter,
                 "stored ecosystem receipt carries unknown entity kind {value}"
             ),
+            Self::InvalidNodeConditions { reason } => {
+                write!(formatter, "invalid node gate conditions: {reason}")
+            }
         }
     }
 }

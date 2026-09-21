@@ -1,7 +1,9 @@
 //! Domain model of the durable `TaskPlan`/`TaskNode` declaration authority
 //! (ADR-0016 决定 2, v0.5 §24.1.1/§25.2.1 skeleton subset).
 
-use nlos_types::{ArtifactId, IdempotencyKey, PackageId, ReceiptId, TaskNodeId, TaskPlanId};
+use nlos_types::{
+    ArtifactId, IdempotencyKey, NamespaceId, PackageId, ReceiptId, TaskNodeId, TaskPlanId,
+};
 
 /// Domain separator for the authority-derived [`TaskPlanId`].
 pub const PLAN_ID_DOMAIN: &[u8] = b"llmos/plan/plan-id/v1";
@@ -47,6 +49,9 @@ pub const ECOSYSTEM_RESOLUTION_ID_DOMAIN: &[u8] = b"llmos/plan/ecosystem-resolut
 pub const MAX_DECLARED_NODES_PER_REVISION: usize = 100_000;
 /// Structural admission bound for one node's dependency edges.
 pub const MAX_DEPENDENCIES_PER_NODE: usize = 256;
+/// Structural admission bound for one node's declared namespace set
+/// (the [`NamespaceCondition`] posture; same bound as dependencies).
+pub const MAX_CONDITION_NAMESPACES: usize = 256;
 
 /// What a declared node executes as (v0.5 `agent_role_or_executable`).
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -280,6 +285,176 @@ pub struct PlanNodeDeclaration {
     pub policy_digest: [u8; 32],
     /// Digest of the requested resource upper bound.
     pub resource_ceiling_digest: [u8; 32],
+    /// Structured form of the three G3 gate conditions (W36-P7): the
+    /// typed [`NodeConditions`] upgrade of what previously rode the
+    /// digest slots by convention only. `None` (the digest-only form)
+    /// remains fully accepted and hashes bit-identically to the
+    /// pre-v6 formula.
+    pub conditions: Option<NodeConditions>,
+}
+
+/// Structured form of the three G3 gate conditions W28-A carried as
+/// opaque digests (W36-P7; W31-G §8.2.2): v0.5 行 3650
+/// `[PLAN-LAZY-001]`'s Namespace / `ResourceContract` / fanout gate
+/// declarations. Validation is structural (canonical, bounded, honest
+/// to declare); *enforcement* stays with the future authorities — the
+/// materialization gate consumes this typed form when they land.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NodeConditions {
+    pub namespace: NamespaceCondition,
+    pub resource_contract: ResourceContractCondition,
+    pub fanout: FanoutCondition,
+}
+
+/// The namespaces the node declares it will act within; the gate
+/// consults the Namespace/Capability authority against this set.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NamespaceCondition {
+    /// Declaration order is not identity: the canonical encoding sorts,
+    /// so re-declaring the same set in another order keeps the node
+    /// digest bitwise (duplicates are refused typed, not deduplicated).
+    pub namespaces: Vec<NamespaceId>,
+}
+
+/// Requested per-dimension resource ceilings, mirroring the fixed
+/// three-dimension `ResourceDemand` vocabulary of the resource
+/// authority (`cpu_shares` / `memory_mib` / `io_weight`, W22-R). At least one
+/// dimension must be non-zero — a declared contract of nothing is
+/// refused typed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ResourceContractCondition {
+    pub cpu_shares: u64,
+    pub memory_mib: u64,
+    pub io_weight: u64,
+}
+
+/// The node's declared upper bound on live downstream fanout
+/// (`[PLAN-TOPIC-001]`/`[MSG-PAY-001]` posture: a declared fanout bound
+/// must carry a bounded payer/grant before `MATERIALIZING`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FanoutCondition {
+    pub max_downstream_fanout: u64,
+}
+
+impl NodeConditions {
+    /// Structural validation of one typed condition set. Called on the
+    /// apply path before any digest is computed, and re-run by decode
+    /// (a stored body that fails it is corrupt, never reinterpreted).
+    pub(crate) fn validate(&self) -> Result<(), crate::PlanStoreError> {
+        if self.namespace.namespaces.is_empty() {
+            return Err(crate::PlanStoreError::InvalidNodeConditions {
+                reason: "namespace condition must declare at least one namespace",
+            });
+        }
+        if self.namespace.namespaces.len() > MAX_CONDITION_NAMESPACES {
+            return Err(crate::PlanStoreError::InvalidNodeConditions {
+                reason: "namespace condition exceeds the admission bound",
+            });
+        }
+        let mut seen = std::collections::HashSet::with_capacity(self.namespace.namespaces.len());
+        for namespace in &self.namespace.namespaces {
+            if !seen.insert(*namespace) {
+                return Err(crate::PlanStoreError::InvalidNodeConditions {
+                    reason: "duplicate namespace in one condition set",
+                });
+            }
+        }
+        if self.resource_contract.cpu_shares == 0
+            && self.resource_contract.memory_mib == 0
+            && self.resource_contract.io_weight == 0
+        {
+            return Err(crate::PlanStoreError::InvalidNodeConditions {
+                reason: "resource contract must request at least one non-zero dimension",
+            });
+        }
+        if self.fanout.max_downstream_fanout == 0 {
+            return Err(crate::PlanStoreError::InvalidNodeConditions {
+                reason: "fanout condition must bound at least one downstream",
+            });
+        }
+        Ok(())
+    }
+
+    /// Canonical byte encoding (schema tag 1): the sorted namespace set
+    /// (order-independent identity), then the three resource dimensions
+    /// and the fanout bound as big-endian u64. Assumes [`Self::validate`]
+    /// passed; the encoding is the node-digest fold input.
+    pub(crate) fn canonical_bytes(&self) -> Vec<u8> {
+        let mut namespaces = self.namespace.namespaces.clone();
+        namespaces.sort_unstable();
+        let mut bytes = Vec::with_capacity(41 + namespaces.len() * 16);
+        bytes.push(1_u8);
+        bytes.extend_from_slice(&(namespaces.len() as u64).to_be_bytes());
+        for namespace in namespaces {
+            bytes.extend_from_slice(namespace.as_bytes());
+        }
+        bytes.extend_from_slice(&self.resource_contract.cpu_shares.to_be_bytes());
+        bytes.extend_from_slice(&self.resource_contract.memory_mib.to_be_bytes());
+        bytes.extend_from_slice(&self.resource_contract.io_weight.to_be_bytes());
+        bytes.extend_from_slice(&self.fanout.max_downstream_fanout.to_be_bytes());
+        bytes
+    }
+
+    /// Decodes one canonical body and re-validates it; anything malformed
+    /// or non-canonical (unsorted namespaces, trailing bytes) fails
+    /// closed as a corrupt record.
+    pub(crate) fn decode(bytes: &[u8]) -> Result<Self, crate::PlanStoreError> {
+        let corrupt = |reason: &'static str| crate::PlanStoreError::CorruptRecord(reason);
+        if bytes.first() != Some(&1_u8) {
+            return Err(corrupt("node conditions schema tag"));
+        }
+        let mut offset = 1_usize;
+        let take = |offset: &mut usize, width: usize| -> Option<&[u8]> {
+            let slice = bytes.get(*offset..(*offset + width))?;
+            *offset += width;
+            Some(slice)
+        };
+        let count_bytes = take(&mut offset, 8)
+            .and_then(|slice| <[u8; 8]>::try_from(slice).ok())
+            .ok_or_else(|| corrupt("node conditions namespace count"))?;
+        let count = usize::try_from(u64::from_be_bytes(count_bytes))
+            .map_err(|_| corrupt("node conditions namespace count"))?;
+        if count == 0 || count > MAX_CONDITION_NAMESPACES {
+            return Err(corrupt("node conditions namespace count"));
+        }
+        let mut namespaces = Vec::with_capacity(count);
+        for _ in 0..count {
+            let id_bytes = take(&mut offset, 16)
+                .and_then(|slice| <[u8; 16]>::try_from(slice).ok())
+                .ok_or_else(|| corrupt("node conditions namespace id"))?;
+            namespaces.push(NamespaceId::from_bytes(id_bytes));
+        }
+        let mut dimension = || -> Result<u64, crate::PlanStoreError> {
+            take(&mut offset, 8)
+                .and_then(|slice| <[u8; 8]>::try_from(slice).ok())
+                .map(u64::from_be_bytes)
+                .ok_or_else(|| corrupt("node conditions resource dimension"))
+        };
+        let cpu_shares = dimension()?;
+        let memory_mib = dimension()?;
+        let io_weight = dimension()?;
+        let max_downstream_fanout = dimension()?;
+        if offset != bytes.len() {
+            return Err(corrupt("node conditions trailing bytes"));
+        }
+        let is_sorted = namespaces.is_sorted();
+        let conditions = Self {
+            namespace: NamespaceCondition { namespaces },
+            resource_contract: ResourceContractCondition {
+                cpu_shares,
+                memory_mib,
+                io_weight,
+            },
+            fanout: FanoutCondition {
+                max_downstream_fanout,
+            },
+        };
+        conditions.validate()?;
+        if !is_sorted {
+            return Err(corrupt("node conditions are not canonical"));
+        }
+        Ok(conditions)
+    }
 }
 
 /// Request to apply one plan revision (revision 1 creates the plan).
