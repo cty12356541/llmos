@@ -91,9 +91,12 @@ sample-app-driver uninstall $STATE <package-id> <service_os_pid>
 
 ## 诚实范围
 
-- 载荷执行面（把 `executable` entry 的字节真正跑起来）是后续车道：
-  样例的 run 阶段驱动的是公共任务/操作/纤维面，载荷以 artifact 形态
-  可消费（verify 时已物化进 artifact store）。
+- 载荷执行面：内核侧最小车道已由 W35-P2 前片落地（`nlos-slice-k::
+  execute_application_payload`——已安装应用当前代际的 executable entry
+  字节经 nlos-driver-mock 面真实执行，receipts 可查；CLI `nlos-package
+  install` 同批收口），但**本样例的 run 阶段未接线该车道**——样例驱动
+  的仍是公共任务/操作/纤维面，载荷以 artifact 形态可消费。样例自身
+  接线执行车道属后续切片。
 - `background-service` 的 Os 侧替身是 `sleep 600` 真实子进程（slice-k
   测试同款纪律），经 supervisor registry 注册、被真实 SIGTERM 杀死；
   它不是内核托管的服务进程。

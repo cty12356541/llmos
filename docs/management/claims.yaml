@@ -16,7 +16,7 @@
   status: PARTIAL_PASS
   implementation_refs:
     - crates/nlos-application
-    - crates/nlos-artifact/src/bin/nlos-package.rs
+    - crates/nlos-package/src/main.rs
     - examples/sample-app
   test_refs:
     - crates/nlos-application/tests
@@ -1104,7 +1104,7 @@
   status: IN_PROGRESS
   implementation_refs:
     - crates/nlos-artifact
-    - crates/nlos-artifact/src/bin/nlos-package.rs
+    - crates/nlos-package/src/main.rs
   test_refs:
     - crates/nlos-artifact/tests
   evidence_refs:
