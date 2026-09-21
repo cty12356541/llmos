@@ -1,5 +1,7 @@
 # 阶段 B 权威进度单
 
+> 本轮（2026-09-21 第九十二增量·W34-D 退出定案）阶段 B 退出评审收口：维护者审阅退出评审包（[W34-A 六门矩阵](../evidence/stage-b/reviews/w34a-six-gate-matrix.md)：B-002/003/004/006 SATISFIED-WITH-BOUNDARIES、B-001/005 PARTIAL-residuals、无 OPEN 门；P0=0；claims 71/risks 12 全量回填 lint 0）后回复「继续」，按 §6.5.4 保留用户门批准退出——§6 状态翻转 `IN_PROGRESS / NOT EXITED` → `EXITED`。具名 residual 显式移交阶段 C（§6.5.6 清单 17 项，含升级条款 RISK-B-12）；收口 CI [run 35540402321](https://github.com/cty12356541/llmos/actions/runs/35540402321) 四腿全绿。生产量级声明与退出解耦（门原文禁令保持有效）。本增量不改任何能力 Claim 状态；阶段 C 编排另立。
+
 > 本轮（2026-09-21 第九十一增量）W27–W33 全量收官波按 §6.5 派发纪律（2026-09-20 补充）完成——真依赖就绪集跨波晋升、八轮派发约 45 条实现/评审车道、单控制器串行集成。**全仓门：275 测试二进制 / 1536 passed / 0 failed / 20 ignored**（W26 基线 218/1177，净增 57 二进制 359 用例）；fmt/clippy（--all-targets --all-features）双 0；schema check-generated 0；desktop 全量构建 0；三平台 CI/MSRV 全绿：[run 35540402321](https://github.com/cty12356541/llmos/actions/runs/35540402321)（`98e372e`，windows/ubuntu/macos/MSRV 四腿 success；Pages success run `35532408630`）；cfg-off 家族 10 处 Windows 腿修复随 `c46d038`..`98e372e` 六个收尾提交留痕；夜间 scale-probe 自 09-13 起的既有失败（blocking_io_negative 探针）与本波无关、如实登记待专项。**退出门裁定（三份评审记录 [reviews/w31g-road-b004-gates](../evidence/stage-b/reviews/w31g-road-b004-gates.md)、[reviews/w33h-road-b001-b002](../evidence/stage-b/reviews/w33h-road-b001-b002.md)）**：ROAD-B-004 六门 G1–G6 全 SATISFIED-WITH-BOUNDARIES（具名边界随裁定带入）；ROAD-B-001 构造性证明成立、PARTIAL 近收口（差登记 defects 处置）；ROAD-B-002 四维齐（W32-F UI Surface 落地闭合唯一硬缺口）PARTIAL（Windows 实杀等登记项）；ROAD-B-003 六域闭环（[W30-A](../evidence/stage-b/b-task-008c2g-complete-writeset.md) 六域混合写集验收 + W30-C provider 降级/投机 fence）；ROAD-B-005 GUI 全链（W32-A..F + W32-C 四路径 parity 钉死 20 命令家族 + W32-G 四层 inspect，SABI 增至 v1.5）。**架构决定**：[ADR-0017](./adrs/0017-resource-operation-cross-authority-prepare-finalize.md) 定案并实现闭环（Resource 有界 coordinator schema v43 + 三域 worker cycle + G1–G7；Operation verify 半边负门）。**新权威/服务**：nlos-plan（声明面状态权威 v1–v3：G1 不可变 revision 链/G4 resolver/G3 物化门/residency/两层调度器/100K 惰性有界实测）、nlos-driver-mock（provider 面 + 降级/fence）、nlos-notify/nlos-search（X-1 薄层）、desktop/（Tauri 可信壳）、examples/sample-app（第三方全周期）、nlos-package 工具链 + PKG-CONF-001..042 conformance kit。**工程治理**：机器台账 lint 全波拦截 6 次索引漂移（含 reviews/ 子目录 rglob 修正）；4 处 CI 根因修复留痕（Windows cfg dead_code ×2、clippy 1.98 chunks_exact 新 lint、conformance bin required-features 逃过 --all-targets → 本地门升级 --all-features、慢 runner worker 计数器读侧竞态 ×3 有界轮询）；两处纪律违规（amend+force-with-lease 自家坏提交、管道退出码掩盖失败门）在运行时台账留痕。**遗留**：W34 退出评审波（W34-A 证据矩阵/B claims 全量回填/C 未知风险清单 → W34-D 用户门）；slice-k-demo STEP 09d 登记 defect 待处置；release profile 复测与多平台 100K 探针沿各证据登记递延。下一验收门更新为：**W34 阶段 B 退出评审（§6.5.5 五条件逐一满足 → W34-D 维护者明确批准）**。
 
 > 本轮（2026-09-20 第九十增量·工具波登记，不占 stage-B 车道）工具波 T1「dash 插件」完成并推送 `origin/feat/dash-plugin`（tip `38c3910`）：仓库级 Claude Code 项目仪表盘插件（`plugins/dash/`——薄事件 hooks + git 快照 + SDD 台账五态深语义适配；oneline/panel/html+mermaid 渲染、聚焦/单键 watch 交互；设计 [spec](../superpowers/specs/2026-09-13-dash-plugin-design.md)/[plan](../superpowers/plans/2026-09-13-dash-plugin.md) 13 任务 TDD）。实现 `d90cac9`→`595d2a1` 21 提交 + 合流 `feat/dash-plugin-design`（spec §11 调度器二期修订并入；旧 `render_dag.py` 渲染件退役，design 侧 `b81e655` mtime 修复随之作废、留痕）+ main 基线并线（`cee684a`：§6.5 编排 + ADR-0016）+ 波次号改 T（`38c3910`）。验证：插件单测 61/61 OK（`python3 -m unittest discover`）+ CLI oneline/panel 实跑 exit 0。**波次号约定：工具链波次自本增量起用 T 编号（T1=dash 插件；T2 头号议题=调度器，见 spec §11），不占用 §6.5.3 的 W 车道号——W27 仍为六条 stage-B 车道**。dash 分支并入 main 时点未定（工具链改动，不阻塞 §6.5 车道推进）；`feat/dash-plugin-design` 已完全包含于 `feat/dash-plugin`（并入 main 后可删）。本增量不改变 §6.5 编排与 §5 下一验收门。
@@ -1293,7 +1295,7 @@ TaskGroup membership generation/root CAS + Admission/Removal Receipt            
 | `ROAD-B-005` Task Manager 多层手动控制与 NL/GUI/CLI 同路 | 局部推进：NL 四命令同义词 + ExportMetrics + **InspectProcess** NL/CLI（commit `e40de48`）+ **InspectTask socket parity + InspectResource NL/CLI**（commit `b75d8c5`，[B-CONTROL-003](../evidence/stage-b/b-control-003-nl-prefix.md) §W17-005）+ **六命令 EN/ZH 同义词扩展**（commit `ee7363a`，§W18-005）+ **inspect 同义词 `查看 健康`**（commit `3c12370`，§W19-005）+ **`检查健康`/`检查 健康`**（commit `c4567c2`，§W20-005）+ **`health status`/`健康状态`/`健康 状态`**（commit `76cf285`，§W21-005）+ **`task status`/`任务状态`/`任务 状态` + `resource status`/`资源状态`/`资源 状态`**（commit `e09ff64`，§W22-005）已有单节点 H3；**pause/resume/cancel + kill/throttle/reclaim 变体与三条真实执行路径**（W28-D/W29-D 已并入本分支，§W28-D/§W29-D）+ **B5-3 各层 inspect 补齐**（本次提交 §W32-G：TaskGroup/TaskNode/ExecutionFiber/Topic/Operation 五 typed Receipt 视图 + NL/CLI 三路 parity）已有单节点 H3；W28-D/W29-D 全命令面 + 真实执行接线、W32-A..F Trusted GUI 全链、W32-C 四路径 parity 钉死（20 命令家族）已落；GUI 真机战役（computer-use 清单）与多层手动调度深度登记 |
 | `ROAD-B-006` 100K dormant Fiber、阻塞隔离、crash propagation、Activation meter | 局部推进：100K fiber、cancel/late-callback、structured join/detach、process crash 合同层 + runtime terminal 门（`a69e709`）、Activation meter（`c3b2a10`）、阻塞 I/O 负向（`9b262f3`）、**批量 cancel 传播**（process `520cfce`）、**platform kill 合同层**（process `89b14a5`）+ **AlreadyTerminated + inspect 读回**（process `0ca7251`，W19-P）+ **POSIX platform kill 最小前缀**（process `207ddd2`，W20-P）+ **Windows platform kill adapter 前缀**（process `1a8baea`，W21-P）+ **supervisor pid 注册表前缀**（`SupervisorPidRegistry` 单调代次栅栏 + `pid_map()` 直喂 adapter，process `a1da2e0`，W22-P）、**`backpressure_wait`/`suspended` 生命周期**（runtime `2332ce7`，§6.8）+ **lifecycle 10K 探针**（runtime `8425be7`，§6.10，W19-006）+ **lifecycle 100K 探针实跑**（runtime `aa71d6c`，§6.11，W20-006）+ **lifecycle meter aggregate inspect 前缀**（runtime `ba9e3c9`，§6.12，W21-006）+ **OpenMetrics 文本 exposition 前缀**（runtime `f81e57f`，§6.14，W22-006）+ **Activation meter 10K/100K ignore 探针实跑**（runtime `a82cd5b`/`2236e26`，§6.9.3–§6.9.4）已有单节点 H3；W27-C runtime 批量 cancel 联动 + late-callback 矩阵、W27-F wake latency/fairness 确定性测试已落；Windows platform kill CI 步骤已接（W28-F，windows leg 首跑绿 run `35511878717`）；B6-4 跨平台 supervisor、B6-5 完整 BirthDecision、runtime kill receipt 消费登记；仍为 `PARTIAL_PASS` |
 
-阶段 B 当前总体状态：`IN_PROGRESS / NOT EXITED`。
+阶段 B 当前总体状态：**`EXITED`（2026-09-21，W34-D）**——维护者对退出评审包（§6.5.5 五条件 + 六门裁定 + P0=0）回复「继续」批准退出；生产量级声明（PID 级 Agent 容量 / coroutine 级大规模并发）按各门原文禁令仍以 release-profile/多平台复测为前置，移交清单见 §6.5.6。
 
 ## 6.5 阶段 B 收官编排计划（W27 起 → 阶段退出门）
 
@@ -1502,6 +1504,28 @@ B6-1..B6-5 相互独立可并行 → ROAD-B-006
 3. 未知风险清单显式列出，各项有 owner 与缓解措施；
 4. [管理机制 §7](./README.md#7-评审与决策机制)「Stage 退出或 production claim」要求的 Evidence review + 未知风险清单 + 明确批准完成；
 5. 本节全部车道 DONE，或经批准显式移交阶段 C 并在本节登记。
+
+### 6.5.6 移交阶段 C 清单（2026-09-21，W34-D 批准随附）
+
+退出评审中具名、未在本阶段闭合的登记项，全部显式移交：
+
+1. slice-k-demo STEP 09d defect 根因处置（RISK-B-12 升级条款随行：若证明为生产 GC 误收在册 blob 即升 P0 并重开退出前提）；
+2. 载荷执行面 + `nlos package install` CLI（B-001 边界）；
+3. GUI 真机战役（computer-use 清单：面板/focus/送对话/statusline/hooks 实时性/HTML/降级三连）；Windows GUI；
+4. Windows live-child 实杀测试（`taskkill /F /T` 成功路径无真实子进程断言——W28-F 只闭合「CI 复验已跑」半维）；
+5. release-profile + 多平台（Linux/Windows）规模复测与 CI 化（全部规模数字现为 debug/test 单平台 macOS 口径；PID 级容量与 coroutine 级并发生产声明以此为前置）；
+6. 100K 级 cancel/batch-cancel 探针、多 worker wake fairness、端到端墙钟分布；
+7. G4 生态 selector 半边（Package/Skill/Tool/Model/Artifact/Topic/外部服务）；G3 Namespace/ResourceContract/fanout 从 digest 升结构化；
+8. apply 侧 TaskNode 维 admission consult（现仅物化半边）；Task-reclaim × plan-residency 轴互连；PINNED tier；调度器自身规模探针；100K@50% cell 与回收再入场矩阵；
+9. provider 面真实载体替换确定性 mock + transport 跨平台 + payload codec 冻结通道；
+10. runtime kill receipt 消费与 Activation meter 联动；B6-4 跨平台 supervisor spawn/suspend/kill；B6-5 完整 BirthDecision；
+11. Application 层控制面与生命周期 NL 动词（uninstall/disable application）；supervisor 自动 pid 发现/unregister；
+12. `restore_process` 复活链、干净退出终态路径、teardown 并发竞争面、teardown/NL kill 幂等键同源；
+13. TS/Python conformance 对 SABI v1.2–v1.5 新臂/新视图的 golden 钉死；
+14. 夜间 scale-probe 既有失败（自 2026-09-13，blocking_io_negative 探针）专项排查；
+15. 多 Cell / 分布式（阶段 C 本体）；Notification/Search 超最小面扩展；完整桌面（Task Space 全量枚举 IPC 面、五层 desktop 派发）；
+16. 真实硬件掉电与 M4/M6/M8 模型校准（层 3+）；
+17. 生产 signing key custody / enforcement-gateway reconciliation authority（ADR-0017 约束 4 的终态承载）。
 
 ## 7. 进度更新协议
 
