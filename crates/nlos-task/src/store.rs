@@ -1942,26 +1942,35 @@ impl SqliteTaskAuthority {
     /// Returns [`TaskStoreError::ReclaimExecutionProfileMismatch`] when the
     /// warrant's advisory tier differs from the authority's bound profile,
     /// [`TaskStoreError::ReclaimExecutionSequenceOutOfRange`] for a
-    /// sequence index outside the default policy, and propagates any
+    /// sequence index outside the default policy, propagates any
     /// non-skip closure failure verbatim (the skip set is the structurally
     /// non-evictable members rediscovered between the snapshot and the
-    /// close: `OutstandingEffectSlots`, `PermitHasEffects`).
-    pub fn drive_working_set_reclaim(
+    /// close: `OutstandingEffectSlots`, `PermitHasEffects`), and
+    /// propagates the residency drive's own typed refusal (W31-G
+    /// §8.2.5 — an eviction records the plan-side walk in this call).
+    pub fn drive_working_set_reclaim<R>(
         &self,
         request: WorkingSetReclaimExecutionRequest,
-    ) -> Result<WorkingSetReclaimExecutionReport, TaskStoreError> {
+        residency: &R,
+    ) -> Result<WorkingSetReclaimExecutionReport, R::Error>
+    where
+        R: crate::ReclaimResidencyDrive,
+        R::Error: From<TaskStoreError>,
+    {
         let execution = request.execution;
         if execution.advisory.profile_id != self.scale_profile.profile_id {
             return Err(TaskStoreError::ReclaimExecutionProfileMismatch {
                 advisory_profile_id: execution.advisory.profile_id,
                 authority_profile_id: self.scale_profile.profile_id,
-            });
+            }
+            .into());
         }
         let start = usize::from(execution.execution_sequence);
         if start >= TASK_DEFAULT_RECLAIM_POLICY.phases.len() {
             return Err(TaskStoreError::ReclaimExecutionSequenceOutOfRange {
                 sequence: execution.execution_sequence,
-            });
+            }
+            .into());
         }
 
         let reclaim_threshold_count = self.scale_profile.reclaim_threshold_count();
@@ -2025,6 +2034,7 @@ impl SqliteTaskAuthority {
             let connection = self.lock_connection()?;
             count_issued_permits(&*connection)?
         };
+        residency.drive_reclaim_residency(&evictions, request.executed_at_ms)?;
         Ok(WorkingSetReclaimExecutionReport {
             pressure_relieved: post_active_count <= reclaim_threshold_count,
             execution,

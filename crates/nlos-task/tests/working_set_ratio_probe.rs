@@ -53,9 +53,10 @@ use std::time::{Duration, Instant};
 use nlos_task::{
     AttemptSpec, Authorities, DEFAULT_RECLAIM_THRESHOLD_RATIO, MaterializationAdmissionFacts,
     PermitDecision, PermitRequest, ReclaimPhase, ScaleProfile, SnapshotBundle, SqliteTaskAuthority,
-    TASK_PROFILE_10K, TASK_PROFILE_100K, TaskSpec, TaskStoreError, WorkingSetPressureSnapshot,
-    WorkingSetReclaimAdvisory, WorkingSetReclaimExecution, WorkingSetReclaimExecutionRequest,
-    WorkingSetReclaimOutcome, empty_effect_history_root, enforce_working_set_admission,
+    TASK_PROFILE_10K, TASK_PROFILE_100K, TaskSpec, TaskStoreError, UnlinkedReclaimResidency,
+    WorkingSetPressureSnapshot, WorkingSetReclaimAdvisory, WorkingSetReclaimExecution,
+    WorkingSetReclaimExecutionRequest, WorkingSetReclaimOutcome, empty_effect_history_root,
+    enforce_working_set_admission,
 };
 use nlos_types::{
     CancellationScopeId, Generation, IdempotencyKey, TaskAttemptId, TaskId, TaskSnapshotId,
@@ -705,10 +706,13 @@ fn run_working_set_ratio_matrix_cell(cell: &MatrixCell, print: bool) {
     let execution = last_execution.expect("cap issuance surfaces a reclaim warrant");
     let reclaim_started = Instant::now();
     let reclaim_report = authority
-        .drive_working_set_reclaim(WorkingSetReclaimExecutionRequest {
-            execution,
-            executed_at_ms: 8_000,
-        })
+        .drive_working_set_reclaim(
+            WorkingSetReclaimExecutionRequest {
+                execution,
+                executed_at_ms: 8_000,
+            },
+            &UnlinkedReclaimResidency,
+        )
         .expect("drive reclaim after cap fill");
     let reclaim_elapsed = reclaim_started.elapsed();
     assert!(

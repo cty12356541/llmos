@@ -2,12 +2,10 @@
 //! a driven working-set eviction must record `record_residency_transition`
 //! on the bound plan nodes — the two ledgers may not write independently.
 //!
-//! The Task authority still owns permit closure (`drive_working_set_reclaim`);
-//! the plan authority owns the residency walk. The seam is
-//! [`nlos_task::reclaim_residency_victims`] (eviction identities) plus
-//! [`nlos_plan::SqlitePlanAuthority::apply_reclaim_residency`] (one adjacent
-//! evict step per bound node). Assembler 1:1 task→node binding is test-
-//! owned here, same posture as the apply-admission consult mapping.
+//! The production path is [`SqliteTaskAuthority::drive_working_set_reclaim`]:
+//! permit closure and the plan-side residency walk happen in that one
+//! call. The assembler supplies a [`nlos_task::ReclaimResidencyDrive`]
+//! (1:1 task→node binding); it is not an after-the-fact seam.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -17,13 +15,80 @@ use nlos_plan::{
     PlanStoreError, ReclaimResidencyEviction, ResidencyTransitionRequest, SqlitePlanAuthority,
 };
 use nlos_task::{
-    Authorities, PermitDecision, PermitRequest, ScaleProfile, SnapshotBundle, SqliteTaskAuthority,
-    TaskSpec, WorkingSetReclaimExecutionRequest, empty_effect_history_root,
+    Authorities, PermitDecision, PermitRequest, ReclaimResidencyDrive, ScaleProfile,
+    SnapshotBundle, SqliteTaskAuthority, TaskSpec, TaskStoreError, WorkingSetReclaimEviction,
+    WorkingSetReclaimExecutionRequest, empty_effect_history_root,
 };
 use nlos_types::{
-    CancellationScopeId, Generation, IdempotencyKey, TaskAttemptId, TaskId, TaskPlanId,
+    CancellationScopeId, Generation, IdempotencyKey, TaskAttemptId, TaskId, TaskNodeId, TaskPlanId,
     TaskSnapshotId,
 };
+
+/// Cross-authority error so the production drive can `?` Task failures
+/// while still surfacing plan-side PINNED / CAS refusals.
+#[derive(Debug)]
+enum ReclaimDriveError {
+    #[allow(dead_code)] // carried for `From<TaskStoreError>` on the drive path
+    Task(TaskStoreError),
+    Plan(PlanStoreError),
+}
+
+impl From<TaskStoreError> for ReclaimDriveError {
+    fn from(error: TaskStoreError) -> Self {
+        Self::Task(error)
+    }
+}
+
+/// Assembler binding: each evicted Task maps onto one declared node;
+/// the drive calls [`SqlitePlanAuthority::apply_reclaim_residency`]
+/// inside `drive_working_set_reclaim`, not after it.
+struct BoundPlanResidency<'a> {
+    plan: &'a SqlitePlanAuthority,
+    plan_id: TaskPlanId,
+    node_a: TaskNodeId,
+    node_b: TaskNodeId,
+}
+
+impl BoundPlanResidency<'_> {
+    fn node_for(&self, id: TaskId) -> Result<TaskNodeId, ReclaimDriveError> {
+        if id == task_id(0) {
+            Ok(self.node_a)
+        } else if id == task_id(1) {
+            Ok(self.node_b)
+        } else {
+            Err(ReclaimDriveError::Task(TaskStoreError::TaskNotFound))
+        }
+    }
+}
+
+impl ReclaimResidencyDrive for BoundPlanResidency<'_> {
+    type Error = ReclaimDriveError;
+
+    fn drive_reclaim_residency(
+        &self,
+        evictions: &[WorkingSetReclaimEviction],
+        executed_at_ms: i64,
+    ) -> Result<(), ReclaimDriveError> {
+        let mapped = evictions
+            .iter()
+            .enumerate()
+            .map(|(index, eviction)| {
+                Ok(ReclaimResidencyEviction {
+                    plan_id: self.plan_id,
+                    node_id: self.node_for(eviction.task_id)?,
+                    expected_declared_revision: 1,
+                    idempotency_key: IdempotencyKey::from_bytes(id_bytes(0xd0, index as u64)),
+                    transitioned_at_ms: u64::try_from(executed_at_ms.saturating_add(100))
+                        .expect("executed_at_ms is non-negative"),
+                })
+            })
+            .collect::<Result<Vec<_>, ReclaimDriveError>>()?;
+        self.plan
+            .apply_reclaim_residency(&mapped)
+            .map_err(ReclaimDriveError::Plan)?;
+        Ok(())
+    }
+}
 
 static RECLAIM_PROFILE: ScaleProfile = ScaleProfile {
     profile_id: "task-reclaim-residency",
@@ -206,47 +271,33 @@ fn reclaim_drive_records_plan_residency_evict_step() {
         .reclaim_execution
         .expect("second issuance crosses the soft threshold");
 
+    let binding = BoundPlanResidency {
+        plan: &plan,
+        plan_id,
+        node_a,
+        node_b,
+    };
     let report = task
-        .drive_working_set_reclaim(WorkingSetReclaimExecutionRequest {
-            execution: warrant,
-            executed_at_ms: 9_000,
-        })
-        .expect("drive reclaim");
+        .drive_working_set_reclaim(
+            WorkingSetReclaimExecutionRequest {
+                execution: warrant,
+                executed_at_ms: 9_000,
+            },
+            &binding,
+        )
+        .expect("drive reclaim records residency");
     assert!(report.post_active_count < report.pre_active_count);
     let victims = SqliteTaskAuthority::reclaim_residency_victims(&report);
     assert_eq!(victims.len(), 1, "soft-threshold overshoot is one unit");
-
-    let binding = |victim: TaskId| {
-        if victim == task_id(0) {
-            node_a
-        } else if victim == task_id(1) {
-            node_b
-        } else {
-            panic!("unexpected victim {victim:?}")
-        }
-    };
-    let evictions: Vec<ReclaimResidencyEviction> = victims
-        .into_iter()
-        .enumerate()
-        .map(|(index, (id, _))| ReclaimResidencyEviction {
-            plan_id,
-            node_id: binding(id),
-            expected_declared_revision: 1,
-            idempotency_key: IdempotencyKey::from_bytes(id_bytes(0xd0, index as u64)),
-            transitioned_at_ms: 9_100,
-        })
-        .collect();
-    let evicted_node = evictions[0].node_id;
+    let evicted_node = binding
+        .node_for(victims[0].0)
+        .expect("victim is one of the two bound tasks");
     let stayed = if evicted_node == node_a {
         node_b
     } else {
         node_a
     };
 
-    let decisions = plan
-        .apply_reclaim_residency(&evictions)
-        .expect("apply reclaim to residency");
-    assert_eq!(decisions.len(), 1);
     assert_eq!(
         plan.inspect_node_residency(plan_id, evicted_node)
             .expect("inspect evicted")
@@ -312,38 +363,32 @@ fn reclaim_residency_refuses_pinned_victim() {
     let _ = issue_permit(&task, 0);
     let second = issue_permit(&task, 1);
     let warrant = second.reclaim_execution.expect("warrant");
-    let report = task
-        .drive_working_set_reclaim(WorkingSetReclaimExecutionRequest {
-            execution: warrant,
-            executed_at_ms: 9_000,
-        })
-        .expect("drive");
-    let victims = SqliteTaskAuthority::reclaim_residency_victims(&report);
-    assert_eq!(victims.len(), 1);
-
-    let evictions = vec![ReclaimResidencyEviction {
+    let binding = BoundPlanResidency {
+        plan: &plan,
         plan_id,
-        node_id: if victims[0].0 == task_id(0) {
-            node_a
-        } else {
-            node_b
-        },
-        expected_declared_revision: 1,
-        idempotency_key: IdempotencyKey::from_bytes([0xf0; 16]),
-        transitioned_at_ms: 9_100,
-    }];
-    let denied = plan
-        .apply_reclaim_residency(&evictions)
-        .expect_err("PINNED victim must refuse");
+        node_a,
+        node_b,
+    };
+    let denied = task
+        .drive_working_set_reclaim(
+            WorkingSetReclaimExecutionRequest {
+                execution: warrant,
+                executed_at_ms: 9_000,
+            },
+            &binding,
+        )
+        .expect_err("PINNED victim must refuse on the production drive");
     assert!(matches!(
         denied,
-        PlanStoreError::PinnedNodeNotEvictable { .. }
+        ReclaimDriveError::Plan(PlanStoreError::PinnedNodeNotEvictable { .. })
     ));
-    assert_eq!(
-        plan.inspect_node_residency(plan_id, evictions[0].node_id)
-            .expect("inspect")
-            .expect("node")
-            .tier,
-        NodeResidencyTier::Hot
-    );
+    for node_id in [node_a, node_b] {
+        assert_eq!(
+            plan.inspect_node_residency(plan_id, node_id)
+                .expect("inspect")
+                .expect("node")
+                .tier,
+            NodeResidencyTier::Hot
+        );
+    }
 }

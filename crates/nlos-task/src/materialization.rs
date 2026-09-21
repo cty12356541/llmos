@@ -22,10 +22,51 @@
 
 use nlos_types::{CommitPermitId, TaskId};
 
-use crate::pressure::WorkingSetReclaimExecutionReport;
+use crate::pressure::{WorkingSetReclaimEviction, WorkingSetReclaimExecutionReport};
 use crate::scale::ScaleProfile;
 use crate::store::SqliteTaskAuthority;
 use crate::{TaskStoreError, enforce_task_node_admission, enforce_working_set_admission};
+
+/// Production reclaim×residency drive (W36-P8; W31-G §8.2.5): the Task
+/// authority owns permit closure; this boundary is invoked **inside**
+/// [`SqliteTaskAuthority::drive_working_set_reclaim`] so an eviction
+/// records the plan-side residency walk in the same call. `Err` is
+/// fail-closed (PINNED / CAS / consult failure) — never a silent skip.
+pub trait ReclaimResidencyDrive {
+    /// The drive's own failure type (plan-side refusals stay with the
+    /// implementation; Task errors convert via `From`).
+    type Error;
+
+    /// Records one adjacent residency evict step per durably closed
+    /// working-set member.
+    ///
+    /// # Errors
+    ///
+    /// Implementation-defined typed refusal (for example a PINNED node).
+    fn drive_reclaim_residency(
+        &self,
+        evictions: &[WorkingSetReclaimEviction],
+        executed_at_ms: i64,
+    ) -> Result<(), Self::Error>;
+}
+
+/// Drive for Tasks that carry no plan binding: residency is not a
+/// second ledger for these members. Plan-bound reclaim must pass a
+/// drive that records `record_residency_transition`.
+pub struct UnlinkedReclaimResidency;
+
+impl ReclaimResidencyDrive for UnlinkedReclaimResidency {
+    type Error = TaskStoreError;
+
+    fn drive_reclaim_residency(
+        &self,
+        evictions: &[WorkingSetReclaimEviction],
+        executed_at_ms: i64,
+    ) -> Result<(), TaskStoreError> {
+        let _ = (evictions, executed_at_ms);
+        Ok(())
+    }
+}
 
 /// The admission facts an approved materialization carries back to the
 /// plan gate: the tier that answered and the projected counts the

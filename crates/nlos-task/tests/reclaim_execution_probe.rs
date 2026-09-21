@@ -32,7 +32,7 @@ use std::time::{Duration, Instant};
 
 use nlos_task::{
     Authorities, PermitDecision, PermitRequest, ScaleProfile, SnapshotBundle, SqliteTaskAuthority,
-    WorkingSetReclaimExecutionRequest, empty_effect_history_root,
+    UnlinkedReclaimResidency, WorkingSetReclaimExecutionRequest, empty_effect_history_root,
 };
 use nlos_types::{
     CancellationScopeId, Generation, IdempotencyKey, TaskAttemptId, TaskId, TaskSnapshotId,
@@ -226,10 +226,13 @@ fn run_tier(label: &str, profile: &'static ScaleProfile, ceiling: Duration) {
     let bytes_before_drive = database_bytes(&database.path);
     let drive_started = Instant::now();
     let report = authority
-        .drive_working_set_reclaim(WorkingSetReclaimExecutionRequest {
-            execution: warrant,
-            executed_at_ms: 900_000,
-        })
+        .drive_working_set_reclaim(
+            WorkingSetReclaimExecutionRequest {
+                execution: warrant,
+                executed_at_ms: 900_000,
+            },
+            &UnlinkedReclaimResidency,
+        )
         .expect("drive reclaim execution");
     let drive_total = drive_started.elapsed();
 

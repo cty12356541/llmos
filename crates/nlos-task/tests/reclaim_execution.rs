@@ -17,8 +17,8 @@ use nlos_task::{
     Authorities, ClosePermitDecision, ClosePermitRequest, LogicalEffectDescriptor, NoEffectReason,
     NoEffectRequest, PermitClosureOutcome, PermitDecision, PermitRequest, PermitState,
     PlannedEffect, ReceiptOutcome, ReclaimPhase, ScaleProfile, SnapshotBundle, SqliteTaskAuthority,
-    TaskSpec, TaskStoreError, WorkingSetReclaimAdvisory, WorkingSetReclaimExecution,
-    WorkingSetReclaimExecutionRequest, empty_effect_history_root,
+    TaskSpec, TaskStoreError, UnlinkedReclaimResidency, WorkingSetReclaimAdvisory,
+    WorkingSetReclaimExecution, WorkingSetReclaimExecutionRequest, empty_effect_history_root,
 };
 use nlos_types::{
     CancellationScopeId, Generation, IdempotencyKey, TaskAttemptId, TaskId, TaskSnapshotId,
@@ -289,10 +289,13 @@ fn drive_closes_mixed_working_set_through_public_closures() {
     assert!(before.needs_reclaim);
 
     let report = authority
-        .drive_working_set_reclaim(WorkingSetReclaimExecutionRequest {
-            execution: warrant,
-            executed_at_ms: 9_000,
-        })
+        .drive_working_set_reclaim(
+            WorkingSetReclaimExecutionRequest {
+                execution: warrant,
+                executed_at_ms: 9_000,
+            },
+            &UnlinkedReclaimResidency,
+        )
         .expect("drive reclaim execution");
 
     // The walk covers the full default policy from the planned step, with
@@ -402,20 +405,26 @@ fn drive_after_relief_is_the_legal_noop() {
         .expect("current advisory above threshold");
 
     let first = authority
-        .drive_working_set_reclaim(WorkingSetReclaimExecutionRequest {
-            execution: warrant,
-            executed_at_ms: 9_000,
-        })
+        .drive_working_set_reclaim(
+            WorkingSetReclaimExecutionRequest {
+                execution: warrant,
+                executed_at_ms: 9_000,
+            },
+            &UnlinkedReclaimResidency,
+        )
         .expect("first drive");
     assert_eq!(first.pre_active_count, 3);
     assert_eq!(first.evictions.len(), 1);
     assert!(first.pressure_relieved);
 
     let second = authority
-        .drive_working_set_reclaim(WorkingSetReclaimExecutionRequest {
-            execution: warrant,
-            executed_at_ms: 9_100,
-        })
+        .drive_working_set_reclaim(
+            WorkingSetReclaimExecutionRequest {
+                execution: warrant,
+                executed_at_ms: 9_100,
+            },
+            &UnlinkedReclaimResidency,
+        )
         .expect("second drive");
     assert!(second.evictions.is_empty());
     assert_eq!(second.post_active_count, 2);
@@ -452,10 +461,13 @@ fn drive_reports_honest_shortfall_when_nothing_is_evictable() {
         .expect("current advisory above threshold");
 
     let report = authority
-        .drive_working_set_reclaim(WorkingSetReclaimExecutionRequest {
-            execution: warrant,
-            executed_at_ms: 9_000,
-        })
+        .drive_working_set_reclaim(
+            WorkingSetReclaimExecutionRequest {
+                execution: warrant,
+                executed_at_ms: 9_000,
+            },
+            &UnlinkedReclaimResidency,
+        )
         .expect("drive with nothing evictable");
     assert_eq!(report.pre_active_count, 3);
     assert_eq!(report.post_active_count, 3);
@@ -499,10 +511,13 @@ fn drive_rejects_foreign_tier_warrant_and_out_of_range_sequence() {
         max_active_working_set: 8,
     };
     let mismatch = authority
-        .drive_working_set_reclaim(WorkingSetReclaimExecutionRequest {
-            execution: nlos_task::plan_working_set_reclaim_execution(&foreign_advisory),
-            executed_at_ms: 9_000,
-        })
+        .drive_working_set_reclaim(
+            WorkingSetReclaimExecutionRequest {
+                execution: nlos_task::plan_working_set_reclaim_execution(&foreign_advisory),
+                executed_at_ms: 9_000,
+            },
+            &UnlinkedReclaimResidency,
+        )
         .expect_err("foreign-tier warrant must fail closed");
     assert!(matches!(
         mismatch,
@@ -513,20 +528,23 @@ fn drive_rejects_foreign_tier_warrant_and_out_of_range_sequence() {
     ));
 
     let out_of_range = authority
-        .drive_working_set_reclaim(WorkingSetReclaimExecutionRequest {
-            execution: WorkingSetReclaimExecution {
-                execution_sequence: 4,
-                phase: ReclaimPhase::Kill,
-                advisory: WorkingSetReclaimAdvisory {
-                    profile_id: RECLAIM_TEST_PROFILE.profile_id,
-                    projected_active_count: 5,
-                    reclaim_threshold_count: 4,
-                    reclaim_threshold_ratio: 50,
-                    max_active_working_set: 8,
+        .drive_working_set_reclaim(
+            WorkingSetReclaimExecutionRequest {
+                execution: WorkingSetReclaimExecution {
+                    execution_sequence: 4,
+                    phase: ReclaimPhase::Kill,
+                    advisory: WorkingSetReclaimAdvisory {
+                        profile_id: RECLAIM_TEST_PROFILE.profile_id,
+                        projected_active_count: 5,
+                        reclaim_threshold_count: 4,
+                        reclaim_threshold_ratio: 50,
+                        max_active_working_set: 8,
+                    },
                 },
+                executed_at_ms: 9_000,
             },
-            executed_at_ms: 9_000,
-        })
+            &UnlinkedReclaimResidency,
+        )
         .expect_err("out-of-range sequence must fail closed");
     assert!(matches!(
         out_of_range,
