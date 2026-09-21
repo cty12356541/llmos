@@ -641,9 +641,9 @@ G3 三条件结构化（`tests/structured_conditions.rs`，5 passed）：
 
 ### 13.1 apply 侧 TaskNode 维 admission consult（§8.2.4）
 
-声明面 gated apply `SqlitePlanAuthority::apply_plan_revision_with_admission` 在写入前 consult 店面级 projected `plan_nodes` 人口（既有行 + 本修订新 key）。Task 侧 `SqliteTaskAuthority::answer_plan_declaration` 只读回答 `max_task_nodes` 维。超档 typed `DeclarationAdmissionDenied` 且零 durable 行；consult 故障 `DeclarationConsultUnavailable` fail-closed；幂等重放与无增长 reshape 绕过 consult。plain `apply_plan_revision` 面保持咨询无关。
+生产声明面 `SqlitePlanAuthority::apply_plan_revision` 缺 consult 时 typed `DeclarationConsultUnavailable`（零 durable 行，禁止 silent pass）。consult 路径 `apply_plan_revision_with_admission` 在写入前 consult 店面级 projected `plan_nodes` 人口（既有行 + 本修订新 key）。Task 侧 `SqliteTaskAuthority::answer_plan_declaration` 只读回答 `max_task_nodes` 维。超档 typed `DeclarationAdmissionDenied` 且零 durable 行；consult 故障同样 fail-closed；幂等重放与无增长 reshape 绕过 consult。咨询无关旁路具名为 `apply_plan_revision_ungated`（测试/夹具专用）。
 
-测试：`crates/nlos-plan/tests/apply_admission.rs` — 6 passed（deny 零副作用、replay 绕过、店面级累积、跨 plan 累积、consult 故障 fail-closed、plain/gated 交错）。
+测试：`crates/nlos-plan/tests/apply_admission.rs` — 7 passed（默认 apply 无 consult fail-closed、deny 零副作用、replay 绕过、店面级累积、跨 plan 累积、consult 故障 fail-closed、gated reshape/growth）。
 
 ### 13.2 PINNED overlay 最小档（§8.2.6）
 

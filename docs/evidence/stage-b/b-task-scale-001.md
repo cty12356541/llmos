@@ -463,12 +463,9 @@ checkpoint/rehydrate benchmark (full, single platform): nodes=5000 input_bytes=6
 
 ### 15.1 Task reclaim × plan residency（闭合 §14 缺口 #1）
 
-Task 面 `drive_working_set_reclaim` 仍只关 permit。新增缝：
+生产路径 `SqliteTaskAuthority::drive_working_set_reclaim` 在 permit 关闭之后、返回报告之前调用 [`ReclaimResidencyDrive`]：驱逐与 plan 侧 `record_residency_transition`（经 `apply_reclaim_residency` 一步 HOT→WARM）发生在同一次 drive。PINNED 受害者 typed `PinnedNodeNotEvictable`，plan 账本不静默下行。无 plan 绑定的 Task 走具名 `UnlinkedReclaimResidency`。
 
-- `SqliteTaskAuthority::reclaim_residency_victims`（`nlos-task` `materialization.rs`）：按驱逐序暴露 `(task_id, permit_id)`。
-- `SqlitePlanAuthority::apply_reclaim_residency`：对绑定 plan node 走一步驱逐（HOT→WARM）；PINNED 受害者 typed `PinnedNodeNotEvictable`，plan 账本不静默下行。
-
-1:1 `task_id → node` 绑定为组装器/测试所有（与 apply-admission consult 映射同姿态）。测试 `crates/nlos-plan/tests/reclaim_residency.rs` — 2 passed。
+1:1 `task_id → node` 绑定仍是组装器/测试所有（consult 映射同姿态），但组装器不能在 drive 之后才“记得”写 residency——drive 签名强制传入 drive。测试 `crates/nlos-plan/tests/reclaim_residency.rs` — 2 passed。
 
 ### 15.2 比例矩阵 100K@50% + 回收再入场（§8.2.7 / 原 §13 缺口）
 
