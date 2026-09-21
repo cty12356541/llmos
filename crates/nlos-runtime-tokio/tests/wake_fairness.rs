@@ -1,19 +1,33 @@
 //! Wake latency and fairness tests for the durable Outbox wake consumer
 //! endpoint ([`TokioWakeSink`] + [`TokioRuntimeAdapter::wait_for_operation`]).
 //!
-//! Determinism strategy: every test runs on a `current_thread` runtime and
-//! accounts progress in **scheduler rounds** — one `yield_now().await` by the
-//! driver task is one round, i.e. one pass over the ready queue. There are no
-//! wall-clock waits (`tokio::time` is never used): a wait that would be
-//! starved stays pending forever and deterministically trips the round bound,
-//! while a delivered wake is observed in a small fixed number of rounds.
-//! Tokio paused time is not used because the workspace `tokio` dependency
-//! does not enable the `test-util` feature; these tests register no timers,
-//! so round accounting alone is fully deterministic.
+//! Determinism strategy: every test accounts progress in **scheduler
+//! rounds** — one `yield_now().await` by the driver task is one round, i.e.
+//! one pass over the ready queue. There are no wall-clock waits
+//! (`tokio::time` is never used): a wait that would be starved stays pending
+//! forever and deterministically trips the round bound, while a delivered
+//! wake is observed in a small fixed number of rounds. Tokio paused time is
+//! not used because the workspace `tokio` dependency does not enable the
+//! `test-util` feature; these tests register no timers, so round accounting
+//! alone is fully deterministic.
+//!
+//! Two flavors:
+//!
+//! - the original `current_thread` tests (W27-F): a single scheduler makes
+//!   the round counter a total order over task progress, so fixed round
+//!   bounds are fully deterministic;
+//! - the `multi_thread` tests (W35-P6, closing §6.17.2's registered
+//!   multi-worker gap): with `workers` workers the driver's yield only
+//!   guarantees one pass over ONE worker's ready queue, so progress is
+//!   accounted in rounds via shared atomics and every bound is scaled by
+//!   the worker count (see `multi_worker_bounds`). Wall-clock asserts are
+//!   still avoided: a starved waiter never resolves and trips the scaled
+//!   round bound regardless of scheduling order.
 
 use std::future::pending;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use nlos_runtime::{
     FiberExit, FiberHandle, FiberSpec, FiberState, RuntimeAdapter, WakeOutcome, WakeSink,
@@ -425,4 +439,258 @@ async fn burst_wake_with_interleaved_cancel_never_drops_wakes() {
         sink.wake(&handles[0], operation(200), Generation::INITIAL),
         Ok(WakeOutcome::NotWaiting)
     );
+}
+
+// ---------------------------------------------------------------------------
+// Multi-worker flavor (W35-P6, §6.17.2 gap "multi_thread/work-stealing 下的
+// 公平性形状"). Same wake path, same burst shape, different scheduler: a
+// `multi_thread` runtime with a fixed worker count.
+//
+// Calibration (why every bound scales with the worker count, and why a
+// multi-worker round is bigger than a current_thread round): the test driver
+// is the `block_on` root task, and on a `current_thread` runtime one driver
+// `yield_now().await` IS one pass over the single scheduler — every other
+// ready task runs synchronously inside it. On a `multi_thread` runtime the
+// root task's yield round-trips in microseconds on its own thread while the
+// workers are independent OS threads that may not have been scheduled at
+// all yet, so a bare yield cannot bound their progress. A multi-worker
+// driver round is therefore a COOPERATIVE SCHEDULING SLOT: one yield (a
+// pass over the driver's own queue) plus a 1ms sleep (OS time for the other
+// workers). The assertion values remain round counts — never milliseconds —
+// and each round covers at least 1/workers of the ready population in the
+// worst case, so the drain bound and the allowed spread both scale linearly
+// with `workers` (`bound = base × workers`).
+//
+// The burst itself still happens back-to-back with zero yields in between.
+// Latency is measured in rounds elapsed since the burst completion marker
+// (`round - burst_round`), so a waiter resolved on an already-idle worker
+// while the burst is still issuing reads latency 0 instead of inheriting a
+// stale registration-phase round number.
+//
+// Starvation stays a deterministic failure: a starved waiter never resolves,
+// so the drain loop trips its scaled round bound regardless of scheduling
+// order; a delivered wake resolves within a few cooperative rounds per
+// worker pass, which the scaled bound accommodates. The 1ms slot makes the
+// round unit coarse enough that normal OS jitter cannot burn the whole
+// budget before a healthy worker completes its few polls.
+// ---------------------------------------------------------------------------
+
+/// One cooperative scheduling slot for the multi-worker flavor: pass over
+/// the driver's own queue, then OS time for the other workers.
+const WORKER_ROUND_SLOT: Duration = Duration::from_millis(1);
+
+/// Multi-worker burst fairness parameters and the worker-scaled bounds.
+struct MultiWorkerBounds {
+    workers: usize,
+    registration_round_bound: usize,
+    drain_round_bound: usize,
+    spread_round_bound: usize,
+}
+
+impl MultiWorkerBounds {
+    fn new(workers: usize) -> Self {
+        Self {
+            workers,
+            registration_round_bound: REGISTRATION_ROUND_BOUND * workers,
+            drain_round_bound: FAIRNESS_ROUND_BOUND * workers,
+            spread_round_bound: FAIRNESS_SPREAD_ROUNDS * workers,
+        }
+    }
+}
+
+/// What one multi-worker waiter observed: the wait outcome and the round
+/// latency since the burst completion marker.
+#[derive(Clone, Copy, Debug)]
+struct MultiWorkerObservation {
+    outcome: WaitOutcome,
+    round_latency: usize,
+}
+
+#[allow(clippy::too_many_lines)] // One scenario covers registration, burst, drain, spread, and load phases.
+async fn multi_worker_burst_fairness(bounds: MultiWorkerBounds) {
+    const WAITERS: usize = 32;
+    const LOAD_FIBERS: usize = 8;
+    const LOAD_SPINS: usize = 16;
+    let runtime = runtime(WAITERS + LOAD_FIBERS + 8);
+    let sink = runtime.wake_sink();
+
+    let registered = Arc::new(AtomicUsize::new(0));
+    let round = Arc::new(AtomicUsize::new(0));
+    let observations: Arc<Mutex<Vec<Option<MultiWorkerObservation>>>> =
+        Arc::new(Mutex::new(vec![None; WAITERS]));
+    let load_completed = Arc::new(AtomicUsize::new(0));
+
+    let mut handles = Vec::new();
+    for index in 0..WAITERS {
+        handles.push(spawn_multi_worker_waiter(
+            &runtime,
+            index,
+            &registered,
+            &round,
+            &observations,
+        ));
+    }
+    for index in 0..LOAD_FIBERS {
+        let load_completed = Arc::clone(&load_completed);
+        let spec = fiber_spec(
+            2000 + index,
+            CancellationScopeId::from_bytes(id_bytes(800 + index)),
+        );
+        runtime
+            .spawn_fiber(
+                spec,
+                Box::pin(async move {
+                    for _ in 0..LOAD_SPINS {
+                        tokio::task::yield_now().await;
+                    }
+                    load_completed.fetch_add(1, Ordering::SeqCst);
+                    FiberExit::Completed
+                }),
+            )
+            .expect("spawn load fiber");
+    }
+
+    // Registration phase: the round counter stores absolute, monotonically
+    // increasing round numbers so no phase ever rewinds it.
+    let mut phase = 0_usize;
+    loop {
+        phase += 1;
+        round.store(phase, Ordering::SeqCst);
+        tokio::task::yield_now().await;
+        tokio::time::sleep(WORKER_ROUND_SLOT).await;
+        if registered.load(Ordering::SeqCst) == WAITERS {
+            break;
+        }
+        assert!(
+            phase < bounds.registration_round_bound,
+            "all waiters must register within {} rounds on {} workers",
+            bounds.registration_round_bound,
+            bounds.workers
+        );
+    }
+
+    // Burst completion marker: waiters resolving while the burst is still
+    // issuing compute a saturated (zero) latency against this round number.
+    let burst_round = phase;
+    for (index, handle) in handles.iter().enumerate() {
+        assert_eq!(
+            sink.wake(handle, operation(10_000 + index), Generation::INITIAL),
+            Ok(WakeOutcome::Delivered)
+        );
+    }
+
+    loop {
+        phase += 1;
+        round.store(phase, Ordering::SeqCst);
+        tokio::task::yield_now().await;
+        tokio::time::sleep(WORKER_ROUND_SLOT).await;
+        if observed_multi_worker(&observations).len() == WAITERS {
+            break;
+        }
+        assert!(
+            phase - burst_round < bounds.drain_round_bound,
+            "all burst-woken waiters must progress within {} rounds on {} workers",
+            bounds.drain_round_bound,
+            bounds.workers
+        );
+    }
+
+    let seen = observed_multi_worker(&observations);
+    assert_eq!(seen.len(), WAITERS, "no waiter may be starved");
+    assert!(
+        seen.iter().all(|o| o.outcome == WaitOutcome::Woken),
+        "a lost or misrouted wake must fail loudly, not resolve otherwise"
+    );
+    let max_latency = seen.iter().map(|o| o.round_latency).max().unwrap_or(0);
+    let min_latency = seen.iter().map(|o| o.round_latency).min().unwrap_or(0);
+    assert!(
+        max_latency <= bounds.drain_round_bound,
+        "slowest waiter observed at round latency {max_latency}"
+    );
+    assert!(
+        max_latency - min_latency <= bounds.spread_round_bound,
+        "waiter round-latency spread {min_latency}..{max_latency} exceeds the \
+         worker-scaled fairness spread"
+    );
+
+    loop {
+        phase += 1;
+        round.store(phase, Ordering::SeqCst);
+        tokio::task::yield_now().await;
+        tokio::time::sleep(WORKER_ROUND_SLOT).await;
+        if load_completed.load(Ordering::SeqCst) == LOAD_FIBERS {
+            break;
+        }
+        assert!(
+            phase - burst_round < bounds.drain_round_bound + TERMINAL_ROUND_BOUND * bounds.workers,
+            "background load must also finish within the worker-scaled round bound"
+        );
+    }
+
+    eprintln!(
+        "multi-worker burst fairness (workers={}): {} waiters drained, \
+         round latency min={min_latency} max={max_latency} \
+         (drain bound {}, spread bound {})",
+        bounds.workers, WAITERS, bounds.drain_round_bound, bounds.spread_round_bound
+    );
+}
+
+fn spawn_multi_worker_waiter(
+    runtime: &TokioRuntimeAdapter,
+    fiber_index: usize,
+    registered: &Arc<AtomicUsize>,
+    round: &Arc<AtomicUsize>,
+    observations: &Arc<Mutex<Vec<Option<MultiWorkerObservation>>>>,
+) -> FiberHandle {
+    let spec = fiber_spec(
+        fiber_index,
+        CancellationScopeId::from_bytes(id_bytes(900 + fiber_index)),
+    );
+    let handle = FiberHandle {
+        fiber_id: spec.fiber_id,
+        generation: spec.fiber_generation,
+    };
+    let adapter = runtime.clone();
+    let registered = Arc::clone(registered);
+    let round = Arc::clone(round);
+    let observations = Arc::clone(observations);
+    let body = async move {
+        let wait = adapter
+            .wait_for_operation(handle, operation(10_000 + fiber_index), Generation::INITIAL)
+            .expect("wait registration");
+        registered.fetch_add(1, Ordering::SeqCst);
+        let outcome = wait.await;
+        let round_latency = round.load(Ordering::SeqCst);
+        observations.lock().expect("observations lock")[fiber_index] =
+            Some(MultiWorkerObservation {
+                outcome,
+                round_latency,
+            });
+        FiberExit::Completed
+    };
+    runtime
+        .spawn_fiber(spec, Box::pin(body))
+        .expect("spawn waiter")
+}
+
+fn observed_multi_worker(
+    observations: &Arc<Mutex<Vec<Option<MultiWorkerObservation>>>>,
+) -> Vec<MultiWorkerObservation> {
+    observations
+        .lock()
+        .expect("observations lock")
+        .iter()
+        .copied()
+        .flatten()
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn burst_wake_is_fair_across_waiters_on_two_workers() {
+    multi_worker_burst_fairness(MultiWorkerBounds::new(2)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn burst_wake_is_fair_across_waiters_on_four_workers() {
+    multi_worker_burst_fairness(MultiWorkerBounds::new(4)).await;
 }
