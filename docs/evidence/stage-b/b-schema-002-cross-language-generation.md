@@ -84,3 +84,48 @@ Buf 以失败退出并报告：此前存在的 `Envelope` field 4 `method` 被�
 - deterministic CBOR、签名域、fuzz/property corpus、parser 深度限制和 typed IPC 尚未完成；
 
 因此 `B-SCHEMA` 继续保持 `IN_PROGRESS`，ADR-0003 继续保持 `POC`。
+
+## 6. 移交项 #13 收口：SABI v1.2–v1.5 新增面 TS/Python golden 钉死（2026-09-21）
+
+> 对应：`docs/management/stage-b-progress.md` §6.5.6 移交清单第 13 项（W29-G/W34-A 评审标记的 deferred minor）；分支 `fix/w34-conformance-golden`。
+
+### 6.1 范围与钉死模式
+
+本波次新增的 SystemControl 面在此前只有 Rust 侧 golden（`crates/nlos-schema/tests/compatibility.rs` 保持字节源真理），TS/Python conformance 落后。本次按既有 B-SCHEMA-014-METRICS-GOLDEN 模式补齐（goldens 内联于 `tests/conformance/schema/envelope.ts|py`，不新增 `schema/golden/` 文件）：
+
+- v1.2（W28-D）pause/resume/cancel 命令臂；
+- v1.3（W29-D）kill/throttle/reclaim 命令臂（throttle 携带 `throttle_percent=50`）；
+- v1.4（W28-C-3b）`ResourceRecoveryOperationsSnapshot` 快照 golden（v1.4 冻结点身份）+ semantic/resource acknowledge/resume 四个命令臂 round-trip + 三个 recovery 视图 GetSystemControlRequest round-trip；
+- v1.5（W32-G）五层 inspect 快照 golden（TaskGroup/TaskNode/ExecutionFiber/Topic/DurableOperation，v1.5 冻结点身份）+ 五层视图 GetSystemControlRequest 加性寻址字段（`target_id`/`plan_id`/`target_generation`）round-trip + `SystemControlView` 4..=8 与 `RecoveryFailureAuthority.RESOURCE=6` 枚举值钉死。
+
+### 6.2 发现的字段序分歧（记录为事实，不改 Rust golden）
+
+`ControlCommand` 的 oneof 块按声明顺序位于 field 6 与 `reason`(field 8) 之间。实测（TS runtime `@bufbuild/protobuf` 2.14.1、Python runtime `protobuf` 6.33.4）：
+
+- prost 按 proto 声明序输出：`[1..6][oneof 臂][reason]`（W28-D/W29-D Rust golden 即此序）；
+- protobuf-es 与 Python upb 按字段号序输出：`[1..6][reason][oneof 臂]`（臂号 9..=18 均 > 8）。
+
+两者是同一 message 的合法 wire 形式（protobuf 字段序不具语义），但字节不逐等。因此命令族 golden 采用双锚点钉法，两语言一致：
+
+1. 解码锚：字面 prost 序字节（Rust 常量 hex 逐段复刻）必须可解码，字段/oneof 臂/CAS 寻址断言后重编码必须落到规范形；
+2. 编码锚：镜像 Rust fixture 构造的实例编码必须逐字节等于规范形（TS 与 Python 规范形互相逐字节一致）；另设一个分歧见证断言（prost 序 ≠ 规范式），运行时升级导致两种序收敛时强制显式重钉。
+
+无 oneof 且字段号升序的消息（全部快照族）不受影响，保持与 Rust golden 直接逐字节相等。
+
+### 6.3 验证
+
+```sh
+npm run schema:typecheck          # tsc 通过（tests/conformance 在 include 内）
+npm run schema:test:typescript    # 通过（新增 §handover-13 全部断言）
+python tests/conformance/schema/envelope.py   # 通过
+npm run schema:check-generated    # 通过，gen/ 无漂移
+cargo test -p nlos-schema --test compatibility  # 34 passed（Rust golden 侧回归）
+```
+
+schema/ 与 gen/ 零改动（只读）；Rust golden 零改动；既有测试零弱化。
+
+### 6.4 边界与遗留
+
+- Rust 侧 pre-wire fail-closed 约束（throttle_percent 0/101 拒绝、告警条数上界、寻址字段合法性等）仍是 Rust 编码器策略，不在 TS/Python 生成码 conformance 范围内，维持 Rust 单侧覆盖；
+- GetSystemControlRequest 与四个 recovery 命令臂在 Rust 侧本就未钉字节 golden（仅 round-trip），TS/Python 按同形 round-trip + 解码断言钉住，不单方面发明新 canonical 字节；
+- §6.5.6 清单第 13 项自此闭合；清单勾销动作留待阶段 C 编排（不在本分支 write-set）。
