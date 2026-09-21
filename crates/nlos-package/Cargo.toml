@@ -1,0 +1,31 @@
+[package]
+name = "nlos-package"
+description = "Developer Package SDK CLI (keygen/build/verify/conformance/install): a thin shell over the nlos-artifact package surface plus the public application-authority install path."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "nlos-package"
+path = "src/main.rs"
+
+[dependencies]
+ed25519-dalek.workspace = true
+# The install subcommand drives the verify-then-commit application
+# authority, which nlos-application owns; nlos-application itself depends
+# on nlos-artifact, so the CLI cannot live inside nlos-artifact (cycle).
+# This crate sits above both and is the CLI's single home.
+nlos-application = { path = "../nlos-application" }
+nlos-artifact = { path = "../nlos-artifact" }
+# The e2e test recomputes the payload execution's terminal outcome through
+# the driver face's public derivation.
+nlos-driver-mock = { path = "../nlos-driver-mock" }
+nlos-identity = { path = "../nlos-identity" }
+nlos-slice-k = { path = "../nlos-slice-k" }
+nlos-types = { path = "../nlos-types" }
+sha2.workspace = true
+
+[lints]
+workspace = true

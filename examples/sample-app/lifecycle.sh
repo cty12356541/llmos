@@ -36,8 +36,8 @@ expect_line() {
 
 # ---- 0. 工具链就位（可经环境变量覆盖；缺省就地构建） ----
 if [ -z "${NLOS_PACKAGE_BIN:-}" ]; then
-    say "building nlos-package (cargo build -p nlos-artifact --bin nlos-package)"
-    (cd "$REPO_ROOT" && cargo build -q -p nlos-artifact --bin nlos-package)
+    say "building nlos-package (cargo build -p nlos-package)"
+    (cd "$REPO_ROOT" && cargo build -q -p nlos-package)
     NLOS_PACKAGE_BIN=$REPO_ROOT/target/debug/nlos-package
 fi
 if [ -z "${DRIVER_BIN:-}" ]; then

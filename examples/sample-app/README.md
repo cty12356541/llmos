@@ -53,7 +53,7 @@ sample-app/
 
 ```sh
 # 0. 工具链
-cargo build -p nlos-artifact --bin nlos-package        # → target/debug/nlos-package
+cargo build -p nlos-package                                     # → target/debug/nlos-package
 cargo build                                            # 本目录 → target/debug/sample-app-driver
 
 # 1. 密钥（熵由开发者供给；样例种子见 lifecycle.sh，勿用于生产）
