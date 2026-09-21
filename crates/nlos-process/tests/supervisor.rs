@@ -25,8 +25,8 @@ use std::time::{Duration, Instant};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use nlos_process::{
-    ProcessSupervisor, SpawnSupervisedRequest, SupervisorError, SupervisorPidDecision,
-    SupervisorPidRegistryError, SupervisorSignalOutcome,
+    ProcessSupervisor, RegisterSupervisorPidRequest, SpawnSupervisedRequest, SupervisorError,
+    SupervisorPidDecision, SupervisorPidRegistryError, SupervisorSignalOutcome,
 };
 use nlos_types::{Generation, ProcessId};
 
@@ -398,4 +398,76 @@ fn supervisor_suspend_resume_are_typed_unsupported_off_unix() {
 
     let original = supervisor.registry().lookup(process_id).expect("mapping");
     assert_eq!(original.os_pid, std::process::id());
+}
+
+/// A G1 kill must signal the os_pid resolved under that generation fence,
+/// not a later `pid_map()` snapshot. Sequential stale-generation coverage
+/// cannot catch this: if G2 supersedes *before* resolve, `kill(G1)` fails
+/// closed and never reaches the adapter. The after-resolve hook interleaves
+/// `Supersede` between the fence check and the adapter build — the TOCTOU
+/// a full-registry `pid_map()` path is exposed to.
+#[test]
+#[cfg(any(unix, windows))]
+fn supervisor_kill_binds_the_fenced_os_pid_across_a_g2_supersede() {
+    let supervisor = ProcessSupervisor::new();
+    let process_id = ProcessId::from_bytes([0x38; 16]);
+    let next = Generation::INITIAL.checked_next().expect("next");
+
+    let mut g1 = supervisor
+        .spawn_supervised(spawn_request(process_id), &mut sleeper_command())
+        .expect("spawn G1");
+    let g1_pid = g1.os_pid();
+    assert!(
+        g1.child().try_wait().expect("poll G1").is_none(),
+        "G1 child must be alive before the kill"
+    );
+
+    let mut g2 = sleeper_command().spawn().expect("spawn G2");
+    let g2_pid = g2.id();
+    assert_ne!(g1_pid, g2_pid, "the two generations must own distinct pids");
+    assert!(
+        g2.try_wait().expect("poll G2").is_none(),
+        "G2 child must be alive before the kill"
+    );
+
+    supervisor.install_kill_after_resolve_hook(move |registry| {
+        let decision = registry
+            .register(RegisterSupervisorPidRequest {
+                process_id,
+                process_generation: next,
+                os_pid: g2_pid,
+                registered_at_ms: 6_000,
+            })
+            .expect("supersede G2 after G1 resolve");
+        assert!(
+            matches!(decision, SupervisorPidDecision::Superseded { .. }),
+            "expected Superseded, got {decision:?}"
+        );
+    });
+
+    let kill_result = supervisor.kill(process_id, Generation::INITIAL);
+    assert!(
+        matches!(&kill_result, Ok(SupervisorSignalOutcome::Applied)),
+        "G1 kill must still apply to the fenced G1 pid, got {kill_result:?}"
+    );
+
+    // Give a signaled G2 time to exit: a pid_map() TOCTOU delivers SIGTERM
+    // to G2, and an immediate try_wait can still see it alive. Waiting on
+    // G1 first would only burn the 30s timeout on the surviving G1 child.
+    assert!(
+        wait_for_exit(&mut g2, Duration::from_millis(500)).is_none(),
+        "G1 kill must not SIGTERM/taskkill the superseded G2 child"
+    );
+
+    let g1_status = wait_for_exit(g1.child(), Duration::from_secs(30))
+        .expect("G1 child must die to the fenced kill");
+    assert!(!g1_status.success());
+
+    let g2_kill = supervisor.kill(process_id, next);
+    assert!(
+        matches!(&g2_kill, Ok(SupervisorSignalOutcome::Applied)),
+        "G2 teardown kill failed: {g2_kill:?}"
+    );
+    let g2_status = wait_for_exit(&mut g2, Duration::from_secs(30)).expect("G2 teardown");
+    assert!(!g2_status.success());
 }

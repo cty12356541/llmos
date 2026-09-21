@@ -12,8 +12,10 @@
 //! Platform matrix (fail-closed, typed):
 //!
 //! - spawn / kill are real on Unix and Windows — kill reuses
-//!   [`PosixPlatformKillAdapter`] / [`WindowsPlatformKillAdapter`] over the
-//!   registry's `pid_map()` snapshot, so the supervisor signal path and the
+//!   [`PosixPlatformKillAdapter`] / [`WindowsPlatformKillAdapter`] over a
+//!   one-entry map taken from the generation-fenced registry entry (not a
+//!   later `pid_map()` snapshot, whose `ProcessId → os_pid` shape drops the
+//!   generation), so the supervisor signal path and the
 //!   [`crate::ProcessAuthority::request_platform_kill`] durable path share
 //!   one adapter implementation per host;
 //! - suspend / resume are real on Unix (`SIGSTOP` / `SIGCONT`); Windows has
@@ -29,6 +31,8 @@
 //! [`crate::ProcessAuthority::request_platform_kill`], whose adapter can be
 //! fed by [`SupervisorPidRegistry::pid_map`].
 
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 use std::process::{Child, Command};
@@ -46,6 +50,14 @@ use crate::supervisor_pid::{
 use crate::platform_kill::PosixPlatformKillAdapter;
 #[cfg(windows)]
 use crate::platform_kill::WindowsPlatformKillAdapter;
+
+thread_local! {
+    /// One-shot interleaving point for the G1-resolve / G2-supersede TOCTOU
+    /// (integration tests only). `kill` takes the hook after the generation
+    /// fence resolves and before the adapter is built.
+    static KILL_AFTER_RESOLVE: RefCell<Option<Box<dyn FnOnce(&SupervisorPidRegistry)>>> =
+        const { RefCell::new(None) };
+}
 
 /// One supervisor spawn request: the authority-assigned Process identity
 /// the spawned child backs, plus the registry bookkeeping timestamp.
@@ -188,6 +200,27 @@ impl ProcessSupervisor {
     #[must_use]
     pub fn registry(&self) -> &SupervisorPidRegistry {
         &self.registry
+    }
+
+    /// Installs a one-shot callback that [`Self::kill`] runs after the
+    /// generation fence resolves and before the platform adapter is built.
+    ///
+    /// Integration tests use this to interleave a `Supersede` between those
+    /// two steps (the G1/G2 TOCTOU sequential stale-generation coverage
+    /// cannot reach). Production callers must not install a hook.
+    #[doc(hidden)]
+    pub fn install_kill_after_resolve_hook(
+        &self,
+        hook: impl FnOnce(&SupervisorPidRegistry) + 'static,
+    ) {
+        let _ = self;
+        KILL_AFTER_RESOLVE.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+    }
+
+    fn run_kill_after_resolve_hook(&self) {
+        if let Some(hook) = KILL_AFTER_RESOLVE.with(|slot| slot.borrow_mut().take()) {
+            hook(&self.registry);
+        }
     }
 
     /// Spawns `command` as the host child backing
@@ -333,9 +366,12 @@ impl ProcessSupervisor {
     /// Kills the host child registered for
     /// `(process_id, expected_process_generation)` through the host's real
     /// platform kill adapter (SIGTERM on Unix, `taskkill /F /T` on Windows),
-    /// built from the registry's `pid_map()` snapshot — the same adapter
-    /// family the durable
-    /// [`crate::ProcessAuthority::request_platform_kill`] path accepts.
+    /// built from a one-entry map of the fenced entry's `os_pid` — the same
+    /// adapter family the durable
+    /// [`crate::ProcessAuthority::request_platform_kill`] path accepts. A
+    /// later `pid_map()` snapshot is not consulted: that map is
+    /// `ProcessId → os_pid` only, so a `Supersede` between resolve and
+    /// signal would otherwise deliver the G2 child's pid to a G1 kill.
     ///
     /// # Errors
     ///
@@ -348,7 +384,8 @@ impl ProcessSupervisor {
         expected_process_generation: Generation,
     ) -> Result<SupervisorSignalOutcome, SupervisorError> {
         let entry = self.resolve_current_entry(process_id, expected_process_generation)?;
-        let adapter = HostKillAdapter::from_registry(&self.registry);
+        self.run_kill_after_resolve_hook();
+        let adapter = HostKillAdapter::from_fenced_entry(&entry);
         match adapter.signal_platform_kill(process_id, entry.process_generation) {
             Ok(crate::platform_kill::PlatformKillAdapterOutcome::Signaled) => {
                 Ok(SupervisorSignalOutcome::Applied)
@@ -382,14 +419,18 @@ impl ProcessSupervisor {
 
 #[cfg(any(unix, windows))]
 impl HostKillAdapter {
-    fn from_registry(registry: &SupervisorPidRegistry) -> Self {
+    /// Builds the host adapter from the already-fenced registry entry, not
+    /// from a later `pid_map()` snapshot (generation-blind `ProcessId →
+    /// os_pid`). Same adapter types; no second pid ledger.
+    fn from_fenced_entry(entry: &crate::supervisor_pid::SupervisorPidEntry) -> Self {
+        let map = HashMap::from([(entry.process_id, entry.os_pid)]);
         #[cfg(unix)]
         {
-            Self::Posix(PosixPlatformKillAdapter::new(registry.pid_map()))
+            Self::Posix(PosixPlatformKillAdapter::new(map))
         }
         #[cfg(windows)]
         {
-            Self::Windows(WindowsPlatformKillAdapter::new(registry.pid_map()))
+            Self::Windows(WindowsPlatformKillAdapter::new(map))
         }
     }
 }
