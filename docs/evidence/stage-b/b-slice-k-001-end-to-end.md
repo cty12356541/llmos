@@ -501,3 +501,61 @@ cargo fmt -p nlos-slice-k -- --check（stable + nightly-2026-08-01）   → 干�
 - **supervisor unregister / `restore_process` 复活 / fiber incarnation 快照层**：维持 §15.4 登记。
 - **teardown 无并发竞争面**：进程内顺序线性化；真并发交织下的 kill/cancel 竞态沿用 §7.4 边界。
 - **未运行项**：`cargo --workspace` 级命令（任务约束）；Windows 实机（`#[cfg(not(unix))]` 合同用例由既有 cross-platform CI windows-latest 腿在控制器屏障 push 后验证）；demo bin 接线（STEP 09d 基线 panic 未修，W28-E 域）。
+
+## 17. STEP 09d 登记 defect 根因处置（2026-09-21 追加：W34-D 阶段 C 移交#1 / RISK-B-12 裁定）
+
+- **定位**：处置 §15.3/§16.4 登记、[W33-H §0.1/§3.2](../evidence/stage-b/reviews/w33h-road-b001-b002.md) 在 HEAD 复现、[RISK-B-12](../../../management/risks.yaml)（P1，含「若证明为生产 GC 误收在册 blob 即升 P0」升级条款）随行的 demo bin defect：`cargo run -p nlos-slice-k --bin slice-k-demo` → STEP 09d panic `assertion left == right, left: [], right: [3bfcea1b…, 7a83d712…]`。分支 `fix/w34-09d-defect`，base `ebbeddc`（自 `50bf7fd` ff 至 main 收口位）。
+- **复现**：base `ebbeddc` macOS/arm64 实跑同 panic（STEP 09d 前 71 行正常，09d `collected_digests==[]`）；panic 后 runtime root 残留（demo 清理仅在 EXIT 0 路径），durable 状态可离线取证。
+
+### 17.1 根因（durable 取证，非推断）
+
+对 panic 残留 root 的 `artifacts/metadata.db` 直接取证：
+
+**`artifact_gc_receipts` 全表（按 created_at 排序）**：
+
+| idempotency_key | 语义（seeded_key 推导） | collected | scanned |
+|---|---|---|---|
+| `40…40` | `seeded_key(0x2A,22)` STEP 01 happy-chain install pass | 0 | 1 |
+| `43…43` | `seeded_key(0x2D,22)` STEP 09b reinstall pass | 0 | 2 |
+| `44…44` | `seeded_key(0x2E,22)` STEP 09b disable 后拒绝安装 pass | 0 | 2 |
+| `3E…3E` | `seeded_key(0x2A,20)` STEP 09d 手动 pass | 0 | 2 |
+| `45…45` | `seeded_key(0x2F,22)` **STEP 09c uninstall 后拒绝安装 pass** | **2** | **4** |
+
+`45…45` 行的 `collected_digests` 恰为 panic 期望的两枚 planted digest（`3bfcea1b…`/`7a83d712…`）——**收集者是 STEP 09c「reinstall-after-uninstall refused」探针前置的 W22-001 install-scoped pass**（`install_verified_package_by_id` 默认 `AutoOrphanGc::Enabled`，pass 先于 authority 拒绝执行），不是 W33-H 怀疑的 W28-E auto-GC tick：残留库 `artifact_auto_gc_state` 为 `passes_completed=0 / failures=0`（tick 从未触发），且 `tick_auto_gc` 全仓无生产调用点（仅 `nlos-artifact` 自身测试）。
+
+**时序还原**：W17-001（`daafa75`）在 `demo_uninstall` 顶部种植两枚 orphan（先于 09c 拒绝探针）；W22-001（`048d9ab`）给 install 入口加默认前置 pass——0x2F 拒绝探针自此开始合法收集 planted orphan（自有 durable receipt、21/22 独立键带，与手动 19/20 不别名）。W22-001 验证门只跑 `cargo test -p nlos-slice-k`（15 passed，demo bin 未跑）→ 断裂静默；W29-F（§15.3）首次观测。demo 断言「手动 pass 恰收集两枚 planted digest」对 W22-001 后的世界过时。
+
+### 17.2 假设裁定（RISK-B-12 升级条款）
+
+| 假设 | 裁定 | 证据 |
+|---|---|---|
+| H1 早期 pass 合法收集 planted orphan（demo 预期过时） | **成立**（机构修正：W22-001 install-scoped 前缀，非 W28-E tick） | §17.1 receipt 表 `45…45` 行；planted blob 由 `plant_orphan_artifact_blob` 构造性无 metadata 行 |
+| H2 receipt/幂等键缺陷（无 durable receipt 或键冲突致空收集） | **排除** | 收集 pass 的 durable receipt 在册；手动 pass 以自有键 `3E…3E` 全新执行（`Collected` 空集非 `Replayed`），无别名 |
+| H3 W27-D/W30-D 变更致 demo 预期漂移 | **排除** | demo 序列自 W17-001/W22-001 后未动（demo 文件末次变更 `4043910`/W29-F，仅加 STEP 12b）；断点在 09c↔09d 交互，与 W27-D/W30-D 写集无交集 |
+| H4（P0 分支）生产 GC 误收**在册** blob | **排除** | 收集 receipt 仅含两枚 planted digest；三层保守引用集（revision `{e218…, 0df9…}` + head `{0df9…}` + staged ∅）不含 planted；两枚 referenced blob 文件在 pass 后磁盘存活 |
+
+**RISK-B-12 裁定：不升 P0。** 无 durable 状态丢失、无在册 blob 误收；产品面（`collect_orphan_blobs` 保守核心、W22-001 前缀顺序、W28-E tick）行为全部符合设计。缺陷为 demo 级（fixture 时序 × 过时断言）。
+
+### 17.3 修复（demo 级最小修复，09d 断言按任务书保留不删）
+
+1. **STEP 09c 拒绝探针改 `AutoOrphanGc::Disabled`**（`install_verified_package_by_id_with_gc(…, 0x2F, AutoOrphanGc::Disabled)`）：fail-closed 探针不应有 blob 副作用；planted orphan 留给 09d 显式 pass，§10.2 登记输出恢复（`collected=2 scanned=4`）。demo 的默认 Enabled 行为仍由 STEP 01（0x2A）与 09b（0x2D）安装路径演示。
+2. **STEP 12b 场景种子 `0x30`→`0xA0`**（09d 修复解掩的第二个 demo 级缺陷，此前因 09d 先 panic 从未在 demo 全程抵达）：`seeded_key(0x30,13)==seeded_key(0x2A,19)`（09d 手动 GC 时钟）与 `seeded_key(0x30,15)==seeded_key(0x2A,21)`（happy-chain install pass 时钟）碰撞——时钟权威按 key 幂等 replay 旧读数（…176/…157），`installed_at < verified_at` 触发 `InstallationPrecedesVerification` fail-closed 拒绝。`0xA0` 全键带（`0xAC..0xC5`/`0xD4..0xDA`/`0x18..0x2B`/`0x4E..0x52` 及 `0xB0/0xB6` 键）与 demo 既有消费集（`0x36..0x47`、`0x49`、`0x4B`、`0x53..0x69`、`0x78..0x88`）及后续 0x2C 家族不相交。测试面（fresh runtime 各自种子）不受影响、零改动。
+3. **回归钉死**（`tests/lifecycle_uninstall.rs` +2 用例）：`refused_reinstall_with_default_gc_still_collects_preexisting_orphans`（根因钉死：拒绝安装的默认前置 pass 仍收集 pre-existing orphan 且 receipt 可 `Replayed` 读回——登记为设计行为）与 `refused_reinstall_with_gc_disabled_keeps_planted_orphans_for_manual_gc`（修复钉死：Disabled 拒绝探针保留 orphan → 手动 pass 恰收集两枚、payload 存活、21/22 键未消耗）。
+
+### 17.4 验证门（分支 `fix/w34-09d-defect`，base `ebbeddc`，macOS/arm64 实跑）
+
+```text
+cargo test -p nlos-slice-k -p nlos-artifact → 136 passed / 0 failed / 27 测试二进制
+  （lifecycle_uninstall 3→5；nlos-artifact 全绿零回归：auto_gc 7、gc 4、fault_injection 10 等）
+cargo clippy -p nlos-slice-k --all-targets -- -D warnings → 0 warning
+cargo fmt -p nlos-slice-k -- --check                    → 通过
+cargo run -p nlos-slice-k --bin slice-k-demo            → EXIT=0，71 行 [slice-k] 输出至 DONE
+```
+
+demo 全程关键行（实跑摘录）：`STEP 09d orphan-gc collected=2 scanned=4` + `RECEIPT kind=artifact-gc … collected=2 scanned=4` + `referenced-blobs retained (fail-closed GC)`；`STEP 12b pair materialized … bindings=2 pid_entries=2` + `platform-kill … generation=1` + `process-terminal … lifecycle=Crashed matched_fibers=2 canceled_scopes=1` + `isolation first=… still active`；`STEP 13/14` 恢复链 + `task-commit-recovered` + `INSPECT-RECOVERED` 全链 + `DONE`。
+
+### 17.5 已知限制（如实登记）
+
+- **09d 断言保留**：按任务书纪律未删除断言（退役属维护者裁量）；如后续选择退役，§17.1/§17.2 的 durable 取证即为裁决依据。
+- **键带纪律为 demo 层约定**：共享 runtime 的累计 seed 键带不相交性靠 `0xA0` 选种时的人工核算（§17.3.2），无机械 lint；测试面因 fresh runtime + §15.2 键带纪律不受影响。
+- **未运行项**：`cargo --workspace` 级命令（车道约束）；Windows 实机（demo `#[cfg(not(unix))]` 分支由既有 CI windows-latest 腿覆盖）；CI 未跑（分支未 push，控制器裁量合流）。
