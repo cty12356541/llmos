@@ -1,12 +1,12 @@
-# B-PLAN-001：nlos-plan 声明面状态权威骨架（TaskPlan/TaskNode state face）+ Dependency Resolver + Context Residency 分级 + 10K/100K 逻辑 TaskNode benchmark + 惰性物化门 + 分层 Scheduler 最小版
+# B-PLAN-001：nlos-plan 声明面状态权威骨架（TaskPlan/TaskNode state face）+ Dependency Resolver + Context Residency 分级 + 10K/100K 逻辑 TaskNode benchmark + 惰性物化门 + 分层 Scheduler 最小版 + 生态 selector 半边与 G3 三条件结构化
 
-状态：`PARTIAL_PASS`（**W28-A 状态面骨架 + W29-B Dependency Resolver + W31-E Context residency 分级最小版 + W31-D 10K/100K 逻辑 TaskNode benchmark + W31-A 惰性物化门（G3）+ W31-F 分层 Scheduler 最小版**，2026-09-21）
+状态：`PARTIAL_PASS`（**W28-A 状态面骨架 + W29-B Dependency Resolver + W31-E Context residency 分级最小版 + W31-D 10K/100K 逻辑 TaskNode benchmark + W31-A 惰性物化门（G3）+ W31-F 分层 Scheduler 最小版 + W36-P7 G4 生态 selector 半边 + G3 三条件结构化**，2026-09-21）
 
 > 对应：[ADR-0016 决定 2](../../management/adrs/0016-task-plan-declaration-surface.md)（独立 `nlos-plan` authority）与 [决定 5](../../management/adrs/0016-task-plan-declaration-surface.md)（Resolver 结果 durable）与 [决定 4](../../management/adrs/0016-task-plan-declaration-surface.md)（ScaleProfile 维度正规化）；[议题 35 §6](../../discussions/35-TaskPlan声明面设计.md) 验收门 G1（§2–§6，W28-A）、G4（§7，W29-B）、G2/G5（§9，W31-D）与 G3（§10，W31-A）；[进度单 §6.5.3](../../management/stage-b-progress.md) W28-A / W29-B / W31-E / W31-D / W31-A / W31-F 车道行
 >
-> 实现：crate `crates/nlos-plan`（schema v1：`plans` / `plan_revisions` / `plan_nodes` / `plan_node_transitions` 四表 + 12 trigger；schema v2 additive：`plan_revision_nodes` / `plan_revision_edges` / `plan_resolution_receipts` 三表 + 8 trigger；schema v3 additive：`plan_node_residency_transitions` 一表 + `plan_nodes` 两列 + 4 trigger；schema v4 additive：`plan_materialization_requests` 一表 + 1 partial unique index + 5 trigger）+ `tests/tasknode_scale_probe.rs`（§9 规模探针）+ `tests/materialization_gate.rs` / `tests/materialization_fault_matrix.rs`（§10 G3 证伪与物化门故障矩阵）+ `crates/nlos-task/src/materialization.rs`（§10 Task 侧消费接线）+ `src/scheduler.rs` / `tests/scheduler.rs`（§11 W31-F 两层调度器）
+> 实现：crate `crates/nlos-plan`（schema v1：`plans` / `plan_revisions` / `plan_nodes` / `plan_node_transitions` 四表 + 12 trigger；schema v2 additive：`plan_revision_nodes` / `plan_revision_edges` / `plan_resolution_receipts` 三表 + 8 trigger；schema v3 additive：`plan_node_residency_transitions` 一表 + `plan_nodes` 两列 + 4 trigger；schema v4 additive：`plan_materialization_requests` 一表 + 1 partial unique index + 5 trigger；schema v5 additive：`ecosystem_resolution_receipts` 一表 + 2 写一次 trigger；schema v6 additive：`plan_revision_nodes.conditions_body` 可空列）+ `tests/tasknode_scale_probe.rs`（§9 规模探针）+ `tests/materialization_gate.rs` / `tests/materialization_fault_matrix.rs`（§10 G3 证伪与物化门故障矩阵）+ `crates/nlos-task/src/materialization.rs`（§10 Task 侧消费接线）+ `src/scheduler.rs` / `tests/scheduler.rs`（§11 W31-F 两层调度器）+ `src/selector.rs` / `src/artifact_source.rs`（特性门）/ `tests/ecosystem_selector.rs`（§12 前半）+ `model.rs` `NodeConditions` 三件套 / `tests/structured_conditions.rs`（§12 后半）+ `crates/nlos-application/src/selector_source.rs`（§12 Application 薄扩展适配器）
 >
-> 范围纪律：W28-A 只落**状态权威落点**（§1–§6）；W29-B 只落 **Dependency Resolver**（§7，B4-3）；W31-E 只落 **Context residency 分级最小版**（§8，B4-5）；W31-D 只落 **10K/100K 逻辑 TaskNode benchmark**（§9，B4-9，G2/G5 后半）；W31-A 只落**惰性物化门**（§10，B4-4，G3——request/resolve 门 + Task 侧 admission consult 接线 + 存储层 MATERIALIZING 边门禁）；W31-F 只落**分层 Scheduler 最小版**（§11，B4-6——Global/Worker 两层 + 物化窗口调度 + 决策 inspect）。manifest 模板面（W28-B）与 TaskSpec 关联字段（W29-A 已落）不在本 evidence 声明范围。
+> 范围纪律：W28-A 只落**状态权威落点**（§1–§6）；W29-B 只落 **Dependency Resolver**（§7，B4-3）；W31-E 只落 **Context residency 分级最小版**（§8，B4-5）；W31-D 只落 **10K/100K 逻辑 TaskNode benchmark**（§9，B4-9，G2/G5 后半）；W31-A 只落**惰性物化门**（§10，B4-4，G3——request/resolve 门 + Task 侧 admission consult 接线 + 存储层 MATERIALIZING 边门禁）；W31-F 只落**分层 Scheduler 最小版**（§11，B4-6——Global/Worker 两层 + 物化窗口调度 + 决策 inspect）；W36-P7 只落**生态 selector 半边 + G3 三条件结构化**（§12，C-SELECTOR 移交#7——typed selector→generation handle 解析负路径面 + Namespace/ResourceContract/fanout typed 声明面；G3 三条件的**enforcement**与节点声明对 resolution handle 的结构化绑定不在本 lane）。manifest 模板面（W28-B）与 TaskSpec 关联字段（W29-A 已落）不在本 evidence 声明范围。
 
 ## 1. 本切片目标
 
@@ -524,3 +524,111 @@ PENDING 轮总是入选（已持席位，解析即收敛）                  └
 - **`cargo test --workspace`：未运行**——派工单 MUST NOT（波次屏障由控制器收口）。
 - **三平台 CI / MSRV：未运行**——待 push 后 CI 触发。
 - **调度器规模/吞吐探针：未运行**——本切片验收门为收缩联动 + 决策 inspect 两语义门；benchmark 矩阵归 W31-B/G 口径。
+
+## 12. W36-P7：G4 生态 selector 半边 + G3 三条件结构化（C-SELECTOR，移交#7 前半）
+
+> 对应：[进度单 §C.3.2 `C-SELECTOR` 行](../../management/stage-c-progress.md)（移交#7；`NOT_STARTED`（W31-G §8.2.2/§8.2.3；U-7/U-8）→ 本 lane 落 typed selector→generation handle 解析 + 负路径 + 三条件结构化）、[§C.5.1 移交#7](../../management/stage-c-progress.md)、[§C.5.3 W36 波](../../management/stage-c-progress.md)；[W31-G §8.2.2/§8.2.3 residuals](reviews/w31g-road-b004-gates.md)（G3 三条件仍为声明 digest；G4 生态 selector 半边未落）；[v0.5 行 3654 `[PLAN-DEPENDENCY-001]`](../../design/06-架构设计总纲-v0.5.md)（"Package、Skill、Tool、Model、Artifact、Topic 和外部服务依赖 MUST 在计划中以 typed selector 声明，并在执行前解析为带版本/generation 的 handle"）、[行 3650 `[PLAN-LAZY-001]`](../../design/06-架构设计总纲-v0.5.md)（G3 五条件）；[ADR-0016 决定 5](../../management/adrs/0016-task-plan-declaration-surface.md)（第二半：生态实体同享 durable receipt 语义）。
+>
+> 状态：`PASS`（本切片范围）；实现分支 `feat/w36-p7`（worktree `llmos-w36-p7`），三实现提交 + 本 evidence 提交，未 push。
+
+### 12.1 设计
+
+W29-B 的 resolver 只解析 plan revision；本 lane 把同一套 G4 pinned-handle 语义平移到**生态实体**（存在于仓库且有 generation 载荷读回的实体），并把 G3 三条件从「约定 ride 在 digest 槽位」升为 typed 验证声明面：
+
+```text
+typed EcosystemSelector ──resolve_ecosystem_selector──▶ durable EcosystemResolutionHandle
+（kind + 名义 id +              （BEGIN IMMEDIATE 内：replay 优先 → kinds() 门 →
+ Current|At(generation)）         source consult → 钉 (generation, content_digest) →
+                                  写一次 ecosystem_resolution_receipts，commit）
+                                        │
+EcosystemSelectorSource trait（kinds() 自声明注册面 + 关联 Error + 静态派发，零 dyn，
+镜像 W31-F AdmissionConsult 姿态）      │ verify_ecosystem_resolution_current
+  ├─ TestSource（crate 内测试源）       │（显式新鲜度栅栏：source 现值 ≠ 柄上代际 ⇒
+  ├─ ArtifactSelectorSource            │  StaleEcosystemGeneration typed fail-closed，
+  │   （nlos-plan 特性 artifact-source，│  实体消失 ⇒ EntityNotFound）
+  │    可选 dep，默认依赖图不变）        │
+  └─ ApplicationSelectorSource
+      （nlos-application 薄扩展，沿既有
+       application→plan 依赖方向，零环）
+```
+
+- **kind 闭集以「权威有 generation 载荷读回」为准入**：Application（`inspect_application` → `current_installation_generation` + manifest digest）、Artifact（`resolve_head` → head revision + content digest）落地；Topic/Skill/Tool/Model/外部服务**不发明**（§12.5 递延台账具名）。
+- **负路径全 typed**：未注册 kind ⇒ `EcosystemSourceUnavailable`（fail-closed 不 panic）；实体未知 ⇒ `EcosystemEntityNotFound`；代际失配（双向）⇒ `StaleEcosystemGeneration`；source 失败 ⇒ `Source(e)` 传播且零 durable 行；存储行 kind 域外 ⇒ `EcosystemKindUnknown`；id 不再派生 ⇒ `CorruptRecord`。
+- **G3 三条件**：`NodeConditions{namespace: NamespaceCondition（非空/去重/上界 256/序不入身份）, resource_contract: ResourceContractCondition（cpu_shares/memory_mib/io_weight 三维镜像 nlos-resource `ResourceDemand` 词汇，至少一维非零）, fanout: FanoutCondition（下游扇出上界 ≥ 1）}`；digest-only 形态完全兼容（`node_digest` None 分支零追加——v1..v5 行与旧公式逐位相等，测试内复刻旧公式钉死）。
+
+### 12.2 红→绿记录（如实）
+
+1. **红（版本头迁移断言，实测）**：v5 落地时 `schema_v2_migration_paths` / `schema_v3_migration_paths` 实测红（`user_version` 4 ≠ 5 断言失败）；v6 落地时同一对断言再红（5 ≠ 6）——按波次惯例（v3→v4 同型维护）更新为当前头后转绿。生态 API 面以编译红起步（`E0432 unresolved imports`，类型不存在）。
+2. **开发期测试捕获的两处缺陷（测试先行价值的如实记录）**：(a) rusqlite 对 STRICT 表 NULL 列的类型推断把 `Option<Vec<u8>>` 读成 `Vec<u8>`（digest-only 行读回 `InvalidColumnType(Null)` 实测红）——修为闭包内显式 `get::<_, Option<Vec<u8>>>`；(b) order-free 身份测试首版误用不同 `node_key` 对比（node_key 本就入 digest，断言红）——修正测试逻辑为同 key 跨 plan 对照。
+3. **绿**：三提交全绿（§12.6 门）；既有 G1/G3/G4/residency/materialization 断言零弱化（§12.3 机械适配仅加 `conditions: None`，无断言改动）。
+
+### 12.3 实现事实
+
+- **`crates/nlos-plan/src/selector.rs`**（新模块）：`EcosystemSelectorSource` trait + `EcosystemResolutionError<E>{Plan|Source}` + `resolve_ecosystem_selector` / `inspect_ecosystem_resolution` / `verify_ecosystem_resolution_current`（`SqlitePlanAuthority` impl 块，replay-优先、`kinds()` 门先于 consult、source 失败零 durable）；receipt id 域分隔派生 `digest16(llmos/plan/ecosystem-resolution-id/v1, key‖kind‖entity‖generation)`，读回重派生校验（不匹配 ⇒ `CorruptRecord`）。
+- **`model.rs`**：`EcosystemEntityKind`（Application=1/Artifact=2，闭集 + `EcosystemKindUnknown` decode 守卫）、`GenerationExpectation{Current|At}`、`EcosystemSelector`、`EcosystemEntityState`、`EcosystemSourceLookup{Found|NotFound}`、`ResolveEcosystemRequest`、`EcosystemResolutionHandle`/`Decision`；G3 侧 `NodeConditions` 三件套 + `validate`/`canonical_bytes`/`decode`（decode 重验 + 非 canonical ⇒ `CorruptRecord`）+ `MAX_CONDITION_NAMESPACES=256`；`PlanNodeDeclaration.conditions: Option<NodeConditions>` additive 字段。
+- **`schema.rs` v5/v6**：v5 `ecosystem_resolution_receipts`（写一次双 trigger；`entity_kind` 有意不带 IN-list CHECK——decode 面保持可证伪，§12.4 #10 以 raw INSERT 99 实测）；v6 `plan_revision_nodes.conditions_body BLOB` 可空列（NULL=digest-only 旧形态）。
+- **`store.rs`**：`validate_declaration` 挂接条件验证（⇒ `InvalidNodeConditions` typed）；`node_digest` additive 折叠（None 零追加）；`persist_revision_shape` 写 conditions_body；新读回面 `inspect_node_conditions(plan, revision, node)`。
+- **适配器**：nlos-plan `[features] artifact-source = ["dep:nlos-artifact"]` + `src/artifact_source.rs`（`resolve_head` 映射：零修订/未知 id ⇒ NotFound typed miss，保留期外/存储错 ⇒ Store(err)）；nlos-application `src/selector_source.rs`（薄扩展，读回 status 无关）。
+- **机械适配**：`conditions: None` 共 17 处（nlos-plan 12 测试文件 + nlos-application `task_templates.rs`/`manifest_task_templates.rs` + nlos-system-control `layer_inspector_authorities.rs` 1 处——后两者为 additive 字段的编译驱动适配，无断言改动）。
+
+### 12.4 证伪测试
+
+生态 selector 半边（`tests/ecosystem_selector.rs`，10 passed + 特性门 1）：
+
+| 用例 | 覆盖 | 结果 |
+|---|---|---|
+| `ecosystem_current_selector_pins_once_and_receipt_never_floats` | G4 平移：Current 钉一次；source 推进后同键 replay 由原回执应答（不再咨询 source）、新键钉新代际、双回执并存可审计 | PASS |
+| `ecosystem_at_expectation_resolves_and_stale_generation_fences_typed` | At 精确代际解析；推进后 At(旧) 与 At(超前) 双向 ⇒ `StaleEcosystemGeneration{expected,current}` 逐字段；At(0) ⇒ `InvalidRequest` | PASS |
+| `ecosystem_unknown_entity_fails_typed_notfound` | 未知实体 id ⇒ `EcosystemEntityNotFound{kind,entity_id}` typed miss，零 durable 行 | PASS |
+| `ecosystem_kind_without_registered_source_fails_typed_unavailable` | 源未声明该 kind ⇒ `EcosystemSourceUnavailable`（fail-closed 不 panic，不咨询源，零行） | PASS |
+| `ecosystem_source_failure_propagates_and_writes_nothing_durable` | source `Err` ⇒ `Source(e)` 传播 + 计数 0；恢复后同键正常解析 | PASS |
+| `ecosystem_idempotent_replay_answers_original_and_rebind_conflicts` | 同键同 selector ⇒ Replayed 原回执；At(原代际) 形态 replay 等价；换实体/换 At 目标/换时间戳 ⇒ `IdempotencyConflict` | PASS |
+| `ecosystem_receipts_survive_restart_and_reopen_stays_at_head` | 文件库 drop+reopen 回执逐位存活；user_version=6 头；人为降版本戳重迁移幂等收敛回 6 | PASS |
+| `ecosystem_two_kinds_resolve_through_one_multi_kind_source` | 单一多 kind 源双实体独立解析（kind 回读正确、id 不同） | PASS |
+| `ecosystem_verify_current_face_detects_stale_generation` | 显式新鲜度栅栏：未动 ⇒ Ok(原柄)；推进 ⇒ Stale{expected=柄,current=现}；实体消失 ⇒ `EcosystemEntityNotFound` | PASS |
+| `ecosystem_unknown_kind_and_tampered_rows_fail_typed_closed` | raw INSERT kind=99 行 ⇒ 读回 `EcosystemKindUnknown(99)`；id 不再派生行 ⇒ `CorruptRecord`；写一次 trigger 拒 raw UPDATE/DELETE；合法行照常读 | PASS |
+| `artifact_adapter::artifact_source_resolves_real_head_and_fences_on_advance`（`--features artifact-source`） | 真实面：真 `put_revision` CAS 推进 head，At(2) 解析钉 v2 digest；推进 v3 后 resolve+verify 双面 Stale；未知 id typed miss | PASS |
+
+G3 三条件结构化（`tests/structured_conditions.rs`，5 passed）：
+
+| 用例 | 覆盖 | 结果 |
+|---|---|---|
+| `structured_conditions_apply_validate_and_read_back_canonically` | 与 digest-only 同 revision 共存；读回 canonical（序规范化）；重启存活；revision 链仍可验证 | PASS |
+| `conditions_digest_fold_is_bit_compatible_and_order_free` | 测试内复刻 pre-v6 公式：None 形态逐位相等（bit-compat 钉死）；Some 扩展 digest；同集异序 + 跨 plan 同 digest（序与 plan 身份均不入）；异界变 digest | PASS |
+| `structured_conditions_invalid_forms_fail_typed` | 空集/重复/超界(257)/全零资源/零扇出 五形态 ⇒ `InvalidNodeConditions`，零 shape 行 | PASS |
+| `frozen_node_conditions_rewrite_is_refused_typed` | 执行冻结后同集（异序）重声明保原 revision/digest；异集 ⇒ `FrozenNodeShapeRewrite`（G1 fence 覆盖条件维度） | PASS |
+| `tampered_condition_bodies_fail_closed_on_decode` | 错 tag/截断/非 canonical 三体 ⇒ `CorruptRecord` 读回拒绝 | PASS |
+
+真实面适配器（`crates/nlos-application/tests/selector_source.rs`，1 passed）：
+
+| 用例 | 覆盖 | 结果 |
+|---|---|---|
+| `application_source_pins_install_generations_and_fences_on_reinstall` | 真验签包安装链（support fixture）：gen1 钉 manifest digest；重装 gen2 ⇒ 旧柄 verify 栅栏 + At(1) 栅栏 + 新 Current 钉 gen2；未知包 typed miss；未知回执 typed | PASS |
+
+### 12.5 已知限制与 deferred minors（如实登记）
+
+- **G3 三条件 enforcement 仍开放**（W31-G §8.2.2 后半，如实带入）：本 lane 交付 typed 声明面 + 结构验证；物化门对三条件的**消费/强制**（Namespace/Capability 权威裁决、Resource 权威 admission、fanout payer/grant 预留）随对应权威落地逐面接测试——「对应权威未落」的事实未变，变的是三条件从不可证伪的 digest 变为可验证的 typed 声明。
+- **`[PLAN-DEPENDENCY-001]` kind 闭集递延台账（具名）**：**Topic**——实体在（`nlos-topic` TopicAuthority/TopicRecord）但无推进的 topic 级 generation（仅创建时 `channel_generation` 快照，不可推进 ⇒ fencing 空转；subscription/pattern generation 粒度不同），待 topic 头部 revision/generation 落地后入集；**Skill/Tool**——仓库无任何实体（全仓 grep 零符号；`nlos-capability` 仅 NamespaceId 前缀树目标，无 skill/tool 注册面）；**Model/ModelConfig**——无 crate 无类型；**外部服务**——仅 `nlos-service-directory` 内存 SABI PoC 快照（candidate generation 为调用方快照数据非权威代际；对快照解析即违反「不得把搜索结果当已授权依赖」），待 durable 外部服务权威落地。
+- **At 仅栅栏形态**：`At(g)` 只匹配当前代际（失配双向 stale fail-closed）；**历史代际钉取递延**（artifact `inspect_revision`/application `list_installations` 具备按代读回，接入后 At 可钉历史）。
+- **声明侧结构化绑定递延**：节点声明对生态依赖仍以 `input_selectors_digest` 摘要绑定；把 resolution handle 以 typed 输入选择器清单写入声明（替代摘要绑定）属物化门后续车道（本 lane 落解析半边 + 负路径）。
+- **ResourceContractCondition 为声明合法子集**：固定三维镜像 nlos-resource W22-R `ResourceDemand` 词汇；总纲 ResourceContract 全字段（scheduling class/deadline policy/guarantee/overcommit 等）不入声明面——声明表达「请求上界」，裁决与 effective 面归 Resource 权威。
+- **nlos-application/nlos-system-control 写集说明**：分别为薄扩展模块（沿既有依赖方向的新公共面 + 1 测试）与 1 行编译驱动机械适配（`conditions: None`），均为本 additive 字段的必要涟漪，非越权改写。
+- **验证域**：macOS 单平台 debug/test profile；`nlos-system-control` 仅跑全量测试（129/0）未动其源码；kill-9/断电外推边界沿 §4 口径（本 lane 无新崩溃窗口面——解析事务为单事务原子，restart 测试覆盖 reopen 收敛）。
+
+### 12.6 验证门（W36-P7 实跑）
+
+| 门 | 命令 | 结果 |
+| --- | --- | --- |
+| fmt | `cargo fmt -p nlos-plan -p nlos-application -p nlos-system-control` | PASS |
+| 全量测试（默认特性） | `cargo test -p nlos-plan` | PASS（16 target 全 ok，75 passed / 0 failed / 2 ignored；W31-F 60 基线零回归 + 15 新用例） |
+| 全量测试（特性门） | `cargo test -p nlos-plan --features artifact-source` | PASS（76 passed / 0 failed / 2 ignored——含真实 ArtifactStore 适配器用例） |
+| 依赖面测试 | `cargo test -p nlos-application` / `cargo test -p nlos-system-control` | PASS（86 / 0（W31-G 口径 60 之上为后续 lane 增量 + 本 lane 1 适配器用例）；129 / 0） |
+| clippy | `cargo clippy -p nlos-plan -p nlos-application -p nlos-system-control --all-features --all-targets -- -D warnings` | PASS（0 warning；未使用 `chunks_exact`，CI 纪律） |
+| workspace 编译 | `cargo check --workspace --all-targets` | PASS（可选特性不改变默认依赖图） |
+
+### 12.7 未运行项（W36-P7，显式列出）
+
+- **push 与 PR：未执行**——派工单 MUST NOT；由控制器统一执行（lane #8 `C-PLAN-HARDEN` 在本 lane 之后排队）。
+- **`cargo test --workspace`：未运行**——派工单 MUST NOT（波次屏障由控制器收口；并行车道持 nlos-task/nlos-process 写集）。
+- **三平台 CI / MSRV：未运行**——待 push 后 CI 触发。
+- **release profile 复测：未运行**——本 lane 无 benchmark 声明，沿 §9 口径不涉及。

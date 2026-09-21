@@ -9,7 +9,7 @@ use rusqlite::{Connection, TransactionBehavior};
 
 use crate::PlanStoreError;
 
-pub(crate) const SCHEMA_VERSION: i64 = 4;
+pub(crate) const SCHEMA_VERSION: i64 = 6;
 
 /// Creates the durable plan authority schema v1: the per-plan
 /// `plans` current-state head (monotonic current revision), the immutable
@@ -257,6 +257,113 @@ pub(crate) fn migrate_v4(connection: &mut Connection) -> Result<(), PlanStoreErr
 
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     transaction.execute_batch(SCHEMA_V4_SQL)?;
+    transaction.commit()?;
+    Ok(())
+}
+
+/// Advances a v4 database to v5 (additive, one `BEGIN IMMEDIATE`
+/// transaction): the immutable `ecosystem_resolution_receipts` of the
+/// resolver's ecosystem selector half (W36-P7, ADR-0016 决定 5 second
+/// half; `[PLAN-DEPENDENCY-001]`). One row is one durable
+/// generation-carrying handle: the pinned generation and content digest
+/// observed when the resolution committed, never floated by later
+/// source generations, and re-derived binding-checked on readback. The
+/// `entity_kind` domain is deliberately not a `CHECK` IN-list: the
+/// closed enum's decode face ([`crate::PlanStoreError::EcosystemKindUnknown`])
+/// is the fail-closed guard, so a row with a kind outside this build's
+/// enum (e.g. written by a later schema version) is refused typed on
+/// read instead of aborting at insert-time domain policing.
+pub(crate) fn migrate_v5(connection: &mut Connection) -> Result<(), PlanStoreError> {
+    let table_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+          WHERE type='table' AND name = 'ecosystem_resolution_receipts'",
+        [],
+        |row| row.get(0),
+    )?;
+    let trigger_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN (
+            'ecosystem_resolution_receipts_immutable_update',
+            'ecosystem_resolution_receipts_no_delete'
+          )",
+        [],
+        |row| row.get(0),
+    )?;
+    if table_count == 1 && trigger_count == 2 {
+        connection.pragma_update(None, "user_version", 5)?;
+        return Ok(());
+    }
+    if table_count != 0 || trigger_count != 0 {
+        return Err(PlanStoreError::CorruptRecord(
+            "partial plan authority v5 schema",
+        ));
+    }
+    let v4_tables: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+          WHERE type='table' AND name IN (
+            'plans', 'plan_revisions', 'plan_nodes', 'plan_node_transitions',
+            'plan_revision_nodes', 'plan_revision_edges', 'plan_resolution_receipts',
+            'plan_node_residency_transitions', 'plan_materialization_requests'
+          )",
+        [],
+        |row| row.get(0),
+    )?;
+    if v4_tables != 9 {
+        return Err(PlanStoreError::CorruptRecord(
+            "plan authority v4 schema missing",
+        ));
+    }
+
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(SCHEMA_V5_SQL)?;
+    transaction.commit()?;
+    Ok(())
+}
+
+/// Advances a v5 database to v6 (additive, one `BEGIN IMMEDIATE`
+/// transaction): the structured G3 gate conditions column (W36-P7; W31-G
+/// §8.2.2). `plan_revision_nodes` gains a nullable `conditions_body`
+/// holding the canonical [`crate::NodeConditions`] encoding; `NULL` is
+/// the digest-only legacy form, which stays fully accepted — pre-v6
+/// rows and re-declarations hash bit-identically (the node digest
+/// formula's absence branch appends nothing). Existing rows backfill to
+/// `NULL` (their conditions rode the digest slots by convention), and
+/// the write-once UPDATE/DELETE triggers keep covering the new column
+/// with the row.
+pub(crate) fn migrate_v6(connection: &mut Connection) -> Result<(), PlanStoreError> {
+    let column_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('plan_revision_nodes')
+          WHERE name = 'conditions_body'",
+        [],
+        |row| row.get(0),
+    )?;
+    if column_count == 1 {
+        connection.pragma_update(None, "user_version", 6)?;
+        return Ok(());
+    }
+    if column_count != 0 {
+        return Err(PlanStoreError::CorruptRecord(
+            "partial plan authority v6 schema",
+        ));
+    }
+    let v5_tables: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+          WHERE type='table' AND name IN (
+            'plans', 'plan_revisions', 'plan_nodes', 'plan_node_transitions',
+            'plan_revision_nodes', 'plan_revision_edges', 'plan_resolution_receipts',
+            'plan_node_residency_transitions', 'plan_materialization_requests',
+            'ecosystem_resolution_receipts'
+          )",
+        [],
+        |row| row.get(0),
+    )?;
+    if v5_tables != 10 {
+        return Err(PlanStoreError::CorruptRecord(
+            "plan authority v5 schema missing",
+        ));
+    }
+
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(SCHEMA_V6_SQL)?;
     transaction.commit()?;
     Ok(())
 }
@@ -627,3 +734,29 @@ BEGIN
 END;
 
 PRAGMA user_version = 4;";
+
+pub(crate) const SCHEMA_V5_SQL: &str = "CREATE TABLE ecosystem_resolution_receipts (
+    resolution_id BLOB PRIMARY KEY NOT NULL CHECK(length(resolution_id) = 16),
+    idempotency_key BLOB NOT NULL UNIQUE CHECK(length(idempotency_key) = 16),
+    entity_kind INTEGER NOT NULL,
+    entity_id BLOB NOT NULL CHECK(length(entity_id) = 16),
+    generation INTEGER NOT NULL CHECK(generation >= 1),
+    content_digest BLOB NOT NULL CHECK(length(content_digest) = 32),
+    resolved_at_ms INTEGER NOT NULL CHECK(resolved_at_ms >= 0)
+) STRICT;
+
+CREATE TRIGGER ecosystem_resolution_receipts_immutable_update
+BEFORE UPDATE ON ecosystem_resolution_receipts BEGIN
+    SELECT RAISE(ABORT, 'ecosystem resolution receipt is immutable');
+END;
+CREATE TRIGGER ecosystem_resolution_receipts_no_delete
+BEFORE DELETE ON ecosystem_resolution_receipts BEGIN
+    SELECT RAISE(ABORT, 'ecosystem resolution receipt is durable');
+END;
+
+PRAGMA user_version = 5;";
+
+pub(crate) const SCHEMA_V6_SQL: &str = "ALTER TABLE plan_revision_nodes
+    ADD COLUMN conditions_body BLOB;
+
+PRAGMA user_version = 6;";

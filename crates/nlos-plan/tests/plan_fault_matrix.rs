@@ -102,6 +102,7 @@ fn node(key: u8, payload: u8) -> PlanNodeDeclaration {
         output_contract_digest: [payload; 32],
         policy_digest: [payload; 32],
         resource_ceiling_digest: [payload; 32],
+        conditions: None,
     }
 }
 

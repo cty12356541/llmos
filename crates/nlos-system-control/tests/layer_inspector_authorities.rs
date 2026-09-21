@@ -177,6 +177,7 @@ mod plan_authority {
                     output_contract_digest: [0x45; 32],
                     policy_digest: [0x49; 32],
                     resource_ceiling_digest: [0x4A; 32],
+                    conditions: None,
                 }],
                 idempotency_key: IdempotencyKey::from_bytes([0x46; 16]),
                 applied_at_ms: 1_000,

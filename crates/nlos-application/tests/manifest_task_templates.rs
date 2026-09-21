@@ -243,6 +243,7 @@ fn plan_override_001_templated_segment_compiles_to_the_direct_plan_proposal() {
                 output_contract_digest: ContentDigest::of_bytes(b"output-contract").into_bytes(),
                 policy_digest: ContentDigest::of_bytes(b"policy").into_bytes(),
                 resource_ceiling_digest: ContentDigest::of_bytes(b"resource-ceiling").into_bytes(),
+                conditions: None,
             },
             PlanNodeDeclaration {
                 node_key: [0x02; 16],
@@ -253,6 +254,7 @@ fn plan_override_001_templated_segment_compiles_to_the_direct_plan_proposal() {
                 output_contract_digest: ContentDigest::of_bytes(b"output-contract").into_bytes(),
                 policy_digest: ContentDigest::of_bytes(b"policy").into_bytes(),
                 resource_ceiling_digest: ContentDigest::of_bytes(b"resource-ceiling").into_bytes(),
+                conditions: None,
             },
             PlanNodeDeclaration {
                 node_key: [0x03; 16],
@@ -263,6 +265,7 @@ fn plan_override_001_templated_segment_compiles_to_the_direct_plan_proposal() {
                 output_contract_digest: ContentDigest::of_bytes(b"output-contract").into_bytes(),
                 policy_digest: ContentDigest::of_bytes(b"policy").into_bytes(),
                 resource_ceiling_digest: ContentDigest::of_bytes(b"resource-ceiling").into_bytes(),
+                conditions: None,
             },
         ],
         idempotency_key,

@@ -18,14 +18,16 @@ use sha2::{Digest, Sha256};
 use crate::PlanStoreError;
 use crate::model::{
     ApplyPlanRevisionRequest, ChainVerification, DEPENDENCIES_ROOT_DOMAIN,
-    MAX_DECLARED_NODES_PER_REVISION, MAX_DEPENDENCIES_PER_NODE, NODES_ROOT_DOMAIN,
+    MAX_DECLARED_NODES_PER_REVISION, MAX_DEPENDENCIES_PER_NODE, NODES_ROOT_DOMAIN, NodeConditions,
     NodeResidencyTier, NodeTransitionDecision, NodeTransitionRequest, NodeTransitionVoucher,
     PLAN_ID_DOMAIN, PlanNodeDeclaration, PlanNodeKind, PlanNodeRecord, PlanNodeState,
     PlanRevisionDecision, PlanRevisionReceipt, PlanView, REVISION_DIGEST_DOMAIN,
     TASK_NODE_ID_DOMAIN, VOUCHER_ID_DOMAIN, decode_kind, decode_state, decode_tier, encode_kind,
     encode_state, encode_tier,
 };
-use crate::schema::{SCHEMA_VERSION, migrate_v1, migrate_v2, migrate_v3, migrate_v4};
+use crate::schema::{
+    SCHEMA_VERSION, migrate_v1, migrate_v2, migrate_v3, migrate_v4, migrate_v5, migrate_v6,
+};
 
 /// A single-writer `SQLite` plan authority.
 pub struct SqlitePlanAuthority {
@@ -93,17 +95,32 @@ impl SqlitePlanAuthority {
                 migrate_v2(&mut connection)?;
                 migrate_v3(&mut connection)?;
                 migrate_v4(&mut connection)?;
+                migrate_v5(&mut connection)?;
+                migrate_v6(&mut connection)?;
             }
             1 => {
                 migrate_v2(&mut connection)?;
                 migrate_v3(&mut connection)?;
                 migrate_v4(&mut connection)?;
+                migrate_v5(&mut connection)?;
+                migrate_v6(&mut connection)?;
             }
             2 => {
                 migrate_v3(&mut connection)?;
                 migrate_v4(&mut connection)?;
+                migrate_v5(&mut connection)?;
+                migrate_v6(&mut connection)?;
             }
-            3 => migrate_v4(&mut connection)?,
+            3 => {
+                migrate_v4(&mut connection)?;
+                migrate_v5(&mut connection)?;
+                migrate_v6(&mut connection)?;
+            }
+            4 => {
+                migrate_v5(&mut connection)?;
+                migrate_v6(&mut connection)?;
+            }
+            5 => migrate_v6(&mut connection)?,
             SCHEMA_VERSION => {}
             other => return Err(PlanStoreError::SchemaVersionUnsupported(other)),
         }
@@ -331,6 +348,37 @@ impl SqlitePlanAuthority {
             .into_iter()
             .map(decode_node_row)
             .collect()
+    }
+
+    /// Reads the structured G3 gate conditions one revision's declared
+    /// shape row carries (W36-P7). `Ok(None)` means the node was
+    /// declared in the digest-only form (or the shape row is absent).
+    ///
+    /// # Errors
+    ///
+    /// Fails typed on a corrupt (malformed or non-canonical) stored
+    /// body, or on storage failure.
+    pub fn inspect_node_conditions(
+        &self,
+        plan_id: TaskPlanId,
+        revision: u64,
+        node_id: TaskNodeId,
+    ) -> Result<Option<NodeConditions>, PlanStoreError> {
+        let connection = self.lock()?;
+        let body: Option<Vec<u8>> = connection
+            .query_row(
+                "SELECT conditions_body FROM plan_revision_nodes
+                 WHERE plan_id = ?1 AND revision = ?2 AND task_node_id = ?3",
+                params![
+                    plan_id.as_bytes().as_slice(),
+                    encode_u64(revision)?,
+                    node_id.as_bytes().as_slice(),
+                ],
+                |row| row.get::<_, Option<Vec<u8>>>(0),
+            )
+            .optional()?
+            .flatten();
+        body.as_deref().map(NodeConditions::decode).transpose()
     }
 
     /// Lists one node's transition vouchers in dense sequence order.
@@ -586,6 +634,9 @@ fn validate_declaration(nodes: &[PlanNodeDeclaration]) -> Result<(), PlanStoreEr
                 reason: "node dependency set exceeds the admission bound",
             });
         }
+        if let Some(conditions) = &node.conditions {
+            conditions.validate()?;
+        }
         let mut declared_dependencies =
             std::collections::HashSet::with_capacity(node.dependency_keys.len());
         for dependency in &node.dependency_keys {
@@ -670,6 +721,12 @@ fn declaration_has_cycle(nodes: &[PlanNodeDeclaration]) -> bool {
 /// digest excludes the plan identity: the same shape re-declared in a
 /// later revision must hash identically so the frozen-shape comparison is
 /// bitwise.
+///
+/// W36-P7 additive fold: a `Some(conditions)` declaration appends one
+/// presence byte plus the canonical [`NodeConditions`] body; `None`
+/// appends **nothing**, so pre-v6 node digests stay bit-identical (the
+/// legacy digest-only form and every stored v1..v5 row compare bitwise
+/// against the new formula's absence branch).
 fn node_digest(node: &PlanNodeDeclaration) -> [u8; 32] {
     let kind_byte = match node.kind {
         PlanNodeKind::AgentRole => 1_u8,
@@ -690,6 +747,10 @@ fn node_digest(node: &PlanNodeDeclaration) -> [u8; 32] {
     hasher.update(node.output_contract_digest);
     hasher.update(node.policy_digest);
     hasher.update(node.resource_ceiling_digest);
+    if let Some(conditions) = &node.conditions {
+        hasher.update([1_u8]);
+        hasher.update(conditions.canonical_bytes());
+    }
     hasher.finalize().into()
 }
 
@@ -1184,9 +1245,10 @@ fn upsert_plan_nodes(
 }
 
 /// Persists the revision's complete declared shape (node set + dependency
-/// edges) beside its immutable receipt (schema v2, same transaction). These
-/// rows are the resolver's durable input; they are write-once and are
-/// re-verified against the receipt's roots at every resolution.
+/// edges + structured gate conditions) beside its immutable receipt
+/// (schema v2/v6, same transaction). These rows are the resolver's
+/// durable input; they are write-once and are re-verified against the
+/// receipt's roots at every resolution.
 fn persist_revision_shape(
     transaction: &rusqlite::Transaction<'_>,
     plan_id: TaskPlanId,
@@ -1195,10 +1257,15 @@ fn persist_revision_shape(
     digests: &[([u8; 32], TaskNodeId)],
 ) -> Result<(), PlanStoreError> {
     for (node, (digest, node_id)) in nodes.iter().zip(digests) {
+        let conditions_body = node
+            .conditions
+            .as_ref()
+            .map(NodeConditions::canonical_bytes);
         transaction.execute(
             "INSERT INTO plan_revision_nodes (
-                plan_id, revision, task_node_id, node_key, node_kind, node_digest
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                plan_id, revision, task_node_id, node_key, node_kind, node_digest,
+                conditions_body
+              ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 plan_id.as_bytes().as_slice(),
                 encode_u64(revision)?,
@@ -1206,6 +1273,7 @@ fn persist_revision_shape(
                 node.node_key.as_slice(),
                 encode_kind(node.kind),
                 digest.as_slice(),
+                conditions_body.as_deref(),
             ],
         )?;
         for dependency in &node.dependency_keys {

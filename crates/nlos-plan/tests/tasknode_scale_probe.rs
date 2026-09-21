@@ -200,6 +200,7 @@ fn declaration(index: u64) -> PlanNodeDeclaration {
         output_contract_digest: digest32(index ^ 0x3333_3333_3333_3333),
         policy_digest: digest32(index ^ 0x4444_4444_4444_4444),
         resource_ceiling_digest: digest32(index ^ 0x5555_5555_5555_5555),
+        conditions: None,
     }
 }
 

@@ -61,6 +61,7 @@ pub fn compile_task_templates(
             output_contract_digest: template.output_contract_digest,
             policy_digest: template.policy_digest,
             resource_ceiling_digest: template.resource_ceiling_digest,
+            conditions: None,
         })
         .collect();
     Ok(ApplyPlanRevisionRequest {

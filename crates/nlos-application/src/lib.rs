@@ -106,6 +106,7 @@
 
 mod migration;
 mod schema;
+mod selector_source;
 mod surfaces;
 mod task_templates;
 
@@ -131,6 +132,7 @@ pub use migration::{
     MigrationStepRecord, MigrationView, RecordMigrationStepDecision, RecordMigrationStepRequest,
     RollbackMigrationDecision, RollbackPackageMigrationRequest,
 };
+pub use selector_source::{ApplicationSelectorSource, ApplicationSourceError};
 pub use surfaces::{
     MAX_SURFACE_TEXT_BYTES, MAX_SURFACES_PER_SEGMENT, PackageSurfaceDeclaration,
     PackageSurfaceKind, SurfaceSegmentError, validate_surface_declarations,
