@@ -135,7 +135,7 @@ fn verified_payload_package(
             role: PackageEntryRole::Executable,
         }],
     };
-    let signed = SignedPackage {
+    let envelope = SignedPackage {
         signature: signer
             .signing
             .sign(&package_manifest_message(&manifest))
@@ -148,7 +148,7 @@ fn verified_payload_package(
         .verify_package(
             &runtime.identity,
             VerifyPackageRequest {
-                signed: &signed,
+                signed: &envelope,
                 idempotency_key: seeded_key(SEED, key_offset + 1),
                 verified_at_ms: runtime
                     .wall_now_ms(seeded_key(SEED, clock_offset + 1))
