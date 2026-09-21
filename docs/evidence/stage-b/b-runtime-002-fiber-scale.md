@@ -1,6 +1,6 @@
 # B-RUNTIME-002：100K dormant/waiting Fiber 承载证明（ROAD-B-006 前片）
 
-- 状态：`PARTIAL_PASS`（ROAD-B-006 的承载量 + 唤醒正确性 + 线程有界性前片 + cancel/late-callback 功能矩阵（§6，2026-09-02 追加）+ 阻塞 I/O 负向证明最小前缀（§6.7，2026-09-05 追加）；structured join/detach、Process crash propagation、分维 Activation metering 已做；100K 规模级 cancel 探针未做，ROAD-B-006 整体不达成）
+- 状态：`PARTIAL_PASS`（ROAD-B-006 的承载量 + 唤醒正确性 + 线程有界性前片 + cancel/late-callback 功能矩阵（§6，2026-09-02 追加）+ 阻塞 I/O 负向证明最小前缀（§6.7，2026-09-05 追加）+ 100K 规模级 batch cancel 探针（§6.19，2026-09-21 追加，W35-P6；联动路径口径——durable-wait 全量挂起下的终态 purge O(n²) 特征仍登记）；structured join/detach、Process crash propagation、分维 Activation metering 已做；ROAD-B-006 整体不达成）
 - 日期：2026-08-31（macOS arm64 单平台实测）
 - Owner：`nlos-runtime-tokio`（`tests/durable_wait_scale.rs`）
 - 设计依据：[架构设计总纲 v0.5 §28.2 ROAD-B-006](../../design/06-架构设计总纲-v0.5.md)（「单机 runtime MUST 证明有限宿主线程可承载至少 100K dormant/waiting Fiber……未完成前不得声称 coroutine 级大规模并发」）
@@ -70,7 +70,7 @@ cargo fmt -p nlos-runtime-tokio -- --check                            → 通过
 - **单平台实测**：数字均为 macOS arm64（APFS fsync 特性敏感，register_settle 主导项）；Linux/Windows 数字待夜间 scale-probe CI job（`--include-ignored`，ubuntu）补充。
 - **MSRV 双工具链未本地执行**：本地 1.97 toolchain 安装损坏（`librustc_driver` dylib 缺失 → 其 rustfmt/check 均不可用），fmt 双工具链与 MSRV check 以 CI（stable/Linux fmt 门 + ubuntu MSRV job）为准，如实标注。
 - **in-memory 注册表线性扫描**：`deliver`（逐 report 行线性 find）与 fiber 终态 purge（`retain` 全表）在 100K 挂起下呈 O(n) 每事件，wake 阶段 ~4.3s 可接受但属已登记的规模特征，非本前片修改对象。
-- **未做（ROAD-B-006 其余退出门，登记后续）**：~~cancel/late-callback 矩阵~~（功能级矩阵已落地，见 §6；100K 规模级 cancel 探针仍因 O(n²) 终态 purge 未纳入）、~~structured join/detach（API 不存在，如实登记缺口，见 §6.4）~~（合同层最小前缀已落地，见 §6.5）、~~Process crash propagation~~（见 `b-process-003-crash-propagation.md`）、~~分维 Activation metering 最小前缀~~（见 §6.6）、~~阻塞 I/O 负向证明~~（见 §6.7）；100K `cancel_scope` 收尾因 O(n²) 终态 purge 未纳入探针， teardown 走 drop。
+- **未做（ROAD-B-006 其余退出门，登记后续）**：~~cancel/late-callback 矩阵~~（功能级矩阵已落地，见 §6；~~100K 规模级 cancel 探针仍因 O(n²) 终态 purge 未纳入~~——batch-cancel 联动路径的 100K 探针已于 W35-P6 落地并本地实测绿，见 §6.19；本条所指 durable-wait 全量挂起下「每次终态全表 retain」的 O(n²) 实现特征本身未变，仍登记）、~~structured join/detach（API 不存在，如实登记缺口，见 §6.4）~~（合同层最小前缀已落地，见 §6.5）、~~Process crash propagation~~（见 `b-process-003-crash-propagation.md`）、~~分维 Activation metering 最小前缀~~（见 §6.6）、~~阻塞 I/O 负向证明~~（见 §6.7）；100K `cancel_scope` 收尾因 O(n²) 终态 purge 未纳入探针（durable_wait_scale teardown 口径；batch-cancel 联动路径已另立 `batch_cancel_scale` 探针，wait 子集按 tier 不变设计绕开该家族，见 §6.19）， teardown 走 drop。
 - probe 为 `#[ignore]`，常规 CI（push/PR）不运行；夜间 scale-probe job 覆盖。
 
 ## 6. cancel/late-callback 功能矩阵（2026-09-02 追加，勾销 §5 中 cancel/late-callback 项的功能级部分）
@@ -594,7 +594,7 @@ cargo fmt -p nlos-runtime-tokio -- --check                → 通过（stable，
 - **如实保留（ROAD-B-006 剩余，Claim 维持 PARTIAL_PASS）**：
   - runtime kill receipt 消费（`request_platform_kill` 联动）与 Activation meter 联动；
   - runtime 侧 spawn 不做 process 门（fresh scope 的 runtime spawn 合法，durable 侧 fail-closed 承担 incarnation 围栏——本片有意分工，非缺口冒充）；跨 process 共享 scope 的整体取消为 scope 树语义的显式代价；
-  - sweep 为 O(n) 注册表扫描 + O(n·m) scope 去重（n 命中 fiber / m 去重 scope），100K 规模级 batch cancel 探针未纳入（同 §5 O(n) 特征家族）；
+  - sweep 为 O(n) 注册表扫描 + O(n·m) scope 去重（n 命中 fiber / m 去重 scope），~~100K 规模级 batch cancel 探针未纳入~~（W35-P6 已落地 `batch_cancel_scale` 并以 10K:100K 每纤比值 1.01–1.10×（界 3×）实证线性及以下，见 §6.19；O(n²) 终态 purge 特征家族本身见 §5 仍登记）；
   - 未声称 ROAD-B-006 整体达成。
 
 ### 6.17 Wake latency/fairness 确定性测试（2026-09-20 追加，W27-F / B-RUNTIME 开放项）
@@ -629,9 +629,9 @@ cargo clippy -p nlos-runtime-tokio --all-targets -- -D warnings
 
 - **勾销**：§3 `B-RUNTIME` 行「wake latency/fairness」的**功能级确定性测试**（scheduler-step 级 latency bound + burst fairness 无饿死 + 交错 cancel 不丢 wake）→ 本 §6.17。
 - **如实保留（不外推）**：
-  - SQLite → pump OS 线程 → `TokioWakeSink` 的**端到端墙钟延迟分布**（PoC-0004 §6 已登记「真实规模 backpressure 计量」，非本片口径）；
-  - `multi_thread`/work-stealing 下的公平性形状（本片为 `current_thread` 确定性口径，多 worker 的交错属不同问题）；
-  - 100K 规模 wake 风暴探针（与 §5 已登记的 100K cancel 探针同族，未纳入）；
+  - ~~SQLite → pump OS 线程 → `TokioWakeSink` 的**端到端墙钟延迟分布**（PoC-0004 §6 已登记「真实规模 backpressure 计量」，非本片口径）~~——W35-P6 以首割测量探针落地（`outbox_wake_latency`，256-burst 百分位登记，仅 sanity 界），见 §6.19；更大规模/持续负载下的分布仍属后续口径；
+  - ~~`multi_thread`/work-stealing 下的公平性形状（本片为 `current_thread` 确定性口径，多 worker 的交错属不同问题）~~——W35-P6 以 2/4-worker 协作轮口径落地（`wake_fairness` 多 worker 两测），见 §6.19；
+  - 100K 规模 wake 风暴探针（与 §5 已登记的 100K cancel 探针同族，未纳入；W35-P6 的 wake 侧覆盖为 32-waiter 公平 + 256-burst 延迟分布，100K wake 风暴仍登记）；
   - ROAD-B-006 其余未决项不变，Claim 维持 `PARTIAL_PASS`。
 
 ### 6.18 夜间 scale-probe blocking_io_negative 既有失败：根因排查与测量方法学校准（2026-09-21 追加，W34 移交项 #14 / ROAD-B-006）
@@ -660,3 +660,41 @@ cargo clippy -p nlos-runtime-tokio --all-targets -- -D warnings
   - `cargo test -p nlos-runtime-tokio` → **128 passed / 0 failed / 11 ignored**；`cargo fmt --all -- --check` 通过；`cargo clippy -p nlos-runtime-tokio --all-targets -- -D warnings` exit 0。
 - **PENDING**：最终证明为下一个 schedule 触发的 scale-probe run（ubuntu-latest，`--include-ignored`）三探针绿，届时回填 run 链接。本修复**未 push**。
 - **缺口更新**：移交清单 §6.5.6 #14 由「专项排查」推进为「已排查修复、PENDING 夜间复证」；`durable_wait_scale.rs` 的绝对 `THREAD_BOUND=10` 具同型暴露面（其两探针均无 blocking pool、独立测试二进制、当前夜间绿）——如实登记不在本片扩改，留待其首个假失败时同法校准。
+
+### 6.19 100K batch cancel 探针 + 多 worker wake 公平 + 端到端墙钟分布首割（2026-09-21 追加，W35-P6 / ROAD-B-006 / W34-A review §6 residual 2）
+
+- Owner：`nlos-runtime-tokio`（新增 `tests/batch_cancel_scale.rs`、`tests/outbox_wake_latency.rs`，扩展 `tests/wake_fairness.rs`；**test-only 零 src 侵入**；base HEAD `e6b4725`）。
+- 勾销对象：§6.16.2「100K 规模级 batch cancel 探针未纳入」；§6.17.2「multi_thread/work-stealing 公平性形状」与「SQLite→pump→TokioWakeSink 端到端墙钟分布」（PoC-0004 §6 首割）；W34-A review §6 residual 2。§6.18 校准纪律全程适用：拓扑无关推导界、种群比例界（非绝对 ms/MB）、不假设 runner 核数、二进制内探针串行槽。
+- **(a) 100K batch cancel 探针**（`batch_cancel_scale.rs`，`#[ignore]` ×2，§6.18 同款 `PROBE_SERIALIZE` 槽 + 同步 `#[test]` + `bounded_runtime().block_on`）：
+  - 拓扑：每 tier `count` fibers ÷ 4 process × 16 scope/process；组成 = 4 只预终态（`Completed`）/process + **tier 不变** 1000 只 in-fiber Operation wait 挂起（记忆 waits 注册表非空，逼出终态 purge 路径；常量设计使已登记 O(waits²) 家族对两 tier 贡献固定成本，10K→100K 比值只隔离 sweep/cancel/reap 家族）+ 其余 `pending()` 挂起。
+  - 断言族：①终态唯一——Σ matched_fibers == count、already_terminal == 16、vanished == 0、settle 后逐 fiber 普查恰 `count-16` Cancelled + 16 Completed、join 恰返回对应 exit（无丢失/复写/复活）；②reclaim 硬界——join 同步 reap 后 `registered_fibers()==0` **且** `registered_scopes()==0`（reap 窗口即 join 循环本身，确定性断言，非 RSS 口径）；③RSS 种群比例界——满载增长 ≤ `8 KiB × count`（W8 实测 ~2KiB/fiber，4× 余量；无绝对 MB、无 runner 假设）；④线程界——tier 内基线增长 ≤ +4（自有 2 worker + slack，batch cancel 不产线程）；⑤**O 族比值界**——同进程先 10K 后 100K，`per_fiber(100K) ≤ 3.0 × per_fiber(10K)`（cancel 阶段 = linkage+settle+join；线性 ⇒ ≈1×，O(n²) ⇒ 10× 种群比必然击穿；比值而非绝对墙钟，CI 画像诚实）。
+  - macOS arm64（M5 10 核，stable 1.97.1，槽内独占）实测（两次独立运行）：
+    - run1：10K per-fiber 18.373µs（spawn 35.1ms / linkage 5.4ms / settle 163.2ms / join 10.2ms；rss 4960→21360 KiB 增长 16400 ≤ 80000；threads 4→4）；100K per-fiber 21.365µs（spawn 321.3ms / linkage 70.9ms / settle 1.951s / join 109.4ms；rss 22800→159696 增长 136896 ≈ 1.34 KiB/fiber ≤ 800000；reap 后 93056——allocator 驻留，仅记录不断言；threads 4→4）；**比值 1.10×（界 3×）**。
+    - run2：10K 19.673µs vs 100K 19.777µs → **比值 1.01×**；100K settle 1.779s / join 119.5ms；rss 增长 137008 KiB；threads 5→5；紧随其后的独立 10K 档在 allocator 驻留基线上增长 10368 KiB 仍 ≤ 界（比例界对基线漂移免疫的实证）。
+  - 100K 全量档本地实跑绿（非 PENDING-CI 降级；单测全程 2.75s）。
+- **(b) 多 worker wake 公平**（`wake_fairness.rs` 增 2 项非 ignore 测试，`worker_threads=2`/`4`）：
+  - 口径迁移的根因（实现期踩实）：多 worker 下测试 driver 是 `block_on` 根任务，裸 `yield_now` 轮在微秒级往返于自身线程，**不构成对独立 OS 线程 worker 进度的界**——首版裸 yield 实现确定性击穿 16 轮界。修正：多 worker「轮」= 协作调度槽（1 次 yield + 1ms sleep，让渡 OS 时间给其余 worker），断言值仍为轮数（绝无毫秒断言）；轮数界与 spread 界均按 worker 数线性放大（`bound = base × workers`：一轮最差只覆盖就绪种群 1/workers）。延迟 = 相对 burst 完成标记的轮差（burst 期间在空 worker 上就地完成的 waiter 读 0，不继承注册阶段轮号）。饿死仍为确定性失败（饿死 waiter 永不 resolve → 必然击穿轮界）。
+  - 形状：32 waiter + 8 只 yield 竞争 fiber，背靠背 burst 后全部 `Woken`；drain 界 `8×workers` 轮、spread 界 `4×workers` 轮、注册界 `32×workers` 轮、负载完成界 `drain+16×workers` 轮。
+  - 实测：`wake_fairness` 5/5（3 既有 current_thread + 2 新增）连续 15+20 轮复跑全绿，~0.01s/轮。
+- **(c) 端到端墙钟分布首割**（`outbox_wake_latency.rs`，`#[ignore]` 测量探针——**登记数字、不断言分布**）：
+  - 路径：真实 `SqliteOperationStore` → 256 笔 dispatch/complete 背靠背提交（同一事务落 outbox 行）→ 单次 `pump.hint()` → pump OS 线程（batch_limit=16，fallback poll 25ms）→ `TokioWakeSink` → fiber 体内 `wait_for_operation` 观察。每条：`commit_at`（complete() 返回时刻）→ `observed_at`（Woken 观察时刻）同进程单调钟差。sanity 界仅：全部恰一次 `Woken`、outbox 清零、pump 零故障、延迟 ∈ [0, 30s]。
+  - macOS arm64 两轮实测：run1 latency p50=19.16ms / p90=24.52ms / p99=25.79ms / max=25.91ms / min=6.32ms；writer `complete()` p50=90.9µs / p99=277.8µs / max=802.3µs（总提交墙钟 26.1ms）；端到端 38.1ms / 6715 wakes/s。run2 p50=16.76ms / p90=26.54ms / p99=27.94ms / max=28.11ms；writer p99=664.2µs / max=2.82ms；6449.7 wakes/s。分布形状与拓扑一致：单 hint + 16/批 → p50 由批队列位置 + hint 落点主导，writer 侧 fsync 波动进 p99/max。
+- 验证门（2026-09-21，macOS arm64，stable 1.97.1）：
+  ```text
+  cargo test -p nlos-runtime-tokio
+    → 130 passed / 0 failed / 14 ignored（128 既有 + 2 多 worker 公平；
+      ignored = 既有 11 + batch_cancel_scale 2 + outbox_wake_latency 1）
+  cargo test -p nlos-runtime-tokio --test batch_cancel_scale -- --include-ignored --nocapture
+    → 2 passed / 0 failed（10K 与 100K 含比值，两轮）
+  cargo test -p nlos-runtime-tokio --test outbox_wake_latency -- --ignored --nocapture
+    → 1 passed / 0 failed（两轮，分布如上登记）
+  cargo test -p nlos-runtime-tokio --test wake_fairness   → 5 passed ×15+20 轮
+  cargo fmt -p nlos-runtime-tokio -- --check             → 通过
+  cargo clippy -p nlos-runtime-tokio --all-targets -- -D warnings → exit 0
+  ```
+- **如实保留（不外推）**：
+  - 数字均为 macOS arm64 单平台；`#[ignore]` 档随夜间 scale-probe job（ubuntu，`--include-ignored`）复证，属常规单平台限制（同 §5 口径），非失败 PENDING；
+  - O(waits²) 终态 purge 家族：探针以 tier 不变 wait 子集绕开（设计性决定），`durable_wait_scale` teardown 口径的该实现特征未变，仍按 §5 登记；
+  - 100K 规模 wake 风暴探针未纳入（§6.17.2 保留项）；
+  - 墙钟分布为首割（256-burst、单 hint）；持续负载/更大规模 backpressure 计量仍属 PoC-0004 §6 后续口径；
+  - ROAD-B-006 其余未决项不变，Claim 维持 `PARTIAL_PASS`。
