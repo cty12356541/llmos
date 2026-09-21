@@ -449,6 +449,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "nlos-driver-mock"
+version = "0.1.0"
+dependencies = [
+ "minicbor",
+ "nlos-clock",
+ "nlos-identity",
+ "nlos-ipc",
+ "nlos-operation",
+ "nlos-runtime",
+ "nlos-schema",
+ "nlos-store",
+ "nlos-types",
+ "sha2",
+ "tokio",
+]
+
+[[package]]
 name = "nlos-identity"
 version = "0.1.0"
 dependencies = [
@@ -457,6 +474,18 @@ dependencies = [
  "nlos-types",
  "rusqlite",
  "sha2",
+]
+
+[[package]]
+name = "nlos-ipc"
+version = "0.1.0"
+dependencies = [
+ "nlos-identity",
+ "nlos-schema",
+ "nlos-types",
+ "sha2",
+ "tokio",
+ "windows-sys",
 ]
 
 [[package]]
@@ -524,6 +553,7 @@ dependencies = [
  "nlos-task",
  "nlos-types",
  "nlos-wait",
+ "rusqlite",
  "tokio",
 ]
 
@@ -558,6 +588,7 @@ dependencies = [
  "nlos-artifact",
  "nlos-clock",
  "nlos-commit-coordinator",
+ "nlos-driver-mock",
  "nlos-identity",
  "nlos-operation",
  "nlos-process",

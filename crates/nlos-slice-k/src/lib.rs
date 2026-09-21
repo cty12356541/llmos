@@ -45,6 +45,7 @@ mod error;
 mod fiber;
 mod nl;
 mod package;
+mod payload;
 mod runtime;
 mod teardown;
 
@@ -60,6 +61,10 @@ pub use nl::{RunningRecoveryHealth, SliceKControlPolicy, dispatch_nl_command};
 pub use package::{
     AutoOrphanGc, PublishedPackage, Publisher, artifact_blob_path, fixture_bytes,
     plant_orphan_artifact_blob, provenance_triple,
+};
+pub use payload::{
+    PAYLOAD_OPERATION_DOMAIN, PAYLOAD_SEED_DOMAIN, PayloadExecution, execute_application_payload,
+    payload_execution_seed,
 };
 pub use runtime::{
     ApplicationRegistrationInspect, ChainInspect, ChainQuery, SliceKRuntime, initial_generation,

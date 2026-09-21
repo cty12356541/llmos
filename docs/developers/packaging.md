@@ -1,21 +1,22 @@
 # NLOS Package SDK 开发者指南（`nlos-package` CLI）
 
-> 状态：`DESIGN+IMPLEMENTED`（W33-A / B1-4；证据见 [B-ARTIFACT-007](../evidence/stage-b/b-artifact-007-package-sdk.md)）
+> 状态：`DESIGN+IMPLEMENTED`（W33-A / B1-4；证据见 [B-ARTIFACT-007](../evidence/stage-b/b-artifact-007-package-sdk.md)；`install` 子命令 W35-P2 / 移交#2 前片，见 [B-APPLICATION-007 §7](../evidence/stage-b/b-application-007-third-party-sample.md)）
 >
 > 适用版本：`nlos/package-file/v1` · 依赖 `nlos-artifact` 签名验证面（B-ARTIFACT-003 / W28-B 模板段）
 
 面向第三方 Application 开发者的打包工具链：从一个普通开发者目录（manifest + 载荷文件 + 可选 tasks 模板）构建出**一个自包含、已签名、可复现**的包文件，并用与内核同一条 `verify_package` 权威路径验签。本 CLI 不触任何内核内部 API。
 
-## 1. 三条命令
+## 1. 命令
 
 ```text
 nlos-package keygen --seed <HEX64> [--out <KEYFILE>]        # 默认 KEYFILE = nlos-package.devkey
 nlos-package build <DIR> --key <KEYFILE> [--out <PKGFILE>]  # 默认 PKGFILE = <package_id_hex>.v<version>.nlospkg
 nlos-package verify <PKGFILE> [--store <DIR>] [--identity <DIR>] [--at-ms <U64>]
 nlos-package conformance <PKGFILE>                          # W33-C 一致性检查器，见 package-conformance.md
+nlos-package install <PKGFILE> --root <DIR>                 # W35-P2：verify → 安装权威（见 §6.1）
 ```
 
-二进制位于 `crates/nlos-artifact/src/bin/nlos-package.rs`，`cargo build -p nlos-artifact` 后在 `target/debug/nlos-package`（或 `target/release/`）。
+二进制位于 `crates/nlos-package/src/main.rs`（W35-P2 起独立 crate——install 需链接 `nlos-application` 安装权威，而后者依赖 `nlos-artifact`，原址会成依赖环；W33-A 时期根 Cargo.toml 禁改才落在 nlos-artifact 的 src/bin 下），`cargo build -p nlos-package` 后在 `target/debug/nlos-package`（或 `target/release/`）。
 
 ## 2. 开发者目录布局
 
@@ -88,19 +89,38 @@ signer ca53… key 2056…
 
 流程：解析包文件 → 把每个 entry 物化为真实 `ArtifactStore` 内容（create + put revision，均幂等）→ 在 `IdentityAuthority` 里 bootstrap（或 replay）签名者 → 调 `ArtifactStore::verify_package` / `verify_package_with_tasks`：manifest 形状 → 幂等 replay → 当前 key binding 验签 → 逐条内容绑定 → 落 immutable receipt。`--store`/`--identity` 缺省用一次性临时目录（验完即删）；显式给目录则持久化，且验签幂等键从 manifest 摘要确定性派生——同包重验输出 `REPLAYED` 与首个 receipt 逐字节相同（durable receipt 是权威，密钥事后吊销不影响 replay）。
 
-**后续安装链**：receipt id（`VERIFIED` 行的 32 位十六进制）即 `nlos_application::ApplicationAuthority::install_application` 的 `package_verification_receipt_id` 入参——验签与安装由 receipt digest-binding 衔接（全周期演示见 W33-B 样板应用车道）。
+**后续安装链**：receipt id（`VERIFIED` 行的 32 位十六进制）即 `nlos_application::ApplicationAuthority::install_application` 的 `package_verification_receipt_id` 入参——验签与安装由 receipt digest-binding 衔接（全周期演示见 W33-B 样板应用车道；W35-P2 起 `install` 子命令直接走通，见 §6.1）。
+
+### 6.1. install：从 CLI 走通安装权威（W35-P2）
+
+```text
+$ nlos-package install sample.nlospkg --root state.d
+VERIFIED a7ea5992540089137d455035715a495e
+manifest_digest a3db0ba7…
+package 0f1e… version 4295229442
+signer ca53… key 2056…
+INSTALL 185f9e2228c1f5bead58a0d7840132b3
+decision installed
+application f15f… package 0f1e… generation 1 version 4295229442 entries 2 installer ca53…
+executables hello
+```
+
+流程：解析包文件 → 在 `--root`（必填）上打开 slice-k 装配的权威集（identity/process/artifacts/applications/tasks/clock/operations，子路径布局与 `sample-app-driver` 同一落点）→ bootstrap 签名者 → 逐 entry 物化 → 权威 verify 管线（`VERIFIED`/`REPLAYED`，与 §6 同一条路径）→ W22-001 install-scoped 孤儿 GC → `install_application`（receipt digest-binding、单事务 CAS 推进代际）。
+
+幂等纪律：verify 幂等键由 manifest digest 派生（同 §6），GC/安装幂等键与时钟键由 verification receipt id 域分隔派生——**同包重装逐回执 replay**（`decision replayed`，代际不推进），**不同包装进同一 root 互不冲突**（各自的 receipt 派生各自的键）。安装后 `--root` 即可被 slice-k 运行时/载荷执行车道重新打开（`SliceKRuntime::open`）。
 
 ### 退出码
 
 | 码 | 含义 |
 |---|---|
-| 0 | 成功（verify 输出 VERIFIED/REPLAYED；conformance 输出 CONFORMANT） |
+| 0 | 成功（verify 输出 VERIFIED/REPLAYED；conformance 输出 CONFORMANT；install 输出 INSTALL + decision） |
 | 1 | 用法错误 |
 | 2 | 输入畸形：manifest/密钥文件/包文件解析或形状（重复 entry 名、悬空依赖、截断包…）；conformance 亦用于文件不可读 |
 | 3 | 验签/身份失败：签名不符、principal 未知、密钥吊销、幂等冲突 |
 | 4 | 内容绑定失败：载荷与声明摘要不符（篡改载荷） |
 | 5 | 内部 I/O 或存储失败 |
 | 6 | conformance 发现违规（`PKG-CONF-###`，规则表见 [package-conformance.md](package-conformance.md)） |
+| 7 | 安装权威拒绝（`install`：receipt 未知/终态冲突/幂等冲突/时序倒置） |
 
 ### 篡改语义（负门）
 
@@ -111,9 +131,10 @@ signer ca53… key 2056…
 ## 7. 已知限制
 
 - 单签名者、无 trust root/签名链/多签；`KeyPurpose` 沿用 `SemanticSigning`（B-ARTIFACT-003 已登记的 identity 侧后续切片）。
-- `verify` 的自包含物化是**开发者路径**：内核生产摄取走系统侧 store/identity 部署，本 CLI 不覆盖。
+- `verify` 的自包含物化是**开发者路径**：内核生产摄取走系统侧 store/identity 部署，本 CLI 不覆盖。`install` 同理把 `--root` 当作单节点状态根（dev 形态），不做多 principal 审批。
 - manifest 是 §23.2 最小子集 + tasks 段；applications/imports/exports/resources/lifecycle/security 等字段未建模。
 - 版本点分三元组的打包公式镜像自 `nlos-application`（两 crate 依赖方向所限无法复用函数）；`nlos-application` 侧公式演进时此文档与 CLI 需同步。
+- `install` 只做安装：运行/更新/卸载的消费端 CLI（`run`/`update`/`uninstall` 子命令）仍是后续车道；已安装应用 executable 载荷的执行经 `nlos-slice-k::execute_application_payload` 内核车道（W35-P2 前片）。
 
 ## 8. 相关
 

@@ -23,6 +23,7 @@ members = [
     "crates/nlos-process",
     "crates/nlos-resource",
     "crates/nlos-artifact",
+    "crates/nlos-package",
     "crates/nlos-commit-coordinator",
     "crates/nlos-slice-k",
     "crates/nlos-system-control",

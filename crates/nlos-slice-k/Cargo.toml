@@ -17,6 +17,7 @@ nlos-application = { path = "../nlos-application" }
 nlos-artifact = { path = "../nlos-artifact" }
 nlos-clock = { path = "../nlos-clock" }
 nlos-commit-coordinator = { path = "../nlos-commit-coordinator" }
+nlos-driver-mock = { path = "../nlos-driver-mock" }
 nlos-identity = { path = "../nlos-identity" }
 nlos-operation = { path = "../nlos-operation" }
 nlos-process = { path = "../nlos-process" }

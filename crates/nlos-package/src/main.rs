@@ -1,4 +1,5 @@
-//! `nlos-package` — developer Package SDK CLI (W33-A, B1-4).
+//! `nlos-package` — developer Package SDK CLI (W33-A, B1-4; install
+//! subcommand W35-P2 / handover #2 first slice).
 //!
 //! A thin shell around the `nlos-artifact` package surface: it owns no
 //! verification logic of its own. `build` turns a developer tree (line-based
@@ -8,7 +9,11 @@
 //! real [`IdentityAuthority`], and runs the crate's authoritative
 //! `verify_package` / `verify_package_with_tasks` pipeline — the same path
 //! the kernel consumes. `keygen` derives a deterministic developer signing
-//! key descriptor from caller-supplied seed material.
+//! key descriptor from caller-supplied seed material. `install` (W35-P2)
+//! drives the same verify pipeline against one persistent state root and
+//! then hands the durable receipt to the public application-authority
+//! install path — what the slice-k library demo drove in-process, now from
+//! the CLI (W33-H §2 boundary 3).
 //!
 //! # Usage
 //!
@@ -17,6 +22,7 @@
 //! nlos-package build <DIR> --key <KEYFILE> [--out <PKGFILE>]
 //! nlos-package verify <PKGFILE> [--store <DIR>] [--identity <DIR>] [--at-ms <U64>]
 //! nlos-package conformance <PKGFILE>
+//! nlos-package install <PKGFILE> --root <DIR>
 //! ```
 //!
 //! # Determinism
@@ -32,7 +38,8 @@
 //! package file, shape) · `3` signature/identity verification failure ·
 //! `4` content-binding failure (tampered payload) · `5` internal I/O or
 //! store failure · `6` conformance findings (see
-//! docs/developers/package-conformance.md).
+//! docs/developers/package-conformance.md) · `7` application-authority
+//! install rejection.
 //!
 //! # Conformance (W33-C)
 //!
@@ -46,11 +53,12 @@
 //!
 //! # Trust boundary (dev toolchain only)
 //!
-//! `keygen` keys are developer convenience keys: `verify` bootstraps the
-//! signer principal from the descriptor embedded in the package file, which
-//! proves the signature matches that key — it is NOT a trust decision.
-//! Production signing-key custody, trust roots, and signature chains are
-//! deployment concerns outside this CLI (see docs/developers/packaging.md).
+//! `keygen` keys are developer convenience keys: `verify` and `install`
+//! bootstrap the signer principal from the descriptor embedded in the
+//! package file, which proves the signature matches that key — it is NOT
+//! a trust decision. Production signing-key custody, trust roots, and
+//! signature chains are deployment concerns outside this CLI (see
+//! docs/developers/packaging.md).
 
 use std::fmt::Write as _;
 use std::fs;
@@ -58,22 +66,25 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use ed25519_dalek::{Signer, SigningKey};
+use nlos_application::{InstallApplicationRequest, InstallDecision};
 use nlos_artifact::{
-    ArtifactError, ArtifactStore, ContentDigest, CreateArtifactSpec, MAX_ENTRY_NAME_BYTES,
-    PackageEntryRole, PackageFile, PackageFileEntry, PackageManifest, PackageTaskKind,
-    PackageTaskTemplate, PackageVerificationDecision, ProvenanceSourceTriple, PutRevisionRequest,
-    SignedPackage, SignedPackageWithTasks, SignerDescriptor, VerifyPackageRequest,
-    VerifyPackageWithTasksRequest, decode_package_file, derive_artifact_id,
+    ArtifactError, ArtifactStore, CollectOrphanBlobsRequest, ContentDigest, CreateArtifactSpec,
+    MAX_ENTRY_NAME_BYTES, PackageEntryRole, PackageFile, PackageFileEntry, PackageManifest,
+    PackageTaskKind, PackageTaskTemplate, PackageVerificationDecision, ProvenanceSourceTriple,
+    PutRevisionRequest, SignedPackage, SignedPackageWithTasks, SignerDescriptor,
+    VerifyPackageRequest, VerifyPackageWithTasksRequest, decode_package_file, derive_artifact_id,
     package_manifest_message, package_manifest_with_tasks_message, validate_task_templates,
 };
 use nlos_identity::{BootstrapPrincipalRequest, IdentityAuthority};
+use nlos_slice_k::SliceKRuntime;
 use nlos_types::{ArtifactId, IdempotencyKey, PackageId};
 use sha2::{Digest, Sha256};
 
 const USAGE: &str = "usage: nlos-package keygen --seed <HEX64> [--out <KEYFILE>] \
   | build <DIR> --key <KEYFILE> [--out <PKGFILE>] \
   | verify <PKGFILE> [--store <DIR>] [--identity <DIR>] [--at-ms <U64>] \
-  | conformance <PKGFILE>";
+  | conformance <PKGFILE> \
+  | install <PKGFILE> --root <DIR>";
 
 /// Domain separators for CLI-owned derivations; each derivation is plain
 /// SHA-256 over `domain ‖ input` (the crate's receipt-id precedent).
@@ -82,6 +93,18 @@ const VERIFY_KEY_DOMAIN: &[u8] = b"llmos/package-file/verify-key/v1";
 const KEYGEN_PROFILE_DOMAIN: &[u8] = b"llmos/package-keygen/profile/v1";
 const KEYGEN_POLICY_DOMAIN: &[u8] = b"llmos/package-keygen/policy/v1";
 const KEYGEN_BOOTSTRAP_DOMAIN: &[u8] = b"llmos/package-keygen/bootstrap-key/v1";
+/// Install-lane clock reading before verification (input: manifest digest,
+/// known before a receipt exists).
+const INSTALL_VERIFY_CLOCK_DOMAIN: &[u8] = b"llmos/package-file/install-verify-clock/v1";
+/// Install-scoped orphan-GC idempotency + clock keys (input: verification
+/// receipt id) — the W22-001 pass slice-k runs before its install call.
+const INSTALL_GC_KEY_DOMAIN: &[u8] = b"llmos/package-file/install-gc-key/v1";
+const INSTALL_GC_CLOCK_DOMAIN: &[u8] = b"llmos/package-file/install-gc-clock/v1";
+/// Installation idempotency + clock keys (input: verification receipt id):
+/// reinstalling the same package replays the durable receipt; a different
+/// package derives a different key, so one root can hold many packages.
+const INSTALL_KEY_DOMAIN: &[u8] = b"llmos/package-file/install-key/v1";
+const INSTALL_CLOCK_DOMAIN: &[u8] = b"llmos/package-file/install-clock/v1";
 
 /// Typed CLI failure, mapped onto the documented exit codes.
 #[derive(Debug)]
@@ -99,6 +122,10 @@ enum ToolError {
     /// Conformance findings (exit 6); the findings themselves are
     /// already printed to stdout by the conformance command.
     Conformance(usize),
+    /// The application authority refused the installation (exit 7):
+    /// unknown verification receipt, disabled/uninstalled terminal state,
+    /// idempotency conflict, or an out-of-order timestamp.
+    Install(String),
 }
 
 impl ToolError {
@@ -114,6 +141,7 @@ impl ToolError {
             Self::Binding(_) => 4,
             Self::Internal(_) => 5,
             Self::Conformance(_) => 6,
+            Self::Install(_) => 7,
         }
     }
 }
@@ -157,6 +185,7 @@ fn main() -> ExitCode {
         "build" => build_command(&arguments[1..]),
         "verify" => verify_command(&arguments[1..]),
         "conformance" => conformance_command(&arguments[1..]),
+        "install" => install_command(&arguments[1..]),
         _ => Err(ToolError::Usage),
     };
     match result {
@@ -179,7 +208,8 @@ impl ToolError {
             Self::Input(text)
             | Self::Signature(text)
             | Self::Binding(text)
-            | Self::Internal(text) => text.clone(),
+            | Self::Internal(text)
+            | Self::Install(text) => text.clone(),
             Self::Conformance(count) => format!("package conformance violations: {count}"),
         }
     }
@@ -974,6 +1004,174 @@ fn conformance_command(arguments: &[String]) -> Result<(), ToolError> {
             report.findings.len()
         );
         Err(ToolError::Conformance(report.findings.len()))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// install
+// ---------------------------------------------------------------------------
+
+/// Installs one package file into a persistent state root: decode →
+/// materialize entries into the root's real `ArtifactStore` → run the
+/// authoritative verify pipeline → install-scoped orphan-GC pass → the
+/// application authority's verify-then-commit install (receipt
+/// digest-binding, generation-advancing CAS). The durable verification
+/// receipt is the only thing handed to the install authority — the same
+/// authority-first path the slice-k library demo drives, now from the
+/// CLI. Every idempotency/clock key derives from the manifest digest or
+/// the receipt id, so reinstalling the same package replays every
+/// receipt while a different package installs fresh beside it.
+fn install_command(arguments: &[String]) -> Result<(), ToolError> {
+    let mut package_path = None;
+    let mut root = None;
+    parse_flags(
+        arguments,
+        &mut |flag, value| {
+            if flag == "root" {
+                root = Some(value.to_string());
+                true
+            } else {
+                false
+            }
+        },
+        &mut |token| {
+            if package_path.is_none() {
+                package_path = Some(token.to_string());
+                true
+            } else {
+                false
+            }
+        },
+    )?;
+    let Some(package_path) = package_path else {
+        return Err(ToolError::Usage);
+    };
+    let Some(root) = root else {
+        return Err(ToolError::Usage);
+    };
+
+    let bytes = fs::read(&package_path)
+        .map_err(|error| ToolError::input("read package", &format!("{package_path}: {error}")))?;
+    let package = decode_package_file(&bytes)
+        .map_err(|error| ToolError::input("package file", &error.to_string()))?;
+
+    let runtime = SliceKRuntime::open(&root)
+        .map_err(|error| ToolError::Internal(format!("open state root {root}: {error}")))?;
+    let (decision, installation, fresh) = install_into_root(&runtime, &package)?;
+
+    print_decision(&decision);
+    println!("INSTALL {}", hex(installation.installation_id.as_bytes()));
+    println!("decision {}", if fresh { "installed" } else { "replayed" });
+    let executables: Vec<&str> = package
+        .entries
+        .iter()
+        .filter(|entry| entry.role == PackageEntryRole::Executable)
+        .map(|entry| entry.name.as_str())
+        .collect();
+    println!(
+        "application {} package {} generation {} version {} entries {} installer {}",
+        hex(installation.application_id.as_bytes()),
+        hex(installation.package_id.as_bytes()),
+        installation.installation_generation.get(),
+        installation.package_version,
+        installation.entry_count,
+        hex(installation.installer_principal.as_bytes()),
+    );
+    println!("executables {}", executables.join(","));
+    Ok(())
+}
+
+/// The install lane proper: bootstrap the signer into the root's identity
+/// authority, materialize the entries, run the authoritative verify
+/// pipeline, execute the install-scoped orphan-GC pass, and hand the
+/// durable verification receipt to the application authority's
+/// verify-then-commit install — the same authority-first path the
+/// slice-k library demo drives. Returns the verification decision, the
+/// immutable installation receipt, and whether this call advanced the
+/// generation (`true`) or replayed the durable receipt (`false`).
+fn install_into_root(
+    runtime: &SliceKRuntime,
+    package: &PackageFile,
+) -> Result<
+    (
+        PackageVerificationDecision,
+        nlos_application::InstallationReceipt,
+        bool,
+    ),
+    ToolError,
+> {
+    let signer = runtime
+        .identity
+        .bootstrap_principal(package.descriptor.bootstrap_request())
+        .map_err(|error| ToolError::input("bootstrap signer principal", &error.to_string()))?
+        .binding()
+        .principal_id;
+
+    let manifest = manifest_of(&package.package_id, package.version, &package.entries);
+    let message_digest = if package.tasks.is_empty() {
+        package_manifest_message(&manifest)
+    } else {
+        package_manifest_with_tasks_message(&manifest, &package.tasks)
+    };
+    let verified_at_ms = runtime
+        .wall_now_ms(IdempotencyKey::from_bytes(derive_16(
+            INSTALL_VERIFY_CLOCK_DOMAIN,
+            &message_digest,
+        )))
+        .map_err(|error| ToolError::Internal(format!("verify clock: {error}")))?;
+
+    for entry in &package.entries {
+        materialize_entry(&runtime.artifacts, package, entry, verified_at_ms)?;
+    }
+    let decision = verify_signed(
+        &runtime.artifacts,
+        &runtime.identity,
+        package,
+        signer,
+        verified_at_ms,
+    )?;
+    let receipt = decision.receipt();
+
+    let gc_clock = IdempotencyKey::from_bytes(derive_16(
+        INSTALL_GC_CLOCK_DOMAIN,
+        receipt.receipt_id.as_bytes(),
+    ));
+    runtime
+        .artifacts
+        .collect_orphan_blobs(CollectOrphanBlobsRequest {
+            idempotency_key: IdempotencyKey::from_bytes(derive_16(
+                INSTALL_GC_KEY_DOMAIN,
+                receipt.receipt_id.as_bytes(),
+            )),
+            collected_at_ms: runtime
+                .wall_now_ms(gc_clock)
+                .map_err(|error| ToolError::Internal(format!("gc clock: {error}")))?,
+        })
+        .map_err(from_artifact_error)?;
+
+    let installed_at_ms = runtime
+        .wall_now_ms(IdempotencyKey::from_bytes(derive_16(
+            INSTALL_CLOCK_DOMAIN,
+            receipt.receipt_id.as_bytes(),
+        )))
+        .map_err(|error| ToolError::Internal(format!("install clock: {error}")))?;
+    match runtime
+        .applications
+        .install_application(
+            &runtime.artifacts,
+            InstallApplicationRequest {
+                package_verification_receipt_id: receipt.receipt_id,
+                idempotency_key: IdempotencyKey::from_bytes(derive_16(
+                    INSTALL_KEY_DOMAIN,
+                    receipt.receipt_id.as_bytes(),
+                )),
+                installed_at_ms,
+            },
+        )
+        .map_err(|error| ToolError::Install(error.to_string()))?
+    {
+        InstallDecision::Installed(installation) => Ok((decision, installation, true)),
+        InstallDecision::Replayed(installation) => Ok((decision, installation, false)),
     }
 }
 

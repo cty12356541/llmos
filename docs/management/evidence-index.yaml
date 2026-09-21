@@ -822,8 +822,8 @@
   date: "2026-09-20"
 - id: b-application-007-third-party-sample
   path: docs/evidence/stage-b/b-application-007-third-party-sample.md
-  title: "B-APPLICATION-007：第三方样板应用全生命周期（W33-B/B1-5）"
-  scope: "非内核视角开发→sign→install→run→update→uninstall 样板（examples/sample-app + lifecycle.sh + slice-k 无头全链测试）"
+  title: "B-APPLICATION-007：第三方样板应用全生命周期（W33-B/B1-5；§7=W35-P2 移交#2 前片）"
+  scope: "非内核视角开发→sign→install→run→update→uninstall 样板（examples/sample-app + lifecycle.sh + slice-k 无头全链测试）；§7 前片：nlos-package install CLI（W33-H §2 边界 3）+ 内核侧 executable 载荷经 nlos-driver-mock 面的确定性执行车道（边界 1 前片）"
   assurance: H3
   date: "2026-09-21"
 - id: b-task-008c2g-complete-writeset
