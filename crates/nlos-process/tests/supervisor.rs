@@ -400,7 +400,7 @@ fn supervisor_suspend_resume_are_typed_unsupported_off_unix() {
     assert_eq!(original.os_pid, std::process::id());
 }
 
-/// A G1 kill must signal the os_pid resolved under that generation fence,
+/// A G1 kill must signal the `os_pid` resolved under that generation fence,
 /// not a later `pid_map()` snapshot. Sequential stale-generation coverage
 /// cannot catch this: if G2 supersedes *before* resolve, `kill(G1)` fails
 /// closed and never reaches the adapter. The after-resolve hook interleaves
