@@ -123,7 +123,7 @@ impl Root {
     }
 
     fn task(&self) -> SqliteTaskAuthority {
-        SqliteTaskAuthority::open_with_scale_profile(&self.0.join("task.sqlite3"), &RECLAIM_PROFILE)
+        SqliteTaskAuthority::open_with_scale_profile(self.0.join("task.sqlite3"), &RECLAIM_PROFILE)
             .expect("open task")
     }
 }

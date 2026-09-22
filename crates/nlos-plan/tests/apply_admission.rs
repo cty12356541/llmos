@@ -1,5 +1,5 @@
 //! W36-P8 apply-time declared-population admission consult battery
-//! (W31-G §8.2.4: 声明面 apply 时 TaskNode 维 admission consult 仍缺 —
+//! (W31-G §8.2.4: 声明面 apply 时 `TaskNode` 维 admission consult 仍缺 —
 //! only the materialization half was wired by W31-A).
 //!
 //! [`SqlitePlanAuthority::apply_plan_revision`] is the production
@@ -59,7 +59,7 @@ impl Root {
     }
 
     fn task(&self) -> SqliteTaskAuthority {
-        SqliteTaskAuthority::open_with_scale_profile(&self.0.join("task.sqlite3"), &NODE_CAP_TWO)
+        SqliteTaskAuthority::open_with_scale_profile(self.0.join("task.sqlite3"), &NODE_CAP_TWO)
             .expect("open task authority")
     }
 }

@@ -295,17 +295,19 @@ impl SqlitePlanAuthority {
             dependencies_root,
         );
 
-        let receipt = write_revision(
-            &transaction,
-            &request,
+        let receipt = write_revision(&WriteRevisionArgs {
+            transaction: &transaction,
             plan_id,
             revision,
             parent_digest,
             nodes_root,
             dependencies_root,
             plan_digest,
-            &digests,
-        )?;
+            digests: &digests,
+            nodes: &request.nodes,
+            idempotency_key: request.idempotency_key,
+            applied_at_ms: request.applied_at_ms,
+        })?;
         transaction.commit()?;
 
         Ok(PlanRevisionDecision::Applied(receipt))
@@ -338,13 +340,20 @@ impl SqlitePlanAuthority {
         request: ApplyPlanRevisionRequest,
         consult: &C,
     ) -> Result<PlanRevisionDecision, PlanStoreError> {
-        validate_declaration(&request.nodes)?;
-        let plan_id = match request.plan_id {
+        // Consume the owned request (exactly-once intent stays at the API
+        // boundary) so needless_pass_by_value does not fire without #[allow].
+        let ApplyPlanRevisionRequest {
+            plan_id: request_plan_id,
+            nodes,
+            idempotency_key,
+            applied_at_ms,
+        } = request;
+        validate_declaration(&nodes)?;
+        let plan_id = match request_plan_id {
             Some(plan_id) => plan_id,
-            None => derive_plan_id(&request.idempotency_key),
+            None => derive_plan_id(&idempotency_key),
         };
-        let digests: Vec<([u8; 32], TaskNodeId)> = request
-            .nodes
+        let digests: Vec<([u8; 32], TaskNodeId)> = nodes
             .iter()
             .map(|node| (node_digest(node), derive_node_id(plan_id, &node.node_key)))
             .collect();
@@ -354,16 +363,14 @@ impl SqlitePlanAuthority {
 
         // Idempotent replay first: the durable receipt is the authority
         // (the consult is bypassed exactly like the registration gate).
-        if let Some(existing) = load_revision_receipt_by_key(&transaction, request.idempotency_key)?
-        {
+        if let Some(existing) = load_revision_receipt_by_key(&transaction, idempotency_key)? {
             let replay_nodes_root = nodes_root(plan_id, existing.revision, &digests);
-            let replay_dependencies_root =
-                dependencies_root(plan_id, existing.revision, &request.nodes);
+            let replay_dependencies_root = dependencies_root(plan_id, existing.revision, &nodes);
             if existing.plan_id != plan_id
                 || existing.nodes_root != replay_nodes_root
                 || existing.dependencies_root != replay_dependencies_root
-                || existing.declared_node_count != request.nodes.len() as u64
-                || existing.applied_at_ms != request.applied_at_ms
+                || existing.declared_node_count != nodes.len() as u64
+                || existing.applied_at_ms != applied_at_ms
             {
                 return Err(PlanStoreError::IdempotencyConflict);
             }
@@ -371,7 +378,7 @@ impl SqlitePlanAuthority {
             return Ok(PlanRevisionDecision::Replayed(existing));
         }
 
-        let (revision, parent_digest) = if request.plan_id.is_none() {
+        let (revision, parent_digest) = if request_plan_id.is_none() {
             (1, None)
         } else {
             let current = load_plan_head(&transaction, plan_id)?
@@ -383,8 +390,7 @@ impl SqlitePlanAuthority {
             (current.current_revision + 1, Some(parent))
         };
 
-        let (projected, fresh) =
-            projected_declared_population(&transaction, plan_id, &request.nodes)?;
+        let (projected, fresh) = projected_declared_population(&transaction, plan_id, &nodes)?;
         // Growth-only consult: a reshape that adds no `plan_nodes` row
         // is not a declaration-population admission question (the
         // lifetime rows already exist). Replay already bypasses;
@@ -408,7 +414,7 @@ impl SqlitePlanAuthority {
         }
 
         let nodes_root = nodes_root(plan_id, revision, &digests);
-        let dependencies_root = dependencies_root(plan_id, revision, &request.nodes);
+        let dependencies_root = dependencies_root(plan_id, revision, &nodes);
         let plan_digest = revision_digest(
             plan_id,
             revision,
@@ -416,17 +422,19 @@ impl SqlitePlanAuthority {
             nodes_root,
             dependencies_root,
         );
-        let receipt = write_revision(
-            &transaction,
-            &request,
+        let receipt = write_revision(&WriteRevisionArgs {
+            transaction: &transaction,
             plan_id,
             revision,
             parent_digest,
             nodes_root,
             dependencies_root,
             plan_digest,
-            &digests,
-        )?;
+            digests: &digests,
+            nodes: &nodes,
+            idempotency_key,
+            applied_at_ms,
+        })?;
         transaction.commit()?;
 
         Ok(PlanRevisionDecision::Applied(receipt))
@@ -1445,29 +1453,48 @@ fn persist_revision_shape(
     Ok(())
 }
 
-/// The revision write set shared by both apply faces: plan head advance,
-/// node upserts, the immutable receipt link, and the declared shape rows
-/// (one auditable transaction; callers own the surrounding consult/replay
-/// protocol and the commit).
-fn write_revision(
-    transaction: &rusqlite::Transaction<'_>,
-    request: &ApplyPlanRevisionRequest,
+/// Arguments for [`write_revision`] (keeps the shared write-set helper
+/// under the clippy argument cap without changing commit semantics).
+struct WriteRevisionArgs<'a> {
+    transaction: &'a rusqlite::Transaction<'a>,
     plan_id: TaskPlanId,
     revision: u64,
     parent_digest: Option<[u8; 32]>,
     nodes_root: [u8; 32],
     dependencies_root: [u8; 32],
     plan_digest: [u8; 32],
-    digests: &[([u8; 32], TaskNodeId)],
-) -> Result<PlanRevisionReceipt, PlanStoreError> {
-    if revision == 1 {
+    digests: &'a [([u8; 32], TaskNodeId)],
+    nodes: &'a [PlanNodeDeclaration],
+    idempotency_key: IdempotencyKey,
+    applied_at_ms: u64,
+}
+
+/// The revision write set shared by both apply faces: plan head advance,
+/// node upserts, the immutable receipt link, and the declared shape rows
+/// (one auditable transaction; callers own the surrounding consult/replay
+/// protocol and the commit).
+fn write_revision(args: &WriteRevisionArgs<'_>) -> Result<PlanRevisionReceipt, PlanStoreError> {
+    let WriteRevisionArgs {
+        transaction,
+        plan_id,
+        revision,
+        parent_digest,
+        nodes_root,
+        dependencies_root,
+        plan_digest,
+        digests,
+        nodes,
+        idempotency_key,
+        applied_at_ms,
+    } = args;
+    if *revision == 1 {
         transaction.execute(
             "INSERT INTO plans (
                 plan_id, current_revision, created_at_ms, updated_at_ms
              ) VALUES (?1, 1, ?2, ?2)",
             params![
                 plan_id.as_bytes().as_slice(),
-                encode_u64(request.applied_at_ms)?,
+                encode_u64(*applied_at_ms)?,
             ],
         )?;
     } else {
@@ -1477,19 +1504,19 @@ fn write_revision(
              WHERE plan_id = ?1",
             params![
                 plan_id.as_bytes().as_slice(),
-                encode_u64(revision)?,
-                encode_u64(request.applied_at_ms)?,
+                encode_u64(*revision)?,
+                encode_u64(*applied_at_ms)?,
             ],
         )?;
     }
 
     upsert_plan_nodes(
         transaction,
-        plan_id,
-        revision,
-        &request.nodes,
+        *plan_id,
+        *revision,
+        nodes,
         digests,
-        request.applied_at_ms,
+        *applied_at_ms,
     )?;
 
     transaction.execute(
@@ -1500,28 +1527,28 @@ fn write_revision(
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
             plan_id.as_bytes().as_slice(),
-            encode_u64(revision)?,
-            request.idempotency_key.as_bytes().as_slice(),
+            encode_u64(*revision)?,
+            idempotency_key.as_bytes().as_slice(),
             parent_digest.as_ref().map(<[u8; 32]>::as_slice),
             nodes_root.as_slice(),
             dependencies_root.as_slice(),
             plan_digest.as_slice(),
-            encode_u64(request.nodes.len() as u64)?,
-            encode_u64(request.applied_at_ms)?,
+            encode_u64(nodes.len() as u64)?,
+            encode_u64(*applied_at_ms)?,
         ],
     )?;
-    persist_revision_shape(transaction, plan_id, revision, &request.nodes, digests)?;
+    persist_revision_shape(transaction, *plan_id, *revision, nodes, digests)?;
 
     Ok(PlanRevisionReceipt {
-        plan_id,
-        revision,
-        idempotency_key: request.idempotency_key,
-        parent_revision_digest: parent_digest,
-        nodes_root,
-        dependencies_root,
-        plan_digest,
-        declared_node_count: request.nodes.len() as u64,
-        applied_at_ms: request.applied_at_ms,
+        plan_id: *plan_id,
+        revision: *revision,
+        idempotency_key: *idempotency_key,
+        parent_revision_digest: *parent_digest,
+        nodes_root: *nodes_root,
+        dependencies_root: *dependencies_root,
+        plan_digest: *plan_digest,
+        declared_node_count: nodes.len() as u64,
+        applied_at_ms: *applied_at_ms,
     })
 }
 

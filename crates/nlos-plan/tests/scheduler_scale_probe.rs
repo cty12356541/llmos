@@ -1,5 +1,5 @@
 //! W36-P8 scheduler scale probe (W31-G §8.2.7 / B-PLAN-001 §11.5):
-//! the two-tier materialization scheduler itself, not the TaskNode
+//! the two-tier materialization scheduler itself, not the `TaskNode`
 //! metadata probe. Default-suite smoke always runs; the 10K ignored
 //! cell is the re-runnable scale measurement.
 //!
