@@ -2,6 +2,7 @@
 members = [
     "crates/nlos-application",
     "crates/nlos-canonical",
+    "crates/nlos-cell",
     "crates/nlos-clock",
     "crates/nlos-ipc",
     "crates/nlos-operation",
