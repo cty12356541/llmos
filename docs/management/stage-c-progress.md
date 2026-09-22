@@ -267,6 +267,8 @@ W35 晋升候选池（依派发纪律 (4)，决策点关闭 + 写集空闲即可
 
 已在 main、本波补登（先前合入未写 §C.3）：#2 `953c8af`、#5 `09c0832`、#6 `4df55d6`、#7 `8b91419`、#11 `f49c5a8`。
 
-**未运行项（不得用本登记冒充屏障）**：`cargo test --workspace --no-fail-fast`；`cargo clippy --workspace --all-targets --all-features -- -D warnings`；三平台 CI / Pages / MSRV；`scale-probe-release` 首 CI run；Windows supervisor 实杀臂；T4 100K@50% / 调度器 10K ignore 探针本 integrator 未复跑（车道报告已有数字）。
+**未运行项（不得用本登记冒充屏障）**：三平台 CI / Pages / MSRV；`scale-probe-release` 首 CI run；Windows supervisor 实杀臂；T4 100K@50% / 调度器 10K ignore 探针本 integrator 未复跑（车道报告已有数字）。
+
+2026-09-22：本地屏障于 HEAD `8397488`（plan-fmt merge）记为 workspace test 1614 passed / 0 failed / 25 ignored、`cargo fmt --check`、clippy 均绿；三平台 CI 未跑。
 
 **仍开、具名 parked（owner）**：见 §C.3.1/§C.3.2 各行未决项；另 `feat/dash-plugin` 为工具链旁支、不入 C 册（owner：dash 插件车道）。
