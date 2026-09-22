@@ -11,6 +11,8 @@
 //! that order, fail-closed: a rejected durable decision leaves zero runtime
 //! side effect.
 
+use std::sync::atomic::Ordering;
+
 use nlos_process::{
     FiberCancelPropagationDecision, ProcessAuthority, PropagateCancelToFibersRequest,
 };
@@ -143,6 +145,18 @@ impl TokioRuntimeAdapter {
                 Err(other) => return Err(other.into()),
             }
         }
+        drop(scopes);
+
+        // Activation-meter linkage (lock-free counters, the
+        // `orphan_buffer_dropped` seam): one successful sweep feeds the
+        // sweep count and its matched-fiber total. Relaxed suffices — the
+        // counters carry counts, no inter-variable ordering.
+        self.inner
+            .process_cancel_sweeps
+            .fetch_add(1, Ordering::Relaxed);
+        self.inner
+            .process_fiber_cancel_matched
+            .fetch_add(matched_fibers as u64, Ordering::Relaxed);
 
         Ok(ProcessFiberCancelReport {
             decision,

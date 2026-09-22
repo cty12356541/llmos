@@ -71,7 +71,7 @@ use std::task::{Context, Poll};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use nlos_runtime::{FiberHandle, RuntimeError};
-use nlos_types::{ChannelId, ExecutionFiberId, Generation, IdempotencyKey};
+use nlos_types::{ChannelId, ExecutionFiberId, Generation, IdempotencyKey, ProcessId};
 use nlos_wait::{
     NotifyCommitsRequest, RegisterDecision, RegisterWaitRequest, WaitAuthority, WaitAuthorityError,
     WaitId, WaitRecord, WaitState, WakeReport,
@@ -274,6 +274,12 @@ pub enum ChannelWaitError {
     /// violation, failed closed before any arming (and therefore before any
     /// durable side effect).
     ResumePlanMismatch,
+    /// No durable platform-kill receipt exists for the presented
+    /// `(process_id, process_generation)` (see
+    /// `TokioRuntimeAdapter::consume_platform_kill`): there is no kill
+    /// evidence to consume, so the runtime linkage fails closed with zero
+    /// side effect.
+    PlatformKillReceiptAbsent { process_id: ProcessId },
 }
 
 impl fmt::Display for ChannelWaitError {
@@ -302,6 +308,10 @@ impl fmt::Display for ChannelWaitError {
             Self::ResumePlanMismatch => formatter.write_str(
                 "resume plan references a wait that is not a still-pending event of the replay",
             ),
+            Self::PlatformKillReceiptAbsent { process_id } => write!(
+                formatter,
+                "no durable platform-kill receipt exists to consume for process {process_id:?}"
+            ),
         }
     }
 }
@@ -317,7 +327,8 @@ impl std::error::Error for ChannelWaitError {
             Self::RecordMismatch
             | Self::SnapshotUnavailable
             | Self::StaleFiberIncarnation
-            | Self::ResumePlanMismatch => None,
+            | Self::ResumePlanMismatch
+            | Self::PlatformKillReceiptAbsent { .. } => None,
             Self::ResumeRejected(rejection) => Some(rejection),
         }
     }

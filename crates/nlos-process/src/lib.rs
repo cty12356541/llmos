@@ -8,6 +8,7 @@
 mod model;
 mod platform_kill;
 mod schema;
+mod supervisor;
 mod supervisor_pid;
 
 use std::error::Error;
@@ -40,6 +41,10 @@ pub use platform_kill::{
     NoopPlatformKillAdapter, PlatformKillAdapter, PlatformKillAdapterError,
     PlatformKillAdapterOutcome, PosixPlatformKillAdapter, StubPlatformKillAdapter,
     WindowsPlatformKillAdapter,
+};
+pub use supervisor::{
+    ProcessSupervisor, SpawnSupervisedRequest, SupervisedSpawn, SupervisorError,
+    SupervisorSignalOutcome,
 };
 pub use supervisor_pid::{
     RegisterSupervisorPidRequest, SupervisorPidDecision, SupervisorPidEntry, SupervisorPidRegistry,
