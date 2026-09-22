@@ -60,7 +60,7 @@
 
 **P0 条款（承 risks.yaml 头部纪律，逐字有效）**：P0 阻止阶段退出；P1 须有缓解措施与复查点；status 只反映已有 Evidence 支撑的缓解现状，无证据支撑的缓解不得写 mitigated。当前 P0=0（W34-C 确认）。
 
-**常设门（standing gate，逐波屏障复查）**：RISK-B-12 升级条款已于 2026-09-21 裁决关闭（根因 = W22-001 install-scoped 前缀收集预埋孤儿，回执级证据排除误收在册 blob，**不升 P0**；处置 merge `87ef288`，[B-SLICE-K-001 §17](../evidence/stage-b/b-slice-k-001-end-to-end.md)）——条款文本存档于 risks.yaml/exit-unknown-risks 作为同类条款范本。存续常设门：夜间 scale-probe 绿（移交 #14 复证 PENDING）与 P0=0 维持。
+**常设门（standing gate，逐波屏障复查）**：RISK-B-12 升级条款已于 2026-09-21 裁决关闭（根因 = W22-001 install-scoped 前缀收集预埋孤儿，回执级证据排除误收在册 blob，**不升 P0**；处置 merge `87ef288`，[B-SLICE-K-001 §17](../evidence/stage-b/b-slice-k-001-end-to-end.md)）——条款文本存档于 risks.yaml/exit-unknown-risks 作为同类条款范本。存续常设门：夜间 scale-probe **schedule** 绿（移交 #14 的 workflow_dispatch 复证已闭合——dispatch run [35560466719](https://github.com/cty12356541/llmos/actions/runs/35560466719)，与 §6.5.6 #14 / [B-RUNTIME-002 §6.18.2.2](../evidence/stage-b/b-runtime-002-fiber-scale.md) 一致；**不得以 dispatch 绿冒充 schedule 绿**，schedule 常设门仍开）与 P0=0 维持。
 
 ## C.3 当前工作包总览
 
@@ -97,7 +97,7 @@
 | `C-APP-CONTROL` | #11 | Application 层控制面与生命周期 NL 动词；supervisor 自动 pid 发现/unregister | **`PARTIAL_PASS` / 前片 VERIFIED**（2026-09-21：merge `f49c5a8`；[B-CONTROL-003 W35-P11](../evidence/stage-b/b-control-003-nl-prefix.md)——disable/uninstall 命令臂 + 真实 ApplicationAuthority 接线 + 四路 parity） | Application 层 inspect（GET）+ supervisor 自动 pid 发现/unregister（后者写集在 `nlos-process`，现已空闲）。owner：后续 C-APP-CONTROL 切片 |
 | `C-LIFECYCLE` | #12 | `restore_process` 复活链、干净退出终态、teardown 并发竞争面、teardown/NL kill 幂等键同源 | `NOT_STARTED`（W33-H §4 行 4/5 沿引） | 四子项 |
 | `C-CONFORMANCE-GOLDEN` | #13 | TS/Python conformance 对 SABI v1.2–v1.5 新臂/新视图 golden 钉死 | **`DONE`**（2026-09-21：merge `5c6f4c7`，[B-SCHEMA-002 §6](../evidence/stage-b/b-schema-002-cross-language-generation.md) 收口证据；U-14 退役） | 无（后续新增 SABI 臂随波屏障钉死即可） |
-| `C-SCALE-PROBE` | #14 | 夜间 scale-probe 既有失败专项排查 | **根因修复已合入 main**（merge `ebbeddc`：测量窗口串行化 + 基线相对界；[B-RUNTIME-002 §6.18](../evidence/stage-b/b-runtime-002-fiber-scale.md)：测量方法学缺陷 + 10K 档 `+2` 标定错误，本地双模式 3/3 绿）——**PENDING 下一个 schedule run 复证**（§6.5.6 #14 行原文） | 夜间 schedule run 绿后回填关闭（W35 常设门槽位） |
+| `C-SCALE-PROBE` | #14 | 夜间 scale-probe 既有失败专项排查 | **根因修复已合入 main**（merge `ebbeddc`：测量窗口串行化 + 基线相对界；[B-RUNTIME-002 §6.18](../evidence/stage-b/b-runtime-002-fiber-scale.md)：测量方法学缺陷 + 10K 档 `+2` 标定错误，本地双模式 3/3 绿）——**dispatch 复证已闭合**（2026-09-22：与 §6.5.6 #14「复证全绿闭合」及 [B-RUNTIME-002 §6.18.2.2](../evidence/stage-b/b-runtime-002-fiber-scale.md) 对齐；dispatch run [35560466719](https://github.com/cty12356541/llmos/actions/runs/35560466719) 五 job 首全绿含 scale-probe；不再引用已过时的 PENDING 行原文） | **夜间 schedule 常设门仍开**（仅 workflow_dispatch 绿不得关 schedule 门；W35-B 仍要 schedule run 绿 + 链接回填） |
 | `C-MULTICELL` | #15 | 多 Cell / 分布式（阶段 C 本体）；Notification/Search 超最小面扩展；完整桌面 | 前半 = §C.3.1 C-core 全族；后半两件**归置未定**（决策点 3：Notification/Search 超最小面规范未指派阶段；完整桌面按 §28.4 属 D） | 决策点 3 |
 | `C-POWER-LOSS` | #16 | 真实硬件掉电与 M4/M6/M8 模型校准（层 3+） | `NOT_STARTED`（U-4；层 1 APFS 校准/层 2 dm-flakey run 33895972272 已有） | 真机掉电设备或校准数据；时序归决策点 3 |
 | `C-CUSTODY-GATEWAY` | #17 | 生产 signing key custody / enforcement-gateway reconciliation authority | `NOT_STARTED`（ADR-0017 约束 4 的终态承载；复审触发器 2 联动） | owner 侧自动结算（R-B 受限复活）评估随 C-LEASE reconciliation |
@@ -185,7 +185,7 @@ C-CELL + C-SHARD + C-SCHED + C-FANOUT（bulkhead/storm 面）
 | 车道 | 事项 | 主要写集 | 验收门 |
 |---|---|---|---|
 | W35-A | 移交#1 复核登记（处置已于 2026-09-21 完成：merge `87ef288`，RISK-B-12 裁决不升 P0 并 closed） | docs（本表 + §6.5.6 对账） | §C.3 与 §6.5.6 #1 状态一致；常设门条款存档登记 |
-| W35-B | 移交#14：夜间 scale-probe 复证收口 | docs（B-RUNTIME-002 §6.18 回填 + §6.5.6 #14 行关闭） | 下一个 schedule run 绿 + run 链接回填；否则按失败如实登记并回 W35-A 同级处置 |
+| W35-B | 移交#14：夜间 scale-probe 复证收口 | docs（B-RUNTIME-002 §6.18 回填 + §6.5.6 #14 行关闭） | **dispatch 半边已闭合**（run [35560466719](https://github.com/cty12356541/llmos/actions/runs/35560466719) / §6.18.2.2 / §6.5.6 #14「复证全绿闭合」）；**schedule 常设门验收仍开**：下一个 schedule run 绿 + run 链接回填；否则按失败如实登记并回 W35-A 同级处置 |
 | W35-C | 本计划批准与治理半边：决策点 0–5 收口（docs）；evidence-index schema v2 扩域 `docs/evidence/stage-c/` + lint 适配 + 移交项 #1–17 状态逐项入册（含 #13 已收口复核） | docs/management（本文件、evidence-index.yaml、risks.yaml 如需） | 决策点各有裁定并留痕（晋升 ADR 者开档）；lint 全绿；本表 §C.3 与 §6.5.6 对账一致 |
 
 W35 晋升候选池（依派发纪律 (4)，决策点关闭 + 写集空闲即可进 W35，增量日志留痕）：移交#4 Windows 实杀（RISK-B-10 退役证据）、移交#11 Application 层控制面前片、移交#2 载荷执行面前片——三者与决策点 1–5 无信息依赖、与 W35-A/B/C 写集不相交。
