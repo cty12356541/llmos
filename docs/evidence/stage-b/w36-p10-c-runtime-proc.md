@@ -5,7 +5,7 @@
 - Owner：`nlos-runtime` / `nlos-runtime-tokio` / `nlos-process`
 - 设计依据：W34-A §6 residual 3；阶段 C 移交 #10；v0.5 §8.2 合同层 `BirthDecision` disposition 切片（非跨域 durable 对象）
 - 关联：`b-runtime-002` §6.16.2（kill receipt 消费 residual）；`b-process-003` §6–§10（platform kill / supervisor pid registry residual）；B6-4 / B6-5
-- 分支：`feat/w36-p10`（worktree `/Users/lipunima/projects/llmos-w36-p10`）；base `7d3ad53`；本文件为新 Evidence 小节，不改既有进度单、不改 `b-runtime-002` / `b-process-003` 正文（避免与 main `8b91419` 后追加节冲突）
+- 分支：`feat/w36-p10`；base `7d3ad53`；合入本地 main `c45bd10`（2026-09-22）。本文件为新 Evidence 小节，不改 `b-runtime-002` / `b-process-003` 正文（避免与既有追加节冲突）
 
 ## 1. 实现事实
 
@@ -17,7 +17,7 @@
 
 ### 1.2 B6-4 跨平台 supervisor（`28567e1`）
 
-- `ProcessSupervisor` 复用 `SupervisorPidRegistry` + `PosixPlatformKillAdapter` / `WindowsPlatformKillAdapter`（`pid_map()` 快照），不另起 pid 账。
+- `ProcessSupervisor` 复用 `SupervisorPidRegistry` + 平台 adapter；kill 绑到围栏解析的 `SupervisorPidEntry`（`from_fenced_entry`），不另起 pid 账。Durable `request_platform_kill` 调用方可仍喂 `registry.pid_map()`。
 - spawn 观察 OS pid 后登记；登记拒绝则杀掉并回收刚 spawn 的 child（`[PROC-SPAWN-003]` supervisor 侧类比）。
 - Unix：真实 spawn / `SIGSTOP`+`SIGCONT` suspend-resume / SIGTERM kill（ESRCH → `AlreadyTerminated`）。
 - Windows：真实 spawn + `taskkill /F /T` kill；suspend/resume typed `UnsupportedOnPlatform`（工作区 `unsafe_code = forbid`，不发明能力）。

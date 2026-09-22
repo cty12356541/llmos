@@ -1510,16 +1510,16 @@ B6-1..B6-5 相互独立可并行 → ROAD-B-006
 退出评审中具名、未在本阶段闭合的登记项，全部显式移交：
 
 1. slice-k-demo STEP 09d defect 根因处置（RISK-B-12 升级条款随行：若证明为生产 GC 误收在册 blob 即升 P0 并重开退出前提）——**已处置**（2026-09-21，merge `87ef288` 已推 origin/main，[B-SLICE-K-001 §17](../evidence/stage-b/b-slice-k-001-end-to-end.md)：durable 取证证明收集者为 W22-001 install-scoped pass 合法收集构造性 orphan（receipt 在册、referenced blob 全存活、W28-E tick 零触发），P0 升级条款经证排除、RISK-B-12 已 closed；demo 级修复 + 解掩的 STEP 12b 键带碰撞修复 + 2 条回归钉死，demo 全程 EXIT=0、136 passed/0 failed）；
-2. 载荷执行面 + `nlos package install` CLI（B-001 边界）；
+2. 载荷执行面 + `nlos package install` CLI（B-001 边界）——**前片已合入**（2026-09-21，merge `953c8af`，[B-APPLICATION-007 §7](../evidence/stage-b/b-application-007-third-party-sample.md)）；后片 run/update/uninstall CLI 消费端 + 样例接线仍开（owner：后续 C-APP-PAYLOAD）；
 3. GUI 真机战役（computer-use 清单：面板/focus/送对话/statusline/hooks 实时性/HTML/降级三连）；Windows GUI；
 4. Windows live-child 实杀测试（`taskkill /F /T` 成功路径无真实子进程断言——W28-F 只闭合「CI 复验已跑」半维）；
-5. release-profile + 多平台（Linux/Windows）规模复测与 CI 化（全部规模数字现为 debug/test 单平台 macOS 口径；PID 级容量与 coroutine 级并发生产声明以此为前置）；
-6. 100K 级 cancel/batch-cancel 探针、多 worker wake fairness、端到端墙钟分布；
-7. G4 生态 selector 半边（Package/Skill/Tool/Model/Artifact/Topic/外部服务）；G3 Namespace/ResourceContract/fanout 从 digest 升结构化；
-8. apply 侧 TaskNode 维 admission consult（现仅物化半边）；Task-reclaim × plan-residency 轴互连；PINNED tier；调度器自身规模探针；100K@50% cell 与回收再入场矩阵；
+5. release-profile + 多平台（Linux/Windows）规模复测与 CI 化（全部规模数字现为 debug/test 单平台 macOS 口径；PID 级容量与 coroutine 级并发生产声明以此为前置）——**管线前片已合入**（2026-09-21，merge `09c0832`，[B-SCALE-RELEASE-001](../evidence/stage-b/b-scale-release-001.md)）；首 CI run PENDING（owner：控制器 dispatch / 夜间 schedule）；生产量级声明禁令维持；
+6. 100K 级 cancel/batch-cancel 探针、多 worker wake fairness、端到端墙钟分布——**三探针前片已合入**（2026-09-21，merge `4df55d6`，[B-RUNTIME-002 §6.19](../evidence/stage-b/b-runtime-002-fiber-scale.md)）；O(n²) 终态 purge 家族与 100K wake 风暴仍开（owner：后续 C-RUNTIME-SCALE）；
+7. G4 生态 selector 半边（Package/Skill/Tool/Model/Artifact/Topic/外部服务）；G3 Namespace/ResourceContract/fanout 从 digest 升结构化——**前半已合入**（2026-09-21，merge `8b91419`，[B-PLAN-001 §12](../evidence/stage-b/b-plan-001-declaration-surface.md)）；Topic/Skill/Tool/Model/外部服务与 G3 enforcement 仍开（owner：后续 C-SELECTOR）；
+8. apply 侧 TaskNode 维 admission consult（现仅物化半边）；Task-reclaim × plan-residency 轴互连；PINNED tier；调度器自身规模探针；100K@50% cell 与回收再入场矩阵——**四 residual 已合入**（2026-09-22，merge `8ed592a`，[B-PLAN-001 §13](../evidence/stage-b/b-plan-001-declaration-surface.md) / [B-TASK-SCALE-001 §15](../evidence/stage-b/b-task-scale-001.md)）；`nlos-system-control` 夹具仍调 `apply_plan_revision`（park，owner：后续 write-set / assembler）；
 9. provider 面真实载体替换确定性 mock + transport 跨平台 + payload codec 冻结通道；
-10. runtime kill receipt 消费与 Activation meter 联动；B6-4 跨平台 supervisor spawn/suspend/kill；B6-5 完整 BirthDecision；
-11. Application 层控制面与生命周期 NL 动词（uninstall/disable application）；supervisor 自动 pid 发现/unregister；
+10. runtime kill receipt 消费与 Activation meter 联动；B6-4 跨平台 supervisor spawn/suspend/kill；B6-5 完整 BirthDecision——**三子项已合入**（2026-09-22，merge `c45bd10`，[W36-P10](../evidence/stage-b/w36-p10-c-runtime-proc.md)）；Windows supervisor 实杀臂未在本机跑（owner：C-WIN-KILL / 三平台 CI）；
+11. Application 层控制面与生命周期 NL 动词（uninstall/disable application）；supervisor 自动 pid 发现/unregister——**前片已合入**（2026-09-21，merge `f49c5a8`，[B-CONTROL-003 W35-P11](../evidence/stage-b/b-control-003-nl-prefix.md)）；Application inspect GET + supervisor pid 发现仍开（owner：后续 C-APP-CONTROL）；
 12. `restore_process` 复活链、干净退出终态路径、teardown 并发竞争面、teardown/NL kill 幂等键同源；
 13. TS/Python conformance 对 SABI v1.2–v1.5 新臂/新视图的 golden 钉死；
 14. 夜间 scale-probe 既有失败（自 2026-09-13，blocking_io_negative 探针）专项排查——已排查修复（[B-RUNTIME-002](../evidence/stage-b/b-runtime-002-fiber-scale.md) §6.18：根因为进程级线程读数 × libtest 默认并发的测量方法学缺陷 + 10K 档 `+2` 标定错误，本地双模式 3/3 绿；实际自 09-06 首夜即败，非 09-13；复证全绿闭合（2026-09-22：家族三例修复 + `--no-fail-fast` 可见性根除，dispatch run [35560466719](https://github.com/cty12356541/llmos/actions/runs/35560466719) 五 job 首全绿含 scale-probe 历史首绿，merge `ebbeddc`/`4df55d6`/`3d423c3`，§6.18.2.1-6.19）；

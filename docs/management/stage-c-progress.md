@@ -64,16 +64,16 @@
 
 ## C.3 当前工作包总览
 
-种子 = §6.5.6 移交项 #1–17 + v0.5 §28.3 C-core。状态以起草基线 HEAD `ebbeddc` 为准（#13/#14 已有退出后进展，如实登记）。
+种子 = §6.5.6 移交项 #1–17 + v0.5 §28.3 C-core。状态以起草基线 HEAD `ebbeddc` 为起点；其后合入以本表各行 + [§C.8](#c8-增量日志w36w37-本地合入) 为准（禁止只改聊天）。
 
 ### C.3.1 C-core 工作包（阶段 C 本体）
 
 | ID | 工作包 | 规范锚点 | 状态 |
 |---|---|---|---|
-| `C-CELL` | Cell 本地七件套 + 控制面最小面 + 多节点 identity/epoch/fencing | §26.1（Cell/控制面职责表 + `DIST-LOCAL/FAIL/NAME-001`） | `NOT_STARTED`（决策点 1 前置） |
+| `C-CELL` | Cell 本地七件套 + 控制面最小面 + 多节点 identity/epoch/fencing | §26.1（Cell/控制面职责表 + `DIST-LOCAL/FAIL/NAME-001`） | **`PARTIAL_PASS`**（2026-09-22：identity/epoch/fencing 最小面合入 `4fe5854`，crate `nlos-cell`；[ADR-0018](./adrs/0018-single-host-multiprocess-dual-cell-topology.md) `ACCEPTED` ≠ `VERIFIED`，七件套与其余控制面未做、信息门仍开。不声称 C-CELL 已实现） |
 | `C-LEASE` | Quota/Capacity/ExclusiveDevice lease 三族 + reconciliation | §12 全部 `LEASE-*` 不变量 | `NOT_STARTED` |
 | `C-SYNC` | Artifact/event sync + 跨域审计 checkpoint | §26.2；`SEM-CHECKPOINT-001`（行 2808） | `NOT_STARTED` |
-| `C-SHARD` | TaskAuthority 分片与跨 Cell 接管（单机表组族向 DIST-TASK-001..004 全语义迁移） | §26.1 `DIST-TASK-001/002/004`；对象模型三 Record | `NOT_STARTED`（跨 Cell 提交语义 ADR 前置，决策点 4） |
+| `C-SHARD` | TaskAuthority 分片与跨 Cell 接管（单机表组族向 DIST-TASK-001..004 全语义迁移） | §26.1 `DIST-TASK-001/002/004`；对象模型三 Record | `NOT_STARTED`（[ADR-0019](./adrs/0019-cross-cell-commit-semantics-extension.md) 已开档 `CANDIDATE` `b512fa7`；派发仍以其 `VERIFIED` 为前置，本 integrator 未实现任何 C-SHARD 切片） |
 | `C-FANOUT` | 层级子组/局部 reducer/Merkle result root + fanout admission + bulkhead | `DIST-TASK-003`、`DIST-FANOUT-001`、`DIST-BULKHEAD-001` | `NOT_STARTED` |
 | `C-MIGRATE` | placement、Process 迁移、federation 机制面 | §26.3 `DIST-MIGRATE-001/002`；§26.1 控制面 placement/migration intent | `NOT_STARTED` |
 | `C-SCHED` | Global/Cell/Worker SchedulerDomain、work stealing、context affinity、跨 Cell pressure/backpressure | §28.3 第 6 条；SchedulerDomainId 类型（§33） | `NOT_STARTED` |
@@ -85,16 +85,16 @@
 | ID | 移交# | 事项（§6.5.6 原文要点） | 当前状态与证据 | 主要未决项 |
 |---|---|---|---|---|
 | `C-REG-12` | #1 | slice-k-demo STEP 09d defect 根因处置（collected_digests==[] panic） | **`DONE`**（2026-09-21：merge `87ef288`——根因 = W22-001 install-scoped 前缀在 fail-closed 拒绝前收集预埋孤儿（登记嫌疑 W28-E 归因修正）；回执级证据排除误收在册 blob，RISK-B-12 裁决不升 P0 并 closed；demo 拒绝探针改 `AutoOrphanGc::Disabled` + 回归测试；demo e2e 绿 + 136 passed；[B-SLICE-K-001 §17](../evidence/stage-b/b-slice-k-001-end-to-end.md)） | 无 |
-| `C-APP-PAYLOAD` | #2 | 载荷执行面 + `nlos package install` CLI | `NOT_STARTED`（W33-H §2 边界 1/3：manifest executable 字节不被真实执行；消费端为库驱动） | 内核侧载荷执行车道 + CLI 子命令 |
+| `C-APP-PAYLOAD` | #2 | 载荷执行面 + `nlos package install` CLI | **`PARTIAL_PASS` / 前片 VERIFIED**（2026-09-21：merge `953c8af`；[B-APPLICATION-007 §7](../evidence/stage-b/b-application-007-third-party-sample.md)——载荷执行车道 + `nlos-package install` CLI） | 后片：run/update/uninstall CLI 消费端 + 样例自身接线该车道。owner：后续 C-APP-PAYLOAD 切片 |
 | `C-GUI-CAMPAIGN` | #3 | GUI 真机战役（computer-use 清单）+ Windows GUI | `NOT_STARTED`（W34-A §5；RISK-B-06/U-3） | 归置（决策点 3：D 邻接但为 B 交付物的可用性验证） |
 | `C-WIN-KILL` | #4 | Windows live-child 实杀（taskkill /F/T 成功路径无真实子进程断言） | `NOT_STARTED`（W34-A §6 residual 4 精确口径；RISK-B-10/U-2） | Windows 实机 kill 矩阵 + B2-1 双活三层场景 |
-| `C-SCALE-RELEASE` | #5 | release-profile + Linux/Windows 规模复测与 CI 化 | `NOT_STARTED`（RISK-B-07/U-1；全部规模数字为 debug/test 单平台 macOS） | 生产量级声明前置（PID 级/coroutine 级） |
-| `C-RUNTIME-SCALE` | #6 | 100K 级 cancel/batch-cancel 探针、多 worker wake fairness、端到端墙钟分布 | `NOT_STARTED`（W34-A §6 residual 2） | O(n²)/O(n) 终态 purge 特征家族探针 |
-| `C-SELECTOR` | #7 | G4 生态 selector 半边（Package/Skill/Tool/Model/Artifact/Topic/外部服务）；G3 Namespace/ResourceContract/fanout 从 digest 升结构化 | `NOT_STARTED`（W31-G §8.2.2/§8.2.3；U-7/U-8） | 各面 typed selector → generation handle 解析 + 负路径；三条件权威落地 |
-| `C-PLAN-HARDEN` | #8 | apply 侧 TaskNode admission consult；Task-reclaim × plan-residency 互连；PINNED tier；调度器自身规模探针；100K@50% cell 与回收再入场 | `NOT_STARTED`（W31-G §8.2.4–§8.2.7；U-11） | 逐项补跑/接线 |
+| `C-SCALE-RELEASE` | #5 | release-profile + Linux/Windows 规模复测与 CI 化 | **`PARTIAL_PASS` / 管线前片 VERIFIED**（2026-09-21：merge `09c0832`；[B-SCALE-RELEASE-001](../evidence/stage-b/b-scale-release-001.md)——`scale-probe-release` job + 同日同机首批 release↔debug 数字）。生产量级声明禁令维持 | 首 CI run `PENDING`（owner：控制器 post-merge dispatch / 夜间 schedule）。U-1 多平台半边待该 run 回填 |
+| `C-RUNTIME-SCALE` | #6 | 100K 级 cancel/batch-cancel 探针、多 worker wake fairness、端到端墙钟分布 | **`PARTIAL_PASS` / 三探针前片 VERIFIED**（2026-09-21：merge `4df55d6`；[B-RUNTIME-002 §6.19](../evidence/stage-b/b-runtime-002-fiber-scale.md)——100K batch-cancel 比值 + 多 worker fairness + 墙钟分布首割） | durable-wait 全量挂起下 O(n²) 终态 purge 家族本身；100K wake 风暴。owner：后续 C-RUNTIME-SCALE |
+| `C-SELECTOR` | #7 | G4 生态 selector 半边（Package/Skill/Tool/Model/Artifact/Topic/外部服务）；G3 Namespace/ResourceContract/fanout 从 digest 升结构化 | **`PARTIAL_PASS` / 前半 VERIFIED**（2026-09-21：merge `8b91419`；[B-PLAN-001 §12](../evidence/stage-b/b-plan-001-declaration-surface.md)——Application/Artifact typed selector + G3 三条件结构化） | Topic/Skill/Tool/Model/外部服务未发明（§12.5）；G3 enforcement 与节点声明对 resolution handle 的结构化绑定。owner：后续 C-SELECTOR 切片 |
+| `C-PLAN-HARDEN` | #8 | apply 侧 TaskNode admission consult；Task-reclaim × plan-residency 互连；PINNED tier；调度器自身规模探针；100K@50% cell 与回收再入场 | **`PARTIAL_PASS` / 四 residual VERIFIED**（2026-09-22：merge `8ed592a`；终审 Ready；[B-PLAN-001 §13](../evidence/stage-b/b-plan-001-declaration-surface.md) + [B-TASK-SCALE-001 §15](../evidence/stage-b/b-task-scale-001.md)）。本 integrator 定向复跑：nlos-plan+nlos-task skip-10K/100K 名 **462 passed / 0 failed / 2 ignored / 8 filtered** | `nlos-system-control` 夹具仍调 `apply_plan_revision`（park，owner：后续 write-set / assembler）；PINNED 台账/SABI 字段与调度器 100K 为 brief 边界；`apply_plan_revision_ungated` / `UnlinkedReclaimResidency` 旁路 |
 | `C-PROVIDER-REAL` | #9 | provider 真实载体替换 mock + transport 跨平台 + payload codec 冻结通道 | `NOT_STARTED`（U-10；codec 决策沿 RISK-B-05 review_point） | 首个真实 provider 全链接入；codec 入 ADR-0014 通道显式决策 |
-| `C-RUNTIME-PROC` | #10 | kill receipt 消费 × Activation meter 联动；B6-4 跨平台 supervisor；B6-5 完整 BirthDecision | `NOT_STARTED`（W34-A §6 residual 3） | 三子项 |
-| `C-APP-CONTROL` | #11 | Application 层控制面与生命周期 NL 动词；supervisor 自动 pid 发现/unregister | `NOT_STARTED`（W34-A §5：七层中 Application 层缺位） | ControlCommand arm + NL 白名单 |
+| `C-RUNTIME-PROC` | #10 | kill receipt 消费 × Activation meter 联动；B6-4 跨平台 supervisor；B6-5 完整 BirthDecision | **`PARTIAL_PASS` / 三子项 VERIFIED**（2026-09-22：merge `c45bd10`；终审 Ready；[W36-P10](../evidence/stage-b/w36-p10-c-runtime-proc.md)）。本 integrator 定向复跑：runtime 三 crate skip-10K/100K 名 **185 passed / 0 failed / 4 ignored / 11 filtered**；kill_receipt 5 / birth_decision 7 / supervisor 6 / runtime-lib 2 | Windows `#[cfg(windows)]` supervisor 实杀臂未在本机跑（owner：C-WIN-KILL / 三平台 CI）；5 parked minors（test/API/docs polish） |
+| `C-APP-CONTROL` | #11 | Application 层控制面与生命周期 NL 动词；supervisor 自动 pid 发现/unregister | **`PARTIAL_PASS` / 前片 VERIFIED**（2026-09-21：merge `f49c5a8`；[B-CONTROL-003 W35-P11](../evidence/stage-b/b-control-003-nl-prefix.md)——disable/uninstall 命令臂 + 真实 ApplicationAuthority 接线 + 四路 parity） | Application 层 inspect（GET）+ supervisor 自动 pid 发现/unregister（后者写集在 `nlos-process`，现已空闲）。owner：后续 C-APP-CONTROL 切片 |
 | `C-LIFECYCLE` | #12 | `restore_process` 复活链、干净退出终态、teardown 并发竞争面、teardown/NL kill 幂等键同源 | `NOT_STARTED`（W33-H §4 行 4/5 沿引） | 四子项 |
 | `C-CONFORMANCE-GOLDEN` | #13 | TS/Python conformance 对 SABI v1.2–v1.5 新臂/新视图 golden 钉死 | **`DONE`**（2026-09-21：merge `5c6f4c7`，[B-SCHEMA-002 §6](../evidence/stage-b/b-schema-002-cross-language-generation.md) 收口证据；U-14 退役） | 无（后续新增 SABI 臂随波屏障钉死即可） |
 | `C-SCALE-PROBE` | #14 | 夜间 scale-probe 既有失败专项排查 | **根因修复已合入 main**（merge `ebbeddc`：测量窗口串行化 + 基线相对界；[B-RUNTIME-002 §6.18](../evidence/stage-b/b-runtime-002-fiber-scale.md)：测量方法学缺陷 + 10K 档 `+2` 标定错误，本地双模式 3/3 绿）——**PENDING 下一个 schedule run 复证**（§6.5.6 #14 行原文） | 夜间 schedule run 绿后回填关闭（W35 常设门槽位） |
@@ -190,9 +190,9 @@ C-CELL + C-SHARD + C-SCHED + C-FANOUT（bulkhead/storm 面）
 
 W35 晋升候选池（依派发纪律 (4)，决策点关闭 + 写集空闲即可进 W35，增量日志留痕）：移交#4 Windows 实杀（RISK-B-10 退役证据）、移交#11 Application 层控制面前片、移交#2 载荷执行面前片——三者与决策点 1–5 无信息依赖、与 W35-A/B/C 写集不相交。
 
-**W36（单 Cell 加固波，依决策点 2 排程）**：移交#5 release/多平台复测 + CI 化（`C-SCALE-RELEASE`）∥ 移交#6 100K cancel/fairness/墙钟（`C-RUNTIME-SCALE`）∥ 移交#7/#8 plan 生态与矩阵缺口（`C-SELECTOR`/`C-PLAN-HARDEN`）∥ 移交#10（`C-RUNTIME-PROC`）——车道级细化待 W35 屏障后。
+**W36（单 Cell 加固波，依决策点 2 排程）**：四车道任务门+终审已齐并**已合入本地 main**（#5 `09c0832` / #7 `8b91419` / #10 `c45bd10` / #8 `8ed592a`；#6 已于 W35-P6 `4df55d6` 提前）。**W36 屏障未关**：本 integrator 未跑 `cargo test --workspace` / workspace clippy / 三平台 CI，不得声称屏障闭合。否决窗口仍开。
 
-**W37（Cell 骨架波，依决策点 1 + 拓扑 ADR）**：`C-CELL` 前片（Cell 本地件套最小面 + 控制面最小面 + 多节点 identity/epoch/fencing）∥ 移交#9 provider 真实载体前片（若 codec 决策关闭）∥ 移交#12 lifecycle 族。
+**W37（Cell 骨架波，依决策点 1 + 拓扑 ADR）**：A–E 文档/前片已合入本地 main（ADR-0018 `c433d6f` / ADR-0019 `b512fa7` / cell spec `e485450` / ADR-0020 `705d4d1` / nlos-cell `4fe5854`）。移交#9 仍信息门（codec 未冻结）；#12 未派。七件套切片与 C-SHARD **未实现**（信息门：0018/0019 均非 VERIFIED）。
 
 **W38（lease/quota 波）**：`C-LEASE`（§12 三族 + reconciliation）∥ 移交#17 custody/gateway 前片。
 
@@ -216,6 +216,8 @@ W35 晋升候选池（依派发纪律 (4)，决策点关闭 + 写集空闲即可
 3. **归置裁定**：(i) 完整桌面→**D 册**（C 册只挂引用）；Notification/Search 超最小面→**显式 backlog**（规范未指派，不排入 C 波次；出现规范依据再入册）；(ii) GUI 真机战役→**C 册 W36 起的常设观察项、不占车道**（computer-use 战役需维护者本机，控制器只备清单）；(iii) 掉电层 3+→**持续项**（遇真机设备即执行，不设 C 期硬承诺）；(iv) 顺位确认——W35 已按写集完成 #2/#11 前片，后片随波次。
 4. **跨 Cell 提交 ADR：裁 (b) W37 随拓扑 ADR 并行开档**（早启降低 W39 串行等待；C-SHARD 派发仍以其 VERIFIED 为前置，纪律不变）。
 5. **federation 解释：确认草案读法**——C 交付机制面（跨 Cell 名称/服务发现、迁移 intent、审计 checkpoint），全球跨组织清算延后（§29.2）；C-MIGRATE 验收边界据此。
+
+2026-09-22 落档（本地合入，未 push）：[ADR-0018](./adrs/0018-single-host-multiprocess-dual-cell-topology.md) `ACCEPTED` `c433d6f`；[ADR-0019](./adrs/0019-cross-cell-commit-semantics-extension.md) `CANDIDATE` `b512fa7`；[ADR-0020](./adrs/0020-control-plane-single-writer-and-consensus-timing.md) `CANDIDATE` `705d4d1`。**否决窗口仍至 W36 屏障**（屏障 CI 本 integrator 未跑）。ACCEPTED/CANDIDATE ≠ VERIFIED。
 
 ### C.5.5 阶段 C 退出评审门
 
@@ -241,6 +243,30 @@ W35 晋升候选池（依派发纪律 (4)，决策点关闭 + 写集空闲即可
 - 阶段 B 权威进度单（移交清单 §6.5.6 + 派发纪律原文）：[stage-b-progress.md](./stage-b-progress.md)
 - 管理机制：[README.md](./README.md)；知识规则：[project-knowledge-progressive-disclosure.md](./project-knowledge-progressive-disclosure.md)
 - 跨 authority 契约与 Stage C 扩展点：[ADR-0013](./adrs/0013-cross-authority-verify-then-commit-contract.md)；声明面：[ADR-0016](./adrs/0016-task-plan-declaration-surface.md)；三域 coordinator 与 enforcement-gateway 终态：[ADR-0017](./adrs/0017-resource-operation-cross-authority-prepare-finalize.md)
+- 多 Cell 拓扑（决策点 1）：[ADR-0018](./adrs/0018-single-host-multiprocess-dual-cell-topology.md)（`ACCEPTED` ≠ `VERIFIED`）
+- 跨 Cell 提交语义扩展点（决策点 4）：[ADR-0019](./adrs/0019-cross-cell-commit-semantics-extension.md)（`CANDIDATE`；C-SHARD 派发前置）
+- 控制面单写者与共识基底时序：[ADR-0020](./adrs/0020-control-plane-single-writer-and-consensus-timing.md)（`CANDIDATE`；不解锁 C-CELL / C-SHARD）
+- Cell 骨架 DESIGN spec：[2026-09-22-cell-skeleton-design.md](../superpowers/specs/2026-09-22-cell-skeleton-design.md)（不授权七件套实现）
 - 机器台账：[claims.yaml](./claims.yaml)、[risks.yaml](./risks.yaml)、[evidence-index.yaml](./evidence-index.yaml)
 - 风险与未知项：[exit-unknown-risks.md](./exit-unknown-risks.md)（U-1..U-14；§4 已决定递延项）
 - 评审基线：[W31-G](../evidence/stage-b/reviews/w31g-road-b004-gates.md)、[W33-H](../evidence/stage-b/reviews/w33h-road-b001-b002.md)、[W34-A](../evidence/stage-b/reviews/w34a-six-gate-matrix.md)
+
+## C.8 增量日志（W36/W37 本地合入）
+
+2026-09-22 单一 integrator：把已完成未合入车道合入**本地** `main`（基点 `8b91419` → 代码 HEAD `4fe5854`，本登记提交另计），并 CAS 对齐 §C.3 / L0 / evidence-index / §6.5.6。未 push、未开 PR、未跑波次屏障 CI。
+
+| 车道 | 分支 | merge SHA | 写集要点 |
+|---|---|---|---|
+| W37-A | `feat/w37-topo-adr` | `c433d6f` | ADR-0018 新文件 |
+| W37-B | `feat/w37-xcell-adr` | `b512fa7` | ADR-0019 新文件 |
+| W37-D | `feat/w37-consensus-adr` | `705d4d1` | ADR-0020 新文件 |
+| W37-C | `feat/w37-cell-spec` | `e485450` | Cell 骨架 DESIGN spec |
+| W36 T2 / #10 | `feat/w36-p10` | `c45bd10` | nlos-runtime / nlos-runtime-tokio / nlos-process + W36-P10 Evidence |
+| W36 T4 / #8 | `feat/w36-p8` | `8ed592a` | nlos-plan / nlos-task + B-PLAN-001 §13 / B-TASK-SCALE-001 §15 |
+| W37-E | `feat/w37-cell-skeleton` | `4fe5854` | 新 crate `nlos-cell`（Cargo.toml/lock 无冲突） |
+
+已在 main、本波补登（先前合入未写 §C.3）：#2 `953c8af`、#5 `09c0832`、#6 `4df55d6`、#7 `8b91419`、#11 `f49c5a8`。
+
+**未运行项（不得用本登记冒充屏障）**：`cargo test --workspace --no-fail-fast`；`cargo clippy --workspace --all-targets --all-features -- -D warnings`；三平台 CI / Pages / MSRV；`scale-probe-release` 首 CI run；Windows supervisor 实杀臂；T4 100K@50% / 调度器 10K ignore 探针本 integrator 未复跑（车道报告已有数字）。
+
+**仍开、具名 parked（owner）**：见 §C.3.1/§C.3.2 各行未决项；另 `feat/dash-plugin` 为工具链旁支、不入 C 册（owner：dash 插件车道）。

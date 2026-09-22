@@ -1,6 +1,6 @@
 # B-PLAN-001：nlos-plan 声明面状态权威骨架（TaskPlan/TaskNode state face）+ Dependency Resolver + Context Residency 分级 + 10K/100K 逻辑 TaskNode benchmark + 惰性物化门 + 分层 Scheduler 最小版 + 生态 selector 半边与 G3 三条件结构化
 
-状态：`PARTIAL_PASS`（**W28-A 状态面骨架 + W29-B Dependency Resolver + W31-E Context residency 分级最小版 + W31-D 10K/100K 逻辑 TaskNode benchmark + W31-A 惰性物化门（G3）+ W31-F 分层 Scheduler 最小版 + W36-P7 G4 生态 selector 半边 + G3 三条件结构化**，2026-09-21）
+状态：`PARTIAL_PASS`（**W28-A 状态面骨架 + W29-B Dependency Resolver + W31-E Context residency 分级最小版 + W31-D 10K/100K 逻辑 TaskNode benchmark + W31-A 惰性物化门（G3）+ W31-F 分层 Scheduler 最小版 + W36-P7 G4 生态 selector 半边 + G3 三条件结构化 + W36-P8 apply consult / PINNED / 调度器探针**，2026-09-22）
 
 > 对应：[ADR-0016 决定 2](../../management/adrs/0016-task-plan-declaration-surface.md)（独立 `nlos-plan` authority）与 [决定 5](../../management/adrs/0016-task-plan-declaration-surface.md)（Resolver 结果 durable）与 [决定 4](../../management/adrs/0016-task-plan-declaration-surface.md)（ScaleProfile 维度正规化）；[议题 35 §6](../../discussions/35-TaskPlan声明面设计.md) 验收门 G1（§2–§6，W28-A）、G4（§7，W29-B）、G2/G5（§9，W31-D）与 G3（§10，W31-A）；[进度单 §6.5.3](../../management/stage-b-progress.md) W28-A / W29-B / W31-E / W31-D / W31-A / W31-F 车道行
 >

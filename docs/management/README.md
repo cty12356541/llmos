@@ -187,8 +187,12 @@ P0 风险阻止 Stage 退出；P1 必须有 owner、缓解措施和明确复查�
 
 ## 11.5 阶段 C 管理入口（当前活跃阶段）
 
-- 阶段 C 权威进度单与编排：[stage-c-progress.md](./stage-c-progress.md)（2026-09-22 决策点 0 批准生效；W35 起波次编排 §C.5.3；决策点裁定与否决窗口 §C.5.4）
+- 阶段 C 权威进度单与编排：[stage-c-progress.md](./stage-c-progress.md)（2026-09-22 决策点 0 批准生效；W35 起波次编排 §C.5.3；决策点裁定与否决窗口 §C.5.4；W36/W37 本地合入见 §C.8）
 - 阶段 B 已 EXITED：[stage-b-progress.md](./stage-b-progress.md)（§6.5.6 十七项移交清单为 C 册输入）
+- 单机双进程 Cell×2 拓扑：[ADR-0018](./adrs/0018-single-host-multiprocess-dual-cell-topology.md)（`ACCEPTED`，否决窗口至 W36 屏障；`ACCEPTED` ≠ `VERIFIED`）
+- 跨 Cell 提交语义扩展点：[ADR-0019](./adrs/0019-cross-cell-commit-semantics-extension.md)（`CANDIDATE`；C-SHARD 派发仍以其 `VERIFIED` 为前置）
+- 控制面单写者与共识基底时序：[ADR-0020](./adrs/0020-control-plane-single-writer-and-consensus-timing.md)（`CANDIDATE`；不解锁 C-CELL / C-SHARD）
+- Cell 骨架 DESIGN spec：[2026-09-22-cell-skeleton-design.md](../superpowers/specs/2026-09-22-cell-skeleton-design.md)（不授权七件套实现）
 
 ## 12. 阶段 B 管理入口
 
@@ -210,6 +214,7 @@ P0 风险阻止 Stage 退出；P1 必须有 owner、缓解措施和明确复查�
 - Schema 注册表通道冻结 v1-beta：[ADR-0014](./adrs/0014-schema-channel-freeze-v1-beta.md)
 - 不可信代码执行双层隔离（独立 host Process + 进程内 Wasmtime 按信任档分层）：[ADR-0015](./adrs/0015-dual-layer-untrusted-execution-isolation.md)
 - TaskPlan/TaskNode 声明面落点（独立 nlos-plan authority + manifest 模板来源组合）：[ADR-0016](./adrs/0016-task-plan-declaration-surface.md)
+- Resource/Operation 跨 authority prepare/finalize 入口：[ADR-0017](./adrs/0017-resource-operation-cross-authority-prepare-finalize.md)
 - 多语言 SDK 支持评估：[language-sdk-support-plan.md](./language-sdk-support-plan.md)
 - 规范路线：[v0.5 第 28.2 节](../design/06-架构设计总纲-v0.5.md#282-阶段-b单机通用应用平台)
 - 执行层级决策：[议题 29](../discussions/29-现代系统执行层级与机制迁移.md)

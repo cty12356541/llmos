@@ -745,9 +745,9 @@
 - id: b-task-scale-001
   path: docs/evidence/stage-b/b-task-scale-001.md
   title: "B-TASK-SCALE-001：ROAD-B-004 前片 ScaleProfile 骨架与 10K 已落地维度规模证明"
-  scope: "ROAD-B-004 前片 ScaleProfile 骨架与 10K 已落地维度规模证明；§13 W31-B working-set 比例矩阵基准（10K/100K × active-ratio，admission/pressure/advisory 精确断言）"
+  scope: "ROAD-B-004 前片 ScaleProfile 骨架与 10K 已落地维度规模证明；§13 W31-B working-set 比例矩阵基准（10K/100K × active-ratio，admission/pressure/advisory 精确断言）；§15 W36-P8 reclaim×residency + 100K@50% 回收再入场"
   assurance: H3
-  date: "2026-09-21"
+  date: "2026-09-22"
 - id: b-topic-001-topic-service-single-log-fanout
   path: docs/evidence/stage-b/b-topic-001-topic-service-single-log-fanout.md
   title: "B-TOPIC-001：Topic 服务层单 log fanout 最小前缀"
@@ -787,9 +787,9 @@
 - id: b-plan-001-declaration-surface
   path: docs/evidence/stage-b/b-plan-001-declaration-surface.md
   title: "B-PLAN-001：nlos-plan 声明面状态权威骨架（TaskPlan/TaskNode state face）"
-  scope: "nlos-plan authority 骨架——revision digest 链/节点状态机/G1 证伪/重启 replay/F1-F4（W28-A）"
+  scope: "nlos-plan authority 骨架——revision digest 链/节点状态机/G1 证伪/重启 replay/F1-F4（W28-A）；§12 W36-P7 G4 生态 selector 半边 + G3 三条件；§13 W36-P8 apply consult / PINNED / 调度器探针"
   assurance: H3
-  date: "2026-09-20"
+  date: "2026-09-22"
 - id: w27-f-ci-run-links
   path: docs/evidence/stage-b/w27-f-ci-run-links.md
   title: "W27-F：W26 CI/Pages run 链补登勘察（B3-5 前半）"
@@ -874,3 +874,9 @@
   scope: "ROAD-B-001..006 + 横切 X-1..X-6 全门矩阵：三门新评审（B-003 六条款逐项/B-005 层×动作/B-006 条款逐一，具名测试引用）+ W32-F 增补评审闭合 B-002 唯一硬缺口 + W33-H/W31-G 状态更新；裁决 B-002/003/004/006 SATISFIED-WITH-BOUNDARIES、B-001/005 PARTIAL-residuals；§6.5.5 五条件 readiness 逐条（CI run 35531478487 in_progress、W34-B/C/D 待做）；§6 B-006 行 run 35511878717 措辞勘误（step 级绿/job 级 Clippy 失败）"
   assurance: H3
   date: "2026-09-21"
+- id: w36-p10-c-runtime-proc
+  path: docs/evidence/stage-b/w36-p10-c-runtime-proc.md
+  title: "W36-P10 / C-RUNTIME-PROC：kill receipt×meter + B6-4 supervisor + B6-5 BirthDecision"
+  scope: "移交#10 三子项最小前缀：consume_platform_kill 与 Activation meter 联动、ProcessSupervisor 复用 pid registry、合同层 BirthDecision/BirthRejection；非跨 authority BirthDecision，非 ROAD-B-006 整体"
+  assurance: H3
+  date: "2026-09-22"
