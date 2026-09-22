@@ -437,6 +437,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "nlos-cell"
+version = "0.1.0"
+dependencies = [
+ "nlos-types",
+]
+
+[[package]]
 name = "nlos-channel"
 version = "0.1.0"
 dependencies = [
