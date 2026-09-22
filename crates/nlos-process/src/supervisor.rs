@@ -51,11 +51,14 @@ use crate::platform_kill::PosixPlatformKillAdapter;
 #[cfg(windows)]
 use crate::platform_kill::WindowsPlatformKillAdapter;
 
+/// One-shot kill-path interleave hook (integration tests only).
+type KillAfterResolveHook = Box<dyn FnOnce(&SupervisorPidRegistry)>;
+
 thread_local! {
     /// One-shot interleaving point for the G1-resolve / G2-supersede TOCTOU
     /// (integration tests only). `kill` takes the hook after the generation
     /// fence resolves and before the adapter is built.
-    static KILL_AFTER_RESOLVE: RefCell<Option<Box<dyn FnOnce(&SupervisorPidRegistry)>>> =
+    static KILL_AFTER_RESOLVE: RefCell<Option<KillAfterResolveHook>> =
         const { RefCell::new(None) };
 }
 
