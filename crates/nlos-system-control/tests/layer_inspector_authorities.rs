@@ -150,8 +150,9 @@ fn not_found(failure: &SabiFailure) -> bool {
 mod plan_authority {
     use super::*;
     use nlos_plan::{
-        ApplyPlanRevisionRequest, PlanNodeDeclaration, PlanNodeKind, PlanNodeState,
-        PlanRevisionDecision, SqlitePlanAuthority,
+        ApplyPlanRevisionRequest, DeclarationAdmissionConsult, DeclarationAdmissionOutcome,
+        PlanNodeDeclaration, PlanNodeKind, PlanNodeState, PlanRevisionDecision, PlanStoreError,
+        SqlitePlanAuthority,
     };
     use nlos_schema::sabi::v1::{
         ContextResidencyTier, PlanNodeKind as WireKind, PlanNodeLifecycleState as WireState,
@@ -159,30 +160,79 @@ mod plan_authority {
     use nlos_system_control::TaskNodeInspectSource as _;
     use nlos_system_control::control::{ControlOutcome, TaskNodeInspection};
     use nlos_system_control::plan_inspector::PlanAuthorityTaskNodeSource;
+    use nlos_task::TaskStoreError;
     use nlos_types::{IdempotencyKey, TaskNodeId, TaskPlanId};
+
+    /// Production-shaped 1:1 mapping: Task `answer_plan_declaration` onto
+    /// the plan-side consult outcome (same assembler wiring as
+    /// `nlos-plan` `apply_admission.rs`). Counts calls so the inspector
+    /// fixture cannot silently slide onto the consult-free ungated bypass.
+    struct TaskDeclarationConsult<'a> {
+        task: &'a SqliteTaskAuthority,
+        calls: AtomicU64,
+    }
+
+    impl DeclarationAdmissionConsult for TaskDeclarationConsult<'_> {
+        type Error = TaskStoreError;
+
+        fn consult_plan_declaration(
+            &self,
+            projected_task_nodes: u64,
+        ) -> Result<DeclarationAdmissionOutcome, TaskStoreError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            match self.task.answer_plan_declaration(projected_task_nodes) {
+                Ok(()) => Ok(DeclarationAdmissionOutcome::Admits),
+                Err(TaskStoreError::TaskNodeAdmissionDenied {
+                    profile_id,
+                    max_task_nodes,
+                    ..
+                }) => Ok(DeclarationAdmissionOutcome::Denied {
+                    profile_id: profile_id.to_string(),
+                    max_task_nodes,
+                }),
+                Err(other) => Err(other),
+            }
+        }
+    }
+
+    fn declared_node() -> PlanNodeDeclaration {
+        PlanNodeDeclaration {
+            node_key: [0x42; 16],
+            kind: PlanNodeKind::Executable,
+            binding_digest: [0x43; 32],
+            dependency_keys: Vec::new(),
+            input_selectors_digest: [0x44; 32],
+            output_contract_digest: [0x45; 32],
+            policy_digest: [0x49; 32],
+            resource_ceiling_digest: [0x4A; 32],
+            conditions: None,
+        }
+    }
 
     fn declared_plan() -> (SqlitePlanAuthority, TaskPlanId, TaskNodeId) {
         let file = TestFile::new("plan");
         let authority = SqlitePlanAuthority::open(&file.path).expect("open plan authority");
         std::mem::forget(file);
+        let task = task_authority("plan-declare-admission");
+        let consult = TaskDeclarationConsult {
+            task: &task,
+            calls: AtomicU64::new(0),
+        };
         let decision = authority
-            .apply_plan_revision(ApplyPlanRevisionRequest {
-                plan_id: None,
-                nodes: vec![PlanNodeDeclaration {
-                    node_key: [0x42; 16],
-                    kind: PlanNodeKind::Executable,
-                    binding_digest: [0x43; 32],
-                    dependency_keys: Vec::new(),
-                    input_selectors_digest: [0x44; 32],
-                    output_contract_digest: [0x45; 32],
-                    policy_digest: [0x49; 32],
-                    resource_ceiling_digest: [0x4A; 32],
-                    conditions: None,
-                }],
-                idempotency_key: IdempotencyKey::from_bytes([0x46; 16]),
-                applied_at_ms: 1_000,
-            })
-            .expect("apply revision");
+            .apply_plan_revision_with_admission(
+                ApplyPlanRevisionRequest {
+                    plan_id: None,
+                    nodes: vec![declared_node()],
+                    idempotency_key: IdempotencyKey::from_bytes([0x46; 16]),
+                    applied_at_ms: 1_000,
+                },
+                &consult,
+            )
+            .expect("apply revision through admission consult");
+        assert!(
+            consult.calls.load(Ordering::SeqCst) >= 1,
+            "inspector fixture must consult Task admission; ungated is not this fixture's path"
+        );
         let PlanRevisionDecision::Applied(receipt) = decision else {
             panic!("expected first revision to apply");
         };
@@ -191,6 +241,35 @@ mod plan_authority {
             .expect("list nodes");
         assert_eq!(nodes.len(), 1);
         (authority, receipt.plan_id, nodes[0].node_id)
+    }
+
+    /// The inspector fixture must apply through Task admission consult
+    /// (W36-P8 residual / W37): the no-consult default face typed-denies,
+    /// so a durable declared node is proof the consult path ran. A later
+    /// default-face apply on the same store still typed-denies — we did
+    /// not reopen a silent admit.
+    #[test]
+    fn declared_plan_applies_through_task_admission_consult() {
+        let (authority, plan_id, node_id) = declared_plan();
+        let record = authority
+            .inspect_node(plan_id, node_id)
+            .expect("inspect")
+            .expect("present");
+        assert_eq!(record.state, PlanNodeState::Declared);
+        assert_eq!(record.declared_revision, 1);
+
+        let denied = authority
+            .apply_plan_revision(ApplyPlanRevisionRequest {
+                plan_id: Some(plan_id),
+                nodes: vec![declared_node()],
+                idempotency_key: IdempotencyKey::from_bytes([0x99; 16]),
+                applied_at_ms: 2_000,
+            })
+            .expect_err("default apply face must typed-deny without consult");
+        assert!(matches!(
+            denied,
+            PlanStoreError::DeclarationConsultUnavailable
+        ));
     }
 
     #[test]
