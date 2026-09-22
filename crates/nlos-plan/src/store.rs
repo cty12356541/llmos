@@ -1492,10 +1492,7 @@ fn write_revision(args: &WriteRevisionArgs<'_>) -> Result<PlanRevisionReceipt, P
             "INSERT INTO plans (
                 plan_id, current_revision, created_at_ms, updated_at_ms
              ) VALUES (?1, 1, ?2, ?2)",
-            params![
-                plan_id.as_bytes().as_slice(),
-                encode_u64(*applied_at_ms)?,
-            ],
+            params![plan_id.as_bytes().as_slice(), encode_u64(*applied_at_ms)?,],
         )?;
     } else {
         transaction.execute(
