@@ -1,0 +1,136 @@
+//! One OS process = one Cell. Two Cells require two processes (ADR-0018).
+//!
+//! Parent-side checks live in one `#[test]` so they share a single process
+//! claim. The child helper is a separate test harness entry that only
+//! claims when spawned as its own OS process.
+
+use std::fmt::Write as _;
+use std::fs;
+use std::process::Command;
+
+use nlos_cell::{CellAuthority, CellError, CellIdentity};
+use nlos_types::SchedulerDomainId;
+
+const CHILD_CLAIM_ENV: &str = "NLOS_CELL_CHILD_CLAIM";
+const CHILD_OUT_ENV: &str = "NLOS_CELL_CHILD_OUT";
+
+fn parent_domain() -> SchedulerDomainId {
+    SchedulerDomainId::from_bytes([0xc1; 16])
+}
+
+fn child_domain() -> SchedulerDomainId {
+    SchedulerDomainId::from_bytes([0xc2; 16])
+}
+
+#[test]
+fn child_claim_helper() {
+    let Ok(out_path) = std::env::var(CHILD_OUT_ENV) else {
+        return;
+    };
+    let authority = CellAuthority::claim(child_domain()).expect("child claim");
+    let line = format!(
+        "{}\n{}\n{}\n{}\n",
+        authority.os_process_id(),
+        hex(authority.identity().as_bytes()),
+        authority.node_boot_generation().get(),
+        authority.epoch().get()
+    );
+    fs::write(out_path, line).expect("write child receipt");
+}
+
+#[test]
+fn two_os_process_authorities_not_two_in_process_threads() {
+    if std::env::var(CHILD_CLAIM_ENV).is_ok() {
+        return;
+    }
+
+    let out_path =
+        std::env::temp_dir().join(format!("nlos-cell-w37e-child-{}.txt", std::process::id()));
+    let _ = fs::remove_file(&out_path);
+
+    let status = Command::new(std::env::current_exe().expect("test executable"))
+        .args(["--exact", "child_claim_helper", "--nocapture"])
+        .env(CHILD_CLAIM_ENV, "1")
+        .env(CHILD_OUT_ENV, &out_path)
+        .status()
+        .expect("spawn child Cell process");
+    assert!(status.success(), "child Cell process failed: {status:?}");
+
+    let receipt = fs::read_to_string(&out_path).expect("child receipt");
+    let mut lines = receipt.lines();
+    let child_pid: u32 = lines
+        .next()
+        .expect("child pid")
+        .parse()
+        .expect("child pid u32");
+    let child_identity = lines.next().expect("child identity");
+    let child_boot: u64 = lines.next().expect("child boot").parse().expect("boot u64");
+    let child_epoch: u64 = lines
+        .next()
+        .expect("child epoch")
+        .parse()
+        .expect("epoch u64");
+
+    let domain_a = parent_domain();
+    let domain_b = SchedulerDomainId::from_bytes([0xc3; 16]);
+    let (first, second) = std::thread::scope(|scope| {
+        let left = scope.spawn(|| CellAuthority::claim(domain_a));
+        let right = scope.spawn(|| CellAuthority::claim(domain_b));
+        (left.join().expect("left"), right.join().expect("right"))
+    });
+
+    let wins = u8::from(first.is_ok()) + u8::from(second.is_ok());
+    assert_eq!(
+        wins, 1,
+        "exactly one in-process claim may succeed; got {first:?} / {second:?}"
+    );
+
+    let parent = match (first, second) {
+        (Ok(authority), Err(error)) | (Err(error), Ok(authority)) => {
+            assert_eq!(authority.os_process_id(), std::process::id());
+            match error {
+                CellError::AlreadyClaimedInProcess { existing } => {
+                    assert_eq!(existing, authority.identity());
+                }
+                other => panic!("expected AlreadyClaimedInProcess, got {other:?}"),
+            }
+            authority
+        }
+        other => panic!("expected one Ok and one AlreadyClaimed, got {other:?}"),
+    };
+
+    let retry = CellAuthority::claim(SchedulerDomainId::from_bytes([0xc4; 16]));
+    assert_eq!(
+        retry.expect_err("third claim must fail"),
+        CellError::AlreadyClaimedInProcess {
+            existing: parent.identity(),
+        }
+    );
+
+    assert_ne!(child_pid, std::process::id());
+    assert_eq!(parent.os_process_id(), std::process::id());
+    assert_ne!(child_pid, parent.os_process_id());
+    assert_eq!(
+        child_identity,
+        hex(CellIdentity::from_domain(child_domain()).as_bytes())
+    );
+    assert!(
+        parent.identity() == CellIdentity::from_domain(parent_domain())
+            || parent.identity() == CellIdentity::from_domain(domain_b)
+    );
+    assert_ne!(hex(parent.identity().as_bytes()).as_str(), child_identity);
+    assert_eq!(child_boot, 1);
+    assert_eq!(child_epoch, 1);
+    assert_eq!(parent.node_boot_generation().get(), 1);
+    assert_eq!(parent.epoch().get(), 1);
+
+    let _ = fs::remove_file(&out_path);
+}
+
+fn hex(bytes: &[u8; 16]) -> String {
+    let mut out = String::with_capacity(32);
+    for byte in bytes {
+        write!(out, "{byte:02x}").expect("write hex nibble");
+    }
+    out
+}
