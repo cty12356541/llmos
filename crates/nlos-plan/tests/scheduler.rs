@@ -307,7 +307,7 @@ fn selection_is_deterministic_ready_fifo_bounded_by_window() {
     // so e's first-declared time is later — FIFO must rank it after the
     // revision-1 nodes even though its node id may sort anywhere.
     let plan_id = authority
-        .apply_plan_revision(revision_request(
+        .apply_plan_revision_ungated(revision_request(
             None,
             vec![
                 node(0x0a, 0x01),
@@ -322,7 +322,7 @@ fn selection_is_deterministic_ready_fifo_bounded_by_window() {
         .receipt()
         .plan_id;
     authority
-        .apply_plan_revision(revision_request(
+        .apply_plan_revision_ungated(revision_request(
             Some(plan_id),
             vec![
                 node(0x0a, 0x01),
@@ -423,7 +423,7 @@ fn window_shrinks_on_admission_rejection_and_is_inspectable() {
     let authority = SqlitePlanAuthority::open(root.0.join("plan.sqlite3")).expect("open plan");
     let task = open_task(&root, &ZERO_WORKING_SET);
     let plan_id = authority
-        .apply_plan_revision(revision_request(
+        .apply_plan_revision_ungated(revision_request(
             None,
             vec![
                 node(0x0a, 0x01),
@@ -506,7 +506,7 @@ fn scheduler_cannot_materialize_past_admission_gate() {
     let root = Root::new("no-bypass");
     let authority = SqlitePlanAuthority::open(root.0.join("plan.sqlite3")).expect("open plan");
     let plan_id = authority
-        .apply_plan_revision(revision_request(
+        .apply_plan_revision_ungated(revision_request(
             None,
             vec![node(0x0a, 0x01), node(0x0b, 0x02)],
             0x11,
@@ -588,7 +588,7 @@ fn crashed_gate_round_converges_via_adoption_on_next_pass() {
     let authority = SqlitePlanAuthority::open(root.0.join("plan.sqlite3")).expect("open plan");
     let task = open_task(&root, &TASK_PROFILE_10K);
     let plan_id = authority
-        .apply_plan_revision(revision_request(
+        .apply_plan_revision_ungated(revision_request(
             None,
             vec![node(0x0a, 0x01), node(0x0b, 0x02)],
             0x11,
@@ -667,7 +667,7 @@ fn consult_failure_leaves_pending_round_and_next_pass_adopts() {
     let root = Root::new("consult-fail");
     let authority = SqlitePlanAuthority::open(root.0.join("plan.sqlite3")).expect("open plan");
     let plan_id = authority
-        .apply_plan_revision(revision_request(None, vec![node(0x0a, 0x01)], 0x11, 1_000))
+        .apply_plan_revision_ungated(revision_request(None, vec![node(0x0a, 0x01)], 0x11, 1_000))
         .expect("apply revision")
         .receipt()
         .plan_id;
@@ -729,7 +729,7 @@ fn controller_lever_and_seat_release_drive_progress() {
     let authority = SqlitePlanAuthority::open(root.0.join("plan.sqlite3")).expect("open plan");
     let task = open_task(&root, &TASK_PROFILE_10K);
     let plan_id = authority
-        .apply_plan_revision(revision_request(
+        .apply_plan_revision_ungated(revision_request(
             None,
             vec![node(0x0a, 0x01), node(0x0b, 0x02)],
             0x11,

@@ -74,6 +74,14 @@ impl SqlitePlanAuthority {
                 to: request.to_tier,
             });
         }
+        let (pinned, _) =
+            crate::pin::load_pin_state(&transaction, request.plan_id, request.node_id)?;
+        if pinned && request.to_tier.discriminant() < request.from_tier.discriminant() {
+            return Err(PlanStoreError::PinnedNodeNotEvictable {
+                node_id: request.node_id,
+                tier: node.residency_tier,
+            });
+        }
         if node.declared_revision != request.expected_declared_revision {
             return Err(PlanStoreError::StaleNodeRevision {
                 node_id: request.node_id,
@@ -174,6 +182,48 @@ impl SqlitePlanAuthority {
         }))
     }
 
+    /// Applies Task-side reclaim evictions onto the residency axis:
+    /// one adjacent evict step per bound node (typically HOT→WARM).
+    /// PINNED victims fail typed ([`PlanStoreError::PinnedNodeNotEvictable`]);
+    /// a node already at `METADATA_ONLY` fails
+    /// [`PlanStoreError::InvalidRequest`].
+    ///
+    /// # Errors
+    ///
+    /// Propagates the same typed refusals as
+    /// [`Self::record_residency_transition`], or `InvalidRequest` when
+    /// the node has no lower tier.
+    pub fn apply_reclaim_residency(
+        &self,
+        evictions: &[crate::model::ReclaimResidencyEviction],
+    ) -> Result<Vec<ResidencyTransitionDecision>, PlanStoreError> {
+        let mut decisions = Vec::with_capacity(evictions.len());
+        for eviction in evictions {
+            let node = self
+                .inspect_node(eviction.plan_id, eviction.node_id)?
+                .ok_or(PlanStoreError::NodeNotFound {
+                    plan_id: eviction.plan_id,
+                    node_id: eviction.node_id,
+                })?;
+            let to_tier =
+                evict_adjacent(node.residency_tier).ok_or(PlanStoreError::InvalidRequest {
+                    reason: "reclaim residency has no lower tier",
+                })?;
+            decisions.push(
+                self.record_residency_transition(ResidencyTransitionRequest {
+                    plan_id: eviction.plan_id,
+                    node_id: eviction.node_id,
+                    from_tier: node.residency_tier,
+                    to_tier,
+                    expected_declared_revision: eviction.expected_declared_revision,
+                    idempotency_key: eviction.idempotency_key,
+                    transitioned_at_ms: eviction.transitioned_at_ms,
+                })?,
+            );
+        }
+        Ok(decisions)
+    }
+
     /// Lists one node's residency transition vouchers in dense sequence
     /// order.
     ///
@@ -211,6 +261,16 @@ impl SqlitePlanAuthority {
 // ---------------------------------------------------------------------------
 // residency voucher rows (pure helpers)
 // ---------------------------------------------------------------------------
+
+const fn evict_adjacent(from: NodeResidencyTier) -> Option<NodeResidencyTier> {
+    match from {
+        NodeResidencyTier::Running => Some(NodeResidencyTier::Hot),
+        NodeResidencyTier::Hot => Some(NodeResidencyTier::Warm),
+        NodeResidencyTier::Warm => Some(NodeResidencyTier::Cold),
+        NodeResidencyTier::Cold => Some(NodeResidencyTier::MetadataOnly),
+        NodeResidencyTier::MetadataOnly => None,
+    }
+}
 
 fn derive_residency_voucher_id(
     key: IdempotencyKey,

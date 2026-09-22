@@ -67,7 +67,7 @@ fn revision_request(
 
 fn first_plan(authority: &SqlitePlanAuthority) -> TaskPlanId {
     authority
-        .apply_plan_revision(revision_request(None, vec![node(0x01, 0x11)], 0x01))
+        .apply_plan_revision_ungated(revision_request(None, vec![node(0x01, 0x11)], 0x01))
         .expect("apply revision 1")
         .receipt()
         .plan_id
@@ -112,11 +112,11 @@ fn revision_one_is_authority_assigned_and_deterministic_across_databases() {
     let request = revision_request(None, vec![node(0x01, 0x11)], 0x01);
 
     let receipt_a = authority_a
-        .apply_plan_revision(request.clone())
+        .apply_plan_revision_ungated(request.clone())
         .expect("apply a")
         .receipt();
     let receipt_b = authority_b
-        .apply_plan_revision(request)
+        .apply_plan_revision_ungated(request)
         .expect("apply b")
         .receipt();
 
@@ -135,18 +135,18 @@ fn revision_replay_is_idempotent_and_rebinding_fails_typed() {
     let authority = SqlitePlanAuthority::open(&root.0).expect("open");
     let request = revision_request(None, vec![node(0x01, 0x11)], 0x01);
     let created_receipt = authority
-        .apply_plan_revision(request.clone())
+        .apply_plan_revision_ungated(request.clone())
         .expect("apply")
         .receipt();
 
     let replayed = authority
-        .apply_plan_revision(request.clone())
+        .apply_plan_revision_ungated(request.clone())
         .expect("replay same bytes");
     assert_eq!(replayed.clone().receipt(), created_receipt);
     assert!(matches!(replayed, PlanRevisionDecision::Replayed(_)));
 
     let rebound = authority
-        .apply_plan_revision(revision_request(None, vec![node(0x01, 0x22)], 0x01))
+        .apply_plan_revision_ungated(revision_request(None, vec![node(0x01, 0x22)], 0x01))
         .expect_err("same key with different bytes must fail");
     assert!(matches!(rebound, PlanStoreError::IdempotencyConflict));
 
@@ -166,13 +166,13 @@ fn later_revisions_chain_parent_digests_and_verify() {
     let root = Root::new("chain");
     let authority = SqlitePlanAuthority::open(&root.0).expect("open");
     let first_receipt = authority
-        .apply_plan_revision(revision_request(None, vec![node(0x01, 0x11)], 0x01))
+        .apply_plan_revision_ungated(revision_request(None, vec![node(0x01, 0x11)], 0x01))
         .expect("revision 1")
         .receipt();
     let plan_id = first_receipt.plan_id;
 
     let second_receipt = authority
-        .apply_plan_revision(revision_request(
+        .apply_plan_revision_ungated(revision_request(
             Some(plan_id),
             vec![node(0x01, 0x11), node(0x02, 0x22)],
             0x02,
@@ -180,7 +180,7 @@ fn later_revisions_chain_parent_digests_and_verify() {
         .expect("revision 2")
         .receipt();
     let third_receipt = authority
-        .apply_plan_revision(revision_request(
+        .apply_plan_revision_ungated(revision_request(
             Some(plan_id),
             vec![node(0x01, 0x11), node(0x02, 0x22), node(0x03, 0x33)],
             0x03,
@@ -215,7 +215,7 @@ fn revision_on_unknown_plan_and_structural_negatives_fail_typed() {
     let authority = SqlitePlanAuthority::open(&root.0).expect("open");
 
     assert!(matches!(
-        authority.apply_plan_revision(revision_request(
+        authority.apply_plan_revision_ungated(revision_request(
             Some(TaskPlanId::from_bytes([0x99; 16])),
             vec![node(0x01, 0x11)],
             0x01
@@ -223,13 +223,13 @@ fn revision_on_unknown_plan_and_structural_negatives_fail_typed() {
         Err(PlanStoreError::PlanNotFound(_))
     ));
     assert!(matches!(
-        authority.apply_plan_revision(revision_request(None, Vec::new(), 0x01)),
+        authority.apply_plan_revision_ungated(revision_request(None, Vec::new(), 0x01)),
         Err(PlanStoreError::InvalidRequest {
             reason: "a plan revision must declare at least one node"
         })
     ));
     assert!(matches!(
-        authority.apply_plan_revision(revision_request(
+        authority.apply_plan_revision_ungated(revision_request(
             None,
             vec![node(0x01, 0x11), node(0x01, 0x12)],
             0x01
@@ -239,7 +239,7 @@ fn revision_on_unknown_plan_and_structural_negatives_fail_typed() {
         })
     ));
     assert!(matches!(
-        authority.apply_plan_revision(revision_request(
+        authority.apply_plan_revision_ungated(revision_request(
             None,
             vec![PlanNodeDeclaration {
                 dependency_keys: vec![[0x01; 16]],
@@ -254,7 +254,7 @@ fn revision_on_unknown_plan_and_structural_negatives_fail_typed() {
     let mut unknown_dep = node(0x01, 0x11);
     unknown_dep.dependency_keys = vec![[0xfe; 16]];
     assert!(matches!(
-        authority.apply_plan_revision(revision_request(None, vec![unknown_dep], 0x01)),
+        authority.apply_plan_revision_ungated(revision_request(None, vec![unknown_dep], 0x01)),
         Err(PlanStoreError::UnknownDependency { node_key }) if node_key == [0xfe; 16]
     ));
 
@@ -263,7 +263,7 @@ fn revision_on_unknown_plan_and_structural_negatives_fail_typed() {
     let mut b = node(0x02, 0x22);
     b.dependency_keys = vec![[0x01; 16]];
     assert!(matches!(
-        authority.apply_plan_revision(revision_request(None, vec![a, b], 0x01)),
+        authority.apply_plan_revision_ungated(revision_request(None, vec![a, b], 0x01)),
         Err(PlanStoreError::PlanCycle)
     ));
 }
@@ -463,7 +463,7 @@ fn transition_cas_fences_stale_revision_and_state() {
 
     // A revision bump fences in-flight transitions on pre-execution nodes.
     authority
-        .apply_plan_revision(revision_request(
+        .apply_plan_revision_ungated(revision_request(
             Some(plan_id),
             vec![node(0x01, 0x12)],
             0x02,

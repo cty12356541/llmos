@@ -20,9 +20,55 @@
 //! deliberate wiring (caller-owned), keeping the two authority
 //! vocabularies decoupled.
 
+use nlos_types::{CommitPermitId, TaskId};
+
+use crate::pressure::{WorkingSetReclaimEviction, WorkingSetReclaimExecutionReport};
 use crate::scale::ScaleProfile;
 use crate::store::SqliteTaskAuthority;
 use crate::{TaskStoreError, enforce_task_node_admission, enforce_working_set_admission};
+
+/// Production reclaim×residency drive (W36-P8; W31-G §8.2.5): the Task
+/// authority owns permit closure; this boundary is invoked **per
+/// victim, before** [`SqliteTaskAuthority::drive_working_set_reclaim`]
+/// calls `close_permit`, so a PINNED refusal leaves Task occupancy
+/// unchanged. `Err` is fail-closed (PINNED / CAS / consult failure) —
+/// never a silent skip after a Task write.
+pub trait ReclaimResidencyDrive {
+    /// The drive's own failure type (plan-side refusals stay with the
+    /// implementation; Task errors convert via `From`).
+    type Error;
+
+    /// Records one adjacent residency evict step for the candidate
+    /// victims. Invoked with a single pending member (closure receipt
+    /// not yet minted) **before** Task permit close.
+    ///
+    /// # Errors
+    ///
+    /// Implementation-defined typed refusal (for example a PINNED node).
+    fn drive_reclaim_residency(
+        &self,
+        evictions: &[WorkingSetReclaimEviction],
+        executed_at_ms: i64,
+    ) -> Result<(), Self::Error>;
+}
+
+/// Drive for Tasks that carry no plan binding: residency is not a
+/// second ledger for these members. Plan-bound reclaim must pass a
+/// drive that records `record_residency_transition`.
+pub struct UnlinkedReclaimResidency;
+
+impl ReclaimResidencyDrive for UnlinkedReclaimResidency {
+    type Error = TaskStoreError;
+
+    fn drive_reclaim_residency(
+        &self,
+        evictions: &[WorkingSetReclaimEviction],
+        executed_at_ms: i64,
+    ) -> Result<(), TaskStoreError> {
+        let _ = (evictions, executed_at_ms);
+        Ok(())
+    }
+}
 
 /// The admission facts an approved materialization carries back to the
 /// plan gate: the tier that answered and the projected counts the
@@ -92,5 +138,46 @@ impl SqliteTaskAuthority {
             other_declared_task_nodes,
             snapshot.active_count,
         )
+    }
+
+    /// Answers the plan-declaration (apply-time) consult over the
+    /// declared-TaskNode dimension only (W36-P8; W31-G §8.2.4 — the
+    /// declaration half the materialization consult left open): whether
+    /// a projected store-wide declared-`TaskNode` population still fits
+    /// the configured [`ScaleProfile`]'s `max_task_nodes`. Read-only
+    /// cross-authority consult — no Task-side durable write, the same
+    /// ADR-0013 posture as [`Self::answer_plan_materialization`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TaskStoreError::TaskNodeAdmissionDenied`] as the typed
+    /// denial; no other failure surface (the projection is caller-owned
+    /// plan-side data).
+    pub fn answer_plan_declaration(&self, projected_task_nodes: u64) -> Result<(), TaskStoreError> {
+        let profile = self.scale_profile();
+        if profile.admits_task_nodes(projected_task_nodes) {
+            Ok(())
+        } else {
+            Err(TaskStoreError::TaskNodeAdmissionDenied {
+                profile_id: profile.profile_id,
+                task_count: projected_task_nodes,
+                max_task_nodes: profile.max_task_nodes,
+            })
+        }
+    }
+
+    /// The Task half of the reclaim×residency seam (W36-P8; W31-G §8.2.5):
+    /// identities of durably evicted working-set members, in eviction
+    /// order. The assembler binds each `task_id` to a plan node; the
+    /// plan authority records the matching residency step.
+    #[must_use]
+    pub fn reclaim_residency_victims(
+        report: &WorkingSetReclaimExecutionReport,
+    ) -> Vec<(TaskId, CommitPermitId)> {
+        report
+            .evictions
+            .iter()
+            .map(|eviction| (eviction.task_id, eviction.permit_id))
+            .collect()
     }
 }

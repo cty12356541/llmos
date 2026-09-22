@@ -33,6 +33,7 @@
 mod artifact_source;
 mod materialization;
 mod model;
+mod pin;
 mod residency;
 mod resolver;
 mod scheduler;
@@ -50,10 +51,11 @@ pub use model::{
     EcosystemResolutionDecision, EcosystemResolutionHandle, EcosystemSelector,
     EcosystemSourceLookup, FanoutCondition, GenerationExpectation, MAX_CONDITION_NAMESPACES,
     MAX_DECLARED_NODES_PER_REVISION, MAX_DEPENDENCIES_PER_NODE, NamespaceCondition, NodeConditions,
-    NodeResidencyTier, NodeResidencyView, NodeTransitionDecision, NodeTransitionRequest,
-    NodeTransitionVoucher, PlanNodeDeclaration, PlanNodeKind, PlanNodeRecord, PlanNodeState,
-    PlanResolutionDecision, PlanResolutionHandle, PlanRevisionDecision, PlanRevisionReceipt,
-    PlanRevisionSelector, PlanView, ResidencyTransitionDecision, ResidencyTransitionRequest,
+    NodePinDecision, NodePinRequest, NodePinView, NodePinVoucher, NodeResidencyTier,
+    NodeResidencyView, NodeTransitionDecision, NodeTransitionRequest, NodeTransitionVoucher,
+    PlanNodeDeclaration, PlanNodeKind, PlanNodeRecord, PlanNodeState, PlanResolutionDecision,
+    PlanResolutionHandle, PlanRevisionDecision, PlanRevisionReceipt, PlanRevisionSelector,
+    PlanView, ReclaimResidencyEviction, ResidencyTransitionDecision, ResidencyTransitionRequest,
     ResidencyTransitionVoucher, ResolveEcosystemRequest, ResolvePlanRequest, ResolvedPlanNode,
     ResourceContractCondition,
 };
@@ -70,7 +72,7 @@ pub use scheduler::{
     SelectionEntry, SelectionKind, SelectionReport, SelectionSkipReason, SkipEntry,
 };
 pub use selector::{EcosystemResolutionError, EcosystemSelectorSource};
-pub use store::SqlitePlanAuthority;
+pub use store::{DeclarationAdmissionConsult, DeclarationAdmissionOutcome, SqlitePlanAuthority};
 
 /// Errors produced by the durable plan authority.
 ///
@@ -118,7 +120,9 @@ pub enum PlanStoreError {
     },
     /// The requested residency tier transition is not a legal edge of
     /// the conservative W31-E set (a single adjacent step along the
-    /// 议题 28 chain; no self-loops, no skips, no `PINNED`).
+    /// 议题 28 chain; no self-loops, no skips). PINNED is an overlay,
+    /// not a sixth discriminant — eviction of a pinned node is
+    /// [`Self::PinnedNodeNotEvictable`].
     IllegalResidencyTransition {
         node_id: TaskNodeId,
         from: NodeResidencyTier,
@@ -130,6 +134,20 @@ pub enum PlanStoreError {
         node_id: TaskNodeId,
         expected_from: NodeResidencyTier,
         current: NodeResidencyTier,
+    },
+    /// Eviction of a PINNED node is refused (W36-P8; `[SCALE-PIN-001]`
+    /// minimal overlay): the residency axis does not move. Unpin
+    /// (degrade) first.
+    PinnedNodeNotEvictable {
+        node_id: TaskNodeId,
+        tier: NodeResidencyTier,
+    },
+    /// The pin/unpin overlay CAS missed: the node is already in the
+    /// requested pin state.
+    PinStateCasMismatch {
+        node_id: TaskNodeId,
+        expected_pinned: bool,
+        current: bool,
     },
     /// The transition's expected declared revision does not match the
     /// node's durable declared revision (`[PLAN-DAG-001]` fence).
@@ -238,6 +256,24 @@ pub enum PlanStoreError {
     InvalidNodeConditions {
         reason: &'static str,
     },
+    /// The apply-time declared-population consult denied the revision:
+    /// the projected store-wide declared-TaskNode population exceeds the
+    /// Task tier's `max_task_nodes` dimension (W36-P8; W31-G §8.2.4 —
+    /// the declaration half of the W31-A consult, ADR-0016 决定 4).
+    /// Nothing was written; the reason body is owned by the Task
+    /// authority.
+    DeclarationAdmissionDenied {
+        /// Tier identifier of the denying profile.
+        profile_id: String,
+        /// The projected store-wide declared-TaskNode population.
+        projected_task_nodes: u64,
+        /// Inclusive hard cap of the declared-TaskNode dimension.
+        max_task_nodes: u64,
+    },
+    /// The apply-time declared-population consult itself failed
+    /// (transport/storage posture). The gated apply fails closed — no
+    /// revision is committed without a verified admission (ADR-0013).
+    DeclarationConsultUnavailable,
 }
 
 impl fmt::Display for PlanStoreError {
@@ -299,6 +335,18 @@ impl fmt::Display for PlanStoreError {
             } => write!(
                 formatter,
                 "node {node_id:?} residency tier CAS expected {expected_from:?} but found {current:?}"
+            ),
+            Self::PinnedNodeNotEvictable { node_id, tier } => write!(
+                formatter,
+                "node {node_id:?} is PINNED at {tier:?} and cannot be evicted"
+            ),
+            Self::PinStateCasMismatch {
+                node_id,
+                expected_pinned,
+                current,
+            } => write!(
+                formatter,
+                "node {node_id:?} pin CAS expected pinned={expected_pinned} but found {current}"
             ),
             Self::StaleNodeRevision {
                 node_id,
@@ -394,6 +442,17 @@ impl fmt::Display for PlanStoreError {
             ),
             Self::InvalidNodeConditions { reason } => {
                 write!(formatter, "invalid node gate conditions: {reason}")
+            }
+            Self::DeclarationAdmissionDenied {
+                profile_id,
+                projected_task_nodes,
+                max_task_nodes,
+            } => write!(
+                formatter,
+                "plan revision admission denied by tier {profile_id}: projected {projected_task_nodes} declared task nodes exceed max_task_nodes {max_task_nodes}"
+            ),
+            Self::DeclarationConsultUnavailable => {
+                formatter.write_str("plan revision admission consult failed; apply fails closed")
             }
         }
     }

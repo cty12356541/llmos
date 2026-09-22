@@ -192,7 +192,10 @@ pub use lease::{
     CompleteAuthorityTakeoverRequest, MAX_AUTHORITY_LEASE_TTL_MS,
     barrier_observation_signature_message,
 };
-pub use materialization::{MaterializationAdmissionFacts, admit_plan_materialization};
+pub use materialization::{
+    MaterializationAdmissionFacts, ReclaimResidencyDrive, UnlinkedReclaimResidency,
+    admit_plan_materialization,
+};
 pub use model::{
     AdoptionReceiptRecord, AttemptHandle, AttemptRecord, AttemptRegistrationDecision, AttemptSpec,
     AttemptState, CancelDecision, CancelRequest, ClosePermitDecision, ClosePermitRequest,

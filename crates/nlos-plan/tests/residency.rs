@@ -72,7 +72,7 @@ fn revision_request(
 
 fn first_plan(authority: &SqlitePlanAuthority) -> TaskPlanId {
     authority
-        .apply_plan_revision(revision_request(None, vec![node(0x01, 0x11)], 0x01))
+        .apply_plan_revision_ungated(revision_request(None, vec![node(0x01, 0x11)], 0x01))
         .expect("apply revision 1")
         .receipt()
         .plan_id
@@ -388,7 +388,7 @@ fn residency_transition_cas_fences_stale_tier_and_revision() {
     // that observed the pre-reshape revision ([PLAN-DAG-001] fence,
     // same discipline as the lifecycle face).
     authority
-        .apply_plan_revision(revision_request(
+        .apply_plan_revision_ungated(revision_request(
             Some(plan_id),
             vec![node(0x01, 0x12)],
             0x02,
@@ -763,7 +763,7 @@ fn schema_v3_migration_paths() {
     let db_path = root.0.join("plan.sqlite3");
     std::fs::create_dir_all(&root.0).expect("create db directory");
     let authority = SqlitePlanAuthority::open(&db_path).expect("fresh open");
-    assert_eq!(user_version(&db_path), 6);
+    assert_eq!(user_version(&db_path), 7);
     let plan_id = first_plan(&authority);
     let node_id = first_node_id(&authority, plan_id);
     let decision = residency_step(
@@ -778,7 +778,7 @@ fn schema_v3_migration_paths() {
     drop(authority);
 
     let reopened = SqlitePlanAuthority::open(&db_path).expect("reopen at v3");
-    assert_eq!(user_version(&db_path), 6);
+    assert_eq!(user_version(&db_path), 7);
     let view = reopened
         .inspect_node_residency(plan_id, node_id)
         .expect("view after reopen")
@@ -798,7 +798,7 @@ fn schema_v3_migration_paths() {
         .expect("stamp v2");
     drop(raw);
     let remigrated = SqlitePlanAuthority::open(&db_path).expect("idempotent re-migration");
-    assert_eq!(user_version(&db_path), 6);
+    assert_eq!(user_version(&db_path), 7);
     let view = remigrated
         .inspect_node_residency(plan_id, node_id)
         .expect("view after re-migration")

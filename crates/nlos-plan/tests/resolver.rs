@@ -123,7 +123,7 @@ fn diamond_graph_resolves_deterministic_topological_order() {
     let root = Root::new("diamond");
     let authority = SqlitePlanAuthority::open(&root.0).expect("open authority");
     let plan_id = authority
-        .apply_plan_revision(revision_request(
+        .apply_plan_revision_ungated(revision_request(
             None,
             vec![
                 node(0x0a, 0x11, &[]),
@@ -201,12 +201,12 @@ fn resolution_is_deterministic_across_databases() {
     let nodes = vec![node(0x0a, 0x11, &[]), node(0x0b, 0x22, &[0x0a])];
 
     let plan_id = authority_a
-        .apply_plan_revision(revision_request(None, nodes.clone(), 0x01))
+        .apply_plan_revision_ungated(revision_request(None, nodes.clone(), 0x01))
         .expect("apply a")
         .receipt()
         .plan_id;
     authority_b
-        .apply_plan_revision(revision_request(None, nodes, 0x01))
+        .apply_plan_revision_ungated(revision_request(None, nodes, 0x01))
         .expect("apply b");
 
     let handle_a = resolve_current(&authority_a, plan_id, 0x51);
@@ -222,7 +222,7 @@ fn selector_and_receipt_negatives_fail_typed() {
     let root = Root::new("negative");
     let authority = SqlitePlanAuthority::open(&root.0).expect("open authority");
     let plan_id = authority
-        .apply_plan_revision(revision_request(None, vec![node(0x0a, 0x11, &[])], 0x01))
+        .apply_plan_revision_ungated(revision_request(None, vec![node(0x0a, 0x11, &[])], 0x01))
         .expect("revision 1")
         .receipt()
         .plan_id;
@@ -288,7 +288,7 @@ fn resolution_idempotency_matrix() {
     let root = Root::new("idem");
     let authority = SqlitePlanAuthority::open(&root.0).expect("open authority");
     let plan_id = authority
-        .apply_plan_revision(revision_request(None, vec![node(0x0a, 0x11, &[])], 0x01))
+        .apply_plan_revision_ungated(revision_request(None, vec![node(0x0a, 0x11, &[])], 0x01))
         .expect("revision 1")
         .receipt()
         .plan_id;
@@ -296,7 +296,7 @@ fn resolution_idempotency_matrix() {
         let root_b = Root::new("idem-other");
         let authority_b = SqlitePlanAuthority::open(&root_b.0).expect("open b");
         authority_b
-            .apply_plan_revision(revision_request(None, vec![node(0x0a, 0x11, &[])], 0x81))
+            .apply_plan_revision_ungated(revision_request(None, vec![node(0x0a, 0x11, &[])], 0x81))
             .expect("other plan")
             .receipt()
             .plan_id
@@ -378,7 +378,7 @@ fn duplicate_dependency_keys_are_refused_typed() {
     let root = Root::new("dup-dep");
     let authority = SqlitePlanAuthority::open(&root.0).expect("open authority");
     assert!(matches!(
-        authority.apply_plan_revision(revision_request(
+        authority.apply_plan_revision_ungated(revision_request(
             None,
             vec![node(0x0a, 0x11, &[]), node(0x0b, 0x22, &[0x0a, 0x0a]),],
             0x01,
@@ -398,7 +398,7 @@ fn tampered_non_cyclic_shape_fails_closed_on_root_verification() {
     let root = Root::new("tamper-roots");
     let authority = SqlitePlanAuthority::open(&root.0).expect("open authority");
     let plan_id = authority
-        .apply_plan_revision(revision_request(
+        .apply_plan_revision_ungated(revision_request(
             None,
             vec![
                 node(0x0a, 0x11, &[]),
@@ -476,7 +476,7 @@ fn injected_cycle_fails_closed_naming_exact_members() {
     let root = Root::new("tamper-cycle");
     let authority = SqlitePlanAuthority::open(&root.0).expect("open authority");
     let plan_id = authority
-        .apply_plan_revision(revision_request(
+        .apply_plan_revision_ungated(revision_request(
             None,
             vec![
                 node(0x0a, 0x11, &[]),
@@ -532,7 +532,7 @@ fn missing_revision_shape_fails_typed_never_rederived() {
     let root = Root::new("no-shape");
     let authority = SqlitePlanAuthority::open(&root.0).expect("open authority");
     let plan_id = authority
-        .apply_plan_revision(revision_request(None, vec![node(0x0a, 0x11, &[])], 0x01))
+        .apply_plan_revision_ungated(revision_request(None, vec![node(0x0a, 0x11, &[])], 0x01))
         .expect("revision 1")
         .receipt()
         .plan_id;
@@ -582,9 +582,9 @@ fn schema_v2_migration_paths() {
     let db_path = root.0.join("plan.sqlite3");
     std::fs::create_dir_all(&root.0).expect("create db directory");
     let authority = SqlitePlanAuthority::open(&db_path).expect("fresh open");
-    assert_eq!(user_version(&db_path), 6);
+    assert_eq!(user_version(&db_path), 7);
     let plan_id = authority
-        .apply_plan_revision(revision_request(None, vec![node(0x0a, 0x11, &[])], 0x01))
+        .apply_plan_revision_ungated(revision_request(None, vec![node(0x0a, 0x11, &[])], 0x01))
         .expect("revision 1")
         .receipt()
         .plan_id;
@@ -592,7 +592,7 @@ fn schema_v2_migration_paths() {
     drop(authority);
 
     let reopened = SqlitePlanAuthority::open(&db_path).expect("reopen at head");
-    assert_eq!(user_version(&db_path), 6);
+    assert_eq!(user_version(&db_path), 7);
     drop(reopened);
 
     // A database stamped v1 whose newer schemas already exist re-migrates
@@ -602,7 +602,7 @@ fn schema_v2_migration_paths() {
         .expect("stamp v1");
     drop(raw);
     let remigrated = SqlitePlanAuthority::open(&db_path).expect("idempotent re-migration");
-    assert_eq!(user_version(&db_path), 6);
+    assert_eq!(user_version(&db_path), 7);
     assert_eq!(
         remigrated
             .inspect_resolution(handle.resolution_id)

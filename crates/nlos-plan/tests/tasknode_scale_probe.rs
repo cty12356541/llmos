@@ -257,7 +257,7 @@ fn apply_revision(
     };
     let started = Instant::now();
     let receipt = authority
-        .apply_plan_revision(request)
+        .apply_plan_revision_ungated(request)
         .expect("apply plan revision")
         .receipt();
     let elapsed = started.elapsed();
