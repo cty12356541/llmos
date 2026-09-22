@@ -4,7 +4,7 @@
 //! discriminant: eviction (`to.discriminant() < from.discriminant()`)
 //! of a pinned node is typed-refused; unpin is the degrade path that
 //! restores the ordinary HOT→WARM→COLD walk. Full `[SCALE-PIN-001]`
-//! bindings (ResourceAllocation, owner, reason, resident-bytes,
+//! bindings (`ResourceAllocation`, owner, reason, resident-bytes,
 //! rebuild-cost, expiry, fence) are out of this slice.
 
 use nlos_types::{IdempotencyKey, ReceiptId, TaskNodeId, TaskPlanId};

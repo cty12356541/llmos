@@ -5,7 +5,7 @@
 //! This is deliberately *not* a sixth `NodeResidencyTier` discriminant
 //! (that would break the out-of-write-set `ContextResidencyTier`
 //! mapping). It is also not the full SCALE-PIN-001 ledger
-//! (ResourceAllocation / owner / reason / resident-bytes / rebuild-cost
+//! (`ResourceAllocation` / owner / reason / resident-bytes / rebuild-cost
 //! / expiry / fence) — those stay named boundaries.
 
 use std::sync::atomic::{AtomicU64, Ordering};
