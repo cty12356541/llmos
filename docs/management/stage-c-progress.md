@@ -70,8 +70,8 @@
 
 | ID | 工作包 | 规范锚点 | 状态 |
 |---|---|---|---|
-| `C-CELL` | Cell 本地七件套 + 控制面最小面 + 多节点 identity/epoch/fencing | §26.1（Cell/控制面职责表 + `DIST-LOCAL/FAIL/NAME-001`） | **`PARTIAL_PASS`**（2026-09-22：identity/epoch/fencing 最小面合入 `4fe5854`，crate `nlos-cell`；[ADR-0018](./adrs/0018-single-host-multiprocess-dual-cell-topology.md) `ACCEPTED` ≠ `VERIFIED`，七件套与其余控制面未做、信息门仍开。不声称 C-CELL 已实现） |
-| `C-LEASE` | Quota/Capacity/ExclusiveDevice lease 三族 + reconciliation | §12 全部 `LEASE-*` 不变量 | `NOT_STARTED` |
+| `C-CELL` | Cell 本地七件套 + 控制面最小面 + 多节点 identity/epoch/fencing | §26.1（Cell/控制面职责表 + `DIST-LOCAL/FAIL/NAME-001`） | **`PARTIAL_PASS`**（2026-09-22：identity/epoch/fencing 最小面合入 `4fe5854`，crate `nlos-cell`；W38-E 测试加固 `e9c252c`/`5c93394`——身份与 pid 解耦、双进程存活窗口；[ADR-0018](./adrs/0018-single-host-multiprocess-dual-cell-topology.md) `ACCEPTED` ≠ `VERIFIED`，七件套与其余控制面未做、信息门仍开。不声称 C-CELL 已实现） |
+| `C-LEASE` | Quota/Capacity/ExclusiveDevice lease 三族 + reconciliation | §12 全部 `LEASE-*` 不变量 | **`PARTIAL_PASS` / 前片**（2026-09-25：单 Cell `QuotaLease` 授予与过期 epoch 拒绝合入 `ac898ec`/`7fa1fec`，`CellAuthority::admit` 接线 `fc5d81b`/`6ec9528`，crate `nlos-lease` + `tests/quota_grant.rs`；**无独立 Evidence 文件**——Claim 止于单 Cell QuotaLease 前片。Capacity/ExclusiveDevice/reconciliation/`LEASE-*` 全族未做。不声称 C-LEASE 已实现） |
 | `C-SYNC` | Artifact/event sync + 跨域审计 checkpoint | §26.2；`SEM-CHECKPOINT-001`（行 2808） | `NOT_STARTED` |
 | `C-SHARD` | TaskAuthority 分片与跨 Cell 接管（单机表组族向 DIST-TASK-001..004 全语义迁移） | §26.1 `DIST-TASK-001/002/004`；对象模型三 Record | `NOT_STARTED`（[ADR-0019](./adrs/0019-cross-cell-commit-semantics-extension.md) 已开档 `CANDIDATE` `b512fa7`；派发仍以其 `VERIFIED` 为前置，本 integrator 未实现任何 C-SHARD 切片） |
 | `C-FANOUT` | 层级子组/局部 reducer/Merkle result root + fanout admission + bulkhead | `DIST-TASK-003`、`DIST-FANOUT-001`、`DIST-BULKHEAD-001` | `NOT_STARTED` |
@@ -85,7 +85,7 @@
 | ID | 移交# | 事项（§6.5.6 原文要点） | 当前状态与证据 | 主要未决项 |
 |---|---|---|---|---|
 | `C-REG-12` | #1 | slice-k-demo STEP 09d defect 根因处置（collected_digests==[] panic） | **`DONE`**（2026-09-21：merge `87ef288`——根因 = W22-001 install-scoped 前缀在 fail-closed 拒绝前收集预埋孤儿（登记嫌疑 W28-E 归因修正）；回执级证据排除误收在册 blob，RISK-B-12 裁决不升 P0 并 closed；demo 拒绝探针改 `AutoOrphanGc::Disabled` + 回归测试；demo e2e 绿 + 136 passed；[B-SLICE-K-001 §17](../evidence/stage-b/b-slice-k-001-end-to-end.md)） | 无 |
-| `C-APP-PAYLOAD` | #2 | 载荷执行面 + `nlos package install` CLI | **`PARTIAL_PASS` / 前片 VERIFIED**（2026-09-21：merge `953c8af`；[B-APPLICATION-007 §7](../evidence/stage-b/b-application-007-third-party-sample.md)——载荷执行车道 + `nlos-package install` CLI） | 后片：run/update/uninstall CLI 消费端 + 样例自身接线该车道。owner：后续 C-APP-PAYLOAD 切片 |
+| `C-APP-PAYLOAD` | #2 | 载荷执行面 + `nlos package install` CLI | **`PARTIAL_PASS` / 前片**（install：2026-09-21 merge `953c8af` + [B-APPLICATION-007 §7](../evidence/stage-b/b-application-007-third-party-sample.md) VERIFIED；run/update/uninstall CLI：2026-09-25 merge `4c67ede`/`000436d`/`e406fdb`（`c362668`/`874385f`/`5bb60fc`）+ crate 测试，**无独立 Evidence 文件**——Claim 止于 CLI 子命令前片） | 样例自身接线该车道；无 W38 Evidence 文件。owner：后续 C-APP-PAYLOAD 切片 |
 | `C-GUI-CAMPAIGN` | #3 | GUI 真机战役（computer-use 清单）+ Windows GUI | `NOT_STARTED`（W34-A §5；RISK-B-06/U-3） | 归置（决策点 3：D 邻接但为 B 交付物的可用性验证） |
 | `C-WIN-KILL` | #4 | Windows live-child 实杀（taskkill /F/T 成功路径无真实子进程断言） | `NOT_STARTED`（W34-A §6 residual 4 精确口径；RISK-B-10/U-2） | Windows 实机 kill 矩阵 + B2-1 双活三层场景 |
 | `C-SCALE-RELEASE` | #5 | release-profile + Linux/Windows 规模复测与 CI 化 | **`PARTIAL_PASS` / 管线前片 VERIFIED**（2026-09-21：merge `09c0832`；[B-SCALE-RELEASE-001](../evidence/stage-b/b-scale-release-001.md)——`scale-probe-release` job + 同日同机首批 release↔debug 数字）。生产量级声明禁令维持 | 首 CI run `PENDING`（owner：控制器 post-merge dispatch / 夜间 schedule）。U-1 多平台半边待该 run 回填 |
@@ -94,7 +94,7 @@
 | `C-PLAN-HARDEN` | #8 | apply 侧 TaskNode admission consult；Task-reclaim × plan-residency 互连；PINNED tier；调度器自身规模探针；100K@50% cell 与回收再入场 | **`PARTIAL_PASS` / 四 residual VERIFIED**（2026-09-22：merge `8ed592a`；终审 Ready；[B-PLAN-001 §13](../evidence/stage-b/b-plan-001-declaration-surface.md) + [B-TASK-SCALE-001 §15](../evidence/stage-b/b-task-scale-001.md)）。本 integrator 定向复跑：nlos-plan+nlos-task skip-10K/100K 名 **462 passed / 0 failed / 2 ignored / 8 filtered** | `nlos-system-control` 夹具仍调 `apply_plan_revision`（park，owner：后续 write-set / assembler）；PINNED 台账/SABI 字段与调度器 100K 为 brief 边界；`apply_plan_revision_ungated` / `UnlinkedReclaimResidency` 旁路 |
 | `C-PROVIDER-REAL` | #9 | provider 真实载体替换 mock + transport 跨平台 + payload codec 冻结通道 | `NOT_STARTED`（U-10；codec 决策沿 RISK-B-05 review_point） | 首个真实 provider 全链接入；codec 入 ADR-0014 通道显式决策 |
 | `C-RUNTIME-PROC` | #10 | kill receipt 消费 × Activation meter 联动；B6-4 跨平台 supervisor；B6-5 完整 BirthDecision | **`PARTIAL_PASS` / 三子项 VERIFIED**（2026-09-22：merge `c45bd10`；终审 Ready；[W36-P10](../evidence/stage-b/w36-p10-c-runtime-proc.md)）。本 integrator 定向复跑：runtime 三 crate skip-10K/100K 名 **185 passed / 0 failed / 4 ignored / 11 filtered**；kill_receipt 5 / birth_decision 7 / supervisor 6 / runtime-lib 2 | Windows `#[cfg(windows)]` supervisor 实杀臂未在本机跑（owner：C-WIN-KILL / 三平台 CI）；5 parked minors（test/API/docs polish） |
-| `C-APP-CONTROL` | #11 | Application 层控制面与生命周期 NL 动词；supervisor 自动 pid 发现/unregister | **`PARTIAL_PASS` / 前片 VERIFIED**（2026-09-21：merge `f49c5a8`；[B-CONTROL-003 W35-P11](../evidence/stage-b/b-control-003-nl-prefix.md)——disable/uninstall 命令臂 + 真实 ApplicationAuthority 接线 + 四路 parity） | Application 层 inspect（GET）+ supervisor 自动 pid 发现/unregister（后者写集在 `nlos-process`，现已空闲）。owner：后续 C-APP-CONTROL 切片 |
+| `C-APP-CONTROL` | #11 | Application 层控制面与生命周期 NL 动词；supervisor 自动 pid 发现/unregister | **`PARTIAL_PASS` / 前片**（disable/uninstall：2026-09-21 merge `f49c5a8` + [B-CONTROL-003 W35-P11](../evidence/stage-b/b-control-003-nl-prefix.md) VERIFIED；inspect GET：2026-09-25 merge `ce06746`/`e8a3c4b`；supervisor 按代次 unregister：`7e975d7`/`1a8a073`——后两片 **无独立 Evidence 文件**，Claim 止于 inspect+unregister 前片） | supervisor 自动 pid **发现**仍开；不声称 Application 层控制面全包 DONE。owner：后续 C-APP-CONTROL 切片 |
 | `C-LIFECYCLE` | #12 | `restore_process` 复活链、干净退出终态、teardown 并发竞争面、teardown/NL kill 幂等键同源 | `NOT_STARTED`（W33-H §4 行 4/5 沿引） | 四子项 |
 | `C-CONFORMANCE-GOLDEN` | #13 | TS/Python conformance 对 SABI v1.2–v1.5 新臂/新视图 golden 钉死 | **`DONE`**（2026-09-21：merge `5c6f4c7`，[B-SCHEMA-002 §6](../evidence/stage-b/b-schema-002-cross-language-generation.md) 收口证据；U-14 退役） | 无（后续新增 SABI 臂随波屏障钉死即可） |
 | `C-SCALE-PROBE` | #14 | 夜间 scale-probe 既有失败专项排查 | **根因修复已合入 main**（merge `ebbeddc`：测量窗口串行化 + 基线相对界；[B-RUNTIME-002 §6.18](../evidence/stage-b/b-runtime-002-fiber-scale.md)：测量方法学缺陷 + 10K 档 `+2` 标定错误，本地双模式 3/3 绿）——**dispatch 复证已闭合**（2026-09-22：与 §6.5.6 #14「复证全绿闭合」及 [B-RUNTIME-002 §6.18.2.2](../evidence/stage-b/b-runtime-002-fiber-scale.md) 对齐；dispatch run [35560466719](https://github.com/cty12356541/llmos/actions/runs/35560466719) 五 job 首全绿含 scale-probe；不再引用已过时的 PENDING 行原文） | **夜间 schedule 常设门仍开**（仅 workflow_dispatch 绿不得关 schedule 门；W35-B 仍要 schedule run 绿 + 链接回填） |
@@ -190,11 +190,11 @@ C-CELL + C-SHARD + C-SCHED + C-FANOUT（bulkhead/storm 面）
 
 W35 晋升候选池（依派发纪律 (4)，决策点关闭 + 写集空闲即可进 W35，增量日志留痕）：移交#4 Windows 实杀（RISK-B-10 退役证据）、移交#11 Application 层控制面前片、移交#2 载荷执行面前片——三者与决策点 1–5 无信息依赖、与 W35-A/B/C 写集不相交。
 
-**W36（单 Cell 加固波，依决策点 2 排程）**：四车道任务门+终审已齐并**已合入本地 main**（#5 `09c0832` / #7 `8b91419` / #10 `c45bd10` / #8 `8ed592a`；#6 已于 W35-P6 `4df55d6` 提前）。**W36 屏障未关**：本 integrator 未跑 `cargo test --workspace` / workspace clippy / 三平台 CI，不得声称屏障闭合。否决窗口仍开。
+**W36（单 Cell 加固波，依决策点 2 排程）**：四车道任务门+终审已齐并**已合入 origin/main**（#5 `09c0832` / #7 `8b91419` / #10 `c45bd10` / #8 `8ed592a`；#6 已于 W35-P6 `4df55d6` 提前）。**W36 屏障未关**：三平台 CI / Pages / MSRV / nightly schedule 未关——不得声称屏障闭合。否决窗口仍开。
 
-**W37（Cell 骨架波，依决策点 1 + 拓扑 ADR）**：A–E 文档/前片已合入本地 main（ADR-0018 `c433d6f` / ADR-0019 `b512fa7` / cell spec `e485450` / ADR-0020 `705d4d1` / nlos-cell `4fe5854`）。移交#9 仍信息门（codec 未冻结）；#12 未派。七件套切片与 C-SHARD **未实现**（信息门：0018/0019 均非 VERIFIED）。
+**W37（Cell 骨架波，依决策点 1 + 拓扑 ADR）**：A–E 文档/前片已合入 origin/main（ADR-0018 `c433d6f` / ADR-0019 `b512fa7` / cell spec `e485450` / ADR-0020 `705d4d1` / nlos-cell `4fe5854`）。移交#9 仍信息门（codec 未冻结）；#12 生命周期全包未做（W38 仅合入 spawn-refusal 观察测试 `6547039`，不解锁 #12）。七件套切片与 C-SHARD **未实现**（信息门：0018/0019 均非 VERIFIED）。
 
-**W38（lease/quota 波）**：`C-LEASE`（§12 三族 + reconciliation）∥ 移交#17 custody/gateway 前片。
+**W38（lease/quota + 移交后片）**：已合入并推送 origin/main `e406fdb`（2026-09-25）。前片：`C-LEASE` 单 Cell QuotaLease（`ac898ec`/`fc5d81b`）；#2 run/update/uninstall CLI（`4c67ede`/`000436d`/`e406fdb`）；#11 inspect + supervisor unregister（`ce06746`/`7e975d7`，**发现仍开**）；W38 test/fix 车道（cell/plan/process）。**未做 / 仍开**：C-SHARD、C-CELL 七件套、#12 全生命周期、三平台 CI、夜间 schedule、#17 custody/gateway；各前片无独立 Evidence 文件——Claim=`PARTIAL_PASS`。
 
 **W39（TaskAuthority 跨 Cell 波）**：跨 Cell 提交语义 ADR（决策点 4 → ADR-0013 扩展点定案）→ `C-SHARD`（DIST-TASK-001..004 迁移；单机 schema v27–v38 表组族为基础）∥ `C-FANOUT`。
 
@@ -217,7 +217,7 @@ W35 晋升候选池（依派发纪律 (4)，决策点关闭 + 写集空闲即可
 4. **跨 Cell 提交 ADR：裁 (b) W37 随拓扑 ADR 并行开档**（早启降低 W39 串行等待；C-SHARD 派发仍以其 VERIFIED 为前置，纪律不变）。
 5. **federation 解释：确认草案读法**——C 交付机制面（跨 Cell 名称/服务发现、迁移 intent、审计 checkpoint），全球跨组织清算延后（§29.2）；C-MIGRATE 验收边界据此。
 
-2026-09-22 落档（本地合入，未 push）：[ADR-0018](./adrs/0018-single-host-multiprocess-dual-cell-topology.md) `ACCEPTED` `c433d6f`；[ADR-0019](./adrs/0019-cross-cell-commit-semantics-extension.md) `CANDIDATE` `b512fa7`；[ADR-0020](./adrs/0020-control-plane-single-writer-and-consensus-timing.md) `CANDIDATE` `705d4d1`。**否决窗口仍至 W36 屏障**（屏障 CI 本 integrator 未跑）。ACCEPTED/CANDIDATE ≠ VERIFIED。
+2026-09-22 落档（现已在 origin/main）：[ADR-0018](./adrs/0018-single-host-multiprocess-dual-cell-topology.md) `ACCEPTED` `c433d6f`；[ADR-0019](./adrs/0019-cross-cell-commit-semantics-extension.md) `CANDIDATE` `b512fa7`；[ADR-0020](./adrs/0020-control-plane-single-writer-and-consensus-timing.md) `CANDIDATE` `705d4d1`。**否决窗口仍至 W36 屏障**（三平台 CI / nightly schedule 未关）。ACCEPTED/CANDIDATE ≠ VERIFIED。
 
 ### C.5.5 阶段 C 退出评审门
 
@@ -251,9 +251,9 @@ W35 晋升候选池（依派发纪律 (4)，决策点关闭 + 写集空闲即可
 - 风险与未知项：[exit-unknown-risks.md](./exit-unknown-risks.md)（U-1..U-14；§4 已决定递延项）
 - 评审基线：[W31-G](../evidence/stage-b/reviews/w31g-road-b004-gates.md)、[W33-H](../evidence/stage-b/reviews/w33h-road-b001-b002.md)、[W34-A](../evidence/stage-b/reviews/w34a-six-gate-matrix.md)
 
-## C.8 增量日志（W36/W37 本地合入）
+## C.8 增量日志（W36/W37/W38 合入与推送）
 
-2026-09-22 单一 integrator：把已完成未合入车道合入**本地** `main`（基点 `8b91419` → 代码 HEAD `4fe5854`，本登记提交另计），并 CAS 对齐 §C.3 / L0 / evidence-index / §6.5.6。未 push、未开 PR、未跑波次屏障 CI。
+2026-09-22 单一 integrator：把已完成未合入车道合入**本地** `main`（基点 `8b91419` → 代码 HEAD `4fe5854`，本登记提交另计），并 CAS 对齐 §C.3 / L0 / evidence-index / §6.5.6。当时未 push、未开 PR、未跑波次屏障 CI。
 
 | 车道 | 分支 | merge SHA | 写集要点 |
 |---|---|---|---|
@@ -267,8 +267,25 @@ W35 晋升候选池（依派发纪律 (4)，决策点关闭 + 写集空闲即可
 
 已在 main、本波补登（先前合入未写 §C.3）：#2 `953c8af`、#5 `09c0832`、#6 `4df55d6`、#7 `8b91419`、#11 `f49c5a8`。
 
-**未运行项（不得用本登记冒充屏障）**：三平台 CI / Pages / MSRV；`scale-probe-release` 首 CI run；Windows supervisor 实杀臂；T4 100K@50% / 调度器 10K ignore 探针本 integrator 未复跑（车道报告已有数字）。
+**未运行项（不得用本登记冒充屏障）**：三平台 CI / Pages / MSRV；`scale-probe-release` 首 CI run；夜间 schedule；Windows supervisor 实杀臂；T4 100K@50% / 调度器 10K ignore 探针本 integrator 未复跑（车道报告已有数字）。
 
 2026-09-22：本地屏障于 HEAD `8397488`（plan-fmt merge）记为 workspace test 1614 passed / 0 failed / 25 ignored、`cargo fmt --check`、clippy 均绿；三平台 CI 未跑。
+
+2026-09-25：`git push origin main` 成功——`8b91419..e406fdb`（含 W36/W37 合入 + W38 前片）。推送后 origin/main = `e406fdbc526b84193112085b48dc74dae9ef21a8`；本地与远程对齐（ahead/behind 0）。§C.3 同步：`C-LEASE`/`C-APP-PAYLOAD`/`C-APP-CONTROL`/`C-CELL` 前片改为 `PARTIAL_PASS`（无 W38 Evidence 文件处不升 DONE）。**仍未声称**：C-SHARD、C-CELL 七件套、#12 全生命周期、三平台 CI、夜间 schedule。
+
+| 车道 | 分支 | merge SHA | 写集要点 |
+|---|---|---|---|
+| W38-E cell tests | `fix/w38-cell-tests` | `e9c252c` | nlos-cell 双进程窗口 / 去空跑 child |
+| W38-L12 observe | `feat/w38-lifecycle` | `6547039` | spawn 拒绝后子进程已死观察（**不**解锁 #12） |
+| W38 plan-evict | `test/w38-plan-unpin-evict` | `84114c5` | 未 pin 节点驱逐正路径 |
+| W38 ticker | `test/w38-supervisor-ticker` | `ed93d9c` | supervisor ticker 文件缓冲 flake |
+| W38-A11 inspect | `feat/w38-app-control` | `ce06746` | InspectApplication GET + NL/CLI |
+| W38 unregister | `feat/w38-supervisor-unregister` | `7e975d7` | supervisor 按代次 unregister（发现仍开） |
+| W38 cell-id | `test/w38-cell-identity` | `5c93394` | 身份与 pid 解耦断言 |
+| W38-L QuotaLease | `feat/w38-quota-lease` | `ac898ec` | `nlos-lease` 单 Cell QuotaLease |
+| W38-P2 run | `feat/w38-payload` | `4c67ede` | `nlos package run` |
+| W38 lease-admit | `fix/w38-lease-admit` | `fc5d81b` | QuotaLease → `CellAuthority::admit` |
+| W38-P2 update | `feat/w38-package-update` | `000436d` | `nlos package update` |
+| W38-P2 uninstall | `feat/w38-package-uninstall` | `e406fdb` | `nlos package uninstall` |
 
 **仍开、具名 parked（owner）**：见 §C.3.1/§C.3.2 各行未决项；另 `feat/dash-plugin` 为工具链旁支、不入 C 册（owner：dash 插件车道）。
