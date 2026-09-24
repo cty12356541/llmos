@@ -1,6 +1,6 @@
 # NLOS Package SDK 开发者指南（`nlos-package` CLI）
 
-> 状态：`DESIGN+IMPLEMENTED`（W33-A / B1-4；证据见 [B-ARTIFACT-007](../evidence/stage-b/b-artifact-007-package-sdk.md)；`install` 子命令 W35-P2 / 移交#2 前片，见 [B-APPLICATION-007 §7](../evidence/stage-b/b-application-007-third-party-sample.md)）
+> 状态：`DESIGN+IMPLEMENTED`（W33-A / B1-4；证据见 [B-ARTIFACT-007](../evidence/stage-b/b-artifact-007-package-sdk.md)；`install` 子命令 W35-P2 / 移交#2 前片，见 [B-APPLICATION-007 §7](../evidence/stage-b/b-application-007-third-party-sample.md)；`run` 子命令 W38-P2 / 移交#2 后片首切片）
 >
 > 适用版本：`nlos/package-file/v1` · 依赖 `nlos-artifact` 签名验证面（B-ARTIFACT-003 / W28-B 模板段）
 
@@ -14,6 +14,7 @@ nlos-package build <DIR> --key <KEYFILE> [--out <PKGFILE>]  # 默认 PKGFILE = <
 nlos-package verify <PKGFILE> [--store <DIR>] [--identity <DIR>] [--at-ms <U64>]
 nlos-package conformance <PKGFILE>                          # W33-C 一致性检查器，见 package-conformance.md
 nlos-package install <PKGFILE> --root <DIR>                 # W35-P2：verify → 安装权威（见 §6.1）
+nlos-package run <PACKAGE_ID_HEX> <ENTRY> --root <DIR>      # W38-P2：载荷执行车道消费端（见 §6.2）
 ```
 
 二进制位于 `crates/nlos-package/src/main.rs`（W35-P2 起独立 crate——install 需链接 `nlos-application` 安装权威，而后者依赖 `nlos-artifact`，原址会成依赖环；W33-A 时期根 Cargo.toml 禁改才落在 nlos-artifact 的 src/bin 下），`cargo build -p nlos-package` 后在 `target/debug/nlos-package`（或 `target/release/`）。
@@ -109,18 +110,38 @@ executables hello
 
 幂等纪律：verify 幂等键由 manifest digest 派生（同 §6），GC/安装幂等键与时钟键由 verification receipt id 域分隔派生——**同包重装逐回执 replay**（`decision replayed`，代际不推进），**不同包装进同一 root 互不冲突**（各自的 receipt 派生各自的键）。安装后 `--root` 即可被 slice-k 运行时/载荷执行车道重新打开（`SliceKRuntime::open`）。
 
+### 6.2. run：从 CLI 走通载荷执行车道（W38-P2）
+
+```text
+$ nlos-package run <package-id-hex> hello --root state.d
+RUN f15f762dbcc3ad0e…
+decision executed
+entry hello
+package 0f1e…
+application f15f… generation 1 version …
+artifact … revision 0 digest … bytes …
+operation …
+callback …
+receipts admission=… preparation=… activation=…
+outcome completed:…
+```
+
+流程：在 `--root`（必填）上打开与 `install` 同一套 slice-k 权威集 → 以 32 位十六进制 `package-id` + entry 名调用 `nlos_slice_k::execute_application_payload`（W35-P2 前片已收口的内核车道：读回当前代际 executable 载荷字节 → MockProvider register/dispatch/complete，种子 = `SHA-256("llmos/slice-k/payload-seed/v1" ‖ 字节)`）。不发明新包格式、不 spawn 进程。
+
+幂等纪律：同 root / 同代际 / 同 entry 再跑 ⇒ 三边界全 replay（`decision replayed`），outcome 与 operation id 逐位相同。未安装 / 非 installed 态 / 缺 entry 物化 ⇒ exit 7（typed lane refusal）。
+
 ### 退出码
 
 | 码 | 含义 |
 |---|---|
-| 0 | 成功（verify 输出 VERIFIED/REPLAYED；conformance 输出 CONFORMANT；install 输出 INSTALL + decision） |
+| 0 | 成功（verify 输出 VERIFIED/REPLAYED；conformance 输出 CONFORMANT；install 输出 INSTALL + decision；run 输出 RUN + decision） |
 | 1 | 用法错误 |
-| 2 | 输入畸形：manifest/密钥文件/包文件解析或形状（重复 entry 名、悬空依赖、截断包…）；conformance 亦用于文件不可读 |
+| 2 | 输入畸形：manifest/密钥文件/包文件解析或形状（重复 entry 名、悬空依赖、截断包…）；conformance 亦用于文件不可读；run 的 package-id 非 32 hex |
 | 3 | 验签/身份失败：签名不符、principal 未知、密钥吊销、幂等冲突 |
 | 4 | 内容绑定失败：载荷与声明摘要不符（篡改载荷） |
 | 5 | 内部 I/O 或存储失败 |
 | 6 | conformance 发现违规（`PKG-CONF-###`，规则表见 [package-conformance.md](package-conformance.md)） |
-| 7 | 安装权威拒绝（`install`：receipt 未知/终态冲突/幂等冲突/时序倒置） |
+| 7 | 权威拒绝（`install`：receipt 未知/终态冲突/幂等冲突/时序倒置；`run`：未安装/非 installed/缺物化/driver 面拒绝） |
 
 ### 篡改语义（负门）
 
@@ -134,7 +155,7 @@ executables hello
 - `verify` 的自包含物化是**开发者路径**：内核生产摄取走系统侧 store/identity 部署，本 CLI 不覆盖。`install` 同理把 `--root` 当作单节点状态根（dev 形态），不做多 principal 审批。
 - manifest 是 §23.2 最小子集 + tasks 段；applications/imports/exports/resources/lifecycle/security 等字段未建模。
 - 版本点分三元组的打包公式镜像自 `nlos-application`（两 crate 依赖方向所限无法复用函数）；`nlos-application` 侧公式演进时此文档与 CLI 需同步。
-- `install` 只做安装：运行/更新/卸载的消费端 CLI（`run`/`update`/`uninstall` 子命令）仍是后续车道；已安装应用 executable 载荷的执行经 `nlos-slice-k::execute_application_payload` 内核车道（W35-P2 前片）。
+- `install`/`run` 已收口：更新/卸载的消费端 CLI（`update`/`uninstall` 子命令）与样例自身接线仍是后续车道；已安装应用 executable 载荷的执行经 `nlos-slice-k::execute_application_payload` 内核车道（W35-P2 前片），`nlos-package run` 是其 CLI 消费端（W38-P2）。
 
 ## 8. 相关
 

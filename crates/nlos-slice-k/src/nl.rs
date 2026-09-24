@@ -135,6 +135,7 @@ pub fn dispatch_nl_command(
         now_wall_ms,
         Some(&ProcessAuthorityInspector::new(&runtime.process)),
         None,
+        None,
     )
     .map_err(SliceKError::Control)
 }
