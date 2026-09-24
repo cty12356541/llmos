@@ -371,6 +371,23 @@ impl FiberRecord {
         }
     }
 
+    /// Blocks until this generation leaves [`TerminalOutcome::Pending`].
+    /// Does not consume the exit (unlike [`Self::join`]) so a later join can
+    /// still observe [`FiberExit::Completed`].
+    fn wait_until_terminal(&self) {
+        let mut terminal = lock_unpoisoned(&self.terminal);
+        while matches!(*terminal, TerminalOutcome::Pending) {
+            terminal = self
+                .terminal_notify
+                .wait(terminal)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+
+    fn terminal_is_pending(&self) -> bool {
+        matches!(*lock_unpoisoned(&self.terminal), TerminalOutcome::Pending)
+    }
+
     fn set_state(&self, state: FiberState) {
         let now = Instant::now();
         let current = *lock_unpoisoned(&self.state);
