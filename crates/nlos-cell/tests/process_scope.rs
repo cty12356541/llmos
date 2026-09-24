@@ -11,7 +11,7 @@
 use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -64,24 +64,27 @@ fn child_claim_helper() {
     }
 }
 
-#[test]
-fn two_os_process_authorities_not_two_in_process_threads() {
-    let stamp = std::process::id();
-    let out_path = std::env::temp_dir().join(format!("nlos-cell-w38e-child-{stamp}.txt"));
-    let release_path = std::env::temp_dir().join(format!("nlos-cell-w38e-release-{stamp}.flag"));
-    let _ = fs::remove_file(&out_path);
-    let _ = fs::remove_file(&release_path);
+struct ChildReceipt {
+    pid: u32,
+    identity: String,
+    boot: u64,
+    epoch: u64,
+    token: u64,
+}
 
-    let mut child = Command::new(std::env::current_exe().expect("test executable"))
+fn spawn_child_claim_helper(out_path: &Path, release_path: &Path) -> Child {
+    Command::new(std::env::current_exe().expect("test executable"))
         .args(["--exact", "child_claim_helper", "--nocapture", "--ignored"])
-        .env(CHILD_OUT_ENV, &out_path)
-        .env(CHILD_RELEASE_ENV, &release_path)
+        .env(CHILD_OUT_ENV, out_path)
+        .env(CHILD_RELEASE_ENV, release_path)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())
         .spawn()
-        .expect("spawn child Cell process");
+        .expect("spawn child Cell process")
+}
 
+fn wait_for_child_receipt(child: &mut Child, out_path: &Path) {
     // Wait for child receipt while the child process is still running.
     let deadline = Instant::now() + CHILD_WAIT;
     loop {
@@ -102,33 +105,37 @@ fn two_os_process_authorities_not_two_in_process_threads() {
         );
         thread::sleep(POLL);
     }
+}
 
-    // Live overlap: child still holds its Cell while parent claims.
-    assert!(
-        child.try_wait().expect("child try_wait").is_none(),
-        "child must still be alive so this test observes two live Cells (env+tempfile harness)"
-    );
-
-    let receipt = fs::read_to_string(&out_path).expect("child receipt");
+fn parse_child_receipt(receipt: &str) -> ChildReceipt {
     let mut lines = receipt.lines();
-    let child_pid: u32 = lines
+    let pid: u32 = lines
         .next()
         .expect("child pid")
         .parse()
         .expect("child pid u32");
-    let child_identity = lines.next().expect("child identity");
-    let child_boot: u64 = lines.next().expect("child boot").parse().expect("boot u64");
-    let child_epoch: u64 = lines
+    let identity = lines.next().expect("child identity").to_string();
+    let boot: u64 = lines.next().expect("child boot").parse().expect("boot u64");
+    let epoch: u64 = lines
         .next()
         .expect("child epoch")
         .parse()
         .expect("epoch u64");
-    let child_token: u64 = lines
+    let token: u64 = lines
         .next()
         .expect("child fencing token")
         .parse()
         .expect("token u64");
+    ChildReceipt {
+        pid,
+        identity,
+        boot,
+        epoch,
+        token,
+    }
+}
 
+fn claim_sole_in_process_authority() -> (CellAuthority, SchedulerDomainId) {
     let domain_a = parent_domain();
     let domain_b = SchedulerDomainId::from_bytes([0xc3; 16]);
     let (first, second) = std::thread::scope(|scope| {
@@ -156,6 +163,59 @@ fn two_os_process_authorities_not_two_in_process_threads() {
         }
         other => panic!("expected one Ok and one AlreadyClaimed, got {other:?}"),
     };
+    (parent, domain_b)
+}
+
+fn assert_live_fence_compare(
+    parent: &CellAuthority,
+    child: &ChildReceipt,
+    domain_b: SchedulerDomainId,
+) {
+    assert_ne!(child.pid, std::process::id());
+    assert_eq!(parent.os_process_id(), std::process::id());
+    assert_ne!(child.pid, parent.os_process_id());
+    assert_eq!(
+        child.identity,
+        hex(CellIdentity::from_domain(child_domain()).as_bytes())
+    );
+    assert!(
+        parent.identity() == CellIdentity::from_domain(parent_domain())
+            || parent.identity() == CellIdentity::from_domain(domain_b)
+    );
+    assert_ne!(hex(parent.identity().as_bytes()).as_str(), child.identity);
+
+    // Live fence axes: distinct identities/pids; boot/epoch/token still INITIAL.
+    assert_eq!(child.boot, 1);
+    assert_eq!(child.epoch, 1);
+    assert_eq!(child.token, 1);
+    assert_eq!(parent.node_boot_generation().get(), 1);
+    assert_eq!(parent.epoch().get(), 1);
+    assert_eq!(parent.fencing_token().get(), 1);
+    assert_ne!(
+        parent.fence().identity(),
+        CellIdentity::from_domain(child_domain())
+    );
+}
+
+#[test]
+fn two_os_process_authorities_not_two_in_process_threads() {
+    let stamp = std::process::id();
+    let out_path = std::env::temp_dir().join(format!("nlos-cell-w38e-child-{stamp}.txt"));
+    let release_path = std::env::temp_dir().join(format!("nlos-cell-w38e-release-{stamp}.flag"));
+    let _ = fs::remove_file(&out_path);
+    let _ = fs::remove_file(&release_path);
+
+    let mut child = spawn_child_claim_helper(&out_path, &release_path);
+    wait_for_child_receipt(&mut child, &out_path);
+
+    // Live overlap: child still holds its Cell while parent claims.
+    assert!(
+        child.try_wait().expect("child try_wait").is_none(),
+        "child must still be alive so this test observes two live Cells (env+tempfile harness)"
+    );
+
+    let receipt = parse_child_receipt(&fs::read_to_string(&out_path).expect("child receipt"));
+    let (parent, domain_b) = claim_sole_in_process_authority();
 
     // Still live: both authorities exist concurrently (child blocked on release).
     assert!(
@@ -174,30 +234,7 @@ fn two_os_process_authorities_not_two_in_process_threads() {
         }
     );
 
-    assert_ne!(child_pid, std::process::id());
-    assert_eq!(parent.os_process_id(), std::process::id());
-    assert_ne!(child_pid, parent.os_process_id());
-    assert_eq!(
-        child_identity,
-        hex(CellIdentity::from_domain(child_domain()).as_bytes())
-    );
-    assert!(
-        parent.identity() == CellIdentity::from_domain(parent_domain())
-            || parent.identity() == CellIdentity::from_domain(domain_b)
-    );
-    assert_ne!(hex(parent.identity().as_bytes()).as_str(), child_identity);
-
-    // Live fence axes: distinct identities/pids; boot/epoch/token still INITIAL.
-    assert_eq!(child_boot, 1);
-    assert_eq!(child_epoch, 1);
-    assert_eq!(child_token, 1);
-    assert_eq!(parent.node_boot_generation().get(), 1);
-    assert_eq!(parent.epoch().get(), 1);
-    assert_eq!(parent.fencing_token().get(), 1);
-    assert_ne!(
-        parent.fence().identity(),
-        CellIdentity::from_domain(child_domain())
-    );
+    assert_live_fence_compare(&parent, &receipt, domain_b);
 
     fs::write(&release_path, b"release").expect("signal child release");
     let status = child.wait().expect("wait child after release");
