@@ -527,3 +527,79 @@ fn supervisor_kill_binds_the_fenced_os_pid_across_a_g2_supersede() {
     let g2_status = wait_for_exit(&mut g2, Duration::from_secs(30)).expect("G2 teardown");
     assert!(!g2_status.success());
 }
+
+/// Caller-supplied unregister removes the registered mapping at the expected
+/// generation and is idempotent once the row is gone (W38-A11 / C-APP-CONTROL
+/// unregister half — no automatic pid scanner).
+#[test]
+fn supervisor_unregister_removes_the_registered_mapping() {
+    let supervisor = ProcessSupervisor::new();
+    let process_id = ProcessId::from_bytes([0x39; 16]);
+    supervisor
+        .registry()
+        .register(RegisterSupervisorPidRequest {
+            process_id,
+            process_generation: Generation::INITIAL,
+            os_pid: 4_242,
+            registered_at_ms: 5_000,
+        })
+        .expect("register mapping");
+
+    let first = supervisor
+        .unregister(process_id, Generation::INITIAL)
+        .expect("first unregister");
+    let second = supervisor
+        .unregister(process_id, Generation::INITIAL)
+        .expect("second unregister");
+
+    assert!(first);
+    assert!(!second);
+    assert!(supervisor.registry().pid_map().is_empty());
+    assert_eq!(
+        supervisor.registry().lookup(process_id).expect_err("miss"),
+        SupervisorPidRegistryError::ProcessNotRegistered(process_id)
+    );
+}
+
+/// A stale-generation unregister fails closed and never clears a newer
+/// mapping — unregister is registry-only and must not signal the current
+/// generation's pid.
+#[test]
+fn supervisor_unregister_fails_closed_on_stale_generation() {
+    let supervisor = ProcessSupervisor::new();
+    let process_id = ProcessId::from_bytes([0x3a; 16]);
+    let next = Generation::INITIAL.checked_next().expect("next");
+    supervisor
+        .registry()
+        .register(RegisterSupervisorPidRequest {
+            process_id,
+            process_generation: Generation::INITIAL,
+            os_pid: 4_242,
+            registered_at_ms: 5_000,
+        })
+        .expect("register G1");
+    supervisor
+        .registry()
+        .register(RegisterSupervisorPidRequest {
+            process_id,
+            process_generation: next,
+            os_pid: 5_151,
+            registered_at_ms: 6_000,
+        })
+        .expect("supersede G2");
+
+    let error = supervisor
+        .unregister(process_id, Generation::INITIAL)
+        .expect_err("stale unregister must fail closed");
+    assert!(
+        matches!(
+            error,
+            SupervisorError::Registry(SupervisorPidRegistryError::StaleProcessGeneration { .. })
+        ),
+        "expected StaleProcessGeneration, got {error:?}"
+    );
+    assert_eq!(
+        supervisor.registry().pid_map(),
+        HashMap::from([(process_id, 5_151)])
+    );
+}
