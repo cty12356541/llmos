@@ -290,7 +290,7 @@ W35 晋升候选池（依派发纪律 (4)，决策点关闭 + 写集空闲即可
 
 **仍开、具名 parked（owner）**：见 §C.3.1/§C.3.2 各行未决项；另 `feat/dash-plugin` 为工具链旁支、不入 C 册（owner：dash 插件车道）。
 
-2026-09-25（历史）：代码 tip `e782c35` 时相对当时 origin/main `ee649d3` 曾 **ahead 8**；一次 unbound `git push` 挂起失败后台账登记至 `4a98e67`/`194b014`。**现已核实**：bound SSH `ls-remote` 确认 origin/main = `194b0147a79192aed3c762e0dde83db9eb525aa6`（范围 `ee649d3..194b014`）；本地与远程 ahead/behind 0。§C.3 同步：`C-LEASE` 三族单 Cell 前片、`C-CELL` boot generation、`C-LIFECYCLE` 干净退出+stale-generation 测试、`C-APP-PAYLOAD` clippy 拆分、D 前片（五层 inspect + Surface CLOSED）均为 `PARTIAL_PASS`。**仍未声称**：C-SHARD、C-CELL 七件套全量、Stage D 余量、#12 全生命周期余量、三平台 CI、夜间 schedule。本地验证（据前次会话）：fmt+clippy+workspace test 于 `e782c35` 绿 1628 passed —— **≠** 三平台 CI。
+2026-09-25（历史）：代码 tip `e782c35` 时相对当时 origin/main `ee649d3` 曾 **ahead 8**；一次 unbound `git push` 挂起失败后台账登记至 `4a98e67`/`194b014`。**现已核实**：范围 `ee649d3..194b014` 已由 bound SSH `ls-remote` 核实在 origin；台账提交 `3c5cc9a` 与其后的 invariant 提交亦在 origin；本地 main 与 origin 对齐（ahead/behind 0）；权威 tip 以 `git ls-remote origin refs/heads/main` 为准，本文件不冻结 tip SHA。§C.3 同步：`C-LEASE` 三族单 Cell 前片、`C-CELL` boot generation、`C-LIFECYCLE` 干净退出+stale-generation 测试、`C-APP-PAYLOAD` clippy 拆分、D 前片（五层 inspect + Surface CLOSED）均为 `PARTIAL_PASS`。**仍未声称**：C-SHARD、C-CELL 七件套全量、Stage D 余量、#12 全生命周期余量、三平台 CI、夜间 schedule。本地验证（据前次会话）：fmt+clippy+workspace test 于 `e782c35` 绿 1628 passed —— **≠** 三平台 CI。
 
 | 车道 | 分支 | merge SHA | 写集要点 |
 |---|---|---|---|
@@ -304,4 +304,4 @@ W35 晋升候选池（依派发纪律 (4)，决策点关闭 + 写集空闲即可
 | W38 cell lines | `fix/w38-cell-too-many-lines` | `f3e83f6` | clippy `too_many_lines` 拆分 process_scope（`1ad35d4`）；已在 origin |
 | W38 pkg lines | `fix/w38-package-too-many-lines` | `e782c35` | clippy `too_many_lines` 拆分 run_command（`dcfc1d3`）；已在 origin |
 | W38/W39 台账 | （docs） | `4a98e67` | 登记上述前片为 `PARTIAL_PASS`；已在 origin |
-| HEAD/ahead 对账 | （docs） | `194b014` | 纠正 `e782c35`/ahead 与 L0；已在 origin（origin tip） |
+| HEAD/ahead 对账 | （docs） | `194b014` | 纠正 `e782c35`/ahead 与 L0；已在 origin（origin 上已核实点，非当前 tip） |
