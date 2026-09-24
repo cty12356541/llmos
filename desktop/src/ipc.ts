@@ -57,6 +57,36 @@ export async function inspectTask(planIdHex: string): Promise<ReceiptDto> {
   return invoke("inspect_task", { planIdHex });
 }
 
+/** W39-D:Task Space 五层 inspect(既有 SABI v1.5 ControlCommand 的 GUI 接线)。 */
+export async function inspectTaskGroup(groupIdHex: string): Promise<ReceiptDto> {
+  return invoke("inspect_task_group", { groupIdHex });
+}
+
+export async function inspectTaskNode(
+  planIdHex: string,
+  nodeIdHex: string,
+): Promise<ReceiptDto> {
+  return invoke("inspect_task_node", { planIdHex, nodeIdHex });
+}
+
+export async function inspectExecutionFiber(
+  fiberIdHex: string,
+  generation: number,
+): Promise<ReceiptDto> {
+  return invoke("inspect_execution_fiber", { fiberIdHex, generation });
+}
+
+export async function inspectTopic(topicIdHex: string): Promise<ReceiptDto> {
+  return invoke("inspect_topic", { topicIdHex });
+}
+
+export async function inspectOperation(
+  operationIdHex: string,
+  generation: number,
+): Promise<ReceiptDto> {
+  return invoke("inspect_operation", { operationIdHex, generation });
+}
+
 export async function inspectProcess(processIdHex: string): Promise<ReceiptDto> {
   return invoke("inspect_process", { processIdHex });
 }

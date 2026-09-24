@@ -101,6 +101,8 @@ const MUTATION_TITLES: Record<string, string> = {
   operation_killed: "操作已终止(operation_killed)",
   operation_throttled: "操作已限流(operation_throttled)",
   operation_reclaimed: "工作集已回收(operation_reclaimed)",
+  application_disabled: "应用已禁用(application_disabled)",
+  application_uninstalled: "应用已卸载(application_uninstalled)",
 };
 
 function renderOutcome(outcome: OutcomeDto): HTMLElement {
@@ -188,6 +190,33 @@ function renderOutcome(outcome: OutcomeDto): HTMLElement {
       );
       break;
     }
+    case "application_inspected": {
+      card.append(el("h3", { text: "Application 层 inspect" }));
+      card.append(
+        fieldRow("package_id", outcome.packageIdHex),
+        fieldRow("application_id", outcome.applicationIdHex),
+        fieldRow("package_manifest_digest", outcome.packageManifestDigestHex),
+        fieldRow("installation_generation", String(outcome.currentInstallationGeneration)),
+        fieldRow("status", String(outcome.status)),
+        fieldRow("created_at_ms", String(outcome.createdAtMs)),
+        fieldRow("updated_at_ms", String(outcome.updatedAtMs)),
+      );
+      break;
+    }
+    case "task_group_inspected":
+    case "task_node_inspected":
+    case "execution_fiber_inspected":
+    case "topic_inspected":
+    case "durable_operation_inspected": {
+      card.append(el("h3", { text: `层级 inspect(${outcome.kind})` }));
+      card.append(
+        el("p", {
+          className: "muted",
+          text: "完整字段渲染见「任务空间」视图;主壳此处仅登记形态可达。",
+        }),
+      );
+      break;
+    }
     case "metrics_exported": {
       card.append(el("h3", { text: "OpenMetrics 导出" }));
       const pre = el("pre", { className: "metrics", text: outcome.openmetricsText });
@@ -210,7 +239,9 @@ function renderOutcome(outcome: OutcomeDto): HTMLElement {
     case "operation_cancelled":
     case "operation_killed":
     case "operation_throttled":
-    case "operation_reclaimed": {
+    case "operation_reclaimed":
+    case "application_disabled":
+    case "application_uninstalled": {
       card.append(el("h3", { text: MUTATION_TITLES[outcome.kind] ?? outcome.kind }));
       card.append(fieldRow("receipt_reference", outcome.receiptIdHex));
       break;

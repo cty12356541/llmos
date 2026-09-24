@@ -212,6 +212,7 @@ pub async fn dispatch_control_with_resource(
         &command,
         None,
         resource,
+        None,
     )
     .await
     .map_err(|error| from_control_error(&error))?;
@@ -349,6 +350,117 @@ pub fn inspect_task(
 ) -> Result<ReceiptDto, DesktopError> {
     let plan_id = principal_bytes(&plan_id_hex)?;
     dispatch_configured(&state, ControlCommand::InspectTask { plan_id })
+}
+
+/// W39-D / §28.4:Task Space 五层 inspect 命令构造器(hex → ControlCommand)。
+/// Tauri 命令与集成测试共用;generation 必须非零(与上游
+/// `validate_layer_generation` 同纪律,在派发前于 GUI 壳拒绝)。
+pub fn layer_inspect_task_group(group_id_hex: &str) -> Result<ControlCommand, DesktopError> {
+    Ok(ControlCommand::InspectTaskGroup {
+        group_id: principal_bytes(group_id_hex)?,
+    })
+}
+
+pub fn layer_inspect_task_node(
+    plan_id_hex: &str,
+    node_id_hex: &str,
+) -> Result<ControlCommand, DesktopError> {
+    Ok(ControlCommand::InspectTaskNode {
+        plan_id: principal_bytes(plan_id_hex)?,
+        node_id: principal_bytes(node_id_hex)?,
+    })
+}
+
+pub fn layer_inspect_execution_fiber(
+    fiber_id_hex: &str,
+    generation: u64,
+) -> Result<ControlCommand, DesktopError> {
+    reject_zero_generation(generation)?;
+    Ok(ControlCommand::InspectExecutionFiber {
+        fiber_id: principal_bytes(fiber_id_hex)?,
+        generation,
+    })
+}
+
+pub fn layer_inspect_topic(topic_id_hex: &str) -> Result<ControlCommand, DesktopError> {
+    Ok(ControlCommand::InspectTopic {
+        topic_id: principal_bytes(topic_id_hex)?,
+    })
+}
+
+pub fn layer_inspect_operation(
+    operation_id_hex: &str,
+    generation: u64,
+) -> Result<ControlCommand, DesktopError> {
+    reject_zero_generation(generation)?;
+    Ok(ControlCommand::InspectOperation {
+        operation_id: principal_bytes(operation_id_hex)?,
+        generation,
+    })
+}
+
+fn reject_zero_generation(generation: u64) -> Result<(), DesktopError> {
+    if generation == 0 {
+        Err(DesktopError::config(
+            "handle generation must be a non-zero generation",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// W39-D:InspectTaskGroup 的 GUI 接线(既有只读 ControlCommand)。
+#[tauri::command]
+pub fn inspect_task_group(
+    state: tauri::State<'_, AppState>,
+    group_id_hex: String,
+) -> Result<ReceiptDto, DesktopError> {
+    dispatch_configured(&state, layer_inspect_task_group(&group_id_hex)?)
+}
+
+/// W39-D:InspectTaskNode 的 GUI 接线。
+#[tauri::command]
+pub fn inspect_task_node(
+    state: tauri::State<'_, AppState>,
+    plan_id_hex: String,
+    node_id_hex: String,
+) -> Result<ReceiptDto, DesktopError> {
+    dispatch_configured(&state, layer_inspect_task_node(&plan_id_hex, &node_id_hex)?)
+}
+
+/// W39-D:InspectExecutionFiber 的 GUI 接线。
+#[tauri::command]
+pub fn inspect_execution_fiber(
+    state: tauri::State<'_, AppState>,
+    fiber_id_hex: String,
+    generation: u64,
+) -> Result<ReceiptDto, DesktopError> {
+    dispatch_configured(
+        &state,
+        layer_inspect_execution_fiber(&fiber_id_hex, generation)?,
+    )
+}
+
+/// W39-D:InspectTopic 的 GUI 接线。
+#[tauri::command]
+pub fn inspect_topic(
+    state: tauri::State<'_, AppState>,
+    topic_id_hex: String,
+) -> Result<ReceiptDto, DesktopError> {
+    dispatch_configured(&state, layer_inspect_topic(&topic_id_hex)?)
+}
+
+/// W39-D:InspectOperation 的 GUI 接线。
+#[tauri::command]
+pub fn inspect_operation(
+    state: tauri::State<'_, AppState>,
+    operation_id_hex: String,
+    generation: u64,
+) -> Result<ReceiptDto, DesktopError> {
+    dispatch_configured(
+        &state,
+        layer_inspect_operation(&operation_id_hex, generation)?,
+    )
 }
 
 #[tauri::command]
@@ -944,6 +1056,32 @@ mod tests {
         let (command, args) = parity_command("export-resource-metrics", None).unwrap();
         assert_eq!(command, ControlCommand::ExportResourceMetrics);
         assert_eq!(args, vec!["export-resource-metrics".to_owned()]);
+    }
+
+    #[test]
+    fn layer_inspect_builders_reject_malformed_hex_and_zero_generation() {
+        assert!(layer_inspect_task_group("31").is_err());
+        assert!(layer_inspect_task_node(&"31".repeat(16), &"zz".repeat(16)).is_err());
+        assert_eq!(
+            layer_inspect_execution_fiber(&"31".repeat(16), 0)
+                .unwrap_err()
+                .code,
+            ErrorCode::Config
+        );
+        assert_eq!(
+            layer_inspect_operation(&"31".repeat(16), 0)
+                .unwrap_err()
+                .code,
+            ErrorCode::Config
+        );
+        let fiber = layer_inspect_execution_fiber(&"b1".repeat(16), 2).unwrap();
+        assert_eq!(
+            fiber,
+            ControlCommand::InspectExecutionFiber {
+                fiber_id: [0xb1; 16],
+                generation: 2,
+            }
+        );
     }
 
     fn control_action(action: ControlAction) -> Result<ControlCommand, DesktopError> {

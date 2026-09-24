@@ -64,6 +64,16 @@ export type OutcomeDto =
       consumptionCount: number;
     }
   | {
+      kind: "application_inspected";
+      packageIdHex: string;
+      applicationIdHex: string;
+      packageManifestDigestHex: string;
+      currentInstallationGeneration: number;
+      status: number;
+      createdAtMs: number;
+      updatedAtMs: number;
+    }
+  | {
       kind: "task_group_inspected";
       groupIdHex: string;
       taskIdHex: string;
@@ -134,7 +144,9 @@ export type OutcomeDto =
   | { kind: "operation_cancelled"; receiptIdHex: string }
   | { kind: "operation_killed"; receiptIdHex: string }
   | { kind: "operation_throttled"; receiptIdHex: string }
-  | { kind: "operation_reclaimed"; receiptIdHex: string };
+  | { kind: "operation_reclaimed"; receiptIdHex: string }
+  | { kind: "application_disabled"; receiptIdHex: string }
+  | { kind: "application_uninstalled"; receiptIdHex: string };
 
 /** mutation 成功形态(渲染样式与读侧巡检区分)。 */
 export const MUTATION_OUTCOME_KINDS: ReadonlySet<OutcomeDto["kind"]> = new Set([
@@ -146,6 +158,8 @@ export const MUTATION_OUTCOME_KINDS: ReadonlySet<OutcomeDto["kind"]> = new Set([
   "operation_killed",
   "operation_throttled",
   "operation_reclaimed",
+  "application_disabled",
+  "application_uninstalled",
 ]);
 
 /** W32-B 授权动作(serde tag 与 CLI operation 名一致;desktop/src-tauri/src/ipc.rs 为权威)。 */
