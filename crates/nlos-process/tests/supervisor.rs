@@ -245,6 +245,10 @@ fn supervisor_spawn_registers_pid_and_kill_terminates_real_child() {
 
 /// Unix: the suspend/resume round-trip is observable through a ticker
 /// child — output freezes while `SIGSTOP`ed and resumes after `SIGCONT`.
+///
+/// Each tick appends via a fresh shell redirect (`echo … >> file`) so the
+/// write is closed each iteration. File-backed redirected stdout is fully
+/// buffered on Linux and would flake if we counted an open-stdout stream.
 #[test]
 #[cfg(unix)]
 fn supervisor_suspend_resume_round_trip_freezes_and_resumes_child_progress() {
@@ -253,13 +257,19 @@ fn supervisor_suspend_resume_round_trip_freezes_and_resumes_child_progress() {
     let root = TestRoot::new("ticker");
     std::fs::create_dir_all(root.path()).expect("create ticker root");
     let ticks_path = root.path().join("ticks");
+    // Touch the file so early reads never race a missing path.
+    std::fs::File::create(&ticks_path).expect("create ticks file");
 
-    let ticks_file = std::fs::File::create(&ticks_path).expect("create ticks file");
+    // Quote the path for the shell; TestRoot paths are under std::env::temp_dir
+    // and contain no single quotes, so a simple wrap is enough.
+    let ticks_shell = ticks_path.to_string_lossy().replace('\'', "'\\''");
     let mut ticker = Command::new("sh");
     ticker
         .arg("-c")
-        .arg("while true; do echo tick; sleep 0.05; done")
-        .stdout(Stdio::from(ticks_file))
+        .arg(format!(
+            "while true; do echo tick >> '{ticks_shell}'; sleep 0.05; done"
+        ))
+        .stdout(Stdio::null())
         .stderr(Stdio::null());
 
     let mut spawned = supervisor
