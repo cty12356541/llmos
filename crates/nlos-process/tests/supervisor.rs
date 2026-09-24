@@ -15,6 +15,7 @@
 //! - hosts that are neither Unix nor Windows compile the same typed
 //!   fail-closed kill arm (cfg-swap compile-verified; not CI-executed).
 
+use std::collections::HashMap;
 #[cfg(unix)]
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -24,9 +25,14 @@ use std::time::{Duration, Instant};
 #[cfg(unix)]
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(unix)]
+use nlos_process::PosixPlatformKillAdapter;
+#[cfg(windows)]
+use nlos_process::WindowsPlatformKillAdapter;
 use nlos_process::{
-    ProcessSupervisor, RegisterSupervisorPidRequest, SpawnSupervisedRequest, SupervisorError,
-    SupervisorPidDecision, SupervisorPidRegistryError, SupervisorSignalOutcome,
+    PlatformKillAdapter, PlatformKillAdapterOutcome, ProcessSupervisor,
+    RegisterSupervisorPidRequest, SpawnSupervisedRequest, SupervisorError, SupervisorPidDecision,
+    SupervisorPidRegistryError, SupervisorSignalOutcome,
 };
 use nlos_types::{Generation, ProcessId};
 
@@ -111,6 +117,15 @@ fn display_names_every_failure_class() {
     let process_id = ProcessId::from_bytes([0x31; 16]);
     let cases = [
         SupervisorError::Registry(SupervisorPidRegistryError::ProcessNotRegistered(process_id)),
+        SupervisorError::SpawnRefused {
+            cause: SupervisorPidRegistryError::OsPidRebind {
+                process_id,
+                generation: Generation::INITIAL,
+                registered: 1,
+                presented: 2,
+            },
+            torn_down_os_pid: 2,
+        },
         SupervisorError::Spawn(std::io::Error::other("spawn refused")),
         SupervisorError::PlatformKill(nlos_process::PlatformKillAdapterError::Platform(
             "adapter refused",
@@ -123,6 +138,26 @@ fn display_names_every_failure_class() {
     for case in &cases {
         assert!(!case.to_string().is_empty());
     }
+}
+
+/// Probe an OS pid through the host platform kill adapter: a refused spawn's
+/// torn-down child must already be dead (`AlreadyTerminated`), not merely
+/// absent from the supervisor registry.
+#[cfg(any(unix, windows))]
+fn assert_os_pid_already_terminated(os_pid: u32) {
+    let probe_id = ProcessId::from_bytes([0xFD; 16]);
+    let map = HashMap::from([(probe_id, os_pid)]);
+    #[cfg(unix)]
+    let adapter = PosixPlatformKillAdapter::new(map);
+    #[cfg(windows)]
+    let adapter = WindowsPlatformKillAdapter::new(map);
+    let outcome = adapter
+        .signal_platform_kill(probe_id, Generation::INITIAL)
+        .expect("probe signal");
+    assert!(
+        matches!(outcome, PlatformKillAdapterOutcome::AlreadyTerminated),
+        "refused child os_pid={os_pid} must already be dead, got {outcome:?}"
+    );
 }
 
 /// Unix: spawn registers the observed OS pid; kill delivers a real SIGTERM
@@ -330,7 +365,8 @@ fn supervisor_signals_fail_closed_on_stale_generation() {
 
 /// A refused registration (same-generation OS pid rebind) never leaves the
 /// half-owned child behind: the just-spawned child is killed and reaped
-/// before the typed rejection surfaces, and the original mapping is intact.
+/// before the typed rejection surfaces, the torn-down OS pid is already
+/// dead under a host kill probe, and the original mapping is intact.
 #[test]
 #[cfg(any(unix, windows))]
 fn spawn_supervised_refusal_reaps_the_child_and_keeps_the_original_mapping() {
@@ -350,13 +386,23 @@ fn spawn_supervised_refusal_reaps_the_child_and_keeps_the_original_mapping() {
     let refusal = supervisor
         .spawn_supervised(spawn_request(process_id), &mut sleeper_command())
         .expect_err("same-generation rebind must be refused");
+    let SupervisorError::SpawnRefused {
+        cause,
+        torn_down_os_pid,
+    } = refusal
+    else {
+        panic!("expected SpawnRefused, got {refusal:?}");
+    };
     assert!(
-        matches!(
-            refusal,
-            SupervisorError::Registry(SupervisorPidRegistryError::OsPidRebind { .. })
-        ),
-        "expected OsPidRebind, got {refusal:?}"
+        matches!(cause, SupervisorPidRegistryError::OsPidRebind { .. }),
+        "expected OsPidRebind cause, got {cause:?}"
     );
+    assert_ne!(
+        torn_down_os_pid,
+        std::process::id(),
+        "torn-down pid must be the refused child, not the pre-registered mapping"
+    );
+    assert_os_pid_already_terminated(torn_down_os_pid);
 
     let original = supervisor.registry().lookup(process_id).expect("mapping");
     assert_eq!(original.os_pid, std::process::id());

@@ -111,10 +111,17 @@ pub enum SupervisorSignalOutcome {
 
 #[derive(Debug)]
 pub enum SupervisorError {
-    /// The pid registry rejected the operation (unknown mapping, stale
-    /// generation, or a same-generation rebind during spawn); zero side
-    /// effect.
+    /// The pid registry rejected the operation (unknown mapping or stale
+    /// generation on a signal path); zero side effect.
     Registry(SupervisorPidRegistryError),
+    /// Spawn registration was refused after the host child was created; the
+    /// just-spawned child was killed and reaped before this error surfaces.
+    /// `torn_down_os_pid` is the OS pid that was torn down (observable for
+    /// callers / tests that must confirm no half-owned child remains).
+    SpawnRefused {
+        cause: SupervisorPidRegistryError,
+        torn_down_os_pid: u32,
+    },
     /// The host child could not be spawned.
     Spawn(std::io::Error),
     /// The platform kill adapter rejected the supervisor kill (missing
@@ -131,6 +138,13 @@ impl fmt::Display for SupervisorError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Registry(error) => write!(formatter, "supervisor registry failure: {error}"),
+            Self::SpawnRefused {
+                cause,
+                torn_down_os_pid,
+            } => write!(
+                formatter,
+                "supervisor spawn registration refused (torn down os pid {torn_down_os_pid}): {cause}"
+            ),
             Self::Spawn(error) => write!(formatter, "supervisor spawn failure: {error}"),
             Self::PlatformKill(error) => write!(formatter, "supervisor kill failure: {error}"),
             Self::UnsupportedOnPlatform { operation } => write!(
@@ -145,7 +159,7 @@ impl fmt::Display for SupervisorError {
 impl Error for SupervisorError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::Registry(error) => Some(error),
+            Self::Registry(error) | Self::SpawnRefused { cause: error, .. } => Some(error),
             Self::Spawn(error) => Some(error),
             Self::PlatformKill(error) => Some(error),
             Self::UnsupportedOnPlatform { .. } | Self::Signal(_) => None,
@@ -255,9 +269,13 @@ impl ProcessSupervisor {
         }) {
             Ok(decision) => Ok(SupervisedSpawn { child, decision }),
             Err(error) => {
+                let torn_down_os_pid = child.id();
                 let _ = child.kill();
                 let _ = child.wait();
-                Err(SupervisorError::Registry(error))
+                Err(SupervisorError::SpawnRefused {
+                    cause: error,
+                    torn_down_os_pid,
+                })
             }
         }
     }
