@@ -4,6 +4,9 @@
 //! (`LEASE-GRANT-001`). Face value is deducted from the in-memory available
 //! pool before the lease is issued. Stale epoch is a typed fail-closed reject.
 //!
+//! Fence admit is delegated to [`CellAuthority::admit`]; this crate does not
+//! re-implement the fail-closed fence checks.
+//!
 //! Out of scope for this slice: Capacity/ExclusiveDevice families,
 //! reconciliation, custody (#17), cross-cell grant, transport, Raft, and a
 //! durable second ledger.
@@ -11,7 +14,9 @@
 use std::error::Error;
 use std::fmt;
 
-use nlos_cell::{CellEpoch, CellFence, CellFencingToken, CellIdentity};
+use nlos_cell::{
+    CellAdmitError, CellAuthority, CellEpoch, CellFence, CellFencingToken, CellIdentity,
+};
 use nlos_types::{Generation, QuotaLeaseId};
 
 /// Fence scope for a single-Cell grant: the Cell identity itself.
@@ -117,32 +122,21 @@ impl QuotaLeaseGrant {
 
 /// In-memory single-Cell `QuotaLease` grantor.
 ///
-/// Holds the control-plane AVAILABLE pool and the current Cell fence axes.
-/// Not a durable ledger and not a second authority store.
+/// Holds the control-plane AVAILABLE pool and the Cell authority used for
+/// fence admit. Not a durable ledger and not a second authority store.
 #[derive(Debug)]
 pub struct QuotaLeaseGrantor {
-    cell: CellIdentity,
-    node_boot_generation: Generation,
-    epoch: CellEpoch,
-    fencing_token: CellFencingToken,
+    authority: CellAuthority,
     available: u64,
 }
 
 impl QuotaLeaseGrantor {
-    /// Opens a grantor for one Cell with an initial AVAILABLE pool.
+    /// Opens a grantor bound to an existing Cell authority with an initial
+    /// AVAILABLE pool.
     #[must_use]
-    pub const fn open(
-        cell: CellIdentity,
-        node_boot_generation: Generation,
-        epoch: CellEpoch,
-        fencing_token: CellFencingToken,
-        available: u64,
-    ) -> Self {
+    pub const fn open(authority: CellAuthority, available: u64) -> Self {
         Self {
-            cell,
-            node_boot_generation,
-            epoch,
-            fencing_token,
+            authority,
             available,
         }
     }
@@ -156,7 +150,8 @@ impl QuotaLeaseGrantor {
     /// Grants a `QuotaLease` against a presented Cell fence.
     ///
     /// `LEASE-GRANT-001`: `face_value` is deducted from AVAILABLE before the
-    /// lease is issued. Fail-closed fence checks run before any deduct.
+    /// lease is issued. Fail-closed fence checks run via
+    /// [`CellAuthority::admit`] before any deduct.
     ///
     /// # Errors
     ///
@@ -167,7 +162,7 @@ impl QuotaLeaseGrantor {
         lease_id: QuotaLeaseId,
         face_value: u64,
     ) -> Result<QuotaLeaseGrant, QuotaLeaseGrantError> {
-        self.admit_fence(presented)?;
+        self.authority.admit(presented)?;
         if face_value > self.available {
             return Err(QuotaLeaseGrantError::InsufficientAvailable {
                 requested: face_value,
@@ -175,51 +170,18 @@ impl QuotaLeaseGrantor {
             });
         }
         self.available -= face_value;
+        let cell = self.authority.identity();
         Ok(QuotaLeaseGrant {
             lease_id,
-            cell: self.cell,
-            node_boot_generation: self.node_boot_generation,
+            cell,
+            node_boot_generation: self.authority.node_boot_generation(),
             face_value,
             remaining: face_value,
-            epoch: self.epoch,
-            fencing_token: self.fencing_token,
-            fence_scope: FenceScope::cell(self.cell),
+            epoch: self.authority.epoch(),
+            fencing_token: self.authority.fencing_token(),
+            fence_scope: FenceScope::cell(cell),
             state: QuotaLeaseState::Issued,
         })
-    }
-
-    fn admit_fence(&self, presented: &CellFence) -> Result<(), QuotaLeaseGrantError> {
-        if presented.identity() != self.cell {
-            return Err(QuotaLeaseGrantError::IdentityMismatch {
-                presented: presented.identity(),
-                current: self.cell,
-            });
-        }
-        if presented.node_boot_generation() != self.node_boot_generation {
-            return Err(QuotaLeaseGrantError::BootGenerationMismatch {
-                presented: presented.node_boot_generation(),
-                current: self.node_boot_generation,
-            });
-        }
-        if presented.epoch() < self.epoch {
-            return Err(QuotaLeaseGrantError::StaleEpoch {
-                presented: presented.epoch(),
-                current: self.epoch,
-            });
-        }
-        if presented.epoch() != self.epoch {
-            return Err(QuotaLeaseGrantError::EpochMismatch {
-                presented: presented.epoch(),
-                current: self.epoch,
-            });
-        }
-        if presented.fencing_token() != self.fencing_token {
-            return Err(QuotaLeaseGrantError::FencingTokenMismatch {
-                presented: presented.fencing_token(),
-                current: self.fencing_token,
-            });
-        }
-        Ok(())
     }
 }
 
@@ -268,6 +230,28 @@ pub enum QuotaLeaseGrantError {
         /// Remaining AVAILABLE before the attempt.
         available: u64,
     },
+}
+
+impl From<CellAdmitError> for QuotaLeaseGrantError {
+    fn from(error: CellAdmitError) -> Self {
+        match error {
+            CellAdmitError::StaleEpoch { presented, current } => {
+                Self::StaleEpoch { presented, current }
+            }
+            CellAdmitError::EpochMismatch { presented, current } => {
+                Self::EpochMismatch { presented, current }
+            }
+            CellAdmitError::BootGenerationMismatch { presented, current } => {
+                Self::BootGenerationMismatch { presented, current }
+            }
+            CellAdmitError::IdentityMismatch { presented, current } => {
+                Self::IdentityMismatch { presented, current }
+            }
+            CellAdmitError::FencingTokenMismatch { presented, current } => {
+                Self::FencingTokenMismatch { presented, current }
+            }
+        }
+    }
 }
 
 impl fmt::Display for QuotaLeaseGrantError {
