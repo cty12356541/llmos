@@ -187,7 +187,7 @@ P0 风险阻止 Stage 退出；P1 必须有 owner、缓解措施和明确复查�
 
 ## 11.5 阶段 C 管理入口（当前活跃阶段）
 
-- 阶段 C 权威进度单与编排：[stage-c-progress.md](./stage-c-progress.md)（2026-09-22 决策点 0 批准生效；W35 起波次编排 §C.5.3；决策点裁定与否决窗口 §C.5.4；W36–W39 合入与推送状态见 §C.8；本地相对 origin/main 仍有未推送前片，`PARTIAL_PASS`，不声称 CI/屏障闭合）
+- 阶段 C 权威进度单与编排：[stage-c-progress.md](./stage-c-progress.md)（2026-09-22 决策点 0 批准生效；W35 起波次编排 §C.5.3；决策点裁定与否决窗口 §C.5.4；W36–W39 合入与推送状态见 §C.8；origin/main = `194b0147a79192aed3c762e0dde83db9eb525aa6`（`ee649d3..194b014` 已由 ls-remote 核实），ahead/behind 0；`PARTIAL_PASS` 前片，不声称 CI/屏障闭合）
 - 阶段 B 已 EXITED：[stage-b-progress.md](./stage-b-progress.md)（§6.5.6 十七项移交清单为 C 册输入）
 - 单机双进程 Cell×2 拓扑：[ADR-0018](./adrs/0018-single-host-multiprocess-dual-cell-topology.md)（`ACCEPTED`，否决窗口至 W36 屏障；`ACCEPTED` ≠ `VERIFIED`）
 - 跨 Cell 提交语义扩展点：[ADR-0019](./adrs/0019-cross-cell-commit-semantics-extension.md)（`CANDIDATE`；C-SHARD 派发仍以其 `VERIFIED` 为前置）
