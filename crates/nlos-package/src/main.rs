@@ -1,6 +1,6 @@
 //! `nlos-package` — developer Package SDK CLI (W33-A, B1-4; install
-//! subcommand W35-P2 / handover #2 first slice; run subcommand W38-P2 /
-//! handover #2 back slice).
+//! subcommand W35-P2 / handover #2 first slice; run + update subcommands
+//! W38-P2 / handover #2 back slices).
 //!
 //! A thin shell around the `nlos-artifact` package surface: it owns no
 //! verification logic of its own. `build` turns a developer tree (line-based
@@ -16,7 +16,9 @@
 //! install path — what the slice-k library demo drove in-process, now from
 //! the CLI (W33-H §2 boundary 3). `run` (W38-P2) opens that same root and
 //! drives the kernel payload-execution lane over one installed executable
-//! entry (W33-H §2 boundary 1 consumer CLI).
+//! entry (W33-H §2 boundary 1 consumer CLI). `update` (W38-P2) reuses the
+//! install verify/materialize/GC path and hands the new durable receipt to
+//! [`nlos_application::ApplicationAuthority::update_application`] (B-APPLICATION-002).
 //!
 //! # Usage
 //!
@@ -27,6 +29,7 @@
 //! nlos-package conformance <PKGFILE>
 //! nlos-package install <PKGFILE> --root <DIR>
 //! nlos-package run <PACKAGE_ID_HEX> <ENTRY> --root <DIR>
+//! nlos-package update <PKGFILE> --root <DIR> [--compat same-major|same-minor]
 //! ```
 //!
 //! # Determinism
@@ -43,7 +46,7 @@
 //! `4` content-binding failure (tampered payload) · `5` internal I/O or
 //! store failure · `6` conformance findings (see
 //! docs/developers/package-conformance.md) · `7` application-authority
-//! install rejection or payload-execution lane refusal.
+//! install/update rejection or payload-execution lane refusal.
 //!
 //! # Conformance (W33-C)
 //!
@@ -70,7 +73,10 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use ed25519_dalek::{Signer, SigningKey};
-use nlos_application::{InstallApplicationRequest, InstallDecision};
+use nlos_application::{
+    CompatibilityWindow, InstallApplicationRequest, InstallDecision, UpdateApplicationRequest,
+    UpdateDecision,
+};
 use nlos_artifact::{
     ArtifactError, ArtifactStore, CollectOrphanBlobsRequest, ContentDigest, CreateArtifactSpec,
     MAX_ENTRY_NAME_BYTES, PackageEntryRole, PackageFile, PackageFileEntry, PackageManifest,
@@ -90,7 +96,8 @@ const USAGE: &str = "usage: nlos-package keygen --seed <HEX64> [--out <KEYFILE>]
   | verify <PKGFILE> [--store <DIR>] [--identity <DIR>] [--at-ms <U64>] \
   | conformance <PKGFILE> \
   | install <PKGFILE> --root <DIR> \
-  | run <PACKAGE_ID_HEX> <ENTRY> --root <DIR>";
+  | run <PACKAGE_ID_HEX> <ENTRY> --root <DIR> \
+  | update <PKGFILE> --root <DIR> [--compat same-major|same-minor]";
 
 /// Domain separators for CLI-owned derivations; each derivation is plain
 /// SHA-256 over `domain ‖ input` (the crate's receipt-id precedent).
@@ -111,6 +118,12 @@ const INSTALL_GC_CLOCK_DOMAIN: &[u8] = b"llmos/package-file/install-gc-clock/v1"
 /// package derives a different key, so one root can hold many packages.
 const INSTALL_KEY_DOMAIN: &[u8] = b"llmos/package-file/install-key/v1";
 const INSTALL_CLOCK_DOMAIN: &[u8] = b"llmos/package-file/install-clock/v1";
+/// Update idempotency + clock keys (input: verification receipt id of the
+/// *new* package generation): re-issuing the same update replays; a different
+/// target receipt advances a fresh generation under the SameMajor/SameMinor
+/// compatibility window.
+const UPDATE_KEY_DOMAIN: &[u8] = b"llmos/package-file/update-key/v1";
+const UPDATE_CLOCK_DOMAIN: &[u8] = b"llmos/package-file/update-clock/v1";
 
 /// Typed CLI failure, mapped onto the documented exit codes.
 #[derive(Debug)]
@@ -132,6 +145,11 @@ enum ToolError {
     /// unknown verification receipt, disabled/uninstalled terminal state,
     /// idempotency conflict, or an out-of-order timestamp.
     Install(String),
+    /// The application authority refused the update (exit 7): no installed
+    /// application, disabled/uninstalled terminal state, unchanged manifest,
+    /// compatibility-window violation, idempotency conflict, or an
+    /// out-of-order timestamp.
+    Update(String),
     /// The payload-execution lane refused the run (exit 7): no installed
     /// application under the package identity, non-installed status,
     /// missing installation receipt, missing entry artifact, or a driver
@@ -152,7 +170,7 @@ impl ToolError {
             Self::Binding(_) => 4,
             Self::Internal(_) => 5,
             Self::Conformance(_) => 6,
-            Self::Install(_) | Self::Run(_) => 7,
+            Self::Install(_) | Self::Update(_) | Self::Run(_) => 7,
         }
     }
 }
@@ -198,6 +216,7 @@ fn main() -> ExitCode {
         "conformance" => conformance_command(&arguments[1..]),
         "install" => install_command(&arguments[1..]),
         "run" => run_command(&arguments[1..]),
+        "update" => update_command(&arguments[1..]),
         _ => Err(ToolError::Usage),
     };
     match result {
@@ -222,6 +241,7 @@ impl ToolError {
             | Self::Binding(text)
             | Self::Internal(text)
             | Self::Install(text)
+            | Self::Update(text)
             | Self::Run(text) => text.clone(),
             Self::Conformance(count) => format!("package conformance violations: {count}"),
         }
@@ -1113,6 +1133,44 @@ fn install_into_root(
     ),
     ToolError,
 > {
+    let decision = prepare_verified_package(runtime, package)?;
+    let receipt = decision.receipt();
+
+    let installed_at_ms = runtime
+        .wall_now_ms(IdempotencyKey::from_bytes(derive_16(
+            INSTALL_CLOCK_DOMAIN,
+            receipt.receipt_id.as_bytes(),
+        )))
+        .map_err(|error| ToolError::Internal(format!("install clock: {error}")))?;
+    match runtime
+        .applications
+        .install_application(
+            &runtime.artifacts,
+            InstallApplicationRequest {
+                package_verification_receipt_id: receipt.receipt_id,
+                idempotency_key: IdempotencyKey::from_bytes(derive_16(
+                    INSTALL_KEY_DOMAIN,
+                    receipt.receipt_id.as_bytes(),
+                )),
+                installed_at_ms,
+            },
+        )
+        .map_err(|error| ToolError::Install(error.to_string()))?
+    {
+        InstallDecision::Installed(installation) => Ok((decision, installation, true)),
+        InstallDecision::Replayed(installation) => Ok((decision, installation, false)),
+    }
+}
+
+/// Shared verify → materialize → GC path used by both `install` and
+/// `update`: bootstrap the signer, land every entry, run the authoritative
+/// verify pipeline, then the install-scoped orphan-GC pass. The durable
+/// verification receipt is the only fact handed onward to the application
+/// authority.
+fn prepare_verified_package(
+    runtime: &SliceKRuntime,
+    package: &PackageFile,
+) -> Result<PackageVerificationDecision, ToolError> {
     let signer = runtime
         .identity
         .bootstrap_principal(package.descriptor.bootstrap_request())
@@ -1162,29 +1220,149 @@ fn install_into_root(
         })
         .map_err(from_artifact_error)?;
 
-    let installed_at_ms = runtime
+    Ok(decision)
+}
+
+// ---------------------------------------------------------------------------
+// update
+// ---------------------------------------------------------------------------
+
+/// Updates one already-installed application to a newly verified package
+/// generation (W38-P2 / handover #2 update sub-item): decode → the same
+/// verify/materialize/GC path `install` uses →
+/// [`nlos_application::ApplicationAuthority::update_application`] with an
+/// explicit compatibility window (default `same-major`). No new package
+/// format — the CLI only names the existing authority-first update API.
+fn update_command(arguments: &[String]) -> Result<(), ToolError> {
+    let mut package_path = None;
+    let mut root = None;
+    let mut compat_raw: Option<String> = None;
+    parse_flags(
+        arguments,
+        &mut |flag, value| match flag {
+            "root" => {
+                root = Some(value.to_string());
+                true
+            }
+            "compat" => {
+                compat_raw = Some(value.to_string());
+                true
+            }
+            _ => false,
+        },
+        &mut |token| {
+            if package_path.is_none() {
+                package_path = Some(token.to_string());
+                true
+            } else {
+                false
+            }
+        },
+    )?;
+    let Some(package_path) = package_path else {
+        return Err(ToolError::Usage);
+    };
+    let Some(root) = root else {
+        return Err(ToolError::Usage);
+    };
+    let compat = match compat_raw.as_deref() {
+        None => CompatibilityWindow::SameMajor,
+        Some(value) => parse_compat_window(value)?,
+    };
+
+    let bytes = fs::read(&package_path)
+        .map_err(|error| ToolError::input("read package", &format!("{package_path}: {error}")))?;
+    let package = decode_package_file(&bytes)
+        .map_err(|error| ToolError::input("package file", &error.to_string()))?;
+
+    let runtime = SliceKRuntime::open(&root)
+        .map_err(|error| ToolError::Internal(format!("open state root {root}: {error}")))?;
+    let (decision, installation, fresh) = update_into_root(&runtime, &package, compat)?;
+
+    print_decision(&decision);
+    println!("UPDATE {}", hex(installation.installation_id.as_bytes()));
+    println!("decision {}", if fresh { "updated" } else { "replayed" });
+    let executables: Vec<&str> = package
+        .entries
+        .iter()
+        .filter(|entry| entry.role == PackageEntryRole::Executable)
+        .map(|entry| entry.name.as_str())
+        .collect();
+    println!(
+        "application {} package {} generation {} version {} entries {} installer {}",
+        hex(installation.application_id.as_bytes()),
+        hex(installation.package_id.as_bytes()),
+        installation.installation_generation.get(),
+        installation.package_version,
+        installation.entry_count,
+        hex(installation.installer_principal.as_bytes()),
+    );
+    println!("executables {}", executables.join(","));
+    println!(
+        "compat {}",
+        match compat {
+            CompatibilityWindow::SameMajor => "same-major",
+            CompatibilityWindow::SameMinor => "same-minor",
+        }
+    );
+    Ok(())
+}
+
+fn parse_compat_window(value: &str) -> Result<CompatibilityWindow, ToolError> {
+    match value {
+        "same-major" => Ok(CompatibilityWindow::SameMajor),
+        "same-minor" => Ok(CompatibilityWindow::SameMinor),
+        _ => Err(ToolError::input(
+            "compat",
+            "must be same-major or same-minor",
+        )),
+    }
+}
+
+/// The update lane proper: shared verify/materialize/GC, then the public
+/// `update_application` path (B-APPLICATION-002). Returns the verification
+/// decision, the immutable installation receipt at the new (or replayed)
+/// generation, and whether this call advanced the generation.
+fn update_into_root(
+    runtime: &SliceKRuntime,
+    package: &PackageFile,
+    compatibility_window: CompatibilityWindow,
+) -> Result<
+    (
+        PackageVerificationDecision,
+        nlos_application::InstallationReceipt,
+        bool,
+    ),
+    ToolError,
+> {
+    let decision = prepare_verified_package(runtime, package)?;
+    let receipt = decision.receipt();
+
+    let updated_at_ms = runtime
         .wall_now_ms(IdempotencyKey::from_bytes(derive_16(
-            INSTALL_CLOCK_DOMAIN,
+            UPDATE_CLOCK_DOMAIN,
             receipt.receipt_id.as_bytes(),
         )))
-        .map_err(|error| ToolError::Internal(format!("install clock: {error}")))?;
+        .map_err(|error| ToolError::Internal(format!("update clock: {error}")))?;
     match runtime
         .applications
-        .install_application(
+        .update_application(
             &runtime.artifacts,
-            InstallApplicationRequest {
+            UpdateApplicationRequest {
+                package_id: package.package_id,
                 package_verification_receipt_id: receipt.receipt_id,
                 idempotency_key: IdempotencyKey::from_bytes(derive_16(
-                    INSTALL_KEY_DOMAIN,
+                    UPDATE_KEY_DOMAIN,
                     receipt.receipt_id.as_bytes(),
                 )),
-                installed_at_ms,
+                updated_at_ms,
+                compatibility_window,
             },
         )
-        .map_err(|error| ToolError::Install(error.to_string()))?
+        .map_err(|error| ToolError::Update(error.to_string()))?
     {
-        InstallDecision::Installed(installation) => Ok((decision, installation, true)),
-        InstallDecision::Replayed(installation) => Ok((decision, installation, false)),
+        UpdateDecision::Updated(installation) => Ok((decision, installation, true)),
+        UpdateDecision::Replayed(installation) => Ok((decision, installation, false)),
     }
 }
 

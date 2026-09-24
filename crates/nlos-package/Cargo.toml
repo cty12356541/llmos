@@ -1,6 +1,6 @@
 [package]
 name = "nlos-package"
-description = "Developer Package SDK CLI (keygen/build/verify/conformance/install/run): a thin shell over the nlos-artifact package surface plus the public application-authority install path and the slice-k payload-execution lane."
+description = "Developer Package SDK CLI (keygen/build/verify/conformance/install/run/update): a thin shell over the nlos-artifact package surface plus the public application-authority install/update paths and the slice-k payload-execution lane."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
