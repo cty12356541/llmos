@@ -114,8 +114,8 @@ fn user_version(path: &std::path::Path) -> i64 {
         .expect("user_version")
 }
 
-/// A newly declared node is unpinned: no voucher, evict (once raised)
-/// is still legal.
+/// A newly declared node is unpinned: no voucher, and once raised to
+/// HOT an evict-direction step (HOT→WARM) is still legal.
 #[test]
 fn nodes_default_to_unpinned() {
     let root = Root::new("default");
@@ -130,6 +130,27 @@ fn nodes_default_to_unpinned() {
     assert!(!view.pinned);
     assert_eq!(view.transition_count, 0);
     assert_eq!(view.last_voucher, None);
+
+    raise_to_hot(&authority, plan_id, node_id);
+    authority
+        .record_residency_transition(ResidencyTransitionRequest {
+            plan_id,
+            node_id,
+            from_tier: NodeResidencyTier::Hot,
+            to_tier: NodeResidencyTier::Warm,
+            expected_declared_revision: 1,
+            idempotency_key: IdempotencyKey::from_bytes([0x13; 16]),
+            transitioned_at_ms: 2_100,
+        })
+        .expect("unpinned node allows HOT→WARM evict");
+    assert_eq!(
+        authority
+            .inspect_node_residency(plan_id, node_id)
+            .expect("residency after evict")
+            .expect("node")
+            .tier,
+        NodeResidencyTier::Warm
+    );
 }
 
 /// PINNED 拒绝/降级: pin a HOT node, HOT→WARM is typed-refused with
