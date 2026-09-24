@@ -871,7 +871,7 @@ const SURFACE_PRESENTATION_GAPS: ReadonlyArray<{ fact: string; detail: string }>
   {
     fact: "表面生命周期管理",
     detail:
-      "REGISTERED→CREATED→PRESENTED↔HIDDEN→CLOSED 状态机、open/close 动作、stale 表面隔离执行器——本链只有 durable 声明与呈现过滤(stale 代际不呈现)",
+      "open/close 终态已由桌面 Rust `window_lifecycle`(REGISTERED→CREATED→PRESENTED↔HIDDEN→CLOSED)落地;本视图仍只有 durable 声明与呈现过滤,未接线 GUI 开合控件、stale 表面隔离执行器",
   },
   {
     fact: "焦点/输入路由与几何",

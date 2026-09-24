@@ -14,8 +14,8 @@
 //! - **未知应用是类型化 NOT_FOUND**:从未安装的包是事实,不是错误。
 //!
 //! 渲染边界(诚实登记,视图内静态缺口卡同步):载荷内容渲染(entry
-//! 引用的 artifact 字节)、表面生命周期(REGISTERED→…→CLOSED)、焦点/
-//! 输入路由、多窗口几何——均不在本最小链内。
+//! 引用的 artifact 字节)、焦点/输入路由、多窗口几何——均不在本最小链内。
+//! 表面开合终态见 `window_lifecycle`(`REGISTERED`…`CLOSED` 的 open/close)。
 
 use nlos_application::{
     ApplicationAuthority, ApplicationAuthorityError, ApplicationStatus, PackageSurfaceKind,
