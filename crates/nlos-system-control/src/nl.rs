@@ -39,6 +39,11 @@
 //! inspect process <32-hex> | check process <32-hex> | show process <32-hex>
 //!   | get process <32-hex> | status process <32-hex>
 //!   | 检查进程 <32位十六进制> | 查看进程 <32位十六进制> | 查看 进程 <32位十六进制>
+//! inspect application <32-hex> | check application <32-hex> | show application <32-hex>
+//!   | get application <32-hex> | status application <32-hex> | application status <32-hex>
+//!   | 查看应用 <32位十六进制> | 检查应用 <32位十六进制>
+//!   | 查看 应用 <32位十六进制> | 检查 应用 <32位十六进制>
+//!   | 应用状态 <32位十六进制> | 应用 状态 <32位十六进制>
 //! inspect resource <32-hex> | check resource <32-hex> | show resource <32-hex>
 //!   | get resource <32-hex> | status resource <32-hex> | resource status <32-hex>
 //!   | 查看资源 <32位十六进制> | 查看 资源 <32位十六进制>
@@ -188,7 +193,8 @@ pub const NL_UNINSTALL_REASON: &str =
 /// Legal grammar, named verbatim in every rejection message.
 const GRAMMAR_HELP: &str = "valid forms: \"inspect health\" | \"export metrics\" | \
 \"inspect resource recovery\" | \"export resource metrics\" | \
-\"inspect task <32-hex>\" | \"inspect process <32-hex>\" | \"inspect resource <32-hex>\" | \
+\"inspect task <32-hex>\" | \"inspect process <32-hex>\" | \"inspect application <32-hex>\" | \
+\"inspect resource <32-hex>\" | \
 \"inspect task group <32-hex>\" | \"inspect task node <32-hex> <32-hex>\" | \
 \"inspect fiber <32-hex> generation <count>\" | \"inspect topic <32-hex>\" | \
 \"inspect operation <32-hex> generation <count>\" | \
@@ -234,6 +240,9 @@ pub fn parse_nl_command(input: &str) -> Result<ControlCommand, ControlError> {
         return result;
     }
     if let Some(result) = try_parse_inspect_process(&tokens) {
+        return result;
+    }
+    if let Some(result) = try_parse_inspect_application(&tokens) {
         return result;
     }
     if let Some(result) = try_parse_inspect_resource(&tokens) {
@@ -350,6 +359,13 @@ fn try_parse_inspect_health(tokens: &[&str]) -> Option<Result<ControlCommand, Co
             None
         }
         [head, second, ..]
+            if (is_read_verb(head) && second.eq_ignore_ascii_case("application"))
+                || (*head == "查看" && *second == "应用")
+                || (*head == "检查" && *second == "应用") =>
+        {
+            None
+        }
+        [head, second, ..]
             if (is_read_verb(head) && second.eq_ignore_ascii_case("resource"))
                 || (*head == "查看" && *second == "资源")
                 || (*head == "检查" && *second == "资源") =>
@@ -375,7 +391,7 @@ fn try_parse_inspect_health(tokens: &[&str]) -> Option<Result<ControlCommand, Co
         [head, ..] if is_read_verb(head) || *head == "查看" || *head == "检查" => {
             Some(Err(ControlError::InvalidCommand(
                 "\"inspect\" expects \"health\", \"resource recovery\", \"task <32-hex>\", \
-                 \"process <32-hex>\", or \"resource <32-hex>\"",
+                 \"process <32-hex>\", \"application <32-hex>\", or \"resource <32-hex>\"",
             )))
         }
         _ => None,
@@ -511,6 +527,7 @@ fn try_parse_export_metrics(tokens: &[&str]) -> Option<Result<ControlCommand, Co
             if (head.eq_ignore_ascii_case("show") || head.eq_ignore_ascii_case("get"))
                 && (second.eq_ignore_ascii_case("task")
                     || second.eq_ignore_ascii_case("process")
+                    || second.eq_ignore_ascii_case("application")
                     || second.eq_ignore_ascii_case("resource")) =>
         {
             None
@@ -570,6 +587,52 @@ fn try_parse_inspect_process(tokens: &[&str]) -> Option<Result<ControlCommand, C
         {
             Some(Err(ControlError::InvalidCommand(
                 "\"inspect process\" expects \"<32-hex>\"",
+            )))
+        }
+        _ => None,
+    }
+}
+
+fn try_parse_inspect_application(tokens: &[&str]) -> Option<Result<ControlCommand, ControlError>> {
+    match tokens {
+        [head, second, package_id]
+            if is_read_verb(head) && second.eq_ignore_ascii_case("application") =>
+        {
+            Some(
+                parse_hex_id(package_id)
+                    .map(|package_id| ControlCommand::InspectApplication { package_id }),
+            )
+        }
+        [first, second, package_id]
+            if first.eq_ignore_ascii_case("application")
+                && second.eq_ignore_ascii_case("status") =>
+        {
+            Some(
+                parse_hex_id(package_id)
+                    .map(|package_id| ControlCommand::InspectApplication { package_id }),
+            )
+        }
+        ["查看应用" | "检查应用", package_id] | ["查看" | "检查", "应用", package_id] => {
+            Some(
+                parse_hex_id(package_id)
+                    .map(|package_id| ControlCommand::InspectApplication { package_id }),
+            )
+        }
+        ["应用状态", package_id] | ["应用", "状态", package_id] => Some(
+            parse_hex_id(package_id)
+                .map(|package_id| ControlCommand::InspectApplication { package_id }),
+        ),
+        [head, second, ..]
+            if (is_read_verb(head) && second.eq_ignore_ascii_case("application"))
+                || (*head == "查看" && *second == "应用")
+                || (*head == "检查" && *second == "应用")
+                || (*head == "应用" && *second == "状态")
+                || *head == "应用状态"
+                || *head == "查看应用"
+                || *head == "检查应用" =>
+        {
+            Some(Err(ControlError::InvalidCommand(
+                "\"inspect application\" expects \"<32-hex>\"",
             )))
         }
         _ => None,
@@ -1794,6 +1857,48 @@ mod tests {
     }
 
     #[test]
+    fn english_application_inspect_forms_parse() {
+        for sentence in [
+            "inspect application a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "INSPECT APPLICATION A1B2C3D4E5F60718293A4B5C6D7E8F90",
+            "check application a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "show application A1B2C3D4E5F60718293A4B5C6D7E8F90",
+            "get application a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "status application a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "application status a1b2c3d4e5f60718293a4b5c6d7e8f90",
+        ] {
+            assert_eq!(
+                parse_nl_command(sentence).unwrap(),
+                ControlCommand::InspectApplication {
+                    package_id: plan_id()
+                },
+                "sentence: {sentence:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn chinese_application_inspect_forms_parse() {
+        for sentence in [
+            "查看应用 a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "  查看应用  A1B2C3D4E5F60718293A4B5C6D7E8F90 ",
+            "检查应用 a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "查看 应用 a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "检查 应用 a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "应用状态 a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "应用 状态 a1b2c3d4e5f60718293a4b5c6d7e8f90",
+        ] {
+            assert_eq!(
+                parse_nl_command(sentence).unwrap(),
+                ControlCommand::InspectApplication {
+                    package_id: plan_id()
+                },
+                "sentence: {sentence:?}"
+            );
+        }
+    }
+
+    #[test]
     fn application_lifecycle_near_misses_are_typed_rejections() {
         for sentence in [
             "disable application a1b2c3d4e5f60718293a4b5c6d7e8f90",
@@ -1806,7 +1911,10 @@ mod tests {
             "禁用应用 a1b2c3d4e5f60718293a4b5c6d7e8f90",
             "卸载应用",
             "卸载 应用 a1b2c3d4e5f60718293a4b5c6d7e8f90 期望",
-            "inspect application a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "inspect application",
+            "inspect application a1b2c3d4e5f60718293a4b5c6d7e8f9",
+            "查看应用",
+            "应用状态",
         ] {
             assert!(
                 matches!(

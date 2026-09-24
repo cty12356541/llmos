@@ -699,7 +699,16 @@ impl ParityFixture {
         command: &ControlCommand,
     ) -> nlos_system_control::control::ControlReceipt {
         let control = self.reference_control();
-        dispatch_in_process(&control, command, MONOTONIC_NOW_NS, WALL_NOW_MS, None, None).unwrap()
+        dispatch_in_process(
+            &control,
+            command,
+            MONOTONIC_NOW_NS,
+            WALL_NOW_MS,
+            None,
+            None,
+            None,
+        )
+        .unwrap()
     }
 
     fn rearm_semantic(&self) {
@@ -782,7 +791,7 @@ async fn assert_four_path_parity(
         if let Some(rearm) = rearm {
             rearm();
         }
-        let nl = dispatch_over_socket(&fixture.socket_plain, &compiled, None, None)
+        let nl = dispatch_over_socket(&fixture.socket_plain, &compiled, None, None, None)
             .await
             .unwrap_or_else(|error| panic!("{label}: NL dispatch {sentence:?}: {error:?}"));
         assert_eq!(
@@ -819,6 +828,7 @@ async fn assert_four_path_parity(
         principal,
         |digest: &[u8; 32]| Ok(key.sign(digest).to_bytes()),
         command,
+        None,
         None,
         None,
     )

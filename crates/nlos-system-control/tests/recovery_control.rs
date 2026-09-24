@@ -2345,6 +2345,7 @@ fn w32g_layer_views_refuse_fail_closed_without_sources() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)] // Layer snapshot matrix; third inspector arg adds one line per dispatch.
 fn w32g_layer_views_route_to_wired_sources_with_typed_snapshots() {
     use nlos_system_control::control::{ControlCommand, ControlOutcome, dispatch_in_process};
     let database = TestDatabase::new();
@@ -2368,6 +2369,7 @@ fn w32g_layer_views_route_to_wired_sources_with_typed_snapshots() {
         6_000,
         None,
         None,
+        None,
     )
     .unwrap();
     let ControlOutcome::TaskNodeInspected(node) = node_receipt.outcome.as_ref().unwrap() else {
@@ -2385,6 +2387,7 @@ fn w32g_layer_views_route_to_wired_sources_with_typed_snapshots() {
         },
         10,
         6_000,
+        None,
         None,
         None,
     )
@@ -2405,6 +2408,7 @@ fn w32g_layer_views_route_to_wired_sources_with_typed_snapshots() {
         6_000,
         None,
         None,
+        None,
     )
     .unwrap();
     let ControlOutcome::TopicInspected(topic) = topic_receipt.outcome.as_ref().unwrap() else {
@@ -2421,6 +2425,7 @@ fn w32g_layer_views_route_to_wired_sources_with_typed_snapshots() {
         },
         10,
         6_000,
+        None,
         None,
         None,
     )
@@ -2440,6 +2445,7 @@ fn w32g_layer_views_route_to_wired_sources_with_typed_snapshots() {
         },
         10,
         6_000,
+        None,
         None,
         None,
     )
@@ -2471,6 +2477,7 @@ fn w32g_task_group_view_reads_the_real_task_authority() {
         6_000,
         None,
         None,
+        None,
     )
     .unwrap();
     let ControlOutcome::TaskGroupInspected(group) = receipt.outcome.as_ref().unwrap() else {
@@ -2492,6 +2499,7 @@ fn w32g_task_group_view_reads_the_real_task_authority() {
         },
         10,
         6_000,
+        None,
         None,
         None,
     )

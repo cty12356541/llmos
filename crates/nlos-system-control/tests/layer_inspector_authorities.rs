@@ -336,6 +336,7 @@ mod plan_authority {
             6_000,
             None,
             None,
+            None,
         )
         .expect("dispatch");
         let ControlOutcome::TaskNodeInspected(inspection): &ControlOutcome =
@@ -455,6 +456,7 @@ mod runtime_fiber {
             6_000,
             None,
             None,
+            None,
         )
         .expect("dispatch");
         let ControlOutcome::ExecutionFiberInspected(handler_inspection) =
@@ -560,6 +562,7 @@ mod topic_rows {
             6_000,
             None,
             None,
+            None,
         )
         .expect("dispatch");
         let ControlOutcome::TopicInspected(inspection) = receipt.outcome.expect("success") else {
@@ -654,6 +657,7 @@ mod operation_rows {
             },
             10,
             6_000,
+            None,
             None,
             None,
         )

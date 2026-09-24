@@ -121,6 +121,12 @@ pub enum ControlCommand {
     /// [`ResourceInspector`] wired at dispatch time; the recovery GET envelope
     /// is still crossed for authorization parity.
     InspectResource { reservation_id: [u8; 16] },
+    /// Inspect one application by its 16-byte package identity (W38-A11,
+    /// C-APP-CONTROL 后片 GET). The receipt reports a bounded read-only
+    /// snapshot from the pluggable [`ApplicationInspector`] wired at
+    /// dispatch time; the recovery GET envelope is still crossed for
+    /// authorization parity (mirrors [`Self::InspectProcess`]).
+    InspectApplication { package_id: [u8; 16] },
     /// Inspect one `TaskGroup` by its 16-byte group id (W32-G, B5-3). The
     /// handler reads the durable group and its bounded member list straight
     /// from the `TaskAuthority` it already owns; the receipt crosses as one
@@ -306,6 +312,7 @@ impl ControlCommand {
             Self::InspectTask { plan_id } => *plan_id,
             Self::InspectProcess { process_id } => *process_id,
             Self::InspectResource { reservation_id } => *reservation_id,
+            Self::InspectApplication { package_id } => *package_id,
             Self::InspectTaskGroup { group_id } => *group_id,
             Self::InspectTaskNode { node_id, .. } => *node_id,
             Self::InspectExecutionFiber { fiber_id, .. } => *fiber_id,
@@ -364,6 +371,7 @@ impl ControlCommand {
             Self::InspectTask { plan_id } => *plan_id,
             Self::InspectProcess { process_id } => *process_id,
             Self::InspectResource { reservation_id } => *reservation_id,
+            Self::InspectApplication { package_id } => *package_id,
             Self::InspectTaskGroup { group_id } => *group_id,
             Self::InspectTaskNode { node_id, .. } => *node_id,
             Self::InspectExecutionFiber { fiber_id, .. } => *fiber_id,
@@ -599,6 +607,51 @@ impl ResourceInspector for UnwiredResourceInspector {
     }
 }
 
+/// Bounded read-only facts for one application head inspection.
+///
+/// `status` mirrors `nlos_application::ApplicationStatus::encode`:
+/// `1 = installed`, `2 = disabled`, `3 = uninstalled`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ApplicationInspection {
+    pub package_id: [u8; 16],
+    pub application_id: [u8; 16],
+    pub package_manifest_digest: [u8; 32],
+    pub current_installation_generation: u64,
+    pub status: u8,
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
+}
+
+/// Pluggable read-only application inspection backend for
+/// [`ControlCommand::InspectApplication`]. Hosts wire a real authority
+/// adapter (see [`crate::application_inspector`] with the `application`
+/// feature) or leave the default [`UnwiredApplicationInspector`] in place
+/// until one is available.
+pub trait ApplicationInspector {
+    /// Returns one bounded application-head snapshot or a sanitized failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SabiFailure`] when the backing authority rejects the read or
+    /// the package has never been installed.
+    fn inspect_application(
+        &self,
+        package_id: [u8; 16],
+    ) -> Result<ApplicationInspection, SabiFailure>;
+}
+
+/// Default stub used when no application inspection backend is wired.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct UnwiredApplicationInspector;
+
+impl ApplicationInspector for UnwiredApplicationInspector {
+    fn inspect_application(&self, _: [u8; 16]) -> Result<ApplicationInspection, SabiFailure> {
+        Err(not_found_failure(
+            "application inspection backend is not wired",
+        ))
+    }
+}
+
 /// Bounded read-only facts for one `TaskGroup` inspection (W32-G, B5-3).
 /// Wire enum types carry the state classes; the shared decode path already
 /// rejects unspecified values, so a decoded inspection never carries one.
@@ -707,6 +760,8 @@ pub enum ControlOutcome {
     ProcessInspected(ProcessInspection),
     /// Read-only resource reservation cost inspection completed.
     ResourceInspected(ResourceInspection),
+    /// Read-only application head inspection completed (W38-A11).
+    ApplicationInspected(ApplicationInspection),
     /// Read-only `TaskGroup` inspection completed (W32-G, B5-3).
     TaskGroupInspected(TaskGroupInspection),
     /// Read-only plan `TaskNode` inspection completed (W32-G, B5-3).
@@ -895,6 +950,7 @@ pub fn build_request_envelope(command: &ControlCommand) -> Result<Envelope, Cont
         | ControlCommand::InspectTask { .. }
         | ControlCommand::InspectProcess { .. }
         | ControlCommand::InspectResource { .. }
+        | ControlCommand::InspectApplication { .. }
         | ControlCommand::ExportMetrics => (
             GET_METHOD,
             recovery_view_payload(SystemControlView::ArtifactCommitRecovery)?,
@@ -1263,6 +1319,7 @@ pub fn dispatch_in_process<H, A>(
     now_wall_ms: i64,
     process: Option<&dyn ProcessInspector>,
     resource: Option<&dyn ResourceInspector>,
+    application: Option<&dyn ApplicationInspector>,
 ) -> Result<ControlReceipt, ControlError>
 where
     H: RecoveryHealthSource,
@@ -1270,7 +1327,7 @@ where
 {
     let request = build_request_envelope(command)?;
     let response = control.handle_for_ipc(&request, now_monotonic_ns, now_wall_ms);
-    ControlReceipt::compose(command, &response, process, resource)
+    ControlReceipt::compose(command, &response, process, resource, application)
 }
 
 /// Dispatches one command to a real local IPC endpoint and projects the
@@ -1289,6 +1346,7 @@ pub async fn dispatch_over_socket(
     command: &ControlCommand,
     process: Option<&dyn ProcessInspector>,
     resource: Option<&dyn ResourceInspector>,
+    application: Option<&dyn ApplicationInspector>,
 ) -> Result<ControlReceipt, ControlError> {
     use nlos_ipc::{LocalRpcClient, TransportConfig};
     use nlos_schema::sabi::v1::ExchangeRequest;
@@ -1305,7 +1363,7 @@ pub async fn dispatch_over_socket(
         })
         .await
         .map_err(ControlError::Ipc)?;
-    ControlReceipt::compose(command, response.envelope(), process, resource)
+    ControlReceipt::compose(command, response.envelope(), process, resource, application)
 }
 
 /// Projects one completed mutation response into its authoritative receipt
@@ -1795,6 +1853,21 @@ fn compose_resource_inspection(
     }
 }
 
+fn compose_application_inspection(
+    application: Option<&dyn ApplicationInspector>,
+    package_id: [u8; 16],
+) -> Result<ControlOutcome, SabiFailure> {
+    if let Some(inspector) = application {
+        inspector
+            .inspect_application(package_id)
+            .map(ControlOutcome::ApplicationInspected)
+    } else {
+        UnwiredApplicationInspector
+            .inspect_application(package_id)
+            .map(ControlOutcome::ApplicationInspected)
+    }
+}
+
 /// Projects the snapshot-backed read commands (aggregate/domain health and
 /// the three metrics exports) from one handler response. The plan-scoped
 /// inspection and the inspector-backed process/resource reads stay in
@@ -1866,6 +1939,7 @@ impl ControlReceipt {
         response: &Envelope,
         process: Option<&dyn ProcessInspector>,
         resource: Option<&dyn ResourceInspector>,
+        application: Option<&dyn ApplicationInspector>,
     ) -> Result<Self, ControlError> {
         let Some(envelope::CommonContext::ResponseContext(context)) =
             response.common_context.as_ref()
@@ -1905,6 +1979,9 @@ impl ControlReceipt {
                 }
                 ControlCommand::InspectResource { reservation_id } => {
                     compose_resource_inspection(resource, *reservation_id)
+                }
+                ControlCommand::InspectApplication { package_id } => {
+                    compose_application_inspection(application, *package_id)
                 }
                 ControlCommand::InspectTaskGroup { .. } => Ok(ControlOutcome::TaskGroupInspected(
                     decoded_task_group_inspection(response)?,
@@ -2020,6 +2097,16 @@ impl ControlReceipt {
                 bytes.extend_from_slice(&inspection.upper_bound.to_le_bytes());
                 bytes.extend_from_slice(&inspection.usage_high_water.to_le_bytes());
                 bytes.extend_from_slice(&inspection.consumption_count.to_le_bytes());
+            }
+            Ok(ControlOutcome::ApplicationInspected(inspection)) => {
+                bytes.push(22);
+                bytes.extend_from_slice(&inspection.package_id);
+                bytes.extend_from_slice(&inspection.application_id);
+                bytes.extend_from_slice(&inspection.package_manifest_digest);
+                bytes.extend_from_slice(&inspection.current_installation_generation.to_le_bytes());
+                bytes.push(inspection.status);
+                bytes.extend_from_slice(&inspection.created_at_ms.to_le_bytes());
+                bytes.extend_from_slice(&inspection.updated_at_ms.to_le_bytes());
             }
             Ok(ControlOutcome::Acknowledged { receipt_id }) => {
                 push_tagged_receipt(&mut bytes, 2, receipt_id);
@@ -2343,6 +2430,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // Exhaustive §25.3 identity matrix for every ControlCommand arm.
     fn command_ids_are_deterministic_per_variant() {
         assert_eq!(
             ControlCommand::InspectHealth.control_command_id(),
@@ -2380,6 +2468,13 @@ mod tests {
             }
             .control_command_id(),
             [0x66; 16]
+        );
+        assert_eq!(
+            ControlCommand::InspectApplication {
+                package_id: [0x67; 16]
+            }
+            .control_command_id(),
+            [0x67; 16]
         );
         assert_eq!(
             ControlCommand::AcknowledgeRecoveryAlert {

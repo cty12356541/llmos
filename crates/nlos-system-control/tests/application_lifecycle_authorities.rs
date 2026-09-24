@@ -265,7 +265,16 @@ fn dispatch(
     });
     let control = RecoverySystemControl::new(tasks, &health, &CapabilityPolicy)
         .with_application_executor(executor);
-    dispatch_in_process(&control, command, MONOTONIC_NOW_NS, WALL_NOW_MS, None, None).unwrap()
+    dispatch_in_process(
+        &control,
+        command,
+        MONOTONIC_NOW_NS,
+        WALL_NOW_MS,
+        None,
+        None,
+        None,
+    )
+    .unwrap()
 }
 
 #[test]
@@ -445,4 +454,60 @@ fn application_arms_end_to_end_through_the_shared_handler() {
         panic!("expected an application-uninstalled receipt");
     };
     assert_eq!(receipt_id, direct_uninstall.into_bytes().to_vec());
+}
+
+#[test]
+fn application_inspect_routes_through_the_authority_inspector() {
+    use nlos_system_control::application_inspector::ApplicationAuthorityInspector;
+
+    let fixture = ApplicationFixture::new("inspect-get", 0x45);
+    let inspector = ApplicationAuthorityInspector::new(&fixture.applications);
+    let health = StubHealth(RecoveryWorkerHealth {
+        state: RecoveryWorkerState::Running,
+        ..RecoveryWorkerHealth::default()
+    });
+    let control = RecoverySystemControl::new(&fixture.tasks, &health, &CapabilityPolicy);
+
+    let package_id = fixture.package_id.into_bytes();
+    let command = ControlCommand::InspectApplication { package_id };
+    let receipt = dispatch_in_process(
+        &control,
+        &command,
+        MONOTONIC_NOW_NS,
+        WALL_NOW_MS,
+        None,
+        None,
+        Some(&inspector),
+    )
+    .unwrap();
+    let ControlOutcome::ApplicationInspected(snapshot) = receipt.outcome.as_ref().unwrap() else {
+        panic!("expected application inspection receipt");
+    };
+    assert_eq!(snapshot.package_id, package_id);
+    assert_eq!(snapshot.current_installation_generation, 1);
+    assert_eq!(snapshot.status, 1, "installed");
+
+    let missing = dispatch_in_process(
+        &control,
+        &ControlCommand::InspectApplication {
+            package_id: [0xFF; 16],
+        },
+        MONOTONIC_NOW_NS,
+        WALL_NOW_MS,
+        None,
+        None,
+        Some(&inspector),
+    )
+    .unwrap();
+    let Err(failure) = missing.outcome.as_ref() else {
+        panic!("expected typed not-found for an unknown package");
+    };
+    assert_eq!(
+        failure.code,
+        i32::from(nlos_schema::sabi::v1::SabiErrorCode::NotFound)
+    );
+    assert_eq!(
+        failure.safe_message,
+        "requested application was not found under the package identity"
+    );
 }
