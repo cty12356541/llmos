@@ -1014,6 +1014,27 @@ async fn cli_and_in_process_paths_produce_byte_identical_receipts() {
         unwired_resource_reference.to_bytes()
     );
 
+    let unwired_application = ControlCommand::InspectApplication {
+        package_id: PACKAGE_ID,
+    };
+    let unwired_application_reference = dispatch_in_process(
+        &control,
+        &unwired_application,
+        MONOTONIC_NOW_NS,
+        WALL_NOW_MS,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    let cli_unwired_application =
+        run_cli(&socket_path, &["inspect-application", &hex(&PACKAGE_ID)]);
+    assert_eq!(cli_unwired_application.status.code(), Some(1));
+    assert_eq!(
+        cli_receipt_bytes(&cli_unwired_application),
+        unwired_application_reference.to_bytes()
+    );
+
     let acknowledge = acknowledge_command(&plan_id);
     assert_in_process_socket_and_cli_parity(
         &socket_path,
@@ -1543,6 +1564,66 @@ async fn nl_sentences_compile_to_the_same_socket_receipts_as_direct_commands() {
         panic!("expected resource inspection receipt");
     };
     assert_eq!(resource_snapshot.reservation_id, RESERVATION_ID);
+
+    // Inspect application: NL sentences compile to the same command and, with
+    // a wired stub inspector, produce byte-identical receipts over socket and
+    // in-process dispatch (W38-A11; mirrors process/resource).
+    let package_hex = hex(&PACKAGE_ID);
+    let direct_application = ControlCommand::InspectApplication {
+        package_id: PACKAGE_ID,
+    };
+    let nl_application = parse_nl_command(&format!("inspect application {package_hex}")).unwrap();
+    assert_eq!(nl_application, direct_application);
+    assert_eq!(
+        parse_nl_command(&format!("查看应用 {package_hex}")).unwrap(),
+        direct_application
+    );
+    let synonym_application =
+        parse_nl_command(&format!("check application {package_hex}")).unwrap();
+    assert_eq!(synonym_application, direct_application);
+    let application_stub = stub_application_inspection();
+    assert_nl_socket_and_in_process_parity(
+        &socket_path,
+        &control,
+        &direct_application,
+        &[nl_application, synonym_application],
+        None,
+        None,
+        Some(&application_stub),
+    )
+    .await;
+    let application_status =
+        parse_nl_command(&format!("application status {package_hex}")).unwrap();
+    assert_eq!(application_status, direct_application);
+    let zh_application_status = parse_nl_command(&format!("应用 状态 {package_hex}")).unwrap();
+    assert_eq!(zh_application_status, direct_application);
+    assert_nl_socket_and_in_process_parity(
+        &socket_path,
+        &control,
+        &direct_application,
+        &[application_status, zh_application_status],
+        None,
+        None,
+        Some(&application_stub),
+    )
+    .await;
+    let application_receipt = dispatch_in_process(
+        &control,
+        &direct_application,
+        MONOTONIC_NOW_NS,
+        WALL_NOW_MS,
+        None,
+        None,
+        Some(&application_stub),
+    )
+    .unwrap();
+    let ControlOutcome::ApplicationInspected(application_snapshot) =
+        application_receipt.outcome.as_ref().unwrap()
+    else {
+        panic!("expected application inspection receipt");
+    };
+    assert_eq!(application_snapshot.package_id, PACKAGE_ID);
+    assert_eq!(application_snapshot.status, 1);
 
     // Acknowledge: the English and Chinese sentences both compile to the
     // same fully-determined mutation the direct construction spells out.

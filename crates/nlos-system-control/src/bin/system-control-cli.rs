@@ -19,6 +19,7 @@
 //! system-control-cli <SOCKET> export-resource-metrics
 //! system-control-cli <SOCKET> inspect-task <PLAN_ID_HEX_32>
 //! system-control-cli <SOCKET> inspect-process <PROCESS_ID_HEX_32>
+//! system-control-cli <SOCKET> inspect-application <PACKAGE_ID_HEX_32>
 //! system-control-cli <SOCKET> inspect-resource <RESERVATION_ID_HEX_32>
 //! system-control-cli <SOCKET> inspect-task-group <GROUP_ID_HEX_32>
 //! system-control-cli <SOCKET> inspect-task-node <PLAN_ID_HEX_32> <NODE_ID_HEX_32>
@@ -67,6 +68,7 @@ const USAGE: &str = "usage: system-control-cli <SOCKET> inspect-health \
 | export-resource-metrics \
 | inspect-task <PLAN_ID_HEX_32> \
 | inspect-process <PROCESS_ID_HEX_32> \
+| inspect-application <PACKAGE_ID_HEX_32> \
 | inspect-resource <RESERVATION_ID_HEX_32> \
 | inspect-task-group <GROUP_ID_HEX_32> \
 | inspect-task-node <PLAN_ID_HEX_32> <NODE_ID_HEX_32> \
