@@ -384,6 +384,28 @@ impl ProcessSupervisor {
         })
     }
 
+    /// Removes the registered OS pid mapping for
+    /// `(process_id, expected_process_generation)`.
+    ///
+    /// Caller-supplied only: this does not scan the host for live children
+    /// and never signals a pid. A matching generation clears the row
+    /// (`Ok(true)`); an already-absent mapping is the idempotent
+    /// `Ok(false)`; a stale presented generation fails closed and leaves the
+    /// newer mapping untouched.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed on a stale generation or a poisoned registry lock.
+    pub fn unregister(
+        &self,
+        process_id: ProcessId,
+        expected_process_generation: Generation,
+    ) -> Result<bool, SupervisorError> {
+        self.registry
+            .unregister(process_id, expected_process_generation)
+            .map_err(SupervisorError::Registry)
+    }
+
     /// Kills the host child registered for
     /// `(process_id, expected_process_generation)` through the host's real
     /// platform kill adapter (SIGTERM on Unix, `taskkill /F /T` on Windows),
