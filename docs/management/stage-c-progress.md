@@ -70,8 +70,8 @@
 
 | ID | 工作包 | 规范锚点 | 状态 |
 |---|---|---|---|
-| `C-CELL` | Cell 本地七件套 + 控制面最小面 + 多节点 identity/epoch/fencing | §26.1（Cell/控制面职责表 + `DIST-LOCAL/FAIL/NAME-001`） | **`PARTIAL_PASS`**（2026-09-22：identity/epoch/fencing 最小面合入 `4fe5854`，crate `nlos-cell`；W38-E 测试加固 `e9c252c`/`5c93394`——身份与 pid 解耦、双进程存活窗口；[ADR-0018](./adrs/0018-single-host-multiprocess-dual-cell-topology.md) `ACCEPTED` ≠ `VERIFIED`，七件套与其余控制面未做、信息门仍开。不声称 C-CELL 已实现） |
-| `C-LEASE` | Quota/Capacity/ExclusiveDevice lease 三族 + reconciliation | §12 全部 `LEASE-*` 不变量 | **`PARTIAL_PASS` / 前片**（2026-09-25：单 Cell `QuotaLease` 授予与过期 epoch 拒绝合入 `ac898ec`/`7fa1fec`，`CellAuthority::admit` 接线 `fc5d81b`/`6ec9528`，crate `nlos-lease` + `tests/quota_grant.rs`；**无独立 Evidence 文件**——Claim 止于单 Cell QuotaLease 前片。Capacity/ExclusiveDevice/reconciliation/`LEASE-*` 全族未做。不声称 C-LEASE 已实现） |
+| `C-CELL` | Cell 本地七件套 + 控制面最小面 + 多节点 identity/epoch/fencing | §26.1（Cell/控制面职责表 + `DIST-LOCAL/FAIL/NAME-001`） | **`PARTIAL_PASS` / 前片**（2026-09-22：identity/epoch/fencing 最小面合入 `4fe5854`，crate `nlos-cell`；W38-E 测试加固 `e9c252c`/`5c93394`——身份与 pid 解耦、双进程存活窗口；W38-CELL boot generation 持久化合入 `12d89e1`/`bb9b7cb`；clippy `too_many_lines` 拆分 `f3e83f6`/`1ad35d4`；[ADR-0018](./adrs/0018-single-host-multiprocess-dual-cell-topology.md) `ACCEPTED` ≠ `VERIFIED`。**七件套与其余控制面未做**、信息门仍开。不声称 C-CELL 已实现） |
+| `C-LEASE` | Quota/Capacity/ExclusiveDevice lease 三族 + reconciliation | §12 全部 `LEASE-*` 不变量 | **`PARTIAL_PASS` / 前片**（2026-09-25 本地 HEAD：单 Cell 三族授予与过期 epoch 拒绝——Quota `ac898ec`/`7fa1fec` + admit `fc5d81b`/`6ec9528`；Capacity `9be119c`/`6225f4b`；ExclusiveDevice `ac2116c`/`9219bd8`；crate `nlos-lease`。**无独立 Evidence 文件**——Claim 止于单 Cell 三族前片。**reconciliation / 全 §12 `LEASE-*` 未做**。不声称 C-LEASE 已实现） |
 | `C-SYNC` | Artifact/event sync + 跨域审计 checkpoint | §26.2；`SEM-CHECKPOINT-001`（行 2808） | `NOT_STARTED` |
 | `C-SHARD` | TaskAuthority 分片与跨 Cell 接管（单机表组族向 DIST-TASK-001..004 全语义迁移） | §26.1 `DIST-TASK-001/002/004`；对象模型三 Record | `NOT_STARTED`（[ADR-0019](./adrs/0019-cross-cell-commit-semantics-extension.md) 已开档 `CANDIDATE` `b512fa7`；派发仍以其 `VERIFIED` 为前置，本 integrator 未实现任何 C-SHARD 切片） |
 | `C-FANOUT` | 层级子组/局部 reducer/Merkle result root + fanout admission + bulkhead | `DIST-TASK-003`、`DIST-FANOUT-001`、`DIST-BULKHEAD-001` | `NOT_STARTED` |
@@ -85,7 +85,7 @@
 | ID | 移交# | 事项（§6.5.6 原文要点） | 当前状态与证据 | 主要未决项 |
 |---|---|---|---|---|
 | `C-REG-12` | #1 | slice-k-demo STEP 09d defect 根因处置（collected_digests==[] panic） | **`DONE`**（2026-09-21：merge `87ef288`——根因 = W22-001 install-scoped 前缀在 fail-closed 拒绝前收集预埋孤儿（登记嫌疑 W28-E 归因修正）；回执级证据排除误收在册 blob，RISK-B-12 裁决不升 P0 并 closed；demo 拒绝探针改 `AutoOrphanGc::Disabled` + 回归测试；demo e2e 绿 + 136 passed；[B-SLICE-K-001 §17](../evidence/stage-b/b-slice-k-001-end-to-end.md)） | 无 |
-| `C-APP-PAYLOAD` | #2 | 载荷执行面 + `nlos package install` CLI | **`PARTIAL_PASS` / 前片**（install：2026-09-21 merge `953c8af` + [B-APPLICATION-007 §7](../evidence/stage-b/b-application-007-third-party-sample.md) VERIFIED；run/update/uninstall CLI：2026-09-25 merge `4c67ede`/`000436d`/`e406fdb`（`c362668`/`874385f`/`5bb60fc`）+ crate 测试，**无独立 Evidence 文件**——Claim 止于 CLI 子命令前片） | 样例自身接线该车道；无 W38 Evidence 文件。owner：后续 C-APP-PAYLOAD 切片 |
+| `C-APP-PAYLOAD` | #2 | 载荷执行面 + `nlos package install` CLI | **`PARTIAL_PASS` / 前片**（install：2026-09-21 merge `953c8af` + [B-APPLICATION-007 §7](../evidence/stage-b/b-application-007-third-party-sample.md) VERIFIED；run/update/uninstall CLI：2026-09-25 merge `4c67ede`/`000436d`/`e406fdb`（`c362668`/`874385f`/`5bb60fc`）+ crate 测试；clippy `too_many_lines` 拆分 `e782c35`/`dcfc1d3`；**无独立 Evidence 文件**——Claim 止于 CLI 子命令前片） | 样例自身接线该车道；无 W38 Evidence 文件。owner：后续 C-APP-PAYLOAD 切片 |
 | `C-GUI-CAMPAIGN` | #3 | GUI 真机战役（computer-use 清单）+ Windows GUI | `NOT_STARTED`（W34-A §5；RISK-B-06/U-3） | 归置（决策点 3：D 邻接但为 B 交付物的可用性验证） |
 | `C-WIN-KILL` | #4 | Windows live-child 实杀（taskkill /F/T 成功路径无真实子进程断言） | `NOT_STARTED`（W34-A §6 residual 4 精确口径；RISK-B-10/U-2） | Windows 实机 kill 矩阵 + B2-1 双活三层场景 |
 | `C-SCALE-RELEASE` | #5 | release-profile + Linux/Windows 规模复测与 CI 化 | **`PARTIAL_PASS` / 管线前片 VERIFIED**（2026-09-21：merge `09c0832`；[B-SCALE-RELEASE-001](../evidence/stage-b/b-scale-release-001.md)——`scale-probe-release` job + 同日同机首批 release↔debug 数字）。生产量级声明禁令维持 | 首 CI run `PENDING`（owner：控制器 post-merge dispatch / 夜间 schedule）。U-1 多平台半边待该 run 回填 |
@@ -95,10 +95,10 @@
 | `C-PROVIDER-REAL` | #9 | provider 真实载体替换 mock + transport 跨平台 + payload codec 冻结通道 | `NOT_STARTED`（U-10；codec 决策沿 RISK-B-05 review_point） | 首个真实 provider 全链接入；codec 入 ADR-0014 通道显式决策 |
 | `C-RUNTIME-PROC` | #10 | kill receipt 消费 × Activation meter 联动；B6-4 跨平台 supervisor；B6-5 完整 BirthDecision | **`PARTIAL_PASS` / 三子项 VERIFIED**（2026-09-22：merge `c45bd10`；终审 Ready；[W36-P10](../evidence/stage-b/w36-p10-c-runtime-proc.md)）。本 integrator 定向复跑：runtime 三 crate skip-10K/100K 名 **185 passed / 0 failed / 4 ignored / 11 filtered**；kill_receipt 5 / birth_decision 7 / supervisor 6 / runtime-lib 2 | Windows `#[cfg(windows)]` supervisor 实杀臂未在本机跑（owner：C-WIN-KILL / 三平台 CI）；5 parked minors（test/API/docs polish） |
 | `C-APP-CONTROL` | #11 | Application 层控制面与生命周期 NL 动词；supervisor 自动 pid 发现/unregister | **`PARTIAL_PASS` / 前片**（disable/uninstall：2026-09-21 merge `f49c5a8` + [B-CONTROL-003 W35-P11](../evidence/stage-b/b-control-003-nl-prefix.md) VERIFIED；inspect GET：2026-09-25 merge `ce06746`/`e8a3c4b`；supervisor 按代次 unregister：`7e975d7`/`1a8a073`——后两片 **无独立 Evidence 文件**，Claim 止于 inspect+unregister 前片） | supervisor 自动 pid **发现**仍开；不声称 Application 层控制面全包 DONE。owner：后续 C-APP-CONTROL 切片 |
-| `C-LIFECYCLE` | #12 | `restore_process` 复活链、干净退出终态、teardown 并发竞争面、teardown/NL kill 幂等键同源 | `NOT_STARTED`（W33-H §4 行 4/5 沿引） | 四子项 |
+| `C-LIFECYCLE` | #12 | `restore_process` 复活链、干净退出终态、teardown 并发竞争面、teardown/NL kill 幂等键同源 | **`PARTIAL_PASS` / 前片**（2026-09-25 本地 HEAD：`clean_shutdown`→`FiberExit::Completed` 合入 `cb51acb`/`6da024d`；`restore_process` 过期代次拒绝测试合入 `d391ba7`/`362fc11`；W38 spawn-refusal 观察 `6547039` 仍不解锁全包。**无独立 Evidence 文件**——Claim 止于干净退出 + stale-generation 测试前片。teardown 竞争面 / 幂等键同源 / 完整复活链未做） | 后两子项 + 完整复活链。owner：后续 C-LIFECYCLE |
 | `C-CONFORMANCE-GOLDEN` | #13 | TS/Python conformance 对 SABI v1.2–v1.5 新臂/新视图 golden 钉死 | **`DONE`**（2026-09-21：merge `5c6f4c7`，[B-SCHEMA-002 §6](../evidence/stage-b/b-schema-002-cross-language-generation.md) 收口证据；U-14 退役） | 无（后续新增 SABI 臂随波屏障钉死即可） |
 | `C-SCALE-PROBE` | #14 | 夜间 scale-probe 既有失败专项排查 | **根因修复已合入 main**（merge `ebbeddc`：测量窗口串行化 + 基线相对界；[B-RUNTIME-002 §6.18](../evidence/stage-b/b-runtime-002-fiber-scale.md)：测量方法学缺陷 + 10K 档 `+2` 标定错误，本地双模式 3/3 绿）——**dispatch 复证已闭合**（2026-09-22：与 §6.5.6 #14「复证全绿闭合」及 [B-RUNTIME-002 §6.18.2.2](../evidence/stage-b/b-runtime-002-fiber-scale.md) 对齐；dispatch run [35560466719](https://github.com/cty12356541/llmos/actions/runs/35560466719) 五 job 首全绿含 scale-probe；不再引用已过时的 PENDING 行原文） | **夜间 schedule 常设门仍开**（仅 workflow_dispatch 绿不得关 schedule 门；W35-B 仍要 schedule run 绿 + 链接回填） |
-| `C-MULTICELL` | #15 | 多 Cell / 分布式（阶段 C 本体）；Notification/Search 超最小面扩展；完整桌面 | 前半 = §C.3.1 C-core 全族；后半两件**归置未定**（决策点 3：Notification/Search 超最小面规范未指派阶段；完整桌面按 §28.4 属 D） | 决策点 3 |
+| `C-MULTICELL` | #15 | 多 Cell / 分布式（阶段 C 本体）；Notification/Search 超最小面扩展；完整桌面 | 前半 = §C.3.1 C-core 全族；Notification/Search 超最小面仍 backlog；完整桌面按决策点 3→**D 册**。D 前片已在本地 HEAD：五层只读 inspect `ee649d3`/`86fd713`；Surface open/close→`CLOSED` `d059ac2`/`49d3e14`——**`PARTIAL_PASS` / D 前片**，**不声称 Stage D 余量 DONE** | C-core 仍开；D 余量未做 |
 | `C-POWER-LOSS` | #16 | 真实硬件掉电与 M4/M6/M8 模型校准（层 3+） | `NOT_STARTED`（U-4；层 1 APFS 校准/层 2 dm-flakey run 33895972272 已有） | 真机掉电设备或校准数据；时序归决策点 3 |
 | `C-CUSTODY-GATEWAY` | #17 | 生产 signing key custody / enforcement-gateway reconciliation authority | `NOT_STARTED`（ADR-0017 约束 4 的终态承载；复审触发器 2 联动） | owner 侧自动结算（R-B 受限复活）评估随 C-LEASE reconciliation |
 
@@ -194,9 +194,9 @@ W35 晋升候选池（依派发纪律 (4)，决策点关闭 + 写集空闲即可
 
 **W37（Cell 骨架波，依决策点 1 + 拓扑 ADR）**：A–E 文档/前片已合入 origin/main（ADR-0018 `c433d6f` / ADR-0019 `b512fa7` / cell spec `e485450` / ADR-0020 `705d4d1` / nlos-cell `4fe5854`）。移交#9 仍信息门（codec 未冻结）；#12 生命周期全包未做（W38 仅合入 spawn-refusal 观察测试 `6547039`，不解锁 #12）。七件套切片与 C-SHARD **未实现**（信息门：0018/0019 均非 VERIFIED）。
 
-**W38（lease/quota + 移交后片）**：已合入并推送 origin/main `e406fdb`（2026-09-25）。前片：`C-LEASE` 单 Cell QuotaLease（`ac898ec`/`fc5d81b`）；#2 run/update/uninstall CLI（`4c67ede`/`000436d`/`e406fdb`）；#11 inspect + supervisor unregister（`ce06746`/`7e975d7`，**发现仍开**）；W38 test/fix 车道（cell/plan/process）。**未做 / 仍开**：C-SHARD、C-CELL 七件套、#12 全生命周期、三平台 CI、夜间 schedule、#17 custody/gateway；各前片无独立 Evidence 文件——Claim=`PARTIAL_PASS`。
+**W38（lease/quota + 移交后片）**：本地 HEAD `e782c35`（2026-09-25；相对 origin/main `ee649d3` **ahead 8**，push 未成）。已合入本地的前片：`C-LEASE` 单 Cell Quota+Capacity+ExclusiveDevice（`ac898ec`/`9be119c`/`ac2116c`）；boot generation（`12d89e1`/`bb9b7cb`）；#12 干净退出 + restore 过期代次测试（`cb51acb`/`d391ba7`）；#2 run/update/uninstall CLI（`4c67ede`/`000436d`/`e406fdb`）+ clippy 行数拆分（`e782c35`/`f3e83f6`）；#11 inspect + supervisor unregister（`ce06746`/`7e975d7`，**发现仍开**）。**未做 / 仍开**：C-SHARD、C-CELL **七件套全量**、#12 全生命周期余量、三平台 CI、夜间 schedule、#17 custody/gateway；各前片无独立 Evidence 文件——Claim=`PARTIAL_PASS`。本地 fmt+clippy+workspace test 于 `e782c35` 绿（1628 passed）**≠** 三平台 CI。
 
-**W39（TaskAuthority 跨 Cell 波）**：跨 Cell 提交语义 ADR（决策点 4 → ADR-0013 扩展点定案）→ `C-SHARD`（DIST-TASK-001..004 迁移；单机 schema v27–v38 表组族为基础）∥ `C-FANOUT`。
+**W39（TaskAuthority 跨 Cell 波 + D 邻接前片）**：`C-SHARD` / `C-FANOUT` **未实现**（ADR-0019 仍非 VERIFIED）。D 前片（决策点 3 归 D 册）：五层只读 inspect `ee649d3`/`86fd713`；窗口开合终态 `d059ac2`/`49d3e14`——**`PARTIAL_PASS` / D 前片**，**不声称 Stage D 余量 / C-SHARD DONE**。
 
 **W40（sync 与分区恢复波）**：`C-SYNC` → `C-PARTITION` → **ROAD-C-001 证据评审**。
 
@@ -289,3 +289,17 @@ W35 晋升候选池（依派发纪律 (4)，决策点关闭 + 写集空闲即可
 | W38-P2 uninstall | `feat/w38-package-uninstall` | `e406fdb` | `nlos package uninstall` |
 
 **仍开、具名 parked（owner）**：见 §C.3.1/§C.3.2 各行未决项；另 `feat/dash-plugin` 为工具链旁支、不入 C 册（owner：dash 插件车道）。
+
+2026-09-25（本地 HEAD `e782c35`，相对 origin/main `ee649d3` **ahead 8 / behind 0**）：`git push origin main` **失败**——挂起 >40s 无输出后被杀；`dig github.com` 曾解析到 `20.205.243.166`，同轮 `ping` 报 `cannot resolve github.com: Unknown host`（DNS/连通性不稳定）。**台账仅登记本地 HEAD，docs 提交未推送。** §C.3 同步：`C-LEASE` 三族单 Cell 前片、`C-CELL` boot generation、`C-LIFECYCLE` 干净退出+stale-generation 测试、`C-APP-PAYLOAD` clippy 拆分、D 前片（五层 inspect + Surface CLOSED）均为 `PARTIAL_PASS`。**仍未声称**：C-SHARD、C-CELL 七件套全量、Stage D 余量、#12 全生命周期余量、三平台 CI、夜间 schedule。本地验证（据前次会话）：fmt+clippy+workspace test 于 `e782c35` 绿 1628 passed —— **≠** 三平台 CI。
+
+| 车道 | 分支 | merge SHA | 写集要点 |
+|---|---|---|---|
+| W38-L CapacityLease | `feat/w38-capacity-lease` | `9be119c` | 单 Cell CapacityLease（`6225f4b`） |
+| W38-CELL boot gen | `feat/w38-cell-boot` | `12d89e1` | boot generation 持久化（`bb9b7cb`） |
+| W38-L12 clean exit | `feat/w38-clean-exit` | `cb51acb` | `clean_shutdown`→`FiberExit::Completed`（`6da024d`） |
+| W38-L ExclusiveDevice | `feat/w38-device-lease` | `ac2116c` | 单 Cell ExclusiveDevice（`9219bd8`） |
+| W39-D five-layer | `feat/w39-stage-d` | `ee649d3` | Task Space 五层只读 inspect（`86fd713`）；已在 origin |
+| W38-L12 restore-proc | `feat/w38-restore-proc` | `d391ba7` | restore 过期代次拒绝测试（`362fc11`）；**仅本地** |
+| W39-D window | `feat/w39-window-lifecycle` | `d059ac2` | Surface open/close→CLOSED（`49d3e14`）；**仅本地** |
+| W38 cell lines | `fix/w38-cell-too-many-lines` | `f3e83f6` | clippy `too_many_lines` 拆分 process_scope（`1ad35d4`）；**仅本地** |
+| W38 pkg lines | `fix/w38-package-too-many-lines` | `e782c35` | clippy `too_many_lines` 拆分 run_command（`dcfc1d3`）；**仅本地** |
