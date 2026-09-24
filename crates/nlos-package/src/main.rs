@@ -1,6 +1,6 @@
 //! `nlos-package` — developer Package SDK CLI (W33-A, B1-4; install
-//! subcommand W35-P2 / handover #2 first slice; run + update subcommands
-//! W38-P2 / handover #2 back slices).
+//! subcommand W35-P2 / handover #2 first slice; run + update + uninstall
+//! subcommands W38-P2 / handover #2 back slices).
 //!
 //! A thin shell around the `nlos-artifact` package surface: it owns no
 //! verification logic of its own. `build` turns a developer tree (line-based
@@ -19,6 +19,9 @@
 //! entry (W33-H §2 boundary 1 consumer CLI). `update` (W38-P2) reuses the
 //! install verify/materialize/GC path and hands the new durable receipt to
 //! [`nlos_application::ApplicationAuthority::update_application`] (B-APPLICATION-002).
+//! `uninstall` (W38-P2) opens that same root and drives
+//! [`nlos_application::ApplicationAuthority::uninstall_application`]
+//! (B-APPLICATION-003) for one package identity.
 //!
 //! # Usage
 //!
@@ -30,6 +33,7 @@
 //! nlos-package install <PKGFILE> --root <DIR>
 //! nlos-package run <PACKAGE_ID_HEX> <ENTRY> --root <DIR>
 //! nlos-package update <PKGFILE> --root <DIR> [--compat same-major|same-minor]
+//! nlos-package uninstall <PACKAGE_ID_HEX> --root <DIR>
 //! ```
 //!
 //! # Determinism
@@ -46,7 +50,7 @@
 //! `4` content-binding failure (tampered payload) · `5` internal I/O or
 //! store failure · `6` conformance findings (see
 //! docs/developers/package-conformance.md) · `7` application-authority
-//! install/update rejection or payload-execution lane refusal.
+//! install/update/uninstall rejection or payload-execution lane refusal.
 //!
 //! # Conformance (W33-C)
 //!
@@ -74,8 +78,8 @@ use std::process::ExitCode;
 
 use ed25519_dalek::{Signer, SigningKey};
 use nlos_application::{
-    CompatibilityWindow, InstallApplicationRequest, InstallDecision, UpdateApplicationRequest,
-    UpdateDecision,
+    CompatibilityWindow, InstallApplicationRequest, InstallDecision, UninstallApplicationRequest,
+    UninstallDecision, UpdateApplicationRequest, UpdateDecision,
 };
 use nlos_artifact::{
     ArtifactError, ArtifactStore, CollectOrphanBlobsRequest, ContentDigest, CreateArtifactSpec,
@@ -97,7 +101,8 @@ const USAGE: &str = "usage: nlos-package keygen --seed <HEX64> [--out <KEYFILE>]
   | conformance <PKGFILE> \
   | install <PKGFILE> --root <DIR> \
   | run <PACKAGE_ID_HEX> <ENTRY> --root <DIR> \
-  | update <PKGFILE> --root <DIR> [--compat same-major|same-minor]";
+  | update <PKGFILE> --root <DIR> [--compat same-major|same-minor] \
+  | uninstall <PACKAGE_ID_HEX> --root <DIR>";
 
 /// Domain separators for CLI-owned derivations; each derivation is plain
 /// SHA-256 over `domain ‖ input` (the crate's receipt-id precedent).
@@ -124,6 +129,11 @@ const INSTALL_CLOCK_DOMAIN: &[u8] = b"llmos/package-file/install-clock/v1";
 /// compatibility window.
 const UPDATE_KEY_DOMAIN: &[u8] = b"llmos/package-file/update-key/v1";
 const UPDATE_CLOCK_DOMAIN: &[u8] = b"llmos/package-file/update-clock/v1";
+/// Uninstall idempotency + clock keys (input: package id bytes): re-issuing
+/// the same uninstall for one package identity replays the durable receipt;
+/// a different package derives a different key.
+const UNINSTALL_KEY_DOMAIN: &[u8] = b"llmos/package-file/uninstall-key/v1";
+const UNINSTALL_CLOCK_DOMAIN: &[u8] = b"llmos/package-file/uninstall-clock/v1";
 
 /// Typed CLI failure, mapped onto the documented exit codes.
 #[derive(Debug)]
@@ -150,6 +160,10 @@ enum ToolError {
     /// compatibility-window violation, idempotency conflict, or an
     /// out-of-order timestamp.
     Update(String),
+    /// The application authority refused the uninstall (exit 7): no
+    /// application under the package identity, already-uninstalled with a
+    /// distinct key, idempotency conflict, or an out-of-order timestamp.
+    Uninstall(String),
     /// The payload-execution lane refused the run (exit 7): no installed
     /// application under the package identity, non-installed status,
     /// missing installation receipt, missing entry artifact, or a driver
@@ -170,7 +184,7 @@ impl ToolError {
             Self::Binding(_) => 4,
             Self::Internal(_) => 5,
             Self::Conformance(_) => 6,
-            Self::Install(_) | Self::Update(_) | Self::Run(_) => 7,
+            Self::Install(_) | Self::Update(_) | Self::Uninstall(_) | Self::Run(_) => 7,
         }
     }
 }
@@ -217,6 +231,7 @@ fn main() -> ExitCode {
         "install" => install_command(&arguments[1..]),
         "run" => run_command(&arguments[1..]),
         "update" => update_command(&arguments[1..]),
+        "uninstall" => uninstall_command(&arguments[1..]),
         _ => Err(ToolError::Usage),
     };
     match result {
@@ -242,6 +257,7 @@ impl ToolError {
             | Self::Internal(text)
             | Self::Install(text)
             | Self::Update(text)
+            | Self::Uninstall(text)
             | Self::Run(text) => text.clone(),
             Self::Conformance(count) => format!("package conformance violations: {count}"),
         }
@@ -1363,6 +1379,102 @@ fn update_into_root(
     {
         UpdateDecision::Updated(installation) => Ok((decision, installation, true)),
         UpdateDecision::Replayed(installation) => Ok((decision, installation, false)),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// uninstall
+// ---------------------------------------------------------------------------
+
+/// Uninstalls one installed or disabled application (W38-P2 / handover #2
+/// uninstall sub-item): open the persistent state root written by `install`,
+/// resolve the package identity, and hand it to
+/// [`nlos_application::ApplicationAuthority::uninstall_application`]
+/// (B-APPLICATION-003). No new package format — the CLI only names the
+/// existing authority-first uninstall API. Idempotency and clock keys
+/// derive from the package id, so re-issuing the same uninstall replays.
+fn uninstall_command(arguments: &[String]) -> Result<(), ToolError> {
+    let mut package_hex = None;
+    let mut root = None;
+    parse_flags(
+        arguments,
+        &mut |flag, value| {
+            if flag == "root" {
+                root = Some(value.to_string());
+                true
+            } else {
+                false
+            }
+        },
+        &mut |token| {
+            if package_hex.is_none() {
+                package_hex = Some(token.to_string());
+                true
+            } else {
+                false
+            }
+        },
+    )?;
+    let Some(package_hex) = package_hex else {
+        return Err(ToolError::Usage);
+    };
+    let Some(root) = root else {
+        return Err(ToolError::Usage);
+    };
+    let Some(package_bytes) = hex_array::<16>(&package_hex) else {
+        return Err(ToolError::input(
+            "uninstall",
+            "package id must be exactly 32 hex chars",
+        ));
+    };
+    let package_id = PackageId::from_bytes(package_bytes);
+
+    let runtime = SliceKRuntime::open(&root)
+        .map_err(|error| ToolError::Internal(format!("open state root {root}: {error}")))?;
+    let (receipt, fresh) = uninstall_into_root(&runtime, package_id)?;
+
+    println!("UNINSTALL {}", hex(receipt.application_id.as_bytes()));
+    println!(
+        "decision {}",
+        if fresh { "uninstalled" } else { "replayed" }
+    );
+    println!(
+        "application {} package {} generation {}",
+        hex(receipt.application_id.as_bytes()),
+        hex(package_id.as_bytes()),
+        receipt.application_generation.get(),
+    );
+    Ok(())
+}
+
+/// The uninstall lane proper: deterministic clock + idempotency keys from
+/// the package identity, then the public `uninstall_application` path
+/// (B-APPLICATION-003). Returns the immutable uninstall receipt and whether
+/// this call performed the terminal transition (`true`) or replayed (`false`).
+fn uninstall_into_root(
+    runtime: &SliceKRuntime,
+    package_id: PackageId,
+) -> Result<(nlos_application::UninstallReceipt, bool), ToolError> {
+    let uninstalled_at_ms = runtime
+        .wall_now_ms(IdempotencyKey::from_bytes(derive_16(
+            UNINSTALL_CLOCK_DOMAIN,
+            package_id.as_bytes(),
+        )))
+        .map_err(|error| ToolError::Internal(format!("uninstall clock: {error}")))?;
+    match runtime
+        .applications
+        .uninstall_application(UninstallApplicationRequest {
+            package_id,
+            idempotency_key: IdempotencyKey::from_bytes(derive_16(
+                UNINSTALL_KEY_DOMAIN,
+                package_id.as_bytes(),
+            )),
+            uninstalled_at_ms,
+        })
+        .map_err(|error| ToolError::Uninstall(error.to_string()))?
+    {
+        UninstallDecision::Uninstalled(receipt) => Ok((receipt, true)),
+        UninstallDecision::Replayed(receipt) => Ok((receipt, false)),
     }
 }
 
