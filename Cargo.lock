@@ -525,6 +525,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nlos-lease"
+version = "0.1.0"
+dependencies = [
+ "nlos-cell",
+ "nlos-types",
+]
+
+[[package]]
 name = "nlos-notify"
 version = "0.1.0"
 dependencies = [
