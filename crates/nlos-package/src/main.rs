@@ -91,7 +91,7 @@ use nlos_artifact::{
 };
 use nlos_identity::{BootstrapPrincipalRequest, IdentityAuthority};
 use nlos_operation::CompletionOutcome;
-use nlos_slice_k::{SliceKError, SliceKRuntime, execute_application_payload};
+use nlos_slice_k::{PayloadExecution, SliceKError, SliceKRuntime, execute_application_payload};
 use nlos_types::{ArtifactId, IdempotencyKey, PackageId};
 use sha2::{Digest, Sha256};
 
@@ -1541,7 +1541,11 @@ fn run_command(arguments: &[String]) -> Result<(), ToolError> {
     let execution =
         execute_application_payload(&runtime, PackageId::from_bytes(package_bytes), &entry)
             .map_err(from_slice_k_run_error)?;
+    print_run_execution(&execution);
+    Ok(())
+}
 
+fn print_run_execution(execution: &PayloadExecution) {
     let fresh = !(execution.register_replayed
         && execution.dispatch_replayed
         && execution.complete_replayed);
@@ -1593,7 +1597,6 @@ fn run_command(arguments: &[String]) -> Result<(), ToolError> {
             }
         }
     );
-    Ok(())
 }
 
 fn from_slice_k_run_error(error: SliceKError) -> ToolError {
