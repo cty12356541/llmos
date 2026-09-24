@@ -194,7 +194,7 @@ W35 晋升候选池（依派发纪律 (4)，决策点关闭 + 写集空闲即可
 
 **W37（Cell 骨架波，依决策点 1 + 拓扑 ADR）**：A–E 文档/前片已合入 origin/main（ADR-0018 `c433d6f` / ADR-0019 `b512fa7` / cell spec `e485450` / ADR-0020 `705d4d1` / nlos-cell `4fe5854`）。移交#9 仍信息门（codec 未冻结）；#12 生命周期全包未做（W38 仅合入 spawn-refusal 观察测试 `6547039`，不解锁 #12）。七件套切片与 C-SHARD **未实现**（信息门：0018/0019 均非 VERIFIED）。
 
-**W38（lease/quota + 移交后片）**：本地 HEAD `e782c35`（2026-09-25；相对 origin/main `ee649d3` **ahead 8**，push 未成）。已合入本地的前片：`C-LEASE` 单 Cell Quota+Capacity+ExclusiveDevice（`ac898ec`/`9be119c`/`ac2116c`）；boot generation（`12d89e1`/`bb9b7cb`）；#12 干净退出 + restore 过期代次测试（`cb51acb`/`d391ba7`）；#2 run/update/uninstall CLI（`4c67ede`/`000436d`/`e406fdb`）+ clippy 行数拆分（`e782c35`/`f3e83f6`）；#11 inspect + supervisor unregister（`ce06746`/`7e975d7`，**发现仍开**）。**未做 / 仍开**：C-SHARD、C-CELL **七件套全量**、#12 全生命周期余量、三平台 CI、夜间 schedule、#17 custody/gateway；各前片无独立 Evidence 文件——Claim=`PARTIAL_PASS`。本地 fmt+clippy+workspace test 于 `e782c35` 绿（1628 passed）**≠** 三平台 CI。
+**W38（lease/quota + 移交后片）**：本地 tip 相对 origin/main `ee649d3` **ahead 10 / behind 0**（2026-09-25；含本台账修订与 `4a98e67` 登记，**push 未成**）。已合入本地的前片：`C-LEASE` 单 Cell Quota+Capacity+ExclusiveDevice（`ac898ec`/`9be119c`/`ac2116c`）；boot generation（`12d89e1`/`bb9b7cb`）；#12 干净退出 + restore 过期代次测试（`cb51acb`/`d391ba7`）；#2 run/update/uninstall CLI（`4c67ede`/`000436d`/`e406fdb`）+ clippy 行数拆分（`e782c35`/`f3e83f6`）；#11 inspect + supervisor unregister（`ce06746`/`7e975d7`，**发现仍开**）。**未做 / 仍开**：C-SHARD、C-CELL **七件套全量**、#12 全生命周期余量、三平台 CI、夜间 schedule、#17 custody/gateway；各前片无独立 Evidence 文件——Claim=`PARTIAL_PASS`。本地 fmt+clippy+workspace test 于 `e782c35` 绿（1628 passed）**≠** 三平台 CI。
 
 **W39（TaskAuthority 跨 Cell 波 + D 邻接前片）**：`C-SHARD` / `C-FANOUT` **未实现**（ADR-0019 仍非 VERIFIED）。D 前片（决策点 3 归 D 册）：五层只读 inspect `ee649d3`/`86fd713`；窗口开合终态 `d059ac2`/`49d3e14`——**`PARTIAL_PASS` / D 前片**，**不声称 Stage D 余量 / C-SHARD DONE**。
 
@@ -290,7 +290,7 @@ W35 晋升候选池（依派发纪律 (4)，决策点关闭 + 写集空闲即可
 
 **仍开、具名 parked（owner）**：见 §C.3.1/§C.3.2 各行未决项；另 `feat/dash-plugin` 为工具链旁支、不入 C 册（owner：dash 插件车道）。
 
-2026-09-25（本地 HEAD `e782c35`，相对 origin/main `ee649d3` **ahead 8 / behind 0**）：`git push origin main` **失败**——挂起 >40s 无输出后被杀；`dig github.com` 曾解析到 `20.205.243.166`，同轮 `ping` 报 `cannot resolve github.com: Unknown host`（DNS/连通性不稳定）。**台账仅登记本地 HEAD，docs 提交未推送。** §C.3 同步：`C-LEASE` 三族单 Cell 前片、`C-CELL` boot generation、`C-LIFECYCLE` 干净退出+stale-generation 测试、`C-APP-PAYLOAD` clippy 拆分、D 前片（五层 inspect + Surface CLOSED）均为 `PARTIAL_PASS`。**仍未声称**：C-SHARD、C-CELL 七件套全量、Stage D 余量、#12 全生命周期余量、三平台 CI、夜间 schedule。本地验证（据前次会话）：fmt+clippy+workspace test 于 `e782c35` 绿 1628 passed —— **≠** 三平台 CI。
+2026-09-25（代码 tip `e782c35` 时相对 origin/main `ee649d3` **ahead 8**）：`git push origin main` **失败**——挂起 >40s 无输出后被杀；`dig github.com` 曾解析到 `20.205.243.166`，同轮 `ping` 报 `cannot resolve github.com: Unknown host`（DNS/连通性不稳定）。随后台账登记 `4a98e67`，使本地 **ahead 9**。本修订把 HEAD/ahead 与 git 对齐为 **ahead 10**（含本提交）；**push 仍未成**。§C.3 同步：`C-LEASE` 三族单 Cell 前片、`C-CELL` boot generation、`C-LIFECYCLE` 干净退出+stale-generation 测试、`C-APP-PAYLOAD` clippy 拆分、D 前片（五层 inspect + Surface CLOSED）均为 `PARTIAL_PASS`。**仍未声称**：C-SHARD、C-CELL 七件套全量、Stage D 余量、#12 全生命周期余量、三平台 CI、夜间 schedule。本地验证（据前次会话）：fmt+clippy+workspace test 于 `e782c35` 绿 1628 passed —— **≠** 三平台 CI。
 
 | 车道 | 分支 | merge SHA | 写集要点 |
 |---|---|---|---|
@@ -303,3 +303,5 @@ W35 晋升候选池（依派发纪律 (4)，决策点关闭 + 写集空闲即可
 | W39-D window | `feat/w39-window-lifecycle` | `d059ac2` | Surface open/close→CLOSED（`49d3e14`）；**仅本地** |
 | W38 cell lines | `fix/w38-cell-too-many-lines` | `f3e83f6` | clippy `too_many_lines` 拆分 process_scope（`1ad35d4`）；**仅本地** |
 | W38 pkg lines | `fix/w38-package-too-many-lines` | `e782c35` | clippy `too_many_lines` 拆分 run_command（`dcfc1d3`）；**仅本地** |
+| W38/W39 台账 | （本机 docs） | `4a98e67` | 登记上述前片为 `PARTIAL_PASS`；**仅本地** |
+| HEAD/ahead 对账 | （本机 docs） | 本提交 | 纠正 `e782c35`/ahead 8 → 与 git 一致（ahead 10）；**仅本地** |
