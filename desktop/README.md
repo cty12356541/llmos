@@ -240,10 +240,13 @@ hex 一致。
   (带 surfaces 声明段)→ 真实验签 → install → 登记 → **第二个独立权威
   句柄上的桌面呈现**(读者进程形态)逐字段断言;stale 代际空集、重声明
   恢复、未知包 NOT_FOUND、未配置 CONFIG 拒绝均钉死。
+- **表面开合终态(W39-D / §25)**:`window_lifecycle::SurfaceLifecycle`
+  落地规范链 `REGISTERED → CREATED → PRESENTED ↔ HIDDEN → CLOSED` 上的
+  open/close 动作,open 后 close 到达终态 `CLOSED`(无窗口管理器/合成器)。
 - **呈现边界登记(诚实边界)**:entry 载荷内容渲染(artifact 字节→表
-  面内容)、表面生命周期(REGISTERED→…→CLOSED)、焦点/输入路由、窗口
-  几何/多窗口编排、Surface 域 SABI ControlCommand IPC 面——均不在本最
-  小链内,视图以静态缺口卡声明缺席(证据 b-gui-001 §W32-F)。
+  面内容)、焦点/输入路由、窗口几何/多窗口编排、Surface 域 SABI
+  ControlCommand IPC 面——均不在本最小链内,视图以静态缺口卡声明缺席
+  (证据 b-gui-001 §W32-F)。
 
 ## 一致性自检(parity approach)
 
