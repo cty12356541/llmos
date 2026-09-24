@@ -1,16 +1,23 @@
 //! Process-scoped Cell identity / epoch / fencing (C-CELL first slice).
 //!
-//! ADR-0018: one OS process is one Cell authority. This crate does not
-//! implement the Cell-local seven-piece set, consensus, or any transport.
+//! ADR-0018: one OS process is one Cell authority. Each Cell process owns a
+//! caller-supplied local data directory (no shared durable root). This crate
+//! does not implement the Cell-local seven-piece set, product IPC, consensus,
+//! or Raft.
 
 use std::error::Error;
 use std::fmt;
+use std::fs;
 use std::num::NonZeroU64;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use nlos_types::{Generation, SchedulerDomainId};
 
 static PROCESS_CLAIM: Mutex<Option<CellIdentity>> = Mutex::new(None);
+
+const IDENTITY_FILE: &str = "cell_identity";
+const BOOT_GENERATION_FILE: &str = "node_boot_generation";
 
 /// Stable Cell identity: the Cell layer of [`SchedulerDomainId`].
 ///
@@ -176,13 +183,57 @@ pub struct CellAuthority {
 }
 
 impl CellAuthority {
-    /// Claims the unique Cell authority for this OS process.
+    /// Claims the unique Cell authority for this OS process without a durable
+    /// data directory. Boot generation is always [`Generation::INITIAL`].
+    ///
+    /// Prefer [`Self::claim_with_data_dir`] when the Cell owns a local durable
+    /// root so restarts bump `node_boot_generation`.
     ///
     /// # Errors
     ///
     /// Returns [`CellError::AlreadyClaimedInProcess`] when this process
     /// already holds a Cell. A second in-process claim is not a second Cell.
     pub fn claim(domain: SchedulerDomainId) -> Result<Self, CellError> {
+        Self::finish_claim(domain, Generation::INITIAL)
+    }
+
+    /// Claims the unique Cell authority for this OS process, persisting
+    /// `node_boot_generation` under `data_dir`.
+    ///
+    /// First claim writes [`Generation::INITIAL`]. A later process claim of
+    /// the same identity against the same directory advances the generation
+    /// so prior-boot fences fail [`CellAuthority::admit`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CellError::AlreadyClaimedInProcess`] when this process
+    /// already holds a Cell. Directory I/O, corrupt state, identity mismatch,
+    /// or exhausted generation space are typed [`CellError`] rejects.
+    pub fn claim_with_data_dir(
+        domain: SchedulerDomainId,
+        data_dir: impl AsRef<Path>,
+    ) -> Result<Self, CellError> {
+        let identity = CellIdentity::from_domain(domain);
+        let mut slot = PROCESS_CLAIM.lock().map_err(|_| CellError::LockPoisoned)?;
+        if let Some(existing) = *slot {
+            return Err(CellError::AlreadyClaimedInProcess { existing });
+        }
+        let node_boot_generation = advance_persisted_boot_generation(data_dir.as_ref(), identity)?;
+        *slot = Some(identity);
+        drop(slot);
+        Ok(Self {
+            identity,
+            node_boot_generation,
+            epoch: CellEpoch::INITIAL,
+            fencing_token: CellFencingToken::INITIAL,
+            os_process_id: std::process::id(),
+        })
+    }
+
+    fn finish_claim(
+        domain: SchedulerDomainId,
+        node_boot_generation: Generation,
+    ) -> Result<Self, CellError> {
         let identity = CellIdentity::from_domain(domain);
         let mut slot = PROCESS_CLAIM.lock().map_err(|_| CellError::LockPoisoned)?;
         if let Some(existing) = *slot {
@@ -192,7 +243,7 @@ impl CellAuthority {
         drop(slot);
         Ok(Self {
             identity,
-            node_boot_generation: Generation::INITIAL,
+            node_boot_generation,
             epoch: CellEpoch::INITIAL,
             fencing_token: CellFencingToken::INITIAL,
             os_process_id: std::process::id(),
@@ -316,6 +367,17 @@ pub enum CellError {
     GenerationExhausted,
     /// Process claim lock was poisoned.
     LockPoisoned,
+    /// Caller-supplied data directory could not be created or written.
+    DataDirUnavailable,
+    /// Data directory contents are incomplete or unreadable; fail closed.
+    DataDirCorrupt,
+    /// Data directory is bound to a different Cell identity.
+    DataDirIdentityMismatch {
+        /// Identity already recorded in the directory.
+        existing: CellIdentity,
+        /// Identity presented by this claim.
+        presented: CellIdentity,
+    },
 }
 
 impl fmt::Display for CellError {
@@ -331,6 +393,19 @@ impl fmt::Display for CellError {
                 formatter.write_str("Cell epoch or fencing token space exhausted")
             }
             Self::LockPoisoned => formatter.write_str("Cell process-claim lock poisoned"),
+            Self::DataDirUnavailable => {
+                formatter.write_str("Cell data directory unavailable for boot generation")
+            }
+            Self::DataDirCorrupt => {
+                formatter.write_str("Cell data directory boot-generation state is corrupt")
+            }
+            Self::DataDirIdentityMismatch {
+                existing,
+                presented,
+            } => write!(
+                formatter,
+                "Cell data directory identity mismatch: existing {existing:?} != presented {presented:?}"
+            ),
         }
     }
 }
@@ -413,3 +488,112 @@ impl fmt::Display for CellAdmitError {
 }
 
 impl Error for CellAdmitError {}
+
+fn advance_persisted_boot_generation(
+    data_dir: &Path,
+    identity: CellIdentity,
+) -> Result<Generation, CellError> {
+    fs::create_dir_all(data_dir).map_err(|_| CellError::DataDirUnavailable)?;
+
+    let identity_path = data_dir.join(IDENTITY_FILE);
+    let boot_path = data_dir.join(BOOT_GENERATION_FILE);
+    let identity_present = path_exists(&identity_path)?;
+    let boot_present = path_exists(&boot_path)?;
+
+    match (identity_present, boot_present) {
+        (false, false) => {
+            write_identity_file(&identity_path, identity)?;
+            write_boot_generation_file(&boot_path, Generation::INITIAL)?;
+            Ok(Generation::INITIAL)
+        }
+        (true, true) => {
+            let existing = read_identity_file(&identity_path)?;
+            if existing != identity {
+                return Err(CellError::DataDirIdentityMismatch {
+                    existing,
+                    presented: identity,
+                });
+            }
+            let previous = read_boot_generation_file(&boot_path)?;
+            let next = previous
+                .checked_next()
+                .ok_or(CellError::GenerationExhausted)?;
+            write_boot_generation_file(&boot_path, next)?;
+            Ok(next)
+        }
+        _ => Err(CellError::DataDirCorrupt),
+    }
+}
+
+fn path_exists(path: &Path) -> Result<bool, CellError> {
+    path.try_exists().map_err(|_| CellError::DataDirUnavailable)
+}
+
+fn write_identity_file(path: &Path, identity: CellIdentity) -> Result<(), CellError> {
+    atomic_write(path, &hex_identity(identity.as_bytes()))
+}
+
+fn read_identity_file(path: &Path) -> Result<CellIdentity, CellError> {
+    let raw = fs::read_to_string(path).map_err(|_| CellError::DataDirUnavailable)?;
+    let trimmed = raw.trim();
+    if trimmed.len() != 32 {
+        return Err(CellError::DataDirCorrupt);
+    }
+    let mut bytes = [0u8; 16];
+    for (index, chunk) in trimmed.as_bytes().chunks(2).enumerate() {
+        if chunk.len() != 2 {
+            return Err(CellError::DataDirCorrupt);
+        }
+        let high = hex_nibble(chunk[0])?;
+        let low = hex_nibble(chunk[1])?;
+        bytes[index] = (high << 4) | low;
+    }
+    Ok(CellIdentity::from_domain(SchedulerDomainId::from_bytes(
+        bytes,
+    )))
+}
+
+fn write_boot_generation_file(path: &Path, generation: Generation) -> Result<(), CellError> {
+    atomic_write(path, &format!("{}\n", generation.get()))
+}
+
+fn read_boot_generation_file(path: &Path) -> Result<Generation, CellError> {
+    let raw = fs::read_to_string(path).map_err(|_| CellError::DataDirUnavailable)?;
+    let value: u64 = raw.trim().parse().map_err(|_| CellError::DataDirCorrupt)?;
+    NonZeroU64::new(value)
+        .map(Generation::new)
+        .ok_or(CellError::DataDirCorrupt)
+}
+
+fn atomic_write(path: &Path, contents: &str) -> Result<(), CellError> {
+    let parent = path.parent().ok_or(CellError::DataDirUnavailable)?;
+    let mut tmp = PathBuf::from(parent);
+    tmp.push(format!(
+        ".{}.tmp",
+        path.file_name()
+            .ok_or(CellError::DataDirUnavailable)?
+            .to_string_lossy()
+    ));
+    fs::write(&tmp, contents).map_err(|_| CellError::DataDirUnavailable)?;
+    fs::rename(&tmp, path).map_err(|_| {
+        let _ = fs::remove_file(&tmp);
+        CellError::DataDirUnavailable
+    })
+}
+
+fn hex_identity(bytes: &[u8; 16]) -> String {
+    let mut out = String::with_capacity(32);
+    for byte in bytes {
+        fmt::Write::write_fmt(&mut out, format_args!("{byte:02x}")).expect("write hex");
+    }
+    out
+}
+
+fn hex_nibble(byte: u8) -> Result<u8, CellError> {
+    match byte {
+        b'0'..=b'9' => Ok(byte - b'0'),
+        b'a'..=b'f' => Ok(byte - b'a' + 10),
+        b'A'..=b'F' => Ok(byte - b'A' + 10),
+        _ => Err(CellError::DataDirCorrupt),
+    }
+}
