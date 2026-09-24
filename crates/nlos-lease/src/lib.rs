@@ -1,19 +1,22 @@
-//! Single-Cell `QuotaLease` / `CapacityLease` grant (C-LEASE slices).
+//! Single-Cell `QuotaLease` / `CapacityLease` / `ExclusiveDeviceLease` grant
+//! (C-LEASE slices).
 //!
 //! Control-plane prepaid transfer for one Cell:
 //! - `QuotaLease` (`LEASE-GRANT-001`): `AVAILABLE` → node `LEASE`; face value
 //!   deducted from the in-memory available pool before issue.
 //! - `CapacityLease` (`LEASE-CAPACITY-001` prefix): source pool →
 //!   `GLOBAL_RESERVED`; `amount` deducted before issue.
+//! - `ExclusiveDeviceLease` (`LEASE-DEVICE-001` prefix): FREE `DeviceLeaseHead` →
+//!   `DEVICE_RESERVED`; device claimed before issue.
 //!
-//! Stale epoch is a typed fail-closed reject for both families.
+//! Stale epoch is a typed fail-closed reject for all three families.
 //!
 //! Fence admit is delegated to [`CellAuthority::admit`]; this crate does not
 //! re-implement the fail-closed fence checks.
 //!
-//! Out of scope for this slice: `ExclusiveDevice`, reconciliation, custody
-//! (#17), cross-cell grant, transport, Raft, durable second ledger, and the
-//! `CapacityLease` full state machine beyond `GLOBAL_RESERVED`.
+//! Out of scope for this slice: reconciliation, custody (#17), cross-cell
+//! grant, transport, Raft, durable second ledger, and full state machines
+//! beyond the first reserved state of each family.
 
 use std::error::Error;
 use std::fmt;
@@ -21,7 +24,7 @@ use std::fmt;
 use nlos_cell::{
     CellAdmitError, CellAuthority, CellEpoch, CellFence, CellFencingToken, CellIdentity,
 };
-use nlos_types::{CapacityLeaseId, Generation, QuotaLeaseId};
+use nlos_types::{CapacityLeaseId, DeviceId, ExclusiveDeviceLeaseId, Generation, QuotaLeaseId};
 
 /// Fence scope for a single-Cell grant: the Cell identity itself.
 ///
@@ -553,3 +556,256 @@ impl fmt::Display for CapacityLeaseGrantError {
 }
 
 impl Error for CapacityLeaseGrantError {}
+
+/// `ExclusiveDeviceLease` state after a successful grant. Full state machine
+/// (`HOLDER_PREPARED` / `ACTIVE` / reset / …) is deferred.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum ExclusiveDeviceLeaseState {
+    /// Issued after durable (here: in-memory) FREE→reserved claim on the
+    /// `DeviceLeaseHead` (`LEASE-DEVICE-001` `DEVICE_RESERVED`).
+    DeviceReserved,
+}
+
+/// A single-Cell `ExclusiveDeviceLease` grant snapshot (v0.5 §12 fields used by
+/// this slice: id, device, exclusivity epoch, holder node/boot, fencing token,
+/// state).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExclusiveDeviceLeaseGrant {
+    device_lease_id: ExclusiveDeviceLeaseId,
+    device_id: DeviceId,
+    holder_node: CellIdentity,
+    holder_node_boot_generation: Generation,
+    exclusivity_epoch: CellEpoch,
+    fencing_token: CellFencingToken,
+    fence_scope: FenceScope,
+    state: ExclusiveDeviceLeaseState,
+}
+
+impl ExclusiveDeviceLeaseGrant {
+    /// Stable exclusive device lease identity.
+    #[must_use]
+    pub const fn device_lease_id(self) -> ExclusiveDeviceLeaseId {
+        self.device_lease_id
+    }
+
+    /// Device identity bound into the grant.
+    #[must_use]
+    pub const fn device_id(self) -> DeviceId {
+        self.device_id
+    }
+
+    /// Holder Cell (`holder_node` in §12 `ExclusiveDeviceLease`).
+    #[must_use]
+    pub const fn holder_node(self) -> CellIdentity {
+        self.holder_node
+    }
+
+    /// Holder node boot generation bound into the grant.
+    #[must_use]
+    pub const fn holder_node_boot_generation(self) -> Generation {
+        self.holder_node_boot_generation
+    }
+
+    /// Exclusivity epoch bound into the grant (Cell epoch for this single-Cell
+    /// fence slice).
+    #[must_use]
+    pub const fn exclusivity_epoch(self) -> CellEpoch {
+        self.exclusivity_epoch
+    }
+
+    /// Fencing token bound into the grant.
+    #[must_use]
+    pub const fn fencing_token(self) -> CellFencingToken {
+        self.fencing_token
+    }
+
+    /// Fence scope for this grant.
+    #[must_use]
+    pub const fn fence_scope(self) -> FenceScope {
+        self.fence_scope
+    }
+
+    /// Lease state after grant.
+    #[must_use]
+    pub const fn state(self) -> ExclusiveDeviceLeaseState {
+        self.state
+    }
+}
+
+/// In-memory single-Cell `ExclusiveDeviceLease` grantor.
+///
+/// Holds one `DeviceLeaseHead` (FREE or reserved) and the Cell authority used
+/// for fence admit. Not a durable ledger and not a second authority store.
+#[derive(Debug)]
+pub struct ExclusiveDeviceLeaseGrantor {
+    authority: CellAuthority,
+    device_id: DeviceId,
+    free: bool,
+}
+
+impl ExclusiveDeviceLeaseGrantor {
+    /// Opens a grantor bound to an existing Cell authority with a FREE device
+    /// head for `device_id`.
+    #[must_use]
+    pub const fn open(authority: CellAuthority, device_id: DeviceId) -> Self {
+        Self {
+            authority,
+            device_id,
+            free: true,
+        }
+    }
+
+    /// Device identity this grantor manages.
+    #[must_use]
+    pub const fn device_id(&self) -> DeviceId {
+        self.device_id
+    }
+
+    /// Whether the in-memory `DeviceLeaseHead` is still FREE.
+    #[must_use]
+    pub const fn is_free(&self) -> bool {
+        self.free
+    }
+
+    /// Grants an `ExclusiveDeviceLease` against a presented Cell fence.
+    ///
+    /// `LEASE-DEVICE-001` prefix: the FREE head is claimed before the lease
+    /// enters [`ExclusiveDeviceLeaseState::DeviceReserved`]. Fail-closed fence
+    /// checks run via [`CellAuthority::admit`] before any claim.
+    ///
+    /// # Errors
+    ///
+    /// Typed reject: [`ExclusiveDeviceLeaseGrantError`].
+    pub fn grant(
+        &mut self,
+        presented: &CellFence,
+        device_lease_id: ExclusiveDeviceLeaseId,
+    ) -> Result<ExclusiveDeviceLeaseGrant, ExclusiveDeviceLeaseGrantError> {
+        self.authority.admit(presented)?;
+        if !self.free {
+            return Err(ExclusiveDeviceLeaseGrantError::DeviceNotFree {
+                device_id: self.device_id,
+            });
+        }
+        self.free = false;
+        let holder_node = self.authority.identity();
+        Ok(ExclusiveDeviceLeaseGrant {
+            device_lease_id,
+            device_id: self.device_id,
+            holder_node,
+            holder_node_boot_generation: self.authority.node_boot_generation(),
+            exclusivity_epoch: self.authority.epoch(),
+            fencing_token: self.authority.fencing_token(),
+            fence_scope: FenceScope::cell(holder_node),
+            state: ExclusiveDeviceLeaseState::DeviceReserved,
+        })
+    }
+}
+
+/// Typed fail-closed rejects for an `ExclusiveDeviceLease` grant attempt.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExclusiveDeviceLeaseGrantError {
+    /// Presented epoch is older than the grantor's current epoch.
+    StaleEpoch {
+        /// Epoch on the presentation.
+        presented: CellEpoch,
+        /// Epoch currently held by the grantor.
+        current: CellEpoch,
+    },
+    /// Presented epoch is not current and is not older (fail closed).
+    EpochMismatch {
+        /// Epoch on the presentation.
+        presented: CellEpoch,
+        /// Epoch currently held by the grantor.
+        current: CellEpoch,
+    },
+    /// Presented boot generation does not match the grantor.
+    BootGenerationMismatch {
+        /// Boot generation on the presentation.
+        presented: Generation,
+        /// Boot generation currently held by the grantor.
+        current: Generation,
+    },
+    /// Presented identity is not this Cell.
+    IdentityMismatch {
+        /// Identity on the presentation.
+        presented: CellIdentity,
+        /// Identity of this grantor.
+        current: CellIdentity,
+    },
+    /// Epoch matches but the fencing token does not.
+    FencingTokenMismatch {
+        /// Token on the presentation.
+        presented: CellFencingToken,
+        /// Token currently held by the grantor.
+        current: CellFencingToken,
+    },
+    /// `DeviceLeaseHead` is not FREE; cannot install a second exclusive holder.
+    DeviceNotFree {
+        /// Device whose head is already reserved.
+        device_id: DeviceId,
+    },
+}
+
+impl From<CellAdmitError> for ExclusiveDeviceLeaseGrantError {
+    fn from(error: CellAdmitError) -> Self {
+        match error {
+            CellAdmitError::StaleEpoch { presented, current } => {
+                Self::StaleEpoch { presented, current }
+            }
+            CellAdmitError::EpochMismatch { presented, current } => {
+                Self::EpochMismatch { presented, current }
+            }
+            CellAdmitError::BootGenerationMismatch { presented, current } => {
+                Self::BootGenerationMismatch { presented, current }
+            }
+            CellAdmitError::IdentityMismatch { presented, current } => {
+                Self::IdentityMismatch { presented, current }
+            }
+            CellAdmitError::FencingTokenMismatch { presented, current } => {
+                Self::FencingTokenMismatch { presented, current }
+            }
+        }
+    }
+}
+
+impl fmt::Display for ExclusiveDeviceLeaseGrantError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::StaleEpoch { presented, current } => write!(
+                formatter,
+                "stale Cell epoch for ExclusiveDeviceLease grant: presented {} < current {}",
+                presented.get(),
+                current.get()
+            ),
+            Self::EpochMismatch { presented, current } => write!(
+                formatter,
+                "Cell epoch mismatch for ExclusiveDeviceLease grant: presented {} != current {}",
+                presented.get(),
+                current.get()
+            ),
+            Self::BootGenerationMismatch { presented, current } => write!(
+                formatter,
+                "Cell boot generation mismatch for ExclusiveDeviceLease grant: presented {} != current {}",
+                presented.get(),
+                current.get()
+            ),
+            Self::IdentityMismatch { presented, current } => write!(
+                formatter,
+                "Cell identity mismatch for ExclusiveDeviceLease grant: presented {presented:?} != current {current:?}"
+            ),
+            Self::FencingTokenMismatch { presented, current } => write!(
+                formatter,
+                "Cell fencing token mismatch for ExclusiveDeviceLease grant: presented {} != current {}",
+                presented.get(),
+                current.get()
+            ),
+            Self::DeviceNotFree { device_id } => write!(
+                formatter,
+                "ExclusiveDeviceLease DeviceLeaseHead not FREE for device {device_id:?}"
+            ),
+        }
+    }
+}
+
+impl Error for ExclusiveDeviceLeaseGrantError {}
