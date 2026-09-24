@@ -17,8 +17,9 @@ use nlos_schema::sabi::v1::{
     SabiRequestContext,
 };
 use nlos_system_control::control::{
-    ControlCommand, ControlOutcome, ProcessInspection, ProcessInspector, RecoveryWorkerLifecycle,
-    ResourceInspection, ResourceInspector, dispatch_in_process, parse_hex_id,
+    ApplicationInspection, ApplicationInspector, ControlCommand, ControlOutcome, ProcessInspection,
+    ProcessInspector, RecoveryWorkerLifecycle, ResourceInspection, ResourceInspector,
+    dispatch_in_process, parse_hex_id,
 };
 #[cfg(unix)]
 use nlos_system_control::{OperationCommandExecutor, OperationControlRequest};
@@ -45,6 +46,7 @@ const DENIED_REASON: &str = "denied: exercising the policy denial path";
 
 const PROCESS_ID: [u8; 16] = [0x77; 16];
 const RESERVATION_ID: [u8; 16] = [0x88; 16];
+const PACKAGE_ID: [u8; 16] = [0xA1; 16];
 
 // 仅被 #[cfg(unix)] 的 socket/CLI parity 测试使用；Windows 腿编译时置空避免 dead_code
 #[cfg(unix)]
@@ -214,6 +216,42 @@ fn stub_resource_inspection() -> StubResourceInspector {
             upper_bound: 100,
             usage_high_water: 37,
             consumption_count: 2,
+        },
+    }
+}
+
+struct StubApplicationInspector {
+    snapshot: ApplicationInspection,
+}
+
+impl ApplicationInspector for StubApplicationInspector {
+    fn inspect_application(
+        &self,
+        package_id: [u8; 16],
+    ) -> Result<ApplicationInspection, SabiFailure> {
+        if package_id == self.snapshot.package_id {
+            Ok(self.snapshot.clone())
+        } else {
+            Err(nlos_schema::sabi::v1::SabiFailure {
+                code: SabiErrorCode::NotFound.into(),
+                retry: nlos_schema::sabi::v1::RetryDirective::DoNotRetry.into(),
+                safe_message: "requested application was not found under the package identity"
+                    .to_owned(),
+            })
+        }
+    }
+}
+
+fn stub_application_inspection() -> StubApplicationInspector {
+    StubApplicationInspector {
+        snapshot: ApplicationInspection {
+            package_id: PACKAGE_ID,
+            application_id: [0xA2; 16],
+            package_manifest_digest: [0xA3; 32],
+            current_installation_generation: 2,
+            status: 1,
+            created_at_ms: 1_000,
+            updated_at_ms: 2_000,
         },
     }
 }
@@ -477,6 +515,7 @@ fn in_process_dispatch_produces_typed_receipts() {
         WALL_NOW_MS,
         None,
         None,
+        None,
     )
     .unwrap();
     let ControlOutcome::Inspected(inspection) = health_receipt.outcome.as_ref().unwrap() else {
@@ -498,6 +537,7 @@ fn in_process_dispatch_produces_typed_receipts() {
         WALL_NOW_MS,
         None,
         None,
+        None,
     )
     .unwrap();
     let ControlOutcome::Inspected(task_inspection) = task_receipt.outcome.as_ref().unwrap() else {
@@ -515,6 +555,7 @@ fn in_process_dispatch_produces_typed_receipts() {
         WALL_NOW_MS,
         None,
         None,
+        None,
     )
     .unwrap();
     let Err(failure) = missing.outcome.as_ref() else {
@@ -529,6 +570,7 @@ fn in_process_dispatch_produces_typed_receipts() {
         WALL_NOW_MS,
         None,
         None,
+        None,
     )
     .unwrap();
     let ControlOutcome::Acknowledged { receipt_id } = acknowledgement.outcome.as_ref().unwrap()
@@ -541,6 +583,7 @@ fn in_process_dispatch_produces_typed_receipts() {
         &acknowledge_command(&plan_id),
         MONOTONIC_NOW_NS,
         WALL_NOW_MS,
+        None,
         None,
         None,
     )
@@ -568,6 +611,7 @@ fn in_process_dispatch_produces_typed_receipts() {
         WALL_NOW_MS,
         None,
         None,
+        None,
     )
     .unwrap();
     let Err(denial) = denied.outcome.as_ref() else {
@@ -583,6 +627,7 @@ fn in_process_dispatch_produces_typed_receipts() {
         },
         MONOTONIC_NOW_NS,
         WALL_NOW_MS,
+        None,
         None,
         None,
     )
@@ -602,6 +647,7 @@ fn in_process_dispatch_produces_typed_receipts() {
         WALL_NOW_MS,
         Some(&stub),
         None,
+        None,
     )
     .unwrap();
     let ControlOutcome::ProcessInspected(snapshot) = process_receipt.outcome.as_ref().unwrap()
@@ -618,6 +664,7 @@ fn in_process_dispatch_produces_typed_receipts() {
         },
         MONOTONIC_NOW_NS,
         WALL_NOW_MS,
+        None,
         None,
         None,
     )
@@ -640,6 +687,7 @@ fn in_process_dispatch_produces_typed_receipts() {
         WALL_NOW_MS,
         None,
         Some(&resource_stub),
+        None,
     )
     .unwrap();
     let ControlOutcome::ResourceInspected(resource_snapshot) =
@@ -649,6 +697,57 @@ fn in_process_dispatch_produces_typed_receipts() {
     };
     assert_eq!(resource_snapshot.reservation_id, RESERVATION_ID);
     assert_eq!(resource_snapshot.usage_high_water, 37);
+
+    let unwired_application = dispatch_in_process(
+        &control,
+        &ControlCommand::InspectApplication {
+            package_id: PACKAGE_ID,
+        },
+        MONOTONIC_NOW_NS,
+        WALL_NOW_MS,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    let Err(unwired_application_failure) = unwired_application.outcome.as_ref() else {
+        panic!("expected typed failure when the application backend is unwired");
+    };
+    assert_eq!(
+        unwired_application_failure.code,
+        i32::from(SabiErrorCode::NotFound)
+    );
+    assert_eq!(
+        unwired_application_failure.safe_message,
+        "application inspection backend is not wired"
+    );
+
+    let application_stub = stub_application_inspection();
+    let application_receipt = dispatch_in_process(
+        &control,
+        &ControlCommand::InspectApplication {
+            package_id: PACKAGE_ID,
+        },
+        MONOTONIC_NOW_NS,
+        WALL_NOW_MS,
+        None,
+        None,
+        Some(&application_stub),
+    )
+    .unwrap();
+    let ControlOutcome::ApplicationInspected(application_snapshot) =
+        application_receipt.outcome.as_ref().unwrap()
+    else {
+        panic!("expected application inspection receipt");
+    };
+    assert_eq!(application_snapshot.package_id, PACKAGE_ID);
+    assert_eq!(application_snapshot.current_installation_generation, 2);
+    assert_eq!(application_snapshot.status, 1);
+    assert_eq!(
+        application_receipt.to_bytes()[36],
+        22,
+        "application inspection outcome discriminator tag"
+    );
 }
 
 #[cfg(unix)]
@@ -770,6 +869,7 @@ mod socket_harness {
         cli_args: &[&str],
         process: Option<&dyn ProcessInspector>,
         resource: Option<&dyn ResourceInspector>,
+        application: Option<&dyn ApplicationInspector>,
     ) {
         use nlos_system_control::control::dispatch_over_socket;
 
@@ -780,9 +880,10 @@ mod socket_harness {
             WALL_NOW_MS,
             process,
             resource,
+            application,
         )
         .unwrap();
-        let library = dispatch_over_socket(socket_path, command, process, resource)
+        let library = dispatch_over_socket(socket_path, command, process, resource, application)
             .await
             .unwrap();
         assert_eq!(direct.to_bytes(), library.to_bytes());
@@ -805,16 +906,19 @@ mod socket_harness {
         nl_commands: &[ControlCommand],
         process: Option<&dyn ProcessInspector>,
         resource: Option<&dyn ResourceInspector>,
+        application: Option<&dyn ApplicationInspector>,
     ) {
         use nlos_system_control::control::dispatch_over_socket;
 
-        let direct_receipt = dispatch_over_socket(socket_path, direct, process, resource)
-            .await
-            .unwrap();
-        for nl_command in nl_commands {
-            let nl_receipt = dispatch_over_socket(socket_path, nl_command, process, resource)
+        let direct_receipt =
+            dispatch_over_socket(socket_path, direct, process, resource, application)
                 .await
                 .unwrap();
+        for nl_command in nl_commands {
+            let nl_receipt =
+                dispatch_over_socket(socket_path, nl_command, process, resource, application)
+                    .await
+                    .unwrap();
             assert_eq!(direct_receipt.to_bytes(), nl_receipt.to_bytes());
             let in_process = dispatch_in_process(
                 control,
@@ -823,6 +927,7 @@ mod socket_harness {
                 WALL_NOW_MS,
                 process,
                 resource,
+                application,
             )
             .unwrap();
             assert_eq!(in_process.to_bytes(), direct_receipt.to_bytes());
@@ -855,6 +960,7 @@ async fn cli_and_in_process_paths_produce_byte_identical_receipts() {
         &["inspect-health"],
         None,
         None,
+        None,
     )
     .await;
     assert_in_process_socket_and_cli_parity(
@@ -862,6 +968,7 @@ async fn cli_and_in_process_paths_produce_byte_identical_receipts() {
         &control,
         &ControlCommand::ExportMetrics,
         &["export-metrics"],
+        None,
         None,
         None,
     )
@@ -875,6 +982,7 @@ async fn cli_and_in_process_paths_produce_byte_identical_receipts() {
         &unwired_process,
         MONOTONIC_NOW_NS,
         WALL_NOW_MS,
+        None,
         None,
         None,
     )
@@ -894,6 +1002,7 @@ async fn cli_and_in_process_paths_produce_byte_identical_receipts() {
         &unwired_resource,
         MONOTONIC_NOW_NS,
         WALL_NOW_MS,
+        None,
         None,
         None,
     )
@@ -919,6 +1028,7 @@ async fn cli_and_in_process_paths_produce_byte_identical_receipts() {
         ],
         None,
         None,
+        None,
     )
     .await;
     let ack_direct = dispatch_in_process(
@@ -926,6 +1036,7 @@ async fn cli_and_in_process_paths_produce_byte_identical_receipts() {
         &acknowledge,
         MONOTONIC_NOW_NS,
         WALL_NOW_MS,
+        None,
         None,
         None,
     )
@@ -945,6 +1056,7 @@ async fn cli_and_in_process_paths_produce_byte_identical_receipts() {
         },
         MONOTONIC_NOW_NS,
         WALL_NOW_MS,
+        None,
         None,
         None,
     )
@@ -996,6 +1108,7 @@ async fn cli_and_in_process_paths_produce_byte_identical_receipts() {
         WALL_NOW_MS,
         None,
         None,
+        None,
     )
     .unwrap();
     let ControlOutcome::SemanticInspected(inspection) =
@@ -1013,6 +1126,7 @@ async fn cli_and_in_process_paths_produce_byte_identical_receipts() {
         &["inspect-semantic-health"],
         None,
         None,
+        None,
     )
     .await;
     assert_in_process_socket_and_cli_parity(
@@ -1020,6 +1134,7 @@ async fn cli_and_in_process_paths_produce_byte_identical_receipts() {
         &control,
         &ControlCommand::ExportSemanticMetrics,
         &["export-semantic-metrics"],
+        None,
         None,
         None,
     )
@@ -1044,6 +1159,7 @@ async fn cli_and_in_process_paths_produce_byte_identical_receipts() {
         ],
         None,
         None,
+        None,
     )
     .await;
 
@@ -1058,6 +1174,7 @@ async fn cli_and_in_process_paths_produce_byte_identical_receipts() {
         &semantic_resume,
         MONOTONIC_NOW_NS,
         WALL_NOW_MS,
+        None,
         None,
         None,
     )
@@ -1183,6 +1300,7 @@ async fn nl_sentences_compile_to_the_same_socket_receipts_as_direct_commands() {
         &[nl_inspect, synonym_inspect, status_health],
         None,
         None,
+        None,
     )
     .await;
     let health_check = parse_nl_command("health check").unwrap();
@@ -1196,6 +1314,7 @@ async fn nl_sentences_compile_to_the_same_socket_receipts_as_direct_commands() {
         &[health_check, system_status, spaced_health, check_health],
         None,
         None,
+        None,
     )
     .await;
     let health_status = parse_nl_command("health status").unwrap();
@@ -1207,6 +1326,7 @@ async fn nl_sentences_compile_to_the_same_socket_receipts_as_direct_commands() {
         &control,
         &ControlCommand::InspectHealth,
         &[health_status, zh_health_status],
+        None,
         None,
         None,
     )
@@ -1232,6 +1352,7 @@ async fn nl_sentences_compile_to_the_same_socket_receipts_as_direct_commands() {
         &[nl_task, synonym_task],
         None,
         None,
+        None,
     )
     .await;
     let task_status = parse_nl_command(&format!("task status {plan_hex}")).unwrap();
@@ -1245,6 +1366,7 @@ async fn nl_sentences_compile_to_the_same_socket_receipts_as_direct_commands() {
         &[task_status, zh_task_status],
         None,
         None,
+        None,
     )
     .await;
     let task_receipt = dispatch_in_process(
@@ -1252,6 +1374,7 @@ async fn nl_sentences_compile_to_the_same_socket_receipts_as_direct_commands() {
         &direct_task,
         MONOTONIC_NOW_NS,
         WALL_NOW_MS,
+        None,
         None,
         None,
     )
@@ -1277,21 +1400,27 @@ async fn nl_sentences_compile_to_the_same_socket_receipts_as_direct_commands() {
         parse_nl_command("指标").unwrap(),
         ControlCommand::ExportMetrics
     );
-    let direct_export =
-        dispatch_over_socket(&socket_path, &ControlCommand::ExportMetrics, None, None)
-            .await
-            .unwrap();
-    let nl_export_receipt = dispatch_over_socket(&socket_path, &nl_export, None, None)
+    let direct_export = dispatch_over_socket(
+        &socket_path,
+        &ControlCommand::ExportMetrics,
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let nl_export_receipt = dispatch_over_socket(&socket_path, &nl_export, None, None, None)
         .await
         .unwrap();
     assert_eq!(direct_export.to_bytes(), nl_export_receipt.to_bytes());
     let metrics_synonym = parse_nl_command("metrics").unwrap();
     let metrics_zh = parse_nl_command("指标").unwrap();
-    let metrics_synonym_receipt = dispatch_over_socket(&socket_path, &metrics_synonym, None, None)
-        .await
-        .unwrap();
+    let metrics_synonym_receipt =
+        dispatch_over_socket(&socket_path, &metrics_synonym, None, None, None)
+            .await
+            .unwrap();
     assert_eq!(direct_export.to_bytes(), metrics_synonym_receipt.to_bytes());
-    let metrics_zh_receipt = dispatch_over_socket(&socket_path, &metrics_zh, None, None)
+    let metrics_zh_receipt = dispatch_over_socket(&socket_path, &metrics_zh, None, None, None)
         .await
         .unwrap();
     assert_eq!(direct_export.to_bytes(), metrics_zh_receipt.to_bytes());
@@ -1300,6 +1429,7 @@ async fn nl_sentences_compile_to_the_same_socket_receipts_as_direct_commands() {
         &nl_export,
         MONOTONIC_NOW_NS,
         WALL_NOW_MS,
+        None,
         None,
         None,
     )
@@ -1338,6 +1468,7 @@ async fn nl_sentences_compile_to_the_same_socket_receipts_as_direct_commands() {
         &[nl_process, synonym_process],
         Some(&stub),
         None,
+        None,
     )
     .await;
     let process_receipt = dispatch_in_process(
@@ -1346,6 +1477,7 @@ async fn nl_sentences_compile_to_the_same_socket_receipts_as_direct_commands() {
         MONOTONIC_NOW_NS,
         WALL_NOW_MS,
         Some(&stub),
+        None,
         None,
     )
     .unwrap();
@@ -1378,6 +1510,7 @@ async fn nl_sentences_compile_to_the_same_socket_receipts_as_direct_commands() {
         &[nl_resource, synonym_resource],
         None,
         Some(&resource_stub),
+        None,
     )
     .await;
     let resource_status = parse_nl_command(&format!("resource status {reservation_hex}")).unwrap();
@@ -1391,6 +1524,7 @@ async fn nl_sentences_compile_to_the_same_socket_receipts_as_direct_commands() {
         &[resource_status, zh_resource_status],
         None,
         Some(&resource_stub),
+        None,
     )
     .await;
     let resource_receipt = dispatch_in_process(
@@ -1400,6 +1534,7 @@ async fn nl_sentences_compile_to_the_same_socket_receipts_as_direct_commands() {
         WALL_NOW_MS,
         None,
         Some(&resource_stub),
+        None,
     )
     .unwrap();
     let ControlOutcome::ResourceInspected(resource_snapshot) =
@@ -1424,7 +1559,7 @@ async fn nl_sentences_compile_to_the_same_socket_receipts_as_direct_commands() {
     assert_eq!(nl_ack, direct_ack);
     let ack_synonym = parse_nl_command(&format!("ack alert {plan_hex} expecting 1")).unwrap();
     assert_eq!(ack_synonym, direct_ack);
-    let direct_ack_receipt = dispatch_over_socket(&socket_path, &direct_ack, None, None)
+    let direct_ack_receipt = dispatch_over_socket(&socket_path, &direct_ack, None, None, None)
         .await
         .unwrap();
     let ControlOutcome::Acknowledged { receipt_id } = direct_ack_receipt.outcome.as_ref().unwrap()
@@ -1433,7 +1568,7 @@ async fn nl_sentences_compile_to_the_same_socket_receipts_as_direct_commands() {
     };
     assert_eq!(receipt_id.len(), 16);
     for nl_command in [nl_ack, ack_synonym] {
-        let nl_ack_receipt = dispatch_over_socket(&socket_path, &nl_command, None, None)
+        let nl_ack_receipt = dispatch_over_socket(&socket_path, &nl_command, None, None, None)
             .await
             .unwrap();
         assert_eq!(direct_ack_receipt.to_bytes(), nl_ack_receipt.to_bytes());
@@ -1628,6 +1763,7 @@ async fn operation_control_commands_are_byte_identical_across_nl_cli_and_direct_
             &nl_commands,
             None,
             None,
+            None,
         )
         .await;
         assert_in_process_socket_and_cli_parity(
@@ -1643,9 +1779,10 @@ async fn operation_control_commands_are_byte_identical_across_nl_cli_and_direct_
             ],
             None,
             None,
+            None,
         )
         .await;
-        let receipt = dispatch_over_socket(&socket_path, &operation, None, None)
+        let receipt = dispatch_over_socket(&socket_path, &operation, None, None, None)
             .await
             .unwrap();
         match receipt.outcome.as_ref().unwrap() {
@@ -1670,8 +1807,16 @@ async fn operation_control_commands_are_byte_identical_across_nl_cli_and_direct_
         expected_generation_or_revision: OPERATION_CAS,
         reason: DENIED_REASON.to_owned(),
     };
-    let denied_reference =
-        dispatch_in_process(&control, &denied, MONOTONIC_NOW_NS, WALL_NOW_MS, None, None).unwrap();
+    let denied_reference = dispatch_in_process(
+        &control,
+        &denied,
+        MONOTONIC_NOW_NS,
+        WALL_NOW_MS,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
     let Err(failure) = denied_reference.outcome.as_ref() else {
         panic!("expected typed policy failure");
     };
@@ -1833,6 +1978,7 @@ async fn kill_throttle_reclaim_commands_are_byte_identical_across_nl_cli_and_dir
             &nl_commands,
             None,
             None,
+            None,
         )
         .await;
         let cli_reference: Vec<&str> = cli_args.iter().map(String::as_str).collect();
@@ -1843,9 +1989,10 @@ async fn kill_throttle_reclaim_commands_are_byte_identical_across_nl_cli_and_dir
             &cli_reference,
             None,
             None,
+            None,
         )
         .await;
-        let receipt = dispatch_over_socket(&socket_path, &operation, None, None)
+        let receipt = dispatch_over_socket(&socket_path, &operation, None, None, None)
             .await
             .unwrap();
         match receipt.outcome.as_ref().unwrap() {
@@ -1927,6 +2074,7 @@ async fn resource_recovery_commands_are_byte_identical_across_nl_cli_and_direct_
         WALL_NOW_MS,
         None,
         None,
+        None,
     )
     .unwrap();
     let ControlOutcome::ResourceRecoveryInspected(resource_inspection) =
@@ -1944,6 +2092,7 @@ async fn resource_recovery_commands_are_byte_identical_across_nl_cli_and_direct_
         &[nl_inspect, nl_inspect_zh, nl_inspect_status],
         None,
         None,
+        None,
     )
     .await;
     assert_in_process_socket_and_cli_parity(
@@ -1951,6 +2100,7 @@ async fn resource_recovery_commands_are_byte_identical_across_nl_cli_and_direct_
         &control,
         &ControlCommand::InspectResourceHealth,
         &["inspect-resource-health"],
+        None,
         None,
         None,
     )
@@ -1971,6 +2121,7 @@ async fn resource_recovery_commands_are_byte_identical_across_nl_cli_and_direct_
         &[nl_export],
         None,
         None,
+        None,
     )
     .await;
     assert_in_process_socket_and_cli_parity(
@@ -1980,11 +2131,13 @@ async fn resource_recovery_commands_are_byte_identical_across_nl_cli_and_direct_
         &["export-resource-metrics"],
         None,
         None,
+        None,
     )
     .await;
     let export_receipt = dispatch_over_socket(
         &socket_path,
         &ControlCommand::ExportResourceMetrics,
+        None,
         None,
         None,
     )
@@ -2021,6 +2174,7 @@ async fn resource_recovery_commands_are_byte_identical_across_nl_cli_and_direct_
         ],
         None,
         None,
+        None,
     )
     .await;
     let nl_ack = parse_nl_command(&format!(
@@ -2049,6 +2203,7 @@ async fn resource_recovery_commands_are_byte_identical_across_nl_cli_and_direct_
         &[nl_ack.clone(), nl_ack_zh],
         None,
         None,
+        None,
     )
     .await;
     assert!(
@@ -2070,8 +2225,16 @@ async fn resource_recovery_commands_are_byte_identical_across_nl_cli_and_direct_
         expected_total_failures: RESOURCE_TOTAL_FAILURES,
         reason: RESOURCE_REASON.to_owned(),
     };
-    let resume_reference =
-        dispatch_in_process(&control, &resume, MONOTONIC_NOW_NS, WALL_NOW_MS, None, None).unwrap();
+    let resume_reference = dispatch_in_process(
+        &control,
+        &resume,
+        MONOTONIC_NOW_NS,
+        WALL_NOW_MS,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
     let ControlOutcome::Resumed { receipt_id } = resume_reference.outcome.as_ref().unwrap() else {
         panic!("expected resumed receipt");
     };
@@ -2106,7 +2269,7 @@ async fn resource_recovery_commands_are_byte_identical_across_nl_cli_and_direct_
     );
 
     reset_escalated_resource_recovery(&database);
-    let nl_resume_receipt = dispatch_over_socket(&socket_path, &nl_resume, None, None)
+    let nl_resume_receipt = dispatch_over_socket(&socket_path, &nl_resume, None, None, None)
         .await
         .unwrap();
     let ControlOutcome::Resumed { receipt_id } = nl_resume_receipt.outcome.as_ref().unwrap() else {
@@ -2393,6 +2556,7 @@ async fn w32g_layer_reads_are_byte_identical_across_nl_cli_and_direct_paths() {
         &["inspect-task-group", &hex(group_id.as_bytes())],
         None,
         None,
+        None,
     )
     .await;
     assert_nl_socket_and_in_process_parity(
@@ -2415,6 +2579,7 @@ async fn w32g_layer_reads_are_byte_identical_across_nl_cli_and_direct_paths() {
         ],
         None,
         None,
+        None,
     )
     .await;
 
@@ -2428,6 +2593,7 @@ async fn w32g_layer_reads_are_byte_identical_across_nl_cli_and_direct_paths() {
             node_id: [0xA2; 16],
         },
         &["inspect-task-node", &node_hex_a1, &node_hex_a2],
+        None,
         None,
         None,
     )
@@ -2451,6 +2617,7 @@ async fn w32g_layer_reads_are_byte_identical_across_nl_cli_and_direct_paths() {
         ],
         None,
         None,
+        None,
     )
     .await;
 
@@ -2463,6 +2630,7 @@ async fn w32g_layer_reads_are_byte_identical_across_nl_cli_and_direct_paths() {
             generation: 2,
         },
         &["inspect-fiber", &fiber_hex, "2"],
+        None,
         None,
         None,
     )
@@ -2484,6 +2652,7 @@ async fn w32g_layer_reads_are_byte_identical_across_nl_cli_and_direct_paths() {
         ],
         None,
         None,
+        None,
     )
     .await;
 
@@ -2495,6 +2664,7 @@ async fn w32g_layer_reads_are_byte_identical_across_nl_cli_and_direct_paths() {
             topic_id: [0xC1; 16],
         },
         &["inspect-topic", &topic_hex],
+        None,
         None,
         None,
     )
@@ -2512,6 +2682,7 @@ async fn w32g_layer_reads_are_byte_identical_across_nl_cli_and_direct_paths() {
         ],
         None,
         None,
+        None,
     )
     .await;
 
@@ -2524,6 +2695,7 @@ async fn w32g_layer_reads_are_byte_identical_across_nl_cli_and_direct_paths() {
             generation: 1,
         },
         &["inspect-operation", &operation_hex, "1"],
+        None,
         None,
         None,
     )
@@ -2543,6 +2715,7 @@ async fn w32g_layer_reads_are_byte_identical_across_nl_cli_and_direct_paths() {
             ))
             .unwrap(),
         ],
+        None,
         None,
         None,
     )

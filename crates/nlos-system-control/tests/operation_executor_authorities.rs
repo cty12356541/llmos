@@ -113,7 +113,16 @@ fn dispatch<E: nlos_system_control::OperationCommandExecutor>(
     let health = stub_health();
     let control = RecoverySystemControl::new(tasks, &health, &CapabilityPolicy)
         .with_operation_executor(executor);
-    dispatch_in_process(&control, command, MONOTONIC_NOW_NS, WALL_NOW_MS, None, None).unwrap()
+    dispatch_in_process(
+        &control,
+        command,
+        MONOTONIC_NOW_NS,
+        WALL_NOW_MS,
+        None,
+        None,
+        None,
+    )
+    .unwrap()
 }
 
 fn operation_request(

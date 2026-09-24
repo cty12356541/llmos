@@ -71,6 +71,12 @@ pub mod process_inspector;
 #[cfg(feature = "resource")]
 pub mod resource_inspector;
 
+/// Optional [`control::ApplicationInspector`] adapter backed by
+/// [`nlos_application::ApplicationAuthority`] (`application` feature,
+/// W38-A11 C-APP-CONTROL GET 后片).
+#[cfg(feature = "application")]
+pub mod application_inspector;
+
 /// Optional [`TaskNodeInspectSource`] adapter backed by the durable
 /// [`nlos_plan::SqlitePlanAuthority`] (`plan` feature, W32-G).
 #[cfg(feature = "plan")]

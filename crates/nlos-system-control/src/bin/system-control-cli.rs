@@ -134,6 +134,9 @@ fn parsed_command(arguments: &[String]) -> Result<ControlCommand, ControlError> 
         "inspect-process" if arguments.len() == 2 => Ok(ControlCommand::InspectProcess {
             process_id: parse_hex_id(&arguments[1])?,
         }),
+        "inspect-application" if arguments.len() == 2 => Ok(ControlCommand::InspectApplication {
+            package_id: parse_hex_id(&arguments[1])?,
+        }),
         "inspect-resource" if arguments.len() == 2 => Ok(ControlCommand::InspectResource {
             reservation_id: parse_hex_id(&arguments[1])?,
         }),
@@ -407,6 +410,14 @@ fn summary(receipt: &ControlReceipt) -> String {
             inspection.process_generation,
             hex(&inspection.task_id),
         ),
+        Ok(ControlOutcome::ApplicationInspected(inspection)) => format!(
+            "outcome=application_inspected package_id={} application_id={} generation={} \
+             status={}",
+            hex(&inspection.package_id),
+            hex(&inspection.application_id),
+            inspection.current_installation_generation,
+            inspection.status,
+        ),
         Ok(ControlOutcome::ResourceInspected(inspection)) => format!(
             "outcome=resource_inspected reservation_id={} account_id={} upper_bound={} \
              usage_high_water={} consumptions={}",
@@ -470,7 +481,7 @@ async fn run() -> Result<ExitCode, ControlError> {
         return Ok(ExitCode::from(2));
     };
     let command = parsed_command(&arguments[1..]).inspect_err(|_| eprintln!("{USAGE}"))?;
-    let receipt = dispatch_over_socket(&socket, &command, None, None).await?;
+    let receipt = dispatch_over_socket(&socket, &command, None, None, None).await?;
     println!("RECEIPT {}", receipt_to_hex(&receipt));
     println!("{}", summary(&receipt));
     if receipt.outcome.is_ok() {
