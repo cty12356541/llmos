@@ -1,5 +1,6 @@
 //! `nlos-package` — developer Package SDK CLI (W33-A, B1-4; install
-//! subcommand W35-P2 / handover #2 first slice).
+//! subcommand W35-P2 / handover #2 first slice; run subcommand W38-P2 /
+//! handover #2 back slice).
 //!
 //! A thin shell around the `nlos-artifact` package surface: it owns no
 //! verification logic of its own. `build` turns a developer tree (line-based
@@ -13,7 +14,9 @@
 //! drives the same verify pipeline against one persistent state root and
 //! then hands the durable receipt to the public application-authority
 //! install path — what the slice-k library demo drove in-process, now from
-//! the CLI (W33-H §2 boundary 3).
+//! the CLI (W33-H §2 boundary 3). `run` (W38-P2) opens that same root and
+//! drives the kernel payload-execution lane over one installed executable
+//! entry (W33-H §2 boundary 1 consumer CLI).
 //!
 //! # Usage
 //!
@@ -23,6 +26,7 @@
 //! nlos-package verify <PKGFILE> [--store <DIR>] [--identity <DIR>] [--at-ms <U64>]
 //! nlos-package conformance <PKGFILE>
 //! nlos-package install <PKGFILE> --root <DIR>
+//! nlos-package run <PACKAGE_ID_HEX> <ENTRY> --root <DIR>
 //! ```
 //!
 //! # Determinism
@@ -39,7 +43,7 @@
 //! `4` content-binding failure (tampered payload) · `5` internal I/O or
 //! store failure · `6` conformance findings (see
 //! docs/developers/package-conformance.md) · `7` application-authority
-//! install rejection.
+//! install rejection or payload-execution lane refusal.
 //!
 //! # Conformance (W33-C)
 //!
@@ -76,7 +80,8 @@ use nlos_artifact::{
     package_manifest_message, package_manifest_with_tasks_message, validate_task_templates,
 };
 use nlos_identity::{BootstrapPrincipalRequest, IdentityAuthority};
-use nlos_slice_k::SliceKRuntime;
+use nlos_operation::CompletionOutcome;
+use nlos_slice_k::{SliceKError, SliceKRuntime, execute_application_payload};
 use nlos_types::{ArtifactId, IdempotencyKey, PackageId};
 use sha2::{Digest, Sha256};
 
@@ -84,7 +89,8 @@ const USAGE: &str = "usage: nlos-package keygen --seed <HEX64> [--out <KEYFILE>]
   | build <DIR> --key <KEYFILE> [--out <PKGFILE>] \
   | verify <PKGFILE> [--store <DIR>] [--identity <DIR>] [--at-ms <U64>] \
   | conformance <PKGFILE> \
-  | install <PKGFILE> --root <DIR>";
+  | install <PKGFILE> --root <DIR> \
+  | run <PACKAGE_ID_HEX> <ENTRY> --root <DIR>";
 
 /// Domain separators for CLI-owned derivations; each derivation is plain
 /// SHA-256 over `domain ‖ input` (the crate's receipt-id precedent).
@@ -126,6 +132,11 @@ enum ToolError {
     /// unknown verification receipt, disabled/uninstalled terminal state,
     /// idempotency conflict, or an out-of-order timestamp.
     Install(String),
+    /// The payload-execution lane refused the run (exit 7): no installed
+    /// application under the package identity, non-installed status,
+    /// missing installation receipt, missing entry artifact, or a driver
+    /// face boundary rejection (e.g. callback-identity conflict).
+    Run(String),
 }
 
 impl ToolError {
@@ -141,7 +152,7 @@ impl ToolError {
             Self::Binding(_) => 4,
             Self::Internal(_) => 5,
             Self::Conformance(_) => 6,
-            Self::Install(_) => 7,
+            Self::Install(_) | Self::Run(_) => 7,
         }
     }
 }
@@ -186,6 +197,7 @@ fn main() -> ExitCode {
         "verify" => verify_command(&arguments[1..]),
         "conformance" => conformance_command(&arguments[1..]),
         "install" => install_command(&arguments[1..]),
+        "run" => run_command(&arguments[1..]),
         _ => Err(ToolError::Usage),
     };
     match result {
@@ -209,7 +221,8 @@ impl ToolError {
             | Self::Signature(text)
             | Self::Binding(text)
             | Self::Internal(text)
-            | Self::Install(text) => text.clone(),
+            | Self::Install(text)
+            | Self::Run(text) => text.clone(),
             Self::Conformance(count) => format!("package conformance violations: {count}"),
         }
     }
@@ -1172,6 +1185,138 @@ fn install_into_root(
     {
         InstallDecision::Installed(installation) => Ok((decision, installation, true)),
         InstallDecision::Replayed(installation) => Ok((decision, installation, false)),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// run
+// ---------------------------------------------------------------------------
+
+/// Runs one installed application's manifest-declared executable entry
+/// through the kernel payload-execution lane (W38-P2 / handover #2 back
+/// slice): open the persistent state root written by `install`, resolve
+/// the package identity + entry name, and hand them to
+/// [`execute_application_payload`]. No new package format, no process
+/// spawn — the same driver-face lane the W35-P2 front slice closed.
+fn run_command(arguments: &[String]) -> Result<(), ToolError> {
+    let mut package_hex = None;
+    let mut entry = None;
+    let mut root = None;
+    parse_flags(
+        arguments,
+        &mut |flag, value| {
+            if flag == "root" {
+                root = Some(value.to_string());
+                true
+            } else {
+                false
+            }
+        },
+        &mut |token| {
+            if package_hex.is_none() {
+                package_hex = Some(token.to_string());
+                true
+            } else if entry.is_none() {
+                entry = Some(token.to_string());
+                true
+            } else {
+                false
+            }
+        },
+    )?;
+    let Some(package_hex) = package_hex else {
+        return Err(ToolError::Usage);
+    };
+    let Some(entry) = entry else {
+        return Err(ToolError::Usage);
+    };
+    let Some(root) = root else {
+        return Err(ToolError::Usage);
+    };
+    let Some(package_bytes) = hex_array::<16>(&package_hex) else {
+        return Err(ToolError::input(
+            "run",
+            "package id must be exactly 32 hex chars",
+        ));
+    };
+    if entry.is_empty() || entry.contains('\0') {
+        return Err(ToolError::input(
+            "run",
+            "entry name must be non-empty and NUL-free",
+        ));
+    }
+
+    let runtime = SliceKRuntime::open(&root)
+        .map_err(|error| ToolError::Internal(format!("open state root {root}: {error}")))?;
+    let execution =
+        execute_application_payload(&runtime, PackageId::from_bytes(package_bytes), &entry)
+            .map_err(from_slice_k_run_error)?;
+
+    let fresh = !(execution.register_replayed
+        && execution.dispatch_replayed
+        && execution.complete_replayed);
+    println!("RUN {}", hex(execution.application_id.as_bytes()));
+    println!("decision {}", if fresh { "executed" } else { "replayed" });
+    println!("entry {}", execution.entry_name);
+    println!("package {}", hex(execution.package_id.as_bytes()));
+    println!(
+        "application {} generation {} version {}",
+        hex(execution.application_id.as_bytes()),
+        execution.installation_generation.get(),
+        execution.package_version,
+    );
+    println!(
+        "artifact {} revision {} digest {} bytes {}",
+        hex(execution.artifact_id.as_bytes()),
+        execution.payload_revision,
+        hex(execution.payload_digest.as_bytes()),
+        execution.payload_size_bytes,
+    );
+    println!(
+        "operation {}",
+        hex(execution.operation.operation_id.as_bytes())
+    );
+    println!("callback {}", hex(execution.callback_id.as_bytes()));
+    println!(
+        "receipts admission={} preparation={} activation={}",
+        hex(execution.admission_receipt_id.as_bytes()),
+        hex(execution.preparation_receipt_id.as_bytes()),
+        hex(execution.activation_receipt_id.as_bytes()),
+    );
+    println!(
+        "outcome {}",
+        match &execution.outcome {
+            CompletionOutcome::Completed { receipt_id } => {
+                format!("completed:{}", hex(receipt_id.as_bytes()))
+            }
+            CompletionOutcome::Failed { receipt_id } => {
+                format!("failed:{}", hex(receipt_id.as_bytes()))
+            }
+            CompletionOutcome::PartialEffect { receipt_id } => {
+                format!("partial-effect:{}", hex(receipt_id.as_bytes()))
+            }
+            CompletionOutcome::EffectUnknown { receipt_id } => {
+                format!("effect-unknown:{}", hex(receipt_id.as_bytes()))
+            }
+            CompletionOutcome::CancelledBeforeEffect { receipt_id } => {
+                format!("cancelled-before-effect:{}", hex(receipt_id.as_bytes()))
+            }
+        }
+    );
+    Ok(())
+}
+
+fn from_slice_k_run_error(error: SliceKError) -> ToolError {
+    match error {
+        SliceKError::PayloadState(reason) => {
+            ToolError::Run(format!("payload execution state refusal: {reason}"))
+        }
+        SliceKError::Driver(source) => ToolError::Run(format!("driver provider face: {source}")),
+        SliceKError::Application(source) => {
+            ToolError::Run(format!("application authority: {source}"))
+        }
+        SliceKError::Artifact(source) => from_artifact_error(source),
+        other => ToolError::Internal(other.to_string()),
     }
 }
 

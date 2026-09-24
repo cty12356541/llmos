@@ -1,6 +1,6 @@
 [package]
 name = "nlos-package"
-description = "Developer Package SDK CLI (keygen/build/verify/conformance/install): a thin shell over the nlos-artifact package surface plus the public application-authority install path."
+description = "Developer Package SDK CLI (keygen/build/verify/conformance/install/run): a thin shell over the nlos-artifact package surface plus the public application-authority install path and the slice-k payload-execution lane."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -23,6 +23,9 @@ nlos-artifact = { path = "../nlos-artifact" }
 # the driver face's public derivation.
 nlos-driver-mock = { path = "../nlos-driver-mock" }
 nlos-identity = { path = "../nlos-identity" }
+# CompletionOutcome is printed by the `run` subcommand from the payload
+# lane's public receipt surface.
+nlos-operation = { path = "../nlos-operation" }
 nlos-slice-k = { path = "../nlos-slice-k" }
 nlos-types = { path = "../nlos-types" }
 sha2.workspace = true

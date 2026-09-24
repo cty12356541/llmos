@@ -562,6 +562,7 @@ dependencies = [
  "nlos-artifact",
  "nlos-driver-mock",
  "nlos-identity",
+ "nlos-operation",
  "nlos-slice-k",
  "nlos-types",
  "sha2",
