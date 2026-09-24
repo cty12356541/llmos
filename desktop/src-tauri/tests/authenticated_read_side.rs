@@ -66,6 +66,7 @@ async fn authenticated_inspect_health_matches_plain_entry_bytes() {
         &ControlCommand::InspectHealth,
         None,
         None,
+        None,
     )
     .await
     .expect("plain dispatch");

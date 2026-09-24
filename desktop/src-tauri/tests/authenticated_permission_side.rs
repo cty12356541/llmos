@@ -138,6 +138,7 @@ async fn unwired_cost_inspect_stays_typed_not_found_and_matches_plain_entry() {
         &ControlCommand::InspectResource { reservation_id },
         None,
         None,
+        None,
     )
     .await
     .expect("plain dispatch");

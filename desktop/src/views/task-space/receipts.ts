@@ -1,9 +1,8 @@
 // Task Space(W33-F)的 Receipt 渲染层:SABI Receipt 只读展示,与主壳
 // (desktop/src/main.ts)同形。对 OutcomeDto 全形态穷尽匹配——特别覆盖
 // W32-G 五层 inspect 形态(task_group/task_node/execution_fiber/topic/
-// durable_operation inspected,types.ts 既有导出):它们是 Task Space
-// 详情面的数据丰富度来源;本壳命令层尚未接线其派发(见 gap 登记),
-// 渲染形态先行就绪,接线落地即直显。
+// durable_operation inspected):W39-D 已接通 desktop 命令层派发,本层
+// 直显回执。
 
 import type { OutcomeDto, ReceiptDto } from "../../types";
 import { el, fieldRow } from "./dom";
@@ -134,6 +133,19 @@ export function renderOutcome(outcome: OutcomeDto): HTMLElement {
       );
       break;
     }
+    case "application_inspected": {
+      card.append(el("h3", { text: "Application 层 inspect(W38)" }));
+      card.append(
+        fieldRow("package_id", outcome.packageIdHex),
+        fieldRow("application_id", outcome.applicationIdHex),
+        fieldRow("package_manifest_digest", outcome.packageManifestDigestHex),
+        fieldRow("installation_generation", String(outcome.currentInstallationGeneration)),
+        fieldRow("status", String(outcome.status)),
+        fieldRow("created_at_ms", String(outcome.createdAtMs)),
+        fieldRow("updated_at_ms", String(outcome.updatedAtMs)),
+      );
+      break;
+    }
     case "task_group_inspected": {
       card.append(el("h3", { text: "TaskGroup 层 inspect(W32-G,SABI v1.5)" }));
       card.append(
@@ -226,7 +238,9 @@ export function renderOutcome(outcome: OutcomeDto): HTMLElement {
     case "operation_cancelled":
     case "operation_killed":
     case "operation_throttled":
-    case "operation_reclaimed": {
+    case "operation_reclaimed":
+    case "application_disabled":
+    case "application_uninstalled": {
       // 本视图只读:Task Space 不派发任何控制动作,mutation 回执不应出现;
       // 穷尽臂显式拒绝而不是静默渲染,保住「零写入」边界可见性。
       card.append(

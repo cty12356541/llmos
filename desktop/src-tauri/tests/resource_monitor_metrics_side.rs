@@ -118,6 +118,7 @@ async fn metrics_export_receipts_match_plain_entry_bytes() {
             &command,
             None,
             None,
+            None,
         )
         .await
         .expect("plain dispatch");

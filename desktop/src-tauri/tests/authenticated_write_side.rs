@@ -197,6 +197,7 @@ async fn operation_commands_dispatch_real_submits_with_typed_unwired_failures() 
         &build_control_command(pause, [0xD1; 16]).expect("build pause"),
         None,
         None,
+        None,
     )
     .await
     .expect("plain pause");

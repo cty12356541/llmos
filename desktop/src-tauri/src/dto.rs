@@ -4,10 +4,10 @@
 
 use nlos_schema::sabi::v1::{RetryDirective, SabiErrorCode, SabiFailure};
 use nlos_system_control::control::{
-    ControlOutcome, ControlReceipt, DurableOperationInspection, ExecutionFiberInspection,
-    ProcessInspection, RecoveryInspection, ResourceInspection, ResourceRecoveryInspection,
-    SemanticRecoveryInspection, TaskGroupInspection, TaskNodeInspection, TopicInspection,
-    receipt_to_hex,
+    ApplicationInspection, ControlOutcome, ControlReceipt, DurableOperationInspection,
+    ExecutionFiberInspection, ProcessInspection, RecoveryInspection, ResourceInspection,
+    ResourceRecoveryInspection, SemanticRecoveryInspection, TaskGroupInspection,
+    TaskNodeInspection, TopicInspection, receipt_to_hex,
 };
 
 /// 一条 escalated 告警(artifact/semantic 共用形态)。
@@ -69,9 +69,19 @@ pub enum OutcomeDto {
         usage_high_water: u64,
         consumption_count: u32,
     },
-    /// W32-G(SABI v1.5)五层 inspect 形态:显式补齐穷尽匹配(本壳尚无
-    /// 对应 GUI 命令接线,投影为有界标量事实;成员行以计数 + 截断标志
-    /// 呈现,不逐行展开)。
+    /// W38 Application 层 inspect 形态(desktop 穷尽匹配补齐;本壳派发面属
+    /// 控制中心读,非本波次 Task Space 五层接线范围)。
+    ApplicationInspected {
+        package_id_hex: String,
+        application_id_hex: String,
+        package_manifest_digest_hex: String,
+        current_installation_generation: u64,
+        status: u8,
+        created_at_ms: u64,
+        updated_at_ms: u64,
+    },
+    /// W32-G(SABI v1.5)五层 inspect 形态:有界标量事实;成员行以计数 +
+    /// 截断标志呈现,不逐行展开。W39-D 接通 desktop 派发。
     TaskGroupInspected {
         group_id_hex: String,
         task_id_hex: String,
@@ -161,6 +171,12 @@ pub enum OutcomeDto {
         receipt_id_hex: String,
     },
     OperationReclaimed {
+        receipt_id_hex: String,
+    },
+    ApplicationDisabled {
+        receipt_id_hex: String,
+    },
+    ApplicationUninstalled {
         receipt_id_hex: String,
     },
 }
@@ -371,6 +387,18 @@ fn resource_inspected_dto(inspection: &ResourceInspection) -> OutcomeDto {
     }
 }
 
+fn application_inspected_dto(inspection: &ApplicationInspection) -> OutcomeDto {
+    OutcomeDto::ApplicationInspected {
+        package_id_hex: hex(&inspection.package_id),
+        application_id_hex: hex(&inspection.application_id),
+        package_manifest_digest_hex: hex(&inspection.package_manifest_digest),
+        current_installation_generation: inspection.current_installation_generation,
+        status: inspection.status,
+        created_at_ms: inspection.created_at_ms,
+        updated_at_ms: inspection.updated_at_ms,
+    }
+}
+
 fn task_group_inspected_dto(inspection: &TaskGroupInspection) -> OutcomeDto {
     OutcomeDto::TaskGroupInspected {
         group_id_hex: hex(&inspection.group_id),
@@ -455,6 +483,9 @@ pub fn receipt_dto(receipt: &ControlReceipt) -> ReceiptDto {
         }
         Ok(ControlOutcome::ProcessInspected(inspection)) => process_inspected_dto(inspection),
         Ok(ControlOutcome::ResourceInspected(inspection)) => resource_inspected_dto(inspection),
+        Ok(ControlOutcome::ApplicationInspected(inspection)) => {
+            application_inspected_dto(inspection)
+        }
         Ok(ControlOutcome::TaskGroupInspected(inspection)) => task_group_inspected_dto(inspection),
         Ok(ControlOutcome::TaskNodeInspected(inspection)) => task_node_inspected_dto(inspection),
         Ok(ControlOutcome::ExecutionFiberInspected(inspection)) => {
@@ -491,6 +522,14 @@ pub fn receipt_dto(receipt: &ControlReceipt) -> ReceiptDto {
         Ok(ControlOutcome::OperationReclaimed { receipt_id }) => OutcomeDto::OperationReclaimed {
             receipt_id_hex: hex(receipt_id),
         },
+        Ok(ControlOutcome::ApplicationDisabled { receipt_id }) => OutcomeDto::ApplicationDisabled {
+            receipt_id_hex: hex(receipt_id),
+        },
+        Ok(ControlOutcome::ApplicationUninstalled { receipt_id }) => {
+            OutcomeDto::ApplicationUninstalled {
+                receipt_id_hex: hex(receipt_id),
+            }
+        }
         Err(failure) => failure_dto(failure),
     };
     ReceiptDto {
@@ -520,6 +559,7 @@ fn outcome_label(outcome: &OutcomeDto) -> String {
         OutcomeDto::SemanticInspected { .. } => "semantic_inspected".to_owned(),
         OutcomeDto::ResourceRecoveryInspected { .. } => "resource_recovery_inspected".to_owned(),
         OutcomeDto::ProcessInspected { .. } => "process_inspected".to_owned(),
+        OutcomeDto::ApplicationInspected { .. } => "application_inspected".to_owned(),
         OutcomeDto::TaskGroupInspected { .. } => "task_group_inspected".to_owned(),
         OutcomeDto::TaskNodeInspected { .. } => "task_node_inspected".to_owned(),
         OutcomeDto::ExecutionFiberInspected { .. } => "execution_fiber_inspected".to_owned(),
@@ -534,6 +574,8 @@ fn outcome_label(outcome: &OutcomeDto) -> String {
         OutcomeDto::OperationKilled { .. } => "operation_killed".to_owned(),
         OutcomeDto::OperationThrottled { .. } => "operation_throttled".to_owned(),
         OutcomeDto::OperationReclaimed { .. } => "operation_reclaimed".to_owned(),
+        OutcomeDto::ApplicationDisabled { .. } => "application_disabled".to_owned(),
+        OutcomeDto::ApplicationUninstalled { .. } => "application_uninstalled".to_owned(),
     }
 }
 

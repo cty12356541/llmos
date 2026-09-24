@@ -14,12 +14,17 @@
 //   的 `RECEIPT` 行同一等价契约(house parity 纪律)。
 
 import {
+  inspectExecutionFiber,
   inspectHealth,
+  inspectOperation,
   inspectProcess,
   inspectResourceCost,
   inspectSemanticHealth,
   inspectResourceHealth,
   inspectTask,
+  inspectTaskGroup,
+  inspectTaskNode,
+  inspectTopic,
 } from "../../ipc";
 import type { ReceiptDto } from "../../types";
 import { el, fieldRow, labeledInput, showError } from "./dom";
@@ -40,7 +45,7 @@ const TASK_SPACE_GAPS: ReadonlyArray<{ fact: string; detail: string }> = [
   {
     fact: "任务/TaskGroup 全量枚举面",
     detail:
-      "无 IPC 列表命令——恢复巡检只投影 escalated 告警行;本列表 = 三域 escalated 计划行 + 手动关注 plan_id(InspectTask 验证存在),全量枚举待后续 IPC 面",
+      "无 IPC 列表命令——恢复巡检只投影 escalated 告警行;本列表 = 三域 escalated 计划行 + 手动关注 plan_id(InspectTask 验证存在),全量枚举待后续 IPC 面(§28.4 完整 Task Space)",
   },
   {
     fact: "W29-A 关联字段(application_id / plan_revision)",
@@ -48,14 +53,9 @@ const TASK_SPACE_GAPS: ReadonlyArray<{ fact: string; detail: string }> = [
       "TaskSpec v44 已在 tasks 表落三列(nlos-task schema),但现有可达读面(InspectTask 告警投影)不携带这两字段——无 IPC 投影,本视图不发明;待 inspect 面扩列后在此呈现",
   },
   {
-    fact: "W32-G 五层 inspect 的桌面派发接线",
-    detail:
-      "SABI v1.5 命令(InspectTaskGroup/TaskNode/ExecutionFiber/Topic/Operation)与 DTO 投影(types.ts 五 outcome 形态)已在;desktop 命令层(src-tauri)未接——本车道文件边界只含 views/task-space/,渲染形态已就绪(见上),接线属后续车道(W32-E §W32-E.4-3 同款登记)。今日操作者路径:system-control-cli <plain_socket> inspect-task-node <plan> <node>",
-  },
-  {
     fact: "fiber / operation 列表面",
     detail:
-      "上游 W32-G 已登记:runtime 无 fiber id 枚举 API、store 行缺失与 stale generation 不可区分——Task Space 的层级浏览同样受此约束",
+      "上游 W32-G 已登记:runtime 无 fiber id 枚举 API、store 行缺失与 stale generation 不可区分——Task Space 的层级浏览同样受此约束;按已知 id 的单点 inspect 已由 W39-D 接通",
   },
 ];
 
@@ -223,22 +223,106 @@ function taskDetailPane(state: TaskSpaceState): { node: HTMLElement; taskResult:
 
 function planNodesCard(): HTMLElement {
   const panel = el("section", { className: "card" });
-  panel.append(el("h3", { text: "计划节点与四层 inspect(W32-G,SABI v1.5)——派发未接线" }));
+  panel.append(el("h3", { text: "五层只读 inspect(W39-D / §28.4 Task Space)" }));
   panel.append(
     el("p", {
       className: "muted",
-      text: "任务 → 计划节点(TaskNode)/任务组(TaskGroup)/执行纤程(ExecutionFiber)/主题(Topic)/持久操作(DurableOperation)的五层只读 inspect 命令与回执投影已在上游落地;desktop 命令层尚未接线(src-tauri 不在本车道写集),本视图不派发、不发明数据。渲染形态已就绪:五类 outcome 一旦经任何既有读路径到达即直显(形态见「层级 inspect 形态预览」)。",
+      text: "按操作者已知 id 派发既有 SABI v1.5 ControlCommand(经认证 IPC);列表面仍缺。夹具未接 layer inspector 时回执为类型化 NOT_FOUND(与 CLI 同字节)。generation 必须非零。",
     }),
   );
-  const details = el("details");
-  details.append(el("summary", { text: "层级 inspect 形态预览(类型形态,非真实数据)" }));
-  details.append(
-    el("p", {
-      className: "muted",
-      text: "TaskNode:plan_id/node_kind/state/declared_revision(计划 revision 引用)/node_digest/residency_tier;TaskGroup:group_id/task_id/state/membership_generation/member_count;ExecutionFiber:state/lifecycle_phase/有界时间米表;Topic:channel 绑定/active_subscriptions;DurableOperation:状态机行/owner fiber/终态 outcome receipt。",
-    }),
+
+  const group = labeledInput("TaskGroup id(32 hex)", "group_id", "");
+  const groupResult = el("div");
+  const groupButton = el("button", { text: "InspectTaskGroup" });
+  groupButton.addEventListener("click", () => {
+    const id = group.input.value.trim().toLowerCase();
+    if (!HEX32.test(id)) {
+      groupResult.replaceChildren(el("p", { className: "muted", text: "请先输入 32 位 hex group_id。" }));
+      return;
+    }
+    runReceiptAction(groupResult, () => inspectTaskGroup(id));
+  });
+
+  const plan = labeledInput("TaskNode plan_id(32 hex)", "plan_id", "");
+  const node = labeledInput("TaskNode node_id(32 hex)", "node_id", "");
+  const nodeResult = el("div");
+  const nodeButton = el("button", { text: "InspectTaskNode" });
+  nodeButton.addEventListener("click", () => {
+    const planId = plan.input.value.trim().toLowerCase();
+    const nodeId = node.input.value.trim().toLowerCase();
+    if (!HEX32.test(planId) || !HEX32.test(nodeId)) {
+      nodeResult.replaceChildren(
+        el("p", { className: "muted", text: "请先输入 32 位 hex 的 plan_id 与 node_id。" }),
+      );
+      return;
+    }
+    runReceiptAction(nodeResult, () => inspectTaskNode(planId, nodeId));
+  });
+
+  const fiber = labeledInput("ExecutionFiber id(32 hex)", "fiber_id", "");
+  const fiberGen = labeledInput("fiber generation(>0)", "generation", "1");
+  const fiberResult = el("div");
+  const fiberButton = el("button", { text: "InspectExecutionFiber" });
+  fiberButton.addEventListener("click", () => {
+    const id = fiber.input.value.trim().toLowerCase();
+    const generation = Number.parseInt(fiberGen.input.value.trim(), 10);
+    if (!HEX32.test(id) || !Number.isFinite(generation) || generation < 1) {
+      fiberResult.replaceChildren(
+        el("p", { className: "muted", text: "请输入 32 hex fiber_id 与非零 generation。" }),
+      );
+      return;
+    }
+    runReceiptAction(fiberResult, () => inspectExecutionFiber(id, generation));
+  });
+
+  const topic = labeledInput("Topic id(32 hex)", "topic_id", "");
+  const topicResult = el("div");
+  const topicButton = el("button", { text: "InspectTopic" });
+  topicButton.addEventListener("click", () => {
+    const id = topic.input.value.trim().toLowerCase();
+    if (!HEX32.test(id)) {
+      topicResult.replaceChildren(el("p", { className: "muted", text: "请先输入 32 位 hex topic_id。" }));
+      return;
+    }
+    runReceiptAction(topicResult, () => inspectTopic(id));
+  });
+
+  const operation = labeledInput("DurableOperation id(32 hex)", "operation_id", "");
+  const opGen = labeledInput("operation generation(>0)", "generation", "1");
+  const opResult = el("div");
+  const opButton = el("button", { text: "InspectOperation" });
+  opButton.addEventListener("click", () => {
+    const id = operation.input.value.trim().toLowerCase();
+    const generation = Number.parseInt(opGen.input.value.trim(), 10);
+    if (!HEX32.test(id) || !Number.isFinite(generation) || generation < 1) {
+      opResult.replaceChildren(
+        el("p", { className: "muted", text: "请输入 32 hex operation_id 与非零 generation。" }),
+      );
+      return;
+    }
+    runReceiptAction(opResult, () => inspectOperation(id, generation));
+  });
+
+  panel.append(
+    group.row,
+    groupButton,
+    groupResult,
+    plan.row,
+    node.row,
+    nodeButton,
+    nodeResult,
+    fiber.row,
+    fiberGen.row,
+    fiberButton,
+    fiberResult,
+    topic.row,
+    topicButton,
+    topicResult,
+    operation.row,
+    opGen.row,
+    opButton,
+    opResult,
   );
-  panel.append(details);
   return panel;
 }
 
