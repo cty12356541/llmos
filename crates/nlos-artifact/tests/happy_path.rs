@@ -255,3 +255,63 @@ fn unknown_schema_version_fails_closed() {
     };
     assert!(matches!(error, ArtifactError::SchemaVersionUnsupported(99)));
 }
+
+/// deep-audit/32 M1 regression: a blob already sitting at the digest
+/// address is only a benign no-op when its stored bytes actually hash to
+/// that address. A corrupted (bit-rotted or truncated) blob must make the
+/// commit fail with a typed `DigestMismatch` instead of being silently
+/// reused — previously every put of this digest reported success while
+/// every read failed forever with no commit-time diagnosis. No metadata
+/// is committed on the failure; repairing the file unblocks the same put.
+#[test]
+fn put_over_corrupted_existing_blob_fails_typed_and_commits_no_metadata() {
+    let directory = TestStoreDir::new("already-present-corrupt");
+    let store = ArtifactStore::open(directory.root()).expect("open store");
+    store.create_artifact(artifact_spec(0x0f)).expect("create");
+
+    // Plant corrupted bytes at the exact content address of the payload.
+    let payload = bytes(0x2a, 128);
+    let digest = nlos_artifact::ContentDigest::of_bytes(&payload);
+    let blob_path = directory.artifact_blob(digest);
+    std::fs::create_dir_all(blob_path.parent().expect("shard dir")).expect("shard dir");
+    std::fs::write(&blob_path, b"corrupted bytes parked at the digest address")
+        .expect("plant corrupted blob");
+
+    let error = store
+        .put_revision(put(artifact_id(0x0f), 0, &payload))
+        .expect_err("commit over a corrupted blob must fail closed");
+    assert!(
+        matches!(error, ArtifactError::DigestMismatch { expected, .. } if expected == digest),
+        "expected DigestMismatch for {digest}, got {error}"
+    );
+
+    // Fail-closed means fail-closed on the metadata plane too: no
+    // revision, no head advance.
+    assert!(matches!(
+        store.get_revision(artifact_id(0x0f), 1, READ_NOW_MS),
+        Err(ArtifactError::RevisionNotFound { .. })
+    ));
+    assert_eq!(
+        store
+            .resolve_head(artifact_id(0x0f), READ_NOW_MS)
+            .expect("head"),
+        None
+    );
+
+    // Repairing the stored bytes (the operator remedy the typed error
+    // points at) makes the identical put succeed and read back.
+    std::fs::write(&blob_path, &payload).expect("repair blob");
+    match store
+        .put_revision(put(artifact_id(0x0f), 0, &payload))
+        .expect("put after repair")
+    {
+        PutRevisionDecision::Committed(record) => assert_eq!(record.digest, digest),
+        PutRevisionDecision::Replayed(_) => panic!("first successful put must commit"),
+    }
+    assert_eq!(
+        store
+            .get_revision(artifact_id(0x0f), 1, READ_NOW_MS)
+            .expect("get after repair"),
+        payload
+    );
+}

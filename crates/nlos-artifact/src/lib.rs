@@ -31,7 +31,10 @@
 //!    revision row and compare-and-swaps the head pointer.
 //!
 //! Blob durability always precedes the metadata commit that references the
-//! digest. A crash before the rename leaves an orphan tmp file (removed by
+//! digest, and both phases run inside the store's single-writer critical
+//! section, so the orphan GC scan (same mutex) can never mistake an
+//! in-flight blob for an unreferenced orphan. A crash before the rename
+//! leaves an orphan tmp file (removed by
 //! [`ArtifactStore::recover`]); after the rename but before the metadata
 //! commit leaves an orphan blob (listed by `recover`, removable only by
 //! the explicit [`ArtifactStore::collect_orphan_blobs`] GC); after the

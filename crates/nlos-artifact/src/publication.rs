@@ -25,12 +25,17 @@ impl ArtifactStore {
         request: StageRevisionRequest<'_>,
     ) -> Result<StageRevisionDecision, ArtifactError> {
         let digest = ContentDigest::of_bytes(request.bytes);
-        blob::commit_blob(&self.paths().artifacts, digest, request.bytes)?;
-
         let staging_id = staging_id_for(request.artifact_id, request.idempotency_key);
         let size_bytes = u64::try_from(request.bytes.len())
             .map_err(|_| ArtifactError::InvalidSpec("blob length exceeds u64"))?;
+        // Phase 1 (durable blob) inside the writer critical section, as in
+        // `put_revision` (deep-audit/32 H1): the single-writer mutex is held
+        // from before the blob bytes hit disk until the staging transaction
+        // commits, so a concurrent `collect_orphan_blobs` scan (same mutex)
+        // cannot delete this in-flight blob before the staging row that
+        // references it exists.
         let mut connection = self.lock_connection()?;
+        blob::commit_blob(&self.paths().artifacts, digest, request.bytes)?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
 
         if let Some(existing) = load_staged_by_key(&transaction, request.idempotency_key)? {

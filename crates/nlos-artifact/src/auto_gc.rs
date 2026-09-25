@@ -183,9 +183,10 @@ impl ArtifactStore {
     /// condition is met, runs one conservative orphan-collection pass
     /// over the unchanged [`ArtifactStore::collect_orphan_blobs`] core.
     ///
-    /// The same single-writer discipline as the explicit core applies:
-    /// no `put_revision`/`stage_revision` may be in flight on this store
-    /// while a fired pass runs.
+    /// A fired pass is serialized against `put_revision`/`stage_revision`
+    /// by the shared writer mutex (see the `gc` module): the blob-commit
+    /// phases of those writes run inside the same critical section as
+    /// the pass's scan, so no in-flight blob is ever sentenced.
     ///
     /// # Errors
     ///

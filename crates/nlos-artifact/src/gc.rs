@@ -24,7 +24,11 @@
 //! One run holds the process-local writer mutex and one
 //! `BEGIN IMMEDIATE` transaction from the reference scan to the receipt
 //! commit, so the committed reference set cannot change under it
-//! (single-writer discipline, as for every other mutating API). Blob
+//! (single-writer discipline, as for every other mutating API). The blob
+//! commit phases of `put_revision`/`stage_revision` run under the same
+//! mutex, so an in-flight put can never appear mid-run as an unreferenced
+//! blob — what the scan does see is the durable residue of a crash or a
+//! killed process between its blob rename and metadata commit. Blob
 //! files cannot join a `SQLite` transaction, so the order is fixed:
 //!
 //! 1. compute the orphan set inside the open transaction,
@@ -123,11 +127,13 @@ impl ArtifactStore {
     /// revision (any state), and no head references. Removals and the
     /// receipt follow the crash-window order documented in `gc`.
     ///
-    /// The caller must observe the crate's single-writer discipline: no
-    /// `put_revision`/`stage_revision` may be in flight on the same store
-    /// while GC runs, since such a write commits its blob (phase 1)
-    /// before its metadata (phase 2) and would be indistinguishable from
-    /// a crash orphan mid-run.
+    /// The run is serialized against writers by the process-local mutex
+    /// it holds from the reference scan to the receipt commit:
+    /// `put_revision` and `stage_revision` commit their blob phase
+    /// *inside* the same critical section, so an in-flight put can never
+    /// surface to this scan as an unreferenced blob (deep-audit/32 H1).
+    /// What the scan legitimately collects is the residue of a crash or
+    /// a killed process between its blob rename and metadata commit.
     ///
     /// # Errors
     ///
