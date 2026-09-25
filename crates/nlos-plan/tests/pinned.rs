@@ -291,9 +291,9 @@ fn pin_is_idempotent_and_cas_safe() {
 }
 
 #[test]
-fn schema_v7_fresh_open_is_current_head() {
+fn schema_v8_fresh_open_is_current_head() {
     let root = Root::new("schema");
     let authority = SqlitePlanAuthority::open(&root.0).expect("open");
     drop(authority);
-    assert_eq!(user_version(&root.0), 7);
+    assert_eq!(user_version(&root.0), 8);
 }

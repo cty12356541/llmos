@@ -158,7 +158,7 @@ fn structured_conditions_apply_validate_and_read_back_canonically() {
     let db_path = root.0.join("plan.sqlite3");
     std::fs::create_dir_all(&root.0).expect("create db directory");
     let authority = SqlitePlanAuthority::open(&db_path).expect("open authority");
-    assert_eq!(user_version(&db_path), 7);
+    assert_eq!(user_version(&db_path), 8);
 
     let unsorted = conditions(&[0x0c, 0x0a, 0x0b], 4);
     let plan_id = apply_first(

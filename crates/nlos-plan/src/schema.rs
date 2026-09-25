@@ -9,7 +9,7 @@ use rusqlite::{Connection, TransactionBehavior};
 
 use crate::PlanStoreError;
 
-pub(crate) const SCHEMA_VERSION: i64 = 7;
+pub(crate) const SCHEMA_VERSION: i64 = 8;
 
 /// Creates the durable plan authority schema v1: the per-plan
 /// `plans` current-state head (monotonic current revision), the immutable
@@ -409,6 +409,80 @@ pub(crate) fn migrate_v7(connection: &mut Connection) -> Result<(), PlanStoreErr
 
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     transaction.execute_batch(SCHEMA_V7_SQL)?;
+    transaction.commit()?;
+    Ok(())
+}
+
+/// Advances a v7 database to v8 (corrective, one `BEGIN IMMEDIATE`
+/// transaction): rebuilds the `plan_revision_edges` declaration
+/// triggers. The v2 `plan_revision_edges_declared_dependency` trigger
+/// shipped a copy-paste defect — its WHEN clause probed
+/// `NEW.dependent_node_id` (the previous trigger's predicate), so the
+/// dependency endpoint's same-revision declaration was enforced only by
+/// the store's apply-time validation and the resolver's root
+/// re-verification, never by the storage layer. v8 drops both edge
+/// triggers and recreates them with the corrected predicate
+/// (`NEW.dependency_node_id`), matching the fixed v2 baseline.
+///
+/// Data rows are untouched: the apply path refuses undeclared
+/// dependencies before any write, so no v7 row can name an undeclared
+/// endpoint — the rebuilt guard only closes the raw SQL face.
+///
+/// The census distinguishes trigger *bodies*, not just names: a trigger
+/// pair whose dependency trigger still carries the defective predicate
+/// is a v7 database that needs the rebuild, never "already complete";
+/// a database missing either trigger is a partial schema and fails
+/// closed.
+pub(crate) fn migrate_v8(connection: &mut Connection) -> Result<(), PlanStoreError> {
+    let table_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+          WHERE type='table' AND name = 'plan_revision_edges'",
+        [],
+        |row| row.get(0),
+    )?;
+    if table_count != 1 {
+        return Err(PlanStoreError::CorruptRecord(
+            "plan authority v7 schema missing",
+        ));
+    }
+    let trigger_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN (
+            'plan_revision_edges_declared_dependent',
+            'plan_revision_edges_declared_dependency'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    // Body probe: a trigger counts as corrected only when its stored
+    // CREATE statement probes the endpoint it guards. The v7 defect is
+    // exactly a dependency trigger whose body probes the *dependent*
+    // column, so that defective body must not satisfy this census.
+    // Each probe is name-scoped, so the shared textual vocabulary of
+    // the two triggers cannot cross-count.
+    let corrected_bodies: i64 = connection.query_row(
+        "SELECT (SELECT COUNT(*) FROM sqlite_master
+                  WHERE type='trigger'
+                    AND name = 'plan_revision_edges_declared_dependent'
+                    AND instr(sql, 'task_node_id = NEW.dependent_node_id') > 0)
+              + (SELECT COUNT(*) FROM sqlite_master
+                  WHERE type='trigger'
+                    AND name = 'plan_revision_edges_declared_dependency'
+                    AND instr(sql, 'task_node_id = NEW.dependency_node_id') > 0)",
+        [],
+        |row| row.get(0),
+    )?;
+    if trigger_count == 2 && corrected_bodies == 2 {
+        connection.pragma_update(None, "user_version", 8)?;
+        return Ok(());
+    }
+    if trigger_count != 2 {
+        return Err(PlanStoreError::CorruptRecord(
+            "partial plan authority v8 schema",
+        ));
+    }
+
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(SCHEMA_V8_SQL)?;
     transaction.commit()?;
     Ok(())
 }
@@ -846,3 +920,30 @@ BEGIN
 END;
 
 PRAGMA user_version = 7;";
+
+pub(crate) const SCHEMA_V8_SQL: &str =
+    "DROP TRIGGER IF EXISTS plan_revision_edges_declared_dependent;
+DROP TRIGGER IF EXISTS plan_revision_edges_declared_dependency;
+
+CREATE TRIGGER plan_revision_edges_declared_dependent
+AFTER INSERT ON plan_revision_edges
+WHEN NOT EXISTS (
+    SELECT 1 FROM plan_revision_nodes
+    WHERE plan_id = NEW.plan_id AND revision = NEW.revision
+      AND task_node_id = NEW.dependent_node_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'dependency edge dependent is not declared in this revision');
+END;
+CREATE TRIGGER plan_revision_edges_declared_dependency
+AFTER INSERT ON plan_revision_edges
+WHEN NOT EXISTS (
+    SELECT 1 FROM plan_revision_nodes
+    WHERE plan_id = NEW.plan_id AND revision = NEW.revision
+      AND task_node_id = NEW.dependency_node_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'dependency edge dependency is not declared in this revision');
+END;
+
+PRAGMA user_version = 8;";
