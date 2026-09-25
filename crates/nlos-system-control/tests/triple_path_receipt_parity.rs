@@ -987,47 +987,93 @@ async fn inspect_export_family_receipts_are_byte_identical_across_direct_nl_cli_
 }
 
 /// Scoped process/resource reads with unwired client-side inspectors: the
-/// typed `not wired` `NotFound` failure shape is byte-identical across all
-/// four paths (the CLI binary and the GUI backend both dispatch with no
-/// inspector, so this is the production shape).
+/// typed `not wired` `NotFound` failure shape is byte-identical across the
+/// direct, NL, and GUI paths (all three dispatch with no inspector). The
+/// CLI path refuses before the wire with the honest exit-2 `--root` hint
+/// instead of printing the unwired receipt (D5 CLI read-surface fix).
 #[tokio::test(flavor = "multi_thread")]
 async fn scoped_inspect_family_receipts_are_byte_identical_across_direct_nl_cli_and_gui_paths() {
+    use nlos_system_control::control::dispatch_over_socket;
+
     let (fixture, key, principal) = ParityFixture::spawn("scope", 0x72);
     fixture.serve();
 
-    let process_hex = hex(&PROCESS_ID);
-    parity(
-        &fixture,
-        &key,
-        principal,
-        "inspect-process",
-        &ControlCommand::InspectProcess {
-            process_id: PROCESS_ID,
-        },
-        &[
-            &format!("inspect process {process_hex}"),
-            &format!("检查进程 {process_hex}"),
-        ],
-        &["inspect-process", &process_hex],
-    )
-    .await;
+    let composed_reads: [(&str, ControlCommand, Vec<String>, Vec<String>); 2] = [
+        (
+            "inspect-process",
+            ControlCommand::InspectProcess {
+                process_id: PROCESS_ID,
+            },
+            vec![
+                format!("inspect process {}", hex(&PROCESS_ID)),
+                format!("检查进程 {}", hex(&PROCESS_ID)),
+            ],
+            vec!["inspect-process".to_owned(), hex(&PROCESS_ID)],
+        ),
+        (
+            "inspect-resource",
+            ControlCommand::InspectResource {
+                reservation_id: RESERVATION_ID,
+            },
+            vec![
+                format!("inspect resource {}", hex(&RESERVATION_ID)),
+                format!("查看资源 {}", hex(&RESERVATION_ID)),
+            ],
+            vec!["inspect-resource".to_owned(), hex(&RESERVATION_ID)],
+        ),
+    ];
 
-    let reservation_hex = hex(&RESERVATION_ID);
-    parity(
-        &fixture,
-        &key,
-        principal,
-        "inspect-resource",
-        &ControlCommand::InspectResource {
-            reservation_id: RESERVATION_ID,
-        },
-        &[
-            &format!("inspect resource {reservation_hex}"),
-            &format!("查看资源 {reservation_hex}"),
-        ],
-        &["inspect-resource", &reservation_hex],
-    )
-    .await;
+    for (label, command, nl_sentences, cli_args) in composed_reads {
+        let direct = fixture.dispatch_reference(&command);
+        let direct_bytes = direct.to_bytes();
+        for sentence in &nl_sentences {
+            let compiled = parse_nl_command(sentence)
+                .unwrap_or_else(|error| panic!("{label}: NL sentence {sentence:?}: {error:?}"));
+            assert_eq!(&compiled, &command, "{label}: NL sentence {sentence:?}");
+            let nl = dispatch_over_socket(&fixture.socket_plain, &compiled, None, None, None)
+                .await
+                .unwrap_or_else(|error| panic!("{label}: NL dispatch {sentence:?}: {error:?}"));
+            assert_eq!(
+                nl.to_bytes(),
+                direct_bytes,
+                "{label}: NL path bytes diverge for {sentence:?}"
+            );
+        }
+        let gui = dispatch_over_authenticated_socket(
+            &fixture.socket_authenticated,
+            principal,
+            |digest: &[u8; 32]| Ok(key.sign(digest).to_bytes()),
+            &command,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{label}: GUI path dispatch: {error:?}"));
+        assert_eq!(
+            gui.to_bytes(),
+            direct_bytes,
+            "{label}: GUI path bytes diverge"
+        );
+
+        let cli_slice: Vec<&str> = cli_args.iter().map(String::as_str).collect();
+        let cli = run_cli(&fixture.socket_plain, &cli_slice);
+        assert_eq!(
+            cli.status.code(),
+            Some(2),
+            "{label}: cli {cli_slice:?} stdout={} stderr={}",
+            String::from_utf8_lossy(&cli.stdout),
+            String::from_utf8_lossy(&cli.stderr),
+        );
+        assert!(
+            !String::from_utf8_lossy(&cli.stdout).contains("RECEIPT"),
+            "{label}: a refused read must not print a receipt"
+        );
+        assert!(
+            String::from_utf8_lossy(&cli.stderr).contains("--root"),
+            "{label}: the refusal must explain the --root requirement"
+        );
+    }
 
     let process_reference = fixture.dispatch_reference(&ControlCommand::InspectProcess {
         process_id: PROCESS_ID,
