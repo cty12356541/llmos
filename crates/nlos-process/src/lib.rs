@@ -772,17 +772,32 @@ impl ProcessAuthority {
     /// Records a durable platform-kill receipt for an active Process binding,
     /// then invokes the injected adapter to signal the host OS.
     ///
+    /// At-least-once signal delivery: every successful call — fresh or
+    /// replayed — drives the adapter, because the receipt commits before
+    /// the OS signal fires and a signal lost in that window must be
+    /// recoverable by retrying. A replay therefore re-issues the signal
+    /// (SIGTERM / `taskkill` re-signaling is idempotent) and then returns
+    /// the original receipt byte-for-byte as [`PlatformKillDecision::Replayed`].
+    /// [`PlatformKillAdapterOutcome::AlreadyTerminated`] is a success on both
+    /// paths: the target is already dead, so the signal's goal is achieved.
+    ///
     /// # Errors
     ///
     /// Fails when the Process is unknown, terminal, stale, already signaled with
     /// a conflicting idempotency key, storage cannot commit, or the adapter
-    /// rejects the signal.
+    /// rejects the signal — including on replay, where the durable receipt
+    /// stays committed so the next retry re-enters this path and signals
+    /// again instead of losing the kill silently.
     pub fn request_platform_kill(
         &self,
         request: RequestPlatformKillRequest,
         adapter: &impl PlatformKillAdapter,
     ) -> Result<PlatformKillDecision, ProcessAuthorityError> {
-        let receipt = {
+        // `(receipt, replayed)`: the committed receipt plus whether it was
+        // freshly inserted (`false`) or loaded from an exact idempotent
+        // replay (`true`). Both leave the transaction committed; only the
+        // adapter tail below distinguishes them.
+        let (receipt, replayed) = {
             let mut connection = self.lock()?;
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -793,49 +808,59 @@ impl ProcessAuthority {
                     return Err(ProcessAuthorityError::IdempotencyConflict);
                 }
                 transaction.commit()?;
-                return Ok(PlatformKillDecision::Replayed(existing));
-            }
-
-            let head = load_process_head_optional(&transaction, request.process_id)?
-                .ok_or(ProcessAuthorityError::ProcessNotFound(request.process_id))?;
-            if head.lifecycle_state != ProcessLifecycleState::Active {
-                return Err(ProcessAuthorityError::ProcessBindingTerminal(
-                    head.lifecycle_state,
-                ));
-            }
-            if head.process_generation != request.expected_process_generation
-                || head.process_fencing_token != request.expected_process_fencing_token
-            {
-                return Err(ProcessAuthorityError::StaleProcessBinding);
-            }
-            if let Some(existing) = load_platform_kill_receipt_optional(
-                &transaction,
-                request.process_id,
-                head.process_generation,
-            )? {
-                if platform_kill_matches_request(&existing, &request) {
-                    transaction.commit()?;
-                    return Ok(PlatformKillDecision::Replayed(existing));
+                (existing, true)
+            } else {
+                let head = load_process_head_optional(&transaction, request.process_id)?
+                    .ok_or(ProcessAuthorityError::ProcessNotFound(request.process_id))?;
+                if head.lifecycle_state != ProcessLifecycleState::Active {
+                    return Err(ProcessAuthorityError::ProcessBindingTerminal(
+                        head.lifecycle_state,
+                    ));
                 }
-                return Err(ProcessAuthorityError::PlatformKillAlreadySignaled);
+                if head.process_generation != request.expected_process_generation
+                    || head.process_fencing_token != request.expected_process_fencing_token
+                {
+                    return Err(ProcessAuthorityError::StaleProcessBinding);
+                }
+                if let Some(existing) = load_platform_kill_receipt_optional(
+                    &transaction,
+                    request.process_id,
+                    head.process_generation,
+                )? {
+                    if !platform_kill_matches_request(&existing, &request) {
+                        return Err(ProcessAuthorityError::PlatformKillAlreadySignaled);
+                    }
+                    transaction.commit()?;
+                    (existing, true)
+                } else {
+                    let record = PlatformKillReceipt {
+                        process_id: request.process_id,
+                        process_generation: head.process_generation,
+                        process_fencing_token: head.process_fencing_token,
+                        idempotency_key: request.idempotency_key,
+                        killed_at_ms: request.killed_at_ms,
+                    };
+                    insert_platform_kill_receipt(&transaction, &record)?;
+                    transaction.commit()?;
+                    (record, false)
+                }
             }
-
-            let record = PlatformKillReceipt {
-                process_id: request.process_id,
-                process_generation: head.process_generation,
-                process_fencing_token: head.process_fencing_token,
-                idempotency_key: request.idempotency_key,
-                killed_at_ms: request.killed_at_ms,
-            };
-            insert_platform_kill_receipt(&transaction, &record)?;
-            transaction.commit()?;
-            record
         };
 
-        match adapter
+        // At-least-once tail: fresh commits AND replays re-drive the adapter,
+        // so a signal lost after the receipt committed is re-issued by the
+        // retry that observed the loss. Adapter failure propagates on both
+        // paths — the receipt stays durable, and the caller's next retry
+        // replays and signals again.
+        let outcome = adapter
             .signal_platform_kill(receipt.process_id, receipt.process_generation)
-            .map_err(ProcessAuthorityError::PlatformKillAdapter)?
-        {
+            .map_err(ProcessAuthorityError::PlatformKillAdapter)?;
+        if replayed {
+            // Byte-identical original row: only the side effect (the
+            // supplementary signal) distinguishes this from a short-circuit.
+            return Ok(PlatformKillDecision::Replayed(receipt));
+        }
+        match outcome {
             PlatformKillAdapterOutcome::Signaled => Ok(PlatformKillDecision::Signaled(receipt)),
             PlatformKillAdapterOutcome::AlreadyTerminated => {
                 Ok(PlatformKillDecision::AlreadyTerminated(receipt))

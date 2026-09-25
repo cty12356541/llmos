@@ -1,6 +1,7 @@
 //! Acceptance tests for B-PROCESS-003 platform kill contract-layer minimum
 //! prefix: durable kill receipt, stub adapter invocation, terminal fail-closed,
-//! idempotent replay, (on Unix) real SIGTERM via [`PosixPlatformKillAdapter`],
+//! idempotent replay (which re-issues the OS signal — at-least-once),
+//! (on Unix) real SIGTERM via [`PosixPlatformKillAdapter`],
 //! (on Windows) real `taskkill /F /T` via [`WindowsPlatformKillAdapter`],
 //! (on non-Windows) stub rejection for [`WindowsPlatformKillAdapter`], and
 //! each adapter's missing-map / cross-platform stub fail-closed paths.
@@ -182,7 +183,7 @@ fn request_platform_kill_fail_closed_on_terminal_binding() {
 }
 
 #[test]
-fn request_platform_kill_replays_without_reinvoking_adapter() {
+fn request_platform_kill_replay_reinvokes_adapter_and_returns_original_receipt() {
     let root = TestRoot::new("replay");
     let kill_key = IdempotencyKey::from_bytes([0xD1; 16]);
     let (process_id, generation, receipt) = {
@@ -196,13 +197,22 @@ fn request_platform_kill_replays_without_reinvoking_adapter() {
         assert!(matches!(first, PlatformKillDecision::Signaled(_)));
         assert_eq!(adapter.recorded_signals().len(), 1);
 
+        // At-least-once: the replay must re-issue the OS signal (a signal
+        // lost between commit and adapter call is recovered exactly here),
+        // while the returned receipt stays the byte-identical original row.
         let replay = fixture
             .authority
             .request_platform_kill(request, &adapter)
             .expect("in-memory replay");
         assert!(matches!(replay, PlatformKillDecision::Replayed(_)));
         assert_eq!(replay.receipt(), first.receipt());
-        assert_eq!(adapter.recorded_signals().len(), 1);
+        assert_eq!(
+            adapter.recorded_signals(),
+            vec![
+                (fixture.process_id, fixture.process_generation),
+                (fixture.process_id, fixture.process_generation),
+            ]
+        );
 
         (
             fixture.process_id,
@@ -227,7 +237,8 @@ fn request_platform_kill_replays_without_reinvoking_adapter() {
         .expect("reopen replay");
     assert!(matches!(replay, PlatformKillDecision::Replayed(_)));
     assert_eq!(replay.receipt(), &receipt);
-    assert!(adapter.recorded_signals().is_empty());
+    // The reopen replay re-signals too: exactly one supplementary signal.
+    assert_eq!(adapter.recorded_signals(), vec![(process_id, generation)]);
 }
 
 #[derive(Debug, Default)]
@@ -292,7 +303,104 @@ fn request_platform_kill_already_terminated_commits_receipt_without_signaled() {
         .expect("replay");
     assert!(matches!(replay, PlatformKillDecision::Replayed(_)));
     assert_eq!(replay.receipt(), decision.receipt());
-    assert_eq!(adapter.invocations(), 1);
+    // Replay re-signals (at-least-once); the dead target again answers
+    // AlreadyTerminated, which the replay path also counts as success.
+    assert_eq!(adapter.invocations(), 2);
+}
+
+/// Adapter that fails the first `failures_before_success` invocations, then
+/// records signals like the stub — models a transient signal failure after
+/// the durable receipt already committed.
+#[derive(Debug, Default)]
+struct TransientKillAdapter {
+    failures_remaining: std::sync::Mutex<u32>,
+    signals: std::sync::Mutex<Vec<(ProcessId, Generation)>>,
+}
+
+impl TransientKillAdapter {
+    fn new(failures_before_success: u32) -> Self {
+        Self {
+            failures_remaining: std::sync::Mutex::new(failures_before_success),
+            signals: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    fn recorded_signals(&self) -> Vec<(ProcessId, Generation)> {
+        self.signals
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+}
+
+impl PlatformKillAdapter for TransientKillAdapter {
+    fn signal_platform_kill(
+        &self,
+        process_id: ProcessId,
+        process_generation: Generation,
+    ) -> Result<PlatformKillAdapterOutcome, PlatformKillAdapterError> {
+        let mut failures_remaining = self
+            .failures_remaining
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if *failures_remaining > 0 {
+            *failures_remaining -= 1;
+            return Err(PlatformKillAdapterError::Platform(
+                "transient platform signal failure",
+            ));
+        }
+        self.signals
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((process_id, process_generation));
+        Ok(PlatformKillAdapterOutcome::Signaled)
+    }
+}
+
+#[test]
+fn request_platform_kill_retry_after_adapter_failure_reissues_signal() {
+    // The audited defect: the receipt commits before the OS signal fires,
+    // so an adapter failure (or a crash after commit) strands a durable
+    // "killed" receipt with no signal. Recovery must run through the
+    // replay path re-invoking the adapter, not through a short-circuit.
+    let root = TestRoot::new("transient-adapter-failure");
+    let fixture = open_fixture(&root, 66);
+    let adapter = TransientKillAdapter::new(1);
+    let key = IdempotencyKey::from_bytes([0x99; 16]);
+    let request = kill_request(&fixture, key);
+
+    let first = fixture
+        .authority
+        .request_platform_kill(request, &adapter)
+        .expect_err("adapter failure surfaces even though the receipt committed");
+    assert!(matches!(
+        first,
+        ProcessAuthorityError::PlatformKillAdapter(PlatformKillAdapterError::Platform(
+            "transient platform signal failure"
+        ))
+    ));
+    assert!(adapter.recorded_signals().is_empty());
+
+    // The receipt is durably committed despite the failed signal.
+    let committed = fixture
+        .authority
+        .inspect_platform_kill_receipt(fixture.process_id, fixture.process_generation)
+        .expect("inspect committed receipt")
+        .expect("receipt committed before the signal fired");
+    assert_eq!(committed.idempotency_key, key);
+
+    // The retry replays, re-issues the signal, and returns the original
+    // receipt byte-for-byte — the lost signal is recovered, not dropped.
+    let retry = fixture
+        .authority
+        .request_platform_kill(request, &adapter)
+        .expect("retry replays and re-signals");
+    assert!(matches!(retry, PlatformKillDecision::Replayed(_)));
+    assert_eq!(retry.receipt(), &committed);
+    assert_eq!(
+        adapter.recorded_signals(),
+        vec![(fixture.process_id, fixture.process_generation)]
+    );
 }
 
 #[test]
@@ -576,11 +684,12 @@ fn windows_platform_kill_adapter_terminates_real_child_process() {
         Ok(PlatformKillAdapterOutcome::AlreadyTerminated)
     ));
 
-    // Exact-idempotency replay never re-invokes the adapter: an empty-map
-    // adapter would fail closed if the adapter were consulted again.
+    // Exact-idempotency replay re-invokes the adapter (at-least-once): the
+    // real pid map must be supplied again, and the dead pid answers
+    // AlreadyTerminated, which the replay path counts as success.
     let replay = killed
         .authority
-        .request_platform_kill(request, &WindowsPlatformKillAdapter::new(HashMap::new()))
+        .request_platform_kill(request, &adapter)
         .expect("replay windows platform kill");
     assert!(matches!(replay, PlatformKillDecision::Replayed(_)));
     assert_eq!(replay.receipt(), &receipt);
