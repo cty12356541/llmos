@@ -1056,12 +1056,22 @@ fn validate_cross_term_adoption_context(
         return Err(TaskStoreError::AuthorityLeaseFenced);
     }
     let registry = crate::participant::inspect_registry(transaction, &task.record)?;
-    let expected_generation = original_registry_binding
+    let minimum_successor_generation = original_registry_binding
         .generation
         .checked_add(1)
         .ok_or(TaskStoreError::EpochExhausted)?;
-    if registry.generation != expected_generation
-        || registry.prior_root != original_registry_binding.root
+    // Cross-term adoption liveness: every participant registration after
+    // the successor hand-off advances the successor registry generation
+    // (each immutable generation row chains to the previous root), so any
+    // generation at or beyond the direct successor must stay admissible —
+    // requiring exactly original+1 would freeze an adopted quarantined
+    // permit forever. The one-hop `prior_root` descent witness is only
+    // definable for the direct successor generation, so it is checked
+    // there; later generations descend through their own immutable
+    // per-generation rows.
+    if registry.generation < minimum_successor_generation
+        || (registry.generation == minimum_successor_generation
+            && registry.prior_root != original_registry_binding.root)
         || !matches!(
             registry.state,
             crate::ParticipantRegistryState::Open
@@ -1077,10 +1087,28 @@ fn validate_cross_term_adoption_context(
     let current_assignment = load_current_assignment(transaction, task.record.task_id)?.ok_or(
         TaskStoreError::CorruptRecord("cross-term adoption current assignment"),
     )?;
+    // "Successor Active" semantics: the live assignment must be Active,
+    // not the takeover completion assignment, and bound to the successor
+    // lease. Its registry binding may lag the current generation between
+    // a participant registration and the next lease-bound permit issuance
+    // (registrations never rotate assignments, and a quarantined permit
+    // blocks that issuance), so any in-chain successor binding is
+    // accepted: generation within [original+1, current], root verified
+    // against the immutable per-generation row.
     if current_assignment.state != AuthorityAssignmentState::Active
         || current_assignment.assignment_id == completion_assignment_id
         || current_assignment.authority_lease_binding != takeover.new_authority_lease_binding
-        || current_assignment.participant_registry_binding != current_registry_binding
+    {
+        return Err(TaskStoreError::AuthorityLeaseFenced);
+    }
+    let assignment_binding = current_assignment.participant_registry_binding;
+    if assignment_binding.generation < minimum_successor_generation
+        || assignment_binding.generation > registry.generation
+        || crate::participant::registry_root_at_generation(
+            transaction,
+            task.record.task_id,
+            assignment_binding.generation,
+        )? != Some(assignment_binding.root)
     {
         return Err(TaskStoreError::AuthorityLeaseFenced);
     }
@@ -1103,6 +1131,55 @@ fn validate_cross_term_adoption_context(
         current_registry_binding,
         exact_fenced_participant_root,
     })
+}
+
+/// Cross-term adoption anchor check (adoption liveness): after a cross-term
+/// adoption, participant registrations may advance the successor registry
+/// generation — and rotate the active assignment with it — while the
+/// adopted permit is still outstanding. The adoption receipt's recorded
+/// `current_*` anchor stays valid when it names a real registry generation
+/// inside the successor chain (verified against the immutable
+/// per-generation row root) and an assignment of the SAME successor lease
+/// term that is still active or was fenced by a later same-term rotation.
+/// The takeover-chain checks (receipt Complete, old/completion assignments
+/// Fenced, live successor Active assignment, fence root) are unchanged;
+/// a later takeover term still mismatches `context.current_lease` and
+/// fails closed in the callers.
+fn adoption_anchor_advancement_valid(
+    transaction: &Transaction<'_>,
+    context: &CrossTermAdoptionContext,
+    recorded_assignment_id: TaskAuthorityAssignmentId,
+    recorded_registry_binding: crate::ParticipantRegistryBinding,
+) -> Result<bool, TaskStoreError> {
+    let minimum_successor_generation = context
+        .original_registry_binding
+        .generation
+        .checked_add(1)
+        .ok_or(TaskStoreError::EpochExhausted)?;
+    if recorded_registry_binding.generation < minimum_successor_generation
+        || recorded_registry_binding.generation > context.current_registry_binding.generation
+    {
+        return Ok(false);
+    }
+    if crate::participant::registry_root_at_generation(
+        transaction,
+        context.takeover.task_id,
+        recorded_registry_binding.generation,
+    )? != Some(recorded_registry_binding.root)
+    {
+        return Ok(false);
+    }
+    match crate::lease::load_assignment_by_id(
+        transaction,
+        context.takeover.task_id,
+        recorded_assignment_id,
+    )? {
+        Some(record) => Ok(matches!(
+            record.state,
+            AuthorityAssignmentState::Active | AuthorityAssignmentState::Fenced
+        ) && record.authority_lease_binding == context.current_lease),
+        None => Ok(false),
+    }
 }
 
 #[allow(clippy::too_many_lines)]
@@ -1551,13 +1628,38 @@ fn validate_cross_adoption_for_terminal(
     if adoption.authority_lease_binding != Some(context.current_lease)
         || adoption.original_authority_lease_binding != Some(context.old_lease)
         || adoption.original_participant_registry_binding != Some(context.original_registry_binding)
-        || adoption.current_assignment_id != Some(context.current_assignment_id)
-        || adoption.current_participant_registry_binding != Some(context.current_registry_binding)
         || adoption.exact_fenced_participant_root != Some(context.exact_fenced_participant_root)
         || adoption.current_cancel_epoch != Some(task.record.cancel_epoch)
         || adoption
             .current_control_epoch
             .is_none_or(|epoch| task.record.control_epoch < epoch)
+    {
+        return Err(TaskStoreError::AuthorityLeaseBindingMismatch);
+    }
+    // Adoption-liveness anchor: the recorded `current_*` pair may trail the
+    // live successor chain when participants registered after the adoption
+    // (see `adoption_anchor_advancement_valid`); everything immutable
+    // above stays an exact match.
+    let recorded_assignment_id =
+        adoption
+            .current_assignment_id
+            .ok_or(TaskStoreError::CorruptRecord(
+                "cross-term adoption current assignment",
+            ))?;
+    let recorded_registry_binding =
+        adoption
+            .current_participant_registry_binding
+            .ok_or(TaskStoreError::CorruptRecord(
+                "cross-term adoption current registry",
+            ))?;
+    if (recorded_assignment_id != context.current_assignment_id
+        || recorded_registry_binding != context.current_registry_binding)
+        && !adoption_anchor_advancement_valid(
+            transaction,
+            &context,
+            recorded_assignment_id,
+            recorded_registry_binding,
+        )?
     {
         return Err(TaskStoreError::AuthorityLeaseBindingMismatch);
     }
@@ -3321,12 +3423,34 @@ impl SqliteTaskAuthority {
                 successor_lease,
                 request.reconciled_at_ms,
             )?;
+            // Adoption-liveness anchor: the immutable lease/fence-root
+            // binding stays an exact match; the recorded `current_*` pair
+            // may trail the live successor chain when participants
+            // registered after the adoption (verified in-chain by
+            // `adoption_anchor_advancement_valid`).
             if adoption.authority_lease_binding != Some(context.current_lease)
-                || adoption.current_assignment_id != Some(context.current_assignment_id)
-                || adoption.current_participant_registry_binding
-                    != Some(context.current_registry_binding)
                 || adoption.exact_fenced_participant_root
                     != Some(context.exact_fenced_participant_root)
+            {
+                return Err(TaskStoreError::AuthorityLeaseBindingMismatch);
+            }
+            let recorded_assignment_id =
+                adoption
+                    .current_assignment_id
+                    .ok_or(TaskStoreError::CorruptRecord(
+                        "cross-term adoption current assignment",
+                    ))?;
+            let recorded_registry_binding = adoption.current_participant_registry_binding.ok_or(
+                TaskStoreError::CorruptRecord("cross-term adoption current registry"),
+            )?;
+            if (recorded_assignment_id != context.current_assignment_id
+                || recorded_registry_binding != context.current_registry_binding)
+                && !adoption_anchor_advancement_valid(
+                    &transaction,
+                    &context,
+                    recorded_assignment_id,
+                    recorded_registry_binding,
+                )?
             {
                 return Err(TaskStoreError::AuthorityLeaseBindingMismatch);
             }
@@ -3815,6 +3939,44 @@ fn replay_finalize(
         }
     }
     Ok(FinalizeDecision::Replayed(Box::new(receipt)))
+}
+
+/// Converge divergence detection (mixed plan liveness): the permit backing
+/// a still-`Planned` Resource finalize plan was terminalized out-of-band
+/// by the direct resource-aware v3 API with finalize bytes that differ
+/// from the plan's sealed envelope. Envelope replay — and therefore
+/// converge — can never succeed for such a plan (a permanent
+/// [`TaskStoreError::HistoryConflict`] loop), so the caller reports a
+/// typed divergence for upper-layer adjudication instead. Uses exactly
+/// the durable facts `replay_finalize` compares, fail-closed.
+pub(crate) fn resource_converge_replay_diverged(
+    source: &impl SqlRead,
+    permit: &PermitRecord,
+    request: &FinalizeRequestV3,
+) -> Result<bool, TaskStoreError> {
+    if permit.state != PermitState::Closed {
+        return Ok(false);
+    }
+    let Some(receipt) = load_receipt_by_permit(source, permit.task_id, permit.permit_id)? else {
+        return Ok(false);
+    };
+    if matches!(
+        receipt.outcome,
+        ReceiptOutcome::FailedBeforeEffect | ReceiptOutcome::CancelledBeforeEffect
+    ) {
+        // Pre-effect closures keep their own typed replay refusal
+        // (`PermitNotIssued`); this detector owns the finalize-proof
+        // byte divergence only.
+        return Ok(false);
+    }
+    Ok(match load_finalize_proof(source, receipt.receipt_id)? {
+        Some(digest) => digest != finalize_proof_digest(request),
+        None => {
+            receipt.new_effect_history_root != request.base.new_effect_history_root
+                || receipt.new_retry_fence_epoch != request.base.new_retry_fence_epoch
+                || !request.required_satisfaction.is_empty()
+        }
+    })
 }
 
 /// Fail-closed comparison of a Resource receipt set (owner-verified before

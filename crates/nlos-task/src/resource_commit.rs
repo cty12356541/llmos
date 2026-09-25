@@ -896,10 +896,13 @@ impl SqliteTaskAuthority {
     /// # Errors
     ///
     /// Returns a typed plan/envelope error, the resource-aware v3
-    /// lifecycle errors, or [`TaskStoreError::ResourceParticipantAuthority`]
+    /// lifecycle errors, [`TaskStoreError::ResourceParticipantAuthority`]
     /// when the owner read itself fails (an infrastructure failure the
-    /// caller may ledger). The not-due outcome is a decision, not an
-    /// error.
+    /// caller may ledger), or [`TaskStoreError::ResourceConvergeProofDiverged`]
+    /// when the permit was already terminalized out-of-band with finalize
+    /// bytes that differ from the sealed envelope (a plan-level failure
+    /// the recovery worker ledgers with backoff). The not-due outcome is
+    /// a decision, not an error.
     pub fn converge_resource_commit_plan(
         &self,
         resource_authority: &nlos_resource::ResourceAuthority,
@@ -941,6 +944,19 @@ impl SqliteTaskAuthority {
         let write_set = {
             let connection = self.lock_connection()?;
             let permit = load_permit_by_id(&*connection, plan.task_id, plan.permit_id)?;
+            if crate::reconcile::resource_converge_replay_diverged(&*connection, &permit, &request)?
+            {
+                // Converge liveness: the direct resource-aware v3 API
+                // terminalized this permit with satisfaction bytes that
+                // differ from the sealed envelope, so envelope replay can
+                // never succeed. Report the durable divergence as a typed
+                // plan-level failure for upper-layer adjudication instead
+                // of looping on `HistoryConflict`; the recovery worker
+                // ledgers it with backoff.
+                return Err(TaskStoreError::ResourceConvergeProofDiverged {
+                    plan_id: plan.plan_id,
+                });
+            }
             let record = load_write_set_by_root(&*connection, plan.task_id, permit.write_set_root)?
                 .ok_or(TaskStoreError::TaskWriteSetNotFound)?;
             if record.write_set_root != crate::model::task_write_set_root(&record) {

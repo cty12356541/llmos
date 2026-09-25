@@ -378,6 +378,18 @@ pub enum TaskStoreError {
     InvalidResourceRecoveryState {
         state: ResourceRecoveryState,
     },
+    /// A still-`Planned` Resource finalize plan whose permit was already
+    /// terminalized out-of-band (by the direct resource-aware v3 API)
+    /// with finalize bytes that differ from the plan's sealed envelope:
+    /// envelope replay can never succeed, so converge reports this typed
+    /// divergence for upper-layer adjudication instead of looping on
+    /// `HistoryConflict`. Plan-level by design: the recovery worker
+    /// ledgers it with backoff without consuming a domain budget.
+    ResourceConvergeProofDiverged {
+        /// The plan whose envelope diverged from the durable finalize
+        /// proof.
+        plan_id: ResourceCommitPlanId,
+    },
     /// The task ID is already registered with a different specification.
     DuplicateTask,
     /// The attempt ID is already registered with a different specification.
@@ -405,6 +417,14 @@ pub enum TaskStoreError {
         /// Static explanation of the rejected binding.
         reason: &'static str,
     },
+    /// The Artifact commit ladder cannot admit a write set that also
+    /// carries effect plans (mixed effect+Artifact, or a legacy
+    /// effect-bearing permit): the artifact-only finalize gate can never
+    /// clear for such a permit, so admission fails typed at
+    /// plan/authorize time instead of stranding a permanently stuck plan.
+    /// Effect-bearing write sets (including effect+Semantic mixes, which
+    /// remain legal) must finalize through the unified v3 finalize path.
+    MixedEffectArtifactWriteSet,
     /// A Semantic publication plan or nested owner receipt conflicts with
     /// the immutable `TaskWriteSet` binding.
     InvalidSemanticPublicationPlan {
@@ -861,6 +881,10 @@ impl fmt::Display for TaskStoreError {
                     "Resource recovery state {state:?} rejects the transition"
                 )
             }
+            Self::ResourceConvergeProofDiverged { plan_id } => write!(
+                formatter,
+                "Resource converge found the permit finalized with different satisfaction bytes than the sealed envelope; plan {plan_id:?} needs upper-layer adjudication"
+            ),
             Self::DuplicateTask => formatter.write_str("task ID re-registered with new spec"),
             Self::DuplicateAttempt => formatter.write_str("attempt ID re-registered with new spec"),
             Self::SnapshotConflict => formatter.write_str("snapshot ID rebound to new bytes"),
@@ -876,6 +900,10 @@ impl fmt::Display for TaskStoreError {
             Self::ArtifactPublicationConflict { reason } => {
                 write!(formatter, "artifact publication receipt conflict: {reason}")
             }
+            Self::MixedEffectArtifactWriteSet => write!(
+                formatter,
+                "artifact commit ladder requires an effect-free write set; effect-bearing permits must finalize through the unified v3 path"
+            ),
             Self::InvalidSemanticPublicationPlan { reason } => {
                 write!(formatter, "invalid semantic publication plan: {reason}")
             }

@@ -988,11 +988,12 @@ fn artifact_write_declaration_binds_post_permit_publication_plan() {
         semantic_reads: Vec::new(),
         semantic_appends: Vec::new(),
         resource_reservations: Vec::new(),
-        planned_effects: vec![planned_effect()],
-        effect_endpoints: vec![TaskWriteSetEffectEndpointRequest::ArtifactHead {
-            effect_seq: 0,
-            artifact_id,
-        }],
+        // Artifact-only declaration: since the mixed effect+Artifact
+        // admission refusal, the Artifact publication ladder is reserved
+        // for effect-free write sets (this test's mixed variant used to
+        // ride the audited mixed-plan bug).
+        planned_effects: Vec::new(),
+        effect_endpoints: Vec::new(),
         idempotency_key: IdempotencyKey::from_bytes([0xae; 16]),
         sealed_at_ms: 1_130,
     };
@@ -1004,7 +1005,7 @@ fn artifact_write_declaration_binds_post_permit_publication_plan() {
 
     let mut permit_request = permit(&spec, 0xaf);
     permit_request.write_set_root = record.write_set_root;
-    permit_request.planned_effects = request.planned_effects.clone();
+    permit_request.planned_effects = Vec::new();
     let wrong_artifact_root = AuthorityRoot::new("wrong-artifact-permit");
     let wrong_artifact = nlos_artifact::ArtifactStore::open(&wrong_artifact_root.0).unwrap();
     assert!(matches!(

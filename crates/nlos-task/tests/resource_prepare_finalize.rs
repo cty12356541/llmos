@@ -19,12 +19,13 @@ use nlos_resource::{
     ResourceDemand,
 };
 use nlos_task::{
-    AttemptSpec, FinalizeRequest, FinalizeRequestV3, NestedResourceCostReceipt,
-    ParticipantRegistryBinding, PermitDecision, PermitRecord, PermitRequest, PermitState,
-    PrepareResourceFinalizeRequest, ResourceCommitPlanState, ResourceConvergeDecision,
-    ResourceFinalizeDecision, ResourceFinalizeEnvelopeDecision, SnapshotBundle,
-    SnapshotConsistency, SqliteTaskAuthority, TaskSnapshotReceiptSpec, TaskSpec, TaskStoreError,
-    TaskWriteSetRequest, TaskWriteSetResourceReservationRequest, empty_effect_history_root,
+    AttemptSpec, FinalizeRequest, FinalizeRequestV3, LogicalEffectDescriptor,
+    NestedResourceCostReceipt, ParticipantRegistryBinding, PermitDecision, PermitRecord,
+    PermitRequest, PermitState, PlannedEffect, PrepareResourceFinalizeRequest,
+    ResourceCommitPlanState, ResourceConvergeDecision, ResourceFinalizeDecision,
+    ResourceFinalizeEnvelopeDecision, SnapshotBundle, SnapshotConsistency, SqliteTaskAuthority,
+    TaskSnapshotReceiptSpec, TaskSpec, TaskStoreError, TaskWriteSetRequest,
+    TaskWriteSetResourceReservationRequest, empty_effect_history_root,
 };
 use nlos_types::{
     CallId, CancellationScopeId, Generation, IdempotencyKey, OperationId, ReceiptId, TaskAttemptId,
@@ -849,4 +850,291 @@ fn converge_flips_plan_when_permit_was_finalized_directly() {
         ),
         2
     );
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn converge_reports_typed_divergence_when_direct_finalize_used_different_satisfaction_bytes() {
+    // Given a prepared envelope over TWO required effect slots whose permit
+    // was terminalized by the direct resource-aware v3 API with the SAME
+    // satisfaction set in a DIFFERENT byte order: the durable finalize
+    // proof digest differs from the envelope bytes, so envelope replay can
+    // never succeed.
+    let database = TestDatabase::new("diverged");
+    let resource_root = AuthorityRoot::new("diverged-resource");
+    let owner = OwnerFixture::new(&resource_root.0, 0xa7);
+    let reservations = two_reservations(&owner);
+    let authority = database.open();
+    authority
+        .register_task(TaskSpec {
+            application_id: None,
+            plan_revision: None,
+            task_id: task_id(),
+            task_generation: Generation::INITIAL,
+            registered_at_ms: 1_000,
+        })
+        .expect("register task");
+    let spec = attempt_spec();
+    authority
+        .register_snapshot_receipt(TaskSnapshotReceiptSpec {
+            task_id: task_id(),
+            snapshot: spec.snapshot,
+            receipt_id: ReceiptId::from_bytes([0x31; 16]),
+            builder_id: [0x32; 16],
+            builder_version_digest: [0x33; 32],
+            per_authority_checkpoint_receipts: vec![ReceiptId::from_bytes([0x34; 16])],
+            dependency_closure_root: [0x35; 32],
+            semantic_resolver_digest: [0x36; 32],
+            canonical_iteration_digest: [0x37; 32],
+            achieved_consistency: SnapshotConsistency::Causal,
+            built_at_ms: 1_005,
+            authority_id: [0x38; 16],
+            key_id: [0x39; 16],
+            signature: [0x3a; 64],
+        })
+        .expect("snapshot receipt");
+    authority
+        .register_attempt_with_snapshot_receipt(spec, ReceiptId::from_bytes([0x31; 16]))
+        .expect("register attempt");
+    let registry = authority
+        .inspect_participant_registry(task_id())
+        .expect("registry");
+    let first_binding = ParticipantRegistryBinding {
+        generation: registry.generation,
+        root: registry.root,
+    };
+    let driver_registration = authority
+        .register_driver_gateway_participant(
+            &owner.authority,
+            task_id(),
+            first_binding,
+            owner.driver.driver_id,
+            owner.driver.generation,
+            1_150,
+        )
+        .expect("driver participant");
+    let second_binding = ParticipantRegistryBinding {
+        generation: driver_registration.registry().generation,
+        root: driver_registration.registry().root,
+    };
+    let ledger_registration = authority
+        .register_resource_ledger_participant(
+            &owner.authority,
+            task_id(),
+            second_binding,
+            owner.account.account_id,
+            Generation::INITIAL,
+            1_160,
+        )
+        .expect("ledger participant");
+    let sealed_binding = ParticipantRegistryBinding {
+        generation: ledger_registration.registry().generation,
+        root: ledger_registration.registry().root,
+    };
+    let effect = |slot: u64| PlannedEffect {
+        descriptor: LogicalEffectDescriptor {
+            task_id: task_id(),
+            task_generation: Generation::INITIAL,
+            intent_spec_id: [0x51 + u8::try_from(slot).expect("slot"); 32],
+            stable_action_slot: slot,
+            target_authority_object_id: [0x61; 32],
+            effect_class: 1,
+            idempotency_scope: 1,
+        },
+        required: true,
+        required_condition_digest: None,
+        success_criteria_digest: [0x71 + u8::try_from(slot).expect("slot"); 32],
+        action_proposal_digest: [0x81; 32],
+    };
+    let effects = vec![effect(0), effect(1)];
+    let artifact_root = AuthorityRoot::new("diverged-artifact");
+    let artifact = nlos_artifact::ArtifactStore::open(&artifact_root.0).expect("artifact store");
+    let write_set = authority
+        .seal_task_write_set_with_resource_authority(
+            &artifact,
+            &owner.authority,
+            TaskWriteSetRequest {
+                task_id: task_id(),
+                attempt_id: spec.attempt_id,
+                attempt_generation: spec.attempt_generation,
+                artifact_reads: Vec::new(),
+                artifact_writes: Vec::new(),
+                process_binding: None,
+                semantic_reads: Vec::new(),
+                semantic_appends: Vec::new(),
+                resource_reservations: reservations
+                    .iter()
+                    .map(|reservation| TaskWriteSetResourceReservationRequest {
+                        reservation_id: reservation.reservation_id,
+                        expected_call_id: reservation.call_id,
+                        expected_operation_id: reservation.operation_id,
+                        expected_quote_id: reservation.quote_id,
+                    })
+                    .collect(),
+                planned_effects: effects.clone(),
+                effect_endpoints: vec![
+                    nlos_task::TaskWriteSetEffectEndpointRequest::ResourceLedger {
+                        effect_seq: 0,
+                        account_id: owner.account.account_id,
+                        expected_account_generation: Generation::INITIAL,
+                    },
+                    nlos_task::TaskWriteSetEffectEndpointRequest::ResourceLedger {
+                        effect_seq: 1,
+                        account_id: owner.account.account_id,
+                        expected_account_generation: Generation::INITIAL,
+                    },
+                ],
+                idempotency_key: IdempotencyKey::from_bytes([0x41; 16]),
+                sealed_at_ms: 1_200,
+            },
+        )
+        .expect("seal mixed write set")
+        .record()
+        .clone();
+    assert_eq!(write_set.participant_registry_binding, sealed_binding);
+    let permit = match authority
+        .request_commit_permit_with_resource_authority(
+            &owner.authority,
+            PermitRequest {
+                task_id: task_id(),
+                attempt_id: spec.attempt_id,
+                attempt_generation: spec.attempt_generation,
+                write_set_root: write_set.write_set_root,
+                planned_effects: effects,
+                idempotency_key: IdempotencyKey::from_bytes([0x42; 16]),
+                valid_until_ms: 9_000,
+                requested_at_ms: 1_300,
+            },
+        )
+        .expect("permit")
+    {
+        PermitDecision::Issued(permit) => *permit,
+        other => panic!("expected issued permit, got {other:?}"),
+    };
+    for seq in [0u64, 1] {
+        let issued = match authority
+            .request_effect_permit(nlos_task::EffectPermitRequest {
+                task_id: task_id(),
+                attempt_id: spec.attempt_id,
+                attempt_generation: spec.attempt_generation,
+                permit_id: permit.permit_id,
+                permit_epoch: permit.permit_epoch,
+                effect_seq: seq,
+                idempotency_key: IdempotencyKey::from_bytes(
+                    [0xd0 + u8::try_from(seq).expect("seq"); 16],
+                ),
+                valid_until_ms: 9_999,
+                requested_at_ms: 1_400,
+            })
+            .expect("effect permit")
+        {
+            nlos_task::EffectPermitDecision::Issued(record) => record,
+            other @ nlos_task::EffectPermitDecision::Replayed(_) => {
+                panic!("expected issued effect permit, got {other:?}")
+            }
+        };
+        authority
+            .consume_dispatch_token(nlos_task::DispatchRequest {
+                task_id: task_id(),
+                attempt_id: spec.attempt_id,
+                attempt_generation: spec.attempt_generation,
+                permit_id: permit.permit_id,
+                permit_epoch: permit.permit_epoch,
+                effect_permit_id: issued.effect_permit_id,
+                dispatch_token: issued.one_shot_dispatch_token,
+                dispatched_at_ms: 1_500,
+            })
+            .expect("dispatch");
+        authority
+            .record_effect_outcome(nlos_task::OutcomeRequest {
+                task_id: task_id(),
+                attempt_id: spec.attempt_id,
+                attempt_generation: spec.attempt_generation,
+                permit_id: permit.permit_id,
+                permit_epoch: permit.permit_epoch,
+                effect_seq: seq,
+                outcome: nlos_task::Outcome::Closed {
+                    authoritative_closure_digest: [0xaa + u8::try_from(seq).expect("seq"); 32],
+                },
+                recorded_at_ms: 1_600,
+            })
+            .expect("close effect");
+    }
+    let satisfaction = |seq: u64| nlos_task::RequiredSatisfaction {
+        effect_seq: seq,
+        proof: nlos_task::RequiredSatisfactionProof::EffectClosedSuccess {
+            success_assertion_digest: {
+                let slot = authority
+                    .inspect_effect_slot(permit.permit_id, seq)
+                    .expect("slot");
+                let receipt = authority
+                    .inspect_effect_receipt(slot.effect_receipt_id.expect("effect receipt"))
+                    .expect("effect receipt");
+                nlos_task::expected_success_assertion_digest(&slot, &receipt)
+            },
+        },
+    };
+    let proof_zero = satisfaction(0);
+    let proof_one = satisfaction(1);
+    let plan_id = authority
+        .prepare_resource_finalize(PrepareResourceFinalizeRequest {
+            task_id: task_id(),
+            attempt_id: spec.attempt_id,
+            attempt_generation: spec.attempt_generation,
+            permit_id: permit.permit_id,
+            idempotency_key: IdempotencyKey::from_bytes([0x43; 16]),
+            required_satisfaction: vec![proof_zero, proof_one],
+            fenced_participant_digest: [0x45; 32],
+            prepared_at_ms: 1_700,
+        })
+        .expect("prepare envelope")
+        .record()
+        .plan_id;
+    settle_all(&owner, &reservations);
+    let mut direct = finalize_request(permit.permit_id, 1_800);
+    // Same proof set, SWAPPED order: valid for the terminal evaluation but
+    // different finalize-proof bytes than the sealed envelope order.
+    direct.required_satisfaction = vec![proof_one, proof_zero];
+    assert!(matches!(
+        authority.finalize_commit_v3_with_resource_authority(&owner.authority, direct),
+        Ok(nlos_task::ResourceFinalizeDecision::Committed(_))
+    ));
+
+    // When converge runs, the typed divergence surfaces instead of the
+    // unrecoverable HistoryConflict retry loop, and the durable plan stays
+    // an inspectable Planned fact.
+    for _ in 0..2 {
+        assert!(matches!(
+            authority.converge_resource_commit_plan(&owner.authority, plan_id, 1_900),
+            Err(TaskStoreError::ResourceConvergeProofDiverged { .. })
+        ));
+    }
+    let plan = authority.inspect_resource_commit_plan(plan_id).unwrap();
+    assert_eq!(plan.state, ResourceCommitPlanState::Planned);
+    assert!(
+        authority
+            .inspect_resource_finalize_envelope(plan_id)
+            .unwrap()
+            .is_some()
+    );
+
+    // And the plan-level failure books into the durable Resource recovery
+    // ledger with backoff (the recovery worker's plan-failure path: no
+    // domain budget, Retrying with a future retry timestamp).
+    let current = authority
+        .inspect_resource_recovery(plan_id)
+        .expect("inspect recovery")
+        .map_or(0, |record| record.total_failures);
+    let ledger = authority
+        .record_resource_recovery_failure(nlos_task::ResourceRecoveryFailureRequest {
+            plan_id,
+            expected_total_failures: current,
+            source: nlos_task::ResourceRecoveryFailureSource::TaskAuthority,
+            observed_at_ms: 1_900,
+            base_delay_ms: 100,
+            max_delay_ms: 60_000,
+        })
+        .expect("record recovery failure");
+    assert_eq!(ledger.state, nlos_task::ResourceRecoveryState::Retrying);
+    assert!(ledger.next_retry_at_ms.unwrap_or(i64::MIN) > 1_900);
 }

@@ -41,14 +41,12 @@ use nlos_resource::{
 };
 use nlos_semantic::{PublishSemanticPublicationRequest, SemanticAuthority};
 use nlos_task::{
-    ArtifactCommitPlanId, ArtifactCommitPlanState, ArtifactPublicationAuthorizationDecision,
     ArtifactPublicationExpectation, AttemptSpec, Authorities, DispatchRequest,
-    EffectPermitDecision, EffectPermitRequest, FinalizeArtifactCommitRequest, FinalizeRequest,
-    FinalizeRequestV3, FinalizeSpec, FinalizeSpecDecision, LogicalEffectDescriptor,
-    NestedArtifactPublicationReceipt, NestedResourceCostReceipt, NestedSemanticPublicationReceipt,
-    Outcome, OutcomeRequest, ParticipantRegistryBinding, PermitDecision, PermitRecord,
-    PermitRequest, PermitState, PlanArtifactCommitRequest, PlanSemanticCommitRequest,
-    PlannedEffect, RecordArtifactPublicationsRequest, RecordSemanticPublicationsRequest,
+    EffectPermitDecision, EffectPermitRequest, FinalizeRequest, FinalizeRequestV3, FinalizeSpec,
+    FinalizeSpecDecision, LogicalEffectDescriptor, NestedResourceCostReceipt,
+    NestedSemanticPublicationReceipt, Outcome, OutcomeRequest, ParticipantRegistryBinding,
+    PermitDecision, PermitRecord, PermitRequest, PermitState, PlanArtifactCommitRequest,
+    PlanSemanticCommitRequest, PlannedEffect, RecordSemanticPublicationsRequest,
     SemanticCommitPlanId, SemanticCommitPlanState, SemanticResourceFinalizeDecision,
     SemanticResourceTaskCommitReceipt, SnapshotBundle, SnapshotConsistency, SqliteTaskAuthority,
     TaskCommitReceipt, TaskSnapshotReceiptSpec, TaskSpec, TaskStoreError, TaskWriteSetArtifactRead,
@@ -888,13 +886,11 @@ fn drive_semantic_to_ready(
     (plan.plan_id, owner_copy)
 }
 
-/// Drives the Artifact publication face: owner stage + Task plan +
-/// authorize + owner publish + Task receipt consumption → plan READY.
-/// Returns the plan id with the exact nested publication.
-fn drive_artifact_to_ready(
-    mixed: &SixDomainPermit,
-    owners: &Owners,
-) -> (ArtifactCommitPlanId, NestedArtifactPublicationReceipt) {
+/// Drives the Artifact face: owner stage + publish (durable owner
+/// evidence), while the Task-side ladder admission is typed-rejected for
+/// this mixed effect-bearing permit (`MixedEffectArtifactWriteSet`, zero
+/// durable plan rows) — the artifact-only ladder never accepts it.
+fn drive_artifact_owner_evidence(mixed: &SixDomainPermit, owners: &Owners) {
     let staging_id = nlos_artifact::staging_id_for(owners.write_artifact, owners.staging_key);
     let expectation = ArtifactPublicationExpectation {
         staging_id: staging_id.into_bytes(),
@@ -917,28 +913,23 @@ fn drive_artifact_to_ready(
         })
         .expect("owner stage");
     let spec = attempt_spec();
-    let plan = mixed
-        .authority
-        .plan_artifact_commit(PlanArtifactCommitRequest {
-            task_id: task_id(),
-            attempt_id: spec.attempt_id,
-            attempt_generation: spec.attempt_generation,
-            permit_id: mixed.permit.permit_id,
-            expectations: vec![expectation],
-            idempotency_key: IdempotencyKey::from_bytes([0xbc; 16]),
-            planned_at_ms: 1_386,
-        })
-        .expect("artifact plan")
-        .record()
-        .clone();
-    assert_eq!(plan.write_set_root, mixed.sealed.write_set_root);
-    assert!(matches!(
-        mixed
-            .authority
-            .authorize_artifact_publication(plan.plan_id, 1_387)
-            .expect("authorize artifact publication"),
-        ArtifactPublicationAuthorizationDecision::Authorized(_)
-    ));
+    assert!(
+        matches!(
+            mixed
+                .authority
+                .plan_artifact_commit(PlanArtifactCommitRequest {
+                    task_id: task_id(),
+                    attempt_id: spec.attempt_id,
+                    attempt_generation: spec.attempt_generation,
+                    permit_id: mixed.permit.permit_id,
+                    expectations: vec![expectation],
+                    idempotency_key: IdempotencyKey::from_bytes([0xbc; 16]),
+                    planned_at_ms: 1_386,
+                }),
+            Err(TaskStoreError::MixedEffectArtifactWriteSet)
+        ),
+        "the mixed effect-bearing permit must never enter the artifact-only ladder"
+    );
     let receipt = owners
         .artifact
         .publish_staged_revision(nlos_artifact::PublishStagedRevisionRequest {
@@ -951,34 +942,7 @@ fn drive_artifact_to_ready(
         .expect("owner publish")
         .receipt()
         .clone();
-    let nested = NestedArtifactPublicationReceipt {
-        receipt_id: receipt.receipt_id,
-        staging_id: receipt.staging_id.into_bytes(),
-        artifact_id: receipt.artifact_id,
-        revision: receipt.revision,
-        digest: receipt.digest.into_bytes(),
-        size_bytes: receipt.size_bytes,
-        task_id: receipt.task_id,
-        permit_id: receipt.permit_id,
-        write_set_root: receipt.write_set_root.into_bytes(),
-        prior_head_revision: receipt.prior_head_revision,
-        prior_head_digest: receipt
-            .prior_head_digest
-            .map(nlos_artifact::ContentDigest::into_bytes),
-        new_head_revision: receipt.new_head_revision,
-        new_head_digest: receipt.new_head_digest.into_bytes(),
-        created_at_ms: i64::try_from(receipt.created_at_ms).expect("created_at fits i64"),
-    };
-    let progress = mixed
-        .authority
-        .record_artifact_publications(RecordArtifactPublicationsRequest {
-            plan_id: plan.plan_id,
-            receipts: vec![nested],
-            observed_at_ms: 1_389,
-        })
-        .expect("record artifact publications");
-    assert_eq!(progress.plan.state, ArtifactCommitPlanState::Ready);
-    (plan.plan_id, nested)
+    assert_eq!(receipt.revision, 1);
 }
 
 /// Prepares and activates the Operation owner dispatch (ADR-0017 O-B
@@ -1099,8 +1063,7 @@ fn six_domain_write_set_seals_permits_and_finalizes_with_unified_receipt() {
     close_effect_slot(&mixed, 0, 0xb2, [0xb3; 32]);
     close_effect_slot(&mixed, 1, 0xb4, [0xb5; 32]);
     let (plan_id, expected_publication) = drive_semantic_to_ready(&mixed, &owners);
-    let (artifact_plan_id, expected_artifact_publication) =
-        drive_artifact_to_ready(&mixed, &owners);
+    drive_artifact_owner_evidence(&mixed, &owners);
     owners
         .resource
         .settle(&reservations[0], &[(1, 30), (2, 37)], 37, 0xb6);
@@ -1109,21 +1072,19 @@ fn six_domain_write_set_seals_permits_and_finalizes_with_unified_receipt() {
         .settle(&reservations[1], &[(1, 10)], 10, 0xb7);
     activate_operation(&owners);
 
-    // And the honest Artifact boundary already holds BEFORE the terminal:
-    // the publication plan is READY with durable receipts, but the
-    // artifact-only rung typed-refuses to terminalize this mixed permit
-    // (it carries effect slots), so its publications cannot ride any
-    // terminal transaction of this write set.
-    assert!(matches!(
+    // And the honest Artifact boundary now holds at ADMISSION: the
+    // artifact-only ladder typed-refused this effect-bearing write set
+    // before any durable plan existed, so there is no stuck READY plan
+    // and nothing of the Artifact face can ride a terminal transaction
+    // of this write set (the owner-side publication is durable evidence
+    // only).
+    assert!(
         mixed
             .authority
-            .finalize_artifact_commit(FinalizeArtifactCommitRequest {
-                plan_id: artifact_plan_id,
-                finalized_at_ms: 1_690,
-            }),
-        Err(TaskStoreError::InvalidArtifactPublicationPlan { reason })
-            if reason == "Artifact finalize requires an artifact-only permit"
-    ));
+            .list_incomplete_artifact_commit_plans(10)
+            .expect("incomplete artifact plans")
+            .is_empty()
+    );
 
     // Then the Combined rung commits all of it in one terminal
     // transaction and the unified receipt carries the base Effect
@@ -1221,18 +1182,6 @@ fn six_domain_write_set_seals_permits_and_finalizes_with_unified_receipt() {
         TaskCommitReceipt::SemanticResource(rebuilt).commit_receipt_digest()
     );
 
-    // And the Artifact face stays exactly where the architecture leaves
-    // it: the READY plan and its publication receipts remain durable
-    // evidence, unlinked to any terminal Task receipt.
-    let artifact_progress = mixed
-        .authority
-        .inspect_artifact_commit_progress(artifact_plan_id)
-        .expect("artifact progress");
-    assert_eq!(artifact_progress.plan.state, ArtifactCommitPlanState::Ready);
-    assert_eq!(
-        artifact_progress.publications,
-        vec![expected_artifact_publication]
-    );
     assert_eq!(raw_count(&fixture, "SELECT COUNT(*) FROM task_receipts"), 1);
     assert_eq!(
         raw_count(
@@ -1257,8 +1206,8 @@ fn six_domain_write_set_seals_permits_and_finalizes_with_unified_receipt() {
             &fixture,
             "SELECT COUNT(*) FROM task_artifact_publication_receipts"
         ),
-        1,
-        "artifact publications stay durable as the Artifact face evidence"
+        0,
+        "the mixed permit never entered the Task-side artifact ladder"
     );
 }
 
@@ -1274,7 +1223,7 @@ fn six_domain_replay_after_restart_reads_only_task_rows() {
         close_effect_slot(&mixed, 0, 0xc2, [0xc3; 32]);
         close_effect_slot(&mixed, 1, 0xc4, [0xc5; 32]);
         let (plan_id, _) = drive_semantic_to_ready(&mixed, &owners);
-        let _ = drive_artifact_to_ready(&mixed, &owners);
+        drive_artifact_owner_evidence(&mixed, &owners);
         owners
             .resource
             .settle(&reservations[0], &[(1, 30), (2, 37)], 37, 0xc6);
