@@ -50,9 +50,9 @@
 //!   never touches the application row (the failed drill never activated
 //!   anything, so the prior revision is *already* the active one — the
 //!   receipt records that fact durably and replayably), whereas
-//!   `rollback_application` steps a disabled/uninstalled application one
-//!   generation back. Different tables, different gates, different
-//!   semantics.
+//!   `rollback_application` forward-rolls a disabled/uninstalled
+//!   application's previous content onto a fresh generation. Different
+//!   tables, different gates, different semantics.
 //!
 //! Honest scope: the drill's steps are caller-driven records (this
 //! authority owns lifecycle facts, not user data — step *execution*
@@ -929,7 +929,7 @@ impl ApplicationAuthority {
     /// receipt records that retained baseline (and the abandoned
     /// target) durably and replayably. This is the PKG-level rollback,
     /// distinct from the lifecycle [`ApplicationAuthority::
-    /// rollback_application`] generation step-back.
+    /// rollback_application`] content forward roll.
     ///
     /// # Errors
     ///

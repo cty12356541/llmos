@@ -17,19 +17,26 @@
 //! installation facts — installation id, package digest, manifest digest,
 //! installer principal, idempotency key, timestamps), and — added in v2,
 //! mirroring the artifact authority's staged migrations —
-//! `application_disable_receipts` (the immutable fact of the one
+//! `application_disable_receipts` (the immutable fact of one
 //! `installed → disabled` transition, which makes
 //! [`ApplicationAuthority::disable_application`] replayable). Schema v3
-//! adds `application_uninstall_receipts` (the immutable fact of the terminal
-//! `installed|disabled → uninstalled` transition, which makes
+//! adds `application_uninstall_receipts` (the immutable fact of one
+//! terminal `installed|disabled → uninstalled` transition, which makes
 //! [`ApplicationAuthority::uninstall_application`] replayable). Schema v4
 //! adds `application_rollback_receipts` (the immutable fact of one
-//! `disabled|uninstalled → installed` generation step back, which makes
+//! `disabled|uninstalled → installed` rollback, which makes
 //! [`ApplicationAuthority::rollback_application`] replayable). Schema v5
 //! adds `application_background_task_registrations` (immutable background-task
 //! binding; [`ApplicationAuthority::register_background_task`] replayable). Schema v6
 //! adds `application_process_bindings` (immutable process binding;
-//! [`ApplicationAuthority::register_process_binding`] replayable). DDL triggers
+//! [`ApplicationAuthority::register_process_binding`] replayable). Schema v9
+//! (deep-audit D1/D2) moves the rollback to *forward roll* semantics: a
+//! rollback re-commits the previous content generation as a brand-new
+//! installation generation, so the generation is strictly monotonic (it
+//! never rewinds onto a generation that already carries an immutable
+//! receipt), and disable/uninstall receipts are keyed per
+//! `(application, generation)` instead of terminal-once-per-application.
+//! DDL triggers
 //! carry the invariants at every layer: receipts are immutable and
 //! durable, the generation is monotonic under CAS, application identity is
 //! frozen, rows cannot be deleted, a receipt can only exist at the
@@ -56,8 +63,9 @@
 //! installed-state content update prefix only; `disable_application` lands
 //! the `installed → disabled` transition only; `uninstall_application`
 //! lands the terminal `installed|disabled → uninstalled` CAS mark only;
-//! `rollback_application` lands one generation step back from
-//! `disabled|uninstalled` to `installed` only; there is no enable shortcut,
+//! `rollback_application` lands one content-generation rollback from
+//! `disabled|uninstalled` to `installed` only, as a forward roll onto a
+//! fresh generation; there is no enable shortcut,
 //! no physical row delete), running Task/Process teardown (ungated
 //! `uninstall_application`/`rollback_application` do not stop or wait for
 //! tasks; [`ApplicationAuthority::uninstall_application_with_activity_gate`]
@@ -463,26 +471,32 @@ impl UninstallDecision {
     }
 }
 
-/// Immutable durable proof that one application rolled back one installation
-/// generation: the fact of one `disabled|uninstalled → installed` step that
-/// CAS-decrements the current generation and restores the previous
-/// installation's manifest digest from durable history.
+/// Immutable durable proof that one application rolled its content back
+/// one generation: the fact of one `disabled|uninstalled → installed`
+/// *forward roll* that re-commits the previous content generation's
+/// receipt content as a brand-new installation generation (old content,
+/// new generation), so the generation counter stays dense and strictly
+/// monotonic and every later lifecycle command lands on a fresh
+/// generation with a fresh receipt.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RollbackReceipt {
     pub application_id: ApplicationId,
-    /// The installation generation before rollback (the generation being
-    /// stepped back from).
+    /// The installation generation being rolled back from (the
+    /// abandoned content generation).
     pub from_generation: Generation,
-    /// The installation generation after rollback (the previous durable
-    /// installation generation restored as current).
+    /// The fresh installation generation the restored content was
+    /// re-committed at (`from_generation + 1` on clean history; further
+    /// when an upgraded pre-v9 row still sits below its own receipt
+    /// history).
     pub to_generation: Generation,
     pub idempotency_key: IdempotencyKey,
     pub rollback_at_ms: u64,
 }
 
-/// Request to roll one application back one installation generation.
-/// Exactly-once by idempotency key, mirroring the disable/uninstall
-/// request shape.
+/// Request to roll one application's content back one generation
+/// (forward roll: the previous content generation is re-committed as a
+/// new generation). Exactly-once by idempotency key, mirroring the
+/// disable/uninstall request shape.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RollbackApplicationRequest {
     /// The package identity whose application singleton is rolled back.
@@ -498,8 +512,9 @@ pub struct RollbackApplicationRequest {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RollbackDecision {
     /// First execution of this key: the application status CAS'd to
-    /// `installed`, the generation stepped back one, and the rollback
-    /// receipt committed with it.
+    /// `installed` at the fresh forward-roll generation, the restored
+    /// content's installation receipt and the rollback receipt committed
+    /// with it.
     RolledBack(RollbackReceipt),
     /// Durable replay: this key already rolled back and the recorded
     /// original receipt is returned unchanged (no second transition, no
@@ -741,8 +756,9 @@ pub enum ApplicationAuthorityError {
         application_id: ApplicationId,
         status: ApplicationStatus,
     },
-    /// The application is already at the initial installation generation;
-    /// there is no previous generation to restore.
+    /// The application's current installation generation is the initial
+    /// one; there is no earlier content generation whose receipt a
+    /// rollback could re-commit as the forward-roll generation.
     RollbackAtInitialGeneration {
         application_id: ApplicationId,
         generation: Generation,
@@ -753,8 +769,9 @@ pub enum ApplicationAuthorityError {
         last_updated_at_ms: u64,
         rollback_at_ms: u64,
     },
-    /// The durable installation history has no receipt for the previous
-    /// generation — a corrupt or incomplete record.
+    /// The durable installation history has no receipt for the generation
+    /// before the current one — the content a rollback would restore is
+    /// a corrupt or incomplete record.
     PreviousInstallationNotFound {
         application_id: ApplicationId,
         generation: Generation,
@@ -1057,7 +1074,7 @@ impl fmt::Display for ApplicationAuthorityError {
             } => write!(
                 formatter,
                 "application {application_id:?} is at installation generation \
-                 {generation:?}; there is no previous generation to roll back to"
+                 {generation:?}; there is no earlier content generation to restore"
             ),
             Self::RollbackPrecedesLastUpdate {
                 last_updated_at_ms,
@@ -1318,7 +1335,7 @@ impl ApplicationAuthority {
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
         match version {
             0 => schema::migrate_v1(&mut connection)?,
-            1..=8 => {}
+            1..=9 => {}
             other => return Err(ApplicationAuthorityError::SchemaVersionUnsupported(other)),
         }
         if version < 2 {
@@ -1341,6 +1358,9 @@ impl ApplicationAuthority {
         }
         if version < 8 {
             schema::migrate_v8(&mut connection)?;
+        }
+        if version < 9 {
+            schema::migrate_v9(&mut connection)?;
         }
         Ok(Self {
             connection: Mutex::new(connection),
@@ -1446,11 +1466,7 @@ impl ApplicationAuthority {
                     });
                 }
                 ApplicationStatus::Installed => {
-                    let next = view.current_installation_generation.checked_next().ok_or(
-                        ApplicationAuthorityError::CorruptRecord(
-                            "installation generation space is exhausted",
-                        ),
-                    )?;
+                    let next = next_installation_generation(&transaction, &view)?;
                     let changed = transaction.execute(
                         "UPDATE applications
                          SET current_installation_generation = ?1,
@@ -1723,12 +1739,7 @@ impl ApplicationAuthority {
             verified.package_version,
         )?;
 
-        let next = application
-            .current_installation_generation
-            .checked_next()
-            .ok_or(ApplicationAuthorityError::CorruptRecord(
-                "installation generation space is exhausted",
-            ))?;
+        let next = next_installation_generation(&transaction, &application)?;
         let changed = transaction.execute(
             "UPDATE applications
              SET current_installation_generation = ?1,
@@ -1947,11 +1958,18 @@ impl ApplicationAuthority {
         Ok(UninstallDecision::Uninstalled(receipt))
     }
 
-    /// Rolls one disabled or uninstalled application back one installation
-    /// generation: in one `Immediate` transaction CAS's the status to
-    /// `installed`, decrements the generation by exactly one, restores the
-    /// previous generation's manifest digest from durable installation
-    /// history, and commits the immutable rollback receipt.
+    /// Rolls one disabled or uninstalled application's content back one
+    /// generation as a *forward roll*: in one `Immediate` transaction the
+    /// previous content generation's installation receipt is re-committed
+    /// bitwise (package id, manifest digest, package version, entry count,
+    /// verification receipt id, installer principal) at a **new**
+    /// installation generation — the current generation plus one — the
+    /// status CAS's to `installed` at that generation, and the immutable
+    /// rollback receipt commits with it. Old content, new generation: the
+    /// generation counter stays dense and strictly monotonic, so no
+    /// receipt ever collides with durable history and every later
+    /// lifecycle command (update, disable, uninstall, another rollback)
+    /// lands on a fresh generation with a fresh receipt.
     ///
     /// Fail-closed order:
     ///
@@ -1959,7 +1977,9 @@ impl ApplicationAuthority {
     ///    request's idempotency key is the authority; it replays unchanged
     ///    without touching the state. The same key with a different request
     ///    shape (a different package or timestamp) is a typed
-    ///    [`ApplicationAuthorityError::IdempotencyConflict`].
+    ///    [`ApplicationAuthorityError::IdempotencyConflict`], as is a key
+    ///    already bound to a durable installation receipt of another
+    ///    command.
     /// 2. **State gate**: the application singleton must exist
     ///    ([`ApplicationAuthorityError::ApplicationNotFound`]) and be
     ///    `disabled` or `uninstalled` ([`ApplicationAuthorityError::
@@ -1967,25 +1987,34 @@ impl ApplicationAuthority {
     ///    application cannot roll back in this slice.
     /// 3. **Temporal binding**: the rollback timestamp must not precede
     ///    the application row's last update.
-    /// 4. **Generation gate**: the current generation must be strictly
+    /// 4. **Content gate**: the current generation must be strictly
     ///    greater than the initial generation ([`ApplicationAuthorityError::
-    ///    RollbackAtInitialGeneration`]); the previous installation receipt
-    ///    must exist in durable history ([`ApplicationAuthorityError::
+    ///    RollbackAtInitialGeneration`]); the receipt of the generation
+    ///    before the current one — the content a rollback restores — must
+    ///    exist in durable history ([`ApplicationAuthorityError::
     ///    PreviousInstallationNotFound`]).
-    /// 5. **Single-transaction commit**: the status/generation/digest update
-    ///    and the receipt insert share the one transaction (co-life), and
-    ///    the DDL state-bounds guard only accepts a receipt for an
-    ///    application already installed at the target generation.
+    /// 5. **Single-transaction commit**: the status/generation/digest CAS,
+    ///    the new installation receipt at the forward-roll generation, and
+    ///    the rollback receipt share the one transaction (co-life); the
+    ///    DDL state-bounds guards only accept an installation receipt at
+    ///    the application's *current* generation and a rollback receipt
+    ///    for an application already installed at the receipt's target
+    ///    generation.
+    ///
+    /// The new installation receipt inherits the artifact authority's
+    /// verification fact through the prior generation's receipt (its
+    /// content fields were digest-bound at its own install; see
+    /// [`rollback_binding_error`]), so no artifact readback is re-issued.
     ///
     /// This slice does **not** implement health checks, migration
     /// compatibility, binary atomic switching, or any full `[PKG-UPDATE-001]`
-    /// policy engine beyond the one-step generation anchor.
+    /// policy engine beyond the one-generation content anchor.
     ///
     /// # Errors
     ///
     /// Fails closed (zero durable state change) for an unknown package, an
     /// installed application, an initial-generation application, a missing
-    /// previous installation receipt, an idempotency conflict, a rollback
+    /// prior installation receipt, an idempotency conflict, a rollback
     /// preceding its own last update, a lost generation CAS, or any storage
     /// failure.
     pub fn rollback_application(
@@ -2034,6 +2063,7 @@ impl ApplicationAuthority {
         self.rollback_application_internal(request, Some(TaskActivitySource::TaskAuthority(tasks)))
     }
 
+    #[allow(clippy::too_many_lines)]
     fn rollback_application_internal(
         &self,
         request: RollbackApplicationRequest,
@@ -2051,6 +2081,14 @@ impl ApplicationAuthority {
             }
             transaction.commit()?;
             return Ok(RollbackDecision::Replayed(existing));
+        }
+
+        // The rollback key also lands in `installation_receipts` at the
+        // forward-roll generation; a key already bound to another
+        // installation command is a typed conflict, never a raw UNIQUE
+        // failure.
+        if load_receipt_by_key(&transaction, request.idempotency_key)?.is_some() {
+            return Err(ApplicationAuthorityError::IdempotencyConflict);
         }
 
         let application = load_application_by_package(&transaction, request.package_id)?.ok_or(
@@ -2077,20 +2115,22 @@ impl ApplicationAuthority {
             });
         }
 
-        let to_generation = generation_prev(application.current_installation_generation).ok_or(
-            ApplicationAuthorityError::RollbackAtInitialGeneration {
+        // Forward roll: the restored content is the most recent durable
+        // installation generation strictly before the current one (the
+        // history is dense, so that is the current generation minus one).
+        let content_generation = generation_prev(application.current_installation_generation)
+            .ok_or(ApplicationAuthorityError::RollbackAtInitialGeneration {
                 application_id: application.application_id,
                 generation: application.current_installation_generation,
-            },
-        )?;
-        let previous = load_installation_receipt_at_generation(
+            })?;
+        let prior = load_installation_receipt_at_generation(
             &transaction,
             application.application_id,
-            to_generation,
+            content_generation,
         )?
         .ok_or(ApplicationAuthorityError::PreviousInstallationNotFound {
             application_id: application.application_id,
-            generation: to_generation,
+            generation: content_generation,
         })?;
 
         if let Some(activity) = activity {
@@ -2107,6 +2147,7 @@ impl ApplicationAuthority {
             }
         }
 
+        let to_generation = next_installation_generation(&transaction, &application)?;
         let changed = transaction.execute(
             "UPDATE applications
              SET status = ?1,
@@ -2119,7 +2160,7 @@ impl ApplicationAuthority {
             params![
                 ApplicationStatus::Installed.encode(),
                 encode_generation(to_generation)?,
-                previous.package_manifest_digest.as_bytes().as_slice(),
+                prior.package_manifest_digest.as_bytes().as_slice(),
                 encode_u64(request.rollback_at_ms)?,
                 application.application_id.as_bytes().as_slice(),
                 encode_generation(application.current_installation_generation)?,
@@ -2133,16 +2174,43 @@ impl ApplicationAuthority {
             ));
         }
 
-        let receipt = RollbackReceipt {
+        // The forward roll's installation receipt: every content field is
+        // copied bitwise from the prior generation's receipt, so the new
+        // generation inherits the artifact authority's verification fact
+        // through the same seven-equation binding shape (see
+        // `rollback_binding_error`).
+        let receipt = InstallationReceipt {
+            installation_id: derive_installation_id(
+                request.idempotency_key,
+                application.application_id,
+                to_generation,
+            ),
+            application_id: application.application_id,
+            installation_generation: to_generation,
+            package_id: prior.package_id,
+            package_manifest_digest: prior.package_manifest_digest,
+            package_version: prior.package_version,
+            entry_count: prior.entry_count,
+            package_verification_receipt_id: prior.package_verification_receipt_id,
+            installer_principal: prior.installer_principal,
+            idempotency_key: request.idempotency_key,
+            installed_at_ms: request.rollback_at_ms,
+        };
+        if let Some(error) = rollback_binding_error(&receipt, &prior) {
+            return Err(error);
+        }
+        insert_receipt(&transaction, &receipt)?;
+
+        let rollback_receipt = RollbackReceipt {
             application_id: application.application_id,
             from_generation: application.current_installation_generation,
             to_generation,
             idempotency_key: request.idempotency_key,
             rollback_at_ms: request.rollback_at_ms,
         };
-        insert_rollback_receipt(&transaction, &receipt)?;
+        insert_rollback_receipt(&transaction, &rollback_receipt)?;
         transaction.commit()?;
-        Ok(RollbackDecision::RolledBack(receipt))
+        Ok(RollbackDecision::RolledBack(rollback_receipt))
     }
 
     /// # Errors
@@ -2707,6 +2775,57 @@ fn binding_error(
     None
 }
 
+/// The forward-roll digest binding: a rollback re-commits one prior
+/// generation's receipt content at a new generation, so it inherits the
+/// artifact authority's verification fact *through the prior durable
+/// receipt* instead of a fresh artifact readback — the same seven
+/// equations as [`binding_error`], with the prior installation receipt
+/// standing in for the verified receipt (its six content fields were
+/// digest-bound at its own install) and the prior receipt's install
+/// timestamp standing in for the verification timestamp (itself at or
+/// after it).
+fn rollback_binding_error(
+    receipt: &InstallationReceipt,
+    prior: &InstallationReceipt,
+) -> Option<ApplicationAuthorityError> {
+    if receipt.package_verification_receipt_id != prior.package_verification_receipt_id {
+        return Some(ApplicationAuthorityError::CorruptRecord(
+            "rollback receipt id binding mismatch",
+        ));
+    }
+    if receipt.package_id != prior.package_id {
+        return Some(ApplicationAuthorityError::CorruptRecord(
+            "rollback package id binding mismatch",
+        ));
+    }
+    if receipt.package_manifest_digest != prior.package_manifest_digest {
+        return Some(ApplicationAuthorityError::CorruptRecord(
+            "rollback manifest digest binding mismatch",
+        ));
+    }
+    if receipt.package_version != prior.package_version {
+        return Some(ApplicationAuthorityError::CorruptRecord(
+            "rollback package version binding mismatch",
+        ));
+    }
+    if receipt.entry_count != prior.entry_count {
+        return Some(ApplicationAuthorityError::CorruptRecord(
+            "rollback entry count binding mismatch",
+        ));
+    }
+    if receipt.installer_principal != prior.installer_principal {
+        return Some(ApplicationAuthorityError::CorruptRecord(
+            "rollback installer principal binding mismatch",
+        ));
+    }
+    if receipt.installed_at_ms < prior.installed_at_ms {
+        return Some(ApplicationAuthorityError::CorruptRecord(
+            "rollback precedes the installation it restores",
+        ));
+    }
+    None
+}
+
 /// Derives the stable application identity of one package identity
 /// (domain-separated, mirroring the artifact receipt-id derivation).
 #[must_use]
@@ -2885,6 +3004,40 @@ fn load_installation_receipt_at_generation(
         encode_generation(generation)?,
     ])?;
     rows.next()?.map(decode_receipt_row).transpose()
+}
+
+/// The next fresh installation generation: one past the greater of the
+/// application row's current generation and the durable receipt history's
+/// maximum. On v9-clean history the two agree and every command advances
+/// exactly one step; on a database upgraded from the pre-v9 generation
+/// step-back (whose rewound rows sit below their own receipt history) it
+/// jumps over the already-recorded generations, so a fresh receipt can
+/// never collide with durable history (the latent residue of deep-audit
+/// D1 in upgraded data).
+fn next_installation_generation(
+    source: &Connection,
+    application: &ApplicationView,
+) -> Result<Generation, ApplicationAuthorityError> {
+    let mut statement = source.prepare(
+        "SELECT MAX(installation_generation) FROM installation_receipts
+         WHERE application_id = ?1",
+    )?;
+    let durable_max: Option<i64> = statement
+        .query_row([application.application_id.as_bytes().as_slice()], |row| {
+            row.get(0)
+        })?;
+    let durable_max = u64::try_from(durable_max.unwrap_or(0)).map_err(|_| {
+        ApplicationAuthorityError::CorruptRecord("negative installation generation")
+    })?;
+    let base = durable_max.max(application.current_installation_generation.get());
+    let nonzero = std::num::NonZeroU64::new(base).ok_or(
+        ApplicationAuthorityError::CorruptRecord("zero installation generation"),
+    )?;
+    Generation::new(nonzero)
+        .checked_next()
+        .ok_or(ApplicationAuthorityError::CorruptRecord(
+            "installation generation space is exhausted",
+        ))
 }
 
 fn insert_rollback_receipt(
