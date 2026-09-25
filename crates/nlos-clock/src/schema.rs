@@ -42,7 +42,12 @@ pub(crate) fn migrate_v1(connection: &mut Connection) -> Result<(), AuthorityClo
         |row| row.get(0),
     )?;
     if table_count == 2 && trigger_count == 6 {
-        connection.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        // Only the v1 objects are known complete here, so this is a v1
+        // store whose stamp never landed — stamp it as exactly that.
+        // Stamping SCHEMA_VERSION would strand the store at v2 whenever
+        // the migrate_v2 pass that open() runs next fails, and every
+        // later open would then skip migrating the wall domain entirely.
+        connection.pragma_update(None, "user_version", 1)?;
         return Ok(());
     }
     if table_count != 0 || trigger_count != 0 {
