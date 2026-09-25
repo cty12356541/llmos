@@ -46,6 +46,7 @@ mod fiber;
 mod nl;
 mod package;
 mod payload;
+mod pump;
 mod runtime;
 mod teardown;
 
@@ -66,6 +67,7 @@ pub use payload::{
     PAYLOAD_OPERATION_DOMAIN, PAYLOAD_SEED_DOMAIN, PayloadExecution, execute_application_payload,
     payload_execution_seed,
 };
+pub use pump::{FailClosedReconcileSink, ReconcileRefusalSnapshot};
 pub use runtime::{
     ApplicationRegistrationInspect, ChainInspect, ChainQuery, SliceKRuntime, initial_generation,
     seeded_key, short_hex,
