@@ -5,9 +5,11 @@
 //! adapter signal → crash terminal marker → W27-C batch-cancel linkage),
 //! per registered background Task the `cancel_task` fence — and only then
 //! cross the W27-D production uninstall activity gate. Re-running the
-//! teardown replays the identical durable receipts (the kill replay works
-//! even against an empty supervisor registry: the durable receipt
-//! short-circuits before any adapter invocation).
+//! teardown replays the identical durable receipts while re-driving the
+//! kill adapter on every replay (at-least-once signal delivery: the
+//! supervisor registry must still resolve each binding's OS pid, and
+//! re-signaling an already-dead target reports `AlreadyTerminated` —
+//! success).
 //!
 //! The module invents no authority semantics: every transition is the
 //! landed public API of `nlos-process`, `nlos-task`, and
@@ -89,9 +91,10 @@ struct BindingTeardownStep {
 /// to its crash terminal (kill → terminal → linkage), every registered
 /// background Task to `Cancelled`, then the gated uninstall. A re-run over
 /// an already-torn-down application replays byte-identical durable
-/// receipts: the kill replay short-circuits on the durable receipt before
-/// any adapter invocation (the supervisor registry may even be empty on a
-/// re-run — the W29-F replay proof), the crash/linkage/cancel replays are
+/// receipts: the kill replay re-drives the adapter with a supplementary
+/// signal (at-least-once — the supervisor registry must still resolve the
+/// OS pid, and an already-dead target reports `AlreadyTerminated` success),
+/// the crash/linkage/cancel replays are
 /// exact, and the gated uninstall replays without consulting the activity
 /// gate.
 ///

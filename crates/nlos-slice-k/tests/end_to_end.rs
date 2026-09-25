@@ -22,7 +22,6 @@
 //!    replays idempotently after a crash-drop + reopen. Non-Unix hosts run
 //!    the same chain against the noop contract adapter.
 
-use std::collections::HashMap;
 use std::future::pending;
 use std::sync::Arc;
 
@@ -31,10 +30,10 @@ use nlos_artifact::{
     ContentDigest, PackageVerificationDecision, VerifyPackageRequest, package_manifest_message,
 };
 use nlos_process::{
-    FiberCancelPropagationDecision, PlatformKillDecision, PosixPlatformKillAdapter,
-    ProcessAuthorityError, ProcessLifecycleState, ProcessTerminalDecision,
-    PropagateCancelToFibersRequest, PropagateCrashRequest, RegisterSupervisorPidRequest,
-    RequestPlatformKillRequest, SupervisorPidDecision, SupervisorPidRegistry,
+    FiberCancelPropagationDecision, PlatformKillDecision, ProcessAuthorityError,
+    ProcessLifecycleState, ProcessTerminalDecision, PropagateCancelToFibersRequest,
+    PropagateCrashRequest, RegisterSupervisorPidRequest, RequestPlatformKillRequest,
+    StubPlatformKillAdapter, SupervisorPidDecision, SupervisorPidRegistry,
 };
 use nlos_runtime::{FiberExit, FiberSpec, FiberState, RuntimeAdapter as _, RuntimeError};
 use nlos_runtime_tokio::{TokioRuntimeAdapter, TokioRuntimeConfig};
@@ -800,10 +799,12 @@ async fn second_process_kill_chain_body(
         *second
     );
 
-    // The kill replays without re-signaling: a fresh adapter with an EMPTY
-    // pid map still succeeds because the durable receipt short-circuits
-    // before any adapter invocation (a broken replay would fail closed on
-    // the missing map entry / unavailable adapter).
+    // The kill replays while STILL driving the adapter (at-least-once): a
+    // fresh recording stub accepts exactly one supplementary signal for
+    // the killed second process — a short-circuiting replay would record
+    // zero — and the decision replays the byte-identical receipt (a broken
+    // replay would fail closed or re-derive a distinct receipt).
+    let replay_adapter = StubPlatformKillAdapter::new();
     let kill_replay = reopened
         .process
         .request_platform_kill(
@@ -814,11 +815,19 @@ async fn second_process_kill_chain_body(
                 idempotency_key: kill.kill.receipt().idempotency_key,
                 killed_at_ms: kill.kill.receipt().killed_at_ms,
             },
-            &PosixPlatformKillAdapter::new(HashMap::new()),
+            &replay_adapter,
         )
         .expect("kill replay after reopen");
     assert!(matches!(kill_replay, PlatformKillDecision::Replayed(_)));
     assert_eq!(kill_replay.receipt(), kill.kill.receipt());
+    assert_eq!(
+        replay_adapter.recorded_signals(),
+        vec![(
+            kill.kill.receipt().process_id,
+            kill.kill.receipt().process_generation
+        )],
+        "the replayed kill re-signals the dead process through the adapter"
+    );
 
     let crash_replay = reopened
         .process

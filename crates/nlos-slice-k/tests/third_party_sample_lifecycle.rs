@@ -32,8 +32,9 @@
 //! 5. **uninstall**: the W30-D teardown chain drives the registered
 //!    process binding through the platform-kill chain and the background
 //!    Task to `Cancelled`, the gate opens, the uninstall commits, and a
-//!    re-run replays byte-identical receipts through an empty supervisor
-//!    registry (the durable kill receipt short-circuits).
+//!    re-run replays byte-identical receipts while STILL re-signaling
+//!    through the supervisor registry (at-least-once: the dead service
+//!    stand-in reports `AlreadyTerminated` — success).
 //!
 //! Unix runs the kill chain against a real OS child (`sleep 600`) fed to
 //! the supervisor registry — the documented stand-in for the sample's
@@ -776,15 +777,16 @@ async fn third_party_sample_lifecycle_body(
         Err(RuntimeError::Cancelled)
     ));
 
-    // Replay: the whole teardown re-run through an EMPTY registry replays
-    // byte-identical receipts (the kill replay short-circuits on the
-    // durable receipt before any adapter invocation).
+    // Replay: the whole teardown re-run through the original registry
+    // replays byte-identical receipts while the kill replay STILL drives
+    // the adapter (at-least-once) — the killed service stand-in is an
+    // unreaped zombie, so the supplementary SIGTERM is a no-op success.
     let replay = run_application_teardown(
         &runtime,
         &tokio_adapter,
         PackageId::from_bytes(PACKAGE),
         0x12,
-        &SupervisorPidRegistry::new(),
+        &registry,
     )
     .expect("teardown replay");
     assert!(matches!(replay.kills[0], PlatformKillDecision::Replayed(_)));

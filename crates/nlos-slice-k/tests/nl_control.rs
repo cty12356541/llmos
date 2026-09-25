@@ -8,11 +8,10 @@
 //! binding, `kill operation <pid> expecting <generation>` drives the
 //! durable platform-kill path through the supervisor pid registry and the
 //! platform adapter. Repeating the kill sentence replays the identical
-//! durable receipt through an EMPTY pid map (short-circuit proof: a
-//! broken replay would fail closed on the missing mapping).
+//! durable receipt while STILL driving the adapter (at-least-once signal
+//! delivery: a recording stub observes exactly one supplementary signal
+//! for the already-killed process).
 
-#[cfg(unix)]
-use std::collections::HashMap;
 use std::sync::Arc;
 
 #[cfg(unix)]
@@ -114,10 +113,6 @@ async fn nl_control_body(
     let kill_adapter = PosixPlatformKillAdapter::new(pair.registry.pid_map());
     #[cfg(not(unix))]
     let kill_adapter = nlos_process::NoopPlatformKillAdapter;
-    #[cfg(unix)]
-    let empty_map_adapter = PosixPlatformKillAdapter::new(HashMap::new());
-    #[cfg(not(unix))]
-    let empty_map_adapter = nlos_process::NoopPlatformKillAdapter;
 
     // NL inspect (EN canonical form): the receipt carries the process
     // authority's own readback-validated facts.
@@ -203,18 +198,27 @@ async fn nl_control_body(
         assert!(!status.success(), "the real OS child died by signal");
     }
 
-    // Sentence replay through an EMPTY pid map: the durable receipt
-    // short-circuits before any adapter invocation (a broken replay would
-    // fail closed on the missing mapping) and re-derives the identical
-    // receipt id.
+    // Sentence replay still drives the adapter (at-least-once): the
+    // recording stub accepts exactly one supplementary signal for the
+    // already-killed second process — a short-circuiting replay would
+    // record zero — and the receipt id re-derives identically.
+    let replay_adapter = nlos_process::StubPlatformKillAdapter::new();
     let kill_replay =
-        dispatch_nl_command(&runtime, &pair.registry, &empty_map_adapter, &kill_sentence)
+        dispatch_nl_command(&runtime, &pair.registry, &replay_adapter, &kill_sentence)
             .expect("NL kill replay dispatch");
     let replayed_id = match kill_replay.outcome.expect("NL kill replay outcome") {
         ControlOutcome::OperationKilled { receipt_id } => receipt_id,
         other => panic!("expected a replayed operation-killed receipt, got {other:?}"),
     };
     assert_eq!(receipt_id, replayed_id);
+    assert_eq!(
+        replay_adapter.recorded_signals(),
+        vec![(
+            pair.process_second.process_id,
+            pair.process_second.process_generation
+        )],
+        "the replayed NL kill re-signals the killed process through the adapter"
+    );
 
     // A stale CAS expectation is refused typed without a second signal.
     let stale = dispatch_nl_command(
