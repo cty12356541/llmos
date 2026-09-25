@@ -6,8 +6,10 @@
 //! replay without consulting the source, restart persistence, simulated
 //! system-clock rollback absorption (injected [`nlos_clock::WallSource`]),
 //! wall-source refusal fail-closed with replay still served from durable
-//! state, the v1→v2 additive upgrade path, wall-domain DDL guards, and
-//! strict tick/wall domain isolation (`now` semantics untouched).
+//! state, the v1→v2 additive upgrade path (including an unstamped v1 store
+//! whose fast-path stamp must leave a failed v2 pass retryable at v1),
+//! wall-domain DDL guards, and strict tick/wall domain isolation (`now`
+//! semantics untouched).
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -110,6 +112,11 @@ fn raw_count(database: &std::path::Path, sql: &str) -> i64 {
     connection
         .query_row(sql, [], |row| row.get(0))
         .expect("count rows")
+}
+
+/// The stored schema version stamp (`PRAGMA user_version`).
+fn raw_user_version(base: &std::path::Path) -> i64 {
+    raw_count(&clock_database(base), "PRAGMA user_version")
 }
 
 fn assert_wall_counts(base: &std::path::Path, expected: [i64; 2]) {
@@ -344,6 +351,160 @@ fn v1_store_upgrades_additively_and_keeps_tick_state() {
         advanced.as_u64() > 0,
         "bootstrap reading is the system clock"
     );
+    assert_wall_counts(root.base(), [1, 1]);
+}
+
+/// An unstamped v1 store — the complete v1 schema with `user_version` still
+/// 0, the durable shape a v1-era binary leaves when it dies between the v1
+/// schema commit and the version stamp — re-enters through `migrate_v1`'s
+/// already-complete fast path, upgrades additively to v2, and keeps every
+/// committed tick reading.
+#[test]
+fn unstamped_v1_store_upgrades_additively_and_keeps_tick_state() {
+    let root = TestRoot::new("unstamped-v1");
+    {
+        let clock = AuthorityClock::open(root.base()).expect("open v2 clock");
+        for (seed, expected) in [(0xA1_u8, 1_u64), (0xA2, 2), (0xA3, 3)] {
+            let reading = match clock.now(request(seed)).expect("now must tick") {
+                NowDecision::Tick(reading) => reading,
+                NowDecision::Replayed(reading) => {
+                    panic!("fresh key cannot replay, got {reading}")
+                }
+            };
+            assert_eq!(reading.as_u64(), expected, "ticks are dense");
+        }
+    }
+    {
+        // Strip the wall domain and zero the version stamp: the complete
+        // v1 schema at user_version 0, the exact precondition of
+        // migrate_v1's already-complete fast path.
+        let raw = Connection::open(clock_database(root.base())).expect("raw connection");
+        raw.execute("DROP TABLE wall_receipts", [])
+            .expect("drop wall receipts");
+        raw.execute("DROP TABLE wall_watermark", [])
+            .expect("drop wall watermark");
+        raw.pragma_update(None, "user_version", 0)
+            .expect("clear version stamp");
+    }
+
+    let reopened = AuthorityClock::open_with_wall_source(root.base(), ManualWallSource::at(8_000))
+        .expect("reopen upgrades the unstamped v1 store");
+    assert_eq!(
+        raw_user_version(root.base()),
+        2,
+        "the upgrade path stamps the store v2"
+    );
+    assert_eq!(
+        reopened.inspect().expect("tick state untouched by upgrade"),
+        nlos_clock::Reading::from_u64(3)
+    );
+    for (seed, expected) in [(0xA1_u8, 1_u64), (0xA2, 2), (0xA3, 3)] {
+        let reading = match reopened.now(request(seed)).expect("now must replay") {
+            NowDecision::Replayed(reading) => reading,
+            NowDecision::Tick(reading) => {
+                panic!("committed key cannot re-tick, got {reading}")
+            }
+        };
+        assert_eq!(reading.as_u64(), expected, "committed readings survive");
+    }
+    let continued = match reopened.now(request(0xA4)).expect("now must tick") {
+        NowDecision::Tick(reading) => reading,
+        NowDecision::Replayed(reading) => panic!("fresh key cannot replay, got {reading}"),
+    };
+    assert_eq!(continued.as_u64(), 4, "fresh ticks continue densely");
+    assert_eq!(
+        raw_count(
+            &clock_database(root.base()),
+            "SELECT COUNT(*) FROM tick_receipts"
+        ),
+        4,
+        "three surviving receipts plus the fresh tick"
+    );
+
+    assert_eq!(
+        reopened.inspect_wall().expect("wall domain re-seeded"),
+        WallReading::from_u64(0)
+    );
+    assert_eq!(wall_advanced(&reopened, 0x01), WallReading::from_u64(8_000));
+    assert_wall_counts(root.base(), [1, 1]);
+}
+
+/// `migrate_v1`'s already-complete fast path stamps the store at its own
+/// schema's version (1), never the current `SCHEMA_VERSION`: a v2 pass that
+/// then fails must leave the store retryable, not stranded at a v2 stamp
+/// with no wall domain — a state every later open would skip migrating.
+#[test]
+fn failed_v2_pass_on_unstamped_v1_store_leaves_version_retryable() {
+    let root = TestRoot::new("v1-retry-stamp");
+    {
+        let clock = AuthorityClock::open(root.base()).expect("open v2 clock");
+        let reading = match clock.now(request(0xA1)).expect("now must tick") {
+            NowDecision::Tick(reading) => reading,
+            NowDecision::Replayed(reading) => panic!("fresh key cannot replay, got {reading}"),
+        };
+        assert_eq!(reading.as_u64(), 1, "ticks are dense");
+    }
+    {
+        // The unstamped v1 store above, carrying a poisoned v2 prefix: a
+        // lone wall table without its triggers, which migrate_v2 must
+        // refuse as a partial wall schema.
+        let raw = Connection::open(clock_database(root.base())).expect("raw connection");
+        raw.execute("DROP TABLE wall_receipts", [])
+            .expect("drop wall receipts");
+        raw.execute("DROP TABLE wall_watermark", [])
+            .expect("drop wall watermark");
+        raw.execute(
+            "CREATE TABLE wall_watermark (
+                singleton INTEGER PRIMARY KEY NOT NULL CHECK(singleton = 1),
+                reading_ms INTEGER NOT NULL CHECK(reading_ms >= 0)
+            ) STRICT;",
+            [],
+        )
+        .expect("plant partial wall prefix");
+        raw.pragma_update(None, "user_version", 0)
+            .expect("clear version stamp");
+    }
+
+    let Err(error) = AuthorityClock::open_with_wall_source(root.base(), ManualWallSource::at(1))
+    else {
+        panic!("a partial wall schema must fail closed");
+    };
+    assert!(
+        matches!(error, AuthorityClockError::CorruptRecord(_)),
+        "expected CorruptRecord for the partial wall schema, got {error}"
+    );
+    assert_eq!(
+        raw_user_version(root.base()),
+        1,
+        "the failed v2 pass must leave the store stamped at v1, retryable — never stranded at v2"
+    );
+
+    // Repair the poisoned prefix: the v1-stamped store retries and
+    // completes the v2 migration instead of skipping it.
+    {
+        let raw = Connection::open(clock_database(root.base())).expect("raw connection");
+        raw.execute("DROP TABLE wall_watermark", [])
+            .expect("drop poisoned prefix");
+    }
+    let reopened = AuthorityClock::open_with_wall_source(root.base(), ManualWallSource::at(6_000))
+        .expect("reopen retries and completes the v2 migration");
+    assert_eq!(
+        raw_user_version(root.base()),
+        2,
+        "the retried migration stamps the store v2"
+    );
+    assert_eq!(
+        reopened
+            .inspect()
+            .expect("tick state untouched by the retry"),
+        nlos_clock::Reading::from_u64(1)
+    );
+    let replayed = match reopened.now(request(0xA1)).expect("now must replay") {
+        NowDecision::Replayed(reading) => reading,
+        NowDecision::Tick(reading) => panic!("committed key cannot re-tick, got {reading}"),
+    };
+    assert_eq!(replayed.as_u64(), 1, "the committed reading survives");
+    assert_eq!(wall_advanced(&reopened, 0x01), WallReading::from_u64(6_000));
     assert_wall_counts(root.base(), [1, 1]);
 }
 
