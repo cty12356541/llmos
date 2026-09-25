@@ -21,6 +21,10 @@
 //!   derivation only.
 //! * Any frame other than a well-formed attestation received during the
 //!   handshake is a typed [`HandshakeError::Schema`] rejection.
+//! * The nonce registry is bounded with oldest-first displacement: at
+//!   capacity a new challenge evicts the oldest never-consumed nonce, so
+//!   repeated half-open handshakes cannot disable the endpoint; a late
+//!   attestation for the displaced nonce fails closed as unknown.
 //!
 //! The server's fresh nonce bytes come from the caller-supplied
 //! `next_nonce` generator: this crate deliberately carries no randomness

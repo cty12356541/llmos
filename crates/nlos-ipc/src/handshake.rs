@@ -8,6 +8,14 @@
 //! replayed nonces, tampered signatures, and channel-binding drift all fail
 //! closed as typed [`HandshakeError`] values before any session exists.
 //!
+//! Half-open handshakes cannot wedge the endpoint: once `capacity` nonces
+//! are outstanding, the [`HandshakeNonceRegistry`] displaces its oldest
+//! never-consumed nonce when the next challenge is issued (bounded
+//! staleness). A silent client that never attests therefore only ages out
+//! the oldest pending challenges; it can never pin all slots and disable
+//! the endpoint until restart. A late attestation for a displaced nonce
+//! fails closed as unknown.
+//!
 //! The facility is transport-agnostic; the caller wires it onto any byte
 //! stream (for example [`FramedIo`](crate::FramedIo) over a Unix socket):
 //!
@@ -29,7 +37,7 @@
 //! framed Unix-socket transport into ready-to-use authenticated
 //! serve/connect entry points.
 
-use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::error::Error;
 use std::fmt;
 use std::sync::{Mutex, MutexGuard};
@@ -57,8 +65,16 @@ pub const HANDSHAKE_MESSAGE_DOMAIN: &[u8] = b"llmos/principal-handshake/v1";
 pub enum HandshakeError {
     InvalidConfig(&'static str),
     NonceRejected,
-    NonceCapacityExhausted { capacity: usize },
-    ChannelBinding { actual: usize },
+    /// Capacity diagnostic retained for error-surface stability. Since the
+    /// registry now displaces its oldest outstanding nonce under load (see
+    /// [`HandshakeNonceRegistry`]), registration no longer produces this
+    /// variant; downstream matchers keep compiling unchanged.
+    NonceCapacityExhausted {
+        capacity: usize,
+    },
+    ChannelBinding {
+        actual: usize,
+    },
     ChannelBindingMismatch,
     MalformedAttestation(&'static str),
     Schema(CompatibilityError),
@@ -138,13 +154,28 @@ pub fn principal_handshake_message(
     hasher.finalize().into()
 }
 
-/// Bounded one-time nonce registry. The server supplies its own fresh nonce
-/// bytes; this registry only enforces uniqueness at issue time and single
-/// use at consume time, so replays and retry oracles fail closed.
+/// Bounded one-time nonce registry with oldest-first displacement.
+///
+/// The server supplies its own fresh nonce bytes; this registry only enforces
+/// uniqueness at issue time and single use at consume time, so replays and
+/// retry oracles fail closed.
+///
+/// Anti-DoS semantics: a client that receives a challenge and then silently
+/// disappears (its attestation never arrives) must not pin its slot forever.
+/// This crate deliberately reads no wall clock and keeps its
+/// caller-supplied-timestamp API, so staleness is bounded by displacement
+/// instead of a TTL: when a fresh nonce is registered while `capacity`
+/// nonces are outstanding, the oldest never-consumed nonce is evicted first.
+/// Issuing a challenge therefore never fails for capacity, and `capacity`
+/// half-open handshakes cannot disable the endpoint until restart. The cost
+/// is bounded liveness: an honest client slower than `capacity - 1` newer
+/// challenges must reconnect. A displaced nonce becomes unknown, so any late
+/// attestation carrying it fails closed as
+/// [`HandshakeError::NonceRejected`].
 #[derive(Debug)]
 pub struct HandshakeNonceRegistry {
     capacity: usize,
-    issued: Mutex<HashSet<[u8; HANDSHAKE_NONCE_BYTES]>>,
+    issued: Mutex<VecDeque<[u8; HANDSHAKE_NONCE_BYTES]>>,
 }
 
 impl HandshakeNonceRegistry {
@@ -161,46 +192,56 @@ impl HandshakeNonceRegistry {
         }
         Ok(Self {
             capacity,
-            issued: Mutex::new(HashSet::new()),
+            issued: Mutex::new(VecDeque::new()),
         })
     }
 
     /// Registers one fresh server-generated nonce. Duplicate registration is
-    /// rejected instead of silently refreshed.
+    /// rejected instead of silently refreshed. When the registry already
+    /// holds `capacity` outstanding nonces, the oldest never-consumed nonce
+    /// is displaced first (bounded staleness), so abandoned half-open
+    /// handshakes cannot exhaust the endpoint; see the struct documentation
+    /// for the full semantics.
     ///
     /// # Errors
     ///
-    /// Fails closed for duplicate nonces, exhausted capacity, or a poisoned
-    /// registry lock.
+    /// Fails closed for duplicate nonces or a poisoned registry lock.
     pub fn register(&self, nonce: [u8; HANDSHAKE_NONCE_BYTES]) -> Result<(), HandshakeError> {
         let mut issued = self.lock()?;
-        if !issued.contains(&nonce) && issued.len() >= self.capacity {
-            return Err(HandshakeError::NonceCapacityExhausted {
-                capacity: self.capacity,
-            });
+        if issued.contains(&nonce) {
+            return Err(HandshakeError::NonceRejected);
         }
-        if issued.insert(nonce) {
-            Ok(())
-        } else {
-            Err(HandshakeError::NonceRejected)
+        if issued.len() >= self.capacity {
+            let displaced = issued.pop_front();
+            debug_assert!(
+                displaced.is_some(),
+                "capacity is non-zero, so a full registry always has an oldest nonce"
+            );
         }
+        issued.push_back(nonce);
+        Ok(())
     }
 
     /// Consumes a nonce exactly once.
     ///
     /// # Errors
     ///
-    /// Returns [`HandshakeError::NonceRejected`] for unknown or already
-    /// consumed nonces.
+    /// Returns [`HandshakeError::NonceRejected`] for unknown, already
+    /// consumed, or displaced nonces.
     pub fn consume(&self, nonce: &[u8; HANDSHAKE_NONCE_BYTES]) -> Result<(), HandshakeError> {
-        if self.lock()?.remove(nonce) {
-            Ok(())
-        } else {
-            Err(HandshakeError::NonceRejected)
+        let mut issued = self.lock()?;
+        match issued.iter().position(|candidate| candidate == nonce) {
+            Some(position) => {
+                issued.remove(position);
+                Ok(())
+            }
+            None => Err(HandshakeError::NonceRejected),
         }
     }
 
-    fn lock(&self) -> Result<MutexGuard<'_, HashSet<[u8; HANDSHAKE_NONCE_BYTES]>>, HandshakeError> {
+    fn lock(
+        &self,
+    ) -> Result<MutexGuard<'_, VecDeque<[u8; HANDSHAKE_NONCE_BYTES]>>, HandshakeError> {
         self.issued
             .lock()
             .map_err(|_| HandshakeError::InvalidConfig("nonce registry lock is poisoned"))
@@ -254,7 +295,9 @@ impl From<VerifiedCapabilityCommandSigner> for VerifiedPrincipalHandshake {
 ///
 /// # Errors
 ///
-/// Fails closed on duplicate nonce, exhausted registry, or config errors.
+/// Fails closed on a duplicate nonce or config errors. A full registry
+/// never fails here: it displaces its oldest outstanding nonce instead (see
+/// [`HandshakeNonceRegistry`]).
 pub fn issue_challenge(
     registry: &HandshakeNonceRegistry,
     nonce: [u8; HANDSHAKE_NONCE_BYTES],
