@@ -1221,11 +1221,17 @@ fn sabi_wire_command(
         ControlCommand::UninstallApplication { .. } => {
             control_command::Command::UninstallApplication(UninstallApplicationCommand {})
         }
-        // The remaining mutation arm is the artifact acknowledgement; the
-        // read-only variants never reach this helper.
-        _ => control_command::Command::AcknowledgeArtifactRecoveryAlert(
-            AcknowledgeArtifactRecoveryAlertCommand {},
-        ),
+        ControlCommand::AcknowledgeRecoveryAlert { .. } => {
+            control_command::Command::AcknowledgeArtifactRecoveryAlert(
+                AcknowledgeArtifactRecoveryAlertCommand {},
+            )
+        }
+        // Fail-closed like `mutation_address`/`mutation_reason` above: every
+        // mutation variant now has an explicit wire arm, and the read-only
+        // variants return before the SUBMIT arm of `build_request_envelope`.
+        // A future variant missing its arm must panic here instead of
+        // silently compiling into the artifact acknowledgement.
+        _ => unreachable!("read-only variants never reach the submit arm"),
     };
     nlos_schema::sabi::v1::ControlCommand {
         control_command_id: control_command_id.to_vec(),
@@ -2766,6 +2772,28 @@ mod tests {
             panic!("request context expected");
         };
         assert_eq!(context.idempotency_key, vec![0x41; 16]);
+    }
+
+    #[test]
+    fn artifact_acknowledgement_envelope_carries_the_artifact_command() {
+        let envelope = build_request_envelope(&ControlCommand::AcknowledgeRecoveryAlert {
+            control_command_id: [0x41; 16],
+            plan_id: [0x22; 16],
+            expected_total_failures: 3,
+            reason: "operator acknowledges the escalated artifact alert".to_owned(),
+        })
+        .unwrap();
+        assert_eq!(envelope.method, SUBMIT_METHOD);
+        let payload = decode_submit_control_command_request(&envelope.payload).unwrap();
+        let command = payload.command.unwrap();
+        assert!(matches!(
+            command.command,
+            Some(control_command::Command::AcknowledgeArtifactRecoveryAlert(
+                _
+            ))
+        ));
+        assert_eq!(command.target_id, vec![0x22; 16]);
+        assert_eq!(command.expected_generation_or_revision, 3);
     }
 
     #[test]
