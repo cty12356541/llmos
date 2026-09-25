@@ -595,6 +595,45 @@ fn cmd_update(root: &str, package_hex: &str, receipt_hex: &str) -> DriverResult<
     Ok(())
 }
 
+/// 解析卸载阶段重注册进 supervisor registry 的 stand-in OS pid。
+///
+/// 只认显式 `[os-pid]`（run 阶段输出的 `service_os_pid=`，脚本携带）：
+/// 权威面查不到任何已注册的 os pid——`ProcessBindingRecord` /
+/// `ProcessBindingReceipt` / durable kill receipt 均不含 os pid 字段，
+/// `SupervisorPidRegistry` 是纯内存注册表、无跨进程查询面——因此：
+///
+/// - 显式给了 pid：Unix 下拒绝等于驱动自身 pid 的入参（stand-in 是
+///   run 阶段 spawn 的独立子进程；向自身发 SIGTERM 即自杀）。非 Unix
+///   的 noop kill 链从不真发信号，run 契约道输出的自身 pid 保持可回传。
+/// - 未给 pid 且存在 process binding：typed 拒绝（exit 2），指引用户
+///   显式传 pid，绝不回退自身 pid。
+/// - 未给 pid 且无任何 process binding：无 kill 目标，无需 pid。
+fn resolve_stand_in_pid(
+    os_pid: Option<u32>,
+    process_binding_count: usize,
+) -> DriverResult<Option<u32>> {
+    let Some(pid) = os_pid else {
+        if process_binding_count == 0 {
+            return Ok(None);
+        }
+        return Err(DriverError::Failed(
+            "no [os-pid] given and no registered os pid is recoverable from the authorities \
+             (process bindings and kill receipts record no os pid); pass the service_os_pid \
+             printed by `run` explicitly"
+                .to_string(),
+        ));
+    };
+    #[cfg(unix)]
+    if pid == std::process::id() {
+        return Err(DriverError::Failed(
+            "os-pid must be the run-phase service stand-in pid, not this driver's own pid \
+             (the Unix teardown kill chain would SIGTERM it mid-run)"
+                .to_string(),
+        ));
+    }
+    Ok(Some(pid))
+}
+
 /// uninstall：先见证 W27-D 真实活动门的 typed 拒绝，再走 W30-D teardown 链
 /// （platform kill → crash terminal → W27-C linkage → `cancel_task`）过门卸载。
 fn cmd_uninstall(root: &str, package_hex: &str, os_pid: Option<u32>) -> DriverResult<()> {
@@ -606,26 +645,35 @@ fn cmd_uninstall(root: &str, package_hex: &str, os_pid: Option<u32>) -> DriverRe
     )?;
 
     // supervisor 内存 registry 的既定重启模式：卸载时对存活 binding 重注册
-    // pid（run 阶段输出、脚本携带；未给则用自身 pid——非 Unix noop 契约道）。
-    let stand_in_pid = os_pid.unwrap_or_else(std::process::id);
+    // pid。pid 只认显式 [os-pid]（run 阶段输出的 service_os_pid、脚本携
+    // 带）；绝不缺省回退自身 pid——Unix 下 teardown 的 Posix kill 链会真
+    // 实向注册 pid 发 SIGTERM，缺省取自身 pid 即驱动中途自杀（exit 143，
+    // 破坏 0/1/2 退出码契约）。
     let registry = SupervisorPidRegistry::new();
     let registrations = runtime.inspect_application_registrations(package_id)?;
-    for binding in &registrations.process_bindings {
-        let active = runtime
-            .process
-            .inspect_active_process_binding(binding.process_id)?;
-        registry.register(RegisterSupervisorPidRequest {
-            process_id: binding.process_id,
-            process_generation: active.process_generation,
-            os_pid: stand_in_pid,
-            registered_at_ms: runtime.wall_now_ms(driver_key(b"uninstall", 0))?,
-        })?;
+    let stand_in_pid = resolve_stand_in_pid(os_pid, registrations.process_bindings.len())?;
+    if let Some(stand_in_pid) = stand_in_pid {
+        for binding in &registrations.process_bindings {
+            let active = runtime
+                .process
+                .inspect_active_process_binding(binding.process_id)?;
+            registry.register(RegisterSupervisorPidRequest {
+                process_id: binding.process_id,
+                process_generation: active.process_generation,
+                os_pid: stand_in_pid,
+                registered_at_ms: runtime.wall_now_ms(driver_key(b"uninstall", 0))?,
+            })?;
+        }
     }
+    let os_pid_text = match stand_in_pid {
+        Some(pid) => pid.to_string(),
+        None => "none".to_string(),
+    };
     println!(
-        "[sample-app] UNINSTALL registered process_bindings={} background_tasks={} os_pid={}",
+        "[sample-app] UNINSTALL registered process_bindings={} background_tasks={} \
+         os_pid={os_pid_text}",
         registrations.process_bindings.len(),
         registrations.background_tasks.len(),
-        stand_in_pid
     );
 
     // W27-D 真实活动门：注册的后台 Task 未收敛，卸载必须 typed 拒绝。
