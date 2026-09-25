@@ -27,7 +27,7 @@ use crate::model::{
 };
 use crate::schema::{
     SCHEMA_VERSION, migrate_v1, migrate_v2, migrate_v3, migrate_v4, migrate_v5, migrate_v6,
-    migrate_v7,
+    migrate_v7, migrate_v8,
 };
 
 /// A single-writer `SQLite` plan authority.
@@ -145,6 +145,7 @@ impl SqlitePlanAuthority {
                 migrate_v5(&mut connection)?;
                 migrate_v6(&mut connection)?;
                 migrate_v7(&mut connection)?;
+                migrate_v8(&mut connection)?;
             }
             1 => {
                 migrate_v2(&mut connection)?;
@@ -153,6 +154,7 @@ impl SqlitePlanAuthority {
                 migrate_v5(&mut connection)?;
                 migrate_v6(&mut connection)?;
                 migrate_v7(&mut connection)?;
+                migrate_v8(&mut connection)?;
             }
             2 => {
                 migrate_v3(&mut connection)?;
@@ -160,23 +162,31 @@ impl SqlitePlanAuthority {
                 migrate_v5(&mut connection)?;
                 migrate_v6(&mut connection)?;
                 migrate_v7(&mut connection)?;
+                migrate_v8(&mut connection)?;
             }
             3 => {
                 migrate_v4(&mut connection)?;
                 migrate_v5(&mut connection)?;
                 migrate_v6(&mut connection)?;
                 migrate_v7(&mut connection)?;
+                migrate_v8(&mut connection)?;
             }
             4 => {
                 migrate_v5(&mut connection)?;
                 migrate_v6(&mut connection)?;
                 migrate_v7(&mut connection)?;
+                migrate_v8(&mut connection)?;
             }
             5 => {
                 migrate_v6(&mut connection)?;
                 migrate_v7(&mut connection)?;
+                migrate_v8(&mut connection)?;
             }
-            6 => migrate_v7(&mut connection)?,
+            6 => {
+                migrate_v7(&mut connection)?;
+                migrate_v8(&mut connection)?;
+            }
+            7 => migrate_v8(&mut connection)?,
             SCHEMA_VERSION => {}
             other => return Err(PlanStoreError::SchemaVersionUnsupported(other)),
         }
@@ -1409,6 +1419,13 @@ fn upsert_plan_nodes(
 /// (schema v2/v6, same transaction). These rows are the resolver's
 /// durable input; they are write-once and are re-verified against the
 /// receipt's roots at every resolution.
+///
+/// All declared node rows land before any edge row: the storage-layer
+/// declaration triggers (schema v8) require *both* endpoints of an edge
+/// to be declared in this revision, and a dependency may be declared
+/// after its dependent (the declaration order is the caller's choice),
+/// so an interleaved per-node insert would abort on the corrected
+/// dependency predicate.
 fn persist_revision_shape(
     transaction: &rusqlite::Transaction<'_>,
     plan_id: TaskPlanId,
@@ -1436,6 +1453,8 @@ fn persist_revision_shape(
                 conditions_body.as_deref(),
             ],
         )?;
+    }
+    for (node, (_digest, node_id)) in nodes.iter().zip(digests) {
         for dependency in &node.dependency_keys {
             transaction.execute(
                 "INSERT INTO plan_revision_edges (
