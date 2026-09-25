@@ -1447,79 +1447,89 @@ async function bootstrap(): Promise<void> {
   if (app === null) {
     return;
   }
-  const config = await getConfig();
-  const layout = el("div", { className: "layout" });
-  const sidebar = el("nav", { className: "sidebar" });
-  const main = el("main", { className: "main" });
-  const views = new Map<string, HTMLElement>();
-  const register = (id: string, label: string, node: HTMLElement): void => {
-    views.set(id, node);
-    const tab = el("button", { className: "tab", text: label });
-    tab.addEventListener("click", () => {
-      for (const [otherId, otherNode] of views) {
-        otherNode.classList.toggle("active", otherId === id);
-      }
-      for (const child of sidebar.children) {
-        if (child instanceof HTMLElement) {
-          child.classList.toggle("active", child === tab);
+  try {
+    const config = await getConfig();
+    const layout = el("div", { className: "layout" });
+    const sidebar = el("nav", { className: "sidebar" });
+    const main = el("main", { className: "main" });
+    const views = new Map<string, HTMLElement>();
+    const register = (id: string, label: string, node: HTMLElement): void => {
+      views.set(id, node);
+      const tab = el("button", { className: "tab", text: label });
+      tab.addEventListener("click", () => {
+        for (const [otherId, otherNode] of views) {
+          otherNode.classList.toggle("active", otherId === id);
         }
+        for (const child of sidebar.children) {
+          if (child instanceof HTMLElement) {
+            child.classList.toggle("active", child === tab);
+          }
+        }
+      });
+      sidebar.append(tab);
+      node.classList.add("view");
+      if (id === "health") {
+        node.classList.add("active");
       }
-    });
-    sidebar.append(tab);
-    node.classList.add("view", id === "health" ? "active" : "");
-    main.append(node);
-  };
-  register("health", "恢复总览", healthView("恢复总览(InspectHealth)", inspectHealth));
-  register(
-    "semantic",
-    "语义恢复",
-    healthView("语义恢复(InspectSemanticHealth)", inspectSemanticHealth),
-  );
-  register(
-    "task",
-    "任务查询",
-    targetQueryView({
-      label: "任务(恢复计划)id",
-      placeholder: "32 hex 字符 plan_id",
-      button: "查询任务",
-      dispatch: inspectTask,
-    }),
-  );
-  register("task-space", "任务空间", taskSpaceView());
-  register(
-    "process",
-    "进程查询",
-    targetQueryView({
-      label: "进程 id",
-      placeholder: "32 hex 字符 process_id",
-      button: "查询进程",
-      dispatch: inspectProcess,
-    }),
-  );
-  register(
-    "resource",
-    "资源查询",
-    targetQueryView({
-      label: "资源预留 id",
-      placeholder: "32 hex 字符 reservation_id",
-      button: "查询资源",
-      dispatch: inspectResource,
-    }),
-  );
-  register("metrics", "指标导出", metricsView());
-  register("monitor", "资源监控", resourceMonitorView());
-  register("surfaces", "应用表面", appSurfacesView());
-  register("control", "控制动作", controlView());
-  register("permission", "权限/预算", permissionView(config));
-  const parity = el("div");
-  parity.append(parityView(), parityWriteCard());
-  register("parity", "一致性自检", parity);
-  register("config", "连接配置", configView(config));
-  if (sidebar.firstElementChild instanceof HTMLElement) {
-    sidebar.firstElementChild.classList.add("active");
+      main.append(node);
+    };
+    register("health", "恢复总览", healthView("恢复总览(InspectHealth)", inspectHealth));
+    register(
+      "semantic",
+      "语义恢复",
+      healthView("语义恢复(InspectSemanticHealth)", inspectSemanticHealth),
+    );
+    register(
+      "task",
+      "任务查询",
+      targetQueryView({
+        label: "任务(恢复计划)id",
+        placeholder: "32 hex 字符 plan_id",
+        button: "查询任务",
+        dispatch: inspectTask,
+      }),
+    );
+    register("task-space", "任务空间", taskSpaceView());
+    register(
+      "process",
+      "进程查询",
+      targetQueryView({
+        label: "进程 id",
+        placeholder: "32 hex 字符 process_id",
+        button: "查询进程",
+        dispatch: inspectProcess,
+      }),
+    );
+    register(
+      "resource",
+      "资源查询",
+      targetQueryView({
+        label: "资源预留 id",
+        placeholder: "32 hex 字符 reservation_id",
+        button: "查询资源",
+        dispatch: inspectResource,
+      }),
+    );
+    register("metrics", "指标导出", metricsView());
+    register("monitor", "资源监控", resourceMonitorView());
+    register("surfaces", "应用表面", appSurfacesView());
+    register("control", "控制动作", controlView());
+    register("permission", "权限/预算", permissionView(config));
+    const parity = el("div");
+    parity.append(parityView(), parityWriteCard());
+    register("parity", "一致性自检", parity);
+    register("config", "连接配置", configView(config));
+    if (sidebar.firstElementChild instanceof HTMLElement) {
+      sidebar.firstElementChild.classList.add("active");
+    }
+    layout.append(sidebar, main);
+    app.replaceChildren(layout);
+  } catch (error) {
+    const card = el("section", { className: "card error" });
+    card.append(el("h3", { text: "启动失败" }));
+    card.append(fieldRow("message", String(error)));
+    app.replaceChildren(card);
   }
-  layout.append(sidebar, main);
-  app.replaceChildren(layout);
 }
 
 void bootstrap();
