@@ -12,8 +12,9 @@ use nlos_task::{
     ArtifactRecoveryFailureRequest, ArtifactRecoveryFailureSource, ArtifactRecoveryResumeRequest,
     ArtifactRecoveryState, AttemptSpec, FinalizeArtifactCommitRequest, LogicalEffectDescriptor,
     NestedArtifactPublicationReceipt, PermitDecision, PermitRequest, PlanArtifactCommitRequest,
-    PlannedEffect, RecordArtifactPublicationsRequest, SnapshotBundle, SqliteTaskAuthority,
-    TaskSpec, TaskStoreError, artifact_publication_plan_root, empty_effect_history_root,
+    PlannedEffect, RecordArtifactPublicationsRequest, SnapshotBundle, SnapshotConsistency,
+    SqliteTaskAuthority, TaskSpec, TaskStoreError, artifact_publication_plan_root,
+    empty_effect_history_root,
 };
 use nlos_types::{
     ArtifactId, CancellationScopeId, Generation, IdempotencyKey, PrincipalId, ReceiptId,
@@ -246,8 +247,8 @@ fn authorization_is_durable_replayable_and_required_before_receipts() {
 }
 
 #[test]
-fn authorization_rejects_permits_with_effect_slots() {
-    let database = TestDatabase::new("authorization-effect-rejection");
+fn effect_bearing_permits_are_typed_rejected_at_plan_admission() {
+    let database = TestDatabase::new("plan-effect-rejection");
     let authority = database.open();
     let expectations = vec![expectation(1, 1)];
     let effect = PlannedEffect {
@@ -267,22 +268,302 @@ fn authorization_rejects_permits_with_effect_slots() {
     };
     let (attempt, permit) =
         register_and_issue_with_effects(&authority, &expectations, vec![effect]);
-    let plan = authority
-        .plan_artifact_commit(plan_request(attempt, &permit, expectations))
-        .unwrap()
-        .record()
-        .clone();
+    // Mixed effect+Artifact liveness (audit C2): a permit that carries any
+    // effect plans is typed-rejected at plan admission — the artifact-only
+    // finalize gate could never clear for it, so admitting the plan would
+    // strand it in Publishing/Ready forever.
     assert!(matches!(
-        authority.authorize_artifact_publication(plan.plan_id, 4_500),
-        Err(TaskStoreError::InvalidArtifactPublicationPlan { .. })
+        authority.plan_artifact_commit(plan_request(attempt, &permit, expectations)),
+        Err(TaskStoreError::MixedEffectArtifactWriteSet)
+    ));
+    assert_eq!(
+        raw_count(&database, "SELECT COUNT(*) FROM task_artifact_commit_plans"),
+        0
+    );
+    assert!(matches!(
+        authority.inspect_artifact_commit_plan(derived_plan_id(permit.permit_id)),
+        Err(TaskStoreError::ArtifactCommitPlanNotFound)
     ));
     assert_eq!(
         authority
-            .inspect_artifact_commit_plan(plan.plan_id)
+            .inspect_permit(attempt.task_id, permit.permit_id)
+            .unwrap()
+            .state,
+        nlos_task::PermitState::Issued
+    );
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn sealed_mixed_effect_artifact_plans_are_typed_rejected_at_plan_and_authorize() {
+    let database = TestDatabase::new("mixed-rejection");
+    let artifact_root = AuthorityRoot::new("mixed-artifact");
+    let semantic_root = AuthorityRoot::new("mixed-semantic");
+    let authority = database.open();
+    let artifact = nlos_artifact::ArtifactStore::open(&artifact_root.0).expect("artifact");
+    let semantic = nlos_semantic::SemanticAuthority::open(&semantic_root.0).expect("semantic");
+    let task_id = TaskId::from_bytes([0x01; 16]);
+    authority
+        .register_task(TaskSpec {
+            application_id: None,
+            plan_revision: None,
+            task_id,
+            task_generation: Generation::INITIAL,
+            registered_at_ms: 1_000,
+        })
+        .expect("register task");
+    let registry = authority
+        .inspect_participant_registry(task_id)
+        .expect("registry");
+    authority
+        .register_semantic_admission_participant(
+            &semantic,
+            task_id,
+            nlos_task::ParticipantRegistryBinding {
+                generation: registry.generation,
+                root: registry.root,
+            },
+            1_050,
+        )
+        .expect("semantic participant");
+    let attempt = AttemptSpec {
+        task_id,
+        attempt_id: TaskAttemptId::from_bytes([0x02; 16]),
+        attempt_generation: Generation::INITIAL,
+        snapshot: SnapshotBundle {
+            snapshot_id: TaskSnapshotId::from_bytes([0x03; 16]),
+            snapshot_digest: [0x04; 32],
+            expected_head_commit_seq: 0,
+            effect_history_root: empty_effect_history_root(),
+            retry_fence_epoch: 0,
+        },
+        cancellation_scope_id: CancellationScopeId::from_bytes([0x05; 16]),
+        cancellation_generation: Generation::INITIAL,
+        idempotency_key: IdempotencyKey::from_bytes([0x06; 16]),
+        registered_at_ms: 2_000,
+    };
+    let snapshot_receipt_id = ReceiptId::from_bytes([0x50; 16]);
+    authority
+        .register_snapshot_receipt(nlos_task::TaskSnapshotReceiptSpec {
+            task_id,
+            snapshot: attempt.snapshot,
+            receipt_id: snapshot_receipt_id,
+            builder_id: [0x51; 16],
+            builder_version_digest: [0x52; 32],
+            per_authority_checkpoint_receipts: vec![ReceiptId::from_bytes([0x53; 16])],
+            dependency_closure_root: [0x54; 32],
+            semantic_resolver_digest: [0x55; 32],
+            canonical_iteration_digest: [0x56; 32],
+            achieved_consistency: SnapshotConsistency::Causal,
+            built_at_ms: 2_100,
+            authority_id: [0x57; 16],
+            key_id: [0x58; 16],
+            signature: [0x59; 64],
+        })
+        .expect("snapshot receipt");
+    authority
+        .register_attempt_with_snapshot_receipt(attempt, snapshot_receipt_id)
+        .expect("register attempt");
+    // A sealed TaskWriteSet carrying BOTH a proposed Artifact write and a
+    // planned effect slot bound to the semantic endpoint: exactly the
+    // mixed write set that used to enter the Artifact ladder and then
+    // deadlock at the artifact-only finalize gate.
+    let expectations = vec![expectation(1, 1)];
+    artifact
+        .create_artifact(nlos_artifact::CreateArtifactSpec {
+            artifact_id: expectations[0].artifact_id,
+            idempotency_key: IdempotencyKey::from_bytes([0x49; 16]),
+            content_type: "application/octet-stream".to_owned(),
+            application_id: None,
+            owner: None,
+            created_at_ms: 2_400,
+        })
+        .expect("create artifact");
+    let registry = authority
+        .inspect_participant_registry(task_id)
+        .expect("registry after semantic admission");
+    authority
+        .register_artifact_head_participant(
+            &artifact,
+            task_id,
+            nlos_task::ParticipantRegistryBinding {
+                generation: registry.generation,
+                root: registry.root,
+            },
+            expectations[0].artifact_id,
+            2_450,
+        )
+        .expect("artifact head participant");
+    let effect = PlannedEffect {
+        descriptor: LogicalEffectDescriptor {
+            task_id,
+            task_generation: Generation::INITIAL,
+            intent_spec_id: [0x41; 32],
+            stable_action_slot: 2,
+            target_authority_object_id: [0x42; 32],
+            effect_class: 2,
+            idempotency_scope: 2,
+        },
+        required: true,
+        required_condition_digest: None,
+        success_criteria_digest: [0x43; 32],
+        action_proposal_digest: [0x44; 32],
+    };
+    let sealed = match authority
+        .seal_task_write_set_with_semantic_authority(
+            &artifact,
+            &semantic,
+            nlos_task::TaskWriteSetRequest {
+                task_id: attempt.task_id,
+                attempt_id: attempt.attempt_id,
+                attempt_generation: attempt.attempt_generation,
+                artifact_reads: Vec::new(),
+                artifact_writes: vec![nlos_task::TaskWriteSetArtifactWriteRequest {
+                    artifact_id: expectations[0].artifact_id,
+                    expected_head_revision: 0,
+                    proposed_revision: expectations[0].target_revision,
+                    content_digest: expectations[0].digest,
+                    size_bytes: expectations[0].size_bytes,
+                }],
+                process_binding: None,
+                semantic_reads: Vec::new(),
+                semantic_appends: Vec::new(),
+                resource_reservations: Vec::new(),
+                planned_effects: vec![effect.clone()],
+                effect_endpoints: vec![
+                    nlos_task::TaskWriteSetEffectEndpointRequest::SemanticAdmission {
+                        effect_seq: 0,
+                    },
+                ],
+                idempotency_key: IdempotencyKey::from_bytes([0x46; 16]),
+                sealed_at_ms: 2_500,
+            },
+        )
+        .expect("seal mixed write set")
+    {
+        nlos_task::TaskWriteSetDecision::Sealed(record)
+        | nlos_task::TaskWriteSetDecision::Replayed(record) => record,
+    };
+    let decision = authority
+        .request_commit_permit(PermitRequest {
+            task_id: attempt.task_id,
+            attempt_id: attempt.attempt_id,
+            attempt_generation: attempt.attempt_generation,
+            write_set_root: sealed.write_set_root,
+            planned_effects: vec![effect],
+            idempotency_key: IdempotencyKey::from_bytes([0x47; 16]),
+            valid_until_ms: 20_000,
+            requested_at_ms: 3_000,
+        })
+        .expect("issue mixed permit");
+    let PermitDecision::Issued(permit) = decision else {
+        panic!("expected issued permit, got {decision:?}");
+    };
+    let permit = *permit;
+
+    // Plan admission fails typed with zero durable plan rows.
+    assert!(matches!(
+        authority.plan_artifact_commit(plan_request(attempt, &permit, expectations.clone())),
+        Err(TaskStoreError::MixedEffectArtifactWriteSet)
+    ));
+    assert_eq!(
+        raw_count(&database, "SELECT COUNT(*) FROM task_artifact_commit_plans"),
+        0
+    );
+
+    // A durable mixed plan created before the plan-time guard (simulated
+    // by inserting the immutable plan/expectation rows directly) is
+    // typed-rejected at authorize admission instead of advancing to
+    // Publishing, and keeps zero partial state transition.
+    let plan_id = derived_plan_id(permit.permit_id);
+    let canonical_root = artifact_publication_plan_root(&expectations).expect("canonical root");
+    let mut root_bytes = [0u8; 32];
+    root_bytes.copy_from_slice(&permit.write_set_root);
+    let raw = Connection::open(&database.path).expect("open raw");
+    raw.execute(
+        "INSERT INTO task_artifact_commit_plans (
+            plan_id, task_id, permit_id, idempotency_key, attempt_id,
+            attempt_generation, write_set_root, artifact_plan_root,
+            expected_artifact_count, plan_state, task_receipt_id,
+            created_at_ms, updated_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, NULL, 4000, 4000)",
+        rusqlite::params![
+            plan_id.as_bytes().as_slice(),
+            task_id.as_bytes().as_slice(),
+            permit.permit_id.as_bytes().as_slice(),
+            IdempotencyKey::from_bytes([0x48; 16]).as_bytes().as_slice(),
+            attempt.attempt_id.as_bytes().as_slice(),
+            &permit.attempt_generation.get().to_be_bytes()[..],
+            root_bytes.as_slice(),
+            canonical_root.as_slice(),
+            &expectations.len().to_be_bytes()[..],
+        ],
+    )
+    .expect("insert legacy plan row");
+    let expectation = &expectations[0];
+    raw.execute(
+        "INSERT INTO task_artifact_publication_expectations (
+            plan_id, ordinal, staging_id, artifact_id, target_revision,
+            digest, size_bytes
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        rusqlite::params![
+            plan_id.as_bytes().as_slice(),
+            &0u64.to_be_bytes()[..],
+            expectation.staging_id.as_slice(),
+            expectation.artifact_id.as_bytes().as_slice(),
+            &expectation.target_revision.to_be_bytes()[..],
+            expectation.digest.as_slice(),
+            &expectation.size_bytes.to_be_bytes()[..],
+        ],
+    )
+    .expect("insert expectation row");
+    drop(raw);
+    let outcome = authority.authorize_artifact_publication(plan_id, 4_500);
+    assert!(
+        matches!(outcome, Err(TaskStoreError::MixedEffectArtifactWriteSet)),
+        "expected typed mixed refusal, got {outcome:?}"
+    );
+    assert_eq!(
+        authority
+            .inspect_artifact_commit_plan(plan_id)
             .unwrap()
             .state,
         ArtifactCommitPlanState::Planned
     );
+}
+
+struct AuthorityRoot(PathBuf);
+
+impl AuthorityRoot {
+    fn new(label: &str) -> Self {
+        let sequence = NEXT_DATABASE.fetch_add(1, Ordering::Relaxed);
+        Self(std::env::temp_dir().join(format!(
+            "nlos-task-artifact-plan-{label}-{sequence}-{}",
+            std::process::id()
+        )))
+    }
+}
+
+impl Drop for AuthorityRoot {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn raw_count(database: &TestDatabase, sql: &str) -> i64 {
+    let raw = Connection::open(&database.path).expect("open raw");
+    raw.query_row(sql, [], |row| row.get(0)).expect("raw count")
+}
+
+fn derived_plan_id(permit_id: nlos_types::CommitPermitId) -> nlos_task::ArtifactCommitPlanId {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(b"llmos/task-artifact-commit-plan/v1");
+    hasher.update(permit_id.as_bytes());
+    let digest = hasher.finalize();
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    nlos_task::ArtifactCommitPlanId::from_bytes(bytes)
 }
 
 #[test]

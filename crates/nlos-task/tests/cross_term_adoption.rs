@@ -580,6 +580,444 @@ fn cross_term_adoption_reconciles_old_permit_under_successor_proof() {
     );
 }
 
+/// Audit C3 liveness: after a cross-term adoption, participant
+/// registrations advance the successor registry generation (and rotate the
+/// active assignment with the next lease-bound permit). The adopted
+/// quarantined permit must still reconcile and finalize through the SAME
+/// successor term instead of dead-locking on the frozen `exactly +1`
+/// generation expectation.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn cross_term_adoption_survives_participant_registry_advancement() {
+    let database = TestDatabase::new("advancement");
+    let identity_root = IdentityRoot::new("advancement");
+    let artifact_root = IdentityRoot::new("advancement-artifact");
+    let semantic_root = IdentityRoot::new("advancement-semantic");
+    let authority = database.open();
+    let artifact = nlos_artifact::ArtifactStore::open(&artifact_root.0).expect("artifact");
+    let semantic = nlos_semantic::SemanticAuthority::open(&semantic_root.0).expect("semantic");
+    let identity = IdentityAuthority::open(&identity_root.0).expect("identity");
+    let signer = barrier_signer(&identity, 0xa0);
+
+    authority
+        .register_task(TaskSpec {
+            application_id: None,
+            plan_revision: None,
+            task_id: task_id(),
+            task_generation: Generation::INITIAL,
+            registered_at_ms: 1,
+        })
+        .expect("task");
+    let spec = attempt();
+    let initial_registry = authority
+        .inspect_participant_registry(task_id())
+        .expect("registry");
+    authority
+        .register_semantic_admission_participant(
+            &semantic,
+            task_id(),
+            nlos_task::ParticipantRegistryBinding {
+                generation: initial_registry.generation,
+                root: initial_registry.root,
+            },
+            3,
+        )
+        .expect("semantic participant");
+    let snapshot_receipt_id = ReceiptId::from_bytes([0x67; 16]);
+    authority
+        .register_snapshot_receipt(TaskSnapshotReceiptSpec {
+            task_id: task_id(),
+            snapshot: spec.snapshot,
+            receipt_id: snapshot_receipt_id,
+            builder_id: [0x68; 16],
+            builder_version_digest: [0x69; 32],
+            per_authority_checkpoint_receipts: vec![ReceiptId::from_bytes([0x6a; 16])],
+            dependency_closure_root: [0x6b; 32],
+            semantic_resolver_digest: [0x6c; 32],
+            canonical_iteration_digest: [0x6d; 32],
+            achieved_consistency: SnapshotConsistency::Causal,
+            built_at_ms: 4,
+            authority_id: [0x6e; 16],
+            key_id: [0x6f; 16],
+            signature: [0x70; 64],
+        })
+        .expect("snapshot receipt");
+    authority
+        .register_attempt_with_snapshot_receipt(spec, snapshot_receipt_id)
+        .expect("attempt");
+    let write_set = match authority
+        .seal_task_write_set_with_semantic_authority(
+            &artifact,
+            &semantic,
+            TaskWriteSetRequest {
+                task_id: spec.task_id,
+                attempt_id: spec.attempt_id,
+                attempt_generation: spec.attempt_generation,
+                artifact_reads: Vec::new(),
+                artifact_writes: Vec::new(),
+                process_binding: None,
+                semantic_reads: Vec::new(),
+                semantic_appends: Vec::new(),
+                resource_reservations: Vec::new(),
+                planned_effects: vec![planned_effect()],
+                effect_endpoints: vec![TaskWriteSetEffectEndpointRequest::SemanticAdmission {
+                    effect_seq: 0,
+                }],
+                idempotency_key: IdempotencyKey::from_bytes([0x79; 16]),
+                sealed_at_ms: 5,
+            },
+        )
+        .expect("write set")
+    {
+        TaskWriteSetDecision::Sealed(record) | TaskWriteSetDecision::Replayed(record) => record,
+    };
+    let lease_one = authority
+        .acquire_authority_lease(lease_request(1, 0x91, 100, 100))
+        .expect("lease one")
+        .record();
+    let permit = issued_permit(
+        authority
+            .request_commit_permit_with_authority_lease(AuthorityLeasePermitRequest {
+                permit: permit_request(&spec, write_set.write_set_root),
+                lease: lease_one,
+            })
+            .expect("permit"),
+    );
+    let registry_binding = permit
+        .participant_registry_binding
+        .expect("original registry");
+    let effect = issued_effect(
+        authority
+            .request_effect_permit_with_authority_lease(AuthorityLeaseEffectPermitRequest {
+                permit: nlos_task::EffectPermitRequest {
+                    task_id: spec.task_id,
+                    attempt_id: spec.attempt_id,
+                    attempt_generation: spec.attempt_generation,
+                    permit_id: permit.permit_id,
+                    permit_epoch: permit.permit_epoch,
+                    effect_seq: 0,
+                    idempotency_key: IdempotencyKey::from_bytes([0x83; 16]),
+                    valid_until_ms: 10_000,
+                    requested_at_ms: 160,
+                },
+                lease: lease_one,
+            })
+            .expect("effect permit"),
+    );
+    authority
+        .consume_dispatch_token_with_authority_lease(AuthorityLeaseDispatchRequest {
+            dispatch: nlos_task::DispatchRequest {
+                task_id: spec.task_id,
+                attempt_id: spec.attempt_id,
+                attempt_generation: spec.attempt_generation,
+                permit_id: permit.permit_id,
+                permit_epoch: permit.permit_epoch,
+                effect_permit_id: effect.effect_permit_id,
+                dispatch_token: effect.one_shot_dispatch_token,
+                dispatched_at_ms: 170,
+            },
+            lease: lease_one,
+        })
+        .expect("dispatch");
+    authority
+        .record_effect_outcome_with_authority_lease(AuthorityLeaseOutcomeRequest {
+            outcome: OutcomeRequest {
+                task_id: spec.task_id,
+                attempt_id: spec.attempt_id,
+                attempt_generation: spec.attempt_generation,
+                permit_id: permit.permit_id,
+                permit_epoch: permit.permit_epoch,
+                effect_seq: 0,
+                outcome: Outcome::Unknown {
+                    uncertainty_digest: [0x84; 32],
+                },
+                recorded_at_ms: 180,
+            },
+            lease: lease_one,
+        })
+        .expect("unknown");
+    assert!(matches!(
+        authority.finalize_commit_v3_with_authority_lease(
+            nlos_task::AuthorityLeaseFinalizeRequest {
+                finalize: finalize_request(&spec, permit.permit_id),
+                lease: lease_one,
+            }
+        ),
+        Err(TaskStoreError::Quarantined)
+    ));
+
+    let lease_two = authority
+        .acquire_authority_lease(lease_request(2, 0x92, 201, 1_000))
+        .expect("lease two")
+        .record();
+    authority
+        .prepare_authority_takeover_fence(AuthorityLeaseTakeoverFenceRequest {
+            task_id: spec.task_id,
+            expected_registry_binding: registry_binding,
+            lease: lease_two,
+            requested_at_ms: 210,
+        })
+        .expect("freeze");
+    let fence = authority
+        .inspect_authority_takeover_fence_receipt(spec.task_id, registry_binding)
+        .expect("fence receipt");
+    let takeover = authority
+        .inspect_authority_takeover_receipt(spec.task_id, fence.receipt_id)
+        .expect("takeover receipt");
+    let members = authority
+        .inspect_authority_takeover_fence_members(spec.task_id, registry_binding)
+        .expect("fence members");
+    for member in members.iter().map(|member| member.participant) {
+        record_signed_observation(&authority, &identity, &signer, &takeover, member);
+    }
+    authority
+        .complete_authority_takeover(CompleteAuthorityTakeoverRequest {
+            takeover_receipt_id: takeover.receipt_id,
+            lease: lease_two,
+            completed_at_ms: 230,
+        })
+        .expect("complete takeover");
+    let reopened = authority
+        .reopen_successor_registry(AuthoritySuccessorRegistryReopenRequest {
+            takeover_receipt_id: takeover.receipt_id,
+            lease: lease_two,
+            reopened_at_ms: 240,
+        })
+        .expect("reopen successor registry");
+    let adoption = match authority
+        .adopt_permit_across_takeover(AuthorityLeaseCrossTermAdoptionRequest {
+            adoption: nlos_task::AdoptionRequest {
+                task_id: spec.task_id,
+                permit_id: permit.permit_id,
+                permit_epoch: permit.permit_epoch,
+                idempotency_key: IdempotencyKey::from_bytes([0x85; 16]),
+                adopted_at_ms: 250,
+            },
+            takeover_receipt_id: takeover.receipt_id,
+            successor_lease: lease_two,
+        })
+        .expect("cross-term adoption")
+    {
+        AdoptionReplay::Adopted(record) => *record,
+        AdoptionReplay::Replayed(record) => {
+            panic!("expected adopted receipt, got replayed {record:?}")
+        }
+    };
+    assert_eq!(
+        adoption.current_participant_registry_binding,
+        Some(reopened.successor_registry_binding)
+    );
+
+    // A participant registration advances the successor registry past the
+    // direct hand-off generation (original+1 → original+2).
+    let successor_registry = authority
+        .inspect_participant_registry(task_id())
+        .expect("successor registry");
+    assert_eq!(
+        successor_registry.generation,
+        reopened.successor_registry_binding.generation
+    );
+    let advanced_artifact_id = nlos_types::ArtifactId::from_bytes([0x9a; 16]);
+    artifact
+        .create_artifact(nlos_artifact::CreateArtifactSpec {
+            artifact_id: advanced_artifact_id,
+            idempotency_key: IdempotencyKey::from_bytes([0x9b; 16]),
+            content_type: "application/octet-stream".to_owned(),
+            application_id: None,
+            owner: None,
+            created_at_ms: 251,
+        })
+        .expect("create advancement artifact");
+    authority
+        .register_artifact_head_participant(
+            &artifact,
+            task_id(),
+            nlos_task::ParticipantRegistryBinding {
+                generation: successor_registry.generation,
+                root: successor_registry.root,
+            },
+            advanced_artifact_id,
+            252,
+        )
+        .expect("advance registry generation");
+    let advanced_registry = authority
+        .inspect_participant_registry(task_id())
+        .expect("advanced registry");
+    assert_eq!(
+        advanced_registry.generation,
+        reopened.successor_registry_binding.generation + 1
+    );
+
+    // The adopted permit still reconciles and finalizes under the SAME
+    // successor lease even though the registry advanced past original+1.
+    authority
+        .reconcile_effect_with_authority_lease(AuthorityLeaseReconcileRequest {
+            reconcile: ReconcileRequest {
+                task_id: spec.task_id,
+                permit_id: permit.permit_id,
+                permit_epoch: permit.permit_epoch,
+                effect_seq: 0,
+                adoption_receipt_id: adoption.receipt_id,
+                outcome: ReconcileOutcome::EffectClosed,
+                closure_proof_digest: [0x86; 32],
+                reconciled_at_ms: 260,
+            },
+            lease: lease_two,
+        })
+        .expect("reconcile after registry advancement");
+    assert_eq!(
+        authority
+            .inspect_permit(spec.task_id, permit.permit_id)
+            .unwrap()
+            .state,
+        nlos_task::PermitState::Issued
+    );
+    let slot = authority
+        .inspect_effect_slot(permit.permit_id, 0)
+        .expect("slot");
+    let effect_receipt = authority
+        .inspect_effect_receipt(slot.effect_receipt_id.expect("effect receipt"))
+        .expect("effect receipt");
+    let mut finalize = finalize_request(&spec, permit.permit_id);
+    finalize.base.finalized_at_ms = 270;
+    finalize.required_satisfaction = vec![nlos_task::RequiredSatisfaction {
+        effect_seq: 0,
+        proof: nlos_task::RequiredSatisfactionProof::EffectClosedSuccess {
+            success_assertion_digest: nlos_task::expected_success_assertion_digest(
+                &slot,
+                &effect_receipt,
+            ),
+        },
+    }];
+    let committed = authority
+        .finalize_commit_v3_with_authority_lease(nlos_task::AuthorityLeaseFinalizeRequest {
+            finalize,
+            lease: lease_two,
+        })
+        .expect("finalize adopted permit after registry advancement")
+        .into_committed_receipt();
+    assert_eq!(
+        committed.participant_registry_binding,
+        Some(nlos_task::ParticipantRegistryBinding {
+            generation: advanced_registry.generation,
+            root: advanced_registry.root,
+        })
+    );
+    assert_eq!(committed.new_head_commit_seq, 1);
+
+    // The next lease-bound permit rotates the active assignment to the
+    // advanced registry binding within the SAME successor term; the
+    // replaced Active row must be Fenced (exactly one Active remains).
+    // Issuance is only possible now: the quarantined tombstone blocked it
+    // until the adopted permit was reconciled and finalized.
+    let second = AttemptSpec {
+        attempt_id: TaskAttemptId::from_bytes([0x9c; 16]),
+        snapshot: SnapshotBundle {
+            snapshot_id: TaskSnapshotId::from_bytes([0x9d; 16]),
+            snapshot_digest: [0x9e; 32],
+            expected_head_commit_seq: committed.new_head_commit_seq,
+            effect_history_root: committed.new_effect_history_root,
+            retry_fence_epoch: committed.new_retry_fence_epoch,
+        },
+        idempotency_key: IdempotencyKey::from_bytes([0x9f; 16]),
+        registered_at_ms: 253,
+        ..spec
+    };
+    let second_snapshot_receipt_id = ReceiptId::from_bytes([0xa1; 16]);
+    authority
+        .register_snapshot_receipt(TaskSnapshotReceiptSpec {
+            task_id: task_id(),
+            snapshot: second.snapshot,
+            receipt_id: second_snapshot_receipt_id,
+            builder_id: [0xa2; 16],
+            builder_version_digest: [0xa3; 32],
+            per_authority_checkpoint_receipts: vec![ReceiptId::from_bytes([0xa4; 16])],
+            dependency_closure_root: [0xa5; 32],
+            semantic_resolver_digest: [0xa6; 32],
+            canonical_iteration_digest: [0xa7; 32],
+            achieved_consistency: SnapshotConsistency::Causal,
+            built_at_ms: 253,
+            authority_id: [0xa8; 16],
+            key_id: [0xa9; 16],
+            signature: [0xaa; 64],
+        })
+        .expect("second snapshot receipt");
+    authority
+        .register_attempt_with_snapshot_receipt(second, second_snapshot_receipt_id)
+        .expect("second attempt");
+    let second_write_set = match authority
+        .seal_task_write_set_with_semantic_authority(
+            &artifact,
+            &semantic,
+            TaskWriteSetRequest {
+                task_id: second.task_id,
+                attempt_id: second.attempt_id,
+                attempt_generation: second.attempt_generation,
+                artifact_reads: Vec::new(),
+                artifact_writes: Vec::new(),
+                process_binding: None,
+                semantic_reads: Vec::new(),
+                semantic_appends: Vec::new(),
+                resource_reservations: Vec::new(),
+                planned_effects: Vec::new(),
+                effect_endpoints: Vec::new(),
+                idempotency_key: IdempotencyKey::from_bytes([0xab; 16]),
+                sealed_at_ms: 254,
+            },
+        )
+        .expect("second write set")
+    {
+        TaskWriteSetDecision::Sealed(record) | TaskWriteSetDecision::Replayed(record) => record,
+    };
+    let second_permit = issued_permit(
+        authority
+            .request_commit_permit_with_authority_lease(AuthorityLeasePermitRequest {
+                permit: PermitRequest {
+                    task_id: second.task_id,
+                    attempt_id: second.attempt_id,
+                    attempt_generation: second.attempt_generation,
+                    write_set_root: second_write_set.write_set_root,
+                    planned_effects: Vec::new(),
+                    idempotency_key: IdempotencyKey::from_bytes([0xac; 16]),
+                    valid_until_ms: 10_000,
+                    requested_at_ms: 255,
+                },
+                lease: lease_two,
+            })
+            .expect("second permit"),
+    );
+    assert_eq!(
+        second_permit
+            .participant_registry_binding
+            .expect("second permit registry"),
+        nlos_task::ParticipantRegistryBinding {
+            generation: advanced_registry.generation,
+            root: advanced_registry.root,
+        }
+    );
+    {
+        let raw = rusqlite::Connection::open(&database.path).expect("open raw");
+        let active: i64 = raw
+            .query_row(
+                "SELECT COUNT(*) FROM task_authority_assignments
+                 WHERE task_id = ?1 AND assignment_state = 1",
+                [task_id().as_bytes().as_slice()],
+                |row| row.get(0),
+            )
+            .expect("count active assignments");
+        assert_eq!(active, 1, "exactly one Active assignment after rotation");
+        let rotated: i64 = raw
+            .query_row(
+                "SELECT COUNT(*) FROM task_authority_assignments
+                 WHERE assignment_id = ?1 AND assignment_state = 3",
+                [reopened.active_assignment_id.as_bytes().as_slice()],
+                |row| row.get(0),
+            )
+            .expect("count fenced rotated assignment");
+        assert_eq!(rotated, 1, "replaced Active assignment was Fenced");
+    }
+}
+
 trait FinalizeDecisionExt {
     fn into_committed_receipt(self) -> nlos_task::TaskReceiptRecord;
 }

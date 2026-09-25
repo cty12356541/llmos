@@ -940,13 +940,15 @@ pub enum TaskState {
 
 /// Pre-permit subset of the §25.1 `TaskAttempt` state machine.
 ///
-/// Reachable in this slice: `Created` → `ReadyToCommit` →
-/// `CommitPermitted` (CAS win) | `Superseded` (CAS loss) | `Conflicted`
-/// (validation failure), `CommitPermitted` → `Committed` (finalize), and any
-/// open pre-permit state → `Cancelled`. The remaining variants are reserved
-/// for the scheduling and effect slices and cannot be produced here;
-/// post-permit `EFFECTING`/`FINALIZING`/`UNCERTAIN`/`RECONCILING` are
-/// represented as permit states rather than attempt states in this slice.
+/// Reachable here: `Created` → `ReadyToCommit` → `CommitPermitted` (CAS
+/// win) | `Superseded` (CAS loss) | `Conflicted` (validation failure),
+/// `CommitPermitted` → `Committed` (finalize) | `Failed`
+/// (failed-after-effect / non-commit terminal outcome), and any open
+/// pre-permit state → `Cancelled`. The scheduling-only variants
+/// (`Admitted` … `Validating`) and `Cancelling` remain reserved for their
+/// slices and cannot be produced here; post-permit
+/// `EFFECTING`/`FINALIZING`/`UNCERTAIN`/`RECONCILING` are represented as
+/// permit states rather than attempt states in this slice.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AttemptState {
     Created,
@@ -974,7 +976,9 @@ pub enum AttemptState {
     Cancelling,
     /// Closed before any effect with a closure receipt; `TaskHead` unchanged.
     Cancelled,
-    /// Reserved for the failure-reporting slice; not producible here.
+    /// Terminal failure outcome of a permit-holding attempt (for example a
+    /// `FAILED_AFTER_EFFECT` / partial-effect finalize or a quarantined
+    /// closure); `TaskHead` did not advance with a commit receipt.
     Failed,
     /// Permit holder finalized; `TaskHead` advanced with a commit receipt.
     Committed,
@@ -989,11 +993,15 @@ impl AttemptState {
     }
 
     /// Whether the attempt has reached a state this slice never leaves.
+    ///
+    /// `Failed` is a real terminal product of the failure-reporting
+    /// paths (failed-after-effect finalizes and quarantined closures),
+    /// not a reserved variant.
     #[must_use]
     pub const fn is_terminal(self) -> bool {
         matches!(
             self,
-            Self::Conflicted | Self::Superseded | Self::Cancelled | Self::Committed
+            Self::Conflicted | Self::Superseded | Self::Cancelled | Self::Failed | Self::Committed
         )
     }
 
@@ -1053,7 +1061,9 @@ pub enum PermitState {
     Closed,
     /// Reserved tombstone; not producible in this slice.
     Superseded,
-    /// Reserved tombstone; not producible in this slice.
+    /// Non-reusable tombstone produced when any slot is `EffectUnknown` at
+    /// closure time (`[TASK-EFFECT-003]`); the `TaskHead` stays frozen
+    /// until every unknown slot is reconciled.
     Quarantined,
 }
 

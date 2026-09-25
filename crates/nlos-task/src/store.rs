@@ -1126,6 +1126,13 @@ impl SqliteTaskAuthority {
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let task = load_task(&transaction, request.task_id)?;
         let planned_effects = request.planned_effects.clone();
+        // Empty-set closure convention (arbitration A3): this all-zero
+        // `[0; 32]` is the permit-record-side marker for "no planned
+        // effects" only. The permit effect-set control side closes the
+        // empty set with the domain-separated
+        // `effect::empty_effect_set_root()` hash instead. The two
+        // constants are independent closure conventions over disjoint
+        // surfaces; they must never be compared against each other.
         let effect_set_root = if planned_effects.is_empty() {
             [0; 32]
         } else {
@@ -4318,6 +4325,27 @@ fn ensure_active_assignment(
         }
         if existing.authority_lease_binding.term > lease.term {
             return Err(TaskStoreError::AuthorityLeaseFenced);
+        }
+        // Same-term registry rotation (participant registration advanced
+        // the binding): fence the replaced Active row before inserting the
+        // new one so exactly one Active assignment exists per task. The
+        // CAS miss is corruption inside this `Immediate` transaction — the
+        // row was just read as Active above.
+        let changed = transaction.execute(
+            "UPDATE task_authority_assignments
+             SET assignment_state = ?1, updated_at_ms = ?2
+             WHERE assignment_id = ?3 AND assignment_state = ?4",
+            params![
+                AuthorityAssignmentState::Fenced.code(),
+                now_ms,
+                existing.assignment_id.as_bytes().as_slice(),
+                AuthorityAssignmentState::Active.code(),
+            ],
+        )?;
+        if changed != 1 {
+            return Err(TaskStoreError::CorruptRecord(
+                "rotated active assignment lost its Active state",
+            ));
         }
     }
     let record = AuthorityAssignmentRecord {
