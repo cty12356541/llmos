@@ -24,14 +24,22 @@
 //!     dimension + working-set dimension) and returns the admission
 //!     facts or the typed denial.
 //! 3.  **Resolve** (commit, plan authority):
-//!     [`SqlitePlanAuthority::resolve_materialization`] re-verifies the
-//!     declared-revision fence and dependency readiness inside the
-//!     commit transaction, then commits the verdict: an approval flips
+//!     [`SqlitePlanAuthority::resolve_materialization`] commits the
+//!     verdict. Readiness facts gate the approval commit, never the
+//!     closure of the round: a rejection always records its typed
+//!     reason and leaves the node `WAITING_*` — the materialization
+//!     window shrinks, the plan does not fail (G3 falsification #2).
+//!     An approval re-verifies the declared-revision fence and
+//!     dependency readiness inside the commit transaction, then flips
 //!     the node `WAITING_* → MATERIALIZING` and the request to
 //!     `APPROVED` (admission facts recorded) in **one** transaction; a
-//!     rejection records the typed reason and leaves the node
-//!     `WAITING_*` — the materialization window shrinks, the plan does
-//!     not fail (G3 falsification #2).
+//!     fenced approval — the node was reshaped in flight — closes the
+//!     round as an explicit typed reshaped-revision rejection instead
+//!     of erroring, so the `one_pending` gate face releases and the
+//!     caller may open a fresh round against the new revision (the
+//!     fence rides the DDL's fixed rejected-row shape as the
+//!     `RESHAPED_REVISION_FENCE_PROFILE` rejection profile carrying
+//!     the observed and current revisions).
 //!
 //! G3 falsification #1 (a node with unmet dependencies materializing
 //! through any face) is closed at three layers: the typed request
@@ -185,21 +193,29 @@ impl SqlitePlanAuthority {
     }
 
     /// Resolves one pending materialization request with the Task-side
-    /// admission verdict (ADR-0013 commit half). Approval commits the
-    /// request row and the `WAITING_* → MATERIALIZING` voucher in one
-    /// transaction; rejection records the typed reason and keeps the
-    /// node `WAITING_*` (the window shrinks). Replays return the
-    /// original outcome; a different verdict or timestamp on a resolved
-    /// request is a typed idempotency conflict.
+    /// admission verdict (ADR-0013 commit half). Readiness fences gate
+    /// the approval commit, never the closure of the round: a rejection
+    /// verdict always commits its typed reason (whatever the node's
+    /// declared revision or dependencies look like at commit time), and
+    /// an approval verdict whose declared-revision fence mismatches (the
+    /// node was reshaped in flight) closes the round as an explicit
+    /// typed reshaped-revision rejection — leaving it `PENDING` would
+    /// seal the node's gate face forever (`one_pending`) and hold a
+    /// scheduler seat. Either way the node stays `WAITING_*` (the
+    /// window shrinks, the plan does not fail) and a fresh round may be
+    /// requested against the new revision. An un-fenced approval
+    /// re-verifies dependency readiness inside the commit transaction
+    /// and commits the request row and the `WAITING_* → MATERIALIZING`
+    /// voucher in one transaction. Replays return the original outcome;
+    /// a different verdict or timestamp on a resolved request is a
+    /// typed idempotency conflict.
     ///
     /// # Errors
     ///
     /// Fails typed on unknown request keys
-    /// ([`PlanStoreError::MaterializationRequestNotFound`]), stale
-    /// declared-revision fences
-    /// ([`PlanStoreError::StaleNodeRevision`]), unmet dependencies at
-    /// commit time, nodes no longer awaiting materialization,
-    /// idempotency rebinding, or storage failure.
+    /// ([`PlanStoreError::MaterializationRequestNotFound`]), unmet
+    /// dependencies at approval commit time, nodes no longer awaiting
+    /// materialization, idempotency rebinding, or storage failure.
     pub fn resolve_materialization(
         &self,
         resolution: MaterializationResolution,
@@ -230,23 +246,39 @@ impl SqlitePlanAuthority {
                 node_id: existing.node_id,
             },
         )?;
-        if node.declared_revision != existing.observed_declared_revision {
-            return Err(PlanStoreError::StaleNodeRevision {
-                node_id: existing.node_id,
-                expected: existing.observed_declared_revision,
-                current: node.declared_revision,
-            });
-        }
-        let unresolved = unresolved_dependencies(&transaction, &node)?;
-        if !unresolved.is_empty() {
-            return Err(PlanStoreError::DependenciesNotReady {
-                node_id: existing.node_id,
-                unresolved,
-            });
-        }
 
         match resolution.verdict {
             MaterializationAdmissionVerdict::Approved(admission) => {
+                if node.declared_revision != existing.observed_declared_revision {
+                    // The fence: the pinned declared-revision shape is
+                    // gone, so this approval can never commit. But the
+                    // verdict must still close the round — a `PENDING`
+                    // row would hold the `one_pending` face (and a
+                    // scheduler seat) forever. Resolve it as an
+                    // explicit typed rejection: the node stays
+                    // `WAITING_*`, the plan does not fail, and a fresh
+                    // round may open against the new revision.
+                    let reason = reshaped_revision_rejection(
+                        existing.observed_declared_revision,
+                        node.declared_revision,
+                    );
+                    let mut record = existing;
+                    apply_rejection(
+                        &transaction,
+                        &mut record,
+                        &reason,
+                        resolution.resolved_at_ms,
+                    )?;
+                    transaction.commit()?;
+                    return Ok(MaterializationResolutionDecision::Rejected(record));
+                }
+                let unresolved = unresolved_dependencies(&transaction, &node)?;
+                if !unresolved.is_empty() {
+                    return Err(PlanStoreError::DependenciesNotReady {
+                        node_id: existing.node_id,
+                        unresolved,
+                    });
+                }
                 if !matches!(
                     node.state,
                     PlanNodeState::WaitingAuthorization
@@ -289,6 +321,11 @@ impl SqlitePlanAuthority {
                 Ok(MaterializationResolutionDecision::Approved(approval))
             }
             MaterializationAdmissionVerdict::Rejected(reason) => {
+                // A rejection is always committable: readiness facts
+                // (the declared-revision fence, dependency completion)
+                // gate the approval commit, not the closure of the
+                // round. The node stays `WAITING_*` and `one_pending`
+                // releases even when the round was fenced in flight.
                 let mut record = existing;
                 apply_rejection(
                     &transaction,
@@ -549,6 +586,47 @@ fn apply_rejection(
 }
 
 // ---------------------------------------------------------------------------
+// reshaped-revision fence rejection (verdict-order fix, deep-audit/30)
+// ---------------------------------------------------------------------------
+
+/// The rejection-profile marker for a round closed by the
+/// declared-revision fence rather than by a Task-side admission denial.
+///
+/// The `plan_materialization_requests` DDL fixes the rejected-row shape
+/// to the two admission kinds (`rejection_kind IN (1, 2)` with
+/// profile/observed/cap), and the write set of this lane may not change
+/// the schema or the model — so the fence rides that shape: the profile
+/// marks the cause, the observed slot carries the request's pinned
+/// `observed_declared_revision`, and the cap slot carries the node's
+/// current `declared_revision` (the `expected`/`current` pair of the
+/// fence fact).
+const RESHAPED_REVISION_FENCE_PROFILE: &str = "plan:reshaped-declared-revision";
+
+/// The typed rejection a fenced approval resolves as: the round is
+/// closed (releasing `one_pending` and the scheduler seat), the node
+/// stays `WAITING_*`, and the revision pair survives the durable
+/// readback.
+fn reshaped_revision_rejection(observed: u64, current: u64) -> MaterializationRejection {
+    MaterializationRejection::TaskNodeCapExceeded {
+        profile_id: RESHAPED_REVISION_FENCE_PROFILE.to_string(),
+        task_count: observed,
+        max_task_nodes: current,
+    }
+}
+
+/// Whether a resolved record's rejection is the reshaped-revision fence
+/// (the deterministic conversion an approval verdict undergoes on a
+/// fenced round), so the very same approval replays as that committed
+/// outcome instead of an idempotency conflict.
+fn is_reshaped_revision_fence(record: &MaterializationRequestRecord) -> bool {
+    matches!(
+        &record.rejection,
+        Some(MaterializationRejection::TaskNodeCapExceeded { profile_id, .. })
+            if profile_id == RESHAPED_REVISION_FENCE_PROFILE
+    )
+}
+
+// ---------------------------------------------------------------------------
 // readiness verification (pure over the durable rows)
 // ---------------------------------------------------------------------------
 
@@ -615,8 +693,11 @@ fn resolution_matches_record(
     }
     match &resolution.verdict {
         MaterializationAdmissionVerdict::Approved(admission) => {
-            record.status == MaterializationRequestStatus::Approved
-                && record.admission.as_ref() == Some(admission)
+            (record.status == MaterializationRequestStatus::Approved
+                && record.admission.as_ref() == Some(admission))
+                // An approval that landed as a fence conversion replays
+                // as that conversion's committed outcome.
+                || is_reshaped_revision_fence(record)
         }
         MaterializationAdmissionVerdict::Rejected(reason) => {
             record.status == MaterializationRequestStatus::Rejected
