@@ -11,21 +11,21 @@
 //! # Usage
 //!
 //! ```text
-//! system-control-cli <SOCKET> inspect-health
-//! system-control-cli <SOCKET> inspect-semantic-health
-//! system-control-cli <SOCKET> inspect-resource-health
-//! system-control-cli <SOCKET> export-metrics
-//! system-control-cli <SOCKET> export-semantic-metrics
-//! system-control-cli <SOCKET> export-resource-metrics
-//! system-control-cli <SOCKET> inspect-task <PLAN_ID_HEX_32>
-//! system-control-cli <SOCKET> inspect-process <PROCESS_ID_HEX_32>
-//! system-control-cli <SOCKET> inspect-application <PACKAGE_ID_HEX_32>
-//! system-control-cli <SOCKET> inspect-resource <RESERVATION_ID_HEX_32>
-//! system-control-cli <SOCKET> inspect-task-group <GROUP_ID_HEX_32>
-//! system-control-cli <SOCKET> inspect-task-node <PLAN_ID_HEX_32> <NODE_ID_HEX_32>
-//! system-control-cli <SOCKET> inspect-fiber <FIBER_ID_HEX_32> <GENERATION>
-//! system-control-cli <SOCKET> inspect-topic <TOPIC_ID_HEX_32>
-//! system-control-cli <SOCKET> inspect-operation <OPERATION_ID_HEX_32> <GENERATION>
+//! system-control-cli [--root <STATE_ROOT>] <SOCKET> inspect-health
+//! system-control-cli [--root <STATE_ROOT>] <SOCKET> inspect-semantic-health
+//! system-control-cli [--root <STATE_ROOT>] <SOCKET> inspect-resource-health
+//! system-control-cli [--root <STATE_ROOT>] <SOCKET> export-metrics
+//! system-control-cli [--root <STATE_ROOT>] <SOCKET> export-semantic-metrics
+//! system-control-cli [--root <STATE_ROOT>] <SOCKET> export-resource-metrics
+//! system-control-cli [--root <STATE_ROOT>] <SOCKET> inspect-task <PLAN_ID_HEX_32>
+//! system-control-cli --root <STATE_ROOT> <SOCKET> inspect-process <PROCESS_ID_HEX_32>
+//! system-control-cli --root <STATE_ROOT> <SOCKET> inspect-application <PACKAGE_ID_HEX_32>
+//! system-control-cli --root <STATE_ROOT> <SOCKET> inspect-resource <RESERVATION_ID_HEX_32>
+//! system-control-cli [--root <STATE_ROOT>] <SOCKET> inspect-task-group <GROUP_ID_HEX_32>
+//! system-control-cli [--root <STATE_ROOT>] <SOCKET> inspect-task-node <PLAN_ID_HEX_32> <NODE_ID_HEX_32>
+//! system-control-cli [--root <STATE_ROOT>] <SOCKET> inspect-fiber <FIBER_ID_HEX_32> <GENERATION>
+//! system-control-cli [--root <STATE_ROOT>] <SOCKET> inspect-topic <TOPIC_ID_HEX_32>
+//! system-control-cli [--root <STATE_ROOT>] <SOCKET> inspect-operation <OPERATION_ID_HEX_32> <GENERATION>
 //! system-control-cli <SOCKET> ack-recovery-alert <COMMAND_ID_HEX_32> <PLAN_ID_HEX_32> <EXPECTED_FAILURES> <REASON>
 //! system-control-cli <SOCKET> ack-semantic-recovery-alert <COMMAND_ID_HEX_32> <PLAN_ID_HEX_32> <EXPECTED_FAILURES> <REASON>
 //! system-control-cli <SOCKET> resume-semantic-recovery <COMMAND_ID_HEX_32> <PLAN_ID_HEX_32> <EXPECTED_FAILURES> <REASON>
@@ -39,12 +39,26 @@
 //! system-control-cli <SOCKET> reclaim-operation <COMMAND_ID_HEX_32> <TARGET_ID_HEX_32> <EXPECTED_REVISION> <REASON>
 //! ```
 //!
+//! # Read-surface composition (`--root`)
+//!
+//! `inspect-process`, `inspect-resource`, and `inspect-application`
+//! projections are composed **client-side** (the `ControlReceipt::compose`
+//! contract): the bounded facts come from an inspector over the same state
+//! root the daemon serves. `--root <STATE_ROOT>` opens the corresponding
+//! authorities read-only and injects those three inspectors; without
+//! `--root` the three commands refuse before the wire with exit code `2`
+//! and an honest hint instead of pretending the backend is unwired. The
+//! three inspector arms require a build with the `process`/`resource`/
+//! `application` features (the `daemon` feature aggregates all of them).
+//! Flags are accepted only before `<SOCKET>`.
+//!
 //! # Output and exit contract
 //!
 //! The first stdout line is always `RECEIPT <hex>` — the deterministic
 //! [`ControlReceipt::to_bytes`] encoding — followed by one human-readable
 //! summary line. Exit codes: `0` success receipt, `1` typed failure receipt
-//! (the sanitized `SabiFailure`), `2` usage or transport error.
+//! (the sanitized `SabiFailure`), `2` usage, transport, or refused
+//! read-surface error.
 //!
 //! # Authorization posture
 //!
@@ -52,15 +66,18 @@
 //! (`LOCAL_ISSUER_PRINCIPAL_ID`) until ADR-0011 lands; the service-side
 //! authorizer remains the policy boundary.
 
+#[cfg(unix)]
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 #[cfg(unix)]
 use nlos_system_control::control::{
-    ControlCommand, ControlError, ControlOutcome, ControlReceipt, parse_hex_id, receipt_to_hex,
+    ApplicationInspector, ControlCommand, ControlError, ControlOutcome, ControlReceipt,
+    ProcessInspector, ResourceInspector, parse_hex_id, receipt_to_hex,
 };
 
 #[cfg(unix)]
-const USAGE: &str = "usage: system-control-cli <SOCKET> inspect-health \
+const USAGE: &str = "usage: system-control-cli [--root <STATE_ROOT>] <SOCKET> inspect-health \
 | inspect-semantic-health \
 | inspect-resource-health \
 | export-metrics \
@@ -474,16 +491,172 @@ fn summary(receipt: &ControlReceipt) -> String {
     }
 }
 
+/// The client-side read authorities behind `--root`, one field per
+/// inspector feature (absent fields compile out in builds without the
+/// feature). Opened read-only over the daemon's state root; the GET
+/// envelope still crosses the socket for authorization parity.
+#[cfg(all(
+    unix,
+    any(feature = "process", feature = "resource", feature = "application")
+))]
+struct RootState {
+    #[cfg(feature = "process")]
+    process: nlos_process::ProcessAuthority,
+    #[cfg(feature = "resource")]
+    resource: nlos_resource::ResourceAuthority,
+    #[cfg(feature = "application")]
+    application: nlos_application::ApplicationAuthority,
+}
+
+#[cfg(all(
+    unix,
+    any(feature = "process", feature = "resource", feature = "application")
+))]
+impl RootState {
+    /// Opens the three inspector authorities under `root`. Each authority
+    /// name matches the resident daemon's assembly layout.
+    fn open(root: &std::path::Path) -> Result<Self, String> {
+        // A build without any of the three inspector features has nothing
+        // to open; the parameter keeps the daemon-layout contract visible.
+        #[cfg(not(any(feature = "process", feature = "resource", feature = "application")))]
+        let _ = root;
+        #[cfg(feature = "process")]
+        let process = nlos_process::ProcessAuthority::open(root.join("process"))
+            .map_err(|error| format!("--root process authority: {error}"))?;
+        #[cfg(feature = "resource")]
+        let resource = nlos_resource::ResourceAuthority::open(root.join("resource"))
+            .map_err(|error| format!("--root resource authority: {error}"))?;
+        #[cfg(feature = "application")]
+        let application = nlos_application::ApplicationAuthority::open(root.join("application"))
+            .map_err(|error| format!("--root application authority: {error}"))?;
+        Ok(Self {
+            #[cfg(feature = "process")]
+            process,
+            #[cfg(feature = "resource")]
+            resource,
+            #[cfg(feature = "application")]
+            application,
+        })
+    }
+}
+
+/// The three commands whose projection is composed client-side, with the
+/// inspector each one needs.
+#[cfg(unix)]
+fn composed_read_command(command: &ControlCommand) -> Option<(&'static str, &'static str)> {
+    match command {
+        ControlCommand::InspectProcess { .. } => Some(("inspect-process", "process")),
+        ControlCommand::InspectResource { .. } => Some(("inspect-resource", "resource")),
+        ControlCommand::InspectApplication { .. } => Some(("inspect-application", "application")),
+        _ => None,
+    }
+}
+
+/// Splits an optional leading `--root <STATE_ROOT>` pair off the argument
+/// list. Flags are only accepted before `<SOCKET>` so mutation reasons can
+/// never collide with them.
+#[cfg(unix)]
+fn split_root_flag(arguments: &[String]) -> Result<(Option<PathBuf>, &[String]), ControlError> {
+    if arguments.first().map(String::as_str) != Some("--root") {
+        return Ok((None, arguments));
+    }
+    let Some(value) = arguments.get(1) else {
+        return Err(ControlError::InvalidCommand(
+            "--root requires a <STATE_ROOT> value",
+        ));
+    };
+    Ok((Some(PathBuf::from(value)), &arguments[2..]))
+}
+
 #[cfg(unix)]
 async fn run() -> Result<ExitCode, ControlError> {
     use nlos_system_control::control::dispatch_over_socket;
+
     let arguments: Vec<String> = std::env::args().skip(1).collect();
-    let Some(socket) = arguments.first().cloned() else {
+    let (root, positional) = split_root_flag(&arguments).inspect_err(|_| eprintln!("{USAGE}"))?;
+    let Some(socket) = positional.first().cloned() else {
         eprintln!("{USAGE}");
         return Ok(ExitCode::from(2));
     };
-    let command = parsed_command(&arguments[1..]).inspect_err(|_| eprintln!("{USAGE}"))?;
-    let receipt = dispatch_over_socket(&socket, &command, None, None, None).await?;
+    let command = parsed_command(&positional[1..]).inspect_err(|_| eprintln!("{USAGE}"))?;
+
+    // Read-surface honesty: the three client-composed reads refuse before
+    // the wire unless --root supplies the same state root the daemon owns.
+    if let Some((command_name, feature)) = composed_read_command(&command) {
+        let feature_enabled = match feature {
+            "process" => cfg!(feature = "process"),
+            "resource" => cfg!(feature = "resource"),
+            _ => cfg!(feature = "application"),
+        };
+        if root.is_none() {
+            eprintln!(
+                "system-control-cli: {command_name} composes its projection client-side and \
+                 needs --root <STATE_ROOT> pointing at the system-control daemon's state root; \
+                 without it the read is structurally unwired, not merely empty"
+            );
+            eprintln!("{USAGE}");
+            return Ok(ExitCode::from(2));
+        }
+        if !feature_enabled {
+            eprintln!(
+                "system-control-cli: this build lacks the `{feature}` inspector feature; \
+                 rebuild with --features {feature} (or `daemon`) to use --root with {command_name}"
+            );
+            return Ok(ExitCode::from(2));
+        }
+    }
+    #[cfg(any(feature = "process", feature = "resource", feature = "application"))]
+    let root_state = match root.as_ref() {
+        None => None,
+        Some(path) => match RootState::open(path) {
+            Ok(state) => Some(state),
+            Err(error) => {
+                eprintln!("system-control-cli: {error}");
+                return Ok(ExitCode::from(2));
+            }
+        },
+    };
+    // Without any inspector feature there is nothing to open; the three
+    // composed commands have already refused above.
+    #[cfg(not(any(feature = "process", feature = "resource", feature = "application")))]
+    let _ = root.as_ref();
+
+    #[cfg(feature = "process")]
+    let process_adapter = root_state.as_ref().map(|state| {
+        nlos_system_control::process_inspector::ProcessAuthorityInspector::new(&state.process)
+    });
+    #[cfg(feature = "process")]
+    let process: Option<&dyn ProcessInspector> = process_adapter
+        .as_ref()
+        .map(|inspector| inspector as &dyn ProcessInspector);
+    #[cfg(not(feature = "process"))]
+    let process: Option<&dyn ProcessInspector> = None;
+
+    #[cfg(feature = "resource")]
+    let resource_adapter = root_state.as_ref().map(|state| {
+        nlos_system_control::resource_inspector::ResourceAuthorityInspector::new(&state.resource)
+    });
+    #[cfg(feature = "resource")]
+    let resource: Option<&dyn ResourceInspector> = resource_adapter
+        .as_ref()
+        .map(|inspector| inspector as &dyn ResourceInspector);
+    #[cfg(not(feature = "resource"))]
+    let resource: Option<&dyn ResourceInspector> = None;
+
+    #[cfg(feature = "application")]
+    let application_adapter = root_state.as_ref().map(|state| {
+        nlos_system_control::application_inspector::ApplicationAuthorityInspector::new(
+            &state.application,
+        )
+    });
+    #[cfg(feature = "application")]
+    let application: Option<&dyn ApplicationInspector> = application_adapter
+        .as_ref()
+        .map(|inspector| inspector as &dyn ApplicationInspector);
+    #[cfg(not(feature = "application"))]
+    let application: Option<&dyn ApplicationInspector> = None;
+
+    let receipt = dispatch_over_socket(&socket, &command, process, resource, application).await?;
     println!("RECEIPT {}", receipt_to_hex(&receipt));
     println!("{}", summary(&receipt));
     if receipt.outcome.is_ok() {

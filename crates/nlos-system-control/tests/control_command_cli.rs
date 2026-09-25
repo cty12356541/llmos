@@ -974,10 +974,13 @@ async fn cli_and_in_process_paths_produce_byte_identical_receipts() {
     )
     .await;
 
+    // Client-composed reads without --root refuse before the wire with the
+    // honest exit-2 hint instead of a fake "unwired backend" success
+    // receipt (D5 CLI read-surface fix).
     let unwired_process = ControlCommand::InspectProcess {
         process_id: PROCESS_ID,
     };
-    let unwired_reference = dispatch_in_process(
+    let _ = dispatch_in_process(
         &control,
         &unwired_process,
         MONOTONIC_NOW_NS,
@@ -988,16 +991,20 @@ async fn cli_and_in_process_paths_produce_byte_identical_receipts() {
     )
     .unwrap();
     let cli_unwired = run_cli(&socket_path, &["inspect-process", &hex(&PROCESS_ID)]);
-    assert_eq!(cli_unwired.status.code(), Some(1));
-    assert_eq!(
-        cli_receipt_bytes(&cli_unwired),
-        unwired_reference.to_bytes()
+    assert_eq!(cli_unwired.status.code(), Some(2));
+    assert!(
+        !String::from_utf8_lossy(&cli_unwired.stdout).contains("RECEIPT"),
+        "a refused read must not print a receipt"
+    );
+    assert!(
+        String::from_utf8_lossy(&cli_unwired.stderr).contains("--root"),
+        "the refusal must explain the --root requirement"
     );
 
     let unwired_resource = ControlCommand::InspectResource {
         reservation_id: RESERVATION_ID,
     };
-    let unwired_resource_reference = dispatch_in_process(
+    let _ = dispatch_in_process(
         &control,
         &unwired_resource,
         MONOTONIC_NOW_NS,
@@ -1008,16 +1015,16 @@ async fn cli_and_in_process_paths_produce_byte_identical_receipts() {
     )
     .unwrap();
     let cli_unwired_resource = run_cli(&socket_path, &["inspect-resource", &hex(&RESERVATION_ID)]);
-    assert_eq!(cli_unwired_resource.status.code(), Some(1));
-    assert_eq!(
-        cli_receipt_bytes(&cli_unwired_resource),
-        unwired_resource_reference.to_bytes()
+    assert_eq!(cli_unwired_resource.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&cli_unwired_resource.stderr).contains("--root"),
+        "the refusal must explain the --root requirement"
     );
 
     let unwired_application = ControlCommand::InspectApplication {
         package_id: PACKAGE_ID,
     };
-    let unwired_application_reference = dispatch_in_process(
+    let _ = dispatch_in_process(
         &control,
         &unwired_application,
         MONOTONIC_NOW_NS,
@@ -1029,10 +1036,10 @@ async fn cli_and_in_process_paths_produce_byte_identical_receipts() {
     .unwrap();
     let cli_unwired_application =
         run_cli(&socket_path, &["inspect-application", &hex(&PACKAGE_ID)]);
-    assert_eq!(cli_unwired_application.status.code(), Some(1));
-    assert_eq!(
-        cli_receipt_bytes(&cli_unwired_application),
-        unwired_application_reference.to_bytes()
+    assert_eq!(cli_unwired_application.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&cli_unwired_application.stderr).contains("--root"),
+        "the refusal must explain the --root requirement"
     );
 
     let acknowledge = acknowledge_command(&plan_id);
