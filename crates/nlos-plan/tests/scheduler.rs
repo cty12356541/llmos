@@ -797,3 +797,129 @@ fn controller_lever_and_seat_release_drive_progress() {
     scheduler.set_window(4);
     assert_eq!(scheduler.window(), 4);
 }
+
+/// Deep-audit/30: a durable `PENDING` gate round that a reshaping
+/// revision fenced must not hold its scheduler seat forever. The pass
+/// that adopts it closes it as a typed reshaped-revision rejection
+/// (the round releases, the window shrinks like any rejection), the
+/// next pass selects the node for a fresh round under a new key, and
+/// the node converges to `MATERIALIZING`.
+#[test]
+#[allow(clippy::too_many_lines)] // One test walks seat loss and the converging fresh round end to end.
+fn fenced_pending_round_returns_its_seat_and_converges_on_the_next_pass() {
+    let root = Root::new("fence-seat");
+    let authority = SqlitePlanAuthority::open(root.0.join("plan.sqlite3")).expect("open plan");
+    let task = open_task(&root, &TASK_PROFILE_10K);
+    let plan_id = authority
+        .apply_plan_revision_ungated(revision_request(
+            None,
+            vec![node(0x0a, 0x01), node(0x0b, 0x02)],
+            0x11,
+            1_000,
+        ))
+        .expect("apply revision 1")
+        .receipt()
+        .plan_id;
+    let node_a = node_id_of(&authority, plan_id, [0x0a; 16]);
+
+    // The crash simulation: a pre-restart worker opened node a's round
+    // at revision 1 and died before the consult.
+    let crashed_key = IdempotencyKey::from_bytes([0x99; 16]);
+    authority
+        .request_materialization(MaterializationRequest {
+            plan_id,
+            node_id: node_a,
+            idempotency_key: crashed_key,
+            requested_at_ms: 2_000,
+        })
+        .expect("pre-crash gate round");
+
+    // The in-flight reshape that fences the adopted round.
+    authority
+        .apply_plan_revision_ungated(revision_request(
+            Some(plan_id),
+            vec![node(0x0a, 0x7f), node(0x0b, 0x02)],
+            0x12,
+            2_100,
+        ))
+        .expect("apply revision 2");
+
+    // Pass 1: node a is adopted (the pending round holds one seat),
+    // node b takes a fresh revision-2 round; the admitting consult
+    // closes a's fenced round as a typed rejection and approves b.
+    let consult = TaskConsult(&task);
+    let mut scheduler = MaterializationScheduler::new(3);
+    let report = scheduler
+        .select(&authority, plan_id)
+        .expect("fenced select");
+    assert_eq!(report.seats_in_use, 1, "the pending round holds a seat");
+    assert_eq!(
+        report
+            .selections
+            .iter()
+            .find(|entry| entry.node_id == node_a)
+            .expect("node a adopted")
+            .kind,
+        SelectionKind::AdoptPendingGateRound {
+            request_key: crashed_key
+        }
+    );
+    let summary = scheduler
+        .run_pass(&authority, plan_id, &consult, 2_500)
+        .expect("fenced pass");
+    assert_eq!(summary.approved, 1, "node b's fresh round approves");
+    assert_eq!(
+        summary.rejected, 1,
+        "the fenced round closes as a rejection"
+    );
+    assert_eq!(scheduler.window(), 2, "the rejection shrank the window");
+    assert!(scheduler.decisions().iter().any(|record| matches!(
+        &record.decision,
+        SchedulerDecision::Rejected {
+            node_id,
+            reason: MaterializationRejection::TaskNodeCapExceeded { profile_id, .. },
+            ..
+        } if *node_id == node_a && profile_id == "plan:reshaped-declared-revision"
+    )));
+    let a_row = authority
+        .inspect_node(plan_id, node_a)
+        .expect("inspect a")
+        .expect("a");
+    assert_eq!(a_row.state, PlanNodeState::WaitingResource);
+    assert_eq!(a_row.declared_revision, 2);
+    let history = authority
+        .inspect_node_materialization_requests(plan_id, node_a)
+        .expect("history a");
+    assert_eq!(history.len(), 1);
+    assert_eq!(
+        history[0].status,
+        nlos_plan::MaterializationRequestStatus::Rejected
+    );
+
+    // The seat returned: the next pass classifies node a as a fresh
+    // round (not an adoption, not starved) and converges it.
+    let report = scheduler
+        .select(&authority, plan_id)
+        .expect("recovered select");
+    assert_eq!(report.seats_in_use, 1, "only node b's band seat remains");
+    assert_eq!(
+        report
+            .selections
+            .iter()
+            .find(|entry| entry.node_id == node_a)
+            .expect("node a selectable again")
+            .kind,
+        SelectionKind::NewGateRound
+    );
+    let summary = scheduler
+        .run_pass(&authority, plan_id, &consult, 3_000)
+        .expect("converging pass");
+    assert_eq!(summary.approved, 1);
+    assert_eq!(materialized_count(&authority, plan_id), 2);
+    let history = authority
+        .inspect_node_materialization_requests(plan_id, node_a)
+        .expect("history a");
+    assert_eq!(history.len(), 2, "a fresh round under a new key");
+    assert_ne!(history[1].idempotency_key, crashed_key);
+    assert!(history[1].approved_voucher_id.is_some());
+}

@@ -801,10 +801,14 @@ fn gate_request_drives_legal_edges_is_idempotent_and_single_pending() {
     ));
 }
 
-/// Gate fence: a reshaping revision fences an in-flight request — the
-/// approval's declared-revision CAS fails typed and the caller re-requests
-/// against the new revision.
+/// Gate fence: a reshaping revision fences an in-flight approval — the
+/// approval can never commit against the pinned revision-1 shape, so
+/// the verdict closes the round as an explicit typed
+/// reshaped-revision rejection (never an error that would strand the
+/// `PENDING` row on the `one_pending` face), and the caller re-requests
+/// against the new revision through a fresh gated round.
 #[test]
+#[allow(clippy::too_many_lines)] // One test covers the fence outcome, replay, and recovery round.
 fn gate_resolve_is_fenced_by_declared_revision_cas() {
     let root = Root::new("fence");
     let plan = SqlitePlanAuthority::open(root.0.join("plan.sqlite3")).expect("open plan");
@@ -835,6 +839,9 @@ fn gate_resolve_is_fenced_by_declared_revision_cas() {
     ))
     .expect("apply revision 2");
 
+    // The fence: the admitted approval commits as an explicit typed
+    // rejection carrying the revision pair, not an error — the round
+    // must close so `one_pending` releases.
     let fenced = plan
         .resolve_materialization(MaterializationResolution {
             request_key: IdempotencyKey::from_bytes([0x21; 16]),
@@ -847,16 +854,24 @@ fn gate_resolve_is_fenced_by_declared_revision_cas() {
             ),
             resolved_at_ms: 2_500,
         })
-        .expect_err("stale request revision must fence the approval");
-    assert!(matches!(
-        fenced,
-        PlanStoreError::StaleNodeRevision {
-            expected: 1,
-            current: 2,
-            ..
-        }
-    ));
+        .expect("fenced approval must close the round as a rejection");
+    let MaterializationResolutionDecision::Rejected(record) = &fenced else {
+        panic!("fenced approval must not approve, got {fenced:?}");
+    };
+    assert_eq!(record.status, MaterializationRequestStatus::Rejected);
+    assert_eq!(
+        record.rejection.as_ref(),
+        Some(&MaterializationRejection::TaskNodeCapExceeded {
+            profile_id: "plan:reshaped-declared-revision".to_string(),
+            task_count: 1,
+            max_task_nodes: 2,
+        }),
+        "the typed fence reason carries the observed and current revisions"
+    );
+    assert_eq!(record.resolved_at_ms, Some(2_500));
 
+    // The approval did not commit and the plan did not fail: the node
+    // stays WAITING_RESOURCE at the new revision, nothing materializes.
     let a_row = plan
         .inspect_node(plan_id, node_a)
         .expect("inspect a")
@@ -864,4 +879,152 @@ fn gate_resolve_is_fenced_by_declared_revision_cas() {
     assert_eq!(a_row.state, PlanNodeState::WaitingResource);
     assert_eq!(a_row.declared_revision, 2);
     assert_eq!(materialized_count(&plan, plan_id), 0);
+
+    // The fence conversion replays as its committed outcome.
+    let replay = plan
+        .resolve_materialization(MaterializationResolution {
+            request_key: IdempotencyKey::from_bytes([0x21; 16]),
+            verdict: MaterializationAdmissionVerdict::Approved(
+                nlos_plan::MaterializationAdmission {
+                    profile_id: "task-10k".to_string(),
+                    projected_task_nodes: 2,
+                    projected_active_working_set: 1,
+                },
+            ),
+            resolved_at_ms: 2_500,
+        })
+        .expect("fence-conversion replay");
+    assert!(matches!(
+        replay,
+        MaterializationResolutionDecision::ReplayedRejected(_)
+    ));
+
+    // `one_pending` released: a fresh round against revision 2 is the
+    // recovery the fence exists to force, and it approves.
+    let wide = open_task(&root, &TASK_PROFILE_10K);
+    plan.request_materialization(MaterializationRequest {
+        plan_id,
+        node_id: node_a,
+        idempotency_key: IdempotencyKey::from_bytes([0x22; 16]),
+        requested_at_ms: 3_000,
+    })
+    .expect("fresh round against the new revision");
+    let recovered =
+        consult_and_resolve(&plan, &wide, IdempotencyKey::from_bytes([0x22; 16]), 3_500);
+    assert!(matches!(
+        recovered,
+        MaterializationResolutionDecision::Approved(_)
+    ));
+    let a_final = plan
+        .inspect_node(plan_id, node_a)
+        .expect("inspect a")
+        .expect("a");
+    assert_eq!(a_final.state, PlanNodeState::Materializing);
+    let history = plan
+        .inspect_node_materialization_requests(plan_id, node_a)
+        .expect("request history");
+    assert_eq!(history.len(), 2);
+    assert_eq!(history[0].status, MaterializationRequestStatus::Rejected);
+    assert_eq!(history[1].status, MaterializationRequestStatus::Approved);
+}
+
+/// Deep-audit/30: a `PENDING` round fenced by a reshaping revision must
+/// not seal the node's gate face. While the round is in flight the
+/// `one_pending` partial unique index refuses a second round; once the
+/// revision reshapes, every verdict closes the round — an admission
+/// denial commits its own typed reason (a rejection never needs the
+/// fence) — and a fresh round under a new key opens immediately.
+#[test]
+fn fenced_pending_round_closes_on_every_verdict_and_releases_one_pending() {
+    let root = Root::new("fence-release");
+    let plan = SqlitePlanAuthority::open(root.0.join("plan.sqlite3")).expect("open plan");
+    let plan_id = plan
+        .apply_plan_revision_ungated(revision_request(
+            None,
+            vec![node(0x0a, 0x01), node(0x0b, 0x02)],
+            0x11,
+        ))
+        .expect("apply revision 1")
+        .receipt()
+        .plan_id;
+    let node_a = node_id_of(&plan, plan_id, [0x0a; 16]);
+
+    plan.request_materialization(MaterializationRequest {
+        plan_id,
+        node_id: node_a,
+        idempotency_key: IdempotencyKey::from_bytes([0x21; 16]),
+        requested_at_ms: 2_000,
+    })
+    .expect("pending round at revision 1");
+
+    // The seal forming: one pending round per node.
+    let second = plan
+        .request_materialization(MaterializationRequest {
+            plan_id,
+            node_id: node_a,
+            idempotency_key: IdempotencyKey::from_bytes([0x22; 16]),
+            requested_at_ms: 2_100,
+        })
+        .expect_err("a second concurrent round must be refused");
+    assert!(matches!(
+        second,
+        PlanStoreError::MaterializationRequestAlreadyPending { .. }
+    ));
+
+    // Reshape in flight, then close the round with an admission denial:
+    // the caller's typed rejection commits even though the fence
+    // mismatches (rejections are never fenced).
+    plan.apply_plan_revision_ungated(revision_request(
+        Some(plan_id),
+        vec![node(0x0a, 0x7f), node(0x0b, 0x02)],
+        0x12,
+    ))
+    .expect("apply revision 2");
+    let denied = plan
+        .resolve_materialization(MaterializationResolution {
+            request_key: IdempotencyKey::from_bytes([0x21; 16]),
+            verdict: MaterializationAdmissionVerdict::Rejected(
+                MaterializationRejection::WorkingSetFull {
+                    profile_id: "task-g3-zero-working-set".to_string(),
+                    active_count: 7,
+                    max_active_working_set: 6,
+                },
+            ),
+            resolved_at_ms: 2_500,
+        })
+        .expect("a rejection verdict must close even a fenced round");
+    let MaterializationResolutionDecision::Rejected(record) = &denied else {
+        panic!("expected a typed rejection, got {denied:?}");
+    };
+    assert_eq!(
+        record.rejection.as_ref(),
+        Some(&MaterializationRejection::WorkingSetFull {
+            profile_id: "task-g3-zero-working-set".to_string(),
+            active_count: 7,
+            max_active_working_set: 6,
+        }),
+        "the caller's typed reason survives, not a fence override"
+    );
+
+    // `one_pending` released: the very key that was refused now opens a
+    // fresh round (a new key), and the node is still WAITING_*.
+    plan.request_materialization(MaterializationRequest {
+        plan_id,
+        node_id: node_a,
+        idempotency_key: IdempotencyKey::from_bytes([0x22; 16]),
+        requested_at_ms: 3_000,
+    })
+    .expect("fresh round under a new key after the closure");
+    let a_row = plan
+        .inspect_node(plan_id, node_a)
+        .expect("inspect a")
+        .expect("a");
+    assert_eq!(a_row.state, PlanNodeState::WaitingResource);
+    assert_eq!(a_row.declared_revision, 2);
+    let history = plan
+        .inspect_node_materialization_requests(plan_id, node_a)
+        .expect("request history");
+    assert_eq!(history.len(), 2);
+    assert_eq!(history[0].status, MaterializationRequestStatus::Rejected);
+    assert_eq!(history[1].status, MaterializationRequestStatus::Pending);
 }
