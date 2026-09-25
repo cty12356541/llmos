@@ -6,10 +6,12 @@
 //! kill path (platform kill → crash terminal → W27-C linkage) and every
 //! Task through the `cancel_task` fence, the gate then opens and the
 //! uninstall commits — and re-running the whole teardown replays the
-//! identical durable receipts (the kill replay through an EMPTY pid map
-//! proves the durable receipt short-circuits before any adapter
-//! invocation). Everything survives a crash-drop + reopen, including the
-//! task-row association.
+//! identical durable receipts while STILL driving the kill adapter
+//! (at-least-once signal delivery: a replay through an EMPTY pid map now
+//! fails closed on the missing mapping, and a replay through the real
+//! registry re-signals the children — the already-dead ones map ESRCH to
+//! `AlreadyTerminated` success). Everything survives a crash-drop + reopen,
+//! including the task-row association.
 
 use std::future::pending;
 use std::sync::Arc;
@@ -103,6 +105,9 @@ fn refusal_probe_spec(
     }
 }
 
+/// Unix-only fail-closed probe registry: empty, so every platform kill
+/// replay that consults the adapter fails on the missing mapping.
+#[cfg(unix)]
 fn empty_supervisor() -> SupervisorPidRegistry {
     SupervisorPidRegistry::new()
 }
@@ -279,19 +284,34 @@ async fn uninstall_teardown_body(
     assert_eq!(application.status, ApplicationStatus::Uninstalled);
     assert_eq!(application.application_id, pair.application_id);
 
-    // Idempotent replay: the whole teardown re-run through an EMPTY pid map
-    // — the kill replay short-circuits on the durable receipt before any
-    // adapter invocation (a broken replay would fail closed on the missing
-    // mapping), every receipt replays byte-identically, and the gated
-    // uninstall replays without consulting the activity gate.
-    let replay = run_application_teardown(
-        &runtime,
-        &adapter,
-        pair.package_id,
-        seed,
-        &empty_supervisor(),
-    )
-    .expect("teardown replay");
+    // Idempotent replay, at-least-once edition: the re-run re-drives the
+    // kill adapter — through an EMPTY pid map the replay now fails closed
+    // on the missing mapping (the proof the durable receipt no longer
+    // short-circuits before the adapter), while through the REAL registry
+    // it re-signals both children (the second is dead and reaped: ESRCH
+    // maps to AlreadyTerminated success; the first is an unreaped zombie:
+    // the supplementary signal is a no-op), every receipt replays
+    // byte-identically, and the gated uninstall replays without
+    // consulting the activity gate.
+    #[cfg(unix)]
+    assert!(
+        matches!(
+            run_application_teardown(
+                &runtime,
+                &adapter,
+                pair.package_id,
+                seed,
+                &empty_supervisor(),
+            ),
+            Err(SliceKError::Process(
+                ProcessAuthorityError::PlatformKillAdapter(_)
+            ))
+        ),
+        "the replayed kill must still consult the platform adapter"
+    );
+    let replay =
+        run_application_teardown(&runtime, &adapter, pair.package_id, seed, &pair.registry)
+            .expect("teardown replay");
     for (index, kill) in replay.kills.iter().enumerate() {
         assert!(
             matches!(kill, PlatformKillDecision::Replayed(_)),
@@ -400,12 +420,15 @@ async fn uninstall_teardown_body(
     assert_eq!(registrations.background_tasks.len(), 2);
     assert_eq!(registrations.process_bindings.len(), 2);
 
+    // Reopen replay through the original registry mappings: both children
+    // are dead and reaped by now, so every supplementary signal reports
+    // AlreadyTerminated — success — and every receipt still replays.
     let reopened_teardown = run_application_teardown(
         &reopened,
         &fresh_adapter,
         pair.package_id,
         seed,
-        &empty_supervisor(),
+        &pair.registry,
     )
     .expect("teardown replay after reopen");
     for kill in &reopened_teardown.kills {

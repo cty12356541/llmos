@@ -107,7 +107,9 @@ impl SystemControlAuthorizer for SliceKControlPolicy {
 /// reading handed to the handler comes from this runtime's clock under a
 /// key derived from the parsed command identity, so repeating the same
 /// sentence replays the same durable effects (an NL kill re-derives the
-/// identical platform-kill receipt, never a second signal).
+/// identical platform-kill receipt and re-drives the adapter's
+/// supplementary signal — at-least-once delivery, with an already-dead
+/// target reporting `AlreadyTerminated` success).
 ///
 /// # Errors
 ///
