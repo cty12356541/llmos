@@ -252,7 +252,11 @@ impl ArtifactStore {
     ///
     /// Phase 1 commits the blob bytes durably under their digest; phase 2
     /// inserts the immutable revision row and compare-and-swaps the head in
-    /// one `BEGIN IMMEDIATE` transaction. The new revision number is derived
+    /// one `BEGIN IMMEDIATE` transaction. Both phases run inside one
+    /// writer critical section (the mutex taken by [`Self::lock_connection`]):
+    /// the orphan GC scan (`collect_orphan_blobs`, same mutex) can therefore
+    /// never observe this put's in-flight blob as unreferenced and delete it
+    /// between the two phases. The new revision number is derived
     /// as `expected_head_revision + 1` (authority-issued, deterministic).
     ///
     /// Decision order inside the transaction: an exact re-put (same derived
@@ -270,10 +274,20 @@ impl ArtifactStore {
         request: PutRevisionRequest<'_>,
     ) -> Result<PutRevisionDecision, ArtifactError> {
         let digest = ContentDigest::of_bytes(request.bytes);
-        // Phase 1: durable blob BEFORE any metadata referencing it exists.
+        // Phase 1: durable blob BEFORE any metadata referencing it exists —
+        // and inside the writer critical section (deep-audit/32 H1). The
+        // mutex is held from before the blob bytes hit disk until the
+        // metadata transaction commits, serializing this put against
+        // `collect_orphan_blobs` (same mutex): the GC scan can never
+        // sentence this in-flight digest as an unreferenced orphan and
+        // delete it before the referencing row lands, which would leave the
+        // revision permanently `BlobMissing`. The digest above is pure
+        // computation; the held interval contains only the blob fsyncs and
+        // the `SQLite` transaction, and every failure path releases the
+        // guard by ordinary drop.
+        let mut connection = self.lock_connection()?;
         blob::commit_blob(&self.paths.artifacts, digest, request.bytes)?;
 
-        let mut connection = self.lock_connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let artifact = load_artifact_optional(&transaction, request.artifact_id)?
             .ok_or(ArtifactError::ArtifactNotFound(request.artifact_id))?;
@@ -386,4 +400,115 @@ pub(crate) fn validate_text_component(
 
 pub(crate) fn encode_u64(value: u64) -> Result<i64, ArtifactError> {
     i64::try_from(value).map_err(|_| ArtifactError::InvalidSpec("value exceeds SQLite INTEGER"))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use nlos_types::{ArtifactId, IdempotencyKey};
+
+    use super::*;
+    use crate::gc::{CollectOrphanBlobsDecision, CollectOrphanBlobsRequest};
+    use crate::model::ProvenanceSourceTriple;
+
+    static TEST_ROOT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    /// deep-audit/32 H1 regression: the blob commit phase of `put_revision`
+    /// must run inside the writer critical section. While another holder
+    /// keeps the mutex (as a GC pass does for its whole scan-delete
+    /// window), a concurrent put must not have written — let alone renamed
+    /// into place — its blob: the file at the digest address can only
+    /// appear after the mutex is available to this put. That is exactly
+    /// what makes the GC reference-set computation unable to observe an
+    /// in-flight, not-yet-referenced digest. Under the pre-fix ordering
+    /// the blob was durable before the lock was taken, and a GC run
+    /// wedged between the two phases deleted it, leaving the revision
+    /// permanently `BlobMissing`.
+    #[test]
+    fn put_revision_blob_phase_is_inside_the_writer_critical_section() {
+        let sequence = TEST_ROOT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "nlos-artifact-store-lock-{}-{sequence}",
+            std::process::id()
+        ));
+        let store = ArtifactStore::open(&root).expect("open store");
+        store
+            .create_artifact(CreateArtifactSpec {
+                artifact_id: ArtifactId::from_bytes([0x5c; 16]),
+                idempotency_key: IdempotencyKey::from_bytes([0x6c; 16]),
+                content_type: "application/octet-stream".to_string(),
+                application_id: None,
+                owner: None,
+                created_at_ms: 1_000,
+            })
+            .expect("create artifact");
+
+        let payload = b"put/gc serialization probe";
+        let digest = ContentDigest::of_bytes(payload);
+        let blob_path = store.paths.artifacts.blob_path(digest);
+
+        std::thread::scope(|scope| {
+            let (done, rx) = mpsc::channel::<()>();
+            let handle = {
+                // Hold the single-writer mutex the way a GC pass would.
+                let guard = store.connection.lock().expect("probe lock");
+                let store_ref = &store;
+                let worker = scope.spawn(move || {
+                    let decision = store_ref.put_revision(PutRevisionRequest {
+                        artifact_id: ArtifactId::from_bytes([0x5c; 16]),
+                        expected_head_revision: 0,
+                        bytes: payload,
+                        created_at_ms: 2_000,
+                        provenance: ProvenanceSourceTriple {
+                            source_a: [0x01; 16],
+                            source_b: [0x02; 16],
+                            source_digest: ContentDigest::of_bytes(b"probe source"),
+                        },
+                    });
+                    done.send(()).expect("notify put completion");
+                    decision
+                });
+                // Let the worker start and pile up on the mutex.
+                std::thread::sleep(Duration::from_millis(150));
+                assert!(
+                    rx.try_recv().is_err(),
+                    "put_revision must block while another writer holds the mutex"
+                );
+                assert!(
+                    !blob_path.exists(),
+                    "the blob commit must not run outside the writer critical section"
+                );
+                drop(guard);
+                worker
+            };
+            let decision = handle
+                .join()
+                .expect("put thread must not panic")
+                .expect("put must commit once serialized");
+            assert!(matches!(decision, PutRevisionDecision::Committed(_)));
+        });
+
+        // Equivalent single-threaded assertion for the GC side: once the
+        // put has returned, the digest is durably referenced, so a pass
+        // computed now (same mutex, hence after the put's metadata
+        // commit) never sentences it.
+        assert!(blob_path.is_file());
+        let decision = store
+            .collect_orphan_blobs(CollectOrphanBlobsRequest {
+                idempotency_key: IdempotencyKey::from_bytes([0x7c; 16]),
+                collected_at_ms: 3_000,
+            })
+            .expect("gc pass");
+        assert!(matches!(decision, CollectOrphanBlobsDecision::Collected(_)));
+        assert!(
+            decision.receipt().collected_digests.is_empty(),
+            "a committed revision's blob must never be sentenced as an orphan"
+        );
+
+        drop(store);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
