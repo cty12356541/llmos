@@ -3,18 +3,24 @@
 //! directory, plus the in-process inspect view the demo prints.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use nlos_application::{
     ApplicationAuthority, ApplicationStatus, ApplicationView, BackgroundTaskRegistrationReceipt,
     InstallationReceipt, ProcessBindingReceipt,
 };
 use nlos_artifact::{ArtifactStore, HeadState};
+use nlos_capability::CapabilityAuthority;
 use nlos_clock::{AuthorityClock, NowRequest};
 use nlos_commit_coordinator::ArtifactCommitCoordinator;
 use nlos_identity::IdentityAuthority;
 use nlos_operation::{OperationHandle, OperationSnapshot};
+use nlos_outbox::{ConsumerConfig, OutboxConsumer};
 use nlos_process::{ProcessAuthority, ProcessBindingRecord};
+use nlos_runtime_tokio::{
+    OutboxPump, OutboxPumpStartError, PumpConfig, PumpHealth, PumpState, StoreOutboxSource,
+    TokioRuntimeAdapter,
+};
 use nlos_store::SqliteOperationStore;
 use nlos_task::{AttemptRecord, PermitRecord, SqliteTaskAuthority, TaskRecord};
 use nlos_types::{
@@ -23,6 +29,10 @@ use nlos_types::{
 };
 
 use crate::error::{SliceKError, SliceKResult};
+use crate::pump::{PumpLane, ReconcileRefusalSnapshot, stop_pump_bounded};
+
+/// Poison-tolerant guard over the runtime's pump slot.
+type PumpGuard<'a> = MutexGuard<'a, Option<OutboxPump>>;
 
 /// One assembler holding every authority of the first longitudinal slice.
 ///
@@ -56,6 +66,20 @@ pub struct SliceKRuntime {
     /// ([`MockProvider::new`](nlos_driver_mock::MockProvider::new)) without
     /// opening a second connection to the same database.
     pub operations: Arc<SqliteOperationStore>,
+    /// Capability authority (root issuance, delegation, semantic admission).
+    /// Assembled with read-only exposure: the slice holds and opens it so
+    /// `authorize_semantic` is production-reachable through this runtime,
+    /// but adds no wrapper semantics.
+    capability: CapabilityAuthority,
+    /// The durable-Outbox pump lane: `None` until
+    /// [`SliceKRuntime::start_pump`] binds a pump to a runtime adapter.
+    /// Guarded by a `Mutex` so `Drop` and explicit stops can take the pump
+    /// out from behind an `Arc`-shared runtime.
+    pump: Mutex<Option<OutboxPump>>,
+    /// Refusal surface of the fail-closed reconcile sink (see
+    /// [`crate::pump`]). Created once per runtime and shared with every
+    /// pump generation, so the counters survive pump restarts.
+    pump_lane: PumpLane,
 }
 
 impl SliceKRuntime {
@@ -76,6 +100,7 @@ impl SliceKRuntime {
         let tasks = SqliteTaskAuthority::open(root.join("tasks.sqlite3"))?;
         let clock = AuthorityClock::open(root.join("clock"))?;
         let operations = Arc::new(SqliteOperationStore::open(root.join("operations.sqlite3"))?);
+        let capability = CapabilityAuthority::open(root.join("capability"))?;
         Ok(Self {
             root,
             identity,
@@ -85,6 +110,9 @@ impl SliceKRuntime {
             tasks,
             clock,
             operations,
+            capability,
+            pump: Mutex::new(None),
+            pump_lane: PumpLane::new(),
         })
     }
 
@@ -126,6 +154,108 @@ impl SliceKRuntime {
     #[must_use]
     pub fn coordinator(&self) -> ArtifactCommitCoordinator<'_> {
         ArtifactCommitCoordinator::new(&self.tasks, &self.artifacts)
+    }
+
+    /// Read-only handle on the capability authority this runtime opened
+    /// (`<root>/capability/capability-authority.db`), making
+    /// `authorize_semantic` production-reachable through the slice.
+    #[must_use]
+    pub fn capability(&self) -> &CapabilityAuthority {
+        &self.capability
+    }
+
+    /// Starts the durable-Outbox pump for this runtime, bound to `adapter`'s
+    /// wake lane.
+    ///
+    /// Why an explicit start instead of `open`: the wake sink must be the
+    /// [`TokioWakeSink`](nlos_runtime_tokio::TokioWakeSink) of the very
+    /// adapter that hosts the owner fibers — `open` is synchronous and
+    /// tokio-context-free while every existing lane builds its own adapter
+    /// from `Handle::current()`, so injection is the only wiring that
+    /// routes wakes to the right fiber registry instead of acking them as
+    /// `FiberGone`.
+    ///
+    /// Routing: `WakeFiber` entries go to the adapter's wake sink (the
+    /// closed durable-wake loop); `ReconcileEffect` entries go to the
+    /// fail-closed sink documented in [`crate::pump`] — refused with a
+    /// typed error, retried with backoff, never acknowledged away, and
+    /// counted on [`Self::reconcile_refusals`]. The pump uses the landed
+    /// default tuning (25ms fallback poll, 16-failure threshold).
+    ///
+    /// Starting again while a pump is `Running` fails closed — a second
+    /// lane silently stealing the pump would ack wakes for its fibers as
+    /// `FiberGone` on the first lane's registry. A `Faulted`/`Stopped`
+    /// leftover is joined first and replaced (fault recovery).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SliceKError::Pump`] when a pump is already running, and
+    /// [`SliceKError::Io`] when the OS refuses the pump thread.
+    pub fn start_pump(&self, adapter: &TokioRuntimeAdapter) -> SliceKResult<()> {
+        let mut pump = self.lock_pump();
+        if let Some(existing) = pump.as_ref() {
+            if existing.health().state == PumpState::Running {
+                return Err(SliceKError::Pump(
+                    "outbox pump already running; stop_pump() before starting another",
+                ));
+            }
+            // Not running: join the dead thread so only one pump generation
+            // ever owns the outbox.
+            if let Some(dead) = pump.take() {
+                dead.stop();
+            }
+        }
+        let consumer = OutboxConsumer {
+            source: StoreOutboxSource::new(Arc::clone(&self.operations)),
+            wake_sink: adapter.wake_sink(),
+            reconcile_sink: self.pump_lane.sink(),
+            config: ConsumerConfig { batch_limit: 8 },
+        };
+        let started = OutboxPump::start(consumer, PumpConfig::default()).map_err(
+            |error: OutboxPumpStartError| match error {
+                OutboxPumpStartError::Spawn(io) => SliceKError::Io(io),
+            },
+        )?;
+        *pump = Some(started);
+        Ok(())
+    }
+
+    /// Bounded, non-blocking delivery hint into a running pump. `false`
+    /// when no pump runs (or a hint is already pending); the 25ms fallback
+    /// poll bounds delivery either way, so callers may ignore the result.
+    #[must_use]
+    pub fn hint_pump(&self) -> bool {
+        self.lock_pump().as_ref().is_some_and(OutboxPump::hint)
+    }
+
+    /// Current pump health, or `None` while no pump is running.
+    #[must_use]
+    pub fn pump_health(&self) -> Option<PumpHealth> {
+        self.lock_pump().as_ref().map(OutboxPump::health)
+    }
+
+    /// The fail-closed reconcile lane's refusal surface: how many
+    /// `ReconcileEffect` entries this runtime refused (they stay durable in
+    /// the outbox) and the most recent typed reason.
+    #[must_use]
+    pub fn reconcile_refusals(&self) -> ReconcileRefusalSnapshot {
+        self.pump_lane.snapshot()
+    }
+
+    /// Stops the pump and joins its thread. Idempotent: a runtime without
+    /// a running pump is a no-op. Unacknowledged outbox entries stay
+    /// durable for a future pump, exactly as the at-least-once contract
+    /// requires.
+    pub fn stop_pump(&self) {
+        if let Some(pump) = self.lock_pump().take() {
+            stop_pump_bounded(pump);
+        }
+    }
+
+    fn lock_pump(&self) -> PumpGuard<'_> {
+        self.pump
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Drains every pending artifact commit plan to its terminal
@@ -205,6 +335,25 @@ impl SliceKRuntime {
             background_tasks: self.applications.inspect_background_tasks(package_id)?,
             process_bindings: self.applications.inspect_process_bindings(package_id)?,
         })
+    }
+}
+
+impl Drop for SliceKRuntime {
+    /// Stops a still-running pump with a bounded join (see
+    /// [`crate::pump`]): the stop flag and wake-up hint are delivered
+    /// first, the join itself waits at most a deadline so teardown cannot
+    /// hang on a stuck consumer lane. With no pump running this is a
+    /// no-op — dropping a runtime that never started one has no threads to
+    /// reap.
+    fn drop(&mut self) {
+        if let Some(pump) = self
+            .pump
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            stop_pump_bounded(pump);
+        }
     }
 }
 

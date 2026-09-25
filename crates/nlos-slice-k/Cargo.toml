@@ -15,11 +15,13 @@ path = "src/bin/slice-k-demo.rs"
 ed25519-dalek.workspace = true
 nlos-application = { path = "../nlos-application" }
 nlos-artifact = { path = "../nlos-artifact" }
+nlos-capability = { path = "../nlos-capability" }
 nlos-clock = { path = "../nlos-clock" }
 nlos-commit-coordinator = { path = "../nlos-commit-coordinator" }
 nlos-driver-mock = { path = "../nlos-driver-mock" }
 nlos-identity = { path = "../nlos-identity" }
 nlos-operation = { path = "../nlos-operation" }
+nlos-outbox = { path = "../nlos-outbox" }
 nlos-process = { path = "../nlos-process" }
 nlos-runtime = { path = "../nlos-runtime" }
 nlos-runtime-tokio = { path = "../nlos-runtime-tokio" }

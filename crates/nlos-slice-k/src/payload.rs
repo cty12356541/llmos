@@ -303,6 +303,9 @@ pub fn execute_application_payload(
         callback_id,
         seed: payload_execution_seed(&payload),
     })?;
+    // The durable completion committed a `WakeFiber` outbox row; hint a
+    // running pump so delivery does not wait for the fallback poll.
+    let _ = runtime.hint_pump();
     let payload_digest = ContentDigest::of_bytes(&payload);
     Ok(PayloadExecution {
         application_id: application.application_id,

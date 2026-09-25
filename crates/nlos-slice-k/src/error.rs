@@ -7,6 +7,7 @@ use std::fmt;
 
 use nlos_application::ApplicationAuthorityError;
 use nlos_artifact::ArtifactError;
+use nlos_capability::CapabilityAuthorityError;
 use nlos_clock::AuthorityClockError;
 use nlos_commit_coordinator::CoordinatorError;
 use nlos_driver_mock::ProviderError;
@@ -34,6 +35,14 @@ pub enum SliceKError {
     Task(TaskStoreError),
     /// The clock authority refused a reading.
     Clock(AuthorityClockError),
+    /// The capability authority refused an open, issuance, delegation, or
+    /// admission step.
+    Capability(CapabilityAuthorityError),
+    /// The runtime's Outbox pump lifecycle refused a transition this call
+    /// cannot make honestly (for example starting a second pump while one
+    /// is still running — its wake lane would silently ack the first
+    /// lane's wakes as `FiberGone`).
+    Pump(&'static str),
     /// The operation store refused a driver-operation step.
     Operation(StoreError),
     /// The driver-mock provider face refused a payload-execution step
@@ -83,6 +92,8 @@ impl fmt::Display for SliceKError {
             Self::Application(error) => write!(formatter, "application authority: {error}"),
             Self::Task(error) => write!(formatter, "task authority: {error}"),
             Self::Clock(error) => write!(formatter, "clock authority: {error}"),
+            Self::Capability(error) => write!(formatter, "capability authority: {error}"),
+            Self::Pump(reason) => write!(formatter, "outbox pump lifecycle refusal: {reason}"),
             Self::Operation(error) => write!(formatter, "operation store: {error}"),
             Self::Driver(error) => write!(formatter, "driver provider face: {error}"),
             Self::PayloadState(reason) => {
@@ -131,12 +142,14 @@ impl Error for SliceKError {
             Self::PayloadState(_)
             | Self::TeardownState(_)
             | Self::TimestampOverflow(_)
-            | Self::SizeOverflow(_) => None,
+            | Self::SizeOverflow(_)
+            | Self::Pump(_) => None,
             Self::SupervisorPid(error) => Some(error),
             Self::BatchCancel(error) => Some(error),
             Self::Runtime(error) => Some(error),
             Self::Coordinator(error) => Some(error),
             Self::Control(error) => Some(error),
+            Self::Capability(error) => Some(error),
         }
     }
 }
@@ -180,6 +193,12 @@ impl From<TaskStoreError> for SliceKError {
 impl From<AuthorityClockError> for SliceKError {
     fn from(error: AuthorityClockError) -> Self {
         Self::Clock(error)
+    }
+}
+
+impl From<CapabilityAuthorityError> for SliceKError {
+    fn from(error: CapabilityAuthorityError) -> Self {
+        Self::Capability(error)
     }
 }
 
