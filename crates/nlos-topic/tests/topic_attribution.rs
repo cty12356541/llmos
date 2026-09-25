@@ -807,6 +807,102 @@ fn compact_replay_heals_missing_unallocated_rows() {
     );
 }
 
+/// Deep-audit finding 25 / decision D3: `compact` itself advances the
+/// channel consume high-water to the minimum active subscriber cursor (the
+/// service-layer ack) before trimming — no external owner ack.  Replaying
+/// the compact then records nothing new: the channel replays the durable
+/// watermark, the coverage pass double-accounts no `Unallocated` row and
+/// the queue state stays byte-stable.
+#[test]
+fn compact_service_ack_trims_and_replays_without_double_accounting() {
+    let harness = Harness::new("service-ack");
+    let head = create_channel(&harness.channel, 1_024, 210);
+    let topic = create_topic(
+        &harness.topics,
+        head.channel_id,
+        b"service-ack",
+        policy_for(4),
+        211,
+    );
+    let a = subscribe_at(&harness.topics, topic.topic_id, 1, 8_000);
+    publish_at(&harness.topics, topic.topic_id, 212, b"abc", 8_001);
+    publish_at(&harness.topics, topic.topic_id, 213, b"abcd", 8_002);
+    // B joins at the head (cursor 2): its window starts beyond the log, so
+    // sequences 1-2 were never crossed by any advance.
+    let _b = subscribe_at(&harness.topics, topic.topic_id, 2, 8_003);
+    publish_at(&harness.topics, topic.topic_id, 214, b"vwxyz", 8_004);
+    // A never advances and unsubscribes: the release point is B's cursor 2,
+    // but the bound stays stuck at the never-acked high-water.
+    unsubscribe(&harness.topics, &a, 8_100);
+    let queue = harness
+        .channel
+        .inspect_queue(head.channel_id)
+        .expect("queue");
+    assert_eq!((queue.consume_high_water, queue.max_sequence), (0, 3));
+    assert_eq!(
+        harness
+            .topics
+            .compact_bound(topic.topic_id)
+            .expect("bound stuck without the ack"),
+        0
+    );
+
+    // One compact: the service acks the high-water 0 -> 2 itself, then
+    // trims.  Sequences 1-2 left the log without ever being delivered, so
+    // the coverage pass records exactly two `Unallocated` rows.
+    assert_eq!(compact_trimmed(&harness.topics, topic.topic_id, 9), 2);
+    let rows = ledger_rows(&harness.root.topic_db());
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().all(|row| row.kind == UNALLOCATED));
+    assert_eq!(
+        rows.iter().map(|row| row.payload_bytes).collect::<Vec<_>>(),
+        [3, 4]
+    );
+    let queue = harness
+        .channel
+        .inspect_queue(head.channel_id)
+        .expect("queue");
+    assert_eq!(
+        (
+            queue.consume_high_water,
+            queue.trim_high_water,
+            queue.backlog_bytes,
+            queue.max_sequence
+        ),
+        (2, 2, 5, 3)
+    );
+
+    // The replay is idempotent end to end: the channel replays the durable
+    // watermark, the coverage pass records nothing new, the ledger rows are
+    // byte-equal and the report closes on the same figures (sequence 3 is
+    // still live and unsettled).
+    let before = ledger_rows(&harness.root.topic_db());
+    match harness.topics.compact(topic.topic_id, 9) {
+        Ok(TopicCompactDecision::Replayed(receipt)) => {
+            assert_eq!(receipt.effective_trim_high_water, 2);
+        }
+        _ => panic!("identical watermark must replay"),
+    }
+    assert_eq!(ledger_rows(&harness.root.topic_db()), before);
+    assert_eq!(
+        report(&harness.topics, topic.topic_id),
+        AttributionReport {
+            topic_id: topic.topic_id,
+            attributed_bytes: 0,
+            unallocated_bytes: 7,
+            unsettled_bytes: 5,
+            total: 12,
+            policy_version: ATTRIBUTION_POLICY_VERSION,
+            balanced: true,
+        }
+    );
+    let queue = harness
+        .channel
+        .inspect_queue(head.channel_id)
+        .expect("queue");
+    assert_eq!((queue.consume_high_water, queue.trim_high_water), (2, 2));
+}
+
 /// Reopen replays the ledger byte-identically: every field of every row is
 /// equal after a full close/reopen cycle, the report reconciles to the same
 /// value, and the additive v7 migration left the `user_version` watermark

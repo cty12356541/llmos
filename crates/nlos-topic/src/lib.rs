@@ -159,7 +159,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use nlos_channel::{
-    ChannelAuthority, ChannelAuthorityError, ChannelRecord,
+    AckRequest, ChannelAuthority, ChannelAuthorityError, ChannelRecord,
     CompactDecision as ChannelCompactDecision, CompactReceipt as ChannelCompactReceipt,
     EnqueueDecision, EnqueueRequest, FencingToken, QueueEntryRecord,
 };
@@ -2330,8 +2330,12 @@ impl TopicAuthority {
     /// result may be shorter than `limit` when the shared channel-level
     /// consume high-water or the personal cursor already covered the window.
     /// A slow subscriber's lag never hides entries from another subscriber
-    /// and vice versa; only the shared channel consume high-water (advanced
-    /// by the channel owner, never by this service) bounds everyone.
+    /// and vice versa; only the shared channel consume high-water bounds
+    /// everyone.  This service advances that high-water only inside
+    /// [`TopicAuthority::compact`] and only up to the minimum active
+    /// subscriber cursor (the service-layer ack linkage; the channel owner's
+    /// direct acks remain the other writer), so an entry is never hidden
+    /// behind the high-water before every active subscriber has consumed it.
     ///
     /// # Errors
     ///
@@ -2544,6 +2548,10 @@ impl TopicAuthority {
     /// enforced by this slice).  The bound only consults this topic's
     /// subscribers; channels hosting several topics need a cross-topic
     /// aggregation before trimming (a known limitation of this slice).
+    /// [`TopicAuthority::compact`] advances the high-water to the cursor
+    /// component before trimming (the service-layer ack linkage), so after a
+    /// compact the two components coincide whenever an active subscriber
+    /// holds the log.
     ///
     /// # Errors
     ///
@@ -2552,30 +2560,89 @@ impl TopicAuthority {
     pub fn compact_bound(&self, topic_id: TopicId) -> Result<u64, TopicAuthorityError> {
         let connection = self.lock()?;
         let topic = load_topic_verified(&connection, topic_id)?;
-        // `MIN(cursor)` is SQL NULL when the topic has rows but none active,
-        // and the query returns no row at all when it has no rows: both mean
-        // "no live subscriber" and fall back to the consume high-water.
-        let min_live: Option<Option<i64>> = connection
-            .query_row(
-                "SELECT MIN(cursor) FROM topic_subscriptions WHERE topic_id=?1 AND active=1",
-                [topic_id.as_bytes().as_slice()],
-                |row| row.get(0),
-            )
-            .optional()?;
         let queue = self
             .channel
             .inspect_queue(topic.channel_id)
             .map_err(TopicAuthorityError::Channel)?;
-        Ok(min_live
-            .flatten()
-            .map(decode_u64)
-            .transpose()?
-            .map_or(queue.consume_high_water, |cursor| {
+        Ok(
+            min_active_cursor(&connection, topic_id)?.map_or(queue.consume_high_water, |cursor| {
                 cursor.min(queue.consume_high_water)
-            }))
+            }),
+        )
+    }
+
+    /// Advances the channel consume high-water to the topic's subscriber
+    /// release point: the minimum cursor over the topic's active
+    /// subscriptions, the exact population [`TopicAuthority::compact_bound`]
+    /// clamps with (a `QUARANTINED` subscription is still active, so its lag
+    /// still holds the release point; the channel owner's direct acks remain
+    /// the other writer of the high-water).
+    ///
+    /// This is the service-layer half of the compact linkage (deep-audit
+    /// finding 25, decision D3): Topic is the Channel's service layer, and
+    /// the trim bound is only reachable when the consume high-water has
+    /// actually advanced — [`ChannelAuthority::compact`] clamps every trim to
+    /// the high-water, and without this advance the high-water stays at 0,
+    /// the backlog admitted against the capacity grows monotonically and a
+    /// bounded multi-subscriber channel dead-ends on
+    /// [`ChannelAuthorityError::QueueFull`] with no release path.  The ack
+    /// target is safe by construction: it is the minimum over the active
+    /// cursors, so the advance never crosses an entry any active subscriber
+    /// has not consumed.
+    ///
+    /// The ack runs before the trim and is idempotent, so a crash between
+    /// the two is healed by re-running the compact (replaying the exact
+    /// high-water replays the stored decision; a lower request is rejected).
+    /// Skipped without a write when there is nothing to advance: no active
+    /// subscriber, a release point of 0 on a fresh channel, or a release
+    /// point at or below the already-advanced high-water (a subscriber that
+    /// joined below it — the high-water is monotonic and never regresses).
+    /// The receipt time is the `0` marker: the compact entry carries no
+    /// caller time and the crate never reads a wall clock.
+    fn advance_consume_high_water(
+        &self,
+        topic_id: TopicId,
+        channel_id: ChannelId,
+    ) -> Result<(), TopicAuthorityError> {
+        let release = {
+            let connection = self.lock()?;
+            min_active_cursor(&connection, topic_id)?
+        };
+        let Some(release) = release else {
+            return Ok(());
+        };
+        let consume_high_water = self
+            .channel
+            .inspect_queue(channel_id)
+            .map_err(TopicAuthorityError::Channel)?
+            .consume_high_water;
+        if release <= consume_high_water {
+            return Ok(());
+        }
+        self.channel
+            .ack(AckRequest {
+                channel_id,
+                up_to_sequence: release,
+                acked_at_ms: 0,
+            })
+            .map_err(TopicAuthorityError::Channel)?;
+        Ok(())
     }
 
     /// Trims the channel log to `min(trim_to_sequence, compact_bound)`.
+    ///
+    /// Service-layer high-water linkage (deep-audit finding 25, decision D3):
+    /// before the trim, the service first advances the channel consume
+    /// high-water to the bound's subscriber component — the minimum cursor
+    /// over the active subscriptions — through [`ChannelAuthority::ack`]
+    /// (never past any active subscriber's cursor, so no pollable entry is
+    /// crossed); the trim then runs against the freshly advanced high-water,
+    /// to which the channel clamps it.  Ordering the ack before the trim
+    /// keeps every crash window replayable: the ack is idempotent and the
+    /// trim replays, so re-running the compact converges.  The high-water
+    /// advance is skipped without a write when there is nothing to advance
+    /// (no active subscriber, release point 0, or a high-water already at or
+    /// past the release point).
     ///
     /// The effective watermark is delegated to
     /// [`ChannelAuthority::compact`], whose own clamping (never past the
@@ -2611,6 +2678,9 @@ impl TopicAuthority {
             let connection = self.lock()?;
             load_topic_verified(&connection, topic_id)?.channel_id
         };
+        // Ack first: the high-water advance must be durable before the trim
+        // clamps to it, and replaying the ack after a crash converges.
+        self.advance_consume_high_water(topic_id, channel_id)?;
         let bound = self.compact_bound(topic_id)?;
         let target = trim_to_sequence.min(bound);
         let channel_decision = self
@@ -3262,6 +3332,28 @@ fn wrap_compact(
         effective_trim_high_water: target,
         channel: receipt,
     }
+}
+
+/// The minimum cursor over the topic's active subscriptions, or `None` when
+/// the topic has no active subscriber.  `MIN(cursor)` is SQL NULL when the
+/// topic has rows but none active, and the query returns no row at all when
+/// it has no rows: both mean "no live subscriber".  A `QUARANTINED`
+/// subscription is still active and still holds the release point (its
+/// cursor keeps advancing); this is the exact population
+/// [`TopicAuthority::compact_bound`] clamps with and
+/// [`TopicAuthority::advance_consume_high_water`] acks to.
+fn min_active_cursor(
+    connection: &Connection,
+    topic_id: TopicId,
+) -> Result<Option<u64>, TopicAuthorityError> {
+    let min_live: Option<Option<i64>> = connection
+        .query_row(
+            "SELECT MIN(cursor) FROM topic_subscriptions WHERE topic_id=?1 AND active=1",
+            [topic_id.as_bytes().as_slice()],
+            |row| row.get(0),
+        )
+        .optional()?;
+    min_live.flatten().map(decode_u64).transpose()
 }
 
 /// Retention admission for one prospective publication (`RSM-FANOUT-001`,
