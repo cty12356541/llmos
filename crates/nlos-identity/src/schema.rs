@@ -1,4 +1,4 @@
-use rusqlite::{Connection, TransactionBehavior};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 
 use crate::IdentityAuthorityError;
 
@@ -124,6 +124,20 @@ pub(crate) fn migrate_v1(connection: &mut Connection) -> Result<(), IdentityAuth
 /// Adds durable key-rotation receipts and widens identity-snapshot
 /// `change_kind` to admit rotation (3) alongside bootstrap (1) and
 /// revocation (2).
+///
+/// `SQLite` cannot widen a `CHECK` constraint in place, so
+/// `identity_snapshots` is rebuilt through the documented table-rebuild
+/// procedure: rows are copied verbatim into a shadow table, the original
+/// is dropped and the shadow renamed over it, and the immutability
+/// triggers are recreated.  The procedure requires foreign-key
+/// enforcement off *around* (not inside) the rebuild transaction: a
+/// `PRAGMA foreign_keys` change inside an open transaction is a no-op,
+/// and with enforcement still on the implicit `DELETE FROM` before
+/// `DROP TABLE identity_snapshots` would abort on the surviving v1 child
+/// rows in `snapshot_principals`, `snapshot_key_bindings`, and
+/// `key_revocations`.  The rebuilt schema is accepted only when
+/// `PRAGMA foreign_key_check` reports no violation, and enforcement is
+/// restored even when the migration fails midway.
 #[allow(clippy::too_many_lines)] // One auditable transaction contains the complete v2 delta.
 pub(crate) fn migrate_v2(connection: &mut Connection) -> Result<(), IdentityAuthorityError> {
     let table_count: i64 = connection.query_row(
@@ -149,11 +163,13 @@ pub(crate) fn migrate_v2(connection: &mut Connection) -> Result<(), IdentityAuth
         ));
     }
 
-    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    transaction.execute_batch(
-        "PRAGMA foreign_keys=OFF;
-
-        CREATE TABLE identity_snapshots_v2 (
+    // The documented SQLite table-rebuild procedure requires foreign-key
+    // enforcement off around (not inside) the rebuild transaction.
+    connection.pragma_update(None, "foreign_keys", "OFF")?;
+    let migration = (|| {
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute_batch(
+            "CREATE TABLE identity_snapshots_v2 (
             identity_snapshot_id BLOB PRIMARY KEY NOT NULL CHECK(length(identity_snapshot_id) = 16),
             control_domain_id BLOB NOT NULL CHECK(length(control_domain_id) = 16),
             generation INTEGER NOT NULL CHECK(generation >= 1),
@@ -200,11 +216,21 @@ pub(crate) fn migrate_v2(connection: &mut Connection) -> Result<(), IdentityAuth
         CREATE TRIGGER key_rotations_immutable_delete BEFORE DELETE ON key_rotations
         BEGIN SELECT RAISE(ABORT, 'key rotation is immutable'); END;
 
-        PRAGMA foreign_keys=ON;
         PRAGMA user_version=2;",
-    )?;
-    transaction.commit()?;
-    Ok(())
+        )?;
+        let foreign_key_failure: Option<String> = transaction
+            .query_row("PRAGMA foreign_key_check", [], |row| row.get(0))
+            .optional()?;
+        if foreign_key_failure.is_some() {
+            return Err(IdentityAuthorityError::CorruptRecord(
+                "foreign key violation after identity authority v2 rebuild",
+            ));
+        }
+        transaction.commit()?;
+        Ok(())
+    })();
+    connection.pragma_update(None, "foreign_keys", "ON")?;
+    migration
 }
 
 /// Adds durable key-generation custody bindings for the trusted-local

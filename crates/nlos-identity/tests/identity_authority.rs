@@ -14,7 +14,7 @@ use nlos_identity::{
     semantic_signature_message,
 };
 use nlos_types::{Generation, IdempotencyKey, PrincipalId, SemanticEventId, SessionId};
-use rusqlite::Connection;
+use rusqlite::{Connection, params};
 
 static NEXT: AtomicU64 = AtomicU64::new(1);
 
@@ -909,4 +909,334 @@ fn session_register_rejects_invalid_validity_window() {
         }),
         Err(IdentityAuthorityError::InvalidKeyValidity)
     ));
+}
+
+/// The hand-written v1 schema exactly as `migrate_v1` created it, so
+/// migration tests can reopen a database that predates every later
+/// schema version.
+const V1_SCHEMA_SQL: &str = "CREATE TABLE principals (
+        principal_id BLOB PRIMARY KEY NOT NULL CHECK(length(principal_id) = 16),
+        bootstrap_idempotency_key BLOB NOT NULL UNIQUE CHECK(length(bootstrap_idempotency_key) = 16),
+        profile_digest BLOB NOT NULL CHECK(length(profile_digest) = 32),
+        created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0)
+    ) STRICT;
+
+    CREATE TABLE control_domains (
+        control_domain_id BLOB PRIMARY KEY NOT NULL CHECK(length(control_domain_id) = 16),
+        current_snapshot_id BLOB NOT NULL UNIQUE CHECK(length(current_snapshot_id) = 16),
+        current_generation INTEGER NOT NULL CHECK(current_generation >= 1),
+        policy_digest BLOB NOT NULL CHECK(length(policy_digest) = 32),
+        created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0),
+        updated_at_ms INTEGER NOT NULL CHECK(updated_at_ms >= created_at_ms)
+    ) STRICT;
+
+    CREATE TABLE identity_snapshots (
+        identity_snapshot_id BLOB PRIMARY KEY NOT NULL CHECK(length(identity_snapshot_id) = 16),
+        control_domain_id BLOB NOT NULL CHECK(length(control_domain_id) = 16),
+        generation INTEGER NOT NULL CHECK(generation >= 1),
+        prior_snapshot_id BLOB CHECK(prior_snapshot_id IS NULL OR length(prior_snapshot_id) = 16),
+        policy_digest BLOB NOT NULL CHECK(length(policy_digest) = 32),
+        effective_at_ms INTEGER NOT NULL CHECK(effective_at_ms >= 0),
+        change_kind INTEGER NOT NULL CHECK(change_kind IN (1, 2)),
+        UNIQUE(control_domain_id, generation),
+        FOREIGN KEY(control_domain_id) REFERENCES control_domains(control_domain_id),
+        FOREIGN KEY(prior_snapshot_id) REFERENCES identity_snapshots(identity_snapshot_id),
+        CHECK((generation = 1) = (prior_snapshot_id IS NULL))
+    ) STRICT;
+
+    CREATE TABLE snapshot_principals (
+        identity_snapshot_id BLOB NOT NULL CHECK(length(identity_snapshot_id) = 16),
+        principal_id BLOB NOT NULL CHECK(length(principal_id) = 16),
+        PRIMARY KEY(identity_snapshot_id, principal_id),
+        FOREIGN KEY(identity_snapshot_id) REFERENCES identity_snapshots(identity_snapshot_id),
+        FOREIGN KEY(principal_id) REFERENCES principals(principal_id)
+    ) STRICT;
+
+    CREATE TABLE key_heads (
+        key_id BLOB PRIMARY KEY NOT NULL CHECK(length(key_id) = 16),
+        principal_id BLOB NOT NULL CHECK(length(principal_id) = 16),
+        control_domain_id BLOB NOT NULL CHECK(length(control_domain_id) = 16),
+        current_generation INTEGER NOT NULL CHECK(current_generation >= 1),
+        created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0),
+        FOREIGN KEY(principal_id) REFERENCES principals(principal_id),
+        FOREIGN KEY(control_domain_id) REFERENCES control_domains(control_domain_id)
+    ) STRICT;
+
+    CREATE TABLE key_versions (
+        key_id BLOB NOT NULL CHECK(length(key_id) = 16),
+        generation INTEGER NOT NULL CHECK(generation >= 1),
+        purpose INTEGER NOT NULL CHECK(purpose IN (1, 2)),
+        algorithm INTEGER NOT NULL CHECK(algorithm = 1),
+        public_key BLOB NOT NULL CHECK(length(public_key) = 32),
+        valid_from_ms INTEGER NOT NULL CHECK(valid_from_ms >= 0),
+        valid_until_ms INTEGER NOT NULL CHECK(valid_until_ms >= valid_from_ms),
+        revoked_at_ms INTEGER CHECK(revoked_at_ms IS NULL OR revoked_at_ms >= valid_from_ms),
+        PRIMARY KEY(key_id, generation),
+        FOREIGN KEY(key_id) REFERENCES key_heads(key_id)
+    ) STRICT;
+
+    CREATE TABLE snapshot_key_bindings (
+        identity_snapshot_id BLOB NOT NULL CHECK(length(identity_snapshot_id) = 16),
+        key_id BLOB NOT NULL CHECK(length(key_id) = 16),
+        key_generation INTEGER NOT NULL CHECK(key_generation >= 1),
+        PRIMARY KEY(identity_snapshot_id, key_id),
+        FOREIGN KEY(identity_snapshot_id) REFERENCES identity_snapshots(identity_snapshot_id),
+        FOREIGN KEY(key_id, key_generation) REFERENCES key_versions(key_id, generation)
+    ) STRICT;
+
+    CREATE TABLE key_revocations (
+        idempotency_key BLOB PRIMARY KEY NOT NULL CHECK(length(idempotency_key) = 16),
+        receipt_id BLOB NOT NULL UNIQUE CHECK(length(receipt_id) = 16),
+        key_id BLOB NOT NULL CHECK(length(key_id) = 16),
+        expected_key_generation INTEGER NOT NULL CHECK(expected_key_generation >= 1),
+        expected_snapshot_id BLOB NOT NULL CHECK(length(expected_snapshot_id) = 16),
+        resulting_key_generation INTEGER NOT NULL CHECK(resulting_key_generation = expected_key_generation + 1),
+        resulting_snapshot_id BLOB NOT NULL CHECK(length(resulting_snapshot_id) = 16),
+        resulting_snapshot_generation INTEGER NOT NULL CHECK(resulting_snapshot_generation >= 2),
+        revoked_at_ms INTEGER NOT NULL CHECK(revoked_at_ms >= 0),
+        FOREIGN KEY(key_id, resulting_key_generation) REFERENCES key_versions(key_id, generation),
+        FOREIGN KEY(resulting_snapshot_id) REFERENCES identity_snapshots(identity_snapshot_id)
+    ) STRICT;
+
+    CREATE TRIGGER principals_immutable_update BEFORE UPDATE ON principals
+    BEGIN SELECT RAISE(ABORT, 'principal is immutable'); END;
+    CREATE TRIGGER principals_immutable_delete BEFORE DELETE ON principals
+    BEGIN SELECT RAISE(ABORT, 'principal is immutable'); END;
+    CREATE TRIGGER identity_snapshots_immutable_update BEFORE UPDATE ON identity_snapshots
+    BEGIN SELECT RAISE(ABORT, 'identity snapshot is immutable'); END;
+    CREATE TRIGGER identity_snapshots_immutable_delete BEFORE DELETE ON identity_snapshots
+    BEGIN SELECT RAISE(ABORT, 'identity snapshot is immutable'); END;
+    CREATE TRIGGER snapshot_principals_immutable_update BEFORE UPDATE ON snapshot_principals
+    BEGIN SELECT RAISE(ABORT, 'snapshot principal is immutable'); END;
+    CREATE TRIGGER snapshot_principals_immutable_delete BEFORE DELETE ON snapshot_principals
+    BEGIN SELECT RAISE(ABORT, 'snapshot principal is immutable'); END;
+    CREATE TRIGGER key_versions_immutable_update BEFORE UPDATE ON key_versions
+    BEGIN SELECT RAISE(ABORT, 'key version is immutable'); END;
+    CREATE TRIGGER key_versions_immutable_delete BEFORE DELETE ON key_versions
+    BEGIN SELECT RAISE(ABORT, 'key version is immutable'); END;
+    CREATE TRIGGER snapshot_key_bindings_immutable_update BEFORE UPDATE ON snapshot_key_bindings
+    BEGIN SELECT RAISE(ABORT, 'snapshot key binding is immutable'); END;
+    CREATE TRIGGER snapshot_key_bindings_immutable_delete BEFORE DELETE ON snapshot_key_bindings
+    BEGIN SELECT RAISE(ABORT, 'snapshot key binding is immutable'); END;
+    CREATE TRIGGER key_revocations_immutable_update BEFORE UPDATE ON key_revocations
+    BEGIN SELECT RAISE(ABORT, 'key revocation is immutable'); END;
+    CREATE TRIGGER key_revocations_immutable_delete BEFORE DELETE ON key_revocations
+    BEGIN SELECT RAISE(ABORT, 'key revocation is immutable'); END;
+
+    PRAGMA user_version = 1;";
+
+#[test]
+#[allow(clippy::too_many_lines)] // One migration fixture plus its per-table row assertions.
+fn populated_v1_database_migrates_to_current_schema_preserving_rows() {
+    let root = Root::new("v1-populated-migration");
+    let principal_id = [0x01u8; 16];
+    let bootstrap_idempotency_key = [0x02u8; 16];
+    let profile_digest = [0x03u8; 32];
+    let control_domain_id = [0x04u8; 16];
+    let policy_digest = [0x05u8; 32];
+    let first_snapshot_id = [0x06u8; 16];
+    let second_snapshot_id = [0x07u8; 16];
+    let key_id = [0x08u8; 16];
+    let public_key = [0x09u8; 32];
+    std::fs::create_dir_all(root.path()).unwrap();
+    {
+        let raw = Connection::open(root.path().join("identity-authority.db")).unwrap();
+        raw.execute_batch(V1_SCHEMA_SQL).unwrap();
+        raw.execute(
+            "INSERT INTO principals (principal_id, bootstrap_idempotency_key, profile_digest, created_at_ms)
+             VALUES (?1, ?2, ?3, 100)",
+            params![principal_id, bootstrap_idempotency_key, profile_digest],
+        )
+        .unwrap();
+        raw.execute(
+            "INSERT INTO control_domains (control_domain_id, current_snapshot_id, current_generation,
+                                          policy_digest, created_at_ms, updated_at_ms)
+             VALUES (?1, ?2, 2, ?3, 100, 200)",
+            params![control_domain_id, second_snapshot_id, policy_digest],
+        )
+        .unwrap();
+        raw.execute(
+            "INSERT INTO identity_snapshots (identity_snapshot_id, control_domain_id, generation,
+                                             prior_snapshot_id, policy_digest, effective_at_ms, change_kind)
+             VALUES (?1, ?2, 1, NULL, ?3, 100, 1),
+                    (?4, ?2, 2, ?1, ?3, 200, 2)",
+            params![
+                first_snapshot_id,
+                control_domain_id,
+                policy_digest,
+                second_snapshot_id
+            ],
+        )
+        .unwrap();
+        raw.execute(
+            "INSERT INTO snapshot_principals (identity_snapshot_id, principal_id)
+             VALUES (?1, ?2), (?3, ?2)",
+            params![first_snapshot_id, principal_id, second_snapshot_id],
+        )
+        .unwrap();
+        raw.execute(
+            "INSERT INTO key_heads (key_id, principal_id, control_domain_id, current_generation, created_at_ms)
+             VALUES (?1, ?2, ?3, 1, 100)",
+            params![key_id, principal_id, control_domain_id],
+        )
+        .unwrap();
+        raw.execute(
+            "INSERT INTO key_versions (key_id, generation, purpose, algorithm, public_key,
+                                       valid_from_ms, valid_until_ms, revoked_at_ms)
+             VALUES (?1, 1, 1, 1, ?2, 100, 9_000, NULL)",
+            params![key_id, public_key],
+        )
+        .unwrap();
+        raw.execute(
+            "INSERT INTO snapshot_key_bindings (identity_snapshot_id, key_id, key_generation)
+             VALUES (?1, ?2, 1), (?3, ?2, 1)",
+            params![first_snapshot_id, key_id, second_snapshot_id],
+        )
+        .unwrap();
+        assert_eq!(
+            raw.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+    }
+
+    // Upgrading over surviving child rows (snapshot_principals and
+    // snapshot_key_bindings still reference identity_snapshots) must not
+    // abort the identity_snapshots rebuild with a foreign-key failure.
+    drop(IdentityAuthority::open(root.path()).unwrap());
+
+    let raw = Connection::open(root.path().join("identity-authority.db")).unwrap();
+    assert_eq!(
+        raw.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+            .unwrap(),
+        4
+    );
+    assert_eq!(
+        raw.query_row("SELECT COUNT(*) FROM principals", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        raw.query_row(
+            "SELECT principal_id, bootstrap_idempotency_key, profile_digest FROM principals",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                ))
+            }
+        )
+        .unwrap(),
+        (
+            principal_id.to_vec(),
+            bootstrap_idempotency_key.to_vec(),
+            profile_digest.to_vec()
+        )
+    );
+    assert_eq!(
+        raw.query_row(
+            "SELECT generation, prior_snapshot_id, change_kind FROM identity_snapshots
+             WHERE identity_snapshot_id = ?1",
+            params![second_snapshot_id],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Option<Vec<u8>>>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            }
+        )
+        .unwrap(),
+        (2, Some(first_snapshot_id.to_vec()), 2)
+    );
+    assert_eq!(
+        raw.query_row("SELECT COUNT(*) FROM snapshot_principals", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        raw.query_row("SELECT COUNT(*) FROM key_heads", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        raw.query_row("SELECT public_key FROM key_versions", [], |row| row
+            .get::<_, Vec<u8>>(0))
+            .unwrap(),
+        public_key.to_vec()
+    );
+    assert_eq!(
+        raw.query_row("SELECT COUNT(*) FROM snapshot_key_bindings", [], |row| row
+            .get::<_, i64>(
+            0
+        ))
+        .unwrap(),
+        2
+    );
+    assert_eq!(
+        raw.query_row("SELECT COUNT(*) FROM key_rotations", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        raw.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN (
+                'identity_snapshots_immutable_update',
+                'identity_snapshots_immutable_delete',
+                'key_rotations_immutable_update',
+                'key_rotations_immutable_delete'
+             )",
+            [],
+            |row| row.get::<_, i64>(0)
+        )
+        .unwrap(),
+        4
+    );
+    assert!(
+        raw.query_row("PRAGMA foreign_key_check", [], |row| row
+            .get::<_, String>(0))
+            .is_err()
+    );
+    assert!(raw.execute("DELETE FROM identity_snapshots", []).is_err());
+}
+
+#[test]
+fn empty_v1_database_migrates_to_current_schema() {
+    let root = Root::new("v1-empty-migration");
+    std::fs::create_dir_all(root.path()).unwrap();
+    {
+        let raw = Connection::open(root.path().join("identity-authority.db")).unwrap();
+        raw.execute_batch(V1_SCHEMA_SQL).unwrap();
+    }
+
+    let authority = IdentityAuthority::open(root.path()).unwrap();
+    let key = signing_key(92);
+    let binding = authority
+        .bootstrap_principal(bootstrap_request(92, &key))
+        .unwrap()
+        .binding();
+    drop(authority);
+    let reopened = IdentityAuthority::open(root.path()).unwrap();
+    assert_eq!(
+        reopened.inspect_current_binding(binding.key_id).unwrap(),
+        binding
+    );
+
+    let raw = Connection::open(root.path().join("identity-authority.db")).unwrap();
+    assert_eq!(
+        raw.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+            .unwrap(),
+        4
+    );
+    assert!(
+        raw.query_row("PRAGMA foreign_key_check", [], |row| row
+            .get::<_, String>(0))
+            .is_err()
+    );
 }
