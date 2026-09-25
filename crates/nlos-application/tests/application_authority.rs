@@ -655,13 +655,14 @@ fn trigger_guards_abort_raw_tampering() {
         .is_err()
     );
 
-    // Disabled can only transition to uninstalled or rollback-to-installed
-    // (with a one-step generation decrease); bare re-enable is illegal.
+    // Disabled can only transition to uninstalled or the forward-roll
+    // rollback-to-installed (with a generation advance); bare re-enable
+    // is illegal.
     raw.execute("UPDATE applications SET status=2", [])
         .expect("legal disable");
     assert!(
         raw.execute("UPDATE applications SET status=1", []).is_err(),
-        "re-enabling a disabled application without generation rollback is illegal"
+        "re-enabling a disabled application without a generation advance is illegal"
     );
     assert!(
         raw.execute(
@@ -678,7 +679,7 @@ fn trigger_guards_abort_raw_tampering() {
     .expect("disabled may transition to uninstalled");
     assert!(
         raw.execute("UPDATE applications SET status=1", []).is_err(),
-        "uninstalled is terminal except rollback with generation decrease"
+        "uninstalled is terminal except the forward-roll rollback with a generation advance"
     );
     assert!(
         raw.execute("UPDATE applications SET status=2", []).is_err(),
@@ -693,19 +694,33 @@ fn trigger_guards_abort_raw_tampering() {
             "UPDATE applications SET status=1, current_installation_generation=2",
             []
         )
-        .is_err()
+        .is_err(),
+        "re-enabling without a fresh generation is illegal"
     );
+    assert!(
+        raw.execute(
+            "UPDATE applications SET status=1, current_installation_generation=1",
+            []
+        )
+        .is_err(),
+        "the generation never decreases, not even on rollback"
+    );
+    raw.execute(
+        "UPDATE applications
+         SET status=1,
+             current_installation_generation=current_installation_generation+1,
+             updated_at_ms=updated_at_ms+1",
+        [],
+    )
+    .expect("the forward roll re-enables onto a fresh generation");
 
     // The guarded authority still serves reads; durable state is untouched.
     let view = authority
         .inspect_application(verified.package_id)
         .expect("inspect after tamper sweep")
         .expect("exists");
-    assert_eq!(
-        view.status,
-        nlos_application::ApplicationStatus::Uninstalled
-    );
-    assert_eq!(view.current_installation_generation.get(), 2);
+    assert_eq!(view.status, nlos_application::ApplicationStatus::Installed);
+    assert_eq!(view.current_installation_generation.get(), 3);
     assert_eq!(
         authority
             .inspect_installation(first.installation_id)
@@ -1779,8 +1794,9 @@ fn uninstall_refusals_are_typed_and_leave_zero_state() {
     assert_eq!(view.current_installation_generation, Generation::INITIAL);
 }
 
-/// 正常回退（disabled）：update 到 gen 2 后 disable，rollback 单事务 CAS
-/// disabled→installed 并代际 -1、恢复 gen 1 manifest；同 key 重放返回原回执。
+/// 正常回退（disabled）：update 到 gen 2 后 disable，rollback 前滚——旧内容
+/// （gen 1 receipt）装进全新 gen 3、状态 CAS disabled→installed；同 key 重放
+/// 返回原回执，代际历史保持稠密单调。
 #[test]
 fn rollback_disabled_after_update_replays_idempotently() {
     let stack = TestStack::new(&label("rollback-disabled"), 0x4A);
@@ -1801,7 +1817,7 @@ fn rollback_disabled_after_update_replays_idempotently() {
     let receipt = rolled_back(&authority, first.package_id, 0x0A, 5_000);
     assert_eq!(receipt.application_id, gen1.application_id);
     assert_eq!(receipt.from_generation.get(), 2);
-    assert_eq!(receipt.to_generation, Generation::INITIAL);
+    assert_eq!(receipt.to_generation.get(), 3);
     assert_eq!(receipt.rollback_at_ms, 5_000);
 
     let view = authority
@@ -1809,9 +1825,29 @@ fn rollback_disabled_after_update_replays_idempotently() {
         .expect("inspect")
         .expect("exists");
     assert_eq!(view.status, nlos_application::ApplicationStatus::Installed);
-    assert_eq!(view.current_installation_generation, Generation::INITIAL);
+    assert_eq!(view.current_installation_generation.get(), 3);
     assert_eq!(view.package_manifest_digest, first.manifest_digest);
     assert_eq!(view.updated_at_ms, 5_000);
+
+    // The forward roll committed a fresh installation receipt at gen 3
+    // whose content is the gen 1 receipt, bitwise.
+    let listed = authority
+        .list_installations(gen1.application_id)
+        .expect("list");
+    assert_eq!(listed.len(), 3);
+    assert_eq!(listed[2].installation_generation.get(), 3);
+    assert_eq!(
+        listed[2].package_manifest_digest,
+        gen1.package_manifest_digest
+    );
+    assert_eq!(listed[2].package_version, gen1.package_version);
+    assert_eq!(listed[2].entry_count, gen1.entry_count);
+    assert_eq!(
+        listed[2].package_verification_receipt_id,
+        gen1.package_verification_receipt_id
+    );
+    assert_eq!(listed[2].installer_principal, gen1.installer_principal);
+    assert_eq!(listed[2].installed_at_ms, 5_000);
 
     let read_back = authority
         .inspect_rollback_receipt(key(0x0A))
@@ -1821,13 +1857,13 @@ fn rollback_disabled_after_update_replays_idempotently() {
 
     let replay = rollback_replayed(&authority, first.package_id, 0x0A, 5_000);
     assert_eq!(replay, receipt);
-    assert_counts(&stack, 1, 2);
+    assert_counts(&stack, 1, 3);
     assert_disable_counts(&stack, 1);
     assert_rollback_counts(&stack, 1);
 }
 
-/// 正常回退（uninstalled）：update 到 gen 2 后 uninstall，rollback 恢复
-/// gen 1 manifest 并 CAS uninstalled→installed；同 key 重放返回原回执。
+/// 正常回退（uninstalled）：update 到 gen 2 后 uninstall，rollback 前滚到
+/// gen 3 并恢复 gen 1 内容、CAS uninstalled→installed；同 key 重放返回原回执。
 #[test]
 fn rollback_uninstalled_after_update_replays_idempotently() {
     let stack = TestStack::new(&label("rollback-uninstalled"), 0x4B);
@@ -1848,17 +1884,19 @@ fn rollback_uninstalled_after_update_replays_idempotently() {
     let receipt = rolled_back(&authority, first.package_id, 0x0A, 5_000);
     assert_eq!(receipt.application_id, gen1.application_id);
     assert_eq!(receipt.from_generation.get(), 2);
-    assert_eq!(receipt.to_generation, Generation::INITIAL);
+    assert_eq!(receipt.to_generation.get(), 3);
 
     let view = authority
         .inspect_application(first.package_id)
         .expect("inspect")
         .expect("exists");
     assert_eq!(view.status, nlos_application::ApplicationStatus::Installed);
+    assert_eq!(view.current_installation_generation.get(), 3);
     assert_eq!(view.package_manifest_digest, gen1.package_manifest_digest);
 
     let replay = rollback_replayed(&authority, first.package_id, 0x0A, 5_000);
     assert_eq!(replay, receipt);
+    assert_counts(&stack, 1, 3);
     assert_uninstall_counts(&stack, 1);
     assert_rollback_counts(&stack, 1);
 }
@@ -1998,14 +2036,643 @@ fn rollback_refusals_are_typed_and_leave_zero_state() {
         } if application_id == receipt.application_id
     ));
 
-    assert_counts(&stack, 2, 3);
+    assert_counts(&stack, 2, 4);
     assert_rollback_counts(&stack, 1);
     let view = authority
         .inspect_application(verified.package_id)
         .expect("inspect")
         .expect("exists");
     assert_eq!(view.status, nlos_application::ApplicationStatus::Installed);
-    assert_eq!(view.current_installation_generation, Generation::INITIAL);
+    assert_eq!(view.current_installation_generation.get(), 3);
+}
+
+/// 前滚多跳（D1）：回滚后 update 通道仍然打开——每次生命周期动作都落在
+/// 全新代际 + 全新 receipt，`UNIQUE(application_id, generation)` 不可能再撞。
+#[test]
+fn rollback_forward_roll_keeps_update_channel_open_across_hops() {
+    let stack = TestStack::new(&label("rollback-forward-update"), 0x5A);
+    let v1 = stack.verify_package(0x41, 1, key(0xF0), 1_000);
+    let v2 = stack.verify_package(0x41, 2, key(0xF1), 2_000);
+    let v3 = stack.verify_package(0x41, 3, key(0xF2), 2_500);
+    let authority = open_authority(stack.root.root());
+    let gen1 = installed(&authority, &stack.artifacts, v1.receipt_id, 0x01, 3_000);
+    let gen2 = updated(
+        &authority,
+        &stack.artifacts,
+        v1.package_id,
+        v2.receipt_id,
+        0x02,
+        4_000,
+    );
+    disabled(&authority, v1.package_id, 0x0B, 5_000);
+
+    let first = rolled_back(&authority, v1.package_id, 0x0A, 6_000);
+    assert_eq!(first.from_generation, gen2.installation_generation);
+    assert_eq!(first.to_generation.get(), 3);
+
+    // The one-way gate is gone: a fresh update after the rollback commits
+    // a receipt at generation 4 (the rewound-generation UNIQUE collision
+    // the old semantics hit is impossible by construction now).
+    let gen4 = updated(
+        &authority,
+        &stack.artifacts,
+        v1.package_id,
+        v3.receipt_id,
+        0x03,
+        7_000,
+    );
+    assert_eq!(gen4.installation_generation.get(), 4);
+    assert_eq!(gen4.package_manifest_digest, v3.manifest_digest);
+
+    // Second hop: disable + roll back again lands on generation 5 and
+    // restores the generation-3 content (v1); the second disable takes a
+    // fresh receipt at generation 4 (D2: no per-application PK collision).
+    disabled(&authority, v1.package_id, 0x0C, 8_000);
+    let second = rolled_back(&authority, v1.package_id, 0x0D, 9_000);
+    assert_eq!(second.from_generation.get(), 4);
+    assert_eq!(second.to_generation.get(), 5);
+    let view = authority
+        .inspect_application(v1.package_id)
+        .expect("inspect")
+        .expect("exists");
+    assert_eq!(view.status, nlos_application::ApplicationStatus::Installed);
+    assert_eq!(view.current_installation_generation.get(), 5);
+    assert_eq!(view.package_manifest_digest, gen1.package_manifest_digest);
+
+    // Dense, strictly monotonic history: five receipts, five generations.
+    let listed = authority
+        .list_installations(gen1.application_id)
+        .expect("list");
+    let generations = listed
+        .iter()
+        .map(|receipt| receipt.installation_generation.get())
+        .collect::<Vec<_>>();
+    assert_eq!(generations, vec![1, 2, 3, 4, 5]);
+    let digests = listed
+        .iter()
+        .map(|receipt| receipt.package_manifest_digest)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        digests,
+        vec![
+            v1.manifest_digest,
+            v2.manifest_digest,
+            v1.manifest_digest,
+            v3.manifest_digest,
+            v1.manifest_digest,
+        ]
+    );
+    assert_counts(&stack, 1, 5);
+    assert_disable_counts(&stack, 2);
+    assert_rollback_counts(&stack, 2);
+}
+
+/// 回滚 → disable → 再回滚（D2 核心）：第二次 disable 落在新代际的新
+/// receipt，不再撞 `application_disable_receipts` 的主键；第二次回滚恢复
+/// 当前代之前最近一代的内容。
+#[test]
+fn rollback_disable_rollback_cycle_never_collides() {
+    let stack = TestStack::new(&label("rollback-disable-cycle"), 0x5B);
+    let v1 = stack.verify_package(0x41, 1, key(0xF0), 1_000);
+    let v2 = stack.verify_package(0x41, 2, key(0xF1), 2_000);
+    let authority = open_authority(stack.root.root());
+    installed(&authority, &stack.artifacts, v1.receipt_id, 0x01, 3_000);
+    updated(
+        &authority,
+        &stack.artifacts,
+        v1.package_id,
+        v2.receipt_id,
+        0x02,
+        4_000,
+    );
+    disabled(&authority, v1.package_id, 0x0B, 5_000);
+    let first = rolled_back(&authority, v1.package_id, 0x0A, 6_000);
+    assert_eq!(first.to_generation.get(), 3);
+
+    // Disable at the forward-roll generation: a second durable disable
+    // receipt for the same application (pre-fix: raw PK collision).
+    let disable = disabled(&authority, v1.package_id, 0x0C, 7_000);
+    assert_eq!(disable.application_generation.get(), 3);
+
+    // Roll back again: generation 4 restores the generation-2 content (v2)
+    // — the receipt of the most recent generation before the current one.
+    let second = rolled_back(&authority, v1.package_id, 0x0D, 8_000);
+    assert_eq!(second.from_generation.get(), 3);
+    assert_eq!(second.to_generation.get(), 4);
+    let view = authority
+        .inspect_application(v1.package_id)
+        .expect("inspect")
+        .expect("exists");
+    assert_eq!(view.current_installation_generation.get(), 4);
+    assert_eq!(view.package_manifest_digest, v2.manifest_digest);
+
+    assert_counts(&stack, 1, 4);
+    assert_disable_counts(&stack, 2);
+    assert_rollback_counts(&stack, 2);
+}
+
+/// 回滚 → uninstall → 再回滚 → 终态 uninstall（D2）：uninstall receipt 按
+/// (application, generation) 记账，可重复落账；终态后同 key 重放收敛。
+#[test]
+fn rollback_uninstall_cycles_end_terminal() {
+    let stack = TestStack::new(&label("rollback-uninstall-cycle"), 0x5C);
+    let v1 = stack.verify_package(0x41, 1, key(0xF0), 1_000);
+    let v2 = stack.verify_package(0x41, 2, key(0xF1), 2_000);
+    let authority = open_authority(stack.root.root());
+    installed(&authority, &stack.artifacts, v1.receipt_id, 0x01, 3_000);
+    updated(
+        &authority,
+        &stack.artifacts,
+        v1.package_id,
+        v2.receipt_id,
+        0x02,
+        4_000,
+    );
+    let uninstall_one = uninstalled(&authority, v1.package_id, 0x0B, 5_000);
+    assert_eq!(uninstall_one.application_generation.get(), 2);
+
+    let first = rolled_back(&authority, v1.package_id, 0x0A, 6_000);
+    assert_eq!(first.to_generation.get(), 3);
+    let uninstall_two = uninstalled(&authority, v1.package_id, 0x0C, 7_000);
+    assert_eq!(uninstall_two.application_generation.get(), 3);
+
+    let second = rolled_back(&authority, v1.package_id, 0x0D, 8_000);
+    assert_eq!(second.from_generation.get(), 3);
+    assert_eq!(second.to_generation.get(), 4);
+    let uninstall_three = uninstalled(&authority, v1.package_id, 0x0E, 9_000);
+    assert_eq!(uninstall_three.application_generation.get(), 4);
+
+    let view = authority
+        .inspect_application(v1.package_id)
+        .expect("inspect")
+        .expect("exists");
+    assert_eq!(
+        view.status,
+        nlos_application::ApplicationStatus::Uninstalled
+    );
+    assert_eq!(view.current_installation_generation.get(), 4);
+    assert_eq!(view.package_manifest_digest, v2.manifest_digest);
+
+    // Terminal-state replay converges on the original receipt.
+    assert_eq!(
+        uninstall_replayed(&authority, v1.package_id, 0x0E, 9_000),
+        uninstall_three
+    );
+    assert_counts(&stack, 1, 4);
+    assert_uninstall_counts(&stack, 3);
+    assert_rollback_counts(&stack, 2);
+}
+
+/// 回执链可审计：每次回滚 = 恰好一条新 installation receipt（内容逐字段
+/// 继承被恢复代，installation id 派生自 (key, application, 新代)）+ 一条
+/// rollback receipt（target 指向新代）；同 key 重放不新增任何行。
+#[test]
+fn rollback_receipt_chain_is_auditable() {
+    let stack = TestStack::new(&label("rollback-audit"), 0x5D);
+    let v1 = stack.verify_package(0x41, 1, key(0xF0), 1_000);
+    let v2 = stack.verify_package(0x41, 2, key(0xF1), 2_000);
+    let authority = open_authority(stack.root.root());
+    let gen1 = installed(&authority, &stack.artifacts, v1.receipt_id, 0x01, 3_000);
+    updated(
+        &authority,
+        &stack.artifacts,
+        v1.package_id,
+        v2.receipt_id,
+        0x02,
+        4_000,
+    );
+    disabled(&authority, v1.package_id, 0x0B, 5_000);
+    let first = rolled_back(&authority, v1.package_id, 0x0A, 6_000);
+    disabled(&authority, v1.package_id, 0x0C, 7_000);
+    let second = rolled_back(&authority, v1.package_id, 0x0D, 8_000);
+
+    assert_eq!(first.from_generation.get(), 2);
+    assert_eq!(first.to_generation.get(), 3);
+    assert_eq!(second.from_generation.get(), 3);
+    assert_eq!(second.to_generation.get(), 4);
+
+    let listed = authority
+        .list_installations(gen1.application_id)
+        .expect("list");
+    assert_eq!(listed.len(), 4);
+    let generations = listed
+        .iter()
+        .map(|receipt| receipt.installation_generation.get())
+        .collect::<Vec<_>>();
+    assert_eq!(generations, vec![1, 2, 3, 4]);
+
+    // Each forward-roll receipt inherits the restored generation's
+    // content bitwise, under its own installation id, key, and timestamp.
+    let restored = [(&listed[2], &listed[0]), (&listed[3], &listed[1])];
+    for (rolled, source) in restored {
+        assert_eq!(rolled.package_id, source.package_id);
+        assert_eq!(
+            rolled.package_manifest_digest,
+            source.package_manifest_digest
+        );
+        assert_eq!(rolled.package_version, source.package_version);
+        assert_eq!(rolled.entry_count, source.entry_count);
+        assert_eq!(
+            rolled.package_verification_receipt_id,
+            source.package_verification_receipt_id
+        );
+        assert_eq!(rolled.installer_principal, source.installer_principal);
+        assert_ne!(rolled.installation_id, source.installation_id);
+        assert_ne!(rolled.idempotency_key, source.idempotency_key);
+    }
+    assert_eq!(
+        listed[2].installation_id,
+        derive_installation_id(
+            key(0x0A),
+            gen1.application_id,
+            listed[2].installation_generation
+        )
+    );
+    assert_eq!(
+        listed[3].installation_id,
+        derive_installation_id(
+            key(0x0D),
+            gen1.application_id,
+            listed[3].installation_generation
+        )
+    );
+    assert_eq!(listed[2].installed_at_ms, 6_000);
+    assert_eq!(listed[3].installed_at_ms, 8_000);
+
+    // One rollback receipt per command, each target naming the new
+    // generation; replay adds no rows anywhere.
+    assert_eq!(
+        authority
+            .inspect_rollback_receipt(key(0x0A))
+            .expect("inspect")
+            .expect("exists"),
+        first
+    );
+    assert_eq!(
+        authority
+            .inspect_rollback_receipt(key(0x0D))
+            .expect("inspect")
+            .expect("exists"),
+        second
+    );
+    assert_eq!(
+        rollback_replayed(&authority, v1.package_id, 0x0A, 6_000),
+        first
+    );
+    assert_eq!(
+        rollback_replayed(&authority, v1.package_id, 0x0D, 8_000),
+        second
+    );
+    assert_counts(&stack, 1, 4);
+    assert_disable_counts(&stack, 2);
+    assert_rollback_counts(&stack, 2);
+}
+
+/// 回滚 key 与既有安装命令 key 冲突：typed IdempotencyConflict、零
+/// durable 变化（不是裸 `SQLite` `UNIQUE` 错误）。
+#[test]
+fn rollback_key_bound_to_an_installation_command_conflicts_typed() {
+    let stack = TestStack::new(&label("rollback-key-conflict"), 0x5E);
+    let v1 = stack.verify_package(0x41, 1, key(0xF0), 1_000);
+    let v2 = stack.verify_package(0x41, 2, key(0xF1), 2_000);
+    let authority = open_authority(stack.root.root());
+    installed(&authority, &stack.artifacts, v1.receipt_id, 0x01, 3_000);
+    updated(
+        &authority,
+        &stack.artifacts,
+        v1.package_id,
+        v2.receipt_id,
+        0x02,
+        4_000,
+    );
+    disabled(&authority, v1.package_id, 0x0B, 5_000);
+    let error = authority
+        .rollback_application(RollbackApplicationRequest {
+            package_id: v1.package_id,
+            idempotency_key: key(0x01),
+            rollback_at_ms: 6_000,
+        })
+        .expect_err("the install command's key is already bound");
+    assert!(matches!(
+        error,
+        ApplicationAuthorityError::IdempotencyConflict
+    ));
+    assert_counts(&stack, 1, 2);
+    assert_rollback_counts(&stack, 0);
+}
+
+/// Builds, by hand, the v8-era database the upgrade test upgrades: one
+/// application with receipts at generations 1..3 that then lived through
+/// the legacy generation step-back (3 → 2, disabled first), leaving the
+/// rewound row below its own receipt history (the durable D1 residue).
+// One auditable block contains the complete v8-era DDL fixture.
+#[allow(clippy::too_many_lines)]
+fn seed_v8_database_with_legacy_rollback(
+    root: &std::path::Path,
+    application_id: nlos_types::ApplicationId,
+    package_id: nlos_types::PackageId,
+) {
+    let d1 = [0x11; 32];
+    let d2 = [0x12; 32];
+    let d3 = [0x13; 32];
+    {
+        let raw = Connection::open(authority_database(root)).expect("open raw");
+        raw.execute_batch(
+            "CREATE TABLE applications (
+                application_id BLOB PRIMARY KEY NOT NULL CHECK(length(application_id)=16),
+                package_id BLOB NOT NULL UNIQUE CHECK(length(package_id)=16),
+                package_manifest_digest BLOB NOT NULL CHECK(length(package_manifest_digest)=32),
+                current_installation_generation INTEGER NOT NULL
+                    CHECK(current_installation_generation >= 1),
+                status INTEGER NOT NULL CHECK(status IN (1, 2, 3)),
+                created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0),
+                updated_at_ms INTEGER NOT NULL CHECK(updated_at_ms >= created_at_ms)
+            ) STRICT;
+            CREATE TRIGGER applications_monotonic_generation
+            BEFORE UPDATE ON applications
+            WHEN NEW.current_installation_generation < OLD.current_installation_generation
+                AND NOT (
+                    NEW.status = 1
+                    AND OLD.status IN (2, 3)
+                    AND NEW.current_installation_generation
+                        = OLD.current_installation_generation - 1
+                )
+            BEGIN
+                SELECT RAISE(ABORT, 'application installation generation is monotonic');
+            END;
+            CREATE TRIGGER applications_frozen_identity
+            BEFORE UPDATE ON applications
+            WHEN NEW.application_id != OLD.application_id OR NEW.package_id != OLD.package_id
+            BEGIN
+                SELECT RAISE(ABORT, 'application identity is frozen');
+            END;
+            CREATE TRIGGER applications_legal_status_transition
+            BEFORE UPDATE ON applications
+            WHEN (OLD.status = 3
+                    AND NOT (
+                        NEW.status = 1
+                        AND NEW.current_installation_generation
+                            = OLD.current_installation_generation - 1
+                    ))
+                OR (OLD.status = 2 AND NEW.status NOT IN (1, 3))
+                OR (OLD.status = 2 AND NEW.status = 1
+                    AND NEW.current_installation_generation
+                        != OLD.current_installation_generation - 1)
+                OR (OLD.status = 1 AND NEW.status = 1
+                    AND NEW.current_installation_generation
+                        <= OLD.current_installation_generation)
+                OR NEW.status NOT IN (1, 2, 3)
+            BEGIN
+                SELECT RAISE(ABORT, 'application status transition is not legal');
+            END;
+            CREATE TRIGGER applications_no_delete
+            BEFORE DELETE ON applications BEGIN
+                SELECT RAISE(ABORT, 'application row is durable');
+            END;
+            CREATE TABLE installation_receipts (
+                installation_id BLOB PRIMARY KEY NOT NULL CHECK(length(installation_id)=16),
+                idempotency_key BLOB NOT NULL UNIQUE CHECK(length(idempotency_key)=16),
+                application_id BLOB NOT NULL CHECK(length(application_id)=16),
+                installation_generation INTEGER NOT NULL CHECK(installation_generation >= 1),
+                package_id BLOB NOT NULL CHECK(length(package_id)=16),
+                package_manifest_digest BLOB NOT NULL CHECK(length(package_manifest_digest)=32),
+                package_version INTEGER NOT NULL CHECK(package_version >= 0),
+                entry_count INTEGER NOT NULL CHECK(entry_count >= 1),
+                package_verification_receipt_id BLOB NOT NULL
+                    CHECK(length(package_verification_receipt_id)=16),
+                installer_principal BLOB NOT NULL CHECK(length(installer_principal)=16),
+                installed_at_ms INTEGER NOT NULL CHECK(installed_at_ms >= 0),
+                UNIQUE(application_id, installation_generation)
+            ) STRICT;
+            CREATE TRIGGER installation_receipts_immutable_update
+            BEFORE UPDATE ON installation_receipts BEGIN
+                SELECT RAISE(ABORT, 'installation receipt is immutable');
+            END;
+            CREATE TRIGGER installation_receipts_no_delete
+            BEFORE DELETE ON installation_receipts BEGIN
+                SELECT RAISE(ABORT, 'installation receipt is durable');
+            END;
+            CREATE TRIGGER installation_receipts_generation_bounds
+            AFTER INSERT ON installation_receipts
+            WHEN NEW.installation_generation != (
+                SELECT current_installation_generation FROM applications
+                WHERE application_id = NEW.application_id
+            )
+            BEGIN
+                SELECT RAISE(ABORT, 'installation receipt exceeds the application generation');
+            END;
+            CREATE TABLE application_disable_receipts (
+                application_id BLOB PRIMARY KEY NOT NULL CHECK(length(application_id)=16),
+                idempotency_key BLOB NOT NULL UNIQUE CHECK(length(idempotency_key)=16),
+                application_generation INTEGER NOT NULL CHECK(application_generation >= 1),
+                disabled_at_ms INTEGER NOT NULL CHECK(disabled_at_ms >= 0)
+            ) STRICT;
+            CREATE TRIGGER application_disable_receipts_state_bounds
+            AFTER INSERT ON application_disable_receipts
+            WHEN (SELECT status FROM applications
+                  WHERE application_id = NEW.application_id) != 2
+                OR NEW.application_generation != (
+                    SELECT current_installation_generation FROM applications
+                    WHERE application_id = NEW.application_id
+                )
+            BEGIN
+                SELECT RAISE(ABORT, 'disable receipt bounds');
+            END;
+            CREATE TABLE application_uninstall_receipts (
+                application_id BLOB PRIMARY KEY NOT NULL CHECK(length(application_id)=16),
+                idempotency_key BLOB NOT NULL UNIQUE CHECK(length(idempotency_key)=16),
+                application_generation INTEGER NOT NULL CHECK(application_generation >= 1),
+                uninstalled_at_ms INTEGER NOT NULL CHECK(uninstalled_at_ms >= 0)
+            ) STRICT;
+            CREATE TABLE application_rollback_receipts (
+                idempotency_key BLOB PRIMARY KEY NOT NULL CHECK(length(idempotency_key)=16),
+                application_id BLOB NOT NULL CHECK(length(application_id)=16),
+                from_generation INTEGER NOT NULL CHECK(from_generation >= 2),
+                to_generation INTEGER NOT NULL
+                    CHECK(to_generation >= 1 AND from_generation = to_generation + 1),
+                rollback_at_ms INTEGER NOT NULL CHECK(rollback_at_ms >= 0)
+            ) STRICT;
+            CREATE TRIGGER application_rollback_receipts_state_bounds
+            AFTER INSERT ON application_rollback_receipts
+            WHEN (SELECT status FROM applications
+                  WHERE application_id = NEW.application_id) != 1
+                OR NEW.to_generation != (
+                    SELECT current_installation_generation FROM applications
+                    WHERE application_id = NEW.application_id
+                )
+            BEGIN
+                SELECT RAISE(ABORT, 'rollback receipt bounds');
+            END;
+            PRAGMA user_version=8;",
+        )
+        .expect("seed v8 schema");
+
+        let app = application_id.as_bytes().as_slice();
+        let pkg = package_id.as_bytes().as_slice();
+        let receipt = |raw: &Connection,
+                       installation: u8,
+                       generation: i64,
+                       digest: &[u8; 32],
+                       version: i64,
+                       at_ms: i64| {
+            raw.execute(
+                "INSERT INTO installation_receipts (
+                    installation_id, idempotency_key, application_id,
+                    installation_generation, package_id, package_manifest_digest,
+                    package_version, entry_count, package_verification_receipt_id,
+                    installer_principal, installed_at_ms
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8, ?9, ?10)",
+                rusqlite::params![
+                    [installation; 16].as_slice(),
+                    [installation; 16].as_slice(),
+                    app,
+                    generation,
+                    pkg,
+                    digest.as_slice(),
+                    version,
+                    [0x99_u8; 16].as_slice(),
+                    [0xC0_u8; 16].as_slice(),
+                    at_ms,
+                ],
+            )
+            .expect("seed receipt");
+        };
+        raw.execute(
+            "INSERT INTO applications (
+                application_id, package_id, package_manifest_digest,
+                current_installation_generation, status, created_at_ms, updated_at_ms
+             ) VALUES (?1, ?2, ?3, 1, 1, 1000, 2000)",
+            rusqlite::params![app, pkg, d1.as_slice()],
+        )
+        .expect("seed application");
+        receipt(&raw, 0xA1, 1, &d1, 1, 2_000);
+        raw.execute(
+            "UPDATE applications SET current_installation_generation = 2,
+                 package_manifest_digest = ?1, updated_at_ms = 3000
+             WHERE application_id = ?2",
+            rusqlite::params![d2.as_slice(), app],
+        )
+        .expect("seed advance 2");
+        receipt(&raw, 0xA2, 2, &d2, 2, 3_000);
+        raw.execute(
+            "UPDATE applications SET current_installation_generation = 3,
+                 package_manifest_digest = ?1, updated_at_ms = 4000
+             WHERE application_id = ?2",
+            rusqlite::params![d3.as_slice(), app],
+        )
+        .expect("seed advance 3");
+        receipt(&raw, 0xA3, 3, &d3, 3, 4_000);
+        raw.execute(
+            "UPDATE applications SET status = 2, updated_at_ms = 5000
+             WHERE application_id = ?1",
+            rusqlite::params![app],
+        )
+        .expect("seed disable");
+        raw.execute(
+            "INSERT INTO application_disable_receipts (
+                application_id, idempotency_key, application_generation, disabled_at_ms
+             ) VALUES (?1, ?2, 3, 5000)",
+            rusqlite::params![app, [0x04_u8; 16].as_slice()],
+        )
+        .expect("seed disable receipt");
+        // The legacy generation step-back: 3 -> 2 under the v4 semantics.
+        raw.execute(
+            "UPDATE applications SET status = 1, current_installation_generation = 2,
+                 package_manifest_digest = ?1, updated_at_ms = 6000
+             WHERE application_id = ?2",
+            rusqlite::params![d2.as_slice(), app],
+        )
+        .expect("seed legacy rollback");
+        raw.execute(
+            "INSERT INTO application_rollback_receipts (
+                idempotency_key, application_id, from_generation, to_generation,
+                rollback_at_ms
+             ) VALUES (?1, ?2, 3, 2, 6000)",
+            rusqlite::params![[0x05_u8; 16].as_slice(), app],
+        )
+        .expect("seed legacy rollback receipt");
+    }
+}
+
+/// v8 → v9 升级：手工构造经历过旧语义回退（3→2，receipt 1..3 已在）的
+/// v8 数据库；升级后旧 receipt 逐字保留，偏斜行（row 代落后于 receipt 最大
+/// 代）的 update 与 rollback 都跳到"最大 receipt 代 + 1"，旧 D1 残留不再
+/// 以裸 UNIQUE 错误暴露；第二次 disable/回滚落在全新代际。
+#[test]
+fn v9_upgrade_preserves_legacy_rows_and_reopens_skewed_history() {
+    let stack = TestStack::new(&label("v9-upgrade"), 0x5F);
+    let package_id = nlos_types::PackageId::from_bytes([0x51; 16]);
+    let application_id = derive_application_id(package_id);
+    let d2 = [0x12; 32];
+    let d3 = [0x13; 32];
+    seed_v8_database_with_legacy_rollback(stack.root.root(), application_id, package_id);
+
+    // Reopening runs the v9 migration; the legacy state survives bitwise.
+    let authority = open_authority(stack.root.root());
+    assert_eq!(
+        raw_count(
+            &authority_database(stack.root.root()),
+            "PRAGMA user_version"
+        ),
+        9,
+        "the v9 migration must have run"
+    );
+    let view = authority
+        .inspect_application(package_id)
+        .expect("inspect")
+        .expect("exists");
+    assert_eq!(view.current_installation_generation.get(), 2);
+    assert_eq!(
+        view.package_manifest_digest,
+        nlos_artifact::ContentDigest::from_bytes(d2)
+    );
+    let legacy = authority
+        .inspect_rollback_receipt(key(0x05))
+        .expect("inspect")
+        .expect("legacy rollback receipt survives");
+    assert_eq!(legacy.application_id, application_id);
+    assert_eq!(legacy.from_generation.get(), 3);
+    assert_eq!(legacy.to_generation.get(), 2);
+    assert_eq!(legacy.rollback_at_ms, 6_000);
+    assert_counts(&stack, 1, 3);
+    assert_disable_counts(&stack, 1);
+    assert_rollback_counts(&stack, 1);
+
+    // Skew repaired forward: the update lands at max receipt generation + 1
+    // (4), not the rewound row generation + 1 (3, already recorded).
+    let target = stack.verify_package(0x51, 4, key(0xF0), 6_500);
+    let update = updated(
+        &authority,
+        &stack.artifacts,
+        package_id,
+        target.receipt_id,
+        0x06,
+        7_000,
+    );
+    assert_eq!(update.installation_generation.get(), 4);
+    assert_eq!(update.package_manifest_digest, target.manifest_digest);
+
+    // The second disable and a rollback land on fresh generations with
+    // fresh receipts (D2 on upgraded data).
+    disabled(&authority, package_id, 0x07, 8_000);
+    let rollback = rolled_back(&authority, package_id, 0x08, 9_000);
+    assert_eq!(rollback.from_generation.get(), 4);
+    assert_eq!(rollback.to_generation.get(), 5);
+    let view = authority
+        .inspect_application(package_id)
+        .expect("inspect")
+        .expect("exists");
+    assert_eq!(view.status, nlos_application::ApplicationStatus::Installed);
+    assert_eq!(view.current_installation_generation.get(), 5);
+    assert_eq!(
+        view.package_manifest_digest,
+        nlos_artifact::ContentDigest::from_bytes(d3),
+        "the rollback restores the generation before the current one (d3)"
+    );
+
+    assert_counts(&stack, 1, 5);
+    assert_disable_counts(&stack, 2);
+    assert_rollback_counts(&stack, 2);
 }
 
 struct MockTaskProbe {
@@ -2495,7 +3162,7 @@ fn rollback_task_activity_gate_refuses_then_converges() {
                 receipt.from_generation,
                 Generation::INITIAL.checked_next().unwrap()
             );
-            assert_eq!(receipt.to_generation, Generation::INITIAL);
+            assert_eq!(receipt.to_generation.get(), 3);
         }
         other @ nlos_application::RollbackDecision::Replayed(_) => {
             panic!("fresh key must roll back, got {other:?}")

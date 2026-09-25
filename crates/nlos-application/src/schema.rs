@@ -2,7 +2,7 @@ use rusqlite::{Connection, TransactionBehavior};
 
 use crate::ApplicationAuthorityError;
 
-pub(crate) const SCHEMA_VERSION: i64 = 8;
+pub(crate) const SCHEMA_VERSION: i64 = 9;
 
 /// Creates the durable application/installation authority schema v1: the
 /// per-package `applications` singleton (current installation generation +
@@ -619,7 +619,14 @@ pub(crate) fn migrate_v6(connection: &mut Connection) -> Result<(), ApplicationA
         |row| row.get(0),
     )?;
     if table_count == 1 && trigger_count == 3 {
-        connection.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        // Only the v6 objects are known complete here, so this is a v6
+        // store whose stamp never landed — stamp it as exactly that.
+        // Stamping SCHEMA_VERSION (v9 today) would claim currency the
+        // objects do not have: if this open dies before the v7/v8/v9
+        // passes complete, every later open would then skip them
+        // entirely and surface raw `no such table` errors for the
+        // migration-runner and surface-registration schemas.
+        connection.pragma_update(None, "user_version", 6)?;
         return Ok(());
     }
     if table_count != 0 || trigger_count != 0 {
@@ -970,4 +977,430 @@ pub(crate) fn migrate_v8(connection: &mut Connection) -> Result<(), ApplicationA
     )?;
     transaction.commit()?;
     Ok(())
+}
+
+/// Adds schema v9 (B-2, deep-audit D1/D2): the rollback *forward roll*.
+/// A lifecycle rollback re-commits the previous content generation as a
+/// brand-new installation generation (`disabled|uninstalled → installed`
+/// with a generation **advance**), so the generation counter stays dense
+/// and strictly monotonic and every later lifecycle command (update,
+/// disable, uninstall, rollback) lands on a fresh generation with a
+/// fresh receipt — the v4 generation step-back made rollback a one-way
+/// gate: the generation it rewound to already had an immutable receipt,
+/// and the per-application `PRIMARY KEY(application_id)` disable/uninstall
+/// receipts collided on the way back in, both surfacing as raw `SQLite`
+/// constraint errors.
+///
+/// Column shapes are unchanged everywhere; only the constraint layer
+/// moves (the staged forward-migration precedent of v3/v4):
+///
+/// - `applications_monotonic_generation` returns to the strict v1 form:
+///   the generation never decreases, not even on rollback (a rollback
+///   advances it).
+/// - `applications_legal_status_transition` re-opens
+///   `disabled|uninstalled → installed` only together with a generation
+///   increase (the forward roll); every other edge of the v4 lattice is
+///   preserved verbatim.
+/// - `application_disable_receipts` / `application_uninstall_receipts`
+///   are keyed per `(application, generation)` instead of per
+///   application: the status itself is no longer terminal-forever once a
+///   rollback can re-install, so each disable/uninstall of each
+///   generation is its own durable fact (idempotency keys stay unique).
+/// - `application_rollback_receipts` accepts both directions of adjacency
+///   to the restored history: any forward target (`to > from`, the v9
+///   forward roll — exactly `from + 1` on clean history, further when a
+///   database upgraded from v4–v8 still carries a rewound row below its
+///   own receipt history) and the legacy `from = to + 1` rows written by
+///   v4–v8, so the rebuild preserves existing durable history bitwise.
+///   Its state-bounds guard is unchanged: a rollback receipt only exists
+///   for an application already installed at the receipt's target
+///   generation.
+#[allow(clippy::too_many_lines)]
+pub(crate) fn migrate_v9(connection: &mut Connection) -> Result<(), ApplicationAuthorityError> {
+    let shape_count: i64 = connection.query_row(
+        "SELECT (SELECT COUNT(*) FROM sqlite_master
+                  WHERE type='trigger' AND name='applications_monotonic_generation'
+                    AND sql NOT LIKE '%OLD.current_installation_generation - 1%')
+             + (SELECT COUNT(*) FROM sqlite_master
+                WHERE type='trigger' AND name='applications_legal_status_transition'
+                  AND sql NOT LIKE '%OLD.current_installation_generation - 1%')
+             + (SELECT COUNT(*) FROM sqlite_master
+                WHERE type='table' AND name='application_disable_receipts'
+                  AND sql LIKE '%PRIMARY KEY(application_id, application_generation)%')
+             + (SELECT COUNT(*) FROM sqlite_master
+                WHERE type='table' AND name='application_uninstall_receipts'
+                  AND sql LIKE '%PRIMARY KEY(application_id, application_generation)%')
+             + (SELECT COUNT(*) FROM sqlite_master
+                WHERE type='table' AND name='application_rollback_receipts'
+                  AND sql LIKE '%to_generation > from_generation%')",
+        [],
+        |row| row.get(0),
+    )?;
+    if shape_count == 5 {
+        connection.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        return Ok(());
+    }
+    if shape_count != 0 {
+        return Err(ApplicationAuthorityError::CorruptRecord(
+            "partial application forward-roll schema",
+        ));
+    }
+
+    connection.pragma_update(None, "foreign_keys", "OFF")?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "DROP TRIGGER IF EXISTS applications_monotonic_generation;
+        DROP TRIGGER IF EXISTS applications_legal_status_transition;
+        DROP TRIGGER IF EXISTS application_disable_receipts_immutable_update;
+        DROP TRIGGER IF EXISTS application_disable_receipts_no_delete;
+        DROP TRIGGER IF EXISTS application_disable_receipts_state_bounds;
+        DROP TRIGGER IF EXISTS application_uninstall_receipts_immutable_update;
+        DROP TRIGGER IF EXISTS application_uninstall_receipts_no_delete;
+        DROP TRIGGER IF EXISTS application_uninstall_receipts_state_bounds;
+        DROP TRIGGER IF EXISTS application_rollback_receipts_immutable_update;
+        DROP TRIGGER IF EXISTS application_rollback_receipts_no_delete;
+        DROP TRIGGER IF EXISTS application_rollback_receipts_state_bounds;
+
+        CREATE TRIGGER applications_monotonic_generation
+        BEFORE UPDATE ON applications
+        WHEN NEW.current_installation_generation < OLD.current_installation_generation
+        BEGIN
+            SELECT RAISE(ABORT, 'application installation generation is monotonic');
+        END;
+        CREATE TRIGGER applications_legal_status_transition
+        BEFORE UPDATE ON applications
+        WHEN (OLD.status = 3
+                AND NOT (
+                    NEW.status = 1
+                    AND NEW.current_installation_generation
+                        > OLD.current_installation_generation
+                ))
+            OR (OLD.status = 2
+                AND NEW.status NOT IN (1, 3))
+            OR (OLD.status = 2
+                AND NEW.status = 3
+                AND NEW.current_installation_generation
+                    != OLD.current_installation_generation)
+            OR (OLD.status = 2
+                AND NEW.status = 1
+                AND NEW.current_installation_generation
+                    <= OLD.current_installation_generation)
+            OR (OLD.status = 1
+                AND NEW.status = 2
+                AND NEW.current_installation_generation
+                    != OLD.current_installation_generation)
+            OR (OLD.status = 1
+                AND NEW.status = 3
+                AND NEW.current_installation_generation
+                    != OLD.current_installation_generation)
+            OR (OLD.status = 1
+                AND NEW.status = 1
+                AND NEW.current_installation_generation
+                    <= OLD.current_installation_generation)
+            OR NEW.status NOT IN (1, 2, 3)
+        BEGIN
+            SELECT RAISE(ABORT, 'application status transition is not legal');
+        END;
+
+        CREATE TABLE application_disable_receipts_v9 (
+            application_id BLOB NOT NULL CHECK(length(application_id)=16),
+            idempotency_key BLOB NOT NULL UNIQUE CHECK(length(idempotency_key)=16),
+            application_generation INTEGER NOT NULL CHECK(application_generation >= 1),
+            disabled_at_ms INTEGER NOT NULL CHECK(disabled_at_ms >= 0),
+            PRIMARY KEY(application_id, application_generation),
+            FOREIGN KEY(application_id) REFERENCES applications(application_id)
+        ) STRICT;
+        INSERT INTO application_disable_receipts_v9
+            SELECT application_id, idempotency_key, application_generation, disabled_at_ms
+            FROM application_disable_receipts;
+        DROP TABLE application_disable_receipts;
+        ALTER TABLE application_disable_receipts_v9 RENAME TO application_disable_receipts;
+
+        CREATE TRIGGER application_disable_receipts_immutable_update
+        BEFORE UPDATE ON application_disable_receipts BEGIN
+            SELECT RAISE(ABORT, 'application disable receipt is immutable');
+        END;
+        CREATE TRIGGER application_disable_receipts_no_delete
+        BEFORE DELETE ON application_disable_receipts BEGIN
+            SELECT RAISE(ABORT, 'application disable receipt is durable');
+        END;
+        CREATE TRIGGER application_disable_receipts_state_bounds
+        AFTER INSERT ON application_disable_receipts
+        WHEN (SELECT status FROM applications
+              WHERE application_id = NEW.application_id) != 2
+            OR NEW.application_generation != (
+                SELECT current_installation_generation FROM applications
+                WHERE application_id = NEW.application_id
+            )
+        BEGIN
+            SELECT RAISE(ABORT, 'application disable receipt requires the disabled application at its current generation');
+        END;
+
+        CREATE TABLE application_uninstall_receipts_v9 (
+            application_id BLOB NOT NULL CHECK(length(application_id)=16),
+            idempotency_key BLOB NOT NULL UNIQUE CHECK(length(idempotency_key)=16),
+            application_generation INTEGER NOT NULL CHECK(application_generation >= 1),
+            uninstalled_at_ms INTEGER NOT NULL CHECK(uninstalled_at_ms >= 0),
+            PRIMARY KEY(application_id, application_generation),
+            FOREIGN KEY(application_id) REFERENCES applications(application_id)
+        ) STRICT;
+        INSERT INTO application_uninstall_receipts_v9
+            SELECT application_id, idempotency_key, application_generation, uninstalled_at_ms
+            FROM application_uninstall_receipts;
+        DROP TABLE application_uninstall_receipts;
+        ALTER TABLE application_uninstall_receipts_v9 RENAME TO application_uninstall_receipts;
+
+        CREATE TRIGGER application_uninstall_receipts_immutable_update
+        BEFORE UPDATE ON application_uninstall_receipts BEGIN
+            SELECT RAISE(ABORT, 'application uninstall receipt is immutable');
+        END;
+        CREATE TRIGGER application_uninstall_receipts_no_delete
+        BEFORE DELETE ON application_uninstall_receipts BEGIN
+            SELECT RAISE(ABORT, 'application uninstall receipt is durable');
+        END;
+        CREATE TRIGGER application_uninstall_receipts_state_bounds
+        AFTER INSERT ON application_uninstall_receipts
+        WHEN (SELECT status FROM applications
+              WHERE application_id = NEW.application_id) != 3
+            OR NEW.application_generation != (
+                SELECT current_installation_generation FROM applications
+                WHERE application_id = NEW.application_id
+            )
+        BEGIN
+            SELECT RAISE(ABORT, 'application uninstall receipt requires the uninstalled application at its current generation');
+        END;
+
+        CREATE TABLE application_rollback_receipts_v9 (
+            idempotency_key BLOB PRIMARY KEY NOT NULL CHECK(length(idempotency_key)=16),
+            application_id BLOB NOT NULL CHECK(length(application_id)=16),
+            from_generation INTEGER NOT NULL CHECK(from_generation >= 2),
+            to_generation INTEGER NOT NULL
+                CHECK(to_generation >= 1
+                      AND (to_generation > from_generation
+                           OR from_generation = to_generation + 1)),
+            rollback_at_ms INTEGER NOT NULL CHECK(rollback_at_ms >= 0),
+            FOREIGN KEY(application_id) REFERENCES applications(application_id)
+        ) STRICT;
+        INSERT INTO application_rollback_receipts_v9
+            SELECT idempotency_key, application_id, from_generation, to_generation,
+                   rollback_at_ms
+            FROM application_rollback_receipts;
+        DROP TABLE application_rollback_receipts;
+        ALTER TABLE application_rollback_receipts_v9 RENAME TO application_rollback_receipts;
+
+        CREATE TRIGGER application_rollback_receipts_immutable_update
+        BEFORE UPDATE ON application_rollback_receipts BEGIN
+            SELECT RAISE(ABORT, 'application rollback receipt is immutable');
+        END;
+        CREATE TRIGGER application_rollback_receipts_no_delete
+        BEFORE DELETE ON application_rollback_receipts BEGIN
+            SELECT RAISE(ABORT, 'application rollback receipt is durable');
+        END;
+        CREATE TRIGGER application_rollback_receipts_state_bounds
+        AFTER INSERT ON application_rollback_receipts
+        WHEN (SELECT status FROM applications
+              WHERE application_id = NEW.application_id) != 1
+            OR NEW.to_generation != (
+                SELECT current_installation_generation FROM applications
+                WHERE application_id = NEW.application_id
+            )
+        BEGIN
+            SELECT RAISE(ABORT, 'application rollback receipt requires the installed application at its target generation');
+        END;
+
+        PRAGMA user_version=9;",
+    )?;
+    transaction.commit()?;
+    connection.pragma_update(None, "foreign_keys", "ON")?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use rusqlite::Connection;
+
+    use super::{migrate_v1, migrate_v2, migrate_v3, migrate_v4, migrate_v5, migrate_v6};
+    use crate::ApplicationAuthority;
+
+    fn user_version(connection: &Connection) -> i64 {
+        connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap()
+    }
+
+    fn scalar(connection: &Connection, sql: &str) -> i64 {
+        connection.query_row(sql, [], |row| row.get(0)).unwrap()
+    }
+
+    /// Builds the fixture on `database`: a complete v6 object set whose
+    /// `user_version` stamp never landed (reset to 5), carrying one
+    /// installed-then-disabled application with its installation and
+    /// disable receipts. Returns `(application_id, package_id,
+    /// manifest_digest)` for the caller's assertions.
+    fn seed_unstamped_v6_store(database: &std::path::Path) -> ([u8; 16], [u8; 16], [u8; 32]) {
+        let application_id = [0xA1_u8; 16];
+        let package_id = [0xB1_u8; 16];
+        let manifest_digest = [0x31_u8; 32];
+        let mut connection = Connection::open(database).unwrap();
+        migrate_v1(&mut connection).unwrap();
+        migrate_v2(&mut connection).unwrap();
+        migrate_v3(&mut connection).unwrap();
+        migrate_v4(&mut connection).unwrap();
+        migrate_v5(&mut connection).unwrap();
+        migrate_v6(&mut connection).unwrap();
+        // The v6 commit landed but the user_version stamp never did.
+        connection.pragma_update(None, "user_version", 5).unwrap();
+        connection
+            .execute(
+                "INSERT INTO applications (
+                    application_id, package_id, package_manifest_digest,
+                    current_installation_generation, status,
+                    created_at_ms, updated_at_ms
+                 ) VALUES (?1, ?2, ?3, 1, 1, 1000, 1000)",
+                rusqlite::params![
+                    application_id.as_slice(),
+                    package_id.as_slice(),
+                    manifest_digest.as_slice()
+                ],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO installation_receipts (
+                    installation_id, idempotency_key, application_id,
+                    installation_generation, package_id,
+                    package_manifest_digest, package_version, entry_count,
+                    package_verification_receipt_id, installer_principal,
+                    installed_at_ms
+                 ) VALUES (?1, ?2, ?3, 1, ?4, ?5, 1, 1, ?6, ?7, 1000)",
+                rusqlite::params![
+                    [0xC1_u8; 16].as_slice(),
+                    [0xC1_u8; 16].as_slice(),
+                    application_id.as_slice(),
+                    package_id.as_slice(),
+                    manifest_digest.as_slice(),
+                    [0x99_u8; 16].as_slice(),
+                    [0xD0_u8; 16].as_slice()
+                ],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE applications SET status = 2, updated_at_ms = 2000
+                 WHERE application_id = ?1",
+                rusqlite::params![application_id.as_slice()],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO application_disable_receipts (
+                    application_id, idempotency_key,
+                    application_generation, disabled_at_ms
+                 ) VALUES (?1, ?2, 1, 2000)",
+                rusqlite::params![application_id.as_slice(), [0x04_u8; 16].as_slice()],
+            )
+            .unwrap();
+        (application_id, package_id, manifest_digest)
+    }
+
+    /// Asserts the store reached v9 with the v7/v8 objects present and the
+    /// seeded rows preserved across the whole chain (including the v9
+    /// composite-key rebuild of the disable receipts).
+    fn assert_upgraded_to_nine_with_data(raw: &Connection, manifest_digest: &[u8; 32]) {
+        assert_eq!(user_version(raw), 9, "the chain must reach v9");
+        for table in [
+            "application_migrations",
+            "application_migration_steps",
+            "application_migration_rollback_receipts",
+            "application_surface_registrations",
+        ] {
+            assert_eq!(
+                scalar(
+                    raw,
+                    &format!(
+                        "SELECT COUNT(*) FROM sqlite_master
+                         WHERE type='table' AND name='{table}'"
+                    )
+                ),
+                1,
+                "v7/v8 objects must exist, not be skipped"
+            );
+        }
+        let applications: i64 = raw
+            .query_row(
+                "SELECT COUNT(*) FROM applications
+                 WHERE current_installation_generation = 1 AND status = 2
+                   AND package_manifest_digest = ?1",
+                rusqlite::params![manifest_digest.as_slice()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(applications, 1, "the application row survives the chain");
+        assert_eq!(
+            scalar(
+                raw,
+                "SELECT COUNT(*) FROM installation_receipts
+                 WHERE installation_generation = 1 AND installed_at_ms = 1000"
+            ),
+            1,
+            "the installation receipt survives the chain"
+        );
+        assert_eq!(
+            scalar(
+                raw,
+                "SELECT COUNT(*) FROM application_disable_receipts
+                 WHERE application_generation = 1 AND disabled_at_ms = 2000"
+            ),
+            1,
+            "the disable receipt survives the v9 composite-key rebuild"
+        );
+    }
+
+    /// The registered v6 fast-path defect, pinned: a store whose v6 objects
+    /// are complete but whose `user_version` stamp never landed must be
+    /// re-stamped as exactly 6 — never `SCHEMA_VERSION` — so the reopened
+    /// chain still walks v7/v8/v9 and the durable rows survive them all.
+    /// (Stamping the newest version here would strand the store at it
+    /// whenever this open dies before the later passes complete.)
+    #[test]
+    fn v6_complete_objects_with_missing_stamp_restamp_six_then_upgrades_to_nine() {
+        let root = std::env::temp_dir().join(format!(
+            "nlos-application-schema-v6-restamp-{}",
+            std::process::id()
+        ));
+        if root.exists() {
+            std::fs::remove_dir_all(&root).unwrap();
+        }
+        std::fs::create_dir_all(&root).unwrap();
+        let database = root.join("application-authority.db");
+        let (_application_id, package_id, manifest_digest) = seed_unstamped_v6_store(&database);
+        {
+            let mut connection = Connection::open(&database).unwrap();
+            migrate_v6(&mut connection).unwrap();
+            assert_eq!(
+                user_version(&connection),
+                6,
+                "the complete-object fast path must pin 6, not SCHEMA_VERSION"
+            );
+        }
+
+        // Reopening walks the full v6 → v7 → v8 → v9 chain.
+        let authority = ApplicationAuthority::open(&root).unwrap();
+        {
+            let raw = Connection::open(&database).unwrap();
+            assert_upgraded_to_nine_with_data(&raw, &manifest_digest);
+        }
+        // The upgraded store serves the public read path, not just raw rows.
+        let view = authority
+            .inspect_application(nlos_types::PackageId::from_bytes(package_id))
+            .unwrap()
+            .expect("application exists after upgrade");
+        assert_eq!(view.current_installation_generation.get(), 1);
+        assert_eq!(
+            view.package_manifest_digest,
+            nlos_artifact::ContentDigest::from_bytes(manifest_digest)
+        );
+        drop(authority);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
