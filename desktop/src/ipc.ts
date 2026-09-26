@@ -91,6 +91,11 @@ export async function inspectProcess(processIdHex: string): Promise<ReceiptDto> 
   return invoke("inspect_process", { processIdHex });
 }
 
+/** InspectApplication:application_root 接线时组装应用头;未接线为类型化 NOT_FOUND。 */
+export async function inspectApplication(packageIdHex: string): Promise<ReceiptDto> {
+  return invoke("inspect_application", { packageIdHex });
+}
+
 export async function inspectResource(reservationIdHex: string): Promise<ReceiptDto> {
   return invoke("inspect_resource", { reservationIdHex });
 }

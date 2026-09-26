@@ -19,10 +19,12 @@
 use std::sync::Mutex;
 
 use ed25519_dalek::{Signer, SigningKey};
+use nlos_application::ApplicationAuthority;
 use nlos_resource::ResourceAuthority;
+use nlos_system_control::application_inspector::ApplicationAuthorityInspector;
 use nlos_system_control::control::{
-    CONTROL_CAPABILITY_GENERATION, CONTROL_CAPABILITY_SLOT, ControlCommand, ResourceInspector,
-    parse_hex_id,
+    ApplicationInspector, CONTROL_CAPABILITY_GENERATION, CONTROL_CAPABILITY_SLOT, ControlCommand,
+    ResourceInspector, parse_hex_id,
 };
 use nlos_system_control::resource_inspector::ResourceAuthorityInspector;
 use nlos_types::PrincipalId;
@@ -238,6 +240,91 @@ pub async fn dispatch_control_with_resource(
     _resource: Option<&dyn ResourceInspector>,
 ) -> Result<ReceiptDto, DesktopError> {
     Err(DesktopError::unsupported_platform())
+}
+
+/// [`dispatch_control`] 的 Application inspect 扩展:可选
+/// [`ApplicationAuthorityInspector`]。`None` 保持
+/// [`nlos_system_control::control::UnwiredApplicationInspector`] 的类型化
+/// `NOT_FOUND`(`application inspection backend is not wired`)。
+#[cfg(unix)]
+pub async fn dispatch_control_with_application(
+    socket: &str,
+    principal_hex: &str,
+    key_file: &str,
+    command: ControlCommand,
+    application: Option<&dyn ApplicationInspector>,
+) -> Result<ReceiptDto, DesktopError> {
+    use nlos_system_control::auth::dispatch_over_authenticated_socket;
+
+    let principal = PrincipalId::from_bytes(principal_bytes(principal_hex)?);
+    let seed = key_seed(key_file)?;
+    let key = SigningKey::from_bytes(&seed);
+    let receipt = dispatch_over_authenticated_socket(
+        socket,
+        principal,
+        |digest| Ok(key.sign(digest).to_bytes()),
+        &command,
+        None,
+        None,
+        application,
+    )
+    .await
+    .map_err(|error| from_control_error(&error))?;
+    Ok(receipt_dto(&receipt))
+}
+
+#[cfg(not(unix))]
+pub async fn dispatch_control_with_application(
+    _socket: &str,
+    _principal_hex: &str,
+    _key_file: &str,
+    _command: ControlCommand,
+    _application: Option<&dyn ApplicationInspector>,
+) -> Result<ReceiptDto, DesktopError> {
+    Err(DesktopError::unsupported_platform())
+}
+
+/// `InspectApplication` 经认证入口派发。配置了 `application_root` 时以
+/// [`ApplicationAuthorityInspector`] 组装应用头事实;未配置时 inspector
+/// 为 `None`,回执为既有未接线 `NOT_FOUND`。
+pub async fn dispatch_application_inspect(
+    socket: &str,
+    principal_hex: &str,
+    key_file: &str,
+    authority: Option<&ApplicationAuthority>,
+    package_id: [u8; 16],
+) -> Result<ReceiptDto, DesktopError> {
+    let command = ControlCommand::InspectApplication { package_id };
+    match authority {
+        Some(authority) => {
+            let inspector = ApplicationAuthorityInspector::new(authority);
+            dispatch_control_with_application(
+                socket,
+                principal_hex,
+                key_file,
+                command,
+                Some(&inspector),
+            )
+            .await
+        }
+        None => {
+            dispatch_control_with_application(socket, principal_hex, key_file, command, None).await
+        }
+    }
+}
+
+fn open_application_authority(
+    application_root: Option<&str>,
+) -> Result<Option<ApplicationAuthority>, DesktopError> {
+    let Some(root) = application_root
+        .map(str::trim)
+        .filter(|root| !root.is_empty())
+    else {
+        return Ok(None);
+    };
+    ApplicationAuthority::open(root)
+        .map(Some)
+        .map_err(|error| DesktopError::config(format!("打开本地应用权威失败({root}):{error}")))
 }
 
 /// 同步阻塞执行一次认证 dispatch。`dispatch_over_authenticated_socket` 的
@@ -576,6 +663,26 @@ pub fn cost_fact_check(
     ))
 }
 
+/// `ControlCommand::InspectApplication` 的 GUI 接线。未配置
+/// `application_root` 时走既有未接线 inspector,回执为类型化 `NOT_FOUND`。
+#[tauri::command]
+pub fn inspect_application(
+    state: tauri::State<'_, AppState>,
+    package_id_hex: String,
+) -> Result<ReceiptDto, DesktopError> {
+    let config = state.snapshot()?;
+    let package_id = principal_bytes(&package_id_hex)?;
+    let (socket, principal, key_file) = required(&config)?;
+    let authority = open_application_authority(config.application_root.as_deref())?;
+    tauri::async_runtime::block_on(dispatch_application_inspect(
+        &socket,
+        &principal,
+        &key_file,
+        authority.as_ref(),
+        package_id,
+    ))
+}
+
 /// W32-F 表面呈现命令:按包身份读回应用声明的可呈现表面(本地应用
 /// 权威直读视图,与权限/预算视图的 cost 查询同机制,非 CLI parity 面)。
 #[tauri::command]
@@ -841,7 +948,9 @@ fn parity_command(
 ) -> Result<(ControlCommand, Vec<String>), DesktopError> {
     let target = || -> Result<[u8; 16], DesktopError> {
         let value = target_hex.ok_or_else(|| {
-            DesktopError::config("该 operation 需要 32 hex 目标 id(inspect-task/process/resource)")
+            DesktopError::config(
+                "该 operation 需要 32 hex 目标 id(inspect-task/process/resource/application)",
+            )
         })?;
         principal_bytes(value)
     };
@@ -890,6 +999,16 @@ fn parity_command(
                 ControlCommand::InspectResource { reservation_id },
                 vec![
                     "inspect-resource".into(),
+                    target_hex.unwrap_or_default().to_owned(),
+                ],
+            ))
+        }
+        "inspect-application" => {
+            let package_id = target()?;
+            Ok((
+                ControlCommand::InspectApplication { package_id },
+                vec![
+                    "inspect-application".into(),
                     target_hex.unwrap_or_default().to_owned(),
                 ],
             ))

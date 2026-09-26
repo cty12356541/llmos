@@ -44,7 +44,7 @@ ed25519-dalek = { version = "3.0.0", default-features = false, features = ["fast
 nlos-application = { path = "../../crates/nlos-application" }
 nlos-resource = { path = "../../crates/nlos-resource" }
 nlos-schema = { path = "../../crates/nlos-schema" }
-nlos-system-control = { path = "../../crates/nlos-system-control", features = ["cli", "resource"] }
+nlos-system-control = { path = "../../crates/nlos-system-control", features = ["cli", "resource", "application"] }
 nlos-types = { path = "../../crates/nlos-types" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

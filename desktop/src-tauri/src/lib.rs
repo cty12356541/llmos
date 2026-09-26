@@ -33,6 +33,7 @@ pub fn run() {
             ipc::inspect_topic,
             ipc::inspect_operation,
             ipc::inspect_process,
+            ipc::inspect_application,
             ipc::inspect_resource,
             ipc::inspect_resource_health,
             ipc::submit_control,

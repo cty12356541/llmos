@@ -17,6 +17,7 @@ import {
   inspectExecutionFiber,
   inspectHealth,
   inspectOperation,
+  inspectApplication,
   inspectProcess,
   inspectResourceCost,
   inspectSemanticHealth,
@@ -187,7 +188,7 @@ function taskDetailPane(state: TaskSpaceState): { node: HTMLElement; taskResult:
   entities.append(
     el("p", {
       className: "muted",
-      text: "任务↔进程/预留的绑定枚举无 IPC 面(见缺口登记);按操作者已知的 process_id / reservation_id 查询关联快照。",
+      text: "任务↔进程/预留的绑定枚举无 IPC 面(见缺口登记);按操作者已知的 process_id / reservation_id / package_id 查询关联快照。",
     }),
   );
   const process = labeledInput("进程 id(32 hex)", "32 hex 字符 process_id", "");
@@ -216,7 +217,30 @@ function taskDetailPane(state: TaskSpaceState): { node: HTMLElement; taskResult:
     }
     runReceiptAction(reservationResult, () => inspectResourceCost(id.toLowerCase()));
   });
-  entities.append(process.row, processButton, processResult, reservation.row, reservationButton, reservationResult);
+  const application = labeledInput("应用包 id(32 hex)", "32 hex 字符 package_id", "");
+  const applicationResult = el("div");
+  const applicationButton = el("button", { text: "查询应用头" });
+  applicationButton.addEventListener("click", () => {
+    const id = application.input.value.trim();
+    if (!HEX32.test(id)) {
+      applicationResult.replaceChildren(
+        el("p", { className: "muted", text: "请先输入 32 位 hex 的 package_id。" }),
+      );
+      return;
+    }
+    runReceiptAction(applicationResult, () => inspectApplication(id.toLowerCase()));
+  });
+  entities.append(
+    process.row,
+    processButton,
+    processResult,
+    reservation.row,
+    reservationButton,
+    reservationResult,
+    application.row,
+    applicationButton,
+    applicationResult,
+  );
   wrap.append(entities);
   return { node: wrap, taskResult };
 }
