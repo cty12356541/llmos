@@ -21,12 +21,14 @@
 //! re-implement the fail-closed fence checks.
 //!
 //! `CapacityLease` additionally has idempotent
-//! `GLOBAL_RESERVED → RETURNING → RETURNED` (`LEASE-PREACTIVE-001`).
-//! `RETURNING` does not refund; `RETURNED` refunds `amount` once.
+//! `GLOBAL_RESERVED → TARGET_PREPARED` and
+//! `GLOBAL_RESERVED`/`TARGET_PREPARED → RETURNING → RETURNED`
+//! (`LEASE-PREACTIVE-001`). `RETURNING` does not refund; `RETURNED` refunds
+//! `amount` once. `ACTIVE` stays out: there is no host attach receipt.
 //!
 //! Out of scope: reconciliation receipts, custody (#17), cross-cell grant,
 //! transport, Raft, quarantine, TTL-as-reuse, durable second ledger, Capacity
-//! states past `RETURNED`, and Device reset/zeroization.
+//! `ACTIVE` and later reclaim states, and Device reset/zeroization.
 
 use std::collections::HashMap;
 use std::error::Error;
@@ -670,13 +672,16 @@ impl Error for QuotaLeaseLedgerError {}
 
 /// `CapacityLease` state for the single-Cell prefix.
 ///
-/// Spec chain used here: `GLOBAL_RESERVED → RETURNING → RETURNED`.
-/// `TARGET_PREPARED` / `ACTIVE` / reclaim stay out of this slice.
+/// Spec chain used here: `GLOBAL_RESERVED → TARGET_PREPARED` and
+/// `GLOBAL_RESERVED`/`TARGET_PREPARED → RETURNING → RETURNED`.
+/// `ACTIVE` / reclaim stay out of this slice.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum CapacityLeaseState {
     /// Issued after durable (here: in-memory) `amount` deduct from the source
     /// pool (`LEASE-CAPACITY-001` `GLOBAL_RESERVED`).
     GlobalReserved,
+    /// Pre-active prepare. Source pool is unchanged (`TARGET_PREPARED`).
+    TargetPrepared,
     /// Pre-active return started. Source pool is unchanged (`RETURNING`).
     Returning,
     /// Source authority accepted the return. `amount` is back in the pool
@@ -842,7 +847,32 @@ impl CapacityLeaseGrantor {
             .ok_or(CapacityLeaseReturnError::UnknownLease)
     }
 
-    /// `GLOBAL_RESERVED → RETURNING`. Does not refund the source pool.
+    /// `GLOBAL_RESERVED → TARGET_PREPARED`. Does not refund the source pool.
+    ///
+    /// A second call on `TARGET_PREPARED` returns the committed lease.
+    ///
+    /// # Errors
+    ///
+    /// Typed reject: [`CapacityLeaseReturnError`].
+    pub fn prepare(
+        &mut self,
+        presented: &CellFence,
+        capacity_lease_id: CapacityLeaseId,
+    ) -> Result<CapacityLeaseGrant, CapacityLeaseReturnError> {
+        self.authority.admit(presented)?;
+        let lease = self.lease_mut(capacity_lease_id)?;
+        match lease.state {
+            CapacityLeaseState::GlobalReserved => {
+                lease.state = CapacityLeaseState::TargetPrepared;
+                Ok(*lease)
+            }
+            CapacityLeaseState::TargetPrepared => Ok(*lease),
+            state => Err(CapacityLeaseReturnError::NotGlobalReserved { state }),
+        }
+    }
+
+    /// `GLOBAL_RESERVED` or `TARGET_PREPARED` → `RETURNING`. Does not refund
+    /// the source pool.
     ///
     /// # Errors
     ///
@@ -855,7 +885,7 @@ impl CapacityLeaseGrantor {
         self.authority.admit(presented)?;
         let lease = self.lease_mut(capacity_lease_id)?;
         match lease.state {
-            CapacityLeaseState::GlobalReserved => {
+            CapacityLeaseState::GlobalReserved | CapacityLeaseState::TargetPrepared => {
                 lease.state = CapacityLeaseState::Returning;
                 Ok(*lease)
             }
@@ -885,7 +915,8 @@ impl CapacityLeaseGrantor {
                     (*lease, lease.amount)
                 }
                 CapacityLeaseState::Returned => (*lease, 0),
-                state @ CapacityLeaseState::GlobalReserved => {
+                state @ (CapacityLeaseState::GlobalReserved
+                | CapacityLeaseState::TargetPrepared) => {
                     return Err(CapacityLeaseReturnError::NotReturning { state });
                 }
             }
@@ -1038,9 +1069,15 @@ pub enum CapacityLeaseReturnError {
     Fence(CapacityLeaseGrantError),
     /// No capacity lease with this id has been issued.
     UnknownLease,
-    /// Return was asked of a lease that is neither `GLOBAL_RESERVED` nor
-    /// `RETURNING`.
+    /// Return was asked of a lease that is neither `GLOBAL_RESERVED`,
+    /// `TARGET_PREPARED`, nor `RETURNING`.
     NotReserved {
+        /// State of the committed lease.
+        state: CapacityLeaseState,
+    },
+    /// Prepare was asked of a lease that is neither `GLOBAL_RESERVED` nor
+    /// `TARGET_PREPARED`.
+    NotGlobalReserved {
         /// State of the committed lease.
         state: CapacityLeaseState,
     },
@@ -1065,7 +1102,11 @@ impl fmt::Display for CapacityLeaseReturnError {
             Self::UnknownLease => write!(formatter, "unknown CapacityLease"),
             Self::NotReserved { state } => write!(
                 formatter,
-                "CapacityLease return requires GLOBAL_RESERVED, found {state:?}"
+                "CapacityLease return requires GLOBAL_RESERVED or TARGET_PREPARED, found {state:?}"
+            ),
+            Self::NotGlobalReserved { state } => write!(
+                formatter,
+                "CapacityLease prepare requires GLOBAL_RESERVED, found {state:?}"
             ),
             Self::NotReturning { state } => write!(
                 formatter,
