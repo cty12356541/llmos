@@ -187,7 +187,7 @@ P0 风险阻止 Stage 退出；P1 必须有 owner、缓解措施和明确复查�
 
 ## 11.5 阶段 C 管理入口（当前活跃阶段）
 
-- 阶段 C 权威进度单与编排：[stage-c-progress.md](./stage-c-progress.md)（2026-09-22 决策点 0 批准生效；W35 起波次编排 §C.5.3；决策点裁定与否决窗口 §C.5.4；W36–W39 合入与推送状态见 §C.8；本地 main 与 origin/main 对齐（ahead/behind 0）；范围 `ee649d3..194b014` 已由 bound SSH ls-remote 核实在 origin；台账提交 `3c5cc9a` 亦在 origin；权威 tip 以 `git ls-remote origin refs/heads/main` 为准，本文件不冻结 tip SHA；`PARTIAL_PASS` 前片；2026-09-26 续片 QuotaLease 高水位/关闭 `df8abd6`、Capacity 预激活归还 `43f2600`、Surface create/hide `6165bc4`、Capacity `TARGET_PREPARED` `cd2205e`、拆卸采纳已提交 kill `3d8da80`、表面进程绑定投影 `80fd1e3`、Quota 失联 `QUARANTINED` `7573260`，仍为 `PARTIAL_PASS`；C-SHARD / Cell 七件套 / Stage D 余量 / 三平台 CI / 夜间 schedule 仍开，不声称 CI 绿或屏障闭合）
+- 阶段 C 权威进度单与编排：[stage-c-progress.md](./stage-c-progress.md)（2026-09-22 决策点 0 批准生效；W35 起波次编排 §C.5.3；决策点裁定与否决窗口 §C.5.4；W36–W39 合入与推送状态见 §C.8；本地 main 与 origin/main 对齐（ahead/behind 0）；范围 `ee649d3..194b014` 已由 bound SSH ls-remote 核实在 origin；台账提交 `3c5cc9a` 亦在 origin；权威 tip 以 `git ls-remote origin refs/heads/main` 为准，本文件不冻结 tip SHA；`PARTIAL_PASS` 前片；2026-09-26 续片 QuotaLease 高水位/关闭 `df8abd6`、Capacity 预激活归还 `43f2600`、Surface create/hide `6165bc4`、Capacity `TARGET_PREPARED` `cd2205e`、拆卸采纳已提交 kill `3d8da80`、表面进程绑定投影 `80fd1e3`、Quota 失联 `QUARANTINED` `7573260`、`InspectApplication` 接线 `3560800`、当前代际后台任务投影 `74305de`，仍为 `PARTIAL_PASS`；C-SHARD / Cell 七件套 / Stage D 余量 / 三平台 CI / 夜间 schedule 仍开，不声称 CI 绿或屏障闭合）
 - 阶段 B 已 EXITED：[stage-b-progress.md](./stage-b-progress.md)（§6.5.6 十七项移交清单为 C 册输入）
 - 单机双进程 Cell×2 拓扑：[ADR-0018](./adrs/0018-single-host-multiprocess-dual-cell-topology.md)（`ACCEPTED`，否决窗口至 W36 屏障；`ACCEPTED` ≠ `VERIFIED`）
 - 跨 Cell 提交语义扩展点：[ADR-0019](./adrs/0019-cross-cell-commit-semantics-extension.md)（`CANDIDATE`；C-SHARD 派发仍以其 `VERIFIED` 为前置）
