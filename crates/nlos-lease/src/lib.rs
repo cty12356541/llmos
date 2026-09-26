@@ -11,13 +11,20 @@
 //!
 //! Stale epoch is a typed fail-closed reject for all three families.
 //!
+//! `QuotaLease` also tracks a node-local monotonic usage high-water
+//! (`LEASE-SPEND-001`, `LEASE-REPORT-001`), `ACTIVE → CLOSING → CLOSED`
+//! (`LEASE-CLOSE-001`), and idempotent `ISSUED` cancel (`LEASE-PREACTIVE-001`).
+//! The high-water moves face value straight from local remaining to spent;
+//! this slice has no held-reservation bucket.
+//!
 //! Fence admit is delegated to [`CellAuthority::admit`]; this crate does not
 //! re-implement the fail-closed fence checks.
 //!
-//! Out of scope for this slice: reconciliation, custody (#17), cross-cell
-//! grant, transport, Raft, durable second ledger, and full state machines
-//! beyond the first reserved state of each family.
+//! Out of scope: reconciliation receipts, custody (#17), cross-cell grant,
+//! transport, Raft, quarantine, TTL-as-reuse, durable second ledger, and the
+//! Capacity/Device state machines beyond their first reserved state.
 
+use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 
@@ -48,12 +55,22 @@ impl FenceScope {
     }
 }
 
-/// `QuotaLease` state after a successful grant. Full state machine (ACTIVE /
-/// CLOSING / FENCED / …) is deferred with Capacity/Device and reconciliation.
+/// `QuotaLease` state for the single-Cell prefix.
+///
+/// Spec chain used here: `ISSUED → ACTIVE → CLOSING → CLOSED` and
+/// `ISSUED → CANCELLED`. `FENCED` / `QUARANTINED` stay out of this slice.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum QuotaLeaseState {
-    /// Issued after durable (here: in-memory) `face_value` deduct.
+    /// Prepaid and not yet admitted on the node (`ISSUED`).
     Issued,
+    /// Node-local sub-ledger is open (`ACTIVE`).
+    Active,
+    /// New usage is frozen; remainder is not back in `AVAILABLE` (`CLOSING`).
+    Closing,
+    /// Close ACK applied; unspent face value returned (`CLOSED`).
+    Closed,
+    /// Pre-active cancel; full face value returned (`CANCELLED`).
+    Cancelled,
 }
 
 /// A single-Cell `QuotaLease` grant snapshot (v0.5 §12 `QuotaLease` fields used
@@ -65,6 +82,8 @@ pub struct QuotaLeaseGrant {
     node_boot_generation: Generation,
     face_value: u64,
     remaining: u64,
+    spent: u64,
+    returned: u64,
     epoch: CellEpoch,
     fencing_token: CellFencingToken,
     fence_scope: FenceScope,
@@ -96,10 +115,22 @@ impl QuotaLeaseGrant {
         self.face_value
     }
 
-    /// Remaining face value immediately after issue (= `face_value`).
+    /// Local remainder not yet spent or returned.
     #[must_use]
     pub const fn remaining(self) -> u64 {
         self.remaining
+    }
+
+    /// Monotonic usage high-water already consumed from the face value.
+    #[must_use]
+    pub const fn spent(self) -> u64 {
+        self.spent
+    }
+
+    /// Face value returned to the control-plane pool.
+    #[must_use]
+    pub const fn returned(self) -> u64 {
+        self.returned
     }
 
     /// Epoch bound into the grant.
@@ -135,16 +166,18 @@ impl QuotaLeaseGrant {
 pub struct QuotaLeaseGrantor {
     authority: CellAuthority,
     available: u64,
+    leases: HashMap<QuotaLeaseId, QuotaLeaseGrant>,
 }
 
 impl QuotaLeaseGrantor {
     /// Opens a grantor bound to an existing Cell authority with an initial
     /// AVAILABLE pool.
     #[must_use]
-    pub const fn open(authority: CellAuthority, available: u64) -> Self {
+    pub fn open(authority: CellAuthority, available: u64) -> Self {
         Self {
             authority,
             available,
+            leases: HashMap::new(),
         }
     }
 
@@ -158,7 +191,10 @@ impl QuotaLeaseGrantor {
     ///
     /// `LEASE-GRANT-001`: `face_value` is deducted from AVAILABLE before the
     /// lease is issued. Fail-closed fence checks run via
-    /// [`CellAuthority::admit`] before any deduct.
+    /// [`CellAuthority::admit`] before any deduct. An identical
+    /// `(lease_id, face_value)` returns the committed lease and does not
+    /// deduct again. A different face value for the same id is
+    /// [`QuotaLeaseGrantError::ConflictingFace`].
     ///
     /// # Errors
     ///
@@ -169,6 +205,16 @@ impl QuotaLeaseGrantor {
         lease_id: QuotaLeaseId,
         face_value: u64,
     ) -> Result<QuotaLeaseGrant, QuotaLeaseGrantError> {
+        if let Some(existing) = self.leases.get(&lease_id).copied() {
+            if existing.face_value == face_value {
+                return Ok(existing);
+            }
+            self.authority.admit(presented)?;
+            return Err(QuotaLeaseGrantError::ConflictingFace {
+                existing: existing.face_value,
+                requested: face_value,
+            });
+        }
         self.authority.admit(presented)?;
         if face_value > self.available {
             return Err(QuotaLeaseGrantError::InsufficientAvailable {
@@ -178,18 +224,215 @@ impl QuotaLeaseGrantor {
         }
         self.available -= face_value;
         let cell = self.authority.identity();
-        Ok(QuotaLeaseGrant {
+        let grant = QuotaLeaseGrant {
             lease_id,
             cell,
             node_boot_generation: self.authority.node_boot_generation(),
             face_value,
             remaining: face_value,
+            spent: 0,
+            returned: 0,
             epoch: self.authority.epoch(),
             fencing_token: self.authority.fencing_token(),
             fence_scope: FenceScope::cell(cell),
             state: QuotaLeaseState::Issued,
-        })
+        };
+        self.leases.insert(lease_id, grant);
+        Ok(grant)
     }
+
+    /// Reads the committed lease snapshot.
+    ///
+    /// # Errors
+    ///
+    /// [`QuotaLeaseLedgerError::UnknownLease`] when `lease_id` was never issued.
+    pub fn query(&self, lease_id: QuotaLeaseId) -> Result<QuotaLeaseGrant, QuotaLeaseLedgerError> {
+        self.leases
+            .get(&lease_id)
+            .copied()
+            .ok_or(QuotaLeaseLedgerError::UnknownLease)
+    }
+
+    /// Moves `ISSUED → ACTIVE`. A second call returns the committed lease.
+    ///
+    /// # Errors
+    ///
+    /// Typed reject: [`QuotaLeaseLedgerError`].
+    pub fn activate(
+        &mut self,
+        presented: &CellFence,
+        lease_id: QuotaLeaseId,
+    ) -> Result<QuotaLeaseGrant, QuotaLeaseLedgerError> {
+        self.authority.admit(presented)?;
+        let lease = self.lease_mut(lease_id)?;
+        match lease.state {
+            QuotaLeaseState::Issued => {
+                lease.state = QuotaLeaseState::Active;
+                Ok(*lease)
+            }
+            QuotaLeaseState::Active => Ok(*lease),
+            state => Err(QuotaLeaseLedgerError::ActivateRequiresIssued { state }),
+        }
+    }
+
+    /// Advances the monotonic usage high-water inside the issued face value.
+    ///
+    /// `LEASE-SPEND-001` / `LEASE-REPORT-001`: the same high-water is
+    /// idempotent. A lower mark is a typed regression. A mark above
+    /// `face_value` is refused, so the lease cannot expand. `CLOSING` accepts
+    /// only the already-committed mark.
+    ///
+    /// # Errors
+    ///
+    /// Typed reject: [`QuotaLeaseLedgerError`].
+    pub fn report_usage(
+        &mut self,
+        presented: &CellFence,
+        lease_id: QuotaLeaseId,
+        high_water: u64,
+    ) -> Result<QuotaLeaseGrant, QuotaLeaseLedgerError> {
+        self.authority.admit(presented)?;
+        let lease = self.lease_mut(lease_id)?;
+        match lease.state {
+            QuotaLeaseState::Active => apply_quota_high_water(lease, high_water),
+            QuotaLeaseState::Closing => closing_high_water(lease, high_water),
+            state => Err(QuotaLeaseLedgerError::NotActive { state }),
+        }
+    }
+
+    /// `ACTIVE → CLOSING`. Does not return remainder to `AVAILABLE`.
+    ///
+    /// # Errors
+    ///
+    /// Typed reject: [`QuotaLeaseLedgerError`].
+    pub fn begin_close(
+        &mut self,
+        presented: &CellFence,
+        lease_id: QuotaLeaseId,
+    ) -> Result<QuotaLeaseGrant, QuotaLeaseLedgerError> {
+        self.authority.admit(presented)?;
+        let lease = self.lease_mut(lease_id)?;
+        match lease.state {
+            QuotaLeaseState::Active => {
+                lease.state = QuotaLeaseState::Closing;
+                Ok(*lease)
+            }
+            QuotaLeaseState::Closing => Ok(*lease),
+            state => Err(QuotaLeaseLedgerError::NotActive { state }),
+        }
+    }
+
+    /// `CLOSING → CLOSED`. Returns only the unspent remainder to `AVAILABLE`.
+    ///
+    /// A second ACK returns the committed lease and does not refund again.
+    ///
+    /// # Errors
+    ///
+    /// Typed reject: [`QuotaLeaseLedgerError`].
+    pub fn ack_close(
+        &mut self,
+        presented: &CellFence,
+        lease_id: QuotaLeaseId,
+    ) -> Result<QuotaLeaseGrant, QuotaLeaseLedgerError> {
+        self.authority.admit(presented)?;
+        let (snapshot, refund) = {
+            let lease = self.lease_mut(lease_id)?;
+            match lease.state {
+                QuotaLeaseState::Closing => {
+                    let refund = lease.remaining;
+                    lease.returned += refund;
+                    lease.remaining = 0;
+                    lease.state = QuotaLeaseState::Closed;
+                    (*lease, refund)
+                }
+                QuotaLeaseState::Closed => (*lease, 0),
+                state => return Err(QuotaLeaseLedgerError::NotClosing { state }),
+            }
+        };
+        self.available += refund;
+        Ok(snapshot)
+    }
+
+    /// Idempotent `ISSUED → CANCELLED`. Refunds the full face value once.
+    ///
+    /// A lease that has left `ISSUED` is refused: this slice has no fence
+    /// proof that would let an active lease cancel.
+    ///
+    /// # Errors
+    ///
+    /// Typed reject: [`QuotaLeaseLedgerError`].
+    pub fn cancel(
+        &mut self,
+        presented: &CellFence,
+        lease_id: QuotaLeaseId,
+    ) -> Result<QuotaLeaseGrant, QuotaLeaseLedgerError> {
+        self.authority.admit(presented)?;
+        let (snapshot, refund) = {
+            let lease = self.lease_mut(lease_id)?;
+            match lease.state {
+                QuotaLeaseState::Issued => {
+                    let refund = lease.face_value;
+                    lease.remaining = 0;
+                    lease.returned = refund;
+                    lease.spent = 0;
+                    lease.state = QuotaLeaseState::Cancelled;
+                    (*lease, refund)
+                }
+                QuotaLeaseState::Cancelled => (*lease, 0),
+                state => {
+                    return Err(QuotaLeaseLedgerError::CancelRequiresNeverActive { state });
+                }
+            }
+        };
+        self.available += refund;
+        Ok(snapshot)
+    }
+
+    fn lease_mut(
+        &mut self,
+        lease_id: QuotaLeaseId,
+    ) -> Result<&mut QuotaLeaseGrant, QuotaLeaseLedgerError> {
+        self.leases
+            .get_mut(&lease_id)
+            .ok_or(QuotaLeaseLedgerError::UnknownLease)
+    }
+}
+
+fn apply_quota_high_water(
+    lease: &mut QuotaLeaseGrant,
+    high_water: u64,
+) -> Result<QuotaLeaseGrant, QuotaLeaseLedgerError> {
+    if high_water < lease.spent {
+        return Err(QuotaLeaseLedgerError::UsageRegression {
+            reported: high_water,
+            current: lease.spent,
+        });
+    }
+    if high_water > lease.face_value {
+        return Err(QuotaLeaseLedgerError::UsageExceedsFace {
+            reported: high_water,
+            face_value: lease.face_value,
+        });
+    }
+    lease.spent = high_water;
+    lease.remaining = lease.face_value - lease.spent;
+    Ok(*lease)
+}
+
+fn closing_high_water(
+    lease: &QuotaLeaseGrant,
+    high_water: u64,
+) -> Result<QuotaLeaseGrant, QuotaLeaseLedgerError> {
+    if high_water < lease.spent {
+        return Err(QuotaLeaseLedgerError::UsageRegression {
+            reported: high_water,
+            current: lease.spent,
+        });
+    }
+    if high_water == lease.spent {
+        return Ok(*lease);
+    }
+    Err(QuotaLeaseLedgerError::NewReserveForbidden)
 }
 
 /// Typed fail-closed rejects for a `QuotaLease` grant attempt.
@@ -236,6 +479,13 @@ pub enum QuotaLeaseGrantError {
         requested: u64,
         /// Remaining AVAILABLE before the attempt.
         available: u64,
+    },
+    /// The same `lease_id` was already issued with a different face value.
+    ConflictingFace {
+        /// Face value on the committed lease.
+        existing: u64,
+        /// Face value on this grant attempt.
+        requested: u64,
     },
 }
 
@@ -299,11 +549,120 @@ impl fmt::Display for QuotaLeaseGrantError {
                 formatter,
                 "insufficient AVAILABLE for QuotaLease grant: requested {requested} > available {available}"
             ),
+            Self::ConflictingFace {
+                existing,
+                requested,
+            } => write!(
+                formatter,
+                "conflicting QuotaLease face value: existing {existing} != requested {requested}"
+            ),
         }
     }
 }
 
 impl Error for QuotaLeaseGrantError {}
+
+/// Typed fail-closed rejects for `QuotaLease` activate, usage, close, and cancel.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum QuotaLeaseLedgerError {
+    /// Presented fence was rejected by [`CellAuthority::admit`].
+    Fence(QuotaLeaseGrantError),
+    /// No lease with this id has been issued.
+    UnknownLease,
+    /// Activate was asked of a lease that is neither `ISSUED` nor `ACTIVE`.
+    ActivateRequiresIssued {
+        /// State of the committed lease.
+        state: QuotaLeaseState,
+    },
+    /// Usage was asked of a lease that is not `ACTIVE` (and not an idempotent
+    /// `CLOSING` replay).
+    NotActive {
+        /// State of the committed lease.
+        state: QuotaLeaseState,
+    },
+    /// `CLOSING` refused a high-water above the committed mark.
+    NewReserveForbidden,
+    /// Reported usage is below the committed high-water.
+    UsageRegression {
+        /// Mark on this report.
+        reported: u64,
+        /// Committed high-water.
+        current: u64,
+    },
+    /// Reported usage is above the issued face value.
+    UsageExceedsFace {
+        /// Mark on this report.
+        reported: u64,
+        /// Issued face value.
+        face_value: u64,
+    },
+    /// Close ACK was asked of a lease that is neither `CLOSING` nor `CLOSED`.
+    NotClosing {
+        /// State of the committed lease.
+        state: QuotaLeaseState,
+    },
+    /// Cancel was asked of a lease that has left `ISSUED`.
+    CancelRequiresNeverActive {
+        /// State of the committed lease.
+        state: QuotaLeaseState,
+    },
+}
+
+impl From<CellAdmitError> for QuotaLeaseLedgerError {
+    fn from(error: CellAdmitError) -> Self {
+        Self::Fence(QuotaLeaseGrantError::from(error))
+    }
+}
+
+impl fmt::Display for QuotaLeaseLedgerError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Fence(error) => write!(formatter, "QuotaLease fence rejected: {error}"),
+            Self::UnknownLease => write!(formatter, "unknown QuotaLease"),
+            Self::ActivateRequiresIssued { state } => {
+                write!(
+                    formatter,
+                    "QuotaLease activate requires ISSUED, found {state:?}"
+                )
+            }
+            Self::NotActive { state } => {
+                write!(
+                    formatter,
+                    "QuotaLease usage requires ACTIVE, found {state:?}"
+                )
+            }
+            Self::NewReserveForbidden => {
+                write!(
+                    formatter,
+                    "QuotaLease CLOSING forbids a higher usage high-water"
+                )
+            }
+            Self::UsageRegression { reported, current } => write!(
+                formatter,
+                "QuotaLease usage high-water regressed: reported {reported} < current {current}"
+            ),
+            Self::UsageExceedsFace {
+                reported,
+                face_value,
+            } => write!(
+                formatter,
+                "QuotaLease usage exceeds face value: reported {reported} > face {face_value}"
+            ),
+            Self::NotClosing { state } => {
+                write!(
+                    formatter,
+                    "QuotaLease close ACK requires CLOSING, found {state:?}"
+                )
+            }
+            Self::CancelRequiresNeverActive { state } => write!(
+                formatter,
+                "QuotaLease cancel requires a lease that was never ACTIVE, found {state:?}"
+            ),
+        }
+    }
+}
+
+impl Error for QuotaLeaseLedgerError {}
 
 /// `CapacityLease` state after a successful grant. Full state machine
 /// (`TARGET_PREPARED` / `ACTIVE` / reclaim / …) is deferred.
