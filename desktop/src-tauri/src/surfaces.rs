@@ -15,7 +15,7 @@
 //!
 //! 渲染边界(诚实登记,视图内静态缺口卡同步):载荷内容渲染(entry
 //! 引用的 artifact 字节)、焦点/输入路由、多窗口几何——均不在本最小链内。
-//! 表面开合终态见 `window_lifecycle`(`REGISTERED`…`CLOSED` 的 open/close)。
+//! 表面开合终态见 `window_lifecycle`(`REGISTERED`…`CLOSED` 的 create/open/hide/close)。
 
 use nlos_application::{
     ApplicationAuthority, ApplicationAuthorityError, ApplicationStatus, PackageSurfaceKind,
