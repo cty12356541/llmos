@@ -20,9 +20,13 @@
 //! Fence admit is delegated to [`CellAuthority::admit`]; this crate does not
 //! re-implement the fail-closed fence checks.
 //!
+//! `CapacityLease` additionally has idempotent
+//! `GLOBAL_RESERVED → RETURNING → RETURNED` (`LEASE-PREACTIVE-001`).
+//! `RETURNING` does not refund; `RETURNED` refunds `amount` once.
+//!
 //! Out of scope: reconciliation receipts, custody (#17), cross-cell grant,
-//! transport, Raft, quarantine, TTL-as-reuse, durable second ledger, and the
-//! Capacity/Device state machines beyond their first reserved state.
+//! transport, Raft, quarantine, TTL-as-reuse, durable second ledger, Capacity
+//! states past `RETURNED`, and Device reset/zeroization.
 
 use std::collections::HashMap;
 use std::error::Error;
@@ -664,13 +668,20 @@ impl fmt::Display for QuotaLeaseLedgerError {
 
 impl Error for QuotaLeaseLedgerError {}
 
-/// `CapacityLease` state after a successful grant. Full state machine
-/// (`TARGET_PREPARED` / `ACTIVE` / reclaim / …) is deferred.
+/// `CapacityLease` state for the single-Cell prefix.
+///
+/// Spec chain used here: `GLOBAL_RESERVED → RETURNING → RETURNED`.
+/// `TARGET_PREPARED` / `ACTIVE` / reclaim stay out of this slice.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum CapacityLeaseState {
     /// Issued after durable (here: in-memory) `amount` deduct from the source
     /// pool (`LEASE-CAPACITY-001` `GLOBAL_RESERVED`).
     GlobalReserved,
+    /// Pre-active return started. Source pool is unchanged (`RETURNING`).
+    Returning,
+    /// Source authority accepted the return. `amount` is back in the pool
+    /// (`RETURNED`).
+    Returned,
 }
 
 /// A single-Cell `CapacityLease` grant snapshot (v0.5 §12 fields used by this
@@ -746,16 +757,18 @@ impl CapacityLeaseGrant {
 pub struct CapacityLeaseGrantor {
     authority: CellAuthority,
     pool_remaining: u64,
+    leases: HashMap<CapacityLeaseId, CapacityLeaseGrant>,
 }
 
 impl CapacityLeaseGrantor {
     /// Opens a grantor bound to an existing Cell authority with an initial
     /// source capacity pool.
     #[must_use]
-    pub const fn open(authority: CellAuthority, pool_remaining: u64) -> Self {
+    pub fn open(authority: CellAuthority, pool_remaining: u64) -> Self {
         Self {
             authority,
             pool_remaining,
+            leases: HashMap::new(),
         }
     }
 
@@ -781,6 +794,16 @@ impl CapacityLeaseGrantor {
         capacity_lease_id: CapacityLeaseId,
         amount: u64,
     ) -> Result<CapacityLeaseGrant, CapacityLeaseGrantError> {
+        if let Some(existing) = self.leases.get(&capacity_lease_id).copied() {
+            if existing.amount == amount {
+                return Ok(existing);
+            }
+            self.authority.admit(presented)?;
+            return Err(CapacityLeaseGrantError::ConflictingAmount {
+                existing: existing.amount,
+                requested: amount,
+            });
+        }
         self.authority.admit(presented)?;
         if amount > self.pool_remaining {
             return Err(CapacityLeaseGrantError::InsufficientCapacity {
@@ -790,7 +813,7 @@ impl CapacityLeaseGrantor {
         }
         self.pool_remaining -= amount;
         let target_node = self.authority.identity();
-        Ok(CapacityLeaseGrant {
+        let grant = CapacityLeaseGrant {
             capacity_lease_id,
             target_node,
             target_node_boot_generation: self.authority.node_boot_generation(),
@@ -799,7 +822,85 @@ impl CapacityLeaseGrantor {
             fencing_token: self.authority.fencing_token(),
             fence_scope: FenceScope::cell(target_node),
             state: CapacityLeaseState::GlobalReserved,
-        })
+        };
+        self.leases.insert(capacity_lease_id, grant);
+        Ok(grant)
+    }
+
+    /// Reads the committed capacity lease snapshot.
+    ///
+    /// # Errors
+    ///
+    /// [`CapacityLeaseReturnError::UnknownLease`] when the id was never issued.
+    pub fn query(
+        &self,
+        capacity_lease_id: CapacityLeaseId,
+    ) -> Result<CapacityLeaseGrant, CapacityLeaseReturnError> {
+        self.leases
+            .get(&capacity_lease_id)
+            .copied()
+            .ok_or(CapacityLeaseReturnError::UnknownLease)
+    }
+
+    /// `GLOBAL_RESERVED → RETURNING`. Does not refund the source pool.
+    ///
+    /// # Errors
+    ///
+    /// Typed reject: [`CapacityLeaseReturnError`].
+    pub fn begin_return(
+        &mut self,
+        presented: &CellFence,
+        capacity_lease_id: CapacityLeaseId,
+    ) -> Result<CapacityLeaseGrant, CapacityLeaseReturnError> {
+        self.authority.admit(presented)?;
+        let lease = self.lease_mut(capacity_lease_id)?;
+        match lease.state {
+            CapacityLeaseState::GlobalReserved => {
+                lease.state = CapacityLeaseState::Returning;
+                Ok(*lease)
+            }
+            CapacityLeaseState::Returning => Ok(*lease),
+            state @ CapacityLeaseState::Returned => {
+                Err(CapacityLeaseReturnError::NotReserved { state })
+            }
+        }
+    }
+
+    /// `RETURNING → RETURNED`. Refunds `amount` to the source pool once.
+    ///
+    /// # Errors
+    ///
+    /// Typed reject: [`CapacityLeaseReturnError`].
+    pub fn ack_return(
+        &mut self,
+        presented: &CellFence,
+        capacity_lease_id: CapacityLeaseId,
+    ) -> Result<CapacityLeaseGrant, CapacityLeaseReturnError> {
+        self.authority.admit(presented)?;
+        let (snapshot, refund) = {
+            let lease = self.lease_mut(capacity_lease_id)?;
+            match lease.state {
+                CapacityLeaseState::Returning => {
+                    lease.state = CapacityLeaseState::Returned;
+                    (*lease, lease.amount)
+                }
+                CapacityLeaseState::Returned => (*lease, 0),
+                state @ CapacityLeaseState::GlobalReserved => {
+                    return Err(CapacityLeaseReturnError::NotReturning { state });
+                }
+            }
+        };
+        self.pool_remaining += refund;
+        Ok(snapshot)
+    }
+
+    fn lease_mut(
+        &mut self,
+        capacity_lease_id: CapacityLeaseId,
+    ) -> Result<&mut CapacityLeaseGrant, CapacityLeaseReturnError> {
+        self.leases
+            .get_mut(&capacity_lease_id)
+            .ok_or(CapacityLeaseReturnError::UnknownLease)
     }
 }
 
@@ -847,6 +948,13 @@ pub enum CapacityLeaseGrantError {
         requested: u64,
         /// Remaining source pool before the attempt.
         available: u64,
+    },
+    /// The same capacity lease id was already issued with a different amount.
+    ConflictingAmount {
+        /// Amount on the committed lease.
+        existing: u64,
+        /// Amount on this grant attempt.
+        requested: u64,
     },
 }
 
@@ -910,11 +1018,64 @@ impl fmt::Display for CapacityLeaseGrantError {
                 formatter,
                 "insufficient CapacityLease source pool: requested {requested} > available {available}"
             ),
+            Self::ConflictingAmount {
+                existing,
+                requested,
+            } => write!(
+                formatter,
+                "conflicting CapacityLease amount: existing {existing} != requested {requested}"
+            ),
         }
     }
 }
 
 impl Error for CapacityLeaseGrantError {}
+
+/// Typed fail-closed rejects for `CapacityLease` pre-active return.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CapacityLeaseReturnError {
+    /// Presented fence was rejected by [`CellAuthority::admit`].
+    Fence(CapacityLeaseGrantError),
+    /// No capacity lease with this id has been issued.
+    UnknownLease,
+    /// Return was asked of a lease that is neither `GLOBAL_RESERVED` nor
+    /// `RETURNING`.
+    NotReserved {
+        /// State of the committed lease.
+        state: CapacityLeaseState,
+    },
+    /// Return ACK was asked of a lease that is neither `RETURNING` nor
+    /// `RETURNED`.
+    NotReturning {
+        /// State of the committed lease.
+        state: CapacityLeaseState,
+    },
+}
+
+impl From<CellAdmitError> for CapacityLeaseReturnError {
+    fn from(error: CellAdmitError) -> Self {
+        Self::Fence(CapacityLeaseGrantError::from(error))
+    }
+}
+
+impl fmt::Display for CapacityLeaseReturnError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Fence(error) => write!(formatter, "CapacityLease fence rejected: {error}"),
+            Self::UnknownLease => write!(formatter, "unknown CapacityLease"),
+            Self::NotReserved { state } => write!(
+                formatter,
+                "CapacityLease return requires GLOBAL_RESERVED, found {state:?}"
+            ),
+            Self::NotReturning { state } => write!(
+                formatter,
+                "CapacityLease return ACK requires RETURNING, found {state:?}"
+            ),
+        }
+    }
+}
+
+impl Error for CapacityLeaseReturnError {}
 
 /// `ExclusiveDeviceLease` state after a successful grant. Full state machine
 /// (`HOLDER_PREPARED` / `ACTIVE` / reset / …) is deferred.
