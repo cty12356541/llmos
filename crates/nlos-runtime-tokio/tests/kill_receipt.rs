@@ -20,16 +20,19 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+#[cfg(unix)]
+use nlos_process::PosixPlatformKillAdapter;
 use nlos_process::{
-    CreateIsolationDomainRequest, IsolationDomainDecision, PlatformKillDecision,
-    PosixPlatformKillAdapter, ProcessAuthority, ProcessBindingDecision, ProcessLifecycleState,
-    PropagateCancelToFibersRequest, PropagateCrashRequest, RegisterDelegatedProcessRequest,
-    RegisterFiberIncarnationRequest, RequestPlatformKillRequest, StubPlatformKillAdapter,
+    CreateIsolationDomainRequest, IsolationDomainDecision, PlatformKillDecision, ProcessAuthority,
+    ProcessBindingDecision, ProcessLifecycleState, PropagateCancelToFibersRequest,
+    PropagateCrashRequest, RegisterDelegatedProcessRequest, RegisterFiberIncarnationRequest,
+    RequestPlatformKillRequest, StubPlatformKillAdapter,
 };
 use nlos_runtime::{FiberExit, FiberHandle, FiberSpec, FiberState, RuntimeAdapter};
+#[cfg(unix)]
+use nlos_runtime_tokio::PlatformKillConsumptionReport;
 use nlos_runtime_tokio::{
-    ChannelWaitError, PlatformKillConsumptionReport, RuntimeHealth, TokioRuntimeAdapter,
-    TokioRuntimeConfig,
+    ChannelWaitError, RuntimeHealth, TokioRuntimeAdapter, TokioRuntimeConfig,
 };
 use nlos_types::{
     AgentInstanceId, CancellationScopeId, ExecutionFiberId, Generation, IdempotencyKey,
