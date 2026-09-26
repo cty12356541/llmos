@@ -18,6 +18,7 @@
 
 use std::sync::Mutex;
 
+#[cfg(unix)]
 use ed25519_dalek::{Signer, SigningKey};
 use nlos_application::ApplicationAuthority;
 use nlos_resource::ResourceAuthority;
@@ -27,12 +28,15 @@ use nlos_system_control::control::{
     ResourceInspector, parse_hex_id,
 };
 use nlos_system_control::resource_inspector::ResourceAuthorityInspector;
+#[cfg(unix)]
 use nlos_types::PrincipalId;
 use serde::Deserialize;
 
+#[cfg(unix)]
+use crate::dto::receipt_dto;
 use crate::dto::{
     ConfigDto, ConfigSourceDto, ControlPlaneFactsDto, FactCheckDto, ParityDto, ReceiptDto,
-    fact_check_dto, receipt_dto,
+    fact_check_dto,
 };
 use crate::error::{DesktopError, from_control_error};
 

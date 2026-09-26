@@ -35,9 +35,12 @@
 //! the socket files, print `STOPPED`, and exit 0. A startup failure prints
 //! one typed error line and exits 2.
 
+#[cfg(all(unix, feature = "daemon"))]
 use std::path::PathBuf;
 use std::process::ExitCode;
+#[cfg(all(unix, feature = "daemon"))]
 use std::sync::Arc;
+#[cfg(all(unix, feature = "daemon"))]
 use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(all(unix, feature = "daemon"))]
