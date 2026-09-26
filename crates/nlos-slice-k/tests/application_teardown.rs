@@ -17,9 +17,11 @@ use std::future::pending;
 use std::sync::Arc;
 
 use nlos_application::{ApplicationAuthorityError, ApplicationStatus};
+#[cfg(unix)]
+use nlos_process::SupervisorPidRegistry;
 use nlos_process::{
     FiberCancelPropagationDecision, PlatformKillDecision, ProcessAuthorityError,
-    ProcessLifecycleState, ProcessTerminalDecision, SupervisorPidRegistry,
+    ProcessLifecycleState, ProcessTerminalDecision,
 };
 use nlos_runtime::{FiberSpec, FiberState, RuntimeAdapter as _, RuntimeError};
 use nlos_runtime_tokio::{TokioRuntimeAdapter, TokioRuntimeConfig};
