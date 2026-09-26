@@ -208,6 +208,15 @@ export interface PresentedSurfaceDto {
   registeredAtMs: number;
 }
 
+/** 当前代际进程绑定(inspect_process_bindings 回执投影)。 */
+export interface PresentedProcessBindingDto {
+  processIdHex: string;
+  registrantPrincipalHex: string;
+  applicationGeneration: number;
+  registrationKeyHex: string;
+  registeredAtMs: number;
+}
+
 /** W32-F:一个应用的呈现事实(当前 durable 状态 + 当前代际可呈现表面集)。 */
 export interface SurfacesPresentationDto {
   applicationIdHex: string;
@@ -216,6 +225,7 @@ export interface SurfacesPresentationDto {
   status: "installed" | "disabled" | "uninstalled";
   packageManifestDigestHex: string;
   presentableSurfaces: PresentedSurfaceDto[];
+  processBindings: PresentedProcessBindingDto[];
 }
 
 /** W32-D 控制面授权事实(客户端路径常量,非 inspect 数据)。 */

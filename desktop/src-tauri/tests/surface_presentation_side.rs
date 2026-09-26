@@ -21,8 +21,8 @@ use llmos_desktop_lib::error::ErrorCode;
 use llmos_desktop_lib::surfaces::{open_configured_application_authority, present_surfaces_core};
 use nlos_application::{
     CompatibilityWindow, InstallApplicationRequest, InstallDecision, PackageSurfaceDeclaration,
-    PackageSurfaceKind, RegisterSurfacesDecision, RegisterSurfacesRequest,
-    UpdateApplicationRequest, UpdateDecision,
+    PackageSurfaceKind, RegisterProcessBindingRequest, RegisterSurfacesDecision,
+    RegisterSurfacesRequest, UpdateApplicationRequest, UpdateDecision,
 };
 use nlos_artifact::{
     ArtifactStore, ContentDigest, CreateArtifactSpec, PackageEntryRole, PackageManifest,
@@ -30,7 +30,7 @@ use nlos_artifact::{
     VerifyPackageRequest, package_manifest_message,
 };
 use nlos_identity::{BootstrapPrincipalRequest, IdentityAuthority, KeyPurpose};
-use nlos_types::{ApplicationId, ArtifactId, IdempotencyKey, PackageId, PrincipalId};
+use nlos_types::{ApplicationId, ArtifactId, IdempotencyKey, PackageId, PrincipalId, ProcessId};
 
 /// 每个测试独享的一次性根目录(进程内唯一)。
 fn temp_root(name: &str) -> PathBuf {
@@ -222,6 +222,15 @@ fn declared_surfaces_present_through_the_desktop_command_face() {
         }
     };
     assert_eq!(registered.len(), 2);
+    authority
+        .register_process_binding(RegisterProcessBindingRequest {
+            package_id: verification.package_id,
+            process_id: ProcessId::from_bytes([0x44; 16]),
+            registrant_principal: installation.installer_principal,
+            idempotency_key: IdempotencyKey::from_bytes([0x94; 16]),
+            registered_at_ms: 7_600,
+        })
+        .expect("register process binding");
 
     // 桌面读者:第二个独立打开的权威句柄 + 呈现核心(Tauri 命令的同
     // 一组合)。
@@ -260,6 +269,17 @@ fn declared_surfaces_present_through_the_desktop_command_face() {
     assert_eq!(panel.kind, "panel");
     assert_eq!(panel.title, "运行面板");
     assert_eq!(panel.entry_name.as_deref(), Some("main"));
+
+    assert_eq!(presentation.process_bindings.len(), 1);
+    let binding = &presentation.process_bindings[0];
+    assert_eq!(binding.process_id_hex, lower_hex(&[0x44; 16]));
+    assert_eq!(
+        binding.registrant_principal_hex,
+        lower_hex(installation.installer_principal.as_bytes())
+    );
+    assert_eq!(binding.application_generation, 1);
+    assert_eq!(binding.registration_key_hex, lower_hex(&[0x94; 16]));
+    assert_eq!(binding.registered_at_ms, 7_600);
 
     // 未配置 application_root:类型化 CONFIG 拒绝(无未接线回退形态)。
     let unwired = match open_configured_application_authority(None) {
@@ -312,12 +332,22 @@ fn stale_generation_and_unknown_package_present_honestly() {
             registered_at_ms: 7_500,
         })
         .expect("generation-1 registration");
+    authority
+        .register_process_binding(RegisterProcessBindingRequest {
+            package_id: first.package_id,
+            process_id: ProcessId::from_bytes([0x45; 16]),
+            registrant_principal: installed.installer_principal,
+            idempotency_key: IdempotencyKey::from_bytes([0x94; 16]),
+            registered_at_ms: 7_600,
+        })
+        .expect("generation-1 process binding");
 
     let desktop =
         open_configured_application_authority(authority_root.to_str()).expect("desktop reader");
     let generation_one =
         present_surfaces_core(&desktop, first.package_id).expect("present generation 1");
     assert_eq!(generation_one.presentable_surfaces.len(), 2);
+    assert_eq!(generation_one.process_bindings.len(), 1);
 
     // 内容更新:同 major 新版本,代际 1 → 2。
     let second = stack.verify_package(
@@ -356,6 +386,10 @@ fn stale_generation_and_unknown_package_present_honestly() {
     assert!(
         generation_two.presentable_surfaces.is_empty(),
         "generation-1 registrations are stale and must not present"
+    );
+    assert!(
+        generation_two.process_bindings.is_empty(),
+        "generation-1 process bindings are stale and must not present"
     );
     assert_eq!(
         authority

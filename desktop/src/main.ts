@@ -925,7 +925,33 @@ function renderSurfacesPresentation(presentation: SurfacesPresentationDto): HTML
       "可呈现表面数",
       String(presentation.presentableSurfaces.length),
     ),
+    fieldRow("当前代际进程绑定数", String(presentation.processBindings.length)),
   );
+  if (presentation.processBindings.length > 0) {
+    const table = el("table", { className: "data-table" });
+    const header = el("tr");
+    header.append(
+      el("th", { text: "process_id" }),
+      el("th", { text: "registrant" }),
+      el("th", { text: "generation" }),
+      el("th", { text: "registered_at_ms" }),
+    );
+    const head = el("thead");
+    head.append(header);
+    const body = el("tbody");
+    for (const binding of presentation.processBindings) {
+      const tr = el("tr");
+      tr.append(
+        el("td", { text: binding.processIdHex }),
+        el("td", { text: binding.registrantPrincipalHex }),
+        el("td", { text: String(binding.applicationGeneration) }),
+        el("td", { text: String(binding.registeredAtMs) }),
+      );
+      body.append(tr);
+    }
+    table.append(head, body);
+    summary.append(table);
+  }
   if (presentation.status !== "installed") {
     summary.append(
       el("p", {

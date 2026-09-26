@@ -7,7 +7,8 @@
 //! 呈现即时打开(WAL 多进程读安全),不缓存句柄。投影纪律:
 //!
 //! - **只呈现声明过的事实**:`inspect_surfaces` 的 durable 行逐位携带
-//!   应用声明的 surface(id/kind/title/entry),DTO 不发明任何字段;
+//!   应用声明的 surface(id/kind/title/entry);`inspect_process_bindings`
+//!   的回执同样逐字段投影。DTO 不发明任何字段;
 //! - **stale 代际不呈现**:只呈现登记在应用**当前**安装代际的表面
 //!   (`[DUI-WINDOW-001]` 「stale Surface 不得接收新输入」的最小版),
 //!   非当前代际与已卸载/停用状态如实投影为空集 + 状态行,不报错;
@@ -40,6 +41,20 @@ pub struct PresentedSurfaceDto {
     pub registered_at_ms: u64,
 }
 
+/// One durable process binding projected for the surface view.
+///
+/// Fields are the `inspect_process_bindings` receipt, hex-encoded. Stale
+/// generations are omitted the same way stale surfaces are.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PresentedProcessBindingDto {
+    pub process_id_hex: String,
+    pub registrant_principal_hex: String,
+    pub application_generation: u64,
+    pub registration_key_hex: String,
+    pub registered_at_ms: u64,
+}
+
 /// One application's presentation facts: current durable state plus the
 /// presentable surface set.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
@@ -53,6 +68,8 @@ pub struct SurfacesPresentationDto {
     pub package_manifest_digest_hex: String,
     /// 当前代际的可呈现表面(声明序);stale 代际/非 installed 状态为空。
     pub presentable_surfaces: Vec<PresentedSurfaceDto>,
+    /// 当前代际的进程绑定(登记序);stale 代际/非 installed 状态为空。
+    pub process_bindings: Vec<PresentedProcessBindingDto>,
 }
 
 fn status_name(status: ApplicationStatus) -> &'static str {
@@ -124,10 +141,15 @@ pub fn present_surfaces_core(
     let registrations = authority
         .inspect_surfaces(package_id)
         .map_err(authority_failure)?;
-    let presentable = if application.status == ApplicationStatus::Installed {
+    let bindings = authority
+        .inspect_process_bindings(package_id)
+        .map_err(authority_failure)?;
+    let current = application.status == ApplicationStatus::Installed;
+    let generation = application.current_installation_generation;
+    let presentable = if current {
         registrations
             .iter()
-            .filter(|row| row.application_generation == application.current_installation_generation)
+            .filter(|row| row.application_generation == generation)
             .map(|row| PresentedSurfaceDto {
                 surface_id_hex: hex(&row.surface_id),
                 kind: kind_name(row.kind).to_owned(),
@@ -140,13 +162,29 @@ pub fn present_surfaces_core(
     } else {
         Vec::new()
     };
+    let process_bindings = if current {
+        bindings
+            .iter()
+            .filter(|row| row.application_generation == generation)
+            .map(|row| PresentedProcessBindingDto {
+                process_id_hex: hex(row.process_id.as_bytes()),
+                registrant_principal_hex: hex(row.registrant_principal.as_bytes()),
+                application_generation: row.application_generation.get(),
+                registration_key_hex: hex(row.idempotency_key.as_bytes()),
+                registered_at_ms: row.registered_at_ms,
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     Ok(SurfacesPresentationDto {
         application_id_hex: hex(application.application_id.as_bytes()),
         package_id_hex: hex(package_id.as_bytes()),
-        application_generation: application.current_installation_generation.get(),
+        application_generation: generation.get(),
         status: status_name(application.status).to_owned(),
         package_manifest_digest_hex: hex(application.package_manifest_digest.as_bytes()),
         presentable_surfaces: presentable,
+        process_bindings,
     })
 }
 
