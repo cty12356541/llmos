@@ -198,6 +198,12 @@ pub fn run_application_teardown(
 /// clock readings under the deterministic keys; a replay run (terminal
 /// marker present) rebuilds the byte-identical requests from the durable
 /// kill receipt and terminal marker instead.
+///
+/// A kill receipt that is already committed while the crash marker is not
+/// (NL kill uses the process id as its command id, then returns before
+/// teardown writes the terminal marker) is adopted: teardown replays that
+/// receipt's idempotency key and `killed_at_ms` instead of minting a second
+/// key.
 fn teardown_step_for(
     runtime: &SliceKRuntime,
     process_id: ProcessId,
@@ -223,6 +229,21 @@ fn teardown_step_for(
         });
     }
     let binding = runtime.process.inspect_active_process_binding(process_id)?;
+    if let Some(kill) = runtime
+        .process
+        .inspect_platform_kill_receipt(process_id, binding.process_generation)?
+    {
+        return Ok(BindingTeardownStep {
+            process_id,
+            process_generation: binding.process_generation,
+            process_fencing_token: binding.process_fencing_token,
+            kill_idempotency_key: kill.idempotency_key,
+            killed_at_ms: kill.killed_at_ms,
+            crash_idempotency_key: crash_key,
+            marked_at_ms: runtime
+                .wall_now_ms(teardown_key(b"crash-clock", process_id.as_bytes()))?,
+        });
+    }
     Ok(BindingTeardownStep {
         process_id,
         process_generation: binding.process_generation,

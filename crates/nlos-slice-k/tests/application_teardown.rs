@@ -475,6 +475,83 @@ async fn uninstall_teardown_contract_via_noop_adapter_on_non_unix() {
     uninstall_teardown_body(&dir, None).await;
 }
 
+/// Kill receipt committed, crash marker not yet written: teardown must adopt
+/// that receipt (NL kill's command id is the process id) instead of minting
+/// a second key and failing `PlatformKillAlreadySignaled`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn teardown_adopts_committed_platform_kill_before_terminal_marker() {
+    let dir = TempDir::new("teardown-kill-race");
+    let seed = 0xE1_u8;
+    let runtime = Arc::new(SliceKRuntime::open(dir.root()).expect("open slice-k runtime"));
+    let adapter = slice_adapter();
+    let mut children = Vec::new();
+    let (pid_first, pid_second) = if cfg!(unix) {
+        let first = std::process::Command::new("sleep")
+            .arg("600")
+            .spawn()
+            .expect("spawn first sleeper");
+        let second = std::process::Command::new("sleep")
+            .arg("600")
+            .spawn()
+            .expect("spawn second sleeper");
+        let pids = (first.id(), second.id());
+        children.push(first);
+        children.push(second);
+        pids
+    } else {
+        (std::process::id(), std::process::id())
+    };
+    let pair = run_second_process_pair(&runtime, &adapter, seed, pid_first, pid_second)
+        .await
+        .expect("second process pair");
+    let process = pair.process_second;
+    let nl_key = nlos_types::IdempotencyKey::from_bytes(*process.process_id.as_bytes());
+    let killed_at_ms = 9_001_u64;
+    let prior_adapter = nlos_process::StubPlatformKillAdapter::new();
+    let prior = runtime
+        .process
+        .request_platform_kill(
+            nlos_process::RequestPlatformKillRequest {
+                process_id: process.process_id,
+                expected_process_generation: process.process_generation,
+                expected_process_fencing_token: process.process_fencing_token,
+                idempotency_key: nl_key,
+                killed_at_ms,
+            },
+            &prior_adapter,
+        )
+        .expect("NL-shaped kill commits before the terminal marker");
+    assert!(matches!(prior, PlatformKillDecision::Signaled(_)));
+    assert!(
+        runtime
+            .process
+            .inspect_process_terminal(process.process_id)
+            .expect("terminal inspect")
+            .is_none(),
+        "the race window is a kill receipt with no crash marker"
+    );
+
+    let teardown =
+        run_application_teardown(&runtime, &adapter, pair.package_id, seed, &pair.registry)
+            .expect("teardown adopts the committed kill");
+    let adopted = teardown
+        .kills
+        .iter()
+        .find(|kill| kill.receipt().process_id == process.process_id)
+        .expect("second process kill");
+    assert!(
+        matches!(adopted, PlatformKillDecision::Replayed(_)),
+        "committed kill must replay, got {adopted:?}"
+    );
+    assert_eq!(adopted.receipt().idempotency_key, nl_key);
+    assert_eq!(adopted.receipt().killed_at_ms, killed_at_ms);
+
+    for mut child in children {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
+
 /// 关联下沉 (W30-D deliverable 3): the schema-v44 declaration association
 /// — `application_id` from a real installation AND a declared plan
 /// revision — lands in the durable task rows, survives reopen, and the
