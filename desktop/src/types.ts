@@ -217,6 +217,15 @@ export interface PresentedProcessBindingDto {
   registeredAtMs: number;
 }
 
+/** 当前代际后台任务登记(inspect_background_tasks 回执投影)。 */
+export interface PresentedBackgroundTaskDto {
+  taskIdHex: string;
+  registrantPrincipalHex: string;
+  applicationGeneration: number;
+  registrationKeyHex: string;
+  registeredAtMs: number;
+}
+
 /** W32-F:一个应用的呈现事实(当前 durable 状态 + 当前代际可呈现表面集)。 */
 export interface SurfacesPresentationDto {
   applicationIdHex: string;
@@ -226,6 +235,7 @@ export interface SurfacesPresentationDto {
   packageManifestDigestHex: string;
   presentableSurfaces: PresentedSurfaceDto[];
   processBindings: PresentedProcessBindingDto[];
+  backgroundTasks: PresentedBackgroundTaskDto[];
 }
 
 /** W32-D 控制面授权事实(客户端路径常量,非 inspect 数据)。 */

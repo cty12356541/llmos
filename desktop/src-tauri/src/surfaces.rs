@@ -8,7 +8,7 @@
 //!
 //! - **只呈现声明过的事实**:`inspect_surfaces` 的 durable 行逐位携带
 //!   应用声明的 surface(id/kind/title/entry);`inspect_process_bindings`
-//!   的回执同样逐字段投影。DTO 不发明任何字段;
+//!   与 `inspect_background_tasks` 的回执同样逐字段投影。DTO 不发明任何字段;
 //! - **stale 代际不呈现**:只呈现登记在应用**当前**安装代际的表面
 //!   (`[DUI-WINDOW-001]` 「stale Surface 不得接收新输入」的最小版),
 //!   非当前代际与已卸载/停用状态如实投影为空集 + 状态行,不报错;
@@ -55,6 +55,20 @@ pub struct PresentedProcessBindingDto {
     pub registered_at_ms: u64,
 }
 
+/// One durable background-task registration projected for the surface view.
+///
+/// Fields are the `inspect_background_tasks` receipt, hex-encoded. Stale
+/// generations are omitted the same way stale process bindings are.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PresentedBackgroundTaskDto {
+    pub task_id_hex: String,
+    pub registrant_principal_hex: String,
+    pub application_generation: u64,
+    pub registration_key_hex: String,
+    pub registered_at_ms: u64,
+}
+
 /// One application's presentation facts: current durable state plus the
 /// presentable surface set.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
@@ -70,6 +84,8 @@ pub struct SurfacesPresentationDto {
     pub presentable_surfaces: Vec<PresentedSurfaceDto>,
     /// 当前代际的进程绑定(登记序);stale 代际/非 installed 状态为空。
     pub process_bindings: Vec<PresentedProcessBindingDto>,
+    /// 当前代际的后台任务登记(登记序);stale 代际/非 installed 状态为空。
+    pub background_tasks: Vec<PresentedBackgroundTaskDto>,
 }
 
 fn status_name(status: ApplicationStatus) -> &'static str {
@@ -144,6 +160,9 @@ pub fn present_surfaces_core(
     let bindings = authority
         .inspect_process_bindings(package_id)
         .map_err(authority_failure)?;
+    let tasks = authority
+        .inspect_background_tasks(package_id)
+        .map_err(authority_failure)?;
     let current = application.status == ApplicationStatus::Installed;
     let generation = application.current_installation_generation;
     let presentable = if current {
@@ -177,6 +196,21 @@ pub fn present_surfaces_core(
     } else {
         Vec::new()
     };
+    let background_tasks = if current {
+        tasks
+            .iter()
+            .filter(|row| row.application_generation == generation)
+            .map(|row| PresentedBackgroundTaskDto {
+                task_id_hex: hex(row.task_id.as_bytes()),
+                registrant_principal_hex: hex(row.registrant_principal.as_bytes()),
+                application_generation: row.application_generation.get(),
+                registration_key_hex: hex(row.idempotency_key.as_bytes()),
+                registered_at_ms: row.registered_at_ms,
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     Ok(SurfacesPresentationDto {
         application_id_hex: hex(application.application_id.as_bytes()),
         package_id_hex: hex(package_id.as_bytes()),
@@ -185,6 +219,7 @@ pub fn present_surfaces_core(
         package_manifest_digest_hex: hex(application.package_manifest_digest.as_bytes()),
         presentable_surfaces: presentable,
         process_bindings,
+        background_tasks,
     })
 }
 

@@ -21,8 +21,8 @@ use llmos_desktop_lib::error::ErrorCode;
 use llmos_desktop_lib::surfaces::{open_configured_application_authority, present_surfaces_core};
 use nlos_application::{
     CompatibilityWindow, InstallApplicationRequest, InstallDecision, PackageSurfaceDeclaration,
-    PackageSurfaceKind, RegisterProcessBindingRequest, RegisterSurfacesDecision,
-    RegisterSurfacesRequest, UpdateApplicationRequest, UpdateDecision,
+    PackageSurfaceKind, RegisterBackgroundTaskRequest, RegisterProcessBindingRequest,
+    RegisterSurfacesDecision, RegisterSurfacesRequest, UpdateApplicationRequest, UpdateDecision,
 };
 use nlos_artifact::{
     ArtifactStore, ContentDigest, CreateArtifactSpec, PackageEntryRole, PackageManifest,
@@ -30,7 +30,9 @@ use nlos_artifact::{
     VerifyPackageRequest, package_manifest_message,
 };
 use nlos_identity::{BootstrapPrincipalRequest, IdentityAuthority, KeyPurpose};
-use nlos_types::{ApplicationId, ArtifactId, IdempotencyKey, PackageId, PrincipalId, ProcessId};
+use nlos_types::{
+    ApplicationId, ArtifactId, IdempotencyKey, PackageId, PrincipalId, ProcessId, TaskId,
+};
 
 /// 每个测试独享的一次性根目录(进程内唯一)。
 fn temp_root(name: &str) -> PathBuf {
@@ -231,6 +233,15 @@ fn declared_surfaces_present_through_the_desktop_command_face() {
             registered_at_ms: 7_600,
         })
         .expect("register process binding");
+    authority
+        .register_background_task(RegisterBackgroundTaskRequest {
+            package_id: verification.package_id,
+            task_id: TaskId::from_bytes([0x55; 16]),
+            registrant_principal: installation.installer_principal,
+            idempotency_key: IdempotencyKey::from_bytes([0x98; 16]),
+            registered_at_ms: 7_700,
+        })
+        .expect("register background task");
 
     // 桌面读者:第二个独立打开的权威句柄 + 呈现核心(Tauri 命令的同
     // 一组合)。
@@ -280,6 +291,17 @@ fn declared_surfaces_present_through_the_desktop_command_face() {
     assert_eq!(binding.application_generation, 1);
     assert_eq!(binding.registration_key_hex, lower_hex(&[0x94; 16]));
     assert_eq!(binding.registered_at_ms, 7_600);
+
+    assert_eq!(presentation.background_tasks.len(), 1);
+    let task = &presentation.background_tasks[0];
+    assert_eq!(task.task_id_hex, lower_hex(&[0x55; 16]));
+    assert_eq!(
+        task.registrant_principal_hex,
+        lower_hex(installation.installer_principal.as_bytes())
+    );
+    assert_eq!(task.application_generation, 1);
+    assert_eq!(task.registration_key_hex, lower_hex(&[0x98; 16]));
+    assert_eq!(task.registered_at_ms, 7_700);
 
     // 未配置 application_root:类型化 CONFIG 拒绝(无未接线回退形态)。
     let unwired = match open_configured_application_authority(None) {
@@ -341,6 +363,15 @@ fn stale_generation_and_unknown_package_present_honestly() {
             registered_at_ms: 7_600,
         })
         .expect("generation-1 process binding");
+    authority
+        .register_background_task(RegisterBackgroundTaskRequest {
+            package_id: first.package_id,
+            task_id: TaskId::from_bytes([0x56; 16]),
+            registrant_principal: installed.installer_principal,
+            idempotency_key: IdempotencyKey::from_bytes([0x99; 16]),
+            registered_at_ms: 7_700,
+        })
+        .expect("generation-1 background task");
 
     let desktop =
         open_configured_application_authority(authority_root.to_str()).expect("desktop reader");
@@ -348,6 +379,7 @@ fn stale_generation_and_unknown_package_present_honestly() {
         present_surfaces_core(&desktop, first.package_id).expect("present generation 1");
     assert_eq!(generation_one.presentable_surfaces.len(), 2);
     assert_eq!(generation_one.process_bindings.len(), 1);
+    assert_eq!(generation_one.background_tasks.len(), 1);
 
     // 内容更新:同 major 新版本,代际 1 → 2。
     let second = stack.verify_package(
@@ -390,6 +422,10 @@ fn stale_generation_and_unknown_package_present_honestly() {
     assert!(
         generation_two.process_bindings.is_empty(),
         "generation-1 process bindings are stale and must not present"
+    );
+    assert!(
+        generation_two.background_tasks.is_empty(),
+        "generation-1 background tasks are stale and must not present"
     );
     assert_eq!(
         authority
