@@ -26,16 +26,21 @@
 //! (`LEASE-PREACTIVE-001`). `RETURNING` does not refund; `RETURNED` refunds
 //! `amount` once. `ACTIVE` stays out: there is no host attach receipt.
 //!
+//! `QuotaLease` loss (`LEASE-LOSS-001`): advancing the Cell epoch moves
+//! `ISSUED` / `ACTIVE` / `CLOSING` leases into `QUARANTINED` without returning
+//! their face value to `AVAILABLE`. `CLOSED` and `CANCELLED` stay put.
+//!
 //! Out of scope: reconciliation receipts, custody (#17), cross-cell grant,
-//! transport, Raft, quarantine, TTL-as-reuse, durable second ledger, Capacity
-//! `ACTIVE` and later reclaim states, and Device reset/zeroization.
+//! transport, Raft, gateway fence-barrier, TTL-as-reuse, durable second
+//! ledger, Capacity `ACTIVE` and later reclaim states, and Device
+//! reset/zeroization.
 
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 
 use nlos_cell::{
-    CellAdmitError, CellAuthority, CellEpoch, CellFence, CellFencingToken, CellIdentity,
+    CellAdmitError, CellAuthority, CellEpoch, CellError, CellFence, CellFencingToken, CellIdentity,
 };
 use nlos_types::{CapacityLeaseId, DeviceId, ExclusiveDeviceLeaseId, Generation, QuotaLeaseId};
 
@@ -63,8 +68,9 @@ impl FenceScope {
 
 /// `QuotaLease` state for the single-Cell prefix.
 ///
-/// Spec chain used here: `ISSUED → ACTIVE → CLOSING → CLOSED` and
-/// `ISSUED → CANCELLED`. `FENCED` / `QUARANTINED` stay out of this slice.
+/// Spec chain used here: `ISSUED → ACTIVE → CLOSING → CLOSED`,
+/// `ISSUED → CANCELLED`, and non-terminal → `QUARANTINED` on epoch advance.
+/// `FENCED` stays out of this slice.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum QuotaLeaseState {
     /// Prepaid and not yet admitted on the node (`ISSUED`).
@@ -77,6 +83,8 @@ pub enum QuotaLeaseState {
     Closed,
     /// Pre-active cancel; full face value returned (`CANCELLED`).
     Cancelled,
+    /// Unreconciled face value frozen after epoch advance (`QUARANTINED`).
+    Quarantined,
 }
 
 /// A single-Cell `QuotaLease` grant snapshot (v0.5 §12 `QuotaLease` fields used
@@ -392,6 +400,33 @@ impl QuotaLeaseGrantor {
         };
         self.available += refund;
         Ok(snapshot)
+    }
+
+    /// Advances the Cell epoch and quarantines unreconciled leases.
+    ///
+    /// `LEASE-LOSS-001`: `ISSUED`, `ACTIVE`, and `CLOSING` leases bound to the
+    /// previous epoch become `QUARANTINED`. Their face value is not returned
+    /// to `AVAILABLE`. `CLOSED` and `CANCELLED` are already reconciled.
+    ///
+    /// # Errors
+    ///
+    /// [`CellError::GenerationExhausted`] when the epoch cannot advance.
+    pub fn advance_epoch_and_quarantine(&mut self) -> Result<CellFence, CellError> {
+        let fence = self.authority.advance_epoch()?;
+        for lease in self.leases.values_mut() {
+            if lease.epoch >= fence.epoch() {
+                continue;
+            }
+            match lease.state {
+                QuotaLeaseState::Issued | QuotaLeaseState::Active | QuotaLeaseState::Closing => {
+                    lease.state = QuotaLeaseState::Quarantined;
+                }
+                QuotaLeaseState::Closed
+                | QuotaLeaseState::Cancelled
+                | QuotaLeaseState::Quarantined => {}
+            }
+        }
+        Ok(fence)
     }
 
     fn lease_mut(
