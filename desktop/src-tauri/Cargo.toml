@@ -71,3 +71,13 @@ getrandom = "0.4"
 # F3-c2:Windows named pipe 传输面(tokio::net::windows::named_pipe;
 # tauri 已带入 tokio,此处只补 net feature,不新增 crate)。
 tokio = { version = "1.48", features = ["net"] }
+# F3-c3:dev-fixture 密钥文件的 owner-only DACL(0600 等价物)需直调
+# Win32 安全 API。windows-sys 与根 workspace 同版本(经 nlos-ipc 传递
+# 依赖已在 desktop 树内),不新增第三方 crate。
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_SystemServices",
+] }

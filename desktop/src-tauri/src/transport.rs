@@ -21,23 +21,24 @@
 //! [`endpoint_channel_binding`] 按规整后的管道名派生,同一域分隔符,
 //! 客户端与 dev-fixture 服务端共用本函数(单一派生点,不会漂移)。
 //!
-//! ## 边界(F3-c3,不做假凭据桩)
+//! ## 边界(F3-c3 后现状)
 //!
-//! 本模块只做**传输通道**,不做 OS 凭据校验:
+//! 本模块只做**传输通道**,不做 OS 凭据校验;Windows 凭据面已拆为两层:
 //!
-//! - Unix 服务端凭据门(0600 权限位 + `peer_cred` uid/gid)住在
-//!   `nlos-system-control` daemon,不在本 crate;
-//! - Windows 等价物(named pipe 安全描述符 / 客户端进程令牌解析,
-//!   `PeerIdentity::WindowsNamedPipe.process_id` 目前恒 `None`——
-//!   `nlos_ipc::windows` 尚未解析对端 pid)属 F3-c3;在落地前,
-//!   dev-fixture 服务端以 `AllowPeer` 放行——与 Unix 夹具现状一致
-//!   (Unix 夹具同样用 `AllowPeer`,生产凭据门在 daemon);
-//! - principal 级认证(ADR-0011 challenge-response)是协议层,平台中立,
-//!   两平台都真实执行:没有 plain socket 捷径。
-//!
-//! TODO(F3-c3):Windows 生产服务端凭据面(`GetNamedPipeClientProcessId`
-//! /进程令牌 ACL 门)+ 与真实 Windows SystemControl daemon 的通道绑定
-//! 约定对齐(当前只有 dev-fixture 双端共读本模块派生)。
+//! - **对端凭据解析**(nlos-ipc):`PeerIdentity::WindowsNamedPipe.process_id`
+//!   由 `nlos_ipc::windows` 以 `GetNamedPipeClientProcessId`/
+//!   `GetNamedPipeServerProcessId` 双向解析(accept/connect 返回时);
+//! - **peer 门**(装配点):dev-fixture Windows 服务端以
+//!   `nlos_ipc::windows::SameUserAuthorizer` 做同用户令牌门(对端 token
+//!   user SID == 本进程 token user SID;0600 Unix socket 权限位的等价物)。
+//!   Unix 侧凭据门(0600 权限位 + `peer_cred` uid/gid)住在
+//!   `nlos-system-control` daemon,不在本 crate——两平台夹具语义对齐
+//!   (Unix 夹具同为 `AllowPeer`,认证入口另有 ADR-0011 principal 级握手,
+//!   平台中立、无 plain 捷径);
+//! - **生产 Windows SystemControl daemon 面**(上游 daemon.rs 整体
+//!   cfg(unix)):named pipe 创建期安全描述符门(替代/叠加 accept 期令牌
+//!   门)与真实 daemon 的通道绑定约定对齐仍是开放项——评估已登记
+//!   (W45-C3 报告),不在本模块伪造。
 
 use nlos_system_control::control::{
     ApplicationInspector, ControlCommand, ControlReceipt, ProcessInspector, ResourceInspector,

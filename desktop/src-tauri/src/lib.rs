@@ -16,6 +16,11 @@ pub mod window_lifecycle;
 #[cfg(feature = "dev-fixture")]
 pub mod devfixture;
 
+/// Windows 安全原语(dev-fixture 凭据面,F3-c3:密钥文件 owner-only DACL)。
+/// 仅 dev-fixture 使用;生产凭据面属后续 Windows daemon 车道。
+#[cfg(all(windows, feature = "dev-fixture"))]
+pub mod winsec;
+
 pub fn run() {
     if let Err(error) = tauri::Builder::default()
         .manage(ipc::AppState::from_env())

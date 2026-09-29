@@ -3,7 +3,8 @@
 //! 装配真实权威(IdentityAuthority / AuthorityClock / SqliteTaskAuthority)
 //! 并同时开放 ADR-0011 认证入口(GUI 唯一接线方式)与 plain 入口(供真实
 //! `system-control-cli` 做一致性比对)。启动后把 GUI 连接所需的全部环境
-//! 变量打印到 stdout,把 Ed25519 种子写入 0600 临时密钥文件。
+//! 变量打印到 stdout,把 Ed25519 种子写入权限收窄的临时密钥文件
+//! (Unix 0600;Windows owner-only DACL,F3-c3)。
 //!
 //! 运行方式与完整演示步骤见 `desktop/README.md`。
 
@@ -78,7 +79,10 @@ async fn main() {
         fixture.endpoint_plain()
     );
     println!();
-    println!("# 密钥种子已写入 0600 文件:{}", key_file.display());
+    println!(
+        "# 密钥种子已写入权限收窄文件(Unix 0600 / Windows owner-only DACL):{}",
+        key_file.display()
+    );
     println!("# Ctrl-C 停止。");
 
     let (authenticated, plain) = fixture.serve_forever();

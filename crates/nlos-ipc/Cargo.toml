@@ -37,11 +37,27 @@ sha2.workspace = true
 tokio.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-windows-sys.workspace = true
+# F3-c3:named-pipe 对端凭据解析(GetNamedPipeClientProcessId/
+# ServerProcessId、对端进程令牌 user SID 比对)在 workspace 基础特性之上
+# 追加的 windows-sys 特性(同一 crate,零新增第三方依赖)。
+windows-sys = { workspace = true, features = [
+    "Win32_Security",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+] }
 
 [dev-dependencies]
 ed25519-dalek.workspace = true
 prost.workspace = true
 
-[lints]
-workspace = true
+# F3-c3 carve-out:named-pipe 对端凭据面必须直调 Win32 FFI(windows-sys),
+# 无法在 unsafe_code=forbid 下表达。放弃 workspace lint 继承并本地重申
+# 同强度的 clippy all/pedantic;unsafe 块仅存在于 src/windows.rs 的 FFI
+# 调用点(逐块 SAFETY 论证),Unix 侧(lib.rs/unix.rs/handshake.rs)
+# 保持零 unsafe。
+[lints.rust]
+unsafe_code = "allow"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"

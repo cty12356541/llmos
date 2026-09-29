@@ -15,12 +15,15 @@
 //! Windows 走 `nlos-ipc` 的 named pipe 适配器 + 平台中立握手原语在
 //! devfixture 侧装配的等价服务回路(上游 auth 模块整体 cfg(unix))。
 //!
+//! OS 凭据面(F3-c3):Windows 侧 named pipe 对端 pid 由 `nlos-ipc` 解析
+//! (`GetNamedPipeClientProcessId`),服务端以 `SameUserAuthorizer` 做
+//! 同用户令牌门(0600 Unix socket 权限位的 Windows 等价物:仅创建用户
+//! 的进程可入);Unix 夹具维持 `AllowPeer` 现状(生产凭据门在上游
+//! daemon,夹具语义两平台对齐:认证入口另有 ADR-0011 principal 级握手)。
+//!
 //! 两个入口共享同一类 `RecoverySystemControl` handler(B-TASK-006L 三入口
 //! 字节一致契约的服务侧前提)。夹具密钥为进程内随机生成(OS 随机源种子),
 //! 只写入权限收窄的临时文件,绝不入仓库。本模块不承载任何生产语义。
-//!
-//! TODO(F3-c3):两端平台的夹具 peer 门都是 `AllowPeer`(与 Unix 夹具现状
-//! 一致);Windows 生产凭据面(named pipe 客户端进程令牌/ACL 门)属 F3-c3。
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -318,16 +321,22 @@ fn authorize_capability(
     }
 }
 
+/// Unix 夹具 peer 门(F3-c3 起 Windows 装配 `SameUserAuthorizer`,此桩
+/// 仅 Unix 保留——与上游夹具现状一致,生产凭据门在 daemon)。
+#[cfg(unix)]
 struct AllowPeer;
 
+#[cfg(unix)]
 impl PeerAuthorizer for AllowPeer {
     fn authorize(&self, _: &PeerIdentity) -> Result<(), String> {
         Ok(())
     }
 }
 
-/// 密钥文件创建(Unix:0600;Windows:默认 ACL,见 `write_key_file` 的
-/// TODO(F3-c3) 注)。
+/// 密钥文件创建:两端平台都在落盘时显式收窄访问面——Unix 以 0600 权限位;
+/// Windows 以 owner-only DACL(`crate::winsec`:唯一 allow-ACE = 当前用户
+/// `FILE_ALL_ACCESS`,创建时经 `SECURITY_ATTRIBUTES` 一次到位,不存在默认
+/// DACL 存续窗口;`key_file_acl_side.rs` 钉死其结构)。
 fn open_key_file(path: &Path) -> Result<fs::File, FixtureError> {
     #[cfg(unix)]
     {
@@ -342,11 +351,7 @@ fn open_key_file(path: &Path) -> Result<fs::File, FixtureError> {
     }
     #[cfg(windows)]
     {
-        fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(path)
-            .map_err(FixtureError::Io)
+        crate::winsec::create_new_owner_only(path).map_err(FixtureError::Io)
     }
 }
 
@@ -385,12 +390,11 @@ impl WindowsHandshakeContext {
     }
 }
 
-/// named pipe accept 预算:适配器的 accept-with-timeout 超时会丢弃预创建
-/// 实例并使 listener 失效,夹具没有"空闲轮"语义,放宽到 1 小时(实际
-/// 不触发;connect 由客户端驱动)。
-#[cfg(windows)]
-const PIPE_ACCEPT_BUDGET: Duration = Duration::from_secs(3600);
-
+/// named pipe accept:F3-c3 起 `nlos-ipc` 适配器的 accept 超时是
+/// cancel-safe 的(超时实例连同挂起的 ConnectNamedPipe 一并归还 listener,
+/// 下轮复用),夹具不再需要放宽超时预算规避"超时丢弃预创建实例且不重建"
+/// 的旧行为——空闲轮按 `TransportConfig` 的 connect 预算轮转,与 Unix
+/// 夹具的空闲轮语义一致。
 #[cfg(windows)]
 async fn accept_pipe(
     listener: &mut NamedPipeListenerAdapter,
@@ -402,15 +406,7 @@ async fn accept_pipe(
     ),
     nlos_ipc::IpcError,
 > {
-    let accept_config = TransportConfig::new(
-        config.maximum_frame_bytes(),
-        PIPE_ACCEPT_BUDGET,
-        config.read_timeout(),
-        config.write_timeout(),
-    )?;
-    // TODO(F3-c3):`PeerIdentity::WindowsNamedPipe.process_id` 目前恒 None
-    // (nlos-ipc windows 适配器未解析对端 pid)——Windows 凭据门的输入。
-    listener.accept(accept_config).await
+    listener.accept(config).await
 }
 
 /// Windows 版 `authenticated_serve_one_control` 的 devfixture 镜像:语义逐
@@ -419,22 +415,24 @@ async fn accept_pipe(
 /// → `serve_one`(墙钟经 `AuthorityClock`,按 correlation id 幂等)。
 /// 上游把 post-handshake serve 结果放在 `AuthenticatedServeOutcome.served`
 /// (不算握手错误);夹具循环同样忽略 serve 结果,只对握手错误退避。
+/// peer 门为泛型(F3-c3:Windows 装配 `SameUserAuthorizer`)。
 #[cfg(windows)]
 #[allow(clippy::too_many_arguments)]
-async fn authenticated_serve_one_control_pipe<H, A, N>(
+async fn authenticated_serve_one_control_pipe<H, A, G, N>(
     listener: &mut NamedPipeListenerAdapter,
     config: TransportConfig,
     control: &RecoverySystemControl<'_, H, A>,
     identity: &IdentityAuthority,
     clock: &AuthorityClock,
     handshake: &WindowsHandshakeContext,
-    peer_gate: &AllowPeer,
+    peer_gate: &G,
     now_monotonic_ns: u64,
     next_nonce: N,
 ) -> Result<(), nlos_ipc::handshake::HandshakeError>
 where
     H: RecoveryHealthSource,
     A: SystemControlAuthorizer,
+    G: PeerAuthorizer,
     N: FnOnce() -> [u8; nlos_schema::HANDSHAKE_NONCE_BYTES],
 {
     use nlos_clock::NowRequest;
@@ -852,6 +850,9 @@ pub struct DevFixture {
     listener_authenticated: Option<ListenerAdapter>,
     listener_plain: Option<ListenerAdapter>,
     random: RandomSource,
+    /// Windows OS 凭据门(F3-c3):named pipe 双入口共用的同用户 peer 门。
+    #[cfg(windows)]
+    peer_gate: nlos_ipc::windows::SameUserAuthorizer,
     principal_hex: String,
     key_seed_hex: String,
     plan_id_hex: String,
@@ -949,6 +950,8 @@ impl DevFixture {
         let listener_authenticated = Some(bind_endpoint(&endpoint_authenticated)?);
         let listener_plain = Some(bind_endpoint(&endpoint_plain)?);
         let settled = create_settled_reservation(&root.0)?;
+        #[cfg(windows)]
+        let peer_gate = nlos_ipc::windows::SameUserAuthorizer::new().map_err(FixtureError::Io)?;
 
         Ok(Self {
             root,
@@ -962,6 +965,8 @@ impl DevFixture {
             listener_authenticated,
             listener_plain,
             random,
+            #[cfg(windows)]
+            peer_gate,
             principal_hex: hex(binding.principal_id.as_bytes()),
             key_seed_hex: hex(&key_seed),
             plan_id_hex: hex(plan_id.as_bytes()),
@@ -1021,8 +1026,8 @@ impl DevFixture {
     }
 
     /// 把 Ed25519 种子写入权限收窄的密钥文件(客户端派发时读取)。
-    /// Unix:0600;Windows:默认继承用户态 ACL(用户 profile 临时目录),
-    /// TODO(F3-c3):显式 ACL 收窄(0600 等价物)属 Windows 凭据面车道。
+    /// Unix:0600 权限位;Windows:owner-only DACL(`crate::winsec`,
+    /// 0600 等价物——`key_file_acl_side.rs` 断言其单 ACE 结构)。
     pub fn write_key_file(&self, path: &Path) -> Result<(), FixtureError> {
         use std::io::Write;
 
@@ -1048,6 +1053,8 @@ impl DevFixture {
         let handshake = Arc::clone(&self.handshake);
         let health = self.health.clone();
         let random = self.random.clone();
+        #[cfg(windows)]
+        let peer_gate = self.peer_gate.clone();
         tokio::spawn(async move {
             // Windows 的 named pipe accept 需要 &mut(Unix 不需要)。
             #[allow(unused_mut)]
@@ -1078,7 +1085,7 @@ impl DevFixture {
                     identity.as_ref(),
                     clock.as_ref(),
                     handshake.as_ref(),
-                    &AllowPeer,
+                    &peer_gate,
                     monotonic_now_ns(),
                     || random.bytes32(),
                 )
@@ -1097,6 +1104,8 @@ impl DevFixture {
         let listener = self.listener_plain.take();
         let tasks = Arc::clone(&self.tasks);
         let health = self.health.clone();
+        #[cfg(windows)]
+        let peer_gate = self.peer_gate.clone();
         tokio::spawn(async move {
             #[allow(unused_mut)]
             let Some(mut listener) = listener else {
@@ -1117,6 +1126,9 @@ impl DevFixture {
                 let (stream, peer) =
                     match accept_pipe(&mut listener, TransportConfig::default()).await {
                         Ok(connection) => connection,
+                        Err(nlos_ipc::IpcError::Timeout(nlos_ipc::IoOperation::Accept)) => {
+                            continue;
+                        }
                         Err(error) => {
                             eprintln!("dev_server: plain accept: {error}");
                             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -1124,11 +1136,10 @@ impl DevFixture {
                         }
                     };
                 let wall_ms = i64::try_from(wall_now_ms()).unwrap_or(i64::MAX);
-                // 一个坏交换不拖垮端点:handler 失败只影响该连接。
-                let _ = serve_one(stream, TransportConfig::default(), peer, &AllowPeer, {
+                let handler = {
                     let tasks = Arc::clone(&tasks);
                     let health = health.clone();
-                    move |validated| {
+                    move |validated: nlos_schema::ValidatedExchangeRequest| {
                         let control =
                             RecoverySystemControl::new(tasks.as_ref(), &health, &CapabilityPolicy);
                         let response = control.handle_for_ipc(
@@ -1142,7 +1153,25 @@ impl DevFixture {
                             }))
                         }
                     }
-                })
+                };
+                // 一个坏交换不拖垮端点:handler 失败只影响该连接。
+                #[cfg(unix)]
+                let _ = serve_one(
+                    stream,
+                    TransportConfig::default(),
+                    peer,
+                    &AllowPeer,
+                    handler,
+                )
+                .await;
+                #[cfg(windows)]
+                let _ = serve_one(
+                    stream,
+                    TransportConfig::default(),
+                    peer,
+                    &peer_gate,
+                    handler,
+                )
                 .await;
             }
         })
