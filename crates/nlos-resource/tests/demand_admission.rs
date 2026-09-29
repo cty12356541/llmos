@@ -85,6 +85,29 @@ fn reserve_request(
     }
 }
 
+/// The pre-v6 `reservation_identity_immutable` trigger (the v1 thirteen
+/// identity columns), used by fixtures to reproduce a database whose
+/// reservations identity trigger predates the demand columns.
+const PRE_DEMAND_IDENTITY_TRIGGER_SQL: &str =
+    "DROP TRIGGER IF EXISTS reservation_identity_immutable;
+     CREATE TRIGGER reservation_identity_immutable BEFORE UPDATE ON reservations
+     WHEN NEW.reservation_id != OLD.reservation_id
+       OR NEW.idempotency_key != OLD.idempotency_key
+       OR NEW.account_id != OLD.account_id OR NEW.quote_id != OLD.quote_id
+       OR NEW.call_id != OLD.call_id OR NEW.operation_id != OLD.operation_id
+       OR NEW.driver_id != OLD.driver_id OR NEW.device_id != OLD.device_id
+       OR NEW.driver_generation != OLD.driver_generation
+       OR NEW.driver_fencing_token != OLD.driver_fencing_token
+       OR NEW.upper_bound != OLD.upper_bound OR NEW.activation_token != OLD.activation_token
+       OR NEW.created_at_ms != OLD.created_at_ms
+     BEGIN SELECT RAISE(ABORT, 'reservation identity is immutable'); END;";
+
+fn reservation_identity_update_fails(database: &Path, set_clause: &str) -> bool {
+    let raw = Connection::open(database.join("resource-authority.db")).unwrap();
+    raw.execute(&format!("UPDATE reservations SET {set_clause}"), [])
+        .is_err()
+}
+
 #[test]
 fn reserve_rejects_each_dimension_exceeding_quote_capacity_fail_closed() {
     let capacity = ResourceDemand {
@@ -280,18 +303,20 @@ fn legacy_v5_rows_migrate_with_zero_default_demand_and_legacy_path_still_binds()
         assert!(matches!(reserved, ReservationDecision::Reserved(_)));
         (reserved.record().reservation_id, account.account_id)
     };
-    // Strip the v6 demand columns to reproduce a legacy v5-shaped database.
+    // Strip the v6 demand columns to reproduce a legacy v5-shaped database
+    // (its identity trigger predates the demand columns).
     {
         let raw = Connection::open(root.path().join("resource-authority.db")).unwrap();
-        raw.execute_batch(
-            "ALTER TABLE quotes DROP COLUMN capacity_cpu_shares;
+        raw.execute_batch(&format!(
+            "{PRE_DEMAND_IDENTITY_TRIGGER_SQL}
+             ALTER TABLE quotes DROP COLUMN capacity_cpu_shares;
              ALTER TABLE quotes DROP COLUMN capacity_memory_mib;
              ALTER TABLE quotes DROP COLUMN capacity_io_weight;
              ALTER TABLE reservations DROP COLUMN demand_cpu_shares;
              ALTER TABLE reservations DROP COLUMN demand_memory_mib;
              ALTER TABLE reservations DROP COLUMN demand_io_weight;
-             PRAGMA user_version = 5;",
-        )
+             PRAGMA user_version = 5;"
+        ))
         .unwrap();
     }
     let authority = ResourceAuthority::open(root.path()).unwrap();
@@ -302,6 +327,12 @@ fn legacy_v5_rows_migrate_with_zero_default_demand_and_legacy_path_still_binds()
         "legacy v5 rows read back as the zero (single-credit) demand profile"
     );
     assert_eq!(migrated.upper_bound, 100);
+    // The v6 migration rebuilds the identity trigger over the surviving
+    // rows: the migrated row's zero demand is now DDL-immutable.
+    assert!(
+        reservation_identity_update_fails(root.path(), "demand_cpu_shares = 1"),
+        "the rebuilt trigger must cover the demand columns for legacy rows"
+    );
 
     // The legacy zero-demand path still binds: zero demand never exceeds
     // zero capacity, so pre-demand callers keep their exact behavior.
@@ -358,10 +389,11 @@ fn partial_demand_schema_fails_closed() {
     }
     {
         let raw = Connection::open(root.path().join("resource-authority.db")).unwrap();
-        raw.execute_batch(
-            "ALTER TABLE reservations DROP COLUMN demand_io_weight;
-             PRAGMA user_version = 5;",
-        )
+        raw.execute_batch(&format!(
+            "{PRE_DEMAND_IDENTITY_TRIGGER_SQL}
+             ALTER TABLE reservations DROP COLUMN demand_io_weight;
+             PRAGMA user_version = 5;"
+        ))
         .unwrap();
     }
     assert!(matches!(
@@ -369,5 +401,161 @@ fn partial_demand_schema_fails_closed() {
         Err(ResourceAuthorityError::CorruptRecord(
             "partial resource demand schema"
         ))
+    ));
+}
+
+/// The declared demand of a fresh v6 database is part of the
+/// DDL-enforced immutable Reservation identity: out-of-band SQL cannot
+/// rewrite it, while the mutable bookkeeping columns (the usage
+/// high-water) keep updating.
+#[test]
+fn declared_demand_is_ddl_immutable_on_fresh_v6_databases() {
+    let root = Root::new("demand-immutable");
+    let reservation_id = {
+        let authority = ResourceAuthority::open(root.path()).unwrap();
+        let driver = authority
+            .register_driver(driver_request(43))
+            .unwrap()
+            .record();
+        let account = authority.create_account(account_request(43, 1000)).unwrap();
+        let capacity = ResourceDemand {
+            cpu_shares: 100,
+            memory_mib: 1024,
+            io_weight: 10,
+        };
+        let quote = authority
+            .create_quote(quote_request(43, driver, 100, capacity))
+            .unwrap()
+            .record();
+        let demand = ResourceDemand {
+            cpu_shares: 64,
+            memory_mib: 512,
+            io_weight: 5,
+        };
+        authority
+            .reserve(reserve_request(43, account, quote, demand))
+            .unwrap()
+            .record()
+            .reservation_id
+    };
+
+    for set_clause in [
+        "demand_cpu_shares = demand_cpu_shares + 1",
+        "demand_memory_mib = 0",
+        "demand_io_weight = 7",
+    ] {
+        assert!(
+            reservation_identity_update_fails(root.path(), set_clause),
+            "out-of-band UPDATE ({set_clause}) must be DDL-rejected"
+        );
+    }
+    // The quote capacity columns are covered by the whole-table quote
+    // immutability trigger.
+    let raw = Connection::open(root.path().join("resource-authority.db")).unwrap();
+    assert!(
+        raw.execute("UPDATE quotes SET capacity_cpu_shares = 1", [])
+            .is_err()
+    );
+    // Mutable bookkeeping columns are not over-blocked by the identity
+    // trigger (the consume path updates exactly these columns).
+    assert_eq!(
+        raw.execute(
+            "UPDATE reservations SET usage_high_water_seq = 3, usage_high_water = 70
+             WHERE reservation_id = ?1",
+            rusqlite::params![reservation_id.as_bytes().as_slice()],
+        )
+        .unwrap(),
+        1
+    );
+}
+
+/// Existing-data upgrade: a v6 database migrated before the demand columns
+/// joined the identity trigger keeps its rows, and the first reopen after
+/// the fix rebuilds the trigger in place over the surviving rows.
+#[test]
+fn pre_demand_v6_identity_trigger_rebuilds_over_surviving_rows() {
+    let root = Root::new("demand-trigger-rebuild");
+    let seeded = {
+        let authority = ResourceAuthority::open(root.path()).unwrap();
+        let driver = authority
+            .register_driver(driver_request(44))
+            .unwrap()
+            .record();
+        let account = authority.create_account(account_request(44, 1000)).unwrap();
+        let capacity = ResourceDemand {
+            cpu_shares: 100,
+            memory_mib: 1024,
+            io_weight: 10,
+        };
+        let quote = authority
+            .create_quote(quote_request(44, driver, 100, capacity))
+            .unwrap()
+            .record();
+        let demand = ResourceDemand {
+            cpu_shares: 64,
+            memory_mib: 512,
+            io_weight: 5,
+        };
+        authority
+            .reserve(reserve_request(44, account, quote, demand))
+            .unwrap()
+            .record()
+    };
+
+    // Reproduce the pre-fix database: columns present, identity trigger
+    // predating them (the defect state — a demand rewrite is accepted).
+    {
+        let raw = Connection::open(root.path().join("resource-authority.db")).unwrap();
+        raw.execute_batch(PRE_DEMAND_IDENTITY_TRIGGER_SQL).unwrap();
+        assert!(
+            !reservation_identity_update_fails(root.path(), "demand_cpu_shares = 65"),
+            "fixture setup: the pre-demand trigger must not cover the demand columns"
+        );
+        // Undo the probe rewrite so the upgrade asserts over pristine data.
+        assert_eq!(
+            raw.execute(
+                "UPDATE reservations SET demand_cpu_shares = ?1 WHERE reservation_id = ?2",
+                rusqlite::params![
+                    i64::try_from(seeded.demand.cpu_shares).unwrap(),
+                    seeded.reservation_id.as_bytes().as_slice()
+                ],
+            )
+            .unwrap(),
+            1
+        );
+    }
+
+    // First reopen: the trigger-only upgrade runs over the surviving rows.
+    let authority = ResourceAuthority::open(root.path()).unwrap();
+    assert_eq!(
+        authority
+            .inspect_reservation(seeded.reservation_id)
+            .unwrap(),
+        seeded,
+        "the trigger rebuild leaves the surviving row byte-identical"
+    );
+    assert!(
+        reservation_identity_update_fails(root.path(), "demand_cpu_shares = 65"),
+        "after the upgrade the declared demand is DDL-immutable"
+    );
+    assert!(
+        reservation_identity_update_fails(root.path(), "demand_io_weight = 9"),
+        "every demand column is covered"
+    );
+
+    // Second reopen takes the complete-state fast path (idempotent re-entry)
+    // and the protection stays enforced.
+    drop(authority);
+    let reopened = ResourceAuthority::open(root.path()).unwrap();
+    assert_eq!(
+        reopened
+            .inspect_reservation(seeded.reservation_id)
+            .unwrap()
+            .demand,
+        seeded.demand
+    );
+    assert!(reservation_identity_update_fails(
+        root.path(),
+        "demand_memory_mib = 1"
     ));
 }

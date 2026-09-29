@@ -116,6 +116,109 @@ fn bootstrap_is_atomic_durable_and_exactly_replayable() {
 }
 
 #[test]
+fn bootstrap_replay_after_rotation_returns_the_bootstrap_point_binding() {
+    let root = Root::new("bootstrap-replay-rotate");
+    let old_key = signing_key(15);
+    let new_key = signing_key(16);
+    let request = bootstrap_request(15, &old_key);
+    let bootstrap_binding = {
+        let authority = IdentityAuthority::open(root.path()).unwrap();
+        let created = authority.bootstrap_principal(request).unwrap();
+        assert!(matches!(created, BootstrapDecision::Created(_)));
+        created.binding()
+    };
+
+    let (replayed, current) = {
+        let authority = IdentityAuthority::open(root.path()).unwrap();
+        authority
+            .rotate_key(RotateKeyRequest {
+                key_id: bootstrap_binding.key_id,
+                expected_key_generation: bootstrap_binding.key_generation,
+                expected_identity_snapshot_id: bootstrap_binding.identity_snapshot_id,
+                new_public_key: new_key.verifying_key().to_bytes(),
+                new_valid_from_ms: 2_000,
+                new_valid_until_ms: 10_000,
+                idempotency_key: IdempotencyKey::from_bytes([0x8A; 16]),
+                rotated_at_ms: 3_000,
+            })
+            .unwrap();
+        let replay = authority.bootstrap_principal(request).unwrap();
+        assert!(
+            matches!(replay, BootstrapDecision::Replayed(_)),
+            "an identical bootstrap request must replay, not conflict, after rotation"
+        );
+        let current = authority
+            .inspect_current_binding(bootstrap_binding.key_id)
+            .unwrap();
+        (replay.binding(), current)
+    };
+
+    // The replayed decision is exactly the original Created binding (the
+    // generation-1 snapshot binding), while the live binding advanced.
+    assert_eq!(replayed, bootstrap_binding);
+    assert_eq!(replayed.key_generation, Generation::INITIAL);
+    assert_eq!(replayed.public_key, old_key.verifying_key().to_bytes());
+    assert_ne!(current.public_key, replayed.public_key);
+    assert_eq!(current.key_generation.get(), 2);
+
+    // The point-in-time replay survives restart, and a materially different
+    // request under the same idempotency key still fails closed.
+    let reopened = IdentityAuthority::open(root.path()).unwrap();
+    assert_eq!(
+        reopened.bootstrap_principal(request).unwrap().binding(),
+        bootstrap_binding
+    );
+    let mut changed = request;
+    changed.public_key = signing_key(17).verifying_key().to_bytes();
+    assert!(matches!(
+        reopened.bootstrap_principal(changed),
+        Err(IdentityAuthorityError::IdempotencyConflict)
+    ));
+}
+
+#[test]
+fn bootstrap_replay_after_revocation_returns_the_bootstrap_point_binding() {
+    let root = Root::new("bootstrap-replay-revoke");
+    let key = signing_key(18);
+    let request = bootstrap_request(18, &key);
+    let bootstrap_binding = {
+        let authority = IdentityAuthority::open(root.path()).unwrap();
+        authority.bootstrap_principal(request).unwrap().binding()
+    };
+
+    let replayed = {
+        let authority = IdentityAuthority::open(root.path()).unwrap();
+        authority
+            .revoke_key(RevokeKeyRequest {
+                key_id: bootstrap_binding.key_id,
+                expected_key_generation: bootstrap_binding.key_generation,
+                expected_identity_snapshot_id: bootstrap_binding.identity_snapshot_id,
+                idempotency_key: IdempotencyKey::from_bytes([0x8B; 16]),
+                revoked_at_ms: 3_000,
+            })
+            .unwrap();
+        let replay = authority.bootstrap_principal(request).unwrap();
+        assert!(matches!(replay, BootstrapDecision::Replayed(_)));
+        replay.binding()
+    };
+
+    assert_eq!(replayed, bootstrap_binding);
+    assert_eq!(replayed.key_revoked_at_ms, None);
+    let reopened = IdentityAuthority::open(root.path()).unwrap();
+    assert_eq!(
+        reopened.bootstrap_principal(request).unwrap().binding(),
+        bootstrap_binding
+    );
+    assert_eq!(
+        reopened
+            .inspect_current_binding(bootstrap_binding.key_id)
+            .unwrap()
+            .key_revoked_at_ms,
+        Some(3_000)
+    );
+}
+
+#[test]
 fn semantic_verification_checks_signature_binding_and_validity() {
     let root = Root::new("verify");
     let key = signing_key(20);

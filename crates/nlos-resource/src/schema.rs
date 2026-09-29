@@ -573,10 +573,37 @@ pub(crate) fn migrate_v5(connection: &mut Connection) -> Result<(), ResourceAuth
     Ok(())
 }
 
+/// The v6 `reservation_identity_immutable` trigger: the v1 identity columns
+/// plus the three declared demand columns, so out-of-band SQL cannot rewrite
+/// a Reservation's declared demand (the quotes capacity columns are already
+/// covered by the whole-table `quotes_immutable_update` trigger). Replacing
+/// the v1 trigger is data-preserving: `DROP TRIGGER` + `CREATE TRIGGER`
+/// never touches surviving rows.
+const RESERVATION_IDENTITY_IMMUTABLE_TRIGGER_SQL: &str =
+    "DROP TRIGGER IF EXISTS reservation_identity_immutable;
+     CREATE TRIGGER reservation_identity_immutable BEFORE UPDATE ON reservations
+     WHEN NEW.reservation_id != OLD.reservation_id
+       OR NEW.idempotency_key != OLD.idempotency_key
+       OR NEW.account_id != OLD.account_id OR NEW.quote_id != OLD.quote_id
+       OR NEW.call_id != OLD.call_id OR NEW.operation_id != OLD.operation_id
+       OR NEW.driver_id != OLD.driver_id OR NEW.device_id != OLD.device_id
+       OR NEW.driver_generation != OLD.driver_generation
+       OR NEW.driver_fencing_token != OLD.driver_fencing_token
+       OR NEW.upper_bound != OLD.upper_bound OR NEW.activation_token != OLD.activation_token
+       OR NEW.created_at_ms != OLD.created_at_ms
+       OR NEW.demand_cpu_shares != OLD.demand_cpu_shares
+       OR NEW.demand_memory_mib != OLD.demand_memory_mib
+       OR NEW.demand_io_weight != OLD.demand_io_weight
+     BEGIN SELECT RAISE(ABORT, 'reservation identity is immutable'); END;";
+
 /// Adds multi-dimension Reservation demand admission columns: per-dimension
 /// capacity on quotes and declared demand on reservations. Legacy rows keep
 /// the all-zero default (the legacy single-credit dimension profile), so
-/// v1-v5 data read-back and admission behavior is unchanged.
+/// v1-v5 data read-back and admission behavior is unchanged. The
+/// `reservation_identity_immutable` trigger is rebuilt in the same migration
+/// so the declared demand columns join the schema-enforced immutable
+/// Reservation identity; an already-migrated v6 database whose trigger
+/// predates the demand columns is upgraded in place over its surviving rows.
 pub(crate) fn migrate_v6(connection: &mut Connection) -> Result<(), ResourceAuthorityError> {
     fn table_columns(
         connection: &Connection,
@@ -610,8 +637,30 @@ pub(crate) fn migrate_v6(connection: &mut Connection) -> Result<(), ResourceAuth
         .any(|c| {
             quote_columns.iter().any(|n| n == c) || reservation_columns.iter().any(|n| n == c)
         });
+    // The identity trigger must cover the demand columns; probing the stored
+    // trigger text detects a pre-demand v6 database that already has the
+    // columns but not their immutability protection.
+    let identity_trigger_covers_demand: bool = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger'
+          AND name='reservation_identity_immutable'
+          AND sql LIKE '%demand_cpu_shares%'
+          AND sql LIKE '%demand_memory_mib%'
+          AND sql LIKE '%demand_io_weight%'",
+        [],
+        |row| row.get::<_, i64>(0),
+    )? == 1;
     if has_capacity && has_demand {
-        connection.pragma_update(None, "user_version", 6)?;
+        if identity_trigger_covers_demand {
+            connection.pragma_update(None, "user_version", 6)?;
+            return Ok(());
+        }
+        // Existing v6 database whose identity trigger predates the demand
+        // columns: rebuild only the trigger (a data-preserving upgrade over
+        // the surviving rows) and re-stamp the version.
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute_batch(RESERVATION_IDENTITY_IMMUTABLE_TRIGGER_SQL)?;
+        transaction.execute_batch("PRAGMA user_version = 6;")?;
+        transaction.commit()?;
         return Ok(());
     }
     if partial {
@@ -643,6 +692,7 @@ pub(crate) fn migrate_v6(connection: &mut Connection) -> Result<(), ResourceAuth
 
          PRAGMA user_version = 6;",
     )?;
+    transaction.execute_batch(RESERVATION_IDENTITY_IMMUTABLE_TRIGGER_SQL)?;
     transaction.commit()?;
     Ok(())
 }

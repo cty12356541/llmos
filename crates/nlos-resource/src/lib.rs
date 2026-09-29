@@ -215,11 +215,13 @@ impl ResourceDemand {
 
     /// Scales every dimension down to `percent`% of `self` (`100` is the
     /// exact identity; smaller percents saturate and truncate, only ever
-    /// shrinking a dimension; `0` collapses the demand to zero). This is
-    /// the authoritative throttle adjustment of the demand type —
-    /// [`throttle_demand`] pairs it with the admission check.
+    /// shrinking a dimension; `0` collapses the demand to zero). Percents
+    /// above `100` are clamped to the exact identity — a throttle never
+    /// widens a demand. This is the authoritative throttle adjustment of the
+    /// demand type — [`throttle_demand`] pairs it with the admission check.
     #[must_use]
     pub const fn throttled_to_percent(self, percent: u64) -> Self {
+        let percent = if percent > 100 { 100 } else { percent };
         if percent == 100 {
             self
         } else {
@@ -241,7 +243,9 @@ impl ResourceDemand {
 /// coordinator lane's scope.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DemandThrottle {
-    /// Whole-percent level the demand was throttled down to.
+    /// Whole-percent level the demand was throttled down to (the effective
+    /// level after clamping to `[0, 100]`, so the record always satisfies
+    /// `demand_before.throttled_to_percent(throttle_percent) == demand_after`).
     pub throttle_percent: u64,
     pub demand_before: ResourceDemand,
     pub demand_after: ResourceDemand,
@@ -253,18 +257,19 @@ pub struct DemandThrottle {
 }
 
 /// Applies one authoritative throttle adjustment: every dimension of
-/// `current` is scaled down to `percent`% and the result is
-/// admission-checked against `capacity` in the fixed
-/// [`DemandDimension::ALL`] order.
+/// `current` is scaled down to `percent`% (clamped to `[0, 100]`, so a
+/// throttle never widens a demand) and the result is admission-checked
+/// against `capacity` in the fixed [`DemandDimension::ALL`] order.
 #[must_use]
 pub fn throttle_demand(
     current: ResourceDemand,
     capacity: ResourceDemand,
     percent: u64,
 ) -> DemandThrottle {
+    let effective_percent = percent.min(100);
     let demand_after = current.throttled_to_percent(percent);
     DemandThrottle {
-        throttle_percent: percent,
+        throttle_percent: effective_percent,
         demand_before: current,
         demand_after,
         capacity,
@@ -1380,6 +1385,17 @@ impl ResourceAuthority {
     /// present, and credits `upper_bound - final_usage` back to the account's
     /// available credit (double-entry release of the hold).
     ///
+    /// Stale-fence settlement: while the quote's driver fence is still
+    /// current, any monotonic settlement within the upper bound is accepted.
+    /// Once the driver rotated past the reservation's fence, consumption is
+    /// frozen at the durable high-water, so settlement is only accepted
+    /// pinned to exactly that frozen `(high_water_seq, high_water)` — the
+    /// escape hatch that keeps a rotated driver from permanently freezing
+    /// the held credit. Any larger claim fails as [`ResourceAuthorityError::StaleDriver`]
+    /// because the stale fence can no longer prove usage above the
+    /// high-water; activation, consumption, and quarantine keep failing
+    /// closed on a stale fence.
+    ///
     /// # Errors
     /// Fails closed on inactive/stale bindings, replay conflicts, timestamp
     /// regressions, monotonicity/bound violations, or storage failure.
@@ -1475,12 +1491,30 @@ impl ResourceAuthority {
         {
             return Err(ResourceAuthorityError::InvalidFinalizeTimestamp);
         }
-        active_driver(
+        // Settlement fence. Current fence: any monotonic settlement within
+        // the upper bound is provable, as before. Stale or absent fence: the
+        // durable high-water is the only provable settlement basis (usage
+        // above it could only be reported by the rotated-away driver), so
+        // settlement is pinned to exactly the frozen high-water pair — this
+        // is the recovery path for holds that a driver rotation would
+        // otherwise freeze forever.
+        if let Err(fence_error) = active_driver(
             &transaction,
             reservation.driver_id,
             reservation.driver_generation,
             reservation.driver_fencing_token,
-        )?;
+        ) {
+            match fence_error {
+                ResourceAuthorityError::StaleDriver | ResourceAuthorityError::DriverNotFound => {
+                    if q.final_seq != reservation.usage_high_water_seq
+                        || q.final_usage != reservation.usage_high_water
+                    {
+                        return Err(ResourceAuthorityError::StaleDriver);
+                    }
+                }
+                other_error => return Err(other_error),
+            }
+        }
         if q.final_seq < reservation.usage_high_water_seq {
             return Err(ResourceAuthorityError::FinalizeSequenceConflict);
         }

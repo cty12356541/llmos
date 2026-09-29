@@ -19,7 +19,7 @@ use nlos_resource::{
     CreateAccountRequest, CreateQuoteRequest, FinalizationReceipt, FinalizeDecision,
     FinalizeReservationRequest, QuarantineDecision, QuarantineReservationRequest,
     RegisterDriverRequest, ReservationState, ReserveRequest, ResourceAuthority,
-    ResourceAuthorityError, ResourceDemand,
+    ResourceAuthorityError, ResourceDemand, RotateDriverRequest,
 };
 use nlos_types::{CallId, IdempotencyKey, OperationId, ReceiptId};
 use rusqlite::Connection;
@@ -565,6 +565,144 @@ fn quarantined_reservation_reconciles_with_effect_closed_proof() {
     assert_eq!(
         count, 1,
         "the immutable quarantine receipt survives reconciliation"
+    );
+}
+
+/// A driver rotation freezes in-flight metering (consume/quarantine keep
+/// failing closed on the stale fence), but the settlement path must stay
+/// live: finalize is accepted pinned to exactly the durable frozen
+/// high-water, releasing the hold instead of stranding it forever. Any
+/// claim above the frozen high-water still fails as `StaleDriver`, because
+/// only the rotated-away driver could have proven that usage.
+#[test]
+#[allow(clippy::too_many_lines)] // One test covers the full rotation-freeze recovery lifecycle.
+fn finalize_after_driver_rotation_escapes_the_frozen_hold() {
+    let root = Root::new("stale-fence-settle");
+    let (account, reservation) = {
+        let authority = ResourceAuthority::open(root.path()).unwrap();
+        let (driver, account, reservation) = seed_active(&authority, 90, 1000, 100);
+        authority
+            .consume(ConsumeReservationRequest {
+                reservation_id: reservation.reservation_id,
+                operation_id: reservation.operation_id,
+                activation_receipt_id: reservation.activation_receipt_id.unwrap(),
+                sequence: 1,
+                cumulative_usage: 40,
+                consumed_at_ms: 4_001,
+            })
+            .unwrap();
+        assert_eq!(
+            authority
+                .inspect_account(account.account_id)
+                .unwrap()
+                .available_credit,
+            900
+        );
+
+        // Rotate the driver past the reservation's fence.
+        authority
+            .rotate_driver(RotateDriverRequest {
+                driver_id: driver.driver_id,
+                expected_generation: driver.generation,
+                expected_fencing_token: driver.fencing_token,
+                idempotency_key: IdempotencyKey::from_bytes([0x9F; 16]),
+                rotated_at_ms: 4_500,
+            })
+            .unwrap();
+
+        // In-flight metering stays fail-closed on the stale fence.
+        assert!(matches!(
+            authority.consume(ConsumeReservationRequest {
+                reservation_id: reservation.reservation_id,
+                operation_id: reservation.operation_id,
+                activation_receipt_id: reservation.activation_receipt_id.unwrap(),
+                sequence: 2,
+                cumulative_usage: 50,
+                consumed_at_ms: 4_501,
+            }),
+            Err(ResourceAuthorityError::StaleDriver)
+        ));
+        assert!(matches!(
+            authority.quarantine(QuarantineReservationRequest {
+                reservation_id: reservation.reservation_id,
+                operation_id: reservation.operation_id,
+                activation_receipt_id: reservation.activation_receipt_id.unwrap(),
+                reason_digest: [0x25; 32],
+                quarantined_at_ms: 4_502,
+            }),
+            Err(ResourceAuthorityError::StaleDriver)
+        ));
+
+        // A settlement claim above the frozen high-water cannot be proven by
+        // the stale fence and keeps failing closed.
+        assert!(matches!(
+            authority.finalize_reservation(finalize_request(&reservation, 2, 50, 0x55)),
+            Err(ResourceAuthorityError::StaleDriver)
+        ));
+        assert!(
+            matches!(
+                authority.finalize_reservation(finalize_request(&reservation, 2, 40, 0x55)),
+                Err(ResourceAuthorityError::StaleDriver)
+            ),
+            "a higher sequence alone is also not provable on a stale fence"
+        );
+
+        // Pinned to the durable frozen high-water (seq 1, usage 40), the
+        // settlement escapes the freeze and releases the hold.
+        let settled = finalize_receipt(
+            authority
+                .finalize_reservation(finalize_request(&reservation, 1, 40, 0x56))
+                .unwrap(),
+        );
+        assert_eq!(settled.high_water_seq, 1);
+        assert_eq!(settled.final_seq, 1);
+        assert_eq!(settled.high_water, 40);
+        assert_eq!(settled.final_usage, 40);
+        assert_eq!(settled.refund_credit, 60);
+        assert_eq!(
+            authority
+                .inspect_account(account.account_id)
+                .unwrap()
+                .available_credit,
+            960,
+            "the frozen hold is refunded in the same transaction"
+        );
+        assert_eq!(
+            authority
+                .inspect_reservation(reservation.reservation_id)
+                .unwrap()
+                .state,
+            ReservationState::Finalized
+        );
+        // Exact replay of the pinned settlement is idempotent.
+        assert!(matches!(
+            authority.finalize_reservation(finalize_request(&reservation, 1, 40, 0x56)),
+            Ok(FinalizeDecision::Replayed(replayed)) if replayed == settled
+        ));
+        (account, reservation)
+    };
+
+    let reopened = ResourceAuthority::open(root.path()).unwrap();
+    assert_eq!(
+        reopened
+            .inspect_reservation(reservation.reservation_id)
+            .unwrap()
+            .state,
+        ReservationState::Finalized
+    );
+    assert_eq!(
+        reopened
+            .inspect_account(account.account_id)
+            .unwrap()
+            .available_credit,
+        960
+    );
+    assert_eq!(
+        reopened
+            .inspect_finalize_receipt(reservation.reservation_id)
+            .unwrap()
+            .refund_credit,
+        60
     );
 }
 
