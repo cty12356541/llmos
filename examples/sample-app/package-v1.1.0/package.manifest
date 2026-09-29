@@ -1,0 +1,14 @@
+# sample-app v1.1.0 — the same developer tree after the update edit:
+# version 1.0.0 -> 1.1.0（同 major，SameMajor 兼容窗内），载荷与模板体有实改。
+# package-id 不变（Application 身份保持）；manifest digest 因内容而变，
+# 因此走 update/migration 通道而不是重装通道。
+
+package-id = 9a1c7d3e5f0b2a4c6d8e0f1a2b3c4d5e
+version = 1.1.0
+
+entry = sample-driver executable app.bin
+entry = sample-config data assets/config.bin
+
+# 同一组 node key（跨 revision 的逻辑节点身份），模板体按新版本更新。
+task = 01fa3c57b9d1e2f4a6b8c0d2e4f6a8b0 agent-role tasks/main-binding.txt tasks/main-inputs.txt tasks/main-outputs.txt tasks/main-policy.txt tasks/main-ceiling.txt
+task = 02ce7a19d5f3b1a9c7e5d3f1b9a7c5e3 executable tasks/service-binding.txt tasks/service-inputs.txt tasks/service-outputs.txt tasks/service-policy.txt tasks/service-ceiling.txt deps=01fa3c57b9d1e2f4a6b8c0d2e4f6a8b0

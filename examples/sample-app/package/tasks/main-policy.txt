@@ -1,0 +1,1 @@
+policy: fail-closed, no retry before durable receipt

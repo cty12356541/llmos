@@ -142,6 +142,8 @@ fn prepare_fixture(
         task_id,
         task_generation: Generation::INITIAL,
         registered_at_ms: 1,
+        application_id: None,
+        plan_revision: None,
     })?;
     let attempt = fixture_attempt(task_id);
     authority.register_attempt(attempt)?;

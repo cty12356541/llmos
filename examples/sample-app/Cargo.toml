@@ -1,0 +1,36 @@
+[package]
+name = "sample-app-driver"
+description = "W33-B 第三方样板应用生命周期驱动：仅经由公共面（nlos-slice-k 装配 + 各 landed 权威 crate 公共 API）驱动 install/run/update/uninstall，零内核内部 API。"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+license = "Apache-2.0"
+publish = false
+
+# 本 manifest 自带空 [workspace]，因此是独立 workspace 根，cargo 不会把
+# examples/sample-app 并入仓库根 workspace（desktop/src-tauri 先例；根
+# Cargo.toml 的 members 不变）。
+[workspace]
+
+[[bin]]
+name = "sample-app-driver"
+path = "src/main.rs"
+
+[dependencies]
+nlos-application = { path = "../../crates/nlos-application" }
+nlos-artifact = { path = "../../crates/nlos-artifact" }
+nlos-process = { path = "../../crates/nlos-process" }
+nlos-runtime = { path = "../../crates/nlos-runtime" }
+nlos-runtime-tokio = { path = "../../crates/nlos-runtime-tokio" }
+nlos-slice-k = { path = "../../crates/nlos-slice-k" }
+nlos-task = { path = "../../crates/nlos-task" }
+nlos-types = { path = "../../crates/nlos-types" }
+sha2 = { version = "0.11.0", default-features = false }
+tokio = { version = "1.48", features = ["macros", "rt-multi-thread", "sync", "time"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"

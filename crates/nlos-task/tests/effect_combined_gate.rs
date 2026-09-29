@@ -220,6 +220,8 @@ fn create_channel(authority: &ChannelAuthority) -> nlos_channel::ChannelRecord {
 fn registered_attempt(authority: &SqliteTaskAuthority, seed: u8) -> AttemptSpec {
     authority
         .register_task(TaskSpec {
+            application_id: None,
+            plan_revision: None,
             task_id: task_id(),
             task_generation: Generation::INITIAL,
             registered_at_ms: 1_000,
@@ -472,9 +474,10 @@ fn combined_gate_fails_closed_when_operation_never_activated() {
     // minted; the slot is untouched.
     assert!(matches!(
         result,
-        Err(nlos_task::TaskStoreError::OperationParticipantAuthority(
-            nlos_store::StoreError::DispatchPreparationNotFound
-        ))
+        Err(nlos_task::TaskStoreError::OperationDispatchNotPrepared {
+            operation_id,
+            generation: 1,
+        }) if operation_id == slot.operation.operation_id
     ));
     let stored = authority
         .inspect_effect_slot(slot.commit_permit.permit_id, 0)
@@ -566,9 +569,10 @@ fn combined_gate_fails_closed_on_operation_rotation_between_seal_and_mint() {
     // minted; the slot is untouched.
     assert!(matches!(
         result,
-        Err(nlos_task::TaskStoreError::OperationParticipantAuthority(
-            nlos_store::StoreError::Operation(nlos_operation::OperationError::InvalidGeneration)
-        ))
+        Err(nlos_task::TaskStoreError::OperationDispatchStaleGeneration {
+            operation_id,
+            sealed_generation: 1,
+        }) if operation_id == slot.operation.operation_id
     ));
     let stored = authority
         .inspect_effect_slot(slot.commit_permit.permit_id, 0)

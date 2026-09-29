@@ -3,7 +3,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
-use crate::store::encode_u64;
+use crate::store::{SqlRead, encode_u64};
 use crate::{TaskRecord, TaskStoreError};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -744,6 +744,34 @@ fn load_current_registry(
         created_at_ms: row.6,
         updated_at_ms: row.7,
     }))
+}
+
+/// Reads the immutable `participant_registry_root` of one specific
+/// registry generation of a task, if that generation row exists.
+/// Registry generations are append-only and `UNIQUE(task_id,
+/// registry_generation)`, so the row root is a stable per-generation
+/// anchor used to verify that a recorded binding really belongs to the
+/// task's successor chain.
+pub(crate) fn registry_root_at_generation(
+    source: &impl SqlRead,
+    task_id: TaskId,
+    generation: u64,
+) -> Result<Option<[u8; 32]>, TaskStoreError> {
+    let mut statement = source.prepare_statement(
+        "SELECT participant_registry_root FROM task_participant_registries
+         WHERE task_id = ?1 AND registry_generation = ?2",
+    )?;
+    let mut rows = statement.query(params![
+        task_id.as_bytes().as_slice(),
+        encode_u64(generation).as_slice(),
+    ])?;
+    rows.next()?
+        .map(|row| {
+            let value: Vec<u8> = row.get(0)?;
+            <[u8; 32]>::try_from(value.as_slice())
+                .map_err(|_| TaskStoreError::CorruptRecord("expected 32-byte registry root"))
+        })
+        .transpose()
 }
 
 fn load_participants(

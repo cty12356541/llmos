@@ -8,17 +8,40 @@
 //! `spawn_blocking` pool and, in one small test, a deliberate misplaced
 //! `std::thread::sleep` misuse) and proves thread growth stays sub-linear.
 //!
-//! Negative proof methodology:
-//! 1. comparative tiers — measure thread count after full `WaitingIo` settle
+//! Negative proof methodology (calibrated W34, handover #14):
+//! 1. exclusive measurement window — the three probes in this binary share a
+//!    static serialization slot: `process_thread_count()` is process-wide, so
+//!    overlapping probes would count each other's runtimes. The nightly
+//!    scale-probe job (`--include-ignored`, default libtest concurrency)
+//!    exposed exactly that: 3 probes × (2 workers + 8 blocking-pool threads)
+//!    in one process measured 26 against a cap of 16;
+//! 2. comparative tiers — measure thread count after full `WaitingIo` settle
 //!    at a low fiber count vs a higher count (8×); assert
 //!    `threads(high) <= threads(low) + SUBLINEAR_HEADROOM`;
-//! 2. absolute bound — parked load on a fixed two-worker runtime stays below
-//!    `THREAD_BOUND`, independent of fiber count;
-//! 3. optional `#[ignore]` 10K tier for evidence parity with
-//!    `durable_wait_scale.rs`.
+//! 3. baseline-relative growth bounds — assert
+//!    `threads(after) <= threads(before probe) + GROWTH_BOUND`, where the
+//!    baseline is taken after acquiring the slot. The original W15-B absolute
+//!    caps (16 / 10) were anchored to a quiet ~4-thread process (local
+//!    `--test-threads=1` runs); the growth bounds preserve identical
+//!    effective caps on a quiet machine while staying immune to sibling or
+//!    lingering threads (Tokio blocking-pool threads linger ~10s after
+//!    idle). They also fix a latent mis-calibration: the 10K tier's old
+//!    `threads_after <= threads_before + 2` contradicted its own
+//!    `spawn_blocking` pool, which lawfully adds up to
+//!    `MAX_BLOCKING_THREADS` after the baseline — in isolated execution it
+//!    measured 4 -> 12.
+//!
+//! Topology note: every bound derives from the probe runtime's OWN fixed
+//! shape (`WORKER_THREADS` + `MAX_BLOCKING_THREADS` + small headroom), never
+//! from host core counts — the claim under test is fiber-count-independence
+//! of host threads on a fixed runtime, which must hold on any host. Host
+//! topology enters only through libtest's default concurrency, which the
+//! serialization slot removes from the measurement.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::MutexGuard;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -41,21 +64,41 @@ const QUICK_COUNT: usize = 10_000;
 /// Allowed thread growth between low and high tiers — far below the 8× fiber
 /// ratio if threads tracked fiber count linearly.
 const SUBLINEAR_HEADROOM: usize = 15;
+/// Fixed worker count of every probe runtime in this file; part of the
+/// asserted bound derivation, not a host-topology input.
+const WORKER_THREADS: usize = 2;
 /// Tokio blocking-pool cap for `spawn_blocking` probes: proves blocking I/O
 /// uses a bounded pool rather than one OS thread per fiber.
 const MAX_BLOCKING_THREADS: usize = 8;
-/// Upper bound with two workers + capped blocking pool + test/adapter headroom.
-const BLOCKING_IO_THREAD_BOUND: usize = 2 + MAX_BLOCKING_THREADS + 6;
+/// Allowed host-thread growth over the pre-probe baseline for
+/// `spawn_blocking` patterns: probe workers + capped blocking pool + 2
+/// auxiliary headroom. Numerically identical to the W15-B absolute cap 16 on
+/// that era's documented quiet baseline of 4 threads.
+const BLOCKING_IO_GROWTH_BOUND: usize = WORKER_THREADS + MAX_BLOCKING_THREADS + 2;
+/// Allowed host-thread growth for the misplaced-sleep pattern, which spawns
+/// no threads of its own: the W15-B absolute cap 10 minus the same quiet
+/// baseline of 4.
+const MISPLACED_GROWTH_BOUND: usize = 6;
 /// Simulated blocking I/O latency inside `spawn_blocking`.
 const BLOCKING_IO_LATENCY: Duration = Duration::from_millis(2);
 const REGISTERED_AT_MS: u64 = 1_000;
-/// Host-thread upper bound when fibers are parked on async durable wait
-/// without an expanded blocking pool (same rationale as `durable_wait_scale.rs`).
-const THREAD_BOUND: usize = 10;
+
+/// `process_thread_count()` is process-wide, so the probes in this binary
+/// must not overlap: each holds this slot for its whole body, and takes its
+/// baseline only after acquiring it.
+static PROBE_SERIALIZE: Mutex<()> = Mutex::new(());
+
+fn acquire_probe_slot() -> MutexGuard<'static, ()> {
+    // A panicked probe poisons the slot without corrupting any shared state;
+    // later probes still deserve their own measurement window.
+    PROBE_SERIALIZE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 fn bounded_runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
+        .worker_threads(WORKER_THREADS)
         .max_blocking_threads(MAX_BLOCKING_THREADS)
         .enable_all()
         .build()
@@ -320,6 +363,8 @@ fn process_thread_count() -> usize {
 
 #[test]
 fn blocking_io_on_durable_wait_path_grows_threads_sublinearly() {
+    let _slot = acquire_probe_slot();
+    let threads_before = process_thread_count();
     bounded_runtime().block_on(async {
         let threads_low =
             threads_after_blocking_io_park(LOW_COUNT, BlockingIoPattern::SpawnBlocking).await;
@@ -332,58 +377,55 @@ fn blocking_io_on_durable_wait_path_grows_threads_sublinearly() {
              (8× fibers, headroom={SUBLINEAR_HEADROOM})"
         );
         assert!(
-            threads_high <= BLOCKING_IO_THREAD_BOUND,
-            "host threads {threads_high} exceed bounded blocking-pool cap \
-             {BLOCKING_IO_THREAD_BOUND}"
+            threads_high <= threads_before + BLOCKING_IO_GROWTH_BOUND,
+            "host threads {threads_high} exceed the bounded blocking-pool growth cap \
+             {BLOCKING_IO_GROWTH_BOUND} over baseline {threads_before}"
         );
 
         eprintln!(
             "blocking-io sublinear proof (max_blocking={MAX_BLOCKING_THREADS}): \
-             fibers {LOW_COUNT}->{HIGH_COUNT}, threads {threads_low}->{threads_high}"
+             fibers {LOW_COUNT}->{HIGH_COUNT}, threads {threads_low}->{threads_high} \
+             (baseline {threads_before}, growth bound {BLOCKING_IO_GROWTH_BOUND})"
         );
     });
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn misplaced_blocking_sleep_stays_thread_bounded_on_durable_wait_path() {
+#[test]
+fn misplaced_blocking_sleep_stays_thread_bounded_on_durable_wait_path() {
+    let _slot = acquire_probe_slot();
     let threads_before = process_thread_count();
-    let threads_after =
-        threads_after_blocking_io_park(HIGH_COUNT, BlockingIoPattern::MisplacedSleep).await;
+    bounded_runtime().block_on(async {
+        let threads_after =
+            threads_after_blocking_io_park(HIGH_COUNT, BlockingIoPattern::MisplacedSleep).await;
 
-    assert!(
-        threads_after <= THREAD_BOUND,
-        "misplaced blocking sleep caused unbounded threads: {threads_after} > {THREAD_BOUND}"
-    );
-    assert!(
-        threads_after <= threads_before + SUBLINEAR_HEADROOM,
-        "threads grew with fiber count after misplaced blocking sleep: \
-         before={threads_before} after={threads_after}"
-    );
+        assert!(
+            threads_after <= threads_before + MISPLACED_GROWTH_BOUND,
+            "misplaced blocking sleep grew host threads beyond its zero-spawn allowance: \
+             {threads_before} -> {threads_after} (+{MISPLACED_GROWTH_BOUND} allowed)"
+        );
 
-    eprintln!(
-        "misplaced blocking sleep proof: {HIGH_COUNT} fibers, \
-         threads {threads_before}->{threads_after}"
-    );
+        eprintln!(
+            "misplaced blocking sleep proof: {HIGH_COUNT} fibers, \
+             threads {threads_before}->{threads_after}"
+        );
+    });
 }
 
 #[test]
 #[ignore = "explicit Stage B 10K blocking-I/O durable-wait negative proof (quick tier)"]
 fn ten_thousand_blocking_io_fibers_stay_thread_bounded() {
+    let _slot = acquire_probe_slot();
+    let threads_before = process_thread_count();
+    let started = Instant::now();
     bounded_runtime().block_on(async {
-        let threads_before = process_thread_count();
-        let started = Instant::now();
         let threads_after =
             threads_after_blocking_io_park(QUICK_COUNT, BlockingIoPattern::SpawnBlocking).await;
         let elapsed = started.elapsed();
 
         assert!(
-            threads_after <= BLOCKING_IO_THREAD_BOUND,
-            "10K blocking-io fibers exceeded bounded thread cap: {threads_after} > \
-             {BLOCKING_IO_THREAD_BOUND}"
-        );
-        assert!(
-            threads_after <= threads_before + 2,
-            "10K blocking-io fibers grew host threads: {threads_before} -> {threads_after}"
+            threads_after <= threads_before + BLOCKING_IO_GROWTH_BOUND,
+            "10K blocking-io fibers exceeded bounded thread growth: {threads_before} -> \
+             {threads_after} (+{BLOCKING_IO_GROWTH_BOUND} allowed)"
         );
 
         eprintln!(

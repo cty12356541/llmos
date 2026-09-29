@@ -1410,6 +1410,100 @@ impl fmt::Debug for EffectPermitAuthorities<'_> {
     }
 }
 
+/// `[B-OP-FENCE-003]` / ADR-0017 O-B verify-half mapping: one owner
+/// readback plus a fail-closed classification of every bad preparation
+/// shape, shared by the `EffectPermit` mint gate and the finalize-time
+/// participant/effect binding revalidation. The owner's
+/// `inspect_activation_proof` is the single activation authority; its
+/// `OperationNotActivated` answer alone cannot distinguish a still
+/// Registered (retryable) preparation from a canceled one, so the owner
+/// state machine is re-read once more to classify the terminal shape.
+/// Owner storage failures stay wrapped in
+/// [`TaskStoreError::OperationParticipantAuthority`] exactly like the
+/// other owner-revalidation gates.
+pub(crate) fn verify_operation_activation(
+    operation_authority: &nlos_store::SqliteOperationStore,
+    handle: OperationHandle,
+) -> Result<(), TaskStoreError> {
+    let proof = match operation_authority.inspect_activation_proof(handle) {
+        Ok(proof) => proof,
+        Err(nlos_store::StoreError::Operation(
+            nlos_operation::OperationError::InvalidGeneration,
+        )) => {
+            return Err(TaskStoreError::OperationDispatchStaleGeneration {
+                operation_id: handle.operation_id,
+                sealed_generation: handle.generation.get(),
+            });
+        }
+        Err(nlos_store::StoreError::DispatchPreparationNotFound) => {
+            return Err(TaskStoreError::OperationDispatchNotPrepared {
+                operation_id: handle.operation_id,
+                generation: handle.generation.get(),
+            });
+        }
+        Err(nlos_store::StoreError::OperationNotActivated) => {
+            let snapshot = operation_authority
+                .inspect(handle)
+                .map_err(TaskStoreError::OperationParticipantAuthority)?;
+            return match snapshot.state {
+                nlos_operation::OperationState::Registered => {
+                    Err(TaskStoreError::OperationDispatchNotActivated {
+                        operation_id: handle.operation_id,
+                        generation: handle.generation.get(),
+                    })
+                }
+                nlos_operation::OperationState::CancelledBeforeEffect { .. } => {
+                    Err(TaskStoreError::OperationDispatchCancelled {
+                        operation_id: handle.operation_id,
+                        generation: handle.generation.get(),
+                    })
+                }
+                _ => Err(TaskStoreError::CorruptRecord(
+                    "operation lacks activation outside the pre-dispatch window",
+                )),
+            };
+        }
+        Err(error) => return Err(TaskStoreError::OperationParticipantAuthority(error)),
+    };
+    if proof.operation != handle {
+        return Err(TaskStoreError::OperationParticipantAuthority(
+            nlos_store::StoreError::CorruptRecord(
+                "activation proof operation handle differs from sealed endpoint",
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// Finalize-time Operation endpoint revalidation (ADR-0017 O-B): for every
+/// sealed `OperationBinding` endpoint of an issued permit's write set, the
+/// owner's durable dispatch activation receipt must be re-read and match
+/// the sealed `OperationId + Generation` handle before the terminal Task
+/// transaction opens. This mirrors `validate_operation_endpoint_bindings`
+/// (registration proof at seal/permit freeze) one level later in the
+/// authority-first order: registration is proven at freeze, activation is
+/// proven at consumption and finalization. Non-Operation endpoints pass
+/// through untouched.
+pub(crate) fn verify_sealed_operation_activation_endpoints(
+    operation_authority: &nlos_store::SqliteOperationStore,
+    record: &crate::model::TaskWriteSetRecord,
+) -> Result<(), TaskStoreError> {
+    for endpoint in record
+        .effect_endpoints
+        .iter()
+        .filter(|endpoint| endpoint.kind == TaskWriteSetEffectEndpointKind::OperationBinding)
+    {
+        verify_operation_activation(
+            operation_authority,
+            OperationHandle {
+                operation_id: OperationId::from_bytes(endpoint.object_id),
+                generation: endpoint.participant_generation,
+            },
+        )?;
+    }
+    Ok(())
+}
+
 /// `[B-OP-FENCE-003]` activation gate for dispatch-consumption wiring: before
 /// minting an `EffectPermit` for a slot whose sealed `TaskWriteSet` endpoint is
 /// an `OperationBinding`, the owning Operation authority must already hold the
@@ -1439,21 +1533,13 @@ fn check_effect_slot_activation(
     }) else {
         return Ok(());
     };
-    let handle = OperationHandle {
-        operation_id: OperationId::from_bytes(endpoint.object_id),
-        generation: endpoint.participant_generation,
-    };
-    let proof = authority
-        .inspect_activation_proof(handle)
-        .map_err(TaskStoreError::OperationParticipantAuthority)?;
-    if proof.operation != handle {
-        return Err(TaskStoreError::OperationParticipantAuthority(
-            nlos_store::StoreError::CorruptRecord(
-                "activation proof operation handle differs from sealed endpoint",
-            ),
-        ));
-    }
-    Ok(())
+    verify_operation_activation(
+        authority,
+        OperationHandle {
+            operation_id: OperationId::from_bytes(endpoint.object_id),
+            generation: endpoint.participant_generation,
+        },
+    )
 }
 
 /// `B-CHANNEL-001` channel gate: before minting an `EffectPermit` for a slot

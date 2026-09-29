@@ -24,7 +24,11 @@
 //! One run holds the process-local writer mutex and one
 //! `BEGIN IMMEDIATE` transaction from the reference scan to the receipt
 //! commit, so the committed reference set cannot change under it
-//! (single-writer discipline, as for every other mutating API). Blob
+//! (single-writer discipline, as for every other mutating API). The blob
+//! commit phases of `put_revision`/`stage_revision` run under the same
+//! mutex, so an in-flight put can never appear mid-run as an unreferenced
+//! blob — what the scan does see is the durable residue of a crash or a
+//! killed process between its blob rename and metadata commit. Blob
 //! files cannot join a `SQLite` transaction, so the order is fixed:
 //!
 //! 1. compute the orphan set inside the open transaction,
@@ -47,15 +51,20 @@
 //!
 //! # Scope and honesty boundaries
 //!
-//! Explicit invocation only: no automatic trigger, schedule, or open-time
-//! sweep. Retention expiry (`retention` module) never feeds this module:
-//! an expired artifact's revisions are still committed reference rows, so
-//! expired-but-referenced blobs are mechanically not orphans and the
-//! fail-safe direction is unchanged. Physical reclamation of expired
-//! artifacts is separate follow-up work. No cross-artifact or external
-//! reference tracking — a blob referenced only from outside this store is
-//! by construction an orphan *to this store*. Presence, not integrity,
-//! decides candidacy; full-blob re-hashing remains an audit concern.
+//! This module's entry is explicit-only. The automatic trigger
+//! (`auto_gc` module, W28-E) adds no second deletion path: every
+//! triggered pass is one [`ArtifactStore::collect_orphan_blobs`] call
+//! under a derived key from the trigger's own key space. There is still
+//! no schedule of the crate's own, no background thread, and no
+//! open-time sweep. Retention expiry (`retention` module) never feeds
+//! this module: an expired artifact's revisions are still committed
+//! reference rows, so expired-but-referenced blobs are mechanically not
+//! orphans and the fail-safe direction is unchanged. Physical
+//! reclamation of expired artifacts is separate follow-up work. No
+//! cross-artifact or external reference tracking — a blob referenced
+//! only from outside this store is by construction an orphan *to this
+//! store*. Presence, not integrity, decides candidacy; full-blob
+//! re-hashing remains an audit concern.
 
 use std::collections::HashSet;
 
@@ -118,11 +127,13 @@ impl ArtifactStore {
     /// revision (any state), and no head references. Removals and the
     /// receipt follow the crash-window order documented in `gc`.
     ///
-    /// The caller must observe the crate's single-writer discipline: no
-    /// `put_revision`/`stage_revision` may be in flight on the same store
-    /// while GC runs, since such a write commits its blob (phase 1)
-    /// before its metadata (phase 2) and would be indistinguishable from
-    /// a crash orphan mid-run.
+    /// The run is serialized against writers by the process-local mutex
+    /// it holds from the reference scan to the receipt commit:
+    /// `put_revision` and `stage_revision` commit their blob phase
+    /// *inside* the same critical section, so an in-flight put can never
+    /// surface to this scan as an unreferenced blob (deep-audit/32 H1).
+    /// What the scan legitimately collects is the residue of a crash or
+    /// a killed process between its blob rename and metadata commit.
     ///
     /// # Errors
     ///
@@ -140,12 +151,7 @@ impl ArtifactStore {
             return Ok(CollectOrphanBlobsDecision::Replayed(existing));
         }
 
-        let mut referenced: HashSet<ContentDigest> = load_all_revision_digests(&transaction)?
-            .into_iter()
-            .map(|(_, _, digest)| digest)
-            .collect();
-        referenced.extend(load_all_staged_digests_any_state(&transaction)?);
-        referenced.extend(load_all_head_digests(&transaction)?);
+        let referenced = referenced_digests(&transaction)?;
 
         let scan = blob::scan_blobs(&self.paths().artifacts.blobs)?;
         let scanned_blob_count = u64::try_from(scan.present.len()).unwrap_or(u64::MAX);
@@ -187,6 +193,37 @@ impl ArtifactStore {
         load_receipt_optional(&*connection, receipt_id)?
             .ok_or(ArtifactError::GcReceiptNotFound(receipt_id))
     }
+
+    /// Read-only count of current orphan candidates: the same
+    /// present-minus-referenced diff [`ArtifactStore::collect_orphan_blobs`]
+    /// computes, without deleting anything. The auto-GC threshold probe
+    /// (`auto_gc` module) is the only caller; a racy count can cause at
+    /// most one extra conservative pass, never a wrong deletion.
+    pub(crate) fn count_orphan_candidates(&self) -> Result<u64, ArtifactError> {
+        let connection = self.lock_connection()?;
+        let referenced = referenced_digests(&*connection)?;
+        let scan = blob::scan_blobs(&self.paths().artifacts.blobs)?;
+        Ok(u64::try_from(
+            scan.present
+                .iter()
+                .filter(|digest| !referenced.contains(*digest))
+                .count(),
+        )
+        .unwrap_or(u64::MAX))
+    }
+}
+
+/// The three-layer conservative reference set: every committed revision
+/// digest, every staged digest in any state, and every live head. Any
+/// blob named here is retained by [`ArtifactStore::collect_orphan_blobs`].
+fn referenced_digests(source: &impl SqlRead) -> Result<HashSet<ContentDigest>, ArtifactError> {
+    let mut referenced: HashSet<ContentDigest> = load_all_revision_digests(source)?
+        .into_iter()
+        .map(|(_, _, digest)| digest)
+        .collect();
+    referenced.extend(load_all_staged_digests_any_state(source)?);
+    referenced.extend(load_all_head_digests(source)?);
+    Ok(referenced)
 }
 
 /// Every staged digest regardless of release state: the deliberately

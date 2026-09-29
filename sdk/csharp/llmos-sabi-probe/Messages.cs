@@ -1,7 +1,8 @@
 // Hand-written C# mirrors of the frozen v1-beta nlos.sabi.v1 message family
 // (schema/nlos/sabi/v1/*.proto) plus the additive ADR-0011
-// PrincipalHandshake family, sufficient for the B-SDK-LANG-EVAL C# golden
-// probe against schema/golden/*.hex.
+// PrincipalHandshake family and the frozen ServiceDirectory resolve entry
+// message, sufficient for the B-SDK-LANG-EVAL C# golden probe against
+// schema/golden/*.hex.
 //
 // This is a probe, NOT the full C# SDK: only the wire surface exercised by
 // the frozen goldens is implemented, marshaling is deterministic by
@@ -165,6 +166,17 @@ public sealed class PrincipalHandshakeAttestation
     public byte[] Nonce { get; set; } = Array.Empty<byte>();
     public byte[] ChannelBinding { get; set; } = Array.Empty<byte>();
     public byte[] Signature { get; set; } = Array.Empty<byte>();
+
+    public byte[] UnknownFields { get; set; } = Array.Empty<byte>();
+}
+
+// Mirrors nlos.sabi.v1.ResolveServiceRequest, the frozen ServiceDirectory
+// resolve entry message (schema name on the wire:
+// "nlos.sabi.ServiceDirectory", v1 minor 0).
+public sealed class ResolveServiceRequest
+{
+    public SchemaIdentity? Schema { get; set; }
+    public string Service { get; set; } = "";
 
     public byte[] UnknownFields { get; set; } = Array.Empty<byte>();
 }

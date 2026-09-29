@@ -31,7 +31,10 @@
 //!    revision row and compare-and-swaps the head pointer.
 //!
 //! Blob durability always precedes the metadata commit that references the
-//! digest. A crash before the rename leaves an orphan tmp file (removed by
+//! digest, and both phases run inside the store's single-writer critical
+//! section, so the orphan GC scan (same mutex) can never mistake an
+//! in-flight blob for an unreferenced orphan. A crash before the rename
+//! leaves an orphan tmp file (removed by
 //! [`ArtifactStore::recover`]); after the rename but before the metadata
 //! commit leaves an orphan blob (listed by `recover`, removable only by
 //! the explicit [`ArtifactStore::collect_orphan_blobs`] GC); after the
@@ -55,15 +58,45 @@
 //! never re-verify. See `package` for the exact fail-closed order and the
 //! scope boundaries.
 //!
+//! # Task-templated package face (W28-B, ADR-0016 决定 1)
+//!
+//! [`ArtifactStore::verify_package_with_tasks`] verifies the additive
+//! `tasks` template segment face: a
+//! [`SignedPackageWithTasks`](crate::SignedPackageWithTasks) carries the
+//! base manifest plus task templates, and the signer's Ed25519 signature
+//! covers both as one domain-separated message
+//! ([`package_manifest_with_tasks_message`]). The legacy face above stays
+//! byte-for-byte untouched (G6: old signed packages verify and install
+//! identically), and the two message domains make cross-face signature
+//! reuse impossible — a segment can be neither stripped from nor injected
+//! into a verified package. Compiling the verified segment into a plan
+//! proposal is the `nlos-application` half of W28-B; this crate owns only
+//! the manifest face and its shared shape authority
+//! ([`validate_task_templates`]).
+//!
 //! # Explicit orphan GC (minimal prefix)
 //!
 //! [`ArtifactStore::collect_orphan_blobs`] is the only artifact-blob
 //! deletion path: it removes blobs under `artifacts/blobs/` whose digest
 //! no committed revision, no staged revision (any state), and no head
 //! references, and records exactly what it removed in one immutable GC
-//! receipt replayable by idempotency key across restarts. It is never
-//! triggered automatically. See the `gc` module for the conservative
-//! judgement rule and the crash-window semantics.
+//! receipt replayable by idempotency key across restarts. See the `gc`
+//! module for the conservative judgement rule and the crash-window
+//! semantics.
+//!
+//! # Automatic orphan-GC trigger (W28-E)
+//!
+//! [`ArtifactStore::tick_auto_gc`] evaluates a periodic or threshold
+//! trigger condition on an explicit, caller-driven tick and, when it is
+//! met, runs one pass of the *unchanged* explicit core under a key from
+//! the trigger's own derived idempotency-key space — there is still no
+//! second deletion path. No background thread and no open-time sweep:
+//! the caller owns the clock and the cadence.
+//! [`AutoOrphanGcPolicy::Disabled`](crate::AutoOrphanGcPolicy::Disabled)
+//! is a full bypass, and [`ArtifactStore::inspect_auto_gc_health`]
+//! reads back the durable trigger counters (passes, orphans collected,
+//! failures, last pass/failure times). See the `auto_gc` module for the
+//! pass protocol and crash windows.
 //!
 //! # Retention policy (minimal prefix, B-ARTIFACT-005)
 //!
@@ -88,10 +121,12 @@
 //!   blob layer is confined to the internal `blob` module so a later slice
 //!   can lift it behind a backend trait.
 //! - GC is an explicit conservative orphan sweep only
-//!   (`collect_orphan_blobs`): no automatic/scheduled trigger, no
-//!   cross-artifact or external reference tracking. Retention is a
-//!   minimal read-visibility upper bound only (`set_retention`): no
-//!   automatic cleanup or retention-GC, no TTL renewal engine, no
+//!   (`collect_orphan_blobs`): no cross-artifact or external reference
+//!   tracking, and no crate-owned schedule, background thread, or
+//!   open-time sweep — automatic triggering is one explicit
+//!   caller-driven tick (`tick_auto_gc`) over the same core. Retention
+//!   is a minimal read-visibility upper bound only (`set_retention`):
+//!   no automatic cleanup or retention-GC, no TTL renewal engine, no
 //!   per-revision bounds. No encryption, provenance chains, or legal
 //!   hold. Package
 //!   verification is a minimal prefix only: no installation/update
@@ -102,11 +137,14 @@
 //!   latency stays predictable and recovery reporting is an operator
 //!   decision. Callers may invoke it immediately after open.
 
+mod auto_gc;
 mod blob;
 mod cache;
+mod conformance;
 mod gc;
 mod model;
 mod package;
+mod package_file;
 mod provenance;
 mod publication;
 mod query;
@@ -123,6 +161,10 @@ use std::path::PathBuf;
 use nlos_identity::IdentityAuthorityError;
 use nlos_types::{ArtifactId, PrincipalId};
 
+pub use auto_gc::{
+    AutoGcHealth, AutoGcSkipReason, AutoGcTickDecision, AutoOrphanGcPolicy, TickAutoGcRequest,
+};
+pub use conformance::{ConformanceFinding, ConformanceReport, ConformanceRule, check_package_file};
 pub use gc::{CollectOrphanBlobsDecision, CollectOrphanBlobsRequest, GcReceipt};
 pub use model::{
     ArtifactHeadEndpointProof, ArtifactProvenanceReceipt, ArtifactPublicationReceipt,
@@ -133,8 +175,15 @@ pub use model::{
     StageRevisionRequest, StagedRevisionRecord, StagedRevisionState, StagingId,
 };
 pub use package::{
-    PackageEntryRole, PackageManifest, PackageManifestEntry, PackageVerificationDecision,
-    PackageVerificationReceipt, SignedPackage, VerifyPackageRequest, package_manifest_message,
+    MAX_TASK_DEPENDENCIES_PER_TEMPLATE, MAX_TASK_TEMPLATES_PER_MANIFEST, PackageEntryRole,
+    PackageManifest, PackageManifestEntry, PackageTaskKind, PackageTaskTemplate,
+    PackageVerificationDecision, PackageVerificationReceipt, SignedPackage, SignedPackageWithTasks,
+    VerifyPackageRequest, VerifyPackageWithTasksRequest, package_manifest_message,
+    package_manifest_with_tasks_message, validate_task_templates,
+};
+pub use package_file::{
+    MAX_ENTRY_NAME_BYTES, PACKAGE_FILE_MAGIC, PackageFile, PackageFileEntry, PackageFileError,
+    SignerDescriptor, decode_package_file, derive_artifact_id,
 };
 pub use publication::staging_id_for;
 pub use retention::{RetentionRecord, SetRetentionDecision, SetRetentionRequest};

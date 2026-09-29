@@ -1,0 +1,3 @@
+sample-app driver entry v1.0.0
+consumed via the public driver/runtime surfaces:
+task -> attempt -> process -> fiber driver-operation -> artifact + task-commit-receipt

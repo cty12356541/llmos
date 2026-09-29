@@ -90,6 +90,16 @@ fn map_process_authority_error(error: &ProcessAuthorityError) -> SabiFailure {
             RetryDirective::DoNotRetry,
             "requested process fiber state was not found",
         ),
+        ProcessAuthorityError::PlatformKillAlreadySignaled => (
+            SabiErrorCode::Conflict,
+            RetryDirective::DoNotRetry,
+            "platform kill was already signaled for this process generation",
+        ),
+        ProcessAuthorityError::PlatformKillAdapter(_) => (
+            SabiErrorCode::Driver,
+            RetryDirective::DoNotRetry,
+            "platform kill adapter failed to signal the os process",
+        ),
     };
     SabiFailure {
         code: code.into(),

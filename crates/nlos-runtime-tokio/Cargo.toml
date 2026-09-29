@@ -17,6 +17,12 @@ nlos-store = { path = "../nlos-store" }
 nlos-task = { path = "../nlos-task" }
 nlos-types = { path = "../nlos-types" }
 nlos-wait = { path = "../nlos-wait" }
+# Promoted from dev-dependencies by W33-G because src/bin targets cannot
+# link dev-dependencies: the `nlos-debug` bin opens the authority stores
+# through read-only SQLite connections for its enumeration face (the
+# authorities expose no listing APIs and the debugger must never create
+# or migrate a store).
+rusqlite.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]

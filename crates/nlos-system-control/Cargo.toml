@@ -13,16 +13,43 @@ cli = [
     "dep:nlos-ipc",
     "dep:nlos-clock",
     "dep:nlos-identity",
-    "dep:sha2",
     "dep:tokio",
+]
+# Resident system_control daemon (D5): aggregates every inspector feature
+# plus the `cli` transport surface, and adds the authorities the daemon owns
+# even though no inspector adapter touches them (`nlos-artifact` for the
+# commit-recovery worker, `nlos-channel` to open the topic authority) and
+# Ed25519 seed parsing for the optional `--identity-key-file` bootstrap.
+daemon = [
+    "cli",
+    "process",
+    "resource",
+    "plan",
+    "runtime",
+    "topic",
+    "store",
+    "application",
+    "dep:nlos-artifact",
+    "dep:nlos-channel",
+    "dep:ed25519-dalek",
 ]
 process = ["dep:nlos-process"]
 resource = ["dep:nlos-resource"]
+plan = ["dep:nlos-plan"]
+runtime = ["dep:nlos-runtime", "dep:nlos-runtime-tokio"]
+topic = ["dep:nlos-topic"]
+store = ["dep:nlos-store", "dep:nlos-operation"]
+application = ["dep:nlos-application"]
 
 [[bin]]
 name = "system-control-cli"
 path = "src/bin/system-control-cli.rs"
 required-features = ["cli"]
+
+[[bin]]
+name = "system-control-daemon"
+path = "src/bin/system-control-daemon.rs"
+required-features = ["daemon"]
 
 [dependencies]
 nlos-clock = { path = "../nlos-clock", optional = true }
@@ -34,13 +61,27 @@ nlos-types = { path = "../nlos-types" }
 nlos-ipc = { path = "../nlos-ipc", optional = true }
 nlos-process = { path = "../nlos-process", optional = true }
 nlos-resource = { path = "../nlos-resource", optional = true }
-sha2 = { workspace = true, optional = true }
-tokio = { workspace = true, optional = true }
+nlos-plan = { path = "../nlos-plan", optional = true }
+nlos-runtime = { path = "../nlos-runtime", optional = true }
+nlos-runtime-tokio = { path = "../nlos-runtime-tokio", optional = true }
+nlos-topic = { path = "../nlos-topic", optional = true }
+nlos-store = { path = "../nlos-store", optional = true }
+nlos-operation = { path = "../nlos-operation", optional = true }
+nlos-application = { path = "../nlos-application", optional = true }
+nlos-artifact = { path = "../nlos-artifact", optional = true }
+nlos-channel = { path = "../nlos-channel", optional = true }
+ed25519-dalek = { workspace = true, optional = true }
+sha2 = { workspace = true }
+tokio = { workspace = true, optional = true, features = ["signal"] }
 
 [dev-dependencies]
 ed25519-dalek.workspace = true
 nlos-ipc = { path = "../nlos-ipc" }
 nlos-service-directory = { path = "../nlos-service-directory" }
+nlos-channel = { path = "../nlos-channel" }
+nlos-artifact = { path = "../nlos-artifact" }
+nlos-identity = { path = "../nlos-identity" }
+rusqlite.workspace = true
 tokio.workspace = true
 
 [lints]

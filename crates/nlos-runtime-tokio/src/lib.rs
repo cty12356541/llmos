@@ -11,22 +11,26 @@ use nlos_runtime::{
     ActivationUsage, FiberExit, FiberFuture, FiberHandle, FiberSpec, FiberState, RuntimeAdapter,
     RuntimeError,
 };
-use nlos_types::{CancellationScopeId, ExecutionFiberId, Generation};
+use nlos_types::{CancellationScopeId, ExecutionFiberId, Generation, ProcessId};
 use tokio::runtime::Handle;
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 
+mod batch_cancel;
 mod channel_wait;
+mod kill_receipt;
 mod metrics;
 mod pump;
 mod replay;
 mod snapshot;
 mod wake;
 
+pub use batch_cancel::ProcessFiberCancelReport;
 use channel_wait::ChannelWaitRegistry;
 pub use channel_wait::{
     ChannelSequenceWait, ChannelWaitError, DeliveryReport, RearmReport, RearmedChannelWait,
     TokioChannelWakeSink,
 };
+pub use kill_receipt::PlatformKillConsumptionReport;
 pub use pump::{
     OutboxPump, OutboxPumpStartError, PumpConfig, PumpHealth, PumpState, RecordingReconcileSink,
     StoreOutboxSource,
@@ -231,6 +235,12 @@ impl UsageAccumulator {
 struct FiberRecord {
     fiber_id: ExecutionFiberId,
     generation: Generation,
+    /// The process fault domain this fiber was spawned under, captured from
+    /// the spec so the batch-cancel sweep (`crate::batch_cancel`) can fence
+    /// scopes by `(process_id, process_generation)` without an authority
+    /// lookup.
+    process_id: ProcessId,
+    process_generation: Generation,
     scope: Arc<CancellationScope>,
     /// Registry key of the scope this record references, carried so the reap
     /// path can release the scope's reference without a lookup
@@ -251,12 +261,16 @@ impl FiberRecord {
     fn new(
         fiber_id: ExecutionFiberId,
         generation: Generation,
+        process_id: ProcessId,
+        process_generation: Generation,
         scope: Arc<CancellationScope>,
         scope_key: ScopeKey,
     ) -> Self {
         Self {
             fiber_id,
             generation,
+            process_id,
+            process_generation,
             scope,
             scope_key,
             state: Mutex::new(FiberState::Ready),
@@ -355,6 +369,23 @@ impl FiberRecord {
         if matches!(*terminal, TerminalOutcome::Pending) {
             self.terminal_notify.notify_all();
         }
+    }
+
+    /// Blocks until this generation leaves [`TerminalOutcome::Pending`].
+    /// Does not consume the exit (unlike [`Self::join`]) so a later join can
+    /// still observe [`FiberExit::Completed`].
+    fn wait_until_terminal(&self) {
+        let mut terminal = lock_unpoisoned(&self.terminal);
+        while matches!(*terminal, TerminalOutcome::Pending) {
+            terminal = self
+                .terminal_notify
+                .wait(terminal)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+
+    fn terminal_is_pending(&self) -> bool {
+        matches!(*lock_unpoisoned(&self.terminal), TerminalOutcome::Pending)
     }
 
     fn set_state(&self, state: FiberState) {
@@ -689,6 +720,19 @@ struct Inner {
     /// locks. Relaxed ordering suffices: the counter carries a count, no
     /// inter-variable ordering.
     orphan_buffer_dropped: AtomicU64,
+    /// Monotonic count of successful process-level cancel sweeps driven
+    /// through [`TokioRuntimeAdapter::cancel_process_fibers`] (including
+    /// the sweeps driven by platform-kill receipt consumption); never
+    /// resets. Same lock-free/Relaxed seam as `orphan_buffer_dropped`: the
+    /// counter meters the linkage path, not the durable ledger, so an
+    /// idempotent replay counts as another consumption event.
+    process_cancel_sweeps: AtomicU64,
+    /// Monotonic sum of `matched_fibers` over those process-level cancel
+    /// sweeps; never resets.
+    process_fiber_cancel_matched: AtomicU64,
+    /// Monotonic count of durable platform-kill receipts consumed by
+    /// [`TokioRuntimeAdapter::consume_platform_kill`]; never resets.
+    platform_kills_consumed: AtomicU64,
     shutdown: AtomicBool,
     admission: Arc<Semaphore>,
 }
@@ -775,6 +819,22 @@ pub struct RuntimeHealth {
     /// (pure rejection). Never resets. Fiber-bound waits are never dropped
     /// and never counted (ORPHAN-002).
     pub orphan_buffer_dropped_total: u64,
+    /// Monotonic count of successful process-level cancel sweeps (the W27-C
+    /// batch-cancel linkage, including the sweeps driven by platform-kill
+    /// receipt consumption). The counter meters the runtime linkage path,
+    /// not the durable ledger: an idempotent replay of the same linkage
+    /// counts as another sweep. Never resets.
+    pub process_cancel_sweeps_total: u64,
+    /// Monotonic sum of live fibers matched under the process fence by
+    /// those sweeps (`ProcessFiberCancelReport::matched_fibers`). Never
+    /// resets.
+    pub process_fiber_cancel_matched_total: u64,
+    /// Monotonic count of durable platform-kill receipts consumed by
+    /// `TokioRuntimeAdapter::consume_platform_kill`. Consumption is the
+    /// runtime acting on the kill evidence, so an idempotent re-consumption
+    /// counts again — the durable receipt itself is immutable and unchanged.
+    /// Never resets.
+    pub platform_kills_consumed_total: u64,
 }
 
 /// A Tokio executor adapter that preserves NLOS identity and cancellation.
@@ -803,6 +863,9 @@ impl TokioRuntimeAdapter {
                 waits: Mutex::new(HashMap::new()),
                 channel_waits: Mutex::new(ChannelWaitRegistry::new(config.orphan_buffer_capacity)),
                 orphan_buffer_dropped: AtomicU64::new(0),
+                process_cancel_sweeps: AtomicU64::new(0),
+                process_fiber_cancel_matched: AtomicU64::new(0),
+                platform_kills_consumed: AtomicU64::new(0),
                 shutdown: AtomicBool::new(false),
                 admission: Arc::new(Semaphore::new(config.max_live_fibers)),
             }),
@@ -820,6 +883,15 @@ impl TokioRuntimeAdapter {
     pub fn health(&self) -> RuntimeHealth {
         RuntimeHealth {
             orphan_buffer_dropped_total: self.inner.orphan_buffer_dropped.load(Ordering::Relaxed),
+            process_cancel_sweeps_total: self.inner.process_cancel_sweeps.load(Ordering::Relaxed),
+            process_fiber_cancel_matched_total: self
+                .inner
+                .process_fiber_cancel_matched
+                .load(Ordering::Relaxed),
+            platform_kills_consumed_total: self
+                .inner
+                .platform_kills_consumed
+                .load(Ordering::Relaxed),
         }
     }
 
@@ -979,6 +1051,8 @@ impl RuntimeAdapter for TokioRuntimeAdapter {
         let record = Arc::new(FiberRecord::new(
             spec.fiber_id,
             spec.fiber_generation,
+            spec.process_id,
+            spec.process_generation,
             Arc::clone(&scope),
             scope_key,
         ));

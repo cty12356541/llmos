@@ -238,6 +238,31 @@ impl TokioRuntimeAdapter {
         }
     }
 
+    /// Clean shutdown: wait until every registered fiber generation has
+    /// reached a terminal outcome (preserving the existing
+    /// [`nlos_runtime::FiberExit::Completed`] clean exit when the fiber body
+    /// returns it), then engage [`Self::shutdown`]. Does not invent a new
+    /// exit vocabulary and does not rewrite `Failed` / `Cancelled` into
+    /// `Completed`.
+    ///
+    /// Callers must not admit new fibers while this drain runs; concurrent
+    /// spawn is a race outside this slice. Idempotent once the fail-closed
+    /// shutdown flag is set.
+    pub fn clean_shutdown(&self) {
+        loop {
+            let pending: Vec<Arc<FiberRecord>> = lock_unpoisoned(&self.inner.fibers)
+                .values()
+                .filter(|record| record.terminal_is_pending())
+                .map(Arc::clone)
+                .collect();
+            let Some(record) = pending.into_iter().next() else {
+                break;
+            };
+            record.wait_until_terminal();
+        }
+        self.shutdown();
+    }
+
     /// Registers a wait for the terminal wake of `operation_id` +
     /// `operation_generation` on behalf of `handle`.
     ///

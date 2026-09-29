@@ -374,3 +374,81 @@ fn gc_power_loss_mid_commit_phantom_receipt_invisible_after_reopen() {
     assert!(completion.receipt().collected_digests.is_empty());
     assert_integrity(directory.root());
 }
+
+/// deep-audit/32 H1 regression (end-to-end): a GC pass running
+/// concurrently with puts must never remove a blob a put is committing.
+/// The pre-fix ordering (blob durable on disk, then mutex, then metadata)
+/// left exactly that scan-delete window: the GC saw the fresh blob with
+/// no referencing row, deleted it, and the put then committed metadata
+/// for a blob that no longer existed — a permanently `BlobMissing`
+/// revision. The blob commit phase now runs inside the writer critical
+/// section (same mutex as the GC pass), so every revision below must
+/// stay readable no matter how the threads interleave.
+#[test]
+fn gc_concurrent_with_puts_never_sentences_in_flight_blobs() {
+    let directory = TestStoreDir::new("gc-put-race");
+    let store = ArtifactStore::open(directory.root()).expect("open");
+    store.create_artifact(artifact_spec(0x3a)).expect("create");
+    let artifact = artifact_id(0x3a);
+    let put_count: u64 = 24;
+    let stop = std::sync::atomic::AtomicBool::new(false);
+
+    std::thread::scope(|scope| {
+        let collector = scope.spawn(|| {
+            let mut receipts = Vec::new();
+            let mut pass: u64 = 0;
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                let mut key_bytes = [0_u8; 16];
+                key_bytes[8..].copy_from_slice(&pass.to_be_bytes());
+                let decision = store
+                    .collect_orphan_blobs(CollectOrphanBlobsRequest {
+                        idempotency_key: IdempotencyKey::from_bytes(key_bytes),
+                        collected_at_ms: 9_000,
+                    })
+                    .expect("gc pass");
+                receipts.push(decision.receipt().clone());
+                pass += 1;
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            receipts
+        });
+
+        for index in 0..put_count {
+            let payload = format!("gc-race-payload-{index}").into_bytes();
+            store
+                .put_revision(put(artifact, index, &payload))
+                .expect("put must commit while GC passes run");
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+
+        for receipt in collector.join().expect("gc thread") {
+            assert!(
+                receipt.collected_digests.is_empty(),
+                "a pass concurrent with puts must never collect a digest: {:?}",
+                receipt.collected_digests
+            );
+        }
+    });
+
+    // Every committed revision is still byte-readable (the pre-fix race
+    // surfaced here as `BlobMissing`).
+    for index in 0..put_count {
+        let payload = format!("gc-race-payload-{index}").into_bytes();
+        assert_eq!(
+            store
+                .get_revision(artifact, index + 1, READ_NOW_MS)
+                .expect("revision must survive concurrent GC"),
+            payload
+        );
+        assert!(
+            directory
+                .artifact_blob(ContentDigest::of_bytes(&payload))
+                .is_file()
+        );
+    }
+
+    let report = store.recover().expect("recover");
+    assert!(report.missing_blobs.is_empty());
+    assert!(report.orphan_blobs.is_empty());
+    assert_integrity(directory.root());
+}

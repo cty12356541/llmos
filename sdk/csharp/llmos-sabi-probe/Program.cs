@@ -221,9 +221,9 @@ Run("wire: TestBytesHelpers", () =>
 
 // ----------------------------------------------------------------------
 // Golden cases (mirror sdk/go/sabi/golden_test.go case-for-case; the golden
-// gate is the full four-file sabi set the Go lane asserts: Envelope-v1,
-// Envelope-common-request-v1, Envelope-common-uncertain-v1, and
-// PrincipalHandshake-v1).
+// gate is the full five-file sabi set the Go lane asserts: Envelope-v1,
+// Envelope-common-request-v1, Envelope-common-uncertain-v1,
+// PrincipalHandshake-v1, and ServiceDirectory.ResolveRequest-v1).
 // ----------------------------------------------------------------------
 
 Run("sabi: TestEnvelopeGolden (byte-equal + decode fields + roundtrip)", () =>
@@ -408,6 +408,33 @@ Run("sabi: TestPrincipalHandshakeGolden (byte-equal + decode fields + roundtrip)
     RoundtripGolden("PrincipalHandshake-v1", golden, g =>
     {
         var m = new PrincipalHandshakeAttestation();
+        SabiCodec.Unmarshal(m, g);
+        return SabiCodec.Marshal(m);
+    });
+});
+
+Run("sabi: TestServiceDirectoryResolveRequestGolden (byte-equal + decode fields + roundtrip)", () =>
+{
+    byte[] golden = GoldenBytes("nlos.sabi.ServiceDirectory.ResolveRequest-v1.hex");
+
+    var request = new ResolveServiceRequest
+    {
+        Schema = new SchemaIdentity { Name = "nlos.sabi.ServiceDirectory", Major = 1 },
+        Service = "operation",
+    };
+    CheckBytes(SabiCodec.Marshal(request), golden, "encode ServiceDirectory.ResolveRequest-v1 != golden");
+
+    var decoded = new ResolveServiceRequest();
+    SabiCodec.Unmarshal(decoded, golden);
+    Check(decoded.Schema != null, "decoded schema identity missing");
+    Check(decoded.Schema!.Name == "nlos.sabi.ServiceDirectory", "decoded schema name");
+    Check(decoded.Schema.Major == 1, "decoded schema major");
+    Check(decoded.Schema.Minor == 0, "decoded schema minor");
+    Check(decoded.Service == "operation", "decoded service");
+
+    RoundtripGolden("ServiceDirectory.ResolveRequest-v1", golden, g =>
+    {
+        var m = new ResolveServiceRequest();
         SabiCodec.Unmarshal(m, g);
         return SabiCodec.Marshal(m);
     });

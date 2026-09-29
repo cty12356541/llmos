@@ -12,8 +12,9 @@ use nlos_artifact::CollectOrphanBlobsDecision;
 use nlos_runtime::RuntimeAdapter as _;
 use nlos_runtime_tokio::{TokioRuntimeAdapter, TokioRuntimeConfig};
 use nlos_slice_k::{
-    ChainQuery, HappyChain, SliceKRuntime, artifact_blob_path, plant_orphan_artifact_blob,
-    run_cancel_path, run_happy_chain, run_recovery_prefix, seeded_key, short_hex,
+    AutoOrphanGc, ChainQuery, HappyChain, SliceKRuntime, artifact_blob_path,
+    plant_orphan_artifact_blob, run_cancel_path, run_happy_chain, run_recovery_prefix,
+    run_second_process_pair, run_second_process_platform_kill, seeded_key, short_hex,
 };
 
 fn receipt_line(kind: &str, id: &[u8], detail: &str) {
@@ -37,6 +38,7 @@ async fn main() {
 
     demo_happy_chain(&runtime, &adapter).await;
     demo_cancel_path(&runtime, &adapter).await;
+    demo_second_process_kill(&runtime, &adapter).await;
     demo_recovery(runtime, adapter, &root).await;
     println!("[slice-k] DONE");
 
@@ -246,9 +248,17 @@ fn demo_uninstall(runtime: &Arc<SliceKRuntime>, chain: &HappyChain) {
             uninstall.application_generation.get()
         ),
     );
+    // The refusal probe must not mutate blob state: the default Enabled
+    // install-scoped pass (W22-001) runs BEFORE the authority refusal and
+    // would legitimately collect the planted orphans, leaving STEP 09d's
+    // explicit pass empty (B-SLICE-K-001 §17, RISK-B-12 root cause).
     assert!(
         runtime
-            .install_verified_package_by_id(chain.verification_receipt_id, 0x2F)
+            .install_verified_package_by_id_with_gc(
+                chain.verification_receipt_id,
+                0x2F,
+                AutoOrphanGc::Disabled,
+            )
             .is_err(),
         "installing over an uninstalled application must fail closed"
     );
@@ -336,6 +346,87 @@ async fn demo_cancel_path(runtime: &Arc<SliceKRuntime>, adapter: &TokioRuntimeAd
             .state,
         cancel.converged_plans
     );
+}
+
+/// Demonstrates ROAD-B-002 B2-1: one application driving TWO process
+/// bindings concurrently, the second one platform-killed end to end. On
+/// Unix the chain signals a REAL child process through the POSIX adapter
+/// fed by the supervisor pid registry; other hosts run the same chain
+/// against the noop contract adapter (the honest limitation, §W29-F).
+async fn demo_second_process_kill(runtime: &Arc<SliceKRuntime>, adapter: &TokioRuntimeAdapter) {
+    println!("[slice-k] STEP 12b second-process-kill begin");
+    #[cfg(unix)]
+    let mut children = {
+        let first = std::process::Command::new("sleep")
+            .arg("600")
+            .spawn()
+            .expect("demo first child");
+        let second = std::process::Command::new("sleep")
+            .arg("600")
+            .spawn()
+            .expect("demo second child");
+        (first, second)
+    };
+    #[cfg(unix)]
+    let (os_pid_first, os_pid_second) = (children.0.id(), children.1.id());
+    #[cfg(not(unix))]
+    let (os_pid_first, os_pid_second) = (std::process::id(), std::process::id());
+
+    // Seed-band discipline: this scenario's key family (seed offsets
+    // 12..37 plus the sub-seed bands) must stay disjoint from every key
+    // the earlier steps already consumed on this shared runtime — a
+    // colliding clock key would replay its stale durable reading and
+    // trip `InstallationPrecedesVerification` (B-SLICE-K-001 §17).
+    let pair = run_second_process_pair(runtime, adapter, 0xA0, os_pid_first, os_pid_second)
+        .await
+        .expect("second process pair");
+    println!(
+        "[slice-k] STEP 12b pair materialized first={} second={} bindings=2 pid_entries=2",
+        short_hex(pair.process_first.process_id.as_bytes()),
+        short_hex(pair.process_second.process_id.as_bytes()),
+    );
+    let kill = run_second_process_platform_kill(runtime, adapter, &pair)
+        .await
+        .expect("second process platform kill chain");
+    receipt_line(
+        "platform-kill",
+        kill.kill.receipt().process_id.as_bytes(),
+        &format!(
+            "generation={} killed_at_ms={}",
+            kill.kill.receipt().process_generation.get(),
+            kill.kill.receipt().killed_at_ms
+        ),
+    );
+    receipt_line(
+        "process-terminal",
+        kill.crash.process_id.as_bytes(),
+        &format!(
+            "lifecycle={:?} matched_fibers={} canceled_scopes={} already_terminal={}",
+            kill.crash.lifecycle_state,
+            kill.linkage.matched_fibers,
+            kill.linkage.canceled_scopes,
+            kill.linkage.already_terminal,
+        ),
+    );
+    let survived = runtime
+        .process
+        .inspect_active_process_binding(pair.process_first.process_id)
+        .expect("first process unaffected (isolation)");
+    println!(
+        "[slice-k] STEP 12b isolation first={} generation={} still active",
+        short_hex(survived.process_id.as_bytes()),
+        survived.process_generation.get(),
+    );
+    #[cfg(unix)]
+    {
+        assert!(
+            !children.1.wait().expect("demo killed child").success(),
+            "the real child died by signal"
+        );
+        let _ = children.0.kill();
+        let _ = children.0.wait();
+    }
+    println!("[slice-k] STEP 12b second-process-kill done");
 }
 
 async fn demo_recovery(

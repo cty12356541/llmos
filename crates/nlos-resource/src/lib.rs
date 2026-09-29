@@ -212,6 +212,64 @@ impl ResourceDemand {
             (demand > bound).then_some((dimension, demand, bound))
         })
     }
+
+    /// Scales every dimension down to `percent`% of `self` (`100` is the
+    /// exact identity; smaller percents saturate and truncate, only ever
+    /// shrinking a dimension; `0` collapses the demand to zero). This is
+    /// the authoritative throttle adjustment of the demand type —
+    /// [`throttle_demand`] pairs it with the admission check.
+    #[must_use]
+    pub const fn throttled_to_percent(self, percent: u64) -> Self {
+        if percent == 100 {
+            self
+        } else {
+            Self {
+                cpu_shares: self.cpu_shares.saturating_mul(percent) / 100,
+                memory_mib: self.memory_mib.saturating_mul(percent) / 100,
+                io_weight: self.io_weight.saturating_mul(percent) / 100,
+            }
+        }
+    }
+}
+
+/// Typed outcome of one authoritative demand throttle adjustment (W29-D
+/// `throttle_operation` execution surface).
+///
+/// The reservation model declares demand immutably at reserve time, so a
+/// throttle is computed and admission-checked here — the durable
+/// re-reservation that would persist `demand_after` remains the resource
+/// coordinator lane's scope.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DemandThrottle {
+    /// Whole-percent level the demand was throttled down to.
+    pub throttle_percent: u64,
+    pub demand_before: ResourceDemand,
+    pub demand_after: ResourceDemand,
+    pub capacity: ResourceDemand,
+    /// First fixed-order dimension where `demand_after` exceeds `capacity`,
+    /// if any (a throttle never widens a demand, so this is `None` whenever
+    /// `demand_before` already admitted).
+    pub first_exceedance: Option<(DemandDimension, u64, u64)>,
+}
+
+/// Applies one authoritative throttle adjustment: every dimension of
+/// `current` is scaled down to `percent`% and the result is
+/// admission-checked against `capacity` in the fixed
+/// [`DemandDimension::ALL`] order.
+#[must_use]
+pub fn throttle_demand(
+    current: ResourceDemand,
+    capacity: ResourceDemand,
+    percent: u64,
+) -> DemandThrottle {
+    let demand_after = current.throttled_to_percent(percent);
+    DemandThrottle {
+        throttle_percent: percent,
+        demand_before: current,
+        demand_after,
+        capacity,
+        first_exceedance: demand_after.exceedance_of(capacity),
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1699,6 +1757,17 @@ impl ResourceAuthority {
     ) -> Result<ReservationRecord, ResourceAuthorityError> {
         let connection = self.lock()?;
         reservation(&connection, id)?.ok_or(ResourceAuthorityError::ReservationNotFound)
+    }
+
+    /// Reads the immutable Quote record with its declared per-dimension
+    /// demand capacity — the admission bound a throttle adjustment is
+    /// checked against (W29-D `throttle_operation` execution surface).
+    ///
+    /// # Errors
+    /// Fails for an unknown Quote or storage error.
+    pub fn inspect_quote(&self, id: QuoteId) -> Result<QuoteRecord, ResourceAuthorityError> {
+        let connection = self.lock()?;
+        quote(&connection, id)?.ok_or(ResourceAuthorityError::QuoteNotFound)
     }
 
     /// Reads the endpoint proof for the current Driver generation.

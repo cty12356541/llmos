@@ -90,6 +90,8 @@ fn setup_attempt(tasks: &SqliteTaskAuthority, task_id: TaskId, attempt_id: TaskA
             task_id,
             task_generation: Generation::INITIAL,
             registered_at_ms: 1_000,
+            application_id: None,
+            plan_revision: None,
         })
         .expect("register task");
     tasks

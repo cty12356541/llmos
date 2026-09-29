@@ -124,3 +124,87 @@ ROAD-B-001 GC 最小前缀：Slice K 纵切面在 uninstall 后调用 B-ARTIFACT
 ### 8.4 验证
 
 见 [B-SLICE-K-001 §10.4](b-slice-k-001-end-to-end.md#104-验证base-head-77efcb6-工作区定向--p-命令)。
+
+## 9. W27-D 追加：活动门接入真实 TaskAuthority 查询（2026-09-20）
+
+> 状态：`PARTIAL PASS`（生产活动查询接线；closure seam 保留；无 teardown/GC）
+
+### 9.1 目标
+
+勾销 §7.5 第一条缺口的前半：`uninstall`/`rollback` 活动门不再只依赖 caller 闭包
+（`ActiveTaskActivityProbe`），生产路径改为**真实 TaskAuthority 查询**——门内解析
+package 的 durable background-task 注册集合，再查询任务权威中这些 Task 是否仍
+outstanding（非终态 `Active`）。
+
+### 9.2 写集
+
+- `crates/nlos-task/src/activity.rs`（新）：`SqliteTaskAuthority::
+  inspect_outstanding_task_count(&self, task_ids: &[TaskId]) -> Result<u64,
+  TaskStoreError>` —— distinct 命中 `tasks` 行且 `task_state` 解码为 `Active` 的计数；
+  无 durable 行计 0（承诺≠活动）、终态（`Cancelled`）计 0、不可解码 `task_state` 以
+  `CorruptRecord` fail-closed。内嵌单测 3 例。
+- `crates/nlos-task/src/lib.rs`：仅 `mod activity;` 一行。
+- `crates/nlos-application/src/lib.rs`：`TaskActivityQueryFailed { package_id, error:
+  TaskStoreError }` typed 错误（Display + `Error::source`）；私有
+  `TaskActivitySource`（`Probe` 闭包 seam / `TaskAuthority` 真实查询双形状）；
+  `uninstall_application_with_task_activity_gate` /
+  `rollback_application_with_task_activity_gate` 公共 API；私有
+  `load_registered_background_task_ids`（事务内 `SELECT DISTINCT task_id`，跨全部
+  installation generation）。
+- `crates/nlos-application/Cargo.toml`：新增生产依赖 `nlos-task`（只读消费；根
+  Cargo.toml 未动）。
+- `crates/nlos-application/tests/application_authority.rs`：5 用例（见 9.4）。
+
+### 9.3 语义
+
+- **门内真实查询（W16-001 §7.3 的生产化）**：gate 位于 replay 检查之后、status CAS
+  之前（位置不变）；`TaskAuthority` 形状在此位置**先于跨权威查询**用已开的写事务解析
+  本 application 的注册 task 集合（同一事务视图），再对独立 task store 查询 liveness。
+  闭包形状保持不变（infallible），slice-k 既有用法不受影响（已回归验证）。
+- **死锁自由**：查询只进入 task authority 自己的 store/锁（app→task 单向锁序）；
+  绝不在持写锁时重入 `ApplicationAuthority`（slice-k 既有约束保持）。
+- **fail-closed**：task 查询不可回答（含不可解码 `task_state` 的 `CorruptRecord`、
+  存储错误）→ `TaskActivityQueryFailed`，事务 drop，零 durable 状态； healed 后同
+  shaped 新键收敛。
+- **replay 不变**：durable receipt 为权威，replay 路径完全不触碰查询——即使查询
+  此刻必然失败（用例以 tamper 证明）。
+- **活动语义（honest scope）**：activity = TaskAuthority 可见的 outstanding task；
+  仅注册而无 durable task 行不计活动（区别于 slice-k 旧 stub 的注册计数）；跨权威
+  无原子性（查询为 task store 的时点读），TOCTOU 与 §7 相同开放。
+- **W27-A 车道协调**：本车道在 nlos-task 只新增上述只读查询
+  （`inspect_outstanding_task_count`，`src/activity.rs`）；未触碰
+  recovery/worker/metrics 文件与 store.rs。
+
+### 9.4 验收
+
+新增 `tests/application_authority.rs` 5 用例：
+
+1. `uninstall_task_activity_gate_opens_without_outstanding_tasks`——仅注册（无 task
+   行）+ 已 Cancelled 注册并存 → 门开（证明是 liveness 查询而非注册计数）；
+2. `uninstall_task_activity_gate_refuses_while_task_active_then_converges`——1 个
+   Active task → `ApplicationActiveTasksRunning{active_task_count:1}` 零 durable
+   状态；`cancel_task` 后新键收敛 uninstall；
+3. `uninstall_task_activity_gate_fails_closed_on_task_store_error`——tamper
+   `task_state=7` → `TaskActivityQueryFailed` 零状态；heal 至终态后收敛；
+4. `uninstall_task_activity_gate_replay_bypasses_task_activity_query`——receipt 落
+   地后出现 Active 活动 + tamper 必败查询，replay 仍 byte-equal；
+5. `rollback_task_activity_gate_refuses_then_converges`——disabled 双代际 app 的
+   rollback 同语义（拒绝 + cancel 后收敛）。
+
+```text
+cargo test -p nlos-application                                # PASS：56 passed / 0 failed
+  （lib 6 + application_authority 43[含新 5] + application_fault_injection 7）
+cargo test -p nlos-task --lib                                  # PASS：23 passed / 0 failed（含 activity 3）
+cargo test -p nlos-task --test task_authority --test scale_profile  # PASS：13 + 14 / 0 failed
+cargo test -p nlos-slice-k --test application_registrations    # PASS：3 / 0 failed（closure seam 兼容回归）
+cargo clippy -p nlos-application -p nlos-task --all-targets -- -D warnings  # PASS：exit 0
+cargo fmt -p nlos-application -p nlos-task -- --check          # PASS：exit 0
+```
+
+### 9.5 仍开放（PARTIAL_PASS 缺口）
+
+- Task/Process teardown、Capability revoke、GC（同 §7.5）。
+- 跨权威原子性：活动查询是 task store 时点读，gate→CAS 窗口内新注册/新活动不可见。
+- Slice K runtime 侧生产调用点切换到 `*_with_task_activity_gate`（现由调用方接线；
+  slice-k 既有 closure 用法保持合法）。
+- 跨进程 uninstall 审批、workspace 级门、真实断电、三平台 CI。

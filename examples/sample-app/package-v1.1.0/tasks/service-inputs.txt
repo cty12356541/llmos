@@ -1,0 +1,1 @@
+input-selector: main node output receipt

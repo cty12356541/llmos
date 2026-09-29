@@ -1,7 +1,8 @@
 // Package sabi contains hand-written Go mirrors of the frozen v1-beta
 // nlos.sabi.v1 message family (schema/nlos/sabi/v1/*.proto) plus the additive
-// ADR-0011 PrincipalHandshake family, sufficient for the B-SDK-LANG-EVAL Go
-// golden probe against schema/golden/*.hex.
+// ADR-0011 PrincipalHandshake family and the frozen ServiceDirectory resolve
+// entry message, sufficient for the B-SDK-LANG-EVAL Go golden probe against
+// schema/golden/*.hex.
 //
 // This is a probe, NOT the full Go SDK: only the wire surface exercised by
 // the frozen goldens is implemented, marshaling is deterministic by
@@ -166,6 +167,16 @@ type PrincipalHandshakeAttestation struct {
 	Nonce          []byte          `wire:"3"`
 	ChannelBinding []byte          `wire:"4"`
 	Signature      []byte          `wire:"5"`
+
+	UnknownFields []byte `wire:"-"`
+}
+
+// ResolveServiceRequest mirrors nlos.sabi.v1.ResolveServiceRequest, the
+// frozen ServiceDirectory resolve entry message (schema name on the wire:
+// "nlos.sabi.ServiceDirectory", v1 minor 0).
+type ResolveServiceRequest struct {
+	Schema  *SchemaIdentity `wire:"1"`
+	Service string          `wire:"2"`
 
 	UnknownFields []byte `wire:"-"`
 }

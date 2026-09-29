@@ -148,6 +148,13 @@ pub struct FinalizeSpec<'a> {
     /// Resource owner whose FINALIZED cost aggregates are re-read and
     /// nested under the terminal Task receipt.
     pub resource_authority: Option<&'a nlos_resource::ResourceAuthority>,
+    /// Operation owner whose durable dispatch activation receipts are
+    /// re-read for every sealed `OperationBinding` endpoint before the
+    /// terminal Task transaction opens (ADR-0017 O-B verify half;
+    /// `[TASK-COMMIT-002]` slot evidence-chain owner revalidation).
+    /// Guard-only: nothing new is persisted and the Operation is never
+    /// transitioned by the Task side.
+    pub operation_authority: Option<&'a nlos_store::SqliteOperationStore>,
 }
 
 // The owner stores are opaque SQLite handles without `Debug`, and the
@@ -162,6 +169,7 @@ impl std::fmt::Debug for FinalizeSpec<'_> {
             .field("persisted_envelope", &self.persisted_envelope.is_some())
             .field("authority_lease", &self.authority_lease.is_some())
             .field("resource_authority", &self.resource_authority.is_some())
+            .field("operation_authority", &self.operation_authority.is_some())
             .finish()
     }
 }
@@ -924,7 +932,7 @@ fn load_cross_adoption_by_id(
     rows.next()?.map(decode_cross_adoption_row).transpose()
 }
 
-fn load_adoption_by_permit(
+pub(crate) fn load_adoption_by_permit(
     source: &impl SqlRead,
     task_id: TaskId,
     permit_id: CommitPermitId,
@@ -1048,12 +1056,22 @@ fn validate_cross_term_adoption_context(
         return Err(TaskStoreError::AuthorityLeaseFenced);
     }
     let registry = crate::participant::inspect_registry(transaction, &task.record)?;
-    let expected_generation = original_registry_binding
+    let minimum_successor_generation = original_registry_binding
         .generation
         .checked_add(1)
         .ok_or(TaskStoreError::EpochExhausted)?;
-    if registry.generation != expected_generation
-        || registry.prior_root != original_registry_binding.root
+    // Cross-term adoption liveness: every participant registration after
+    // the successor hand-off advances the successor registry generation
+    // (each immutable generation row chains to the previous root), so any
+    // generation at or beyond the direct successor must stay admissible —
+    // requiring exactly original+1 would freeze an adopted quarantined
+    // permit forever. The one-hop `prior_root` descent witness is only
+    // definable for the direct successor generation, so it is checked
+    // there; later generations descend through their own immutable
+    // per-generation rows.
+    if registry.generation < minimum_successor_generation
+        || (registry.generation == minimum_successor_generation
+            && registry.prior_root != original_registry_binding.root)
         || !matches!(
             registry.state,
             crate::ParticipantRegistryState::Open
@@ -1069,10 +1087,28 @@ fn validate_cross_term_adoption_context(
     let current_assignment = load_current_assignment(transaction, task.record.task_id)?.ok_or(
         TaskStoreError::CorruptRecord("cross-term adoption current assignment"),
     )?;
+    // "Successor Active" semantics: the live assignment must be Active,
+    // not the takeover completion assignment, and bound to the successor
+    // lease. Its registry binding may lag the current generation between
+    // a participant registration and the next lease-bound permit issuance
+    // (registrations never rotate assignments, and a quarantined permit
+    // blocks that issuance), so any in-chain successor binding is
+    // accepted: generation within [original+1, current], root verified
+    // against the immutable per-generation row.
     if current_assignment.state != AuthorityAssignmentState::Active
         || current_assignment.assignment_id == completion_assignment_id
         || current_assignment.authority_lease_binding != takeover.new_authority_lease_binding
-        || current_assignment.participant_registry_binding != current_registry_binding
+    {
+        return Err(TaskStoreError::AuthorityLeaseFenced);
+    }
+    let assignment_binding = current_assignment.participant_registry_binding;
+    if assignment_binding.generation < minimum_successor_generation
+        || assignment_binding.generation > registry.generation
+        || crate::participant::registry_root_at_generation(
+            transaction,
+            task.record.task_id,
+            assignment_binding.generation,
+        )? != Some(assignment_binding.root)
     {
         return Err(TaskStoreError::AuthorityLeaseFenced);
     }
@@ -1095,6 +1131,55 @@ fn validate_cross_term_adoption_context(
         current_registry_binding,
         exact_fenced_participant_root,
     })
+}
+
+/// Cross-term adoption anchor check (adoption liveness): after a cross-term
+/// adoption, participant registrations may advance the successor registry
+/// generation — and rotate the active assignment with it — while the
+/// adopted permit is still outstanding. The adoption receipt's recorded
+/// `current_*` anchor stays valid when it names a real registry generation
+/// inside the successor chain (verified against the immutable
+/// per-generation row root) and an assignment of the SAME successor lease
+/// term that is still active or was fenced by a later same-term rotation.
+/// The takeover-chain checks (receipt Complete, old/completion assignments
+/// Fenced, live successor Active assignment, fence root) are unchanged;
+/// a later takeover term still mismatches `context.current_lease` and
+/// fails closed in the callers.
+fn adoption_anchor_advancement_valid(
+    transaction: &Transaction<'_>,
+    context: &CrossTermAdoptionContext,
+    recorded_assignment_id: TaskAuthorityAssignmentId,
+    recorded_registry_binding: crate::ParticipantRegistryBinding,
+) -> Result<bool, TaskStoreError> {
+    let minimum_successor_generation = context
+        .original_registry_binding
+        .generation
+        .checked_add(1)
+        .ok_or(TaskStoreError::EpochExhausted)?;
+    if recorded_registry_binding.generation < minimum_successor_generation
+        || recorded_registry_binding.generation > context.current_registry_binding.generation
+    {
+        return Ok(false);
+    }
+    if crate::participant::registry_root_at_generation(
+        transaction,
+        context.takeover.task_id,
+        recorded_registry_binding.generation,
+    )? != Some(recorded_registry_binding.root)
+    {
+        return Ok(false);
+    }
+    match crate::lease::load_assignment_by_id(
+        transaction,
+        context.takeover.task_id,
+        recorded_assignment_id,
+    )? {
+        Some(record) => Ok(matches!(
+            record.state,
+            AuthorityAssignmentState::Active | AuthorityAssignmentState::Fenced
+        ) && record.authority_lease_binding == context.current_lease),
+        None => Ok(false),
+    }
 }
 
 #[allow(clippy::too_many_lines)]
@@ -1543,13 +1628,38 @@ fn validate_cross_adoption_for_terminal(
     if adoption.authority_lease_binding != Some(context.current_lease)
         || adoption.original_authority_lease_binding != Some(context.old_lease)
         || adoption.original_participant_registry_binding != Some(context.original_registry_binding)
-        || adoption.current_assignment_id != Some(context.current_assignment_id)
-        || adoption.current_participant_registry_binding != Some(context.current_registry_binding)
         || adoption.exact_fenced_participant_root != Some(context.exact_fenced_participant_root)
         || adoption.current_cancel_epoch != Some(task.record.cancel_epoch)
         || adoption
             .current_control_epoch
             .is_none_or(|epoch| task.record.control_epoch < epoch)
+    {
+        return Err(TaskStoreError::AuthorityLeaseBindingMismatch);
+    }
+    // Adoption-liveness anchor: the recorded `current_*` pair may trail the
+    // live successor chain when participants registered after the adoption
+    // (see `adoption_anchor_advancement_valid`); everything immutable
+    // above stays an exact match.
+    let recorded_assignment_id =
+        adoption
+            .current_assignment_id
+            .ok_or(TaskStoreError::CorruptRecord(
+                "cross-term adoption current assignment",
+            ))?;
+    let recorded_registry_binding =
+        adoption
+            .current_participant_registry_binding
+            .ok_or(TaskStoreError::CorruptRecord(
+                "cross-term adoption current registry",
+            ))?;
+    if (recorded_assignment_id != context.current_assignment_id
+        || recorded_registry_binding != context.current_registry_binding)
+        && !adoption_anchor_advancement_valid(
+            transaction,
+            &context,
+            recorded_assignment_id,
+            recorded_registry_binding,
+        )?
     {
         return Err(TaskStoreError::AuthorityLeaseBindingMismatch);
     }
@@ -2067,7 +2177,16 @@ impl SqliteTaskAuthority {
     /// - `resource_authority` (with optional Semantic guard) matches the
     ///   Resource rungs (returns [`FinalizeSpecDecision::Resource`]);
     /// - `semantic_plan` + `resource_authority` matches the combined rungs
-    ///   (returns [`FinalizeSpecDecision::Combined`]).
+    ///   (returns [`FinalizeSpecDecision::Combined`]);
+    /// - `operation_authority` composes with every rung above: before the
+    ///   terminal Task transaction opens, the owner's durable dispatch
+    ///   activation receipt is re-read for every sealed `OperationBinding`
+    ///   endpoint (ADR-0017 O-B verify half; prepared-but-never-activated,
+    ///   canceled, and stale-generation preparations fail closed with the
+    ///   typed `OperationDispatch*` errors naming the Operation). A closed
+    ///   permit replays from the durable Task rows without consulting the
+    ///   Operation authority, and nothing new is persisted on the Task or
+    ///   Operation side — the gate is guard-only.
     ///
     /// Missing required authorities fail closed before any owner read:
     /// `semantic_plan` without `semantic_authority`, and
@@ -2077,7 +2196,11 @@ impl SqliteTaskAuthority {
     /// # Errors
     ///
     /// Returns the union of the ladder constructors' errors plus the two
-    /// spec-shape conflicts above.
+    /// spec-shape conflicts above, and — when `operation_authority` is
+    /// set — the typed `OperationDispatchNotPrepared` /
+    /// `OperationDispatchNotActivated` / `OperationDispatchCancelled` /
+    /// `OperationDispatchStaleGeneration` rejections naming the Operation
+    /// whose sealed preparation failed the owner activation re-read.
     #[allow(clippy::needless_pass_by_value)]
     pub fn finalize_commit_v3_with_spec(
         &self,
@@ -2115,6 +2238,7 @@ impl SqliteTaskAuthority {
                 let receipts = self.verify_owners_for_spec_finalize(
                     Some(semantic_authority),
                     Some(resource_authority),
+                    spec.operation_authority,
                     &request,
                 )?;
                 let decision = self.finalize_impl_with_semantic_and_resource_receipts(
@@ -2131,7 +2255,12 @@ impl SqliteTaskAuthority {
                     .ok_or(TaskStoreError::TaskWriteSetConflict {
                         reason: "spec-based finalize with a Semantic plan requires the Semantic authority",
                     })?;
-                self.verify_owners_for_spec_finalize(Some(semantic_authority), None, &request)?;
+                self.verify_owners_for_spec_finalize(
+                    Some(semantic_authority),
+                    None,
+                    spec.operation_authority,
+                    &request,
+                )?;
                 let decision = match spec.authority_lease {
                     Some(lease) => self.finalize_impl_with_semantic_plan_and_authority_lease(
                         &request, plan_id, lease,
@@ -2144,6 +2273,7 @@ impl SqliteTaskAuthority {
                 let receipts = self.verify_owners_for_spec_finalize(
                     spec.semantic_authority,
                     Some(resource_authority),
+                    spec.operation_authority,
                     &request,
                 )?;
                 let decision = self.finalize_impl_with_resource_receipts(
@@ -2154,8 +2284,13 @@ impl SqliteTaskAuthority {
                 Ok(FinalizeSpecDecision::Resource(decision))
             }
             (None, None) => {
-                if let Some(semantic_authority) = spec.semantic_authority {
-                    self.verify_owners_for_spec_finalize(Some(semantic_authority), None, &request)?;
+                if spec.semantic_authority.is_some() || spec.operation_authority.is_some() {
+                    self.verify_owners_for_spec_finalize(
+                        spec.semantic_authority,
+                        None,
+                        spec.operation_authority,
+                        &request,
+                    )?;
                 }
                 let decision = match spec.authority_lease {
                     Some(lease) => {
@@ -2169,17 +2304,20 @@ impl SqliteTaskAuthority {
     }
 
     /// Loads the sealed write set of an issued permit once and re-reads the
-    /// Semantic owner proofs (guard only, when requested) and every sealed
-    /// Reservation's FINALIZED owner aggregate (when requested) before the
-    /// Task transaction opens. Non-issued permits and legacy permits
-    /// without a sealed write set validate nothing and return an empty
-    /// receipt set (replay inserts/reads no rows). This replicates the
-    /// pre-transaction halves of the ladder constructors exactly, in one
-    /// shared code path for the struct-based entry.
+    /// Semantic owner proofs (guard only, when requested), every sealed
+    /// Reservation's FINALIZED owner aggregate (when requested), and every
+    /// sealed `OperationBinding` endpoint's dispatch activation receipt
+    /// (when requested, ADR-0017 O-B) before the Task transaction opens.
+    /// Non-issued permits and legacy permits without a sealed write set
+    /// validate nothing and return an empty receipt set (replay inserts/
+    /// reads no rows). This replicates the pre-transaction halves of the
+    /// ladder constructors exactly, in one shared code path for the
+    /// struct-based entry.
     fn verify_owners_for_spec_finalize(
         &self,
         semantic_authority: Option<&nlos_semantic::SemanticAuthority>,
         resource_authority: Option<&nlos_resource::ResourceAuthority>,
+        operation_authority: Option<&nlos_store::SqliteOperationStore>,
         request: &FinalizeRequestV3,
     ) -> Result<Vec<NestedResourceCostReceipt>, TaskStoreError> {
         let permit = self.inspect_permit(request.base.task_id, request.base.permit_id)?;
@@ -2202,6 +2340,12 @@ impl SqliteTaskAuthority {
         }
         if let Some(semantic_authority) = semantic_authority {
             validate_semantic_finalization(semantic_authority, &record)?;
+        }
+        if let Some(operation_authority) = operation_authority {
+            crate::effect::verify_sealed_operation_activation_endpoints(
+                operation_authority,
+                &record,
+            )?;
         }
         match resource_authority {
             Some(resource_authority) => {
@@ -2245,7 +2389,7 @@ impl SqliteTaskAuthority {
         request: &FinalizeRequestV3,
         legacy: bool,
     ) -> Result<FinalizeDecision, TaskStoreError> {
-        match self.finalize_impl_inner(request, legacy, None, None, None)? {
+        match self.finalize_impl_inner(request, legacy, None, None, None, None)? {
             FinalizeImplResult::Plain(decision) => Ok(decision),
             _ => Err(TaskStoreError::CorruptRecord(
                 "non-plain finalize result returned through plain API",
@@ -2259,7 +2403,7 @@ impl SqliteTaskAuthority {
         legacy: bool,
         authority_lease: Option<AuthorityLeaseRecord>,
     ) -> Result<FinalizeDecision, TaskStoreError> {
-        match self.finalize_impl_inner(request, legacy, authority_lease, None, None)? {
+        match self.finalize_impl_inner(request, legacy, authority_lease, None, None, None)? {
             FinalizeImplResult::Plain(decision) => Ok(decision),
             _ => Err(TaskStoreError::CorruptRecord(
                 "non-plain finalize result returned through plain API",
@@ -2272,7 +2416,7 @@ impl SqliteTaskAuthority {
         request: &FinalizeRequestV3,
         plan_id: SemanticCommitPlanId,
     ) -> Result<SemanticFinalizeDecision, TaskStoreError> {
-        match self.finalize_impl_inner(request, false, None, Some(plan_id), None)? {
+        match self.finalize_impl_inner(request, false, None, Some(plan_id), None, None)? {
             FinalizeImplResult::Semantic(decision) => Ok(decision),
             _ => Err(TaskStoreError::CorruptRecord(
                 "non-Semantic finalize result returned through Semantic API",
@@ -2291,6 +2435,7 @@ impl SqliteTaskAuthority {
             false,
             Some(authority_lease),
             Some(plan_id),
+            None,
             None,
         )? {
             FinalizeImplResult::Semantic(decision) => Ok(decision),
@@ -2315,11 +2460,40 @@ impl SqliteTaskAuthority {
             false,
             authority_lease,
             None,
+            None,
             Some(resource_receipts),
         )? {
             FinalizeImplResult::Resource(decision) => Ok(decision),
             _ => Err(TaskStoreError::CorruptRecord(
                 "non-Resource finalize result returned through Resource API",
+            )),
+        }
+    }
+
+    /// Plan-threaded Resource v3 finalize core used by
+    /// `converge_resource_commit_plan`: identical to
+    /// [`Self::finalize_impl_with_resource_receipts`], and additionally
+    /// flips the Resource finalize plan to `Finalized` (bound to the
+    /// terminal Task receipt) and resolves the Resource recovery ledger
+    /// inside the same terminal Task transaction — on both the fresh
+    /// commit and the closed-permit replay path.
+    pub(crate) fn finalize_impl_with_resource_plan(
+        &self,
+        request: &FinalizeRequestV3,
+        resource_plan_id: crate::resource_commit::ResourceCommitPlanId,
+        resource_receipts: &[NestedResourceCostReceipt],
+    ) -> Result<ResourceFinalizeDecision, TaskStoreError> {
+        match self.finalize_impl_inner(
+            request,
+            false,
+            None,
+            None,
+            Some(resource_plan_id),
+            Some(resource_receipts),
+        )? {
+            FinalizeImplResult::Resource(decision) => Ok(decision),
+            _ => Err(TaskStoreError::CorruptRecord(
+                "non-Resource finalize result returned through Resource plan API",
             )),
         }
     }
@@ -2340,6 +2514,7 @@ impl SqliteTaskAuthority {
             false,
             authority_lease,
             Some(semantic_plan_id),
+            None,
             Some(resource_receipts),
         )? {
             FinalizeImplResult::Combined(decision) => Ok(decision),
@@ -2356,6 +2531,7 @@ impl SqliteTaskAuthority {
         legacy: bool,
         authority_lease: Option<AuthorityLeaseRecord>,
         semantic_plan_id: Option<SemanticCommitPlanId>,
+        resource_plan_id: Option<crate::resource_commit::ResourceCommitPlanId>,
         resource_receipts: Option<&[NestedResourceCostReceipt]>,
     ) -> Result<FinalizeImplResult, TaskStoreError> {
         let mut connection = self.lock_connection()?;
@@ -2478,6 +2654,19 @@ impl SqliteTaskAuthority {
                             request.base.task_id,
                             &nested,
                         )?;
+                        if let Some(plan_id) = resource_plan_id {
+                            crate::resource_commit::bind_resource_plan_receipt(
+                                &transaction,
+                                plan_id,
+                                receipt.receipt_id,
+                                request.base.finalized_at_ms,
+                            )?;
+                            crate::recovery::resolve_resource_recovery(
+                                &transaction,
+                                plan_id,
+                                request.base.finalized_at_ms,
+                            )?;
+                        }
                         transaction.commit()?;
                         return Ok(FinalizeImplResult::Resource(
                             ResourceFinalizeDecision::Replayed(Box::new(
@@ -2653,6 +2842,22 @@ impl SqliteTaskAuthority {
                 ))
             }
             (None, Some(receipts)) => {
+                if let Some(plan_id) = resource_plan_id {
+                    // The plan flip and ledger resolve ride the SAME
+                    // terminal transaction as the receipt/nested rows, so
+                    // the whole bridge appears and disappears together.
+                    crate::resource_commit::bind_resource_plan_receipt(
+                        &transaction,
+                        plan_id,
+                        receipt.receipt_id,
+                        request.base.finalized_at_ms,
+                    )?;
+                    crate::recovery::resolve_resource_recovery(
+                        &transaction,
+                        plan_id,
+                        request.base.finalized_at_ms,
+                    )?;
+                }
                 transaction.commit()?;
                 Ok(FinalizeImplResult::Resource(
                     ResourceFinalizeDecision::Committed(Box::new(ResourceTaskCommitReceipt {
@@ -3218,12 +3423,34 @@ impl SqliteTaskAuthority {
                 successor_lease,
                 request.reconciled_at_ms,
             )?;
+            // Adoption-liveness anchor: the immutable lease/fence-root
+            // binding stays an exact match; the recorded `current_*` pair
+            // may trail the live successor chain when participants
+            // registered after the adoption (verified in-chain by
+            // `adoption_anchor_advancement_valid`).
             if adoption.authority_lease_binding != Some(context.current_lease)
-                || adoption.current_assignment_id != Some(context.current_assignment_id)
-                || adoption.current_participant_registry_binding
-                    != Some(context.current_registry_binding)
                 || adoption.exact_fenced_participant_root
                     != Some(context.exact_fenced_participant_root)
+            {
+                return Err(TaskStoreError::AuthorityLeaseBindingMismatch);
+            }
+            let recorded_assignment_id =
+                adoption
+                    .current_assignment_id
+                    .ok_or(TaskStoreError::CorruptRecord(
+                        "cross-term adoption current assignment",
+                    ))?;
+            let recorded_registry_binding = adoption.current_participant_registry_binding.ok_or(
+                TaskStoreError::CorruptRecord("cross-term adoption current registry"),
+            )?;
+            if (recorded_assignment_id != context.current_assignment_id
+                || recorded_registry_binding != context.current_registry_binding)
+                && !adoption_anchor_advancement_valid(
+                    &transaction,
+                    &context,
+                    recorded_assignment_id,
+                    recorded_registry_binding,
+                )?
             {
                 return Err(TaskStoreError::AuthorityLeaseBindingMismatch);
             }
@@ -3712,6 +3939,44 @@ fn replay_finalize(
         }
     }
     Ok(FinalizeDecision::Replayed(Box::new(receipt)))
+}
+
+/// Converge divergence detection (mixed plan liveness): the permit backing
+/// a still-`Planned` Resource finalize plan was terminalized out-of-band
+/// by the direct resource-aware v3 API with finalize bytes that differ
+/// from the plan's sealed envelope. Envelope replay — and therefore
+/// converge — can never succeed for such a plan (a permanent
+/// [`TaskStoreError::HistoryConflict`] loop), so the caller reports a
+/// typed divergence for upper-layer adjudication instead. Uses exactly
+/// the durable facts `replay_finalize` compares, fail-closed.
+pub(crate) fn resource_converge_replay_diverged(
+    source: &impl SqlRead,
+    permit: &PermitRecord,
+    request: &FinalizeRequestV3,
+) -> Result<bool, TaskStoreError> {
+    if permit.state != PermitState::Closed {
+        return Ok(false);
+    }
+    let Some(receipt) = load_receipt_by_permit(source, permit.task_id, permit.permit_id)? else {
+        return Ok(false);
+    };
+    if matches!(
+        receipt.outcome,
+        ReceiptOutcome::FailedBeforeEffect | ReceiptOutcome::CancelledBeforeEffect
+    ) {
+        // Pre-effect closures keep their own typed replay refusal
+        // (`PermitNotIssued`); this detector owns the finalize-proof
+        // byte divergence only.
+        return Ok(false);
+    }
+    Ok(match load_finalize_proof(source, receipt.receipt_id)? {
+        Some(digest) => digest != finalize_proof_digest(request),
+        None => {
+            receipt.new_effect_history_root != request.base.new_effect_history_root
+                || receipt.new_retry_fence_epoch != request.base.new_retry_fence_epoch
+                || !request.required_satisfaction.is_empty()
+        }
+    })
 }
 
 /// Fail-closed comparison of a Resource receipt set (owner-verified before

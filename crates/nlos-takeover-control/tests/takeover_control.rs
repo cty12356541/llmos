@@ -202,6 +202,8 @@ fn register_task_attempt(authority: &SqliteTaskAuthority, seed: u8) -> AttemptSp
             task_id,
             task_generation: Generation::INITIAL,
             registered_at_ms: 1,
+            application_id: None,
+            plan_revision: None,
         })
         .expect("register task");
     let attempt = AttemptSpec {

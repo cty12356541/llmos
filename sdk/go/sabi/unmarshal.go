@@ -676,3 +676,37 @@ func (m *PrincipalHandshakeAttestation) Unmarshal(b []byte) error {
 		}
 	})
 }
+
+// Unmarshal decodes one ResolveServiceRequest value.
+func (m *ResolveServiceRequest) Unmarshal(b []byte) error {
+	const msg = "ResolveServiceRequest"
+	*m = ResolveServiceRequest{}
+	return scan(msg, b, func(field int, wt byte, value, tag []byte) (int, error) {
+		switch {
+		case field == 1 && wt == wire.TypeLen:
+			v, n, err := wire.Bytes(value)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.Schema = &SchemaIdentity{}
+			if err := m.Schema.Unmarshal(v); err != nil {
+				return 0, err
+			}
+			return n, nil
+		case field == 2 && wt == wire.TypeLen:
+			s, n, err := decodeString(value)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.Service = s
+			return n, nil
+		default:
+			n, err := wire.SkipValue(value, wt)
+			if err != nil {
+				return 0, fmt.Errorf("sabi: %s: %w", msg, err)
+			}
+			m.UnknownFields = captureUnknown(m.UnknownFields, tag, value, n)
+			return n, nil
+		}
+	})
+}

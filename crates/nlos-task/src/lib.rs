@@ -108,6 +108,15 @@
 //! finalize rung layers the Semantic owner-proof re-read and READY
 //! publication-plan gate on top of the same Resource verification and
 //! persists both nested sets in one terminal Task transaction.
+//! Schema v44 (ADR-0016 决定 3) additively associates each Task
+//! declaration with an optional `application_id` and plan revision
+//! reference; references are stored only — runtime verification stays at
+//! the materialization/permit boundaries (ADR-0013 verify-then-commit) —
+//! and legacy rows keep a `NULL` association rather than an invented one.
+//! In the same step (决定 4) the `ScaleProfile` task-node dimension was
+//! normalized to declared `TaskNode` counts while Task registration keeps
+//! the independent `max_task_registrations` bound enforced by
+//! `register_task` admission.
 //! Verify-then-commit is not
 //! cross-authority atomicity.
 //! Compensation execution
@@ -128,10 +137,12 @@
 //! attempt state machine are represented as permit/slot states rather
 //! than attempt states here.
 
+mod activity;
 mod commit;
 mod effect;
 mod group;
 mod lease;
+mod materialization;
 mod migrations;
 mod model;
 mod participant;
@@ -181,6 +192,10 @@ pub use lease::{
     CompleteAuthorityTakeoverRequest, MAX_AUTHORITY_LEASE_TTL_MS,
     barrier_observation_signature_message,
 };
+pub use materialization::{
+    MaterializationAdmissionFacts, ReclaimResidencyDrive, UnlinkedReclaimResidency,
+    admit_plan_materialization,
+};
 pub use model::{
     AdoptionReceiptRecord, AttemptHandle, AttemptRecord, AttemptRegistrationDecision, AttemptSpec,
     AttemptState, CancelDecision, CancelRequest, ClosePermitDecision, ClosePermitRequest,
@@ -188,17 +203,17 @@ pub use model::{
     FinalizeRequest, PermitClosureOutcome, PermitConflict, PermitDecision, PermitRecord,
     PermitRequest, PermitState, PlannedEffect, QuarantineReceiptRecord, ReceiptOutcome,
     ReconcileOutcome, ReconciliationReceiptRecord, RequiredSatisfaction, RequiredSatisfactionProof,
-    SnapshotBundle, SnapshotConsistency, TaskReceiptRecord, TaskRecord, TaskRegistrationDecision,
-    TaskSnapshotReceiptRecord, TaskSnapshotReceiptSpec, TaskSpec, TaskState,
-    TaskWriteSetArtifactRead, TaskWriteSetArtifactWrite, TaskWriteSetArtifactWriteRequest,
-    TaskWriteSetDecision, TaskWriteSetEffectEndpoint, TaskWriteSetEffectEndpointKind,
-    TaskWriteSetEffectEndpointRequest, TaskWriteSetProcessBinding,
+    SnapshotBundle, SnapshotConsistency, TaskPlanRevisionRef, TaskReceiptRecord, TaskRecord,
+    TaskRegistrationDecision, TaskSnapshotReceiptRecord, TaskSnapshotReceiptSpec, TaskSpec,
+    TaskState, TaskWriteSetArtifactRead, TaskWriteSetArtifactWrite,
+    TaskWriteSetArtifactWriteRequest, TaskWriteSetDecision, TaskWriteSetEffectEndpoint,
+    TaskWriteSetEffectEndpointKind, TaskWriteSetEffectEndpointRequest, TaskWriteSetProcessBinding,
     TaskWriteSetProcessBindingRequest, TaskWriteSetRecord, TaskWriteSetRequest,
     TaskWriteSetResourceReservation, TaskWriteSetResourceReservationRequest,
     TaskWriteSetSemanticAppend, TaskWriteSetSemanticAppendRequest, TaskWriteSetSemanticRead,
     TaskWriteSetSemanticRequiredDurability, TaskWriteSetSemanticTarget, empty_effect_history_root,
 };
-pub use nlos_types::{EffectPermitId, EffectSlotId, TaskGroupId};
+pub use nlos_types::{EffectPermitId, EffectSlotId, OperationId, TaskGroupId, TaskId};
 pub use participant::{
     ParticipantRecord, ParticipantRegistrationDecision, ParticipantRegistryBinding,
     ParticipantRegistryRecord, ParticipantRegistryState, ParticipantType,
@@ -206,7 +221,9 @@ pub use participant::{
 pub use pressure::{
     CommitPermitDecision, ReclaimPhase, ReclaimPolicy, TASK_DEFAULT_RECLAIM_POLICY,
     WorkingSetPressure, WorkingSetPressureSnapshot, WorkingSetReclaimAdvisory,
-    WorkingSetReclaimExecution, WorkingSetReclaimOutcome, enforce_task_node_admission,
+    WorkingSetReclaimEviction, WorkingSetReclaimExecution, WorkingSetReclaimExecutionReport,
+    WorkingSetReclaimExecutionRequest, WorkingSetReclaimOutcome, WorkingSetReclaimPhaseReport,
+    enforce_task_node_admission, enforce_task_registration_admission,
     enforce_working_set_admission, execute_working_set_reclaim_execution,
     inspect_working_set_pressure, plan_working_set_reclaim_execution, working_set_reclaim_advisory,
 };
@@ -222,14 +239,21 @@ pub use recovery::{
     ArtifactRecoveryAlertAcknowledgeRequest, ArtifactRecoveryAlertReceipt,
     ArtifactRecoveryFailureRequest, ArtifactRecoveryFailureSource, ArtifactRecoveryRecord,
     ArtifactRecoveryResumeRequest, ArtifactRecoveryState, ArtifactRecoverySummary,
+    ResourceRecoveryAlert, ResourceRecoveryAlertAcknowledgeDecision,
+    ResourceRecoveryAlertAcknowledgeRequest, ResourceRecoveryAlertReceipt,
+    ResourceRecoveryFailureRequest, ResourceRecoveryFailureSource, ResourceRecoveryRecord,
+    ResourceRecoveryResumeRequest, ResourceRecoveryState, ResourceRecoverySummary,
     SemanticRecoveryAlert, SemanticRecoveryAlertAcknowledgeDecision,
     SemanticRecoveryAlertAcknowledgeRequest, SemanticRecoveryAlertReceipt,
     SemanticRecoveryFailureRequest, SemanticRecoveryFailureSource, SemanticRecoveryRecord,
     SemanticRecoveryResumeRequest, SemanticRecoveryState, SemanticRecoverySummary,
+    semantic_recovery_resume_reference,
 };
 pub use resource_commit::{
-    NestedResourceCostReceipt, ResourceFinalizeDecision, ResourceTaskCommitReceipt,
-    SemanticResourceFinalizeDecision, SemanticResourceTaskCommitReceipt,
+    NestedResourceCostReceipt, PrepareResourceFinalizeRequest, ResourceCommitPlanId,
+    ResourceCommitPlanRecord, ResourceCommitPlanState, ResourceConvergeDecision,
+    ResourceFinalizeDecision, ResourceFinalizeEnvelopeDecision, ResourceFinalizeEnvelopeRecord,
+    ResourceTaskCommitReceipt, SemanticResourceFinalizeDecision, SemanticResourceTaskCommitReceipt,
 };
 pub use scale::{
     DEFAULT_RECLAIM_THRESHOLD_RATIO, ScaleProfile, TASK_PROFILE_10K, TASK_PROFILE_100K,
@@ -332,6 +356,40 @@ pub enum TaskStoreError {
     InvalidSemanticRecoveryState {
         state: SemanticRecoveryState,
     },
+    /// No Resource finalize plan with this identity exists.
+    ResourceCommitPlanNotFound,
+    /// A Resource finalize plan or envelope invariant was violated; the
+    /// request fails closed with zero Task terminal mutation (ADR-0017
+    /// decision R-C gate G1).
+    InvalidResourcePlan {
+        reason: &'static str,
+    },
+    /// Resource recovery retry timing or timestamp is invalid.
+    InvalidResourceRecoveryPolicy {
+        reason: &'static str,
+    },
+    /// A Resource recovery update used a stale failure-count CAS.
+    ResourceRecoveryCasMismatch {
+        expected: u64,
+        current: u64,
+    },
+    /// The requested Resource recovery transition is invalid for its
+    /// durable state.
+    InvalidResourceRecoveryState {
+        state: ResourceRecoveryState,
+    },
+    /// A still-`Planned` Resource finalize plan whose permit was already
+    /// terminalized out-of-band (by the direct resource-aware v3 API)
+    /// with finalize bytes that differ from the plan's sealed envelope:
+    /// envelope replay can never succeed, so converge reports this typed
+    /// divergence for upper-layer adjudication instead of looping on
+    /// `HistoryConflict`. Plan-level by design: the recovery worker
+    /// ledgers it with backoff without consuming a domain budget.
+    ResourceConvergeProofDiverged {
+        /// The plan whose envelope diverged from the durable finalize
+        /// proof.
+        plan_id: ResourceCommitPlanId,
+    },
     /// The task ID is already registered with a different specification.
     DuplicateTask,
     /// The attempt ID is already registered with a different specification.
@@ -359,6 +417,14 @@ pub enum TaskStoreError {
         /// Static explanation of the rejected binding.
         reason: &'static str,
     },
+    /// The Artifact commit ladder cannot admit a write set that also
+    /// carries effect plans (mixed effect+Artifact, or a legacy
+    /// effect-bearing permit): the artifact-only finalize gate can never
+    /// clear for such a permit, so admission fails typed at
+    /// plan/authorize time instead of stranding a permanently stuck plan.
+    /// Effect-bearing write sets (including effect+Semantic mixes, which
+    /// remain legal) must finalize through the unified v3 finalize path.
+    MixedEffectArtifactWriteSet,
     /// A Semantic publication plan or nested owner receipt conflicts with
     /// the immutable `TaskWriteSet` binding.
     InvalidSemanticPublicationPlan {
@@ -587,6 +653,45 @@ pub enum TaskStoreError {
     ProcessParticipantAuthority(nlos_process::ProcessAuthorityError),
     /// Operation authority proof readback failed before Task mutation.
     OperationParticipantAuthority(nlos_store::StoreError),
+    /// The Operation dispatch sealed into a `TaskWriteSet` endpoint was
+    /// never durably prepared at the owner (still merely Registered); the
+    /// verify gate fails closed naming the Operation (ADR-0017 O-B).
+    OperationDispatchNotPrepared {
+        /// The Operation whose sealed endpoint lacks any preparation.
+        operation_id: OperationId,
+        /// The generation sealed into the endpoint binding.
+        generation: u64,
+    },
+    /// The Operation dispatch sealed into a `TaskWriteSet` endpoint was
+    /// durably prepared but never activated at the owner (the Operation is
+    /// still Registered, so activation may still arrive); the verify gate
+    /// fails closed naming the Operation (ADR-0017 O-B).
+    OperationDispatchNotActivated {
+        /// The Operation whose preparation was never activated.
+        operation_id: OperationId,
+        /// The generation sealed into the endpoint binding.
+        generation: u64,
+    },
+    /// The Operation dispatch sealed into a `TaskWriteSet` endpoint was
+    /// canceled at the owner before activation (terminal
+    /// `CancelledBeforeEffect` — the preparation can never activate); the
+    /// verify gate fails closed naming the Operation (ADR-0017 O-B).
+    OperationDispatchCancelled {
+        /// The Operation whose preparation was canceled before activation.
+        operation_id: OperationId,
+        /// The generation sealed into the endpoint binding.
+        generation: u64,
+    },
+    /// The generation sealed into a `TaskWriteSet` Operation endpoint is
+    /// stale (or unknown to the consulted owner) at verify time; the gate
+    /// fails closed naming the Operation and its sealed generation
+    /// (ADR-0017 O-B).
+    OperationDispatchStaleGeneration {
+        /// The Operation whose sealed generation drifted.
+        operation_id: OperationId,
+        /// The generation sealed into the endpoint binding.
+        sealed_generation: u64,
+    },
     /// Channel authority proof readback failed before Task mutation.
     ChannelParticipantAuthority(nlos_channel::ChannelAuthorityError),
     /// Identity authority verification failed for a signed barrier
@@ -617,15 +722,51 @@ pub enum TaskStoreError {
         /// Inclusive hard cap from the profile.
         max_active_working_set: u64,
     },
-    /// A net-new Task registration would exceed the configured
-    /// [`ScaleProfile`] logical task-node hard cap (`[ROAD-B-004]` prefix).
+    /// A net-new plan-side declaration or association would exceed the
+    /// configured [`ScaleProfile`] declared-`TaskNode` hard cap
+    /// (ADR-0016 决定 4 normalized dimension; consulted at the
+    /// plan-association/materialization boundary, W30-D gap).
     TaskNodeAdmissionDenied {
         /// Tier identifier of the rejecting profile.
         profile_id: &'static str,
-        /// Projected registered task count after the rejected registration.
+        /// Projected declared `TaskNode` count after the rejected
+        /// declaration/association.
         task_count: u64,
         /// Inclusive hard cap from the profile.
         max_task_nodes: u64,
+    },
+    /// A net-new Task registration would exceed the configured
+    /// [`ScaleProfile`] task-registration hard cap — the independent
+    /// second explicit dimension kept by ADR-0016 决定 4 and enforced by
+    /// `register_task` admission.
+    TaskRegistrationAdmissionDenied {
+        /// Tier identifier of the rejecting profile.
+        profile_id: &'static str,
+        /// Projected registered task count after the rejected registration.
+        registration_count: u64,
+        /// Inclusive hard cap from the profile.
+        max_task_registrations: u64,
+    },
+    /// A driven reclaim execution presented an advisory warrant minted
+    /// against a different [`ScaleProfile`] tier than the authority's
+    /// bound profile (W31-C closure gate).
+    ReclaimExecutionProfileMismatch {
+        advisory_profile_id: &'static str,
+        authority_profile_id: &'static str,
+    },
+    /// A driven reclaim execution named a phase sequence index outside
+    /// [`crate::TASK_DEFAULT_RECLAIM_POLICY`] (W31-C closure gate).
+    ReclaimExecutionSequenceOutOfRange {
+        sequence: u8,
+    },
+    /// An idempotent registration replay for an existing task repeated a
+    /// different association (application or plan revision) than the
+    /// durable declaration (ADR-0016 决定 3: the association is
+    /// declaration identity and is never rewritten, legacy `NULL` rows
+    /// included).
+    TaskAssociationConflict {
+        /// The registered task whose durable association was mismatched.
+        task_id: TaskId,
     },
 }
 
@@ -721,6 +862,29 @@ impl fmt::Display for TaskStoreError {
                     "Semantic recovery state {state:?} rejects the transition"
                 )
             }
+            Self::ResourceCommitPlanNotFound => {
+                formatter.write_str("resource commit plan does not exist")
+            }
+            Self::InvalidResourcePlan { reason } => {
+                write!(formatter, "invalid resource finalize plan: {reason}")
+            }
+            Self::InvalidResourceRecoveryPolicy { reason } => {
+                write!(formatter, "invalid Resource recovery policy: {reason}")
+            }
+            Self::ResourceRecoveryCasMismatch { expected, current } => write!(
+                formatter,
+                "Resource recovery CAS expected {expected} failures but found {current}"
+            ),
+            Self::InvalidResourceRecoveryState { state } => {
+                write!(
+                    formatter,
+                    "Resource recovery state {state:?} rejects the transition"
+                )
+            }
+            Self::ResourceConvergeProofDiverged { plan_id } => write!(
+                formatter,
+                "Resource converge found the permit finalized with different satisfaction bytes than the sealed envelope; plan {plan_id:?} needs upper-layer adjudication"
+            ),
             Self::DuplicateTask => formatter.write_str("task ID re-registered with new spec"),
             Self::DuplicateAttempt => formatter.write_str("attempt ID re-registered with new spec"),
             Self::SnapshotConflict => formatter.write_str("snapshot ID rebound to new bytes"),
@@ -736,6 +900,10 @@ impl fmt::Display for TaskStoreError {
             Self::ArtifactPublicationConflict { reason } => {
                 write!(formatter, "artifact publication receipt conflict: {reason}")
             }
+            Self::MixedEffectArtifactWriteSet => write!(
+                formatter,
+                "artifact commit ladder requires an effect-free write set; effect-bearing permits must finalize through the unified v3 path"
+            ),
             Self::InvalidSemanticPublicationPlan { reason } => {
                 write!(formatter, "invalid semantic publication plan: {reason}")
             }
@@ -931,6 +1099,34 @@ impl fmt::Display for TaskStoreError {
                     "Operation participant proof verification failed: {error}"
                 )
             }
+            Self::OperationDispatchNotPrepared {
+                operation_id,
+                generation,
+            } => write!(
+                formatter,
+                "operation {operation_id:?} generation {generation} has no durable dispatch preparation"
+            ),
+            Self::OperationDispatchNotActivated {
+                operation_id,
+                generation,
+            } => write!(
+                formatter,
+                "operation {operation_id:?} generation {generation} was prepared but never activated"
+            ),
+            Self::OperationDispatchCancelled {
+                operation_id,
+                generation,
+            } => write!(
+                formatter,
+                "operation {operation_id:?} generation {generation} dispatch was canceled before activation"
+            ),
+            Self::OperationDispatchStaleGeneration {
+                operation_id,
+                sealed_generation,
+            } => write!(
+                formatter,
+                "operation {operation_id:?} sealed generation {sealed_generation} is stale or unknown at the owner"
+            ),
             Self::ChannelParticipantAuthority(error) => {
                 write!(
                     formatter,
@@ -968,6 +1164,29 @@ impl fmt::Display for TaskStoreError {
             } => write!(
                 formatter,
                 "task-node admission denied for profile {profile_id}: task_count {task_count} exceeds max {max_task_nodes}"
+            ),
+            Self::TaskRegistrationAdmissionDenied {
+                profile_id,
+                registration_count,
+                max_task_registrations,
+            } => write!(
+                formatter,
+                "task-registration admission denied for profile {profile_id}: registration_count {registration_count} exceeds max {max_task_registrations}"
+            ),
+            Self::ReclaimExecutionProfileMismatch {
+                advisory_profile_id,
+                authority_profile_id,
+            } => write!(
+                formatter,
+                "reclaim execution warrant minted for profile {advisory_profile_id} but authority binds {authority_profile_id}"
+            ),
+            Self::ReclaimExecutionSequenceOutOfRange { sequence } => write!(
+                formatter,
+                "reclaim execution sequence {sequence} is outside the default policy"
+            ),
+            Self::TaskAssociationConflict { task_id } => write!(
+                formatter,
+                "task {task_id:?} already registered with a different application/plan association"
             ),
         }
     }

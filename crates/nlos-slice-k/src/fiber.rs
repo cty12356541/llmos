@@ -117,6 +117,11 @@ fn run_write_job(
             receipt_id: job.completion_receipt_id,
         },
     )?;
+    // The terminal commit wrote a `WakeFiber` outbox row in the same
+    // transaction; a running pump can deliver it now instead of waiting for
+    // the fallback poll. Bounded and non-blocking: no pump running, or a
+    // hint already pending, are both fine.
+    let _ = runtime.hint_pump();
 
     let mut plan_id = None;
     if let Some(permit_id) = job.permit {

@@ -7,14 +7,14 @@
 use std::path::PathBuf;
 
 use nlos_schema::sabi::v1::{
-    CallerIdentity, Envelope, RetryDirective, SabiErrorCode, SabiRequestContext, SchemaIdentity,
-    envelope,
+    CallerIdentity, Envelope, RetryDirective, SabiErrorCode, SabiFailure, SabiRequestContext,
+    SchemaIdentity, envelope,
 };
 use nlos_schema::{
     CommonSemanticsError, CompatibilityError, REQUEST_ID_BYTES, SABI_ENVELOPE_SCHEMA,
 };
 use nlos_system_control::{SYSTEM_CONTROL_SERVICE, SystemControlError, failure_envelope};
-use nlos_task::{ArtifactRecoveryState, TaskStoreError};
+use nlos_task::{ArtifactRecoveryState, ResourceRecoveryState, TaskStoreError};
 
 fn assert_mapping(
     error: &SystemControlError,
@@ -71,6 +71,40 @@ fn request_contract_and_identity_failures_are_terminal_and_bounded() {
         SabiErrorCode::Driver,
         RetryDirective::DoNotRetry,
     );
+    assert_mapping(
+        &SystemControlError::OperationControlExecutionUnwired,
+        SabiErrorCode::NotFound,
+        RetryDirective::DoNotRetry,
+    );
+    assert_mapping(
+        &SystemControlError::ApplicationControlExecutionUnwired,
+        SabiErrorCode::NotFound,
+        RetryDirective::DoNotRetry,
+    );
+    let executor_failure = SystemControlError::OperationExecution(SabiFailure {
+        code: SabiErrorCode::Conflict.into(),
+        retry: RetryDirective::DoNotRetry.into(),
+        safe_message: "operation executor rejected the transition".to_owned(),
+    });
+    let mapped = executor_failure.to_sabi_failure();
+    assert_eq!(mapped.code, i32::from(SabiErrorCode::Conflict));
+    assert_eq!(mapped.retry, i32::from(RetryDirective::DoNotRetry));
+    assert_eq!(
+        mapped.safe_message,
+        "operation executor rejected the transition"
+    );
+    let application_failure = SystemControlError::ApplicationExecution(SabiFailure {
+        code: SabiErrorCode::State.into(),
+        retry: RetryDirective::DoNotRetry.into(),
+        safe_message: "application executor rejected the transition".to_owned(),
+    });
+    let mapped = application_failure.to_sabi_failure();
+    assert_eq!(mapped.code, i32::from(SabiErrorCode::State));
+    assert_eq!(mapped.retry, i32::from(RetryDirective::DoNotRetry));
+    assert_eq!(
+        mapped.safe_message,
+        "application executor rejected the transition"
+    );
 }
 
 #[test]
@@ -113,6 +147,37 @@ fn recovery_task_failures_preserve_retry_safety() {
     assert_mapping(
         &SystemControlError::Task(TaskStoreError::CorruptRecord("private durable detail")),
         SabiErrorCode::Driver,
+        RetryDirective::DoNotRetry,
+    );
+}
+
+#[test]
+fn resource_recovery_task_failures_preserve_retry_safety() {
+    assert_mapping(
+        &SystemControlError::Task(TaskStoreError::ResourceCommitPlanNotFound),
+        SabiErrorCode::NotFound,
+        RetryDirective::DoNotRetry,
+    );
+    assert_mapping(
+        &SystemControlError::Task(TaskStoreError::ResourceRecoveryCasMismatch {
+            expected: 8,
+            current: 9,
+        }),
+        SabiErrorCode::Conflict,
+        RetryDirective::DoNotRetry,
+    );
+    assert_mapping(
+        &SystemControlError::Task(TaskStoreError::InvalidResourceRecoveryState {
+            state: ResourceRecoveryState::Escalated,
+        }),
+        SabiErrorCode::State,
+        RetryDirective::DoNotRetry,
+    );
+    assert_mapping(
+        &SystemControlError::Task(TaskStoreError::InvalidResourceRecoveryPolicy {
+            reason: "resume timestamp regresses durable history",
+        }),
+        SabiErrorCode::InvalidArgument,
         RetryDirective::DoNotRetry,
     );
 }
@@ -211,4 +276,28 @@ fn malformed_correlation_falls_back_to_a_bounded_request_id() {
         panic!("failure envelope must carry a response context");
     };
     assert_eq!(context.correlation_id, request.request_id);
+}
+
+#[test]
+fn w32g_layer_inspection_failures_are_bounded_and_forwarded() {
+    assert_mapping(
+        &SystemControlError::LayerInspectionUnwired,
+        SabiErrorCode::NotFound,
+        RetryDirective::DoNotRetry,
+    );
+    let failure = SystemControlError::LayerInspection(SabiFailure {
+        code: SabiErrorCode::NotFound.into(),
+        retry: RetryDirective::DoNotRetry.into(),
+        safe_message: "requested topic was not found".to_owned(),
+    })
+    .to_sabi_failure();
+    assert_eq!(failure.code, i32::from(SabiErrorCode::NotFound));
+    assert_eq!(failure.retry, i32::from(RetryDirective::DoNotRetry));
+    assert_eq!(failure.safe_message, "requested topic was not found");
+
+    assert_mapping(
+        &SystemControlError::Task(TaskStoreError::GroupNotFound),
+        SabiErrorCode::NotFound,
+        RetryDirective::DoNotRetry,
+    );
 }

@@ -1,0 +1,19 @@
+[package]
+name = "nlos-notify"
+description = "Notification minimal service: a thin subscription face over the Topic/Channel/Wait authorities."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+nlos-channel = { path = "../nlos-channel" }
+nlos-topic = { path = "../nlos-topic" }
+nlos-types = { path = "../nlos-types" }
+nlos-wait = { path = "../nlos-wait" }
+rusqlite.workspace = true
+sha2.workspace = true
+
+[lints]
+workspace = true

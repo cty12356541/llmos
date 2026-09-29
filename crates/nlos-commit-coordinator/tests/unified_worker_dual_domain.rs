@@ -141,6 +141,8 @@ fn prepare_single(databases: &TestAuthorities, seed: u8) -> PreparedSingle {
             task_id,
             task_generation: Generation::INITIAL,
             registered_at_ms: 1_000,
+            application_id: None,
+            plan_revision: None,
         })
         .unwrap();
     let attempt = AttemptSpec {
@@ -358,6 +360,8 @@ fn prepare_semantic(databases: &TestAuthorities, seed: u8) -> PreparedSemantic {
             task_id,
             task_generation: Generation::INITIAL,
             registered_at_ms: 1_000,
+            application_id: None,
+            plan_revision: None,
         })
         .unwrap();
     let snapshot_receipt = ReceiptId::from_bytes([seed.wrapping_add(21); 16]);
@@ -658,6 +662,21 @@ fn both_domains_converge_in_one_worker() {
                 && tasks
                     .inspect_semantic_commit_progress(semantic_pending.plan)
                     .is_ok_and(|progress| progress.plan.state == SemanticCommitPlanState::Finalized)
+        },
+        Duration::from_secs(10),
+    );
+
+    // 计数器与 plan 终态在同一 worker 迭代内先后落定——对计数器同样做有界
+    // 轮询，消除「plan 已 Finalized 而计数尚未递增」的读侧竞态（慢 runner
+    // 上曾真实命中：Windows CI run 35522355445 两条失败均此形态）。
+    wait_until_within(
+        || {
+            let h = worker.health();
+            h.state == RecoveryWorkerState::Running
+                && h.total_inspected == 1
+                && h.total_finalized == 1
+                && h.semantic_total_inspected == 1
+                && h.semantic_total_finalized == 1
         },
         Duration::from_secs(10),
     );
@@ -1086,6 +1105,13 @@ fn mixed_semantic_infra_and_artifact_plan_failures_use_separate_budgets() {
             tasks
                 .inspect_artifact_commit_plan(artifact_pending.plan)
                 .is_ok_and(|plan| plan.state == ArtifactCommitPlanState::Finalized)
+        },
+        Duration::from_secs(10),
+    );
+    wait_until_within(
+        || {
+            let h = worker.health();
+            h.state == RecoveryWorkerState::Running && h.total_finalized == 1
         },
         Duration::from_secs(10),
     );

@@ -17,19 +17,26 @@
 //! installation facts — installation id, package digest, manifest digest,
 //! installer principal, idempotency key, timestamps), and — added in v2,
 //! mirroring the artifact authority's staged migrations —
-//! `application_disable_receipts` (the immutable fact of the one
+//! `application_disable_receipts` (the immutable fact of one
 //! `installed → disabled` transition, which makes
 //! [`ApplicationAuthority::disable_application`] replayable). Schema v3
-//! adds `application_uninstall_receipts` (the immutable fact of the terminal
-//! `installed|disabled → uninstalled` transition, which makes
+//! adds `application_uninstall_receipts` (the immutable fact of one
+//! terminal `installed|disabled → uninstalled` transition, which makes
 //! [`ApplicationAuthority::uninstall_application`] replayable). Schema v4
 //! adds `application_rollback_receipts` (the immutable fact of one
-//! `disabled|uninstalled → installed` generation step back, which makes
+//! `disabled|uninstalled → installed` rollback, which makes
 //! [`ApplicationAuthority::rollback_application`] replayable). Schema v5
 //! adds `application_background_task_registrations` (immutable background-task
 //! binding; [`ApplicationAuthority::register_background_task`] replayable). Schema v6
 //! adds `application_process_bindings` (immutable process binding;
-//! [`ApplicationAuthority::register_process_binding`] replayable). DDL triggers
+//! [`ApplicationAuthority::register_process_binding`] replayable). Schema v9
+//! (deep-audit D1/D2) moves the rollback to *forward roll* semantics: a
+//! rollback re-commits the previous content generation as a brand-new
+//! installation generation, so the generation is strictly monotonic (it
+//! never rewinds onto a generation that already carries an immutable
+//! receipt), and disable/uninstall receipts are keyed per
+//! `(application, generation)` instead of terminal-once-per-application.
+//! DDL triggers
 //! carry the invariants at every layer: receipts are immutable and
 //! durable, the generation is monotonic under CAS, application identity is
 //! frozen, rows cannot be deleted, a receipt can only exist at the
@@ -56,8 +63,9 @@
 //! installed-state content update prefix only; `disable_application` lands
 //! the `installed → disabled` transition only; `uninstall_application`
 //! lands the terminal `installed|disabled → uninstalled` CAS mark only;
-//! `rollback_application` lands one generation step back from
-//! `disabled|uninstalled` to `installed` only; there is no enable shortcut,
+//! `rollback_application` lands one content-generation rollback from
+//! `disabled|uninstalled` to `installed` only, as a forward roll onto a
+//! fresh generation; there is no enable shortcut,
 //! no physical row delete), running Task/Process teardown (ungated
 //! `uninstall_application`/`rollback_application` do not stop or wait for
 //! tasks; [`ApplicationAuthority::uninstall_application_with_activity_gate`]
@@ -67,9 +75,48 @@
 //! creation wiring (the next Slice K longitudinal slice), multi-party
 //! installer approval (exactly one installer principal is recorded, taken
 //! from the verified receipt's signer), §23.2's full manifest
-//! applications/components model, and any cross-process transport.
+//! applications/components model, and any cross-process transport. The
+//! uninstall/rollback activity gate exists in two shapes: a pluggable
+//! caller-supplied [`ActiveTaskActivityProbe`] seam, and — since W27-D —
+//! the production wiring [`ApplicationAuthority::
+//! uninstall_application_with_task_activity_gate`] / [`ApplicationAuthority::
+//! rollback_application_with_task_activity_gate`], which resolves the
+//! package's durable background-task registrations inside the gate's own
+//! transaction and queries the task authority for live task activity,
+//! failing closed (typed refusal, zero durable state) when that query
+//! cannot be answered.
+//!
+//! Since W28-B (ADR-0016 决定 1, the manifest template half), this crate
+//! also compiles a task-templated package's `tasks` segment into the
+//! `TaskPlan` proposal a caller would declare directly
+//! ([`compile_task_templates`]): proposal data only, no plan store
+//! opened (`[PLAN-OVERRIDE-001]` — the manifest answers where a
+//! declaration comes from, never what it is). Install-time instantiation
+//! wiring is a later Slice K lane.
+//!
+//! Since W29-E (B1-3), the crate also carries the `[PKG-UPDATE-001]`
+//! staged migration runner (schema v7, the `migration` module): a
+//! same-major revision change with data/schema consequences runs as a
+//! durable drill — [`ApplicationAuthority::migrate_application`] commits
+//! the frozen baseline/target binding in `pending`,
+//! [`ApplicationAuthority::record_migration_step`] advances strictly
+//! ordered immutable step marks through `running` (crash between steps
+//! converges on restart),
+//! [`ApplicationAuthority::run_migration_health_check`] records one
+//! terminal typed verdict after re-verifying the target binding, and
+//! then exactly one of [`ApplicationAuthority::
+//! activate_package_migration`] (the atomic switch: generation CAS +1,
+//! installation receipt, and the drill's `done` transition in one
+//! transaction) or [`ApplicationAuthority::
+//! rollback_package_migration`] (the PKG-level failed-health rollback:
+//! `failed` + an immutable receipt, the application row untouched
+//! because the prior revision stayed active) terminates the drill.
 
+mod migration;
 mod schema;
+mod selector_source;
+mod surfaces;
+mod task_templates;
 
 use std::error::Error;
 use std::fmt;
@@ -78,12 +125,27 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use nlos_artifact::{ArtifactError, ArtifactStore, ContentDigest, PackageVerificationReceipt};
+use nlos_task::{SqliteTaskAuthority, TaskStoreError};
 use nlos_types::{
     ApplicationId, Generation, IdempotencyKey, InstallationId, PackageId, PrincipalId, ProcessId,
     ReceiptId, TaskId,
 };
 use rusqlite::{Connection, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
+
+pub use migration::{
+    ActivateMigrationDecision, ActivatePackageMigrationRequest, MigrateApplicationRequest,
+    MigrateDecision, MigrationHealthContext, MigrationHealthDecision, MigrationHealthProbe,
+    MigrationHealthReport, MigrationHealthState, MigrationRollbackReceipt, MigrationState,
+    MigrationStepRecord, MigrationView, RecordMigrationStepDecision, RecordMigrationStepRequest,
+    RollbackMigrationDecision, RollbackPackageMigrationRequest,
+};
+pub use selector_source::{ApplicationSelectorSource, ApplicationSourceError};
+pub use surfaces::{
+    MAX_SURFACE_TEXT_BYTES, MAX_SURFACES_PER_SEGMENT, PackageSurfaceDeclaration,
+    PackageSurfaceKind, SurfaceSegmentError, validate_surface_declarations,
+};
+pub use task_templates::{TaskTemplateError, compile_task_templates};
 
 /// Domain separator for the authority-derived [`ApplicationId`]: one
 /// application identity per package identity, derived exactly like the
@@ -409,26 +471,32 @@ impl UninstallDecision {
     }
 }
 
-/// Immutable durable proof that one application rolled back one installation
-/// generation: the fact of one `disabled|uninstalled → installed` step that
-/// CAS-decrements the current generation and restores the previous
-/// installation's manifest digest from durable history.
+/// Immutable durable proof that one application rolled its content back
+/// one generation: the fact of one `disabled|uninstalled → installed`
+/// *forward roll* that re-commits the previous content generation's
+/// receipt content as a brand-new installation generation (old content,
+/// new generation), so the generation counter stays dense and strictly
+/// monotonic and every later lifecycle command lands on a fresh
+/// generation with a fresh receipt.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RollbackReceipt {
     pub application_id: ApplicationId,
-    /// The installation generation before rollback (the generation being
-    /// stepped back from).
+    /// The installation generation being rolled back from (the
+    /// abandoned content generation).
     pub from_generation: Generation,
-    /// The installation generation after rollback (the previous durable
-    /// installation generation restored as current).
+    /// The fresh installation generation the restored content was
+    /// re-committed at (`from_generation + 1` on clean history; further
+    /// when an upgraded pre-v9 row still sits below its own receipt
+    /// history).
     pub to_generation: Generation,
     pub idempotency_key: IdempotencyKey,
     pub rollback_at_ms: u64,
 }
 
-/// Request to roll one application back one installation generation.
-/// Exactly-once by idempotency key, mirroring the disable/uninstall
-/// request shape.
+/// Request to roll one application's content back one generation
+/// (forward roll: the previous content generation is re-committed as a
+/// new generation). Exactly-once by idempotency key, mirroring the
+/// disable/uninstall request shape.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RollbackApplicationRequest {
     /// The package identity whose application singleton is rolled back.
@@ -444,8 +512,9 @@ pub struct RollbackApplicationRequest {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RollbackDecision {
     /// First execution of this key: the application status CAS'd to
-    /// `installed`, the generation stepped back one, and the rollback
-    /// receipt committed with it.
+    /// `installed` at the fresh forward-roll generation, the restored
+    /// content's installation receipt and the rollback receipt committed
+    /// with it.
     RolledBack(RollbackReceipt),
     /// Durable replay: this key already rolled back and the recorded
     /// original receipt is returned unchanged (no second transition, no
@@ -529,6 +598,64 @@ impl RegisterProcessBindingDecision {
             Self::Registered(receipt) | Self::Replayed(receipt) => receipt,
         }
     }
+}
+
+/// Immutable durable proof that one declared `surfaces` segment was
+/// registered as one application installation's UI-Surface set (W32-F /
+/// B2-2): one receipt per declared surface, sharing the registration
+/// call's idempotency key and timestamp. The declared content is part of
+/// the durable fact — inspect returns exactly what was declared, bitwise,
+/// so a presenter never renders anything the application did not declare.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SurfaceRegistrationReceipt {
+    pub application_id: ApplicationId,
+    /// Declaration order within the registered segment (dense from 0).
+    pub surface_index: u64,
+    pub surface_id: [u8; 16],
+    pub kind: PackageSurfaceKind,
+    pub title: String,
+    pub entry_name: Option<String>,
+    /// The manifest digest of the installed package content the segment
+    /// was registered against (the content binding; equals the
+    /// application row's manifest digest at registration time).
+    pub package_manifest_digest: ContentDigest,
+    pub registrant_principal: PrincipalId,
+    pub application_generation: Generation,
+    pub idempotency_key: IdempotencyKey,
+    pub registered_at_ms: u64,
+}
+
+/// Request to register one declared `surfaces` segment against an
+/// installed application. Authority-bound: the caller supplies the
+/// declared segment and the manifest digest of the package content it
+/// was declared for; the authority pins both to the application's
+/// current installation generation and refuses a digest mismatch
+/// fail-closed (a declaration naming stale content never silently
+/// overrides the installed generation).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RegisterSurfacesRequest {
+    pub package_id: PackageId,
+    /// Manifest digest of the package content the segment declares
+    /// against (a caller that just installed or verified knows it from
+    /// the verification/installation receipt). Must equal the
+    /// application row's current manifest digest.
+    pub declared_manifest_digest: ContentDigest,
+    pub surfaces: Vec<PackageSurfaceDeclaration>,
+    pub registrant_principal: PrincipalId,
+    pub idempotency_key: IdempotencyKey,
+    pub registered_at_ms: u64,
+}
+
+/// Outcome of one [`ApplicationAuthority::register_surfaces`] call: the
+/// whole registered segment, in declaration order, whichever branch.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RegisterSurfacesDecision {
+    /// First execution of this key: the segment's rows committed at the
+    /// application's current generation.
+    Registered(Vec<SurfaceRegistrationReceipt>),
+    /// Durable replay: this key already registered and the recorded
+    /// original segment is returned unchanged.
+    Replayed(Vec<SurfaceRegistrationReceipt>),
 }
 
 /// Fail-closed typed errors of the application/installation authority.
@@ -629,8 +756,9 @@ pub enum ApplicationAuthorityError {
         application_id: ApplicationId,
         status: ApplicationStatus,
     },
-    /// The application is already at the initial installation generation;
-    /// there is no previous generation to restore.
+    /// The application's current installation generation is the initial
+    /// one; there is no earlier content generation whose receipt a
+    /// rollback could re-commit as the forward-roll generation.
     RollbackAtInitialGeneration {
         application_id: ApplicationId,
         generation: Generation,
@@ -641,8 +769,9 @@ pub enum ApplicationAuthorityError {
         last_updated_at_ms: u64,
         rollback_at_ms: u64,
     },
-    /// The durable installation history has no receipt for the previous
-    /// generation — a corrupt or incomplete record.
+    /// The durable installation history has no receipt for the generation
+    /// before the current one — the content a rollback would restore is
+    /// a corrupt or incomplete record.
     PreviousInstallationNotFound {
         application_id: ApplicationId,
         generation: Generation,
@@ -650,6 +779,15 @@ pub enum ApplicationAuthorityError {
     ApplicationActiveTasksRunning {
         package_id: PackageId,
         active_task_count: u64,
+    },
+    /// The task-authority activity query backing the uninstall/rollback
+    /// gate could not be answered; the fresh mutation is refused
+    /// fail-closed with zero durable state. Durable replays under the
+    /// original idempotency key never consult the query and are
+    /// unaffected.
+    TaskActivityQueryFailed {
+        package_id: PackageId,
+        error: TaskStoreError,
     },
     RegistrationPrecedesLastUpdate {
         last_updated_at_ms: u64,
@@ -663,10 +801,149 @@ pub enum ApplicationAuthorityError {
         application_id: ApplicationId,
         process_id: ProcessId,
     },
+    /// The declared `surfaces` segment violates the manifest shape
+    /// contract (the shared [`surfaces::validate_surface_declarations`]
+    /// authority refused it).
+    SurfaceSegment(SurfaceSegmentError),
+    /// The declared manifest digest does not match the application's
+    /// current installation content; a surface declaration naming stale
+    /// package content is refused fail-closed, never silently rebound.
+    SurfaceManifestMismatch {
+        application_id: ApplicationId,
+        installed_manifest_digest: ContentDigest,
+        declared_manifest_digest: ContentDigest,
+    },
+    /// The surface identity is already registered for this application
+    /// at the current installation generation; re-declaring after a
+    /// generation advance is a fresh registration, a same-generation
+    /// redeclaration under a new key is a typed refusal.
+    SurfaceAlreadyRegistered {
+        application_id: ApplicationId,
+        surface_id: [u8; 16],
+    },
+    /// No migration drill exists under this idempotency key.
+    MigrationNotFound { idempotency_key: IdempotencyKey },
+    /// A migration drill must declare at least one step; a zero-step
+    /// drill has no staged migration to run.
+    MigrationStepCountZero,
+    /// The application already has a live (pending/running) migration
+    /// drill; at most one drill per application may be in flight.
+    MigrationAlreadyLive {
+        application_id: ApplicationId,
+        live_idempotency_key: IdempotencyKey,
+    },
+    /// The drill is terminal (`done`/`failed`); only its durable replays
+    /// are accepted, never a fresh command.
+    MigrationTerminal {
+        application_id: ApplicationId,
+        state: MigrationState,
+    },
+    /// The drill is still `pending` (no step recorded yet); health
+    /// checks, activation, and rollback require the running state.
+    MigrationNotRunning {
+        application_id: ApplicationId,
+        state: MigrationState,
+    },
+    /// The requested step index is not the next unrecorded index.
+    MigrationStepOutOfOrder {
+        requested_step_index: u64,
+        expected_step_index: u64,
+        declared_step_count: u64,
+    },
+    /// Every declared step of this drill is already recorded; there is
+    /// no further step to complete.
+    MigrationDrillComplete {
+        idempotency_key: IdempotencyKey,
+        declared_step_count: u64,
+    },
+    /// The step timestamp precedes the drill's last durable update.
+    MigrationStepPrecedesLastUpdate {
+        last_updated_at_ms: u64,
+        completed_at_ms: u64,
+    },
+    /// The drill has unrecorded steps; health checks and activation
+    /// require the whole declared drill.
+    MigrationStepsIncomplete {
+        completed_step_count: u64,
+        declared_step_count: u64,
+    },
+    /// The health-check timestamp precedes the drill's last durable
+    /// update.
+    HealthCheckPrecedesLastUpdate {
+        last_updated_at_ms: u64,
+        checked_at_ms: u64,
+    },
+    /// The migration request timestamp precedes the target package's
+    /// verification timestamp.
+    MigrationPrecedesVerification {
+        verified_at_ms: u64,
+        requested_at_ms: u64,
+    },
+    /// The activation timestamp precedes the recorded health check.
+    ActivationPrecedesHealthCheck {
+        health_checked_at_ms: u64,
+        activated_at_ms: u64,
+    },
+    /// Activation requires a recorded health verdict; none exists yet.
+    MigrationHealthUnchecked { idempotency_key: IdempotencyKey },
+    /// Activation is impossible after a failed verdict; the drill must
+    /// take the PKG rollback path instead.
+    MigrationHealthFailed { idempotency_key: IdempotencyKey },
+    /// The PKG rollback path requires a failed health verdict.
+    MigrationRequiresFailedHealth { health: MigrationHealthState },
+    /// The rollback timestamp precedes the recorded failed verdict.
+    MigrationRollbackPrecedesHealthCheck {
+        health_checked_at_ms: u64,
+        rolled_back_at_ms: u64,
+    },
+    /// The application's current generation no longer matches the
+    /// drill's frozen baseline (e.g. the direct update channel advanced
+    /// it while the drill was live); the drill cannot activate or roll
+    /// back onto a moved baseline.
+    MigrationBaselineMoved {
+        application_id: ApplicationId,
+        from_generation: Generation,
+        current_generation: Generation,
+    },
 }
 
 pub trait ActiveTaskActivityProbe {
     fn outstanding_task_count(&self, package_id: PackageId) -> u64;
+}
+
+/// The activity consult one gated uninstall/rollback performs between its
+/// pre-mutation validation and the status CAS. The gate's writer
+/// transaction is open while the consult runs, so both shapes are
+/// deadlock-free by construction: the probe seam is an inert caller
+/// value, and the task-authority shape reads this authority's
+/// registrations from the already-open transaction (never re-entering
+/// `ApplicationAuthority`) and queries the task authority's own separate
+/// store.
+enum TaskActivitySource<'a> {
+    Probe(&'a dyn ActiveTaskActivityProbe),
+    TaskAuthority(&'a SqliteTaskAuthority),
+}
+
+impl TaskActivitySource<'_> {
+    fn outstanding_task_count(
+        &self,
+        source: &Connection,
+        application_id: ApplicationId,
+        package_id: PackageId,
+    ) -> Result<u64, ApplicationAuthorityError> {
+        match self {
+            Self::Probe(probe) => Ok(probe.outstanding_task_count(package_id)),
+            Self::TaskAuthority(tasks) => {
+                let task_ids = load_registered_background_task_ids(source, application_id)?;
+                tasks
+                    .inspect_outstanding_task_count(&task_ids)
+                    .map_err(|error| ApplicationAuthorityError::TaskActivityQueryFailed {
+                        package_id,
+                        error,
+                    })
+            }
+        }
+    }
 }
 
 impl fmt::Display for ApplicationAuthorityError {
@@ -797,7 +1074,7 @@ impl fmt::Display for ApplicationAuthorityError {
             } => write!(
                 formatter,
                 "application {application_id:?} is at installation generation \
-                 {generation:?}; there is no previous generation to roll back to"
+                 {generation:?}; there is no earlier content generation to restore"
             ),
             Self::RollbackPrecedesLastUpdate {
                 last_updated_at_ms,
@@ -822,6 +1099,11 @@ impl fmt::Display for ApplicationAuthorityError {
                 formatter,
                 "package {package_id:?} has {active_task_count} active task(s); uninstall and rollback are refused until they finish"
             ),
+            Self::TaskActivityQueryFailed { package_id, error } => write!(
+                formatter,
+                "task activity query for package {package_id:?} failed; \
+                 uninstall/rollback are refused fail-closed: {error}"
+            ),
             Self::RegistrationPrecedesLastUpdate {
                 last_updated_at_ms,
                 registered_at_ms,
@@ -843,6 +1125,152 @@ impl fmt::Display for ApplicationAuthorityError {
                 formatter,
                 "process {process_id:?} is already bound to application {application_id:?} at the current generation; replay the original idempotency key instead of issuing a new command"
             ),
+            Self::SurfaceSegment(error) => write!(
+                formatter,
+                "surface segment violates the manifest shape contract: {error}"
+            ),
+            Self::SurfaceManifestMismatch {
+                application_id,
+                installed_manifest_digest,
+                declared_manifest_digest,
+            } => write!(
+                formatter,
+                "surface declaration of application {application_id:?} names manifest digest \
+                 {declared_manifest_digest:?} but the current installation content is \
+                 {installed_manifest_digest:?}; redeclare against the installed content"
+            ),
+            Self::SurfaceAlreadyRegistered {
+                application_id,
+                surface_id,
+            } => write!(
+                formatter,
+                "surface {surface_id:?} is already registered for application \
+                 {application_id:?} at the current generation; a generation advance is \
+                 required before redeclaring it"
+            ),
+            Self::MigrationNotFound { idempotency_key } => write!(
+                formatter,
+                "no package migration drill exists under key {idempotency_key:?}"
+            ),
+            Self::MigrationStepCountZero => {
+                formatter.write_str("a package migration drill must declare at least one step")
+            }
+            Self::MigrationAlreadyLive {
+                application_id,
+                live_idempotency_key,
+            } => write!(
+                formatter,
+                "application {application_id:?} already has a live migration drill under key \
+                 {live_idempotency_key:?}; at most one drill may be in flight per application"
+            ),
+            Self::MigrationTerminal {
+                application_id,
+                state,
+            } => write!(
+                formatter,
+                "migration drill of application {application_id:?} is terminal \
+                 ({state:?}); replay the original idempotency key instead of issuing \
+                 a new command"
+            ),
+            Self::MigrationNotRunning {
+                application_id,
+                state,
+            } => write!(
+                formatter,
+                "migration drill of application {application_id:?} is {state:?}; \
+                 health checks, activation, and rollback require a running drill"
+            ),
+            Self::MigrationStepOutOfOrder {
+                requested_step_index,
+                expected_step_index,
+                declared_step_count,
+            } => write!(
+                formatter,
+                "migration step {requested_step_index} is not the next unrecorded step \
+                 (expected {expected_step_index} of {declared_step_count} declared)"
+            ),
+            Self::MigrationDrillComplete {
+                idempotency_key,
+                declared_step_count,
+            } => write!(
+                formatter,
+                "migration drill {idempotency_key:?} already recorded all \
+                 {declared_step_count} declared step(s); there is no further step"
+            ),
+            Self::MigrationStepPrecedesLastUpdate {
+                last_updated_at_ms,
+                completed_at_ms,
+            } => write!(
+                formatter,
+                "migration step timestamp {completed_at_ms} precedes the drill's \
+                 last durable update {last_updated_at_ms}"
+            ),
+            Self::MigrationStepsIncomplete {
+                completed_step_count,
+                declared_step_count,
+            } => write!(
+                formatter,
+                "migration drill completed {completed_step_count} of \
+                 {declared_step_count} declared step(s); health checks and activation \
+                 require the whole drill"
+            ),
+            Self::HealthCheckPrecedesLastUpdate {
+                last_updated_at_ms,
+                checked_at_ms,
+            } => write!(
+                formatter,
+                "migration health check timestamp {checked_at_ms} precedes the drill's \
+                 last durable update {last_updated_at_ms}"
+            ),
+            Self::MigrationPrecedesVerification {
+                verified_at_ms,
+                requested_at_ms,
+            } => write!(
+                formatter,
+                "migration request timestamp {requested_at_ms} precedes verification \
+                 timestamp {verified_at_ms}"
+            ),
+            Self::ActivationPrecedesHealthCheck {
+                health_checked_at_ms,
+                activated_at_ms,
+            } => write!(
+                formatter,
+                "migration activation timestamp {activated_at_ms} precedes the recorded \
+                 health check {health_checked_at_ms}"
+            ),
+            Self::MigrationHealthUnchecked { idempotency_key } => write!(
+                formatter,
+                "migration drill {idempotency_key:?} has no recorded health verdict; \
+                 run the health check before activating"
+            ),
+            Self::MigrationHealthFailed { idempotency_key } => write!(
+                formatter,
+                "migration drill {idempotency_key:?} failed its health check; take the \
+                 PKG rollback path instead of activating"
+            ),
+            Self::MigrationRequiresFailedHealth { health } => write!(
+                formatter,
+                "the PKG migration rollback requires a failed health verdict, \
+                 not {health:?}"
+            ),
+            Self::MigrationRollbackPrecedesHealthCheck {
+                health_checked_at_ms,
+                rolled_back_at_ms,
+            } => write!(
+                formatter,
+                "migration rollback timestamp {rolled_back_at_ms} precedes the recorded \
+                 failed health check {health_checked_at_ms}"
+            ),
+            Self::MigrationBaselineMoved {
+                application_id,
+                from_generation,
+                current_generation,
+            } => write!(
+                formatter,
+                "application {application_id:?} is at generation {current_generation:?}, \
+                 no longer at the drill's frozen baseline {from_generation:?}; the drill \
+                 cannot activate or roll back onto a moved baseline"
+            ),
         }
     }
 }
@@ -853,6 +1281,7 @@ impl Error for ApplicationAuthorityError {
             Self::Sqlite(error) => Some(error),
             Self::Io(error) => Some(error),
             Self::Artifact(error) => Some(error),
+            Self::TaskActivityQueryFailed { error, .. } => Some(error),
             _ => None,
         }
     }
@@ -906,7 +1335,7 @@ impl ApplicationAuthority {
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
         match version {
             0 => schema::migrate_v1(&mut connection)?,
-            1..=6 => {}
+            1..=9 => {}
             other => return Err(ApplicationAuthorityError::SchemaVersionUnsupported(other)),
         }
         if version < 2 {
@@ -921,8 +1350,17 @@ impl ApplicationAuthority {
         if version < 5 {
             schema::migrate_v5(&mut connection)?;
         }
-        if version < schema::SCHEMA_VERSION {
+        if version < 6 {
             schema::migrate_v6(&mut connection)?;
+        }
+        if version < 7 {
+            schema::migrate_v7(&mut connection)?;
+        }
+        if version < 8 {
+            schema::migrate_v8(&mut connection)?;
+        }
+        if version < 9 {
+            schema::migrate_v9(&mut connection)?;
         }
         Ok(Self {
             connection: Mutex::new(connection),
@@ -1028,11 +1466,7 @@ impl ApplicationAuthority {
                     });
                 }
                 ApplicationStatus::Installed => {
-                    let next = view.current_installation_generation.checked_next().ok_or(
-                        ApplicationAuthorityError::CorruptRecord(
-                            "installation generation space is exhausted",
-                        ),
-                    )?;
+                    let next = next_installation_generation(&transaction, &view)?;
                     let changed = transaction.execute(
                         "UPDATE applications
                          SET current_installation_generation = ?1,
@@ -1305,12 +1739,7 @@ impl ApplicationAuthority {
             verified.package_version,
         )?;
 
-        let next = application
-            .current_installation_generation
-            .checked_next()
-            .ok_or(ApplicationAuthorityError::CorruptRecord(
-                "installation generation space is exhausted",
-            ))?;
+        let next = next_installation_generation(&transaction, &application)?;
         let changed = transaction.execute(
             "UPDATE applications
              SET current_installation_generation = ?1,
@@ -1415,13 +1844,41 @@ impl ApplicationAuthority {
         request: UninstallApplicationRequest,
         probe: &impl ActiveTaskActivityProbe,
     ) -> Result<UninstallDecision, ApplicationAuthorityError> {
-        self.uninstall_application_internal(request, Some(probe))
+        self.uninstall_application_internal(request, Some(TaskActivitySource::Probe(probe)))
+    }
+
+    /// Refuses a fresh uninstall while any of the package's durably
+    /// registered background Tasks is still outstanding in the task
+    /// authority — the production activity gate (W27-D). Inside the
+    /// gate's own writer transaction the package's background-task
+    /// registrations are resolved (the same transactional view the
+    /// uninstall itself will commit), then
+    /// [`SqliteTaskAuthority::inspect_outstanding_task_count`] is queried
+    /// against the task authority's separate store: a registration
+    /// without a durable task row is a promise, not activity, and a task
+    /// that reached its terminal state is not activity either. A query
+    /// that cannot be answered is a typed fail-closed refusal
+    /// ([`ApplicationAuthorityError::TaskActivityQueryFailed`]) with zero
+    /// durable state; durable replay under the same idempotency key
+    /// never consults the query.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::uninstall_application`], plus
+    /// [`ApplicationAuthorityError::ApplicationActiveTasksRunning`] and
+    /// [`ApplicationAuthorityError::TaskActivityQueryFailed`].
+    pub fn uninstall_application_with_task_activity_gate(
+        &self,
+        tasks: &SqliteTaskAuthority,
+        request: UninstallApplicationRequest,
+    ) -> Result<UninstallDecision, ApplicationAuthorityError> {
+        self.uninstall_application_internal(request, Some(TaskActivitySource::TaskAuthority(tasks)))
     }
 
     fn uninstall_application_internal(
         &self,
         request: UninstallApplicationRequest,
-        probe: Option<&dyn ActiveTaskActivityProbe>,
+        activity: Option<TaskActivitySource<'_>>,
     ) -> Result<UninstallDecision, ApplicationAuthorityError> {
         let mut connection = self.lock()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -1459,8 +1916,12 @@ impl ApplicationAuthority {
             });
         }
 
-        if let Some(probe) = probe {
-            let active_task_count = probe.outstanding_task_count(request.package_id);
+        if let Some(activity) = activity {
+            let active_task_count = activity.outstanding_task_count(
+                &transaction,
+                application.application_id,
+                request.package_id,
+            )?;
             if active_task_count > 0 {
                 return Err(ApplicationAuthorityError::ApplicationActiveTasksRunning {
                     package_id: request.package_id,
@@ -1497,11 +1958,18 @@ impl ApplicationAuthority {
         Ok(UninstallDecision::Uninstalled(receipt))
     }
 
-    /// Rolls one disabled or uninstalled application back one installation
-    /// generation: in one `Immediate` transaction CAS's the status to
-    /// `installed`, decrements the generation by exactly one, restores the
-    /// previous generation's manifest digest from durable installation
-    /// history, and commits the immutable rollback receipt.
+    /// Rolls one disabled or uninstalled application's content back one
+    /// generation as a *forward roll*: in one `Immediate` transaction the
+    /// previous content generation's installation receipt is re-committed
+    /// bitwise (package id, manifest digest, package version, entry count,
+    /// verification receipt id, installer principal) at a **new**
+    /// installation generation — the current generation plus one — the
+    /// status CAS's to `installed` at that generation, and the immutable
+    /// rollback receipt commits with it. Old content, new generation: the
+    /// generation counter stays dense and strictly monotonic, so no
+    /// receipt ever collides with durable history and every later
+    /// lifecycle command (update, disable, uninstall, another rollback)
+    /// lands on a fresh generation with a fresh receipt.
     ///
     /// Fail-closed order:
     ///
@@ -1509,7 +1977,9 @@ impl ApplicationAuthority {
     ///    request's idempotency key is the authority; it replays unchanged
     ///    without touching the state. The same key with a different request
     ///    shape (a different package or timestamp) is a typed
-    ///    [`ApplicationAuthorityError::IdempotencyConflict`].
+    ///    [`ApplicationAuthorityError::IdempotencyConflict`], as is a key
+    ///    already bound to a durable installation receipt of another
+    ///    command.
     /// 2. **State gate**: the application singleton must exist
     ///    ([`ApplicationAuthorityError::ApplicationNotFound`]) and be
     ///    `disabled` or `uninstalled` ([`ApplicationAuthorityError::
@@ -1517,25 +1987,34 @@ impl ApplicationAuthority {
     ///    application cannot roll back in this slice.
     /// 3. **Temporal binding**: the rollback timestamp must not precede
     ///    the application row's last update.
-    /// 4. **Generation gate**: the current generation must be strictly
+    /// 4. **Content gate**: the current generation must be strictly
     ///    greater than the initial generation ([`ApplicationAuthorityError::
-    ///    RollbackAtInitialGeneration`]); the previous installation receipt
-    ///    must exist in durable history ([`ApplicationAuthorityError::
+    ///    RollbackAtInitialGeneration`]); the receipt of the generation
+    ///    before the current one — the content a rollback restores — must
+    ///    exist in durable history ([`ApplicationAuthorityError::
     ///    PreviousInstallationNotFound`]).
-    /// 5. **Single-transaction commit**: the status/generation/digest update
-    ///    and the receipt insert share the one transaction (co-life), and
-    ///    the DDL state-bounds guard only accepts a receipt for an
-    ///    application already installed at the target generation.
+    /// 5. **Single-transaction commit**: the status/generation/digest CAS,
+    ///    the new installation receipt at the forward-roll generation, and
+    ///    the rollback receipt share the one transaction (co-life); the
+    ///    DDL state-bounds guards only accept an installation receipt at
+    ///    the application's *current* generation and a rollback receipt
+    ///    for an application already installed at the receipt's target
+    ///    generation.
+    ///
+    /// The new installation receipt inherits the artifact authority's
+    /// verification fact through the prior generation's receipt (its
+    /// content fields were digest-bound at its own install; see
+    /// [`rollback_binding_error`]), so no artifact readback is re-issued.
     ///
     /// This slice does **not** implement health checks, migration
     /// compatibility, binary atomic switching, or any full `[PKG-UPDATE-001]`
-    /// policy engine beyond the one-step generation anchor.
+    /// policy engine beyond the one-generation content anchor.
     ///
     /// # Errors
     ///
     /// Fails closed (zero durable state change) for an unknown package, an
     /// installed application, an initial-generation application, a missing
-    /// previous installation receipt, an idempotency conflict, a rollback
+    /// prior installation receipt, an idempotency conflict, a rollback
     /// preceding its own last update, a lost generation CAS, or any storage
     /// failure.
     pub fn rollback_application(
@@ -1558,13 +2037,37 @@ impl ApplicationAuthority {
         request: RollbackApplicationRequest,
         probe: &impl ActiveTaskActivityProbe,
     ) -> Result<RollbackDecision, ApplicationAuthorityError> {
-        self.rollback_application_internal(request, Some(probe))
+        self.rollback_application_internal(request, Some(TaskActivitySource::Probe(probe)))
     }
 
+    /// Refuses a fresh rollback while any of the package's durably
+    /// registered background Tasks is still outstanding in the task
+    /// authority — the production activity gate (W27-D), mirroring
+    /// [`Self::uninstall_application_with_task_activity_gate`]:
+    /// registrations are resolved inside the gate's own transaction and
+    /// task liveness is queried on the task authority's separate store;
+    /// an unanswerable query is a typed fail-closed refusal
+    /// ([`ApplicationAuthorityError::TaskActivityQueryFailed`]) with
+    /// zero durable state, and durable replay never consults the query.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::rollback_application`], plus
+    /// [`ApplicationAuthorityError::ApplicationActiveTasksRunning`] and
+    /// [`ApplicationAuthorityError::TaskActivityQueryFailed`].
+    pub fn rollback_application_with_task_activity_gate(
+        &self,
+        tasks: &SqliteTaskAuthority,
+        request: RollbackApplicationRequest,
+    ) -> Result<RollbackDecision, ApplicationAuthorityError> {
+        self.rollback_application_internal(request, Some(TaskActivitySource::TaskAuthority(tasks)))
+    }
+
+    #[allow(clippy::too_many_lines)]
     fn rollback_application_internal(
         &self,
         request: RollbackApplicationRequest,
-        probe: Option<&dyn ActiveTaskActivityProbe>,
+        activity: Option<TaskActivitySource<'_>>,
     ) -> Result<RollbackDecision, ApplicationAuthorityError> {
         let mut connection = self.lock()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -1578,6 +2081,14 @@ impl ApplicationAuthority {
             }
             transaction.commit()?;
             return Ok(RollbackDecision::Replayed(existing));
+        }
+
+        // The rollback key also lands in `installation_receipts` at the
+        // forward-roll generation; a key already bound to another
+        // installation command is a typed conflict, never a raw UNIQUE
+        // failure.
+        if load_receipt_by_key(&transaction, request.idempotency_key)?.is_some() {
+            return Err(ApplicationAuthorityError::IdempotencyConflict);
         }
 
         let application = load_application_by_package(&transaction, request.package_id)?.ok_or(
@@ -1604,24 +2115,30 @@ impl ApplicationAuthority {
             });
         }
 
-        let to_generation = generation_prev(application.current_installation_generation).ok_or(
-            ApplicationAuthorityError::RollbackAtInitialGeneration {
+        // Forward roll: the restored content is the most recent durable
+        // installation generation strictly before the current one (the
+        // history is dense, so that is the current generation minus one).
+        let content_generation = generation_prev(application.current_installation_generation)
+            .ok_or(ApplicationAuthorityError::RollbackAtInitialGeneration {
                 application_id: application.application_id,
                 generation: application.current_installation_generation,
-            },
-        )?;
-        let previous = load_installation_receipt_at_generation(
+            })?;
+        let prior = load_installation_receipt_at_generation(
             &transaction,
             application.application_id,
-            to_generation,
+            content_generation,
         )?
         .ok_or(ApplicationAuthorityError::PreviousInstallationNotFound {
             application_id: application.application_id,
-            generation: to_generation,
+            generation: content_generation,
         })?;
 
-        if let Some(probe) = probe {
-            let active_task_count = probe.outstanding_task_count(request.package_id);
+        if let Some(activity) = activity {
+            let active_task_count = activity.outstanding_task_count(
+                &transaction,
+                application.application_id,
+                request.package_id,
+            )?;
             if active_task_count > 0 {
                 return Err(ApplicationAuthorityError::ApplicationActiveTasksRunning {
                     package_id: request.package_id,
@@ -1630,6 +2147,7 @@ impl ApplicationAuthority {
             }
         }
 
+        let to_generation = next_installation_generation(&transaction, &application)?;
         let changed = transaction.execute(
             "UPDATE applications
              SET status = ?1,
@@ -1642,7 +2160,7 @@ impl ApplicationAuthority {
             params![
                 ApplicationStatus::Installed.encode(),
                 encode_generation(to_generation)?,
-                previous.package_manifest_digest.as_bytes().as_slice(),
+                prior.package_manifest_digest.as_bytes().as_slice(),
                 encode_u64(request.rollback_at_ms)?,
                 application.application_id.as_bytes().as_slice(),
                 encode_generation(application.current_installation_generation)?,
@@ -1656,16 +2174,43 @@ impl ApplicationAuthority {
             ));
         }
 
-        let receipt = RollbackReceipt {
+        // The forward roll's installation receipt: every content field is
+        // copied bitwise from the prior generation's receipt, so the new
+        // generation inherits the artifact authority's verification fact
+        // through the same seven-equation binding shape (see
+        // `rollback_binding_error`).
+        let receipt = InstallationReceipt {
+            installation_id: derive_installation_id(
+                request.idempotency_key,
+                application.application_id,
+                to_generation,
+            ),
+            application_id: application.application_id,
+            installation_generation: to_generation,
+            package_id: prior.package_id,
+            package_manifest_digest: prior.package_manifest_digest,
+            package_version: prior.package_version,
+            entry_count: prior.entry_count,
+            package_verification_receipt_id: prior.package_verification_receipt_id,
+            installer_principal: prior.installer_principal,
+            idempotency_key: request.idempotency_key,
+            installed_at_ms: request.rollback_at_ms,
+        };
+        if let Some(error) = rollback_binding_error(&receipt, &prior) {
+            return Err(error);
+        }
+        insert_receipt(&transaction, &receipt)?;
+
+        let rollback_receipt = RollbackReceipt {
             application_id: application.application_id,
             from_generation: application.current_installation_generation,
             to_generation,
             idempotency_key: request.idempotency_key,
             rollback_at_ms: request.rollback_at_ms,
         };
-        insert_rollback_receipt(&transaction, &receipt)?;
+        insert_rollback_receipt(&transaction, &rollback_receipt)?;
         transaction.commit()?;
-        Ok(RollbackDecision::RolledBack(receipt))
+        Ok(RollbackDecision::RolledBack(rollback_receipt))
     }
 
     /// # Errors
@@ -1861,6 +2406,156 @@ impl ApplicationAuthority {
             receipts.push(decode_process_binding_row(row)?);
         }
         Ok(receipts)
+    }
+
+    /// Reads one application's every durable surface registration by
+    /// package identity, registration order first, declaration order
+    /// within a registration. An unknown application lists as empty —
+    /// a legitimate read outcome, not an error. This is the presenter's
+    /// discovery face: the durable rows are exactly what the
+    /// application declared, bitwise.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed on a storage error.
+    pub fn inspect_surfaces(
+        &self,
+        package_id: PackageId,
+    ) -> Result<Vec<SurfaceRegistrationReceipt>, ApplicationAuthorityError> {
+        let connection = self.lock()?;
+        let application_id = derive_application_id(package_id);
+        let mut statement = connection.prepare(
+            "SELECT application_id, surface_index, surface_id, surface_kind,
+                    title, entry_name, package_manifest_digest,
+                    registrant_principal, application_generation,
+                    idempotency_key, registered_at_ms
+             FROM application_surface_registrations
+             WHERE application_id = ?1
+             ORDER BY registered_at_ms ASC, idempotency_key ASC, surface_index ASC",
+        )?;
+        let mut rows = statement.query([application_id.as_bytes().as_slice()])?;
+        let mut receipts = Vec::new();
+        while let Some(row) = rows.next()? {
+            receipts.push(decode_surface_registration_row(row)?);
+        }
+        Ok(receipts)
+    }
+
+    /// Registers one declared `surfaces` segment as the UI-Surface set
+    /// of an installed application's current generation (W32-F / B2-2),
+    /// pinned to the installation's manifest content.
+    ///
+    /// Fail-closed order (mirroring the v5/v6 registration faces plus
+    /// the content binding):
+    ///
+    /// 1. **Segment shape**: the shared validator
+    ///    ([`surfaces::validate_surface_declarations`]) refuses an
+    ///    empty, oversized, duplicate-id, or text-unbounded segment.
+    /// 2. **Replay**: the durable rows under the request's idempotency
+    ///    key are the authority; a byte-equal re-registration replays
+    ///    unchanged, and the same key with any other shape is a typed
+    ///    [`ApplicationAuthorityError::IdempotencyConflict`].
+    /// 3. **State + content binding**: the application must exist, be
+    ///    `installed`, the timestamp must not precede the row's last
+    ///    update, and the declared manifest digest must equal the
+    ///    current installation's manifest digest.
+    /// 4. **Per-surface admission**: no surface identity may already be
+    ///    registered at the current generation (a generation advance
+    ///    opens fresh admission).
+    ///
+    /// # Errors
+    ///
+    /// Fails closed (zero durable state change) for a malformed
+    /// segment, an unknown package, a disabled/uninstalled application,
+    /// an idempotency conflict, a duplicate surface identity, a manifest
+    /// digest mismatch, a timestamp preceding the last application
+    /// update, or any storage failure.
+    pub fn register_surfaces(
+        &self,
+        request: &RegisterSurfacesRequest,
+    ) -> Result<RegisterSurfacesDecision, ApplicationAuthorityError> {
+        surfaces::validate_surface_declarations(&request.surfaces)
+            .map_err(ApplicationAuthorityError::SurfaceSegment)?;
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(existing) =
+            load_surface_registrations_by_key(&transaction, request.idempotency_key)?
+        {
+            if surface_replay_conflicts(&existing, request) {
+                return Err(ApplicationAuthorityError::IdempotencyConflict);
+            }
+            transaction.commit()?;
+            return Ok(RegisterSurfacesDecision::Replayed(existing));
+        }
+        let application = load_application_by_package(&transaction, request.package_id)?.ok_or(
+            ApplicationAuthorityError::ApplicationNotFound {
+                package_id: request.package_id,
+            },
+        )?;
+        match application.status {
+            ApplicationStatus::Uninstalled => {
+                return Err(ApplicationAuthorityError::ApplicationUninstalled {
+                    application_id: application.application_id,
+                });
+            }
+            ApplicationStatus::Disabled => {
+                return Err(ApplicationAuthorityError::ApplicationDisabled {
+                    application_id: application.application_id,
+                });
+            }
+            ApplicationStatus::Installed => {}
+        }
+        if request.registered_at_ms < application.updated_at_ms {
+            return Err(ApplicationAuthorityError::RegistrationPrecedesLastUpdate {
+                last_updated_at_ms: application.updated_at_ms,
+                registered_at_ms: request.registered_at_ms,
+            });
+        }
+        if request.declared_manifest_digest != application.package_manifest_digest {
+            return Err(ApplicationAuthorityError::SurfaceManifestMismatch {
+                application_id: application.application_id,
+                installed_manifest_digest: application.package_manifest_digest,
+                declared_manifest_digest: request.declared_manifest_digest,
+            });
+        }
+        for declaration in &request.surfaces {
+            if load_surface_registration_at_generation(
+                &transaction,
+                application.application_id,
+                declaration.surface_id,
+                application.current_installation_generation,
+            )?
+            .is_some()
+            {
+                return Err(ApplicationAuthorityError::SurfaceAlreadyRegistered {
+                    application_id: application.application_id,
+                    surface_id: declaration.surface_id,
+                });
+            }
+        }
+        let receipts = request
+            .surfaces
+            .iter()
+            .enumerate()
+            .map(|(index, declaration)| SurfaceRegistrationReceipt {
+                application_id: application.application_id,
+                surface_index: index as u64,
+                surface_id: declaration.surface_id,
+                kind: declaration.kind,
+                title: declaration.title.clone(),
+                entry_name: declaration.entry_name.clone(),
+                package_manifest_digest: request.declared_manifest_digest,
+                registrant_principal: request.registrant_principal,
+                application_generation: application.current_installation_generation,
+                idempotency_key: request.idempotency_key,
+                registered_at_ms: request.registered_at_ms,
+            })
+            .collect::<Vec<_>>();
+        for receipt in &receipts {
+            insert_surface_registration(&transaction, receipt)?;
+        }
+        transaction.commit()?;
+        Ok(RegisterSurfacesDecision::Registered(receipts))
     }
 
     /// Reads an application's current durable state by package identity
@@ -2080,6 +2775,57 @@ fn binding_error(
     None
 }
 
+/// The forward-roll digest binding: a rollback re-commits one prior
+/// generation's receipt content at a new generation, so it inherits the
+/// artifact authority's verification fact *through the prior durable
+/// receipt* instead of a fresh artifact readback — the same seven
+/// equations as [`binding_error`], with the prior installation receipt
+/// standing in for the verified receipt (its six content fields were
+/// digest-bound at its own install) and the prior receipt's install
+/// timestamp standing in for the verification timestamp (itself at or
+/// after it).
+fn rollback_binding_error(
+    receipt: &InstallationReceipt,
+    prior: &InstallationReceipt,
+) -> Option<ApplicationAuthorityError> {
+    if receipt.package_verification_receipt_id != prior.package_verification_receipt_id {
+        return Some(ApplicationAuthorityError::CorruptRecord(
+            "rollback receipt id binding mismatch",
+        ));
+    }
+    if receipt.package_id != prior.package_id {
+        return Some(ApplicationAuthorityError::CorruptRecord(
+            "rollback package id binding mismatch",
+        ));
+    }
+    if receipt.package_manifest_digest != prior.package_manifest_digest {
+        return Some(ApplicationAuthorityError::CorruptRecord(
+            "rollback manifest digest binding mismatch",
+        ));
+    }
+    if receipt.package_version != prior.package_version {
+        return Some(ApplicationAuthorityError::CorruptRecord(
+            "rollback package version binding mismatch",
+        ));
+    }
+    if receipt.entry_count != prior.entry_count {
+        return Some(ApplicationAuthorityError::CorruptRecord(
+            "rollback entry count binding mismatch",
+        ));
+    }
+    if receipt.installer_principal != prior.installer_principal {
+        return Some(ApplicationAuthorityError::CorruptRecord(
+            "rollback installer principal binding mismatch",
+        ));
+    }
+    if receipt.installed_at_ms < prior.installed_at_ms {
+        return Some(ApplicationAuthorityError::CorruptRecord(
+            "rollback precedes the installation it restores",
+        ));
+    }
+    None
+}
+
 /// Derives the stable application identity of one package identity
 /// (domain-separated, mirroring the artifact receipt-id derivation).
 #[must_use]
@@ -2260,6 +3006,40 @@ fn load_installation_receipt_at_generation(
     rows.next()?.map(decode_receipt_row).transpose()
 }
 
+/// The next fresh installation generation: one past the greater of the
+/// application row's current generation and the durable receipt history's
+/// maximum. On v9-clean history the two agree and every command advances
+/// exactly one step; on a database upgraded from the pre-v9 generation
+/// step-back (whose rewound rows sit below their own receipt history) it
+/// jumps over the already-recorded generations, so a fresh receipt can
+/// never collide with durable history (the latent residue of deep-audit
+/// D1 in upgraded data).
+fn next_installation_generation(
+    source: &Connection,
+    application: &ApplicationView,
+) -> Result<Generation, ApplicationAuthorityError> {
+    let mut statement = source.prepare(
+        "SELECT MAX(installation_generation) FROM installation_receipts
+         WHERE application_id = ?1",
+    )?;
+    let durable_max: Option<i64> = statement
+        .query_row([application.application_id.as_bytes().as_slice()], |row| {
+            row.get(0)
+        })?;
+    let durable_max = u64::try_from(durable_max.unwrap_or(0)).map_err(|_| {
+        ApplicationAuthorityError::CorruptRecord("negative installation generation")
+    })?;
+    let base = durable_max.max(application.current_installation_generation.get());
+    let nonzero = std::num::NonZeroU64::new(base).ok_or(
+        ApplicationAuthorityError::CorruptRecord("zero installation generation"),
+    )?;
+    Generation::new(nonzero)
+        .checked_next()
+        .ok_or(ApplicationAuthorityError::CorruptRecord(
+            "installation generation space is exhausted",
+        ))
+}
+
 fn insert_rollback_receipt(
     transaction: &Connection,
     receipt: &RollbackReceipt,
@@ -2414,6 +3194,26 @@ fn load_background_task_registration_by_key(
         .map(decode_background_task_registration_row)
         .transpose()
 }
+
+/// Distinct task identities durably registered as background tasks of one
+/// application across every installation generation (the same task may be
+/// re-registered after a generation advance; activity counts identities,
+/// not registration rows).
+fn load_registered_background_task_ids(
+    source: &Connection,
+    application_id: ApplicationId,
+) -> Result<Vec<TaskId>, ApplicationAuthorityError> {
+    let mut statement = source.prepare(
+        "SELECT DISTINCT task_id FROM application_background_task_registrations
+         WHERE application_id = ?1 ORDER BY task_id",
+    )?;
+    let mut rows = statement.query([application_id.as_bytes().as_slice()])?;
+    let mut task_ids = Vec::new();
+    while let Some(row) = rows.next()? {
+        task_ids.push(TaskId::from_bytes(blob16(row, 0)?));
+    }
+    Ok(task_ids)
+}
 fn load_background_task_registration_at_generation(
     source: &Connection,
     application_id: ApplicationId,
@@ -2489,6 +3289,127 @@ fn decode_process_binding_row(
         application_generation: decode_generation(row, 3)?,
         idempotency_key: IdempotencyKey::from_bytes(blob16(row, 4)?),
         registered_at_ms: decode_u64(row, 5)?,
+    })
+}
+
+/// A durable replay conflicts iff any recorded fact differs from the
+/// request: the addressed application, the registrant, the timestamp,
+/// the bound manifest digest, or any declared surface bitwise. Rows load
+/// ordered by their dense `surface_index`, so enumerated alignment is
+/// the declaration order.
+fn surface_replay_conflicts(
+    existing: &[SurfaceRegistrationReceipt],
+    request: &RegisterSurfacesRequest,
+) -> bool {
+    let Some(first) = existing.first() else {
+        return true;
+    };
+    first.application_id != derive_application_id(request.package_id)
+        || first.registrant_principal != request.registrant_principal
+        || first.registered_at_ms != request.registered_at_ms
+        || first.package_manifest_digest != request.declared_manifest_digest
+        || existing.len() != request.surfaces.len()
+        || existing.iter().enumerate().any(|(position, row)| {
+            let Some(declaration) = request.surfaces.get(position) else {
+                return true;
+            };
+            row.surface_index != position as u64
+                || row.surface_id != declaration.surface_id
+                || row.kind != declaration.kind
+                || row.title != declaration.title
+                || row.entry_name != declaration.entry_name
+        })
+}
+
+fn load_surface_registrations_by_key(
+    source: &Connection,
+    key: IdempotencyKey,
+) -> Result<Option<Vec<SurfaceRegistrationReceipt>>, ApplicationAuthorityError> {
+    let mut statement = source.prepare(
+        "SELECT application_id, surface_index, surface_id, surface_kind,
+                title, entry_name, package_manifest_digest,
+                registrant_principal, application_generation,
+                idempotency_key, registered_at_ms
+         FROM application_surface_registrations
+         WHERE idempotency_key = ?1
+         ORDER BY surface_index ASC",
+    )?;
+    let mut rows = statement.query([key.as_bytes().as_slice()])?;
+    let mut receipts = Vec::new();
+    while let Some(row) = rows.next()? {
+        receipts.push(decode_surface_registration_row(row)?);
+    }
+    Ok((!receipts.is_empty()).then_some(receipts))
+}
+
+fn load_surface_registration_at_generation(
+    source: &Connection,
+    application_id: ApplicationId,
+    surface_id: [u8; 16],
+    generation: Generation,
+) -> Result<Option<SurfaceRegistrationReceipt>, ApplicationAuthorityError> {
+    let mut statement = source.prepare(
+        "SELECT application_id, surface_index, surface_id, surface_kind,
+                title, entry_name, package_manifest_digest,
+                registrant_principal, application_generation,
+                idempotency_key, registered_at_ms
+         FROM application_surface_registrations
+         WHERE application_id = ?1 AND surface_id = ?2 AND application_generation = ?3",
+    )?;
+    let mut rows = statement.query(params![
+        application_id.as_bytes().as_slice(),
+        surface_id.as_slice(),
+        encode_generation(generation)?,
+    ])?;
+    rows.next()?
+        .map(decode_surface_registration_row)
+        .transpose()
+}
+
+fn insert_surface_registration(
+    transaction: &Connection,
+    receipt: &SurfaceRegistrationReceipt,
+) -> Result<(), ApplicationAuthorityError> {
+    transaction.execute(
+        "INSERT INTO application_surface_registrations (
+            idempotency_key, surface_index, application_id, surface_id,
+            surface_kind, title, entry_name, package_manifest_digest,
+            registrant_principal, application_generation, registered_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        params![
+            receipt.idempotency_key.as_bytes().as_slice(),
+            i64::try_from(receipt.surface_index)
+                .map_err(|_| ApplicationAuthorityError::CorruptRecord("surface index"))?,
+            receipt.application_id.as_bytes().as_slice(),
+            receipt.surface_id.as_slice(),
+            i64::from(receipt.kind.encode()),
+            receipt.title,
+            receipt.entry_name,
+            receipt.package_manifest_digest.as_bytes().as_slice(),
+            receipt.registrant_principal.as_bytes().as_slice(),
+            encode_generation(receipt.application_generation)?,
+            encode_u64(receipt.registered_at_ms)?,
+        ],
+    )?;
+    Ok(())
+}
+
+fn decode_surface_registration_row(
+    row: &rusqlite::Row<'_>,
+) -> Result<SurfaceRegistrationReceipt, ApplicationAuthorityError> {
+    Ok(SurfaceRegistrationReceipt {
+        application_id: ApplicationId::from_bytes(blob16(row, 0)?),
+        surface_index: decode_u64(row, 1)?,
+        surface_id: blob16(row, 2)?,
+        kind: PackageSurfaceKind::decode(row.get(3)?)
+            .map_err(|_| ApplicationAuthorityError::CorruptRecord("surface kind"))?,
+        title: row.get(4)?,
+        entry_name: row.get(5)?,
+        package_manifest_digest: ContentDigest::from_bytes(blob32(row, 6)?),
+        registrant_principal: PrincipalId::from_bytes(blob16(row, 7)?),
+        application_generation: decode_generation(row, 8)?,
+        idempotency_key: IdempotencyKey::from_bytes(blob16(row, 9)?),
+        registered_at_ms: decode_u64(row, 10)?,
     })
 }
 

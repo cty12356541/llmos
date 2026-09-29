@@ -43,19 +43,33 @@
 mod chain;
 mod error;
 mod fiber;
+mod nl;
 mod package;
+mod payload;
+mod pump;
 mod runtime;
+mod teardown;
 
 pub use chain::{
-    CancelFacts, HappyChain, RecoveryPrefix, run_cancel_path, run_happy_chain, run_recovery_prefix,
+    CancelFacts, HappyChain, RecoveryPrefix, SECOND_BACKGROUND_TASK_SEED_OFFSET,
+    SECOND_BINDING_SEED_OFFSET, SECOND_MATERIALIZE_SEED_OFFSET, SECOND_TASK_SEED_OFFSET,
+    SecondProcessKill, SecondProcessPair, run_cancel_path, run_happy_chain, run_recovery_prefix,
+    run_second_process_pair, run_second_process_platform_kill,
 };
 pub use error::{SliceKError, SliceKResult};
 pub use fiber::{FiberOutcome, WriteFiberJob, spawn_write_fiber};
+pub use nl::{RunningRecoveryHealth, SliceKControlPolicy, dispatch_nl_command};
 pub use package::{
     AutoOrphanGc, PublishedPackage, Publisher, artifact_blob_path, fixture_bytes,
     plant_orphan_artifact_blob, provenance_triple,
 };
+pub use payload::{
+    PAYLOAD_OPERATION_DOMAIN, PAYLOAD_SEED_DOMAIN, PayloadExecution, execute_application_payload,
+    payload_execution_seed,
+};
+pub use pump::{FailClosedReconcileSink, ReconcileRefusalSnapshot};
 pub use runtime::{
     ApplicationRegistrationInspect, ChainInspect, ChainQuery, SliceKRuntime, initial_generation,
     seeded_key, short_hex,
 };
+pub use teardown::{ApplicationTeardown, run_application_teardown};

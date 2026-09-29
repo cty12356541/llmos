@@ -24,12 +24,19 @@ pub enum PlatformKillAdapterOutcome {
 /// Platform-specific OS process kill signaling.
 ///
 /// Implementations must be side-effect bounded to the presented Process
-/// identity; this crate's authority path durably records the receipt before
-/// invoking the adapter.
+/// identity. This crate's authority path durably records the receipt before
+/// invoking the adapter, and re-invokes the adapter on every idempotent
+/// replay of that receipt (at-least-once signal delivery), so
+/// implementations must tolerate being called more than once per kill:
+/// re-signaling an already-dead process maps to
+/// [`PlatformKillAdapterOutcome::AlreadyTerminated`], never an error.
 pub trait PlatformKillAdapter {
     /// Signals the host platform to kill the OS process backing `process_id`
-    /// at `process_generation`. Failures propagate to the caller; the durable
-    /// kill receipt remains committed (at-least-once semantics).
+    /// at `process_generation`. Every call — fresh or replay — issues the
+    /// signal; [`PlatformKillAdapterOutcome::AlreadyTerminated`] reports
+    /// success when the target already died. Failures propagate to the
+    /// caller; the durable kill receipt remains committed, so the caller's
+    /// retry replays and signals again (at-least-once semantics).
     ///
     /// # Errors
     ///
@@ -223,10 +230,13 @@ impl PlatformKillAdapter for WindowsPlatformKillAdapter {
             return Ok(PlatformKillAdapterOutcome::Signaled);
         }
 
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        // `taskkill` exits 128 when the pid is already gone (locale
+        // independent); the stderr conjunct is the English-locale fallback,
+        // matched case-insensitively and parenthesized so the `&&` pair
+        // stays one `||` operand instead of being swallowed by precedence.
+        let stderr = String::from_utf8_lossy(&output.stderr).to_ascii_lowercase();
         if output.status.code() == Some(128)
-            || stderr.contains("not found")
-            || stderr.contains("ERROR: The process") && stderr.contains("not found")
+            || (stderr.contains("error:") && stderr.contains("not found"))
         {
             return Ok(PlatformKillAdapterOutcome::AlreadyTerminated);
         }

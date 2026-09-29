@@ -103,6 +103,99 @@ impl fmt::Display for RuntimeError {
 
 impl Error for RuntimeError {}
 
+/// The typed birth (admission) decision for one
+/// [`RuntimeAdapter::spawn_fiber`] attempt: the fiber generation was either
+/// admitted and scheduled, or rejected before any side effect with the
+/// contract's own admission reason.
+///
+/// This is the runtime-contract slice of the process-domain `BirthDecision`
+/// family (design §8.2 `disposition: COMMIT | ABORT`): it types the
+/// runtime's admission dimensions only. The cross-authority birth object
+/// (launch grant digest, resource admission, capability prepares, process
+/// identity receipts) is a different, durable artifact and stays out of
+/// this contract.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BirthDecision {
+    /// The fiber generation was admitted (disposition COMMIT): the handle
+    /// is live and the future is scheduled without requiring a join.
+    Admitted(FiberHandle),
+    /// The birth was rejected before any side effect (disposition ABORT)
+    /// with the typed admission reason.
+    Rejected(BirthRejection),
+}
+
+impl BirthDecision {
+    /// The admitted handle, or `None` for a rejected birth.
+    #[must_use]
+    pub const fn handle(&self) -> Option<&FiberHandle> {
+        match self {
+            Self::Admitted(handle) => Some(handle),
+            Self::Rejected(_) => None,
+        }
+    }
+}
+
+/// Typed spawn-admission rejection reasons — exactly the failure dimensions
+/// the runtime contract defines for [`RuntimeAdapter::spawn_fiber`]; no
+/// dimension beyond that family is invented. Every variant carries the
+/// underlying [`RuntimeError`] verbatim, so a decision consumer never loses
+/// the wire error.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BirthRejection {
+    /// Runtime admission capacity is exhausted
+    /// ([`RuntimeError::QueueFull`]).
+    Capacity(RuntimeError),
+    /// The cancellation scope is closed, so the birth is fenced
+    /// ([`RuntimeError::Cancelled`]).
+    Scope(RuntimeError),
+    /// The fiber's deadline budget was already exceeded at birth
+    /// ([`RuntimeError::DeadlineExceeded`]).
+    Budget(RuntimeError),
+    /// The fiber identity fence rejected the birth: a duplicate live
+    /// identity, or a reaped identity still inside its tombstone window
+    /// ([`RuntimeError::DuplicateFiber`] /
+    /// [`RuntimeError::FiberReaped`]).
+    Identity(RuntimeError),
+    /// A generation fence rejected the birth: the fiber id is live under a
+    /// different fiber generation, or the scope id is registered or fenced
+    /// under a different cancellation generation
+    /// ([`RuntimeError::InvalidGeneration`]).
+    GenerationFence(RuntimeError),
+    /// The runtime is unavailable for new births
+    /// ([`RuntimeError::ShuttingDown`]).
+    Unavailable(RuntimeError),
+}
+
+impl BirthRejection {
+    /// The underlying contract error, verbatim.
+    #[must_use]
+    pub const fn error(&self) -> &RuntimeError {
+        match self {
+            Self::Capacity(error)
+            | Self::Scope(error)
+            | Self::Budget(error)
+            | Self::Identity(error)
+            | Self::GenerationFence(error)
+            | Self::Unavailable(error) => error,
+        }
+    }
+}
+
+impl From<RuntimeError> for BirthRejection {
+    fn from(error: RuntimeError) -> Self {
+        match error {
+            RuntimeError::QueueFull => Self::Capacity(error),
+            RuntimeError::Cancelled => Self::Scope(error),
+            RuntimeError::DeadlineExceeded => Self::Budget(error),
+            RuntimeError::DuplicateFiber | RuntimeError::FiberReaped { .. } => {
+                Self::Identity(error)
+            }
+            RuntimeError::InvalidGeneration => Self::GenerationFence(error),
+            RuntimeError::ShuttingDown => Self::Unavailable(error),
+        }
+    }
+}
+
 /// The executor boundary used by NLOS services.
 ///
 /// Implementations must preserve NLOS identity, cancellation, admission, and
@@ -129,6 +222,22 @@ pub trait RuntimeAdapter: Send + Sync {
         spec: FiberSpec,
         future: FiberFuture,
     ) -> Result<FiberHandle, RuntimeError>;
+
+    /// Admits a fiber and returns the complete typed birth decision.
+    ///
+    /// The default implementation drives [`Self::spawn_fiber`] and
+    /// classifies its error with [`BirthRejection::from`], so every
+    /// [`RuntimeAdapter`] exposes the same admission-decision surface.
+    /// Implementations with richer admission internals MAY override it, but
+    /// the classification MUST stay total over the contract's error family
+    /// and MUST NOT invent dimensions beyond it. A
+    /// [`BirthDecision::Rejected`] birth has zero runtime side effect.
+    fn birth_fiber(&self, spec: FiberSpec, future: FiberFuture) -> BirthDecision {
+        match self.spawn_fiber(spec, future) {
+            Ok(handle) => BirthDecision::Admitted(handle),
+            Err(error) => BirthDecision::Rejected(BirthRejection::from(error)),
+        }
+    }
 
     /// Waits until the fiber generation reaches a terminal state and returns
     /// its [`FiberExit`].
@@ -248,4 +357,58 @@ pub trait WakeSink: Send + Sync {
         operation_id: OperationId,
         operation_generation: Generation,
     ) -> Result<WakeOutcome, RuntimeError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        BirthDecision, BirthRejection, ExecutionFiberId, FiberHandle, Generation, RuntimeError,
+    };
+
+    const HANDLE: FiberHandle = FiberHandle {
+        fiber_id: ExecutionFiberId::from_bytes([0x42; 16]),
+        generation: Generation::INITIAL,
+    };
+
+    #[test]
+    fn birth_rejection_classifies_every_runtime_error_without_loss() {
+        let errors = [
+            RuntimeError::QueueFull,
+            RuntimeError::Cancelled,
+            RuntimeError::DeadlineExceeded,
+            RuntimeError::DuplicateFiber,
+            RuntimeError::InvalidGeneration,
+            RuntimeError::ShuttingDown,
+            RuntimeError::FiberReaped {
+                fiber_id: HANDLE.fiber_id,
+                generation: HANDLE.generation,
+            },
+        ];
+        let expected = [
+            BirthRejection::Capacity(RuntimeError::QueueFull),
+            BirthRejection::Scope(RuntimeError::Cancelled),
+            BirthRejection::Budget(RuntimeError::DeadlineExceeded),
+            BirthRejection::Identity(RuntimeError::DuplicateFiber),
+            BirthRejection::GenerationFence(RuntimeError::InvalidGeneration),
+            BirthRejection::Unavailable(RuntimeError::ShuttingDown),
+            BirthRejection::Identity(RuntimeError::FiberReaped {
+                fiber_id: HANDLE.fiber_id,
+                generation: HANDLE.generation,
+            }),
+        ];
+        for (error, expected) in errors.into_iter().zip(expected) {
+            let rejection = BirthRejection::from(error);
+            assert_eq!(rejection, expected);
+            assert_eq!(rejection.error(), expected.error());
+        }
+    }
+
+    #[test]
+    fn birth_decision_handle_is_present_only_for_admission() {
+        assert_eq!(BirthDecision::Admitted(HANDLE).handle(), Some(&HANDLE));
+        assert_eq!(
+            BirthDecision::Rejected(BirthRejection::Capacity(RuntimeError::QueueFull)).handle(),
+            None
+        );
+    }
 }

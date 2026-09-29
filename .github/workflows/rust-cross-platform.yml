@@ -50,6 +50,20 @@ jobs:
         with:
           python-version: "3.13"
 
+      # W29-G（B-SDK-LANG-EVAL）：Go/C# golden 探针所需工具链，与本地证据
+      # 记录的版本对齐（Go 1.27.x、.NET SDK 8.0.4xx feature band）。
+      - name: Install Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.27"
+          # sdk/go 零第三方依赖（无 go.sum），显式关闭依赖缓存避免空缓存告警。
+          cache: false
+
+      - name: Install .NET SDK
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: "8.0.x"
+
       - name: Install schema runtimes
         run: |
           npm ci --ignore-scripts
@@ -66,6 +80,22 @@ jobs:
           npm run schema:test:typescript
           python tests/conformance/schema/envelope.py
 
+      # W29-G（B-SDK-LANG-EVAL）：双语言 Envelope 家族 golden 探针与
+      # TS/Python conformance 同门——三平台字节级一致是冻结 wire 的验收门。
+      # GOTOOLCHAIN=local 防止 runner 侧自动下载工具链绕过上面的版本钉扎。
+      - name: Run Go golden probe
+        working-directory: sdk/go
+        env:
+          GOTOOLCHAIN: local
+        run: |
+          go version
+          go test ./... -count=1
+
+      - name: Run C# golden probe
+        run: |
+          dotnet --version
+          dotnet run --project sdk/csharp/llmos-sabi-probe/llmos-sabi-probe.csproj
+
       - name: Test cross-language local IPC clients
         run: |
           npm run ipc:test:typescript
@@ -80,6 +110,14 @@ jobs:
       - name: Reject Protobuf breaking changes
         if: runner.os == 'Linux' && github.event_name == 'pull_request'
         run: npx --no-install buf breaking --against '.git#branch=origin/${{ github.base_ref }},subdir=schema'
+
+      # B6-2（W28-F）：Windows 实机 platform kill 复验锚点。cargo test --workspace
+      # 已隐式覆盖本目标，但独立具名步骤让 windows-latest 腿的 run 日志里出现
+      # platform_kill 测试组，供证据文件回填精确 run 链接；置于 Test workspace
+      # 之前，即使后续全仓测试失败也不影响本步骤先行落账。
+      - name: Test platform kill contract on Windows
+        if: runner.os == 'Windows'
+        run: cargo test -p nlos-process --test platform_kill
 
       - name: Test workspace
         run: cargo test --workspace
@@ -113,8 +151,56 @@ jobs:
       # --include-ignored 会执行两个被 #[ignore] 标记的规模探针：
       # crates/nlos-store/tests/store_scale.rs（10 万 Operation 元数据）
       # crates/nlos-runtime-tokio/tests/scale.rs（10 万 fiber）
+      # --no-fail-fast：单个失败二进制不得掩盖后续二进制（scale_profile_probe
+      # 曾因此 15 天未在夜间暴露，见 b-runtime-002 §6.18.2）；任一失败 job 仍红。
       - name: Test workspace including ignored scale probes
-        run: cargo test --workspace -- --include-ignored
+        run: cargo test --workspace --no-fail-fast -- --include-ignored
+
+  scale-probe-release:
+    # 移交#5（W36 lane C / C-SCALE-RELEASE / RISK-B-07 / U-1，b-scale-release-001）：
+    # release-profile 规模探针多平台重测。与 scale-probe（debug）同门：仅
+    # schedule/workflow_dispatch，push/PR 一律跳过。探针家族与断言零改动——
+    # §6.18 校准纪律（饱和门/比值界/种群比例界）在 release 下原样成立，
+    # 本 job 只换 profile 与平台矩阵，不发布任何生产量级声明。
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    name: Scale probe release (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          # 独立 key 前缀，避免 release 工件与同 workflow 内 debug 工件混写
+          # 缓存键（msrv job 同款纪律）。
+          key: scale-release-${{ runner.os }}
+
+      # 成本纪律：-p + --test 精确钉探针 test 目标（连带其 lib 依赖链），
+      # 不做全 workspace release 构建。三家族分步：task 注册/permit 面 →
+      # plan 逻辑 TaskNode 面 → runtime 生命周期/计量/batch-cancel 面。
+      # --no-fail-fast（cargo 级）：单二进制失败不掩盖后续二进制（§6.18.2
+      # 教训）；--nocapture：探针 profile 行（本管线的测量数字）进 run 日志。
+      # 后两步 !cancelled()：前序家族失败时仍摊开其余家族结果（job 整体仍红）。
+      - name: Release scale probes (nlos-task)
+        run: cargo test --release --no-fail-fast -p nlos-task --test scale_profile --test scale_profile_probe -- --include-ignored --nocapture
+
+      - name: Release scale probes (nlos-plan)
+        if: ${{ !cancelled() }}
+        run: cargo test --release --no-fail-fast -p nlos-plan --test tasknode_scale_probe -- --include-ignored --nocapture
+
+      - name: Release scale probes (nlos-runtime-tokio)
+        if: ${{ !cancelled() }}
+        run: cargo test --release --no-fail-fast -p nlos-runtime-tokio --test lifecycle_scale --test activation_meter_scale --test batch_cancel_scale -- --include-ignored --nocapture
 
   msrv:
     name: MSRV 1.97

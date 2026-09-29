@@ -7,13 +7,19 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+# Ed25519 for the package surface: the `nlos-package` bin signs package
+# manifests (src/bin), and the library's conformance kit verifies the
+# signature-chain rule against the embedded signer descriptor (W33-C).
+# Promoted from dev-dependencies by W33-A because src/bin targets cannot
+# link dev-dependencies; the signing key construction mirrors the
+# crate's tests (W33-A evidence §2).
+ed25519-dalek.workspace = true
 nlos-identity = { path = "../nlos-identity" }
 nlos-types = { path = "../nlos-types" }
 rusqlite.workspace = true
 sha2.workspace = true
 
 [dev-dependencies]
-ed25519-dalek.workspace = true
 nlos-store-fault = { path = "../nlos-store-fault" }
 rusqlite.workspace = true
 

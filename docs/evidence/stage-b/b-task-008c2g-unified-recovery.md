@@ -90,7 +90,7 @@
 - **两台账退避分布不对称**（已登记）：Artifact 台账带 per-plan 确定性 jitter（±20%），Semantic 为纯函数 capped exponential（`base × 2^(n-1)` 封顶）；调用方/消费方不得假设两平面重试时刻相同（`worker.rs` 调用点注释钉死）。
 - **escalation 阈值常量 vs config 不对称**（已登记）：Artifact 走 `config.failure_threshold`、Semantic 固定常量 8，同一 worker 配置下实际阈值可为 3 vs 8；仅由测试 `escalation_threshold_pinned_at_eight_and_backoff_saturates` 隐式钉死，未提升为配置。
 - **health 面观测裂隙**（已登记）：健康面 authority 枚举无 Semantic 变体，Semantic 失败在 `last_failures` 中显示为 Coordinator（台账 `last_source` 正确记 `SemanticAuthority`，测试钉死）；semantic 失败条目 `plan_id = None`（`RecoveryWorkerFailure.plan_id` 为 artifact 时代类型，按 plan 身份的持久查询走 `inspect_semantic_recovery`）；`semantic_domain_faulted` 置位后 `semantic_consecutive_failed_cycles` 冻结在阈值不清零（钉死决策：保留置位证据，新实例归零）。
-- **semantic 域对 system-control 运维面不可见**（终审补登，2026-09-13）：worker 的 9 个 semantic health 字段（`worker.rs:146-163`）在生产消费方中被丢弃——system-control 的 recovery metrics 全为 `nlos_artifact_recovery_*` 计数/gauge（`crates/nlos-system-control/src/lib.rs:111-155`），Acknowledge 控制命令固定走 `AcknowledgeArtifactRecoveryAlertCommand`（`crates/nlos-system-control/src/control.rs:387-447`），CLI 无 semantic 通道；因此 Semantic `Escalated` 后的人工 `resume_semantic_recovery` 无任何 metric/IPC/CLI 通道可达（仅进程内 Rust API），semantic 告警与恢复状态对运维面整体不可见。接线（SABI 契约扩展 + Rust/TS/Py 三语言 conformance）登记为 W27 首选车道。
+- **semantic 域对 system-control 运维面不可见**（终审补登，2026-09-13；**已于 W27-A 关闭，见 §8**）：worker 的 9 个 semantic health 字段（`worker.rs:146-163`）在生产消费方中被丢弃——system-control 的 recovery metrics 全为 `nlos_artifact_recovery_*` 计数/gauge（`crates/nlos-system-control/src/lib.rs:111-155`），Acknowledge 控制命令固定走 `AcknowledgeArtifactRecoveryAlertCommand`（`crates/nlos-system-control/src/control.rs:387-447`），CLI 无 semantic 通道；因此 Semantic `Escalated` 后的人工 `resume_semantic_recovery` 无任何 metric/IPC/CLI 通道可达（仅进程内 Rust API），semantic 告警与恢复状态对运维面整体不可见。接线（SABI 契约扩展 + Rust/TS/Py 三语言 conformance）登记为 W27 首选车道。
 - **complete TaskWriteSet 不因本波次晋升**：统一 receipt 是纯读侧聚合类型，不改变任何持久化事实；本波次不改变 spec §8 登记的完成度口径。
 - **契约引用**：本切片兑现的是 [ADR-0013](../../management/adrs/0013-cross-authority-verify-then-commit-contract.md) 的**有界收敛半边**（verify-then-commit 契约的本地恢复调度），不构成跨机原子提交或 compensation 执行。
 - 其余登记在案的 deferred minors（节选）：`resume` 不重读 plan 终态——已 Finalized plan 的 Escalated 行 resume 会留惰性孤儿 Retrying 行（F 矩阵未新增缺陷证据）；v42 部分态守卫按表名计数不校验部件形状（与 v39 同海拔）；`list`/`acknowledge` 的 NotFound 无法区分台账行丢失与 plan 丢失；嵌套 receipt 字段翻转敏感性未测（三处 `encode_*` 单行回归可逃逸现有套件）；semantic 故障测试 fixture 跨 crate 复制约 215 行双份维护。
@@ -101,3 +101,53 @@
 - **三平台 CI（"Rust cross-platform verification"）/ MSRV / Pages：未运行**——CI 待 push 后触发；unix/Windows 侧编译与执行以 CI 为准。
 - **TS/Py conformance、schema 生成物检查：未运行**——本波次零 schema/proto 改动（`schema/`、`gen/` 不在写集），无触发面。
 - 议题 35（TaskPlan/TaskNode 声明面）：未启动。
+
+## 8. W27-A 收尾增量（2026-09-20）：semantic 域运维面接线（关闭 §6 第 5 条观测裂隙）
+
+对应 §6 第 5 条终审补登（semantic 域对 system-control 运维面不可见）与 §6.5.3 W27-A 车道验收（semantic 域 `Escalated`→人工 resume 经 IPC/CLI 全链可达；semantic metrics/ack 不再借用 artifact 命名；三语言 conformance golden；既有恢复面测试零回归）。分支 `feat/w27-a`（worktree `llmos-w27-a`，基线 `3d81a90`），提交 `33da024..93f186f`（5 提交 = schema 契约 1 + nlos-task 派生 1 + system-control 接线 1 + lockfile chore 1 + 三语言 golden 1）。
+
+### 8.1 交付与实现位置
+
+| 车道验收项 | 实现位置 | 测试锚点 |
+|---|---|---|
+| SABI 契约 additive 扩展 | `schema/nlos/sabi/v1/system_control.proto`：`SystemControlView` +`SEMANTIC_COMMIT_RECOVERY=2`、`RecoveryFailureAuthority` +`SEMANTIC=5`、新消息 `SemanticRecoveryMetrics`/`SemanticRecoveryAlertStatus`/`SemanticRecoveryOperationsSnapshot`/`AcknowledgeSemanticRecoveryAlertCommand`/`ResumeSemanticRecoveryCommand`、`ControlCommand` oneof 增臂 9/10（`reason=8` 位次不动）、`ArtifactRecoveryMetrics.domain_faulted=12`；`gen/` TS/Py 生成物经 `npm run schema:generate` 同步 | `semantic_recovery_control_payloads_are_typed_bounded_and_fail_closed`（get/snapshot/ack/resume round-trip + 过量告警/坏回执/Unspecified authority/缺 metrics fail-closed） |
+| nlos-schema 注册表与校验 | `crates/nlos-schema/src/lib.rs`：`SABI_SYSTEM_CONTROL_V1` 晋 minor 1（冻结标记不变，Envelope v1.1 先例）、`system_control_schema_identity()` 随升 v1.1、语义快照 encode/decode + 逐位镜像 artifact 的告警校验（无 worker 生命周期/last_failures——属共享 worker 事实） | `registry_exposes_the_supported_contract`（(1,1) 机械适配）、`semantic_recovery_snapshot_pins_the_cross_language_golden_bytes` |
+| 三语言 conformance golden | 固定 137 字节内联 hex（同值常量三处）：Rust `compatibility.rs`、TS `tests/conformance/schema/envelope.ts`、Python `tests/conformance/schema/envelope.py`；覆盖 v1.1 identity、Semantic authority、`domain_faulted`、optional 告警回执、`alerts_truncated`、decode→re-encode 回环 | 上述 Rust golden 测试 + `npm run schema:test:typescript` + `python tests/conformance/schema/envelope.py` |
+| handler 视图/命令路由 | `crates/nlos-system-control/src/lib.rs`：`handle_get` 按 view 路由（semantic → `list_semantic_recovery_alerts` + `summarize_semantic_recovery` 活台账 gauge，`alert_limit` 截断在适配层——W26 台账 API 钉死零参 list）；`handle_submit` 按 oneof 路由 ack-artifact（原路径）/ack-semantic（幂等回执）/resume-semantic；`TaskStoreError` 语义族（`SemanticRecoveryCasMismatch`/`InvalidSemanticRecoveryState`/`InvalidSemanticRecoveryPolicy`）由 catch-all 归位 Conflict/State/InvalidArgument | `semantic_get_routes_by_view_and_reports_authoritative_ledger_facts`、`semantic_acknowledge_replays_idempotently_with_typed_cas_failures`、`semantic_resume_requeues_the_escalated_ledger_with_typed_replay_failure`、`semantic_escalated_plan_is_acknowledged_and_resumed_over_real_ipc`（真实 duplex IPC） |
+| 指标目录 parity（`nlos_semantic_recovery_*`） | `lib.rs` `RecoveryCounter` +`SemanticPlansInspected/Finalized`、`RecoveryGauge` +7（semantic 4 durable gauge + consecutive + domain_faulted + `nlos_artifact_recovery_domain_faulted`）；`export_metrics` 单次 health 读取 + 双台账汇总输出全目录（W26 的 9 个 semantic health 字段自此全部有生产消费方）；`openmetrics.rs` 渲染目录同步 | `export_emits_complete_typed_catalog_in_stable_order`（19 事件序列 + 18 名称钉死）、`export_uses_one_health_generation_for_the_complete_catalog`、`export_metrics_feeds_the_renderer_exactly_one_snapshot`（扩展 FULL_CATALOG_TEXT 逐字节） |
+| CLI/NL 通道 | `control.rs`/`bin/system-control-cli.rs`：新 `ControlCommand` 四变体（InspectSemanticHealth/ExportSemanticMetrics/AcknowledgeSemanticRecoveryAlert/ResumeSemanticRecovery），CLI 动词 `inspect-semantic-health`/`export-semantic-metrics`/`ack-semantic-recovery-alert`/`resume-semantic-recovery`；同一编译点/传输/回执投影（`to_bytes` 判别 6/7） | `cli_and_in_process_paths_produce_byte_identical_receipts` 扩展段：semantic 可见→ack（三通道字节等价）→resume（一次性消费，字节等价校验间重置 durable 输入，fixture 注释钉死）；`semantic_read_envelopes_use_the_semantic_commit_recovery_view` 等单测 ×3 |
+| Escalated→人工 resume 全链可达 | `nlos-task` `semantic_recovery_resume_reference`（域分隔 `llmos/task-semantic-recovery-resume/v1` SHA-256 前 16 字节）为 resume 提供跨幂等重放稳定的 outcome 命名；resume 过渡本身是 durable 证据（台账行在命令 CAS 下 `Escalated`→`Retrying`、`next_retry_at_ms` 重排、consecutive 清零，worker 到期扫描重新进入） | `semantic_recovery_resume_reference_pins_the_domain_separated_formula`（与 ack 派生域互不碰撞钉死）+ E2E 断言 `inspect_semantic_recovery` 终态 |
+
+### 8.2 冻结口径说明（ADR-0014）
+
+SystemControl 属 ADR-0014 六个 v1-beta 冻结条目；本波次为**冻结条目的 additive 扩列**（新字段号、新消息、新枚举值、新 oneof 臂，无改号/改语义/删字段），`frozen: true` 保持，minor 0→1 记录扩展（Envelope 1.1 先例）。车道指令中「REGISTRY additive entry, frozen: false」按 ADR-0014 原文解释为**新注册条目**（如 PrincipalHandshake 第七条目）的规则；本波次无新通道/新注册条目，故不适用——如需将 SystemControl 解冻须新 ADR，本波次未做。
+
+### 8.3 已知限制与 deferred minors（W27-A 新增）
+
+- **resume outcome 引用不落 durable receipt 行**：`semantic_recovery_resume_reference` 为确定性命名（重放同命令同字节），但无 ack 式可查询回执行；候选后续（需走 durable format 变更门）：语义 resume 回执表（migration）或纳入 task 历史。契约上 resume 回执经 `ControlCommandResult.receipt` + 响应上下文 receipts 满足 side-effecting 证据要求。
+- **语义告警 `alert_limit` 截断在适配层**：W26 台账 API 钉死零参 `list_semantic_recovery_alerts`，逐条 limit 未下沉（改签名破坏 W26 既有测试，超出本车道写集纪律）。
+- **NL 语法无 semantic 形式**：本车道验收面为 metric/IPC/CLI；NL 限制文法编译器（`nl.rs`）未加 semantic 句式（GUI/NL parity 的完整收口留后续车道）。
+- **artifact 域 resume 仍无 IPC/CLI 通道**：本车道按验收只接线 semantic 域；artifact `resume_artifact_recovery` 的运维面暴露为对称后续候选。
+- **语义失败条目在共享 `last_failures` 的显示裂隙不变**（W26 §6 已登记：authority 显示为 Coordinator、`plan_id=None`）；semantic 视图未重映射共享失败列表，按 plan 身份的持久查询仍走 `inspect_semantic_recovery`。
+- **无 semantic authority 的 worker 输出全零语义族**：`nlos_semantic_recovery_*` 在 `start()`（无语义权威）实例下恒零——诚实零值（W26 `recovery_worker_health_defaults_keep_semantic_domain_quiescent` 钉死语义），非缺数。
+- **语义 E2E fixture 直接播种台账行**（raw SQL、per-connection FK 关闭）：`Escalated` 转移本身在 nlos-task W26 矩阵覆盖；fixture 注释钉死理由。
+
+### 8.4 验证门（worktree `llmos-w27-a`，HEAD `93f186f`）
+
+工具链：`rustc 1.97.1 (8bab26f4f 2026-07-14)` / `cargo 1.97.1`，macOS 本地实跑。
+
+| 命令 | 结果 |
+|---|---|
+| `cargo test -p nlos-schema` | **23 passed / 0 failed**（含 2 个新 golden/fail-closed 测试；注册表 minor 断言机械适配） |
+| `cargo test -p nlos-system-control` | **66 passed / 0 failed**（W26 基线 59 → +7：语义 E2E ×4、control 单测 ×3；metrics 契约/openmetrics 既有断言机械扩展，无删除/弱化） |
+| `cargo test -p nlos-task` | **319 passed / 0 failed**（全量 41 test targets 零回归，含新增派生钉死测试；恢复面套件 ledger 9 / fault_matrix 5 / schema 2 单列复验全绿） |
+| `npm run schema:lint` / `schema:check-generated` / `schema:typecheck` / `schema:test:typescript` | 全过（buf lint/format 0 差异；生成物与基线一致；tsc 0 错；TS conformance 含新 golden 通过） |
+| `python3 tests/conformance/schema/envelope.py` | 通过（semantic golden 逐字节一致） |
+| `cargo fmt --check -p nlos-schema -p nlos-system-control -p nlos-task` / `cargo clippy <同三 crate> --all-targets -- -D warnings` | 双 0 |
+| `cargo check --workspace --all-targets` | 通过（全仓编译面零破坏） |
+
+### 8.5 未运行项（W27-A，显式列出）
+
+- **push / PR / 三平台 CI / MSRV / Pages：未执行**——按波次屏障，push 与 CI 由控制器统一收尾。
+- **`cargo test --workspace`：未整跑**——按车道纪律只跑定向门（三 crate + conformance）；全仓门由 W27 波次屏障执行（编译面已 `cargo check --workspace --all-targets` 全绿）。
+- **`buf breaking`（对 main）：未跑**——本波次 proto 改动为纯 additive（新增字段号/消息/枚举值），golden 与 `schema:check-generated` 背书；PR 级 buf breaking 门待控制器 push 后 CI 执行。

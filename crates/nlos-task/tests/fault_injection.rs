@@ -132,6 +132,8 @@ fn task_id(seed: u8) -> TaskId {
 
 fn task_spec(seed: u8) -> TaskSpec {
     TaskSpec {
+        application_id: None,
+        plan_revision: None,
         task_id: task_id(seed),
         task_generation: Generation::INITIAL,
         registered_at_ms: 1_000,

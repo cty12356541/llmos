@@ -4,8 +4,8 @@
 use nlos_application::{ApplicationAuthorityError, ApplicationStatus, DisableApplicationRequest};
 use nlos_artifact::{CollectOrphanBlobsDecision, PackageVerificationReceipt};
 use nlos_slice_k::{
-    PublishedPackage, SliceKRuntime, artifact_blob_path, fixture_bytes, plant_orphan_artifact_blob,
-    seeded_key,
+    AutoOrphanGc, PublishedPackage, SliceKRuntime, artifact_blob_path, fixture_bytes,
+    plant_orphan_artifact_blob, seeded_key,
 };
 
 struct TempDir {
@@ -189,4 +189,88 @@ fn uninstall_then_manual_gc_collects_package_orphans_and_retains_referenced_blob
     let replay = runtime.collect_orphan_blobs(0xE0).expect("GC replay");
     assert!(matches!(replay, CollectOrphanBlobsDecision::Replayed(_)));
     assert_eq!(replay.receipt(), receipt);
+}
+
+/// Root-cause pin for the registered STEP 09d defect (B-SLICE-K-001 §17,
+/// RISK-B-12): a default install attempt runs its install-scoped orphan
+/// pass BEFORE the install authority call, so even an attempt the
+/// authority refuses (uninstalled application, fail-closed) still
+/// collects pre-existing orphan blobs under its own durable receipt.
+/// This is designed W22-001 behavior, not a production GC bug.
+#[test]
+fn refused_reinstall_with_default_gc_still_collects_preexisting_orphans() {
+    let (_dir, runtime, package, verification) = installed_fixture(0xF5);
+
+    let (orphan, orphan_path) =
+        plant_orphan_artifact_blob(runtime.root(), 0xA3, 64).expect("plant orphan");
+    runtime
+        .uninstall_application(package.package_id, 0xF5)
+        .expect("uninstall");
+
+    assert!(
+        runtime
+            .install_verified_package_by_id(verification.receipt_id, 0xF7)
+            .is_err(),
+        "reinstall over an uninstalled application must fail closed"
+    );
+    assert!(
+        !orphan_path.exists(),
+        "the install-scoped pass ran before the refusal and collected the orphan"
+    );
+
+    let readback = runtime.install_orphan_gc(0xF7).expect("gc readback");
+    assert!(matches!(readback, CollectOrphanBlobsDecision::Replayed(_)));
+    assert_eq!(readback.receipt().collected_digests, vec![orphan]);
+}
+
+/// Fix pin for the same defect: the demo's fail-closed refusal probe opts
+/// out of the install-scoped pass, so the STEP 09d manual pass collects
+/// exactly the planted orphans and referenced blobs survive.
+#[test]
+fn refused_reinstall_with_gc_disabled_keeps_planted_orphans_for_manual_gc() {
+    let (_dir, runtime, package, verification) = installed_fixture(0xF0);
+
+    let (orphan_a, orphan_a_path) =
+        plant_orphan_artifact_blob(runtime.root(), 0xA1, 128).expect("plant orphan A");
+    let (orphan_b, orphan_b_path) =
+        plant_orphan_artifact_blob(runtime.root(), 0xA2, 96).expect("plant orphan B");
+    runtime
+        .uninstall_application(package.package_id, 0xF0)
+        .expect("uninstall");
+
+    assert!(
+        runtime
+            .install_verified_package_by_id_with_gc(
+                verification.receipt_id,
+                0xF2,
+                AutoOrphanGc::Disabled
+            )
+            .is_err(),
+        "reinstall over an uninstalled application must fail closed"
+    );
+    assert!(
+        orphan_a_path.is_file() && orphan_b_path.is_file(),
+        "the opt-out must leave the planted orphans for the manual pass"
+    );
+
+    let gc = runtime
+        .collect_orphan_blobs(0xF0)
+        .expect("manual orphan GC");
+    assert!(matches!(gc, CollectOrphanBlobsDecision::Collected(_)));
+    let mut expected = vec![orphan_a, orphan_b];
+    expected.sort();
+    assert_eq!(gc.receipt().collected_digests, expected);
+    assert!(!orphan_a_path.exists());
+    assert!(!orphan_b_path.exists());
+    assert!(
+        artifact_blob_path(runtime.root(), package.payload_digest).is_file(),
+        "referenced package payload blob must survive GC"
+    );
+
+    let install_scoped = runtime.install_orphan_gc(0xF2).expect("gc readback");
+    assert!(
+        matches!(install_scoped, CollectOrphanBlobsDecision::Collected(_)),
+        "the Disabled refusal must not have consumed the install-scoped key"
+    );
+    assert!(install_scoped.receipt().collected_digests.is_empty());
 }

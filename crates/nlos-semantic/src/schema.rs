@@ -426,7 +426,52 @@ pub(crate) fn migrate_v5(connection: &mut Connection) -> Result<(), SemanticAuth
 }
 
 /// Adds append-only declassification receipt storage for `[SEM-DECLASS-001]`.
+///
+/// The preflight mirrors v3/v4: a store whose v6 objects are already
+/// complete but whose `user_version` stamp never landed is re-stamped as
+/// exactly v6, while a *partial* object set — a half-migrated store —
+/// fails closed as a typed `CorruptRecord` instead of surfacing as a raw
+/// `table already exists` `SQLite` error from the `DDL` pass.
 pub(crate) fn migrate_v6(connection: &mut Connection) -> Result<(), SemanticAuthorityError> {
+    let table_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type='table' AND name IN (
+            'declassification_receipts',
+            'declassification_source_events'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    let index_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type='index' AND name = 'declassification_receipts_nonce_idx'",
+        [],
+        |row| row.get(0),
+    )?;
+    let trigger_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN (
+            'declassification_receipts_immutable_update',
+            'declassification_receipts_immutable_delete',
+            'declassification_source_events_immutable_update',
+            'declassification_source_events_immutable_delete'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if table_count == 2 && index_count == 1 && trigger_count == 4 {
+        // Only the v6 objects are known complete here, so this is a v6
+        // store whose stamp never landed — stamp it as exactly that.
+        // Stamping SCHEMA_VERSION would strand the store at the newest
+        // schema once a later migration exists, and every later open
+        // would then skip the passes in between entirely.
+        connection.pragma_update(None, "user_version", 6)?;
+        return Ok(());
+    }
+    if table_count != 0 || index_count != 0 || trigger_count != 0 {
+        return Err(SemanticAuthorityError::CorruptRecord(
+            "partial semantic declassification schema",
+        ));
+    }
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     transaction.execute_batch(
         "CREATE TABLE declassification_receipts (
@@ -519,7 +564,87 @@ pub(crate) fn load_semantic_admission_endpoint_proof(
 mod tests {
     use rusqlite::Connection;
 
-    use super::migrate_v1_to_v2;
+    use super::{
+        SemanticAuthorityError, migrate_v1_to_v2, migrate_v2, migrate_v3, migrate_v4, migrate_v5,
+        migrate_v6,
+    };
+
+    fn user_version(connection: &Connection) -> i64 {
+        connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap()
+    }
+
+    /// A v5 store, built by the same forward migration chain `open()` runs.
+    fn v5_store() -> Connection {
+        let mut connection = Connection::open_in_memory().unwrap();
+        migrate_v2(&mut connection).unwrap();
+        migrate_v3(&mut connection).unwrap();
+        migrate_v4(&mut connection).unwrap();
+        migrate_v5(&mut connection).unwrap();
+        assert_eq!(user_version(&connection), 5);
+        connection
+    }
+
+    /// A half-migrated v6 store (some declassification objects present,
+    /// the stamp missing) must fail closed with the typed `CorruptRecord`
+    /// before the `DDL` pass — not surface as a raw `table already exists`
+    /// `SQLite` error that misdiagnoses corruption as a storage failure.
+    #[test]
+    fn v6_partial_declassification_objects_fail_closed() {
+        // Half-shape one: one table landed, nothing else.
+        let mut connection = v5_store();
+        connection
+            .execute_batch("CREATE TABLE declassification_receipts (stub INTEGER) STRICT;")
+            .unwrap();
+        assert!(matches!(
+            migrate_v6(&mut connection),
+            Err(SemanticAuthorityError::CorruptRecord(_))
+        ));
+        assert_eq!(
+            user_version(&connection),
+            5,
+            "fail-closed must leave the half-migrated store unstamped"
+        );
+
+        // Half-shape two: the tables and index landed, but one guard
+        // trigger is missing.
+        let mut connection = v5_store();
+        migrate_v6(&mut connection).unwrap();
+        connection.pragma_update(None, "user_version", 5).unwrap();
+        connection
+            .execute_batch("DROP TRIGGER declassification_source_events_immutable_delete;")
+            .unwrap();
+        assert!(matches!(
+            migrate_v6(&mut connection),
+            Err(SemanticAuthorityError::CorruptRecord(_))
+        ));
+        assert_eq!(user_version(&connection), 5);
+    }
+
+    /// The recovery contract of the preflight: complete v6 objects whose
+    /// stamp never landed are re-stamped as exactly v6 by the fast path
+    /// (pinning 6, never `SCHEMA_VERSION`), without replaying the `DDL`.
+    #[test]
+    fn v6_complete_objects_with_missing_stamp_restamp_exactly_v6() {
+        let mut connection = v5_store();
+        migrate_v6(&mut connection).unwrap();
+        connection.pragma_update(None, "user_version", 5).unwrap();
+        migrate_v6(&mut connection).unwrap();
+        assert_eq!(user_version(&connection), 6);
+        let objects: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name IN (
+                    'declassification_receipts',
+                    'declassification_source_events',
+                    'declassification_receipts_nonce_idx'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(objects, 3, "the fast path must not duplicate objects");
+    }
 
     #[test]
     fn v1_migration_preserves_assertion_rows_and_adds_spec_storage() {

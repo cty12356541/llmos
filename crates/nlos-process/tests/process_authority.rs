@@ -312,6 +312,64 @@ fn restore_advances_process_and_agent_generations_and_fences_old_reference() {
 }
 
 #[test]
+fn restore_process_rejects_stale_generation_fail_closed() {
+    let root = TestRoot::new("restore-stale-generation");
+    let authority = ProcessAuthority::open(root.path()).expect("open");
+    let domain = authority
+        .create_isolation_domain(domain_request(41))
+        .expect("domain")
+        .record()
+        .clone();
+    let old = authority
+        .register_delegated_process(registration(41, &domain))
+        .expect("register")
+        .record()
+        .clone();
+    let rotated = authority
+        .rotate_isolation_domain(rotate_request(41, &domain))
+        .expect("rotate")
+        .record()
+        .clone();
+    let restored = authority
+        .restore_process(RestoreProcessRequest {
+            process_id: old.process_id,
+            expected_process_generation: old.process_generation,
+            expected_process_fencing_token: old.process_fencing_token,
+            isolation_domain_id: rotated.isolation_domain_id,
+            isolation_domain_generation: rotated.generation,
+            isolation_domain_fencing_token: rotated.fencing_token,
+            idempotency_key: IdempotencyKey::from_bytes([0xc1; 16]),
+            restored_at_ms: 4_100,
+        })
+        .expect("restore")
+        .record()
+        .clone();
+
+    let stale = authority
+        .restore_process(RestoreProcessRequest {
+            process_id: old.process_id,
+            expected_process_generation: old.process_generation,
+            expected_process_fencing_token: old.process_fencing_token,
+            isolation_domain_id: rotated.isolation_domain_id,
+            isolation_domain_generation: rotated.generation,
+            isolation_domain_fencing_token: rotated.fencing_token,
+            idempotency_key: IdempotencyKey::from_bytes([0xc2; 16]),
+            restored_at_ms: 4_200,
+        })
+        .expect_err("stale generation must fail closed");
+    assert!(
+        matches!(stale, ProcessAuthorityError::ProcessFenceConflict),
+        "stale generation must fail closed, got {stale:?}"
+    );
+    assert_eq!(
+        authority
+            .inspect_active_process_binding(restored.process_id)
+            .expect("current binding untouched"),
+        restored
+    );
+}
+
+#[test]
 fn durable_generation_and_binding_rows_are_ddl_immutable() {
     let root = TestRoot::new("immutable");
     let binding = {

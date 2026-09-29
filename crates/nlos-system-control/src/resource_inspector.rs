@@ -31,7 +31,7 @@ impl ResourceInspector for ResourceAuthorityInspector<'_> {
         let receipt = self
             .authority
             .inspect_cost_receipt(reservation_id)
-            .map_err(map_resource_authority_error)?;
+            .map_err(|error| map_resource_authority_error(&error))?;
         Ok(ResourceInspection {
             reservation_id: *receipt.reservation_id.as_bytes(),
             account_id: *receipt.account_id.as_bytes(),
@@ -91,7 +91,8 @@ fn map_resource_authority_error(error: &ResourceAuthorityError) -> SabiFailure {
         | ResourceAuthorityError::InvalidQuarantineTimestamp
         | ResourceAuthorityError::InvalidFinalizeTimestamp
         | ResourceAuthorityError::GenerationExhausted
-        | ResourceAuthorityError::InsufficientCredit { .. } => (
+        | ResourceAuthorityError::InsufficientCredit { .. }
+        | ResourceAuthorityError::DemandExceedsCapacity { .. } => (
             SabiErrorCode::InvalidArgument,
             RetryDirective::DoNotRetry,
             "resource inspection request violates the authority contract",

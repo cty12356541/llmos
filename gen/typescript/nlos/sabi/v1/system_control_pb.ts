@@ -12,7 +12,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file nlos/sabi/v1/system_control.proto.
  */
 export const file_nlos_sabi_v1_system_control: GenFile = /*@__PURE__*/
-  fileDesc("CiFubG9zL3NhYmkvdjEvc3lzdGVtX2NvbnRyb2wucHJvdG8SDG5sb3Muc2FiaS52MSKLAQoXR2V0U3lzdGVtQ29udHJvbFJlcXVlc3QSLAoGc2NoZW1hGAEgASgLMhwubmxvcy5zYWJpLnYxLlNjaGVtYUlkZW50aXR5Ei0KBHZpZXcYAiABKA4yHy5ubG9zLnNhYmkudjEuU3lzdGVtQ29udHJvbFZpZXcSEwoLYWxlcnRfbGltaXQYAyABKA0iZAoWUmVjb3ZlcnlGYWlsdXJlU3VtbWFyeRIPCgdwbGFuX2lkGAEgASgMEjkKCWF1dGhvcml0eRgCIAEoDjImLm5sb3Muc2FiaS52MS5SZWNvdmVyeUZhaWx1cmVBdXRob3JpdHkisAMKF0FydGlmYWN0UmVjb3ZlcnlNZXRyaWNzEkAKDHdvcmtlcl9zdGF0ZRgBIAEoDjIqLm5sb3Muc2FiaS52MS5SZWNvdmVyeVdvcmtlckxpZmVjeWNsZVN0YXRlEhgKEGNvbXBsZXRlZF9jeWNsZXMYAiABKAQSFwoPdG90YWxfaW5zcGVjdGVkGAMgASgEEhcKD3RvdGFsX2ZpbmFsaXplZBgEIAEoBBIhChljb25zZWN1dGl2ZV9mYWlsZWRfY3ljbGVzGAUgASgEEhsKDnJldHJ5X2RlbGF5X21zGAYgASgESACIAQESGAoQZHVyYWJsZV9yZXRyeWluZxgHIAEoBBIZChFkdXJhYmxlX2VzY2FsYXRlZBgIIAEoBBIoCiBkdXJhYmxlX3VuYWNrbm93bGVkZ2VkX2VzY2FsYXRlZBgJIAEoBBIYChBkdXJhYmxlX3Jlc29sdmVkGAogASgEEjsKDWxhc3RfZmFpbHVyZXMYCyADKAsyJC5ubG9zLnNhYmkudjEuUmVjb3ZlcnlGYWlsdXJlU3VtbWFyeUIRCg9fcmV0cnlfZGVsYXlfbXMinwIKG0FydGlmYWN0UmVjb3ZlcnlBbGVydFN0YXR1cxIPCgdwbGFuX2lkGAEgASgMEhYKDnRvdGFsX2ZhaWx1cmVzGAIgASgEEkYKFmxhc3RfZmFpbHVyZV9hdXRob3JpdHkYAyABKA4yJi5ubG9zLnNhYmkudjEuUmVjb3ZlcnlGYWlsdXJlQXV0aG9yaXR5EhoKEmZpcnN0X2ZhaWxlZF9hdF9tcxgEIAEoAxIZChFsYXN0X2ZhaWxlZF9hdF9tcxgFIAEoAxIXCg9lc2NhbGF0ZWRfYXRfbXMYBiABKAMSPwoXYWNrbm93bGVkZ2VtZW50X3JlY2VpcHQYByABKAsyHi5ubG9zLnNhYmkudjEuUmVjZWlwdFJlZmVyZW5jZSLfAQoiQXJ0aWZhY3RSZWNvdmVyeU9wZXJhdGlvbnNTbmFwc2hvdBIsCgZzY2hlbWEYASABKAsyHC5ubG9zLnNhYmkudjEuU2NoZW1hSWRlbnRpdHkSNgoHbWV0cmljcxgCIAEoCzIlLm5sb3Muc2FiaS52MS5BcnRpZmFjdFJlY292ZXJ5TWV0cmljcxI5CgZhbGVydHMYAyADKAsyKS5ubG9zLnNhYmkudjEuQXJ0aWZhY3RSZWNvdmVyeUFsZXJ0U3RhdHVzEhgKEGFsZXJ0c190cnVuY2F0ZWQYBCABKAgiKQonQWNrbm93bGVkZ2VBcnRpZmFjdFJlY292ZXJ5QWxlcnRDb21tYW5kIuUCCg5Db250cm9sQ29tbWFuZBIaChJjb250cm9sX2NvbW1hbmRfaWQYASABKAwSGwoTaXNzdWVyX3ByaW5jaXBhbF9pZBgCIAEoDBIyCgZzb3VyY2UYAyABKA4yIi5ubG9zLnNhYmkudjEuQ29udHJvbENvbW1hbmRTb3VyY2USKQoFc2NvcGUYBCABKA4yGi5ubG9zLnNhYmkudjEuQ29udHJvbFNjb3BlEhEKCXRhcmdldF9pZBgFIAEoDBInCh9leHBlY3RlZF9nZW5lcmF0aW9uX29yX3JldmlzaW9uGAYgASgEEmQKI2Fja25vd2xlZGdlX2FydGlmYWN0X3JlY292ZXJ5X2FsZXJ0GAcgASgLMjUubmxvcy5zYWJpLnYxLkFja25vd2xlZGdlQXJ0aWZhY3RSZWNvdmVyeUFsZXJ0Q29tbWFuZEgAEg4KBnJlYXNvbhgIIAEoCUIJCgdjb21tYW5kInoKG1N1Ym1pdENvbnRyb2xDb21tYW5kUmVxdWVzdBIsCgZzY2hlbWEYASABKAsyHC5ubG9zLnNhYmkudjEuU2NoZW1hSWRlbnRpdHkSLQoHY29tbWFuZBgCIAEoCzIcLm5sb3Muc2FiaS52MS5Db250cm9sQ29tbWFuZCLMAQoUQ29udHJvbENvbW1hbmRSZXN1bHQSLAoGc2NoZW1hGAEgASgLMhwubmxvcy5zYWJpLnYxLlNjaGVtYUlkZW50aXR5EhoKEmNvbnRyb2xfY29tbWFuZF9pZBgCIAEoDBI5CgVzdGF0ZRgDIAEoDjIqLm5sb3Muc2FiaS52MS5Db250cm9sQ29tbWFuZExpZmVjeWNsZVN0YXRlEi8KB3JlY2VpcHQYBCABKAsyHi5ubG9zLnNhYmkudjEuUmVjZWlwdFJlZmVyZW5jZSr9AQoUQ29udHJvbENvbW1hbmRTb3VyY2USJgoiQ09OVFJPTF9DT01NQU5EX1NPVVJDRV9VTlNQRUNJRklFRBAAEiYKIkNPTlRST0xfQ09NTUFORF9TT1VSQ0VfVFJVU1RFRF9HVUkQARIjCh9DT05UUk9MX0NPTU1BTkRfU09VUkNFX05MX1NIRUxMEAISHgoaQ09OVFJPTF9DT01NQU5EX1NPVVJDRV9DTEkQAxIpCiVDT05UUk9MX0NPTU1BTkRfU09VUkNFX1NUUlVDVFVSRURfQVBJEAQSJQohQ09OVFJPTF9DT01NQU5EX1NPVVJDRV9BVVRPTUFUSU9OEAUqZAoMQ29udHJvbFNjb3BlEh0KGUNPTlRST0xfU0NPUEVfVU5TUEVDSUZJRUQQABIYChRDT05UUk9MX1NDT1BFX1NZU1RFTRABEhsKF0NPTlRST0xfU0NPUEVfT1BFUkFUSU9OEAIqagoRU3lzdGVtQ29udHJvbFZpZXcSIwofU1lTVEVNX0NPTlRST0xfVklFV19VTlNQRUNJRklFRBAAEjAKLFNZU1RFTV9DT05UUk9MX1ZJRVdfQVJUSUZBQ1RfQ09NTUlUX1JFQ09WRVJZEAEqtQIKHFJlY292ZXJ5V29ya2VyTGlmZWN5Y2xlU3RhdGUSLworUkVDT1ZFUllfV09SS0VSX0xJRkVDWUNMRV9TVEFURV9VTlNQRUNJRklFRBAAEiwKKFJFQ09WRVJZX1dPUktFUl9MSUZFQ1lDTEVfU1RBVEVfU1RBUlRJTkcQARIrCidSRUNPVkVSWV9XT1JLRVJfTElGRUNZQ0xFX1NUQVRFX1JVTk5JTkcQAhIvCitSRUNPVkVSWV9XT1JLRVJfTElGRUNZQ0xFX1NUQVRFX0JBQ0tJTkdfT0ZGEAMSKwonUkVDT1ZFUllfV09SS0VSX0xJRkVDWUNMRV9TVEFURV9GQVVMVEVEEAQSKwonUkVDT1ZFUllfV09SS0VSX0xJRkVDWUNMRV9TVEFURV9TVE9QUEVEEAUq5wEKGFJlY292ZXJ5RmFpbHVyZUF1dGhvcml0eRIqCiZSRUNPVkVSWV9GQUlMVVJFX0FVVEhPUklUWV9VTlNQRUNJRklFRBAAEiMKH1JFQ09WRVJZX0ZBSUxVUkVfQVVUSE9SSVRZX1RBU0sQARInCiNSRUNPVkVSWV9GQUlMVVJFX0FVVEhPUklUWV9BUlRJRkFDVBACEioKJlJFQ09WRVJZX0ZBSUxVUkVfQVVUSE9SSVRZX0NPT1JESU5BVE9SEAMSJQohUkVDT1ZFUllfRkFJTFVSRV9BVVRIT1JJVFlfV09SS0VSEAQq2wEKHENvbnRyb2xDb21tYW5kTGlmZWN5Y2xlU3RhdGUSLworQ09OVFJPTF9DT01NQU5EX0xJRkVDWUNMRV9TVEFURV9VTlNQRUNJRklFRBAAEi0KKUNPTlRST0xfQ09NTUFORF9MSUZFQ1lDTEVfU1RBVEVfQ09NUExFVEVEEAESLAooQ09OVFJPTF9DT01NQU5EX0xJRkVDWUNMRV9TVEFURV9SRUpFQ1RFRBACEi0KKUNPTlRST0xfQ09NTUFORF9MSUZFQ1lDTEVfU1RBVEVfVU5DRVJUQUlOEANiBnByb3RvMw", [file_nlos_sabi_v1_envelope]);
+  fileDesc("CiFubG9zL3NhYmkvdjEvc3lzdGVtX2NvbnRyb2wucHJvdG8SDG5sb3Muc2FiaS52MSLKAQoXR2V0U3lzdGVtQ29udHJvbFJlcXVlc3QSLAoGc2NoZW1hGAEgASgLMhwubmxvcy5zYWJpLnYxLlNjaGVtYUlkZW50aXR5Ei0KBHZpZXcYAiABKA4yHy5ubG9zLnNhYmkudjEuU3lzdGVtQ29udHJvbFZpZXcSEwoLYWxlcnRfbGltaXQYAyABKA0SEQoJdGFyZ2V0X2lkGAQgASgMEg8KB3BsYW5faWQYBSABKAwSGQoRdGFyZ2V0X2dlbmVyYXRpb24YBiABKAQiZAoWUmVjb3ZlcnlGYWlsdXJlU3VtbWFyeRIPCgdwbGFuX2lkGAEgASgMEjkKCWF1dGhvcml0eRgCIAEoDjImLm5sb3Muc2FiaS52MS5SZWNvdmVyeUZhaWx1cmVBdXRob3JpdHkiyAMKF0FydGlmYWN0UmVjb3ZlcnlNZXRyaWNzEkAKDHdvcmtlcl9zdGF0ZRgBIAEoDjIqLm5sb3Muc2FiaS52MS5SZWNvdmVyeVdvcmtlckxpZmVjeWNsZVN0YXRlEhgKEGNvbXBsZXRlZF9jeWNsZXMYAiABKAQSFwoPdG90YWxfaW5zcGVjdGVkGAMgASgEEhcKD3RvdGFsX2ZpbmFsaXplZBgEIAEoBBIhChljb25zZWN1dGl2ZV9mYWlsZWRfY3ljbGVzGAUgASgEEhsKDnJldHJ5X2RlbGF5X21zGAYgASgESACIAQESGAoQZHVyYWJsZV9yZXRyeWluZxgHIAEoBBIZChFkdXJhYmxlX2VzY2FsYXRlZBgIIAEoBBIoCiBkdXJhYmxlX3VuYWNrbm93bGVkZ2VkX2VzY2FsYXRlZBgJIAEoBBIYChBkdXJhYmxlX3Jlc29sdmVkGAogASgEEjsKDWxhc3RfZmFpbHVyZXMYCyADKAsyJC5ubG9zLnNhYmkudjEuUmVjb3ZlcnlGYWlsdXJlU3VtbWFyeRIWCg5kb21haW5fZmF1bHRlZBgMIAEoCEIRCg9fcmV0cnlfZGVsYXlfbXMinwIKG0FydGlmYWN0UmVjb3ZlcnlBbGVydFN0YXR1cxIPCgdwbGFuX2lkGAEgASgMEhYKDnRvdGFsX2ZhaWx1cmVzGAIgASgEEkYKFmxhc3RfZmFpbHVyZV9hdXRob3JpdHkYAyABKA4yJi5ubG9zLnNhYmkudjEuUmVjb3ZlcnlGYWlsdXJlQXV0aG9yaXR5EhoKEmZpcnN0X2ZhaWxlZF9hdF9tcxgEIAEoAxIZChFsYXN0X2ZhaWxlZF9hdF9tcxgFIAEoAxIXCg9lc2NhbGF0ZWRfYXRfbXMYBiABKAMSPwoXYWNrbm93bGVkZ2VtZW50X3JlY2VpcHQYByABKAsyHi5ubG9zLnNhYmkudjEuUmVjZWlwdFJlZmVyZW5jZSLfAQoiQXJ0aWZhY3RSZWNvdmVyeU9wZXJhdGlvbnNTbmFwc2hvdBIsCgZzY2hlbWEYASABKAsyHC5ubG9zLnNhYmkudjEuU2NoZW1hSWRlbnRpdHkSNgoHbWV0cmljcxgCIAEoCzIlLm5sb3Muc2FiaS52MS5BcnRpZmFjdFJlY292ZXJ5TWV0cmljcxI5CgZhbGVydHMYAyADKAsyKS5ubG9zLnNhYmkudjEuQXJ0aWZhY3RSZWNvdmVyeUFsZXJ0U3RhdHVzEhgKEGFsZXJ0c190cnVuY2F0ZWQYBCABKAgi/wEKF1NlbWFudGljUmVjb3ZlcnlNZXRyaWNzEhcKD3RvdGFsX2luc3BlY3RlZBgBIAEoBBIXCg90b3RhbF9maW5hbGl6ZWQYAiABKAQSIQoZY29uc2VjdXRpdmVfZmFpbGVkX2N5Y2xlcxgDIAEoBBIYChBkdXJhYmxlX3JldHJ5aW5nGAQgASgEEhkKEWR1cmFibGVfZXNjYWxhdGVkGAUgASgEEigKIGR1cmFibGVfdW5hY2tub3dsZWRnZWRfZXNjYWxhdGVkGAYgASgEEhgKEGR1cmFibGVfcmVzb2x2ZWQYByABKAQSFgoOZG9tYWluX2ZhdWx0ZWQYCCABKAginwIKG1NlbWFudGljUmVjb3ZlcnlBbGVydFN0YXR1cxIPCgdwbGFuX2lkGAEgASgMEhYKDnRvdGFsX2ZhaWx1cmVzGAIgASgEEkYKFmxhc3RfZmFpbHVyZV9hdXRob3JpdHkYAyABKA4yJi5ubG9zLnNhYmkudjEuUmVjb3ZlcnlGYWlsdXJlQXV0aG9yaXR5EhoKEmZpcnN0X2ZhaWxlZF9hdF9tcxgEIAEoAxIZChFsYXN0X2ZhaWxlZF9hdF9tcxgFIAEoAxIXCg9lc2NhbGF0ZWRfYXRfbXMYBiABKAMSPwoXYWNrbm93bGVkZ2VtZW50X3JlY2VpcHQYByABKAsyHi5ubG9zLnNhYmkudjEuUmVjZWlwdFJlZmVyZW5jZSLfAQoiU2VtYW50aWNSZWNvdmVyeU9wZXJhdGlvbnNTbmFwc2hvdBIsCgZzY2hlbWEYASABKAsyHC5ubG9zLnNhYmkudjEuU2NoZW1hSWRlbnRpdHkSNgoHbWV0cmljcxgCIAEoCzIlLm5sb3Muc2FiaS52MS5TZW1hbnRpY1JlY292ZXJ5TWV0cmljcxI5CgZhbGVydHMYAyADKAsyKS5ubG9zLnNhYmkudjEuU2VtYW50aWNSZWNvdmVyeUFsZXJ0U3RhdHVzEhgKEGFsZXJ0c190cnVuY2F0ZWQYBCABKAgi/wEKF1Jlc291cmNlUmVjb3ZlcnlNZXRyaWNzEhcKD3RvdGFsX2luc3BlY3RlZBgBIAEoBBIXCg90b3RhbF9maW5hbGl6ZWQYAiABKAQSIQoZY29uc2VjdXRpdmVfZmFpbGVkX2N5Y2xlcxgDIAEoBBIYChBkdXJhYmxlX3JldHJ5aW5nGAQgASgEEhkKEWR1cmFibGVfZXNjYWxhdGVkGAUgASgEEigKIGR1cmFibGVfdW5hY2tub3dsZWRnZWRfZXNjYWxhdGVkGAYgASgEEhgKEGR1cmFibGVfcmVzb2x2ZWQYByABKAQSFgoOZG9tYWluX2ZhdWx0ZWQYCCABKAginwIKG1Jlc291cmNlUmVjb3ZlcnlBbGVydFN0YXR1cxIPCgdwbGFuX2lkGAEgASgMEhYKDnRvdGFsX2ZhaWx1cmVzGAIgASgEEkYKFmxhc3RfZmFpbHVyZV9hdXRob3JpdHkYAyABKA4yJi5ubG9zLnNhYmkudjEuUmVjb3ZlcnlGYWlsdXJlQXV0aG9yaXR5EhoKEmZpcnN0X2ZhaWxlZF9hdF9tcxgEIAEoAxIZChFsYXN0X2ZhaWxlZF9hdF9tcxgFIAEoAxIXCg9lc2NhbGF0ZWRfYXRfbXMYBiABKAMSPwoXYWNrbm93bGVkZ2VtZW50X3JlY2VpcHQYByABKAsyHi5ubG9zLnNhYmkudjEuUmVjZWlwdFJlZmVyZW5jZSLfAQoiUmVzb3VyY2VSZWNvdmVyeU9wZXJhdGlvbnNTbmFwc2hvdBIsCgZzY2hlbWEYASABKAsyHC5ubG9zLnNhYmkudjEuU2NoZW1hSWRlbnRpdHkSNgoHbWV0cmljcxgCIAEoCzIlLm5sb3Muc2FiaS52MS5SZXNvdXJjZVJlY292ZXJ5TWV0cmljcxI5CgZhbGVydHMYAyADKAsyKS5ubG9zLnNhYmkudjEuUmVzb3VyY2VSZWNvdmVyeUFsZXJ0U3RhdHVzEhgKEGFsZXJ0c190cnVuY2F0ZWQYBCABKAgiiAIKD1Rhc2tHcm91cFN0YXR1cxIQCghncm91cF9pZBgBIAEoDBIPCgd0YXNrX2lkGAIgASgMEhcKD3BhcmVudF9ncm91cF9pZBgDIAEoDBI0CgVzdGF0ZRgEIAEoDjIlLm5sb3Muc2FiaS52MS5UYXNrR3JvdXBMaWZlY3ljbGVTdGF0ZRIdChVtZW1iZXJzaGlwX2dlbmVyYXRpb24YBSABKAQSEQoJc3RhdGVfc2VxGAYgASgEEg0KBWRlcHRoGAcgASgEEhQKDGNhbmNlbF9lcG9jaBgIIAEoBBIVCg1jcmVhdGVkX2F0X21zGAkgASgDEhUKDXVwZGF0ZWRfYXRfbXMYCiABKAMitwIKFVRhc2tHcm91cE1lbWJlclN0YXR1cxI2CgttZW1iZXJfdHlwZRgBIAEoDjIhLm5sb3Muc2FiaS52MS5UYXNrR3JvdXBNZW1iZXJUeXBlEhEKCW1lbWJlcl9pZBgCIAEoDBJAChBtZW1iZXJzaGlwX3N0YXRlGAMgASgOMiYubmxvcy5zYWJpLnYxLlRhc2tHcm91cE1lbWJlcnNoaXBTdGF0ZRIdChVtZW1iZXJzaGlwX2dlbmVyYXRpb24YBCABKAQSOQoRYWRtaXNzaW9uX3JlY2VpcHQYBSABKAsyHi5ubG9zLnNhYmkudjEuUmVjZWlwdFJlZmVyZW5jZRI3Cg9yZW1vdmFsX3JlY2VpcHQYBiABKAsyHi5ubG9zLnNhYmkudjEuUmVjZWlwdFJlZmVyZW5jZSLKAQobVGFza0dyb3VwT3BlcmF0aW9uc1NuYXBzaG90EiwKBnNjaGVtYRgBIAEoCzIcLm5sb3Muc2FiaS52MS5TY2hlbWFJZGVudGl0eRIsCgVncm91cBgCIAEoCzIdLm5sb3Muc2FiaS52MS5UYXNrR3JvdXBTdGF0dXMSNAoHbWVtYmVycxgDIAMoCzIjLm5sb3Muc2FiaS52MS5UYXNrR3JvdXBNZW1iZXJTdGF0dXMSGQoRbWVtYmVyc190cnVuY2F0ZWQYBCABKAgi8AIKDlRhc2tOb2RlU3RhdHVzEg8KB3BsYW5faWQYASABKAwSDwoHbm9kZV9pZBgCIAEoDBIoCgRraW5kGAMgASgOMhoubmxvcy5zYWJpLnYxLlBsYW5Ob2RlS2luZBIzCgVzdGF0ZRgEIAEoDjIkLm5sb3Muc2FiaS52MS5QbGFuTm9kZUxpZmVjeWNsZVN0YXRlEhkKEWRlY2xhcmVkX3JldmlzaW9uGAUgASgEEhMKC25vZGVfZGlnZXN0GAYgASgMEhgKEHRyYW5zaXRpb25fY291bnQYByABKAQSOgoOcmVzaWRlbmN5X3RpZXIYCCABKA4yIi5ubG9zLnNhYmkudjEuQ29udGV4dFJlc2lkZW5jeVRpZXISIgoacmVzaWRlbmN5X3RyYW5zaXRpb25fY291bnQYCSABKAQSHAoUZmlyc3RfZGVjbGFyZWRfYXRfbXMYCiABKAQSFQoNdXBkYXRlZF9hdF9tcxgLIAEoBCJ2ChpUYXNrTm9kZU9wZXJhdGlvbnNTbmFwc2hvdBIsCgZzY2hlbWEYASABKAsyHC5ubG9zLnNhYmkudjEuU2NoZW1hSWRlbnRpdHkSKgoEbm9kZRgCIAEoCzIcLm5sb3Muc2FiaS52MS5UYXNrTm9kZVN0YXR1cyLMAgoURXhlY3V0aW9uRmliZXJTdGF0dXMSEAoIZmliZXJfaWQYASABKAwSEgoKZ2VuZXJhdGlvbhgCIAEoBBI5CgVzdGF0ZRgDIAEoDjIqLm5sb3Muc2FiaS52MS5FeGVjdXRpb25GaWJlckxpZmVjeWNsZVN0YXRlEjoKD2xpZmVjeWNsZV9waGFzZRgEIAEoDjIhLm5sb3Muc2FiaS52MS5FeGVjdXRpb25GaWJlclBoYXNlEhUKDWFjdGl2ZV9jcHVfbXMYBSABKAQSFwoPZWxhcHNlZF93YWxsX21zGAYgASgEEhkKEXNjaGVkdWxlcl93YWl0X21zGAcgASgEEhgKEGV4dGVybmFsX3dhaXRfbXMYCCABKAQSHAoUYmFja3ByZXNzdXJlX3dhaXRfbXMYCSABKAQSFAoMc3VzcGVuZGVkX21zGAogASgEIoMBCiBFeGVjdXRpb25GaWJlck9wZXJhdGlvbnNTbmFwc2hvdBIsCgZzY2hlbWEYASABKAsyHC5ubG9zLnNhYmkudjEuU2NoZW1hSWRlbnRpdHkSMQoFZmliZXIYAiABKAsyIi5ubG9zLnNhYmkudjEuRXhlY3V0aW9uRmliZXJTdGF0dXMiqQEKC1RvcGljU3RhdHVzEhAKCHRvcGljX2lkGAEgASgMEhIKCmNoYW5uZWxfaWQYAiABKAwSGgoSY2hhbm5lbF9nZW5lcmF0aW9uGAMgASgEEgwKBG5hbWUYBCABKAwSHAoUYWN0aXZlX3N1YnNjcmlwdGlvbnMYBSABKAQSFQoNcG9saWN5X2RpZ2VzdBgGIAEoDBIVCg1jcmVhdGVkX2F0X21zGAcgASgEInEKF1RvcGljT3BlcmF0aW9uc1NuYXBzaG90EiwKBnNjaGVtYRgBIAEoCzIcLm5sb3Muc2FiaS52MS5TY2hlbWFJZGVudGl0eRIoCgV0b3BpYxgCIAEoCzIZLm5sb3Muc2FiaS52MS5Ub3BpY1N0YXR1cyL9AQoWRHVyYWJsZU9wZXJhdGlvblN0YXR1cxIUCgxvcGVyYXRpb25faWQYASABKAwSEgoKZ2VuZXJhdGlvbhgCIAEoBBIyCgVzdGF0ZRgDIAEoDjIjLm5sb3Muc2FiaS52MS5EdXJhYmxlT3BlcmF0aW9uU3RhdGUSFAoMY2FuY2VsX2Vwb2NoGAQgASgEEhYKDm93bmVyX2ZpYmVyX2lkGAUgASgMEh4KFm93bmVyX2ZpYmVyX2dlbmVyYXRpb24YBiABKAQSNwoPb3V0Y29tZV9yZWNlaXB0GAcgASgLMh4ubmxvcy5zYWJpLnYxLlJlY2VpcHRSZWZlcmVuY2UigQEKGER1cmFibGVPcGVyYXRpb25TbmFwc2hvdBIsCgZzY2hlbWEYASABKAsyHC5ubG9zLnNhYmkudjEuU2NoZW1hSWRlbnRpdHkSNwoJb3BlcmF0aW9uGAIgASgLMiQubmxvcy5zYWJpLnYxLkR1cmFibGVPcGVyYXRpb25TdGF0dXMiKQonQWNrbm93bGVkZ2VBcnRpZmFjdFJlY292ZXJ5QWxlcnRDb21tYW5kIikKJ0Fja25vd2xlZGdlU2VtYW50aWNSZWNvdmVyeUFsZXJ0Q29tbWFuZCIfCh1SZXN1bWVTZW1hbnRpY1JlY292ZXJ5Q29tbWFuZCIpCidBY2tub3dsZWRnZVJlc291cmNlUmVjb3ZlcnlBbGVydENvbW1hbmQiHwodUmVzdW1lUmVzb3VyY2VSZWNvdmVyeUNvbW1hbmQiDgoMUGF1c2VDb21tYW5kIg8KDVJlc3VtZUNvbW1hbmQiDwoNQ2FuY2VsQ29tbWFuZCINCgtLaWxsQ29tbWFuZCIrCg9UaHJvdHRsZUNvbW1hbmQSGAoQdGhyb3R0bGVfcGVyY2VudBgBIAEoBCIQCg5SZWNsYWltQ29tbWFuZCIbChlEaXNhYmxlQXBwbGljYXRpb25Db21tYW5kIh0KG1VuaW5zdGFsbEFwcGxpY2F0aW9uQ29tbWFuZCK9CQoOQ29udHJvbENvbW1hbmQSGgoSY29udHJvbF9jb21tYW5kX2lkGAEgASgMEhsKE2lzc3Vlcl9wcmluY2lwYWxfaWQYAiABKAwSMgoGc291cmNlGAMgASgOMiIubmxvcy5zYWJpLnYxLkNvbnRyb2xDb21tYW5kU291cmNlEikKBXNjb3BlGAQgASgOMhoubmxvcy5zYWJpLnYxLkNvbnRyb2xTY29wZRIRCgl0YXJnZXRfaWQYBSABKAwSJwofZXhwZWN0ZWRfZ2VuZXJhdGlvbl9vcl9yZXZpc2lvbhgGIAEoBBJkCiNhY2tub3dsZWRnZV9hcnRpZmFjdF9yZWNvdmVyeV9hbGVydBgHIAEoCzI1Lm5sb3Muc2FiaS52MS5BY2tub3dsZWRnZUFydGlmYWN0UmVjb3ZlcnlBbGVydENvbW1hbmRIABJkCiNhY2tub3dsZWRnZV9zZW1hbnRpY19yZWNvdmVyeV9hbGVydBgJIAEoCzI1Lm5sb3Muc2FiaS52MS5BY2tub3dsZWRnZVNlbWFudGljUmVjb3ZlcnlBbGVydENvbW1hbmRIABJPChhyZXN1bWVfc2VtYW50aWNfcmVjb3ZlcnkYCiABKAsyKy5ubG9zLnNhYmkudjEuUmVzdW1lU2VtYW50aWNSZWNvdmVyeUNvbW1hbmRIABI1Cg9wYXVzZV9vcGVyYXRpb24YCyABKAsyGi5ubG9zLnNhYmkudjEuUGF1c2VDb21tYW5kSAASNwoQcmVzdW1lX29wZXJhdGlvbhgMIAEoCzIbLm5sb3Muc2FiaS52MS5SZXN1bWVDb21tYW5kSAASNwoQY2FuY2VsX29wZXJhdGlvbhgNIAEoCzIbLm5sb3Muc2FiaS52MS5DYW5jZWxDb21tYW5kSAASMwoOa2lsbF9vcGVyYXRpb24YDiABKAsyGS5ubG9zLnNhYmkudjEuS2lsbENvbW1hbmRIABI7ChJ0aHJvdHRsZV9vcGVyYXRpb24YDyABKAsyHS5ubG9zLnNhYmkudjEuVGhyb3R0bGVDb21tYW5kSAASOQoRcmVjbGFpbV9vcGVyYXRpb24YECABKAsyHC5ubG9zLnNhYmkudjEuUmVjbGFpbUNvbW1hbmRIABJkCiNhY2tub3dsZWRnZV9yZXNvdXJjZV9yZWNvdmVyeV9hbGVydBgRIAEoCzI1Lm5sb3Muc2FiaS52MS5BY2tub3dsZWRnZVJlc291cmNlUmVjb3ZlcnlBbGVydENvbW1hbmRIABJPChhyZXN1bWVfcmVzb3VyY2VfcmVjb3ZlcnkYEiABKAsyKy5ubG9zLnNhYmkudjEuUmVzdW1lUmVzb3VyY2VSZWNvdmVyeUNvbW1hbmRIABJGChNkaXNhYmxlX2FwcGxpY2F0aW9uGBMgASgLMicubmxvcy5zYWJpLnYxLkRpc2FibGVBcHBsaWNhdGlvbkNvbW1hbmRIABJKChV1bmluc3RhbGxfYXBwbGljYXRpb24YFCABKAsyKS5ubG9zLnNhYmkudjEuVW5pbnN0YWxsQXBwbGljYXRpb25Db21tYW5kSAASDgoGcmVhc29uGAggASgJQgkKB2NvbW1hbmQiegobU3VibWl0Q29udHJvbENvbW1hbmRSZXF1ZXN0EiwKBnNjaGVtYRgBIAEoCzIcLm5sb3Muc2FiaS52MS5TY2hlbWFJZGVudGl0eRItCgdjb21tYW5kGAIgASgLMhwubmxvcy5zYWJpLnYxLkNvbnRyb2xDb21tYW5kIswBChRDb250cm9sQ29tbWFuZFJlc3VsdBIsCgZzY2hlbWEYASABKAsyHC5ubG9zLnNhYmkudjEuU2NoZW1hSWRlbnRpdHkSGgoSY29udHJvbF9jb21tYW5kX2lkGAIgASgMEjkKBXN0YXRlGAMgASgOMioubmxvcy5zYWJpLnYxLkNvbnRyb2xDb21tYW5kTGlmZWN5Y2xlU3RhdGUSLwoHcmVjZWlwdBgEIAEoCzIeLm5sb3Muc2FiaS52MS5SZWNlaXB0UmVmZXJlbmNlKv0BChRDb250cm9sQ29tbWFuZFNvdXJjZRImCiJDT05UUk9MX0NPTU1BTkRfU09VUkNFX1VOU1BFQ0lGSUVEEAASJgoiQ09OVFJPTF9DT01NQU5EX1NPVVJDRV9UUlVTVEVEX0dVSRABEiMKH0NPTlRST0xfQ09NTUFORF9TT1VSQ0VfTkxfU0hFTEwQAhIeChpDT05UUk9MX0NPTU1BTkRfU09VUkNFX0NMSRADEikKJUNPTlRST0xfQ09NTUFORF9TT1VSQ0VfU1RSVUNUVVJFRF9BUEkQBBIlCiFDT05UUk9MX0NPTU1BTkRfU09VUkNFX0FVVE9NQVRJT04QBSpkCgxDb250cm9sU2NvcGUSHQoZQ09OVFJPTF9TQ09QRV9VTlNQRUNJRklFRBAAEhgKFENPTlRST0xfU0NPUEVfU1lTVEVNEAESGwoXQ09OVFJPTF9TQ09QRV9PUEVSQVRJT04QAiqAAwoRU3lzdGVtQ29udHJvbFZpZXcSIwofU1lTVEVNX0NPTlRST0xfVklFV19VTlNQRUNJRklFRBAAEjAKLFNZU1RFTV9DT05UUk9MX1ZJRVdfQVJUSUZBQ1RfQ09NTUlUX1JFQ09WRVJZEAESMAosU1lTVEVNX0NPTlRST0xfVklFV19TRU1BTlRJQ19DT01NSVRfUkVDT1ZFUlkQAhIwCixTWVNURU1fQ09OVFJPTF9WSUVXX1JFU09VUkNFX0NPTU1JVF9SRUNPVkVSWRADEiIKHlNZU1RFTV9DT05UUk9MX1ZJRVdfVEFTS19HUk9VUBAEEiEKHVNZU1RFTV9DT05UUk9MX1ZJRVdfVEFTS19OT0RFEAUSJwojU1lTVEVNX0NPTlRST0xfVklFV19FWEVDVVRJT05fRklCRVIQBhIdChlTWVNURU1fQ09OVFJPTF9WSUVXX1RPUElDEAcSIQodU1lTVEVNX0NPTlRST0xfVklFV19PUEVSQVRJT04QCCq1AgocUmVjb3ZlcnlXb3JrZXJMaWZlY3ljbGVTdGF0ZRIvCitSRUNPVkVSWV9XT1JLRVJfTElGRUNZQ0xFX1NUQVRFX1VOU1BFQ0lGSUVEEAASLAooUkVDT1ZFUllfV09SS0VSX0xJRkVDWUNMRV9TVEFURV9TVEFSVElORxABEisKJ1JFQ09WRVJZX1dPUktFUl9MSUZFQ1lDTEVfU1RBVEVfUlVOTklORxACEi8KK1JFQ09WRVJZX1dPUktFUl9MSUZFQ1lDTEVfU1RBVEVfQkFDS0lOR19PRkYQAxIrCidSRUNPVkVSWV9XT1JLRVJfTElGRUNZQ0xFX1NUQVRFX0ZBVUxURUQQBBIrCidSRUNPVkVSWV9XT1JLRVJfTElGRUNZQ0xFX1NUQVRFX1NUT1BQRUQQBSq5AgoYUmVjb3ZlcnlGYWlsdXJlQXV0aG9yaXR5EioKJlJFQ09WRVJZX0ZBSUxVUkVfQVVUSE9SSVRZX1VOU1BFQ0lGSUVEEAASIwofUkVDT1ZFUllfRkFJTFVSRV9BVVRIT1JJVFlfVEFTSxABEicKI1JFQ09WRVJZX0ZBSUxVUkVfQVVUSE9SSVRZX0FSVElGQUNUEAISKgomUkVDT1ZFUllfRkFJTFVSRV9BVVRIT1JJVFlfQ09PUkRJTkFUT1IQAxIlCiFSRUNPVkVSWV9GQUlMVVJFX0FVVEhPUklUWV9XT1JLRVIQBBInCiNSRUNPVkVSWV9GQUlMVVJFX0FVVEhPUklUWV9TRU1BTlRJQxAFEicKI1JFQ09WRVJZX0ZBSUxVUkVfQVVUSE9SSVRZX1JFU09VUkNFEAYq6gQKF1Rhc2tHcm91cExpZmVjeWNsZVN0YXRlEioKJlRBU0tfR1JPVVBfTElGRUNZQ0xFX1NUQVRFX1VOU1BFQ0lGSUVEEAASIwofVEFTS19HUk9VUF9MSUZFQ1lDTEVfU1RBVEVfT1BFThABEiUKIVRBU0tfR1JPVVBfTElGRUNZQ0xFX1NUQVRFX1NFQUxFRBACEi8KK1RBU0tfR1JPVVBfTElGRUNZQ0xFX1NUQVRFX0NBTkNFTF9SRVFVRVNURUQQAxIpCiVUQVNLX0dST1VQX0xJRkVDWUNMRV9TVEFURV9DQU5DRUxMSU5HEAQSKAokVEFTS19HUk9VUF9MSUZFQ1lDTEVfU1RBVEVfUVVJRVNDSU5HEAUSKAokVEFTS19HUk9VUF9MSUZFQ1lDTEVfU1RBVEVfQ09NUExFVEVEEAYSJQohVEFTS19HUk9VUF9MSUZFQ1lDTEVfU1RBVEVfRkFJTEVEEAcSJgoiVEFTS19HUk9VUF9MSUZFQ1lDTEVfU1RBVEVfUEFSVElBTBAIEigKJFRBU0tfR1JPVVBfTElGRUNZQ0xFX1NUQVRFX0NBTkNFTExFRBAJEigKJFRBU0tfR1JPVVBfTElGRUNZQ0xFX1NUQVRFX1VOQ0VSVEFJThAKEikKJVRBU0tfR1JPVVBfTElGRUNZQ0xFX1NUQVRFX1JFQ09WRVJJTkcQCxIqCiZUQVNLX0dST1VQX0xJRkVDWUNMRV9TVEFURV9RVUFSQU5USU5FRBAMEi0KKVRBU0tfR1JPVVBfTElGRUNZQ0xFX1NUQVRFX0VGRkVDVF9VTktOT1dOEA0quQEKE1Rhc2tHcm91cE1lbWJlclR5cGUSJgoiVEFTS19HUk9VUF9NRU1CRVJfVFlQRV9VTlNQRUNJRklFRBAAEiYKIlRBU0tfR1JPVVBfTUVNQkVSX1RZUEVfQ0hJTERfR1JPVVAQARInCiNUQVNLX0dST1VQX01FTUJFUl9UWVBFX1RBU0tfQVRURU1QVBACEikKJVRBU0tfR1JPVVBfTUVNQkVSX1RZUEVfQUdFTlRfSU5TVEFOQ0UQAyqYAQoYVGFza0dyb3VwTWVtYmVyc2hpcFN0YXRlEisKJ1RBU0tfR1JPVVBfTUVNQkVSU0hJUF9TVEFURV9VTlNQRUNJRklFRBAAEiYKIlRBU0tfR1JPVVBfTUVNQkVSU0hJUF9TVEFURV9BQ1RJVkUQARInCiNUQVNLX0dST1VQX01FTUJFUlNISVBfU1RBVEVfUkVNT1ZFRBACKmwKDFBsYW5Ob2RlS2luZBIeChpQTEFOX05PREVfS0lORF9VTlNQRUNJRklFRBAAEh0KGVBMQU5fTk9ERV9LSU5EX0FHRU5UX1JPTEUQARIdChlQTEFOX05PREVfS0lORF9FWEVDVVRBQkxFEAIq8wQKFlBsYW5Ob2RlTGlmZWN5Y2xlU3RhdGUSKQolUExBTl9OT0RFX0xJRkVDWUNMRV9TVEFURV9VTlNQRUNJRklFRBAAEiYKIlBMQU5fTk9ERV9MSUZFQ1lDTEVfU1RBVEVfREVDTEFSRUQQARIwCixQTEFOX05PREVfTElGRUNZQ0xFX1NUQVRFX0JMT0NLRURfREVQRU5ERU5DWRACEiYKIlBMQU5fTk9ERV9MSUZFQ1lDTEVfU1RBVEVfRUxJR0lCTEUQAxIzCi9QTEFOX05PREVfTElGRUNZQ0xFX1NUQVRFX1dBSVRJTkdfQVVUSE9SSVpBVElPThAEEi4KKlBMQU5fTk9ERV9MSUZFQ1lDTEVfU1RBVEVfV0FJVElOR19SRVNPVVJDRRAFEisKJ1BMQU5fTk9ERV9MSUZFQ1lDTEVfU1RBVEVfTUFURVJJQUxJWklORxAGEiQKIFBMQU5fTk9ERV9MSUZFQ1lDTEVfU1RBVEVfQUNUSVZFEAcSKgomUExBTl9OT0RFX0xJRkVDWUNMRV9TVEFURV9DSEVDS1BPSU5URUQQCBIlCiFQTEFOX05PREVfTElGRUNZQ0xFX1NUQVRFX0VWSUNURUQQCRIpCiVQTEFOX05PREVfTElGRUNZQ0xFX1NUQVRFX1JFSFlEUkFUSU5HEAoSJwojUExBTl9OT0RFX0xJRkVDWUNMRV9TVEFURV9DT01QTEVURUQQCxIkCiBQTEFOX05PREVfTElGRUNZQ0xFX1NUQVRFX0ZBSUxFRBAMEicKI1BMQU5fTk9ERV9MSUZFQ1lDTEVfU1RBVEVfQ0FOQ0VMTEVEEA0q7gEKFENvbnRleHRSZXNpZGVuY3lUaWVyEiYKIkNPTlRFWFRfUkVTSURFTkNZX1RJRVJfVU5TUEVDSUZJRUQQABIoCiRDT05URVhUX1JFU0lERU5DWV9USUVSX01FVEFEQVRBX09OTFkQARIfChtDT05URVhUX1JFU0lERU5DWV9USUVSX0NPTEQQAhIfChtDT05URVhUX1JFU0lERU5DWV9USUVSX1dBUk0QAxIeChpDT05URVhUX1JFU0lERU5DWV9USUVSX0hPVBAEEiIKHkNPTlRFWFRfUkVTSURFTkNZX1RJRVJfUlVOTklORxAFKqIEChxFeGVjdXRpb25GaWJlckxpZmVjeWNsZVN0YXRlEi8KK0VYRUNVVElPTl9GSUJFUl9MSUZFQ1lDTEVfU1RBVEVfVU5TUEVDSUZJRUQQABIrCidFWEVDVVRJT05fRklCRVJfTElGRUNZQ0xFX1NUQVRFX0NSRUFURUQQARIpCiVFWEVDVVRJT05fRklCRVJfTElGRUNZQ0xFX1NUQVRFX1JFQURZEAISKwonRVhFQ1VUSU9OX0ZJQkVSX0xJRkVDWUNMRV9TVEFURV9SVU5OSU5HEAMSLgoqRVhFQ1VUSU9OX0ZJQkVSX0xJRkVDWUNMRV9TVEFURV9XQUlUSU5HX0lPEAQSMQotRVhFQ1VUSU9OX0ZJQkVSX0xJRkVDWUNMRV9TVEFURV9XQUlUSU5HX01PREVMEAUSMAosRVhFQ1VUSU9OX0ZJQkVSX0xJRkVDWUNMRV9TVEFURV9XQUlUSU5HX1RPT0wQBhItCilFWEVDVVRJT05fRklCRVJfTElGRUNZQ0xFX1NUQVRFX1NVU1BFTkRFRBAHEi0KKUVYRUNVVElPTl9GSUJFUl9MSUZFQ1lDTEVfU1RBVEVfQ09NUExFVEVEEAgSKgomRVhFQ1VUSU9OX0ZJQkVSX0xJRkVDWUNMRV9TVEFURV9GQUlMRUQQCRItCilFWEVDVVRJT05fRklCRVJfTElGRUNZQ0xFX1NUQVRFX0NBTkNFTExFRBAKKt0BChNFeGVjdXRpb25GaWJlclBoYXNlEiUKIUVYRUNVVElPTl9GSUJFUl9QSEFTRV9VTlNQRUNJRklFRBAAEiEKHUVYRUNVVElPTl9GSUJFUl9QSEFTRV9SVU5OSU5HEAESKgomRVhFQ1VUSU9OX0ZJQkVSX1BIQVNFX1dBSVRJTkdfRVhURVJOQUwQAhIrCidFWEVDVVRJT05fRklCRVJfUEhBU0VfQkFDS1BSRVNTVVJFX1dBSVQQAxIjCh9FWEVDVVRJT05fRklCRVJfUEhBU0VfU1VTUEVOREVEEAQqlgMKFUR1cmFibGVPcGVyYXRpb25TdGF0ZRInCiNEVVJBQkxFX09QRVJBVElPTl9TVEFURV9VTlNQRUNJRklFRBAAEiYKIkRVUkFCTEVfT1BFUkFUSU9OX1NUQVRFX1JFR0lTVEVSRUQQARImCiJEVVJBQkxFX09QRVJBVElPTl9TVEFURV9ESVNQQVRDSEVEEAISLAooRFVSQUJMRV9PUEVSQVRJT05fU1RBVEVfQ0FOQ0VMX1JFUVVFU1RFRBADEiUKIURVUkFCTEVfT1BFUkFUSU9OX1NUQVRFX0NPTVBMRVRFRBAEEiIKHkRVUkFCTEVfT1BFUkFUSU9OX1NUQVRFX0ZBSUxFRBAFEjMKL0RVUkFCTEVfT1BFUkFUSU9OX1NUQVRFX0NBTkNFTExFRF9CRUZPUkVfRUZGRUNUEAYSKgomRFVSQUJMRV9PUEVSQVRJT05fU1RBVEVfUEFSVElBTF9FRkZFQ1QQBxIqCiZEVVJBQkxFX09QRVJBVElPTl9TVEFURV9FRkZFQ1RfVU5LTk9XThAIKtsBChxDb250cm9sQ29tbWFuZExpZmVjeWNsZVN0YXRlEi8KK0NPTlRST0xfQ09NTUFORF9MSUZFQ1lDTEVfU1RBVEVfVU5TUEVDSUZJRUQQABItCilDT05UUk9MX0NPTU1BTkRfTElGRUNZQ0xFX1NUQVRFX0NPTVBMRVRFRBABEiwKKENPTlRST0xfQ09NTUFORF9MSUZFQ1lDTEVfU1RBVEVfUkVKRUNURUQQAhItCilDT05UUk9MX0NPTU1BTkRfTElGRUNZQ0xFX1NUQVRFX1VOQ0VSVEFJThADYgZwcm90bzM", [file_nlos_sabi_v1_envelope]);
 
 /**
  * @generated from message nlos.sabi.v1.GetSystemControlRequest
@@ -32,6 +32,33 @@ export type GetSystemControlRequest = Message<"nlos.sabi.v1.GetSystemControlRequ
    * @generated from field: uint32 alert_limit = 3;
    */
   alertLimit: number;
+
+  /**
+   * B5-3 (W32-G) additive per-layer addressing: the primary 16-byte target
+   * (group_id / node_id / fiber_id / topic_id / operation_id) for views 4..=8,
+   * empty for the recovery views 1..=3. The bounded member list of the
+   * TASK_GROUP view reuses `alert_limit` as its truncation bound.
+   *
+   * @generated from field: bytes target_id = 4;
+   */
+  targetId: Uint8Array;
+
+  /**
+   * Owning plan for the TASK_NODE view (node ids are plan-scoped derivations);
+   * empty for every other view.
+   *
+   * @generated from field: bytes plan_id = 5;
+   */
+  planId: Uint8Array;
+
+  /**
+   * Handle generation for the EXECUTION_FIBER and OPERATION views (both
+   * authorities resolve handles by id + generation); zero for every other
+   * view.
+   *
+   * @generated from field: uint64 target_generation = 6;
+   */
+  targetGeneration: bigint;
 };
 
 /**
@@ -124,6 +151,14 @@ export type ArtifactRecoveryMetrics = Message<"nlos.sabi.v1.ArtifactRecoveryMetr
    * @generated from field: repeated nlos.sabi.v1.RecoveryFailureSummary last_failures = 11;
    */
   lastFailures: RecoveryFailureSummary[];
+
+  /**
+   * Sticky: the artifact half stopped scanning after exhausting its own
+   * failure budget (the thread-level state stays authoritative for the run).
+   *
+   * @generated from field: bool domain_faulted = 12;
+   */
+  domainFaulted: boolean;
 };
 
 /**
@@ -213,6 +248,745 @@ export const ArtifactRecoveryOperationsSnapshotSchema: GenMessage<ArtifactRecove
   messageDesc(file_nlos_sabi_v1_system_control, 4);
 
 /**
+ * Semantic-domain projection of the dual-domain recovery worker health and
+ * the durable `task_semantic_recovery` ledger. The worker lifecycle and
+ * per-cycle counters it shares with the artifact domain stay on
+ * `ArtifactRecoveryMetrics`; this message carries only the semantic half.
+ *
+ * @generated from message nlos.sabi.v1.SemanticRecoveryMetrics
+ */
+export type SemanticRecoveryMetrics = Message<"nlos.sabi.v1.SemanticRecoveryMetrics"> & {
+  /**
+   * @generated from field: uint64 total_inspected = 1;
+   */
+  totalInspected: bigint;
+
+  /**
+   * @generated from field: uint64 total_finalized = 2;
+   */
+  totalFinalized: bigint;
+
+  /**
+   * @generated from field: uint64 consecutive_failed_cycles = 3;
+   */
+  consecutiveFailedCycles: bigint;
+
+  /**
+   * @generated from field: uint64 durable_retrying = 4;
+   */
+  durableRetrying: bigint;
+
+  /**
+   * @generated from field: uint64 durable_escalated = 5;
+   */
+  durableEscalated: bigint;
+
+  /**
+   * @generated from field: uint64 durable_unacknowledged_escalated = 6;
+   */
+  durableUnacknowledgedEscalated: bigint;
+
+  /**
+   * @generated from field: uint64 durable_resolved = 7;
+   */
+  durableResolved: bigint;
+
+  /**
+   * Sticky: the semantic half stopped scanning after exhausting its own
+   * failure budget while the artifact half keeps running.
+   *
+   * @generated from field: bool domain_faulted = 8;
+   */
+  domainFaulted: boolean;
+};
+
+/**
+ * Describes the message nlos.sabi.v1.SemanticRecoveryMetrics.
+ * Use `create(SemanticRecoveryMetricsSchema)` to create a new message.
+ */
+export const SemanticRecoveryMetricsSchema: GenMessage<SemanticRecoveryMetrics> = /*@__PURE__*/
+  messageDesc(file_nlos_sabi_v1_system_control, 5);
+
+/**
+ * @generated from message nlos.sabi.v1.SemanticRecoveryAlertStatus
+ */
+export type SemanticRecoveryAlertStatus = Message<"nlos.sabi.v1.SemanticRecoveryAlertStatus"> & {
+  /**
+   * @generated from field: bytes plan_id = 1;
+   */
+  planId: Uint8Array;
+
+  /**
+   * @generated from field: uint64 total_failures = 2;
+   */
+  totalFailures: bigint;
+
+  /**
+   * @generated from field: nlos.sabi.v1.RecoveryFailureAuthority last_failure_authority = 3;
+   */
+  lastFailureAuthority: RecoveryFailureAuthority;
+
+  /**
+   * @generated from field: int64 first_failed_at_ms = 4;
+   */
+  firstFailedAtMs: bigint;
+
+  /**
+   * @generated from field: int64 last_failed_at_ms = 5;
+   */
+  lastFailedAtMs: bigint;
+
+  /**
+   * @generated from field: int64 escalated_at_ms = 6;
+   */
+  escalatedAtMs: bigint;
+
+  /**
+   * @generated from field: nlos.sabi.v1.ReceiptReference acknowledgement_receipt = 7;
+   */
+  acknowledgementReceipt?: ReceiptReference | undefined;
+};
+
+/**
+ * Describes the message nlos.sabi.v1.SemanticRecoveryAlertStatus.
+ * Use `create(SemanticRecoveryAlertStatusSchema)` to create a new message.
+ */
+export const SemanticRecoveryAlertStatusSchema: GenMessage<SemanticRecoveryAlertStatus> = /*@__PURE__*/
+  messageDesc(file_nlos_sabi_v1_system_control, 6);
+
+/**
+ * @generated from message nlos.sabi.v1.SemanticRecoveryOperationsSnapshot
+ */
+export type SemanticRecoveryOperationsSnapshot = Message<"nlos.sabi.v1.SemanticRecoveryOperationsSnapshot"> & {
+  /**
+   * @generated from field: nlos.sabi.v1.SchemaIdentity schema = 1;
+   */
+  schema?: SchemaIdentity | undefined;
+
+  /**
+   * @generated from field: nlos.sabi.v1.SemanticRecoveryMetrics metrics = 2;
+   */
+  metrics?: SemanticRecoveryMetrics | undefined;
+
+  /**
+   * @generated from field: repeated nlos.sabi.v1.SemanticRecoveryAlertStatus alerts = 3;
+   */
+  alerts: SemanticRecoveryAlertStatus[];
+
+  /**
+   * @generated from field: bool alerts_truncated = 4;
+   */
+  alertsTruncated: boolean;
+};
+
+/**
+ * Describes the message nlos.sabi.v1.SemanticRecoveryOperationsSnapshot.
+ * Use `create(SemanticRecoveryOperationsSnapshotSchema)` to create a new message.
+ */
+export const SemanticRecoveryOperationsSnapshotSchema: GenMessage<SemanticRecoveryOperationsSnapshot> = /*@__PURE__*/
+  messageDesc(file_nlos_sabi_v1_system_control, 7);
+
+/**
+ * Resource-domain projection (W28-C-3b, ADR-0017 G8): mirrors the semantic
+ * messages field-for-field over the schema v43 `task_resource_recovery`
+ * ledger. Worker lifecycle and cross-domain counters stay on
+ * `ArtifactRecoveryMetrics`; this message carries only the resource half.
+ *
+ * @generated from message nlos.sabi.v1.ResourceRecoveryMetrics
+ */
+export type ResourceRecoveryMetrics = Message<"nlos.sabi.v1.ResourceRecoveryMetrics"> & {
+  /**
+   * @generated from field: uint64 total_inspected = 1;
+   */
+  totalInspected: bigint;
+
+  /**
+   * @generated from field: uint64 total_finalized = 2;
+   */
+  totalFinalized: bigint;
+
+  /**
+   * @generated from field: uint64 consecutive_failed_cycles = 3;
+   */
+  consecutiveFailedCycles: bigint;
+
+  /**
+   * @generated from field: uint64 durable_retrying = 4;
+   */
+  durableRetrying: bigint;
+
+  /**
+   * @generated from field: uint64 durable_escalated = 5;
+   */
+  durableEscalated: bigint;
+
+  /**
+   * @generated from field: uint64 durable_unacknowledged_escalated = 6;
+   */
+  durableUnacknowledgedEscalated: bigint;
+
+  /**
+   * @generated from field: uint64 durable_resolved = 7;
+   */
+  durableResolved: bigint;
+
+  /**
+   * Sticky: the resource half stopped scanning after exhausting its own
+   * failure budget while the artifact and semantic halves keep running.
+   *
+   * @generated from field: bool domain_faulted = 8;
+   */
+  domainFaulted: boolean;
+};
+
+/**
+ * Describes the message nlos.sabi.v1.ResourceRecoveryMetrics.
+ * Use `create(ResourceRecoveryMetricsSchema)` to create a new message.
+ */
+export const ResourceRecoveryMetricsSchema: GenMessage<ResourceRecoveryMetrics> = /*@__PURE__*/
+  messageDesc(file_nlos_sabi_v1_system_control, 8);
+
+/**
+ * @generated from message nlos.sabi.v1.ResourceRecoveryAlertStatus
+ */
+export type ResourceRecoveryAlertStatus = Message<"nlos.sabi.v1.ResourceRecoveryAlertStatus"> & {
+  /**
+   * @generated from field: bytes plan_id = 1;
+   */
+  planId: Uint8Array;
+
+  /**
+   * @generated from field: uint64 total_failures = 2;
+   */
+  totalFailures: bigint;
+
+  /**
+   * @generated from field: nlos.sabi.v1.RecoveryFailureAuthority last_failure_authority = 3;
+   */
+  lastFailureAuthority: RecoveryFailureAuthority;
+
+  /**
+   * @generated from field: int64 first_failed_at_ms = 4;
+   */
+  firstFailedAtMs: bigint;
+
+  /**
+   * @generated from field: int64 last_failed_at_ms = 5;
+   */
+  lastFailedAtMs: bigint;
+
+  /**
+   * @generated from field: int64 escalated_at_ms = 6;
+   */
+  escalatedAtMs: bigint;
+
+  /**
+   * @generated from field: nlos.sabi.v1.ReceiptReference acknowledgement_receipt = 7;
+   */
+  acknowledgementReceipt?: ReceiptReference | undefined;
+};
+
+/**
+ * Describes the message nlos.sabi.v1.ResourceRecoveryAlertStatus.
+ * Use `create(ResourceRecoveryAlertStatusSchema)` to create a new message.
+ */
+export const ResourceRecoveryAlertStatusSchema: GenMessage<ResourceRecoveryAlertStatus> = /*@__PURE__*/
+  messageDesc(file_nlos_sabi_v1_system_control, 9);
+
+/**
+ * @generated from message nlos.sabi.v1.ResourceRecoveryOperationsSnapshot
+ */
+export type ResourceRecoveryOperationsSnapshot = Message<"nlos.sabi.v1.ResourceRecoveryOperationsSnapshot"> & {
+  /**
+   * @generated from field: nlos.sabi.v1.SchemaIdentity schema = 1;
+   */
+  schema?: SchemaIdentity | undefined;
+
+  /**
+   * @generated from field: nlos.sabi.v1.ResourceRecoveryMetrics metrics = 2;
+   */
+  metrics?: ResourceRecoveryMetrics | undefined;
+
+  /**
+   * @generated from field: repeated nlos.sabi.v1.ResourceRecoveryAlertStatus alerts = 3;
+   */
+  alerts: ResourceRecoveryAlertStatus[];
+
+  /**
+   * @generated from field: bool alerts_truncated = 4;
+   */
+  alertsTruncated: boolean;
+};
+
+/**
+ * Describes the message nlos.sabi.v1.ResourceRecoveryOperationsSnapshot.
+ * Use `create(ResourceRecoveryOperationsSnapshotSchema)` to create a new message.
+ */
+export const ResourceRecoveryOperationsSnapshotSchema: GenMessage<ResourceRecoveryOperationsSnapshot> = /*@__PURE__*/
+  messageDesc(file_nlos_sabi_v1_system_control, 10);
+
+/**
+ * @generated from message nlos.sabi.v1.TaskGroupStatus
+ */
+export type TaskGroupStatus = Message<"nlos.sabi.v1.TaskGroupStatus"> & {
+  /**
+   * @generated from field: bytes group_id = 1;
+   */
+  groupId: Uint8Array;
+
+  /**
+   * @generated from field: bytes task_id = 2;
+   */
+  taskId: Uint8Array;
+
+  /**
+   * Empty when the group is a tree root.
+   *
+   * @generated from field: bytes parent_group_id = 3;
+   */
+  parentGroupId: Uint8Array;
+
+  /**
+   * @generated from field: nlos.sabi.v1.TaskGroupLifecycleState state = 4;
+   */
+  state: TaskGroupLifecycleState;
+
+  /**
+   * @generated from field: uint64 membership_generation = 5;
+   */
+  membershipGeneration: bigint;
+
+  /**
+   * @generated from field: uint64 state_seq = 6;
+   */
+  stateSeq: bigint;
+
+  /**
+   * @generated from field: uint64 depth = 7;
+   */
+  depth: bigint;
+
+  /**
+   * @generated from field: uint64 cancel_epoch = 8;
+   */
+  cancelEpoch: bigint;
+
+  /**
+   * @generated from field: int64 created_at_ms = 9;
+   */
+  createdAtMs: bigint;
+
+  /**
+   * @generated from field: int64 updated_at_ms = 10;
+   */
+  updatedAtMs: bigint;
+};
+
+/**
+ * Describes the message nlos.sabi.v1.TaskGroupStatus.
+ * Use `create(TaskGroupStatusSchema)` to create a new message.
+ */
+export const TaskGroupStatusSchema: GenMessage<TaskGroupStatus> = /*@__PURE__*/
+  messageDesc(file_nlos_sabi_v1_system_control, 11);
+
+/**
+ * @generated from message nlos.sabi.v1.TaskGroupMemberStatus
+ */
+export type TaskGroupMemberStatus = Message<"nlos.sabi.v1.TaskGroupMemberStatus"> & {
+  /**
+   * @generated from field: nlos.sabi.v1.TaskGroupMemberType member_type = 1;
+   */
+  memberType: TaskGroupMemberType;
+
+  /**
+   * @generated from field: bytes member_id = 2;
+   */
+  memberId: Uint8Array;
+
+  /**
+   * @generated from field: nlos.sabi.v1.TaskGroupMembershipState membership_state = 3;
+   */
+  membershipState: TaskGroupMembershipState;
+
+  /**
+   * @generated from field: uint64 membership_generation = 4;
+   */
+  membershipGeneration: bigint;
+
+  /**
+   * @generated from field: nlos.sabi.v1.ReceiptReference admission_receipt = 5;
+   */
+  admissionReceipt?: ReceiptReference | undefined;
+
+  /**
+   * @generated from field: nlos.sabi.v1.ReceiptReference removal_receipt = 6;
+   */
+  removalReceipt?: ReceiptReference | undefined;
+};
+
+/**
+ * Describes the message nlos.sabi.v1.TaskGroupMemberStatus.
+ * Use `create(TaskGroupMemberStatusSchema)` to create a new message.
+ */
+export const TaskGroupMemberStatusSchema: GenMessage<TaskGroupMemberStatus> = /*@__PURE__*/
+  messageDesc(file_nlos_sabi_v1_system_control, 12);
+
+/**
+ * @generated from message nlos.sabi.v1.TaskGroupOperationsSnapshot
+ */
+export type TaskGroupOperationsSnapshot = Message<"nlos.sabi.v1.TaskGroupOperationsSnapshot"> & {
+  /**
+   * @generated from field: nlos.sabi.v1.SchemaIdentity schema = 1;
+   */
+  schema?: SchemaIdentity | undefined;
+
+  /**
+   * @generated from field: nlos.sabi.v1.TaskGroupStatus group = 2;
+   */
+  group?: TaskGroupStatus | undefined;
+
+  /**
+   * @generated from field: repeated nlos.sabi.v1.TaskGroupMemberStatus members = 3;
+   */
+  members: TaskGroupMemberStatus[];
+
+  /**
+   * @generated from field: bool members_truncated = 4;
+   */
+  membersTruncated: boolean;
+};
+
+/**
+ * Describes the message nlos.sabi.v1.TaskGroupOperationsSnapshot.
+ * Use `create(TaskGroupOperationsSnapshotSchema)` to create a new message.
+ */
+export const TaskGroupOperationsSnapshotSchema: GenMessage<TaskGroupOperationsSnapshot> = /*@__PURE__*/
+  messageDesc(file_nlos_sabi_v1_system_control, 13);
+
+/**
+ * @generated from message nlos.sabi.v1.TaskNodeStatus
+ */
+export type TaskNodeStatus = Message<"nlos.sabi.v1.TaskNodeStatus"> & {
+  /**
+   * @generated from field: bytes plan_id = 1;
+   */
+  planId: Uint8Array;
+
+  /**
+   * @generated from field: bytes node_id = 2;
+   */
+  nodeId: Uint8Array;
+
+  /**
+   * @generated from field: nlos.sabi.v1.PlanNodeKind kind = 3;
+   */
+  kind: PlanNodeKind;
+
+  /**
+   * @generated from field: nlos.sabi.v1.PlanNodeLifecycleState state = 4;
+   */
+  state: PlanNodeLifecycleState;
+
+  /**
+   * @generated from field: uint64 declared_revision = 5;
+   */
+  declaredRevision: bigint;
+
+  /**
+   * SHA-256 digest of the declared node content at `declared_revision`.
+   *
+   * @generated from field: bytes node_digest = 6;
+   */
+  nodeDigest: Uint8Array;
+
+  /**
+   * @generated from field: uint64 transition_count = 7;
+   */
+  transitionCount: bigint;
+
+  /**
+   * @generated from field: nlos.sabi.v1.ContextResidencyTier residency_tier = 8;
+   */
+  residencyTier: ContextResidencyTier;
+
+  /**
+   * @generated from field: uint64 residency_transition_count = 9;
+   */
+  residencyTransitionCount: bigint;
+
+  /**
+   * @generated from field: uint64 first_declared_at_ms = 10;
+   */
+  firstDeclaredAtMs: bigint;
+
+  /**
+   * @generated from field: uint64 updated_at_ms = 11;
+   */
+  updatedAtMs: bigint;
+};
+
+/**
+ * Describes the message nlos.sabi.v1.TaskNodeStatus.
+ * Use `create(TaskNodeStatusSchema)` to create a new message.
+ */
+export const TaskNodeStatusSchema: GenMessage<TaskNodeStatus> = /*@__PURE__*/
+  messageDesc(file_nlos_sabi_v1_system_control, 14);
+
+/**
+ * @generated from message nlos.sabi.v1.TaskNodeOperationsSnapshot
+ */
+export type TaskNodeOperationsSnapshot = Message<"nlos.sabi.v1.TaskNodeOperationsSnapshot"> & {
+  /**
+   * @generated from field: nlos.sabi.v1.SchemaIdentity schema = 1;
+   */
+  schema?: SchemaIdentity | undefined;
+
+  /**
+   * @generated from field: nlos.sabi.v1.TaskNodeStatus node = 2;
+   */
+  node?: TaskNodeStatus | undefined;
+};
+
+/**
+ * Describes the message nlos.sabi.v1.TaskNodeOperationsSnapshot.
+ * Use `create(TaskNodeOperationsSnapshotSchema)` to create a new message.
+ */
+export const TaskNodeOperationsSnapshotSchema: GenMessage<TaskNodeOperationsSnapshot> = /*@__PURE__*/
+  messageDesc(file_nlos_sabi_v1_system_control, 15);
+
+/**
+ * Runtime-snapshot projection of one execution fiber. All time meters are
+ * bounded whole-millisecond projections of the adapter's Duration meters.
+ *
+ * @generated from message nlos.sabi.v1.ExecutionFiberStatus
+ */
+export type ExecutionFiberStatus = Message<"nlos.sabi.v1.ExecutionFiberStatus"> & {
+  /**
+   * @generated from field: bytes fiber_id = 1;
+   */
+  fiberId: Uint8Array;
+
+  /**
+   * @generated from field: uint64 generation = 2;
+   */
+  generation: bigint;
+
+  /**
+   * @generated from field: nlos.sabi.v1.ExecutionFiberLifecycleState state = 3;
+   */
+  state: ExecutionFiberLifecycleState;
+
+  /**
+   * @generated from field: nlos.sabi.v1.ExecutionFiberPhase lifecycle_phase = 4;
+   */
+  lifecyclePhase: ExecutionFiberPhase;
+
+  /**
+   * @generated from field: uint64 active_cpu_ms = 5;
+   */
+  activeCpuMs: bigint;
+
+  /**
+   * @generated from field: uint64 elapsed_wall_ms = 6;
+   */
+  elapsedWallMs: bigint;
+
+  /**
+   * @generated from field: uint64 scheduler_wait_ms = 7;
+   */
+  schedulerWaitMs: bigint;
+
+  /**
+   * @generated from field: uint64 external_wait_ms = 8;
+   */
+  externalWaitMs: bigint;
+
+  /**
+   * @generated from field: uint64 backpressure_wait_ms = 9;
+   */
+  backpressureWaitMs: bigint;
+
+  /**
+   * @generated from field: uint64 suspended_ms = 10;
+   */
+  suspendedMs: bigint;
+};
+
+/**
+ * Describes the message nlos.sabi.v1.ExecutionFiberStatus.
+ * Use `create(ExecutionFiberStatusSchema)` to create a new message.
+ */
+export const ExecutionFiberStatusSchema: GenMessage<ExecutionFiberStatus> = /*@__PURE__*/
+  messageDesc(file_nlos_sabi_v1_system_control, 16);
+
+/**
+ * @generated from message nlos.sabi.v1.ExecutionFiberOperationsSnapshot
+ */
+export type ExecutionFiberOperationsSnapshot = Message<"nlos.sabi.v1.ExecutionFiberOperationsSnapshot"> & {
+  /**
+   * @generated from field: nlos.sabi.v1.SchemaIdentity schema = 1;
+   */
+  schema?: SchemaIdentity | undefined;
+
+  /**
+   * @generated from field: nlos.sabi.v1.ExecutionFiberStatus fiber = 2;
+   */
+  fiber?: ExecutionFiberStatus | undefined;
+};
+
+/**
+ * Describes the message nlos.sabi.v1.ExecutionFiberOperationsSnapshot.
+ * Use `create(ExecutionFiberOperationsSnapshotSchema)` to create a new message.
+ */
+export const ExecutionFiberOperationsSnapshotSchema: GenMessage<ExecutionFiberOperationsSnapshot> = /*@__PURE__*/
+  messageDesc(file_nlos_sabi_v1_system_control, 17);
+
+/**
+ * @generated from message nlos.sabi.v1.TopicStatus
+ */
+export type TopicStatus = Message<"nlos.sabi.v1.TopicStatus"> & {
+  /**
+   * @generated from field: bytes topic_id = 1;
+   */
+  topicId: Uint8Array;
+
+  /**
+   * @generated from field: bytes channel_id = 2;
+   */
+  channelId: Uint8Array;
+
+  /**
+   * @generated from field: uint64 channel_generation = 3;
+   */
+  channelGeneration: bigint;
+
+  /**
+   * Bounded declared topic name (authority-admitted bytes, NUL-free).
+   *
+   * @generated from field: bytes name = 4;
+   */
+  name: Uint8Array;
+
+  /**
+   * @generated from field: uint64 active_subscriptions = 5;
+   */
+  activeSubscriptions: bigint;
+
+  /**
+   * SHA-256 digest of the admitted topic policy.
+   *
+   * @generated from field: bytes policy_digest = 6;
+   */
+  policyDigest: Uint8Array;
+
+  /**
+   * @generated from field: uint64 created_at_ms = 7;
+   */
+  createdAtMs: bigint;
+};
+
+/**
+ * Describes the message nlos.sabi.v1.TopicStatus.
+ * Use `create(TopicStatusSchema)` to create a new message.
+ */
+export const TopicStatusSchema: GenMessage<TopicStatus> = /*@__PURE__*/
+  messageDesc(file_nlos_sabi_v1_system_control, 18);
+
+/**
+ * @generated from message nlos.sabi.v1.TopicOperationsSnapshot
+ */
+export type TopicOperationsSnapshot = Message<"nlos.sabi.v1.TopicOperationsSnapshot"> & {
+  /**
+   * @generated from field: nlos.sabi.v1.SchemaIdentity schema = 1;
+   */
+  schema?: SchemaIdentity | undefined;
+
+  /**
+   * @generated from field: nlos.sabi.v1.TopicStatus topic = 2;
+   */
+  topic?: TopicStatus | undefined;
+};
+
+/**
+ * Describes the message nlos.sabi.v1.TopicOperationsSnapshot.
+ * Use `create(TopicOperationsSnapshotSchema)` to create a new message.
+ */
+export const TopicOperationsSnapshotSchema: GenMessage<TopicOperationsSnapshot> = /*@__PURE__*/
+  messageDesc(file_nlos_sabi_v1_system_control, 19);
+
+/**
+ * Durable state-machine row of one operation (the execution half of the
+ * Topic/Operation layer). Terminal states carry their outcome receipt.
+ *
+ * @generated from message nlos.sabi.v1.DurableOperationStatus
+ */
+export type DurableOperationStatus = Message<"nlos.sabi.v1.DurableOperationStatus"> & {
+  /**
+   * @generated from field: bytes operation_id = 1;
+   */
+  operationId: Uint8Array;
+
+  /**
+   * @generated from field: uint64 generation = 2;
+   */
+  generation: bigint;
+
+  /**
+   * @generated from field: nlos.sabi.v1.DurableOperationState state = 3;
+   */
+  state: DurableOperationState;
+
+  /**
+   * @generated from field: uint64 cancel_epoch = 4;
+   */
+  cancelEpoch: bigint;
+
+  /**
+   * @generated from field: bytes owner_fiber_id = 5;
+   */
+  ownerFiberId: Uint8Array;
+
+  /**
+   * @generated from field: uint64 owner_fiber_generation = 6;
+   */
+  ownerFiberGeneration: bigint;
+
+  /**
+   * @generated from field: nlos.sabi.v1.ReceiptReference outcome_receipt = 7;
+   */
+  outcomeReceipt?: ReceiptReference | undefined;
+};
+
+/**
+ * Describes the message nlos.sabi.v1.DurableOperationStatus.
+ * Use `create(DurableOperationStatusSchema)` to create a new message.
+ */
+export const DurableOperationStatusSchema: GenMessage<DurableOperationStatus> = /*@__PURE__*/
+  messageDesc(file_nlos_sabi_v1_system_control, 20);
+
+/**
+ * @generated from message nlos.sabi.v1.DurableOperationSnapshot
+ */
+export type DurableOperationSnapshot = Message<"nlos.sabi.v1.DurableOperationSnapshot"> & {
+  /**
+   * @generated from field: nlos.sabi.v1.SchemaIdentity schema = 1;
+   */
+  schema?: SchemaIdentity | undefined;
+
+  /**
+   * @generated from field: nlos.sabi.v1.DurableOperationStatus operation = 2;
+   */
+  operation?: DurableOperationStatus | undefined;
+};
+
+/**
+ * Describes the message nlos.sabi.v1.DurableOperationSnapshot.
+ * Use `create(DurableOperationSnapshotSchema)` to create a new message.
+ */
+export const DurableOperationSnapshotSchema: GenMessage<DurableOperationSnapshot> = /*@__PURE__*/
+  messageDesc(file_nlos_sabi_v1_system_control, 21);
+
+/**
  * @generated from message nlos.sabi.v1.AcknowledgeArtifactRecoveryAlertCommand
  */
 export type AcknowledgeArtifactRecoveryAlertCommand = Message<"nlos.sabi.v1.AcknowledgeArtifactRecoveryAlertCommand"> & {
@@ -223,7 +997,192 @@ export type AcknowledgeArtifactRecoveryAlertCommand = Message<"nlos.sabi.v1.Ackn
  * Use `create(AcknowledgeArtifactRecoveryAlertCommandSchema)` to create a new message.
  */
 export const AcknowledgeArtifactRecoveryAlertCommandSchema: GenMessage<AcknowledgeArtifactRecoveryAlertCommand> = /*@__PURE__*/
-  messageDesc(file_nlos_sabi_v1_system_control, 5);
+  messageDesc(file_nlos_sabi_v1_system_control, 22);
+
+/**
+ * @generated from message nlos.sabi.v1.AcknowledgeSemanticRecoveryAlertCommand
+ */
+export type AcknowledgeSemanticRecoveryAlertCommand = Message<"nlos.sabi.v1.AcknowledgeSemanticRecoveryAlertCommand"> & {
+};
+
+/**
+ * Describes the message nlos.sabi.v1.AcknowledgeSemanticRecoveryAlertCommand.
+ * Use `create(AcknowledgeSemanticRecoveryAlertCommandSchema)` to create a new message.
+ */
+export const AcknowledgeSemanticRecoveryAlertCommandSchema: GenMessage<AcknowledgeSemanticRecoveryAlertCommand> = /*@__PURE__*/
+  messageDesc(file_nlos_sabi_v1_system_control, 23);
+
+/**
+ * @generated from message nlos.sabi.v1.ResumeSemanticRecoveryCommand
+ */
+export type ResumeSemanticRecoveryCommand = Message<"nlos.sabi.v1.ResumeSemanticRecoveryCommand"> & {
+};
+
+/**
+ * Describes the message nlos.sabi.v1.ResumeSemanticRecoveryCommand.
+ * Use `create(ResumeSemanticRecoveryCommandSchema)` to create a new message.
+ */
+export const ResumeSemanticRecoveryCommandSchema: GenMessage<ResumeSemanticRecoveryCommand> = /*@__PURE__*/
+  messageDesc(file_nlos_sabi_v1_system_control, 24);
+
+/**
+ * W28-C-3b (ADR-0017 G8): the resource-domain mirror of the semantic
+ * recovery arms, addressing `task_resource_commit_plans` rows through the
+ * shared `target_id` / `expected_generation_or_revision` CAS contract.
+ *
+ * @generated from message nlos.sabi.v1.AcknowledgeResourceRecoveryAlertCommand
+ */
+export type AcknowledgeResourceRecoveryAlertCommand = Message<"nlos.sabi.v1.AcknowledgeResourceRecoveryAlertCommand"> & {
+};
+
+/**
+ * Describes the message nlos.sabi.v1.AcknowledgeResourceRecoveryAlertCommand.
+ * Use `create(AcknowledgeResourceRecoveryAlertCommandSchema)` to create a new message.
+ */
+export const AcknowledgeResourceRecoveryAlertCommandSchema: GenMessage<AcknowledgeResourceRecoveryAlertCommand> = /*@__PURE__*/
+  messageDesc(file_nlos_sabi_v1_system_control, 25);
+
+/**
+ * @generated from message nlos.sabi.v1.ResumeResourceRecoveryCommand
+ */
+export type ResumeResourceRecoveryCommand = Message<"nlos.sabi.v1.ResumeResourceRecoveryCommand"> & {
+};
+
+/**
+ * Describes the message nlos.sabi.v1.ResumeResourceRecoveryCommand.
+ * Use `create(ResumeResourceRecoveryCommandSchema)` to create a new message.
+ */
+export const ResumeResourceRecoveryCommandSchema: GenMessage<ResumeResourceRecoveryCommand> = /*@__PURE__*/
+  messageDesc(file_nlos_sabi_v1_system_control, 26);
+
+/**
+ * B5-1 first half (W28-D): typed operation-level control arms. Like the
+ * recovery commands above, the payloads stay empty — the operational target
+ * rides the shared `target_id` field and the CAS expectation rides
+ * `expected_generation_or_revision`. Real execution wiring (process
+ * suspend/resume/kill) lands in the W29-D lane.
+ *
+ * @generated from message nlos.sabi.v1.PauseCommand
+ */
+export type PauseCommand = Message<"nlos.sabi.v1.PauseCommand"> & {
+};
+
+/**
+ * Describes the message nlos.sabi.v1.PauseCommand.
+ * Use `create(PauseCommandSchema)` to create a new message.
+ */
+export const PauseCommandSchema: GenMessage<PauseCommand> = /*@__PURE__*/
+  messageDesc(file_nlos_sabi_v1_system_control, 27);
+
+/**
+ * @generated from message nlos.sabi.v1.ResumeCommand
+ */
+export type ResumeCommand = Message<"nlos.sabi.v1.ResumeCommand"> & {
+};
+
+/**
+ * Describes the message nlos.sabi.v1.ResumeCommand.
+ * Use `create(ResumeCommandSchema)` to create a new message.
+ */
+export const ResumeCommandSchema: GenMessage<ResumeCommand> = /*@__PURE__*/
+  messageDesc(file_nlos_sabi_v1_system_control, 28);
+
+/**
+ * @generated from message nlos.sabi.v1.CancelCommand
+ */
+export type CancelCommand = Message<"nlos.sabi.v1.CancelCommand"> & {
+};
+
+/**
+ * Describes the message nlos.sabi.v1.CancelCommand.
+ * Use `create(CancelCommandSchema)` to create a new message.
+ */
+export const CancelCommandSchema: GenMessage<CancelCommand> = /*@__PURE__*/
+  messageDesc(file_nlos_sabi_v1_system_control, 29);
+
+/**
+ * B5-1 second half + B5-2 (W29-D): the remaining operation-level arms.
+ * Kill and Reclaim keep the empty-payload contract — `target_id` addresses
+ * the process (kill) or the working-set owner (reclaim) and the CAS
+ * expectation rides `expected_generation_or_revision`. Throttle alone
+ * carries a payload because no shared field expresses the throttle level.
+ *
+ * @generated from message nlos.sabi.v1.KillCommand
+ */
+export type KillCommand = Message<"nlos.sabi.v1.KillCommand"> & {
+};
+
+/**
+ * Describes the message nlos.sabi.v1.KillCommand.
+ * Use `create(KillCommandSchema)` to create a new message.
+ */
+export const KillCommandSchema: GenMessage<KillCommand> = /*@__PURE__*/
+  messageDesc(file_nlos_sabi_v1_system_control, 30);
+
+/**
+ * `throttle_percent` is the whole-percent level the operational target is
+ * throttled down to (1..=100 of the current declared demand).
+ *
+ * @generated from message nlos.sabi.v1.ThrottleCommand
+ */
+export type ThrottleCommand = Message<"nlos.sabi.v1.ThrottleCommand"> & {
+  /**
+   * @generated from field: uint64 throttle_percent = 1;
+   */
+  throttlePercent: bigint;
+};
+
+/**
+ * Describes the message nlos.sabi.v1.ThrottleCommand.
+ * Use `create(ThrottleCommandSchema)` to create a new message.
+ */
+export const ThrottleCommandSchema: GenMessage<ThrottleCommand> = /*@__PURE__*/
+  messageDesc(file_nlos_sabi_v1_system_control, 31);
+
+/**
+ * @generated from message nlos.sabi.v1.ReclaimCommand
+ */
+export type ReclaimCommand = Message<"nlos.sabi.v1.ReclaimCommand"> & {
+};
+
+/**
+ * Describes the message nlos.sabi.v1.ReclaimCommand.
+ * Use `create(ReclaimCommandSchema)` to create a new message.
+ */
+export const ReclaimCommandSchema: GenMessage<ReclaimCommand> = /*@__PURE__*/
+  messageDesc(file_nlos_sabi_v1_system_control, 32);
+
+/**
+ * 移交#11 前片 (W35-P11): Application-layer lifecycle control arms. Both
+ * keep the empty-payload contract — `target_id` addresses the 16-byte
+ * package identity (application identity is authority-derived from it) and
+ * the CAS expectation rides `expected_generation_or_revision` as the
+ * application's current installation generation.
+ *
+ * @generated from message nlos.sabi.v1.DisableApplicationCommand
+ */
+export type DisableApplicationCommand = Message<"nlos.sabi.v1.DisableApplicationCommand"> & {
+};
+
+/**
+ * Describes the message nlos.sabi.v1.DisableApplicationCommand.
+ * Use `create(DisableApplicationCommandSchema)` to create a new message.
+ */
+export const DisableApplicationCommandSchema: GenMessage<DisableApplicationCommand> = /*@__PURE__*/
+  messageDesc(file_nlos_sabi_v1_system_control, 33);
+
+/**
+ * @generated from message nlos.sabi.v1.UninstallApplicationCommand
+ */
+export type UninstallApplicationCommand = Message<"nlos.sabi.v1.UninstallApplicationCommand"> & {
+};
+
+/**
+ * Describes the message nlos.sabi.v1.UninstallApplicationCommand.
+ * Use `create(UninstallApplicationCommandSchema)` to create a new message.
+ */
+export const UninstallApplicationCommandSchema: GenMessage<UninstallApplicationCommand> = /*@__PURE__*/
+  messageDesc(file_nlos_sabi_v1_system_control, 34);
 
 /**
  * @generated from message nlos.sabi.v1.ControlCommand
@@ -268,6 +1227,78 @@ export type ControlCommand = Message<"nlos.sabi.v1.ControlCommand"> & {
      */
     value: AcknowledgeArtifactRecoveryAlertCommand;
     case: "acknowledgeArtifactRecoveryAlert";
+  } | {
+    /**
+     * @generated from field: nlos.sabi.v1.AcknowledgeSemanticRecoveryAlertCommand acknowledge_semantic_recovery_alert = 9;
+     */
+    value: AcknowledgeSemanticRecoveryAlertCommand;
+    case: "acknowledgeSemanticRecoveryAlert";
+  } | {
+    /**
+     * @generated from field: nlos.sabi.v1.ResumeSemanticRecoveryCommand resume_semantic_recovery = 10;
+     */
+    value: ResumeSemanticRecoveryCommand;
+    case: "resumeSemanticRecovery";
+  } | {
+    /**
+     * @generated from field: nlos.sabi.v1.PauseCommand pause_operation = 11;
+     */
+    value: PauseCommand;
+    case: "pauseOperation";
+  } | {
+    /**
+     * @generated from field: nlos.sabi.v1.ResumeCommand resume_operation = 12;
+     */
+    value: ResumeCommand;
+    case: "resumeOperation";
+  } | {
+    /**
+     * @generated from field: nlos.sabi.v1.CancelCommand cancel_operation = 13;
+     */
+    value: CancelCommand;
+    case: "cancelOperation";
+  } | {
+    /**
+     * @generated from field: nlos.sabi.v1.KillCommand kill_operation = 14;
+     */
+    value: KillCommand;
+    case: "killOperation";
+  } | {
+    /**
+     * @generated from field: nlos.sabi.v1.ThrottleCommand throttle_operation = 15;
+     */
+    value: ThrottleCommand;
+    case: "throttleOperation";
+  } | {
+    /**
+     * @generated from field: nlos.sabi.v1.ReclaimCommand reclaim_operation = 16;
+     */
+    value: ReclaimCommand;
+    case: "reclaimOperation";
+  } | {
+    /**
+     * @generated from field: nlos.sabi.v1.AcknowledgeResourceRecoveryAlertCommand acknowledge_resource_recovery_alert = 17;
+     */
+    value: AcknowledgeResourceRecoveryAlertCommand;
+    case: "acknowledgeResourceRecoveryAlert";
+  } | {
+    /**
+     * @generated from field: nlos.sabi.v1.ResumeResourceRecoveryCommand resume_resource_recovery = 18;
+     */
+    value: ResumeResourceRecoveryCommand;
+    case: "resumeResourceRecovery";
+  } | {
+    /**
+     * @generated from field: nlos.sabi.v1.DisableApplicationCommand disable_application = 19;
+     */
+    value: DisableApplicationCommand;
+    case: "disableApplication";
+  } | {
+    /**
+     * @generated from field: nlos.sabi.v1.UninstallApplicationCommand uninstall_application = 20;
+     */
+    value: UninstallApplicationCommand;
+    case: "uninstallApplication";
   } | { case: undefined; value?: undefined };
 
   /**
@@ -281,7 +1312,7 @@ export type ControlCommand = Message<"nlos.sabi.v1.ControlCommand"> & {
  * Use `create(ControlCommandSchema)` to create a new message.
  */
 export const ControlCommandSchema: GenMessage<ControlCommand> = /*@__PURE__*/
-  messageDesc(file_nlos_sabi_v1_system_control, 6);
+  messageDesc(file_nlos_sabi_v1_system_control, 35);
 
 /**
  * @generated from message nlos.sabi.v1.SubmitControlCommandRequest
@@ -303,7 +1334,7 @@ export type SubmitControlCommandRequest = Message<"nlos.sabi.v1.SubmitControlCom
  * Use `create(SubmitControlCommandRequestSchema)` to create a new message.
  */
 export const SubmitControlCommandRequestSchema: GenMessage<SubmitControlCommandRequest> = /*@__PURE__*/
-  messageDesc(file_nlos_sabi_v1_system_control, 7);
+  messageDesc(file_nlos_sabi_v1_system_control, 36);
 
 /**
  * @generated from message nlos.sabi.v1.ControlCommandResult
@@ -335,7 +1366,7 @@ export type ControlCommandResult = Message<"nlos.sabi.v1.ControlCommandResult"> 
  * Use `create(ControlCommandResultSchema)` to create a new message.
  */
 export const ControlCommandResultSchema: GenMessage<ControlCommandResult> = /*@__PURE__*/
-  messageDesc(file_nlos_sabi_v1_system_control, 8);
+  messageDesc(file_nlos_sabi_v1_system_control, 37);
 
 /**
  * @generated from enum nlos.sabi.v1.ControlCommandSource
@@ -417,6 +1448,45 @@ export enum SystemControlView {
    * @generated from enum value: SYSTEM_CONTROL_VIEW_ARTIFACT_COMMIT_RECOVERY = 1;
    */
   ARTIFACT_COMMIT_RECOVERY = 1,
+
+  /**
+   * @generated from enum value: SYSTEM_CONTROL_VIEW_SEMANTIC_COMMIT_RECOVERY = 2;
+   */
+  SEMANTIC_COMMIT_RECOVERY = 2,
+
+  /**
+   * @generated from enum value: SYSTEM_CONTROL_VIEW_RESOURCE_COMMIT_RECOVERY = 3;
+   */
+  RESOURCE_COMMIT_RECOVERY = 3,
+
+  /**
+   * B5-3 per-layer inspect views (W32-G): one bounded snapshot per
+   * organizational/execution layer. Views 4..=8 address exactly one target
+   * through the additive `target_id`/`plan_id`/`target_generation` fields.
+   *
+   * @generated from enum value: SYSTEM_CONTROL_VIEW_TASK_GROUP = 4;
+   */
+  TASK_GROUP = 4,
+
+  /**
+   * @generated from enum value: SYSTEM_CONTROL_VIEW_TASK_NODE = 5;
+   */
+  TASK_NODE = 5,
+
+  /**
+   * @generated from enum value: SYSTEM_CONTROL_VIEW_EXECUTION_FIBER = 6;
+   */
+  EXECUTION_FIBER = 6,
+
+  /**
+   * @generated from enum value: SYSTEM_CONTROL_VIEW_TOPIC = 7;
+   */
+  TOPIC = 7,
+
+  /**
+   * @generated from enum value: SYSTEM_CONTROL_VIEW_OPERATION = 8;
+   */
+  OPERATION = 8,
 }
 
 /**
@@ -494,6 +1564,16 @@ export enum RecoveryFailureAuthority {
    * @generated from enum value: RECOVERY_FAILURE_AUTHORITY_WORKER = 4;
    */
   WORKER = 4,
+
+  /**
+   * @generated from enum value: RECOVERY_FAILURE_AUTHORITY_SEMANTIC = 5;
+   */
+  SEMANTIC = 5,
+
+  /**
+   * @generated from enum value: RECOVERY_FAILURE_AUTHORITY_RESOURCE = 6;
+   */
+  RESOURCE = 6,
 }
 
 /**
@@ -501,6 +1581,450 @@ export enum RecoveryFailureAuthority {
  */
 export const RecoveryFailureAuthoritySchema: GenEnum<RecoveryFailureAuthority> = /*@__PURE__*/
   enumDesc(file_nlos_sabi_v1_system_control, 4);
+
+/**
+ * @generated from enum nlos.sabi.v1.TaskGroupLifecycleState
+ */
+export enum TaskGroupLifecycleState {
+  /**
+   * @generated from enum value: TASK_GROUP_LIFECYCLE_STATE_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: TASK_GROUP_LIFECYCLE_STATE_OPEN = 1;
+   */
+  OPEN = 1,
+
+  /**
+   * @generated from enum value: TASK_GROUP_LIFECYCLE_STATE_SEALED = 2;
+   */
+  SEALED = 2,
+
+  /**
+   * @generated from enum value: TASK_GROUP_LIFECYCLE_STATE_CANCEL_REQUESTED = 3;
+   */
+  CANCEL_REQUESTED = 3,
+
+  /**
+   * @generated from enum value: TASK_GROUP_LIFECYCLE_STATE_CANCELLING = 4;
+   */
+  CANCELLING = 4,
+
+  /**
+   * @generated from enum value: TASK_GROUP_LIFECYCLE_STATE_QUIESCING = 5;
+   */
+  QUIESCING = 5,
+
+  /**
+   * @generated from enum value: TASK_GROUP_LIFECYCLE_STATE_COMPLETED = 6;
+   */
+  COMPLETED = 6,
+
+  /**
+   * @generated from enum value: TASK_GROUP_LIFECYCLE_STATE_FAILED = 7;
+   */
+  FAILED = 7,
+
+  /**
+   * @generated from enum value: TASK_GROUP_LIFECYCLE_STATE_PARTIAL = 8;
+   */
+  PARTIAL = 8,
+
+  /**
+   * @generated from enum value: TASK_GROUP_LIFECYCLE_STATE_CANCELLED = 9;
+   */
+  CANCELLED = 9,
+
+  /**
+   * @generated from enum value: TASK_GROUP_LIFECYCLE_STATE_UNCERTAIN = 10;
+   */
+  UNCERTAIN = 10,
+
+  /**
+   * @generated from enum value: TASK_GROUP_LIFECYCLE_STATE_RECOVERING = 11;
+   */
+  RECOVERING = 11,
+
+  /**
+   * @generated from enum value: TASK_GROUP_LIFECYCLE_STATE_QUARANTINED = 12;
+   */
+  QUARANTINED = 12,
+
+  /**
+   * @generated from enum value: TASK_GROUP_LIFECYCLE_STATE_EFFECT_UNKNOWN = 13;
+   */
+  EFFECT_UNKNOWN = 13,
+}
+
+/**
+ * Describes the enum nlos.sabi.v1.TaskGroupLifecycleState.
+ */
+export const TaskGroupLifecycleStateSchema: GenEnum<TaskGroupLifecycleState> = /*@__PURE__*/
+  enumDesc(file_nlos_sabi_v1_system_control, 5);
+
+/**
+ * @generated from enum nlos.sabi.v1.TaskGroupMemberType
+ */
+export enum TaskGroupMemberType {
+  /**
+   * @generated from enum value: TASK_GROUP_MEMBER_TYPE_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: TASK_GROUP_MEMBER_TYPE_CHILD_GROUP = 1;
+   */
+  CHILD_GROUP = 1,
+
+  /**
+   * @generated from enum value: TASK_GROUP_MEMBER_TYPE_TASK_ATTEMPT = 2;
+   */
+  TASK_ATTEMPT = 2,
+
+  /**
+   * @generated from enum value: TASK_GROUP_MEMBER_TYPE_AGENT_INSTANCE = 3;
+   */
+  AGENT_INSTANCE = 3,
+}
+
+/**
+ * Describes the enum nlos.sabi.v1.TaskGroupMemberType.
+ */
+export const TaskGroupMemberTypeSchema: GenEnum<TaskGroupMemberType> = /*@__PURE__*/
+  enumDesc(file_nlos_sabi_v1_system_control, 6);
+
+/**
+ * @generated from enum nlos.sabi.v1.TaskGroupMembershipState
+ */
+export enum TaskGroupMembershipState {
+  /**
+   * @generated from enum value: TASK_GROUP_MEMBERSHIP_STATE_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: TASK_GROUP_MEMBERSHIP_STATE_ACTIVE = 1;
+   */
+  ACTIVE = 1,
+
+  /**
+   * @generated from enum value: TASK_GROUP_MEMBERSHIP_STATE_REMOVED = 2;
+   */
+  REMOVED = 2,
+}
+
+/**
+ * Describes the enum nlos.sabi.v1.TaskGroupMembershipState.
+ */
+export const TaskGroupMembershipStateSchema: GenEnum<TaskGroupMembershipState> = /*@__PURE__*/
+  enumDesc(file_nlos_sabi_v1_system_control, 7);
+
+/**
+ * @generated from enum nlos.sabi.v1.PlanNodeKind
+ */
+export enum PlanNodeKind {
+  /**
+   * @generated from enum value: PLAN_NODE_KIND_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: PLAN_NODE_KIND_AGENT_ROLE = 1;
+   */
+  AGENT_ROLE = 1,
+
+  /**
+   * @generated from enum value: PLAN_NODE_KIND_EXECUTABLE = 2;
+   */
+  EXECUTABLE = 2,
+}
+
+/**
+ * Describes the enum nlos.sabi.v1.PlanNodeKind.
+ */
+export const PlanNodeKindSchema: GenEnum<PlanNodeKind> = /*@__PURE__*/
+  enumDesc(file_nlos_sabi_v1_system_control, 8);
+
+/**
+ * @generated from enum nlos.sabi.v1.PlanNodeLifecycleState
+ */
+export enum PlanNodeLifecycleState {
+  /**
+   * @generated from enum value: PLAN_NODE_LIFECYCLE_STATE_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: PLAN_NODE_LIFECYCLE_STATE_DECLARED = 1;
+   */
+  DECLARED = 1,
+
+  /**
+   * @generated from enum value: PLAN_NODE_LIFECYCLE_STATE_BLOCKED_DEPENDENCY = 2;
+   */
+  BLOCKED_DEPENDENCY = 2,
+
+  /**
+   * @generated from enum value: PLAN_NODE_LIFECYCLE_STATE_ELIGIBLE = 3;
+   */
+  ELIGIBLE = 3,
+
+  /**
+   * @generated from enum value: PLAN_NODE_LIFECYCLE_STATE_WAITING_AUTHORIZATION = 4;
+   */
+  WAITING_AUTHORIZATION = 4,
+
+  /**
+   * @generated from enum value: PLAN_NODE_LIFECYCLE_STATE_WAITING_RESOURCE = 5;
+   */
+  WAITING_RESOURCE = 5,
+
+  /**
+   * @generated from enum value: PLAN_NODE_LIFECYCLE_STATE_MATERIALIZING = 6;
+   */
+  MATERIALIZING = 6,
+
+  /**
+   * @generated from enum value: PLAN_NODE_LIFECYCLE_STATE_ACTIVE = 7;
+   */
+  ACTIVE = 7,
+
+  /**
+   * @generated from enum value: PLAN_NODE_LIFECYCLE_STATE_CHECKPOINTED = 8;
+   */
+  CHECKPOINTED = 8,
+
+  /**
+   * @generated from enum value: PLAN_NODE_LIFECYCLE_STATE_EVICTED = 9;
+   */
+  EVICTED = 9,
+
+  /**
+   * @generated from enum value: PLAN_NODE_LIFECYCLE_STATE_REHYDRATING = 10;
+   */
+  REHYDRATING = 10,
+
+  /**
+   * @generated from enum value: PLAN_NODE_LIFECYCLE_STATE_COMPLETED = 11;
+   */
+  COMPLETED = 11,
+
+  /**
+   * @generated from enum value: PLAN_NODE_LIFECYCLE_STATE_FAILED = 12;
+   */
+  FAILED = 12,
+
+  /**
+   * @generated from enum value: PLAN_NODE_LIFECYCLE_STATE_CANCELLED = 13;
+   */
+  CANCELLED = 13,
+}
+
+/**
+ * Describes the enum nlos.sabi.v1.PlanNodeLifecycleState.
+ */
+export const PlanNodeLifecycleStateSchema: GenEnum<PlanNodeLifecycleState> = /*@__PURE__*/
+  enumDesc(file_nlos_sabi_v1_system_control, 9);
+
+/**
+ * @generated from enum nlos.sabi.v1.ContextResidencyTier
+ */
+export enum ContextResidencyTier {
+  /**
+   * @generated from enum value: CONTEXT_RESIDENCY_TIER_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: CONTEXT_RESIDENCY_TIER_METADATA_ONLY = 1;
+   */
+  METADATA_ONLY = 1,
+
+  /**
+   * @generated from enum value: CONTEXT_RESIDENCY_TIER_COLD = 2;
+   */
+  COLD = 2,
+
+  /**
+   * @generated from enum value: CONTEXT_RESIDENCY_TIER_WARM = 3;
+   */
+  WARM = 3,
+
+  /**
+   * @generated from enum value: CONTEXT_RESIDENCY_TIER_HOT = 4;
+   */
+  HOT = 4,
+
+  /**
+   * @generated from enum value: CONTEXT_RESIDENCY_TIER_RUNNING = 5;
+   */
+  RUNNING = 5,
+}
+
+/**
+ * Describes the enum nlos.sabi.v1.ContextResidencyTier.
+ */
+export const ContextResidencyTierSchema: GenEnum<ContextResidencyTier> = /*@__PURE__*/
+  enumDesc(file_nlos_sabi_v1_system_control, 10);
+
+/**
+ * @generated from enum nlos.sabi.v1.ExecutionFiberLifecycleState
+ */
+export enum ExecutionFiberLifecycleState {
+  /**
+   * @generated from enum value: EXECUTION_FIBER_LIFECYCLE_STATE_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: EXECUTION_FIBER_LIFECYCLE_STATE_CREATED = 1;
+   */
+  CREATED = 1,
+
+  /**
+   * @generated from enum value: EXECUTION_FIBER_LIFECYCLE_STATE_READY = 2;
+   */
+  READY = 2,
+
+  /**
+   * @generated from enum value: EXECUTION_FIBER_LIFECYCLE_STATE_RUNNING = 3;
+   */
+  RUNNING = 3,
+
+  /**
+   * @generated from enum value: EXECUTION_FIBER_LIFECYCLE_STATE_WAITING_IO = 4;
+   */
+  WAITING_IO = 4,
+
+  /**
+   * @generated from enum value: EXECUTION_FIBER_LIFECYCLE_STATE_WAITING_MODEL = 5;
+   */
+  WAITING_MODEL = 5,
+
+  /**
+   * @generated from enum value: EXECUTION_FIBER_LIFECYCLE_STATE_WAITING_TOOL = 6;
+   */
+  WAITING_TOOL = 6,
+
+  /**
+   * @generated from enum value: EXECUTION_FIBER_LIFECYCLE_STATE_SUSPENDED = 7;
+   */
+  SUSPENDED = 7,
+
+  /**
+   * @generated from enum value: EXECUTION_FIBER_LIFECYCLE_STATE_COMPLETED = 8;
+   */
+  COMPLETED = 8,
+
+  /**
+   * @generated from enum value: EXECUTION_FIBER_LIFECYCLE_STATE_FAILED = 9;
+   */
+  FAILED = 9,
+
+  /**
+   * @generated from enum value: EXECUTION_FIBER_LIFECYCLE_STATE_CANCELLED = 10;
+   */
+  CANCELLED = 10,
+}
+
+/**
+ * Describes the enum nlos.sabi.v1.ExecutionFiberLifecycleState.
+ */
+export const ExecutionFiberLifecycleStateSchema: GenEnum<ExecutionFiberLifecycleState> = /*@__PURE__*/
+  enumDesc(file_nlos_sabi_v1_system_control, 11);
+
+/**
+ * @generated from enum nlos.sabi.v1.ExecutionFiberPhase
+ */
+export enum ExecutionFiberPhase {
+  /**
+   * @generated from enum value: EXECUTION_FIBER_PHASE_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: EXECUTION_FIBER_PHASE_RUNNING = 1;
+   */
+  RUNNING = 1,
+
+  /**
+   * @generated from enum value: EXECUTION_FIBER_PHASE_WAITING_EXTERNAL = 2;
+   */
+  WAITING_EXTERNAL = 2,
+
+  /**
+   * @generated from enum value: EXECUTION_FIBER_PHASE_BACKPRESSURE_WAIT = 3;
+   */
+  BACKPRESSURE_WAIT = 3,
+
+  /**
+   * @generated from enum value: EXECUTION_FIBER_PHASE_SUSPENDED = 4;
+   */
+  SUSPENDED = 4,
+}
+
+/**
+ * Describes the enum nlos.sabi.v1.ExecutionFiberPhase.
+ */
+export const ExecutionFiberPhaseSchema: GenEnum<ExecutionFiberPhase> = /*@__PURE__*/
+  enumDesc(file_nlos_sabi_v1_system_control, 12);
+
+/**
+ * @generated from enum nlos.sabi.v1.DurableOperationState
+ */
+export enum DurableOperationState {
+  /**
+   * @generated from enum value: DURABLE_OPERATION_STATE_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: DURABLE_OPERATION_STATE_REGISTERED = 1;
+   */
+  REGISTERED = 1,
+
+  /**
+   * @generated from enum value: DURABLE_OPERATION_STATE_DISPATCHED = 2;
+   */
+  DISPATCHED = 2,
+
+  /**
+   * @generated from enum value: DURABLE_OPERATION_STATE_CANCEL_REQUESTED = 3;
+   */
+  CANCEL_REQUESTED = 3,
+
+  /**
+   * @generated from enum value: DURABLE_OPERATION_STATE_COMPLETED = 4;
+   */
+  COMPLETED = 4,
+
+  /**
+   * @generated from enum value: DURABLE_OPERATION_STATE_FAILED = 5;
+   */
+  FAILED = 5,
+
+  /**
+   * @generated from enum value: DURABLE_OPERATION_STATE_CANCELLED_BEFORE_EFFECT = 6;
+   */
+  CANCELLED_BEFORE_EFFECT = 6,
+
+  /**
+   * @generated from enum value: DURABLE_OPERATION_STATE_PARTIAL_EFFECT = 7;
+   */
+  PARTIAL_EFFECT = 7,
+
+  /**
+   * @generated from enum value: DURABLE_OPERATION_STATE_EFFECT_UNKNOWN = 8;
+   */
+  EFFECT_UNKNOWN = 8,
+}
+
+/**
+ * Describes the enum nlos.sabi.v1.DurableOperationState.
+ */
+export const DurableOperationStateSchema: GenEnum<DurableOperationState> = /*@__PURE__*/
+  enumDesc(file_nlos_sabi_v1_system_control, 13);
 
 /**
  * @generated from enum nlos.sabi.v1.ControlCommandLifecycleState
@@ -531,4 +2055,4 @@ export enum ControlCommandLifecycleState {
  * Describes the enum nlos.sabi.v1.ControlCommandLifecycleState.
  */
 export const ControlCommandLifecycleStateSchema: GenEnum<ControlCommandLifecycleState> = /*@__PURE__*/
-  enumDesc(file_nlos_sabi_v1_system_control, 5);
+  enumDesc(file_nlos_sabi_v1_system_control, 14);

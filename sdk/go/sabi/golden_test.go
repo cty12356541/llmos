@@ -281,6 +281,43 @@ func TestPrincipalHandshakeGolden(t *testing.T) {
 	})
 }
 
+// TestServiceDirectoryResolveRequestGolden pins the frozen ServiceDirectory
+// resolve entry golden, mirroring the Rust compatibility test and the
+// TypeScript/Python conformance case (schema identity + service name only;
+// endpoints stay hidden until negotiation).
+func TestServiceDirectoryResolveRequestGolden(t *testing.T) {
+	golden := goldenBytes(t, "nlos.sabi.ServiceDirectory.ResolveRequest-v1.hex")
+
+	request := &ResolveServiceRequest{
+		Schema:  &SchemaIdentity{Name: "nlos.sabi.ServiceDirectory", Major: 1},
+		Service: "operation",
+	}
+	if got := request.Marshal(); !bytes.Equal(got, golden) {
+		t.Fatalf("encode ServiceDirectory.ResolveRequest-v1 != golden:\n got  %x\n want %x", got, golden)
+	}
+
+	var decoded ResolveServiceRequest
+	if err := decoded.Unmarshal(golden); err != nil {
+		t.Fatalf("decode golden: %v", err)
+	}
+	if decoded.Schema == nil ||
+		decoded.Schema.Name != "nlos.sabi.ServiceDirectory" ||
+		decoded.Schema.Major != 1 ||
+		decoded.Schema.Minor != 0 {
+		t.Fatalf("decoded schema identity mismatch: %+v", decoded.Schema)
+	}
+	if decoded.Service != "operation" {
+		t.Fatalf("decoded service mismatch: %q", decoded.Service)
+	}
+	roundtripGolden(t, "ServiceDirectory.ResolveRequest-v1", golden, func(b []byte) ([]byte, error) {
+		var m ResolveServiceRequest
+		if err := m.Unmarshal(b); err != nil {
+			return nil, err
+		}
+		return m.Marshal(), nil
+	})
+}
+
 // TestUnknownFieldPreservedAcrossRoundtrip mirrors the cross-language
 // conformance case: a trailing unknown field (field 100, varint 7) appended
 // to the frozen Envelope golden must survive decode + re-encode verbatim.

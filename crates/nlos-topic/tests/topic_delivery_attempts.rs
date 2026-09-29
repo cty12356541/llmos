@@ -9,12 +9,12 @@
 //! is deleted, publishers are never blocked, quarantined rows stop billing),
 //! and the explicit token-authenticated recovery (`reinstate_with_token`).
 
-use nlos_channel::{ChannelAuthority, ChannelDecision, CreateChannelRequest};
+use nlos_channel::{ChannelAuthority, ChannelDecision, CompactReceipt, CreateChannelRequest};
 use nlos_topic::{
     AdvanceDecision, AdvanceRequest, ConsumeToken, CreateTopicRequest, PublishRequest,
     ReinstateDecision, SubscribeDecision, SubscribeRequest, SubscriberKey, SubscriptionState,
-    TopicAuthority, TopicAuthorityError, TopicDecision, TopicPolicy, TopicRecord,
-    UnsubscribeRequest,
+    TopicAuthority, TopicAuthorityError, TopicCompactDecision, TopicCompactReceipt, TopicDecision,
+    TopicPolicy, TopicRecord, UnsubscribeRequest,
 };
 use nlos_types::{IdempotencyKey, ResourceAccountId};
 use rusqlite::Connection;
@@ -471,5 +471,98 @@ fn quarantine_state_replays_after_restart() {
             .inspect_subscription(topic.topic_id, subscriber(1))
             .expect("inspect after restart"),
         before
+    );
+}
+
+/// Deep-audit finding 25 / decision D3: a `QUARANTINED` subscription is
+/// still active, so its lag keeps holding the compact release point.  The
+/// service-layer ack waits for the isolated subscriber itself to advance
+/// (which quarantine deliberately still allows) before the channel
+/// high-water and the trim move; until then the compact is a no-op that
+/// writes nothing, not even the ack.
+#[test]
+fn quarantined_lag_holds_the_compact_release_point_until_it_advances() {
+    let (harness, topic) = bootstrap("quarantine-bound", 2);
+    let slow = subscribe(&harness, topic.topic_id, 1, 3_000);
+    publish(&harness, &topic, 81, 4_000); // free: no backlog yet
+    publish(&harness, &topic, 82, 4_100); // slow billed 1
+    publish(&harness, &topic, 83, 4_200); // slow billed 2 -> QUARANTINED at cursor 0
+    let quick = subscribe(&harness, topic.topic_id, 2, 4_300);
+    assert_eq!(quick.record.cursor, 3);
+    assert_eq!(
+        harness
+            .topics
+            .inspect_subscription(topic.topic_id, subscriber(1))
+            .expect("inspect slow")
+            .state,
+        SubscriptionState::Quarantined
+    );
+
+    // The quarantined cursor 0 is the minimum active cursor: the bound
+    // stays 0 and the compact replays a zero watermark — the ack is skipped
+    // without a write (nothing to advance).
+    assert_eq!(
+        harness
+            .topics
+            .compact_bound(topic.topic_id)
+            .expect("bound held by the quarantined lag"),
+        0
+    );
+    assert_eq!(
+        harness
+            .topics
+            .compact(topic.topic_id, 9)
+            .expect("compact is a no-op trim"),
+        TopicCompactDecision::Replayed(TopicCompactReceipt {
+            topic_id: topic.topic_id,
+            channel_id: topic.channel_id,
+            effective_trim_high_water: 0,
+            channel: CompactReceipt {
+                channel_id: topic.channel_id,
+                trim_high_water: 0,
+            },
+        })
+    );
+    let queue = harness
+        .channel
+        .inspect_queue(topic.channel_id)
+        .expect("queue untouched");
+    assert_eq!(
+        (
+            queue.consume_high_water,
+            queue.trim_high_water,
+            queue.backlog_bytes
+        ),
+        (0, 0, 24)
+    );
+
+    // Quarantine stops delivery only: the isolated subscriber catches up
+    // with its own token, lifting the release point for the whole channel.
+    advance_with_token(&harness, &topic, &slow, 3);
+    assert_eq!(
+        harness
+            .topics
+            .compact_bound(topic.topic_id)
+            .expect("bound still at the stale high-water"),
+        0
+    );
+    let trimmed = harness
+        .topics
+        .compact(topic.topic_id, 9)
+        .expect("compact acks and trims");
+    assert!(matches!(trimmed, TopicCompactDecision::Trimmed(_)));
+    assert_eq!(trimmed.receipt().effective_trim_high_water, 3);
+    let queue = harness
+        .channel
+        .inspect_queue(topic.channel_id)
+        .expect("queue released");
+    assert_eq!(
+        (
+            queue.consume_high_water,
+            queue.trim_high_water,
+            queue.backlog_bytes,
+            queue.retained_bytes
+        ),
+        (3, 3, 0, 0)
     );
 }

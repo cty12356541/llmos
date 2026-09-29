@@ -7,11 +7,14 @@ use std::fmt;
 
 use nlos_application::ApplicationAuthorityError;
 use nlos_artifact::ArtifactError;
+use nlos_capability::CapabilityAuthorityError;
 use nlos_clock::AuthorityClockError;
 use nlos_commit_coordinator::CoordinatorError;
+use nlos_driver_mock::ProviderError;
 use nlos_identity::IdentityAuthorityError;
 use nlos_process::ProcessAuthorityError;
 use nlos_runtime::RuntimeError;
+use nlos_runtime_tokio::ChannelWaitError;
 use nlos_store::StoreError;
 use nlos_task::TaskStoreError;
 
@@ -32,12 +35,46 @@ pub enum SliceKError {
     Task(TaskStoreError),
     /// The clock authority refused a reading.
     Clock(AuthorityClockError),
+    /// The capability authority refused an open, issuance, delegation, or
+    /// admission step.
+    Capability(CapabilityAuthorityError),
+    /// The runtime's Outbox pump lifecycle refused a transition this call
+    /// cannot make honestly (for example starting a second pump while one
+    /// is still running — its wake lane would silently ack the first
+    /// lane's wakes as `FiberGone`).
+    Pump(&'static str),
     /// The operation store refused a driver-operation step.
     Operation(StoreError),
+    /// The driver-mock provider face refused a payload-execution step
+    /// (unreachable RPC or a durable operation-authority rejection such as
+    /// a callback-identity conflict on a mutated payload).
+    Driver(ProviderError),
+    /// The payload-execution lane refused a durable state this call cannot
+    /// execute: no application under the package identity, a non-installed
+    /// status, a missing installation receipt, or an executable entry that
+    /// was never materialized into the artifact authority.
+    PayloadState(&'static str),
+    /// The supervisor pid registry refused a registration (second-process
+    /// kill chain spawn phase).
+    SupervisorPid(nlos_process::SupervisorPidRegistryError),
+    /// The runtime batch-cancel linkage refused the propagation
+    /// (second-process kill chain).
+    BatchCancel(ChannelWaitError),
     /// The tokio runtime adapter refused a fiber admission or cancel.
     Runtime(RuntimeError),
     /// The cross-authority commit coordinator refused a convergence step.
     Coordinator(CoordinatorError),
+    /// The teardown lane refused a durable state this chain never produces
+    /// (e.g. a binding terminal without a platform-kill receipt — an
+    /// out-of-band crash): the assembly names the refusal instead of
+    /// guessing a transition the authorities do not offer.
+    TeardownState(&'static str),
+    /// The system-control prefix refused an NL command (out-of-grammar
+    /// sentence or dispatch-contract defect); handler rejections surface
+    /// as typed receipt failures inside
+    /// [`ControlReceipt::outcome`](nlos_system_control::control::ControlReceipt::outcome),
+    /// not here.
+    Control(nlos_system_control::control::ControlError),
     /// A wall-clock millisecond value does not fit the callee's `i64`
     /// timestamp domain.
     TimestampOverflow(u64),
@@ -55,9 +92,25 @@ impl fmt::Display for SliceKError {
             Self::Application(error) => write!(formatter, "application authority: {error}"),
             Self::Task(error) => write!(formatter, "task authority: {error}"),
             Self::Clock(error) => write!(formatter, "clock authority: {error}"),
+            Self::Capability(error) => write!(formatter, "capability authority: {error}"),
+            Self::Pump(reason) => write!(formatter, "outbox pump lifecycle refusal: {reason}"),
             Self::Operation(error) => write!(formatter, "operation store: {error}"),
+            Self::Driver(error) => write!(formatter, "driver provider face: {error}"),
+            Self::PayloadState(reason) => {
+                write!(formatter, "payload execution state refusal: {reason}")
+            }
+            Self::SupervisorPid(error) => {
+                write!(formatter, "supervisor pid registry: {error}")
+            }
+            Self::BatchCancel(error) => {
+                write!(formatter, "runtime batch-cancel linkage: {error}")
+            }
             Self::Runtime(error) => write!(formatter, "fiber runtime: {error}"),
             Self::Coordinator(error) => write!(formatter, "commit coordinator: {error}"),
+            Self::TeardownState(reason) => {
+                write!(formatter, "teardown state refusal: {reason}")
+            }
+            Self::Control(error) => write!(formatter, "system-control prefix: {error}"),
             Self::TimestampOverflow(value) => {
                 write!(
                     formatter,
@@ -85,9 +138,18 @@ impl Error for SliceKError {
             Self::Task(error) => Some(error),
             Self::Clock(error) => Some(error),
             Self::Operation(error) => Some(error),
+            Self::Driver(error) => Some(error),
+            Self::PayloadState(_)
+            | Self::TeardownState(_)
+            | Self::TimestampOverflow(_)
+            | Self::SizeOverflow(_)
+            | Self::Pump(_) => None,
+            Self::SupervisorPid(error) => Some(error),
+            Self::BatchCancel(error) => Some(error),
             Self::Runtime(error) => Some(error),
             Self::Coordinator(error) => Some(error),
-            Self::TimestampOverflow(_) | Self::SizeOverflow(_) => None,
+            Self::Control(error) => Some(error),
+            Self::Capability(error) => Some(error),
         }
     }
 }
@@ -134,9 +196,33 @@ impl From<AuthorityClockError> for SliceKError {
     }
 }
 
+impl From<CapabilityAuthorityError> for SliceKError {
+    fn from(error: CapabilityAuthorityError) -> Self {
+        Self::Capability(error)
+    }
+}
+
 impl From<StoreError> for SliceKError {
     fn from(error: StoreError) -> Self {
         Self::Operation(error)
+    }
+}
+
+impl From<ProviderError> for SliceKError {
+    fn from(error: ProviderError) -> Self {
+        Self::Driver(error)
+    }
+}
+
+impl From<nlos_process::SupervisorPidRegistryError> for SliceKError {
+    fn from(error: nlos_process::SupervisorPidRegistryError) -> Self {
+        Self::SupervisorPid(error)
+    }
+}
+
+impl From<ChannelWaitError> for SliceKError {
+    fn from(error: ChannelWaitError) -> Self {
+        Self::BatchCancel(error)
     }
 }
 

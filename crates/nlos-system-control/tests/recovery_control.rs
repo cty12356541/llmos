@@ -13,31 +13,39 @@ use nlos_ipc::{
     LocalRpcClient, OutboundResponse, PeerAuthorizer, PeerIdentity, TransportConfig, serve_one,
 };
 use nlos_schema::sabi::v1::{
-    AcknowledgeArtifactRecoveryAlertCommand, CallerIdentity, CapabilityHandle, ControlCommand,
-    ControlCommandSource, ControlScope, Envelope, ExchangeRequest, ExchangeResponse,
-    GetSystemControlRequest, LocalEndpoint, LocalTransportKind, NegotiateServiceRequest,
-    ReceiptReference, RetryDirective, SabiErrorCode, SabiRequestContext, ServiceCandidate,
-    ServiceVersion, SubmitControlCommandRequest, SystemControlView, control_command, envelope,
-    negotiate_service_response,
+    AcknowledgeArtifactRecoveryAlertCommand, AcknowledgeResourceRecoveryAlertCommand,
+    AcknowledgeSemanticRecoveryAlertCommand, CallerIdentity, CancelCommand, CapabilityHandle,
+    ControlCommand, ControlCommandSource, ControlScope, DisableApplicationCommand, Envelope,
+    ExchangeRequest, ExchangeResponse, GetSystemControlRequest, KillCommand, LocalEndpoint,
+    LocalTransportKind, NegotiateServiceRequest, PauseCommand, ReceiptReference, ReclaimCommand,
+    ResumeCommand, ResumeResourceRecoveryCommand, ResumeSemanticRecoveryCommand, RetryDirective,
+    SabiErrorCode, SabiFailure, SabiRequestContext, ServiceCandidate, ServiceVersion,
+    SubmitControlCommandRequest, SystemControlView, ThrottleCommand, UninstallApplicationCommand,
+    control_command, envelope, negotiate_service_response,
 };
 use nlos_schema::{
     MethodSemantics, SABI_ENVELOPE_SCHEMA, SABI_SYSTEM_CONTROL_SCHEMA,
     decode_artifact_recovery_operations_snapshot, decode_control_command_result,
+    decode_resource_recovery_operations_snapshot, decode_semantic_recovery_operations_snapshot,
     encode_get_system_control_request, encode_submit_control_command_request,
     system_control_schema_identity, validate_sabi_response_context,
 };
 use nlos_service_directory::{ServiceRegistration, SnapshotDirectory};
 use nlos_system_control::{
-    GET_METHOD, RecoveryCounter, RecoveryGauge, RecoveryHealthSource, RecoveryMetricsSink,
-    RecoverySystemControl, SUBMIT_METHOD, SYSTEM_CONTROL_SERVICE, SystemControlAuthorizer,
+    ApplicationCommandExecutor, ApplicationControlRequest, GET_METHOD, OperationCommandExecutor,
+    OperationControlRequest, RecoveryCounter, RecoveryGauge, RecoveryHealthSource,
+    RecoveryMetricsSink, RecoverySystemControl, SUBMIT_METHOD, SYSTEM_CONTROL_SERVICE,
+    SystemControlAuthorizer, resource_recovery_resume_reference,
 };
 use nlos_task::{
     ArtifactPublicationExpectation, ArtifactRecoveryFailureRequest, ArtifactRecoveryFailureSource,
-    AttemptSpec, PermitDecision, PermitRequest, PlanArtifactCommitRequest, SnapshotBundle,
+    AttemptSpec, PermitDecision, PermitRequest, PlanArtifactCommitRequest, ResourceCommitPlanId,
+    ResourceRecoveryState, SemanticCommitPlanId, SemanticRecoveryState, SnapshotBundle,
     SqliteTaskAuthority, TaskSpec, artifact_publication_plan_root, empty_effect_history_root,
+    semantic_recovery_resume_reference,
 };
 use nlos_types::{
-    ArtifactId, CancellationScopeId, Generation, IdempotencyKey, TaskAttemptId, TaskId,
+    ArtifactId, CancellationScopeId, Generation, IdempotencyKey, ReceiptId, TaskAttemptId, TaskId,
     TaskSnapshotId,
 };
 use tokio::io::duplex;
@@ -173,6 +181,8 @@ fn create_escalated_plan(authority: &SqliteTaskAuthority) -> nlos_task::Artifact
             task_id,
             task_generation: Generation::INITIAL,
             registered_at_ms: 1_000,
+            application_id: None,
+            plan_revision: None,
         })
         .unwrap();
     let attempt = AttemptSpec {
@@ -291,6 +301,9 @@ fn get_exchange_request() -> ExchangeRequest {
                 schema: Some(system_control_schema_identity()),
                 view: SystemControlView::ArtifactCommitRecovery.into(),
                 alert_limit: 8,
+                target_id: Vec::new(),
+                plan_id: Vec::new(),
+                target_generation: 0,
             })
             .unwrap(),
         )),
@@ -333,6 +346,14 @@ fn health(plan_id: nlos_task::ArtifactCommitPlanId) -> StubHealth {
         semantic_total_finalized: 0,
         semantic_domain_faulted: false,
         artifact_domain_faulted: false,
+        resource_durable_retrying: 0,
+        resource_durable_escalated: 0,
+        resource_durable_unacknowledged_escalated: 0,
+        resource_durable_resolved: 0,
+        resource_consecutive_failed_cycles: 0,
+        resource_total_inspected: 0,
+        resource_total_finalized: 0,
+        resource_domain_faulted: false,
     })
 }
 
@@ -375,6 +396,9 @@ fn get_returns_bounded_typed_health_without_local_diagnostics() {
         schema: Some(system_control_schema_identity()),
         view: SystemControlView::ArtifactCommitRecovery.into(),
         alert_limit: 8,
+        target_id: Vec::new(),
+        plan_id: Vec::new(),
+        target_generation: 0,
     })
     .unwrap();
     let response = control
@@ -408,6 +432,9 @@ fn get_returns_bounded_typed_health_without_local_diagnostics() {
                         schema: Some(system_control_schema_identity()),
                         view: SystemControlView::ArtifactCommitRecovery.into(),
                         alert_limit: 8,
+                        target_id: Vec::new(),
+                        plan_id: Vec::new(),
+                        target_generation: 0,
                     },)
                     .unwrap()
                 ),
@@ -431,7 +458,7 @@ fn metrics_export_uses_stable_catalog_and_live_task_authority_gauges() {
     control.export_metrics(&mut metrics).unwrap();
 
     assert_eq!(metrics.state, Some(RecoveryWorkerState::BackingOff));
-    assert_eq!(metrics.counters.len(), 3);
+    assert_eq!(metrics.counters.len(), 7);
     assert!(
         metrics
             .counters
@@ -450,6 +477,20 @@ fn metrics_export_uses_stable_catalog_and_live_task_authority_gauges() {
     assert_eq!(
         RecoveryGauge::DurableUnacknowledgedEscalated.name(),
         "nlos_artifact_recovery_durable_unacknowledged_escalated"
+    );
+    assert!(
+        metrics
+            .counters
+            .contains(&(RecoveryCounter::ResourcePlansInspected, 0))
+    );
+    assert!(
+        metrics
+            .gauges
+            .contains(&(RecoveryGauge::ResourceDurableUnacknowledgedEscalated, 0))
+    );
+    assert_eq!(
+        RecoveryGauge::ResourceDurableUnacknowledgedEscalated.name(),
+        "nlos_resource_recovery_durable_unacknowledged_escalated"
     );
 }
 
@@ -731,6 +772,479 @@ fn submit_rejects_forged_issuer_and_mismatched_command_key_without_receipt() {
     );
 }
 
+const OPERATION_TARGET_ID: [u8; 16] = [0x81; 16];
+const OPERATION_COMMAND_ID: [u8; 16] = [0x61; 16];
+const OPERATION_CAS: u64 = 5;
+
+fn operation_submit_envelope(arm: control_command::Command) -> Envelope {
+    let submit = SubmitControlCommandRequest {
+        schema: Some(system_control_schema_identity()),
+        command: Some(ControlCommand {
+            control_command_id: OPERATION_COMMAND_ID.to_vec(),
+            issuer_principal_id: vec![0x31; 16],
+            source: ControlCommandSource::Cli.into(),
+            scope: ControlScope::Operation.into(),
+            target_id: OPERATION_TARGET_ID.to_vec(),
+            expected_generation_or_revision: OPERATION_CAS,
+            command: Some(arm),
+            reason: "operator pauses the escalated operation".to_owned(),
+        }),
+    };
+    envelope(
+        SUBMIT_METHOD,
+        request_context(OPERATION_COMMAND_ID.to_vec()),
+        encode_submit_control_command_request(&submit).unwrap(),
+    )
+}
+
+/// One request served by [`RecordingOperationExecutor`].
+struct ExecutedOperation {
+    arm: &'static str,
+    target_id: [u8; 16],
+    expected_generation_or_revision: u64,
+    issuer_principal_id: [u8; 16],
+    idempotency_key: [u8; 16],
+    requested_at_ms: i64,
+    throttle_percent: Option<u64>,
+}
+
+/// Deterministic stub executor: records every request it serves and answers
+/// with a receipt id whose first byte names the executed arm.
+struct RecordingOperationExecutor {
+    requests: std::sync::Mutex<Vec<ExecutedOperation>>,
+}
+
+impl RecordingOperationExecutor {
+    fn receipt(arm_tag: u8) -> ReceiptId {
+        let mut id = OPERATION_TARGET_ID;
+        id[0] = arm_tag;
+        ReceiptId::from_bytes(id)
+    }
+
+    fn record(&self, arm: &'static str, request: &OperationControlRequest) {
+        self.record_with_percent(arm, request, None);
+    }
+
+    fn record_with_percent(
+        &self,
+        arm: &'static str,
+        request: &OperationControlRequest,
+        throttle_percent: Option<u64>,
+    ) {
+        self.requests.lock().unwrap().push(ExecutedOperation {
+            arm,
+            target_id: request.target_id,
+            expected_generation_or_revision: request.expected_generation_or_revision,
+            issuer_principal_id: request.issuer_principal_id,
+            idempotency_key: request.idempotency_key,
+            requested_at_ms: request.requested_at_ms,
+            throttle_percent,
+        });
+    }
+}
+
+impl OperationCommandExecutor for RecordingOperationExecutor {
+    fn pause_operation(&self, request: OperationControlRequest) -> Result<ReceiptId, SabiFailure> {
+        self.record("pause", &request);
+        Ok(Self::receipt(1))
+    }
+
+    fn resume_operation(&self, request: OperationControlRequest) -> Result<ReceiptId, SabiFailure> {
+        self.record("resume", &request);
+        Ok(Self::receipt(2))
+    }
+
+    fn cancel_operation(&self, request: OperationControlRequest) -> Result<ReceiptId, SabiFailure> {
+        self.record("cancel", &request);
+        Err(SabiFailure {
+            code: SabiErrorCode::Conflict.into(),
+            retry: RetryDirective::DoNotRetry.into(),
+            safe_message: "stub executor rejects cancels".to_owned(),
+        })
+    }
+
+    fn kill_operation(&self, request: OperationControlRequest) -> Result<ReceiptId, SabiFailure> {
+        self.record("kill", &request);
+        Ok(Self::receipt(4))
+    }
+
+    fn throttle_operation(
+        &self,
+        request: OperationControlRequest,
+        throttle_percent: u64,
+    ) -> Result<ReceiptId, SabiFailure> {
+        self.record_with_percent("throttle", &request, Some(throttle_percent));
+        Ok(Self::receipt(5))
+    }
+
+    fn reclaim_operation(
+        &self,
+        request: OperationControlRequest,
+    ) -> Result<ReceiptId, SabiFailure> {
+        self.record("reclaim", &request);
+        Ok(Self::receipt(6))
+    }
+}
+
+#[test]
+fn operation_commands_refuse_fail_closed_without_an_executor() {
+    let database = TestDatabase::new();
+    let authority = database.open();
+    let plan_id = create_escalated_plan(&authority);
+    let health = health(plan_id);
+    let control = RecoverySystemControl::new(&authority, &health, &CapabilityPolicy);
+    for arm in [
+        control_command::Command::PauseOperation(PauseCommand {}),
+        control_command::Command::ResumeOperation(ResumeCommand {}),
+        control_command::Command::CancelOperation(CancelCommand {}),
+        control_command::Command::KillOperation(KillCommand {}),
+        control_command::Command::ThrottleOperation(ThrottleCommand {
+            throttle_percent: 50,
+        }),
+        control_command::Command::ReclaimOperation(ReclaimCommand {}),
+    ] {
+        let response = control.handle_for_ipc(&operation_submit_envelope(arm), 10, 6_000);
+        let Some(envelope::CommonContext::ResponseContext(context)) =
+            response.common_context.as_ref()
+        else {
+            panic!("expected response context");
+        };
+        let failure = context.failure.as_ref().unwrap();
+        assert_eq!(failure.code, i32::from(SabiErrorCode::NotFound));
+        assert_eq!(failure.retry, i32::from(RetryDirective::DoNotRetry));
+        assert_eq!(
+            failure.safe_message,
+            "operation control execution backend is not wired"
+        );
+        assert!(context.receipts.is_empty());
+    }
+}
+
+#[test]
+fn operation_commands_route_to_the_wired_executor_with_typed_receipts() {
+    let database = TestDatabase::new();
+    let authority = database.open();
+    let plan_id = create_escalated_plan(&authority);
+    let health = health(plan_id);
+    let executor = RecordingOperationExecutor {
+        requests: std::sync::Mutex::new(Vec::new()),
+    };
+    let control = RecoverySystemControl::new(&authority, &health, &CapabilityPolicy)
+        .with_operation_executor(&executor);
+
+    let pause = control.handle_for_ipc(
+        &operation_submit_envelope(control_command::Command::PauseOperation(PauseCommand {})),
+        10,
+        6_000,
+    );
+    let result = decode_control_command_result(&pause.payload).unwrap();
+    assert_eq!(result.control_command_id, OPERATION_COMMAND_ID.to_vec());
+    assert_eq!(
+        result.receipt.unwrap().receipt_id,
+        RecordingOperationExecutor::receipt(1).into_bytes().to_vec()
+    );
+    validate_sabi_response_context(&pause, MethodSemantics::MUTATION).unwrap();
+
+    let resume = control.handle_for_ipc(
+        &operation_submit_envelope(control_command::Command::ResumeOperation(ResumeCommand {})),
+        10,
+        6_000,
+    );
+    let result = decode_control_command_result(&resume.payload).unwrap();
+    assert_eq!(
+        result.receipt.unwrap().receipt_id,
+        RecordingOperationExecutor::receipt(2).into_bytes().to_vec()
+    );
+
+    // An executor rejection crosses as the bounded failure it produced —
+    // class, retry directive, and safe message forwarded verbatim, with no
+    // receipt evidence.
+    let cancel = control.handle_for_ipc(
+        &operation_submit_envelope(control_command::Command::CancelOperation(CancelCommand {})),
+        10,
+        6_000,
+    );
+    let Some(envelope::CommonContext::ResponseContext(context)) = cancel.common_context.as_ref()
+    else {
+        panic!("expected response context");
+    };
+    let failure = context.failure.as_ref().unwrap();
+    assert_eq!(failure.code, i32::from(SabiErrorCode::Conflict));
+    assert_eq!(failure.retry, i32::from(RetryDirective::DoNotRetry));
+    assert_eq!(failure.safe_message, "stub executor rejects cancels");
+    assert!(cancel.payload.is_empty());
+    assert!(context.receipts.is_empty());
+
+    let requests = executor.requests.lock().unwrap();
+    assert_eq!(
+        requests.iter().map(|entry| entry.arm).collect::<Vec<_>>(),
+        vec!["pause", "resume", "cancel"]
+    );
+    for entry in requests.iter() {
+        assert_eq!(entry.target_id, OPERATION_TARGET_ID);
+        assert_eq!(entry.expected_generation_or_revision, OPERATION_CAS);
+        assert_eq!(entry.issuer_principal_id, [0x31; 16]);
+        assert_eq!(entry.idempotency_key, OPERATION_COMMAND_ID);
+        assert_eq!(entry.requested_at_ms, 6_000);
+    }
+}
+
+/// W29-D arms through the same seam: the kill/throttle/reclaim wire
+/// commands carry their typed receipt ids back, and throttle additionally
+/// forwards the whole-percent level to the executor.
+#[test]
+fn w29d_operation_arms_route_to_the_wired_executor_with_typed_receipts() {
+    let database = TestDatabase::new();
+    let authority = database.open();
+    let plan_id = create_escalated_plan(&authority);
+    let health = health(plan_id);
+    let executor = RecordingOperationExecutor {
+        requests: std::sync::Mutex::new(Vec::new()),
+    };
+    let control = RecoverySystemControl::new(&authority, &health, &CapabilityPolicy)
+        .with_operation_executor(&executor);
+
+    let kill = control.handle_for_ipc(
+        &operation_submit_envelope(control_command::Command::KillOperation(KillCommand {})),
+        10,
+        6_000,
+    );
+    let result = decode_control_command_result(&kill.payload).unwrap();
+    assert_eq!(
+        result.receipt.unwrap().receipt_id,
+        RecordingOperationExecutor::receipt(4).into_bytes().to_vec()
+    );
+
+    let throttle = control.handle_for_ipc(
+        &operation_submit_envelope(control_command::Command::ThrottleOperation(
+            ThrottleCommand {
+                throttle_percent: 50,
+            },
+        )),
+        10,
+        6_000,
+    );
+    let result = decode_control_command_result(&throttle.payload).unwrap();
+    assert_eq!(
+        result.receipt.unwrap().receipt_id,
+        RecordingOperationExecutor::receipt(5).into_bytes().to_vec()
+    );
+
+    let reclaim = control.handle_for_ipc(
+        &operation_submit_envelope(control_command::Command::ReclaimOperation(
+            ReclaimCommand {},
+        )),
+        10,
+        6_000,
+    );
+    let result = decode_control_command_result(&reclaim.payload).unwrap();
+    assert_eq!(
+        result.receipt.unwrap().receipt_id,
+        RecordingOperationExecutor::receipt(6).into_bytes().to_vec()
+    );
+    validate_sabi_response_context(&reclaim, MethodSemantics::MUTATION).unwrap();
+
+    let requests = executor.requests.lock().unwrap();
+    assert_eq!(
+        requests.iter().map(|entry| entry.arm).collect::<Vec<_>>(),
+        vec!["kill", "throttle", "reclaim"]
+    );
+    for entry in requests.iter() {
+        assert_eq!(entry.target_id, OPERATION_TARGET_ID);
+        assert_eq!(entry.expected_generation_or_revision, OPERATION_CAS);
+        assert_eq!(entry.issuer_principal_id, [0x31; 16]);
+        assert_eq!(entry.idempotency_key, OPERATION_COMMAND_ID);
+        assert_eq!(entry.requested_at_ms, 6_000);
+    }
+    let throttle_entry = requests
+        .iter()
+        .find(|entry| entry.arm == "throttle")
+        .unwrap();
+    assert_eq!(throttle_entry.throttle_percent, Some(50));
+    assert!(
+        requests
+            .iter()
+            .filter(|entry| entry.arm != "throttle")
+            .all(|entry| entry.throttle_percent.is_none())
+    );
+}
+
+const APPLICATION_PACKAGE_ID: [u8; 16] = [0xE1; 16];
+const APPLICATION_COMMAND_ID: [u8; 16] = [0x67; 16];
+const APPLICATION_CAS: u64 = 3;
+
+fn application_submit_envelope(arm: control_command::Command) -> Envelope {
+    let submit = SubmitControlCommandRequest {
+        schema: Some(system_control_schema_identity()),
+        command: Some(ControlCommand {
+            control_command_id: APPLICATION_COMMAND_ID.to_vec(),
+            issuer_principal_id: vec![0x31; 16],
+            source: ControlCommandSource::Cli.into(),
+            scope: ControlScope::Operation.into(),
+            target_id: APPLICATION_PACKAGE_ID.to_vec(),
+            expected_generation_or_revision: APPLICATION_CAS,
+            command: Some(arm),
+            reason: "operator drives the application lifecycle".to_owned(),
+        }),
+    };
+    envelope(
+        SUBMIT_METHOD,
+        request_context(APPLICATION_COMMAND_ID.to_vec()),
+        encode_submit_control_command_request(&submit).unwrap(),
+    )
+}
+
+struct ExecutedApplication {
+    arm: &'static str,
+    package_id: [u8; 16],
+    expected_generation_or_revision: u64,
+    issuer_principal_id: [u8; 16],
+    idempotency_key: [u8; 16],
+    requested_at_ms: i64,
+}
+
+/// Deterministic application executor stub: records every request it serves,
+/// answers disable with a receipt, and refuses uninstall with a bounded
+/// failure (mirroring `RecordingOperationExecutor`'s cancel refusal).
+struct RecordingApplicationExecutor {
+    requests: std::sync::Mutex<Vec<ExecutedApplication>>,
+}
+
+impl RecordingApplicationExecutor {
+    fn receipt(arm_tag: u8) -> ReceiptId {
+        let mut id = APPLICATION_PACKAGE_ID;
+        id[0] = arm_tag;
+        ReceiptId::from_bytes(id)
+    }
+
+    fn record(&self, arm: &'static str, request: &ApplicationControlRequest) {
+        self.requests.lock().unwrap().push(ExecutedApplication {
+            arm,
+            package_id: request.package_id,
+            expected_generation_or_revision: request.expected_generation_or_revision,
+            issuer_principal_id: request.issuer_principal_id,
+            idempotency_key: request.idempotency_key,
+            requested_at_ms: request.requested_at_ms,
+        });
+    }
+}
+
+impl ApplicationCommandExecutor for RecordingApplicationExecutor {
+    fn disable_application(
+        &self,
+        request: ApplicationControlRequest,
+    ) -> Result<ReceiptId, SabiFailure> {
+        self.record("disable", &request);
+        Ok(Self::receipt(7))
+    }
+
+    fn uninstall_application(
+        &self,
+        request: ApplicationControlRequest,
+    ) -> Result<ReceiptId, SabiFailure> {
+        self.record("uninstall", &request);
+        Err(SabiFailure {
+            code: SabiErrorCode::State.into(),
+            retry: RetryDirective::DoNotRetry.into(),
+            safe_message: "stub executor refuses uninstalls".to_owned(),
+        })
+    }
+}
+
+#[test]
+fn application_commands_refuse_fail_closed_without_an_executor() {
+    let database = TestDatabase::new();
+    let authority = database.open();
+    let plan_id = create_escalated_plan(&authority);
+    let health = health(plan_id);
+    let control = RecoverySystemControl::new(&authority, &health, &CapabilityPolicy);
+    for arm in [
+        control_command::Command::DisableApplication(DisableApplicationCommand {}),
+        control_command::Command::UninstallApplication(UninstallApplicationCommand {}),
+    ] {
+        let response = control.handle_for_ipc(&application_submit_envelope(arm), 10, 6_000);
+        let Some(envelope::CommonContext::ResponseContext(context)) =
+            response.common_context.as_ref()
+        else {
+            panic!("expected response context");
+        };
+        let failure = context.failure.as_ref().unwrap();
+        assert_eq!(failure.code, i32::from(SabiErrorCode::NotFound));
+        assert_eq!(failure.retry, i32::from(RetryDirective::DoNotRetry));
+        assert_eq!(
+            failure.safe_message,
+            "application control execution backend is not wired"
+        );
+        assert!(context.receipts.is_empty());
+    }
+}
+
+/// W35-P11 arms through the application seam: the disable wire command
+/// carries its typed receipt id back, the executor rejection crosses as the
+/// bounded failure it produced, and every request field (package identity,
+/// installation-generation CAS, issuer, idempotency key, wall clock) is
+/// forwarded intact.
+#[test]
+fn w35p11_application_arms_route_to_the_wired_executor_with_typed_receipts() {
+    let database = TestDatabase::new();
+    let authority = database.open();
+    let plan_id = create_escalated_plan(&authority);
+    let health = health(plan_id);
+    let executor = RecordingApplicationExecutor {
+        requests: std::sync::Mutex::new(Vec::new()),
+    };
+    let control = RecoverySystemControl::new(&authority, &health, &CapabilityPolicy)
+        .with_application_executor(&executor);
+
+    let disable = control.handle_for_ipc(
+        &application_submit_envelope(control_command::Command::DisableApplication(
+            DisableApplicationCommand {},
+        )),
+        10,
+        6_000,
+    );
+    let result = decode_control_command_result(&disable.payload).unwrap();
+    assert_eq!(result.control_command_id, APPLICATION_COMMAND_ID.to_vec());
+    assert_eq!(
+        result.receipt.unwrap().receipt_id,
+        RecordingApplicationExecutor::receipt(7)
+            .into_bytes()
+            .to_vec()
+    );
+    validate_sabi_response_context(&disable, MethodSemantics::MUTATION).unwrap();
+
+    let uninstall = control.handle_for_ipc(
+        &application_submit_envelope(control_command::Command::UninstallApplication(
+            UninstallApplicationCommand {},
+        )),
+        10,
+        6_000,
+    );
+    let Some(envelope::CommonContext::ResponseContext(context)) = uninstall.common_context.as_ref()
+    else {
+        panic!("expected response context");
+    };
+    let failure = context.failure.as_ref().unwrap();
+    assert_eq!(failure.code, i32::from(SabiErrorCode::State));
+    assert_eq!(failure.retry, i32::from(RetryDirective::DoNotRetry));
+    assert_eq!(failure.safe_message, "stub executor refuses uninstalls");
+    assert!(uninstall.payload.is_empty());
+    assert!(context.receipts.is_empty());
+
+    let requests = executor.requests.lock().unwrap();
+    assert_eq!(
+        requests.iter().map(|entry| entry.arm).collect::<Vec<_>>(),
+        vec!["disable", "uninstall"]
+    );
+    for entry in requests.iter() {
+        assert_eq!(entry.package_id, APPLICATION_PACKAGE_ID);
+        assert_eq!(entry.expected_generation_or_revision, APPLICATION_CAS);
+        assert_eq!(entry.issuer_principal_id, [0x31; 16]);
+        assert_eq!(entry.idempotency_key, APPLICATION_COMMAND_ID);
+        assert_eq!(entry.requested_at_ms, 6_000);
+    }
+}
+
 #[test]
 fn service_directory_negotiates_the_system_control_contract() {
     let directory = SnapshotDirectory::new([ServiceRegistration {
@@ -762,7 +1276,1237 @@ fn service_directory_negotiates_the_system_control_contract() {
         supported_transport_kinds: vec![LocalTransportKind::UnixSocket.into()],
     });
     let negotiate_service_response::Result::Binding(binding) = response.result.unwrap() else {
-        panic!("expected SystemControl binding")
+        panic!("expected SystemControl binding");
     };
     assert_eq!(binding.candidate.unwrap().service, SYSTEM_CONTROL_SERVICE);
+}
+
+const SEMANTIC_PLAN_ID: [u8; 16] = [0x71; 16];
+const SEMANTIC_ACK_COMMAND_ID: [u8; 16] = [0x53; 16];
+const SEMANTIC_RESUME_COMMAND_ID: [u8; 16] = [0x54; 16];
+const SEMANTIC_TOTAL_FAILURES: u64 = 8;
+
+/// Seeds one escalated `task_semantic_recovery` ledger row straight into the
+/// task database. The `Escalated` transition itself is W26-tested inside
+/// `nlos-task`; this fixture only manufactures the durable operations-face
+/// input the `SystemControl` handler reads. The recovery table's foreign key
+/// to `task_semantic_commit_plans` is enforced per-connection, so a raw
+/// seeding connection leaves it unchecked.
+fn seed_escalated_semantic_recovery(database: &TestDatabase) -> SemanticCommitPlanId {
+    let authority = database.open();
+    let summary = authority.summarize_semantic_recovery().unwrap();
+    assert_eq!(summary.escalated, 0, "fixture expects an empty ledger");
+    drop(authority);
+
+    let raw = rusqlite::Connection::open(&database.path).unwrap();
+    raw.pragma_update(None, "foreign_keys", "OFF").unwrap();
+    raw.execute(
+        "INSERT INTO task_semantic_recovery (
+            plan_id, recovery_state, consecutive_failures, total_failures,
+            last_failure_source, first_failed_at_ms, last_failed_at_ms,
+            next_retry_at_ms, escalated_at_ms, resolved_at_ms, updated_at_ms
+        ) VALUES (?1, 1, ?2, ?3, 1, 1000, 1400, NULL, 1500, NULL, 1500)",
+        rusqlite::params![
+            SEMANTIC_PLAN_ID.as_slice(),
+            SEMANTIC_TOTAL_FAILURES.to_be_bytes().as_slice(),
+            SEMANTIC_TOTAL_FAILURES.to_be_bytes().as_slice(),
+        ],
+    )
+    .unwrap();
+    SemanticCommitPlanId::from_bytes(SEMANTIC_PLAN_ID)
+}
+
+fn semantic_health(plan_id: nlos_task::ArtifactCommitPlanId) -> StubHealth {
+    StubHealth(RecoveryWorkerHealth {
+        state: RecoveryWorkerState::Running,
+        completed_cycles: 21,
+        total_inspected: 5,
+        total_finalized: 4,
+        consecutive_failed_cycles: 0,
+        retry_delay: None,
+        last_failures: vec![RecoveryWorkerFailure {
+            plan_id: Some(plan_id),
+            authority: WorkerFailureAuthority::Coordinator,
+            message: "secret local database path must not cross IPC".to_owned(),
+        }],
+        durable_retrying: 0,
+        durable_escalated: 0,
+        durable_unacknowledged_escalated: 0,
+        durable_resolved: 0,
+        semantic_durable_retrying: 2,
+        semantic_durable_escalated: 3,
+        semantic_durable_unacknowledged_escalated: 3,
+        semantic_durable_resolved: 7,
+        semantic_consecutive_failed_cycles: 4,
+        semantic_total_inspected: 13,
+        semantic_total_finalized: 6,
+        semantic_domain_faulted: false,
+        artifact_domain_faulted: false,
+        resource_durable_retrying: 0,
+        resource_durable_escalated: 0,
+        resource_durable_unacknowledged_escalated: 0,
+        resource_durable_resolved: 0,
+        resource_consecutive_failed_cycles: 0,
+        resource_total_inspected: 0,
+        resource_total_finalized: 0,
+        resource_domain_faulted: false,
+    })
+}
+
+fn semantic_get_envelope(alert_limit: u32) -> Envelope {
+    envelope(
+        GET_METHOD,
+        request_context(Vec::new()),
+        encode_get_system_control_request(&GetSystemControlRequest {
+            schema: Some(system_control_schema_identity()),
+            view: SystemControlView::SemanticCommitRecovery.into(),
+            alert_limit,
+            target_id: Vec::new(),
+            plan_id: Vec::new(),
+            target_generation: 0,
+        })
+        .unwrap(),
+    )
+}
+
+fn semantic_submit_envelope(
+    command_id: [u8; 16],
+    command: control_command::Command,
+    expected_total_failures: u64,
+) -> Envelope {
+    let submit = SubmitControlCommandRequest {
+        schema: Some(system_control_schema_identity()),
+        command: Some(ControlCommand {
+            control_command_id: command_id.to_vec(),
+            issuer_principal_id: vec![0x31; 16],
+            source: ControlCommandSource::Cli.into(),
+            scope: ControlScope::Operation.into(),
+            target_id: SEMANTIC_PLAN_ID.to_vec(),
+            expected_generation_or_revision: expected_total_failures,
+            command: Some(command),
+            reason: "operator inspected durable semantic recovery state".to_owned(),
+        }),
+    };
+    envelope(
+        SUBMIT_METHOD,
+        request_context(command_id.to_vec()),
+        encode_submit_control_command_request(&submit).unwrap(),
+    )
+}
+
+#[test]
+fn semantic_get_routes_by_view_and_reports_authoritative_ledger_facts() {
+    let database = TestDatabase::new();
+    let authority = database.open();
+    let plan_id = create_escalated_plan(&authority);
+    seed_escalated_semantic_recovery(&database);
+    let health = semantic_health(plan_id);
+    let control = RecoverySystemControl::new(&authority, &health, &CapabilityPolicy);
+
+    let response = control
+        .handle(&semantic_get_envelope(8), 10, 6_000)
+        .unwrap();
+    validate_sabi_response_context(&response, MethodSemantics::QUERY).unwrap();
+    let snapshot = decode_semantic_recovery_operations_snapshot(&response.payload).unwrap();
+    let metrics = snapshot.metrics.as_ref().unwrap();
+    // The durable gauges must come from the live semantic ledger, not the
+    // deliberately different worker cache in `semantic_health`.
+    assert_eq!(metrics.durable_retrying, 0);
+    assert_eq!(metrics.durable_escalated, 1);
+    assert_eq!(metrics.durable_unacknowledged_escalated, 1);
+    assert_eq!(metrics.durable_resolved, 0);
+    assert_eq!(metrics.total_inspected, 13);
+    assert_eq!(metrics.total_finalized, 6);
+    assert_eq!(metrics.consecutive_failed_cycles, 4);
+    assert!(!metrics.domain_faulted);
+    assert_eq!(snapshot.alerts.len(), 1);
+    assert_eq!(snapshot.alerts[0].plan_id, SEMANTIC_PLAN_ID);
+    assert_eq!(snapshot.alerts[0].total_failures, SEMANTIC_TOTAL_FAILURES);
+    assert_eq!(
+        snapshot.alerts[0].last_failure_authority,
+        i32::from(nlos_schema::sabi::v1::RecoveryFailureAuthority::Semantic)
+    );
+    assert_eq!(snapshot.alerts[0].escalated_at_ms, 1_500);
+    assert_eq!(snapshot.alerts[0].acknowledgement_receipt, None);
+    assert!(!snapshot.alerts_truncated);
+    assert!(
+        !response
+            .payload
+            .windows(6)
+            .any(|window| window == b"secret")
+    );
+
+    let artifact = control
+        .handle(
+            &envelope(
+                GET_METHOD,
+                request_context(Vec::new()),
+                encode_get_system_control_request(&GetSystemControlRequest {
+                    schema: Some(system_control_schema_identity()),
+                    view: SystemControlView::ArtifactCommitRecovery.into(),
+                    alert_limit: 8,
+                    target_id: Vec::new(),
+                    plan_id: Vec::new(),
+                    target_generation: 0,
+                })
+                .unwrap(),
+            ),
+            10,
+            6_000,
+        )
+        .unwrap();
+    let artifact_snapshot =
+        decode_artifact_recovery_operations_snapshot(&artifact.payload).unwrap();
+    assert_eq!(artifact_snapshot.alerts.len(), 1);
+    assert_eq!(artifact_snapshot.alerts[0].plan_id, plan_id.as_bytes());
+}
+
+#[test]
+fn semantic_acknowledge_replays_idempotently_with_typed_cas_failures() {
+    let database = TestDatabase::new();
+    let authority = database.open();
+    let plan_id = create_escalated_plan(&authority);
+    seed_escalated_semantic_recovery(&database);
+    let health = semantic_health(plan_id);
+    let control = RecoverySystemControl::new(&authority, &health, &CapabilityPolicy);
+
+    let stale_cas = control
+        .handle(
+            &semantic_submit_envelope(
+                SEMANTIC_ACK_COMMAND_ID,
+                control_command::Command::AcknowledgeSemanticRecoveryAlert(
+                    AcknowledgeSemanticRecoveryAlertCommand {},
+                ),
+                SEMANTIC_TOTAL_FAILURES + 1,
+            ),
+            10,
+            6_000,
+        )
+        .unwrap_err();
+    let failure = stale_cas.to_sabi_failure();
+    assert_eq!(failure.code, i32::from(SabiErrorCode::Conflict));
+    assert_eq!(failure.retry, i32::from(RetryDirective::DoNotRetry));
+
+    let acknowledged = control
+        .handle(
+            &semantic_submit_envelope(
+                SEMANTIC_ACK_COMMAND_ID,
+                control_command::Command::AcknowledgeSemanticRecoveryAlert(
+                    AcknowledgeSemanticRecoveryAlertCommand {},
+                ),
+                SEMANTIC_TOTAL_FAILURES,
+            ),
+            10,
+            6_000,
+        )
+        .unwrap();
+    validate_sabi_response_context(&acknowledged, MethodSemantics::MUTATION).unwrap();
+    let ack_result = decode_control_command_result(&acknowledged.payload).unwrap();
+    let ack_receipt = ack_result.receipt.unwrap();
+    assert_eq!(ack_receipt.receipt_id.len(), 16);
+
+    let replay = control
+        .handle(
+            &semantic_submit_envelope(
+                SEMANTIC_ACK_COMMAND_ID,
+                control_command::Command::AcknowledgeSemanticRecoveryAlert(
+                    AcknowledgeSemanticRecoveryAlertCommand {},
+                ),
+                SEMANTIC_TOTAL_FAILURES,
+            ),
+            10,
+            7_000,
+        )
+        .unwrap();
+    assert_eq!(
+        decode_control_command_result(&replay.payload)
+            .unwrap()
+            .receipt,
+        Some(ack_receipt.clone())
+    );
+    let alerts = authority.list_semantic_recovery_alerts().unwrap();
+    assert_eq!(alerts.len(), 1);
+    assert_eq!(
+        alerts[0].acknowledgement.map(|receipt| receipt.receipt_id),
+        Some(ReceiptId::from_bytes(
+            ack_receipt.receipt_id.clone().try_into().unwrap()
+        ))
+    );
+}
+
+#[test]
+fn semantic_resume_requeues_the_escalated_ledger_with_typed_replay_failure() {
+    let database = TestDatabase::new();
+    let authority = database.open();
+    let plan_id = create_escalated_plan(&authority);
+    seed_escalated_semantic_recovery(&database);
+    let semantic_plan = SemanticCommitPlanId::from_bytes(SEMANTIC_PLAN_ID);
+    let health = semantic_health(plan_id);
+    let control = RecoverySystemControl::new(&authority, &health, &CapabilityPolicy);
+
+    let resumed = control
+        .handle(
+            &semantic_submit_envelope(
+                SEMANTIC_RESUME_COMMAND_ID,
+                control_command::Command::ResumeSemanticRecovery(ResumeSemanticRecoveryCommand {}),
+                SEMANTIC_TOTAL_FAILURES,
+            ),
+            10,
+            6_000,
+        )
+        .unwrap();
+    validate_sabi_response_context(&resumed, MethodSemantics::MUTATION).unwrap();
+    let resume_result = decode_control_command_result(&resumed.payload).unwrap();
+    let resume_reference = resume_result.receipt.unwrap();
+    assert_eq!(
+        resume_reference.receipt_id,
+        semantic_recovery_resume_reference(semantic_plan, SEMANTIC_TOTAL_FAILURES)
+            .as_bytes()
+            .to_vec()
+    );
+    let record = authority
+        .inspect_semantic_recovery(semantic_plan)
+        .unwrap()
+        .unwrap();
+    assert_eq!(record.state, SemanticRecoveryState::Retrying);
+    assert_eq!(record.total_failures, SEMANTIC_TOTAL_FAILURES);
+    assert_eq!(record.consecutive_failures, 0);
+    assert_eq!(record.next_retry_at_ms, Some(6_000));
+    assert_eq!(record.escalated_at_ms, None);
+
+    let replayed_resume = control
+        .handle(
+            &semantic_submit_envelope(
+                SEMANTIC_RESUME_COMMAND_ID,
+                control_command::Command::ResumeSemanticRecovery(ResumeSemanticRecoveryCommand {}),
+                SEMANTIC_TOTAL_FAILURES,
+            ),
+            10,
+            7_000,
+        )
+        .unwrap_err();
+    let replay_failure = replayed_resume.to_sabi_failure();
+    assert_eq!(replay_failure.code, i32::from(SabiErrorCode::State));
+    assert_eq!(replay_failure.retry, i32::from(RetryDirective::DoNotRetry));
+}
+
+#[tokio::test]
+async fn semantic_escalated_plan_is_acknowledged_and_resumed_over_real_ipc() {
+    let database = Arc::new(TestDatabase::new());
+    let authority = Arc::new(database.open());
+    let plan_id = create_escalated_plan(&authority);
+    seed_escalated_semantic_recovery(&database);
+    let semantic_plan = SemanticCommitPlanId::from_bytes(SEMANTIC_PLAN_ID);
+
+    let acknowledge_request = ExchangeRequest {
+        envelope: Some(semantic_submit_envelope(
+            SEMANTIC_ACK_COMMAND_ID,
+            control_command::Command::AcknowledgeSemanticRecoveryAlert(
+                AcknowledgeSemanticRecoveryAlertCommand {},
+            ),
+            SEMANTIC_TOTAL_FAILURES,
+        )),
+    };
+    let config = transport_config();
+    let (client_stream, server_stream) = duplex(64 * 1024);
+    let server_authority = Arc::clone(&authority);
+    let server_health = semantic_health(plan_id);
+    let server = tokio::spawn(async move {
+        serve_one(
+            server_stream,
+            config,
+            PeerIdentity::InMemory,
+            &AllowPeer,
+            move |validated| {
+                let response = RecoverySystemControl::new(
+                    server_authority.as_ref(),
+                    &server_health,
+                    &CapabilityPolicy,
+                )
+                .handle_for_ipc(validated.envelope(), 10, 6_000);
+                async move {
+                    Ok(OutboundResponse::Typed(ExchangeResponse {
+                        envelope: Some(response),
+                    }))
+                }
+            },
+        )
+        .await
+    });
+    let response = LocalRpcClient::new(client_stream, config)
+        .exchange_validated(acknowledge_request)
+        .await
+        .unwrap();
+    server.await.unwrap().unwrap();
+
+    let response_envelope = response.envelope();
+    validate_sabi_response_context(response_envelope, MethodSemantics::MUTATION).unwrap();
+    let result = decode_control_command_result(&response_envelope.payload).unwrap();
+    let ack_receipt = result.receipt.unwrap();
+    assert_eq!(ack_receipt.receipt_id.len(), 16);
+    assert_eq!(
+        response_envelope
+            .common_context
+            .as_ref()
+            .and_then(|context| match context {
+                envelope::CommonContext::ResponseContext(context) => context.receipts.first(),
+                envelope::CommonContext::RequestContext(_) => None,
+            }),
+        Some(&ack_receipt)
+    );
+
+    let resume_request = ExchangeRequest {
+        envelope: Some(semantic_submit_envelope(
+            SEMANTIC_RESUME_COMMAND_ID,
+            control_command::Command::ResumeSemanticRecovery(ResumeSemanticRecoveryCommand {}),
+            SEMANTIC_TOTAL_FAILURES,
+        )),
+    };
+    let resume_health = semantic_health(plan_id);
+    let resume = RecoverySystemControl::new(authority.as_ref(), &resume_health, &CapabilityPolicy)
+        .handle(resume_request.envelope.as_ref().unwrap(), 10, 6_000)
+        .unwrap();
+    validate_sabi_response_context(&resume, MethodSemantics::MUTATION).unwrap();
+    let resume_result = decode_control_command_result(&resume.payload).unwrap();
+    assert_eq!(
+        resume_result.receipt.unwrap().receipt_id,
+        semantic_recovery_resume_reference(semantic_plan, SEMANTIC_TOTAL_FAILURES)
+            .as_bytes()
+            .to_vec()
+    );
+    assert_eq!(
+        authority
+            .inspect_semantic_recovery(semantic_plan)
+            .unwrap()
+            .unwrap()
+            .state,
+        SemanticRecoveryState::Retrying
+    );
+}
+
+const RESOURCE_PLAN_ID: [u8; 16] = [0x81; 16];
+const RESOURCE_ACK_COMMAND_ID: [u8; 16] = [0x57; 16];
+const RESOURCE_RESUME_COMMAND_ID: [u8; 16] = [0x58; 16];
+const RESOURCE_TOTAL_FAILURES: u64 = 8;
+
+/// Seeds one escalated `task_resource_recovery` ledger row straight into the
+/// task database, mirroring the semantic fixture: the `Escalated`
+/// transition itself is W28-C-tested inside `nlos-task`; this fixture only
+/// manufactures the durable operations-face input the `SystemControl`
+/// handler reads. The recovery table's foreign key to
+/// `task_resource_commit_plans` is enforced per-connection, so a raw
+/// seeding connection leaves it unchecked.
+fn seed_escalated_resource_recovery(database: &TestDatabase) -> ResourceCommitPlanId {
+    let authority = database.open();
+    let summary = authority.summarize_resource_recovery().unwrap();
+    assert_eq!(summary.escalated, 0, "fixture expects an empty ledger");
+    drop(authority);
+
+    let raw = rusqlite::Connection::open(&database.path).unwrap();
+    raw.pragma_update(None, "foreign_keys", "OFF").unwrap();
+    raw.execute(
+        "INSERT INTO task_resource_recovery (
+            plan_id, recovery_state, consecutive_failures, total_failures,
+            last_failure_source, first_failed_at_ms, last_failed_at_ms,
+            next_retry_at_ms, escalated_at_ms, resolved_at_ms, updated_at_ms
+        ) VALUES (?1, 1, ?2, ?3, 1, 1000, 1400, NULL, 1500, NULL, 1500)",
+        rusqlite::params![
+            RESOURCE_PLAN_ID.as_slice(),
+            RESOURCE_TOTAL_FAILURES.to_be_bytes().as_slice(),
+            RESOURCE_TOTAL_FAILURES.to_be_bytes().as_slice(),
+        ],
+    )
+    .unwrap();
+    ResourceCommitPlanId::from_bytes(RESOURCE_PLAN_ID)
+}
+
+fn resource_health(plan_id: nlos_task::ArtifactCommitPlanId) -> StubHealth {
+    StubHealth(RecoveryWorkerHealth {
+        state: RecoveryWorkerState::Running,
+        completed_cycles: 21,
+        total_inspected: 5,
+        total_finalized: 4,
+        consecutive_failed_cycles: 0,
+        retry_delay: None,
+        last_failures: vec![RecoveryWorkerFailure {
+            plan_id: Some(plan_id),
+            authority: WorkerFailureAuthority::Coordinator,
+            message: "secret local database path must not cross IPC".to_owned(),
+        }],
+        durable_retrying: 0,
+        durable_escalated: 0,
+        durable_unacknowledged_escalated: 0,
+        durable_resolved: 0,
+        semantic_durable_retrying: 0,
+        semantic_durable_escalated: 0,
+        semantic_durable_unacknowledged_escalated: 0,
+        semantic_durable_resolved: 0,
+        semantic_consecutive_failed_cycles: 0,
+        semantic_total_inspected: 0,
+        semantic_total_finalized: 0,
+        semantic_domain_faulted: false,
+        artifact_domain_faulted: false,
+        resource_durable_retrying: 2,
+        resource_durable_escalated: 3,
+        resource_durable_unacknowledged_escalated: 3,
+        resource_durable_resolved: 7,
+        resource_consecutive_failed_cycles: 4,
+        resource_total_inspected: 15,
+        resource_total_finalized: 7,
+        resource_domain_faulted: false,
+    })
+}
+
+fn resource_get_envelope(alert_limit: u32) -> Envelope {
+    envelope(
+        GET_METHOD,
+        request_context(Vec::new()),
+        encode_get_system_control_request(&GetSystemControlRequest {
+            schema: Some(system_control_schema_identity()),
+            view: SystemControlView::ResourceCommitRecovery.into(),
+            alert_limit,
+            target_id: Vec::new(),
+            plan_id: Vec::new(),
+            target_generation: 0,
+        })
+        .unwrap(),
+    )
+}
+
+fn resource_submit_envelope(
+    command_id: [u8; 16],
+    command: control_command::Command,
+    expected_total_failures: u64,
+) -> Envelope {
+    let submit = SubmitControlCommandRequest {
+        schema: Some(system_control_schema_identity()),
+        command: Some(ControlCommand {
+            control_command_id: command_id.to_vec(),
+            issuer_principal_id: vec![0x31; 16],
+            source: ControlCommandSource::Cli.into(),
+            scope: ControlScope::Operation.into(),
+            target_id: RESOURCE_PLAN_ID.to_vec(),
+            expected_generation_or_revision: expected_total_failures,
+            command: Some(command),
+            reason: "operator inspected durable resource recovery state".to_owned(),
+        }),
+    };
+    envelope(
+        SUBMIT_METHOD,
+        request_context(command_id.to_vec()),
+        encode_submit_control_command_request(&submit).unwrap(),
+    )
+}
+
+#[test]
+fn resource_get_routes_by_view_and_reports_authoritative_ledger_facts() {
+    let database = TestDatabase::new();
+    let authority = database.open();
+    let plan_id = create_escalated_plan(&authority);
+    seed_escalated_resource_recovery(&database);
+    let health = resource_health(plan_id);
+    let control = RecoverySystemControl::new(&authority, &health, &CapabilityPolicy);
+
+    let response = control
+        .handle(&resource_get_envelope(8), 10, 6_000)
+        .unwrap();
+    validate_sabi_response_context(&response, MethodSemantics::QUERY).unwrap();
+    let snapshot = decode_resource_recovery_operations_snapshot(&response.payload).unwrap();
+    let metrics = snapshot.metrics.as_ref().unwrap();
+    // The durable gauges must come from the live resource ledger, not the
+    // deliberately different worker cache in `resource_health`.
+    assert_eq!(metrics.durable_retrying, 0);
+    assert_eq!(metrics.durable_escalated, 1);
+    assert_eq!(metrics.durable_unacknowledged_escalated, 1);
+    assert_eq!(metrics.durable_resolved, 0);
+    assert_eq!(metrics.total_inspected, 15);
+    assert_eq!(metrics.total_finalized, 7);
+    assert_eq!(metrics.consecutive_failed_cycles, 4);
+    assert!(!metrics.domain_faulted);
+    assert_eq!(snapshot.alerts.len(), 1);
+    assert_eq!(snapshot.alerts[0].plan_id, RESOURCE_PLAN_ID);
+    assert_eq!(snapshot.alerts[0].total_failures, RESOURCE_TOTAL_FAILURES);
+    assert_eq!(
+        snapshot.alerts[0].last_failure_authority,
+        i32::from(nlos_schema::sabi::v1::RecoveryFailureAuthority::Resource)
+    );
+    assert_eq!(snapshot.alerts[0].escalated_at_ms, 1_500);
+    assert_eq!(snapshot.alerts[0].acknowledgement_receipt, None);
+    assert!(!snapshot.alerts_truncated);
+    assert!(
+        !response
+            .payload
+            .windows(6)
+            .any(|window| window == b"secret")
+    );
+
+    let semantic = control
+        .handle(&semantic_get_envelope(8), 10, 6_000)
+        .unwrap();
+    let semantic_snapshot = decode_semantic_recovery_operations_snapshot(&semantic.payload)
+        .expect("resource view must not leak into the semantic view");
+    assert!(semantic_snapshot.alerts.is_empty());
+}
+
+#[test]
+fn resource_acknowledge_replays_idempotently_with_typed_cas_failures() {
+    let database = TestDatabase::new();
+    let authority = database.open();
+    let plan_id = create_escalated_plan(&authority);
+    seed_escalated_resource_recovery(&database);
+    let health = resource_health(plan_id);
+    let control = RecoverySystemControl::new(&authority, &health, &CapabilityPolicy);
+
+    let stale_cas = control
+        .handle(
+            &resource_submit_envelope(
+                RESOURCE_ACK_COMMAND_ID,
+                control_command::Command::AcknowledgeResourceRecoveryAlert(
+                    AcknowledgeResourceRecoveryAlertCommand {},
+                ),
+                RESOURCE_TOTAL_FAILURES + 1,
+            ),
+            10,
+            6_000,
+        )
+        .unwrap_err();
+    let failure = stale_cas.to_sabi_failure();
+    assert_eq!(failure.code, i32::from(SabiErrorCode::Conflict));
+    assert_eq!(failure.retry, i32::from(RetryDirective::DoNotRetry));
+
+    let acknowledged = control
+        .handle(
+            &resource_submit_envelope(
+                RESOURCE_ACK_COMMAND_ID,
+                control_command::Command::AcknowledgeResourceRecoveryAlert(
+                    AcknowledgeResourceRecoveryAlertCommand {},
+                ),
+                RESOURCE_TOTAL_FAILURES,
+            ),
+            10,
+            6_000,
+        )
+        .unwrap();
+    validate_sabi_response_context(&acknowledged, MethodSemantics::MUTATION).unwrap();
+    let ack_result = decode_control_command_result(&acknowledged.payload).unwrap();
+    let ack_receipt = ack_result.receipt.unwrap();
+    assert_eq!(ack_receipt.receipt_id.len(), 16);
+
+    let replay = control
+        .handle(
+            &resource_submit_envelope(
+                RESOURCE_ACK_COMMAND_ID,
+                control_command::Command::AcknowledgeResourceRecoveryAlert(
+                    AcknowledgeResourceRecoveryAlertCommand {},
+                ),
+                RESOURCE_TOTAL_FAILURES,
+            ),
+            10,
+            7_000,
+        )
+        .unwrap();
+    assert_eq!(
+        decode_control_command_result(&replay.payload)
+            .unwrap()
+            .receipt,
+        Some(ack_receipt.clone())
+    );
+    let alerts = authority.list_resource_recovery_alerts().unwrap();
+    assert_eq!(alerts.len(), 1);
+    assert_eq!(
+        alerts[0].acknowledgement.map(|receipt| receipt.receipt_id),
+        Some(ReceiptId::from_bytes(
+            ack_receipt.receipt_id.clone().try_into().unwrap()
+        ))
+    );
+}
+
+#[test]
+fn resource_resume_requeues_the_escalated_ledger_with_typed_replay_failure() {
+    let database = TestDatabase::new();
+    let authority = database.open();
+    let plan_id = create_escalated_plan(&authority);
+    seed_escalated_resource_recovery(&database);
+    let resource_plan = ResourceCommitPlanId::from_bytes(RESOURCE_PLAN_ID);
+    let health = resource_health(plan_id);
+    let control = RecoverySystemControl::new(&authority, &health, &CapabilityPolicy);
+
+    let resumed = control
+        .handle(
+            &resource_submit_envelope(
+                RESOURCE_RESUME_COMMAND_ID,
+                control_command::Command::ResumeResourceRecovery(ResumeResourceRecoveryCommand {}),
+                RESOURCE_TOTAL_FAILURES,
+            ),
+            10,
+            6_000,
+        )
+        .unwrap();
+    validate_sabi_response_context(&resumed, MethodSemantics::MUTATION).unwrap();
+    let resume_result = decode_control_command_result(&resumed.payload).unwrap();
+    let resume_reference = resume_result.receipt.unwrap();
+    assert_eq!(
+        resume_reference.receipt_id,
+        resource_recovery_resume_reference(resource_plan, RESOURCE_TOTAL_FAILURES)
+            .as_bytes()
+            .to_vec()
+    );
+    let record = authority
+        .inspect_resource_recovery(resource_plan)
+        .unwrap()
+        .unwrap();
+    assert_eq!(record.state, ResourceRecoveryState::Retrying);
+    assert_eq!(record.total_failures, RESOURCE_TOTAL_FAILURES);
+    assert_eq!(record.consecutive_failures, 0);
+    assert_eq!(record.next_retry_at_ms, Some(6_000));
+    assert_eq!(record.escalated_at_ms, None);
+
+    let replayed_resume = control
+        .handle(
+            &resource_submit_envelope(
+                RESOURCE_RESUME_COMMAND_ID,
+                control_command::Command::ResumeResourceRecovery(ResumeResourceRecoveryCommand {}),
+                RESOURCE_TOTAL_FAILURES,
+            ),
+            10,
+            7_000,
+        )
+        .unwrap_err();
+    let replay_failure = replayed_resume.to_sabi_failure();
+    assert_eq!(replay_failure.code, i32::from(SabiErrorCode::State));
+    assert_eq!(replay_failure.retry, i32::from(RetryDirective::DoNotRetry));
+}
+
+#[tokio::test]
+async fn resource_escalated_plan_is_acknowledged_and_resumed_over_real_ipc() {
+    let database = Arc::new(TestDatabase::new());
+    let authority = Arc::new(database.open());
+    let plan_id = create_escalated_plan(&authority);
+    seed_escalated_resource_recovery(&database);
+    let resource_plan = ResourceCommitPlanId::from_bytes(RESOURCE_PLAN_ID);
+
+    let acknowledge_request = ExchangeRequest {
+        envelope: Some(resource_submit_envelope(
+            RESOURCE_ACK_COMMAND_ID,
+            control_command::Command::AcknowledgeResourceRecoveryAlert(
+                AcknowledgeResourceRecoveryAlertCommand {},
+            ),
+            RESOURCE_TOTAL_FAILURES,
+        )),
+    };
+    let config = transport_config();
+    let (client_stream, server_stream) = duplex(64 * 1024);
+    let server_authority = Arc::clone(&authority);
+    let server_health = resource_health(plan_id);
+    let server = tokio::spawn(async move {
+        serve_one(
+            server_stream,
+            config,
+            PeerIdentity::InMemory,
+            &AllowPeer,
+            move |validated| {
+                let response = RecoverySystemControl::new(
+                    server_authority.as_ref(),
+                    &server_health,
+                    &CapabilityPolicy,
+                )
+                .handle_for_ipc(validated.envelope(), 10, 6_000);
+                async move {
+                    Ok(OutboundResponse::Typed(ExchangeResponse {
+                        envelope: Some(response),
+                    }))
+                }
+            },
+        )
+        .await
+    });
+    let response = LocalRpcClient::new(client_stream, config)
+        .exchange_validated(acknowledge_request)
+        .await
+        .unwrap();
+    server.await.unwrap().unwrap();
+
+    let response_envelope = response.envelope();
+    validate_sabi_response_context(response_envelope, MethodSemantics::MUTATION).unwrap();
+    let result = decode_control_command_result(&response_envelope.payload).unwrap();
+    let ack_receipt = result.receipt.unwrap();
+    assert_eq!(ack_receipt.receipt_id.len(), 16);
+    assert_eq!(
+        response_envelope
+            .common_context
+            .as_ref()
+            .and_then(|context| match context {
+                envelope::CommonContext::ResponseContext(context) => context.receipts.first(),
+                envelope::CommonContext::RequestContext(_) => None,
+            }),
+        Some(&ack_receipt)
+    );
+
+    let resume_request = ExchangeRequest {
+        envelope: Some(resource_submit_envelope(
+            RESOURCE_RESUME_COMMAND_ID,
+            control_command::Command::ResumeResourceRecovery(ResumeResourceRecoveryCommand {}),
+            RESOURCE_TOTAL_FAILURES,
+        )),
+    };
+    let resume_health = resource_health(plan_id);
+    let resume = RecoverySystemControl::new(authority.as_ref(), &resume_health, &CapabilityPolicy)
+        .handle(resume_request.envelope.as_ref().unwrap(), 10, 6_000)
+        .unwrap();
+    validate_sabi_response_context(&resume, MethodSemantics::MUTATION).unwrap();
+    let resume_result = decode_control_command_result(&resume.payload).unwrap();
+    assert_eq!(
+        resume_result.receipt.unwrap().receipt_id,
+        resource_recovery_resume_reference(resource_plan, RESOURCE_TOTAL_FAILURES)
+            .as_bytes()
+            .to_vec()
+    );
+    assert_eq!(
+        authority
+            .inspect_resource_recovery(resource_plan)
+            .unwrap()
+            .unwrap()
+            .state,
+        ResourceRecoveryState::Retrying
+    );
+}
+
+// W32-G (B5-3): per-layer inspect views — unwired fail-closed defaults,
+// wired stub receipts, and the real TaskAuthority-backed TaskGroup view.
+
+struct StubLayerSources {
+    node: Option<nlos_system_control::control::TaskNodeInspection>,
+    fiber: Option<nlos_system_control::control::ExecutionFiberInspection>,
+    topic: Option<nlos_system_control::control::TopicInspection>,
+    operation: Option<nlos_system_control::control::DurableOperationInspection>,
+}
+
+impl nlos_system_control::TaskNodeInspectSource for StubLayerSources {
+    fn inspect_task_node(
+        &self,
+        plan_id: [u8; 16],
+        node_id: [u8; 16],
+    ) -> Result<nlos_system_control::control::TaskNodeInspection, SabiFailure> {
+        match &self.node {
+            Some(inspection) if inspection.plan_id == plan_id && inspection.node_id == node_id => {
+                Ok(inspection.clone())
+            }
+            _ => Err(SabiFailure {
+                code: SabiErrorCode::NotFound.into(),
+                retry: RetryDirective::DoNotRetry.into(),
+                safe_message: "requested task node was not found".to_owned(),
+            }),
+        }
+    }
+}
+
+impl nlos_system_control::ExecutionFiberInspectSource for StubLayerSources {
+    fn inspect_execution_fiber(
+        &self,
+        fiber_id: [u8; 16],
+        generation: u64,
+    ) -> Result<nlos_system_control::control::ExecutionFiberInspection, SabiFailure> {
+        match &self.fiber {
+            Some(inspection)
+                if inspection.fiber_id == fiber_id && inspection.generation == generation =>
+            {
+                Ok(inspection.clone())
+            }
+            _ => Err(SabiFailure {
+                code: SabiErrorCode::NotFound.into(),
+                retry: RetryDirective::DoNotRetry.into(),
+                safe_message: "requested execution fiber handle was not found".to_owned(),
+            }),
+        }
+    }
+}
+
+impl nlos_system_control::TopicInspectSource for StubLayerSources {
+    fn inspect_topic(
+        &self,
+        topic_id: [u8; 16],
+    ) -> Result<nlos_system_control::control::TopicInspection, SabiFailure> {
+        match &self.topic {
+            Some(inspection) if inspection.topic_id == topic_id => Ok(inspection.clone()),
+            _ => Err(SabiFailure {
+                code: SabiErrorCode::NotFound.into(),
+                retry: RetryDirective::DoNotRetry.into(),
+                safe_message: "requested topic was not found".to_owned(),
+            }),
+        }
+    }
+}
+
+impl nlos_system_control::OperationInspectSource for StubLayerSources {
+    fn inspect_operation(
+        &self,
+        operation_id: [u8; 16],
+        generation: u64,
+    ) -> Result<nlos_system_control::control::DurableOperationInspection, SabiFailure> {
+        match &self.operation {
+            Some(inspection)
+                if inspection.operation_id == operation_id
+                    && inspection.generation == generation =>
+            {
+                Ok(inspection.clone())
+            }
+            _ => Err(SabiFailure {
+                code: SabiErrorCode::NotFound.into(),
+                retry: RetryDirective::DoNotRetry.into(),
+                safe_message: "requested operation row was not found".to_owned(),
+            }),
+        }
+    }
+}
+
+fn stub_layer_sources() -> StubLayerSources {
+    use nlos_schema::sabi::v1::{
+        ContextResidencyTier, DurableOperationState, ExecutionFiberLifecycleState,
+        ExecutionFiberPhase, PlanNodeKind, PlanNodeLifecycleState,
+    };
+    StubLayerSources {
+        node: Some(nlos_system_control::control::TaskNodeInspection {
+            plan_id: [0xA1; 16],
+            node_id: [0xA2; 16],
+            kind: PlanNodeKind::Executable,
+            state: PlanNodeLifecycleState::Eligible,
+            declared_revision: 4,
+            node_digest: vec![0xA3; 32],
+            transition_count: 2,
+            residency_tier: ContextResidencyTier::MetadataOnly,
+            residency_transition_count: 0,
+            first_declared_at_ms: 2_000,
+            updated_at_ms: 2_400,
+        }),
+        fiber: Some(nlos_system_control::control::ExecutionFiberInspection {
+            fiber_id: [0xB1; 16],
+            generation: 2,
+            state: ExecutionFiberLifecycleState::Running,
+            lifecycle_phase: ExecutionFiberPhase::WaitingExternal,
+            active_cpu_ms: 11,
+            elapsed_wall_ms: 40,
+            scheduler_wait_ms: 3,
+            external_wait_ms: 20,
+            backpressure_wait_ms: 1,
+            suspended_ms: 0,
+        }),
+        topic: Some(nlos_system_control::control::TopicInspection {
+            topic_id: [0xC1; 16],
+            channel_id: [0xC2; 16],
+            channel_generation: 5,
+            name: b"stage-b/inspect".to_vec(),
+            active_subscriptions: 2,
+            policy_digest: vec![0xC3; 32],
+            created_at_ms: 3_000,
+        }),
+        operation: Some(nlos_system_control::control::DurableOperationInspection {
+            operation_id: [0xD1; 16],
+            generation: 1,
+            state: DurableOperationState::Dispatched,
+            cancel_epoch: 0,
+            owner_fiber_id: [0xB1; 16],
+            owner_fiber_generation: 2,
+            outcome_receipt_id: None,
+        }),
+    }
+}
+
+fn layer_get_envelope(
+    view: SystemControlView,
+    target_id: Vec<u8>,
+    plan_id: Vec<u8>,
+    target_generation: u64,
+) -> Envelope {
+    let mut request = request_context(Vec::new());
+    request.correlation_id = vec![0x44; 16];
+    let mut envelope = envelope(GET_METHOD, request, Vec::new());
+    envelope.payload = encode_get_system_control_request(&GetSystemControlRequest {
+        schema: Some(system_control_schema_identity()),
+        view: view.into(),
+        alert_limit: 8,
+        target_id,
+        plan_id,
+        target_generation,
+    })
+    .unwrap();
+    envelope
+}
+
+fn w32g_group_fixture(authority: &SqliteTaskAuthority) -> nlos_types::TaskGroupId {
+    use nlos_task::{
+        AttemptSpec, CompletionMode, FailureMode, GroupBinding, GroupSpec, SnapshotBundle, TaskSpec,
+    };
+    let task_id = TaskId::from_bytes([0x11; 16]);
+    authority
+        .register_task(TaskSpec {
+            task_id,
+            task_generation: Generation::INITIAL,
+            registered_at_ms: 1_000,
+            application_id: None,
+            plan_revision: None,
+        })
+        .unwrap();
+    let group_id = nlos_types::TaskGroupId::from_bytes([0x91; 16]);
+    authority
+        .register_group(GroupSpec {
+            group_id,
+            task_id,
+            task_generation: Generation::INITIAL,
+            parent_group_id: None,
+            group_policy_digest: [0x91; 32],
+            completion_mode: CompletionMode::All,
+            failure_mode: FailureMode::CollectAll,
+            max_children: 4,
+            max_depth: 1,
+            resource_group_id: None,
+            resource_account_digest: None,
+            cancellation_scope_id: CancellationScopeId::from_bytes([0x92; 16]),
+            registered_at_ms: 1_500,
+        })
+        .unwrap();
+    let record = authority.inspect_group(group_id).unwrap();
+    let binding = GroupBinding {
+        group_id,
+        expected_membership_generation: record.membership_generation,
+        expected_membership_root: record.membership_root,
+        expected_group_policy_digest: record.group_policy_digest,
+    };
+    authority
+        .register_attempt_in_group(
+            AttemptSpec {
+                task_id,
+                attempt_id: TaskAttemptId::from_bytes([0x93; 16]),
+                attempt_generation: Generation::INITIAL,
+                snapshot: SnapshotBundle {
+                    snapshot_id: TaskSnapshotId::from_bytes([0x94; 16]),
+                    snapshot_digest: [0x95; 32],
+                    expected_head_commit_seq: 0,
+                    effect_history_root: empty_effect_history_root(),
+                    retry_fence_epoch: 0,
+                },
+                cancellation_scope_id: CancellationScopeId::from_bytes([0x96; 16]),
+                cancellation_generation: Generation::INITIAL,
+                idempotency_key: IdempotencyKey::from_bytes([0x97; 16]),
+                registered_at_ms: 2_000,
+            },
+            binding,
+        )
+        .unwrap();
+    group_id
+}
+
+#[test]
+fn w32g_layer_views_refuse_fail_closed_without_sources() {
+    let database = TestDatabase::new();
+    let authority = database.open();
+    let plan_id = create_escalated_plan(&authority);
+    let stub_health = health(plan_id);
+    let control = RecoverySystemControl::new(&authority, &stub_health, &CapabilityPolicy);
+    for (view, target_id, plan, generation) in [
+        (
+            SystemControlView::TaskNode,
+            vec![0xA2; 16],
+            vec![0xA1; 16],
+            0_u64,
+        ),
+        (
+            SystemControlView::ExecutionFiber,
+            vec![0xB1; 16],
+            Vec::new(),
+            2_u64,
+        ),
+        (SystemControlView::Topic, vec![0xC1; 16], Vec::new(), 0_u64),
+        (
+            SystemControlView::Operation,
+            vec![0xD1; 16],
+            Vec::new(),
+            1_u64,
+        ),
+    ] {
+        let response = control.handle_for_ipc(
+            &layer_get_envelope(view, target_id, plan, generation),
+            10,
+            6_000,
+        );
+        let Some(envelope::CommonContext::ResponseContext(context)) =
+            response.common_context.as_ref()
+        else {
+            panic!("expected response context");
+        };
+        let failure = context.failure.as_ref().unwrap();
+        assert_eq!(failure.code, i32::from(SabiErrorCode::NotFound));
+        assert_eq!(failure.retry, i32::from(RetryDirective::DoNotRetry));
+        assert_eq!(
+            failure.safe_message,
+            "layer inspection backend is not wired"
+        );
+        assert!(context.receipts.is_empty());
+    }
+}
+
+#[test]
+#[allow(clippy::too_many_lines)] // Layer snapshot matrix; third inspector arg adds one line per dispatch.
+fn w32g_layer_views_route_to_wired_sources_with_typed_snapshots() {
+    use nlos_system_control::control::{ControlCommand, ControlOutcome, dispatch_in_process};
+    let database = TestDatabase::new();
+    let authority = database.open();
+    let plan_id = create_escalated_plan(&authority);
+    let sources = stub_layer_sources();
+    let stub_health = health(plan_id);
+    let control = RecoverySystemControl::new(&authority, &stub_health, &CapabilityPolicy)
+        .with_task_node_source(&sources)
+        .with_execution_fiber_source(&sources)
+        .with_topic_source(&sources)
+        .with_operation_source(&sources);
+
+    let node_receipt = dispatch_in_process(
+        &control,
+        &ControlCommand::InspectTaskNode {
+            plan_id: [0xA1; 16],
+            node_id: [0xA2; 16],
+        },
+        10,
+        6_000,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    let ControlOutcome::TaskNodeInspected(node) = node_receipt.outcome.as_ref().unwrap() else {
+        panic!("expected task node inspection receipt");
+    };
+    assert_eq!(node.plan_id, [0xA1; 16]);
+    assert_eq!(node.declared_revision, 4);
+    assert_eq!(node.node_digest, vec![0xA3; 32]);
+
+    let fiber_receipt = dispatch_in_process(
+        &control,
+        &ControlCommand::InspectExecutionFiber {
+            fiber_id: [0xB1; 16],
+            generation: 2,
+        },
+        10,
+        6_000,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    let ControlOutcome::ExecutionFiberInspected(fiber) = fiber_receipt.outcome.as_ref().unwrap()
+    else {
+        panic!("expected execution fiber inspection receipt");
+    };
+    assert_eq!(fiber.fiber_id, [0xB1; 16]);
+    assert_eq!(fiber.elapsed_wall_ms, 40);
+
+    let topic_receipt = dispatch_in_process(
+        &control,
+        &ControlCommand::InspectTopic {
+            topic_id: [0xC1; 16],
+        },
+        10,
+        6_000,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    let ControlOutcome::TopicInspected(topic) = topic_receipt.outcome.as_ref().unwrap() else {
+        panic!("expected topic inspection receipt");
+    };
+    assert_eq!(topic.name, b"stage-b/inspect".to_vec());
+    assert_eq!(topic.active_subscriptions, 2);
+
+    let operation_receipt = dispatch_in_process(
+        &control,
+        &ControlCommand::InspectOperation {
+            operation_id: [0xD1; 16],
+            generation: 1,
+        },
+        10,
+        6_000,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    let ControlOutcome::DurableOperationInspected(operation) =
+        operation_receipt.outcome.as_ref().unwrap()
+    else {
+        panic!("expected durable operation inspection receipt");
+    };
+    assert_eq!(operation.owner_fiber_id, [0xB1; 16]);
+    assert!(operation.outcome_receipt_id.is_none());
+
+    let missing = dispatch_in_process(
+        &control,
+        &ControlCommand::InspectTopic {
+            topic_id: [0xEE; 16],
+        },
+        10,
+        6_000,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    let Err(failure) = missing.outcome.as_ref() else {
+        panic!("expected typed failure for a missing topic");
+    };
+    assert_eq!(failure.code, i32::from(SabiErrorCode::NotFound));
+    assert_eq!(failure.safe_message, "requested topic was not found");
+}
+
+#[test]
+fn w32g_task_group_view_reads_the_real_task_authority() {
+    use nlos_schema::sabi::v1::TaskGroupLifecycleState;
+    use nlos_system_control::control::{ControlCommand, ControlOutcome, dispatch_in_process};
+    let database = TestDatabase::new();
+    let authority = database.open();
+    let group_id = w32g_group_fixture(&authority);
+    let plan_id = create_escalated_plan(&authority);
+    let stub_health = health(plan_id);
+    let control = RecoverySystemControl::new(&authority, &stub_health, &CapabilityPolicy);
+
+    let receipt = dispatch_in_process(
+        &control,
+        &ControlCommand::InspectTaskGroup {
+            group_id: *group_id.as_bytes(),
+        },
+        10,
+        6_000,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    let ControlOutcome::TaskGroupInspected(group) = receipt.outcome.as_ref().unwrap() else {
+        panic!("expected task group inspection receipt");
+    };
+    assert_eq!(group.group_id, *group_id.as_bytes());
+    assert_eq!(group.task_id, [0x11; 16]);
+    assert_eq!(group.parent_group_id, None);
+    assert_eq!(group.state, TaskGroupLifecycleState::Open);
+    assert_eq!(group.members.len(), 1);
+    assert_eq!(group.members[0].member_id, [0x93; 16]);
+    assert_eq!(group.members[0].admission_receipt_id.len(), 16);
+    assert!(!group.members_truncated);
+
+    let missing = dispatch_in_process(
+        &control,
+        &ControlCommand::InspectTaskGroup {
+            group_id: [0xEE; 16],
+        },
+        10,
+        6_000,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    let Err(failure) = missing.outcome.as_ref() else {
+        panic!("expected typed failure for a missing group");
+    };
+    assert_eq!(failure.code, i32::from(SabiErrorCode::NotFound));
+    assert_eq!(failure.retry, i32::from(RetryDirective::DoNotRetry));
 }

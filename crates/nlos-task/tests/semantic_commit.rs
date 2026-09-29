@@ -212,6 +212,8 @@ fn run_semantic_owner_receipt_lifecycle(with_effect: bool) {
     };
     let task = SqliteTaskAuthority::open(&fixture.task_path).unwrap();
     task.register_task(TaskSpec {
+        application_id: None,
+        plan_revision: None,
         task_id,
         task_generation: Generation::INITIAL,
         registered_at_ms: 1,

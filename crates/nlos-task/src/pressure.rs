@@ -3,11 +3,14 @@
 //!
 //! Honest scope of this skeleton:
 //!
-//! - **Prefix enforcement only.** [`crate::SqliteTaskAuthority::request_commit_permit`]
+//! - **Prefix enforcement plus one real closure path.** [`crate::SqliteTaskAuthority::request_commit_permit`]
 //!   consults [`WorkingSetPressure::admits`] before issuing a new outstanding
 //!   `CommitPermit`, and [`crate::SqliteTaskAuthority::register_task`]
-//!   consults [`ScaleProfile::admits_task_nodes`] before a net-new durable
-//!   Task registration; idempotent permit and registration replays bypass the
+//!   consults [`ScaleProfile::admits_task_registrations`] before a net-new
+//!   durable Task registration (ADR-0016 决定 4 registration dimension;
+//!   the declared-`TaskNode` dimension [`enforce_task_node_admission`] is
+//!   consulted at the plan-association/materialization boundary, W30-D
+//!   gap); idempotent permit and registration replays bypass the
 //!   gates. When admission
 //!   still passes but the projected active count crosses the soft threshold,
 //!   [`working_set_reclaim_advisory`] surfaces a typed
@@ -17,14 +20,24 @@
 //!   [`WorkingSetReclaimExecution`]; when execution is planned on an issued
 //!   permit, [`execute_working_set_reclaim_execution`] surfaces a typed
 //!   [`WorkingSetReclaimOutcome`] for the `RebuildableCache` prefix (synthetic
-//!   evictable-unit counter only; no Context Residency Controller). Later
-//!   phases and full Materialization Controller wiring remain deferred.
-//! - **No rehydrate.** Checkpoint/evict/rehydrate benchmarks and recovery
-//!   wiring are registered gaps in `docs/evidence/stage-b/b-task-scale-001.md`.
+//!   evictable-unit counter only; no Context Residency Controller).
+//!   [`crate::SqliteTaskAuthority::drive_working_set_reclaim`] then drives a
+//!   planned execution to completion through the authority's real closure
+//!   paths (W31-C): the `CheckpointEvict` phase closes evictable issued
+//!   permits through the public `close_permit` path
+//!   (`CancelledBeforeEffect`), while `RebuildableCache`,
+//!   `DegradeBackgroundQos`, and `Kill` report `face_absent` with zero
+//!   units — this authority owns no cache, `QoS`, or kill face in this slice.
+//! - **No rehydrate in this crate.** The measured checkpoint/evict/rehydrate
+//!   cycle for fibers is the runtime B path
+//!   (`nlos-runtime-tokio` snapshot/resume, W31-C evidence); a Task-plane
+//!   rehydrate face remains a registered gap.
 //! - **Predicate surface.** [`WorkingSetPressure::needs_reclaim`] reports when
 //!   the observed active working set crosses the tier's soft threshold;
 //!   [`crate::ScaleProfile::admits_active_working_set`] remains the hard
 //!   inclusive upper bound checked by [`enforce_working_set_admission`].
+
+use nlos_types::{CommitPermitId, ReceiptId, TaskId};
 
 use crate::TaskStoreError;
 use crate::model::PermitDecision;
@@ -231,6 +244,61 @@ pub fn inspect_working_set_pressure(
     }
 }
 
+/// Controller request to drive one planned reclaim execution to completion
+/// through the authority's real closure paths (W31-C).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WorkingSetReclaimExecutionRequest {
+    /// The planned step this drive executes — the advisory warrant surfaced
+    /// on an issued `CommitPermitDecision`.
+    pub execution: WorkingSetReclaimExecution,
+    pub executed_at_ms: i64,
+}
+
+/// One durably evicted working-set member of a driven reclaim execution.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WorkingSetReclaimEviction {
+    pub task_id: TaskId,
+    pub permit_id: CommitPermitId,
+    /// The `TaskPermitClosureReceipt` written by the public close path.
+    pub closure_receipt_id: ReceiptId,
+}
+
+/// Per-phase execution fact of one driven reclaim execution.
+///
+/// `face_absent` marks phases this authority has no real face for in this
+/// slice (`RebuildableCache`, `DegradeBackgroundQos`, `Kill`): their zero
+/// `evicted_units` is an honest absence, never a success claim.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WorkingSetReclaimPhaseReport {
+    pub phase: ReclaimPhase,
+    /// Working-set units durably evicted by this phase's real closure path.
+    pub evicted_units: u64,
+    pub face_absent: bool,
+}
+
+/// Readback of one reclaim execution driven to completion: the phase walk
+/// with real per-phase facts, the durable evictions, and the observed
+/// pre/post working-set counts (W31-C).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkingSetReclaimExecutionReport {
+    /// The warrant this drive executed (planned step + advisory snapshot).
+    pub execution: WorkingSetReclaimExecution,
+    /// Phases walked in [`TASK_DEFAULT_RECLAIM_POLICY`] order from the
+    /// planned step's sequence index.
+    pub phases: Vec<WorkingSetReclaimPhaseReport>,
+    /// Permits durably closed by the `CheckpointEvict` phase, in eviction
+    /// order.
+    pub evictions: Vec<WorkingSetReclaimEviction>,
+    /// Store-wide issued-permit count observed before the first closure.
+    pub pre_active_count: u64,
+    /// Store-wide issued-permit count observed after the last closure.
+    pub post_active_count: u64,
+    /// The soft threshold count the execution targeted.
+    pub reclaim_threshold_count: u64,
+    /// Whether the post count is back at or below the soft threshold.
+    pub pressure_relieved: bool,
+}
+
 /// Reports whether a projected net-new issuance should surface reclaim
 /// advisory after hard admission passes.
 ///
@@ -317,10 +385,45 @@ pub fn enforce_working_set_admission(
 }
 
 /// Fail-closed when a net-new durable Task registration would exceed the
-/// tier hard logical task-node cap.
+/// tier hard registration cap — the second explicit dimension of
+/// ADR-0016 决定 4 (`max_task_registrations`).
 ///
 /// `current_count` is the store-wide count of registered Tasks before the
 /// candidate registration; the gate consults `current_count + 1`.
+///
+/// # Errors
+///
+/// Returns [`TaskStoreError::TaskRegistrationAdmissionDenied`] when the
+/// projected count exceeds [`ScaleProfile::max_task_registrations`].
+pub fn enforce_task_registration_admission(
+    profile: &ScaleProfile,
+    current_count: u64,
+) -> Result<(), TaskStoreError> {
+    let projected = current_count
+        .checked_add(1)
+        .ok_or(TaskStoreError::EpochExhausted)?;
+    if profile.admits_task_registrations(projected) {
+        Ok(())
+    } else {
+        Err(TaskStoreError::TaskRegistrationAdmissionDenied {
+            profile_id: profile.profile_id,
+            registration_count: projected,
+            max_task_registrations: profile.max_task_registrations,
+        })
+    }
+}
+
+/// Fail-closed when a plan-side declaration or association would exceed
+/// the tier hard declared-`TaskNode` cap.
+///
+/// 口径 note (ADR-0016 决定 4): [`ScaleProfile::max_task_nodes`] counts
+/// declared `TaskNode`s (the persisted `plan_nodes` count of the
+/// `nlos-plan` authority). Before W29-A the `register_task` path
+/// provisionally consulted this dimension over durable `Task`
+/// registrations; since the normalization the registration bound is
+/// [`enforce_task_registration_admission`]. This gate is the consult
+/// surface for the plan-association/materialization boundary (W30-D,
+/// registered gap); no store path in this crate calls it yet.
 ///
 /// # Errors
 ///
@@ -349,9 +452,10 @@ mod tests {
     use super::{
         CommitPermitDecision, ReclaimPhase, ReclaimPolicy, TASK_DEFAULT_RECLAIM_POLICY,
         WorkingSetPressure, WorkingSetReclaimAdvisory, WorkingSetReclaimExecution,
-        WorkingSetReclaimOutcome, enforce_task_node_admission, enforce_working_set_admission,
-        execute_working_set_reclaim_execution, inspect_working_set_pressure,
-        plan_working_set_reclaim_execution, working_set_reclaim_advisory,
+        WorkingSetReclaimOutcome, enforce_task_node_admission, enforce_task_registration_admission,
+        enforce_working_set_admission, execute_working_set_reclaim_execution,
+        inspect_working_set_pressure, plan_working_set_reclaim_execution,
+        working_set_reclaim_advisory,
     };
     use crate::TaskStoreError;
     use crate::model::PermitDecision;
@@ -410,6 +514,7 @@ mod tests {
         let profile = ScaleProfile {
             profile_id: "task-admission-unit",
             max_task_nodes: 64,
+            max_task_registrations: 64,
             max_active_working_set: 2,
             reclaim_threshold_ratio: Some(DEFAULT_RECLAIM_THRESHOLD_RATIO),
         };
@@ -431,6 +536,7 @@ mod tests {
         let profile = ScaleProfile {
             profile_id: "task-node-admission-unit",
             max_task_nodes: 2,
+            max_task_registrations: 64,
             max_active_working_set: 64,
             reclaim_threshold_ratio: Some(DEFAULT_RECLAIM_THRESHOLD_RATIO),
         };
@@ -445,6 +551,34 @@ mod tests {
                 max_task_nodes: 2,
             }
         ));
+        // 决定 4 口径: the same count stays inside the independent
+        // registration dimension this profile leaves open.
+        enforce_task_registration_admission(&profile, 2).expect("registration dimension open");
+    }
+
+    #[test]
+    fn enforce_task_registration_admission_admits_at_cap_rejects_one_over() {
+        let profile = ScaleProfile {
+            profile_id: "task-registration-admission-unit",
+            max_task_nodes: 64,
+            max_task_registrations: 2,
+            max_active_working_set: 64,
+            reclaim_threshold_ratio: Some(DEFAULT_RECLAIM_THRESHOLD_RATIO),
+        };
+        enforce_task_registration_admission(&profile, 0).expect("first slot");
+        enforce_task_registration_admission(&profile, 1).expect("at cap");
+        let denied = enforce_task_registration_admission(&profile, 2).unwrap_err();
+        assert!(matches!(
+            denied,
+            TaskStoreError::TaskRegistrationAdmissionDenied {
+                profile_id: "task-registration-admission-unit",
+                registration_count: 3,
+                max_task_registrations: 2,
+            }
+        ));
+        // 决定 4 口径: the task-node dimension stays open at the same
+        // count.
+        enforce_task_node_admission(&profile, 2).expect("task-node dimension open");
     }
 
     #[test]
@@ -452,6 +586,7 @@ mod tests {
         let profile = ScaleProfile {
             profile_id: "task-advisory-unit",
             max_task_nodes: 64,
+            max_task_registrations: 64,
             max_active_working_set: 2,
             reclaim_threshold_ratio: Some(DEFAULT_RECLAIM_THRESHOLD_RATIO),
         };
@@ -482,6 +617,7 @@ mod tests {
         let profile = ScaleProfile {
             profile_id: "task-inspect-unit",
             max_task_nodes: 64,
+            max_task_registrations: 64,
             max_active_working_set: 2,
             reclaim_threshold_ratio: Some(DEFAULT_RECLAIM_THRESHOLD_RATIO),
         };
@@ -572,6 +708,7 @@ mod tests {
         let profile = ScaleProfile {
             profile_id: "task-custom",
             max_task_nodes: 1_000,
+            max_task_registrations: 1_000,
             max_active_working_set: 100,
             reclaim_threshold_ratio: None,
         };

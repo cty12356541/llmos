@@ -20,8 +20,9 @@ use nlos_application::{
 };
 use nlos_artifact::{
     ArtifactStore, ContentDigest, CreateArtifactSpec, PackageEntryRole, PackageManifest,
-    PackageManifestEntry, ProvenanceSourceTriple, PutRevisionRequest, SignedPackage,
-    VerifyPackageRequest, package_manifest_message,
+    PackageManifestEntry, PackageTaskKind, PackageTaskTemplate, ProvenanceSourceTriple,
+    PutRevisionRequest, SignedPackage, SignedPackageWithTasks, VerifyPackageRequest,
+    VerifyPackageWithTasksRequest, package_manifest_message, package_manifest_with_tasks_message,
 };
 use nlos_identity::{BootstrapPrincipalRequest, IdentityAuthority, IdentityBinding, KeyPurpose};
 use nlos_types::{
@@ -182,6 +183,72 @@ impl TestStack {
             )
             .expect("verify package");
         decision.receipt().clone()
+    }
+
+    /// Builds, signs, and verifies one task-templated package whose single
+    /// entry binds the published artifact's head and whose `tasks` segment
+    /// is the caller's; returns the receipt and the signed package (the
+    /// compile tests need the declared segment).
+    pub fn verify_templated_package(
+        &self,
+        package_seed: u8,
+        version: u64,
+        tasks: Vec<PackageTaskTemplate>,
+        idempotency_key: IdempotencyKey,
+        verified_at_ms: u64,
+    ) -> (
+        nlos_artifact::PackageVerificationReceipt,
+        SignedPackageWithTasks,
+    ) {
+        let (artifact_id, digest) = self.publish_artifact(0x31, b"payload-of-the-templated");
+        let manifest = PackageManifest {
+            package_id: PackageId::from_bytes([package_seed; 16]),
+            version,
+            entries: vec![PackageManifestEntry {
+                name: "main".to_string(),
+                artifact_id,
+                digest,
+                role: PackageEntryRole::Executable,
+            }],
+        };
+        let message = package_manifest_with_tasks_message(&manifest, &tasks);
+        let signed = SignedPackageWithTasks {
+            manifest,
+            tasks,
+            signer: self.identity.binding.principal_id,
+            signature: self.identity.key.sign(&message).to_bytes(),
+        };
+        let decision = self
+            .artifacts
+            .verify_package_with_tasks(
+                &self.identity.authority,
+                VerifyPackageWithTasksRequest {
+                    signed: &signed,
+                    idempotency_key,
+                    verified_at_ms,
+                },
+            )
+            .expect("verify templated package");
+        (decision.receipt().clone(), signed)
+    }
+}
+
+/// One template whose digest-bound bodies are re-derivable from its node
+/// key (the compile-equivalence test derives the same fields directly).
+pub fn task_template(
+    node_key: [u8; 16],
+    kind: PackageTaskKind,
+    dependency_keys: Vec<[u8; 16]>,
+) -> PackageTaskTemplate {
+    PackageTaskTemplate {
+        node_key,
+        kind,
+        binding_digest: ContentDigest::of_bytes(&node_key).into_bytes(),
+        dependency_keys,
+        input_selectors_digest: ContentDigest::of_bytes(b"input-selectors").into_bytes(),
+        output_contract_digest: ContentDigest::of_bytes(b"output-contract").into_bytes(),
+        policy_digest: ContentDigest::of_bytes(b"policy").into_bytes(),
+        resource_ceiling_digest: ContentDigest::of_bytes(b"resource-ceiling").into_bytes(),
     }
 }
 

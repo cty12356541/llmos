@@ -58,8 +58,9 @@ impl DomainPaths {
 pub(crate) enum BlobCommit {
     /// The blob was written, verified, renamed, and directory-synced.
     Stored,
-    /// A blob with this digest already existed; content addressing makes the
-    /// write a no-op (read paths re-verify the digest).
+    /// A blob with this digest already existed and its stored bytes were
+    /// re-verified against the digest address (see `verify_present_blob`);
+    /// content addressing makes the write a no-op.
     AlreadyPresent,
 }
 
@@ -75,7 +76,7 @@ pub(crate) fn commit_blob(
 ) -> Result<BlobCommit, ArtifactError> {
     let final_path = domain.blob_path(digest);
     if final_path.try_exists().map_err(ArtifactError::Io)? {
-        return Ok(BlobCommit::AlreadyPresent);
+        return verify_present_blob(&final_path, digest);
     }
     let shard = final_path.parent().ok_or(ArtifactError::CorruptRecord(
         "blob path has no shard parent",
@@ -83,10 +84,7 @@ pub(crate) fn commit_blob(
     fs::create_dir_all(shard).map_err(map_write_error)?;
     sync_dir(&domain.blobs)?;
 
-    let sequence = TMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let tmp_path = domain
-        .tmp
-        .join(format!("{}.{}.tmp", digest.to_hex(), sequence));
+    let tmp_path = next_tmp_path(domain, digest);
 
     let write_result = write_and_verify(&tmp_path, digest, bytes);
     if let Err(error) = write_result {
@@ -102,15 +100,65 @@ pub(crate) fn commit_blob(
                 return Err(ArtifactError::CrossDeviceRename);
             }
             // A concurrent commit of identical content may have won the
-            // rename; content addressing makes that benign.
+            // rename; that reuse is benign only when verified, exactly like
+            // the entry fast path above.
             if final_path.try_exists().map_err(ArtifactError::Io)? {
-                return Ok(BlobCommit::AlreadyPresent);
+                return verify_present_blob(&final_path, digest);
             }
             return Err(ArtifactError::Io(error));
         }
     }
     sync_dir(shard)?;
     Ok(BlobCommit::Stored)
+}
+
+/// Allocates the next tmp scratch path: `<digest>.<pid>.<seq>.tmp`. The
+/// process id plus the process-local sequence makes a cross-process name
+/// collision impossible for concurrent writers (deep-audit/32 M2): two
+/// processes committing the same digest with independent sequence numbers
+/// would otherwise share one scratch file, and one of them could rename
+/// bytes mid-write that it never verified into the digest address.
+fn next_tmp_path(domain: &DomainPaths, digest: ContentDigest) -> PathBuf {
+    let sequence = TMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    domain.tmp.join(format!(
+        "{}.{}.{}.tmp",
+        digest.to_hex(),
+        std::process::id(),
+        sequence
+    ))
+}
+
+/// Verified [`BlobCommit::AlreadyPresent`] for a blob that already sits at
+/// its content address: the stored bytes are streamed back and must hash
+/// to the address (deep-audit/32 M1). Presence alone would silently reuse
+/// corrupted or truncated bytes under this digest forever, surfacing only
+/// as `DigestMismatch` on every read with no commit-time diagnosis.
+fn verify_present_blob(path: &Path, digest: ContentDigest) -> Result<BlobCommit, ArtifactError> {
+    let actual = hash_file(path)?;
+    if actual != digest {
+        return Err(ArtifactError::DigestMismatch {
+            expected: digest,
+            actual,
+            path: path.to_path_buf(),
+        });
+    }
+    Ok(BlobCommit::AlreadyPresent)
+}
+
+/// Streams `path` and returns the digest of the bytes that actually reach
+/// the read, not of any in-memory buffer.
+fn hash_file(path: &Path) -> Result<ContentDigest, ArtifactError> {
+    let mut file = File::open(path).map_err(ArtifactError::Io)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let read = file.read(&mut buffer).map_err(ArtifactError::Io)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(ContentDigest::from_bytes(hasher.finalize().into()))
 }
 
 fn write_and_verify(
@@ -125,17 +173,7 @@ fn write_and_verify(
     }
     // Verify what actually reached the file, not the in-memory buffer: a
     // corrupted or short write must never be renamed into a digest address.
-    let mut file = File::open(tmp_path).map_err(ArtifactError::Io)?;
-    let mut hasher = Sha256::new();
-    let mut buffer = [0_u8; 8192];
-    loop {
-        let read = file.read(&mut buffer).map_err(ArtifactError::Io)?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..read]);
-    }
-    let actual = ContentDigest::from_bytes(hasher.finalize().into());
+    let actual = hash_file(tmp_path)?;
     if actual != expected {
         return Err(ArtifactError::DigestMismatch {
             expected,
@@ -339,6 +377,50 @@ mod tests {
     #[test]
     fn cross_device_code_is_distinct_from_no_space() {
         assert!(!NO_SPACE_CODES.contains(&CROSS_DEVICE_CODE));
+    }
+
+    /// deep-audit/32 M2 regression: the tmp scratch name must embed the
+    /// allocating process id next to the process-local sequence. Two
+    /// processes committing the same digest with independently drawn
+    /// sequence numbers would otherwise share one scratch file, and one
+    /// could rename bytes mid-write that it never verified into the
+    /// digest address.
+    #[test]
+    fn tmp_names_embed_pid_and_sequence() {
+        let digest = ContentDigest::of_bytes(b"tmp naming probe");
+        let domain = DomainPaths {
+            blobs: PathBuf::from("/nlos-artifact-virtual/blobs"),
+            tmp: PathBuf::from("/nlos-artifact-virtual/tmp"),
+        };
+
+        let first = next_tmp_path(&domain, digest);
+        let second = next_tmp_path(&domain, digest);
+        assert_ne!(first, second, "successive tmp allocations must differ");
+
+        let name = first
+            .file_name()
+            .expect("tmp path has a file name")
+            .to_string_lossy()
+            .into_owned();
+        let parts: Vec<&str> = name.split('.').collect();
+        assert_eq!(
+            parts.len(),
+            4,
+            "tmp name layout must be <64-hex>.<pid>.<seq>.tmp, got {name}"
+        );
+        assert_eq!(parts[0], digest.to_hex());
+        assert_eq!(
+            parts[1],
+            std::process::id().to_string(),
+            "tmp name must embed the allocating process id"
+        );
+        assert!(
+            parts[2].bytes().all(|byte| byte.is_ascii_digit()),
+            "sequence component must be numeric, got {}",
+            parts[2]
+        );
+        assert_eq!(parts[3], "tmp");
+        assert_eq!(first.parent(), Some(domain.tmp.as_path()));
     }
 
     /// Smoke-test that `sync_dir` accepts an on-disk directory on every host

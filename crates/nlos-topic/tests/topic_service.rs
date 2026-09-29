@@ -1584,3 +1584,125 @@ fn policy_digest_binds_declarations_deterministically() {
     assert_eq!(publications.len(), 1);
     assert_eq!(publications[0], publication);
 }
+
+/// Deep-audit finding 25 / decision D3: the topic service is the channel's
+/// service layer, so `compact` advances the channel consume high-water to
+/// the minimum active subscriber cursor (the service-layer ack) before
+/// trimming.  Without the linkage a bounded multi-subscriber channel
+/// dead-ends on `QueueFull`: the subscriber cursors move, but the
+/// high-water stays at 0, the backlog admitted against the capacity never
+/// drops and no release path exists.
+#[test]
+fn compact_ack_linkage_releases_channel_capacity_for_multi_subscriber_topics() {
+    let harness = Harness::new("compact-ack");
+    // 12 bytes of capacity: exactly three 4-byte payloads, so the fourth
+    // publish projects past the bound.
+    let head = create_channel(&harness.channel, 12, 230);
+    let topic = create_topic(
+        &harness.topics,
+        head.channel_id,
+        b"release",
+        TopicPolicy {
+            max_recipients: 4,
+            delivery_attempts: 8,
+            cascade_depth: 2,
+            retained_bytes: 4_096,
+            retention_ms: 86_400_000,
+            payer: payer(7),
+        },
+        231,
+    );
+    let a = subscribe_at(&harness.topics, topic.topic_id, 1, 8_000);
+    let b = subscribe_at(&harness.topics, topic.topic_id, 2, 8_001);
+    publish_at(&harness.topics, topic.topic_id, 232, b"aaaa", 8_100);
+    publish_at(&harness.topics, topic.topic_id, 233, b"bbbb", 8_101);
+    publish_at(&harness.topics, topic.topic_id, 234, b"cccc", 8_102);
+    assert!(matches!(
+        harness.topics.publish(PublishRequest {
+            topic_id: topic.topic_id,
+            payload: b"dddd".to_vec(),
+            idempotency_key: key(235),
+            published_at_ms: 8_103,
+        }),
+        Err(TopicAuthorityError::Channel(
+            ChannelAuthorityError::QueueFull
+        ))
+    ));
+    let queue = harness
+        .channel
+        .inspect_queue(head.channel_id)
+        .expect("full queue");
+    assert_eq!(
+        (
+            queue.consume_high_water,
+            queue.backlog_bytes,
+            queue.max_sequence
+        ),
+        (0, 12, 3)
+    );
+
+    // Both subscribers consume everything, yet the cursors alone release
+    // nothing: the bound is min(cursors, high-water) and the high-water has
+    // no writer of its own — exactly the dead-end the linkage fixes.
+    for subscription in [&a, &b] {
+        harness
+            .topics
+            .advance_with_token(
+                AdvanceRequest {
+                    topic_id: topic.topic_id,
+                    subscriber_key: subscription.subscriber_key,
+                    up_to_sequence: 3,
+                    advanced_at_ms: 8_200,
+                },
+                &subscription.consume_token,
+            )
+            .expect("advance with token");
+    }
+    assert_eq!(
+        harness
+            .topics
+            .compact_bound(topic.topic_id)
+            .expect("bound stuck at the stale high-water"),
+        0
+    );
+
+    // The compact acks the channel up to the release point (the minimum
+    // active cursor) first, then trims against the advanced high-water.
+    let trimmed = harness
+        .topics
+        .compact(topic.topic_id, 9)
+        .expect("compact releases capacity");
+    assert!(matches!(trimmed, TopicCompactDecision::Trimmed(_)));
+    assert_eq!(trimmed.receipt().effective_trim_high_water, 3);
+    let queue = harness
+        .channel
+        .inspect_queue(head.channel_id)
+        .expect("released queue");
+    assert_eq!(
+        (
+            queue.consume_high_water,
+            queue.trim_high_water,
+            queue.backlog_bytes,
+            queue.retained_bytes,
+            queue.max_sequence
+        ),
+        (3, 3, 0, 0, 3)
+    );
+
+    // The capacity is admitted again: publishing resumes on the same log
+    // and both windows keep receiving the new tail.
+    let resumed = publish_at(&harness.topics, topic.topic_id, 235, b"dddd", 8_300);
+    assert_eq!(resumed.channel_sequence, 4);
+    for seed in [1_u8, 2] {
+        assert_eq!(
+            harness
+                .topics
+                .poll(topic.topic_id, subscriber(seed), 10)
+                .expect("tail after release")
+                .iter()
+                .map(|entry| entry.sequence)
+                .collect::<Vec<_>>(),
+            [4]
+        );
+    }
+}

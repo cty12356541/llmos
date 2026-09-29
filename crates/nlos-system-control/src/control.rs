@@ -22,16 +22,27 @@ use std::fmt;
 
 use nlos_commit_coordinator::RecoveryWorkerState;
 use nlos_schema::sabi::v1::{
-    AcknowledgeArtifactRecoveryAlertCommand, ArtifactRecoveryMetrics,
-    ArtifactRecoveryOperationsSnapshot, CallerIdentity, CapabilityHandle, ControlCommandSource,
-    ControlScope, Envelope, GetSystemControlRequest, ReceiptReference, SabiErrorCode, SabiFailure,
-    SabiRequestContext, SubmitControlCommandRequest, SystemControlView, control_command, envelope,
+    AcknowledgeArtifactRecoveryAlertCommand, AcknowledgeResourceRecoveryAlertCommand,
+    AcknowledgeSemanticRecoveryAlertCommand, ArtifactRecoveryMetrics,
+    ArtifactRecoveryOperationsSnapshot, CallerIdentity, CancelCommand, CapabilityHandle,
+    ContextResidencyTier, ControlCommandSource, ControlScope, DisableApplicationCommand,
+    DurableOperationState, Envelope, ExecutionFiberLifecycleState, ExecutionFiberPhase,
+    GetSystemControlRequest, KillCommand, PauseCommand, PlanNodeKind, PlanNodeLifecycleState,
+    ReceiptReference, ReclaimCommand, ResourceRecoveryMetrics, ResourceRecoveryOperationsSnapshot,
+    ResumeCommand, ResumeResourceRecoveryCommand, ResumeSemanticRecoveryCommand, SabiErrorCode,
+    SabiFailure, SabiRequestContext, SemanticRecoveryMetrics, SemanticRecoveryOperationsSnapshot,
+    SubmitControlCommandRequest, SystemControlView, TaskGroupLifecycleState, TaskGroupMemberType,
+    TaskGroupMembershipState, ThrottleCommand, UninstallApplicationCommand, control_command,
+    envelope,
 };
 use nlos_schema::{
     CompatibilityError, REQUEST_ID_BYTES, SABI_ENVELOPE_SCHEMA,
     decode_artifact_recovery_operations_snapshot, decode_control_command_result,
-    encode_get_system_control_request, encode_submit_control_command_request,
-    system_control_schema_identity,
+    decode_durable_operation_snapshot, decode_execution_fiber_operations_snapshot,
+    decode_resource_recovery_operations_snapshot, decode_semantic_recovery_operations_snapshot,
+    decode_task_group_operations_snapshot, decode_task_node_operations_snapshot,
+    decode_topic_operations_snapshot, encode_get_system_control_request,
+    encode_submit_control_command_request, system_control_schema_identity,
 };
 
 use crate::openmetrics::OpenMetricsRenderer;
@@ -58,8 +69,16 @@ const LOCAL_REQUEST_ID: [u8; 16] = [0x35; 16];
 const LOCAL_PROCESS_GENERATION: u64 = 1;
 const INSPECT_HEALTH_COMMAND_ID: [u8; 16] = [0xC0; 16];
 const EXPORT_METRICS_COMMAND_ID: [u8; 16] = [0xC1; 16];
+const INSPECT_SEMANTIC_HEALTH_COMMAND_ID: [u8; 16] = [0xC2; 16];
+const EXPORT_SEMANTIC_METRICS_COMMAND_ID: [u8; 16] = [0xC3; 16];
+const INSPECT_RESOURCE_HEALTH_COMMAND_ID: [u8; 16] = [0xC4; 16];
+const EXPORT_RESOURCE_METRICS_COMMAND_ID: [u8; 16] = [0xC5; 16];
 const INSPECT_CORRELATION_ID: [u8; 16] = [0x34; 16];
 const EXPORT_METRICS_CORRELATION_ID: [u8; 16] = [0x36; 16];
+const INSPECT_SEMANTIC_CORRELATION_ID: [u8; 16] = [0x37; 16];
+const EXPORT_SEMANTIC_METRICS_CORRELATION_ID: [u8; 16] = [0x38; 16];
+const INSPECT_RESOURCE_RECOVERY_CORRELATION_ID: [u8; 16] = [0x39; 16];
+const EXPORT_RESOURCE_RECOVERY_METRICS_CORRELATION_ID: [u8; 16] = [0x3A; 16];
 
 /// Bounded control operations for the minimal prefix (§25.3). The read
 /// variants reuse the `get` snapshot; the mutation variant is the one real
@@ -71,11 +90,24 @@ pub enum ControlCommand {
     /// Inspect aggregate recovery health (worker lifecycle plus durable
     /// retrying/escalated/resolved gauges).
     InspectHealth,
+    /// Inspect the semantic-domain recovery half: semantic worker counters,
+    /// durable gauges, fault bit, and escalated semantic alerts.
+    InspectSemanticHealth,
+    /// Inspect the resource-domain recovery half (W28-C-3b, ADR-0017 G8):
+    /// resource worker counters, durable gauges, fault bit, and escalated
+    /// resource alerts over the v43 ledger.
+    InspectResourceHealth,
     /// Export one authoritative recovery metrics snapshot as deterministic
     /// `OpenMetrics` text. Uses the same `get` handler path as inspection and
     /// projects the typed catalog through the backend-neutral exporter boundary
     /// (`export_metrics` parity).
     ExportMetrics,
+    /// Export the semantic-domain half of the same catalog as deterministic
+    /// `OpenMetrics` text through the semantic `get` view.
+    ExportSemanticMetrics,
+    /// Export the resource-domain half of the same catalog as deterministic
+    /// `OpenMetrics` text through the resource `get` view.
+    ExportResourceMetrics,
     /// Inspect one recovery plan/task by its 16-byte plan id; the receipt
     /// reports only that plan's alert.
     InspectTask { plan_id: [u8; 16] },
@@ -89,6 +121,43 @@ pub enum ControlCommand {
     /// [`ResourceInspector`] wired at dispatch time; the recovery GET envelope
     /// is still crossed for authorization parity.
     InspectResource { reservation_id: [u8; 16] },
+    /// Inspect one application by its 16-byte package identity (W38-A11,
+    /// C-APP-CONTROL 后片 GET). The receipt reports a bounded read-only
+    /// snapshot from the pluggable [`ApplicationInspector`] wired at
+    /// dispatch time; the recovery GET envelope is still crossed for
+    /// authorization parity (mirrors [`Self::InspectProcess`]).
+    InspectApplication { package_id: [u8; 16] },
+    /// Inspect one `TaskGroup` by its 16-byte group id (W32-G, B5-3). The
+    /// handler reads the durable group and its bounded member list straight
+    /// from the `TaskAuthority` it already owns; the receipt crosses as one
+    /// typed `TaskGroupOperationsSnapshot`.
+    InspectTaskGroup { group_id: [u8; 16] },
+    /// Inspect one plan `TaskNode` by its 16-byte owning plan id and 16-byte
+    /// node id (W32-G, B5-3). Node ids are plan-scoped derivations, so both
+    /// halves address the read; the handler reads through the pluggable
+    /// [`crate::TaskNodeInspectSource`] seam (nlos-plan authority data).
+    InspectTaskNode {
+        plan_id: [u8; 16],
+        node_id: [u8; 16],
+    },
+    /// Inspect one execution fiber by its 16-byte fiber id and non-zero
+    /// handle generation (W32-G, B5-3). The handler reads the runtime
+    /// snapshot surface (state, lifecycle phase, bounded usage meters)
+    /// through the pluggable [`crate::ExecutionFiberInspectSource`] seam.
+    InspectExecutionFiber { fiber_id: [u8; 16], generation: u64 },
+    /// Inspect one durable topic row by its 16-byte topic id (W32-G, B5-3):
+    /// bounded channel linkage, admitted name, policy digest, and the
+    /// active-subscription count, read through the pluggable
+    /// [`crate::TopicInspectSource`] seam.
+    InspectTopic { topic_id: [u8; 16] },
+    /// Inspect one durable operation state-machine row by its 16-byte
+    /// operation id and non-zero handle generation (W32-G, B5-3): state,
+    /// cancel epoch, owner fiber handle, and the terminal outcome receipt,
+    /// read through the pluggable [`crate::OperationInspectSource`] seam.
+    InspectOperation {
+        operation_id: [u8; 16],
+        generation: u64,
+    },
     /// Acknowledge one escalated recovery alert. `control_command_id` is the
     /// idempotency identity (§25.3) and is bound to the request idempotency
     /// key by the handler; `expected_total_failures` is the CAS expectation.
@@ -96,6 +165,134 @@ pub enum ControlCommand {
         control_command_id: [u8; 16],
         plan_id: [u8; 16],
         expected_total_failures: u64,
+        reason: String,
+    },
+    /// Acknowledge one escalated semantic recovery alert. Same §25.3 identity
+    /// and CAS contract as [`Self::AcknowledgeRecoveryAlert`], routed to the
+    /// semantic ledger.
+    AcknowledgeSemanticRecoveryAlert {
+        control_command_id: [u8; 16],
+        plan_id: [u8; 16],
+        expected_total_failures: u64,
+        reason: String,
+    },
+    /// Resume one escalated semantic recovery plan: the ledger row returns to
+    /// `Retrying` under the `expected_total_failures` CAS, so the recovery
+    /// worker re-enters it on its next due scan. The receipt reference names
+    /// the deterministic resume outcome (see
+    /// `nlos_task::semantic_recovery_resume_reference`).
+    ResumeSemanticRecovery {
+        control_command_id: [u8; 16],
+        plan_id: [u8; 16],
+        expected_total_failures: u64,
+        reason: String,
+    },
+    /// Acknowledge one escalated resource recovery alert (W28-C-3b,
+    /// ADR-0017 G8). Same §25.3 identity and CAS contract as
+    /// [`Self::AcknowledgeSemanticRecoveryAlert`], routed to the v43
+    /// resource ledger.
+    AcknowledgeResourceRecoveryAlert {
+        control_command_id: [u8; 16],
+        plan_id: [u8; 16],
+        expected_total_failures: u64,
+        reason: String,
+    },
+    /// Resume one escalated resource recovery plan: the ledger row returns
+    /// to `Retrying` under the `expected_total_failures` CAS and the tri-
+    /// domain worker re-enters it on its next due scan. The receipt
+    /// reference names the deterministic resume outcome (see
+    /// [`crate::resource_recovery_resume_reference`]).
+    ResumeResourceRecovery {
+        control_command_id: [u8; 16],
+        plan_id: [u8; 16],
+        expected_total_failures: u64,
+        reason: String,
+    },
+    /// Pause one operational target under an explicit CAS expectation
+    /// (`expected_generation_or_revision`). B5-1 first half (W28-D): the
+    /// command surface — envelope compilation, authorization, idempotency
+    /// binding, typed receipt — is complete; execution routes to the
+    /// pluggable [`crate::OperationCommandExecutor`] seam, whose default
+    /// stub refuses fail-closed until a host wires an executor.
+    PauseOperation {
+        control_command_id: [u8; 16],
+        target_id: [u8; 16],
+        expected_generation_or_revision: u64,
+        reason: String,
+    },
+    /// Resume one paused operational target; same seam contract as
+    /// [`Self::PauseOperation`].
+    ResumeOperation {
+        control_command_id: [u8; 16],
+        target_id: [u8; 16],
+        expected_generation_or_revision: u64,
+        reason: String,
+    },
+    /// Cancel one operational target; same seam contract as
+    /// [`Self::PauseOperation`].
+    CancelOperation {
+        control_command_id: [u8; 16],
+        target_id: [u8; 16],
+        expected_generation_or_revision: u64,
+        reason: String,
+    },
+    /// Kill one operational target: for the process authority executor the
+    /// `target_id` addresses a `ProcessId` and the CAS expectation is the
+    /// process generation (B5-1 second half, W29-D). Execution routes to
+    /// [`crate::OperationCommandExecutor::kill_operation`]; the receipt id
+    /// is derived from the authority's durable platform-kill receipt.
+    KillOperation {
+        control_command_id: [u8; 16],
+        target_id: [u8; 16],
+        expected_generation_or_revision: u64,
+        reason: String,
+    },
+    /// Throttle one operational target down to `throttle_percent` percent of
+    /// its current declared demand (B5-2, W29-D; whole percent `1..=100`,
+    /// rejected before the wire otherwise). Execution routes to
+    /// [`crate::OperationCommandExecutor::throttle_operation`]; the resource
+    /// demand executor derives the receipt id from the authority-driven
+    /// before/after demand adjustment.
+    ThrottleOperation {
+        control_command_id: [u8; 16],
+        target_id: [u8; 16],
+        expected_generation_or_revision: u64,
+        throttle_percent: u64,
+        reason: String,
+    },
+    /// Reclaim one operational target's working set (B5-2, W29-D). Execution
+    /// routes to [`crate::OperationCommandExecutor::reclaim_operation`]; the
+    /// working-set executor drives the nlos-task reclaim advisory→plan→
+    /// execute entry and derives the receipt id from its typed outcome.
+    ReclaimOperation {
+        control_command_id: [u8; 16],
+        target_id: [u8; 16],
+        expected_generation_or_revision: u64,
+        reason: String,
+    },
+    /// Disable one installed application (W35-P11, 移交#11 前片). The target
+    /// is the 16-byte package identity — the application singleton is
+    /// authority-derived from it — and the CAS expectation is the
+    /// application's current installation generation. Execution routes to
+    /// the pluggable [`crate::ApplicationCommandExecutor::disable_application`]
+    /// seam; disable has no activity gate (the `installed → disabled`
+    /// transition is reversible by rollback).
+    DisableApplication {
+        control_command_id: [u8; 16],
+        package_id: [u8; 16],
+        expected_generation_or_revision: u64,
+        reason: String,
+    },
+    /// Uninstall one installed or disabled application (W35-P11, 移交#11
+    /// 前片); same addressing contract as [`Self::DisableApplication`].
+    /// Execution routes to
+    /// [`crate::ApplicationCommandExecutor::uninstall_application`]; the
+    /// real executor drives the W27-D task-activity gate before the
+    /// terminal transition commits.
+    UninstallApplication {
+        control_command_id: [u8; 16],
+        package_id: [u8; 16],
+        expected_generation_or_revision: u64,
         reason: String,
     },
 }
@@ -107,11 +304,57 @@ impl ControlCommand {
     pub const fn control_command_id(&self) -> [u8; 16] {
         match self {
             Self::InspectHealth => INSPECT_HEALTH_COMMAND_ID,
+            Self::InspectSemanticHealth => INSPECT_SEMANTIC_HEALTH_COMMAND_ID,
+            Self::InspectResourceHealth => INSPECT_RESOURCE_HEALTH_COMMAND_ID,
             Self::ExportMetrics => EXPORT_METRICS_COMMAND_ID,
+            Self::ExportSemanticMetrics => EXPORT_SEMANTIC_METRICS_COMMAND_ID,
+            Self::ExportResourceMetrics => EXPORT_RESOURCE_METRICS_COMMAND_ID,
             Self::InspectTask { plan_id } => *plan_id,
             Self::InspectProcess { process_id } => *process_id,
             Self::InspectResource { reservation_id } => *reservation_id,
+            Self::InspectApplication { package_id } => *package_id,
+            Self::InspectTaskGroup { group_id } => *group_id,
+            Self::InspectTaskNode { node_id, .. } => *node_id,
+            Self::InspectExecutionFiber { fiber_id, .. } => *fiber_id,
+            Self::InspectTopic { topic_id } => *topic_id,
+            Self::InspectOperation { operation_id, .. } => *operation_id,
             Self::AcknowledgeRecoveryAlert {
+                control_command_id, ..
+            }
+            | Self::AcknowledgeSemanticRecoveryAlert {
+                control_command_id, ..
+            }
+            | Self::ResumeSemanticRecovery {
+                control_command_id, ..
+            }
+            | Self::AcknowledgeResourceRecoveryAlert {
+                control_command_id, ..
+            }
+            | Self::ResumeResourceRecovery {
+                control_command_id, ..
+            }
+            | Self::PauseOperation {
+                control_command_id, ..
+            }
+            | Self::ResumeOperation {
+                control_command_id, ..
+            }
+            | Self::CancelOperation {
+                control_command_id, ..
+            }
+            | Self::KillOperation {
+                control_command_id, ..
+            }
+            | Self::ThrottleOperation {
+                control_command_id, ..
+            }
+            | Self::ReclaimOperation {
+                control_command_id, ..
+            }
+            | Self::DisableApplication {
+                control_command_id, ..
+            }
+            | Self::UninstallApplication {
                 control_command_id, ..
             } => *control_command_id,
         }
@@ -120,11 +363,57 @@ impl ControlCommand {
     const fn correlation_id(&self) -> [u8; 16] {
         match self {
             Self::InspectHealth => INSPECT_CORRELATION_ID,
+            Self::InspectSemanticHealth => INSPECT_SEMANTIC_CORRELATION_ID,
+            Self::InspectResourceHealth => INSPECT_RESOURCE_RECOVERY_CORRELATION_ID,
             Self::ExportMetrics => EXPORT_METRICS_CORRELATION_ID,
+            Self::ExportSemanticMetrics => EXPORT_SEMANTIC_METRICS_CORRELATION_ID,
+            Self::ExportResourceMetrics => EXPORT_RESOURCE_RECOVERY_METRICS_CORRELATION_ID,
             Self::InspectTask { plan_id } => *plan_id,
             Self::InspectProcess { process_id } => *process_id,
             Self::InspectResource { reservation_id } => *reservation_id,
+            Self::InspectApplication { package_id } => *package_id,
+            Self::InspectTaskGroup { group_id } => *group_id,
+            Self::InspectTaskNode { node_id, .. } => *node_id,
+            Self::InspectExecutionFiber { fiber_id, .. } => *fiber_id,
+            Self::InspectTopic { topic_id } => *topic_id,
+            Self::InspectOperation { operation_id, .. } => *operation_id,
             Self::AcknowledgeRecoveryAlert {
+                control_command_id, ..
+            }
+            | Self::AcknowledgeSemanticRecoveryAlert {
+                control_command_id, ..
+            }
+            | Self::ResumeSemanticRecovery {
+                control_command_id, ..
+            }
+            | Self::AcknowledgeResourceRecoveryAlert {
+                control_command_id, ..
+            }
+            | Self::ResumeResourceRecovery {
+                control_command_id, ..
+            }
+            | Self::PauseOperation {
+                control_command_id, ..
+            }
+            | Self::ResumeOperation {
+                control_command_id, ..
+            }
+            | Self::CancelOperation {
+                control_command_id, ..
+            }
+            | Self::KillOperation {
+                control_command_id, ..
+            }
+            | Self::ThrottleOperation {
+                control_command_id, ..
+            }
+            | Self::ReclaimOperation {
+                control_command_id, ..
+            }
+            | Self::DisableApplication {
+                control_command_id, ..
+            }
+            | Self::UninstallApplication {
                 control_command_id, ..
             } => *control_command_id,
         }
@@ -143,6 +432,56 @@ pub struct RecoveryInspection {
     pub durable_resolved: u64,
     /// Bounded alert list exactly as the handler returned it.
     pub alerts: Vec<RecoveryAlertInsight>,
+}
+
+/// Typed facts carried by a successful semantic-domain inspection: the
+/// semantic half of the worker health plus the escalated semantic alerts.
+/// There is no per-domain worker lifecycle — the shared lifecycle stays on
+/// [`RecoveryInspection`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SemanticRecoveryInspection {
+    pub total_inspected: u64,
+    pub total_finalized: u64,
+    pub consecutive_failed_cycles: u64,
+    pub durable_retrying: u64,
+    pub durable_escalated: u64,
+    pub durable_unacknowledged_escalated: u64,
+    pub durable_resolved: u64,
+    pub domain_faulted: bool,
+    pub alerts: Vec<SemanticRecoveryAlertInsight>,
+}
+
+/// One semantic recovery alert as reported by the authoritative snapshot.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SemanticRecoveryAlertInsight {
+    pub plan_id: Vec<u8>,
+    pub total_failures: u64,
+    pub acknowledged_receipt_id: Option<Vec<u8>>,
+}
+
+/// Typed facts carried by a successful resource-domain recovery inspection
+/// (W28-C-3b): the resource half of the worker health plus the escalated
+/// resource alerts. There is no per-domain worker lifecycle — the shared
+/// lifecycle stays on [`RecoveryInspection`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResourceRecoveryInspection {
+    pub total_inspected: u64,
+    pub total_finalized: u64,
+    pub consecutive_failed_cycles: u64,
+    pub durable_retrying: u64,
+    pub durable_escalated: u64,
+    pub durable_unacknowledged_escalated: u64,
+    pub durable_resolved: u64,
+    pub domain_faulted: bool,
+    pub alerts: Vec<ResourceRecoveryAlertInsight>,
+}
+
+/// One resource recovery alert as reported by the authoritative snapshot.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResourceRecoveryAlertInsight {
+    pub plan_id: Vec<u8>,
+    pub total_failures: u64,
+    pub acknowledged_receipt_id: Option<Vec<u8>>,
 }
 
 /// Worker lifecycle as observed by the recovery worker.
@@ -268,6 +607,139 @@ impl ResourceInspector for UnwiredResourceInspector {
     }
 }
 
+/// Bounded read-only facts for one application head inspection.
+///
+/// `status` mirrors `nlos_application::ApplicationStatus::encode`:
+/// `1 = installed`, `2 = disabled`, `3 = uninstalled`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ApplicationInspection {
+    pub package_id: [u8; 16],
+    pub application_id: [u8; 16],
+    pub package_manifest_digest: [u8; 32],
+    pub current_installation_generation: u64,
+    pub status: u8,
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
+}
+
+/// Pluggable read-only application inspection backend for
+/// [`ControlCommand::InspectApplication`]. Hosts wire a real authority
+/// adapter (see [`crate::application_inspector`] with the `application`
+/// feature) or leave the default [`UnwiredApplicationInspector`] in place
+/// until one is available.
+pub trait ApplicationInspector {
+    /// Returns one bounded application-head snapshot or a sanitized failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SabiFailure`] when the backing authority rejects the read or
+    /// the package has never been installed.
+    fn inspect_application(
+        &self,
+        package_id: [u8; 16],
+    ) -> Result<ApplicationInspection, SabiFailure>;
+}
+
+/// Default stub used when no application inspection backend is wired.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct UnwiredApplicationInspector;
+
+impl ApplicationInspector for UnwiredApplicationInspector {
+    fn inspect_application(&self, _: [u8; 16]) -> Result<ApplicationInspection, SabiFailure> {
+        Err(not_found_failure(
+            "application inspection backend is not wired",
+        ))
+    }
+}
+
+/// Bounded read-only facts for one `TaskGroup` inspection (W32-G, B5-3).
+/// Wire enum types carry the state classes; the shared decode path already
+/// rejects unspecified values, so a decoded inspection never carries one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TaskGroupInspection {
+    pub group_id: [u8; 16],
+    pub task_id: [u8; 16],
+    pub parent_group_id: Option<[u8; 16]>,
+    pub state: TaskGroupLifecycleState,
+    pub membership_generation: u64,
+    pub state_seq: u64,
+    pub depth: u64,
+    pub cancel_epoch: u64,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+    pub members: Vec<TaskGroupMemberInsight>,
+    pub members_truncated: bool,
+}
+
+/// One durable group membership row as reported by the authority.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TaskGroupMemberInsight {
+    pub member_type: TaskGroupMemberType,
+    pub member_id: [u8; 16],
+    pub membership_state: TaskGroupMembershipState,
+    pub membership_generation: u64,
+    pub admission_receipt_id: Vec<u8>,
+    pub removal_receipt_id: Option<Vec<u8>>,
+}
+
+/// Bounded read-only facts for one plan `TaskNode` inspection (W32-G, B5-3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TaskNodeInspection {
+    pub plan_id: [u8; 16],
+    pub node_id: [u8; 16],
+    pub kind: PlanNodeKind,
+    pub state: PlanNodeLifecycleState,
+    pub declared_revision: u64,
+    pub node_digest: Vec<u8>,
+    pub transition_count: u64,
+    pub residency_tier: ContextResidencyTier,
+    pub residency_transition_count: u64,
+    pub first_declared_at_ms: u64,
+    pub updated_at_ms: u64,
+}
+
+/// Bounded runtime-snapshot facts for one execution fiber inspection
+/// (W32-G, B5-3); every time meter is a whole-millisecond projection.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExecutionFiberInspection {
+    pub fiber_id: [u8; 16],
+    pub generation: u64,
+    pub state: ExecutionFiberLifecycleState,
+    pub lifecycle_phase: ExecutionFiberPhase,
+    pub active_cpu_ms: u64,
+    pub elapsed_wall_ms: u64,
+    pub scheduler_wait_ms: u64,
+    pub external_wait_ms: u64,
+    pub backpressure_wait_ms: u64,
+    pub suspended_ms: u64,
+}
+
+/// Bounded read-only facts for one durable topic row inspection (W32-G,
+/// B5-3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TopicInspection {
+    pub topic_id: [u8; 16],
+    pub channel_id: [u8; 16],
+    pub channel_generation: u64,
+    pub name: Vec<u8>,
+    pub active_subscriptions: u64,
+    pub policy_digest: Vec<u8>,
+    pub created_at_ms: u64,
+}
+
+/// Bounded read-only facts for one durable operation state-machine row
+/// (W32-G, B5-3); terminal states carry their outcome receipt id.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DurableOperationInspection {
+    pub operation_id: [u8; 16],
+    pub generation: u64,
+    pub state: DurableOperationState,
+    pub cancel_epoch: u64,
+    pub owner_fiber_id: [u8; 16],
+    pub owner_fiber_generation: u64,
+    pub outcome_receipt_id: Option<Vec<u8>>,
+}
+
 /// Deterministic `OpenMetrics` text produced by one metrics export command.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MetricsExport {
@@ -280,14 +752,59 @@ pub struct MetricsExport {
 pub enum ControlOutcome {
     /// Read-only inspection completed.
     Inspected(RecoveryInspection),
+    /// Read-only semantic-domain inspection completed.
+    SemanticInspected(SemanticRecoveryInspection),
+    /// Read-only resource-domain recovery inspection completed (W28-C-3b).
+    ResourceRecoveryInspected(ResourceRecoveryInspection),
     /// Read-only process binding inspection completed.
     ProcessInspected(ProcessInspection),
     /// Read-only resource reservation cost inspection completed.
     ResourceInspected(ResourceInspection),
+    /// Read-only application head inspection completed (W38-A11).
+    ApplicationInspected(ApplicationInspection),
+    /// Read-only `TaskGroup` inspection completed (W32-G, B5-3).
+    TaskGroupInspected(TaskGroupInspection),
+    /// Read-only plan `TaskNode` inspection completed (W32-G, B5-3).
+    TaskNodeInspected(TaskNodeInspection),
+    /// Read-only execution fiber runtime inspection completed (W32-G, B5-3).
+    ExecutionFiberInspected(ExecutionFiberInspection),
+    /// Read-only durable topic inspection completed (W32-G, B5-3).
+    TopicInspected(TopicInspection),
+    /// Read-only durable operation inspection completed (W32-G, B5-3).
+    DurableOperationInspected(DurableOperationInspection),
     /// Read-only metrics export completed.
     MetricsExported(MetricsExport),
     /// Mutation accepted by the `TaskAuthority`; authoritative receipt id.
     Acknowledged { receipt_id: Vec<u8> },
+    /// Semantic resume accepted: the ledger row returned to `Retrying`.
+    /// `receipt_id` names the deterministic resume outcome.
+    Resumed { receipt_id: Vec<u8> },
+    /// Operation-level pause accepted by the wired
+    /// [`crate::OperationCommandExecutor`]; `receipt_id` names the executed
+    /// pause transition.
+    OperationPaused { receipt_id: Vec<u8> },
+    /// Operation-level resume accepted by the executor seam.
+    OperationResumed { receipt_id: Vec<u8> },
+    /// Operation-level cancel accepted by the executor seam.
+    OperationCancelled { receipt_id: Vec<u8> },
+    /// Operation-level kill accepted by the executor seam (W29-D); the
+    /// receipt id is derived from the backing authority's durable
+    /// platform-kill receipt.
+    OperationKilled { receipt_id: Vec<u8> },
+    /// Operation-level throttle accepted by the executor seam (W29-D); the
+    /// receipt id is derived from the authority-driven demand adjustment.
+    OperationThrottled { receipt_id: Vec<u8> },
+    /// Operation-level reclaim accepted by the executor seam (W29-D); the
+    /// receipt id is derived from the nlos-task reclaim execution outcome.
+    OperationReclaimed { receipt_id: Vec<u8> },
+    /// Application disable accepted by the application executor seam
+    /// (W35-P11, 移交#11 前片); the receipt id is derived from the
+    /// application authority's durable disable receipt facts.
+    ApplicationDisabled { receipt_id: Vec<u8> },
+    /// Application uninstall accepted by the application executor seam;
+    /// the receipt id is derived from the application authority's durable
+    /// uninstall receipt facts (the W27-D activity gate ran first).
+    ApplicationUninstalled { receipt_id: Vec<u8> },
 }
 
 /// Typed receipt for one dispatched [`ControlCommand`] (§24.3 posture in
@@ -361,6 +878,63 @@ impl From<CompatibilityError> for ControlError {
     }
 }
 
+/// Compiles one W32-G per-layer read command into its `(method, payload)`
+/// GET arm; read-only, so the shared envelope tail is left to the caller.
+fn layer_view_get_arm(
+    command: &ControlCommand,
+) -> Option<Result<(&'static str, Vec<u8>), ControlError>> {
+    let (view, target_id, plan_id, target_generation) = match command {
+        ControlCommand::InspectTaskGroup { group_id } => {
+            (SystemControlView::TaskGroup, *group_id, Vec::new(), 0)
+        }
+        ControlCommand::InspectTaskNode { plan_id, node_id } => {
+            (SystemControlView::TaskNode, *node_id, plan_id.to_vec(), 0)
+        }
+        ControlCommand::InspectExecutionFiber {
+            fiber_id,
+            generation,
+        } => {
+            if let Err(error) = validate_layer_generation(*generation) {
+                return Some(Err(error));
+            }
+            (
+                SystemControlView::ExecutionFiber,
+                *fiber_id,
+                Vec::new(),
+                *generation,
+            )
+        }
+        ControlCommand::InspectTopic { topic_id } => {
+            (SystemControlView::Topic, *topic_id, Vec::new(), 0)
+        }
+        ControlCommand::InspectOperation {
+            operation_id,
+            generation,
+        } => {
+            if let Err(error) = validate_layer_generation(*generation) {
+                return Some(Err(error));
+            }
+            (
+                SystemControlView::Operation,
+                *operation_id,
+                Vec::new(),
+                *generation,
+            )
+        }
+        _ => return None,
+    };
+    Some(
+        encode_get_system_control_request(&layer_view_request(
+            view,
+            target_id,
+            plan_id,
+            target_generation,
+        ))
+        .map(|payload| (GET_METHOD, payload))
+        .map_err(ControlError::from),
+    )
+}
+
 /// Compiles one [`ControlCommand`] into the same SABI request envelope the
 /// structured API would send. This is the single compilation point shared by
 /// the in-process dispatcher and the CLI binary (§25.3 `[CTRL-PARITY-001]`).
@@ -376,34 +950,67 @@ pub fn build_request_envelope(command: &ControlCommand) -> Result<Envelope, Cont
         | ControlCommand::InspectTask { .. }
         | ControlCommand::InspectProcess { .. }
         | ControlCommand::InspectResource { .. }
+        | ControlCommand::InspectApplication { .. }
         | ControlCommand::ExportMetrics => (
             GET_METHOD,
-            encode_get_system_control_request(&GetSystemControlRequest {
-                schema: Some(system_control_schema_identity()),
-                view: SystemControlView::ArtifactCommitRecovery.into(),
-                alert_limit: INSPECT_ALERT_LIMIT,
-            })?,
+            recovery_view_payload(SystemControlView::ArtifactCommitRecovery)?,
         ),
-        ControlCommand::AcknowledgeRecoveryAlert {
-            control_command_id,
-            plan_id,
-            expected_total_failures,
-            reason,
-        } => {
+        ControlCommand::InspectSemanticHealth | ControlCommand::ExportSemanticMetrics => (
+            GET_METHOD,
+            recovery_view_payload(SystemControlView::SemanticCommitRecovery)?,
+        ),
+        ControlCommand::InspectResourceHealth | ControlCommand::ExportResourceMetrics => (
+            GET_METHOD,
+            recovery_view_payload(SystemControlView::ResourceCommitRecovery)?,
+        ),
+        layer_command @ (ControlCommand::InspectTaskGroup { .. }
+        | ControlCommand::InspectTaskNode { .. }
+        | ControlCommand::InspectExecutionFiber { .. }
+        | ControlCommand::InspectTopic { .. }
+        | ControlCommand::InspectOperation { .. }) => {
+            layer_view_get_arm(layer_command).ok_or(ControlError::InvalidCommand(
+                "per-layer read commands must compile through the layer view arm",
+            ))??
+        }
+        ControlCommand::AcknowledgeRecoveryAlert { .. }
+        | ControlCommand::AcknowledgeSemanticRecoveryAlert { .. }
+        | ControlCommand::ResumeSemanticRecovery { .. }
+        | ControlCommand::AcknowledgeResourceRecoveryAlert { .. }
+        | ControlCommand::ResumeResourceRecovery { .. }
+        | ControlCommand::PauseOperation { .. }
+        | ControlCommand::ResumeOperation { .. }
+        | ControlCommand::CancelOperation { .. }
+        | ControlCommand::KillOperation { .. }
+        | ControlCommand::ThrottleOperation { .. }
+        | ControlCommand::ReclaimOperation { .. }
+        | ControlCommand::DisableApplication { .. }
+        | ControlCommand::UninstallApplication { .. } => {
+            let reason = mutation_reason(command);
             if reason.is_empty() {
                 return Err(ControlError::InvalidCommand(
-                    "acknowledgement requires a non-empty bounded reason",
+                    "control mutations require a non-empty bounded reason",
                 ));
             }
+            if let ControlCommand::ThrottleOperation {
+                throttle_percent, ..
+            } = command
+                && !(1..=100).contains(throttle_percent)
+            {
+                return Err(ControlError::InvalidCommand(
+                    "throttle percent must be a whole percent from 1 to 100",
+                ));
+            }
+            let (target_id, cas) = mutation_address(command);
             (
                 SUBMIT_METHOD,
                 encode_submit_control_command_request(&SubmitControlCommandRequest {
                     schema: Some(system_control_schema_identity()),
                     command: Some(sabi_wire_command(
-                        *control_command_id,
-                        *plan_id,
-                        *expected_total_failures,
+                        command.control_command_id(),
+                        target_id,
+                        cas,
                         reason,
+                        command,
                     )),
                 })?,
             )
@@ -427,22 +1034,213 @@ pub fn build_request_envelope(command: &ControlCommand) -> Result<Envelope, Cont
     })
 }
 
+fn recovery_view_payload(view: SystemControlView) -> Result<Vec<u8>, ControlError> {
+    encode_get_system_control_request(&GetSystemControlRequest {
+        schema: Some(system_control_schema_identity()),
+        view: view.into(),
+        alert_limit: INSPECT_ALERT_LIMIT,
+        target_id: Vec::new(),
+        plan_id: Vec::new(),
+        target_generation: 0,
+    })
+    .map_err(ControlError::from)
+}
+
+/// Builds the W32-G per-layer `get` request: the view, its primary target,
+/// the plan-scoped secondary target, and the handle generation, under the
+/// shared bounded `alert_limit`.
+fn layer_view_request(
+    view: SystemControlView,
+    target_id: [u8; 16],
+    plan_id: Vec<u8>,
+    target_generation: u64,
+) -> GetSystemControlRequest {
+    GetSystemControlRequest {
+        schema: Some(system_control_schema_identity()),
+        view: view.into(),
+        alert_limit: INSPECT_ALERT_LIMIT,
+        target_id: target_id.to_vec(),
+        plan_id,
+        target_generation,
+    }
+}
+
+/// Rejects a zero handle generation before the wire — the runtime and
+/// operation authorities resolve handles by (id, generation) and zero is
+/// never a valid generation.
+fn validate_layer_generation(generation: u64) -> Result<(), ControlError> {
+    if generation == 0 {
+        Err(ControlError::InvalidCommand(
+            "handle generation must be a non-zero generation",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// Addressing and CAS expectation of one mutation variant: the operational
+/// target id and the compare-and-swap value the command must carry on the
+/// wire. Read-only variants never reach the submit arm that calls this.
+fn mutation_address(command: &ControlCommand) -> ([u8; 16], u64) {
+    match command {
+        ControlCommand::PauseOperation {
+            target_id,
+            expected_generation_or_revision,
+            ..
+        }
+        | ControlCommand::ResumeOperation {
+            target_id,
+            expected_generation_or_revision,
+            ..
+        }
+        | ControlCommand::CancelOperation {
+            target_id,
+            expected_generation_or_revision,
+            ..
+        }
+        | ControlCommand::KillOperation {
+            target_id,
+            expected_generation_or_revision,
+            ..
+        }
+        | ControlCommand::ThrottleOperation {
+            target_id,
+            expected_generation_or_revision,
+            ..
+        }
+        | ControlCommand::ReclaimOperation {
+            target_id,
+            expected_generation_or_revision,
+            ..
+        } => (*target_id, *expected_generation_or_revision),
+        ControlCommand::DisableApplication {
+            package_id,
+            expected_generation_or_revision,
+            ..
+        }
+        | ControlCommand::UninstallApplication {
+            package_id,
+            expected_generation_or_revision,
+            ..
+        } => (*package_id, *expected_generation_or_revision),
+        ControlCommand::AcknowledgeRecoveryAlert {
+            plan_id,
+            expected_total_failures,
+            ..
+        }
+        | ControlCommand::AcknowledgeSemanticRecoveryAlert {
+            plan_id,
+            expected_total_failures,
+            ..
+        }
+        | ControlCommand::ResumeSemanticRecovery {
+            plan_id,
+            expected_total_failures,
+            ..
+        }
+        | ControlCommand::AcknowledgeResourceRecoveryAlert {
+            plan_id,
+            expected_total_failures,
+            ..
+        }
+        | ControlCommand::ResumeResourceRecovery {
+            plan_id,
+            expected_total_failures,
+            ..
+        } => (*plan_id, *expected_total_failures),
+        _ => unreachable!("read-only variants never reach the submit arm"),
+    }
+}
+
+fn mutation_reason(command: &ControlCommand) -> &str {
+    match command {
+        ControlCommand::AcknowledgeRecoveryAlert { reason, .. }
+        | ControlCommand::AcknowledgeSemanticRecoveryAlert { reason, .. }
+        | ControlCommand::ResumeSemanticRecovery { reason, .. }
+        | ControlCommand::AcknowledgeResourceRecoveryAlert { reason, .. }
+        | ControlCommand::ResumeResourceRecovery { reason, .. }
+        | ControlCommand::PauseOperation { reason, .. }
+        | ControlCommand::ResumeOperation { reason, .. }
+        | ControlCommand::CancelOperation { reason, .. }
+        | ControlCommand::KillOperation { reason, .. }
+        | ControlCommand::ThrottleOperation { reason, .. }
+        | ControlCommand::ReclaimOperation { reason, .. }
+        | ControlCommand::DisableApplication { reason, .. }
+        | ControlCommand::UninstallApplication { reason, .. } => reason,
+        _ => unreachable!("read-only variants never reach the submit arm"),
+    }
+}
+
 fn sabi_wire_command(
     control_command_id: [u8; 16],
-    plan_id: [u8; 16],
-    expected_total_failures: u64,
+    target_id: [u8; 16],
+    cas: u64,
     reason: &str,
+    command: &ControlCommand,
 ) -> nlos_schema::sabi::v1::ControlCommand {
+    let wire_command = match command {
+        ControlCommand::AcknowledgeSemanticRecoveryAlert { .. } => {
+            control_command::Command::AcknowledgeSemanticRecoveryAlert(
+                AcknowledgeSemanticRecoveryAlertCommand {},
+            )
+        }
+        ControlCommand::ResumeSemanticRecovery { .. } => {
+            control_command::Command::ResumeSemanticRecovery(ResumeSemanticRecoveryCommand {})
+        }
+        ControlCommand::AcknowledgeResourceRecoveryAlert { .. } => {
+            control_command::Command::AcknowledgeResourceRecoveryAlert(
+                AcknowledgeResourceRecoveryAlertCommand {},
+            )
+        }
+        ControlCommand::ResumeResourceRecovery { .. } => {
+            control_command::Command::ResumeResourceRecovery(ResumeResourceRecoveryCommand {})
+        }
+        ControlCommand::PauseOperation { .. } => {
+            control_command::Command::PauseOperation(PauseCommand {})
+        }
+        ControlCommand::ResumeOperation { .. } => {
+            control_command::Command::ResumeOperation(ResumeCommand {})
+        }
+        ControlCommand::CancelOperation { .. } => {
+            control_command::Command::CancelOperation(CancelCommand {})
+        }
+        ControlCommand::KillOperation { .. } => {
+            control_command::Command::KillOperation(KillCommand {})
+        }
+        ControlCommand::ThrottleOperation {
+            throttle_percent, ..
+        } => control_command::Command::ThrottleOperation(ThrottleCommand {
+            throttle_percent: *throttle_percent,
+        }),
+        ControlCommand::ReclaimOperation { .. } => {
+            control_command::Command::ReclaimOperation(ReclaimCommand {})
+        }
+        ControlCommand::DisableApplication { .. } => {
+            control_command::Command::DisableApplication(DisableApplicationCommand {})
+        }
+        ControlCommand::UninstallApplication { .. } => {
+            control_command::Command::UninstallApplication(UninstallApplicationCommand {})
+        }
+        ControlCommand::AcknowledgeRecoveryAlert { .. } => {
+            control_command::Command::AcknowledgeArtifactRecoveryAlert(
+                AcknowledgeArtifactRecoveryAlertCommand {},
+            )
+        }
+        // Fail-closed like `mutation_address`/`mutation_reason` above: every
+        // mutation variant now has an explicit wire arm, and the read-only
+        // variants return before the SUBMIT arm of `build_request_envelope`.
+        // A future variant missing its arm must panic here instead of
+        // silently compiling into the artifact acknowledgement.
+        _ => unreachable!("read-only variants never reach the submit arm"),
+    };
     nlos_schema::sabi::v1::ControlCommand {
         control_command_id: control_command_id.to_vec(),
         issuer_principal_id: LOCAL_ISSUER_PRINCIPAL_ID.to_vec(),
         source: ControlCommandSource::Cli.into(),
         scope: ControlScope::Operation.into(),
-        target_id: plan_id.to_vec(),
-        expected_generation_or_revision: expected_total_failures,
-        command: Some(control_command::Command::AcknowledgeArtifactRecoveryAlert(
-            AcknowledgeArtifactRecoveryAlertCommand {},
-        )),
+        target_id: target_id.to_vec(),
+        expected_generation_or_revision: cas,
+        command: Some(wire_command),
         reason: reason.to_owned(),
     }
 }
@@ -450,6 +1248,42 @@ fn sabi_wire_command(
 fn request_context(command: &ControlCommand) -> SabiRequestContext {
     let idempotency_key = match command {
         ControlCommand::AcknowledgeRecoveryAlert {
+            control_command_id, ..
+        }
+        | ControlCommand::AcknowledgeSemanticRecoveryAlert {
+            control_command_id, ..
+        }
+        | ControlCommand::ResumeSemanticRecovery {
+            control_command_id, ..
+        }
+        | ControlCommand::AcknowledgeResourceRecoveryAlert {
+            control_command_id, ..
+        }
+        | ControlCommand::ResumeResourceRecovery {
+            control_command_id, ..
+        }
+        | ControlCommand::PauseOperation {
+            control_command_id, ..
+        }
+        | ControlCommand::ResumeOperation {
+            control_command_id, ..
+        }
+        | ControlCommand::CancelOperation {
+            control_command_id, ..
+        }
+        | ControlCommand::KillOperation {
+            control_command_id, ..
+        }
+        | ControlCommand::ThrottleOperation {
+            control_command_id, ..
+        }
+        | ControlCommand::ReclaimOperation {
+            control_command_id, ..
+        }
+        | ControlCommand::DisableApplication {
+            control_command_id, ..
+        }
+        | ControlCommand::UninstallApplication {
             control_command_id, ..
         } => control_command_id.to_vec(),
         _ => Vec::new(),
@@ -491,6 +1325,7 @@ pub fn dispatch_in_process<H, A>(
     now_wall_ms: i64,
     process: Option<&dyn ProcessInspector>,
     resource: Option<&dyn ResourceInspector>,
+    application: Option<&dyn ApplicationInspector>,
 ) -> Result<ControlReceipt, ControlError>
 where
     H: RecoveryHealthSource,
@@ -498,7 +1333,7 @@ where
 {
     let request = build_request_envelope(command)?;
     let response = control.handle_for_ipc(&request, now_monotonic_ns, now_wall_ms);
-    ControlReceipt::compose(command, &response, process, resource)
+    ControlReceipt::compose(command, &response, process, resource, application)
 }
 
 /// Dispatches one command to a real local IPC endpoint and projects the
@@ -517,6 +1352,7 @@ pub async fn dispatch_over_socket(
     command: &ControlCommand,
     process: Option<&dyn ProcessInspector>,
     resource: Option<&dyn ResourceInspector>,
+    application: Option<&dyn ApplicationInspector>,
 ) -> Result<ControlReceipt, ControlError> {
     use nlos_ipc::{LocalRpcClient, TransportConfig};
     use nlos_schema::sabi::v1::ExchangeRequest;
@@ -533,13 +1369,198 @@ pub async fn dispatch_over_socket(
         })
         .await
         .map_err(ControlError::Ipc)?;
-    ControlReceipt::compose(command, response.envelope(), process, resource)
+    ControlReceipt::compose(command, response.envelope(), process, resource, application)
+}
+
+/// Projects one completed mutation response into its authoritative receipt
+/// id, fail-closed on a foreign command echo or missing receipt reference.
+fn decoded_result_receipt(
+    command: &ControlCommand,
+    response: &Envelope,
+) -> Result<Vec<u8>, ControlError> {
+    let result = decode_control_command_result(&response.payload)?;
+    if result.control_command_id != command.control_command_id().to_vec() {
+        return Err(ControlError::UnexpectedResponse(
+            "result echoed a foreign control command id",
+        ));
+    }
+    result
+        .receipt
+        .map(|ReceiptReference { receipt_id }| receipt_id)
+        .ok_or(ControlError::UnexpectedResponse(
+            "completed command carried no receipt reference",
+        ))
 }
 
 fn decoded_snapshot(
     response: &Envelope,
 ) -> Result<ArtifactRecoveryOperationsSnapshot, ControlError> {
     let snapshot = decode_artifact_recovery_operations_snapshot(&response.payload)?;
+    if snapshot.alerts.len() > usize::try_from(INSPECT_ALERT_LIMIT).unwrap_or(usize::MAX) {
+        return Err(ControlError::UnexpectedResponse(
+            "snapshot exceeded the requested alert bound",
+        ));
+    }
+    Ok(snapshot)
+}
+
+fn fixed16_or_defect(bytes: &[u8]) -> Result<[u8; 16], ControlError> {
+    bytes
+        .try_into()
+        .map_err(|_| ControlError::UnexpectedResponse("layer status carried an invalid identifier"))
+}
+
+fn decoded_task_group_inspection(response: &Envelope) -> Result<TaskGroupInspection, ControlError> {
+    let snapshot = decode_task_group_operations_snapshot(&response.payload)?;
+    if snapshot.members.len() > usize::try_from(INSPECT_ALERT_LIMIT).unwrap_or(usize::MAX) {
+        return Err(ControlError::UnexpectedResponse(
+            "snapshot exceeded the requested member bound",
+        ));
+    }
+    let group = snapshot.group.ok_or(ControlError::Schema(
+        CompatibilityError::MissingSystemControlLayerStatus,
+    ))?;
+    Ok(TaskGroupInspection {
+        group_id: fixed16_or_defect(&group.group_id)?,
+        task_id: fixed16_or_defect(&group.task_id)?,
+        parent_group_id: if group.parent_group_id.is_empty() {
+            None
+        } else {
+            Some(fixed16_or_defect(&group.parent_group_id)?)
+        },
+        state: TaskGroupLifecycleState::try_from(group.state)
+            .map_err(|_| ControlError::UnexpectedResponse("unspecified task group state"))?,
+        membership_generation: group.membership_generation,
+        state_seq: group.state_seq,
+        depth: group.depth,
+        cancel_epoch: group.cancel_epoch,
+        created_at_ms: group.created_at_ms,
+        updated_at_ms: group.updated_at_ms,
+        members: snapshot
+            .members
+            .into_iter()
+            .map(|member| {
+                Ok(TaskGroupMemberInsight {
+                    member_type: TaskGroupMemberType::try_from(member.member_type).map_err(
+                        |_| ControlError::UnexpectedResponse("unspecified task group member type"),
+                    )?,
+                    member_id: fixed16_or_defect(&member.member_id)?,
+                    membership_state: TaskGroupMembershipState::try_from(member.membership_state)
+                        .map_err(|_| {
+                        ControlError::UnexpectedResponse("unspecified task group membership state")
+                    })?,
+                    membership_generation: member.membership_generation,
+                    admission_receipt_id: member
+                        .admission_receipt
+                        .map(|receipt| receipt.receipt_id)
+                        .ok_or(ControlError::UnexpectedResponse(
+                            "task group member carried no admission receipt",
+                        ))?,
+                    removal_receipt_id: member.removal_receipt.map(|receipt| receipt.receipt_id),
+                })
+            })
+            .collect::<Result<Vec<_>, ControlError>>()?,
+        members_truncated: snapshot.members_truncated,
+    })
+}
+
+fn decoded_task_node_inspection(response: &Envelope) -> Result<TaskNodeInspection, ControlError> {
+    let snapshot = decode_task_node_operations_snapshot(&response.payload)?;
+    let node = snapshot.node.ok_or(ControlError::Schema(
+        CompatibilityError::MissingSystemControlLayerStatus,
+    ))?;
+    Ok(TaskNodeInspection {
+        plan_id: fixed16_or_defect(&node.plan_id)?,
+        node_id: fixed16_or_defect(&node.node_id)?,
+        kind: PlanNodeKind::try_from(node.kind)
+            .map_err(|_| ControlError::UnexpectedResponse("unspecified plan node kind"))?,
+        state: PlanNodeLifecycleState::try_from(node.state)
+            .map_err(|_| ControlError::UnexpectedResponse("unspecified plan node state"))?,
+        declared_revision: node.declared_revision,
+        node_digest: node.node_digest,
+        transition_count: node.transition_count,
+        residency_tier: ContextResidencyTier::try_from(node.residency_tier)
+            .map_err(|_| ControlError::UnexpectedResponse("unspecified context residency tier"))?,
+        residency_transition_count: node.residency_transition_count,
+        first_declared_at_ms: node.first_declared_at_ms,
+        updated_at_ms: node.updated_at_ms,
+    })
+}
+
+fn decoded_execution_fiber_inspection(
+    response: &Envelope,
+) -> Result<ExecutionFiberInspection, ControlError> {
+    let snapshot = decode_execution_fiber_operations_snapshot(&response.payload)?;
+    let fiber = snapshot.fiber.ok_or(ControlError::Schema(
+        CompatibilityError::MissingSystemControlLayerStatus,
+    ))?;
+    Ok(ExecutionFiberInspection {
+        fiber_id: fixed16_or_defect(&fiber.fiber_id)?,
+        generation: fiber.generation,
+        state: ExecutionFiberLifecycleState::try_from(fiber.state)
+            .map_err(|_| ControlError::UnexpectedResponse("unspecified execution fiber state"))?,
+        lifecycle_phase: ExecutionFiberPhase::try_from(fiber.lifecycle_phase)
+            .map_err(|_| ControlError::UnexpectedResponse("unspecified execution fiber phase"))?,
+        active_cpu_ms: fiber.active_cpu_ms,
+        elapsed_wall_ms: fiber.elapsed_wall_ms,
+        scheduler_wait_ms: fiber.scheduler_wait_ms,
+        external_wait_ms: fiber.external_wait_ms,
+        backpressure_wait_ms: fiber.backpressure_wait_ms,
+        suspended_ms: fiber.suspended_ms,
+    })
+}
+
+fn decoded_topic_inspection(response: &Envelope) -> Result<TopicInspection, ControlError> {
+    let snapshot = decode_topic_operations_snapshot(&response.payload)?;
+    let topic = snapshot.topic.ok_or(ControlError::Schema(
+        CompatibilityError::MissingSystemControlLayerStatus,
+    ))?;
+    Ok(TopicInspection {
+        topic_id: fixed16_or_defect(&topic.topic_id)?,
+        channel_id: fixed16_or_defect(&topic.channel_id)?,
+        channel_generation: topic.channel_generation,
+        name: topic.name,
+        active_subscriptions: topic.active_subscriptions,
+        policy_digest: topic.policy_digest,
+        created_at_ms: topic.created_at_ms,
+    })
+}
+
+fn decoded_durable_operation_inspection(
+    response: &Envelope,
+) -> Result<DurableOperationInspection, ControlError> {
+    let snapshot = decode_durable_operation_snapshot(&response.payload)?;
+    let operation = snapshot.operation.ok_or(ControlError::Schema(
+        CompatibilityError::MissingSystemControlLayerStatus,
+    ))?;
+    Ok(DurableOperationInspection {
+        operation_id: fixed16_or_defect(&operation.operation_id)?,
+        generation: operation.generation,
+        state: DurableOperationState::try_from(operation.state)
+            .map_err(|_| ControlError::UnexpectedResponse("unspecified durable operation state"))?,
+        cancel_epoch: operation.cancel_epoch,
+        owner_fiber_id: fixed16_or_defect(&operation.owner_fiber_id)?,
+        owner_fiber_generation: operation.owner_fiber_generation,
+        outcome_receipt_id: operation.outcome_receipt.map(|receipt| receipt.receipt_id),
+    })
+}
+
+fn decoded_semantic_snapshot(
+    response: &Envelope,
+) -> Result<SemanticRecoveryOperationsSnapshot, ControlError> {
+    let snapshot = decode_semantic_recovery_operations_snapshot(&response.payload)?;
+    if snapshot.alerts.len() > usize::try_from(INSPECT_ALERT_LIMIT).unwrap_or(usize::MAX) {
+        return Err(ControlError::UnexpectedResponse(
+            "snapshot exceeded the requested alert bound",
+        ));
+    }
+    Ok(snapshot)
+}
+
+fn decoded_resource_snapshot(
+    response: &Envelope,
+) -> Result<ResourceRecoveryOperationsSnapshot, ControlError> {
+    let snapshot = decode_resource_recovery_operations_snapshot(&response.payload)?;
     if snapshot.alerts.len() > usize::try_from(INSPECT_ALERT_LIMIT).unwrap_or(usize::MAX) {
         return Err(ControlError::UnexpectedResponse(
             "snapshot exceeded the requested alert bound",
@@ -565,6 +1586,66 @@ fn decoded_inspection(response: &Envelope) -> Result<RecoveryInspection, Control
             .alerts
             .into_iter()
             .map(|alert| RecoveryAlertInsight {
+                plan_id: alert.plan_id,
+                total_failures: alert.total_failures,
+                acknowledged_receipt_id: alert
+                    .acknowledgement_receipt
+                    .map(|receipt| receipt.receipt_id),
+            })
+            .collect(),
+    })
+}
+
+fn decoded_semantic_inspection(
+    response: &Envelope,
+) -> Result<SemanticRecoveryInspection, ControlError> {
+    let snapshot = decoded_semantic_snapshot(response)?;
+    let metrics = snapshot.metrics.ok_or(ControlError::Schema(
+        CompatibilityError::MissingSystemControlMetrics,
+    ))?;
+    Ok(SemanticRecoveryInspection {
+        total_inspected: metrics.total_inspected,
+        total_finalized: metrics.total_finalized,
+        consecutive_failed_cycles: metrics.consecutive_failed_cycles,
+        durable_retrying: metrics.durable_retrying,
+        durable_escalated: metrics.durable_escalated,
+        durable_unacknowledged_escalated: metrics.durable_unacknowledged_escalated,
+        durable_resolved: metrics.durable_resolved,
+        domain_faulted: metrics.domain_faulted,
+        alerts: snapshot
+            .alerts
+            .into_iter()
+            .map(|alert| SemanticRecoveryAlertInsight {
+                plan_id: alert.plan_id,
+                total_failures: alert.total_failures,
+                acknowledged_receipt_id: alert
+                    .acknowledgement_receipt
+                    .map(|receipt| receipt.receipt_id),
+            })
+            .collect(),
+    })
+}
+
+fn decoded_resource_inspection(
+    response: &Envelope,
+) -> Result<ResourceRecoveryInspection, ControlError> {
+    let snapshot = decoded_resource_snapshot(response)?;
+    let metrics = snapshot.metrics.ok_or(ControlError::Schema(
+        CompatibilityError::MissingSystemControlMetrics,
+    ))?;
+    Ok(ResourceRecoveryInspection {
+        total_inspected: metrics.total_inspected,
+        total_finalized: metrics.total_finalized,
+        consecutive_failed_cycles: metrics.consecutive_failed_cycles,
+        durable_retrying: metrics.durable_retrying,
+        durable_escalated: metrics.durable_escalated,
+        durable_unacknowledged_escalated: metrics.durable_unacknowledged_escalated,
+        durable_resolved: metrics.durable_resolved,
+        domain_faulted: metrics.domain_faulted,
+        alerts: snapshot
+            .alerts
+            .into_iter()
+            .map(|alert| ResourceRecoveryAlertInsight {
                 plan_id: alert.plan_id,
                 total_failures: alert.total_failures,
                 acknowledged_receipt_id: alert
@@ -616,6 +1697,116 @@ fn render_metrics_export(metrics: &ArtifactRecoveryMetrics) -> Result<MetricsExp
             metrics.durable_unacknowledged_escalated,
         ),
         (RecoveryGauge::DurableResolved, metrics.durable_resolved),
+        (
+            RecoveryGauge::ArtifactDomainFaulted,
+            u64::from(metrics.domain_faulted),
+        ),
+    ] {
+        renderer
+            .set_gauge(gauge, value)
+            .map_err(map_renderer_error)?;
+    }
+    Ok(MetricsExport {
+        openmetrics_text: renderer.render(),
+    })
+}
+
+fn render_semantic_metrics_export(
+    metrics: &SemanticRecoveryMetrics,
+) -> Result<MetricsExport, ControlError> {
+    let mut renderer = OpenMetricsRenderer::new();
+    for (counter, value) in [
+        (
+            RecoveryCounter::SemanticPlansInspected,
+            metrics.total_inspected,
+        ),
+        (
+            RecoveryCounter::SemanticPlansFinalized,
+            metrics.total_finalized,
+        ),
+    ] {
+        renderer
+            .set_counter_total(counter, value)
+            .map_err(map_renderer_error)?;
+    }
+    for (gauge, value) in [
+        (
+            RecoveryGauge::SemanticConsecutiveFailedCycles,
+            metrics.consecutive_failed_cycles,
+        ),
+        (
+            RecoveryGauge::SemanticDurableRetrying,
+            metrics.durable_retrying,
+        ),
+        (
+            RecoveryGauge::SemanticDurableEscalated,
+            metrics.durable_escalated,
+        ),
+        (
+            RecoveryGauge::SemanticDurableUnacknowledgedEscalated,
+            metrics.durable_unacknowledged_escalated,
+        ),
+        (
+            RecoveryGauge::SemanticDurableResolved,
+            metrics.durable_resolved,
+        ),
+        (
+            RecoveryGauge::SemanticDomainFaulted,
+            u64::from(metrics.domain_faulted),
+        ),
+    ] {
+        renderer
+            .set_gauge(gauge, value)
+            .map_err(map_renderer_error)?;
+    }
+    Ok(MetricsExport {
+        openmetrics_text: renderer.render(),
+    })
+}
+
+fn render_resource_metrics_export(
+    metrics: &ResourceRecoveryMetrics,
+) -> Result<MetricsExport, ControlError> {
+    let mut renderer = OpenMetricsRenderer::new();
+    for (counter, value) in [
+        (
+            RecoveryCounter::ResourcePlansInspected,
+            metrics.total_inspected,
+        ),
+        (
+            RecoveryCounter::ResourcePlansFinalized,
+            metrics.total_finalized,
+        ),
+    ] {
+        renderer
+            .set_counter_total(counter, value)
+            .map_err(map_renderer_error)?;
+    }
+    for (gauge, value) in [
+        (
+            RecoveryGauge::ResourceConsecutiveFailedCycles,
+            metrics.consecutive_failed_cycles,
+        ),
+        (
+            RecoveryGauge::ResourceDurableRetrying,
+            metrics.durable_retrying,
+        ),
+        (
+            RecoveryGauge::ResourceDurableEscalated,
+            metrics.durable_escalated,
+        ),
+        (
+            RecoveryGauge::ResourceDurableUnacknowledgedEscalated,
+            metrics.durable_unacknowledged_escalated,
+        ),
+        (
+            RecoveryGauge::ResourceDurableResolved,
+            metrics.durable_resolved,
+        ),
+        (
+            RecoveryGauge::ResourceDomainFaulted,
+            u64::from(metrics.domain_faulted),
+        ),
     ] {
         renderer
             .set_gauge(gauge, value)
@@ -668,6 +1859,76 @@ fn compose_resource_inspection(
     }
 }
 
+fn compose_application_inspection(
+    application: Option<&dyn ApplicationInspector>,
+    package_id: [u8; 16],
+) -> Result<ControlOutcome, SabiFailure> {
+    if let Some(inspector) = application {
+        inspector
+            .inspect_application(package_id)
+            .map(ControlOutcome::ApplicationInspected)
+    } else {
+        UnwiredApplicationInspector
+            .inspect_application(package_id)
+            .map(ControlOutcome::ApplicationInspected)
+    }
+}
+
+/// Projects the snapshot-backed read commands (aggregate/domain health and
+/// the three metrics exports) from one handler response. The plan-scoped
+/// inspection and the inspector-backed process/resource reads stay in
+/// `compose` because their outcomes may carry a typed failure, not a
+/// projection defect.
+fn decoded_snapshot_outcome(
+    command: &ControlCommand,
+    response: &Envelope,
+) -> Result<ControlOutcome, ControlError> {
+    match command {
+        ControlCommand::InspectHealth => {
+            Ok(ControlOutcome::Inspected(decoded_inspection(response)?))
+        }
+        ControlCommand::InspectSemanticHealth => Ok(ControlOutcome::SemanticInspected(
+            decoded_semantic_inspection(response)?,
+        )),
+        ControlCommand::InspectResourceHealth => Ok(ControlOutcome::ResourceRecoveryInspected(
+            decoded_resource_inspection(response)?,
+        )),
+        ControlCommand::ExportMetrics => {
+            let metrics = decoded_snapshot(response)?
+                .metrics
+                .ok_or(ControlError::Schema(
+                    CompatibilityError::MissingSystemControlMetrics,
+                ))?;
+            Ok(ControlOutcome::MetricsExported(render_metrics_export(
+                &metrics,
+            )?))
+        }
+        ControlCommand::ExportSemanticMetrics => {
+            let metrics =
+                decoded_semantic_snapshot(response)?
+                    .metrics
+                    .ok_or(ControlError::Schema(
+                        CompatibilityError::MissingSystemControlMetrics,
+                    ))?;
+            Ok(ControlOutcome::MetricsExported(
+                render_semantic_metrics_export(&metrics)?,
+            ))
+        }
+        ControlCommand::ExportResourceMetrics => {
+            let metrics =
+                decoded_resource_snapshot(response)?
+                    .metrics
+                    .ok_or(ControlError::Schema(
+                        CompatibilityError::MissingSystemControlMetrics,
+                    ))?;
+            Ok(ControlOutcome::MetricsExported(
+                render_resource_metrics_export(&metrics)?,
+            ))
+        }
+        _ => unreachable!("non-snapshot commands never reach the snapshot projection"),
+    }
+}
+
 impl ControlReceipt {
     /// Projects one handler response envelope into the typed receipt. This
     /// is the single projection point for both dispatch paths; it never
@@ -678,11 +1939,13 @@ impl ControlReceipt {
     ///
     /// Returns [`ControlError`] when the response shape does not match the
     /// command or the frozen payload contract.
+    #[allow(clippy::too_many_lines)] // The per-variant outcome projections stay flat in one auditable match.
     pub fn compose(
         command: &ControlCommand,
         response: &Envelope,
         process: Option<&dyn ProcessInspector>,
         resource: Option<&dyn ResourceInspector>,
+        application: Option<&dyn ApplicationInspector>,
     ) -> Result<Self, ControlError> {
         let Some(envelope::CommonContext::ResponseContext(context)) =
             response.common_context.as_ref()
@@ -696,17 +1959,13 @@ impl ControlReceipt {
             Err(failure.clone())
         } else {
             match command {
-                ControlCommand::InspectHealth => {
-                    Ok(ControlOutcome::Inspected(decoded_inspection(response)?))
-                }
-                ControlCommand::ExportMetrics => {
-                    let snapshot = decoded_snapshot(response)?;
-                    let metrics = snapshot.metrics.ok_or(ControlError::Schema(
-                        CompatibilityError::MissingSystemControlMetrics,
-                    ))?;
-                    Ok(ControlOutcome::MetricsExported(render_metrics_export(
-                        &metrics,
-                    )?))
+                snapshot_command @ (ControlCommand::InspectHealth
+                | ControlCommand::InspectSemanticHealth
+                | ControlCommand::InspectResourceHealth
+                | ControlCommand::ExportMetrics
+                | ControlCommand::ExportSemanticMetrics
+                | ControlCommand::ExportResourceMetrics) => {
+                    Ok(decoded_snapshot_outcome(snapshot_command, response)?)
                 }
                 ControlCommand::InspectTask { plan_id } => {
                     let mut inspected = decoded_inspection(response)?;
@@ -727,20 +1986,68 @@ impl ControlReceipt {
                 ControlCommand::InspectResource { reservation_id } => {
                     compose_resource_inspection(resource, *reservation_id)
                 }
-                ControlCommand::AcknowledgeRecoveryAlert { .. } => {
-                    let result = decode_control_command_result(&response.payload)?;
-                    if result.control_command_id != command.control_command_id().to_vec() {
-                        return Err(ControlError::UnexpectedResponse(
-                            "result echoed a foreign control command id",
-                        ));
-                    }
-                    let receipt_id = result
-                        .receipt
-                        .map(|ReceiptReference { receipt_id }| receipt_id)
-                        .ok_or(ControlError::UnexpectedResponse(
-                            "completed command carried no receipt reference",
-                        ))?;
-                    Ok(ControlOutcome::Acknowledged { receipt_id })
+                ControlCommand::InspectApplication { package_id } => {
+                    compose_application_inspection(application, *package_id)
+                }
+                ControlCommand::InspectTaskGroup { .. } => Ok(ControlOutcome::TaskGroupInspected(
+                    decoded_task_group_inspection(response)?,
+                )),
+                ControlCommand::InspectTaskNode { .. } => Ok(ControlOutcome::TaskNodeInspected(
+                    decoded_task_node_inspection(response)?,
+                )),
+                ControlCommand::InspectExecutionFiber { .. } => {
+                    Ok(ControlOutcome::ExecutionFiberInspected(
+                        decoded_execution_fiber_inspection(response)?,
+                    ))
+                }
+                ControlCommand::InspectTopic { .. } => Ok(ControlOutcome::TopicInspected(
+                    decoded_topic_inspection(response)?,
+                )),
+                ControlCommand::InspectOperation { .. } => {
+                    Ok(ControlOutcome::DurableOperationInspected(
+                        decoded_durable_operation_inspection(response)?,
+                    ))
+                }
+                ControlCommand::AcknowledgeRecoveryAlert { .. }
+                | ControlCommand::AcknowledgeSemanticRecoveryAlert { .. }
+                | ControlCommand::AcknowledgeResourceRecoveryAlert { .. } => {
+                    Ok(ControlOutcome::Acknowledged {
+                        receipt_id: decoded_result_receipt(command, response)?,
+                    })
+                }
+                ControlCommand::ResumeSemanticRecovery { .. }
+                | ControlCommand::ResumeResourceRecovery { .. } => Ok(ControlOutcome::Resumed {
+                    receipt_id: decoded_result_receipt(command, response)?,
+                }),
+                ControlCommand::PauseOperation { .. } => Ok(ControlOutcome::OperationPaused {
+                    receipt_id: decoded_result_receipt(command, response)?,
+                }),
+                ControlCommand::ResumeOperation { .. } => Ok(ControlOutcome::OperationResumed {
+                    receipt_id: decoded_result_receipt(command, response)?,
+                }),
+                ControlCommand::CancelOperation { .. } => Ok(ControlOutcome::OperationCancelled {
+                    receipt_id: decoded_result_receipt(command, response)?,
+                }),
+                ControlCommand::KillOperation { .. } => Ok(ControlOutcome::OperationKilled {
+                    receipt_id: decoded_result_receipt(command, response)?,
+                }),
+                ControlCommand::ThrottleOperation { .. } => {
+                    Ok(ControlOutcome::OperationThrottled {
+                        receipt_id: decoded_result_receipt(command, response)?,
+                    })
+                }
+                ControlCommand::ReclaimOperation { .. } => Ok(ControlOutcome::OperationReclaimed {
+                    receipt_id: decoded_result_receipt(command, response)?,
+                }),
+                ControlCommand::DisableApplication { .. } => {
+                    Ok(ControlOutcome::ApplicationDisabled {
+                        receipt_id: decoded_result_receipt(command, response)?,
+                    })
+                }
+                ControlCommand::UninstallApplication { .. } => {
+                    Ok(ControlOutcome::ApplicationUninstalled {
+                        receipt_id: decoded_result_receipt(command, response)?,
+                    })
                 }
             }
         };
@@ -768,35 +2075,14 @@ impl ControlReceipt {
                 push_bytes(&mut bytes, failure.safe_message.as_bytes());
             }
             Ok(ControlOutcome::Inspected(inspection)) => {
-                bytes.push(1);
-                bytes.extend_from_slice(
-                    &encode_worker_lifecycle(inspection.worker_state).to_le_bytes(),
-                );
-                bytes.extend_from_slice(&inspection.completed_cycles.to_le_bytes());
-                bytes.extend_from_slice(&inspection.durable_retrying.to_le_bytes());
-                bytes.extend_from_slice(&inspection.durable_escalated.to_le_bytes());
-                bytes.extend_from_slice(&inspection.durable_unacknowledged_escalated.to_le_bytes());
-                bytes.extend_from_slice(&inspection.durable_resolved.to_le_bytes());
-                bytes.extend_from_slice(
-                    &u32::try_from(inspection.alerts.len())
-                        .unwrap_or(u32::MAX)
-                        .to_le_bytes(),
-                );
-                for alert in &inspection.alerts {
-                    push_bytes(&mut bytes, &alert.plan_id);
-                    bytes.extend_from_slice(&alert.total_failures.to_le_bytes());
-                    match alert.acknowledged_receipt_id.as_ref() {
-                        Some(receipt_id) => {
-                            bytes.push(1);
-                            push_bytes(&mut bytes, receipt_id);
-                        }
-                        None => bytes.push(0),
-                    }
-                }
+                push_artifact_inspection(&mut bytes, inspection);
             }
             Ok(ControlOutcome::MetricsExported(export)) => {
                 bytes.push(3);
                 push_bytes(&mut bytes, export.openmetrics_text.as_bytes());
+            }
+            Ok(ControlOutcome::SemanticInspected(inspection)) => {
+                push_semantic_inspection(&mut bytes, inspection);
             }
             Ok(ControlOutcome::ProcessInspected(inspection)) => {
                 bytes.push(4);
@@ -807,6 +2093,9 @@ impl ControlReceipt {
                 bytes.extend_from_slice(&inspection.task_attempt_id);
                 bytes.extend_from_slice(&inspection.isolation_domain_id);
             }
+            Ok(ControlOutcome::ResourceRecoveryInspected(inspection)) => {
+                push_resource_recovery_inspection(&mut bytes, inspection);
+            }
             Ok(ControlOutcome::ResourceInspected(inspection)) => {
                 bytes.push(5);
                 bytes.extend_from_slice(&inspection.reservation_id);
@@ -815,12 +2104,251 @@ impl ControlReceipt {
                 bytes.extend_from_slice(&inspection.usage_high_water.to_le_bytes());
                 bytes.extend_from_slice(&inspection.consumption_count.to_le_bytes());
             }
+            Ok(ControlOutcome::ApplicationInspected(inspection)) => {
+                bytes.push(22);
+                bytes.extend_from_slice(&inspection.package_id);
+                bytes.extend_from_slice(&inspection.application_id);
+                bytes.extend_from_slice(&inspection.package_manifest_digest);
+                bytes.extend_from_slice(&inspection.current_installation_generation.to_le_bytes());
+                bytes.push(inspection.status);
+                bytes.extend_from_slice(&inspection.created_at_ms.to_le_bytes());
+                bytes.extend_from_slice(&inspection.updated_at_ms.to_le_bytes());
+            }
             Ok(ControlOutcome::Acknowledged { receipt_id }) => {
-                bytes.push(2);
-                push_bytes(&mut bytes, receipt_id);
+                push_tagged_receipt(&mut bytes, 2, receipt_id);
+            }
+            Ok(ControlOutcome::Resumed { receipt_id }) => {
+                push_tagged_receipt(&mut bytes, 7, receipt_id);
+            }
+            Ok(ControlOutcome::OperationPaused { receipt_id }) => {
+                push_tagged_receipt(&mut bytes, 8, receipt_id);
+            }
+            Ok(ControlOutcome::OperationResumed { receipt_id }) => {
+                push_tagged_receipt(&mut bytes, 9, receipt_id);
+            }
+            Ok(ControlOutcome::OperationCancelled { receipt_id }) => {
+                push_tagged_receipt(&mut bytes, 10, receipt_id);
+            }
+            Ok(ControlOutcome::OperationKilled { receipt_id }) => {
+                push_tagged_receipt(&mut bytes, 11, receipt_id);
+            }
+            Ok(ControlOutcome::OperationThrottled { receipt_id }) => {
+                push_tagged_receipt(&mut bytes, 12, receipt_id);
+            }
+            Ok(ControlOutcome::OperationReclaimed { receipt_id }) => {
+                push_tagged_receipt(&mut bytes, 13, receipt_id);
+            }
+            Ok(ControlOutcome::ApplicationDisabled { receipt_id }) => {
+                push_tagged_receipt(&mut bytes, 20, receipt_id);
+            }
+            Ok(ControlOutcome::ApplicationUninstalled { receipt_id }) => {
+                push_tagged_receipt(&mut bytes, 21, receipt_id);
+            }
+            Ok(ControlOutcome::TaskGroupInspected(inspection)) => {
+                push_task_group_inspection(&mut bytes, inspection);
+            }
+            Ok(ControlOutcome::TaskNodeInspected(inspection)) => {
+                push_task_node_inspection(&mut bytes, inspection);
+            }
+            Ok(ControlOutcome::ExecutionFiberInspected(inspection)) => {
+                push_execution_fiber_inspection(&mut bytes, inspection);
+            }
+            Ok(ControlOutcome::TopicInspected(inspection)) => {
+                push_topic_inspection(&mut bytes, inspection);
+            }
+            Ok(ControlOutcome::DurableOperationInspected(inspection)) => {
+                push_durable_operation_inspection(&mut bytes, inspection);
             }
         }
         bytes
+    }
+}
+
+fn push_semantic_inspection(bytes: &mut Vec<u8>, inspection: &SemanticRecoveryInspection) {
+    bytes.push(6);
+    bytes.extend_from_slice(&inspection.total_inspected.to_le_bytes());
+    bytes.extend_from_slice(&inspection.total_finalized.to_le_bytes());
+    bytes.extend_from_slice(&inspection.consecutive_failed_cycles.to_le_bytes());
+    bytes.extend_from_slice(&inspection.durable_retrying.to_le_bytes());
+    bytes.extend_from_slice(&inspection.durable_escalated.to_le_bytes());
+    bytes.extend_from_slice(&inspection.durable_unacknowledged_escalated.to_le_bytes());
+    bytes.extend_from_slice(&inspection.durable_resolved.to_le_bytes());
+    bytes.push(u8::from(inspection.domain_faulted));
+    bytes.extend_from_slice(
+        &u32::try_from(inspection.alerts.len())
+            .unwrap_or(u32::MAX)
+            .to_le_bytes(),
+    );
+    for alert in &inspection.alerts {
+        push_bytes(bytes, &alert.plan_id);
+        bytes.extend_from_slice(&alert.total_failures.to_le_bytes());
+        match alert.acknowledged_receipt_id.as_ref() {
+            Some(receipt_id) => {
+                bytes.push(1);
+                push_bytes(bytes, receipt_id);
+            }
+            None => bytes.push(0),
+        }
+    }
+}
+
+fn push_task_group_inspection(bytes: &mut Vec<u8>, inspection: &TaskGroupInspection) {
+    bytes.push(15);
+    bytes.extend_from_slice(&inspection.group_id);
+    bytes.extend_from_slice(&inspection.task_id);
+    match inspection.parent_group_id {
+        Some(parent) => {
+            bytes.push(1);
+            bytes.extend_from_slice(&parent);
+        }
+        None => bytes.push(0),
+    }
+    bytes.extend_from_slice(&i32::from(inspection.state).to_le_bytes());
+    bytes.extend_from_slice(&inspection.membership_generation.to_le_bytes());
+    bytes.extend_from_slice(&inspection.state_seq.to_le_bytes());
+    bytes.extend_from_slice(&inspection.depth.to_le_bytes());
+    bytes.extend_from_slice(&inspection.cancel_epoch.to_le_bytes());
+    bytes.extend_from_slice(&inspection.created_at_ms.to_le_bytes());
+    bytes.extend_from_slice(&inspection.updated_at_ms.to_le_bytes());
+    bytes.push(u8::from(inspection.members_truncated));
+    bytes.extend_from_slice(
+        &u32::try_from(inspection.members.len())
+            .unwrap_or(u32::MAX)
+            .to_le_bytes(),
+    );
+    for member in &inspection.members {
+        bytes.extend_from_slice(&i32::from(member.member_type).to_le_bytes());
+        bytes.extend_from_slice(&member.member_id);
+        bytes.extend_from_slice(&i32::from(member.membership_state).to_le_bytes());
+        bytes.extend_from_slice(&member.membership_generation.to_le_bytes());
+        push_bytes(bytes, &member.admission_receipt_id);
+        match member.removal_receipt_id.as_ref() {
+            Some(receipt_id) => {
+                bytes.push(1);
+                push_bytes(bytes, receipt_id);
+            }
+            None => bytes.push(0),
+        }
+    }
+}
+
+fn push_task_node_inspection(bytes: &mut Vec<u8>, inspection: &TaskNodeInspection) {
+    bytes.push(16);
+    bytes.extend_from_slice(&inspection.plan_id);
+    bytes.extend_from_slice(&inspection.node_id);
+    bytes.extend_from_slice(&i32::from(inspection.kind).to_le_bytes());
+    bytes.extend_from_slice(&i32::from(inspection.state).to_le_bytes());
+    bytes.extend_from_slice(&inspection.declared_revision.to_le_bytes());
+    push_bytes(bytes, &inspection.node_digest);
+    bytes.extend_from_slice(&inspection.transition_count.to_le_bytes());
+    bytes.extend_from_slice(&i32::from(inspection.residency_tier).to_le_bytes());
+    bytes.extend_from_slice(&inspection.residency_transition_count.to_le_bytes());
+    bytes.extend_from_slice(&inspection.first_declared_at_ms.to_le_bytes());
+    bytes.extend_from_slice(&inspection.updated_at_ms.to_le_bytes());
+}
+
+fn push_execution_fiber_inspection(bytes: &mut Vec<u8>, inspection: &ExecutionFiberInspection) {
+    bytes.push(17);
+    bytes.extend_from_slice(&inspection.fiber_id);
+    bytes.extend_from_slice(&inspection.generation.to_le_bytes());
+    bytes.extend_from_slice(&i32::from(inspection.state).to_le_bytes());
+    bytes.extend_from_slice(&i32::from(inspection.lifecycle_phase).to_le_bytes());
+    bytes.extend_from_slice(&inspection.active_cpu_ms.to_le_bytes());
+    bytes.extend_from_slice(&inspection.elapsed_wall_ms.to_le_bytes());
+    bytes.extend_from_slice(&inspection.scheduler_wait_ms.to_le_bytes());
+    bytes.extend_from_slice(&inspection.external_wait_ms.to_le_bytes());
+    bytes.extend_from_slice(&inspection.backpressure_wait_ms.to_le_bytes());
+    bytes.extend_from_slice(&inspection.suspended_ms.to_le_bytes());
+}
+
+fn push_topic_inspection(bytes: &mut Vec<u8>, inspection: &TopicInspection) {
+    bytes.push(18);
+    bytes.extend_from_slice(&inspection.topic_id);
+    bytes.extend_from_slice(&inspection.channel_id);
+    bytes.extend_from_slice(&inspection.channel_generation.to_le_bytes());
+    push_bytes(bytes, &inspection.name);
+    bytes.extend_from_slice(&inspection.active_subscriptions.to_le_bytes());
+    push_bytes(bytes, &inspection.policy_digest);
+    bytes.extend_from_slice(&inspection.created_at_ms.to_le_bytes());
+}
+
+fn push_durable_operation_inspection(bytes: &mut Vec<u8>, inspection: &DurableOperationInspection) {
+    bytes.push(19);
+    bytes.extend_from_slice(&inspection.operation_id);
+    bytes.extend_from_slice(&inspection.generation.to_le_bytes());
+    bytes.extend_from_slice(&i32::from(inspection.state).to_le_bytes());
+    bytes.extend_from_slice(&inspection.cancel_epoch.to_le_bytes());
+    bytes.extend_from_slice(&inspection.owner_fiber_id);
+    bytes.extend_from_slice(&inspection.owner_fiber_generation.to_le_bytes());
+    match inspection.outcome_receipt_id.as_ref() {
+        Some(receipt_id) => {
+            bytes.push(1);
+            push_bytes(bytes, receipt_id);
+        }
+        None => bytes.push(0),
+    }
+}
+
+/// Appends one outcome discriminator byte and the length-prefixed receipt
+/// id — the shared shape of every receipt-only outcome.
+fn push_tagged_receipt(bytes: &mut Vec<u8>, tag: u8, receipt_id: &[u8]) {
+    bytes.push(tag);
+    push_bytes(bytes, receipt_id);
+}
+
+fn push_artifact_inspection(bytes: &mut Vec<u8>, inspection: &RecoveryInspection) {
+    bytes.push(1);
+    bytes.extend_from_slice(&encode_worker_lifecycle(inspection.worker_state).to_le_bytes());
+    bytes.extend_from_slice(&inspection.completed_cycles.to_le_bytes());
+    bytes.extend_from_slice(&inspection.durable_retrying.to_le_bytes());
+    bytes.extend_from_slice(&inspection.durable_escalated.to_le_bytes());
+    bytes.extend_from_slice(&inspection.durable_unacknowledged_escalated.to_le_bytes());
+    bytes.extend_from_slice(&inspection.durable_resolved.to_le_bytes());
+    bytes.extend_from_slice(
+        &u32::try_from(inspection.alerts.len())
+            .unwrap_or(u32::MAX)
+            .to_le_bytes(),
+    );
+    for alert in &inspection.alerts {
+        push_bytes(bytes, &alert.plan_id);
+        bytes.extend_from_slice(&alert.total_failures.to_le_bytes());
+        match alert.acknowledged_receipt_id.as_ref() {
+            Some(receipt_id) => {
+                bytes.push(1);
+                push_bytes(bytes, receipt_id);
+            }
+            None => bytes.push(0),
+        }
+    }
+}
+
+/// Resource-domain mirror of [`push_artifact_inspection`] under outcome tag
+/// `14`: the eight scalar projection fields, then the bounded alert list.
+fn push_resource_recovery_inspection(bytes: &mut Vec<u8>, inspection: &ResourceRecoveryInspection) {
+    bytes.push(14);
+    bytes.extend_from_slice(&inspection.total_inspected.to_le_bytes());
+    bytes.extend_from_slice(&inspection.total_finalized.to_le_bytes());
+    bytes.extend_from_slice(&inspection.consecutive_failed_cycles.to_le_bytes());
+    bytes.extend_from_slice(&inspection.durable_retrying.to_le_bytes());
+    bytes.extend_from_slice(&inspection.durable_escalated.to_le_bytes());
+    bytes.extend_from_slice(&inspection.durable_unacknowledged_escalated.to_le_bytes());
+    bytes.extend_from_slice(&inspection.durable_resolved.to_le_bytes());
+    bytes.push(u8::from(inspection.domain_faulted));
+    bytes.extend_from_slice(
+        &u32::try_from(inspection.alerts.len())
+            .unwrap_or(u32::MAX)
+            .to_le_bytes(),
+    );
+    for alert in &inspection.alerts {
+        push_bytes(bytes, &alert.plan_id);
+        bytes.extend_from_slice(&alert.total_failures.to_le_bytes());
+        match alert.acknowledged_receipt_id.as_ref() {
+            Some(receipt_id) => {
+                bytes.push(1);
+                push_bytes(bytes, receipt_id);
+            }
+            None => bytes.push(0),
+        }
     }
 }
 
@@ -880,6 +2408,7 @@ pub fn parse_hex_id(value: &str) -> Result<[u8; REQUEST_ID_BYTES], ControlError>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nlos_schema::{decode_get_system_control_request, decode_submit_control_command_request};
 
     #[test]
     fn parse_hex_id_is_fail_closed() {
@@ -907,14 +2436,23 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // Exhaustive §25.3 identity matrix for every ControlCommand arm.
     fn command_ids_are_deterministic_per_variant() {
         assert_eq!(
             ControlCommand::InspectHealth.control_command_id(),
             INSPECT_HEALTH_COMMAND_ID
         );
         assert_eq!(
+            ControlCommand::InspectSemanticHealth.control_command_id(),
+            INSPECT_SEMANTIC_HEALTH_COMMAND_ID
+        );
+        assert_eq!(
             ControlCommand::ExportMetrics.control_command_id(),
             EXPORT_METRICS_COMMAND_ID
+        );
+        assert_eq!(
+            ControlCommand::ExportSemanticMetrics.control_command_id(),
+            EXPORT_SEMANTIC_METRICS_COMMAND_ID
         );
         assert_eq!(
             ControlCommand::InspectTask {
@@ -938,6 +2476,13 @@ mod tests {
             [0x66; 16]
         );
         assert_eq!(
+            ControlCommand::InspectApplication {
+                package_id: [0x67; 16]
+            }
+            .control_command_id(),
+            [0x67; 16]
+        );
+        assert_eq!(
             ControlCommand::AcknowledgeRecoveryAlert {
                 control_command_id: [0x41; 16],
                 plan_id: [0x22; 16],
@@ -946,6 +2491,235 @@ mod tests {
             }
             .control_command_id(),
             [0x41; 16]
+        );
+        assert_eq!(
+            ControlCommand::AcknowledgeSemanticRecoveryAlert {
+                control_command_id: [0x53; 16],
+                plan_id: [0x71; 16],
+                expected_total_failures: 8,
+                reason: "inspected semantic recovery evidence".to_owned(),
+            }
+            .control_command_id(),
+            [0x53; 16]
+        );
+        assert_eq!(
+            ControlCommand::ResumeSemanticRecovery {
+                control_command_id: [0x54; 16],
+                plan_id: [0x71; 16],
+                expected_total_failures: 8,
+                reason: "operator resumes the escalated semantic plan".to_owned(),
+            }
+            .control_command_id(),
+            [0x54; 16]
+        );
+        assert_eq!(
+            ControlCommand::PauseOperation {
+                control_command_id: [0x61; 16],
+                target_id: [0x81; 16],
+                expected_generation_or_revision: 5,
+                reason: "operator pauses the operation".to_owned(),
+            }
+            .control_command_id(),
+            [0x61; 16]
+        );
+        assert_eq!(
+            ControlCommand::ResumeOperation {
+                control_command_id: [0x62; 16],
+                target_id: [0x81; 16],
+                expected_generation_or_revision: 5,
+                reason: "operator resumes the operation".to_owned(),
+            }
+            .control_command_id(),
+            [0x62; 16]
+        );
+        assert_eq!(
+            ControlCommand::CancelOperation {
+                control_command_id: [0x63; 16],
+                target_id: [0x81; 16],
+                expected_generation_or_revision: 5,
+                reason: "operator cancels the operation".to_owned(),
+            }
+            .control_command_id(),
+            [0x63; 16]
+        );
+    }
+
+    #[test]
+    fn w29d_command_ids_are_deterministic_per_variant() {
+        assert_eq!(
+            ControlCommand::KillOperation {
+                control_command_id: [0x64; 16],
+                target_id: [0x82; 16],
+                expected_generation_or_revision: 6,
+                reason: "operator kills the operation".to_owned(),
+            }
+            .control_command_id(),
+            [0x64; 16]
+        );
+        assert_eq!(
+            ControlCommand::ThrottleOperation {
+                control_command_id: [0x65; 16],
+                target_id: [0x82; 16],
+                expected_generation_or_revision: 6,
+                throttle_percent: 50,
+                reason: "operator throttles the operation".to_owned(),
+            }
+            .control_command_id(),
+            [0x65; 16]
+        );
+        assert_eq!(
+            ControlCommand::ReclaimOperation {
+                control_command_id: [0x66; 16],
+                target_id: [0x82; 16],
+                expected_generation_or_revision: 6,
+                reason: "operator reclaims the working set".to_owned(),
+            }
+            .control_command_id(),
+            [0x66; 16]
+        );
+    }
+
+    #[test]
+    fn resource_recovery_command_ids_are_deterministic_per_variant() {
+        assert_eq!(
+            ControlCommand::InspectResourceHealth.control_command_id(),
+            INSPECT_RESOURCE_HEALTH_COMMAND_ID
+        );
+        assert_eq!(
+            ControlCommand::ExportResourceMetrics.control_command_id(),
+            EXPORT_RESOURCE_METRICS_COMMAND_ID
+        );
+        assert_eq!(
+            ControlCommand::AcknowledgeResourceRecoveryAlert {
+                control_command_id: [0x57; 16],
+                plan_id: [0x81; 16],
+                expected_total_failures: 8,
+                reason: "inspected resource recovery evidence".to_owned(),
+            }
+            .control_command_id(),
+            [0x57; 16]
+        );
+        assert_eq!(
+            ControlCommand::ResumeResourceRecovery {
+                control_command_id: [0x58; 16],
+                plan_id: [0x81; 16],
+                expected_total_failures: 8,
+                reason: "operator resumes the escalated resource plan".to_owned(),
+            }
+            .control_command_id(),
+            [0x58; 16]
+        );
+    }
+
+    #[test]
+    fn resource_recovery_read_envelopes_use_the_resource_commit_recovery_view() {
+        let inspect = build_request_envelope(&ControlCommand::InspectResourceHealth).unwrap();
+        assert_eq!(inspect.method, GET_METHOD);
+        let export = build_request_envelope(&ControlCommand::ExportResourceMetrics).unwrap();
+        assert_eq!(export.method, GET_METHOD);
+        assert_eq!(inspect.payload, export.payload);
+        let payload = decode_get_system_control_request(&inspect.payload).unwrap();
+        assert_eq!(
+            payload.view,
+            i32::from(nlos_schema::sabi::v1::SystemControlView::ResourceCommitRecovery)
+        );
+    }
+
+    #[test]
+    fn resource_recovery_mutation_envelopes_carry_the_domain_commands() {
+        let acknowledge =
+            build_request_envelope(&ControlCommand::AcknowledgeResourceRecoveryAlert {
+                control_command_id: [0x57; 16],
+                plan_id: [0x81; 16],
+                expected_total_failures: 8,
+                reason: "inspected resource recovery evidence".to_owned(),
+            })
+            .unwrap();
+        assert_eq!(acknowledge.method, SUBMIT_METHOD);
+        let acknowledge_payload =
+            decode_submit_control_command_request(&acknowledge.payload).unwrap();
+        let acknowledge_command = acknowledge_payload.command.unwrap();
+        assert!(matches!(
+            acknowledge_command.command,
+            Some(control_command::Command::AcknowledgeResourceRecoveryAlert(
+                _
+            ))
+        ));
+        assert_eq!(acknowledge_command.target_id, vec![0x81; 16]);
+        assert_eq!(acknowledge_command.expected_generation_or_revision, 8);
+        let Some(envelope::CommonContext::RequestContext(context)) = acknowledge.common_context
+        else {
+            panic!("request context expected");
+        };
+        assert_eq!(context.idempotency_key, vec![0x57; 16]);
+
+        let resume = build_request_envelope(&ControlCommand::ResumeResourceRecovery {
+            control_command_id: [0x58; 16],
+            plan_id: [0x81; 16],
+            expected_total_failures: 8,
+            reason: "operator resumes the escalated resource plan".to_owned(),
+        })
+        .unwrap();
+        assert_eq!(resume.method, SUBMIT_METHOD);
+        let resume_payload = decode_submit_control_command_request(&resume.payload).unwrap();
+        assert!(matches!(
+            resume_payload.command.unwrap().command,
+            Some(control_command::Command::ResumeResourceRecovery(_))
+        ));
+    }
+
+    #[test]
+    fn resource_recovery_mutations_reject_empty_reason_before_the_wire() {
+        assert!(matches!(
+            build_request_envelope(&ControlCommand::AcknowledgeResourceRecoveryAlert {
+                control_command_id: [0x57; 16],
+                plan_id: [0x81; 16],
+                expected_total_failures: 8,
+                reason: String::new(),
+            }),
+            Err(ControlError::InvalidCommand(_))
+        ));
+        assert!(matches!(
+            build_request_envelope(&ControlCommand::ResumeResourceRecovery {
+                control_command_id: [0x58; 16],
+                plan_id: [0x81; 16],
+                expected_total_failures: 8,
+                reason: String::new(),
+            }),
+            Err(ControlError::InvalidCommand(_))
+        ));
+    }
+
+    #[test]
+    fn resource_recovery_resume_reference_pins_the_domain_separated_formula() {
+        use crate::resource_recovery_resume_reference;
+        use nlos_task::ResourceCommitPlanId;
+        use nlos_types::ReceiptId;
+
+        let plan_id = ResourceCommitPlanId::from_bytes([0x81; 16]);
+        let reference = resource_recovery_resume_reference(plan_id, 8);
+        assert_eq!(
+            reference,
+            resource_recovery_resume_reference(plan_id, 8),
+            "same plan and revision must derive the same reference"
+        );
+        assert_ne!(
+            reference,
+            resource_recovery_resume_reference(plan_id, 9),
+            "the failure-count revision must be part of the derivation"
+        );
+        assert_ne!(
+            reference,
+            resource_recovery_resume_reference(ResourceCommitPlanId::from_bytes([0x71; 16]), 8),
+            "the plan identity must be part of the derivation"
+        );
+        assert_eq!(
+            reference,
+            ReceiptId::from_bytes([
+                0x91, 0x9c, 0x2d, 0x6e, 0x7f, 0x60, 0x36, 0xb1, 0x2e, 0x91, 0x3a, 0x5a, 0x28, 0x53,
+                0x6d, 0x65,
+            ]),
+            "the domain-separated formula is pinned byte-for-byte"
         );
     }
 
@@ -998,5 +2772,497 @@ mod tests {
             panic!("request context expected");
         };
         assert_eq!(context.idempotency_key, vec![0x41; 16]);
+    }
+
+    #[test]
+    fn artifact_acknowledgement_envelope_carries_the_artifact_command() {
+        let envelope = build_request_envelope(&ControlCommand::AcknowledgeRecoveryAlert {
+            control_command_id: [0x41; 16],
+            plan_id: [0x22; 16],
+            expected_total_failures: 3,
+            reason: "operator acknowledges the escalated artifact alert".to_owned(),
+        })
+        .unwrap();
+        assert_eq!(envelope.method, SUBMIT_METHOD);
+        let payload = decode_submit_control_command_request(&envelope.payload).unwrap();
+        let command = payload.command.unwrap();
+        assert!(matches!(
+            command.command,
+            Some(control_command::Command::AcknowledgeArtifactRecoveryAlert(
+                _
+            ))
+        ));
+        assert_eq!(command.target_id, vec![0x22; 16]);
+        assert_eq!(command.expected_generation_or_revision, 3);
+    }
+
+    #[test]
+    fn semantic_read_envelopes_use_the_semantic_commit_recovery_view() {
+        let inspect = build_request_envelope(&ControlCommand::InspectSemanticHealth).unwrap();
+        assert_eq!(inspect.method, GET_METHOD);
+        let export = build_request_envelope(&ControlCommand::ExportSemanticMetrics).unwrap();
+        assert_eq!(export.method, GET_METHOD);
+        assert_eq!(inspect.payload, export.payload);
+        let payload = decode_get_system_control_request(&inspect.payload).unwrap();
+        assert_eq!(
+            payload.view,
+            i32::from(nlos_schema::sabi::v1::SystemControlView::SemanticCommitRecovery)
+        );
+    }
+
+    #[test]
+    fn semantic_mutation_envelopes_carry_the_domain_commands() {
+        let acknowledge =
+            build_request_envelope(&ControlCommand::AcknowledgeSemanticRecoveryAlert {
+                control_command_id: [0x53; 16],
+                plan_id: [0x71; 16],
+                expected_total_failures: 8,
+                reason: "inspected semantic recovery evidence".to_owned(),
+            })
+            .unwrap();
+        assert_eq!(acknowledge.method, SUBMIT_METHOD);
+        let acknowledge_payload =
+            decode_submit_control_command_request(&acknowledge.payload).unwrap();
+        let acknowledge_command = acknowledge_payload.command.unwrap();
+        assert!(matches!(
+            acknowledge_command.command,
+            Some(control_command::Command::AcknowledgeSemanticRecoveryAlert(
+                _
+            ))
+        ));
+        assert_eq!(acknowledge_command.target_id, vec![0x71; 16]);
+        assert_eq!(acknowledge_command.expected_generation_or_revision, 8);
+        let Some(envelope::CommonContext::RequestContext(context)) = acknowledge.common_context
+        else {
+            panic!("request context expected");
+        };
+        assert_eq!(context.idempotency_key, vec![0x53; 16]);
+
+        let resume = build_request_envelope(&ControlCommand::ResumeSemanticRecovery {
+            control_command_id: [0x54; 16],
+            plan_id: [0x71; 16],
+            expected_total_failures: 8,
+            reason: "operator resumes the escalated semantic plan".to_owned(),
+        })
+        .unwrap();
+        assert_eq!(resume.method, SUBMIT_METHOD);
+        let resume_payload = decode_submit_control_command_request(&resume.payload).unwrap();
+        assert!(matches!(
+            resume_payload.command.unwrap().command,
+            Some(control_command::Command::ResumeSemanticRecovery(_))
+        ));
+    }
+
+    #[test]
+    fn semantic_mutations_reject_empty_reason_before_the_wire() {
+        assert!(matches!(
+            build_request_envelope(&ControlCommand::AcknowledgeSemanticRecoveryAlert {
+                control_command_id: [0x53; 16],
+                plan_id: [0x71; 16],
+                expected_total_failures: 8,
+                reason: String::new(),
+            }),
+            Err(ControlError::InvalidCommand(_))
+        ));
+        assert!(matches!(
+            build_request_envelope(&ControlCommand::ResumeSemanticRecovery {
+                control_command_id: [0x54; 16],
+                plan_id: [0x71; 16],
+                expected_total_failures: 8,
+                reason: String::new(),
+            }),
+            Err(ControlError::InvalidCommand(_))
+        ));
+    }
+
+    #[test]
+    fn operation_mutation_envelopes_carry_the_wire_arms() {
+        for (command, expected_arm) in [
+            (
+                ControlCommand::PauseOperation {
+                    control_command_id: [0x61; 16],
+                    target_id: [0x81; 16],
+                    expected_generation_or_revision: 5,
+                    reason: "operator pauses the operation".to_owned(),
+                },
+                0,
+            ),
+            (
+                ControlCommand::ResumeOperation {
+                    control_command_id: [0x62; 16],
+                    target_id: [0x81; 16],
+                    expected_generation_or_revision: 5,
+                    reason: "operator resumes the operation".to_owned(),
+                },
+                1,
+            ),
+            (
+                ControlCommand::CancelOperation {
+                    control_command_id: [0x63; 16],
+                    target_id: [0x81; 16],
+                    expected_generation_or_revision: 5,
+                    reason: "operator cancels the operation".to_owned(),
+                },
+                2,
+            ),
+        ] {
+            let envelope = build_request_envelope(&command).unwrap();
+            assert_eq!(envelope.method, SUBMIT_METHOD);
+            let payload = decode_submit_control_command_request(&envelope.payload).unwrap();
+            let wire_command = payload.command.unwrap();
+            let matched = match wire_command.command {
+                Some(control_command::Command::PauseOperation(PauseCommand {})) => 0,
+                Some(control_command::Command::ResumeOperation(ResumeCommand {})) => 1,
+                Some(control_command::Command::CancelOperation(CancelCommand {})) => 2,
+                _ => panic!("expected an operation-level arm"),
+            };
+            assert_eq!(matched, expected_arm);
+            assert_eq!(wire_command.target_id, vec![0x81; 16]);
+            assert_eq!(wire_command.expected_generation_or_revision, 5);
+            let Some(envelope::CommonContext::RequestContext(context)) = envelope.common_context
+            else {
+                panic!("request context expected");
+            };
+            assert_eq!(
+                context.idempotency_key,
+                command.control_command_id().to_vec()
+            );
+        }
+    }
+
+    #[test]
+    fn w29d_mutation_envelopes_carry_the_wire_arms_and_percent() {
+        for (command, matched_arm) in [
+            (
+                ControlCommand::KillOperation {
+                    control_command_id: [0x64; 16],
+                    target_id: [0x82; 16],
+                    expected_generation_or_revision: 6,
+                    reason: "operator kills the operation".to_owned(),
+                },
+                control_command::Command::KillOperation(KillCommand {}),
+            ),
+            (
+                ControlCommand::ThrottleOperation {
+                    control_command_id: [0x65; 16],
+                    target_id: [0x82; 16],
+                    expected_generation_or_revision: 6,
+                    throttle_percent: 50,
+                    reason: "operator throttles the operation".to_owned(),
+                },
+                control_command::Command::ThrottleOperation(ThrottleCommand {
+                    throttle_percent: 50,
+                }),
+            ),
+            (
+                ControlCommand::ReclaimOperation {
+                    control_command_id: [0x66; 16],
+                    target_id: [0x82; 16],
+                    expected_generation_or_revision: 6,
+                    reason: "operator reclaims the working set".to_owned(),
+                },
+                control_command::Command::ReclaimOperation(ReclaimCommand {}),
+            ),
+        ] {
+            let envelope = build_request_envelope(&command).unwrap();
+            assert_eq!(envelope.method, SUBMIT_METHOD);
+            let payload = decode_submit_control_command_request(&envelope.payload).unwrap();
+            let wire_command = payload.command.unwrap();
+            assert_eq!(wire_command.command, Some(matched_arm));
+            assert_eq!(wire_command.target_id, vec![0x82; 16]);
+            assert_eq!(wire_command.expected_generation_or_revision, 6);
+            let Some(envelope::CommonContext::RequestContext(context)) = envelope.common_context
+            else {
+                panic!("request context expected");
+            };
+            assert_eq!(
+                context.idempotency_key,
+                command.control_command_id().to_vec()
+            );
+        }
+    }
+
+    #[test]
+    fn operation_mutations_reject_empty_reason_before_the_wire() {
+        for command in [
+            ControlCommand::PauseOperation {
+                control_command_id: [0x61; 16],
+                target_id: [0x81; 16],
+                expected_generation_or_revision: 5,
+                reason: String::new(),
+            },
+            ControlCommand::ResumeOperation {
+                control_command_id: [0x62; 16],
+                target_id: [0x81; 16],
+                expected_generation_or_revision: 5,
+                reason: String::new(),
+            },
+            ControlCommand::CancelOperation {
+                control_command_id: [0x63; 16],
+                target_id: [0x81; 16],
+                expected_generation_or_revision: 5,
+                reason: String::new(),
+            },
+            ControlCommand::KillOperation {
+                control_command_id: [0x64; 16],
+                target_id: [0x82; 16],
+                expected_generation_or_revision: 6,
+                reason: String::new(),
+            },
+            ControlCommand::ThrottleOperation {
+                control_command_id: [0x65; 16],
+                target_id: [0x82; 16],
+                expected_generation_or_revision: 6,
+                throttle_percent: 50,
+                reason: String::new(),
+            },
+            ControlCommand::ReclaimOperation {
+                control_command_id: [0x66; 16],
+                target_id: [0x82; 16],
+                expected_generation_or_revision: 6,
+                reason: String::new(),
+            },
+        ] {
+            assert!(matches!(
+                build_request_envelope(&command),
+                Err(ControlError::InvalidCommand(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn throttle_mutations_reject_out_of_range_percent_before_the_wire() {
+        for throttle_percent in [0, 101, u64::MAX] {
+            assert!(matches!(
+                build_request_envelope(&ControlCommand::ThrottleOperation {
+                    control_command_id: [0x65; 16],
+                    target_id: [0x82; 16],
+                    expected_generation_or_revision: 6,
+                    throttle_percent,
+                    reason: "operator throttles the operation".to_owned(),
+                }),
+                Err(ControlError::InvalidCommand(
+                    "throttle percent must be a whole percent from 1 to 100"
+                ))
+            ));
+        }
+    }
+
+    #[test]
+    fn w32g_layer_command_ids_are_deterministic_per_variant() {
+        assert_eq!(
+            ControlCommand::InspectTaskGroup {
+                group_id: [0x91; 16]
+            }
+            .control_command_id(),
+            [0x91; 16]
+        );
+        assert_eq!(
+            ControlCommand::InspectTaskNode {
+                plan_id: [0xA1; 16],
+                node_id: [0xA2; 16]
+            }
+            .control_command_id(),
+            [0xA2; 16]
+        );
+        assert_eq!(
+            ControlCommand::InspectExecutionFiber {
+                fiber_id: [0xB1; 16],
+                generation: 2
+            }
+            .control_command_id(),
+            [0xB1; 16]
+        );
+        assert_eq!(
+            ControlCommand::InspectTopic {
+                topic_id: [0xC1; 16]
+            }
+            .control_command_id(),
+            [0xC1; 16]
+        );
+        assert_eq!(
+            ControlCommand::InspectOperation {
+                operation_id: [0xD1; 16],
+                generation: 1
+            }
+            .control_command_id(),
+            [0xD1; 16]
+        );
+    }
+
+    #[test]
+    fn w32g_layer_read_envelopes_carry_view_targeting() {
+        let group = build_request_envelope(&ControlCommand::InspectTaskGroup {
+            group_id: [0x91; 16],
+        })
+        .unwrap();
+        assert_eq!(group.method, GET_METHOD);
+        let group_payload = decode_get_system_control_request(&group.payload).unwrap();
+        assert_eq!(
+            group_payload.view,
+            i32::from(nlos_schema::sabi::v1::SystemControlView::TaskGroup)
+        );
+        assert_eq!(group_payload.target_id, vec![0x91; 16]);
+        assert!(group_payload.plan_id.is_empty());
+
+        let node = build_request_envelope(&ControlCommand::InspectTaskNode {
+            plan_id: [0xA1; 16],
+            node_id: [0xA2; 16],
+        })
+        .unwrap();
+        let node_payload = decode_get_system_control_request(&node.payload).unwrap();
+        assert_eq!(
+            node_payload.view,
+            i32::from(nlos_schema::sabi::v1::SystemControlView::TaskNode)
+        );
+        assert_eq!(node_payload.target_id, vec![0xA2; 16]);
+        assert_eq!(node_payload.plan_id, vec![0xA1; 16]);
+
+        let fiber = build_request_envelope(&ControlCommand::InspectExecutionFiber {
+            fiber_id: [0xB1; 16],
+            generation: 2,
+        })
+        .unwrap();
+        let fiber_payload = decode_get_system_control_request(&fiber.payload).unwrap();
+        assert_eq!(
+            fiber_payload.view,
+            i32::from(nlos_schema::sabi::v1::SystemControlView::ExecutionFiber)
+        );
+        assert_eq!(fiber_payload.target_id, vec![0xB1; 16]);
+        assert_eq!(fiber_payload.target_generation, 2);
+
+        let topic = build_request_envelope(&ControlCommand::InspectTopic {
+            topic_id: [0xC1; 16],
+        })
+        .unwrap();
+        let topic_payload = decode_get_system_control_request(&topic.payload).unwrap();
+        assert_eq!(
+            topic_payload.view,
+            i32::from(nlos_schema::sabi::v1::SystemControlView::Topic)
+        );
+        assert_eq!(topic_payload.target_id, vec![0xC1; 16]);
+
+        let operation = build_request_envelope(&ControlCommand::InspectOperation {
+            operation_id: [0xD1; 16],
+            generation: 1,
+        })
+        .unwrap();
+        let operation_payload = decode_get_system_control_request(&operation.payload).unwrap();
+        assert_eq!(
+            operation_payload.view,
+            i32::from(nlos_schema::sabi::v1::SystemControlView::Operation)
+        );
+        assert_eq!(operation_payload.target_id, vec![0xD1; 16]);
+        assert_eq!(operation_payload.target_generation, 1);
+    }
+
+    #[test]
+    fn w32g_layer_reads_reject_zero_generation_before_the_wire() {
+        for command in [
+            ControlCommand::InspectExecutionFiber {
+                fiber_id: [0xB1; 16],
+                generation: 0,
+            },
+            ControlCommand::InspectOperation {
+                operation_id: [0xD1; 16],
+                generation: 0,
+            },
+        ] {
+            assert!(matches!(
+                build_request_envelope(&command),
+                Err(ControlError::InvalidCommand(
+                    "handle generation must be a non-zero generation"
+                ))
+            ));
+        }
+    }
+
+    #[test]
+    fn w35p11_command_ids_are_deterministic_per_variant() {
+        assert_eq!(
+            ControlCommand::DisableApplication {
+                control_command_id: [0x67; 16],
+                package_id: [0xE1; 16],
+                expected_generation_or_revision: 3,
+                reason: "operator disables the application".to_owned(),
+            }
+            .control_command_id(),
+            [0x67; 16]
+        );
+        assert_eq!(
+            ControlCommand::UninstallApplication {
+                control_command_id: [0x68; 16],
+                package_id: [0xE1; 16],
+                expected_generation_or_revision: 3,
+                reason: "operator uninstalls the application".to_owned(),
+            }
+            .control_command_id(),
+            [0x68; 16]
+        );
+    }
+
+    #[test]
+    fn w35p11_mutation_envelopes_carry_the_wire_arms_and_package_addressing() {
+        for (command, matched_arm) in [
+            (
+                ControlCommand::DisableApplication {
+                    control_command_id: [0x67; 16],
+                    package_id: [0xE1; 16],
+                    expected_generation_or_revision: 3,
+                    reason: "operator disables the application".to_owned(),
+                },
+                control_command::Command::DisableApplication(DisableApplicationCommand {}),
+            ),
+            (
+                ControlCommand::UninstallApplication {
+                    control_command_id: [0x68; 16],
+                    package_id: [0xE1; 16],
+                    expected_generation_or_revision: 3,
+                    reason: "operator uninstalls the application".to_owned(),
+                },
+                control_command::Command::UninstallApplication(UninstallApplicationCommand {}),
+            ),
+        ] {
+            let envelope = build_request_envelope(&command).unwrap();
+            assert_eq!(envelope.method, SUBMIT_METHOD);
+            let payload = decode_submit_control_command_request(&envelope.payload).unwrap();
+            let wire_command = payload.command.unwrap();
+            assert_eq!(wire_command.command, Some(matched_arm));
+            assert_eq!(wire_command.target_id, vec![0xE1; 16]);
+            assert_eq!(wire_command.expected_generation_or_revision, 3);
+            let Some(envelope::CommonContext::RequestContext(context)) = envelope.common_context
+            else {
+                panic!("request context expected");
+            };
+            assert_eq!(
+                context.idempotency_key,
+                command.control_command_id().to_vec()
+            );
+        }
+    }
+
+    #[test]
+    fn w35p11_mutations_reject_empty_reason_before_the_wire() {
+        for command in [
+            ControlCommand::DisableApplication {
+                control_command_id: [0x67; 16],
+                package_id: [0xE1; 16],
+                expected_generation_or_revision: 3,
+                reason: String::new(),
+            },
+            ControlCommand::UninstallApplication {
+                control_command_id: [0x68; 16],
+                package_id: [0xE1; 16],
+                expected_generation_or_revision: 3,
+                reason: String::new(),
+            },
+        ] {
+            assert!(matches!(
+                build_request_envelope(&command),
+                Err(ControlError::InvalidCommand(
+                    "control mutations require a non-empty bounded reason"
+                ))
+            ));
+        }
     }
 }

@@ -1,0 +1,22 @@
+[package]
+name = "nlos-search"
+description = "Search minimal service: a read-only query face over the Semantic authority's admitted facts."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+nlos-capability = { path = "../nlos-capability" }
+nlos-semantic = { path = "../nlos-semantic" }
+nlos-types = { path = "../nlos-types" }
+rusqlite.workspace = true
+
+[dev-dependencies]
+ed25519-dalek.workspace = true
+nlos-identity = { path = "../nlos-identity" }
+nlos-process = { path = "../nlos-process" }
+
+[lints]
+workspace = true

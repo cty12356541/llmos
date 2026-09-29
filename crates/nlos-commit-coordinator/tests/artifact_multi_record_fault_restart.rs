@@ -129,6 +129,8 @@ fn prepare_plan(authorities: &TestAuthorities) -> PreparedPlan {
             task_id,
             task_generation: Generation::INITIAL,
             registered_at_ms: 1_000,
+            application_id: None,
+            plan_revision: None,
         })
         .expect("register task");
     tasks

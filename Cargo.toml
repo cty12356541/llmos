@@ -2,6 +2,8 @@
 members = [
     "crates/nlos-application",
     "crates/nlos-canonical",
+    "crates/nlos-cell",
+    "crates/nlos-lease",
     "crates/nlos-clock",
     "crates/nlos-ipc",
     "crates/nlos-operation",
@@ -12,8 +14,10 @@ members = [
     "crates/nlos-runtime",
     "crates/nlos-runtime-tokio",
     "crates/nlos-outbox",
+    "crates/nlos-plan",
     "crates/nlos-store-fault",
     "crates/nlos-task",
+    "crates/nlos-driver-mock",
     "crates/nlos-identity",
     "crates/nlos-capability",
     "crates/nlos-channel",
@@ -21,6 +25,7 @@ members = [
     "crates/nlos-process",
     "crates/nlos-resource",
     "crates/nlos-artifact",
+    "crates/nlos-package",
     "crates/nlos-commit-coordinator",
     "crates/nlos-slice-k",
     "crates/nlos-system-control",
@@ -28,6 +33,8 @@ members = [
     "crates/nlos-topic",
     "crates/nlos-wait",
     "crates/nlos-wait-control",
+    "crates/nlos-notify",
+    "crates/nlos-search",
 ]
 exclude = ["fuzz"]
 resolver = "3"

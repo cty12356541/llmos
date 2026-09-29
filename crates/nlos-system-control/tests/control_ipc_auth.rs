@@ -264,6 +264,14 @@ fn stub_health(plan_id: &ArtifactCommitPlanId) -> StubHealth {
         semantic_total_finalized: 0,
         semantic_domain_faulted: false,
         artifact_domain_faulted: false,
+        resource_durable_retrying: 0,
+        resource_durable_escalated: 0,
+        resource_durable_unacknowledged_escalated: 0,
+        resource_durable_resolved: 0,
+        resource_consecutive_failed_cycles: 0,
+        resource_total_inspected: 0,
+        resource_total_finalized: 0,
+        resource_domain_faulted: false,
     })
 }
 
@@ -274,6 +282,8 @@ fn create_escalated_plan(authority: &SqliteTaskAuthority) -> ArtifactCommitPlanI
             task_id,
             task_generation: Generation::INITIAL,
             registered_at_ms: 1_000,
+            application_id: None,
+            plan_revision: None,
         })
         .unwrap();
     let attempt = AttemptSpec {
@@ -505,6 +515,7 @@ async fn authenticated_roundtrip_inspect_and_acknowledge() {
         &ControlCommand::InspectHealth,
         None,
         None,
+        None,
     )
     .await
     .unwrap();
@@ -521,6 +532,7 @@ async fn authenticated_roundtrip_inspect_and_acknowledge() {
         principal,
         &signer,
         &acknowledge_command(&fixture.plan_id),
+        None,
         None,
         None,
     )
@@ -879,9 +891,17 @@ async fn dispatch_all_entries(
 ) -> [nlos_system_control::control::ControlReceipt; 3] {
     use nlos_system_control::control::{dispatch_in_process, dispatch_over_socket};
 
-    let in_process =
-        dispatch_in_process(control, command, MONOTONIC_NOW_NS, wall_ms, None, None).unwrap();
-    let plain = dispatch_over_socket(plain_socket, command, None, None)
+    let in_process = dispatch_in_process(
+        control,
+        command,
+        MONOTONIC_NOW_NS,
+        wall_ms,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    let plain = dispatch_over_socket(plain_socket, command, None, None, None)
         .await
         .unwrap();
     let authenticated = dispatch_over_authenticated_socket(
@@ -889,6 +909,7 @@ async fn dispatch_all_entries(
         principal,
         signer,
         command,
+        None,
         None,
         None,
     )

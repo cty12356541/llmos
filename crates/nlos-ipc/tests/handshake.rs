@@ -128,7 +128,7 @@ impl PeerAuthorizer for Allow {
 }
 
 #[test]
-fn nonce_registry_is_bounded_and_one_time() {
+fn nonce_registry_is_bounded_displacing_and_one_time() {
     assert!(matches!(
         HandshakeNonceRegistry::new(0).unwrap_err(),
         HandshakeError::InvalidConfig("nonce registry capacity must be non-zero")
@@ -141,19 +141,61 @@ fn nonce_registry_is_bounded_and_one_time() {
         Err(HandshakeError::NonceRejected)
     ));
     registry.register([2; 32]).unwrap();
+    // At capacity the oldest outstanding nonce is displaced instead of the
+    // endpoint being disabled: the fresh registration still succeeds.
+    registry.register([3; 32]).unwrap();
+    // The displaced nonce is unknown now, and never-registered nonces stay
+    // unknown too.
     assert!(matches!(
-        registry.register([3; 32]),
-        Err(HandshakeError::NonceCapacityExhausted { capacity: 2 })
+        registry.consume(&[1; 32]),
+        Err(HandshakeError::NonceRejected)
     ));
     assert!(matches!(
         registry.consume(&[4; 32]),
         Err(HandshakeError::NonceRejected)
     ));
-    registry.consume(&[1; 32]).unwrap();
+    // Surviving nonces keep their exact one-time consume semantics.
+    registry.consume(&[2; 32]).unwrap();
     assert!(matches!(
-        registry.consume(&[1; 32]),
+        registry.consume(&[2; 32]),
         Err(HandshakeError::NonceRejected)
     ));
+    registry.consume(&[3; 32]).unwrap();
+    assert!(matches!(
+        registry.consume(&[3; 32]),
+        Err(HandshakeError::NonceRejected)
+    ));
+}
+
+#[test]
+fn full_registry_stays_serviceable_and_displaced_nonces_fail_closed() {
+    let (_root, identity, key, binding) = bootstrap(0x31);
+    let registry = HandshakeNonceRegistry::new(2).unwrap();
+
+    issue_challenge(&registry, [0xA1; 32]).unwrap();
+    issue_challenge(&registry, [0xA2; 32]).unwrap();
+
+    // The registry is at capacity, yet a fresh challenge still issues: the
+    // oldest outstanding nonce is displaced (bounded staleness), so
+    // repeated half-open handshakes cannot wedge the endpoint.
+    issue_challenge(&registry, [0xA3; 32]).unwrap();
+
+    // A late attestation for the displaced nonce fails closed as unknown.
+    let stale = attestation_for(&key, &binding, &[0xA1; 32], b"binding");
+    assert!(matches!(
+        verify_attestation(&identity, &registry, &stale, b"binding", 5_000),
+        Err(HandshakeError::NonceRejected)
+    ));
+
+    // Displacement follows registration order, not consumption: consuming a
+    // nonce frees its slot, so the next registration evicts nothing and both
+    // survivors verify normally.
+    registry.consume(&[0xA2; 32]).unwrap();
+    issue_challenge(&registry, [0xA4; 32]).unwrap();
+    let survivor = attestation_for(&key, &binding, &[0xA3; 32], b"binding");
+    verify_attestation(&identity, &registry, &survivor, b"binding", 5_000).unwrap();
+    let fresh = attestation_for(&key, &binding, &[0xA4; 32], b"binding");
+    verify_attestation(&identity, &registry, &fresh, b"binding", 5_000).unwrap();
 }
 
 #[test]

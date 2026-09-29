@@ -9,10 +9,11 @@
 //! mandated by the full §25.1 contract.
 
 use nlos_types::{
-    AgentInstanceId, ArtifactId, CallId, CancellationScopeId, ChannelId, CommitPermitId, DeviceId,
-    DriverId, Generation, IdempotencyKey, IsolationDomainId, NamespaceId, OperationId, ProcessId,
-    QuoteId, ReceiptId, ReservationId, ResourceAccountId, SemanticEventId, TaskAttemptId,
-    TaskAuthorityAssignmentId, TaskId, TaskParticipantId, TaskSnapshotId,
+    AgentInstanceId, ApplicationId, ArtifactId, CallId, CancellationScopeId, ChannelId,
+    CommitPermitId, DeviceId, DriverId, Generation, IdempotencyKey, IsolationDomainId, NamespaceId,
+    OperationId, ProcessId, QuoteId, ReceiptId, ReservationId, ResourceAccountId, SemanticEventId,
+    TaskAttemptId, TaskAuthorityAssignmentId, TaskId, TaskParticipantId, TaskPlanId,
+    TaskSnapshotId,
 };
 use sha2::{Digest, Sha256};
 
@@ -34,11 +35,27 @@ pub fn empty_effect_history_root() -> [u8; 32] {
     hasher.finalize().into()
 }
 
+/// Plan revision reference stored on a `TaskSpec` association
+/// (ADR-0016 决定 3): the declared plan identity plus the exact revision
+/// the Task was declared against. The pair is total — a stored reference
+/// always names both halves; runtime verification happens at the
+/// materialization/permit boundaries (ADR-0013 verify-then-commit), not
+/// at registration.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TaskPlanRevisionRef {
+    pub plan_id: TaskPlanId,
+    pub revision: u64,
+}
+
 /// Durable specification of a registered Task.
 ///
 /// Registration is idempotent on `task_id`: repeating the exact same
 /// specification returns the existing record, while reusing the ID with a
-/// different generation is rejected fail-closed.
+/// different generation is rejected fail-closed. Since schema v44
+/// (ADR-0016 决定 3) a spec may additionally carry the application and
+/// plan-revision association; the association is part of the declaration
+/// identity, so a replay with a different association is rejected
+/// fail-closed. Legacy pre-v44 rows carry no association (`None`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TaskSpec {
     pub task_id: TaskId,
@@ -46,6 +63,12 @@ pub struct TaskSpec {
     /// Caller-supplied registration time in milliseconds (wall-clock is not
     /// part of the authority's causality; it is stored for observability).
     pub registered_at_ms: i64,
+    /// Application association (ADR-0016 决定 3); `None` when the Task is
+    /// not declared from an installed application (legacy rows included).
+    pub application_id: Option<ApplicationId>,
+    /// Plan revision association (ADR-0016 决定 3); `None` for Tasks
+    /// declared outside any `TaskPlan` revision (legacy rows included).
+    pub plan_revision: Option<TaskPlanRevisionRef>,
 }
 
 /// Frozen-input core shared by a full `TaskSnapshot` and its durable receipt.
@@ -917,13 +940,15 @@ pub enum TaskState {
 
 /// Pre-permit subset of the §25.1 `TaskAttempt` state machine.
 ///
-/// Reachable in this slice: `Created` → `ReadyToCommit` →
-/// `CommitPermitted` (CAS win) | `Superseded` (CAS loss) | `Conflicted`
-/// (validation failure), `CommitPermitted` → `Committed` (finalize), and any
-/// open pre-permit state → `Cancelled`. The remaining variants are reserved
-/// for the scheduling and effect slices and cannot be produced here;
-/// post-permit `EFFECTING`/`FINALIZING`/`UNCERTAIN`/`RECONCILING` are
-/// represented as permit states rather than attempt states in this slice.
+/// Reachable here: `Created` → `ReadyToCommit` → `CommitPermitted` (CAS
+/// win) | `Superseded` (CAS loss) | `Conflicted` (validation failure),
+/// `CommitPermitted` → `Committed` (finalize) | `Failed`
+/// (failed-after-effect / non-commit terminal outcome), and any open
+/// pre-permit state → `Cancelled`. The scheduling-only variants
+/// (`Admitted` … `Validating`) and `Cancelling` remain reserved for their
+/// slices and cannot be produced here; post-permit
+/// `EFFECTING`/`FINALIZING`/`UNCERTAIN`/`RECONCILING` are represented as
+/// permit states rather than attempt states in this slice.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AttemptState {
     Created,
@@ -951,7 +976,9 @@ pub enum AttemptState {
     Cancelling,
     /// Closed before any effect with a closure receipt; `TaskHead` unchanged.
     Cancelled,
-    /// Reserved for the failure-reporting slice; not producible here.
+    /// Terminal failure outcome of a permit-holding attempt (for example a
+    /// `FAILED_AFTER_EFFECT` / partial-effect finalize or a quarantined
+    /// closure); `TaskHead` did not advance with a commit receipt.
     Failed,
     /// Permit holder finalized; `TaskHead` advanced with a commit receipt.
     Committed,
@@ -966,11 +993,15 @@ impl AttemptState {
     }
 
     /// Whether the attempt has reached a state this slice never leaves.
+    ///
+    /// `Failed` is a real terminal product of the failure-reporting
+    /// paths (failed-after-effect finalizes and quarantined closures),
+    /// not a reserved variant.
     #[must_use]
     pub const fn is_terminal(self) -> bool {
         matches!(
             self,
-            Self::Conflicted | Self::Superseded | Self::Cancelled | Self::Committed
+            Self::Conflicted | Self::Superseded | Self::Cancelled | Self::Failed | Self::Committed
         )
     }
 
@@ -1030,7 +1061,9 @@ pub enum PermitState {
     Closed,
     /// Reserved tombstone; not producible in this slice.
     Superseded,
-    /// Reserved tombstone; not producible in this slice.
+    /// Non-reusable tombstone produced when any slot is `EffectUnknown` at
+    /// closure time (`[TASK-EFFECT-003]`); the `TaskHead` stays frozen
+    /// until every unknown slot is reconciled.
     Quarantined,
 }
 
@@ -1146,6 +1179,14 @@ pub struct TaskRecord {
     /// The currently outstanding permit, if any. A `Closed` permit is not
     /// reported here; the CAS gate recomputes eligibility from permit rows.
     pub active_permit: Option<CommitPermitId>,
+    /// Application association declared at registration (ADR-0016 决定 3,
+    /// schema v44). `None` for rows registered before v44 or without an
+    /// application; immutable once registered.
+    pub application_id: Option<ApplicationId>,
+    /// Plan revision association declared at registration (ADR-0016
+    /// 决定 3, schema v44). `None` for rows registered before v44 or
+    /// outside any plan; immutable once registered.
+    pub plan_revision: Option<TaskPlanRevisionRef>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
 }

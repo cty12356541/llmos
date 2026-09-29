@@ -60,7 +60,8 @@ fn suffix_path(path: &Path, suffix: &str) -> PathBuf {
 fn schema_v42_creates_semantic_recovery_tables_idempotently() {
     let database = TestDatabase::new("v42");
     // Opening a fresh database runs the full chain to the current
-    // version: both new tables exist and user_version = 42.
+    // version (v43 since the Resource coordinator group landed): both
+    // v42 tables exist and user_version = 43.
     drop(database.open());
     let raw = Connection::open(&database.path).expect("open raw connection");
     let count: i64 = raw
@@ -76,18 +77,18 @@ fn schema_v42_creates_semantic_recovery_tables_idempotently() {
     let version: i64 = raw
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("read user_version");
-    assert_eq!(version, 42);
+    assert_eq!(version, 44);
     drop(raw);
 
     // Reopening at the current version skips migration dispatch
     // altogether (the `12..=SCHEMA_VERSION` match arm in
-    // `open_with_vfs_and_scale_profile`); user_version stays 42.
+    // `open_with_vfs_and_scale_profile`); user_version stays 44.
     drop(database.open());
     let raw = Connection::open(&database.path).expect("reopen raw connection");
     let version: i64 = raw
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("reread user_version");
-    assert_eq!(version, 42);
+    assert_eq!(version, 44);
 }
 
 #[test]

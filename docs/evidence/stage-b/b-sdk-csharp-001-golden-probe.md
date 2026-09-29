@@ -1,7 +1,7 @@
 # Evidence B-SDK-CSHARP-001：C# 最小 golden 探针（冻结 wire v1-beta 逐字节比对）
 
-- 状态：**PASS**（golden 门 16/16 全 PASS、4/4 golden，与 Go 先例完全对齐；2026-08-30 扩面记录见 §8）
-- 日期：2026-08-30（初版 W4-G）；2026-08-30（§8 扩面追加）
+- 状态：**PASS**（golden 门 16/16 全 PASS、4/4 golden，与 Go 先例完全对齐；2026-08-30 扩面记录见 §8；2026-09-20 W29-G 解封复验零漂移 + ServiceDirectory.ResolveRequest 扩面见 §9）
+- 日期：2026-08-30（初版 W4-G）；2026-08-30（§8 扩面追加）；2026-09-20（§9 W29-G 追加）
 - 仓库 HEAD：`bb93e2fbd53cafde0933ebc07f83b4c70f7072e1`（初版基线）；§8 验证时 `afd05ae71b39e62eaa55487e3cb49e4527d89d36`（无漂移）
 - 工作包：`B-SDK-LANG-EVAL`（Go 先例 [b-sdk-go-001](b-sdk-go-001-golden-probe.md) 的第二语言镜像车道）
 - 冻结纪律依据：[ADR-0014](../../management/adrs/0014-schema-channel-freeze-v1-beta.md)
@@ -78,8 +78,8 @@ cs golden probe: 14 passed, 0 failed (total 14)              # EXIT=0
 
 1. **非完整 SDK**：仅手写 2 条目 frozen wire 面；无 options/map/zigzag/fixed 编码、无反射/描述符、无 UTF-8 校验（C# `Encoding.UTF8` 对非法序列做替换式解码，Go 车道保留原始字节——对 ASCII golden 无差异，但对含非法 UTF-8 的 string 字段非 bit-preserving，语义校验归 SDK 校验层）、无 service 桩、无 oneof 类型化 API（双臂用异常而非 typed error）、无 conformance 框架集成。
 2. **无 IPC 客户端**：不含 LocalRpcService 传输层。
-3. **覆盖面 4/7 registry golden 条目**（§8 扩面后；Envelope 家族全 4 条：Envelope-v1、Envelope-common-request-v1、Envelope-common-uncertain-v1、PrincipalHandshake-v1）：ServiceDirectory.ResolveRequest、OperationControl、SystemControl、TakeoverControl、WaitControl 及 DigestEnvelope 家族未覆盖。
-4. **golden 门 4/4**（§8 扩面后）：Go 车道断言过的 4 条 sabi golden 本车道已全量对齐；全仓 7 条 golden 中剩余 3 条（ServiceDirectory.ResolveRequest-v1、DigestEnvelope-v1/-preimage-v1）分属其他家族，不在本探针 registry 面。
+3. **覆盖面 4/7 registry golden 条目**（§8 扩面后；Envelope 家族全 4 条：Envelope-v1、Envelope-common-request-v1、Envelope-common-uncertain-v1、PrincipalHandshake-v1）：OperationControl、SystemControl、TakeoverControl、WaitControl 及 DigestEnvelope 家族未覆盖（ServiceDirectory.ResolveRequest 已于 §9 覆盖）。
+4. **golden 门 4/4**（§8 扩面后；§9 扩面后 5/5）：Go 车道断言过的 4 条 sabi golden 本车道已全量对齐（§9 再补 ServiceDirectory.ResolveRequest-v1）；全仓 7 条 golden 中剩余 2 条（DigestEnvelope-v1/-preimage-v1）属 canonical CBOR 家族，不在本探针 registry 面。
 5. .NET 工具链为临时下载供给，未进入机器 PATH 与 CI；与 `Google.Protobuf`/protobuf-net 生成代码的交叉比对未做（无 protoc，且探针刻意零依赖）。
 6. 解码不校验重复 oneof 臂（后到覆盖），解码枚举不做未知值 fail-closed（proto3 保留未知值）；`Environment.Exit` 码为唯一失败信号，无 xunit/NUnit 报告格式。
 7. 测试以 console harness 形式交付（无测试框架依赖）；若后续车道引入 xunit，需迁移 16 个用例的断言形式。
@@ -138,5 +138,55 @@ cs golden probe: 16 passed, 0 failed (total 16)                                 
 ### 8.5 已知限制增量（对 §5 的覆盖更新）
 
 - 覆盖面更新为 **4/7 registry golden 条目（Envelope 家族全 4 条）**；剩余未覆盖：`ServiceDirectory.ResolveRequest-v1`、`nlos.canonical.DigestEnvelope-v1/-preimage-v1`（分属 ServiceDirectory/Digest 家族）。
+
+## 9. W29-G 解封复验与扩面记录：ServiceDirectory.ResolveRequest golden（2026-09-20 追加）
+
+- 触发：与 Go 车道同批解封（[b-sdk-go-001 §8](b-sdk-go-001-golden-probe.md)）；2026-08-04 后移决定所等待的 `B-TASK`/EffectPermit 纵切面已落地，W29-G 对当前冻结 wire 复验双语言探针并补 Envelope 家族 golden 缺口。
+- 验证时仓库 HEAD：`55c7f4548e31c00e99cfb79f1a81c7df0a3850a7`（运行全程无漂移；探针基线提交为 `a6ad75b`）。
+
+### 9.1 解封复验：冻结 wire 漂移核验（结论：零漂移）
+
+```console
+$ git log --oneline a6ad75b..HEAD -- schema/nlos/sabi/v1/envelope.proto \
+    schema/nlos/sabi/v1/principal_handshake.proto schema/nlos/sabi/v1/service_directory.proto
+（空输出：探针覆盖的三个 proto 零改动）
+$ git log --oneline a6ad75b..HEAD -- schema/nlos/sabi/v1/
+33da024 feat(nlos-schema): SystemControl v1.1 语义域恢复运维面 additive 契约 (W27-A)
+c974030 feat(nlos-schema): SystemControl v1.2 操作级 pause/resume/cancel additive 命令契约 (W28-D)
+```
+
+期间 wire 增量仅 `system_control.proto` v1.1/v1.2，REGISTRY（`crates/nlos-schema/src/lib.rs` `SABI_SYSTEM_CONTROL_V1`）声明两者均为 ADR-0014 freeze 下 additive 扩展且条目保持 frozen，不触及探针消息面；冻结 golden 自 `b0badd5` 后零改动。**解封基线探针零修改即 16/16 全 PASS——无字节差需要用期望更新掩盖**（扩面前基线以 `git stash` 暂存本车道改动后原样运行取得）。
+
+### 9.2 扩面：ServiceDirectory.ResolveRequest golden
+
+补齐 Rust 侧 sabi golden 第 5 条 `nlos.sabi.ServiceDirectory.ResolveRequest-v1.hex`（参考 `crates/nlos-schema/tests/compatibility.rs` 与 `tests/conformance/schema/envelope.py` L87–101），与 Go 车道同日同输入值域对齐；`nlos.canonical.DigestEnvelope` 家族（CBOR）维持未覆盖。
+
+| 路径 | 操作 | 说明 |
+|---|---|---|
+| `sdk/csharp/llmos-sabi-probe/Messages.cs` | 修改 | 新增 `ResolveServiceRequest`（field 1 schema / field 2 service）；文件头注释同步 |
+| `sdk/csharp/llmos-sabi-probe/Codec.cs` | 修改 | 新增 `Marshal`/`Unmarshal`/`Reset` 三件套（确定性/fail-closed 契约同文件头） |
+| `sdk/csharp/llmos-sabi-probe/Program.cs` | 修改 | 新增 `TestServiceDirectoryResolveRequestGolden` 用例（byte-equal ＋ 解码断言 ＋ roundtrip）；golden 门注释 4→5 条 |
+
+输入值域：schema `{nlos.sabi.ServiceDirectory, major=1, minor=0}`（minor 零值省略）、service=`operation`，golden 43 字节。写集外零改动；`bin/`、`obj/` 为 HEAD 已跟踪内容，构建验证后按原状恢复（同 §8.1 先例）。
+
+### 9.3 验证门命令与结果（W29-G）
+
+```console
+$ <tmp>/w29g/dotnet/dotnet --version    # 8.0.424（临时下载，SHA512 与 §2 记录一致；CDN 限速，分段续传拼装后整体校验通过）
+$ dotnet run --project sdk/csharp/llmos-sabi-probe/llmos-sabi-probe.csproj
+cs golden probe: 16 passed, 0 failed (total 16)    # 解封基线（扩面前，EXIT=0）
+cs golden probe: 17 passed, 0 failed (total 17)    # 扩面后（EXIT=0）
+```
+
+**数字：解封基线 16/16、扩面后 17/17 用例 PASS（0 FAIL），exit 0。**
+
+### 9.4 CI 接线
+
+与 Go 车道同批：`rust-cross-platform.yml` verify job 新增 `Install .NET SDK`（setup-dotnet@v6，`8.0.x`）与 `Run C# golden probe`（`dotnet run --project sdk/csharp/llmos-sabi-probe/llmos-sabi-probe.csproj`）步骤，三平台矩阵与 TS/Python conformance 同门。任务禁 push，**接线尚未经真实 CI run 验证**；首个合并后 run 以前缀 `Run C# golden probe` 的步骤日志为准。
+
+### 9.5 已知限制增量（对 §5 的覆盖更新）
+
+- 覆盖面更新为 **5/7 registry golden 条目**（Envelope 家族 4 条 + ServiceDirectory.ResolveRequest-v1）；剩余 `nlos.canonical.DigestEnvelope-v1/-preimage-v1`（CBOR 家族）与 control 面四条目未覆盖。
+- `ResolveServiceRequest` 仅实现 golden 消费面；`ResolveServiceResponse`/`NegotiateServiceRequest` 等 ServiceDirectory 其余消息（含 oneof result）未实现。
 - §5.4 原记录的 common golden 缺口关闭；golden 门与 Go 先例 4/4 一致。
 - field 7 缺陷的教训：探针此前从未解码过 repeated message 字段（编码面已有用例、解码面为空），该路径现由 common-request 用例锁定。

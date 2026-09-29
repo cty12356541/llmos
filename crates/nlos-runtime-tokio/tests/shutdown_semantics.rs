@@ -163,3 +163,66 @@ async fn join_on_terminal_fiber_after_shutdown_still_returns_exit() {
 
     assert_eq!(runtime.join_fiber(handle), Ok(FiberExit::Completed));
 }
+
+/// Given/When/Then: given a still-running fiber whose body returns the
+/// existing clean exit [`FiberExit::Completed`]; when `clean_shutdown` runs;
+/// then it waits for that terminal (does not invent a new exit vocabulary
+/// and does not fail the join with [`RuntimeError::ShuttingDown`]), joins
+/// as `Completed`, and only then engages the fail-closed shutdown gate.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clean_shutdown_waits_for_completed_exit_before_fail_closed() {
+    let runtime = TokioRuntimeAdapter::new(
+        tokio::runtime::Handle::current(),
+        TokioRuntimeConfig::default(),
+    )
+    .expect("adapter");
+    let scope = CancellationScopeId::from_bytes(id_bytes(33));
+    let release = std::sync::Arc::new(tokio::sync::Notify::new());
+    let wait = std::sync::Arc::clone(&release);
+    let handle = runtime
+        .spawn_fiber(
+            fiber_spec(1, scope),
+            Box::pin(async move {
+                wait.notified().await;
+                FiberExit::Completed
+            }),
+        )
+        .expect("spawn");
+
+    wait_for_state(&runtime, handle, FiberState::Running).await;
+
+    let draining = runtime.clone();
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let join_thread = std::thread::spawn(move || {
+        let _ = started_tx.send(());
+        draining.clean_shutdown();
+        let _ = done_tx.send(());
+    });
+
+    started_rx.recv().expect("clean_shutdown thread started");
+    assert_eq!(
+        done_rx.recv_timeout(Duration::from_millis(100)),
+        Err(RecvTimeoutError::Timeout),
+        "clean_shutdown must stay parked while the fiber is still live"
+    );
+
+    release.notify_one();
+
+    done_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("clean_shutdown must return after the fiber reaches Completed");
+    join_thread.join().expect("clean_shutdown thread");
+
+    assert_eq!(
+        runtime.join_fiber(handle),
+        Ok(FiberExit::Completed),
+        "clean shutdown must preserve the existing Completed exit"
+    );
+
+    let refuse_scope = CancellationScopeId::from_bytes(id_bytes(34));
+    match runtime.spawn_fiber(fiber_spec(2, refuse_scope), Box::pin(pending())) {
+        Err(RuntimeError::ShuttingDown) => {}
+        other => panic!("expected ShuttingDown after clean_shutdown, got {other:?}"),
+    }
+}

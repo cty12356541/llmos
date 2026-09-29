@@ -302,7 +302,10 @@ impl SqliteTaskAuthority {
     /// against those declarations while the durable plan remains bound to the
     /// permit root. Legacy permits without a sealed write declaration retain
     /// the direct canonical-root check. This call does not authorize any
-    /// canonical Artifact publication.
+    /// canonical Artifact publication. A permit that carries any effect
+    /// plans is typed-rejected here (`MixedEffectArtifactWriteSet`): the
+    /// Artifact ladder is artifact-only end to end, and effect-bearing
+    /// write sets must finalize through the unified v3 path.
     ///
     /// # Errors
     ///
@@ -348,6 +351,20 @@ impl SqliteTaskAuthority {
         }
         if permit.state != PermitState::Issued {
             return Err(TaskStoreError::PermitNotIssued);
+        }
+        let effect_count: i64 = transaction.query_row(
+            "SELECT COUNT(*) FROM effect_slots WHERE permit_id = ?1",
+            [request.permit_id.as_bytes().as_slice()],
+            |row| row.get(0),
+        )?;
+        if effect_count != 0 {
+            // Typed admission refusal (mixed effect+Artifact liveness): the
+            // artifact-only finalize gate below can never clear for a permit
+            // that also carries effect plans, so such a plan would strand in
+            // `Publishing`/`Ready` forever. Effect-bearing write sets —
+            // including the legal effect+Semantic mix — must finalize
+            // through the unified v3 path instead of the Artifact ladder.
+            return Err(TaskStoreError::MixedEffectArtifactWriteSet);
         }
         if task.record.head_commit_seq != permit.expected_head_commit_seq
             || task.record.head_effect_history_root != permit.expected_effect_history_root
@@ -424,9 +441,10 @@ impl SqliteTaskAuthority {
     /// Exact retries after that transition replay the durable decision.
     ///
     /// A permit backed only by the legacy publication-root path remains
-    /// artifact-only. A newer sealed `TaskWriteSet` may carry both proposed
-    /// Artifact writes and effect slots; this slice authorizes the Artifact
-    /// side while terminal Task finalization remains guarded separately.
+    /// artifact-only. Any permit carrying effect plans is typed-rejected
+    /// (mixed effect+Artifact permits as `MixedEffectArtifactWriteSet`):
+    /// the artifact-only finalize gate could never clear for them, so
+    /// they belong on the unified v3 path, never on this ladder.
     ///
     /// # Errors
     ///
@@ -486,7 +504,16 @@ impl SqliteTaskAuthority {
             [plan.permit_id.as_bytes().as_slice()],
             |row| row.get(0),
         )?;
-        if effect_count != 0 && !sealed_artifact_writes {
+        if effect_count != 0 {
+            if sealed_artifact_writes {
+                // Typed admission refusal (mixed effect+Artifact liveness):
+                // a durable mixed plan — created before the plan-time guard
+                // — must stop here instead of advancing to `Publishing`,
+                // where the artifact-only finalize gate would strand it
+                // forever. The unified v3 path owns effect-bearing write
+                // sets.
+                return Err(TaskStoreError::MixedEffectArtifactWriteSet);
+            }
             return Err(TaskStoreError::InvalidArtifactPublicationPlan {
                 reason: "Artifact publication authorization requires an artifact-only permit",
             });
