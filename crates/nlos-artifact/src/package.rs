@@ -492,6 +492,69 @@ impl ArtifactStore {
         )
     }
 
+    /// Pure precheck of a legacy signed package: manifest shape plus the
+    /// signer's current-key signature over the manifest digest, with zero
+    /// store reads and zero durable writes. Lets callers reject unsigned or
+    /// signature-tampered packages before materializing their entries (the
+    /// full [`ArtifactStore::verify_package`] still runs afterwards to bind
+    /// store heads against the signed digests and commit the receipt).
+    ///
+    /// # Errors
+    ///
+    /// [`ArtifactError::PackageManifestInvalid`] for a malformed manifest,
+    /// or the typed fail-closed signature set (unknown signer, revoked key,
+    /// invalid signature) mapped through [`package_signature_error`].
+    #[must_use = "an ignored precheck verifies nothing"]
+    pub fn precheck_signed_package(
+        identity: &IdentityAuthority,
+        signed: &SignedPackage,
+        verified_at_ms: u64,
+    ) -> Result<(), ArtifactError> {
+        validate_manifest(&signed.manifest)?;
+        let manifest_digest = ContentDigest::from_bytes(package_manifest_message(&signed.manifest));
+        identity
+            .verify_capability_command_signature(VerifyCapabilityCommandSignatureRequest {
+                message_digest: manifest_digest.into_bytes(),
+                principal: signed.signer,
+                signature: signed.signature,
+                verified_at_ms,
+            })
+            .map_err(package_signature_error)?;
+        Ok(())
+    }
+
+    /// Pure precheck of a task-templated signed package: base manifest and
+    /// task-segment shape plus the signer's current-key signature over the
+    /// combined digest, with zero store reads and zero durable writes. See
+    /// [`ArtifactStore::precheck_signed_package`] for the contract.
+    ///
+    /// # Errors
+    ///
+    /// [`ArtifactError::PackageManifestInvalid`] for a malformed manifest or
+    /// task segment, or the typed fail-closed signature set.
+    #[must_use = "an ignored precheck verifies nothing"]
+    pub fn precheck_signed_package_with_tasks(
+        identity: &IdentityAuthority,
+        signed: &SignedPackageWithTasks,
+        verified_at_ms: u64,
+    ) -> Result<(), ArtifactError> {
+        validate_manifest(&signed.manifest)?;
+        validate_task_templates(&signed.tasks)?;
+        let manifest_digest = ContentDigest::from_bytes(package_manifest_with_tasks_message(
+            &signed.manifest,
+            &signed.tasks,
+        ));
+        identity
+            .verify_capability_command_signature(VerifyCapabilityCommandSignatureRequest {
+                message_digest: manifest_digest.into_bytes(),
+                principal: signed.signer,
+                signature: signed.signature,
+                verified_at_ms,
+            })
+            .map_err(package_signature_error)?;
+        Ok(())
+    }
+
     /// The one verification pipeline both signed-package faces share.
     /// Only the manifest digest (and the shape validation that precedes
     /// this call) differs between the faces; content binding, replay, and

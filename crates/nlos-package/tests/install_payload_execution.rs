@@ -152,6 +152,74 @@ fn build_fixture_package(scratch: &ScratchDir, tree: &Path) -> PathBuf {
     package
 }
 
+/// Verify-before-materialize (audit 27 D1): a package whose signature does
+/// not verify must leave a caller-supplied persistent `--store` untouched —
+/// no blob or artifact writes — instead of durably materializing the
+/// unverified payloads before the signature decision.
+#[test]
+fn signature_rejected_package_leaves_a_persistent_verify_store_untouched() {
+    let scratch = ScratchDir::new("verify-order");
+    let tree = scratch.path("tree");
+    write_fixture_tree(&tree);
+    let package_path = build_fixture_package(&scratch, &tree);
+
+    // Flip one byte of the detached signature (the trailing 64 bytes of the
+    // file): manifest and payloads stay intact, only verification fails.
+    let mut tampered = fs::read(&package_path).expect("read package");
+    let last = tampered.len() - 1;
+    tampered[last] ^= 0xff;
+    let tampered_path = scratch.path("tampered.nlospkg");
+    fs::write(&tampered_path, &tampered).expect("write tampered package");
+
+    let store = scratch.path("verify-store");
+    let verify = run_cli(&[
+        "verify",
+        &tampered_path.to_string_lossy(),
+        "--store",
+        &store.to_string_lossy(),
+    ]);
+    assert_ne!(
+        verify.status.code(),
+        Some(0),
+        "tampered signature must fail verification:\n{}",
+        stderr_text(&verify)
+    );
+
+    let mut durable: Vec<PathBuf> = Vec::new();
+    collect_files(&store, &mut durable);
+    let leftover: Vec<String> = durable
+        .into_iter()
+        .filter(|path| {
+            !matches!(
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or(""),
+                "metadata.db" | "metadata.db-wal" | "metadata.db-shm"
+            )
+        })
+        .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        leftover,
+        Vec::<String>::new(),
+        "a rejected package must leave zero durable writes in the store"
+    );
+}
+
+fn collect_files(directory: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_files(&path, out);
+        } else {
+            out.push(path);
+        }
+    }
+}
+
 #[test]
 fn install_cli_then_payload_executes_through_driver_face_with_inspectable_receipts() {
     let scratch = ScratchDir::new("e2e");

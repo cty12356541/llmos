@@ -877,10 +877,16 @@ fn verify_command(arguments: &[String]) -> Result<(), ToolError> {
         .binding()
         .principal_id;
 
+    // Signature precheck before materializing (audit 27 D1): the signature
+    // is a pure function of the package fields and the identity authority,
+    // so a package whose signature does not verify is rejected with zero
+    // durable writes to the store — which may be a caller-supplied
+    // persistent root. The full verify still runs after materialization to
+    // bind store heads against the signed digests (kernel verify contract).
+    precheck_signature(&authority, &package, signer, at_ms)?;
     for entry in &package.entries {
         materialize_entry(&artifact_store, &package, entry, at_ms)?;
     }
-
     let decision = verify_signed(&artifact_store, &authority, &package, signer, at_ms)?;
     print_decision(&decision);
     Ok(())
@@ -950,6 +956,43 @@ fn verify_signed(
                 },
             )
             .map_err(from_artifact_error)
+    }
+}
+
+/// Pure signature precheck (audit 27 D1): the same manifest reconstruction
+/// and face selection as [`verify_signed`], routed to the artifact crate's
+/// precheck associated functions — no store access, so a rejected package
+/// costs zero durable writes.
+fn precheck_signature(
+    authority: &IdentityAuthority,
+    package: &PackageFile,
+    signer: nlos_types::PrincipalId,
+    at_ms: u64,
+) -> Result<(), ToolError> {
+    let manifest = manifest_of(&package.package_id, package.version, &package.entries);
+    if package.tasks.is_empty() {
+        ArtifactStore::precheck_signed_package(
+            authority,
+            &SignedPackage {
+                manifest,
+                signer,
+                signature: package.signature,
+            },
+            at_ms,
+        )
+        .map_err(from_artifact_error)
+    } else {
+        ArtifactStore::precheck_signed_package_with_tasks(
+            authority,
+            &SignedPackageWithTasks {
+                manifest,
+                tasks: package.tasks.clone(),
+                signer,
+                signature: package.signature,
+            },
+            at_ms,
+        )
+        .map_err(from_artifact_error)
     }
 }
 
@@ -1207,6 +1250,13 @@ fn prepare_verified_package(
         )))
         .map_err(|error| ToolError::Internal(format!("verify clock: {error}")))?;
 
+    // Signature precheck before materializing (audit 27 D1): an
+    // install/update against a persistent root must not commit the payloads
+    // of a package whose signature does not verify; the precheck-rejected
+    // package costs zero durable writes and the orphan GC below stays
+    // unreachable. The full verify runs after materialization to bind store
+    // heads against the signed digests (kernel verify contract).
+    precheck_signature(&runtime.identity, package, signer, verified_at_ms)?;
     for entry in &package.entries {
         materialize_entry(&runtime.artifacts, package, entry, verified_at_ms)?;
     }
