@@ -610,65 +610,17 @@ impl SemanticAuthority {
             EDGE_CAPTURED,
         )?;
 
-        let receipt_core_digest = build_admission_receipt_core_digest(
+        let receipt = seal_admission(
+            &transaction,
+            identity,
+            store_signer,
             request.claimed_event_id,
             log_seq,
             request.admitted_at_ms,
-            Some(effective_valid_until_ms),
+            effective_valid_until_ms,
             &request.captured_inputs,
             effective_taint,
             request.authz_policy_digest,
-            store_signer.principal_id(),
-            store_signer.control_domain_id(),
-            store_signer.key_id(),
-        );
-        let mut receipt_id_bytes = [0_u8; 16];
-        receipt_id_bytes.copy_from_slice(&receipt_core_digest[..16]);
-        let receipt_id = ReceiptId::from_bytes(receipt_id_bytes);
-        let receipt_message = admission_receipt_signature_message(receipt_id, receipt_core_digest);
-        let store_signature = store_signer.sign(&receipt_message).map_err(|error| {
-            SemanticAuthorityError::StoreSigningFailed(error.message().to_owned())
-        })?;
-        let verified_store = identity.verify_semantic_authority_signature(
-            VerifySemanticAuthoritySignatureRequest {
-                message_digest: receipt_message,
-                issuer: store_signer.principal_id(),
-                control_domain_id: store_signer.control_domain_id(),
-                key_id: store_signer.key_id(),
-                signature: store_signature,
-                verified_at_ms: request.admitted_at_ms,
-            },
-        )?;
-        if verified_store.principal_id() != store_signer.principal_id()
-            || verified_store.control_domain_id() != store_signer.control_domain_id()
-            || verified_store.key_id() != store_signer.key_id()
-        {
-            return Err(SemanticAuthorityError::StoreSignerBindingMismatch);
-        }
-        let receipt = AdmissionReceipt {
-            receipt_id,
-            event_id: request.claimed_event_id,
-            log_seq,
-            admitted_at_ms: request.admitted_at_ms,
-            effective_valid_until_ms: Some(effective_valid_until_ms),
-            captured_inputs: request.captured_inputs.clone(),
-            effective_taint,
-            authz_policy_digest: request.authz_policy_digest,
-            durability: AdmissionDurability::Durable,
-            store_principal: store_signer.principal_id(),
-            store_control_domain: store_signer.control_domain_id(),
-            store_key_id: store_signer.key_id(),
-            store_signature,
-        };
-        insert_admission_receipt(&transaction, &receipt)?;
-        transaction.execute(
-            "INSERT INTO semantic_outbox (log_seq, event_id, receipt_id, acknowledged_at_ms)
-             VALUES (?1, ?2, ?3, NULL)",
-            params![
-                encode_u64(log_seq)?,
-                receipt.event_id.as_bytes().as_slice(),
-                receipt.receipt_id.as_bytes().as_slice(),
-            ],
         )?;
         transaction.commit()?;
         Ok(AppendDecision::Admitted(receipt))
@@ -784,65 +736,17 @@ impl SemanticAuthority {
             EDGE_CAPTURED,
         )?;
 
-        let receipt_core_digest = build_admission_receipt_core_digest(
+        let receipt = seal_admission(
+            &transaction,
+            identity,
+            store_signer,
             request.claimed_event_id,
             log_seq,
             request.admitted_at_ms,
-            Some(effective_valid_until_ms),
+            effective_valid_until_ms,
             &request.captured_inputs,
             effective_taint,
             request.authz_policy_digest,
-            store_signer.principal_id(),
-            store_signer.control_domain_id(),
-            store_signer.key_id(),
-        );
-        let mut receipt_id_bytes = [0_u8; 16];
-        receipt_id_bytes.copy_from_slice(&receipt_core_digest[..16]);
-        let receipt_id = ReceiptId::from_bytes(receipt_id_bytes);
-        let receipt_message = admission_receipt_signature_message(receipt_id, receipt_core_digest);
-        let store_signature = store_signer.sign(&receipt_message).map_err(|error| {
-            SemanticAuthorityError::StoreSigningFailed(error.message().to_owned())
-        })?;
-        let verified_store = identity.verify_semantic_authority_signature(
-            VerifySemanticAuthoritySignatureRequest {
-                message_digest: receipt_message,
-                issuer: store_signer.principal_id(),
-                control_domain_id: store_signer.control_domain_id(),
-                key_id: store_signer.key_id(),
-                signature: store_signature,
-                verified_at_ms: request.admitted_at_ms,
-            },
-        )?;
-        if verified_store.principal_id() != store_signer.principal_id()
-            || verified_store.control_domain_id() != store_signer.control_domain_id()
-            || verified_store.key_id() != store_signer.key_id()
-        {
-            return Err(SemanticAuthorityError::StoreSignerBindingMismatch);
-        }
-        let receipt = AdmissionReceipt {
-            receipt_id,
-            event_id: request.claimed_event_id,
-            log_seq,
-            admitted_at_ms: request.admitted_at_ms,
-            effective_valid_until_ms: Some(effective_valid_until_ms),
-            captured_inputs: request.captured_inputs.clone(),
-            effective_taint,
-            authz_policy_digest: request.authz_policy_digest,
-            durability: AdmissionDurability::Durable,
-            store_principal: store_signer.principal_id(),
-            store_control_domain: store_signer.control_domain_id(),
-            store_key_id: store_signer.key_id(),
-            store_signature,
-        };
-        insert_admission_receipt(&transaction, &receipt)?;
-        transaction.execute(
-            "INSERT INTO semantic_outbox (log_seq, event_id, receipt_id, acknowledged_at_ms)
-             VALUES (?1, ?2, ?3, NULL)",
-            params![
-                encode_u64(log_seq)?,
-                receipt.event_id.as_bytes().as_slice(),
-                receipt.receipt_id.as_bytes().as_slice(),
-            ],
         )?;
         transaction.commit()?;
         Ok(AppendDecision::Admitted(receipt))
