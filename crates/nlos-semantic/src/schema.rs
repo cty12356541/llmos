@@ -520,6 +520,190 @@ pub(crate) fn migrate_v6(connection: &mut Connection) -> Result<(), SemanticAuth
     Ok(())
 }
 
+/// Adds the store identity triple to `durability_receipts` so production
+/// issuance can bind each receipt to the verifiable store signer that minted
+/// it. The columns are nullable: pre-v7 rows and external direct-writes keep
+/// a `NULL` triple and are treated as unverifiable by the verification path.
+///
+/// The preflight mirrors v3/v4/v6: a store whose v7 columns are already
+/// complete but whose `user_version` stamp never landed is re-stamped as
+/// exactly v7, while a *partial* column set — a half-migrated store — fails
+/// closed as a typed `CorruptRecord` instead of surfacing as a raw
+/// `duplicate column name` `SQLite` error from the `DDL` pass.
+pub(crate) fn migrate_v7(connection: &mut Connection) -> Result<(), SemanticAuthorityError> {
+    let column_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('durability_receipts')
+         WHERE name IN ('store_principal_id', 'store_control_domain_id', 'store_key_id')",
+        [],
+        |row| row.get(0),
+    )?;
+    if column_count == 3 {
+        // Only the v7 columns are known complete here, so this is a v7 store
+        // whose stamp never landed — stamp it as exactly that (see migrate_v6).
+        connection.pragma_update(None, "user_version", 7)?;
+        return Ok(());
+    }
+    if column_count != 0 {
+        return Err(SemanticAuthorityError::CorruptRecord(
+            "partial semantic durability store schema",
+        ));
+    }
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "ALTER TABLE durability_receipts ADD COLUMN store_principal_id BLOB
+            CHECK(store_principal_id IS NULL OR length(store_principal_id) = 16);
+         ALTER TABLE durability_receipts ADD COLUMN store_control_domain_id BLOB
+            CHECK(store_control_domain_id IS NULL OR length(store_control_domain_id) = 16);
+         ALTER TABLE durability_receipts ADD COLUMN store_key_id BLOB
+            CHECK(store_key_id IS NULL OR length(store_key_id) = 16);
+         PRAGMA user_version = 7;",
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
+
+/// Adds the immutable typed-link index (`semantic_typed_links`) that maps
+/// judgment endpoints and verification event targets to their referencing
+/// events, and backfills it from the stored canonical envelopes so
+/// `inspect_trust_view` resolves facts through the index instead of a full
+/// O(N) canonical rescan of every typed event.
+///
+/// The preflight mirrors v3/v4/v6: complete objects plus a complete backfill
+/// whose stamp never landed are re-stamped as exactly v8, while a *partial*
+/// object set or an incomplete backfill fails closed as a typed
+/// `CorruptRecord`.
+pub(crate) fn migrate_v8(connection: &mut Connection) -> Result<(), SemanticAuthorityError> {
+    let table_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type='table' AND name='semantic_typed_links'",
+        [],
+        |row| row.get(0),
+    )?;
+    let trigger_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN (
+            'semantic_typed_links_immutable_update',
+            'semantic_typed_links_immutable_delete'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if table_count == 1 && trigger_count == 2 {
+        if typed_links_backfill_complete(&*connection)? {
+            // Complete v8 objects with a complete backfill whose stamp never
+            // landed — stamp it as exactly that (see migrate_v6).
+            connection.pragma_update(None, "user_version", 8)?;
+            return Ok(());
+        }
+        return Err(SemanticAuthorityError::CorruptRecord(
+            "incomplete semantic typed link backfill",
+        ));
+    }
+    if table_count != 0 || trigger_count != 0 {
+        return Err(SemanticAuthorityError::CorruptRecord(
+            "partial semantic typed link schema",
+        ));
+    }
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "CREATE TABLE semantic_typed_links (
+            event_id BLOB NOT NULL CHECK(length(event_id) = 32),
+            endpoint_event_id BLOB NOT NULL CHECK(length(endpoint_event_id) = 32),
+            endpoint_role INTEGER NOT NULL CHECK(endpoint_role IN (1, 2, 3)),
+            PRIMARY KEY(endpoint_event_id, endpoint_role, event_id),
+            FOREIGN KEY(event_id) REFERENCES semantic_events(event_id),
+            FOREIGN KEY(endpoint_event_id) REFERENCES semantic_events(event_id)
+        ) STRICT;
+
+        CREATE TRIGGER semantic_typed_links_immutable_update
+        BEFORE UPDATE ON semantic_typed_links
+        BEGIN SELECT RAISE(ABORT, 'semantic typed link is immutable'); END;
+        CREATE TRIGGER semantic_typed_links_immutable_delete
+        BEFORE DELETE ON semantic_typed_links
+        BEGIN SELECT RAISE(ABORT, 'semantic typed link is immutable'); END;
+
+        PRAGMA user_version = 8;",
+    )?;
+    backfill_typed_links(&transaction)?;
+    transaction.commit()?;
+    Ok(())
+}
+
+/// True when every stored type-2/3 event has at least one index row.
+fn typed_links_backfill_complete(connection: &Connection) -> Result<bool, SemanticAuthorityError> {
+    let unindexed: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM semantic_events e
+         WHERE e.event_type IN (2, 3) AND NOT EXISTS (
+            SELECT 1 FROM semantic_typed_links x WHERE x.event_id = e.event_id
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(unindexed == 0)
+}
+
+/// Derives index rows from the stored canonical envelopes themselves, so the
+/// backfilled index can never disagree with the authoritative event bytes.
+fn backfill_typed_links(
+    transaction: &rusqlite::Transaction<'_>,
+) -> Result<(), SemanticAuthorityError> {
+    let mut statement = transaction.prepare(
+        "SELECT event_id, event_type, canonical_unsigned_event
+         FROM semantic_events WHERE event_type IN (2, 3)",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, Vec<u8>>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, Vec<u8>>(2)?,
+        ))
+    })?;
+    let mut links: Vec<(Vec<u8>, Vec<u8>, i64)> = Vec::new();
+    for row in rows {
+        let (event_id, event_type, canonical) = row?;
+        let event = match event_type {
+            2 => {
+                let judgment = crate::decode_unsigned_judgment_event(&canonical)?;
+                vec![
+                    (judgment.source, crate::TYPED_LINK_JUDGMENT_SOURCE),
+                    (judgment.target, crate::TYPED_LINK_JUDGMENT_TARGET),
+                ]
+            }
+            3 => {
+                let verification = crate::decode_unsigned_verification_event(&canonical)?;
+                match verification.target {
+                    crate::model::VerificationTarget::Event(target) => {
+                        vec![(target.event_id, crate::TYPED_LINK_VERIFICATION_TARGET)]
+                    }
+                    crate::model::VerificationTarget::Criterion(_) => Vec::new(),
+                }
+            }
+            _ => {
+                return Err(SemanticAuthorityError::CorruptRecord(
+                    "typed link backfill event type",
+                ));
+            }
+        };
+        links.extend(
+            event
+                .into_iter()
+                .map(|(endpoint, role)| (event_id.clone(), endpoint.as_bytes().to_vec(), role)),
+        );
+    }
+    for (event_id, endpoint_event_id, endpoint_role) in links {
+        transaction
+            .execute(
+                "INSERT INTO semantic_typed_links (
+                    event_id, endpoint_event_id, endpoint_role
+                 ) VALUES (?1, ?2, ?3)",
+                rusqlite::params![event_id, endpoint_event_id, endpoint_role],
+            )
+            .map_err(|_| {
+                SemanticAuthorityError::CorruptRecord("typed link backfill endpoint binding")
+            })?;
+    }
+    Ok(())
+}
+
 pub(crate) fn load_semantic_admission_endpoint_proof(
     connection: &Connection,
 ) -> Result<SemanticAdmissionEndpointProof, SemanticAuthorityError> {
@@ -566,7 +750,7 @@ mod tests {
 
     use super::{
         SemanticAuthorityError, migrate_v1_to_v2, migrate_v2, migrate_v3, migrate_v4, migrate_v5,
-        migrate_v6,
+        migrate_v6, migrate_v7,
     };
 
     fn user_version(connection: &Connection) -> i64 {
@@ -583,6 +767,14 @@ mod tests {
         migrate_v4(&mut connection).unwrap();
         migrate_v5(&mut connection).unwrap();
         assert_eq!(user_version(&connection), 5);
+        connection
+    }
+
+    /// A v6 store, built by the same forward migration chain `open()` runs.
+    fn v6_store() -> Connection {
+        let mut connection = v5_store();
+        migrate_v6(&mut connection).unwrap();
+        assert_eq!(user_version(&connection), 6);
         connection
     }
 
@@ -644,6 +836,100 @@ mod tests {
             )
             .unwrap();
         assert_eq!(objects, 3, "the fast path must not duplicate objects");
+    }
+
+    /// A half-migrated v7 store (some store identity columns present, the
+    /// stamp missing) must fail closed with the typed `CorruptRecord` before
+    /// the `DDL` pass — not surface as a raw `duplicate column name` error.
+    #[test]
+    fn v7_partial_durability_store_columns_fail_closed() {
+        let mut connection = v6_store();
+        connection
+            .execute_batch("ALTER TABLE durability_receipts ADD COLUMN store_principal_id BLOB;")
+            .unwrap();
+        assert!(matches!(
+            migrate_v7(&mut connection),
+            Err(SemanticAuthorityError::CorruptRecord(_))
+        ));
+        assert_eq!(
+            user_version(&connection),
+            6,
+            "fail-closed must leave the half-migrated store unstamped"
+        );
+    }
+
+    /// The recovery contract of the preflight: complete v7 columns whose
+    /// stamp never landed are re-stamped as exactly v7 by the fast path,
+    /// without replaying the `DDL`.
+    #[test]
+    fn v7_complete_columns_with_missing_stamp_restamp_exactly_v7() {
+        let mut connection = v6_store();
+        migrate_v7(&mut connection).unwrap();
+        assert_eq!(user_version(&connection), 7);
+        connection.pragma_update(None, "user_version", 6).unwrap();
+        migrate_v7(&mut connection).unwrap();
+        assert_eq!(user_version(&connection), 7);
+        let columns: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('durability_receipts')
+                 WHERE name IN ('store_principal_id', 'store_control_domain_id', 'store_key_id')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(columns, 3, "the fast path must not duplicate columns");
+    }
+
+    /// The v7 columns are nullable and length-checked: legacy rows keep a
+    /// `NULL` store identity triple, and malformed triples are rejected.
+    #[test]
+    fn v7_durability_store_columns_are_nullable_and_length_checked() {
+        let mut connection = v6_store();
+        migrate_v7(&mut connection).unwrap();
+        connection
+            .execute_batch(
+                "INSERT INTO content_objects VALUES (zeroblob(32), 'text/plain', X'01');
+                 INSERT INTO semantic_events (
+                    event_id, canonical_unsigned_event, event_type, scope_kind, scope_id,
+                    issuer_principal_id, issuer_process_id, issuer_process_generation,
+                    control_domain_id, issued_at_unix_ns, valid_until_ms, purpose_digest,
+                    key_id, content_digest, spec_body_digest
+                 ) VALUES (
+                    zeroblob(32), X'01', 1, 1, zeroblob(16), zeroblob(16), zeroblob(16),
+                    1, zeroblob(16), 1, NULL, NULL, zeroblob(16), zeroblob(32), NULL
+                 );",
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO durability_receipts (
+                    receipt_id, event_id, durable_checkpoint_id, durable_at_ms, store_signature
+                 ) VALUES (zeroblob(16), zeroblob(32), zeroblob(32), 1, zeroblob(64))",
+                [],
+            )
+            .unwrap();
+        let triple: (Option<i64>, Option<i64>, Option<i64>) = connection
+            .query_row(
+                "SELECT length(store_principal_id), length(store_control_domain_id),
+                        length(store_key_id)
+                 FROM durability_receipts",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(triple, (None, None, None));
+        assert!(
+            connection
+                .execute(
+                    "INSERT INTO durability_receipts (
+                    receipt_id, event_id, durable_checkpoint_id, durable_at_ms,
+                    store_principal_id, store_signature
+                 ) VALUES (zeroblob(16), zeroblob(32), zeroblob(32), 1,
+                           zeroblob(15), zeroblob(64))",
+                    [],
+                )
+                .is_err()
+        );
     }
 
     #[test]

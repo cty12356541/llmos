@@ -14,16 +14,17 @@ use nlos_process::{
 };
 use nlos_semantic::{
     AcknowledgeOutboxRequest, AdmissionReceipt, AppendAssertionRequest, AppendDecision,
-    AppendSpecRequest, AssertionMode, CriterionAggregation, CriterionEffect, EvaluatorKind,
-    ImmutableEvaluatorReference, ImmutableEvaluatorReferenceKind, IntentConstraints,
-    IntentCriterion, IntentCriticality, IntentSettlement, IntentSpecBody, LocalProcessRef,
-    OutboxAckDecision, PublishSemanticPublicationRequest, SemanticAuthority,
-    SemanticAuthorityError, SemanticPayloadIdentity, SemanticPublicationDecision, SettlementMode,
-    SettlementTimeoutAction, StoreSigner, StoreSignerError, TaintFlags, UnsignedAssertionEvent,
-    UnsignedSpecEvent, admission_receipt_core_digest, admission_receipt_signature_message,
-    content_digest, decode_unsigned_assertion_event, decode_unsigned_spec_event,
-    encode_intent_spec_body, encode_unsigned_assertion_event, encode_unsigned_spec_event,
-    hard_criteria_digest, intent_spec_body_digest, semantic_event_id,
+    AppendSpecRequest, AssertionMode, CriterionAggregation, CriterionEffect, DurabilityDecision,
+    EvaluatorKind, ImmutableEvaluatorReference, ImmutableEvaluatorReferenceKind, IntentConstraints,
+    IntentCriterion, IntentCriticality, IntentSettlement, IntentSpecBody,
+    IssueDurabilityReceiptRequest, LocalProcessRef, OutboxAckDecision,
+    PublishSemanticPublicationRequest, SemanticAuthority, SemanticAuthorityError,
+    SemanticPayloadIdentity, SemanticPublicationDecision, SettlementMode, SettlementTimeoutAction,
+    StoreSigner, StoreSignerError, TaintFlags, UnsignedAssertionEvent, UnsignedSpecEvent,
+    admission_receipt_core_digest, admission_receipt_signature_message,
+    build_durability_receipt_core_digest, content_digest, decode_unsigned_assertion_event,
+    decode_unsigned_spec_event, encode_intent_spec_body, encode_unsigned_assertion_event,
+    encode_unsigned_spec_event, hard_criteria_digest, intent_spec_body_digest, semantic_event_id,
 };
 use nlos_types::{
     CommitPermitId, Generation, IdempotencyKey, NamespaceId, ReceiptId, SemanticEventId,
@@ -914,7 +915,7 @@ fn real_v1_store_migrates_without_losing_assertion_or_receipt() {
     assert_eq!(
         raw.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .unwrap(),
-        6
+        8
     );
     assert_eq!(
         raw.query_row(
@@ -983,4 +984,330 @@ fn semantic_authority_tables_are_append_only_at_storage_layer() {
         1
     );
     assert_ne!(receipt.receipt_id, ReceiptId::from_bytes([0; 16]));
+}
+
+#[test]
+fn durability_receipt_issue_verify_replay_and_publish() {
+    let root = Root::new("durability-issue");
+    let fixture = fixture(&root, 120);
+    let request = request(&fixture, 10, Vec::new(), Vec::new(), TaintFlags::default());
+    let admission = append(&fixture, &request).receipt().clone();
+
+    let issue = IssueDurabilityReceiptRequest {
+        event_id: admission.event_id,
+        admission_receipt_id: admission.receipt_id,
+        durable_checkpoint_id: [0x5d; 32],
+        durable_at_ms: 3_000,
+    };
+    let decision = fixture
+        .semantic
+        .issue_durability_receipt(&fixture.identity, &fixture.store_signer, &issue)
+        .unwrap();
+    let issued = *decision.receipt();
+    assert!(matches!(decision, DurabilityDecision::Issued(_)));
+    assert_eq!(
+        (
+            issued.store_principal,
+            issued.store_control_domain,
+            issued.store_key_id
+        ),
+        (
+            Some(fixture.store_signer.principal_id()),
+            Some(fixture.store_signer.control_domain_id()),
+            Some(fixture.store_signer.key_id())
+        )
+    );
+
+    // The raw read exposes the same receipt including the store triple.
+    assert_eq!(
+        fixture
+            .semantic
+            .inspect_durability_receipt(admission.event_id, issued.receipt_id)
+            .unwrap(),
+        issued
+    );
+    // End-to-end provenance verification passes.
+    assert_eq!(
+        fixture
+            .semantic
+            .verify_durability_receipt(&fixture.identity, admission.event_id, issued.receipt_id)
+            .unwrap(),
+        issued
+    );
+    // The receipt id is deterministic in the signed core digest.
+    let core = build_durability_receipt_core_digest(
+        admission.event_id,
+        admission.log_seq,
+        issue.durable_checkpoint_id,
+        issue.durable_at_ms,
+        fixture.store_signer.principal_id(),
+        fixture.store_signer.control_domain_id(),
+        fixture.store_signer.key_id(),
+    );
+    let mut expected_id = [0_u8; 16];
+    expected_id.copy_from_slice(&core[..16]);
+    assert_eq!(issued.receipt_id.as_bytes(), &expected_id);
+
+    // Exact retry replays the same immutable receipt.
+    let replay = fixture
+        .semantic
+        .issue_durability_receipt(&fixture.identity, &fixture.store_signer, &issue)
+        .unwrap();
+    assert!(matches!(replay, DurabilityDecision::Replayed(_)));
+    assert_eq!(replay.receipt(), &issued);
+
+    // The production receipt is accepted as the publication durability proof.
+    let publication = PublishSemanticPublicationRequest {
+        task_id: TaskId::from_bytes([0x71; 16]),
+        permit_id: CommitPermitId::from_bytes([0x72; 16]),
+        write_set_root: [0x73; 32],
+        event_id: admission.event_id,
+        target: fixture.capability_record.target,
+        admission_receipt_id: admission.receipt_id,
+        durability_receipt_id: Some(issued.receipt_id),
+        published_at_ms: 4_000,
+    };
+    match fixture
+        .semantic
+        .publish_semantic_publication(publication)
+        .unwrap()
+    {
+        SemanticPublicationDecision::Published(receipt) => {
+            assert_eq!(receipt.durability_receipt_id, Some(issued.receipt_id));
+        }
+        SemanticPublicationDecision::Replayed(receipt) => {
+            panic!("expected first publication to publish, replayed {receipt:?}")
+        }
+    }
+    drop(fixture);
+}
+
+#[test]
+fn durability_receipt_issue_rejects_stale_bindings() {
+    let root = Root::new("durability-stale");
+    let fixture = fixture(&root, 130);
+    let request = request(&fixture, 11, Vec::new(), Vec::new(), TaintFlags::default());
+    let admission = append(&fixture, &request).receipt().clone();
+    assert_eq!(admission.admitted_at_ms, 2_000);
+
+    let stale_time = IssueDurabilityReceiptRequest {
+        event_id: admission.event_id,
+        admission_receipt_id: admission.receipt_id,
+        durable_checkpoint_id: [0x5d; 32],
+        durable_at_ms: 1_999,
+    };
+    assert!(matches!(
+        fixture
+            .semantic
+            .issue_durability_receipt(&fixture.identity, &fixture.store_signer, &stale_time)
+            .unwrap_err(),
+        SemanticAuthorityError::DurabilityBeforeAdmission
+    ));
+
+    let wrong_admission = IssueDurabilityReceiptRequest {
+        admission_receipt_id: ReceiptId::from_bytes([0xff; 16]),
+        durable_at_ms: 3_000,
+        ..stale_time
+    };
+    assert!(matches!(
+        fixture
+            .semantic
+            .issue_durability_receipt(&fixture.identity, &fixture.store_signer, &wrong_admission)
+            .unwrap_err(),
+        SemanticAuthorityError::DurabilityAdmissionBindingMismatch
+    ));
+
+    let unknown_event = IssueDurabilityReceiptRequest {
+        event_id: SemanticEventId::from_bytes([0xee; 32]),
+        admission_receipt_id: admission.receipt_id,
+        durable_checkpoint_id: [0x5d; 32],
+        durable_at_ms: 3_000,
+    };
+    assert!(matches!(
+        fixture
+            .semantic
+            .issue_durability_receipt(&fixture.identity, &fixture.store_signer, &unknown_event)
+            .unwrap_err(),
+        SemanticAuthorityError::EventNotFound(_)
+    ));
+    drop(fixture);
+}
+
+#[test]
+fn durability_receipt_verify_rejects_unprovenanced_rows() {
+    let root = Root::new("durability-forged");
+    let fixture = fixture(&root, 140);
+    let request = request(&fixture, 12, Vec::new(), Vec::new(), TaintFlags::default());
+    let admission = append(&fixture, &request).receipt().clone();
+    drop(fixture);
+
+    let raw = Connection::open(root.path().join("semantic-authority.db")).unwrap();
+    // Forged shape one: legacy columns only — no store identity at all.
+    let legacy_id = ReceiptId::from_bytes([0xa1; 16]);
+    raw.execute(
+        "INSERT INTO durability_receipts (
+            receipt_id, event_id, durable_checkpoint_id, durable_at_ms, store_signature
+         ) VALUES (?1, ?2, ?3, 3_000, ?4)",
+        rusqlite::params![
+            legacy_id.as_bytes().as_slice(),
+            admission.event_id.as_bytes().as_slice(),
+            [0x5du8; 32].as_slice(),
+            [0x5eu8; 64].as_slice(),
+        ],
+    )
+    .unwrap();
+    // Forged shape two: claims the real store triple with a correct derived
+    // id but a bogus signature.
+    let forged_id;
+    {
+        let core = build_durability_receipt_core_digest(
+            admission.event_id,
+            admission.log_seq,
+            [0x6a; 32],
+            3_000,
+            admission.store_principal,
+            admission.store_control_domain,
+            admission.store_key_id,
+        );
+        let mut expected_id = [0_u8; 16];
+        expected_id.copy_from_slice(&core[..16]);
+        forged_id = ReceiptId::from_bytes(expected_id);
+        raw.execute(
+            "INSERT INTO durability_receipts (
+                receipt_id, event_id, durable_checkpoint_id, durable_at_ms,
+                store_principal_id, store_control_domain_id, store_key_id, store_signature
+             ) VALUES (?1, ?2, ?3, 3_000, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                forged_id.as_bytes().as_slice(),
+                admission.event_id.as_bytes().as_slice(),
+                [0x6au8; 32].as_slice(),
+                admission.store_principal.as_bytes().as_slice(),
+                admission.store_control_domain.as_bytes().as_slice(),
+                admission.store_key_id.as_bytes().as_slice(),
+                [0x6bu8; 64].as_slice(),
+            ],
+        )
+        .unwrap();
+    }
+    // Forged shape three: an arbitrary id that does not derive from any core.
+    let arbitrary_id = ReceiptId::from_bytes([0xa3; 16]);
+    raw.execute(
+        "INSERT INTO durability_receipts (
+            receipt_id, event_id, durable_checkpoint_id, durable_at_ms,
+            store_principal_id, store_control_domain_id, store_key_id, store_signature
+         ) VALUES (?1, ?2, ?3, 3_000, ?4, ?5, ?6, ?7)",
+        rusqlite::params![
+            arbitrary_id.as_bytes().as_slice(),
+            admission.event_id.as_bytes().as_slice(),
+            [0x6cu8; 32].as_slice(),
+            admission.store_principal.as_bytes().as_slice(),
+            admission.store_control_domain.as_bytes().as_slice(),
+            admission.store_key_id.as_bytes().as_slice(),
+            [0x6du8; 64].as_slice(),
+        ],
+    )
+    .unwrap();
+    drop(raw);
+
+    let identity = IdentityAuthority::open(root.path()).unwrap();
+    let semantic = SemanticAuthority::open(root.path()).unwrap();
+    assert!(matches!(
+        semantic
+            .verify_durability_receipt(&identity, admission.event_id, legacy_id)
+            .unwrap_err(),
+        SemanticAuthorityError::DurabilityReceiptUnverifiable
+    ));
+    assert!(matches!(
+        semantic
+            .verify_durability_receipt(&identity, admission.event_id, forged_id)
+            .unwrap_err(),
+        SemanticAuthorityError::Identity(_)
+    ));
+    assert!(matches!(
+        semantic
+            .verify_durability_receipt(&identity, admission.event_id, arbitrary_id)
+            .unwrap_err(),
+        SemanticAuthorityError::DurabilityReceiptUnverifiable
+    ));
+    assert!(matches!(
+        semantic
+            .verify_durability_receipt(
+                &identity,
+                admission.event_id,
+                ReceiptId::from_bytes([0x00; 16])
+            )
+            .unwrap_err(),
+        SemanticAuthorityError::DurabilityReceiptNotFound(_)
+    ));
+}
+
+#[test]
+fn durability_receipt_publication_rejects_foreign_store_triple() {
+    let root = Root::new("durability-foreign");
+    let fixture = fixture(&root, 150);
+    let request = request(&fixture, 13, Vec::new(), Vec::new(), TaintFlags::default());
+    let admission = append(&fixture, &request).receipt().clone();
+    let target = fixture.capability_record.target;
+    drop(fixture);
+
+    // A second, different store principal bootstrapped in the same identity
+    // authority: its signed receipt is well-formed but does not match the
+    // admission's store binding, so publication must reject it.
+    let (other_key, other_binding) = bootstrap(&IdentityAuthority::open(root.path()).unwrap(), 201);
+    let _ = other_key;
+    let raw = Connection::open(root.path().join("semantic-authority.db")).unwrap();
+    let core = build_durability_receipt_core_digest(
+        admission.event_id,
+        admission.log_seq,
+        [0x7a; 32],
+        3_000,
+        other_binding.principal_id,
+        other_binding.control_domain_id,
+        other_binding.key_id,
+    );
+    let mut forged_id = [0_u8; 16];
+    forged_id.copy_from_slice(&core[..16]);
+    let foreign_id = ReceiptId::from_bytes(forged_id);
+    raw.execute(
+        "INSERT INTO durability_receipts (
+            receipt_id, event_id, durable_checkpoint_id, durable_at_ms,
+            store_principal_id, store_control_domain_id, store_key_id, store_signature
+         ) VALUES (?1, ?2, ?3, 3_000, ?4, ?5, ?6, ?7)",
+        rusqlite::params![
+            foreign_id.as_bytes().as_slice(),
+            admission.event_id.as_bytes().as_slice(),
+            [0x7au8; 32].as_slice(),
+            other_binding.principal_id.as_bytes().as_slice(),
+            other_binding.control_domain_id.as_bytes().as_slice(),
+            other_binding.key_id.as_bytes().as_slice(),
+            [0x7bu8; 64].as_slice(),
+        ],
+    )
+    .unwrap();
+    drop(raw);
+
+    let identity = IdentityAuthority::open(root.path()).unwrap();
+    let semantic = SemanticAuthority::open(root.path()).unwrap();
+    // The signature itself is bogus, so provenance verification fails.
+    assert!(
+        semantic
+            .verify_durability_receipt(&identity, admission.event_id, foreign_id)
+            .is_err()
+    );
+    // And even structurally, publication refuses the foreign store triple.
+    assert!(matches!(
+        semantic
+            .publish_semantic_publication(PublishSemanticPublicationRequest {
+                task_id: TaskId::from_bytes([0x81; 16]),
+                permit_id: CommitPermitId::from_bytes([0x82; 16]),
+                write_set_root: [0x83; 32],
+                event_id: admission.event_id,
+                target,
+                admission_receipt_id: admission.receipt_id,
+                durability_receipt_id: Some(foreign_id),
+                published_at_ms: 4_000,
+            })
+            .unwrap_err(),
+        SemanticAuthorityError::SemanticPublicationDurabilityBindingMismatch
+    ));
 }
