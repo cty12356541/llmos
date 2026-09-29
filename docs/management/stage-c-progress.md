@@ -356,3 +356,5 @@ W35 晋升候选池（依派发纪律 (4)，决策点关闭 + 写集空闲即可
 **集成缝 ×2（W43-INT）**：`bc1cf2d` slice-k 泵启动错误映射补 InvalidConfig 臂；`3309866` nlos-search 读面版本白名单扩 [6,7,8]（semantic v8 断链，v7/v8 为增量迁移读面兼容）。
 
 **验证**（隔离 `CARGO_TARGET_DIR`）：全仓 fmt --check / clippy -D warnings / test **1708 passed / 0 failed / 27 ignored**（cargo exit 0）；desktop `tsc --noEmit` exit 0 + src-tauri clippy `--features dev-fixture -D warnings` 干净（E6 前任未及汇报的 desktop 面由 integrator 补验）。**推送**：`68f71d7..3309866` 已在 origin/main。dispatch 验证 run 36535472709 结果以实际 run 为准，本段不预写。**新增待排期**：E1 剩 3 项；E3 越线 2 项（需上游 crate 新 API）；中危登记册余量见 deep-audit 各文档未勾销条目。仍开项不变（C-SHARD、七件套、Stage D 余量、Device reset、reconcile 路由、#12 余量）。
+
+2026-09-29（续）：Phase E 波验证 run [36535656124](https://github.com/cty12356541/llmos/actions/runs/36535656124)（push，`774aa6c`）conclusion=**success**，全部 job 绿（三平台、MSRV 1.97、三平台 release 探针、include-ignored）。此前 dispatch run 36535472709 与其前一 push run 因并发组取消，非失败。Phase E 波闭环。
