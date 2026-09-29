@@ -1941,6 +1941,7 @@ name = "llmos-desktop"
 version = "0.1.0"
 dependencies = [
  "ed25519-dalek",
+ "getrandom 0.4.3",
  "nlos-application",
  "nlos-artifact",
  "nlos-clock",
@@ -1954,6 +1955,7 @@ dependencies = [
  "nlos-types",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "tauri",
  "tauri-build",
  "tokio",

@@ -8,13 +8,13 @@
 //!     且与 plain 入口(CLI 同路)receipt 字节一致——预算/成本视图在未
 //!     配置 resource_root 时不伪造任何数据。
 
-#![cfg(all(unix, feature = "dev-fixture"))]
+#![cfg(feature = "dev-fixture")]
 
 use llmos_desktop_lib::devfixture::DevFixture;
 use llmos_desktop_lib::dto::{OutcomeDto, fact_check_dto};
 use llmos_desktop_lib::ipc::{dispatch_control, dispatch_cost_inspect};
 use nlos_resource::ResourceAuthority;
-use nlos_system_control::control::{ControlCommand, ControlReceipt, parse_hex_id, receipt_to_hex};
+use nlos_system_control::control::{ControlCommand, parse_hex_id, receipt_to_hex};
 use nlos_types::ReservationId;
 
 fn write_key_file(fixture: &DevFixture, label: &str) -> String {
@@ -34,11 +34,7 @@ async fn cost_inspect(
     reservation_id: [u8; 16],
 ) -> llmos_desktop_lib::dto::ReceiptDto {
     dispatch_cost_inspect(
-        fixture
-            .socket_authenticated()
-            .display()
-            .to_string()
-            .as_str(),
+        fixture.endpoint_authenticated().as_str(),
         fixture.principal_hex(),
         key_file,
         authority,
@@ -132,16 +128,17 @@ async fn unwired_cost_inspect_stays_typed_not_found_and_matches_plain_entry() {
     assert!(code.contains("NOT_FOUND"), "code was {code}");
     assert!(safe_message.contains("not wired"));
 
-    // 与 plain 入口(CLI 同路)同命令同未接线形态:receipt 字节一致。
-    let plain: ControlReceipt = nlos_system_control::control::dispatch_over_socket(
-        fixture.socket_plain(),
-        &ControlCommand::InspectResource { reservation_id },
-        None,
-        None,
-        None,
-    )
-    .await
-    .expect("plain dispatch");
+    // 与 plain 入口(Unix:CLI 同路;Windows:named pipe plain 助手)同命令
+    // 同未接线形态:receipt 字节一致。
+    let plain = fixture
+        .dispatch_plain(
+            &ControlCommand::InspectResource { reservation_id },
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("plain dispatch");
     assert_eq!(receipt.receipt_hex, receipt_to_hex(&plain));
 
     // 一致性自检在未接线形态下也如实可比(两侧同形态失败回执)。
@@ -167,11 +164,7 @@ async fn parity_dispatch_path_never_wires_the_resource_inspector() {
     let reservation_id = parse_hex_id(&facts.reservation_id_hex).expect("reservation id");
 
     let receipt = dispatch_control(
-        fixture
-            .socket_authenticated()
-            .display()
-            .to_string()
-            .as_str(),
+        fixture.endpoint_authenticated().as_str(),
         fixture.principal_hex(),
         &key_file,
         ControlCommand::InspectResource { reservation_id },

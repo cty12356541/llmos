@@ -18,7 +18,6 @@
 
 use std::sync::Mutex;
 
-#[cfg(unix)]
 use ed25519_dalek::{Signer, SigningKey};
 use nlos_application::ApplicationAuthority;
 use nlos_resource::ResourceAuthority;
@@ -28,11 +27,9 @@ use nlos_system_control::control::{
     ResourceInspector, parse_hex_id,
 };
 use nlos_system_control::resource_inspector::ResourceAuthorityInspector;
-#[cfg(unix)]
 use nlos_types::PrincipalId;
 use serde::Deserialize;
 
-#[cfg(unix)]
 use crate::dto::receipt_dto;
 use crate::dto::{
     ConfigDto, ConfigSourceDto, ControlPlaneFactsDto, FactCheckDto, ParityDto, ReceiptDto,
@@ -131,7 +128,7 @@ fn config_dto(config: &SessionConfig) -> ConfigDto {
         resource_root: config.resource_root.clone(),
         application_root: config.application_root.clone(),
         source: config.source,
-        platform_supported: cfg!(unix),
+        platform_supported: cfg!(any(unix, windows)),
     }
 }
 
@@ -183,7 +180,10 @@ fn required(config: &SessionConfig) -> Result<(String, String, String), DesktopE
 
 /// 经 ADR-0011 认证入口派发一条命令(inspect 读与 W32-B 授权写共用)并
 /// 投影 Receipt(纯函数核心,由 Tauri 命令与集成测试共用)。
-#[cfg(unix)]
+///
+/// F3-c2:传输面经 [`crate::transport::dispatch_authenticated`] 平台分派
+/// (Unix domain socket / Windows named pipe),凭据准备(principal 解析、
+/// 密钥文件读取、Ed25519 签名)两平台同一份代码。
 pub async fn dispatch_control(
     socket: &str,
     principal_hex: &str,
@@ -198,7 +198,6 @@ pub async fn dispatch_control(
 /// (上游 `ControlReceipt::compose` 契约);`None` 保持未接线形态,回执为
 /// 类型化 `NOT_FOUND`,与 CLI(同样未接线)字节一致——CLI parity 比对
 /// 恒走 [`dispatch_control`],不受本参数影响。
-#[cfg(unix)]
 pub async fn dispatch_control_with_resource(
     socket: &str,
     principal_hex: &str,
@@ -206,12 +205,10 @@ pub async fn dispatch_control_with_resource(
     command: ControlCommand,
     resource: Option<&dyn ResourceInspector>,
 ) -> Result<ReceiptDto, DesktopError> {
-    use nlos_system_control::auth::dispatch_over_authenticated_socket;
-
     let principal = PrincipalId::from_bytes(principal_bytes(principal_hex)?);
     let seed = key_seed(key_file)?;
     let key = SigningKey::from_bytes(&seed);
-    let receipt = dispatch_over_authenticated_socket(
+    let receipt = crate::transport::dispatch_authenticated(
         socket,
         principal,
         |digest| Ok(key.sign(digest).to_bytes()),
@@ -220,37 +217,14 @@ pub async fn dispatch_control_with_resource(
         resource,
         None,
     )
-    .await
-    .map_err(|error| from_control_error(&error))?;
+    .await?;
     Ok(receipt_dto(&receipt))
-}
-
-#[cfg(not(unix))]
-pub async fn dispatch_control(
-    _socket: &str,
-    _principal_hex: &str,
-    _key_file: &str,
-    _command: ControlCommand,
-) -> Result<ReceiptDto, DesktopError> {
-    Err(DesktopError::unsupported_platform())
-}
-
-#[cfg(not(unix))]
-pub async fn dispatch_control_with_resource(
-    _socket: &str,
-    _principal_hex: &str,
-    _key_file: &str,
-    _command: ControlCommand,
-    _resource: Option<&dyn ResourceInspector>,
-) -> Result<ReceiptDto, DesktopError> {
-    Err(DesktopError::unsupported_platform())
 }
 
 /// [`dispatch_control`] 的 Application inspect 扩展:可选
 /// [`ApplicationAuthorityInspector`]。`None` 保持
 /// [`nlos_system_control::control::UnwiredApplicationInspector`] 的类型化
 /// `NOT_FOUND`(`application inspection backend is not wired`)。
-#[cfg(unix)]
 pub async fn dispatch_control_with_application(
     socket: &str,
     principal_hex: &str,
@@ -258,12 +232,10 @@ pub async fn dispatch_control_with_application(
     command: ControlCommand,
     application: Option<&dyn ApplicationInspector>,
 ) -> Result<ReceiptDto, DesktopError> {
-    use nlos_system_control::auth::dispatch_over_authenticated_socket;
-
     let principal = PrincipalId::from_bytes(principal_bytes(principal_hex)?);
     let seed = key_seed(key_file)?;
     let key = SigningKey::from_bytes(&seed);
-    let receipt = dispatch_over_authenticated_socket(
+    let receipt = crate::transport::dispatch_authenticated(
         socket,
         principal,
         |digest| Ok(key.sign(digest).to_bytes()),
@@ -272,20 +244,8 @@ pub async fn dispatch_control_with_application(
         None,
         application,
     )
-    .await
-    .map_err(|error| from_control_error(&error))?;
+    .await?;
     Ok(receipt_dto(&receipt))
-}
-
-#[cfg(not(unix))]
-pub async fn dispatch_control_with_application(
-    _socket: &str,
-    _principal_hex: &str,
-    _key_file: &str,
-    _command: ControlCommand,
-    _application: Option<&dyn ApplicationInspector>,
-) -> Result<ReceiptDto, DesktopError> {
-    Err(DesktopError::unsupported_platform())
 }
 
 /// `InspectApplication` 经认证入口派发。配置了 `application_root` 时以
@@ -743,8 +703,9 @@ pub fn control_plane_facts() -> ControlPlaneFactsDto {
     }
 }
 
-/// §25.3 idempotency 身份:每次提交新生成 16 字节(/dev/urandom;认证入口
-/// 仅 Unix,非 Unix 面在派发前就以类型化 UNSUPPORTED_PLATFORM 拒绝)。
+/// §25.3 idempotency 身份:每次提交新生成 16 字节 OS 级随机
+/// (Unix: /dev/urandom,历史路径不变;Windows: getrandom,经
+/// ProcessPrng/BCrypt;其余平台 fail-closed)。
 #[cfg(unix)]
 fn fresh_command_id() -> Result<[u8; 16], DesktopError> {
     use std::io::Read;
@@ -757,7 +718,15 @@ fn fresh_command_id() -> Result<[u8; 16], DesktopError> {
     Ok(id)
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn fresh_command_id() -> Result<[u8; 16], DesktopError> {
+    let mut id = [0u8; 16];
+    getrandom::fill(&mut id)
+        .map_err(|error| DesktopError::internal(format!("读取命令 id 失败: {error}")))?;
+    Ok(id)
+}
+
+#[cfg(not(any(unix, windows)))]
 fn fresh_command_id() -> Result<[u8; 16], DesktopError> {
     Err(DesktopError::unsupported_platform())
 }
@@ -1413,7 +1382,7 @@ mod tests {
         assert_eq!(throttle_percent, 50);
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn fresh_command_id_is_unique_per_call() {
         let first = fresh_command_id().unwrap();

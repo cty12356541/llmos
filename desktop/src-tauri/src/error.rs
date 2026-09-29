@@ -17,7 +17,8 @@ pub enum ErrorCode {
     Ipc,
     /// 命令编译或回执投影违反控制面契约(`ControlError` 的其余形态)。
     Control,
-    /// 当前平台没有认证入口可用(认证 dispatch 目前仅 Unix)。
+    /// 当前平台没有认证传输面可用(F3-c2 起 Unix socket 与 Windows named
+    /// pipe 均已接线;仅其余平台触达)。
     UnsupportedPlatform,
     /// 请求的权威事实不存在(如从未安装的包)——事实读回,不是可重试错误。
     NotFound,
@@ -60,7 +61,7 @@ impl DesktopError {
     pub fn unsupported_platform() -> Self {
         Self::new(
             ErrorCode::UnsupportedPlatform,
-            "认证 SystemControl 入口目前仅提供 Unix socket 接线;Windows named-pipe 认证入口为后续波次",
+            "认证 SystemControl 传输面在当前平台没有接线(Unix socket / Windows named pipe 之外的平台)",
         )
     }
 }

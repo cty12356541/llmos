@@ -40,13 +40,19 @@ async fn main() {
     println!("# GUI 环境变量(export 后启动 `npm run tauri dev`):");
     println!(
         "export LLMOS_DESKTOP_SOCKET={}",
-        fixture.socket_authenticated().display()
+        fixture.endpoint_authenticated()
     );
     println!("export LLMOS_DESKTOP_PRINCIPAL={}", fixture.principal_hex());
     println!("export LLMOS_DESKTOP_KEY_FILE={}", key_file.display());
     println!(
         "export LLMOS_DESKTOP_CLI_SOCKET={}",
-        fixture.socket_plain().display()
+        fixture.endpoint_plain()
+    );
+    // system-control-cli 二进制目前仅 Unix(上游 plain 入口 dispatch_over_socket
+    // 为 cfg(unix));Windows 上 CLI parity 面由集成测试的 dispatch_plain 助手覆盖。
+    println!(
+        "# (CLI 一致性比对仅 Unix;当前平台 {})",
+        std::env::consts::OS
     );
     println!("export LLMOS_DESKTOP_CLI={}", repo_cli_path().display());
     println!(
@@ -65,11 +71,11 @@ async fn main() {
     println!("reservation_id = {}", facts.reservation_id_hex);
     println!("account_id    = {}", facts.account_id_hex);
     println!();
-    println!("# CLI 一致性手动比对(先 cargo build -p nlos-system-control):");
+    println!("# CLI 一致性手动比对(先 cargo build -p nlos-system-control;仅 Unix):");
     println!(
         "{} {} inspect-health",
         repo_cli_path().display(),
-        fixture.socket_plain().display()
+        fixture.endpoint_plain()
     );
     println!();
     println!("# 密钥种子已写入 0600 文件:{}", key_file.display());

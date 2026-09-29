@@ -3,7 +3,7 @@
 //! projects `ApplicationInspected`; this lane only passes the inspector
 //! the resource-cost path already passes for `ResourceAuthority`.
 
-#![cfg(all(unix, feature = "dev-fixture"))]
+#![cfg(feature = "dev-fixture")]
 
 use std::path::PathBuf;
 
@@ -18,7 +18,7 @@ use nlos_artifact::{
     VerifyPackageRequest, package_manifest_message,
 };
 use nlos_identity::{BootstrapPrincipalRequest, IdentityAuthority, KeyPurpose};
-use nlos_system_control::control::{ControlCommand, ControlReceipt, receipt_to_hex};
+use nlos_system_control::control::{ControlCommand, receipt_to_hex};
 use nlos_types::{ApplicationId, ArtifactId, IdempotencyKey, PackageId, PrincipalId};
 
 fn write_key_file(fixture: &DevFixture, label: &str) -> String {
@@ -178,11 +178,7 @@ async fn application_inspect_matches_authority_head() {
         .expect("installed application");
 
     let receipt = dispatch_application_inspect(
-        fixture
-            .socket_authenticated()
-            .display()
-            .to_string()
-            .as_str(),
+        fixture.endpoint_authenticated().as_str(),
         fixture.principal_hex(),
         &key_file,
         Some(&authority),
@@ -223,21 +219,21 @@ async fn application_inspect_matches_authority_head() {
         head.package_manifest_digest
     );
 
-    let plain: ControlReceipt = nlos_system_control::control::dispatch_over_socket(
-        fixture.socket_plain(),
-        &ControlCommand::InspectApplication {
-            package_id: *verification.package_id.as_bytes(),
-        },
-        None,
-        None,
-        Some(
-            &nlos_system_control::application_inspector::ApplicationAuthorityInspector::new(
-                &authority,
+    let plain = fixture
+        .dispatch_plain(
+            &ControlCommand::InspectApplication {
+                package_id: *verification.package_id.as_bytes(),
+            },
+            None,
+            None,
+            Some(
+                &nlos_system_control::application_inspector::ApplicationAuthorityInspector::new(
+                    &authority,
+                ),
             ),
-        ),
-    )
-    .await
-    .expect("plain dispatch");
+        )
+        .await
+        .expect("plain dispatch");
     assert_eq!(receipt.receipt_hex, receipt_to_hex(&plain));
 
     let _ = std::fs::remove_file(&key_file);
@@ -250,11 +246,7 @@ async fn unwired_application_inspect_is_typed_not_found() {
     let _loops = fixture.serve_forever();
 
     let receipt = dispatch_application_inspect(
-        fixture
-            .socket_authenticated()
-            .display()
-            .to_string()
-            .as_str(),
+        fixture.endpoint_authenticated().as_str(),
         fixture.principal_hex(),
         &key_file,
         None,
