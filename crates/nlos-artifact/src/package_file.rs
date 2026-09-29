@@ -341,7 +341,12 @@ pub fn decode_package_file(bytes: &[u8]) -> Result<PackageFile, PackageFileError
         };
         let binding_digest = decoder.take_array("task binding")?;
         let dependency_count = decoder.take_count("task dependency count")?;
-        let mut dependency_keys = Vec::with_capacity(dependency_count);
+        // Lazy allocation: the count is unverified wire data, so sizing the
+        // Vec from it would let an 8-byte file request an allocation near
+        // usize::MAX (capacity overflow / OOM) instead of a typed error. The
+        // loop's take_array folds the unavoidable EOF into `Truncated`,
+        // matching the entry loop's lazy idiom.
+        let mut dependency_keys = Vec::new();
         for _ in 0..dependency_count {
             dependency_keys.push(decoder.take_array("task dependency")?);
         }
@@ -454,6 +459,27 @@ mod tests {
             ],
             tasks,
             signature: [0xcd; 64],
+        }
+    }
+
+    #[test]
+    fn huge_dependency_count_folds_into_a_typed_error_instead_of_preallocating() {
+        // The dependency count is unverified wire data: an 8-byte field must
+        // never size an allocation. Splice u64::MAX into the count of an
+        // otherwise valid file and cut the body right after it — the loop
+        // must hit EOF and return the typed Truncated error, not abort on a
+        // capacity overflow or OOM trying to reserve near usize::MAX.
+        let encoded = package_file(true).encode();
+        let needle = [0_u8, 0, 0, 0, 0, 0, 0, 1];
+        let at = encoded
+            .windows(8)
+            .position(|window| window == needle)
+            .expect("the dependency-count qword is unique in this fixture");
+        let mut hostile = encoded[..at + 8].to_vec();
+        hostile[at..at + 8].copy_from_slice(&u64::MAX.to_be_bytes());
+        match decode_package_file(&hostile) {
+            Err(PackageFileError::Truncated { .. }) => {}
+            other => panic!("expected typed Truncated, got {other:?}"),
         }
     }
 

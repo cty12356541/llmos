@@ -100,6 +100,8 @@ cargo build -p nlos-system-control
 cd desktop && npm run dev:server
 
 # 3. 另一个终端,按夹具输出 export 环境变量后启动 GUI
+#    (写路径自检探针执行真实 mutation,需显式 opt-in 宿主保护门)
+export LLMOS_DESKTOP_ALLOW_WRITE_PARITY=1
 npm run tauri dev
 ```
 
@@ -112,7 +114,10 @@ npm run tauri dev
 plan_id 下发 ack/resume 应得到类型化 `NOT_FOUND`(域路由不串);
 「操作控制」下发任意动作(如 pause)在夹具上得到类型化
 `NOT_FOUND`(executor 未接线)——kill 需两步确认。「一致性自检」页
-「写路径自检」选默认参数运行应显示 `matched`(两侧同为确定性失败回执)。
+「写路径自检」需先 `export LLMOS_DESKTOP_ALLOW_WRITE_PARITY=1`
+(探针执行真实 pause-operation mutation 的宿主保护门;未设置时命令
+以类型化 CONFIG 错误拒绝),选默认参数运行应显示
+`matched`(两侧同为确定性失败回执)。
 「权限/预算」页:授权事实卡显示会话 principal 与控制能力句柄
 (slot=9 generation=1),「验证控制面授权」应得到真实巡检回执(权限通过);
 「查询成本」输入夹具打印的 `reservation_id` 应显示

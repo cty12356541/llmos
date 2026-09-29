@@ -331,17 +331,36 @@ fn open_application_authority(
         .map_err(|error| DesktopError::config(format!("打开本地应用权威失败({root}):{error}")))
 }
 
-/// 同步阻塞执行一次认证 dispatch。`dispatch_over_authenticated_socket` 的
-/// future 持有上游 `&dyn ProcessInspector/&dyn ResourceInspector` 参数(非
-/// `Sync`),不能作为 Tauri async 命令的 `Send` future;同步命令运行在
-/// 独立阻塞线程,`block_on` 是正确收口。
-fn dispatch_configured(
+/// 把一次阻塞派发移出调用线程:H10(深审计 42 D1)。macOS 上 WKWebView
+/// 的脚本消息回调发生在**主线程**,同步 `#[tauri::command]` 内联
+/// `block_on` 会把 UI 线程按传输超时预算(connect/read/write 各 5s,
+/// 叠加 challenge-response 多轮)整体冻结。改法:命令一律 `async fn`,
+/// 非 `Send` 的派发 future(`dispatch_over_authenticated_socket` 持有
+/// 上游 `&dyn ProcessInspector/&dyn ResourceInspector` 参数,非 `Sync`,
+/// 不能直接作 Tauri async 命令的 `Send` future)封装进
+/// [`tauri::async_runtime::spawn_blocking`] 闭包,在 runtime 的阻塞
+/// 线程池上 `block_on` 驱动完成——等待发生在阻塞线程,主线程立即返回。
+async fn dispatch_off_main<F, R>(work: F) -> Result<R, DesktopError>
+where
+    F: FnOnce() -> Result<R, DesktopError> + Send + 'static,
+    R: Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|_| DesktopError::internal("认证派发阻塞线程 join 失败"))?
+}
+
+/// 会话配置快照 + 必需凭据,随后在阻塞线程池上执行一次认证 dispatch。
+async fn dispatch_configured(
     state: &tauri::State<'_, AppState>,
     command: ControlCommand,
 ) -> Result<ReceiptDto, DesktopError> {
     let config = state.snapshot()?;
     let (socket, principal, key_file) = required(&config)?;
-    tauri::async_runtime::block_on(dispatch_control(&socket, &principal, &key_file, command))
+    dispatch_off_main(move || {
+        tauri::async_runtime::block_on(dispatch_control(&socket, &principal, &key_file, command))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -392,35 +411,35 @@ pub fn set_config(
 }
 
 #[tauri::command]
-pub fn inspect_health(state: tauri::State<'_, AppState>) -> Result<ReceiptDto, DesktopError> {
-    dispatch_configured(&state, ControlCommand::InspectHealth)
+pub async fn inspect_health(state: tauri::State<'_, AppState>) -> Result<ReceiptDto, DesktopError> {
+    dispatch_configured(&state, ControlCommand::InspectHealth).await
 }
 
 #[tauri::command]
-pub fn inspect_semantic_health(
+pub async fn inspect_semantic_health(
     state: tauri::State<'_, AppState>,
 ) -> Result<ReceiptDto, DesktopError> {
-    dispatch_configured(&state, ControlCommand::InspectSemanticHealth)
+    dispatch_configured(&state, ControlCommand::InspectSemanticHealth).await
 }
 
 /// 资源域恢复巡检(W32-B 补接线:G8 资源恢复动作的 CAS 预期来源)。
 #[tauri::command]
-pub fn inspect_resource_health(
+pub async fn inspect_resource_health(
     state: tauri::State<'_, AppState>,
 ) -> Result<ReceiptDto, DesktopError> {
-    dispatch_configured(&state, ControlCommand::InspectResourceHealth)
+    dispatch_configured(&state, ControlCommand::InspectResourceHealth).await
 }
 
 #[tauri::command]
-pub fn export_metrics(state: tauri::State<'_, AppState>) -> Result<ReceiptDto, DesktopError> {
-    dispatch_configured(&state, ControlCommand::ExportMetrics)
+pub async fn export_metrics(state: tauri::State<'_, AppState>) -> Result<ReceiptDto, DesktopError> {
+    dispatch_configured(&state, ControlCommand::ExportMetrics).await
 }
 
 #[tauri::command]
-pub fn export_semantic_metrics(
+pub async fn export_semantic_metrics(
     state: tauri::State<'_, AppState>,
 ) -> Result<ReceiptDto, DesktopError> {
-    dispatch_configured(&state, ControlCommand::ExportSemanticMetrics)
+    dispatch_configured(&state, ControlCommand::ExportSemanticMetrics).await
 }
 
 /// W32-E 资源监控:resource 域(G8)指标导出——既有只读命令
@@ -428,19 +447,19 @@ pub fn export_semantic_metrics(
 /// artifact/semantic 两域)。与另外两条导出命令同路经认证入口,回执携带
 /// OpenMetrics 文本;无任何新控制路径。
 #[tauri::command]
-pub fn export_resource_metrics(
+pub async fn export_resource_metrics(
     state: tauri::State<'_, AppState>,
 ) -> Result<ReceiptDto, DesktopError> {
-    dispatch_configured(&state, ControlCommand::ExportResourceMetrics)
+    dispatch_configured(&state, ControlCommand::ExportResourceMetrics).await
 }
 
 #[tauri::command]
-pub fn inspect_task(
+pub async fn inspect_task(
     state: tauri::State<'_, AppState>,
     plan_id_hex: String,
 ) -> Result<ReceiptDto, DesktopError> {
     let plan_id = principal_bytes(&plan_id_hex)?;
-    dispatch_configured(&state, ControlCommand::InspectTask { plan_id })
+    dispatch_configured(&state, ControlCommand::InspectTask { plan_id }).await
 }
 
 /// W39-D / §28.4:Task Space 五层 inspect 命令构造器(hex → ControlCommand)。
@@ -502,26 +521,26 @@ fn reject_zero_generation(generation: u64) -> Result<(), DesktopError> {
 
 /// W39-D:InspectTaskGroup 的 GUI 接线(既有只读 ControlCommand)。
 #[tauri::command]
-pub fn inspect_task_group(
+pub async fn inspect_task_group(
     state: tauri::State<'_, AppState>,
     group_id_hex: String,
 ) -> Result<ReceiptDto, DesktopError> {
-    dispatch_configured(&state, layer_inspect_task_group(&group_id_hex)?)
+    dispatch_configured(&state, layer_inspect_task_group(&group_id_hex)?).await
 }
 
 /// W39-D:InspectTaskNode 的 GUI 接线。
 #[tauri::command]
-pub fn inspect_task_node(
+pub async fn inspect_task_node(
     state: tauri::State<'_, AppState>,
     plan_id_hex: String,
     node_id_hex: String,
 ) -> Result<ReceiptDto, DesktopError> {
-    dispatch_configured(&state, layer_inspect_task_node(&plan_id_hex, &node_id_hex)?)
+    dispatch_configured(&state, layer_inspect_task_node(&plan_id_hex, &node_id_hex)?).await
 }
 
 /// W39-D:InspectExecutionFiber 的 GUI 接线。
 #[tauri::command]
-pub fn inspect_execution_fiber(
+pub async fn inspect_execution_fiber(
     state: tauri::State<'_, AppState>,
     fiber_id_hex: String,
     generation: u64,
@@ -530,20 +549,21 @@ pub fn inspect_execution_fiber(
         &state,
         layer_inspect_execution_fiber(&fiber_id_hex, generation)?,
     )
+    .await
 }
 
 /// W39-D:InspectTopic 的 GUI 接线。
 #[tauri::command]
-pub fn inspect_topic(
+pub async fn inspect_topic(
     state: tauri::State<'_, AppState>,
     topic_id_hex: String,
 ) -> Result<ReceiptDto, DesktopError> {
-    dispatch_configured(&state, layer_inspect_topic(&topic_id_hex)?)
+    dispatch_configured(&state, layer_inspect_topic(&topic_id_hex)?).await
 }
 
 /// W39-D:InspectOperation 的 GUI 接线。
 #[tauri::command]
-pub fn inspect_operation(
+pub async fn inspect_operation(
     state: tauri::State<'_, AppState>,
     operation_id_hex: String,
     generation: u64,
@@ -552,24 +572,25 @@ pub fn inspect_operation(
         &state,
         layer_inspect_operation(&operation_id_hex, generation)?,
     )
+    .await
 }
 
 #[tauri::command]
-pub fn inspect_process(
+pub async fn inspect_process(
     state: tauri::State<'_, AppState>,
     process_id_hex: String,
 ) -> Result<ReceiptDto, DesktopError> {
     let process_id = principal_bytes(&process_id_hex)?;
-    dispatch_configured(&state, ControlCommand::InspectProcess { process_id })
+    dispatch_configured(&state, ControlCommand::InspectProcess { process_id }).await
 }
 
 #[tauri::command]
-pub fn inspect_resource(
+pub async fn inspect_resource(
     state: tauri::State<'_, AppState>,
     reservation_id_hex: String,
 ) -> Result<ReceiptDto, DesktopError> {
     let reservation_id = principal_bytes(&reservation_id_hex)?;
-    dispatch_configured(&state, ControlCommand::InspectResource { reservation_id })
+    dispatch_configured(&state, ControlCommand::InspectResource { reservation_id }).await
 }
 
 /// W32-D:打开会话配置指向的本地资源权威(未配置/空白 → `None`,保持
@@ -616,21 +637,24 @@ pub async fn dispatch_cost_inspect(
 
 /// W32-D 预算/成本可见性命令:「权限/预算」视图的资源成本查询入口。
 #[tauri::command]
-pub fn inspect_resource_cost(
+pub async fn inspect_resource_cost(
     state: tauri::State<'_, AppState>,
     reservation_id_hex: String,
 ) -> Result<ReceiptDto, DesktopError> {
     let config = state.snapshot()?;
     let reservation_id = principal_bytes(&reservation_id_hex)?;
-    let (socket, principal, key_file) = required(&config)?;
-    let authority = open_resource_authority(config.resource_root.as_deref())?;
-    tauri::async_runtime::block_on(dispatch_cost_inspect(
-        &socket,
-        &principal,
-        &key_file,
-        authority.as_ref(),
-        reservation_id,
-    ))
+    dispatch_off_main(move || {
+        let (socket, principal, key_file) = required(&config)?;
+        let authority = open_resource_authority(config.resource_root.as_deref())?;
+        tauri::async_runtime::block_on(dispatch_cost_inspect(
+            &socket,
+            &principal,
+            &key_file,
+            authority.as_ref(),
+            reservation_id,
+        ))
+    })
+    .await
 }
 
 /// W32-D 一致性自检(渲染事实 vs 直接复检):同一 reservation 两次独立
@@ -638,53 +662,59 @@ pub fn inspect_resource_cost(
 /// 已结清(FINALIZED)预留的事实不可变,两次必须一致;未接线形态两侧
 /// 同为类型化 NOT_FOUND,字节同样可比。
 #[tauri::command]
-pub fn cost_fact_check(
+pub async fn cost_fact_check(
     state: tauri::State<'_, AppState>,
     reservation_id_hex: String,
 ) -> Result<FactCheckDto, DesktopError> {
     let config = state.snapshot()?;
     let reservation_id = principal_bytes(&reservation_id_hex)?;
-    let (socket, principal, key_file) = required(&config)?;
-    let authority = open_resource_authority(config.resource_root.as_deref())?;
-    let first = tauri::async_runtime::block_on(dispatch_cost_inspect(
-        &socket,
-        &principal,
-        &key_file,
-        authority.as_ref(),
-        reservation_id,
-    ))?;
-    let second = tauri::async_runtime::block_on(dispatch_cost_inspect(
-        &socket,
-        &principal,
-        &key_file,
-        authority.as_ref(),
-        reservation_id,
-    ))?;
-    Ok(fact_check_dto(
-        &reservation_id_hex.trim().to_lowercase(),
-        &first,
-        &second,
-    ))
+    dispatch_off_main(move || {
+        let (socket, principal, key_file) = required(&config)?;
+        let authority = open_resource_authority(config.resource_root.as_deref())?;
+        let first = tauri::async_runtime::block_on(dispatch_cost_inspect(
+            &socket,
+            &principal,
+            &key_file,
+            authority.as_ref(),
+            reservation_id,
+        ))?;
+        let second = tauri::async_runtime::block_on(dispatch_cost_inspect(
+            &socket,
+            &principal,
+            &key_file,
+            authority.as_ref(),
+            reservation_id,
+        ))?;
+        Ok(fact_check_dto(
+            &reservation_id_hex.trim().to_lowercase(),
+            &first,
+            &second,
+        ))
+    })
+    .await
 }
 
 /// `ControlCommand::InspectApplication` 的 GUI 接线。未配置
 /// `application_root` 时走既有未接线 inspector,回执为类型化 `NOT_FOUND`。
 #[tauri::command]
-pub fn inspect_application(
+pub async fn inspect_application(
     state: tauri::State<'_, AppState>,
     package_id_hex: String,
 ) -> Result<ReceiptDto, DesktopError> {
     let config = state.snapshot()?;
     let package_id = principal_bytes(&package_id_hex)?;
-    let (socket, principal, key_file) = required(&config)?;
-    let authority = open_application_authority(config.application_root.as_deref())?;
-    tauri::async_runtime::block_on(dispatch_application_inspect(
-        &socket,
-        &principal,
-        &key_file,
-        authority.as_ref(),
-        package_id,
-    ))
+    dispatch_off_main(move || {
+        let (socket, principal, key_file) = required(&config)?;
+        let authority = open_application_authority(config.application_root.as_deref())?;
+        tauri::async_runtime::block_on(dispatch_application_inspect(
+            &socket,
+            &principal,
+            &key_file,
+            authority.as_ref(),
+            package_id,
+        ))
+    })
+    .await
 }
 
 /// W32-F 表面呈现命令:按包身份读回应用声明的可呈现表面(本地应用
@@ -937,12 +967,12 @@ pub fn build_control_command(
 /// W32-B 写入半唯一入口:授权动作 → 真实 ControlCommand → 认证 IPC。
 /// 回执(含类型化失败)完整返回前端渲染,后端不改写失败。
 #[tauri::command]
-pub fn submit_control(
+pub async fn submit_control(
     state: tauri::State<'_, AppState>,
     action: ControlAction,
 ) -> Result<ReceiptDto, DesktopError> {
     let command = build_control_command(action, fresh_command_id()?)?;
-    dispatch_configured(&state, command)
+    dispatch_configured(&state, command).await
 }
 
 /// 只读 operation → (ControlCommand, CLI 参数)。mutation 一律拒绝。
@@ -1026,35 +1056,57 @@ fn parity_command(
 /// 一致性自检(读路径):同一只读命令,GUI 经认证入口派发一次,真实
 /// `system-control-cli` 经 plain socket 派发一次,比对 receipt hex。
 #[tauri::command]
-pub fn parity_check(
+pub async fn parity_check(
     state: tauri::State<'_, AppState>,
     operation: String,
     target_hex: Option<String>,
 ) -> Result<ParityDto, DesktopError> {
     let config = state.snapshot()?;
     let (command, cli_args) = parity_command(&operation, target_hex.as_deref())?;
-    let (socket, principal, key_file) = required(&config)?;
-    let gui =
-        tauri::async_runtime::block_on(dispatch_control(&socket, &principal, &key_file, command))?;
-    let cli = run_cli(&config, &cli_args)?;
-    Ok(ParityDto {
-        operation,
-        matched: cli.receipt_hex.as_deref() == Some(gui.receipt_hex.as_str()),
-        gui_receipt_hex: gui.receipt_hex,
-        cli_receipt_hex: cli.receipt_hex,
-        cli_exit_code: cli.exit_code,
-        cli_stderr: cli.stderr,
+    dispatch_off_main(move || {
+        let (socket, principal, key_file) = required(&config)?;
+        let gui = tauri::async_runtime::block_on(dispatch_control(
+            &socket, &principal, &key_file, command,
+        ))?;
+        let cli = run_cli(&config, &cli_args)?;
+        Ok(ParityDto {
+            matched: cli.receipt_hex.as_deref() == Some(gui.receipt_hex.as_str()),
+            gui_receipt_hex: gui.receipt_hex,
+            cli_receipt_hex: cli.receipt_hex,
+            cli_exit_code: cli.exit_code,
+            cli_stderr: cli.stderr,
+            operation,
+        })
     })
+    .await
 }
 
 /// 一次真实 `system-control-cli` 子进程运行的首行 `RECEIPT <hex>` 投影。
+#[derive(Debug)]
 struct CliRun {
     receipt_hex: Option<String>,
     exit_code: Option<i32>,
     stderr: Option<String>,
 }
 
+/// CLI 子进程墙钟预算:plain 入口一次交换的传输预算为 connect+read+write
+/// 各 5s(上游 TransportConfig 默认),叠加 CLI 自身启动与指标文本量,
+/// 30s 覆盖慢启动仍有界(深审计 42 D2:无超时的 `output()` 可把调用线程
+/// 无限期挂住)。
+const CLI_RUN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 fn run_cli(config: &SessionConfig, cli_args: &[String]) -> Result<CliRun, DesktopError> {
+    run_cli_with_timeout(config, cli_args, CLI_RUN_TIMEOUT)
+}
+
+fn run_cli_with_timeout(
+    config: &SessionConfig,
+    cli_args: &[String],
+    timeout_budget: std::time::Duration,
+) -> Result<CliRun, DesktopError> {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+
     let cli_socket = config.cli_socket.clone().ok_or_else(|| {
         DesktopError::config("一致性自检需要 cli_socket(plain 入口;开发夹具提供)")
     })?;
@@ -1062,25 +1114,92 @@ fn run_cli(config: &SessionConfig, cli_args: &[String]) -> Result<CliRun, Deskto
         .cli_path
         .clone()
         .unwrap_or_else(|| DEFAULT_CLI_PATH.to_owned());
-    let output = std::process::Command::new(&cli_path)
+    let mut child = Command::new(&cli_path)
         .arg(&cli_socket)
         .args(cli_args)
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|error| {
             DesktopError::ipc(format!("启动 system-control-cli({cli_path})失败: {error}"))
         })?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    // 读线程排空两路管道:否则子进程写满管道缓冲后会阻塞在 write 上,
+    // 等待方永远等不到退出(经典 output() 死锁面)。
+    fn drain_pipe<R>(pipe: Option<R>) -> Option<std::thread::JoinHandle<Vec<u8>>>
+    where
+        R: Read + Send + 'static,
+    {
+        pipe.map(|mut reader| {
+            std::thread::spawn(move || {
+                let mut buffer = Vec::new();
+                let _ = reader.read_to_end(&mut buffer);
+                buffer
+            })
+        })
+    }
+    let stdout_reader = drain_pipe(child.stdout.take());
+    let stderr_reader = drain_pipe(child.stderr.take());
+
+    let deadline = std::time::Instant::now() + timeout_budget;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    // 超时即终止并回收,不让挂起的 CLI 把调用方挂住。
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(DesktopError::ipc(format!(
+                        "运行 system-control-cli({cli_path})超过 {}ms 墙钟预算,已终止子进程",
+                        timeout_budget.as_millis()
+                    )));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Err(error) => {
+                return Err(DesktopError::ipc(format!(
+                    "等待 system-control-cli({cli_path})退出失败: {error}"
+                )));
+            }
+        }
+    };
+
+    let stdout = stdout_reader
+        .map(|reader| reader.join().unwrap_or_default())
+        .unwrap_or_default();
+    let stderr = stderr_reader
+        .map(|reader| reader.join().unwrap_or_default())
+        .unwrap_or_default();
+    let stdout = String::from_utf8_lossy(&stdout);
     let cli_receipt_hex = stdout
         .lines()
         .next()
         .and_then(|line| line.strip_prefix("RECEIPT "))
         .map(str::to_owned);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = String::from_utf8_lossy(&stderr);
     Ok(CliRun {
         receipt_hex: cli_receipt_hex,
-        exit_code: output.status.code(),
+        exit_code: status.code(),
         stderr: (!stderr.trim().is_empty()).then(|| stderr.trim().to_owned()),
     })
+}
+
+/// 写路径自检的宿主保护开关(深审计 42 D9):探针执行真实
+/// pause-operation mutation 且 GUI 侧先行,任意已配置 socket 上盲跑
+/// 属未防护面。仅在显式设置 `LLMOS_DESKTOP_ALLOW_WRITE_PARITY=1`
+/// (预期为 dev:server 开发夹具宿主)后可用。
+pub const ENV_ALLOW_WRITE_PARITY: &str = "LLMOS_DESKTOP_ALLOW_WRITE_PARITY";
+
+fn write_parity_allowed(flag: Option<String>) -> bool {
+    matches!(flag.as_deref(), Some("1"))
+}
+
+/// GUI 侧 mutation 已派发而 CLI 侧运行失败时的错误面:必须披露 GUI
+/// 回执,操作者才能感知"已写入"(深审计 42 D9 的感知缺失面)。
+fn write_parity_cli_failure(gui_receipt_hex: &str, error: &DesktopError) -> DesktopError {
+    DesktopError::ipc(format!(
+        "CLI 侧运行失败,但 GUI 侧 pause-operation 已真实派发(RECEIPT {gui_receipt_hex});CLI 错误: {error}"
+    ))
 }
 
 /// W32-B 写路径一致性探针:同一条 pause-operation 命令(同 command id、
@@ -1088,18 +1207,24 @@ fn run_cli(config: &SessionConfig, cli_args: &[String]) -> Result<CliRun, Deskto
 /// 入口各派发一次,比对 receipt hex。开发夹具未接线操作执行器时两侧同为
 /// 确定性的类型化 `NOT_FOUND`(executor 未接线)失败回执,字节可比;在
 /// 已接线执行器的宿主上,第一次派发可能真实暂停目标、第二次按 idempotency/
-/// CAS 纪律回 CONFLICT——matched=false 即如实显示。完整写路径 parity 矩阵
+/// CAS 纪律回 CONFLICT——matched=false 即如实显示。探针受
+/// [`ENV_ALLOW_WRITE_PARITY`] 宿主保护门约束。完整写路径 parity 矩阵
 /// (成功/NotFound/Rights 三形态)钉死属 W32-C。
 #[tauri::command]
-pub fn parity_check_write(
+pub async fn parity_check_write(
     state: tauri::State<'_, AppState>,
     command_id_hex: String,
     target_hex: String,
     expected_revision: u64,
     reason: String,
 ) -> Result<ParityDto, DesktopError> {
+    if !write_parity_allowed(std::env::var(ENV_ALLOW_WRITE_PARITY).ok()) {
+        return Err(DesktopError::config(
+            "写路径自检会执行真实 pause-operation mutation:仅在开发夹具宿主显式设置 LLMOS_DESKTOP_ALLOW_WRITE_PARITY=1 后可用",
+        ));
+    }
     let config = state.snapshot()?;
-    let trimmed_reason = reason.trim();
+    let trimmed_reason = reason.trim().to_owned();
     if trimmed_reason.is_empty() {
         return Err(DesktopError::config("写路径自检需要非空 reason"));
     }
@@ -1107,27 +1232,32 @@ pub fn parity_check_write(
         control_command_id: principal_bytes(&command_id_hex)?,
         target_id: principal_bytes(&target_hex)?,
         expected_generation_or_revision: expected_revision,
-        reason: trimmed_reason.to_owned(),
+        reason: trimmed_reason.clone(),
     };
-    let (socket, principal, key_file) = required(&config)?;
-    let gui =
-        tauri::async_runtime::block_on(dispatch_control(&socket, &principal, &key_file, command))?;
-    let cli_args = vec![
-        "pause-operation".to_owned(),
-        command_id_hex.trim().to_owned(),
-        target_hex.trim().to_owned(),
-        expected_revision.to_string(),
-        trimmed_reason.to_owned(),
-    ];
-    let cli = run_cli(&config, &cli_args)?;
-    Ok(ParityDto {
-        operation: "pause-operation".to_owned(),
-        matched: cli.receipt_hex.as_deref() == Some(gui.receipt_hex.as_str()),
-        gui_receipt_hex: gui.receipt_hex,
-        cli_receipt_hex: cli.receipt_hex,
-        cli_exit_code: cli.exit_code,
-        cli_stderr: cli.stderr,
+    dispatch_off_main(move || {
+        let (socket, principal, key_file) = required(&config)?;
+        let gui = tauri::async_runtime::block_on(dispatch_control(
+            &socket, &principal, &key_file, command,
+        ))?;
+        let cli_args = vec![
+            "pause-operation".to_owned(),
+            command_id_hex.trim().to_owned(),
+            target_hex.trim().to_owned(),
+            expected_revision.to_string(),
+            trimmed_reason,
+        ];
+        let cli = run_cli(&config, &cli_args)
+            .map_err(|error| write_parity_cli_failure(&gui.receipt_hex, &error))?;
+        Ok(ParityDto {
+            matched: cli.receipt_hex.as_deref() == Some(gui.receipt_hex.as_str()),
+            gui_receipt_hex: gui.receipt_hex,
+            cli_receipt_hex: cli.receipt_hex,
+            cli_exit_code: cli.exit_code,
+            cli_stderr: cli.stderr,
+            operation: "pause-operation".to_owned(),
+        })
     })
+    .await
 }
 
 /// 仅供测试与文档引用:默认 CLI 探测路径。
@@ -1289,5 +1419,121 @@ mod tests {
         let first = fresh_command_id().unwrap();
         let second = fresh_command_id().unwrap();
         assert_ne!(first, second);
+    }
+
+    /// H10 回归:阻塞派发必须离开调用线程(spawn_blocking),而不是把
+    /// 调用线程(生产中即主线程)按 block_on 挂住。
+    #[test]
+    fn dispatch_off_main_runs_work_off_the_calling_thread() {
+        let caller = std::thread::current().id();
+        let ran_on_caller = tauri::async_runtime::block_on(async {
+            dispatch_off_main(move || Ok(std::thread::current().id() == caller)).await
+        })
+        .unwrap();
+        assert!(
+            !ran_on_caller,
+            "阻塞派发必须在调用线程之外的阻塞池线程上执行"
+        );
+    }
+
+    /// run_cli 超时/成功/启动失败三面回归(深审计 42 D2)。脚本夹具避免
+    /// 依赖真实 system-control-cli 二进制。
+    #[cfg(unix)]
+    fn write_cli_script(dir: &std::path::Path, name: &str, body: &str) -> String {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = dir.join(name);
+        std::fs::write(&path, body).unwrap();
+        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&path, permissions).unwrap();
+        path.to_str().unwrap().to_owned()
+    }
+
+    #[cfg(unix)]
+    fn cli_script_config(cli_path: &str) -> SessionConfig {
+        SessionConfig {
+            cli_socket: Some("ignored-socket".to_owned()),
+            cli_path: Some(cli_path.to_owned()),
+            ..SessionConfig::default()
+        }
+    }
+
+    #[cfg(unix)]
+    fn cli_script_dir(tag: &str) -> std::path::PathBuf {
+        // 每个测试独立目录:并行测试共享同一临时目录会在清理时互相删除。
+        std::env::temp_dir().join(format!("llmosdt-unit-{}-{tag}", std::process::id()))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_cli_projects_receipt_line_and_exit_code() {
+        let dir = cli_script_dir("cli-ok");
+        std::fs::create_dir_all(&dir).ok();
+        let script = write_cli_script(
+            &dir,
+            "cli-ok.sh",
+            "#!/bin/sh\necho 'RECEIPT 0123456789abcdef'\n",
+        );
+        let run = run_cli_with_timeout(&cli_script_config(&script), &[], CLI_RUN_TIMEOUT).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(run.receipt_hex.as_deref(), Some("0123456789abcdef"));
+        assert_eq!(run.exit_code, Some(0));
+        assert_eq!(run.stderr, None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_cli_kills_hung_subprocess_after_the_wall_clock_budget() {
+        let dir = cli_script_dir("cli-hang");
+        std::fs::create_dir_all(&dir).ok();
+        let script = write_cli_script(&dir, "cli-hang.sh", "#!/bin/sh\nsleep 30\n");
+        let started = std::time::Instant::now();
+        let error = run_cli_with_timeout(
+            &cli_script_config(&script),
+            &[],
+            std::time::Duration::from_millis(150),
+        )
+        .unwrap_err();
+        let elapsed = started.elapsed();
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(error.code, crate::error::ErrorCode::Ipc);
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "超时必须及时返回"
+        );
+        assert!(error.message.contains("已终止子进程"));
+    }
+
+    #[test]
+    fn run_cli_reports_spawn_failure_as_ipc_error() {
+        let config = SessionConfig {
+            cli_socket: Some("ignored-socket".to_owned()),
+            cli_path: Some("/nonexistent/llmos-cli-probe".to_owned()),
+            ..SessionConfig::default()
+        };
+        let error = run_cli_with_timeout(&config, &[], CLI_RUN_TIMEOUT).unwrap_err();
+        assert_eq!(error.code, crate::error::ErrorCode::Ipc);
+        assert!(error.message.contains("启动 system-control-cli"));
+    }
+
+    /// 写路径自检宿主保护门:仅显式 "1" 放行(深审计 42 D9)。
+    #[test]
+    fn write_parity_guard_requires_explicit_opt_in() {
+        assert!(write_parity_allowed(Some("1".to_owned())));
+        assert!(!write_parity_allowed(None));
+        assert!(!write_parity_allowed(Some("0".to_owned())));
+        assert!(!write_parity_allowed(Some("yes".to_owned())));
+        assert!(!write_parity_allowed(Some("".to_owned())));
+    }
+
+    /// CLI 失败错误面必须披露 GUI 侧已派发的回执(深审计 42 D9)。
+    #[test]
+    fn write_parity_cli_failure_discloses_the_dispatched_gui_receipt() {
+        let cli_error = DesktopError::ipc("启动 system-control-cli(x)失败: no such file");
+        let error = write_parity_cli_failure("deadbeef", &cli_error);
+        assert_eq!(error.code, crate::error::ErrorCode::Ipc);
+        assert!(error.message.contains("deadbeef"));
+        assert!(error.message.contains("已真实派发"));
     }
 }
