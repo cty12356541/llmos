@@ -106,9 +106,9 @@ impl RandomSource {
 
     fn bytes32(&self) -> [u8; 32] {
         let mut out = [0u8; 32];
-        for (index, chunk) in out.chunks_exact_mut(8).enumerate() {
+        for index in 0..4 {
             let value = self.next_u64().wrapping_add((index as u64) << 32);
-            chunk.copy_from_slice(&value.to_le_bytes());
+            out[index * 8..index * 8 + 8].copy_from_slice(&value.to_le_bytes());
         }
         out
     }
