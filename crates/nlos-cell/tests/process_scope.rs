@@ -36,10 +36,17 @@ fn child_domain() -> SchedulerDomainId {
 #[test]
 #[ignore = "spawned by two_os_process_authorities_not_two_in_process_threads"]
 fn child_claim_helper() {
-    let out_path = std::env::var(CHILD_OUT_ENV)
-        .expect("NLOS_CELL_CHILD_OUT must be set; this ignored harness is not a default test");
-    let release_path = std::env::var(CHILD_RELEASE_ENV)
-        .expect("NLOS_CELL_CHILD_RELEASE must be set; this ignored harness is not a default test");
+    // Batch `--ignored`/`--include-ignored` runs (nightly scale-probe job)
+    // reach this entry without env; only the parent spawn makes it meaningful.
+    let (Ok(out_path), Ok(release_path)) = (
+        std::env::var(CHILD_OUT_ENV),
+        std::env::var(CHILD_RELEASE_ENV),
+    ) else {
+        eprintln!(
+            "skipped: {CHILD_OUT_ENV}/{CHILD_RELEASE_ENV} unset (harness entry, parent spawn only)"
+        );
+        return;
+    };
 
     let authority = CellAuthority::claim(child_domain()).expect("child claim");
     let fence = authority.fence();
