@@ -86,7 +86,7 @@ const USAGE: &str = "usage: nlos-debug snapshot inspect <STORE> \
 const WAIT_SCHEMA_VERSION: i64 = 1;
 const CHANNEL_SCHEMA_VERSION: i64 = 3;
 const PROCESS_SCHEMA_VERSION: i64 = 5;
-const TASK_SCHEMA_VERSION: i64 = 44;
+const TASK_SCHEMA_VERSION: i64 = 45;
 
 /// Cap for recovery plan/alert listings; the debugger renders everything
 /// present, never samples.
@@ -2010,7 +2010,7 @@ mod tests {
             hex_of(&binding(1))
         )));
         assert!(output.contains("input_len=19 written_at=2500"));
-        assert!(output.contains("face task.sqlite3 present schema=44"));
+        assert!(output.contains("face task.sqlite3 present schema=45"));
     }
 
     #[test]
