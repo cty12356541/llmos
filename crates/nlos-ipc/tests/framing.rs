@@ -217,3 +217,39 @@ async fn mismatched_response_request_id_fails_closed() {
     ));
     server.await.unwrap().unwrap();
 }
+
+#[tokio::test]
+async fn frame_too_large_send_leaves_connection_usable() {
+    // 深审计 36 D2 回归:send 的写前界检(FrameTooLarge)零字节上网,
+    // 连接不得毒化——同一连接上缩小后的下一次交换必须成功。
+    let (client_stream, server_stream) = duplex(64_000);
+    let mut big = request(1);
+    big.envelope
+        .as_mut()
+        .expect("test request has an envelope")
+        .payload = vec![0x5a; 512];
+    let big_wire = nlos_schema::encode_exchange_request(&big).unwrap();
+    let client = LocalRpcClient::new(client_stream, fast_config(big_wire.len() - 1));
+    let server = tokio::spawn(async move {
+        serve_one(
+            server_stream,
+            fast_config(64_000),
+            PeerIdentity::InMemory,
+            &Allow,
+            |validated| async move {
+                Ok(OutboundResponse::Typed(ExchangeResponse {
+                    envelope: Some(envelope(validated.envelope().request_id[0])),
+                }))
+            },
+        )
+        .await
+    });
+
+    assert!(matches!(
+        client.exchange_validated(big).await,
+        Err(IpcError::FrameTooLarge { .. })
+    ));
+    let response = client.exchange_validated(request(2)).await.unwrap();
+    assert_eq!(response.envelope().request_id, vec![2; 16]);
+    server.await.unwrap().unwrap();
+}

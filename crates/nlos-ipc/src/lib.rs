@@ -436,7 +436,12 @@ where
             return Err(IpcError::ConnectionUnusable);
         }
         if let Err(error) = connection.framed.send(&wire).await {
-            connection.usable = false;
+            // 写前界检失败(FrameTooLarge)零字节上网,连接仍然完好,不毒化
+            // ——与编码失败路径对称(深审计 36 D2);其余 send 失败(写超时/
+            // 写中 I/O 错误)可能已留下部分写,毒化并要求上层重连。
+            if !matches!(error, IpcError::FrameTooLarge { .. }) {
+                connection.usable = false;
+            }
             return Err(error);
         }
         let response_wire = match connection.framed.receive().await {
