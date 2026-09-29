@@ -7,6 +7,7 @@
 mod canonical;
 mod declassification;
 mod durability;
+mod merge;
 mod model;
 mod schema;
 mod spec;
@@ -38,6 +39,11 @@ use sha2::{Digest, Sha256};
 pub use canonical::{
     decode_unsigned_assertion_event, decode_unsigned_spec_event, encode_unsigned_assertion_event,
     encode_unsigned_spec_event, semantic_event_id,
+};
+pub use merge::{
+    AdmissionConflictOccurrence, MergedSignedEvent, SignedEventSetConflict, SignedEventSetItem,
+    SignedEventSetMergeReport, SignedEventSetOrigin, SignedEventSetRejection,
+    merge_signed_event_sets,
 };
 pub use model::{
     AcknowledgeOutboxRequest, AdmissionDurability, AdmissionReceipt, AppendAssertionRequest,
