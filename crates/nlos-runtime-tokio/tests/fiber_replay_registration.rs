@@ -751,6 +751,36 @@ async fn resume_binding_gates_incarnation_and_reports_new_events() {
         "the failed resume must not disturb the live armed wait"
     );
 
+    // The gate was requested (the binding declares an expected incarnation)
+    // but cannot be evaluated — no process authority in the resume sources.
+    // The resume must fail closed instead of silently downgrading to an
+    // un-gated resume, and the live armed wait stays undisturbed.
+    let unevaluable = adapter
+        .resume_binding(
+            handle,
+            &authorities.wait,
+            ReplayAuthorities {
+                process: None,
+                ..sources
+            },
+            &Redrive {
+                binding_id: binding(1),
+                process: Some(process_id),
+                incarnation: Some(first_incarnation),
+            },
+        )
+        .expect_err("unevaluable gate must fail closed");
+    assert!(matches!(
+        unevaluable,
+        ChannelWaitError::IncarnationGateUnavailable
+    ));
+    assert!(
+        tokio::time::timeout(PENDING_PROBE, &mut armed)
+            .await
+            .is_err(),
+        "the unevaluable-gate resume must not disturb the live armed wait"
+    );
+
     // A later notification wakes the re-armed wait of the new incarnation.
     let wake = notify(&authorities.wait, channel_id, 5, 15);
     assert_eq!(wake.woken.len(), 1);

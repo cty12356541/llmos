@@ -267,6 +267,15 @@ pub enum ChannelWaitError {
     /// one (the ADR-0012 generation gate); fail-closed, zero durable side
     /// effect.
     StaleFiberIncarnation,
+    /// The ADR-0012 incarnation gate was requested — the resumable declares
+    /// [`ResumableBinding::expected_incarnation`](crate::ResumableBinding::expected_incarnation)
+    /// — but it cannot be evaluated: no process authority was supplied to
+    /// the resume, or the incarnation declares no
+    /// [`process_id`](crate::ResumableBinding::process_id). Fail-closed,
+    /// zero durable side effect: the resume is never silently downgraded to
+    /// un-gated, which would lose the ADR-0012 protection with no
+    /// diagnostic. Only the documented `None` opt-out skips the gate.
+    IncarnationGateUnavailable,
     /// The durable row returned by the authority does not match the
     /// registered request (binding, channel or target sequence) — an
     /// authority contract violation, failed closed.
@@ -306,6 +315,9 @@ impl fmt::Display for ChannelWaitError {
                 .write_str("no entry snapshot exists for the binding's current incarnation"),
             Self::StaleFiberIncarnation => formatter
                 .write_str("the presented fiber incarnation is not the binding's current one"),
+            Self::IncarnationGateUnavailable => formatter.write_str(
+                "the incarnation gate was requested but no process authority or process identity is available to evaluate it",
+            ),
             Self::RecordMismatch => formatter
                 .write_str("durable wait row does not match the registered channel wait request"),
             Self::ResumeRejected(rejection) => {
@@ -333,6 +345,7 @@ impl std::error::Error for ChannelWaitError {
             Self::RecordMismatch
             | Self::SnapshotUnavailable
             | Self::StaleFiberIncarnation
+            | Self::IncarnationGateUnavailable
             | Self::ResumePlanMismatch
             | Self::PlatformKillReceiptAbsent { .. } => None,
             Self::ResumeRejected(rejection) => Some(rejection),
