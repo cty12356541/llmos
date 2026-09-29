@@ -73,10 +73,22 @@ impl CancellationScope {
     }
 
     async fn cancelled(&self) {
+        // Create the `Notified` future before checking the flag — the same
+        // pattern as the wait drivers in `wake.rs` and `channel_wait.rs`.
+        // A `cancel()` racing this point is then observed either by the
+        // flag or by the `notify_waiters` call count the future captured
+        // at creation (tokio `Notified` tracks `notify_waiters` calls from
+        // creation, even before its first poll), never lost in between.
+        // Checking the flag first would leave a window — however narrow,
+        // preemption can stretch it arbitrarily — where the store lands
+        // after the load and `notify_waiters` completes before the
+        // registration, parking this awaiter forever.
+        let notified = self.notify.notified();
+        tokio::pin!(notified);
         if self.is_cancelled() {
             return;
         }
-        self.notify.notified().await;
+        notified.await;
     }
 }
 
@@ -1221,4 +1233,71 @@ fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::CancellationScope;
+
+    /// Bounded probe: a `cancelled()` that lost its wakeup would park
+    /// forever, so every assertion here resolves through a timeout rather
+    /// than a bare await.
+    const RESOLVE: Duration = Duration::from_secs(5);
+
+    fn probe_runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("current-thread probe runtime")
+    }
+
+    /// Regression guard for the lost-wakeup ordering: a `cancel()` that
+    /// completes before the first poll must resolve `cancelled()`
+    /// immediately through the flag.
+    #[test]
+    fn cancelled_resolves_when_cancel_precedes_first_poll() {
+        let scope = CancellationScope::new();
+        scope.cancel();
+        let runtime = probe_runtime();
+        runtime.block_on(async {
+            tokio::time::timeout(RESOLVE, scope.cancelled())
+                .await
+                .expect("a pre-existing cancel must resolve the awaiter");
+        });
+    }
+
+    /// Regression guard for the lost-wakeup ordering: a `cancel()` that
+    /// arrives while the awaiter is parked must resolve `cancelled()`
+    /// through `notify_waiters`.
+    #[test]
+    fn cancelled_resolves_when_cancel_arrives_while_parked() {
+        let scope = CancellationScope::new();
+        let racer = std::sync::Arc::new(scope);
+        let canceller = std::sync::Arc::clone(&racer);
+        let canceller = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            canceller.cancel();
+        });
+        let runtime = probe_runtime();
+        runtime.block_on(async {
+            tokio::time::timeout(RESOLVE, racer.cancelled())
+                .await
+                .expect("a cancel arriving at a parked awaiter must wake it");
+        });
+        canceller.join().expect("canceller thread");
+    }
+
+    // The lost-wakeup window itself — a `cancel()` whose entire
+    // store-plus-`notify_waiters` sequence lands between the flag load and
+    // the `Notified` creation — cannot be exercised deterministically: the
+    // two statements run back-to-back inside a single poll, so no external
+    // interleaving point exists, and the cancel sequence outlasts the
+    // window by an order of magnitude, which makes a spin-race stress
+    // effectively unable to hit it without a mid-poll preemption. The fix
+    // is correct by construction instead: creating `Notified` first means
+    // tokio captures the `notify_waiters` call count at creation, so every
+    // cancel is observed by at least one of the two signals (flag or
+    // count) regardless of where the awaiter is preempted.
 }
