@@ -211,9 +211,13 @@ impl SliceKRuntime {
             reconcile_sink: self.pump_lane.sink(),
             config: ConsumerConfig { batch_limit: 8 },
         };
+        // `PumpConfig::default()` keeps a non-zero poll interval, so the
+        // InvalidConfig arm is unreachable here — but mapping it keeps the
+        // pump's start surface exhaustive instead of a wildcard.
         let started = OutboxPump::start(consumer, PumpConfig::default()).map_err(
             |error: OutboxPumpStartError| match error {
                 OutboxPumpStartError::Spawn(io) => SliceKError::Io(io),
+                OutboxPumpStartError::InvalidConfig(reason) => SliceKError::Pump(reason),
             },
         )?;
         *pump = Some(started);
