@@ -2088,10 +2088,10 @@ impl SqliteTaskAuthority {
     ///
     /// # Errors
     ///
-    /// Returns a not-found, holder, epoch, slot-state, replay-conflict, or
-    /// storage error. A permit whose issuance bound an authority lease
-    /// additionally fails closed with the typed lease family (`TK-B2`); see
-    /// [`Self::record_effect_outcome_with_authority_lease`].
+    /// Returns a not-found, holder, epoch, slot-state, replay-conflict,
+    /// adoption-scope, or storage error. A permit whose issuance bound an
+    /// authority lease additionally fails closed with the typed lease family
+    /// (`TK-B2`); see [`Self::record_effect_outcome_with_authority_lease`].
     pub fn record_effect_outcome(
         &self,
         request: OutcomeRequest,
@@ -2161,6 +2161,17 @@ impl SqliteTaskAuthority {
                 return Err(TaskStoreError::IdempotencyConflict);
             }
             return Err(TaskStoreError::InvalidEffectSlotState { state: slot.state });
+        }
+        // `[TASK-COMMIT-003]`: an adopted permit's scope is
+        // RECONCILE_CLOSE_OR_QUARANTINE_ONLY — a dispatched slot's outcome
+        // is registered by the reconcile slice, never by the fenced old
+        // holder. The replay branch above stays first (a pre-adoption
+        // outcome still replays byte-equal), and the head part of the
+        // commit context stays structurally exempt (a sibling effect's
+        // closure moves `head_effect_history_root`); the slot CAS still
+        // arbitrates the write itself.
+        if crate::reconcile::has_adoption(&transaction, request.permit_id)? {
+            return Err(TaskStoreError::AdoptionScopeViolation);
         }
         // `TK-B2`: the live-lease fence, after the replay branch (which
         // stays first) and strictly before the receipt write — a fenced
@@ -2249,9 +2260,10 @@ impl SqliteTaskAuthority {
     /// # Errors
     ///
     /// Returns a not-found, holder, epoch, token, slot-state, condition,
-    /// replay-conflict, or storage error. A permit whose issuance bound an
-    /// authority lease additionally fails closed with the typed lease family
-    /// (`TK-B2`); see [`Self::record_no_effect_with_authority_lease`].
+    /// replay-conflict, adoption-scope, or storage error. A permit whose
+    /// issuance bound an authority lease additionally fails closed with the
+    /// typed lease family (`TK-B2`); see
+    /// [`Self::record_no_effect_with_authority_lease`].
     pub fn record_no_effect(
         &self,
         request: NoEffectRequest,
@@ -2339,6 +2351,17 @@ impl SqliteTaskAuthority {
             && slot.required_condition_digest.is_none()
         {
             return Err(TaskStoreError::ConditionNotBound);
+        }
+        // `[TASK-COMMIT-003]`: an adopted permit's scope is
+        // RECONCILE_CLOSE_OR_QUARANTINE_ONLY — proving a token unconsumed
+        // on an adopted permit belongs to the reconcile slice, not to the
+        // fenced old holder. The `NoEffect` replay branch above stays
+        // first; the head part of the commit context stays structurally
+        // exempt (a sibling effect's closure moves
+        // `head_effect_history_root`); the slot CAS still arbitrates the
+        // write itself.
+        if crate::reconcile::has_adoption(&transaction, request.permit_id)? {
+            return Err(TaskStoreError::AdoptionScopeViolation);
         }
         // `TK-B2`: the live-lease fence, after the replay branch (which
         // stays first) and strictly before the receipt write — a fenced
@@ -2476,13 +2499,19 @@ impl SqliteTaskAuthority {
     ///    `(binding, fiber_generation)` identity (idempotent re-registration
     ///    replay); any other identity — including a stale incarnation
     ///    generation — fails closed with
-    ///    [`TaskStoreError::EffectBindingConflict`] and zero side effect.
+    ///    [`TaskStoreError::EffectBindingConflict`] and zero side effect;
+    /// 6. an adopted permit is reconcile-only (`[TASK-COMMIT-003]`): once
+    ///    any adoption receipt binds the permit, a fresh registration fails
+    ///    closed with [`TaskStoreError::AdoptionScopeViolation`] — the
+    ///    projection's attribution fact cannot be written by the fenced old
+    ///    holder. Both replay branches above stay exempt.
     ///
     /// # Errors
     ///
     /// Fails closed for an invalid binding, idempotency rebinding, a
     /// non-holder caller, a closed registration window, a conflicting
-    /// binding identity, or a storage/corruption failure. A permit whose
+    /// binding identity, an adoption scope violation, or a
+    /// storage/corruption failure. A permit whose
     /// issuance bound an authority lease additionally fails closed with the
     /// typed lease family (`TK-B2`); see
     /// [`Self::register_effect_binding_with_authority_lease`].
@@ -2582,6 +2611,20 @@ impl SqliteTaskAuthority {
                 return Ok(EffectBindingDecision::Replayed(Box::new(existing)));
             }
             return Err(TaskStoreError::EffectBindingConflict);
+        }
+
+        // `[TASK-COMMIT-003]`: an adopted permit's scope is
+        // RECONCILE_CLOSE_OR_QUARANTINE_ONLY — a projection-layer
+        // attribution fact (which fiber initiated the effect) must not be
+        // registered by the fenced old holder once the permit is adopted.
+        // Adoption never touches a non-`Unknown` slot's state and the
+        // binding CAS below has no state-machine arbitration, so unlike
+        // the outcome paths this fence is the only scope guard. Both
+        // replay branches above stay first; the head part of the commit
+        // context stays structurally exempt (a sibling effect's closure
+        // moves `head_effect_history_root`).
+        if crate::reconcile::has_adoption(&transaction, request.permit_id)? {
+            return Err(TaskStoreError::AdoptionScopeViolation);
         }
 
         // `TK-B2`: the live-lease fence, after both replay branches (which

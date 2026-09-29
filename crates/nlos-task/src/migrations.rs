@@ -1,4 +1,4 @@
-//! Linear `SQLite` schema migration chain (v1 → v44) for the durable
+//! Linear `SQLite` schema migration chain (v1 → v45) for the durable
 //! `TaskAuthority`.
 //!
 //! Every `migrate_vN` advances `user_version` by exactly one step, committed
@@ -3048,3 +3048,105 @@ const SCHEMA_V44_SQL: &str = "ALTER TABLE tasks
      END;
 
      PRAGMA user_version = 44;";
+
+/// v44 → v45 narrows the effect fiber registration idempotency scope from
+/// globally unique to `(task_id, idempotency_key)`-unique (W44-E1R, audit
+/// 04-task-effect.md [M1]): `effect_permits` is already
+/// `(task_id, idempotency_key)`-unique and the registration pre-check
+/// (`load_effect_registration_by_key`) is task-scoped, so cross-task key
+/// reuse previously fell through to the global UNIQUE constraint and
+/// surfaced as an unclassified storage error instead of a fresh
+/// registration. The composite uniqueness lands as the named index
+/// `effect_fiber_registrations_idempotency_key` (enforcement-equivalent to
+/// an inline UNIQUE constraint, and name-detectable for the idempotent
+/// re-run check below). Data-preserving rebuild along the v40 precedent:
+/// existing rows are copied verbatim (the composite constraint is strictly
+/// weaker than the global one, so the copy cannot fail), the
+/// `(permit_id, effect_seq, binding_id)` uniqueness, the binding index,
+/// and both immutability triggers are recreated identically. Idempotent
+/// and re-runnable.
+pub(crate) fn migrate_v45(connection: &mut Connection) -> Result<(), TaskStoreError> {
+    let composite_index_present: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master
+            WHERE type='index'
+              AND name='effect_fiber_registrations_idempotency_key'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    let leftover_rebuild_table: bool = connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master
+            WHERE type='table' AND name='effect_fiber_registrations_v45'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if composite_index_present {
+        connection.pragma_update(None, "user_version", 45)?;
+        return Ok(());
+    }
+    if leftover_rebuild_table {
+        return Err(TaskStoreError::CorruptRecord(
+            "partial fiber registration idempotency schema",
+        ));
+    }
+    connection.pragma_update(None, "foreign_keys", "OFF")?;
+    let migration = (|| {
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute_batch(SCHEMA_V45_SQL)?;
+        transaction.commit()?;
+        Ok::<(), TaskStoreError>(())
+    })();
+    let restore = connection.pragma_update(None, "foreign_keys", "ON");
+    if let Err(error) = migration {
+        let _ = restore;
+        return Err(error);
+    }
+    restore?;
+    Ok(())
+}
+
+const SCHEMA_V45_SQL: &str = "CREATE TABLE effect_fiber_registrations_v45 (
+        registration_id BLOB PRIMARY KEY NOT NULL CHECK(length(registration_id) = 16),
+        task_id BLOB NOT NULL CHECK(length(task_id) = 16),
+        permit_id BLOB NOT NULL CHECK(length(permit_id) = 16),
+        effect_slot_id BLOB NOT NULL CHECK(length(effect_slot_id) = 16),
+        effect_seq BLOB NOT NULL CHECK(length(effect_seq) = 8),
+        logical_effect_id BLOB NOT NULL CHECK(length(logical_effect_id) = 32),
+        binding_id BLOB NOT NULL CHECK(length(binding_id) = 16),
+        fiber_generation BLOB NOT NULL CHECK(length(fiber_generation) = 8),
+        idempotency_key BLOB NOT NULL CHECK(length(idempotency_key) = 16),
+        registered_at_ms INTEGER NOT NULL CHECK(registered_at_ms >= 0),
+        UNIQUE(permit_id, effect_seq, binding_id),
+        FOREIGN KEY(task_id) REFERENCES tasks(task_id)
+    ) STRICT;
+
+    INSERT INTO effect_fiber_registrations_v45 (
+        registration_id, task_id, permit_id, effect_slot_id, effect_seq,
+        logical_effect_id, binding_id, fiber_generation, idempotency_key,
+        registered_at_ms
+    )
+    SELECT registration_id, task_id, permit_id, effect_slot_id, effect_seq,
+           logical_effect_id, binding_id, fiber_generation, idempotency_key,
+           registered_at_ms
+    FROM effect_fiber_registrations;
+
+    DROP TABLE effect_fiber_registrations;
+    ALTER TABLE effect_fiber_registrations_v45
+        RENAME TO effect_fiber_registrations;
+
+    CREATE UNIQUE INDEX effect_fiber_registrations_idempotency_key
+        ON effect_fiber_registrations(task_id, idempotency_key);
+    CREATE INDEX effect_fiber_registrations_by_binding
+        ON effect_fiber_registrations(binding_id);
+
+    CREATE TRIGGER effect_fiber_registration_is_immutable
+    BEFORE UPDATE ON effect_fiber_registrations
+    BEGIN SELECT RAISE(ABORT, 'effect fiber registration is immutable'); END;
+    CREATE TRIGGER effect_fiber_registration_is_immutable_delete
+    BEFORE DELETE ON effect_fiber_registrations
+    BEGIN SELECT RAISE(ABORT, 'effect fiber registration is immutable'); END;
+
+    PRAGMA user_version = 45;";

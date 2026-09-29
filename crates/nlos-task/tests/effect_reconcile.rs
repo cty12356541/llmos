@@ -656,6 +656,189 @@ fn adoption_scope_forbids_new_permits_dispatches_and_effects() {
     assert_eq!(slot1.state, SlotState::Planned, "no dispatch happened");
 }
 
+/// Builds a fiber-registration request bound to the fixture's holder.
+fn binding_request(
+    spec: &AttemptSpec,
+    permit: &PermitRecord,
+    effect_seq: u64,
+    fiber_seed: u8,
+    key_seed: u8,
+    registered_at_ms: i64,
+) -> nlos_task::RegisterEffectBindingRequest {
+    nlos_task::RegisterEffectBindingRequest {
+        task_id: spec.task_id,
+        attempt_id: spec.attempt_id,
+        attempt_generation: spec.attempt_generation,
+        permit_id: permit.permit_id,
+        permit_epoch: permit.permit_epoch,
+        effect_seq,
+        binding: nlos_types::ExecutionFiberId::from_bytes([fiber_seed; 16]),
+        fiber_generation: Generation::new(std::num::NonZeroU64::new(1).expect("generation")),
+        idempotency_key: IdempotencyKey::from_bytes(bytes(key_seed)),
+        registered_at_ms,
+    }
+}
+
+/// `[TASK-COMMIT-003]` (W44-E1R, audit 04 [M2]): the three post-issuance
+/// effect-plane write paths — outcome registration, no-effect closure, and
+/// fiber registration — carry the same adoption scope fence as mint and
+/// dispatch. The exploit window is the lifted tombstone: after the last
+/// `EffectUnknown` slot is reconciled the permit returns to `Issued`, and
+/// without the fence the fenced old holder could still write receipts,
+/// absence proofs, and projection attribution facts on the adopted permit.
+///
+/// Drives the shared fixture to that lifted-tombstone state: slot 0 went
+/// through the crash window (`EffectUnknown`), slot 1 registered its fiber
+/// before the adoption, slot 2 stays `Dispatched`, slot 3 stays `Planned`;
+/// the permit quarantined, was adopted, and returned to `Issued` after the
+/// unknown slot's reconcile.
+fn lifted_adoption_fixture() -> (
+    TestDatabase,
+    AttemptSpec,
+    PermitRecord,
+    nlos_task::AdoptionReceiptRecord,
+) {
+    let database = TestDatabase::new("adoption-fences");
+    let authority = database.open();
+    authority.register_task(task_spec()).expect("register task");
+    let spec = attempt_spec(0x0a, snapshot(0, 0));
+    authority.register_attempt(spec).expect("register attempt");
+    let effects = vec![
+        planned(0, true),
+        planned(1, true),
+        planned(2, true),
+        planned(3, false),
+    ];
+    let permit = issued_permit(
+        authority
+            .request_commit_permit(permit_request(&spec, 0x01, effects))
+            .expect("permit"),
+    );
+    let issued0 = issued_effect_permit(
+        authority
+            .request_effect_permit(effect_request(&spec, &permit, 0, 0xe1))
+            .expect("issue slot 0"),
+    );
+    authority
+        .consume_dispatch_token(dispatch_request(&spec, &permit, &issued0))
+        .expect("dispatch slot 0");
+    authority
+        .record_effect_outcome(outcome_request(
+            &spec,
+            &permit,
+            0,
+            Outcome::Unknown {
+                uncertainty_digest: [0x99; 32],
+            },
+        ))
+        .expect("register uncertainty");
+    authority
+        .register_effect_binding(binding_request(&spec, &permit, 1, 0x71, 0xd1, 4_500))
+        .expect("register slot 1 fiber before adoption");
+    let issued2 = issued_effect_permit(
+        authority
+            .request_effect_permit(effect_request(&spec, &permit, 2, 0xe3))
+            .expect("issue slot 2"),
+    );
+    authority
+        .consume_dispatch_token(dispatch_request(&spec, &permit, &issued2))
+        .expect("dispatch slot 2");
+    authority
+        .finalize_commit_v3(finalize_v3(&spec, permit.permit_id, Vec::new(), [0xf1; 32]))
+        .expect_err("quarantine");
+    let adoption = match authority
+        .adopt_permit(adopt_request(&spec, &permit, 0xd5))
+        .expect("adopt")
+    {
+        AdoptionReplay::Adopted(record) => *record,
+        other @ AdoptionReplay::Replayed(_) => panic!("expected Adopted, got {other:?}"),
+    };
+    authority
+        .reconcile_effect(reconcile_request(
+            &spec,
+            &permit,
+            0,
+            adoption.receipt_id,
+            ReconcileOutcome::EffectClosed,
+            [0xaa; 32],
+        ))
+        .expect("reconcile slot 0");
+    assert_eq!(
+        authority
+            .inspect_permit(task_id(), permit.permit_id)
+            .expect("permit")
+            .state,
+        PermitState::Issued,
+        "the tombstone lifted: the holder gates pass again"
+    );
+    (database, spec, permit, adoption)
+}
+
+#[test]
+fn adoption_scope_fences_outcome_no_effect_and_binding_writes() {
+    let (database, spec, permit, _adoption) = lifted_adoption_fixture();
+    let authority = database.open();
+
+    // Outcome registration on the adopted permit fails closed and writes
+    // nothing (the reconcile slice owns the dispatched slot's fate).
+    assert!(matches!(
+        authority.record_effect_outcome(outcome_request(
+            &spec,
+            &permit,
+            2,
+            Outcome::Closed {
+                authoritative_closure_digest: [0xbb; 32]
+            }
+        )),
+        Err(TaskStoreError::AdoptionScopeViolation)
+    ));
+    assert_eq!(
+        authority
+            .inspect_effect_slot(permit.permit_id, 2)
+            .expect("slot 2")
+            .state,
+        SlotState::Dispatched,
+        "the adopted permit's dispatched slot is untouched"
+    );
+
+    // No-effect closure of the still-`Planned` slot fails closed too.
+    assert!(matches!(
+        authority.record_no_effect(no_effect_request(
+            &spec,
+            &permit,
+            3,
+            NoEffectReason::NotSelected
+        )),
+        Err(TaskStoreError::AdoptionScopeViolation)
+    ));
+    assert_eq!(
+        authority
+            .inspect_effect_slot(permit.permit_id, 3)
+            .expect("slot 3")
+            .state,
+        SlotState::Planned,
+        "the adopted permit's planned slot is untouched"
+    );
+
+    // A fresh fiber registration (projection attribution) fails closed
+    // with no binding columns written.
+    assert!(matches!(
+        authority.register_effect_binding(binding_request(&spec, &permit, 3, 0x72, 0xd2, 4_600)),
+        Err(TaskStoreError::AdoptionScopeViolation)
+    ));
+    let slot3 = authority
+        .inspect_effect_slot(permit.permit_id, 3)
+        .expect("slot 3 after fence");
+    assert!(slot3.fiber_binding.is_none() && slot3.fiber_generation.is_none());
+
+    // Replay-first: the byte-equal registration recorded before the
+    // adoption still replays its original receipt despite the fence.
+    assert!(matches!(
+        authority.register_effect_binding(binding_request(&spec, &permit, 1, 0x71, 0xd1, 4_500)),
+        Ok(nlos_task::EffectBindingDecision::Replayed(_))
+    ));
+}
+
 /// Bullet: reconcile to `EFFECT_CLOSED` writes the reconciliation receipt,
 /// appends the history entry, lifts the tombstone, and unblocks a
 /// `COMMITTED` finalize (required rule now satisfiable); reconcile replays

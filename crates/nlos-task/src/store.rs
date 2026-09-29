@@ -46,7 +46,7 @@ use crate::migrations::{
     migrate_v23, migrate_v24, migrate_v25, migrate_v26, migrate_v27, migrate_v28, migrate_v29,
     migrate_v30, migrate_v31, migrate_v32, migrate_v33, migrate_v34, migrate_v35, migrate_v36,
     migrate_v37, migrate_v38, migrate_v39, migrate_v40, migrate_v41, migrate_v42, migrate_v43,
-    migrate_v44,
+    migrate_v44, migrate_v45,
 };
 use crate::model::{derive_closure_receipt_id, derive_permit_id, empty_effect_history_root};
 use crate::pressure::{
@@ -72,7 +72,7 @@ use crate::{
     TaskWriteSetSemanticTarget,
 };
 
-const SCHEMA_VERSION: i64 = 44;
+const SCHEMA_VERSION: i64 = 45;
 
 /// A single-writer `SQLite` task authority.
 ///
@@ -364,6 +364,7 @@ impl SqliteTaskAuthority {
             migrate_v42(&mut connection)?;
             migrate_v43(&mut connection)?;
             migrate_v44(&mut connection)?;
+            migrate_v45(&mut connection)?;
         }
 
         Ok(Self {
@@ -2387,6 +2388,17 @@ impl SqliteTaskAuthority {
     /// observation returns the stored record; mixing signed and unsigned
     /// forms of the same observation fails closed.
     ///
+    /// Lock scope (W44-E1R, audit 01 #9): the signature verification and
+    /// the identity authority's revocation lookup run outside the
+    /// authority mutex and the `BEGIN IMMEDIATE` transaction, so task
+    /// writes are never serialized behind an Ed25519 verify. Only the
+    /// verification inputs are read under a brief lock: the signed message
+    /// binds the pending receipt's exact fence-set root, and the write
+    /// transaction re-runs every observation gate plus a byte-equality
+    /// fence on that root before any durable write — a request failing
+    /// both the signature and an observation gate now surfaces the
+    /// signature error first (fail-closed either way, nothing written).
+    ///
     /// # Errors
     ///
     /// Returns `ReceiptNotFound`, a participant/root binding error, the
@@ -2404,19 +2416,21 @@ impl SqliteTaskAuthority {
         }
         let verified_at_ms = u64::try_from(request.observed_at_ms)
             .map_err(|_| TaskStoreError::CorruptRecord("takeover barrier timestamp"))?;
-        let mut connection = self.lock_connection()?;
-        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let core = validate_barrier_observation(
-            &transaction,
-            request.takeover_receipt_id,
-            &request.participant,
-        )?;
+        // Phase 1 — a brief lock, no write transaction: read the exact
+        // fence-set root the signature message must bind, failing closed
+        // on the same pending/incomplete conditions the transactional
+        // validation below enforces.
+        let fence_set_root = {
+            let connection = self.lock_connection()?;
+            read_barrier_signature_fence_root(&*connection, request.takeover_receipt_id)?
+        }; // Phase 2 — no lock held: the Ed25519 verify and the identity
+        // authority's key/revocation lookup at `observed_at_ms`.
         let message_digest = barrier_observation_signature_message(
             request.takeover_receipt_id,
             &request.participant,
             request.remote_receipt_id,
             request.barrier_digest,
-            core.fence_set_root,
+            fence_set_root,
         );
         let proof = identity
             .verify_barrier_observation_signature(
@@ -2430,6 +2444,25 @@ impl SqliteTaskAuthority {
                 },
             )
             .map_err(TaskStoreError::BarrierSignerIdentityAuthority)?;
+        // Phase 3 — the write transaction: every observation gate re-runs,
+        // then the TOCTOU fence below, strictly before any durable write.
+        let mut connection = self.lock_connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let core = validate_barrier_observation(
+            &transaction,
+            request.takeover_receipt_id,
+            &request.participant,
+        )?;
+        // The root whose message was verified outside the lock must still
+        // be the pending receipt's exact root when the transaction re-reads
+        // it. The receipt row is immutable while Pending (the v37 narrowed
+        // trigger), so a mismatch means the takeover completed in between
+        // (or the row is corrupt) — fail closed, nothing written.
+        if core.fence_set_root != fence_set_root {
+            return Err(TaskStoreError::CorruptRecord(
+                "takeover fence set root moved during signature verification",
+            ));
+        }
         let record = AuthorityTakeoverBarrierReceiptRecord {
             receipt_id: derive_takeover_barrier_receipt_id(
                 request.takeover_receipt_id,
@@ -3296,6 +3329,31 @@ fn validate_takeover_fence_manifest(
 struct BarrierObservationCore {
     takeover: AuthorityTakeoverReceiptRecord,
     fence_set_root: [u8; 32],
+}
+
+/// Reads the exact fence-set root a barrier-observation signature message
+/// must bind, failing closed unless the takeover receipt exists, is still
+/// `Pending` without a successor assignment, and carries its exact root
+/// (W44-E1R: the signed path verifies outside the lock, so this read is
+/// the only part that touches the task store before phase 2).
+fn read_barrier_signature_fence_root(
+    source: &impl SqlRead,
+    takeover_receipt_id: ReceiptId,
+) -> Result<[u8; 32], TaskStoreError> {
+    let takeover = crate::lease::load_takeover_receipt_by_id(source, takeover_receipt_id)?
+        .ok_or(TaskStoreError::ReceiptNotFound)?;
+    if takeover.barrier_state != AuthorityTakeoverReceiptState::Pending
+        || takeover.new_assignment_id.is_some()
+    {
+        return Err(TaskStoreError::CorruptRecord(
+            "takeover receipt is not pending",
+        ));
+    }
+    takeover
+        .exact_fence_set_root
+        .ok_or(TaskStoreError::CorruptRecord(
+            "takeover fence set root is incomplete",
+        ))
 }
 
 fn validate_barrier_observation(

@@ -556,7 +556,7 @@ fn effect_binding_write_window_converges_by_idempotent_replay() {
         assert_eq!(
             raw.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .expect("read version"),
-            44
+            45
         );
     }
     let reopened = database.open();
@@ -648,4 +648,215 @@ fn unused_helpers() {
     // effect test files.
     let _ = idempotency_identity_digest;
     let _ = CommitPermitId::from_bytes(bytes(0));
+}
+
+/// W44-E1R (audit 04-task-effect.md [M1]): the fiber-registration
+/// idempotency key is task-scoped, not globally unique — `effect_permits`
+/// is already `(task_id, idempotency_key)`-unique and the pre-check
+/// (`load_effect_registration_by_key`) is task-scoped, so the v41 global
+/// UNIQUE turned cross-task key reuse into an unclassified storage error.
+/// The v45 migration rebuilds the table with the composite
+/// `(task_id, idempotency_key)` uniqueness while preserving every existing
+/// registration row verbatim; within one task the same key rebound to
+/// different bytes stays the typed `IdempotencyConflict`.
+fn task_b_id() -> TaskId {
+    TaskId::from_bytes([0x02; 16])
+}
+
+fn task_b_spec() -> TaskSpec {
+    TaskSpec {
+        application_id: None,
+        plan_revision: None,
+        task_id: task_b_id(),
+        task_generation: Generation::INITIAL,
+        registered_at_ms: 1_000,
+    }
+}
+
+fn attempt_b_spec() -> AttemptSpec {
+    AttemptSpec {
+        task_id: task_b_id(),
+        attempt_id: TaskAttemptId::from_bytes(bytes(0x1a)),
+        attempt_generation: Generation::INITIAL,
+        snapshot: snapshot(0, 0),
+        cancellation_scope_id: CancellationScopeId::from_bytes(bytes(0xca)),
+        cancellation_generation: Generation::INITIAL,
+        idempotency_key: IdempotencyKey::from_bytes(bytes(0xaa)),
+        registered_at_ms: 2_000,
+    }
+}
+
+fn planned_b(stable_action_slot: u64) -> PlannedEffect {
+    PlannedEffect {
+        descriptor: LogicalEffectDescriptor {
+            task_id: task_b_id(),
+            task_generation: Generation::INITIAL,
+            intent_spec_id: [0x44; 32],
+            stable_action_slot,
+            target_authority_object_id: [0x55; 32],
+            effect_class: 7,
+            idempotency_scope: 3,
+        },
+        required: true,
+        required_condition_digest: None,
+        success_criteria_digest: [0x66; 32],
+        action_proposal_digest: [0x77; 32],
+    }
+}
+
+/// Rebuilds `effect_fiber_registrations` in the legacy v41-v44 shape
+/// (global UNIQUE on the bare idempotency key) carrying the existing rows,
+/// and stamps `user_version = 44`.
+fn regress_fiber_registrations_to_v44(path: &Path) {
+    let raw = Connection::open(path).expect("open raw connection");
+    raw.pragma_update(None, "foreign_keys", "OFF")
+        .expect("fk off");
+    raw.execute_batch(
+        "CREATE TABLE effect_fiber_registrations_v44 (
+             registration_id BLOB PRIMARY KEY NOT NULL CHECK(length(registration_id) = 16),
+             task_id BLOB NOT NULL CHECK(length(task_id) = 16),
+             permit_id BLOB NOT NULL CHECK(length(permit_id) = 16),
+             effect_slot_id BLOB NOT NULL CHECK(length(effect_slot_id) = 16),
+             effect_seq BLOB NOT NULL CHECK(length(effect_seq) = 8),
+             logical_effect_id BLOB NOT NULL CHECK(length(logical_effect_id) = 32),
+             binding_id BLOB NOT NULL CHECK(length(binding_id) = 16),
+             fiber_generation BLOB NOT NULL CHECK(length(fiber_generation) = 8),
+             idempotency_key BLOB NOT NULL UNIQUE CHECK(length(idempotency_key) = 16),
+             registered_at_ms INTEGER NOT NULL CHECK(registered_at_ms >= 0),
+             UNIQUE(permit_id, effect_seq, binding_id),
+             FOREIGN KEY(task_id) REFERENCES tasks(task_id)
+         ) STRICT;
+         INSERT INTO effect_fiber_registrations_v44 (
+             registration_id, task_id, permit_id, effect_slot_id, effect_seq,
+             logical_effect_id, binding_id, fiber_generation, idempotency_key,
+             registered_at_ms
+         )
+         SELECT registration_id, task_id, permit_id, effect_slot_id, effect_seq,
+                logical_effect_id, binding_id, fiber_generation, idempotency_key,
+                registered_at_ms
+         FROM effect_fiber_registrations;
+         DROP TABLE effect_fiber_registrations;
+         ALTER TABLE effect_fiber_registrations_v44
+             RENAME TO effect_fiber_registrations;
+         CREATE INDEX effect_fiber_registrations_by_binding
+             ON effect_fiber_registrations(binding_id);
+         CREATE TRIGGER effect_fiber_registration_is_immutable
+         BEFORE UPDATE ON effect_fiber_registrations
+         BEGIN SELECT RAISE(ABORT, 'effect fiber registration is immutable'); END;
+         CREATE TRIGGER effect_fiber_registration_is_immutable_delete
+         BEFORE DELETE ON effect_fiber_registrations
+         BEGIN SELECT RAISE(ABORT, 'effect fiber registration is immutable'); END;
+         PRAGMA user_version = 44;",
+    )
+    .expect("regress to legacy v44 shape");
+    let legacy_sql: String = raw
+        .query_row(
+            "SELECT sql FROM sqlite_master
+             WHERE type='table' AND name='effect_fiber_registrations'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read legacy ddl");
+    assert!(
+        legacy_sql.contains("idempotency_key BLOB NOT NULL UNIQUE"),
+        "legacy shape pinned: {legacy_sql}"
+    );
+}
+
+#[test]
+fn v45_migration_scopes_fiber_idempotency_keys_per_task_and_preserves_rows() {
+    // Seed a real registration with the current code, then regress the
+    // table to the legacy shape so the upgrade path runs against rows.
+    let (database, spec, _loser, permit) = setup_winner(vec![planned(0, true), planned(1, true)]);
+    let authority = database.open();
+    let expected = registered(
+        authority
+            .register_effect_binding(registration_request(
+                &spec,
+                &permit,
+                0,
+                fiber(0x70),
+                generation(1),
+                0xd1,
+            ))
+            .expect("register binding"),
+    );
+    drop(authority);
+    regress_fiber_registrations_to_v44(&database.path);
+
+    // Reopen: v44 → v45 runs, stamping the version and rebuilding the
+    // uniqueness scope while carrying the row verbatim.
+    let authority = database.open();
+    {
+        let raw = Connection::open(&database.path).expect("open raw connection");
+        assert_eq!(
+            raw.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .expect("read version"),
+            45,
+            "v45 migration stamped"
+        );
+        let mut statement = raw
+            .prepare("SELECT name FROM pragma_index_info('effect_fiber_registrations_idempotency_key') ORDER BY seqno")
+            .expect("index info");
+        let columns: Vec<String> = statement
+            .query_map([], |row| row.get(0))
+            .expect("index columns")
+            .map(|column| column.expect("column name"))
+            .collect();
+        drop(statement);
+        assert_eq!(
+            columns,
+            vec!["task_id".to_string(), "idempotency_key".to_string()],
+            "the composite unique index covers the task scope"
+        );
+    }
+    assert_eq!(
+        authority
+            .list_effect_registrations_for_binding(fiber(0x70))
+            .expect("list after migration"),
+        vec![expected.clone()],
+        "the legacy registration survived the rebuild byte-equal"
+    );
+
+    // Cross-task key reuse is a fresh registration now (the pre-check is
+    // task-scoped and the durable constraint no longer global).
+    authority
+        .register_task(task_b_spec())
+        .expect("register task B");
+    let spec_b = attempt_b_spec();
+    authority.register_attempt(spec_b).expect("register B");
+    let permit_b = issued_permit(
+        authority
+            .request_commit_permit_with_authorities_struct(
+                nlos_task::Authorities::default(),
+                permit_request(&spec_b, 0x21, vec![planned_b(0)]),
+            )
+            .expect("permit B"),
+    );
+    let cross_task = registered(
+        authority
+            .register_effect_binding(registration_request(
+                &spec_b,
+                &permit_b,
+                0,
+                fiber(0x80),
+                generation(1),
+                0xd1,
+            ))
+            .expect("same key, different task registers fresh"),
+    );
+    assert_ne!(cross_task.task_id, expected.task_id);
+
+    // Within one task the key stays exclusive with the typed conflict.
+    assert!(matches!(
+        authority.register_effect_binding(registration_request(
+            &spec,
+            &permit,
+            1,
+            fiber(0x71),
+            generation(1),
+            0xd1,
+        )),
+        Err(TaskStoreError::IdempotencyConflict)
+    ));
 }

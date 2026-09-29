@@ -23,7 +23,7 @@ use nlos_task::{
 };
 use nlos_types::{
     CancellationScopeId, Generation, IdempotencyKey, PrincipalId, ProcessId, ReceiptId,
-    TaskAttemptId, TaskId,
+    TaskAttemptId, TaskId, TaskParticipantId,
 };
 use rusqlite::Connection;
 
@@ -538,7 +538,7 @@ fn v35_takeover_barrier_schema_migrates_signer_columns() {
     let version: i64 = raw
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("read migrated schema version");
-    assert_eq!(version, 44);
+    assert_eq!(version, 45);
     let signer_column_count: i64 = raw
         .query_row(
             "SELECT COUNT(*) FROM pragma_table_info('task_authority_takeover_barrier_receipts')
@@ -559,4 +559,56 @@ fn v35_takeover_barrier_schema_migrates_signer_columns() {
         .expect("legacy unsigned observations after migration");
     assert_eq!(readback, vec![unsigned]);
     assert_eq!(readback[0].signer, None);
+}
+
+/// W44-E1R (audit 01-task-store-A.md #9): the Ed25519 verification and the
+/// identity authority's key/revocation lookup run before the
+/// `BEGIN IMMEDIATE` transaction (only the fence-set root input is read
+/// under a brief lock). A request that fails BOTH the signature and a
+/// transactional observation gate — here a participant outside the frozen
+/// manifest plus an all-zero signature — surfaces the signature error,
+/// pinning the hoisted order (the pre-fix order ran the manifest gate
+/// first, inside the write transaction). Fail-closed either way, nothing
+/// written; the valid path and replay semantics are covered by the
+/// sibling tests.
+#[test]
+fn signature_verification_precedes_transaction_gates_and_writes_no_row() {
+    let database = TestDatabase::new("verify-first");
+    let identity_root = IdentityRoot::new("verify-first");
+    let authority = database.open();
+    let identity = IdentityAuthority::open(identity_root.path()).unwrap();
+    let signer = bootstrap_barrier_signer(&identity, 0x31, KeyPurpose::BarrierObservationSigning);
+    let fence = fence_takeover(&authority, 0x31);
+
+    let mut outsider = barrier_request(&fence, 220);
+    outsider.participant.participant_id = TaskParticipantId::from_bytes([0xee; 16]);
+    let digest = barrier_observation_signature_message(
+        outsider.takeover_receipt_id,
+        &outsider.participant,
+        outsider.remote_receipt_id,
+        outsider.barrier_digest,
+        fence.fence_set_root,
+    );
+    let mut signature = barrier_signature(&signer, digest);
+    signature.signature = [0; 64];
+    assert!(matches!(
+        authority.record_authority_takeover_barrier_receipt_signed(&identity, outsider, signature),
+        Err(TaskStoreError::BarrierSignerIdentityAuthority(
+            nlos_identity::IdentityAuthorityError::InvalidSignature
+        ))
+    ));
+    assert!(
+        authority
+            .inspect_authority_takeover_barrier_receipts(fence.takeover_receipt_id)
+            .expect("inspect barrier observations")
+            .is_empty()
+    );
+
+    // The store is unaffected by the failed verify: the canonical signed
+    // observation still records and replays on the same receipt.
+    let request = barrier_request(&fence, 220);
+    let signature = barrier_signature(&signer, observation_digest(&fence));
+    authority
+        .record_authority_takeover_barrier_receipt_signed(&identity, request, signature)
+        .expect("canonical observation still records");
 }
