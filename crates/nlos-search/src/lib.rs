@@ -45,7 +45,10 @@ use rusqlite::{Connection, OpenFlags, ToSql};
 /// `nlos-semantic`'s private schema version by review: an authority
 /// migration that keeps the tables this face reads compatible must add the
 /// new version here, otherwise every open fails closed.
-const SUPPORTED_AUTHORITY_SCHEMA_VERSIONS: &[i64] = &[6];
+/// v7/v8 are additive authority migrations (v8: the immutable typed-link
+/// index table); the read face's tables are unchanged, so both stay
+/// readable (W43-INT seam for the W43-E2 semantic v8 bump).
+const SUPPORTED_AUTHORITY_SCHEMA_VERSIONS: &[i64] = &[6, 7, 8];
 
 const EVENT_TYPE_ASSERTION: i64 = 1;
 
