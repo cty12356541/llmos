@@ -673,6 +673,7 @@ impl SqliteTaskAuthority {
         self.finalize_semantic_commit_inner(request, Some(authority_lease))
     }
 
+    #[allow(clippy::too_many_lines)] // The terminal transaction stays contiguous for audit.
     fn finalize_semantic_commit_inner(
         &self,
         request: FinalizeSemanticCommitRequest,
@@ -707,6 +708,18 @@ impl SqliteTaskAuthority {
             plan.attempt_generation,
             plan.permit_id,
         )?;
+        // `[TASK-COMMIT-003]` scope fence, mirroring the effect-plane mint
+        // and dispatch entries: a permit carrying an adoption receipt is
+        // owned by the adoption-aware terminal paths (unified v3 finalize,
+        // reconcile, closure), never by this direct Semantic-only finalize.
+        // Structurally an adopted permit is already `Quarantined` (adoption
+        // requires the tombstone, and the tombstone requires an
+        // `EffectUnknown` slot — which `ensure_no_effect_slots` refuses
+        // anyway); the fence makes that cross-file invariant explicit and
+        // typed instead of surfacing as a generic `PermitNotIssued`.
+        if crate::reconcile::has_adoption(&transaction, permit.permit_id)? {
+            return Err(TaskStoreError::AdoptionScopeViolation);
+        }
         validate_semantic_only_lease(
             &transaction,
             &permit,
@@ -745,6 +758,19 @@ impl SqliteTaskAuthority {
             created_at_ms: request.finalized_at_ms,
         };
         crate::store::insert_receipt(&transaction, &receipt)?;
+        // The same terminal-transaction finalize-proof row the unified v3
+        // path writes (`write_commit_receipt`): later plain
+        // `finalize_commit_v3` replays compare the stored proof digest
+        // instead of falling into the legacy caller-supplied-root branch,
+        // so a replaying coordinator cannot be false-positived by root
+        // bytes this direct path never used. A Semantic-only permit has no
+        // Effect slots, so its committed proof identity is the empty
+        // satisfaction set.
+        crate::reconcile::insert_finalize_proof(
+            &transaction,
+            receipt_id,
+            crate::reconcile::finalize_proof_digest_of(&[]),
+        )?;
         close_permit(&transaction, &permit, request.finalized_at_ms)?;
         set_attempt_state(
             &transaction,

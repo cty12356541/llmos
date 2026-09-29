@@ -7,16 +7,17 @@ use nlos_semantic::{
     PublishSemanticPublicationRequest, SemanticAuthority, SemanticPublicationReceipt,
 };
 use nlos_task::{
-    AttemptSpec, AuthorityLeaseEffectPermitRequest, AuthorityLeaseNoEffectRequest,
-    AuthorityLeasePermitRequest, AuthorityLeaseRequest, EffectPermitDecision, EffectPermitRequest,
-    FinalizeRequest, FinalizeRequestV3, FinalizeSemanticCommitRequest, LogicalEffectDescriptor,
-    NestedSemanticPublicationReceipt, NoEffectReason, NoEffectRequest, PermitDecision,
-    PermitRequest, PlanSemanticCommitRequest, PlannedEffect, PrepareSemanticFinalizeRequest,
-    RecordSemanticPublicationsRequest, SemanticCommitPlanState, SemanticFinalizeDecision,
-    SnapshotBundle, SnapshotConsistency, SqliteTaskAuthority, TaskSnapshotReceiptSpec, TaskSpec,
-    TaskStoreError, TaskWriteSetEffectEndpointRequest, TaskWriteSetRequest,
-    TaskWriteSetSemanticAppendRequest, TaskWriteSetSemanticRequiredDurability,
-    TaskWriteSetSemanticTarget, empty_effect_history_root,
+    AdoptionRequest, AttemptSpec, Authorities, AuthorityLeaseEffectPermitRequest,
+    AuthorityLeaseNoEffectRequest, AuthorityLeasePermitRequest, AuthorityLeaseRequest,
+    DispatchRequest, EffectPermitDecision, EffectPermitRequest, FinalizeDecision, FinalizeRequest,
+    FinalizeRequestV3, FinalizeSemanticCommitRequest, LogicalEffectDescriptor,
+    NestedSemanticPublicationReceipt, NoEffectReason, NoEffectRequest, Outcome, OutcomeRequest,
+    PermitDecision, PermitRecord, PermitRequest, PlanSemanticCommitRequest, PlannedEffect,
+    PrepareSemanticFinalizeRequest, RecordSemanticPublicationsRequest, RequiredSatisfaction,
+    RequiredSatisfactionProof, SemanticCommitPlanState, SemanticFinalizeDecision, SnapshotBundle,
+    SnapshotConsistency, SqliteTaskAuthority, TaskSnapshotReceiptSpec, TaskSpec, TaskStoreError,
+    TaskWriteSetEffectEndpointRequest, TaskWriteSetRequest, TaskWriteSetSemanticAppendRequest,
+    TaskWriteSetSemanticRequiredDurability, TaskWriteSetSemanticTarget, empty_effect_history_root,
 };
 use nlos_types::{
     CancellationScopeId, Generation, IdempotencyKey, NamespaceId, ProcessId, ReceiptId,
@@ -568,4 +569,349 @@ fn run_semantic_owner_receipt_lifecycle(with_effect: bool) {
     };
     assert!(matches!(replay, SemanticFinalizeDecision::Replayed(_)));
     assert_eq!(replay.receipt(), committed.receipt());
+}
+
+/// Drives the direct Semantic-only lifecycle (no lease, no Effect slots) up
+/// to a READY plan and returns every handle the W43-E1 regression tests
+/// need: the fixture roots, the owner authority, the Task/attempt identity,
+/// the winning permit, and the READY plan id.
+struct SemanticOnlyReadyPlan {
+    fixture: Fixture,
+    task_id: TaskId,
+    attempt_id: TaskAttemptId,
+    permit: PermitRecord,
+    plan_id: nlos_task::SemanticCommitPlanId,
+}
+
+#[allow(clippy::too_many_lines)]
+fn semantic_only_ready_plan(with_effect: bool) -> SemanticOnlyReadyPlan {
+    let fixture = Fixture::new();
+    let (semantic, event_id, admission_receipt_id, durability_receipt_id) =
+        seed_semantic_authority(&fixture.semantic_root);
+    let artifact = nlos_artifact::ArtifactStore::open(&fixture.artifact_root).unwrap();
+    let task_id = TaskId::from_bytes([0x80; 16]);
+    let attempt_id = TaskAttemptId::from_bytes([0x81; 16]);
+    let target = NamespaceId::from_bytes([0x40; 16]);
+    let attempt = AttemptSpec {
+        task_id,
+        attempt_id,
+        attempt_generation: Generation::INITIAL,
+        snapshot: SnapshotBundle {
+            snapshot_id: TaskSnapshotId::from_bytes([0x82; 16]),
+            snapshot_digest: [0x83; 32],
+            expected_head_commit_seq: 0,
+            effect_history_root: empty_effect_history_root(),
+            retry_fence_epoch: 0,
+        },
+        cancellation_scope_id: CancellationScopeId::from_bytes([0x84; 16]),
+        cancellation_generation: Generation::INITIAL,
+        idempotency_key: IdempotencyKey::from_bytes([0x85; 16]),
+        registered_at_ms: 10,
+    };
+    let task = SqliteTaskAuthority::open(&fixture.task_path).unwrap();
+    task.register_task(TaskSpec {
+        application_id: None,
+        plan_revision: None,
+        task_id,
+        task_generation: Generation::INITIAL,
+        registered_at_ms: 1,
+    })
+    .unwrap();
+    task.register_snapshot_receipt(TaskSnapshotReceiptSpec {
+        task_id,
+        snapshot: attempt.snapshot,
+        receipt_id: ReceiptId::from_bytes([0x86; 16]),
+        builder_id: [0x87; 16],
+        builder_version_digest: [0x88; 32],
+        per_authority_checkpoint_receipts: vec![ReceiptId::from_bytes([0x89; 16])],
+        dependency_closure_root: [0x8a; 32],
+        semantic_resolver_digest: [0x8b; 32],
+        canonical_iteration_digest: [0x8c; 32],
+        achieved_consistency: SnapshotConsistency::Causal,
+        built_at_ms: 2,
+        authority_id: [0x8d; 16],
+        key_id: [0x8e; 16],
+        signature: [0x8f; 64],
+    })
+    .unwrap();
+    task.register_attempt_with_snapshot_receipt(attempt, ReceiptId::from_bytes([0x86; 16]))
+        .unwrap();
+    let registry = task.inspect_participant_registry(task_id).unwrap();
+    task.register_semantic_admission_participant(
+        &semantic,
+        task_id,
+        nlos_task::ParticipantRegistryBinding {
+            generation: registry.generation,
+            root: registry.root,
+        },
+        3,
+    )
+    .unwrap();
+    let planned_effects = if with_effect {
+        vec![mixed_effect(task_id)]
+    } else {
+        Vec::new()
+    };
+    let permit_planned_effects = planned_effects.clone();
+    let effect_endpoints = if with_effect {
+        vec![TaskWriteSetEffectEndpointRequest::SemanticAdmission { effect_seq: 0 }]
+    } else {
+        Vec::new()
+    };
+    let write_set = task
+        .seal_task_write_set_with_semantic_authority(
+            &artifact,
+            &semantic,
+            TaskWriteSetRequest {
+                task_id,
+                attempt_id,
+                attempt_generation: Generation::INITIAL,
+                artifact_reads: Vec::new(),
+                artifact_writes: Vec::new(),
+                process_binding: None,
+                semantic_reads: Vec::new(),
+                semantic_appends: vec![TaskWriteSetSemanticAppendRequest {
+                    event_id,
+                    target: TaskWriteSetSemanticTarget::Namespace(target),
+                    required_durability: TaskWriteSetSemanticRequiredDurability::Durable,
+                    expected_admission_policy_digest: [0x58; 32],
+                    durability_receipt_id: Some(durability_receipt_id),
+                }],
+                resource_reservations: Vec::new(),
+                planned_effects,
+                effect_endpoints,
+                idempotency_key: IdempotencyKey::from_bytes([0x90; 16]),
+                sealed_at_ms: 4,
+            },
+        )
+        .unwrap()
+        .record()
+        .clone();
+    let permit = match task
+        .request_commit_permit_with_authorities_struct(
+            Authorities::default(),
+            PermitRequest {
+                task_id,
+                attempt_id,
+                attempt_generation: Generation::INITIAL,
+                write_set_root: write_set.write_set_root,
+                planned_effects: permit_planned_effects,
+                idempotency_key: IdempotencyKey::from_bytes([0x91; 16]),
+                valid_until_ms: 1_000,
+                requested_at_ms: 5,
+            },
+        )
+        .unwrap()
+    {
+        PermitDecision::Issued(permit) => *permit,
+        other => panic!("expected issued permit, got {other:?}"),
+    };
+    let plan = task
+        .plan_semantic_commit(PlanSemanticCommitRequest {
+            task_id,
+            attempt_id,
+            attempt_generation: Generation::INITIAL,
+            permit_id: permit.permit_id,
+            idempotency_key: IdempotencyKey::from_bytes([0x92; 16]),
+            planned_at_ms: 6,
+        })
+        .unwrap()
+        .record()
+        .clone();
+    assert!(matches!(
+        task.authorize_semantic_publication(plan.plan_id, 7)
+            .unwrap()
+            .record()
+            .state,
+        SemanticCommitPlanState::Publishing
+    ));
+    let owner = semantic
+        .publish_semantic_publication(PublishSemanticPublicationRequest {
+            task_id,
+            permit_id: permit.permit_id,
+            write_set_root: write_set.write_set_root,
+            event_id,
+            target: CapabilityTarget::Namespace(target),
+            admission_receipt_id,
+            durability_receipt_id: Some(durability_receipt_id),
+            published_at_ms: 8,
+        })
+        .unwrap()
+        .receipt();
+    let progress = task
+        .record_semantic_publications(
+            &semantic,
+            RecordSemanticPublicationsRequest {
+                plan_id: plan.plan_id,
+                receipts: vec![nested(&owner, target)],
+                observed_at_ms: 9,
+            },
+        )
+        .unwrap();
+    assert_eq!(progress.plan.state, SemanticCommitPlanState::Ready);
+    drop(task);
+    SemanticOnlyReadyPlan {
+        fixture,
+        task_id,
+        attempt_id,
+        permit,
+        plan_id: plan.plan_id,
+    }
+}
+
+/// W43-E1: the direct Semantic-only finalize must leave the same
+/// `task_finalize_proofs` row the unified v3 terminal transaction writes,
+/// so a later plain `finalize_commit_v3` replay compares the stored proof
+/// digest instead of falling into the legacy caller-supplied-root branch
+/// (which false-positives with `IdempotencyConflict` whenever the replaying
+/// coordinator computed different root bytes).
+#[test]
+fn direct_semantic_finalize_replays_through_plain_v3_by_proof_digest() {
+    let ready = semantic_only_ready_plan(false);
+    let task = SqliteTaskAuthority::open(&ready.fixture.task_path).unwrap();
+    let committed = task
+        .finalize_semantic_commit(FinalizeSemanticCommitRequest {
+            plan_id: ready.plan_id,
+            finalized_at_ms: 11,
+        })
+        .unwrap();
+    assert!(matches!(committed, SemanticFinalizeDecision::Committed(_)));
+    // The receipt's effect root/fence are the preserved pre-commit values,
+    // NOT any caller-recomputed bytes: v3 replay authority is the stored
+    // finalize-proof digest.
+    let replay_with_foreign_roots = FinalizeRequestV3 {
+        base: FinalizeRequest {
+            task_id: ready.task_id,
+            attempt_id: ready.attempt_id,
+            attempt_generation: Generation::INITIAL,
+            permit_id: ready.permit.permit_id,
+            new_effect_history_root: [0xee; 32],
+            new_retry_fence_epoch: 77,
+            finalized_at_ms: 99,
+        },
+        required_satisfaction: Vec::new(),
+        fenced_participant_digest: [0; 32],
+    };
+    match task.finalize_commit_v3(replay_with_foreign_roots) {
+        Ok(FinalizeDecision::Replayed(receipt)) => {
+            assert_eq!(*receipt, committed.receipt().task_receipt);
+        }
+        other => panic!("expected plain v3 replay, got {other:?}"),
+    }
+    // Divergent satisfaction bytes still fail closed, typed by the proof
+    // digest comparison (`HistoryConflict`), never as a legacy-root
+    // idempotency false positive.
+    let divergent = FinalizeRequestV3 {
+        base: FinalizeRequest {
+            task_id: ready.task_id,
+            attempt_id: ready.attempt_id,
+            attempt_generation: Generation::INITIAL,
+            permit_id: ready.permit.permit_id,
+            new_effect_history_root: [0xee; 32],
+            new_retry_fence_epoch: 77,
+            finalized_at_ms: 99,
+        },
+        required_satisfaction: vec![RequiredSatisfaction {
+            effect_seq: 0,
+            proof: RequiredSatisfactionProof::EffectClosedSuccess {
+                success_assertion_digest: [0xab; 32],
+            },
+        }],
+        fenced_participant_digest: [0; 32],
+    };
+    assert!(matches!(
+        task.finalize_commit_v3(divergent),
+        Err(TaskStoreError::HistoryConflict)
+    ));
+}
+
+/// W43-E1: the direct Semantic-only finalize carries the `[TASK-COMMIT-003]`
+/// adoption scope fence of the effect-plane mint/dispatch entries. Once a
+/// permit is quarantined (an `EffectUnknown` slot) and adopted, the direct
+/// path must refuse it with the typed scope violation instead of relying on
+/// the generic `PermitNotIssued` refusal of the later context checks.
+#[test]
+fn direct_semantic_finalize_refuses_adopted_permits() {
+    let ready = semantic_only_ready_plan(true);
+    let task = SqliteTaskAuthority::open(&ready.fixture.task_path).unwrap();
+    // Drive the single declared slot into `EffectUnknown` while the plan is
+    // already READY.
+    let issued = match task
+        .request_effect_permit(EffectPermitRequest {
+            task_id: ready.task_id,
+            attempt_id: ready.attempt_id,
+            attempt_generation: Generation::INITIAL,
+            permit_id: ready.permit.permit_id,
+            permit_epoch: ready.permit.permit_epoch,
+            effect_seq: 0,
+            idempotency_key: IdempotencyKey::from_bytes([0x93; 16]),
+            valid_until_ms: 1_000,
+            requested_at_ms: 10,
+        })
+        .unwrap()
+    {
+        EffectPermitDecision::Issued(issued) => issued,
+        other @ EffectPermitDecision::Replayed(_) => {
+            panic!("expected issued effect permit, got {other:?}")
+        }
+    };
+    task.consume_dispatch_token(DispatchRequest {
+        task_id: ready.task_id,
+        attempt_id: ready.attempt_id,
+        attempt_generation: Generation::INITIAL,
+        permit_id: ready.permit.permit_id,
+        permit_epoch: ready.permit.permit_epoch,
+        effect_permit_id: issued.effect_permit_id,
+        dispatch_token: issued.one_shot_dispatch_token,
+        dispatched_at_ms: 11,
+    })
+    .unwrap();
+    task.record_effect_outcome(OutcomeRequest {
+        task_id: ready.task_id,
+        attempt_id: ready.attempt_id,
+        attempt_generation: Generation::INITIAL,
+        permit_id: ready.permit.permit_id,
+        permit_epoch: ready.permit.permit_epoch,
+        effect_seq: 0,
+        outcome: Outcome::Unknown {
+            uncertainty_digest: [0xcd; 32],
+        },
+        recorded_at_ms: 12,
+    })
+    .unwrap();
+    // The v3 terminal path quarantines the permit (`[TASK-EFFECT-003]`).
+    assert!(matches!(
+        task.finalize_commit_v3(FinalizeRequestV3 {
+            base: FinalizeRequest {
+                task_id: ready.task_id,
+                attempt_id: ready.attempt_id,
+                attempt_generation: Generation::INITIAL,
+                permit_id: ready.permit.permit_id,
+                new_effect_history_root: empty_effect_history_root(),
+                new_retry_fence_epoch: 0,
+                finalized_at_ms: 13,
+            },
+            required_satisfaction: Vec::new(),
+            fenced_participant_digest: [0; 32],
+        }),
+        Err(TaskStoreError::Quarantined)
+    ));
+    let adoption = task
+        .adopt_permit(AdoptionRequest {
+            task_id: ready.task_id,
+            permit_id: ready.permit.permit_id,
+            permit_epoch: ready.permit.permit_epoch,
+            idempotency_key: IdempotencyKey::from_bytes([0x94; 16]),
+            adopted_at_ms: 14,
+        })
+        .unwrap();
+    assert!(matches!(adoption, nlos_task::AdoptionReplay::Adopted(_)));
+    // The adopted permit is outside this direct path's scope.
+    assert!(matches!(
+        task.finalize_semantic_commit(FinalizeSemanticCommitRequest {
+            plan_id: ready.plan_id,
+            finalized_at_ms: 15,
+        }),
+        Err(TaskStoreError::AdoptionScopeViolation)
+    ));
 }
