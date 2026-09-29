@@ -191,7 +191,10 @@ async fn concurrent_call_gets_immediate_backpressure() {
 }
 
 #[tokio::test]
-async fn mismatched_response_request_id_fails_closed() {
+async fn typed_response_request_id_is_echoed_by_serve_one() {
+    // 深审计 36 D3 回归:handler 遗漏回写(故意给错 request_id)时,
+    // serve_one 必须盖章 echo 请求关联——客户端不得因 RequestIdMismatch
+    // 毒化连接。
     let (client_stream, server_stream) = duplex(4_096);
     let config = fast_config(4_096);
     let server = tokio::spawn(async move {
@@ -209,13 +212,79 @@ async fn mismatched_response_request_id_fails_closed() {
         .await
     });
 
+    let response = LocalRpcClient::new(client_stream, config)
+        .exchange_validated(request(8))
+        .await
+        .unwrap();
+    assert_eq!(response.envelope().request_id, vec![8; 16]);
+    server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn forwarded_response_request_id_mismatch_is_rejected() {
+    // Forwarded 响应保持上游字节不变,serve_one 只校验关联:失配以
+    // 类型化 RequestIdMismatch 拒绝发送,客户端看到 EOF 型读错误。
+    let (client_stream, server_stream) = duplex(4_096);
+    let config = fast_config(4_096);
+    let forwarded = decode_exchange_response(
+        &encode_exchange_response(&ExchangeResponse {
+            envelope: Some(envelope(9)),
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    let server = tokio::spawn(async move {
+        serve_one(
+            server_stream,
+            config,
+            PeerIdentity::InMemory,
+            &Allow,
+            move |_| async move { Ok(OutboundResponse::Forwarded(forwarded)) },
+        )
+        .await
+    });
+
     assert!(matches!(
-        LocalRpcClient::new(client_stream, config)
+        LocalRpcClient::new(client_stream, fast_config(4_096))
             .exchange_validated(request(8))
             .await,
+        Err(IpcError::Io {
+            operation: IoOperation::Read,
+            ..
+        })
+    ));
+    assert!(matches!(
+        server.await.unwrap().unwrap_err(),
+        IpcError::RequestIdMismatch
+    ));
+}
+
+#[tokio::test]
+async fn raw_mismatched_response_still_poisons_the_client() {
+    // 绕过 serve_one 的回写保护(直连 FramedIo)时,客户端自身的关联
+    // 校验仍是纵深防御:失配毒化连接。
+    let (client_stream, server_stream) = duplex(4_096);
+    let config = fast_config(4_096);
+    let server = tokio::spawn(async move {
+        let mut framed = FramedIo::new(server_stream, config);
+        framed.receive().await.unwrap();
+        let response = encode_exchange_response(&ExchangeResponse {
+            envelope: Some(envelope(9)),
+        })
+        .unwrap();
+        framed.send(&response).await.unwrap();
+    });
+
+    let client = LocalRpcClient::new(client_stream, fast_config(4_096));
+    assert!(matches!(
+        client.exchange_validated(request(8)).await,
         Err(IpcError::RequestIdMismatch)
     ));
-    server.await.unwrap().unwrap();
+    assert!(matches!(
+        client.exchange_validated(request(8)).await,
+        Err(IpcError::ConnectionUnusable)
+    ));
+    server.await.unwrap();
 }
 
 #[tokio::test]

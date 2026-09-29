@@ -502,7 +502,27 @@ where
     let mut connection = FramedIo::new(stream, config);
     let request_wire = connection.receive().await?;
     let request = decode_exchange_request(&request_wire)?;
-    let response_wire = handler(request).await?.into_wire()?;
+    // 库层强制回写 request_id(深审计 36 D3):Typed 响应由 serve_one 盖章
+    // echo 请求关联,handler 遗漏回写不再使客户端收到 RequestIdMismatch
+    // 并毒化连接;Forwarded 响应保持上游字节不变(避免重编码漂移),仅
+    // 校验关联,失配以类型化错误拒绝发送。客户端侧的关联校验保留为
+    // 纵深防御。
+    let request_id = request.envelope().request_id.clone();
+    let response = match handler(request).await? {
+        OutboundResponse::Typed(mut response) => {
+            if let Some(envelope) = response.envelope.as_mut() {
+                envelope.request_id = request_id;
+            }
+            OutboundResponse::Typed(response)
+        }
+        OutboundResponse::Forwarded(validated) => {
+            if validated.envelope().request_id != request_id {
+                return Err(IpcError::RequestIdMismatch);
+            }
+            OutboundResponse::Forwarded(validated)
+        }
+    };
+    let response_wire = response.into_wire()?;
     connection.send(&response_wire).await
 }
 
