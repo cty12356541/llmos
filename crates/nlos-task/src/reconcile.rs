@@ -1413,8 +1413,17 @@ fn count_unknown_slots(
 }
 
 fn finalize_proof_digest(request: &FinalizeRequestV3) -> [u8; 32] {
-    let mut encoded: Vec<[u8; 41]> = Vec::with_capacity(request.required_satisfaction.len());
-    for satisfaction in &request.required_satisfaction {
+    finalize_proof_digest_of(&request.required_satisfaction)
+}
+
+/// The stored finalize-proof identity of a satisfaction set: the digest the
+/// terminal transaction persists in `task_finalize_proofs` and that every
+/// later v3 replay compares against. Exposed for the direct Semantic-only
+/// finalize path, which carries no Effect slots and therefore commits the
+/// empty-satisfaction identity.
+pub(crate) fn finalize_proof_digest_of(satisfactions: &[crate::RequiredSatisfaction]) -> [u8; 32] {
+    let mut encoded: Vec<[u8; 41]> = Vec::with_capacity(satisfactions.len());
+    for satisfaction in satisfactions {
         let mut bytes = [0u8; 41];
         bytes[..8].copy_from_slice(&satisfaction.effect_seq.to_be_bytes());
         match satisfaction.proof {
@@ -1437,7 +1446,7 @@ fn finalize_proof_digest(request: &FinalizeRequestV3) -> [u8; 32] {
     sha256("llmos/task-finalize-proofs/v1", &parts)
 }
 
-fn insert_finalize_proof(
+pub(crate) fn insert_finalize_proof(
     transaction: &Transaction<'_>,
     receipt_id: ReceiptId,
     proof_digest: [u8; 32],
