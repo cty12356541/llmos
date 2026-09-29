@@ -215,11 +215,13 @@ impl ResourceDemand {
 
     /// Scales every dimension down to `percent`% of `self` (`100` is the
     /// exact identity; smaller percents saturate and truncate, only ever
-    /// shrinking a dimension; `0` collapses the demand to zero). This is
-    /// the authoritative throttle adjustment of the demand type —
-    /// [`throttle_demand`] pairs it with the admission check.
+    /// shrinking a dimension; `0` collapses the demand to zero). Percents
+    /// above `100` are clamped to the exact identity — a throttle never
+    /// widens a demand. This is the authoritative throttle adjustment of the
+    /// demand type — [`throttle_demand`] pairs it with the admission check.
     #[must_use]
     pub const fn throttled_to_percent(self, percent: u64) -> Self {
+        let percent = if percent > 100 { 100 } else { percent };
         if percent == 100 {
             self
         } else {
@@ -241,7 +243,9 @@ impl ResourceDemand {
 /// coordinator lane's scope.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DemandThrottle {
-    /// Whole-percent level the demand was throttled down to.
+    /// Whole-percent level the demand was throttled down to (the effective
+    /// level after clamping to `[0, 100]`, so the record always satisfies
+    /// `demand_before.throttled_to_percent(throttle_percent) == demand_after`).
     pub throttle_percent: u64,
     pub demand_before: ResourceDemand,
     pub demand_after: ResourceDemand,
@@ -253,18 +257,19 @@ pub struct DemandThrottle {
 }
 
 /// Applies one authoritative throttle adjustment: every dimension of
-/// `current` is scaled down to `percent`% and the result is
-/// admission-checked against `capacity` in the fixed
-/// [`DemandDimension::ALL`] order.
+/// `current` is scaled down to `percent`% (clamped to `[0, 100]`, so a
+/// throttle never widens a demand) and the result is admission-checked
+/// against `capacity` in the fixed [`DemandDimension::ALL`] order.
 #[must_use]
 pub fn throttle_demand(
     current: ResourceDemand,
     capacity: ResourceDemand,
     percent: u64,
 ) -> DemandThrottle {
+    let effective_percent = percent.min(100);
     let demand_after = current.throttled_to_percent(percent);
     DemandThrottle {
-        throttle_percent: percent,
+        throttle_percent: effective_percent,
         demand_before: current,
         demand_after,
         capacity,

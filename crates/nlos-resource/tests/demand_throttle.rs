@@ -126,6 +126,43 @@ fn throttled_to_percent_scales_every_dimension_saturating() {
 }
 
 #[test]
+fn out_of_domain_percents_clamp_to_the_identity_never_widen() {
+    let demand = ResourceDemand {
+        cpu_shares: 64,
+        memory_mib: 512,
+        io_weight: 5,
+    };
+    // percent > 100 is out of the whole-percent domain: clamped to 100 (the
+    // exact identity) instead of amplifying any dimension.
+    assert_eq!(demand.throttled_to_percent(101), demand);
+    assert_eq!(demand.throttled_to_percent(u64::MAX), demand);
+    let amplified_risk = ResourceDemand {
+        cpu_shares: 1,
+        memory_mib: 1,
+        io_weight: 1,
+    };
+    assert_eq!(amplified_risk.throttled_to_percent(200), amplified_risk);
+
+    // The DemandThrottle record stays self-consistent: the reported percent
+    // is the effective clamped level, so a demand that already admitted can
+    // never report a first exceedance through an out-of-domain percent.
+    let capacity = ResourceDemand {
+        cpu_shares: 100,
+        memory_mib: 1024,
+        io_weight: 10,
+    };
+    let admitted = ResourceDemand {
+        cpu_shares: 80,
+        memory_mib: 900,
+        io_weight: 9,
+    };
+    let decision = throttle_demand(admitted, capacity, 5_000);
+    assert_eq!(decision.throttle_percent, 100);
+    assert_eq!(decision.demand_after, admitted);
+    assert_eq!(decision.first_exceedance, None);
+}
+
+#[test]
 fn throttle_demand_reports_before_after_and_admission() {
     let capacity = ResourceDemand {
         cpu_shares: 100,
