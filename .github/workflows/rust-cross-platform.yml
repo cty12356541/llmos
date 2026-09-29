@@ -129,6 +129,57 @@ jobs:
         if: runner.os == 'Linux'
         run: cargo fmt --all -- --check
 
+  # F2（next-phase-plan §7）：desktop 面进矩阵——TS 类型检查 + src-tauri
+  # dev-fixture 全量测试与 clippy。边界如实登记：Tauri GUI 打包
+  # （tauri build）需各 OS 系统依赖（ubuntu 的 webkit2gtk 等），本 job
+  # 不含；cargo 侧编译已由 clippy/test 覆盖。
+  desktop:
+    name: desktop (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      - name: Install Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install desktop npm toolchain
+        run: npm ci --ignore-scripts
+        working-directory: desktop
+
+      - name: TypeScript type check
+        run: npx tsc --noEmit
+        working-directory: desktop
+
+      - name: Clippy (dev-fixture)
+        run: cargo clippy --manifest-path desktop/src-tauri/Cargo.toml --features dev-fixture --all-targets -- -D warnings
+
+      - name: Rust fmt check
+        run: cargo fmt --manifest-path desktop/src-tauri/Cargo.toml --all -- --check
+
+      - name: Integration tests (dev-fixture)
+        run: cargo test --manifest-path desktop/src-tauri/Cargo.toml --features dev-fixture --no-fail-fast
+
   scale-probe:
     # GitHub Actions 不支持按 job 声明触发器，用 if 限定：
     # 仅夜间 schedule 或手动 workflow_dispatch 运行，push/PR 一律跳过，
