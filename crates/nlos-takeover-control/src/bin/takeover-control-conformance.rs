@@ -488,11 +488,17 @@ fn truncate_wal_inside_last_commit(path: &Path) -> io::Result<()> {
     let last_commit = (0..frame_count)
         .rfind(|index| {
             let start = 32 + index * frame_size;
+            // A WAL frame header is page-number (0..4), commit size (4..8,
+            // non-zero exactly for commit frames), then the two salt values
+            // (8..16). The commit marker lives at 4..8 — reading 8..12
+            // tested salt-1, which is essentially always non-zero, so the
+            // scan silently degenerated to "the last frame" instead of the
+            // last commit frame.
             let commit = [
-                wal[start + 8],
-                wal[start + 9],
-                wal[start + 10],
-                wal[start + 11],
+                wal[start + 4],
+                wal[start + 5],
+                wal[start + 6],
+                wal[start + 7],
             ];
             u32::from_be_bytes(commit) != 0
         })
