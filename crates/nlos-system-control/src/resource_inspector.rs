@@ -60,6 +60,18 @@ fn map_resource_authority_error(error: &ResourceAuthorityError) -> SabiFailure {
             RetryDirective::DoNotRetry,
             "resource reservation is not settled for cost inspection",
         ),
+        ResourceAuthorityError::StaleThrottleDemand { .. }
+        | ResourceAuthorityError::InvalidThrottleAdjustment { .. } => (
+            SabiErrorCode::Conflict,
+            RetryDirective::DoNotRetry,
+            "throttle decision chain rejected the reported demand transition",
+        ),
+        ResourceAuthorityError::InvalidThrottlePercent
+        | ResourceAuthorityError::InvalidThrottleTimestamp => (
+            SabiErrorCode::InvalidArgument,
+            RetryDirective::DoNotRetry,
+            "throttle decision input is outside the authority domain",
+        ),
         ResourceAuthorityError::Sqlite(_)
         | ResourceAuthorityError::DurabilityUnavailable { .. }
         | ResourceAuthorityError::CorruptRecord(_)

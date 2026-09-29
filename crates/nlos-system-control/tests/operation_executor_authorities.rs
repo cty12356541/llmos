@@ -505,9 +505,13 @@ mod throttle {
             executor.throttle_operation(make_request(), 50).unwrap(),
             receipt_id
         );
-        // A different level is a different authority-driven adjustment.
+        // A different level is a different command — and command
+        // idempotency is owned by the submit handler, so it arrives with a
+        // different command key and records a second chain link.
+        let mut other_level = make_request();
+        other_level.idempotency_key = [0x5a; 16];
         assert_ne!(
-            executor.throttle_operation(make_request(), 25).unwrap(),
+            executor.throttle_operation(other_level, 25).unwrap(),
             receipt_id
         );
     }

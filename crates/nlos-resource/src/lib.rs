@@ -1975,6 +1975,55 @@ impl ResourceAuthority {
         Ok(decisions)
     }
 
+    /// Reads the reservation's decision recorded under one idempotency
+    /// key, if any. The key is the command identity at the control-plane
+    /// executor; this is the replay probe for callers whose
+    /// `demand_before` is chain-derived and therefore recomputed on every
+    /// attempt — a hit is the durable decision to replay byte-equal.
+    ///
+    /// # Errors
+    /// Fails when the Reservation is unknown or storage cannot be read.
+    pub fn inspect_throttle_decision_by_key(
+        &self,
+        reservation_id: ReservationId,
+        idempotency_key: IdempotencyKey,
+    ) -> Result<Option<ThrottleDecisionReceipt>, ResourceAuthorityError> {
+        let connection = self.lock()?;
+        if reservation(&connection, reservation_id)?.is_none() {
+            return Err(ResourceAuthorityError::ReservationNotFound);
+        }
+        let mut statement = connection.prepare(
+            "SELECT receipt_id, reservation_id, operation_id,
+                    sequence, throttle_percent,
+                    before_cpu_shares, before_memory_mib, before_io_weight,
+                    after_cpu_shares, after_memory_mib, after_io_weight,
+                    decided_at_ms
+             FROM reservation_throttle_decisions
+             WHERE reservation_id=?1 AND idempotency_key=?2",
+        )?;
+        let mut rows = statement.query(params![
+            reservation_id.as_bytes().as_slice(),
+            idempotency_key.as_bytes().as_slice()
+        ])?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+        Ok(Some(throttle_decision_decode((
+            row.get::<_, Vec<u8>>(0)?,
+            row.get::<_, Vec<u8>>(1)?,
+            row.get::<_, Vec<u8>>(2)?,
+            row.get::<_, i64>(3)?,
+            row.get::<_, i64>(4)?,
+            row.get::<_, i64>(5)?,
+            row.get::<_, i64>(6)?,
+            row.get::<_, i64>(7)?,
+            row.get::<_, i64>(8)?,
+            row.get::<_, i64>(9)?,
+            row.get::<_, i64>(10)?,
+            row.get::<_, i64>(11)?,
+        ))?))
+    }
+
     /// Reads the authoritative merged demand view of one Reservation: the
     /// declared reserve-time demand folded through the complete decision
     /// chain. Every chain link is re-derived (sequence continuity, chain

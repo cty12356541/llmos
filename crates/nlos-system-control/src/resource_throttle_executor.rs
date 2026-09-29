@@ -78,6 +78,24 @@ impl OperationCommandExecutor for ResourceDemandThrottleExecutor<'_> {
                 "throttle CAS mismatch: expected revision is not the reservation usage sequence",
             ));
         }
+        // Command-identity replay: the ledger's `demand_before` is
+        // chain-derived, so a recomputed attempt would otherwise disagree
+        // with the recorded transition. The submit handler owns command
+        // idempotency; here the key is the command identity, and a recorded
+        // decision under it replays byte-equal.
+        let command_key = IdempotencyKey::from_bytes(request.idempotency_key);
+        if let Some(existing) = self
+            .authority
+            .inspect_throttle_decision_by_key(reservation_id, command_key)
+            .map_err(|error| map_resource_throttle_error(&error))?
+        {
+            return Ok(throttle_receipt(
+                &request,
+                existing.throttle_percent,
+                existing.demand_before,
+                existing.demand_after,
+            ));
+        }
         let quote = self
             .authority
             .inspect_quote(reservation.quote_id)
@@ -107,40 +125,15 @@ impl OperationCommandExecutor for ResourceDemandThrottleExecutor<'_> {
                 throttle_percent,
                 demand_before: throttle.demand_before,
                 demand_after: throttle.demand_after,
-                idempotency_key: IdempotencyKey::from_bytes(request.idempotency_key),
+                idempotency_key: command_key,
                 decided_at_ms,
             })
             .map_err(|error| map_resource_throttle_error(&error))?;
-        let before = [
-            throttle.demand_before.cpu_shares,
-            throttle.demand_before.memory_mib,
-            throttle.demand_before.io_weight,
-        ]
-        .map(u64::to_be_bytes);
-        let after = [
-            throttle.demand_after.cpu_shares,
-            throttle.demand_after.memory_mib,
-            throttle.demand_after.io_weight,
-        ]
-        .map(u64::to_be_bytes);
-        // The receipt covers the recorded transition: effective-demand
-        // before (chain-aware) → throttled after, keyed by the command's
-        // idempotency key, so a replay of the command hits the ledger's
-        // durable decision and re-derives byte-equal receipt inputs.
-        let percent = throttle.throttle_percent.to_be_bytes();
-        Ok(derive_executor_receipt_id(
-            THROTTLE_RECEIPT_DOMAIN,
-            &[
-                &request.target_id,
-                &before[0],
-                &before[1],
-                &before[2],
-                &after[0],
-                &after[1],
-                &after[2],
-                &percent,
-                &request.idempotency_key,
-            ],
+        Ok(throttle_receipt(
+            &request,
+            throttle.throttle_percent,
+            throttle.demand_before,
+            throttle.demand_after,
         ))
     }
 
@@ -163,6 +156,45 @@ impl OperationCommandExecutor for ResourceDemandThrottleExecutor<'_> {
     fn reclaim_operation(&self, _: OperationControlRequest) -> Result<ReceiptId, SabiFailure> {
         Err(arm_not_wired("reclaim"))
     }
+}
+
+/// Derives the control-plane receipt over one recorded transition: the
+/// demand dimensions before and after, the percent, and the command's
+/// idempotency key — replaying a recorded decision re-derives byte-equal
+/// inputs.
+fn throttle_receipt(
+    request: &OperationControlRequest,
+    percent: u64,
+    before_demand: nlos_resource::ResourceDemand,
+    after_demand: nlos_resource::ResourceDemand,
+) -> ReceiptId {
+    let before = [
+        before_demand.cpu_shares,
+        before_demand.memory_mib,
+        before_demand.io_weight,
+    ]
+    .map(u64::to_be_bytes);
+    let after = [
+        after_demand.cpu_shares,
+        after_demand.memory_mib,
+        after_demand.io_weight,
+    ]
+    .map(u64::to_be_bytes);
+    let percent = percent.to_be_bytes();
+    derive_executor_receipt_id(
+        THROTTLE_RECEIPT_DOMAIN,
+        &[
+            &request.target_id,
+            &before[0],
+            &before[1],
+            &before[2],
+            &after[0],
+            &after[1],
+            &after[2],
+            &percent,
+            &request.idempotency_key,
+        ],
+    )
 }
 
 fn arm_not_wired(arm: &'static str) -> SabiFailure {
@@ -191,11 +223,11 @@ fn map_resource_throttle_error(error: &ResourceAuthorityError) -> SabiFailure {
             SabiErrorCode::NotFound,
             "requested resource quote was not found",
         ),
-        ResourceAuthorityError::StaleThrottleDemand => (
+        ResourceAuthorityError::StaleThrottleDemand { .. } => (
             SabiErrorCode::Conflict,
             "throttle demand_before is not the reservation's current effective demand",
         ),
-        ResourceAuthorityError::InvalidThrottleAdjustment => (
+        ResourceAuthorityError::InvalidThrottleAdjustment { .. } => (
             SabiErrorCode::Conflict,
             "throttle demand_after does not equal the clamped demand_before",
         ),
