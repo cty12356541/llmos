@@ -20,17 +20,21 @@
 //!    authority-driven adjustment.
 //!
 //! Honest scope: the reservation model declares demand immutably at reserve
-//! time, so the adjusted demand is computed and admission-checked here
-//! without a durable write; persisting `demand_after` as a re-reservation
-//! remains the resource coordinator lane's scope (recorded as a gap in the
-//! W29-D evidence).
+//! time, so the adjusted demand is computed and admission-checked here and
+//! durably recorded through the append-only throttle-decision ledger
+//! (`record_throttle_decision`, W44-RA): the decision chain folds into the
+//! effective-demand read face and survives restarts. Working-set reclamation
+//! is a separate lane (its occupancy model is not isomorphic to demand
+//! throttling; recorded as a gap in the W29-D evidence).
 //!
 //! Every other arm refuses fail-closed; hosts compose authorities by
 //! delegation, exactly like this type does.
 
-use nlos_resource::{ResourceAuthority, ResourceAuthorityError, throttle_demand};
+use nlos_resource::{
+    RecordThrottleDecisionRequest, ResourceAuthority, ResourceAuthorityError, throttle_demand,
+};
 use nlos_schema::sabi::v1::{RetryDirective, SabiErrorCode, SabiFailure};
-use nlos_types::{ReceiptId, ReservationId};
+use nlos_types::{IdempotencyKey, ReceiptId, ReservationId};
 
 use crate::executor_receipt::derive_executor_receipt_id;
 use crate::{OperationCommandExecutor, OperationControlRequest};
@@ -78,7 +82,35 @@ impl OperationCommandExecutor for ResourceDemandThrottleExecutor<'_> {
             .authority
             .inspect_quote(reservation.quote_id)
             .map_err(|error| map_resource_throttle_error(&error))?;
-        let throttle = throttle_demand(reservation.demand, quote.demand_capacity, throttle_percent);
+        // Chain-aware: the decision ledger validates `demand_before` against
+        // the current effective demand (declared demand folded with the
+        // decision chain), so a second throttle composes on the first
+        // instead of re-deriving from the declared demand.
+        let effective = self
+            .authority
+            .inspect_effective_demand(reservation_id)
+            .map_err(|error| map_resource_throttle_error(&error))?;
+        let throttle = throttle_demand(
+            effective.effective_demand,
+            quote.demand_capacity,
+            throttle_percent,
+        );
+        let decided_at_ms = u64::try_from(request.requested_at_ms).map_err(|_| {
+            bounded_failure(
+                SabiErrorCode::InvalidArgument,
+                "requested_at_ms must be a non-negative wall-clock millisecond value",
+            )
+        })?;
+        self.authority
+            .record_throttle_decision(RecordThrottleDecisionRequest {
+                reservation_id,
+                throttle_percent,
+                demand_before: throttle.demand_before,
+                demand_after: throttle.demand_after,
+                idempotency_key: IdempotencyKey::from_bytes(request.idempotency_key),
+                decided_at_ms,
+            })
+            .map_err(|error| map_resource_throttle_error(&error))?;
         let before = [
             throttle.demand_before.cpu_shares,
             throttle.demand_before.memory_mib,
@@ -91,6 +123,10 @@ impl OperationCommandExecutor for ResourceDemandThrottleExecutor<'_> {
             throttle.demand_after.io_weight,
         ]
         .map(u64::to_be_bytes);
+        // The receipt covers the recorded transition: effective-demand
+        // before (chain-aware) → throttled after, keyed by the command's
+        // idempotency key, so a replay of the command hits the ledger's
+        // durable decision and re-derives byte-equal receipt inputs.
         let percent = throttle.throttle_percent.to_be_bytes();
         Ok(derive_executor_receipt_id(
             THROTTLE_RECEIPT_DOMAIN,
@@ -154,6 +190,22 @@ fn map_resource_throttle_error(error: &ResourceAuthorityError) -> SabiFailure {
         ResourceAuthorityError::QuoteNotFound => (
             SabiErrorCode::NotFound,
             "requested resource quote was not found",
+        ),
+        ResourceAuthorityError::StaleThrottleDemand => (
+            SabiErrorCode::Conflict,
+            "throttle demand_before is not the reservation's current effective demand",
+        ),
+        ResourceAuthorityError::InvalidThrottleAdjustment => (
+            SabiErrorCode::Conflict,
+            "throttle demand_after does not equal the clamped demand_before",
+        ),
+        ResourceAuthorityError::InvalidThrottlePercent => (
+            SabiErrorCode::InvalidArgument,
+            "throttle percent is outside the authority domain",
+        ),
+        ResourceAuthorityError::InvalidThrottleTimestamp => (
+            SabiErrorCode::InvalidArgument,
+            "throttle decision timestamp predates the reservation history",
         ),
         ResourceAuthorityError::Sqlite(_)
         | ResourceAuthorityError::DurabilityUnavailable { .. }
