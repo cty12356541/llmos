@@ -6,6 +6,7 @@
 
 mod canonical;
 mod declassification;
+mod durability;
 mod model;
 mod schema;
 mod spec;
@@ -42,14 +43,15 @@ pub use model::{
     AcknowledgeOutboxRequest, AdmissionDurability, AdmissionReceipt, AppendAssertionRequest,
     AppendDecision, AppendSpecRequest, AppendTypedEventRequest, AssertionMode,
     CriterionAggregation, CriterionEffect, CriterionVerificationTarget, DeclassificationReceipt,
-    DurabilityReceipt, EvaluatorKind, EventVerificationTarget, ImmutableEvaluatorReference,
-    ImmutableEvaluatorReferenceKind, IntentConstraints, IntentCriterion, IntentCriticality,
-    IntentSettlement, IntentSpecBody, IssueDeclassificationDecision,
-    IssueDeclassificationReceiptRequest, JudgmentRelation, LocalProcessRef,
-    MAX_CANONICAL_EVENT_BYTES, MAX_CONTENT_BYTES, MAX_LINEAGE_ITEMS, MAX_NONCE_BYTES,
-    MAX_SPEC_CAPABILITY_REFS, MAX_SPEC_CRITERIA, MAX_SPEC_EXTENSION_BYTES, MAX_SPEC_EXTENSIONS,
-    MIN_NONCE_BYTES, OutboxAckDecision, PublishSemanticPublicationRequest, RetractionMode,
-    RetractionRecord, SemanticAdmissionEndpointProof, SemanticEventRecord, SemanticOutboxRecord,
+    DurabilityDecision, DurabilityReceipt, EvaluatorKind, EventVerificationTarget,
+    ImmutableEvaluatorReference, ImmutableEvaluatorReferenceKind, IntentConstraints,
+    IntentCriterion, IntentCriticality, IntentSettlement, IntentSpecBody,
+    IssueDeclassificationDecision, IssueDeclassificationReceiptRequest,
+    IssueDurabilityReceiptRequest, JudgmentRelation, LocalProcessRef, MAX_CANONICAL_EVENT_BYTES,
+    MAX_CONTENT_BYTES, MAX_LINEAGE_ITEMS, MAX_NONCE_BYTES, MAX_SPEC_CAPABILITY_REFS,
+    MAX_SPEC_CRITERIA, MAX_SPEC_EXTENSION_BYTES, MAX_SPEC_EXTENSIONS, MIN_NONCE_BYTES,
+    OutboxAckDecision, PublishSemanticPublicationRequest, RetractionMode, RetractionRecord,
+    SemanticAdmissionEndpointProof, SemanticEventRecord, SemanticOutboxRecord,
     SemanticPayloadIdentity, SemanticPublicationDecision, SemanticPublicationReceipt,
     SettlementMode, SettlementTimeoutAction, SpecExtension, StoreSigner, StoreSignerError,
     TaintFlags, TrustViewJudgmentFact, TrustViewJudgmentRole, TrustViewSnapshot,
@@ -68,8 +70,9 @@ pub use typed::{
 };
 
 pub use declassification::declassification_issue_authorization_id;
+pub use durability::{build_durability_receipt_core_digest, durability_receipt_signature_message};
 
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 const EDGE_DECLARED: i64 = 1;
 const EDGE_CAPTURED: i64 = 2;
 
@@ -126,6 +129,10 @@ pub enum SemanticAuthorityError {
     SemanticPublicationAdmissionBindingMismatch,
     SemanticPublicationDurabilityBindingMismatch,
     SemanticPublicationConflict(&'static str),
+    DurabilityAdmissionBindingMismatch,
+    DurabilityBeforeAdmission,
+    DurabilityReceiptNotFound(ReceiptId),
+    DurabilityReceiptUnverifiable,
     OutboxAckBindingMismatch,
     OutboxAckNotMonotonic {
         previous: u64,
@@ -266,6 +273,18 @@ impl fmt::Display for SemanticAuthorityError {
                     "semantic publication conflicts with durable receipt: {reason}"
                 )
             }
+            Self::DurabilityAdmissionBindingMismatch => {
+                formatter.write_str("durability receipt request does not match the admitted event")
+            }
+            Self::DurabilityBeforeAdmission => {
+                formatter.write_str("durability receipt timestamp precedes admission")
+            }
+            Self::DurabilityReceiptNotFound(id) => {
+                write!(formatter, "durability receipt {id:?} does not exist")
+            }
+            Self::DurabilityReceiptUnverifiable => {
+                formatter.write_str("durability receipt carries no verifiable store signer binding")
+            }
             Self::OutboxAckBindingMismatch => {
                 formatter.write_str("outbox acknowledgement binding does not match owner record")
             }
@@ -403,6 +422,7 @@ impl SemanticAuthority {
                 schema::migrate_v4(&mut connection)?;
                 schema::migrate_v5(&mut connection)?;
                 schema::migrate_v6(&mut connection)?;
+                schema::migrate_v7(&mut connection)?;
             }
             1 => {
                 schema::migrate_v1_to_v2(&mut connection)?;
@@ -410,23 +430,31 @@ impl SemanticAuthority {
                 schema::migrate_v4(&mut connection)?;
                 schema::migrate_v5(&mut connection)?;
                 schema::migrate_v6(&mut connection)?;
+                schema::migrate_v7(&mut connection)?;
             }
             2 => {
                 schema::migrate_v3(&mut connection)?;
                 schema::migrate_v4(&mut connection)?;
                 schema::migrate_v5(&mut connection)?;
                 schema::migrate_v6(&mut connection)?;
+                schema::migrate_v7(&mut connection)?;
             }
             3 => {
                 schema::migrate_v4(&mut connection)?;
                 schema::migrate_v5(&mut connection)?;
                 schema::migrate_v6(&mut connection)?;
+                schema::migrate_v7(&mut connection)?;
             }
             4 => {
                 schema::migrate_v5(&mut connection)?;
                 schema::migrate_v6(&mut connection)?;
+                schema::migrate_v7(&mut connection)?;
             }
-            5 => schema::migrate_v6(&mut connection)?,
+            5 => {
+                schema::migrate_v6(&mut connection)?;
+                schema::migrate_v7(&mut connection)?;
+            }
+            6 => schema::migrate_v7(&mut connection)?,
             SCHEMA_VERSION => {}
             other => return Err(SemanticAuthorityError::SchemaVersionUnsupported(other)),
         }
@@ -1168,6 +1196,58 @@ impl SemanticAuthority {
         load_durability_receipt(&connection, event_id, receipt_id)
     }
 
+    /// Issues the immutable owner-signed durability receipt for one admitted
+    /// event — the production writer of `durability_receipts`.
+    ///
+    /// The authority re-reads the event and its durable `AdmissionReceipt` in
+    /// the issuance transaction: a mismatched admission binding, or a
+    /// `durable_at_ms` that precedes admission, fails closed. The receipt id
+    /// is derived deterministically from the signed core digest (event, log
+    /// sequence, checkpoint, timestamp, and the store identity triple), the
+    /// store signature is verified against the `IdentityAuthority` before
+    /// commit, and exact retries replay the original immutable receipt.
+    ///
+    /// # Errors
+    ///
+    /// Typed fail-closed errors for missing events, admission binding
+    /// mismatches, pre-admission timestamps, identity verification, or store
+    /// signing failures.
+    pub fn issue_durability_receipt(
+        &self,
+        identity: &IdentityAuthority,
+        store_signer: &impl StoreSigner,
+        request: &IssueDurabilityReceiptRequest,
+    ) -> Result<DurabilityDecision, SemanticAuthorityError> {
+        let mut connection = self.lock()?;
+        durability::issue_durability_receipt(&mut connection, identity, store_signer, request)
+    }
+
+    /// Loads one durability receipt and verifies its provenance end to end:
+    /// the recorded store identity triple must derive the stored receipt id
+    /// from the signed core digest, and the store signature must verify
+    /// against the `IdentityAuthority` at the recorded durability timestamp.
+    ///
+    /// Rows without a store identity triple — pre-v7 legacy rows or direct
+    /// database injections — carry no verifiable provenance and fail closed
+    /// with `DurabilityReceiptUnverifiable`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DurabilityReceiptNotFound` when the receipt is absent,
+    /// `DurabilityReceiptUnverifiable` for unbound rows or derived-id
+    /// mismatches, or identity/storage failures.
+    pub fn verify_durability_receipt(
+        &self,
+        identity: &IdentityAuthority,
+        event_id: SemanticEventId,
+        receipt_id: ReceiptId,
+    ) -> Result<DurabilityReceipt, SemanticAuthorityError> {
+        let connection = self.lock()?;
+        load_event_record(&connection, event_id)?
+            .ok_or(SemanticAuthorityError::EventNotFound(event_id))?;
+        durability::verify_durability_receipt(&connection, identity, event_id, receipt_id)
+    }
+
     /// Reads the owner-consistent transport status for one admission outbox item.
     ///
     /// The returned acknowledgement is only an outbox transport observation;
@@ -1331,6 +1411,23 @@ impl SemanticAuthority {
             };
             if durability.event_id != request.event_id
                 || durability.receipt_id != durability_receipt_id
+            {
+                return Err(SemanticAuthorityError::SemanticPublicationDurabilityBindingMismatch);
+            }
+            // A production-issued receipt records the store identity triple
+            // that minted it; a triple that disagrees with the admission's
+            // store binding is rejected. Pre-v7 legacy rows carry no triple
+            // and keep the structural binding checks above.
+            if let (Some(principal), Some(domain), Some(key)) = (
+                durability.store_principal,
+                durability.store_control_domain,
+                durability.store_key_id,
+            ) && (principal, domain, key)
+                != (
+                    admission.store_principal,
+                    admission.store_control_domain,
+                    admission.store_key_id,
+                )
             {
                 return Err(SemanticAuthorityError::SemanticPublicationDurabilityBindingMismatch);
             }
@@ -2210,39 +2307,11 @@ fn load_durability_receipt(
     event_id: SemanticEventId,
     receipt_id: ReceiptId,
 ) -> Result<DurabilityReceipt, SemanticAuthorityError> {
-    let row = connection.query_row(
-        "SELECT event_id, durable_checkpoint_id, durable_at_ms, store_signature
-         FROM durability_receipts WHERE receipt_id=?1 AND event_id=?2",
-        params![
-            receipt_id.as_bytes().as_slice(),
-            event_id.as_bytes().as_slice()
-        ],
-        |row| {
-            Ok((
-                row.get::<_, Vec<u8>>(0)?,
-                row.get::<_, Vec<u8>>(1)?,
-                row.get::<_, i64>(2)?,
-                row.get::<_, Vec<u8>>(3)?,
-            ))
-        },
-    )?;
-    Ok(DurabilityReceipt {
-        receipt_id,
-        event_id: nlos_types::SemanticEventId::from_bytes(
-            row.0
-                .try_into()
-                .map_err(|_| SemanticAuthorityError::CorruptRecord("durability event id"))?,
-        ),
-        durable_checkpoint_id: row
-            .1
-            .try_into()
-            .map_err(|_| SemanticAuthorityError::CorruptRecord("durable checkpoint id"))?,
-        durable_at_ms: decode_u64(row.2)?,
-        store_signature: row
-            .3
-            .try_into()
-            .map_err(|_| SemanticAuthorityError::CorruptRecord("durability store signature"))?,
-    })
+    // Preserve the historical missing-row error shape: callers of the raw
+    // read path (publication binding) match on this exact rusqlite variant.
+    durability::load_durability_receipt_optional(connection, event_id, receipt_id)?.ok_or(
+        SemanticAuthorityError::Sqlite(rusqlite::Error::QueryReturnedNoRows),
+    )
 }
 
 fn load_outbox(

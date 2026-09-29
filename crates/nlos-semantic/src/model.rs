@@ -545,13 +545,48 @@ pub struct AdmissionReceipt {
 /// Immutable owner-issued proof that an admitted event crossed a durable
 /// checkpoint after admission. This receipt is optional when the authority
 /// directly issued a `Durable` [`AdmissionReceipt`].
+///
+/// The store identity triple is recorded by the production issuance path
+/// ([`crate::SemanticAuthority::issue_durability_receipt`]); a `None` triple
+/// marks a pre-v7 legacy row that carries no verifiable signer binding and is
+/// rejected by [`crate::SemanticAuthority::verify_durability_receipt`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DurabilityReceipt {
     pub receipt_id: ReceiptId,
     pub event_id: SemanticEventId,
     pub durable_checkpoint_id: [u8; 32],
     pub durable_at_ms: u64,
+    pub store_principal: Option<PrincipalId>,
+    pub store_control_domain: Option<ControlDomainId>,
+    pub store_key_id: Option<KeyId>,
     pub store_signature: [u8; 64],
+}
+
+/// Owner request to mint one durability receipt for an already-admitted
+/// event. The authority re-reads the event and its `AdmissionReceipt` in the
+/// issuance transaction; a mismatched admission binding fails closed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct IssueDurabilityReceiptRequest {
+    pub event_id: SemanticEventId,
+    pub admission_receipt_id: ReceiptId,
+    pub durable_checkpoint_id: [u8; 32],
+    pub durable_at_ms: u64,
+}
+
+/// Idempotent result of the durability receipt issuance boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DurabilityDecision {
+    Issued(DurabilityReceipt),
+    Replayed(DurabilityReceipt),
+}
+
+impl DurabilityDecision {
+    #[must_use]
+    pub fn receipt(&self) -> &DurabilityReceipt {
+        match self {
+            Self::Issued(receipt) | Self::Replayed(receipt) => receipt,
+        }
+    }
 }
 
 /// Durable transport status for one Semantic admission outbox item.
