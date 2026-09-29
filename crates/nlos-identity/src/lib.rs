@@ -232,6 +232,12 @@ impl IdentityAuthority {
     /// This method is a trusted local-bootstrap boundary, not an untrusted IPC
     /// registration endpoint.
     ///
+    /// Replay contract: re-submitting the exact same request returns
+    /// [`BootstrapDecision::Replayed`] with the bootstrap-time binding (the
+    /// immutable generation-1 snapshot binding) even after the principal's key
+    /// was later rotated or revoked; a materially different request under the
+    /// same idempotency key is an `IdempotencyConflict`.
+    ///
     /// # Errors
     ///
     /// Fails for malformed keys/validity, idempotency rebinding, or storage
@@ -1431,23 +1437,55 @@ fn insert_key_version(
     Ok(())
 }
 
+/// Resolves the bootstrap-time binding for a bootstrap idempotency key: the
+/// immutable generation-1 snapshot binding, not the live current binding. A
+/// replay must answer with the same binding the original `Created` decision
+/// returned, so a later rotate/revoke of the principal's key leaves the
+/// bootstrap replay contract intact instead of surfacing an
+/// `IdempotencyConflict` against post-rotation key material.
 fn load_binding_by_bootstrap_key(
     transaction: &Transaction<'_>,
     idempotency_key: IdempotencyKey,
 ) -> Result<Option<IdentityBinding>, IdentityAuthorityError> {
-    let key_id = transaction
+    let domain_and_key = transaction
         .query_row(
-            "SELECT kh.key_id
+            "SELECT kh.control_domain_id, kh.key_id
              FROM principals p JOIN key_heads kh ON kh.principal_id=p.principal_id
              WHERE p.bootstrap_idempotency_key=?1",
             [idempotency_key.as_bytes().as_slice()],
+            |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?)),
+        )
+        .optional()?;
+    let Some((domain_bytes, key_bytes)) = domain_and_key else {
+        return Ok(None);
+    };
+    let control_domain_id = decode_id::<16, _>(
+        domain_bytes,
+        ControlDomainId::from_bytes,
+        "control domain id",
+    )?;
+    let key_id = decode_id::<16, _>(key_bytes, KeyId::from_bytes, "key id")?;
+    // UNIQUE(control_domain_id, generation) makes the generation-1 lookup a
+    // point query; a domain without its bootstrap snapshot is corruption and
+    // falls through to the insert path's constraint failure.
+    let bootstrap_snapshot_id = transaction
+        .query_row(
+            "SELECT identity_snapshot_id FROM identity_snapshots
+             WHERE control_domain_id=?1 AND generation=1",
+            [control_domain_id.as_bytes().as_slice()],
             |row| row.get::<_, Vec<u8>>(0),
         )
         .optional()?
-        .map(|bytes| decode_id::<16, _>(bytes, KeyId::from_bytes, "key id"))
+        .map(|bytes| {
+            decode_id::<16, _>(
+                bytes,
+                IdentitySnapshotId::from_bytes,
+                "identity snapshot id",
+            )
+        })
         .transpose()?;
-    match key_id {
-        Some(id) => load_current_binding(transaction, id),
+    match bootstrap_snapshot_id {
+        Some(snapshot_id) => load_binding_at_snapshot(transaction, snapshot_id, key_id),
         None => Ok(None),
     }
 }
