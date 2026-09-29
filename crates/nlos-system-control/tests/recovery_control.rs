@@ -31,6 +31,10 @@ use nlos_schema::{
     system_control_schema_identity, validate_sabi_response_context,
 };
 use nlos_service_directory::{ServiceRegistration, SnapshotDirectory};
+use nlos_system_control::control::{
+    ControlCommand as TypedControlCommand, ControlOutcome, ControlReceipt, INSPECT_ALERT_LIMIT,
+    build_request_envelope,
+};
 use nlos_system_control::{
     ApplicationCommandExecutor, ApplicationControlRequest, GET_METHOD, OperationCommandExecutor,
     OperationControlRequest, RecoveryCounter, RecoveryGauge, RecoveryHealthSource,
@@ -252,6 +256,92 @@ fn create_escalated_plan(authority: &SqliteTaskAuthority) -> nlos_task::Artifact
     plan.plan_id
 }
 
+/// Seeds one escalated plan whose every derived identity is tagged, so
+/// several distinct escalated plans can coexist for window tests. The
+/// `observed_at_ms` controls the escalation rank (the alert list orders by
+/// `escalated_at_ms`).
+fn create_escalated_plan_at(
+    authority: &SqliteTaskAuthority,
+    tag: u8,
+    observed_at_ms: i64,
+) -> nlos_task::ArtifactCommitPlanId {
+    let task_id = TaskId::from_bytes([tag; 16]);
+    authority
+        .register_task(TaskSpec {
+            task_id,
+            task_generation: Generation::INITIAL,
+            registered_at_ms: 1_000,
+            application_id: None,
+            plan_revision: None,
+        })
+        .unwrap();
+    let attempt = AttemptSpec {
+        task_id,
+        attempt_id: TaskAttemptId::from_bytes([tag; 16]),
+        attempt_generation: Generation::INITIAL,
+        snapshot: SnapshotBundle {
+            snapshot_id: TaskSnapshotId::from_bytes([tag; 16]),
+            snapshot_digest: [tag; 32],
+            expected_head_commit_seq: 0,
+            effect_history_root: empty_effect_history_root(),
+            retry_fence_epoch: 0,
+        },
+        cancellation_scope_id: CancellationScopeId::from_bytes([tag; 16]),
+        cancellation_generation: Generation::INITIAL,
+        idempotency_key: IdempotencyKey::from_bytes([tag; 16]),
+        registered_at_ms: 2_000,
+    };
+    authority.register_attempt(attempt).unwrap();
+    let expectation = ArtifactPublicationExpectation {
+        staging_id: [tag; 16],
+        artifact_id: ArtifactId::from_bytes([tag; 16]),
+        target_revision: 1,
+        digest: [tag; 32],
+        size_bytes: 10,
+    };
+    let PermitDecision::Issued(permit) = authority
+        .request_commit_permit(PermitRequest {
+            task_id,
+            attempt_id: attempt.attempt_id,
+            attempt_generation: attempt.attempt_generation,
+            write_set_root: artifact_publication_plan_root(std::slice::from_ref(&expectation))
+                .unwrap(),
+            planned_effects: Vec::new(),
+            idempotency_key: IdempotencyKey::from_bytes([0xE0 | tag; 16]),
+            valid_until_ms: 20_000,
+            requested_at_ms: 3_000,
+        })
+        .unwrap()
+    else {
+        panic!("expected permit");
+    };
+    let plan = authority
+        .plan_artifact_commit(PlanArtifactCommitRequest {
+            task_id,
+            attempt_id: attempt.attempt_id,
+            attempt_generation: attempt.attempt_generation,
+            permit_id: permit.permit_id,
+            idempotency_key: IdempotencyKey::from_bytes([0xF0 | tag; 16]),
+            expectations: vec![expectation],
+            planned_at_ms: 4_000,
+        })
+        .unwrap()
+        .record()
+        .clone();
+    authority
+        .record_artifact_recovery_failure(ArtifactRecoveryFailureRequest {
+            plan_id: plan.plan_id,
+            expected_total_failures: 0,
+            source: ArtifactRecoveryFailureSource::ArtifactAuthority,
+            observed_at_ms,
+            base_delay_ms: 100,
+            max_delay_ms: 1_000,
+            escalation_threshold: 1,
+        })
+        .unwrap();
+    plan.plan_id
+}
+
 fn request_context(idempotency_key: Vec<u8>) -> SabiRequestContext {
     SabiRequestContext {
         caller: Some(CallerIdentity {
@@ -443,6 +533,56 @@ fn get_returns_bounded_typed_health_without_local_diagnostics() {
             )
             .is_err()
     );
+}
+
+/// Regression (W43-E3, audit 14 D1): the plan-scoped `InspectTask` read must
+/// answer for a plan whose escalated alert ranks beyond the eight-alert
+/// aggregate window, and the aggregate read must surface the truncation
+/// instead of hiding it. Drives the single control path end to end — the
+/// compiled envelope crosses the real handler, then the receipt projection.
+#[test]
+fn inspect_task_answers_a_plan_beyond_the_aggregate_alert_window() {
+    let database = TestDatabase::new();
+    let authority = database.open();
+    // Nine escalated plans; tag nine escalates last, so it ranks exactly one
+    // slot beyond the eight-alert aggregate window.
+    let mut target_plan = None;
+    for tag in 1_u8..=9 {
+        target_plan = Some(create_escalated_plan_at(
+            &authority,
+            tag,
+            5_000 + i64::from(tag),
+        ));
+    }
+    let target_plan = target_plan.unwrap();
+    let health = health(target_plan);
+    let control = RecoverySystemControl::new(&authority, &health, &CapabilityPolicy);
+
+    let command = TypedControlCommand::InspectTask {
+        plan_id: *target_plan.as_bytes(),
+    };
+    let request = build_request_envelope(&command).unwrap();
+    let response = control.handle(&request, 10, 6_000).unwrap();
+    let receipt = ControlReceipt::compose(&command, &response, None, None, None).unwrap();
+    let ControlOutcome::Inspected(inspected) = receipt.outcome.unwrap() else {
+        panic!("expected an inspected outcome for the plan-scoped read");
+    };
+    assert_eq!(inspected.alerts.len(), 1);
+    assert_eq!(inspected.alerts[0].plan_id, target_plan.as_bytes());
+    assert!(!inspected.alerts_truncated);
+
+    // The aggregate read keeps the small bounded window and must report the
+    // truncation through the projection.
+    let aggregate_command = TypedControlCommand::InspectHealth;
+    let aggregate_request = build_request_envelope(&aggregate_command).unwrap();
+    let aggregate_response = control.handle(&aggregate_request, 10, 6_000).unwrap();
+    let aggregate_receipt =
+        ControlReceipt::compose(&aggregate_command, &aggregate_response, None, None, None).unwrap();
+    let ControlOutcome::Inspected(aggregate) = aggregate_receipt.outcome.unwrap() else {
+        panic!("expected an inspected outcome for the aggregate read");
+    };
+    assert_eq!(aggregate.alerts.len(), INSPECT_ALERT_LIMIT as usize);
+    assert!(aggregate.alerts_truncated);
 }
 
 #[test]
