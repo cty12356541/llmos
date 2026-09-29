@@ -33,10 +33,17 @@ fn domain() -> SchedulerDomainId {
 #[test]
 #[ignore = "spawned by restart_bumps_boot_generation_and_admit_rejects_prior_boot"]
 fn child_boot_claim_helper() {
-    let out_path = std::env::var(CHILD_OUT_ENV)
-        .expect("NLOS_CELL_BOOT_CHILD_OUT must be set; this ignored harness is not a default test");
-    let data_dir = std::env::var(CHILD_DATA_DIR_ENV)
-        .expect("NLOS_CELL_BOOT_DATA_DIR must be set; this ignored harness is not a default test");
+    // Batch `--ignored`/`--include-ignored` runs (nightly scale-probe job)
+    // reach this entry without env; only the parent spawn makes it meaningful.
+    let (Ok(out_path), Ok(data_dir)) = (
+        std::env::var(CHILD_OUT_ENV),
+        std::env::var(CHILD_DATA_DIR_ENV),
+    ) else {
+        eprintln!(
+            "skipped: {CHILD_OUT_ENV}/{CHILD_DATA_DIR_ENV} unset (harness entry, parent spawn only)"
+        );
+        return;
+    };
 
     let authority =
         CellAuthority::claim_with_data_dir(domain(), Path::new(&data_dir)).expect("child claim");
