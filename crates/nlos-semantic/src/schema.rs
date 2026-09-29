@@ -562,6 +562,148 @@ pub(crate) fn migrate_v7(connection: &mut Connection) -> Result<(), SemanticAuth
     Ok(())
 }
 
+/// Adds the immutable typed-link index (`semantic_typed_links`) that maps
+/// judgment endpoints and verification event targets to their referencing
+/// events, and backfills it from the stored canonical envelopes so
+/// `inspect_trust_view` resolves facts through the index instead of a full
+/// O(N) canonical rescan of every typed event.
+///
+/// The preflight mirrors v3/v4/v6: complete objects plus a complete backfill
+/// whose stamp never landed are re-stamped as exactly v8, while a *partial*
+/// object set or an incomplete backfill fails closed as a typed
+/// `CorruptRecord`.
+pub(crate) fn migrate_v8(connection: &mut Connection) -> Result<(), SemanticAuthorityError> {
+    let table_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type='table' AND name='semantic_typed_links'",
+        [],
+        |row| row.get(0),
+    )?;
+    let trigger_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN (
+            'semantic_typed_links_immutable_update',
+            'semantic_typed_links_immutable_delete'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if table_count == 1 && trigger_count == 2 {
+        if typed_links_backfill_complete(&*connection)? {
+            // Complete v8 objects with a complete backfill whose stamp never
+            // landed — stamp it as exactly that (see migrate_v6).
+            connection.pragma_update(None, "user_version", 8)?;
+            return Ok(());
+        }
+        return Err(SemanticAuthorityError::CorruptRecord(
+            "incomplete semantic typed link backfill",
+        ));
+    }
+    if table_count != 0 || trigger_count != 0 {
+        return Err(SemanticAuthorityError::CorruptRecord(
+            "partial semantic typed link schema",
+        ));
+    }
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "CREATE TABLE semantic_typed_links (
+            event_id BLOB NOT NULL CHECK(length(event_id) = 32),
+            endpoint_event_id BLOB NOT NULL CHECK(length(endpoint_event_id) = 32),
+            endpoint_role INTEGER NOT NULL CHECK(endpoint_role IN (1, 2, 3)),
+            PRIMARY KEY(endpoint_event_id, endpoint_role, event_id),
+            FOREIGN KEY(event_id) REFERENCES semantic_events(event_id),
+            FOREIGN KEY(endpoint_event_id) REFERENCES semantic_events(event_id)
+        ) STRICT;
+
+        CREATE TRIGGER semantic_typed_links_immutable_update
+        BEFORE UPDATE ON semantic_typed_links
+        BEGIN SELECT RAISE(ABORT, 'semantic typed link is immutable'); END;
+        CREATE TRIGGER semantic_typed_links_immutable_delete
+        BEFORE DELETE ON semantic_typed_links
+        BEGIN SELECT RAISE(ABORT, 'semantic typed link is immutable'); END;
+
+        PRAGMA user_version = 8;",
+    )?;
+    backfill_typed_links(&transaction)?;
+    transaction.commit()?;
+    Ok(())
+}
+
+/// True when every stored type-2/3 event has at least one index row.
+fn typed_links_backfill_complete(connection: &Connection) -> Result<bool, SemanticAuthorityError> {
+    let unindexed: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM semantic_events e
+         WHERE e.event_type IN (2, 3) AND NOT EXISTS (
+            SELECT 1 FROM semantic_typed_links x WHERE x.event_id = e.event_id
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(unindexed == 0)
+}
+
+/// Derives index rows from the stored canonical envelopes themselves, so the
+/// backfilled index can never disagree with the authoritative event bytes.
+fn backfill_typed_links(
+    transaction: &rusqlite::Transaction<'_>,
+) -> Result<(), SemanticAuthorityError> {
+    let mut statement = transaction.prepare(
+        "SELECT event_id, event_type, canonical_unsigned_event
+         FROM semantic_events WHERE event_type IN (2, 3)",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, Vec<u8>>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, Vec<u8>>(2)?,
+        ))
+    })?;
+    let mut links: Vec<(Vec<u8>, Vec<u8>, i64)> = Vec::new();
+    for row in rows {
+        let (event_id, event_type, canonical) = row?;
+        let event = match event_type {
+            2 => {
+                let judgment = crate::decode_unsigned_judgment_event(&canonical)?;
+                vec![
+                    (judgment.source, crate::TYPED_LINK_JUDGMENT_SOURCE),
+                    (judgment.target, crate::TYPED_LINK_JUDGMENT_TARGET),
+                ]
+            }
+            3 => {
+                let verification = crate::decode_unsigned_verification_event(&canonical)?;
+                match verification.target {
+                    crate::model::VerificationTarget::Event(target) => {
+                        vec![(target.event_id, crate::TYPED_LINK_VERIFICATION_TARGET)]
+                    }
+                    crate::model::VerificationTarget::Criterion(_) => Vec::new(),
+                }
+            }
+            _ => {
+                return Err(SemanticAuthorityError::CorruptRecord(
+                    "typed link backfill event type",
+                ));
+            }
+        };
+        links.extend(
+            event
+                .into_iter()
+                .map(|(endpoint, role)| (event_id.clone(), endpoint.as_bytes().to_vec(), role)),
+        );
+    }
+    for (event_id, endpoint_event_id, endpoint_role) in links {
+        transaction
+            .execute(
+                "INSERT INTO semantic_typed_links (
+                    event_id, endpoint_event_id, endpoint_role
+                 ) VALUES (?1, ?2, ?3)",
+                rusqlite::params![event_id, endpoint_event_id, endpoint_role],
+            )
+            .map_err(|_| {
+                SemanticAuthorityError::CorruptRecord("typed link backfill endpoint binding")
+            })?;
+    }
+    Ok(())
+}
+
 pub(crate) fn load_semantic_admission_endpoint_proof(
     connection: &Connection,
 ) -> Result<SemanticAdmissionEndpointProof, SemanticAuthorityError> {

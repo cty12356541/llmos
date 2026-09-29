@@ -72,9 +72,18 @@ pub use typed::{
 pub use declassification::declassification_issue_authorization_id;
 pub use durability::{build_durability_receipt_core_digest, durability_receipt_signature_message};
 
-const SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = 8;
 const EDGE_DECLARED: i64 = 1;
 const EDGE_CAPTURED: i64 = 2;
+/// Typed-link index role: the indexed event is a Judgment and the endpoint
+/// is its `source`.
+const TYPED_LINK_JUDGMENT_SOURCE: i64 = 1;
+/// Typed-link index role: the indexed event is a Judgment and the endpoint
+/// is its `target`.
+const TYPED_LINK_JUDGMENT_TARGET: i64 = 2;
+/// Typed-link index role: the indexed event is a Verification and the
+/// endpoint is its `VerificationTarget::Event` subject.
+const TYPED_LINK_VERIFICATION_TARGET: i64 = 3;
 
 #[derive(Debug)]
 pub enum SemanticAuthorityError {
@@ -423,6 +432,7 @@ impl SemanticAuthority {
                 schema::migrate_v5(&mut connection)?;
                 schema::migrate_v6(&mut connection)?;
                 schema::migrate_v7(&mut connection)?;
+                schema::migrate_v8(&mut connection)?;
             }
             1 => {
                 schema::migrate_v1_to_v2(&mut connection)?;
@@ -431,6 +441,7 @@ impl SemanticAuthority {
                 schema::migrate_v5(&mut connection)?;
                 schema::migrate_v6(&mut connection)?;
                 schema::migrate_v7(&mut connection)?;
+                schema::migrate_v8(&mut connection)?;
             }
             2 => {
                 schema::migrate_v3(&mut connection)?;
@@ -438,23 +449,31 @@ impl SemanticAuthority {
                 schema::migrate_v5(&mut connection)?;
                 schema::migrate_v6(&mut connection)?;
                 schema::migrate_v7(&mut connection)?;
+                schema::migrate_v8(&mut connection)?;
             }
             3 => {
                 schema::migrate_v4(&mut connection)?;
                 schema::migrate_v5(&mut connection)?;
                 schema::migrate_v6(&mut connection)?;
                 schema::migrate_v7(&mut connection)?;
+                schema::migrate_v8(&mut connection)?;
             }
             4 => {
                 schema::migrate_v5(&mut connection)?;
                 schema::migrate_v6(&mut connection)?;
                 schema::migrate_v7(&mut connection)?;
+                schema::migrate_v8(&mut connection)?;
             }
             5 => {
                 schema::migrate_v6(&mut connection)?;
                 schema::migrate_v7(&mut connection)?;
+                schema::migrate_v8(&mut connection)?;
             }
-            6 => schema::migrate_v7(&mut connection)?,
+            6 => {
+                schema::migrate_v7(&mut connection)?;
+                schema::migrate_v8(&mut connection)?;
+            }
+            7 => schema::migrate_v8(&mut connection)?,
             SCHEMA_VERSION => {}
             other => return Err(SemanticAuthorityError::SchemaVersionUnsupported(other)),
         }
@@ -1128,6 +1147,7 @@ impl SemanticAuthority {
                 request.admitted_at_ms,
             )?;
         }
+        insert_typed_links(&transaction, request.claimed_event_id, &event)?;
 
         let receipt = seal_admission(
             &transaction,
@@ -1889,6 +1909,60 @@ fn insert_typed_event(
             event.key_id().as_bytes().as_slice(),
         ],
     )?;
+    Ok(())
+}
+
+/// Writes the durable typed-link index rows for one admitted typed event so
+/// trust-view lookups resolve endpoints through the index instead of a full
+/// canonical rescan. The canonical envelope remains authoritative: readers
+/// re-verify each indexed row against the decoded payload.
+fn insert_typed_links(
+    transaction: &Transaction<'_>,
+    event_id: SemanticEventId,
+    event: &typed::TypedEvent,
+) -> Result<(), SemanticAuthorityError> {
+    let mut links: Vec<(SemanticEventId, i64)> = Vec::new();
+    match event {
+        typed::TypedEvent::Judgment(judgment) => {
+            links.push((judgment.source, TYPED_LINK_JUDGMENT_SOURCE));
+            links.push((judgment.target, TYPED_LINK_JUDGMENT_TARGET));
+        }
+        typed::TypedEvent::Verification(verification) => {
+            if let VerificationTarget::Event(target) = verification.target {
+                links.push((target.event_id, TYPED_LINK_VERIFICATION_TARGET));
+            }
+        }
+        typed::TypedEvent::Retraction(_) => {}
+    }
+    for (endpoint_event_id, endpoint_role) in links {
+        transaction
+            .execute(
+                "INSERT INTO semantic_typed_links (
+                    event_id, endpoint_event_id, endpoint_role
+                 ) VALUES (?1, ?2, ?3)",
+                params![
+                    event_id.as_bytes().as_slice(),
+                    endpoint_event_id.as_bytes().as_slice(),
+                    endpoint_role,
+                ],
+            )
+            .map_err(|error| {
+                if matches!(
+                    error,
+                    rusqlite::Error::SqliteFailure(
+                        rusqlite::ffi::Error {
+                            code: rusqlite::ffi::ErrorCode::ConstraintViolation,
+                            ..
+                        },
+                        _,
+                    )
+                ) {
+                    SemanticAuthorityError::CorruptRecord("typed link endpoint binding")
+                } else {
+                    SemanticAuthorityError::Sqlite(error)
+                }
+            })?;
+    }
     Ok(())
 }
 

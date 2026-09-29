@@ -4,7 +4,7 @@
 //! intentionally out of scope; this module derives taint/labels and
 //! verification facts from durable admission rows only.
 
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 
 use nlos_types::{ReceiptId, SemanticEventId};
 
@@ -108,36 +108,49 @@ fn load_verification_facts(
     connection: &Connection,
     subject_event_id: SemanticEventId,
 ) -> Result<Vec<TrustViewVerificationFact>, SemanticAuthorityError> {
+    // Resolve candidates through the durable typed-link index instead of a
+    // full canonical rescan of every Verification event; each indexed row is
+    // still re-verified against its decoded canonical envelope below.
     let mut statement = connection.prepare(
         "SELECT e.canonical_unsigned_event, l.log_seq, a.admitted_at_ms
-         FROM semantic_events e
-         JOIN event_log l ON l.event_id = e.event_id
-         JOIN admission_receipts a ON a.event_id = e.event_id
-         WHERE e.event_type = 3
+         FROM semantic_typed_links x
+         JOIN semantic_events e ON e.event_id = x.event_id
+         JOIN event_log l ON l.event_id = x.event_id
+         JOIN admission_receipts a ON a.event_id = x.event_id
+         WHERE x.endpoint_event_id = ?1 AND x.endpoint_role = ?2
          ORDER BY l.log_seq",
     )?;
-    let rows = statement.query_map([], |row| {
-        Ok((
-            row.get::<_, Vec<u8>>(0)?,
-            row.get::<_, i64>(1)?,
-            row.get::<_, i64>(2)?,
-        ))
-    })?;
+    let rows = statement.query_map(
+        params![
+            subject_event_id.as_bytes().as_slice(),
+            crate::TYPED_LINK_VERIFICATION_TARGET,
+        ],
+        |row| {
+            Ok((
+                row.get::<_, Vec<u8>>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        },
+    )?;
     let mut facts = Vec::new();
     for row in rows {
         let (canonical, log_seq, admitted_at_ms) = row?;
         let event = decode_unsigned_verification_event(&canonical)?;
-        if matches!(
+        if !matches!(
             event.target,
             VerificationTarget::Event(target) if target.event_id == subject_event_id
         ) {
-            facts.push(TrustViewVerificationFact {
-                verification_event_id: crate::semantic_event_id(&canonical),
-                log_seq: crate::decode_u64(log_seq)?,
-                outcome: event.outcome,
-                admitted_at_ms: crate::decode_u64(admitted_at_ms)?,
-            });
+            return Err(SemanticAuthorityError::CorruptRecord(
+                "verification link index disagrees with canonical event",
+            ));
         }
+        facts.push(TrustViewVerificationFact {
+            verification_event_id: crate::semantic_event_id(&canonical),
+            log_seq: crate::decode_u64(log_seq)?,
+            outcome: event.outcome,
+            admitted_at_ms: crate::decode_u64(admitted_at_ms)?,
+        });
     }
     Ok(facts)
 }
@@ -146,24 +159,45 @@ fn load_judgment_facts(
     connection: &Connection,
     subject_event_id: SemanticEventId,
 ) -> Result<Vec<TrustViewJudgmentFact>, SemanticAuthorityError> {
+    // Both endpoint roles of the subject resolve through the index; the
+    // canonical envelope remains authoritative for the emitted fact.
     let mut statement = connection.prepare(
         "SELECT e.canonical_unsigned_event, l.log_seq
-         FROM semantic_events e
-         JOIN event_log l ON l.event_id = e.event_id
-         JOIN admission_receipts a ON a.event_id = e.event_id
-         WHERE e.event_type = 2
+         FROM semantic_typed_links x
+         JOIN semantic_events e ON e.event_id = x.event_id
+         JOIN event_log l ON l.event_id = x.event_id
+         JOIN admission_receipts a ON a.event_id = x.event_id
+         WHERE x.endpoint_event_id = ?1 AND x.endpoint_role IN (?2, ?3)
          ORDER BY l.log_seq",
     )?;
-    let rows = statement.query_map([], |row| {
-        Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, i64>(1)?))
-    })?;
+    let rows = statement.query_map(
+        params![
+            subject_event_id.as_bytes().as_slice(),
+            crate::TYPED_LINK_JUDGMENT_SOURCE,
+            crate::TYPED_LINK_JUDGMENT_TARGET,
+        ],
+        |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, i64>(1)?)),
+    )?;
     let mut facts = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     for row in rows {
         let (canonical, log_seq) = row?;
         let event = decode_unsigned_judgment_event(&canonical)?;
+        if event.source != subject_event_id && event.target != subject_event_id {
+            return Err(SemanticAuthorityError::CorruptRecord(
+                "judgment link index disagrees with canonical event",
+            ));
+        }
+        let judgment_event_id = crate::semantic_event_id(&canonical);
+        // A self-referential judgment is indexed under both endpoint roles;
+        // it still yields exactly one fact, with the Source role first as
+        // the full-scan implementation did.
+        if !seen.insert(judgment_event_id) {
+            continue;
+        }
         if event.source == subject_event_id {
             facts.push(TrustViewJudgmentFact {
-                judgment_event_id: crate::semantic_event_id(&canonical),
+                judgment_event_id,
                 log_seq: crate::decode_u64(log_seq)?,
                 relation: event.relation,
                 counterpart_event_id: event.target,
@@ -171,7 +205,7 @@ fn load_judgment_facts(
             });
         } else if event.target == subject_event_id {
             facts.push(TrustViewJudgmentFact {
-                judgment_event_id: crate::semantic_event_id(&canonical),
+                judgment_event_id,
                 log_seq: crate::decode_u64(log_seq)?,
                 relation: event.relation,
                 counterpart_event_id: event.source,
