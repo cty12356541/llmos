@@ -13,7 +13,9 @@ use nlos_outbox::{
     ReconcileSink,
 };
 use nlos_runtime::{FiberHandle, RuntimeError, WakeOutcome, WakeSink};
-use nlos_runtime_tokio::{OutboxPump, PumpConfig, PumpState, RecordingReconcileSink};
+use nlos_runtime_tokio::{
+    OutboxPump, OutboxPumpStartError, PumpConfig, PumpState, RecordingReconcileSink,
+};
 use nlos_types::{CallbackId, ExecutionFiberId, Generation, OperationId, ReceiptId};
 
 /// Generous bound for events that must happen.
@@ -173,6 +175,25 @@ fn config(poll_interval: Duration, failure_threshold: usize) -> PumpConfig {
         poll_interval,
         failure_threshold,
     }
+}
+
+/// A zero `poll_interval` is rejected at `start` instead of degenerating
+/// into an unbacked busy-poll loop; no pump thread is spawned.
+#[test]
+fn zero_poll_interval_is_rejected_at_start() {
+    let (source, _probe) = FlakySource::new(1);
+    let rejection = OutboxPump::start(
+        OutboxConsumer {
+            source,
+            wake_sink: PanickingWakeSink, // never reached: start fails first
+            reconcile_sink: RecordingReconcileSink::default(),
+            config: ConsumerConfig { batch_limit: 8 },
+        },
+        config(Duration::ZERO, 16),
+    )
+    .err()
+    .expect("zero poll interval must be rejected");
+    assert!(matches!(rejection, OutboxPumpStartError::InvalidConfig(_)));
 }
 
 /// Observability: a persistently failing source shows up in `health()` with
