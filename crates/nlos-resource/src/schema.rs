@@ -696,3 +696,79 @@ pub(crate) fn migrate_v6(connection: &mut Connection) -> Result<(), ResourceAuth
     transaction.commit()?;
     Ok(())
 }
+
+/// Adds the durable, append-only Reservation throttle-decision ledger (W44-RA
+/// `record_throttle_decision` write surface). The migration is purely
+/// additive: no `reservations` column changes, so surviving v1-v6 rows and
+/// the immutable Reservation identity keep their exact meaning. A decision
+/// row may only be inserted while its reservation carries no terminal
+/// overlay (the binding trigger); the rows themselves are immutable history
+/// (the update/delete triggers).
+pub(crate) fn migrate_v7(connection: &mut Connection) -> Result<(), ResourceAuthorityError> {
+    let table_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type='table' AND name='reservation_throttle_decisions'",
+        [],
+        |row| row.get(0),
+    )?;
+    let trigger_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN (
+            'reservation_throttle_binding_insert',
+            'reservation_throttle_decisions_immutable_update',
+            'reservation_throttle_decisions_immutable_delete'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if table_count == 1 && trigger_count == 3 {
+        connection.pragma_update(None, "user_version", 7)?;
+        return Ok(());
+    }
+    if table_count != 0 || trigger_count != 0 {
+        return Err(ResourceAuthorityError::CorruptRecord(
+            "partial resource throttle schema",
+        ));
+    }
+
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "CREATE TABLE reservation_throttle_decisions (
+            receipt_id BLOB PRIMARY KEY NOT NULL CHECK(length(receipt_id) = 16),
+            idempotency_key BLOB NOT NULL UNIQUE CHECK(length(idempotency_key) = 16),
+            reservation_id BLOB NOT NULL CHECK(length(reservation_id) = 16),
+            operation_id BLOB NOT NULL CHECK(length(operation_id) = 16),
+            sequence INTEGER NOT NULL CHECK(sequence >= 1),
+            throttle_percent INTEGER NOT NULL CHECK(throttle_percent BETWEEN 0 AND 100),
+            before_cpu_shares INTEGER NOT NULL CHECK(before_cpu_shares >= 0),
+            before_memory_mib INTEGER NOT NULL CHECK(before_memory_mib >= 0),
+            before_io_weight INTEGER NOT NULL CHECK(before_io_weight >= 0),
+            after_cpu_shares INTEGER NOT NULL CHECK(after_cpu_shares >= 0),
+            after_memory_mib INTEGER NOT NULL CHECK(after_memory_mib >= 0),
+            after_io_weight INTEGER NOT NULL CHECK(after_io_weight >= 0),
+            decided_at_ms INTEGER NOT NULL CHECK(decided_at_ms >= 0),
+            UNIQUE(reservation_id, sequence),
+            FOREIGN KEY(reservation_id) REFERENCES reservations(reservation_id)
+        ) STRICT;
+
+        CREATE TRIGGER reservation_throttle_binding_insert
+        BEFORE INSERT ON reservation_throttle_decisions
+        WHEN NOT EXISTS (
+            SELECT 1 FROM reservations AS r
+            WHERE r.reservation_id = NEW.reservation_id
+              AND r.operation_id = NEW.operation_id
+              AND r.quarantine_receipt_id IS NULL
+              AND r.finalize_receipt_id IS NULL
+        )
+        BEGIN SELECT RAISE(ABORT, 'throttle decision binding mismatch'); END;
+        CREATE TRIGGER reservation_throttle_decisions_immutable_update
+        BEFORE UPDATE ON reservation_throttle_decisions
+        BEGIN SELECT RAISE(ABORT, 'throttle decision is immutable'); END;
+        CREATE TRIGGER reservation_throttle_decisions_immutable_delete
+        BEFORE DELETE ON reservation_throttle_decisions
+        BEGIN SELECT RAISE(ABORT, 'throttle decision is immutable'); END;
+
+        PRAGMA user_version = 7;",
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
