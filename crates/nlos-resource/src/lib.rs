@@ -1385,6 +1385,17 @@ impl ResourceAuthority {
     /// present, and credits `upper_bound - final_usage` back to the account's
     /// available credit (double-entry release of the hold).
     ///
+    /// Stale-fence settlement: while the quote's driver fence is still
+    /// current, any monotonic settlement within the upper bound is accepted.
+    /// Once the driver rotated past the reservation's fence, consumption is
+    /// frozen at the durable high-water, so settlement is only accepted
+    /// pinned to exactly that frozen `(high_water_seq, high_water)` — the
+    /// escape hatch that keeps a rotated driver from permanently freezing
+    /// the held credit. Any larger claim fails as [`ResourceAuthorityError::StaleDriver`]
+    /// because the stale fence can no longer prove usage above the
+    /// high-water; activation, consumption, and quarantine keep failing
+    /// closed on a stale fence.
+    ///
     /// # Errors
     /// Fails closed on inactive/stale bindings, replay conflicts, timestamp
     /// regressions, monotonicity/bound violations, or storage failure.
@@ -1480,12 +1491,30 @@ impl ResourceAuthority {
         {
             return Err(ResourceAuthorityError::InvalidFinalizeTimestamp);
         }
-        active_driver(
+        // Settlement fence. Current fence: any monotonic settlement within
+        // the upper bound is provable, as before. Stale or absent fence: the
+        // durable high-water is the only provable settlement basis (usage
+        // above it could only be reported by the rotated-away driver), so
+        // settlement is pinned to exactly the frozen high-water pair — this
+        // is the recovery path for holds that a driver rotation would
+        // otherwise freeze forever.
+        if let Err(fence_error) = active_driver(
             &transaction,
             reservation.driver_id,
             reservation.driver_generation,
             reservation.driver_fencing_token,
-        )?;
+        ) {
+            match fence_error {
+                ResourceAuthorityError::StaleDriver | ResourceAuthorityError::DriverNotFound => {
+                    if q.final_seq != reservation.usage_high_water_seq
+                        || q.final_usage != reservation.usage_high_water
+                    {
+                        return Err(ResourceAuthorityError::StaleDriver);
+                    }
+                }
+                other_error => return Err(other_error),
+            }
+        }
         if q.final_seq < reservation.usage_high_water_seq {
             return Err(ResourceAuthorityError::FinalizeSequenceConflict);
         }
