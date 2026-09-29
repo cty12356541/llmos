@@ -62,6 +62,18 @@ pub const CONTROL_CAPABILITY_GENERATION: u64 = 1;
 pub const LOCAL_ISSUER_PRINCIPAL_ID: [u8; 16] = [0x31; 16];
 /// Bounded upper bound for recovery alerts requested by one inspection.
 pub const INSPECT_ALERT_LIMIT: u32 = 8;
+/// Widest alert window the wire contract admits
+/// ([`nlos_schema::MAX_SYSTEM_CONTROL_ALERTS`]). The plan-scoped
+/// `InspectTask` read requests this window because its projection answers
+/// for exactly one plan: the target plan's escalated alert must not fall
+/// out of the snapshot merely because it ranked beyond the small aggregate
+/// view (the recovery GET views cannot carry `plan_id` on the wire, so the
+/// only lever the client has is the window size).
+pub const INSPECT_TASK_ALERT_LIMIT: u32 = 256;
+const _: () = assert!(
+    INSPECT_TASK_ALERT_LIMIT as usize == nlos_schema::MAX_SYSTEM_CONTROL_ALERTS,
+    "the scoped alert window must stay pinned to the schema alert bound",
+);
 
 const LOCAL_APPLICATION_ID: [u8; 16] = [0x32; 16];
 const LOCAL_PROCESS_ID: [u8; 16] = [0x33; 16];
@@ -430,6 +442,9 @@ pub struct RecoveryInspection {
     pub durable_escalated: u64,
     pub durable_unacknowledged_escalated: u64,
     pub durable_resolved: u64,
+    /// Whether the handler cut the alert list at the requested bound: when
+    /// set, the (incomplete) list is a window, not the whole escalated set.
+    pub alerts_truncated: bool,
     /// Bounded alert list exactly as the handler returned it.
     pub alerts: Vec<RecoveryAlertInsight>,
 }
@@ -448,6 +463,8 @@ pub struct SemanticRecoveryInspection {
     pub durable_unacknowledged_escalated: u64,
     pub durable_resolved: u64,
     pub domain_faulted: bool,
+    /// Whether the handler cut the alert list at the requested bound.
+    pub alerts_truncated: bool,
     pub alerts: Vec<SemanticRecoveryAlertInsight>,
 }
 
@@ -473,6 +490,8 @@ pub struct ResourceRecoveryInspection {
     pub durable_unacknowledged_escalated: u64,
     pub durable_resolved: u64,
     pub domain_faulted: bool,
+    /// Whether the handler cut the alert list at the requested bound.
+    pub alerts_truncated: bool,
     pub alerts: Vec<ResourceRecoveryAlertInsight>,
 }
 
@@ -944,24 +963,44 @@ fn layer_view_get_arm(
 /// Returns [`ControlError::Schema`] when payload encoding fails and
 /// [`ControlError::InvalidCommand`] when the bounded reason contract is
 /// violated before encoding.
+#[allow(clippy::too_many_lines)] // The per-variant compilation arms stay flat in one auditable match.
 pub fn build_request_envelope(command: &ControlCommand) -> Result<Envelope, ControlError> {
     let (method, payload) = match command {
         ControlCommand::InspectHealth
-        | ControlCommand::InspectTask { .. }
         | ControlCommand::InspectProcess { .. }
         | ControlCommand::InspectResource { .. }
         | ControlCommand::InspectApplication { .. }
         | ControlCommand::ExportMetrics => (
             GET_METHOD,
-            recovery_view_payload(SystemControlView::ArtifactCommitRecovery)?,
+            recovery_view_payload(
+                SystemControlView::ArtifactCommitRecovery,
+                INSPECT_ALERT_LIMIT,
+            )?,
+        ),
+        // Plan-scoped read: the wire contract pins the recovery views to
+        // empty addressing, so the plan rides only in the projection; the
+        // widest admissible window keeps its escalated alert inside the
+        // snapshot (see `INSPECT_TASK_ALERT_LIMIT`).
+        ControlCommand::InspectTask { .. } => (
+            GET_METHOD,
+            recovery_view_payload(
+                SystemControlView::ArtifactCommitRecovery,
+                INSPECT_TASK_ALERT_LIMIT,
+            )?,
         ),
         ControlCommand::InspectSemanticHealth | ControlCommand::ExportSemanticMetrics => (
             GET_METHOD,
-            recovery_view_payload(SystemControlView::SemanticCommitRecovery)?,
+            recovery_view_payload(
+                SystemControlView::SemanticCommitRecovery,
+                INSPECT_ALERT_LIMIT,
+            )?,
         ),
         ControlCommand::InspectResourceHealth | ControlCommand::ExportResourceMetrics => (
             GET_METHOD,
-            recovery_view_payload(SystemControlView::ResourceCommitRecovery)?,
+            recovery_view_payload(
+                SystemControlView::ResourceCommitRecovery,
+                INSPECT_ALERT_LIMIT,
+            )?,
         ),
         layer_command @ (ControlCommand::InspectTaskGroup { .. }
         | ControlCommand::InspectTaskNode { .. }
@@ -1034,11 +1073,14 @@ pub fn build_request_envelope(command: &ControlCommand) -> Result<Envelope, Cont
     })
 }
 
-fn recovery_view_payload(view: SystemControlView) -> Result<Vec<u8>, ControlError> {
+fn recovery_view_payload(
+    view: SystemControlView,
+    alert_limit: u32,
+) -> Result<Vec<u8>, ControlError> {
     encode_get_system_control_request(&GetSystemControlRequest {
         schema: Some(system_control_schema_identity()),
         view: view.into(),
-        alert_limit: INSPECT_ALERT_LIMIT,
+        alert_limit,
         target_id: Vec::new(),
         plan_id: Vec::new(),
         target_generation: 0,
@@ -1394,9 +1436,10 @@ fn decoded_result_receipt(
 
 fn decoded_snapshot(
     response: &Envelope,
+    alert_limit: u32,
 ) -> Result<ArtifactRecoveryOperationsSnapshot, ControlError> {
     let snapshot = decode_artifact_recovery_operations_snapshot(&response.payload)?;
-    if snapshot.alerts.len() > usize::try_from(INSPECT_ALERT_LIMIT).unwrap_or(usize::MAX) {
+    if snapshot.alerts.len() > usize::try_from(alert_limit).unwrap_or(usize::MAX) {
         return Err(ControlError::UnexpectedResponse(
             "snapshot exceeded the requested alert bound",
         ));
@@ -1569,8 +1612,11 @@ fn decoded_resource_snapshot(
     Ok(snapshot)
 }
 
-fn decoded_inspection(response: &Envelope) -> Result<RecoveryInspection, ControlError> {
-    let snapshot = decoded_snapshot(response)?;
+fn decoded_inspection(
+    response: &Envelope,
+    alert_limit: u32,
+) -> Result<RecoveryInspection, ControlError> {
+    let snapshot = decoded_snapshot(response, alert_limit)?;
     let metrics = snapshot.metrics.ok_or(ControlError::Schema(
         CompatibilityError::MissingSystemControlMetrics,
     ))?;
@@ -1582,6 +1628,7 @@ fn decoded_inspection(response: &Envelope) -> Result<RecoveryInspection, Control
         durable_escalated: metrics.durable_escalated,
         durable_unacknowledged_escalated: metrics.durable_unacknowledged_escalated,
         durable_resolved: metrics.durable_resolved,
+        alerts_truncated: snapshot.alerts_truncated,
         alerts: snapshot
             .alerts
             .into_iter()
@@ -1612,6 +1659,7 @@ fn decoded_semantic_inspection(
         durable_unacknowledged_escalated: metrics.durable_unacknowledged_escalated,
         durable_resolved: metrics.durable_resolved,
         domain_faulted: metrics.domain_faulted,
+        alerts_truncated: snapshot.alerts_truncated,
         alerts: snapshot
             .alerts
             .into_iter()
@@ -1642,6 +1690,7 @@ fn decoded_resource_inspection(
         durable_unacknowledged_escalated: metrics.durable_unacknowledged_escalated,
         durable_resolved: metrics.durable_resolved,
         domain_faulted: metrics.domain_faulted,
+        alerts_truncated: snapshot.alerts_truncated,
         alerts: snapshot
             .alerts
             .into_iter()
@@ -1884,9 +1933,10 @@ fn decoded_snapshot_outcome(
     response: &Envelope,
 ) -> Result<ControlOutcome, ControlError> {
     match command {
-        ControlCommand::InspectHealth => {
-            Ok(ControlOutcome::Inspected(decoded_inspection(response)?))
-        }
+        ControlCommand::InspectHealth => Ok(ControlOutcome::Inspected(decoded_inspection(
+            response,
+            INSPECT_ALERT_LIMIT,
+        )?)),
         ControlCommand::InspectSemanticHealth => Ok(ControlOutcome::SemanticInspected(
             decoded_semantic_inspection(response)?,
         )),
@@ -1894,7 +1944,7 @@ fn decoded_snapshot_outcome(
             decoded_resource_inspection(response)?,
         )),
         ControlCommand::ExportMetrics => {
-            let metrics = decoded_snapshot(response)?
+            let metrics = decoded_snapshot(response, INSPECT_ALERT_LIMIT)?
                 .metrics
                 .ok_or(ControlError::Schema(
                     CompatibilityError::MissingSystemControlMetrics,
@@ -1968,10 +2018,24 @@ impl ControlReceipt {
                     Ok(decoded_snapshot_outcome(snapshot_command, response)?)
                 }
                 ControlCommand::InspectTask { plan_id } => {
-                    let mut inspected = decoded_inspection(response)?;
+                    // The widest admissible window backs this projection: the
+                    // wire contract pins the recovery views to empty
+                    // addressing, so the plan is retained client-side from
+                    // the bounded escalated-alert list.
+                    let mut inspected = decoded_inspection(response, INSPECT_TASK_ALERT_LIMIT)?;
                     inspected
                         .alerts
                         .retain(|alert| alert.plan_id.as_slice() == plan_id.as_slice());
+                    if inspected.alerts.is_empty() && inspected.alerts_truncated {
+                        // The handler cut the list before the whole
+                        // escalated set was returned: the plan may still
+                        // hold an escalated alert beyond the window, so a
+                        // synthesized NotFound would be a false negative.
+                        // Fail as an unanswerable projection instead.
+                        return Err(ControlError::UnexpectedResponse(
+                            "the escalated alert window was truncated before the requested plan",
+                        ));
+                    }
                     if inspected.alerts.is_empty() {
                         Err(not_found_failure(
                             "requested recovery task was not found in the operations snapshot",
@@ -2174,6 +2238,7 @@ fn push_semantic_inspection(bytes: &mut Vec<u8>, inspection: &SemanticRecoveryIn
     bytes.extend_from_slice(&inspection.durable_unacknowledged_escalated.to_le_bytes());
     bytes.extend_from_slice(&inspection.durable_resolved.to_le_bytes());
     bytes.push(u8::from(inspection.domain_faulted));
+    bytes.push(u8::from(inspection.alerts_truncated));
     bytes.extend_from_slice(
         &u32::try_from(inspection.alerts.len())
             .unwrap_or(u32::MAX)
@@ -2304,6 +2369,7 @@ fn push_artifact_inspection(bytes: &mut Vec<u8>, inspection: &RecoveryInspection
     bytes.extend_from_slice(&inspection.durable_escalated.to_le_bytes());
     bytes.extend_from_slice(&inspection.durable_unacknowledged_escalated.to_le_bytes());
     bytes.extend_from_slice(&inspection.durable_resolved.to_le_bytes());
+    bytes.push(u8::from(inspection.alerts_truncated));
     bytes.extend_from_slice(
         &u32::try_from(inspection.alerts.len())
             .unwrap_or(u32::MAX)
@@ -2334,6 +2400,7 @@ fn push_resource_recovery_inspection(bytes: &mut Vec<u8>, inspection: &ResourceR
     bytes.extend_from_slice(&inspection.durable_unacknowledged_escalated.to_le_bytes());
     bytes.extend_from_slice(&inspection.durable_resolved.to_le_bytes());
     bytes.push(u8::from(inspection.domain_faulted));
+    bytes.push(u8::from(inspection.alerts_truncated));
     bytes.extend_from_slice(
         &u32::try_from(inspection.alerts.len())
             .unwrap_or(u32::MAX)
@@ -2408,7 +2475,15 @@ pub fn parse_hex_id(value: &str) -> Result<[u8; REQUEST_ID_BYTES], ControlError>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nlos_schema::{decode_get_system_control_request, decode_submit_control_command_request};
+    use nlos_schema::sabi::v1::{
+        ArtifactRecoveryAlertStatus, RecoveryFailureAuthority, RecoveryWorkerLifecycleState,
+        SabiResponseContext,
+    };
+    use nlos_schema::{
+        decode_get_system_control_request, decode_submit_control_command_request,
+        encode_artifact_recovery_operations_snapshot, encode_resource_recovery_operations_snapshot,
+        encode_semantic_recovery_operations_snapshot,
+    };
 
     #[test]
     fn parse_hex_id_is_fail_closed() {
@@ -2433,6 +2508,253 @@ mod tests {
                 .payload,
             envelope.payload
         );
+    }
+
+    /// Regression (W43-E3, audit 14 D1): the plan-scoped read must request
+    /// the widest admissible window — the recovery GET views cannot carry
+    /// `plan_id`, so a small window silently misreports plans whose
+    /// escalated alert ranked beyond it as "not found".
+    #[test]
+    fn inspect_task_envelope_requests_the_widest_alert_window() {
+        let scoped = build_request_envelope(&ControlCommand::InspectTask {
+            plan_id: [0x42; 16],
+        })
+        .unwrap();
+        assert_eq!(scoped.method, GET_METHOD);
+        let request = decode_get_system_control_request(&scoped.payload).unwrap();
+        assert_eq!(
+            request.view,
+            i32::from(SystemControlView::ArtifactCommitRecovery)
+        );
+        assert_eq!(request.alert_limit, INSPECT_TASK_ALERT_LIMIT);
+        assert!(request.target_id.is_empty());
+        assert!(request.plan_id.is_empty());
+
+        let aggregate = build_request_envelope(&ControlCommand::InspectHealth).unwrap();
+        let aggregate_request = decode_get_system_control_request(&aggregate.payload).unwrap();
+        assert_eq!(aggregate_request.alert_limit, INSPECT_ALERT_LIMIT);
+    }
+
+    fn synthetic_response_envelope(payload: Vec<u8>) -> Envelope {
+        Envelope {
+            schema: Some(nlos_schema::sabi::v1::SchemaIdentity {
+                name: SABI_ENVELOPE_SCHEMA.to_owned(),
+                major: 1,
+                minor: 1,
+                critical_extension_ids: Vec::new(),
+                non_critical_extension_ids: Vec::new(),
+            }),
+            request_id: vec![0x35; 16],
+            service: crate::SYSTEM_CONTROL_SERVICE.to_owned(),
+            method: GET_METHOD.to_owned(),
+            common_context: Some(envelope::CommonContext::ResponseContext(
+                SabiResponseContext {
+                    correlation_id: vec![0x34; 16],
+                    operation: None,
+                    receipts: Vec::new(),
+                    failure: None,
+                },
+            )),
+            payload,
+        }
+    }
+
+    fn synthetic_alert(plan: [u8; 16], escalated_at_ms: i64) -> ArtifactRecoveryAlertStatus {
+        ArtifactRecoveryAlertStatus {
+            plan_id: plan.to_vec(),
+            total_failures: 1,
+            last_failure_authority: i32::from(RecoveryFailureAuthority::Task),
+            first_failed_at_ms: escalated_at_ms - 2_000,
+            last_failed_at_ms: escalated_at_ms - 1_000,
+            escalated_at_ms,
+            acknowledgement_receipt: None,
+        }
+    }
+
+    fn synthetic_artifact_response(
+        alerts: Vec<ArtifactRecoveryAlertStatus>,
+        alerts_truncated: bool,
+    ) -> Envelope {
+        let snapshot = ArtifactRecoveryOperationsSnapshot {
+            schema: Some(system_control_schema_identity()),
+            metrics: Some(ArtifactRecoveryMetrics {
+                worker_state: i32::from(RecoveryWorkerLifecycleState::Running),
+                completed_cycles: 1,
+                total_inspected: 2,
+                total_finalized: 1,
+                consecutive_failed_cycles: 0,
+                retry_delay_ms: None,
+                durable_retrying: 0,
+                durable_escalated: u64::try_from(alerts.len()).unwrap_or(u64::MAX),
+                durable_unacknowledged_escalated: 0,
+                durable_resolved: 0,
+                last_failures: Vec::new(),
+                domain_faulted: false,
+            }),
+            alerts,
+            alerts_truncated,
+        };
+        synthetic_response_envelope(
+            encode_artifact_recovery_operations_snapshot(&snapshot).unwrap(),
+        )
+    }
+
+    /// Regression (W43-E3, audit 14 D1): a plan whose escalated alert ranks
+    /// beyond the small aggregate window must still be answered.
+    #[test]
+    fn compose_inspect_task_answers_a_plan_beyond_the_aggregate_window() {
+        let alerts: Vec<_> = (1_u8..=9)
+            .map(|tag| synthetic_alert([tag; 16], 10_000 + i64::from(tag)))
+            .collect();
+        let response = synthetic_artifact_response(alerts, false);
+        let receipt = ControlReceipt::compose(
+            &ControlCommand::InspectTask {
+                plan_id: [0x09; 16],
+            },
+            &response,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let ControlOutcome::Inspected(inspected) = receipt.outcome.unwrap() else {
+            panic!("expected an inspected outcome");
+        };
+        assert_eq!(inspected.alerts.len(), 1);
+        assert_eq!(inspected.alerts[0].plan_id, vec![0x09; 16]);
+        assert!(!inspected.alerts_truncated);
+    }
+
+    /// Regression (W43-E3, audit 14 D1): when the window was truncated the
+    /// plan may hold an alert beyond it — the projection must refuse to
+    /// answer instead of manufacturing a false `NotFound`.
+    #[test]
+    fn compose_inspect_task_reports_truncation_instead_of_false_not_found() {
+        let alerts: Vec<_> = (1_u8..=8)
+            .map(|tag| synthetic_alert([tag; 16], 10_000 + i64::from(tag)))
+            .collect();
+        let response = synthetic_artifact_response(alerts, true);
+        let composed = ControlReceipt::compose(
+            &ControlCommand::InspectTask {
+                plan_id: [0xA9; 16],
+            },
+            &response,
+            None,
+            None,
+            None,
+        );
+        assert!(matches!(
+            composed,
+            Err(ControlError::UnexpectedResponse(
+                "the escalated alert window was truncated before the requested plan"
+            ))
+        ));
+    }
+
+    /// The definitive miss stays a `NotFound` failure: an untruncated window
+    /// proves the plan holds no escalated recovery alert.
+    #[test]
+    fn compose_inspect_task_not_found_is_definitive_when_untruncated() {
+        let alerts: Vec<_> = (1_u8..=8)
+            .map(|tag| synthetic_alert([tag; 16], 10_000 + i64::from(tag)))
+            .collect();
+        let response = synthetic_artifact_response(alerts, false);
+        let receipt = ControlReceipt::compose(
+            &ControlCommand::InspectTask {
+                plan_id: [0xB7; 16],
+            },
+            &response,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let failure = receipt.outcome.unwrap_err();
+        assert_eq!(failure.code, i32::from(SabiErrorCode::NotFound));
+    }
+
+    /// Regression (W43-E3, audit 14 D1): the handler's truncation flag must
+    /// survive the projection — dropping it hid window misses from every
+    /// aggregate consumer.
+    #[test]
+    fn compose_inspect_health_propagates_the_truncation_flag() {
+        let alerts: Vec<_> = (1_u8..=2)
+            .map(|tag| synthetic_alert([tag; 16], 10_000 + i64::from(tag)))
+            .collect();
+        let response = synthetic_artifact_response(alerts, true);
+        let receipt =
+            ControlReceipt::compose(&ControlCommand::InspectHealth, &response, None, None, None)
+                .unwrap();
+        let ControlOutcome::Inspected(inspected) = receipt.outcome.unwrap() else {
+            panic!("expected an inspected outcome");
+        };
+        assert!(inspected.alerts_truncated);
+        assert_eq!(inspected.alerts.len(), 2);
+    }
+
+    #[test]
+    fn compose_semantic_and_resource_health_propagate_the_truncation_flag() {
+        let semantic = synthetic_response_envelope(
+            encode_semantic_recovery_operations_snapshot(&SemanticRecoveryOperationsSnapshot {
+                schema: Some(system_control_schema_identity()),
+                metrics: Some(SemanticRecoveryMetrics {
+                    total_inspected: 1,
+                    total_finalized: 1,
+                    consecutive_failed_cycles: 0,
+                    durable_retrying: 0,
+                    durable_escalated: 1,
+                    durable_unacknowledged_escalated: 0,
+                    durable_resolved: 0,
+                    domain_faulted: false,
+                }),
+                alerts: Vec::new(),
+                alerts_truncated: true,
+            })
+            .unwrap(),
+        );
+        let receipt = ControlReceipt::compose(
+            &ControlCommand::InspectSemanticHealth,
+            &semantic,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let ControlOutcome::SemanticInspected(inspected) = receipt.outcome.unwrap() else {
+            panic!("expected a semantic inspected outcome");
+        };
+        assert!(inspected.alerts_truncated);
+
+        let resource = synthetic_response_envelope(
+            encode_resource_recovery_operations_snapshot(&ResourceRecoveryOperationsSnapshot {
+                schema: Some(system_control_schema_identity()),
+                metrics: Some(ResourceRecoveryMetrics {
+                    total_inspected: 1,
+                    total_finalized: 1,
+                    consecutive_failed_cycles: 0,
+                    durable_retrying: 0,
+                    durable_escalated: 1,
+                    durable_unacknowledged_escalated: 0,
+                    durable_resolved: 0,
+                    domain_faulted: false,
+                }),
+                alerts: Vec::new(),
+                alerts_truncated: true,
+            })
+            .unwrap(),
+        );
+        let receipt = ControlReceipt::compose(
+            &ControlCommand::InspectResourceHealth,
+            &resource,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let ControlOutcome::ResourceRecoveryInspected(inspected) = receipt.outcome.unwrap() else {
+            panic!("expected a resource recovery inspected outcome");
+        };
+        assert!(inspected.alerts_truncated);
     }
 
     #[test]
