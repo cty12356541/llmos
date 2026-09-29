@@ -358,3 +358,18 @@ W35 晋升候选池（依派发纪律 (4)，决策点关闭 + 写集空闲即可
 **验证**（隔离 `CARGO_TARGET_DIR`）：全仓 fmt --check / clippy -D warnings / test **1708 passed / 0 failed / 27 ignored**（cargo exit 0）；desktop `tsc --noEmit` exit 0 + src-tauri clippy `--features dev-fixture -D warnings` 干净（E6 前任未及汇报的 desktop 面由 integrator 补验）。**推送**：`68f71d7..3309866` 已在 origin/main。dispatch 验证 run 36535472709 结果以实际 run 为准，本段不预写。**新增待排期**：E1 剩 3 项；E3 越线 2 项（需上游 crate 新 API）；中危登记册余量见 deep-audit 各文档未勾销条目。仍开项不变（C-SHARD、七件套、Stage D 余量、Device reset、reconcile 路由、#12 余量）。
 
 2026-09-29（续）：Phase E 波验证 run [36535656124](https://github.com/cty12356541/llmos/actions/runs/36535656124)（push，`774aa6c`）conclusion=**success**，全部 job 绿（三平台、MSRV 1.97、三平台 release 探针、include-ignored）。此前 dispatch run 36535472709 与其前一 push run 因并发组取消，非失败。Phase E 波闭环。
+
+2026-09-29（W44 波：E1 尾项+上游 API+SC 接线+F 波前片）：三车道子代理并行 + integrator 串行接线与 F 件。
+
+| 车道 | merge | 内容 |
+|---|---|---|
+| W44-E1R nlos-task | merge 入 a92fa32..6eb4b6b 段 | **Phase E E1 车道收官（3/3）**：①effect 三路径（outcome/no-effect/binding）统一补收养栅栏 `AdoptionScopeViolation`（`0ab9a50`，墓碑抬升窗口闭合；head 结构性豁免按审计论证保留）；②fiber 幂等键全局 UNIQUE 改 `(task_id, idempotency_key)` 域内唯一，v44→v45 数据保留整表重建（`4ec3914`，存量行字节等价存活测试）；③takeover barrier 的 Ed25519 验签移出锁临界区，三段式+根字节等价 TOCTOU 栅栏（`c5634f7`）。nlos-task 381/0 + 下游 takeover/plan 105/0 |
+| W44-RA nlos-resource | `8911f4e` | throttle 决策追加式台账 `record_throttle_decision`（权威链验证：demand_before=当前有效需求、demand_after=钳位结果；schema v7 三态预检；存量 v6 带数据升级测试）+ `inspect_effective_demand` 合并读面（`8d4bedf`，54/0）。reclaim 落点登记为独立车道（占用模型不同构） |
+| W44-RB runtime-tokio | `ba45812` | `FiberSnapshot` 聚合快照 `inspect_fiber_snapshot`：三把 Mutex 固定锁序同窗复制（锁序论证入档），并发不混代实证守卫（`aaa35b9`，5/5） |
+| W44-SC1/SC2 system-control | merge 段 | integrator 接线：throttle executor → 决策台账（链式合成+四类类型化错误映射+回执同源，`0ffb1b2`，139/0）；fiber_inspector → 单次聚合快照消撕裂（`027a087`）。**W43-E3 两项越线登记全部闭合** |
+| W44-F5 takeover | `2368cac` merge | conformance 断 WAL 截断改读帧头 4..8 commit 标志（原读 8..12 是 salt-1，恒非零=退化为截最后一帧），10/0 |
+| W44-F4 | 物理搬迁 | llm-proxy（本地未跟踪、含密钥、从未入库）移出仓库树至 ~/projects/llm-proxy-personal；git 无涉 |
+| W44-F2 CI | `f54707c` merge | desktop 面进三平台矩阵：tsc + src-tauri dev-fixture clippy/fmt/8 个集成测试（本地预验 41/0）；边界登记：tauri GUI 打包需各 OS 系统依赖，不在本 job |
+| W44-INT | `6eb4b6b` | nlos-debug 的 task schema 钉子 44→45 + 渲染断言（E1R v45 的下游缝，六测级联红→绿） |
+
+**验证**（隔离 target）：全仓 fmt/clippy/test **1728 passed / 0 failed / 27 ignored**（净增 20 测试）。**推送** `a92fa32..6eb4b6b` 在 origin/main。CI（含 desktop job 首跑）结果以实际 run 为准，本段不预写。**Phase E 六车道全部收官（22+3=25 项）**；F 波余量：F1 死代码三选一（待用户定夺）、F3 Windows 凭据面、tauri GUI 打包进 CI。仍开项不变。
