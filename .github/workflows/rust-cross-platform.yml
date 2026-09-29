@@ -130,15 +130,18 @@ jobs:
         run: cargo fmt --all -- --check
 
   # F2（next-phase-plan §7）：desktop 面进矩阵——TS 类型检查 + src-tauri
-  # dev-fixture 全量测试与 clippy。边界如实登记：Tauri GUI 打包
+  # dev-fixture 全量测试与 clippy。边界如实登记：①Tauri GUI 打包
   # （tauri build）需各 OS 系统依赖（ubuntu 的 webkit2gtk 等），本 job
-  # 不含；cargo 侧编译已由 clippy/test 覆盖。
+  # 不含；cargo 侧编译已由 clippy/test 覆盖。②Windows 腿暂缺：
+  # llmos-desktop 的 IPC/auth 走 Unix domain socket 与 Unix 权限位，
+  # Windows 面（named pipe 传输 + 凭据移植）是开放的 F3 车道——F3 落地
+  # 后把 windows-latest 加回矩阵，不以假桩糊绿。
   desktop:
     name: desktop (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
