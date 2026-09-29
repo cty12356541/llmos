@@ -405,12 +405,19 @@ impl TokioRuntimeAdapter {
     /// 3. terminal fiber or already-cancelled scope → an empty
     ///    [`ResumeReport`] without projecting (nothing is re-driven, zero
     ///    durable side effects), not an error;
-    /// 4. the ADR-0012 generation gate: when `sources.process` is present
-    ///    and the incarnation declares its expected incarnation and process,
-    ///    the binding's current registered incarnation must equal the
-    ///    expected one ([`ChannelWaitError::StaleFiberIncarnation`]
-    ///    otherwise) — a stale incarnation's resume takes zero durable side
-    ///    effect;
+    /// 4. the ADR-0012 generation gate: an incarnation that declares its
+    ///    expected incarnation has asked for the gate, so the resume fails
+    ///    closed with [`ChannelWaitError::IncarnationGateUnavailable`] when
+    ///    the gate cannot be evaluated — no process authority in
+    ///    `sources.process`, or no
+    ///    [`process_id`](ResumableBinding::process_id) on the incarnation.
+    ///    With the inputs present, a terminal process binding fails closed
+    ///    through `inspect_active_process_binding` and the binding's current
+    ///    registered incarnation must equal the expected one
+    ///    ([`ChannelWaitError::StaleFiberIncarnation`] otherwise) — a stale
+    ///    incarnation's resume takes zero durable side effect. Only the
+    ///    documented `None` opt-out skips the gate; the process-liveness
+    ///    check alone still runs whenever both inputs happen to be present;
     /// 5. projection ([`BindingEventProjection::project`]);
     /// 6. the incarnation's `resume` — a rejection aborts with
     ///    [`ChannelWaitError::ResumeRejected`] before anything is armed;
@@ -478,16 +485,36 @@ impl TokioRuntimeAdapter {
         // bindings fail closed via `inspect_active_process_binding` before
         // `inspect_fiber_incarnation`, which does not itself reject terminal
         // process heads (B-PROCESS-003 / W15-P runtime linkage).
-        if let (Some(process), Some(process_id)) = (sources.process, resumable.process_id()) {
-            process.inspect_active_process_binding(process_id)?;
-            if let Some(expected) = resumable.expected_incarnation() {
-                let fiber =
-                    nlos_types::ExecutionFiberId::from_bytes(*resumable.binding().as_bytes());
-                let current = process.inspect_fiber_incarnation(process_id, fiber)?;
-                if current.incarnation_generation != expected {
-                    return Err(ChannelWaitError::StaleFiberIncarnation);
+        //
+        // Fail-closed on unavailable gate inputs: an incarnation that
+        // declares `expected_incarnation` has asked for the gate, so a
+        // missing process authority or process identity aborts the resume
+        // instead of silently downgrading it to un-gated — which would lose
+        // the ADR-0012 protection with no diagnostic. Only the documented
+        // `None` opt-out skips the gate; the process-liveness check below
+        // still runs whenever both inputs happen to be present.
+        match (
+            sources.process,
+            resumable.process_id(),
+            resumable.expected_incarnation(),
+        ) {
+            (Some(process), Some(process_id), expected) => {
+                process.inspect_active_process_binding(process_id)?;
+                if let Some(expected) = expected {
+                    let fiber =
+                        nlos_types::ExecutionFiberId::from_bytes(*resumable.binding().as_bytes());
+                    let current = process.inspect_fiber_incarnation(process_id, fiber)?;
+                    if current.incarnation_generation != expected {
+                        return Err(ChannelWaitError::StaleFiberIncarnation);
+                    }
                 }
             }
+            // The gate was requested but cannot be evaluated.
+            (None, _, Some(_)) | (_, None, Some(_)) => {
+                return Err(ChannelWaitError::IncarnationGateUnavailable);
+            }
+            // The gate was not requested and no liveness check is possible.
+            (_, _, None) => {}
         }
 
         let replay = BindingEventProjection::project(waits, sources, resumable.binding())?;

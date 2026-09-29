@@ -138,7 +138,11 @@ impl WakeSink for TokioWakeSink {
     /// for that key resolves immediately with [`WaitOutcome::Woken`], exactly
     /// like an early wake. A repeat wake that hits a buffered or
     /// just-consumed key still reports [`WakeOutcome::Delivered`], as
-    /// at-least-once redelivery requires.
+    /// at-least-once redelivery requires. A shutdown observed after the
+    /// delivery started fails closed with
+    /// [`RuntimeError::ShuttingDown`] — the entry stays unconsumed for the
+    /// next runtime instance instead of being acked into a registry no
+    /// future registration can read.
     fn wake(
         &self,
         fiber: &FiberHandle,
@@ -166,6 +170,17 @@ impl WakeSink for TokioWakeSink {
         // off, or observes the terminal state and reports `NotWaiting` — never
         // an orphaned buffer.
         let mut waits = lock_unpoisoned(&self.inner.waits);
+        // Re-check the shutdown flag inside the critical section.
+        // `shutdown()` sets the flag and then clears this map under the same
+        // lock, so an insertion that raced past the unlocked check above and
+        // landed after that clear would strand a `Buffered` entry no future
+        // registration can ever consume (they are all rejected by the flag) —
+        // an acked durable wake silently lost across the shutdown boundary.
+        // Failing closed here leaves the outbox entry unconsumed for the next
+        // runtime instance, as the `WakeSink::ShuttingDown` contract requires.
+        if self.inner.shutdown.load(Ordering::Acquire) {
+            return Err(RuntimeError::ShuttingDown);
+        }
         if is_terminal(*lock_unpoisoned(&record.state)) {
             return Ok(WakeOutcome::NotWaiting);
         }
@@ -270,7 +285,10 @@ impl TokioRuntimeAdapter {
     /// precede registration), the returned wait resolves immediately with
     /// [`WaitOutcome::Woken`]. If the fiber is already terminal or its scope
     /// already cancelled, it resolves immediately with
-    /// [`WaitOutcome::Cancelled`].
+    /// [`WaitOutcome::Cancelled`]. A shutdown observed mid-registration —
+    /// between the unlocked gate and the registry critical section — also
+    /// resolves immediately with [`WaitOutcome::Cancelled`] instead of
+    /// registering an orphaned wait that nothing can ever deliver to.
     ///
     /// # Errors
     ///
@@ -297,6 +315,18 @@ impl TokioRuntimeAdapter {
         // and the state reads terminal here, or the entry is registered and a
         // later purge drops its sender, resolving the wait as `Cancelled`.
         let mut waits = lock_unpoisoned(&self.inner.waits);
+        // Re-check the shutdown flag inside the critical section,
+        // symmetric with `join_fiber`'s in-loop re-check: `shutdown()` sets
+        // the flag and then clears this map under the same lock. A
+        // registration that raced past the unlocked check above and inserted
+        // after that clear would orphan its sender in the dead map — the
+        // wake side has stopped consuming, so the wait could pend forever.
+        // Seeing the flag here means the clear either already happened or is
+        // ordered behind this critical section; either way the wait resolves
+        // `Cancelled` and nothing is registered across the boundary.
+        if self.inner.shutdown.load(Ordering::Acquire) {
+            return Ok(OperationWait::ready(WaitOutcome::Cancelled));
+        }
         if is_terminal(*lock_unpoisoned(&record.state)) || record.scope.is_cancelled() {
             return Ok(OperationWait::ready(WaitOutcome::Cancelled));
         }
@@ -342,5 +372,145 @@ impl TokioRuntimeAdapter {
                 }
             }),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::future::pending;
+    use std::time::Duration;
+
+    use nlos_runtime::{FiberSpec, RuntimeAdapter, RuntimeError, WakeSink};
+    use nlos_types::{
+        AgentInstanceId, CancellationScopeId, ExecutionFiberId, Generation, OperationId, ProcessId,
+        ResourceGroupId, SchedulerDomainId,
+    };
+
+    use crate::{TokioRuntimeAdapter, TokioRuntimeConfig, lock_unpoisoned};
+
+    use super::WaitOutcome;
+
+    /// Generous window for the racing thread to reach its park point before
+    /// the test proceeds; parking proves its earlier statements completed.
+    const PARK: Duration = Duration::from_millis(250);
+    /// Generous bound for waits that must resolve.
+    const RESOLVE: Duration = Duration::from_secs(5);
+
+    fn id_bytes(value: usize) -> [u8; 16] {
+        let mut bytes = [0_u8; 16];
+        bytes[8..].copy_from_slice(&(value as u64).to_be_bytes());
+        bytes
+    }
+
+    fn fiber_spec(index: usize, scope: CancellationScopeId) -> FiberSpec {
+        FiberSpec {
+            fiber_id: ExecutionFiberId::from_bytes(id_bytes(index)),
+            fiber_generation: Generation::INITIAL,
+            agent_instance_id: AgentInstanceId::from_bytes(id_bytes(index)),
+            agent_generation: Generation::INITIAL,
+            process_id: ProcessId::from_bytes(id_bytes(1)),
+            process_generation: Generation::INITIAL,
+            task_attempt_id: None,
+            cancellation_scope_id: scope,
+            cancellation_generation: Generation::INITIAL,
+            resource_group_id: ResourceGroupId::from_bytes(id_bytes(1)),
+            scheduler_domain_id: SchedulerDomainId::from_bytes(id_bytes(1)),
+            deadline: None,
+        }
+    }
+
+    fn operation(index: usize) -> OperationId {
+        OperationId::from_bytes(id_bytes(index))
+    }
+
+    fn probe_runtime() -> (tokio::runtime::Runtime, TokioRuntimeAdapter) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("probe runtime");
+        let adapter = TokioRuntimeAdapter::new(
+            runtime.handle().clone(),
+            TokioRuntimeConfig {
+                max_live_fibers: 2,
+                ..TokioRuntimeConfig::default()
+            },
+        )
+        .expect("adapter");
+        (runtime, adapter)
+    }
+
+    /// Regression (cross-shutdown TOCTOU, registration side): a
+    /// `wait_for_operation` whose unlocked shutdown gate passes just before
+    /// `shutdown()` completes used to insert its `Pending` entry into the
+    /// already-cleared map, orphaning the sender and parking the wait
+    /// forever. The interleaving is forced deterministically by parking the
+    /// registration on the `fibers` registry lock (acquired between the
+    /// unlocked gate and the `waits` critical section) while `shutdown()`
+    /// finishes its flag store and both map clears.
+    #[test]
+    fn wait_registration_racing_shutdown_resolves_cancelled() {
+        let (runtime, adapter) = probe_runtime();
+        let scope = CancellationScopeId::from_bytes(id_bytes(1));
+        let handle = adapter
+            .spawn_fiber(fiber_spec(1, scope), Box::pin(pending()))
+            .expect("spawn");
+
+        let parked = lock_unpoisoned(&adapter.inner.fibers);
+        let racing = adapter.clone();
+        let registration = std::thread::spawn(move || {
+            racing.wait_for_operation(handle, operation(1), Generation::INITIAL)
+        });
+        // Parked on `fibers` proves the registration's unlocked shutdown
+        // gate has already passed with the flag still clear.
+        std::thread::sleep(PARK);
+        // `shutdown()` parks on the `fibers` snapshot only AFTER the flag
+        // store and both wait-map clears complete.
+        let shutting_down = adapter.clone();
+        let shutdown = std::thread::spawn(move || shutting_down.shutdown());
+        std::thread::sleep(PARK);
+        drop(parked);
+
+        let wait = registration
+            .join()
+            .expect("registration thread")
+            .expect("registration succeeds");
+        shutdown.join().expect("shutdown thread");
+        let outcome = runtime.block_on(async {
+            tokio::time::timeout(RESOLVE, wait)
+                .await
+                .expect("a registration that raced shutdown must resolve, not pend forever")
+        });
+        assert_eq!(outcome, WaitOutcome::Cancelled);
+    }
+
+    /// Regression (cross-shutdown TOCTOU, delivery side): a `wake` whose
+    /// unlocked shutdown gate passes just before `shutdown()` completes used
+    /// to insert a `Buffered` entry into the already-cleared map and report
+    /// `Delivered` — an acked durable wake silently lost across the shutdown
+    /// boundary. The same `fibers`-parking interleaving forces the race;
+    /// the fix fails the delivery closed instead.
+    #[test]
+    fn wake_racing_shutdown_fails_closed() {
+        let (_runtime, adapter) = probe_runtime();
+        let scope = CancellationScopeId::from_bytes(id_bytes(2));
+        let handle = adapter
+            .spawn_fiber(fiber_spec(2, scope), Box::pin(pending()))
+            .expect("spawn");
+
+        let parked = lock_unpoisoned(&adapter.inner.fibers);
+        let sink = adapter.wake_sink();
+        let delivery =
+            std::thread::spawn(move || sink.wake(&handle, operation(2), Generation::INITIAL));
+        // Parked on `fibers` proves the wake's unlocked shutdown gate has
+        // already passed with the flag still clear.
+        std::thread::sleep(PARK);
+        let shutting_down = adapter.clone();
+        let shutdown = std::thread::spawn(move || shutting_down.shutdown());
+        std::thread::sleep(PARK);
+        drop(parked);
+
+        let outcome = delivery.join().expect("delivery thread");
+        shutdown.join().expect("shutdown thread");
+        assert_eq!(outcome, Err(RuntimeError::ShuttingDown));
     }
 }

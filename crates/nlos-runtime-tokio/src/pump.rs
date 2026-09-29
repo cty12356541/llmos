@@ -163,7 +163,8 @@ pub struct PumpConfig {
     pub poll_interval: Duration,
     /// Consecutive drain failures (source errors or consumer panics) after
     /// which the pump transitions to [`PumpState::Faulted`] and the pump
-    /// thread exits. A successful drain resets the counter.
+    /// thread exits. A successful drain resets the counter. `0` is allowed
+    /// and means the very first failure faults the pump.
     pub failure_threshold: usize,
 }
 
@@ -254,6 +255,10 @@ impl PumpHealthInner {
 /// untouched, so a caller may retry `start` after resolving the cause.
 #[derive(Debug)]
 pub enum OutboxPumpStartError {
+    /// The configuration is unusable: a zero `poll_interval` would turn the
+    /// success path into an unbacked busy-poll (`recv_timeout(0)` returns
+    /// immediately, hammering the source without rest).
+    InvalidConfig(&'static str),
     /// The OS could not spawn the dedicated pump thread.
     Spawn(std::io::Error),
 }
@@ -261,6 +266,9 @@ pub enum OutboxPumpStartError {
 impl fmt::Display for OutboxPumpStartError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidConfig(reason) => {
+                write!(formatter, "invalid outbox pump config: {reason}")
+            }
             Self::Spawn(error) => write!(formatter, "could not spawn outbox pump thread: {error}"),
         }
     }
@@ -269,6 +277,7 @@ impl fmt::Display for OutboxPumpStartError {
 impl Error for OutboxPumpStartError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
+            Self::InvalidConfig(_) => None,
             Self::Spawn(error) => Some(error),
         }
     }
@@ -310,6 +319,11 @@ impl OutboxPump {
         W: WakeSink + 'static,
         R: ReconcileSink + 'static,
     {
+        if config.poll_interval.is_zero() {
+            return Err(OutboxPumpStartError::InvalidConfig(
+                "poll_interval must be non-zero",
+            ));
+        }
         let stop = Arc::new(AtomicBool::new(false));
         let health = Arc::new(PumpHealthInner {
             state: AtomicUsize::new(STATE_RUNNING),
