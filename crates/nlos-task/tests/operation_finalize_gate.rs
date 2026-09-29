@@ -818,7 +818,7 @@ fn negative_gate_no_task_side_operation_plan_machinery_in_schema() {
     let version: i64 = raw
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 44);
+    assert_eq!(version, 45);
 
     // No Task-side Operation table family exists at all — the
     // semantic/resource naming family (`task_*_commit_plans`,

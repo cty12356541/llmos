@@ -949,7 +949,7 @@ fn v5_database_migrates_to_v6_without_changing_existing_task() {
     let version: i64 = raw
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 44);
+    assert_eq!(version, 45);
 }
 
 #[test]
@@ -1323,7 +1323,7 @@ fn v7_database_migrates_to_v8_without_inventing_recovery_history() {
     let version: i64 = raw
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 44);
+    assert_eq!(version, 45);
 }
 
 #[test]
@@ -1510,5 +1510,5 @@ fn v8_database_migrates_to_v9_without_inventing_alert_receipts() {
     let version: i64 = raw
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 44);
+    assert_eq!(version, 45);
 }
