@@ -128,6 +128,34 @@ pub struct LifecycleMeterAggregate {
     pub sampled_fibers: usize,
 }
 
+/// One fiber's inspection triple — `state`, `lifecycle_phase`, `usage` —
+/// copied in a single call under one simultaneous hold of the record's
+/// three inspection mutexes.
+///
+/// Field semantics are exactly those of the three separate queries
+/// ([`RuntimeAdapter::inspect`],
+/// [`TokioRuntimeAdapter::inspect_lifecycle_phase`],
+/// [`RuntimeAdapter::activation_usage`]); the only difference is that the
+/// triple cannot tear across a transition that writes several of the
+/// domains together. The snapshot is a momentarily consistent copy of
+/// this one fiber's three domains — it is **not** a transactional
+/// snapshot across fibers: snapshots of two different fibers (or two
+/// successive snapshots of the same fiber) carry no cross-snapshot
+/// consistency guarantee, because each is taken at its own instant
+/// against its own lock window.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FiberSnapshot {
+    /// Same value [`RuntimeAdapter::inspect`] would report at the snapshot
+    /// instant.
+    pub state: FiberState,
+    /// Same value [`TokioRuntimeAdapter::inspect_lifecycle_phase`] would
+    /// report at the snapshot instant.
+    pub lifecycle_phase: FiberLifecyclePhase,
+    /// Same value [`RuntimeAdapter::activation_usage`] would report at the
+    /// snapshot instant (open metering phase folded up to that instant).
+    pub usage: ActivationUsage,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum UsagePhase {
     #[default]
@@ -505,6 +533,48 @@ impl FiberRecord {
     fn activation_usage_snapshot(&self) -> ActivationUsage {
         let usage = lock_unpoisoned(&self.usage);
         usage.snapshot(Instant::now())
+    }
+
+    /// Copies the `(state, lifecycle_phase, usage)` inspection triple in one
+    /// lock window: the three mutexes are acquired in field-declaration
+    /// order — `state`, then `lifecycle_phase`, then `usage` — and held
+    /// simultaneously while the values are copied out.
+    ///
+    /// Deadlock freedom under that order: `lifecycle_phase` and `usage` are
+    /// leaf locks everywhere else in the crate (every other acquisition is a
+    /// lone temporary guard, never held while acquiring another mutex), and
+    /// `state` already precedes both in the only nesting that touches them
+    /// (the `begin_*`/`resume_*` families hold `state` while taking `usage`
+    /// and `lifecycle_phase`). The one edge this window adds —
+    /// `lifecycle_phase` → `usage`, both leaves — therefore closes no cycle
+    /// against the adapter's global order `waits` → `channel_waits` →
+    /// record `terminal`/inspection locks → `fibers` → `scopes` (with the
+    /// sanctioned `fibers` → `state`/`usage` forward edges).
+    ///
+    /// Copy-time consistency: because all three guards overlap, no writer can
+    /// mutate any of the three domains during the window, so the copied
+    /// triple is exactly the record's inspection state at one instant — the
+    /// `usage` fold timestamp is taken inside the window, after the last
+    /// guard is acquired. Every multi-domain writer transition is bracketed
+    /// by the `state` lock (`begin_*`/`resume_*` mutate `usage` and
+    /// `lifecycle_phase` only while holding `state`), so a mid-transition
+    /// combination — e.g. `lifecycle_phase = Suspended` while `state` is
+    /// still `Running` — is unobservable through this path. The terminal
+    /// path writes `usage` and `state` as separate sequential sections; a
+    /// snapshot interleaved between them observes the post-`usage`,
+    /// pre-`state` combination, which is a combination that was genuinely
+    /// true at an instant inside the window, never an impossible mix of
+    /// epochs.
+    fn aggregate_snapshot(&self) -> FiberSnapshot {
+        let state = lock_unpoisoned(&self.state);
+        let lifecycle_phase = lock_unpoisoned(&self.lifecycle_phase);
+        let usage = lock_unpoisoned(&self.usage);
+        let now = Instant::now();
+        FiberSnapshot {
+            state: *state,
+            lifecycle_phase: *lifecycle_phase,
+            usage: usage.snapshot(now),
+        }
     }
 }
 
@@ -944,6 +1014,38 @@ impl TokioRuntimeAdapter {
     ) -> Result<FiberLifecyclePhase, RuntimeError> {
         let record = self.record_for(handle)?;
         Ok(record.lifecycle_phase_snapshot())
+    }
+
+    /// Returns the `(state, lifecycle_phase, usage)` inspection triple of one
+    /// fiber in a single call, as a momentarily consistent
+    /// [`FiberSnapshot`].
+    ///
+    /// Complements the three separate read-side queries
+    /// ([`RuntimeAdapter::inspect`], [`Self::inspect_lifecycle_phase`],
+    /// [`RuntimeAdapter::activation_usage`]), which stay unchanged: a caller
+    /// issuing them one after another observes each domain at its own
+    /// instant and can see a torn combination under concurrent transitions.
+    /// This query resolves the handle through the same registry path as those
+    /// three and copies all three domains inside one simultaneous hold of
+    /// the record's inspection mutexes (acquired in field-declaration
+    /// order), so the returned triple cannot tear across a transition of
+    /// this fiber. See [`FiberSnapshot`] for the cross-fiber caveat: the
+    /// snapshot is per-fiber and instantaneous, not a transactional snapshot
+    /// across fibers.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RuntimeError::InvalidGeneration`] when the handle is stale,
+    /// and [`RuntimeError::FiberReaped`] when the generation's record was
+    /// already reaped (consumed by a join or reclaimed by a detach,
+    /// FIBER-REAP-002 via the shared handle resolution) — the same error
+    /// surface as the three separate queries.
+    pub fn inspect_fiber_snapshot(
+        &self,
+        handle: FiberHandle,
+    ) -> Result<FiberSnapshot, RuntimeError> {
+        let record = self.record_for(handle)?;
+        Ok(record.aggregate_snapshot())
     }
 
     /// Marks a live fiber as blocked on scheduler/admission backpressure.
