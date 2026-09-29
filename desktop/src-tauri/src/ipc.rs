@@ -1082,13 +1082,31 @@ pub async fn parity_check(
 }
 
 /// 一次真实 `system-control-cli` 子进程运行的首行 `RECEIPT <hex>` 投影。
+#[derive(Debug)]
 struct CliRun {
     receipt_hex: Option<String>,
     exit_code: Option<i32>,
     stderr: Option<String>,
 }
 
+/// CLI 子进程墙钟预算:plain 入口一次交换的传输预算为 connect+read+write
+/// 各 5s(上游 TransportConfig 默认),叠加 CLI 自身启动与指标文本量,
+/// 30s 覆盖慢启动仍有界(深审计 42 D2:无超时的 `output()` 可把调用线程
+/// 无限期挂住)。
+const CLI_RUN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 fn run_cli(config: &SessionConfig, cli_args: &[String]) -> Result<CliRun, DesktopError> {
+    run_cli_with_timeout(config, cli_args, CLI_RUN_TIMEOUT)
+}
+
+fn run_cli_with_timeout(
+    config: &SessionConfig,
+    cli_args: &[String],
+    timeout_budget: std::time::Duration,
+) -> Result<CliRun, DesktopError> {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+
     let cli_socket = config.cli_socket.clone().ok_or_else(|| {
         DesktopError::config("一致性自检需要 cli_socket(plain 入口;开发夹具提供)")
     })?;
@@ -1096,23 +1114,72 @@ fn run_cli(config: &SessionConfig, cli_args: &[String]) -> Result<CliRun, Deskto
         .cli_path
         .clone()
         .unwrap_or_else(|| DEFAULT_CLI_PATH.to_owned());
-    let output = std::process::Command::new(&cli_path)
+    let mut child = Command::new(&cli_path)
         .arg(&cli_socket)
         .args(cli_args)
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|error| {
             DesktopError::ipc(format!("启动 system-control-cli({cli_path})失败: {error}"))
         })?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    // 读线程排空两路管道:否则子进程写满管道缓冲后会阻塞在 write 上,
+    // 等待方永远等不到退出(经典 output() 死锁面)。
+    fn drain_pipe<R>(pipe: Option<R>) -> Option<std::thread::JoinHandle<Vec<u8>>>
+    where
+        R: Read + Send + 'static,
+    {
+        pipe.map(|mut reader| {
+            std::thread::spawn(move || {
+                let mut buffer = Vec::new();
+                let _ = reader.read_to_end(&mut buffer);
+                buffer
+            })
+        })
+    }
+    let stdout_reader = drain_pipe(child.stdout.take());
+    let stderr_reader = drain_pipe(child.stderr.take());
+
+    let deadline = std::time::Instant::now() + timeout_budget;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    // 超时即终止并回收,不让挂起的 CLI 把调用方挂住。
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(DesktopError::ipc(format!(
+                        "运行 system-control-cli({cli_path})超过 {}ms 墙钟预算,已终止子进程",
+                        timeout_budget.as_millis()
+                    )));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Err(error) => {
+                return Err(DesktopError::ipc(format!(
+                    "等待 system-control-cli({cli_path})退出失败: {error}"
+                )));
+            }
+        }
+    };
+
+    let stdout = stdout_reader
+        .map(|reader| reader.join().unwrap_or_default())
+        .unwrap_or_default();
+    let stderr = stderr_reader
+        .map(|reader| reader.join().unwrap_or_default())
+        .unwrap_or_default();
+    let stdout = String::from_utf8_lossy(&stdout);
     let cli_receipt_hex = stdout
         .lines()
         .next()
         .and_then(|line| line.strip_prefix("RECEIPT "))
         .map(str::to_owned);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = String::from_utf8_lossy(&stderr);
     Ok(CliRun {
         receipt_hex: cli_receipt_hex,
-        exit_code: output.status.code(),
+        exit_code: status.code(),
         stderr: (!stderr.trim().is_empty()).then(|| stderr.trim().to_owned()),
     })
 }
@@ -1342,5 +1409,86 @@ mod tests {
             !ran_on_caller,
             "阻塞派发必须在调用线程之外的阻塞池线程上执行"
         );
+    }
+
+    /// run_cli 超时/成功/启动失败三面回归(深审计 42 D2)。脚本夹具避免
+    /// 依赖真实 system-control-cli 二进制。
+    #[cfg(unix)]
+    fn write_cli_script(dir: &std::path::Path, name: &str, body: &str) -> String {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = dir.join(name);
+        std::fs::write(&path, body).unwrap();
+        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&path, permissions).unwrap();
+        path.to_str().unwrap().to_owned()
+    }
+
+    #[cfg(unix)]
+    fn cli_script_config(cli_path: &str) -> SessionConfig {
+        SessionConfig {
+            cli_socket: Some("ignored-socket".to_owned()),
+            cli_path: Some(cli_path.to_owned()),
+            ..SessionConfig::default()
+        }
+    }
+
+    #[cfg(unix)]
+    fn cli_script_dir(tag: &str) -> std::path::PathBuf {
+        // 每个测试独立目录:并行测试共享同一临时目录会在清理时互相删除。
+        std::env::temp_dir().join(format!("llmosdt-unit-{}-{tag}", std::process::id()))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_cli_projects_receipt_line_and_exit_code() {
+        let dir = cli_script_dir("cli-ok");
+        std::fs::create_dir_all(&dir).ok();
+        let script = write_cli_script(
+            &dir,
+            "cli-ok.sh",
+            "#!/bin/sh\necho 'RECEIPT 0123456789abcdef'\n",
+        );
+        let run = run_cli_with_timeout(&cli_script_config(&script), &[], CLI_RUN_TIMEOUT).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(run.receipt_hex.as_deref(), Some("0123456789abcdef"));
+        assert_eq!(run.exit_code, Some(0));
+        assert_eq!(run.stderr, None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_cli_kills_hung_subprocess_after_the_wall_clock_budget() {
+        let dir = cli_script_dir("cli-hang");
+        std::fs::create_dir_all(&dir).ok();
+        let script = write_cli_script(&dir, "cli-hang.sh", "#!/bin/sh\nsleep 30\n");
+        let started = std::time::Instant::now();
+        let error = run_cli_with_timeout(
+            &cli_script_config(&script),
+            &[],
+            std::time::Duration::from_millis(150),
+        )
+        .unwrap_err();
+        let elapsed = started.elapsed();
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(error.code, crate::error::ErrorCode::Ipc);
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "超时必须及时返回"
+        );
+        assert!(error.message.contains("已终止子进程"));
+    }
+
+    #[test]
+    fn run_cli_reports_spawn_failure_as_ipc_error() {
+        let config = SessionConfig {
+            cli_socket: Some("ignored-socket".to_owned()),
+            cli_path: Some("/nonexistent/llmos-cli-probe".to_owned()),
+            ..SessionConfig::default()
+        };
+        let error = run_cli_with_timeout(&config, &[], CLI_RUN_TIMEOUT).unwrap_err();
+        assert_eq!(error.code, crate::error::ErrorCode::Ipc);
+        assert!(error.message.contains("启动 system-control-cli"));
     }
 }
