@@ -719,7 +719,8 @@ fn finalize_v5_migration_reapplies_idempotently_and_partial_schema_fails_closed(
     {
         let raw = Connection::open(root.path().join("resource-authority.db")).unwrap();
         raw.execute_batch(
-            "DROP TRIGGER reservation_finalize_binding_insert;
+            "DROP TABLE reservation_throttle_decisions;
+             DROP TRIGGER reservation_finalize_binding_insert;
              DROP TRIGGER reservation_finalize_binding_update;
              DROP TRIGGER reservation_finalize_receipts_immutable_update;
              DROP TRIGGER reservation_finalize_receipts_immutable_delete;

@@ -503,10 +503,16 @@ fn pre_demand_v6_identity_trigger_rebuilds_over_surviving_rows() {
     };
 
     // Reproduce the pre-fix database: columns present, identity trigger
-    // predating them (the defect state — a demand rewrite is accepted).
+    // predating them (the defect state — a demand rewrite is accepted). The
+    // fixture must also re-stamp v6: the database the fix targeted carries
+    // user_version 6, and the dispatch only re-enters migrate_v6 from there.
     {
         let raw = Connection::open(root.path().join("resource-authority.db")).unwrap();
-        raw.execute_batch(PRE_DEMAND_IDENTITY_TRIGGER_SQL).unwrap();
+        raw.execute_batch(&format!(
+            "{PRE_DEMAND_IDENTITY_TRIGGER_SQL}
+             PRAGMA user_version = 6;"
+        ))
+        .unwrap();
         assert!(
             !reservation_identity_update_fails(root.path(), "demand_cpu_shares = 65"),
             "fixture setup: the pre-demand trigger must not cover the demand columns"

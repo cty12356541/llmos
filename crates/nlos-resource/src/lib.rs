@@ -238,9 +238,11 @@ impl ResourceDemand {
 /// `throttle_operation` execution surface).
 ///
 /// The reservation model declares demand immutably at reserve time, so a
-/// throttle is computed and admission-checked here — the durable
-/// re-reservation that would persist `demand_after` remains the resource
-/// coordinator lane's scope.
+/// throttle is computed and admission-checked here;
+/// [`ResourceAuthority::record_throttle_decision`] is the durable write
+/// surface that persists such a decision (W44-RA) — an append-only ledger
+/// per reservation, with the effective demand merged on the
+/// [`ResourceAuthority::inspect_effective_demand`] read face.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DemandThrottle {
     /// Whole-percent level the demand was throttled down to (the effective
@@ -275,6 +277,88 @@ pub fn throttle_demand(
         capacity,
         first_exceedance: demand_after.exceedance_of(capacity),
     }
+}
+
+/// A durable throttle decision for one Reservation (W44-RA
+/// `record_throttle_decision` write surface). This is the ledger record of a
+/// [`throttle_demand`] adjustment: `demand_after` must equal
+/// `demand_before.throttled_to_percent(throttle_percent)` and `demand_before`
+/// must equal the reservation's current effective demand (the declared
+/// reserve-time demand when no decision exists yet, otherwise the previous
+/// decision's `demand_after`) — the authority re-derives both and refuses
+/// anything else fail-closed.
+///
+/// Honest scope: this records and exposes the coordinator's throttle
+/// decisions; it deliberately does not alter any existing flow. The declared
+/// reserve-time demand stays immutable, and reserve/activate/consume/
+/// quarantine/finalize keep their exact v1-v6 semantics (the credit
+/// accounting bound remains the reserve `upper_bound`, never a demand). The
+/// working-set reclaim persistence landing point is intentionally not built
+/// here: its subject (nlos-task working-set occupancy/eviction phases) is
+/// not isomorphic to reservation-demand throttling, so it stays registered
+/// as a separate lane rather than forced into this ledger.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RecordThrottleDecisionRequest {
+    pub reservation_id: ReservationId,
+    /// Whole-percent throttle level in `[0, 100]` (the pure-function domain;
+    /// callers may impose tighter bounds). `0` collapses the effective demand
+    /// to zero; values above `100` are rejected — a throttle never widens.
+    pub throttle_percent: u64,
+    pub demand_before: ResourceDemand,
+    pub demand_after: ResourceDemand,
+    pub idempotency_key: IdempotencyKey,
+    pub decided_at_ms: u64,
+}
+
+/// One immutable, append-only throttle-decision row of a Reservation's
+/// ledger. The receipt identity is derived from the reservation, the
+/// idempotency key, and the decision content (percent + before/after
+/// dimensions), so it cannot exist without the authority-verified
+/// adjustment; `decided_at_ms` is excluded so an exact retry reproduces the
+/// original receipt.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ThrottleDecisionReceipt {
+    pub receipt_id: ReceiptId,
+    pub reservation_id: ReservationId,
+    pub operation_id: OperationId,
+    /// 1-based position in the reservation's decision chain (insertion
+    /// order; strictly increasing, gaps impossible because the authority
+    /// allocates it).
+    pub sequence: u64,
+    pub throttle_percent: u64,
+    pub demand_before: ResourceDemand,
+    pub demand_after: ResourceDemand,
+    pub decided_at_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ThrottleDecisionDecision {
+    Recorded(ThrottleDecisionReceipt),
+    Replayed(ThrottleDecisionReceipt),
+}
+impl ThrottleDecisionDecision {
+    #[must_use]
+    pub const fn receipt(self) -> ThrottleDecisionReceipt {
+        match self {
+            Self::Recorded(receipt) | Self::Replayed(receipt) => receipt,
+        }
+    }
+}
+
+/// Owner-derived, fail-closed read face of one Reservation's throttle state.
+/// `effective_demand` is the authoritative merged view — the declared
+/// reserve-time demand folded through the complete decision chain (a chain
+/// of never-widening adjustments, so it equals the latest decision's
+/// `demand_after`, or the declared demand when no decision exists). Every
+/// chain link is re-derived from the durable rows before this value is
+/// returned; a broken chain fails as [`ResourceAuthorityError::CorruptRecord`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EffectiveDemandRecord {
+    pub reservation_id: ReservationId,
+    pub declared_demand: ResourceDemand,
+    pub effective_demand: ResourceDemand,
+    /// The complete decision chain, in `sequence` order.
+    pub decisions: Vec<ThrottleDecisionReceipt>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -550,6 +634,16 @@ pub enum ResourceAuthorityError {
     InvalidQuarantineTimestamp,
     InvalidFinalizeTimestamp,
     FinalizeSequenceConflict,
+    InvalidThrottlePercent,
+    StaleThrottleDemand {
+        expected: ResourceDemand,
+        reported: ResourceDemand,
+    },
+    InvalidThrottleAdjustment {
+        expected: ResourceDemand,
+        reported: ResourceDemand,
+    },
+    InvalidThrottleTimestamp,
     CorruptRecord(&'static str),
     GenerationExhausted,
     LockPoisoned,
@@ -630,6 +724,7 @@ impl ResourceAuthority {
                 schema::migrate_v4(&mut c)?;
                 schema::migrate_v5(&mut c)?;
                 schema::migrate_v6(&mut c)?;
+                schema::migrate_v7(&mut c)?;
             }
             1 => {
                 schema::migrate_v2(&mut c)?;
@@ -637,23 +732,31 @@ impl ResourceAuthority {
                 schema::migrate_v4(&mut c)?;
                 schema::migrate_v5(&mut c)?;
                 schema::migrate_v6(&mut c)?;
+                schema::migrate_v7(&mut c)?;
             }
             2 | 3 => {
                 schema::migrate_v3(&mut c)?;
                 schema::migrate_v4(&mut c)?;
                 schema::migrate_v5(&mut c)?;
                 schema::migrate_v6(&mut c)?;
+                schema::migrate_v7(&mut c)?;
             }
             4 => {
                 schema::migrate_v4(&mut c)?;
                 schema::migrate_v5(&mut c)?;
                 schema::migrate_v6(&mut c)?;
+                schema::migrate_v7(&mut c)?;
             }
             5 => {
                 schema::migrate_v5(&mut c)?;
                 schema::migrate_v6(&mut c)?;
+                schema::migrate_v7(&mut c)?;
             }
-            6 => schema::migrate_v6(&mut c)?,
+            6 => {
+                schema::migrate_v6(&mut c)?;
+                schema::migrate_v7(&mut c)?;
+            }
+            7 => schema::migrate_v7(&mut c)?,
             x => return Err(ResourceAuthorityError::SchemaVersionUnsupported(x)),
         }
         Ok(Self {
@@ -1628,6 +1731,162 @@ impl ResourceAuthority {
         Ok(FinalizeDecision::Finalized(receipt))
     }
 
+    /// Persists one authoritative throttle decision for a Reservation as an
+    /// immutable, append-only ledger row (W44-RA write surface).
+    ///
+    /// Semantics, kept explicit:
+    ///
+    /// * The declared reserve-time demand stays immutable — this never
+    ///   rewrites the Reservation row. The decision rows are authoritative
+    ///   history, and [`Self::inspect_effective_demand`] is the merged read
+    ///   face: effective demand = declared demand folded through the chain
+    ///   (equivalently the latest decision's `demand_after`, or the declared
+    ///   demand while the ledger is empty).
+    /// * Every link is authority-verified: `demand_before` must equal the
+    ///   Reservation's current effective demand, and `demand_after` must
+    ///   equal `demand_before.throttled_to_percent(throttle_percent)` — an
+    ///   arbitrary demand pair cannot be persisted.
+    /// * The credit accounting bound stays the reserve `upper_bound`;
+    ///   reserve/activate/consume/quarantine/finalize behaviors are
+    ///   unchanged by this ledger.
+    /// * Recordable while the Reservation carries no terminal overlay
+    ///   (RESERVED or ACTIVE); QUARANTINED/FINALIZED refuse fail-closed.
+    ///   Like every mutating path, the Reservation's driver fence must be
+    ///   current.
+    ///
+    /// The receipt identity excludes `decided_at_ms`, so an exact retry
+    /// replays the original receipt; the same key with different decision
+    /// content is an [`ResourceAuthorityError::IdempotencyConflict`].
+    ///
+    /// # Errors
+    /// Fails closed on out-of-domain percents, stale chain input, a
+    /// non-authoritative adjustment, replay conflicts, timestamp
+    /// regressions, terminal states, a stale driver fence, or storage
+    /// failure.
+    #[allow(clippy::too_many_lines)] // Keep the chain checks and receipt write auditable together.
+    pub fn record_throttle_decision(
+        &self,
+        q: RecordThrottleDecisionRequest,
+    ) -> Result<ThrottleDecisionDecision, ResourceAuthorityError> {
+        if q.throttle_percent > 100 {
+            return Err(ResourceAuthorityError::InvalidThrottlePercent);
+        }
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(existing) = throttle_decision_by_key(&transaction, q.idempotency_key)? {
+            if existing.reservation_id != q.reservation_id
+                || existing.throttle_percent != q.throttle_percent
+                || existing.demand_before != q.demand_before
+                || existing.demand_after != q.demand_after
+            {
+                return Err(ResourceAuthorityError::IdempotencyConflict);
+            }
+            transaction.commit()?;
+            return Ok(ThrottleDecisionDecision::Replayed(existing));
+        }
+        let reservation = reservation(&transaction, q.reservation_id)?
+            .ok_or(ResourceAuthorityError::ReservationNotFound)?;
+        if reservation.state == ReservationState::Quarantined {
+            return Err(ResourceAuthorityError::ReservationQuarantined);
+        }
+        if reservation.state == ReservationState::Finalized {
+            return Err(ResourceAuthorityError::ReservationFinalized);
+        }
+        active_driver(
+            &transaction,
+            reservation.driver_id,
+            reservation.driver_generation,
+            reservation.driver_fencing_token,
+        )?;
+        // Timeline: the decision must not predate any binding milestone it
+        // is measured against — creation, activation when present, and the
+        // previous decision.
+        let mut earliest_ms = reservation.created_at_ms;
+        if let Some(activation) = activation_receipt(&transaction, q.reservation_id)? {
+            earliest_ms = earliest_ms.max(activation.activated_at_ms);
+        }
+        let decisions = throttle_decisions(&transaction, q.reservation_id)?;
+        if let Some(latest) = decisions.last() {
+            earliest_ms = earliest_ms.max(latest.decided_at_ms);
+        }
+        if q.decided_at_ms < earliest_ms {
+            return Err(ResourceAuthorityError::InvalidThrottleTimestamp);
+        }
+        // Chain CAS: demand_before must be the current effective demand —
+        // the declared demand while the ledger is empty, otherwise the
+        // latest decision's demand_after.
+        let effective_before = decisions
+            .last()
+            .map_or(reservation.demand, |latest| latest.demand_after);
+        if q.demand_before != effective_before {
+            return Err(ResourceAuthorityError::StaleThrottleDemand {
+                expected: effective_before,
+                reported: q.demand_before,
+            });
+        }
+        // Authority-verified adjustment: the persisted demand_after must be
+        // the authoritative scaling of demand_before (never a widening, and
+        // never an arbitrary value).
+        let authoritative = q.demand_before.throttled_to_percent(q.throttle_percent);
+        if q.demand_after != authoritative {
+            return Err(ResourceAuthorityError::InvalidThrottleAdjustment {
+                expected: authoritative,
+                reported: q.demand_after,
+            });
+        }
+        let sequence = decisions.last().map_or(1, |latest| latest.sequence + 1);
+        let receipt_id = ReceiptId::from_bytes(id16(
+            b"nlos/reservation-throttle/receipt/v1",
+            &[
+                q.reservation_id.as_bytes(),
+                q.idempotency_key.as_bytes(),
+                &q.throttle_percent.to_be_bytes(),
+                &q.demand_before.cpu_shares.to_be_bytes(),
+                &q.demand_before.memory_mib.to_be_bytes(),
+                &q.demand_before.io_weight.to_be_bytes(),
+                &q.demand_after.cpu_shares.to_be_bytes(),
+                &q.demand_after.memory_mib.to_be_bytes(),
+                &q.demand_after.io_weight.to_be_bytes(),
+            ],
+        ));
+        let receipt = ThrottleDecisionReceipt {
+            receipt_id,
+            reservation_id: q.reservation_id,
+            operation_id: reservation.operation_id,
+            sequence,
+            throttle_percent: q.throttle_percent,
+            demand_before: q.demand_before,
+            demand_after: q.demand_after,
+            decided_at_ms: q.decided_at_ms,
+        };
+        transaction.execute(
+            "INSERT INTO reservation_throttle_decisions (
+                receipt_id, idempotency_key, reservation_id, operation_id,
+                sequence, throttle_percent,
+                before_cpu_shares, before_memory_mib, before_io_weight,
+                after_cpu_shares, after_memory_mib, after_io_weight,
+                decided_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            params![
+                receipt.receipt_id.as_bytes().as_slice(),
+                q.idempotency_key.as_bytes().as_slice(),
+                receipt.reservation_id.as_bytes().as_slice(),
+                receipt.operation_id.as_bytes().as_slice(),
+                eu(receipt.sequence)?,
+                eu(receipt.throttle_percent)?,
+                eu(receipt.demand_before.cpu_shares)?,
+                eu(receipt.demand_before.memory_mib)?,
+                eu(receipt.demand_before.io_weight)?,
+                eu(receipt.demand_after.cpu_shares)?,
+                eu(receipt.demand_after.memory_mib)?,
+                eu(receipt.demand_after.io_weight)?,
+                eu(receipt.decided_at_ms)?,
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(ThrottleDecisionDecision::Recorded(receipt))
+    }
+
     /// Reads the immutable finalize receipt and verifies that the settled
     /// usage snapshot still agrees with the FINALIZED Reservation.
     ///
@@ -1688,6 +1947,86 @@ impl ResourceAuthority {
             ));
         }
         Ok(receipt)
+    }
+
+    /// Reads one Reservation's complete immutable throttle-decision ledger,
+    /// in `sequence` order, verifying each row's operation binding against
+    /// the durable Reservation row.
+    ///
+    /// # Errors
+    /// Fails when the Reservation is unknown, a decision row's binding
+    /// disagrees with the Reservation, or storage cannot be read.
+    pub fn inspect_throttle_decisions(
+        &self,
+        reservation_id: ReservationId,
+    ) -> Result<Vec<ThrottleDecisionReceipt>, ResourceAuthorityError> {
+        let connection = self.lock()?;
+        let reservation = reservation(&connection, reservation_id)?
+            .ok_or(ResourceAuthorityError::ReservationNotFound)?;
+        let decisions = throttle_decisions(&connection, reservation_id)?;
+        if decisions
+            .iter()
+            .any(|receipt| receipt.operation_id != reservation.operation_id)
+        {
+            return Err(ResourceAuthorityError::CorruptRecord(
+                "throttle decision binding disagrees with reservation",
+            ));
+        }
+        Ok(decisions)
+    }
+
+    /// Reads the authoritative merged demand view of one Reservation: the
+    /// declared reserve-time demand folded through the complete decision
+    /// chain. Every chain link is re-derived (sequence continuity, chain
+    /// continuity, and the authoritative adjustment) before the merged
+    /// value is returned — the read face fails closed instead of trusting
+    /// the stored rows.
+    ///
+    /// # Errors
+    /// Fails when the Reservation is unknown, its decision ledger is
+    /// missing or inconsistent, or storage cannot be read.
+    pub fn inspect_effective_demand(
+        &self,
+        reservation_id: ReservationId,
+    ) -> Result<EffectiveDemandRecord, ResourceAuthorityError> {
+        let connection = self.lock()?;
+        let reservation = reservation(&connection, reservation_id)?
+            .ok_or(ResourceAuthorityError::ReservationNotFound)?;
+        let decisions = throttle_decisions(&connection, reservation_id)?;
+        let mut effective = reservation.demand;
+        for (expected_sequence, receipt) in (1_u64..).zip(decisions.iter()) {
+            if receipt.operation_id != reservation.operation_id {
+                return Err(ResourceAuthorityError::CorruptRecord(
+                    "throttle decision binding disagrees with reservation",
+                ));
+            }
+            if receipt.sequence != expected_sequence {
+                return Err(ResourceAuthorityError::CorruptRecord(
+                    "throttle decision sequence has a gap",
+                ));
+            }
+            if receipt.demand_before != effective {
+                return Err(ResourceAuthorityError::CorruptRecord(
+                    "throttle decision chain disagrees with effective demand",
+                ));
+            }
+            if receipt.demand_after
+                != receipt
+                    .demand_before
+                    .throttled_to_percent(receipt.throttle_percent)
+            {
+                return Err(ResourceAuthorityError::CorruptRecord(
+                    "throttle decision is not the authoritative adjustment",
+                ));
+            }
+            effective = receipt.demand_after;
+        }
+        Ok(EffectiveDemandRecord {
+            reservation_id,
+            declared_demand: reservation.demand,
+            effective_demand: effective,
+            decisions,
+        })
     }
 
     /// Reads a complete owner-derived Resource/cost receipt for one settled
@@ -2312,6 +2651,113 @@ fn consumption_receipts(
             cumulative_usage: du(row.get::<_, i64>(4)?)?,
             consumed_at_ms: du(row.get::<_, i64>(5)?)?,
         });
+    }
+    Ok(receipts)
+}
+
+/// Decoded column tuple of one `reservation_throttle_decisions` row (the
+/// idempotency key is the lookup key and stays out of the receipt).
+type ThrottleDecisionRow = (
+    Vec<u8>,
+    Vec<u8>,
+    Vec<u8>,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+);
+fn throttle_decision_decode(
+    x: ThrottleDecisionRow,
+) -> Result<ThrottleDecisionReceipt, ResourceAuthorityError> {
+    Ok(ThrottleDecisionReceipt {
+        receipt_id: ReceiptId::from_bytes(a16(x.0)?),
+        reservation_id: ReservationId::from_bytes(a16(x.1)?),
+        operation_id: OperationId::from_bytes(a16(x.2)?),
+        sequence: du(x.3)?,
+        throttle_percent: du(x.4)?,
+        demand_before: ResourceDemand {
+            cpu_shares: du(x.5)?,
+            memory_mib: du(x.6)?,
+            io_weight: du(x.7)?,
+        },
+        demand_after: ResourceDemand {
+            cpu_shares: du(x.8)?,
+            memory_mib: du(x.9)?,
+            io_weight: du(x.10)?,
+        },
+        decided_at_ms: du(x.11)?,
+    })
+}
+fn throttle_decision_by_key(
+    c: &Connection,
+    k: IdempotencyKey,
+) -> Result<Option<ThrottleDecisionReceipt>, ResourceAuthorityError> {
+    let x = c
+        .query_row(
+            "SELECT receipt_id, reservation_id, operation_id,
+                    sequence, throttle_percent,
+                    before_cpu_shares, before_memory_mib, before_io_weight,
+                    after_cpu_shares, after_memory_mib, after_io_weight,
+                    decided_at_ms
+             FROM reservation_throttle_decisions
+             WHERE idempotency_key=?1",
+            [k.as_bytes().as_slice()],
+            |r| {
+                Ok((
+                    r.get::<_, Vec<u8>>(0)?,
+                    r.get::<_, Vec<u8>>(1)?,
+                    r.get::<_, Vec<u8>>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, i64>(4)?,
+                    r.get::<_, i64>(5)?,
+                    r.get::<_, i64>(6)?,
+                    r.get::<_, i64>(7)?,
+                    r.get::<_, i64>(8)?,
+                    r.get::<_, i64>(9)?,
+                    r.get::<_, i64>(10)?,
+                    r.get::<_, i64>(11)?,
+                ))
+            },
+        )
+        .optional()?;
+    x.map(throttle_decision_decode).transpose()
+}
+fn throttle_decisions(
+    c: &Connection,
+    reservation_id: ReservationId,
+) -> Result<Vec<ThrottleDecisionReceipt>, ResourceAuthorityError> {
+    let mut statement = c.prepare(
+        "SELECT receipt_id, reservation_id, operation_id,
+                sequence, throttle_percent,
+                before_cpu_shares, before_memory_mib, before_io_weight,
+                after_cpu_shares, after_memory_mib, after_io_weight,
+                decided_at_ms
+         FROM reservation_throttle_decisions
+         WHERE reservation_id=?1
+         ORDER BY sequence",
+    )?;
+    let mut rows = statement.query([reservation_id.as_bytes().as_slice()])?;
+    let mut receipts = Vec::new();
+    while let Some(row) = rows.next()? {
+        receipts.push(throttle_decision_decode((
+            row.get::<_, Vec<u8>>(0)?,
+            row.get::<_, Vec<u8>>(1)?,
+            row.get::<_, Vec<u8>>(2)?,
+            row.get::<_, i64>(3)?,
+            row.get::<_, i64>(4)?,
+            row.get::<_, i64>(5)?,
+            row.get::<_, i64>(6)?,
+            row.get::<_, i64>(7)?,
+            row.get::<_, i64>(8)?,
+            row.get::<_, i64>(9)?,
+            row.get::<_, i64>(10)?,
+            row.get::<_, i64>(11)?,
+        ))?);
     }
     Ok(receipts)
 }
