@@ -341,3 +341,18 @@ W35 晋升候选池（依派发纪律 (4)，决策点关闭 + 写集空闲即可
 2026-09-29：夜间 scale-probe(include-ignored) 五晚连红的根因定位与修复。**发现**：夜间 schedule 已实际运行（历史共 7 次：09-22/23 success；09-24 起连续五次 failure——run 36193917211、36064117948、36273685849、36352673336、36498768430，均在 scale-probe(include-ignored) 单 job，其余 job 全绿）。根因：`nlos-cell` 两个子进程 harness 入口（`child_claim_helper`/`child_boot_claim_helper`，09-24 随 W38 批量入 main 的 `8961577` 引入）只应由父测试带 `NLOS_CELL_*` env 拉起；夜间 `cargo test --workspace -- --include-ignored` 裸跑触发 `env::var().expect` panic。**修复**：`6f2c11e`（merge `1e60707`，fix/w43-cell-harness-include-ignored，已推送 origin）——env 缺失时 eprintln 跳过说明并 return；`#[ignore]` 与父测试 `--exact --ignored` 真实拉起路径不变。**本地验收**（隔离 `CARGO_TARGET_DIR`）：pre-fix 裸 `--ignored` 复现同型 panic（boot_generation.rs:37 NotPresent）；修复后全仓 `cargo test --workspace --no-fail-fast -- --ignored` **27 passed / 0 failed**、cargo exit 0（即当前全部 ignored 测试无其他失败者）；`cargo test -p nlos-cell` 默认跑双进程路径绿；fmt/clippy exit 0。**≠** 今晚夜间 run 结果——不预写、修复后夜间首绿以实际 run 为准。其余仍开项不变。
 
 2026-09-29（续）：修复验证 run [36520084111](https://github.com/cty12356541/llmos/actions/runs/36520084111)（workflow_dispatch，`cf1c369`）conclusion=**success**，8/8 job 全绿，含五晚连红的 Scale probe (include-ignored)（首跑即绿）与三平台 release 探针。夜间连红闭环：根因（W38 引入的 harness 裸跑）→ 修复（W43-A）→ 本地 27/0 → dispatch 实证。例行夜间 schedule 的后续运行以实际 run 为准，本段不预写。其余仍开项不变（C-SHARD、七件套、Stage D 余量、Device reset、reconcile 路由、#12 余量）。
+
+2026-09-29（Phase E 波，六域车道）：按 DAG 入度归零最大调度并行派发 E1–E6 六车道（AGENTS.md §11 波次），子代理通道四次基础设施故障（2×ENOBUFS/2×EPIPE）后由主会话接管串行收尾（中断现场的半成品经审查后续用补全，无一丢弃）。**本波修复 22 项，高危登记册 10/10 全部关闭（H10 落地）**。
+
+| 车道 | merge | 完成 | 要点 |
+|---|---|---|---|
+| E1 nlos-task | `2926ecf` | 1/4 | finalize 绕主干：直接 Semantic finalize 持久化 finalize-proof 行并拒绝 adopted permit（`95ce96a`，378/0）。**开放 3 项**：effect 三路径栅栏 / fiber idem key 全局 UNIQUE / Ed25519 持锁验签 |
+| E2 nlos-semantic | `7cede02` | 3/3 | durability_receipts 生产签发+端到端验签（`ea1fa1f`）；trust_view 改 v8 typed-link 索引消 O(N) 重扫（`1d217ba`，schema 6→8，存量 v1/v6/v7 升级路径带测试；前任中断现场补全：迁移臂 0–4 补挂 v8+断言更新）；assertion/spec 封存收敛到 seal_admission（`510be83`，净删 96 行） |
+| E3 system-control | `0e59f54` 段 | 1/3 | InspectTask 窗口 256+`alerts_truncated` 传播+截断拒答不再假 NotFound（`812d2bd`，139/0）。**越线 2 项**：throttle/reclaim 持久化（需 nlos-resource 写 API/Residency Controller）；fiber_inspector 原子快照（需 runtime-tokio 单次聚合快照 API） |
+| E4 runtime-tokio | `47758d4` | 5/5 | 丢失唤醒（`4e8129f`）/跨关停 TOCTOU（`fb6c3b6`）/自翻转竞争（`0c01eaf`）；replay 代际门输入缺失 fail-closed（`af3412f`，integrator 补 match 缺臂+回归断言）；PumpConfig 零间隔 start 即拒（`6268002`）。150/0 |
+| E5 identity+resource | `c03cbb1` | 4/4 | bootstrap 重放装时点快照（`c4c1ea9`）；throttle 钳位（`b2ad2b1`）；active_driver 冻结高水位结算逃生口（`55dd2a8`，activate/consume 保持 fail-closed）；v6 demand 列纳入不可变触发器+存量 v6 库原地重建（`b171b59`）。71/0 |
+| E6 ipc+desktop+package | `0e59f54` | 8/8 | **H10**：派发命令 async 化、认证 dispatch 移出主线程（`8202cf1`）；毒化对称（`465c9a7`）；serve_one 强制回写 request_id（`6b7cfbb`）；CSP 收紧（`c1ce798`）；run_cli 墙钟超时（`10aade3`）；parity 探针宿主保护门（`9240d79`）；解码器巨计数惰性分配（`1d61d86`）；物化前纯签名预检、验签失败零持久写（`9be19f6`，含 nlos-artifact 两个零库访问 precheck 函数） |
+
+**集成缝 ×2（W43-INT）**：`bc1cf2d` slice-k 泵启动错误映射补 InvalidConfig 臂；`3309866` nlos-search 读面版本白名单扩 [6,7,8]（semantic v8 断链，v7/v8 为增量迁移读面兼容）。
+
+**验证**（隔离 `CARGO_TARGET_DIR`）：全仓 fmt --check / clippy -D warnings / test **1708 passed / 0 failed / 27 ignored**（cargo exit 0）；desktop `tsc --noEmit` exit 0 + src-tauri clippy `--features dev-fixture -D warnings` 干净（E6 前任未及汇报的 desktop 面由 integrator 补验）。**推送**：`68f71d7..3309866` 已在 origin/main。dispatch 验证 run 36535472709 结果以实际 run 为准，本段不预写。**新增待排期**：E1 剩 3 项；E3 越线 2 项（需上游 crate 新 API）；中危登记册余量见 deep-audit 各文档未勾销条目。仍开项不变（C-SHARD、七件套、Stage D 余量、Device reset、reconcile 路由、#12 余量）。
