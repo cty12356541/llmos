@@ -13,7 +13,7 @@
 use std::future::pending;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use nlos_channel::{
@@ -29,8 +29,8 @@ use nlos_types::{
     ResourceGroupId, SchedulerDomainId,
 };
 use nlos_wait::{
-    BindingId, NotifyCommitsRequest, RegisterDecision, RegisterWaitRequest, WaitAuthority,
-    WaitRecord, WaitState, WakeReport,
+    BindingId, CancelWaitRequest, NotifyCommitsRequest, RegisterDecision, RegisterWaitRequest,
+    WaitAuthority, WaitRecord, WaitState, WakeReport,
 };
 use tokio::runtime::Handle;
 
@@ -592,6 +592,206 @@ async fn stale_or_unknown_fiber_handle_fails_invalid_generation() {
         pair.wait.register_wait(request),
         Ok(RegisterDecision::Registered(_))
     ));
+    runtime
+        .cancel_scope(scope, Generation::INITIAL)
+        .expect("cancel");
+}
+
+/// Regression (self-flip vs concurrent durable cancel, registration side).
+///
+/// `notify_commits` succeeds even when its flip set is empty, so an explicit
+/// `cancel_wait` landing between the runtime's pending read and its
+/// high-water self-flip used to resolve the wait `Woken` while the durable
+/// row ended `CANCELLED`. The vulnerable window sits between two authority
+/// calls inside one registration and cannot be paused deterministically, so
+/// each round races one cancellation against one registration with a swept
+/// release delay; the oracle holds on EVERY interleaving, so the test never
+/// fails spuriously: the resolved outcome must agree with the row's durable
+/// terminal state.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn self_flip_racing_cancel_agrees_with_durable_state() {
+    const ROUNDS: usize = 40;
+    let root = Root::new("self-flip-cancel-race");
+    let channel_authority =
+        Arc::new(ChannelAuthority::open(root.path()).expect("open channel authority"));
+    let wait_authority = Arc::new(
+        WaitAuthority::open(root.path(), Arc::clone(&channel_authority))
+            .expect("open wait authority"),
+    );
+    let runtime = runtime();
+    let (handle, scope) = spawn_waiter(&runtime, 1);
+
+    for round in 0..ROUNDS {
+        let seed = 10 + round;
+        let channel = create_channel(
+            &channel_authority,
+            u8::try_from(seed).expect("channel seed"),
+        );
+        // One committed entry covers target 1, so the registration takes the
+        // high-water self-flip path.
+        enqueue(
+            &channel_authority,
+            channel.channel_id,
+            u8::try_from(seed + 50).expect("enqueue seed"),
+        );
+        let request = register_request(&channel, 1, u8::try_from(seed + 100).expect("seed"));
+        let row = register(&wait_authority, request);
+        assert_eq!(row.state, WaitState::Pending);
+
+        let go = Arc::new(AtomicBool::new(false));
+        let go_canceller = Arc::clone(&go);
+        let canceller_authority = Arc::clone(&wait_authority);
+        let cancelled_id = row.wait_id;
+        let cancel_seed = u8::try_from(seed + 150).expect("cancel seed");
+        let canceller = std::thread::spawn(move || {
+            while !go_canceller.load(Ordering::Relaxed) {
+                std::hint::spin_loop();
+            }
+            // Swept delay (0 .. ~1ms across the rounds): some round lands
+            // the cancellation inside the registration's window between its
+            // pending read and its self-flip, whatever the machine speed.
+            std::thread::sleep(Duration::from_micros(
+                u64::try_from(round).expect("round") * 25,
+            ));
+            // An error here only means the self-flip won the row first
+            // (`WaitNotPending`); the oracle below checks the state.
+            let _ = canceller_authority.cancel_wait(CancelWaitRequest {
+                wait_id: cancelled_id,
+                cancelled_at_ms: 3_000,
+                idempotency_key: key(cancel_seed),
+            });
+        });
+        go.store(true, Ordering::Relaxed);
+
+        let wait = runtime
+            .wait_for_channel(handle, &wait_authority, request)
+            .expect("registration succeeds");
+        let outcome = tokio::time::timeout(RESOLVE, wait)
+            .await
+            .expect("the registered wait resolves on every interleaving");
+        canceller.join().expect("canceller thread");
+        let final_state = wait_authority
+            .inspect_wait(row.wait_id)
+            .expect("final row read")
+            .state;
+        match final_state {
+            WaitState::Woken => assert_eq!(
+                outcome,
+                WaitOutcome::Woken,
+                "round {round}: a WOKEN row must resolve Woken"
+            ),
+            WaitState::Cancelled => assert_eq!(
+                outcome,
+                WaitOutcome::Cancelled,
+                "round {round}: a CANCELLED row must resolve Cancelled, never Woken"
+            ),
+            WaitState::Pending => {
+                panic!("round {round}: the row must be terminal after the race")
+            }
+        }
+    }
+
+    runtime
+        .cancel_scope(scope, Generation::INITIAL)
+        .expect("cancel");
+}
+
+/// Regression (self-flip vs concurrent durable cancel, rearm side).
+///
+/// The same race through `rearm_channel_waits`: `arm_durable_row` re-read
+/// the post-flip row but did not branch on its state, so a racing
+/// cancellation winner was reported `satisfied` carrying a `Woken` future
+/// over a `CANCELLED` row. Invariants on every interleaving: every
+/// `satisfied` row is durably `WOKEN` and resolves `Woken`, and a row that
+/// ended `CANCELLED` is never armed at all.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rearm_self_flip_racing_cancel_agrees_with_durable_state() {
+    const ROUNDS: usize = 40;
+    let root = Root::new("rearm-self-flip-cancel-race");
+    let channel_authority =
+        Arc::new(ChannelAuthority::open(root.path()).expect("open channel authority"));
+    let wait_authority = Arc::new(
+        WaitAuthority::open(root.path(), Arc::clone(&channel_authority))
+            .expect("open wait authority"),
+    );
+    let runtime = runtime();
+    let (handle, scope) = spawn_waiter(&runtime, 1);
+
+    for round in 0..ROUNDS {
+        let seed = 10 + round;
+        let channel = create_channel(
+            &channel_authority,
+            u8::try_from(seed).expect("channel seed"),
+        );
+        enqueue(
+            &channel_authority,
+            channel.channel_id,
+            u8::try_from(seed + 50).expect("enqueue seed"),
+        );
+        let request = register_request(&channel, 1, u8::try_from(seed + 100).expect("seed"));
+        let row = register(&wait_authority, request);
+        assert_eq!(row.state, WaitState::Pending);
+
+        let go = Arc::new(AtomicBool::new(false));
+        let go_canceller = Arc::clone(&go);
+        let canceller_authority = Arc::clone(&wait_authority);
+        let cancelled_id = row.wait_id;
+        let cancel_seed = u8::try_from(seed + 150).expect("cancel seed");
+        let canceller = std::thread::spawn(move || {
+            while !go_canceller.load(Ordering::Relaxed) {
+                std::hint::spin_loop();
+            }
+            std::thread::sleep(Duration::from_micros(
+                u64::try_from(round).expect("round") * 25,
+            ));
+            let _ = canceller_authority.cancel_wait(CancelWaitRequest {
+                wait_id: cancelled_id,
+                cancelled_at_ms: 3_000,
+                idempotency_key: key(cancel_seed),
+            });
+        });
+        go.store(true, Ordering::Relaxed);
+
+        let mut report = runtime
+            .rearm_channel_waits(handle, &wait_authority, Some(channel.channel_id))
+            .expect("rearm succeeds");
+        canceller.join().expect("canceller thread");
+        let final_state = wait_authority
+            .inspect_wait(row.wait_id)
+            .expect("final row read")
+            .state;
+        let mut armed_ids = Vec::new();
+        for mut armed in report.satisfied.drain(..) {
+            assert_eq!(
+                armed.record.state,
+                WaitState::Woken,
+                "round {round}: only a WOKEN row may be reported satisfied"
+            );
+            armed_ids.push(armed.record.wait_id);
+            assert_eq!(
+                tokio::time::timeout(RESOLVE, &mut armed.wait)
+                    .await
+                    .expect("a satisfied rearm resolves immediately"),
+                WaitOutcome::Woken,
+                "round {round}: a satisfied rearm must resolve Woken"
+            );
+        }
+        armed_ids.extend(report.pending.iter().map(|armed| armed.record.wait_id));
+        match final_state {
+            WaitState::Woken => assert!(
+                armed_ids.contains(&row.wait_id),
+                "round {round}: a WOKEN row must be armed by the rearm"
+            ),
+            WaitState::Cancelled => assert!(
+                !armed_ids.contains(&row.wait_id),
+                "round {round}: a CANCELLED row must never be armed, satisfied or not"
+            ),
+            WaitState::Pending => {
+                panic!("round {round}: the row must be terminal after the race")
+            }
+        }
+    }
+
     runtime
         .cancel_scope(scope, Generation::INITIAL)
         .expect("cancel");

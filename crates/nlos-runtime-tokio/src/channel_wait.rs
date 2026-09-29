@@ -25,8 +25,12 @@
 //! 5. a still-`PENDING` row whose channel high-water already covers the
 //!    target (via `WaitAuthority::channel_high_water`) is self-flipped
 //!    through an explicit `notify_commits` under a domain-reserved
-//!    idempotency key and resolves ready [`WaitOutcome::Woken`] — the
-//!    explicit-notify model, never a polling loop;
+//!    idempotency key, re-read, and resolves ready
+//!    [`WaitOutcome::Woken`] — the explicit-notify model, never a polling
+//!    loop. The re-read honors a concurrent explicit `cancel_wait` that
+//!    won the row (`notify_commits` succeeds on an empty flip set), so a
+//!    row that ended `CANCELLED` resolves ready
+//!    [`WaitOutcome::Cancelled`] instead;
 //! 6. otherwise the wait registers an in-memory `Pending` entry, resolved by
 //!    [`TokioChannelWakeSink::deliver`].
 //!
@@ -44,8 +48,10 @@
 //! and per row: `CANCELLED` is never re-armed; `WOKEN` resolves immediately
 //! (at-least-once) and consumes any early-buffered placeholder wake; a
 //! high-water-covered `PENDING` row is self-flipped through the same
-//! `self_notify_key` transform; any other `PENDING` row re-registers the
-//! same `ChannelWaitKey`-keyed wait with the same supersede semantics.
+//! `self_notify_key` transform and re-read, so a concurrent explicit
+//! `cancel_wait` that won the row leaves it un-armed; any other `PENDING`
+//! row re-registers the same `ChannelWaitKey`-keyed wait with the same
+//! supersede semantics.
 //! The durable rows are otherwise read-only to rearm, and fiber execution
 //! state is not rebuilt — the restarted fiber's own code must call rearm
 //! (or re-register) after it is spawned.
@@ -538,8 +544,10 @@ pub(crate) enum RowArming {
 ///   its [`WaitId`];
 /// - a still-`PENDING` row whose channel high-water already covers its
 ///   target is self-flipped through the domain-reserved `self_notify_key`
-///   transform (the one durable write this logic can perform) and resolves
-///   immediately;
+///   transform (the one durable write this logic can perform), re-read, and
+///   resolves immediately — unless the re-read shows a concurrent explicit
+///   `cancel_wait` won the row (`notify_commits` succeeds on an empty flip
+///   set), in which case the terminal `CANCELLED` row is never armed;
 /// - any other still-`PENDING` row re-registers the in-memory
 ///   `ChannelWaitKey`-keyed wait with the same supersede semantics as
 ///   `wait_for_channel`: a second arming for the same wait supersedes the
@@ -584,13 +592,27 @@ pub(crate) fn arm_durable_row(
                 })?;
                 // Re-read so the outcome carries the authoritative post-flip
                 // row (a notification that raced this self-flip may have
-                // flipped the row first).
+                // flipped the row first) — and, critically, so a concurrent
+                // explicit `cancel_wait` that won the row between the
+                // pending read and this self-flip is honored:
+                // `notify_commits` succeeds even when its flip set is empty,
+                // so success alone does not prove this row flipped `WOKEN`.
+                // A `CANCELLED` row is terminal on the durable side and is
+                // never armed; a still-`PENDING` re-read is not expected
+                // after a committed self-flip and falls through to the
+                // generic arming below.
                 let flipped = waits.inspect_wait(durable.wait_id)?;
-                consume_channel_buffer(inner, durable.wait_id);
-                return Ok(RowArming::Satisfied(RearmedChannelWait {
-                    record: flipped,
-                    wait: ChannelSequenceWait::ready(WaitOutcome::Woken),
-                }));
+                match flipped.state {
+                    WaitState::Woken => {
+                        consume_channel_buffer(inner, durable.wait_id);
+                        return Ok(RowArming::Satisfied(RearmedChannelWait {
+                            record: flipped,
+                            wait: ChannelSequenceWait::ready(WaitOutcome::Woken),
+                        }));
+                    }
+                    WaitState::Cancelled => return Ok(RowArming::NotArmed),
+                    WaitState::Pending => {}
+                }
             }
 
             let key = ChannelWaitKey::new(durable.wait_id, handle);
@@ -895,7 +917,25 @@ impl TokioRuntimeAdapter {
                 notified_at_ms: now_millis(),
                 idempotency_key: self_notify_key(current.wait_id),
             })?;
-            return Ok(ChannelSequenceWait::ready(WaitOutcome::Woken));
+            // Re-read the row so a concurrent explicit `cancel_wait` that
+            // won it between the pending read above and this self-flip is
+            // honored: `notify_commits` succeeds even when its flip set is
+            // empty, so success alone does not prove this row flipped
+            // `WOKEN`. A `CANCELLED` row resolves `Cancelled` (the
+            // cancellation-split contract: the runtime never resurrects a
+            // durably cancelled wait); a still-`PENDING` re-read is not
+            // expected after a committed self-flip and falls through to the
+            // in-memory registration below.
+            let flipped = waits.inspect_wait(current.wait_id)?;
+            match flipped.state {
+                WaitState::Woken => {
+                    return Ok(ChannelSequenceWait::ready(WaitOutcome::Woken));
+                }
+                WaitState::Cancelled => {
+                    return Ok(ChannelSequenceWait::ready(WaitOutcome::Cancelled));
+                }
+                WaitState::Pending => {}
+            }
         }
 
         let key = ChannelWaitKey::new(current.wait_id, &handle);
