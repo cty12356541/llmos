@@ -1184,12 +1184,31 @@ fn run_cli_with_timeout(
     })
 }
 
+/// 写路径自检的宿主保护开关(深审计 42 D9):探针执行真实
+/// pause-operation mutation 且 GUI 侧先行,任意已配置 socket 上盲跑
+/// 属未防护面。仅在显式设置 `LLMOS_DESKTOP_ALLOW_WRITE_PARITY=1`
+/// (预期为 dev:server 开发夹具宿主)后可用。
+pub const ENV_ALLOW_WRITE_PARITY: &str = "LLMOS_DESKTOP_ALLOW_WRITE_PARITY";
+
+fn write_parity_allowed(flag: Option<String>) -> bool {
+    matches!(flag.as_deref(), Some("1"))
+}
+
+/// GUI 侧 mutation 已派发而 CLI 侧运行失败时的错误面:必须披露 GUI
+/// 回执,操作者才能感知"已写入"(深审计 42 D9 的感知缺失面)。
+fn write_parity_cli_failure(gui_receipt_hex: &str, error: &DesktopError) -> DesktopError {
+    DesktopError::ipc(format!(
+        "CLI 侧运行失败,但 GUI 侧 pause-operation 已真实派发(RECEIPT {gui_receipt_hex});CLI 错误: {error}"
+    ))
+}
+
 /// W32-B 写路径一致性探针:同一条 pause-operation 命令(同 command id、
 /// 目标、CAS、reason——两侧字节同一),GUI 经认证入口、真实 CLI 经 plain
 /// 入口各派发一次,比对 receipt hex。开发夹具未接线操作执行器时两侧同为
 /// 确定性的类型化 `NOT_FOUND`(executor 未接线)失败回执,字节可比;在
 /// 已接线执行器的宿主上,第一次派发可能真实暂停目标、第二次按 idempotency/
-/// CAS 纪律回 CONFLICT——matched=false 即如实显示。完整写路径 parity 矩阵
+/// CAS 纪律回 CONFLICT——matched=false 即如实显示。探针受
+/// [`ENV_ALLOW_WRITE_PARITY`] 宿主保护门约束。完整写路径 parity 矩阵
 /// (成功/NotFound/Rights 三形态)钉死属 W32-C。
 #[tauri::command]
 pub async fn parity_check_write(
@@ -1199,6 +1218,11 @@ pub async fn parity_check_write(
     expected_revision: u64,
     reason: String,
 ) -> Result<ParityDto, DesktopError> {
+    if !write_parity_allowed(std::env::var(ENV_ALLOW_WRITE_PARITY).ok()) {
+        return Err(DesktopError::config(
+            "写路径自检会执行真实 pause-operation mutation:仅在开发夹具宿主显式设置 LLMOS_DESKTOP_ALLOW_WRITE_PARITY=1 后可用",
+        ));
+    }
     let config = state.snapshot()?;
     let trimmed_reason = reason.trim().to_owned();
     if trimmed_reason.is_empty() {
@@ -1222,7 +1246,8 @@ pub async fn parity_check_write(
             expected_revision.to_string(),
             trimmed_reason,
         ];
-        let cli = run_cli(&config, &cli_args)?;
+        let cli = run_cli(&config, &cli_args)
+            .map_err(|error| write_parity_cli_failure(&gui.receipt_hex, &error))?;
         Ok(ParityDto {
             matched: cli.receipt_hex.as_deref() == Some(gui.receipt_hex.as_str()),
             gui_receipt_hex: gui.receipt_hex,
@@ -1490,5 +1515,25 @@ mod tests {
         let error = run_cli_with_timeout(&config, &[], CLI_RUN_TIMEOUT).unwrap_err();
         assert_eq!(error.code, crate::error::ErrorCode::Ipc);
         assert!(error.message.contains("启动 system-control-cli"));
+    }
+
+    /// 写路径自检宿主保护门:仅显式 "1" 放行(深审计 42 D9)。
+    #[test]
+    fn write_parity_guard_requires_explicit_opt_in() {
+        assert!(write_parity_allowed(Some("1".to_owned())));
+        assert!(!write_parity_allowed(None));
+        assert!(!write_parity_allowed(Some("0".to_owned())));
+        assert!(!write_parity_allowed(Some("yes".to_owned())));
+        assert!(!write_parity_allowed(Some("".to_owned())));
+    }
+
+    /// CLI 失败错误面必须披露 GUI 侧已派发的回执(深审计 42 D9)。
+    #[test]
+    fn write_parity_cli_failure_discloses_the_dispatched_gui_receipt() {
+        let cli_error = DesktopError::ipc("启动 system-control-cli(x)失败: no such file");
+        let error = write_parity_cli_failure("deadbeef", &cli_error);
+        assert_eq!(error.code, crate::error::ErrorCode::Ipc);
+        assert!(error.message.contains("deadbeef"));
+        assert!(error.message.contains("已真实派发"));
     }
 }
