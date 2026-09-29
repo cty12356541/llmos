@@ -373,3 +373,5 @@ W35 晋升候选池（依派发纪律 (4)，决策点关闭 + 写集空闲即可
 | W44-INT | `6eb4b6b` | nlos-debug 的 task schema 钉子 44→45 + 渲染断言（E1R v45 的下游缝，六测级联红→绿） |
 
 **验证**（隔离 target）：全仓 fmt/clippy/test **1728 passed / 0 failed / 27 ignored**（净增 20 测试）。**推送** `a92fa32..6eb4b6b` 在 origin/main。CI（含 desktop job 首跑）结果以实际 run 为准，本段不预写。**Phase E 六车道全部收官（22+3=25 项）**；F 波余量：F1 死代码三选一（待用户定夺）、F3 Windows 凭据面、tauri GUI 打包进 CI。仍开项不变。
+
+2026-09-29（续）：W44 波 CI 收口。desktop job 三轮落地：首跑暴露 SC resource feature 门控面三缺陷（dad7532 修复：结构变体单元模式×2、resource_inspector 穷尽 match 缺四臂、链式 demand_before 与命令重放冲突——语义归位为命令键身份+RA 新增 inspect_throttle_decision_by_key 回放读）；二跑暴露平台面（1aa0c4e：CI stable 1.98 新 lint 改写 devfixture、补 icon.ico、ubuntu 装 tauri 系统库）；三跑暴露 Windows 腿实为 F3 开放域（b309589：llmos-desktop 的 IPC/auth 依赖 Unix domain socket 与权限位，named pipe 传输+凭据移植未建，矩阵诚实暂收 ubuntu+macOS，不以假桩糊绿）。最终 run [36560383044](https://github.com/cty12356541/llmos/actions/runs/36560383044)（push，`b309589`）conclusion=**success** 全 job 绿（desktop ubuntu/macos 含 tsc+clippy+fmt+8 集成测试全 ✓）。**集成缝教训第三条入册：feature 门控模块必须按 feature 矩阵验证**（与"新枚举变体查下游穷尽 match""schema 升级查下游版本白名单/钉子"并列为三条跨 crate 契约检查线）。F3 落地后把 windows-latest 加回 desktop 矩阵。
