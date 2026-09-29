@@ -48,15 +48,15 @@ impl ExecutionFiberInspectSource for TokioExecutionFiberSource<'_> {
             fiber_id: ExecutionFiberId::from_bytes(fiber_id),
             generation: Generation::new(generation),
         };
-        let state = self.runtime.inspect(handle).map_err(map_runtime_error)?;
-        let phase = self
+        // One aggregate snapshot instead of three separate queries: the
+        // fiber's state, lifecycle phase, and usage are copied under one
+        // consistent lock window, so the inspection can no longer observe a
+        // torn mix of pre- and post-transition values (W44-RB).
+        let snapshot = self
             .runtime
-            .inspect_lifecycle_phase(handle)
+            .inspect_fiber_snapshot(handle)
             .map_err(map_runtime_error)?;
-        let usage = self
-            .runtime
-            .activation_usage(handle)
-            .map_err(map_runtime_error)?;
+        let (state, phase, usage) = (snapshot.state, snapshot.lifecycle_phase, snapshot.usage);
         Ok(ExecutionFiberInspection {
             fiber_id: *handle.fiber_id.as_bytes(),
             generation: handle.generation.get(),
