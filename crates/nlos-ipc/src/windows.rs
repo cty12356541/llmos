@@ -1,5 +1,6 @@
 use std::ffi::{OsStr, OsString};
 use std::io;
+use std::os::windows::io::AsRawHandle;
 use std::time::Duration;
 
 use tokio::net::windows::named_pipe::{
@@ -8,6 +9,7 @@ use tokio::net::windows::named_pipe::{
 use tokio::time::{sleep, timeout};
 use windows_sys::Win32::Foundation::ERROR_PIPE_BUSY;
 use windows_sys::Win32::Storage::FileSystem::SECURITY_IDENTIFICATION;
+use windows_sys::Win32::System::Pipes::GetNamedPipeClientProcessId;
 
 use crate::{IoOperation, IpcError, PeerIdentity, TransportConfig, map_io, timeout_io};
 
@@ -62,14 +64,58 @@ impl NamedPipeListenerAdapter {
             server.connect(),
         )
         .await?;
+        // Fail closed: the peer identity carries the kernel-observed client
+        // pid or the accept fails with a typed error — never an unknown
+        // credential that would make the pre-gate vacuously match.
+        let process_id = client_process_id(&server)?;
         self.next = Some(create_server(
             &self.name,
             self.maximum_instances,
             config,
             false,
         )?);
-        Ok((server, PeerIdentity::WindowsNamedPipe { process_id: None }))
+        Ok((
+            server,
+            PeerIdentity::WindowsNamedPipe {
+                process_id: Some(process_id),
+            },
+        ))
     }
+}
+
+/// Reads the kernel-observed client pid of one connected pipe instance.
+///
+/// This is the authoritative OS credential for the authorization pre-gate
+/// ([`ExactPeerAuthorizer`](crate::ExactPeerAuthorizer)); a client's
+/// self-reported identity is never consulted for authorization.
+///
+/// # Errors
+///
+/// Fails closed with a typed accept error when the OS refuses to disclose
+/// the client pid. The connection is then dropped by the caller instead of
+/// continuing with an unknown credential.
+fn client_process_id(server: &NamedPipeServer) -> Result<u32, IpcError> {
+    let mut process_id = 0_u32;
+    // SAFETY: `server` owns its named-pipe handle for the duration of this
+    // shared borrow, so the HANDLE lent by `as_raw_handle` is valid and open
+    // for the whole call, and `GetNamedPipeClientProcessId` neither closes
+    // it nor retains it. The call runs strictly after `connect()` completed,
+    // so the instance is bound to exactly one client and the kernel can
+    // attribute a pid. `addr_of_mut!` hands the API a raw pointer to the
+    // valid, aligned, fully initialized `u32` out-parameter without ever
+    // creating an intermediate reference. The returned BOOL is checked
+    // against zero, so `process_id` is only read after the kernel reported
+    // success.
+    let result = unsafe {
+        GetNamedPipeClientProcessId(server.as_raw_handle(), std::ptr::addr_of_mut!(process_id))
+    };
+    if result == 0 {
+        return Err(IpcError::Io {
+            operation: IoOperation::Accept,
+            source: io::Error::last_os_error(),
+        });
+    }
+    Ok(process_id)
 }
 
 /// Connects to a local named pipe with a bounded busy/not-found retry loop.
@@ -104,7 +150,18 @@ pub async fn connect(
         .await
         .map_err(|_| IpcError::Timeout(IoOperation::Connect))?
         .map_err(|source| map_io(IoOperation::Connect, source))?;
-    Ok((client, PeerIdentity::WindowsNamedPipe { process_id: None }))
+    // Self-reported identity: the client end of a named pipe exposes no
+    // in-kernel peer credential to read, so this process fills in its own
+    // pid for informational symmetry with the Unix adapter's shape. The
+    // asymmetry with the accept path is intentional: only the server-side
+    // `GetNamedPipeClientProcessId` credential is authoritative for
+    // authorization; nothing ever authorizes against this self-report.
+    Ok((
+        client,
+        PeerIdentity::WindowsNamedPipe {
+            process_id: Some(std::process::id()),
+        },
+    ))
 }
 
 fn create_server(

@@ -1,5 +1,10 @@
 //! ADR-0011 transport wiring: composes the transport-agnostic handshake
-//! primitives with the framed Unix-socket transport.
+//! primitives with the framed platform transport — the Unix-domain socket
+//! on Unix and the named pipe on Windows. Both platform streams implement
+//! `AsyncRead + AsyncWrite + Unpin`, so [`FramedIo`] frames them with the
+//! exact same wire bytes; only transport acquisition (bind/accept/connect)
+//! and the endpoint-path byte encoding fed into the channel binding are
+//! platform-dispatched.
 //!
 //! [`authenticated_serve_one`] accepts one connection, runs the
 //! OS-credential pre-gate, then the challenge-response handshake, and only
@@ -32,38 +37,73 @@
 //! inject deterministic generators.
 
 use std::future::Future;
-use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
+
+#[cfg(unix)]
+use std::os::unix::ffi::OsStrExt;
+#[cfg(windows)]
+use std::os::windows::ffi::OsStrExt;
 
 use nlos_identity::IdentityAuthority;
 use nlos_schema::{HANDSHAKE_NONCE_BYTES, HANDSHAKE_SIGNATURE_BYTES, ValidatedExchangeRequest};
 use nlos_types::PrincipalId;
 use sha2::{Digest, Sha256};
+use tokio::io::{AsyncRead, AsyncWrite};
+#[cfg(unix)]
 use tokio::net::UnixStream;
+#[cfg(windows)]
+use tokio::net::windows::named_pipe::NamedPipeClient;
 
 use super::{
     HandshakeError, HandshakeNonceRegistry, VerifiedPrincipalHandshake, attestation_nonce,
     client_attestation, decode_attestation_wire, decode_challenge_wire, encode_attestation_wire,
     encode_challenge_wire, issue_challenge, principal_handshake_message, verify_attestation,
 };
-use crate::unix::{UnixListenerAdapter, connect};
-use crate::{FramedIo, IpcError, OutboundResponse, PeerAuthorizer, TransportConfig, serve_one};
+#[cfg(unix)]
+use crate::unix::UnixListenerAdapter;
+#[cfg(windows)]
+use crate::windows::NamedPipeListenerAdapter;
+use crate::{
+    FramedIo, IpcError, OutboundResponse, PeerAuthorizer, PeerIdentity, TransportConfig, serve_one,
+};
 
 /// Domain separator keeping endpoint-derived channel bindings distinct from
 /// every other SHA-256 domain in the system.
 const CHANNEL_BINDING_DOMAIN: &[u8] = b"llmos/ipc-channel-binding/v1";
 
-/// Derives the channel binding both ends of one Unix-socket endpoint agree
-/// on: a domain-separated SHA-256 over the endpoint path bytes. The fixed
-/// 32-byte output always satisfies the handshake binding bounds regardless
-/// of path length. Callers on both ends must pass the same resolved
-/// endpoint path (for example the ServiceDirectory-resolved socket path).
+/// Derives the channel binding both ends of one local endpoint agree on: a
+/// domain-separated SHA-256 over the endpoint path bytes. The fixed 32-byte
+/// output always satisfies the handshake binding bounds regardless of path
+/// length. Callers on both ends must pass the same resolved endpoint path
+/// (for example the ServiceDirectory-resolved socket path or pipe name).
+///
+/// The path bytes keep each platform's native encoding — the raw bytes of
+/// the OS string on Unix, the UTF-16 code units of the pipe name on
+/// Windows. Both ends of one endpoint always run on the same OS, so the
+/// encodings never mix on one wire.
 #[must_use]
 pub fn endpoint_channel_binding(path: &Path) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(CHANNEL_BINDING_DOMAIN);
-    hasher.update(path.as_os_str().as_bytes());
+    hasher.update(endpoint_path_bytes(path));
     hasher.finalize().into()
+}
+
+/// Endpoint-path bytes hashed into the channel binding (see
+/// [`endpoint_channel_binding`]).
+#[cfg(unix)]
+fn endpoint_path_bytes(path: &Path) -> Vec<u8> {
+    path.as_os_str().as_bytes().to_vec()
+}
+
+/// Endpoint-path bytes hashed into the channel binding (see
+/// [`endpoint_channel_binding`]).
+#[cfg(windows)]
+fn endpoint_path_bytes(path: &Path) -> Vec<u8> {
+    path.as_os_str()
+        .encode_wide()
+        .flat_map(u16::to_ne_bytes)
+        .collect()
 }
 
 /// Server-side holder for one authenticated endpoint: the locally derived
@@ -142,9 +182,105 @@ impl AuthenticatedServeOutcome {
 /// nonces, channel-binding drift, unknown principals, revoked or invalid
 /// keys, and bad signatures. The post-handshake serve result is reported in
 /// [`AuthenticatedServeOutcome::served`], not as a handshake error.
+#[cfg(unix)]
 #[allow(clippy::too_many_arguments)]
 pub async fn authenticated_serve_one<A, H, F, N>(
     listener: &UnixListenerAdapter,
+    config: TransportConfig,
+    identity: &IdentityAuthority,
+    nonces: &HandshakeNonceRegistry,
+    endpoint_binding: &[u8],
+    authorizer: &A,
+    handler: H,
+    next_nonce: N,
+    verified_at_ms: u64,
+) -> Result<AuthenticatedServeOutcome, HandshakeError>
+where
+    A: PeerAuthorizer,
+    H: FnOnce(ValidatedExchangeRequest) -> F,
+    F: Future<Output = Result<OutboundResponse, IpcError>>,
+    N: FnMut() -> [u8; HANDSHAKE_NONCE_BYTES],
+{
+    let (stream, peer) = listener.accept(config).await.map_err(transport_failure)?;
+    authenticated_exchange(
+        stream,
+        peer,
+        config,
+        identity,
+        nonces,
+        endpoint_binding,
+        authorizer,
+        handler,
+        next_nonce,
+        verified_at_ms,
+    )
+    .await
+}
+
+/// Accepts one connection, authorizes its OS credential pre-gate, runs the
+/// challenge-response handshake against the caller's `endpoint_binding`,
+/// and then serves exactly one exchange with the existing [`serve_one`]
+/// semantics. The authorizer deliberately runs twice: once before the
+/// handshake (fail fast, zero nonce side effects) and once inside
+/// [`serve_one`] (unchanged existing behavior).
+///
+/// On any handshake failure the connection is closed and the typed
+/// [`HandshakeError`] is returned. The one-time nonce is consumed before
+/// signature verification and is never returned to the registry, so failed
+/// handshakes burn their nonce by design.
+///
+/// # Errors
+///
+/// Fails closed with a typed [`HandshakeError`] for pre-gate denial,
+/// challenge/attestation transport failures (including timeouts), schema
+/// violations (including any non-attestation frame), wrong or replayed
+/// nonces, channel-binding drift, unknown principals, revoked or invalid
+/// keys, and bad signatures. The post-handshake serve result is reported in
+/// [`AuthenticatedServeOutcome::served`], not as a handshake error.
+#[cfg(windows)]
+#[allow(clippy::too_many_arguments)]
+pub async fn authenticated_serve_one<A, H, F, N>(
+    listener: &mut NamedPipeListenerAdapter,
+    config: TransportConfig,
+    identity: &IdentityAuthority,
+    nonces: &HandshakeNonceRegistry,
+    endpoint_binding: &[u8],
+    authorizer: &A,
+    handler: H,
+    next_nonce: N,
+    verified_at_ms: u64,
+) -> Result<AuthenticatedServeOutcome, HandshakeError>
+where
+    A: PeerAuthorizer,
+    H: FnOnce(ValidatedExchangeRequest) -> F,
+    F: Future<Output = Result<OutboundResponse, IpcError>>,
+    N: FnMut() -> [u8; HANDSHAKE_NONCE_BYTES],
+{
+    let (stream, peer) = listener.accept(config).await.map_err(transport_failure)?;
+    authenticated_exchange(
+        stream,
+        peer,
+        config,
+        identity,
+        nonces,
+        endpoint_binding,
+        authorizer,
+        handler,
+        next_nonce,
+        verified_at_ms,
+    )
+    .await
+}
+
+/// Platform-neutral authenticated serving core: the OS credential pre-gate,
+/// the challenge-response handshake, and the [`serve_one`] semantics, in
+/// exactly that order. Both platform wrappers delegate here after their
+/// platform-specific accept, so the handshake bytes and failure order are
+/// identical on every platform.
+#[allow(clippy::too_many_arguments)]
+async fn authenticated_exchange<S, A, H, F, N>(
+    stream: S,
+    peer: PeerIdentity,
     config: TransportConfig,
     identity: &IdentityAuthority,
     nonces: &HandshakeNonceRegistry,
@@ -155,12 +291,12 @@ pub async fn authenticated_serve_one<A, H, F, N>(
     verified_at_ms: u64,
 ) -> Result<AuthenticatedServeOutcome, HandshakeError>
 where
+    S: AsyncRead + AsyncWrite + Unpin,
     A: PeerAuthorizer,
     H: FnOnce(ValidatedExchangeRequest) -> F,
     F: Future<Output = Result<OutboundResponse, IpcError>>,
     N: FnMut() -> [u8; HANDSHAKE_NONCE_BYTES],
 {
-    let (stream, peer) = listener.accept(config).await.map_err(transport_failure)?;
     authorizer
         .authorize(&peer)
         .map_err(HandshakeError::PeerAuthorization)?;
@@ -202,6 +338,7 @@ where
 /// Fails closed with a typed [`HandshakeError`] for transport failures
 /// (including connect/read/write timeouts), malformed or schema-invalid
 /// challenges, and signer rejections.
+#[cfg(unix)]
 pub async fn authenticated_connect<S>(
     path: impl AsRef<Path>,
     config: TransportConfig,
@@ -213,15 +350,68 @@ where
 {
     let path = path.as_ref();
     let channel_binding = endpoint_channel_binding(path);
-    let (stream, _peer) = connect(path, config).await.map_err(transport_failure)?;
+    let (stream, _peer) = crate::unix::connect(path, config)
+        .await
+        .map_err(transport_failure)?;
+    answer_challenge(stream, config, principal, &channel_binding, sign).await
+}
+
+/// Connects to the named pipe at `path`, answers the server's challenge on
+/// behalf of `principal` by signing the handshake digest through the
+/// caller-provided `sign` callback, and returns the framed connection ready
+/// for authenticated exchanges.
+///
+/// The channel binding is derived from `path` via
+/// [`endpoint_channel_binding`]; the server must expect the same derivation
+/// (see [`ServerHandshakeContext::new`]).
+///
+/// # Errors
+///
+/// Fails closed with a typed [`HandshakeError`] for transport failures
+/// (including connect/read/write timeouts), malformed or schema-invalid
+/// challenges, and signer rejections.
+#[cfg(windows)]
+pub async fn authenticated_connect<S>(
+    path: impl AsRef<Path>,
+    config: TransportConfig,
+    principal: PrincipalId,
+    sign: S,
+) -> Result<FramedIo<NamedPipeClient>, HandshakeError>
+where
+    S: Fn(&[u8; 32]) -> Result<[u8; HANDSHAKE_SIGNATURE_BYTES], HandshakeError>,
+{
+    let path = path.as_ref();
+    let channel_binding = endpoint_channel_binding(path);
+    let (stream, _peer) = crate::windows::connect(path, config)
+        .await
+        .map_err(transport_failure)?;
+    answer_challenge(stream, config, principal, &channel_binding, sign).await
+}
+
+/// Platform-neutral client half of the handshake: receive the challenge,
+/// sign the digest through the caller's callback, and send the attestation.
+/// Both platform wrappers delegate here after their platform-specific
+/// connect, so the handshake bytes and failure order are identical on every
+/// platform.
+async fn answer_challenge<St, S>(
+    stream: St,
+    config: TransportConfig,
+    principal: PrincipalId,
+    channel_binding: &[u8],
+    sign: S,
+) -> Result<FramedIo<St>, HandshakeError>
+where
+    St: AsyncRead + AsyncWrite + Unpin,
+    S: Fn(&[u8; 32]) -> Result<[u8; HANDSHAKE_SIGNATURE_BYTES], HandshakeError>,
+{
     let mut framed = FramedIo::new(stream, config);
 
     let challenge_wire = framed.receive().await.map_err(transport_failure)?;
     let challenge = decode_challenge_wire(&challenge_wire)?;
     let nonce = attestation_nonce(&challenge.nonce)?;
-    let digest = principal_handshake_message(&nonce, principal, &channel_binding);
+    let digest = principal_handshake_message(&nonce, principal, channel_binding);
     let signature = sign(&digest)?;
-    let attestation = client_attestation(principal, &challenge, &channel_binding, signature)?;
+    let attestation = client_attestation(principal, &challenge, channel_binding, signature)?;
     framed
         .send(&encode_attestation_wire(&attestation)?)
         .await

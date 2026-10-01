@@ -123,9 +123,17 @@ async fn windows_named_pipe_round_trip_uses_the_same_schema_and_framing() {
         unique_suffix()
     );
     let mut listener = NamedPipeListenerAdapter::bind(&name, 2, config()).unwrap();
+    // The client runs in this same process, so the kernel-observed server
+    // credential and the client's self-report both carry the current pid.
+    let expected_pid = std::process::id();
     let server = tokio::spawn(async move {
         let (stream, peer) = listener.accept(config()).await?;
-        assert_eq!(peer, PeerIdentity::WindowsNamedPipe { process_id: None });
+        assert_eq!(
+            peer,
+            PeerIdentity::WindowsNamedPipe {
+                process_id: Some(expected_pid)
+            }
+        );
         serve_one(stream, config(), peer, &Allow, |validated| async move {
             Ok(OutboundResponse::Typed(ExchangeResponse {
                 envelope: Some(validated.envelope().clone()),
@@ -135,7 +143,12 @@ async fn windows_named_pipe_round_trip_uses_the_same_schema_and_framing() {
     });
 
     let (stream, peer) = connect(&name, config()).await.unwrap();
-    assert_eq!(peer, PeerIdentity::WindowsNamedPipe { process_id: None });
+    assert_eq!(
+        peer,
+        PeerIdentity::WindowsNamedPipe {
+            process_id: Some(expected_pid)
+        }
+    );
     let response = LocalRpcClient::new(stream, config())
         .exchange_validated(request())
         .await
