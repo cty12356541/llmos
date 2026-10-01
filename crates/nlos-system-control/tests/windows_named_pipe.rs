@@ -303,7 +303,7 @@ async fn submit_crosses_real_windows_named_pipe_and_replays_receipt() {
     let server_authority = Arc::clone(&authority);
     let server = tokio::spawn(async move {
         let peer_binding =
-            PeerCredentialBinding::from_peer(PeerIdentity::WindowsNamedPipe { process_id: None });
+            PeerCredentialBinding::from_peer(PeerIdentity::WindowsNamedPipe { process_id: Some(std::process::id()) });
         let peer_authorizer = ExactPeerAuthorizer::new(peer_binding);
         let server_health = health();
         let policy = CapabilityPolicy;
@@ -327,7 +327,7 @@ async fn submit_crosses_real_windows_named_pipe_and_replays_receipt() {
 
     let first = {
         let (stream, peer) = connect(&pipe_name, config).await.unwrap();
-        assert_eq!(peer, PeerIdentity::WindowsNamedPipe { process_id: None });
+        assert_eq!(peer, PeerIdentity::WindowsNamedPipe { process_id: Some(std::process::id()) });
         LocalRpcClient::new(stream, config)
             .exchange_validated(request.clone())
             .await
@@ -366,7 +366,7 @@ async fn submit_crosses_real_windows_named_pipe_and_replays_receipt() {
 
     let replay = {
         let (stream, peer) = connect(&pipe_name, config).await.unwrap();
-        assert_eq!(peer, PeerIdentity::WindowsNamedPipe { process_id: None });
+        assert_eq!(peer, PeerIdentity::WindowsNamedPipe { process_id: Some(std::process::id()) });
         LocalRpcClient::new(stream, config)
             .exchange_validated(request)
             .await
