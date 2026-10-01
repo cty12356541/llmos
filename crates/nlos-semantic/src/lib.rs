@@ -1285,7 +1285,10 @@ impl SemanticAuthority {
     /// publication fact consumed by `TaskAuthority`.
     ///
     /// The owner re-reads the event, target, durable `AdmissionReceipt` and
-    /// optional `DurabilityReceipt` in the same transaction. A deterministic
+    /// optional `DurabilityReceipt` in the same transaction. A presented
+    /// `DurabilityReceipt` must bind to the admitted event; a row carrying a
+    /// store identity triple must match the admission's store binding and its
+    /// receipt id must re-derive from the signed core digest. A deterministic
     /// log-prefix digest is stored as `semantic_checkpoint_after`; it is a
     /// local reference checkpoint, not a distributed/global vector clock.
     /// Exact retries replay the original immutable receipt. A different
@@ -1295,6 +1298,7 @@ impl SemanticAuthority {
     ///
     /// Returns typed binding/conflict errors when the caller supplies a stale
     /// or mismatched owner fact, plus storage/corruption errors.
+    #[allow(clippy::too_many_lines)] // One auditable transaction owns the full binding re-check.
     pub fn publish_semantic_publication(
         &self,
         request: PublishSemanticPublicationRequest,
@@ -1340,20 +1344,45 @@ impl SemanticAuthority {
             }
             // A production-issued receipt records the store identity triple
             // that minted it; a triple that disagrees with the admission's
-            // store binding is rejected. Pre-v7 legacy rows carry no triple
-            // and keep the structural binding checks above.
+            // store binding is rejected, and the stored receipt id must
+            // re-derive from the signed core digest (event, admission log
+            // sequence, checkpoint, timestamp, triple), so a tampered or
+            // naively injected row fails closed here. Pre-v7 legacy rows
+            // carry no triple and keep the structural binding checks above.
+            // Authenticating the store signature itself needs the
+            // `IdentityAuthority` and stays on `verify_durability_receipt`.
             if let (Some(principal), Some(domain), Some(key)) = (
                 durability.store_principal,
                 durability.store_control_domain,
                 durability.store_key_id,
-            ) && (principal, domain, key)
-                != (
-                    admission.store_principal,
-                    admission.store_control_domain,
-                    admission.store_key_id,
-                )
-            {
-                return Err(SemanticAuthorityError::SemanticPublicationDurabilityBindingMismatch);
+            ) {
+                if (principal, domain, key)
+                    != (
+                        admission.store_principal,
+                        admission.store_control_domain,
+                        admission.store_key_id,
+                    )
+                {
+                    return Err(
+                        SemanticAuthorityError::SemanticPublicationDurabilityBindingMismatch,
+                    );
+                }
+                let core_digest = durability::build_durability_receipt_core_digest(
+                    durability.event_id,
+                    admission.log_seq,
+                    durability.durable_checkpoint_id,
+                    durability.durable_at_ms,
+                    principal,
+                    domain,
+                    key,
+                );
+                let mut expected_id_bytes = [0_u8; 16];
+                expected_id_bytes.copy_from_slice(&core_digest[..16]);
+                if durability.receipt_id.as_bytes() != &expected_id_bytes {
+                    return Err(SemanticAuthorityError::CorruptRecord(
+                        "durability receipt id does not derive from its signed core",
+                    ));
+                }
             }
         }
 
