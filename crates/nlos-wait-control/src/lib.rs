@@ -46,7 +46,7 @@
 //!
 //! # Authenticated service variant (opt-in, ADR-0011)
 //!
-//! The [`authenticated`] module (feature `authenticated-server`, Unix only)
+//! The [`authenticated`] module (feature `authenticated-server`)
 //! layers the ADR-0011 principal challenge-response handshake in front of
 //! the same five methods: it consumes the `nlos-ipc` handshake transport
 //! facility, verifies attestations through the `IdentityAuthority`, takes
@@ -83,7 +83,7 @@ pub const CANCEL_WAIT_METHOD: &str = "cancel_wait";
 pub const LIST_WAITS_METHOD: &str = "list_waits";
 pub const INSPECT_WAIT_METHOD: &str = "inspect_wait";
 
-#[cfg(all(unix, feature = "authenticated-server"))]
+#[cfg(feature = "authenticated-server")]
 pub mod authenticated;
 
 pub use nlos_schema::{
