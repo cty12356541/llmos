@@ -72,6 +72,10 @@ async fn main() {
         fixture.socket_plain().display()
     );
     println!();
+    println!("# 写路径自检(pause-operation 探针)默认关闭:探针会执行真实");
+    println!("# mutation,仅在开发夹具宿主显式 opt-in 后可用(深审计 42 D9):");
+    println!("export LLMOS_DESKTOP_ALLOW_WRITE_PARITY=1");
+    println!();
     println!("# 密钥种子已写入 0600 文件:{}", key_file.display());
     println!("# Ctrl-C 停止。");
 

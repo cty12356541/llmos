@@ -249,6 +249,12 @@ export function renderOutcome(outcome: OutcomeDto): HTMLElement {
       );
       break;
     }
+    default: {
+      // 穷尽性静态断言:与主壳 main.ts 的 renderOutcome 同纪律——新增
+      // OutcomeDto kind 而未补渲染臂时,never 赋值在编译期报错(E-6a)。
+      const exhaustive: never = outcome;
+      throw new Error(`未覆盖的 outcome 形态: ${String(exhaustive)}`);
+    }
   }
   return card;
 }
