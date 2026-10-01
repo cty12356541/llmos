@@ -16,7 +16,7 @@
 //! ALL violations into a report. Rule documentation:
 //! `docs/developers/package-conformance.md`.
 
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, VerifyingKey};
 
 use crate::model::ContentDigest;
 use crate::package::{
@@ -190,6 +190,10 @@ fn decode_error_rule(error: &PackageFileError) -> ConformanceRule {
         PackageFileError::Truncated { .. }
         | PackageFileError::TrailingBytes { .. }
         | PackageFileError::CountOverflow { .. } => ConformanceRule::StructureFraming,
+        // An over-bound dependency count is the same violation the
+        // post-decode TaskBoundDependencies rule reports for decoded
+        // segments — decode now rejects it before allocation.
+        PackageFileError::DependencyCountBound { .. } => ConformanceRule::TaskBoundDependencies,
         PackageFileError::EntryNameLength { .. }
         | PackageFileError::EntryNameNotUtf8
         | PackageFileError::EntryNameNul => ConformanceRule::StructureEntryName,
@@ -282,6 +286,12 @@ fn task_segment_findings(tasks: &[crate::package::PackageTaskTemplate]) -> Vec<C
 }
 
 fn check_signature_chain(package: &PackageFile, report: &mut ConformanceReport) {
+    // Strict verification, aligned with the kernel's admission path
+    // (deep-audit 31, E-6b): `nlos-identity` verifies package signatures
+    // with `verify_strict`, and the producer-side gate must be at least as
+    // strong as verification — non-strict `verify` accepts signatures the
+    // kernel would reject (e.g. small-order torsion components), which
+    // would stamp such packages CONFORMANT only to fail at admission.
     let face = if package.tasks.is_empty() {
         "legacy"
     } else {
@@ -302,7 +312,7 @@ fn check_signature_chain(package: &PackageFile, report: &mut ConformanceReport) 
         Err(_) => {
             finding("embedded signer public key is not a valid Ed25519 verifying key".to_string())
         }
-        Ok(key) => match key.verify(&message, &Signature::from_bytes(&package.signature)) {
+        Ok(key) => match key.verify_strict(&message, &Signature::from_bytes(&package.signature)) {
             Ok(()) => None,
             Err(_) => finding(format!(
                 "signature does not verify against the embedded signer key over the {face} \
@@ -519,6 +529,34 @@ mod tests {
                 "kit must flag {segment:?}"
             );
         }
+    }
+
+    #[test]
+    fn torsion_signature_components_fail_the_strict_gate() {
+        // Deep-audit 31, E-6b regression: the kernel's admission path
+        // verifies package signatures with `verify_strict`; the conformance
+        // gate must be at least as strong. An all-torsion "signature" —
+        // identity public key, identity R, zero S — satisfies the
+        // non-strict verification equation for ANY message, but
+        // `verify_strict` rejects it because R is small-order. Before the
+        // strict alignment this package was reported CONFORMANT.
+        let mut package = minimal_package();
+        let mut identity = [0_u8; 32];
+        identity[0] = 1; // Ed25519 identity point encoding (y = 1, x = 0).
+        package.descriptor.public_key = identity;
+        let mut signature = [0_u8; 64];
+        signature[0] = 1; // R = identity; S = 0 (canonical zero scalar).
+        package.signature = signature;
+
+        let report = check_package_file(&package.encode());
+        assert_eq!(
+            report.findings.len(),
+            1,
+            "the torsion signature must be the only finding: {:?}",
+            report.findings
+        );
+        assert_eq!(report.findings[0].rule, ConformanceRule::SignatureChain);
+        assert!(!report.is_conformant());
     }
 
     #[test]

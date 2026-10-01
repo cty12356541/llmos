@@ -262,6 +262,82 @@ fn tampered_payload_fails_verification_with_binding_exit_code() {
 }
 
 #[test]
+fn payload_tampered_verify_store_leaves_zero_target_bytes() {
+    // E-6b / audit 27 D1 follow-up: a payload-tampered package carries a
+    // VALID signature (the signature covers manifest digests, not payload
+    // bytes), so only the full pipeline — content binding — catches it.
+    // `verify --store` must run that whole pipeline in a throwaway gate
+    // store: the caller-supplied store root receives zero bytes of the
+    // unverified payload (previously the tampered payload was durably
+    // materialized first and stayed unreachable by the orphan GC after
+    // the binding failure).
+    let scratch = ScratchDir::new("tamper-payload-gate");
+    let key = keygen(&scratch, &"66".repeat(32));
+    let tree = scratch.path("tree");
+    write_fixture_tree(&tree, "1.2.0", false);
+    let package = scratch.path("sample.nlospkg");
+    assert_eq!(build(&tree, &key, &package).status.code(), Some(0));
+
+    // Flip exactly one payload byte: signature stays valid, the content
+    // binding is what fails.
+    let mut bytes = fs::read(&package).expect("read package");
+    let positions: Vec<usize> = bytes
+        .windows(PAYLOAD_NEEDLE.len())
+        .enumerate()
+        .filter(|(_, window)| *window == PAYLOAD_NEEDLE)
+        .map(|(index, _)| index)
+        .collect();
+    assert_eq!(positions.len(), 1, "needle must occur exactly once");
+    bytes[positions[0]] ^= 0xff;
+    let tampered = scratch.path("tampered.nlospkg");
+    fs::write(&tampered, bytes).expect("write tampered");
+
+    let store = scratch.path("store.d");
+    let output = verify(&scratch, &tampered);
+    assert_eq!(
+        output.status.code(),
+        Some(EXIT_BINDING),
+        "payload tamper must stay a typed binding failure:\n{}",
+        stderr_text(&output)
+    );
+
+    // Zero tampered payload bytes may live anywhere under the target
+    // store root — gate rejection happens before the root is even opened.
+    let mut tampered_needle = PAYLOAD_NEEDLE.to_vec();
+    tampered_needle[0] ^= 0xff;
+    let mut offenders = Vec::new();
+    collect_files(&store, &mut |path| {
+        if fs::read(path).is_ok_and(|content| {
+            content
+                .windows(tampered_needle.len())
+                .any(|window| window == tampered_needle)
+        }) {
+            offenders.push(path.to_path_buf());
+        }
+    });
+    assert_eq!(
+        offenders,
+        Vec::<PathBuf>::new(),
+        "a gate-rejected package must leave zero payload bytes in the target store"
+    );
+}
+
+/// Recursive file visitor that tolerates a not-yet-created root.
+fn collect_files(directory: &Path, visit: &mut dyn FnMut(&Path)) {
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_files(&path, visit);
+        } else {
+            visit(&path);
+        }
+    }
+}
+
+#[test]
 fn tampered_manifest_fails_signature_verification() {
     let scratch = ScratchDir::new("tamper-manifest");
     let key = keygen(&scratch, &"44".repeat(32));
