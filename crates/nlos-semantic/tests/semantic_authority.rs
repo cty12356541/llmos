@@ -1311,3 +1311,76 @@ fn durability_receipt_publication_rejects_foreign_store_triple() {
         SemanticAuthorityError::SemanticPublicationDurabilityBindingMismatch
     ));
 }
+
+/// A row that claims the admission's own store triple but whose stored id
+/// does not re-derive from its stored core facts is a tampered or naively
+/// injected receipt: publication must fail closed instead of accepting it as
+/// the stronger durability proof.
+#[test]
+fn durability_receipt_publication_rejects_underived_receipt_id() {
+    let root = Root::new("durability-underived");
+    let fixture = fixture(&root, 160);
+    let request = request(&fixture, 14, Vec::new(), Vec::new(), TaintFlags::default());
+    let admission = append(&fixture, &request).receipt().clone();
+    let target = fixture.capability_record.target;
+    drop(fixture);
+
+    // The id is derived from a core that disagrees with the stored row (a
+    // different durable timestamp), mirroring a tampered checkpoint/timestamp.
+    let core = build_durability_receipt_core_digest(
+        admission.event_id,
+        admission.log_seq,
+        [0x8a; 32],
+        2_999,
+        admission.store_principal,
+        admission.store_control_domain,
+        admission.store_key_id,
+    );
+    let mut claimed_id = [0_u8; 16];
+    claimed_id.copy_from_slice(&core[..16]);
+    let claimed = ReceiptId::from_bytes(claimed_id);
+    let raw = Connection::open(root.path().join("semantic-authority.db")).unwrap();
+    raw.execute(
+        "INSERT INTO durability_receipts (
+            receipt_id, event_id, durable_checkpoint_id, durable_at_ms,
+            store_principal_id, store_control_domain_id, store_key_id, store_signature
+         ) VALUES (?1, ?2, ?3, 3_000, ?4, ?5, ?6, ?7)",
+        rusqlite::params![
+            claimed.as_bytes().as_slice(),
+            admission.event_id.as_bytes().as_slice(),
+            [0x8au8; 32].as_slice(),
+            admission.store_principal.as_bytes().as_slice(),
+            admission.store_control_domain.as_bytes().as_slice(),
+            admission.store_key_id.as_bytes().as_slice(),
+            [0x8bu8; 64].as_slice(),
+        ],
+    )
+    .unwrap();
+    drop(raw);
+
+    let identity = IdentityAuthority::open(root.path()).unwrap();
+    let semantic = SemanticAuthority::open(root.path()).unwrap();
+    // End-to-end provenance verification rejects the underived id.
+    assert!(matches!(
+        semantic
+            .verify_durability_receipt(&identity, admission.event_id, claimed)
+            .unwrap_err(),
+        SemanticAuthorityError::DurabilityReceiptUnverifiable
+    ));
+    // And the publication binding path fails closed on the same fact.
+    assert!(matches!(
+        semantic
+            .publish_semantic_publication(PublishSemanticPublicationRequest {
+                task_id: TaskId::from_bytes([0x91; 16]),
+                permit_id: CommitPermitId::from_bytes([0x92; 16]),
+                write_set_root: [0x93; 32],
+                event_id: admission.event_id,
+                target,
+                admission_receipt_id: admission.receipt_id,
+                durability_receipt_id: Some(claimed),
+                published_at_ms: 4_000,
+            })
+            .unwrap_err(),
+        SemanticAuthorityError::CorruptRecord(_)
+    ));
+}
