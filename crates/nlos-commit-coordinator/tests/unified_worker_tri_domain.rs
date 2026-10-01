@@ -946,11 +946,9 @@ fn worker_converges_pending_resource_plan_without_caller() {
         ),
         3
     );
-    assert!(
-        tasks
-            .list_incomplete_resource_commit_plans(8)
-            .unwrap()
-            .is_empty()
+    assert_eq!(
+        tasks.list_incomplete_resource_commit_plans(8).unwrap(),
+        [] as [nlos_task::ResourceCommitPlanRecord; 0]
     );
 
     // Explicit replays are byte-equal with zero duplicated rows.
@@ -988,7 +986,10 @@ fn worker_converges_pending_resource_plan_without_caller() {
     assert_eq!(health.resource_total_inspected, 1);
     assert_eq!(health.resource_total_finalized, 1);
     assert_eq!(health.resource_consecutive_failed_cycles, 0);
-    assert!(health.last_failures.is_empty());
+    assert_eq!(
+        health.last_failures,
+        [] as [nlos_commit_coordinator::RecoveryWorkerFailure; 0]
+    );
     assert_eq!(health.retry_delay, None);
     assert_eq!(health.resource_durable_retrying, 0);
     assert_eq!(health.resource_durable_escalated, 0);
@@ -1037,7 +1038,10 @@ fn not_due_resource_plan_records_no_failure_and_keeps_scanning() {
     assert_eq!(health.state, RecoveryWorkerState::Running);
     assert_eq!(health.resource_total_finalized, 0);
     assert_eq!(health.resource_consecutive_failed_cycles, 0);
-    assert!(health.last_failures.is_empty());
+    assert_eq!(
+        health.last_failures,
+        [] as [nlos_commit_coordinator::RecoveryWorkerFailure; 0]
+    );
     assert_eq!(health.retry_delay, None);
     assert_eq!(health.resource_durable_retrying, 0);
     assert_eq!(health.resource_durable_escalated, 0);
@@ -1152,7 +1156,10 @@ fn tri_domain_pending_plans_converge_in_one_worker() {
     assert_eq!(health.consecutive_failed_cycles, 0);
     assert_eq!(health.semantic_consecutive_failed_cycles, 0);
     assert_eq!(health.resource_consecutive_failed_cycles, 0);
-    assert!(health.last_failures.is_empty());
+    assert_eq!(
+        health.last_failures,
+        [] as [nlos_commit_coordinator::RecoveryWorkerFailure; 0]
+    );
     assert_eq!(health.retry_delay, None);
     assert!(!health.artifact_domain_faulted);
     assert!(!health.semantic_domain_faulted);

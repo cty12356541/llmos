@@ -1154,11 +1154,11 @@ fn register_power_loss_invisible_redo_byte_equal() {
 
     let recovered = reopen_wait(root.base(), &channel);
     assert_wait_counts(root.base(), [0, 0, 0]);
-    assert!(
+    assert_eq!(
         recovered
             .inspect_channel_waits(head.channel_id)
-            .expect("no waits after power loss")
-            .is_empty()
+            .expect("no waits after power loss"),
+        [] as [nlos_wait::WaitRecord; 0]
     );
     assert_integrity(root.base());
 
@@ -1366,10 +1366,9 @@ fn wait_fault_notify_window_kill9_replays_original_report() {
     // A fresh key over the same range flips nothing: WOKEN is terminal. The
     // empty report is still durably recorded under its own key, so the
     // receipt count grows to exactly two while the rows stay untouched.
-    assert!(
-        notified(&wait, &notify_request(ids.channel_id, 4, 0x31, 9_999))
-            .woken
-            .is_empty()
+    assert_eq!(
+        notified(&wait, &notify_request(ids.channel_id, 4, 0x31, 9_999)).woken,
+        [] as [nlos_wait::WaitRecord; 0]
     );
     assert_eq!(
         wait.inspect_channel_waits(ids.channel_id)

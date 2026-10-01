@@ -349,7 +349,10 @@ async fn authenticated_ipc_degraded_provider_fails_bounded_and_recovers() {
         "the safe message stays bounded diagnostics"
     );
     assert!(degraded.payload.is_empty(), "no success evidence may leak");
-    assert!(failure_context.receipts.is_empty());
+    assert_eq!(
+        failure_context.receipts,
+        [] as [nlos_schema::sabi::v1::ReceiptReference; 0]
+    );
     assert_eq!(
         provider.store().inspect(handle).unwrap().state,
         nlos_operation::OperationState::Registered,

@@ -434,20 +434,16 @@ fn due_scan_filters_state_and_time_and_resume_requeues() {
         expected = rec.total_failures;
     }
     // 第三次失败 consecutive=3 → 退避 100 * 2^2 = 400 → next_retry = 3_400
-    assert!(
-        authority
-            .list_due_resource_commit_plans(10, 3_000)
-            .unwrap()
-            .is_empty()
+    assert_eq!(
+        authority.list_due_resource_commit_plans(10, 3_000).unwrap(),
+        [] as [nlos_task::ResourceCommitPlanRecord; 0]
     );
     let due = authority.list_due_resource_commit_plans(10, 3_500).unwrap();
     assert_eq!(due.len(), 1);
     assert_eq!(due[0].plan_id, plan_id);
-    assert!(
-        authority
-            .list_due_resource_commit_plans(0, 3_500)
-            .unwrap()
-            .is_empty()
+    assert_eq!(
+        authority.list_due_resource_commit_plans(0, 3_500).unwrap(),
+        [] as [nlos_task::ResourceCommitPlanRecord; 0]
     );
     assert!(matches!(
         authority.list_due_resource_commit_plans(10, -1),
@@ -459,11 +455,11 @@ fn due_scan_filters_state_and_time_and_resume_requeues() {
     }
     assert_eq!(expected, 8);
     // Escalated 不进扫描
-    assert!(
+    assert_eq!(
         authority
             .list_due_resource_commit_plans(10, i64::MAX)
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [nlos_task::ResourceCommitPlanRecord; 0]
     );
     let resumed = authority
         .resume_resource_recovery(ResourceRecoveryResumeRequest {

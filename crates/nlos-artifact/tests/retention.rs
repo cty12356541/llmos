@@ -373,7 +373,10 @@ fn gc_never_collects_expired_references_and_policy_survives_restart() {
         })
         .expect("gc run");
     assert!(matches!(decision, CollectOrphanBlobsDecision::Collected(_)));
-    assert!(decision.receipt().collected_digests.is_empty());
+    assert_eq!(
+        decision.receipt().collected_digests,
+        [] as [nlos_artifact::ContentDigest; 0]
+    );
     assert_eq!(decision.receipt().scanned_blob_count, 1);
     assert!(
         directory

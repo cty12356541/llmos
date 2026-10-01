@@ -90,11 +90,9 @@ mod baseline {
                 .unwrap()
                 .is_some()
         );
-        assert!(
-            reopened
-                .list_incomplete_semantic_commit_plans(1)
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            reopened.list_incomplete_semantic_commit_plans(1).unwrap(),
+            [] as [nlos_task::SemanticCommitPlanRecord; 0]
         );
     }
 }

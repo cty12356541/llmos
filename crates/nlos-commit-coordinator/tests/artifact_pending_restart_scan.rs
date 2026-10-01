@@ -223,7 +223,10 @@ fn pending_restart_scan_consumes_all_owner_publication_replays() {
             .inspect_artifact_commit_progress(plan_id)
             .expect("inspect publishing prefix");
         assert_eq!(progress.plan.state, ArtifactCommitPlanState::Publishing);
-        assert!(progress.publications.is_empty());
+        assert_eq!(
+            progress.publications,
+            [] as [nlos_task::NestedArtifactPublicationReceipt; 0]
+        );
         (
             plan_id,
             vec![
@@ -241,7 +244,10 @@ fn pending_restart_scan_consumes_all_owner_publication_replays() {
         reopened_prefix.plan.state,
         ArtifactCommitPlanState::Publishing
     );
-    assert!(reopened_prefix.publications.is_empty());
+    assert_eq!(
+        reopened_prefix.publications,
+        [] as [nlos_task::NestedArtifactPublicationReceipt; 0]
+    );
     let receipts = ArtifactCommitCoordinator::new(&tasks, &artifacts)
         .converge_pending(1, 6_000)
         .expect("converge pending artifact plan");
@@ -287,10 +293,10 @@ fn pending_restart_scan_consumes_all_owner_publication_replays() {
         })
         .expect("replay finalized plan");
     assert_eq!(replay, receipts[0]);
-    assert!(
+    assert_eq!(
         ArtifactCommitCoordinator::new(&tasks, &artifacts)
             .converge_pending(1, 8_000)
-            .expect("scan after replay")
-            .is_empty()
+            .expect("scan after replay"),
+        [] as [nlos_task::ArtifactTaskCommitReceipt; 0]
     );
 }

@@ -547,7 +547,10 @@ fn takeover_fence_freezes_registry_and_replays_after_restart() {
     let fence_members = authority
         .inspect_authority_takeover_fence_members(first_attempt.task_id, registry_binding)
         .expect("exact fence member manifest");
-    assert!(!fence_members.is_empty());
+    assert_ne!(
+        fence_members,
+        [] as [nlos_task::AuthorityTakeoverFenceMemberRecord; 0]
+    );
     assert_eq!(
         authority
             .inspect_task(first_attempt.task_id)
@@ -630,7 +633,10 @@ fn takeover_fence_freezes_registry_and_replays_after_restart() {
     );
     assert_eq!(coverage.expected_member_count, fence_members.len());
     assert_eq!(coverage.observed_member_count, 1);
-    assert!(coverage.missing_participants.is_empty());
+    assert_eq!(
+        coverage.missing_participants,
+        [] as [nlos_task::ParticipantRecord; 0]
+    );
     let mut unknown_participant = participant;
     unknown_participant.participant_id = TaskParticipantId::from_bytes([0xee; 16]);
     assert!(matches!(

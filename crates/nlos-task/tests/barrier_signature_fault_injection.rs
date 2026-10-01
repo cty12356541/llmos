@@ -1217,11 +1217,11 @@ fn fault_enospc_on_signed_barrier_write_fails_closed() {
     assert_sqlite_error_chain(&error, &["full"]);
     assert!(nlos_store_fault::writes_observed() > 0);
 
-    assert!(
+    assert_eq!(
         authority
             .inspect_authority_takeover_barrier_receipts(takeover.receipt_id)
-            .expect("observations")
-            .is_empty()
+            .expect("observations"),
+        [] as [nlos_task::AuthorityTakeoverBarrierReceiptRecord; 0]
     );
     assert_eq!(
         raw_count(&database.path, "task_authority_takeover_barrier_receipts"),

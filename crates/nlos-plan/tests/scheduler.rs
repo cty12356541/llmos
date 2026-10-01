@@ -276,7 +276,7 @@ impl AdmissionConsult for FlakyConsult {
     ) -> Result<AdmissionConsultOutcome, ConsultUnavailable> {
         if self
             .failures_left
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
                 left.checked_sub(1)
             })
             .is_ok()

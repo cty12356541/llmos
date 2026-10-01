@@ -249,7 +249,10 @@ mod matrix {
 
             let reopened = SemanticAuthority::open(&fixture.semantic_root)
                 .expect("reopen Semantic authority after write failure");
-            assert!(publication_ids(&fixture.semantic_root).is_empty());
+            assert_eq!(
+                publication_ids(&fixture.semantic_root),
+                [] as [std::vec::Vec<u8>; 0]
+            );
             assert!(matches!(
                 task.inspect_semantic_commit_progress(plan_id),
                 Ok(progress) if progress.plan.state == SemanticCommitPlanState::Publishing
@@ -290,7 +293,10 @@ mod matrix {
 
         let reopened = SemanticAuthority::open(&fixture.semantic_root)
             .expect("reopen Semantic authority after silent loss");
-        assert!(publication_ids(&fixture.semantic_root).is_empty());
+        assert_eq!(
+            publication_ids(&fixture.semantic_root),
+            [] as [std::vec::Vec<u8>; 0]
+        );
         let recovered = SemanticCommitCoordinator::new(&task, &reopened)
             .converge(ConvergeSemanticCommitRequest { plan_id, now_ms: 9 })
             .expect("retry after silent loss");
@@ -315,7 +321,10 @@ mod matrix {
             .expect("reopen Semantic authority after torn WAL");
         let task = SqliteTaskAuthority::open(&fixture.task_path)
             .expect("reopen Task authority after torn WAL");
-        assert!(publication_ids(&fixture.semantic_root).is_empty());
+        assert_eq!(
+            publication_ids(&fixture.semantic_root),
+            [] as [std::vec::Vec<u8>; 0]
+        );
         let recovered = SemanticCommitCoordinator::new(&task, &reopened)
             .converge(ConvergeSemanticCommitRequest {
                 plan_id,
@@ -385,7 +394,10 @@ mod matrix {
             .inspect_semantic_commit_progress(plan_id)
             .expect("inspect Task prefix");
         assert_eq!(progress.plan.state, SemanticCommitPlanState::Publishing);
-        assert!(progress.publications.is_empty());
+        assert_eq!(
+            progress.publications,
+            [] as [nlos_task::NestedSemanticPublicationReceipt; 0]
+        );
         assert_eq!(publication_ids(&fixture.semantic_root).len(), 1);
         let receipt = SemanticCommitCoordinator::new(&reopened, &semantic)
             .converge(ConvergeSemanticCommitRequest { plan_id, now_ms: 9 })

@@ -1008,11 +1008,9 @@ fn golden_v2_database_migrates_losslessly_to_v3() {
     assert_eq!(summary.required_effect_count, 1);
 
     // The v3 plane starts empty and bit-compatible with the initial head.
-    assert!(
-        authority
-            .list_effect_history(task_id())
-            .expect("history")
-            .is_empty()
+    assert_eq!(
+        authority.list_effect_history(task_id()).expect("history"),
+        [] as [nlos_task::EffectHistoryEntry; 0]
     );
     assert_eq!(
         authority
@@ -1047,7 +1045,10 @@ fn golden_v2_database_migrates_losslessly_to_v3() {
         }),
         Err(TaskStoreError::ParticipantRegistryBindingMissing)
     ));
-    assert!(authority.list_effect_history(task_id()).unwrap().is_empty());
+    assert_eq!(
+        authority.list_effect_history(task_id()).unwrap(),
+        [] as [nlos_task::EffectHistoryEntry; 0]
+    );
 
     // The v2 immutability triggers still enforce, and the v3 ones do too.
     let connection = rusqlite::Connection::open(&database.path).expect("raw connection");

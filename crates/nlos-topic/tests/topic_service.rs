@@ -653,12 +653,12 @@ fn publish_enqueues_exactly_once_and_replays_without_duplicates() {
         .expect("publications");
     assert_eq!(publications.len(), 2);
     assert!(publications.contains(&first));
-    assert!(
+    assert_eq!(
         harness
             .topics
             .inspect_publications(sibling.topic_id)
-            .expect("sibling publications")
-            .is_empty()
+            .expect("sibling publications"),
+        [] as [nlos_topic::PublicationRecord; 0]
     );
 }
 
@@ -851,12 +851,12 @@ fn poll_and_advance_isolate_slow_subscribers() {
             advanced_at_ms: 7_100,
         })
     );
-    assert!(
+    assert_eq!(
         harness
             .topics
             .poll(topic.topic_id, subscriber(2), 10)
-            .expect("fast subscriber drained")
-            .is_empty()
+            .expect("fast subscriber drained"),
+        [] as [nlos_channel::QueueEntryRecord; 0]
     );
     assert_eq!(
         harness
@@ -1006,12 +1006,12 @@ fn compact_bound_clamps_to_min_live_subscriber_cursor() {
     // Entry 3 is hidden by the shared channel consume high-water (the
     // documented single-high-water limitation of this slice), while the live
     // tail beyond it stays pollable for the slow subscriber.
-    assert!(
+    assert_eq!(
         harness
             .topics
             .poll(topic.topic_id, subscriber(1), 10)
-            .expect("poll consumed tail")
-            .is_empty()
+            .expect("poll consumed tail"),
+        [] as [nlos_channel::QueueEntryRecord; 0]
     );
     // A catches up past the hidden entry before the next publication: lag
     // billing (delivery attempts) charges subscribers that are behind when a
@@ -1118,12 +1118,12 @@ fn compact_bound_clamps_to_min_live_subscriber_cursor() {
             acked_at_ms: 8_400,
         })
         .expect("drain tail");
-    assert!(
+    assert_eq!(
         harness
             .channel
             .receive(head.channel_id, 10)
-            .expect("channel drained")
-            .is_empty()
+            .expect("channel drained"),
+        [] as [nlos_channel::QueueEntryRecord; 0]
     );
 
     // An unknown topic fails closed.

@@ -176,9 +176,12 @@ fn gc_collects_provable_orphans_and_retains_every_referenced_blob() {
     );
 
     let report = store.recover().expect("recover");
-    assert!(report.orphan_blobs.is_empty());
-    assert!(report.missing_blobs.is_empty());
-    assert!(report.missing_staged_blobs.is_empty());
+    assert_eq!(report.orphan_blobs, [] as [nlos_artifact::ContentDigest; 0]);
+    assert_eq!(report.missing_blobs, [] as [nlos_artifact::MissingBlob; 0]);
+    assert_eq!(
+        report.missing_staged_blobs,
+        [] as [nlos_artifact::MissingStagedBlob; 0]
+    );
 
     let readback = store
         .inspect_gc_receipt(receipt.receipt_id)
@@ -289,8 +292,8 @@ fn gc_io_error_during_receipt_commit_leaves_consistent_state() {
     drop(store);
     let reopened = ArtifactStore::open(directory.root()).expect("reopen");
     let report = reopened.recover().expect("recover");
-    assert!(report.orphan_blobs.is_empty());
-    assert!(report.missing_blobs.is_empty());
+    assert_eq!(report.orphan_blobs, [] as [nlos_artifact::ContentDigest; 0]);
+    assert_eq!(report.missing_blobs, [] as [nlos_artifact::MissingBlob; 0]);
     let raw = rusqlite::Connection::open(directory.root().join("metadata.db")).expect("raw open");
     let count: i64 = raw
         .query_row("SELECT COUNT(*) FROM artifact_gc_receipts", [], |row| {
@@ -306,7 +309,10 @@ fn gc_io_error_during_receipt_commit_leaves_consistent_state() {
         .collect_orphan_blobs(gc_request(0x0c))
         .expect("retry gc");
     assert!(matches!(retry, CollectOrphanBlobsDecision::Collected(_)));
-    assert!(retry.receipt().collected_digests.is_empty());
+    assert_eq!(
+        retry.receipt().collected_digests,
+        [] as [nlos_artifact::ContentDigest; 0]
+    );
     assert_eq!(retry.receipt().scanned_blob_count, 1, "only p1 remains");
     let again = reopened
         .collect_orphan_blobs(gc_request(0x0c))
@@ -361,8 +367,8 @@ fn gc_power_loss_mid_commit_phantom_receipt_invisible_after_reopen() {
         p1
     );
     let report = recovered.recover().expect("recover");
-    assert!(report.orphan_blobs.is_empty());
-    assert!(report.missing_blobs.is_empty());
+    assert_eq!(report.orphan_blobs, [] as [nlos_artifact::ContentDigest; 0]);
+    assert_eq!(report.missing_blobs, [] as [nlos_artifact::MissingBlob; 0]);
 
     let completion = recovered
         .collect_orphan_blobs(gc_request(0x0d))
@@ -371,7 +377,10 @@ fn gc_power_loss_mid_commit_phantom_receipt_invisible_after_reopen() {
         completion,
         CollectOrphanBlobsDecision::Collected(_)
     ));
-    assert!(completion.receipt().collected_digests.is_empty());
+    assert_eq!(
+        completion.receipt().collected_digests,
+        [] as [nlos_artifact::ContentDigest; 0]
+    );
     assert_integrity(directory.root());
 }
 
@@ -448,7 +457,7 @@ fn gc_concurrent_with_puts_never_sentences_in_flight_blobs() {
     }
 
     let report = store.recover().expect("recover");
-    assert!(report.missing_blobs.is_empty());
-    assert!(report.orphan_blobs.is_empty());
+    assert_eq!(report.missing_blobs, [] as [nlos_artifact::MissingBlob; 0]);
+    assert_eq!(report.orphan_blobs, [] as [nlos_artifact::ContentDigest; 0]);
     assert_integrity(directory.root());
 }

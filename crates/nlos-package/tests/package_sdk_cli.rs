@@ -133,7 +133,7 @@ fn keygen(scratch: &ScratchDir, seed_hex: &str) -> PathBuf {
         "keygen failed:\n{}",
         stderr_text(&output)
     );
-    assert!(!stdout_line(&output, "principal").is_empty());
+    assert_ne!(stdout_line(&output, "principal"), "");
     key
 }
 

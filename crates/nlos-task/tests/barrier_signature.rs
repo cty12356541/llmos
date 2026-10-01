@@ -343,7 +343,10 @@ fn signed_observation_persists_verifier_proven_signer_and_replays() {
         coverage.state,
         AuthorityTakeoverBarrierCoverageState::LocallyCovered
     );
-    assert!(coverage.missing_participants.is_empty());
+    assert_eq!(
+        coverage.missing_participants,
+        [] as [nlos_task::ParticipantRecord; 0]
+    );
     assert_eq!(
         authority
             .record_authority_takeover_barrier_receipt_signed(&identity, request, signature)
@@ -369,11 +372,11 @@ fn semantic_signing_key_is_rejected_and_writes_no_row() {
             nlos_identity::IdentityAuthorityError::KeyPurposeMismatch
         ))
     ));
-    assert!(
+    assert_eq!(
         authority
             .inspect_authority_takeover_barrier_receipts(fence.takeover_receipt_id)
-            .expect("inspect barrier observations")
-            .is_empty()
+            .expect("inspect barrier observations"),
+        [] as [nlos_task::AuthorityTakeoverBarrierReceiptRecord; 0]
     );
     let coverage = authority
         .inspect_authority_takeover_barrier_coverage(fence.takeover_receipt_id)
@@ -404,11 +407,11 @@ fn signature_over_other_material_is_rejected_and_writes_no_row() {
             nlos_identity::IdentityAuthorityError::InvalidSignature
         ))
     ));
-    assert!(
+    assert_eq!(
         authority
             .inspect_authority_takeover_barrier_receipts(fence.takeover_receipt_id)
-            .expect("inspect barrier observations")
-            .is_empty()
+            .expect("inspect barrier observations"),
+        [] as [nlos_task::AuthorityTakeoverBarrierReceiptRecord; 0]
     );
 }
 
@@ -430,11 +433,11 @@ fn foreign_issuer_binding_is_rejected_and_writes_no_row() {
             nlos_identity::IdentityAuthorityError::SignerBindingMismatch
         ))
     ));
-    assert!(
+    assert_eq!(
         authority
             .inspect_authority_takeover_barrier_receipts(fence.takeover_receipt_id)
-            .expect("inspect barrier observations")
-            .is_empty()
+            .expect("inspect barrier observations"),
+        [] as [nlos_task::AuthorityTakeoverBarrierReceiptRecord; 0]
     );
 }
 
@@ -597,11 +600,11 @@ fn signature_verification_precedes_transaction_gates_and_writes_no_row() {
             nlos_identity::IdentityAuthorityError::InvalidSignature
         ))
     ));
-    assert!(
+    assert_eq!(
         authority
             .inspect_authority_takeover_barrier_receipts(fence.takeover_receipt_id)
-            .expect("inspect barrier observations")
-            .is_empty()
+            .expect("inspect barrier observations"),
+        [] as [nlos_task::AuthorityTakeoverBarrierReceiptRecord; 0]
     );
 
     // The store is unaffected by the failed verify: the canonical signed

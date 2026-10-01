@@ -217,7 +217,10 @@ fn authorization_is_durable_replayable_and_required_before_receipts() {
         let progress = authority
             .inspect_artifact_commit_progress(plan.plan_id)
             .unwrap();
-        assert!(progress.publications.is_empty());
+        assert_eq!(
+            progress.publications,
+            [] as [nlos_task::NestedArtifactPublicationReceipt; 0]
+        );
         (attempt, permit, plan)
     };
 
@@ -1055,7 +1058,10 @@ fn conflicting_receipt_batch_rolls_back_without_partial_consumption() {
         .inspect_artifact_commit_progress(plan.plan_id)
         .unwrap();
     assert_eq!(unchanged.plan.state, ArtifactCommitPlanState::Publishing);
-    assert!(unchanged.publications.is_empty());
+    assert_eq!(
+        unchanged.publications,
+        [] as [nlos_task::NestedArtifactPublicationReceipt; 0]
+    );
 }
 
 #[test]
@@ -1130,12 +1136,12 @@ fn v6_plan_migrates_to_current_and_remains_queryable() {
         migrated.inspect_artifact_commit_plan(plan_id).unwrap(),
         expected
     );
-    assert!(
+    assert_eq!(
         migrated
             .inspect_artifact_commit_progress(plan_id)
             .unwrap()
-            .publications
-            .is_empty()
+            .publications,
+        [] as [nlos_task::NestedArtifactPublicationReceipt; 0]
     );
 }
 
@@ -1180,11 +1186,11 @@ fn recovery_ledger_survives_restart_filters_due_and_resolves_with_commit() {
         Some(first)
     );
     let first_due = first.next_retry_at_ms.unwrap();
-    assert!(
+    assert_eq!(
         authority
             .list_due_artifact_commit_plans(8, first_due - 1)
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [nlos_task::ArtifactCommitPlanRecord; 0]
     );
     assert_eq!(
         authority
@@ -1239,11 +1245,11 @@ fn recovery_ledger_survives_restart_filters_due_and_resolves_with_commit() {
     assert_eq!(escalated.state, ArtifactRecoveryState::Escalated);
     assert_eq!(escalated.consecutive_failures, 3);
     assert_eq!(escalated.next_retry_at_ms, None);
-    assert!(
+    assert_eq!(
         authority
             .list_due_artifact_commit_plans(8, i64::MAX)
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [nlos_task::ArtifactCommitPlanRecord; 0]
     );
     assert!(matches!(
         authority.resume_artifact_recovery(ArtifactRecoveryResumeRequest {
@@ -1400,11 +1406,11 @@ fn escalated_alert_acknowledgement_is_durable_idempotent_and_does_not_resume() {
     assert_eq!(alerts.len(), 1);
     assert_eq!(alerts[0].recovery, escalated);
     assert_eq!(alerts[0].acknowledgement, Some(receipt));
-    assert!(
+    assert_eq!(
         authority
             .list_due_artifact_commit_plans(8, i64::MAX)
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [nlos_task::ArtifactCommitPlanRecord; 0]
     );
     drop(authority);
     let raw = Connection::open(&database.path).unwrap();
@@ -1499,11 +1505,9 @@ fn v8_database_migrates_to_v9_without_inventing_alert_receipts() {
 
     let migrated = database.open();
     assert!(migrated.inspect_artifact_commit_plan(plan_id).is_ok());
-    assert!(
-        migrated
-            .list_artifact_recovery_alerts(8)
-            .unwrap()
-            .is_empty()
+    assert_eq!(
+        migrated.list_artifact_recovery_alerts(8).unwrap(),
+        [] as [nlos_task::ArtifactRecoveryAlert; 0]
     );
     drop(migrated);
     let raw = Connection::open(&database.path).unwrap();
