@@ -14,10 +14,10 @@ use nlos_task::{
     AuthorityLeaseReconcileRequest, AuthorityLeaseRequest, AuthorityLeaseTakeoverFenceRequest,
     ClosePermitDecision, ClosePermitRequest, EffectPermitDecision, EffectPermitRequest,
     FinalizeDecision, FinalizeRequestV3, IssuedPermit, LogicalEffectDescriptor, NoEffectReason,
-    NoEffectRequest, Outcome, OutcomeRequest, PermitClosureOutcome, PermitDecision, PermitRecord,
-    PermitRequest, PermitState, PlannedEffect, ReconcileOutcome, ReconcileReplay, ReconcileRequest,
-    RequiredSatisfaction, RequiredSatisfactionProof, SlotState, SnapshotBundle,
-    SqliteTaskAuthority, TaskSpec, TaskStoreError, empty_effect_history_root,
+    NoEffectRequest, Outcome, OutcomeRequest, ParticipantRegistryState, PermitClosureOutcome,
+    PermitDecision, PermitRecord, PermitRequest, PermitState, PlannedEffect, ReconcileOutcome,
+    ReconcileReplay, ReconcileRequest, RequiredSatisfaction, RequiredSatisfactionProof, SlotState,
+    SnapshotBundle, SqliteTaskAuthority, TaskSpec, TaskStoreError, empty_effect_history_root,
     expected_success_assertion_digest,
 };
 use nlos_types::{
@@ -837,6 +837,235 @@ fn adoption_scope_fences_outcome_no_effect_and_binding_writes() {
         authority.register_effect_binding(binding_request(&spec, &permit, 1, 0x71, 0xd1, 4_500)),
         Ok(nlos_task::EffectBindingDecision::Replayed(_))
     ));
+}
+
+/// Audit 03: the outcome and no-effect paths revalidate the same commit
+/// context (head/group/frozen registry) the mint and dispatch entries
+/// require. The head part cannot false-positive on a sibling effect's
+/// closure — the durable head fields move only inside the terminal commit
+/// transactions, which close the permit atomically — so closing slot 0 and
+/// then registering slot 1's outcome / slot 2's absence proof stays green
+/// (the earlier "sibling closure moves the head root" exemption claim was
+/// incorrect: a sibling closure appends history rows and bumps
+/// `control_epoch` only).
+#[test]
+fn outcome_and_no_effect_commit_context_survives_sibling_effect_closure() {
+    let database = TestDatabase::new("context-sibling");
+    let authority = database.open();
+    authority.register_task(task_spec()).expect("register task");
+    let spec = attempt_spec(0x0a, snapshot(0, 0));
+    authority.register_attempt(spec).expect("register attempt");
+    let permit = issued_permit(
+        authority
+            .request_commit_permit(permit_request(
+                &spec,
+                0x01,
+                vec![planned(0, true), planned(1, true), planned(2, false)],
+            ))
+            .expect("permit"),
+    );
+    // Slot 0 closes with an effect: history row appended, control epoch
+    // bumped, durable head fields untouched.
+    let issued0 = issued_effect_permit(
+        authority
+            .request_effect_permit(effect_request(&spec, &permit, 0, 0xe1))
+            .expect("issue slot 0"),
+    );
+    authority
+        .consume_dispatch_token(dispatch_request(&spec, &permit, &issued0))
+        .expect("dispatch slot 0");
+    authority
+        .record_effect_outcome(outcome_request(
+            &spec,
+            &permit,
+            0,
+            Outcome::Closed {
+                authoritative_closure_digest: [0xbb; 32],
+            },
+        ))
+        .expect("close slot 0");
+    // Slot 1's outcome still registers under the revalidated commit
+    // context — no stale-head false positive from the sibling closure.
+    let issued1 = issued_effect_permit(
+        authority
+            .request_effect_permit(effect_request(&spec, &permit, 1, 0xe2))
+            .expect("issue slot 1"),
+    );
+    authority
+        .consume_dispatch_token(dispatch_request(&spec, &permit, &issued1))
+        .expect("dispatch slot 1");
+    authority
+        .record_effect_outcome(outcome_request(
+            &spec,
+            &permit,
+            1,
+            Outcome::Closed {
+                authoritative_closure_digest: [0xbc; 32],
+            },
+        ))
+        .expect("close slot 1 after a sibling closure");
+    // The untouched planned slot's absence proof registers too.
+    authority
+        .record_no_effect(no_effect_request(
+            &spec,
+            &permit,
+            2,
+            NoEffectReason::NotSelected,
+        ))
+        .expect("no-effect after sibling closures");
+    assert_eq!(
+        authority
+            .inspect_effect_slot(permit.permit_id, 1)
+            .expect("slot 1")
+            .state,
+        SlotState::EffectClosed
+    );
+    assert_eq!(
+        authority
+            .inspect_effect_slot(permit.permit_id, 2)
+            .expect("slot 2")
+            .state,
+        SlotState::NoEffect
+    );
+}
+
+/// Audit 03: once a takeover fence moves the participant registry off
+/// `FrozenForPermit`, the fenced old holder can neither register an
+/// outcome nor prove an absence — the commit-context revalidation refuses
+/// both with the typed frozen-registry error and resolution belongs to
+/// the reconcile slice. The byte-equal replay of a pre-fence outcome
+/// still returns the original receipt (replay stays ahead of every
+/// fence).
+///
+/// Builds the fenced world: slot 0 closed pre-fence (its byte-equal
+/// replay must survive the fence), slot 1 dispatched and in flight, slot
+/// 2 planned, and the registry moved to `FrozenForTakeover` by a
+/// successor-term takeover fence.
+fn takeover_fenced_fixture() -> (TestDatabase, AttemptSpec, PermitRecord, OutcomeRequest) {
+    let database = TestDatabase::new("context-fence");
+    let authority = database.open();
+    authority.register_task(task_spec()).expect("register task");
+    let spec = attempt_spec(0x0a, snapshot(0, 0));
+    authority.register_attempt(spec).expect("register attempt");
+    let permit = issued_permit(
+        authority
+            .request_commit_permit(permit_request(
+                &spec,
+                0x01,
+                vec![planned(0, true), planned(1, true), planned(2, false)],
+            ))
+            .expect("permit"),
+    );
+    let registry_binding = permit
+        .participant_registry_binding
+        .expect("permit issuance freezes the registry");
+    let issued0 = issued_effect_permit(
+        authority
+            .request_effect_permit(effect_request(&spec, &permit, 0, 0xe1))
+            .expect("issue slot 0"),
+    );
+    authority
+        .consume_dispatch_token(dispatch_request(&spec, &permit, &issued0))
+        .expect("dispatch slot 0");
+    let closure = outcome_request(
+        &spec,
+        &permit,
+        0,
+        Outcome::Closed {
+            authoritative_closure_digest: [0xbb; 32],
+        },
+    );
+    authority
+        .record_effect_outcome(closure)
+        .expect("close slot 0 pre-fence");
+    let issued1 = issued_effect_permit(
+        authority
+            .request_effect_permit(effect_request(&spec, &permit, 1, 0xe2))
+            .expect("issue slot 1"),
+    );
+    authority
+        .consume_dispatch_token(dispatch_request(&spec, &permit, &issued1))
+        .expect("dispatch slot 1");
+    let successor_lease = authority
+        .acquire_authority_lease(AuthorityLeaseRequest {
+            holder_id: ProcessId::from_bytes([0x91; 16]),
+            idempotency_key: IdempotencyKey::from_bytes([0x92; 16]),
+            requested_at_ms: 6_500,
+            ttl_ms: 10_000,
+        })
+        .expect("successor lease")
+        .record();
+    authority
+        .prepare_authority_takeover_fence(AuthorityLeaseTakeoverFenceRequest {
+            task_id: task_id(),
+            expected_registry_binding: registry_binding,
+            lease: successor_lease,
+            requested_at_ms: 6_600,
+        })
+        .expect("freeze registry for takeover");
+    (database, spec, permit, closure)
+}
+
+#[test]
+fn outcome_commit_context_refuses_takeover_frozen_registry() {
+    let (database, spec, permit, closure) = takeover_fenced_fixture();
+    let authority = database.open();
+    // The fenced old holder's outcome registration is refused by the
+    // commit-context revalidation and writes nothing.
+    assert!(matches!(
+        authority.record_effect_outcome(outcome_request(
+            &spec,
+            &permit,
+            1,
+            Outcome::Closed {
+                authoritative_closure_digest: [0xbd; 32],
+            },
+        )),
+        Err(TaskStoreError::ParticipantRegistryFrozen {
+            state: ParticipantRegistryState::FrozenForTakeover,
+        })
+    ));
+    assert_eq!(
+        authority
+            .inspect_effect_slot(permit.permit_id, 1)
+            .expect("slot 1")
+            .state,
+        SlotState::Dispatched,
+        "the fenced holder's in-flight slot is untouched"
+    );
+    // Replay-first discipline: the byte-equal pre-fence outcome replays
+    // its original receipt despite the frozen registry.
+    assert!(matches!(
+        authority.record_effect_outcome(closure),
+        Ok(nlos_task::EffectReceiptDecision::Replayed(_))
+    ));
+}
+
+#[test]
+fn no_effect_commit_context_refuses_takeover_frozen_registry() {
+    let (database, spec, permit, _closure) = takeover_fenced_fixture();
+    let authority = database.open();
+    // The absence-proof path refuses the same frozen registry and writes
+    // nothing.
+    assert!(matches!(
+        authority.record_no_effect(no_effect_request(
+            &spec,
+            &permit,
+            2,
+            NoEffectReason::NotSelected,
+        )),
+        Err(TaskStoreError::ParticipantRegistryFrozen {
+            state: ParticipantRegistryState::FrozenForTakeover,
+        })
+    ));
+    assert_eq!(
+        authority
+            .inspect_effect_slot(permit.permit_id, 2)
+            .expect("slot 2")
+            .state,
+        SlotState::Planned,
+        "the fenced holder's planned slot is untouched"
+    );
 }
 
 /// Bullet: reconcile to `EFFECT_CLOSED` writes the reconciliation receipt,

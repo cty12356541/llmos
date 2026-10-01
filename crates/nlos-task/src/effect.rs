@@ -2089,9 +2089,11 @@ impl SqliteTaskAuthority {
     /// # Errors
     ///
     /// Returns a not-found, holder, epoch, slot-state, replay-conflict,
-    /// adoption-scope, or storage error. A permit whose issuance bound an
-    /// authority lease additionally fails closed with the typed lease family
-    /// (`TK-B2`); see [`Self::record_effect_outcome_with_authority_lease`].
+    /// adoption-scope, stale-head/membership/registry (commit-context
+    /// revalidation, audit 03), or storage error. A permit whose issuance
+    /// bound an authority lease additionally fails closed with the typed
+    /// lease family (`TK-B2`); see
+    /// [`Self::record_effect_outcome_with_authority_lease`].
     pub fn record_effect_outcome(
         &self,
         request: OutcomeRequest,
@@ -2166,13 +2168,29 @@ impl SqliteTaskAuthority {
         // RECONCILE_CLOSE_OR_QUARANTINE_ONLY — a dispatched slot's outcome
         // is registered by the reconcile slice, never by the fenced old
         // holder. The replay branch above stays first (a pre-adoption
-        // outcome still replays byte-equal), and the head part of the
-        // commit context stays structurally exempt (a sibling effect's
-        // closure moves `head_effect_history_root`); the slot CAS still
+        // outcome still replays byte-equal); the slot CAS still
         // arbitrates the write itself.
         if crate::reconcile::has_adoption(&transaction, request.permit_id)? {
             return Err(TaskStoreError::AdoptionScopeViolation);
         }
+        // Audit 03: the same commit context the mint/dispatch entries
+        // revalidate (head/group/frozen registry), with the replay branch
+        // still first. The head part cannot false-positive on a sibling
+        // effect's closure: the durable `head_commit_seq` /
+        // `head_effect_history_root` / `retry_fence_epoch` fields move
+        // only inside the terminal commit transactions
+        // (`write_commit_receipt` / `finalize_legacy`), each of which
+        // closes the permit in the same transaction — a sibling closure
+        // appends history rows and bumps `control_epoch` only. While
+        // `check_holder` sees an `Issued` permit the head is therefore
+        // bit-stable (the earlier "sibling closure moves the head"
+        // structural exemption was incorrect), so this stays a fail-closed
+        // invariant against any future writer that moves the head without
+        // closing the permit; the group and frozen-registry parts are
+        // live fences in their own right (a takeover-frozen registry
+        // refuses the fenced old holder's outcome, pushing resolution to
+        // the reconcile slice).
+        check_commit_context(&transaction, request.attempt_id, &context)?;
         // `TK-B2`: the live-lease fence, after the replay branch (which
         // stays first) and strictly before the receipt write — a fenced
         // writer can neither close nor leave uncertain a live dispatch.
@@ -2260,9 +2278,10 @@ impl SqliteTaskAuthority {
     /// # Errors
     ///
     /// Returns a not-found, holder, epoch, token, slot-state, condition,
-    /// replay-conflict, adoption-scope, or storage error. A permit whose
-    /// issuance bound an authority lease additionally fails closed with the
-    /// typed lease family (`TK-B2`); see
+    /// replay-conflict, adoption-scope, stale-head/membership/registry
+    /// (commit-context revalidation, audit 03), or storage error. A permit
+    /// whose issuance bound an authority lease additionally fails closed
+    /// with the typed lease family (`TK-B2`); see
     /// [`Self::record_no_effect_with_authority_lease`].
     pub fn record_no_effect(
         &self,
@@ -2356,13 +2375,22 @@ impl SqliteTaskAuthority {
         // RECONCILE_CLOSE_OR_QUARANTINE_ONLY — proving a token unconsumed
         // on an adopted permit belongs to the reconcile slice, not to the
         // fenced old holder. The `NoEffect` replay branch above stays
-        // first; the head part of the commit context stays structurally
-        // exempt (a sibling effect's closure moves
-        // `head_effect_history_root`); the slot CAS still arbitrates the
-        // write itself.
+        // first; the slot CAS still arbitrates the write itself.
         if crate::reconcile::has_adoption(&transaction, request.permit_id)? {
             return Err(TaskStoreError::AdoptionScopeViolation);
         }
+        // Audit 03: the same commit-context revalidation the
+        // mint/dispatch entries run, with the replay branch still first.
+        // The head part cannot false-positive on a sibling effect's
+        // closure — the durable head fields move only in the terminal
+        // commit transactions, which close the permit atomically, so
+        // while `check_holder` sees an `Issued` permit the head is
+        // bit-stable (see the outcome path for the full argument). The
+        // frozen-registry part refuses absence proofs recorded after a
+        // takeover fence froze the registry: the fenced old holder's
+        // still-`Planned`/`Permitted` slots resolve through the
+        // reconcile slice instead.
+        check_commit_context(&transaction, request.attempt_id, &context)?;
         // `TK-B2`: the live-lease fence, after the replay branch (which
         // stays first) and strictly before the receipt write — a fenced
         // writer can never forge an absence proof for another holder.
@@ -2620,9 +2648,11 @@ impl SqliteTaskAuthority {
         // Adoption never touches a non-`Unknown` slot's state and the
         // binding CAS below has no state-machine arbitration, so unlike
         // the outcome paths this fence is the only scope guard. Both
-        // replay branches above stay first; the head part of the commit
-        // context stays structurally exempt (a sibling effect's closure
-        // moves `head_effect_history_root`).
+        // replay branches above stay first; registration deliberately
+        // carries no commit-context revalidation — it is a pre-effect
+        // projection fact whose `Planned`/`Permitted` window closes
+        // before any terminal commit could move the durable head fields,
+        // and the slot's binding CAS arbitrates the write.
         if crate::reconcile::has_adoption(&transaction, request.permit_id)? {
             return Err(TaskStoreError::AdoptionScopeViolation);
         }
