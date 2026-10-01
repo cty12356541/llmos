@@ -43,5 +43,15 @@ windows-sys.workspace = true
 ed25519-dalek.workspace = true
 prost.workspace = true
 
-[lints]
-workspace = true
+# The workspace forbids `unsafe_code`, but the Windows named-pipe adapter
+# needs one FFI call (`GetNamedPipeClientProcessId`) to read the OS-level
+# client pid credential. Mirroring `nlos-store-fault`, this crate does NOT
+# set `[lints] workspace = true`: inheriting it would forbid that bridge.
+#
+# 不继承 workspace lints 的副作用是连 clippy 约束一并丢失。这里显式恢复与
+# workspace 同级的 clippy 检查，但刻意不声明 `rust.unsafe_code`（默认 allow）：
+# unsafe 仅限 `src/windows.rs` 的 FFI 桥（与 store-fault 的 VFS 垫片同族的
+# 指定 unsafe 审计点），逐块附 SAFETY 论证。
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
