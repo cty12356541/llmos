@@ -3,10 +3,10 @@
 //! Decision D5: this module closes the assembly gap between the desktop GUI
 //! authenticated entry and the CLI plain entry when no desktop service
 //! process is running. One daemon owns a state root, opens every real
-//! authority under it (identity, clock, task, artifact, process, resource,
-//! application, plan, channel+topic, operation store, and a tokio runtime
-//! adapter), starts the [`TaskAuthorityCommitRecoveryWorker`], and serves
-//! two Unix socket endpoints side by side:
+//! authority under it (identity, clock, task, artifact, semantic, process,
+//! resource, application, plan, channel+topic, operation store, and a tokio
+//! runtime adapter), starts the [`TaskAuthorityCommitRecoveryWorker`], and
+//! serves two Unix socket endpoints side by side:
 //!
 //! - **authenticated entry** — [`authenticated_serve_one_control`] (the GUI's
 //!   only wiring shape; every connection answers the ADR-0011
@@ -23,7 +23,8 @@
 //!
 //! The `Process`/`Resource`/`Application` authorities are opened because the
 //! daemon is the resident owner of the state root (and the worker drives the
-//! resource half through its own `ResourceAuthority` handle); their
+//! resource half through its own `ResourceAuthority` handle, its semantic
+//! half through its own `SemanticAuthority` handle); their
 //! inspector adapters are composed **client-side** per the
 //! `ControlReceipt::compose` contract, exactly like the CLI `--root` path.
 //!
@@ -68,6 +69,7 @@ use nlos_schema::sabi::v1::{
     ControlCommand as SabiWireCommand, ExchangeResponse, GetSystemControlRequest,
     SabiRequestContext,
 };
+use nlos_semantic::{SemanticAuthority, SemanticAuthorityError};
 use nlos_store::{SqliteOperationStore, StoreError};
 use nlos_task::{SqliteTaskAuthority, TaskStoreError};
 use nlos_topic::{TopicAuthority, TopicAuthorityError};
@@ -101,6 +103,7 @@ pub enum DaemonError {
     Clock(AuthorityClockError),
     Task(TaskStoreError),
     Artifact(nlos_artifact::ArtifactError),
+    Semantic(SemanticAuthorityError),
     Process(ProcessAuthorityError),
     Resource(ResourceAuthorityError),
     Application(nlos_application::ApplicationAuthorityError),
@@ -125,6 +128,7 @@ impl fmt::Display for DaemonError {
             Self::Clock(error) => write!(formatter, "authority clock: {error}"),
             Self::Task(error) => write!(formatter, "task authority: {error}"),
             Self::Artifact(error) => write!(formatter, "artifact store: {error}"),
+            Self::Semantic(error) => write!(formatter, "semantic authority: {error}"),
             Self::Process(error) => write!(formatter, "process authority: {error}"),
             Self::Resource(error) => write!(formatter, "resource authority: {error}"),
             Self::Application(error) => write!(formatter, "application authority: {error}"),
@@ -149,6 +153,7 @@ impl Error for DaemonError {
             Self::Clock(error) => Some(error),
             Self::Task(error) => Some(error),
             Self::Artifact(error) => Some(error),
+            Self::Semantic(error) => Some(error),
             Self::Process(error) => Some(error),
             Self::Resource(error) => Some(error),
             Self::Application(error) => Some(error),
@@ -335,6 +340,9 @@ pub struct SystemControlDaemon {
     pub tasks: Arc<SqliteTaskAuthority>,
     /// Artifact store driven by the recovery worker.
     pub artifacts: Arc<ArtifactStore>,
+    /// Semantic authority (worker semantic half; resident owner of the
+    /// state root, mirroring the resource half).
+    pub semantic: Arc<SemanticAuthority>,
     /// Process authority (resident owner; client-side inspector surface).
     pub process: Arc<ProcessAuthority>,
     /// Resource authority (worker resource half + client-side inspector).
@@ -432,9 +440,10 @@ pub struct DaemonEndpoints {
 }
 
 /// Assembles the daemon: opens every authority under `options.root`, starts
-/// the recovery worker (semantic half quiescent — no semantic authority is
-/// opened; the artifact and resource halves run), optionally bootstraps the
-/// `--identity-key-file` principal, and binds both endpoints.
+/// the recovery worker with all three recovery domains live (the artifact,
+/// semantic, and resource halves each scan and converge their due plans),
+/// optionally bootstraps the `--identity-key-file` principal, and binds both
+/// endpoints.
 ///
 /// # Errors
 ///
@@ -465,6 +474,9 @@ pub fn assemble(
     let artifacts = Arc::new(
         ArtifactStore::open(options.root.join("artifacts")).map_err(DaemonError::Artifact)?,
     );
+    let semantic = Arc::new(
+        SemanticAuthority::open(options.root.join("semantic")).map_err(DaemonError::Semantic)?,
+    );
     let process = Arc::new(
         ProcessAuthority::open(options.root.join("process")).map_err(DaemonError::Process)?,
     );
@@ -486,12 +498,14 @@ pub fn assemble(
         .map_err(DaemonError::Store)?;
     let runtime = TokioRuntimeAdapter::new(runtime_handle, TokioRuntimeConfig::default())
         .map_err(DaemonError::Runtime)?;
-    // The worker's semantic half stays quiescent: the daemon opens no
-    // semantic authority, so only artifact and resource plans are scanned.
+    // The worker drives all three recovery domains: the artifact half
+    // through `artifacts`, the semantic half through `semantic`, and the
+    // resource half through `resource`, so due plans in every domain are
+    // scanned and converged.
     let worker = TaskAuthorityCommitRecoveryWorker::start_with_semantic_and_resource_authorities(
         Arc::clone(&tasks),
         Arc::clone(&artifacts),
-        None,
+        Some(Arc::clone(&semantic)),
         Some(Arc::clone(&resource)),
         options.worker_config,
     )
@@ -512,6 +526,7 @@ pub fn assemble(
         clock: Arc::new(clock),
         tasks,
         artifacts,
+        semantic,
         process,
         resource,
         application,
