@@ -744,12 +744,12 @@ async fn run_ipc_write_fault(code: FaultCode) {
             i32::from(RetryDirective::RetrySameIdempotencyKey)
         );
         assert!(nlos_store_fault::writes_observed() > 0);
-        assert!(
+        assert_eq!(
             fixture
                 .authority
                 .inspect_authority_takeover_barrier_receipts(fixture.fence.takeover_receipt_id)
-                .unwrap()
-                .is_empty()
+                .unwrap(),
+            [] as [nlos_task::AuthorityTakeoverBarrierReceiptRecord; 0]
         );
     }
 
@@ -822,11 +822,11 @@ async fn ipc_power_loss_write_loss_is_invisible_and_same_key_recovers() {
         SqliteTaskAuthority::open_with_vfs(&database.path, Some(FAULT_VFS_NAME))
             .expect("reopen after IPC power loss"),
     );
-    assert!(
+    assert_eq!(
         recovered
             .inspect_authority_takeover_barrier_receipts(fence.takeover_receipt_id)
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [nlos_task::AuthorityTakeoverBarrierReceiptRecord; 0]
     );
     assert_eq!(
         recovered
@@ -965,12 +965,12 @@ async fn wrong_purpose_signing_key_fails_as_rights_over_ipc_without_durable_row(
     let failure = response_failure(response.envelope());
     assert_eq!(failure.code, i32::from(SabiErrorCode::Rights));
     assert_eq!(failure.retry, i32::from(RetryDirective::DoNotRetry));
-    assert!(
+    assert_eq!(
         fixture
             .authority
             .inspect_authority_takeover_barrier_receipts(fixture.fence.takeover_receipt_id)
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [nlos_task::AuthorityTakeoverBarrierReceiptRecord; 0]
     );
 }
 
@@ -995,12 +995,12 @@ async fn tampered_signature_fails_as_rights_over_ipc_without_durable_row() {
     let failure = response_failure(response.envelope());
     assert_eq!(failure.code, i32::from(SabiErrorCode::Rights));
     assert_eq!(failure.retry, i32::from(RetryDirective::DoNotRetry));
-    assert!(
+    assert_eq!(
         fixture
             .authority
             .inspect_authority_takeover_barrier_receipts(fixture.fence.takeover_receipt_id)
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [nlos_task::AuthorityTakeoverBarrierReceiptRecord; 0]
     );
 }
 
@@ -1060,7 +1060,7 @@ async fn unknown_method_is_a_typed_not_supported_failure_over_ipc() {
     .await;
     let response_envelope = response.envelope();
     assert_eq!(response_envelope.request_id, vec![0x35; 16]);
-    assert!(response_envelope.payload.is_empty());
+    assert_eq!(response_envelope.payload, [] as [u8; 0]);
     let envelope::CommonContext::ResponseContext(context) = response_envelope
         .common_context
         .as_ref()
@@ -1069,7 +1069,10 @@ async fn unknown_method_is_a_typed_not_supported_failure_over_ipc() {
         panic!("expected response context");
     };
     assert!(context.operation.is_none());
-    assert!(context.receipts.is_empty());
+    assert_eq!(
+        context.receipts,
+        [] as [nlos_schema::sabi::v1::ReceiptReference; 0]
+    );
     let failure = response_failure(response_envelope);
     assert_eq!(failure.code, i32::from(SabiErrorCode::NotSupported));
     assert_eq!(failure.retry, i32::from(RetryDirective::DoNotRetry));
