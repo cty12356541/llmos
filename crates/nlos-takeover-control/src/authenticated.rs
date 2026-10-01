@@ -47,20 +47,28 @@
 //!
 //! Every handshake failure is a typed error and the connection is dropped
 //! before any request byte reaches the handler; a consumed nonce is never
-//! returned, so failed handshakes burn their nonce by design. Unix only:
-//! the upstream transport facility is `#[cfg(unix)]`, so Windows
-//! authenticated serving remains a future slice.
+//! returned, so failed handshakes burn their nonce by design. Both platforms
+//! are served through the same upstream transport core: the Unix-domain
+//! socket on Unix and the named pipe on Windows differ only in transport
+//! acquisition and the endpoint-path byte encoding fed into the channel
+//! binding (see [`EndpointListener`]), so the handshake bytes and failure
+//! order are identical on every platform.
 
 use std::error::Error;
 use std::fmt;
+use std::future::Future;
 
 use nlos_clock::{AuthorityClock, AuthorityClockError};
 use nlos_identity::IdentityAuthority;
 use nlos_ipc::handshake::HandshakeError;
+use nlos_ipc::handshake::HandshakeNonceRegistry;
 use nlos_ipc::handshake::transport::{
     AuthenticatedServeOutcome, ServerHandshakeContext, authenticated_serve_one,
 };
+#[cfg(unix)]
 use nlos_ipc::unix::UnixListenerAdapter;
+#[cfg(windows)]
+use nlos_ipc::windows::NamedPipeListenerAdapter;
 use nlos_ipc::{IpcError, OutboundResponse, PeerAuthorizer, TransportConfig};
 use nlos_schema::sabi::v1::ExchangeResponse;
 use nlos_schema::{HANDSHAKE_NONCE_BYTES, ValidatedExchangeRequest};
@@ -113,6 +121,98 @@ impl From<HandshakeError> for AuthenticatedIpcError {
     }
 }
 
+/// Platform listener type the authenticated serving entry accepts: the
+/// Unix-domain socket listener on Unix, the local named-pipe listener on
+/// Windows (whose endpoint path is the pipe path). Both adapters delegate
+/// to the same upstream transport core, so only the stream acquisition and
+/// the channel-binding path encoding differ — the handshake and exchange
+/// wire bytes are identical on every platform.
+#[cfg(unix)]
+pub type EndpointListener = UnixListenerAdapter;
+
+/// Platform listener type the authenticated serving entry accepts: the
+/// Unix-domain socket listener on Unix, the local named-pipe listener on
+/// Windows (whose endpoint path is the pipe path). Both adapters delegate
+/// to the same upstream transport core, so only the stream acquisition and
+/// the channel-binding path encoding differ — the handshake and exchange
+/// wire bytes are identical on every platform.
+#[cfg(windows)]
+pub type EndpointListener = NamedPipeListenerAdapter;
+
+/// Dispatches one authenticated serving cycle to the platform transport
+/// wrapper: accept, OS-credential pre-gate, challenge-response handshake,
+/// then exactly one served exchange. Unix path: the Unix-domain socket
+/// wrapper, byte-for-byte the historical behavior.
+#[cfg(unix)]
+#[allow(clippy::too_many_arguments)]
+async fn platform_authenticated_serve<A, H, F, N>(
+    listener: &mut EndpointListener,
+    config: TransportConfig,
+    identity: &IdentityAuthority,
+    nonces: &HandshakeNonceRegistry,
+    endpoint_binding: &[u8],
+    authorizer: &A,
+    handler: H,
+    next_nonce: N,
+    verified_at_ms: u64,
+) -> Result<AuthenticatedServeOutcome, HandshakeError>
+where
+    A: PeerAuthorizer,
+    H: FnOnce(ValidatedExchangeRequest) -> F,
+    F: Future<Output = Result<OutboundResponse, IpcError>>,
+    N: FnMut() -> [u8; HANDSHAKE_NONCE_BYTES],
+{
+    authenticated_serve_one(
+        listener,
+        config,
+        identity,
+        nonces,
+        endpoint_binding,
+        authorizer,
+        handler,
+        next_nonce,
+        verified_at_ms,
+    )
+    .await
+}
+
+/// Dispatches one authenticated serving cycle to the platform transport
+/// wrapper: accept, OS-credential pre-gate, challenge-response handshake,
+/// then exactly one served exchange. Windows path: the named-pipe wrapper
+/// over the same shared handshake core.
+#[cfg(windows)]
+#[allow(clippy::too_many_arguments)]
+async fn platform_authenticated_serve<A, H, F, N>(
+    listener: &mut EndpointListener,
+    config: TransportConfig,
+    identity: &IdentityAuthority,
+    nonces: &HandshakeNonceRegistry,
+    endpoint_binding: &[u8],
+    authorizer: &A,
+    handler: H,
+    next_nonce: N,
+    verified_at_ms: u64,
+) -> Result<AuthenticatedServeOutcome, HandshakeError>
+where
+    A: PeerAuthorizer,
+    H: FnOnce(ValidatedExchangeRequest) -> F,
+    F: Future<Output = Result<OutboundResponse, IpcError>>,
+    N: FnMut() -> [u8; HANDSHAKE_NONCE_BYTES],
+{
+    authenticated_serve_one(
+        listener,
+        config,
+        identity,
+        nonces,
+        endpoint_binding,
+        authorizer,
+        handler,
+        next_nonce,
+        verified_at_ms,
+    )
+    .await
+}
+
 /// Opt-in authenticated serving variant of the [`TakeoverControl`] IPC
 /// surface: the existing handler composed with the ADR-0011 transport
 /// handshake and the [`AuthorityClock`] wall domain. See the module
@@ -157,11 +257,14 @@ where
         }
     }
 
-    /// Accepts one connection, runs the OS-credential pre-gate, verifies the
+    /// Accepts one connection through the platform listener
+    /// ([`EndpointListener`]: a bound Unix-domain socket on Unix, a bound
+    /// named pipe on Windows), runs the OS-credential pre-gate, verifies the
     /// challenge-response handshake at the **`AuthorityClock`'s durable wall
     /// high-water** (`inspect_wall`, read without durable side effects), and
     /// only then serves exactly one exchange with the unchanged
-    /// [`TakeoverControl::handle_for_ipc`] semantics.
+    /// [`TakeoverControl::handle_for_ipc`] semantics. The listener must be
+    /// bound to the same endpoint the handshake context was derived from.
     ///
     /// The wall high-water may lag the system clock between duty-cycle
     /// advances; that is the documented behavior of the durable wall domain,
@@ -179,7 +282,7 @@ where
     /// as handshake errors.
     pub async fn serve_one<P, N>(
         &self,
-        listener: &UnixListenerAdapter,
+        listener: &mut EndpointListener,
         config: TransportConfig,
         peer_gate: &P,
         now_monotonic_ns: u64,
@@ -203,7 +306,7 @@ where
                 }))
             }
         };
-        Ok(authenticated_serve_one(
+        Ok(platform_authenticated_serve(
             listener,
             config,
             self.identity,
