@@ -10,7 +10,7 @@
 use std::num::NonZeroU64;
 use std::time::Duration;
 
-use nlos_runtime::{FiberHandle, RuntimeAdapter as _, RuntimeError};
+use nlos_runtime::{FiberHandle, RuntimeError};
 use nlos_runtime_tokio::{FiberLifecyclePhase, TokioRuntimeAdapter};
 use nlos_schema::sabi::v1::{
     ExecutionFiberLifecycleState as WireState, ExecutionFiberPhase as WirePhase, RetryDirective,
