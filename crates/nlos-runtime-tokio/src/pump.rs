@@ -36,6 +36,15 @@ use nlos_types::{CallbackId, Generation, OperationId};
 /// Default fallback poll interval when no delivery hint arrives.
 const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
+/// Floor for [`PumpConfig::poll_interval`], enforced at
+/// [`OutboxPump::start`]: a sub-millisecond interval would make both the
+/// success path (`recv_timeout`) and the failure backoff degenerate into an
+/// unbacked busy-poll hammering the durable source. `poll_interval` is also
+/// the base of the failure backoff, so the floor keeps every derived backoff
+/// step non-zero by construction — there is no separate backoff knob to
+/// misconfigure.
+const MIN_POLL_INTERVAL: Duration = Duration::from_millis(1);
+
 /// Default number of consecutive drain failures that faults the pump.
 const DEFAULT_FAILURE_THRESHOLD: usize = 16;
 
@@ -159,7 +168,11 @@ pub struct PumpConfig {
     /// dropped hint delays delivery by at most this interval. It is also the
     /// base of the failure backoff: consecutive drain failures wait
     /// `poll_interval * 2^(n-1)`, capped at 64 × `poll_interval` (1600ms at
-    /// the default interval).
+    /// the default interval). Must be at least 1ms — the floor is enforced
+    /// at [`OutboxPump::start`], and being the backoff base it keeps every
+    /// backoff step non-zero by construction. No upper bound is enforced: a
+    /// long interval delays delivery but is a legitimate tuning, not a
+    /// hazard.
     pub poll_interval: Duration,
     /// Consecutive drain failures (source errors or consumer panics) after
     /// which the pump transitions to [`PumpState::Faulted`] and the pump
@@ -255,9 +268,15 @@ impl PumpHealthInner {
 /// untouched, so a caller may retry `start` after resolving the cause.
 #[derive(Debug)]
 pub enum OutboxPumpStartError {
-    /// The configuration is unusable: a zero `poll_interval` would turn the
-    /// success path into an unbacked busy-poll (`recv_timeout(0)` returns
-    /// immediately, hammering the source without rest).
+    /// The configuration is unusable. Two shapes are rejected before the
+    /// pump thread is spawned:
+    ///
+    /// - a [`PumpConfig::poll_interval`] below 1ms, which would turn the
+    ///   success path (`recv_timeout`) into an unbacked busy-poll;
+    /// - a consumer [`ConsumerConfig`](nlos_outbox::ConsumerConfig)
+    ///   `batch_limit` of zero, which the consumer only debug-asserts — in a
+    ///   release build it would poll empty batches forever while the pump
+    ///   idled as if healthy.
     InvalidConfig(&'static str),
     /// The OS could not spawn the dedicated pump thread.
     Spawn(std::io::Error),
@@ -308,8 +327,12 @@ impl OutboxPump {
     ///
     /// # Errors
     ///
-    /// Returns [`OutboxPumpStartError::Spawn`] when the OS refuses to create
-    /// the pump thread; no pump state exists in that case.
+    /// Returns [`OutboxPumpStartError::InvalidConfig`] when the combined
+    /// configuration is unusable — a [`PumpConfig::poll_interval`] below
+    /// [`MIN_POLL_INTERVAL`] (1ms) or a consumer `batch_limit` of zero; no
+    /// pump state exists and no thread is spawned in either case. Returns
+    /// [`OutboxPumpStartError::Spawn`] when the OS refuses to create the
+    /// pump thread; no pump state exists in that case either.
     pub fn start<S, W, R>(
         consumer: OutboxConsumer<S, W, R>,
         config: PumpConfig,
@@ -319,9 +342,17 @@ impl OutboxPump {
         W: WakeSink + 'static,
         R: ReconcileSink + 'static,
     {
-        if config.poll_interval.is_zero() {
+        if config.poll_interval < MIN_POLL_INTERVAL {
             return Err(OutboxPumpStartError::InvalidConfig(
-                "poll_interval must be non-zero",
+                "poll_interval must be at least 1ms",
+            ));
+        }
+        // `batch_limit` lives on the consumer's config and is only
+        // debug-asserted in `drain_once`; enforce it here so a release build
+        // cannot spawn a pump that polls empty batches forever.
+        if consumer.config.batch_limit == 0 {
+            return Err(OutboxPumpStartError::InvalidConfig(
+                "consumer batch_limit must be positive",
             ));
         }
         let stop = Arc::new(AtomicBool::new(false));

@@ -196,6 +196,57 @@ fn zero_poll_interval_is_rejected_at_start() {
     assert!(matches!(rejection, OutboxPumpStartError::InvalidConfig(_)));
 }
 
+/// A sub-millisecond `poll_interval` is rejected at `start` exactly like a
+/// zero one: `recv_timeout(999µs)` still returns between source polls fast
+/// enough to behave as an unbacked busy-poll, and the failure backoff —
+/// derived from the same base — would inherit the degenerate floor.
+#[test]
+fn sub_millisecond_poll_interval_is_rejected_at_start() {
+    let (source, _probe) = FlakySource::new(1);
+    let rejection = OutboxPump::start(
+        OutboxConsumer {
+            source,
+            wake_sink: PanickingWakeSink, // never reached: start fails first
+            reconcile_sink: RecordingReconcileSink::default(),
+            config: ConsumerConfig { batch_limit: 8 },
+        },
+        config(Duration::from_micros(999), 16),
+    )
+    .err()
+    .expect("sub-millisecond poll interval must be rejected");
+    assert!(matches!(rejection, OutboxPumpStartError::InvalidConfig(_)));
+}
+
+/// A consumer `batch_limit` of zero is rejected at `start`: the consumer
+/// only debug-asserts it, so a release build would otherwise spawn a pump
+/// that polls empty batches forever while reporting itself healthy.
+#[test]
+fn zero_batch_limit_is_rejected_at_start() {
+    let (source, _probe) = FlakySource::new(1);
+    let rejection = OutboxPump::start(
+        OutboxConsumer {
+            source,
+            wake_sink: PanickingWakeSink, // never reached: start fails first
+            reconcile_sink: RecordingReconcileSink::default(),
+            config: ConsumerConfig { batch_limit: 0 },
+        },
+        config(Duration::from_millis(25), 16),
+    )
+    .err()
+    .expect("zero batch limit must be rejected");
+    match rejection {
+        OutboxPumpStartError::InvalidConfig(reason) => {
+            assert!(
+                reason.contains("batch_limit"),
+                "reason names the field: {reason}"
+            );
+        }
+        error @ OutboxPumpStartError::Spawn(_) => {
+            panic!("expected InvalidConfig, got {error:?}")
+        }
+    }
+}
+
 /// Observability: a persistently failing source shows up in `health()` with
 /// the failure count and root-cause text, drain attempts are spaced by a
 /// growing bounded backoff, and a later recovery resets the counter to zero.
