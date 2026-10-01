@@ -28,6 +28,8 @@ const POLL_STEP: Duration = Duration::from_millis(10);
 /// Several pump poll intervals — enough for a retried refusal to be
 /// re-offered (and re-counted) at least twice.
 const RETRY_WINDOW: Duration = Duration::from_millis(300);
+/// Bounded wait for pump backoff re-offers on slow CI runners.
+const RETRY_BOUND: Duration = Duration::from_secs(8);
 
 struct TempDir {
     root: PathBuf,
@@ -349,12 +351,19 @@ async fn reconcile_effect_backs_off_visibly_without_being_acked() {
     // must stay durable too — the consumer drains in sequence order.
     complete_orphaned_operation(&runtime, 0x60);
 
-    tokio::time::sleep(RETRY_WINDOW).await;
+    // The pump re-offers the refused entry on its failure backoff schedule;
+    // poll for the second refusal instead of racing a fixed window, because
+    // runner speed and synchronous=FULL fsync latency vary widely in CI.
+    let deadline = tokio::time::Instant::now() + RETRY_BOUND;
+    let mut refusals = runtime.reconcile_refusals();
+    while refusals.total < 2 && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(POLL_STEP).await;
+        refusals = runtime.reconcile_refusals();
+    }
     let pending = runtime.operations.pending_outbox(16).expect("pending");
     assert_eq!(pending.len(), 2, "neither entry may be acknowledged away");
     assert_eq!(pending[0].kind, OutboxKind::ReconcileEffect);
 
-    let refusals = runtime.reconcile_refusals();
     assert!(
         refusals.total >= 2,
         "the pump re-offered the refused entry ({} refusals recorded)",
