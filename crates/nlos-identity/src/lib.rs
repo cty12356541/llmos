@@ -981,12 +981,19 @@ impl IdentityAuthority {
     /// Registers an immutable custody binding for one key generation under the
     /// trusted-local software-only reference profile. Principal and control
     /// domain are copied from the current durable binding; stale generation
-    /// fences fail closed.
+    /// fences and revoked key generations fail closed.
+    ///
+    /// Replay contract: an exact re-submission under the same idempotency key
+    /// returns [`CustodyBindingDecision::Replayed`]; re-addressing an already
+    /// registered `(key_id, key_generation)` under a **different** idempotency
+    /// key is an `IdempotencyConflict` — a receipt is never handed across
+    /// idempotency keys.
     ///
     /// # Errors
     ///
-    /// Fails on unknown keys, stale generation fences, unsupported custody
-    /// profiles, idempotency rebinding, or storage failure.
+    /// Fails on unknown keys, stale generation fences, revoked key
+    /// generations, unsupported custody profiles, idempotency rebinding, or
+    /// storage failure.
     pub fn register_custody_binding(
         &self,
         request: RegisterCustodyBindingRequest,
@@ -1002,12 +1009,18 @@ impl IdentityAuthority {
             transaction.commit()?;
             return Ok(CustodyBindingDecision::Replayed(existing));
         }
-        if let Some(existing) = load_custody_by_generation(
+        if let Some((stored_idempotency_key, existing)) = load_custody_by_generation(
             &transaction,
             request.key_id,
             request.expected_key_generation,
         )? {
-            if !custody_request_matches(existing, request) {
+            // Second replay channel (business identity lookup): the stored
+            // binding must have been recorded under the caller's exact
+            // idempotency key, otherwise the caller is re-addressing another
+            // key's registration and must not be handed its receipt.
+            if stored_idempotency_key != request.idempotency_key
+                || !custody_request_matches(existing, request)
+            {
                 return Err(IdentityAuthorityError::IdempotencyConflict);
             }
             transaction.commit()?;
@@ -1019,6 +1032,17 @@ impl IdentityAuthority {
         if binding.key_generation != request.expected_key_generation {
             return Err(IdentityAuthorityError::KeyGenerationFenceConflict);
         }
+        // Symmetric with `register_session`: a revoked current generation (and
+        // any durable revocation row naming the requested generation) refuses
+        // new custody registrations fail-closed.
+        if binding.key_revoked_at_ms.is_some() {
+            return Err(IdentityAuthorityError::KeyRevoked);
+        }
+        ensure_key_generation_not_revoked(
+            &transaction,
+            request.key_id,
+            request.expected_key_generation,
+        )?;
 
         let record = KeyCustodyRecord {
             key_id: request.key_id,
@@ -1059,6 +1083,7 @@ impl IdentityAuthority {
     ) -> Result<KeyCustodyRecord, IdentityAuthorityError> {
         let connection = self.lock()?;
         load_custody_by_generation(&connection, key_id, key_generation)?
+            .map(|(_, record)| record)
             .ok_or(IdentityAuthorityError::CustodyBindingNotFound(key_id))
     }
 
@@ -1076,6 +1101,7 @@ impl IdentityAuthority {
         let binding = load_current_binding(&connection, key_id)?
             .ok_or(IdentityAuthorityError::KeyNotFound(key_id))?;
         load_custody_by_generation(&connection, key_id, binding.key_generation)?
+            .map(|(_, record)| record)
             .ok_or(IdentityAuthorityError::CustodyBindingNotFound(key_id))
     }
 
@@ -1083,6 +1109,12 @@ impl IdentityAuthority {
     /// the current key generation. Principal and control domain are copied from
     /// the durable binding; stale generation fences and revoked generations fail
     /// closed.
+    ///
+    /// Replay contract: an exact re-submission under the same idempotency key
+    /// returns [`SessionRegistrationDecision::Replayed`]; re-addressing an
+    /// already registered `session_id` under a **different** idempotency key is
+    /// an `IdempotencyConflict` — a receipt is never handed across idempotency
+    /// keys.
     ///
     /// # Errors
     ///
@@ -1103,8 +1135,16 @@ impl IdentityAuthority {
             transaction.commit()?;
             return Ok(SessionRegistrationDecision::Replayed(existing));
         }
-        if let Some(existing) = load_session_by_id(&transaction, request.session_id)? {
-            if !session_request_matches(existing, request) {
+        if let Some((stored_idempotency_key, existing)) =
+            load_session_by_id(&transaction, request.session_id)?
+        {
+            // Second replay channel (business identity lookup): the stored
+            // session must have been recorded under the caller's exact
+            // idempotency key, otherwise the caller is re-addressing another
+            // key's registration and must not be handed its receipt.
+            if stored_idempotency_key != request.idempotency_key
+                || !session_request_matches(existing, request)
+            {
                 return Err(IdentityAuthorityError::IdempotencyConflict);
             }
             transaction.commit()?;
@@ -1179,7 +1219,7 @@ impl IdentityAuthority {
         session_id: SessionId,
     ) -> Result<TrustedLocalSessionRecord, IdentityAuthorityError> {
         let connection = self.lock()?;
-        let record = load_session_by_id(&connection, session_id)?
+        let (_, record) = load_session_by_id(&connection, session_id)?
             .ok_or(IdentityAuthorityError::SessionNotFound(session_id))?;
         ensure_key_generation_not_revoked(&connection, record.key_id, record.key_generation)?;
         Ok(record)
@@ -1798,18 +1838,23 @@ fn load_rotation_by_key(
         .transpose()
 }
 
-type CustodyRow = (Vec<u8>, i64, Vec<u8>, Vec<u8>, i64, i64);
+type CustodyRow = (Vec<u8>, Vec<u8>, i64, Vec<u8>, Vec<u8>, i64, i64);
 
-fn decode_custody_row(row: CustodyRow) -> Result<KeyCustodyRecord, IdentityAuthorityError> {
-    Ok(KeyCustodyRecord {
-        key_id: decode_id::<16, _>(row.0, KeyId::from_bytes, "key id")?,
-        key_generation: decode_generation(row.1)?,
-        principal_id: decode_id::<16, _>(row.2, PrincipalId::from_bytes, "principal id")?,
-        control_domain_id: decode_id::<16, _>(row.3, ControlDomainId::from_bytes, "domain id")?,
-        custody_profile: CustodyProfile::decode(row.4)
-            .ok_or(IdentityAuthorityError::CorruptRecord("custody profile"))?,
-        registered_at_ms: decode_u64(row.5)?,
-    })
+fn decode_custody_row(
+    row: CustodyRow,
+) -> Result<(IdempotencyKey, KeyCustodyRecord), IdentityAuthorityError> {
+    Ok((
+        IdempotencyKey::from_bytes(decode_array(row.0, "idempotency key")?),
+        KeyCustodyRecord {
+            key_id: decode_id::<16, _>(row.1, KeyId::from_bytes, "key id")?,
+            key_generation: decode_generation(row.2)?,
+            principal_id: decode_id::<16, _>(row.3, PrincipalId::from_bytes, "principal id")?,
+            control_domain_id: decode_id::<16, _>(row.4, ControlDomainId::from_bytes, "domain id")?,
+            custody_profile: CustodyProfile::decode(row.5)
+                .ok_or(IdentityAuthorityError::CorruptRecord("custody profile"))?,
+            registered_at_ms: decode_u64(row.6)?,
+        },
+    ))
 }
 
 fn load_custody_by_idempotency(
@@ -1818,34 +1863,40 @@ fn load_custody_by_idempotency(
 ) -> Result<Option<KeyCustodyRecord>, IdentityAuthorityError> {
     connection
         .query_row(
-            "SELECT key_id, key_generation, principal_id, control_domain_id,
+            "SELECT idempotency_key, key_id, key_generation, principal_id, control_domain_id,
                     custody_profile, registered_at_ms
              FROM key_custody_bindings WHERE idempotency_key=?1",
             [idempotency_key.as_bytes().as_slice()],
             |row| {
                 Ok((
                     row.get::<_, Vec<u8>>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, i64>(2)?,
                     row.get::<_, Vec<u8>>(3)?,
-                    row.get::<_, i64>(4)?,
+                    row.get::<_, Vec<u8>>(4)?,
                     row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
                 ))
             },
         )
         .optional()?
         .map(decode_custody_row)
         .transpose()
+        .map(|stored| stored.map(|(_, record)| record))
 }
 
+/// Business-identity lookup of a custody binding by `(key_id, key_generation)`,
+/// returning the idempotency key the row was recorded under together with the
+/// record so replay judgment can enforce key equality (receipts never cross
+/// idempotency keys).
 fn load_custody_by_generation(
     connection: &Connection,
     key_id: KeyId,
     key_generation: Generation,
-) -> Result<Option<KeyCustodyRecord>, IdentityAuthorityError> {
+) -> Result<Option<(IdempotencyKey, KeyCustodyRecord)>, IdentityAuthorityError> {
     connection
         .query_row(
-            "SELECT key_id, key_generation, principal_id, control_domain_id,
+            "SELECT idempotency_key, key_id, key_generation, principal_id, control_domain_id,
                     custody_profile, registered_at_ms
              FROM key_custody_bindings
              WHERE key_id=?1 AND key_generation=?2",
@@ -1856,11 +1907,12 @@ fn load_custody_by_generation(
             |row| {
                 Ok((
                     row.get::<_, Vec<u8>>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, i64>(2)?,
                     row.get::<_, Vec<u8>>(3)?,
-                    row.get::<_, i64>(4)?,
+                    row.get::<_, Vec<u8>>(4)?,
                     row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
                 ))
             },
         )
@@ -1874,6 +1926,7 @@ type SessionRow = (
     Vec<u8>,
     Vec<u8>,
     Vec<u8>,
+    Vec<u8>,
     i64,
     Vec<u8>,
     Vec<u8>,
@@ -1883,18 +1936,21 @@ type SessionRow = (
 
 fn decode_session_row(
     row: SessionRow,
-) -> Result<TrustedLocalSessionRecord, IdentityAuthorityError> {
-    Ok(TrustedLocalSessionRecord {
-        receipt_id: decode_id::<16, _>(row.0, ReceiptId::from_bytes, "receipt id")?,
-        session_id: decode_id::<16, _>(row.1, SessionId::from_bytes, "session id")?,
-        session_token_digest: decode_array(row.2, "session token digest")?,
-        key_id: decode_id::<16, _>(row.3, KeyId::from_bytes, "key id")?,
-        key_generation: decode_generation(row.4)?,
-        principal_id: decode_id::<16, _>(row.5, PrincipalId::from_bytes, "principal id")?,
-        control_domain_id: decode_id::<16, _>(row.6, ControlDomainId::from_bytes, "domain id")?,
-        registered_at_ms: decode_u64(row.7)?,
-        expires_at_ms: decode_u64(row.8)?,
-    })
+) -> Result<(IdempotencyKey, TrustedLocalSessionRecord), IdentityAuthorityError> {
+    Ok((
+        IdempotencyKey::from_bytes(decode_array(row.0, "idempotency key")?),
+        TrustedLocalSessionRecord {
+            receipt_id: decode_id::<16, _>(row.1, ReceiptId::from_bytes, "receipt id")?,
+            session_id: decode_id::<16, _>(row.2, SessionId::from_bytes, "session id")?,
+            session_token_digest: decode_array(row.3, "session token digest")?,
+            key_id: decode_id::<16, _>(row.4, KeyId::from_bytes, "key id")?,
+            key_generation: decode_generation(row.5)?,
+            principal_id: decode_id::<16, _>(row.6, PrincipalId::from_bytes, "principal id")?,
+            control_domain_id: decode_id::<16, _>(row.7, ControlDomainId::from_bytes, "domain id")?,
+            registered_at_ms: decode_u64(row.8)?,
+            expires_at_ms: decode_u64(row.9)?,
+        },
+    ))
 }
 
 fn load_session_by_idempotency(
@@ -1903,8 +1959,9 @@ fn load_session_by_idempotency(
 ) -> Result<Option<TrustedLocalSessionRecord>, IdentityAuthorityError> {
     connection
         .query_row(
-            "SELECT receipt_id, session_id, session_token_digest, key_id, key_generation,
-                    principal_id, control_domain_id, registered_at_ms, expires_at_ms
+            "SELECT idempotency_key, receipt_id, session_id, session_token_digest,
+                    key_id, key_generation, principal_id, control_domain_id,
+                    registered_at_ms, expires_at_ms
              FROM trusted_local_sessions WHERE idempotency_key=?1",
             [idempotency_key.as_bytes().as_slice()],
             |row| {
@@ -1913,27 +1970,34 @@ fn load_session_by_idempotency(
                     row.get::<_, Vec<u8>>(1)?,
                     row.get::<_, Vec<u8>>(2)?,
                     row.get::<_, Vec<u8>>(3)?,
-                    row.get::<_, i64>(4)?,
-                    row.get::<_, Vec<u8>>(5)?,
+                    row.get::<_, Vec<u8>>(4)?,
+                    row.get::<_, i64>(5)?,
                     row.get::<_, Vec<u8>>(6)?,
-                    row.get::<_, i64>(7)?,
+                    row.get::<_, Vec<u8>>(7)?,
                     row.get::<_, i64>(8)?,
+                    row.get::<_, i64>(9)?,
                 ))
             },
         )
         .optional()?
         .map(decode_session_row)
         .transpose()
+        .map(|stored| stored.map(|(_, record)| record))
 }
 
+/// Business-identity lookup of a session by `session_id`, returning the
+/// idempotency key the row was recorded under together with the record so
+/// replay judgment can enforce key equality (receipts never cross idempotency
+/// keys).
 fn load_session_by_id(
     connection: &Connection,
     session_id: SessionId,
-) -> Result<Option<TrustedLocalSessionRecord>, IdentityAuthorityError> {
+) -> Result<Option<(IdempotencyKey, TrustedLocalSessionRecord)>, IdentityAuthorityError> {
     connection
         .query_row(
-            "SELECT receipt_id, session_id, session_token_digest, key_id, key_generation,
-                    principal_id, control_domain_id, registered_at_ms, expires_at_ms
+            "SELECT idempotency_key, receipt_id, session_id, session_token_digest,
+                    key_id, key_generation, principal_id, control_domain_id,
+                    registered_at_ms, expires_at_ms
              FROM trusted_local_sessions WHERE session_id=?1",
             [session_id.as_bytes().as_slice()],
             |row| {
@@ -1942,11 +2006,12 @@ fn load_session_by_id(
                     row.get::<_, Vec<u8>>(1)?,
                     row.get::<_, Vec<u8>>(2)?,
                     row.get::<_, Vec<u8>>(3)?,
-                    row.get::<_, i64>(4)?,
-                    row.get::<_, Vec<u8>>(5)?,
+                    row.get::<_, Vec<u8>>(4)?,
+                    row.get::<_, i64>(5)?,
                     row.get::<_, Vec<u8>>(6)?,
-                    row.get::<_, i64>(7)?,
+                    row.get::<_, Vec<u8>>(7)?,
                     row.get::<_, i64>(8)?,
+                    row.get::<_, i64>(9)?,
                 ))
             },
         )
