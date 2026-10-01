@@ -330,7 +330,10 @@ fn kill9_consumer_before_ack_preserves_entry_for_redelivery() {
 
     // Redelivery path: a fresh consumer ACKs it and the outbox drains.
     store.acknowledge_outbox(sequence).expect("redelivered ACK");
-    assert!(store.pending_outbox(10).expect("pending").is_empty());
+    assert_eq!(
+        store.pending_outbox(10).expect("pending"),
+        [] as [nlos_store::OutboxEntry; 0]
+    );
     assert_integrity(&database.path);
 }
 

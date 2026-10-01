@@ -502,7 +502,10 @@ fn artifact_pending_plan_converges_with_unchanged_health_and_quiescent_semantic_
     assert_eq!(running.total_finalized, 1);
     assert_eq!(running.consecutive_failed_cycles, 0);
     assert_eq!(running.retry_delay, None);
-    assert!(running.last_failures.is_empty());
+    assert_eq!(
+        running.last_failures,
+        [] as [nlos_commit_coordinator::RecoveryWorkerFailure; 0]
+    );
     assert_eq!(running.durable_retrying, 0);
     assert_eq!(running.durable_escalated, 0);
     assert_eq!(running.durable_unacknowledged_escalated, 0);
@@ -552,7 +555,10 @@ fn recovery_worker_health_defaults_keep_semantic_domain_quiescent() {
     assert_eq!(health.total_finalized, 0);
     assert_eq!(health.consecutive_failed_cycles, 0);
     assert_eq!(health.retry_delay, None);
-    assert!(health.last_failures.is_empty());
+    assert_eq!(
+        health.last_failures,
+        [] as [nlos_commit_coordinator::RecoveryWorkerFailure; 0]
+    );
     // New semantic-domain fields default to zero/false.
     assert_eq!(health.semantic_total_inspected, 0);
     assert_eq!(health.semantic_total_finalized, 0);
@@ -611,7 +617,10 @@ fn worker_converges_pending_semantic_plan_without_caller() {
     assert_eq!(running.semantic_total_inspected, 1);
     assert_eq!(running.semantic_total_finalized, 1);
     assert_eq!(running.semantic_consecutive_failed_cycles, 0);
-    assert!(running.last_failures.is_empty());
+    assert_eq!(
+        running.last_failures,
+        [] as [nlos_commit_coordinator::RecoveryWorkerFailure; 0]
+    );
     assert_eq!(running.retry_delay, None);
     // Clean convergence never opens a semantic ledger row, so every durable
     // semantic gauge stays zero. `semantic_durable_resolved` only moves on
@@ -690,7 +699,10 @@ fn both_domains_converge_in_one_worker() {
     assert_eq!(running.consecutive_failed_cycles, 0);
     assert_eq!(running.semantic_consecutive_failed_cycles, 0);
     assert_eq!(running.retry_delay, None);
-    assert!(running.last_failures.is_empty());
+    assert_eq!(
+        running.last_failures,
+        [] as [nlos_commit_coordinator::RecoveryWorkerFailure; 0]
+    );
     assert_eq!(running.durable_retrying, 0);
     assert_eq!(running.durable_escalated, 0);
     assert_eq!(running.semantic_durable_retrying, 0);
@@ -884,7 +896,10 @@ fn semantic_authority_failures_escalate_ledger_without_faulting_domain() {
         SemanticCommitPlanState::Publishing,
         "authorize succeeded; the owner publication never landed"
     );
-    assert!(progress.publications.is_empty());
+    assert_eq!(
+        progress.publications,
+        [] as [nlos_task::NestedSemanticPublicationReceipt; 0]
+    );
     worker.stop();
 }
 

@@ -137,11 +137,11 @@ fn enqueue_receive_ack_cycle_is_ordered_and_drains() {
             acked_at_ms: 1_201,
         })
         .expect("ack rest");
-    assert!(
+    assert_eq!(
         authority
             .receive(head.channel_id, 10)
-            .expect("receive drained")
-            .is_empty()
+            .expect("receive drained"),
+        [] as [nlos_channel::QueueEntryRecord; 0]
     );
     assert_eq!(
         authority
@@ -282,11 +282,11 @@ fn stale_fence_rejects_enqueue_but_old_generation_entries_stay_receivable() {
             trim_high_water: 2,
         })
     );
-    assert!(
+    assert_eq!(
         authority
             .receive(head.channel_id, 10)
-            .expect("receive drained")
-            .is_empty()
+            .expect("receive drained"),
+        [] as [nlos_channel::QueueEntryRecord; 0]
     );
 }
 
@@ -783,11 +783,11 @@ fn v1_database_migrates_to_v2_preserving_channel_data() {
             max_sequence: 0,
         }
     );
-    assert!(
+    assert_eq!(
         migrated
             .receive(head.channel_id, 10)
-            .expect("receive migrated queue")
-            .is_empty()
+            .expect("receive migrated queue"),
+        [] as [nlos_channel::QueueEntryRecord; 0]
     );
     match migrated
         .enqueue(request_for(&head, 2, b"post-migration", 20))

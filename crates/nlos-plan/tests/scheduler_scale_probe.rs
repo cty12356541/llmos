@@ -109,7 +109,7 @@ fn run_scheduler_scale_cell(count: u64, print: bool) {
         .expect("select at scale");
     let select_elapsed = select_started.elapsed();
     assert_eq!(report.selections.len() as u64, count);
-    assert!(report.skips.is_empty());
+    assert_eq!(report.skips, [] as [nlos_plan::SkipEntry; 0]);
     assert!(
         select_elapsed < SELECT_CEILING,
         "select {count} nodes took {select_elapsed:?} (>= {SELECT_CEILING:?})"

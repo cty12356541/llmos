@@ -2553,8 +2553,8 @@ mod tests {
             i32::from(SystemControlView::ArtifactCommitRecovery)
         );
         assert_eq!(request.alert_limit, INSPECT_TASK_ALERT_LIMIT);
-        assert!(request.target_id.is_empty());
-        assert!(request.plan_id.is_empty());
+        assert_eq!(request.target_id, [] as [u8; 0]);
+        assert_eq!(request.plan_id, [] as [u8; 0]);
 
         let aggregate = build_request_envelope(&ControlCommand::InspectHealth).unwrap();
         let aggregate_request = decode_get_system_control_request(&aggregate.payload).unwrap();
@@ -3456,7 +3456,7 @@ mod tests {
             i32::from(nlos_schema::sabi::v1::SystemControlView::TaskGroup)
         );
         assert_eq!(group_payload.target_id, vec![0x91; 16]);
-        assert!(group_payload.plan_id.is_empty());
+        assert_eq!(group_payload.plan_id, [] as [u8; 0]);
 
         let node = build_request_envelope(&ControlCommand::InspectTaskNode {
             plan_id: [0xA1; 16],

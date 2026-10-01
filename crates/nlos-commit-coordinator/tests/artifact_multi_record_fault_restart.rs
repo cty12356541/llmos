@@ -372,10 +372,10 @@ fn second_artifact_record_failure_restarts_from_owner_prefix() {
             .clone(),
         committed
     );
-    assert!(
+    assert_eq!(
         ArtifactCommitCoordinator::new(&tasks, &artifacts)
             .converge_pending(8, 5_500)
-            .expect("empty pending scan")
-            .is_empty()
+            .expect("empty pending scan"),
+        [] as [nlos_task::ArtifactTaskCommitReceipt; 0]
     );
 }

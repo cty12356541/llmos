@@ -158,7 +158,10 @@ fn request_platform_kill_fail_closed_on_terminal_binding() {
             ProcessLifecycleState::Terminated
         ))
     ));
-    assert!(adapter.recorded_signals().is_empty());
+    assert_eq!(
+        adapter.recorded_signals(),
+        [] as [(nlos_types::ProcessId, nlos_types::Generation); 0]
+    );
 
     let crashed = open_fixture(&root, 63);
     crashed
@@ -379,7 +382,10 @@ fn request_platform_kill_retry_after_adapter_failure_reissues_signal() {
             "transient platform signal failure"
         ))
     ));
-    assert!(adapter.recorded_signals().is_empty());
+    assert_eq!(
+        adapter.recorded_signals(),
+        [] as [(nlos_types::ProcessId, nlos_types::Generation); 0]
+    );
 
     // The receipt is durably committed despite the failed signal.
     let committed = fixture

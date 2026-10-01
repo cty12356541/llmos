@@ -153,6 +153,7 @@ impl AuthenticatedServeOutcome {
         &self.verified
     }
 
+    #[must_use = "the served result must be inspected before dropping the outcome"]
     pub const fn served(&self) -> &Result<(), IpcError> {
         &self.served
     }

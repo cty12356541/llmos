@@ -421,7 +421,10 @@ fn semantic_coordinator_replays_owner_publication_after_task_write_failure() {
     let recovered = SqliteTaskAuthority::open(&fixture.task_path).unwrap();
     let progress = recovered.inspect_semantic_commit_progress(plan_id).unwrap();
     assert_eq!(progress.plan.state, SemanticCommitPlanState::Publishing);
-    assert!(progress.publications.is_empty());
+    assert_eq!(
+        progress.publications,
+        [] as [nlos_task::NestedSemanticPublicationReceipt; 0]
+    );
     let receipt = SemanticCommitCoordinator::new(&recovered, &semantic)
         .converge(ConvergeSemanticCommitRequest { plan_id, now_ms: 9 })
         .unwrap();

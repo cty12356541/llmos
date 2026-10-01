@@ -417,22 +417,18 @@ fn due_scan_filters_state_and_time_and_resume_requeues() {
     }
     // 第三次失败 consecutive=3 → 退避 100 * 2^2 = 400 → next_retry = 3_400
     // 未到期:不返回
-    assert!(
-        authority
-            .list_due_semantic_commit_plans(10, 3_000)
-            .unwrap()
-            .is_empty()
+    assert_eq!(
+        authority.list_due_semantic_commit_plans(10, 3_000).unwrap(),
+        [] as [nlos_task::SemanticCommitPlanRecord; 0]
     );
     // 到期:返回该 plan
     let due = authority.list_due_semantic_commit_plans(10, 3_500).unwrap();
     assert_eq!(due.len(), 1);
     assert_eq!(due[0].plan_id, plan_id);
     // limit=0 返回空(镜像 list_incomplete 的守卫)
-    assert!(
-        authority
-            .list_due_semantic_commit_plans(0, 3_500)
-            .unwrap()
-            .is_empty()
+    assert_eq!(
+        authority.list_due_semantic_commit_plans(0, 3_500).unwrap(),
+        [] as [nlos_task::SemanticCommitPlanRecord; 0]
     );
     // 负扫描时间戳被拒(镜像 artifact 守卫)
     assert!(matches!(
@@ -445,11 +441,11 @@ fn due_scan_filters_state_and_time_and_resume_requeues() {
         expected = rec.total_failures;
     }
     assert_eq!(expected, 8);
-    assert!(
+    assert_eq!(
         authority
             .list_due_semantic_commit_plans(10, i64::MAX)
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [nlos_task::SemanticCommitPlanRecord; 0]
     );
     // resume(Escalated→Retrying CAS)后重回调度,总失败史保留
     let resumed = authority
@@ -801,17 +797,15 @@ fn alert_lifecycle_and_finalize_resolves_ledger() {
     assert_eq!(resolved.escalated_at_ms, None);
     assert_eq!(resolved.next_retry_at_ms, None);
     // Resolved 后:告警面清空、到期扫描不返回、汇总 resolved=1
-    assert!(
-        authority
-            .list_semantic_recovery_alerts()
-            .unwrap()
-            .is_empty()
+    assert_eq!(
+        authority.list_semantic_recovery_alerts().unwrap(),
+        [] as [nlos_task::SemanticRecoveryAlert; 0]
     );
-    assert!(
+    assert_eq!(
         authority
             .list_due_semantic_commit_plans(10, i64::MAX)
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [nlos_task::SemanticCommitPlanRecord; 0]
     );
     assert_eq!(
         authority.summarize_semantic_recovery().unwrap(),
@@ -842,11 +836,11 @@ fn alert_lifecycle_and_finalize_resolves_ledger() {
             .is_none()
     );
     // Finalized plan 不回到期扫描
-    assert!(
+    assert_eq!(
         reopened
             .list_due_semantic_commit_plans(10, i64::MAX)
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [nlos_task::SemanticCommitPlanRecord; 0]
     );
     // 幂等重放 finalize:终态唯一,不复活台账行
     let replay = reopened
@@ -1006,11 +1000,11 @@ fn ledger_row_loss_before_finalize_still_converges() {
             .unwrap()
             .is_none()
     );
-    assert!(
+    assert_eq!(
         reopened
             .list_due_semantic_commit_plans(10, i64::MAX)
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [nlos_task::SemanticCommitPlanRecord; 0]
     );
     // 再次 finalize:幂等重放,终态不变
     let replay = reopened
@@ -1085,10 +1079,8 @@ fn persisted_envelope_finalize_resolves_ledger() {
     assert_eq!(resolved.total_failures, 8);
     assert_eq!(resolved.resolved_at_ms, Some(23_000));
     assert_eq!(resolved.escalated_at_ms, None);
-    assert!(
-        authority
-            .list_semantic_recovery_alerts()
-            .unwrap()
-            .is_empty()
+    assert_eq!(
+        authority.list_semantic_recovery_alerts().unwrap(),
+        [] as [nlos_task::SemanticRecoveryAlert; 0]
     );
 }

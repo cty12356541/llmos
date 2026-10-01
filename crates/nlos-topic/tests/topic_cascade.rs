@@ -348,12 +348,12 @@ fn cascade_depth_exceeded_fails_closed_pre_write() {
 
     // Zero partial state: no leaf publication, no row for the rejected key
     // and no budget movement on the mid publication.
-    assert!(
+    assert_eq!(
         harness
             .topics
             .inspect_publications(leaf_topic.topic_id)
-            .expect("leaf journal")
-            .is_empty()
+            .expect("leaf journal"),
+        [] as [nlos_topic::PublicationRecord; 0]
     );
     assert!(matches!(
         harness.topics.inspect_publication(key(52)),
@@ -966,12 +966,12 @@ fn republish_validates_parent_state_and_request_bindings() {
             .cascade_budget_remaining,
         2
     );
-    assert!(
+    assert_eq!(
         harness
             .topics
             .inspect_publications(child_topic.topic_id)
-            .expect("no child rows")
-            .is_empty()
+            .expect("no child rows"),
+        [] as [nlos_topic::PublicationRecord; 0]
     );
 
     // Once the parent reaches its terminal ENQUEUED state the same forward

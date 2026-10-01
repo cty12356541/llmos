@@ -448,7 +448,10 @@ fn cross_term_adoption_reconciles_old_permit_under_successor_proof() {
     let members = authority
         .inspect_authority_takeover_fence_members(spec.task_id, registry_binding)
         .expect("fence members");
-    assert!(!members.is_empty());
+    assert_ne!(
+        members,
+        [] as [nlos_task::AuthorityTakeoverFenceMemberRecord; 0]
+    );
     for member in members.iter().map(|member| member.participant) {
         record_signed_observation(&authority, &identity, &signer, &takeover, member);
     }

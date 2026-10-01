@@ -109,6 +109,7 @@ impl AuthenticatedMockDriverOutcome {
         &self.verified
     }
 
+    #[must_use]
     pub const fn served(&self) -> &Result<(), IpcError> {
         &self.served
     }

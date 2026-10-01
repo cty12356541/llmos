@@ -624,12 +624,12 @@ fn migration_refusals_are_typed_with_zero_durable_state() {
         ),
         Err(ApplicationAuthorityError::ApplicationDisabled { .. })
     ));
-    assert!(
+    assert_eq!(
         second
             .authority
             .list_package_migrations(second.package_id)
-            .expect("list migrations")
-            .is_empty()
+            .expect("list migrations"),
+        [] as [nlos_application::MigrationView; 0]
     );
 }
 

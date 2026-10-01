@@ -1644,12 +1644,12 @@ fn artifact_face_owner_published_mixed_ladder_refused_terminal_converges() {
         0,
         "the typed mixed refusal leaves zero durable plan rows"
     );
-    assert!(
+    assert_eq!(
         drive
             .authority
             .list_incomplete_artifact_commit_plans(10)
-            .expect("incomplete artifact plans")
-            .is_empty()
+            .expect("incomplete artifact plans"),
+        [] as [nlos_task::ArtifactCommitPlanRecord; 0]
     );
     let committed = committed_combined(
         six_domain_finalize(&drive, &owners, plan_id, 1_700)

@@ -648,7 +648,7 @@ fn selector_queries_match_authority_readback() {
             ..all_selector()
         })
         .unwrap();
-    assert!(unknown_issuer.is_empty());
+    assert_eq!(unknown_issuer, [] as [nlos_search::AssertionHit; 0]);
     let unknown_scope = workload
         .search
         .search_assertions(&AssertionSelector {
@@ -656,7 +656,7 @@ fn selector_queries_match_authority_readback() {
             ..all_selector()
         })
         .unwrap();
-    assert!(unknown_scope.is_empty());
+    assert_eq!(unknown_scope, [] as [nlos_search::AssertionHit; 0]);
 
     // Retraction facet straight from the authority's durable rows.
     let only_retracted = workload
@@ -712,7 +712,7 @@ fn verification_joined_search_matches_authority_trust_views() {
         .search
         .search_assertions(&verification_selector(TrustViewVerificationStatus::Fail))
         .unwrap();
-    assert!(fail.is_empty());
+    assert_eq!(fail, [] as [nlos_search::AssertionHit; 0]);
 
     // Limit applies after the verification join, never before it: a small
     // limit over Unverified (4, 5 in admission order) still surfaces the
@@ -939,20 +939,21 @@ fn typed_failures_for_empty_state_and_invalid_inputs() {
         SearchService::open(root.path(), Arc::clone(&fixture.semantic)).expect("open search face");
 
     // Empty authority: typed-empty results, not errors.
-    assert!(
-        search
-            .search_assertions(&all_selector())
-            .unwrap()
-            .is_empty()
+    assert_eq!(
+        search.search_assertions(&all_selector()).unwrap(),
+        [] as [nlos_search::AssertionHit; 0]
     );
     let index = search.build_index().unwrap();
     assert_eq!(index.assertion_count(), 0);
-    assert!(index.query(&all_selector()).unwrap().is_empty());
-    assert!(
+    assert_eq!(
+        index.query(&all_selector()).unwrap(),
+        [] as [nlos_search::AssertionHit; 0]
+    );
+    assert_eq!(
         search
             .search_assertions(&verification_selector(TrustViewVerificationStatus::Pass))
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [nlos_search::AssertionHit; 0]
     );
 
     // Zero limit fails closed on both faces.

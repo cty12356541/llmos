@@ -509,7 +509,7 @@ mod tests {
             template([0x02; 16], vec![[0x01; 16]]),
         ];
         assert!(validate_task_templates(&valid).is_ok());
-        assert!(task_segment_findings(&valid).is_empty());
+        assert_eq!(task_segment_findings(&valid), Vec::new());
 
         let violations: Vec<Vec<PackageTaskTemplate>> = vec![
             vec![

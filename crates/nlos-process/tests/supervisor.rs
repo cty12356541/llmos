@@ -136,7 +136,7 @@ fn display_names_every_failure_class() {
         SupervisorError::Signal("unix signal failed for registered os pid"),
     ];
     for case in &cases {
-        assert!(!case.to_string().is_empty());
+        assert_ne!(case.to_string(), "");
     }
 }
 

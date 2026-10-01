@@ -326,11 +326,11 @@ fn effect_binding_registration_precedes_effect_and_replays() {
         .expect("list registrations");
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0], first);
-    assert!(
+    assert_eq!(
         authority
             .list_effect_registrations_for_binding(fiber(0x71))
-            .expect("list other binding")
-            .is_empty()
+            .expect("list other binding"),
+        [] as [nlos_task::EffectFiberRegistrationRecord; 0]
     );
 
     // Registration precedes the effect: the slot is still free to issue its
@@ -377,11 +377,11 @@ fn effect_binding_gates_fail_closed_without_side_effects() {
     ));
 
     // Registration and slot binding stay absent after the failed gates.
-    assert!(
+    assert_eq!(
         authority
             .list_effect_registrations_for_binding(fiber(0x70))
-            .expect("list after failures")
-            .is_empty()
+            .expect("list after failures"),
+        [] as [nlos_task::EffectFiberRegistrationRecord; 0]
     );
 
     // The closed window: once the slot dispatched, registration is too late.
@@ -406,11 +406,11 @@ fn effect_binding_gates_fail_closed_without_side_effects() {
             state: SlotState::Dispatched
         })
     ));
-    assert!(
+    assert_eq!(
         authority
             .list_effect_registrations_for_binding(fiber(0x70))
-            .expect("list after closed window")
-            .is_empty()
+            .expect("list after closed window"),
+        [] as [nlos_task::EffectFiberRegistrationRecord; 0]
     );
 }
 
@@ -492,11 +492,11 @@ fn effect_binding_write_window_converges_by_idempotent_replay() {
         let authority = database.open();
 
         // W1 crash before the write: nothing durable, redo registers fresh.
-        assert!(
+        assert_eq!(
             authority
                 .list_effect_registrations_for_binding(fiber(0x70))
-                .expect("absent before any write")
-                .is_empty()
+                .expect("absent before any write"),
+            [] as [nlos_task::EffectFiberRegistrationRecord; 0]
         );
         let record = registered(
             authority

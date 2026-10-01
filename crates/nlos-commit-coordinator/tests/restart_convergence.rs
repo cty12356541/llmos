@@ -537,11 +537,11 @@ fn every_cross_authority_prefix_converges_after_restart() {
         })
         .unwrap();
     assert_eq!(replay, committed);
-    assert!(
+    assert_eq!(
         ArtifactCommitCoordinator::new(&tasks, &artifacts)
             .converge_pending(16, 10_000)
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [nlos_task::ArtifactTaskCommitReceipt; 0]
     );
 }
 
@@ -596,7 +596,10 @@ fn artifact_vfs_io_error_keeps_both_heads_at_the_committed_prefix() {
             .inspect_artifact_commit_progress(pending.plan)
             .unwrap();
         assert_eq!(progress.plan.state, ArtifactCommitPlanState::Publishing);
-        assert!(progress.publications.is_empty());
+        assert_eq!(
+            progress.publications,
+            [] as [nlos_task::NestedArtifactPublicationReceipt; 0]
+        );
         assert_eq!(tasks.inspect_task(pending.task).unwrap().head_commit_seq, 0);
         let receipt = ArtifactCommitCoordinator::new(&tasks, &artifacts)
             .converge(ConvergeArtifactCommitRequest {
@@ -658,7 +661,10 @@ fn task_vfs_enospc_preserves_published_artifact_and_replays_receipt() {
             .inspect_artifact_commit_progress(pending.plan)
             .unwrap();
         assert_eq!(progress.plan.state, ArtifactCommitPlanState::Publishing);
-        assert!(progress.publications.is_empty());
+        assert_eq!(
+            progress.publications,
+            [] as [nlos_task::NestedArtifactPublicationReceipt; 0]
+        );
         assert_eq!(tasks.inspect_task(pending.task).unwrap().head_commit_seq, 0);
         ArtifactCommitCoordinator::new(&tasks, &artifacts)
             .converge(ConvergeArtifactCommitRequest {
@@ -726,7 +732,10 @@ fn task_vfs_power_loss_hides_phantom_nested_receipt_and_redoes_from_prefix() {
         .inspect_artifact_commit_progress(pending.plan)
         .unwrap();
     assert_eq!(recovered.plan.state, ArtifactCommitPlanState::Publishing);
-    assert!(recovered.publications.is_empty());
+    assert_eq!(
+        recovered.publications,
+        [] as [nlos_task::NestedArtifactPublicationReceipt; 0]
+    );
     assert_eq!(tasks.inspect_task(pending.task).unwrap().head_commit_seq, 0);
     let receipt = ArtifactCommitCoordinator::new(&tasks, &artifacts)
         .converge(ConvergeArtifactCommitRequest {
@@ -768,7 +777,10 @@ fn worker_converges_after_process_crash_at_published_prefix() {
         .inspect_artifact_commit_progress(pending.plan)
         .unwrap();
     assert_eq!(prefix.plan.state, ArtifactCommitPlanState::Publishing);
-    assert!(prefix.publications.is_empty());
+    assert_eq!(
+        prefix.publications,
+        [] as [nlos_task::NestedArtifactPublicationReceipt; 0]
+    );
     assert_eq!(tasks.inspect_task(pending.task).unwrap().head_commit_seq, 0);
 
     let tasks = Arc::new(tasks);
@@ -885,7 +897,10 @@ fn authority_write_failures_remain_partial_and_converge_after_repair() {
         );
         let progress = tasks.inspect_artifact_commit_progress(record.plan).unwrap();
         assert_eq!(progress.plan.state, ArtifactCommitPlanState::Publishing);
-        assert!(progress.publications.is_empty());
+        assert_eq!(
+            progress.publications,
+            [] as [nlos_task::NestedArtifactPublicationReceipt; 0]
+        );
     }
     execute_sql(
         &record_failure.task_path,
@@ -1056,7 +1071,10 @@ fn task_authority_worker_scans_immediately_and_stops_promptly() {
     assert!(running.completed_cycles >= 1);
     assert_eq!(running.total_inspected, 1);
     assert_eq!(running.total_finalized, 1);
-    assert!(running.last_failures.is_empty());
+    assert_eq!(
+        running.last_failures,
+        [] as [nlos_commit_coordinator::RecoveryWorkerFailure; 0]
+    );
 
     let stop_started = Instant::now();
     worker.stop();
@@ -1120,7 +1138,10 @@ fn task_authority_worker_backs_off_reports_source_and_recovers() {
     let recovered = worker.health();
     assert_eq!(recovered.consecutive_failed_cycles, 0);
     assert_eq!(recovered.retry_delay, None);
-    assert!(recovered.last_failures.is_empty());
+    assert_eq!(
+        recovered.last_failures,
+        [] as [nlos_commit_coordinator::RecoveryWorkerFailure; 0]
+    );
     assert_eq!(recovered.total_finalized, 1);
     worker.stop();
 }

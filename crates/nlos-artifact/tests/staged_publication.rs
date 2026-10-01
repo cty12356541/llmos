@@ -65,8 +65,11 @@ fn staging_is_durable_but_does_not_advance_canonical_head() {
     ));
 
     let report = store.recover().expect("recover");
-    assert!(report.missing_staged_blobs.is_empty());
-    assert!(report.orphan_blobs.is_empty());
+    assert_eq!(
+        report.missing_staged_blobs,
+        [] as [nlos_artifact::MissingStagedBlob; 0]
+    );
+    assert_eq!(report.orphan_blobs, [] as [nlos_artifact::ContentDigest; 0]);
 }
 
 #[test]
@@ -264,7 +267,7 @@ fn missing_staged_blob_is_visible_and_blocks_publication() {
     let report = store.recover().expect("recover");
     assert_eq!(report.missing_staged_blobs.len(), 1);
     assert_eq!(report.missing_staged_blobs[0].staging_id, staged.staging_id);
-    assert!(report.missing_blobs.is_empty());
+    assert_eq!(report.missing_blobs, [] as [nlos_artifact::MissingBlob; 0]);
     assert!(matches!(
         store.publish_staged_revision(publish_request(&staged)),
         Err(ArtifactError::StagedBlobMissing { .. })

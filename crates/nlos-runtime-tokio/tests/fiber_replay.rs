@@ -446,8 +446,8 @@ async fn resume_redrives_pending_wait_to_live_wait_and_deliver_wakes_it() {
         .expect("resume binding");
     assert!(report.rearmed_satisfied.is_empty());
     assert_eq!(report.rearmed_pending.len(), 1);
-    assert!(report.already_woken.is_empty());
-    assert!(report.cancelled.is_empty());
+    assert_eq!(report.already_woken, [] as [nlos_wait::WaitRecord; 0]);
+    assert_eq!(report.cancelled, [] as [nlos_wait::WaitRecord; 0]);
     assert_eq!(report.replay.binding, binding(1));
     assert_eq!(report.replay.events.len(), 1);
     let RearmedChannelWait {
@@ -558,10 +558,9 @@ async fn resume_self_flips_high_water_covered_pending_wait_satisfied() {
     assert_eq!(flipped.state, WaitState::Woken);
     // A distinct notify key over the same range flips nothing: the row is
     // terminal, so the self-flip notification stays idempotent.
-    assert!(
-        notify(&pair.wait, channel.channel_id, 1, 31)
-            .woken
-            .is_empty()
+    assert_eq!(
+        notify(&pair.wait, channel.channel_id, 1, 31).woken,
+        [] as [nlos_wait::WaitRecord; 0]
     );
     adapter
         .cancel_scope(scope, Generation::INITIAL)
@@ -607,7 +606,7 @@ async fn resume_reports_woken_events_as_facts_without_rearming() {
         .expect("resume binding");
     assert!(report.rearmed_satisfied.is_empty());
     assert!(report.rearmed_pending.is_empty());
-    assert!(report.cancelled.is_empty());
+    assert_eq!(report.cancelled, [] as [nlos_wait::WaitRecord; 0]);
     assert_eq!(report.already_woken.len(), 1);
     assert_eq!(report.already_woken[0].wait_id, durable.wait_id);
     assert_eq!(report.already_woken[0].state, WaitState::Woken);
@@ -672,7 +671,7 @@ async fn resume_reports_cancelled_events_as_facts_with_zero_action() {
         .expect("resume binding");
     assert!(report.rearmed_satisfied.is_empty());
     assert!(report.rearmed_pending.is_empty());
-    assert!(report.already_woken.is_empty());
+    assert_eq!(report.already_woken, [] as [nlos_wait::WaitRecord; 0]);
     assert_eq!(report.cancelled.len(), 1);
     assert_eq!(report.cancelled[0].wait_id, durable.wait_id);
     assert_eq!(report.cancelled[0].state, WaitState::Cancelled);
@@ -949,7 +948,10 @@ async fn unknown_binding_projects_empty_replay_and_empty_report() {
         BindingEventProjection::project(&pair.wait, ReplayAuthorities::default(), binding(7))
             .expect("project empty");
     assert_eq!(replay.binding, binding(7));
-    assert!(replay.events.is_empty());
+    assert_eq!(
+        replay.events,
+        [] as [nlos_runtime_tokio::BindingReplayEvent; 0]
+    );
 
     let report = adapter
         .resume_binding(
@@ -962,11 +964,14 @@ async fn unknown_binding_projects_empty_replay_and_empty_report() {
         )
         .expect("resume empty binding");
     assert_eq!(report.replay.binding, binding(7));
-    assert!(report.replay.events.is_empty());
+    assert_eq!(
+        report.replay.events,
+        [] as [nlos_runtime_tokio::BindingReplayEvent; 0]
+    );
     assert!(report.rearmed_satisfied.is_empty());
     assert!(report.rearmed_pending.is_empty());
-    assert!(report.already_woken.is_empty());
-    assert!(report.cancelled.is_empty());
+    assert_eq!(report.already_woken, [] as [nlos_wait::WaitRecord; 0]);
+    assert_eq!(report.cancelled, [] as [nlos_wait::WaitRecord; 0]);
     adapter
         .cancel_scope(scope, Generation::INITIAL)
         .expect("cancel");

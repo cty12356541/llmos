@@ -234,11 +234,11 @@ fn register_validation_rejects_before_any_durable_write() {
 
     // Every rejection left zero durable state: the channel has no waits and
     // the rejected idempotency key is still free.
-    assert!(
+    assert_eq!(
         pair.wait
             .inspect_channel_waits(channel.channel_id)
-            .expect("list after rejections")
-            .is_empty()
+            .expect("list after rejections"),
+        [] as [nlos_wait::WaitRecord; 0]
     );
     match pair
         .wait
@@ -260,9 +260,9 @@ fn notify_empty_report_unknown_channel_and_zero_up_to() {
     // A channel without waits reports an empty wake set, twice, under
     // distinct keys: an empty report is a success, not an error.
     let first = notify(&pair.wait, channel.channel_id, 5, 30);
-    assert!(first.woken.is_empty());
+    assert_eq!(first.woken, [] as [nlos_wait::WaitRecord; 0]);
     let second = notify(&pair.wait, channel.channel_id, 5, 31);
-    assert!(second.woken.is_empty());
+    assert_eq!(second.woken, [] as [nlos_wait::WaitRecord; 0]);
 
     // An unknown channel fails closed through the owner readback.
     assert!(matches!(
@@ -362,7 +362,7 @@ fn notify_replay_does_not_double_flip_and_later_notify_wakes_remainder() {
     // A different key over the same range flips nothing: already-WOKEN rows
     // are terminal and their wake fields are untouched.
     let again = notify(&pair.wait, channel.channel_id, 4, 31);
-    assert!(again.woken.is_empty());
+    assert_eq!(again.woken, [] as [nlos_wait::WaitRecord; 0]);
     assert_eq!(
         pair.wait
             .inspect_wait(early.wait_id)
@@ -759,7 +759,7 @@ fn inspect_listing_matches_single_inspect() {
             .wait
             .inspect_channel_waits(channel_id)
             .expect("list waits");
-        assert!(!listed.is_empty());
+        assert_ne!(listed, [] as [nlos_wait::WaitRecord; 0]);
         for record in listed {
             assert_eq!(
                 pair.wait.inspect_wait(record.wait_id).expect("inspect one"),
@@ -799,11 +799,11 @@ fn inspect_listing_matches_single_inspect() {
 
     // An empty channel lists empty; unknown waits fail closed.
     let gamma = create_channel(&pair.channel, 202);
-    assert!(
+    assert_eq!(
         pair.wait
             .inspect_channel_waits(gamma.channel_id)
-            .expect("list empty channel")
-            .is_empty()
+            .expect("list empty channel"),
+        [] as [nlos_wait::WaitRecord; 0]
     );
     assert!(matches!(
         pair.wait.inspect_wait(WaitId::from_bytes([0x79; 16])),
@@ -829,10 +829,9 @@ fn ddl_guards_reject_illegal_wait_mutations() {
             idempotency_key: key(40),
         })
         .expect("cancel for guards");
-    assert!(
-        notify(&pair.wait, channel.channel_id, 5, 30)
-            .woken
-            .is_empty()
+    assert_eq!(
+        notify(&pair.wait, channel.channel_id, 5, 30).woken,
+        [] as [nlos_wait::WaitRecord; 0]
     );
     let raw = Connection::open(root.db()).expect("open raw connection");
 

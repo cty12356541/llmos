@@ -67,11 +67,9 @@ mod baseline {
             reopened.inspect_semantic_commit_progress(plan_id),
             Ok(progress) if progress.plan.state == SemanticCommitPlanState::Finalized
         ));
-        assert!(
-            reopened
-                .list_incomplete_semantic_commit_plans(1)
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            reopened.list_incomplete_semantic_commit_plans(1).unwrap(),
+            [] as [nlos_task::SemanticCommitPlanRecord; 0]
         );
     }
 }
