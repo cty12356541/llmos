@@ -246,6 +246,12 @@ function renderOutcome(outcome: OutcomeDto): HTMLElement {
       card.append(fieldRow("receipt_reference", outcome.receiptIdHex));
       break;
     }
+    default: {
+      // 穷尽性静态断言:switch 已覆盖 OutcomeDto 全部 23 形态;新增 kind
+      // 而未补渲染臂时,下面的 never 赋值在编译期报错(E-6a)。
+      const exhaustive: never = outcome;
+      throw new Error(`未覆盖的 outcome 形态: ${String(exhaustive)}`);
+    }
   }
   if (outcome.kind === "failure") {
     card.classList.add("error");
@@ -1215,8 +1221,12 @@ function configView(initial: ConfigDto): HTMLElement {
     initial.applicationRoot ?? "",
   );
   const status = el("p", { className: "muted", text: `配置来源:${initial.source}` });
+  // 保存失败只在此处提示:不清空面板,操作者已填的七个输入框原样保留
+  // 可改后重试(E-6a:此前 showError 会 replaceChildren 整个面板丢输入)。
+  const errorBox = el("div");
   const save = el("button", { text: "保存会话配置" });
   save.addEventListener("click", () => {
+    errorBox.replaceChildren();
     setConfig({
       socketPath: socket.input.value.trim() || null,
       principalHex: principal.input.value.trim() || null,
@@ -1229,7 +1239,7 @@ function configView(initial: ConfigDto): HTMLElement {
       .then((saved) => {
         status.textContent = `配置来源:${saved.source}(已保存)`;
       })
-      .catch((error: unknown) => showError(status.parentElement ?? panel, error));
+      .catch((error: unknown) => showError(errorBox, error));
   });
   panel.append(
     socket.row,
@@ -1241,6 +1251,7 @@ function configView(initial: ConfigDto): HTMLElement {
     applicationRoot.row,
     save,
     status,
+    errorBox,
   );
   return panel;
 }
@@ -1455,7 +1466,15 @@ function resourceMonitorView(): HTMLElement {
   }
   panel.append(refresh, autoLabel, status, domainsBox);
 
+  // in-flight 守卫:上一轮三域派发未完成时跳过本轮,防止慢 socket 下
+  // 请求堆积(E-6a)。
+  let inFlight = false;
   const fetchAll = (): void => {
+    if (inFlight) {
+      status.textContent = "上一轮刷新仍在进行,本轮跳过。";
+      return;
+    }
+    inFlight = true;
     status.textContent = "刷新中……";
     let pending = MONITOR_DOMAINS.length;
     for (const domain of MONITOR_DOMAINS) {
@@ -1472,6 +1491,7 @@ function resourceMonitorView(): HTMLElement {
         .finally(() => {
           pending -= 1;
           if (pending === 0) {
+            inFlight = false;
             status.textContent = `最近刷新:${new Date().toLocaleTimeString()}`;
           }
         });
@@ -1479,14 +1499,32 @@ function resourceMonitorView(): HTMLElement {
   };
 
   let timer = 0;
+  const stopAutoRefresh = (): void => {
+    window.clearInterval(timer);
+    timer = 0;
+  };
+  const startAutoRefresh = (): void => {
+    if (timer !== 0) {
+      return;
+    }
+    fetchAll();
+    timer = window.setInterval(fetchAll, MONITOR_REFRESH_MS);
+  };
   refresh.addEventListener("click", fetchAll);
   auto.addEventListener("change", () => {
     if (auto.checked) {
-      fetchAll();
-      timer = window.setInterval(fetchAll, MONITOR_REFRESH_MS);
+      startAutoRefresh();
     } else {
-      window.clearInterval(timer);
-      timer = 0;
+      stopAutoRefresh();
+    }
+  });
+  // 页面不可见即暂停自动轮询(隐藏 tab 上的三域认证派发只是空转);
+  // 回到前台且勾选仍在时恢复。in-flight 轮次自然完成,不强行中止。
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      stopAutoRefresh();
+    } else if (auto.checked) {
+      startAutoRefresh();
     }
   });
 
