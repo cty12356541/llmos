@@ -346,7 +346,10 @@ fn failure_of(response: &Envelope) -> (SabiErrorCode, RetryDirective) {
         panic!("failure envelope must carry a response context");
     };
     assert!(context.operation.is_none());
-    assert!(context.receipts.is_empty());
+    assert_eq!(
+        context.receipts,
+        [] as [nlos_schema::sabi::v1::ReceiptReference; 0]
+    );
     let failure = context.failure.as_ref().expect("typed failure");
     (
         SabiErrorCode::try_from(failure.code).unwrap(),
@@ -679,7 +682,10 @@ fn tampered_payload_maps_to_a_bounded_invalid_argument_failure() {
         failure_of(&response),
         (SabiErrorCode::InvalidArgument, RetryDirective::DoNotRetry)
     );
-    assert!(pair.wait.list_waits(None).unwrap().is_empty());
+    assert_eq!(
+        pair.wait.list_waits(None).unwrap(),
+        [] as [nlos_wait::WaitRecord; 0]
+    );
 }
 
 #[test]
@@ -712,7 +718,10 @@ fn authorizer_denial_maps_to_a_rights_failure_without_side_effects() {
         );
     }
     // Denial precedes any durable effect.
-    assert!(pair.wait.list_waits(None).unwrap().is_empty());
+    assert_eq!(
+        pair.wait.list_waits(None).unwrap(),
+        [] as [nlos_wait::WaitRecord; 0]
+    );
 }
 
 #[test]
@@ -800,7 +809,10 @@ fn invalid_sabi_context_fails_closed_without_touching_the_authority() {
         (SabiErrorCode::Deadline, RetryDirective::DoNotRetry)
     );
 
-    assert!(pair.wait.list_waits(None).unwrap().is_empty());
+    assert_eq!(
+        pair.wait.list_waits(None).unwrap(),
+        [] as [nlos_wait::WaitRecord; 0]
+    );
 }
 
 #[test]
@@ -824,7 +836,10 @@ fn idempotency_key_rebinding_is_a_conflict_before_any_effect() {
         failure_of(&response),
         (SabiErrorCode::Conflict, RetryDirective::DoNotRetry)
     );
-    assert!(pair.wait.list_waits(None).unwrap().is_empty());
+    assert_eq!(
+        pair.wait.list_waits(None).unwrap(),
+        [] as [nlos_wait::WaitRecord; 0]
+    );
 }
 
 #[test]
