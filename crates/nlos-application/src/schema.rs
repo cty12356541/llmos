@@ -734,7 +734,14 @@ pub(crate) fn migrate_v7(connection: &mut Connection) -> Result<(), ApplicationA
         |row| row.get(0),
     )?;
     if table_count == 3 && trigger_count == 9 && index_count == 1 {
-        connection.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        // Only the v7 objects are known complete here, so this is a v7
+        // store whose stamp never landed — stamp it as exactly that.
+        // Stamping SCHEMA_VERSION (v9 today) would claim currency the
+        // objects do not have: if this open dies before the v8/v9 passes
+        // complete, every later open would then skip them entirely and
+        // surface raw `no such table` errors for the surface-registration
+        // schema while keeping the pre-forward-roll constraint layer.
+        connection.pragma_update(None, "user_version", 7)?;
         return Ok(());
     }
     if table_count != 0 || trigger_count != 0 || index_count != 0 {
@@ -921,7 +928,15 @@ pub(crate) fn migrate_v8(connection: &mut Connection) -> Result<(), ApplicationA
         |row| row.get(0),
     )?;
     if table_count == 1 && trigger_count == 3 {
-        connection.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        // Only the v8 objects are known complete here, so this is a v8
+        // store whose stamp never landed — stamp it as exactly that.
+        // Stamping SCHEMA_VERSION (v9 today) would claim currency the
+        // objects do not have: if this open dies before the v9 pass
+        // completes, every later open would then skip it entirely and
+        // keep the v4 one-way rollback gate (with its colliding
+        // per-application disable/uninstall receipts) in force instead
+        // of the forward roll.
+        connection.pragma_update(None, "user_version", 8)?;
         return Ok(());
     }
     if table_count != 0 || trigger_count != 0 {
@@ -1219,7 +1234,10 @@ pub(crate) fn migrate_v9(connection: &mut Connection) -> Result<(), ApplicationA
 mod tests {
     use rusqlite::Connection;
 
-    use super::{migrate_v1, migrate_v2, migrate_v3, migrate_v4, migrate_v5, migrate_v6};
+    use super::{
+        migrate_v1, migrate_v2, migrate_v3, migrate_v4, migrate_v5, migrate_v6, migrate_v7,
+        migrate_v8,
+    };
     use crate::ApplicationAuthority;
 
     fn user_version(connection: &Connection) -> i64 {
@@ -1232,24 +1250,44 @@ mod tests {
         connection.query_row(sql, [], |row| row.get(0)).unwrap()
     }
 
-    /// Builds the fixture on `database`: a complete v6 object set whose
-    /// `user_version` stamp never landed (reset to 5), carrying one
-    /// installed-then-disabled application with its installation and
-    /// disable receipts. Returns `(application_id, package_id,
-    /// manifest_digest)` for the caller's assertions.
-    fn seed_unstamped_v6_store(database: &std::path::Path) -> ([u8; 16], [u8; 16], [u8; 32]) {
-        let application_id = [0xA1_u8; 16];
-        let package_id = [0xB1_u8; 16];
-        let manifest_digest = [0x31_u8; 32];
-        let mut connection = Connection::open(database).unwrap();
-        migrate_v1(&mut connection).unwrap();
-        migrate_v2(&mut connection).unwrap();
-        migrate_v3(&mut connection).unwrap();
-        migrate_v4(&mut connection).unwrap();
-        migrate_v5(&mut connection).unwrap();
-        migrate_v6(&mut connection).unwrap();
-        // The v6 commit landed but the user_version stamp never did.
-        connection.pragma_update(None, "user_version", 5).unwrap();
+    /// Applies the staged chain `v1..=top` on `connection` (the same pass
+    /// sequence [`crate::ApplicationAuthority::open`] walks), emulating a
+    /// store built when `top` was the current version.
+    fn migrate_up_to(connection: &mut Connection, top: i64) {
+        assert!((1..=8).contains(&top), "the fixture chain tops out at v8");
+        migrate_v1(connection).unwrap();
+        if top >= 2 {
+            migrate_v2(connection).unwrap();
+        }
+        if top >= 3 {
+            migrate_v3(connection).unwrap();
+        }
+        if top >= 4 {
+            migrate_v4(connection).unwrap();
+        }
+        if top >= 5 {
+            migrate_v5(connection).unwrap();
+        }
+        if top >= 6 {
+            migrate_v6(connection).unwrap();
+        }
+        if top >= 7 {
+            migrate_v7(connection).unwrap();
+        }
+        if top >= 8 {
+            migrate_v8(connection).unwrap();
+        }
+    }
+
+    /// Seeds one installed-then-disabled application with its installation
+    /// and disable receipts — the durable payload shared by every
+    /// unstamped-store fixture.
+    fn seed_durable_rows(
+        connection: &Connection,
+        application_id: [u8; 16],
+        package_id: [u8; 16],
+        manifest_digest: [u8; 32],
+    ) {
         connection
             .execute(
                 "INSERT INTO applications (
@@ -1300,6 +1338,28 @@ mod tests {
                 rusqlite::params![application_id.as_slice(), [0x04_u8; 16].as_slice()],
             )
             .unwrap();
+    }
+
+    /// Builds the fixture on `database`: a complete v`top` object set whose
+    /// `user_version` stamp never landed (reset to `top - 1`), carrying one
+    /// installed-then-disabled application with its installation and
+    /// disable receipts. Returns `(application_id, package_id,
+    /// manifest_digest)` for the caller's assertions.
+    fn seed_unstamped_store(
+        database: &std::path::Path,
+        top: i64,
+    ) -> ([u8; 16], [u8; 16], [u8; 32]) {
+        let application_id = [0xA1_u8; 16];
+        let package_id = [0xB1_u8; 16];
+        let manifest_digest = [0x31_u8; 32];
+        let mut connection = Connection::open(database).unwrap();
+        migrate_up_to(&mut connection, top);
+        // The top-version commit landed but the user_version stamp never
+        // did.
+        connection
+            .pragma_update(None, "user_version", top - 1)
+            .unwrap();
+        seed_durable_rows(&connection, application_id, package_id, manifest_digest);
         (application_id, package_id, manifest_digest)
     }
 
@@ -1373,7 +1433,7 @@ mod tests {
         }
         std::fs::create_dir_all(&root).unwrap();
         let database = root.join("application-authority.db");
-        let (_application_id, package_id, manifest_digest) = seed_unstamped_v6_store(&database);
+        let (_application_id, package_id, manifest_digest) = seed_unstamped_store(&database, 6);
         {
             let mut connection = Connection::open(&database).unwrap();
             migrate_v6(&mut connection).unwrap();
@@ -1389,6 +1449,114 @@ mod tests {
         {
             let raw = Connection::open(&database).unwrap();
             assert_upgraded_to_nine_with_data(&raw, &manifest_digest);
+        }
+        // The upgraded store serves the public read path, not just raw rows.
+        let view = authority
+            .inspect_application(nlos_types::PackageId::from_bytes(package_id))
+            .unwrap()
+            .expect("application exists after upgrade");
+        assert_eq!(view.current_installation_generation.get(), 1);
+        assert_eq!(
+            view.package_manifest_digest,
+            nlos_artifact::ContentDigest::from_bytes(manifest_digest)
+        );
+        drop(authority);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The v7 fast-path sibling of the v6 pin above: a store whose v7
+    /// migration-runner objects are complete but whose `user_version`
+    /// stamp never landed must be re-stamped as exactly 7 — never
+    /// `SCHEMA_VERSION` — so the reopened chain still walks v8/v9 and the
+    /// durable rows survive them all. (Stamping v9 here would strand the
+    /// store at 9 whenever this open dies before the later passes
+    /// complete, and every later open would then skip the missing
+    /// surface-registration and forward-roll objects.)
+    #[test]
+    fn v7_complete_objects_with_missing_stamp_restamp_seven_then_upgrades_to_nine() {
+        let root = std::env::temp_dir().join(format!(
+            "nlos-application-schema-v7-restamp-{}",
+            std::process::id()
+        ));
+        if root.exists() {
+            std::fs::remove_dir_all(&root).unwrap();
+        }
+        std::fs::create_dir_all(&root).unwrap();
+        let database = root.join("application-authority.db");
+        let (_application_id, package_id, manifest_digest) = seed_unstamped_store(&database, 7);
+        {
+            let mut connection = Connection::open(&database).unwrap();
+            migrate_v7(&mut connection).unwrap();
+            assert_eq!(
+                user_version(&connection),
+                7,
+                "the complete-object fast path must pin 7, not SCHEMA_VERSION"
+            );
+        }
+
+        // Reopening walks the v8 → v9 remainder of the chain.
+        let authority = ApplicationAuthority::open(&root).unwrap();
+        {
+            let raw = Connection::open(&database).unwrap();
+            assert_upgraded_to_nine_with_data(&raw, &manifest_digest);
+        }
+        // The upgraded store serves the public read path, not just raw rows.
+        let view = authority
+            .inspect_application(nlos_types::PackageId::from_bytes(package_id))
+            .unwrap()
+            .expect("application exists after upgrade");
+        assert_eq!(view.current_installation_generation.get(), 1);
+        assert_eq!(
+            view.package_manifest_digest,
+            nlos_artifact::ContentDigest::from_bytes(manifest_digest)
+        );
+        drop(authority);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The v8 fast-path sibling of the v6/v7 pins: a store whose v8
+    /// surface-registration objects are complete but whose `user_version`
+    /// stamp never landed must be re-stamped as exactly 8 — never
+    /// `SCHEMA_VERSION` — so the reopened chain still runs the v9 forward
+    /// roll and the durable rows survive its composite-key rebuilds.
+    #[test]
+    fn v8_complete_objects_with_missing_stamp_restamp_eight_then_upgrades_to_nine() {
+        let root = std::env::temp_dir().join(format!(
+            "nlos-application-schema-v8-restamp-{}",
+            std::process::id()
+        ));
+        if root.exists() {
+            std::fs::remove_dir_all(&root).unwrap();
+        }
+        std::fs::create_dir_all(&root).unwrap();
+        let database = root.join("application-authority.db");
+        let (_application_id, package_id, manifest_digest) = seed_unstamped_store(&database, 8);
+        {
+            let mut connection = Connection::open(&database).unwrap();
+            migrate_v8(&mut connection).unwrap();
+            assert_eq!(
+                user_version(&connection),
+                8,
+                "the complete-object fast path must pin 8, not SCHEMA_VERSION"
+            );
+        }
+
+        // Reopening runs the v9 forward roll; a v9-stamped stranded store
+        // would have skipped it and kept the v4 constraint layer.
+        let authority = ApplicationAuthority::open(&root).unwrap();
+        {
+            let raw = Connection::open(&database).unwrap();
+            assert_upgraded_to_nine_with_data(&raw, &manifest_digest);
+            assert_eq!(
+                scalar(
+                    &raw,
+                    "SELECT COUNT(*) FROM sqlite_master
+                     WHERE type='table' AND name='application_rollback_receipts'
+                       AND sql LIKE '%to_generation > from_generation%'"
+                ),
+                1,
+                "the v9 forward-roll constraints must be in force"
+            );
         }
         // The upgraded store serves the public read path, not just raw rows.
         let view = authority
