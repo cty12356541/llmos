@@ -25,21 +25,30 @@
 //!   resolves an active binding.
 //! * **Root capability** ([`Self::application_capability`]): self-issued per
 //!   application namespace through `issue_root_signed`, rights exactly
-//!   `SEMANTIC_APPEND`, `call_limit = None`, validity the writer key's
-//!   stored window (taken from the clock wall at key creation, the widest
-//!   window that keeps replays byte-stable). Open items, deliberately not
-//!   wired in this slice: (1) the capability **consume ledger** stays
-//!   unwired — the bridge rides `authorize_semantic` only; (2) the durable
-//!   `semantic_outbox` row every admit writes has **no production
-//!   consumer** yet (repo-wide audit at W49 found callers only inside
-//!   `nlos-semantic`'s own tests) — this lane does not build one.
+//!   `SEMANTIC_APPEND`, `call_limit = SEMANTIC_WRITER_ROOT_CALL_LIMIT`
+//!   (W51: a finite per-application budget, no longer unlimited), validity
+//!   the writer key's stored window (taken from the clock wall at key
+//!   creation, the widest window that keeps replays byte stable). The
+//!   limit is a compiled constant, never runtime configuration: the
+//!   issuance request must stay byte-identical across reopens, and a
+//!   mutable quota would idempotency-conflict every already-issued root.
+//!   When a budget exhausts, the upgrade path is a future delegate/rotate
+//!   lane — not editing the constant against live roots. The W49 open
+//!   item "the consume ledger stays unwired" closed in W51: the bridge
+//!   exercises the capability once per admission through `consume`
+//!   *before* appending (see [`Self::append_operation_receipt`]), and the
+//!   remaining budget is observable through
+//!   [`SliceKRuntime::semantic_writer_budget`]. The other W49 open item
+//!   (the `semantic_outbox` row's missing production consumer) closed in
+//!   W50: `crate::semantic_stream` is that consumer.
 //! * **Bridge** ([`Self::append_operation_receipt`]): one assertion per
 //!   terminal payload operation, `FactFromTool` with the driver's terminal
 //!   receipt as execution evidence, no lineage parent, and every
 //!   replay-sensitive input (`nonce`, `issued_at_unix_ns`, the clock key
-//!   behind `admitted_at_ms`) derived from
-//!   `(application_id, installation_generation, entry, operation_id)` — an
-//!   exact re-run replays the same `EventId` instead of double-writing.
+//!   behind `admitted_at_ms`, and the capability-consume idempotency key)
+//!   derived from `(application_id, installation_generation, entry,
+//!   operation_id)` — an exact re-run replays the same `EventId` (and the
+//!   same consume receipt) instead of double-writing or double-charging.
 //!
 //! Fail-closed: any refusal surfaces as a typed [`SliceKError`]; the
 //! payload lane propagates it instead of reporting an unrecorded run.
@@ -51,13 +60,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use ed25519_dalek::{Signer, SigningKey};
 use nlos_capability::{
-    CapabilityRecord, CapabilityRights, CapabilityTarget, IssueRootCapabilityRequest,
-    SignedIssueRootCapabilityRequest, issue_root_command_message,
+    CapabilityRecord, CapabilityRights, CapabilityTarget, ConsumeCapabilityRequest,
+    IssueRootCapabilityRequest, SignedIssueRootCapabilityRequest, issue_root_command_message,
 };
 use nlos_clock::{AuthorityClock, NowRequest};
 use nlos_identity::{
     BootstrapPrincipalRequest, IdentityAuthority, IdentityBinding, KeyPurpose,
-    semantic_signature_message,
+    VerifySemanticSignatureRequest, semantic_signature_message,
 };
 use nlos_operation::{CompletionOutcome, OperationState};
 use nlos_process::{
@@ -100,6 +109,14 @@ const WRITER_CAPABILITY_DOMAIN: &[u8] = b"llmos/slice-k/semantic-writer/capabili
 /// second event.
 const OPERATION_RECEIPT_NONCE_DOMAIN: &[u8] = b"llmos/slice-k/operation-receipt/inputs/v1";
 
+/// Domain separator of the per-operation capability-consume idempotency
+/// key: the same replay-critical operation tuple and byte framing as
+/// [`OPERATION_RECEIPT_NONCE_DOMAIN`] under a distinct domain string, so
+/// one ledger charge per operation tuple replays exactly — it can never
+/// collide with (or be replayed as) an event-input derivation, and vice
+/// versa.
+const OPERATION_RECEIPT_CONSUME_DOMAIN: &[u8] = b"llmos/slice-k/operation-receipt/consume/v1";
+
 /// Domain separator of the canonical operation-receipt content bytes.
 const OPERATION_RECEIPT_CONTENT_DOMAIN: &[u8] = b"llmos/slice-k/operation-receipt/v1";
 
@@ -122,6 +139,22 @@ const WIDEST_STORED_MS: u64 = i64::MAX as u64;
 /// Width of the on-disk writer key file: `seed` (32) ‖ `valid_from` (8) ‖
 /// `valid_until` (8).
 const WRITER_KEY_FILE_BYTES: usize = 48;
+
+/// The root capability's per-application call budget (W51): 1 Mi
+/// admitted semantic events per application namespace before
+/// [`CapabilityAuthority::consume`] fails closed with
+/// `CallLimitExhausted`.
+///
+/// Deliberately a compiled constant, not configuration: the per-
+/// application issuance request (and therefore its idempotent replay)
+/// covers `call_limit`, so a runtime-tunable value would conflict with
+/// every root an earlier configuration already issued. The limit is also
+/// deliberately not stored in the key file — a reopen must rebuild the
+/// identical issuance request from the file bytes plus this constant
+/// alone. When an application exhausts its budget, the upgrade path is a
+/// future delegate/rotate lane (issue a fresh root or delegate a slice of
+/// a new one); this constant must not be edited against live roots.
+pub const SEMANTIC_WRITER_ROOT_CALL_LIMIT: u64 = 1 << 20;
 
 /// The v1 authorization policy digest recorded on every bridged admission.
 fn authz_policy_digest() -> [u8; 32] {
@@ -182,11 +215,16 @@ fn be_u64(bytes: &[u8]) -> u64 {
 /// The durable writer key material: an Ed25519 seed plus the validity
 /// window every derived bootstrap/issuance request reuses, so a reopen
 /// replays byte-identical requests instead of conflicting with itself.
+/// The root capability's call budget rides along as a derivation input,
+/// never as a file byte: production keys carry
+/// [`SEMANTIC_WRITER_ROOT_CALL_LIMIT`], and only the test-injection
+/// constructors below may carry anything else.
 #[derive(Clone)]
 pub struct SemanticWriterKey {
     seed: [u8; 32],
     valid_from_ms: u64,
     valid_until_ms: u64,
+    root_call_limit: u64,
 }
 
 impl SemanticWriterKey {
@@ -217,6 +255,7 @@ impl SemanticWriterKey {
                     seed,
                     valid_from_ms: be_u64(&bytes[32..40]),
                     valid_until_ms: be_u64(&bytes[40..48]),
+                    root_call_limit: SEMANTIC_WRITER_ROOT_CALL_LIMIT,
                 };
                 restrict_to_owner(path);
                 Ok(key)
@@ -232,14 +271,33 @@ impl SemanticWriterKey {
     }
 
     /// Test/fixture injection: a deterministic seed with the widest
-    /// validity window. Production code never calls this — the production
-    /// seed comes from [`Self::load_or_create`] only.
+    /// validity window and the production call budget. Production code
+    /// never calls this — the production seed comes from
+    /// [`Self::load_or_create`] only.
     #[must_use]
     pub fn from_seed_for_tests(seed: [u8; 32]) -> Self {
         Self {
             seed,
             valid_from_ms: 0,
             valid_until_ms: WIDEST_STORED_MS,
+            root_call_limit: SEMANTIC_WRITER_ROOT_CALL_LIMIT,
+        }
+    }
+
+    /// Test/fixture injection of the same family as
+    /// [`Self::from_seed_for_tests`], with an overridden root-capability
+    /// call budget — the only way to observe a budget exhausting inside a
+    /// test (production roots always carry
+    /// [`SEMANTIC_WRITER_ROOT_CALL_LIMIT`]). The limit must be non-zero:
+    /// the capability authority's bounds gate refuses `Some(0)` typed at
+    /// issuance.
+    #[must_use]
+    pub fn from_seed_with_root_call_limit_for_tests(seed: [u8; 32], root_call_limit: u64) -> Self {
+        Self {
+            seed,
+            valid_from_ms: 0,
+            valid_until_ms: WIDEST_STORED_MS,
+            root_call_limit,
         }
     }
 
@@ -259,6 +317,7 @@ impl SemanticWriterKey {
             seed: os_random_seed(),
             valid_from_ms: now_ms,
             valid_until_ms,
+            root_call_limit: SEMANTIC_WRITER_ROOT_CALL_LIMIT,
         }
     }
 
@@ -382,6 +441,10 @@ pub struct SemanticWriter {
     binding: IdentityBinding,
     process_binding: ProcessBindingRecord,
     valid_until_ms: u64,
+    /// The per-application root-capability call budget this writer issues
+    /// with (production: [`SEMANTIC_WRITER_ROOT_CALL_LIMIT`]; tests may
+    /// inject a smaller one through [`SemanticWriterKey`]).
+    root_call_limit: u64,
 }
 
 impl SemanticWriter {
@@ -482,6 +545,7 @@ impl SemanticWriter {
             binding,
             process_binding,
             valid_until_ms: valid_until,
+            root_call_limit: key.root_call_limit,
         })
     }
 
@@ -515,10 +579,20 @@ impl SemanticWriter {
         &self.process_binding
     }
 
+    /// The per-application call budget this writer's root capabilities
+    /// carry (production: [`SEMANTIC_WRITER_ROOT_CALL_LIMIT`]; the
+    /// test-injection key constructors may carry a smaller one).
+    #[must_use]
+    pub const fn root_call_limit(&self) -> u64 {
+        self.root_call_limit
+    }
+
     /// Idempotently issues (or replays) the writer's per-application root
-    /// capability: self-signed, `SEMANTIC_APPEND` only, unlimited calls
-    /// (the consume ledger is a registered open item), target the
-    /// application's v1 policy namespace.
+    /// capability: self-signed, `SEMANTIC_APPEND` only, call budget
+    /// [`Self::root_call_limit`] (production:
+    /// [`SEMANTIC_WRITER_ROOT_CALL_LIMIT`], W51 — the consume ledger the
+    /// bridge charges lives behind this limit), target the application's
+    /// v1 policy namespace.
     ///
     /// # Errors
     ///
@@ -537,7 +611,7 @@ impl SemanticWriter {
             valid_from_ms: self.binding.key_valid_from_ms,
             valid_until_ms: self.valid_until_ms,
             delegation_depth_remaining: 0,
-            call_limit: None,
+            call_limit: Some(self.root_call_limit),
             idempotency_key: IdempotencyKey::from_bytes(hash16(
                 WRITER_CAPABILITY_DOMAIN,
                 &[
@@ -563,13 +637,17 @@ impl SemanticWriter {
     }
 
     /// Bridges one terminal payload-operation receipt into exactly one
-    /// Semantic assertion (admitting or replaying; never double-writing).
+    /// Semantic assertion (admitting or replaying; never double-writing),
+    /// charging the application's capability budget exactly once per
+    /// operation tuple through the consume ledger (never double-charging).
     ///
     /// # Errors
     ///
     /// Fail-closed typed: capability issuance, signature, canonical, or
     /// admission refusals propagate as [`SliceKError`] variants — the
-    /// caller reports no run the ledger did not record.
+    /// caller reports no run the ledger did not record. An exhausted
+    /// per-application budget refuses before any semantic write as
+    /// `SliceKError::Capability(CapabilityAuthorityError::CallLimitExhausted)`.
     pub fn append_operation_receipt(
         &self,
         runtime: &SliceKRuntime,
@@ -586,7 +664,7 @@ impl SemanticWriter {
             },
             control_domain: self.binding.control_domain_id,
             issued_at_unix_ns: receipt_input_u64(fact, b"issued-at"),
-            nonce: receipt_input(fact, b"nonce")[..16].to_vec(),
+            nonce: event_input(fact, b"nonce")[..16].to_vec(),
             declared_parents: Vec::new(),
             declassification_receipt_id: None,
             valid_until_ms: Some(self.valid_until_ms),
@@ -610,6 +688,37 @@ impl SemanticWriter {
         // exact re-run replays the identical reading (and receipt).
         let admitted_at_ms =
             runtime.wall_now_ms(receipt_idempotency_key(fact, b"admission-clock"))?;
+        // Consume-before-append (W51): exercise the root capability once
+        // per admission, BEFORE any semantic write — an exhausted budget
+        // fails the bridge closed here with zero semantic state. The
+        // charge carries the same handle/target/right/purpose the
+        // admission's own `authorize_semantic` gate will check, and its
+        // idempotency key derives from the same operation tuple as the
+        // event inputs under a distinct domain: an exact re-run, a reopen
+        // re-run, or a retry after a failed append replays the same
+        // consumption receipt and never charges twice. The signer proof
+        // is the exact signature over the claimed event id the semantic
+        // admission verifies below, at the same authority time.
+        let consume_signer =
+            runtime
+                .identity
+                .verify_semantic_signature(VerifySemanticSignatureRequest {
+                    event_id: claimed_event_id,
+                    issuer: self.binding.principal_id,
+                    control_domain_id: self.binding.control_domain_id,
+                    key_id: self.binding.key_id,
+                    signature,
+                    admitted_at_ms,
+                })?;
+        runtime.capability().consume(ConsumeCapabilityRequest {
+            handle: capability.handle,
+            signer: consume_signer,
+            target: capability.target,
+            required_right: CapabilityRights::SEMANTIC_APPEND,
+            purpose_digest: capability.purpose_digest,
+            idempotency_key: receipt_consume_idempotency_key(fact),
+            consumed_at_ms: admitted_at_ms,
+        })?;
         let request = AppendAssertionRequest {
             canonical_unsigned_event,
             claimed_event_id,
@@ -671,9 +780,12 @@ impl StoreSigner for SemanticWriter {
 
 /// Domain-separated SHA-256 over the replay-critical operation tuple
 /// `(application_id, installation_generation, entry_name, operation_id)`.
-fn receipt_input(fact: &OperationReceiptFact<'_>, tag: &[u8]) -> [u8; 32] {
+/// The `domain` picks the derivation family (event inputs vs the consume
+/// ledger key); the framing is shared so both stay byte-comparable
+/// inputs of the same tuple, never of each other.
+fn receipt_input(domain: &[u8], fact: &OperationReceiptFact<'_>, tag: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
-    hasher.update(OPERATION_RECEIPT_NONCE_DOMAIN);
+    hasher.update(domain);
     hasher.update(tag);
     hasher.update(fact.application_id.as_bytes());
     hasher.update(fact.installation_generation.get().to_be_bytes());
@@ -687,19 +799,41 @@ fn receipt_input(fact: &OperationReceiptFact<'_>, tag: &[u8]) -> [u8; 32] {
     hasher.finalize().into()
 }
 
+/// The event-input derivation of the operation tuple (see
+/// [`OPERATION_RECEIPT_NONCE_DOMAIN`]).
+fn event_input(fact: &OperationReceiptFact<'_>, tag: &[u8]) -> [u8; 32] {
+    receipt_input(OPERATION_RECEIPT_NONCE_DOMAIN, fact, tag)
+}
+
 /// Deterministic u64 derivation input (used for `issued_at_unix_ns`):
 /// masked into the `i64` range SQLite's integer encoding stores. The value
 /// is a replay-stable derivation label, not wall time — the authoritative
 /// wall facts of the admission live in `admitted_at_ms` and the receipt.
 fn receipt_input_u64(fact: &OperationReceiptFact<'_>, tag: &[u8]) -> u64 {
-    let digest = receipt_input(fact, tag);
+    let digest = event_input(fact, tag);
     be_u64(&digest[..8]) & WIDEST_STORED_MS
 }
 
 /// The 16-byte idempotency key of one operation tuple derivation (the
 /// admission-clock key of [`SemanticWriter::append_operation_receipt`]).
 fn receipt_idempotency_key(fact: &OperationReceiptFact<'_>, tag: &[u8]) -> IdempotencyKey {
-    let digest = receipt_input(fact, tag);
+    let digest = event_input(fact, tag);
+    let mut bytes = [0_u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    IdempotencyKey::from_bytes(bytes)
+}
+
+/// The 16-byte capability-consume idempotency key of one operation tuple
+/// (see [`OPERATION_RECEIPT_CONSUME_DOMAIN`]): same tuple and framing as
+/// [`receipt_idempotency_key`] under the consume-only domain, so the
+/// ledger charge replays per operation tuple without ever colliding with
+/// an event-input or clock derivation of the same tuple.
+fn receipt_consume_idempotency_key(fact: &OperationReceiptFact<'_>) -> IdempotencyKey {
+    let digest = receipt_input(
+        OPERATION_RECEIPT_CONSUME_DOMAIN,
+        fact,
+        b"capability-consume",
+    );
     let mut bytes = [0_u8; 16];
     bytes.copy_from_slice(&digest[..16]);
     IdempotencyKey::from_bytes(bytes)
@@ -771,4 +905,77 @@ fn outcome_receipt_id(outcome: CompletionOutcome) -> ReceiptId {
         | CompletionOutcome::EffectUnknown { receipt_id } => receipt_id,
     };
     ReceiptId::from_bytes(*receipt_id.as_bytes())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fact(operation_byte: u8, entry: &'static str) -> OperationReceiptFact<'static> {
+        OperationReceiptFact {
+            application_id: ApplicationId::from_bytes([0x51; 16]),
+            package_id: PackageId::from_bytes([0x52; 16]),
+            package_version: 1,
+            installation_generation: Generation::INITIAL,
+            entry_name: entry,
+            artifact_id: ArtifactId::from_bytes([0x53; 16]),
+            payload_revision: 1,
+            payload_digest: [0x54; 32],
+            payload_size_bytes: 1,
+            operation_id: OperationId::from_bytes([operation_byte; 16]),
+            operation_generation: Generation::INITIAL,
+            callback_id: CallbackId::from_bytes([0x55; 16]),
+            outcome: CompletionOutcome::Completed {
+                receipt_id: ReceiptId::from_bytes([0x56; 16]),
+            },
+            terminal_state: OperationState::Completed {
+                receipt_id: ReceiptId::from_bytes([0x56; 16]),
+            },
+        }
+    }
+
+    /// The consume-ledger key and every event-input derivation of the same
+    /// operation tuple come from distinct domain strings: across a spread
+    /// of tuples and tags, no 16-byte key of one family equals a key of
+    /// the other — a collision would let a ledger charge be rebound as a
+    /// clock/event input (typed `IdempotencyConflict`) or vice versa.
+    /// Inside a family the derivation stays stable per tuple and distinct
+    /// across tuples.
+    #[test]
+    fn consume_key_domain_never_collides_with_event_input_domain() {
+        let mut consume_keys = Vec::new();
+        let mut event_keys = Vec::new();
+        for (entry_index, entry) in ["entry-a", "entry-b"].iter().enumerate() {
+            for operation_byte in [0x01_u8, 0x02, 0x03] {
+                let tuple = fact(
+                    operation_byte.wrapping_add(u8::try_from(entry_index * 16).expect("small")),
+                    entry,
+                );
+                consume_keys.push(receipt_consume_idempotency_key(&tuple));
+                for tag in [b"nonce".as_slice(), b"issued-at", b"admission-clock"] {
+                    event_keys.push(receipt_idempotency_key(&tuple, tag));
+                }
+            }
+        }
+        assert_eq!(consume_keys.len(), 6);
+        assert_eq!(event_keys.len(), 18);
+        for consume in &consume_keys {
+            for event in &event_keys {
+                assert_ne!(
+                    consume.as_bytes(),
+                    event.as_bytes(),
+                    "consume-domain key must never equal an event-domain key"
+                );
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        for key in consume_keys.iter().chain(event_keys.iter()) {
+            assert!(seen.insert(key.as_bytes()), "keys must be family-distinct");
+        }
+        assert_eq!(
+            receipt_consume_idempotency_key(&fact(0x01, "entry-a")).as_bytes(),
+            receipt_consume_idempotency_key(&fact(0x01, "entry-a")).as_bytes(),
+            "same tuple derives the same consume key"
+        );
+    }
 }

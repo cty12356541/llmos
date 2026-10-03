@@ -330,8 +330,10 @@ pub fn execute_application_payload(
     let payload_digest = ContentDigest::of_bytes(&payload);
     // Semantic write bridge (D6 first slice, W49): the terminal receipt of
     // this operation becomes exactly one admitted Semantic assertion under
-    // the runtime's writer principal. Fail-closed — an error propagates
-    // instead of reporting a run the semantic ledger did not record.
+    // the runtime's writer principal, charging the application's
+    // capability budget exactly once along the way (the W51 consume
+    // ledger). Fail-closed — an error propagates instead of reporting a
+    // run the semantic ledger did not record.
     let semantic = runtime.semantic_writer().append_operation_receipt(
         runtime,
         &OperationReceiptFact {

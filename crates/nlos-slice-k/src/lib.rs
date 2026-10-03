@@ -80,7 +80,7 @@ pub use semantic_stream::{
     semantic_stream_envelope, semantic_stream_publish_key, system_subscriber_key,
 };
 pub use semantic_writer::{
-    OPERATION_RECEIPT_MEDIA_TYPE, OperationReceiptAppend, OperationReceiptFact, SemanticWriter,
-    SemanticWriterKey, application_namespace,
+    OPERATION_RECEIPT_MEDIA_TYPE, OperationReceiptAppend, OperationReceiptFact,
+    SEMANTIC_WRITER_ROOT_CALL_LIMIT, SemanticWriter, SemanticWriterKey, application_namespace,
 };
 pub use teardown::{ApplicationTeardown, run_application_teardown};
