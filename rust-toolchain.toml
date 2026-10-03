@@ -1,4 +1,19 @@
+# Toolchain is PINNED (not `stable`) on purpose: the 2026-10-01 incident
+# (run 36877470433) showed CI runners rolling stable mid-day (1.97.x →
+# 1.99.0) and tripping new lints that local toolchains could not see,
+# redding every platform at once. Pinning makes local and CI agree by
+# construction.
+#
+# Roll ritual (every ~6 weeks, or when a needed fix lands):
+#   1. bump the channel below,
+#   2. `rustup toolchain install <new>` locally,
+#   3. `cargo clippy --workspace --all-targets -- -D warnings` +
+#      `cargo fmt --all -- --check` (both workspaces: root and
+#      desktop/src-tauri), fix what the new lints flag,
+#   4. push and confirm the cross-platform workflow is green.
+# CI installs whatever this file pins (rustup resolves it on first use);
+# the MSRV 1.97 job and the fuzz nightly pin are independent of this.
 [toolchain]
-channel = "stable"
+channel = "1.99.0"
 profile = "minimal"
 components = ["clippy", "rustfmt"]
