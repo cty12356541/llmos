@@ -38,7 +38,7 @@ use crate::semantic_stream::{
     SemanticStreamPump, SemanticStreamPumpStartError, SemanticStreamState,
     bootstrap_semantic_stream, stop_semantic_stream_bounded,
 };
-use crate::semantic_writer::SemanticWriter;
+use crate::semantic_writer::{SemanticWriter, SemanticWriterBudgetRaise, WriterRootRegistry};
 
 /// Poison-tolerant guard over the runtime's pump slot.
 type PumpGuard<'a> = MutexGuard<'a, Option<OutboxPump>>;
@@ -109,6 +109,14 @@ pub struct SliceKRuntime {
     /// [`crate::semantic_writer`]). Held so the payload lane's terminal
     /// receipts reach the semantic ledger without any caller-side setup.
     semantic_writer: SemanticWriter,
+    /// The durable raise registry (W53-B, file
+    /// `<root>/semantic-writer-roots`): the current root-capability handle
+    /// per (writer key, application) that
+    /// [`SliceKRuntime::raise_semantic_writer_budget`] wrote and every
+    /// active-root resolution reads. Guarded by a `Mutex` so a raise
+    /// serializes its revoke→issue→register orchestration against bridge
+    /// resolutions within this runtime.
+    writer_roots: Mutex<WriterRootRegistry>,
     /// The semantic notification stream pump lane (see
     /// [`crate::semantic_stream`]): `None` until
     /// [`SliceKRuntime::start_semantic_stream`] bootstraps the well-known
@@ -158,6 +166,7 @@ impl SliceKRuntime {
             &process,
             &crate::semantic_writer::load_runtime_writer_key(&clock, &root.join("keys"))?,
         )?;
+        let writer_roots = WriterRootRegistry::load(root.join("semantic-writer-roots"))?;
         Ok(Self {
             root,
             identity,
@@ -172,6 +181,7 @@ impl SliceKRuntime {
             channel,
             topics,
             semantic_writer,
+            writer_roots: Mutex::new(writer_roots),
             pump: Mutex::new(None),
             pump_lane: PumpLane::new(),
             semantic_stream: Mutex::new(None),
@@ -248,23 +258,101 @@ impl SliceKRuntime {
     /// exactly once (see [`crate::semantic_writer`]). The read-only face
     /// for CLI/daemon presentation; an exhausted budget surfaces as `Some(0)`.
     ///
-    /// Resolving the handle replays the writer's deterministic, idempotent
-    /// root issuance — the byte-identical request every bridge append
-    /// replays — so the first observation of an application materializes
-    /// exactly that one replay-stable capability row and no other state.
+    /// Since W53-B the read resolves the application's *current active
+    /// root* (the durable raise registry first, the writer's
+    /// deterministic, idempotent original-issuance replay as fallback):
+    /// after [`Self::raise_semantic_writer_budget`] the reported budget is
+    /// the new root's — a fresh `new_limit` that subsequent admissions
+    /// draw down (the authority meters per capability, so a raised root
+    /// never inherits the old root's spent charges). Before any raise, the
+    /// first observation of an application still materializes exactly the
+    /// one replay-stable original capability row and no other state.
     ///
     /// # Errors
     ///
-    /// Propagates capability-authority refusals typed (issuance replay or
-    /// the budget read).
+    /// Propagates capability-authority refusals typed. A no-active-root
+    /// state (the raise window of
+    /// [`Self::raise_semantic_writer_budget`], or an out-of-band
+    /// revocation of the original root) fails closed with the authority's
+    /// generation-fence refusal instead of reporting a number.
     pub fn semantic_writer_budget(
         &self,
         application_id: ApplicationId,
     ) -> SliceKResult<Option<u64>> {
         let capability = self
             .semantic_writer
-            .application_capability(self, application_id)?;
+            .active_application_capability(self, application_id)?;
         Ok(self.capability.call_limit_remaining(capability.handle)?)
+    }
+
+    /// Raises (or lowers — an operations decision, no monotonicity is
+    /// enforced) the application's per-writer semantic-write budget to
+    /// exactly `new_limit` (`>= 1`), closing the W51 exhaustion residual
+    /// (W53-B). No single transaction spans the needed authority effects,
+    /// so this is an orchestrated sequence of the capability authority's
+    /// own signed commands, in a fixed order:
+    ///
+    /// 1. resolve the (writer, application)'s current active root (the
+    ///    raise registry, falling back to the untouched original
+    ///    issuance);
+    /// 2. when that root's `call_limit` already equals `new_limit`, this
+    ///    call is the typed no-op replay (`issued == false`) — nothing is
+    ///    revoked or issued;
+    /// 3. otherwise revoke the current root through `revoke_signed`
+    ///    (writer-signed; the writer is both issuer and holder), which
+    ///    advances its generation and leaves the old handle
+    ///    generation-fenced;
+    /// 4. issue a fresh root through `issue_root_signed` — the identical
+    ///    target namespace, rights, purpose, and validity window, with
+    ///    `call_limit = new_limit`;
+    /// 5. durably register the new root in `<root>/semantic-writer-roots`
+    ///    (atomic temp-file replace), which every bridge admission, budget
+    ///    read, and later raise resolves through.
+    ///
+    /// The new root is a fresh budget: the authority meters consumption
+    /// per capability, so the raised root starts at `new_limit` remaining
+    /// and does not inherit the revoked root's spent charges. The raise's
+    /// authority time and command idempotency keys derive from
+    /// `(writer key, application, "raise", new_limit)` on the durable
+    /// clock, so replaying the same raise replays the same revocation and
+    /// issuance receipts and converges without double effects; a raise to
+    /// a *different* limit after a completed one is simply another raise.
+    ///
+    /// **Window semantics (honest, not atomic):** if the process dies — or
+    /// the issue or registry persist refuses — after step 3's revoke
+    /// committed but before step 5 registered a live new root, the
+    /// application has *no active root*: bridge admissions and
+    /// [`Self::semantic_writer_budget`] fail closed with the capability
+    /// authority's generation-fence refusal. Any later raise converges the
+    /// state (with nothing active there is nothing to revoke; the issue
+    /// proceeds and the registry is written) — including a raise to a
+    /// different limit. A root issued but never registered (a crash
+    /// between steps 4 and 5) stays live but unreachable through this
+    /// runtime: same writer, same namespace, same rights, and only the
+    /// registry-named root is ever consumed.
+    ///
+    /// # Errors
+    ///
+    /// Fails typed on `new_limit == 0`, clock or capability-authority
+    /// refusals (signature, identity, revocation authorization), or a
+    /// registry persistence failure — see the window semantics above for
+    /// the states those failures can leave behind.
+    pub fn raise_semantic_writer_budget(
+        &self,
+        application_id: ApplicationId,
+        new_limit: u64,
+    ) -> SliceKResult<SemanticWriterBudgetRaise> {
+        self.semantic_writer
+            .raise_application_capability(self, application_id, new_limit)
+    }
+
+    /// The raise registry lock shared by the writer's resolution and raise
+    /// orchestration (see [`Self::writer_roots`]); poison-tolerant like
+    /// every other runtime mutex.
+    pub(crate) fn lock_writer_roots(&self) -> std::sync::MutexGuard<'_, WriterRootRegistry> {
+        self.writer_roots
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Starts the durable-Outbox pump for this runtime, bound to `adapter`'s
