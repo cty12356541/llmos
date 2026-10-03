@@ -21,6 +21,7 @@ use nlos_runtime_tokio::{
     OutboxPump, OutboxPumpStartError, PumpConfig, PumpHealth, PumpState, StoreOutboxSource,
     TokioRuntimeAdapter,
 };
+use nlos_semantic::SemanticAuthority;
 use nlos_store::SqliteOperationStore;
 use nlos_task::{AttemptRecord, PermitRecord, SqliteTaskAuthority, TaskRecord};
 use nlos_types::{
@@ -30,6 +31,7 @@ use nlos_types::{
 
 use crate::error::{SliceKError, SliceKResult};
 use crate::pump::{PumpLane, ReconcileLaneSnapshot, stop_pump_bounded};
+use crate::semantic_writer::SemanticWriter;
 
 /// Poison-tolerant guard over the runtime's pump slot.
 type PumpGuard<'a> = MutexGuard<'a, Option<OutboxPump>>;
@@ -76,6 +78,16 @@ pub struct SliceKRuntime {
     /// `authorize_semantic` is production-reachable through this runtime,
     /// but adds no wrapper semantics.
     capability: CapabilityAuthority,
+    /// Semantic assertion authority (`<root>/semantic/semantic-authority.db`,
+    /// the daemon W46-L3 path style), opened read-exposed: the production
+    /// write side lives in [`crate::semantic_writer`], which appends through
+    /// this authority's admission gates.
+    semantic: SemanticAuthority,
+    /// The dedicated semantic writer principal this runtime bootstrapped
+    /// (key file `<root>/keys/semantic-writer.key`, see
+    /// [`crate::semantic_writer`]). Held so the payload lane's terminal
+    /// receipts reach the semantic ledger without any caller-side setup.
+    semantic_writer: SemanticWriter,
     /// The durable-Outbox pump lane: `None` until
     /// [`SliceKRuntime::start_pump`] binds a pump to a runtime adapter.
     /// Guarded by a `Mutex` so `Drop` and explicit stops can take the pump
@@ -107,6 +119,12 @@ impl SliceKRuntime {
         let clock = Arc::new(AuthorityClock::open(root.join("clock"))?);
         let operations = Arc::new(SqliteOperationStore::open(root.join("operations.sqlite3"))?);
         let capability = CapabilityAuthority::open(root.join("capability"))?;
+        let semantic = SemanticAuthority::open(root.join("semantic"))?;
+        let semantic_writer = SemanticWriter::assemble(
+            &identity,
+            &process,
+            &crate::semantic_writer::load_runtime_writer_key(&clock, &root.join("keys"))?,
+        )?;
         Ok(Self {
             root,
             identity,
@@ -117,6 +135,8 @@ impl SliceKRuntime {
             clock,
             operations,
             capability,
+            semantic,
+            semantic_writer,
             pump: Mutex::new(None),
             pump_lane: PumpLane::new(),
         })
@@ -168,6 +188,22 @@ impl SliceKRuntime {
     #[must_use]
     pub fn capability(&self) -> &CapabilityAuthority {
         &self.capability
+    }
+
+    /// Read-only handle on the semantic authority this runtime opened
+    /// (`<root>/semantic/semantic-authority.db`): event, receipt, outbox,
+    /// and trust-view reads for everything the write bridge admitted.
+    #[must_use]
+    pub fn semantic(&self) -> &SemanticAuthority {
+        &self.semantic
+    }
+
+    /// The runtime's dedicated semantic writer principal (see
+    /// [`crate::semantic_writer`]): the only production writer of semantic
+    /// assertions in this slice.
+    #[must_use]
+    pub fn semantic_writer(&self) -> &SemanticWriter {
+        &self.semantic_writer
     }
 
     /// Starts the durable-Outbox pump for this runtime, bound to `adapter`'s

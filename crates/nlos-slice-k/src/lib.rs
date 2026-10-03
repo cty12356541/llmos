@@ -48,6 +48,7 @@ mod package;
 mod payload;
 mod pump;
 mod runtime;
+mod semantic_writer;
 mod teardown;
 
 pub use chain::{
@@ -71,5 +72,9 @@ pub use pump::{LateOutcomeReconcileSink, ReconcileLaneSnapshot};
 pub use runtime::{
     ApplicationRegistrationInspect, ChainInspect, ChainQuery, SliceKRuntime, initial_generation,
     seeded_key, short_hex,
+};
+pub use semantic_writer::{
+    OPERATION_RECEIPT_MEDIA_TYPE, OperationReceiptAppend, OperationReceiptFact, SemanticWriter,
+    SemanticWriterKey, application_namespace,
 };
 pub use teardown::{ApplicationTeardown, run_application_teardown};
