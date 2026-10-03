@@ -27,8 +27,8 @@ use nlos_store::SqliteOperationStore;
 use nlos_task::{AttemptRecord, PermitRecord, SqliteTaskAuthority, TaskRecord};
 use nlos_topic::TopicAuthority;
 use nlos_types::{
-    CommitPermitId, Generation, IdempotencyKey, InstallationId, PackageId, ProcessId,
-    TaskAttemptId, TaskId,
+    ApplicationId, CommitPermitId, Generation, IdempotencyKey, InstallationId, PackageId,
+    ProcessId, TaskAttemptId, TaskId,
 };
 
 use crate::error::{SliceKError, SliceKResult};
@@ -240,6 +240,31 @@ impl SliceKRuntime {
     #[must_use]
     pub fn semantic_writer(&self) -> &SemanticWriter {
         &self.semantic_writer
+    }
+
+    /// The remaining semantic-write budget of one application's root
+    /// capability (W51): `call_limit_remaining` read through the runtime's
+    /// writer — the per-application quota every bridged admission charges
+    /// exactly once (see [`crate::semantic_writer`]). The read-only face
+    /// for CLI/daemon presentation; an exhausted budget surfaces as `Some(0)`.
+    ///
+    /// Resolving the handle replays the writer's deterministic, idempotent
+    /// root issuance — the byte-identical request every bridge append
+    /// replays — so the first observation of an application materializes
+    /// exactly that one replay-stable capability row and no other state.
+    ///
+    /// # Errors
+    ///
+    /// Propagates capability-authority refusals typed (issuance replay or
+    /// the budget read).
+    pub fn semantic_writer_budget(
+        &self,
+        application_id: ApplicationId,
+    ) -> SliceKResult<Option<u64>> {
+        let capability = self
+            .semantic_writer
+            .application_capability(self, application_id)?;
+        Ok(self.capability.call_limit_remaining(capability.handle)?)
     }
 
     /// Starts the durable-Outbox pump for this runtime, bound to `adapter`'s
@@ -495,6 +520,15 @@ impl SliceKRuntime {
     /// not errors.
     pub fn inspect_chain(&self, query: ChainQuery) -> SliceKResult<ChainInspect> {
         let application = self.applications.inspect_application(query.package_id)?;
+        // The application row names the principal whose semantic-write
+        // budget the inspect surfaces (W51): resolved only when the
+        // application exists, through the same idempotent replay the
+        // bridge performs.
+        let semantic_writer_budget = application
+            .as_ref()
+            .map(|view| self.semantic_writer_budget(view.application_id))
+            .transpose()?
+            .flatten();
         let installation = query
             .installation_id
             .map(|installation_id| self.applications.inspect_installation(installation_id))
@@ -521,6 +555,7 @@ impl SliceKRuntime {
             .transpose()?;
         Ok(ChainInspect {
             application,
+            semantic_writer_budget,
             installation,
             process,
             task,
@@ -600,6 +635,10 @@ pub struct ChainQuery {
 #[derive(Clone, Debug)]
 pub struct ChainInspect {
     pub application: Option<ApplicationView>,
+    /// Remaining semantic-write budget of the inspected application's
+    /// writer root capability (`call_limit_remaining`, W51): `None` only
+    /// while the application itself is absent (never installed).
+    pub semantic_writer_budget: Option<u64>,
     pub installation: Option<InstallationReceipt>,
     /// The authority-current process binding, readback-validated.
     pub process: Option<ProcessBindingRecord>,
@@ -667,6 +706,11 @@ impl ChainInspect {
             None => "absent".to_string(),
         };
         lines.push(format!("application={application_state}"));
+        let budget = match self.semantic_writer_budget {
+            Some(units) => units.to_string(),
+            None => "absent".to_string(),
+        };
+        lines.push(format!("semantic_writer_budget={budget}"));
         let installation = match &self.installation {
             Some(receipt) => crate::short_hex(receipt.installation_id.as_bytes()),
             None => "absent".to_string(),

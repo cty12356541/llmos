@@ -36,5 +36,10 @@ nlos-types = { path = "../nlos-types" }
 sha2.workspace = true
 tokio.workspace = true
 
+[dev-dependencies]
+# Test-only read of the capability ledger's durable consumption rows (the
+# same inspection pattern as `nlos-capability`'s own tests).
+rusqlite.workspace = true
+
 [lints]
 workspace = true

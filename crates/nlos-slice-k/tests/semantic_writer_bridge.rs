@@ -2,7 +2,9 @@
 //! receipt becomes exactly one admitted Semantic assertion under the
 //! runtime's dedicated writer principal — queryable, replay-exact, guarded
 //! by the root capability's `authorize_semantic`, and fail-closed typed
-//! when the capability is revoked or the writer key file is corrupt.
+//! when the capability is revoked or the writer key file is corrupt. The
+//! W51 consume-ledger wiring (one budget charge per admission, exhaustion
+//! fail-closed) has its own file: `semantic_consume_ledger.rs`.
 //!
 //! Fixture discipline mirrors `payload_execution.rs` (one package identity,
 //! single `executable` entry); this file's idempotency/clock band is
@@ -18,10 +20,10 @@ use nlos_artifact::{
     derive_artifact_id, package_manifest_message,
 };
 use nlos_capability::{
-    CapabilityRights, CapabilityTarget, RevokeCapabilityRequest, SignedRevokeCapabilityRequest,
-    revoke_command_message,
+    CapabilityAuthorityError, CapabilityRights, CapabilityTarget, RevokeCapabilityRequest,
+    SignedRevokeCapabilityRequest, revoke_command_message,
 };
-use nlos_semantic::{AdmissionDurability, SemanticAuthorityError};
+use nlos_semantic::AdmissionDurability;
 use nlos_slice_k::{
     PayloadExecution, Publisher, SliceKError, SliceKRuntime, application_namespace,
     execute_application_payload, seeded_key,
@@ -195,7 +197,8 @@ fn payload_execution_appends_one_queryable_semantic_assertion() {
     assert!(matches!(admission.durability, AdmissionDurability::Durable));
 
     // Every admit wrote one semantic_outbox row; nothing acknowledges it
-    // (registered open item: no production consumer yet).
+    // here because this fixture runs no semantic-stream pump (the W50
+    // consumer lane has its own tests in `semantic_stream.rs`).
     let outbox = runtime
         .semantic()
         .inspect_outbox(execution.semantic_event_id)
@@ -205,9 +208,10 @@ fn payload_execution_appends_one_queryable_semantic_assertion() {
     assert!(outbox.acknowledged_at_ms.is_none());
 
     // The root capability authorizes the namespace: SEMANTIC_APPEND only,
-    // unlimited calls (consume ledger deliberately unwired), inspectable
-    // as active at admission time — the authorize_semantic gate the
-    // admission above already exercised for real.
+    // the finite W51 per-application budget (charged once per bridged
+    // admission by the consume ledger), inspectable as active at admission
+    // time — the authorize_semantic gate the admission above already
+    // exercised for real.
     let writer = runtime.semantic_writer();
     let capability = writer
         .application_capability(&runtime, execution.application_id)
@@ -217,7 +221,10 @@ fn payload_execution_appends_one_queryable_semantic_assertion() {
             .rights
             .contains(CapabilityRights::SEMANTIC_APPEND)
     );
-    assert_eq!(capability.call_limit, None);
+    assert_eq!(
+        capability.call_limit,
+        Some(nlos_slice_k::SEMANTIC_WRITER_ROOT_CALL_LIMIT)
+    );
     assert_eq!(capability.holder, writer.principal_id());
     assert_eq!(capability.issuer, writer.principal_id());
     assert_eq!(
@@ -361,7 +368,12 @@ fn revoked_root_capability_fails_the_bridge_closed_typed() {
         .expect("revoke the root capability");
 
     // A fresh operation under the same namespace must fail closed: the
-    // run is not reported as executed without its semantic record.
+    // run is not reported as executed without its semantic record. Since
+    // W51 the refusal fires at the consume-before-append charge (the
+    // same admission gates, one step earlier than the append's own
+    // `authorize_semantic`). The revocation advanced the capability's
+    // current generation, so the replayed issuance's handle is stale and
+    // the typed refusal is the capability authority's generation fence.
     let signer = runtime.bootstrap_publisher(SEED).expect("publisher");
     let receipt_v2 = verified_payload_package(&runtime, &signer, 2, PAYLOAD_B, 52, 54);
     runtime
@@ -372,8 +384,8 @@ fn revoked_root_capability_fails_the_bridge_closed_typed() {
     assert!(
         matches!(
             &refusal,
-            SliceKError::Semantic(SemanticAuthorityError::Capability(_))
+            SliceKError::Capability(CapabilityAuthorityError::GenerationFenceConflict)
         ),
-        "expected a typed capability refusal through the semantic bridge, got: {refusal}"
+        "expected a typed capability refusal through the consume charge, got: {refusal}"
     );
 }
