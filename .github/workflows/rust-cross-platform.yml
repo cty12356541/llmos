@@ -288,7 +288,41 @@ jobs:
           # 独立 key 前缀，避免与 stable 工具链缓存键冲突
           key: msrv-${{ runner.os }}
 
-      # rust-toolchain.toml 会把裸 cargo 钉在 stable 上，
+      # rust-toolchain.toml 会把裸 cargo 钉在文件声明的精确版本上，
       # 必须用 +1.97 显式工具链选择器覆盖，否则 MSRV 校验形同虚设
       - name: Check workspace on Rust 1.97
         run: cargo +1.97 check --workspace --all-targets
+
+  # W53：daemon feature 非 default，主 verify job 的 --workspace 从不编译它；
+  # 此 job 补上编译+测试覆盖，windows 腿同时承担 daemon 跨平台（W53-A）的
+  # MSVC 实机验证（此前仅本地 windows-gnu 交叉检查）。
+  daemon-feature:
+    name: daemon feature (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # 与 rust-toolchain.toml 的钉值同步升（roll 仪式见该文件头注释）
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: "1.99.0"
+          components: clippy
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: daemon-${{ runner.os }}
+
+      - name: Test system-control with daemon feature
+        run: cargo test -p nlos-system-control --features daemon
+
+      - name: Clippy with daemon feature
+        run: cargo clippy -p nlos-system-control --features daemon --all-targets -- -D warnings
