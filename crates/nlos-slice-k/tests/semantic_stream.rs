@@ -540,7 +540,21 @@ fn cursor_follow_and_compact_release_the_bounded_channel_capacity() {
     assert_eq!(journal.len(), usize::from(EVENTS));
 
     // The system subscriber consumed everything and the compact linkage
-    // released the capacity: nothing is held against the bound.
+    // released the capacity: nothing is held against the bound. The cursor
+    // follow and compact run on pump cycles *after* the final publish, so
+    // wait for the release to converge instead of racing the next cycle
+    // (slow CI runners — Windows with synchronous=FULL across four
+    // databases — lag the advance behind the ack).
+    assert!(wait_until(|| {
+        let queue = runtime
+            .channel
+            .inspect_queue(binding.channel_id())
+            .expect("channel readable");
+        queue.max_sequence == u64::from(EVENTS)
+            && queue.consume_high_water == u64::from(EVENTS)
+            && queue.trim_high_water == u64::from(EVENTS)
+            && queue.backlog_bytes == 0
+    }));
     let queue = runtime
         .channel
         .inspect_queue(binding.channel_id())
