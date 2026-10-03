@@ -1,4 +1,4 @@
-//! ADR-0011 opt-in authenticated control-plane entry points (Unix only).
+//! ADR-0011 opt-in authenticated control-plane entry points.
 //!
 //! Strictly additive over [`crate::control`]: the in-process dispatcher, the
 //! plain [`dispatch_over_socket`](crate::control::dispatch_over_socket)
@@ -6,6 +6,13 @@
 //! path keep their exact semantics. This module only adds one explicit
 //! opt-in service entry, [`authenticated_serve_one_control`], and its
 //! matching client, [`dispatch_over_authenticated_socket`].
+//!
+//! The surface is platform-dispatched exactly like the `nlos-ipc` handshake
+//! transport facility it consumes: the Unix-domain socket on Unix and the
+//! named pipe on Windows frame the identical handshake and exchange bytes,
+//! and only transport acquisition (bind/accept/connect) plus the
+//! endpoint-path byte encoding fed into the channel binding differ per
+//! platform (see [`EndpointListener`]).
 //!
 //! Connection level (ADR-0011 decision 1): every connection must answer the
 //! `nlos-ipc` principal challenge-response handshake. The server verifies
@@ -44,12 +51,20 @@ use nlos_ipc::handshake::transport::{
     AuthenticatedServeOutcome, ServerHandshakeContext, authenticated_connect,
     authenticated_serve_one,
 };
+#[cfg(unix)]
 use nlos_ipc::unix::UnixListenerAdapter;
-use nlos_ipc::{LocalRpcClient, OutboundResponse, PeerAuthorizer, TransportConfig};
+#[cfg(windows)]
+use nlos_ipc::windows::NamedPipeListenerAdapter;
+use nlos_ipc::{FramedIo, LocalRpcClient, OutboundResponse, PeerAuthorizer, TransportConfig};
 use nlos_schema::sabi::v1::{Envelope, ExchangeRequest, ExchangeResponse, envelope};
 use nlos_schema::{HANDSHAKE_NONCE_BYTES, HANDSHAKE_SIGNATURE_BYTES, REQUEST_ID_BYTES};
 use nlos_types::{IdempotencyKey, PrincipalId};
 use sha2::{Digest, Sha256};
+use tokio::io::{AsyncRead, AsyncWrite};
+#[cfg(unix)]
+use tokio::net::UnixStream;
+#[cfg(windows)]
+use tokio::net::windows::named_pipe::NamedPipeClient;
 
 use crate::control::{
     ApplicationInspector, ControlCommand, ControlError, ControlReceipt, ProcessInspector,
@@ -83,11 +98,33 @@ fn handshake_wall_key(nonce: &[u8; HANDSHAKE_NONCE_BYTES]) -> IdempotencyKey {
     IdempotencyKey::from_bytes(key)
 }
 
+/// Platform listener type the authenticated serving entry accepts: the
+/// Unix-domain socket listener on Unix, the local named-pipe listener on
+/// Windows (whose endpoint path is the pipe path). Both adapters delegate
+/// to the same upstream transport core, so only the stream acquisition and
+/// the channel-binding path encoding differ — the handshake and exchange
+/// wire bytes are identical on every platform.
+#[cfg(unix)]
+pub type EndpointListener = UnixListenerAdapter;
+
+/// Platform listener type the authenticated serving entry accepts: the
+/// Unix-domain socket listener on Unix, the local named-pipe listener on
+/// Windows (whose endpoint path is the pipe path). Both adapters delegate
+/// to the same upstream transport core, so only the stream acquisition and
+/// the channel-binding path encoding differ — the handshake and exchange
+/// wire bytes are identical on every platform.
+#[cfg(windows)]
+pub type EndpointListener = NamedPipeListenerAdapter;
+
 /// Accepts one connection, gates it with `peer_gate`, runs the ADR-0011
 /// challenge-response handshake verified through `identity` at the `clock`'s
 /// durable wall reading, and then serves exactly one control exchange with
 /// the unchanged [`RecoverySystemControl::handle_for_ipc`] semantics — the
 /// exchange's wall time comes from the clock (see [`command_wall_key`]).
+///
+/// The listener is the platform [`EndpointListener`] (a bound Unix-domain
+/// socket on Unix, a bound named pipe on Windows) and must be bound to the
+/// same endpoint the `handshake` context was derived from.
 ///
 /// `next_nonce` supplies the one-time server nonce bytes for this single
 /// connection; production wiring injects an OS-quality RNG and tests inject
@@ -102,7 +139,7 @@ fn handshake_wall_key(nonce: &[u8; HANDSHAKE_NONCE_BYTES]) -> IdempotencyKey {
 /// dispatched, and the consumed nonce is never returned to the registry.
 #[allow(clippy::too_many_arguments)]
 pub async fn authenticated_serve_one_control<H, A, P, N>(
-    listener: &UnixListenerAdapter,
+    listener: &mut EndpointListener,
     config: TransportConfig,
     control: &RecoverySystemControl<'_, H, A>,
     identity: &IdentityAuthority,
@@ -190,9 +227,11 @@ fn bounded_correlation(request: &Envelope) -> Option<[u8; REQUEST_ID_BYTES]> {
 }
 
 /// Dispatches one [`ControlCommand`] to an ADR-0011 authenticated control
-/// endpoint: connects to the Unix socket at `socket`, answers the server's
-/// challenge on behalf of `principal` by signing the handshake digest with
-/// `sign`, then crosses the same handler path and receipt projection as
+/// endpoint: connects to the platform local endpoint at `socket` — the
+/// Unix-domain socket on Unix, the named pipe on Windows — answers the
+/// server's challenge on behalf of `principal` by signing the handshake
+/// digest with `sign`, then crosses the same handler path and receipt
+/// projection as
 /// [`dispatch_over_socket`](crate::control::dispatch_over_socket).
 ///
 /// # Errors
@@ -214,10 +253,75 @@ where
 {
     let request = build_request_envelope(command)?;
     let config = TransportConfig::default();
-    let framed = authenticated_connect(socket, config, principal, sign)
+    let framed = platform_authenticated_connect(socket, config, principal, sign)
         .await
         .map_err(ControlError::Handshake)?;
-    let response = LocalRpcClient::new(framed.into_inner(), config)
+    exchange_over_authenticated_stream(
+        framed.into_inner(),
+        config,
+        request,
+        command,
+        process,
+        resource,
+        application,
+    )
+    .await
+}
+
+/// Platform dispatch for the authenticated connection acquisition, mirroring
+/// the dual-path [`nlos_ipc::handshake::transport::authenticated_connect`]:
+/// the Unix-domain socket connect on Unix, the named-pipe connect on
+/// Windows. Both wrappers hand the platform stream to the same handshake
+/// core, so the handshake bytes and failure order are identical on every
+/// platform.
+#[cfg(unix)]
+async fn platform_authenticated_connect<S>(
+    socket: impl AsRef<Path>,
+    config: TransportConfig,
+    principal: PrincipalId,
+    sign: S,
+) -> Result<FramedIo<UnixStream>, HandshakeError>
+where
+    S: Fn(&[u8; 32]) -> Result<[u8; HANDSHAKE_SIGNATURE_BYTES], HandshakeError>,
+{
+    authenticated_connect(socket, config, principal, sign).await
+}
+
+/// Platform dispatch for the authenticated connection acquisition, mirroring
+/// the dual-path [`nlos_ipc::handshake::transport::authenticated_connect`]:
+/// the Unix-domain socket connect on Unix, the named-pipe connect on
+/// Windows. Both wrappers hand the platform stream to the same handshake
+/// core, so the handshake bytes and failure order are identical on every
+/// platform.
+#[cfg(windows)]
+async fn platform_authenticated_connect<S>(
+    socket: impl AsRef<Path>,
+    config: TransportConfig,
+    principal: PrincipalId,
+    sign: S,
+) -> Result<FramedIo<NamedPipeClient>, HandshakeError>
+where
+    S: Fn(&[u8; 32]) -> Result<[u8; HANDSHAKE_SIGNATURE_BYTES], HandshakeError>,
+{
+    authenticated_connect(socket, config, principal, sign).await
+}
+
+/// Platform-neutral post-handshake exchange core: one validated exchange
+/// over the authenticated stream and the shared receipt projection. The
+/// Unix path crosses exactly the same calls as before the platform split.
+async fn exchange_over_authenticated_stream<St>(
+    stream: St,
+    config: TransportConfig,
+    request: Envelope,
+    command: &ControlCommand,
+    process: Option<&dyn ProcessInspector>,
+    resource: Option<&dyn ResourceInspector>,
+    application: Option<&dyn ApplicationInspector>,
+) -> Result<ControlReceipt, ControlError>
+where
+    St: AsyncRead + AsyncWrite + Unpin + Send,
+{
+    let response = LocalRpcClient::new(stream, config)
         .exchange_validated(ExchangeRequest {
             envelope: Some(request),
         })

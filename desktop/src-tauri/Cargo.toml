@@ -58,3 +58,7 @@ nlos-identity = { path = "../../crates/nlos-identity", optional = true }
 nlos-ipc = { path = "../../crates/nlos-ipc", optional = true }
 nlos-task = { path = "../../crates/nlos-task", optional = true }
 tokio = { version = "1.48", features = ["rt-multi-thread", "macros", "time"], optional = true }
+
+# Windows 命令 id 的 OS 随机源(BCrypt CSPRNG);Unix 侧沿用 /dev/urandom。
+[target.'cfg(windows)'.dependencies]
+getrandom = "0.3"

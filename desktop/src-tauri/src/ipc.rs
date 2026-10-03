@@ -3,8 +3,11 @@
 //! 每条命令——inspect 读或授权控制写——都通过
 //! [`nlos_system_control::auth::dispatch_over_authenticated_socket`]
 //! ——ADR-0011 challenge-response 认证入口——到达真实 SystemControl 服务,
-//! 没有 plain socket 捷径。principal 私钥不入仓库:会话配置来自环境变量或
-//! GUI 会话内设置,签名密钥始终从 operator 提供的 `0600` 密钥文件在派发时读取。
+//! 没有 plain socket 捷径。端点路径按平台解释:Unix 下为 Unix socket
+//! 路径,Windows 下为命名管道路径,字符串自会话配置透传。principal 私钥
+//! 不入仓库:会话配置来自环境变量或 GUI 会话内设置,签名密钥始终从
+//! operator 提供的密钥文件(64 hex Ed25519 种子;Unix 侧 0600 权限位)
+//! 在派发时读取。
 //!
 //! 写入半(W32-B):`submit_control` 把 GUI 的授权动作编译为真实
 //! `ControlCommand`(§25.3 idempotency 身份在派发时新生成;CAS 预期由
@@ -18,7 +21,6 @@
 
 use std::sync::Mutex;
 
-#[cfg(unix)]
 use ed25519_dalek::{Signer, SigningKey};
 use nlos_application::ApplicationAuthority;
 use nlos_resource::ResourceAuthority;
@@ -28,11 +30,9 @@ use nlos_system_control::control::{
     ResourceInspector, parse_hex_id,
 };
 use nlos_system_control::resource_inspector::ResourceAuthorityInspector;
-#[cfg(unix)]
 use nlos_types::PrincipalId;
 use serde::Deserialize;
 
-#[cfg(unix)]
 use crate::dto::receipt_dto;
 use crate::dto::{
     ConfigDto, ConfigSourceDto, ControlPlaneFactsDto, FactCheckDto, ParityDto, ReceiptDto,
@@ -131,7 +131,8 @@ fn config_dto(config: &SessionConfig) -> ConfigDto {
         resource_root: config.resource_root.clone(),
         application_root: config.application_root.clone(),
         source: config.source,
-        platform_supported: cfg!(unix),
+        // 认证派发核心已跨平台(Unix socket / Windows 命名管道)。
+        platform_supported: cfg!(any(unix, windows)),
     }
 }
 
@@ -182,8 +183,9 @@ fn required(config: &SessionConfig) -> Result<(String, String, String), DesktopE
 }
 
 /// 经 ADR-0011 认证入口派发一条命令(inspect 读与 W32-B 授权写共用)并
-/// 投影 Receipt(纯函数核心,由 Tauri 命令与集成测试共用)。
-#[cfg(unix)]
+/// 投影 Receipt(纯函数核心,由 Tauri 命令与集成测试共用)。端点路径按
+/// 平台解释——Unix 下为 Unix socket 路径,Windows 下为命名管道路径,
+/// 字符串透传给跨平台认证传输(nlos-ipc handshake transport)。
 pub async fn dispatch_control(
     socket: &str,
     principal_hex: &str,
@@ -198,7 +200,6 @@ pub async fn dispatch_control(
 /// (上游 `ControlReceipt::compose` 契约);`None` 保持未接线形态,回执为
 /// 类型化 `NOT_FOUND`,与 CLI(同样未接线)字节一致——CLI parity 比对
 /// 恒走 [`dispatch_control`],不受本参数影响。
-#[cfg(unix)]
 pub async fn dispatch_control_with_resource(
     socket: &str,
     principal_hex: &str,
@@ -225,32 +226,10 @@ pub async fn dispatch_control_with_resource(
     Ok(receipt_dto(&receipt))
 }
 
-#[cfg(not(unix))]
-pub async fn dispatch_control(
-    _socket: &str,
-    _principal_hex: &str,
-    _key_file: &str,
-    _command: ControlCommand,
-) -> Result<ReceiptDto, DesktopError> {
-    Err(DesktopError::unsupported_platform())
-}
-
-#[cfg(not(unix))]
-pub async fn dispatch_control_with_resource(
-    _socket: &str,
-    _principal_hex: &str,
-    _key_file: &str,
-    _command: ControlCommand,
-    _resource: Option<&dyn ResourceInspector>,
-) -> Result<ReceiptDto, DesktopError> {
-    Err(DesktopError::unsupported_platform())
-}
-
 /// [`dispatch_control`] 的 Application inspect 扩展:可选
 /// [`ApplicationAuthorityInspector`]。`None` 保持
 /// [`nlos_system_control::control::UnwiredApplicationInspector`] 的类型化
 /// `NOT_FOUND`(`application inspection backend is not wired`)。
-#[cfg(unix)]
 pub async fn dispatch_control_with_application(
     socket: &str,
     principal_hex: &str,
@@ -275,17 +254,6 @@ pub async fn dispatch_control_with_application(
     .await
     .map_err(|error| from_control_error(&error))?;
     Ok(receipt_dto(&receipt))
-}
-
-#[cfg(not(unix))]
-pub async fn dispatch_control_with_application(
-    _socket: &str,
-    _principal_hex: &str,
-    _key_file: &str,
-    _command: ControlCommand,
-    _application: Option<&dyn ApplicationInspector>,
-) -> Result<ReceiptDto, DesktopError> {
-    Err(DesktopError::unsupported_platform())
 }
 
 /// `InspectApplication` 经认证入口派发。配置了 `application_root` 时以
@@ -743,8 +711,9 @@ pub fn control_plane_facts() -> ControlPlaneFactsDto {
     }
 }
 
-/// §25.3 idempotency 身份:每次提交新生成 16 字节(/dev/urandom;认证入口
-/// 仅 Unix,非 Unix 面在派发前就以类型化 UNSUPPORTED_PLATFORM 拒绝)。
+/// §25.3 idempotency 身份:每次提交新生成 16 字节 OS 随机(Unix 读
+/// `/dev/urandom`;Windows 经 `getrandom` 走 BCrypt CSPRNG)。认证派发
+/// 已跨平台,命令 id 的生成不再有平台桩。
 #[cfg(unix)]
 fn fresh_command_id() -> Result<[u8; 16], DesktopError> {
     use std::io::Read;
@@ -757,9 +726,12 @@ fn fresh_command_id() -> Result<[u8; 16], DesktopError> {
     Ok(id)
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
 fn fresh_command_id() -> Result<[u8; 16], DesktopError> {
-    Err(DesktopError::unsupported_platform())
+    let mut id = [0u8; 16];
+    getrandom::fill(&mut id)
+        .map_err(|error| DesktopError::internal(format!("读取命令 id 失败: {error}")))?;
+    Ok(id)
 }
 
 /// GUI 授权动作(SABI v1.4 命令面;serde tag 与 CLI operation 名一致)。

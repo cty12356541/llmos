@@ -702,6 +702,7 @@ dependencies = [
  "nlos-task",
  "nlos-topic",
  "nlos-types",
+ "rusqlite",
  "sha2",
  "tokio",
 ]

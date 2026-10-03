@@ -439,7 +439,7 @@ impl Fixture {
     }
 
     fn spawn_serving_n(&mut self, connections: usize) -> JoinHandle<ServeOutcomes> {
-        let listener = self.listener.take().unwrap();
+        let mut listener = self.listener.take().unwrap();
         let tasks = Arc::clone(&self.tasks);
         let identity = Arc::clone(&self.identity);
         let clock = Arc::clone(&self.clock);
@@ -458,7 +458,7 @@ impl Fixture {
                     RecoverySystemControl::new(tasks.as_ref(), &health, &CapabilityPolicy);
                 outcomes.push(
                     authenticated_serve_one_control(
-                        &listener,
+                        &mut listener,
                         TransportConfig::default(),
                         &control,
                         identity.as_ref(),

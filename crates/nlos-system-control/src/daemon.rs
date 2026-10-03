@@ -558,7 +558,7 @@ pub fn assemble(
 /// Never panics by construction; every failure path is a logged round.
 pub async fn serve_authenticated_endpoint(
     daemon: Arc<SystemControlDaemon>,
-    listener: UnixListenerAdapter,
+    mut listener: UnixListenerAdapter,
     stop: Arc<AtomicBool>,
 ) {
     while !stop.load(Ordering::Relaxed) {
@@ -568,7 +568,7 @@ pub async fn serve_authenticated_endpoint(
         let operations = OperationStoreSource::new(&daemon.operations);
         let control = daemon.layer_control(&plans, &fibers, &topics, &operations);
         let outcome = authenticated_serve_one_control(
-            &listener,
+            &mut listener,
             TransportConfig::default(),
             &control,
             daemon.identity.as_ref(),
@@ -773,7 +773,7 @@ impl RandomSource {
 
     fn bytes32(&self) -> [u8; 32] {
         let mut out = [0u8; 32];
-        for (index, chunk) in out.chunks_exact_mut(8).enumerate() {
+        for (index, chunk) in out.as_chunks_mut::<8>().0.iter_mut().enumerate() {
             let value = self.next_u64().wrapping_add((index as u64) << 32);
             chunk.copy_from_slice(&value.to_le_bytes());
         }

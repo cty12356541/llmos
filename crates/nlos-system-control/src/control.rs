@@ -857,8 +857,9 @@ pub enum ControlError {
     #[cfg(feature = "cli")]
     Ipc(nlos_ipc::IpcError),
     /// ADR-0011 handshake refusal on the authenticated dispatch path
-    /// (Unix + `cli` only, via [`crate::auth`]).
-    #[cfg(all(unix, feature = "cli"))]
+    /// (`cli` feature, via [`crate::auth`]; platform-dispatched like the
+    /// `nlos-ipc` handshake transport it consumes).
+    #[cfg(feature = "cli")]
     Handshake(nlos_ipc::handshake::HandshakeError),
 }
 
@@ -872,7 +873,7 @@ impl fmt::Display for ControlError {
             }
             #[cfg(feature = "cli")]
             Self::Ipc(error) => write!(formatter, "control transport: {error}"),
-            #[cfg(all(unix, feature = "cli"))]
+            #[cfg(feature = "cli")]
             Self::Handshake(error) => write!(formatter, "control handshake refused: {error}"),
         }
     }
@@ -885,7 +886,7 @@ impl Error for ControlError {
             Self::InvalidCommand(_) | Self::UnexpectedResponse(_) => None,
             #[cfg(feature = "cli")]
             Self::Ipc(error) => Some(error),
-            #[cfg(all(unix, feature = "cli"))]
+            #[cfg(feature = "cli")]
             Self::Handshake(error) => Some(error),
         }
     }

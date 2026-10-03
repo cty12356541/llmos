@@ -7,10 +7,15 @@
 //!
 //! 运行方式与完整演示步骤见 `desktop/README.md`。
 
+// 夹具 harness 只接线 Unix socket(W52 边界,见 lib.rs `devfixture` 门);
+// Windows 侧以 tests/windows_authenticated_pipe_side.rs 为认证面证据。
+#[cfg(unix)]
 use std::path::PathBuf;
 
+#[cfg(unix)]
 use llmos_desktop_lib::devfixture::DevFixture;
 
+#[cfg(unix)]
 fn repo_cli_path() -> PathBuf {
     // CARGO_MANIFEST_DIR = desktop/src-tauri;仓库 target 目录在其上两级。
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -21,6 +26,7 @@ fn repo_cli_path() -> PathBuf {
         })
 }
 
+#[cfg(unix)]
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     let mut fixture = match DevFixture::spawn("dev") {
@@ -81,4 +87,10 @@ async fn main() {
 
     let (authenticated, plain) = fixture.serve_forever();
     let _ = tokio::join!(authenticated, plain);
+}
+
+#[cfg(not(unix))]
+fn main() {
+    eprintln!("dev_server: 夹具 harness 目前只接线 Unix socket(W52 边界);");
+    eprintln!("Windows 侧认证面证据见 tests/windows_authenticated_pipe_side.rs。");
 }
