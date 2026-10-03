@@ -29,7 +29,7 @@ use nlos_types::{
 };
 
 use crate::error::{SliceKError, SliceKResult};
-use crate::pump::{PumpLane, ReconcileRefusalSnapshot, stop_pump_bounded};
+use crate::pump::{PumpLane, ReconcileLaneSnapshot, stop_pump_bounded};
 
 /// Poison-tolerant guard over the runtime's pump slot.
 type PumpGuard<'a> = MutexGuard<'a, Option<OutboxPump>>;
@@ -57,9 +57,14 @@ pub struct SliceKRuntime {
     /// Application/installation authority (verify-then-install).
     pub applications: ApplicationAuthority,
     /// Task authority (tasks, attempts, permits, commit plans, receipts).
-    pub tasks: SqliteTaskAuthority,
-    /// Authority clock (durable monotonic tick + wall high-water).
-    pub clock: AuthorityClock,
+    /// Held behind an `Arc` so the pump's reconcile sink can route late
+    /// Operation outcomes into the same durable authority without opening a
+    /// second connection to the same database.
+    pub tasks: Arc<SqliteTaskAuthority>,
+    /// Authority clock (durable monotonic tick + wall high-water). Shared
+    /// behind an `Arc` with the pump's reconcile sink, whose per-entry
+    /// idempotency keys take replay-stable wall readings.
+    pub clock: Arc<AuthorityClock>,
     /// Durable operation store (driver operations owned by fibers). Shared
     /// behind an `Arc` so the payload-execution lane can bind the same
     /// durable authority into the `nlos-driver-mock` provider face
@@ -76,9 +81,10 @@ pub struct SliceKRuntime {
     /// Guarded by a `Mutex` so `Drop` and explicit stops can take the pump
     /// out from behind an `Arc`-shared runtime.
     pump: Mutex<Option<OutboxPump>>,
-    /// Refusal surface of the fail-closed reconcile sink (see
-    /// [`crate::pump`]). Created once per runtime and shared with every
-    /// pump generation, so the counters survive pump restarts.
+    /// Health surface of the reconcile lane (see [`crate::pump`]): routed
+    /// and refused counts of the task-routing sink. Created once per runtime
+    /// and shared with every pump generation, so the counters survive pump
+    /// restarts.
     pump_lane: PumpLane,
 }
 
@@ -97,8 +103,8 @@ impl SliceKRuntime {
         let process = ProcessAuthority::open(root.join("process"))?;
         let artifacts = ArtifactStore::open(root.join("artifacts"))?;
         let applications = ApplicationAuthority::open(root.join("applications"))?;
-        let tasks = SqliteTaskAuthority::open(root.join("tasks.sqlite3"))?;
-        let clock = AuthorityClock::open(root.join("clock"))?;
+        let tasks = Arc::new(SqliteTaskAuthority::open(root.join("tasks.sqlite3"))?);
+        let clock = Arc::new(AuthorityClock::open(root.join("clock"))?);
         let operations = Arc::new(SqliteOperationStore::open(root.join("operations.sqlite3"))?);
         let capability = CapabilityAuthority::open(root.join("capability"))?;
         Ok(Self {
@@ -177,9 +183,11 @@ impl SliceKRuntime {
     ///
     /// Routing: `WakeFiber` entries go to the adapter's wake sink (the
     /// closed durable-wake loop); `ReconcileEffect` entries go to the
-    /// fail-closed sink documented in [`crate::pump`] — refused with a
-    /// typed error, retried with backoff, never acknowledged away, and
-    /// counted on [`Self::reconcile_refusals`]. The pump uses the landed
+    /// task-routing sink documented in [`crate::pump`] — offered to this
+    /// runtime's task authority as real late-outcome routing, with the
+    /// typed no-route decision and every routing failure kept fail-closed
+    /// (not acknowledged, retried with backoff, counted per lane on
+    /// [`Self::reconcile_lane`]). The pump uses the landed
     /// default tuning (25ms fallback poll, 16-failure threshold).
     ///
     /// Starting again while a pump is `Running` fails closed — a second
@@ -208,7 +216,9 @@ impl SliceKRuntime {
         let consumer = OutboxConsumer {
             source: StoreOutboxSource::new(Arc::clone(&self.operations)),
             wake_sink: adapter.wake_sink(),
-            reconcile_sink: self.pump_lane.sink(),
+            reconcile_sink: self
+                .pump_lane
+                .sink(Arc::clone(&self.tasks), Arc::clone(&self.clock)),
             config: ConsumerConfig { batch_limit: 8 },
         };
         // `PumpConfig::default()` keeps a non-zero poll interval, so the
@@ -238,11 +248,12 @@ impl SliceKRuntime {
         self.lock_pump().as_ref().map(OutboxPump::health)
     }
 
-    /// The fail-closed reconcile lane's refusal surface: how many
-    /// `ReconcileEffect` entries this runtime refused (they stay durable in
-    /// the outbox) and the most recent typed reason.
+    /// The reconcile lane's health surface: how many `ReconcileEffect`
+    /// entries routed into the task authority, and how many were refused
+    /// per fail-closed lane (typed no-route vs routing failure) with the
+    /// most recent typed reason. Refused entries stay durable in the outbox.
     #[must_use]
-    pub fn reconcile_refusals(&self) -> ReconcileRefusalSnapshot {
+    pub fn reconcile_lane(&self) -> ReconcileLaneSnapshot {
         self.pump_lane.snapshot()
     }
 
