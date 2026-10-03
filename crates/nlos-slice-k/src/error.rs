@@ -8,6 +8,7 @@ use std::fmt;
 use nlos_application::ApplicationAuthorityError;
 use nlos_artifact::ArtifactError;
 use nlos_capability::CapabilityAuthorityError;
+use nlos_channel::ChannelAuthorityError;
 use nlos_clock::AuthorityClockError;
 use nlos_commit_coordinator::CoordinatorError;
 use nlos_driver_mock::ProviderError;
@@ -18,6 +19,7 @@ use nlos_runtime_tokio::ChannelWaitError;
 use nlos_semantic::SemanticAuthorityError;
 use nlos_store::StoreError;
 use nlos_task::TaskStoreError;
+use nlos_topic::TopicAuthorityError;
 
 /// Fail-closed errors of the Slice K assembly.
 #[derive(Debug)]
@@ -50,6 +52,15 @@ pub enum SliceKError {
     /// a `semantic-writer.key` whose width is not the documented 48-byte
     /// `seed ‖ valid_from ‖ valid_until` layout).
     SemanticWriter(&'static str),
+    /// The system Channel endpoint authority refused a semantic-stream
+    /// bootstrap step (the durable queue under `<root>/channel`; distinct
+    /// from the runtime's fiber wake `ChannelWaitError` lane).
+    Channel(ChannelAuthorityError),
+    /// The Topic service-layer authority refused a semantic-stream step
+    /// (bootstrap, publish, cursor advance, or compact). Channel
+    /// rejections propagated through the topic layer stay reachable via
+    /// [`std::error::Error::source`].
+    Topic(TopicAuthorityError),
     /// The runtime's Outbox pump lifecycle refused a transition this call
     /// cannot make honestly (for example starting a second pump while one
     /// is still running — its wake lane would silently ack the first
@@ -108,6 +119,12 @@ impl fmt::Display for SliceKError {
             Self::Semantic(error) => write!(formatter, "semantic authority: {error}"),
             Self::SemanticWriter(reason) => {
                 write!(formatter, "semantic writer key material refusal: {reason}")
+            }
+            Self::Channel(error) => {
+                write!(formatter, "system channel authority: {error}")
+            }
+            Self::Topic(error) => {
+                write!(formatter, "topic service authority: {error}")
             }
             Self::Pump(reason) => write!(formatter, "outbox pump lifecycle refusal: {reason}"),
             Self::Operation(error) => write!(formatter, "operation store: {error}"),
@@ -168,6 +185,8 @@ impl Error for SliceKError {
             Self::Control(error) => Some(error),
             Self::Capability(error) => Some(error),
             Self::Semantic(error) => Some(error),
+            Self::Channel(error) => Some(error),
+            Self::Topic(error) => Some(error),
         }
     }
 }
@@ -223,6 +242,18 @@ impl From<CapabilityAuthorityError> for SliceKError {
 impl From<SemanticAuthorityError> for SliceKError {
     fn from(error: SemanticAuthorityError) -> Self {
         Self::Semantic(error)
+    }
+}
+
+impl From<ChannelAuthorityError> for SliceKError {
+    fn from(error: ChannelAuthorityError) -> Self {
+        Self::Channel(error)
+    }
+}
+
+impl From<TopicAuthorityError> for SliceKError {
+    fn from(error: TopicAuthorityError) -> Self {
+        Self::Topic(error)
     }
 }
 

@@ -11,6 +11,7 @@ use nlos_application::{
 };
 use nlos_artifact::{ArtifactStore, HeadState};
 use nlos_capability::CapabilityAuthority;
+use nlos_channel::ChannelAuthority;
 use nlos_clock::{AuthorityClock, NowRequest};
 use nlos_commit_coordinator::ArtifactCommitCoordinator;
 use nlos_identity::IdentityAuthority;
@@ -24,6 +25,7 @@ use nlos_runtime_tokio::{
 use nlos_semantic::SemanticAuthority;
 use nlos_store::SqliteOperationStore;
 use nlos_task::{AttemptRecord, PermitRecord, SqliteTaskAuthority, TaskRecord};
+use nlos_topic::TopicAuthority;
 use nlos_types::{
     CommitPermitId, Generation, IdempotencyKey, InstallationId, PackageId, ProcessId,
     TaskAttemptId, TaskId,
@@ -31,10 +33,18 @@ use nlos_types::{
 
 use crate::error::{SliceKError, SliceKResult};
 use crate::pump::{PumpLane, ReconcileLaneSnapshot, stop_pump_bounded};
+use crate::semantic_stream::{
+    SemanticStreamBinding, SemanticStreamConfig, SemanticStreamDeps, SemanticStreamHealth,
+    SemanticStreamPump, SemanticStreamPumpStartError, SemanticStreamState,
+    bootstrap_semantic_stream, stop_semantic_stream_bounded,
+};
 use crate::semantic_writer::SemanticWriter;
 
 /// Poison-tolerant guard over the runtime's pump slot.
 type PumpGuard<'a> = MutexGuard<'a, Option<OutboxPump>>;
+
+/// Poison-tolerant guard over the runtime's semantic stream pump slot.
+type SemanticStreamGuard<'a> = MutexGuard<'a, Option<SemanticStreamPump>>;
 
 /// One assembler holding every authority of the first longitudinal slice.
 ///
@@ -81,13 +91,31 @@ pub struct SliceKRuntime {
     /// Semantic assertion authority (`<root>/semantic/semantic-authority.db`,
     /// the daemon W46-L3 path style), opened read-exposed: the production
     /// write side lives in [`crate::semantic_writer`], which appends through
-    /// this authority's admission gates.
-    semantic: SemanticAuthority,
+    /// this authority's admission gates. Held behind an `Arc` so the
+    /// semantic stream pump lane can drain the admission outbox through the
+    /// same connection without opening a second one.
+    semantic: Arc<SemanticAuthority>,
+    /// Durable system Channel endpoint authority (`<root>/channel`), the
+    /// daemon W46 path style — opened for the semantic notification stream
+    /// lane (see [`crate::semantic_stream`]) and shared with the topic
+    /// authority below.
+    pub channel: Arc<ChannelAuthority>,
+    /// Durable Topic service-layer authority (`<root>/topics`) over the
+    /// system channel — the semantic notification stream's fanout owner
+    /// (see [`crate::semantic_stream`]).
+    pub topics: Arc<TopicAuthority>,
     /// The dedicated semantic writer principal this runtime bootstrapped
     /// (key file `<root>/keys/semantic-writer.key`, see
     /// [`crate::semantic_writer`]). Held so the payload lane's terminal
     /// receipts reach the semantic ledger without any caller-side setup.
     semantic_writer: SemanticWriter,
+    /// The semantic notification stream pump lane (see
+    /// [`crate::semantic_stream`]): `None` until
+    /// [`SliceKRuntime::start_semantic_stream`] bootstraps the well-known
+    /// system channel/topic/subscription and binds a pump to it. Guarded by
+    /// a `Mutex` so `Drop` and explicit stops can take the pump out from
+    /// behind an `Arc`-shared runtime.
+    semantic_stream: Mutex<Option<SemanticStreamPump>>,
     /// The durable-Outbox pump lane: `None` until
     /// [`SliceKRuntime::start_pump`] binds a pump to a runtime adapter.
     /// Guarded by a `Mutex` so `Drop` and explicit stops can take the pump
@@ -119,7 +147,12 @@ impl SliceKRuntime {
         let clock = Arc::new(AuthorityClock::open(root.join("clock"))?);
         let operations = Arc::new(SqliteOperationStore::open(root.join("operations.sqlite3"))?);
         let capability = CapabilityAuthority::open(root.join("capability"))?;
-        let semantic = SemanticAuthority::open(root.join("semantic"))?;
+        let channel = Arc::new(ChannelAuthority::open(root.join("channel"))?);
+        let topics = Arc::new(TopicAuthority::open(
+            root.join("topics"),
+            Arc::clone(&channel),
+        )?);
+        let semantic = Arc::new(SemanticAuthority::open(root.join("semantic"))?);
         let semantic_writer = SemanticWriter::assemble(
             &identity,
             &process,
@@ -136,9 +169,12 @@ impl SliceKRuntime {
             operations,
             capability,
             semantic,
+            channel,
+            topics,
             semantic_writer,
             pump: Mutex::new(None),
             pump_lane: PumpLane::new(),
+            semantic_stream: Mutex::new(None),
         })
     }
 
@@ -309,6 +345,132 @@ impl SliceKRuntime {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// Idempotently bootstraps the semantic notification stream's
+    /// well-known system channel, system topic, and system subscription
+    /// (see [`crate::semantic_stream`]) under the default
+    /// [`SemanticStreamConfig`]. Repeating the call replays the durable
+    /// binding; the durable-identity fields of the config are frozen per
+    /// root.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`SliceKError::Channel`], [`SliceKError::Topic`], and
+    /// [`SliceKError::Clock`] refusals typed.
+    pub fn bootstrap_semantic_stream(&self) -> SliceKResult<SemanticStreamBinding> {
+        bootstrap_semantic_stream(
+            &self.channel,
+            &self.topics,
+            &self.clock,
+            &SemanticStreamConfig::default(),
+        )
+    }
+
+    /// Starts the semantic notification stream pump with the default
+    /// [`SemanticStreamConfig`] (see [`crate::semantic_stream`]): one
+    /// dedicated OS thread that drains the pending semantic admission
+    /// outbox prefix into 73-byte topic envelopes, acknowledges the outbox,
+    /// and follows/compacts the system subscriber cursor so the bounded
+    /// channel capacity is released.
+    ///
+    /// Why a separate lifecycle from [`Self::start_pump`]: the durable
+    /// Outbox pump is bound to a caller's tokio adapter because its wake
+    /// lane routes into that adapter's fiber registry; the semantic stream
+    /// has no wake sink to route — its failure domain, tuning, and stop
+    /// semantics are its own, so coupling the two lanes would let one
+    /// lane's fault take the other down.
+    ///
+    /// Starting again while a stream pump is running fails closed; a
+    /// `Faulted`/`Stopped` leftover is joined first and replaced.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SliceKError::Channel`]/[`SliceKError::Topic`]/
+    /// [`SliceKError::Clock`] when the bootstrap refuses,
+    /// [`SliceKError::Pump`] when a stream pump already runs or the config
+    /// is unusable, and [`SliceKError::Io`] when the OS refuses the thread.
+    pub fn start_semantic_stream(&self) -> SliceKResult<SemanticStreamBinding> {
+        self.start_semantic_stream_with(SemanticStreamConfig::default())
+    }
+
+    /// [`Self::start_semantic_stream`] under an explicit (possibly
+    /// non-default) [`SemanticStreamConfig`] — the lane's documented tuning
+    /// and durable-policy surface. The config's durable-identity fields are
+    /// frozen per root: a different value against an already-bootstrapped
+    /// root fails closed with the authorities' typed idempotency conflict.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::start_semantic_stream`].
+    pub fn start_semantic_stream_with(
+        &self,
+        config: SemanticStreamConfig,
+    ) -> SliceKResult<SemanticStreamBinding> {
+        let mut stream = self.lock_semantic_stream();
+        if let Some(existing) = stream.as_ref() {
+            if existing.health().state == SemanticStreamState::Running {
+                return Err(SliceKError::Pump(
+                    "semantic stream pump already running; stop_semantic_stream() before starting another",
+                ));
+            }
+            // Not running: join the dead thread so only one stream pump
+            // generation ever owns the lane.
+            if let Some(dead) = stream.take() {
+                stop_semantic_stream_bounded(dead);
+            }
+        }
+        let binding = bootstrap_semantic_stream(&self.channel, &self.topics, &self.clock, &config)?;
+        let started = SemanticStreamPump::start(
+            SemanticStreamDeps {
+                semantic: Arc::clone(&self.semantic),
+                topics: Arc::clone(&self.topics),
+                clock: Arc::clone(&self.clock),
+                binding: binding.clone(),
+            },
+            config,
+        )
+        .map_err(|error: SemanticStreamPumpStartError| match error {
+            SemanticStreamPumpStartError::Spawn(io) => SliceKError::Io(io),
+            SemanticStreamPumpStartError::InvalidConfig(reason) => SliceKError::Pump(reason),
+        })?;
+        *stream = Some(started);
+        Ok(binding)
+    }
+
+    /// Bounded, non-blocking wake-up hint into a running semantic stream
+    /// pump. `false` when no pump runs (or a hint is already pending); the
+    /// fallback poll interval bounds delivery either way, so callers may
+    /// ignore the result.
+    #[must_use]
+    pub fn hint_semantic_stream(&self) -> bool {
+        self.lock_semantic_stream()
+            .as_ref()
+            .is_some_and(SemanticStreamPump::hint)
+    }
+
+    /// Current semantic stream pump health, or `None` while no pump runs.
+    #[must_use]
+    pub fn semantic_stream_health(&self) -> Option<SemanticStreamHealth> {
+        self.lock_semantic_stream()
+            .as_ref()
+            .map(SemanticStreamPump::health)
+    }
+
+    /// Stops the semantic stream pump and joins its thread. Idempotent: a
+    /// runtime without a running stream pump is a no-op. Unacknowledged
+    /// outbox rows stay durable for a future pump, exactly as the
+    /// at-least-once contract requires.
+    pub fn stop_semantic_stream(&self) {
+        if let Some(pump) = self.lock_semantic_stream().take() {
+            stop_semantic_stream_bounded(pump);
+        }
+    }
+
+    fn lock_semantic_stream(&self) -> SemanticStreamGuard<'_> {
+        self.semantic_stream
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     /// Drains every pending artifact commit plan to its terminal
     /// `TaskCommitReceipt` (the crash-recovery convergence entry).
     ///
@@ -393,9 +555,9 @@ impl Drop for SliceKRuntime {
     /// Stops a still-running pump with a bounded join (see
     /// [`crate::pump`]): the stop flag and wake-up hint are delivered
     /// first, the join itself waits at most a deadline so teardown cannot
-    /// hang on a stuck consumer lane. With no pump running this is a
-    /// no-op — dropping a runtime that never started one has no threads to
-    /// reap.
+    /// hang on a stuck consumer lane. The semantic stream pump lane gets
+    /// the same bounded stop. With neither pump running this is a no-op —
+    /// dropping a runtime that never started one has no threads to reap.
     fn drop(&mut self) {
         if let Some(pump) = self
             .pump
@@ -404,6 +566,14 @@ impl Drop for SliceKRuntime {
             .take()
         {
             stop_pump_bounded(pump);
+        }
+        if let Some(stream) = self
+            .semantic_stream
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            stop_semantic_stream_bounded(stream);
         }
     }
 }

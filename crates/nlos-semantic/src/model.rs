@@ -601,6 +601,34 @@ pub struct SemanticOutboxRecord {
     pub acknowledged_at_ms: Option<u64>,
 }
 
+/// One pending (unacknowledged) admission-outbox row, in log order — the
+/// read-only enumeration surface a transport consumer drains.
+///
+/// The row carries exactly the owner-binding facts an
+/// [`AcknowledgeOutboxRequest`](crate::AcknowledgeOutboxRequest) re-supplies
+/// after delivery (`event_id`, `log_seq`, `receipt_id`, plus the receipt's
+/// `admitted_at_ms` so the consumer can respect the
+/// not-before-admission rule), together with the event facts a notification
+/// needs to describe the admission without re-reading the full canonical
+/// bytes: the authority event-type code and the payload-identity digest.
+/// `content_digest` is the event's payload identity — the content digest for
+/// assertions, the spec-body digest for SPEC events — and `None` for the
+/// structural typed events (judgment/verification/retraction), which carry
+/// no payload identity.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SemanticOutboxRow {
+    pub log_seq: u64,
+    pub event_id: SemanticEventId,
+    pub receipt_id: ReceiptId,
+    pub admitted_at_ms: u64,
+    /// Authority event-type code of the admitted event: `1` assertion, `2`
+    /// judgment, `3` verification, `4` retraction, `5` spec.
+    pub event_type: u8,
+    /// Payload-identity digest when the event type carries one (`None` for
+    /// structural typed events).
+    pub content_digest: Option<[u8; 32]>,
+}
+
 /// A transport consumer's owner-bound acknowledgement observation.
 ///
 /// The event/log/receipt triple is supplied by the consumer and must match
