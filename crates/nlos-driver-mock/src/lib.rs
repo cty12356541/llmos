@@ -14,7 +14,8 @@
 //!   state is ROAD-B-003's fifth gate);
 //! * the typed IPC face (`ipc`): SABI envelope handling, served only
 //!   through the `authenticated` ADR-0011 principal challenge-response entry
-//!   (Unix). There is deliberately no plaintext IPC shortcut.
+//!   (Unix-domain socket on Unix, named pipe on Windows). There is
+//!   deliberately no plaintext IPC shortcut.
 //!
 //! The provider owns no canonical state. Registration identity is the
 //! `OperationSpec` itself; dispatch replays under the durable preparation/
@@ -40,7 +41,6 @@
 //!   provider's late speculative completion (reconciliation-only commit,
 //!   wake fenced, exactly-once across restarts).
 
-#[cfg(unix)]
 pub mod authenticated;
 pub mod cache;
 pub mod codec;
