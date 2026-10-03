@@ -1,4 +1,4 @@
-//! Resident `system_control` daemon (`daemon` feature, Unix only).
+//! Resident `system_control` daemon (`daemon` feature, cross-platform).
 //!
 //! Decision D5: this module closes the assembly gap between the desktop GUI
 //! authenticated entry and the CLI plain entry when no desktop service
@@ -6,13 +6,20 @@
 //! authority under it (identity, clock, task, artifact, semantic, process,
 //! resource, application, plan, channel+topic, operation store, and a tokio
 //! runtime adapter), starts the [`TaskAuthorityCommitRecoveryWorker`], and
-//! serves two Unix socket endpoints side by side:
+//! serves two local endpoints side by side:
 //!
 //! - **authenticated entry** — [`authenticated_serve_one_control`] (the GUI's
 //!   only wiring shape; every connection answers the ADR-0011
 //!   challenge-response handshake);
 //! - **plain entry** — `serve_one` + [`RecoverySystemControl::handle_for_ipc`]
 //!   for the `system-control-cli` binary.
+//!
+//! The two endpoints are platform-dispatched exactly like the `nlos-ipc`
+//! transport and [`crate::auth`] entries they consume: Unix-domain sockets
+//! on Unix, named pipes on Windows (see [`crate::auth::EndpointListener`]
+//! and the default-endpoint derivation on [`DaemonOptions`]). Only transport
+//! acquisition (bind/accept) and the endpoint-path form differ per platform;
+//! handshake and exchange wire bytes are identical on every platform.
 //!
 //! Both entries share one handler construction path with every
 //! `with_*_source` inspector seam wired; the executor arms stay
@@ -35,7 +42,6 @@
 use std::error::Error;
 use std::fmt;
 use std::fs;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -55,7 +61,10 @@ use nlos_identity::{
     KeyPurpose,
 };
 use nlos_ipc::handshake::transport::ServerHandshakeContext;
+#[cfg(unix)]
 use nlos_ipc::unix::UnixListenerAdapter;
+#[cfg(windows)]
+use nlos_ipc::windows::NamedPipeListenerAdapter;
 use nlos_ipc::{
     OutboundResponse, PeerAuthorizer, PeerIdentity, TransportConfig, handshake::HandshakeError,
     serve_one,
@@ -76,6 +85,7 @@ use nlos_topic::{TopicAuthority, TopicAuthorityError};
 use nlos_types::IdempotencyKey;
 use sha2::{Digest, Sha256};
 
+use crate::auth::EndpointListener;
 use crate::auth::authenticated_serve_one_control;
 use crate::control::{
     CONTROL_CAPABILITY_GENERATION, CONTROL_CAPABILITY_SLOT, ControlCommand, ControlError,
@@ -92,6 +102,76 @@ use crate::{RecoveryHealthSource, RecoverySystemControl, SystemControlAuthorizer
 const BOOTSTRAP_KEY_VALID_UNTIL_MS: u64 = 4_102_444_800_000;
 /// Handshake nonce registry capacity for the authenticated endpoint.
 const HANDSHAKE_NONCE_CAPACITY: usize = 64;
+/// Named-pipe instance budget for one daemon endpoint on Windows (the
+/// `bind`/`accept` contract requires at least two instances: one listening,
+/// one connected). The service loops serve one exchange per round, so a
+/// small backlog lets clients queue while one exchange is in flight.
+#[cfg(windows)]
+const DAEMON_PIPE_INSTANCES: usize = 4;
+
+// Default endpoint-path derivation, centralized in this one place per OS
+// form:
+//
+// - Unix — owner-only filesystem sockets inside the state root:
+//   `<root>/system-control-auth.sock` and `<root>/system-control-plain.sock`
+//   (byte-for-byte the historical defaults);
+// - Windows — named pipes in the machine-global pipe namespace:
+//   `\\.\pipe\llmos-system-control-{auth|plain}-<root-digest>`. The
+//   namespace is shared by every process on the machine, so a 16-hex digest
+//   of the state root's OS path bytes keeps distinct roots on distinct pipe
+//   names; two daemons on the same root (same spelling) still collide
+//   fail-closed at bind (the named-pipe first-instance flag), mirroring the
+//   Unix stale-path posture without a filesystem artifact to unlink.
+//
+// The daemon never mixes forms: an explicit
+// `DaemonOptions::with_auth_socket`/`with_plain_socket` override is used
+// verbatim and must already carry the intended platform form, because the
+// authenticated channel binding hashes exactly these path bytes on both
+// ends.
+//
+/// Default authenticated-endpoint path, per-OS form (see the centralized
+/// derivation rules above): `<root>/system-control-auth.sock` on Unix.
+#[cfg(unix)]
+fn auth_endpoint_default(root: &Path) -> PathBuf {
+    root.join("system-control-auth.sock")
+}
+
+/// Default authenticated-endpoint path, per-OS form (see the centralized
+/// derivation rules above): `\\.\pipe\llmos-system-control-auth-<digest>` on
+/// Windows.
+#[cfg(windows)]
+fn auth_endpoint_default(root: &Path) -> PathBuf {
+    default_pipe_endpoint("auth", root)
+}
+
+/// Default plain-endpoint path, per-OS form (see the centralized derivation
+/// rules above): `<root>/system-control-plain.sock` on Unix.
+#[cfg(unix)]
+fn plain_endpoint_default(root: &Path) -> PathBuf {
+    root.join("system-control-plain.sock")
+}
+
+/// Default plain-endpoint path, per-OS form (see the centralized derivation
+/// rules above): `\\.\pipe\llmos-system-control-plain-<digest>` on Windows.
+#[cfg(windows)]
+fn plain_endpoint_default(root: &Path) -> PathBuf {
+    default_pipe_endpoint("plain", root)
+}
+
+/// Windows default form: `\\.\pipe\llmos-system-control-<role>-<root-digest>`
+/// with the digest domain-separated and truncated to 16 hex characters
+/// (well inside the kernel's 256-character pipe-name bound).
+#[cfg(windows)]
+fn default_pipe_endpoint(role: &str, root: &Path) -> PathBuf {
+    let mut hasher = Sha256::new();
+    hasher.update(b"llmos/system-control-daemon/pipe-name/v1");
+    hasher.update(root.as_os_str().as_encoded_bytes());
+    let digest: [u8; 32] = hasher.finalize().into();
+    PathBuf::from(format!(
+        r"\\.\pipe\llmos-system-control-{role}-{}",
+        hex(&digest[..8])
+    ))
+}
 
 /// Typed assembly failure. No durable state is changed solely by reporting
 /// one of these; every authority the daemon already opened stays valid for
@@ -174,10 +254,13 @@ impl Error for DaemonError {
 pub struct DaemonOptions {
     /// State root every authority is opened under.
     pub root: PathBuf,
-    /// Authenticated endpoint path; defaults to
-    /// `<root>/system-control-auth.sock`.
+    /// Authenticated endpoint path; the per-OS default is derived from the
+    /// root (see the centralized derivation rules above the
+    /// `*_endpoint_default` helpers).
     pub auth_socket: Option<PathBuf>,
-    /// Plain endpoint path; defaults to `<root>/system-control-plain.sock`.
+    /// Plain endpoint path; the per-OS default is derived from the root
+    /// (see the centralized derivation rules above the
+    /// `*_endpoint_default` helpers).
     pub plain_socket: Option<PathBuf>,
     /// Optional 64-hex Ed25519 seed file (the desktop client's 0600 key-file
     /// format). When present the daemon bootstraps (or idempotently replays)
@@ -200,14 +283,16 @@ impl DaemonOptions {
         }
     }
 
-    /// Overrides the authenticated endpoint path.
+    /// Overrides the authenticated endpoint path (Unix socket path on Unix,
+    /// `\\.\pipe\...` pipe name on Windows).
     #[must_use]
     pub fn with_auth_socket(mut self, path: impl Into<PathBuf>) -> Self {
         self.auth_socket = Some(path.into());
         self
     }
 
-    /// Overrides the plain endpoint path.
+    /// Overrides the plain endpoint path (Unix socket path on Unix,
+    /// `\\.\pipe\...` pipe name on Windows).
     #[must_use]
     pub fn with_plain_socket(mut self, path: impl Into<PathBuf>) -> Self {
         self.plain_socket = Some(path.into());
@@ -231,13 +316,13 @@ impl DaemonOptions {
     fn auth_socket_path(&self) -> PathBuf {
         self.auth_socket
             .clone()
-            .unwrap_or_else(|| self.root.join("system-control-auth.sock"))
+            .unwrap_or_else(|| auth_endpoint_default(&self.root))
     }
 
     fn plain_socket_path(&self) -> PathBuf {
         self.plain_socket
             .clone()
-            .unwrap_or_else(|| self.root.join("system-control-plain.sock"))
+            .unwrap_or_else(|| plain_endpoint_default(&self.root))
     }
 }
 
@@ -308,9 +393,10 @@ fn authorize_capability(context: &SabiRequestContext) -> Result<(), &'static str
 
 /// Peer gate for both endpoints: the authenticated endpoint has already
 /// verified the connection through the ADR-0011 handshake, and the plain
-/// endpoint stays inside the local trust domain (filesystem-permission
-/// 0600 sockets), so the in-transport peer gate admits and the capability
-/// policy remains the boundary.
+/// endpoint stays inside the local trust domain (owner-only 0600 sockets on
+/// Unix, the machine-local named-pipe namespace on Windows), so the
+/// in-transport peer gate admits and the capability policy remains the
+/// boundary.
 struct AllowPeer;
 
 impl PeerAuthorizer for AllowPeer {
@@ -433,10 +519,12 @@ impl SystemControlDaemon {
     }
 }
 
-/// Bound listeners for the two endpoints, handed to the service loops.
+/// Bound listeners for the two endpoints, handed to the service loops. The
+/// listener type is the platform [`EndpointListener`] (Unix-domain socket
+/// on Unix, named pipe on Windows), so the loops stay platform-neutral.
 pub struct DaemonEndpoints {
-    pub listener_authenticated: UnixListenerAdapter,
-    pub listener_plain: UnixListenerAdapter,
+    pub listener_authenticated: EndpointListener,
+    pub listener_plain: EndpointListener,
 }
 
 /// Assembles the daemon: opens every authority under `options.root`, starts
@@ -558,7 +646,7 @@ pub fn assemble(
 /// Never panics by construction; every failure path is a logged round.
 pub async fn serve_authenticated_endpoint(
     daemon: Arc<SystemControlDaemon>,
-    mut listener: UnixListenerAdapter,
+    mut listener: EndpointListener,
     stop: Arc<AtomicBool>,
 ) {
     while !stop.load(Ordering::Relaxed) {
@@ -597,11 +685,11 @@ pub async fn serve_authenticated_endpoint(
 /// Never panics by construction; every failure path is a logged round.
 pub async fn serve_plain_endpoint(
     daemon: Arc<SystemControlDaemon>,
-    listener: UnixListenerAdapter,
+    mut listener: EndpointListener,
     stop: Arc<AtomicBool>,
 ) {
     while !stop.load(Ordering::Relaxed) {
-        let (stream, peer) = match listener.accept(TransportConfig::default()).await {
+        let (stream, peer) = match accept_plain(&mut listener).await {
             Ok(connection) => connection,
             Err(nlos_ipc::IpcError::Timeout(nlos_ipc::IoOperation::Accept)) => continue,
             Err(error) => {
@@ -637,6 +725,38 @@ pub async fn serve_plain_endpoint(
     }
 }
 
+/// Platform dispatch for one plain-endpoint accept, mirroring the dual-path
+/// [`nlos_ipc::handshake::transport`] accept halves: the Unix-domain socket
+/// accept on Unix, the named-pipe accept on Windows (exclusive borrow — the
+/// listener swaps in its next listening instance). Both wrappers hand the
+/// platform stream to the same platform-neutral `serve_one` core, so the
+/// exchange bytes and failure order are identical on every platform.
+#[cfg(unix)]
+async fn accept_plain(
+    listener: &mut EndpointListener,
+) -> Result<(tokio::net::UnixStream, PeerIdentity), nlos_ipc::IpcError> {
+    listener.accept(TransportConfig::default()).await
+}
+
+/// Platform dispatch for one plain-endpoint accept, mirroring the dual-path
+/// [`nlos_ipc::handshake::transport`] accept halves: the Unix-domain socket
+/// accept on Unix, the named-pipe accept on Windows (exclusive borrow — the
+/// listener swaps in its next listening instance). Both wrappers hand the
+/// platform stream to the same platform-neutral `serve_one` core, so the
+/// exchange bytes and failure order are identical on every platform.
+#[cfg(windows)]
+async fn accept_plain(
+    listener: &mut EndpointListener,
+) -> Result<
+    (
+        tokio::net::windows::named_pipe::NamedPipeServer,
+        PeerIdentity,
+    ),
+    nlos_ipc::IpcError,
+> {
+    listener.accept(TransportConfig::default()).await
+}
+
 /// Removes a stale socket path (best effort — a live daemon keeps serving
 /// its already-bound inode) and binds a fresh owner-only endpoint.
 ///
@@ -644,13 +764,28 @@ pub async fn serve_plain_endpoint(
 ///
 /// Returns [`DaemonError::Ipc`] when the bind or permission hardening
 /// fails.
-fn bind_socket(path: &Path) -> Result<UnixListenerAdapter, DaemonError> {
+#[cfg(unix)]
+fn bind_socket(path: &Path) -> Result<EndpointListener, DaemonError> {
     match fs::remove_file(path) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(DaemonError::Io(error)),
     }
     UnixListenerAdapter::bind(path).map_err(DaemonError::Ipc)
+}
+
+/// Binds the named-pipe endpoint on Windows. There is no stale-path unlink:
+/// the pipe namespace is kernel-managed, and the first-instance flag makes
+/// a second daemon on the same pipe name fail closed at bind instead of
+/// silently attaching to the live one.
+///
+/// # Errors
+///
+/// Returns [`DaemonError::Ipc`] when the pipe instance cannot be created.
+#[cfg(windows)]
+fn bind_socket(path: &Path) -> Result<EndpointListener, DaemonError> {
+    NamedPipeListenerAdapter::bind(path, DAEMON_PIPE_INSTANCES, TransportConfig::default())
+        .map_err(DaemonError::Ipc)
 }
 
 /// Bootstraps (or idempotently replays) the principal for one Ed25519 seed
@@ -739,10 +874,10 @@ fn digest16(domain: &[u8], public_key: [u8; 32]) -> [u8; 16] {
     key
 }
 
-/// Handshake nonce random source: splitmix64 seeded from `/dev/urandom` at
-/// assembly (fail-closed), mirroring the dev-fixture posture. Production
-/// wiring keeps everything inside the process boundary; the seed never
-/// leaves it.
+/// Handshake nonce random source: splitmix64 seeded from OS entropy at
+/// assembly (fail-closed where a device read can fail), mirroring the
+/// dev-fixture posture. Production wiring keeps everything inside the
+/// process boundary; the seed never leaves it.
 struct RandomSource {
     state: Arc<AtomicU64>,
 }
@@ -753,11 +888,8 @@ impl RandomSource {
     /// Returns [`DaemonError::Io`] when the OS random source cannot be read;
     /// the daemon refuses to serve handshakes with a guessed seed.
     fn from_os() -> Result<Self, DaemonError> {
-        let mut buffer = [0u8; 8];
-        let mut source = fs::File::open("/dev/urandom").map_err(DaemonError::Io)?;
-        source.read_exact(&mut buffer).map_err(DaemonError::Io)?;
         Ok(Self {
-            state: Arc::new(AtomicU64::new(u64::from_le_bytes(buffer) | 1)),
+            state: Arc::new(AtomicU64::new(os_entropy_seed()? | 1)),
         })
     }
 
@@ -779,6 +911,46 @@ impl RandomSource {
         }
         out
     }
+}
+
+/// Unix entropy seed: eight bytes read from `/dev/urandom` (fail-closed).
+#[cfg(unix)]
+fn os_entropy_seed() -> Result<u64, DaemonError> {
+    use std::io::Read as _;
+
+    let mut buffer = [0u8; 8];
+    let mut source = fs::File::open("/dev/urandom").map_err(DaemonError::Io)?;
+    source.read_exact(&mut buffer).map_err(DaemonError::Io)?;
+    Ok(u64::from_le_bytes(buffer))
+}
+
+/// Windows entropy seed: no `/dev/urandom` device exists, so the splitmix64
+/// state is seeded by mixing the std hasher's process-random OS seed, the
+/// wall clock, and the pid through the same splitmix64 finalizer. Same
+/// dev-fixture posture as the Unix half: the seed stays inside the process
+/// and only has to be unpredictable per daemon start.
+///
+/// The `Result` signature is kept uniform with the Unix half (whose device
+/// read fails closed) so [`RandomSource::from_os`] stays one un-gated call.
+#[cfg(windows)]
+#[allow(clippy::unnecessary_wraps)] // no Windows entropy source can fail
+fn os_entropy_seed() -> Result<u64, DaemonError> {
+    use std::collections::hash_map::RandomState;
+    use std::hash::BuildHasher as _;
+    use std::hash::Hasher as _;
+
+    let mut seed = RandomState::new().build_hasher().finish();
+    seed ^= u64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or_default(),
+    )
+    .unwrap_or(u64::MAX);
+    seed ^= u64::from(std::process::id());
+    seed = (seed ^ (seed >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    seed = (seed ^ (seed >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    Ok(seed ^ (seed >> 31))
 }
 
 fn wall_now_ms() -> i64 {
