@@ -695,6 +695,7 @@ dependencies = [
  "nlos-runtime",
  "nlos-runtime-tokio",
  "nlos-schema",
+ "nlos-semantic",
  "nlos-store",
  "nlos-system-control",
  "nlos-task",

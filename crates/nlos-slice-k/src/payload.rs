@@ -45,12 +45,13 @@ use nlos_operation::{CompletionOutcome, OperationHandle, OperationState};
 use nlos_runtime::FiberHandle;
 use nlos_types::{
     ApplicationId, ArtifactId, CallbackId, CancellationScopeId, ExecutionFiberId, Generation,
-    OperationId, PackageId, ReceiptId,
+    OperationId, PackageId, ReceiptId, SemanticEventId,
 };
 use sha2::{Digest, Sha256};
 
 use crate::error::{SliceKError, SliceKResult};
 use crate::runtime::SliceKRuntime;
+use crate::semantic_writer::OperationReceiptFact;
 
 /// Domain separator of the payload operation identity derivation: one
 /// SHA-256 over `domain ‖ application_id ‖ generation ‖ entry_name ‖ tag`
@@ -66,6 +67,7 @@ pub const PAYLOAD_OPERATION_DOMAIN: &[u8] = b"llmos/slice-k/payload-operation/v1
 pub const PAYLOAD_SEED_DOMAIN: &[u8] = b"llmos/slice-k/payload-seed/v1";
 
 /// The receipts of one payload execution, straight from the driver face.
+#[allow(clippy::struct_excessive_bools)] // Replay flags mirror the driver's per-boundary receipts.
 #[derive(Clone, Debug)]
 pub struct PayloadExecution {
     pub application_id: ApplicationId,
@@ -94,6 +96,17 @@ pub struct PayloadExecution {
     pub register_replayed: bool,
     pub dispatch_replayed: bool,
     pub complete_replayed: bool,
+    /// The semantic assertion this execution's terminal receipt became
+    /// (the production write bridge, see [`crate::semantic_writer`]).
+    pub semantic_event_id: SemanticEventId,
+    /// Admission receipt of the semantic assertion.
+    pub semantic_admission_receipt_id: ReceiptId,
+    /// Log sequence of the semantic assertion inside the authority's
+    /// append-only event log.
+    pub semantic_log_seq: u64,
+    /// `true` when the semantic authority replayed the identical assertion
+    /// instead of admitting a new one (exact re-execution).
+    pub semantic_replayed: bool,
 }
 
 impl PayloadExecution {
@@ -151,6 +164,13 @@ impl PayloadExecution {
             self.register_replayed,
             self.dispatch_replayed,
             self.complete_replayed
+        ));
+        lines.push(format!(
+            "semantic event={} admission={} log_seq={} replayed={}",
+            crate::short_hex(self.semantic_event_id.as_bytes()),
+            crate::short_hex(self.semantic_admission_receipt_id.as_bytes()),
+            self.semantic_log_seq,
+            self.semantic_replayed
         ));
         lines
     }
@@ -213,6 +233,7 @@ fn derive_identity(
 /// provider face refuses a boundary (including the callback-identity
 /// conflict raised for payload bytes that mutated after a first
 /// execution under the same identity).
+#[allow(clippy::too_many_lines)] // One linear authority sequence: resolve, drive, bridge, return.
 pub fn execute_application_payload(
     runtime: &SliceKRuntime,
     package_id: PackageId,
@@ -307,6 +328,29 @@ pub fn execute_application_payload(
     // running pump so delivery does not wait for the fallback poll.
     let _ = runtime.hint_pump();
     let payload_digest = ContentDigest::of_bytes(&payload);
+    // Semantic write bridge (D6 first slice, W49): the terminal receipt of
+    // this operation becomes exactly one admitted Semantic assertion under
+    // the runtime's writer principal. Fail-closed — an error propagates
+    // instead of reporting a run the semantic ledger did not record.
+    let semantic = runtime.semantic_writer().append_operation_receipt(
+        runtime,
+        &OperationReceiptFact {
+            application_id: application.application_id,
+            package_id,
+            package_version: installation.package_version,
+            installation_generation: installation.installation_generation,
+            entry_name,
+            artifact_id,
+            payload_revision: head.revision,
+            payload_digest: payload_digest.into_bytes(),
+            payload_size_bytes,
+            operation_id: registered.handle.operation_id,
+            operation_generation: registered.handle.generation,
+            callback_id,
+            outcome: completed.outcome,
+            terminal_state: completed.state,
+        },
+    )?;
     Ok(PayloadExecution {
         application_id: application.application_id,
         package_id,
@@ -327,5 +371,9 @@ pub fn execute_application_payload(
         register_replayed: registered.replayed,
         dispatch_replayed: dispatched.replayed,
         complete_replayed: completed.replayed,
+        semantic_event_id: semantic.event_id,
+        semantic_admission_receipt_id: semantic.admission_receipt_id,
+        semantic_log_seq: semantic.log_seq,
+        semantic_replayed: semantic.replayed,
     })
 }

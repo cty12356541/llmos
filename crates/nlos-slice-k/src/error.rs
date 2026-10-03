@@ -15,6 +15,7 @@ use nlos_identity::IdentityAuthorityError;
 use nlos_process::ProcessAuthorityError;
 use nlos_runtime::RuntimeError;
 use nlos_runtime_tokio::ChannelWaitError;
+use nlos_semantic::SemanticAuthorityError;
 use nlos_store::StoreError;
 use nlos_task::TaskStoreError;
 
@@ -38,6 +39,17 @@ pub enum SliceKError {
     /// The capability authority refused an open, issuance, delegation, or
     /// admission step.
     Capability(CapabilityAuthorityError),
+    /// The semantic authority refused an admission the production write
+    /// bridge attempted (canonical, signature, execution-fence,
+    /// capability, content, or lineage gate), or its store-signing step
+    /// failed. The payload lane treats this as fail-closed: a run whose
+    /// terminal receipt the semantic ledger did not record is reported as
+    /// an error, never as success.
+    Semantic(SemanticAuthorityError),
+    /// The semantic writer's durable key material is unusable (for example
+    /// a `semantic-writer.key` whose width is not the documented 48-byte
+    /// `seed ‖ valid_from ‖ valid_until` layout).
+    SemanticWriter(&'static str),
     /// The runtime's Outbox pump lifecycle refused a transition this call
     /// cannot make honestly (for example starting a second pump while one
     /// is still running — its wake lane would silently ack the first
@@ -93,6 +105,10 @@ impl fmt::Display for SliceKError {
             Self::Task(error) => write!(formatter, "task authority: {error}"),
             Self::Clock(error) => write!(formatter, "clock authority: {error}"),
             Self::Capability(error) => write!(formatter, "capability authority: {error}"),
+            Self::Semantic(error) => write!(formatter, "semantic authority: {error}"),
+            Self::SemanticWriter(reason) => {
+                write!(formatter, "semantic writer key material refusal: {reason}")
+            }
             Self::Pump(reason) => write!(formatter, "outbox pump lifecycle refusal: {reason}"),
             Self::Operation(error) => write!(formatter, "operation store: {error}"),
             Self::Driver(error) => write!(formatter, "driver provider face: {error}"),
@@ -143,13 +159,15 @@ impl Error for SliceKError {
             | Self::TeardownState(_)
             | Self::TimestampOverflow(_)
             | Self::SizeOverflow(_)
-            | Self::Pump(_) => None,
+            | Self::Pump(_)
+            | Self::SemanticWriter(_) => None,
             Self::SupervisorPid(error) => Some(error),
             Self::BatchCancel(error) => Some(error),
             Self::Runtime(error) => Some(error),
             Self::Coordinator(error) => Some(error),
             Self::Control(error) => Some(error),
             Self::Capability(error) => Some(error),
+            Self::Semantic(error) => Some(error),
         }
     }
 }
@@ -199,6 +217,12 @@ impl From<AuthorityClockError> for SliceKError {
 impl From<CapabilityAuthorityError> for SliceKError {
     fn from(error: CapabilityAuthorityError) -> Self {
         Self::Capability(error)
+    }
+}
+
+impl From<SemanticAuthorityError> for SliceKError {
+    fn from(error: SemanticAuthorityError) -> Self {
+        Self::Semantic(error)
     }
 }
 
