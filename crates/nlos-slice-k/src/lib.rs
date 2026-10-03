@@ -48,6 +48,7 @@ mod package;
 mod payload;
 mod pump;
 mod runtime;
+mod semantic_stream;
 mod semantic_writer;
 mod teardown;
 
@@ -72,6 +73,11 @@ pub use pump::{LateOutcomeReconcileSink, ReconcileLaneSnapshot};
 pub use runtime::{
     ApplicationRegistrationInspect, ChainInspect, ChainQuery, SliceKRuntime, initial_generation,
     seeded_key, short_hex,
+};
+pub use semantic_stream::{
+    SEMANTIC_STREAM_DOMAIN, SEMANTIC_STREAM_ENVELOPE_BYTES, SEMANTIC_STREAM_TOPIC_NAME,
+    SemanticStreamBinding, SemanticStreamConfig, SemanticStreamHealth, SemanticStreamState,
+    semantic_stream_envelope, semantic_stream_publish_key, system_subscriber_key,
 };
 pub use semantic_writer::{
     OPERATION_RECEIPT_MEDIA_TYPE, OperationReceiptAppend, OperationReceiptFact, SemanticWriter,

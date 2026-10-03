@@ -51,7 +51,7 @@ pub use model::{
     MAX_CONTENT_BYTES, MAX_LINEAGE_ITEMS, MAX_NONCE_BYTES, MAX_SPEC_CAPABILITY_REFS,
     MAX_SPEC_CRITERIA, MAX_SPEC_EXTENSION_BYTES, MAX_SPEC_EXTENSIONS, MIN_NONCE_BYTES,
     OutboxAckDecision, PublishSemanticPublicationRequest, RetractionMode, RetractionRecord,
-    SemanticAdmissionEndpointProof, SemanticEventRecord, SemanticOutboxRecord,
+    SemanticAdmissionEndpointProof, SemanticEventRecord, SemanticOutboxRecord, SemanticOutboxRow,
     SemanticPayloadIdentity, SemanticPublicationDecision, SemanticPublicationReceipt,
     SettlementMode, SettlementTimeoutAction, SpecExtension, StoreSigner, StoreSignerError,
     TaintFlags, TrustViewJudgmentFact, TrustViewJudgmentRole, TrustViewSnapshot,
@@ -1278,6 +1278,57 @@ impl SemanticAuthority {
         }))
     }
 
+    /// Lists the pending (unacknowledged) admission-outbox rows in log
+    /// order, at most `limit` of them.
+    ///
+    /// This is the read-only enumeration surface a transport consumer
+    /// drains: every admitted event contributes exactly one immutable row
+    /// (identity frozen by trigger, deletes forbidden), and a row leaves
+    /// this listing exactly when an owner-bound
+    /// [`acknowledge_outbox`](Self::acknowledge_outbox) recorded its
+    /// transport acknowledgement. The method performs zero writes and never
+    /// infers a checkpoint or publication from the transport state. The scan
+    /// walks the `log_seq` primary key and filters unacknowledged rows in
+    /// memory, which keeps the authority schema untouched at the cost of a
+    /// linear scan — the documented trade for this slice.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed with a storage or corrupt-record error when a joined
+    /// event/receipt/outbox triple disagrees with the authority invariants.
+    pub fn list_pending_outbox(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<SemanticOutboxRow>, SemanticAuthorityError> {
+        let connection = self.lock()?;
+        let mut statement = connection.prepare(
+            "SELECT o.log_seq, o.event_id, o.receipt_id, r.admitted_at_ms,
+                    e.event_type, e.content_digest, e.spec_body_digest
+             FROM semantic_outbox o
+             JOIN admission_receipts r ON r.event_id = o.event_id
+             JOIN semantic_events e ON e.event_id = o.event_id
+             WHERE o.acknowledged_at_ms IS NULL
+             ORDER BY o.log_seq
+             LIMIT ?1",
+        )?;
+        let limit = i64::try_from(limit)
+            .map_err(|_| SemanticAuthorityError::CorruptRecord("pending list limit"))?;
+        let rows = statement
+            .query_map([limit], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, Option<Vec<u8>>>(5)?,
+                    row.get::<_, Option<Vec<u8>>>(6)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows.into_iter().map(decode_outbox_row).collect()
+    }
+
     /// Creates the SemanticAuthority-owned publication receipt for one
     /// already-admitted event. The operation is local to this authority and
     /// intentionally does not acknowledge the transport outbox: an ACK is
@@ -2349,6 +2400,46 @@ fn load_outbox(
             })
         })
         .transpose()
+}
+
+/// Raw joined `(outbox, admission receipt, event)` columns of one pending
+/// row, in the `list_pending_outbox` selection order.
+type PendingOutboxRowRaw = (
+    i64,
+    Vec<u8>,
+    Vec<u8>,
+    i64,
+    i64,
+    Option<Vec<u8>>,
+    Option<Vec<u8>>,
+);
+
+/// Decodes one pending outbox row, re-validating the event-type/payload
+/// identity pairing against the same invariants
+/// [`SemanticAuthority::inspect_event`] enforces on the event record.
+fn decode_outbox_row(
+    row: PendingOutboxRowRaw,
+) -> Result<SemanticOutboxRow, SemanticAuthorityError> {
+    let event_type = u8::try_from(row.4)
+        .map_err(|_| SemanticAuthorityError::CorruptRecord("outbox event type"))?;
+    let content_digest = match (event_type, row.5, row.6) {
+        (1, Some(digest), None) => Some(decode_array(digest, "outbox content digest")?),
+        (5, None, Some(digest)) => Some(decode_array(digest, "outbox spec body digest")?),
+        (2..=4, None, None) => None,
+        _ => {
+            return Err(SemanticAuthorityError::CorruptRecord(
+                "outbox payload identity",
+            ));
+        }
+    };
+    Ok(SemanticOutboxRow {
+        log_seq: decode_u64(row.0)?,
+        event_id: decode_id(row.1, SemanticEventId::from_bytes, "outbox event id")?,
+        receipt_id: decode_id(row.2, ReceiptId::from_bytes, "outbox receipt id")?,
+        admitted_at_ms: decode_u64(row.3)?,
+        event_type,
+        content_digest,
+    })
 }
 
 fn publication_matches_request(

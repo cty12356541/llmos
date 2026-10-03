@@ -506,6 +506,79 @@ fn outbox_ack_is_owner_bound_monotonic_and_not_publication_proof() {
 }
 
 #[test]
+fn list_pending_outbox_enumerates_in_log_order_and_drains_on_ack() {
+    let root = Root::new("outbox-pending");
+    let (first_request, second_receipt) = {
+        let fixture = fixture(&root, 76);
+        let first_request = request(&fixture, 3, Vec::new(), Vec::new(), TaintFlags::default());
+        let first = append(&fixture, &first_request).receipt().clone();
+        let second = append(
+            &fixture,
+            &request(&fixture, 4, Vec::new(), Vec::new(), TaintFlags::default()),
+        )
+        .receipt()
+        .clone();
+
+        // Both admits are pending: log order, owner binding facts, and the
+        // assertion content digest ride each row.
+        let pending = fixture.semantic.list_pending_outbox(10).unwrap();
+        assert_eq!(pending.len(), 2);
+        assert_eq!(pending[0].log_seq, first.log_seq);
+        assert_eq!(pending[0].event_id, first.event_id);
+        assert_eq!(pending[0].receipt_id, first.receipt_id);
+        assert_eq!(pending[0].admitted_at_ms, first.admitted_at_ms);
+        assert_eq!(pending[0].event_type, 1);
+        assert_eq!(
+            pending[0].content_digest,
+            Some(content_digest("text/plain", &first_request.content_bytes).unwrap())
+        );
+        assert_eq!(
+            fixture
+                .semantic
+                .inspect_event(first.event_id)
+                .unwrap()
+                .payload_identity,
+            SemanticPayloadIdentity::AssertionContent(
+                content_digest("text/plain", &first_request.content_bytes).unwrap()
+            )
+        );
+        assert_eq!(pending[1].log_seq, second.log_seq);
+        assert!(pending[1].log_seq > pending[0].log_seq);
+
+        // The limit bounds the enumeration without reordering it.
+        let limited = fixture.semantic.list_pending_outbox(1).unwrap();
+        assert_eq!(limited.len(), 1);
+        assert_eq!(limited[0].log_seq, first.log_seq);
+
+        // Acknowledging the head drains exactly the head: the read path is
+        // the mirror of the owner-bound ack write path.
+        fixture
+            .semantic
+            .acknowledge_outbox(AcknowledgeOutboxRequest {
+                event_id: first.event_id,
+                log_seq: first.log_seq,
+                receipt_id: first.receipt_id,
+                acknowledged_at_ms: first.admitted_at_ms,
+            })
+            .unwrap();
+        let after_ack = fixture.semantic.list_pending_outbox(10).unwrap();
+        assert_eq!(after_ack.len(), 1);
+        assert_eq!(after_ack[0].event_id, second.event_id);
+
+        // Zero is the empty enumeration, not an error.
+        assert_eq!(fixture.semantic.list_pending_outbox(0).unwrap(), Vec::new());
+        (first_request, second)
+    };
+    // Reopen replays the same pending prefix from the durable rows.
+    let reopened = fixture(&root, 76);
+    let pending = reopened.semantic.list_pending_outbox(10).unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].event_id, second_receipt.event_id);
+    assert_eq!(pending[0].log_seq, second_receipt.log_seq);
+    assert_ne!(pending[0].event_id, first_request.claimed_event_id);
+}
+
+#[test]
 #[allow(clippy::too_many_lines)]
 fn semantic_publication_receipt_is_owner_derived_durable_and_replayable() {
     let root = Root::new("semantic-publication");

@@ -630,6 +630,12 @@ impl SemanticWriter {
             self,
             &request,
         )?;
+        // Every admission wrote a semantic_outbox row: hint a running
+        // semantic stream pump (see `crate::semantic_stream`) so the
+        // notification does not wait for the fallback poll. The hint is
+        // bounded and best-effort, exactly like the payload lane's
+        // outbox-pump hint.
+        let _ = runtime.hint_semantic_stream();
         let (receipt, replayed) = match decision {
             AppendDecision::Admitted(receipt) => (receipt, false),
             AppendDecision::Replayed(receipt) => (receipt, true),

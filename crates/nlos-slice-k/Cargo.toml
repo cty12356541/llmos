@@ -16,6 +16,7 @@ ed25519-dalek.workspace = true
 nlos-application = { path = "../nlos-application" }
 nlos-artifact = { path = "../nlos-artifact" }
 nlos-capability = { path = "../nlos-capability" }
+nlos-channel = { path = "../nlos-channel" }
 nlos-clock = { path = "../nlos-clock" }
 nlos-commit-coordinator = { path = "../nlos-commit-coordinator" }
 nlos-driver-mock = { path = "../nlos-driver-mock" }
@@ -30,6 +31,7 @@ nlos-semantic = { path = "../nlos-semantic" }
 nlos-store = { path = "../nlos-store" }
 nlos-system-control = { path = "../nlos-system-control", default-features = false, features = ["process"] }
 nlos-task = { path = "../nlos-task" }
+nlos-topic = { path = "../nlos-topic" }
 nlos-types = { path = "../nlos-types" }
 sha2.workspace = true
 tokio.workspace = true
