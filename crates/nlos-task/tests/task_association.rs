@@ -287,7 +287,7 @@ fn legacy_v43_rows_migrate_with_null_association() {
     let version: i64 = raw
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(version, 45);
+    assert_eq!(version, 46);
     let association_columns: i64 = raw
         .query_row(
             "SELECT COUNT(*) FROM pragma_table_info('tasks')

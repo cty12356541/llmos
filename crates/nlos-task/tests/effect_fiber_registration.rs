@@ -550,13 +550,13 @@ fn effect_binding_write_window_converges_by_idempotent_replay() {
     assert_eq!(listed, vec![expected.clone()]);
 
     // The reopened authority opens cleanly at the current schema version
-    // (44) and the migrated registrations survive re-open again.
+    // and the migrated registrations survive re-open again.
     {
         let raw = Connection::open(&database.path).expect("open raw connection");
         assert_eq!(
             raw.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .expect("read version"),
-            45
+            46
         );
     }
     let reopened = database.open();
@@ -784,16 +784,16 @@ fn v45_migration_scopes_fiber_idempotency_keys_per_task_and_preserves_rows() {
     drop(authority);
     regress_fiber_registrations_to_v44(&database.path);
 
-    // Reopen: v44 → v45 runs, stamping the version and rebuilding the
-    // uniqueness scope while carrying the row verbatim.
+    // Reopen: v44 → v45 → … → current runs, stamping the version and
+    // rebuilding the uniqueness scope while carrying the row verbatim.
     let authority = database.open();
     {
         let raw = Connection::open(&database.path).expect("open raw connection");
         assert_eq!(
             raw.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .expect("read version"),
-            45,
-            "v45 migration stamped"
+            46,
+            "migration chain stamps the current schema version"
         );
         let mut statement = raw
             .prepare("SELECT name FROM pragma_index_info('effect_fiber_registrations_idempotency_key') ORDER BY seqno")

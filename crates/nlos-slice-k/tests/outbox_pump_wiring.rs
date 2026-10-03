@@ -1,11 +1,13 @@
-//! Wave D-b: the production Outbox pump wiring of [`SliceKRuntime`].
+//! Wave D-b → W48-2: the production Outbox pump wiring of
+//! [`SliceKRuntime`].
 //!
 //! The durable closed loop under test: terminal Operation commits write
 //! `WakeFiber`/`ReconcileEffect` rows into `operation_outbox` in the same
 //! transaction, and the runtime-owned pump (started against a caller's
-//! runtime adapter) drains, applies, and acknowledges them — with the
-//! fail-closed reconcile lane keeping unconsumable entries durable,
-//! visible, and retried instead of silently dropped.
+//! runtime adapter) drains, applies, and acknowledges them — the reconcile
+//! lane routes bound late outcomes into the task authority (the bound
+//! effect slot converges and the entry is acknowledged), while unbindable
+//! entries stay durable, visible, and retried instead of silently dropped.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -16,9 +18,16 @@ use nlos_runtime::{FiberExit, FiberFuture, FiberHandle, FiberSpec, RuntimeAdapte
 use nlos_runtime_tokio::{PumpState, TokioRuntimeAdapter, TokioRuntimeConfig, WaitOutcome};
 use nlos_slice_k::{SliceKError, SliceKRuntime};
 use nlos_store::OutboxKind;
+use nlos_task::{
+    AttemptSpec, Authorities, EffectPermitRequest, LogicalEffectDescriptor, PermitDecision,
+    PermitRequest, PlannedEffect, SlotState, SnapshotBundle, SnapshotConsistency,
+    TaskSnapshotReceiptSpec, TaskSpec, TaskWriteSetArtifactRead, TaskWriteSetEffectEndpointRequest,
+    TaskWriteSetRequest, empty_effect_history_root,
+};
 use nlos_types::{
-    AgentInstanceId, CallbackId, CancellationScopeId, ExecutionFiberId, Generation, OperationId,
-    ProcessId, ReceiptId, ResourceGroupId, SchedulerDomainId,
+    AgentInstanceId, CallbackId, CancellationScopeId, ExecutionFiberId, Generation, IdempotencyKey,
+    OperationId, ProcessId, ReceiptId, ResourceGroupId, SchedulerDomainId, TaskAttemptId, TaskId,
+    TaskSnapshotId,
 };
 
 /// Generous bound for "the 25ms fallback poll must have delivered by now".
@@ -296,15 +305,17 @@ async fn stopped_pump_keeps_entries_durable_until_restart() {
 
 /// Given/When/Then: given a completion that lands after a cancel request
 /// (the ticket's cancel epoch is stale, so the store canonicalizes it
-/// `CanonicalizedForReconciliation` and commits a `ReconcileEffect` row);
-/// when the pump offers it to the slice's reconcile lane; then the sink
-/// refuses with the typed error — the entry is retried (refusal counter
-/// grows) but never acknowledged, a later `WakeFiber` entry queued behind
-/// it stays durable too (in-order batches), and the pump reports this as
-/// backpressure, staying `Running` with zero drain failures.
+/// `CanonicalizedForReconciliation` and commits a `ReconcileEffect` row)
+/// for an operation no task write set ever bound; when the pump offers it
+/// to the slice's reconcile lane; then the sink keeps the fail-closed
+/// refusal semantics for the typed no-route answer — the entry is retried
+/// (the no-route counter grows) but never acknowledged, a later
+/// `WakeFiber` entry queued behind it stays durable too (in-order
+/// batches), and the pump reports this as backpressure, staying `Running`
+/// with zero drain failures.
 #[tokio::test]
-async fn reconcile_effect_backs_off_visibly_without_being_acked() {
-    let dir = TempDir::new("reconcile-refusal");
+async fn unbound_reconcile_effect_refuses_as_no_route_and_stays_durable() {
+    let dir = TempDir::new("reconcile-no-route");
     let runtime = SliceKRuntime::open(dir.root()).expect("open runtime");
     let adapter = adapter();
     runtime.start_pump(&adapter).expect("start pump");
@@ -323,7 +334,7 @@ async fn reconcile_effect_backs_off_visibly_without_being_acked() {
             cancellation_scope_id: spec.cancellation_scope_id,
             cancellation_generation: spec.cancellation_generation,
         })
-        .expect("register")
+        .expect("register operation")
         .handle();
     let ticket = runtime
         .operations
@@ -355,27 +366,354 @@ async fn reconcile_effect_backs_off_visibly_without_being_acked() {
     // poll for the second refusal instead of racing a fixed window, because
     // runner speed and synchronous=FULL fsync latency vary widely in CI.
     let deadline = tokio::time::Instant::now() + RETRY_BOUND;
-    let mut refusals = runtime.reconcile_refusals();
-    while refusals.total < 2 && tokio::time::Instant::now() < deadline {
+    let mut lane = runtime.reconcile_lane();
+    while lane.no_route < 2 && tokio::time::Instant::now() < deadline {
         tokio::time::sleep(POLL_STEP).await;
-        refusals = runtime.reconcile_refusals();
+        lane = runtime.reconcile_lane();
     }
     let pending = runtime.operations.pending_outbox(16).expect("pending");
     assert_eq!(pending.len(), 2, "neither entry may be acknowledged away");
     assert_eq!(pending[0].kind, OutboxKind::ReconcileEffect);
 
     assert!(
-        refusals.total >= 2,
-        "the pump re-offered the refused entry ({} refusals recorded)",
-        refusals.total
+        lane.no_route >= 2,
+        "the pump re-offered the unbindable entry ({} no-route refusals recorded)",
+        lane.no_route
+    );
+    assert_eq!(lane.routed, 0, "nothing may route for an unbound operation");
+    assert_eq!(
+        lane.failed, 0,
+        "an unbound entry is a no-route, not a failure"
     );
     assert!(
-        refusals
-            .last_detail
+        lane.last_detail
             .as_deref()
-            .is_some_and(|detail| detail.contains("slice-k has no reconcile consumer")),
-        "the refusal reason must name the fail-closed routing decision"
+            .is_some_and(|detail| detail.contains("no effect slot binds")),
+        "the refusal reason must name the typed no-route decision"
     );
+
+    let health = runtime.pump_health().expect("pump health");
+    assert_eq!(health.state, PumpState::Running);
+    assert_eq!(health.consecutive_failures, 0);
+    runtime.stop_pump();
+}
+
+/// Task-plane Given-fixture inside one runtime: task + attempt + snapshot
+/// receipt + registered Operation participant + sealed write set whose
+/// single (required) effect slot 0 carries an `OperationBinding` endpoint +
+/// commit permit + owner-activated dispatch + consumed one-shot token, so
+/// the effect slot is `Dispatched` exactly as a fenced fiber would have
+/// left it. Returns the identities the routing assertions need.
+struct BoundEffectSlot {
+    operation: nlos_operation::OperationHandle,
+    ticket: nlos_operation::CallbackTicket,
+    task_id: TaskId,
+    permit: nlos_task::PermitRecord,
+}
+
+/// The whole task-plane Given-fixture assembles one durable chain, so the
+/// constructor stays contiguous for audit at the cost of the line budget.
+#[allow(clippy::too_many_lines)]
+fn bound_effect_slot(runtime: &SliceKRuntime) -> BoundEffectSlot {
+    let fiber = raw_fiber_spec(0x80);
+    let owner = FiberHandle {
+        fiber_id: fiber.fiber_id,
+        generation: fiber.fiber_generation,
+    };
+    let operation = nlos_operation::OperationSpec {
+        operation_id: OperationId::from_bytes(seeded(0x86)),
+        generation: Generation::INITIAL,
+        owner_fiber: owner,
+        cancellation_scope_id: fiber.cancellation_scope_id,
+        cancellation_generation: fiber.cancellation_generation,
+    };
+    let handle = runtime
+        .operations
+        .register(operation)
+        .expect("register bound operation")
+        .handle();
+
+    let task_id = TaskId::from_bytes(seeded(0x87));
+    let spec = AttemptSpec {
+        task_id,
+        attempt_id: TaskAttemptId::from_bytes(seeded(0x88)),
+        attempt_generation: Generation::INITIAL,
+        snapshot: SnapshotBundle {
+            snapshot_id: TaskSnapshotId::from_bytes(seeded(0x89)),
+            snapshot_digest: [0x8a; 32],
+            expected_head_commit_seq: 0,
+            effect_history_root: empty_effect_history_root(),
+            retry_fence_epoch: 0,
+        },
+        cancellation_scope_id: fiber.cancellation_scope_id,
+        cancellation_generation: Generation::INITIAL,
+        idempotency_key: IdempotencyKey::from_bytes(seeded(0x8b)),
+        registered_at_ms: 2_000,
+    };
+    let tasks = &*runtime.tasks;
+    tasks
+        .register_task(TaskSpec {
+            application_id: None,
+            plan_revision: None,
+            task_id,
+            task_generation: Generation::INITIAL,
+            registered_at_ms: 1_000,
+        })
+        .expect("register task");
+    let snapshot_receipt = ReceiptId::from_bytes(seeded(0x8c));
+    tasks
+        .register_snapshot_receipt(TaskSnapshotReceiptSpec {
+            task_id,
+            snapshot: spec.snapshot,
+            receipt_id: snapshot_receipt,
+            builder_id: seeded(0x8d),
+            builder_version_digest: [0x8e; 32],
+            per_authority_checkpoint_receipts: vec![ReceiptId::from_bytes(seeded(0x8f))],
+            dependency_closure_root: [0x90; 32],
+            semantic_resolver_digest: [0x91; 32],
+            canonical_iteration_digest: [0x92; 32],
+            achieved_consistency: SnapshotConsistency::Causal,
+            built_at_ms: 1_100,
+            authority_id: seeded(0x93),
+            key_id: seeded(0x94),
+            signature: [0x95; 64],
+        })
+        .expect("snapshot receipt");
+    tasks
+        .register_attempt_with_snapshot_receipt(spec, snapshot_receipt)
+        .expect("attempt");
+    let registry = tasks
+        .inspect_participant_registry(task_id)
+        .expect("registry");
+    tasks
+        .register_operation_binding_participant(
+            &runtime.operations,
+            task_id,
+            nlos_task::ParticipantRegistryBinding {
+                generation: registry.generation,
+                root: registry.root,
+            },
+            handle.operation_id,
+            handle.generation,
+            1_150,
+        )
+        .expect("operation participant");
+
+    let artifact_id = nlos_types::ArtifactId::from_bytes(seeded(0x96));
+    runtime
+        .artifacts
+        .create_artifact(nlos_artifact::CreateArtifactSpec {
+            artifact_id,
+            idempotency_key: IdempotencyKey::from_bytes(seeded(0x97)),
+            content_type: "application/octet-stream".to_owned(),
+            application_id: None,
+            owner: None,
+            created_at_ms: 1_500,
+        })
+        .expect("artifact");
+    let authorities = Authorities {
+        artifact: Some(&runtime.artifacts),
+        process: None,
+        semantic: None,
+        resource: None,
+        operation: Some(&runtime.operations),
+        channel: None,
+    };
+    let sealed = tasks
+        .seal_task_write_set_with_authorities_struct(
+            authorities,
+            TaskWriteSetRequest {
+                task_id,
+                attempt_id: spec.attempt_id,
+                attempt_generation: spec.attempt_generation,
+                artifact_reads: vec![TaskWriteSetArtifactRead {
+                    artifact_id,
+                    expected_head_revision: 0,
+                    expected_head_digest: None,
+                }],
+                artifact_writes: Vec::new(),
+                process_binding: None,
+                semantic_reads: Vec::new(),
+                semantic_appends: Vec::new(),
+                resource_reservations: Vec::new(),
+                planned_effects: vec![PlannedEffect {
+                    descriptor: LogicalEffectDescriptor {
+                        task_id,
+                        task_generation: Generation::INITIAL,
+                        intent_spec_id: [0x98; 32],
+                        stable_action_slot: 0,
+                        target_authority_object_id: [0x99; 32],
+                        effect_class: 1,
+                        idempotency_scope: 1,
+                    },
+                    required: true,
+                    required_condition_digest: None,
+                    success_criteria_digest: [0x9a; 32],
+                    action_proposal_digest: [0x9b; 32],
+                }],
+                effect_endpoints: vec![TaskWriteSetEffectEndpointRequest::OperationBinding {
+                    effect_seq: 0,
+                    operation_id: handle.operation_id,
+                    expected_operation_generation: handle.generation,
+                }],
+                idempotency_key: IdempotencyKey::from_bytes(seeded(0x9c)),
+                sealed_at_ms: 1_200,
+            },
+        )
+        .expect("seal write set")
+        .record()
+        .clone();
+    let permit = match tasks.request_commit_permit_with_authorities_struct(
+        authorities,
+        PermitRequest {
+            task_id,
+            attempt_id: spec.attempt_id,
+            attempt_generation: spec.attempt_generation,
+            write_set_root: sealed.write_set_root,
+            planned_effects: sealed.planned_effects.clone(),
+            idempotency_key: IdempotencyKey::from_bytes(seeded(0x9d)),
+            valid_until_ms: 9_000,
+            requested_at_ms: 3_000,
+        },
+    ) {
+        Ok(PermitDecision::Issued(record)) => *record,
+        other => panic!("expected issued commit permit, got {other:?}"),
+    };
+
+    // Owner-side prepare+activate (ADR-0005 authority-first order), then the
+    // effect-permit mint and the one-shot token consumption: the slot is
+    // Dispatched and the operation store holds the live callback.
+    let preparation = match runtime
+        .operations
+        .prepare_dispatch(handle, CallbackId::from_bytes(seeded(0x9e)))
+        .expect("prepare dispatch")
+    {
+        nlos_store::OperationPrepareDecision::Prepared(preparation)
+        | nlos_store::OperationPrepareDecision::Replayed(preparation) => preparation,
+    };
+    let ticket = match runtime
+        .operations
+        .activate_dispatch(preparation)
+        .expect("activate dispatch")
+    {
+        nlos_store::OperationActivationDecision::Activated(activation)
+        | nlos_store::OperationActivationDecision::Replayed(activation) => activation.ticket,
+    };
+    let issued = match tasks.request_effect_permit_with_operation_authority(
+        &runtime.operations,
+        EffectPermitRequest {
+            task_id,
+            attempt_id: spec.attempt_id,
+            attempt_generation: spec.attempt_generation,
+            permit_id: permit.permit_id,
+            permit_epoch: permit.permit_epoch,
+            effect_seq: 0,
+            idempotency_key: IdempotencyKey::from_bytes(seeded(0x9f)),
+            valid_until_ms: 9_000,
+            requested_at_ms: 4_000,
+        },
+    ) {
+        Ok(nlos_task::EffectPermitDecision::Issued(record)) => *record,
+        other => panic!("expected issued effect permit, got {other:?}"),
+    };
+    tasks
+        .consume_dispatch_token(nlos_task::DispatchRequest {
+            task_id,
+            attempt_id: spec.attempt_id,
+            attempt_generation: spec.attempt_generation,
+            permit_id: permit.permit_id,
+            permit_epoch: permit.permit_epoch,
+            effect_permit_id: issued.effect_permit_id,
+            dispatch_token: issued.one_shot_dispatch_token,
+            dispatched_at_ms: 5_000,
+        })
+        .expect("consume dispatch token");
+    BoundEffectSlot {
+        operation: handle,
+        ticket,
+        task_id,
+        permit,
+    }
+}
+
+/// Given/When/Then: given a `Dispatched` effect slot bound to an operation
+/// that is cancel-requested and then completes late (the store
+/// canonicalizes the completion for reconciliation and commits a
+/// `ReconcileEffect` row); when the pump offers the entry to the slice's
+/// reconcile lane; then the sink performs real routing — the task
+/// authority's late-outcome lane converges the slot to `EffectClosed` with
+/// a cross-attempt history entry citing the operation, and the entry is
+/// acknowledged away (routed counter, zero refusals).
+#[tokio::test]
+async fn bound_reconcile_effect_routes_to_task_authority_and_acks() {
+    let dir = TempDir::new("reconcile-routed");
+    let runtime = SliceKRuntime::open(dir.root()).expect("open runtime");
+    let bound = bound_effect_slot(&runtime);
+
+    // Cancel wins the wake fence, then the authoritative completion lands:
+    // one `ReconcileEffect` row commits in the same transaction.
+    runtime
+        .operations
+        .request_cancel(bound.operation, ReceiptId::from_bytes(seeded(0xa1)))
+        .expect("cancel request");
+    runtime
+        .operations
+        .complete(
+            bound.ticket,
+            CompletionOutcome::Completed {
+                receipt_id: ReceiptId::from_bytes(seeded(0xa2)),
+            },
+        )
+        .expect("late completion canonicalizes for reconciliation");
+    let pending = runtime.operations.pending_outbox(16).expect("pending");
+    assert_eq!(pending.len(), 1, "exactly the reconcile entry");
+    assert_eq!(pending[0].kind, OutboxKind::ReconcileEffect);
+
+    let slot_before = runtime
+        .tasks
+        .inspect_effect_slot(bound.permit.permit_id, 0)
+        .expect("slot before routing");
+    assert_eq!(slot_before.state, SlotState::Dispatched);
+
+    let adapter = adapter();
+    runtime.start_pump(&adapter).expect("start pump");
+    wait_until("reconcile entry routed and acknowledged", || {
+        runtime
+            .operations
+            .pending_outbox(16)
+            .expect("pending")
+            .is_empty()
+    })
+    .await;
+
+    let slot_after = runtime
+        .tasks
+        .inspect_effect_slot(bound.permit.permit_id, 0)
+        .expect("slot after routing");
+    assert_eq!(slot_after.state, SlotState::EffectClosed);
+    let history = runtime
+        .tasks
+        .list_effect_history(bound.task_id)
+        .expect("effect history");
+    let entry = history
+        .iter()
+        .find(|entry| entry.logical_effect_id == slot_after.logical_effect_id)
+        .expect("late closure appended an effect history entry");
+    assert_eq!(
+        entry.operation_id,
+        Some(bound.operation.operation_id.into_bytes()),
+        "the history entry must cite the routed operation"
+    );
+    assert_eq!(
+        entry.authoritative_effect_receipt_id,
+        slot_after.effect_receipt_id.expect("closure receipt")
+    );
+
+    let lane = runtime.reconcile_lane();
+    assert!(lane.routed >= 1, "the routing must be counted");
+    assert_eq!(lane.no_route, 0);
+    assert_eq!(lane.failed, 0);
+    assert_eq!(lane.last_detail, None);
 
     let health = runtime.pump_health().expect("pump health");
     assert_eq!(health.state, PumpState::Running);

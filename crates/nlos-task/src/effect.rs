@@ -2133,6 +2133,9 @@ impl SqliteTaskAuthority {
         self.record_effect_outcome_inner(request.outcome, Some(request.lease))
     }
 
+    // The W48-2 `operation_id` field on the history append pushed this
+    // contiguous-for-audit transaction one line over the lint budget.
+    #[allow(clippy::too_many_lines)]
     fn record_effect_outcome_inner(
         &self,
         request: OutcomeRequest,
@@ -2251,6 +2254,7 @@ impl SqliteTaskAuthority {
                     slot: &updated,
                     outcome: crate::EffectHistoryOutcome::EffectClosed,
                     authoritative_effect_receipt_id: receipt_id,
+                    operation_id: None,
                     now_ms: request.recorded_at_ms,
                 },
             )?;
