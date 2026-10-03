@@ -1,28 +1,47 @@
 //! Resident daemon assembly tests (`daemon` feature): the real authority
-//! assembly (including the worker's semantic half), both socket binds, the
+//! assembly (including the worker's semantic half), both endpoint binds, the
 //! health face, worker start/stop, one full round-trip per endpoint, and
 //! stale-path rebinding. No long-running process is left behind — every
 //! test drives the loops directly and stops or aborts them.
+//!
+//! Platform split: the filesystem-socket and CLI-client round-trip tests are
+//! Unix-gated (they assert Unix socket files and the Unix-only plain
+//! `dispatch_over_socket` client); the worker-domain convergence test is
+//! portable (endpoint paths are derived per OS through `temp_path`); and the
+//! Windows lane carries one minimal smoke — spawn the real
+//! `system-control-daemon` binary, verify the READY line (both endpoints
+//! bound), and cross one plain round trip over the named pipe.
 
-#![cfg(all(unix, feature = "daemon"))]
+#![cfg(feature = "daemon")]
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
+#[cfg(unix)]
+use std::sync::Arc;
+#[cfg(unix)]
+use std::sync::atomic::AtomicBool;
+
+#[cfg(unix)]
 use ed25519_dalek::Signer as _;
 use nlos_artifact::ArtifactStore;
 use nlos_commit_coordinator::RecoveryWorkerState;
 use nlos_semantic::SemanticAuthority;
+#[cfg(unix)]
 use nlos_system_control::auth::dispatch_over_authenticated_socket;
+use nlos_system_control::control::ControlCommand;
+#[cfg(unix)]
 use nlos_system_control::control::dispatch_over_socket;
-use nlos_system_control::control::{ControlCommand, ControlOutcome, RecoveryWorkerLifecycle};
-use nlos_system_control::daemon::{
-    DaemonOptions, assemble, serve_authenticated_endpoint, serve_plain_endpoint,
-};
+#[cfg(unix)]
+use nlos_system_control::control::{ControlOutcome, RecoveryWorkerLifecycle};
+#[cfg(windows)]
+use nlos_system_control::control::{ControlReceipt, build_request_envelope};
+use nlos_system_control::daemon::{DaemonOptions, assemble};
+#[cfg(unix)]
+use nlos_system_control::daemon::{serve_authenticated_endpoint, serve_plain_endpoint};
 use nlos_task::{
     AttemptSpec, ParticipantRegistryBinding, PermitDecision, PermitRequest,
     PlanSemanticCommitRequest, SemanticCommitPlanState, SnapshotBundle, SnapshotConsistency,
@@ -30,9 +49,11 @@ use nlos_task::{
     TaskWriteSetSemanticAppendRequest, TaskWriteSetSemanticRequiredDurability,
     TaskWriteSetSemanticTarget, empty_effect_history_root,
 };
+#[cfg(unix)]
+use nlos_types::PrincipalId;
 use nlos_types::{
-    CancellationScopeId, Generation, IdempotencyKey, NamespaceId, PrincipalId, ReceiptId,
-    SemanticEventId, TaskAttemptId, TaskId, TaskSnapshotId,
+    CancellationScopeId, Generation, IdempotencyKey, NamespaceId, ReceiptId, SemanticEventId,
+    TaskAttemptId, TaskId, TaskSnapshotId,
 };
 use rusqlite::Connection;
 
@@ -58,6 +79,10 @@ impl Drop for TempRoot {
     }
 }
 
+/// Endpoint path in the host OS form, per test: a `.sock` file under the
+/// temp dir on Unix (short enough for the macOS `SUN_LEN` bound), a
+/// machine-local pipe name on Windows.
+#[cfg(unix)]
 fn temp_path(label: &str, suffix: &str) -> PathBuf {
     let sequence = NEXT_PATH.fetch_add(1, Ordering::Relaxed);
     std::env::temp_dir().join(format!(
@@ -66,6 +91,18 @@ fn temp_path(label: &str, suffix: &str) -> PathBuf {
     ))
 }
 
+/// Endpoint path in the host OS form, per test: a `.sock` file under the
+/// temp dir on Unix, a machine-local pipe name on Windows.
+#[cfg(windows)]
+fn temp_path(label: &str, suffix: &str) -> PathBuf {
+    let sequence = NEXT_PATH.fetch_add(1, Ordering::Relaxed);
+    PathBuf::from(format!(
+        r"\\.\pipe\nlos-daemon-{label}-{suffix}-{}-{sequence}",
+        std::process::id(),
+    ))
+}
+
+#[cfg(unix)]
 fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
 
@@ -76,6 +113,7 @@ fn hex(bytes: &[u8]) -> String {
     output
 }
 
+#[cfg(unix)]
 fn hex16(value: &str) -> [u8; 16] {
     let bytes = value.as_bytes();
     assert_eq!(bytes.len(), 32, "principal hex");
@@ -88,6 +126,7 @@ fn hex16(value: &str) -> [u8; 16] {
     out
 }
 
+#[cfg(unix)]
 fn worker_state(lifecycle: RecoveryWorkerLifecycle) -> RecoveryWorkerState {
     match lifecycle {
         RecoveryWorkerLifecycle::Starting => RecoveryWorkerState::Starting,
@@ -98,6 +137,7 @@ fn worker_state(lifecycle: RecoveryWorkerLifecycle) -> RecoveryWorkerState {
     }
 }
 
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn assembly_opens_authorities_binds_sockets_and_starts_the_worker() {
     let root = TempRoot::new("assemble");
@@ -169,6 +209,7 @@ async fn assembly_opens_authorities_binds_sockets_and_starts_the_worker() {
     drop(endpoints);
 }
 
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn plain_endpoint_serves_the_shared_handler_path_and_stops_gracefully() {
     let root = TempRoot::new("plain");
@@ -206,6 +247,7 @@ async fn plain_endpoint_serves_the_shared_handler_path_and_stops_gracefully() {
     daemon.stop_worker();
 }
 
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn authenticated_endpoint_serves_a_bootstrapped_key_file_client() {
     let root = TempRoot::new("auth");
@@ -266,6 +308,7 @@ async fn authenticated_endpoint_serves_a_bootstrapped_key_file_client() {
     daemon.stop_worker();
 }
 
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stale_socket_paths_are_rebound_by_the_next_assembly() {
     let root = TempRoot::new("rebind");
@@ -590,4 +633,88 @@ async fn worker_semantic_domain_converges_a_due_semantic_plan() {
     daemon.stop_worker();
     assert_eq!(daemon.recovery_health().state, RecoveryWorkerState::Stopped);
     drop(endpoints);
+}
+
+/// Minimal Windows smoke: the real `system-control-daemon` binary assembles
+/// every authority under a temp root, binds both named-pipe endpoints (the
+/// READY line prints only after both binds), and serves one plain round
+/// trip over the pipe — the same minimal service face
+/// `windows_named_pipe.rs` pins for the handler itself.
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn windows_daemon_binary_binds_both_endpoints_and_serves_one_plain_round_trip() {
+    use std::io::BufRead as _;
+    use std::process::{Command, Stdio};
+
+    use nlos_ipc::windows::connect;
+    use nlos_ipc::{LocalRpcClient, TransportConfig};
+    use nlos_schema::sabi::v1::ExchangeRequest;
+
+    let root = TempRoot::new("smoke");
+    fs::create_dir_all(&root.0).expect("create root");
+    let auth_pipe = temp_path("smoke", "auth");
+    let plain_pipe = temp_path("smoke", "plain");
+    let binary = std::env::var("CARGO_BIN_EXE_system-control-daemon")
+        .expect("cargo builds the daemon binary beside the tests");
+    let mut child = Command::new(binary)
+        .arg("--root")
+        .arg(&root.0)
+        .arg("--auth-socket")
+        .arg(&auth_pipe)
+        .arg("--plain-socket")
+        .arg(&plain_pipe)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn system-control-daemon");
+
+    // The READY line proves the whole assembly path — authorities, worker,
+    // and both pipe binds — completed on the other side of the process
+    // boundary; the reader thread plus receive timeout keeps a failed
+    // daemon from deadlocking the test.
+    let stdout = child.stdout.take().expect("piped daemon stdout");
+    let ready = {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut line = String::new();
+            let mut reader = std::io::BufReader::new(stdout);
+            let _ = reader.read_line(&mut line);
+            let _ = sender.send(line);
+        });
+        receiver
+            .recv_timeout(Duration::from_secs(30))
+            .expect("daemon printed its READY line")
+    };
+    assert!(ready.starts_with("READY service=system_control"), "{ready}");
+    assert!(
+        ready.contains(auth_pipe.to_str().unwrap_or_default()),
+        "READY names the authenticated pipe: {ready}"
+    );
+    assert!(
+        ready.contains(plain_pipe.to_str().unwrap_or_default()),
+        "READY names the plain pipe: {ready}"
+    );
+
+    let command = ControlCommand::InspectHealth;
+    let request = build_request_envelope(&command).expect("build request envelope");
+    let config = TransportConfig::default();
+    let (stream, _peer) = connect(&plain_pipe, config)
+        .await
+        .expect("connect the plain pipe");
+    let response = LocalRpcClient::new(stream, config)
+        .exchange_validated(ExchangeRequest {
+            envelope: Some(request),
+        })
+        .await
+        .expect("one plain exchange over the pipe");
+    let receipt = ControlReceipt::compose(&command, response.envelope(), None, None, None)
+        .expect("project the response receipt");
+    assert!(
+        receipt.outcome.is_ok(),
+        "health read served: {:?}",
+        receipt.outcome
+    );
+
+    child.kill().expect("stop the daemon");
+    let _ = child.wait();
 }

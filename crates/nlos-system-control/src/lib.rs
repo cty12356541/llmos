@@ -142,11 +142,14 @@ pub mod openmetrics;
 #[cfg(feature = "cli")]
 pub mod auth;
 
-/// Resident `system_control` daemon (`daemon` feature, Unix only): owns one
-/// state root with every real authority, runs the commit-recovery worker,
-/// and serves the authenticated (GUI) and plain (CLI) endpoints side by
-/// side. See the module documentation for the assembly and exit contract.
-#[cfg(all(unix, feature = "daemon"))]
+/// Resident `system_control` daemon (`daemon` feature): owns one state root
+/// with every real authority, runs the commit-recovery worker, and serves the
+/// authenticated (GUI) and plain (CLI) endpoints side by side.
+/// Platform-dispatched like the `nlos-ipc` transport and [`crate::auth`]
+/// entry points it consumes — Unix-domain sockets on Unix, named pipes on
+/// Windows; handshake and exchange wire bytes are identical on every
+/// platform. See the module documentation for the assembly and exit contract.
+#[cfg(feature = "daemon")]
 pub mod daemon;
 
 /// Discriminates the operation-level arms routed through
