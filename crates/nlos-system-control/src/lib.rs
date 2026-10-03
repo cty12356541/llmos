@@ -132,11 +132,14 @@ mod executor_receipt;
 /// documentation for the renderer contract and remaining B-TASK-006M scope.
 pub mod openmetrics;
 
-/// ADR-0011 opt-in authenticated control-plane entry points (Unix, `cli`
+/// ADR-0011 opt-in authenticated control-plane entry points (`cli`
 /// feature). Strictly additive: the local trust-domain paths above keep
 /// their exact semantics; this module adds one authenticated serve variant
-/// and one authenticated dispatch client.
-#[cfg(all(unix, feature = "cli"))]
+/// and one authenticated dispatch client. Platform-dispatched like the
+/// `nlos-ipc` handshake transport it consumes — Unix-domain socket on Unix,
+/// named pipe on Windows; handshake and exchange wire bytes are identical
+/// on every platform.
+#[cfg(feature = "cli")]
 pub mod auth;
 
 /// Resident `system_control` daemon (`daemon` feature, Unix only): owns one

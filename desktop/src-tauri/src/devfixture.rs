@@ -677,14 +677,14 @@ impl DevFixture {
         let health = self.health.clone();
         let random = self.random.clone();
         tokio::spawn(async move {
-            let Some(listener) = listener else {
+            let Some(mut listener) = listener else {
                 return;
             };
             loop {
                 let control =
                     RecoverySystemControl::new(tasks.as_ref(), &health, &CapabilityPolicy);
                 let outcome = authenticated_serve_one_control(
-                    &listener,
+                    &mut listener,
                     TransportConfig::default(),
                     &control,
                     identity.as_ref(),

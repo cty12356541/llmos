@@ -603,7 +603,7 @@ impl ParityFixture {
         // Both loops are detached (JoinHandles dropped): they serve until
         // the runtime shuts down, and the socket paths clean up via Drop.
         let _authenticated = {
-            let listener = UnixListenerAdapter::bind(&self.socket_authenticated).unwrap();
+            let mut listener = UnixListenerAdapter::bind(&self.socket_authenticated).unwrap();
             let tasks = Arc::clone(&self.tasks);
             let identity = Arc::clone(&self.identity);
             let clock = Arc::clone(&self.clock);
@@ -620,7 +620,7 @@ impl ParityFixture {
                     let mut nonce = [0u8; 32];
                     nonce[..8].copy_from_slice(&nonce_value.to_be_bytes());
                     if authenticated_serve_one_control(
-                        &listener,
+                        &mut listener,
                         TransportConfig::default(),
                         &control,
                         identity.as_ref(),

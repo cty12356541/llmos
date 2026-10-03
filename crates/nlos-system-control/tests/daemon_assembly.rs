@@ -561,7 +561,7 @@ async fn worker_semantic_domain_converges_a_due_semantic_plan() {
     assert_eq!(health.semantic_total_finalized, 1);
     assert_eq!(health.semantic_consecutive_failed_cycles, 0);
     assert!(!health.semantic_domain_faulted);
-    assert!(health.last_failures.is_empty());
+    assert_eq!(health.last_failures, Vec::new());
 
     // Durable proof across authorities: the plan is terminal in the task
     // authority the daemon reopens, the incomplete scan is empty, and clean
@@ -572,11 +572,11 @@ async fn worker_semantic_domain_converges_a_due_semantic_plan() {
         tasks.inspect_semantic_commit_progress(plan_id),
         Ok(progress) if progress.plan.state == SemanticCommitPlanState::Finalized
     ));
-    assert!(
+    assert_eq!(
         tasks
             .list_incomplete_semantic_commit_plans(8)
-            .expect("incomplete scan")
-            .is_empty()
+            .expect("incomplete scan"),
+        Vec::new()
     );
     assert!(
         tasks

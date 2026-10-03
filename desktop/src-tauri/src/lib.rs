@@ -11,8 +11,11 @@ pub mod ipc;
 pub mod surfaces;
 pub mod window_lifecycle;
 
-/// 开发夹具:仅在 `dev-fixture` feature 下编译(dev_server 示例与集成测试)。
-#[cfg(feature = "dev-fixture")]
+/// 开发夹具:仅在 Unix + `dev-fixture` feature 下编译(dev_server 示例与
+/// unix 侧集成测试)。夹具 harness 硬编码 Unix socket 路径与
+/// `/dev/urandom`,Windows 移植属后续车道;Windows 侧认证面证据走
+/// `tests/windows_authenticated_pipe_side.rs`(命名管道端到端)。
+#[cfg(all(unix, feature = "dev-fixture"))]
 pub mod devfixture;
 
 pub fn run() {
