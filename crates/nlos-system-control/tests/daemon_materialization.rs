@@ -22,6 +22,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
+use nlos_clock::{AuthorityClock, AuthorityClockError, WallSource};
 use nlos_plan::{
     ApplyPlanRevisionRequest, MaterializationRequestStatus, PlanNodeDeclaration, PlanNodeKind,
     PlanNodeState, SqlitePlanAuthority,
@@ -74,6 +75,27 @@ fn now_nanos() -> u128 {
         .duration_since(std::time::UNIX_EPOCH)
         .expect("clock after epoch")
         .as_nanos()
+}
+
+/// Deterministic wall source for the clock fixtures (the same seam
+/// `control_ipc_auth.rs` uses): the clock store is the real WAL/FULL
+/// authority; only the wall source is pinned so the gate-round markers'
+/// clock reading is assertable.
+struct FixedWall(u64);
+
+impl WallSource for FixedWall {
+    fn now_ms(&self) -> Result<u64, AuthorityClockError> {
+        Ok(self.0)
+    }
+}
+
+/// Opens the driver's clock authority under a pinned wall source at
+/// `<root>/clock`.
+fn fixed_clock(root: &TempRoot, wall_ms: u64) -> Arc<AuthorityClock> {
+    Arc::new(
+        AuthorityClock::open_with_wall_source(root.0.join("clock"), FixedWall(wall_ms))
+            .expect("open clock authority"),
+    )
 }
 
 /// Endpoint path in the host OS form (Unix socket file on Unix, local
@@ -300,6 +322,7 @@ fn capacity_pressure_denies_without_mischief() {
     let mut driver = MaterializationDriver::start(
         Arc::clone(&plans),
         Arc::clone(&tasks),
+        fixed_clock(&root, 50_000),
         MaterializationDriverConfig {
             window: 4,
             poll_interval: Duration::from_millis(20),
@@ -381,6 +404,7 @@ fn sustained_storage_failures_fault_the_driver() {
     let mut driver = MaterializationDriver::start(
         Arc::clone(&plans),
         Arc::clone(&tasks),
+        fixed_clock(&root, 50_000),
         MaterializationDriverConfig {
             window: 2,
             poll_interval: Duration::from_millis(5),
@@ -408,4 +432,101 @@ fn sustained_storage_failures_fault_the_driver() {
         MaterializationDriverState::Faulted,
         "Faulted is terminal; only a fresh driver restarts the drive"
     );
+}
+
+/// F10/W61-A: gate-round markers carry the `AuthorityClock`'s durable wall
+/// reading, never the bare system clock. The wall source is injectable
+/// (pinned to `50_000`, and the approved round's `requested_at_ms` /
+/// `resolved_at_ms` carry exactly it), and the reading is persistent: after
+/// a driver restart with the system wall rolled back to `1_000` — below
+/// the committed `50_000` watermark — a fresh gate round is still stamped
+/// at or after the earlier reading (the wall high-water never regresses).
+#[test]
+fn gate_rounds_stamp_the_authority_clock_wall_reading() {
+    let root = TempRoot::new("wall-clock");
+    let plans = Arc::new(
+        SqlitePlanAuthority::open(root.0.join("plans.sqlite3")).expect("open plan authority"),
+    );
+    let plan_id = plans
+        .apply_plan_revision_ungated(ApplyPlanRevisionRequest {
+            plan_id: None,
+            nodes: vec![node(0x0a, 0x01, None)],
+            idempotency_key: IdempotencyKey::from_bytes([0x11; 16]),
+            applied_at_ms: 1_000,
+        })
+        .expect("apply revision")
+        .receipt()
+        .plan_id;
+    let tasks = Arc::new(
+        SqliteTaskAuthority::open(root.0.join("tasks.sqlite3")).expect("open task authority"),
+    );
+    let mut driver = MaterializationDriver::start(
+        Arc::clone(&plans),
+        Arc::clone(&tasks),
+        fixed_clock(&root, 50_000),
+        MaterializationDriverConfig {
+            window: 4,
+            poll_interval: Duration::from_millis(20),
+            max_backoff: Duration::from_millis(80),
+            failure_threshold: 8,
+        },
+    )
+    .expect("start driver");
+
+    wait_until("node a materializes", || {
+        node_state(&plans, plan_id, 0x0a) == PlanNodeState::Materializing
+    });
+    let node_a = node_id_of(&plans, plan_id, 0x0a);
+    let first = plans
+        .inspect_node_materialization_requests(plan_id, node_a)
+        .expect("node a history")
+        .remove(0);
+    assert_eq!(
+        first.requested_at_ms, 50_000,
+        "the gate round was stamped by the injected clock wall reading"
+    );
+    assert_eq!(first.resolved_at_ms, Some(50_000));
+    driver.stop();
+
+    // System-clock rollback below the durable watermark plus a driver
+    // restart: a new independent node's gate round must still be stamped
+    // at or after the committed reading. (The reshaping revision restates
+    // the frozen node 0x0a alongside the new 0x0c — frozen nodes cannot
+    // be omitted from a revision.)
+    plans
+        .apply_plan_revision_ungated(ApplyPlanRevisionRequest {
+            plan_id: Some(plan_id),
+            nodes: vec![node(0x0a, 0x01, None), node(0x0c, 0x03, None)],
+            idempotency_key: IdempotencyKey::from_bytes([0x12; 16]),
+            applied_at_ms: 2_000,
+        })
+        .expect("append a second independent node");
+    let rolled_back = fixed_clock(&root, 1_000);
+    let mut restarted = MaterializationDriver::start(
+        Arc::clone(&plans),
+        Arc::clone(&tasks),
+        rolled_back,
+        MaterializationDriverConfig {
+            window: 4,
+            poll_interval: Duration::from_millis(20),
+            max_backoff: Duration::from_millis(80),
+            failure_threshold: 8,
+        },
+    )
+    .expect("restart driver under a rolled-back wall");
+    wait_until("node c materializes", || {
+        node_state(&plans, plan_id, 0x0c) == PlanNodeState::Materializing
+    });
+    let node_c = node_id_of(&plans, plan_id, 0x0c);
+    let second = plans
+        .inspect_node_materialization_requests(plan_id, node_c)
+        .expect("node c history")
+        .remove(0);
+    assert!(
+        second.requested_at_ms >= 50_000,
+        "the durable wall high-water held across the rollback: {}",
+        second.requested_at_ms
+    );
+    assert!(second.resolved_at_ms.is_some_and(|ms| ms >= 50_000));
+    restarted.stop();
 }

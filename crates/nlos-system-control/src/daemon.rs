@@ -847,6 +847,7 @@ pub fn assemble(
         None => None,
     };
     let clock = AuthorityClock::open(options.root.join("clock")).map_err(DaemonError::Clock)?;
+    let clock = Arc::new(clock);
     let tasks = Arc::new(
         SqliteTaskAuthority::open(options.root.join("tasks.sqlite3")).map_err(DaemonError::Task)?,
     );
@@ -895,10 +896,13 @@ pub fn assemble(
     // authority the worker recovers through: periodic passes drive the
     // plan→materialization→task-admission chain (select → gate drive per
     // plan), with the Task consult wired in (see the module docs for the
-    // deliberately-unwired ecosystem selector).
+    // deliberately-unwired ecosystem selector). The driver shares this
+    // daemon's clock so its durable gate-round markers are stamped by the
+    // AuthorityClock wall domain (F10), not the bare system clock.
     let materialization_driver = MaterializationDriver::start(
         Arc::clone(&plans),
         Arc::clone(&tasks),
+        Arc::clone(&clock),
         options.driver_config,
     )
     .map_err(DaemonError::MaterializationDriver)?;
@@ -915,7 +919,7 @@ pub fn assemble(
         plain_socket_path,
         bootstrapped_principal_hex,
         identity: Arc::new(identity),
-        clock: Arc::new(clock),
+        clock,
         tasks,
         artifacts,
         semantic,
@@ -999,6 +1003,15 @@ pub async fn serve_authenticated_endpoint(
 /// accept round, one `serve_one` exchange per connection against the shared
 /// handler. One bad exchange never takes the endpoint down.
 ///
+/// Command time semantics match the authenticated entry (F10/W61-A): the
+/// exchange's wall time is the daemon `AuthorityClock`'s durable wall
+/// reading issued (or durably replayed) for the request's §25.3 correlation
+/// id through [`crate::auth::command_wall_key`] — the shared
+/// [`crate::auth::serve_validated`] projection — so durable mutation
+/// records (`acknowledged_at_ms`, `resumed_at_ms`, ...) are never stamped
+/// from the bare system clock and a retried command re-reads its original
+/// reading on either endpoint.
+///
 /// # Panics
 ///
 /// Never panics by construction; every failure path is a logged round.
@@ -1017,7 +1030,6 @@ pub async fn serve_plain_endpoint(
                 continue;
             }
         };
-        let wall_ms = wall_now_ms();
         let round = Arc::clone(&daemon);
         let _ = serve_one(
             stream,
@@ -1043,8 +1055,12 @@ pub async fn serve_plain_endpoint(
                     .with_operation_source(&operations)
                     .with_operation_executor(&operation_arms)
                     .with_application_executor(&applications);
-                    let response =
-                        control.handle_for_ipc(validated.envelope(), monotonic_now_ns(), wall_ms);
+                    let response = crate::auth::serve_validated(
+                        &control,
+                        daemon.clock.as_ref(),
+                        monotonic_now_ns(),
+                        validated.envelope(),
+                    );
                     Ok(OutboundResponse::Typed(ExchangeResponse {
                         envelope: Some(response),
                     }))
@@ -1258,7 +1274,10 @@ fn os_entropy_seed() -> Result<u64, DaemonError> {
 /// state is seeded by mixing the std hasher's process-random OS seed, the
 /// wall clock, and the pid through the same splitmix64 finalizer. Same
 /// dev-fixture posture as the Unix half: the seed stays inside the process
-/// and only has to be unpredictable per daemon start.
+/// and only has to be unpredictable per daemon start. The wall-clock read
+/// below is **uniqueness/entropy mixing only** (F10/W61-A classification:
+/// pure operational use) — it is never used as a timestamp value; every
+/// authoritative time this daemon stamps comes from the `AuthorityClock`.
 ///
 /// The `Result` signature is kept uniform with the Unix half (whose device
 /// read fails closed) so [`RandomSource::from_os`] stays one un-gated call.
@@ -1283,16 +1302,16 @@ fn os_entropy_seed() -> Result<u64, DaemonError> {
     Ok(seed ^ (seed >> 31))
 }
 
-fn wall_now_ms() -> i64 {
-    i64::try_from(
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
-            .unwrap_or_default(),
-    )
-    .unwrap_or(i64::MAX)
-}
-
+/// Operational monotonic-ns reading for the request-deadline freshness gate
+/// (`deadline_monotonic_ns <= now` → `DeadlineExpired` in
+/// `validate_sabi_request_context`). This is **not** an authoritative
+/// timing source (F10/W61-A classification: pure operational measurement):
+/// it never enters a durable record, receipt, or decision trail — the
+/// `AuthorityClock`'s wall domain (via [`crate::auth::serve_validated`])
+/// owns every authoritative timestamp both endpoints stamp. The clock
+/// authority exposes no monotonic-ns domain (its tick domain is logical `+1`, its
+/// wall domain is milliseconds), so the bare system clock remains the
+/// deliberate source here.
 fn monotonic_now_ns() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

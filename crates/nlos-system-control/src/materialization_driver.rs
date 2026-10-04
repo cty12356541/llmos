@@ -37,6 +37,16 @@
 //! (the daemon's service owner restarts it by reassembling). Nothing
 //! here panics; a panicking pass is caught and surfaced as `Faulted`.
 //!
+//! **Wall timing (F10/W61-A)**: every `at_ms` the scheduler stamps into
+//! durable gate-round markers (`requested_at_ms`, `resolved_at_ms`) is
+//! issued by the caller's [`AuthorityClock`] wall domain, never the bare
+//! system clock — a read-only [`AuthorityClock::inspect_wall`] high-water
+//! for passes that stamp nothing durable, and a fresh domain-separated
+//! [`AuthorityClock::wall_now`] issuance for productive passes (the dense
+//! durable semantics those markers record), so a system-clock rollback or
+//! driver restart cannot stamp a marker earlier than any previously issued
+//! reading.
+//!
 //! **Ecosystem selector: deliberately not wired this lane.** The gate
 //! the driver turns enforces dependency readiness and Task admission;
 //! nodes whose structured conditions need ecosystem resolution are left
@@ -50,14 +60,17 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, sync_channel};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
+use nlos_clock::{AuthorityClock, AuthorityClockError, NowRequest};
 use nlos_plan::{
     AdmissionConsult, AdmissionConsultOutcome, MaterializationAdmission, MaterializationRejection,
     MaterializationScheduler, PlanStoreError, SchedulerPassSummary, SelectionReport,
     SqlitePlanAuthority,
 };
 use nlos_task::{MaterializationAdmissionFacts, SqliteTaskAuthority, TaskStoreError};
+use nlos_types::IdempotencyKey;
+use sha2::{Digest, Sha256};
 
 /// Lifecycle tuning for the daemon's materialization driver.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -191,8 +204,10 @@ pub struct MaterializationDriver {
 impl MaterializationDriver {
     /// Starts the dedicated driver thread: one scheduler instance over
     /// the whole plan set, the Task authority's consumption path as the
-    /// admission consult, and the config's window and cadence. The first
-    /// cycle runs immediately; `poll_interval` applies only after it.
+    /// admission consult, the daemon's durable clock as the wall-time
+    /// source for gate-round markers (see the module docs), and the
+    /// config's window and cadence. The first cycle runs immediately;
+    /// `poll_interval` applies only after it.
     ///
     /// # Errors
     ///
@@ -201,6 +216,7 @@ impl MaterializationDriver {
     pub fn start(
         plans: Arc<SqlitePlanAuthority>,
         tasks: Arc<SqliteTaskAuthority>,
+        clock: Arc<AuthorityClock>,
         config: MaterializationDriverConfig,
     ) -> Result<Self, MaterializationDriverStartError> {
         validate_config(config)?;
@@ -211,7 +227,7 @@ impl MaterializationDriver {
             .name("plan-materialization-driver".to_string())
             .spawn(move || {
                 let outcome = catch_unwind(AssertUnwindSafe(|| {
-                    run_driver(&plans, &tasks, config, &stop_rx, &thread_health);
+                    run_driver(&plans, &tasks, &clock, config, &stop_rx, &thread_health);
                 }));
                 if outcome.is_err() {
                     let mut current = lock(&thread_health);
@@ -284,15 +300,16 @@ struct CycleOutcome {
 fn run_driver(
     plans: &SqlitePlanAuthority,
     tasks: &SqliteTaskAuthority,
+    clock: &AuthorityClock,
     config: MaterializationDriverConfig,
     stop_rx: &Receiver<()>,
     health: &Mutex<MaterializationDriverHealth>,
 ) {
     lock(health).state = MaterializationDriverState::Running;
     let mut scheduler = MaterializationScheduler::new(config.window);
+    let mut wall = DriverWallClock::new(clock);
     loop {
-        let at_ms = now_ms();
-        let next_delay = match run_cycle(plans, tasks, &mut scheduler, at_ms) {
+        let next_delay = match run_cycle(plans, tasks, &mut scheduler, &mut wall) {
             Ok(outcome) => {
                 let mut current = lock(health);
                 current.state = MaterializationDriverState::Running;
@@ -343,22 +360,50 @@ fn run_driver(
     }
 }
 
+/// One cycle's storage failure: a plan-authority failure, or the clock
+/// authority refusing the durable wall read. The clock is storage too —
+/// both variants consume one unit of the consecutive-failure budget; the
+/// driver must never fall back to guessing a wall time.
+#[derive(Debug)]
+enum CycleError {
+    Plan(PlanStoreError),
+    Clock(AuthorityClockError),
+}
+
+impl fmt::Display for CycleError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Plan(error) => write!(formatter, "{error}"),
+            Self::Clock(error) => write!(formatter, "{error}"),
+        }
+    }
+}
+
+impl Error for CycleError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Plan(error) => Some(error),
+            Self::Clock(error) => Some(error),
+        }
+    }
+}
+
 /// One cycle: enumerate the plan set and drive one scheduler pass per
 /// plan. The scheduler (and therefore the window) is shared across the
 /// whole store — the designed global tier.
 ///
 /// # Errors
 ///
-/// Fails with the first storage failure (enumeration or a pass abort);
-/// per-node gate refusals and admission denials are scheduler decisions,
-/// not errors.
+/// Fails with the first storage failure (enumeration, the clock's wall
+/// read, or a pass abort); per-node gate refusals and admission denials
+/// are scheduler decisions, not errors.
 fn run_cycle(
     plans: &SqlitePlanAuthority,
     tasks: &SqliteTaskAuthority,
     scheduler: &mut MaterializationScheduler,
-    at_ms: u64,
-) -> Result<CycleOutcome, PlanStoreError> {
-    let plan_ids = plans.list_plan_ids()?;
+    wall: &mut DriverWallClock<'_>,
+) -> Result<CycleOutcome, CycleError> {
+    let plan_ids = plans.list_plan_ids().map_err(CycleError::Plan)?;
     let consult = TaskAuthorityMaterializationConsult { tasks };
     let mut outcome = CycleOutcome {
         plans: u64::try_from(plan_ids.len()).unwrap_or(u64::MAX),
@@ -370,8 +415,20 @@ fn run_cycle(
         seats_in_use: 0,
     };
     for plan_id in plan_ids {
-        let report = scheduler.select(plans, plan_id)?;
-        let summary = scheduler.drive(plans, &report, &consult, at_ms)?;
+        let report = scheduler.select(plans, plan_id).map_err(CycleError::Plan)?;
+        // Lazy durable issuance: only a pass that drives selections can
+        // stamp durable gate-round markers, so only that pass advances the
+        // clock's wall domain (an idle daemon issues no wall receipts at
+        // all); skip-only passes observe the read-only durable high-water
+        // for their in-memory decision trail instead.
+        let at_ms = if report.selections.is_empty() {
+            wall.passive_ms().map_err(CycleError::Clock)?
+        } else {
+            wall.issued_ms().map_err(CycleError::Clock)?
+        };
+        let summary = scheduler
+            .drive(plans, &report, &consult, at_ms)
+            .map_err(CycleError::Plan)?;
         fold_pass(&mut outcome, &report, &summary);
     }
     Ok(outcome)
@@ -457,11 +514,83 @@ fn retry_delay(config: MaterializationDriverConfig, consecutive_failures: usize)
         .min(config.max_backoff)
 }
 
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
-        .unwrap_or_default()
+/// Domain separator keeping the driver's per-issuance wall keys distinct
+/// from every other `AuthorityClock` idempotency domain (the command-wall
+/// and handshake-wall keys of the control endpoints).
+const DRIVER_WALL_DOMAIN: &[u8] = b"llmos/materialization-driver/wall/v1";
+
+/// Derives the wall-issuance key for one driver instance's Nth durable
+/// wall read. The boot seed only has to make keys unique across driver
+/// instances — a restarted driver must never replay an earlier instance's
+/// key (that would return its stale recorded reading and stamp old times
+/// onto new gate rounds); it is never itself a timestamp.
+fn driver_wall_key(boot_seed: u64, issuance: u64) -> IdempotencyKey {
+    let mut hasher = Sha256::new();
+    hasher.update(DRIVER_WALL_DOMAIN);
+    hasher.update(boot_seed.to_le_bytes());
+    hasher.update(issuance.to_le_bytes());
+    let digest: [u8; 32] = hasher.finalize().into();
+    let mut key = [0; 16];
+    key.copy_from_slice(&digest[..16]);
+    IdempotencyKey::from_bytes(key)
+}
+
+/// One-time per-instance seed for wall-key uniqueness only (F10/W61-A
+/// classification: pure operational use — never a timestamp): the
+/// OS-seeded std hasher finish mixed with the pid.
+fn boot_seed() -> u64 {
+    use std::collections::hash_map::RandomState;
+    use std::hash::{BuildHasher as _, Hasher as _};
+
+    RandomState::new().build_hasher().finish() ^ u64::from(std::process::id())
+}
+
+/// Durable wall timing for the scheduler's gate rounds (F10/W61-A): the
+/// `at_ms` handed to `drive` becomes durable plan markers
+/// (`requested_at_ms`, `resolved_at_ms`), so it comes from the
+/// [`AuthorityClock`]'s wall domain — `max(durable watermark, system
+/// clock)` under a fresh idempotency key per productive pass — never from
+/// the bare system clock. A system-clock rollback or driver restart
+/// therefore cannot stamp a marker earlier than any previously issued
+/// reading.
+struct DriverWallClock<'a> {
+    clock: &'a AuthorityClock,
+    boot_seed: u64,
+    issuance: u64,
+}
+
+impl<'a> DriverWallClock<'a> {
+    fn new(clock: &'a AuthorityClock) -> Self {
+        Self {
+            clock,
+            boot_seed: boot_seed(),
+            issuance: 0,
+        }
+    }
+
+    /// Read-only durable wall high-water ([`AuthorityClock::inspect_wall`]:
+    /// no durable side effect) for passes that stamp nothing durable —
+    /// the honest "last known" instant for in-memory decision-trail
+    /// markers, without minting a receipt per idle pass.
+    fn passive_ms(&self) -> Result<u64, AuthorityClockError> {
+        Ok(self.clock.inspect_wall()?.as_u64())
+    }
+
+    /// Durable dense wall issuance for passes that drive gate rounds: a
+    /// fresh domain-separated key per issuance, so every productive pass
+    /// observes the monotone `max(watermark, system)` reading and records
+    /// its receipt durably (replays across a crash re-read the original
+    /// reading, never a double jump).
+    fn issued_ms(&mut self) -> Result<u64, AuthorityClockError> {
+        self.issuance = self.issuance.saturating_add(1);
+        Ok(self
+            .clock
+            .wall_now(NowRequest {
+                idempotency_key: driver_wall_key(self.boot_seed, self.issuance),
+            })?
+            .reading()
+            .as_u64())
+    }
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {

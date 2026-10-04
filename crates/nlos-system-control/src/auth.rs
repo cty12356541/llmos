@@ -189,7 +189,14 @@ where
 /// Projects one validated request through the unchanged handler with the
 /// clock-issued wall reading; contract violations before the handler are
 /// typed failure envelopes from the single sanitizing projection.
-fn serve_validated<H, A>(
+///
+/// Shared by both served endpoints (F10/W61-A): the authenticated entry
+/// above and the daemon's plain entry
+/// ([`crate::daemon::serve_plain_endpoint`]) issue their command wall time
+/// through this one function, so both faces stamp durable mutation records
+/// from the same `AuthorityClock` wall domain under the same
+/// [`command_wall_key`] derivation — never from the bare system clock.
+pub(crate) fn serve_validated<H, A>(
     control: &RecoverySystemControl<'_, H, A>,
     clock: &AuthorityClock,
     now_monotonic_ns: u64,
