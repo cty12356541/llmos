@@ -210,34 +210,78 @@ pub enum PumpState {
 pub struct PumpHealth {
     /// Lifecycle state of the pump thread.
     pub state: PumpState,
-    /// Consecutive failed drain attempts since the last successful drain.
+    /// Consecutive failed drain attempts (source errors or consumer
+    /// panics) since the last successful drain. Apply-phase stops are
+    /// counted separately, in [`PumpHealth::consecutive_apply_failures`].
     pub consecutive_failures: usize,
-    /// `Display` text of the most recent drain failure; `None` after a
-    /// successful drain.
+    /// `Display` text of the most recent source/panic failure; `None`
+    /// after a successful drain.
     pub last_error: Option<String>,
+    /// Durable sequence of the entry the last drain stopped at without
+    /// completing, when that stop was an apply or ACK failure (not
+    /// shutdown); `None` after a pass that completed.
+    pub stuck_sequence: Option<u64>,
+    /// Consecutive drain passes that stopped at
+    /// [`PumpHealth::stuck_sequence`]. Progress past the stuck entry (the
+    /// stop moves to a later sequence, or a pass completes) resets this to
+    /// zero, mirroring how a successful drain resets
+    /// [`PumpHealth::consecutive_failures`].
+    pub consecutive_apply_failures: usize,
+    /// `Display` text of the most recent apply/ACK stop (the
+    /// [`DrainStop`](nlos_outbox::DrainStop) error of the last stopped
+    /// report); `None` after a pass that completed.
+    pub last_apply_error: Option<String>,
 }
 
 const STATE_RUNNING: usize = 0;
 const STATE_FAULTED: usize = 1;
 const STATE_STOPPED: usize = 2;
 
+/// The apply-failure half of the health state, written under one mutex so
+/// the stuck sequence, its consecutive-failure count and the last error text
+/// stay mutually consistent.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct PumpApplyHealth {
+    stuck_sequence: Option<u64>,
+    consecutive_failures: usize,
+    last_error: Option<String>,
+}
+
 /// Shared health counters written by the pump thread, read via `health()`.
 struct PumpHealthInner {
     state: AtomicUsize,
     consecutive_failures: AtomicUsize,
     last_error: Mutex<Option<String>>,
+    apply: Mutex<PumpApplyHealth>,
 }
 
 impl PumpHealthInner {
     fn record_success(&self) {
         self.consecutive_failures.store(0, Ordering::Release);
         *lock(&self.last_error) = None;
+        *lock(&self.apply) = PumpApplyHealth::default();
     }
 
     /// Records one failed drain and returns the new failure count.
     fn record_failure(&self, error: String) -> usize {
         *lock(&self.last_error) = Some(error);
         self.consecutive_failures.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
+    /// Records one apply/ACK stop at `sequence` and returns the new count of
+    /// consecutive stops at that same sequence. A stop at a different
+    /// sequence means the previous stuck entry finally progressed, so the
+    /// count restarts at one for the new stuck entry.
+    fn record_apply_failure(&self, sequence: u64, error: &str) -> usize {
+        let mut apply = lock(&self.apply);
+        if apply.stuck_sequence == Some(sequence) {
+            apply.consecutive_failures += 1;
+        } else {
+            apply.stuck_sequence = Some(sequence);
+            apply.consecutive_failures = 1;
+        }
+        apply.last_error = Some(error.to_owned());
+        apply.consecutive_failures
     }
 
     fn set_state(&self, state: PumpState) {
@@ -255,10 +299,14 @@ impl PumpHealthInner {
             STATE_STOPPED => PumpState::Stopped,
             _ => PumpState::Running,
         };
+        let apply = lock(&self.apply).clone();
         PumpHealth {
             state,
             consecutive_failures: self.consecutive_failures.load(Ordering::Acquire),
             last_error: lock(&self.last_error).clone(),
+            stuck_sequence: apply.stuck_sequence,
+            consecutive_apply_failures: apply.consecutive_failures,
+            last_apply_error: apply.last_error,
         }
     }
 }
@@ -360,6 +408,7 @@ impl OutboxPump {
             state: AtomicUsize::new(STATE_RUNNING),
             consecutive_failures: AtomicUsize::new(0),
             last_error: Mutex::new(None),
+            apply: Mutex::new(PumpApplyHealth::default()),
         });
         // Capacity 1: one pending hint is enough to schedule a drain, and a
         // full channel makes `hint` drop instead of blocking the writer.
@@ -447,12 +496,20 @@ fn backoff(poll_interval: Duration, failures: usize) -> Duration {
 }
 
 /// The pump thread body: drain until empty, then wait for a hint or the
-/// fallback interval. A transient early stop (`stopped_at`, not a failure)
-/// is retried after the same wait, so a stuck entry cannot spin the thread.
-/// A failed drain backs off exponentially (bounded) and is observable via
-/// health; too many consecutive failures fault the pump. A `shutdown` drain
-/// report is terminal: the pump stops and leaves unacknowledged entries
-/// durable for a future runtime (ADR-0002).
+/// fallback interval. An apply/ACK stop (`stopped_at` with a typed
+/// [`DrainReport::failure`]) is a poison-entry candidate: the drain retried
+/// the same durable sequence and it failed again, so the retry goes through
+/// the same bounded exponential backoff channel as source failures
+/// (keyed on the consecutive same-sequence count) and the stop is visible
+/// in health (`stuck_sequence`, `consecutive_apply_failures`,
+/// `last_apply_error`). Deliberately NO dead-letter and no skip: Outbox
+/// rows are durable and undeletable, and sidelining an entry is a design
+/// decision this pump does not take — it keeps retrying, bounded, with the
+/// failure observable. A source/panic failure still backs off
+/// exponentially and faults the pump past
+/// [`PumpConfig::failure_threshold`]. A `shutdown` drain report is
+/// terminal: the pump stops and leaves unacknowledged entries durable for
+/// a future runtime (ADR-0002).
 fn pump_loop<S, W, R>(
     consumer: &OutboxConsumer<S, W, R>,
     hints: &Receiver<()>,
@@ -475,7 +532,20 @@ fn pump_loop<S, W, R>(
                         health.set_state(PumpState::Stopped);
                         return;
                     }
-                    health.record_success();
+                    match (report.stopped_at, &report.failure) {
+                        // Apply/ACK stop with its typed cause: count the
+                        // consecutive stops at this sequence and retry the
+                        // drain after the shared exponential backoff. A hint
+                        // or the stop signal still wakes the thread early.
+                        (Some(sequence), Some(failure)) => {
+                            let failures = health.record_apply_failure(sequence, &failure.error);
+                            let _ = hints.recv_timeout(backoff(config.poll_interval, failures));
+                            continue 'outer;
+                        }
+                        // Completed pass (an early stop without a failure
+                        // detail is unreachable after the shutdown return).
+                        _ => health.record_success(),
+                    }
                     if report.polled > 0 && report.stopped_at.is_none() {
                         continue;
                     }

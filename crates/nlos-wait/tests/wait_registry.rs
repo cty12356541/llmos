@@ -884,6 +884,211 @@ fn ddl_guards_reject_illegal_wait_mutations() {
     );
 }
 
+/// The wake/cancel migration facts (`woken_at_ms`, `woken_up_to_sequence`,
+/// `cancelled_at_ms`) are written exactly once — inside the legal
+/// `PENDING -> WOKEN` / `PENDING -> CANCELLED` flip — and are then frozen by
+/// the v2 `waits_state_transition` trigger: a bare `UPDATE` of any of them
+/// on a terminal row is rejected at the DDL layer instead of being silently
+/// accepted and passing the shape-only readback.
+#[test]
+fn terminal_wait_rows_freeze_their_migration_facts() {
+    let root = Root::new("terminal-facts");
+    let pair = open_pair(&root);
+    let channel = create_channel(&pair.channel, 200);
+    let woken = register(&pair.wait, &channel, 11, 2, 1);
+    let cancelled = register(&pair.wait, &channel, 12, 5, 2);
+    let pending = register(&pair.wait, &channel, 13, 9, 3);
+    let report = notify(&pair.wait, channel.channel_id, 2, 30);
+    assert_eq!(report.woken.len(), 1);
+    assert_eq!(report.woken[0].woken_at_ms, 500);
+    assert_eq!(report.woken[0].woken_up_to_sequence, 2);
+    pair.wait
+        .cancel_wait(CancelWaitRequest {
+            wait_id: cancelled.wait_id,
+            cancelled_at_ms: 700,
+            idempotency_key: key(40),
+        })
+        .expect("cancel wait");
+    let raw = Connection::open(root.db()).expect("open raw connection");
+
+    // Bare rewrites of a WOKEN row's migration facts are rejected.
+    for statement in [
+        "UPDATE waits SET woken_at_ms=9999 WHERE wait_id=?1",
+        "UPDATE waits SET woken_up_to_sequence=9999 WHERE wait_id=?1",
+        "UPDATE waits SET cancelled_at_ms=9999 WHERE wait_id=?1",
+        "UPDATE waits SET woken_at_ms=9999, woken_up_to_sequence=9999 WHERE wait_id=?1",
+    ] {
+        assert!(
+            raw.execute(statement, [woken.wait_id.as_bytes().as_slice()])
+                .is_err(),
+            "terminal wake facts must be trigger-frozen: {statement}"
+        );
+    }
+    // Bare rewrites of a CANCELLED row's cancellation fact are rejected too.
+    assert!(
+        raw.execute(
+            "UPDATE waits SET cancelled_at_ms=9999 WHERE wait_id=?1",
+            [cancelled.wait_id.as_bytes().as_slice()],
+        )
+        .is_err(),
+        "terminal cancel facts must be trigger-frozen"
+    );
+    // The freeze is on drift, not on the statement shape: a value-preserving
+    // UPDATE of a terminal row stays admissible.
+    raw.execute(
+        "UPDATE waits SET status=1 WHERE wait_id=?1",
+        [woken.wait_id.as_bytes().as_slice()],
+    )
+    .expect("no-op terminal update is admissible");
+
+    // The frozen row still reads back with its original facts.
+    assert_eq!(
+        pair.wait
+            .inspect_wait(woken.wait_id)
+            .expect("inspect woken"),
+        report.woken[0]
+    );
+
+    // The legal one-shot flip paths are unaffected: the still-PENDING row
+    // wakes through the authority, which writes its facts exactly once.
+    let second = notify(&pair.wait, channel.channel_id, 9, 31);
+    assert_eq!(second.woken.len(), 1);
+    assert_eq!(second.woken[0].wait_id, pending.wait_id);
+    assert_eq!(second.woken[0].woken_at_ms, 500);
+    assert_eq!(second.woken[0].woken_up_to_sequence, 9);
+    let later = register(&pair.wait, &channel, 14, 8, 4);
+    match pair
+        .wait
+        .cancel_wait(CancelWaitRequest {
+            wait_id: later.wait_id,
+            cancelled_at_ms: 800,
+            idempotency_key: key(41),
+        })
+        .expect("cancel after freeze")
+    {
+        CancelDecision::Cancelled(record) => {
+            assert_eq!(record.cancelled_at_ms, 800);
+        }
+        CancelDecision::Replayed(_) => panic!("fresh cancel cannot replay"),
+    }
+}
+
+/// Rebuilds `waits_state_transition` at its v1 shape (no freeze of the
+/// terminal migration-fact columns) and rewinds `user_version` to 1, so the
+/// next [`WaitAuthority::open`] exercises the v1 -> v2 trigger migration on
+/// a store whose rows were written under the v1 discipline.
+fn downgrade_to_v1(path: &std::path::Path) {
+    let connection = Connection::open(path).expect("open raw wait db");
+    connection
+        .execute_batch(
+            "DROP TRIGGER waits_state_transition;
+            CREATE TRIGGER waits_state_transition
+            BEFORE UPDATE ON waits
+            WHEN NEW.wait_id != OLD.wait_id
+                OR NEW.binding_id != OLD.binding_id
+                OR NEW.register_idempotency_key != OLD.register_idempotency_key
+                OR NEW.registered_at_ms != OLD.registered_at_ms
+                OR NEW.binding_digest != OLD.binding_digest
+                OR (OLD.status != 0 AND NEW.status != OLD.status)
+                OR (OLD.status = 0 AND NEW.status = 1
+                    AND (NEW.woken_at_ms < 1 OR NEW.woken_up_to_sequence < 1
+                         OR NEW.cancelled_at_ms != 0))
+                OR (OLD.status = 0 AND NEW.status = 2
+                    AND (NEW.cancelled_at_ms < 1 OR NEW.woken_at_ms != 0
+                         OR NEW.woken_up_to_sequence != 0))
+                OR NEW.status NOT IN (0, 1, 2)
+            BEGIN
+                SELECT RAISE(
+                    ABORT,
+                    'wait row is immutable beyond the pending wake or cancel transition'
+                );
+            END;
+            PRAGMA user_version=1;",
+        )
+        .expect("downgrade wait trigger to the v1 shape");
+}
+
+#[test]
+fn v1_to_v2_upgrade_freezes_terminal_facts_and_is_idempotent() {
+    let root = Root::new("v2-upgrade");
+    let (woken, pending, channel_id) = {
+        let pair = open_pair(&root);
+        let channel = create_channel(&pair.channel, 200);
+        let woken = register(&pair.wait, &channel, 11, 2, 1);
+        let pending = register(&pair.wait, &channel, 12, 9, 2);
+        let report = notify(&pair.wait, channel.channel_id, 2, 30);
+        assert_eq!(report.woken[0].wait_id, woken.wait_id);
+        (woken, pending, channel.channel_id)
+    };
+    downgrade_to_v1(&root.db());
+
+    // Under the v1 trigger the terminal facts were still rewritable...
+    {
+        let raw = Connection::open(root.db()).expect("open raw connection");
+        raw.execute(
+            "UPDATE waits SET woken_at_ms=9999 WHERE wait_id=?1",
+            [woken.wait_id.as_bytes().as_slice()],
+        )
+        .expect("v1 leaves terminal facts rewritable");
+        raw.execute(
+            "UPDATE waits SET woken_at_ms=500 WHERE wait_id=?1",
+            [woken.wait_id.as_bytes().as_slice()],
+        )
+        .expect("restore the original fact");
+    }
+
+    // ...and reopening migrates v1 -> v2.
+    {
+        let channel = Arc::new(ChannelAuthority::open(root.path()).expect("open channel"));
+        let wait =
+            WaitAuthority::open(root.path(), Arc::clone(&channel)).expect("reopen migrates to v2");
+        let raw = Connection::open(root.db()).expect("open raw connection");
+        let version: i64 = raw
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("user_version");
+        assert_eq!(version, 2);
+        assert!(
+            raw.execute(
+                "UPDATE waits SET woken_up_to_sequence=9999 WHERE wait_id=?1",
+                [woken.wait_id.as_bytes().as_slice()],
+            )
+            .is_err(),
+            "the migrated trigger freezes the terminal facts"
+        );
+        // The data written under v1 is untouched and still reads back.
+        let inspected = wait.inspect_wait(woken.wait_id).expect("inspect migrated");
+        assert_eq!(inspected.state, WaitState::Woken);
+        assert_eq!(inspected.woken_at_ms, 500);
+        assert_eq!(inspected.woken_up_to_sequence, 2);
+        // The legal flip keeps working on the migrated store.
+        let second = notify(&wait, channel_id, 9, 31);
+        assert_eq!(second.woken.len(), 1);
+        assert_eq!(second.woken[0].wait_id, pending.wait_id);
+    }
+
+    // Reopening again is idempotent: the version stays 2, the trigger keeps
+    // freezing, and the rows are untouched.
+    {
+        let channel = Arc::new(ChannelAuthority::open(root.path()).expect("open channel"));
+        let wait = WaitAuthority::open(root.path(), channel).expect("reopen is idempotent");
+        let raw = Connection::open(root.db()).expect("open raw connection");
+        let version: i64 = raw
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("user_version");
+        assert_eq!(version, 2);
+        assert!(
+            raw.execute(
+                "UPDATE waits SET woken_at_ms=1 WHERE wait_id=?1",
+                [woken.wait_id.as_bytes().as_slice()],
+            )
+            .is_err(),
+            "the trigger still freezes after a second open"
+        );
+        let inspected = wait.inspect_wait(woken.wait_id).expect("inspect again");
+        assert_eq!(inspected.woken_at_ms, 500);
+    }
+}
+
 #[test]
 fn partial_schema_fails_closed() {
     let root = Root::new("partial-schema");
