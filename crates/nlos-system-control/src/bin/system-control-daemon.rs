@@ -37,7 +37,8 @@
 //! both endpoint paths (and the bootstrapped principal, if any) for script
 //! probing. The shutdown signal (SIGINT/SIGTERM on Unix, Ctrl+C on Windows)
 //! stops the accept loops (an idle accept window is bounded by the
-//! transport's 5s timeout), stops the recovery worker, removes the socket
+//! transport's 5s timeout), stops the recovery worker and the
+//! materialization driver, removes the socket
 //! files on Unix (Windows pipe names leave no filesystem artifact), prints
 //! `STOPPED`, and exits 0. A startup failure prints one typed error line
 //! and exits 2.
@@ -102,6 +103,8 @@ fn parsed_arguments() -> Result<ParsedArguments, ParseFailure> {
             plain_socket,
             identity_key_file,
             worker_config: nlos_commit_coordinator::RecoveryWorkerConfig::default(),
+            driver_config:
+                nlos_system_control::materialization_driver::MaterializationDriverConfig::default(),
         },
     })
 }
@@ -188,6 +191,7 @@ async fn main() -> ExitCode {
     let _ = authenticated.await;
     let _ = plain.await;
     daemon.stop_worker();
+    daemon.stop_materialization();
     // Unix closes its filesystem lifecycle: remove the socket files the
     // binds created. Windows named pipes leave no filesystem artifact —
     // the kernel reclaims the pipe name when the last handle closes.
