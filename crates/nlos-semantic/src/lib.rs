@@ -70,9 +70,13 @@ pub use typed::{
 };
 
 pub use declassification::declassification_issue_authorization_id;
-pub use durability::{build_durability_receipt_core_digest, durability_receipt_signature_message};
+pub use durability::{
+    DURABILITY_RECEIPT_PREIMAGE_DOMAIN, SIGNATURE_PREIMAGE_CANONICAL, SIGNATURE_PREIMAGE_LEGACY,
+    build_durability_receipt_core_digest, durability_receipt_canonical_preimage,
+    durability_receipt_signature_message,
+};
 
-const SCHEMA_VERSION: i64 = 8;
+const SCHEMA_VERSION: i64 = 9;
 const EDGE_DECLARED: i64 = 1;
 const EDGE_CAPTURED: i64 = 2;
 /// Typed-link index role: the indexed event is a Judgment and the endpoint
@@ -433,6 +437,7 @@ impl SemanticAuthority {
                 schema::migrate_v6(&mut connection)?;
                 schema::migrate_v7(&mut connection)?;
                 schema::migrate_v8(&mut connection)?;
+                schema::migrate_v9(&mut connection)?;
             }
             1 => {
                 schema::migrate_v1_to_v2(&mut connection)?;
@@ -442,6 +447,7 @@ impl SemanticAuthority {
                 schema::migrate_v6(&mut connection)?;
                 schema::migrate_v7(&mut connection)?;
                 schema::migrate_v8(&mut connection)?;
+                schema::migrate_v9(&mut connection)?;
             }
             2 => {
                 schema::migrate_v3(&mut connection)?;
@@ -450,6 +456,7 @@ impl SemanticAuthority {
                 schema::migrate_v6(&mut connection)?;
                 schema::migrate_v7(&mut connection)?;
                 schema::migrate_v8(&mut connection)?;
+                schema::migrate_v9(&mut connection)?;
             }
             3 => {
                 schema::migrate_v4(&mut connection)?;
@@ -457,23 +464,31 @@ impl SemanticAuthority {
                 schema::migrate_v6(&mut connection)?;
                 schema::migrate_v7(&mut connection)?;
                 schema::migrate_v8(&mut connection)?;
+                schema::migrate_v9(&mut connection)?;
             }
             4 => {
                 schema::migrate_v5(&mut connection)?;
                 schema::migrate_v6(&mut connection)?;
                 schema::migrate_v7(&mut connection)?;
                 schema::migrate_v8(&mut connection)?;
+                schema::migrate_v9(&mut connection)?;
             }
             5 => {
                 schema::migrate_v6(&mut connection)?;
                 schema::migrate_v7(&mut connection)?;
                 schema::migrate_v8(&mut connection)?;
+                schema::migrate_v9(&mut connection)?;
             }
             6 => {
                 schema::migrate_v7(&mut connection)?;
                 schema::migrate_v8(&mut connection)?;
+                schema::migrate_v9(&mut connection)?;
             }
-            7 => schema::migrate_v8(&mut connection)?,
+            7 => {
+                schema::migrate_v8(&mut connection)?;
+                schema::migrate_v9(&mut connection)?;
+            }
+            8 => schema::migrate_v9(&mut connection)?,
             SCHEMA_VERSION => {}
             other => return Err(SemanticAuthorityError::SchemaVersionUnsupported(other)),
         }

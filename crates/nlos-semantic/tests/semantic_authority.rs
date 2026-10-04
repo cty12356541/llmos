@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use ed25519_dalek::{Signer, SigningKey, Verifier};
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier};
 use nlos_capability::{
     CapabilityAuthority, CapabilityRights, CapabilityTarget, IssueRootCapabilityRequest,
     RevokeCapabilityRequest, SignedIssueRootCapabilityRequest, SignedRevokeCapabilityRequest,
@@ -14,16 +14,19 @@ use nlos_process::{
 };
 use nlos_semantic::{
     AcknowledgeOutboxRequest, AdmissionReceipt, AppendAssertionRequest, AppendDecision,
-    AppendSpecRequest, AssertionMode, CriterionAggregation, CriterionEffect, DurabilityDecision,
-    EvaluatorKind, ImmutableEvaluatorReference, ImmutableEvaluatorReferenceKind, IntentConstraints,
+    AppendSpecRequest, AssertionMode, CriterionAggregation, CriterionEffect,
+    DURABILITY_RECEIPT_PREIMAGE_DOMAIN, DurabilityDecision, EvaluatorKind,
+    ImmutableEvaluatorReference, ImmutableEvaluatorReferenceKind, IntentConstraints,
     IntentCriterion, IntentCriticality, IntentSettlement, IntentSpecBody,
     IssueDurabilityReceiptRequest, LocalProcessRef, OutboxAckDecision,
-    PublishSemanticPublicationRequest, SemanticAuthority, SemanticAuthorityError,
-    SemanticPayloadIdentity, SemanticPublicationDecision, SettlementMode, SettlementTimeoutAction,
-    StoreSigner, StoreSignerError, TaintFlags, UnsignedAssertionEvent, UnsignedSpecEvent,
+    PublishSemanticPublicationRequest, SIGNATURE_PREIMAGE_CANONICAL, SIGNATURE_PREIMAGE_LEGACY,
+    SemanticAuthority, SemanticAuthorityError, SemanticPayloadIdentity,
+    SemanticPublicationDecision, SettlementMode, SettlementTimeoutAction, StoreSigner,
+    StoreSignerError, TaintFlags, UnsignedAssertionEvent, UnsignedSpecEvent,
     admission_receipt_core_digest, admission_receipt_signature_message,
     build_durability_receipt_core_digest, content_digest, decode_unsigned_assertion_event,
-    decode_unsigned_spec_event, encode_intent_spec_body, encode_unsigned_assertion_event,
+    decode_unsigned_spec_event, durability_receipt_canonical_preimage,
+    durability_receipt_signature_message, encode_intent_spec_body, encode_unsigned_assertion_event,
     encode_unsigned_spec_event, hard_criteria_digest, intent_spec_body_digest, semantic_event_id,
 };
 use nlos_types::{
@@ -31,6 +34,7 @@ use nlos_types::{
     TaskAttemptId, TaskId,
 };
 use rusqlite::Connection;
+use sha2::{Digest as Sha2Digest, Sha256};
 
 static NEXT: AtomicU64 = AtomicU64::new(1);
 
@@ -988,7 +992,7 @@ fn real_v1_store_migrates_without_losing_assertion_or_receipt() {
     assert_eq!(
         raw.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .unwrap(),
-        8
+        9
     );
     assert_eq!(
         raw.query_row(
@@ -1312,6 +1316,192 @@ fn durability_receipt_verify_rejects_unprovenanced_rows() {
             .unwrap_err(),
         SemanticAuthorityError::DurabilityReceiptNotFound(_)
     ));
+}
+
+/// W61-B: production issuance is the first production consumer of the
+/// `nlos-canonical` `DigestEnvelope` — the store signature covers the SHA-256
+/// of its signing preimage, and the production verify path decodes that
+/// preimage back through the strict canonical decoder before authenticating.
+#[test]
+fn durability_receipt_signs_canonical_preimage_end_to_end() {
+    let root = Root::new("durability-canonical");
+    let fixture = fixture(&root, 160);
+    let request = request(&fixture, 14, Vec::new(), Vec::new(), TaintFlags::default());
+    let admission = append(&fixture, &request).receipt().clone();
+
+    let issue = IssueDurabilityReceiptRequest {
+        event_id: admission.event_id,
+        admission_receipt_id: admission.receipt_id,
+        durable_checkpoint_id: [0x8d; 32],
+        durable_at_ms: 3_000,
+    };
+    let issued = *fixture
+        .semantic
+        .issue_durability_receipt(&fixture.identity, &fixture.store_signer, &issue)
+        .unwrap()
+        .receipt();
+    assert_eq!(
+        issued.signature_preimage_version, SIGNATURE_PREIMAGE_CANONICAL,
+        "new issuance must record the canonical preimage shape"
+    );
+
+    let core = build_durability_receipt_core_digest(
+        admission.event_id,
+        admission.log_seq,
+        issue.durable_checkpoint_id,
+        issue.durable_at_ms,
+        fixture.store_signer.principal_id(),
+        fixture.store_signer.control_domain_id(),
+        fixture.store_signer.key_id(),
+    );
+
+    // Encode: the canonical preimage binds receipt id (object_id) to the
+    // signed core digest (payload_digest) under the receipt domain, and is
+    // far below the canonical frame bound.
+    let preimage = durability_receipt_canonical_preimage(issued.receipt_id, core).unwrap();
+    assert!(
+        preimage.len() < nlos_canonical::MAX_CANONICAL_BYTES,
+        "preimage must stay inside the canonical frame bound"
+    );
+    let domain = nlos_canonical::SignatureDomain::new(DURABILITY_RECEIPT_PREIMAGE_DOMAIN).unwrap();
+
+    // Decode round-trip with byte identity: strict decode accepts the
+    // preimage, returns the same two signed facts, and re-encoding the
+    // decoded envelope reproduces the exact preimage bytes.
+    let decoded =
+        nlos_canonical::decode_signing_preimage_for_domain(&preimage, &domain, &[]).unwrap();
+    assert_eq!(
+        decoded.object_id().into_bytes(),
+        issued.receipt_id.into_bytes()
+    );
+    assert_eq!(decoded.payload_digest().into_bytes(), core);
+    assert_eq!(decoded.critical_extensions(), []);
+    assert_eq!(decoded.noncritical_extensions(), []);
+    assert_eq!(
+        nlos_canonical::encode_signing_preimage(&domain, &decoded).unwrap(),
+        preimage,
+        "canonical re-encoding must be byte-identical"
+    );
+
+    // Consume: the signature verifies over exactly sha256(preimage) — and
+    // over nothing else: the legacy domain-message digest differs.
+    let canonical_digest: [u8; 32] = Sha256::digest(&preimage).into();
+    let legacy_digest = durability_receipt_signature_message(issued.receipt_id, core);
+    assert_ne!(canonical_digest, legacy_digest);
+    fixture
+        .store_signer
+        .key
+        .verifying_key()
+        .verify(
+            &canonical_digest,
+            &Signature::from_bytes(&issued.store_signature),
+        )
+        .unwrap();
+    assert!(
+        fixture
+            .store_signer
+            .key
+            .verifying_key()
+            .verify(
+                &legacy_digest,
+                &Signature::from_bytes(&issued.store_signature)
+            )
+            .is_err(),
+        "the canonical-shape signature must not authenticate the legacy message"
+    );
+
+    // The production verify path decodes and authenticates end to end.
+    assert!(
+        fixture
+            .semantic
+            .verify_durability_receipt(&fixture.identity, admission.event_id, issued.receipt_id)
+            .is_ok()
+    );
+
+    // Fail-closed faces: a foreign domain rejects the same preimage bytes,
+    // and the canonical domain charset refuses non-conforming domains.
+    let foreign = nlos_canonical::SignatureDomain::new("nlos.someone-else/v1").unwrap();
+    assert!(matches!(
+        nlos_canonical::decode_signing_preimage_for_domain(&preimage, &foreign, &[]),
+        Err(nlos_canonical::CanonicalError::DomainMismatch { .. })
+    ));
+    assert!(nlos_canonical::SignatureDomain::new("NLOS.Durability Receipt/v1").is_err());
+    drop(fixture);
+}
+
+/// The legacy signature chain is untouched: a pre-v9 shape row signed over
+/// the legacy domain-message digest still verifies bit-for-bit, and the
+/// recorded shape binds which message the signature must cover.
+#[test]
+fn durability_receipt_legacy_shape_still_verifies_and_shape_binds_message() {
+    let root = Root::new("durability-legacy");
+    let fixture = fixture(&root, 170);
+    let request = request(&fixture, 15, Vec::new(), Vec::new(), TaintFlags::default());
+    let admission = append(&fixture, &request).receipt().clone();
+    let signer = fixture.store_signer.clone();
+    drop(fixture);
+
+    let raw = Connection::open(root.path().join("semantic-authority.db")).unwrap();
+    let mut minted = Vec::new();
+    for (checkpoint, shape) in [
+        ([0x91u8; 32], SIGNATURE_PREIMAGE_LEGACY),
+        ([0x92u8; 32], SIGNATURE_PREIMAGE_CANONICAL),
+    ] {
+        let core = build_durability_receipt_core_digest(
+            admission.event_id,
+            admission.log_seq,
+            checkpoint,
+            3_000,
+            signer.principal_id(),
+            signer.control_domain_id(),
+            signer.key_id(),
+        );
+        let mut id_bytes = [0u8; 16];
+        id_bytes.copy_from_slice(&core[..16]);
+        let receipt_id = ReceiptId::from_bytes(id_bytes);
+        // Both rows carry a signature over the *legacy* message; only the
+        // row that records the legacy shape may verify.
+        let signature = signer
+            .sign(&durability_receipt_signature_message(receipt_id, core))
+            .unwrap();
+        raw.execute(
+            "INSERT INTO durability_receipts (
+                receipt_id, event_id, durable_checkpoint_id, durable_at_ms,
+                store_principal_id, store_control_domain_id, store_key_id, store_signature,
+                signature_preimage_version
+             ) VALUES (?1, ?2, ?3, 3_000, ?4, ?5, ?6, ?7, ?8)",
+            rusqlite::params![
+                receipt_id.as_bytes().as_slice(),
+                admission.event_id.as_bytes().as_slice(),
+                checkpoint.as_slice(),
+                signer.principal_id().as_bytes().as_slice(),
+                signer.control_domain_id().as_bytes().as_slice(),
+                signer.key_id().as_bytes().as_slice(),
+                signature.as_slice(),
+                i64::from(shape),
+            ],
+        )
+        .unwrap();
+        minted.push((receipt_id, shape));
+    }
+    drop(raw);
+
+    let identity = IdentityAuthority::open(root.path()).unwrap();
+    let semantic = SemanticAuthority::open(root.path()).unwrap();
+    for (receipt_id, shape) in minted {
+        let result = semantic.verify_durability_receipt(&identity, admission.event_id, receipt_id);
+        if shape == SIGNATURE_PREIMAGE_LEGACY {
+            assert_eq!(
+                result.unwrap().signature_preimage_version,
+                SIGNATURE_PREIMAGE_LEGACY
+            );
+        } else {
+            assert!(
+                matches!(result.unwrap_err(), SemanticAuthorityError::Identity(_)),
+                "a canonical-shape row must fail closed when signed over the legacy message"
+            );
+        }
+    }
 }
 
 #[test]

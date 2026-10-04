@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 minicbor.workspace = true
+nlos-canonical = { path = "../nlos-canonical" }
 nlos-capability = { path = "../nlos-capability" }
 nlos-identity = { path = "../nlos-identity" }
 nlos-process = { path = "../nlos-process" }
