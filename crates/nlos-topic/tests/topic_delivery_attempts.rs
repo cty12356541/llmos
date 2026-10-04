@@ -9,12 +9,12 @@
 //! is deleted, publishers are never blocked, quarantined rows stop billing),
 //! and the explicit token-authenticated recovery (`reinstate_with_token`).
 
-use nlos_channel::{ChannelAuthority, ChannelDecision, CompactReceipt, CreateChannelRequest};
+use nlos_channel::{ChannelAuthority, ChannelDecision, CreateChannelRequest};
 use nlos_topic::{
     AdvanceDecision, AdvanceRequest, ConsumeToken, CreateTopicRequest, PublishRequest,
     ReinstateDecision, SubscribeDecision, SubscribeRequest, SubscriberKey, SubscriptionState,
-    TopicAuthority, TopicAuthorityError, TopicCompactDecision, TopicCompactReceipt, TopicDecision,
-    TopicPolicy, TopicRecord, UnsubscribeRequest,
+    TopicAuthority, TopicAuthorityError, TopicCompactDecision, TopicDecision, TopicPolicy,
+    TopicRecord, UnsubscribeRequest,
 };
 use nlos_types::{IdempotencyKey, ResourceAccountId};
 use rusqlite::Connection;
@@ -474,14 +474,17 @@ fn quarantine_state_replays_after_restart() {
     );
 }
 
-/// Deep-audit finding 25 / decision D3: a `QUARANTINED` subscription is
-/// still active, so its lag keeps holding the compact release point.  The
-/// service-layer ack waits for the isolated subscriber itself to advance
-/// (which quarantine deliberately still allows) before the channel
-/// high-water and the trim move; until then the compact is a no-op that
-/// writes nothing, not even the ack.
+/// The W55 unification of deep-audit finding #17: a `QUARANTINED`
+/// subscription's lag holds neither retention budget nor the compact
+/// release point — quarantine must not pin the channel's capacity
+/// indefinitely.  With a caught-up delivery-eligible subscriber present,
+/// the compact acks straight to that subscriber's cursor and trims past
+/// the quarantined lag.  The isolated subscription keeps its advance and
+/// unsubscribe rights, and a later reinstate surfaces the crossed cursor
+/// as the typed behind-high-water rejection whose documented recovery is
+/// the blind catch-up (deep-audit finding #18).
 #[test]
-fn quarantined_lag_holds_the_compact_release_point_until_it_advances() {
+fn quarantined_lag_does_not_hold_the_compact_release_point() {
     let (harness, topic) = bootstrap("quarantine-bound", 2);
     let slow = subscribe(&harness, topic.topic_id, 1, 3_000);
     publish(&harness, &topic, 81, 4_000); // free: no backlog yet
@@ -498,58 +501,23 @@ fn quarantined_lag_holds_the_compact_release_point_until_it_advances() {
         SubscriptionState::Quarantined
     );
 
-    // The quarantined cursor 0 is the minimum active cursor: the bound
-    // stays 0 and the compact replays a zero watermark — the ack is skipped
-    // without a write (nothing to advance).
+    // The release population is the delivery-eligible cursors, so the
+    // quarantined cursor 0 pins nothing: the bound still reads 0 only
+    // because the channel high-water has not been acked yet.
     assert_eq!(
         harness
             .topics
             .compact_bound(topic.topic_id)
-            .expect("bound held by the quarantined lag"),
+            .expect("bound at the stale high-water"),
         0
     );
-    assert_eq!(
-        harness
-            .topics
-            .compact(topic.topic_id, 9)
-            .expect("compact is a no-op trim"),
-        TopicCompactDecision::Replayed(TopicCompactReceipt {
-            topic_id: topic.topic_id,
-            channel_id: topic.channel_id,
-            effective_trim_high_water: 0,
-            channel: CompactReceipt {
-                channel_id: topic.channel_id,
-                trim_high_water: 0,
-            },
-        })
-    );
-    let queue = harness
-        .channel
-        .inspect_queue(topic.channel_id)
-        .expect("queue untouched");
-    assert_eq!(
-        (
-            queue.consume_high_water,
-            queue.trim_high_water,
-            queue.backlog_bytes
-        ),
-        (0, 0, 24)
-    );
-
-    // Quarantine stops delivery only: the isolated subscriber catches up
-    // with its own token, lifting the release point for the whole channel.
-    advance_with_token(&harness, &topic, &slow, 3);
-    assert_eq!(
-        harness
-            .topics
-            .compact_bound(topic.topic_id)
-            .expect("bound still at the stale high-water"),
-        0
-    );
+    // The compact acks to the caught-up subscriber's cursor and trims
+    // straight past the quarantined lag (entries 1-3 become the channel's
+    // to delete; the topic records them as `Unallocated`).
     let trimmed = harness
         .topics
         .compact(topic.topic_id, 9)
-        .expect("compact acks and trims");
+        .expect("compact acks and trims past the quarantined lag");
     assert!(matches!(trimmed, TopicCompactDecision::Trimmed(_)));
     assert_eq!(trimmed.receipt().effective_trim_high_water, 3);
     let queue = harness
@@ -565,4 +533,38 @@ fn quarantined_lag_holds_the_compact_release_point_until_it_advances() {
         ),
         (3, 3, 0, 0)
     );
+
+    // Quarantine still rejects the slow subscriber's poll before any
+    // channel read, and the reinstate restores its delivery rights with
+    // the cursor exactly where it was (0) — which the crossed high-water
+    // now makes loud instead of silent.
+    assert!(matches!(
+        harness.topics.poll(topic.topic_id, subscriber(1), 10).err(),
+        Some(TopicAuthorityError::DeliveryQuarantined(_))
+    ));
+    assert!(matches!(
+        harness
+            .topics
+            .reinstate_with_token(topic.topic_id, subscriber(1), &slow.token, 4_400),
+        Ok(ReinstateDecision::Reinstated(_))
+    ));
+    assert!(matches!(
+        harness.topics.poll(topic.topic_id, subscriber(1), 10).err(),
+        Some(TopicAuthorityError::CursorBehindChannelConsumption {
+            cursor: 0,
+            consume_high_water: 3,
+            ..
+        })
+    ));
+    // The documented recovery is the blind catch-up: the skipped entries
+    // are confirmed gone from the delivery path.
+    advance_with_token(&harness, &topic, &slow, 3);
+    assert_eq!(
+        harness
+            .topics
+            .poll(topic.topic_id, subscriber(1), 10)
+            .expect("poll after catch-up"),
+        []
+    );
+    let _ = quick;
 }

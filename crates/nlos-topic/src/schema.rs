@@ -936,3 +936,169 @@ pub(crate) fn migrate_v8(connection: &mut Connection) -> Result<(), TopicAuthori
     transaction.commit()?;
     Ok(())
 }
+
+/// The `topic_publications` immutability trigger's v9 rejection message
+/// (the completed-state body marker of the tightened trigger — see
+/// [`migrate_v9`]).  The DDL and the probe below share this one constant,
+/// so they cannot diverge.
+const PUBLICATIONS_TRIGGER_V9_MESSAGE: &str = "topic publication is immutable beyond enqueue \
+                                               commit, pending length freeze and cascade budget \
+                                               spend";
+
+/// The `topic_patterns` identity trigger's v9 rejection message (the
+/// completed-state body marker of the tightened trigger — see
+/// [`migrate_v9`]), shared between the DDL and the probe for the same
+/// reason.
+const PATTERNS_TRIGGER_V9_MESSAGE: &str = "pattern identity and create key are immutable";
+
+/// Tightens the two immutability triggers and adds the publication-journal
+/// query indexes (schema v9, the W55 topic reconciliation lane over
+/// deep-audit findings #15/#16/#22).
+///
+/// `topic_publications_commit_transition` is rebuilt so the recorded
+/// payload length is frozen on `PENDING_ENQUEUE` rows as well (audit #16:
+/// the v5 clause only froze `OLD.status = 1`, leaving a pending row's
+/// length freely mutable).  The only legal `payload_bytes` mutations
+/// become (a) the `0`-sentinel backfill to the true length, allowed
+/// exactly on the `PENDING -> ENQUEUED` commit transition — the pre-v5
+/// row's single self-heal point, which the enqueue-commit UPDATE still
+/// exercises — and (b) the conservative regression of an `ENQUEUED` row
+/// back to the `0` sentinel (the v5 allowance, kept: an unknown length may
+/// only widen, never narrow, the admission's byte estimate).  Every other
+/// length change — in particular any change on a pending row — aborts.
+///
+/// `topic_patterns_identity_frozen` additionally freezes
+/// `create_idempotency_key` (audit #15: the create key is the pattern
+/// row's replay-rebinding evidence and, exactly like the `topics` table's
+/// frozen create key, is identity — the Rust re-subscribe path no longer
+/// rewrites it, and durable rows from before v9 that already suffered a
+/// rewrite keep their current value; the tightening only stops future
+/// rewrites).
+///
+/// The two `topic_publications` indexes (audit #22) cover the scans the
+/// append-only journal makes on every publish/advance/compact admission:
+/// `(topic_id, channel_sequence)` for the retention byte/time windows and
+/// the attribution coverage passes, `(topic_id, parent_idempotency_key)`
+/// for the cascade child-count probes — without them each admission cost
+/// grew linearly with the full journal history.
+///
+/// Like v6-v8, the step is additive and tracked by the durable presence of
+/// its objects instead of a watermark bump (the `user_version` watermark
+/// belongs to the v1-v5 rebuild chain and keeps reading 5).  The triggers
+/// keep their historical names — the earlier rebuild migrations and the
+/// test matrices address them by name — so the completed-state probe
+/// checks each trigger's stored body for its v9 rejection message (a
+/// marker that lives in the same constant as the DDL).  Idempotent on
+/// reopen: all four objects present is a no-op; a trigger that exists with
+/// a pre-v9 body is rebuilt; a trigger that vanished entirely while its
+/// table lives is a partial state and fails closed as
+/// [`TopicAuthorityError::CorruptRecord`]; the indexes are created with
+/// `IF NOT EXISTS`.  Everything lands in one atomic transaction, so no
+/// torn intermediate state is representable.
+pub(crate) fn migrate_v9(connection: &mut Connection) -> Result<(), TopicAuthorityError> {
+    let publications_v9_body: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+          WHERE type='trigger' AND name='topic_publications_commit_transition'
+            AND instr(sql, ?1) > 0",
+        params![PUBLICATIONS_TRIGGER_V9_MESSAGE],
+        |row| row.get(0),
+    )?;
+    let patterns_v9_body: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+          WHERE type='trigger' AND name='topic_patterns_identity_frozen'
+            AND instr(sql, ?1) > 0",
+        params![PATTERNS_TRIGGER_V9_MESSAGE],
+        |row| row.get(0),
+    )?;
+    let publications_indexes: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+          WHERE type='index' AND name IN (
+              'topic_publications_topic_sequence', 'topic_publications_topic_parent')",
+        [],
+        |row| row.get(0),
+    )?;
+    if publications_v9_body == 1 && patterns_v9_body == 1 && publications_indexes == 2 {
+        // The v9 step is complete: the watermark belongs to the v1-v5
+        // rebuild chain and is left untouched (it already reads 5).
+        return Ok(());
+    }
+    // Partial-state fail-closed: the tables exist (v6/v8 completed, or the
+    // v1-v5 chain for publications), so a missing trigger means someone
+    // dropped an immutability guard — recreate-able objects are rebuilt,
+    // but the vanished-guard state itself must not pass silently for a
+    // shape the migration never produced.
+    for (table, trigger) in [
+        ("topic_publications", "topic_publications_commit_transition"),
+        ("topic_patterns", "topic_patterns_identity_frozen"),
+    ] {
+        let tables: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+            params![table],
+            |row| row.get(0),
+        )?;
+        let triggers: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name=?1",
+            params![trigger],
+            |row| row.get(0),
+        )?;
+        if tables == 1 && triggers == 0 {
+            return Err(TopicAuthorityError::CorruptRecord(
+                "topic immutability trigger vanished before the v9 step",
+            ));
+        }
+    }
+
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(&format!(
+        "DROP TRIGGER IF EXISTS topic_publications_commit_transition;
+
+        CREATE TRIGGER topic_publications_commit_transition
+        BEFORE UPDATE ON topic_publications
+        WHEN NEW.idempotency_key != OLD.idempotency_key
+            OR NEW.topic_id != OLD.topic_id
+            OR NEW.policy_digest != OLD.policy_digest
+            OR NEW.payer_account_id != OLD.payer_account_id
+            OR NEW.payload_digest != OLD.payload_digest
+            OR (NEW.payload_bytes != OLD.payload_bytes
+                AND NOT ((OLD.payload_bytes = 0 AND OLD.status = 0
+                          AND NEW.payload_bytes > 0 AND NEW.status = 1)
+                         OR (OLD.status = 1 AND NEW.payload_bytes = 0)))
+            OR NEW.parent_idempotency_key IS NOT OLD.parent_idempotency_key
+            OR NEW.cascade_level != OLD.cascade_level
+            OR NEW.published_at_ms != OLD.published_at_ms
+            OR NEW.cascade_budget_remaining > OLD.cascade_budget_remaining
+            OR (NEW.cascade_budget_remaining != OLD.cascade_budget_remaining
+                AND OLD.status != 1)
+            OR (OLD.status = 1
+                AND (NEW.channel_sequence != OLD.channel_sequence
+                     OR NEW.channel_generation != OLD.channel_generation
+                     OR NEW.enqueued_at_ms != OLD.enqueued_at_ms))
+            OR (OLD.status != NEW.status
+                AND NOT (OLD.status = 0 AND NEW.status = 1))
+        BEGIN
+            SELECT RAISE(
+                ABORT,
+                '{PUBLICATIONS_TRIGGER_V9_MESSAGE}'
+            );
+        END;
+
+        DROP TRIGGER IF EXISTS topic_patterns_identity_frozen;
+
+        CREATE TRIGGER topic_patterns_identity_frozen
+        BEFORE UPDATE ON topic_patterns
+        WHEN NEW.pattern_id != OLD.pattern_id
+            OR NEW.pattern_text != OLD.pattern_text
+            OR NEW.subscriber_key != OLD.subscriber_key
+            OR NEW.create_idempotency_key != OLD.create_idempotency_key
+        BEGIN
+            SELECT RAISE(ABORT, '{PATTERNS_TRIGGER_V9_MESSAGE}');
+        END;
+
+        CREATE INDEX IF NOT EXISTS topic_publications_topic_sequence
+            ON topic_publications(topic_id, channel_sequence);
+        CREATE INDEX IF NOT EXISTS topic_publications_topic_parent
+            ON topic_publications(topic_id, parent_idempotency_key);",
+    ))?;
+    transaction.commit()?;
+    Ok(())
+}

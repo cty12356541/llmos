@@ -5,9 +5,10 @@ use nlos_channel::{
 };
 use nlos_topic::{
     AdvanceDecision, AdvanceReceipt, AdvanceRequest, CreateTopicRequest, PublicationRecord,
-    PublicationStatus, PublishDecision, PublishRequest, SubscribeDecision, SubscribeRequest,
-    SubscriberKey, SubscriptionRecord, TopicAuthority, TopicAuthorityError, TopicCompactDecision,
-    TopicDecision, TopicPolicy, TopicRecord, UnsubscribeDecision, UnsubscribeRequest,
+    PublicationStatus, PublishDecision, PublishRequest, SubscribeDecision, SubscribePatternRequest,
+    SubscribeRequest, SubscriberKey, SubscriptionRecord, TopicAuthority, TopicAuthorityError,
+    TopicCompactDecision, TopicDecision, TopicPolicy, TopicRecord, UnsubscribeDecision,
+    UnsubscribeRequest,
 };
 use nlos_types::{ChannelId, IdempotencyKey, ResourceAccountId};
 use rusqlite::Connection;
@@ -1003,16 +1004,19 @@ fn compact_bound_clamps_to_min_live_subscriber_cursor() {
     assert_eq!(trimmed.receipt().effective_trim_high_water, 2);
     assert_eq!(trimmed.receipt().channel.trim_high_water, 2);
 
-    // Entry 3 is hidden by the shared channel consume high-water (the
-    // documented single-high-water limitation of this slice), while the live
-    // tail beyond it stays pollable for the slow subscriber.
-    assert_eq!(
-        harness
-            .topics
-            .poll(topic.topic_id, subscriber(1), 10)
-            .expect("poll consumed tail"),
-        [] as [nlos_channel::QueueEntryRecord; 0]
-    );
+    // Entry 3 is hidden by the shared channel consume high-water: the
+    // crossed window is confirmed consumed at the single-log level, so the
+    // poll fails closed with the typed behind-high-water rejection (the
+    // W55 reconciliation of the old silent short-window read) instead of
+    // quietly returning a shortened tail.
+    assert!(matches!(
+        harness.topics.poll(topic.topic_id, subscriber(1), 10),
+        Err(TopicAuthorityError::CursorBehindChannelConsumption {
+            cursor: 2,
+            consume_high_water: 3,
+            ..
+        })
+    ));
     // A catches up past the hidden entry before the next publication: lag
     // billing (delivery attempts) charges subscribers that are behind when a
     // publication lands, and an unconsumed seq 3 would bill A a third time
@@ -1133,6 +1137,112 @@ fn compact_bound_clamps_to_min_live_subscriber_cursor() {
             .compact_bound(nlos_topic::TopicId::from_bytes([0x00; 16])),
         Err(TopicAuthorityError::TopicNotFound(_))
     ));
+}
+
+/// A subscriber whose cursor the channel owner's direct ack crossed no
+/// longer polls a silently shortened window: the poll fails closed with
+/// the typed behind-high-water rejection (the W55 reconciliation of
+/// deep-audit finding #18), and the documented recovery — the explicit
+/// blind catch-up advance — restores the ordinary tail read.
+#[test]
+fn poll_behind_the_channel_consume_point_fails_typed_not_silently() {
+    let harness = Harness::new("poll-behind");
+    let head = create_channel(&harness.channel, 1_024, 200);
+    let topic = create_topic(
+        &harness.topics,
+        head.channel_id,
+        b"poll-behind",
+        policy_for(8),
+        111,
+    );
+    let a = subscribe_at(&harness.topics, topic.topic_id, 1, 9_000);
+    assert_eq!(a.cursor, 0);
+    publish_at(&harness.topics, topic.topic_id, 112, b"one", 9_001);
+    publish_at(&harness.topics, topic.topic_id, 113, b"two", 9_002);
+
+    // The channel owner acks past the subscriber: the (0, 1] window is
+    // confirmed consumed at the single-log level and can never be received.
+    harness
+        .channel
+        .ack(AckRequest {
+            channel_id: head.channel_id,
+            up_to_sequence: 1,
+            acked_at_ms: 9_100,
+        })
+        .expect("owner ack");
+    assert!(matches!(
+        harness.topics.poll(topic.topic_id, subscriber(1), 10),
+        Err(TopicAuthorityError::CursorBehindChannelConsumption {
+            subscription_id,
+            cursor: 0,
+            consume_high_water: 1,
+        }) if subscription_id == a.subscription_id
+    ));
+
+    // The blind catch-up is the documented recovery: advance to the
+    // high-water (the skipped entry is confirmed gone from the delivery
+    // path) and the ordinary tail read resumes.
+    harness
+        .topics
+        .advance(AdvanceRequest {
+            topic_id: topic.topic_id,
+            subscriber_key: subscriber(1),
+            up_to_sequence: 1,
+            advanced_at_ms: 9_200,
+        })
+        .expect("blind catch-up");
+    assert_eq!(
+        harness
+            .topics
+            .poll(topic.topic_id, subscriber(1), 10)
+            .expect("tail after catch-up")
+            .iter()
+            .map(|entry| entry.sequence)
+            .collect::<Vec<_>>(),
+        [2]
+    );
+}
+
+/// Topic names reject the pattern language's wildcard byte at registration
+/// (the W55 reconciliation of deep-audit finding #20): a `*` in a name is
+/// unmatchable by a same-text exact pattern and collides with `prefix*`
+/// patterns.
+#[test]
+fn topic_names_reject_the_pattern_wildcard_byte() {
+    let harness = Harness::new("wildcard-name");
+    let head = create_channel(&harness.channel, 1_024, 200);
+    for name in [&b"wi*ld"[..], &b"trail*"[..], &b"*head"[..]] {
+        assert!(matches!(
+            harness.topics.create_topic(CreateTopicRequest {
+                channel_id: head.channel_id,
+                name: name.to_vec(),
+                policy: policy_for(8),
+                idempotency_key: key(121),
+                created_at_ms: 9_300,
+            }),
+            Err(TopicAuthorityError::InvalidPolicy(
+                "topic name must not contain the pattern wildcard `*`"
+            ))
+        ));
+    }
+    // The wildcard stays legal where it belongs: pattern text.
+    let wildcard = match harness
+        .topics
+        .subscribe_pattern(SubscribePatternRequest {
+            pattern: b"wi*".to_vec(),
+            binding: payer(9),
+            subscriber_key: subscriber(1),
+            idempotency_key: key(122),
+            subscribed_at_ms: 9_301,
+        })
+        .expect("wildcard pattern subscribes")
+    {
+        nlos_topic::PatternSubscribeDecision::Subscribed(outcome) => outcome.pattern,
+        nlos_topic::PatternSubscribeDecision::Replayed(_) => {
+            panic!("fresh pattern subscribe cannot replay")
+        }
+    };
+    assert_eq!(wildcard.pattern, b"wi*".to_vec());
 }
 
 #[test]
