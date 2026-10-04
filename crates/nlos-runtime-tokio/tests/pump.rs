@@ -20,8 +20,11 @@ use nlos_runtime_tokio::{
 };
 use nlos_types::{CallbackId, ExecutionFiberId, Generation, OperationId, ReceiptId};
 
-/// Generous bound for events that must happen.
-const RESOLVE: Duration = Duration::from_secs(10);
+/// Generous bound for events that must happen. Same-sequence stop
+/// accumulation runs on the pump's exponential backoff schedule and can
+/// legitimately take many seconds on loaded CI runners, so budget 10x like
+/// the other slow-machine waits in this workspace.
+const RESOLVE: Duration = Duration::from_secs(30);
 /// Polling step inside `wait_until`.
 const POLL_STEP: Duration = Duration::from_millis(5);
 
