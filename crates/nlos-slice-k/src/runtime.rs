@@ -372,8 +372,14 @@ impl SliceKRuntime {
     /// runtime's task authority as real late-outcome routing, with the
     /// typed no-route decision and every routing failure kept fail-closed
     /// (not acknowledged, retried with backoff, counted per lane on
-    /// [`Self::reconcile_lane`]). The pump uses the landed
-    /// default tuning (25ms fallback poll, 16-failure threshold).
+    /// [`Self::reconcile_lane`]). A persistently refused head entry (W57-B
+    /// poison head) is parked one-way after
+    /// [`DEFAULT_PARK_THRESHOLD`](crate::pump::DEFAULT_PARK_THRESHOLD)
+    /// consecutive same-sequence failures: the queue head unlocks, and the
+    /// parked entry stays durable and unacknowledged for manual
+    /// adjudication — parking is explicit operational debt with no
+    /// automatic un-park. The pump uses the landed default tuning (25ms
+    /// fallback poll, 16-failure pump-fault threshold).
     ///
     /// Starting again while a pump is `Running` fails closed — a second
     /// lane silently stealing the pump would ack wakes for its fibers as
@@ -401,9 +407,11 @@ impl SliceKRuntime {
         let consumer = OutboxConsumer {
             source: StoreOutboxSource::new(Arc::clone(&self.operations)),
             wake_sink: adapter.wake_sink(),
-            reconcile_sink: self
-                .pump_lane
-                .sink(Arc::clone(&self.tasks), Arc::clone(&self.clock)),
+            reconcile_sink: self.pump_lane.sink(
+                Arc::clone(&self.operations),
+                Arc::clone(&self.tasks),
+                Arc::clone(&self.clock),
+            ),
             config: ConsumerConfig { batch_limit: 8 },
         };
         // `PumpConfig::default()` keeps a non-zero poll interval, so the
@@ -434,9 +442,15 @@ impl SliceKRuntime {
     }
 
     /// The reconcile lane's health surface: how many `ReconcileEffect`
-    /// entries routed into the task authority, and how many were refused
-    /// per fail-closed lane (typed no-route vs routing failure) with the
-    /// most recent typed reason. Refused entries stay durable in the outbox.
+    /// entries routed into the task authority, how many were refused per
+    /// fail-closed lane (typed no-route vs routing failure) with the most
+    /// recent typed reason, and the W57-B dead-letter state — how many
+    /// entries this lane parked after repeated same-sequence failures and
+    /// the durable reason of the most recent park. Refused and parked
+    /// entries stay durable in the outbox; parked ones are visible through
+    /// [`SqliteOperationStore::inspect_parked_outbox`] on
+    /// [`Self::operations`] and require manual adjudication (there is no
+    /// automatic un-park).
     #[must_use]
     pub fn reconcile_lane(&self) -> ReconcileLaneSnapshot {
         self.pump_lane.snapshot()

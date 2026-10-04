@@ -87,6 +87,11 @@ const WAIT_SCHEMA_VERSION: i64 = 2;
 const CHANNEL_SCHEMA_VERSION: i64 = 3;
 const PROCESS_SCHEMA_VERSION: i64 = 5;
 const TASK_SCHEMA_VERSION: i64 = 46;
+/// The operation authority's store (W57-B parked the outbox at schema v5).
+/// The debugger renders no operation face yet, so this pin exists for
+/// preflight refusal and the read-only tripwire only — a store found at
+/// any other version is refused, never migrated.
+const OPERATION_SCHEMA_VERSION: i64 = 5;
 
 /// Cap for recovery plan/alert listings; the debugger renders everything
 /// present, never samples.
@@ -239,6 +244,15 @@ fn probe_store(root: &Path) -> Result<StoreFace, ToolError> {
             &mut observed,
         )?,
     };
+    // The operation authority's store is pinned the same way (W57-B: the
+    // outbox parked-entry schema is v5). The debugger renders no operation
+    // face, so only the pin refusal and the read-only tripwire observe
+    // this database; an absent store stays absent.
+    let _operations = probe_database(
+        &root.join("operations.sqlite3"),
+        OPERATION_SCHEMA_VERSION,
+        &mut observed,
+    )?;
     if wait.is_none() && channel.is_none() && process.is_none() && task.is_none() {
         return Err(ToolError::store(
             "probe store",
@@ -2319,6 +2333,10 @@ mod tests {
         drop(process);
         let task = SqliteTaskAuthority::open(root.path().join("task.sqlite3")).expect("open task");
         drop(task);
+        let operations =
+            nlos_store::SqliteOperationStore::open(root.path().join("operations.sqlite3"))
+                .expect("open operations");
+        drop(operations);
         let version = |name: &str| {
             let connection = Connection::open_with_flags(
                 root.path().join(name),
@@ -2339,5 +2357,10 @@ mod tests {
             super::PROCESS_SCHEMA_VERSION
         );
         assert_eq!(version("task.sqlite3"), super::TASK_SCHEMA_VERSION);
+        assert_eq!(
+            version("operations.sqlite3"),
+            super::OPERATION_SCHEMA_VERSION,
+            "the operation store pin must track the authority's current schema (W57-B: v5)"
+        );
     }
 }

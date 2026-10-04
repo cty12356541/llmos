@@ -4,6 +4,14 @@
 //! one `SQLite` transaction. Consumers must acknowledge outbox entries only
 //! after applying them idempotently; a crash may therefore redeliver an entry,
 //! but cannot lose a committed transition.
+//!
+//! A persistently unappliable entry may additionally be *parked* (schema v5
+//! dead-letter parking, W57-B): [`SqliteOperationStore::park_outbox_entry`]
+//! stamps it one-way with a timestamp and a human-facing reason, and
+//! [`SqliteOperationStore::pending_outbox`] then skips it so later entries
+//! flow. Parking is never an acknowledgement — the entry stays durable and
+//! unacknowledged for manual adjudication through
+//! [`SqliteOperationStore::inspect_parked_outbox`].
 
 use std::error::Error;
 use std::fmt;
@@ -24,9 +32,10 @@ use nlos_types::{
 use rusqlite::{Connection, OpenFlags, Transaction, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
 
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 const MAX_ENDPOINT_COMPONENT_BYTES: usize = 128;
 const MAX_DURABLE_RESULT_BYTES: usize = 1024 * 1024;
+const MAX_PARK_REASON_BYTES: usize = 1024;
 
 #[derive(Debug)]
 pub enum StoreError {
@@ -35,6 +44,8 @@ pub enum StoreError {
     CorruptRecord(&'static str),
     UnsupportedSchema(i64),
     OutboxEntryNotFound,
+    OutboxParkConflict,
+    InvalidParkRequest(&'static str),
     InvalidIdempotencyScope,
     IdempotencyConflict,
     IdempotencyRecordNotFound,
@@ -66,6 +77,12 @@ impl fmt::Display for StoreError {
                 write!(formatter, "unsupported authority schema version {version}")
             }
             Self::OutboxEntryNotFound => formatter.write_str("outbox entry does not exist"),
+            Self::OutboxParkConflict => formatter.write_str(
+                "outbox entry is already parked with a different park reason; parking is one-way",
+            ),
+            Self::InvalidParkRequest(reason) => {
+                write!(formatter, "invalid outbox park request: {reason}")
+            }
             Self::InvalidIdempotencyScope => formatter.write_str(
                 "idempotency service and method must be non-empty bounded strings without NUL",
             ),
@@ -251,6 +268,35 @@ pub struct OutboxEntry {
     pub state: OperationState,
 }
 
+/// Linearized result of a one-way outbox parking request (W57-B).
+///
+/// `Parked` stamped this call; `Replayed` proves the entry was already parked
+/// with the exact same reason and returns the original parking timestamp.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OutboxParkDecision {
+    Parked { sequence: i64, parked_at_ms: i64 },
+    Replayed { sequence: i64, parked_at_ms: i64 },
+}
+
+/// One parked (dead-letter) outbox entry as observed by
+/// [`SqliteOperationStore::inspect_parked_outbox`].
+///
+/// `acknowledged` is carried deliberately: parking is never an
+/// acknowledgement, so a healthy parked row reads `acknowledged == false`
+/// until a human adjudicates it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ParkedOutboxEntry {
+    pub sequence: i64,
+    pub kind: OutboxKind,
+    pub operation: OperationHandle,
+    pub owner_fiber: FiberHandle,
+    pub callback_id: Option<CallbackId>,
+    pub state: OperationState,
+    pub acknowledged: bool,
+    pub parked_at_ms: i64,
+    pub park_reason: String,
+}
+
 /// Authority-derived proof for the current Operation endpoint.
 ///
 /// The proof is derived from the durable Operation registration row and is
@@ -349,17 +395,24 @@ impl SqliteOperationStore {
                 migrate_v2(&mut connection)?;
                 migrate_v3(&mut connection)?;
                 migrate_v4(&mut connection)?;
+                migrate_v5(&mut connection)?;
             }
             1 => {
                 migrate_v2(&mut connection)?;
                 migrate_v3(&mut connection)?;
                 migrate_v4(&mut connection)?;
+                migrate_v5(&mut connection)?;
             }
             2 => {
                 migrate_v3(&mut connection)?;
                 migrate_v4(&mut connection)?;
+                migrate_v5(&mut connection)?;
             }
-            3 => migrate_v4(&mut connection)?,
+            3 => {
+                migrate_v4(&mut connection)?;
+                migrate_v5(&mut connection)?;
+            }
+            4 => migrate_v5(&mut connection)?,
             SCHEMA_VERSION => {}
             other => return Err(StoreError::UnsupportedSchema(other)),
         }
@@ -1020,7 +1073,12 @@ impl SqliteOperationStore {
         })
     }
 
-    /// Lists unacknowledged outbox entries in durable sequence order.
+    /// Lists unacknowledged, unparked outbox entries in durable sequence
+    /// order.
+    ///
+    /// Parked (dead-letter) entries are skipped: they stay durable and
+    /// observable through [`Self::inspect_parked_outbox`], but no longer
+    /// block the queue head for consumers.
     ///
     /// # Errors
     ///
@@ -1033,7 +1091,7 @@ impl SqliteOperationStore {
                     owner_fiber_id, owner_fiber_generation, callback_id,
                     state_kind, receipt_id
              FROM operation_outbox
-             WHERE acknowledged = 0
+             WHERE acknowledged = 0 AND parked_at_ms IS NULL
              ORDER BY sequence
              LIMIT ?1",
         )?;
@@ -1047,6 +1105,10 @@ impl SqliteOperationStore {
 
     /// Acknowledges an outbox entry after the consumer has applied it
     /// idempotently. Repeating the ACK is safe.
+    ///
+    /// Parking does not change this surface: a parked entry may still be
+    /// acknowledged (by an explicit adjudication path), but parking itself
+    /// never acknowledges.
     ///
     /// # Errors
     ///
@@ -1063,6 +1125,124 @@ impl SqliteOperationStore {
         }
         transaction.commit()?;
         Ok(())
+    }
+
+    /// Parks a persistently unappliable outbox entry one-way (W57-B
+    /// dead-letter parking).
+    ///
+    /// Parking stamps `parked_at_ms`/`park_reason` on the entry; from then on
+    /// [`Self::pending_outbox`] skips it, so later entries stop queueing
+    /// behind it. Parking is **not** an acknowledgement: the entry keeps
+    /// `acknowledged = 0` and stays durable for manual adjudication through
+    /// [`Self::inspect_parked_outbox`]. There is deliberately no unpark API
+    /// in this schema version — un-parking is an explicit operational
+    /// decision registered as follow-up work.
+    ///
+    /// Idempotency: re-parking an entry that is already parked with the exact
+    /// same `reason` replays the original decision (`Replayed` with the
+    /// original timestamp) without rewriting the row; re-parking with a
+    /// different `reason` is rejected with [`StoreError::OutboxParkConflict`]
+    /// (the strict lane: a parked entry's reason is part of its durable
+    /// evidence and cannot be rewritten after the fact).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::InvalidParkRequest`] for an empty, oversized
+    /// (> 1024 byte), NUL-carrying, or non-UTF-8-bounded reason, or a
+    /// negative `now_ms`; [`StoreError::OutboxEntryNotFound`] when no entry
+    /// with `sequence` exists; and [`StoreError::OutboxParkConflict`] when
+    /// the entry is already parked with a different reason.
+    pub fn park_outbox_entry(
+        &self,
+        sequence: i64,
+        reason: &str,
+        now_ms: i64,
+    ) -> Result<OutboxParkDecision, StoreError> {
+        validate_park_request(reason, now_ms)?;
+        let mut connection = self.lock_connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut statement = transaction.prepare(
+            "SELECT parked_at_ms, park_reason FROM operation_outbox WHERE sequence = ?1",
+        )?;
+        let mut rows = statement.query([sequence])?;
+        let existing: Option<(Option<i64>, Option<String>)> = match rows.next()? {
+            Some(row) => Some((row.get(0)?, row.get(1)?)),
+            None => None,
+        };
+        drop(rows);
+        drop(statement);
+        match existing {
+            None => return Err(StoreError::OutboxEntryNotFound),
+            // Not parked yet: the one-way UPDATE below is legal.
+            Some((None, None)) => {}
+            // Already parked: the exact same reason replays the original
+            // decision; a different reason is the typed one-way conflict;
+            // any partial column is a corrupt durable disagreement.
+            Some((parked_at_ms, park_reason)) => match (parked_at_ms, park_reason) {
+                (Some(at), Some(why)) if why == reason => {
+                    transaction.commit()?;
+                    return Ok(OutboxParkDecision::Replayed {
+                        sequence,
+                        parked_at_ms: at,
+                    });
+                }
+                (Some(_), Some(_)) => return Err(StoreError::OutboxParkConflict),
+                _ => {
+                    return Err(StoreError::CorruptRecord(
+                        "outbox park timestamp and reason disagree",
+                    ));
+                }
+            },
+        }
+        let changed = transaction.execute(
+            "UPDATE operation_outbox
+             SET parked_at_ms = ?1, park_reason = ?2
+             WHERE sequence = ?3 AND parked_at_ms IS NULL",
+            params![now_ms, reason, sequence],
+        )?;
+        if changed != 1 {
+            return Err(StoreError::CorruptRecord(
+                "outbox park compare-and-set failed",
+            ));
+        }
+        transaction.commit()?;
+        Ok(OutboxParkDecision::Parked {
+            sequence,
+            parked_at_ms: now_ms,
+        })
+    }
+
+    /// Lists parked (dead-letter) outbox entries in durable sequence order,
+    /// with their parking timestamps, reasons, and acknowledgement state.
+    ///
+    /// This is the manual-adjudication read surface of W57-B: parked entries
+    /// are explicit operational debt and this listing is the only supported
+    /// way to see them (the pending lane skips them by design).
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage error or corrupt-record error.
+    pub fn inspect_parked_outbox(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<ParkedOutboxEntry>, StoreError> {
+        let connection = self.lock_connection()?;
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let mut statement = connection.prepare(
+            "SELECT sequence, kind, operation_id, operation_generation,
+                    owner_fiber_id, owner_fiber_generation, callback_id,
+                    state_kind, receipt_id, acknowledged, parked_at_ms, park_reason
+             FROM operation_outbox
+             WHERE parked_at_ms IS NOT NULL
+             ORDER BY sequence
+             LIMIT ?1",
+        )?;
+        let mut rows = statement.query([limit])?;
+        let mut entries = Vec::new();
+        while let Some(row) = rows.next()? {
+            entries.push(decode_parked_outbox_row(row)?);
+        }
+        Ok(entries)
     }
 
     fn lock_connection(&self) -> Result<MutexGuard<'_, Connection>, StoreError> {
@@ -1229,6 +1409,51 @@ fn migrate_v4(connection: &mut Connection) -> Result<(), StoreError> {
     Ok(())
 }
 
+/// Adds one-way dead-letter parking to the Outbox (W57-B, schema v5).
+///
+/// Two nullable columns (`parked_at_ms`, `park_reason`) are added to
+/// `operation_outbox`: `NULL` means "not parked". A trigger makes parking
+/// strictly one-way at the storage layer — the only UPDATE of these columns
+/// SQLite accepts is the single NULL→value stamp of
+/// [`SqliteOperationStore::park_outbox_entry`]; a later re-park or an un-park
+/// (value→NULL or value→different value) aborts, so parking is durable
+/// evidence that cannot be rewritten after the fact. The `acknowledged`
+/// semantics are deliberately untouched: acknowledging a row does not mention
+/// the parked columns, and parking never acknowledges. A fresh partial index
+/// keeps [`SqliteOperationStore::pending_outbox`] an index-order scan now
+/// that it must also skip parked rows. Like every migration here this is one
+/// transaction, so an interrupted upgrade leaves a complete v4 or a complete
+/// v5 database, never a mixed schema, and no row data is rewritten.
+fn migrate_v5(connection: &mut Connection) -> Result<(), StoreError> {
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "ALTER TABLE operation_outbox
+            ADD COLUMN parked_at_ms INTEGER
+            CHECK(parked_at_ms IS NULL OR parked_at_ms >= 0);
+         ALTER TABLE operation_outbox
+            ADD COLUMN park_reason TEXT
+            CHECK(park_reason IS NULL OR (
+                length(park_reason) BETWEEN 1 AND 1024
+                AND instr(park_reason, char(0)) = 0));
+
+         CREATE TRIGGER operation_outbox_parking_is_one_way
+         BEFORE UPDATE OF parked_at_ms, park_reason ON operation_outbox
+         WHEN OLD.parked_at_ms IS NOT NULL
+              OR (NEW.parked_at_ms IS NULL) <> (NEW.park_reason IS NULL)
+         BEGIN
+             SELECT RAISE(ABORT, 'operation_outbox parking is one-way');
+         END;
+
+         CREATE INDEX operation_outbox_pending_unparked
+            ON operation_outbox(sequence)
+            WHERE acknowledged = 0 AND parked_at_ms IS NULL;
+
+         PRAGMA user_version = 5;",
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
+
 struct IdempotencyRecord {
     request_digest_sha256: [u8; 32],
     operation: OperationHandle,
@@ -1255,6 +1480,34 @@ fn validate_idempotency_scope(scope: &IdempotencyScope) -> Result<(), StoreError
     } else {
         Err(StoreError::InvalidIdempotencyScope)
     }
+}
+
+/// Fail-closed validation of a parking request before any row is touched:
+/// the reason becomes durable operational evidence, so it must be a
+/// non-empty, bounded, NUL-free UTF-8 string, and the timestamp must fit the
+/// column's non-negative domain.
+fn validate_park_request(reason: &str, now_ms: i64) -> Result<(), StoreError> {
+    if reason.is_empty() {
+        return Err(StoreError::InvalidParkRequest(
+            "park reason must be a non-empty string",
+        ));
+    }
+    if reason.len() > MAX_PARK_REASON_BYTES {
+        return Err(StoreError::InvalidParkRequest(
+            "park reason exceeds the 1024-byte bound",
+        ));
+    }
+    if reason.contains('\0') {
+        return Err(StoreError::InvalidParkRequest(
+            "park reason must not carry a NUL byte",
+        ));
+    }
+    if now_ms < 0 {
+        return Err(StoreError::InvalidParkRequest(
+            "park timestamp must be non-negative milliseconds",
+        ));
+    }
+    Ok(())
 }
 
 fn load_idempotency_record(
@@ -1722,6 +1975,34 @@ fn decode_outbox_row(row: &rusqlite::Row<'_>) -> Result<OutboxEntry, StoreError>
         owner_fiber,
         callback_id,
         state: decode_state(state_kind, Some(receipt_id))?,
+    })
+}
+
+/// Decodes one parked row of [`SqliteOperationStore::inspect_parked_outbox`]:
+/// the outbox fact columns plus the acknowledged flag and the two parking
+/// columns (both of which must be present and mutually consistent — the
+/// v5 trigger makes any other durable combination unreachable).
+fn decode_parked_outbox_row(row: &rusqlite::Row<'_>) -> Result<ParkedOutboxEntry, StoreError> {
+    let entry = decode_outbox_row(row)?;
+    let acknowledged: i64 = row.get(9)?;
+    let parked_at_ms: i64 = row.get(10)?;
+    let park_reason: String = row.get(11)?;
+    if !matches!(acknowledged, 0 | 1) {
+        return Err(StoreError::CorruptRecord("outbox acknowledged flag"));
+    }
+    if parked_at_ms < 0 {
+        return Err(StoreError::CorruptRecord("negative outbox park timestamp"));
+    }
+    Ok(ParkedOutboxEntry {
+        sequence: entry.sequence,
+        kind: entry.kind,
+        operation: entry.operation,
+        owner_fiber: entry.owner_fiber,
+        callback_id: entry.callback_id,
+        state: entry.state,
+        acknowledged: acknowledged == 1,
+        parked_at_ms,
+        park_reason,
     })
 }
 
