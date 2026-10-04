@@ -760,6 +760,78 @@ fn verification_joined_search_matches_authority_trust_views() {
 }
 
 #[test]
+fn limit_aware_windows_page_until_post_filter_survivors_are_collected() {
+    let root = Root::new("windowed");
+    let fixture = fixture(&root, 60);
+    let append_cap = append_capability(&fixture, 0xd1);
+
+    // 80 assertions: 79 Inference rows then one Directive row at the very
+    // end of the log.  The SQL fetch window (limit*4 + 64, so 68..72 rows
+    // for the small limits below) cannot hold the whole log, so the tail
+    // survivors can only be reached by advancing the keyset cursor across
+    // windows — the post-filter `limit` semantics must survive that.
+    let ids: Vec<SemanticEventId> = (0u16..80)
+        .map(|index| {
+            let mode = if index == 79 {
+                AssertionMode::Directive
+            } else {
+                AssertionMode::Inference
+            };
+            append_assertion(
+                &fixture,
+                &append_cap,
+                u8::try_from(index + 1).expect("seed fits u8"),
+                mode,
+                "text/plain",
+                &format!("row{index}"),
+            )
+        })
+        .collect();
+    let last = ids[79];
+    append_verification(&fixture, &append_cap, 0xd2, last, VerificationOutcome::Pass);
+    let search =
+        SearchService::open(root.path(), Arc::clone(&fixture.semantic)).expect("open search face");
+
+    // Mode filter (post-SQL decode): window 4*2+64 = 72 < 80, so the only
+    // Directive row lives past the first window.
+    let directive = search
+        .search_assertions(&AssertionSelector {
+            assertion_mode: Some(AssertionMode::Directive),
+            limit: 2,
+            ..all_selector()
+        })
+        .unwrap();
+    assert_eq!(hit_ids(&directive), vec![last]);
+
+    // Verification join (post-SQL authority lookup): window 4*1+64 = 68 <
+    // 80; the only Pass row is the last one, behind 79 unverified hits.
+    let verified = search
+        .search_assertions(&AssertionSelector {
+            verification: VerificationFilter::Status(TrustViewVerificationStatus::Pass),
+            limit: 1,
+            ..all_selector()
+        })
+        .unwrap();
+    assert_eq!(hit_ids(&verified), vec![last]);
+
+    // Early termination at the exact post-filter limit, in log order.
+    let early = search
+        .search_assertions(&AssertionSelector {
+            assertion_mode: Some(AssertionMode::Inference),
+            limit: 20,
+            ..all_selector()
+        })
+        .unwrap();
+    assert_eq!(hit_ids(&early), ids[..20].to_vec());
+
+    // Exhaustion: a limit above the population returns every row in order.
+    let all = search
+        .search_assertions(&AssertionSelector::new(200))
+        .unwrap();
+    assert_eq!(hit_ids(&all), ids);
+}
+
+#[test]
 fn index_rebuild_is_deterministic_and_matches_live_scan() {
     let workload = workload("index");
 
