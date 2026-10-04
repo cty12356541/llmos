@@ -227,13 +227,22 @@ impl SearchService {
     /// Queries admitted assertions by selector shape against the live
     /// authority rows.
     ///
-    /// Structural predicates (scope, issuer, content digest, retraction
-    /// fact) are evaluated in SQL over the read-only connection; the
-    /// assertion-mode predicate is evaluated after decoding the canonical
-    /// bytes with the authority's own public decoder; a verification
-    /// predicate is evaluated by reading the authority's live
+    /// Structural predicates (scope, issuer, content digest) are evaluated
+    /// in SQL over the read-only connection; the assertion-mode predicate
+    /// is evaluated after decoding the canonical bytes with the
+    /// authority's own public decoder; a verification predicate is
+    /// evaluated by reading the authority's live
     /// [`SemanticAuthority::inspect_trust_view`] per surviving candidate.
     /// `limit` applies after all filters.
+    ///
+    /// The scan is limit-aware (audit #30): each round fetches one
+    /// amplified SQL window — `LIMIT` pushed into the structural query
+    /// over the deterministic `log_seq` order, keyset-paginated on the
+    /// unique `log_seq` — and applies the Rust-side filters to it; when a
+    /// window's survivors fall short of `limit`, the next window is
+    /// fetched until `limit` survivors are collected or the event log is
+    /// exhausted.  A small-limit query therefore never decodes or
+    /// trust-view-joins the unfiltered tail.
     ///
     /// # Errors
     ///
@@ -245,21 +254,71 @@ impl SearchService {
         &self,
         selector: &AssertionSelector,
     ) -> Result<Vec<AssertionHit>, SearchError> {
-        let mut hits = self.scan_assertions(selector)?;
-        if let VerificationFilter::Status(status) = selector.verification {
-            let mut verified = Vec::with_capacity(hits.len());
-            for hit in hits {
-                let view = self
-                    .authority
-                    .inspect_trust_view(hit.event_id)
-                    .map_err(SearchError::Authority)?;
-                if view.verification_status == status {
-                    verified.push(hit);
+        if selector.limit == 0 {
+            return Err(SearchError::InvalidLimit);
+        }
+        let mut hits: Vec<AssertionHit> = Vec::new();
+        // Keyset cursor over the unique, admission-monotone `log_seq`
+        // (`event_log.log_seq` is `INTEGER PRIMARY KEY AUTOINCREMENT` on an
+        // insert-only table): every non-empty page strictly advances the
+        // cursor, so pages never skip or repeat rows.
+        let mut after_log_seq: Option<u64> = None;
+        loop {
+            let page = fetch_assertion_rows(
+                &self.connection,
+                selector,
+                after_log_seq,
+                Some(sql_fetch_window(selector.limit)),
+            )?;
+            let Some(last) = page.last() else {
+                // Empty page: the structural scan is exhausted.
+                break;
+            };
+            after_log_seq = Some(last.log_seq);
+            for hit in page {
+                if selector
+                    .assertion_mode
+                    .is_some_and(|mode| hit.assertion_mode != mode)
+                {
+                    continue;
+                }
+                let retraction_keeps = match selector.retraction {
+                    RetractionFilter::Any => true,
+                    RetractionFilter::ExcludeRetracted => !hit.retracted,
+                    RetractionFilter::OnlyRetracted => hit.retracted,
+                };
+                if !retraction_keeps {
+                    continue;
+                }
+                // Verification join: one authority trust-view lookup per
+                // surviving candidate.  Post-v8 each lookup is an indexed
+                // point read on the authority side (admission receipt by
+                // unique event id; verification/judgment facts resolve
+                // through the `semantic_typed_links` primary-key prefix),
+                // so the join costs O(survivors) small point queries and
+                // the loop above bounds the candidate count.  A batch
+                // (IN-list/JOIN) interface would widen the Semantic
+                // authority's public read surface — a semantic-authority
+                // change, not a search-face one (audit #30 keeps the
+                // per-candidate form).
+                if let VerificationFilter::Status(status) = selector.verification {
+                    let view = self
+                        .authority
+                        .inspect_trust_view(hit.event_id)
+                        .map_err(SearchError::Authority)?;
+                    if view.verification_status != status {
+                        continue;
+                    }
+                }
+                hits.push(hit);
+                if hits.len() == selector.limit {
+                    // `limit` counts post-filter survivors, so the ordered
+                    // prefix is complete the moment the limit-th survivor
+                    // is collected.
+                    return Ok(hits);
                 }
             }
-            hits = verified;
         }
-        hits.truncate(selector.limit);
         Ok(hits)
     }
 
@@ -280,38 +339,22 @@ impl SearchService {
     /// authority's admitted assertions.
     ///
     /// The index is a point-in-time snapshot: never persisted, never
-    /// canonical, and rebuildable at any moment.  Each entry re-derives the
+    /// canonical, and rebuildable at any moment. Each entry re-derives the
     /// `EventId` from the canonical bytes and fails closed on mismatch.
+    /// The pass stays deliberately unbounded (audit #30's documented
+    /// full-scan design): no cursor, no LIMIT window, one whole-log read.
     ///
     /// # Errors
     ///
     /// Fails closed for a storage, decode, or read-integrity failure.
     pub fn build_index(&self) -> Result<SemanticIndex, SearchError> {
-        let entries = fetch_assertion_rows(&self.connection, &AssertionSelector::new(usize::MAX))?;
+        let entries = fetch_assertion_rows(
+            &self.connection,
+            &AssertionSelector::new(usize::MAX),
+            None,
+            None,
+        )?;
         Ok(SemanticIndex { entries })
-    }
-
-    /// The structural scan shared by [`Self::search_assertions`]: SQL
-    /// predicates, canonical decode, then the mode and retraction filters.
-    /// The verification join and the limit are the caller's final steps, so
-    /// that `limit` applies after every filter.
-    fn scan_assertions(
-        &self,
-        selector: &AssertionSelector,
-    ) -> Result<Vec<AssertionHit>, SearchError> {
-        if selector.limit == 0 {
-            return Err(SearchError::InvalidLimit);
-        }
-        let mut hits = fetch_assertion_rows(&self.connection, selector)?;
-        if let Some(mode) = selector.assertion_mode {
-            hits.retain(|hit| hit.assertion_mode == mode);
-        }
-        match selector.retraction {
-            RetractionFilter::Any => {}
-            RetractionFilter::ExcludeRetracted => hits.retain(|hit| !hit.retracted),
-            RetractionFilter::OnlyRetracted => hits.retain(|hit| hit.retracted),
-        }
-        Ok(hits)
     }
 }
 
@@ -408,9 +451,21 @@ fn assertion_columns(row: &rusqlite::Row<'_>) -> rusqlite::Result<AssertionColum
     ))
 }
 
+/// Fetches the assertion rows matching the selector's SQL-side structural
+/// predicates, in admission (`log_seq`) order.
+///
+/// `after_log_seq` keyset-pages the scan (`l.log_seq > ?n`; every page
+/// strictly advances the unique, insert-only `log_seq`) and `fetch_limit`
+/// pushes a `LIMIT ?n` window into the SQL so a limit-aware caller never
+/// materializes the full hit set.  `None` for either means that narrowing
+/// does not apply — the index build's single unbounded pass.  A
+/// `fetch_limit` above the SQLite integer range is clamped to `i64::MAX`,
+/// which SQLite evaluates as unbounded.
 fn fetch_assertion_rows(
     connection: &Connection,
     selector: &AssertionSelector,
+    after_log_seq: Option<u64>,
+    fetch_limit: Option<usize>,
 ) -> Result<Vec<AssertionHit>, SearchError> {
     let mut conditions: Vec<String> = Vec::new();
     // Binding ?1 is the fixed event-type; selector predicates number from ?2.
@@ -432,6 +487,13 @@ fn fetch_assertion_rows(
         conditions.push(format!("e.content_digest=?{next}"));
         parameters.push(Box::new(digest.to_vec()));
     }
+    if let Some(log_seq) = after_log_seq {
+        let next = parameters.len() + 1;
+        conditions.push(format!("l.log_seq>?{next}"));
+        parameters.push(Box::new(i64::try_from(log_seq).map_err(|_| {
+            SearchError::CorruptRecord("log seq exceeds sqlite integer")
+        })?));
+    }
     let mut sql = String::from(
         "SELECT e.event_id, e.canonical_unsigned_event, e.scope_kind, e.scope_id,
                 e.issuer_principal_id, e.content_digest, l.log_seq, a.admitted_at_ms,
@@ -449,12 +511,32 @@ fn fetch_assertion_rows(
         sql.push_str(&conditions.join(" AND "));
     }
     sql.push_str(" ORDER BY l.log_seq");
+    if let Some(limit) = fetch_limit {
+        let next = parameters.len() + 1;
+        let limit_sql = format!(" LIMIT ?{next}");
+        sql.push_str(&limit_sql);
+        parameters.push(Box::new(i64::try_from(limit).unwrap_or(i64::MAX)));
+    }
     let parameter_refs: Vec<&dyn ToSql> = parameters.iter().map(Box::as_ref).collect();
     let mut statement = connection.prepare(&sql)?;
     let rows = statement
         .query_map(parameter_refs.as_slice(), assertion_columns)?
         .collect::<Result<Vec<_>, _>>()?;
     rows.into_iter().map(assertion_hit_from_columns).collect()
+}
+
+/// The SQL fetch window for one pagination round of
+/// [`SearchService::search_assertions`] (audit #30).
+///
+/// The mode, retraction and verification filters run *after* the SQL
+/// fetch, so the window oversamples the raw row count — factor 4 plus 64
+/// rows of slack — which keeps small-limit queries to a single round
+/// while any heavier filtering converges through keyset pagination until
+/// the caller's `limit` post-filter survivors are collected or the event
+/// log is exhausted.  Saturating on purpose: a `usize::MAX` limit
+/// degenerates to one effectively unbounded pass.
+fn sql_fetch_window(limit: usize) -> usize {
+    limit.saturating_mul(4).saturating_add(64)
 }
 
 fn assertion_hit_from_columns(columns: AssertionColumns) -> Result<AssertionHit, SearchError> {
