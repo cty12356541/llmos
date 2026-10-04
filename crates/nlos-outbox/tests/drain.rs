@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use nlos_operation::OperationState;
 use nlos_outbox::{
-    ConsumerConfig, DrainReport, OutboxConsumer, OutboxError, OutboxItem, OutboxKind, OutboxSource,
-    ReconcileSink,
+    ConsumerConfig, DrainReport, DrainStop, DrainStopPhase, OutboxConsumer, OutboxError,
+    OutboxItem, OutboxKind, OutboxSource, ReconcileSink,
 };
 use nlos_runtime::{FiberHandle, RuntimeError, WakeOutcome, WakeSink};
 use nlos_types::{CallbackId, ExecutionFiberId, Generation, OperationId, ReceiptId};
@@ -229,6 +229,7 @@ fn entries_are_applied_then_acked_in_ascending_sequence_order() {
             applied: 3,
             acked: 3,
             stopped_at: None,
+            failure: None,
             shutdown: false,
         }
     );
@@ -280,6 +281,10 @@ fn transient_wake_error_stops_batch_without_applying_or_acknowledging_rest() {
             applied: 1,
             acked: 1,
             stopped_at: Some(2),
+            failure: Some(DrainStop {
+                phase: DrainStopPhase::Wake,
+                error: "runtime admission queue is full".to_owned(),
+            }),
             shutdown: false,
         }
     );
@@ -304,6 +309,7 @@ fn permanent_wake_outcomes_are_applied_and_acknowledged() {
             applied: 3,
             acked: 3,
             stopped_at: None,
+            failure: None,
             shutdown: false,
         }
     );
@@ -347,6 +353,10 @@ fn transient_reconcile_error_stops_batch() {
             applied: 0,
             acked: 0,
             stopped_at: Some(1),
+            failure: Some(DrainStop {
+                phase: DrainStopPhase::Reconcile,
+                error: "outbox reconcile error: scripted reconcile failure".to_owned(),
+            }),
             shutdown: false,
         }
     );
@@ -366,6 +376,10 @@ fn ack_failure_stops_batch_and_later_entries_are_not_applied() {
             applied: 1,
             acked: 0,
             stopped_at: Some(1),
+            failure: Some(DrainStop {
+                phase: DrainStopPhase::Ack,
+                error: "outbox source error: scripted ack failure".to_owned(),
+            }),
             shutdown: false,
         }
     );
@@ -384,6 +398,7 @@ fn ack_failure_stops_batch_and_later_entries_are_not_applied() {
             applied: 2,
             acked: 2,
             stopped_at: None,
+            failure: None,
             shutdown: false,
         }
     );
@@ -436,6 +451,7 @@ fn shutting_down_wake_stops_batch_as_terminal_shutdown() {
             applied: 1,
             acked: 1,
             stopped_at: Some(2),
+            failure: None,
             shutdown: true,
         }
     );

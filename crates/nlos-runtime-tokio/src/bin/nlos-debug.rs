@@ -83,7 +83,7 @@ const USAGE: &str = "usage: nlos-debug snapshot inspect <STORE> \
 /// `schema_pins_match_fresh_authority_stores`, which fails the moment an
 /// authority bumps its schema and forces the pin update. A store at any
 /// other version is refused in preflight (never migrated by the debugger).
-const WAIT_SCHEMA_VERSION: i64 = 1;
+const WAIT_SCHEMA_VERSION: i64 = 2;
 const CHANNEL_SCHEMA_VERSION: i64 = 3;
 const PROCESS_SCHEMA_VERSION: i64 = 5;
 const TASK_SCHEMA_VERSION: i64 = 46;
@@ -745,10 +745,16 @@ fn snapshot_command(arguments: &[String]) -> Result<String, ToolError> {
                 );
                 continue;
             }
-            match markers
-                .iter()
-                .find(|marker| marker.process_id == head.process_id)
-            {
+            // A process can carry terminal markers for several generations
+            // (crash, restore, crash again) and the markers enumerate in
+            // ascending `(process_id, process_generation)` order, so a plain
+            // find-first would render the OLDEST generation's facts. The
+            // head's current generation selects the marker of the terminal
+            // transition that made this head terminal; markers of older
+            // generations are history for the restore chain, not this head.
+            match markers.iter().find(|marker| {
+                marker.process_id == head.process_id && marker.generation == head.generation
+            }) {
                 Some(marker) => {
                     let _ = writeln!(
                         out,
@@ -2011,6 +2017,102 @@ mod tests {
         )));
         assert!(output.contains("input_len=19 written_at=2500"));
         assert!(output.contains("face task.sqlite3 present schema=46"));
+    }
+
+    #[test]
+    fn snapshot_inspect_renders_the_marker_of_the_heads_generation() {
+        // A multi-generation terminal process: crash at generation 1, restore
+        // to generation 2, crash again. The durable marker table now holds
+        // two rows for the process and enumerates them in ascending
+        // generation order, so the rendered terminal facts must come from
+        // the marker matching the head's current generation (2), not from
+        // the first (oldest) marker found.
+        let root = TempDir::new("multigen-terminal");
+        let process = ProcessAuthority::open(root.path()).expect("open process authority");
+        let domain = match process
+            .create_isolation_domain(CreateIsolationDomainRequest {
+                policy_digest: [0x71; 32],
+                idempotency_key: key(81),
+                created_at_ms: 900,
+            })
+            .expect("create domain")
+        {
+            IsolationDomainDecision::Created(record) => record,
+            replayed @ IsolationDomainDecision::Replayed(_) => {
+                panic!("expected created domain, got {replayed:?}")
+            }
+        };
+        let register_process = |seed: u8| match process
+            .register_delegated_process(RegisterDelegatedProcessRequest {
+                task_id: TaskId::from_bytes([0xa1; 16]),
+                task_attempt_id: TaskAttemptId::from_bytes([0xa2; 16]),
+                attempt_generation: Generation::INITIAL,
+                isolation_domain_id: nlos_types::IsolationDomainId::from_bytes(
+                    domain.isolation_domain_id.into_bytes(),
+                ),
+                isolation_domain_generation: domain.generation,
+                isolation_domain_fencing_token: domain.fencing_token,
+                idempotency_key: key(seed),
+                created_at_ms: 950,
+            })
+            .expect("register process")
+        {
+            ProcessBindingDecision::Registered(record) => record,
+            replayed @ ProcessBindingDecision::Replayed(_) => {
+                panic!("expected registered process, got {replayed:?}")
+            }
+        };
+        let crash =
+            |record: &nlos_process::ProcessBindingRecord, seed: u8, marked_at: u64| match process
+                .propagate_crash(nlos_process::PropagateCrashRequest {
+                    process_id: record.process_id,
+                    expected_process_generation: record.process_generation,
+                    expected_process_fencing_token: record.process_fencing_token,
+                    idempotency_key: key(seed),
+                    marked_at_ms: marked_at,
+                })
+                .expect("propagate crash")
+            {
+                ProcessTerminalDecision::Marked(_) => {}
+                ProcessTerminalDecision::Replayed(_) => panic!("fresh crash cannot replay"),
+            };
+        let first = register_process(82);
+        crash(&first, 83, 2_600);
+        let restored = match process
+            .restore_process(nlos_process::RestoreProcessRequest {
+                process_id: first.process_id,
+                expected_process_generation: first.process_generation,
+                expected_process_fencing_token: first.process_fencing_token,
+                isolation_domain_id: nlos_types::IsolationDomainId::from_bytes(
+                    domain.isolation_domain_id.into_bytes(),
+                ),
+                isolation_domain_generation: domain.generation,
+                isolation_domain_fencing_token: domain.fencing_token,
+                idempotency_key: key(84),
+                restored_at_ms: 3_000,
+            })
+            .expect("restore process")
+        {
+            nlos_process::RestoreProcessDecision::Restored(record) => record,
+            replayed @ nlos_process::RestoreProcessDecision::Replayed(_) => {
+                panic!("expected restored process, got {replayed:?}")
+            }
+        };
+        assert_eq!(restored.process_generation.get(), 2);
+        crash(&restored, 85, 3_600);
+        drop(process);
+
+        let output = run(&["snapshot", "inspect", root.path().to_str().unwrap()])
+            .expect("snapshot inspect renders");
+        assert!(output.contains("process-registry processes=1"));
+        assert!(
+            output.contains("lifecycle=crashed at_generation=2 marked_at=3600"),
+            "must render the head-generation marker, not the oldest: {output}"
+        );
+        assert!(
+            !output.contains("at_generation=1"),
+            "the stale generation-1 marker must not be rendered: {output}"
+        );
     }
 
     #[test]

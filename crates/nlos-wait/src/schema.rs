@@ -2,7 +2,7 @@ use rusqlite::{Connection, TransactionBehavior};
 
 use crate::WaitAuthorityError;
 
-pub(crate) const SCHEMA_VERSION: i64 = 1;
+pub(crate) const SCHEMA_VERSION: i64 = 2;
 
 /// Creates the durable wait registry schema v1: the wait state machine rows
 /// (one per registered `(binding, channel, target sequence)` registration),
@@ -25,6 +25,13 @@ pub(crate) const SCHEMA_VERSION: i64 = 1;
 /// which is re-derived on every read so tampering surfaces as
 /// [`WaitAuthorityError::CorruptRecord`] instead of a silently accepted
 /// drift.
+///
+/// v1 leaves one asymmetry that [`migrate_v2`] closes: the trigger freezes
+/// only the identity and status of a terminal (`WOKEN`/`CANCELLED`) row, so
+/// the migration-fact columns `woken_at_ms`/`woken_up_to_sequence`/
+/// `cancelled_at_ms` could still be rewritten by a bare `UPDATE` after the
+/// flip, and — unlike the digest-bound columns — nothing in the readback
+/// re-derives them.
 #[allow(clippy::too_many_lines)] // One atomic STRICT schema batch with its guards.
 pub(crate) fn migrate_v1(connection: &mut Connection) -> Result<(), WaitAuthorityError> {
     let table_count: i64 = connection.query_row(
@@ -137,6 +144,65 @@ pub(crate) fn migrate_v1(connection: &mut Connection) -> Result<(), WaitAuthorit
         END;
 
         PRAGMA user_version=1;",
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
+
+/// Migrates a v1 wait registry to v2 by rebuilding the
+/// `waits_state_transition` trigger with one added WHEN clause: on a row
+/// that has already left `PENDING`, the migration-fact columns
+/// (`woken_at_ms`, `woken_up_to_sequence`, `cancelled_at_ms`) are frozen —
+/// they are written exactly once, inside the legal `PENDING -> WOKEN` /
+/// `PENDING -> CANCELLED` flip transaction, and can never be rewritten
+/// afterwards.
+///
+/// Why the trigger layer and not the readback: the stored `binding_digest`
+/// covers the registration identity and channel binding, but deliberately
+/// does not cover the three wake/cancel facts (extending it would change the
+/// digest of every existing row and break stored replays). The readback
+/// already checks the state/fact *shape* (`validate_wait_state`); what it
+/// cannot check is whether the recorded fact values were altered while
+/// keeping their shape. Freezing at the DDL layer closes that hole for every
+/// writer, including raw `SQLite` sessions.
+///
+/// No data is rewritten and the legal one-shot flip paths are untouched: the
+/// new clause only fires when `OLD.status != 0` AND a fact column changes.
+/// The migration is idempotent by construction: the trigger is dropped and
+/// recreated inside one `Immediate` transaction that also bumps
+/// `user_version` to 2, so an interrupted migration rolls back completely
+/// and re-running it on an already-migrated trigger rebuilds the identical
+/// body.
+pub(crate) fn migrate_v2(connection: &mut Connection) -> Result<(), WaitAuthorityError> {
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "DROP TRIGGER IF EXISTS waits_state_transition;
+        CREATE TRIGGER waits_state_transition
+        BEFORE UPDATE ON waits
+        WHEN NEW.wait_id != OLD.wait_id
+            OR NEW.binding_id != OLD.binding_id
+            OR NEW.register_idempotency_key != OLD.register_idempotency_key
+            OR NEW.registered_at_ms != OLD.registered_at_ms
+            OR NEW.binding_digest != OLD.binding_digest
+            OR (OLD.status != 0 AND NEW.status != OLD.status)
+            OR (OLD.status != 0
+                AND (NEW.woken_at_ms != OLD.woken_at_ms
+                     OR NEW.woken_up_to_sequence != OLD.woken_up_to_sequence
+                     OR NEW.cancelled_at_ms != OLD.cancelled_at_ms))
+            OR (OLD.status = 0 AND NEW.status = 1
+                AND (NEW.woken_at_ms < 1 OR NEW.woken_up_to_sequence < 1
+                     OR NEW.cancelled_at_ms != 0))
+            OR (OLD.status = 0 AND NEW.status = 2
+                AND (NEW.cancelled_at_ms < 1 OR NEW.woken_at_ms != 0
+                     OR NEW.woken_up_to_sequence != 0))
+            OR NEW.status NOT IN (0, 1, 2)
+        BEGIN
+            SELECT RAISE(
+                ABORT,
+                'wait row is immutable beyond the pending wake or cancel transition'
+            );
+        END;
+        PRAGMA user_version=2;",
     )?;
     transaction.commit()?;
     Ok(())

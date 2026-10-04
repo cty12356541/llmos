@@ -139,8 +139,34 @@ pub struct ConsumerConfig {
     pub batch_limit: usize,
 }
 
+/// The boundary a drain pass stopped at, when it stopped early.
+///
+/// The shutdown boundary is deliberately absent: a
+/// [`RuntimeError::ShuttingDown`] stop is a terminal runtime condition, not
+/// a failure, and is reported through [`DrainReport::shutdown`] alone.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DrainStopPhase {
+    /// The wake sink returned a transient error for the stopping entry.
+    Wake,
+    /// The reconcile sink returned a transient error for the stopping entry.
+    Reconcile,
+    /// The entry was applied but its ACK could not be committed.
+    Ack,
+}
+
+/// Typed detail of why one drain pass stopped early: the failing phase plus
+/// the root cause's `Display` text, so drivers and health surfaces can
+/// report what failed instead of only that the pass stopped.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DrainStop {
+    /// Which boundary failed for the entry at [`DrainReport::stopped_at`].
+    pub phase: DrainStopPhase,
+    /// `Display` text of the failing error, verbatim.
+    pub error: String,
+}
+
 /// Outcome of one [`OutboxConsumer::drain_once`] pass.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct DrainReport {
     /// Entries returned by the source for this pass.
     pub polled: usize,
@@ -160,6 +186,12 @@ pub struct DrainReport {
     ///   redelivery is applied again and absorbed by sink idempotency, and
     ///   every later entry was neither applied nor acknowledged.
     pub stopped_at: Option<u64>,
+    /// Typed failure detail (phase + error `Display`) for the entry at
+    /// `stopped_at`: why the wake/reconcile apply or the ACK failed.
+    /// `None` when the pass completed, and `None` for a
+    /// [`DrainReport::shutdown`] stop — shutdown is a terminal runtime
+    /// condition, not a failure.
+    pub failure: Option<DrainStop>,
     /// `true` when the batch stopped because the wake sink reported the
     /// terminal [`RuntimeError::ShuttingDown`].
     ///
@@ -195,10 +227,11 @@ impl<S: OutboxSource, W: WakeSink, R: ReconcileSink> OutboxConsumer<S, W, R> {
     /// Each entry is applied to its sink first and acknowledged second. The
     /// batch stops at the first transient apply failure or failed ACK: that
     /// entry and all later entries are left unacknowledged for redelivery,
-    /// and the stop is reported through [`DrainReport::stopped_at`] as
-    /// `Ok(report)` because backpressure is a normal path, not an error. The
-    /// consumer never reorders, skips, or deduplicates entries; replayed
-    /// entries are applied again and absorbed by sink idempotency.
+    /// and the stop is reported through [`DrainReport::stopped_at`] with its
+    /// typed cause in [`DrainReport::failure`] as `Ok(report)`, because
+    /// backpressure is a normal path, not an error. The consumer never
+    /// reorders, skips, or deduplicates entries; replayed entries are
+    /// applied again and absorbed by sink idempotency.
     ///
     /// A wake that fails with [`RuntimeError::ShuttingDown`] is terminal, not
     /// transient: the batch stops with [`DrainReport::shutdown`] set so the
@@ -254,18 +287,41 @@ impl<S: OutboxSource, W: WakeSink, R: ReconcileSink> OutboxConsumer<S, W, R> {
                         report.shutdown = true;
                         return Ok(report);
                     }
-                    Err(_) => false,
+                    // Any other wake error is a transient apply failure: the
+                    // error detail is carried in the report so drivers stay
+                    // observable (never dropped into a bare `Err(_)`).
+                    Err(error) => {
+                        report.stopped_at = Some(item.sequence);
+                        report.failure = Some(DrainStop {
+                            phase: DrainStopPhase::Wake,
+                            error: error.to_string(),
+                        });
+                        return Ok(report);
+                    }
                 },
-                OutboxKind::ReconcileEffect => self.reconcile_sink.reconcile(item).is_ok(),
+                OutboxKind::ReconcileEffect => match self.reconcile_sink.reconcile(item) {
+                    Ok(()) => true,
+                    Err(error) => {
+                        report.failure = Some(DrainStop {
+                            phase: DrainStopPhase::Reconcile,
+                            error: error.to_string(),
+                        });
+                        false
+                    }
+                },
             };
             if !applied {
                 report.stopped_at = Some(item.sequence);
                 return Ok(report);
             }
             report.applied += 1;
-            if self.source.ack(item.sequence).is_err() {
+            if let Err(error) = self.source.ack(item.sequence) {
                 // The entry was applied; replay relies on sink idempotency.
                 report.stopped_at = Some(item.sequence);
+                report.failure = Some(DrainStop {
+                    phase: DrainStopPhase::Ack,
+                    error: error.to_string(),
+                });
                 return Ok(report);
             }
             report.acked += 1;
