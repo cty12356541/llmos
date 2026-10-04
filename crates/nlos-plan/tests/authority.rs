@@ -627,3 +627,405 @@ fn total_revision_cannot_omit_execution_frozen_node() {
         "the frozen row keeps its original revision (PLAN-DAG-001)"
     );
 }
+
+/// W57-A #4: the terminal exits of the §25.2.1 executing pipeline
+/// distribute over its executing states, so a failed materialization
+/// attempt and a checkpointed node's direct completion/failure are
+/// legal durable edges. Spec basis (v0.5 §25.2.1):
+///
+/// ```text
+/// → MATERIALIZING → ACTIVE (…) → CHECKPOINTED
+///   → EVICTED (residency=WARM|COLD) | COMPLETED | FAILED | CANCELLED
+/// ```
+///
+/// `CHECKPOINTED` sits directly before the terminal-exit list, so
+/// `CHECKPOINTED → COMPLETED | FAILED` is on the chain; the same
+/// exits extend to the pipeline's entry (`MATERIALIZING → FAILED`).
+/// Each new edge is walked through the durable face, and the
+/// out-of-spec neighbors (`EVICTED → COMPLETED/FAILED`,
+/// `CHECKPOINTED → ACTIVE`, terminal → anywhere) refuse typed.
+#[test]
+#[allow(clippy::too_many_lines)] // One test walks every W57-A edge with typed refusals.
+fn terminal_exit_edges_reach_failed_and_completed_from_executing_states() {
+    let root = Root::new("terminal-exits");
+    let authority = SqlitePlanAuthority::open(&root.0).expect("open");
+    let plan_id = authority
+        .apply_plan_revision_ungated(revision_request(
+            None,
+            vec![
+                node(0x01, 0x11),
+                node(0x02, 0x22),
+                node(0x03, 0x33),
+                node(0x04, 0x44),
+            ],
+            0x01,
+        ))
+        .expect("apply revision 1")
+        .receipt()
+        .plan_id;
+    let node_of = |key: [u8; 16]| {
+        authority
+            .list_plan_nodes(plan_id)
+            .expect("list nodes")
+            .into_iter()
+            .find(|record| record.node_key == key)
+            .expect("declared node")
+            .node_id
+    };
+    let step =
+        |node_id: nlos_types::TaskNodeId, from: PlanNodeState, to: PlanNodeState, key: u8| {
+            authority.record_node_transition(NodeTransitionRequest {
+                plan_id,
+                node_id,
+                from_state: from,
+                to_state: to,
+                expected_declared_revision: 1,
+                idempotency_key: IdempotencyKey::from_bytes([key; 16]),
+                transitioned_at_ms: 3_000,
+            })
+        };
+    let drive_to = |node_id: nlos_types::TaskNodeId, key: u8, to: PlanNodeState| {
+        // Walk DECLARED → ELIGIBLE → WAITING_RESOURCE → [gate]
+        // MATERIALIZING → ACTIVE → CHECKPOINTED, reusing the gate face
+        // for the boundary crossing. Voucher idempotency keys are
+        // globally unique, so every node walks on its own disjoint
+        // base+index key block.
+        step(
+            node_id,
+            PlanNodeState::Declared,
+            PlanNodeState::Eligible,
+            key,
+        )
+        .expect("declared → eligible");
+        step(
+            node_id,
+            PlanNodeState::Eligible,
+            PlanNodeState::WaitingResource,
+            key + 0x01,
+        )
+        .expect("eligible → waiting resource");
+        gate_into_materializing(&authority, plan_id, node_id, key + 0x02);
+        if to == PlanNodeState::Materializing {
+            return;
+        }
+        step(
+            node_id,
+            PlanNodeState::Materializing,
+            PlanNodeState::Active,
+            key + 0x03,
+        )
+        .expect("materializing → active");
+        if to == PlanNodeState::Active {
+            return;
+        }
+        step(
+            node_id,
+            PlanNodeState::Active,
+            PlanNodeState::Checkpointed,
+            key + 0x04,
+        )
+        .expect("active → checkpointed");
+    };
+
+    // New edge 1: MATERIALIZING → FAILED (failed materialization
+    // attempt exits the pipeline's entry state).
+    let failed_from_materializing = node_of([0x01; 16]);
+    drive_to(
+        failed_from_materializing,
+        0x40,
+        PlanNodeState::Materializing,
+    );
+    let decision = step(
+        failed_from_materializing,
+        PlanNodeState::Materializing,
+        PlanNodeState::Failed,
+        0x4f,
+    )
+    .expect("MATERIALIZING → FAILED is a legal durable edge");
+    assert!(
+        matches!(decision, NodeTransitionDecision::Recorded(ref voucher)
+            if voucher.from_state == PlanNodeState::Materializing
+                && voucher.to_state == PlanNodeState::Failed)
+    );
+    assert_eq!(
+        authority
+            .inspect_node(plan_id, failed_from_materializing)
+            .expect("inspect")
+            .expect("node")
+            .state,
+        PlanNodeState::Failed
+    );
+
+    // New edge 2: CHECKPOINTED → COMPLETED (the chain's terminal exit
+    // from its last executing state).
+    let completed_from_checkpointed = node_of([0x02; 16]);
+    drive_to(
+        completed_from_checkpointed,
+        0x50,
+        PlanNodeState::Checkpointed,
+    );
+    step(
+        completed_from_checkpointed,
+        PlanNodeState::Checkpointed,
+        PlanNodeState::Completed,
+        0x5f,
+    )
+    .expect("CHECKPOINTED → COMPLETED is a legal durable edge");
+    assert_eq!(
+        authority
+            .inspect_node(plan_id, completed_from_checkpointed)
+            .expect("inspect")
+            .expect("node")
+            .state,
+        PlanNodeState::Completed
+    );
+
+    // New edge 3: CHECKPOINTED → FAILED (the terminal exits distribute
+    // over the pipeline's states, not just its head).
+    let failed_from_checkpointed = node_of([0x03; 16]);
+    drive_to(failed_from_checkpointed, 0x60, PlanNodeState::Checkpointed);
+    step(
+        failed_from_checkpointed,
+        PlanNodeState::Checkpointed,
+        PlanNodeState::Failed,
+        0x6f,
+    )
+    .expect("CHECKPOINTED → FAILED is a legal durable edge");
+    assert_eq!(
+        authority
+            .inspect_node(plan_id, failed_from_checkpointed)
+            .expect("inspect")
+            .expect("node")
+            .state,
+        PlanNodeState::Failed
+    );
+
+    // Out-of-spec refusals from the same walk: EVICTED's only exit is
+    // REHYDRATING (`EVICTED → REHYDRATING → MATERIALIZING`), backward
+    // pipeline edges never un-execute, and terminal states have no
+    // outgoing edge at all.
+    let evicted = node_of([0x04; 16]);
+    drive_to(evicted, 0x70, PlanNodeState::Checkpointed);
+    step(
+        evicted,
+        PlanNodeState::Checkpointed,
+        PlanNodeState::Evicted,
+        0x78,
+    )
+    .expect("CHECKPOINTED → EVICTED stays legal (residency eviction)");
+    for (from, to) in [
+        (PlanNodeState::Evicted, PlanNodeState::Completed),
+        (PlanNodeState::Evicted, PlanNodeState::Failed),
+        (PlanNodeState::Evicted, PlanNodeState::Active),
+    ] {
+        // One key serves every iteration: a typed refusal commits
+        // nothing, so the key is never bound (the refusal must come
+        // from the edge check, not an idempotency replay).
+        assert!(matches!(
+            step(evicted, from, to, 0xf1),
+            Err(PlanStoreError::IllegalNodeTransition {
+                from: illegal_from,
+                to: illegal_to,
+                ..
+            }) if illegal_from == from && illegal_to == to
+        ));
+    }
+    assert!(matches!(
+        step(
+            evicted,
+            PlanNodeState::Checkpointed,
+            PlanNodeState::Active,
+            0xf2
+        ),
+        Err(PlanStoreError::IllegalNodeTransition { .. })
+    ));
+    for node_id in [failed_from_materializing, failed_from_checkpointed] {
+        assert!(matches!(
+            step(
+                node_id,
+                PlanNodeState::Failed,
+                PlanNodeState::Rehydrating,
+                0xf3
+            ),
+            Err(PlanStoreError::IllegalNodeTransition { .. })
+        ));
+        assert!(matches!(
+            step(
+                node_id,
+                PlanNodeState::Failed,
+                PlanNodeState::Cancelled,
+                0xf4
+            ),
+            Err(PlanStoreError::IllegalNodeTransition { .. })
+        ));
+    }
+    assert!(matches!(
+        step(
+            completed_from_checkpointed,
+            PlanNodeState::Completed,
+            PlanNodeState::Cancelled,
+            0xf5
+        ),
+        Err(PlanStoreError::IllegalNodeTransition { .. })
+    ));
+}
+
+/// W57-A #4: the legal edge predicate is exactly the §25.2.1 subset —
+/// the executing chain
+/// `DECLARED → BLOCKED_DEPENDENCY → ELIGIBLE → WAITING_AUTHORIZATION |
+/// WAITING_RESOURCE → MATERIALIZING → ACTIVE → CHECKPOINTED → EVICTED |
+/// COMPLETED | FAILED | CANCELLED` with `EVICTED → REHYDRATING →
+/// MATERIALIZING` as the only evicted exit and `→ CANCELLED` from
+/// every non-terminal state. Every one of the 13×13 ordered pairs
+/// outside that table must be refused (规范外边拒绝), so an accidental
+/// extra edge fails this sweep by name.
+#[test]
+fn state_machine_edge_set_matches_the_spec_subset_exactly() {
+    use PlanNodeState as S;
+    let legal: std::collections::HashSet<(PlanNodeState, PlanNodeState)> = [
+        (S::Declared, S::BlockedDependency),
+        (S::Declared, S::Eligible),
+        (S::BlockedDependency, S::Eligible),
+        (S::Eligible, S::WaitingAuthorization),
+        (S::Eligible, S::WaitingResource),
+        (S::WaitingAuthorization, S::Materializing),
+        (S::WaitingResource, S::Materializing),
+        (S::Materializing, S::Active),
+        (S::Materializing, S::Failed),
+        (S::Active, S::Checkpointed),
+        (S::Active, S::Completed),
+        (S::Active, S::Failed),
+        (S::Checkpointed, S::Evicted),
+        (S::Checkpointed, S::Completed),
+        (S::Checkpointed, S::Failed),
+        (S::Evicted, S::Rehydrating),
+        (S::Rehydrating, S::Materializing),
+    ]
+    .into_iter()
+    .collect();
+    let states = [
+        S::Declared,
+        S::BlockedDependency,
+        S::Eligible,
+        S::WaitingAuthorization,
+        S::WaitingResource,
+        S::Materializing,
+        S::Active,
+        S::Checkpointed,
+        S::Evicted,
+        S::Rehydrating,
+        S::Completed,
+        S::Failed,
+        S::Cancelled,
+    ];
+    for from in states {
+        for to in states {
+            let expected = legal.contains(&(from, to))
+                || (to == S::Cancelled && !from.is_terminal() && from != S::Cancelled);
+            assert_eq!(
+                PlanNodeState::transition_is_legal(from, to),
+                expected,
+                "edge {from:?} -> {to:?} must be {} per §25.2.1",
+                if expected { "legal" } else { "refused" }
+            );
+        }
+    }
+    // The terminal set is exactly the chain's three exits.
+    for state in states {
+        assert_eq!(
+            state.is_terminal(),
+            matches!(state, S::Completed | S::Failed | S::Cancelled),
+            "terminal set drift for {state:?}"
+        );
+    }
+}
+
+/// W57-A #8: a terminal node is an undeletable tombstone row
+/// (`plan_nodes_no_delete`) but leaves the declared-TaskNode admission
+/// population — it has no outgoing §25.2.1 edge, so it can never again
+/// await or hold materialization. Every non-terminal state (including
+/// `EVICTED`, whose live exit `EVICTED → REHYDRATING → MATERIALIZING`
+/// keeps it admissible) still counts. The physical row is asserted to
+/// survive, pinning "excluded from the dimension" against "deleted".
+#[test]
+fn terminal_tombstone_leaves_the_declared_population_and_keeps_its_row() {
+    let root = Root::new("tombstone-count");
+    let authority = SqlitePlanAuthority::open(&root.0).expect("open");
+    let plan_id = authority
+        .apply_plan_revision_ungated(revision_request(None, vec![node(0x01, 0x11)], 0x01))
+        .expect("apply revision 1")
+        .receipt()
+        .plan_id;
+    let node_id = authority
+        .list_plan_nodes(plan_id)
+        .expect("list nodes")
+        .into_iter()
+        .find(|record| record.node_key == [0x01; 16])
+        .expect("declared node")
+        .node_id;
+
+    let step = |from: PlanNodeState, to: PlanNodeState, key: u8| {
+        authority.record_node_transition(NodeTransitionRequest {
+            plan_id,
+            node_id,
+            from_state: from,
+            to_state: to,
+            expected_declared_revision: 1,
+            idempotency_key: IdempotencyKey::from_bytes([key; 16]),
+            transitioned_at_ms: 3_000,
+        })
+    };
+    let declared_count = || {
+        authority
+            .inspect_declared_task_node_count()
+            .expect("declared task-node count")
+    };
+
+    // Every non-terminal state keeps the node in the population.
+    step(PlanNodeState::Declared, PlanNodeState::Eligible, 0xa1).expect("→ eligible");
+    assert_eq!(declared_count(), 1, "ELIGIBLE counts");
+    step(
+        PlanNodeState::Eligible,
+        PlanNodeState::WaitingResource,
+        0xa2,
+    )
+    .expect("→ waiting resource");
+    gate_into_materializing(&authority, plan_id, node_id, 0xa3);
+    assert_eq!(declared_count(), 1, "MATERIALIZING counts");
+    step(PlanNodeState::Materializing, PlanNodeState::Active, 0xa4).expect("→ active");
+    step(PlanNodeState::Active, PlanNodeState::Checkpointed, 0xa5).expect("→ checkpointed");
+    step(PlanNodeState::Checkpointed, PlanNodeState::Evicted, 0xa6).expect("→ evicted");
+    assert_eq!(
+        declared_count(),
+        1,
+        "EVICTED still counts: REHYDRATING → MATERIALIZING is a live exit"
+    );
+    step(PlanNodeState::Evicted, PlanNodeState::Rehydrating, 0xa7).expect("→ rehydrating");
+    gate_into_materializing(&authority, plan_id, node_id, 0xa8);
+    assert_eq!(declared_count(), 1, "REHYDRATING and re-entry count");
+
+    // The terminal transition leaves the population…
+    step(PlanNodeState::Materializing, PlanNodeState::Failed, 0xa9).expect("→ failed (W57-A edge)");
+    assert_eq!(
+        declared_count(),
+        0,
+        "a terminal tombstone occupies no declared-TaskNode seat"
+    );
+
+    // …but the row itself is durable lifetime metadata, never deleted.
+    let raw = Connection::open(&root.0).expect("raw open");
+    let rows: i64 = raw
+        .query_row("SELECT COUNT(*) FROM plan_nodes", [], |row| row.get(0))
+        .expect("count plan_nodes");
+    assert_eq!(rows, 1, "the tombstone row survives (plan_nodes_no_delete)");
+    assert_eq!(
+        raw.query_row(
+            "SELECT node_state FROM plan_nodes WHERE task_node_id = ?1",
+            [node_id.as_bytes().as_slice()],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("read tombstone state"),
+        12_i64,
+        "FAILED is stable discriminant 12"
+    );
+}
