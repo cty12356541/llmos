@@ -35,6 +35,16 @@ pub use worker::{
     RecoveryWorkerStartError, RecoveryWorkerState, TaskAuthorityCommitRecoveryWorker,
 };
 
+/// Maximum durable steps one `converge` invocation may execute before it
+/// returns [`CoordinatorError::IterationLimitExceeded`]. Every step is one
+/// durable cross-authority boundary, so a healthy plan needs
+/// `expectations + 2` steps; a state-machine regression that stops
+/// progressing surfaces as the typed error instead of an unbounded spin
+/// (audit 41 D1 / registry 48 #10). A plan that legitimately needs more
+/// steps converges across repeated calls: each call resumes from the
+/// durable prefix its predecessor committed.
+pub const CONVERGE_MAX_STEPS: usize = 256;
+
 /// One bounded coordinator invocation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ConvergeArtifactCommitRequest {
@@ -58,6 +68,14 @@ pub enum ConvergeStep {
 #[derive(Debug)]
 pub enum CoordinatorError {
     InvalidTimestamp,
+    /// The convergence loop executed [`CONVERGE_MAX_STEPS`] durable steps
+    /// without reaching a terminal plan state. The durable prefix reached
+    /// so far stays committed; a later call resumes from it. A recurring
+    /// exhaustion means the authority state machine stopped advancing
+    /// (audit 41 D1 / registry 48 #10).
+    IterationLimitExceeded {
+        steps: usize,
+    },
     Task(TaskStoreError),
     Artifact(ArtifactError),
     Semantic(SemanticAuthorityError),
@@ -85,6 +103,10 @@ impl fmt::Display for CoordinatorError {
             Self::InvalidTimestamp => {
                 formatter.write_str("coordinator timestamp must be non-negative")
             }
+            Self::IterationLimitExceeded { steps } => write!(
+                formatter,
+                "coordinator exceeded {steps} convergence steps without reaching a terminal plan state"
+            ),
             Self::Task(error) => write!(formatter, "TaskAuthority coordination failure: {error}"),
             Self::Artifact(error) => {
                 write!(formatter, "ArtifactAuthority coordination failure: {error}")
@@ -99,7 +121,7 @@ impl fmt::Display for CoordinatorError {
 impl Error for CoordinatorError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::InvalidTimestamp => None,
+            Self::InvalidTimestamp | Self::IterationLimitExceeded { .. } => None,
             Self::Task(error) => Some(error),
             Self::Artifact(error) => Some(error),
             Self::Semantic(error) => Some(error),
@@ -211,30 +233,45 @@ impl<'a> ArtifactCommitCoordinator<'a> {
                 })
             }
             ArtifactCommitPlanState::Finalized => {
-                let decision =
-                    self.tasks
-                        .finalize_artifact_commit(FinalizeArtifactCommitRequest {
-                            plan_id: request.plan_id,
-                            finalized_at_ms: request.now_ms,
-                        })?;
+                // Terminal state answered idempotently from the durable
+                // facts: no second finalize write intent is issued, so the
+                // reported step cannot misreport a fresh `Committed`
+                // decision as `AlreadyFinalized` (audit 41 D2 / registry
+                // 48 coordinator-domain finding).
+                let receipt_id =
+                    progress
+                        .plan
+                        .task_receipt_id
+                        .ok_or(TaskStoreError::CorruptRecord(
+                            "finalized Artifact plan lacks Task receipt",
+                        ))?;
+                let task_receipt = self
+                    .tasks
+                    .inspect_receipt(progress.plan.task_id, receipt_id)?;
                 Ok(ConvergeStep::AlreadyFinalized(Box::new(
-                    decision.receipt().clone(),
+                    ArtifactTaskCommitReceipt {
+                        task_receipt,
+                        artifact_publications: progress.publications,
+                    },
                 )))
             }
         }
     }
 
-    /// Repeats bounded steps until the plan is durably finalized.
+    /// Repeats bounded steps until the plan is durably finalized, with a
+    /// hard per-invocation step budget of [`CONVERGE_MAX_STEPS`].
     ///
     /// # Errors
     ///
-    /// Returns the first typed authority failure; retrying resumes from the
+    /// Returns the first typed authority failure, or
+    /// [`CoordinatorError::IterationLimitExceeded`] when the budget is
+    /// exhausted without a terminal state; retrying resumes from the
     /// durable prefix already reached.
     pub fn converge(
         &self,
         request: ConvergeArtifactCommitRequest,
     ) -> Result<ArtifactTaskCommitReceipt, CoordinatorError> {
-        loop {
+        for _ in 0..CONVERGE_MAX_STEPS {
             match self.converge_one_step(request)? {
                 ConvergeStep::Authorized | ConvergeStep::PublishedOne { .. } => {}
                 ConvergeStep::Finalized(receipt) | ConvergeStep::AlreadyFinalized(receipt) => {
@@ -242,31 +279,48 @@ impl<'a> ArtifactCommitCoordinator<'a> {
                 }
             }
         }
+        Err(CoordinatorError::IterationLimitExceeded {
+            steps: CONVERGE_MAX_STEPS,
+        })
     }
 
     /// Scans a bounded set of durable non-finalized plans and converges
     /// each one. This is the restart entry point; finalized plans disappear
     /// from subsequent scans.
     ///
+    /// Every plan in the snapshot is attempted: a failing plan no longer
+    /// starves the plans behind it (registry 48 #11). The successes stay
+    /// durably finalized even when a later plan fails.
+    ///
     /// # Errors
     ///
-    /// Returns the first typed authority failure. Earlier plans remain
-    /// durably finalized and later scans continue from that prefix.
+    /// Returns the first typed per-plan failure, but only after the whole
+    /// snapshot has been attempted. Scan-level failures abort immediately.
+    /// Callers that need per-plan failure detail use
+    /// [`Self::converge_pending_best_effort`].
     pub fn converge_pending(
         &self,
         limit: usize,
         now_ms: i64,
     ) -> Result<Vec<ArtifactTaskCommitReceipt>, CoordinatorError> {
-        self.tasks
-            .list_incomplete_artifact_commit_plans(limit)?
-            .into_iter()
-            .map(|plan| {
-                self.converge(ConvergeArtifactCommitRequest {
-                    plan_id: plan.plan_id,
-                    now_ms,
-                })
-            })
-            .collect()
+        let plans = self.tasks.list_incomplete_artifact_commit_plans(limit)?;
+        let mut finalized = Vec::with_capacity(plans.len());
+        let mut first_failure = None;
+        for plan in plans {
+            let outcome = self.converge(ConvergeArtifactCommitRequest {
+                plan_id: plan.plan_id,
+                now_ms,
+            });
+            match outcome {
+                Ok(receipt) => finalized.push(receipt),
+                Err(error) => {
+                    if first_failure.is_none() {
+                        first_failure = Some(error);
+                    }
+                }
+            }
+        }
+        first_failure.map_or(Ok(finalized), Err)
     }
 
     /// Scans a bounded snapshot and attempts every plan independently.
@@ -434,54 +488,90 @@ impl<'a> SemanticCommitCoordinator<'a> {
                 })
             }
             SemanticCommitPlanState::Finalized => {
-                let decision = self.finalize_ready(request.plan_id, request.now_ms)?;
+                // Terminal state answered idempotently from the durable
+                // facts: no second finalize write intent is issued, so the
+                // reported step cannot misreport a fresh `Committed`
+                // decision as `AlreadyFinalized` (audit 41 D2 / registry
+                // 48 coordinator-domain finding).
+                let receipt_id =
+                    progress
+                        .plan
+                        .task_receipt_id
+                        .ok_or(TaskStoreError::CorruptRecord(
+                            "finalized Semantic plan lacks Task receipt",
+                        ))?;
+                let task_receipt = self
+                    .tasks
+                    .inspect_receipt(progress.plan.task_id, receipt_id)?;
                 Ok(ConvergeSemanticStep::AlreadyFinalized(Box::new(
-                    decision.receipt().clone(),
+                    SemanticTaskCommitReceipt {
+                        task_receipt,
+                        semantic_publications: progress.publications,
+                    },
                 )))
             }
         }
     }
 
-    /// Repeats bounded steps until the Semantic plan is durably finalized.
+    /// Repeats bounded steps until the Semantic plan is durably finalized,
+    /// with a hard per-invocation step budget of [`CONVERGE_MAX_STEPS`].
     ///
     /// # Errors
     ///
-    /// Returns the first typed authority failure; retrying resumes from the
+    /// Returns the first typed authority failure, or
+    /// [`CoordinatorError::IterationLimitExceeded`] when the budget is
+    /// exhausted without a terminal state; retrying resumes from the
     /// durable prefix already reached.
     pub fn converge(
         &self,
         request: ConvergeSemanticCommitRequest,
     ) -> Result<SemanticTaskCommitReceipt, CoordinatorError> {
-        loop {
+        for _ in 0..CONVERGE_MAX_STEPS {
             match self.converge_one_step(request)? {
                 ConvergeSemanticStep::Authorized | ConvergeSemanticStep::PublishedOne { .. } => {}
                 ConvergeSemanticStep::Finalized(receipt)
                 | ConvergeSemanticStep::AlreadyFinalized(receipt) => return Ok(*receipt),
             }
         }
+        Err(CoordinatorError::IterationLimitExceeded {
+            steps: CONVERGE_MAX_STEPS,
+        })
     }
 
     /// Scans a bounded set of durable non-finalized Semantic plans and
     /// converges each one. This is the restart entry point for this slice.
     ///
+    /// Every plan in the snapshot is attempted: a failing plan no longer
+    /// starves the plans behind it (registry 48 #11). The successes stay
+    /// durably finalized even when a later plan fails.
+    ///
     /// # Errors
     ///
-    /// Returns the first typed authority failure.
+    /// Returns the first typed per-plan failure, but only after the whole
+    /// snapshot has been attempted. Scan-level failures abort immediately.
     pub fn converge_pending(
         &self,
         limit: usize,
         now_ms: i64,
     ) -> Result<Vec<SemanticTaskCommitReceipt>, CoordinatorError> {
-        self.tasks
-            .list_incomplete_semantic_commit_plans(limit)?
-            .into_iter()
-            .map(|plan| {
-                self.converge(ConvergeSemanticCommitRequest {
-                    plan_id: plan.plan_id,
-                    now_ms,
-                })
-            })
-            .collect()
+        let plans = self.tasks.list_incomplete_semantic_commit_plans(limit)?;
+        let mut finalized = Vec::with_capacity(plans.len());
+        let mut first_failure = None;
+        for plan in plans {
+            let outcome = self.converge(ConvergeSemanticCommitRequest {
+                plan_id: plan.plan_id,
+                now_ms,
+            });
+            match outcome {
+                Ok(receipt) => finalized.push(receipt),
+                Err(error) => {
+                    if first_failure.is_none() {
+                        first_failure = Some(error);
+                    }
+                }
+            }
+        }
+        first_failure.map_or(Ok(finalized), Err)
     }
 
     fn finalize_ready(
