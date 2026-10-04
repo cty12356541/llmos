@@ -1546,6 +1546,11 @@ async function bootstrap(): Promise<void> {
     const register = (id: string, label: string, node: HTMLElement): void => {
       views.set(id, node);
       const tab = el("button", { className: "tab", text: label });
+      // 跨文件契约(W56-b #29):tab 挂稳定 data-view-id 属性,供
+      // desktop/src/views/task-space/index.ts 的 openSidebarTab 按属性
+      // 匹配跳转(不依赖中文文案)。新增/改名 viewId 时需同步那边的
+      // TASK_MANAGER_TABS 表;返回 false 的消费在该视图内提示。
+      tab.dataset.viewId = id;
       tab.addEventListener("click", () => {
         for (const [otherId, otherNode] of views) {
           otherNode.classList.toggle("active", otherId === id);
