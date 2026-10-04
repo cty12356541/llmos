@@ -150,6 +150,21 @@ impl PlanNodeState {
         matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
     }
 
+    /// The SQL `node_state NOT IN (…)` exclusion clause shared by the
+    /// declared-population counting faces (the admission-consult
+    /// projections). Terminal rows are undeletable tombstones
+    /// (`plan_nodes_no_delete`; lifetime metadata), but a terminal node
+    /// has no outgoing §25.2.1 edge, so it can never again await or hold
+    /// materialization — counting it would let dead nodes occupy the
+    /// declared-TaskNode admission dimension forever (the population is
+    /// otherwise monotonic). `EVICTED` (9) is deliberately **not**
+    /// excluded: the §25.2.1 chain gives it the live exit
+    /// `EVICTED → REHYDRATING → MATERIALIZING`, so an evicted node
+    /// remains part of the admissible population. The clause must stay
+    /// in sync with [`Self::is_terminal`] (the discriminants it lists
+    /// are exactly the terminal set).
+    pub(crate) const TERMINAL_TOMBSTONE_EXCLUSION: &str = "11, 12, 13";
+
     /// Whether the node has crossed the execution boundary: from
     /// `MATERIALIZING` on, the node owns (or owned) execution footprint, so
     /// its declared shape revision is frozen (`[PLAN-DAG-001]` final clause:
@@ -167,10 +182,27 @@ impl PlanNodeState {
     /// `BLOCKED_DEPENDENCY → ELIGIBLE`,
     /// `ELIGIBLE → WAITING_AUTHORIZATION | WAITING_RESOURCE`,
     /// `WAITING_AUTHORIZATION|WAITING_RESOURCE → MATERIALIZING`,
-    /// `REHYDRATING → MATERIALIZING`, `MATERIALIZING → ACTIVE`,
+    /// `REHYDRATING → MATERIALIZING`, `MATERIALIZING → ACTIVE | FAILED`,
     /// `ACTIVE → CHECKPOINTED | COMPLETED | FAILED`,
-    /// `CHECKPOINTED → EVICTED`, `EVICTED → REHYDRATING`, and
-    /// `→ CANCELLED` from any non-terminal state.
+    /// `CHECKPOINTED → EVICTED | COMPLETED | FAILED`,
+    /// `EVICTED → REHYDRATING`, and `→ CANCELLED` from any non-terminal
+    /// state.
+    ///
+    /// Edge-set basis (v0.5 §25.2.1, the `TaskNode execution` chain): the
+    /// executing pipeline `… → MATERIALIZING → ACTIVE → CHECKPOINTED`
+    /// ends in `→ EVICTED (residency=WARM|COLD) | COMPLETED | FAILED |
+    /// CANCELLED`, so `CHECKPOINTED` reaches `EVICTED`, `COMPLETED` and
+    /// `FAILED` directly; the terminal exits of the executing pipeline
+    /// distribute over its executing states (`ACTIVE → COMPLETED |
+    /// FAILED` was already producible), which extends to the pipeline's
+    /// entry state: a failed materialization attempt exits
+    /// `MATERIALIZING → FAILED` instead of being cancellable only.
+    /// `EVICTED → REHYDRATING → MATERIALIZING` stays the only evicted
+    /// exit (an evicted node's failure path is re-materialization, which
+    /// itself can fail); `DECLARED → ELIGIBLE` skips the conditional
+    /// `BLOCKED_DEPENDENCY` (blocked is only entered when a dependency
+    /// is unmet); `→ CANCELLED` generalizes the chain's `CANCELLED`
+    /// exit to every non-terminal state.
     #[must_use]
     pub fn transition_is_legal(from: Self, to: Self) -> bool {
         use PlanNodeState as S;
@@ -186,9 +218,9 @@ impl PlanNodeState {
                     S::WaitingAuthorization | S::WaitingResource | S::Rehydrating,
                     S::Materializing
                 )
-                | (S::Materializing, S::Active)
+                | (S::Materializing, S::Active | S::Failed)
                 | (S::Active, S::Checkpointed | S::Completed | S::Failed)
-                | (S::Checkpointed, S::Evicted)
+                | (S::Checkpointed, S::Evicted | S::Completed | S::Failed)
                 | (S::Evicted, S::Rehydrating)
         )
     }

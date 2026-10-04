@@ -19,7 +19,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use nlos_plan::{
     ApplyPlanRevisionRequest, DeclarationAdmissionConsult, DeclarationAdmissionOutcome,
-    PlanNodeDeclaration, PlanNodeKind, PlanRevisionDecision, PlanStoreError, SqlitePlanAuthority,
+    MaterializationAdmission, MaterializationAdmissionVerdict, MaterializationRequest,
+    MaterializationResolution, NodeTransitionRequest, PlanNodeDeclaration, PlanNodeKind,
+    PlanNodeState, PlanRevisionDecision, PlanStoreError, SqlitePlanAuthority,
 };
 use nlos_task::{ScaleProfile, SqliteTaskAuthority, TaskStoreError};
 use nlos_types::IdempotencyKey;
@@ -634,4 +636,117 @@ fn drifted_population_snapshot_is_reconsulted_with_fresh_projection() {
     });
     assert_eq!(consult.calls.load(Ordering::SeqCst), 2);
     assert_eq!(plan_node_rows(&root.0.join("plan.sqlite3")), 2);
+}
+
+/// W57-A #8: the declared-TaskNode admission dimension excludes terminal
+/// tombstone rows, so the population is reusable — a full tier whose
+/// node fails does not hold its declaration seat forever. A growth
+/// revision denied while the tier is full admits after one node reaches
+/// a terminal state (`MATERIALIZING → FAILED`, the W57-A #4 edge), the
+/// projection drops by exactly the tombstone, and the physical row
+/// stays (`plan_nodes_no_delete` — excluded, never deleted).
+#[test]
+fn terminal_tombstone_frees_the_declared_population_seat_for_new_keys() {
+    let root = Root::new("tombstone-seat");
+    let plan = root.plan();
+    let task = root.task();
+    let consult = TaskDeclarationConsult(&task);
+
+    let first = plan
+        .apply_plan_revision_with_admission(
+            request(None, vec![node(0x0a, 1), node(0x0b, 2)], 0x11, 1_000),
+            &consult,
+        )
+        .expect("revision 1 fills the tier exactly");
+    let plan_id = first.receipt().plan_id;
+    let node_a = plan
+        .list_plan_nodes(plan_id)
+        .expect("list nodes")
+        .into_iter()
+        .find(|record| record.node_key == [0x0a; 16])
+        .expect("node a")
+        .node_id;
+
+    // Baseline: growth past the full tier is denied while both nodes
+    // are alive.
+    let denied = plan
+        .apply_plan_revision_with_admission(
+            request(
+                Some(plan_id),
+                vec![node(0x0a, 1), node(0x0b, 2), node(0x0c, 3)],
+                0x12,
+                2_000,
+            ),
+            &consult,
+        )
+        .expect_err("growth over the full tier is denied");
+    assert!(matches!(
+        denied,
+        PlanStoreError::DeclarationAdmissionDenied {
+            projected_task_nodes: 3,
+            max_task_nodes: 2,
+            ..
+        }
+    ));
+
+    // Node a fails: DECLARED → (gate) MATERIALIZING → FAILED.
+    plan.request_materialization(MaterializationRequest {
+        plan_id,
+        node_id: node_a,
+        idempotency_key: IdempotencyKey::from_bytes([0x31; 16]),
+        requested_at_ms: 2_500,
+    })
+    .expect("gate request drives a to WAITING_RESOURCE");
+    plan.resolve_materialization(MaterializationResolution {
+        request_key: IdempotencyKey::from_bytes([0x31; 16]),
+        verdict: MaterializationAdmissionVerdict::Approved(MaterializationAdmission {
+            profile_id: "task-apply-node-cap-two".to_string(),
+            projected_task_nodes: 2,
+            projected_active_working_set: 2,
+        }),
+        resolved_at_ms: 2_501,
+    })
+    .expect("gate approval drives a to MATERIALIZING");
+    plan.record_node_transition(NodeTransitionRequest {
+        plan_id,
+        node_id: node_a,
+        from_state: PlanNodeState::Materializing,
+        to_state: PlanNodeState::Failed,
+        expected_declared_revision: 1,
+        idempotency_key: IdempotencyKey::from_bytes([0x32; 16]),
+        transitioned_at_ms: 2_600,
+    })
+    .expect("MATERIALIZING → FAILED (W57-A #4 edge)");
+    assert_eq!(
+        plan.inspect_declared_task_node_count()
+            .expect("declared count"),
+        1,
+        "the FAILED tombstone left the declared population"
+    );
+
+    // The freed seat admits the previously denied growth: the frozen
+    // node re-declares bit-identically and the new key counts.
+    let admitted = plan
+        .apply_plan_revision_with_admission(
+            request(
+                Some(plan_id),
+                vec![node(0x0a, 1), node(0x0b, 2), node(0x0c, 3)],
+                0x13,
+                3_000,
+            ),
+            &consult,
+        )
+        .expect("the tombstone's seat admits the new key");
+    assert_eq!(admitted.receipt().revision, 2);
+    assert_eq!(
+        plan.inspect_declared_task_node_count()
+            .expect("declared count"),
+        2,
+        "only live nodes occupy the dimension"
+    );
+    assert_eq!(
+        plan_node_rows(&root.0.join("plan.sqlite3")),
+        3,
+        "the tombstone row is durable metadata, never deleted"
+    );
 }

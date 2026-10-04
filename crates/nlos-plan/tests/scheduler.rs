@@ -798,6 +798,90 @@ fn controller_lever_and_seat_release_drive_progress() {
     assert_eq!(scheduler.window(), 4);
 }
 
+/// W57-A #4/#8: a terminal node holds no materialization-window seat,
+/// and the seat is reusable the moment a node leaves the band. The
+/// failure exits the pipeline's entry state directly
+/// (`MATERIALIZING → FAILED`, the new §25.2.1 edge) — the node never
+/// reached `ACTIVE`, yet its seat frees exactly like a completion: the
+/// band (`MATERIALIZING/ACTIVE/CHECKPOINTED/REHYDRATING`) reads zero
+/// seats in use and the next pass materializes the waiting node.
+#[test]
+fn failed_materialization_releases_the_window_seat_without_active() {
+    let root = Root::new("failed-seat");
+    let authority = SqlitePlanAuthority::open(root.0.join("plan.sqlite3")).expect("open plan");
+    let task = open_task(&root, &TASK_PROFILE_10K);
+    let plan_id = authority
+        .apply_plan_revision_ungated(revision_request(
+            None,
+            vec![node(0x0a, 0x01), node(0x0b, 0x02)],
+            0x11,
+            1_000,
+        ))
+        .expect("apply revision")
+        .receipt()
+        .plan_id;
+    let order = expected_fifo_order(&authority, plan_id, &[[0x0a; 16], [0x0b; 16]]);
+    let (first, second) = (order[0], order[1]);
+    let consult = TaskConsult(&task);
+
+    let mut scheduler = MaterializationScheduler::new(1);
+    let summary = scheduler
+        .run_pass(&authority, plan_id, &consult, 2_000)
+        .expect("first pass");
+    assert_eq!(summary.approved, 1, "node a takes the only seat");
+    assert_eq!(
+        summary.skipped, 1,
+        "the window bound skips node b (WindowExhausted)"
+    );
+    let report = scheduler.select(&authority, plan_id).expect("seat held");
+    assert_eq!(report.seats_in_use, 1, "MATERIALIZING holds the seat");
+
+    // The failed materialization attempt: MATERIALIZING → FAILED.
+    authority
+        .record_node_transition(nlos_plan::NodeTransitionRequest {
+            plan_id,
+            node_id: first,
+            from_state: PlanNodeState::Materializing,
+            to_state: PlanNodeState::Failed,
+            expected_declared_revision: 1,
+            idempotency_key: IdempotencyKey::from_bytes([0x51; 16]),
+            transitioned_at_ms: 2_100,
+        })
+        .expect("MATERIALIZING → FAILED is a legal durable edge");
+
+    // The terminal node occupies no seat: the band reads zero and the
+    // failed node is skipped as not-awaiting, never re-selected.
+    let report = scheduler.select(&authority, plan_id).expect("seat freed");
+    assert_eq!(
+        report.seats_in_use, 0,
+        "a terminal node holds no window seat"
+    );
+    assert!(report.selections.iter().all(|entry| entry.node_id != first));
+    assert!(report.skips.iter().any(|skip| skip.node_id == first
+        && matches!(
+            skip.reason,
+            SelectionSkipReason::NotAwaitingMaterialization {
+                current: PlanNodeState::Failed
+            }
+        )));
+
+    // The released seat is immediately reusable: the next pass
+    // materializes the waiting node.
+    let summary = scheduler
+        .run_pass(&authority, plan_id, &consult, 2_200)
+        .expect("second pass");
+    assert_eq!(summary.approved, 1, "the freed seat admits the second node");
+    assert_eq!(materialized_count(&authority, plan_id), 1);
+    assert_eq!(
+        authority
+            .inspect_node(plan_id, second)
+            .expect("inspect b")
+            .expect("node b")
+            .state,
+        PlanNodeState::Materializing
+    );
+}
+
 /// Deep-audit/30: a durable `PENDING` gate round that a reshaping
 /// revision fenced must not hold its scheduler seat forever. The pass
 /// that adopts it closes it as a typed reshaped-revision rejection

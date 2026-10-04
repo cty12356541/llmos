@@ -399,15 +399,30 @@ impl SqlitePlanAuthority {
 
     /// Store-wide persisted declared-TaskNode count (the ADR-0016 决定 4
     /// dimension read face the Task-side materialization consult
-    /// consumes; every declared node of every plan).
+    /// consumes; every declared node of every plan), excluding terminal
+    /// tombstone rows: `plan_nodes` rows are undeletable lifetime
+    /// metadata, and a terminal node (`COMPLETED`/`FAILED`/`CANCELLED`)
+    /// has no outgoing §25.2.1 edge, so it can never again await or hold
+    /// materialization — counting it would let dead nodes permanently
+    /// occupy the declared-TaskNode admission dimension. Non-terminal
+    /// rows (including `EVICTED`, which can re-enter
+    /// `REHYDRATING → MATERIALIZING`) keep counting; the DDL still
+    /// never deletes a row.
     ///
     /// # Errors
     ///
     /// Fails on storage failure.
     pub fn inspect_declared_task_node_count(&self) -> Result<u64, PlanStoreError> {
         let connection = self.lock()?;
-        let count: i64 =
-            connection.query_row("SELECT COUNT(*) FROM plan_nodes", [], |row| row.get(0))?;
+        let count: i64 = connection.query_row(
+            &format!(
+                "SELECT COUNT(*) FROM plan_nodes
+                 WHERE node_state NOT IN ({})",
+                PlanNodeState::TERMINAL_TOMBSTONE_EXCLUSION
+            ),
+            [],
+            |row| row.get(0),
+        )?;
         decode_u64(count)
     }
 }

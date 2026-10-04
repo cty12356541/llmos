@@ -306,9 +306,10 @@ impl SqlitePlanAuthority {
     /// Applies one plan revision behind the apply-time declared-population
     /// admission consult (W36-P8; W31-G §8.2.4 — the declaration half the
     /// W31-A materialization consult left open). The projection is the
-    /// store-wide persisted `plan_nodes` count plus the node keys this
-    /// revision declares that no row carries yet (rows are lifetime
-    /// metadata, so each new key is exactly one future row).
+    /// store-wide persisted `plan_nodes` count (terminal tombstones
+    /// excluded, see [`projected_declared_population`]) plus the node
+    /// keys this revision declares that no row carries yet (rows are
+    /// lifetime metadata, so each new key is exactly one future row).
     ///
     /// The consult is an **external callback** and runs outside the
     /// writer critical section (the process Mutex and the
@@ -408,9 +409,11 @@ impl SqlitePlanAuthority {
             drop(transaction);
             drop(connection);
 
-            // Consult outside every lock (a denial is final — the count is
-            // monotonic, so a drifted projection is larger and still over
-            // the cap; a failed consult fails closed).
+            // Consult outside every lock (a denial is final for the
+            // round and fails closed; the projection is re-verified
+            // before committing — a drifted projection, larger *or*
+            // smaller, restarts the round, since the terminal-tombstone
+            // exclusion makes the population non-monotonic).
             match consult.consult_plan_declaration(projected) {
                 Ok(DeclarationAdmissionOutcome::Admits) => {}
                 Ok(DeclarationAdmissionOutcome::Denied {
@@ -1665,14 +1668,32 @@ fn write_revision(args: &WriteRevisionArgs<'_>) -> Result<PlanRevisionReceipt, P
 /// and the number of new keys it would insert: every persisted
 /// `plan_nodes` row (lifetime metadata, all plans) plus the declared
 /// keys that carry no row under this plan yet — each new key is
-/// exactly one future row (ADR-0016 决定 4 dimension).
+/// exactly one future row (ADR-0016 决定 4 dimension). Terminal
+/// tombstone rows are excluded from both halves: they are undeletable
+/// but have no outgoing §25.2.1 edge, so they will never again await
+/// or hold materialization, and counting them would make the
+/// admission dimension monotonic in dead nodes (a re-declared key
+/// that already carries a terminal row stays excluded — the node
+/// stays terminal, the executed shape is frozen). The projection is
+/// therefore **not** monotonic across a terminal transition, so the
+/// growth-only consult protocol's "a drifted projection is larger and
+/// still over the cap" argument narrows to: a drift during the
+/// consult window is still re-verified before committing (the CAS
+/// re-check refuses any changed projection, larger or smaller).
 fn projected_declared_population(
     transaction: &rusqlite::Transaction<'_>,
     plan_id: TaskPlanId,
     nodes: &[PlanNodeDeclaration],
 ) -> Result<(u64, u64), PlanStoreError> {
-    let existing: i64 =
-        transaction.query_row("SELECT COUNT(*) FROM plan_nodes", [], |row| row.get(0))?;
+    let existing: i64 = transaction.query_row(
+        &format!(
+            "SELECT COUNT(*) FROM plan_nodes
+             WHERE node_state NOT IN ({})",
+            PlanNodeState::TERMINAL_TOMBSTONE_EXCLUSION
+        ),
+        [],
+        |row| row.get(0),
+    )?;
     let mut statement =
         transaction.prepare("SELECT node_key FROM plan_nodes WHERE plan_id = ?1")?;
     let declared_keys = statement.query_map([plan_id.as_bytes().as_slice()], |row| {
