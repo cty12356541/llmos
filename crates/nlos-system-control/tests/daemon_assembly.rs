@@ -28,6 +28,9 @@ use std::sync::atomic::AtomicBool;
 #[cfg(unix)]
 use ed25519_dalek::Signer as _;
 use nlos_artifact::ArtifactStore;
+// W61-A's wall-replay assertions live in the unix-gated plain-endpoint test
+// below; windows-only compiles of this file do not read these types.
+#[cfg(unix)]
 use nlos_clock::{AuthorityClock, NowRequest, WallNowDecision};
 use nlos_commit_coordinator::RecoveryWorkerState;
 use nlos_semantic::SemanticAuthority;
