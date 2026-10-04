@@ -5,8 +5,11 @@
 //! process is running. One daemon owns a state root, opens every real
 //! authority under it (identity, clock, task, artifact, semantic, process,
 //! resource, application, plan, channel+topic, operation store, and a tokio
-//! runtime adapter), starts the [`TaskAuthorityCommitRecoveryWorker`], and
-//! serves two local endpoints side by side:
+//! runtime adapter), starts the [`TaskAuthorityCommitRecoveryWorker`] and
+//! the [`MaterializationDriver`] (the W54-2 production wiring that powers
+//! the W31-F materialization scheduler over the plan authority — periodic
+//! select→gate-drive passes per durable plan, Task admission consult
+//! included), and serves two local endpoints side by side:
 //!
 //! - **authenticated entry** — [`authenticated_serve_one_control`] (the GUI's
 //!   only wiring shape; every connection answers the ADR-0011
@@ -92,6 +95,10 @@ use crate::control::{
     ControlReceipt,
 };
 use crate::fiber_inspector::TokioExecutionFiberSource;
+use crate::materialization_driver::{
+    MaterializationDriver, MaterializationDriverConfig, MaterializationDriverHealth,
+    MaterializationDriverStartError,
+};
 use crate::operation_inspector::OperationStoreSource;
 use crate::plan_inspector::PlanAuthorityTaskNodeSource;
 use crate::topic_inspector::TopicAuthoritySource;
@@ -195,6 +202,7 @@ pub enum DaemonError {
     Ipc(nlos_ipc::IpcError),
     Handshake(HandshakeError),
     Worker(RecoveryWorkerStartError),
+    MaterializationDriver(MaterializationDriverStartError),
     /// The `--identity-key-file` content violates the 64-hex Ed25519 seed
     /// contract shared with the desktop client.
     KeyFile(&'static str),
@@ -220,6 +228,9 @@ impl fmt::Display for DaemonError {
             Self::Ipc(error) => write!(formatter, "ipc endpoint: {error}"),
             Self::Handshake(error) => write!(formatter, "handshake context: {error}"),
             Self::Worker(error) => write!(formatter, "recovery worker: {error}"),
+            Self::MaterializationDriver(error) => {
+                write!(formatter, "materialization driver: {error}")
+            }
             Self::KeyFile(reason) => write!(formatter, "identity key file: {reason}"),
         }
     }
@@ -245,6 +256,7 @@ impl Error for DaemonError {
             Self::Ipc(error) => Some(error),
             Self::Handshake(error) => Some(error),
             Self::Worker(error) => Some(error),
+            Self::MaterializationDriver(error) => Some(error),
             Self::KeyFile(_) => None,
         }
     }
@@ -269,6 +281,9 @@ pub struct DaemonOptions {
     pub identity_key_file: Option<PathBuf>,
     /// Recovery worker tuning; the first scan runs immediately on start.
     pub worker_config: RecoveryWorkerConfig,
+    /// Materialization driver tuning (window, cadence, backoff, fault
+    /// threshold); the first scheduler pass runs immediately on start.
+    pub driver_config: MaterializationDriverConfig,
 }
 
 impl DaemonOptions {
@@ -280,6 +295,7 @@ impl DaemonOptions {
             plain_socket: None,
             identity_key_file: None,
             worker_config: RecoveryWorkerConfig::default(),
+            driver_config: MaterializationDriverConfig::default(),
         }
     }
 
@@ -310,6 +326,13 @@ impl DaemonOptions {
     #[must_use]
     pub const fn with_worker_config(mut self, config: RecoveryWorkerConfig) -> Self {
         self.worker_config = config;
+        self
+    }
+
+    /// Overrides the materialization driver tuning.
+    #[must_use]
+    pub const fn with_driver_config(mut self, config: MaterializationDriverConfig) -> Self {
+        self.driver_config = config;
         self
     }
 
@@ -354,6 +377,32 @@ impl SharedRecoveryWorker {
 impl RecoveryHealthSource for SharedRecoveryWorker {
     fn recovery_health(&self) -> RecoveryWorkerHealth {
         self.health()
+    }
+}
+
+/// The materialization-driver handle shared between the handler
+/// (read-only health face) and the shutdown path (idempotent stop/join),
+/// mirroring [`SharedRecoveryWorker`].
+pub struct SharedMaterializationDriver(Mutex<MaterializationDriver>);
+
+impl SharedMaterializationDriver {
+    fn lock(&self) -> std::sync::MutexGuard<'_, MaterializationDriver> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Current driver health (state, pass counters, window, seats,
+    /// failure posture).
+    #[must_use]
+    pub fn health(&self) -> MaterializationDriverHealth {
+        self.lock().health()
+    }
+
+    /// Requests shutdown and joins the dedicated thread. Repeated calls
+    /// are harmless; `Drop` of the underlying driver runs the same stop.
+    pub fn stop(&self) {
+        self.lock().stop();
     }
 }
 
@@ -435,8 +484,9 @@ pub struct SystemControlDaemon {
     pub resource: Arc<ResourceAuthority>,
     /// Application authority (resident owner; client-side inspector surface).
     pub application: Arc<ApplicationAuthority>,
-    /// Plan authority behind the `TaskNode` inspect seam.
-    pub plans: SqlitePlanAuthority,
+    /// Plan authority behind the `TaskNode` inspect seam and the
+    /// materialization driver's scheduler passes.
+    pub plans: Arc<SqlitePlanAuthority>,
     /// Channel authority the topic authority is bound to.
     pub channel: Arc<ChannelAuthority>,
     /// Topic authority behind the `Topic` inspect seam.
@@ -451,6 +501,8 @@ pub struct SystemControlDaemon {
     random: RandomSource,
     /// Running recovery worker (health face + idempotent stop).
     worker: Arc<SharedRecoveryWorker>,
+    /// Running materialization driver (health face + idempotent stop).
+    materialization: Arc<SharedMaterializationDriver>,
 }
 
 impl SystemControlDaemon {
@@ -463,6 +515,18 @@ impl SystemControlDaemon {
     /// Stops the recovery worker (idempotent stop + join).
     pub fn stop_worker(&self) {
         self.worker.stop();
+    }
+
+    /// Current materialization driver health (state, pass counters,
+    /// window, seats in use, failure posture).
+    #[must_use]
+    pub fn materialization_health(&self) -> MaterializationDriverHealth {
+        self.materialization.health()
+    }
+
+    /// Stops the materialization driver (idempotent stop + join).
+    pub fn stop_materialization(&self) {
+        self.materialization.stop();
     }
 
     /// Wires the handler with every layer inspection source. The sources
@@ -575,8 +639,9 @@ pub fn assemble(
         ApplicationAuthority::open(options.root.join("application"))
             .map_err(DaemonError::Application)?,
     );
-    let plans =
-        SqlitePlanAuthority::open(options.root.join("plans.sqlite3")).map_err(DaemonError::Plan)?;
+    let plans = Arc::new(
+        SqlitePlanAuthority::open(options.root.join("plans.sqlite3")).map_err(DaemonError::Plan)?,
+    );
     let channel = Arc::new(
         ChannelAuthority::open(options.root.join("channel")).map_err(DaemonError::Channel)?,
     );
@@ -598,6 +663,18 @@ pub fn assemble(
         options.worker_config,
     )
     .map_err(DaemonError::Worker)?;
+    // The materialization driver powers the W31-F scheduler over the
+    // same plan authority the inspect seam reads and the same task
+    // authority the worker recovers through: periodic passes drive the
+    // plan→materialization→task-admission chain (select → gate drive per
+    // plan), with the Task consult wired in (see the module docs for the
+    // deliberately-unwired ecosystem selector).
+    let materialization_driver = MaterializationDriver::start(
+        Arc::clone(&plans),
+        Arc::clone(&tasks),
+        options.driver_config,
+    )
+    .map_err(DaemonError::MaterializationDriver)?;
     let handshake = Arc::new(
         ServerHandshakeContext::new(&auth_socket_path, HANDSHAKE_NONCE_CAPACITY)
             .map_err(DaemonError::Handshake)?,
@@ -626,6 +703,9 @@ pub fn assemble(
         handshake,
         random,
         worker: Arc::new(SharedRecoveryWorker(Mutex::new(worker))),
+        materialization: Arc::new(SharedMaterializationDriver(Mutex::new(
+            materialization_driver,
+        ))),
     });
     Ok((
         daemon,

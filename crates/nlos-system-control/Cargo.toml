@@ -84,6 +84,7 @@ nlos-service-directory = { path = "../nlos-service-directory" }
 nlos-channel = { path = "../nlos-channel" }
 nlos-artifact = { path = "../nlos-artifact" }
 nlos-identity = { path = "../nlos-identity" }
+nlos-store-fault = { path = "../nlos-store-fault" }
 rusqlite.workspace = true
 tokio.workspace = true
 

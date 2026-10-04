@@ -152,6 +152,15 @@ pub mod auth;
 #[cfg(feature = "daemon")]
 pub mod daemon;
 
+/// Materialization drive worker for the resident daemon (`daemon`
+/// feature): powers the W31-F two-tier scheduler over the plan authority
+/// the daemon owns — periodic scheduler passes (select → gate drive) per
+/// durable plan, with the Task authority's admission consult wired in.
+/// Lifecycle-shaped like the commit-recovery worker (named thread,
+/// idempotent stop, health face, backoff, terminal Fault).
+#[cfg(feature = "daemon")]
+pub mod materialization_driver;
+
 /// Discriminates the operation-level arms routed through
 /// [`RecoverySystemControl::execute_operation_control`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -460,6 +460,25 @@ impl SqlitePlanAuthority {
         load_plan_head(&connection, plan_id)
     }
 
+    /// Lists every plan id ever created, ordered by id bytes
+    /// (deterministic). The production materialization driver enumerates
+    /// the plan set through this face — one bounded metadata row per
+    /// plan, so the enumeration itself carries no node-scale read.
+    ///
+    /// # Errors
+    ///
+    /// Fails on storage failure or a corrupt row.
+    pub fn list_plan_ids(&self) -> Result<Vec<TaskPlanId>, PlanStoreError> {
+        let connection = self.lock()?;
+        let mut statement = connection.prepare("SELECT plan_id FROM plans ORDER BY plan_id")?;
+        let rows = statement.query_map([], |row| row.get::<_, Vec<u8>>(0))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(PlanStoreError::from)?
+            .into_iter()
+            .map(|bytes| fixed16(bytes, "plan id").map(TaskPlanId::from_bytes))
+            .collect()
+    }
+
     /// Reads one immutable revision receipt, `None` when absent.
     ///
     /// # Errors
