@@ -100,6 +100,19 @@ fn map_process_authority_error(error: &ProcessAuthorityError) -> SabiFailure {
             RetryDirective::DoNotRetry,
             "platform kill adapter failed to signal the os process",
         ),
+        // W59-2 (evaluation F7) generation-fenced kill faces: the registry
+        // re-verification rejected the signal mapping. These arms only map
+        // the variants this crate's inspector must stay exhaustive over.
+        ProcessAuthorityError::PlatformKillGenerationMismatch { .. } => (
+            SabiErrorCode::Conflict,
+            RetryDirective::DoNotRetry,
+            "platform kill generation fence rejected the signal mapping",
+        ),
+        ProcessAuthorityError::PlatformKillTargetNotRegistered(_) => (
+            SabiErrorCode::NotFound,
+            RetryDirective::DoNotRetry,
+            "no os pid mapping is registered for the process",
+        ),
     };
     SabiFailure {
         code: code.into(),
