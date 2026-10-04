@@ -1260,3 +1260,162 @@ fn pattern_create_key_is_frozen_replay_evidence() {
         cancelled_row
     );
 }
+
+/// The v10 step (W58-2, the deep-audit #24 residual W57-C registered): the
+/// subscribe-time attach enumeration narrows its `topics` name scan through
+/// the stored-name index instead of enumerating every row.  The narrowing's
+/// memcmp edges are exercised end to end (exact equality, a plain prefix, a
+/// `0xFF`-heavy prefix whose successor bound carries, an all-`0xFF` prefix
+/// with no finite upper bound, the bare `*`), the storage layer carries the
+/// index with the watermark untouched (object-tracked like v6-v9), the
+/// query plans really go through the index, and the reopen is an
+/// idempotent no-op.
+#[test]
+#[allow(clippy::too_many_lines)] // One test covers the semantics, the storage layer and idempotence.
+fn schema_v10_name_index_narrows_the_attach_enumeration() {
+    let harness = Harness::new("v10-name-index");
+    let head = create_channel(&harness.channel, 4_096, 90);
+    // Names chosen to exercise the narrowing edges: two plain names under
+    // one prefix, a `0xFE 0xFF`-rooted name (the successor bound carries
+    // past the trailing `0xFF`), an all-`0xFF`-rooted name (inside the
+    // unbounded class) and a non-matching neighbour.
+    let plain_a = create_topic(
+        &harness.topics,
+        head.channel_id,
+        b"idx.a",
+        policy_for(8),
+        91,
+    );
+    let _plain_b = create_topic(
+        &harness.topics,
+        head.channel_id,
+        b"idx.b",
+        policy_for(8),
+        92,
+    );
+    let edge_a = create_topic(
+        &harness.topics,
+        head.channel_id,
+        &[0xFE, 0xFF, 0x01],
+        policy_for(8),
+        93,
+    );
+    let edge_b = create_topic(
+        &harness.topics,
+        head.channel_id,
+        &[0xFF, 0x00],
+        policy_for(8),
+        94,
+    );
+    let _other = create_topic(
+        &harness.topics,
+        head.channel_id,
+        b"other",
+        policy_for(8),
+        95,
+    );
+
+    // Exact pattern: an equality seek attaching only the byte-equal topic.
+    let (_exact, exact_report) = subscribe_pattern_at(&harness.topics, b"idx.a", 9, 10, 96, 4_000);
+    assert_eq!(exact_report.attached.len(), 1);
+    assert_eq!(
+        exact_report.attached[0].subscription.topic_id,
+        plain_a.topic_id
+    );
+
+    // Plain prefix: both plain topics, none of the edges.
+    let (_plain, plain_report) = subscribe_pattern_at(&harness.topics, b"idx.*", 9, 11, 97, 4_100);
+    assert_eq!(plain_report.attached.len(), 2);
+
+    // `0xFF`-heavy prefix `[0xFE, 0xFF]*`: the successor bound `[0xFF]`
+    // carries past the trailing `0xFF`, so exactly the one rooted name
+    // attaches (the all-`0xFF`-rooted name sorts at or after the bound).
+    let (_carry, carry_report) =
+        subscribe_pattern_at(&harness.topics, &[0xFE, 0xFF, b'*'], 9, 12, 98, 4_200);
+    assert_eq!(carry_report.attached.len(), 1);
+    assert_eq!(
+        carry_report.attached[0].subscription.topic_id,
+        edge_a.topic_id
+    );
+
+    // All-`0xFF` prefix `[0xFF]*`: no finite upper bound — the range runs
+    // to the end of the index and attaches the rooted name alone.
+    let (_unbounded, unbounded_report) =
+        subscribe_pattern_at(&harness.topics, &[0xFF, b'*'], 9, 13, 99, 4_300);
+    assert_eq!(unbounded_report.attached.len(), 1);
+    assert_eq!(
+        unbounded_report.attached[0].subscription.topic_id,
+        edge_b.topic_id
+    );
+
+    // The bare `*` matches every topic by definition.
+    let (_star, star_report) = subscribe_pattern_at(&harness.topics, b"*", 9, 14, 100, 4_400);
+    assert_eq!(star_report.attached.len(), 5);
+
+    // Storage layer: the index is present, the watermark stays 5 (v10 is
+    // object-tracked, not a watermark bump) and the narrowed scans really
+    // go through the index.
+    {
+        let raw = Connection::open(harness.root.topic_db()).expect("open raw topic db");
+        let version: i64 = raw
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("version");
+        assert_eq!(version, 5, "v10 is object-tracked, the watermark stays 5");
+        let indexes: i64 = raw
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                  WHERE type='index' AND name='topics_topic_name'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count v10 index");
+        assert_eq!(indexes, 1, "the v10 name index is present");
+        let seek: String = raw
+            .query_row(
+                "EXPLAIN QUERY PLAN SELECT topic_id, topic_name FROM topics
+                  WHERE topic_name = ?1 ORDER BY topic_id",
+                rusqlite::params![b"idx.a".to_vec()],
+                |row| row.get(3),
+            )
+            .expect("equality plan");
+        assert!(
+            seek.contains("topics_topic_name"),
+            "the equality seek goes through the index, plan: {seek}"
+        );
+        let range: String = raw
+            .query_row(
+                "EXPLAIN QUERY PLAN SELECT topic_id, topic_name FROM topics
+                  WHERE topic_name >= ?1 AND topic_name < ?2 ORDER BY topic_id",
+                rusqlite::params![b"idx".to_vec(), b"idy".to_vec()],
+                |row| row.get(3),
+            )
+            .expect("range plan");
+        assert!(
+            range.contains("topics_topic_name"),
+            "the prefix range goes through the index, plan: {range}"
+        );
+    }
+
+    // The reopen is idempotent: the v10 completed-state probe finds its
+    // object and writes nothing, and a later pattern subscribe still
+    // attaches through the narrowed scan.
+    let Harness {
+        root,
+        channel,
+        topics,
+    } = harness;
+    drop(topics);
+    drop(channel);
+    let channel = Arc::new(ChannelAuthority::open(root.path()).expect("reopen channel"));
+    let topics = TopicAuthority::open(root.path(), Arc::clone(&channel)).expect("reopen topics");
+    let publications = topics
+        .inspect_publications(plain_a.topic_id)
+        .expect("journal after reopen");
+    assert_eq!(publications.len(), 0);
+    let (_late, late_report) = subscribe_pattern_at(&topics, b"idx.a", 9, 15, 101, 4_500);
+    assert_eq!(late_report.attached.len(), 1);
+    assert_eq!(
+        late_report.attached[0].subscription.topic_id,
+        plain_a.topic_id
+    );
+}

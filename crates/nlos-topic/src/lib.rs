@@ -196,7 +196,9 @@ use nlos_channel::{
     EnqueueDecision, EnqueueRequest, FencingToken, QueueEntryRecord, QueueState,
 };
 use nlos_types::{ChannelId, Generation, IdempotencyKey, ResourceAccountId};
-use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use rusqlite::{
+    Connection, OptionalExtension, Transaction, TransactionBehavior, params, params_from_iter,
+};
 use sha2::{Digest, Sha256};
 
 macro_rules! nominal_id {
@@ -1294,6 +1296,7 @@ impl TopicAuthority {
                 schema::migrate_v7(&mut connection)?;
                 schema::migrate_v8(&mut connection)?;
                 schema::migrate_v9(&mut connection)?;
+                schema::migrate_v10(&mut connection)?;
             }
             1 => {
                 schema::migrate_v2(&mut connection)?;
@@ -1304,6 +1307,7 @@ impl TopicAuthority {
                 schema::migrate_v7(&mut connection)?;
                 schema::migrate_v8(&mut connection)?;
                 schema::migrate_v9(&mut connection)?;
+                schema::migrate_v10(&mut connection)?;
             }
             2 => {
                 schema::migrate_v3(&mut connection)?;
@@ -1313,6 +1317,7 @@ impl TopicAuthority {
                 schema::migrate_v7(&mut connection)?;
                 schema::migrate_v8(&mut connection)?;
                 schema::migrate_v9(&mut connection)?;
+                schema::migrate_v10(&mut connection)?;
             }
             3 => {
                 schema::migrate_v4(&mut connection)?;
@@ -1321,6 +1326,7 @@ impl TopicAuthority {
                 schema::migrate_v7(&mut connection)?;
                 schema::migrate_v8(&mut connection)?;
                 schema::migrate_v9(&mut connection)?;
+                schema::migrate_v10(&mut connection)?;
             }
             4 => {
                 schema::migrate_v5(&mut connection)?;
@@ -1328,15 +1334,17 @@ impl TopicAuthority {
                 schema::migrate_v7(&mut connection)?;
                 schema::migrate_v8(&mut connection)?;
                 schema::migrate_v9(&mut connection)?;
+                schema::migrate_v10(&mut connection)?;
             }
             // The watermark version: the rebuild chain is complete, so only
             // the idempotent additive pre-checks remain (no-ops when the v6,
-            // v7, v8 and v9 objects are already present).
+            // v7, v8, v9 and v10 objects are already present).
             schema::SCHEMA_VERSION => {
                 schema::migrate_v6(&mut connection)?;
                 schema::migrate_v7(&mut connection)?;
                 schema::migrate_v8(&mut connection)?;
                 schema::migrate_v9(&mut connection)?;
+                schema::migrate_v10(&mut connection)?;
             }
             other => return Err(TopicAuthorityError::SchemaVersionUnsupported(other)),
         }
@@ -1505,6 +1513,18 @@ impl TopicAuthority {
     /// A direct subscription is recorded with `attached_by = NULL` (any
     /// provenance from a previous activation of the row is cleared).
     ///
+    /// The subscribe point is a channel sequence high-water snapshot read
+    /// *before* the `Immediate` transaction opens (registry finding #23 /
+    /// deep-audit D8, the W58 closure of the W57-C residual: no channel IO
+    /// runs under this authority's write lock; an already-active key replays
+    /// without paying — or newly failing on — the channel read).  The
+    /// snapshot's `max_sequence` is monotonic and rotation-invariant, so the
+    /// point can only be stale-low: a publication enqueued inside the
+    /// snapshot-to-commit race window is still delivered to the new
+    /// subscriber — over-delivery, never a loss, and never a replay of the
+    /// history before the subscribe point (the same semantics as the
+    /// pattern-attach subscribe point).
+    ///
     /// # Errors
     ///
     /// Fails closed for an unknown Topic, the recipient limit, a Channel
@@ -1512,6 +1532,43 @@ impl TopicAuthority {
     pub fn subscribe(
         &self,
         request: SubscribeRequest,
+    ) -> Result<SubscribeDecision, TopicAuthorityError> {
+        // Verify-then-commit (registry finding #23 / deep-audit D8, the W58
+        // closure of the W57-C residual): the cursor's subscribe point is a
+        // channel snapshot read before the `Immediate` transaction opens, so
+        // no channel IO runs under this authority's write lock.  The pre-pass
+        // is read-only under the connection mutex only: an already-active
+        // key replays right there (the replay arm must not pay, or newly
+        // fail on, a channel read — the same guard
+        // `snapshot_pattern_subscribe_points` applies to pattern keys), and
+        // the topic's channel binding is immutable from creation, so the
+        // snapshot cannot aim at a stale binding.
+        let subscribe_point = {
+            let connection = self.lock()?;
+            if let Some(existing) =
+                load_subscription_optional(&connection, request.topic_id, request.subscriber_key)?
+                    .filter(|existing| existing.active)
+            {
+                return Ok(SubscribeDecision::Replayed(existing));
+            }
+            let channel_id = load_topic_channel_id(&connection, request.topic_id)?;
+            drop(connection);
+            self.channel
+                .inspect_queue(channel_id)
+                .map_err(TopicAuthorityError::Channel)?
+                .max_sequence
+        };
+        self.subscribe_with_subscribe_point(request, subscribe_point)
+    }
+
+    /// The subscribe decision transaction against one subscribe point — the
+    /// verify-then-commit half of [`Self::subscribe`], separated so the
+    /// documented snapshot race (a publish inside the snapshot-to-transaction
+    /// window) is testable with a crafted stale snapshot.
+    fn subscribe_with_subscribe_point(
+        &self,
+        request: SubscribeRequest,
+        subscribe_point: u64,
     ) -> Result<SubscribeDecision, TopicAuthorityError> {
         let mut connection = self.lock()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -1524,10 +1581,6 @@ impl TopicAuthority {
             transaction.commit()?;
             return Ok(SubscribeDecision::Replayed(*existing));
         }
-        let live = self
-            .channel
-            .inspect_queue(topic.channel_id)
-            .map_err(TopicAuthorityError::Channel)?;
         let active = count_active_subscriptions(&transaction, request.topic_id)?;
         if active >= topic.policy.max_recipients {
             return Err(TopicAuthorityError::SubscriberLimitReached);
@@ -1541,7 +1594,7 @@ impl TopicAuthority {
             topic_id: request.topic_id,
             subscriber_key: request.subscriber_key,
             active: true,
-            cursor: live.max_sequence,
+            cursor: subscribe_point,
             subscribed_at_ms: request.subscribed_at_ms,
             unsubscribed_at_ms: 0,
             last_advanced_at_ms: 0,
@@ -2537,15 +2590,38 @@ impl TopicAuthority {
         &self,
         publication_key: IdempotencyKey,
     ) -> Result<PublicationRecord, TopicAuthorityError> {
-        let connection = self.lock()?;
-        let record = load_publication_by_key(&connection, publication_key)?
-            .ok_or(TopicAuthorityError::PublicationNotFound(publication_key))?;
-        let topic = load_topic_verified(&connection, record.topic_id)?;
-        if record.policy_digest != topic.policy_digest || record.payer != topic.policy.payer {
-            return Err(TopicAuthorityError::CorruptRecord(
-                "publication binding disagrees with the topic head",
-            ));
-        }
+        // Read-only local pass under the connection mutex (registry finding
+        // #23 / deep-audit D8, the W58 closure of the W57-C residual): every
+        // topic-authority read the cross-checks needs — record, verified
+        // head, parent chain and the child count — runs inside one mutex
+        // window, and the channel read below runs after the guard drops, so
+        // a slow Channel never lengthens this authority's mutex window.  The
+        // path is read-only, so no transaction semantics are involved: the
+        // split only shrinks the window.  The channel check only gets
+        // fresher (`max_sequence` is monotonic); the publication rows are
+        // append-only with frozen identity, so their cross-checks are
+        // insensitive to the reordering.
+        let (record, topic, children) = {
+            let connection = self.lock()?;
+            let record = load_publication_by_key(&connection, publication_key)?
+                .ok_or(TopicAuthorityError::PublicationNotFound(publication_key))?;
+            let topic = load_topic_verified(&connection, record.topic_id)?;
+            if record.policy_digest != topic.policy_digest || record.payer != topic.policy.payer {
+                return Err(TopicAuthorityError::CorruptRecord(
+                    "publication binding disagrees with the topic head",
+                ));
+            }
+            verify_parent_chain(&connection, &record)?;
+            // The spent budget must reconcile with the durable children:
+            // every referencing child row committed together with exactly
+            // one unit.
+            let children: i64 = connection.query_row(
+                "SELECT COUNT(*) FROM topic_publications WHERE parent_idempotency_key=?1",
+                [publication_key.as_bytes().as_slice()],
+                |row| row.get(0),
+            )?;
+            (record, topic, children)
+        };
         if record.status == PublicationStatus::Enqueued {
             let queue = self
                 .channel
@@ -2557,14 +2633,6 @@ impl TopicAuthority {
                 ));
             }
         }
-        verify_parent_chain(&connection, &record)?;
-        // The spent budget must reconcile with the durable children: every
-        // referencing child row committed together with exactly one unit.
-        let children: i64 = connection.query_row(
-            "SELECT COUNT(*) FROM topic_publications WHERE parent_idempotency_key=?1",
-            [publication_key.as_bytes().as_slice()],
-            |row| row.get(0),
-        )?;
         let spent = decode_u64(children)?;
         let Some(expected_remaining) = topic.policy.cascade_depth.checked_sub(spent) else {
             return Err(TopicAuthorityError::CorruptRecord(
@@ -2904,17 +2972,27 @@ impl TopicAuthority {
     /// Fails closed for an unknown Topic, corrupt state, or a propagated
     /// Channel rejection.
     pub fn compact_bound(&self, topic_id: TopicId) -> Result<u64, TopicAuthorityError> {
-        let connection = self.lock()?;
-        let topic = load_topic_verified(&connection, topic_id)?;
+        // Read-only local pass under the connection mutex (registry finding
+        // #23 / deep-audit D8, the W58 closure of the W57-C residual): the
+        // verified head and the delivery-eligible cursor minimum are read in
+        // one mutex window, and the channel read below runs after the guard
+        // drops.  The path is read-only (no transaction semantics), the
+        // cursor minimum is a topic-authority fact computed entirely under
+        // the same guard as before, and `consume_high_water` is monotonic,
+        // so reading it later only makes the bound fresher — never past an
+        // entitlement the ack-linkage invariant protects.
+        let (channel_id, min_cursor) = {
+            let connection = self.lock()?;
+            let topic = load_topic_verified(&connection, topic_id)?;
+            (topic.channel_id, min_active_cursor(&connection, topic_id)?)
+        };
         let queue = self
             .channel
-            .inspect_queue(topic.channel_id)
+            .inspect_queue(channel_id)
             .map_err(TopicAuthorityError::Channel)?;
-        Ok(
-            min_active_cursor(&connection, topic_id)?.map_or(queue.consume_high_water, |cursor| {
-                cursor.min(queue.consume_high_water)
-            }),
-        )
+        Ok(min_cursor.map_or(queue.consume_high_water, |cursor| {
+            cursor.min(queue.consume_high_water)
+        }))
     }
 
     /// Advances the channel consume high-water to the topic's subscriber
@@ -3080,37 +3158,54 @@ impl TopicAuthority {
         &self,
         topic_id: TopicId,
     ) -> Result<Vec<PublicationRecord>, TopicAuthorityError> {
-        let connection = self.lock()?;
-        let topic = load_topic_verified(&connection, topic_id)?;
+        // Read-only local pass under the connection mutex (registry finding
+        // #23 / deep-audit D8, the W58 closure of the W57-C residual): the
+        // verified head plus the raw journal rows are collected in one mutex
+        // window; the channel read below runs after the guard drops, and the
+        // decode/cross-check tail is pure over the collected locals.  The
+        // path is read-only (no transaction semantics); the journal rows are
+        // append-only with frozen identity, so collecting them inside the
+        // guard is insensitive to the reordering, and the sequence
+        // high-water check only gets fresher (monotonic watermark).
+        let (channel_id, topic_digest, topic_payer, rows) = {
+            let connection = self.lock()?;
+            let topic = load_topic_verified(&connection, topic_id)?;
+            let mut statement = connection.prepare(
+                "SELECT idempotency_key, policy_digest, payer_account_id, payload_digest,
+                        status, channel_sequence, channel_generation, cascade_budget_remaining,
+                        cascade_level, published_at_ms, enqueued_at_ms, parent_idempotency_key
+                 FROM topic_publications WHERE topic_id=?1
+                 ORDER BY published_at_ms, idempotency_key",
+            )?;
+            let rows = statement
+                .query_map([topic_id.as_bytes().as_slice()], |row| {
+                    Ok((
+                        row.get::<_, Vec<u8>>(0)?,
+                        row.get::<_, Vec<u8>>(1)?,
+                        row.get::<_, Vec<u8>>(2)?,
+                        row.get::<_, Vec<u8>>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, i64>(5)?,
+                        row.get::<_, i64>(6)?,
+                        row.get::<_, i64>(7)?,
+                        row.get::<_, i64>(8)?,
+                        row.get::<_, i64>(9)?,
+                        row.get::<_, i64>(10)?,
+                        row.get::<_, Option<Vec<u8>>>(11)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            (
+                topic.channel_id,
+                topic.policy_digest,
+                topic.policy.payer,
+                rows,
+            )
+        };
         let queue = self
             .channel
-            .inspect_queue(topic.channel_id)
+            .inspect_queue(channel_id)
             .map_err(TopicAuthorityError::Channel)?;
-        let mut statement = connection.prepare(
-            "SELECT idempotency_key, policy_digest, payer_account_id, payload_digest,
-                    status, channel_sequence, channel_generation, cascade_budget_remaining,
-                    cascade_level, published_at_ms, enqueued_at_ms, parent_idempotency_key
-             FROM topic_publications WHERE topic_id=?1
-             ORDER BY published_at_ms, idempotency_key",
-        )?;
-        let rows = statement
-            .query_map([topic_id.as_bytes().as_slice()], |row| {
-                Ok((
-                    row.get::<_, Vec<u8>>(0)?,
-                    row.get::<_, Vec<u8>>(1)?,
-                    row.get::<_, Vec<u8>>(2)?,
-                    row.get::<_, Vec<u8>>(3)?,
-                    row.get::<_, i64>(4)?,
-                    row.get::<_, i64>(5)?,
-                    row.get::<_, i64>(6)?,
-                    row.get::<_, i64>(7)?,
-                    row.get::<_, i64>(8)?,
-                    row.get::<_, i64>(9)?,
-                    row.get::<_, i64>(10)?,
-                    row.get::<_, Option<Vec<u8>>>(11)?,
-                ))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
         rows.into_iter()
             .map(|row| {
                 let key = IdempotencyKey::from_bytes(array16(row.0)?);
@@ -3126,8 +3221,7 @@ impl TopicAuthority {
                         row.1, row.2, row.3, row.4, row.5, row.6, row.7, row.8, row.9, row.10,
                     ),
                 )?;
-                if record.policy_digest != topic.policy_digest || record.payer != topic.policy.payer
-                {
+                if record.policy_digest != topic_digest || record.payer != topic_payer {
                     return Err(TopicAuthorityError::CorruptRecord(
                         "publication binding disagrees with the topic head",
                     ));
@@ -3171,48 +3265,61 @@ impl TopicAuthority {
         &self,
         topic_id: TopicId,
     ) -> Result<AttributionReport, TopicAuthorityError> {
-        let connection = self.lock()?;
-        let topic = load_topic_verified(&connection, topic_id)?;
+        // Read-only local pass under the connection mutex (registry finding
+        // #23 / deep-audit D8, the W58 closure of the W57-C residual): the
+        // verified head plus both raw row sets (journal window and ledger)
+        // are collected in one mutex window; the channel read below runs
+        // after the guard drops, and the whole journal-vs-ledger cross-check
+        // tail is pure over the collected locals.  The path is read-only (no
+        // transaction semantics); the journal and ledger rows are
+        // append-only with frozen identity, so collecting them inside the
+        // guard is insensitive to the reordering, and the trim-watermark
+        // check only gets fresher (monotonic watermark).
+        let (channel_id, publications, ledger) = {
+            let connection = self.lock()?;
+            let topic = load_topic_verified(&connection, topic_id)?;
+            let mut statement = connection.prepare(
+                "SELECT channel_sequence, payer_account_id, payload_bytes
+                 FROM topic_publications
+                WHERE topic_id=?1 AND status=1
+                ORDER BY channel_sequence",
+            )?;
+            let publications = statement
+                .query_map([topic_id.as_bytes().as_slice()], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, Vec<u8>>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            drop(statement);
+            let mut statement = connection.prepare(
+                "SELECT ledger_id, payer_account_id, kind, payload_bytes,
+                        policy_version, evidence_sequence
+                 FROM topic_attribution_ledger
+                WHERE topic_id=?1
+                ORDER BY evidence_sequence",
+            )?;
+            let ledger = statement
+                .query_map([topic_id.as_bytes().as_slice()], |row| {
+                    Ok((
+                        row.get::<_, Vec<u8>>(0)?,
+                        row.get::<_, Vec<u8>>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, i64>(5)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            drop(statement);
+            (topic.channel_id, publications, ledger)
+        };
         let queue = self
             .channel
-            .inspect_queue(topic.channel_id)
+            .inspect_queue(channel_id)
             .map_err(TopicAuthorityError::Channel)?;
-        let mut statement = connection.prepare(
-            "SELECT channel_sequence, payer_account_id, payload_bytes
-             FROM topic_publications
-            WHERE topic_id=?1 AND status=1
-            ORDER BY channel_sequence",
-        )?;
-        let publications = statement
-            .query_map([topic_id.as_bytes().as_slice()], |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, Vec<u8>>(1)?,
-                    row.get::<_, i64>(2)?,
-                ))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        drop(statement);
-        let mut statement = connection.prepare(
-            "SELECT ledger_id, payer_account_id, kind, payload_bytes,
-                    policy_version, evidence_sequence
-             FROM topic_attribution_ledger
-            WHERE topic_id=?1
-            ORDER BY evidence_sequence",
-        )?;
-        let ledger = statement
-            .query_map([topic_id.as_bytes().as_slice()], |row| {
-                Ok((
-                    row.get::<_, Vec<u8>>(0)?,
-                    row.get::<_, Vec<u8>>(1)?,
-                    row.get::<_, i64>(2)?,
-                    row.get::<_, i64>(3)?,
-                    row.get::<_, i64>(4)?,
-                    row.get::<_, i64>(5)?,
-                ))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        drop(statement);
 
         let mut journal: BTreeMap<u64, ([u8; 16], u64, bool)> = BTreeMap::new();
         let mut total: u64 = 0;
@@ -4419,6 +4526,74 @@ fn pattern_matches(pattern: &[u8], name: &[u8]) -> bool {
     }
 }
 
+/// The SQL narrowing of one `topics` name scan, pushed down through the v10
+/// `topics_topic_name` index (the W58-2 closure of deep-audit finding #24):
+/// byte-equality for an exact pattern, the half-open memcmp range for a
+/// trailing-`*` pattern — the bare `*` is the empty-prefix range
+/// (`topic_name >= x''`), i.e. every row, as it must be.  Every narrowed
+/// predicate is a *superset* of what [`pattern_matches`] accepts, and the
+/// callers keep the Rust-side test as the authoritative filter, so an index
+/// plan change can never silently drop a match.
+enum TopicNameScan {
+    /// `WHERE topic_name = ?1` with the exact name.
+    Exact(Vec<u8>),
+    /// `WHERE topic_name >= ?1 AND topic_name < ?2` (`?2` absent when the
+    /// prefix has no finite successor bound).
+    Range(Vec<u8>, Option<Vec<u8>>),
+}
+
+fn topic_name_scan_for(pattern: &[u8]) -> TopicNameScan {
+    match pattern.split_last() {
+        Some((b'*', prefix)) => {
+            TopicNameScan::Range(prefix.to_vec(), successor_prefix_bound(prefix))
+        }
+        _ => TopicNameScan::Exact(pattern.to_vec()),
+    }
+}
+
+/// The exclusive upper bound of the memcmp range holding exactly the byte
+/// strings with the given prefix (both SQLite BLOB ordering and Rust byte
+/// ordering are memcmp, so the two agree row for row): the prefix truncated
+/// after its rightmost byte below `0xFF`, that byte incremented — e.g. the
+/// prefix `[0x61, 0xFF, 0xFF]` bounds at `[0x62]`, past every `0x61...`
+/// continuation.  An all-`0xFF` prefix has no finite successor (every
+/// continuation stays inside the class), so the range runs to the end of
+/// the index.
+fn successor_prefix_bound(prefix: &[u8]) -> Option<Vec<u8>> {
+    (0..prefix.len())
+        .rev()
+        .find(|index| prefix[*index] < 0xFF)
+        .map(|index| {
+            let mut bound = prefix[..=index].to_vec();
+            bound[index] += 1;
+            bound
+        })
+}
+
+/// Builds the narrowed `topics` scan: the caller's column list with the
+/// pattern's predicate appended (values stay bound parameters; only the
+/// static predicate text is interpolated) and the id-order preserved, so the
+/// attach report stays deterministic.
+fn topic_name_scan_sql(scan: &TopicNameScan, columns: &str) -> (String, Vec<Vec<u8>>) {
+    match scan {
+        TopicNameScan::Exact(name) => (
+            format!("SELECT {columns} FROM topics WHERE topic_name = ?1 ORDER BY topic_id"),
+            vec![name.clone()],
+        ),
+        TopicNameScan::Range(lower, Some(upper)) => (
+            format!(
+                "SELECT {columns} FROM topics
+                  WHERE topic_name >= ?1 AND topic_name < ?2 ORDER BY topic_id"
+            ),
+            vec![lower.clone(), upper.clone()],
+        ),
+        TopicNameScan::Range(lower, None) => (
+            format!("SELECT {columns} FROM topics WHERE topic_name >= ?1 ORDER BY topic_id"),
+            vec![lower.clone()],
+        ),
+    }
+}
+
 /// Attempts to attach one pattern subscriber to one matching topic: the
 /// shared core of both attach time points.  Mirrors
 /// [`TopicAuthority::subscribe`] exactly — the same replay skip for an
@@ -4477,7 +4652,10 @@ fn attach_one(
 /// name before the verified load (the W55 follow-up on deep-audit finding
 /// #24: the verified load costs a full row decode plus the active-count
 /// re-check per candidate, so the enumeration is one name scan plus a
-/// verified load per *match*, not per topic).
+/// verified load per *match*, not per topic; the W58-2 follow-up pushes the
+/// narrowing through the v10 `topics_topic_name` index — equality for an
+/// exact pattern, prefix range for a trailing `*` — while the Rust-side
+/// [`pattern_matches`] test stays the authoritative filter).
 ///
 /// `subscribe_points` maps each matching topic's channel to the
 /// `max_sequence` snapshot taken before the transaction opened (registry
@@ -4492,10 +4670,13 @@ fn attach_pattern_to_existing_topics(
     pattern: &PatternRecord,
     subscribed_at_ms: u64,
 ) -> Result<Option<AttachReport>, TopicAuthorityError> {
-    let mut statement =
-        transaction.prepare("SELECT topic_id, topic_name FROM topics ORDER BY topic_id")?;
+    let (sql, params) = topic_name_scan_sql(
+        &topic_name_scan_for(&pattern.pattern),
+        "topic_id, topic_name",
+    );
+    let mut statement = transaction.prepare(&sql)?;
     let topic_names = statement
-        .query_map([], |row| {
+        .query_map(params_from_iter(params.iter()), |row| {
             Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -4891,15 +5072,20 @@ fn load_topic_channel_id(
 /// topic whose name matches, in scan order — the aim list for the
 /// pre-transaction subscribe-point snapshot pass of
 /// [`TopicAuthority::subscribe_pattern`] (registry finding #23: the channel
-/// reads then run with no lock held at all).
+/// reads then run with no lock held at all).  The narrowing runs through
+/// the v10 `topics_topic_name` index (equality or prefix range); the
+/// Rust-side [`pattern_matches`] test stays the authoritative filter.
 fn load_matching_channel_ids(
     connection: &Connection,
     pattern: &[u8],
 ) -> Result<Vec<ChannelId>, TopicAuthorityError> {
-    let mut statement = connection
-        .prepare("SELECT topic_id, topic_name, channel_id FROM topics ORDER BY topic_id")?;
+    let (sql, params) = topic_name_scan_sql(
+        &topic_name_scan_for(pattern),
+        "topic_id, topic_name, channel_id",
+    );
+    let mut statement = connection.prepare(&sql)?;
     let rows = statement
-        .query_map([], |row| {
+        .query_map(params_from_iter(params.iter()), |row| {
             Ok((
                 row.get::<_, Vec<u8>>(0)?,
                 row.get::<_, Vec<u8>>(1)?,
@@ -6195,5 +6381,116 @@ mod verify_then_commit_race_tests {
         assert_eq!(converged.report.attached.len(), 1);
         assert_eq!(converged.report.skipped.len(), 0);
         assert_eq!(converged.report.attached[0].subscription.cursor, 0);
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // One test drives the stale point, the race window and the rotation.
+    fn subscribe_stale_snapshot_overdelivers_and_survives_rotation() {
+        let fixture = Fixture::new("subscribe-stale", 4_096);
+        fixture.publish(10, b"before", 3_000);
+        // The subscribe-point snapshot races a further enqueue and a
+        // rotation: captured at max_sequence 1, the channel then advances
+        // to 2 and rotates its fence.
+        let stale = fixture
+            .channel
+            .inspect_queue(fixture.topic.channel_id)
+            .expect("stale snapshot");
+        assert_eq!(stale.max_sequence, 1);
+        fixture.publish(11, b"race-window", 3_100);
+        let head = fixture
+            .channel
+            .inspect_channel(fixture.topic.channel_id)
+            .expect("channel head");
+        fixture
+            .channel
+            .rotate_channel(RotateChannelRequest {
+                channel_id: fixture.topic.channel_id,
+                expected_generation: head.generation,
+                expected_fencing_token: head.fencing_token,
+                idempotency_key: key(205),
+                rotated_at_ms: 3_200,
+            })
+            .expect("rotate");
+        // The decision half against the stale point (the interleaving the
+        // pre-transaction snapshot makes representable — the subscribe
+        // cursor initializes from the stale high-water): over-delivery of
+        // the race window, never a replay of the history before the
+        // subscribe point.
+        let subscribed = match fixture
+            .topics
+            .subscribe_with_subscribe_point(
+                SubscribeRequest {
+                    topic_id: fixture.topic.topic_id,
+                    subscriber_key: subscriber(4),
+                    subscribed_at_ms: 3_300,
+                },
+                stale.max_sequence,
+            )
+            .expect("subscribe against stale point")
+        {
+            SubscribeDecision::Subscribed(record) => record,
+            SubscribeDecision::Replayed(_) => panic!("fresh key cannot replay"),
+        };
+        assert_eq!(subscribed.cursor, 1);
+        assert_eq!(subscribed.attached_by, None);
+        // The race-window entry is receivable across the rotation
+        // (sequence 2); the pre-subscribe-point entry (sequence 1) is
+        // never delivered.
+        let window = fixture
+            .topics
+            .poll(fixture.topic.topic_id, subscriber(4), 10)
+            .expect("poll after subscribe");
+        assert_eq!(window.len(), 1);
+        assert_eq!(window[0].sequence, 2);
+        assert_eq!(window[0].payload, b"race-window".to_vec());
+        // The live path snapshots fresh: a later direct subscriber starts
+        // at the live high-water and receives nothing older.
+        let live = match fixture
+            .topics
+            .subscribe(SubscribeRequest {
+                topic_id: fixture.topic.topic_id,
+                subscriber_key: subscriber(5),
+                subscribed_at_ms: 3_400,
+            })
+            .expect("live subscribe")
+        {
+            SubscribeDecision::Subscribed(record) => record,
+            SubscribeDecision::Replayed(_) => panic!("fresh key cannot replay"),
+        };
+        assert_eq!(live.cursor, 2);
+        // Repeating that subscribe replays the stored decision verbatim.
+        match fixture
+            .topics
+            .subscribe(SubscribeRequest {
+                topic_id: fixture.topic.topic_id,
+                subscriber_key: subscriber(5),
+                subscribed_at_ms: 3_500,
+            })
+            .expect("replayed subscribe")
+        {
+            SubscribeDecision::Replayed(record) => assert_eq!(record.cursor, 2),
+            SubscribeDecision::Subscribed(_) => panic!("active key must replay"),
+        }
+    }
+
+    #[test]
+    fn successor_prefix_bound_covers_the_memcmp_edge_cases() {
+        // The bare `*` and the all-`0xFF` prefixes have no finite successor.
+        assert_eq!(successor_prefix_bound(&[]), None);
+        assert_eq!(successor_prefix_bound(&[0xFF]), None);
+        assert_eq!(successor_prefix_bound(&[0xFF, 0xFF]), None);
+        // A plain prefix increments its last byte.
+        assert_eq!(
+            successor_prefix_bound(&[0x61, 0x62]),
+            Some(vec![0x61, 0x63])
+        );
+        assert_eq!(successor_prefix_bound(&[0x00]), Some(vec![0x01]));
+        // A `0xFF`-heavy prefix carries: the truncation lands on the last
+        // byte below `0xFF`.
+        assert_eq!(
+            successor_prefix_bound(&[0x61, 0xFF, 0xFF]),
+            Some(vec![0x62])
+        );
+        assert_eq!(successor_prefix_bound(&[0xFE, 0xFF]), Some(vec![0xFF]));
     }
 }

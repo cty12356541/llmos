@@ -1102,3 +1102,45 @@ pub(crate) fn migrate_v9(connection: &mut Connection) -> Result<(), TopicAuthori
     transaction.commit()?;
     Ok(())
 }
+
+/// Adds the `topics` name index (schema v10, the W58-2 closure of the
+/// deep-audit #24 residual W57-C registered): the pattern-attach
+/// enumeration at the subscribe time point scans `topics` by stored name
+/// (`WHERE topic_name = / >= / <`, byte-wise memcmp on BLOBs), so the
+/// `topics_topic_name` index turns it from a full-table enumeration with a
+/// per-topic name test into an index seek (equality) or index range scan
+/// (prefix) — the create-time attach enumeration is deliberately *not*
+/// indexed: it lists every `ACTIVE` pattern row (`topic_patterns WHERE
+/// active=1`) and never queries by `pattern_text`, so no patterns index is
+/// warranted.  The `(topic_name, topic_id)` shape covers the enumeration's
+/// own column needs; the id-order sort of the attach report stays a cheap
+/// in-memory order over the narrowed candidate set.  Topic names are
+/// identity-frozen (the v1 trigger) and topic rows are `no_delete`, so the
+/// index never churns.
+///
+/// Like v6-v9, the step is additive and tracked by the durable presence of
+/// its object instead of a watermark bump (the `user_version` watermark
+/// belongs to the v1-v5 rebuild chain and keeps reading 5).  Idempotent on
+/// reopen: the index present is a no-op; absent, it is created inside one
+/// atomic `Immediate` transaction with `IF NOT EXISTS`, so no torn
+/// intermediate state is representable.
+pub(crate) fn migrate_v10(connection: &mut Connection) -> Result<(), TopicAuthorityError> {
+    let name_index: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+          WHERE type='index' AND name='topics_topic_name'",
+        [],
+        |row| row.get(0),
+    )?;
+    if name_index == 1 {
+        // The v10 step is complete: the watermark belongs to the v1-v5
+        // rebuild chain and is left untouched (it already reads 5).
+        return Ok(());
+    }
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "CREATE INDEX IF NOT EXISTS topics_topic_name
+            ON topics(topic_name, topic_id);",
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
