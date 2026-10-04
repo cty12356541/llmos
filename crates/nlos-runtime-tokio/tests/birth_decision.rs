@@ -110,13 +110,23 @@ async fn birth_rejection_capacity_when_admission_bound_is_exhausted() {
     assert_eq!(runtime.registered_fibers(), 1);
 
     // The rejection was the bound, not corruption: releasing the permit by
-    // consuming the live fiber re-opens admission.
+    // consuming the live fiber re-opens admission. The final resource drop
+    // happens on the asynchronous reap, so wait for the registry to drain
+    // instead of racing it on loaded CI runners.
     runtime
         .cancel_scope(scope_a, Generation::INITIAL)
         .expect("cancel");
     let handle = admitted.handle().expect("admitted handle");
     wait_for_state(&runtime, *handle, FiberState::Cancelled).await;
     runtime.join_fiber(*handle).expect("join");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while runtime.registered_fibers() != 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "reap did not drain the registry after join"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
     assert!(matches!(
         runtime.birth_fiber(fiber_spec(2, scope_b), Box::pin(pending())),
         BirthDecision::Admitted(_)
