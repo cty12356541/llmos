@@ -661,6 +661,7 @@ version = "0.1.0"
 dependencies = [
  "ed25519-dalek",
  "minicbor",
+ "nlos-canonical",
  "nlos-capability",
  "nlos-identity",
  "nlos-process",
@@ -692,6 +693,7 @@ dependencies = [
  "nlos-identity",
  "nlos-operation",
  "nlos-outbox",
+ "nlos-plan",
  "nlos-process",
  "nlos-runtime",
  "nlos-runtime-tokio",
