@@ -13,9 +13,10 @@
 //!
 //! - spawn / kill are real on Unix and Windows — kill reuses
 //!   [`PosixPlatformKillAdapter`] / [`WindowsPlatformKillAdapter`] over a
-//!   one-entry map taken from the generation-fenced registry entry (not a
-//!   later `pid_map()` snapshot, whose `ProcessId → os_pid` shape drops the
-//!   generation), so the supervisor signal path and the
+//!   one-entry map keyed on the generation-fenced registry entry's full
+//!   `(process_id, generation)` (not a later `pid_map()` snapshot, whose
+//!   `ProcessId → os_pid` shape drops the generation), so the supervisor
+//!   signal path and the
 //!   [`crate::ProcessAuthority::request_platform_kill`] durable path share
 //!   one adapter implementation per host;
 //! - suspend / resume are real on Unix (`SIGSTOP` / `SIGCONT`); Windows has
@@ -409,12 +410,15 @@ impl ProcessSupervisor {
     /// Kills the host child registered for
     /// `(process_id, expected_process_generation)` through the host's real
     /// platform kill adapter (SIGTERM on Unix, `taskkill /F /T` on Windows),
-    /// built from a one-entry map of the fenced entry's `os_pid` — the same
-    /// adapter family the durable
+    /// built from a one-entry map keyed on the fenced entry's full
+    /// `(process_id, generation)` fence — the same adapter family the
+    /// durable
     /// [`crate::ProcessAuthority::request_platform_kill`] path accepts. A
     /// later `pid_map()` snapshot is not consulted: that map is
-    /// `ProcessId → os_pid` only, so a `Supersede` between resolve and
-    /// signal would otherwise deliver the G2 child's pid to a G1 kill.
+    /// generation-blind `ProcessId → os_pid`, so a `Supersede` between
+    /// resolve and signal would otherwise deliver the G2 child's pid to a
+    /// G1 kill; the generation-keyed one-entry map keeps the signal bound
+    /// to the generation the fence resolved.
     ///
     /// # Errors
     ///
@@ -462,18 +466,21 @@ impl ProcessSupervisor {
 
 #[cfg(any(unix, windows))]
 impl HostKillAdapter {
-    /// Builds the host adapter from the already-fenced registry entry, not
-    /// from a later `pid_map()` snapshot (generation-blind `ProcessId →
-    /// os_pid`). Same adapter types; no second pid ledger.
+    /// Builds the host adapter from the already-fenced registry entry. The
+    /// one-entry map is keyed on the full `(process_id, generation)` fence
+    /// (W59-2 / evaluation F7), so the adapter resolves the pid through the
+    /// same generation the fence resolved — no second pid ledger, and no
+    /// generation-blind `ProcessId → os_pid` fallback that a later
+    /// `pid_map()` snapshot would reintroduce.
     fn from_fenced_entry(entry: &crate::supervisor_pid::SupervisorPidEntry) -> Self {
-        let map = HashMap::from([(entry.process_id, entry.os_pid)]);
+        let map = HashMap::from([((entry.process_id, entry.process_generation), entry.os_pid)]);
         #[cfg(unix)]
         {
-            Self::Posix(PosixPlatformKillAdapter::new(map))
+            Self::Posix(PosixPlatformKillAdapter::with_generation_pid_map(map))
         }
         #[cfg(windows)]
         {
-            Self::Windows(WindowsPlatformKillAdapter::new(map))
+            Self::Windows(WindowsPlatformKillAdapter::with_generation_pid_map(map))
         }
     }
 }

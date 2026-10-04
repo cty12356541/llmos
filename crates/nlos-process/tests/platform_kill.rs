@@ -3,18 +3,23 @@
 //! idempotent replay (which re-issues the OS signal — at-least-once),
 //! (on Unix) real SIGTERM via [`PosixPlatformKillAdapter`],
 //! (on Windows) real `taskkill /F /T` via [`WindowsPlatformKillAdapter`],
-//! (on non-Windows) stub rejection for [`WindowsPlatformKillAdapter`], and
-//! each adapter's missing-map / cross-platform stub fail-closed paths.
+//! (on non-Windows) stub rejection for [`WindowsPlatformKillAdapter`],
+//! each adapter's missing-map / cross-platform stub fail-closed paths, and
+//! the W59-2 / evaluation F7 pre-signal generation fence of
+//! [`ProcessAuthority::request_platform_kill_with_registry`] (pid reuse
+//! fenced on the fresh signal and on every replay's supplementary resend;
+//! generation-keyed adapter maps resolve no pid at a stale generation).
 
 use nlos_process::{
     CreateIsolationDomainRequest, IsolationDomainDecision, MarkProcessTerminatedRequest,
     PlatformKillAdapter, PlatformKillAdapterError, PlatformKillAdapterOutcome,
     PlatformKillDecision, PosixPlatformKillAdapter, ProcessAuthority, ProcessAuthorityError,
     ProcessBindingDecision, ProcessLifecycleState, PropagateCrashRequest,
-    RegisterDelegatedProcessRequest, RequestPlatformKillRequest, StubPlatformKillAdapter,
+    RegisterDelegatedProcessRequest, RegisterSupervisorPidRequest, RequestPlatformKillRequest,
+    RestoreProcessDecision, RestoreProcessRequest, StubPlatformKillAdapter, SupervisorPidRegistry,
     WindowsPlatformKillAdapter,
 };
-use nlos_types::{Generation, IdempotencyKey, ProcessId, TaskAttemptId, TaskId};
+use nlos_types::{Generation, IdempotencyKey, IsolationDomainId, ProcessId, TaskAttemptId, TaskId};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -53,6 +58,9 @@ struct Fixture {
     process_id: ProcessId,
     process_generation: Generation,
     process_fencing_token: nlos_process::FencingToken,
+    isolation_domain_id: IsolationDomainId,
+    isolation_domain_generation: Generation,
+    isolation_domain_fencing_token: nlos_process::FencingToken,
 }
 
 fn open_fixture(root: &TestRoot, seed: u8) -> Fixture {
@@ -87,6 +95,9 @@ fn open_fixture(root: &TestRoot, seed: u8) -> Fixture {
         process_id: binding.process_id,
         process_generation: binding.process_generation,
         process_fencing_token: binding.process_fencing_token,
+        isolation_domain_id: binding.isolation_domain_id,
+        isolation_domain_generation: binding.isolation_domain_generation,
+        isolation_domain_fencing_token: binding.isolation_domain_fencing_token,
     }
 }
 
@@ -736,4 +747,344 @@ fn posix_platform_kill_adapter_unavailable_on_windows() {
             "posix platform kill adapter unavailable on windows"
         ))
     ));
+}
+
+// -------------------------------------------------------------------------
+// W59-2 / evaluation F7: pre-signal generation fence.
+// -------------------------------------------------------------------------
+
+fn register_pid(
+    registry: &SupervisorPidRegistry,
+    fixture: &Fixture,
+    process_generation: Generation,
+    os_pid: u32,
+) {
+    registry
+        .register(RegisterSupervisorPidRequest {
+            process_id: fixture.process_id,
+            process_generation,
+            os_pid,
+            registered_at_ms: 20_000,
+        })
+        .expect("register supervisor pid");
+}
+
+#[test]
+fn request_platform_kill_with_registry_signals_when_generations_match() {
+    let root = TestRoot::new("fence-match");
+    let fixture = open_fixture(&root, 80);
+    let registry = SupervisorPidRegistry::new();
+    register_pid(&registry, &fixture, fixture.process_generation, 4_242);
+    let adapter = StubPlatformKillAdapter::new();
+    let request = kill_request(&fixture, IdempotencyKey::from_bytes([0x81; 16]));
+
+    // Fresh: the fence agrees with the receipt, so the signal issues.
+    let first = fixture
+        .authority
+        .request_platform_kill_with_registry(request, &adapter, Some(&registry))
+        .expect("matching generation must signal");
+    assert!(matches!(first, PlatformKillDecision::Signaled(_)));
+    assert_eq!(
+        adapter.recorded_signals(),
+        vec![(fixture.process_id, fixture.process_generation)]
+    );
+
+    // Replay: the fence re-checks and agrees again, so the supplementary
+    // resend still fires (at-least-once is preserved through the fence).
+    let replay = fixture
+        .authority
+        .request_platform_kill_with_registry(request, &adapter, Some(&registry))
+        .expect("replay under a matching fence");
+    assert!(matches!(replay, PlatformKillDecision::Replayed(_)));
+    assert_eq!(
+        adapter.recorded_signals(),
+        vec![
+            (fixture.process_id, fixture.process_generation),
+            (fixture.process_id, fixture.process_generation),
+        ]
+    );
+}
+
+#[test]
+fn request_platform_kill_with_registry_fences_generation_mismatch_without_signaling() {
+    let root = TestRoot::new("fence-mismatch");
+    let fixture = open_fixture(&root, 81);
+    let registry = SupervisorPidRegistry::new();
+    // The supervisor already advanced the mapping to a newer generation
+    // under a different OS pid — the pid-reuse window: the authority head
+    // is still the receipt's generation, but the pid behind it is gone and
+    // may have been reused by the newer incarnation.
+    let next = fixture.process_generation.checked_next().expect("next");
+    register_pid(&registry, &fixture, next, 5_151);
+
+    let adapter = StubPlatformKillAdapter::new();
+    let error = fixture
+        .authority
+        .request_platform_kill_with_registry(
+            kill_request(&fixture, IdempotencyKey::from_bytes([0x82; 16])),
+            &adapter,
+            Some(&registry),
+        )
+        .expect_err("generation mismatch must fail closed");
+    let ProcessAuthorityError::PlatformKillGenerationMismatch {
+        process_id,
+        receipt_generation,
+        registry_generation,
+    } = error
+    else {
+        panic!("expected PlatformKillGenerationMismatch, got {error:?}");
+    };
+    assert_eq!(process_id, fixture.process_id);
+    assert_eq!(receipt_generation, fixture.process_generation);
+    assert_eq!(registry_generation, next);
+    assert!(error.to_string().contains("os pid may have been reused"));
+
+    // No signal was issued, and the durable receipt still tells the truth.
+    assert_eq!(
+        adapter.recorded_signals(),
+        [] as [(nlos_types::ProcessId, nlos_types::Generation); 0]
+    );
+    assert_eq!(
+        fixture
+            .authority
+            .inspect_platform_kill_receipt(fixture.process_id, fixture.process_generation)
+            .expect("inspect receipt")
+            .map(|receipt| receipt.idempotency_key),
+        Some(IdempotencyKey::from_bytes([0x82; 16]))
+    );
+}
+
+#[test]
+fn request_platform_kill_with_registry_fences_unregistered_then_lifts_on_registration() {
+    let root = TestRoot::new("fence-unregistered");
+    let fixture = open_fixture(&root, 82);
+    let registry = SupervisorPidRegistry::new();
+    let adapter = StubPlatformKillAdapter::new();
+    let request = kill_request(&fixture, IdempotencyKey::from_bytes([0x83; 16]));
+
+    // No supervisor mapping exists: the fence cannot be established, so the
+    // kill fails closed instead of signaling an unverifiable pid.
+    let error = fixture
+        .authority
+        .request_platform_kill_with_registry(request, &adapter, Some(&registry))
+        .expect_err("unregistered process must fail closed");
+    assert!(
+        matches!(
+            error,
+            ProcessAuthorityError::PlatformKillTargetNotRegistered(rejected)
+                if rejected == fixture.process_id
+        ),
+        "expected PlatformKillTargetNotRegistered, got {error:?}"
+    );
+    assert_ne!(error.to_string(), "");
+    assert_eq!(
+        adapter.recorded_signals(),
+        [] as [(nlos_types::ProcessId, nlos_types::Generation); 0]
+    );
+
+    // The mapping is merely absent (not superseded): once the supervisor
+    // registers the receipt's generation, the replay's fence passes and the
+    // supplementary signal finally issues.
+    register_pid(&registry, &fixture, fixture.process_generation, 4_242);
+    let replay = fixture
+        .authority
+        .request_platform_kill_with_registry(request, &adapter, Some(&registry))
+        .expect("fence lifts on the matching registration");
+    assert!(matches!(replay, PlatformKillDecision::Replayed(_)));
+    assert_eq!(
+        adapter.recorded_signals(),
+        vec![(fixture.process_id, fixture.process_generation)]
+    );
+}
+
+#[test]
+fn request_platform_kill_with_registry_replay_resend_is_fenced_after_generation_advance() {
+    // The F7 headline: a G1 kill receipt retries after the Process was
+    // restored to G2 and the supervisor re-registered the G2 incarnation's
+    // pid. The replay's supplementary resend must not signal the pid that
+    // G2 now owns.
+    let root = TestRoot::new("fence-replay-advance");
+    let fixture = open_fixture(&root, 83);
+    let registry = SupervisorPidRegistry::new();
+    register_pid(&registry, &fixture, fixture.process_generation, 4_242);
+    let adapter = StubPlatformKillAdapter::new();
+    let request = kill_request(&fixture, IdempotencyKey::from_bytes([0x84; 16]));
+
+    let first = fixture
+        .authority
+        .request_platform_kill_with_registry(request, &adapter, Some(&registry))
+        .expect("first kill signals at the matching generation");
+    assert!(matches!(first, PlatformKillDecision::Signaled(_)));
+
+    // Restore advances the authority head to G2 ...
+    let restored = fixture
+        .authority
+        .restore_process(RestoreProcessRequest {
+            process_id: fixture.process_id,
+            expected_process_generation: fixture.process_generation,
+            expected_process_fencing_token: fixture.process_fencing_token,
+            isolation_domain_id: fixture.isolation_domain_id,
+            isolation_domain_generation: fixture.isolation_domain_generation,
+            isolation_domain_fencing_token: fixture.isolation_domain_fencing_token,
+            idempotency_key: IdempotencyKey::from_bytes([0x85; 16]),
+            restored_at_ms: 21_000,
+        })
+        .expect("restore");
+    let RestoreProcessDecision::Restored(record) = restored else {
+        panic!("expected Restored, got {restored:?}");
+    };
+    let second_generation = record.process_generation;
+
+    // ... and the supervisor supersedes the mapping to the G2 pid.
+    register_pid(&registry, &fixture, second_generation, 5_151);
+
+    // The G1 retry replays the committed receipt (idempotency-key replay
+    // path) — the resend is fenced: no second signal, typed rejection.
+    let fenced = fixture
+        .authority
+        .request_platform_kill_with_registry(request, &adapter, Some(&registry))
+        .expect_err("replay resend must be fenced after the generation advance");
+    assert!(matches!(
+        fenced,
+        ProcessAuthorityError::PlatformKillGenerationMismatch {
+            receipt_generation,
+            registry_generation,
+            ..
+        } if receipt_generation == fixture.process_generation
+            && registry_generation == second_generation
+    ));
+    assert_eq!(adapter.recorded_signals().len(), 1);
+
+    // The G1 receipt stays durable and inspectable — the rejection is the
+    // truthful report of an undeliverable intent, not a swallowed signal.
+    assert_eq!(
+        fixture
+            .authority
+            .inspect_platform_kill_receipt(fixture.process_id, fixture.process_generation)
+            .expect("inspect g1 receipt")
+            .as_ref(),
+        Some(first.receipt())
+    );
+}
+
+#[test]
+fn request_platform_kill_without_registry_keeps_legacy_unfenced_behavior() {
+    let root = TestRoot::new("fence-legacy-none");
+    let fixture = open_fixture(&root, 84);
+    let registry = SupervisorPidRegistry::new();
+    // The registry disagrees with the receipt's generation — both legacy
+    // entry points must ignore it (documented None semantics).
+    let next = fixture.process_generation.checked_next().expect("next");
+    register_pid(&registry, &fixture, next, 5_151);
+    let adapter = StubPlatformKillAdapter::new();
+    let request = kill_request(&fixture, IdempotencyKey::from_bytes([0x86; 16]));
+
+    let first = fixture
+        .authority
+        .request_platform_kill(request, &adapter)
+        .expect("legacy two-argument path has no fence");
+    assert!(matches!(first, PlatformKillDecision::Signaled(_)));
+
+    let replay = fixture
+        .authority
+        .request_platform_kill_with_registry(request, &adapter, None)
+        .expect("explicit None reproduces the legacy path");
+    assert!(matches!(replay, PlatformKillDecision::Replayed(_)));
+    assert_eq!(adapter.recorded_signals().len(), 2);
+}
+
+#[test]
+#[cfg(unix)]
+fn generation_fenced_posix_adapter_fails_closed_on_stale_generation() {
+    let process_id = ProcessId::from_bytes([0x87; 16]);
+    let next = Generation::INITIAL.checked_next().expect("next");
+    // The map only knows the pid at generation two: a kill presented at the
+    // initial generation must resolve no pid at all — before any OS call.
+    let adapter = PosixPlatformKillAdapter::with_generation_pid_map(HashMap::from([(
+        (process_id, next),
+        std::process::id(),
+    )]));
+
+    assert!(matches!(
+        adapter.signal_platform_kill(process_id, Generation::INITIAL),
+        Err(PlatformKillAdapterError::Platform(
+            "os pid mapping not found for process id at process generation"
+        ))
+    ));
+}
+
+#[test]
+#[cfg(windows)]
+fn generation_fenced_windows_adapter_fails_closed_on_stale_generation() {
+    let process_id = ProcessId::from_bytes([0x88; 16]);
+    let next = Generation::INITIAL.checked_next().expect("next");
+    // Resolve fails before taskkill ever spawns, so no OS pid is touched.
+    let adapter = WindowsPlatformKillAdapter::with_generation_pid_map(HashMap::from([(
+        (process_id, next),
+        std::process::id(),
+    )]));
+
+    assert!(matches!(
+        adapter.signal_platform_kill(process_id, Generation::INITIAL),
+        Err(PlatformKillAdapterError::Platform(
+            "os pid mapping not found for process id at process generation"
+        ))
+    ));
+}
+
+#[test]
+#[cfg(not(windows))]
+fn generation_fenced_windows_adapter_constructor_stays_nameable_off_windows() {
+    let process_id = ProcessId::from_bytes([0x89; 16]);
+    let adapter = WindowsPlatformKillAdapter::with_generation_pid_map(HashMap::from([(
+        (process_id, Generation::INITIAL),
+        std::process::id(),
+    )]));
+
+    assert!(matches!(
+        adapter.signal_platform_kill(process_id, Generation::INITIAL),
+        Err(PlatformKillAdapterError::Platform(
+            "windows platform kill adapter unavailable on non-windows"
+        ))
+    ));
+}
+
+#[test]
+#[cfg(unix)]
+fn fenced_authority_kill_over_generation_pid_map_terminates_real_child() {
+    let root = TestRoot::new("fence-real-kill");
+    let fixture = open_fixture(&root, 85);
+    let mut child = std::process::Command::new("sleep")
+        .arg("600")
+        .spawn()
+        .expect("spawn sleep child");
+
+    let registry = SupervisorPidRegistry::new();
+    register_pid(&registry, &fixture, fixture.process_generation, child.id());
+    let adapter = PosixPlatformKillAdapter::with_generation_pid_map(registry.generation_pid_map());
+
+    let decision = fixture
+        .authority
+        .request_platform_kill_with_registry(
+            kill_request(&fixture, IdempotencyKey::from_bytes([0x8A; 16])),
+            &adapter,
+            Some(&registry),
+        )
+        .expect("fenced platform kill over the generation-keyed map");
+    assert!(matches!(decision, PlatformKillDecision::Signaled(_)));
+
+    let status = child.wait().expect("wait for signaled child");
+    assert!(!status.success());
+
+    // The replay's supplementary resend passes the same fence and the dead
+    // pid answers AlreadyTerminated — at-least-once end to end.
+    let replay = fixture
+        .authority
+        .request_platform_kill_with_registry(
+            kill_request(&fixture, IdempotencyKey::from_bytes([0x8A; 16])),
+            &adapter,
+            Some(&registry),
+        )
+        .expect("fenced replay re-signals the dead target");
+    assert!(matches!(replay, PlatformKillDecision::Replayed(_)));
 }
