@@ -27,7 +27,7 @@ use crate::model::{
 };
 use crate::schema::{
     SCHEMA_VERSION, migrate_v1, migrate_v2, migrate_v3, migrate_v4, migrate_v5, migrate_v6,
-    migrate_v7, migrate_v8,
+    migrate_v7, migrate_v8, migrate_v9,
 };
 
 /// A single-writer `SQLite` plan authority.
@@ -146,6 +146,7 @@ impl SqlitePlanAuthority {
                 migrate_v6(&mut connection)?;
                 migrate_v7(&mut connection)?;
                 migrate_v8(&mut connection)?;
+                migrate_v9(&mut connection)?;
             }
             1 => {
                 migrate_v2(&mut connection)?;
@@ -155,6 +156,7 @@ impl SqlitePlanAuthority {
                 migrate_v6(&mut connection)?;
                 migrate_v7(&mut connection)?;
                 migrate_v8(&mut connection)?;
+                migrate_v9(&mut connection)?;
             }
             2 => {
                 migrate_v3(&mut connection)?;
@@ -163,6 +165,7 @@ impl SqlitePlanAuthority {
                 migrate_v6(&mut connection)?;
                 migrate_v7(&mut connection)?;
                 migrate_v8(&mut connection)?;
+                migrate_v9(&mut connection)?;
             }
             3 => {
                 migrate_v4(&mut connection)?;
@@ -170,23 +173,31 @@ impl SqlitePlanAuthority {
                 migrate_v6(&mut connection)?;
                 migrate_v7(&mut connection)?;
                 migrate_v8(&mut connection)?;
+                migrate_v9(&mut connection)?;
             }
             4 => {
                 migrate_v5(&mut connection)?;
                 migrate_v6(&mut connection)?;
                 migrate_v7(&mut connection)?;
                 migrate_v8(&mut connection)?;
+                migrate_v9(&mut connection)?;
             }
             5 => {
                 migrate_v6(&mut connection)?;
                 migrate_v7(&mut connection)?;
                 migrate_v8(&mut connection)?;
+                migrate_v9(&mut connection)?;
             }
             6 => {
                 migrate_v7(&mut connection)?;
                 migrate_v8(&mut connection)?;
+                migrate_v9(&mut connection)?;
             }
-            7 => migrate_v8(&mut connection)?,
+            7 => {
+                migrate_v8(&mut connection)?;
+                migrate_v9(&mut connection)?;
+            }
+            8 => migrate_v9(&mut connection)?,
             SCHEMA_VERSION => {}
             other => return Err(PlanStoreError::SchemaVersionUnsupported(other)),
         }
@@ -266,58 +277,27 @@ impl SqlitePlanAuthority {
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
 
         // Idempotent replay first: the durable receipt is the authority.
-        if let Some(existing) = load_revision_receipt_by_key(&transaction, request.idempotency_key)?
-        {
-            let replay_nodes_root = nodes_root(plan_id, existing.revision, &digests);
-            let replay_dependencies_root =
-                dependencies_root(plan_id, existing.revision, &request.nodes);
-            if existing.plan_id != plan_id
-                || existing.nodes_root != replay_nodes_root
-                || existing.dependencies_root != replay_dependencies_root
-                || existing.declared_node_count != request.nodes.len() as u64
-                || existing.applied_at_ms != request.applied_at_ms
-            {
-                return Err(PlanStoreError::IdempotencyConflict);
-            }
+        if let Some(existing) = replay_revision_decision(
+            &transaction,
+            plan_id,
+            request.idempotency_key,
+            &digests,
+            &request.nodes,
+            request.applied_at_ms,
+        )? {
             transaction.commit()?;
             return Ok(PlanRevisionDecision::Replayed(existing));
         }
 
-        let (revision, parent_digest) = if request.plan_id.is_none() {
-            (1, None)
-        } else {
-            let current = load_plan_head(&transaction, plan_id)?
-                .ok_or(PlanStoreError::PlanNotFound(plan_id))?;
-            let parent = load_revision_digest(&transaction, plan_id, current.current_revision)?
-                .ok_or(PlanStoreError::CorruptRecord(
-                    "plan head has no revision receipt",
-                ))?;
-            (current.current_revision + 1, Some(parent))
-        };
-
-        let nodes_root = nodes_root(plan_id, revision, &digests);
-        let dependencies_root = dependencies_root(plan_id, revision, &request.nodes);
-        let plan_digest = revision_digest(
+        let receipt = commit_revision_in_transaction(
+            &transaction,
             plan_id,
-            revision,
-            parent_digest,
-            nodes_root,
-            dependencies_root,
-        );
-
-        let receipt = write_revision(&WriteRevisionArgs {
-            transaction: &transaction,
-            plan_id,
-            revision,
-            parent_digest,
-            nodes_root,
-            dependencies_root,
-            plan_digest,
-            digests: &digests,
-            nodes: &request.nodes,
-            idempotency_key: request.idempotency_key,
-            applied_at_ms: request.applied_at_ms,
-        })?;
+            request.plan_id.is_none(),
+            &digests,
+            &request.nodes,
+            request.idempotency_key,
+            request.applied_at_ms,
+        )?;
         transaction.commit()?;
 
         Ok(PlanRevisionDecision::Applied(receipt))
@@ -328,23 +308,40 @@ impl SqlitePlanAuthority {
     /// W31-A materialization consult left open). The projection is the
     /// store-wide persisted `plan_nodes` count plus the node keys this
     /// revision declares that no row carries yet (rows are lifetime
-    /// metadata, so each new key is exactly one future row); the consult
-    /// answers inside the already-open `BEGIN IMMEDIATE` transaction, so
-    /// the verified population and the committed revision are one
-    /// consistent snapshot. A denial is a typed refusal before any write;
-    /// a failed consult fails closed (ADR-0013: cannot verify ⇒ do not
-    /// commit). Idempotent replays bypass the consult — the durable
-    /// receipt is the authority, mirroring the registration-gate
-    /// discipline.
+    /// metadata, so each new key is exactly one future row).
+    ///
+    /// The consult is an **external callback** and runs outside the
+    /// writer critical section (the process Mutex and the
+    /// `BEGIN IMMEDIATE` transaction): a slow or remote consult must not
+    /// freeze the single writer, and a re-entrant consult must not
+    /// deadlock the non-reentrant Mutex. The growth-only guarantee is
+    /// preserved by a snapshot/CAS protocol: the projection is
+    /// snapshotted under the lock, consulted with every lock released,
+    /// then re-verified under the write transaction's lock before the
+    /// revision commits — a drifted projection (another writer grew the
+    /// store-wide population during the consult window) restarts the
+    /// snapshot/consult round once, and a second drift is a typed
+    /// contention refusal ([`PlanStoreError::DeclarationAdmissionContention`])
+    /// with zero durable effects. A no-growth reshape (no fresh
+    /// `plan_nodes` row) is not an admission question and writes through
+    /// inside one transaction, exactly as before. A denial is a typed
+    /// refusal before any write; a failed consult fails closed
+    /// (ADR-0013: cannot verify ⇒ do not commit). Idempotent replays
+    /// bypass the consult — the durable receipt is the authority,
+    /// mirroring the registration-gate discipline (re-checked after the
+    /// consult window, so a concurrent same-key writer replays too).
     ///
     /// # Errors
     ///
     /// Same structural surface as [`Self::apply_plan_revision_ungated`],
     /// plus [`PlanStoreError::DeclarationAdmissionDenied`] when the Task
-    /// tier denies the projected population and
+    /// tier denies the projected population,
     /// [`PlanStoreError::DeclarationConsultUnavailable`] when the consult
-    /// itself fails. This is the production declaration face; the
-    /// no-consult default [`Self::apply_plan_revision`] typed-denies.
+    /// itself fails, and
+    /// [`PlanStoreError::DeclarationAdmissionContention`] when the
+    /// projection drifts across both admission rounds. This is the
+    /// production declaration face; the no-consult default
+    /// [`Self::apply_plan_revision`] typed-denies.
     pub fn apply_plan_revision_with_admission<C: DeclarationAdmissionConsult>(
         &self,
         request: ApplyPlanRevisionRequest,
@@ -368,45 +365,52 @@ impl SqlitePlanAuthority {
             .map(|node| (node_digest(node), derive_node_id(plan_id, &node.node_key)))
             .collect();
 
-        let mut connection = self.lock()?;
-        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        for _attempt in 0..DECLARATION_ADMISSION_ATTEMPTS {
+            let mut connection = self.lock()?;
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
 
-        // Idempotent replay first: the durable receipt is the authority
-        // (the consult is bypassed exactly like the registration gate).
-        if let Some(existing) = load_revision_receipt_by_key(&transaction, idempotency_key)? {
-            let replay_nodes_root = nodes_root(plan_id, existing.revision, &digests);
-            let replay_dependencies_root = dependencies_root(plan_id, existing.revision, &nodes);
-            if existing.plan_id != plan_id
-                || existing.nodes_root != replay_nodes_root
-                || existing.dependencies_root != replay_dependencies_root
-                || existing.declared_node_count != nodes.len() as u64
-                || existing.applied_at_ms != applied_at_ms
-            {
-                return Err(PlanStoreError::IdempotencyConflict);
+            // Idempotent replay first: the durable receipt is the authority
+            // (the consult is bypassed exactly like the registration gate).
+            if let Some(existing) = replay_revision_decision(
+                &transaction,
+                plan_id,
+                idempotency_key,
+                &digests,
+                &nodes,
+                applied_at_ms,
+            )? {
+                transaction.commit()?;
+                return Ok(PlanRevisionDecision::Replayed(existing));
             }
-            transaction.commit()?;
-            return Ok(PlanRevisionDecision::Replayed(existing));
-        }
 
-        let (revision, parent_digest) = if request_plan_id.is_none() {
-            (1, None)
-        } else {
-            let current = load_plan_head(&transaction, plan_id)?
-                .ok_or(PlanStoreError::PlanNotFound(plan_id))?;
-            let parent = load_revision_digest(&transaction, plan_id, current.current_revision)?
-                .ok_or(PlanStoreError::CorruptRecord(
-                    "plan head has no revision receipt",
-                ))?;
-            (current.current_revision + 1, Some(parent))
-        };
+            let (projected, fresh) = projected_declared_population(&transaction, plan_id, &nodes)?;
+            // Growth-only consult: a reshape that adds no `plan_nodes` row
+            // is not a declaration-population admission question (the
+            // lifetime rows already exist). Replay already bypasses;
+            // no-growth follows the same discipline so an already-over-tier
+            // store can still reshape without a silent new-key pass.
+            if fresh == 0 {
+                let receipt = commit_revision_in_transaction(
+                    &transaction,
+                    plan_id,
+                    request_plan_id.is_none(),
+                    &digests,
+                    &nodes,
+                    idempotency_key,
+                    applied_at_ms,
+                )?;
+                transaction.commit()?;
+                return Ok(PlanRevisionDecision::Applied(receipt));
+            }
+            // Snapshot captured: release the read-only transaction and the
+            // writer lock before the external callback.
+            drop(transaction);
+            drop(connection);
 
-        let (projected, fresh) = projected_declared_population(&transaction, plan_id, &nodes)?;
-        // Growth-only consult: a reshape that adds no `plan_nodes` row
-        // is not a declaration-population admission question (the
-        // lifetime rows already exist). Replay already bypasses;
-        // no-growth follows the same discipline so an already-over-tier
-        // store can still reshape without a silent new-key pass.
-        if fresh > 0 {
+            // Consult outside every lock (a denial is final — the count is
+            // monotonic, so a drifted projection is larger and still over
+            // the cap; a failed consult fails closed).
             match consult.consult_plan_declaration(projected) {
                 Ok(DeclarationAdmissionOutcome::Admits) => {}
                 Ok(DeclarationAdmissionOutcome::Denied {
@@ -421,33 +425,46 @@ impl SqlitePlanAuthority {
                 }
                 Err(_) => return Err(PlanStoreError::DeclarationConsultUnavailable),
             }
+
+            // CAS re-verify: re-acquire the writer and confirm the consulted
+            // projection still describes the store before committing.
+            let mut connection = self.lock()?;
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            // The consult window is a concurrency window: a writer may have
+            // landed this exact key while the lock was released.
+            if let Some(existing) = replay_revision_decision(
+                &transaction,
+                plan_id,
+                idempotency_key,
+                &digests,
+                &nodes,
+                applied_at_ms,
+            )? {
+                transaction.commit()?;
+                return Ok(PlanRevisionDecision::Replayed(existing));
+            }
+            let (projected_now, fresh_now) =
+                projected_declared_population(&transaction, plan_id, &nodes)?;
+            if fresh_now > 0 && projected_now != projected {
+                // Drift: growth-only never commits against an unverified
+                // projection. Restart the round with a fresh snapshot (the
+                // final attempt's drift refuses typed below).
+                continue;
+            }
+            let receipt = commit_revision_in_transaction(
+                &transaction,
+                plan_id,
+                request_plan_id.is_none(),
+                &digests,
+                &nodes,
+                idempotency_key,
+                applied_at_ms,
+            )?;
+            transaction.commit()?;
+            return Ok(PlanRevisionDecision::Applied(receipt));
         }
-
-        let nodes_root = nodes_root(plan_id, revision, &digests);
-        let dependencies_root = dependencies_root(plan_id, revision, &nodes);
-        let plan_digest = revision_digest(
-            plan_id,
-            revision,
-            parent_digest,
-            nodes_root,
-            dependencies_root,
-        );
-        let receipt = write_revision(&WriteRevisionArgs {
-            transaction: &transaction,
-            plan_id,
-            revision,
-            parent_digest,
-            nodes_root,
-            dependencies_root,
-            plan_digest,
-            digests: &digests,
-            nodes: &nodes,
-            idempotency_key,
-            applied_at_ms,
-        })?;
-        transaction.commit()?;
-
-        Ok(PlanRevisionDecision::Applied(receipt))
+        Err(PlanStoreError::DeclarationAdmissionContention)
     }
 
     /// Reads one plan's current head, `None` when the plan does not exist.
@@ -858,6 +875,15 @@ fn validate_declaration(nodes: &[PlanNodeDeclaration]) -> Result<(), PlanStoreEr
 
 /// Three-color cycle detection over the declared dependency edges
 /// (`[PLAN-DAG-001]` requires a DAG).
+///
+/// Iterative on purpose: the declaration bound admits chains up to
+/// `MAX_DECLARED_NODES_PER_REVISION` (`100_000`) nodes, and the recursive
+/// formulation's frame-per-node depth overflowed the default thread
+/// stack on deep-but-legal linear chains — an abort, not a recoverable
+/// error. The explicit `(node, next-dependency-index)` stack keeps the
+/// exact white/gray/black semantics: gray-on-edge is a back edge (the
+/// cycle), black is finished, and every frame is pushed exactly once
+/// per node.
 fn declaration_has_cycle(nodes: &[PlanNodeDeclaration]) -> bool {
     #[derive(Clone, Copy, PartialEq)]
     enum Color {
@@ -866,39 +892,43 @@ fn declaration_has_cycle(nodes: &[PlanNodeDeclaration]) -> bool {
         Black,
     }
 
-    fn visit(
-        node: &PlanNodeDeclaration,
-        by_key: &HashMap<[u8; 16], &PlanNodeDeclaration>,
-        colors: &mut HashMap<[u8; 16], Color>,
-    ) -> bool {
-        if colors.get(&node.node_key) == Some(&Color::Gray) {
-            return true;
-        }
-        colors.insert(node.node_key, Color::Gray);
-        for dependency in &node.dependency_keys {
-            if let Some(next) = by_key.get(dependency) {
-                let color = colors.get(dependency).copied().unwrap_or(Color::White);
-                if color == Color::Gray {
-                    return true;
-                }
-                if color == Color::White && visit(next, by_key, colors) {
-                    return true;
-                }
-            }
-        }
-        colors.insert(node.node_key, Color::Black);
-        false
-    }
-
     let by_key: HashMap<[u8; 16], &PlanNodeDeclaration> =
         nodes.iter().map(|node| (node.node_key, node)).collect();
     let mut colors: HashMap<[u8; 16], Color> = HashMap::with_capacity(nodes.len());
     for node in nodes {
         colors.insert(node.node_key, Color::White);
     }
-    nodes.iter().any(|node| {
-        colors.get(&node.node_key) == Some(&Color::White) && visit(node, &by_key, &mut colors)
-    })
+
+    for root in nodes {
+        if colors.get(&root.node_key) != Some(&Color::White) {
+            continue;
+        }
+        let mut stack: Vec<(&PlanNodeDeclaration, usize)> = vec![(root, 0)];
+        colors.insert(root.node_key, Color::Gray);
+        while let Some(frame) = stack.last_mut() {
+            let node = frame.0;
+            if frame.1 == node.dependency_keys.len() {
+                let (finished, _) = stack.pop().expect("frame is present");
+                colors.insert(finished.node_key, Color::Black);
+                continue;
+            }
+            let dependency_key = node.dependency_keys[frame.1];
+            frame.1 += 1;
+            match colors.get(&dependency_key).copied().unwrap_or(Color::White) {
+                // A gray dependency is a back edge onto the in-progress
+                // path — the cycle.
+                Color::Gray => return true,
+                Color::Black => {}
+                Color::White => {
+                    if let Some(&dependency) = by_key.get(&dependency_key) {
+                        colors.insert(dependency_key, Color::Gray);
+                        stack.push((dependency, 0));
+                    }
+                }
+            }
+        }
+    }
+    false
 }
 
 // ---------------------------------------------------------------------------
@@ -1365,6 +1395,44 @@ fn voucher_matches_request(
 // revision write set
 // ---------------------------------------------------------------------------
 
+/// The total-revision presence fence for execution-frozen nodes
+/// (`node_state >= 6`, the `Materializing` discriminant — kept in sync
+/// with the `plan_nodes_executed_shape_frozen` DDL): every frozen node
+/// of the plan must appear, by `node_key`, in the incoming total
+/// declaration set. The shape fence (`FrozenNodeShapeRewrite`) already
+/// pins *how* a frozen node is re-declared; this pins *that* it is.
+fn enforce_frozen_nodes_redeclared(
+    transaction: &rusqlite::Transaction<'_>,
+    plan_id: TaskPlanId,
+    nodes: &[PlanNodeDeclaration],
+) -> Result<(), PlanStoreError> {
+    let mut declared = std::collections::HashSet::with_capacity(nodes.len());
+    for node in nodes {
+        declared.insert(node.node_key);
+    }
+    let mut statement = transaction.prepare(
+        "SELECT task_node_id, node_key FROM plan_nodes
+         WHERE plan_id = ?1 AND node_state >= 6",
+    )?;
+    let frozen = statement
+        .query_map([plan_id.as_bytes().as_slice()], |row| {
+            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(PlanStoreError::from)?;
+    for (node_id_bytes, node_key_bytes) in frozen {
+        let node_key = fixed16(node_key_bytes, "plan node key")?;
+        if !declared.contains(&node_key) {
+            return Err(PlanStoreError::FrozenNodeOmitted {
+                plan_id,
+                node_id: TaskNodeId::from_bytes(fixed16(node_id_bytes, "task node id")?),
+                node_key,
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Persists the declared node set: new nodes are inserted at this revision,
 /// pre-execution nodes are reshaped to this revision, execution-frozen
 /// nodes must re-declare their exact original shape and are left
@@ -1525,6 +1593,12 @@ fn write_revision(args: &WriteRevisionArgs<'_>) -> Result<PlanRevisionReceipt, P
         idempotency_key,
         applied_at_ms,
     } = args;
+    // Presence fence before any write in the transaction: a total
+    // revision that omits an execution-frozen node would silently drop
+    // it from the plan's current shape (the row survives as lifetime
+    // metadata, but the head's roots no longer cover it) while its
+    // Task-side execution footprint persists.
+    enforce_frozen_nodes_redeclared(transaction, *plan_id, nodes)?;
     if *revision == 1 {
         transaction.execute(
             "INSERT INTO plans (
@@ -1624,4 +1698,88 @@ fn projected_declared_population(
             reason: "projected declared population overflows",
         })?;
     Ok((projected, fresh))
+}
+
+/// Snapshot/consult rounds the gated apply runs before refusing a
+/// drifted projection as typed contention: the first round plus one
+/// retry (deep-audit/29 #3 — the consult must not run inside the writer
+/// critical section, and the growth-only guarantee must not commit
+/// against an unverified projection).
+const DECLARATION_ADMISSION_ATTEMPTS: usize = 2;
+
+/// The idempotent-replay decision shared by every apply phase: loads
+/// the receipt by key and verifies the replay five-tuple (plan, both
+/// roots recomputed over the presented declaration, declared count,
+/// applied-at). `Some(receipt)` is a replay (the durable receipt is the
+/// authority); `None` means no decision — the caller proceeds.
+fn replay_revision_decision(
+    transaction: &rusqlite::Transaction<'_>,
+    plan_id: TaskPlanId,
+    idempotency_key: IdempotencyKey,
+    digests: &[([u8; 32], TaskNodeId)],
+    nodes: &[PlanNodeDeclaration],
+    applied_at_ms: u64,
+) -> Result<Option<PlanRevisionReceipt>, PlanStoreError> {
+    let Some(existing) = load_revision_receipt_by_key(transaction, idempotency_key)? else {
+        return Ok(None);
+    };
+    let replay_nodes_root = nodes_root(plan_id, existing.revision, digests);
+    let replay_dependencies_root = dependencies_root(plan_id, existing.revision, nodes);
+    if existing.plan_id != plan_id
+        || existing.nodes_root != replay_nodes_root
+        || existing.dependencies_root != replay_dependencies_root
+        || existing.declared_node_count != nodes.len() as u64
+        || existing.applied_at_ms != applied_at_ms
+    {
+        return Err(PlanStoreError::IdempotencyConflict);
+    }
+    Ok(Some(existing))
+}
+
+/// Head resolution, root derivation, and the full revision write set,
+/// inside the caller's already-open transaction (the caller owns the
+/// surrounding replay/consult protocol and the commit). `first_revision`
+/// mirrors the apply faces' `request.plan_id.is_none()` convention: a
+/// first revision inserts the plan head, later revisions chain onto it.
+fn commit_revision_in_transaction(
+    transaction: &rusqlite::Transaction<'_>,
+    plan_id: TaskPlanId,
+    first_revision: bool,
+    digests: &[([u8; 32], TaskNodeId)],
+    nodes: &[PlanNodeDeclaration],
+    idempotency_key: IdempotencyKey,
+    applied_at_ms: u64,
+) -> Result<PlanRevisionReceipt, PlanStoreError> {
+    let (revision, parent_digest) = if first_revision {
+        (1, None)
+    } else {
+        let current =
+            load_plan_head(transaction, plan_id)?.ok_or(PlanStoreError::PlanNotFound(plan_id))?;
+        let parent = load_revision_digest(transaction, plan_id, current.current_revision)?.ok_or(
+            PlanStoreError::CorruptRecord("plan head has no revision receipt"),
+        )?;
+        (current.current_revision + 1, Some(parent))
+    };
+    let nodes_root = nodes_root(plan_id, revision, digests);
+    let dependencies_root = dependencies_root(plan_id, revision, nodes);
+    let plan_digest = revision_digest(
+        plan_id,
+        revision,
+        parent_digest,
+        nodes_root,
+        dependencies_root,
+    );
+    write_revision(&WriteRevisionArgs {
+        transaction,
+        plan_id,
+        revision,
+        parent_digest,
+        nodes_root,
+        dependencies_root,
+        plan_digest,
+        digests,
+        nodes,
+        idempotency_key,
+        applied_at_ms,
+    })
 }

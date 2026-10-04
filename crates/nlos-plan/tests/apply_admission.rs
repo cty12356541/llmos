@@ -501,3 +501,137 @@ fn gated_apply_admits_reshape_and_denies_growth() {
         }
     ));
 }
+
+/// A consult that parks until released, reporting each projection it
+/// was consulted with: the concurrency-test seam for the consult's
+/// lock-freedom and the drift CAS.
+struct ParkingConsult {
+    entered: std::sync::mpsc::Sender<u64>,
+    release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+    calls: AtomicU64,
+}
+
+impl DeclarationAdmissionConsult for ParkingConsult {
+    type Error = ConsultBroken;
+
+    fn consult_plan_declaration(
+        &self,
+        projected_task_nodes: u64,
+    ) -> Result<DeclarationAdmissionOutcome, ConsultBroken> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.entered
+            .send(projected_task_nodes)
+            .expect("signal consult entered");
+        self.release
+            .lock()
+            .expect("release lock")
+            .recv()
+            .expect("release consult");
+        Ok(DeclarationAdmissionOutcome::Admits)
+    }
+}
+
+/// The admission consult runs outside the writer critical section
+/// (deep-audit/29 #3): a parked consult does not hold the plan
+/// authority's writer — another thread's revision applies and commits
+/// while the consult is in flight — and the parked apply still lands
+/// (its drifted snapshot restarts the consult round, see the next
+/// test).
+#[test]
+fn slow_consult_does_not_hold_the_plan_writer() {
+    let root = Root::new("slow-consult");
+    let plan = root.plan();
+    let (entered, entered_rx) = std::sync::mpsc::channel::<u64>();
+    let (release_tx, release) = std::sync::mpsc::channel::<()>();
+    let consult = ParkingConsult {
+        entered,
+        release: std::sync::Mutex::new(release),
+        calls: AtomicU64::new(0),
+    };
+
+    std::thread::scope(|scope| {
+        let applier = scope.spawn(|| {
+            plan.apply_plan_revision_with_admission(
+                request(None, vec![node(0x0a, 1)], 0x11, 1_000),
+                &consult,
+            )
+        });
+        let first_projection = entered_rx.recv().expect("consult entered");
+        assert_eq!(first_projection, 1);
+
+        // The writer is free: another plan's revision applies and
+        // commits while the consult is parked.
+        let (writer_done, writer_rx) = std::sync::mpsc::channel::<()>();
+        let writer_done_tx = writer_done.clone();
+        let plan_ref = &plan;
+        scope.spawn(move || {
+            plan_ref
+                .apply_plan_revision_ungated(request(None, vec![node(0x2a, 2)], 0x21, 1_000))
+                .expect("the parked consult must not hold the writer");
+            writer_done_tx.send(()).expect("signal writer done");
+        });
+        writer_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the writer completes while the consult is parked");
+
+        // Release; the drifted snapshot restarts the consult round once
+        // (the concurrent revision grew the store-wide population).
+        release_tx.send(()).expect("first release");
+        let second_projection = entered_rx.recv().expect("second consult round");
+        assert_eq!(second_projection, 2);
+        release_tx.send(()).expect("second release");
+
+        let decision = applier
+            .join()
+            .expect("applier thread")
+            .expect("gated apply lands after the consult answers");
+        assert!(matches!(decision, PlanRevisionDecision::Applied(_)));
+    });
+    assert_eq!(plan_node_rows(&root.0.join("plan.sqlite3")), 2);
+}
+
+/// The consult-window drift is closed by the CAS re-verification: the
+/// apply re-consults with the fresh projection and only commits against
+/// the number the Task tier actually admitted — growth-only is
+/// preserved without holding the writer across the external callback
+/// (deep-audit/29 #3).
+#[test]
+fn drifted_population_snapshot_is_reconsulted_with_fresh_projection() {
+    let root = Root::new("drift-cas");
+    let plan = root.plan();
+    let (entered, entered_rx) = std::sync::mpsc::channel::<u64>();
+    let (release_tx, release) = std::sync::mpsc::channel::<()>();
+    let consult = ParkingConsult {
+        entered,
+        release: std::sync::Mutex::new(release),
+        calls: AtomicU64::new(0),
+    };
+
+    std::thread::scope(|scope| {
+        let applier = scope.spawn(|| {
+            plan.apply_plan_revision_with_admission(
+                request(None, vec![node(0x0a, 1)], 0x11, 1_000),
+                &consult,
+            )
+        });
+
+        // Round 1 consults the stale snapshot (1 node); a concurrent
+        // writer grows the store to 2 behind the consult's back.
+        assert_eq!(entered_rx.recv().expect("round 1"), 1);
+        plan.apply_plan_revision_ungated(request(None, vec![node(0x2a, 2)], 0x21, 1_000))
+            .expect("concurrent growth during the consult window");
+        release_tx.send(()).expect("release round 1");
+
+        // Round 2 consults the fresh projection and commits against it.
+        assert_eq!(entered_rx.recv().expect("round 2"), 2);
+        release_tx.send(()).expect("release round 2");
+
+        let decision = applier
+            .join()
+            .expect("applier thread")
+            .expect("apply commits after the drift restart");
+        assert!(matches!(decision, PlanRevisionDecision::Applied(_)));
+    });
+    assert_eq!(consult.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(plan_node_rows(&root.0.join("plan.sqlite3")), 2);
+}

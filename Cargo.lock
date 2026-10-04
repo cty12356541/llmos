@@ -748,6 +748,7 @@ dependencies = [
  "nlos-semantic",
  "nlos-service-directory",
  "nlos-store",
+ "nlos-store-fault",
  "nlos-task",
  "nlos-topic",
  "nlos-types",

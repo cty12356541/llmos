@@ -130,10 +130,17 @@ impl SqlitePlanAuthority {
         let unresolved = unresolved_dependencies(&transaction, &node)?;
         if !unresolved.is_empty() {
             // The blocked fact is durable: a DECLARED node advances to
-            // BLOCKED_DEPENDENCY before the typed refusal.
+            // BLOCKED_DEPENDENCY before the typed refusal. The blocked
+            // voucher consumes a drive step *outside* the readiness
+            // ladder: a same-key retry once the dependencies complete
+            // must find steps 1 and 2 unconsumed (the original defect
+            // consumed step 1 here without recording a request row, so
+            // the retry's BLOCKED_DEPENDENCY → ELIGIBLE voucher collided
+            // on the global idempotency-key UNIQUE constraint and the
+            // node could never materialize under that key again).
             let mut node = node;
             if node.state == PlanNodeState::Declared {
-                let key = drive_key(request.idempotency_key, 1);
+                let key = drive_key(request.idempotency_key, BLOCKED_DEPENDENCY_DRIVE_STEP);
                 drive_transition(
                     &transaction,
                     &mut node,
@@ -632,32 +639,42 @@ fn is_reshaped_revision_fence(record: &MaterializationRequestRecord) -> bool {
 
 /// The node's declared dependencies (from its pinned declared-revision
 /// shape) whose durable state is not `COMPLETED`.
+///
+/// One joined query fetches every dependency's durable state (the
+/// per-dependency `load_plan_node` round-trips were an N+1 the
+/// scheduler's select scan multiplied per candidate per pass); a
+/// dependency row missing from `plan_nodes` fails closed exactly like
+/// the per-node loads did.
 pub(crate) fn unresolved_dependencies(
     connection: &Connection,
     node: &PlanNodeRecord,
 ) -> Result<Vec<TaskNodeId>, PlanStoreError> {
     let mut statement = connection.prepare(
-        "SELECT dependency_node_id FROM plan_revision_edges
-         WHERE plan_id = ?1 AND revision = ?2 AND dependent_node_id = ?3
-         ORDER BY dependency_node_id",
+        "SELECT edges.dependency_node_id, nodes.node_state
+         FROM plan_revision_edges AS edges
+         LEFT JOIN plan_nodes AS nodes
+           ON nodes.plan_id = edges.plan_id
+          AND nodes.task_node_id = edges.dependency_node_id
+         WHERE edges.plan_id = ?1 AND edges.revision = ?2
+           AND edges.dependent_node_id = ?3
+         ORDER BY edges.dependency_node_id",
     )?;
-    let dependencies = statement
+    let rows = statement
         .query_map(
             params![
                 node.plan_id.as_bytes().as_slice(),
                 encode_u64(node.declared_revision)?,
                 node.node_id.as_bytes().as_slice(),
             ],
-            |row| row.get::<_, Vec<u8>>(0),
+            |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Option<i64>>(1)?)),
         )?
         .collect::<Result<Vec<_>, _>>()
         .map_err(PlanStoreError::from)?;
     let mut unresolved = Vec::new();
-    for bytes in dependencies {
+    for (bytes, state) in rows {
         let dependency_id = TaskNodeId::from_bytes(fixed16(bytes, "dependency node id")?);
-        let dependency = load_plan_node(connection, node.plan_id, dependency_id)?
-            .ok_or(PlanStoreError::CorruptRecord("dependency node row missing"))?;
-        if dependency.state != PlanNodeState::Completed {
+        let state = state.ok_or(PlanStoreError::CorruptRecord("dependency node row missing"))?;
+        if crate::model::decode_state(state)? != PlanNodeState::Completed {
             unresolved.push(dependency_id);
         }
     }
@@ -667,6 +684,14 @@ pub(crate) fn unresolved_dependencies(
 // ---------------------------------------------------------------------------
 // key derivation and replay matching (pure)
 // ---------------------------------------------------------------------------
+
+/// The drive-key step the blocked-dependency fact consumes. Steps 1
+/// and 2 are the readiness ladder (`DECLARED/BLOCKED_DEPENDENCY →
+/// ELIGIBLE → WAITING_RESOURCE`, at most one voucher per step — the
+/// state machine guards re-entry); step 3 sits *outside* that ladder
+/// so the blocked voucher can never collide with a later same-key
+/// readiness drive.
+const BLOCKED_DEPENDENCY_DRIVE_STEP: u8 = 3;
 
 fn drive_key(request_key: IdempotencyKey, step: u8) -> IdempotencyKey {
     IdempotencyKey::from_bytes(digest16(
