@@ -23,7 +23,12 @@
 //! [`SliceKRuntime::reconcile_lane`], and the entry stays durable and
 //! unacknowledged for manual adjudication. Parking is explicit
 //! operational debt: there is deliberately no automatic un-park anywhere
-//! in this lane.
+//! in this lane — recovery is a human decision taken through
+//! [`SliceKRuntime::unpark_outbox_entry`] (W58-1), whose store-side
+//! reverse returns the entry to the pending lane in durable sequence
+//! order; this lane then counts the adjudication (`unparked`) and the
+//! redelivery that finally applies (`recovered`) on the same health
+//! surface.
 
 use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -98,6 +103,21 @@ pub struct ReconcileLaneSnapshot {
     /// The durable park reason of the most recent park decision; `None`
     /// when this lane parked nothing yet.
     pub last_park_reason: Option<String>,
+    /// Manual unpark adjudications this lane observed (W58-1): unpark
+    /// decisions taken through [`SliceKRuntime::unpark_outbox_entry`].
+    /// Idempotent unpark replays count too — the counter reports unpark
+    /// *events observed*, mirroring how `parked` counts park events.
+    pub unparked: u64,
+    /// The durable reason of the most recent unpark adjudication; `None`
+    /// when no unpark was observed yet.
+    pub last_unpark_reason: Option<String>,
+    /// Post-unpark recovered deliveries (W58-1): reconcile entries that
+    /// were formerly parked, got recovered by a manual unpark, and then
+    /// applied through this lane (the application the consumer
+    /// acknowledges — the visible proof that the adjudication restored
+    /// delivery). Redeliveries that still refuse count only on the
+    /// refusal counters.
+    pub recovered: u64,
 }
 
 impl ReconcileLaneSnapshot {
@@ -128,8 +148,11 @@ struct ReconcileLaneStats {
     no_route: AtomicU64,
     failed: AtomicU64,
     parked: AtomicU64,
+    unparked: AtomicU64,
+    recovered: AtomicU64,
     last_detail: Mutex<Option<String>>,
     last_park_reason: Mutex<Option<String>>,
+    last_unpark_reason: Mutex<Option<String>>,
     park_tracker: Mutex<ParkTracker>,
 }
 
@@ -184,6 +207,20 @@ impl ReconcileLaneStats {
         *self.lock_tracker() = ParkTracker::default();
     }
 
+    /// Records one observed manual unpark adjudication (W58-1) — a fresh
+    /// `Unparked` and an idempotent `Replayed` alike — keeping the durable
+    /// reason of the most recent one visible.
+    fn record_unpark(&self, reason: String) {
+        self.unparked.fetch_add(1, Ordering::AcqRel);
+        *self.lock_unpark_reason() = Some(reason);
+    }
+
+    /// Records one post-unpark recovered delivery (W58-1): a formerly
+    /// parked entry whose redelivery applied through this lane.
+    fn record_recovered(&self) {
+        self.recovered.fetch_add(1, Ordering::AcqRel);
+    }
+
     fn snapshot(&self) -> ReconcileLaneSnapshot {
         ReconcileLaneSnapshot {
             routed: self.routed.load(Ordering::Acquire),
@@ -192,6 +229,9 @@ impl ReconcileLaneStats {
             last_detail: self.lock().clone(),
             parked: self.parked.load(Ordering::Acquire),
             last_park_reason: self.lock_park_reason().clone(),
+            unparked: self.unparked.load(Ordering::Acquire),
+            last_unpark_reason: self.lock_unpark_reason().clone(),
+            recovered: self.recovered.load(Ordering::Acquire),
         }
     }
 
@@ -203,6 +243,12 @@ impl ReconcileLaneStats {
 
     fn lock_park_reason(&self) -> MutexGuard<'_, Option<String>> {
         self.last_park_reason
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn lock_unpark_reason(&self) -> MutexGuard<'_, Option<String>> {
+        self.last_unpark_reason
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
@@ -239,6 +285,20 @@ fn park_clock_key(item: &OutboxItem) -> IdempotencyKey {
     hasher.update(item.operation_id.as_bytes());
     hasher.update(item.operation_generation.get().to_be_bytes());
     hasher.update(item.sequence.to_be_bytes());
+    let digest: [u8; 32] = hasher.finalize().into();
+    IdempotencyKey::from_bytes(digest[..16].try_into().expect("16-byte prefix"))
+}
+
+/// Deterministic clock idempotency key of one entry's *unparking* timestamp
+/// (W58-1): a third clock domain, so an adjudication reading never disturbs
+/// the routing or parking readings, and a retried unpark (a replaying
+/// adjudication, a crash between the unpark commit and the health record)
+/// replays the same timestamp instead of a fresh one. The durable outbox
+/// sequence alone identifies the row.
+pub(crate) fn unpark_clock_key(sequence: i64) -> IdempotencyKey {
+    let mut hasher = Sha256::new();
+    hasher.update(b"llmos/slice-k-outbox-unpark-clock/v1");
+    hasher.update(sequence.to_be_bytes());
     let digest: [u8; 32] = hasher.finalize().into();
     IdempotencyKey::from_bytes(digest[..16].try_into().expect("16-byte prefix"))
 }
@@ -402,6 +462,24 @@ impl LateOutcomeReconcileSink {
         }
     }
 
+    /// Observes whether one successfully applied entry is a post-unpark
+    /// recovery (W58-1): a formerly parked entry that a manual adjudication
+    /// unparked and whose redelivery just applied here. This is advisory
+    /// visibility only — the apply already succeeded and will be
+    /// acknowledged — so a read failure is skipped silently instead of
+    /// turning a healthy delivery into a reported failure.
+    fn observe_recovery(&self, sequence: u64) {
+        let Some(sequence) = i64::try_from(sequence).ok() else {
+            return;
+        };
+        if let Ok(Some(history)) = self.store.inspect_outbox_park_history_entry(sequence)
+            && !history.parked
+            && history.unpark_count > 0
+        {
+            self.stats.record_recovered();
+        }
+    }
+
     /// The routing attempt without the lane bookkeeping: exactly the
     /// fail-closed semantics documented on [`Self`], with each refusal
     /// tagged by its fail-closed lane so [`ReconcileSink::reconcile`] can
@@ -487,6 +565,7 @@ impl ReconcileSink for LateOutcomeReconcileSink {
             Ok(()) => {
                 self.stats.record_route();
                 self.stats.record_apply_progress(item.sequence);
+                self.observe_recovery(item.sequence);
                 Ok(())
             }
             Err((error, kind)) => {
@@ -595,6 +674,13 @@ impl PumpLane {
 
     pub(crate) fn snapshot(&self) -> ReconcileLaneSnapshot {
         self.stats.snapshot()
+    }
+
+    /// Records one manual unpark adjudication observed through
+    /// [`SliceKRuntime::unpark_outbox_entry`] (W58-1) so the lane's health
+    /// surface carries the adjudication alongside the parks it answers.
+    pub(crate) fn record_unpark(&self, reason: String) {
+        self.stats.record_unpark(reason);
     }
 }
 
@@ -993,5 +1079,118 @@ mod tests {
     #[test]
     fn default_park_threshold_is_the_documented_default() {
         assert_eq!(DEFAULT_PARK_THRESHOLD, 64);
+    }
+
+    /// Given/When/Then: given a poison head parked at the lane's threshold
+    /// (the healthy entry behind it already flowed and acknowledged); when
+    /// a manual adjudication unparks the parked entry through the store's
+    /// W58-1 controlled reverse — the exact store call
+    /// [`SliceKRuntime::unpark_outbox_entry`] drives; then the entry
+    /// rejoins the pending lane at its durable sequence position, the next
+    /// drain re-offers it (recovery is redelivery, not forgiveness: the
+    /// refusal lanes count again and the drain stops at the re-offered
+    /// head), the parked listing empties, and the park history reads the
+    /// entry as recovered with exactly one unpark.
+    #[test]
+    fn unparked_head_rejoins_the_lane_and_is_reoffered() {
+        let root = TempDir::new("unpark-reoffer");
+        std::fs::create_dir_all(root.root()).expect("create temp root");
+        let store =
+            Arc::new(SqliteOperationStore::open(root.root().join("operations.sqlite3")).unwrap());
+        commit_poison_reconcile_entry(&store, 0xa4);
+        commit_healthy_wake_entry(&store, 0xb4);
+        let tasks = Arc::new(
+            nlos_task::SqliteTaskAuthority::open(root.root().join("tasks.sqlite3")).unwrap(),
+        );
+        let clock = Arc::new(nlos_clock::AuthorityClock::open(root.root().join("clock")).unwrap());
+        let lane = PumpLane::with_park_threshold(NonZeroU32::new(3).expect("positive"));
+        let consumer = OutboxConsumer {
+            source: StoreOutboxSource::new(Arc::clone(&store)),
+            wake_sink: DeliveringWakeSink,
+            reconcile_sink: lane.sink(Arc::clone(&store), tasks, clock),
+            config: ConsumerConfig { batch_limit: 8 },
+        };
+
+        // Park the poison head at the threshold, then let the healthy
+        // entry behind it flow through (the W57-B unlock).
+        for _ in 0..3 {
+            let report = consumer.drain_once().expect("parking drains");
+            assert_eq!(report.stopped_at, Some(1));
+        }
+        consumer.drain_once().expect("unblocked drain");
+        assert!(
+            store.pending_outbox(10).expect("pending").is_empty(),
+            "only the parked row remains"
+        );
+        let parked = store.inspect_parked_outbox(10).expect("parked listing");
+        assert_eq!(parked.len(), 1);
+        let sequence = parked[0].sequence;
+
+        // The adjudication recovers the entry; its lane-level bookkeeping
+        // mirrors what SliceKRuntime::unpark_outbox_entry records.
+        let decision = store
+            .unpark_outbox_entry(sequence, "adjudicated: route restored", 8_000)
+            .expect("unpark");
+        assert_eq!(
+            decision,
+            nlos_store::OutboxUnparkDecision::Unparked {
+                sequence,
+                unparked_at_ms: 8_000,
+            }
+        );
+        lane.record_unpark("adjudicated: route restored".to_owned());
+
+        // The recovered head is pending again at its durable position.
+        assert_eq!(
+            store
+                .pending_outbox(10)
+                .expect("pending")
+                .iter()
+                .map(|entry| entry.sequence)
+                .collect::<Vec<_>>(),
+            vec![sequence],
+            "the recovered head rejoins the pending lane"
+        );
+        assert!(
+            store.inspect_parked_outbox(10).expect("parked").is_empty(),
+            "no entry is parked anymore"
+        );
+
+        // The next drain re-offers it; still unbindable, the refusal
+        // counts again and the batch stops at the head (it would re-park
+        // at the threshold — exactly the pre-unpark behavior).
+        let before = lane.snapshot().no_route;
+        let report = consumer.drain_once().expect("re-offer drain");
+        assert_eq!(
+            report.stopped_at,
+            Some(sequence.try_into().expect("positive sequence")),
+            "the head is re-offered"
+        );
+        assert_eq!(report.acked, 0);
+        assert_eq!(lane.snapshot().no_route, before + 1);
+
+        let unparked = lane.snapshot();
+        assert_eq!(unparked.unparked, 1, "the adjudication is visible");
+        assert_eq!(
+            unparked.last_unpark_reason.as_deref(),
+            Some("adjudicated: route restored")
+        );
+        assert_eq!(
+            unparked.recovered, 0,
+            "a re-offered entry that still refuses is no recovered delivery"
+        );
+
+        let history = store
+            .inspect_outbox_park_history_entry(sequence)
+            .expect("history")
+            .expect("the recovered row keeps its history");
+        assert!(!history.parked);
+        assert_eq!(history.park_count, 1);
+        assert_eq!(history.unpark_count, 1);
+        assert_eq!(history.unparked_at_ms, Some(8_000));
+        assert_eq!(
+            history.unpark_reason.as_deref(),
+            Some("adjudicated: route restored")
+        );
     }
 }

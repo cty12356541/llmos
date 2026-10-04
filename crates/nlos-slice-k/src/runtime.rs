@@ -446,14 +446,55 @@ impl SliceKRuntime {
     /// fail-closed lane (typed no-route vs routing failure) with the most
     /// recent typed reason, and the W57-B dead-letter state — how many
     /// entries this lane parked after repeated same-sequence failures and
-    /// the durable reason of the most recent park. Refused and parked
+    /// the durable reason of the most recent park — plus the W58-1
+    /// adjudication state: how many manual unparks this runtime performed
+    /// (with the most recent reason) and how many formerly parked entries
+    /// re-applied through the lane after their recovery. Refused and parked
     /// entries stay durable in the outbox; parked ones are visible through
     /// [`SqliteOperationStore::inspect_parked_outbox`] on
-    /// [`Self::operations`] and require manual adjudication (there is no
-    /// automatic un-park).
+    /// [`Self::operations`] and recover only through
+    /// [`Self::unpark_outbox_entry`] (there is no automatic un-park).
     #[must_use]
     pub fn reconcile_lane(&self) -> ReconcileLaneSnapshot {
         self.pump_lane.snapshot()
+    }
+
+    /// Manual adjudication recovery of one parked outbox entry (W58-1):
+    /// the thin operational entry over the store's schema-v6 controlled
+    /// unpark reverse.
+    ///
+    /// The unpark timestamp is a durable clock reading under a
+    /// deterministic per-sequence idempotency key (replays reuse the same
+    /// reading), the store commits the reverse — both parking columns back
+    /// to `NULL` plus the unpark evidence — and the entry then rejoins
+    /// `pending_outbox` at its durable sequence position, so a running
+    /// pump redelivers it (this call drops a delivery hint; the fallback
+    /// poll bounds delivery either way). The adjudication is counted on
+    /// [`Self::reconcile_lane`] (`unparked` and the most recent reason).
+    /// Unparking never acknowledges and never restarts a pump.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed with [`SliceKError::Clock`] /
+    /// [`SliceKError::TimestampOverflow`] when the adjudication reading
+    /// cannot be taken, and [`SliceKError::Operation`] with the store's
+    /// typed refusal — an unknown sequence, an entry that was never
+    /// parked, an unpark replay carrying a different reason, or an
+    /// invalid reason shape.
+    pub fn unpark_outbox_entry(
+        &self,
+        sequence: i64,
+        reason: &str,
+    ) -> SliceKResult<nlos_store::OutboxUnparkDecision> {
+        let now_ms = self.wall_now_i64(crate::pump::unpark_clock_key(sequence))?;
+        let decision = self
+            .operations
+            .unpark_outbox_entry(sequence, reason, now_ms)?;
+        self.pump_lane.record_unpark(reason.to_owned());
+        // Best-effort prompt redelivery; the pump's fallback poll bounds
+        // delivery either way, so the hint's result is deliberately ignored.
+        let _ = self.hint_pump();
+        Ok(decision)
     }
 
     /// Stops the pump and joins its thread. Idempotent: a runtime without

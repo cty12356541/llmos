@@ -721,6 +721,130 @@ async fn bound_reconcile_effect_routes_to_task_authority_and_acks() {
     runtime.stop_pump();
 }
 
+/// Given/When/Then: given a bound (routable) `ReconcileEffect` entry that a
+/// manual adjudication parked, and a running pump; when the runtime's W58-1
+/// unpark entry point recovers the entry; then the store reverse commits and
+/// the pump redelivers it — the entry routes into the task authority and is
+/// acknowledged away, the lane health shows the adjudication (unparked count
+/// and reason) and the recovered delivery, and the park history reads the
+/// entry as recovered with one unpark. The unpark replay through the runtime
+/// stays idempotent, and the typed refusals (unknown sequence, never parked)
+/// surface as the store's operation error.
+#[tokio::test]
+async fn parked_entry_unparks_through_runtime_and_redelivers() {
+    let dir = TempDir::new("unpark-recovery");
+    let runtime = SliceKRuntime::open(dir.root()).expect("open runtime");
+    let bound = bound_effect_slot(&runtime);
+
+    // Cancel wins the wake fence, then the authoritative completion lands:
+    // one routable `ReconcileEffect` row commits.
+    runtime
+        .operations
+        .request_cancel(bound.operation, ReceiptId::from_bytes(seeded(0xb1)))
+        .expect("cancel request");
+    runtime
+        .operations
+        .complete(
+            bound.ticket,
+            CompletionOutcome::Completed {
+                receipt_id: ReceiptId::from_bytes(seeded(0xb2)),
+            },
+        )
+        .expect("late completion canonicalizes for reconciliation");
+    let pending = runtime.operations.pending_outbox(16).expect("pending");
+    assert_eq!(pending.len(), 1);
+    let sequence = pending[0].sequence;
+
+    // The adjudication parks the routable entry (for example a suspected
+    // consumer outage), so the pending lane no longer serves it.
+    runtime
+        .operations
+        .park_outbox_entry(sequence, "manual: suspected consumer outage", 6_000)
+        .expect("park");
+    assert!(
+        runtime
+            .operations
+            .pending_outbox(16)
+            .expect("pending")
+            .is_empty(),
+        "the parked row leaves the pending lane"
+    );
+
+    // The runtime's unpark entry point fails closed on the typed lanes.
+    match runtime.unpark_outbox_entry(4_242, "unknown entry") {
+        Err(SliceKError::Operation(error)) => {
+            assert!(matches!(error, nlos_store::StoreError::OutboxEntryNotFound));
+        }
+        other => panic!("expected the typed not-found refusal, got {other:?}"),
+    }
+
+    let adapter = adapter();
+    runtime.start_pump(&adapter).expect("start pump");
+
+    let decision = runtime
+        .unpark_outbox_entry(sequence, "adjudicated: outage resolved, retry")
+        .expect("unpark through the runtime entry point");
+    assert!(matches!(
+        decision,
+        nlos_store::OutboxUnparkDecision::Unparked { .. }
+    ));
+    // The replay is idempotent through the same entry point (the durable
+    // clock key replays the reading, the store replays the decision).
+    let replay = runtime
+        .unpark_outbox_entry(sequence, "adjudicated: outage resolved, retry")
+        .expect("unpark replay");
+    assert!(matches!(
+        replay,
+        nlos_store::OutboxUnparkDecision::Replayed { .. }
+    ));
+
+    // The recovered entry redelivers, routes, and is acknowledged.
+    wait_until("recovered entry routed and acknowledged", || {
+        runtime
+            .operations
+            .pending_outbox(16)
+            .expect("pending")
+            .is_empty()
+    })
+    .await;
+    let slot = runtime
+        .tasks
+        .inspect_effect_slot(bound.permit.permit_id, 0)
+        .expect("slot after recovery routing");
+    assert_eq!(slot.state, SlotState::EffectClosed);
+
+    let lane = runtime.reconcile_lane();
+    assert!(lane.routed >= 1, "the recovered entry routed");
+    assert_eq!(lane.no_route, 0);
+    assert_eq!(lane.failed, 0);
+    assert_eq!(lane.parked, 0, "nothing was parked by the lane itself");
+    assert_eq!(lane.unparked, 2, "the unpark and its replay are counted");
+    assert_eq!(
+        lane.last_unpark_reason.as_deref(),
+        Some("adjudicated: outage resolved, retry")
+    );
+    assert!(
+        lane.recovered >= 1,
+        "the post-unpark redelivery that applied is visible"
+    );
+
+    let history = runtime
+        .operations
+        .inspect_outbox_park_history_entry(sequence)
+        .expect("park history")
+        .expect("the recovered row keeps its history");
+    assert!(!history.parked);
+    assert!(history.acknowledged, "the redelivery was acknowledged");
+    assert_eq!(history.park_count, 1);
+    assert_eq!(history.unpark_count, 1);
+    assert_eq!(
+        history.unpark_reason.as_deref(),
+        Some("adjudicated: outage resolved, retry")
+    );
+
+    runtime.stop_pump();
+}
+
 /// Given/When/Then: given a running pump; when a second start is requested;
 /// then the runtime fails closed instead of letting a second pump
 /// generation ack the first lane's wakes as `FiberGone`.

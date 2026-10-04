@@ -4,7 +4,9 @@
 //! ADR-0009/0012 landed and W25's lifecycle consumes: no live-attach, no
 //! mutation of any authority store. `snapshot inspect` renders the durable
 //! fiber face (process bindings, fiber incarnation registry, B-path entry
-//! snapshots) plus the wait registry of one store directory; `replay`
+//! snapshots), the wait registry, and the operation outbox's parking
+//! history (W57-B parked dead-letter entries and W58-1 unparked/recovered
+//! ones with their park counts) of one store directory; `replay`
 //! walks one binding's event stream through the REAL projection machinery
 //! (`BindingEventProjection` + `ResumePlan::all_pending`) and reports what
 //! the resume machinery would restore, step by step, without arming
@@ -87,11 +89,12 @@ const WAIT_SCHEMA_VERSION: i64 = 2;
 const CHANNEL_SCHEMA_VERSION: i64 = 3;
 const PROCESS_SCHEMA_VERSION: i64 = 5;
 const TASK_SCHEMA_VERSION: i64 = 46;
-/// The operation authority's store (W57-B parked the outbox at schema v5).
-/// The debugger renders no operation face yet, so this pin exists for
-/// preflight refusal and the read-only tripwire only — a store found at
-/// any other version is refused, never migrated.
-const OPERATION_SCHEMA_VERSION: i64 = 5;
+/// The operation authority's store (W57-B parked the outbox at schema v5;
+/// W58-1 added the controlled unpark reverse at schema v6). The debugger
+/// renders the outbox parking history (parked/recovered entries) through
+/// its read-only enumeration face; a store found at any other version is
+/// refused in preflight, never migrated.
+const OPERATION_SCHEMA_VERSION: i64 = 6;
 
 /// Cap for recovery plan/alert listings; the debugger renders everything
 /// present, never samples.
@@ -184,6 +187,7 @@ struct StoreFace {
     channel: Option<PathBuf>,
     process: Option<PathBuf>,
     task: Option<PathBuf>,
+    operations: Option<PathBuf>,
     observed_versions: Vec<(PathBuf, i64)>,
 }
 
@@ -244,11 +248,11 @@ fn probe_store(root: &Path) -> Result<StoreFace, ToolError> {
             &mut observed,
         )?,
     };
-    // The operation authority's store is pinned the same way (W57-B: the
-    // outbox parked-entry schema is v5). The debugger renders no operation
-    // face, so only the pin refusal and the read-only tripwire observe
-    // this database; an absent store stays absent.
-    let _operations = probe_database(
+    // The operation authority's store is pinned the same way (W57-B parked
+    // the outbox at v5; W58-1 added the controlled unpark reverse at v6).
+    // The debugger renders the outbox parking history from this database
+    // through its read-only enumeration face; an absent store stays absent.
+    let operations = probe_database(
         &root.join("operations.sqlite3"),
         OPERATION_SCHEMA_VERSION,
         &mut observed,
@@ -265,6 +269,7 @@ fn probe_store(root: &Path) -> Result<StoreFace, ToolError> {
         channel,
         process,
         task,
+        operations,
         observed_versions: observed,
     })
 }
@@ -373,6 +378,24 @@ fn blob16(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<[u8; 16]> {
             )),
         )
     })
+}
+
+/// The store encodes generations as 8-byte big-endian blobs, so the
+/// debugger's enumeration decodes them the same way instead of expecting
+/// an integer column.
+fn blob8_u64(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<u64> {
+    let value: Vec<u8> = row.get(index)?;
+    let bytes: [u8; 8] = value.try_into().map_err(|_| {
+        rusqlite::Error::FromSqlConversionFailure(
+            index,
+            rusqlite::types::Type::Blob,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "expected an 8-byte generation",
+            )),
+        )
+    })?;
+    Ok(u64::from_be_bytes(bytes))
 }
 
 fn blob32(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<[u8; 32]> {
@@ -592,6 +615,72 @@ fn fiber_head_bindings(
         .map_err(|error| map_store("enumerate process fibers", &error))
 }
 
+/// One operation-outbox parking-history row (W57-B park / W58-1 unpark):
+/// the durable entry facts plus the parked/recovered status and counts
+/// rendered by `snapshot inspect`. The `state_kind`/`receipt_id` pair is
+/// rendered verbatim (the authority decodes it; the debugger reports the
+/// durable numbers).
+struct OutboxParkRow {
+    sequence: i64,
+    kind: i64,
+    operation_id: [u8; 16],
+    operation_generation: u64,
+    owner_fiber_id: [u8; 16],
+    callback_id: Option<[u8; 16]>,
+    state_kind: i64,
+    receipt_id: [u8; 16],
+    acknowledged: bool,
+    parked: bool,
+    park_count: i64,
+    parked_at_ms: Option<i64>,
+    park_reason: Option<String>,
+    unparked_at_ms: Option<i64>,
+    unpark_reason: Option<String>,
+}
+
+/// Every operation-outbox entry that was parked at least once (currently
+/// parked dead-letter rows and unparked/recovered rows alike), straight
+/// from the v6 parking columns — the surface the authority's
+/// `inspect_outbox_park_history` serves, read through the debugger's
+/// read-only connection.
+fn outbox_park_history(connection: &Connection) -> Result<Vec<OutboxParkRow>, ToolError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT sequence, kind, operation_id, operation_generation,
+                    owner_fiber_id, callback_id, state_kind, receipt_id,
+                    acknowledged, parked_at_ms, park_reason,
+                    unparked_at_ms, unpark_reason, park_count
+             FROM operation_outbox
+             WHERE parked_at_ms IS NOT NULL OR unparked_at_ms IS NOT NULL
+             ORDER BY sequence",
+        )
+        .map_err(|error| map_store("enumerate outbox park history", &error))?;
+    let rows = statement
+        .query_map([], |row| {
+            let parked_at_ms: Option<i64> = row.get(9)?;
+            Ok(OutboxParkRow {
+                sequence: row.get(0)?,
+                kind: row.get(1)?,
+                operation_id: blob16(row, 2)?,
+                operation_generation: blob8_u64(row, 3)?,
+                owner_fiber_id: blob16(row, 4)?,
+                callback_id: row.get(5)?,
+                state_kind: row.get(6)?,
+                receipt_id: blob16(row, 7)?,
+                acknowledged: row.get::<_, i64>(8)? == 1,
+                parked: parked_at_ms.is_some(),
+                parked_at_ms,
+                park_reason: row.get(10)?,
+                unparked_at_ms: row.get(11)?,
+                unpark_reason: row.get(12)?,
+                park_count: row.get(13)?,
+            })
+        })
+        .map_err(|error| map_store("enumerate outbox park history", &error))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| map_store("enumerate outbox park history", &error))
+}
+
 // ---------------------------------------------------------------------------
 // rendering helpers
 // ---------------------------------------------------------------------------
@@ -622,6 +711,18 @@ fn lifecycle_name(code: i64) -> &'static str {
         2 => "crashed",
         _ => "unknown",
     }
+}
+
+fn outbox_kind_name(code: i64) -> &'static str {
+    match code {
+        0 => "wake",
+        1 => "reconcile",
+        _ => "unknown",
+    }
+}
+
+fn optional_text(value: Option<&str>) -> &str {
+    value.unwrap_or("-")
 }
 
 fn debug_lower(value: impl std::fmt::Debug) -> String {
@@ -839,6 +940,49 @@ fn snapshot_command(arguments: &[String]) -> Result<String, ToolError> {
         let _ = writeln!(out, "process-registry absent");
         let _ = writeln!(out, "fiber-registry absent");
         let _ = writeln!(out, "entry-snapshots absent");
+    }
+
+    // The operation outbox's parking history (W57-B park / W58-1 manual
+    // unpark): every entry ever parked, with its parked/recovered status,
+    // its park/unpark counts, and the adjudication reasons. Read through
+    // the same read-only connection as the other enumeration faces.
+    match face.operations.as_deref().map(open_read_only).transpose()? {
+        Some(connection) => {
+            let history = outbox_park_history(&connection)?;
+            let parked = history.iter().filter(|row| row.parked).count();
+            let recovered = history.len() - parked;
+            let _ = writeln!(
+                out,
+                "operation-outbox parked={parked} recovered={recovered}"
+            );
+            for row in &history {
+                let unparks = row.park_count - i64::from(row.parked);
+                let _ = writeln!(
+                    out,
+                    "  outbox-park seq={} kind={} operation={} generation={} owner={} callback={} state={} receipt={} ack={} status={} parks={} unparks={} parked_at={} reason={} unparked_at={} unpark_reason={}",
+                    row.sequence,
+                    outbox_kind_name(row.kind),
+                    hex(&row.operation_id),
+                    row.operation_generation,
+                    hex(&row.owner_fiber_id),
+                    row.callback_id
+                        .map_or_else(|| "-".to_string(), |id| hex(&id)),
+                    row.state_kind,
+                    hex(&row.receipt_id),
+                    if row.acknowledged { "yes" } else { "no" },
+                    if row.parked { "parked" } else { "recovered" },
+                    row.park_count,
+                    unparks,
+                    optional_ms(row.parked_at_ms),
+                    optional_text(row.park_reason.as_deref()),
+                    optional_ms(row.unparked_at_ms),
+                    optional_text(row.unpark_reason.as_deref()),
+                );
+            }
+        }
+        None => {
+            let _ = writeln!(out, "operation-outbox absent");
+        }
     }
     face.assert_untouched()?;
     Ok(out)
@@ -1441,7 +1585,8 @@ mod tests {
         artifact_publication_plan_root, empty_effect_history_root,
     };
     use nlos_types::{
-        CancellationScopeId, Generation, IdempotencyKey, TaskAttemptId, TaskId, TaskSnapshotId,
+        CallbackId, CancellationScopeId, ExecutionFiberId, Generation, IdempotencyKey,
+        TaskAttemptId, TaskId, TaskSnapshotId,
     };
     use nlos_wait::{
         BindingId, CancelDecision, CancelWaitRequest, NotifyCommitsRequest, RegisterDecision,
@@ -1913,6 +2058,74 @@ mod tests {
             ProcessTerminalDecision::Replayed(_) => panic!("fresh crash cannot replay"),
         }
         drop(process);
+
+        // The operation authority's outbox parking history (W57-B/W58-1):
+        // one wake entry parked (visible dead-letter debt) and one parked
+        // then unparked (recovered by adjudication, its unpark evidence
+        // and counts durable), both unacknowledged.
+        let operations =
+            nlos_store::SqliteOperationStore::open(root.path().join("operations.sqlite3"))
+                .expect("open operations authority");
+        let commit_wake = |store: &nlos_store::SqliteOperationStore, seed: u8| {
+            let handle = match store
+                .register(nlos_operation::OperationSpec {
+                    operation_id: nlos_types::OperationId::from_bytes([seed; 16]),
+                    generation: Generation::INITIAL,
+                    owner_fiber: nlos_runtime::FiberHandle {
+                        fiber_id: ExecutionFiberId::from_bytes([seed.wrapping_add(1); 16]),
+                        generation: Generation::INITIAL,
+                    },
+                    cancellation_scope_id: CancellationScopeId::from_bytes(
+                        [seed.wrapping_add(2); 16],
+                    ),
+                    cancellation_generation: Generation::INITIAL,
+                })
+                .expect("register operation")
+            {
+                nlos_store::RegistrationDecision::Created(handle) => handle,
+                nlos_store::RegistrationDecision::Existing(_) => {
+                    panic!("fresh register cannot exist")
+                }
+            };
+            let ticket = store
+                .dispatch(handle, CallbackId::from_bytes([seed; 16]))
+                .expect("dispatch operation");
+            store
+                .complete(
+                    ticket,
+                    nlos_operation::CompletionOutcome::Completed {
+                        receipt_id: nlos_types::ReceiptId::from_bytes([seed.wrapping_add(3); 16]),
+                    },
+                )
+                .expect("complete operation");
+            store
+                .pending_outbox(16)
+                .expect("pending outbox")
+                .last()
+                .expect("the wake entry is pending")
+                .sequence
+        };
+        let parked_sequence = commit_wake(&operations, 0xd1);
+        let recovered_sequence = commit_wake(&operations, 0xd2);
+        operations
+            .park_outbox_entry(
+                parked_sequence,
+                "fixture: poison head parked for adjudication",
+                2_700,
+            )
+            .expect("park fixture entry");
+        operations
+            .park_outbox_entry(recovered_sequence, "fixture: transient route outage", 2_800)
+            .expect("park fixture entry");
+        operations
+            .unpark_outbox_entry(
+                recovered_sequence,
+                "fixture: outage resolved, retry delivery",
+                2_900,
+            )
+            .expect("unpark fixture entry");
+        drop(operations);
+
         let first_process = *first.process_id.as_bytes();
         Fixture {
             root,
@@ -2031,6 +2244,25 @@ mod tests {
         )));
         assert!(output.contains("input_len=19 written_at=2500"));
         assert!(output.contains("face task.sqlite3 present schema=46"));
+        // The operation outbox's parking history: one parked (dead-letter)
+        // and one recovered (unparked) fixture entry with its counts.
+        assert!(output.contains("operation-outbox parked=1 recovered=1"));
+        assert!(output.contains(&format!(
+            "outbox-park seq=1 kind=wake operation={} generation=1",
+            hex_of(&[0xd1; 16])
+        )));
+        assert!(output.contains(
+            "ack=no status=parked parks=1 unparks=0 parked_at=2700 \
+             reason=fixture: poison head parked for adjudication unparked_at=- unpark_reason=-"
+        ));
+        assert!(output.contains(&format!(
+            "outbox-park seq=2 kind=wake operation={} generation=1",
+            hex_of(&[0xd2; 16])
+        )));
+        assert!(output.contains(
+            "ack=no status=recovered parks=1 unparks=1 parked_at=- reason=- \
+             unparked_at=2900 unpark_reason=fixture: outage resolved, retry delivery"
+        ));
     }
 
     #[test]
@@ -2360,7 +2592,8 @@ mod tests {
         assert_eq!(
             version("operations.sqlite3"),
             super::OPERATION_SCHEMA_VERSION,
-            "the operation store pin must track the authority's current schema (W57-B: v5)"
+            "the operation store pin must track the authority's current schema \
+             (W57-B parked at v5; W58-1 added the controlled unpark at v6)"
         );
     }
 }

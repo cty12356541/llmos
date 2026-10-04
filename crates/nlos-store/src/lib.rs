@@ -12,6 +12,16 @@
 //! flow. Parking is never an acknowledgement — the entry stays durable and
 //! unacknowledged for manual adjudication through
 //! [`SqliteOperationStore::inspect_parked_outbox`].
+//!
+//! A parked entry may be *unparked* by explicit human adjudication (schema
+//! v6, W58-1): [`SqliteOperationStore::unpark_outbox_entry`] performs the
+//! one controlled reverse of the parking columns — both go back to `NULL`
+//! in the same transaction that stamps the unpark adjudication evidence —
+//! and the entry then rejoins [`SqliteOperationStore::pending_outbox`] in
+//! durable sequence order. Every other rewrite of the parking facts stays
+//! aborted by the storage triggers, and
+//! [`SqliteOperationStore::inspect_outbox_park_history`] renders the full
+//! parked/recovered history with the per-entry park counts.
 
 use std::error::Error;
 use std::fmt;
@@ -32,7 +42,7 @@ use nlos_types::{
 use rusqlite::{Connection, OpenFlags, Transaction, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
 
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 const MAX_ENDPOINT_COMPONENT_BYTES: usize = 128;
 const MAX_DURABLE_RESULT_BYTES: usize = 1024 * 1024;
 const MAX_PARK_REASON_BYTES: usize = 1024;
@@ -45,6 +55,16 @@ pub enum StoreError {
     UnsupportedSchema(i64),
     OutboxEntryNotFound,
     OutboxParkConflict,
+    /// Fail-closed refusal of a parking-lane request whose shape is invalid
+    /// for the durable row it names. This one variant serves both directions
+    /// of the parking family (W57-B park, W58-1 unpark): malformed
+    /// reasons/timestamps, an unpark of an entry that was never parked, and
+    /// an unpark replay carrying a different reason than the durable
+    /// adjudication. There are deliberately no per-direction variants —
+    /// downstream consumers (for example the mock driver's retry mapping)
+    /// match this enum exhaustively, and every parking-lane refusal shares
+    /// the same operational meaning: a request the authority will never
+    /// execute as stated.
     InvalidParkRequest(&'static str),
     InvalidIdempotencyScope,
     IdempotencyConflict,
@@ -81,7 +101,7 @@ impl fmt::Display for StoreError {
                 "outbox entry is already parked with a different park reason; parking is one-way",
             ),
             Self::InvalidParkRequest(reason) => {
-                write!(formatter, "invalid outbox park request: {reason}")
+                write!(formatter, "invalid outbox parking request: {reason}")
             }
             Self::InvalidIdempotencyScope => formatter.write_str(
                 "idempotency service and method must be non-empty bounded strings without NUL",
@@ -278,6 +298,19 @@ pub enum OutboxParkDecision {
     Replayed { sequence: i64, parked_at_ms: i64 },
 }
 
+/// Linearized result of a controlled outbox unpark request (W58-1).
+///
+/// `Unparked` performed the reverse this call: the parking columns went
+/// back to `NULL`, the entry rejoined the pending lane, and the unpark
+/// adjudication (timestamp + reason) became durable evidence. `Replayed`
+/// proves the entry was already unparked with the exact same reason and
+/// returns the original unpark timestamp without rewriting anything.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OutboxUnparkDecision {
+    Unparked { sequence: i64, unparked_at_ms: i64 },
+    Replayed { sequence: i64, unparked_at_ms: i64 },
+}
+
 /// One parked (dead-letter) outbox entry as observed by
 /// [`SqliteOperationStore::inspect_parked_outbox`].
 ///
@@ -295,6 +328,42 @@ pub struct ParkedOutboxEntry {
     pub acknowledged: bool,
     pub parked_at_ms: i64,
     pub park_reason: String,
+}
+
+/// One outbox entry that has been parked at least once, as observed by
+/// [`SqliteOperationStore::inspect_outbox_park_history`]: currently parked
+/// (dead-letter) rows and already-unparked (recovered) rows alike.
+///
+/// This is the W58-1 audit surface of the parking family: `parked` is the
+/// "停泊/已恢复" status, `park_count`/`unpark_count` are the per-entry
+/// counts, and the last park/unpark facts carry their adjudication
+/// evidence. The last park facts are `None` once unparked — the controlled
+/// reverse clears the parking columns by design — while the unpark facts
+/// survive (a later re-park may again supersede the parked state).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OutboxParkHistoryEntry {
+    pub sequence: i64,
+    pub kind: OutboxKind,
+    pub operation: OperationHandle,
+    pub owner_fiber: FiberHandle,
+    pub callback_id: Option<CallbackId>,
+    pub state: OperationState,
+    pub acknowledged: bool,
+    /// `true` while the entry sits in the parked (dead-letter) lane;
+    /// `false` once a manual unpark recovered it into the pending lane.
+    pub parked: bool,
+    /// How many times this entry was ever parked (a row parked under the
+    /// v5 one-way schema reads exactly 1).
+    pub park_count: i64,
+    /// How many times a manual unpark recovered this entry.
+    pub unpark_count: i64,
+    /// Timestamp and reason of the most recent park; `None` once unparked.
+    pub parked_at_ms: Option<i64>,
+    pub park_reason: Option<String>,
+    /// Timestamp and reason of the most recent unpark adjudication; `None`
+    /// while the entry was never unparked.
+    pub unparked_at_ms: Option<i64>,
+    pub unpark_reason: Option<String>,
 }
 
 /// Authority-derived proof for the current Operation endpoint.
@@ -396,23 +465,31 @@ impl SqliteOperationStore {
                 migrate_v3(&mut connection)?;
                 migrate_v4(&mut connection)?;
                 migrate_v5(&mut connection)?;
+                migrate_v6(&mut connection)?;
             }
             1 => {
                 migrate_v2(&mut connection)?;
                 migrate_v3(&mut connection)?;
                 migrate_v4(&mut connection)?;
                 migrate_v5(&mut connection)?;
+                migrate_v6(&mut connection)?;
             }
             2 => {
                 migrate_v3(&mut connection)?;
                 migrate_v4(&mut connection)?;
                 migrate_v5(&mut connection)?;
+                migrate_v6(&mut connection)?;
             }
             3 => {
                 migrate_v4(&mut connection)?;
                 migrate_v5(&mut connection)?;
+                migrate_v6(&mut connection)?;
             }
-            4 => migrate_v5(&mut connection)?,
+            4 => {
+                migrate_v5(&mut connection)?;
+                migrate_v6(&mut connection)?;
+            }
+            5 => migrate_v6(&mut connection)?,
             SCHEMA_VERSION => {}
             other => return Err(StoreError::UnsupportedSchema(other)),
         }
@@ -1078,7 +1155,9 @@ impl SqliteOperationStore {
     ///
     /// Parked (dead-letter) entries are skipped: they stay durable and
     /// observable through [`Self::inspect_parked_outbox`], but no longer
-    /// block the queue head for consumers.
+    /// block the queue head for consumers. A manual unpark (W58-1) clears
+    /// the parked columns, so the recovered entry rejoins this listing at
+    /// its durable sequence position — the queue head restores in order.
     ///
     /// # Errors
     ///
@@ -1130,13 +1209,15 @@ impl SqliteOperationStore {
     /// Parks a persistently unappliable outbox entry one-way (W57-B
     /// dead-letter parking).
     ///
-    /// Parking stamps `parked_at_ms`/`park_reason` on the entry; from then on
-    /// [`Self::pending_outbox`] skips it, so later entries stop queueing
-    /// behind it. Parking is **not** an acknowledgement: the entry keeps
-    /// `acknowledged = 0` and stays durable for manual adjudication through
-    /// [`Self::inspect_parked_outbox`]. There is deliberately no unpark API
-    /// in this schema version — un-parking is an explicit operational
-    /// decision registered as follow-up work.
+    /// Parking stamps `parked_at_ms`/`park_reason` on the entry and advances
+    /// `park_count`; from then on [`Self::pending_outbox`] skips it, so later
+    /// entries stop queueing behind it. Parking is **not** an
+    /// acknowledgement: the entry keeps `acknowledged = 0` and stays durable
+    /// for manual adjudication through [`Self::inspect_parked_outbox`]. The
+    /// only legal successor of a parked state is the controlled unpark
+    /// reverse ([`Self::unpark_outbox_entry`], W58-1); after an unpark the
+    /// entry may be parked again, and every such cycle advances the counts
+    /// on [`Self::inspect_outbox_park_history`].
     ///
     /// Idempotency: re-parking an entry that is already parked with the exact
     /// same `reason` replays the original decision (`Replayed` with the
@@ -1196,7 +1277,7 @@ impl SqliteOperationStore {
         }
         let changed = transaction.execute(
             "UPDATE operation_outbox
-             SET parked_at_ms = ?1, park_reason = ?2
+             SET parked_at_ms = ?1, park_reason = ?2, park_count = park_count + 1
              WHERE sequence = ?3 AND parked_at_ms IS NULL",
             params![now_ms, reason, sequence],
         )?;
@@ -1243,6 +1324,178 @@ impl SqliteOperationStore {
             entries.push(decode_parked_outbox_row(row)?);
         }
         Ok(entries)
+    }
+
+    /// Unparks one parked outbox entry through the controlled reverse
+    /// (W58-1 manual adjudication recovery).
+    ///
+    /// This is the only legal successor of a parked state. One transaction
+    /// writes the parking columns back to `NULL`, stamps the unpark
+    /// adjudication (`unparked_at_ms`/`unpark_reason`), and leaves the
+    /// acknowledgement untouched — an unpark is never an ack, and an ack is
+    /// never an unpark. From the commit on, [`Self::pending_outbox`] serves
+    /// the entry again at its durable sequence position, so a recovered
+    /// queue head restores in order and consumers redeliver it.
+    ///
+    /// Idempotency: replaying the unpark of an entry that is already
+    /// unparked with the exact same `reason` replays the original decision
+    /// (`Replayed` with the original unpark timestamp) without rewriting
+    /// the row; a different `reason` fails closed with
+    /// [`StoreError::InvalidParkRequest`] (the adjudication is one-way
+    /// evidence, exactly like the park reason it answers).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::OutboxEntryNotFound`] when no entry with
+    /// `sequence` exists; [`StoreError::InvalidParkRequest`] for an empty,
+    /// oversized, or NUL-carrying reason, a negative `now_ms`, an unpark of
+    /// an entry that was never parked, or an unpark replay with a different
+    /// reason; and [`StoreError::CorruptRecord`] if the durable columns
+    /// disagree.
+    pub fn unpark_outbox_entry(
+        &self,
+        sequence: i64,
+        reason: &str,
+        now_ms: i64,
+    ) -> Result<OutboxUnparkDecision, StoreError> {
+        validate_unpark_request(reason, now_ms)?;
+        let mut connection = self.lock_connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut statement = transaction.prepare(
+            "SELECT parked_at_ms, park_reason, unparked_at_ms, unpark_reason
+             FROM operation_outbox WHERE sequence = ?1",
+        )?;
+        let mut rows = statement.query([sequence])?;
+        let existing: Option<UnparkColumns> = match rows.next()? {
+            Some(row) => Some((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            None => None,
+        };
+        drop(rows);
+        drop(statement);
+        let Some((parked_at_ms, park_reason, unparked_at_ms, unpark_reason)) = existing else {
+            return Err(StoreError::OutboxEntryNotFound);
+        };
+        match (parked_at_ms, park_reason) {
+            // Parked: the controlled reverse below is legal.
+            (Some(_), Some(_)) => {}
+            (None, None) => match (unparked_at_ms, unpark_reason) {
+                // Already unparked: the exact same reason replays the
+                // original adjudication; a different reason is the typed
+                // one-way refusal; any partial column is a corrupt
+                // durable disagreement.
+                (Some(at), Some(why)) if why == reason => {
+                    transaction.commit()?;
+                    return Ok(OutboxUnparkDecision::Replayed {
+                        sequence,
+                        unparked_at_ms: at,
+                    });
+                }
+                (Some(_), Some(_)) => {
+                    return Err(StoreError::InvalidParkRequest(
+                        "the entry is already unparked with a different reason; \
+                         unpark adjudication is one-way",
+                    ));
+                }
+                (None, None) => {
+                    return Err(StoreError::InvalidParkRequest(
+                        "the entry was never parked; only a parked entry can be unparked",
+                    ));
+                }
+                _ => {
+                    return Err(StoreError::CorruptRecord(
+                        "outbox unpark timestamp and reason disagree",
+                    ));
+                }
+            },
+            _ => {
+                return Err(StoreError::CorruptRecord(
+                    "outbox park timestamp and reason disagree",
+                ));
+            }
+        }
+        let changed = transaction.execute(
+            "UPDATE operation_outbox
+             SET parked_at_ms = NULL, park_reason = NULL,
+                 unparked_at_ms = ?1, unpark_reason = ?2
+             WHERE sequence = ?3 AND parked_at_ms IS NOT NULL",
+            params![now_ms, reason, sequence],
+        )?;
+        if changed != 1 {
+            return Err(StoreError::CorruptRecord(
+                "outbox unpark compare-and-set failed",
+            ));
+        }
+        transaction.commit()?;
+        Ok(OutboxUnparkDecision::Unparked {
+            sequence,
+            unparked_at_ms: now_ms,
+        })
+    }
+
+    /// Lists every outbox entry that has been parked at least once, in
+    /// durable sequence order — currently parked (dead-letter) and already
+    /// unparked (recovered) rows alike.
+    ///
+    /// This is the W58-1 audit surface of the parking family: it answers
+    /// "which entries were ever parked, which are still parked, which were
+    /// recovered by adjudication, and how often" without perturbing either
+    /// lane ([`Self::pending_outbox`] keeps serving only unparked rows and
+    /// [`Self::inspect_parked_outbox`] keeps listing only currently parked
+    /// ones).
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage error or corrupt-record error.
+    pub fn inspect_outbox_park_history(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<OutboxParkHistoryEntry>, StoreError> {
+        let connection = self.lock_connection()?;
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let mut statement = connection.prepare(
+            "SELECT sequence, kind, operation_id, operation_generation,
+                    owner_fiber_id, owner_fiber_generation, callback_id,
+                    state_kind, receipt_id, acknowledged,
+                    parked_at_ms, park_reason, unparked_at_ms, unpark_reason, park_count
+             FROM operation_outbox
+             WHERE parked_at_ms IS NOT NULL OR unparked_at_ms IS NOT NULL
+             ORDER BY sequence
+             LIMIT ?1",
+        )?;
+        let mut rows = statement.query([limit])?;
+        let mut entries = Vec::new();
+        while let Some(row) = rows.next()? {
+            entries.push(decode_outbox_park_history_row(row)?);
+        }
+        Ok(entries)
+    }
+
+    /// Reads one entry's parking history by durable sequence (the targeted
+    /// form of [`Self::inspect_outbox_park_history`]); `None` when no entry
+    /// with `sequence` exists. Consumers use this to observe whether a
+    /// delivered entry is a post-unpark recovery.
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage error or corrupt-record error.
+    pub fn inspect_outbox_park_history_entry(
+        &self,
+        sequence: i64,
+    ) -> Result<Option<OutboxParkHistoryEntry>, StoreError> {
+        let connection = self.lock_connection()?;
+        let mut statement = connection.prepare(
+            "SELECT sequence, kind, operation_id, operation_generation,
+                    owner_fiber_id, owner_fiber_generation, callback_id,
+                    state_kind, receipt_id, acknowledged,
+                    parked_at_ms, park_reason, unparked_at_ms, unpark_reason, park_count
+             FROM operation_outbox
+             WHERE sequence = ?1",
+        )?;
+        let mut rows = statement.query([sequence])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(decode_outbox_park_history_row(row)?)),
+            None => Ok(None),
+        }
     }
 
     fn lock_connection(&self) -> Result<MutexGuard<'_, Connection>, StoreError> {
@@ -1454,6 +1707,100 @@ fn migrate_v5(connection: &mut Connection) -> Result<(), StoreError> {
     Ok(())
 }
 
+/// Adds the controlled unpark reverse to the Outbox parking family (W58-1,
+/// schema v6).
+///
+/// Design choice (argued against the alternatives): the reverse keeps the
+/// v5 column pair `parked_at_ms`/`park_reason` as the *only* parked-state
+/// signal and writes both back to `NULL` on unpark, instead of introducing
+/// a separate "unparked" state column. Every v5 read path therefore keeps
+/// its exact meaning for an unparked row — `NULL` *is* "not parked", so
+/// the pending partial index, [`SqliteOperationStore::pending_outbox`],
+/// and the park API's fresh-park pre-read all serve recovered rows again
+/// without a single query change, and a recovered head restores in durable
+/// sequence order for free. What an unpark must additionally prove lives
+/// in three new columns: `unparked_at_ms`/`unpark_reason` (the durable
+/// adjudication evidence, also the idempotency anchor for replays) and
+/// `park_count` (how many times the entry was ever parked — the "曾停泊
+/// 次数" health fact). A full per-cycle evidence ledger table would carry
+/// more history but is a strictly larger schema change than this lane
+/// requires.
+///
+/// The v5 one-way trigger is replaced by a v6 trigger that keeps every v5
+/// abort lane (a parked row's evidence is never rewritten in place, the
+/// two parking columns never disagree) and opens exactly one new legal
+/// transition: the *controlled* reverse, an UPDATE that NULLs both parking
+/// columns while stamping both unpark columns in the same statement. A
+/// bare value→NULL UPDATE still aborts — the reverse is a shaped lane, not
+/// a permission for arbitrary rewrites. A second trigger guards the unpark
+/// evidence: it may only be stamped while the row is parked (inside an
+/// unpark), never cleared, and `park_count` may only advance inside a
+/// fresh park. `acknowledged` stays outside both triggers exactly as in
+/// v5: acking never mentions the parking columns, parking/unparking never
+/// acknowledge.
+///
+/// The count is backfilled for rows already parked under v5 — v5 could
+/// neither un-park nor re-park, so a v5-parked row was parked exactly
+/// once, and the backfill derives that fact from the parked columns
+/// without rewriting any other durable fact. Like every migration here
+/// this is one transaction: an interrupted upgrade leaves a complete v5
+/// or a complete v6 database, never a mixed schema.
+fn migrate_v6(connection: &mut Connection) -> Result<(), StoreError> {
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute_batch(
+        "ALTER TABLE operation_outbox
+            ADD COLUMN unparked_at_ms INTEGER
+            CHECK(unparked_at_ms IS NULL OR unparked_at_ms >= 0);
+         ALTER TABLE operation_outbox
+            ADD COLUMN unpark_reason TEXT
+            CHECK(unpark_reason IS NULL OR (
+                length(unpark_reason) BETWEEN 1 AND 1024
+                AND instr(unpark_reason, char(0)) = 0));
+         ALTER TABLE operation_outbox
+            ADD COLUMN park_count INTEGER NOT NULL DEFAULT 0
+            CHECK(park_count >= 0);
+
+         -- v5-parked rows were parked exactly once (no unpark existed):
+         -- derive their count before the v6 triggers take over. This
+         -- UPDATE mentions none of the v5 trigger's columns, so the v5
+         -- one-way trigger stays silent.
+         UPDATE operation_outbox SET park_count = 1
+          WHERE parked_at_ms IS NOT NULL AND park_count = 0;
+
+         DROP TRIGGER operation_outbox_parking_is_one_way;
+
+         CREATE TRIGGER operation_outbox_parking_is_one_way
+         BEFORE UPDATE OF parked_at_ms, park_reason ON operation_outbox
+         WHEN (NEW.parked_at_ms IS NULL) <> (NEW.park_reason IS NULL)
+              OR (OLD.parked_at_ms IS NULL AND NEW.parked_at_ms IS NOT NULL
+                  AND NEW.park_count <> OLD.park_count + 1)
+              OR (OLD.parked_at_ms IS NOT NULL AND NOT (
+                  NEW.parked_at_ms IS NULL AND NEW.park_reason IS NULL
+                  AND NEW.unparked_at_ms IS NOT NULL
+                  AND NEW.unpark_reason IS NOT NULL))
+         BEGIN
+             SELECT RAISE(ABORT, 'operation_outbox parking is one-way');
+         END;
+
+         CREATE TRIGGER operation_outbox_unpark_evidence_is_one_way
+         BEFORE UPDATE OF unparked_at_ms, unpark_reason, park_count ON operation_outbox
+         WHEN (NEW.unparked_at_ms IS NULL) <> (NEW.unpark_reason IS NULL)
+              OR (OLD.parked_at_ms IS NULL
+                  AND (NEW.unparked_at_ms IS NOT OLD.unparked_at_ms
+                       OR NEW.unpark_reason IS NOT OLD.unpark_reason))
+              OR (NEW.park_count <> OLD.park_count
+                  AND NOT (OLD.parked_at_ms IS NULL
+                           AND NEW.parked_at_ms IS NOT NULL))
+         BEGIN
+             SELECT RAISE(ABORT, 'operation_outbox unpark evidence is one-way');
+         END;
+
+         PRAGMA user_version = 6;",
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
+
 struct IdempotencyRecord {
     request_digest_sha256: [u8; 32],
     operation: OperationHandle,
@@ -1505,6 +1852,39 @@ fn validate_park_request(reason: &str, now_ms: i64) -> Result<(), StoreError> {
     if now_ms < 0 {
         return Err(StoreError::InvalidParkRequest(
             "park timestamp must be non-negative milliseconds",
+        ));
+    }
+    Ok(())
+}
+
+/// The four parking-family columns of one outbox row exactly as the unpark
+/// lane reads them: `(parked_at_ms, park_reason, unparked_at_ms,
+/// unpark_reason)`, each `NULL` meaning "absent".
+type UnparkColumns = (Option<i64>, Option<String>, Option<i64>, Option<String>);
+
+/// Fail-closed validation of an unpark request before any row is touched:
+/// the adjudication reason becomes durable evidence exactly like a park
+/// reason, so it obeys the same non-empty, bounded, NUL-free UTF-8 shape
+/// and the timestamp the same non-negative domain.
+fn validate_unpark_request(reason: &str, now_ms: i64) -> Result<(), StoreError> {
+    if reason.is_empty() {
+        return Err(StoreError::InvalidParkRequest(
+            "unpark reason must be a non-empty string",
+        ));
+    }
+    if reason.len() > MAX_PARK_REASON_BYTES {
+        return Err(StoreError::InvalidParkRequest(
+            "unpark reason exceeds the 1024-byte bound",
+        ));
+    }
+    if reason.contains('\0') {
+        return Err(StoreError::InvalidParkRequest(
+            "unpark reason must not carry a NUL byte",
+        ));
+    }
+    if now_ms < 0 {
+        return Err(StoreError::InvalidParkRequest(
+            "unpark timestamp must be non-negative milliseconds",
         ));
     }
     Ok(())
@@ -2003,6 +2383,77 @@ fn decode_parked_outbox_row(row: &rusqlite::Row<'_>) -> Result<ParkedOutboxEntry
         acknowledged: acknowledged == 1,
         parked_at_ms,
         park_reason,
+    })
+}
+
+/// Decodes one row of [`SqliteOperationStore::inspect_outbox_park_history`]:
+/// the outbox fact columns plus the acknowledged flag, the two parking
+/// columns, the two unpark columns, and the park count. Both column pairs
+/// must agree in NULL-ness (the v6 triggers make any other durable
+/// combination unreachable), the counts must be non-negative, and the
+/// derived `unpark_count` is exactly the park cycles the adjudication lane
+/// already closed.
+fn decode_outbox_park_history_row(
+    row: &rusqlite::Row<'_>,
+) -> Result<OutboxParkHistoryEntry, StoreError> {
+    let entry = decode_outbox_row(row)?;
+    let acknowledged: i64 = row.get(9)?;
+    let parked_at_ms: Option<i64> = row.get(10)?;
+    let park_reason: Option<String> = row.get(11)?;
+    let unparked_at_ms: Option<i64> = row.get(12)?;
+    let unpark_reason: Option<String> = row.get(13)?;
+    let park_count: i64 = row.get(14)?;
+    if !matches!(acknowledged, 0 | 1) {
+        return Err(StoreError::CorruptRecord("outbox acknowledged flag"));
+    }
+    if (parked_at_ms.is_some() != park_reason.is_some())
+        || (unparked_at_ms.is_some() != unpark_reason.is_some())
+    {
+        return Err(StoreError::CorruptRecord(
+            "outbox park or unpark timestamp and reason disagree",
+        ));
+    }
+    if let (Some(at), Some(why)) = (parked_at_ms, park_reason.as_deref())
+        && (at < 0 || why.is_empty() || why.len() > MAX_PARK_REASON_BYTES || why.contains('\0'))
+    {
+        return Err(StoreError::CorruptRecord("outbox park facts out of bound"));
+    }
+    if let (Some(at), Some(why)) = (unparked_at_ms, unpark_reason.as_deref())
+        && (at < 0 || why.is_empty() || why.len() > MAX_PARK_REASON_BYTES || why.contains('\0'))
+    {
+        return Err(StoreError::CorruptRecord(
+            "outbox unpark facts out of bound",
+        ));
+    }
+    if park_count < 0 {
+        return Err(StoreError::CorruptRecord("negative outbox park count"));
+    }
+    let parked = parked_at_ms.is_some();
+    // Every unpark consumed a prior park, and only an unpark re-opens the
+    // park lane, so the cycles strictly alternate: the closed ones are the
+    // parks minus the one currently holding the row (a v5-parked row has
+    // no closed cycle; its count of 1 was backfilled).
+    let unpark_count = park_count - i64::from(parked);
+    if unpark_count < 0 {
+        return Err(StoreError::CorruptRecord(
+            "outbox unpark count exceeds parks",
+        ));
+    }
+    Ok(OutboxParkHistoryEntry {
+        sequence: entry.sequence,
+        kind: entry.kind,
+        operation: entry.operation,
+        owner_fiber: entry.owner_fiber,
+        callback_id: entry.callback_id,
+        state: entry.state,
+        acknowledged: acknowledged == 1,
+        parked,
+        park_count,
+        unpark_count,
+        parked_at_ms,
+        park_reason,
+        unparked_at_ms,
+        unpark_reason,
     })
 }
 
