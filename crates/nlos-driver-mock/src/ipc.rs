@@ -273,6 +273,8 @@ fn store_failure(error: &StoreError) -> (SabiErrorCode, RetryDirective, &'static
             "operation authority schema version is unsupported",
         ),
         Store::OutboxEntryNotFound
+        | Store::OutboxParkConflict
+        | Store::InvalidParkRequest(_)
         | Store::InvalidIdempotencyScope
         | Store::IdempotencyRecordNotFound
         | Store::DurableResultTooLarge { .. } => (
