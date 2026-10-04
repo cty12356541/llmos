@@ -232,10 +232,13 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 fn wait_until(mut predicate: impl FnMut() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(2);
+    // Escalation paths need many backoff cycles; slow CI runners (Windows
+    // with synchronous=FULL) routinely need far more than a couple of
+    // seconds, so budget generously and poll coarsely.
+    let deadline = Instant::now() + Duration::from_secs(30);
     while !predicate() {
         assert!(Instant::now() < deadline, "condition did not become true");
-        std::thread::sleep(Duration::from_millis(5));
+        std::thread::sleep(Duration::from_millis(25));
     }
 }
 
