@@ -28,8 +28,11 @@ use std::sync::atomic::AtomicBool;
 #[cfg(unix)]
 use ed25519_dalek::Signer as _;
 use nlos_artifact::ArtifactStore;
+use nlos_clock::{AuthorityClock, NowRequest, WallNowDecision};
 use nlos_commit_coordinator::RecoveryWorkerState;
 use nlos_semantic::SemanticAuthority;
+#[cfg(unix)]
+use nlos_system_control::auth::command_wall_key;
 #[cfg(unix)]
 use nlos_system_control::auth::dispatch_over_authenticated_socket;
 use nlos_system_control::control::ControlCommand;
@@ -238,6 +241,35 @@ async fn plain_endpoint_serves_the_shared_handler_path_and_stops_gracefully() {
         receipt.outcome.is_ok(),
         "health read served: {:?}",
         receipt.outcome
+    );
+
+    // F10/W61-A: the plain face issues its command wall time through the
+    // daemon's AuthorityClock under the request's correlation id (the
+    // shared `command_wall_key` derivation), never the bare system clock —
+    // the same reading replays unchanged from the daemon's handle and from
+    // a fresh handle over the durable store, and the real system wall
+    // reading is non-degenerate. `InspectHealth`'s correlation id is the
+    // fixed `[0x34; 16]` the control compiler assigns.
+    let plain_wall_key = command_wall_key(&[0x34; 16]);
+    let decision = daemon
+        .clock
+        .wall_now(NowRequest {
+            idempotency_key: plain_wall_key,
+        })
+        .expect("plain wall reading was clock-issued");
+    let WallNowDecision::Replayed(reading) = decision else {
+        panic!("the plain exchange already issued this key: {decision:?}");
+    };
+    assert!(reading.as_u64() > 0, "real wall reading, not a guess");
+    let reopened = AuthorityClock::open(root.0.join("clock")).expect("reopen clock store");
+    assert_eq!(
+        reopened
+            .wall_now(NowRequest {
+                idempotency_key: plain_wall_key,
+            })
+            .expect("durable replay"),
+        WallNowDecision::Replayed(reading),
+        "the plain face's wall reading is durable"
     );
 
     // Graceful stop: the loop observes the flag within one bounded accept
