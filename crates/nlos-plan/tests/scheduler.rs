@@ -923,3 +923,65 @@ fn fenced_pending_round_returns_its_seat_and_converges_on_the_next_pass() {
     assert_ne!(history[1].idempotency_key, crashed_key);
     assert!(history[1].approved_voucher_id.is_some());
 }
+
+/// The controller's full stop survives the rejection trail: at
+/// `set_window(0)` an adopted round's rejection must not revive the
+/// window to the shrink floor — the floor applies only to a *running*
+/// window (deep-audit/30, registry #7). With the window at zero no new
+/// round is ever selected; the durable typed rejection trail remains
+/// the observable record.
+#[test]
+fn controller_full_stop_window_survives_rejection_trail() {
+    let root = Root::new("full-stop");
+    let authority = SqlitePlanAuthority::open(root.0.join("plan.sqlite3")).expect("open plan");
+    let plan_id = authority
+        .apply_plan_revision_ungated(revision_request(None, vec![node(0x0a, 0x01)], 0x11, 1_000))
+        .expect("apply revision")
+        .receipt()
+        .plan_id;
+    let node_a = node_id_of(&authority, plan_id, [0x0a; 16]);
+
+    // An in-flight gate round exists when the controller stops the
+    // window: pending rounds still drive to resolution (crash
+    // convergence), but the stop itself must outlive their verdicts.
+    authority
+        .request_materialization(MaterializationRequest {
+            plan_id,
+            node_id: node_a,
+            idempotency_key: IdempotencyKey::from_bytes([0x41; 16]),
+            requested_at_ms: 2_000,
+        })
+        .expect("gate request");
+
+    let mut scheduler = MaterializationScheduler::new(0);
+    let summary = scheduler
+        .run_pass(&authority, plan_id, &DenyAll, 3_000)
+        .expect("full-stop pass");
+    assert_eq!(
+        summary.selected, 1,
+        "the pending round is adopted regardless of budget"
+    );
+    assert_eq!(summary.rejected, 1);
+    assert_eq!(
+        summary.window_after, 0,
+        "a rejection must not revive a controller-set zero"
+    );
+    assert_eq!(scheduler.window(), 0);
+
+    // No new round is selected at zero; the node stays durably
+    // WAITING_RESOURCE with exactly its one typed rejection.
+    let second = scheduler
+        .run_pass(&authority, plan_id, &DenyAll, 3_500)
+        .expect("second pass");
+    assert_eq!(second.selected, 0);
+    assert_eq!(second.window_after, 0);
+    assert_eq!(scheduler.window(), 0);
+    let history = authority
+        .inspect_node_materialization_requests(plan_id, node_a)
+        .expect("request history");
+    assert_eq!(history.len(), 1);
+    assert!(matches!(
+        history[0].rejection,
+        Some(MaterializationRejection::WorkingSetFull { .. })
+    ));
+}

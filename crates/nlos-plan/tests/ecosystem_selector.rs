@@ -440,7 +440,7 @@ fn ecosystem_idempotent_replay_answers_original_and_rebind_conflicts() {
 }
 
 /// Receipts are durable across restart, the pinned readback survives
-/// reopen byte-equal, the schema head is v5, and an artificially
+/// reopen byte-equal, the schema head is current, and an artificially
 /// down-stamped database re-migrates idempotently to the head.
 #[test]
 fn ecosystem_receipts_survive_restart_and_reopen_stays_at_head() {
@@ -451,7 +451,7 @@ fn ecosystem_receipts_survive_restart_and_reopen_stays_at_head() {
     let artifact = [0x22; 16];
     source.put(artifact, 2, [0x22; 32]);
     let authority = SqlitePlanAuthority::open(&db_path).expect("open authority");
-    assert_eq!(user_version(&db_path), 8);
+    assert_eq!(user_version(&db_path), 9);
     let handle = authority
         .resolve_ecosystem_selector(
             &source,
@@ -462,7 +462,7 @@ fn ecosystem_receipts_survive_restart_and_reopen_stays_at_head() {
     drop(authority);
 
     let reopened = SqlitePlanAuthority::open(&db_path).expect("reopen");
-    assert_eq!(user_version(&db_path), 8);
+    assert_eq!(user_version(&db_path), 9);
     assert_eq!(
         reopened
             .inspect_ecosystem_resolution(handle.resolution_id)
@@ -487,7 +487,7 @@ fn ecosystem_receipts_survive_restart_and_reopen_stays_at_head() {
         .expect("stamp v4");
     drop(raw);
     let remigrated = SqlitePlanAuthority::open(&db_path).expect("idempotent re-migration");
-    assert_eq!(user_version(&db_path), 8);
+    assert_eq!(user_version(&db_path), 9);
     assert_eq!(
         remigrated
             .inspect_ecosystem_resolution(handle.resolution_id)

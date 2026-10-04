@@ -508,3 +508,122 @@ fn reopen_recognizes_schema_and_rejects_unknown_versions() {
         Err(PlanStoreError::SchemaVersionUnsupported(99))
     ));
 }
+
+/// Deterministic 16-byte key for one chain position.
+fn chain_key(index: usize) -> [u8; 16] {
+    (index as u128).to_be_bytes()
+}
+
+/// One link of a linear dependency chain: node `index` depends on
+/// node `index - 1` (nothing for the head).
+fn chain_node(index: usize) -> PlanNodeDeclaration {
+    let payload = u8::try_from(index % 256).expect("index modulo 256 fits u8");
+    PlanNodeDeclaration {
+        node_key: chain_key(index),
+        kind: PlanNodeKind::AgentRole,
+        binding_digest: [payload; 32],
+        dependency_keys: if index == 0 {
+            Vec::new()
+        } else {
+            vec![chain_key(index - 1)]
+        },
+        input_selectors_digest: [payload; 32],
+        output_contract_digest: [payload; 32],
+        policy_digest: [payload; 32],
+        resource_ceiling_digest: [payload; 32],
+        conditions: None,
+    }
+}
+
+/// Deep linear chains are legal declarations bounded only by
+/// `MAX_DECLARED_NODES_PER_REVISION`; the cycle detector must not
+/// recurse per node (a 50k-deep chain overflowed the default test
+/// thread stack — an abort, not a recoverable error;
+/// deep-audit/29 #1). The same chain closed into a cycle still fails
+/// typed.
+#[test]
+fn deep_linear_chain_applies_without_recursion_overflow() {
+    const CHAIN: usize = 50_000;
+    let root = Root::new("deep-chain");
+    let authority = SqlitePlanAuthority::open(&root.0).expect("open");
+
+    let nodes: Vec<PlanNodeDeclaration> = (0..CHAIN).map(chain_node).collect();
+    let decision = authority
+        .apply_plan_revision_ungated(revision_request(None, nodes, 0x01))
+        .expect("deep acyclic chain applies without overflowing the stack");
+    assert_eq!(decision.receipt().declared_node_count, CHAIN as u64);
+
+    // Close the chain into a cycle: still typed, still stack-safe.
+    let mut cyclic: Vec<PlanNodeDeclaration> = (0..CHAIN).map(chain_node).collect();
+    cyclic[0].dependency_keys = vec![chain_key(CHAIN - 1)];
+    let refused = authority
+        .apply_plan_revision_ungated(revision_request(None, cyclic, 0x02))
+        .expect_err("the closed chain is a cycle");
+    assert!(matches!(refused, PlanStoreError::PlanCycle));
+}
+
+/// A total revision may not omit an execution-frozen node: the shape
+/// fence pins *how* such a node is re-declared, this pins *that* it is
+/// — omission would silently drop the node from the plan's current
+/// shape while its Task-side execution footprint persists
+/// (deep-audit/29 #2). Re-declaring the frozen shape passes.
+#[test]
+fn total_revision_cannot_omit_execution_frozen_node() {
+    let root = Root::new("frozen-omission");
+    let authority = SqlitePlanAuthority::open(&root.0).expect("open");
+    let plan_id = authority
+        .apply_plan_revision_ungated(revision_request(
+            None,
+            vec![node(0x0a, 0x01), node(0x0b, 0x02)],
+            0x01,
+        ))
+        .expect("apply revision 1")
+        .receipt()
+        .plan_id;
+    let node_a = authority
+        .list_plan_nodes(plan_id)
+        .expect("list nodes")
+        .into_iter()
+        .find(|record| record.node_key == [0x0a; 16])
+        .expect("node a exists")
+        .node_id;
+    gate_into_materializing(&authority, plan_id, node_a, 0x21);
+
+    // Revision 2 omits the frozen node: typed refusal, nothing written.
+    let refused = authority
+        .apply_plan_revision_ungated(revision_request(
+            Some(plan_id),
+            vec![node(0x0b, 0x02)],
+            0x02,
+        ))
+        .expect_err("omitting an execution-frozen node must fail typed");
+    assert!(matches!(
+        refused,
+        PlanStoreError::FrozenNodeOmitted { node_id, .. } if node_id == node_a
+    ));
+    let head = authority.inspect_plan(plan_id).expect("inspect plan");
+    assert_eq!(
+        head.expect("plan exists").current_revision,
+        1,
+        "the refused revision wrote nothing"
+    );
+
+    // Re-declaring the frozen node with its exact shape passes the fence.
+    let applied = authority
+        .apply_plan_revision_ungated(revision_request(
+            Some(plan_id),
+            vec![node(0x0a, 0x01), node(0x0b, 0x02)],
+            0x03,
+        ))
+        .expect("frozen node re-declared bit-identically");
+    assert_eq!(applied.receipt().revision, 2);
+    let row = authority
+        .inspect_node(plan_id, node_a)
+        .expect("inspect node")
+        .expect("node exists");
+    assert_eq!(row.state, PlanNodeState::Materializing);
+    assert_eq!(
+        row.declared_revision, 1,
+        "the frozen row keeps its original revision (PLAN-DAG-001)"
+    );
+}
