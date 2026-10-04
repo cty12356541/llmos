@@ -930,3 +930,125 @@ fn v4_database_migration_backfills_the_length_sentinel() {
         Err(TopicAuthorityError::SchemaVersionUnsupported(6))
     ));
 }
+
+/// The W55 reconciliation of deep-audit finding #19: journal rows the
+/// channel owner already trimmed out of the single log (a direct compact
+/// of the shared channel) hold no retention budget.  Pre-W55 the
+/// append-only journal counted them toward the backlog forever — the
+/// release point stayed pinned at the untouched subscriber cursor and
+/// publishing dead-ended on `TopicRetentionExhausted` with no self-heal.
+#[test]
+fn directly_trimmed_journal_rows_leave_the_retention_backlog() {
+    // 40 retained bytes: exactly four 10-byte payloads.
+    let (harness, topic) = bootstrap("direct-trim", 40, DAY_MS, 64);
+    let sub = subscribe(&harness, topic.topic_id, 1, 3_000);
+    assert_eq!(publish_ok(&harness, &topic, 11, 4_000), 1);
+    assert_eq!(publish_ok(&harness, &topic, 12, 4_100), 2);
+    assert_eq!(publish_ok(&harness, &topic, 13, 4_200), 3);
+    assert_eq!(publish_ok(&harness, &topic, 14, 4_300), 4);
+    // The subscriber never advances: with the journal intact the fifth
+    // payload projects to 50 > 40 and is rejected.
+    let error = publish_err(&harness, &topic, 15, 4_400);
+    let (_, backlog, _, _, _) = expect_retention(error);
+    assert_eq!(backlog, 40);
+
+    // The channel owner alone drains and trims the whole log: the journal
+    // rows stay (append-only) but the channel entries are deleted.
+    ack(&harness, &topic, 4);
+    match harness
+        .channel
+        .compact(topic.channel_id, 4)
+        .expect("direct channel compact")
+    {
+        nlos_channel::CompactDecision::Trimmed(receipt) => {
+            assert_eq!(receipt.trim_high_water, 4);
+        }
+        nlos_channel::CompactDecision::Replayed(_) => panic!("fresh trim cannot replay"),
+    }
+
+    // The trimmed prefix holds no budget (audit #19): the backlog is now
+    // zero even though the subscriber's cursor never moved, so the same
+    // fifth publish is admitted.
+    assert_eq!(publish_ok(&harness, &topic, 15, 4_500), 5);
+    let _ = sub;
+}
+
+/// The v9 publications trigger freezes the recorded payload length on
+/// `PENDING_ENQUEUE` rows too (the W55 reconciliation of deep-audit
+/// finding #16: the v5 clause only froze `OLD.status = 1`, leaving a
+/// pending row's length freely mutable).  The two legal mutations stay
+/// legal: the `0`-sentinel backfill exactly on the enqueue-commit
+/// transition (the pre-v5 row's single self-heal point) and the
+/// conservative regression of an `ENQUEUED` row to the sentinel.
+#[test]
+fn v9_trigger_freezes_the_pending_payload_length() {
+    let (harness, topic) = bootstrap("pending-freeze", 20, DAY_MS, 64);
+    let _sub = subscribe(&harness, topic.topic_id, 1, 3_000);
+    assert_eq!(publish_ok(&harness, &topic, 21, 4_000), 1);
+    let raw = raw_topic_db(&harness);
+
+    // An ENQUEUED row's length is frozen ...
+    assert!(
+        raw.execute(
+            "UPDATE topic_publications SET payload_bytes=99 WHERE channel_sequence=1",
+            [],
+        )
+        .is_err()
+    );
+    // ... except the conservative regression to the `0` sentinel (the v5
+    // allowance, kept by v9: an unknown length may only widen the
+    // admission estimate).
+    assert!(
+        raw.execute(
+            "UPDATE topic_publications SET payload_bytes=0 WHERE channel_sequence=1",
+            [],
+        )
+        .is_ok()
+    );
+
+    // A PENDING row carrying the `0` sentinel (a pre-v5 shape): its length
+    // is frozen (audit #16) ...
+    raw.execute(
+        "INSERT INTO topic_publications (
+            idempotency_key, topic_id, policy_digest, payer_account_id,
+            payload_digest, payload_bytes, status, channel_sequence,
+            channel_generation, cascade_budget_remaining, cascade_level,
+            parent_idempotency_key, published_at_ms, enqueued_at_ms
+         )
+         SELECT ?1, topic_id, policy_digest, payer_account_id, ?2, 0, 0, 0, 0, 1, 0, NULL, 10, 0
+           FROM topics WHERE topic_id=?3",
+        [
+            key(31).as_bytes().as_slice(),
+            [0xEE_u8; 32].as_slice(),
+            topic.topic_id.as_bytes().as_slice(),
+        ],
+    )
+    .expect("insert sentinel pending row");
+    assert!(
+        raw.execute(
+            "UPDATE topic_publications SET payload_bytes=99 WHERE idempotency_key=?1",
+            [key(31).as_bytes().as_slice()],
+        )
+        .is_err()
+    );
+    // ... while the sentinel backfill on the enqueue-commit transition
+    // stays the single legal self-heal point.
+    assert!(
+        raw.execute(
+            "UPDATE topic_publications
+             SET status=1, payload_bytes=9, channel_sequence=2,
+                 channel_generation=1, enqueued_at_ms=10
+             WHERE idempotency_key=?1 AND status=0",
+            [key(31).as_bytes().as_slice()],
+        )
+        .is_ok()
+    );
+    // And the freshly backfilled length is frozen like any enqueued one.
+    assert!(
+        raw.execute(
+            "UPDATE topic_publications SET payload_bytes=8 WHERE idempotency_key=?1",
+            [key(31).as_bytes().as_slice()],
+        )
+        .is_err()
+    );
+}
