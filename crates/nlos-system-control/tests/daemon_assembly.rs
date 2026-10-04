@@ -172,7 +172,8 @@ async fn assembly_opens_authorities_binds_sockets_and_starts_the_worker() {
     assert_ne!(daemon.recovery_health().state, RecoveryWorkerState::Stopped);
 
     // The in-process dispatch face serves the same handler the sockets
-    // serve, with every layer source wired and the executor arms unwired.
+    // serve, with every layer source wired and the executor arms powered
+    // (W59-1); the arms with no implementation anywhere stay fail-closed.
     let receipt = daemon
         .dispatch_command(&ControlCommand::InspectHealth, 10, 6_000)
         .expect("dispatch");
@@ -190,16 +191,16 @@ async fn assembly_opens_authorities_binds_sockets_and_starts_the_worker() {
                 control_command_id: [0x51; 16],
                 target_id: [0x52; 16],
                 expected_generation_or_revision: 1,
-                reason: "daemon keeps executor arms unwired".to_owned(),
+                reason: "pause has no implementation anywhere".to_owned(),
             },
             10,
             6_000,
         )
         .expect("dispatch");
-    let failure = unwired.outcome.expect_err("executor arms stay unwired");
+    let failure = unwired.outcome.expect_err("pause arm stays fail-closed");
     assert_eq!(
         failure.safe_message,
-        "operation control execution backend is not wired"
+        "the pause arm is not wired in the system-control daemon"
     );
 
     // Worker stop is observable and idempotent.

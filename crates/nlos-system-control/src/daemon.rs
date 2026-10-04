@@ -25,18 +25,45 @@
 //! handshake and exchange wire bytes are identical on every platform.
 //!
 //! Both entries share one handler construction path with every
-//! `with_*_source` inspector seam wired; the executor arms stay
-//! [`crate::UnwiredOperationCommandExecutor`]-shaped (no executor is
-//! injected), so pause/resume/cancel/kill/throttle/reclaim and the
-//! application lifecycle arms refuse fail-closed by construction. The
-//! daemon is a read-only inspection and recovery-command surface.
+//! `with_*_source` inspector seam wired **and the executor arms powered**
+//! (W59-1, the F1/Lane-1 assembly): one daemon-private composite operation
+//! executor composes the three landed operation executors — kill through
+//! [`crate::process_kill_executor::ProcessAuthorityKillExecutor`] over the
+//! daemon's process authority + in-process
+//! [`nlos_process::SupervisorPidRegistry`] + the platform kill adapter,
+//! throttle through
+//! [`crate::resource_throttle_executor::ResourceDemandThrottleExecutor`]
+//! over the daemon's resource authority (W44-SC1 durable decision ledger),
+//! reclaim through
+//! [`crate::working_set_reclaim_executor::WorkingSetReclaimExecutor`] over
+//! the real task-authority occupancy face — and
+//! [`crate::application_lifecycle_executor::ApplicationAuthorityLifecycleExecutor`]
+//! powers the disable/uninstall arms (uninstall through the W27-D
+//! task-activity gate over the daemon's own task authority). The arms with
+//! no implementation anywhere — pause/resume/cancel — refuse fail-closed
+//! with a typed `NOT_FOUND` naming the unwired arm, exactly like the
+//! [`crate::UnwiredOperationCommandExecutor`] they replaced.
+//!
+//! Honest registration-surface gap: the daemon owns the
+//! [`nlos_process::SupervisorPidRegistry`] as an in-process, daemon-lifetime
+//! instance, but no supervisor loop inside this daemon registers pid
+//! mappings yet, so a kill against a never-registered target refuses typed
+//! `NOT_FOUND` ("no supervisor os pid mapping is registered") — the honest
+//! production behavior, not a fabricated signal. Hosts (and tests) seed
+//! mappings through [`SystemControlDaemon::register_supervisor_pid`]; the
+//! per-exchange platform-kill adapter snapshots the registry's current
+//! pid map, mirroring the slice-k teardown usage.
 //!
 //! The `Process`/`Resource`/`Application` authorities are opened because the
 //! daemon is the resident owner of the state root (and the worker drives the
 //! resource half through its own `ResourceAuthority` handle, its semantic
 //! half through its own `SemanticAuthority` handle); their
 //! inspector adapters are composed **client-side** per the
-//! `ControlReceipt::compose` contract, exactly like the CLI `--root` path.
+//! `ControlReceipt::compose` contract, exactly like the CLI `--root` path —
+//! and [`SystemControlDaemon::dispatch_command`] performs the isomorphic
+//! daemon-side composition over the same authorities it owns, so the
+//! in-process service-parity face carries the three composed inspections
+//! without crossing a socket.
 //!
 //! Process/resource/application inspection therefore never crosses these
 //! sockets as server-side state; the GET envelope still crosses for
@@ -73,21 +100,30 @@ use nlos_ipc::{
     serve_one,
 };
 use nlos_plan::{PlanStoreError, SqlitePlanAuthority};
-use nlos_process::{ProcessAuthority, ProcessAuthorityError};
+#[cfg(unix)]
+use nlos_process::PosixPlatformKillAdapter;
+#[cfg(windows)]
+use nlos_process::WindowsPlatformKillAdapter;
+use nlos_process::{
+    ProcessAuthority, ProcessAuthorityError, RegisterSupervisorPidRequest, SupervisorPidDecision,
+    SupervisorPidRegistry, SupervisorPidRegistryError,
+};
 use nlos_resource::{ResourceAuthority, ResourceAuthorityError};
 use nlos_runtime::RuntimeError;
 use nlos_runtime_tokio::{TokioRuntimeAdapter, TokioRuntimeConfig};
 use nlos_schema::sabi::v1::{
-    ControlCommand as SabiWireCommand, ExchangeResponse, GetSystemControlRequest,
-    SabiRequestContext,
+    ControlCommand as SabiWireCommand, ExchangeResponse, GetSystemControlRequest, SabiErrorCode,
+    SabiFailure, SabiRequestContext,
 };
 use nlos_semantic::{SemanticAuthority, SemanticAuthorityError};
 use nlos_store::{SqliteOperationStore, StoreError};
-use nlos_task::{SqliteTaskAuthority, TaskStoreError};
+use nlos_task::{SqliteTaskAuthority, TASK_PROFILE_10K, TaskStoreError};
 use nlos_topic::{TopicAuthority, TopicAuthorityError};
 use nlos_types::IdempotencyKey;
 use sha2::{Digest, Sha256};
 
+use crate::application_inspector::ApplicationAuthorityInspector;
+use crate::application_lifecycle_executor::ApplicationAuthorityLifecycleExecutor;
 use crate::auth::EndpointListener;
 use crate::auth::authenticated_serve_one_control;
 use crate::control::{
@@ -101,8 +137,17 @@ use crate::materialization_driver::{
 };
 use crate::operation_inspector::OperationStoreSource;
 use crate::plan_inspector::PlanAuthorityTaskNodeSource;
+use crate::process_inspector::ProcessAuthorityInspector;
+use crate::process_kill_executor::ProcessAuthorityKillExecutor;
+use crate::resource_inspector::ResourceAuthorityInspector;
+use crate::resource_throttle_executor::ResourceDemandThrottleExecutor;
 use crate::topic_inspector::TopicAuthoritySource;
-use crate::{RecoveryHealthSource, RecoverySystemControl, SystemControlAuthorizer};
+use crate::working_set_reclaim_executor::{
+    TaskAuthorityWorkingSetOccupancy, WorkingSetReclaimExecutor,
+};
+use crate::{
+    OperationCommandExecutor, RecoveryHealthSource, RecoverySystemControl, SystemControlAuthorizer,
+};
 
 /// Key validity ceiling for daemon-bootstrapped principals: 2100-01-01. Not
 /// a secret; only an upper bound, mirroring the dev-fixture window.
@@ -454,6 +499,139 @@ impl PeerAuthorizer for AllowPeer {
     }
 }
 
+/// The platform kill adapter the daemon injects: the real POSIX
+/// `kill(SIGTERM)` adapter on Unix, the real `TerminateProcess`-backed
+/// adapter on Windows (the daemon module itself is Unix/Windows-only —
+/// it has no other `bind_socket` path).
+#[cfg(unix)]
+type DaemonPlatformKillAdapter = PosixPlatformKillAdapter;
+#[cfg(windows)]
+type DaemonPlatformKillAdapter = WindowsPlatformKillAdapter;
+
+/// Builds one platform kill adapter over the supervisor registry's
+/// **current** generation-keyed pid-map snapshot (W59-2 fenced shape: the
+/// map keys carry `(ProcessId, Generation)` so a stale-generation kill can
+/// never resolve to a live pid even if the OS recycled it). The daemon
+/// builds it per handler round, so a registration made between two
+/// exchanges is observed by the next round's kill arm.
+fn platform_kill_adapter(registry: &SupervisorPidRegistry) -> DaemonPlatformKillAdapter {
+    #[cfg(unix)]
+    {
+        PosixPlatformKillAdapter::with_generation_pid_map(registry.generation_pid_map())
+    }
+    #[cfg(windows)]
+    {
+        WindowsPlatformKillAdapter::with_generation_pid_map(registry.generation_pid_map())
+    }
+}
+
+/// Composite operation-level executor of the resident daemon (W59-1): one
+/// [`OperationCommandExecutor`] seam entry delegating each powered arm to
+/// the landed authority-backed executor that owns it — kill to
+/// [`ProcessAuthorityKillExecutor`] over the daemon's process authority +
+/// supervisor registry + platform adapter, throttle to
+/// [`ResourceDemandThrottleExecutor`] over the daemon's resource authority,
+/// reclaim to [`WorkingSetReclaimExecutor`] over the real task-authority
+/// occupancy face. The arms no implementation exists for anywhere —
+/// pause/resume/cancel — keep the [`crate::UnwiredOperationCommandExecutor`]
+/// posture: a typed fail-closed `NOT_FOUND` naming the arm (registered gap;
+/// the wire surface and handler semantics stay owned by the shared submit
+/// path).
+///
+/// The struct owns the per-exchange platform kill adapter (a pid-map
+/// snapshot of the registry, mirroring the slice-k teardown usage) and
+/// borrows only daemon-lifetime authorities, so one value serves a whole
+/// exchange; each arm method builds its concrete executor for the call
+/// itself.
+struct DaemonOperationExecutor<'a> {
+    process: &'a ProcessAuthority,
+    supervisor: &'a SupervisorPidRegistry,
+    resource: &'a ResourceAuthority,
+    tasks: &'a SqliteTaskAuthority,
+    kill_adapter: DaemonPlatformKillAdapter,
+}
+
+impl<'a> DaemonOperationExecutor<'a> {
+    /// Snapshots the registry's current pid map into the platform adapter
+    /// at construction time, so every exchange observes the supervisor
+    /// registrations made before it started.
+    fn new(daemon: &'a SystemControlDaemon) -> Self {
+        Self {
+            process: daemon.process.as_ref(),
+            supervisor: &daemon.supervisor_registry,
+            resource: daemon.resource.as_ref(),
+            tasks: daemon.tasks.as_ref(),
+            kill_adapter: platform_kill_adapter(&daemon.supervisor_registry),
+        }
+    }
+}
+
+impl OperationCommandExecutor for DaemonOperationExecutor<'_> {
+    fn kill_operation(
+        &self,
+        request: crate::OperationControlRequest,
+    ) -> Result<nlos_types::ReceiptId, SabiFailure> {
+        ProcessAuthorityKillExecutor::new(self.process, self.supervisor, &self.kill_adapter)
+            .kill_operation(request)
+    }
+
+    fn throttle_operation(
+        &self,
+        request: crate::OperationControlRequest,
+        throttle_percent: u64,
+    ) -> Result<nlos_types::ReceiptId, SabiFailure> {
+        ResourceDemandThrottleExecutor::new(self.resource)
+            .throttle_operation(request, throttle_percent)
+    }
+
+    fn reclaim_operation(
+        &self,
+        request: crate::OperationControlRequest,
+    ) -> Result<nlos_types::ReceiptId, SabiFailure> {
+        WorkingSetReclaimExecutor::new(
+            // The tier the daemon's task authority was opened with
+            // (`SqliteTaskAuthority::open` defaults to `TASK_PROFILE_10K`);
+            // the occupancy observation below is the same authority's own
+            // issued-permit count, so the two cannot disagree.
+            TASK_PROFILE_10K,
+            TaskAuthorityWorkingSetOccupancy::new(self.tasks),
+        )
+        .reclaim_operation(request)
+    }
+
+    fn pause_operation(
+        &self,
+        _: crate::OperationControlRequest,
+    ) -> Result<nlos_types::ReceiptId, SabiFailure> {
+        Err(arm_unwired("pause"))
+    }
+
+    fn resume_operation(
+        &self,
+        _: crate::OperationControlRequest,
+    ) -> Result<nlos_types::ReceiptId, SabiFailure> {
+        Err(arm_unwired("resume"))
+    }
+
+    fn cancel_operation(
+        &self,
+        _: crate::OperationControlRequest,
+    ) -> Result<nlos_types::ReceiptId, SabiFailure> {
+        Err(arm_unwired("cancel"))
+    }
+}
+
+/// Typed fail-closed refusal of one arm with no implementation anywhere;
+/// same code/retry posture as [`crate::UnwiredOperationCommandExecutor`],
+/// naming the arm for the operator.
+fn arm_unwired(arm: &'static str) -> SabiFailure {
+    SabiFailure {
+        code: SabiErrorCode::NotFound.into(),
+        retry: nlos_schema::sabi::v1::RetryDirective::DoNotRetry.into(),
+        safe_message: format!("the {arm} arm is not wired in the system-control daemon"),
+    }
+}
+
 /// The assembled daemon: every authority handle plus the running worker.
 /// All fields are read-only handles; nothing here is mutated after
 /// [`assemble`].
@@ -495,6 +673,11 @@ pub struct SystemControlDaemon {
     pub operations: SqliteOperationStore,
     /// Live runtime adapter behind the `ExecutionFiber` inspect seam.
     pub runtime: TokioRuntimeAdapter,
+    /// In-process supervisor pid registry behind the kill arm's platform
+    /// adapter (daemon-lifetime memory instance; see
+    /// [`Self::register_supervisor_pid`] for the honest registration-surface
+    /// gap).
+    supervisor_registry: SupervisorPidRegistry,
     /// Handshake nonce registry bound to the authenticated endpoint.
     pub handshake: Arc<ServerHandshakeContext>,
     /// One-time handshake nonce source, seeded from the OS.
@@ -529,31 +712,61 @@ impl SystemControlDaemon {
         self.materialization.stop();
     }
 
-    /// Wires the handler with every layer inspection source. The sources
-    /// must outlive the returned handler; both service loops and
-    /// [`Self::dispatch_command`] build them per exchange.
-    fn layer_control<'a>(
-        &'a self,
-        plans: &'a PlanAuthorityTaskNodeSource<'a>,
-        fibers: &'a TokioExecutionFiberSource<'a>,
-        topics: &'a TopicAuthoritySource<'a>,
-        operations: &'a OperationStoreSource<'a>,
-    ) -> RecoverySystemControl<'a, SharedRecoveryWorker, ControlCapabilityPolicy> {
-        RecoverySystemControl::new(
-            self.tasks.as_ref(),
-            self.worker.as_ref(),
-            &ControlCapabilityPolicy,
+    /// Registers one supervisor-observed OS pid mapping for an
+    /// authority-assigned `ProcessId` in the daemon's in-process registry
+    /// (the registry the kill arm's platform adapter snapshots per
+    /// handler round).
+    ///
+    /// Honest registration-surface gap (W59-1): the daemon runs no
+    /// supervisor loop today, so nothing inside this process registers
+    /// mappings in production — a kill against a never-registered target
+    /// refuses typed `NOT_FOUND` ("no supervisor os pid mapping is
+    /// registered for the process") before the process authority is
+    /// driven. This face exists for the host supervisor lane that will
+    /// own registration, and for assemblies (tests, embeddings) that seed
+    /// real child mappings.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SupervisorPidRegistryError`] on a stale generation, a
+    /// same-generation OS pid rebind, or a poisoned lock; rejections have
+    /// zero side effect.
+    pub fn register_supervisor_pid(
+        &self,
+        request: RegisterSupervisorPidRequest,
+    ) -> Result<SupervisorPidDecision, SupervisorPidRegistryError> {
+        self.supervisor_registry.register(request)
+    }
+
+    /// Builds one exchange's executor stack (W59-1): the composite
+    /// operation executor (kill/throttle/reclaim powered; the composite
+    /// snapshots the registry pid map here, so registrations made before
+    /// this exchange are observed) and the application lifecycle executor.
+    /// The four layer inspect sources and the handler itself are built at
+    /// the call site — their borrows must stay in the caller's frame.
+    fn executor_stack(
+        &self,
+    ) -> (
+        DaemonOperationExecutor<'_>,
+        ApplicationAuthorityLifecycleExecutor<'_>,
+    ) {
+        (
+            DaemonOperationExecutor::new(self),
+            ApplicationAuthorityLifecycleExecutor::new(
+                self.application.as_ref(),
+                self.tasks.as_ref(),
+            ),
         )
-        .with_task_node_source(plans)
-        .with_execution_fiber_source(fibers)
-        .with_topic_source(topics)
-        .with_operation_source(operations)
     }
 
     /// Dispatches one [`ControlCommand`] in-process through the daemon's own
-    /// handler (service parity face for tests and health probes). The
-    /// client-composed inspector slots are left unwired here: process,
-    /// resource, and application inspection is composed by the caller.
+    /// handler (service parity face for tests and health probes) with the
+    /// executor arms powered. The three client-composed inspector slots
+    /// (`Process`/`Resource`/`Application`) are composed daemon-side over
+    /// the very authorities this daemon owns — the same
+    /// `ControlReceipt::compose` contract the CLI `--root` client applies
+    /// client-side, here isomorphic because dispatcher and service share
+    /// one process.
     ///
     /// # Errors
     ///
@@ -570,15 +783,29 @@ impl SystemControlDaemon {
         let fibers = TokioExecutionFiberSource::new(&self.runtime);
         let topics = TopicAuthoritySource::new(&self.topics);
         let operations = OperationStoreSource::new(&self.operations);
-        let control = self.layer_control(&plans, &fibers, &topics, &operations);
+        let (operation_arms, applications) = self.executor_stack();
+        let control = RecoverySystemControl::new(
+            self.tasks.as_ref(),
+            self.worker.as_ref(),
+            &ControlCapabilityPolicy,
+        )
+        .with_task_node_source(&plans)
+        .with_execution_fiber_source(&fibers)
+        .with_topic_source(&topics)
+        .with_operation_source(&operations)
+        .with_operation_executor(&operation_arms)
+        .with_application_executor(&applications);
+        let process = ProcessAuthorityInspector::new(self.process.as_ref());
+        let resource = ResourceAuthorityInspector::new(self.resource.as_ref());
+        let application = ApplicationAuthorityInspector::new(self.application.as_ref());
         crate::control::dispatch_in_process(
             &control,
             command,
             now_monotonic_ns,
             now_wall_ms,
-            None,
-            None,
-            None,
+            Some(&process),
+            Some(&resource),
+            Some(&application),
         )
     }
 }
@@ -700,6 +927,7 @@ pub fn assemble(
         topics,
         operations,
         runtime,
+        supervisor_registry: SupervisorPidRegistry::new(),
         handshake,
         random,
         worker: Arc::new(SharedRecoveryWorker(Mutex::new(worker))),
@@ -734,7 +962,18 @@ pub async fn serve_authenticated_endpoint(
         let fibers = TokioExecutionFiberSource::new(&daemon.runtime);
         let topics = TopicAuthoritySource::new(&daemon.topics);
         let operations = OperationStoreSource::new(&daemon.operations);
-        let control = daemon.layer_control(&plans, &fibers, &topics, &operations);
+        let (operation_arms, applications) = daemon.executor_stack();
+        let control = RecoverySystemControl::new(
+            daemon.tasks.as_ref(),
+            daemon.worker.as_ref(),
+            &ControlCapabilityPolicy,
+        )
+        .with_task_node_source(&plans)
+        .with_execution_fiber_source(&fibers)
+        .with_topic_source(&topics)
+        .with_operation_source(&operations)
+        .with_operation_executor(&operation_arms)
+        .with_application_executor(&applications);
         let outcome = authenticated_serve_one_control(
             &mut listener,
             TransportConfig::default(),
@@ -792,7 +1031,18 @@ pub async fn serve_plain_endpoint(
                     let fibers = TokioExecutionFiberSource::new(&daemon.runtime);
                     let topics = TopicAuthoritySource::new(&daemon.topics);
                     let operations = OperationStoreSource::new(&daemon.operations);
-                    let control = daemon.layer_control(&plans, &fibers, &topics, &operations);
+                    let (operation_arms, applications) = daemon.executor_stack();
+                    let control = RecoverySystemControl::new(
+                        daemon.tasks.as_ref(),
+                        daemon.worker.as_ref(),
+                        &ControlCapabilityPolicy,
+                    )
+                    .with_task_node_source(&plans)
+                    .with_execution_fiber_source(&fibers)
+                    .with_topic_source(&topics)
+                    .with_operation_source(&operations)
+                    .with_operation_executor(&operation_arms)
+                    .with_application_executor(&applications);
                     let response =
                         control.handle_for_ipc(validated.envelope(), monotonic_now_ns(), wall_ms);
                     Ok(OutboundResponse::Typed(ExchangeResponse {
