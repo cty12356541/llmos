@@ -7,6 +7,12 @@
 //! supervisor registers the host pid it observed for an authority-assigned
 //! `ProcessId` at a concrete [`Generation`], and the registry's
 //! [`SupervisorPidRegistry::pid_map`] snapshot feeds both adapters directly.
+//! The generation-fenced
+//! [`SupervisorPidRegistry::generation_pid_map`] snapshot (W59-2 /
+//! evaluation F7) additionally keys the feed on the registered
+//! `(ProcessId, Generation)` fence, and the registry's fenced entries are
+//! the pre-signal re-verification face of
+//! [`ProcessAuthority::request_platform_kill_with_registry`](crate::ProcessAuthority::request_platform_kill_with_registry).
 //!
 //! Generation semantics mirror the `ProcessAuthority` fence family: the
 //! current mapping advances monotonically (`SupervisorPidDecision::Superseded`
@@ -255,7 +261,10 @@ impl SupervisorPidRegistry {
     /// [`PosixPlatformKillAdapter::new`](crate::PosixPlatformKillAdapter::new)
     /// and
     /// [`WindowsPlatformKillAdapter::new`](crate::WindowsPlatformKillAdapter::new)
-    /// accept.
+    /// accept. The snapshot is generation-blind: a kill signaled through it
+    /// resolves the pid by identity alone, so OS pid reuse between snapshot
+    /// and signal is the caller's fence to hold — prefer
+    /// [`Self::generation_pid_map`] (W59-2 / evaluation F7).
     #[must_use]
     pub fn pid_map(&self) -> HashMap<ProcessId, u32> {
         self.entries
@@ -263,6 +272,27 @@ impl SupervisorPidRegistry {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter()
             .map(|(process_id, entry)| (*process_id, entry.os_pid))
+            .collect()
+    }
+
+    /// Returns the `(ProcessId, Generation)` → OS pid snapshot in the exact
+    /// `HashMap<(ProcessId, Generation), u32>` shape
+    /// [`PosixPlatformKillAdapter::with_generation_pid_map`](crate::PosixPlatformKillAdapter::with_generation_pid_map)
+    /// and
+    /// [`WindowsPlatformKillAdapter::with_generation_pid_map`](crate::WindowsPlatformKillAdapter::with_generation_pid_map)
+    /// accept (W59-2 / evaluation F7). Each row keys the mapping on the full
+    /// generation fence it was registered under, so an adapter built from
+    /// this snapshot resolves no pid for a kill presented at any other
+    /// generation — a reused OS pid cannot be signaled on behalf of a stale
+    /// generation. The same fence is re-checked at signal time by
+    /// [`ProcessAuthority::request_platform_kill_with_registry`](crate::ProcessAuthority::request_platform_kill_with_registry).
+    #[must_use]
+    pub fn generation_pid_map(&self) -> HashMap<(ProcessId, Generation), u32> {
+        self.entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .map(|(process_id, entry)| ((*process_id, entry.process_generation), entry.os_pid))
             .collect()
     }
 

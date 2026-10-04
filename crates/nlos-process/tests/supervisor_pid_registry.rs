@@ -229,3 +229,39 @@ fn pid_map_feeds_platform_kill_adapters_directly() {
         HashMap::from([(process_a, 4242), (process_b, 5151)])
     );
 }
+
+#[test]
+fn generation_pid_map_keys_the_snapshot_by_registered_generation() {
+    // Given: process a superseded to generation two under a new pid, and
+    // process b still at its initial generation (W59-2 / evaluation F7).
+    let registry = SupervisorPidRegistry::new();
+    let process_a = process_id(0x0a);
+    let process_b = process_id(0x0b);
+    let generation_two = Generation::INITIAL.checked_next().expect("next generation");
+    registry
+        .register(register_request(process_a, Generation::INITIAL, 4242))
+        .expect("initial registration a");
+    registry
+        .register(register_request(process_a, generation_two, 5151))
+        .expect("supersede a");
+    registry
+        .register(register_request(process_b, Generation::INITIAL, 6161))
+        .expect("registration b");
+
+    // When: the generation-fenced snapshot feeds the fenced adapter
+    // constructor (the exact `HashMap<(ProcessId, Generation), u32>` shape
+    // both adapters accept).
+    let generation_pid_map = registry.generation_pid_map();
+    let _posix = PosixPlatformKillAdapter::with_generation_pid_map(generation_pid_map.clone());
+
+    // Then: every row keeps the generation it was registered under — the
+    // superseded generation-one row is gone, so a stale-generation kill
+    // resolves no pid through this snapshot.
+    assert_eq!(
+        generation_pid_map,
+        HashMap::from([
+            ((process_a, generation_two), 5151),
+            ((process_b, Generation::INITIAL), 6161),
+        ])
+    );
+}
