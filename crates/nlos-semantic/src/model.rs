@@ -560,6 +560,11 @@ pub struct DurabilityReceipt {
     pub store_control_domain: Option<ControlDomainId>,
     pub store_key_id: Option<KeyId>,
     pub store_signature: [u8; 64],
+    /// Signed-message shape: [`crate::SIGNATURE_PREIMAGE_LEGACY`] keeps the
+    /// pre-v9 domain-message digest; [`crate::SIGNATURE_PREIMAGE_CANONICAL`]
+    /// signs the SHA-256 of the `nlos-canonical` `DigestEnvelope` signing
+    /// preimage. Existing rows default to the legacy shape.
+    pub signature_preimage_version: u8,
 }
 
 /// Owner request to mint one durability receipt for an already-admitted

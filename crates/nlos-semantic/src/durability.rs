@@ -6,7 +6,20 @@
 //! verified against the `IdentityAuthority` before the transaction commits.
 //! Rows without a store identity triple (pre-v7 legacy or direct-injected
 //! writes) carry no verifiable provenance and fail verification closed.
+//!
+//! Since schema v9, production issuance signs the `nlos-canonical`
+//! `DigestEnvelope` signing preimage (domain
+//! [`DURABILITY_RECEIPT_PREIMAGE_DOMAIN`], `object_id` = receipt id,
+//! `payload_digest` = signed core digest): the preimage is encoded, gated
+//! through the strict canonical decoder, and only its SHA-256 is handed to
+//! the [`StoreSigner`]. Pre-v9 rows keep the legacy domain-message digest
+//! ([`durability_receipt_signature_message`]) verifiable bit-for-bit; the
+//! per-row shape marker selects the verification path.
 
+use nlos_canonical::{
+    CanonicalDigestEnvelope, CanonicalError, CanonicalObjectId, Sha256Digest, SignatureDomain,
+    decode_signing_preimage_for_domain, encode_signing_preimage,
+};
 use nlos_identity::{IdentityAuthority, VerifySemanticAuthoritySignatureRequest};
 use nlos_types::{ControlDomainId, KeyId, PrincipalId, ReceiptId, SemanticEventId};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
@@ -16,6 +29,17 @@ use crate::{
     DurabilityDecision, DurabilityReceipt, IssueDurabilityReceiptRequest, SemanticAuthorityError,
     StoreSigner, decode_u64, encode_u64,
 };
+
+/// Signature domain of the canonical durability-receipt preimage. Charset is
+/// pinned by `nlos-canonical`'s [`SignatureDomain`] rules.
+pub const DURABILITY_RECEIPT_PREIMAGE_DOMAIN: &str = "nlos.durability-receipt/v1";
+
+/// Pre-v9 signed-message shape: the legacy domain-message digest.
+pub const SIGNATURE_PREIMAGE_LEGACY: u8 = 0;
+
+/// v9 signed-message shape: SHA-256 over the canonical `DigestEnvelope`
+/// signing preimage.
+pub const SIGNATURE_PREIMAGE_CANONICAL: u8 = 1;
 
 pub(crate) fn issue_durability_receipt(
     connection: &mut Connection,
@@ -68,7 +92,11 @@ pub(crate) fn issue_durability_receipt(
         ));
     }
 
-    let receipt_message = durability_receipt_signature_message(receipt_id, receipt_core_digest);
+    let receipt_message = durability_receipt_signature_digest(
+        SIGNATURE_PREIMAGE_CANONICAL,
+        receipt_id,
+        receipt_core_digest,
+    )?;
     let store_signature = store_signer
         .sign(&receipt_message)
         .map_err(|error| SemanticAuthorityError::StoreSigningFailed(error.message().to_owned()))?;
@@ -96,6 +124,7 @@ pub(crate) fn issue_durability_receipt(
         store_control_domain: Some(store_signer.control_domain_id()),
         store_key_id: Some(store_signer.key_id()),
         store_signature,
+        signature_preimage_version: SIGNATURE_PREIMAGE_CANONICAL,
     };
     insert_durability_receipt(&transaction, &receipt)?;
     transaction.commit()?;
@@ -135,8 +164,11 @@ pub(crate) fn verify_durability_receipt(
     if receipt.receipt_id.as_bytes() != &expected_id_bytes {
         return Err(SemanticAuthorityError::DurabilityReceiptUnverifiable);
     }
-    let receipt_message =
-        durability_receipt_signature_message(receipt.receipt_id, receipt_core_digest);
+    let receipt_message = durability_receipt_signature_digest(
+        receipt.signature_preimage_version,
+        receipt.receipt_id,
+        receipt_core_digest,
+    )?;
     let verified_store =
         identity.verify_semantic_authority_signature(VerifySemanticAuthoritySignatureRequest {
             message_digest: receipt_message,
@@ -163,7 +195,8 @@ pub(crate) fn load_durability_receipt_optional(
     connection
         .query_row(
             "SELECT event_id, durable_checkpoint_id, durable_at_ms,
-                    store_principal_id, store_control_domain_id, store_key_id, store_signature
+                    store_principal_id, store_control_domain_id, store_key_id, store_signature,
+                    signature_preimage_version
              FROM durability_receipts WHERE receipt_id=?1 AND event_id=?2",
             params![
                 receipt_id.as_bytes().as_slice(),
@@ -178,6 +211,7 @@ pub(crate) fn load_durability_receipt_optional(
                     row.get::<_, Option<Vec<u8>>>(4)?,
                     row.get::<_, Option<Vec<u8>>>(5)?,
                     row.get::<_, Vec<u8>>(6)?,
+                    row.get::<_, i64>(7)?,
                 ))
             },
         )
@@ -228,6 +262,11 @@ pub(crate) fn load_durability_receipt_optional(
                 store_signature: row.6.try_into().map_err(|_| {
                     SemanticAuthorityError::CorruptRecord("durability store signature")
                 })?,
+                signature_preimage_version: u8::try_from(row.7).map_err(|_| {
+                    SemanticAuthorityError::CorruptRecord(
+                        "durability receipt signature preimage version",
+                    )
+                })?,
             })
         })
         .transpose()
@@ -240,8 +279,9 @@ fn insert_durability_receipt(
     transaction.execute(
         "INSERT INTO durability_receipts (
             receipt_id, event_id, durable_checkpoint_id, durable_at_ms,
-            store_principal_id, store_control_domain_id, store_key_id, store_signature
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            store_principal_id, store_control_domain_id, store_key_id, store_signature,
+            signature_preimage_version
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
             receipt.receipt_id.as_bytes().as_slice(),
             receipt.event_id.as_bytes().as_slice(),
@@ -253,6 +293,7 @@ fn insert_durability_receipt(
                 .map(|id| id.as_bytes().to_vec()),
             receipt.store_key_id.map(|id| id.as_bytes().to_vec()),
             receipt.store_signature.as_slice(),
+            i64::from(receipt.signature_preimage_version),
         ],
     )?;
     Ok(())
@@ -298,4 +339,77 @@ pub fn durability_receipt_signature_message(
     hasher.update(receipt_id.as_bytes());
     hasher.update(receipt_core_digest);
     hasher.finalize().into()
+}
+
+/// Encodes the `nlos-canonical` signing preimage for one durability receipt:
+/// a `CanonicalDigestEnvelope` binding the receipt id (`object_id`) to the
+/// signed core digest (`payload_digest`) under
+/// [`DURABILITY_RECEIPT_PREIMAGE_DOMAIN`]. No extensions are carried: the
+/// core digest already covers every signed receipt field.
+///
+/// # Errors
+///
+/// Returns [`SemanticAuthorityError::CanonicalEncoding`] if the domain or
+/// envelope is rejected, or the preimage exceeds the canonical byte bound.
+pub fn durability_receipt_canonical_preimage(
+    receipt_id: ReceiptId,
+    receipt_core_digest: [u8; 32],
+) -> Result<Vec<u8>, SemanticAuthorityError> {
+    let domain = signature_domain()?;
+    let envelope = CanonicalDigestEnvelope::new(
+        CanonicalObjectId::from_bytes(receipt_id.into_bytes()),
+        Sha256Digest::from_bytes(receipt_core_digest),
+        Vec::new(),
+        Vec::new(),
+    )
+    .map_err(canonical_encoding_error)?;
+    encode_signing_preimage(&domain, &envelope).map_err(canonical_encoding_error)
+}
+
+fn signature_domain() -> Result<SignatureDomain, SemanticAuthorityError> {
+    SignatureDomain::new(DURABILITY_RECEIPT_PREIMAGE_DOMAIN).map_err(canonical_encoding_error)
+}
+
+#[allow(clippy::needless_pass_by_value)] // `map_err` supplies the owned canonical error.
+fn canonical_encoding_error(error: CanonicalError) -> SemanticAuthorityError {
+    SemanticAuthorityError::CanonicalEncoding(error.to_string())
+}
+
+#[allow(clippy::needless_pass_by_value)] // `map_err` supplies the owned canonical error.
+fn canonical_decoding_error(error: CanonicalError) -> SemanticAuthorityError {
+    SemanticAuthorityError::CanonicalDecoding(error.to_string())
+}
+
+/// Computes the digest actually signed over one receipt for its recorded
+/// shape, and — for the canonical shape — proves the produced preimage is
+/// strictly canonical by decoding it back through `nlos-canonical` (whose
+/// decoder rejects any non-deterministic re-encoding) before it is signed or
+/// authenticated.
+fn durability_receipt_signature_digest(
+    signature_preimage_version: u8,
+    receipt_id: ReceiptId,
+    receipt_core_digest: [u8; 32],
+) -> Result<[u8; 32], SemanticAuthorityError> {
+    match signature_preimage_version {
+        SIGNATURE_PREIMAGE_LEGACY => Ok(durability_receipt_signature_message(
+            receipt_id,
+            receipt_core_digest,
+        )),
+        SIGNATURE_PREIMAGE_CANONICAL => {
+            let preimage = durability_receipt_canonical_preimage(receipt_id, receipt_core_digest)?;
+            let decoded = decode_signing_preimage_for_domain(&preimage, &signature_domain()?, &[])
+                .map_err(canonical_decoding_error)?;
+            if decoded.object_id().into_bytes() != receipt_id.into_bytes()
+                || decoded.payload_digest().into_bytes() != receipt_core_digest
+            {
+                return Err(SemanticAuthorityError::CorruptRecord(
+                    "durability receipt canonical preimage binding",
+                ));
+            }
+            Ok(Sha256::digest(&preimage).into())
+        }
+        _ => Err(SemanticAuthorityError::CorruptRecord(
+            "durability receipt signature preimage version",
+        )),
+    }
 }

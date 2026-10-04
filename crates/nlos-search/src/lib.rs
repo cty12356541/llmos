@@ -46,9 +46,11 @@ use rusqlite::{Connection, OpenFlags, ToSql};
 /// migration that keeps the tables this face reads compatible must add the
 /// new version here, otherwise every open fails closed.
 /// v7/v8 are additive authority migrations (v8: the immutable typed-link
-/// index table); the read face's tables are unchanged, so both stay
-/// readable (W43-INT seam for the W43-E2 semantic v8 bump).
-const SUPPORTED_AUTHORITY_SCHEMA_VERSIONS: &[i64] = &[6, 7, 8];
+/// index table); v9 is additive too (v9: the durability-receipt signature
+/// preimage shape marker on a table this face never reads); the read face's
+/// tables are unchanged, so all stay readable (W43-INT seam for the W43-E2
+/// semantic v8 bump; W61-B for the v9 canonical-preimage bump).
+const SUPPORTED_AUTHORITY_SCHEMA_VERSIONS: &[i64] = &[6, 7, 8, 9];
 
 const EVENT_TYPE_ASSERTION: i64 = 1;
 
