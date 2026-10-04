@@ -1086,15 +1086,29 @@ fn run_cli_with_timeout(
         .cli_path
         .clone()
         .unwrap_or_else(|| DEFAULT_CLI_PATH.to_owned());
-    let mut child = Command::new(&cli_path)
-        .arg(&cli_socket)
-        .args(cli_args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| {
-            DesktopError::ipc(format!("启动 system-control-cli({cli_path})失败: {error}"))
-        })?;
+    // ETXTBSY(26) 是"写后即执"的内核侧竞态: 脚本已 fs::write 关闭, 但慢速
+    // runner 的写回/扫描仍短暂持有写打开。有界重试吸收, 其余错误照常上抛。
+    let mut spawn_attempts = 0;
+    let mut child = loop {
+        match Command::new(&cli_path)
+            .arg(&cli_socket)
+            .args(cli_args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            Ok(child) => break child,
+            Err(error) if error.raw_os_error() == Some(26) && spawn_attempts < 5 => {
+                spawn_attempts += 1;
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Err(error) => {
+                return Err(DesktopError::ipc(format!(
+                    "启动 system-control-cli({cli_path})失败: {error}"
+                )));
+            }
+        }
+    };
     // 读线程排空两路管道:否则子进程写满管道缓冲后会阻塞在 write 上,
     // 等待方永远等不到退出(经典 output() 死锁面)。
     fn drain_pipe<R>(pipe: Option<R>) -> Option<std::thread::JoinHandle<Vec<u8>>>
