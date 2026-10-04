@@ -23,6 +23,7 @@ nlos-driver-mock = { path = "../nlos-driver-mock" }
 nlos-identity = { path = "../nlos-identity" }
 nlos-operation = { path = "../nlos-operation" }
 nlos-outbox = { path = "../nlos-outbox" }
+nlos-plan = { path = "../nlos-plan" }
 nlos-process = { path = "../nlos-process" }
 nlos-runtime = { path = "../nlos-runtime" }
 nlos-runtime-tokio = { path = "../nlos-runtime-tokio" }

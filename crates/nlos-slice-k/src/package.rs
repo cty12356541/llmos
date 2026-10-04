@@ -2,30 +2,45 @@
 //! publisher principal, publish the package payload artifact, sign and
 //! verify the package envelope, install it as an application, then register
 //! the Task/Attempt pair the fiber will run under.
+//!
+//! Since W60 this module also carries the install→plan head segment: the
+//! task-templated install face binds the application authority's install
+//! commit to the plan authority's declaration face — the signed `tasks`
+//! segment is compiled ([`compile_task_templates`],
+//! `[PLAN-OVERRIDE-001]`) and applied as one plan revision behind the
+//! apply-time declaration-admission consult, under the idempotency key
+//! derived from `(application_id, installation_generation)`.
 
 use ed25519_dalek::{Signer, SigningKey};
 use nlos_application::{
     BackgroundTaskRegistrationReceipt, InstallApplicationRequest, InstallDecision,
     InstallationReceipt, ProcessBindingReceipt, RegisterBackgroundTaskDecision,
     RegisterBackgroundTaskRequest, RegisterProcessBindingDecision, RegisterProcessBindingRequest,
-    UninstallApplicationRequest, UninstallDecision, UninstallReceipt,
+    TaskTemplateError, UninstallApplicationRequest, UninstallDecision, UninstallReceipt,
+    compile_task_templates,
 };
 use nlos_artifact::{
     CollectOrphanBlobsDecision, CollectOrphanBlobsRequest, ContentDigest, CreateArtifactSpec,
     PackageEntryRole, PackageManifest, PackageManifestEntry, PackageVerificationReceipt,
-    ProvenanceSourceTriple, PutRevisionRequest, SignedPackage, VerifyPackageRequest,
-    package_manifest_message,
+    ProvenanceSourceTriple, PutRevisionRequest, SignedPackage, SignedPackageWithTasks,
+    VerifyPackageRequest, package_manifest_message, package_manifest_with_tasks_message,
 };
 use nlos_identity::{BootstrapPrincipalRequest, IdentityBinding, KeyPurpose};
+use nlos_plan::{
+    DeclarationAdmissionConsult, DeclarationAdmissionOutcome, PlanRevisionDecision,
+    PlanRevisionReceipt,
+};
 use nlos_process::{
     CreateIsolationDomainRequest, ProcessBindingRecord, RegisterDelegatedProcessRequest,
 };
+use nlos_task::{SqliteTaskAuthority, TaskStoreError};
 use nlos_types::{
-    ArtifactId, Generation, IdempotencyKey, PackageId, PrincipalId, ProcessId, TaskAttemptId,
-    TaskId,
+    ApplicationId, ArtifactId, Generation, IdempotencyKey, PackageId, PrincipalId, ProcessId,
+    TaskAttemptId, TaskId, TaskPlanId,
 };
+use sha2::{Digest, Sha256};
 
-use crate::error::SliceKResult;
+use crate::error::{SliceKError, SliceKResult};
 use crate::runtime::{SliceKRuntime, initial_generation, seeded_key};
 
 /// A package producer bootstrapped into the runtime's identity authority.
@@ -281,6 +296,200 @@ impl SliceKRuntime {
         }
     }
 
+    /// Installs one verified task-templated package and applies its
+    /// declared `tasks` segment as one plan revision — the install→plan
+    /// head segment (W60, "装包即提案计划"): after the application
+    /// authority's install commit, the signed segment is compiled
+    /// ([`compile_task_templates`], `[PLAN-OVERRIDE-001]` — the segment is
+    /// a declaration *source*, never a second dialect) and applied to this
+    /// runtime's plan authority
+    /// ([`SqlitePlanAuthority::apply_plan_revision_with_admission`])
+    /// behind the apply-time declaration-admission consult, mapped from
+    /// this runtime's task authority
+    /// ([`SqliteTaskAuthority::answer_plan_declaration`], W31-G §8.2.4).
+    ///
+    /// **Idempotency (domain-separated derivation):** the plan revision's
+    /// exactly-once key is
+    /// [`install_plan_revision_key(application_id, installation_generation)`]
+    /// — SHA-256 over `llmos/slice-k-install-plan-revision/v1`, the
+    /// `ApplicationId`, and the installation generation. Same-generation
+    /// replay (this call re-run, or the install authority replaying its
+    /// receipt) replays the same plan revision (`Replayed`, zero new
+    /// revisions); a new installation generation — a same-major reinstall
+    /// or update carrying a newer verified package — derives a fresh key
+    /// and applies a **new total revision of the same plan**: generation 1
+    /// proposes the initial revision (the authority derives the
+    /// `TaskPlanId` from the key), every later generation names the plan
+    /// whose genesis revision was committed under the generation-1 key, so
+    /// `[PLAN-DAG-001]` total-revision semantics and the G1
+    /// execution-freeze apply automatically across updates.
+    ///
+    /// **Window semantics (honest, not atomic):** the install commit and
+    /// the plan apply are two authority transactions. If the plan
+    /// application fails after the install committed
+    /// ([`SliceKError::Plan`] — a structurally refused revision, an
+    /// admission denial, a consult failure — or
+    /// [`SliceKError::InstallPlanState`] when an update generation finds
+    /// no plan genesis), the installation fact stays durably committed
+    /// and is **never rolled back**: the error names the refusal and the
+    /// caller converges by replaying this call — the application
+    /// authority replays its receipt (`Replayed`, same generation, hence
+    /// the same derived plan key) and this wiring **still attempts the
+    /// plan application** on the replay, so a transient cause removed
+    /// before the replay converges to the applied revision with zero
+    /// double effects. A permanent cause (for example a cyclic declared
+    /// segment, or a Task-tier admission denial) keeps refusing typed;
+    /// plan rollback for uninstall/rollback/migration generations is a
+    /// registered follow-up, not implemented here.
+    ///
+    /// A package whose manifest declares no `tasks` segment is not
+    /// installable through this face (verification of a templated package
+    /// requires a non-empty segment): it installs through the legacy
+    /// [`Self::install_verified_package`] family, which declares no plan
+    /// revision — no declared tasks, no proposal.
+    ///
+    /// W22-001 default: the install-scoped orphan-blob GC pass runs
+    /// before the install authority call; opt out via
+    /// [`Self::install_verified_templated_package_with_gc`].
+    ///
+    /// # Errors
+    ///
+    /// Fails closed with [`SliceKError::InstallPlanState`] *before any
+    /// durable write* when `verification` does not bind `signed` (digest
+    /// or package-identity mismatch); otherwise propagates
+    /// artifact-authority (orphan GC), application-authority, clock, and
+    /// plan-authority errors typed — see the window semantics above for
+    /// which failures leave the installation committed.
+    pub fn install_verified_templated_package(
+        &self,
+        verification: &PackageVerificationReceipt,
+        signed: &SignedPackageWithTasks,
+        seed: u8,
+    ) -> SliceKResult<TemplatedInstallReceipt> {
+        self.install_verified_templated_package_with_gc(
+            verification,
+            signed,
+            seed,
+            AutoOrphanGc::Enabled,
+        )
+    }
+
+    /// [`Self::install_verified_templated_package`] with an explicit
+    /// orphan-GC policy (W22-001), mirroring
+    /// [`Self::install_verified_package_with_gc`]: the install authority
+    /// call and the plan-revision application are identical, only the
+    /// install-scoped GC prefix is toggled.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::install_verified_templated_package`].
+    pub fn install_verified_templated_package_with_gc(
+        &self,
+        verification: &PackageVerificationReceipt,
+        signed: &SignedPackageWithTasks,
+        seed: u8,
+        orphan_gc: AutoOrphanGc,
+    ) -> SliceKResult<TemplatedInstallReceipt> {
+        // Verify-then-declare, pairing first (zero durable state on a
+        // mismatch): the receipt must bind exactly this signed templated
+        // package — same combined manifest digest, same package identity.
+        // A mutated segment cannot reuse a good package's receipt.
+        let templated_digest = ContentDigest::from_bytes(package_manifest_with_tasks_message(
+            &signed.manifest,
+            &signed.tasks,
+        ));
+        if verification.manifest_digest != templated_digest
+            || verification.package_id != signed.manifest.package_id
+        {
+            return Err(SliceKError::InstallPlanState(
+                "verification receipt does not bind this signed task-templated package",
+            ));
+        }
+        match orphan_gc {
+            AutoOrphanGc::Enabled => {
+                self.install_orphan_gc(seed)?;
+            }
+            AutoOrphanGc::Disabled => {}
+        }
+        // The application authority call rides the legacy family's key
+        // band (`seeded_key(seed, 15/16)`), so both faces agree on the
+        // durable installation fact for one (receipt, seed) pair.
+        let installed_at_ms = self.wall_now_ms(seeded_key(seed, 15))?;
+        let installation = match self.applications.install_application(
+            &self.artifacts,
+            InstallApplicationRequest {
+                package_verification_receipt_id: verification.receipt_id,
+                idempotency_key: seeded_key(seed, 16),
+                installed_at_ms,
+            },
+        )? {
+            InstallDecision::Installed(receipt) | InstallDecision::Replayed(receipt) => receipt,
+        };
+        // Head segment: declare the signed segment as one plan revision.
+        // Fail-closed typed — the committed installation is retained (see
+        // the window semantics on the public face).
+        let plan = self.apply_install_plan_revision(signed, &installation, seed)?;
+        Ok(TemplatedInstallReceipt { installation, plan })
+    }
+
+    /// The plan application of one committed templated installation: the
+    /// derived revision key, the generation→plan mapping (create at
+    /// generation 1, total revision of the discovered plan at every later
+    /// generation), the compiled proposal, and the gated apply.
+    fn apply_install_plan_revision(
+        &self,
+        signed: &SignedPackageWithTasks,
+        installation: &InstallationReceipt,
+        seed: u8,
+    ) -> SliceKResult<PlanRevisionDecision> {
+        let idempotency_key = install_plan_revision_key(
+            installation.application_id,
+            installation.installation_generation,
+        );
+        let plan_id = if installation.installation_generation.get() == 1 {
+            None
+        } else {
+            Some(self.discover_application_plan(installation.application_id)?)
+        };
+        // Deterministic per-seed observation time: a replay of this seed
+        // takes the same durable clock reading, so the plan authority's
+        // replay content-equality (nodes, key, timestamp) holds.
+        let applied_at_ms = self.wall_now_ms(seeded_key(seed, 40))?;
+        let mut request =
+            compile_task_templates(signed, idempotency_key, applied_at_ms).map_err(|error| {
+                match error {
+                    TaskTemplateError::InvalidSegment(inner) => SliceKError::Artifact(inner),
+                }
+            })?;
+        request.plan_id = plan_id;
+        let consult = TaskAuthorityDeclarationConsult { tasks: &self.tasks };
+        Ok(self
+            .plans()
+            .apply_plan_revision_with_admission(request, &consult)?)
+    }
+
+    /// Finds the plan of one application: the plan whose genesis revision
+    /// (revision 1) was committed under the application's generation-1
+    /// derived key. Plan rows are lifetime metadata, so the receipt scan
+    /// is stable once the genesis exists; a miss is the typed
+    /// no-genesis refusal (legacy install, install-window residue, or a
+    /// replaced plan store — the documented convergence is replaying the
+    /// application's generation-1 templated install).
+    fn discover_application_plan(&self, application_id: ApplicationId) -> SliceKResult<TaskPlanId> {
+        let genesis = install_plan_revision_key(application_id, Generation::INITIAL);
+        for plan_id in self.plans().list_plan_ids()? {
+            if let Some(receipt) = self.plans().inspect_plan_revision(plan_id, 1)?
+                && receipt.idempotency_key == genesis
+            {
+                return Ok(plan_id);
+            }
+        }
+        Err(SliceKError::InstallPlanState(
+            "application has no plan genesis revision in the plan authority; \
+             replay its generation-1 templated install to converge",
+        ))
+    }
+
     /// Runs one explicit conservative orphan-blob GC pass over this
     /// runtime's artifact store ([`ArtifactStore::collect_orphan_blobs`],
     /// B-ARTIFACT-004) under the manual-invocation keys
@@ -296,7 +505,6 @@ impl SliceKRuntime {
     pub fn collect_orphan_blobs(&self, seed: u8) -> SliceKResult<CollectOrphanBlobsDecision> {
         self.orphan_gc_pass(seeded_key(seed, 19), seeded_key(seed, 20))
     }
-
     /// The install-scoped orphan-blob GC pass (W22-001): one conservative
     /// scan+collect of pre-existing orphan blobs, exactly-once under
     /// `seeded_key(seed, 21/22)`. The install path invokes this
@@ -608,4 +816,99 @@ pub fn fixture_bytes(tag: u8, len: usize) -> Vec<u8> {
     (0..len)
         .map(|index| tag ^ u8::try_from(index % 251).unwrap_or(0))
         .collect()
+}
+
+/// The durable facts of one task-templated install (W60): the application
+/// authority's immutable installation receipt (whichever branch —
+/// `Installed` or `Replayed` — produced it) plus the plan authority's
+/// decision for the declared `tasks` segment of the same call.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TemplatedInstallReceipt {
+    /// The installation receipt the application authority committed (or
+    /// replayed — the plan application runs on both branches, the
+    /// convergence guarantee of the head segment's window semantics).
+    pub installation: InstallationReceipt,
+    /// The plan authority's decision for the segment's compiled proposal:
+    /// `Applied` on the first execution of the derived revision key,
+    /// `Replayed` on every same-generation replay (zero new revisions).
+    pub plan: PlanRevisionDecision,
+}
+
+impl TemplatedInstallReceipt {
+    /// The applied-or-replayed plan revision receipt, whichever branch.
+    #[must_use]
+    pub const fn plan_receipt(&self) -> &PlanRevisionReceipt {
+        match &self.plan {
+            PlanRevisionDecision::Applied(receipt) | PlanRevisionDecision::Replayed(receipt) => {
+                receipt
+            }
+        }
+    }
+}
+
+/// Domain of the install→plan revision key derivation (W60): the
+/// derivation family of [`install_plan_revision_key`], disjoint from every
+/// other idempotency-key domain by construction.
+const INSTALL_PLAN_REVISION_KEY_DOMAIN: &[u8] = b"llmos/slice-k-install-plan-revision/v1";
+
+/// Deterministic plan-revision idempotency key of one installation
+/// generation: SHA-256 over [`INSTALL_PLAN_REVISION_KEY_DOMAIN`], the
+/// `ApplicationId` (16 bytes), and the installation generation (u64
+/// big-endian) — fixed-width framing, so no `(application, generation)`
+/// pair ever aliases another and no seed participates (any seed replaying
+/// the same install derives the same plan key).
+///
+/// This is the total-revision identity of the head segment: generation 1's
+/// key creates the plan (the authority derives the `TaskPlanId` from it),
+/// every later generation's key names one new total revision of that plan,
+/// and a same-generation replay reuses the key bit-for-bit.
+#[must_use]
+pub fn install_plan_revision_key(
+    application_id: ApplicationId,
+    installation_generation: Generation,
+) -> IdempotencyKey {
+    let digest = Sha256::new()
+        .chain_update(INSTALL_PLAN_REVISION_KEY_DOMAIN)
+        .chain_update(application_id.as_bytes())
+        .chain_update(installation_generation.get().to_be_bytes())
+        .finalize();
+    let mut key = [0_u8; 16];
+    key.copy_from_slice(&digest[..16]);
+    IdempotencyKey::from_bytes(key)
+}
+
+/// The Task-side half of the apply-time declaration consult (W36-P8; W31-G
+/// §8.2.4), wired for the plan authority's gated apply: the task
+/// authority's read-only
+/// [`answer_plan_declaration`](SqliteTaskAuthority::answer_plan_declaration)
+/// mapped onto [`DeclarationAdmissionConsult`] — the declaration twin of
+/// the daemon's W31-A `TaskAuthorityMaterializationConsult` adapter. A
+/// typed `TaskNodeAdmissionDenied` is the `Denied` answer (the tier's
+/// window-shrink fact); every other Task error stays `Err` (a failed
+/// consult — the gated apply fails closed, no revision without a verified
+/// admission).
+struct TaskAuthorityDeclarationConsult<'a> {
+    tasks: &'a SqliteTaskAuthority,
+}
+
+impl DeclarationAdmissionConsult for TaskAuthorityDeclarationConsult<'_> {
+    type Error = TaskStoreError;
+
+    fn consult_plan_declaration(
+        &self,
+        projected_task_nodes: u64,
+    ) -> Result<DeclarationAdmissionOutcome, TaskStoreError> {
+        match self.tasks.answer_plan_declaration(projected_task_nodes) {
+            Ok(()) => Ok(DeclarationAdmissionOutcome::Admits),
+            Err(TaskStoreError::TaskNodeAdmissionDenied {
+                profile_id,
+                task_count: _,
+                max_task_nodes,
+            }) => Ok(DeclarationAdmissionOutcome::Denied {
+                profile_id: profile_id.to_string(),
+                max_task_nodes,
+            }),
+            Err(other) => Err(other),
+        }
+    }
 }

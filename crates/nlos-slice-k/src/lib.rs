@@ -62,8 +62,8 @@ pub use error::{SliceKError, SliceKResult};
 pub use fiber::{FiberOutcome, WriteFiberJob, spawn_write_fiber};
 pub use nl::{RunningRecoveryHealth, SliceKControlPolicy, dispatch_nl_command};
 pub use package::{
-    AutoOrphanGc, PublishedPackage, Publisher, artifact_blob_path, fixture_bytes,
-    plant_orphan_artifact_blob, provenance_triple,
+    AutoOrphanGc, PublishedPackage, Publisher, TemplatedInstallReceipt, artifact_blob_path,
+    fixture_bytes, install_plan_revision_key, plant_orphan_artifact_blob, provenance_triple,
 };
 pub use payload::{
     PAYLOAD_OPERATION_DOMAIN, PAYLOAD_SEED_DOMAIN, PayloadExecution, execute_application_payload,
