@@ -17,6 +17,7 @@ use nlos_commit_coordinator::ArtifactCommitCoordinator;
 use nlos_identity::IdentityAuthority;
 use nlos_operation::{OperationHandle, OperationSnapshot};
 use nlos_outbox::{ConsumerConfig, OutboxConsumer};
+use nlos_plan::SqlitePlanAuthority;
 use nlos_process::{ProcessAuthority, ProcessBindingRecord};
 use nlos_runtime_tokio::{
     OutboxPump, OutboxPumpStartError, PumpConfig, PumpHealth, PumpState, StoreOutboxSource,
@@ -73,6 +74,16 @@ pub struct SliceKRuntime {
     /// Operation outcomes into the same durable authority without opening a
     /// second connection to the same database.
     pub tasks: Arc<SqliteTaskAuthority>,
+    /// Durable plan authority (`<root>/plans.sqlite3`, ADR-0016 决定 2) —
+    /// the same path the daemon's `SqlitePlanAuthority` opens, so a slice-k
+    /// runtime and a daemon over one root share one plan store under the
+    /// authority's own single-writer discipline (`BEGIN IMMEDIATE` writer
+    /// fence behind a process-local mutex, 5s busy timeout, WAL/FULL
+    /// durability verified on open). Opened read-exposed: the production
+    /// declaration face through this runtime is the install/update wiring
+    /// of [`crate::package`] (manifest task templates → plan revision);
+    /// [`Self::plans`] is the read-only handle for inspect surfaces.
+    plans: SqlitePlanAuthority,
     /// Authority clock (durable monotonic tick + wall high-water). Shared
     /// behind an `Arc` with the pump's reconcile sink, whose per-entry
     /// idempotency keys take replay-stable wall readings.
@@ -152,6 +163,7 @@ impl SliceKRuntime {
         let artifacts = ArtifactStore::open(root.join("artifacts"))?;
         let applications = ApplicationAuthority::open(root.join("applications"))?;
         let tasks = Arc::new(SqliteTaskAuthority::open(root.join("tasks.sqlite3"))?);
+        let plans = SqlitePlanAuthority::open(root.join("plans.sqlite3"))?;
         let clock = Arc::new(AuthorityClock::open(root.join("clock"))?);
         let operations = Arc::new(SqliteOperationStore::open(root.join("operations.sqlite3"))?);
         let capability = CapabilityAuthority::open(root.join("capability"))?;
@@ -174,6 +186,7 @@ impl SliceKRuntime {
             artifacts,
             applications,
             tasks,
+            plans,
             clock,
             operations,
             capability,
@@ -219,6 +232,17 @@ impl SliceKRuntime {
     pub fn wall_now_i64(&self, key: IdempotencyKey) -> SliceKResult<i64> {
         let ms = self.wall_now_ms(key)?;
         i64::try_from(ms).map_err(|_| SliceKError::TimestampOverflow(ms))
+    }
+
+    /// Read-only handle on the durable plan authority this runtime opened
+    /// (`<root>/plans.sqlite3`, the daemon's plan store path): plan, node,
+    /// revision, and resolution reads for everything the install/update
+    /// wiring declared. The production declaration face is the templated
+    /// install path ([`crate::package`]); this handle exists for inspect
+    /// surfaces and the plan authority's own idempotent replay.
+    #[must_use]
+    pub fn plans(&self) -> &SqlitePlanAuthority {
+        &self.plans
     }
 
     /// The cross-authority verify-then-commit coordinator bound to this

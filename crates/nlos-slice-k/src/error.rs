@@ -13,6 +13,7 @@ use nlos_clock::AuthorityClockError;
 use nlos_commit_coordinator::CoordinatorError;
 use nlos_driver_mock::ProviderError;
 use nlos_identity::IdentityAuthorityError;
+use nlos_plan::PlanStoreError;
 use nlos_process::ProcessAuthorityError;
 use nlos_runtime::RuntimeError;
 use nlos_runtime_tokio::ChannelWaitError;
@@ -36,6 +37,24 @@ pub enum SliceKError {
     Application(ApplicationAuthorityError),
     /// The task authority refused a task/attempt/permit/plan step.
     Task(TaskStoreError),
+    /// The plan authority refused a declaration step of the install→plan
+    /// head segment (W60): a structurally invalid revision (cycle, bound,
+    /// frozen-shape rewrite), an apply-time declaration-admission denial
+    /// or consult failure, an idempotency rebinding, or a storage
+    /// failure. When this surfaces from the templated install path after
+    /// the application authority already committed, the installation fact
+    /// is retained and only the plan revision is missing — see the window
+    /// semantics on the install wiring in [`crate::package`].
+    Plan(PlanStoreError),
+    /// The install→plan wiring refused a durable state it cannot proceed
+    /// on honestly (W60): a verification receipt that does not bind the
+    /// presented signed task-templated package (refused before any
+    /// durable write), or an update-generation install whose application
+    /// has no plan genesis revision in the plan authority (legacy
+    /// install, install-window residue, or a replaced plan store — the
+    /// installation itself is already committed in that case; converge by
+    /// replaying the application's generation-1 templated install).
+    InstallPlanState(&'static str),
     /// The clock authority refused a reading.
     Clock(AuthorityClockError),
     /// The capability authority refused an open, issuance, delegation, or
@@ -114,6 +133,10 @@ impl fmt::Display for SliceKError {
             Self::Artifact(error) => write!(formatter, "artifact authority: {error}"),
             Self::Application(error) => write!(formatter, "application authority: {error}"),
             Self::Task(error) => write!(formatter, "task authority: {error}"),
+            Self::Plan(error) => write!(formatter, "plan authority: {error}"),
+            Self::InstallPlanState(reason) => {
+                write!(formatter, "install-to-plan wiring state refusal: {reason}")
+            }
             Self::Clock(error) => write!(formatter, "clock authority: {error}"),
             Self::Capability(error) => write!(formatter, "capability authority: {error}"),
             Self::Semantic(error) => write!(formatter, "semantic authority: {error}"),
@@ -169,6 +192,7 @@ impl Error for SliceKError {
             Self::Artifact(error) => Some(error),
             Self::Application(error) => Some(error),
             Self::Task(error) => Some(error),
+            Self::Plan(error) => Some(error),
             Self::Clock(error) => Some(error),
             Self::Operation(error) => Some(error),
             Self::Driver(error) => Some(error),
@@ -177,7 +201,8 @@ impl Error for SliceKError {
             | Self::TimestampOverflow(_)
             | Self::SizeOverflow(_)
             | Self::Pump(_)
-            | Self::SemanticWriter(_) => None,
+            | Self::SemanticWriter(_)
+            | Self::InstallPlanState(_) => None,
             Self::SupervisorPid(error) => Some(error),
             Self::BatchCancel(error) => Some(error),
             Self::Runtime(error) => Some(error),
@@ -224,6 +249,12 @@ impl From<ApplicationAuthorityError> for SliceKError {
 impl From<TaskStoreError> for SliceKError {
     fn from(error: TaskStoreError) -> Self {
         Self::Task(error)
+    }
+}
+
+impl From<PlanStoreError> for SliceKError {
+    fn from(error: PlanStoreError) -> Self {
+        Self::Plan(error)
     }
 }
 
