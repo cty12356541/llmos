@@ -35,7 +35,7 @@ fn issue_refuses_spend_and_face_change(
     lease_id: QuotaLeaseId,
 ) {
     let issued = grantor
-        .grant(current, lease_id, 40)
+        .grant(current, lease_id, 40, None)
         .expect("issue prepaid lease");
     assert_eq!(issued.state(), QuotaLeaseState::Issued);
     assert_eq!(issued.remaining(), 40);
@@ -50,12 +50,12 @@ fn issue_refuses_spend_and_face_change(
     );
 
     let replay = grantor
-        .grant(current, lease_id, 40)
+        .grant(current, lease_id, 40, None)
         .expect("identical grant replays the committed lease");
     assert_eq!(replay, issued);
     assert_eq!(grantor.available(), 60);
     assert_eq!(
-        grantor.grant(current, lease_id, 50),
+        grantor.grant(current, lease_id, 50, None),
         Err(QuotaLeaseGrantError::ConflictingFace {
             existing: 40,
             requested: 50,
@@ -190,7 +190,9 @@ fn spend_close_then_cancel_second(
     assert_eq!(grantor.available(), 85);
 
     let second = QuotaLeaseId::from_bytes([0x22; 16]);
-    grantor.grant(current, second, 10).expect("second issue");
+    grantor
+        .grant(current, second, 10, None)
+        .expect("second issue");
     assert_eq!(grantor.available(), 75);
     let cancelled = grantor.cancel(current, second).expect("pre-active cancel");
     assert_eq!(cancelled.state(), QuotaLeaseState::Cancelled);

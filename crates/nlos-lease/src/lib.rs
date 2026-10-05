@@ -74,11 +74,34 @@ impl FenceScope {
     }
 }
 
+/// Monotonic logical instant for lease TTL deadlines (`LEASE-TTL-001`).
+///
+/// An opaque tick counter supplied by the caller; this crate reads no wall
+/// clock. Ordering is the only meaning: a lease whose deadline is less than
+/// or equal to the presented `now` is expired.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct LeaseInstant(u64);
+
+impl LeaseInstant {
+    /// Builds an instant from its tick form.
+    #[must_use]
+    pub const fn new(tick: u64) -> Self {
+        Self(tick)
+    }
+
+    /// Returns the tick form.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
 /// `QuotaLease` state for the single-Cell prefix.
 ///
 /// Spec chain used here: `ISSUED → ACTIVE → CLOSING → CLOSED`,
-/// `ISSUED → CANCELLED`, and non-terminal → `QUARANTINED` on epoch advance.
-/// `FENCED` stays out of this slice.
+/// `ISSUED → CANCELLED`, TTL expiry
+/// `ISSUED`/`ACTIVE`/`CLOSING → FENCED → CLOSED` (settle), and non-terminal
+/// → `QUARANTINED` on epoch advance.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum QuotaLeaseState {
     /// Prepaid and not yet admitted on the node (`ISSUED`).
@@ -91,12 +114,15 @@ pub enum QuotaLeaseState {
     Closed,
     /// Pre-active cancel; full face value returned (`CANCELLED`).
     Cancelled,
+    /// TTL deadline reached (`FENCED`): no new use is admitted and only the
+    /// settle path (`FENCED → CLOSED`) returns the unspent remainder.
+    Fenced,
     /// Unreconciled face value frozen after epoch advance (`QUARANTINED`).
     Quarantined,
 }
 
-/// A single-Cell `QuotaLease` grant snapshot (v0.5 §12 `QuotaLease` fields used
-/// by this slice).
+/// A single-Cell `QuotaLease` grant snapshot (v0.5 §12 `QuotaLease` fields
+/// used by this slice, plus the `LEASE-TTL-001` deadline).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct QuotaLeaseGrant {
     lease_id: QuotaLeaseId,
@@ -109,6 +135,7 @@ pub struct QuotaLeaseGrant {
     epoch: CellEpoch,
     fencing_token: CellFencingToken,
     fence_scope: FenceScope,
+    expires_at: Option<LeaseInstant>,
     state: QuotaLeaseState,
 }
 
@@ -173,6 +200,14 @@ impl QuotaLeaseGrant {
         self.fence_scope
     }
 
+    /// TTL deadline bound at grant time (`LEASE-TTL-001`), if any. `None`
+    /// never expires. A lease is expired once the deadline is less than or
+    /// equal to the sweep's `now`.
+    #[must_use]
+    pub const fn expires_at(self) -> Option<LeaseInstant> {
+        self.expires_at
+    }
+
     /// Lease state after grant.
     #[must_use]
     pub const fn state(self) -> QuotaLeaseState {
@@ -214,9 +249,12 @@ impl QuotaLeaseGrantor {
     /// `LEASE-GRANT-001`: `face_value` is deducted from AVAILABLE before the
     /// lease is issued. Fail-closed fence checks run via
     /// [`CellAuthority::admit`] before any deduct. An identical
-    /// `(lease_id, face_value)` returns the committed lease and does not
-    /// deduct again. A different face value for the same id is
-    /// [`QuotaLeaseGrantError::ConflictingFace`].
+    /// `(lease_id, face_value, expires_at)` returns the committed lease and
+    /// does not deduct again. A different face value for the same id is
+    /// [`QuotaLeaseGrantError::ConflictingFace`]; a different TTL deadline is
+    /// [`QuotaLeaseGrantError::ConflictingTtl`]. The grantor reads no clock:
+    /// a deadline already in the past simply fences the lease on the first
+    /// [`Self::sweep_expired`].
     ///
     /// # Errors
     ///
@@ -226,15 +264,22 @@ impl QuotaLeaseGrantor {
         presented: &CellFence,
         lease_id: QuotaLeaseId,
         face_value: u64,
+        expires_at: Option<LeaseInstant>,
     ) -> Result<QuotaLeaseGrant, QuotaLeaseGrantError> {
         if let Some(existing) = self.leases.get(&lease_id).copied() {
-            if existing.face_value == face_value {
+            if existing.face_value == face_value && existing.expires_at == expires_at {
                 return Ok(existing);
             }
             self.authority.admit(presented)?;
-            return Err(QuotaLeaseGrantError::ConflictingFace {
-                existing: existing.face_value,
-                requested: face_value,
+            if existing.face_value != face_value {
+                return Err(QuotaLeaseGrantError::ConflictingFace {
+                    existing: existing.face_value,
+                    requested: face_value,
+                });
+            }
+            return Err(QuotaLeaseGrantError::ConflictingTtl {
+                existing: existing.expires_at,
+                requested: expires_at,
             });
         }
         self.authority.admit(presented)?;
@@ -257,6 +302,7 @@ impl QuotaLeaseGrantor {
             epoch: self.authority.epoch(),
             fencing_token: self.authority.fencing_token(),
             fence_scope: FenceScope::cell(cell),
+            expires_at,
             state: QuotaLeaseState::Issued,
         };
         self.leases.insert(lease_id, grant);
@@ -410,11 +456,80 @@ impl QuotaLeaseGrantor {
         Ok(snapshot)
     }
 
+    /// Sweeps TTL-expired leases into `FENCED` (`LEASE-TTL-001`).
+    ///
+    /// A lease is expired when its deadline is less than or equal to `now`;
+    /// `None` deadlines never expire. `ISSUED`, `ACTIVE`, and `CLOSING`
+    /// leases move to `FENCED`: no new use is admitted afterwards, and only
+    /// [`Self::settle_fenced`] returns the unspent remainder. Terminal states
+    /// are untouched. Returns the ids fenced by this sweep, sorted by lease
+    /// id; an idempotent re-sweep returns an empty vector.
+    ///
+    /// This is a grantor-local compaction pass on the caller's logical clock:
+    /// no fence is presented and no refund happens here.
+    pub fn sweep_expired(&mut self, now: LeaseInstant) -> Vec<QuotaLeaseId> {
+        let mut fenced = Vec::new();
+        for lease in self.leases.values_mut() {
+            if lease.expires_at.is_none_or(|deadline| deadline > now) {
+                continue;
+            }
+            match lease.state {
+                QuotaLeaseState::Issued | QuotaLeaseState::Active | QuotaLeaseState::Closing => {
+                    lease.state = QuotaLeaseState::Fenced;
+                    fenced.push(lease.lease_id);
+                }
+                QuotaLeaseState::Closed
+                | QuotaLeaseState::Cancelled
+                | QuotaLeaseState::Fenced
+                | QuotaLeaseState::Quarantined => {}
+            }
+        }
+        fenced.sort_unstable();
+        fenced
+    }
+
+    /// `FENCED → CLOSED`: settles an expired lease and returns the unspent
+    /// remainder to `AVAILABLE` once.
+    ///
+    /// The spent high-water stays consumed; only `remaining` comes back. A
+    /// second settle returns the committed lease and does not refund again.
+    /// A lease that is neither `FENCED` nor `CLOSED` is refused — the settle
+    /// window also closes at epoch loss, where `LEASE-LOSS-001` quarantine
+    /// freezes all unreconciled face value.
+    ///
+    /// # Errors
+    ///
+    /// Typed reject: [`QuotaLeaseLedgerError`].
+    pub fn settle_fenced(
+        &mut self,
+        presented: &CellFence,
+        lease_id: QuotaLeaseId,
+    ) -> Result<QuotaLeaseGrant, QuotaLeaseLedgerError> {
+        self.authority.admit(presented)?;
+        let (snapshot, refund) = {
+            let lease = self.lease_mut(lease_id)?;
+            match lease.state {
+                QuotaLeaseState::Fenced => {
+                    let refund = lease.remaining;
+                    lease.returned += refund;
+                    lease.remaining = 0;
+                    lease.state = QuotaLeaseState::Closed;
+                    (*lease, refund)
+                }
+                QuotaLeaseState::Closed => (*lease, 0),
+                state => return Err(QuotaLeaseLedgerError::NotFenced { state }),
+            }
+        };
+        self.available += refund;
+        Ok(snapshot)
+    }
+
     /// Advances the Cell epoch and quarantines unreconciled leases.
     ///
-    /// `LEASE-LOSS-001`: `ISSUED`, `ACTIVE`, and `CLOSING` leases bound to the
-    /// previous epoch become `QUARANTINED`. Their face value is not returned
-    /// to `AVAILABLE`. `CLOSED` and `CANCELLED` are already reconciled.
+    /// `LEASE-LOSS-001`: `ISSUED`, `ACTIVE`, `CLOSING`, and un-settled
+    /// `FENCED` leases bound to the previous epoch become `QUARANTINED`.
+    /// Their face value is not returned to `AVAILABLE`. `CLOSED` and
+    /// `CANCELLED` are already reconciled.
     ///
     /// # Errors
     ///
@@ -426,7 +541,10 @@ impl QuotaLeaseGrantor {
                 continue;
             }
             match lease.state {
-                QuotaLeaseState::Issued | QuotaLeaseState::Active | QuotaLeaseState::Closing => {
+                QuotaLeaseState::Issued
+                | QuotaLeaseState::Active
+                | QuotaLeaseState::Closing
+                | QuotaLeaseState::Fenced => {
                     lease.state = QuotaLeaseState::Quarantined;
                 }
                 QuotaLeaseState::Closed
@@ -536,6 +654,13 @@ pub enum QuotaLeaseGrantError {
         /// Face value on this grant attempt.
         requested: u64,
     },
+    /// The same `lease_id` was already issued with a different TTL deadline.
+    ConflictingTtl {
+        /// Deadline on the committed lease (`None` never expires).
+        existing: Option<LeaseInstant>,
+        /// Deadline on this grant attempt (`None` never expires).
+        requested: Option<LeaseInstant>,
+    },
 }
 
 impl From<CellAdmitError> for QuotaLeaseGrantError {
@@ -605,13 +730,21 @@ impl fmt::Display for QuotaLeaseGrantError {
                 formatter,
                 "conflicting QuotaLease face value: existing {existing} != requested {requested}"
             ),
+            Self::ConflictingTtl {
+                existing,
+                requested,
+            } => write!(
+                formatter,
+                "conflicting QuotaLease TTL deadline: existing {existing:?} != requested {requested:?}"
+            ),
         }
     }
 }
 
 impl Error for QuotaLeaseGrantError {}
 
-/// Typed fail-closed rejects for `QuotaLease` activate, usage, close, and cancel.
+/// Typed fail-closed rejects for `QuotaLease` activate, usage, close, cancel,
+/// and TTL settle.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum QuotaLeaseLedgerError {
     /// Presented fence was rejected by [`CellAuthority::admit`].
@@ -652,6 +785,11 @@ pub enum QuotaLeaseLedgerError {
     },
     /// Cancel was asked of a lease that has left `ISSUED`.
     CancelRequiresNeverActive {
+        /// State of the committed lease.
+        state: QuotaLeaseState,
+    },
+    /// Settle was asked of a lease that is neither `FENCED` nor `CLOSED`.
+    NotFenced {
         /// State of the committed lease.
         state: QuotaLeaseState,
     },
@@ -707,6 +845,12 @@ impl fmt::Display for QuotaLeaseLedgerError {
                 formatter,
                 "QuotaLease cancel requires a lease that was never ACTIVE, found {state:?}"
             ),
+            Self::NotFenced { state } => {
+                write!(
+                    formatter,
+                    "QuotaLease settle requires FENCED, found {state:?}"
+                )
+            }
         }
     }
 }

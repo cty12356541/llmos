@@ -26,7 +26,7 @@ fn quota_lease_grant_uses_cell_authority_admit_and_deducts_available() {
     let mut grantor = QuotaLeaseGrantor::open(authority, 100);
 
     assert_eq!(
-        grantor.grant(&stale, QuotaLeaseId::from_bytes([0xc2; 16]), 25),
+        grantor.grant(&stale, QuotaLeaseId::from_bytes([0xc2; 16]), 25, None),
         Err(QuotaLeaseGrantError::StaleEpoch {
             presented: CellEpoch::INITIAL,
             current: CellEpoch::INITIAL.checked_next().expect("epoch 2"),
@@ -36,7 +36,7 @@ fn quota_lease_grant_uses_cell_authority_admit_and_deducts_available() {
 
     let lease_id = QuotaLeaseId::from_bytes([0xc1; 16]);
     let grant = grantor
-        .grant(&current, lease_id, 40)
+        .grant(&current, lease_id, 40, None)
         .expect("current fence must grant");
 
     assert_eq!(grant.lease_id(), lease_id);
@@ -57,7 +57,7 @@ fn quota_lease_grant_uses_cell_authority_admit_and_deducts_available() {
         current.fencing_token(),
     );
     assert_eq!(
-        grantor.grant(&foreign, QuotaLeaseId::from_bytes([0xc3; 16]), 10),
+        grantor.grant(&foreign, QuotaLeaseId::from_bytes([0xc3; 16]), 10, None),
         Err(QuotaLeaseGrantError::IdentityMismatch {
             presented: CellIdentity::from_domain(SchedulerDomainId::from_bytes([0xb2; 16])),
             current: current.identity(),
@@ -71,7 +71,7 @@ fn quota_lease_grant_uses_cell_authority_admit_and_deducts_available() {
         current.fencing_token(),
     );
     assert_eq!(
-        grantor.grant(&wrong_boot, QuotaLeaseId::from_bytes([0xc4; 16]), 10),
+        grantor.grant(&wrong_boot, QuotaLeaseId::from_bytes([0xc4; 16]), 10, None),
         Err(QuotaLeaseGrantError::BootGenerationMismatch {
             presented: Generation::INITIAL.checked_next().expect("boot 2"),
             current: Generation::INITIAL,
@@ -85,7 +85,7 @@ fn quota_lease_grant_uses_cell_authority_admit_and_deducts_available() {
         CellFencingToken::INITIAL,
     );
     assert_eq!(
-        grantor.grant(&wrong_token, QuotaLeaseId::from_bytes([0xc5; 16]), 10),
+        grantor.grant(&wrong_token, QuotaLeaseId::from_bytes([0xc5; 16]), 10, None),
         Err(QuotaLeaseGrantError::FencingTokenMismatch {
             presented: CellFencingToken::INITIAL,
             current: current.fencing_token(),
@@ -94,7 +94,7 @@ fn quota_lease_grant_uses_cell_authority_admit_and_deducts_available() {
     assert_eq!(grantor.available(), 60);
 
     assert_eq!(
-        grantor.grant(&current, QuotaLeaseId::from_bytes([0xc6; 16]), 61),
+        grantor.grant(&current, QuotaLeaseId::from_bytes([0xc6; 16]), 61, None),
         Err(QuotaLeaseGrantError::InsufficientAvailable {
             requested: 61,
             available: 60,
