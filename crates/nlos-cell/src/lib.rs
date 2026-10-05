@@ -9,6 +9,9 @@
 //! 2026-10-05 W48：接线计划已落地（slice-k `CellHost` 装配 + nlos-slice-k→nlos-cell 依赖边）——解冻条件达成；CellHost 为首个装配消费方。
 //! 2026-10-05 W49：ADR-0021——`CellAuthority` 增共享面 `into_shared`（claim 排他仍在进程槽；
 //! epoch 单写者纪律移交装配面运行时不变量承载）。
+//! 2026-10-05 W50：federation 机制面最小面（[`federation`]：`CellDirectory` 跨 Cell
+//! 名称/服务发现 + `MigrationIntent` 迁移意图登记，共享文件目录 std-only）——ADR-0019
+//! 决定 5 的机制面前两项；不含跨 Cell 提交、全局共识或意图执行。
 //!
 //! ADR-0018: one OS process is one Cell authority. Each Cell process owns a
 //! caller-supplied local data directory (no shared durable root). This crate
@@ -21,6 +24,7 @@
 //! Raft.
 
 mod failure_detector;
+mod federation;
 mod name_cache;
 
 use std::error::Error;
@@ -35,6 +39,10 @@ use nlos_types::{Generation, SchedulerDomainId};
 pub use failure_detector::{
     DeadJudgment, EpochAdvanceReport, FailureDetector, FailureDetectorConfig, FailureDetectorError,
     HeartbeatOutcome, Liveness, LivenessView, MonitoredSubject, SweepReport,
+};
+pub use federation::{
+    CellDirectory, CellDirectorySnapshot, CellRegistrationEntry, FederationError, MigrationIntent,
+    MigrationIntentLog, MigrationIntentRecord, MigrationObject,
 };
 pub use name_cache::{
     CacheHit, CachedCapability, CapabilityNameCache, EpochInvalidation, InsertOutcome,
