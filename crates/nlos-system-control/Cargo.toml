@@ -19,8 +19,9 @@ cli = [
 # plus the `cli` transport surface, and adds the authorities the daemon owns
 # even though no inspector adapter touches them (`nlos-artifact` for the
 # commit-recovery worker, `nlos-channel` to open the topic authority,
-# `nlos-semantic` for the worker's semantic recovery half) and Ed25519 seed
-# parsing for the optional `--identity-key-file` bootstrap.
+# `nlos-semantic` for the worker's semantic recovery half, `nlos-capability`
+# for the ADR-0022 operator root-issuance step) and Ed25519 seed parsing for
+# the optional `--identity-key-file` bootstrap.
 daemon = [
     "cli",
     "process",
@@ -33,6 +34,7 @@ daemon = [
     "dep:nlos-artifact",
     "dep:nlos-channel",
     "dep:nlos-semantic",
+    "dep:nlos-capability",
     "dep:ed25519-dalek",
 ]
 process = ["dep:nlos-process"]
@@ -73,6 +75,7 @@ nlos-application = { path = "../nlos-application", optional = true }
 nlos-artifact = { path = "../nlos-artifact", optional = true }
 nlos-channel = { path = "../nlos-channel", optional = true }
 nlos-semantic = { path = "../nlos-semantic", optional = true }
+nlos-capability = { path = "../nlos-capability", optional = true }
 ed25519-dalek = { workspace = true, optional = true }
 sha2 = { workspace = true }
 tokio = { workspace = true, optional = true, features = ["signal"] }
@@ -83,6 +86,7 @@ nlos-ipc = { path = "../nlos-ipc" }
 nlos-service-directory = { path = "../nlos-service-directory" }
 nlos-channel = { path = "../nlos-channel" }
 nlos-artifact = { path = "../nlos-artifact" }
+nlos-capability = { path = "../nlos-capability" }
 nlos-identity = { path = "../nlos-identity" }
 nlos-store-fault = { path = "../nlos-store-fault" }
 rusqlite.workspace = true

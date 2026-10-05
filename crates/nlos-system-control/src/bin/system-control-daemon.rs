@@ -13,7 +13,7 @@
 //! # Usage
 //!
 //! ```text
-//! system-control-daemon --root <DIR> [--auth-socket <PATH>] [--plain-socket <PATH>] [--identity-key-file <PATH>]
+//! system-control-daemon --root <DIR> [--auth-socket <PATH>] [--plain-socket <PATH>] [--identity-key-file <PATH>] [--operator-key-file <PATH>]
 //! ```
 //!
 //! - `--root` — state root; every authority is opened under it and both
@@ -30,12 +30,22 @@
 //!   the matching principal in `<root>/identity` so a client holding the
 //!   same seed can authenticate. Without it the daemon serves whatever
 //!   principals already exist in the identity authority.
+//! - `--operator-key-file` — optional ADR-0022 operator root-issuance key
+//!   file (same 64-hex Ed25519 seed format; on Unix the file must carry
+//!   owner-only `0600` permission bits — anything wider fails closed at
+//!   startup with a typed error). When given, the daemon opens the
+//!   capability authority under `<root>/capability` and issues — or, on a
+//!   restart with the same key, idempotently replays — one root capability
+//!   binding the operator principal over the root namespace. Without it the
+//!   issuance step never runs and the capability face stays closed (the
+//!   fail-closed default).
 //!
 //! # Output and exit contract
 //!
 //! After both endpoints are bound the daemon prints one `READY` line with
-//! both endpoint paths (and the bootstrapped principal, if any) for script
-//! probing. The shutdown signal (SIGINT/SIGTERM on Unix, Ctrl+C on Windows)
+//! both endpoint paths, the bootstrapped principal (if any), and the
+//! operator root issuance receipt (if the step ran) for script probing. The
+//! shutdown signal (SIGINT/SIGTERM on Unix, Ctrl+C on Windows)
 //! stops the accept loops (an idle accept window is bounded by the
 //! transport's 5s timeout), stops the recovery worker and the
 //! materialization driver, removes the socket
@@ -58,7 +68,7 @@ use nlos_system_control::daemon::{
 
 #[cfg(feature = "daemon")]
 const USAGE: &str = "usage: system-control-daemon --root <DIR> \
-[--auth-socket <PATH>] [--plain-socket <PATH>] [--identity-key-file <PATH>]";
+[--auth-socket <PATH>] [--plain-socket <PATH>] [--identity-key-file <PATH>] [--operator-key-file <PATH>]";
 
 #[cfg(feature = "daemon")]
 enum ParseFailure {
@@ -78,6 +88,7 @@ fn parsed_arguments() -> Result<ParsedArguments, ParseFailure> {
     let mut auth_socket: Option<PathBuf> = None;
     let mut plain_socket: Option<PathBuf> = None;
     let mut identity_key_file: Option<PathBuf> = None;
+    let mut operator_key_file: Option<PathBuf> = None;
     while let Some(flag) = arguments.next() {
         let mut value = || {
             arguments
@@ -90,6 +101,7 @@ fn parsed_arguments() -> Result<ParsedArguments, ParseFailure> {
             "--auth-socket" => auth_socket = Some(PathBuf::from(value()?)),
             "--plain-socket" => plain_socket = Some(PathBuf::from(value()?)),
             "--identity-key-file" => identity_key_file = Some(PathBuf::from(value()?)),
+            "--operator-key-file" => operator_key_file = Some(PathBuf::from(value()?)),
             _ => return Err(ParseFailure::Error("unknown flag")),
         }
     }
@@ -102,6 +114,8 @@ fn parsed_arguments() -> Result<ParsedArguments, ParseFailure> {
             auth_socket,
             plain_socket,
             identity_key_file,
+            operator_key_file,
+            operator_purpose_digest: None,
             worker_config: nlos_commit_coordinator::RecoveryWorkerConfig::default(),
             driver_config:
                 nlos_system_control::materialization_driver::MaterializationDriverConfig::default(),
@@ -164,7 +178,7 @@ async fn main() -> ExitCode {
         }
     };
     println!(
-        "READY service=system_control root={} auth_socket={} plain_socket={} principal={}",
+        "READY service=system_control root={} auth_socket={} plain_socket={} principal={} operator_root_receipt={}",
         daemon.root.display(),
         daemon.auth_socket_path.display(),
         daemon.plain_socket_path.display(),
@@ -172,6 +186,10 @@ async fn main() -> ExitCode {
             .bootstrapped_principal_hex
             .as_deref()
             .unwrap_or("none"),
+        daemon.operator_root.as_ref().map_or_else(
+            || "none".to_owned(),
+            |issuance| { hex(issuance.receipt.receipt_id.as_bytes()) }
+        ),
     );
 
     let stop = Arc::new(AtomicBool::new(false));
@@ -202,6 +220,17 @@ async fn main() -> ExitCode {
     }
     println!("STOPPED service=system_control");
     ExitCode::SUCCESS
+}
+
+#[cfg(feature = "daemon")]
+fn hex(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        let _ = write!(output, "{byte:02x}");
+    }
+    output
 }
 
 #[cfg(not(feature = "daemon"))]
