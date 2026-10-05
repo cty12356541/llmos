@@ -413,3 +413,12 @@ W35 晋升候选池（依派发纪律 (4)，决策点关闭 + 写集空闲即可
 2026-10-05（W48 收口）：CI 两道缝如实登记——解冻注记自带裸驼峰标识符（`CellHost`/`CellAuthority`）触发 doc_markdown，且第一次修复时 `clippy | tail` 管道吞掉退出码导致带错推送（`80cfb0b`），`366f0e6` 以退出码直检收口。**教训第五条（应用于自身的第四条）：验证命令的管道会吃退出码，`| tail` 后必须显式 `$?` 或去掉管道**。终验 run [37331778094](https://github.com/cty12356541/llmos/actions/runs/37331778094)（push，`366f0e6`）conclusion=**success 全 job 绿**。W48 闭环：C-CELL 七件套（2 绿地+5 装配）全部落地，lease/cell 冻结解封。**会话侧机械可做项再次清零**；剩余全部设计门：C-SHARD（ADR-0019 定稿）、语义写端（D6 后置）、capability 签发闭环、capacity/device 族进装配（lease API 演进）。
 
 2026-10-05（设计门裁断，用户授权"按推荐裁定"）：四门逐一仲裁。①**ADR-0019/C-SHARD：维持 CANDIDATE，证据先行**——其定案触发器（单机双 Cell 证据齐备）不存在，纸上定案违反 ADR 自身纪律；裁定下一步为"单机双 Cell 证据车道"（federation 机制面最小实现：跨 Cell 名称/服务发现 + 迁移 intent），证据到再定案。②**ADR-0021 ACCEPTED**：lease grantor 改持 `Arc<CellAuthority>`（一进程一 Cell=同信任域，claim 排他由进程唯一性承载），capacity/device 族进 CellHost。③**ADR-0022 ACCEPTED**：capability 签发闭环=daemon 启动期 operator 密钥文件签发根能力（缺省不签发=fail-closed，幂等，0600 惯例；组织信封模板后置为增强）。④**ADR-0023 ACCEPTED**：D6 后置解除（前置"Capability 实例装配"已于 W40-D/W48 满足），语义写端=slice-k driver 终态→assertion 最小桥（capability 门控，缺省关闭）。三 ADR 已入册并更新 README 索引；实现派 W49（0021+0022）→W50（0023 桥+双 Cell 证据面）。
+
+2026-10-05（W49 波：裁断实施首批）：ADR-0021 与 ADR-0022 落地。
+
+| 车道 | merge 段 | 内容 |
+|---|---|---|
+| W49-L1 ADR-0021 | `feat/w49-lease-shared-authority` | `CellAuthority` 共享面（`into_shared`+内部可变，fence 两计数器同锁不撕裂）；三族 grantor Arc 化（无按值残留）；capacity/device 进 CellHost（grant/return/reset 链 + inspect 两新成员）；三族共存+epoch 联动实测（quota QUARANTINED、capacity/device 旧 fence StaleEpoch）。cell 18/0、lease 10/0、slice-k 81/0 |
+| W49-L2 ADR-0022 | `feat/w49-operator-root-issuance` | daemon 启动期 operator 根签发：`--operator-key-file` 配置面（**未配置=零侵入**，state root 逐字节不变有断言）；0600/64-hex 校验；签发幂等（确定性锚点+参数派生键，重启重放不砖死）；READY 行回执可查。依赖边 +1（SC→nlos-capability，daemon 门控）。4 新测试，双 feature 矩阵绿 |
+
+**验证**：全仓 fmt/clippy（退出码直检）/test **1890/0/27** + daemon 面 20 套件绿。**capability 签发闭环（ADR-0022）与 lease 三族装配（ADR-0021）落地**；W50 待派：ADR-0023 语义写端桥 + ADR-0019 前置的单机双 Cell 证据面。
