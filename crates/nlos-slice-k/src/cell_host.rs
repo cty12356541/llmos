@@ -11,9 +11,11 @@
 //! 1. process supervisor face — the runtime's `ProcessAuthority` plus the
 //!    heartbeat wiring of this module (registration observed = liveness
 //!    evidence, terminal = silence);
-//! 2. resource-lease sub-ledger — one [`QuotaLeaseGrantor`], the *single
-//!    holder* of the [`CellAuthority`] and therefore the single initiator of
-//!    epoch advances;
+//! 2. resource-lease sub-ledgers — all three `nlos-lease` families
+//!    (`QuotaLeaseGrantor`, `CapacityLeaseGrantor`,
+//!    `ExclusiveDeviceLeaseGrantor`) over one *shared* authority
+//!    ([`CellAuthority::into_shared`], ADR-0021); the quota grantor remains
+//!    the single initiator of epoch advances;
 //! 3. driver gateway — one [`ProviderCache`] over a [`MockProvider`] bound
 //!    to the runtime's durable operation store (the consumer-side gateway
 //!    entry with degradation/recovery);
@@ -25,20 +27,21 @@
 //! 7. capability/name cache — [`CapabilityNameCache`], built from the same
 //!    fence.
 //!
-//! **Why only the quota grantor holds the authority:** the claim slot of
+//! **Shared authority, single epoch writer (ADR-0021):** the claim slot of
 //! `nlos-cell` is process-unique and never released (ADR-0018: one OS
-//! process is one Cell), while all three `nlos-lease` grantor families take
-//! the [`CellAuthority`] *by value*. Exactly one grantor can therefore exist
-//! per process, and the quota family is the one with the epoch face
-//! (`advance_epoch_and_quarantine`, `LEASE-LOSS-001`) the wiring map names as
-//! the advance entry. The capacity and device families cannot co-hold the
-//! authority in one process under the W46 API; when they assemble, it is in
-//! their own process or behind an `nlos-lease` API change — never a second
-//! claim here.
+//! process is one Cell), and that slot — not Rust ownership — is what makes
+//! the [`CellAuthority`] unique. All three grantor families therefore
+//! co-hold one shared authority `Arc`-wise inside the claiming process
+//! (W46's by-value API kept exactly one grantor per process; ADR-0021
+//! retired that shape so the capacity and device families assemble here
+//! too). Sharing mints readers, not writers: the quota family stays the
+//! only epoch-advance entry (`advance_epoch_and_quarantine`,
+//! `LEASE-LOSS-001`) — a runtime invariant pinned by tests, since the
+//! compiler no longer proves single-writer through ownership.
 //!
 //! **Epoch broadcast chain (the wiring map's key invariant):** epoch
 //! advances flow one way — [`CellHost::advance_cell_epoch`] drives the
-//! grantor's `advance_epoch_and_quarantine`, takes the new
+//! quota grantor's `advance_epoch_and_quarantine`, takes the new
 //! [`CellFence`], and broadcasts `on_epoch_advanced` in a fixed order
 //! (failure detector first, then the name cache). A refusal mid-chain is
 //! returned as the typed incomplete state [`CellEpochBroadcastIncomplete`]
@@ -56,12 +59,15 @@ use nlos_cell::{
 };
 use nlos_clock::NowRequest;
 use nlos_driver_mock::{CacheHealth, MockProvider, ProviderCache};
-use nlos_lease::{LeaseInstant, QuotaLeaseGrant, QuotaLeaseGrantor};
+use nlos_lease::{
+    CapacityLeaseGrant, CapacityLeaseGrantor, DeviceResetReceipt, ExclusiveDeviceLeaseGrant,
+    ExclusiveDeviceLeaseGrantor, LeaseInstant, QuotaLeaseGrant, QuotaLeaseGrantor,
+};
 use nlos_process::{MarkProcessTerminatedRequest, ProcessBindingRecord, ProcessTerminalRecord};
 use nlos_runtime_tokio::PumpHealth;
 use nlos_types::{
-    CapabilityId, Generation, IdempotencyKey, ProcessId, QuotaLeaseId, SchedulerDomainId,
-    TaskAttemptId, TaskId,
+    CapabilityId, CapacityLeaseId, DeviceId, ExclusiveDeviceLeaseId, Generation, IdempotencyKey,
+    ProcessId, QuotaLeaseId, SchedulerDomainId, TaskAttemptId, TaskId,
 };
 
 use crate::error::{SliceKError, SliceKResult};
@@ -85,6 +91,11 @@ pub struct CellHostConfig {
     pub domain: SchedulerDomainId,
     /// Initial AVAILABLE pool of the quota lease sub-ledger.
     pub quota_available: u64,
+    /// Initial source pool of the capacity lease sub-ledger (W49).
+    pub capacity_pool: u64,
+    /// Device whose exclusive-lease head the device sub-ledger manages
+    /// (W49; one head per host in this slice).
+    pub device: DeviceId,
     /// Escalation thresholds of the failure detector, in durable-clock
     /// logical ticks.
     pub detector: FailureDetectorConfig,
@@ -92,16 +103,21 @@ pub struct CellHostConfig {
 
 impl CellHostConfig {
     /// Builds the assembly inputs. The detector config is explicit (no
-    /// defaults: thresholds are an operational decision).
+    /// defaults: thresholds are an operational decision); so are the two
+    /// lease pools and the managed device.
     #[must_use]
     pub const fn new(
         domain: SchedulerDomainId,
         quota_available: u64,
+        capacity_pool: u64,
+        device: DeviceId,
         detector: FailureDetectorConfig,
     ) -> Self {
         Self {
             domain,
             quota_available,
+            capacity_pool,
+            device,
             detector,
         }
     }
@@ -109,8 +125,9 @@ impl CellHostConfig {
 
 /// The Cell as an assembly: one [`SliceKRuntime`] by value (process
 /// supervisor face, driver gateway, durable outbox lane, artifact cache)
-/// plus the three Cell-local pieces the runtime does not own — the
-/// authority-holding quota lease grantor, the failure detector, and the
+/// plus the Cell-local pieces the runtime does not own — the three lease
+/// sub-ledgers over one shared [`CellAuthority`] (ADR-0021; the quota
+/// grantor is the epoch-advance entry), the failure detector, and the
 /// capability/name cache.
 ///
 /// Not cloneable and single-claim per OS process (the `nlos-cell` claim
@@ -119,9 +136,15 @@ pub struct CellHost {
     /// The wrapped slice runtime: durable process/artifact/operation
     /// authorities, clock, and the outbox-pump lane.
     runtime: SliceKRuntime,
-    /// The lease sub-ledger — the single holder of the [`CellAuthority`]
-    /// and the single initiator of epoch advances.
+    /// The quota lease sub-ledger — the epoch-advance entry of the
+    /// assembly. The authority it holds is the shared one all three
+    /// families co-hold (ADR-0021).
     quota: QuotaLeaseGrantor,
+    /// The capacity lease sub-ledger over the same shared authority (W49).
+    capacity: CapacityLeaseGrantor,
+    /// The exclusive device lease sub-ledger over the same shared authority
+    /// (W49).
+    device: ExclusiveDeviceLeaseGrantor,
     /// The cell-local failure detector (snapshot consumer of the fence).
     detector: FailureDetector,
     /// The cell-local capability/name cache (snapshot consumer of the
@@ -146,8 +169,9 @@ impl CellHost {
     /// Opening order: the slice runtime first (its authority opens are the
     /// crash-recovery path), then the process-unique Cell claim against
     /// `<root>/cell` (so restarts bump `node_boot_generation`), then the
-    /// detector and name cache from the claiming fence, then the quota
-    /// grantor taking the authority by value, then the gateway over the
+    /// detector and name cache from the claiming fence, then the claimed
+    /// authority turned shared ([`CellAuthority::into_shared`], ADR-0021)
+    /// and taken by all three lease grantors, then the gateway over the
     /// runtime's operation store.
     ///
     /// # Errors
@@ -163,12 +187,17 @@ impl CellHost {
         let fence = authority.fence();
         let detector = FailureDetector::new(&fence, config.detector);
         let cache = CapabilityNameCache::new(&fence);
-        let quota = QuotaLeaseGrantor::open(authority, config.quota_available);
+        let authority = authority.into_shared();
+        let quota = QuotaLeaseGrantor::open(Arc::clone(&authority), config.quota_available);
+        let capacity = CapacityLeaseGrantor::open(Arc::clone(&authority), config.capacity_pool);
+        let device = ExclusiveDeviceLeaseGrantor::open(authority, config.device);
         let gateway =
             ProviderCache::new(Arc::new(MockProvider::new(Arc::clone(&runtime.operations))));
         Ok(Self {
             runtime,
             quota,
+            capacity,
+            device,
             detector,
             cache,
             gateway,
@@ -265,13 +294,193 @@ impl CellHost {
         Ok(self.quota.query(lease_id)?)
     }
 
+    /// Remaining source pool of the capacity lease sub-ledger (W49).
+    #[must_use]
+    pub const fn capacity_pool_remaining(&self) -> u64 {
+        self.capacity.pool_remaining()
+    }
+
+    /// Grants a `CapacityLease` against the host's current fence (the
+    /// assembly's single-claim presentation; W49).
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`nlos_lease::CapacityLeaseGrantError`] typed: a stale or
+    /// mismatched fence, an insufficient source pool, or a conflicting
+    /// replay of the same capacity lease id.
+    pub fn grant_capacity_lease(
+        &mut self,
+        capacity_lease_id: CapacityLeaseId,
+        amount: u64,
+    ) -> SliceKResult<CapacityLeaseGrant> {
+        let fence = self.fence;
+        self.grant_capacity_lease_against(&fence, capacity_lease_id, amount)
+    }
+
+    /// Grants a `CapacityLease` against an explicit fence presentation —
+    /// the fail-closed probe face (W49), symmetric to
+    /// [`Self::grant_quota_lease_against`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::grant_capacity_lease`].
+    pub fn grant_capacity_lease_against(
+        &mut self,
+        presented: &CellFence,
+        capacity_lease_id: CapacityLeaseId,
+        amount: u64,
+    ) -> SliceKResult<CapacityLeaseGrant> {
+        Ok(self.capacity.grant(presented, capacity_lease_id, amount)?)
+    }
+
+    /// Reads the committed capacity lease snapshot (W49).
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`SliceKError::CapacityLeaseReturn`] when the id was
+    /// never issued.
+    pub fn query_capacity_lease(
+        &self,
+        capacity_lease_id: CapacityLeaseId,
+    ) -> SliceKResult<CapacityLeaseGrant> {
+        Ok(self.capacity.query(capacity_lease_id)?)
+    }
+
+    /// `GLOBAL_RESERVED` / `TARGET_PREPARED` / `ACTIVE` → `RETURNING`
+    /// against the host's current fence (W49): the return leg starts; no
+    /// refund happens here.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`nlos_lease::CapacityLeaseReturnError`] typed: a stale
+    /// or mismatched fence, an unknown lease id, or an already-returned
+    /// lease.
+    pub fn begin_capacity_return(
+        &mut self,
+        capacity_lease_id: CapacityLeaseId,
+    ) -> SliceKResult<CapacityLeaseGrant> {
+        let fence = self.fence;
+        Ok(self.capacity.begin_return(&fence, capacity_lease_id)?)
+    }
+
+    /// `RETURNING` → `RETURNED` against the host's current fence (W49):
+    /// refunds the full `amount` to the source pool once — capacity is
+    /// returned whole, not consumed.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`nlos_lease::CapacityLeaseReturnError`] typed: a stale
+    /// or mismatched fence, an unknown lease id, or a lease that has not
+    /// begun its return.
+    pub fn ack_capacity_return(
+        &mut self,
+        capacity_lease_id: CapacityLeaseId,
+    ) -> SliceKResult<CapacityLeaseGrant> {
+        let fence = self.fence;
+        Ok(self.capacity.ack_return(&fence, capacity_lease_id)?)
+    }
+
+    /// Whether the device lease sub-ledger's `DeviceLeaseHead` is still
+    /// FREE (W49).
+    #[must_use]
+    pub const fn device_head_free(&self) -> bool {
+        self.device.is_free()
+    }
+
+    /// Grants an `ExclusiveDeviceLease` against the host's current fence
+    /// (W49): claims the FREE head before the lease is issued.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`nlos_lease::ExclusiveDeviceLeaseGrantError`] typed: a
+    /// stale or mismatched fence, or a head that is not FREE.
+    pub fn grant_device_lease(
+        &mut self,
+        device_lease_id: ExclusiveDeviceLeaseId,
+    ) -> SliceKResult<ExclusiveDeviceLeaseGrant> {
+        let fence = self.fence;
+        self.grant_device_lease_against(&fence, device_lease_id)
+    }
+
+    /// Grants an `ExclusiveDeviceLease` against an explicit fence
+    /// presentation — the fail-closed probe face (W49), symmetric to
+    /// [`Self::grant_quota_lease_against`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::grant_device_lease`].
+    pub fn grant_device_lease_against(
+        &mut self,
+        presented: &CellFence,
+        device_lease_id: ExclusiveDeviceLeaseId,
+    ) -> SliceKResult<ExclusiveDeviceLeaseGrant> {
+        Ok(self.device.grant(presented, device_lease_id)?)
+    }
+
+    /// Reads the committed device lease snapshot (W49).
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`SliceKError::DeviceLeaseReturn`] when the id was never
+    /// issued.
+    pub fn query_device_lease(
+        &self,
+        device_lease_id: ExclusiveDeviceLeaseId,
+    ) -> SliceKResult<ExclusiveDeviceLeaseGrant> {
+        Ok(self.device.query(device_lease_id)?)
+    }
+
+    /// `DEVICE_RESERVED` → `RESETTING` against the host's current fence
+    /// (W49): the holder declares reset+zeroization intent; the head is
+    /// not FREE yet.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`nlos_lease::ExclusiveDeviceLeaseReturnError`] typed: a
+    /// stale or mismatched fence, an unknown lease id, or an
+    /// already-returned lease.
+    pub fn declare_device_reset(
+        &mut self,
+        device_lease_id: ExclusiveDeviceLeaseId,
+    ) -> SliceKResult<ExclusiveDeviceLeaseGrant> {
+        let fence = self.fence;
+        Ok(self.device.declare_reset(&fence, device_lease_id)?)
+    }
+
+    /// Submits the reset+zeroization receipt (`RESETTING` → `RETURNED`)
+    /// against the host's current fence (W49): on accept the receipt joins
+    /// the immutable log, the head returns to FREE, and the head reset
+    /// generation bumps. The receipt's own axes must bind the committed
+    /// lease — including the exclusivity epoch the lease was issued under,
+    /// which may precede the current Cell epoch.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`nlos_lease::ExclusiveDeviceLeaseReturnError`] typed: a
+    /// stale or mismatched fence, an unknown lease id, a receipt that does
+    /// not bind the lease or head fence, or a conflicting replay of the
+    /// same idempotency key.
+    pub fn submit_device_reset_receipt(
+        &mut self,
+        receipt: DeviceResetReceipt,
+    ) -> SliceKResult<ExclusiveDeviceLeaseGrant> {
+        let fence = self.fence;
+        Ok(self.device.submit_reset_receipt(&fence, receipt)?)
+    }
+
     /// The explicit epoch-advance entry — the single-initiator broadcast
     /// chain of the wiring map.
     ///
-    /// 1. the authority-holding quota grantor advances the Cell epoch
-    ///    (fencing token with it) and quarantines every unreconciled lease
-    ///    of the previous epoch (`LEASE-LOSS-001`; their face value is not
-    ///    returned to AVAILABLE);
+    /// The capacity and device grantors co-hold the same shared authority
+    /// (ADR-0021) and therefore observe the new epoch immediately, but
+    /// neither can advance it: this method, driving the quota grantor,
+    /// stays the only epoch writer — the single-entry discipline the
+    /// sharing face turned into a runtime invariant.
+    ///
+    /// 1. the quota grantor advances the Cell epoch (fencing token with
+    ///    it) and quarantines every unreconciled lease of the previous
+    ///    epoch (`LEASE-LOSS-001`; their face value is not returned to
+    ///    AVAILABLE);
     /// 2. the new fence is broadcast to the failure detector
     ///    (`on_epoch_advanced`: pending suspicions void, heartbeat evidence
     ///    does not cross the boundary, dead subjects re-enter as fresh
@@ -480,6 +689,8 @@ impl CellHost {
             epoch: self.fence.epoch(),
             fencing_token: self.fence.fencing_token(),
             quota_available: self.quota.available(),
+            capacity_pool_remaining: self.capacity.pool_remaining(),
+            device_head_free: self.device.is_free(),
             active_process_bindings: bindings.len(),
             gateway_health: self.gateway.health(),
             outbox_pump: self.runtime.pump_health(),
@@ -602,6 +813,11 @@ pub struct CellAssemblyInspect {
     pub fencing_token: CellFencingToken,
     /// Remaining AVAILABLE of the quota lease sub-ledger.
     pub quota_available: u64,
+    /// Remaining source pool of the capacity lease sub-ledger (W49).
+    pub capacity_pool_remaining: u64,
+    /// Whether the exclusive device lease sub-ledger's head is still FREE
+    /// (W49).
+    pub device_head_free: bool,
     /// Active process bindings under the supervisor face.
     pub active_process_bindings: usize,
     /// Health of the driver gateway entry.
@@ -648,6 +864,15 @@ impl CellAssemblyInspect {
                 self.fencing_token.get()
             ),
             format!("lease_quota_available={}", self.quota_available),
+            format!("lease_capacity_pool={}", self.capacity_pool_remaining),
+            format!(
+                "lease_device_head={}",
+                if self.device_head_free {
+                    "free"
+                } else {
+                    "reserved"
+                }
+            ),
             format!("process_bindings={}", self.active_process_bindings),
             format!("gateway={gateway}"),
             format!("outbox_pump={pump}"),
