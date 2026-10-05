@@ -8,7 +8,7 @@ use std::fmt;
 use nlos_application::ApplicationAuthorityError;
 use nlos_artifact::ArtifactError;
 use nlos_capability::CapabilityAuthorityError;
-use nlos_cell::{CellError, FailureDetectorError, NameCacheError};
+use nlos_cell::{CellError, FailureDetectorError, FederationError, NameCacheError};
 use nlos_channel::ChannelAuthorityError;
 use nlos_clock::AuthorityClockError;
 use nlos_commit_coordinator::CoordinatorError;
@@ -164,6 +164,10 @@ pub enum SliceKError {
     /// The cell host refused an assembly state it cannot proceed on
     /// honestly (W48; currently only heartbeat tick-sequence exhaustion).
     CellHost(&'static str),
+    /// The opt-in federation face refused a step (W50-L2): the shared root
+    /// was unavailable, a registration publish was not monotone, a corrupt
+    /// state file refused overwriting, or an intent was invalid.
+    Federation(FederationError),
     /// The Cell epoch advanced but a snapshot consumer's broadcast refused
     /// (W48): the typed incomplete state naming which consumer already
     /// received the fence — an advanced-but-partially-broadcast epoch is
@@ -246,6 +250,7 @@ impl fmt::Display for SliceKError {
             Self::FailureDetector(error) => write!(formatter, "cell failure detector: {error}"),
             Self::NameCache(error) => write!(formatter, "cell name cache: {error}"),
             Self::CellHost(reason) => write!(formatter, "cell host state refusal: {reason}"),
+            Self::Federation(error) => write!(formatter, "cell federation face: {error}"),
             Self::CellBroadcast(incomplete) => write!(
                 formatter,
                 "cell epoch advanced to epoch {} token {} but the broadcast refused ({}); incomplete state carried in full",
@@ -310,6 +315,7 @@ impl Error for SliceKError {
             Self::DeviceLeaseReturn(error) => Some(error),
             Self::FailureDetector(error) => Some(error),
             Self::NameCache(error) => Some(error),
+            Self::Federation(error) => Some(error),
             Self::CellBroadcast(incomplete) => match &incomplete.refusal {
                 CellBroadcastRefusal::Detector(error) => Some(error),
                 CellBroadcastRefusal::Cache(error) => Some(error),
@@ -477,6 +483,12 @@ impl From<FailureDetectorError> for SliceKError {
 impl From<NameCacheError> for SliceKError {
     fn from(error: NameCacheError) -> Self {
         Self::NameCache(error)
+    }
+}
+
+impl From<FederationError> for SliceKError {
+    fn from(error: FederationError) -> Self {
+        Self::Federation(error)
     }
 }
 

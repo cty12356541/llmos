@@ -47,15 +47,27 @@
 //! returned as the typed incomplete state [`CellEpochBroadcastIncomplete`]
 //! (which consumer had already received the fence, and the refusal) — an
 //! advanced-but-partially-broadcast epoch is never silently swallowed.
+//!
+//! **Federation face (W50-L2, opt-in):** [`CellHost::open_federated`]
+//! additionally publishes this Cell into one shared [`CellDirectory`]
+//! (cross-Cell name/service discovery) and exposes migration-intent
+//! registration on the same root — the two §26.1 control-plane mechanism
+//! faces of ADR-0019 decision 5. Default opening ([`CellHost::open`]) is
+//! unchanged: no federation root, no registration, no behavior delta. The
+//! published registration carries the host's *last published* fence
+//! (refreshed by [`CellHost::refresh_cell_registration`]); it is a
+//! discovery snapshot, not a fencing oracle, and no cross-Cell commit or
+//! intent execution is implied or performed here.
 
 use std::path::Path;
 use std::sync::Arc;
 
 use nlos_cell::{
-    CacheHit, CapabilityNameCache, CellAuthority, CellEpoch, CellFence, CellFencingToken,
-    CellIdentity, EpochAdvanceReport, EpochInvalidation, FailureDetector, FailureDetectorConfig,
-    FailureDetectorError, HeartbeatOutcome, InsertOutcome, InvalidationOutcome, MonitoredSubject,
-    NameCacheError, NamePath, SweepReport,
+    CacheHit, CapabilityNameCache, CellAuthority, CellDirectory, CellEpoch, CellFence,
+    CellFencingToken, CellIdentity, CellRegistrationEntry, EpochAdvanceReport, EpochInvalidation,
+    FailureDetector, FailureDetectorConfig, FailureDetectorError, HeartbeatOutcome, InsertOutcome,
+    InvalidationOutcome, MigrationIntent, MigrationIntentRecord, MonitoredSubject, NameCacheError,
+    NamePath, SweepReport,
 };
 use nlos_clock::NowRequest;
 use nlos_driver_mock::{CacheHealth, MockProvider, ProviderCache};
@@ -161,6 +173,20 @@ pub struct CellHost {
     /// Monotone counter feeding the durable-clock tick keys of heartbeat
     /// and sweep evidence.
     beat_sequence: u64,
+    /// The opt-in federation face: shared-root [`CellDirectory`] plus this
+    /// host's monotone registration-heartbeat counter. `None` under the
+    /// default (non-federated) opening — zero behavior delta there.
+    federation: Option<FederationFace>,
+}
+
+/// The opt-in federation face of one host: the shared-root directory
+/// handle, this host's heartbeat counter for its own registration file,
+/// and the publishing process's pid (observational, republished verbatim).
+#[derive(Debug)]
+struct FederationFace {
+    directory: CellDirectory,
+    heartbeat: u64,
+    os_process_id: u32,
 }
 
 impl CellHost {
@@ -172,7 +198,8 @@ impl CellHost {
     /// detector and name cache from the claiming fence, then the claimed
     /// authority turned shared ([`CellAuthority::into_shared`], ADR-0021)
     /// and taken by all three lease grantors, then the gateway over the
-    /// runtime's operation store.
+    /// runtime's operation store. No federation root is touched: default
+    /// opening is exactly the pre-W50 behavior.
     ///
     /// # Errors
     ///
@@ -181,9 +208,42 @@ impl CellHost {
     /// the cell data directory is unusable, or its identity is bound to a
     /// different Cell.
     pub fn open(root: impl AsRef<Path>, config: CellHostConfig) -> SliceKResult<Self> {
-        let runtime = SliceKRuntime::open(&root)?;
+        Self::open_with_federation(root.as_ref(), config, None)
+    }
+
+    /// Opens the assembled Cell under one root directory **and** publishes
+    /// its registration (heartbeat 1) into the shared federation root —
+    /// the opt-in mechanism face of W50-L2 (ADR-0019 decision 5): cross-
+    /// Cell name/service discovery plus migration-intent registration on
+    /// one [`CellDirectory`].
+    ///
+    /// The published record carries the opening fence; later refreshes
+    /// ([`Self::refresh_cell_registration`]) republish the host's
+    /// last-advanced fence at a monotone heartbeat. Discovery freshness
+    /// and intent reading flow through [`Self::cell_directory`]. Nothing
+    /// here executes a migration or commits anything across Cells.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::open`], plus [`SliceKError::Federation`] when the shared
+    /// root cannot be opened or the first registration cannot be published.
+    pub fn open_federated(
+        root: impl AsRef<Path>,
+        config: CellHostConfig,
+        federation_root: impl AsRef<Path>,
+    ) -> SliceKResult<Self> {
+        Self::open_with_federation(root.as_ref(), config, Some(federation_root.as_ref()))
+    }
+
+    fn open_with_federation(
+        root: &Path,
+        config: CellHostConfig,
+        federation_root: Option<&Path>,
+    ) -> SliceKResult<Self> {
+        let runtime = SliceKRuntime::open(root)?;
         let authority =
             CellAuthority::claim_with_data_dir(config.domain, runtime.root().join("cell"))?;
+        let os_process_id = authority.os_process_id();
         let fence = authority.fence();
         let detector = FailureDetector::new(&fence, config.detector);
         let cache = CapabilityNameCache::new(&fence);
@@ -193,6 +253,19 @@ impl CellHost {
         let device = ExclusiveDeviceLeaseGrantor::open(authority, config.device);
         let gateway =
             ProviderCache::new(Arc::new(MockProvider::new(Arc::clone(&runtime.operations))));
+        let federation = match federation_root {
+            Some(root) => {
+                let directory = CellDirectory::open(root)?;
+                let entry = federation_registration(&fence, os_process_id, 1)?;
+                directory.publish_registration(&entry)?;
+                Some(FederationFace {
+                    directory,
+                    heartbeat: 1,
+                    os_process_id,
+                })
+            }
+            None => None,
+        };
         Ok(Self {
             runtime,
             quota,
@@ -203,7 +276,60 @@ impl CellHost {
             gateway,
             fence,
             beat_sequence: 0,
+            federation,
         })
+    }
+
+    /// The shared-root federation directory when this host was opened
+    /// federated (discovery reads, intent reads and records); `None` under
+    /// the default opening.
+    #[must_use]
+    pub const fn cell_directory(&self) -> Option<&CellDirectory> {
+        match &self.federation {
+            Some(face) => Some(&face.directory),
+            None => None,
+        }
+    }
+
+    /// Heartbeats this Cell's registration in the federation root: bumps
+    /// the monotone counter and republishes the host's current fence whole
+    /// (write-temp + rename, so readers never observe a torn record).
+    /// Returns the stamped entry, or `None` when this host is not
+    /// federated (the call is then a no-op, not an error).
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`SliceKError::Federation`] when the publish refuses
+    /// (stale heartbeat, unusable root) and [`SliceKError::CellHost`] on
+    /// counter exhaustion.
+    pub fn refresh_cell_registration(&mut self) -> SliceKResult<Option<CellRegistrationEntry>> {
+        let Some(face) = &mut self.federation else {
+            return Ok(None);
+        };
+        let heartbeat = face.heartbeat.checked_add(1).ok_or(SliceKError::CellHost(
+            "federation registration heartbeat exhausted",
+        ))?;
+        face.heartbeat = heartbeat;
+        let entry = federation_registration(&self.fence, face.os_process_id, heartbeat)?;
+        Ok(Some(face.directory.publish_registration(&entry)?))
+    }
+
+    /// Appends one migration intent to the federation root's intent log —
+    /// registration only, never execution (`C-MIGRATE` owns that). Returns
+    /// the recorded form, or `None` when this host is not federated.
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`SliceKError::Federation`] when the intent is invalid
+    /// or the append refuses.
+    pub fn record_migration_intent(
+        &self,
+        intent: &MigrationIntent,
+    ) -> SliceKResult<Option<MigrationIntentRecord>> {
+        match &self.federation {
+            Some(face) => Ok(Some(face.directory.record_migration_intent(intent)?)),
+            None => Ok(None),
+        }
     }
 
     /// The wrapped slice runtime — the assembled home of the process
@@ -729,6 +855,29 @@ fn beat_tick_key(sequence: u64) -> IdempotencyKey {
     bytes[..8].copy_from_slice(CELL_BEAT_KEY_TAG);
     bytes[8..].copy_from_slice(&sequence.to_be_bytes());
     IdempotencyKey::from_bytes(bytes)
+}
+
+/// The one-line assembly digest this host publishes as its registration
+/// description (the "pipeline 描述摘要" of the mechanism face; this slice
+/// has no socket face).
+const FEDERATION_DESCRIPTION: &str = "slice-k CellHost seven-piece assembly";
+
+/// Builds this host's registration entry from a fence plus the monotone
+/// heartbeat counter.
+fn federation_registration(
+    fence: &CellFence,
+    os_process_id: u32,
+    heartbeat: u64,
+) -> SliceKResult<CellRegistrationEntry> {
+    Ok(CellRegistrationEntry::new(
+        fence.identity(),
+        fence.node_boot_generation(),
+        fence.epoch(),
+        fence.fencing_token(),
+        os_process_id,
+        FEDERATION_DESCRIPTION,
+    )?
+    .with_heartbeat(heartbeat))
 }
 
 impl std::fmt::Debug for CellHost {
